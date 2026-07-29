@@ -16,6 +16,24 @@ surfaces, it doesn't belong in this file. Write the generator, don't
 hand-type the snapshot — a hand-typed snapshot is exactly what rotted the
 old open-threads.md head block into stale, misleading instructions.
 
+## Session startup — the same ritual every time (survives session transfer)
+
+The first supervisor turn of ANY session (fresh or transferred) does exactly
+this, in order — founder feedback 2026-07-29: format and cap must not be
+relearned per session:
+
+1. Read `docs/leadv2/CURRENT-PLAN.md` (open work) AND the backlog
+   (`docs/tasks.yaml` top unclaimed). Both, always.
+2. Ask the founder ONE fork question with two concrete options:
+   **«продолжить текущий план»** (list the plan's in-flight cluster) vs
+   **«взять из беклога»** (top-5 unclaimed). Session-transfer resume is the
+   first option, never silent.
+3. Echo the lane cap from `.claude/leadv2-overrides/active-limits.yaml`
+   (`сap N, автодобор on/off`) so the founder can correct it in one word.
+4. Attach the supervise loop ONLY via the URGENT-filter pattern
+   (`tail -F -n0 <loop-log> | grep --line-buffered URGENT`) — a raw
+   Monitor on the log wakes a turn per pulse and silently burns the budget.
+
 ## What a supervisor session IS
 
 A supervisor session does not do the work itself — it coordinates:
@@ -75,6 +93,18 @@ log is append-only. When the backlog pump is on, it claims capacity through
 the dispatch funnel; the supervisor does not claim work manually.
 
 ## Status reporting standard
+
+The 30-minute broad status uses this exact per-lane shape (founder-approved
+format, 2026-07-29 — do not improvise a new one):
+
+```
+<задача> / что решаем: <одна фраза> / кто: <воркер+модель> /
+<синг-воркер | полная leadv2> / апдейт: <что изменилось с прошлого статуса>
+```
+
+One line per lane, plus one closing line: freed slots, pending questions,
+rate-limit window usage. Frequent (sub-30-min) updates go to the status
+line / pulse log surface, never as extra chat turns.
 
 - **Short status**: plain words, no jargon, no UUIDs, no dollar figures
   (report the 5-hour / weekly rate-limit-window usage instead). The broad

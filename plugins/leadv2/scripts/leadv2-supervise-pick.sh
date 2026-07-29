@@ -67,6 +67,7 @@ for line in raw.splitlines():
     if len(parts) < 4:
         continue
     lane, priority, iid, title = parts[0], parts[1], parts[2], "\t".join(parts[3:])
+    lane = "" if lane == "-" else lane  # NB2: "-" is tasks-lib.sh's empty-lane marker
     candidates.append({
         "id": iid, "title": title, "priority": priority, "lane": lane,
         "recommend": False, "reason": f"queued {lane}/{priority}",

@@ -94,8 +94,9 @@ PULSE_S="${LEADV2_SUPERVISE_PULSE_S:-300}"
 BROAD_STATUS_S="${LEADV2_SUPERVISE_BROAD_STATUS_S:-1800}"
 MAX_CYCLES="${LEADV2_SUPERVISE_LOOP_MAX_CYCLES:-0}"
 
-# EFFICIENCY-TUNE-01 C: job-registry stall/done detection.
-JOB_STALL_MIN="${LEADV2_JOB_STALL_MIN:-10}"
+# EFFICIENCY-TUNE-01 C: this different registry artifact keeps its own event,
+# but shares the lane-silence knob so operators do not tune competing limits.
+JOB_STALL_MIN="${LEADV2_LANE_SILENT_MAX_S:-900}"
 JOB_REG_ROOT="/tmp/leadv2-job-registry"
 JOB_REG_SEEN="$(PROJECT_ROOT="$PROJECT_ROOT" "$STATE_PATH_SH" job-registry-seen.json)"
 
@@ -371,7 +372,7 @@ PYPULSE
 # EFFICIENCY-TUNE-01 C: scans /tmp/leadv2-job-registry/*/<job_id> entries
 # (written by codex-task.sh / glm-coder.sh at spawn, cleared at their own
 # completion point) for entries whose run_dir falls under this project.
-# Presence + age >= JOB_STALL_MIN -> URGENT stalled line; an entry seen last
+# Presence + age >= JOB_STALL_MIN seconds -> URGENT stalled line; an entry seen last
 # tick but gone now -> DONE line (best-effort progress.log tail).
 # lean: codex --background dispatches clear their registry entry immediately
 # after parsing jobId (codex-task.sh's own comment, not real job completion),
@@ -412,10 +413,10 @@ for path in glob.glob(os.path.join(reg_root, "*", "*")):
     except Exception:
         mtime = now
     current[job_id] = {"run_dir": run_dir, "started_at": started_at, "kind": kind}
-    age_min = (now - mtime).total_seconds() / 60.0
-    if age_min >= stall_min:
+    age_s = (now - mtime).total_seconds()
+    if age_s >= stall_min:
         now_s = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        line_out = f"{now_s} [SUPERVISE-URGENT] JOB_STALLED {kind} job={job_id} age={int(age_min)}m"
+        line_out = f"{now_s} [SUPERVISE-URGENT] JOB_STALLED {kind} job={job_id} age={int(age_s)}s"
         with open(log_path, "a", encoding="utf-8") as fh:
             fh.write(line_out[:220] + "\n")
 

@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""leadv2-glm-policy-resolve.py — the ONE glm_policy / codex_quota_gate resolver.
+
+T-b (SUPERVISOR-AUDIT-01): formerly two independent copies of the GLM-FIRST-01
+predicate chain existed — leadv2-dispatch-code.sh:resolve_arm() (regex-parsed
+the yaml, no pyyaml dep) and leadv2-router.sh's per-invocation python helper
+(used its own already-parsed cfg dict). Both callers now call resolve_glm_policy()
+here; editing behaviour in this ONE file changes both build-phase dispatch and
+router.sh phase/step routing identically.
+
+CLI mode (leadv2-dispatch-code.sh: no pyyaml, parses routing.yaml itself):
+    leadv2-glm-policy-resolve.py --routing-yaml PATH --job build|review \
+        --signals '{"mission_kind": "...", ...}' [--base-arm glm] [--quota-live PATH]
+    stdout: arm=...\\nrule=...\\nreason=...\\ntier=...\\n
+
+Import mode (leadv2-router.sh: already has glm_policy as a parsed dict via
+PyYAML, calls resolve_glm_policy() directly — see leadv2-router.sh's
+importlib.util.spec_from_file_location loader):
+    from leadv2_glm_policy_resolve import resolve_glm_policy
+    result = resolve_glm_policy(glm_policy, signals, job, base_arm, quota_live_bin)
+
+Fail-safe throughout: any routing.yaml / quota-read error resolves to the
+cheapest default (glm, no gate) rather than raising — a broken resolver must
+never block dispatch (mirrors resolve_arm()'s original `|| printf 'arm=glm...'`
+contract and leadv2-glm-quota-gate.sh's fail-OPEN contract for the live-quota
+read).
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+DEFAULT_BUILD_SPILL = ["glm", "codex", "sonnet"]
+DEFAULT_REVIEW_EXCLUSIONS = ["glm"]
+DEFAULT_BUILD_THRESHOLD_PCT = 80.0
+DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
+
+
+def _num_ge(val, n):
+    try:
+        return val is not None and float(val) >= n
+    except (TypeError, ValueError):
+        return False
+
+
+def extract_glm_policy_block(routing_yaml_text: str) -> dict:
+    """Regex-only glm_policy extractor (no pyyaml dep) for the CLI path.
+    Mirrors the exact fields the import-mode caller (router.sh, which has
+    PyYAML) reads for free from its own parsed cfg — both paths see the same
+    policy shape regardless of which extractor produced it."""
+    exc_ids, opus_kinds, codex_kinds = [], [], []
+    codex_default_tier = "standard"
+    # MAJOR fix (resolver:55-60): gate stays None unless `codex_quota_gate:`
+    # is actually present in the yaml -- repos/configs that never opted into
+    # T-q get exact old v1 behaviour (no thresholds/spill/review-exclusion
+    # applied from hardcoded defaults).
+    gate = None
+    m = re.search(r'(?m)^  glm_policy:\s*\n((?:^[ \t]{4,}.*\n|^[ \t]*\n)+)', routing_yaml_text)
+    if m:
+        block = m.group(1)
+        for idm in re.finditer(r'(?m)^[ \t]*-[ \t]*id:[ \t]*([A-Za-z0-9_-]+)', block):
+            exc_ids.append(idm.group(1))
+        okm = re.search(r'(?m)^[ \t]*opus_only_mission_kinds:[ \t]*\[([^\]]*)\]', block)
+        if okm:
+            opus_kinds = [s.strip() for s in okm.group(1).split(',') if s.strip()]
+        cxkm = re.search(r'(?m)^[ \t]*codex_fitting_mission_kinds:[ \t]*\[([^\]]*)\]', block)
+        if cxkm:
+            codex_kinds = [s.strip() for s in cxkm.group(1).split(',') if s.strip()]
+        cxtm = re.search(r'(?m)^[ \t]*codex_default_tier:[ \t]*([A-Za-z0-9_-]+)', block)
+        if cxtm:
+            codex_default_tier = cxtm.group(1)
+        if re.search(r'(?m)^[ \t]*codex_quota_gate:', block):
+            gate = {
+                "build_threshold_pct": DEFAULT_BUILD_THRESHOLD_PCT,
+                "review_threshold_pct": DEFAULT_REVIEW_THRESHOLD_PCT,
+                "build_spill_order": list(DEFAULT_BUILD_SPILL),
+                "review_arm_exclusions": list(DEFAULT_REVIEW_EXCLUSIONS),
+            }
+            btm = re.search(r'(?m)^[ \t]*build_threshold_pct:[ \t]*([0-9.]+)', block)
+            if btm:
+                gate["build_threshold_pct"] = float(btm.group(1))
+            rtm = re.search(r'(?m)^[ \t]*review_threshold_pct:[ \t]*([0-9.]+)', block)
+            if rtm:
+                gate["review_threshold_pct"] = float(rtm.group(1))
+            bso = re.search(r'(?m)^[ \t]*build_spill_order:[ \t]*\[([^\]]*)\]', block)
+            if bso:
+                gate["build_spill_order"] = [s.strip() for s in bso.group(1).split(',') if s.strip()]
+            rex = re.search(r'(?m)^[ \t]*review_arm_exclusions:[ \t]*\[([^\]]*)\]', block)
+            if rex:
+                gate["review_arm_exclusions"] = [s.strip() for s in rex.group(1).split(',') if s.strip()]
+    return {
+        "sonnet_exceptions": [{"id": i} for i in exc_ids],
+        "opus_only_mission_kinds": opus_kinds,
+        "codex_fitting_mission_kinds": codex_kinds,
+        "codex_default_tier": codex_default_tier,
+        "codex_quota_gate": gate,
+    }
+
+
+def live_codex_weekly_pct(quota_live_bin):
+    """Fail-open: any error -> None (gate never fires on an unknown reading).
+    Same live-quota script leadv2-glm-quota-gate.sh uses for GLM
+    (leadv2-quota-live.sh), read via the "codex" bucket. Codex's schema
+    differs from GLM's (windows[]/binding_window, not five_hour/weekly) —
+    binding_window picks the window whose used_percent is the live figure
+    (observed: "primary", 7-day/604800s window == weekly)."""
+    if not quota_live_bin or not os.path.exists(quota_live_bin):
+        return None
+    try:
+        out = subprocess.run(["bash", quota_live_bin, "codex"], capture_output=True,
+                              text=True, timeout=10)
+        if out.returncode != 0:
+            return None
+        d = json.loads(out.stdout)
+        if d.get("status") != "ok":
+            return None
+        windows = d.get("windows") or []
+        binding = d.get("binding_window")
+        for w in windows:
+            if w.get("kind") == binding:
+                return w.get("used_percent")
+        return windows[0].get("used_percent") if windows else None
+    except Exception:
+        return None
+
+
+def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
+                        base_arm: str = "glm", quota_live_bin: str = None,
+                        quota_codex_pct=None, enable_codex_fitting_rule: bool = True) -> dict:
+    """ONE authority for GLM-FIRST-01 predicates + T-q codex_quota_gate.
+
+    base_arm: the arm the caller would pick with NO glm_policy applied at all.
+      Both current callers always pass "glm" for build-phase resolution (glm
+      is the routing.yaml default there) and whatever the step's own default
+      resolves to for other phases (e.g. "codex" for review) — kept a
+      parameter, not hardcoded, so a future non-glm-default step can still
+      get quota-gate-only enforcement without touching this function.
+    job: "build" | "review" (anything else falls back to "build" semantics —
+      review_arm_exclusions and the review threshold only ever apply when the
+      caller explicitly asks for job="review").
+    enable_codex_fitting_rule: the two pre-T-b duplicates had ALREADY drifted —
+      dispatch-code.sh:resolve_arm() carried the ROUTING-ENFORCEMENT-01
+      codex_fitting_mission_kind rule, leadv2-router.sh's copy never got it
+      (its own command_template builder has no dispatch branch for a bare
+      "codex" build arm). Default True preserves dispatch-code.sh's existing
+      reach; leadv2-router.sh passes False so unifying the resolver does not
+      silently hand its build-phase command builder an arm it cannot dispatch
+      — a separate command_template fix, out of T-b's scope.
+    Returns: {arm, rule, reason, tier, codex_quota_blocked, job}
+    """
+    opus_kinds = glm_policy.get("opus_only_mission_kinds", []) or []
+    exc_ids = [e.get("id") for e in (glm_policy.get("sonnet_exceptions", []) or [])
+               if isinstance(e, dict) and e.get("id")]
+    codex_kinds = glm_policy.get("codex_fitting_mission_kinds", []) or [] if enable_codex_fitting_rule else []
+    codex_default_tier = glm_policy.get("codex_default_tier", "standard")
+    # MAJOR fix (resolver:55-60): None (not {}) when the gate key/block is
+    # absent -- distinguishes "opted out" from "opted in with defaults" so the
+    # enforcement block below can skip entirely rather than applying hardcoded
+    # thresholds/spill/review-exclusion to a repo/config that never asked for them.
+    gate = glm_policy.get("codex_quota_gate")
+
+    # Collateral fix (surfaced by router.sh:595-609 preserving this reason
+    # verbatim): "glm_default" is only a truthful sentinel when base_arm=="glm"
+    # (build's only base_arm). review's base_arm is "codex" -- reusing
+    # "glm_default" there fed router.sh's bandit-allowed-arms special-case
+    # (glm_default -> allowed=["glm"]) and forced GLM onto a review job, the
+    # exact outcome GLM-FIRST-01/review_arm_exclusions exists to prevent.
+    arm, rule, reason = base_arm, "none", ("glm_default" if base_arm == "glm" else "base_arm_default")
+    if base_arm == "glm":
+        # STRICT precedence, first match wins — identical order/semantics to
+        # the two deleted duplicates (dispatch-code.sh:337-418,
+        # router.sh:190-259 pre-T-b).
+        rules = [
+            (bool(signals.get("mission_kind")) and signals.get("mission_kind") in opus_kinds,
+             None, "opus", "opus_mission_kind"),
+            (bool(signals.get("protected_path") or signals.get("safety_touched")),
+             "safety_gate_publish_payments", "sonnet", "sonnet_exception"),
+            (_num_ge(signals.get("subsystem_count"), 4) or bool(signals.get("needs_midflight_interaction")),
+             "integration_critical_4subsystems", "sonnet", "sonnet_exception"),
+            (bool(signals.get("ui_design_judgment")),
+             "ui_design_judgment", "sonnet", "sonnet_exception"),
+            (_num_ge(signals.get("glm_failure_count"), 2),
+             "glm_failed_twice", "sonnet", "sonnet_exception"),
+            (bool(signals.get("glm_lock_busy")),
+             "glm_lock_busy_no_second_channel", "sonnet", "sonnet_exception"),
+            (bool(signals.get("mission_kind")) and signals.get("mission_kind") in codex_kinds,
+             None, "codex", "codex_fitting_mission_kind"),
+        ]
+        for pred, rid, rbase, rsn in rules:
+            if not pred:
+                continue
+            if rid is not None and rid not in exc_ids:
+                continue  # rule id absent from yaml -> cannot fire (single source of truth)
+            arm, rule, reason = rbase, (rid or ("codex_fitting_kind" if rbase == "codex" else "opus_only_kind")), rsn
+            break
+
+    tier = codex_default_tier if arm == "codex" else ""
+    job = job if job in ("build", "review") else "build"
+    codex_blocked = False
+
+    # --- T-q enforcement (SUPERVISOR-AUDIT-01 T-b): codex_quota_gate + review_arm_exclusions ---
+    # MAJOR fix (resolver:55-60): only enforce when the yaml explicitly
+    # declares codex_quota_gate -- absent block => exact old v1 output
+    # (arm/rule/reason/tier from the precedence rules above, untouched).
+    if isinstance(gate, dict):
+        exclusions = gate.get("review_arm_exclusions", DEFAULT_REVIEW_EXCLUSIONS) if job == "review" else []
+        spill = gate.get("build_spill_order", DEFAULT_BUILD_SPILL)
+        threshold = (gate.get("review_threshold_pct", DEFAULT_REVIEW_THRESHOLD_PCT) if job == "review"
+                     else gate.get("build_threshold_pct", DEFAULT_BUILD_THRESHOLD_PCT))
+
+        if quota_codex_pct is None and quota_live_bin:
+            quota_codex_pct = live_codex_weekly_pct(quota_live_bin)
+        # BLOCKING fix (resolver:192-200): quota unknown != known-0%. A read
+        # failure (None) must NOT resolve as "below threshold" -- treat it as
+        # blocked (codex ineligible) until a valid weekly reading exists.
+        quota_known = quota_codex_pct is not None
+        codex_blocked = (not quota_known) or _num_ge(quota_codex_pct, threshold)
+
+        # founder rule: GLM is NEVER a review arm, regardless of quota.
+        if job == "review" and arm in exclusions:
+            arm = "sonnet" if codex_blocked else "codex"
+            rule, reason = "review_arm_exclusions", "review_arm_exclusion"
+            tier = codex_default_tier if arm == "codex" else ""
+
+        if arm == "codex" and codex_blocked:
+            try:
+                nxt = spill[spill.index("codex") + 1:]
+            except ValueError:
+                nxt = ["sonnet"]
+            nxt = [a for a in nxt if not (job == "review" and a in exclusions)]
+            arm = nxt[0] if nxt else "sonnet"
+            rule = "codex_quota_gate_%dpct" % int(threshold)
+            reason = "codex_quota_gate"
+            tier = ""
+
+    return {"arm": arm, "rule": rule, "reason": reason, "tier": tier,
+            "codex_quota_blocked": codex_blocked, "job": job}
+
+
+def _emit_fallback(job: str, reason: str) -> None:
+    """BLOCKING fix (resolver:227-231,:252-257): every review-mode error path
+    must fall back Codex->Sonnet, NEVER glm (founder rule: GLM is never a
+    review arm, no exception path -- not even a resolver crash). With no
+    quota reading available, treat quota as unknown (blocked, per the tri-state
+    fix above), which lands review on sonnet -- the safe end of the
+    Codex->Sonnet chain. Non-review jobs keep the pre-existing cheap-default
+    fallback (arm=glm)."""
+    if job == "review":
+        print("arm=sonnet"); print("rule=none"); print("reason=%s" % reason)
+        print("tier="); print("codex_quota_blocked=1")
+    else:
+        print("arm=glm"); print("rule=none"); print("reason=%s" % reason)
+        print("tier="); print("codex_quota_blocked=0")
+
+
+def _job_from_argv(argv) -> str:
+    """Best-effort --job sniff for fallback paths that run before (or instead
+    of) argparse -- e.g. the top-level exception handler in __main__."""
+    for i, tok in enumerate(argv):
+        if tok == "--job" and i + 1 < len(argv):
+            return argv[i + 1]
+        if tok.startswith("--job="):
+            return tok.split("=", 1)[1]
+    return "build"
+
+
+def _main(argv):
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--routing-yaml", required=True)
+    ap.add_argument("--job", default="build")
+    ap.add_argument("--signals", default="{}")
+    ap.add_argument("--base-arm", default="glm")
+    ap.add_argument("--quota-live", default=None)
+    args = ap.parse_args(argv)
+
+    try:
+        text = Path(args.routing_yaml).read_text()
+    except Exception:
+        _emit_fallback(args.job, "no_routing_yaml")
+        return 0
+
+    glm_policy = extract_glm_policy_block(text)
+    try:
+        signals = json.loads(args.signals)
+    except Exception:
+        signals = {}
+
+    quota_live_bin = args.quota_live
+    if quota_live_bin is None:
+        quota_live_bin = str(Path(__file__).resolve().parent.parent / "leadv2-quota-live.sh")
+
+    result = resolve_glm_policy(glm_policy, signals, args.job, args.base_arm, quota_live_bin)
+    print("arm=%s" % result["arm"])
+    print("rule=%s" % result["rule"])
+    print("reason=%s" % result["reason"])
+    print("tier=%s" % result["tier"])
+    print("codex_quota_blocked=%s" % ("1" if result["codex_quota_blocked"] else "0"))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(_main(sys.argv[1:]) or 0)
+    except Exception as _e:
+        sys.stderr.write("leadv2-glm-policy-resolve.py: resolver_error: %s\n" % _e)
+        _emit_fallback(_job_from_argv(sys.argv[1:]), "resolver_error")
+        sys.exit(0)

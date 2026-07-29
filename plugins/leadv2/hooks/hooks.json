@@ -94,6 +94,13 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-idle-notification-filter.sh\"",
             "timeout": 5,
             "statusMessage": "Idle-notification filter (suppress content-free teammate wakes)..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-pump-caller.sh\"",
+            "timeout": 5,
+            "continueOnBlock": true,
+            "statusMessage": "Supervisor pump-caller (throttled backlog auto-refill)..."
           }
         ]
       }
@@ -113,6 +120,12 @@
       {
         "matcher": "Bash",
         "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Supervisor self-work guard..."
+          },
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-deny-floor.sh\"",
@@ -298,6 +311,12 @@
         "hooks": [
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Supervisor self-work guard..."
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-memory-guard.sh\"",
             "timeout": 5,
             "statusMessage": "Memory guard (MEMORY.md leak prevention)..."
@@ -348,6 +367,12 @@
         "hooks": [
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Supervisor self-work guard..."
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-memory-guard.sh\"",
             "timeout": 5,
             "statusMessage": "Memory guard (MEMORY.md leak prevention)..."
@@ -383,6 +408,17 @@
             "timeout": 5,
             "statusMessage": "Skill-authoring reminder (writing-great-skills)...",
             "continueOnBlock": true
+          }
+        ]
+      },
+      {
+        "matcher": "NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Supervisor self-work guard..."
           }
         ]
       },

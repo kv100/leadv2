@@ -51,6 +51,21 @@
 #   6. Bounded scan: LEADV2_BACKLOG_PUMP_MAX_CANDIDATES (default 8) per
 #      `check` invocation — a pathological queue can't turn one call into an
 #      unbounded loop; the next poll cycle continues where this one stopped.
+#   7. Lane accounting + async dispatch (fix2, SUPERVISOR-AUDIT-01
+#      review-verdict-2 B5/NM1): every dispatch now reserves an active.yaml
+#      lane (pid=null placeholder, same low-level register/unregister writer
+#      leadv2-fanout.sh's Gate1 self-registration already uses) BEFORE the
+#      dispatch call, so a LATER `check` invocation (e.g. the next throttled
+#      hook tick) sees consumed capacity instead of re-dispatching past
+#      MAX_CONCURRENT. The reservation is released on any non-success
+#      dispatch outcome. LEADV2_BACKLOG_PUMP_ASYNC_DISPATCH (default 0) lets
+#      a caller bound by a short host timeout (the pump-caller hook) opt
+#      into backgrounding the dispatch call itself, via a detached
+#      re-invocation of this script (`_async-dispatch`, setsid when
+#      available) — the lane reservation is already committed by the time
+#      `check` returns either way; only the wait for the dispatch call's own
+#      completion is deferred. Default 0 leaves leadv2-supervise-loop.sh's
+#      own periodic `check` call fully synchronous, unchanged.
 #
 # Usage:
 #   leadv2-backlog-pump.sh check              # refill up to capacity; safe,
@@ -76,6 +91,10 @@ set -uo pipefail   # no -e: refusals must journal and continue, never abort
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="leadv2-backlog-pump"
+# Absolute self-path (not a trusted ${BASH_SOURCE[0]}, which may be relative
+# depending on how the caller invoked us) — used for the detached
+# `_async-dispatch` re-invocation, fix2 below.
+SELF="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 
 log()     { printf -- '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
 log_err() { printf -- '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
@@ -98,6 +117,14 @@ export PROJECT_ROOT
 
 # shellcheck source=leadv2-tasks-lib.sh
 source "${SCRIPT_DIR}/leadv2-tasks-lib.sh"
+
+# shellcheck source=leadv2-active-registry.sh
+# active-registry.sh sets -e at its own top; this script's contract (see
+# header comment above) is "no -e: refusals must journal and continue, never
+# abort". `source` runs in THIS shell, so its `set -euo pipefail` would
+# otherwise leak into every line below it — restore `set +e` immediately.
+source "${SCRIPT_DIR}/leadv2-active-registry.sh"
+set +e
 
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 DISPATCH_BIN="${LEADV2_BACKLOG_PUMP_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
@@ -233,7 +260,13 @@ _mission_for_task() {  # $1=task_id -> mission text (title + note), empty if not
 import yaml, sys
 items = yaml.safe_load(sys.argv[1]) or []
 it = items[0] if items else {}
-title = it.get('title', '')
+# NB2 fix (SUPERVISOR-AUDIT-01 fix-round-3): persona-engine's live tasks.yaml
+# rows carry no literal 'title' column at all (0/372) -- 282/296 queued rows
+# instead carry 'intent', a human-written one-liner (same schema gap
+# leadv2-fanout.sh's task_title() already works around). Falling back to
+# intent here is what makes the pump's dispatched mission text non-empty for
+# that generator's rows instead of silently becoming the bare task id.
+title = it.get('title') or it.get('intent') or ''
 note = it.get('note', '')
 origin = it.get('origin', '')
 parts = [p for p in (title, note) if p]
@@ -241,6 +274,92 @@ if origin:
     parts.append(f'(origin: {origin})')
 print(' — '.join(parts) if parts else title)
 " "$row" 2>/dev/null
+}
+
+# ── active.yaml lane reservation (fix2, SUPERVISOR-AUDIT-01 review-verdict-2
+# B5/NM1) ─────────────────────────────────────────────────────────────────
+# Uses leadv2-active-registry.sh's low-level register/unregister/update_pid
+# ops directly (bypassing leadv2_active_register(), which always fills
+# pid=<caller's own durable pid> and has no null-pid mode) so a pump
+# dispatch can reserve a lane with a pid=null placeholder BEFORE the worker
+# exists — the SAME writer, and the same placeholder-then-update shape,
+# leadv2-fanout.sh's single-worker funnel already uses for its own
+# dispatch-code.sh launches.
+_pump_reserve_lane() {  # $1=task_id -> rc 0 reserved, nonzero=failed (fail closed, no dispatch)
+  local tid="$1" yaml_file lockfile session_id ts branch pulse_log
+  yaml_file="$(_leadv2_yaml_file)"
+  lockfile="$(_leadv2_yaml_lockfile)"
+  ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  branch="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || printf -- 'unknown')"
+  session_id="p-$(date -u +%Y%m%dT%H%M%SZ)-null-$$"
+  pulse_log="docs/handoff/backlog-pump-${tid}/pulse.md"
+  _leadv2_yaml_py_lock \
+    "$lockfile" "$yaml_file" register \
+    "$session_id" "$tid" "$PROJECT_ROOT" "$branch" "$ts" \
+    "spawning" "backlog-pump" "null" "null" "null" \
+    "true" "$ts" "$pulse_log" "" ""
+}
+
+_pump_update_lane_pid() {  # $1=task_id $2=pid_or_null -- best-effort, never fails the caller
+  local tid="$1" pid_val="$2" yaml_file lockfile
+  yaml_file="$(_leadv2_yaml_file)"
+  lockfile="$(_leadv2_yaml_lockfile)"
+  [[ -f "$yaml_file" ]] || return 0
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" update_pid "$tid" "$pid_val" >/dev/null 2>&1 || true
+}
+
+_pump_release_lane() {  # $1=task_id -- never fails the caller
+  leadv2_active_unregister "$1" >/dev/null 2>&1 || true
+}
+
+# cmd_async_dispatch — runs the actual dispatch call + its outcome handling
+# (pid-fill on success, task-unclaim + lane-release on anything else). The
+# lane reservation for $1 must ALREADY exist (written by the caller via
+# _pump_reserve_lane) before this runs. Callable either inline (synchronous
+# default) or as a detached re-invocation of this script (async opt-in,
+# MODE=_async-dispatch below) -- same function, same outcome semantics
+# either way, so the two modes can never drift apart.
+# rc: 0 = dispatched, nonzero = not (lane + claim already released).
+cmd_async_dispatch() {  # $1=task_id $2=mission $3=lane $4=priority $5=rank (last 3 optional, logging only)
+  local tid="$1" mission="$2" lane="${3:-}" priority="${4:-}" rank="${5:-}"
+  local rc=0 dc_out=""
+  dc_out="$(bash "$DISPATCH_BIN" "$mission" --kind "backlog-pump" 2>&1)" || rc=$?
+
+  case "$rc" in
+    0)
+      # Only the sonnet arm's handle is a real OS pid (dispatch-code.sh
+      # normalizes it to bare "PID=<n>"); glm/codex handles are provider-
+      # internal run/job ids, not killable pids -- leave pid=null for those
+      # (same convention leadv2-fanout.sh's funnel uses for this exact case).
+      local handle pid_val extracted_pid
+      handle="$(printf '%s\n' "$dc_out" | sed -n 's/.*worker_spawned .*handle=\(.*\)$/\1/p' | tail -1)"
+      pid_val="null"
+      extracted_pid="$(printf '%s' "$handle" | sed -n 's/^PID=\([0-9][0-9]*\).*/\1/p')"
+      [[ -n "$extracted_pid" ]] && pid_val="$extracted_pid"
+      _pump_update_lane_pid "$tid" "$pid_val"
+      jemit decision "pump_dispatched task=${tid} lane=${lane} priority=${priority} reason=declared_plan_order rank=${rank}"
+      return 0
+      ;;
+    2)
+      jemit decision "pump_skip task=${tid} reason=duplicate_task_signature"
+      leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+      _pump_release_lane "$tid"
+      return 2
+      ;;
+    3)
+      jemit decision "pump_deferred_to_founder task=${tid} reason=opus_arm_requires_judgment"
+      leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+      _pump_release_lane "$tid"
+      _surface_to_founder "$tid" "requires judgment (opus arm) — pump will not auto-start this"
+      return 3
+      ;;
+    *)
+      jemit decision "pump_skip task=${tid} reason=spawn_failed rc=${rc}"
+      leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+      _pump_release_lane "$tid"
+      return 1
+      ;;
+  esac
 }
 
 cmd_status() {
@@ -266,6 +385,7 @@ cmd_dry_run() {
   fi
   local i=0
   while IFS=$'\t' read -r lane priority iid title; do
+    [[ "$lane" == "-" ]] && lane=""  # NB2: "-" is tasks-lib.sh's empty-lane marker
     [[ -z "$iid" ]] && continue
     i=$((i + 1))
     (( i > n )) && break
@@ -317,8 +437,12 @@ cmd_check() {
 
   local running_ids; running_ids="$(_active_task_ids)"
   local examined=0 dispatched=0
+  # Bound #7: off by default -- leadv2-supervise-loop.sh's own periodic
+  # `check` call stays fully synchronous, unchanged.
+  local ASYNC_DISPATCH="${LEADV2_BACKLOG_PUMP_ASYNC_DISPATCH:-0}"
 
   while IFS=$'\t' read -r lane priority iid title; do
+    [[ "$lane" == "-" ]] && lane=""  # NB2: "-" is tasks-lib.sh's empty-lane marker
     [[ -z "$iid" ]] && continue
     (( cap <= 0 )) && break
     examined=$((examined + 1))
@@ -334,34 +458,43 @@ cmd_check() {
       continue
     fi
 
+    # Bound #7: reserve the active.yaml lane BEFORE any dispatch attempt --
+    # a failed reservation is treated as a capacity refusal (fail closed),
+    # never as "proceed without a registry row" (that fail-open shape is the
+    # exact defect NB1 flags in leadv2-fanout.sh; not repeated here).
+    if ! _pump_reserve_lane "$iid" >/dev/null 2>&1; then
+      jemit decision "pump_skip task=${iid} reason=lane_reserve_failed"
+      leadv2_tasks_unclaim "$iid" >/dev/null 2>&1 || true
+      continue
+    fi
+
     local mission; mission="$(_mission_for_task "$iid")"
     if [[ -z "$mission" ]]; then
       mission="$title"
     fi
 
-    local rc=0
-    bash "$DISPATCH_BIN" "$mission" --kind "backlog-pump" >/dev/null 2>&1 || rc=$?
+    if [[ "$ASYNC_DISPATCH" == "1" ]]; then
+      # Properly async (fix2 NM1): the lane above is already committed: only
+      # the dispatch call's own completion is deferred, via a detached
+      # re-invocation of this script so a host-timeout-bound caller (the
+      # pump-caller hook) never waits on it. setsid (when available) detaches
+      # from the caller's process group so a later host kill of the caller
+      # cannot also kill this in-flight child.
+      if command -v setsid >/dev/null 2>&1; then
+        setsid bash "$SELF" _async-dispatch "$iid" "$mission" "$lane" "$priority" "$examined" </dev/null >/dev/null 2>&1 &
+      else
+        bash "$SELF" _async-dispatch "$iid" "$mission" "$lane" "$priority" "$examined" </dev/null >/dev/null 2>&1 &
+      fi
+      disown
+      dispatched=$((dispatched + 1))
+      cap=$((cap - 1))
+      continue
+    fi
 
-    case "$rc" in
-      0)
-        jemit decision "pump_dispatched task=${iid} lane=${lane} priority=${priority} reason=declared_plan_order rank=${examined}"
-        dispatched=$((dispatched + 1))
-        cap=$((cap - 1))
-        ;;
-      2)
-        jemit decision "pump_skip task=${iid} reason=duplicate_task_signature"
-        leadv2_tasks_unclaim "$iid" >/dev/null 2>&1 || true
-        ;;
-      3)
-        jemit decision "pump_deferred_to_founder task=${iid} reason=opus_arm_requires_judgment"
-        leadv2_tasks_unclaim "$iid" >/dev/null 2>&1 || true
-        _surface_to_founder "$iid" "requires judgment (opus arm) — pump will not auto-start this"
-        ;;
-      *)
-        jemit decision "pump_skip task=${iid} reason=spawn_failed rc=${rc}"
-        leadv2_tasks_unclaim "$iid" >/dev/null 2>&1 || true
-        ;;
-    esac
+    if cmd_async_dispatch "$iid" "$mission" "$lane" "$priority" "$examined"; then
+      dispatched=$((dispatched + 1))
+      cap=$((cap - 1))
+    fi
   done <<<"$raw"
 
   log "check complete: examined=${examined} dispatched=${dispatched} remaining_capacity=${cap}"
@@ -436,6 +569,11 @@ case "$MODE" in
   dry-run)  cmd_dry_run "$@" ;;
   status)   cmd_status "$@" ;;
   reap)     cmd_reap "$@" ;;
+  # Internal only (fix2, SUPERVISOR-AUDIT-01 B5/NM1): the detached-child
+  # target of cmd_check's async-dispatch branch. Not a public subcommand --
+  # never invoke directly outside a test harness (the lane reservation it
+  # assumes must already exist).
+  _async-dispatch) cmd_async_dispatch "$@" ;;
   -h|--help)
     printf 'Usage: %s check|dry-run [N]|status|reap <task_id> [--base <ref>]\n' "$SCRIPT_NAME" >&2
     ;;

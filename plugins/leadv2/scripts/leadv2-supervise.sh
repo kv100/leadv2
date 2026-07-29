@@ -262,6 +262,11 @@ ACTIVE_LOCKFILE="${ACTIVE_YAML}.lock"
 # additionally lets a caller force observe-only at ANY time (verification.md
 # canary command uses it).
 OBSERVE_ONLY="${LEADV2_SUPERVISE_OBSERVE_ONLY:-0}"
+# LEADV2_SUPERVISE_PRUNE_V2=0 is the one-flag rollback to the exact prior
+# prune-evidence implementation (PID-only death authority, absent PID alone
+# is death evidence). Default-on: =1 or unset consumes the authoritative
+# lane-liveness verdict instead.
+SUPERVISE_PRUNE_V2="${LEADV2_SUPERVISE_PRUNE_V2:-1}"
 # A pending founder decision must not blend into routine supervision forever.
 # This is deliberately a supervisor surface (not a second queue): after this
 # age it emits one fresh URGENT event, even if its original delivery happened
@@ -395,11 +400,11 @@ print(json.dumps(d))
   fi
 fi
 
-# Lane liveness is provider-authoritative. In particular, codex-guard is a
-# rescue sidecar, never evidence that a Codex app-server job died.
-LANE_LIVENESS_JSON="$(LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "${SCRIPT_DIR}/leadv2-lane-liveness.sh" --project-root "$PROJECT_ROOT" --json 2>/dev/null || printf '%s' '{"jobs":[],"availability":"unavailable"}')"
+# One snapshot resolves the active-registry and handoff-log key union in one
+# subprocess.  Codex provider jobs remain included for backward compatibility.
+LANE_LIVENESS_JSON="$(LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "${SCRIPT_DIR}/leadv2-lane-liveness.sh" --project-root "$PROJECT_ROOT" --all --json 2>/dev/null || printf '%s' '{"lanes":[],"jobs":[],"availability":"unavailable"}')"
 
-python3 - "$ACTIVE_YAML" "$HANDOFF_DIR" "$SNAPSHOT" "$JSON_MODE" "$SINCE" "$CP_QUESTIONS_DIR" "${BUS_JSONL:-}" "${BUS_OFFSET_FILE:-}" "$TRUTH_BREACHES_JSON" "$TMUX_WINDOWS_TSV" "$TMUX_PANES_TSV" "$TASKS_YAML_PATH" "$ACTIVE_LOCKFILE" "$TOMBSTONES_FILE" "$OBSERVE_ONLY" "$SCRIPT_DIR" "$PROJECT_ROOT" "$LANE_LIVENESS_JSON" "$QUESTION_ESCALATE_S" <<'PY'
+python3 - "$ACTIVE_YAML" "$HANDOFF_DIR" "$SNAPSHOT" "$JSON_MODE" "$SINCE" "$CP_QUESTIONS_DIR" "${BUS_JSONL:-}" "${BUS_OFFSET_FILE:-}" "$TRUTH_BREACHES_JSON" "$TMUX_WINDOWS_TSV" "$TMUX_PANES_TSV" "$TASKS_YAML_PATH" "$ACTIVE_LOCKFILE" "$TOMBSTONES_FILE" "$OBSERVE_ONLY" "$SCRIPT_DIR" "$PROJECT_ROOT" "$LANE_LIVENESS_JSON" "$QUESTION_ESCALATE_S" "$SUPERVISE_PRUNE_V2" <<'PY'
 import sys, os, json, glob, datetime, subprocess
 from collections import deque
 
@@ -407,9 +412,10 @@ from collections import deque
  bus_jsonl, bus_offset_file, truth_breaches_json, tmux_windows_tsv,
  tmux_panes_tsv, tasks_yaml_path, active_lockfile, tombstones_file,
  observe_only_env, script_dir, project_root, lane_liveness_json,
- question_escalate_s_raw) = sys.argv[1:20]
+ question_escalate_s_raw, prune_v2_raw) = sys.argv[1:21]
 json_mode = json_mode == "1"
 delta_mode = bool(since)
+prune_v2_mode = prune_v2_raw != "0"
 
 try:
     _truth = json.loads(truth_breaches_json)
@@ -422,8 +428,12 @@ try:
     codex_liveness = json.loads(lane_liveness_json)
 except Exception:
     codex_liveness = {"jobs": [], "availability": "unavailable"}
+# Authoritative per-lane verdict (log mtime + process evidence, never a bare
+# PID check) — consumed by prune evidence below instead of re-deriving death
+# from an absent provider PID alone.
+lane_liveness_by_id = {str(row["lane"]): row for row in (codex_liveness.get("lanes") or [])
+                       if isinstance(row, dict) and row.get("lane")}
 
-STUCK_MIN = 25
 CAP_ROWS = 20
 try:
     QUESTION_ESCALATE_S = max(0, int(question_escalate_s_raw))
@@ -452,78 +462,6 @@ def pid_alive(pid_val):
         return True
     except (TypeError, ValueError, ProcessLookupError, PermissionError):
         return False
-
-# ── EYES verdict (S2 of 1b07a6fd0490): replace the inert `stale` column ─────
-# G3 root cause: the `stale` field has NO writer anywhere in the live tree
-# (`leadv2-active-registry.sh mark_stale` has zero callers), so it is false
-# forever and every registered session renders "active" unconditionally.
-# This computes a real per-row verdict from:
-#   (a) pulse.json age (the S1 hook writes it on every tool call), with
-#       tool-type-aware thresholds (D4 mitigation): fast tools ~seconds,
-#       declared-long tools (Agent/Task/Monitor) ~minutes.
-#   (b) kill -0 process existence — strongest signal, overrides the rest.
-#   (c) `ps -o stat= -p <pid>` (macOS BSD; no GNU flags) — STAT containing
-#       'T' = STOPPED = wedged (D2). CAVEAT (D2): this detects ONLY the
-#       kill -STOP failure mode; passing it does NOT prove the real incident
-#       (alive, never STOPped, silently stuck 25-40min) is detected.
-# Every returned reason NAMES its artifact (pulse.json path / pid / STAT),
-# per plan.S2 `must_print`. References `now`, `handoff_dir` at call time.
-LONG_RUNNING_TOOLS = {"Agent", "Task", "Monitor", "WebFetch", "WebSearch",
-                      "CronCreate", "TaskOutput", "ScheduleWakeup"}
-PULSE_THRESHOLD_FAST_S = 90    # seconds — fast tool idle > 90s is suspect
-PULSE_THRESHOLD_LONG_S = 900   # 15 min  — Agent/Monitor may legitimately run minutes
-
-def _ps_stat(pid_val):
-    """macOS BSD: `ps -o stat= -p <pid>` -> e.g. 'SN', 'TN', 'Z+'. No GNU flags."""
-    try:
-        r = subprocess.run(["ps", "-o", "stat=", "-p", str(pid_val)],
-                           capture_output=True, text=True, timeout=2)
-        return (r.stdout or "").strip()
-    except Exception:
-        return ""
-
-def pulse_verdict(tid, s):
-    """Return (status, reason). status in {"active","stale","wedged","dead"}.
-    reason always names its artifact (D2/D4 + plan.S2 must_print)."""
-    pid = s.get("pid")
-    # (b) process existence — strongest signal; overrides age/STAT.
-    if pid is None:
-        return ("dead", "active.yaml row has no pid")
-    try:
-        os.kill(int(pid), 0)
-    except (TypeError, ValueError, ProcessLookupError, PermissionError):
-        return ("dead", f"kill -0 pid={pid} failed (no such process / not ours)")
-    # (c) STAT containing 'T' = STOPPED = wedged (D2 scope only).
-    stat = _ps_stat(pid)
-    if stat and "T" in stat:
-        return ("wedged", f"ps -o stat= -p {pid} -> STAT={stat} (T=STOPPED, D2)")
-    # (a) pulse.json age with tool-type-aware threshold (D4).
-    pulse_path = os.path.join(handoff_dir, tid, "pulse.json")
-    if not os.path.isfile(pulse_path):
-        # EYES writer (S1) has not run yet for this row. Fall back to
-        # active.yaml last_pulse_at; if THAT itself is past STUCK_MIN, call
-        # it stale rather than lying green.
-        ref = parse_iso(s.get("last_pulse_at")) or parse_iso(s.get("started_at"))
-        if ref:
-            mins = int((now - ref).total_seconds() // 60)
-            if mins >= STUCK_MIN:
-                return ("stale", f"no pulse.json; active.yaml last_pulse_at age {mins}m >= STUCK_MIN={STUCK_MIN}m ({ref.isoformat()})")
-            return ("active", f"no pulse.json at {pulse_path}; active.yaml last_pulse_at age {mins}m")
-        return ("active", f"no pulse.json at {pulse_path}; active.yaml row has no timestamps")
-    try:
-        with open(pulse_path, encoding="utf-8") as fh:
-            pj = json.load(fh) or {}
-    except Exception as e:
-        return ("active", f"pulse.json unreadable at {pulse_path} ({e.__class__.__name__})")
-    last_ts = parse_iso(pj.get("last_tool_at") or pj.get("ts"))
-    if not last_ts:
-        return ("active", f"pulse.json missing last_tool_at/ts at {pulse_path}")
-    age_s = int((now - last_ts).total_seconds())
-    tool = pj.get("tool") or "Unknown"
-    threshold_s = PULSE_THRESHOLD_LONG_S if tool in LONG_RUNNING_TOOLS else PULSE_THRESHOLD_FAST_S
-    if age_s > threshold_s:
-        return ("stale", f"pulse.json age {age_s}s > threshold {threshold_s}s for tool={tool} ({pulse_path})")
-    return ("active", f"pulse.json age {age_s}s <= threshold {threshold_s}s tool={tool} ({pulse_path})")
 
 def emit_fatal(kind, message):
     """B1 fail-closed: registry_error / state_write_error. Never a successful
@@ -725,7 +663,24 @@ for tid, s in list(current.items()):
     pid = s.get("pid")
     pid_issue = False
     pid_issue_reason = None
-    if pid is None or not pid_alive(pid):
+    if pid is None:
+        if not prune_v2_mode:
+            # LEADV2_SUPERVISE_PRUNE_V2=0 rollback: exact prior implementation
+            # — an absent PID is treated as death evidence on its own.
+            pid_issue = True
+            pid_issue_reason = "pid dead"
+        else:
+            # BLOCKING fix (SUPERVISOR-AUDIT-01): dispatch-code/funnel rows
+            # are pid:null BY DESIGN (Codex/GLM jobs have no local Claude
+            # PID). An absent PID is never itself death evidence — consult
+            # the authoritative lane-liveness verdict (log mtime + process
+            # evidence) instead. No liveness row / alive / silent => not
+            # death evidence yet; only an explicit "dead:*" verdict counts.
+            liveness_verdict = str((lane_liveness_by_id.get(tid) or {}).get("verdict") or "")
+            if liveness_verdict.startswith("dead:"):
+                pid_issue = True
+                pid_issue_reason = f"lane_liveness={liveness_verdict}"
+    elif not pid_alive(pid):
         pid_issue = True
         pid_issue_reason = "pid dead"
     else:
@@ -1069,19 +1024,30 @@ legacy_by_task = {}
 for q in legacy_pending:
     legacy_by_task.setdefault(q["task_id"], []).append(q)
 
-# ── Table + waiting + stuck (only for currently-live sessions) ─────────────
+# ── Table + waiting + stuck (registry ∪ handoff-log lanes) ─────────────────
 table = []
 waiting_items = []
 stuck_items = []
 
-for tid, s in sorted(current.items()):
+# The liveness helper has already filtered .close and tombstoned lanes.  Do
+# not fall back to a local verdict: this table only maps its authoritative
+# output into the supervisor's historic active/stale/dead vocabulary.
+lane_rows = {str(row.get("lane")): row for row in (codex_liveness.get("lanes") or [])
+             if isinstance(row, dict) and row.get("lane")}
+for tid, lane in sorted(lane_rows.items()):
+    s = current.get(tid, {})
     phase = s.get("phase") or "?"
-    status, status_reason = pulse_verdict(tid, s)
+    verdict = str(lane.get("verdict") or "dead:unresolved")
+    if verdict == "alive":
+        status = "active"
+    elif verdict.startswith("silent:"):
+        status = "stale"
+    else:
+        status = "dead"
+    status_reason = f"{verdict}; source={lane.get('source') or '?'}"
+    if lane.get("log_path"):
+        status_reason += f"; log={lane['log_path']}"
     started_at = parse_iso(s.get("started_at"))
-    last_pulse = parse_iso(s.get("last_pulse_at"))
-    # A lane's elapsed time is its wall-clock lifetime, not the age of its
-    # most recent heartbeat.  The latter made a 28-minute job look 6 minutes
-    # old after a pulse and is not a truthful status metric.
     minutes = max(0, int((now - started_at).total_seconds() // 60)) if started_at else None
 
     # waiting-for-answer: open questions-async pending files with no sibling answered
@@ -1092,17 +1058,8 @@ for tid, s in sorted(current.items()):
 
     is_flagged_closed = new_snapshot_tasks.get(tid, {}).get("has_flag", False)
     reasons = []
-    if not is_flagged_closed:
-        if minutes is not None and minutes > STUCK_MIN:
-            reasons.append(f">{STUCK_MIN}m in phase '{phase}'")
-        pid = s.get("pid")
-        if pid is not None and not pid_alive(pid):
-            reasons.append("pid dead")
-        # EYES (S2): the old `if s.get("stale")` was inert (G3 — no writer).
-        # pulse_verdict above already computed status from pulse.json + STAT;
-        # surface its non-active verdict as a stuck reason, naming its artifact.
-        if status in ("stale", "wedged", "dead"):
-            reasons.append(f"{status}: {status_reason}")
+    if not is_flagged_closed and verdict.startswith("dead:"):
+        reasons.append(status_reason)
     if reasons:
         stuck_items.append({"task_id": tid, "reasons": reasons})
 
@@ -1124,9 +1081,6 @@ for tid, s in sorted(current.items()):
         "task_id": tid, "phase": phase,
         "minutes_in_phase": minutes if minutes is not None else "?",
         "status": status,
-        # EYES (S2): every verdict names its artifact (pulse.json path /
-        # pid / STAT) — plan.S2 must_print. JSON consumers can show WHY
-        # a row is stale/wedged/dead instead of trusting a bare label.
         "status_reason": status_reason,
         "waiting": is_waiting, "where": where,
         "protocol_version": protocol_version,
@@ -1380,7 +1334,7 @@ if delta_mode:
             print(f"  {tid}")
     sys.exit(0)
 
-if not current and not codex_liveness.get("jobs"):
+if not table and not codex_liveness.get("jobs"):
     print("net zhivykh sessiy (no live sessions)")
     sys.exit(0)
 

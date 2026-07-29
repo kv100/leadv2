@@ -91,6 +91,35 @@ fi
 TASKS_YAML="${PROJECT_ROOT}/docs/tasks.yaml"
 ACTIVE_YAML="$(_leadv2_yaml_file)"
 
+# FANOUT-CLASS-FUNNEL-01 (task T-k, 2026-07-29): the founder-picked path
+# (this script) always launched a full Phase-0..8 child session regardless of
+# leadv2-fanout-classify.sh's class -- that class only ever picked
+# provider/model. leadv2-dispatch-code.sh's single-worker funnel (architect
+# prepass + e2e gate + cross-provider review) already exists for the auto-
+# refill path (leadv2-backlog-pump.sh) but was unreachable from here. Light
+# and Standard now route through dispatch-code.sh; Heavy/Strategic keep
+# today's full-cycle launch unchanged. (fanout-classify.sh emits only
+# Light|Standard|Heavy|Strategic -- "Trivial" from the founder's wording maps
+# onto Light here, there is no separate Trivial class to check.)
+# One-flag rollback: LEADV2_FANOUT_CLASS_FUNNEL=0 restores today's behavior
+# byte-identical -- the new branch is fully guarded, nothing else changes.
+#
+# BLOCKING fix (review-verdict.md fanout.sh:106-108): the lib used to be
+# sourced HERE, unconditionally, before this flag was ever consulted -- a
+# missing/broken leadv2-tasks-lib.sh killed rollback mode (=0) too, even
+# though =0 never calls anything from it. Lazy-load it (once) only from
+# inside the funnel-enabled call path (_fanout_ensure_tasks_lib, called at
+# the top of launch_via_dispatch_code) so =0 is truly byte-identical to the
+# pre-funnel script regardless of this file's health.
+FANOUT_CLASS_FUNNEL="${LEADV2_FANOUT_CLASS_FUNNEL:-1}"
+_TASKS_LIB_LOADED=0
+_fanout_ensure_tasks_lib() {
+  [[ "$_TASKS_LIB_LOADED" == "1" ]] && return 0
+  # shellcheck source=leadv2-tasks-lib.sh
+  source "${SCRIPT_DIR}/leadv2-tasks-lib.sh"
+  _TASKS_LIB_LOADED=1
+}
+
 # ── Arg parsing ─────────────────────────────────────────────────────────────
 N=3
 FILTER=""
@@ -750,17 +779,26 @@ _fanout_register_session() {
   local provider="${12:-claude}"
   local route_reason="${13:-}"
   local group_key="${14:-}"
-  local branch ts_now yaml_file lockfile session_id
+  # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): the pulse_log below used
+  # to be hardcoded to the phase-cycle path for EVERY backend, including the
+  # dispatch-code.sh funnel -- which never writes there (it writes
+  # docs/handoff/dispatch-<sig8>/...). liveness/product-close then can't find the
+  # funnel's real log. Optional 15th arg lets a caller (launch_via_dispatch_code)
+  # supply the artifact path it actually knows about; every existing caller omits
+  # it and keeps today's hardcoded path, unchanged.
+  local log_path_override="${15:-}"
+  local branch ts_now yaml_file lockfile session_id pulse_log_path
   branch="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || printf -- 'unknown')"
   ts_now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
   session_id="f-$(date -u +%Y%m%dT%H%M%SZ)-${pid_val}-$$"
+  pulse_log_path="${log_path_override:-docs/leadv2/tasks/${tid}/pulse.md}"
 
   local _reg_rc=0
   python3 - "$lockfile" "$yaml_file" "$session_id" "$tid" "$PROJECT_ROOT" \
     "$branch" "$ts_now" "$cls" "$pid_val" "$window_title" "$daemon_mode" \
-    "docs/leadv2/tasks/${tid}/pulse.md" "$pid_pending" "$where" \
+    "$pulse_log_path" "$pid_pending" "$where" \
     "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" \
     "$provider" "$route_reason" "$group_key" <<'PYEOF' || _reg_rc=$?
 import sys, os, fcntl, tempfile, yaml
@@ -1329,6 +1367,233 @@ launch_tmux() {
   TMUX_LAUNCHED_IDS+=("$tid")
 }
 
+# _fanout_launch_full_cycle <tid> <cls> ... — the pre-FANOUT-CLASS-FUNNEL-01
+# launch path (today's byte-identical behavior), factored out so both the
+# funnel=0 rollback and the Heavy/Strategic path and the funnel's own
+# opus/failure fallbacks all call the exact same code, never a re-typed copy.
+_fanout_launch_full_cycle() {
+  local tid="$1" cls="$2" lead_model="$3" lead_effort="$4" risk_tags="$5"
+  local class_reason="$6" provider="$7" route_reason="$8" group_key="$9"
+  case "$BACKEND" in
+    headless) launch_headless "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key" ;;
+    tmux)     launch_tmux "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key" ;;
+    windows)  launch_windowed "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key" ;;
+  esac
+}
+
+# _fanout_mission_for_task <tid> -> mission text (title + note + origin), or
+# empty if the row can't be found. Mirrors leadv2-backlog-pump.sh's own
+# _mission_for_task() exactly (same tasks-lib call, same field precedence) so
+# a task dispatched through this funnel gets the identical mission shape the
+# auto-refill path already produces and has run in prod.
+_fanout_mission_for_task() {
+  local tid="$1" row
+  row="$(leadv2_tasks_by_id "$tid" 2>/dev/null)" || { printf ''; return; }
+  python3 -c "
+import yaml, sys
+items = yaml.safe_load(sys.argv[1]) or []
+it = items[0] if items else {}
+title = it.get('title', '')
+note = it.get('note', '')
+origin = it.get('origin', '')
+parts = [p for p in (title, note) if p]
+if origin:
+    parts.append(f'(origin: {origin})')
+print(' — '.join(parts) if parts else title)
+" "$row" 2>/dev/null
+}
+
+# _fanout_task_lane_contract <tid> -> tab-separated "writes<TAB>acceptance_cmd<TAB>
+# rollback_onestep(0|1)" (stdout). B4 fix (review-verdict-2.md finding B4,
+# fix-round-2): the funnel used to forward only mission/kind/task-id to
+# dispatch-code.sh, silently dropping a founder-authored task row's
+# `writes`/`acceptance_cmd`/`rollback_onestep` -- fields dispatch-code.sh's
+# --writes/--acceptance-cmd/--rollback-onestep flags already accept and act
+# on (lane-shape gate, architect prepass file-count check, product-close
+# rollback recording), just never populated from this caller. All three
+# fields are OPTIONAL on a tasks.yaml row (the live 296-row queued population
+# has none of them -- see NB2) -- an absent field yields an empty/"0" cell
+# and launch_via_dispatch_code below omits that flag entirely, matching
+# dispatch-code.sh's own direct-CLI-use defaults byte-for-byte.
+_fanout_task_lane_contract() {
+  local tid="$1" row
+  # "-" is the on-the-wire empty marker (same convention as PLAN_TSV above):
+  # `IFS=$'\t' read` treats tab as IFS-whitespace-class and collapses/strips
+  # RUNS of it regardless of custom IFS, so an empty field emitted as a bare
+  # tab is misparsed (verified: "\t\t0" reads back as a="0", b/c empty). The
+  # bash consumer below undoes the marker on each field.
+  row="$(leadv2_tasks_by_id "$tid" 2>/dev/null)" || { printf -- '-\t-\t0'; return; }
+  python3 -c "
+import yaml, sys
+items = yaml.safe_load(sys.argv[1]) or []
+it = items[0] if items else {}
+writes = it.get('writes', '')
+if isinstance(writes, (list, tuple, set)):
+    writes = ','.join(str(w).strip() for w in writes if str(w).strip())
+else:
+    writes = str(writes or '').strip()
+acceptance = str(it.get('acceptance_cmd', '') or '').strip()
+rollback = it.get('rollback_onestep', False)
+rollback_flag = '1' if rollback else '0'
+def esc(s):
+    s = s.replace('\t', ' ').replace('\n', ' ')
+    return s or '-'
+print('\t'.join((esc(writes), esc(acceptance), rollback_flag)))
+" "$row" 2>/dev/null || printf -- '-\t-\t0'
+}
+
+# launch_via_dispatch_code <tid> <cls> <lead_model> <lead_effort> <risk_tags>
+# <class_reason> <provider> <route_reason> <group_key> <label> — the
+# FANOUT-CLASS-FUNNEL-01 single-worker path for Light/Standard tasks. Claims
+# the task (same leadv2_tasks_claim/--by convention leadv2-backlog-pump.sh
+# already uses), builds a mission from tasks.yaml (falling back to the
+# already-computed `label` if the row has no title/note), and hands it to
+# leadv2-dispatch-code.sh -- the SAME single funnel leadv2-backlog-pump.sh
+# uses, so this task now gets the identical architect-prepass + e2e gate +
+# cross-provider review the auto-refill path has had all along (design-map.md
+# row 2/4). Any non-launch outcome (opus arm, duplicate-sig refusal, spawn
+# failure) either releases the claim or falls back to the full 9-phase cycle
+# via _fanout_launch_full_cycle -- a founder-picked task is never silently
+# dropped just because the light funnel declined it.
+launch_via_dispatch_code() {
+  # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): lazy-load tasks-lib here
+  # (only place this path needs it) -- see the =0 rollback comment above.
+  _fanout_ensure_tasks_lib
+  local tid="$1" cls="$2" lead_model="${3:-sonnet}" lead_effort="${4:-medium}"
+  local risk_tags="${5:-}" class_reason="${6:-}"
+  local provider="${7:-claude}" route_reason="${8:-}"
+  local group_key="${9:-}" label="${10:-}"
+  local dispatch_bin="${LEADV2_FANOUT_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
+
+  if [[ ! -x "$dispatch_bin" ]]; then
+    log_error "leadv2-dispatch-code.sh missing/not executable at ${dispatch_bin} -- refusing the single-worker funnel for ${tid}, falling back to full-cycle launch"
+    _fanout_launch_full_cycle "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key"
+    return
+  fi
+
+  local mission
+  mission="$(_fanout_mission_for_task "$tid")"
+  [[ -n "$mission" ]] || mission="$label"
+  [[ -n "$mission" ]] || mission="task ${tid}"
+  # dispatch-code.sh keys its dedup ledger on a content hash of the mission
+  # text, not on tid -- fold tid into the content so the same title text on
+  # two different tasks never collides, and so journaled/handoff artifacts on
+  # the dispatch-code side stay traceable back to this founder-picked task.
+  mission="Task ${tid}: ${mission}"
+
+  if ! leadv2_tasks_claim "$tid" --by "fanout-class-funnel:${tid}" >/dev/null 2>&1; then
+    log "single-worker funnel: task=${tid} could not be claimed (already claimed elsewhere) -- skipping this run"
+    return
+  fi
+
+  # BLOCKING fix (review-verdict.md fanout.sh:1425-1459): dispatch-code.sh's own
+  # bash invocation below is what actually SPAWNS the glm/codex/sonnet worker --
+  # that used to happen before this script ever checked the lane cap, so a lost
+  # cap race left an unregistered, uncounted worker running (log-only WARN, never
+  # killed). Reserve the lane under lock FIRST (pid=null placeholder,
+  # pid_pending=true) so the SAME admission check dispatch-code.sh's spawn can
+  # never bypass runs before, not after, the worker exists. Any non-launch
+  # outcome below releases this reservation via leadv2_active_unregister.
+  local _reserve_rc=0
+  _fanout_register_session "$tid" "$cls" "null" "dispatch-code: ${tid} (reserving)" "true" "true" "dispatch-code" \
+    "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" "$provider" "$route_reason" "$group_key" || _reserve_rc=$?
+  if [[ "$_reserve_rc" -eq 3 ]]; then
+    log "single-worker funnel: task=${tid} lane admission refused under lock BEFORE dispatch (F6/FIX3 cap) -- releasing claim, not launched this run"
+    leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+    return
+  elif [[ "$_reserve_rc" -ne 0 ]]; then
+    # NB1 fix (SUPERVISOR-AUDIT-01 fix-round-3, review-verdict-3.md): this used
+    # to WARN and fall through to dispatch anyway -- a reservation write that
+    # fails for any reason OTHER than a lost admission race (e.g. active.yaml's
+    # lockfile path is unwritable/a directory) is not "no signal", it is "we
+    # cannot account for this session at all". Fail CLOSED like the -eq 3
+    # branch above: no dispatch, claim released, loud error.
+    log_error "single-worker funnel: task=${tid} could not reserve a lane in active.yaml (rc=${_reserve_rc}) -- refusing to dispatch (fail-closed); releasing claim, not launched this run"
+    leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+    return
+  fi
+
+  # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): pass the founder task id
+  # through so dispatch-code.sh/dispatch-product-close.sh can (a) journal a
+  # dispatch-<sig8> <-> tid bridge for liveness, and (b) unclaim this SAME id when
+  # the close gate finishes -- see leadv2-dispatch-product-close.sh's EXIT trap.
+  # B4 fix (review-verdict-2.md): also forward writes/acceptance_cmd/
+  # rollback_onestep when the founder task row carries them -- dispatch-code.sh
+  # already implements --writes/--acceptance-cmd/--rollback-onestep, this caller
+  # simply never read them off the task before now.
+  local _lane_writes="" _lane_acceptance="" _lane_rollback="0"
+  IFS=$'\t' read -r _lane_writes _lane_acceptance _lane_rollback <<< "$(_fanout_task_lane_contract "$tid")"
+  [[ "$_lane_writes" == "-" ]] && _lane_writes=""
+  [[ "$_lane_acceptance" == "-" ]] && _lane_acceptance=""
+  local -a dc_args=("$mission" --kind "fanout-class-funnel" --task-id "$tid")
+  [[ -n "$_lane_writes" ]] && dc_args+=(--writes "$_lane_writes")
+  [[ -n "$_lane_acceptance" ]] && dc_args+=(--acceptance-cmd "$_lane_acceptance")
+  [[ "$_lane_rollback" == "1" ]] && dc_args+=(--rollback-onestep)
+
+  local dc_out dc_rc=0
+  dc_out="$(bash "$dispatch_bin" "${dc_args[@]}" 2>&1)" || dc_rc=$?
+
+  case "$dc_rc" in
+    0)
+      local handle
+      handle="$(printf '%s\n' "$dc_out" | sed -n 's/.*worker_spawned .*handle=\(.*\)$/\1/p' | tail -1)"
+      log "single-worker funnel launch: task=${tid} class=${cls} model=${lead_model} handle=${handle:-<none>} -- $(printf '%s\n' "$dc_out" | tail -1)"
+      # LANE ACCOUNTING (mission req #4): dispatch-code.sh does not write
+      # active.yaml itself (it is out-of-pipeline, unaware of fanout's
+      # lane caps) -- upsert the reservation above with the SAME function
+      # fanout's own backends use, so a funnel launch counts against
+      # hard_limit/light_max/standard_max exactly like a full-cycle child
+      # would. Only the sonnet arm's handle is a real OS pid (dispatch-code.sh
+      # normalizes it to bare PID=<n>); glm/codex handles are provider-
+      # internal run/job ids, not killable pids -- register those with
+      # pid=null. leadv2-stale-sweeper.sh only marks a null-pid row stale
+      # after BOTH pid-dead AND last_pulse_at/started_at > 2h old, so this
+      # is not evicted the instant it's written; see build-a.md open risks
+      # for the long-tail (>2h background job) case.
+      # The sonnet arm's raw handle is "PID=<n> SESSION_ID=<s>" (claude-
+      # subsession.sh's own output, unnormalized -- dispatch-code.sh only
+      # normalizes it to a bare PID INTERNALLY, for its own ledger, never on
+      # this stdout line). Extract with the SAME sed pattern dispatch-code.sh's
+      # _dispatch_normalize_handle uses, so this stays correct if that format
+      # ever changes there. glm/codex handles never match -> pid stays null.
+      local pid_val="null" extracted_pid
+      extracted_pid="$(printf '%s' "$handle" | sed -n 's/^PID=\([0-9][0-9]*\).*/\1/p')"
+      [[ -n "$extracted_pid" ]] && pid_val="$extracted_pid"
+      # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): record the REAL
+      # dispatch-code.sh artifact directory as this row's log source instead of
+      # the phase-cycle default (docs/leadv2/tasks/<tid>/pulse.md) -- the funnel
+      # writes to docs/handoff/dispatch-<sig8>/ and never touches the former,
+      # which is exactly why liveness could never find this path's log.
+      local _dc_sig8 _dc_log_path=""
+      _dc_sig8="$(printf '%s\n' "$dc_out" | sed -n 's/.*task=\([0-9a-f]\{8\}\).*/\1/p' | tail -1)"
+      [[ -n "$_dc_sig8" ]] && _dc_log_path="docs/handoff/dispatch-${_dc_sig8}/developer.stream.jsonl"
+      local _reg_rc=0
+      _fanout_register_session "$tid" "$cls" "$pid_val" "dispatch-code: ${tid}" "true" "false" "dispatch-code" \
+        "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" "$provider" "$route_reason" "$group_key" "$_dc_log_path" || _reg_rc=$?
+      if [[ "$_reg_rc" -eq 3 ]]; then
+        log "WARN: ${tid} admission refused under lock while finalizing the single-worker funnel's registry row (F6/FIX3) -- dispatch-code.sh already spawned this worker; it cannot be killed generically from here (arm-specific handle=${handle:-<none>}), lane cap is now over-subscribed by one until it finishes"
+      fi
+      ;;
+    2)
+      log "single-worker funnel: task=${tid} refused by dispatch-code.sh as a duplicate task-signature -- releasing claim, not launched this run (see dispatch ledger)"
+      leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1
+      ;;
+    3)
+      log "single-worker funnel: task=${tid} resolved to arm=opus (requires lead judgment, dispatch-code.sh never auto-dispatches it) -- releasing claim and falling back to full-cycle launch so the task is not silently dropped"
+      leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1
+      _fanout_launch_full_cycle "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key"
+      ;;
+    *)
+      log_error "single-worker funnel: task=${tid} dispatch-code.sh failed (rc=${dc_rc}) -- releasing claim and falling back to full-cycle launch so the founder-picked task is not silently dropped"
+      leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1
+      _fanout_launch_full_cycle "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key"
+      ;;
+  esac
+}
+
 for i in "${!LAUNCH_IDS[@]}"; do
   tid="${LAUNCH_IDS[$i]}"
   cls="${LAUNCH_CLASSES[$i]}"
@@ -1339,11 +1604,25 @@ for i in "${!LAUNCH_IDS[@]}"; do
   class_reason="${LAUNCH_REASONS[$i]:-}"
   route_reason="${LAUNCH_ROUTE_REASONS[$i]:-}"
   group_key="${LAUNCH_GROUP_KEYS[$i]:-}"
-  case "$BACKEND" in
-    headless) launch_headless "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key" ;;
-    tmux)     launch_tmux "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key" ;;
-    windows)  launch_windowed "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key" ;;
-  esac
+  label="${LAUNCH_LABELS[$i]:-}"
+  cls_lower="$(printf '%s' "$cls" | tr '[:upper:]' '[:lower:]')"
+  # MAJOR fix (review-verdict.md fanout.sh:1478-1494): dispatch-code.sh
+  # re-resolves its own arm and silently ignores any provider/model this loop
+  # already computed -- an explicit --provider/--lead-model request would be
+  # dropped without notice for Light/Standard funnel tasks. Reject the funnel
+  # for an explicit override instead (fall through to the full-cycle path,
+  # which already honors --lead-model/--provider a few lines above this loop).
+  _explicit_route_override=false
+  [[ -n "$LEAD_MODEL_OVERRIDE" ]] && _explicit_route_override=true
+  [[ "$PROVIDER_REQUEST" != "auto" ]] && _explicit_route_override=true
+  if [[ "$FANOUT_CLASS_FUNNEL" == "1" && "$_explicit_route_override" == "false" && ( "$cls_lower" == "light" || "$cls_lower" == "standard" ) ]]; then
+    launch_via_dispatch_code "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key" "$label"
+  else
+    if [[ "$FANOUT_CLASS_FUNNEL" == "1" && "$_explicit_route_override" == "true" && ( "$cls_lower" == "light" || "$cls_lower" == "standard" ) ]]; then
+      log "task=${tid}: explicit --provider/--lead-model override present -- funnel cannot honor it (dispatch-code.sh re-resolves its own arm), routing via full-cycle launch instead"
+    fi
+    _fanout_launch_full_cycle "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key"
+  fi
 done
 
 if [[ "${#TMUX_LAUNCHED_IDS[@]}" -gt 0 ]]; then

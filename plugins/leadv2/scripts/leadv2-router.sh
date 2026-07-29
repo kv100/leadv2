@@ -29,6 +29,11 @@ readonly SCRIPT_DIR
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 readonly PROJECT_ROOT
 readonly ROUTING_YAML="$PROJECT_ROOT/.claude/ref/leadv2-routing.yaml"
+# T-b (SUPERVISOR-AUDIT-01): single glm_policy/codex_quota_gate resolver, shared with
+# leadv2-dispatch-code.sh:resolve_arm(). Exported so the python helper (a temp file, not
+# this script) sees it via os.environ regardless of the heredoc's quoted-EOF (no bash
+# interpolation) delimiter.
+export LEADV2_GLM_POLICY_RESOLVER="${LEADV2_GLM_POLICY_RESOLVER:-${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py}"
 readonly AGENT_STATS_YAML="$PROJECT_ROOT/docs/agents/agent-stats.yaml"
 # LEADV2_PRIORS_YAML: optional override path; defaults to docs/leadv2-priors.yaml
 PRIORS_YAML="${LEADV2_PRIORS_YAML:-${PROJECT_ROOT}/docs/leadv2-priors.yaml}"
@@ -195,55 +200,66 @@ if not isinstance(glm_policy, dict):
     # reading it there. Guarded: repos/phases with no glm_policy at all get None
     # here and leave selected_model untouched.
     glm_policy = phases.get("glm_policy")
-if isinstance(glm_policy, dict):
-    _gp_base = selected_model.split("+")[0].split("-")[0]
-    if _gp_base == "glm":
-        _opus_kinds = glm_policy.get("opus_only_mission_kinds", []) or []
-        _exc_ids = [e.get("id") for e in (glm_policy.get("sonnet_exceptions", []) or [])
-                    if isinstance(e, dict) and e.get("id")]
+# T-b (SUPERVISOR-AUDIT-01): this used to be a second, independent copy of the
+# GLM-FIRST-01 predicate chain (dispatch-code.sh:resolve_arm() was the other).
+# Both now call the ONE resolver at lib/leadv2-glm-policy-resolve.py so editing
+# behaviour changes it for both build-phase dispatch and router.sh phase/step
+# routing identically. Applied for build (glm-default steps) AND review
+# (codex_quota_gate / review_arm_exclusions enforcement, T-q) -- any other
+# phase either has no glm_policy or a base arm the resolver leaves untouched.
+_gp_base = selected_model.split("+")[0].split("-")[0]
+_gp_suffix = selected_model[len(_gp_base):]  # preserve "+agent-tool" etc.
 
-        def _num_ge(val, n):
-            try:
-                return val is not None and float(val) >= n
-            except (TypeError, ValueError):
-                return False
 
-        _gp_suffix = selected_model[len(_gp_base):]  # preserve "+agent-tool" etc.
+def _swap(new_base):
+    return new_base + _gp_suffix
 
-        def _swap(new_base):
-            return new_base + _gp_suffix
 
-        # STRICT precedence, first match wins. A sonnet rule fires only if its id
-        # is present in the yaml — removing an id there silently disables that
-        # rule. We never invent a rule id; opus_kinds/exc_ids both come from yaml.
-        _gp_rules = [
-            (lambda: signals.get("mission_kind") in _opus_kinds,
-             None, "opus", "opus_mission_kind"),
-            (lambda: bool(signals.get("protected_path") or signals.get("safety_touched")),
-             "safety_gate_publish_payments", "sonnet", "sonnet_exception"),
-            (lambda: _num_ge(signals.get("subsystem_count"), 4)
-                    or bool(signals.get("needs_midflight_interaction")),
-             "integration_critical_4subsystems", "sonnet", "sonnet_exception"),
-            (lambda: bool(signals.get("ui_design_judgment")),
-             "ui_design_judgment", "sonnet", "sonnet_exception"),
-            (lambda: _num_ge(signals.get("glm_failure_count"), 2),
-             "glm_failed_twice", "sonnet", "sonnet_exception"),
-            # H5 fix (fix-round-2, ROUTER-HAS-NO-GLM-ARM-01): the yaml declares
-            # glm_lock_busy_no_second_channel (leadv2-routing.yaml:86-87) but no
-            # predicate ever read the glm_lock_busy signal — a declared-but-dead
-            # rule. Wired: same shape as the other sonnet_exception predicates.
-            (lambda: bool(signals.get("glm_lock_busy")),
-             "glm_lock_busy_no_second_channel", "sonnet", "sonnet_exception"),
-        ]
-        for _pred, _rid, _base, _reason in _gp_rules:
-            if not _pred():
-                continue
-            if _rid is not None and _rid not in _exc_ids:
-                continue  # rule id absent from yaml -> cannot fire
-            selected_model = _swap(_base)
-            routing_reason = _reason
-            _glm_resolver_rule = _rid
-            break
+_resolver_ran = False  # True only when resolve_glm_policy() actually executed
+                       # (build/review with a live resolver) -- gates whether
+                       # the reconciliation block below may trust routing_reason
+                       # as already-correct vs. must bucket-recompute it (MAJOR
+                       # fix, router.sh:595-609: other phases -- plan, close,
+                       # deploy, verify -- never touch this block at all, so
+                       # routing_reason must NOT be left at its "glm_default"
+                       # init value for them, or the bandit overlay's
+                       # glm_default-only-allows-glm special-case wrongly
+                       # forces GLM onto e.g. plan's sonnet/opus or close's
+                       # sonnet-floor lead_reflect step).
+_resolver_arm = None  # set below only when the resolver actually fires
+if isinstance(glm_policy, dict) and phase in ("build", "review"):
+    _job = "review" if phase == "review" else "build"
+    _resolver_path = os.environ.get("LEADV2_GLM_POLICY_RESOLVER")
+    _resolve_fn = None
+    if _resolver_path and os.path.isfile(_resolver_path):
+        try:
+            import importlib.util as _ilu
+            _spec = _ilu.spec_from_file_location("leadv2_glm_policy_resolve", _resolver_path)
+            _mod = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            _resolve_fn = _mod.resolve_glm_policy
+        except Exception:
+            _resolve_fn = None  # fail-safe: resolver unavailable -> leave selected_model untouched
+    if _resolve_fn is not None:
+        _quota_live = os.environ.get(
+            "LEADV2_QUOTA_LIVE",
+            os.path.join(os.path.dirname(os.path.dirname(_resolver_path)), "leadv2-quota-live.sh"),
+        )
+        _res = _resolve_fn(glm_policy, signals, _job, base_arm=_gp_base, quota_live_bin=_quota_live,
+                            enable_codex_fitting_rule=False)
+        if _res["arm"] != _gp_base:
+            selected_model = _swap(_res["arm"])
+        routing_reason = _res["reason"]
+        _glm_resolver_rule = None if _res["rule"] in ("none", "glm_default") else _res["rule"]
+        _resolver_arm = _res["arm"]  # gates M9 fix below: rule attribution is sonnet-only
+        _resolver_ran = True
+
+# MAJOR fix (router.sh:595-609): snapshot the model immediately after the
+# resolver ran (or, when it didn't fire, the unchanged pre-resolver model) so
+# the reconciliation block below can tell "nothing touched the arm since the
+# resolver decided it" from "cost-ceiling/bandit machinery mutated it
+# afterward" -- only the latter case may recompute routing_reason/glm_exception_rule.
+_post_resolver_model = selected_model
 
 tool = step_cfg.get("tool", "agent-tool")
 expected_cost = step_cfg.get("expected_cost_usd", 0.0)
@@ -602,16 +618,42 @@ else:
 # these two fields (bash no longer guesses). Never emit "unknown"; never invent a
 # rule id — a sonnet arm carries the resolver's real rule, or null if sonnet is
 # the natural default / a post-resolver mutation (never a fabricated id).
-_final_base = selected_model.split("+")[0].split("-")[0]
-if _final_base == "glm":
-    routing_reason, glm_exception_rule = "glm_default", "null"
-elif _final_base == "opus":
-    routing_reason, glm_exception_rule = "opus_mission_kind", "null"
-elif _final_base == "sonnet":
-    routing_reason = "sonnet_exception"
-    glm_exception_rule = _glm_resolver_rule if _glm_resolver_rule else "null"
+if _resolver_ran and selected_model == _post_resolver_model:
+    # MAJOR fix (router.sh:595-609): the resolver actually fired for this
+    # build/review call AND nothing downstream (escalate_if, cost-ceiling
+    # downgrade, bandit overlay) touched the arm since -- keep its real
+    # rule/reason verbatim. The old bucket-guess below used to overwrite this
+    # unconditionally, e.g. stamping "other" over a real
+    # "codex_quota_gate"/"review_arm_exclusion" reason, or "sonnet_exception"
+    # over a codex-quota spill that landed on sonnet. `_resolver_ran` gates
+    # this so non-build/review phases (plan, close, deploy, verify), where
+    # the resolver never runs at all, always fall through to the bucket
+    # recompute below instead of freezing at the "glm_default" init value.
+    # M9 fix (SUPERVISOR-AUDIT-01 round 2): routing_reason was already copied
+    # from _res["reason"] where the resolver ran (line ~251), but this branch
+    # never copied glm_exception_rule from _glm_resolver_rule -- it stayed
+    # frozen at the "null" init value, so a real sonnet_exception rule id
+    # (e.g. safety_gate_publish_payments) was silently lost from the emitted
+    # line even though routing_reason correctly said "sonnet_exception".
+    # Gated on the resolver's own arm (not just "truthy rule"): the resolver
+    # also stamps a rule id for the opus_only_kind case, but glm_exception_rule
+    # is sonnet-only attribution (matches the bucket-recompute else-branch
+    # below, which hardcodes "null" for every non-sonnet final arm).
+    if _resolver_arm == "sonnet" and _glm_resolver_rule:
+        glm_exception_rule = _glm_resolver_rule
 else:
-    routing_reason, glm_exception_rule = "other", "null"
+    _final_base = selected_model.split("+")[0].split("-")[0]
+    if _final_base == "glm":
+        routing_reason, glm_exception_rule = "glm_default", "null"
+    elif _final_base == "opus":
+        routing_reason, glm_exception_rule = "opus_mission_kind", "null"
+    elif _final_base == "sonnet":
+        routing_reason = "sonnet_exception"
+        glm_exception_rule = _glm_resolver_rule if _glm_resolver_rule else "null"
+    elif _final_base == "codex":
+        routing_reason, glm_exception_rule = "codex_arm", "null"
+    else:
+        routing_reason, glm_exception_rule = "other", "null"
 
 print(f"model={selected_model}")
 print(f"routing_reason={routing_reason}")
@@ -724,6 +766,11 @@ _heuristic_model=$(printf '%s\n' "$result" | grep '^model=' | cut -d= -f2)
 # (glm_default) — the resolved arm in the former case is policy-locked and
 # must not be escaped by the bandit.
 _heuristic_routing_reason=$(printf '%s\n' "$result" | grep '^routing_reason=' | cut -d= -f2)
+# T-b (SUPERVISOR-AUDIT-01): one arm_resolved line per resolution, same journal-ledger
+# contract leadv2-dispatch-code.sh's `emit decision "arm_resolved ..."` carries for build.
+if [[ "$PHASE" == "build" || "$PHASE" == "review" ]]; then
+  log "arm_resolved job=${PHASE} arm=${_heuristic_model} reason=${_heuristic_routing_reason}"
+fi
 
 if [[ "${LEADV2_ROUTE_BANDIT:-0}" == "1" ]] \
    && [[ "$ceiling_status" != "hard_stop_95pct" ]]; then
@@ -926,7 +973,12 @@ tool_val = os.environ['TOOL_VAL']
 # {{role}}/{{task_id}}/{{mission}}/{{mission_file}} placeholder must survive
 # verbatim for the downstream filler to substitute.
 def build_command_template(tool_str, model_str):
-    primary_model = model_str.split('+')[0].replace('-subsession', '').replace('-agent-tool', '')
+    # BLOCKING fix (router.sh:210-239,:928-966): split on BOTH '+' and '-' so
+    # a compound reviewer label (e.g. "codex-adversarial+sonnet-critic") yields
+    # the real base model ("codex") instead of an unmatched literal that fell
+    # through every branch below into ROUTER_UNKNOWN_MODEL -- subsumes the old
+    # '-subsession'/'-agent-tool' .replace() calls (same result for those two).
+    primary_model = model_str.split('+')[0].split('-')[0]
     if primary_model in ('bash', 'bash+python', 'bash+yaml', 'mcp-calls-only', 'skip'):
         return f'# no-LLM: {primary_model}'
     if 'subsession' in tool_str or 'subsession' in model_str:
@@ -962,6 +1014,14 @@ def build_command_template(tool_str, model_str):
             'Agent(subagent_type={{role}}, model='
             f'{primary_model}, '
             'prompt=<mission from {{mission_file}}>)'
+        )
+    if primary_model == 'codex':
+        # BLOCKING fix (router.sh:210-239,:928-966): real reviewer arm, not a
+        # guess -- the same sanctioned codex-task.sh adversarial-review call
+        # leadv2-dispatch-product-close.sh already uses for review dispatch.
+        return (
+            'bash ~/.claude/scripts/codex-task.sh adversarial-review '
+            '--base {{base}} --wait'
         )
     raise SystemExit(f'ROUTER_UNKNOWN_MODEL: {primary_model} has no dispatch branch')
 

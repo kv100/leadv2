@@ -50,6 +50,18 @@ LANE_MAX      = {"action": 3, "recovery": 5, "intelligence": 1, "human-needed": 
 LANE_TTL      = {"action": 90, "recovery": 60, "intelligence": 120, "human-needed": 60}
 TERMINAL      = {"done", "poisoned", "rejected", "failed", "archived",
                  "closed", "completed", "admin-closed"}
+# SUPERVISOR-AUDIT-01: claim's own writer (op=add, op=unclaim, op=release-retry)
+# only ever stamps "pending", but persona-engine's live docs/tasks.yaml is
+# populated by a different generator that stamps "queued" for the identical
+# available-to-work state (0/372 rows are literally "pending" there) --
+# leadv2-fanout.sh's class-funnel selects on status=="queued" and then calls
+# this claim op, so "pending"-only left the funnel permanently unclaimable.
+# Explicit allowlist, not a wildcard/not-in-TERMINAL check. NMIN1 fix
+# (SUPERVISOR-AUDIT-01 fix-round-3): top_n/declared_top_n/next_for_lane were
+# "pending"-only when this comment was written; they now gate on CLAIMABLE
+# too (SUPERVISOR-AUDIT-01 follow-up, see their own inline comments below) --
+# widening claim's own allowlist above was never the last word on this.
+CLAIMABLE     = {"pending", "queued"}
 
 def iso(dt): return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 def now_iso(): return iso(datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
@@ -201,7 +213,12 @@ if op in ("top_n", "declared_top_n"):
         for it in all_items:
             lane = str(it.get("lane", ""))
             if lane == "human-needed": continue
-            if str(it.get("status","")) != "pending": continue
+            # SUPERVISOR-AUDIT-01 follow-up: was "pending"-only, same defect
+            # claim's allowlist above already fixes -- top_n/declared_top_n feed
+            # leadv2-backlog-pump.sh (the autonomous refill loop), and against a
+            # repo whose generator stamps "queued" (persona-engine: 0/372 rows
+            # literally "pending") this returned zero candidates every cycle.
+            if str(it.get("status","")) not in CLAIMABLE: continue
             if (it.get("claim") or {}).get("by") is not None: continue
             if not deps_done(it, by_id):
                 # C1.5/D10: surface dep_missing in dry-run top-N output
@@ -217,7 +234,17 @@ if op in ("top_n", "declared_top_n"):
         if op == "top_n":
             candidates.sort(key=lambda x: x[:4])
         for _, _, _, iid, lane, it in candidates[:top_n]:
-            print(f"{lane}\t{it.get('priority','medium')}\t{iid}\t{it.get('title','')}")
+            # NB2 fix (SUPERVISOR-AUDIT-01 fix-round-3): persona-engine's live
+            # rows carry lane=null/"" (296/296 queued rows). bash `read -r`
+            # with IFS=$'\t' still treats tab as IFS-whitespace-class and
+            # collapses/strips it regardless of what IFS is set to, so a
+            # leading empty field (lane="") merges into the next tab and
+            # shifts every later field (priority/iid/title) left by one --
+            # dropping the task id itself. "-" is the on-the-wire empty
+            # marker (same convention leadv2-fanout.sh's PLAN_TSV emission
+            # already uses); consumers restore "" after reading.
+            _lane_out = lane if lane else "-"
+            print(f"{_lane_out}\t{it.get('priority','medium')}\t{iid}\t{it.get('title','')}")
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN); fd.close()
 
@@ -250,7 +277,7 @@ elif op == "claim":
             claim = it.get("claim") or {}
             if claim.get("by") is not None:
                 print(f"[tasks-lib] already claimed by {claim['by']}", file=sys.stderr); sys.exit(9)
-            if str(it.get("status","")) != "pending":
+            if str(it.get("status","")) not in CLAIMABLE:
                 print(f"[tasks-lib] status={it.get('status')} not claimable", file=sys.stderr); sys.exit(1)
             lane = str(it.get("lane","action"))
             it["status"] = "in_progress"
@@ -406,7 +433,8 @@ elif op == "next_for_lane":
         candidates = []
         for it in all_items:
             if str(it.get("lane","")) != lane: continue
-            if str(it.get("status","")) != "pending": continue
+            # SUPERVISOR-AUDIT-01 follow-up: same "pending"-only defect as top_n above.
+            if str(it.get("status","")) not in CLAIMABLE: continue
             if (it.get("claim") or {}).get("by") is not None: continue
             if not deps_done(it, by_id): continue
             candidates.append((PRIORITY_RANK.get(str(it.get("priority","medium")),4),

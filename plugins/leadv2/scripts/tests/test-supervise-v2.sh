@@ -53,6 +53,11 @@ _new_fixture() {
   state="$(lv2_mktemp_dir "sv2-state")"
   CLEANUP_DIRS+=("$repo" "$state")
   (cd "$repo" && git init -q)
+  # TEST SAFETY (B1 root cause, fix-round-2): hard-abort unless this is
+  # provably a throwaway fixture — see lv2_assert_scratch_repo in
+  # leadv2-temp.sh. Every fixture in this suite is created here; this is the
+  # single choke point.
+  lv2_assert_scratch_repo "$repo"
   mkdir -p "$repo/docs/leadv2" "$repo/docs/handoff"
   # Trailing newline is REQUIRED: `read` (in `read -r a b < <(_new_fixture)`)
   # returns 1 on EOF-without-newline even though it populated the vars —
@@ -746,6 +751,106 @@ test_6_syntax() {
   [[ "$ok" -eq 1 ]] && pass "Test 6: bash -n OK on all 3 scripts"
 }
 
+# ── Test 12: SUPERVISOR-AUDIT-01 fix — pid:null funnel row survives prune ──
+
+test_12_pidnull_survives_prune() {
+  log "Test 12: pid:null funnel row (fresh log) survives prune, no PID-only death"
+
+  local repo state active_path snap still_present
+  read -r repo state < <(_new_fixture)
+  active_path="$(_active_yaml "$repo" "$state")"
+  mkdir -p "$(dirname "$active_path")"
+  cat > "$active_path" <<'YAML'
+sessions:
+  - task_id: FUNNEL-1
+    session_id: f1
+    started_at: "2020-01-01T00:00:00+00:00"
+    phase: build
+    pid: null
+    pid_birth: null
+    protocol_version: 2
+    backend: dispatch-code
+    log_path: docs/handoff/dispatch-abc12345/developer.stream.jsonl
+    last_pulse_at: "2020-01-01T00:00:00+00:00"
+    stale: false
+YAML
+  # B9 fix (fix-round-2): use the REAL leadv2-fanout.sh single-worker-funnel
+  # layout — docs/handoff/dispatch-<sig8>/developer.stream.jsonl, recorded in
+  # the row's log_path — not a synthetic docs/handoff/FUNNEL-1/session.log.
+  # This is the exact artifact leadv2-lane-liveness.sh's resolve() must now
+  # find via log_path; a synthetic path proves nothing about the real bug.
+  mkdir -p "$repo/docs/handoff/dispatch-abc12345"
+  printf 'dispatch-code funnel worker output\n' > "$repo/docs/handoff/dispatch-abc12345/developer.stream.jsonl"
+  snap="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
+    PROJECT_ROOT="$repo" bash "$STATE_PATH_SH" .supervise-last.json)"
+  mkdir -p "$(dirname "$snap")"
+  cat > "$snap" <<'JSON'
+{"rendered_at":"2020-01-01T00:00:00+00:00","tasks":{},"reported_events":[],
+ "dead_candidates":{"FUNNEL-1":"2020-01-01T00:00:00+00:00"},"reconcile_cycle_count":5}
+JSON
+
+  LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
+    LEADV2_SUPERVISE_OBSERVE_ONLY=0 bash "$SUPERVISE_SH" --json >/dev/null 2>&1 \
+    || { fail "Test 12a: supervise.sh exited nonzero"; return; }
+  still_present="$(python3 -c "
+import yaml
+d = yaml.safe_load(open('$active_path')) or {}
+print(any(s.get('task_id')=='FUNNEL-1' for s in d.get('sessions', [])))
+")"
+  if [[ "$still_present" == True ]]; then
+    pass "Test 12a: pid:null row with fresh log survives prune (absent PID alone is not death)"
+  else
+    fail "Test 12a: FUNNEL-1 was pruned despite a fresh log (still_present=$still_present)"
+  fi
+
+  # Rollback proof: LEADV2_SUPERVISE_PRUNE_V2=0 reproduces the exact prior
+  # PID-only death authority on the identical fixture -- the row IS pruned.
+  read -r repo state < <(_new_fixture)
+  active_path="$(_active_yaml "$repo" "$state")"
+  mkdir -p "$(dirname "$active_path")"
+  cat > "$active_path" <<'YAML'
+sessions:
+  - task_id: FUNNEL-1
+    session_id: f1
+    started_at: "2020-01-01T00:00:00+00:00"
+    phase: build
+    pid: null
+    pid_birth: null
+    protocol_version: 2
+    backend: dispatch-code
+    log_path: docs/handoff/dispatch-abc12345/developer.stream.jsonl
+    last_pulse_at: "2020-01-01T00:00:00+00:00"
+    stale: false
+YAML
+  # B9 fix (fix-round-2): use the REAL leadv2-fanout.sh single-worker-funnel
+  # layout — docs/handoff/dispatch-<sig8>/developer.stream.jsonl, recorded in
+  # the row's log_path — not a synthetic docs/handoff/FUNNEL-1/session.log.
+  # This is the exact artifact leadv2-lane-liveness.sh's resolve() must now
+  # find via log_path; a synthetic path proves nothing about the real bug.
+  mkdir -p "$repo/docs/handoff/dispatch-abc12345"
+  printf 'dispatch-code funnel worker output\n' > "$repo/docs/handoff/dispatch-abc12345/developer.stream.jsonl"
+  snap="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
+    PROJECT_ROOT="$repo" bash "$STATE_PATH_SH" .supervise-last.json)"
+  mkdir -p "$(dirname "$snap")"
+  cat > "$snap" <<'JSON'
+{"rendered_at":"2020-01-01T00:00:00+00:00","tasks":{},"reported_events":[],
+ "dead_candidates":{"FUNNEL-1":"2020-01-01T00:00:00+00:00"},"reconcile_cycle_count":5}
+JSON
+  LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
+    LEADV2_SUPERVISE_OBSERVE_ONLY=0 LEADV2_SUPERVISE_PRUNE_V2=0 bash "$SUPERVISE_SH" --json >/dev/null 2>&1 \
+    || { fail "Test 12b: supervise.sh exited nonzero"; return; }
+  still_present="$(python3 -c "
+import yaml
+d = yaml.safe_load(open('$active_path')) or {}
+print(any(s.get('task_id')=='FUNNEL-1' for s in d.get('sessions', [])))
+")"
+  if [[ "$still_present" == False ]]; then
+    pass "Test 12b: LEADV2_SUPERVISE_PRUNE_V2=0 reproduces exact prior PID-only prune"
+  else
+    fail "Test 12b: rollback flag did not reproduce prior prune behavior (still_present=$still_present)"
+  fi
+}
+
 # ── Run all ──────────────────────────────────────────────────────────────
 
 log "=== leadv2-supervise V2 unit tests (SUPERVISE-V2-01 batch-2 item 6) ==="
@@ -774,6 +879,7 @@ case "${LEADV2_SUPERVISE_TEST_ONLY:-all}" in
     test_9_dead_event_dedup
     test_11_global_legacy_question_scan
     test_10_ensure_atomic_attach
+    test_12_pidnull_survives_prune
     ;;
   *)
     fail "unknown LEADV2_SUPERVISE_TEST_ONLY=${LEADV2_SUPERVISE_TEST_ONLY}"

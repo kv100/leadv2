@@ -104,6 +104,33 @@ fi
 
 mkdir -p "$STATE_ROOT"
 
+# ── B1 SAFETY NET (SUPERVISOR-AUDIT-01, third recurrence, fix-round-3) ─────
+# Twice before, a test that sandboxes the control plane via LEADV2_STATE_ROOT
+# still forgot to ALSO thread PROJECT_ROOT/LEADV2_PROJECT_ROOT/CLAUDE_PROJECT_DIR
+# for one specific call; that call's LINK_ROOT then fell back to `git
+# rev-parse --show-toplevel` of the CALLING PROCESS'S cwd — the real repo the
+# test happened to be invoked from — and the symlink-repair block below
+# retargeted that real repo's docs/leadv2/* control-plane links at a
+# throwaway tmp dir. Root-cause every individual missing-override call site
+# is a losing game (this is the third recurrence); this script is the one
+# chokepoint EVERY such call passes through, so the safety net belongs here.
+#
+# LEADV2_STATE_ROOT is a sandbox-only signal: production NEVER sets it (a
+# real /leadv2 session always resolves STATE_ROOT via git-common-dir above).
+# A real leadv2/persona-engine/m3-market/respiro-ios checkout always carries
+# a configured git remote; a scratch `git init` fixture never does (same
+# signal leadv2-temp.sh's lv2_assert_scratch_repo already uses test-side).
+# If a caller set LEADV2_STATE_ROOT (declaring "sandbox this") but LINK_ROOT
+# nonetheless resolves to a real checkout, that is exactly the contradiction
+# that produced the retarget: hard-abort instead of silently mutating it.
+if [[ "$NO_LINK" -eq 0 && -n "${LEADV2_STATE_ROOT:-}" ]]; then
+  if git -C "$LINK_ROOT" remote 2>/dev/null | grep -q . \
+     || [[ -f "$LINK_ROOT/REAL-REPO" || -f "$LINK_ROOT/.git/leadv2-real-repo-marker" ]]; then
+    printf -- '[leadv2-state-path] ABORT: LEADV2_STATE_ROOT is set (a sandbox-only signal — production never sets this) but the resolved LINK_ROOT (%s) is a real repo checkout (has a git remote or a REAL-REPO marker). This means PROJECT_ROOT/LEADV2_PROJECT_ROOT/CLAUDE_PROJECT_DIR was not threaded to THIS specific call, so LINK_ROOT fell back to cwd. Refusing to touch its docs/leadv2/* control-plane symlinks — fix the caller to pass PROJECT_ROOT explicitly; never mutate a real checkout from a sandboxed test.\n' "$LINK_ROOT" >&2
+    exit 1
+  fi
+fi
+
 # ── Orphan-root reconciliation (QUESTION-CHANNEL-DEAD-01) ──────────────────
 # A prior control-plane root has been observed at "${COMMON_DIR}/leadv2-state"
 # (i.e. INSIDE .git, not under ~/.claude/leadv2-state/<slug>) holding real

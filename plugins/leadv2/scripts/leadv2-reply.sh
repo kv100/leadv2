@@ -129,11 +129,16 @@ PYEOF
   exit 3
 fi
 
-# Atomic write via ln sentinel
-LOCK_FILE="${ANSWERED}.lock"
+# M1 fix (SUPERVISOR-AUDIT-01 round 2): write-once CAS directly onto the
+# FINAL $ANSWERED path — no separate deletable lock file. `ln` creation is
+# atomic and fails EEXIST if $ANSWERED already exists, so whichever writer
+# (this founder reply, or leadv2-ask.sh's timeout/architect fallback racing
+# via the same target path) gets there FIRST wins permanently. The old
+# lock-file+mv pattern released its lock right after writing, leaving a
+# window where a delayed second writer could reacquire the freed lock and
+# unconditionally `mv` over an answer that already landed.
 TMP="$(mktemp)"
 
-# Write answered YAML to temp file
 ANSWERED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 cat > "$TMP" << YAML_EOF
 task_id: ${TASK_ID}
@@ -143,10 +148,8 @@ decided_by: founder
 answered_at: "${ANSWERED_AT}"
 YAML_EOF
 
-# Atomic move via ln sentinel (ln is atomic on POSIX; mv -n is NOT on macOS)
-if ln "$TMP" "$LOCK_FILE" 2>/dev/null; then
-  mv "$TMP" "$ANSWERED"
-  rm -f "$LOCK_FILE"
+if ln "$TMP" "$ANSWERED" 2>/dev/null; then
+  rm -f "$TMP"
 else
   rm -f "$TMP"
   printf -- 'Ошибка: вопрос уже отвечен (concurrent write)\n' >&2

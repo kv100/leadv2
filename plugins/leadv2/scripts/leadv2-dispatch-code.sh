@@ -326,15 +326,71 @@ compute_sig() {
 
 sig_is_hex() { printf '%s' "$1" | grep -qxE '[0-9a-f]{64}'; }
 
-# ── GLM-FIRST-01 policy resolver ──────────────────────────────────────────────────
-# Reads glm_policy from routing.yaml (ids + opus_kinds) via regex — no pyyaml dependency,
-# same grep-the-yaml idiom leadv2-journal.sh / leadv2-quota-status.sh use. Predicates mirror
-# leadv2-router.sh:225-252 (first-match-wins; a sonnet rule fires ONLY if its id is listed).
-# Signals arrive via DC_* env vars set from the caller's flags. Prints three lines:
-#   arm=<glm|sonnet|opus>   rule=<id|none|opus_only_kind>   reason=<glm_default|...>
+# ── GLM-FIRST-01 / T-q policy resolver ────────────────────────────────────────────
+# T-b (SUPERVISOR-AUDIT-01): the predicate chain used to be duplicated inline here AND
+# in leadv2-router.sh's per-invocation python helper. Both now call the ONE resolver at
+# lib/leadv2-glm-policy-resolve.py — see that file for the full rule set + the T-q
+# codex_quota_gate / review_arm_exclusions enforcement (job=build here; router.sh passes
+# job=review for phase=review). Signals arrive via DC_* env vars set from the caller's
+# flags. Prints four lines: arm=<glm|sonnet|opus|codex>  rule=<id|none|...>
+# reason=<glm_default|...>  tier=<standard|...|(empty)>
 # (line-per-field, NOT tab-delimited — BSD sed treats \t as literal 't', which corrupts values.)
-# Fail-safe: any error -> arm=glm (the cheap default), reason=resolver_error (observable).
+# Fail-safe: any error/missing-resolver -> arm=glm UNLESS DC_SAFETY/DC_PROTECTED is
+# set, in which case it fails CLOSED to arm=sonnet (reason=*_failclosed, observable).
+# MAJOR fix (review-verdict.md dispatch-code.sh:339-376): a lookup relative only to
+# this caller's SCRIPT_DIR silently resolved to nothing in a vendored copy that
+# missed the lib/ sync (drift) -- resolve_arm()'s own error fallback then read
+# that as "resolver errored" and defaulted to the cheap arm, bypassing
+# safety/protected-path routing there. Prefer the co-located copy; fall back to
+# the verified canonical plugin root (same convention leadv2-drift-guard.sh:58-59
+# uses) rather than accept a path that quietly doesn't exist.
+GLM_POLICY_RESOLVER="${GLM_POLICY_RESOLVER:-}"
+if [[ -z "${GLM_POLICY_RESOLVER}" ]]; then
+  if [[ -f "${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py" ]]; then
+    GLM_POLICY_RESOLVER="${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py"
+  else
+    _canonical_resolver="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py"
+    [[ -f "${_canonical_resolver}" ]] && GLM_POLICY_RESOLVER="${_canonical_resolver}"
+  fi
+fi
 resolve_arm() {
+  local signals_json
+  # Resolver unresolvable in ANY copy (both lookups above missed): fail CLOSED on
+  # safety/protected signals instead of the prior blanket arm=glm default -- a
+  # missing lib/ must never silently bypass safety routing.
+  if [[ -z "${GLM_POLICY_RESOLVER}" || ! -f "${GLM_POLICY_RESOLVER}" ]]; then
+    if [[ "${DC_SAFETY:-0}" == "1" || "${DC_PROTECTED:-0}" == "1" ]]; then
+      printf 'arm=sonnet\nrule=none\nreason=resolver_missing_failclosed\ntier=\n'
+    else
+      printf 'arm=glm\nrule=none\nreason=resolver_missing\ntier=\n'
+    fi
+    return
+  fi
+  signals_json="$(python3 -c '
+import json, os, sys
+e = os.environ
+def _b(k): return bool(int(e.get(k, "0") or 0))
+def _f(k):
+    try: return float(e.get(k, "0") or 0)
+    except (TypeError, ValueError): return 0.0
+print(json.dumps({
+    "mission_kind": e.get("DC_KIND", ""),
+    "protected_path": _b("DC_PROTECTED"),
+    "safety_touched": _b("DC_SAFETY"),
+    "subsystem_count": _f("DC_SUBSYSTEM_COUNT"),
+    "needs_midflight_interaction": _b("DC_INTERACTIVE"),
+    "ui_design_judgment": _b("DC_UI_JUDGMENT"),
+    "glm_failure_count": _f("DC_GLM_FAILURES"),
+    "glm_lock_busy": _b("DC_GLM_LOCK_BUSY"),
+}))
+' 2>/dev/null)" || signals_json='{}'
+  # Build argv via an array, not an unquoted ${VAR:+word "$VAR"} splice: the latter
+  # collapsed "--quota-live" + path into ONE argv element in this exact
+  # local-signals_json-then-conditional-flag shape (bash 5.3, reproducible), which
+  # made argparse silently reject the flag and fail the resolver on every call
+  # (found by T-b's live-policy harness — the CLI mode had never been exercised).
+  local -a _resolver_args=(--routing-yaml "${ROUTING_YAML}" --job build --base-arm glm --signals "${signals_json}")
+  [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && _resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
   DC_PROTECTED="${DC_PROTECTED:-0}" \
   DC_SAFETY="${DC_SAFETY:-0}" \
   DC_SUBSYSTEM_COUNT="${DC_SUBSYSTEM_COUNT:-0}" \
@@ -343,78 +399,14 @@ resolve_arm() {
   DC_KIND="${DC_KIND:-}" \
   DC_GLM_FAILURES="${DC_GLM_FAILURES:-0}" \
   DC_GLM_LOCK_BUSY="${DC_GLM_LOCK_BUSY:-0}" \
-  ROUTING_YAML="${ROUTING_YAML}" \
-  python3 - <<'PY' || printf 'arm=glm\nrule=none\nreason=resolver_error\ntier=\n'
-import os, re, sys
-try:
-    text = open(os.environ["ROUTING_YAML"], "r").read()
-except Exception:
-    print("arm=glm"); print("rule=none"); print("reason=no_routing_yaml"); sys.exit(0)
-
-exc_ids, opus_kinds, codex_kinds = [], [], []
-codex_default_tier = "standard"
-m = re.search(r'(?m)^  glm_policy:\s*\n((?:^[ \t]{4,}.*\n|^[ \t]*\n)+)', text)
-if m:
-    block = m.group(1)
-    for idm in re.finditer(r'(?m)^[ \t]*-[ \t]*id:[ \t]*([A-Za-z0-9_-]+)', block):
-        exc_ids.append(idm.group(1))
-    okm = re.search(r'(?m)^[ \t]*opus_only_mission_kinds:[ \t]*\[([^\]]*)\]', block)
-    if okm:
-        opus_kinds = [s.strip() for s in okm.group(1).split(',') if s.strip()]
-    cxkm = re.search(r'(?m)^[ \t]*codex_fitting_mission_kinds:[ \t]*\[([^\]]*)\]', block)
-    if cxkm:
-        codex_kinds = [s.strip() for s in cxkm.group(1).split(',') if s.strip()]
-    cxtm = re.search(r'(?m)^[ \t]*codex_default_tier:[ \t]*([A-Za-z0-9_-]+)', block)
-    if cxtm:
-        codex_default_tier = cxtm.group(1)
-
-def _ge(v, n):
-    try: return float(v or 0) >= n
-    except (TypeError, ValueError): return False
-
-e = os.environ
-sig = {
-    "mission_kind":            e.get("DC_KIND", ""),
-    "protected_path":          bool(int(e.get("DC_PROTECTED", "0") or 0)),
-    "safety_touched":          bool(int(e.get("DC_SAFETY", "0") or 0)),
-    "subsystem_count":         float(e.get("DC_SUBSYSTEM_COUNT", "0") or 0),
-    "needs_midflight_interaction": bool(int(e.get("DC_INTERACTIVE", "0") or 0)),
-    "ui_design_judgment":      bool(int(e.get("DC_UI_JUDGMENT", "0") or 0)),
-    "glm_failure_count":       float(e.get("DC_GLM_FAILURES", "0") or 0),
-    "glm_lock_busy":           bool(int(e.get("DC_GLM_LOCK_BUSY", "0") or 0)),
-}
-
-rules = [
-    (bool(sig["mission_kind"]) and sig["mission_kind"] in opus_kinds,
-        None, "opus", "opus_mission_kind"),
-    (sig["protected_path"] or sig["safety_touched"],
-        "safety_gate_publish_payments", "sonnet", "sonnet_exception"),
-    (_ge(sig["subsystem_count"], 4) or sig["needs_midflight_interaction"],
-        "integration_critical_4subsystems", "sonnet", "sonnet_exception"),
-    (sig["ui_design_judgment"],
-        "ui_design_judgment", "sonnet", "sonnet_exception"),
-    (_ge(sig["glm_failure_count"], 2),
-        "glm_failed_twice", "sonnet", "sonnet_exception"),
-    (sig["glm_lock_busy"],
-        "glm_lock_busy_no_second_channel", "sonnet", "sonnet_exception"),
-    # CODEX arm (ROUTING-ENFORCEMENT-01): checked AFTER every sonnet_exceptions rule so a
-    # sonnet-exception mission never falls through to codex (mission requirement: "the
-    # sonnet exception list still wins over a codex-fitting mission").
-    (bool(sig["mission_kind"]) and sig["mission_kind"] in codex_kinds,
-        None, "codex", "codex_fitting_mission_kind"),
-]
-arm, rule, reason, tier = "glm", "none", "glm_default", ""
-for pred, rid, base, rsn in rules:
-    if not pred:
-        continue
-    if rid is not None and rid not in exc_ids:
-        continue  # id absent from yaml -> rule cannot fire (single source of truth)
-    arm, rule, reason = base, (rid or ("codex_fitting_kind" if base == "codex" else "opus_only_kind")), rsn
-    break
-if arm == "codex":
-    tier = codex_default_tier
-print("arm=%s" % arm); print("rule=%s" % rule); print("reason=%s" % reason); print("tier=%s" % tier)
-PY
+  python3 "${GLM_POLICY_RESOLVER}" "${_resolver_args[@]}" \
+    2>/dev/null || {
+      if [[ "${DC_SAFETY:-0}" == "1" || "${DC_PROTECTED:-0}" == "1" ]]; then
+        printf 'arm=sonnet\nrule=none\nreason=resolver_error_failclosed\ntier=\n'
+      else
+        printf 'arm=glm\nrule=none\nreason=resolver_error\ntier=\n'
+      fi
+    }
 }
 
 # v2's sole dispatch composition: L1 -> L2 -> L3 -> L4.  Policy remains in
@@ -1016,8 +1008,9 @@ spawn_worker() {
   return ${rc}
 }
 
-spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv>
+spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id>
   local sig8="$1" author="$2" handle="$3" reviewer_arms="${4:-}" lane_writes_csv="${5:-}"
+  local founder_task_id="${6:-}"
   [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]] || return 0
   local close_bin="${LEADV2_DISPATCH_PRODUCT_CLOSE_BIN:-${SCRIPT_DIR}/leadv2-dispatch-product-close.sh}"
   if [[ ! -f "${close_bin}" ]]; then
@@ -1029,7 +1022,7 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     LEADV2_DISPATCH_ARCHITECT_BIN="${ARCHITECT_BIN}" \
     LEADV2_DISPATCH_REVIEWER_ARMS="${reviewer_arms}" \
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
-    bash "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" \
+    bash "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" \
       >/dev/null 2>&1 &
   emit decision "product_close task=${sig8} status=spawned author=${author}"
 }
@@ -1391,6 +1384,14 @@ cmd_status() {
 cmd_resolve() {
   local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 task_class="Standard"
   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0
+  # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
+  # for callers (leadv2-fanout.sh's funnel) that dispatch on behalf of a specific
+  # docs/tasks.yaml row. Additive/optional -- callers that omit it (backlog-pump,
+  # direct CLI use) see no change. Bridges the sig8-keyed dispatch ledger back to
+  # the founder task id so liveness/product-close can resolve one from the other,
+  # and lets the close gate release the ORIGINAL claim on the same id (see
+  # spawn_product_close below and leadv2-dispatch-product-close.sh's EXIT trap).
+  local founder_task_id=""
   local spawn="${LEADV2_DISPATCH_SPAWN:-1}"
   local raw
   while [[ $# -gt 0 ]]; do
@@ -1420,6 +1421,8 @@ cmd_resolve() {
       --acceptance-cmd)  [[ $# -ge 2 ]] || { log_err "--acceptance-cmd requires a value"; usage; }
                           lane_acceptance_cmd="$2"; shift 2 ;;
       --rollback-onestep) lane_rollback=1; shift ;;
+      --task-id)      [[ $# -ge 2 ]] || { log_err "--task-id requires a value"; usage; }
+                      founder_task_id="$2"; shift 2 ;;
       -h|--help)      usage ;;
       --*)            log_err "unknown arg: $1"; usage ;;
       *)              mission="${mission}${mission:+ }$1"; shift ;;  # collect positional mission
@@ -1447,6 +1450,7 @@ cmd_resolve() {
   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
     log_err "signature computation failed"; exit 1
   fi
+  [[ -n "${founder_task_id}" ]] && emit decision "dispatch_task_bound task=${sig8} founder_task=${founder_task_id}"
 
   # Product classifications are visible even when a later shape/router/ledger gate refuses
   # the task.  This is intentionally before any reservation/spawn side effect.
@@ -1591,8 +1595,11 @@ confirmation-seeking; only for a decision you cannot make yourself."
   reason="$(printf '%s\n' "${resolved}" | sed -n 's/^reason=//p')"
   tier="$(printf '%s\n' "${resolved}" | sed -n 's/^tier=//p')"
   v2_eligible="$(printf '%s\n' "${resolved}" | sed -n 's/^eligible=//p')"
+  local codex_quota_blocked
+  codex_quota_blocked="$(printf '%s\n' "${resolved}" | sed -n 's/^codex_quota_blocked=//p')"
   [[ "${router_label}" == "v2" ]] && rule="router_v2"
   [[ -n "${arm}" ]] || { log_err "resolver returned no arm: ${resolved}"; exit 1; }
+  emit decision "arm_resolved job=build arm=${arm} reason=${rule}"
   # RESOLVED_CODEX_TIER is read by _spawn_worker_body's codex case (global, not passed as
   # a positional -- spawn_worker's signature is shared across all three spawning arms).
   [[ "${arm}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
@@ -1642,6 +1649,16 @@ confirmation-seeking; only for a decision you cannot make yourself."
       sonnet) candidate_arms=(sonnet) ;;
       *) log_err "unsupported resolved dispatch arm: ${arm}"; exit 1 ;;
     esac
+    # T-q codex_quota_gate (SUPERVISOR-AUDIT-01 T-b): strip codex from the fixed
+    # glm->codex->sonnet fallback chain when the resolver's live codex-quota read
+    # is >= build_threshold_pct — an arm the resolver itself refuses to hand out
+    # as PRIMARY must not still be reachable as a SPILL target.
+    if [[ "${codex_quota_blocked:-0}" == "1" ]]; then
+      local -a _filtered=()
+      local _a
+      for _a in "${candidate_arms[@]}"; do [[ "${_a}" == "codex" ]] || _filtered+=("${_a}"); done
+      candidate_arms=("${_filtered[@]}")
+    fi
   fi
 
   # ROUTER-QUOTA-DRIVEN-01 (T6): filter candidate_arms by LIVE quota truth
@@ -1720,7 +1737,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
     0)
       local reviewer_arms
       reviewer_arms="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
-      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}"; then
+      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}"; then
         # The worker is already live; make the failed postflight launch visible rather than
         # pretending close evidence will arrive.  Do not kill the independently-owned worker.
         log_err "product close gate could not be launched for task=${sig8}"

@@ -8,6 +8,13 @@ set -uo pipefail
 
 ROOT="${1:?root}"; TASK="${2:?task}"; AUTHOR="${3:?author}"; HANDLE="${4:-}"
 E2E_ON="${5:-1}"; REVIEW_ON="${6:-1}"
+# BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional 7th arg, the
+# founder docs/tasks.yaml task id threaded from leadv2-fanout.sh via
+# leadv2-dispatch-code.sh's --task-id/spawn_product_close. This script's own
+# process lifetime IS the close gate's lifetime, so an EXIT trap is the one
+# lifecycle owner that unclaims the SAME id fanout.sh claimed, on every exit
+# path (pass, fail, blocked) -- omitted entirely when no founder id is known.
+FOUNDER_TASK_ID="${7:-}"
 WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
@@ -15,9 +22,74 @@ DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
 HANDOFF="${ROOT}/docs/handoff/dispatch-${TASK}"
 mkdir -p "${HANDOFF}"
 
+if [[ -n "${FOUNDER_TASK_ID}" ]]; then
+  _TASKS_LIB="${SCRIPT_DIR}/leadv2-tasks-lib.sh"
+  if [[ -f "${_TASKS_LIB}" ]]; then
+    PROJECT_ROOT="${ROOT}"
+    # shellcheck source=leadv2-tasks-lib.sh
+    source "${_TASKS_LIB}"
+    trap 'leadv2_tasks_unclaim "${FOUNDER_TASK_ID}" >/dev/null 2>&1 || true' EXIT
+  fi
+fi
+
 emit() { # type text
   if [[ -f "${JOURNAL_BIN}" ]]; then bash "${JOURNAL_BIN}" append "dispatch-${TASK}" "$1" "$2" >/dev/null 2>&1 || true; fi
   printf '[leadv2-dispatch-product-close] %s\n' "$2" >&2
+}
+
+# The reviewer wrapper and the reviewer do not necessarily use the same stream.  In
+# particular, claude-subsession writes the critic's text to this handoff directory
+# and prints only a handle on stdout.  Keep the artifact resolution and the verdict
+# parser deliberately narrow: review prose is never a verdict contract.
+resolve_review_artifact() {
+  local adir="${ROOT}/docs/handoff/dispatch-${TASK}-review" cand
+  REVIEW_ARTIFACT=""
+  REVIEW_SOURCE=""
+  for cand in "${adir}/critic.full.md" "${adir}/critic.md" "${adir}/critic.summary.md"; do
+    if [[ -s "${cand}" && "${cand}" -nt "${REVIEW_STAMP}" ]]; then
+      REVIEW_ARTIFACT="${cand}"
+      REVIEW_SOURCE="artifact:${cand#"${ROOT}/"}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+parse_review_verdict() { # review-file
+  local review_file="$1"
+  PARSED_VERDICT=""
+  VERDICT_SOURCE=""
+  FINDINGS_CRITICAL=0
+  FINDINGS_HIGH=0
+  FINDINGS_MEDIUM=0
+  FINDINGS_LOW=0
+
+  PARSED_VERDICT="$(sed -nE 's/^[[:space:]]*REVIEW_VERDICT:[[:space:]]*(FAIL|PASS_WITH_NITS|PASS)([[:space:]]|$).*/\1/p' "${review_file}" | head -n 1)"
+  if [[ -n "${PARSED_VERDICT}" ]]; then
+    VERDICT_SOURCE="marker"
+  else
+    PARSED_VERDICT="$(sed -nE 's/^[[:space:]]*(VERDICT|Verdict):[[:space:]]*(FAIL|PASS_WITH_NITS|PASS)([[:space:]]|$).*/\2/p' "${review_file}" | head -n 1)"
+    [[ -n "${PARSED_VERDICT}" ]] && VERDICT_SOURCE="alt_marker"
+  fi
+  [[ -n "${PARSED_VERDICT}" ]] || return 1
+
+  # MAJOR fix (review-verdict.md dispatch-product-close.sh:49-56): REVIEW_FINDINGS
+  # used to be optional -- a reviewer emitting only REVIEW_VERDICT: PASS was
+  # accepted with implicit zero Critical/High findings. Reject any review missing
+  # exactly one valid findings-count marker (none = unscoped verdict; more than
+  # one = ambiguous) rather than defaulting silently to all-zero.
+  local findings_matches findings_count
+  findings_matches="$(sed -nE 's/^[[:space:]]*REVIEW_FINDINGS:[[:space:]]*critical=([0-9]+)[[:space:]]+high=([0-9]+)[[:space:]]+medium=([0-9]+)[[:space:]]+low=([0-9]+)[[:space:]]*$/\1 \2 \3 \4/p' "${review_file}")"
+  findings_count="$(printf '%s\n' "${findings_matches}" | grep -c .)"
+  if [[ "${findings_count}" -ne 1 ]]; then
+    PARSED_VERDICT=""
+    return 1
+  fi
+  read -r FINDINGS_CRITICAL FINDINGS_HIGH FINDINGS_MEDIUM FINDINGS_LOW <<< "${findings_matches}"
+  if [[ "${PARSED_VERDICT}" != FAIL && ( ${FINDINGS_CRITICAL} -gt 0 || ${FINDINGS_HIGH} -gt 0 ) ]]; then
+    PARSED_VERDICT=FAIL
+    VERDICT_SOURCE="contradiction_override"
+  fi
 }
 
 # Wait only for a positively known local PID. Other providers may expose only a durable
@@ -103,18 +175,52 @@ if [[ -f "${ledger}" ]] && grep -qF "\"diff_hash\":\"${diff_hash}\"" "${ledger}"
   exit 0
 fi
 review_out="${HANDOFF}/review-${reviewer}.md"
+review_err="${HANDOFF}/review-${reviewer}.err"
+review_adir="${ROOT}/docs/handoff/dispatch-${TASK}-review"
+mkdir -p "${review_adir}"
+REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
+touch "${REVIEW_STAMP}"
+review_contract=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.'
 if [[ "${reviewer}" == codex ]]; then
-  bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait > "${review_out}" 2>&1; review_rc=$?
+  bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait \
+    --focus "Review ONLY the diff at ${diff_file}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract}" \
+    > "${review_out}" 2> "${review_err}"; review_rc=$?
 else
   mission_file="${HANDOFF}/review-mission.md"
-  printf 'Review ONLY the diff at %s. Return Critical/High correctness findings or clean. You are independent of the author (%s).\n' "${diff_file}" "${AUTHOR}" > "${mission_file}"
-  PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model sonnet --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait > "${review_out}" 2>&1; review_rc=$?
+  printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+    "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+  PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model sonnet --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait \
+    > "${review_out}" 2> "${review_err}"; review_rc=$?
 fi
-verdict=PASS_WITH_NITS; [[ ${review_rc} -ne 0 ]] && verdict=FAIL
+
+resolve_review_artifact || true
+review_file="${REVIEW_ARTIFACT:-${review_out}}"
+if [[ ${review_rc} -ne 0 && -z "${REVIEW_ARTIFACT}" ]]; then
+  printf 'status: blocked\nreason: review_unusable\n' > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=review_unusable rc=${review_rc}"
+  exit 6
+fi
+if [[ ! -s "${review_file}" ]]; then
+  printf 'status: blocked\nreason: review_unusable\n' > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=review_unusable detail=empty"
+  exit 6
+fi
+if ! parse_review_verdict "${review_file}"; then
+  printf 'status: blocked\nreason: review_unusable\n' > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=review_unusable detail=no_verdict_marker"
+  exit 6
+fi
+review_source="${REVIEW_SOURCE:-stream}"
+verdict="${PARSED_VERDICT}"
 record_out="$(LEADV2_DISPATCH_CACHE_DIR="${LEADV2_DISPATCH_CACHE_DIR:-}" LEADV2_JOURNAL_BIN="${JOURNAL_BIN}" \
   bash "${DISPATCH_BIN}" record-review --diff-hash "${diff_hash}" --verdict "${verdict}" --reviewer "${reviewer}" --run-id "dispatch-${TASK}" 2>&1)"; record_rc=$?
 if [[ ${record_rc} -eq 2 ]]; then
   emit decision "review_gate task=${TASK} status=dedup diff=${diff_hash:0:8}"
 else
-  emit decision "review_gate task=${TASK} status=ran author=${AUTHOR} reviewer=${reviewer} verdict=${verdict} diff=${diff_hash:0:8} ledger_rc=${record_rc}"
+  emit decision "review_gate task=${TASK} status=ran author=${AUTHOR} reviewer=${reviewer} verdict=${verdict} diff=${diff_hash:0:8} review_source=${review_source} verdict_source=${VERDICT_SOURCE} ledger_rc=${record_rc}"
+fi
+if [[ "${verdict}" == FAIL ]]; then
+  printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
+    "${FINDINGS_CRITICAL}" "${FINDINGS_HIGH}" "${FINDINGS_MEDIUM}" "${FINDINGS_LOW}" > "${HANDOFF}/review-gate.md"
+  exit 7
 fi

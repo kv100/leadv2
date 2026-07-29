@@ -74,13 +74,24 @@ Only things that need the founder reach chat.
 2. **Pick <=5.** Call `scripts/leadv2-supervise-pick.sh [N<=10]` — a
    read-only ranked picker over `docs/tasks.yaml` top candidates plus any
    cached truth-probe breach (a RED breach's linked work item is pre-ranked
-   first with `recommend:true`). It NEVER dispatches anything itself. Present
-   the ranked list via `AskUserQuestion` (multiSelect); founder picks 0-5.
+   first with `recommend:true`). It NEVER dispatches anything itself.
+   **The AskUserQuestion MUST open with the plan-vs-backlog fork (founder
+   feedback 2026-07-29):** option 1 = «продолжить CURRENT-PLAN» naming the
+   plan's in-flight cluster (session-transfer resume — never silent), the
+   rest = the ranked backlog list (multiSelect); founder picks 0-5. The same
+   message echoes the lane cap from `active-limits.yaml` («cap N, автодобор
+   on/off») so one word corrects it.
    Zero selection is valid — it means "just watch what's already adopted".
-3. **Dispatch picked tasks as complete child sessions.** Call
+3. **Dispatch picked tasks through the classification funnel.** Call
    `scripts/leadv2-fanout.sh --tasks <comma-separated-ids> --provider auto
-   --headless`. Each selected task gets an independent provider session and
-   its own Phase-0 worktree claim. `leadv2-session-route.sh` deterministically
+   --headless`. With `LEADV2_FANOUT_CLASS_FUNNEL=1` (default), class
+   Trivial/Light/Standard routes to the single-worker funnel
+   (`leadv2-dispatch-code.sh`: opus architect-prepass → one worker → e2e
+   gate → cross-review) and only Heavy/Strategic gets a full Phase-0..8
+   child session with its own worktree claim. Passing an explicit
+   `--provider`/`--lead-model` other than auto REJECTS the funnel and forces
+   the full-cycle path (which honors the override) — overrides are never
+   silently dropped. `=0` restores the old always-full-cycle behavior. `leadv2-session-route.sh` deterministically
    chooses the provider/model: routine Light/Standard work may use Codex when
    its CLI, leadv2 skill, and quota headroom are available; Heavy/Strategic or
    high-risk tags stay on Claude/Opus. The provider-neutral runner passes

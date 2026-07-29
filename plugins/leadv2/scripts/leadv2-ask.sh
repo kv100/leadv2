@@ -12,7 +12,7 @@
 # BLOCKS until answered (via leadv2-answer.sh / `/leadv2 reply`).
 #
 # Usage:
-#   leadv2-ask.sh <task-id> "<question>" --option "label|desc" [--option "label|desc" ...] [--default-option <label>] [--timeout <sec=1800>]
+#   leadv2-ask.sh <task-id> "<question>" --option "label|desc" [--option "label|desc" ...] [--default-option <label>] [--timeout <sec=900, or 1800 if LEADV2_ASK_ARCHITECT_FALLBACK=0>]
 #
 # Writes <control-plane>/questions/<qid>.yaml:
 #   task_id: <task-id>
@@ -25,10 +25,27 @@
 #
 # Behavior: polls every LEADV2_ASK_POLL_INTERVAL seconds (default 3) until
 # status becomes 'answered', then prints the chosen option label to stdout
-# and exits 0. On timeout, a declared --default-option is recorded in the
-# question, journal, and open-threads, then printed to stdout and exited 0.
-# Without one, the task is parked human-needed and unclaimed (freeing the
-# pump slot), then exits 2. A timeout is never invisible.
+# and exits 0. On timeout (default 900s / 15min, founder decision 2026-07-29
+# ASK-ARCHITECT-FALLBACK-01 — explicit --timeout always wins; with no
+# explicit --timeout, LEADV2_ASK_ARCHITECT_FALLBACK=0 restores the full
+# pre-fallback behavior INCLUDING the old 1800s/30min default), the ladder is:
+#   1. Spawn an ARCHITECT decision call (opus, via claude-subsession.sh --wait
+#      -- the same invocation shape leadv2-dispatch-code.sh's architect_prepass
+#      uses), capped at LEADV2_ASK_ARCHITECT_TIMEOUT_SEC (default/hard-cap
+#      300s). It is given the question, options, task id, and the task's
+#      context.yaml/STATE.md tail, and must answer with exactly one option
+#      label + a one-line rationale. Success: recorded as decided_by=architect
+#      with the rationale, printed to stdout, exit 0. A founder answer that
+#      lands DURING this call atomically wins the race (see _timeout_record)
+#      — the architect's choice is discarded and the founder's answer is
+#      printed instead.
+#   2. If the architect call fails, times out, or is disabled
+#      (LEADV2_ASK_ARCHITECT_FALLBACK=0 restores pre-fallback behavior): a
+#      declared --default-option is recorded (decided_by=timeout_default) and
+#      printed, exit 0 (same founder-wins race check applies).
+#   3. Otherwise: the task is parked human-needed and unclaimed (freeing the
+#      pump slot), then exits 2. A timeout is never invisible. (Race check
+#      applies here too — a founder answer at the last instant means no park.)
 #
 # DEGRADE (QUESTION-BRIDGE-01): if the control-plane WRITE itself fails — e.g.
 # a stricter per-process sandbox denies flock()/open()/os.replace() on the
@@ -52,8 +69,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# BLOCKING :76 fix — one flag restores the FULL pre-fallback behavior: the
+# 1800s default timeout, not just the disabled architect step. An explicit
+# --timeout always wins over this (see TIMEOUT sentinel below).
+_ask_default_timeout() {
+  if [[ "${LEADV2_ASK_ARCHITECT_FALLBACK:-1}" == "0" ]]; then
+    printf '1800'
+  else
+    printf '900'
+  fi
+}
+
 usage() {
-  printf -- 'Usage: leadv2-ask.sh <task-id> "<question>" --option "label|desc" [--option ...] [--timeout <sec=1800>]\n' >&2
+  printf -- 'Usage: leadv2-ask.sh <task-id> "<question>" --option "label|desc" [--option ...] [--timeout <sec=%s>]\n' "$(_ask_default_timeout)" >&2
   exit 1
 }
 
@@ -62,7 +90,7 @@ usage() {
 TASK_ID="$1"; QUESTION="$2"; shift 2
 
 OPTIONS=()
-TIMEOUT=1800
+TIMEOUT=""   # sentinel: unset means "use the flag-aware default", see below.
 PHASE=""
 PRIORITY="normal"
 WAIT_POLICY="blocking"
@@ -114,6 +142,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Explicit --timeout always wins; otherwise the default follows
+# LEADV2_ASK_ARCHITECT_FALLBACK (BLOCKING :76 — one flag = full old behavior).
+[[ -n "$TIMEOUT" ]] || TIMEOUT="$(_ask_default_timeout)"
 
 if [[ "${#OPTIONS[@]}" -lt 1 ]]; then
   printf -- '[leadv2-ask] at least one --option required\n' >&2
@@ -327,25 +359,98 @@ PYEOF
   sleep "$POLL_INTERVAL"
 done
 
-_timeout_record() { # $1=status $2=selected-or-empty $3=decision-text
-  local status="$1" selected="$2" decision="$3"
-  if [[ "$STORE" == "v2" ]]; then
-    python3 - "$QFILE" "$status" "$selected" "$decision" <<'PYEOF' || true
-import datetime, os, sys, yaml
-p, status, selected, decision = sys.argv[1:]
+_legacy_chosen() { # $1=answered-yaml-path -> prints its "chosen" field, or empty
+  python3 -c '
+import sys, yaml
 try:
-    with open(p, encoding="utf-8") as f: doc = yaml.safe_load(f) or {}
-    doc["status"] = status
-    doc["answer"] = {"selected": selected or None, "decided_by": decision,
-                     "answered_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}
-    tmp = p + ".timeout.%d" % os.getpid()
-    with open(tmp, "w", encoding="utf-8") as f:
-        yaml.safe_dump(doc, f, sort_keys=False); f.flush(); os.fsync(f.fileno())
-    os.replace(tmp, p)
+    d = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
 except Exception:
-    pass
+    d = {}
+print(d.get("chosen", "") or "")
+' "$1" 2>/dev/null || true
+}
+
+_timeout_record() { # $1=status $2=selected-or-empty $3=decided_by $4=rationale-or-empty
+  # Atomically claims the timeout decision under the SAME lock
+  # leadv2-answer.sh (V2) / leadv2-reply.sh (legacy) use to write a founder
+  # answer. Returns 0 if THIS call recorded the timeout decision. Returns 1
+  # if a founder answer won the race (already-answered by the time we got
+  # the lock) — TIMEOUT_RACE_ANSWER is set to the winning selection and
+  # nothing is overwritten (MAJOR :414-477, :341-360).
+  local status="$1" selected="$2" decided_by="$3" rationale="${4:-}"
+  TIMEOUT_RACE_ANSWER=""
+  if [[ "$STORE" == "v2" ]]; then
+    local result
+    result="$(python3 - "$QFILE" "$LOCK" "$status" "$selected" "$decided_by" "$rationale" <<'PYEOF' || true
+import datetime, fcntl, os, sys, yaml
+p, lock_path, status, selected, decided_by, rationale = sys.argv[1:]
+lockf = open(lock_path, "a+")
+try:
+    fcntl.flock(lockf, fcntl.LOCK_EX)
+    try:
+        with open(p, encoding="utf-8") as f:
+            doc = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        doc = {}
+    # Compare-and-set, same rule as leadv2-answer.sh: only a still-`pending`
+    # record may be claimed here. Anything else means the founder already won.
+    if doc.get("status", "pending") != "pending":
+        ans = doc.get("answer") or {}
+        print("RACE_WON:%s" % (ans.get("selected") or ""))
+    else:
+        doc["status"] = status
+        doc["answer"] = {"selected": selected or None, "decided_by": decided_by,
+                         "rationale": rationale or None,
+                         "answered_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}
+        tmp = p + ".timeout.%d" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as f:
+            yaml.safe_dump(doc, f, sort_keys=False); f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, p)
+        print("WRITTEN")
+finally:
+    fcntl.flock(lockf, fcntl.LOCK_UN)
+    lockf.close()
 PYEOF
+)"
+    if [[ "$result" == RACE_WON:* ]]; then
+      TIMEOUT_RACE_ANSWER="${result#RACE_WON:}"
+      [[ -n "$TIMEOUT_RACE_ANSWER" ]] && return 1
+    fi
+  elif [[ "$STORE" == "legacy" ]]; then
+    # M1 fix (round 2): write-once CAS directly onto the FINAL
+    # <qid>-answered.yaml -- no separate deletable lock file. The prior
+    # lock-file+mv pattern released its lock immediately after writing,
+    # leaving a window where THIS delayed timeout/architect writer could
+    # reacquire the freed lock and unconditionally `mv` over a founder answer
+    # that leadv2-reply.sh had already written (round-2 forced race: founder
+    # reply landed, then this writer still clobbered it with
+    # decided_by=timeout_default). `ln` creation is atomic and fails EEXIST
+    # if the target already exists, so the answered record is truly
+    # immutable once present, from either writer, with no re-openable gap.
+    if [[ -f "$LEGACY_ANSWERED" ]]; then
+      TIMEOUT_RACE_ANSWER="$(_legacy_chosen "$LEGACY_ANSWERED")"
+      [[ -n "$TIMEOUT_RACE_ANSWER" ]] && return 1
+    fi
+    local tmp
+    tmp="$(mktemp)"
+    cat >"$tmp" <<YAML_EOF
+task_id: ${TASK_ID}
+qid: ${QID}
+chosen: ${selected}
+decided_by: ${decided_by}
+rationale: ${rationale}
+status: ${status}
+answered_at: "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+YAML_EOF
+    if ln "$tmp" "$LEGACY_ANSWERED" 2>/dev/null; then
+      rm -f "$tmp" "$LEGACY_PENDING"
+    else
+      rm -f "$tmp"
+      TIMEOUT_RACE_ANSWER="$(_legacy_chosen "$LEGACY_ANSWERED")"
+      [[ -n "$TIMEOUT_RACE_ANSWER" ]] && return 1
+    fi
   fi
+  return 0
 }
 
 _journal_timeout() { # $1=text
@@ -361,23 +466,145 @@ _open_thread_timeout() { # $1=text
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TASK_ID" "$QID" "$1" >>"$threads" 2>/dev/null || true
 }
 
-if [[ -n "$DEFAULT_OPTION" ]]; then
-  _timeout_record timed_out "$DEFAULT_OPTION" timeout_default
-  _journal_timeout "ask-timeout qid=${QID} default_option=${DEFAULT_OPTION}; proceeded on reversible default"
-  _open_thread_timeout "timed out; proceeded on default_option=${DEFAULT_OPTION} (follow-up visible)"
-  printf -- 'LEADV2_ASK_TIMEOUT_DEFAULT qid=%s task_id=%s default_option=%s\n' "$QID" "$TASK_ID" "$DEFAULT_OPTION" >&2
-  printf -- '%s\n' "$DEFAULT_OPTION"
+# ── ASK-ARCHITECT-FALLBACK-01 (founder decision 2026-07-29): on expiry, an
+# architect decides instead of parking straight to a human. Same invocation
+# shape as leadv2-dispatch-code.sh's architect_prepass() (dispatch-code.sh:899-969):
+# claude-subsession.sh --role architect --model opus --wait, output artifact
+# read from the handoff dir (PREPASS-READS-ARTIFACT-01 — the design is on
+# disk, never on stdout). LEADV2_ASK_ARCHITECT_BIN lets tests stub the whole
+# call out (env hook) when the real subsession call is too slow for a smoke test.
+_architect_decide() { # sets ARCHITECT_CHOSEN + ARCHITECT_RATIONALE on success; returns 1 on any failure
+  [[ "${LEADV2_ASK_ARCHITECT_FALLBACK:-1}" == "1" ]] || return 1
+
+  local bin model timeout_sec atask adir mfile out rc design lbl raw found
+  bin="${LEADV2_ASK_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}"
+  model="${LEADV2_ASK_ARCHITECT_MODEL:-opus}"
+  timeout_sec="${LEADV2_ASK_ARCHITECT_TIMEOUT_SEC:-300}"
+  [[ "$timeout_sec" -gt 300 ]] && timeout_sec=300   # hard cap, never override past 300s
+  atask="${TASK_ID}-ask-${QID}-architect"
+  adir="${LEGACY_PROJECT_ROOT}/docs/handoff/${atask}"
+  mkdir -p "$adir" || return 1
+
+  mfile="$(mktemp "${TMPDIR:-/tmp}/leadv2-ask-architect.XXXXXX")" || return 1
+  {
+    printf 'A blocked task is waiting on a human answer that did not arrive within the timeout.\n'
+    printf 'Decide NOW which option to take. Do not implement anything — decide only.\n\n'
+    printf 'TASK_ID: %s\n' "$TASK_ID"
+    printf 'QUESTION: %s\n\n' "$QUESTION"
+    printf 'OPTIONS (label|description):\n'
+    for raw in "${OPTIONS[@]}"; do printf -- '- %s\n' "$raw"; done
+    for ctxf in "${LEGACY_PROJECT_ROOT}/docs/handoff/${TASK_ID}/context.yaml" \
+                "${LEGACY_PROJECT_ROOT}/docs/leadv2/tasks/${TASK_ID}/STATE.md"; do
+      if [[ -f "$ctxf" ]]; then
+        printf '\n--- %s (tail) ---\n' "$ctxf"
+        tail -n 40 "$ctxf"
+      fi
+    done
+    printf '\nPick exactly ONE option label from the list above. Your .full.md MUST include, verbatim:\n'
+    printf 'DECISION_OPTION: <the exact option label>\nRATIONALE: <one-line reason>\n'
+  } > "$mfile"
+
+  out="$(PROJECT_ROOT="${LEGACY_PROJECT_ROOT}" python3 - "$timeout_sec" "$bin" "$model" "$atask" "$mfile" <<'PY' 2>&1
+import os, signal, subprocess, sys
+timeout, binary, model, task_id, mission_file = sys.argv[1:]
+proc = None
+try:
+    proc = subprocess.Popen(
+        ["bash", binary, "--role", "architect", "--model", model,
+         "--task-id", task_id, "--mission-file", mission_file, "--wait"],
+        env=os.environ.copy(), text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, start_new_session=True,
+    )
+    stdout, _ = proc.communicate(timeout=int(timeout))
+    sys.stdout.write(stdout or "")
+    sys.exit(proc.returncode)
+except subprocess.TimeoutExpired:
+    if proc is not None:
+        try: os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        stdout, _ = proc.communicate()
+        sys.stdout.write(stdout or "")
+    print("architect_decide_timeout", file=sys.stderr)
+    sys.exit(124)
+PY
+)"; rc=$?
+  rm -f "$mfile"
+
+  # Read the ARTIFACT, never stdout (PREPASS-READS-ARTIFACT-01) — claude-subsession.sh
+  # writes the agent's text to the handoff dir; stdout only carries log/cost metadata.
+  design=""
+  for cand in "${adir}/architect.full.md" "${adir}/architect.md" "${adir}/architect.summary.md"; do
+    [[ -s "$cand" ]] && { design="$cand"; break; }
+  done
+  if [[ -z "$design" ]]; then
+    printf -- '[leadv2-ask] architect decide failed rc=%s: %s\n' "$rc" "$out" >&2
+    return 1
+  fi
+
+  ARCHITECT_CHOSEN="$(grep -m1 -E '^DECISION_OPTION:' "$design" | sed -E 's/^DECISION_OPTION:[[:space:]]*//')"
+  ARCHITECT_RATIONALE="$(grep -m1 -E '^RATIONALE:' "$design" | sed -E 's/^RATIONALE:[[:space:]]*//')"
+  ARCHITECT_CHOSEN="${ARCHITECT_CHOSEN#"${ARCHITECT_CHOSEN%%[![:space:]]*}"}"
+  ARCHITECT_CHOSEN="${ARCHITECT_CHOSEN%"${ARCHITECT_CHOSEN##*[![:space:]]}"}"
+  [[ -n "$ARCHITECT_CHOSEN" ]] || return 1
+
+  found=0
+  for raw in "${OPTIONS[@]}"; do
+    lbl="${raw%%|*}"
+    lbl="${lbl#"${lbl%%[![:space:]]*}"}"; lbl="${lbl%"${lbl##*[![:space:]]}"}"
+    [[ "$lbl" == "$ARCHITECT_CHOSEN" ]] && { found=1; break; }
+  done
+  [[ "$found" -eq 1 ]] || return 1
+
+  [[ -n "$ARCHITECT_RATIONALE" ]] || ARCHITECT_RATIONALE="(no rationale provided)"
+  return 0
+}
+
+# MAJOR :414-477 — a founder answer landing during the (up to 300s)
+# architect call, or in the instant before any of the three writes below,
+# must win. _timeout_record's return value is the atomic claim: 0 means THIS
+# call recorded the timeout decision; 1 means the founder already answered
+# (TIMEOUT_RACE_ANSWER holds the winning selection) and nothing was written.
+_emit_race_won() { # $1=discarded-choice-description
+  _journal_timeout "ask-timeout qid=${QID} founder answered during timeout finalize (${1}); founder answer ${TIMEOUT_RACE_ANSWER} wins"
+  printf -- 'LEADV2_ASK_RACE_FOUNDER_WON qid=%s task_id=%s answer=%s\n' "$QID" "$TASK_ID" "$TIMEOUT_RACE_ANSWER" >&2
+  printf -- '%s\n' "$TIMEOUT_RACE_ANSWER"
   exit 0
+}
+
+ARCHITECT_CHOSEN=""
+ARCHITECT_RATIONALE=""
+if _architect_decide; then
+  if _timeout_record timed_out "$ARCHITECT_CHOSEN" architect "$ARCHITECT_RATIONALE"; then
+    _journal_timeout "ask-timeout qid=${QID} architect decided ${ARCHITECT_CHOSEN}: ${ARCHITECT_RATIONALE}"
+    _open_thread_timeout "timed out; architect decided ${ARCHITECT_CHOSEN} (${ARCHITECT_RATIONALE})"
+    printf -- 'LEADV2_ASK_TIMEOUT_ARCHITECT qid=%s task_id=%s option=%s\n' "$QID" "$TASK_ID" "$ARCHITECT_CHOSEN" >&2
+    printf -- '%s\n' "$ARCHITECT_CHOSEN"
+    exit 0
+  fi
+  _emit_race_won "architect chose ${ARCHITECT_CHOSEN}"
 fi
 
-_timeout_record timed_out_human_needed "" timeout_no_default
-_journal_timeout "ask-timeout qid=${QID} no default_option; parked human-needed and released slot"
-_open_thread_timeout "timed out with no default_option; parked human-needed and released slot"
-if [[ -f "${SCRIPT_DIR}/leadv2-tasks-lib.sh" ]]; then
-  # shellcheck source=leadv2-tasks-lib.sh
-  PROJECT_ROOT="$LEGACY_PROJECT_ROOT" source "${SCRIPT_DIR}/leadv2-tasks-lib.sh"
-  leadv2_tasks_update "$TASK_ID" --key lane --value human-needed >/dev/null 2>&1 || true
-  leadv2_tasks_unclaim "$TASK_ID" >/dev/null 2>&1 || true
+if [[ -n "$DEFAULT_OPTION" ]]; then
+  if _timeout_record timed_out "$DEFAULT_OPTION" timeout_default ""; then
+    _journal_timeout "ask-timeout qid=${QID} default_option=${DEFAULT_OPTION}; proceeded on reversible default (architect unavailable)"
+    _open_thread_timeout "timed out; proceeded on default_option=${DEFAULT_OPTION} (architect unavailable, follow-up visible)"
+    printf -- 'LEADV2_ASK_TIMEOUT_DEFAULT qid=%s task_id=%s default_option=%s\n' "$QID" "$TASK_ID" "$DEFAULT_OPTION" >&2
+    printf -- '%s\n' "$DEFAULT_OPTION"
+    exit 0
+  fi
+  _emit_race_won "default_option=${DEFAULT_OPTION}"
 fi
-printf -- 'LEADV2_ASK_TIMEOUT_HUMAN_NEEDED qid=%s task_id=%s\n' "$QID" "$TASK_ID" >&2
-exit 2
+
+if _timeout_record timed_out_human_needed "" timeout_no_default ""; then
+  _journal_timeout "ask-timeout qid=${QID} no default_option; architect unavailable; parked human-needed and released slot"
+  _open_thread_timeout "timed out with no default_option; architect unavailable; parked human-needed and released slot"
+  if [[ -f "${SCRIPT_DIR}/leadv2-tasks-lib.sh" ]]; then
+    # shellcheck source=leadv2-tasks-lib.sh
+    PROJECT_ROOT="$LEGACY_PROJECT_ROOT" source "${SCRIPT_DIR}/leadv2-tasks-lib.sh"
+    leadv2_tasks_update "$TASK_ID" --key lane --value human-needed >/dev/null 2>&1 || true
+    leadv2_tasks_unclaim "$TASK_ID" >/dev/null 2>&1 || true
+  fi
+  printf -- 'LEADV2_ASK_TIMEOUT_HUMAN_NEEDED qid=%s task_id=%s\n' "$QID" "$TASK_ID" >&2
+  exit 2
+fi
+_emit_race_won "no default_option, would have parked human-needed"
