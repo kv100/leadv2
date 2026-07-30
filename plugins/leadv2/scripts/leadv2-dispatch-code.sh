@@ -1742,7 +1742,15 @@ confirmation-seeking; only for a decision you cannot make yourself."
     candidate_arms=("${_kept[@]}")
   fi
 
-  _stamp_active_phase "${founder_task_id}" "build"
+  # SUPERVISOR-AUDIT-01 model-stamp extension (founder 2026-07-30): stamp the
+  # arm_resolved value now (the resolver's PRIMARY pick) so the row is never
+  # left at fanout's pre-routing classifier guess even if the candidate loop
+  # below never gets a chance to run. The loop's arc==0 branch re-stamps with
+  # the ACTUALLY-launched candidate (same "build" phase, model only) once one
+  # is confirmed -- arm_resolved != candidate whenever the primary is refused
+  # mid-loop (e.g. glm quota-gate refusal falling to sonnet), so that second
+  # stamp is the one that ends up truthful, not this one.
+  _stamp_active_phase "${founder_task_id}" "build" "${arm}"
   local candidate arc
   for candidate in "${candidate_arms[@]}"; do
     [[ "${candidate}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
@@ -1758,6 +1766,9 @@ confirmation-seeking; only for a decision you cannot make yourself."
       exit 2
       ;;
     0)
+      # Re-stamp with the CONFIRMED-launched arm, phase unchanged -- the truthful value
+      # once the primary arm_resolved pick was refused and the loop fell to a fallback.
+      _stamp_active_phase "${founder_task_id}" "build" "${candidate}"
       local reviewer_arms
       reviewer_arms="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
       if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}"; then

@@ -5,7 +5,7 @@
 # Functions:
 #   leadv2_active_register <task_id> <class> <worktree> <branch> <daemon_mode>
 #   leadv2_active_unregister <task_id>
-#   leadv2_active_update_phase <task_id> <phase>
+#   leadv2_active_update_phase <task_id> <phase> [<resolved_model>]
 #   leadv2_active_update_pulse <task_id>
 #   leadv2_active_heartbeat <task_id> <checkpoint>              (PULSE-01)
 #   leadv2_active_mark_finished <task_id> <outcome> [<evidence_json>]  (PULSE-01)
@@ -81,7 +81,7 @@ _leadv2_state_md() {
 #                 <phase> <class> <pid> <pid_birth> <parent_session_id>
 #                 <daemon_mode> <last_pulse_at> <pulse_log>
 #      unregister <task_id>
-#      update_phase <task_id> <phase>
+#      update_phase <task_id> <phase> [<resolved_model>]
 #      update_pulse <task_id> <ts>
 #      mark_stale  <task_id>
 #      append_provider_receipt <task_id> <receipt_json>
@@ -239,7 +239,14 @@ try:
         # wrapper from $LEADV2_TASK_ID before invoking this python core) and
         # V2 2-arg (task_id, phase) forms; by the time control reaches here
         # both have already been normalized to 2 args by the caller.
-        task_id, new_phase = args
+        task_id, new_phase = args[0], args[1]
+        # SUPERVISOR-AUDIT-01 phase-stamps addendum (founder 2026-07-30, model-stamp
+        # extension): optional 3rd arg is the RESOLVED router arm at worker-launch --
+        # the row's lead_model otherwise keeps fanout's pre-routing classifier guess
+        # forever (statusline reads sessions[].lead_model, leadv2-lane-status-line-
+        # tail.sh:277), which lies once the router picks a different arm. "" / "-" /
+        # absent means "no change" -- every pre-existing 2-arg caller is a no-op here.
+        new_model = args[2] if len(args) > 2 else ""
         now = _now_iso()
         for s in sessions:
             if s.get("task_id") == task_id:
@@ -250,6 +257,8 @@ try:
                 if s.get("phase") != new_phase:
                     s["phase_started_at"] = now
                 s["phase"] = new_phase
+                if new_model not in ("", "-", "null", "None"):
+                    s["lead_model"] = new_model
                 s["updated_at"] = now
                 break
 
@@ -520,25 +529,30 @@ leadv2_active_unregister() {
   }
 }
 
-# leadv2_active_update_phase [<task_id>] <phase>
+# leadv2_active_update_phase [<task_id>] <phase> [<resolved_model>]
 # Legacy 1-arg form (several phase skills call this with phase only, e.g.
 # `leadv2_active_update_phase "$PHASE"`) resolves task_id from
-# $LEADV2_TASK_ID. V2 2-arg form is the explicit, preferred call. Both
-# converge on the same python op — normalize here, not in the python core.
+# $LEADV2_TASK_ID. V2 2-arg form is the explicit, preferred call. Optional
+# 3rd arg (V2 form only) also stamps lead_model -- see the update_phase op's
+# model-stamp comment above; omitted/empty is a no-op, so every pre-existing
+# caller is unaffected. Both forms converge on the same python op — normalize
+# here, not in the python core.
 leadv2_active_update_phase() {
-  local task_id phase
+  local task_id phase model
   if [[ $# -ge 2 ]]; then
     task_id="${1:?task_id required}"
     phase="${2:?phase required}"
+    model="${3:-}"
   else
     task_id="${LEADV2_TASK_ID:?leadv2_active_update_phase: 1-arg legacy form requires LEADV2_TASK_ID to be set}"
     phase="${1:?phase required}"
+    model=""
   fi
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
   [[ -f "$yaml_file" ]] || return 0
-  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" update_phase "$task_id" "$phase"
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" update_phase "$task_id" "$phase" "$model"
 }
 
 # leadv2_active_update_pulse <task_id>
