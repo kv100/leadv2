@@ -278,3 +278,6 @@ if [[ "${verdict}" == FAIL ]]; then
     "${FINDINGS_CRITICAL}" "${FINDINGS_HIGH}" "${FINDINGS_MEDIUM}" "${FINDINGS_LOW}" > "${HANDOFF}/review-gate.md"
   exit 7
 fi
+# PASS must overwrite review-gate.md too, or a stale fail/blocked artifact from an earlier
+# attempt keeps lying after the gate has actually cleared (hit live on fe5307b3, 2026-07-30).
+printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}" > "${HANDOFF}/review-gate.md"
