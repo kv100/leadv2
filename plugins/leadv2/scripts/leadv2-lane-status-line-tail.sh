@@ -69,6 +69,11 @@ CACHE_KEY="${CWD_FROM_INPUT//\//_}"
 [[ -z "$CACHE_KEY" ]] && CACHE_KEY="default"
 LANE_CACHE_FILE="${TMPDIR:-/tmp}/leadv2-statusline-lane-${CACHE_KEY}"
 
+# Hoisted (was inside the CACHE_FRESH=0 branch only): also needed below,
+# unconditionally, to resolve the pulse log for the "last:" digest.
+RESOLVER="${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR}/scripts/leadv2-state-path.sh"
+[[ -x "$RESOLVER" ]] || RESOLVER="${SCRIPT_DIR}/leadv2-state-path.sh"
+
 CACHE_FRESH=0
 if [[ -f "$LANE_CACHE_FILE" ]]; then
   CACHE_MTIME="$(timeout 0.05 stat -f %m "$LANE_CACHE_FILE" 2>/dev/null || timeout 0.05 stat -c %Y "$LANE_CACHE_FILE" 2>/dev/null || echo 0)"
@@ -81,8 +86,6 @@ if [[ "$CACHE_FRESH" == "1" ]]; then
   LANES="$(cat "$LANE_CACHE_FILE" 2>/dev/null || true)"
   [[ -z "$LANES" ]] && LANES="lanes ?"
 else
-  RESOLVER="${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR}/scripts/leadv2-state-path.sh"
-  [[ -x "$RESOLVER" ]] || RESOLVER="${SCRIPT_DIR}/leadv2-state-path.sh"
   if [[ -x "$RESOLVER" ]]; then
     ACTIVE_YAML="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 0.08 "$RESOLVER" --no-link active.yaml 2>/dev/null || true)"
     if [[ -n "$ACTIVE_YAML" && -f "$ACTIVE_YAML" ]]; then
@@ -127,9 +130,9 @@ def lane_log(s):
         files = []
     return max(files, key=lambda p: os.path.getmtime(p)) if files else None
 
-parts = [f'lanes {n}/{cap}']
 now = time.time()
-for s in sessions[:8]:  # bound render width
+rows = []
+for s in sessions:
     tid = str(s.get('task_id', '?'))
     phase = str(s.get('phase', '?'))
     log = lane_log(s)
@@ -139,6 +142,15 @@ for s in sessions[:8]:  # bound render width
             age_s = int(now - os.path.getmtime(log))
         except Exception:
             age_s = None
+    rows.append((age_s, tid, phase))
+
+# Pulse digest (founder ask, fix5 attempt 2): only the top-2 MOST
+# recently-active lanes, not the first 8 in file order — smallest age_s
+# first; unknown-age lanes (no discoverable log) sort last, never first.
+rows.sort(key=lambda r: (r[0] is None, r[0] if r[0] is not None else 0))
+
+id_parts = []
+for age_s, tid, phase in rows[:2]:
     if age_s is None:
         age = '?'
     elif age_s < 60:
@@ -147,9 +159,11 @@ for s in sessions[:8]:  # bound render width
         age = f'{age_s // 60}m'
     else:
         age = f'{age_s // 3600}h'
-    parts.append(f'{tid[:12]}:{phase}:{age}')
+    id_parts.append(f'{tid[:12]}:{phase}:{age}')
 
-out = ' | '.join(parts)
+out = f'lanes {n}/{cap}'
+if id_parts:
+    out += ' | ' + ' '.join(id_parts)
 print(out)
 try:
     with open(cache_file, 'w', encoding='utf-8') as fh:
@@ -163,7 +177,27 @@ except Exception:
   [[ -f "$LANE_CACHE_FILE" ]] || printf '%s' "$LANES" > "$LANE_CACHE_FILE" 2>/dev/null || true
 fi
 
-FINAL_LINE="$(printf '%s | %s' "$BASE" "$LANES")"
+# ---- pulse digest "last:" fragment ----
+# Read ONLY here (the detached background tail script), never in the hot
+# path (leadv2-lane-status-line.sh just `cat`s the cache). Resolved via the
+# supervise loop's own path config (leadv2-supervise-loop.sh: LOG_FILE via
+# leadv2-state-path.sh supervise-loop.log) — never a hardcoded docs/leadv2
+# path, same reasoning as the active.yaml lookup above. Independent of the
+# lane cache TTL: cheap (one file tail), so it is recomputed every tail-
+# script run rather than folded into the lane cache's freshness window.
+PULSE_FRAG=""
+if [[ -x "$RESOLVER" ]]; then
+  PULSE_LOG="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 0.08 "$RESOLVER" --no-link supervise-loop.log 2>/dev/null || true)"
+  if [[ -n "$PULSE_LOG" && -f "$PULSE_LOG" ]]; then
+    PULSE_TEXT="$(timeout 0.08 grep -v '^[[:space:]]*$' "$PULSE_LOG" 2>/dev/null | tail -n 1 || true)"
+    if [[ -n "$PULSE_TEXT" ]]; then
+      PULSE_TEXT="${PULSE_TEXT:0:40}"
+      PULSE_FRAG=" | \033[2mlast: ${PULSE_TEXT}\033[0m"
+    fi
+  fi
+fi
+
+FINAL_LINE="$(printf '%s \033[34m| %s\033[0m%b' "$BASE" "$LANES" "$PULSE_FRAG")"
 printf '%s\n' "$FINAL_LINE"
 
 if [[ -n "$OUT_FILE" ]]; then

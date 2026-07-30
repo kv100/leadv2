@@ -91,6 +91,8 @@ if [[ -s "$LAST_KNOWN_FILE" ]]; then
 else
   MODEL="?"
   DISP_CWD="$PWD"
+  STYLE=""
+  REMAINING=""
   if [[ "$INPUT" =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
     MODEL="${BASH_REMATCH[1]}"
   fi
@@ -101,7 +103,22 @@ else
   fi
   [[ -z "$DISP_CWD" ]] && DISP_CWD="$PWD"
   DISP_CWD="${DISP_CWD/#$HOME/~}"
-  printf '%s in %s | lanes ?\n' "$MODEL" "$DISP_CWD"
+  # output_style.name and context_window.remaining_percentage, pure bash
+  # regex (no jq) — same fields ~/.claude/burn/statusline.sh reads via jq.
+  if [[ "$INPUT" =~ \"output_style\"[[:space:]]*:[[:space:]]*\{[^\}]*\"name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+    STYLE="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$INPUT" =~ \"remaining_percentage\"[[:space:]]*:[[:space:]]*([0-9.]+) ]]; then
+    REMAINING="${BASH_REMATCH[1]}"
+  fi
+  # Same ANSI palette as ~/.claude/burn/statusline.sh: cyan model, green
+  # cwd, yellow [style], magenta N% ctx; blue for the " | lanes" fragment
+  # (kept a distinct accent so the lane segment reads as this plugin's own,
+  # not the founder's base statusLine). printf builtin only — zero spawns.
+  printf '\033[36m%s\033[0m in \033[32m%s\033[0m' "$MODEL" "$DISP_CWD"
+  [[ -n "$STYLE" && "$STYLE" != "null" ]] && printf ' [\033[33m%s\033[0m]' "$STYLE"
+  [[ -n "$REMAINING" && "$REMAINING" != "null" ]] && printf ' \033[35m%s%% ctx\033[0m' "$REMAINING"
+  printf ' \033[34m| lanes ?\033[0m\n'
 fi
 
 # ---- fire-and-forget: one throttled detached refresher, never awaited ----
