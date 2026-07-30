@@ -30,9 +30,18 @@
 # NO network, NO Supabase call — after a compact nobody goes to the network,
 # that is the entire premise of this hook.
 #
-# Cap: 120 lines. On overflow the journal tail is trimmed first (down to
-# zero); the open task-id list is NEVER truncated — it is the one thing this
-# hook exists to protect.
+# Cap: 80 lines by default (COMPACT-FREEZE-DIET-01, founder order 2026-07-30 —
+# the 120-line/12-row/40-line ceilings let a 07-18 SESSION MODE block, a
+# 372-task list and 183 ledger rows all ride into every compact). Gated by
+# LEADV2_FREEZE_DIET (default "1"): open task ids trim to top-5, open threads
+# filter to "leading ISO date within last 7 days OR undated in the file's last
+# 40 lines" (cap 30 lines), scheduled decisions parse `## SD-` + `- Due:` into
+# one clean `SD-id — status — why` row per OVERDUE/DUE-TODAY item (cap 15,
+# CLOSED/COLLAPSED and future-dated rows excluded). LEADV2_FREEZE_DIET=0
+# restores the pre-diet behavior verbatim (CAP 120, task cap 10, old
+# role_and_tail()/due_rows() logic) for rollback. On overflow the journal tail
+# is trimmed first (down to zero); the open task-id list is NEVER truncated —
+# it is the one thing this hook exists to protect.
 #
 # Fail-open: ANY error -> exit 0, empty stdout. A broken hook must never
 # block a compact.
@@ -65,7 +74,8 @@ python3 -c "import sys; open('$TMPFILE','w').write(sys.stdin.read())" 2>/dev/nul
 OUT="$(python3 - "$TMPFILE" <<'PYEOF' 2>/dev/null
 import sys, os, re, json, subprocess, glob, datetime
 
-CAP = 120
+CAP_LEGACY = 120
+CAP_DIET = 80
 CLOSED_STATUSES = {
     "done", "closed", "resolved", "complete", "completed",
     "cancelled", "canceled",
@@ -151,14 +161,10 @@ def read_file(path):
 
 
 def due_rows(path):
-    """COMPACT-LEDGER-BLOAT-01: scheduled-decisions.md stores each ledger row
-    as ONE physical line carrying a ~2000-char paragraph (DUE + GO-cond +
-    ACTION + ROLLBACK + WHY). The line-counting CAP never tripped because a
-    paragraph counted as one line, so ~40 paragraphs landed in every compact.
-    Keep only the newest N rows (the ledger is appended chronologically, so the
-    tail is what is still pending) and clip each to max_chars. The full text
-    stays in docs/leadv2/scheduled-decisions.md; the session-start inject hook
-    still surfaces genuinely DUE rows in full."""
+    """Legacy (LEADV2_FREEZE_DIET=0) path — COMPACT-LEDGER-BLOAT-01: keep only
+    the newest N raw lines containing an ALL-CAPS DUE/OVERDUE token, clipped to
+    max_chars. Superseded by due_rows_diet() under the default diet mode; kept
+    verbatim for rollback."""
     max_rows = int(os.environ.get("LEADV2_FREEZE_SD_ROWS", "12"))
     max_chars = int(os.environ.get("LEADV2_FREEZE_SD_CHARS", "220"))
     rows = []
@@ -181,6 +187,125 @@ def due_rows(path):
     if dropped > 0:
         clipped.insert(0, f"(… {dropped} older ledger rows omitted; full text in docs/leadv2/scheduled-decisions.md)")
     return clipped
+
+
+def _strip_md(s):
+    return re.sub(r"\*+", "", s).strip()
+
+
+def due_rows_diet(path, today, max_rows=15, max_chars=200):
+    """COMPACT-FREEZE-DIET-01: structured ledger parse. Splits
+    scheduled-decisions.md into `## SD-...` blocks, drops CLOSED/COLLAPSED
+    rows, and classifies each remaining row as OVERDUE / DUE TODAY / (skip)
+    by parsing its `- Due:` bullet (ISO-date prefix compared to `today`);
+    rows with no `- Due:` bullet fall back to the legacy inline header
+    keywords (STILL DUE / DUE TODAY / OVERDUE). Condition-bound rows (a
+    `- Due:` bullet with no parseable ISO date, e.g. "on next codex plugin
+    update") are intentionally excluded here — they belong to the daily
+    scan tier (scheduled-decisions-run.sh), not the compact freeze. Emits
+    one clean `SD-id — status — why` line per row; never dumps raw body."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return []
+
+    blocks = re.split(r"\n(?=##\s*SD-)", text)
+    rows = []
+    for block in blocks:
+        m_head = re.match(r"##\s*(SD-[A-Za-z0-9_-]+)\s*(.*)", block)
+        if not m_head:
+            continue
+        sd_id = m_head.group(1)
+        header_rest = m_head.group(2)
+        if re.search(r"\bCLOSED\b|\bCOLLAPSED\b", header_rest, re.I):
+            continue
+
+        lines = block.splitlines()
+        due_text = None
+        why_text = None
+        for line in lines[1:]:
+            if due_text is None:
+                m_due = re.match(r"^-\s*\*{0,2}[Dd]ue:?\*{0,2}\s*(.+)$", line)
+                if m_due:
+                    due_text = _strip_md(m_due.group(1))
+                    continue
+            if why_text is None:
+                m_why = re.match(r"^-\s*\*{0,2}[Ww]hy:?\*{0,2}\s*(.+)$", line)
+                if m_why:
+                    why_text = _strip_md(m_why.group(1))
+
+        status = None
+        if due_text is not None:
+            m_iso = re.match(r"(\d{4}-\d{2}-\d{2})", due_text)
+            if m_iso:
+                try:
+                    due_date = datetime.date.fromisoformat(m_iso.group(1))
+                except Exception:
+                    due_date = None
+                if due_date is not None:
+                    if due_date < today:
+                        status = "OVERDUE"
+                    elif due_date == today:
+                        status = "DUE TODAY"
+                    # future-dated -> not yet due, skip
+            # non-ISO due text (condition-bound) -> skip (daily-scan tier owns it)
+        else:
+            if re.search(r"\bOVERDUE\b", header_rest, re.I):
+                status = "OVERDUE"
+            elif re.search(r"STILL DUE\b|DUE TODAY\b", header_rest, re.I):
+                status = "DUE TODAY"
+
+        if status is None:
+            continue
+
+        why = why_text if why_text else _strip_md(header_rest.lstrip("— -").strip())
+        why = re.sub(r"\s+", " ", why).strip()
+        row = f"{sd_id} — {status} — {why}"
+        if len(row) > max_chars:
+            row = row[:max_chars].rstrip() + " …"
+        rows.append(row)
+
+    dropped = len(rows) - max_rows
+    if dropped > 0:
+        rows = rows[-max_rows:]
+        rows.insert(0, f"(… {dropped} older OVERDUE/DUE-TODAY rows omitted; full ledger in docs/leadv2/scheduled-decisions.md)")
+    return rows
+
+
+def _leading_date(line):
+    stripped = re.sub(r"^[\s\-#*\[\]]*", "", line)
+    m = re.match(r"(\d{4}-\d{2}-\d{2})", stripped)
+    if not m:
+        return None
+    try:
+        return datetime.date.fromisoformat(m.group(1))
+    except Exception:
+        return None
+
+
+def filter_threads_diet(lines, today, tail_n=40, cap=30):
+    """COMPACT-FREEZE-DIET-01: keep a line only if (a) it carries a leading
+    ISO date within the last 7 days, or (b) it is undated AND within the
+    file's last `tail_n` lines. This is what stops a stale, undated block
+    (e.g. the 2026-07-18 SESSION MODE head) from surviving — it has no
+    leading date and, in a multi-hundred-line file, sits well outside the
+    tail window. Hard-caps the result to `cap` lines (keeps the newest)."""
+    cutoff = today - datetime.timedelta(days=7)
+    tail_start = max(0, len(lines) - tail_n)
+    kept = []
+    for i, line in enumerate(lines):
+        d = _leading_date(line)
+        if d is not None:
+            if d >= cutoff:
+                kept.append(line)
+        elif i >= tail_start:
+            kept.append(line)
+    dropped = len(kept) - cap
+    if dropped > 0:
+        kept = kept[-cap:]
+        kept.insert(0, f"… {dropped} older/undated lines dropped (full history in docs/leadv2/open-threads.md) …")
+    return kept
 
 
 def latest_journal_tail(root, leadv2_dir, n=15):
@@ -236,13 +361,22 @@ def main():
     tasks_yaml = os.path.join(root, "docs", "tasks.yaml")
     open_tasks = parse_tasks_yaml(tasks_yaml) if os.path.isfile(tasks_yaml) else []
 
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # COMPACT-FREEZE-DIET-01 (founder order 2026-07-30): default ON, =0 restores
+    # the pre-diet 120-line/cap-10/role_and_tail/due_rows behavior verbatim.
+    diet = os.environ.get("LEADV2_FREEZE_DIET", "1") != "0"
+    CAP = CAP_DIET if diet else CAP_LEGACY
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    today = now_utc.date()
+
+    ts = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     header = [f"# compact-freeze @ {ts}", f"open_task_count: {len(open_tasks)}"]
 
     # Cap the dumped task list to the top-N by priority (P0<P1<P2<P3<unranked).
     # The FULL backlog always stays in docs/tasks.yaml; this only bounds the
-    # per-compact context injection (LEADV2_FREEZE_TASK_CAP overrides; default 40).
-    task_dump_cap = int(os.environ.get("LEADV2_FREEZE_TASK_CAP", "10"))
+    # per-compact context injection (LEADV2_FREEZE_TASK_CAP overrides; default
+    # 5 under diet mode, 10 under legacy).
+    default_task_cap = "5" if diet else "10"
+    task_dump_cap = int(os.environ.get("LEADV2_FREEZE_TASK_CAP", default_task_cap))
     def _prank(pr):
         m = re.match(r"[Pp](\d)", pr or "")
         return int(m.group(1)) if m else 9
@@ -278,21 +412,33 @@ def main():
     ot_section = []
     if ot_lines:
         threads_tail_n = int(os.environ.get("LEADV2_FREEZE_THREADS_TAIL", "40"))
-        role_lines, tail_lines, dropped = role_and_tail(ot_lines, tail_n=threads_tail_n)
         ot_section = [
             "## OPEN THREADS (docs/leadv2/open-threads.md; capped, not verbatim)",
             "supervisor role definition (stable, not frozen here): "
             + os.environ.get("CLAUDE_PLUGIN_ROOT", "${CLAUDE_PLUGIN_ROOT}")
             + "/docs/supervisor-role.md",
         ]
-        ot_section += role_lines
-        if dropped:
-            ot_section.append(
-                f"\u2026 {dropped} stale middle lines dropped (full history in docs/leadv2/open-threads.md) \u2026"
-            )
-        ot_section += tail_lines
+        if diet:
+            threads_cap = int(os.environ.get("LEADV2_FREEZE_THREADS_CAP", "30"))
+            ot_section += filter_threads_diet(ot_lines, today, tail_n=threads_tail_n, cap=threads_cap)
+        else:
+            role_lines, tail_lines, dropped = role_and_tail(ot_lines, tail_n=threads_tail_n)
+            ot_section += role_lines
+            if dropped:
+                ot_section.append(
+                    f"\u2026 {dropped} stale middle lines dropped (full history in docs/leadv2/open-threads.md) \u2026"
+                )
+            ot_section += tail_lines
 
-    sd_rows = due_rows(os.path.join(leadv2_abs, "scheduled-decisions.md"))
+    if diet:
+        sd_max_rows = int(os.environ.get("LEADV2_FREEZE_SD_ROWS", "15"))
+        sd_max_chars = int(os.environ.get("LEADV2_FREEZE_SD_CHARS", "200"))
+        sd_rows = due_rows_diet(
+            os.path.join(leadv2_abs, "scheduled-decisions.md"), today,
+            max_rows=sd_max_rows, max_chars=sd_max_chars,
+        )
+    else:
+        sd_rows = due_rows(os.path.join(leadv2_abs, "scheduled-decisions.md"))
     sd_section = ["## SCHEDULED DECISIONS — DUE/OVERDUE"] + sd_rows if sd_rows else []
 
     journal_task_id, journal_lines_full = latest_journal_tail(root, leadv2_dir)
