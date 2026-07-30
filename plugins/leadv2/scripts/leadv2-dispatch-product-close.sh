@@ -37,6 +37,34 @@ emit() { # type text
   printf '[leadv2-dispatch-product-close] %s\n' "$2" >&2
 }
 
+# Fix6 (SUPERVISOR-AUDIT-01): the reviewer arm used to come from a hand-kept env list
+# (LEADV2_DISPATCH_REVIEWER_ARMS, default "codex,sonnet") that never consulted the ONE
+# resolver dispatch-code.sh/router.sh use — GLM's review ban and the codex_quota_gate
+# 95% reserve were invisible here. Call the same lib/leadv2-glm-policy-resolve.py CLI
+# (job=review, base-arm=codex — review's base arm per the resolver's own docstring) so
+# GLM-never-reviews and the codex quota spill are ONE enforced policy, not a second copy.
+# Fail-safe: any resolver-missing/error path falls back to sonnet (never glm, matching
+# the resolver's own review-mode fallback contract).
+resolve_review_arm() {
+  local resolver="${LEADV2_GLM_POLICY_RESOLVER:-}"
+  if [[ -z "${resolver}" ]]; then
+    if [[ -f "${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py" ]]; then
+      resolver="${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py"
+    else
+      local _canonical="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py"
+      [[ -f "${_canonical}" ]] && resolver="${_canonical}"
+    fi
+  fi
+  if [[ -z "${resolver}" || ! -f "${resolver}" ]]; then
+    printf 'arm=sonnet\nreason=resolver_missing_failclosed\n'
+    return
+  fi
+  local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
+  local -a resolver_args=(--routing-yaml "${routing_yaml}" --job review --base-arm codex --signals '{}')
+  [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
+  python3 "${resolver}" "${resolver_args[@]}" 2>/dev/null || printf 'arm=sonnet\nreason=resolver_error_failclosed\n'
+}
+
 # The reviewer wrapper and the reviewer do not necessarily use the same stream.  In
 # particular, claude-subsession writes the critic's text to this handoff directory
 # and prints only a handle on stdout.  Keep the artifact resolution and the verdict
@@ -123,19 +151,27 @@ if [[ "${REVIEW_ON}" != 1 ]]; then
   exit 0
 fi
 
-# REVIEWER_ARMS is an availability result supplied by the router/quota layer. Removing the
-# author is the cross-provider correctness constraint, not an operator exclusion. A conflict
-# is a finding: a same-provider-only pool must never turn into a silent skip.
-arms="${LEADV2_DISPATCH_REVIEWER_ARMS:-codex,sonnet}"
-reviewer=""
-IFS=',' read -r -a candidates <<< "${arms}"
-for candidate in "${candidates[@]}"; do
-  [[ "${candidate}" == "${AUTHOR}" || -z "${candidate}" ]] && continue
-  case "${candidate}" in codex|sonnet) reviewer="${candidate}"; break;; esac
-done
-if [[ -z "${reviewer}" ]]; then
-  printf 'status: conflict\nauthor: %s\navailable_reviewer_arms: %s\n' "${AUTHOR}" "${arms}" > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=conflict author=${AUTHOR} available=${arms} reason=no_cross_provider_reviewer"
+# Resolved via the unified resolver (job=review, base-arm=codex) — see resolve_review_arm()
+# above. Removing the author is the cross-provider correctness constraint, not an operator
+# exclusion. A conflict is a finding: a same-provider-only pool must never turn into a silent skip.
+resolver_out="$(resolve_review_arm)"
+resolved_arm="$(printf '%s\n' "${resolver_out}" | sed -n 's/^arm=//p' | head -n1)"
+resolved_reason="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reason=//p' | head -n1)"
+# Defense-in-depth: the resolver structurally never returns glm for base-arm=codex, but
+# GLM-never-reviews is a founder rule with no exception path, so guard it explicitly too.
+[[ -z "${resolved_arm}" || "${resolved_arm}" == glm ]] && resolved_arm=sonnet
+reviewer="${resolved_arm}"
+if [[ "${reviewer}" == "${AUTHOR}" ]]; then
+  if [[ "${AUTHOR}" == sonnet ]]; then
+    reviewer=""  # only candidate collided with the sonnet author -- park, never self-review
+  else
+    reviewer=sonnet  # fail closed to sonnet-critic; sonnet != AUTHOR is guaranteed in this branch
+  fi
+fi
+if [[ -z "${reviewer}" || "${reviewer}" == "${AUTHOR}" ]]; then
+  printf 'status: conflict\nauthor: %s\nresolved_arm: %s\nresolver_reason: %s\n' \
+    "${AUTHOR}" "${resolved_arm}" "${resolved_reason:-no_cross_provider_reviewer}" > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=conflict author=${AUTHOR} resolved_arm=${resolved_arm} reason=${resolved_reason:-no_cross_provider_reviewer}"
   exit 0
 fi
 
