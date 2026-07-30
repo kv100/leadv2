@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# Architect failure and timeout are advisory: a product dispatch must still launch.
+# PREPASS-RETRY-THEN-PARK-01 (2026-07-29, founder decision) SUPERSEDED this test's
+# original premise ("architect failure and timeout are advisory: a product dispatch
+# must still launch") -- see leadv2-dispatch-code.sh's own dated doc comment at its
+# architect_prepass retry loop. A product task that exhausts ARCHITECT_PREPASS_ATTEMPTS
+# retries is now PARKED (exit 3, no worker_spawned), never dispatched unrefined.
+# Assertions below were stale (asserting the pre-2026-07-29 degrade-to-raw behavior,
+# unrelated to SUPERVISOR-AUDIT-01 items A/B/C) and are updated here to match; the
+# test's PURPOSE is unchanged: prove architect failure/timeout is handled loudly and
+# promptly (retried, then parked) rather than hanging or crashing dispatch-code.sh.
 set -uo pipefail
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
@@ -17,11 +25,16 @@ run() {
   LEADV2_DISPATCH_ARCHITECT_TIMEOUT_SEC=1 LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
   LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off bash "$DISPATCH" "$1" --kind product --protected
 }
-out="$(run 'product failure must dispatch')"; rc=$?
-[[ $rc -eq 0 && "$out" == *worker_spawned* ]] || { echo "FAIL failure did not dispatch: $out"; exit 1; }
+out="$(run 'product failure must park, not dispatch unrefined')"; rc=$?
+[[ $rc -eq 3 && "$out" != *worker_spawned* ]] || { echo "FAIL repeated architect failure did not park cleanly: rc=$rc out=$out"; exit 1; }
 journal="$(find "$REPO/docs/leadv2/tasks" -name journal.md -print -quit)"
-grep -q 'status=degraded reason=failed_rc_9' "$journal" || { echo 'FAIL missing failure degradation journal'; exit 1; }
-start=$(date +%s); out="$(PREPASS_MODE=timeout run 'product timeout must dispatch')"; rc=$?; elapsed=$(( $(date +%s) - start ))
-[[ $rc -eq 0 && $elapsed -lt 8 && "$out" == *worker_spawned* ]] || { echo "FAIL timeout blocked dispatch rc=$rc elapsed=$elapsed out=$out"; exit 1; }
-grep -R -q 'status=degraded reason=timeout' "$REPO/docs/leadv2/tasks" || { echo 'FAIL missing timeout degradation journal'; exit 1; }
-echo 'PASS: architect failure/timeout degrade to raw worker dispatch promptly'
+grep -q 'status=parked reason=no_design_after_2_attempts' "$journal" || { echo 'FAIL missing parked-after-retries journal line'; exit 1; }
+# LOW-4 (fixround-tails): the pre-fix version of this assertion only checked the FINAL
+# park -- a regression that parked on the FIRST failure (never actually retrying) would
+# still pass. Assert the retry half of retry-then-park is real too.
+grep -q 'status=retrying attempt=1/2' "$journal" || { echo 'FAIL missing retry-half journal line before park (retry-then-park regressed to park-on-first-failure)'; exit 1; }
+start=$(date +%s); out="$(PREPASS_MODE=timeout run 'product timeout must park, not dispatch unrefined')"; rc=$?; elapsed=$(( $(date +%s) - start ))
+[[ $rc -eq 3 && $elapsed -lt 8 && "$out" != *worker_spawned* ]] || { echo "FAIL repeated architect timeout did not park promptly: rc=$rc elapsed=$elapsed out=$out"; exit 1; }
+grep -R -q 'status=parked reason=no_design_after_2_attempts' "$REPO/docs/leadv2/tasks" || { echo 'FAIL missing parked-after-timeout journal line'; exit 1; }
+grep -R -q 'status=retrying attempt=1/2' "$REPO/docs/leadv2/tasks" || { echo 'FAIL missing retry-half journal line before the timeout park'; exit 1; }
+echo 'PASS: repeated architect failure/timeout parks promptly (PREPASS-RETRY-THEN-PARK-01), never dispatches an unrefined product task'

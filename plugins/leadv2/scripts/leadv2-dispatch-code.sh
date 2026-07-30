@@ -259,6 +259,15 @@ JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 LEDGER_BIN="${LEADV2_DISPATCH_LEDGER_BIN:-${SCRIPT_DIR}/leadv2-dispatch-ledger.sh}"
 TERMINAL_LEDGER="${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}"
 
+# LOW-2 (fixround-tails): a bare "$$" attempt token recycles across days/reboots -- a later,
+# unrelated process that happens to reuse this pid would be misread as the SAME attempt by
+# the ledger's dedup/sweep-compare logic. ATTEMPT_EPOCH is this process's own start time,
+# computed ONCE so every write within this single invocation (including any exit-trap retry)
+# reuses the identical value. _dl_attempt_token() qualifies the token as
+# <sig8>-<started_at-epoch>-<pid> everywhere an attempt is written or compared.
+ATTEMPT_EPOCH="$(date +%s 2>/dev/null || printf '0')"
+_dl_attempt_token() { printf '%s-%s-%s' "${1:-nosig}" "${ATTEMPT_EPOCH}" "$$"; }
+
 # Phase stamps into active.yaml (SUPERVISOR-AUDIT-01 addendum, founder 2026-07-30):
 # fix-fanout made THIS funnel dispatch the lifecycle owner of its active.yaml row, but
 # nothing here ever advanced `phase` past the "spawning" value _fanout_register_session's
@@ -389,13 +398,15 @@ emit() {
 # explicitly closed so a missing/broken ledger binary can never touch this script's own
 # stdout or its own flock fd 9.
 # <sig8> <terminal:landed|parked|refused|dead> <cause> [<evidence>] [<founder_task_id>]
-# wave2 round3 finding 3: passes this process's own $$ as the ledger's attempt token --
+# wave2 round3 finding 3: passes this process's own attempt token to the ledger --
 # each dispatch-code.sh invocation is exactly one attempt, so this only ever collides with
 # itself (never blocking a genuinely later attempt at the same sig8 from recording its own
-# real outcome after a refused/parked one).
+# real outcome after a refused/parked one). LOW-2: the token is qualified
+# <sig8>-<epoch>-<pid> (_dl_attempt_token above), not a bare pid, so a recycled pid across
+# reboots/days can never be misread as the same attempt.
 _dl_note() {
   [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
-  bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$$" >/dev/null 2>&1 9>&- || true
+  bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$(_dl_attempt_token "$1")" >/dev/null 2>&1 9>&- || true
 }
 
 # ── task signature: normalize mission text, sha256 ────────────────────────────────
@@ -1336,8 +1347,19 @@ _spawn_worker_body() {
       return 1
       ;;
   esac
-  emit decision "worker_spawned by=router model=${arm} task=${sig8} handle=${handle}"
-  printf 'worker_spawned model=%s task=%s handle=%s\n' "${arm}" "${sig8}" "${handle}"
+  # SD-LEDGER-SWEEP-HARDEN-01: this process's own attempt token (_dl_attempt_token, LOW-2:
+  # qualified <sig8>-<epoch>-<pid>, never a bare pid) is ALREADY what _dl_note passes to the
+  # terminal ledger's write-terminal (see that function's own doc comment above) --
+  # printed on stdout here too so a synchronous caller (leadv2-fanout.sh's single-worker
+  # funnel, which captures this whole stdout as dc_out) can stamp the SAME token onto the
+  # lane's active.yaml row via leadv2_active_set_attempt, letting the dispatch-ledger sweep
+  # later attribute a dead verdict to the EXACT attempt that died, not the sig8 as a whole.
+  # attempt=<token> is placed BEFORE handle= on the stdout line, never after: fanout.sh's
+  # handle extraction (`sed -n 's/.*handle=\(.*\)$/\1/p'`) captures to END OF LINE, so a
+  # field appended after handle= would get swallowed into the captured handle string.
+  local _spawn_attempt; _spawn_attempt="$(_dl_attempt_token "${sig8}")"
+  emit decision "worker_spawned by=router model=${arm} task=${sig8} attempt=${_spawn_attempt} handle=${handle}"
+  printf 'worker_spawned model=%s task=%s attempt=%s handle=%s\n' "${arm}" "${sig8}" "${_spawn_attempt}" "${handle}"
   return 0
 }
 

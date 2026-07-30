@@ -10,6 +10,7 @@
 #   leadv2_active_heartbeat <task_id> <checkpoint>              (PULSE-01)
 #   leadv2_active_mark_finished <task_id> <outcome> [<evidence_json>]  (PULSE-01)
 #   leadv2_active_set_writes <task_id> <writes_csv>              (SUPERVISOR-AUDIT-01 T-E)
+#   leadv2_active_set_attempt <task_id> <attempt_id>              (SD-LEDGER-SWEEP-HARDEN-01)
 #   leadv2_active_render_index
 #   leadv2_active_list
 #   leadv2_active_check_limits <class>
@@ -394,6 +395,24 @@ try:
         target["writes"] = writes_csv
         target["updated_at"] = _now_iso()
 
+    # SD-LEDGER-SWEEP-HARDEN-01: stamps the dispatch-code.sh attempt token (its own $$,
+    # already used to key the dispatch-ledger's write-once-per-attempt check -- see
+    # leadv2-dispatch-ledger.sh's dispatch_ledger_write_terminal doc header) onto the
+    # lane's active.yaml row, mirroring set_writes above. Called AFTER the lane's final
+    # registration (real pid, real log_path) -- stamping it onto the earlier pid=null
+    # reservation placeholder would be silently lost, since that row gets REMOVED and
+    # replaced wholesale (not merged) once the real pid is known (see
+    # leadv2-fanout.sh's _fanout_register_session: `if existing: sessions.remove(existing)`
+    # when the placeholder's pid is not alive).
+    elif op == "set_attempt":
+        task_id, attempt_id = args
+        target = next((s for s in sessions if s.get("task_id") == task_id), None)
+        if target is None:
+            print(f"[registry] task not registered for set_attempt: {task_id}", file=sys.stderr)
+            sys.exit(4)
+        target["attempt"] = attempt_id
+        target["updated_at"] = _now_iso()
+
     else:
         print(f"[registry] unknown op: {op}", file=sys.stderr)
         sys.exit(1)
@@ -642,6 +661,21 @@ leadv2_active_set_writes() {
   lockfile="$(_leadv2_yaml_lockfile)"
   [[ -f "$yaml_file" ]] || return 4
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_writes "$task_id" "$writes_csv"
+}
+
+# leadv2_active_set_attempt <task_id> <attempt_id>
+# SD-LEDGER-SWEEP-HARDEN-01: stamps the dispatch-ledger attempt token onto the task's
+# existing active.yaml row (no-op create -- the row must already exist). Call this
+# AFTER the lane's final registration with a real pid, not on the pre-spawn placeholder
+# -- see leadv2-active-registry.sh's own set_attempt op doc comment for why.
+leadv2_active_set_attempt() {
+  local task_id="${1:?task_id required}"
+  local attempt_id="${2:?attempt_id required}"
+  local yaml_file lockfile
+  yaml_file="$(_leadv2_yaml_file)"
+  lockfile="$(_leadv2_yaml_lockfile)"
+  [[ -f "$yaml_file" ]] || return 4
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_attempt "$task_id" "$attempt_id"
 }
 
 # leadv2_active_render_index

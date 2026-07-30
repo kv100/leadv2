@@ -84,6 +84,41 @@ def ps_stat(value):
     except Exception:
         return ""
 
+def parse_iso(ts):
+    # Accepts the "...Z" UTC suffix leadv2-active-registry.sh/leadv2-fanout.sh both write
+    # (_now_iso() / date -u +%Y-%m-%dT%H:%M:%SZ). Any other/malformed shape -> None, never
+    # a fabricated epoch (a bad parse must never MASQUERADE as a real age).
+    if not ts:
+        return None
+    try:
+        import datetime
+        s = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+        return int(datetime.datetime.fromisoformat(s).timestamp())
+    except Exception:
+        return None
+
+def age_from_started_at(session):
+    # SD-LEDGER-SWEEP-HARDEN-01: an artifactless lane (no log file ever written, or the
+    # file it pointed at vanished) used to leave row["age_s"] as None forever, which the
+    # dispatch-ledger sweep's own emitter then null-coerced to 0 -- an artifactless lane
+    # was therefore ALWAYS "younger" than any grace period, permanently blocking its own
+    # sweep no matter how long it had actually been dead. Derive age from the active.yaml
+    # row's own started_at instead, so an artifactless lane still ages out normally.
+    if not session:
+        return None
+    epoch = parse_iso(session.get("started_at"))
+    if epoch is None:
+        # LOW-1 (fixround-tails): missing/unparseable started_at is INDETERMINATE, not a
+        # real age of 0 -- warn so the degradation is visible instead of silently masquerading
+        # as "just spawned" to every downstream age check.
+        print(
+            f"[lane-liveness] WARN: task_id={session.get('task_id')} has no parseable "
+            f"started_at ({session.get('started_at')!r}) -- age_s is indeterminate, not 0",
+            file=sys.stderr,
+        )
+        return None
+    return max(0, int(time.time()) - epoch)
+
 def load_yaml(path, default):
     try:
         import yaml
@@ -133,11 +168,19 @@ def lane_job_id(tid):
 def resolve(tid):
     lane_dir = os.path.join(root, "docs", "handoff", tid)
     row = {"lane": tid, "verdict": None, "age_s": None, "source": None,
-           "log_path": None, "raw_log_path": None, "pid": None, "pid_alive": None, "reason": None}
+           "log_path": None, "raw_log_path": None, "pid": None, "pid_alive": None, "reason": None,
+           "attempt": None}
     session = sessions.get(tid)
     if session is not None:
         row["pid"] = session.get("pid")
         row["pid_alive"] = pid_alive(row["pid"])
+        # SD-LEDGER-SWEEP-HARDEN-01: leadv2_active_set_attempt() stamps this once
+        # dispatch-code.sh's own $$ (the ledger's own attempt token) is known -- see
+        # leadv2-fanout.sh's single-worker funnel finalization call site. Absent on
+        # rows written before this hardening, or by any caller that never spawned
+        # through that path; the dispatch-ledger sweep treats an absent attempt as
+        # "cannot safely attribute a dead terminal" and skips rather than sweeps.
+        row["attempt"] = session.get("attempt")
 
     # B9/B14 fix (SUPERVISOR-AUDIT-01 fix-round-2): consult the active row's
     # OWN recorded log_path first. leadv2-fanout.sh's single-worker funnel
@@ -171,6 +214,7 @@ def resolve(tid):
                 session_log_path = candidate
 
     if session_log_path is None and not os.path.isdir(lane_dir):
+        row["age_s"] = age_from_started_at(session)
         row.update(verdict="dead:no_handoff_dir", source="handoff", reason="no_handoff_dir")
         return row
 
@@ -190,6 +234,7 @@ def resolve(tid):
             log_path = max(files, key=lambda p: os.path.getmtime(p))
             source = "fallback:newest_file"
     if log_path is None:
+        row["age_s"] = age_from_started_at(session)
         row.update(verdict="dead:no_log_artifact", source="handoff", reason="no_log_artifact")
         return row
     # `source` is the selected artifact path, not an inferred status label;
@@ -198,6 +243,7 @@ def resolve(tid):
     row["log_path"], row["source"] = log_path, log_path
     mtime = bsd_mtime(log_path)
     if mtime is None:
+        row["age_s"] = age_from_started_at(session)
         row.update(verdict="dead:log_stat_failed", reason="log_stat_failed")
         return row
     row["age_s"] = max(0, int(time.time()) - mtime)

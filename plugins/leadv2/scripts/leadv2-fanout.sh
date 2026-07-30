@@ -1046,7 +1046,13 @@ launch_headless() {
   # both branches (see comment above).
   # The provider-neutral runner is a hard dependency. Falling back to a raw
   # one-shot CLI would violate the supervisor's Phase 0..8 + sentinel contract.
-  local _runner="${SCRIPT_DIR}/leadv2-session-runner.sh"
+  # MEDIUM-3 (fixround-tails): overridable so tests can point at a fast-exit stub instead
+  # of mv/cp-swapping the CANONICAL leadv2-session-runner.sh in the source tree -- a
+  # SIGINT/SIGTERM/SIGKILL during that swap window would leave the real runner replaced by
+  # the stub with no restore (a RETURN trap does not fire on those signals), silently
+  # no-oping every subsequent /leadv2 launch. Matches the LEADV2_FANOUT_WRITES_OVERLAP_BIN
+  # idiom already used elsewhere in this file.
+  local _runner="${LEADV2_SESSION_RUNNER_BIN:-${SCRIPT_DIR}/leadv2-session-runner.sh}"
   if [[ ! -x "$_runner" ]]; then
     log_error "leadv2-session-runner.sh missing/not executable at ${_runner} — refusing an unguarded one-shot launch"
     return 1
@@ -1156,7 +1162,13 @@ launch_windowed() {
 
   local title="leadv2: ${tid}"
   local cmd
-  local _runner="${SCRIPT_DIR}/leadv2-session-runner.sh"
+  # MEDIUM-3 (fixround-tails): overridable so tests can point at a fast-exit stub instead
+  # of mv/cp-swapping the CANONICAL leadv2-session-runner.sh in the source tree -- a
+  # SIGINT/SIGTERM/SIGKILL during that swap window would leave the real runner replaced by
+  # the stub with no restore (a RETURN trap does not fire on those signals), silently
+  # no-oping every subsequent /leadv2 launch. Matches the LEADV2_FANOUT_WRITES_OVERLAP_BIN
+  # idiom already used elsewhere in this file.
+  local _runner="${LEADV2_SESSION_RUNNER_BIN:-${SCRIPT_DIR}/leadv2-session-runner.sh}"
   if [[ ! -x "$_runner" ]]; then
     log_error "leadv2-session-runner.sh missing/not executable at ${_runner} — refusing an unguarded one-shot launch"
     return 1
@@ -1323,7 +1335,13 @@ launch_tmux() {
   # daemon=false was previously registered here even though nothing acted as
   # a daemon; the runner makes that field honest.
   local cmd
-  local _runner="${SCRIPT_DIR}/leadv2-session-runner.sh"
+  # MEDIUM-3 (fixround-tails): overridable so tests can point at a fast-exit stub instead
+  # of mv/cp-swapping the CANONICAL leadv2-session-runner.sh in the source tree -- a
+  # SIGINT/SIGTERM/SIGKILL during that swap window would leave the real runner replaced by
+  # the stub with no restore (a RETURN trap does not fire on those signals), silently
+  # no-oping every subsequent /leadv2 launch. Matches the LEADV2_FANOUT_WRITES_OVERLAP_BIN
+  # idiom already used elsewhere in this file.
+  local _runner="${LEADV2_SESSION_RUNNER_BIN:-${SCRIPT_DIR}/leadv2-session-runner.sh}"
   if [[ ! -x "$_runner" ]]; then
     log_error "leadv2-session-runner.sh missing/not executable at ${_runner} — refusing an unguarded one-shot launch"
     return 1
@@ -1379,6 +1397,38 @@ _fanout_launch_full_cycle() {
     tmux)     launch_tmux "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key" ;;
     windows)  launch_windowed "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key" ;;
   esac
+  # T-e (SUPERVISOR-AUDIT-01 tail): WRITES-CONFLICT-NOTIFY used to only fire on
+  # launch_via_dispatch_code's single-worker funnel path -- a founder-picked task that
+  # fell through to the full 9-phase cycle (Heavy/Strategic class, opus arm, or any
+  # funnel decline/fallback) never got its `writes` stamped onto active.yaml and never
+  # ran the overlap check, so a Heavy lane could silently collide with another live
+  # lane's declared writes with no SUPERVISE-URGENT signal at all. Runs AFTER the
+  # backend call (not before): each of launch_headless/launch_tmux/launch_windowed
+  # registers the lane's real active.yaml row synchronously before returning, and
+  # set_writes is a no-op create -- stamping onto a row that does not exist yet would
+  # silently fail every time. Same flag, same notify-only semantics, same fail-open
+  # (`|| true`) as launch_via_dispatch_code's own block above -- never blocks or delays
+  # a launch that has already happened by the time this runs.
+  # ALSO gated on FANOUT_CLASS_FUNNEL=="1" (not just the notify flag): _fanout_launch_
+  # full_cycle is reached even under LEADV2_FANOUT_CLASS_FUNNEL=0 (today's total
+  # rollback -- see this file's own header comment on _fanout_ensure_tasks_lib), and
+  # that rollback's entire point is byte-identical behavior REGARDLESS of leadv2-
+  # tasks-lib.sh's health. Under `set -euo pipefail`, sourcing a broken tasks-lib would
+  # abort this whole script -- exactly the failure the =0 rollback exists to survive.
+  if [[ "$FANOUT_CLASS_FUNNEL" == "1" && "${LEADV2_WRITES_CONFLICT_NOTIFY:-1}" != "0" ]]; then
+    _fanout_ensure_tasks_lib
+    local _fc_writes
+    IFS=$'\t' read -r _fc_writes _ _ <<< "$(_fanout_task_lane_contract "$tid")"
+    [[ "$_fc_writes" == "-" ]] && _fc_writes=""
+    if [[ -n "$_fc_writes" ]]; then
+      leadv2_active_set_writes "$tid" "$_fc_writes" >/dev/null 2>&1 || true
+      local _fc_writes_overlap_bin="${LEADV2_FANOUT_WRITES_OVERLAP_BIN:-${SCRIPT_DIR}/leadv2-writes-overlap.sh}"
+      if [[ -x "$_fc_writes_overlap_bin" ]]; then
+        bash "$_fc_writes_overlap_bin" --task-id "$tid" --writes "$_fc_writes" \
+          --project-root "$PROJECT_ROOT" --notify >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
 }
 
 # _fanout_mission_for_task <tid> -> mission text (title + note + origin), or
@@ -1592,6 +1642,18 @@ launch_via_dispatch_code() {
         "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" "$provider" "$route_reason" "$group_key" "$_dc_log_path" || _reg_rc=$?
       if [[ "$_reg_rc" -eq 3 ]]; then
         log "WARN: ${tid} admission refused under lock while finalizing the single-worker funnel's registry row (F6/FIX3) -- dispatch-code.sh already spawned this worker; it cannot be killed generically from here (arm-specific handle=${handle:-<none>}), lane cap is now over-subscribed by one until it finishes"
+      fi
+      # SD-LEDGER-SWEEP-HARDEN-01: dispatch-code.sh's own $$ (its ledger attempt token,
+      # see spawn_worker's worker_spawned line) is only knowable once this synchronous
+      # call has already returned, so it is stamped onto the row AFTER the finalize
+      # register call above, never onto the earlier pre-spawn placeholder -- see
+      # leadv2-active-registry.sh's set_attempt op doc comment for why that ordering
+      # matters (the placeholder row gets replaced wholesale, not merged, once the real
+      # pid is known). Best-effort like set_writes above: never blocks or fails launch.
+      local _dc_attempt
+      _dc_attempt="$(printf '%s\n' "$dc_out" | sed -n 's/.*worker_spawned .*attempt=\([^[:space:]]*\).*/\1/p' | tail -1)"
+      if [[ -n "$_dc_attempt" ]]; then
+        leadv2_active_set_attempt "$tid" "$_dc_attempt" >/dev/null 2>&1 || true
       fi
       ;;
     2)

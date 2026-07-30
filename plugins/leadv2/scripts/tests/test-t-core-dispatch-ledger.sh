@@ -19,9 +19,9 @@ chmod +x "$JOURNAL_STUB"
 export LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$LEDGER_FILE"
 export LEADV2_JOURNAL_BIN="$JOURNAL_STUB"
 export PROJECT_ROOT="$ROOT"
-# SD-LEDGER-SWEEP-HARDEN-01: cmd_sweep() is default-off in production pending the
-# attempt-scoped hardening (see leadv2-dispatch-ledger.sh's own cmd_sweep header) -- this
-# suite still exercises the real (future-enabled) sweep behavior, so it sets the flag.
+# SD-LEDGER-SWEEP-HARDEN-01: sweep now defaults ON (LEADV2_LEDGER_SWEEP_ENABLE=0 is the
+# one-flip rollback) -- set explicitly here anyway so this suite's intent stays legible
+# and immune to a future default change.
 export LEADV2_LEDGER_SWEEP_ENABLE=1
 
 FAIL=0
@@ -83,10 +83,10 @@ cat > "$LANE_LIVENESS_STUB" <<'EOF'
 #!/usr/bin/env bash
 cat <<'JSON'
 {"lanes":[
-  {"lane":"dispatch-eeee5555","verdict":"dead:no_handoff_dir","age_s":9999},
-  {"lane":"dispatch-aaaa1111","verdict":"dead:no_handoff_dir","age_s":9999},
-  {"lane":"dispatch-ffff6666","verdict":"alive","age_s":9999},
-  {"lane":"some-other-lane","verdict":"dead:no_handoff_dir","age_s":9999}
+  {"lane":"dispatch-eeee5555","verdict":"dead:no_handoff_dir","age_s":9999,"attempt":"pid-7001"},
+  {"lane":"dispatch-aaaa1111","verdict":"dead:no_handoff_dir","age_s":9999,"attempt":"pid-7002"},
+  {"lane":"dispatch-ffff6666","verdict":"alive","age_s":9999,"attempt":"pid-7003"},
+  {"lane":"some-other-lane","verdict":"dead:no_handoff_dir","age_s":9999,"attempt":"pid-7004"}
 ]}
 JSON
 EOF
@@ -109,7 +109,7 @@ LANE_LIVENESS_STUB8="$ROOT/lane-liveness-stub8.sh"
 cat > "$LANE_LIVENESS_STUB8" <<'EOF'
 #!/usr/bin/env bash
 cat <<'JSON'
-{"lanes":[{"lane":"dispatch-11112222","verdict":"dead:no_handoff_dir","age_s":9999}]}
+{"lanes":[{"lane":"dispatch-11112222","verdict":"dead:no_handoff_dir","age_s":9999,"attempt":"pid-8001"}]}
 JSON
 EOF
 chmod +x "$LANE_LIVENESS_STUB8"
@@ -133,7 +133,7 @@ LANE_LIVENESS_STUB10="$ROOT/lane-liveness-stub10.sh"
 cat > "$LANE_LIVENESS_STUB10" <<'EOF'
 #!/usr/bin/env bash
 cat <<'JSON'
-{"lanes":[{"lane":"dispatch-33334444","verdict":"dead:no_handoff_dir","age_s":5}]}
+{"lanes":[{"lane":"dispatch-33334444","verdict":"dead:no_handoff_dir","age_s":5,"attempt":"pid-10001"}]}
 JSON
 EOF
 chmod +x "$LANE_LIVENESS_STUB10"
@@ -180,19 +180,21 @@ bash "$BIN" write-terminal "88889999" "task-13" "refused" "no_e2e_entrypoint" "r
 rows13="$(grep -c '"task_sig":"88889999"' "$LEDGER_FILE" 2>/dev/null || echo 0)"
 [[ "$rows13" -eq 1 ]] || { echo "FAIL 13: same-attempt retry appended a 2nd row, got $rows13 rows"; FAIL=1; }
 
-# --- 14 (round4 finding 1): a refused (retryable) row already recorded for a sig8 must
-#         NEVER be swept into `dead` -- dead is a TRUE terminal (write-once), so sweeping it
-#         on top of a refused row would permanently block the later retry that case 11
-#         proved must still be able to land. Same close-owner-absent-and-old setup as case 7
-#         (grace window already cleared via LEADV2_DISPATCH_CLOSE_OWNER_GRACE_S=60 above),
-#         but this sig8 already has a refused row instead of no row at all.
+# --- 14 (round4 finding 1; SD-LEDGER-SWEEP-HARDEN-01 "retryable-row-not-swept"): a
+#         refused (retryable) row already recorded for a sig8, for the SAME attempt the
+#         lane row now reports dead, must NEVER be swept into `dead` -- dead is a TRUE
+#         terminal (write-once), so sweeping it on top of a refused row would permanently
+#         block the later retry that case 11 proved must still be able to land.
+#         LEADV2_DISPATCH_CLOSE_OWNER_GRACE_S is unset since case 10 (line 144 above), so
+#         this now runs at the real DEFAULT grace period (7200s), not an overridden one --
+#         age_s=9999 clears it either way.
 bash "$BIN" write-terminal "99990000" "task-14" "refused" "all_arms_exhausted_quota" "chain=glm,codex" "pid-9000" \
   || { echo "FAIL 14: seeding a refused row failed"; FAIL=1; }
 LANE_LIVENESS_STUB14="$ROOT/lane-liveness-stub14.sh"
 cat > "$LANE_LIVENESS_STUB14" <<'EOF'
 #!/usr/bin/env bash
 cat <<'JSON'
-{"lanes":[{"lane":"dispatch-99990000","verdict":"dead:no_handoff_dir","age_s":9999}]}
+{"lanes":[{"lane":"dispatch-99990000","verdict":"dead:no_handoff_dir","age_s":9999,"attempt":"pid-9000"}]}
 JSON
 EOF
 chmod +x "$LANE_LIVENESS_STUB14"
@@ -208,13 +210,21 @@ bash "$BIN" write-terminal "99990000" "task-14" "landed" "confirmed" "handle=xyz
 grep -q '"task_sig":"99990000".*"terminal":"landed"' "$LEDGER_FILE" \
   || { echo "FAIL 14: no landed row recorded for the retry after the refused row survived sweep"; FAIL=1; }
 
-# --- 15 (round4 finding 3): integration test against the REAL leadv2-lane-liveness.sh
+# --- 15 (round4 finding 3; SD-LEDGER-SWEEP-HARDEN-01 "vanished-artifact lane swept after
+#         started_at+grace"): integration test against the REAL leadv2-lane-liveness.sh
 #         producer (NOT a stub) -- a funnel dispatch whose active.yaml row records a
 #         dispatch-<sig8> log_path, but whose stream file never existed (the exact
 #         crash-lane shape: worker died before ever writing developer.stream.jsonl, or the
 #         file was later cleaned up). The real producer resolves this to
 #         verdict=dead:no_handoff_dir with a NULL verified log_path -- proving sig8
 #         discovery can only succeed here via raw_log_path, never log_path.
+#         round-5 finding 2: age_s used to stay null-coerced-to-0 forever on exactly this
+#         shape, making an artifactless lane PERMANENTLY too young to sweep no matter how
+#         long it had actually been dead; case 15 used to mask this by forcing the grace
+#         period to zero. It no longer does -- started_at is deliberately ancient and
+#         LEADV2_DISPATCH_CLOSE_OWNER_GRACE_S is left UNSET, so this now proves the sweep
+#         at the REAL default grace period (7200s), deriving age from active.yaml's own
+#         started_at instead of a missing artifact.
 REAL_LIVENESS_STATE="$ROOT/real-liveness-state"
 REAL_LIVENESS_PROJECT="$ROOT/real-liveness-project"
 mkdir -p "$REAL_LIVENESS_STATE" "$REAL_LIVENESS_PROJECT/docs/leadv2"
@@ -222,7 +232,7 @@ STATE_PATH_BIN_15="$(dirname "$BIN")/leadv2-state-path.sh"
 LIVENESS_BIN_15="$(dirname "$BIN")/leadv2-lane-liveness.sh"
 REAL_ACTIVE_YAML="$(LEADV2_STATE_ROOT="$REAL_LIVENESS_STATE" PROJECT_ROOT="$REAL_LIVENESS_PROJECT" bash "$STATE_PATH_BIN_15" --no-link active.yaml)"
 mkdir -p "$(dirname "$REAL_ACTIVE_YAML")"
-printf 'sessions:\n  - task_id: founder-task-crash\n    phase: build\n    pid: null\n    log_path: docs/handoff/dispatch-deadbeef/developer.stream.jsonl\n' > "$REAL_ACTIVE_YAML"
+printf 'sessions:\n  - task_id: founder-task-crash\n    phase: build\n    pid: null\n    started_at: "2020-01-01T00:00:00Z"\n    attempt: "pid-15001"\n    log_path: docs/handoff/dispatch-deadbeef/developer.stream.jsonl\n' > "$REAL_ACTIVE_YAML"
 # deliberately never create docs/handoff/dispatch-deadbeef/ (or its stream file) NOR
 # docs/handoff/founder-task-crash/ -- this is the vanished-artifact crash lane.
 LIVENESS_RAW_15="$(LEADV2_STATE_ROOT="$REAL_LIVENESS_STATE" LEADV2_PROJECT_ROOT="$REAL_LIVENESS_PROJECT" \
@@ -231,19 +241,197 @@ echo "$LIVENESS_RAW_15" | grep -q '"log_path": null' \
   || { echo "FAIL 15 setup: expected the verified log_path to be null for the vanished-artifact lane, got: $LIVENESS_RAW_15"; FAIL=1; }
 echo "$LIVENESS_RAW_15" | grep -q '"raw_log_path": "docs/handoff/dispatch-deadbeef/developer.stream.jsonl"' \
   || { echo "FAIL 15 setup: expected raw_log_path to survive despite the missing artifact, got: $LIVENESS_RAW_15"; FAIL=1; }
-export LEADV2_DISPATCH_CLOSE_OWNER_GRACE_S=0
+echo "$LIVENESS_RAW_15" | python3 -c "import json,sys; d=json.load(sys.stdin); a=d['lanes'][0]['age_s']; sys.exit(0 if isinstance(a,int) and a > 7200 else 1)" \
+  || { echo "FAIL 15 setup: expected age_s derived from started_at to exceed the default grace period, got: $LIVENESS_RAW_15"; FAIL=1; }
 LEADV2_DISPATCH_LANE_LIVENESS_BIN="$LIVENESS_BIN_15" \
   LEADV2_PROJECT_ROOT="$REAL_LIVENESS_PROJECT" LEADV2_STATE_ROOT="$REAL_LIVENESS_STATE" \
   PROJECT_ROOT="$REAL_LIVENESS_PROJECT" \
   bash "$BIN" sweep 2>"$ROOT/sweep15.err"
 grep -q '"task_sig":"deadbeef"' "$LEDGER_FILE" \
-  || { echo "FAIL 15: sweep against the REAL liveness producer never resolved sig8 for the vanished-stream-file crash lane"; FAIL=1; cat "$ROOT/sweep15.err"; }
+  || { echo "FAIL 15: sweep against the REAL liveness producer never resolved sig8 for the vanished-stream-file crash lane at default grace"; FAIL=1; cat "$ROOT/sweep15.err"; }
 grep -q '"task_sig":"deadbeef".*"founder_task_id":"founder-task-crash"' "$LEDGER_FILE" \
   || { echo "FAIL 15: swept row missing the real founder_task_id (lane id), not the sig8-shaped lane string"; FAIL=1; }
-unset LEADV2_DISPATCH_CLOSE_OWNER_GRACE_S
+
+# --- 15b (SD-LEDGER-SWEEP-HARDEN-01 companion, same shape, YOUNG started_at): proves the
+#         started_at-derived age still respects the grace window -- a genuinely recent
+#         artifactless lane must NOT be swept just because it has no artifact.
+REAL_LIVENESS_PROJECT_YOUNG="$ROOT/real-liveness-project-young"
+mkdir -p "$REAL_LIVENESS_PROJECT_YOUNG/docs/leadv2"
+REAL_ACTIVE_YAML_YOUNG="$(LEADV2_STATE_ROOT="$REAL_LIVENESS_STATE" PROJECT_ROOT="$REAL_LIVENESS_PROJECT_YOUNG" bash "$STATE_PATH_BIN_15" --no-link active.yaml)"
+mkdir -p "$(dirname "$REAL_ACTIVE_YAML_YOUNG")"
+NOW_ISO_15B="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf 'sessions:\n  - task_id: founder-task-crash-young\n    phase: build\n    pid: null\n    started_at: "%s"\n    attempt: "pid-15002"\n    log_path: docs/handoff/dispatch-1eadbeef/developer.stream.jsonl\n' "$NOW_ISO_15B" > "$REAL_ACTIVE_YAML_YOUNG"
+LEADV2_DISPATCH_LANE_LIVENESS_BIN="$LIVENESS_BIN_15" \
+  LEADV2_PROJECT_ROOT="$REAL_LIVENESS_PROJECT_YOUNG" LEADV2_STATE_ROOT="$REAL_LIVENESS_STATE" \
+  PROJECT_ROOT="$REAL_LIVENESS_PROJECT_YOUNG" \
+  bash "$BIN" sweep 2>"$ROOT/sweep15b.err"
+if grep -q '"task_sig":"1eadbeef"' "$LEDGER_FILE"; then
+  echo "FAIL 15b: a YOUNG artifactless lane (started_at just now) was swept -- grace window not respected"; FAIL=1
+fi
+
+# --- 16 (SD-LEDGER-SWEEP-HARDEN-01 "wrong-attempt not swept"): round-5 finding (a) -- the
+#         OLD sig8-wide dispatch_any_terminal_exists() preflight let a stale row for a
+#         DIFFERENT (wrong) attempt hide a later, genuinely dead retry forever. Proves the
+#         opposite failure mode from case 14: a refused row for attempt "pid-16000" must
+#         NOT block sweeping a dead lane whose row now carries a DIFFERENT attempt
+#         "pid-16999" -- the attempt-scoped check must let this one through, appending its
+#         own dead row, while the sig8-wide TRUE-terminal guard (unrelated to attempt
+#         matching) stays intact for the landed/dead case (proven separately by case 12).
+bash "$BIN" write-terminal "aaaa6666" "task-16" "refused" "all_arms_exhausted_quota" "chain=glm" "pid-16000" \
+  || { echo "FAIL 16: seeding the wrong-attempt refused row failed"; FAIL=1; }
+LANE_LIVENESS_STUB16="$ROOT/lane-liveness-stub16.sh"
+cat > "$LANE_LIVENESS_STUB16" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"lanes":[{"lane":"dispatch-aaaa6666","verdict":"dead:no_handoff_dir","age_s":9999,"attempt":"pid-16999"}]}
+JSON
+EOF
+chmod +x "$LANE_LIVENESS_STUB16"
+LEADV2_DISPATCH_LANE_LIVENESS_BIN="$LANE_LIVENESS_STUB16" bash "$BIN" sweep 2>"$ROOT/sweep16.err"
+grep -q '"task_sig":"aaaa6666".*"terminal":"dead".*"attempt":"pid-16999"' "$LEDGER_FILE" \
+  || { echo "FAIL 16: a genuinely dead retry (different attempt) was hidden by an old refused row for the WRONG attempt"; FAIL=1; cat "$ROOT/sweep16.err"; }
+grep -q '"task_sig":"aaaa6666".*"terminal":"refused".*"attempt":"pid-16000"' "$LEDGER_FILE" \
+  || { echo "FAIL 16: the original wrong-attempt refused row was lost/mutated, expected append-only"; FAIL=1; }
+rows16="$(grep -c '"task_sig":"aaaa6666"' "$LEDGER_FILE" 2>/dev/null || echo 0)"
+[[ "$rows16" -eq 2 ]] || { echo "FAIL 16: expected exactly 2 rows (refused for pid-16000 + dead for pid-16999), got $rows16"; FAIL=1; }
+# now prove the sig8-wide TRUE-terminal guard is NOT weakened by attempt-scoping: once
+# aaaa6666 has a TRUE terminal (dead, just recorded above), a THIRD attempt must still be
+# deduped, exactly like case 12 for landed.
+bash "$BIN" write-terminal "aaaa6666" "task-16" "landed" "should_not_land" "" "pid-17000" \
+  || { echo "FAIL 16: post-sweep dedup-of-true-terminal write returned nonzero (should be a no-op)"; FAIL=1; }
+rows16b="$(grep -c '"task_sig":"aaaa6666"' "$LEDGER_FILE" 2>/dev/null || echo 0)"
+[[ "$rows16b" -eq 2 ]] || { echo "FAIL 16: a 3rd row was appended after sweep's dead already TRUE-terminaled the sig8, got $rows16b rows"; FAIL=1; }
+
+# --- 17 (SD-LEDGER-SWEEP-HARDEN-01 "concurrent refused-append-vs-sweep race", REWRITTEN
+#         MEDIUM-2 fixround-tails): round-5 finding (b) -- the old preflight ran OUTSIDE
+#         the lock, so a refused/parked append landing in the window between check and
+#         write was invisible to the check and then overwritten by write-once dead anyway.
+#         The ORIGINAL version of this case staggered the refuser by a bare `sleep 0.05`,
+#         which in practice always let the refused write land and finish BEFORE the sweep
+#         even reached its own flock call -- that ordering also passes against the OLD,
+#         unlocked, sig8-wide preflight, so the case proved nothing about atomicity
+#         (review-tails-verdict.md MEDIUM-2). This version forces GENUINE contention: a
+#         helper holds the ledger's own lockfile for ~0.3s BEFORE either contender starts,
+#         so write-terminal (refused) and sweep (dead) are BOTH already blocked in their
+#         own `flock -x 9` the instant the lock is released -- whichever the kernel wakes
+#         first wins, and the loser's own locked check-then-append (same flock section, no
+#         TOCTOU) must observe the winner's row and skip. Looped so both orderings are
+#         exercised across the run, not just whichever one `sleep 0.05` happened to favor.
+RACE_LOCK="$LEDGER_FILE.lock"
+race_fail=0
+for race_i in $(seq 1 12); do
+  # review-tails-verdict-2.md HIGH-2: this used to be `c0000%02x` -- 5 chars + 2 hex = 7
+  # hex characters total, which fails cmd_sweep's `^[0-9a-f]{8}$` sig8 extraction
+  # (ledger:419) and drops the lane before `checked` is even incremented, so the race
+  # below tested nothing (sweep was a guaranteed no-op regardless of locking). `c00000`
+  # is 6 chars + 2 hex = 8, a real sig8.
+  RACE_SIG8="$(printf 'c00000%02x' "$race_i")"
+  RACE_ATTEMPT="pid-17${race_i}"
+  LANE_LIVENESS_STUB17="$ROOT/lane-liveness-stub17-${race_i}.sh"
+  cat > "$LANE_LIVENESS_STUB17" <<EOF
+#!/usr/bin/env bash
+cat <<JSON
+{"lanes":[{"lane":"dispatch-${RACE_SIG8}","verdict":"dead:no_handoff_dir","age_s":9999,"attempt":"${RACE_ATTEMPT}"}]}
+JSON
+EOF
+  chmod +x "$LANE_LIVENESS_STUB17"
+  (
+    exec 9>"$RACE_LOCK"
+    flock -x 9
+    sleep 0.3
+    flock -u 9
+    exec 9>&-
+  ) &
+  holder_pid=$!
+  sleep 0.05  # let the holder actually acquire the lock before launching contenders
+  (
+    bash "$BIN" write-terminal "$RACE_SIG8" "task-17-refuser" "refused" "all_arms_exhausted_quota" "chain=glm" "$RACE_ATTEMPT" >/dev/null 2>&1
+  ) &
+  race_pid_a=$!
+  (
+    LEADV2_DISPATCH_LANE_LIVENESS_BIN="$LANE_LIVENESS_STUB17" bash "$BIN" sweep >/dev/null 2>"$ROOT/sweep17-${race_i}.err"
+  ) &
+  race_pid_b=$!
+  wait "$holder_pid" "$race_pid_a" "$race_pid_b" 2>/dev/null
+  # HIGH-2 required fix: assert the sweep actually SAW this lane (checked=1) so a future
+  # sig8-shape mistake (or any other silent drop before the checked counter) cannot re-
+  # inert this case the way the 7-hex RACE_SIG8 did -- without this, rows17==1 is
+  # guaranteed by the refused write alone regardless of what the sweep did.
+  if ! grep -q 'sweep: checked=1 ' "$ROOT/sweep17-${race_i}.err"; then
+    echo "FAIL 17: iteration ${race_i}: sweep did not report checked=1 -- the lane was dropped before reaching the race, this iteration proves nothing -- $(cat "$ROOT/sweep17-${race_i}.err")"
+    race_fail=1
+  fi
+  rows17="$(grep -c "\"task_sig\":\"${RACE_SIG8}\"" "$LEDGER_FILE" 2>/dev/null || echo 0)"
+  if [[ "$rows17" -ne 1 ]]; then
+    echo "FAIL 17: iteration ${race_i}: expected exactly 1 terminal row for the raced sig8 (write-once-per-attempt held under a real lock race), got $rows17 -- $(grep "\"${RACE_SIG8}\"" "$LEDGER_FILE" 2>/dev/null)"
+    race_fail=1
+  fi
+  row17="$(grep "\"task_sig\":\"${RACE_SIG8}\"" "$LEDGER_FILE" 2>/dev/null)"
+  if ! grep -q '"terminal":"refused"' <<<"$row17" && ! grep -q '"terminal":"dead"' <<<"$row17"; then
+    echo "FAIL 17: iteration ${race_i}: the one surviving row is neither refused nor dead -- $row17"; race_fail=1
+  fi
+done
+[[ "$race_fail" -eq 0 ]] || FAIL=1
+
+# --- 18 (HIGH-1 regression, review-tails-verdict.md live repro): a LIVE worker pid +
+#         artifactless (no handoff dir at all) + ANCIENT started_at + no close-owner
+#         record used to get swept into a write-once `dead` even though the worker is
+#         still running -- against the REAL leadv2-lane-liveness.sh producer (not a stub),
+#         proving the fix threads pid_alive all the way through cmd_sweep's own funnel.
+sleep 30 & LIVE_PID_18=$!
+REAL_LIVENESS_PROJECT_18="$ROOT/real-liveness-project-18"
+mkdir -p "$REAL_LIVENESS_PROJECT_18/docs/leadv2"
+REAL_ACTIVE_YAML_18="$(LEADV2_STATE_ROOT="$REAL_LIVENESS_STATE" PROJECT_ROOT="$REAL_LIVENESS_PROJECT_18" bash "$STATE_PATH_BIN_15" --no-link active.yaml)"
+mkdir -p "$(dirname "$REAL_ACTIVE_YAML_18")"
+printf 'sessions:\n  - task_id: founder-task-livepid\n    phase: build\n    pid: %s\n    started_at: "2020-01-01T00:00:00Z"\n    attempt: "pid-18001"\n    log_path: docs/handoff/dispatch-18001111/developer.stream.jsonl\n' "$LIVE_PID_18" > "$REAL_ACTIVE_YAML_18"
+# deliberately never create docs/handoff/dispatch-18001111/ -- same artifactless-crash
+# shape as case 15, but this time with a session pid that IS actually alive.
+LEADV2_DISPATCH_LANE_LIVENESS_BIN="$LIVENESS_BIN_15" \
+  LEADV2_PROJECT_ROOT="$REAL_LIVENESS_PROJECT_18" LEADV2_STATE_ROOT="$REAL_LIVENESS_STATE" \
+  PROJECT_ROOT="$REAL_LIVENESS_PROJECT_18" \
+  bash "$BIN" sweep 2>"$ROOT/sweep18.err"
+if grep -q '"founder_task_id":"founder-task-livepid"' "$LEDGER_FILE"; then
+  echo "FAIL 18: an artifactless lane with a LIVE worker pid was swept dead -- HIGH-1 regressed"; FAIL=1; cat "$ROOT/sweep18.err"
+fi
+kill "$LIVE_PID_18" 2>/dev/null; wait "$LIVE_PID_18" 2>/dev/null
+
+# --- 18b (companion, same shape, DEAD pid): proves the fix is discriminating, not a
+#         blanket new grace -- once the pid is confirmed dead, the same artifactless +
+#         ancient-started_at lane IS still swept.
+DEAD_PID_18B=$LIVE_PID_18  # already reaped above; guaranteed not alive
+REAL_LIVENESS_PROJECT_18B="$ROOT/real-liveness-project-18b"
+mkdir -p "$REAL_LIVENESS_PROJECT_18B/docs/leadv2"
+REAL_ACTIVE_YAML_18B="$(LEADV2_STATE_ROOT="$REAL_LIVENESS_STATE" PROJECT_ROOT="$REAL_LIVENESS_PROJECT_18B" bash "$STATE_PATH_BIN_15" --no-link active.yaml)"
+mkdir -p "$(dirname "$REAL_ACTIVE_YAML_18B")"
+printf 'sessions:\n  - task_id: founder-task-deadpid\n    phase: build\n    pid: %s\n    started_at: "2020-01-01T00:00:00Z"\n    attempt: "pid-18002"\n    log_path: docs/handoff/dispatch-18002222/developer.stream.jsonl\n' "$DEAD_PID_18B" > "$REAL_ACTIVE_YAML_18B"
+LEADV2_DISPATCH_LANE_LIVENESS_BIN="$LIVENESS_BIN_15" \
+  LEADV2_PROJECT_ROOT="$REAL_LIVENESS_PROJECT_18B" LEADV2_STATE_ROOT="$REAL_LIVENESS_STATE" \
+  PROJECT_ROOT="$REAL_LIVENESS_PROJECT_18B" \
+  bash "$BIN" sweep 2>"$ROOT/sweep18b.err"
+grep -q '"founder_task_id":"founder-task-deadpid"' "$LEDGER_FILE" \
+  || { echo "FAIL 18b: an artifactless lane with a confirmed-DEAD pid was not swept"; FAIL=1; cat "$ROOT/sweep18b.err"; }
+
+# --- 19 (MEDIUM-4, review-tails-verdict-2.md): a WEDGED (SIGSTOP'd) worker with a live pid
+#         must still be swept -- dead:wedged_STAT=<stat> already consulted pid_alive itself
+#         and concluded dead deliberately, it is not one of the three artifactless-dead
+#         verdicts (no_handoff_dir/no_log_artifact/log_stat_failed) that never looked at
+#         pid_alive at all, so the HIGH-1 skip must NOT apply to it. Before the MEDIUM-4
+#         fix this lane would stay unswept forever (same shape as case 18's assertion, but
+#         asserting the OPPOSITE outcome).
+LANE_LIVENESS_STUB19="$ROOT/lane-liveness-stub19.sh"
+cat > "$LANE_LIVENESS_STUB19" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"lanes":[{"lane":"dispatch-19001111","verdict":"dead:wedged_STAT=TN","age_s":10832,"attempt":"pid-19001","pid_alive":true}]}
+JSON
+EOF
+chmod +x "$LANE_LIVENESS_STUB19"
+LEADV2_DISPATCH_LANE_LIVENESS_BIN="$LANE_LIVENESS_STUB19" bash "$BIN" sweep 2>"$ROOT/sweep19.err"
+grep -q '"task_sig":"19001111".*"terminal":"dead"' "$LEDGER_FILE" \
+  || { echo "FAIL 19: a wedged (SIGSTOP'd) lane with a live pid was NOT swept -- dead:wedged_STAT already consulted pid_alive and concluded dead deliberately, MEDIUM-4 regressed"; FAIL=1; cat "$ROOT/sweep19.err"; }
 
 if [[ $FAIL -eq 0 ]]; then
-  echo 'PASS: write-once terminal ledger (write/dedup/exists/invalid/sanitize/sweep/close-owner/retryable-refused-parked/sweep-never-poisons-refused/real-liveness-vanished-stream-sig8)'
+  echo 'PASS: write-once terminal ledger (write/dedup/exists/invalid/sanitize/sweep/close-owner/retryable-refused-parked/sweep-never-poisons-refused/real-liveness-vanished-stream-sig8/attempt-scoped-sweep/wrong-attempt/concurrent-lock-race/live-pid-not-swept/dead-pid-swept/wedged-live-pid-swept)'
   exit 0
 fi
 exit 1

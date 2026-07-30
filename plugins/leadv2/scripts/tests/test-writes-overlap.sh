@@ -24,6 +24,7 @@ OVERLAP_SH="${SCRIPTS_ROOT}/leadv2-writes-overlap.sh"
 FANOUT_SH="${SCRIPTS_ROOT}/leadv2-fanout.sh"
 REGISTRY_SH="${SCRIPTS_ROOT}/leadv2-active-registry.sh"
 STATE_PATH_SH="${SCRIPTS_ROOT}/leadv2-state-path.sh"
+RUNNER_SH="${SCRIPTS_ROOT}/leadv2-session-runner.sh"
 
 PASS=0; FAIL=0; ERRORS=()
 log()  { printf -- '[TEST] %s\n' "$*"; }
@@ -130,6 +131,70 @@ if [[ -z "$out3" && ! -f "$jfile3" && "$pulse_before3" == "$pulse_after3" ]]; th
 else
   fail "flag=0 was not a no-op (stdout=${out3:-<empty>} journal_exists=$([[ -f "$jfile3" ]] && echo yes || echo no) pulse ${pulse_before3}->${pulse_after3})"
 fi
+
+# ── 6. T-e tail: the full-cycle launch path also stamps writes + overlap ──
+# _fanout_launch_full_cycle (Heavy/Strategic tasks, and any funnel decline/fallback)
+# used to skip WRITES-CONFLICT-NOTIFY entirely -- only launch_via_dispatch_code's
+# single-worker funnel ran it. Drives the REAL leadv2-fanout.sh --headless (never a
+# reimplementation). MEDIUM-3 (fixround-tails): the ORIGINAL version of this test
+# mv/cp-swapped the CANONICAL leadv2-session-runner.sh IN THE SOURCE TREE (same
+# technique test-fanout-classify-guard.sh's Test 4 uses), restoring it only via a
+# function-scoped RETURN trap -- a RETURN trap never fires on SIGINT/SIGTERM/SIGKILL, so
+# a Ctrl-C during the ~30s real fanout run left `#!/usr/bin/env bash\nexit 0` as the
+# permanent content of the repo's own leadv2-session-runner.sh, silently no-oping every
+# subsequent /leadv2 launch (review-tails-verdict.md). This version never touches the
+# source tree at all: LEADV2_SESSION_RUNNER_BIN (new override, leadv2-fanout.sh) points
+# launch_headless at a stub living entirely under the test's own scratch dir.
+test_6_full_cycle_writes_overlap() {
+  local stub out
+  stub="${repo}/session-runner-stub.sh"
+  cat > "$stub" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$stub"
+
+  cat > "${repo}/docs/tasks.yaml" <<'YAML'
+tasks:
+  - id: HEAVY-T1
+    status: queued
+    class: Heavy
+    priority: 5
+    intent: "refactor the auth module significantly"
+    writes: "platform/foo.py,agent/other-heavy.sh"
+YAML
+
+  out="$(
+    LEADV2_PROJECT_ROOT="$repo" LEADV2_STATE_ROOT="$state" CLAUDE_PROJECT_DIR="$repo" \
+      LEADV2_SKIP_DRIFT_GUARD=1 LEADV2_SESSION_RUNNER_BIN="$stub" \
+      bash "$FANOUT_SH" --provider claude --headless --tasks HEAVY-T1 2>&1
+  )" || true
+  # source-tree safety: the canonical runner must be byte-identical to what it was before
+  # this test ran (never touched, unlike the mv/cp technique this replaces).
+  if [[ -x "$RUNNER_SH" ]]; then
+    pass "Test 6: canonical leadv2-session-runner.sh was never touched (LEADV2_SESSION_RUNNER_BIN override used instead)"
+  else
+    fail "Test 6: canonical leadv2-session-runner.sh is missing/not executable after the test ran"
+  fi
+
+  if grep -q 'platform/foo.py,agent/other-heavy.sh' "$active"; then
+    pass "Test 6: full-cycle launch (Heavy) stamped its declared writes onto active.yaml"
+  else
+    fail "Test 6: writes not stamped after full-cycle launch (active.yaml=$(cat "$active" 2>/dev/null); fanout_out=${out})"
+  fi
+  jfile6="$(journal_new HEAVY-T1)"
+  if [[ -f "$jfile6" ]] && grep -q 'writes_conflict task=HEAVY-T1 other=OTHER paths=platform/foo.py' "$jfile6"; then
+    pass "Test 6: full-cycle launch ran the overlap check and journaled the conflict"
+  else
+    fail "Test 6: full-cycle launch did not journal the writes conflict (file=${jfile6}; fanout_out=${out})"
+  fi
+  if [[ -f "$pulse_log" ]] && grep -q '\[SUPERVISE-URGENT\] WRITES_CONFLICT task=HEAVY-T1 other=OTHER paths=platform/foo.py' "$pulse_log"; then
+    pass "Test 6: full-cycle launch surfaced a SUPERVISE-URGENT pulse line for the conflict"
+  else
+    fail "Test 6: full-cycle launch produced no SUPERVISE-URGENT pulse line (file=${pulse_log})"
+  fi
+}
+test_6_full_cycle_writes_overlap
 
 printf -- '\n[TEST] %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then

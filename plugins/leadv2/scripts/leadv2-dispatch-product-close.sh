@@ -26,6 +26,11 @@ DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
 # (never sourced) -- see leadv2-dispatch-ledger.sh's own doc header.
 LEDGER_BIN="${LEADV2_DISPATCH_LEDGER_BIN:-${SCRIPT_DIR}/leadv2-dispatch-ledger.sh}"
 TERMINAL_LEDGER="${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}"
+# LOW-2 (fixround-tails): qualified <sig8>-<epoch>-<pid> attempt token, computed ONCE so the
+# explicit call and the EXIT trap's own retry (same process) reuse the identical value; a
+# bare pid would recycle across days/reboots and could be misread as the same attempt.
+_PC_ATTEMPT_EPOCH="$(date +%s 2>/dev/null || printf '0')"
+_PC_ATTEMPT="${TASK}-${_PC_ATTEMPT_EPOCH}-$$"
 # wave2 round2 finding 4: records the INTENDED terminal state BEFORE attempting the
 # write, not just after. `|| true` below is deliberate -- a downstream review verdict
 # must never fail this script just because ledger IO hiccuped -- but that also meant a
@@ -41,13 +46,13 @@ _dl_note() {  # <terminal> <cause> [<evidence>]
   _PC_TERMINAL_CAUSE="$2"
   _PC_TERMINAL_EVIDENCE="${3:-}"
   [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
-  # wave2 round3 finding 3: "$$" is this script's own process id, stable across BOTH this
-  # explicit call and the EXIT trap's own idempotent retry of the same _PC_TERMINAL_* state
-  # (see _pc_exit_handler) -- the ledger's attempt-token dedup uses it to recognize that
-  # retry as the SAME attempt (still write-once), while a genuinely later, separate
-  # invocation of this script for the same TASK sig8 gets its own $$ and is never blocked by
-  # an earlier refused/parked row.
-  bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${3:-}" "$$" >/dev/null 2>&1 9>&- || true
+  # wave2 round3 finding 3 / LOW-2: _PC_ATTEMPT (qualified <sig8>-<epoch>-<pid>, not a bare
+  # pid) is stable across BOTH this explicit call and the EXIT trap's own idempotent retry
+  # of the same _PC_TERMINAL_* state (see _pc_exit_handler) -- the ledger's attempt-token
+  # dedup uses it to recognize that retry as the SAME attempt (still write-once), while a
+  # genuinely later, separate invocation of this script for the same TASK sig8 gets its own
+  # token and is never blocked by an earlier refused/parked row.
+  bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${3:-}" "${_PC_ATTEMPT}" >/dev/null 2>&1 9>&- || true
 }
 HANDOFF="${ROOT}/docs/handoff/dispatch-${TASK}"
 mkdir -p "${HANDOFF}"

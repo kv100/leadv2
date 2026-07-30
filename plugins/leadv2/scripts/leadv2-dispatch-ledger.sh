@@ -181,14 +181,18 @@ dispatch_ledger_write_terminal() {
   local rc
   (
     flock -w 10 -x 9 || exit 3
-    local _last_terminal _last_attempt
+    local _last_terminal _same_attempt_row
     _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
     case "${_last_terminal}" in
       landed|dead) exit 2 ;;  # a TRUE terminal already won write-once for this sig8
     esac
-    if [[ -n "${attempt}" ]]; then
-      _last_attempt="$(_dispatch_terminal_last_field "${sig8}" "${f}" attempt)"
-      [[ -n "${_last_attempt}" && "${attempt}" == "${_last_attempt}" ]] && exit 2
+    # LOW-3: aligned on the ANY-row form (matching dispatch_ledger_sweep_write_dead's own
+    # _same_attempt_row check below) -- comparing only the LAST row missed an exit-trap
+    # retry whose attempt is no longer the last row (e.g. a refused/parked row from a
+    # different attempt landed in between), which appended a spurious duplicate.
+    if [[ -n "${attempt}" && -f "${f}" ]]; then
+      _same_attempt_row="$(grep -F "\"task_sig\":\"${sig8}\"" "${f}" 2>/dev/null | grep -F "\"attempt\":\"${attempt}\"" | head -n 1)"
+      [[ -n "${_same_attempt_row}" ]] && exit 2
     fi
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
     printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","terminal":"%s","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
@@ -211,6 +215,80 @@ dispatch_ledger_write_terminal() {
       return 0 ;;  # dedup is a SUCCESSFUL no-op, not a caller error
     3) log_err "write_terminal: lock-wait timeout for sig=${sig8}"; return 1 ;;
     *) log_err "write_terminal: ledger write failed (rc=${rc}) for sig=${sig8}"; return 1 ;;
+  esac
+}
+
+# SD-LEDGER-SWEEP-HARDEN-01: the sweep's OWN write path -- deliberately NOT
+# dispatch_ledger_write_terminal() above. Round-5 review found the sweep's preflight
+# (dispatch_any_terminal_exists, sig8-wide) both too coarse and racy:
+#   (a) too coarse -- an old refused/parked row from a DIFFERENT, earlier attempt at the
+#       same sig8 made the sig8-wide "any terminal already exists" check hide a LATER,
+#       genuinely crashed retry forever (that retry's own dead outcome never got recorded).
+#   (b) racy -- the check ran OUTSIDE any lock, then the write acquired its own separate
+#       lock: a refused/parked row appended for the SAME attempt in between (another
+#       caller losing a race, or a slow refusal finally landing) was invisible to the
+#       check and then overwritten by write-once `dead` anyway (write_terminal only
+#       refuses on a sig8-wide landed|dead, never on refused|parked) -- recreating the
+#       exact poisoning bug this ledger exists to prevent.
+# FIX: <attempt> is now REQUIRED (refuses, not sweeps, when absent -- an attempt-less
+# lane row predates SD-LEDGER-SWEEP-HARDEN-01 or was never stamped, and sweeping it with
+# an empty attempt token risks colliding with a future retry that also has no token yet).
+# The any-terminal check is re-scoped from sig8-wide to (sig8, attempt)-exact, and now
+# runs INSIDE the SAME flock section as the append -- one locked transaction, no window
+# for a concurrent writer to land between check and write. The sig8-wide TRUE-terminal
+# (landed|dead) write-once-final check is UNCHANGED and stays sig8-wide on purpose: once
+# any attempt has truly landed or truly died, no attempt (right OR wrong) may add a
+# second true terminal for that sig8 -- attempt-scoping that guard would let a stale dead
+# attempt overwrite a sig8 that has already, correctly, landed under a different attempt.
+# <sig8> <lane_id> <cause> <evidence> <attempt>
+dispatch_ledger_sweep_write_dead() {
+  local sig8="$1" lane="${2:-}" cause="${3:-}" evidence="${4:-}" attempt="${5:-}"
+  [[ -n "${sig8}" ]] || { log_err "sweep_write_dead: empty task_sig, refusing to write"; return 1; }
+  if [[ -z "${attempt}" ]]; then
+    log_err "sweep_write_dead: no attempt recorded on lane=${lane} sig=${sig8} -- refusing to sweep (attempt-less row predates hardening or was never stamped)"
+    return 2
+  fi
+  local founder cause_s evidence_s attempt_s
+  founder="$(json_safe "${lane}")"
+  cause_s="$(json_safe "${cause}")"
+  evidence_s="$(json_safe "${evidence}")"
+  attempt_s="$(json_safe "${attempt}")"
+  local f lockf; f="$(dispatch_terminal_ledger_file)"; lockf="$(dispatch_terminal_ledger_lock_file)"
+  mkdir -p "$(dirname "${f}")" 2>/dev/null
+  mkdir -p "$(dirname "${lockf}")" 2>/dev/null
+  local rc
+  (
+    flock -w 10 -x 9 || exit 3
+    local _last_terminal _same_attempt_row
+    _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
+    case "${_last_terminal}" in
+      landed|dead) exit 2 ;;  # sig8-wide TRUE terminal already recorded -- write-once-final, attempt-agnostic by design
+    esac
+    if [[ -f "${f}" ]]; then
+      _same_attempt_row="$(grep -F "\"task_sig\":\"${sig8}\"" "${f}" 2>/dev/null | grep -F "\"attempt\":\"${attempt_s}\"" | head -n 1)"
+      [[ -n "${_same_attempt_row}" ]] && exit 2  # a row for THIS exact attempt already exists (refused/parked/landed/dead) -- never append dead on top of it
+    fi
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
+    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","terminal":"dead","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
+      "${ts}" "${sig8}" "${founder}" "${cause_s}" "${evidence_s}" "${attempt_s}" >> "${f}" || exit 1
+    exit 0
+  ) 9>"${lockf}"
+  rc=$?
+  case "${rc}" in
+    0)
+      if [[ -f "${JOURNAL_BIN}" ]]; then
+        bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision \
+          "dispatch_terminal task=${sig8} terminal=dead cause=${cause_s} attempt=${attempt_s} source=sweep" >/dev/null 2>&1 || true
+      fi
+      return 0 ;;
+    2)
+      if [[ -f "${JOURNAL_BIN}" ]]; then
+        bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision \
+          "dispatch_terminal_dedup task=${sig8} attempted=dead attempt=${attempt_s} reason=terminal_already_recorded source=sweep" >/dev/null 2>&1 || true
+      fi
+      return 0 ;;  # dedup is a SUCCESSFUL no-op, not a caller error
+    3) log_err "sweep_write_dead: lock-wait timeout for sig=${sig8}"; return 1 ;;
+    *) log_err "sweep_write_dead: ledger write failed (rc=${rc}) for sig=${sig8}"; return 1 ;;
   esac
 }
 
@@ -314,11 +392,12 @@ _product_close_pid_alive() {
 cmd_sweep() {
   # SD-LEDGER-SWEEP-HARDEN-01: round-5 review (review-wave2-verdict-5.md) found the sweep
   # guard neither attempt-scoped nor atomic, and artifactless age not derived from
-  # active.yaml started_at -- shipping the write-once/dedup/exists core without the sweep
-  # rather than iterating further. Default-off until the hardening lands; flip
-  # LEADV2_LEDGER_SWEEP_ENABLE=1 once the ledger row's GO-condition is met.
-  if [[ "${LEADV2_LEDGER_SWEEP_ENABLE:-0}" != "1" ]]; then
-    log "sweep disabled: pending attempt-scoped hardening, see SD-LEDGER-SWEEP-HARDEN-01"
+  # active.yaml started_at. All three are now fixed (dispatch_ledger_sweep_write_dead
+  # above; leadv2-lane-liveness.sh derives age_s from the session's own started_at on
+  # every artifactless-dead verdict) -- sweep defaults ON; LEADV2_LEDGER_SWEEP_ENABLE=0 is
+  # the one-flip rollback to the prior no-op.
+  if [[ "${LEADV2_LEDGER_SWEEP_ENABLE:-1}" == "0" ]]; then
+    log "sweep disabled: LEADV2_LEDGER_SWEEP_ENABLE=0"
     return 0
   fi
   [[ -f "${LANE_LIVENESS_BIN}" ]] || { log_err "sweep: lane-liveness script not found: ${LANE_LIVENESS_BIN}"; return 1; }
@@ -326,14 +405,15 @@ cmd_sweep() {
   raw="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --all --json 2>/dev/null)" || {
     log_err "sweep: leadv2-lane-liveness.sh --all failed"; return 1
   }
-  local checked=0 swept=0 lane verdict age_s log_path raw_log_path sig8 pc_rc sweep_cause
+  local checked=0 swept=0 skipped_alive=0 skipped_attemptless=0 skipped_indeterminate=0
+  local lane verdict age_s log_path raw_log_path attempt pid_alive_f sig8 pc_rc sweep_cause
   # wave2 round4 finding 3 (self-caught): tab ($'\t') is an IFS WHITESPACE character, so
   # `IFS=$'\t' read` collapses consecutive delimiters -- an empty `log_path` field
   # (exactly the null-verified-artifact case this fix targets) silently shifted
   # `raw_log_path`'s value into the `log_path` variable instead, and left `raw_log_path`
   # itself empty. \x1f (unit separator) is not whitespace, so empty fields are preserved
   # positionally regardless of which field is empty.
-  while IFS=$'\x1f' read -r lane verdict age_s log_path raw_log_path; do
+  while IFS=$'\x1f' read -r lane verdict age_s log_path raw_log_path attempt pid_alive_f; do
     [[ -n "${lane}" ]] || continue
     sig8=""
     if [[ "${lane}" == dispatch-* && "${lane#dispatch-}" =~ ^[0-9a-f]{8}$ ]]; then
@@ -346,6 +426,39 @@ cmd_sweep() {
     [[ -n "${sig8}" ]] || continue
     checked=$(( checked + 1 ))
     [[ "${verdict}" == dead:* ]] || continue
+    # HIGH-1 fix (fixround-tails): a live worker pid is decisive evidence, stronger than an
+    # artifactless verdict derived purely from missing files -- leadv2-lane-liveness.sh's
+    # three artifactless-dead paths (no_handoff_dir/no_log_artifact/log_stat_failed) return
+    # dead:* WITHOUT consulting pid_alive at all, so this sweep must consult it itself,
+    # regardless of age. Without this, an artifactless lane whose worker is genuinely still
+    # running gets swept dead once older than the close-owner grace window, and the write-
+    # once `dead` terminal then permanently discards the real `landed` outcome the live
+    # worker is about to record. See review-tails-verdict.md HIGH-1 for the live repro.
+    #
+    # MEDIUM-4 fix (review-tails-verdict-2.md): the skip above used to fire on EVERY
+    # dead:* verdict, but not every dead:* verdict is artifactless-derived --
+    # dead:wedged_STAT=<stat> and dead:provider_{completed,failed,cancelled} DID consult
+    # pid_alive themselves and concluded dead deliberately (a SIGSTOP'd or provider-
+    # terminated process is dead regardless of pid liveness); those are exactly the
+    # "positively-proven-dead verdict" this sweep's own doc header says should free a
+    # lane. Scoping the skip to only the three verdicts that never looked at pid_alive
+    # keeps HIGH-1's fix (artifactless lanes) while no longer making a wedged worker
+    # permanently unsweepable.
+    if [[ "${pid_alive_f}" == "1" && "${verdict}" =~ ^dead:(no_handoff_dir|no_log_artifact|log_stat_failed)$ ]]; then
+      skipped_alive=$(( skipped_alive + 1 ))
+      log "sweep: skipping lane=${lane} sig=${sig8} verdict=${verdict} -- pid is ALIVE (live-pid evidence overrides an artifactless-dead verdict)"
+      continue
+    fi
+    # LOW-1: a row whose started_at never parsed (missing/malformed) is INDETERMINATE, not
+    # provably dead -- leadv2-lane-liveness.sh's age_from_started_at() already warns on
+    # stderr; the sweep must also refuse explicitly here rather than silently relying on
+    # _product_close_pid_alive's age<grace coercion (which happens to block it TODAY only
+    # because an empty age_s gets coerced to 0, an incidental side-effect, not a decision).
+    if [[ -z "${age_s}" ]]; then
+      skipped_indeterminate=$(( skipped_indeterminate + 1 ))
+      log "sweep: skipping lane=${lane} sig=${sig8} verdict=${verdict} -- age_s indeterminate (started_at missing/unparseable, cannot safely age out)"
+      continue
+    fi
     _product_close_pid_alive "${sig8}" "${age_s}"
     pc_rc=$?
     [[ ${pc_rc} -eq 0 ]] && continue
@@ -354,12 +467,16 @@ cmd_sweep() {
       3) sweep_cause="malformed_owner_record" ;;
       *) sweep_cause="swept" ;;
     esac
-    # wave2 round4 finding 1: any-terminal check, NOT dispatch_terminal_exists() -- a
-    # refused/parked row is already a recorded outcome for this sig8's own attempt; the
-    # sweep must never append `dead` on top of it (dead is write-once, so that would
-    # permanently poison a sig8 a later retry is still entitled to land against).
-    dispatch_any_terminal_exists "${sig8}" && continue
-    if dispatch_ledger_write_terminal "${sig8}" "${lane}" "dead" "${sweep_cause}" "verdict=${verdict}"; then
+    # SD-LEDGER-SWEEP-HARDEN-01: dispatch_ledger_sweep_write_dead() now does its own
+    # atomic, attempt-scoped any-terminal check UNDER THE LOCK (see its own doc header) --
+    # the old unlocked, sig8-wide dispatch_any_terminal_exists() preflight that used to
+    # sit here is gone; this call is now the ENTIRE guard, not a second layer over it.
+    if [[ -z "${attempt}" ]]; then
+      skipped_attemptless=$(( skipped_attemptless + 1 ))
+      log "sweep: skipping lane=${lane} sig=${sig8} -- no attempt recorded on its active.yaml row (attempt-less, cannot safely attribute a dead terminal)"
+      continue
+    fi
+    if dispatch_ledger_sweep_write_dead "${sig8}" "${lane}" "${sweep_cause}" "verdict=${verdict}" "${attempt}"; then
       swept=$(( swept + 1 ))
     fi
   done < <(printf '%s' "${raw}" | python3 -c '
@@ -374,9 +491,16 @@ for row in d.get("lanes") or []:
     age_s = row.get("age_s")
     log_path = row.get("log_path") or ""
     raw_log_path = row.get("raw_log_path") or ""
-    print("%s\x1f%s\x1f%s\x1f%s\x1f%s" % (lane, verdict, age_s if age_s is not None else 0, log_path, raw_log_path))
+    attempt = row.get("attempt") or ""
+    pid_alive_f = "1" if row.get("pid_alive") else "0"
+    print("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % (lane, verdict, age_s if age_s is not None else "", log_path, raw_log_path, attempt, pid_alive_f))
 ' 2>/dev/null)
-  log "sweep: checked=${checked} swept=${swept}"
+  # MEDIUM-1: a per-run summary that distinguishes "nothing needed sweeping" from "the
+  # attempt token never reached this lane at all" (e.g. a stale plugin cache holding a
+  # pre-hardening dispatch-code.sh, which prints no attempt= and skips every lane) -- both
+  # used to print the byte-identical checked=N swept=0, which is the lying-GREEN shape for
+  # a sweep that is default-ON.
+  log "sweep: checked=${checked} swept=${swept} skipped_alive=${skipped_alive} skipped_attemptless=${skipped_attemptless} skipped_indeterminate=${skipped_indeterminate}"
 }
 
 usage() {
