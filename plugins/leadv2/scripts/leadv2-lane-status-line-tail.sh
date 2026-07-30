@@ -223,18 +223,23 @@ if os.path.isfile(label_memo_file):
     except Exception:
         label_memo = {}
 
-def cap_label(text):
+def cap_label(text, label_cap):
     text = text.strip()
-    return text if len(text) <= LABEL_CAP else text[:LABEL_CAP - 1] + '…'
+    label_cap = max(label_cap, 1)
+    if len(text) <= label_cap:
+        return text
+    return text[:label_cap - 1] + '…' if label_cap > 1 else '…'
 
-def resolve_label(tid, s):
+def raw_label(tid, s):
+    # Returns the UNCAPPED label text; capping is applied later, per-row,
+    # once the digest-wide length budget is known (fix5d-addendum).
     for key in ('title', 'mission'):
         val = s.get(key)
         if val:
-            return cap_label(str(val))
+            return str(val)
     if tid in label_memo:
         return label_memo[tid]
-    label = tid[:12]
+    label = tid
     try:
         import subprocess
         proc = subprocess.run(
@@ -247,13 +252,17 @@ def resolve_label(tid, s):
             intent = str(item.get('intent', '') or '')
             tag = intent.split(':', 1)[0].strip()
             if tag:
-                label = cap_label(tag)
+                label = tag
     except Exception:
         pass
     label_memo[tid] = label
     return label
 
-id_parts = []
+# FIX5d-addendum (founder ask): digest also carries dispatch kind (sw =
+# leadv2-dispatch-code.sh's single-worker funnel, identified by backend/
+# where == "dispatch-code"; everything else -- headless/terminal/tmux -- is
+# a full-cycle fanout.sh child, so "full") and the model that ran the lane.
+lane_meta = []
 for age_s, tid, phase in rows[:2]:
     if age_s is None:
         age = '?'
@@ -263,10 +272,36 @@ for age_s, tid, phase in rows[:2]:
         age = f'{age_s // 60}m'
     else:
         age = f'{age_s // 3600}h'
-    label = resolve_label(tid, sessions_by_tid.get(tid, {}))
-    id_parts.append(f'{label}:{phase}:{age}')
+    s = sessions_by_tid.get(tid, {})
+    kind = 'sw' if str(s.get('backend') or s.get('where') or '') == 'dispatch-code' else 'full'
+    model = str(s.get('lead_model') or s.get('provider') or '?')
+    label = raw_label(tid, s)
+    # NB: tuples, not a dict-with-string-keys -- this whole heredoc-style
+    # block is embedded inside the OUTER bash script's double-quoted
+    # 'python3 -c \"...\"' string, so a python double-quoted f-string (or
+    # any bracket lookup needing its OWN quotes inside an f-string) would
+    # prematurely close the outer bash quoting. Every line in this block
+    # stays single-quote-only for that reason.
+    lane_meta.append((label, kind, model, phase, age))
 
-out = f'lanes {n}/{cap}'
+# Whole line stays under ~90 chars, per-lane label absorbs the squeeze
+# first (founder ask) -- everything else (kind/model/phase/age) is short
+# and load-bearing, so it is never shrunk.
+DIGEST_BUDGET = 90
+base_prefix = f'lanes {n}/{cap}'
+id_parts = []
+if lane_meta:
+    fixed_len = len(base_prefix) + len(' | ') + (len(lane_meta) - 1) * len(' ')
+    overheads = [1 + len(k) + 1 + len(mo) + 1 + len(ph) + 1 + len(ag)
+                 for _, k, mo, ph, ag in lane_meta]
+    fixed_len += sum(overheads)
+    available = DIGEST_BUDGET - fixed_len
+    per_label_cap = max(6, min(LABEL_CAP, available // len(lane_meta) if available > 0 else 6))
+    for lbl, k, mo, ph, ag in lane_meta:
+        lbl = cap_label(lbl, per_label_cap)
+        id_parts.append(f'{lbl}·{k}·{mo}·{ph}:{ag}')
+
+out = base_prefix
 if id_parts:
     out += ' | ' + ' '.join(id_parts)
 print(out)
