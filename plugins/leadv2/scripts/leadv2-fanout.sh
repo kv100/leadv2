@@ -112,6 +112,21 @@ ACTIVE_YAML="$(_leadv2_yaml_file)"
 # the top of launch_via_dispatch_code) so =0 is truly byte-identical to the
 # pre-funnel script regardless of this file's health.
 FANOUT_CLASS_FUNNEL="${LEADV2_FANOUT_CLASS_FUNNEL:-1}"
+
+# P0-FANOUT-EXIT-KILLS-ITS-OWN-LANES-01: the funnel path above ran
+# leadv2-dispatch-code.sh SYNCHRONOUSLY in this script's own foreground,
+# strictly sequentially across LAUNCH_IDS -- up to ARCHITECT_PREPASS_TIMEOUT_SEC
+# x ARCHITECT_PREPASS_ATTEMPTS (840s) per lane. On this machine (no `setsid`
+# binary) nothing this script launches gets its own OS session, so when a
+# caller (e.g. the harness Bash tool's 600s ceiling) reaps this script's
+# process GROUP, every already-spawned lane -- prepass and worker alike --
+# dies with it, and any lane the sequential loop never reached is silently
+# dropped with no terminal record. LEADV2_FANOUT_LANE_DETACH=1 (default)
+# hands each funnel lane to a detached, per-lane launcher
+# (leadv2-fanout-lane-launcher.sh) in its own session and waits only for a
+# short handoff ack; =0 restores today's synchronous byte-identical behavior.
+LEADV2_FANOUT_LANE_DETACH="${LEADV2_FANOUT_LANE_DETACH:-1}"
+LEADV2_FANOUT_LANE_ACK_TIMEOUT_SEC="${LEADV2_FANOUT_LANE_ACK_TIMEOUT_SEC:-15}"
 _TASKS_LIB_LOADED=0
 _fanout_ensure_tasks_lib() {
   [[ "$_TASKS_LIB_LOADED" == "1" ]] && return 0
@@ -1492,6 +1507,149 @@ print('\t'.join((esc(writes), esc(acceptance), rollback_flag)))
 " "$row" 2>/dev/null || printf -- '-\t-\t0'
 }
 
+# _leadv2_new_session_exec <logfile> <cmd...> — P0-FANOUT-EXIT-KILLS-ITS-OWN-
+# LANES-01 portability fix. Spawns <cmd...> detached into a NEW OS session
+# (real setsid(2)) so it neither dies when this script exits nor shares this
+# script's process group -- a group-directed signal (e.g. the harness Bash
+# tool reaping a timed-out command's whole group) never reaches it. stdin is
+# /dev/null; stdout+stderr append to <logfile>.
+#
+# FANOUT-MACOS-LAUNCHER-01's prior claim ("nohup + trailing & still detaches
+# from the controlling terminal") is true for terminal detachment but FALSE
+# for group-directed signals -- nohup only sets SIG_IGN for SIGHUP, it never
+# calls setsid(2). On Linux (prod VPS) the real `setsid` binary does this
+# properly already. On macOS (no setsid binary) this falls back to a python3
+# shim that calls os.setsid() for real before exec'ing the target -- python3
+# is already a hard dependency elsewhere in this pipeline
+# (leadv2-dispatch-code.sh). Only if BOTH are unavailable does this fall back
+# to plain nohup, and that fallback is logged loudly, never silently, because
+# it reproduces exactly the bug this function exists to fix.
+#
+# Echoes "<pid> <used_new_session:true|false>" on stdout -- the boolean has
+# the SAME meaning _fanout_kill_child's <used_setsid> arg already expects
+# (true => pid is also the new process-group leader, kill the group; false =>
+# it shares the caller's group, kill only the pid). Caller must NOT background
+# this call again: $! is already captured internally via the backgrounded
+# subshell that execs the primitive, so an extra `&` at the call site would
+# capture the wrong pid.
+_leadv2_new_session_exec() {
+  local logf="$1"; shift
+  local pid used=false
+  if command -v setsid >/dev/null 2>&1; then
+    used=true
+    ( exec setsid nohup "$@" </dev/null >>"$logf" 2>&1 ) &
+    pid=$!
+  elif command -v python3 >/dev/null 2>&1; then
+    used=true
+    ( exec python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+        "$@" </dev/null >>"$logf" 2>&1 ) &
+    pid=$!
+  else
+    log_error "_leadv2_new_session_exec: neither setsid nor python3 available -- launching '$1' NOT session-detached; a caller-group signal (e.g. harness Bash-tool teardown) WILL still reach this child (FANOUT-MACOS-LAUNCHER-01 regression path)"
+    ( exec nohup "$@" </dev/null >>"$logf" 2>&1 ) &
+    pid=$!
+  fi
+  printf '%s %s\n' "$pid" "$used"
+}
+
+# _fanout_write_lane_terminal <tid> <landed|parked|refused|dead> <cause>
+# [<evidence>] — records a terminal row for a lane that never got far enough
+# to have its own dispatch-code.sh sig8 (pre-dispatch failures: launcher
+# binary missing, handoff-ack timeout, launcher died before spawning a
+# worker). Keys on "fanout-<tid>" rather than a sig8 -- the ledger's own
+# write-terminal only requires a non-empty, non-colliding key, and a lane
+# that dies before dispatch-code.sh assigns a sig8 has no other identifier
+# (T0/decision-default in the architect prepass; lead did not override it).
+_fanout_write_lane_terminal() {
+  local tid="$1" terminal="$2" cause="$3" evidence="${4:-}"
+  local ledger_bin="${LEADV2_FANOUT_DISPATCH_LEDGER_BIN:-${SCRIPT_DIR}/leadv2-dispatch-ledger.sh}"
+  if [[ ! -x "$ledger_bin" ]]; then
+    log_error "dispatch ledger missing/not executable at ${ledger_bin} -- cannot record terminal for task=${tid} cause=${cause}"
+    return 1
+  fi
+  bash "$ledger_bin" write-terminal "fanout-${tid}" "$tid" "$terminal" "$cause" "$evidence" "" >/dev/null 2>&1 \
+    || log_error "write-terminal failed for task=${tid} terminal=${terminal} cause=${cause}"
+}
+
+# _fanout_launch_lane_detached <tid> <cls> <lead_model> <lead_effort>
+# <risk_tags> <class_reason> <provider> <route_reason> <group_key> <label>
+# <mission> <lane_writes> <lane_acceptance> <lane_rollback> <dispatch_bin> —
+# P0-FANOUT-EXIT-KILLS-ITS-OWN-LANES-01 default path (LEADV2_FANOUT_LANE_
+# DETACH=1). Hands the (up to 840s) architect-prepass + worker-spawn call to
+# leadv2-dispatch-code.sh off to a per-lane launcher script running in its own
+# OS session, and blocks only for a short handoff ack (LEADV2_FANOUT_LANE_
+# ACK_TIMEOUT_SEC, default 15s) instead of the full synchronous call --
+# letting fanout return promptly regardless of how many lanes are launched or
+# how long any one prepass takes. The launcher (leadv2-fanout-lane-launcher.sh)
+# owns everything past this handoff: running dispatch-code.sh, finalizing the
+# active.yaml registration with the real worker pid, and -- via its own EXIT
+# trap -- guaranteeing a terminal record if it dies before a worker exists.
+# No ack within the timeout => the launcher is killed, the claim and lane
+# reservation are released, and a `dead` terminal row is written here instead
+# -- this lane is never left silently dangling.
+_fanout_launch_lane_detached() {
+  local tid="$1" cls="$2" lead_model="$3" lead_effort="$4" risk_tags="$5"
+  local class_reason="$6" provider="$7" route_reason="$8" group_key="$9"
+  local label="${10}" mission="${11}" lane_writes="${12}" lane_acceptance="${13}"
+  local lane_rollback="${14}" dispatch_bin="${15}"
+
+  local lane_sig_dir="${PROJECT_ROOT}/docs/handoff/fanout-lane-${tid}"
+  mkdir -p "$lane_sig_dir"
+  local mission_file="${lane_sig_dir}/mission.txt"
+  printf '%s' "$mission" > "$mission_file"
+  local lane_log="${lane_sig_dir}/launcher.log"
+  : > "$lane_log"
+
+  local launcher_bin="${LEADV2_FANOUT_LANE_LAUNCHER_BIN:-${SCRIPT_DIR}/leadv2-fanout-lane-launcher.sh}"
+  if [[ ! -x "$launcher_bin" ]]; then
+    log_error "leadv2-fanout-lane-launcher.sh missing/not executable at ${launcher_bin} -- releasing claim+reservation, recording terminal for task=${tid}"
+    leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+    leadv2_active_unregister "$tid" >/dev/null 2>&1 || true
+    _fanout_write_lane_terminal "$tid" dead "lane_launcher_bin_missing" "$launcher_bin"
+    return
+  fi
+
+  local -a launcher_cmd=(env "LEADV2_PROJECT_ROOT=${PROJECT_ROOT}" "PROJECT_ROOT=${PROJECT_ROOT}"
+    bash "$launcher_bin"
+    --task-id "$tid" --class "$cls" --mission-file "$mission_file"
+    --project-root "$PROJECT_ROOT" --sig-dir "$lane_sig_dir"
+    --lead-model "$lead_model" --lead-effort "$lead_effort"
+    --risk-tags "$risk_tags" --class-reason "$class_reason"
+    --provider "$provider" --route-reason "$route_reason" --group-key "$group_key"
+    --dispatch-bin "$dispatch_bin")
+  [[ -n "$lane_writes" ]] && launcher_cmd+=(--writes "$lane_writes")
+  [[ -n "$lane_acceptance" ]] && launcher_cmd+=(--acceptance-cmd "$lane_acceptance")
+  [[ "$lane_rollback" == "1" ]] && launcher_cmd+=(--rollback-onestep)
+
+  local lnse_out lnse_pid lnse_used_setsid
+  lnse_out="$(_leadv2_new_session_exec "$lane_log" "${launcher_cmd[@]}" 9>&-)"
+  lnse_pid="${lnse_out%% *}"
+  lnse_used_setsid="${lnse_out#* }"
+
+  log "lane launcher spawned: task=${tid} launcher_pid=${lnse_pid} used_setsid=${lnse_used_setsid} log=${lane_log}"
+
+  local pid_file="${lane_sig_dir}/launcher.pid"
+  local ack_timeout="${LEADV2_FANOUT_LANE_ACK_TIMEOUT_SEC:-15}"
+  local deadline=$(( $(date +%s) + ack_timeout ))
+  local acked_pid=""
+  while [[ "$(date +%s)" -lt "$deadline" ]]; do
+    if [[ -f "$pid_file" ]]; then
+      acked_pid="$(cat "$pid_file" 2>/dev/null || true)"
+      if [[ -n "$acked_pid" ]] && kill -0 "$acked_pid" 2>/dev/null; then
+        log "lane launcher acked: task=${tid} launcher_pid=${acked_pid}"
+        return
+      fi
+    fi
+    sleep 0.2
+  done
+
+  log_error "lane launcher handoff timed out after ${ack_timeout}s for task=${tid} (launcher_pid=${lnse_pid:-<none>}) -- killing launcher, releasing claim+reservation, recording terminal"
+  _fanout_kill_child "$lnse_pid" "$lnse_used_setsid"
+  leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+  leadv2_active_unregister "$tid" >/dev/null 2>&1 || true
+  _fanout_write_lane_terminal "$tid" dead "launcher_handoff_timeout" "$lane_log"
+}
+
 # launch_via_dispatch_code <tid> <cls> <lead_model> <lead_effort> <risk_tags>
 # <class_reason> <provider> <route_reason> <group_key> <label> — the
 # FANOUT-CLASS-FUNNEL-01 single-worker path for Light/Standard tasks. Claims
@@ -1593,6 +1751,20 @@ launch_via_dispatch_code() {
       bash "$_writes_overlap_bin" --task-id "$tid" --writes "$_lane_writes" \
         --project-root "$PROJECT_ROOT" --notify >/dev/null 2>&1 || true
     fi
+  fi
+
+  # P0-FANOUT-EXIT-KILLS-ITS-OWN-LANES-01: default path from here on is the
+  # detached per-lane launcher (see _fanout_launch_lane_detached above) --
+  # everything below this branch (synchronous dispatch-code.sh call + case)
+  # is preserved byte-identical and only runs when LEADV2_FANOUT_LANE_
+  # DETACH=0, the one-flag rollback to today's behavior. The claim and the
+  # pid=null/pid_pending=true reservation above already happened identically
+  # on both paths -- only what happens AFTER that reservation diverges.
+  if [[ "$LEADV2_FANOUT_LANE_DETACH" != "0" ]]; then
+    _fanout_launch_lane_detached "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" \
+      "$class_reason" "$provider" "$route_reason" "$group_key" "$label" \
+      "$mission" "$_lane_writes" "$_lane_acceptance" "$_lane_rollback" "$dispatch_bin"
+    return
   fi
 
   local -a dc_args=("$mission" --kind "fanout-class-funnel" --task-id "$tid")
