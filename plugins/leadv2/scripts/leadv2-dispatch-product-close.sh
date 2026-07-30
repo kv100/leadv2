@@ -37,6 +37,22 @@ emit() { # type text
   printf '[leadv2-dispatch-product-close] %s\n' "$2" >&2
 }
 
+# Phase stamps into active.yaml (SUPERVISOR-AUDIT-01 addendum, founder 2026-07-30) — see
+# leadv2-dispatch-code.sh's matching block for the full rationale (fix-fanout made the
+# funnel the row's lifecycle owner; nothing ever advanced `phase` past "spawning"). This
+# script owns the e2e/review half of the same funnel run, so it stamps those two
+# transitions with the same cheap update_phase PATCH; dispatch-code.sh stamps prepass/build.
+# Keyed by FOUNDER_TASK_ID (fanout's active.yaml row id), never TASK (the internal sig8) --
+# guarded against empty/unset so leadv2_active_update_phase's "${1:?...}" can never abort
+# this script under `set -u` when no founder id was threaded through (e.g. a bare re-run).
+_ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+[[ -f "${_ACTIVE_REGISTRY_SH}" ]] && source "${_ACTIVE_REGISTRY_SH}"
+_stamp_active_phase() { # <task_id> <phase>
+  [[ -n "${1:-}" ]] || return 0
+  declare -F leadv2_active_update_phase >/dev/null || return 0
+  LEADV2_PROJECT_ROOT="${ROOT}" leadv2_active_update_phase "$1" "$2" >/dev/null 2>&1 || true
+}
+
 # Fix6 (SUPERVISOR-AUDIT-01): the reviewer arm used to come from a hand-kept env list
 # (LEADV2_DISPATCH_REVIEWER_ARMS, default "codex,sonnet") that never consulted the ONE
 # resolver dispatch-code.sh/router.sh use — GLM's review ban and the codex_quota_gate
@@ -126,6 +142,7 @@ if [[ "${AUTHOR}" == sonnet && "${HANDLE}" =~ ^[0-9]+$ ]]; then
   while kill -0 "${HANDLE}" 2>/dev/null; do sleep 2; done
 fi
 
+_stamp_active_phase "${FOUNDER_TASK_ID}" "e2e"
 if [[ "${E2E_ON}" != 1 ]]; then
   emit decision "e2e_gate task=${TASK} status=disabled reason=kill_switch"
 elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${ROOT}")"; then
@@ -146,6 +163,7 @@ else
   fi
 fi
 
+_stamp_active_phase "${FOUNDER_TASK_ID}" "review"
 if [[ "${REVIEW_ON}" != 1 ]]; then
   emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
   exit 0

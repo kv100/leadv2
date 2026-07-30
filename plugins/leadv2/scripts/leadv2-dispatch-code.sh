@@ -248,6 +248,27 @@ ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 
+# Phase stamps into active.yaml (SUPERVISOR-AUDIT-01 addendum, founder 2026-07-30):
+# fix-fanout made THIS funnel dispatch the lifecycle owner of its active.yaml row, but
+# nothing here ever advanced `phase` past the "spawning" value _fanout_register_session's
+# registration sets, so a task that had already built and passed e2e still showed
+# "spawning:10m" on the statusline. Stamp the SAME low-level op the registration path
+# uses (leadv2_active_update_phase -> update_phase, a cheap one-field PATCH under the
+# existing yaml lock, defined in leadv2-active-registry.sh) at each transition this
+# funnel already passes through. Fails open (no-op) if active.yaml/the registry script
+# is missing or the row isn't there — a statusline cosmetic must never block dispatch.
+# The active.yaml row is keyed by the FOUNDER task id (fanout's LAUNCH_IDS), never the
+# internal dispatch sig8 -- passing sig8 here would silently match nothing. An empty/unset
+# task_id (no --task-id caller) is guarded explicitly: leadv2_active_update_phase's own
+# "${1:?...}" would otherwise abort this whole script under `set -u` on an empty arg.
+_ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+[[ -f "${_ACTIVE_REGISTRY_SH}" ]] && source "${_ACTIVE_REGISTRY_SH}"
+_stamp_active_phase() { # <task_id> <phase>
+  [[ -n "${1:-}" ]] || return 0
+  declare -F leadv2_active_update_phase >/dev/null || return 0
+  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_update_phase "$1" "$2" >/dev/null 2>&1 || true
+}
+
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
 DISPATCH_LEDGER_DIR="${DISPATCH_LEDGER_DIR:-${CACHE_BASE}/dispatch-ledger}"
 REVIEW_LEDGER_DIR="${CACHE_BASE}/code-review-ledger"
@@ -1469,6 +1490,7 @@ cmd_resolve() {
     # end-to-end gate would then be inspecting something nobody ever scoped. Blocking forever
     # is wrong; dispatching unrefined is also wrong; PARKING and surfacing it is the honest
     # third option.
+    _stamp_active_phase "${founder_task_id}" "prepass"
     local _pp_ok=0 _pp_try=1
     while (( _pp_try <= ARCHITECT_PREPASS_ATTEMPTS )); do
       if architect_prepass "${mission}" "${sig8}" "${lane_writes}"; then _pp_ok=1; break; fi
@@ -1720,6 +1742,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
     candidate_arms=("${_kept[@]}")
   fi
 
+  _stamp_active_phase "${founder_task_id}" "build"
   local candidate arc
   for candidate in "${candidate_arms[@]}"; do
     [[ "${candidate}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
