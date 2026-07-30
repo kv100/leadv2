@@ -93,6 +93,13 @@ LANE_CACHE_FILE="${TMPDIR:-/tmp}/leadv2-statusline-lane-${CACHE_KEY}"
 RESOLVER="${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR}/scripts/leadv2-state-path.sh"
 [[ -x "$RESOLVER" ]] || RESOLVER="${SCRIPT_DIR}/leadv2-state-path.sh"
 
+# FIX5d (SUPERVISOR-AUDIT-01 follow-up): task-name digest instead of raw id.
+# id→label memo lives alongside the lane cache so a resolved label is never
+# re-fetched on the next paint (only a NEW task_id costs a tasks-lib call).
+TASKS_LIB="${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR}/scripts/leadv2-tasks-lib.sh"
+[[ -f "$TASKS_LIB" ]] || TASKS_LIB="${SCRIPT_DIR}/leadv2-tasks-lib.sh"
+LABEL_MEMO_FILE="${LANE_CACHE_FILE}.labels"
+
 CACHE_FRESH=0
 if [[ -f "$LANE_CACHE_FILE" ]]; then
   CACHE_MTIME="$(timeout 0.05 stat -f %m "$LANE_CACHE_FILE" 2>/dev/null || timeout 0.05 stat -c %Y "$LANE_CACHE_FILE" 2>/dev/null || echo 0)"
@@ -115,7 +122,7 @@ else
   if [[ -x "$RESOLVER" ]]; then
     ACTIVE_YAML="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 1 "$RESOLVER" --no-link active.yaml 2>/dev/null || true)"
     if [[ -n "$ACTIVE_YAML" ]]; then
-      LANES="$(timeout 1 python3 -c "
+      LANES="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 1 python3 -c "
 import sys, os, time, glob
 try:
     import yaml
@@ -176,6 +183,7 @@ def lane_log(s):
 
 now = time.time()
 rows = []
+sessions_by_tid = {}
 for s in sessions:
     tid = str(s.get('task_id', '?'))
     phase = str(s.get('phase', '?'))
@@ -187,11 +195,63 @@ for s in sessions:
         except Exception:
             age_s = None
     rows.append((age_s, tid, phase))
+    sessions_by_tid[tid] = s
 
 # Pulse digest (founder ask, fix5 attempt 2): only the top-2 MOST
 # recently-active lanes, not the first 8 in file order — smallest age_s
 # first; unknown-age lanes (no discoverable log) sort last, never first.
 rows.sort(key=lambda r: (r[0] is None, r[0] if r[0] is not None else 0))
+
+# FIX5d: task-name digest instead of a raw id. Precedence: the active.yaml
+# row's own title/mission field (not populated by any current schema, but
+# a cheap free win if a future writer adds one) -> the label memo (a prior
+# tail-script run already resolved this task_id) -> docs/tasks.yaml via
+# leadv2-tasks-lib.sh's own locked by_id op (never a raw yaml parse here —
+# tasks.yaml can be mid-write by a concurrent lane). Falls back to the raw
+# id if every source comes up empty, so the digest never renders blank.
+LABEL_CAP = 24
+label_memo_file, tasks_lib_path = sys.argv[5], sys.argv[6]
+label_memo = {}
+if os.path.isfile(label_memo_file):
+    try:
+        with open(label_memo_file, encoding='utf-8') as fh:
+            for line in fh:
+                line = line.rstrip('\n')
+                if '\t' in line:
+                    k, v = line.split('\t', 1)
+                    label_memo[k] = v
+    except Exception:
+        label_memo = {}
+
+def cap_label(text):
+    text = text.strip()
+    return text if len(text) <= LABEL_CAP else text[:LABEL_CAP - 1] + '…'
+
+def resolve_label(tid, s):
+    for key in ('title', 'mission'):
+        val = s.get(key)
+        if val:
+            return cap_label(str(val))
+    if tid in label_memo:
+        return label_memo[tid]
+    label = tid[:12]
+    try:
+        import subprocess
+        proc = subprocess.run(
+            ['bash', '-c', 'source "\$1" 2>/dev/null && leadv2_tasks_by_id "\$2"',
+             '_', tasks_lib_path, tid],
+            capture_output=True, text=True, timeout=1,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            item = (yaml.safe_load(proc.stdout) or [{}])[0]
+            intent = str(item.get('intent', '') or '')
+            tag = intent.split(':', 1)[0].strip()
+            if tag:
+                label = cap_label(tag)
+    except Exception:
+        pass
+    label_memo[tid] = label
+    return label
 
 id_parts = []
 for age_s, tid, phase in rows[:2]:
@@ -203,7 +263,8 @@ for age_s, tid, phase in rows[:2]:
         age = f'{age_s // 60}m'
     else:
         age = f'{age_s // 3600}h'
-    id_parts.append(f'{tid[:12]}:{phase}:{age}')
+    label = resolve_label(tid, sessions_by_tid.get(tid, {}))
+    id_parts.append(f'{label}:{phase}:{age}')
 
 out = f'lanes {n}/{cap}'
 if id_parts:
@@ -214,7 +275,13 @@ try:
         fh.write(out)
 except Exception:
     pass
-" "$ACTIVE_YAML" "$CWD_FROM_INPUT" "$LANE_CACHE_FILE" "$LIMITS_YAML" 2>/dev/null || true)"
+try:
+    with open(label_memo_file, 'w', encoding='utf-8') as fh:
+        for k, v in label_memo.items():
+            fh.write(f'{k}\t{v}\n')
+except Exception:
+    pass
+" "$ACTIVE_YAML" "$CWD_FROM_INPUT" "$LANE_CACHE_FILE" "$LIMITS_YAML" "$LABEL_MEMO_FILE" "$TASKS_LIB" 2>/dev/null || true)"
       [[ -z "$LANES" ]] && LANES="lanes ?"
     fi
   fi
