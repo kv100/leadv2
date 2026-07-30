@@ -100,6 +100,22 @@ TASKS_LIB="${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR}/scripts/leadv2-tasks-lib.sh"
 [[ -f "$TASKS_LIB" ]] || TASKS_LIB="${SCRIPT_DIR}/leadv2-tasks-lib.sh"
 LABEL_MEMO_FILE="${LANE_CACHE_FILE}.labels"
 
+# FIX5e (SUPERVISOR-AUDIT-01): a "review:35m" digest entry looks alive even
+# when the worker behind it already exited (review FAIL, no restart yet) --
+# the founder's live repro was exactly this: age from the phase's own log
+# mtime kept ticking harmlessly while the process was gone. Append the
+# authoritative leadv2-lane-liveness.sh verdict (never a hand-rolled PID/age
+# guess here, so this can never drift from supervise.sh's own prune logic)
+# for the SAME top-2 lanes already selected below. Memo-cached ~10s (own
+# file, not folded into LANE_CACHE_FILE/LABEL_MEMO_FILE's TTLs) because the
+# liveness script forks python3 + stat + an optional codex-task.sh call per
+# lane, and this tail script can repaint far more often than a lane's true
+# liveness changes.
+LIVENESS_BIN="${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR}/scripts/leadv2-lane-liveness.sh"
+[[ -x "$LIVENESS_BIN" ]] || LIVENESS_BIN="${SCRIPT_DIR}/leadv2-lane-liveness.sh"
+LIVENESS_MEMO_FILE="${LANE_CACHE_FILE}.liveness"
+LIVENESS_MEMO_TTL_S="${LEADV2_LANE_LIVENESS_MEMO_TTL_S:-10}"
+
 CACHE_FRESH=0
 if [[ -f "$LANE_CACHE_FILE" ]]; then
   CACHE_MTIME="$(timeout 0.05 stat -f %m "$LANE_CACHE_FILE" 2>/dev/null || timeout 0.05 stat -c %Y "$LANE_CACHE_FILE" 2>/dev/null || echo 0)"
@@ -122,8 +138,17 @@ else
   if [[ -x "$RESOLVER" ]]; then
     ACTIVE_YAML="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 1 "$RESOLVER" --no-link active.yaml 2>/dev/null || true)"
     if [[ -n "$ACTIVE_YAML" ]]; then
-      LANES="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 1 python3 -c "
-import sys, os, time, glob
+      # FIX5e: this python block now shells out to leadv2-lane-liveness.sh
+      # for up to 2 lanes (its own subprocess.run each budgeted at 2s below)
+      # -- measured standalone at ~0.9s per call (python3 + stat + an
+      # optional codex-task.sh probe), so the pre-fix5e outer `timeout 1`
+      # killed the WHOLE lane calc on every cache-miss run that hit an
+      # uncached lane, not just the liveness lookup (confirmed: 2 of 3 live
+      # runs regressed all the way to "lanes ?"). Same FIX5c reasoning
+      # applies: this script only ever runs detached in the background, so a
+      # generous outer bound here costs nothing downstream.
+      LANES="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 4 python3 -c "
+import sys, os, time, glob, subprocess
 try:
     import yaml
 except Exception:
@@ -223,6 +248,49 @@ if os.path.isfile(label_memo_file):
     except Exception:
         label_memo = {}
 
+# FIX5e: liveness verdict memo, same tab-separated-file shape as label_memo
+# above, keyed by task_id -> (verdict, resolved_at_epoch). A fresh memo entry
+# (age < liveness_ttl) is reused as-is; only an expired or missing entry pays
+# for a real leadv2-lane-liveness.sh subprocess.
+liveness_bin, liveness_memo_file, liveness_ttl_raw = sys.argv[7], sys.argv[8], sys.argv[9]
+try:
+    liveness_ttl = float(liveness_ttl_raw)
+except ValueError:
+    liveness_ttl = 10.0
+liveness_memo = {}
+if os.path.isfile(liveness_memo_file):
+    try:
+        with open(liveness_memo_file, encoding='utf-8') as fh:
+            for line in fh:
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) == 3:
+                    k, v, ts = parts
+                    try:
+                        liveness_memo[k] = (v, float(ts))
+                    except ValueError:
+                        pass
+    except Exception:
+        liveness_memo = {}
+
+def lane_verdict(tid):
+    now_ts = time.time()
+    cached = liveness_memo.get(tid)
+    if cached and (now_ts - cached[1]) < liveness_ttl:
+        return cached[0]
+    verdict = None
+    try:
+        proc = subprocess.run(
+            ['bash', liveness_bin, '--project-root', root, '--lane', tid],
+            capture_output=True, text=True, timeout=2,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            verdict = proc.stdout.strip().splitlines()[0].strip()
+    except Exception:
+        verdict = None
+    if verdict:
+        liveness_memo[tid] = (verdict, now_ts)
+    return verdict
+
 def cap_label(text, label_cap):
     text = text.strip()
     label_cap = max(label_cap, 1)
@@ -276,30 +344,42 @@ for age_s, tid, phase in rows[:2]:
     kind = 'sw' if str(s.get('backend') or s.get('where') or '') == 'dispatch-code' else 'full'
     model = str(s.get('lead_model') or s.get('provider') or '?')
     label = raw_label(tid, s)
+    # FIX5e: a '·verdict-prefix' suffix only when the authoritative verdict
+    # is NOT 'alive' -- the prefix (everything before the first ':') is whatever
+    # leadv2-lane-liveness.sh itself returns ('dead', 'silent', ...), never a
+    # hand-kept enum here, so a future verdict category renders correctly
+    # with no code change. A lookup failure (no verdict resolved at all)
+    # renders no suffix -- absence of evidence is not evidence of death.
+    verdict = lane_verdict(tid)
+    vsuffix = ''
+    if verdict and not verdict.startswith('alive'):
+        vprefix = verdict.split(':', 1)[0].strip()
+        if vprefix:
+            vsuffix = '·' + vprefix
     # NB: tuples, not a dict-with-string-keys -- this whole heredoc-style
     # block is embedded inside the OUTER bash script's double-quoted
     # 'python3 -c \"...\"' string, so a python double-quoted f-string (or
     # any bracket lookup needing its OWN quotes inside an f-string) would
     # prematurely close the outer bash quoting. Every line in this block
     # stays single-quote-only for that reason.
-    lane_meta.append((label, kind, model, phase, age))
+    lane_meta.append((label, kind, model, phase, age, vsuffix))
 
 # Whole line stays under ~90 chars, per-lane label absorbs the squeeze
-# first (founder ask) -- everything else (kind/model/phase/age) is short
-# and load-bearing, so it is never shrunk.
+# first (founder ask) -- everything else (kind/model/phase/age/verdict) is
+# short and load-bearing, so it is never shrunk.
 DIGEST_BUDGET = 90
 base_prefix = f'lanes {n}/{cap}'
 id_parts = []
 if lane_meta:
     fixed_len = len(base_prefix) + len(' | ') + (len(lane_meta) - 1) * len(' ')
-    overheads = [1 + len(k) + 1 + len(mo) + 1 + len(ph) + 1 + len(ag)
-                 for _, k, mo, ph, ag in lane_meta]
+    overheads = [1 + len(k) + 1 + len(mo) + 1 + len(ph) + 1 + len(ag) + len(vs)
+                 for _, k, mo, ph, ag, vs in lane_meta]
     fixed_len += sum(overheads)
     available = DIGEST_BUDGET - fixed_len
     per_label_cap = max(6, min(LABEL_CAP, available // len(lane_meta) if available > 0 else 6))
-    for lbl, k, mo, ph, ag in lane_meta:
+    for lbl, k, mo, ph, ag, vs in lane_meta:
         lbl = cap_label(lbl, per_label_cap)
-        id_parts.append(f'{lbl}·{k}·{mo}·{ph}:{ag}')
+        id_parts.append(f'{lbl}·{k}·{mo}·{ph}:{ag}{vs}')
 
 out = base_prefix
 if id_parts:
@@ -316,7 +396,13 @@ try:
             fh.write(f'{k}\t{v}\n')
 except Exception:
     pass
-" "$ACTIVE_YAML" "$CWD_FROM_INPUT" "$LANE_CACHE_FILE" "$LIMITS_YAML" "$LABEL_MEMO_FILE" "$TASKS_LIB" 2>/dev/null || true)"
+try:
+    with open(liveness_memo_file, 'w', encoding='utf-8') as fh:
+        for k, (v, ts) in liveness_memo.items():
+            fh.write(f'{k}\t{v}\t{ts}\n')
+except Exception:
+    pass
+" "$ACTIVE_YAML" "$CWD_FROM_INPUT" "$LANE_CACHE_FILE" "$LIMITS_YAML" "$LABEL_MEMO_FILE" "$TASKS_LIB" "$LIVENESS_BIN" "$LIVENESS_MEMO_FILE" "$LIVENESS_MEMO_TTL_S" 2>/dev/null || true)"
       [[ -z "$LANES" ]] && LANES="lanes ?"
     fi
   fi
@@ -333,14 +419,47 @@ fi
 # script run rather than folded into the lane cache's freshness window.
 # FIX5c: same stale fix-round-3 budgets as above (0.08s vs. this resolver's
 # own measured ~100-110ms) — bumped for the same reason.
+# FIX5e: a non-running supervise loop leaves the last pulse line as a
+# fossil forever -- the founder's live repro showed a 2-day-old UTC line
+# rendering as if it were live. Age is measured off the LINE'S OWN leading
+# ISO8601 timestamp (never the log file's mtime, which an unrelated write
+# could refresh); once that age is >= PULSE_STALE_MAX_S the fragment is
+# omitted entirely rather than shown stale. When rendered, the leading UTC
+# stamp is converted to local HH:MM (never raw UTC ISO) — BSD `date -j` first
+# (mac), GNU `date -d`/`date -r @` fallback (VPS), matching the rest of this
+# repo's date-portability convention.
+PULSE_STALE_MAX_S="${LEADV2_LANE_PULSE_STALE_MAX_S:-7200}"
 PULSE_FRAG=""
 if [[ -x "$RESOLVER" ]]; then
   PULSE_LOG="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 1 "$RESOLVER" --no-link supervise-loop.log 2>/dev/null || true)"
   if [[ -n "$PULSE_LOG" && -f "$PULSE_LOG" ]]; then
     PULSE_TEXT="$(timeout 0.5 grep -v '^[[:space:]]*$' "$PULSE_LOG" 2>/dev/null | tail -n 1 || true)"
     if [[ -n "$PULSE_TEXT" ]]; then
-      PULSE_TEXT="${PULSE_TEXT:0:40}"
-      PULSE_FRAG=" | \033[2mlast: ${PULSE_TEXT}\033[0m"
+      PULSE_TS="$(printf '%s' "$PULSE_TEXT" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z?' || true)"
+      PULSE_EPOCH="" PULSE_LOCAL_HHMM=""
+      if [[ -n "$PULSE_TS" ]]; then
+        # -u is load-bearing on BSD: the source stamp is UTC (the trailing
+        # Z), and `date -j -f` with no -u would silently parse those digits
+        # as LOCAL wall-clock instead, skewing the epoch by the machine's
+        # UTC offset (measured: a 5-minute-old EEST stamp mis-parsed this
+        # way computed as >3h old and got wrongly treated as stale).
+        PULSE_EPOCH="$(timeout 0.2 date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$PULSE_TS" +%s 2>/dev/null || timeout 0.2 date -d "$PULSE_TS" +%s 2>/dev/null || true)"
+        if [[ -n "$PULSE_EPOCH" ]]; then
+          PULSE_LOCAL_HHMM="$(timeout 0.2 date -r "$PULSE_EPOCH" +%H:%M 2>/dev/null || timeout 0.2 date -d "@${PULSE_EPOCH}" +%H:%M 2>/dev/null || true)"
+        fi
+      fi
+      PULSE_AGE=""
+      if [[ -n "$PULSE_EPOCH" ]]; then
+        NOW_PULSE_S="${EPOCHSECONDS:-$(date +%s)}"
+        PULSE_AGE=$(( NOW_PULSE_S - PULSE_EPOCH ))
+      fi
+      if [[ -z "$PULSE_AGE" || "$PULSE_AGE" -lt "$PULSE_STALE_MAX_S" ]]; then
+        if [[ -n "$PULSE_TS" && -n "$PULSE_LOCAL_HHMM" ]]; then
+          PULSE_TEXT="${PULSE_LOCAL_HHMM}${PULSE_TEXT#"$PULSE_TS"}"
+        fi
+        PULSE_TEXT="${PULSE_TEXT:0:40}"
+        PULSE_FRAG=" | \033[2mlast: ${PULSE_TEXT}\033[0m"
+      fi
     fi
   fi
 fi
