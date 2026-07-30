@@ -133,7 +133,7 @@ def lane_job_id(tid):
 def resolve(tid):
     lane_dir = os.path.join(root, "docs", "handoff", tid)
     row = {"lane": tid, "verdict": None, "age_s": None, "source": None,
-           "log_path": None, "pid": None, "pid_alive": None, "reason": None}
+           "log_path": None, "raw_log_path": None, "pid": None, "pid_alive": None, "reason": None}
     session = sessions.get(tid)
     if session is not None:
         row["pid"] = session.get("pid")
@@ -152,10 +152,20 @@ def resolve(tid):
     # pointing at a file that does not (yet) exist, falls through to the
     # unchanged directory scan below, so pre-funnel lanes (whose log_path is
     # the phase-cycle pulse.md default) keep their exact prior resolution.
+    # wave2 round4 finding 3: `row["log_path"]` below is only ever set once an artifact is
+    # PROVEN to exist -- a crashed funnel dispatch whose stream file vanished (or never got
+    # written before the crash) leaves it null on every return path, and the dispatch-
+    # ledger sweep's sig8 extraction (which greps the `dispatch-<sig8>` segment out of this
+    # path) had nothing to grep, so exactly the crash lanes that most need sweeping were
+    # silently skipped forever. `raw_log_path` records active.yaml's own recorded path
+    # UNCONDITIONALLY, regardless of whether the file it points at still exists, so a
+    # caller that only needs the PATH SHAPE (not proof of a live artifact) still has
+    # something to resolve a sig8 from.
     session_log_path = None
     if session is not None:
         raw_log_path = session.get("log_path")
         if raw_log_path:
+            row["raw_log_path"] = raw_log_path
             candidate = raw_log_path if os.path.isabs(raw_log_path) else os.path.join(root, raw_log_path)
             if os.path.isfile(candidate):
                 session_log_path = candidate

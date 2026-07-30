@@ -51,10 +51,43 @@ Always exits 0 (a filter producing zero eligible arms is a valid, reportable
 outcome for the caller to act on -- not this layer's failure).
 """
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
 import sys
+
+# T-b tail (SUPERVISOR-AUDIT-01): filter_arms() used to reimplement its OWN copy of
+# the opus_only_mission_kinds / protected_path / glm_failed_twice predicates against
+# the SAME phases.glm_policy dict lib/leadv2-glm-policy-resolve.py already reads --
+# a THIRD independent copy alongside the two dispatch-code.sh/router.sh already
+# unified (see that file's own T-b doc header). Lazily loaded (not imported at
+# module scope) so a repo with no lib/ copy still gets resolve()/dry-run working;
+# filter_arms() itself degrades to "policy fires nothing" on load failure, same
+# fail-open contract the resolver documents for its own callers.
+_RESOLVE_GLM_POLICY_FN = None
+_RESOLVE_GLM_POLICY_LOAD_ATTEMPTED = False
+
+
+def _load_resolve_glm_policy():
+    global _RESOLVE_GLM_POLICY_FN, _RESOLVE_GLM_POLICY_LOAD_ATTEMPTED
+    if _RESOLVE_GLM_POLICY_LOAD_ATTEMPTED:
+        return _RESOLVE_GLM_POLICY_FN
+    _RESOLVE_GLM_POLICY_LOAD_ATTEMPTED = True
+    path = os.environ.get("LEADV2_GLM_POLICY_RESOLVER")
+    if not path or not os.path.isfile(path):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "lib", "leadv2-glm-policy-resolve.py")
+    if not os.path.isfile(path):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("leadv2_glm_policy_resolve", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _RESOLVE_GLM_POLICY_FN = mod.resolve_glm_policy
+    except Exception:
+        _RESOLVE_GLM_POLICY_FN = None
+    return _RESOLVE_GLM_POLICY_FN
 
 # Arm id -> quota bucket key in leadv2-quota-live.sh json output. The Anthropic
 # arms (sonnet/opus/haiku, however the caller spells them) share ONE quota
@@ -266,7 +299,7 @@ def resolve(chain, quota):
 POLICY_BAN_BUCKETS = ("glm", "codex")
 
 
-def filter_arms(arms, glm_policy, signals):
+def filter_arms(arms, glm_policy, signals, resolve_glm_policy_fn=None):
     """Pure function: registry + policy + per-dispatch signals -> {eligible, filtered}.
 
     arms: list of {id, channel, model, bucket, reserve_threshold, reserve_allow}
@@ -282,21 +315,123 @@ def filter_arms(arms, glm_policy, signals):
         glm_failure_count: int,          # F1-spoof-fix note below
         channel_down: [arm_id, ...],
     }
+    resolve_glm_policy_fn: injectable for tests (defaults to the lazily-loaded
+          module from lib/leadv2-glm-policy-resolve.py); None-injection is only
+          honoured when explicitly passed, so production callers always get the
+          real resolver via _load_resolve_glm_policy()'s own lazy singleton.
 
-    No LLM, no I/O, no clock -- same determinism contract as resolve().
+    T-b tail (SUPERVISOR-AUDIT-01): the opus_only_mission_kinds / glm_failed_twice
+    predicates are resolved by the ONE reader, lib/leadv2-glm-policy-resolve.py:
+    resolve_glm_policy() -- this function no longer reimplements that predicate
+    chain as its PRIMARY path, only translates its single-arm verdict into this
+    layer's multi-arm eligible/filtered shape. wave2 round2 finding 5: because
+    both are HARD policies, an independent local recomputation of the SAME two
+    predicates also runs whenever the resolver call did not produce a decision
+    at all (module unavailable, import raised, call raised) -- see
+    `resolver_unavailable` below -- so a missing/failing resolver fails CLOSED
+    instead of silently admitting architecture-class or twice-failed-GLM work.
+    protected_path, quota_gate, and channel_down stay
+    local and are NEVER routed through the resolver's single winning `rule`:
+    protected_path (wave2 finding 8 fix) is an independent hard filter read
+    directly off `signals`, enforced unconditionally so it can never be
+    shadowed by opus_only_kind winning the SAME resolver call for a mission
+    that is simultaneously architecture-flagged and protected-path-touching --
+    a case the old `elif rule == "safety_gate_publish_payments"` translation
+    got wrong (protected_path silently never fired). quota_gate is a
+    caller-precomputed signal (the caller already ran the sanctioned
+    leadv2-glm-quota-gate.sh), and channel_down is a router_v2-only concept the
+    resolver has no notion of -- none of the three is part of glm_policy, so
+    none belongs behind the resolver. Reason-priority is preserved byte-for-byte:
+    policy_ban > protected_path > quota_gate > failed_twice > channel_down
+    (first match wins per arm, via setdefault, exactly as before this refactor).
+
+    No LLM, no I/O, no clock -- same determinism contract as resolve(). The
+    resolver call itself is pure (a routing.yaml block + a signals dict in, a
+    verdict dict out -- no file/subprocess I/O of its own for this call shape).
     """
     glm_policy = glm_policy or {}
     reasons = {}  # arm_id -> reason (first match wins, spec table order)
 
-    opus_only = set(glm_policy.get("opus_only_mission_kinds", []) or [])
+    # wave2 round2 finding 5: glm_failure_count / ledger-verification gating and the
+    # sonnet_exceptions membership check are needed by BOTH the resolver call below
+    # AND the resolver-independent fallback further down, so compute them once here.
+    glm_failure_count = signals.get("glm_failure_count") or 0
+    ledger_verified = bool(signals.get("glm_failure_count_ledger_verified"))
+    # F1-spoof-fix (leadv2-dispatch-code.sh "FIX PASS 2"): an unverified count must
+    # never trip the rule -- same posture as dispatch-code.sh's own capped/ignored-
+    # and-journalled handling.
+    verified_glm_failure_count = glm_failure_count if ledger_verified else 0
     mission_kind = signals.get("mission_kind")
-    if mission_kind is not None and mission_kind in opus_only:
+    opus_kinds = glm_policy.get("opus_only_mission_kinds", []) or []
+    exc_ids = [e.get("id") for e in (glm_policy.get("sonnet_exceptions", []) or [])
+               if isinstance(e, dict) and e.get("id")]
+
+    resolve_fn = resolve_glm_policy_fn if resolve_glm_policy_fn is not None else _load_resolve_glm_policy()
+    rule = None
+    decision = None
+    if resolve_fn is not None:
+        resolve_signals = {
+            "mission_kind": mission_kind,
+            "protected_path": bool(signals.get("protected_path")),
+            "glm_failure_count": verified_glm_failure_count,
+        }
+        try:
+            decision = resolve_fn(glm_policy, resolve_signals, "build", base_arm="glm",
+                                   enable_codex_fitting_rule=False)
+        except Exception:
+            decision = None
+        rule = (decision or {}).get("rule")
+
+    # wave2 round2 finding 5: opus_only_kind and glm_failed_twice are HARD routing
+    # policies (architecture-class work must never reach GLM/codex/claude-haiku; a
+    # GLM arm that has already failed this task twice must never be handed a third
+    # try) -- they must fire even when the resolver module is missing (not loaded),
+    # its own import raises, or the call itself raises. All three collapse `decision`
+    # (not just `rule`) to None above -- that is the ONLY signal this treats as
+    # "resolver unavailable"; an explicit, successfully-returned decision (even one
+    # that names some OTHER rule, or "none") is always trusted as-is and never
+    # second-guessed, so an injected test resolver's own verdict still governs
+    # whenever it actually ran. resolver_unavailable therefore gates this fallback
+    # to the genuine failure case only. Evaluated independently here, mirroring
+    # lib/leadv2-glm-policy-resolve.py's own opus_mission_kind / glm_failed_twice
+    # predicates (including glm_failed_twice's sonnet_exceptions gate, so a repo
+    # that never opted that exception in still gets exactly the configured
+    # behavior) rather than trusting resolve_fn's single winning `rule` string,
+    # which used to be the ONLY way either ban could fire -- an unavailable
+    # resolver used to silently disable both, exactly like protected_path used to
+    # be shadowed before the wave2 fix.
+    resolver_unavailable = decision is None
+    is_opus_only_kind = resolver_unavailable and bool(mission_kind) and mission_kind in opus_kinds
+    is_failed_twice = (
+        resolver_unavailable
+        and "glm_failed_twice" in exc_ids
+        and verified_glm_failure_count is not None
+        and float(verified_glm_failure_count) >= 2
+    )
+
+    if rule == "opus_only_kind" or is_opus_only_kind:
         for arm in arms:
             if arm.get("bucket") in POLICY_BAN_BUCKETS:
                 reasons.setdefault(arm["id"], "policy_ban")
+    # quota_gate (below) must win over failed_twice when both are true --
+    # apply failed_twice's ban AFTER quota_gate so setdefault preserves the
+    # original priority order even though the resolver picks ONE rule.
+    _pending_failed_twice = (rule == "glm_failed_twice") or is_failed_twice
 
+    # T-b tail wave2 finding 8 fix: protected_path used to be gated on the RESOLVER's
+    # single winning `rule` (an `elif` keyed on rule == "safety_gate_publish_payments"),
+    # so a mission that was BOTH architecture-flagged AND touched a protected path lost
+    # the protected-path ban entirely whenever the resolver's own priority picked
+    # opus_only_kind instead -- glm/codex/claude-haiku all stayed eligible with a
+    # protected path in play. protected_path is now read directly off `signals`,
+    # independent of and never shadowed by whichever single rule the resolver
+    # returned (and enforced even when the resolver itself is unavailable or the
+    # policy dict is empty, since it needs no resolver input at all). setdefault
+    # still preserves the documented priority: policy_ban above already claimed any
+    # overlapping arm, so protected_path only fills in the ones the resolver's
+    # opus_only_kind ban didn't reach (e.g. claude-haiku, which is never in
+    # POLICY_BAN_BUCKETS).
     if signals.get("protected_path"):
-        # Spec sec3 L1: protected path -> "only sonnet/opus arms" eligible.
         for arm in arms:
             if arm.get("model") not in ("sonnet", "opus"):
                 reasons.setdefault(arm["id"], "protected_path")
@@ -306,14 +441,7 @@ def filter_arms(arms, glm_policy, signals):
             if arm.get("bucket") == "glm":
                 reasons.setdefault(arm["id"], "quota_gate")
 
-    # F1-spoof-fix (leadv2-dispatch-code.sh "FIX PASS 2"): glm_failure_count
-    # has no real ledger backing it yet, so a caller-supplied value that would
-    # TRIP the rule is not trustworthy input -- same posture as dispatch-
-    # code.sh's own capped/ignored-and-journalled handling. The caller decides
-    # whether to surface the ignore; this function just refuses to act on an
-    # unverified >=2 by treating it as 0 until a real ledger source exists.
-    glm_failure_count = signals.get("glm_failure_count") or 0
-    if signals.get("glm_failure_count_ledger_verified") and glm_failure_count >= 2:
+    if _pending_failed_twice:
         for arm in arms:
             if arm.get("bucket") == "glm":
                 reasons.setdefault(arm["id"], "failed_twice")

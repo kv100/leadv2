@@ -9,6 +9,7 @@
 #   leadv2_active_update_pulse <task_id>
 #   leadv2_active_heartbeat <task_id> <checkpoint>              (PULSE-01)
 #   leadv2_active_mark_finished <task_id> <outcome> [<evidence_json>]  (PULSE-01)
+#   leadv2_active_set_writes <task_id> <writes_csv>              (SUPERVISOR-AUDIT-01 T-E)
 #   leadv2_active_render_index
 #   leadv2_active_list
 #   leadv2_active_check_limits <class>
@@ -85,6 +86,7 @@ _leadv2_state_md() {
 #      update_pulse <task_id> <ts>
 #      mark_stale  <task_id>
 #      append_provider_receipt <task_id> <receipt_json>
+#      set_writes  <task_id> <writes_csv>          (SUPERVISOR-AUDIT-01 T-E)
 #      read        → writes YAML to stdout (no mutation)
 #
 _leadv2_yaml_py_lock() {
@@ -376,6 +378,22 @@ try:
             data["meta"] = {}
         data["meta"]["rendered_at"] = ts_val
 
+    # SUPERVISOR-AUDIT-01 T-E: stamp a lane's declared `writes` (comma-
+    # separated paths, same convention as the tasks.yaml `writes` field --
+    # see leadv2-fanout.sh's _fanout_task_lane_contract) onto its own
+    # active.yaml row so leadv2-writes-overlap.sh can compare a NEW lane's
+    # writes against every currently-alive lane's writes. Notify-only
+    # feature (see leadv2-fanout.sh) -- this op just persists the string,
+    # it makes no liveness/collision judgement itself.
+    elif op == "set_writes":
+        task_id, writes_csv = args
+        target = next((s for s in sessions if s.get("task_id") == task_id), None)
+        if target is None:
+            print(f"[registry] task not registered for set_writes: {task_id}", file=sys.stderr)
+            sys.exit(4)
+        target["writes"] = writes_csv
+        target["updated_at"] = _now_iso()
+
     else:
         print(f"[registry] unknown op: {op}", file=sys.stderr)
         sys.exit(1)
@@ -610,6 +628,20 @@ leadv2_active_append_provider_receipt() {
   lockfile="$(_leadv2_yaml_lockfile)"
   [[ -f "$yaml_file" ]] || return 4
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" append_provider_receipt "$task_id" "$receipt_json"
+}
+
+# leadv2_active_set_writes <task_id> <writes_csv>
+# SUPERVISOR-AUDIT-01 T-E: stamps a comma-separated writes list onto the
+# task's existing active.yaml row (no-op create -- the row must already
+# exist, e.g. from leadv2_active_register / fanout's own reservation).
+leadv2_active_set_writes() {
+  local task_id="${1:?task_id required}"
+  local writes_csv="${2:?writes_csv required}"
+  local yaml_file lockfile
+  yaml_file="$(_leadv2_yaml_file)"
+  lockfile="$(_leadv2_yaml_lockfile)"
+  [[ -f "$yaml_file" ]] || return 4
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_writes "$task_id" "$writes_csv"
 }
 
 # leadv2_active_render_index

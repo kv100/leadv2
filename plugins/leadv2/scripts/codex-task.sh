@@ -48,6 +48,434 @@ if [[ -z "$COMPANION" ]]; then
   exit 1
 fi
 
+# ── T-f (CODEX-REAP-01) -- hung jobs die without a babysitter ──────────────
+# Known hole (tf-diagnosis.md): the zombie reaper (codex-guard.sh TF-02) only
+# runs inside an active guard poll. A job stuck `queued` with a dead pid, or
+# `running` whose pid died, stays "running" forever in the job store when no
+# guard happens to be watching it. `_codex_reap` gives every codex-task.sh
+# invocation its own babysitter sweep -- no cron, no daemon.
+#
+# CODEX_AUTOREAP=1 (default) -- runs the sweep at the top of every subcommand
+# (amortized: the next interaction sweeps first). =0 disables it entirely
+# (byte-identical to pre-T-f behavior; only an active codex-guard.sh or an
+# explicit `codex-task.sh reap` call reaps anything).
+# CODEX_QUEUED_KILL_MIN=15   -- a `queued` job with no live pid past this age is dead.
+# CODEX_RUNNING_DEAD_KILL_MIN=5 -- a `running` job whose pid died past this age is dead.
+CODEX_REAP_STATE_ROOT="${CODEX_GUARD_STATE_ROOT:-$HOME/.claude/plugins/data/codex-openai-codex/state}"
+CODEX_QUEUED_KILL_MIN="${CODEX_QUEUED_KILL_MIN:-15}"
+CODEX_RUNNING_DEAD_KILL_MIN="${CODEX_RUNNING_DEAD_KILL_MIN:-5}"
+CODEX_AUTOREAP="${CODEX_AUTOREAP:-1}"
+# review-wave2-verdict-5 finding 3: a repair marker written next to the job file can itself
+# fail (directory unwritable, disk full, the job dir gone entirely) -- an independent
+# fallback location, outside the job store, gives a repair a second place to land so a
+# later `reap` still has something to reconcile against instead of nothing.
+CODEX_REPAIR_DIR="${CODEX_REPAIR_DIR:-$HOME/.claude/cache/codex-repair}"
+
+# _codex_reap [job_id] -- scans $CODEX_REAP_STATE_ROOT (or just one job's file
+# when job_id is given, forcing the age check regardless of elapsed time) for
+# jobs stuck without a live babysitter and marks them terminal failed with a
+# reap cause. Participates in the SAME mkdir-lock + owner.pid provably-stale
+# protocol as state.mjs's withJobFileLock (JOB-LOCK-SHARED-01) and
+# codex-guard.sh's acquire_job_lock -- one shared cross-process mutex, not a
+# 4th convention. Prints "<jobId> <cause>" per job it reaps; silent (no
+# output) when nothing needed reaping.
+_codex_reap() {
+  local target="${1:-}" _lib_dir
+  _lib_dir="$(dirname "$COMPANION")/lib"
+  python3 - "$CODEX_REAP_STATE_ROOT" "$CODEX_QUEUED_KILL_MIN" "$CODEX_RUNNING_DEAD_KILL_MIN" "$target" "$_lib_dir" "$CODEX_REPAIR_DIR" <<'PY'
+import json, os, shutil, subprocess, sys, time
+from datetime import datetime, timezone
+
+state_root, queued_kill_min, running_kill_min, target, lib_dir, repair_dir = (
+    sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6],
+)
+
+
+def parse_iso(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def pid_alive(pid):
+    if pid is None:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (ProcessLookupError, ValueError):
+        return False
+    except PermissionError:
+        return True  # exists, owned elsewhere -- can't prove dead, never reap
+
+
+def lock_owner(lock_dir):
+    try:
+        with open(os.path.join(lock_dir, "owner.pid")) as f:
+            return int(f.read().strip())
+    except Exception:
+        return None
+
+
+def acquire_lock(job_path):
+    lock_dir = job_path + ".lock"
+    waited = 0
+    while True:
+        try:
+            os.mkdir(lock_dir)
+        except FileExistsError:
+            try:
+                age = time.time() - os.stat(lock_dir).st_mtime
+            except FileNotFoundError:
+                continue
+            if age > 60:
+                owner = lock_owner(lock_dir)
+                if owner is None or not pid_alive(owner):
+                    shutil.rmtree(lock_dir, ignore_errors=True)
+                    continue
+            if waited >= 100:  # ~10s at 0.1s/poll
+                return None
+            time.sleep(0.1)
+            waited += 1
+            continue
+        try:
+            with open(os.path.join(lock_dir, "owner.pid"), "w") as f:
+                f.write(str(os.getpid()))
+        except Exception:
+            pass
+        return lock_dir
+
+
+def release_lock(lock_dir):
+    if lock_dir:
+        shutil.rmtree(lock_dir, ignore_errors=True)
+
+
+# wave2 finding 2: kill_leftover_group used to run getpgid/killpg on a pid that had
+# JUST answered dead to kill(pid, 0) above -- but a dead pid can be reused by the OS
+# for an unrelated process between that check and the getpgid/killpg calls a moment
+# later, with no birth-time token here to prove it is still the SAME process this job
+# ever spawned. That window lets a reap kill a completely unrelated process group
+# while still failing to clean up the actual orphan (which, by definition, is no
+# longer at that pid). Removed entirely rather than guarded: validating process
+# identity would need a persisted birth-time/start-token per pid, which is more
+# machinery than an orphan-cleanup safety net is worth; a leftover child process is
+# the strictly safer failure mode than killing the wrong one.
+
+
+def _sync_state_index(job_id, workspace_root, patch, lib_dir):
+    # wave2 finding 1: the reaper used to rewrite ONLY jobs/<id>.json. status/result/
+    # resume all discover jobs through state.json (state.mjs's listJobs/loadState), so a
+    # reaped job stayed "queued"/"running" in every normal interface even though its own
+    # job file said failed. Patch the SAME canonical index through the plugin's own
+    # upsertJob() (state.mjs) -- the ONE writer every other caller already goes through
+    # (mirrors `_record_spawn_failure`'s own dynamic-import pattern below) -- rather than
+    # a second, drifting reimplementation of state.json's shape in Python. Best-effort:
+    # workspaceRoot is read straight off the job record; a job with none (or no lib_dir
+    # resolved) skips the index sync silently -- the per-job file write already landed,
+    # so this is a partial win, not a failure to escalate.
+    #
+    # wave2 round2 finding 2: `check=False` + the node script's own `process.exit(0)` on
+    # catch used to mean this NEVER reported failure -- an upsertJob error or subprocess
+    # timeout was silently swallowed and the caller had no way to tell state.json stayed
+    # stale. The script now exits 1 on failure and this returns a real bool so the caller
+    # can persist a repair marker instead of losing the divergence.
+    if not workspace_root or not lib_dir:
+        return False
+    script = (
+        "(async () => {"
+        "const [libDir, cwd, patchJson] = process.argv.slice(1);"
+        "const { upsertJob } = await import(libDir + '/state.mjs');"
+        "await upsertJob(cwd, JSON.parse(patchJson));"
+        "})().catch((e) => {"
+        "process.stderr.write('[codex-task] WARN: reap could not sync state index: '"
+        " + (e && e.message ? e.message : e) + \"\\n\");"
+        "process.exit(1);"
+        "});"
+    )
+    try:
+        proc = subprocess.run(
+            ["node", "-e", script, lib_dir, workspace_root, json.dumps(patch)],
+            check=False, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _repair_marker_path(job_path):
+    return f"{job_path}.repair"
+
+
+def _fallback_marker_path(repair_dir, job_id):
+    return os.path.join(repair_dir, f"{job_id}.json")
+
+
+def _write_marker_file(marker_path, payload):
+    tmp = f"{marker_path}.tmp.{os.getpid()}"
+    try:
+        os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+        with open(tmp, "w") as f:
+            json.dump(payload, f)
+        os.replace(tmp, marker_path)
+        return True
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return e
+
+
+def _write_repair_marker(job_path, job_id, workspace_root, patch, repair_dir):
+    # wave2 round2 finding 2: persisted next to the job file (same dir, same lock
+    # discipline) so a later sweep -- possibly a different process -- can find and
+    # retry it without needing to re-derive job_id/workspaceRoot/patch from scratch.
+    #
+    # wave2 round3 finding 4: this is the LAST line of defense against a permanent
+    # state.json/index divergence (upsertJob already failed once, in _sync_state_index,
+    # by the time this is called) -- swallowing a write/rename failure here silently
+    # meant the divergence could never be recovered, by this process or any later sweep,
+    # with no trace it ever happened. Returns True/False instead of always succeeding
+    # silently; the caller surfaces False as an explicit reap failure (see below).
+    #
+    # review-wave2-verdict-5 finding 3: a job-dir-local marker can share the SAME failure
+    # mode that broke the index sync in the first place (unwritable dir, disk full, the
+    # job store itself gone) -- CODEX_REPAIR_DIR is an INDEPENDENT location, so it is tried
+    # whenever the local write fails, giving a later `reap` a second place to look before
+    # this divergence is declared unrecoverable.
+    marker_path = _repair_marker_path(job_path)
+    payload = {"jobId": job_id, "workspaceRoot": workspace_root, "patch": patch}
+    local_err = _write_marker_file(marker_path, payload)
+    if local_err is True:
+        return True
+    fallback_path = _fallback_marker_path(repair_dir, job_id)
+    fallback_err = _write_marker_file(fallback_path, payload)
+    if fallback_err is True:
+        sys.stderr.write(
+            f"[codex-task] WARN: repair marker for job {job_id} could not be written "
+            f"at {marker_path} ({local_err}); persisted to fallback location "
+            f"{fallback_path} instead\n"
+        )
+        return True
+    sys.stderr.write(
+        f"[codex-task] ERROR: could not persist repair marker for job {job_id} "
+        f"at {marker_path} ({local_err}) or fallback {fallback_path} ({fallback_err})\n"
+    )
+    return False
+
+
+def _retry_one_marker(marker_path, lib_dir):
+    try:
+        with open(marker_path) as f:
+            payload = json.load(f)
+    except Exception:
+        return None
+    job_id = payload.get("jobId")
+    workspace_root = payload.get("workspaceRoot")
+    patch = payload.get("patch")
+    if not job_id or not patch:
+        try:
+            os.remove(marker_path)
+        except Exception:
+            pass
+        return None
+    if _sync_state_index(job_id, workspace_root, patch, lib_dir):
+        try:
+            os.remove(marker_path)
+        except Exception:
+            pass
+        return job_id
+    return None
+
+
+def _retry_repair_markers(state_root, lib_dir, repair_dir):
+    # wave2 round2 finding 2: runs BEFORE the normal sweep on every invocation (not just
+    # when CODEX_AUTOREAP fires a new reap) so a prior sync failure gets reconciled even
+    # if no new job needs reaping this round.
+    #
+    # review-wave2-verdict-5 finding 3: also consumes markers persisted to the independent
+    # CODEX_REPAIR_DIR fallback (written when the job-dir-local marker itself failed) --
+    # same reconciliation, second source.
+    repaired = []
+    for root, _dirs, files in os.walk(state_root):
+        if os.path.basename(root) != "jobs":
+            continue
+        for name in files:
+            if not name.endswith(".repair"):
+                continue
+            job_id = _retry_one_marker(os.path.join(root, name), lib_dir)
+            if job_id:
+                repaired.append(job_id)
+    if os.path.isdir(repair_dir):
+        for name in os.listdir(repair_dir):
+            if not name.endswith(".json"):
+                continue
+            job_id = _retry_one_marker(os.path.join(repair_dir, name), lib_dir)
+            if job_id:
+                repaired.append(job_id)
+    return repaired
+
+
+def reap_one(job_path, force=False):
+    lock_dir = acquire_lock(job_path)
+    if lock_dir is None:
+        return None  # lock contended by a live holder -- try again next sweep
+    try:
+        try:
+            with open(job_path) as f:
+                data = json.load(f)
+        except Exception:
+            return None
+
+        status = data.get("status")
+        if status not in ("queued", "running"):
+            return None
+
+        pid = data.get("pid")
+        has_pid = pid is not None and str(pid).strip() != ""
+        if has_pid and pid_alive(pid):
+            return None  # ALIVE -- untouched, no exceptions
+
+        now = time.time()
+        cause = None
+        if status == "queued":
+            created = parse_iso(data.get("createdAt"))
+            age_min = ((now - created) / 60) if created else None
+            if force or (age_min is not None and age_min >= queued_kill_min):
+                cause = f"queued_timeout_{queued_kill_min:g}min"
+        elif not has_pid:
+            # wave2 finding 9: `running` with no pid EVER recorded never had a worker
+            # attached at all -- treat it like a stalled queued job (same grace period
+            # off createdAt) instead of the tighter dead-worker threshold below, which
+            # assumes a worker started and then died (a stronger claim than this state
+            # supports).
+            created = parse_iso(data.get("createdAt"))
+            age_min = ((now - created) / 60) if created else None
+            if force or (age_min is not None and age_min >= queued_kill_min):
+                cause = f"running_no_pid_timeout_{queued_kill_min:g}min"
+        else:
+            ref = parse_iso(data.get("startedAt")) or parse_iso(data.get("createdAt"))
+            age_min = ((now - ref) / 60) if ref else None
+            if force or (age_min is not None and age_min >= running_kill_min):
+                cause = "worker_died_stale"
+
+        if cause is None:
+            return None
+
+        job_id = os.path.basename(job_path)[:-5]
+        completed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        data["status"] = "failed"
+        data["phase"] = "failed"
+        data["pid"] = None
+        data["errorMessage"] = f"reaped: {cause}"
+        data["completedAt"] = completed_at
+
+        tmp = f"{job_path}.tmp.{os.getpid()}"
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, job_path)
+        patch = {
+            "id": job_id,
+            "status": "failed",
+            "phase": "failed",
+            "pid": None,
+            "errorMessage": f"reaped: {cause}",
+            "completedAt": completed_at,
+        }
+        return (job_id, cause, data.get("workspaceRoot"), patch)
+    finally:
+        release_lock(lock_dir)
+
+
+# wave2 round2 finding 2: reconcile any file/index divergence left by a PRIOR sweep's
+# failed upsertJob before reaping anything new this round.
+_retry_repair_markers(state_root, lib_dir, repair_dir)
+
+reaped = []
+_marker_persist_failed = False
+for root, _dirs, files in os.walk(state_root):
+    if os.path.basename(root) != "jobs":
+        continue
+    for name in files:
+        if not name.endswith(".json"):
+            continue
+        job_id = name[:-5]
+        if target and job_id != target:
+            continue
+        job_path = os.path.join(root, name)
+        result = reap_one(job_path, force=bool(target))
+        if result:
+            reaped_job_id, cause, workspace_root, patch = result
+            # Runs AFTER reap_one's own `finally: release_lock(...)` above -- upsertJob
+            # never touches the per-job-file lock (only writeJobFile does), so there is
+            # no lock-reentry/deadlock risk calling it here.
+            if not _sync_state_index(reaped_job_id, workspace_root, patch, lib_dir):
+                if not _write_repair_marker(job_path, reaped_job_id, workspace_root, patch, repair_dir):
+                    _marker_persist_failed = True
+            reaped.append((reaped_job_id, cause))
+
+for job_id, cause in reaped:
+    print(f"{job_id} {cause}")
+
+# wave2 round3 finding 4: the job itself WAS reaped (status=failed already landed in
+# job_path above) -- what is at risk is only the state.json index + this last-resort
+# retry marker, and that risk must not be invisible. Exit nonzero + an explicit stderr
+# line whenever ANY repair marker failed to persist this round, instead of always
+# returning 0 regardless of what happened inside this sweep.
+if _marker_persist_failed:
+    sys.stderr.write(
+        "[codex-task] ERROR: reap completed but a repair marker failed to persist -- "
+        "state.json index divergence for one or more jobs may be permanent without "
+        "manual reconciliation (see the marker-specific error above)\n"
+    )
+    sys.exit(1)
+PY
+}
+
+# _record_spawn_failure <cwd> <error-text> -- CODEX-REAP-01 item 3 (spawn
+# failure visibility). When a background dispatch's launcher output carries
+# no parseable jobId (the "no live job record" case: codex-companion never
+# even reached its own writeJobFile), nothing tracks the failure and it
+# vanishes -- no job.json, no guard armed, no /codex:status entry. This
+# writes a synthetic terminal job record via the plugin's OWN state.mjs
+# functions (generateJobId/writeJobFile/upsertJob), so the failure shows up
+# in `codex-task.sh status --all` like any other job instead of disappearing.
+# Uses the plugin's exported API only -- no mjs file is edited or patched.
+_record_spawn_failure() {
+  local cwd="$1" errtext="$2" lib_dir
+  lib_dir="$(dirname "$COMPANION")/lib"
+  node -e '
+(async () => {
+  const [libDir, cwd, err] = process.argv.slice(1);
+  const { generateJobId, writeJobFile, upsertJob } = await import(libDir + "/state.mjs");
+  const jobId = generateJobId("spawnfail");
+  const now = new Date().toISOString();
+  const record = {
+    id: jobId,
+    status: "failed",
+    phase: "failed",
+    kind: "spawn-failure",
+    kindLabel: "spawn-failure",
+    jobClass: "task",
+    pid: null,
+    createdAt: now,
+    completedAt: now,
+    errorMessage: "spawn_failed: " + String(err).slice(0, 500)
+  };
+  writeJobFile(cwd, jobId, record);
+  upsertJob(cwd, record);
+  console.error("[codex-task] recorded spawn failure as " + jobId + " (job store, status=failed cause=spawn_failed)");
+})().catch((e) => {
+  console.error("[codex-task] WARN: could not record spawn failure to job store: " + (e && e.message ? e.message : e));
+  process.exit(0);
+});
+' "$lib_dir" "$cwd" "$errtext"
+}
+
 # ── --tier extraction (must run before the spark ban + subcommand dispatch,
 # since codex-companion has no concept of --tier — it only understands
 # --model/--effort). Strip --tier out of "$@" and resolve it to concrete
@@ -97,6 +525,62 @@ EOF
 fi
 
 SUB="${1:-}"
+
+# `codex-task.sh reap` -- explicit manual sweep (not a real codex-companion
+# subcommand, intercepted here before anything is forwarded to node).
+if [[ "$SUB" == "reap" ]]; then
+  # wave2 round3 finding 4: capture the sweep's own exit code explicitly (the `||`
+  # keeps this line exempt from `set -e` so a nonzero rc is reported, not silently
+  # aborting before the reaped-jobs output below is ever printed) -- a repair-marker
+  # persistence failure inside _codex_reap now surfaces here as a real reap failure,
+  # not an unconditional success.
+  _REAP_RC=0
+  _REAP_OUT="$(_codex_reap)" || _REAP_RC=$?
+  if [[ -n "$_REAP_OUT" ]]; then
+    printf 'reaped:\n%s\n' "$_REAP_OUT"
+  else
+    echo "no stale jobs found"
+  fi
+  if [[ "$_REAP_RC" -ne 0 ]]; then
+    echo "[codex-task] REAP FAILED: a repair marker could not be persisted for one or more jobs -- state.json index divergence needs manual reconciliation (see stderr above)" >&2
+    exit "$_REAP_RC"
+  fi
+  exit 0
+fi
+
+# CODEX_AUTOREAP (default 1): every other subcommand sweeps the job store
+# first, amortized -- this is the "no cron, no daemon" automatic caller the
+# fix requires. Best-effort: never blocks or fails the real subcommand.
+#
+# wave2 round4 finding 2: the old `2>/dev/null || true` here discarded BOTH the repair-
+# marker failure detail AND its exit code -- unlike the explicit `reap` subcommand above
+# (round3 finding 4), this amortized path left a marker-persistence failure with literally
+# no operator signal, silent even by CODEX_VERBOSE=1's standard. `|| _AUTOREAP_RC=$?` is the
+# same errexit-exempt idiom as the explicit reap call site: it captures the real rc without
+# ever aborting the requested subcommand (still best-effort). The marker file itself (or the
+# lack of one) is the durable state note -- _write_repair_marker/_retry_repair_markers
+# already persist/retry it on disk regardless of this wrapper's own redirection; this fix
+# only restores VISIBILITY of that failure to whoever is watching stderr.
+if [[ "$CODEX_AUTOREAP" == "1" ]]; then
+  _AUTOREAP_RC=0
+  # review-wave2-verdict-5 finding 3: the old `2>/dev/null` here discarded the marker-
+  # specific ERROR line (job id + job file path) _write_repair_marker already writes to
+  # stderr, leaving the WARNING below with no way to say WHICH job needs attention.
+  # Captured to a tempfile instead so those lines can be surfaced alongside it.
+  _AUTOREAP_ERRFILE="$(mktemp 2>/dev/null || printf '%s/.codex-autoreap-err.%s' "${TMPDIR:-/tmp}" "$$")"
+  _AUTOREAP_OUT="$(_codex_reap 2>"$_AUTOREAP_ERRFILE")" || _AUTOREAP_RC=$?
+  if [[ -n "$_AUTOREAP_OUT" && "${CODEX_VERBOSE:-0}" == "1" ]]; then
+    printf '[codex-task] autoreap:\n%s\n' "$_AUTOREAP_OUT" >&2
+  fi
+  if [[ "$_AUTOREAP_RC" -ne 0 ]]; then
+    echo "[codex-task] WARNING: background autoreap failed (rc=${_AUTOREAP_RC}) -- a repair marker could not be persisted for one or more jobs; run 'codex-task.sh reap' to see details and retry" >&2
+    # Round-6 review: unguarded grep exits 1/2 under set -e when the marker line is absent
+    # or the errfile is unreadable, aborting the WRAPPED command -- diagnostics must never
+    # outrank the requested subcommand.
+    grep -E '^\[codex-task\] ERROR: could not persist repair marker' "$_AUTOREAP_ERRFILE" >&2 2>/dev/null || true
+  fi
+  rm -f "$_AUTOREAP_ERRFILE" 2>/dev/null
+fi
 
 # ST-2 — direct Codex tasks do not pass through dispatch-code.sh, so give them
 # the same blocking-question protocol here. Dispatch missions already contain
@@ -483,8 +967,27 @@ _has_background=0
 for _a in "$@"; do [[ "$_a" == "--background" ]] && _has_background=1; done
 
 if [[ ( "$SUB" == "task" || "$SUB" == "review" ) && "$_has_background" -eq 1 ]]; then
-  _BG_OUT="$(_run_with_fallback "$@")"
-  _BG_RC=$?
+  # cwd: whatever was forwarded via --cwd/-C, else $PWD -- matches
+  # codex-companion's own resolveCommandCwd() default (process.cwd()).
+  _GUARD_CWD="$PWD"
+  _prev=""
+  for _a in "$@"; do
+    if [[ "$_prev" == "--cwd" || "$_prev" == "-C" ]]; then
+      _GUARD_CWD="$_a"
+    fi
+    _prev="$_a"
+  done
+
+  # wave2 round3 finding 5: this script runs under `set -e`, and a bare
+  # `_BG_OUT="$(_run_with_fallback "$@")"` is a plain simple-command assignment --
+  # NOT exempt from errexit -- so a genuine nonzero launcher failure aborted the whole
+  # script AT this line, before `_BG_RC` was ever captured and before the no-jobId
+  # branch below could ever call `_record_spawn_failure`. Folding the assignment into
+  # an explicit `&&`/`||` list (the SAME idiom `_run_with_fallback` uses internally for
+  # its own inner command substitution) makes the compound command exempt from -e,
+  # since only the LAST command of an and-or list can trigger it and that is always
+  # one of the two `_BG_RC=` assignments below, which always succeeds.
+  _BG_OUT="$(_run_with_fallback "$@")" && _BG_RC=0 || _BG_RC=$?
   printf '%s\n' "$_BG_OUT"
 
   # jobId format: <task|review>-<base36-timestamp>-<random6> (lib/state.mjs
@@ -492,16 +995,6 @@ if [[ ( "$SUB" == "task" || "$SUB" == "review" ) && "$_has_background" -eq 1 ]];
   # --json payload, so one regex covers both output modes.
   _JOB_ID="$(printf '%s\n' "$_BG_OUT" | grep -oE '(task|review)-[a-z0-9]+-[a-z0-9]+' | head -1 || true)"
   if [[ -n "$_JOB_ID" ]]; then
-    # cwd: whatever was forwarded via --cwd/-C, else $PWD -- matches
-    # codex-companion's own resolveCommandCwd() default (process.cwd()).
-    _GUARD_CWD="$PWD"
-    _prev=""
-    for _a in "$@"; do
-      if [[ "$_prev" == "--cwd" || "$_prev" == "-C" ]]; then
-        _GUARD_CWD="$_a"
-      fi
-      _prev="$_a"
-    done
     _GUARD_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-guard.sh"
     if [[ -x "$_GUARD_SCRIPT" ]]; then
       nohup "$_GUARD_SCRIPT" "$_JOB_ID" "$_GUARD_CWD" >/dev/null 2>&1 < /dev/null &
@@ -511,7 +1004,12 @@ if [[ ( "$SUB" == "task" || "$SUB" == "review" ) && "$_has_background" -eq 1 ]];
       echo "[codex-task] WARN: codex-guard.sh not found next to codex-task.sh -- background job $_JOB_ID is unguarded" >&2
     fi
   else
+    # T-f item 3 (spawn failure visibility): no jobId means codex-companion
+    # never wrote a job record at all -- today this WARNs and the failure
+    # vanishes. Synthesize a terminal job record so it's visible in
+    # `codex-task.sh status --all` instead.
     echo "[codex-task] WARN: could not parse jobId from background dispatch output -- guard not armed" >&2
+    _record_spawn_failure "$_GUARD_CWD" "$_BG_OUT"
   fi
   exit "$_BG_RC"
 fi

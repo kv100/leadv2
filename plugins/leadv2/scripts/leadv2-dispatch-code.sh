@@ -247,6 +247,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-"$0"}")" 2>/dev/null && pwd)"
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
+# T-o (SUPERVISOR-AUDIT-01): the terminal-state ledger CLI. ALWAYS invoked as a subprocess
+# (`bash "${LEDGER_BIN}" ...`) -- never `source`d. leadv2-dispatch-ledger.sh's own doc
+# header explains why: sourcing it collided with this script's own fd-9 flock (dispatch_
+# reserve/confirm/abort all use `flock -x 9`), which silently broke the pre-existing
+# duplicate_task_signature refusal's stdout. A subprocess has its own fd table, so this
+# collision cannot happen -- see _dl_note() below, which also closes fd 9 defensively
+# (`9>&-`), matching the belt-and-suspenders idiom already used at every launcher call site
+# in this file (search `9>&-`). LEADV2_DISPATCH_TERMINAL_LEDGER=0 disables all writes
+# (one-step rollback); this is purely additive observability and never gates a decision.
+LEDGER_BIN="${LEADV2_DISPATCH_LEDGER_BIN:-${SCRIPT_DIR}/leadv2-dispatch-ledger.sh}"
+TERMINAL_LEDGER="${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}"
 
 # Phase stamps into active.yaml (SUPERVISOR-AUDIT-01 addendum, founder 2026-07-30):
 # fix-fanout made THIS funnel dispatch the lifecycle owner of its active.yaml row, but
@@ -263,6 +274,17 @@ JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 # "${1:?...}" would otherwise abort this whole script under `set -u` on an empty arg.
 _ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
 [[ -f "${_ACTIVE_REGISTRY_SH}" ]] && source "${_ACTIVE_REGISTRY_SH}"
+# SILENT-DEATH-01 (SUPERVISOR-AUDIT-01, 2026-07-30): leadv2-active-registry.sh sets its own
+# `set -euo pipefail` (line 26) for standalone use; `source` runs it in THIS shell, so its -e
+# silently overrides line 242's deliberate "NO -e (refusals must journal)" for the rest of
+# this script's execution. With errexit on, every designed-to-be-caught non-zero return
+# (dispatch_reserve's rc=2 duplicate, lock timeouts, ledger-write failures, ...) aborts the
+# whole process AT THE FAILING STATEMENT instead of reaching the `case`/`emit decision`/
+# `printf dispatch_refused` handling a few lines later -- rc leaks out correctly but the
+# refusal is never journaled or printed (100% reproducible: pin the exact mechanism with
+# `bash -x`, not by theorizing about load/flock contention). Restore immediately after the
+# source so a library's own options can never leak into a caller that opted out of them.
+set +e
 _stamp_active_phase() { # <task_id> <phase>
   [[ -n "${1:-}" ]] || return 0
   declare -F leadv2_active_update_phase >/dev/null || return 0
@@ -271,6 +293,10 @@ _stamp_active_phase() { # <task_id> <phase>
 
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
 DISPATCH_LEDGER_DIR="${DISPATCH_LEDGER_DIR:-${CACHE_BASE}/dispatch-ledger}"
+# wave2 round2 finding 3: same STATE_PATH_BIN resolver leadv2-dispatch-ledger.sh's
+# terminal ledger uses (LEAD-CONTROL-PLANE-01) -- close_owner_pidfile() below must land
+# in the SAME cross-worktree location the sweep reads, not a per-worktree repo path.
+STATE_PATH_BIN="${LEADV2_STATE_PATH_BIN:-${SCRIPT_DIR}/leadv2-state-path.sh}"
 REVIEW_LEDGER_DIR="${CACHE_BASE}/code-review-ledger"
 # shellcheck disable=SC2034  # documented config surface (see usage()); the fence hook
 # itself, not this script, is the consumer -- Bash-fence wiring is out of scope here.
@@ -309,6 +335,9 @@ ARCHITECT_PREPASS_TIMEOUT_SEC="${LEADV2_DISPATCH_ARCHITECT_TIMEOUT_SEC:-420}"
 ARCHITECT_PREPASS_ATTEMPTS="${LEADV2_DISPATCH_ARCHITECT_ATTEMPTS:-2}"
 [[ "${ARCHITECT_PREPASS_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]] || ARCHITECT_PREPASS_ATTEMPTS=2
 ARCHITECT_PREPASS_REASON=""
+# T-c (SUPERVISOR-AUDIT-01): sig-keyed prepass cache + reduced prompt for short missions.
+# =0 restores today's behavior byte-for-byte (always re-run the architect, full prompt).
+PREPASS_CACHE="${LEADV2_PREPASS_CACHE:-1}"
 E2E_GATE="${LEADV2_DISPATCH_E2E_GATE:-1}"
 REVIEW_GATE="${LEADV2_DISPATCH_REVIEW_GATE:-1}"
 
@@ -325,6 +354,22 @@ repo_slug() {
 dispatch_ledger_file() { printf '%s/%s.jsonl' "${DISPATCH_LEDGER_DIR}" "$(repo_slug)"; }
 review_ledger_file()   { printf '%s/%s.jsonl' "${REVIEW_LEDGER_DIR}"   "$(repo_slug)"; }
 
+# wave2 round2 finding 3: mirrors leadv2-dispatch-ledger.sh's own close_owner_pidfile() --
+# duplicated (not sourced) for the same reason this file never sources that one (see its
+# "WHY A CLI, NOT A LIBRARY" doc header). Both copies MUST resolve to the identical path
+# for a given sig8; the resolver (leadv2-state-path.sh) is the shared source of truth,
+# not this function's own logic.
+close_owner_pidfile() {
+  local sig8="$1" p=""
+  if [[ -f "${STATE_PATH_BIN}" ]]; then
+    p="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${STATE_PATH_BIN}" --no-link "dispatch-close-owner/${sig8}.pid" 2>/dev/null || true)"
+  fi
+  if [[ -z "${p}" ]]; then
+    p="${CACHE_BASE}/dispatch-close-owner/${sig8}.pid"
+  fi
+  printf '%s' "${p}"
+}
+
 # Journal + stderr-emit one structured line. $1=journal-type, $2..=text (one logical line).
 # Invoked via `bash <path>` (not direct exec): leadv2-journal.sh ships non-executable, and
 # leadv2-state-atomic-write.sh:260 sets this idiom. LEADV2_JOURNAL_BIN override (e.g.
@@ -336,6 +381,21 @@ emit() {
     bash "${JOURNAL_BIN}" append "${JOURNAL_TASK}" "${jtype}" "${line}" >/dev/null 2>&1 || true
   fi
   log "${line}"
+}
+
+# T-o: write-once terminal-state row for <sig8> via leadv2-dispatch-ledger.sh's CLI.
+# ALWAYS a subprocess (see LEDGER_BIN's doc comment above) -- never source this. Purely
+# additive observability: fail-open (`|| true`), stdout/stderr fully redirected, fd 9
+# explicitly closed so a missing/broken ledger binary can never touch this script's own
+# stdout or its own flock fd 9.
+# <sig8> <terminal:landed|parked|refused|dead> <cause> [<evidence>] [<founder_task_id>]
+# wave2 round3 finding 3: passes this process's own $$ as the ledger's attempt token --
+# each dispatch-code.sh invocation is exactly one attempt, so this only ever collides with
+# itself (never blocking a genuinely later attempt at the same sig8 from recording its own
+# real outcome after a refused/parked one).
+_dl_note() {
+  [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
+  bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$$" >/dev/null 2>&1 9>&- || true
 }
 
 # ── task signature: normalize mission text, sha256 ────────────────────────────────
@@ -923,8 +983,32 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
     return 0
   fi
   f="$(_prepass_file "${sig8}")"; mkdir -p "$(dirname "${f}")" || return 1
+
+  # T-c (SUPERVISOR-AUDIT-01): sig-keyed cache. A stamp file next to the prepass artifact
+  # holds the full mission-text hash (compute_sig, not just sig8) that produced it; a
+  # byte-for-byte-identical retry of the SAME mission reuses the design instead of paying
+  # the architect's cost again. LEADV2_PREPASS_CACHE=0 restores today (always re-run).
+  if [[ "${PREPASS_CACHE}" == "1" && -s "${f}" && -f "${f}.sig" ]]; then
+    local _pc_raw_sig _pc_stamp
+    _pc_raw_sig="$(printf '%s' "${raw}" | compute_sig)"
+    _pc_stamp="$(cat "${f}.sig" 2>/dev/null)"
+    if [[ -n "${_pc_raw_sig}" && "${_pc_raw_sig}" == "${_pc_stamp}" ]]; then
+      emit decision "architect_prepass task=${sig8} status=cached reason=sig_match artifact=docs/handoff/dispatch-${sig8}/architect-prepass.md"
+      return 0
+    fi
+  fi
+
   mfile="$(mktemp "${TMPDIR:-/tmp}/leadv2-architect-prepass.XXXXXX")" || return 1
-  printf '%s\n' "You are the architect prepass. Turn this mission into a scoped implementation design. State: changes, exact files, acceptance evidence, and explicit non-goals. Do not implement.\n\nMISSION:\n${raw}" > "${mfile}"
+  # T-c: a short mission (<15 lines) gets a terser prompt -- same architect, same model,
+  # just less framing text to process. LEADV2_PREPASS_CACHE=0 restores the single long
+  # prompt for every mission regardless of length.
+  local _pc_lines
+  _pc_lines="$(printf '%s\n' "${raw}" | grep -c .)"
+  if [[ "${PREPASS_CACHE}" == "1" && "${_pc_lines}" -lt 15 ]]; then
+    printf '%s\n' "Architect prepass (short mission). Terse scoped design only: changes, exact files, acceptance evidence, explicit non-goals. Do not implement.\n\nMISSION:\n${raw}" > "${mfile}"
+  else
+    printf '%s\n' "You are the architect prepass. Turn this mission into a scoped implementation design. State: changes, exact files, acceptance evidence, and explicit non-goals. Do not implement.\n\nMISSION:\n${raw}" > "${mfile}"
+  fi
   # macOS has no portable `timeout`. Python waits for the launcher only; a
   # timed-out advisory prepass is deliberately allowed to finish or be reaped
   # independently while this dispatch immediately continues with the raw task.
@@ -979,6 +1063,12 @@ PY
     printf '%s\n' "${out}" > "${f}" || return 1
   fi
   [[ -s "${f}" ]] || { ARCHITECT_PREPASS_REASON="empty_output"; emit decision "architect_prepass task=${sig8} status=failed reason=empty_output"; return 1; }
+  # T-c: stamp the mission-text hash that produced this design so a later byte-identical
+  # retry (same sig8) can be served from cache. Fail-open: a stamp write failure never
+  # fails the prepass itself, it only means the NEXT call re-runs (safe, just slower).
+  if [[ "${PREPASS_CACHE}" == "1" ]]; then
+    printf '%s' "$(printf '%s' "${raw}" | compute_sig)" > "${f}.sig" 2>/dev/null || true
+  fi
   emit decision "architect_prepass task=${sig8} status=ran artifact=docs/handoff/dispatch-${sig8}/architect-prepass.md source=${design:-stdout}"
 }
 
@@ -1045,6 +1135,25 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
     bash "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" \
       >/dev/null 2>&1 &
+  local _pc_pid=$!
+  # wave2 round2 finding 3: stamp the close-owner record with the REAL os pid of the
+  # just-forked child ourselves, before this function returns -- eliminates the startup
+  # race where product-close.sh wrote its OWN pid as its first executed line (a window
+  # existed between fork and that write during which a concurrent sweep saw no record at
+  # all and wrongly treated the lane as "close gate never launched").
+  local _pc_pidfile _pc_pidfile_tmp
+  _pc_pidfile="$(close_owner_pidfile "${sig8}")"
+  mkdir -p "$(dirname "${_pc_pidfile}")" 2>/dev/null
+  # wave2 round3 finding 2: temp file + atomic rename, mirroring leadv2-dispatch-
+  # product-close.sh's own self-refresh fix -- a direct `>` truncate-in-place left a
+  # window where a concurrent sweep could read a truncated/empty pid and misclassify a
+  # live close-owner as dead.
+  _pc_pidfile_tmp="${_pc_pidfile}.tmp.$$"
+  if printf '%s\n' "${_pc_pid}" > "${_pc_pidfile_tmp}" 2>/dev/null; then
+    mv -f "${_pc_pidfile_tmp}" "${_pc_pidfile}" 2>/dev/null || true
+  else
+    rm -f "${_pc_pidfile_tmp}" 2>/dev/null || true
+  fi
   emit decision "product_close task=${sig8} status=spawned author=${author}"
 }
 
@@ -1500,6 +1609,7 @@ cmd_resolve() {
     if (( _pp_ok == 0 )); then
       emit decision "architect_prepass task=${sig8} status=parked reason=no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts action=not_dispatched"
       log_err "architect prepass produced no design for product task=${sig8} after ${ARCHITECT_PREPASS_ATTEMPTS} attempts -- task PARKED, not dispatched."
+      _dl_note "${sig8}" parked "no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts" "" "${founder_task_id}"
       exit 3
     fi
     # The developer receives the independently-produced design -- but INLINE, and only
@@ -1566,12 +1676,15 @@ confirmation-seeking; only for a decision you cannot make yourself."
     case "${_ls_rc}" in
       0) : ;;  # accepted (or warn-mode violation, already logged)
       3) emit decision "dispatch_refused reason=not_shape_eligible task=${sig8}"
+         _dl_note "${sig8}" refused not_shape_eligible "" "${founder_task_id}"
          printf 'dispatch_refused reason=not_shape_eligible task=%s\n' "${sig8}"
          exit 2 ;;
       2) emit decision "dispatch_refused reason=diagnostic_mission_missing_evidence task=${sig8}"
+         _dl_note "${sig8}" refused diagnostic_mission_missing_evidence "" "${founder_task_id}"
          printf 'dispatch_refused reason=diagnostic_mission_missing_evidence task=%s\n' "${sig8}"
          exit 2 ;;
       *) log_err "leadv2-lane-shape.sh classify failed unexpectedly (rc=${_ls_rc}) for task=${sig8}"
+         _dl_note "${sig8}" dead lane_shape_classify_failed "rc=${_ls_rc}" "${founder_task_id}"
          exit 1 ;;
     esac
   fi
@@ -1606,6 +1719,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
       local v2rc=$?
       emit decision "dispatch_refused reason=router_v2_unavailable task=${sig8} router=v2 rc=${v2rc}"
       log_err "router v2 resolver failed (rc=${v2rc}); set LEADV2_ROUTER_V2=0 for rollback"
+      _dl_note "${sig8}" dead "router_v2_unavailable_rc_${v2rc}" "" "${founder_task_id}"
       exit 1
     }
   else
@@ -1644,15 +1758,28 @@ confirmation-seeking; only for a decision you cannot make yourself."
         emit decision "dispatch_override_rejected reason=force_not_permitted task=${sig8} ledger=$(dispatch_ledger_file)"
       fi
       emit decision "dispatch_refused reason=duplicate_task_signature task=${sig8} ledger=$(dispatch_ledger_file)"
+      # FIX (wave2 finding 3): do NOT terminalize this caller against the shared sig8
+      # key. A duplicate-signature refusal only tells us ANOTHER caller for the same
+      # sig is already in flight -- it says nothing about how that other caller's
+      # dispatch will end. Writing "refused" here would win the terminal ledger's
+      # write-once race and permanently discard whatever landed/parked/dead verdict
+      # the actual winner eventually earns.
       printf 'dispatch_refused reason=duplicate_task_signature task=%s\n' "${sig8}"
       exit 2
     elif [[ ${orc} -ne 0 ]]; then
       log_err "dispatch ledger record failed (rc=${orc}) for task=${sig8}"
+      _dl_note "${sig8}" dead "ledger_record_failed_rc_${orc}" "" "${founder_task_id}"
       exit 1
     fi
     emit decision "route_resolved by=router router=${router_label} model=opus task=${sig8} rule=${rule} reason=${reason}"
     printf 'route_resolved by=router router=%s model=opus task=%s rule=%s reason=%s\n' "${router_label}" "${sig8}" "${rule}" "${reason}"
     log "route_note model=opus requires_lead_judgment (GLM banned for kind=${kind:-<none>}); not auto-dispatched"
+    # FIX (wave2 finding 4): opus dispatch is explicitly NOT auto-dispatched -- nothing
+    # ran, nothing was ever going to run, and the lead's own judgment (a separate,
+    # out-of-band action) is what actually resolves this task. "landed" claimed
+    # delivered work that never happened; "parked" is the true state until the lead
+    # acts.
+    _dl_note "${sig8}" parked resolved_opus_lead_judgment "" "${founder_task_id}"
     exit 3
   fi
 
@@ -1663,7 +1790,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
   local -a candidate_arms attempted
   if [[ "${router_label}" == "v2" ]]; then
     IFS=',' read -r -a candidate_arms <<< "${v2_eligible}"
-    [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; exit 4; }
+    [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
   else
     case "${arm}" in
       glm)   candidate_arms=(glm codex sonnet) ;;
@@ -1707,6 +1834,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
       if [[ ${_rv2_rc} -eq 3 || -z "${_rv2_eligible}" ]]; then
         emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} by=router_v2 chain=${_rv2_chain}"
         log_err "every candidate arm is quota-exhausted (chain='${_rv2_chain}'); refusing to dispatch"
+        _dl_note "${sig8}" refused all_arms_exhausted_quota "chain=${_rv2_chain}" "${founder_task_id}"
         exit 4
       fi
       local -a _rv2_kept=()
@@ -1737,6 +1865,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
     done
     if [[ ${#_kept[@]} -eq 0 ]]; then
       log_err "every candidate arm is excluded (excluded='${_ex_src}'); refusing to dispatch"
+      _dl_note "${sig8}" refused all_arms_excluded "excluded=${_ex_src}" "${founder_task_id}"
       exit 4
     fi
     candidate_arms=("${_kept[@]}")
@@ -1762,6 +1891,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
         emit decision "dispatch_override_rejected reason=force_not_permitted task=${sig8} ledger=$(dispatch_ledger_file)"
       fi
       emit decision "dispatch_refused reason=duplicate_task_signature task=${sig8} ledger=$(dispatch_ledger_file)"
+      # FIX (wave2 round2 finding 1): same reasoning as the opus duplicate branch above --
+      # a duplicate-signature refusal only means ANOTHER caller for this sig8 is already in
+      # flight. Writing "refused" here would win the terminal ledger's write-once race and
+      # permanently discard whatever landed/parked/dead verdict the actual winner earns.
       printf 'dispatch_refused reason=duplicate_task_signature task=%s\n' "${sig8}"
       exit 2
       ;;
@@ -1778,6 +1911,12 @@ confirmation-seeking; only for a decision you cannot make yourself."
       fi
       emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}"
       printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}"
+      # A product dispatch's terminal state is owned by dispatch-product-close.sh (it runs
+      # the e2e/review gates and knows the real outcome) -- writing "landed" HERE for a
+      # product task would let a later, more informative dead/parked verdict from that
+      # script lose the write-once race. Non-product spawns have nothing else that will
+      # ever check back on them, so THIS is their one and only terminal write.
+      [[ "${product_class}" != "product" ]] && _dl_note "${sig8}" landed "spawned_${candidate}" "" "${founder_task_id}"
       exit 0
       ;;
     7)
@@ -1789,6 +1928,9 @@ confirmation-seeking; only for a decision you cannot make yourself."
         emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}"
         printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}"
         emit decision "dispatch_rolled_back reason=no_spawn_dry_run task=${sig8}"
+        # Dry-run: nothing was spawned or reserved (dispatch_abort already ran). No terminal
+        # state exists to record -- writing one here would falsely claim a real dispatch
+        # happened and block a LATER real (--spawn) call for the same sig8 forever.
         exit 0
       fi
       attempted+=("${LAST_ARM_OUTCOME:-${candidate}_failed_launcher}")
@@ -1802,6 +1944,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
       # retryable rc=4 case above.
       log_err "dispatch reservation could not be finalized for task=${sig8} model=${candidate} -- ledger write (confirm or abort) FAILED; a spawned worker may be live but NOT recorded -- check manually"
       emit decision "dispatch_rollback_failed task=${sig8} model=${candidate} rule=${rule} reason=$([[ "${spawn}" == "1" ]] && printf spawn_failed_or_confirm_write_failed || printf no_spawn_dry_run)"
+      _dl_note "${sig8}" dead rollback_failed "model=${candidate}" "${founder_task_id}"
       exit 1
       ;;
     6)
@@ -1810,14 +1953,17 @@ confirmation-seeking; only for a decision you cannot make yourself."
       # a reservation already existed) so the log/journal reason is unambiguous.
       log_err "dispatch reservation FAILED for task=${sig8} model=${candidate} -- ledger write did not land (read-only/full fs?); refusing to spawn"
       emit decision "dispatch_reservation_failed task=${sig8} model=${candidate} rule=${rule}"
+      _dl_note "${sig8}" dead reservation_failed "model=${candidate}" "${founder_task_id}"
       exit 1
       ;;
     3)
       log_err "dispatch lock-wait timeout for task=${sig8}"
+      _dl_note "${sig8}" dead lock_timeout "" "${founder_task_id}"
       exit 1
       ;;
     *)
       log_err "atomic_dispatch_reserve_spawn_confirm: unexpected rc=${arc} for task=${sig8}"
+      _dl_note "${sig8}" dead "unexpected_rc_${arc}" "" "${founder_task_id}"
       exit 1
       ;;
     esac
@@ -1827,6 +1973,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
   attempted_csv="$(IFS=,; printf '%s' "${attempted[*]}")"
   emit decision "dispatch_rolled_back reason=all_arms_unavailable task=${sig8} attempts=${attempted_csv}"
   log_err "all eligible dispatch arms declined or failed for task=${sig8}: ${attempted_csv}"
+  _dl_note "${sig8}" dead all_arms_unavailable "attempts=${attempted_csv}" "${founder_task_id}"
   exit 4
 }
 
@@ -1835,6 +1982,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
 case "${1:-}" in
   record-review) shift; cmd_record_review "$@" ;;
   status)        cmd_status ;;
+  sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;
   -h|--help)     usage ;;
   *)             cmd_resolve "$@" ;;
 esac

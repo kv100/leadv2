@@ -125,6 +125,7 @@ refusal_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/refusal-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/refusal-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/refusing-glm.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/live-codex.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_BIN}" 'quota refusal advances chain' 2>&1)"
 refusal_rc=$?
 if [[ ${refusal_rc} -eq 0 ]] \
@@ -143,6 +144,7 @@ peak_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/peak-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/peak-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/peak-glm.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/live-codex.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_BIN}" 'peak refusal advances chain' 2>&1)"
 peak_rc=$?
 if [[ ${peak_rc} -eq 0 ]] \
@@ -163,6 +165,7 @@ crash_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/crash-root" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/crashing-glm.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/failing-codex.sh" \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/failing-sonnet.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_BIN}" 'launcher crash stays failure' 2>&1)"
 crash_rc=$?
 if [[ ${crash_rc} -eq 4 ]] \
@@ -179,11 +182,13 @@ make_live_glm "${TMP_ROOT}/live-glm.sh"
 dedup_first="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/dedup-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/dedup-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/live-glm.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_BIN}" 'one mission only once' 2>&1)"
 dedup_first_rc=$?
 dedup_second="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/dedup-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/dedup-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/live-glm.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_BIN}" 'one mission only once' 2>&1)"
 dedup_second_rc=$?
 if [[ ${dedup_first_rc} -eq 0 && ${dedup_second_rc} -eq 2 ]] \
@@ -211,11 +216,13 @@ make_root "${TMP_ROOT}/race-root"
 make_live_glm "${TMP_ROOT}/slow-glm.sh" 1
 race_cache="${TMP_ROOT}/race-cache"
 CLAUDE_PROJECT_ROOT="${TMP_ROOT}/race-root" LEADV2_DISPATCH_CACHE_DIR="${race_cache}" \
-  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/slow-glm.sh" bash "${DISPATCH_BIN}" 'racing reservation' >"${TMP_ROOT}/race-one.out" 2>&1 &
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/slow-glm.sh" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  bash "${DISPATCH_BIN}" 'racing reservation' >"${TMP_ROOT}/race-one.out" 2>&1 &
 race_one_pid=$!
 sleep 0.1
 CLAUDE_PROJECT_ROOT="${TMP_ROOT}/race-root" LEADV2_DISPATCH_CACHE_DIR="${race_cache}" \
-  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/slow-glm.sh" bash "${DISPATCH_BIN}" 'racing reservation' >"${TMP_ROOT}/race-two.out" 2>&1 &
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/slow-glm.sh" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  bash "${DISPATCH_BIN}" 'racing reservation' >"${TMP_ROOT}/race-two.out" 2>&1 &
 race_two_pid=$!
 wait "${race_one_pid}"; race_one_rc=$?
 wait "${race_two_pid}"; race_two_rc=$?

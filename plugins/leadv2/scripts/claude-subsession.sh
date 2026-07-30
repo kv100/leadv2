@@ -219,6 +219,9 @@ SHARED_PROTOCOL_BOILERPLATE="MANDATORY — /leadv2 subagent protocol:
 - MCP cache: check docs/handoff/<TASK_ID>/mcp-cache/<tool>-<hash>.yaml before any MCP call (age<30min → use cache). See skill §1b.
 - NO MCP access in this subsession (headless claude -p mode). Mission file has \"## Graph context\" pre-loaded.
 - Chat output to lead: ≤50 words (≤30 for PO/strategist). Full content to deliverable file.
+- After writing DELIVERABLE_COMPLETE and your final chat report, you are DONE — end the turn now.
+  Do not wait for a reply or idle expecting a follow-up; nothing further will arrive in this
+  subsession (T-r, SUPERVISOR-AUDIT-01).
 - See full protocol: .claude/skills/leadv2-subagent-protocol/SKILL.md
 - Codebase graph project: ${LEADV2_CODEBASE_PROJECT:-}
 - Handoff discipline (context.yaml), question proxy (ask-lead.sh), DELIVERABLE_COMPLETE marker, chat limits, and off_limits hard stop are all in the skill file above."

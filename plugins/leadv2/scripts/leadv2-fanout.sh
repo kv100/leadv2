@@ -1525,6 +1525,26 @@ launch_via_dispatch_code() {
   IFS=$'\t' read -r _lane_writes _lane_acceptance _lane_rollback <<< "$(_fanout_task_lane_contract "$tid")"
   [[ "$_lane_writes" == "-" ]] && _lane_writes=""
   [[ "$_lane_acceptance" == "-" ]] && _lane_acceptance=""
+
+  # WRITES-CONFLICT-NOTIFY (SUPERVISOR-AUDIT-01 T-E, founder point: notify,
+  # not hard-block): when this lane declares writes, (a) stamp them onto its
+  # own just-reserved active.yaml row so a LATER lane can see them, then
+  # (b) check them against every currently-alive lane's own declared writes
+  # and, on overlap, journal + surface a SUPERVISE-URGENT pulse line. Dispatch
+  # below proceeds unconditionally either way -- this never blocks or delays
+  # launch. LEADV2_WRITES_CONFLICT_NOTIFY=0 (checked inside the overlap
+  # script) makes the whole block a no-op, restoring today's active.yaml
+  # shape and behavior byte-for-byte; the guard is duplicated here too so
+  # the stamp write itself is skipped, not just the notify.
+  if [[ "${LEADV2_WRITES_CONFLICT_NOTIFY:-1}" != "0" && -n "$_lane_writes" ]]; then
+    leadv2_active_set_writes "$tid" "$_lane_writes" >/dev/null 2>&1 || true
+    local _writes_overlap_bin="${LEADV2_FANOUT_WRITES_OVERLAP_BIN:-${SCRIPT_DIR}/leadv2-writes-overlap.sh}"
+    if [[ -x "$_writes_overlap_bin" ]]; then
+      bash "$_writes_overlap_bin" --task-id "$tid" --writes "$_lane_writes" \
+        --project-root "$PROJECT_ROOT" --notify >/dev/null 2>&1 || true
+    fi
+  fi
+
   local -a dc_args=("$mission" --kind "fanout-class-funnel" --task-id "$tid")
   [[ -n "$_lane_writes" ]] && dc_args+=(--writes "$_lane_writes")
   [[ -n "$_lane_acceptance" ]] && dc_args+=(--acceptance-cmd "$_lane_acceptance")
