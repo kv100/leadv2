@@ -44,23 +44,42 @@ CWD_FROM_INPUT="$(printf -- '%s' "$PARSED" | sed -n '1p')"
 MODEL="$(printf -- '%s' "$PARSED" | sed -n '2p')"
 REMAINING="$(printf -- '%s' "$PARSED" | sed -n '3p')"
 
-# Fallback is ALWAYS computed (a CONFIGURED-but-failing/timed-out user
-# command must fall back here too, not regress to a bare "?").
-DISP_CWD="${CWD_FROM_INPUT:-?}"
-DISP_CWD="${DISP_CWD/#$HOME/~}"
-FALLBACK_BASE="${MODEL:-?} in ${DISP_CWD}"
-[[ -n "$REMAINING" && "$REMAINING" != "null" ]] && FALLBACK_BASE="${FALLBACK_BASE} ${REMAINING}% ctx"
+# FIX5c: fallback is ALWAYS computed (a CONFIGURED-but-failing/timed-out
+# user command must fall back here too, not regress to a bare "?") — and it
+# must share leadv2-lane-status-line.sh's own colorized renderer, not a
+# hand-copy, so this fallback and the hot path's cache-miss fallback can
+# never drift into two different palettes (or the same tilde-escaping bug)
+# again. One extra bash fork to source it is negligible on this already-
+# detached, multi-spawn path.
+# shellcheck source=leadv2-lane-status-line.sh
+source "${SCRIPT_DIR}/leadv2-lane-status-line.sh" 2>/dev/null || true
+if declare -F _leadv2_render_colored_base >/dev/null 2>&1; then
+  FALLBACK_BASE="$(_leadv2_render_colored_base "${MODEL:-?}" "$CWD_FROM_INPUT" "" "$REMAINING")"
+else
+  FALLBACK_BASE="${MODEL:-?} in ${CWD_FROM_INPUT}"
+fi
 
+# FIX5c (SUPERVISOR-AUDIT-01): B13 fix-round-4 made this ENTIRE script run
+# detached and awaited by NOTHING (see leadv2-lane-status-line.sh) — so
+# these per-step timeouts are no longer a UI-latency budget, only a
+# hang-safety-net. They were still left at their old fix-round-3 values
+# (0.05-0.1s) from when a caller-imposed outer timeout made every millisecond
+# count. On THIS machine a single jq/git/python3 fork+exec alone costs
+# 60-150ms (measured directly: the wrapped user command takes 110-150ms,
+# the state-path resolver 100-110ms) — comfortably over every one of those
+# budgets — so USER_CMD, the git-branch fallback, and the lane resolver were
+# timing out on 100% of calls, not occasionally. Generous now that nothing
+# downstream waits on this script.
 BASE="" WRAPPED_OK=0
 if [[ -n "$USER_CMD" ]]; then
-  BASE="$(printf '%s' "$INPUT" | timeout -k 0.05 0.08 bash -c "$USER_CMD" 2>/dev/null || true)"
+  BASE="$(printf '%s' "$INPUT" | timeout -k 0.2 2 bash -c "$USER_CMD" 2>/dev/null || true)"
   [[ -n "$BASE" ]] && WRAPPED_OK=1
 fi
 [[ -z "$BASE" ]] && BASE="$FALLBACK_BASE"
 [[ -z "$BASE" ]] && BASE="?"
 
 if [[ "$WRAPPED_OK" != "1" ]]; then
-  BRANCH="$(timeout 0.05 git -C "$CWD_FROM_INPUT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  BRANCH="$(timeout 1 git -C "$CWD_FROM_INPUT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   [[ -n "$BRANCH" ]] && BASE="${BASE} (${BRANCH})"
 fi
 
@@ -86,27 +105,52 @@ if [[ "$CACHE_FRESH" == "1" ]]; then
   LANES="$(cat "$LANE_CACHE_FILE" 2>/dev/null || true)"
   [[ -z "$LANES" ]] && LANES="lanes ?"
 else
+  # FIX5c: `-f "$ACTIVE_YAML"` used to gate the WHOLE lane calc — but the
+  # resolver ALWAYS returns a path (it constructs one even for a file that
+  # doesn't exist yet), so "no /leadv2 session has ever run in this repo" is
+  # a completely normal state, not an error, and must still render "lanes
+  # 0/<cap>", never "lanes ?". Gate only on the resolver call itself having
+  # produced a path at all (a true resolve failure/timeout).
+  LIMITS_YAML="${CWD_FROM_INPUT}/.claude/leadv2-overrides/active-limits.yaml"
   if [[ -x "$RESOLVER" ]]; then
-    ACTIVE_YAML="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 0.08 "$RESOLVER" --no-link active.yaml 2>/dev/null || true)"
-    if [[ -n "$ACTIVE_YAML" && -f "$ACTIVE_YAML" ]]; then
-      LANES="$(timeout 0.1 python3 -c "
+    ACTIVE_YAML="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 1 "$RESOLVER" --no-link active.yaml 2>/dev/null || true)"
+    if [[ -n "$ACTIVE_YAML" ]]; then
+      LANES="$(timeout 1 python3 -c "
 import sys, os, time, glob
 try:
     import yaml
 except Exception:
     print('lanes ?'); sys.exit(0)
 
-path, root, cache_file = sys.argv[1], sys.argv[2], sys.argv[3]
-try:
-    with open(path, encoding='utf-8') as fh:
-        data = yaml.safe_load(fh) or {}
-except Exception:
-    print('lanes ?'); sys.exit(0)
+path, root, cache_file, limits_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+data = {}
+if os.path.isfile(path):
+    try:
+        with open(path, encoding='utf-8') as fh:
+            data = yaml.safe_load(fh) or {}
+    except Exception:
+        # A file that EXISTS but fails to parse is a true read error.
+        print('lanes ?'); sys.exit(0)
+# A file that does not exist yet (no /leadv2 session ever ran here) is a
+# normal empty state, not an error — data stays {} and n resolves to 0 below.
 
 meta = data.get('meta') or {}
-cap = meta.get('hard_limit', '?')
 sessions = data.get('sessions') or []
 n = len(sessions)
+
+# Cap precedence: active.yaml's own meta.hard_limit (set by the last real
+# session) -> this repo's active-limits.yaml override -> the schema-
+# documented default of 3 (see active-limits.yaml's own header comment).
+cap = meta.get('hard_limit')
+if cap is None and os.path.isfile(limits_path):
+    try:
+        with open(limits_path, encoding='utf-8') as fh:
+            limits = yaml.safe_load(fh) or {}
+        cap = limits.get('hard_limit')
+    except Exception:
+        cap = None
+if cap is None:
+    cap = 3
 
 def lane_log(s):
     # B14 fix: consult the row's own log_path first (dispatch-code.sh
@@ -170,7 +214,7 @@ try:
         fh.write(out)
 except Exception:
     pass
-" "$ACTIVE_YAML" "$CWD_FROM_INPUT" "$LANE_CACHE_FILE" 2>/dev/null || true)"
+" "$ACTIVE_YAML" "$CWD_FROM_INPUT" "$LANE_CACHE_FILE" "$LIMITS_YAML" 2>/dev/null || true)"
       [[ -z "$LANES" ]] && LANES="lanes ?"
     fi
   fi
@@ -185,11 +229,13 @@ fi
 # path, same reasoning as the active.yaml lookup above. Independent of the
 # lane cache TTL: cheap (one file tail), so it is recomputed every tail-
 # script run rather than folded into the lane cache's freshness window.
+# FIX5c: same stale fix-round-3 budgets as above (0.08s vs. this resolver's
+# own measured ~100-110ms) — bumped for the same reason.
 PULSE_FRAG=""
 if [[ -x "$RESOLVER" ]]; then
-  PULSE_LOG="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 0.08 "$RESOLVER" --no-link supervise-loop.log 2>/dev/null || true)"
+  PULSE_LOG="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 1 "$RESOLVER" --no-link supervise-loop.log 2>/dev/null || true)"
   if [[ -n "$PULSE_LOG" && -f "$PULSE_LOG" ]]; then
-    PULSE_TEXT="$(timeout 0.08 grep -v '^[[:space:]]*$' "$PULSE_LOG" 2>/dev/null | tail -n 1 || true)"
+    PULSE_TEXT="$(timeout 0.5 grep -v '^[[:space:]]*$' "$PULSE_LOG" 2>/dev/null | tail -n 1 || true)"
     if [[ -n "$PULSE_TEXT" ]]; then
       PULSE_TEXT="${PULSE_TEXT:0:40}"
       PULSE_FRAG=" | \033[2mlast: ${PULSE_TEXT}\033[0m"

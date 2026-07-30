@@ -59,6 +59,31 @@
 # in the tail script, see there) derives age from the newest of
 # docs/handoff/<task_id>/{session.log,fanout.log} by mtime — never from
 # active.yaml's self-reported log_path/pulse_log.
+# FIX5c (SUPERVISOR-AUDIT-01): shared colorized base-line renderer — used by
+# BOTH this script's own cache-miss static fallback below AND the tail
+# script's post-timeout/post-failure fallback (sourced from there), so a
+# genuine burn failure never yields a grey, uncolored line and both fallback
+# paths can never drift apart. Prints (no trailing newline)
+# "<model> in <cwd> [<style>] <remaining>% ctx".
+_leadv2_render_colored_base() {
+  local model="${1:-?}" cwd="${2:-}" style="${3:-}" remaining="${4:-}"
+  [[ -z "$cwd" ]] && cwd="$PWD"
+  # BUG: `~` on the REPLACEMENT side of `${var/#pat/~}` tilde-EXPANDS back to
+  # $HOME before the substitution lands, silently re-inserting the full path
+  # and no-op'ing the shortening on every call — escape it as `\~`.
+  cwd="${cwd/#$HOME/\~}"
+  printf '\033[36m%s\033[0m in \033[32m%s\033[0m' "$model" "$cwd"
+  [[ -n "$style" && "$style" != "null" ]] && printf ' [\033[33m%s\033[0m]' "$style"
+  [[ -n "$remaining" && "$remaining" != "null" ]] && printf ' \033[35m%s%% ctx\033[0m' "$remaining"
+}
+
+# The tail script sources this file for the function above only — never run
+# this script's own main body (stdin read, cache emit, refresher spawn) when
+# sourced, that would double-consume stdin and mis-fire a second refresher.
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 set -uo pipefail
 
 INPUT="$(cat 2>/dev/null || true)"
@@ -102,7 +127,6 @@ else
     DISP_CWD="${BASH_REMATCH[1]}"
   fi
   [[ -z "$DISP_CWD" ]] && DISP_CWD="$PWD"
-  DISP_CWD="${DISP_CWD/#$HOME/~}"
   # output_style.name and context_window.remaining_percentage, pure bash
   # regex (no jq) — same fields ~/.claude/burn/statusline.sh reads via jq.
   if [[ "$INPUT" =~ \"output_style\"[[:space:]]*:[[:space:]]*\{[^\}]*\"name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
@@ -111,13 +135,9 @@ else
   if [[ "$INPUT" =~ \"remaining_percentage\"[[:space:]]*:[[:space:]]*([0-9.]+) ]]; then
     REMAINING="${BASH_REMATCH[1]}"
   fi
-  # Same ANSI palette as ~/.claude/burn/statusline.sh: cyan model, green
-  # cwd, yellow [style], magenta N% ctx; blue for the " | lanes" fragment
-  # (kept a distinct accent so the lane segment reads as this plugin's own,
-  # not the founder's base statusLine). printf builtin only — zero spawns.
-  printf '\033[36m%s\033[0m in \033[32m%s\033[0m' "$MODEL" "$DISP_CWD"
-  [[ -n "$STYLE" && "$STYLE" != "null" ]] && printf ' [\033[33m%s\033[0m]' "$STYLE"
-  [[ -n "$REMAINING" && "$REMAINING" != "null" ]] && printf ' \033[35m%s%% ctx\033[0m' "$REMAINING"
+  # printf builtin only — zero spawns (the shared renderer above is a bash
+  # function, not a subprocess).
+  _leadv2_render_colored_base "$MODEL" "$DISP_CWD" "$STYLE" "$REMAINING"
   printf ' \033[34m| lanes ?\033[0m\n'
 fi
 
