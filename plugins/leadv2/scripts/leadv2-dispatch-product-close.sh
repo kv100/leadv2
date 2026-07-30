@@ -163,15 +163,23 @@ _stamp_active_phase() { # <task_id> <phase>
   LEADV2_PROJECT_ROOT="${ROOT}" leadv2_active_update_phase "$1" "$2" >/dev/null 2>&1 || true
 }
 
-# Fix6 (SUPERVISOR-AUDIT-01): the reviewer arm used to come from a hand-kept env list
-# (LEADV2_DISPATCH_REVIEWER_ARMS, default "codex,sonnet") that never consulted the ONE
-# resolver dispatch-code.sh/router.sh use — GLM's review ban and the codex_quota_gate
-# 95% reserve were invisible here. Call the same lib/leadv2-glm-policy-resolve.py CLI
-# (job=review, base-arm=codex — review's base arm per the resolver's own docstring) so
-# GLM-never-reviews and the codex quota spill are ONE enforced policy, not a second copy.
-# Fail-safe: any resolver-missing/error path falls back to sonnet (never glm, matching
-# the resolver's own review-mode fallback contract).
-resolve_review_arm() {
+# dispatch-00629379 (P0, 2026-07-30): Fix6 (SUPERVISOR-AUDIT-01) called the resolver
+# for exactly ONE arm (job=review, base-arm=codex) -- with codex quota-gated out and
+# GLM structurally banned from review, EVERY build resolved to sonnet, so the single
+# resolved reviewer was also sonnet, and the self-review guard below correctly (but
+# permanently) refused it as `status: conflict`. Root cause was never candidate_arms
+# (that path was already dead, T-b) -- it was a single-arm resolver with no fallback
+# pool and no opus/glm review path. Fixed here: the resolver now returns an ORDERED,
+# quota-filtered, author-excluding POOL (--review-pool --author) so this function
+# picks the first eligible arm instead of being handed a single already-collided one.
+# Founder decisions encoded (2026-07-30): opus is now a valid reviewer arm; glm
+# reviews up to its OWN 90% band (review-only headroom above the 80% build gate).
+# Fail-safe: any resolver-missing/error path yields empty reviewer/pool + a distinct
+# refusal reason -- the caller then writes `status: no_reviewer`, never a silent
+# collapse to sonnet (which would just re-create the self-review bug for a sonnet
+# author) or to glm (founder rule: GLM never reviews without going through its own
+# quota check, never as a blind fallback).
+resolve_review_pool_call() {
   local resolver="${LEADV2_GLM_POLICY_RESOLVER:-}"
   if [[ -z "${resolver}" ]]; then
     if [[ -f "${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py" ]]; then
@@ -182,13 +190,14 @@ resolve_review_arm() {
     fi
   fi
   if [[ -z "${resolver}" || ! -f "${resolver}" ]]; then
-    printf 'arm=sonnet\nreason=resolver_missing_failclosed\n'
+    printf 'reviewer=\npool=\nrefusal=resolver_missing_failclosed\n'
     return
   fi
   local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
-  local -a resolver_args=(--routing-yaml "${routing_yaml}" --job review --base-arm codex --signals '{}')
+  local -a resolver_args=(--routing-yaml "${routing_yaml}" --job review --base-arm codex \
+    --review-pool --author "${AUTHOR}" --signals '{}')
   [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
-  python3 "${resolver}" "${resolver_args[@]}" 2>/dev/null || printf 'arm=sonnet\nreason=resolver_error_failclosed\n'
+  python3 "${resolver}" "${resolver_args[@]}" 2>/dev/null || printf 'reviewer=\npool=\nrefusal=resolver_error_failclosed\n'
 }
 
 # The reviewer wrapper and the reviewer do not necessarily use the same stream.  In
@@ -289,28 +298,28 @@ if [[ "${REVIEW_ON}" != 1 ]]; then
   exit 0
 fi
 
-# Resolved via the unified resolver (job=review, base-arm=codex) — see resolve_review_arm()
-# above. Removing the author is the cross-provider correctness constraint, not an operator
-# exclusion. A conflict is a finding: a same-provider-only pool must never turn into a silent skip.
-resolver_out="$(resolve_review_arm)"
-resolved_arm="$(printf '%s\n' "${resolver_out}" | sed -n 's/^arm=//p' | head -n1)"
-resolved_reason="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reason=//p' | head -n1)"
-# Defense-in-depth: the resolver structurally never returns glm for base-arm=codex, but
-# GLM-never-reviews is a founder rule with no exception path, so guard it explicitly too.
-[[ -z "${resolved_arm}" || "${resolved_arm}" == glm ]] && resolved_arm=sonnet
-reviewer="${resolved_arm}"
-if [[ "${reviewer}" == "${AUTHOR}" ]]; then
-  if [[ "${AUTHOR}" == sonnet ]]; then
-    reviewer=""  # only candidate collided with the sonnet author -- park, never self-review
-  else
-    reviewer=sonnet  # fail closed to sonnet-critic; sonnet != AUTHOR is guaranteed in this branch
-  fi
+# dispatch-00629379: resolved via the pool resolver (job=review, base-arm=codex,
+# --review-pool --author) -- see resolve_review_pool_call() above. The pool already
+# excludes AUTHOR and orders codex > glm > opus > sonnet by live quota headroom; an
+# empty reviewer here means every arm in the pool was genuinely unavailable (quota or
+# author-collision), which IS a finding -- it must never silently skip the gate.
+resolver_out="$(resolve_review_pool_call)"
+reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"
+pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
+refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
+# Defense-in-depth (R9): the resolver already filters the author out of its pool, but
+# a reviewer==author slip (stale cache, a launcher default) must never reach a live
+# self-review -- assert it here too rather than trusting a single enforcement point.
+if [[ -n "${reviewer}" && "${reviewer}" == "${AUTHOR}" ]]; then
+  refusal="reviewer_equals_author"
+  reviewer=""
 fi
-if [[ -z "${reviewer}" || "${reviewer}" == "${AUTHOR}" ]]; then
-  printf 'status: conflict\nauthor: %s\nresolved_arm: %s\nresolver_reason: %s\n' \
-    "${AUTHOR}" "${resolved_arm}" "${resolved_reason:-no_cross_provider_reviewer}" > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=conflict author=${AUTHOR} resolved_arm=${resolved_arm} reason=${resolved_reason:-no_cross_provider_reviewer}"
-  _dl_note parked "${resolved_reason:-no_cross_provider_reviewer}" "author=${AUTHOR}"
+if [[ -z "${reviewer}" ]]; then
+  refusal="${refusal:-all_review_arms_unavailable}"
+  printf 'status: no_reviewer\nauthor: %s\nrefusal: %s\npool: %s\n' \
+    "${AUTHOR}" "${refusal}" "${pool}" > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=no_reviewer author=${AUTHOR} refusal=${refusal} pool=${pool}"
+  _dl_note parked "${refusal}" "author=${AUTHOR} pool=${pool}"
   exit 0
 fi
 
@@ -362,11 +371,46 @@ if [[ "${reviewer}" == codex ]]; then
   bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait \
     --focus "Review ONLY the diff at ${diff_file}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract}" \
     > "${review_out}" 2> "${review_err}"; review_rc=$?
-else
+elif [[ "${reviewer}" == glm ]]; then
+  # dispatch-00629379: new branch -- GLM is now a valid reviewer arm (founder decision
+  # 2026-07-30, gated at its own 90% review threshold by the resolver above, never a
+  # blind fallback). Primary channel glm-coder.sh; second channel omp-task.sh when the
+  # per-repo glm-coder.sh lock is busy (exit 75), per CLAUDE.md Model routing v2. Both
+  # must land the SAME REVIEW_VERDICT:/REVIEW_FINDINGS: contract in ${review_out} that
+  # parse_review_verdict() below already enforces for every other reviewer branch.
   mission_file="${HANDOFF}/review-mission.md"
   printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
     "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
-  PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model sonnet --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait \
+  glm_bin="${LEADV2_DISPATCH_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
+  omp_bin="${LEADV2_DISPATCH_OMP_BIN:-${ROOT}/.claude/leadv2-overrides/omp-task.sh}"
+  review_rc=75
+  if [[ -x "${glm_bin}" ]]; then
+    bash "${glm_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
+    review_rc=$?
+  fi
+  if [[ ${review_rc} -eq 75 && -x "${omp_bin}" ]]; then
+    omp_run_id="$(bash "${omp_bin}" task "$(cat "${mission_file}")" --dir "${ROOT}" 2>> "${review_err}")"
+    if [[ -n "${omp_run_id}" ]]; then
+      omp_status=""
+      omp_waited=0
+      while (( omp_waited < 900 )); do
+        omp_status="$(bash "${omp_bin}" status "${omp_run_id}" 2>/dev/null)"
+        [[ "${omp_status}" == status=done* || "${omp_status}" == status=failed* ]] && break
+        sleep 5
+        omp_waited=$((omp_waited + 5))
+      done
+      cat "/tmp/omp-task-${omp_run_id}.log" > "${review_out}" 2>/dev/null || true
+      [[ "${omp_status}" == status=done* ]] && review_rc=0 || review_rc=1
+    fi
+  fi
+else
+  # sonnet or opus (R1 fix: launcher must pass the RESOLVED arm, not a hardcoded
+  # model -- the old `--model sonnet` here meant a resolver that returned opus still
+  # ran sonnet, a lying-green review).
+  mission_file="${HANDOFF}/review-mission.md"
+  printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+    "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+  PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model "${reviewer}" --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait \
     > "${review_out}" 2> "${review_err}"; review_rc=$?
 fi
 

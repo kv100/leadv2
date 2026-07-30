@@ -1924,6 +1924,14 @@ confirmation-seeking; only for a decision you cannot make yourself."
       # Re-stamp with the CONFIRMED-launched arm, phase unchanged -- the truthful value
       # once the primary arm_resolved pick was refused and the loop fell to a fallback.
       _stamp_active_phase "${founder_task_id}" "build" "${candidate}"
+      # VESTIGIAL (dispatch-00629379, 2026-07-30): reviewer_arms / the
+      # LEADV2_DISPATCH_REVIEWER_ARMS env it feeds is DEAD -- leadv2-dispatch-
+      # product-close.sh no longer reads it. Reusing the BUILD candidate chain as the
+      # reviewer list was the root cause of "review gate has no available reviewer"
+      # (candidate==author always collided). product-close now resolves its own
+      # reviewer pool via lib/leadv2-glm-policy-resolve.py --review-pool --author, an
+      # ordered, quota-filtered, author-excluding pool independent of this build chain.
+      # Kept (not deleted) only to avoid an unrelated call-signature change here.
       local reviewer_arms
       reviewer_arms="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
       if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}"; then

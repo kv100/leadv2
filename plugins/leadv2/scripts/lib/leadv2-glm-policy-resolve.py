@@ -37,6 +37,18 @@ DEFAULT_REVIEW_EXCLUSIONS = ["glm"]
 DEFAULT_BUILD_THRESHOLD_PCT = 80.0
 DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
 
+# dispatch-00629379 (P0, 2026-07-30): the review gate had no available reviewer once
+# Codex hit its weekly cap and GLM tripped the (build-only) 80% gate -- every build
+# resolved to sonnet, so the reviewer (identical to the author list pre-fix) was also
+# sonnet, and the gate correctly refused the self-review, forever. Two founder
+# decisions this defaults set encodes: (1) opus becomes a valid reviewer arm, (2) glm
+# reviews up to its OWN 90% band (deliberately above the 80% BUILD gate -- review-only
+# headroom, same shape as Codex's existing 80-build/95-review reserve). Defaults carry
+# the fix so a repo whose yaml never opts into these keys still gets it (R7).
+DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "opus", "sonnet"]
+DEFAULT_GLM_REVIEW_THRESHOLD_PCT = 90.0
+DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT = 95.0
+
 
 def _num_ge(val, n):
     try:
@@ -90,6 +102,17 @@ def extract_glm_policy_block(routing_yaml_text: str) -> dict:
             rex = re.search(r'(?m)^[ \t]*review_arm_exclusions:[ \t]*\[([^\]]*)\]', block)
             if rex:
                 gate["review_arm_exclusions"] = [s.strip() for s in rex.group(1).split(',') if s.strip()]
+            # dispatch-00629379: pool-mode-only keys, all optional -- absent means
+            # resolve_review_pool() falls back to its own DEFAULT_* constants.
+            rao = re.search(r'(?m)^[ \t]*review_arm_order:[ \t]*\[([^\]]*)\]', block)
+            if rao:
+                gate["review_arm_order"] = [s.strip() for s in rao.group(1).split(',') if s.strip()]
+            grtm = re.search(r'(?m)^[ \t]*glm_review_threshold_pct:[ \t]*([0-9.]+)', block)
+            if grtm:
+                gate["glm_review_threshold_pct"] = float(grtm.group(1))
+            artm = re.search(r'(?m)^[ \t]*anthropic_review_threshold_pct:[ \t]*([0-9.]+)', block)
+            if artm:
+                gate["anthropic_review_threshold_pct"] = float(artm.group(1))
     return {
         "sonnet_exceptions": [{"id": i} for i in exc_ids],
         "opus_only_mission_kinds": opus_kinds,
@@ -124,6 +147,136 @@ def live_codex_weekly_pct(quota_live_bin):
         return windows[0].get("used_percent") if windows else None
     except Exception:
         return None
+
+
+def live_glm_pct(quota_live_bin):
+    """Fail-open: any error -> None. max(five_hour.pct, weekly.pct) -- mirrors
+    leadv2-glm-quota-gate.sh:112's OR-of-both-windows trip condition (either window
+    over threshold blocks the arm); a weekly-only reading would miss a hot 5h window."""
+    if not quota_live_bin or not os.path.exists(quota_live_bin):
+        return None
+    try:
+        out = subprocess.run(["bash", quota_live_bin, "glm"], capture_output=True,
+                              text=True, timeout=10)
+        if out.returncode != 0:
+            return None
+        d = json.loads(out.stdout)
+        if d.get("status") != "ok":
+            return None
+        five = (d.get("five_hour") or {}).get("pct")
+        weekly = (d.get("weekly") or {}).get("pct")
+        vals = [v for v in (five, weekly) if v is not None]
+        return max(vals) if vals else None
+    except Exception:
+        return None
+
+
+def live_anthropic_pct(quota_live_bin):
+    """Fail-open: any error -> None. The ACTIVE account's max(five_hour_pct,
+    seven_day_pct) -- mirrors leadv2-quota-read.py's own account_resolution;
+    reviewing arms (opus/sonnet) share this one Anthropic-account reading."""
+    if not quota_live_bin or not os.path.exists(quota_live_bin):
+        return None
+    try:
+        out = subprocess.run(["bash", quota_live_bin, "anthropic"], capture_output=True,
+                              text=True, timeout=10)
+        if out.returncode != 0:
+            return None
+        d = json.loads(out.stdout)
+        if d.get("status") != "ok":
+            return None
+        accounts = d.get("accounts") or []
+        active = next((a for a in accounts if a.get("active")), None)
+        if active is None:
+            active_label = d.get("active_account")
+            active = next((a for a in accounts if a.get("account_label") == active_label), None)
+        if active is None and accounts:
+            active = accounts[0]
+        if active is None:
+            return None
+        five = active.get("five_hour_pct")
+        weekly = active.get("seven_day_pct")
+        vals = [v for v in (five, weekly) if v is not None]
+        return max(vals) if vals else None
+    except Exception:
+        return None
+
+
+def _fmt_pct(pct):
+    try:
+        f = float(pct)
+        return "%d" % int(f) if f.is_integer() else str(f)
+    except (TypeError, ValueError):
+        return ""
+
+
+def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = None,
+                         pcts: dict = None) -> dict:
+    """dispatch-00629379 §3.2: the ordered, quota-filtered, author-excluding reviewer
+    pool -- the fix for "review gate has no available reviewer". Unlike
+    resolve_glm_policy() (single arm, build+review), this always returns every
+    candidate's disposition so the caller (leadv2-dispatch-product-close.sh) can pick
+    the first eligible arm and still audit why every other arm was skipped.
+
+    pcts: optional injection for pure/test use -- keys "codex"/"glm"/"anthropic"
+    (opus and sonnet share the single "anthropic" account reading). When a key is
+    absent, the live read is fetched via quota_live_bin (fail-open to None).
+
+    Unknown-quota rule (§3.3): an unknown read blocks an arm ONLY if a later arm
+    exists in the pool -- the terminal arm in `order` is never blocked by an unknown
+    read (an unmeasured bucket beats an outage). A KNOWN over-threshold reading blocks
+    an arm regardless of position -- the terminal-arm exception is for unknown reads
+    only, never for a confirmed-over-threshold one.
+    """
+    gate = glm_policy.get("codex_quota_gate") or {}
+    order = gate.get("review_arm_order") or list(DEFAULT_REVIEW_ARM_ORDER)
+    codex_threshold = gate.get("review_threshold_pct", DEFAULT_REVIEW_THRESHOLD_PCT)
+    glm_threshold = gate.get("glm_review_threshold_pct", DEFAULT_GLM_REVIEW_THRESHOLD_PCT)
+    anthropic_threshold = gate.get("anthropic_review_threshold_pct", DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT)
+    pcts = dict(pcts) if pcts else {}
+
+    def _pct_for(arm):
+        if arm in pcts:
+            return pcts[arm]
+        if arm == "codex":
+            return live_codex_weekly_pct(quota_live_bin)
+        if arm == "glm":
+            return live_glm_pct(quota_live_bin)
+        if arm in ("opus", "sonnet"):
+            if "anthropic" in pcts:
+                return pcts["anthropic"]
+            return live_anthropic_pct(quota_live_bin)
+        return None
+
+    def _threshold_for(arm):
+        if arm == "codex":
+            return codex_threshold
+        if arm == "glm":
+            return glm_threshold
+        return anthropic_threshold
+
+    entries = []
+    reviewer = ""
+    last_idx = len(order) - 1
+    for i, arm in enumerate(order):
+        if arm == author:
+            entries.append("%s:author:" % arm)
+            continue
+        pct = _pct_for(arm)
+        if pct is None:
+            entries.append("%s:unknown:" % arm)
+            if i == last_idx and not reviewer:
+                reviewer = arm
+            continue
+        if _num_ge(pct, _threshold_for(arm)):
+            entries.append("%s:blocked:%s" % (arm, _fmt_pct(pct)))
+        else:
+            entries.append("%s:ok:%s" % (arm, _fmt_pct(pct)))
+            if not reviewer:
+                reviewer = arm
+
+    refusal = "" if reviewer else "all_review_arms_unavailable"
+    return {"reviewer": reviewer, "pool": entries, "refusal": refusal}
 
 
 def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
@@ -274,6 +427,8 @@ def _main(argv):
     ap.add_argument("--signals", default="{}")
     ap.add_argument("--base-arm", default="glm")
     ap.add_argument("--quota-live", default=None)
+    ap.add_argument("--review-pool", action="store_true")
+    ap.add_argument("--author", default="")
     args = ap.parse_args(argv)
 
     try:
@@ -298,6 +453,14 @@ def _main(argv):
     print("reason=%s" % result["reason"])
     print("tier=%s" % result["tier"])
     print("codex_quota_blocked=%s" % ("1" if result["codex_quota_blocked"] else "0"))
+
+    # dispatch-00629379: additive-only -- absent --review-pool, output above is
+    # byte-identical to pre-change (v1-equivalence, design §7 test f).
+    if args.review_pool:
+        pool_result = resolve_review_pool(glm_policy, args.author, quota_live_bin)
+        print("reviewer=%s" % pool_result["reviewer"])
+        print("pool=%s" % ",".join(pool_result["pool"]))
+        print("refusal=%s" % pool_result["refusal"])
     return 0
 
 
