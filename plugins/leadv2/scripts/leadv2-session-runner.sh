@@ -241,13 +241,37 @@ PYEOF
 # e2e flag is also a completed-work signal: Phase 8 may not yet have written
 # its final receipt, but relaunching the full pipeline would repeat finished
 # work.  `COMPLETION_PROOF` is intentionally human-readable for the log.
+#
+# Receipt freshness guard (SESSION-CLOSE-FIXES-01 fix 2): a re-queued task
+# carries a stale receipt from a prior close. Only the receipt-derived
+# sentinel_present limb is guarded below — real_state == done is
+# active.yaml/store truth (a different authority) and is left alone. Source
+# the shared lib; on absence fall back to never-stale so a missing lib cannot
+# brick a re-filed task.
+if [[ -f "$SCRIPT_DIR/lib/leadv2-receipt-freshness.sh" ]]; then
+  # shellcheck source=lib/leadv2-receipt-freshness.sh
+  source "$SCRIPT_DIR/lib/leadv2-receipt-freshness.sh"
+fi
+if ! type leadv2_receipt_is_stale >/dev/null 2>&1; then
+  leadv2_receipt_is_stale() { return 1; }
+fi
+
 completion_proof_present() {
   local real_state
   COMPLETION_PROOF=""
   real_state="$(_leadv2_derive_real_state "$TASK_ID" "$PROJECT_ROOT")"
-  if [[ "$real_state" == "done" ]] || sentinel_present; then
+  if [[ "$real_state" == "done" ]]; then
     COMPLETION_PROOF="Phase-8 completion proof"
     return 0
+  fi
+  # Guard the receipt limb only: if the receipt is STALE (task re-queued in
+  # tasks.yaml) skip sentinel_present entirely (rename aside + proceed). Only
+  # an HONOURED receipt may short-circuit as already-complete.
+  if ! leadv2_receipt_is_stale "$TASK_ID" "$COMPLETION_RECEIPT" "" "$LOGF"; then
+    if sentinel_present; then
+      COMPLETION_PROOF="Phase-8 completion proof"
+      return 0
+    fi
   fi
   if [[ -f "${TASK_DIR}/e2e-gate-passed.flag" ]]; then
     COMPLETION_PROOF="E2E gate completion flag"

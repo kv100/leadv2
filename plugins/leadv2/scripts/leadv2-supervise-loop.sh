@@ -39,8 +39,9 @@
 #   LEADV2_SUPERVISE_LOOP_PULSE_ON_START=1 — force a pulse on the FIRST cycle
 #     instead of waiting for the full PULSE_S window (test determinism)
 #
-# Exit codes: 0 = ensure found a live loop already running (no-op) OR the
-# loop ran its bounded test cycles and exited cleanly. 1 = root_error.
+# Exit codes: 0 = ensure found a live loop already running (EXISTING: adopt)
+# OR a bare invocation found a live owner it must not displace (FOREIGN) OR
+# the loop ran its bounded test cycles and exited cleanly. 1 = root_error.
 #
 # lean: cx=/glm= receipts are read directly from active.yaml's
 # provider_receipts[] field (populated by a future provider-wrapper writer —
@@ -101,7 +102,17 @@ JOB_REG_ROOT="/tmp/leadv2-job-registry"
 JOB_REG_SEEN="$(PROJECT_ROOT="$PROJECT_ROOT" "$STATE_PATH_SH" job-registry-seen.json)"
 
 _now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
-_pid_birth() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' || true; }
+# DO NOT "simplify" back to `tr -s ' '` alone. SESSION-CLOSE-FIXES-01 fix 1A:
+# this is the root cause of the --ensure sibling-spawn. The bash writer here
+# used `tr -s ' '` which squeezes interior whitespace runs but NEVER strips
+# the leading/trailing space, producing `"Fri Jul 31 19:52:12 2026 " (trailing
+# space)`. The python reader in the PYENSURE block normalised with
+# `" ".join(b.split())` (which trims), giving `"Fri Jul 31 19:52:12 2026"`.
+# The two NEVER compared equal, the corroboration branch never returned
+# EXISTING, and EVERY --ensure fell through to "claim ownership + run" — i.e.
+# every intervention added a sibling loop. The fix is byte-identical trimming
+# on both sides (collapse interior runs AND strip both ends), matching python.
+_pid_birth() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//' || true; }
 _pid_alive() { kill -0 "$1" 2>/dev/null; }
 
 # ── Alarm dedupe (SUPERVISOR-HARDENING-01 item 5) ──────────────────────────
@@ -122,6 +133,55 @@ else
   _LEADV2_ALARM_DEDUPE_LOADED=1
 fi
 
+# ── Item 2/3 shared paths (defined early: the --ensure block needs the
+#    heartbeat path, and _install_beat_cron needs both) ────────────────────
+# Heartbeat (item 2): written at the TOP of every cycle so a hang inside
+# supervise.sh shows up as heartbeat staleness. Lives beside the ownership
+# sentinel (same control-plane dir).
+HEARTBEAT_FILE="$(PROJECT_ROOT="$PROJECT_ROOT" "$STATE_PATH_SH" .supervise-loop.heartbeat)"
+WATCHDOG_SH="${SCRIPT_DIR}/leadv2-supervise-watchdog.sh"
+
+# ── Item 3: cron-owned status beat ─────────────────────────────────────────
+# Attaching supervision installs ONE idempotent crontab entry whose payload is
+# the watchdog (item 2) — which both alarms on loop silence AND calls --ensure
+# to self-heal. One entry covers failure classes 1 (silent loop) and 2 (dead
+# loop, no beat). Idempotent by a marker tag; re-running --ensure never
+# accumulates duplicates. Kill-switch LEADV2_SUPERVISE_BEAT_CRON=0 (tests +
+# founder opt-out). CRONTAB_BIN is injectable so tests never touch the real
+# crontab.
+_install_beat_cron() {
+  [[ "${LEADV2_SUPERVISE_BEAT_CRON:-1}" == "1" ]] || return 0
+  [[ -x "$WATCHDOG_SH" ]] || return 0
+  local crontab_bin="${CRONTAB_BIN:-crontab}"
+  command -v "$crontab_bin" >/dev/null 2>&1 || return 0
+  # Repo slug for the marker (basename of the main repo toplevel).
+  local repo_slug
+  repo_slug="$(basename "${PROJECT_ROOT}")"
+  local marker="# LEADV2_SUPERVISE_BEAT ${repo_slug}"
+  local cron_line="*/10 * * * * ${WATCHDOG_SH} --project-root ${PROJECT_ROOT} ${marker}"
+  # Read-modify-write under a sibling lock (no unlocked crontab rewrite — two
+  # concurrent --ensure could otherwise race). python3 fcntl, same convention
+  # as the ownership sentinel below (no bash `flock` binary on macOS/BSD).
+  python3 -c "
+import sys, os, fcntl, subprocess
+lock_path, crontab_bin, marker, line = sys.argv[1:5]
+os.makedirs(os.path.dirname(lock_path) or '.', exist_ok=True)
+lf = open(lock_path, 'a+')
+fcntl.flock(lf, fcntl.LOCK_EX)
+try:
+    cur = subprocess.run([crontab_bin, '-l'], capture_output=True, text=True)
+    rows = (cur.stdout or '').splitlines()
+    rows = [r for r in rows if marker not in r]
+    rows.append(line)
+    new = '\n'.join(rows) + '\n'
+    p = subprocess.run([crontab_bin, '-'], input=new, capture_output=True, text=True)
+    sys.exit(0 if p.returncode == 0 else 0)  # never fail --ensure on a cron hiccup
+finally:
+    fcntl.flock(lf, fcntl.LOCK_UN)
+    lf.close()
+" "${HEARTBEAT_FILE}.crontab.lock" "$crontab_bin" "$marker" "$cron_line" 2>/dev/null || true
+}
+
 # ── --ensure: attach-or-start via PID+birth sentinel (no duplicate loop) ──
 # R2-2 fix (codex-review-2.md finding 2): the old version did an UNLOCKED
 # check-then-create — two concurrent `--ensure` calls could both observe a
@@ -132,16 +192,33 @@ fi
 # single `flock` on `${SENTINEL}.lock` (python3 fcntl, matching this
 # project's portable-locking convention elsewhere in leadv2-supervise.sh —
 # no bash `flock` binary, which is absent on macOS/BSD).
-mkdir -p "$(dirname "$SENTINEL")" "$(dirname "$LOG_FILE")"
+#
+# SESSION-CLOSE-FIXES-01 fix 1B/1C: the adopt predicate now requires
+# pid-alive AND birth-match AND a fresh heartbeat (LEADV2_SUPERVISE_ADOPT_MAX_AGE_S,
+# default 600s = watchdog's 2×PULSE_S). A birth match alone used to be the gate
+# but the birth strings never compared equal (fix 1A) so EXISTING never fired
+# and every --ensure spawned a sibling. Now birth is normalised identically on
+# both sides, and a stale/hung owner (birth matches but heartbeat aged out) is
+# treated as NOT live → fall through and claim. The liveness check is computed
+# UNCONDITIONALLY (not just under --ensure): a bare invocation that finds a
+# live owner prints FOREIGN and exits 0 (single-owner invariant) instead of
+# clobbering the live owner's sentinel with no check at all.
+mkdir -p "$(dirname "$SENTINEL")" "$(dirname "$LOG_FILE")" "$(dirname "$HEARTBEAT_FILE")"
 MY_PID=$$
 MY_BIRTH="$(_pid_birth "$MY_PID")"
 
-_ENSURE_OUT="$(python3 - "$SENTINEL" "${SENTINEL}.lock" "$ENSURE" "$MY_PID" "$MY_BIRTH" <<'PYENSURE'
-import sys, os, json, fcntl, tempfile, datetime, subprocess
+_ENSURE_OUT="$(python3 - "$SENTINEL" "${SENTINEL}.lock" "$ENSURE" "$MY_PID" "$MY_BIRTH" "$HEARTBEAT_FILE" <<'PYENSURE'
+import sys, os, json, fcntl, tempfile, datetime, subprocess, time
 
-sentinel_path, lock_path, ensure_flag, my_pid_s, my_birth = sys.argv[1:6]
+sentinel_path, lock_path, ensure_flag, my_pid_s, my_birth, heartbeat_path = sys.argv[1:7]
 ensure_flag = ensure_flag == "1"
 my_pid = int(my_pid_s)
+
+adopt_max_age = 600
+try:
+    adopt_max_age = int(os.environ.get("LEADV2_SUPERVISE_ADOPT_MAX_AGE_S", "600"))
+except Exception:
+    pass
 
 def pid_alive(pid_val):
     try:
@@ -151,6 +228,9 @@ def pid_alive(pid_val):
         return False
 
 def pid_birth(pid_val):
+    # MUST mirror bash _pid_birth byte-for-byte: collapse interior whitespace
+    # runs AND strip both ends. (SESSION-CLOSE-FIXES-01 fix 1A — the trailing
+    # space mismatch was the sibling-spawn root cause.) Never parse as a date.
     try:
         r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid_val)],
                             capture_output=True, text=True, timeout=5)
@@ -159,23 +239,54 @@ def pid_birth(pid_val):
     except Exception:
         return ""
 
+def heartbeat_fresh(hb_path):
+    # A loop that just started has not written beat 1 yet — an ABSENT
+    # heartbeat is adopt-safe (matches the watchdog: no heartbeat is not
+    # "silent" unless a log exists). Treating absent as stale would
+    # reintroduce the sibling spawn during the startup window. STALE-but-
+    # present (aged past adopt_max_age) is NOT fresh → claim + run.
+    if not hb_path or not os.path.isfile(hb_path):
+        return True
+    try:
+        age = time.time() - os.path.getmtime(hb_path)
+        return age < adopt_max_age
+    except Exception:
+        return True
+
+def live_owner(d):
+    spid = d.get("pid")
+    sbirth = d.get("pid_birth")
+    if spid is None or not pid_alive(spid):
+        return None
+    if not sbirth or pid_birth(spid) != sbirth:
+        return None        # different process reusing the pid → not our owner
+    if not heartbeat_fresh(heartbeat_path):
+        return None        # same process, but stale/hung → not live
+    return int(spid)
+
 os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
 lf = open(lock_path, "a+")
 fcntl.flock(lf, fcntl.LOCK_EX)
 try:
-    if ensure_flag and os.path.isfile(sentinel_path):
+    owner_pid = None
+    if os.path.isfile(sentinel_path):
         try:
             with open(sentinel_path, encoding="utf-8") as fh:
                 d = json.load(fh) or {}
-            spid = d.get("pid")
-            sbirth = d.get("pid_birth")
-            if spid is not None and pid_alive(spid) and sbirth and pid_birth(spid) == sbirth:
-                print(f"EXISTING {int(spid)}")
-                sys.exit(0)
+            owner_pid = live_owner(d)
         except Exception:
-            pass
-    # Not (ensure AND live-and-corroborated) -- claim ownership atomically,
-    # still holding the lock, so no other --ensure caller can race us here.
+            owner_pid = None
+    if owner_pid is not None:
+        # A live owner exists. --ensure ADOPTS it (no sibling); a bare call
+        # honours the single-owner invariant and declines to start (FOREIGN).
+        if ensure_flag:
+            print(f"EXISTING {owner_pid}")
+        else:
+            print(f"FOREIGN {owner_pid}")
+        sys.exit(0)
+    # No live owner — claim ownership atomically, still holding the lock, so no
+    # other --ensure caller can race us here. Covers: no sentinel, dead pid,
+    # pid reuse (birth mismatch), and stale/hung-but-same-pid owner.
     out = {
         "pid": my_pid,
         "pid_birth": my_birth,
@@ -198,20 +309,28 @@ _ENSURE_STATUS="$(printf -- '%s\n' "$_ENSURE_OUT" | awk '{print $1}')"
 _ENSURE_PID="$(printf -- '%s\n' "$_ENSURE_OUT" | awk '{print $2}')"
 
 if [[ "$_ENSURE_STATUS" == "EXISTING" ]]; then
+  # Adopt: ensure the beat cron is present (idempotent) then exit 0 WITHOUT
+  # starting a sibling. The adopt line goes to the log file — today it only
+  # went to stdout, which cron discards, making the adoption invisible.
+  _install_beat_cron
+  printf -- '%s [supervise-loop] adopt existing loop pid=%s log=%s\n' \
+    "$(_now_iso)" "$_ENSURE_PID" "$LOG_FILE" >>"$LOG_FILE"
   printf -- '[supervise-loop] already running pid=%s log=%s\n' "$_ENSURE_PID" "$LOG_FILE"
+  exit 0
+fi
+
+if [[ "$_ENSURE_STATUS" == "FOREIGN" ]]; then
+  # Bare invocation found a live owner — single-owner invariant: do NOT start.
+  printf -- '%s [supervise-loop] another loop owns this repo (pid=%s) — not starting\n' \
+    "$(_now_iso)" "$_ENSURE_PID" >>"$LOG_FILE"
   exit 0
 fi
 
 printf -- '%s [supervise-loop] started pid=%s log=%s event_poll=%ss pulse=%ss\n' \
   "$(_now_iso)" "$MY_PID" "$LOG_FILE" "$EVENT_POLL_S" "$PULSE_S" >>"$LOG_FILE"
 
-# ── Item 2/3 shared paths ──────────────────────────────────────────────────
-# Heartbeat (item 2): written at the TOP of every cycle so a hang inside
-# supervise.sh shows up as heartbeat staleness. Lives beside the ownership
-# sentinel (same control-plane dir).
-HEARTBEAT_FILE="$(PROJECT_ROOT="$PROJECT_ROOT" "$STATE_PATH_SH" .supervise-loop.heartbeat)"
-WATCHDOG_SH="${SCRIPT_DIR}/leadv2-supervise-watchdog.sh"
-
+# ── Heartbeat writer (HEARTBEAT_FILE / WATCHDOG_SH / _install_beat_cron are
+#    defined above the --ensure block; this writer belongs to the loop body) ─
 _write_heartbeat() {  # <cycle>
   local cycle="$1"
   python3 -c "
@@ -228,48 +347,8 @@ os.replace(tmp, path)
 " "$HEARTBEAT_FILE" "$MY_PID" "$MY_BIRTH" "$cycle" 2>/dev/null || true
 }
 
-# ── Item 3: cron-owned status beat ─────────────────────────────────────────
-# Attaching supervision installs ONE idempotent crontab entry whose payload is
-# the watchdog (item 2) — which both alarms on loop silence AND calls --ensure
-# to self-heal. One entry covers failure classes 1 (silent loop) and 2 (dead
-# loop, no beat). Idempotent by a marker tag; re-running --ensure never
-# accumulates duplicates. Kill-switch LEADV2_SUPERVISE_BEAT_CRON=0 (tests +
-# founder opt-out). CRONTAB_BIN is injectable so tests never touch the real
-# crontab.
-_install_beat_cron() {
-  [[ "${LEADV2_SUPERVISE_BEAT_CRON:-1}" == "1" ]] || return 0
-  [[ -x "$WATCHDOG_SH" ]] || return 0
-  local crontab_bin="${CRONTAB_BIN:-crontab}"
-  command -v "$crontab_bin" >/dev/null 2>&1 || return 0
-  # Repo slug for the marker (basename of the main repo toplevel).
-  local repo_slug
-  repo_slug="$(basename "${PROJECT_ROOT}")"
-  local marker="# LEADV2_SUPERVISE_BEAT ${repo_slug}"
-  local cron_line="*/10 * * * * ${WATCHDOG_SH} --project-root ${PROJECT_ROOT} ${marker}"
-  # Read-modify-write under a sibling lock (no unlocked crontab rewrite — two
-  # concurrent --ensure could otherwise race). python3 fcntl, same convention
-  # as the ownership sentinel above (no bash `flock` binary on macOS/BSD).
-  python3 -c "
-import sys, os, fcntl, subprocess
-lock_path, crontab_bin, marker, line = sys.argv[1:5]
-os.makedirs(os.path.dirname(lock_path) or '.', exist_ok=True)
-lf = open(lock_path, 'a+')
-fcntl.flock(lf, fcntl.LOCK_EX)
-try:
-    cur = subprocess.run([crontab_bin, '-l'], capture_output=True, text=True)
-    rows = (cur.stdout or '').splitlines()
-    rows = [r for r in rows if marker not in r]
-    rows.append(line)
-    new = '\n'.join(rows) + '\n'
-    p = subprocess.run([crontab_bin, '-'], input=new, capture_output=True, text=True)
-    sys.exit(0 if p.returncode == 0 else 0)  # never fail --ensure on a cron hiccup
-finally:
-    fcntl.flock(lf, fcntl.LOCK_UN)
-    lf.close()
-" "${HEARTBEAT_FILE}.crontab.lock" "$crontab_bin" "$marker" "$cron_line" 2>/dev/null || true
-}
-
-# Install the beat whenever supervision is attached (both --ensure outcomes).
+# Install the beat whenever a NEW loop actually starts (EXISTING already
+# installed it in its own branch above before the early exit).
 _install_beat_cron
 
 # R2-2 fix: the EXIT trap used to unconditionally `rm -f` the sentinel — if

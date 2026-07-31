@@ -89,7 +89,22 @@ raise SystemExit(0 if valid else 1)
 PYEOF
 }
 
-if sentinel_present; then
+# Receipt freshness guard (SESSION-CLOSE-FIXES-01 fix 2): a re-queued task
+# carries a stale receipt from a prior close. Evaluate BEFORE sentinel_present
+# — if the receipt is stale (task is queued|pending in docs/tasks.yaml) it is
+# renamed aside and we PROCEED; only an honoured receipt (or flag) short-
+# circuits as already-complete. Kill-switch LEADV2_RECEIPT_REQUEUE_GUARD=0.
+if [[ -f "$SCRIPT_DIR/lib/leadv2-receipt-freshness.sh" ]]; then
+  # shellcheck source=lib/leadv2-receipt-freshness.sh
+  source "$SCRIPT_DIR/lib/leadv2-receipt-freshness.sh"
+fi
+if ! type leadv2_receipt_is_stale >/dev/null 2>&1; then
+  leadv2_receipt_is_stale() { return 1; }
+fi
+
+if leadv2_receipt_is_stale "$TASK_ID" "$COMPLETION_RECEIPT" "" "$LOGF"; then
+  log "stale receipt invalidated for re-queued $TASK_ID — proceeding"
+elif sentinel_present; then
   log "Phase-8 completion proof already present for $TASK_ID — nothing to do"
   exit 0
 fi
