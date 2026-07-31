@@ -117,9 +117,12 @@ if (( five_pct >= THRESHOLD || wk_pct >= THRESHOLD )); then
 [glm-quota-gate] LEADV2_DISPATCH_REFUSED: quota_gate
 [glm-quota-gate] REROUTE — GLM quota ≥ ${THRESHOLD}% on: ${tripped}.
   The GLM bucket is low; protect its headroom by running this work elsewhere.
-  Fallback preference (SNAPSHOT 2026-07-17 — verify with leadv2-quota-live.sh):
-    1. Sonnet via Anthropic Max (was the most comfortable bucket today).
-    2. Codex only sparingly (scarcest: 0 credits, resets ~Jul 23) and only at
+  Fallback preference (KIMI-CHANNEL-01, updated 2026-07-31 — verify with
+  leadv2-quota-live.sh; this text is documentation only, it does not itself
+  drive any caller):
+    1. kimi (free, if available — TokenRouter kimi-k3-free via kimi-coder.sh).
+    2. Sonnet via Anthropic Max (was the most comfortable bucket today).
+    3. Codex only sparingly (scarcest: 0 credits, resets ~Jul 23) and only at
        --tier standard/volume per CODEX-TIER-DISCIPLINE-01.
   NOTE: the leadv2-glm-first-agent-gate.sh hook currently DENIES Sonnet
   code-writer spawns. To follow this reroute, the spawn must carry the approved

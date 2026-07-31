@@ -32,7 +32,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_BUILD_SPILL = ["glm", "codex", "sonnet"]
+# KIMI-CHANNEL-01: kimi sits between glm and codex in the build spill chain
+# (glm -> kimi -> sonnet is the founder-approved default; codex stays in the
+# chain for repos/configs that already rely on codex_quota_gate spill).
+# Additive only -- sonnet_exceptions and the task-shape precedence rules below
+# (resolve_glm_policy's `rules` list) stay glm/kimi-blind: a safety/payments/
+# UI-judgment/glm-failed-twice/lock-busy signal routes straight to sonnet or
+# opus and never touches this spill order.
+DEFAULT_BUILD_SPILL = ["glm", "kimi", "codex", "sonnet"]
 DEFAULT_REVIEW_EXCLUSIONS = ["glm"]
 DEFAULT_BUILD_THRESHOLD_PCT = 80.0
 DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
@@ -377,12 +384,20 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
             rule, reason = "review_arm_exclusions", "review_arm_exclusion"
             tier = codex_default_tier if arm == "codex" else ""
 
-        if arm == "codex" and codex_blocked:
-            try:
-                nxt = spill[spill.index("codex") + 1:]
-            except ValueError:
-                nxt = ["sonnet"]
-            nxt = [a for a in nxt if not (job == "review" and a in exclusions)]
+        # KIMI-CHANNEL-01 fix round 1 (C1): a positional after-slice
+        # (spill[spill.index("codex")+1:]) is wrong once an arm sits BEFORE
+        # codex in spill (e.g. kimi in [glm, kimi, codex, sonnet]) -- the
+        # after-slice there is still just ["sonnet"], so kimi is unreachable.
+        # Walk the FULL spill chain instead, skipping the blocked arm(s), the
+        # currently-selected arm, and base_arm (base_arm was already
+        # overridden by the precedence rules above -- resurrecting it here
+        # would undo that decision). Assumes base_arm never appears AFTER the
+        # blocked arm in spill (true for every shipped config today; glm is
+        # always first).
+        blocked = {"codex"} if codex_blocked else set()
+        if arm in blocked:
+            skip = {arm, base_arm} | blocked
+            nxt = [a for a in spill if a not in skip and not (job == "review" and a in exclusions)]
             arm = nxt[0] if nxt else "sonnet"
             rule = "codex_quota_gate_%dpct" % int(threshold)
             reason = "codex_quota_gate"

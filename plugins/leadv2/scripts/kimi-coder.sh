@@ -1,0 +1,1539 @@
+#!/usr/bin/env bash
+# kimi-coder.sh v2 — headless kimi-k3-free code-worker wrapper + background
+# workbench (TokenRouter, Anthropic-compatible endpoint). Clone of
+# glm-coder.sh (KIMI-CHANNEL-01) with three structural deltas from that
+# source: (1) secrets/model come from ~/.claude/secrets/tokenrouter.env
+# (TOKENROUTER_AUTH_TOKEN/TOKENROUTER_BASE_URL/TOKENROUTER_MODEL) instead of
+# zai.env; (2) no quota concept — kimi_launch_probe() does a live
+# GET /v1/models instead of calling the GLM quota-gate sibling script; (3) own
+# lock dir (~/.claude/cache/kimi-runs/) and its own exit-code range (77/78,
+# see below) so a caller can tell which channel bailed without colliding with
+# glm-coder.sh's 75/76.
+#
+# Exit codes (fail-closed on launch, never silently proceed):
+#   0   run/launch OK.
+#   75  usage/config/secrets error (bad args, missing/insecure secrets file,
+#       lock busy) — hard fail, caller must NOT silently reroute.
+#   77  launch probe failed (kimi-k3-free unreachable: non-200 or timeout on
+#       GET /v1/models) — no run-id was ever printed, safe to silently
+#       reroute to the next arm in the chain (glm -> kimi -> sonnet, or
+#       kimi -> sonnet depending on caller).
+#   78  KIMI_FALLBACK_TO_SONNET mid-run sentinel — a run-id existed (the
+#       probe passed, the run started) but timed out/produced no coherent
+#       result; caller decides whether to retry elsewhere, never silently.
+#
+# v1 surface (unchanged): `run` blocks until kimi finishes (v1 exit code,
+# out-file path); `test` self-test. v2 workbench: `bg` detaches immediately
+# and runs under ~/.claude/cache/kimi-runs/<run-id>/ with a single-flight
+# per-repo lock, stream-json journal, best-effort progress parser, and a
+# process-group timeout watchdog. `status`/`tail`/`watch`/`list` mirror
+# codex-task.sh UX — all ported verbatim from glm-coder.sh.
+#
+# (adapted from GLM-RELIABILITY-529-01, 2026-07-08, fix-round-4 RADICAL SIMPLIFY): the
+# `claude` CLI's own Anthropic-SDK HTTP client retries provider-overload
+# (HTTP 529/503/429) up to `max_retries: 300` with exponential backoff,
+# emitting `{"type":"system","subtype":"api_retry",...}` events into the
+# stream-json journal but NOTHING into progress.log -- so a sustained-529 run
+# sat silent for up to ~1h (the old KIMI_TIMEOUT), indistinguishable from
+# "still working". Three prior fix rounds tried increasingly careful
+# per-poll overload-detection heuristics (streak/grace, then progress-based,
+# then unresolved-window-scoped) -- each review round caught a new subtle
+# race in the same fundamentally fragile shape. Founder decision: RIP OUT
+# the whole detection primitive; rely on the existing KIMI_TIMEOUT watchdog as
+# the single bound, now lowered to 900s.
+#
+# NET BEHAVIOR: sustained overload -> SDK retries happen inside the `claude`
+# binary -> each is logged as a `PROVIDER_RETRY status=<n> attempt=<n>` line
+# in progress.log (visible, not silent) -> the run is bounded by the 900s
+# KIMI_TIMEOUT -> the existing timeout watchdog touches `.timed_out` FIRST,
+# before TERM/KILL -> two-sentinel contract emits `KIMI_FALLBACK_TO_SONNET` +
+# exit 78. No 1-hour hang (900s worst case). Zero race-prone detection logic.
+# `cmd_bg` still returns immediately; callers still grep progress.log
+# sentinels + meta.yaml exit_code.
+#
+# Two-sentinel contract on run end (mutually exclusive), written to
+# progress.log + meta.yaml's exit_code field:
+#   - KIMI_FALLBACK_TO_SONNET / exit KIMI_FALLBACK_EXIT_CODE (78): `.timed_out`
+#     fired, OR the run produced no coherent/parseable result at all
+#     (garbage/unparsable output, or an ERROR terminal result -- FIX2) --
+#     a provider/infra problem or ambiguity either way, fail-safe treats it
+#     as "try sonnet". The real/diagnostic exit code is still logged via
+#     RUN_FAILED for debugging.
+#   - KIMI_PERMANENT_FAILURE: the child ran to completion with a COHERENT,
+#     NON-error result but a genuine non-zero exit and NO timeout marker --
+#     a real task failure, not a provider problem; sonnet would hit the same
+#     wall. meta.yaml exit_code PRESERVES the real child exit code (never
+#     overridden). A genuine exit-0 + coherent non-error result is
+#     unconditionally SUCCESS regardless of a stale marker (FIX3, explicit
+#     precedence).
+# kimi-coder.sh does NOT invoke sonnet itself -- it only signals; the
+# caller/Monitor decides what to do with each sentinel.
+#
+# KIMI_CLAUDE_BIN/KIMI_RUNS_DIR/KIMI_SECRETS_FILE are test seams (default to the
+# exact prior hardcoded values) so tests can stub the `claude` binary and
+# isolate run/lock state without touching prod.
+set -euo pipefail
+umask 077
+
+readonly SECRETS_FILE="${KIMI_SECRETS_FILE:-${HOME}/.claude/secrets/tokenrouter.env}"
+# In-script default only — the real value is sourced from the secrets file's
+# TOKENROUTER_BASE_URL (see load_secret). Never overridden by a readonly here,
+# since load_secret runs after this line and must be able to set it from env.
+readonly TOKENROUTER_BASE_URL_DEFAULT="https://api.tokenrouter.com"
+readonly TOKENROUTER_MODEL_DEFAULT="moonshotai/kimi-k3-free"
+readonly RUNS_DIR="${KIMI_RUNS_DIR:-${HOME}/.claude/cache/kimi-runs}"
+# KIMI_TIMEOUT: wall-clock backstop. Turn and no-progress guards below stop
+# superlinear conversation replay before a run reaches this outer bound.
+readonly KIMI_TIMEOUT="${KIMI_TIMEOUT:-900}"
+# KIMI-CHANNEL-01 (adapted from GLM-REVIVE-01) legacy compatibility: when configured lower than the explicit
+# no-progress guard below, KIMI_STALL_S still kills and revives once. At the
+# defaults, KIMI_NO_PROGRESS_S reaches the timeout/fallback path first.
+readonly KIMI_STALL_S="${KIMI_STALL_S:-300}"
+readonly KIMI_MAX_TURNS="${KIMI_MAX_TURNS:-40}"
+# Hard watchdog limits. KIMI_MAX_TURNS remains the Claude CLI request limit and
+# --max-turns remains backward compatible; KIMI_TURN_LIMIT is independently
+# enforced from observed stream turns through the timeout/fallback path.
+readonly KIMI_TURN_LIMIT="${KIMI_TURN_LIMIT:-40}"
+readonly KIMI_NO_PROGRESS_S="${KIMI_NO_PROGRESS_S:-${KIMI_STALL_S}}"
+# Dedicated non-zero exit code for "kimi gave up, fall back to sonnet" —
+# distinct from 75 (lock busy/config error, pre-existing), from 77 (launch
+# probe failed, no run-id printed), and from glm-coder.sh's 76 (same meaning,
+# different rc so a caller can tell which channel bailed — see header table).
+readonly KIMI_FALLBACK_EXIT_CODE="${KIMI_FALLBACK_EXIT_CODE:-78}"
+readonly KIMI_FALLBACK_SENTINEL="KIMI_FALLBACK_TO_SONNET"
+# Emitted (real child exit code PRESERVED in meta.yaml) when the run produced
+# a coherent, non-error result but genuinely failed with no timeout marker —
+# sonnet would hit the same task-level failure.
+readonly KIMI_PERMANENT_FAILURE_SENTINEL="KIMI_PERMANENT_FAILURE"
+# Dedicated exit code for "launch probe failed, no run-id printed yet" — the
+# caller may silently reroute (glm -> kimi -> sonnet chain), unlike 75/78.
+readonly KIMI_PROBE_FAIL_EXIT_CODE="${KIMI_PROBE_FAIL_EXIT_CODE:-77}"
+# Seam for tests to stub the `claude` binary entirely (no real network call).
+readonly KIMI_CLAUDE_BIN="${KIMI_CLAUDE_BIN:-claude}"
+readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+# FINISH GUARD (2026-07-03): appended to every real mission prompt (cmd_bg and
+# cmd_run — never cmd_test) so the model is told, at the prompt level, not to
+# end a run with work parked only in a stash or with no final report. The
+# shell-level git-delta audit (git_snapshot_pre/git_finish_guard below) is the
+# enforcement layer this trailer cannot replace — a prompt is a request, not a
+# guarantee.
+readonly FINISH_CONTRACT_TRAILER='
+
+---
+FINISH CONTRACT: before ending — pop any stash you created; either commit your work with a descriptive message OR state NOT-COMMITTED with reasons; your final message MUST be a report: files changed, test results (honest), commit hash or NOT-COMMITTED. Never end with work only in a stash.'
+
+# KIMI-CHANNEL-01 (adapted from GLM-REVIVE-01) (2026-07-16): prompt-level belt to the --disallowedTools
+# suspenders below. Prepended to every real mission prompt (never cmd_test).
+readonly AGENT_BAN_PREAMBLE='NOTE: the Agent/Task/sub-agent tool is disabled for this session. Do all work directly in this one context -- never attempt to spawn a sub-agent or delegate to another agent.
+
+'
+
+log() { echo "[kimi-coder] [$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2; }
+log_error() { log "ERROR: $*"; }
+log_info() { log "INFO: $*"; }
+
+# KIMI-CHANNEL-01: kimi has no quota concept (TokenRouter announces no peak
+# multiplier) — instead of calling a quota-gate sibling script, this does a
+# live launch-time availability probe: GET ${TOKENROUTER_BASE_URL}/v1/models,
+# bounded by KIMI_PROBE_TIMEOUT_S. Fail-closed: non-200 or timeout -> distinct
+# exit rc (KIMI_PROBE_FAIL_EXIT_CODE, 77) so the caller falls through to the
+# next arm in the chain. No bare `2>/dev/null` on the curl — the HTTP status
+# is always captured and branched on, never silently swallowed.
+# KIMI_SKIP_LAUNCH_PROBE=1 lets the launch proceed unconditionally (test seam,
+# mirrors glm-coder.sh's quota-gate skip knob). cmd_test is NOT probed (health
+# check, not real work — it IS the probe in spirit).
+kimi_launch_probe() {
+  [[ "${KIMI_SKIP_LAUNCH_PROBE:-0}" == "1" ]] && return 0
+  load_secret
+  local probe_timeout="${KIMI_PROBE_TIMEOUT_S:-10}"
+  local http_code curl_err_file curl_stderr
+  curl_err_file="$(mktemp)"
+  # Decision comes from -w's captured http_code (stdout), never from stderr —
+  # but stderr is captured to curl_err_file (not /dev/null) so a timeout vs.
+  # DNS-failure vs. TLS-error distinction is visible in the log line below
+  # instead of being silently masked.
+  http_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time "${probe_timeout}" \
+    -H "Authorization: Bearer ${TOKENROUTER_AUTH_TOKEN}" \
+    "${TOKENROUTER_BASE_URL}/v1/models" 2>"${curl_err_file}" || true)"
+  curl_stderr="$(cat "${curl_err_file}" 2>/dev/null || true)"
+  rm -f "${curl_err_file}"
+  if [[ "${http_code}" != "200" ]]; then
+    # LEADV2_DISPATCH_REFUSED marker: same admission-decision contract
+    # leadv2-glm-quota-gate.sh's REROUTE message uses, so leadv2-dispatch-
+    # code.sh's refusal_reason() recognizes this as a refusal (safe to
+    # silently reroute to the next arm) rather than a genuine launcher crash.
+    log_error "LEADV2_DISPATCH_REFUSED: kimi_probe_failed"
+    log_error "kimi launch probe failed (http_code=${http_code:-000} against ${TOKENROUTER_BASE_URL}/v1/models${curl_stderr:+, curl: ${curl_stderr}}) - reroute to next arm (rc ${KIMI_PROBE_FAIL_EXIT_CODE})."
+    return "${KIMI_PROBE_FAIL_EXIT_CODE}"
+  fi
+  log_info "kimi launch probe OK (http_code=200, ${TOKENROUTER_BASE_URL}/v1/models)."
+  return 0
+}
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  kimi-coder.sh run "<prompt|@file>" [--out <file>] [--cwd <dir>]
+  kimi-coder.sh bg  "<prompt|@file>" [--cwd <dir>] [--max-turns N] [--timeout S]
+  kimi-coder.sh status [run-id]
+  kimi-coder.sh tail <run-id>
+  kimi-coder.sh watch <run-id>
+  kimi-coder.sh list [N]
+  kimi-coder.sh probe
+  kimi-coder.sh test
+
+  run     v1-compat: blocks until kimi finishes. Prints only the out-file path
+          and the v1 exit code.
+  bg      Detaches immediately, prints a run-id. Work continues under
+          ~/.claude/cache/kimi-runs/<run-id>/ (journal.jsonl, progress.log,
+          result.md, meta.yaml). One run per repo (cwd) at a time — a second
+          concurrent `bg` for the same repo exits 75 (lock busy).
+  status  Prints meta.yaml for <run-id> (latest run if omitted).
+  tail    Last 20 progress.log lines + result.md head.
+  watch   `tail -f` on progress.log (live).
+  list    Last N runs: id, status, repo, started_at. Default N=10.
+  probe   Availability check ONLY (GET /v1/models, no claude launch, no run-id,
+          no lock). Exit 0 = channel up; exit 77 = unreachable, caller should
+          reroute to the next arm. This is the subcommand leadv2-session-route.sh
+          calls to decide kimi eligibility on the supervisor/fanout path.
+  test    Self-test: sends a short prompt and prints the tail of the response.
+
+Env knobs: KIMI_TIMEOUT (default 900s), KIMI_MAX_TURNS (default 40),
+  KIMI_TURN_LIMIT (default 40), KIMI_NO_PROGRESS_S (default 300s),
+  KIMI_FALLBACK_EXIT_CODE (default 78), KIMI_PROBE_TIMEOUT_S (default 10s),
+  KIMI_SECRETS_FILE (default ~/.claude/secrets/tokenrouter.env).
+
+Exit codes:
+  0   run/launch OK — proceed.
+  75  usage/config/secrets error (bad args, missing/insecure secrets file,
+      or another kimi run already active for this repo) — hard fail, no
+      reroute.
+  77  launch probe failed (GET /v1/models non-200 or timeout, no run-id
+      printed) — caller may silently reroute to the next arm.
+  78  KIMI_FALLBACK_TO_SONNET mid-run sentinel (a run-id existed) — caller
+      decides what to do next, never a silent retry.
+
+Terminal sentinels (KIMI-CHANNEL-01, adapted from GLM-RELIABILITY-529-01) —
+mutually exclusive, appended to progress.log, mirrored into meta.yaml's
+exit_code field:
+  KIMI_FALLBACK_TO_SONNET   `.timed_out` fired, OR no coherent/non-error
+                           result at all (garbage/unparsable output, or an
+                           error terminal result) — ambiguous either way,
+                           fail-safe treats it as "try sonnet". meta.yaml
+                           exit_code = KIMI_FALLBACK_EXIT_CODE (78).
+  KIMI_PERMANENT_FAILURE    Coherent, non-error result but a genuine non-zero
+                           exit, no timeout marker: a real task failure
+                           sonnet would hit too. meta.yaml exit_code = the
+                           REAL child exit code (never overridden).
+Provider retries (HTTP 429/503/529) are logged as PROVIDER_RETRY lines in
+progress.log for visibility. Wall time, observed turns, and no-progress time
+all terminate through the same timeout marker and fallback path.
+kimi-coder.sh never invokes sonnet itself — callers/Monitor must react to
+whichever sentinel or exit code appears.
+EOF
+}
+
+# Loads TOKENROUTER_AUTH_TOKEN from the secrets file into the current shell.
+# Never echoes the token value anywhere.
+load_secret() {
+  if [[ ! -f "${SECRETS_FILE}" ]]; then
+    log_error "secrets file not found: ${SECRETS_FILE}"
+    exit 1
+  fi
+  local perms
+  perms=$(stat -f "%Lp" "${SECRETS_FILE}" 2>/dev/null || stat -c "%a" "${SECRETS_FILE}" 2>/dev/null || echo "")
+  if [[ "${perms}" != "600" ]]; then
+    log_error "refusing to use secrets file with unsafe perms (${perms:-unknown}), expected 600: ${SECRETS_FILE}"
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  source "${SECRETS_FILE}"
+  if [[ -z "${TOKENROUTER_AUTH_TOKEN:-}" ]]; then
+    log_error "TOKENROUTER_AUTH_TOKEN is empty in ${SECRETS_FILE}"
+    exit 1
+  fi
+  # The only two other TOKENROUTER_* reads: base URL and model, both
+  # optionally set by the secrets file, falling back to the in-script
+  # defaults declared above (KIMI-CHANNEL-01 constraint: no TOKENROUTER_*
+  # config-key drift beyond these three).
+  TOKENROUTER_BASE_URL="${TOKENROUTER_BASE_URL:-${TOKENROUTER_BASE_URL_DEFAULT}}"
+  TOKENROUTER_MODEL="${TOKENROUTER_MODEL:-${TOKENROUTER_MODEL_DEFAULT}}"
+}
+
+# ---------------------------------------------------------------------------
+# v1 blocking path (`run`, `test`) — unchanged behavior, kept intact (R2).
+# ---------------------------------------------------------------------------
+
+run_claude() {
+  local prompt="$1"
+  local out_file="$2"
+  local cwd_dir="$3"
+  local add_finish_contract="${4:-1}"
+
+  load_secret
+
+  local resolved_prompt="${prompt}"
+  if [[ "${prompt}" == @* ]]; then
+    local prompt_file="${prompt#@}"
+    if [[ ! -f "${prompt_file}" ]]; then
+      log_error "prompt file not found: ${prompt_file}"
+      exit 1
+    fi
+    resolved_prompt="$(cat "${prompt_file}")"
+  fi
+  if [[ "${add_finish_contract}" == "1" ]]; then
+    resolved_prompt="${AGENT_BAN_PREAMBLE}${resolved_prompt}${FINISH_CONTRACT_TRAILER}"
+  fi
+
+  local exit_code=0
+  (
+    cd "${cwd_dir}"
+    export ANTHROPIC_BASE_URL="${TOKENROUTER_BASE_URL}"
+    export ANTHROPIC_AUTH_TOKEN="${TOKENROUTER_AUTH_TOKEN}"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="${TOKENROUTER_MODEL}"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="${TOKENROUTER_MODEL}"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="${TOKENROUTER_MODEL}"
+    export DISABLE_MODEL_AVAILABILITY_CHECK=1
+    export API_TIMEOUT_MS=3000000
+    command "${KIMI_CLAUDE_BIN}" -p "${resolved_prompt}" \
+      --dangerously-skip-permissions \
+      --disallowedTools "Agent" \
+      --model sonnet
+  ) >"${out_file}" 2>&1 || exit_code=$?
+
+  echo "${out_file}"
+  return "${exit_code}"
+}
+
+cmd_run() {
+  if [[ $# -lt 1 ]]; then
+    log_error "run requires a prompt argument"
+    usage
+    exit 1
+  fi
+  local prompt="$1"
+  shift
+
+  local out_file
+  out_file="/tmp/kimi-coder-$(date '+%Y%m%d%H%M%S').out"
+  local cwd_dir="${PWD}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --out)
+        out_file="$2"
+        shift 2
+        ;;
+      --cwd)
+        cwd_dir="$2"
+        shift 2
+        ;;
+      *)
+        log_error "unknown argument: $1"
+        usage
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ ! -d "${cwd_dir}" ]]; then
+    log_error "cwd does not exist: ${cwd_dir}"
+    exit 1
+  fi
+
+  kimi_launch_probe || exit $?
+  local exit_code=0
+  run_claude "${prompt}" "${out_file}" "${cwd_dir}" || exit_code=$?
+  exit "${exit_code}"
+}
+
+cmd_test() {
+  local out_file
+  out_file="/tmp/kimi-coder-test-$(date '+%Y%m%d%H%M%S').out"
+  local exit_code=0
+  # add_finish_contract=0: self-test expects an exact-string reply; the
+  # trailer is a real-mission-only instruction (see cmd_run/cmd_bg).
+  run_claude "Reply with exactly: KIMI-ALIVE <your model id>" "${out_file}" "${PWD}" 0 || exit_code=$?
+  log_info "self-test exit code: ${exit_code}"
+  tail -n 20 "${out_file}"
+  exit "${exit_code}"
+}
+
+# ---------------------------------------------------------------------------
+# v2 workbench (`bg`, `status`, `tail`, `watch`, `list`) + internal helpers.
+# ---------------------------------------------------------------------------
+
+lock_dir_for() { echo "${RUNS_DIR}/.lock-$1"; }
+
+acquire_lock() {
+  local repo_hash="$1" timeout_s="$2"
+  local lock_dir
+  lock_dir="$(lock_dir_for "${repo_hash}")"
+  mkdir -p "${RUNS_DIR}"
+  if mkdir "${lock_dir}" 2>/dev/null; then
+    _write_lock_markers "${lock_dir}"
+    return 0
+  fi
+
+  local lock_pid lock_started now age
+  lock_pid="$(cat "${lock_dir}/pid" 2>/dev/null || echo "")"
+  lock_started="$(cat "${lock_dir}/started" 2>/dev/null || echo "")"
+  if [[ -z "${lock_started}" ]]; then
+    # No `started` marker yet means the owner is still inside its own
+    # mkdir-critical-section (or crashed before writing it) — NEVER treat
+    # this as age=now-0 (which reclaims a lock microseconds old). Refuse.
+    log_error "another kimi run is active for this repo (lock initializing, no started marker yet): ${lock_dir}"
+    exit 75
+  fi
+  now="$(date +%s)"
+  age=$(( now - lock_started ))
+  if [[ -n "${lock_pid}" ]] && ! kill -0 "${lock_pid}" 2>/dev/null; then
+    log_info "reclaiming stale lock (dead pid ${lock_pid}): ${lock_dir}"
+  elif [[ "${age}" -gt $((timeout_s + 600)) ]]; then
+    log_info "reclaiming stale lock (age ${age}s > timeout+10m): ${lock_dir}"
+  else
+    log_error "another kimi run is active for this repo (lock: ${lock_dir}, pid: ${lock_pid:-unknown}). Use 'kimi-coder.sh list' to inspect."
+    exit 75
+  fi
+
+  local lock_pgid
+  lock_pgid="$(cat "${lock_dir}/pgid" 2>/dev/null || echo "")"
+  if [[ -n "${lock_pgid}" ]] && kill -0 -"${lock_pgid}" 2>/dev/null; then
+    log_info "terminating orphaned process group ${lock_pgid} before reclaiming lock: ${lock_dir}"
+    kill -TERM -"${lock_pgid}" 2>/dev/null || true
+    sleep 5
+    kill -KILL -"${lock_pgid}" 2>/dev/null || true
+  fi
+  rm -rf "${lock_dir}"
+  if mkdir "${lock_dir}" 2>/dev/null; then
+    _write_lock_markers "${lock_dir}"
+    return 0
+  fi
+  log_error "failed to acquire lock after reclaim: ${lock_dir}"
+  exit 75
+}
+
+# Writes pid+started into an already-mkdir'd lock dir atomically (tmp+mv per
+# file) so a concurrent reader never observes a partially-written marker.
+_write_lock_markers() {
+  local lock_dir="$1"
+  local pid_tmp started_tmp
+  pid_tmp="$(mktemp "${lock_dir}/.pid.XXXXXX")"
+  echo "$$" > "${pid_tmp}"
+  mv "${pid_tmp}" "${lock_dir}/pid"
+  started_tmp="$(mktemp "${lock_dir}/.started.XXXXXX")"
+  date +%s > "${started_tmp}"
+  mv "${started_tmp}" "${lock_dir}/started"
+}
+
+release_lock() {
+  local repo_hash="$1"
+  rm -rf "$(lock_dir_for "${repo_hash}")"
+}
+
+meta_get() {
+  local run_dir="$1" key="$2"
+  { grep "^${key}:" "${run_dir}/meta.yaml" 2>/dev/null | head -1 | cut -d: -f2- | sed 's/^ //'; } || true
+}
+
+write_meta_initial() {
+  local run_dir="$1" run_id="$2" repo="$3" cwd_dir="$4" max_turns="$5" timeout_s="$6" pid="$7"
+  local tmp
+  tmp="$(mktemp "${run_dir}/.meta.XXXXXX")"
+  cat > "${tmp}" <<EOF
+run_id: ${run_id}
+repo: ${repo}
+cwd: ${cwd_dir}
+prompt_file: ${run_dir}/prompt.txt
+endpoint: ${TOKENROUTER_BASE_URL:-${TOKENROUTER_BASE_URL_DEFAULT}}
+model: ${TOKENROUTER_MODEL:-${TOKENROUTER_MODEL_DEFAULT}}
+max_turns: ${max_turns}
+timeout: ${timeout_s}
+turn_limit: ${KIMI_TURN_LIMIT}
+no_progress_s: ${KIMI_NO_PROGRESS_S}
+pid: ${pid}
+status: running
+exit_code:
+turns: 0
+duration_s: 0
+tokens_in: 0
+tokens_out: 0
+cache_read_input_tokens: 0
+cache_creation_input_tokens: 0
+usage_source: stream_proxy
+usage_is_estimate: true
+usage_estimate_turns: 0
+usage_estimate_elapsed_s: 0
+usage_estimate_bytes_streamed: 0
+usage_estimate_output_tokens: 0
+usage_updated_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+termination_bound:
+started_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+finished_at:
+EOF
+  mv "${tmp}" "${run_dir}/meta.yaml"
+}
+
+finalize_meta() {
+  local run_dir="$1" status="$2" exit_code="$3" duration="$4" tokens_in="$5" tokens_out="$6" turns="$7"
+  local run_id repo cwd_dir prompt_file endpoint model max_turns timeout_s turn_limit no_progress_s pid started_at
+  local cache_read cache_creation usage_source usage_is_estimate estimate_turns
+  local estimate_elapsed estimate_bytes estimate_output usage_updated_at termination_bound
+  run_id="$(meta_get "${run_dir}" run_id)"
+  repo="$(meta_get "${run_dir}" repo)"
+  cwd_dir="$(meta_get "${run_dir}" cwd)"
+  prompt_file="$(meta_get "${run_dir}" prompt_file)"
+  endpoint="$(meta_get "${run_dir}" endpoint)"
+  model="$(meta_get "${run_dir}" model)"
+  max_turns="$(meta_get "${run_dir}" max_turns)"
+  timeout_s="$(meta_get "${run_dir}" timeout)"
+  turn_limit="$(meta_get "${run_dir}" turn_limit)"
+  no_progress_s="$(meta_get "${run_dir}" no_progress_s)"
+  pid="$(meta_get "${run_dir}" pid)"
+  started_at="$(meta_get "${run_dir}" started_at)"
+  cache_read="$(meta_get "${run_dir}" cache_read_input_tokens)"
+  cache_creation="$(meta_get "${run_dir}" cache_creation_input_tokens)"
+  usage_source="$(meta_get "${run_dir}" usage_source)"
+  usage_is_estimate="$(meta_get "${run_dir}" usage_is_estimate)"
+  estimate_turns="$(meta_get "${run_dir}" usage_estimate_turns)"
+  estimate_elapsed="$(meta_get "${run_dir}" usage_estimate_elapsed_s)"
+  estimate_bytes="$(meta_get "${run_dir}" usage_estimate_bytes_streamed)"
+  estimate_output="$(meta_get "${run_dir}" usage_estimate_output_tokens)"
+  usage_updated_at="$(meta_get "${run_dir}" usage_updated_at)"
+  termination_bound="$(cat "${run_dir}/.bound_reason" 2>/dev/null || meta_get "${run_dir}" termination_bound)"
+  cache_read="${cache_read:-0}"
+  cache_creation="${cache_creation:-0}"
+  usage_source="${usage_source:-stream_proxy}"
+  usage_is_estimate="${usage_is_estimate:-true}"
+  estimate_turns="${estimate_turns:-${turns}}"
+  estimate_elapsed="${estimate_elapsed:-${duration}}"
+  estimate_bytes="${estimate_bytes:-0}"
+  estimate_output="${estimate_output:-0}"
+  if [[ "${usage_is_estimate}" == "true" ]]; then
+    estimate_elapsed="${duration}"
+  fi
+  usage_updated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  local tmp
+  tmp="$(mktemp "${run_dir}/.meta.XXXXXX")"
+  cat > "${tmp}" <<EOF
+run_id: ${run_id}
+repo: ${repo}
+cwd: ${cwd_dir}
+prompt_file: ${prompt_file}
+endpoint: ${endpoint}
+model: ${model}
+max_turns: ${max_turns}
+timeout: ${timeout_s}
+turn_limit: ${turn_limit:-${KIMI_TURN_LIMIT}}
+no_progress_s: ${no_progress_s:-${KIMI_NO_PROGRESS_S}}
+pid: ${pid}
+status: ${status}
+exit_code: ${exit_code}
+turns: ${turns}
+duration_s: ${duration}
+tokens_in: ${tokens_in}
+tokens_out: ${tokens_out}
+cache_read_input_tokens: ${cache_read}
+cache_creation_input_tokens: ${cache_creation}
+usage_source: ${usage_source}
+usage_is_estimate: ${usage_is_estimate}
+usage_estimate_turns: ${estimate_turns}
+usage_estimate_elapsed_s: ${estimate_elapsed}
+usage_estimate_bytes_streamed: ${estimate_bytes}
+usage_estimate_output_tokens: ${estimate_output}
+usage_updated_at: ${usage_updated_at}
+termination_bound: ${termination_bound}
+started_at: ${started_at}
+finished_at: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+EOF
+  mv "${tmp}" "${run_dir}/meta.yaml"
+}
+
+# macOS ships no util-linux setsid; python3 os.setsid()+execvp is the portable
+# equivalent, used to give a subtree its own process group (R4).
+#
+# MUST be `exec`'d as the function's last command: without `exec`, backgrounding
+# a call to this function (`setsid_wrapper ... &`) forks a wrapper subshell whose
+# pid ($!) is what callers capture, while python3 (and the setsid'd process it
+# execs into) is a further child ONE pid deeper with a DIFFERENT pgid. That
+# mismatch silently breaks watchdog_loop's `kill -TERM -$child_pid` (targets a
+# nonexistent process group, no-ops) — live-verified via the process tree during
+# build (2026-07-03). `exec` replaces the wrapper subshell's own image, so the
+# pid callers capture via $! IS the pid that later calls os.setsid() and becomes
+# its own process-group leader.
+setsid_wrapper() {
+  exec python3 -c '
+import os, sys
+
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+' "$@"
+}
+
+# Incremental observability filter over stream-json. It never determines run
+# success/failure, but it atomically persists usage after stream progress so a
+# process-group kill cannot strand meta.yaml at an unexplained 0/0. Real
+# per-message usage is accumulated by message id when present; the terminal
+# result replaces it with authoritative totals. Current kimi streams report
+# zero per-message usage, so until that result arrives the explicitly-labelled
+# proxy is observed turns, elapsed time, stream bytes, and SDK thinking-token
+# estimates.
+parse_stream() {
+  local run_dir="$1"
+  python3 -u -c '
+import datetime
+import json
+import os
+import sys
+import tempfile
+import time
+
+run_dir = sys.argv[1]
+meta_path = os.path.join(run_dir, "meta.yaml")
+state_path = os.path.join(run_dir, ".stream_state")
+started_ts = time.time()
+last_persist_ts = 0.0
+last_progress_ts = int(started_ts)
+stream_bytes = 0
+estimated_output_tokens = 0
+observed_turns = 0
+reported_turns = 0
+seen_message_ids = set()
+message_usage = {}
+terminal_usage = None
+
+def _num(value):
+    try:
+        return max(0, int(value))
+    except Exception:
+        return 0
+
+def _usage_values(usage):
+    usage = usage if isinstance(usage, dict) else {}
+    return {
+        "tokens_in": _num(usage.get("input_tokens", usage.get("inputTokens", 0))),
+        "tokens_out": _num(usage.get("output_tokens", usage.get("outputTokens", 0))),
+        "cache_read_input_tokens": _num(usage.get("cache_read_input_tokens", usage.get("cacheReadInputTokens", 0))),
+        "cache_creation_input_tokens": _num(usage.get("cache_creation_input_tokens", usage.get("cacheCreationInputTokens", 0))),
+    }
+
+def _result_usage(ev):
+    values = _usage_values(ev.get("usage"))
+    if any(values.values()):
+        return values
+    totals = {key: 0 for key in values}
+    model_usage = ev.get("modelUsage")
+    if isinstance(model_usage, dict):
+        for item in model_usage.values():
+            parsed = _usage_values(item)
+            for key in totals:
+                totals[key] += parsed[key]
+    return totals
+
+def _atomic_write(path, text):
+    fd, tmp_path = tempfile.mkstemp(prefix=".usage.", dir=run_dir, text=True)
+    try:
+        with os.fdopen(fd, "w") as out:
+            out.write(text)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+def _rewrite_meta(values):
+    try:
+        with open(meta_path) as source:
+            lines = source.readlines()
+    except FileNotFoundError:
+        return
+    remaining = dict(values)
+    rewritten = []
+    for line in lines:
+        key = line.split(":", 1)[0] if ":" in line else ""
+        if key in remaining:
+            rewritten.append(key + ": " + str(remaining.pop(key)) + "\n")
+        else:
+            rewritten.append(line)
+    for key, value in remaining.items():
+        rewritten.append(key + ": " + str(value) + "\n")
+    _atomic_write(meta_path, "".join(rewritten))
+
+def _usage_totals():
+    if terminal_usage is not None and any(terminal_usage.values()):
+        return terminal_usage, "terminal_result", "false"
+    totals = {
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    for usage in message_usage.values():
+        for key in totals:
+            totals[key] += usage[key]
+    if any(totals.values()):
+        return totals, "assistant_events", "false"
+    return totals, "stream_proxy", "true"
+
+def _persist(force=False):
+    global last_persist_ts
+    now = time.time()
+    if not force and now - last_persist_ts < 1.0:
+        return
+    totals, source, is_estimate = _usage_totals()
+    elapsed = max(0, int(now - started_ts))
+    turns = reported_turns or observed_turns
+    updated_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    state = (
+        "turns=" + str(observed_turns) + "\n"
+        + "last_progress_ts=" + str(last_progress_ts) + "\n"
+        + "bytes_streamed=" + str(stream_bytes) + "\n"
+    )
+    _atomic_write(state_path, state)
+    _rewrite_meta({
+        "turns": turns,
+        "duration_s": elapsed,
+        "tokens_in": totals["tokens_in"],
+        "tokens_out": totals["tokens_out"],
+        "cache_read_input_tokens": totals["cache_read_input_tokens"],
+        "cache_creation_input_tokens": totals["cache_creation_input_tokens"],
+        "usage_source": source,
+        "usage_is_estimate": is_estimate,
+        "usage_estimate_turns": observed_turns,
+        "usage_estimate_elapsed_s": elapsed,
+        "usage_estimate_bytes_streamed": stream_bytes,
+        "usage_estimate_output_tokens": estimated_output_tokens,
+        "usage_updated_at": updated_at,
+    })
+    last_persist_ts = now
+
+_persist(force=True)
+
+for raw in sys.stdin:
+    stream_bytes += len(raw.encode("utf-8", "replace"))
+    line = raw.strip()
+    if not line:
+        _persist()
+        continue
+    try:
+        ev = json.loads(line)
+    except Exception:
+        _persist()
+        continue
+    etype = ev.get("type")
+    made_progress = False
+    force_persist = False
+    try:
+        if etype == "system" and ev.get("subtype") == "init":
+            print("MODEL " + str(ev.get("model", "unknown")))
+        elif etype == "system" and ev.get("subtype") == "api_retry":
+            # KIMI-CHANNEL-01 (adapted from GLM-RELIABILITY-529-01): surface provider retries (KEEP item
+            # from fix-round-4) so a human watching progress.log sees "it is
+            # retrying" instead of total silence during overload -- values
+            # are int()-sanitized (fall back to "?" on any failure), never
+            # eval/splice the untrusted error body. Purely observational:
+            # retries are NOT independently detected/acted on any more --
+            # the run is bounded solely by KIMI_TIMEOUT.
+            def _display_num(v):
+                try:
+                    return str(int(v))
+                except Exception:
+                    return "?"
+            print("PROVIDER_RETRY status=" + _display_num(ev.get("error_status")) + " attempt=" + _display_num(ev.get("attempt")))
+        elif etype == "system" and ev.get("subtype") == "thinking_tokens":
+            estimated_output_tokens += _num(ev.get("estimated_tokens_delta"))
+            made_progress = True
+        elif etype == "system" and ev.get("subtype") in ("task_started", "task_notification"):
+            made_progress = True
+        elif etype == "result":
+            # KIMI-CHANNEL-01 (adapted from GLM-REVIVE-01): this is currently the only authoritative usage
+            # event. Persist all billable categories before the parser exits.
+            terminal_usage = _result_usage(ev)
+            reported_turns = _num(ev.get("num_turns"))
+            if any(terminal_usage.values()):
+                print(
+                    "TOKENS in=" + str(terminal_usage["tokens_in"])
+                    + " out=" + str(terminal_usage["tokens_out"])
+                    + " cache_read=" + str(terminal_usage["cache_read_input_tokens"])
+                    + " cache_creation=" + str(terminal_usage["cache_creation_input_tokens"])
+                    + " source=terminal_result"
+                )
+            made_progress = True
+            force_persist = True
+        elif etype == "assistant":
+            msg = ev.get("message") or {}
+            message_id = str(msg.get("id") or "")
+            if not message_id:
+                message_id = "event-" + str(observed_turns + 1)
+            if message_id not in seen_message_ids:
+                seen_message_ids.add(message_id)
+                observed_turns += 1
+                force_persist = True
+            blocks = msg.get("content") or []
+            if blocks:
+                made_progress = True
+            for block in blocks:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    name = block.get("name", "?")
+                    inp = block.get("input") or {}
+                    detail = inp.get("file_path") or inp.get("command") or inp.get("path") or ""
+                    print("TOOL " + str(name) + " " + str(detail)[:120])
+            usage = _usage_values(msg.get("usage"))
+            previous = message_usage.get(message_id, {key: 0 for key in usage})
+            merged = {key: max(previous[key], usage[key]) for key in usage}
+            message_usage[message_id] = merged
+            if merged != previous and any(merged.values()):
+                print(
+                    "TOKENS in=" + str(merged["tokens_in"])
+                    + " out=" + str(merged["tokens_out"])
+                    + " cache_read=" + str(merged["cache_read_input_tokens"])
+                    + " cache_creation=" + str(merged["cache_creation_input_tokens"])
+                    + " source=assistant_event"
+                )
+                force_persist = True
+        elif etype == "user":
+            msg = ev.get("message") or {}
+            for block in (msg.get("content") or []):
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    made_progress = True
+                    break
+    except Exception:
+        pass
+    if made_progress:
+        last_progress_ts = int(time.time())
+    _persist(force=force_persist)
+    sys.stdout.flush()
+
+_persist(force=True)
+' "${run_dir}"
+}
+
+# Masks the literal TokenRouter token substring wherever it appears in a stream.
+# lean: literal-token substring redaction only, not a general secret-pattern
+# scanner — upgrade if other secret formats need masking in stderr.
+redact_stream() {
+  python3 -c '
+import sys, os
+
+token = os.environ.get("TOKENROUTER_AUTH_TOKEN", "")
+for line in sys.stdin:
+    if token:
+        line = line.replace(token, "[REDACTED]")
+    sys.stdout.write(line)
+    sys.stdout.flush()
+'
+}
+
+# Fallback result extraction (R3): last `result`-type event from journal.jsonl.
+# KIMI-CHANNEL-01 (adapted from GLM-RELIABILITY-529-01) FIX2 (KEEP item from fix-round-4): also flags
+# whether that last result was an ERROR payload (is_error:true, or a subtype
+# starting with "error") via a sibling `.result_is_error` marker file --
+# cmd_supervise's has_result check excludes error results from counting as
+# "coherent success evidence", so a run that exits non-zero with an
+# overload/error result routes to FALLBACK, not PERMANENT_FAILURE.
+extract_result() {
+  local run_dir="$1"
+  python3 -c '
+import json, sys, os
+
+run_dir = sys.argv[1]
+journal_path = os.path.join(run_dir, "journal.jsonl")
+last_result = None
+try:
+    with open(journal_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get("type") == "result":
+                last_result = ev
+except FileNotFoundError:
+    pass
+
+text = ""
+is_error = False
+if last_result is not None:
+    is_error = bool(last_result.get("is_error")) or str(last_result.get("subtype", "")).startswith("error")
+    text = last_result.get("result") or last_result.get("text") or ""
+    if not text:
+        text = json.dumps(last_result)
+
+out_path = os.path.join(run_dir, "result.md")
+with open(out_path, "w") as out:
+    out.write(text if text else "(no result event found)\n")
+
+if is_error:
+    with open(os.path.join(run_dir, ".result_is_error"), "w") as f:
+        f.write("1\n")
+' "${run_dir}"
+}
+
+sum_tokens() {
+  local run_dir="$1" field="$2"
+  local key value
+  case "${field}" in
+    in) key="tokens_in" ;;
+    out) key="tokens_out" ;;
+    *) return 1 ;;
+  esac
+  value="$(meta_get "${run_dir}" "${key}")"
+  [[ "${value}" =~ ^[0-9]+$ ]] || value=0
+  printf '%s\n' "${value}"
+}
+
+observed_turns() {
+  local run_dir="$1" value
+  value="$(meta_get "${run_dir}" turns)"
+  [[ "${value}" =~ ^[0-9]+$ ]] || value=0
+  printf '%s\n' "${value}"
+}
+
+# ---------------------------------------------------------------------------
+# FINISH GUARD (2026-07-03) — deterministic, shell-level git-delta audit
+# around every run. Root cause: a run ended RUN_COMPLETE with its work parked
+# in a git stash it created mid-run (never popped) and result.md contained
+# mid-run narration, not a final report. Detect-and-scream ONLY — never
+# auto-pops a stash or auto-commits (too dangerous cross-repo, per spec).
+# ---------------------------------------------------------------------------
+
+# PRE-RUN snapshot, written by the supervisor BEFORE the child launches.
+# Degrades gracefully (is_repo=0) when cwd_dir is not a git repo.
+git_snapshot_pre() {
+  local cwd_dir="$1" run_dir="$2"
+  local snap="${run_dir}/git-pre.txt"
+  if ! git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'is_repo=0\n' > "${snap}"
+    return 0
+  fi
+  local stash_count head_sha
+  stash_count="$(git -C "${cwd_dir}" stash list 2>/dev/null | wc -l | tr -d ' ')"
+  head_sha="$(git -C "${cwd_dir}" rev-parse HEAD 2>/dev/null || echo NONE)"
+  {
+    printf 'is_repo=1\n'
+    printf 'stash_count=%s\n' "${stash_count}"
+    printf 'head_sha=%s\n' "${head_sha}"
+  } > "${snap}"
+  # Tracked-only porcelain status (excludes untracked '??') for post-run diff.
+  git -C "${cwd_dir}" status --porcelain 2>/dev/null | grep -v '^??' > "${run_dir}/git-pre-tracked.txt" || true
+}
+
+# POST-RUN audit. Appends FINISH-GUARD sections to result.md and prints the
+# warning count (0, 1, or 2 — one per category) on stdout for the caller to
+# capture. Never modifies git state itself.
+git_finish_guard() {
+  local cwd_dir="$1" run_dir="$2"
+  local snap="${run_dir}/git-pre.txt"
+  local warnings=0
+
+  if [[ ! -f "${snap}" ]]; then
+    echo 0
+    return 0
+  fi
+  local is_repo
+  is_repo="$(grep '^is_repo=' "${snap}" 2>/dev/null | cut -d= -f2)"
+  if [[ "${is_repo}" != "1" ]] || ! git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo 0
+    return 0
+  fi
+
+  local stash_before head_before stash_after head_after
+  stash_before="$(grep '^stash_count=' "${snap}" 2>/dev/null | cut -d= -f2)"
+  head_before="$(grep '^head_sha=' "${snap}" 2>/dev/null | cut -d= -f2)"
+  [[ "${stash_before}" =~ ^[0-9]+$ ]] || stash_before=0
+  [[ -n "${head_before}" ]] || head_before="NONE"
+  stash_after="$(git -C "${cwd_dir}" stash list 2>/dev/null | wc -l | tr -d ' ')"
+  head_after="$(git -C "${cwd_dir}" rev-parse HEAD 2>/dev/null || echo NONE)"
+
+  # --- Stash left behind ------------------------------------------------
+  local new_stash_count=$(( stash_after - stash_before ))
+  if [[ "${new_stash_count}" -gt 0 ]]; then
+    local stash_entries
+    stash_entries="$(git -C "${cwd_dir}" stash list 2>/dev/null | head -n "${new_stash_count}")"
+    {
+      echo ""
+      echo "## FINISH-GUARD: STASH LEFT BEHIND"
+      while IFS= read -r line; do
+        [[ -n "${line}" ]] && echo "- ${line}"
+      done <<< "${stash_entries}"
+    } >> "${run_dir}/result.md"
+    warnings=$(( warnings + 1 ))
+  fi
+
+  # --- Tracked files changed but not committed --------------------------
+  local pre_tracked="${run_dir}/git-pre-tracked.txt"
+  local post_tracked="${run_dir}/git-post-tracked.txt"
+  [[ -f "${pre_tracked}" ]] || : > "${pre_tracked}"
+  git -C "${cwd_dir}" status --porcelain 2>/dev/null | grep -v '^??' > "${post_tracked}" || true
+  local new_dirty
+  new_dirty="$(comm -13 <(sort "${pre_tracked}") <(sort "${post_tracked}") 2>/dev/null || true)"
+  if [[ -n "${new_dirty}" ]]; then
+    {
+      echo ""
+      echo "## FINISH-GUARD: UNCOMMITTED CHANGES"
+      while IFS= read -r line; do
+        [[ -n "${line}" ]] && echo "- ${line}"
+      done <<< "${new_dirty}"
+    } >> "${run_dir}/result.md"
+    warnings=$(( warnings + 1 ))
+  fi
+
+  # --- Commits made during the run (informational) -----------------------
+  if [[ "${head_after}" != "${head_before}" ]] && [[ "${head_before}" != "NONE" ]] && [[ "${head_after}" != "NONE" ]]; then
+    local commits
+    commits="$(git -C "${cwd_dir}" log --oneline "${head_before}..${head_after}" 2>/dev/null || true)"
+    if [[ -n "${commits}" ]]; then
+      {
+        echo ""
+        echo "## Commits made"
+        while IFS= read -r line; do
+          [[ -n "${line}" ]] && echo "- ${line}"
+        done <<< "${commits}"
+      } >> "${run_dir}/result.md"
+    fi
+  fi
+
+  echo "${warnings}"
+}
+
+# Internal: launches `claude -p` for one run. Invoked via `$SELF __run_child`
+# so it re-execs as a standalone process (own process group via setsid_wrapper).
+# Determines exit_code from the child's own exit status ONLY (PIPESTATUS[0]) —
+# never from the parser (R3).
+cmd_run_child() {
+  local run_dir="$1"
+  local cwd_dir max_turns
+  cwd_dir="$(meta_get "${run_dir}" cwd)"
+  max_turns="$(meta_get "${run_dir}" max_turns)"
+
+  load_secret
+  export ANTHROPIC_BASE_URL="${TOKENROUTER_BASE_URL}"
+  export ANTHROPIC_AUTH_TOKEN="${TOKENROUTER_AUTH_TOKEN}"
+  # TOKENROUTER_AUTH_TOKEN itself must also be exported (not just as ANTHROPIC_AUTH_TOKEN)
+  # so redact_stream()'s os.environ.get("TOKENROUTER_AUTH_TOKEN") below actually sees it —
+  # otherwise stderr redaction is dead code (R5 finding, KIMI-CHANNEL-01 review).
+  export TOKENROUTER_AUTH_TOKEN
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="${TOKENROUTER_MODEL}"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="${TOKENROUTER_MODEL}"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="${TOKENROUTER_MODEL}"
+  export DISABLE_MODEL_AVAILABILITY_CHECK=1
+  export API_TIMEOUT_MS=3000000
+
+  cd "${cwd_dir}"
+  local prompt
+  prompt="$(cat "${run_dir}/prompt.txt")"
+  # lean: prompt passed via argv, matching design/v1 — upgrade to stdin/tempfile
+  # passing if a prompt near bash ARG_MAX is observed in practice.
+
+  set +e
+  ( command "${KIMI_CLAUDE_BIN}" -p "${prompt}" \
+      --model sonnet \
+      --output-format stream-json \
+      --verbose \
+      --max-turns "${max_turns}" \
+      --permission-mode bypassPermissions \
+      --disallowedTools "Agent" \
+      2> >(redact_stream >> "${run_dir}/stderr.log")
+  ) | tee "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
+  echo "${PIPESTATUS[0]}" > "${run_dir}/exit_code"
+  set -e
+}
+
+stream_state_get() {
+  local run_dir="$1" key="$2"
+  { grep "^${key}=" "${run_dir}/.stream_state" 2>/dev/null | head -1 | cut -d= -f2-; } || true
+}
+
+terminate_through_timeout_path() {
+  local child_pid="$1" run_dir="$2" bound="$3" value="$4" limit="$5"
+  printf '%s\n' "${bound}" > "${run_dir}/.bound_reason"
+  # Same marker-first ordering as the original wall-clock timeout. The
+  # supervisor therefore reaches the unchanged fallback sentinel/exit-76 path.
+  touch "${run_dir}/.timed_out"
+  case "${bound}" in
+    wall_clock)
+      printf '[%s] TIMEOUT after %ss -- killing process group %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${limit}" "${child_pid}" >> "${run_dir}/progress.log"
+      ;;
+    turn_count)
+      printf '[%s] BOUND_TRIPPED bound=turn_count observed_turns=%s limit=%s -- killing process group %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${value}" "${limit}" "${child_pid}" >> "${run_dir}/progress.log"
+      ;;
+    no_progress)
+      printf '[%s] BOUND_TRIPPED bound=no_progress idle_s=%s limit_s=%s -- killing process group %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${value}" "${limit}" "${child_pid}" >> "${run_dir}/progress.log"
+      ;;
+  esac
+  kill -TERM "-${child_pid}" 2>/dev/null || true
+  sleep 5
+  kill -KILL "-${child_pid}" 2>/dev/null || true
+}
+
+watchdog_loop() {
+  local child_pid="$1" timeout_s="$2" run_dir="$3" stall_s="${4:-${KIMI_STALL_S}}"
+  local turn_limit="${5:-${KIMI_TURN_LIMIT}}" no_progress_s="${6:-${KIMI_NO_PROGRESS_S}}"
+  local waited=0 interval=2
+  # KIMI-CHANNEL-01 (adapted from GLM-REVIVE-01) legacy stall bound shares parse_stream activity state with
+  # the stricter no-progress guard. The explicit guard is checked first and
+  # routes through .timed_out; a lower legacy KIMI_STALL_S may still revive.
+  local started_ts last_progress_ts
+  started_ts="$(date +%s)"
+  last_progress_ts="${started_ts}"
+  while [[ ! -f "${run_dir}/.done" ]]; do
+    if [[ "${waited}" -ge "${timeout_s}" ]]; then
+      # fix-round-1 H1 (KEEP item from fix-round-4): touch the marker FIRST,
+      # before sending TERM. If touched last, cmd_supervise's
+      # `wait "$child_pid"` can return the instant TERM lands (process group
+      # dies fast), at which point cmd_supervise sends a bare `kill` to THIS
+      # subshell while it is still mid-`sleep 5` -- killing it before it
+      # ever reaches `touch`, so the marker never gets written and the
+      # downstream branch that reads it becomes dead code. Touching first
+      # makes the marker unconditionally reliable regardless of who wins
+      # that reap race.
+      terminate_through_timeout_path "${child_pid}" "${run_dir}" "wall_clock" "${waited}" "${timeout_s}"
+      return 0
+    fi
+
+    local observed now state_progress idle_s
+    now="$(date +%s)"
+    observed="$(stream_state_get "${run_dir}" turns)"
+    [[ "${observed}" =~ ^[0-9]+$ ]] || observed=0
+    if [[ "${observed}" -ge "${turn_limit}" ]]; then
+      terminate_through_timeout_path "${child_pid}" "${run_dir}" "turn_count" "${observed}" "${turn_limit}"
+      return 0
+    fi
+
+    state_progress="$(stream_state_get "${run_dir}" last_progress_ts)"
+    if [[ "${state_progress}" =~ ^[0-9]+$ ]] && [[ "${state_progress}" -gt "${last_progress_ts}" ]]; then
+      last_progress_ts="${state_progress}"
+    fi
+    idle_s=$(( now - last_progress_ts ))
+    if [[ "${idle_s}" -ge "${no_progress_s}" ]]; then
+      terminate_through_timeout_path "${child_pid}" "${run_dir}" "no_progress" "${idle_s}" "${no_progress_s}"
+      return 0
+    elif [[ "${idle_s}" -ge "${stall_s}" ]]; then
+      # Same touch-before-kill ordering rationale as the timeout branch above.
+      touch "${run_dir}/.stalled"
+      printf '[%s] STALL_KILL after=%ss -- no progress; killing process group %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${stall_s}" "${child_pid}" >> "${run_dir}/progress.log"
+      kill -TERM "-${child_pid}" 2>/dev/null || true
+      sleep 5
+      kill -KILL "-${child_pid}" 2>/dev/null || true
+      return 0
+    fi
+
+    sleep "${interval}"
+    waited=$((waited + interval))
+  done
+}
+
+# Internal: supervisor. Launches the child in its own process group, runs a
+# timeout watchdog against ONLY that group (never its own), reaps the child,
+# and only then finalizes meta.yaml and releases the lock (R4).
+cmd_supervise() {
+  local run_dir="$1"
+  local repo_hash timeout_s
+  repo_hash="$(cat "${run_dir}/.lockref" 2>/dev/null || echo "")"
+  timeout_s="$(meta_get "${run_dir}" timeout)"
+  [[ -n "${timeout_s}" ]] || timeout_s="${KIMI_TIMEOUT}"
+
+  local start_ts
+  start_ts="$(date +%s)"
+
+  local cwd_dir
+  cwd_dir="$(meta_get "${run_dir}" cwd)"
+  git_snapshot_pre "${cwd_dir}" "${run_dir}"
+
+  setsid_wrapper "${SELF}" __run_child "${run_dir}" >>"${run_dir}/child.log" 2>&1 &
+  local child_pid=$!
+  echo "${child_pid}" > "${run_dir}/pgid"
+  # Also persist into the lock dir so a future acquire_lock() reclaim (e.g.
+  # after this supervisor crashes/OOMs) can TERM->KILL this orphaned process
+  # group before rm -rf'ing the lock (R4 finding, KIMI-CHANNEL-01 review).
+  if [[ -n "${repo_hash}" ]]; then
+    echo "${child_pid}" > "$(lock_dir_for "${repo_hash}")/pgid" 2>/dev/null || true
+  fi
+
+  ( watchdog_loop "${child_pid}" "${timeout_s}" "${run_dir}" "${KIMI_STALL_S}" "${KIMI_TURN_LIMIT}" "${KIMI_NO_PROGRESS_S}" ) &
+  local watchdog_pid=$!
+
+  wait "${child_pid}" 2>/dev/null || true
+  touch "${run_dir}/.done"
+  kill "${watchdog_pid}" 2>/dev/null || true
+  wait "${watchdog_pid}" 2>/dev/null || true
+
+  # KIMI-CHANNEL-01 (adapted from GLM-REVIVE-01) (2026-07-16): a STALL_KILL (caught early by watchdog_loop,
+  # distinct from a full .timed_out) gets exactly ONE auto-retry under a
+  # fresh run-id before falling through to the normal finalize path below.
+  # `revived_from` in THIS run_dir's own meta.yaml is the recursion guard —
+  # only present when this cmd_supervise invocation IS itself the retry, in
+  # which case a second stall falls straight through to the unchanged
+  # KIMI_FALLBACK_TO_SONNET sentinel path (no coherent result, no .timed_out).
+  if [[ -f "${run_dir}/.stalled" ]]; then
+    local already_revived
+    already_revived="$(meta_get "${run_dir}" revived_from)"
+    if [[ -z "${already_revived}" ]]; then
+      local new_run_id new_run_dir max_turns_val repo_name
+      repo_name="$(basename "${cwd_dir}")"
+      new_run_id="$(date '+%y%m%d-%H%M%S')-${repo_name}-$(printf '%04x' $((RANDOM % 65536)))"
+      new_run_dir="${RUNS_DIR}/${new_run_id}"
+      mkdir -p "${new_run_dir}"
+      chmod 700 "${new_run_dir}"
+      cp "${run_dir}/prompt.txt" "${new_run_dir}/prompt.txt"
+      max_turns_val="$(meta_get "${run_dir}" max_turns)"
+      write_meta_initial "${new_run_dir}" "${new_run_id}" "${repo_name}" "${cwd_dir}" "${max_turns_val}" "${timeout_s}" "$$"
+      printf 'revived_from: %s\n' "$(meta_get "${run_dir}" run_id)" >> "${new_run_dir}/meta.yaml"
+      printf '%s\n' "${repo_hash}" > "${new_run_dir}/.lockref"
+
+      # KIMI-CHANNEL-01 (adapted from SD-GLM-PEAK-GATE-BYPASSED-01) (2026-07-27): the stall-revive recursion
+      # relaunches kimi via __run_child directly -- it never went back through
+      # cmd_bg/cmd_run's kimi_launch_probe call, so a revive could silently
+      # cross into peak/reroute territory. Gate it here too, same idiom as
+      # the other two call sites (`|| gate_rc=$?`, never `!`, to preserve the
+      # real exit code under `set -e`).
+      local gate_rc=0
+      kimi_launch_probe || gate_rc=$?
+      if (( gate_rc != 0 )); then
+        echo "REVIVE_BLOCKED_BY_GATE -- quota gate refused the revive (code ${gate_rc}); not relaunching" >> "${run_dir}/progress.log"
+        extract_result "${run_dir}"
+        finalize_meta "${run_dir}" "revive_blocked_by_gate" "${gate_rc}" "$(( $(date +%s) - start_ts ))" \
+          "$(sum_tokens "${run_dir}" in)" "$(sum_tokens "${run_dir}" out)" \
+          "$(observed_turns "${run_dir}")"
+        return "${gate_rc}"
+      fi
+
+      extract_result "${run_dir}"
+      echo "REVIVED -> new_run_id=${new_run_id}" >> "${run_dir}/progress.log"
+      finalize_meta "${run_dir}" "revived" "0" "$(( $(date +%s) - start_ts ))" \
+        "$(sum_tokens "${run_dir}" in)" "$(sum_tokens "${run_dir}" out)" \
+        "$(observed_turns "${run_dir}")"
+      printf 'revived_to: %s\n' "${new_run_id}" >> "${run_dir}/meta.yaml"
+
+      # Lock stays held (same repo_hash) — the recursive call's own finalize
+      # path releases it exactly once, at the true end of this retry chain.
+      cmd_supervise "${new_run_dir}"
+      return 0
+    fi
+  fi
+
+  # fix-round-1 H1/H3 (KEEP item): `.timed_out` is AUTHORITATIVE and checked
+  # FIRST, unconditionally -- watchdog_loop touches it BEFORE sending TERM
+  # (above), so by the time we reach here it reliably exists whenever the
+  # watchdog fired, regardless of whatever (possibly stale/racy) content the
+  # exit_code file happens to hold. child_exit_from_file is captured
+  # separately so the FIX3 genuine-success precedence check below can still
+  # recognize a real race-won completion even if `.timed_out` also exists.
+  local child_exit_from_file=""
+  [[ -f "${run_dir}/exit_code" ]] && child_exit_from_file="$(cat "${run_dir}/exit_code")"
+
+  local exit_code is_timeout=0
+  if [[ -f "${run_dir}/.timed_out" ]]; then
+    exit_code=124
+    is_timeout=1
+  elif [[ -n "${child_exit_from_file}" ]]; then
+    exit_code="${child_exit_from_file}"
+  else
+    exit_code=1
+  fi
+
+  extract_result "${run_dir}"
+
+  # FINISH GUARD: git-delta audit runs regardless of exit_code — a stash-left
+  # or uncommitted-work warning is meaningful even on a failed/timed-out run.
+  # Appends sections to result.md; never mutates git state itself (R-detect-
+  # only per spec).
+  local finish_warnings
+  finish_warnings="$(git_finish_guard "${cwd_dir}" "${run_dir}")"
+  [[ "${finish_warnings}" =~ ^[0-9]+$ ]] || finish_warnings=0
+
+  local duration=$(( $(date +%s) - start_ts ))
+  local tokens_in tokens_out turns status
+  tokens_in="$(sum_tokens "${run_dir}" in)"
+  tokens_out="$(sum_tokens "${run_dir}" out)"
+  turns="$(observed_turns "${run_dir}")"
+
+  # FIX2 (KEEP item): an ERROR result payload (extract_result's
+  # .result_is_error marker -- is_error:true or an "error*" subtype on the
+  # last type:"result" journal event) does NOT count as coherent success
+  # evidence, even if result.md has non-empty text.
+  local has_result=0
+  if [[ -s "${run_dir}/result.md" ]] && ! grep -q '^(no result event found)$' "${run_dir}/result.md" \
+     && [[ ! -f "${run_dir}/.result_is_error" ]]; then
+    has_result=1
+  fi
+
+  # FIX3 (KEEP item) [insurance]: genuine-success precedence, made EXPLICIT.
+  # exit_code==0 from the child's OWN recorded exit_code file, combined with
+  # a coherent non-error result, is unconditionally SUCCESS -- regardless of
+  # a `.timed_out` marker that might also exist (e.g. touched microseconds
+  # before the child's own natural completion won the reap race).
+  if [[ -n "${child_exit_from_file}" ]] && [[ "${child_exit_from_file}" -eq 0 ]] && [[ "${has_result}" -eq 1 ]]; then
+    exit_code=0
+    is_timeout=0
+  fi
+
+  # Success = child exit code + coherent non-error result presence, never
+  # the parser (R3).
+  if [[ "${exit_code}" -eq 0 ]] && [[ "${has_result}" -eq 1 ]]; then
+    status="complete"
+    # Backward-compat: RUN_COMPLETE is always emitted on its own line first —
+    # existing Monitor greps for this literal string keep working unchanged.
+    # When the finish guard found something, two extra lines follow so a
+    # Monitor pattern can additionally catch the warning without losing the
+    # original success signal.
+    echo "RUN_COMPLETE" >> "${run_dir}/progress.log"
+    if [[ "${finish_warnings}" -gt 0 ]]; then
+      echo "RUN_COMPLETE_WITH_WARNINGS" >> "${run_dir}/progress.log"
+      echo "FINISH_WARNINGS=${finish_warnings}" >> "${run_dir}/progress.log"
+    fi
+  else
+    status="failed"
+    local original_exit="${exit_code}"
+    [[ "${original_exit}" -eq 0 ]] && original_exit=1
+    {
+      echo "RUN_FAILED exit=${original_exit}"
+      if [[ -f "${run_dir}/stderr.log" ]]; then
+        echo "ERROR: $(tail -n 5 "${run_dir}/stderr.log" | tr '\n' ' ')"
+      fi
+    } >> "${run_dir}/progress.log"
+
+    # Two-sentinel contract (KEEP item): retryable-elsewhere (`.timed_out`
+    # fired, OR no coherent/non-error result at all -- garbage/unparsable or
+    # an error result, ambiguous either way) -> fallback. Otherwise the
+    # child ran to completion with a COHERENT, non-error result but
+    # genuinely exited non-zero -> a real task failure sonnet would hit too
+    # -- preserve the real exit code.
+    if [[ "${is_timeout}" -eq 1 ]] || [[ "${has_result}" -eq 0 ]]; then
+      exit_code="${KIMI_FALLBACK_EXIT_CODE}"
+      echo "${KIMI_FALLBACK_SENTINEL}" >> "${run_dir}/progress.log"
+    else
+      exit_code="${original_exit}"
+      echo "${KIMI_PERMANENT_FAILURE_SENTINEL}" >> "${run_dir}/progress.log"
+    fi
+  fi
+
+  finalize_meta "${run_dir}" "${status}" "${exit_code}" "${duration}" "${tokens_in}" "${tokens_out}" "${turns}"
+
+  [[ -n "${repo_hash}" ]] && release_lock "${repo_hash}"
+
+  # EFFICIENCY-TUNE-01 C: clear job registry entry at real completion.
+  rm -f "/tmp/leadv2-job-registry/${CLAUDE_SESSION_ID:-nosession}/$(basename "${run_dir}")" 2>/dev/null || true
+}
+
+cmd_bg() {
+  if [[ $# -lt 1 ]]; then
+    log_error "bg requires a prompt argument"
+    usage
+    exit 1
+  fi
+  local prompt="$1"
+  shift
+
+  local cwd_dir="${PWD}"
+  local max_turns="${KIMI_MAX_TURNS}"
+  local timeout_s="${KIMI_TIMEOUT}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cwd)
+        cwd_dir="$2"
+        shift 2
+        ;;
+      --max-turns)
+        max_turns="$2"
+        shift 2
+        ;;
+      --timeout)
+        timeout_s="$2"
+        shift 2
+        ;;
+      *)
+        log_error "unknown argument: $1"
+        usage
+        exit 1
+        ;;
+    esac
+  done
+
+  [[ -d "${cwd_dir}" ]] || { log_error "cwd does not exist: ${cwd_dir}"; exit 1; }
+  cwd_dir="$(cd "${cwd_dir}" && pwd)"
+  [[ "${max_turns}" =~ ^[0-9]+$ ]] || { log_error "--max-turns must be a positive integer"; exit 1; }
+  [[ "${timeout_s}" =~ ^[0-9]+$ ]] || { log_error "--timeout must be a positive integer"; exit 1; }
+  [[ "${KIMI_TURN_LIMIT}" =~ ^[1-9][0-9]*$ ]] || { log_error "KIMI_TURN_LIMIT must be a positive integer"; exit 1; }
+  [[ "${KIMI_NO_PROGRESS_S}" =~ ^[1-9][0-9]*$ ]] || { log_error "KIMI_NO_PROGRESS_S must be a positive integer"; exit 1; }
+
+  kimi_launch_probe || exit $?
+  load_secret
+
+  local repo repo_hash
+  repo="$(basename "${cwd_dir}")"
+  repo_hash="$(printf '%s' "${cwd_dir}" | shasum -a 256 | cut -c1-12)"
+
+  acquire_lock "${repo_hash}" "${timeout_s}"
+
+  local run_id
+  run_id="$(date '+%y%m%d-%H%M%S')-${repo}-$(printf '%04x' $((RANDOM % 65536)))"
+  local run_dir="${RUNS_DIR}/${run_id}"
+  mkdir -p "${run_dir}"
+  chmod 700 "${run_dir}"
+
+  # EFFICIENCY-TUNE-01 C: job registry for supervise-loop stall detection.
+  local _job_reg_dir="/tmp/leadv2-job-registry/${CLAUDE_SESSION_ID:-nosession}"
+  mkdir -p "${_job_reg_dir}" 2>/dev/null \
+    && printf -- '%s\t%s\t%s\n' "${run_dir}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "kimi" \
+       > "${_job_reg_dir}/${run_id}" 2>/dev/null || true
+
+  local resolved_prompt="${prompt}"
+  if [[ "${prompt}" == @* ]]; then
+    local prompt_file="${prompt#@}"
+    if [[ ! -f "${prompt_file}" ]]; then
+      release_lock "${repo_hash}"
+      log_error "prompt file not found: ${prompt_file}"
+      exit 1
+    fi
+    resolved_prompt="$(cat "${prompt_file}")"
+  fi
+  printf '%s%s%s' "${AGENT_BAN_PREAMBLE}" "${resolved_prompt}" "${FINISH_CONTRACT_TRAILER}" > "${run_dir}/prompt.txt"
+
+  write_meta_initial "${run_dir}" "${run_id}" "${repo}" "${cwd_dir}" "${max_turns}" "${timeout_s}" "$$"
+  printf '%s\n' "${repo_hash}" > "${run_dir}/.lockref"
+
+  # setsid_wrapper() already detaches the process from the controlling
+  # terminal's session (os.setsid()), so it is immune to SIGHUP on its own —
+  # `nohup` cannot exec a shell function by name and is not needed here.
+  setsid_wrapper "${SELF}" __supervise "${run_dir}" >>"${run_dir}/supervisor.log" 2>&1 &
+  local supervisor_pid=$!
+  disown
+
+  echo "${supervisor_pid}" > "$(lock_dir_for "${repo_hash}")/pid"
+  echo "${run_id}"
+}
+
+latest_run_id() {
+  mkdir -p "${RUNS_DIR}"
+  { ls -1 "${RUNS_DIR}" 2>/dev/null | sort -r | head -1; } || true
+}
+
+cmd_status() {
+  local run_id="${1:-}"
+  if [[ -z "${run_id}" ]]; then
+    run_id="$(latest_run_id)"
+    [[ -n "${run_id}" ]] || { log_error "no runs found"; exit 1; }
+  fi
+  local run_dir="${RUNS_DIR}/${run_id}"
+  [[ -f "${run_dir}/meta.yaml" ]] || { log_error "run not found: ${run_id}"; exit 1; }
+  cat "${run_dir}/meta.yaml"
+}
+
+cmd_tail() {
+  if [[ $# -lt 1 ]]; then
+    log_error "tail requires a run-id"
+    exit 1
+  fi
+  local run_id="$1"
+  local run_dir="${RUNS_DIR}/${run_id}"
+  [[ -d "${run_dir}" ]] || { log_error "run not found: ${run_id}"; exit 1; }
+  echo "--- progress (last 20) ---"
+  tail -n 20 "${run_dir}/progress.log" 2>/dev/null || echo "(no progress yet)"
+  echo "--- result (head) ---"
+  head -c 2000 "${run_dir}/result.md" 2>/dev/null || echo "(no result yet)"
+  echo
+}
+
+cmd_watch() {
+  if [[ $# -lt 1 ]]; then
+    log_error "watch requires a run-id"
+    exit 1
+  fi
+  local run_id="$1"
+  local run_dir="${RUNS_DIR}/${run_id}"
+  [[ -d "${run_dir}" ]] || { log_error "run not found: ${run_id}"; exit 1; }
+  tail -f "${run_dir}/progress.log"
+}
+
+cmd_list() {
+  local n="${1:-10}"
+  [[ "${n}" =~ ^[0-9]+$ ]] || n=10
+  mkdir -p "${RUNS_DIR}"
+  printf '%-28s %-10s %-20s %s\n' "RUN_ID" "STATUS" "REPO" "STARTED_AT"
+  local d id status repo started
+  for d in "${RUNS_DIR}"/*/; do
+    [[ -d "${d}" ]] || continue
+    [[ -f "${d}meta.yaml" ]] || continue
+    id="$(basename "${d}")"
+    status="$(meta_get "${d}" status)"
+    repo="$(meta_get "${d}" repo)"
+    started="$(meta_get "${d}" started_at)"
+    printf '%-28s %-10s %-20s %s\n' "${id}" "${status:-unknown}" "${repo:-?}" "${started:-?}"
+  done | sort -r -k1,1 | head -n "${n}"
+}
+
+# Availability probe as a first-class subcommand. Callers that only need to know
+# "is the kimi channel up right now?" (leadv2-session-route.sh's _kimi_available
+# check) must NOT have to start a run to find out: no lock, no run-dir, no claude
+# process. Exit code is kimi_launch_probe's verbatim, so 77 keeps its documented
+# "reroute to the next arm" meaning here too.
+cmd_probe() {
+  if [[ $# -gt 0 ]]; then
+    log_error "probe takes no arguments (got: $*)"
+    exit 1
+  fi
+  kimi_launch_probe || exit $?
+  exit 0
+}
+
+main() {
+  if [[ $# -lt 1 ]]; then
+    usage
+    exit 1
+  fi
+  mkdir -p "${RUNS_DIR}"
+  local subcmd="$1"
+  shift
+  case "${subcmd}" in
+    run)
+      cmd_run "$@"
+      ;;
+    bg)
+      cmd_bg "$@"
+      ;;
+    status)
+      cmd_status "$@"
+      ;;
+    tail)
+      cmd_tail "$@"
+      ;;
+    watch)
+      cmd_watch "$@"
+      ;;
+    list)
+      cmd_list "$@"
+      ;;
+    probe)
+      cmd_probe "$@"
+      ;;
+    test)
+      cmd_test "$@"
+      ;;
+    __supervise)
+      cmd_supervise "$@"
+      ;;
+    __run_child)
+      cmd_run_child "$@"
+      ;;
+    *)
+      log_error "unknown subcommand: ${subcmd}"
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

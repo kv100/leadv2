@@ -17,7 +17,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage: leadv2-session-route.sh --class <Light|Standard|Heavy|Strategic>
        [--risk-tags <csv>] [--suggested-model <model>]
-       [--suggested-effort <effort>] [--provider <auto|claude|codex|glm>]
+       [--suggested-effort <effort>] [--provider <auto|claude|codex|glm|kimi>]
 EOF
   exit 1
 }
@@ -41,8 +41,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$PROVIDER_REQUEST" in
-  auto|claude|codex|glm) ;;
-  *) log_error "provider must be auto, claude, codex, or glm (got: $PROVIDER_REQUEST)"; exit 1 ;;
+  auto|claude|codex|glm|kimi) ;;
+  *) log_error "provider must be auto, claude, codex, glm, or kimi (got: $PROVIDER_REQUEST)"; exit 1 ;;
 esac
 
 # Defaults are intentionally usable without YAML/PyYAML. The canonical config
@@ -65,6 +65,14 @@ GLM_LIGHT_MODEL="glm-5.2"
 GLM_LIGHT_EFFORT="low"
 GLM_STANDARD_MODEL="glm-5.2"
 GLM_STANDARD_EFFORT="medium"
+# KIMI-CHANNEL-01: middle rung between glm and codex. Never wider than glm's
+# own eligibility (Light/Standard only, HIGH_RISK_TAGS-blind is intentional --
+# see _kimi_eligible below, mirrors _glm_eligible exactly).
+KIMI_ENABLED="true"
+KIMI_LIGHT_MODEL="moonshotai/kimi-k3-free"
+KIMI_LIGHT_EFFORT="low"
+KIMI_STANDARD_MODEL="moonshotai/kimi-k3-free"
+KIMI_STANDARD_EFFORT="medium"
 HIGH_RISK_TAGS="auth,rls,safety,publish,security,arch"
 
 _config_file="${LEADV2_SESSION_ROUTING_CONFIG:-}"
@@ -97,6 +105,11 @@ if [[ -n "$_config_file" && -f "$_config_file" ]]; then
       glm_light_effort) GLM_LIGHT_EFFORT="$_value" ;;
       glm_standard_model) GLM_STANDARD_MODEL="$_value" ;;
       glm_standard_effort) GLM_STANDARD_EFFORT="$_value" ;;
+      kimi_enabled) KIMI_ENABLED="$_value" ;;
+      kimi_light_model) KIMI_LIGHT_MODEL="$_value" ;;
+      kimi_light_effort) KIMI_LIGHT_EFFORT="$_value" ;;
+      kimi_standard_model) KIMI_STANDARD_MODEL="$_value" ;;
+      kimi_standard_effort) KIMI_STANDARD_EFFORT="$_value" ;;
       high_risk_tags) HIGH_RISK_TAGS="$_value" ;;
     esac
   done < <(python3 - "$_config_file" <<'PYEOF' 2>/dev/null || true
@@ -113,6 +126,8 @@ glm = data.get("glm") or {}
 cm = codex.get("models") or {}
 am = claude.get("models") or {}
 gm = glm.get("models") or {}
+kimi = data.get("kimi") or {}
+km = kimi.get("models") or {}
 high = data.get("high_risk") or {}
 
 values = {
@@ -134,6 +149,11 @@ values = {
     "glm_light_effort": (gm.get("light") or {}).get("effort"),
     "glm_standard_model": (gm.get("standard") or {}).get("model"),
     "glm_standard_effort": (gm.get("standard") or {}).get("effort"),
+    "kimi_enabled": kimi.get("enabled"),
+    "kimi_light_model": (km.get("light") or {}).get("model"),
+    "kimi_light_effort": (km.get("light") or {}).get("effort"),
+    "kimi_standard_model": (km.get("standard") or {}).get("model"),
+    "kimi_standard_effort": (km.get("standard") or {}).get("effort"),
     "high_risk_tags": ",".join(str(x) for x in (high.get("tags") or [])),
 }
 for key, value in values.items():
@@ -155,6 +175,11 @@ GLM_LIGHT_MODEL="${LEADV2_GLM_LIGHT_MODEL:-$GLM_LIGHT_MODEL}"
 GLM_LIGHT_EFFORT="${LEADV2_GLM_LIGHT_EFFORT:-$GLM_LIGHT_EFFORT}"
 GLM_STANDARD_MODEL="${LEADV2_GLM_STANDARD_MODEL:-$GLM_STANDARD_MODEL}"
 GLM_STANDARD_EFFORT="${LEADV2_GLM_STANDARD_EFFORT:-$GLM_STANDARD_EFFORT}"
+KIMI_ENABLED="${LEADV2_KIMI_ENABLED:-$KIMI_ENABLED}"
+KIMI_LIGHT_MODEL="${LEADV2_KIMI_LIGHT_MODEL:-$KIMI_LIGHT_MODEL}"
+KIMI_LIGHT_EFFORT="${LEADV2_KIMI_LIGHT_EFFORT:-$KIMI_LIGHT_EFFORT}"
+KIMI_STANDARD_MODEL="${LEADV2_KIMI_STANDARD_MODEL:-$KIMI_STANDARD_MODEL}"
+KIMI_STANDARD_EFFORT="${LEADV2_KIMI_STANDARD_EFFORT:-$KIMI_STANDARD_EFFORT}"
 HIGH_RISK_TAGS="${LEADV2_HIGH_RISK_TAGS:-$HIGH_RISK_TAGS}"
 
 if ! [[ "$CODEX_MAX_USED_PERCENT" =~ ^[0-9]+$ ]] || (( CODEX_MAX_USED_PERCENT < 1 || CODEX_MAX_USED_PERCENT > 100 )); then
@@ -203,6 +228,13 @@ _glm_effort="$GLM_STANDARD_EFFORT"
 if [[ "$_class_l" == "light" ]]; then
   _glm_model="$GLM_LIGHT_MODEL"
   _glm_effort="$GLM_LIGHT_EFFORT"
+fi
+
+_kimi_model="$KIMI_STANDARD_MODEL"
+_kimi_effort="$KIMI_STANDARD_EFFORT"
+if [[ "$_class_l" == "light" ]]; then
+  _kimi_model="$KIMI_LIGHT_MODEL"
+  _kimi_effort="$KIMI_LIGHT_EFFORT"
 fi
 
 _emit_route_log() {
@@ -360,6 +392,49 @@ if [[ "$_glm_eligible" == "true" ]]; then
   fi
 fi
 
+# KIMI-CHANNEL-01: eligibility mirrors _glm_eligible EXACTLY (Light/Standard
+# only, high-risk-blind) -- never wider than glm, per founder policy. No
+# HIGH_RISK_TAGS carve-out, no Heavy/Strategic eligibility for kimi.
+_kimi_eligible=false
+_kimi_unavailable_reason=""
+if [[ "$KIMI_ENABLED" != "true" && "$KIMI_ENABLED" != "1" ]]; then
+  _kimi_unavailable_reason="disabled by policy"
+elif [[ "$_high_risk" == "true" ]]; then
+  _kimi_unavailable_reason="high-risk class/tags; kimi is banned from arch/design/safety work"
+elif [[ "$_class_l" != "light" && "$_class_l" != "standard" ]]; then
+  _kimi_unavailable_reason="class ${TASK_CLASS} not eligible for kimi (Light/Standard only)"
+else
+  _kimi_eligible=true
+fi
+
+# No quota concept for kimi (TokenRouter announces no peak multiplier) --
+# availability is a live launch-time probe instead of a quota-gate script.
+# `kimi-coder.sh probe` runs ONLY the GET /v1/models check (no claude launch).
+_kimi_available=false
+# M2 (KIMI-CHANNEL-01 fix round 1): don't spend a live launch probe when glm
+# is already eligible and within quota -- glm wins the auto-routing choice
+# below regardless of kimi's availability, so the probe's result would never
+# be observed. `_kimi_available=false` in this skipped case means "not
+# probed (glm eligible and within quota)", NOT "endpoint is down" -- see
+# `_kimi_unavailable_reason` for which case applies. A downstream consumer
+# that treats `_kimi_available=false` as evidence of kimi endpoint health
+# would be reading it wrong.
+if [[ "$_kimi_eligible" == "true" && ( "$_glm_eligible" != "true" || "$_glm_quota_ok" != "true" ) ]]; then
+  _kimi_bin="${LEADV2_KIMI_BIN:-$SCRIPT_DIR/kimi-coder.sh}"
+  if [[ -f "$_kimi_bin" ]]; then
+    if bash "$_kimi_bin" probe >/dev/null 2>/dev/null; then
+      _kimi_available=true
+    else
+      _kimi_probe_rc=$?
+      _kimi_unavailable_reason="launch probe failed (rc=${_kimi_probe_rc}; see kimi-coder.sh for the live reroute reason)"
+    fi
+  else
+    _kimi_unavailable_reason="kimi-coder.sh missing (${_kimi_bin})"
+  fi
+elif [[ "$_kimi_eligible" == "true" ]]; then
+  _kimi_unavailable_reason="not probed (glm eligible and within quota)"
+fi
+
 _provider="claude"
 _model="$_claude_model"
 _effort="$_claude_effort"
@@ -376,11 +451,23 @@ elif [[ "$PROVIDER_REQUEST" == "glm" && "$_glm_eligible" == "true" && "$_glm_quo
   _reason="explicit provider override: glm"
 elif [[ "$PROVIDER_REQUEST" == "glm" ]]; then
   _reason="explicit glm request refused (${_glm_unavailable_reason:-ineligible}); Claude fallback"
+elif [[ "$PROVIDER_REQUEST" == "kimi" && "$_kimi_eligible" == "true" && "$_kimi_available" == "true" ]]; then
+  _provider="kimi"
+  _model="$_kimi_model"
+  _effort="$_kimi_effort"
+  _reason="explicit provider override: kimi"
+elif [[ "$PROVIDER_REQUEST" == "kimi" ]]; then
+  _reason="explicit kimi request refused (${_kimi_unavailable_reason:-ineligible}); Claude fallback"
 elif [[ "$PROVIDER_REQUEST" == "auto" && "$_glm_eligible" == "true" && "$_glm_quota_ok" == "true" ]]; then
   _provider="glm"
   _model="$_glm_model"
   _effort="$_glm_effort"
   _reason="routine ${TASK_CLASS} task routed to GLM (primary code writer, GLM-FIRST-01) to preserve Claude/Codex quota"
+elif [[ "$PROVIDER_REQUEST" == "auto" && "$_kimi_eligible" == "true" && "$_kimi_available" == "true" ]]; then
+  _provider="kimi"
+  _model="$_kimi_model"
+  _effort="$_kimi_effort"
+  _reason="routine ${TASK_CLASS} task routed to kimi (TokenRouter free channel, KIMI-CHANNEL-01) to preserve Claude/Codex quota"
 elif [[ "$_codex_available" != "true" ]]; then
   _reason="Codex unavailable (${_codex_unavailable_reason}); Claude fallback"
 elif [[ "$_codex_quota_ok" != "true" ]]; then
@@ -402,14 +489,27 @@ fi
 _displaced="none"
 case "$_provider" in
   glm)
+    if [[ "$_kimi_eligible" == "true" && "$_kimi_available" == "true" ]]; then
+      _displaced="kimi"
+    elif [[ "$_codex_available" == "true" && "$_codex_quota_ok" == "true" ]]; then
+      _displaced="codex"
+    fi
+    ;;
+  kimi)
     [[ "$_codex_available" == "true" && "$_codex_quota_ok" == "true" ]] && _displaced="codex"
     ;;
   codex)
-    [[ "$_glm_eligible" == "true" && "$_glm_quota_ok" == "true" ]] && _displaced="glm"
+    if [[ "$_glm_eligible" == "true" && "$_glm_quota_ok" == "true" ]]; then
+      _displaced="glm"
+    elif [[ "$_kimi_eligible" == "true" && "$_kimi_available" == "true" ]]; then
+      _displaced="kimi"
+    fi
     ;;
   claude)
     if [[ "$_glm_eligible" == "true" && "$_glm_quota_ok" == "true" ]]; then
       _displaced="glm"
+    elif [[ "$_kimi_eligible" == "true" && "$_kimi_available" == "true" ]]; then
+      _displaced="kimi"
     elif [[ "$_codex_available" == "true" && "$_codex_quota_ok" == "true" ]]; then
       _displaced="codex"
     fi
@@ -428,4 +528,9 @@ printf 'codex_used_percent=%s\n' "${_codex_used:-unknown}"
 printf 'anthropic_used_percent=%s\n' "${_anthropic_used:-unknown}"
 printf 'glm_eligible=%s\n' "$_glm_eligible"
 printf 'glm_quota_ok=%s\n' "$_glm_quota_ok"
+printf 'kimi_eligible=%s\n' "$_kimi_eligible"
+printf 'kimi_available=%s\n' "$_kimi_available"
+if [[ -n "$_kimi_unavailable_reason" ]]; then
+  printf 'kimi_unavailable_reason=%s\n' "$_kimi_unavailable_reason"
+fi
 printf 'displaced=%s\n' "$_displaced"

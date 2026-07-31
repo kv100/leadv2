@@ -596,6 +596,9 @@ _dispatch_normalize_handle() {  # <arm> <raw_handle> -> normalized handle (may b
   local arm="$1" raw="$2"
   case "${arm}" in
     sonnet) printf '%s\n' "${raw}" | sed -n 's/^PID=\([0-9][0-9]*\).*/\1/p' ;;
+    # kimi run-ids are alnum/dash, same shape as glm's -- explicit case for
+    # readability, identical to the default branch (KIMI-CHANNEL-01).
+    kimi)   printf '%s' "${raw//[\"\\]/}" ;;
     *)      printf '%s' "${raw//[\"\\]/}" ;;
   esac
 }
@@ -614,6 +617,18 @@ _dispatch_worker_liveness() {  # <arm> <handle> -> alive|dead|unknown (stdout)
     glm)
       local raw status
       raw="$(bash "${GLM_BIN}" status "${handle}" 2>/dev/null)" || { printf 'unknown'; return; }
+      status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
+      case "${status}" in
+        running)         printf 'alive' ;;
+        complete|failed) printf 'dead' ;;
+        *)               printf 'unknown' ;;
+      esac
+      ;;
+    kimi)
+      # KIMI-CHANNEL-01: identical shape to the glm case above -- kimi-coder.sh's
+      # `status` subcommand resolves the same run-dir its own `bg` call created.
+      local raw status
+      raw="$(bash "${KIMI_BIN}" status "${handle}" 2>/dev/null)" || { printf 'unknown'; return; }
       status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
       case "${status}" in
         running)         printf 'alive' ;;
@@ -1224,6 +1239,8 @@ PY
 # GLM_SECRETS_FILE; claude-subsession.sh: LEADV2_DRY_RUN=1) -- this script never
 # duplicates that stubbing, it only calls the launcher and reports its handle.
 GLM_BIN="${LEADV2_DISPATCH_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
+# KIMI-CHANNEL-01: sibling launcher, same bg/status contract as glm-coder.sh.
+KIMI_BIN="${LEADV2_DISPATCH_KIMI_BIN:-${SCRIPT_DIR}/kimi-coder.sh}"
 SUBSESSION_BIN="${LEADV2_DISPATCH_SUBSESSION_BIN:-${SCRIPT_DIR}/claude-subsession.sh}"
 ARCHITECT_BIN="${LEADV2_DISPATCH_ARCHITECT_BIN:-${SUBSESSION_BIN}}"
 # codex-task.sh is the sanctioned Codex channel -- it already owns tier resolution
@@ -1316,7 +1333,14 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
   marker="$(printf '%s\n' "${combined}" | sed -n 's/.*LEADV2_DISPATCH_REFUSED:[[:space:]]*\([A-Za-z0-9._-][A-Za-z0-9._-]*\).*/\1/p' | head -1)"
   # Every arm shares this contract.  Non-zero alone is still a launcher failure;
   # only the documented admission exit codes plus an explicit marker are refusals.
-  if [[ -n "${marker}" && ( "${rc}" == "1" || "${rc}" == "2" ) ]]; then
+  # KIMI-CHANNEL-01: kimi-coder.sh's launch probe fails closed with rc=77 (no
+  # run-id printed yet) -- distinct from glm's rc 1 (quota)/rc 2 (peak) so the
+  # two channels' launch failures are never confused, but the SAME marker
+  # contract applies: only a launcher that both exits one of its documented
+  # admission codes AND emits the LEADV2_DISPATCH_REFUSED marker counts as a
+  # refusal (safe to silently reroute); any other non-zero exit is a genuine
+  # launcher failure.
+  if [[ -n "${marker}" && ( "${rc}" == "1" || "${rc}" == "2" || ( "${arm}" == "kimi" && "${rc}" == "77" ) ) ]]; then
     printf '%s' "${marker}"
     return 0
   fi
@@ -1371,6 +1395,40 @@ _spawn_worker_body() {
       if ! bash "${GLM_BIN}" status "${handle}" >/dev/null 2>&1 9>&-; then
         emit decision "spawn_failed by=router model=glm task=${sig8} handle=${handle} reason=not_live"
         log_err "spawn(glm) handle=${handle} has no live run record -- treating as launch failure"
+        return 1
+      fi
+      ;;
+    kimi)
+      # KIMI-CHANNEL-01: sibling of the glm case above, same bg/status contract
+      # (kimi-coder.sh is a clone of glm-coder.sh). The only launcher-specific
+      # difference is its launch-probe refusal rc (77, vs. glm's 1/2) --
+      # refusal_reason() already knows about that distinction.
+      out="$(bash "${KIMI_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      err="$(tail -20 "${errf}" 2>/dev/null)"
+      if [[ ${rc} -ne 0 ]]; then
+        local refusal
+        refusal="$(refusal_reason "${arm}" "${rc}" "${out}" "${err}" || true)"
+        if [[ -n "${refusal}" ]]; then
+          LAST_ARM_OUTCOME="kimi_refused_${refusal}"
+          emit decision "arm_refused by=router model=kimi task=${sig8} reason=kimi_refused_${refusal}"
+          log "spawn(kimi) refused: ${refusal}"
+          return 2
+        fi
+        emit decision "spawn_failed by=router model=kimi task=${sig8} rc=${rc} reason=launcher_nonzero_exit"
+        log_err "spawn(kimi) failed rc=${rc}: ${out} ${err}"
+        return 1
+      fi
+      handle="$(printf '%s\n' "${out}" | tail -1)"
+      if [[ -z "${handle}" ]]; then
+        emit decision "spawn_failed by=router model=kimi task=${sig8} reason=empty_handle"
+        log_err "spawn(kimi) returned an empty handle -- treating as launch failure (no-op launcher?)"
+        return 1
+      fi
+      # Liveness: same shape as the glm arm's check above -- kimi-coder.sh's
+      # own `status` subcommand resolves the same run-dir this `bg` call used.
+      if ! bash "${KIMI_BIN}" status "${handle}" >/dev/null 2>&1 9>&-; then
+        emit decision "spawn_failed by=router model=kimi task=${sig8} handle=${handle} reason=not_live"
+        log_err "spawn(kimi) handle=${handle} has no live run record -- treating as launch failure"
         return 1
       fi
       ;;
@@ -1965,7 +2023,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
   else
     case "${arm}" in
-      glm)   candidate_arms=(glm codex sonnet) ;;
+      # KIMI-CHANNEL-01: kimi inserted one rung below glm (founder-approved
+      # downgrade_chain glm -> kimi -> sonnet). Additive only -- codex/sonnet
+      # remain reachable exactly as before if kimi also refuses/fails.
+      glm)   candidate_arms=(glm kimi codex sonnet) ;;
       codex) candidate_arms=(codex sonnet) ;;
       sonnet) candidate_arms=(sonnet) ;;
       *) log_err "unsupported resolved dispatch arm: ${arm}"; exit 1 ;;
