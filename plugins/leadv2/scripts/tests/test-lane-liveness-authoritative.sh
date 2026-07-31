@@ -271,7 +271,13 @@ import json, sys
 d = json.load(sys.stdin)
 lanes = {r["lane"]: r for r in d["lanes"]}
 assert lanes.get("ABANDONED-LANE", {}).get("verdict", "").startswith("dead:")
-expected = sum(1 for r in d["lanes"] if r["verdict"] == "alive" or r["verdict"].startswith("silent:") or r["verdict"].startswith("starting:"))
+# STATUSLINE-COUNT-TRUTH-02 correction: count_live is alive+starting ONLY --
+# silent:* renders but is deliberately EXCLUDED from the numerator (that is
+# the exact "lanes 18/5" disease this task fixes: a stale-but-not-abandoned
+# lane must not inflate the count). This formula used to also count
+# silent:*, which happened to still pass here only because no other fixture
+# in this shared $repo had gone silent yet by this point in the file.
+expected = sum(1 for r in d["lanes"] if r["verdict"] == "alive" or r["verdict"].startswith("starting:"))
 assert d["count_live"] == expected, (d["count_live"], expected)
 ' <<<"$abandoned_all_json"; then
   printf '[TEST] PASS: D1 -- count_live excludes the abandoned pid-less lane\n'; pass=$((pass+1))
