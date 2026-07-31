@@ -42,6 +42,13 @@
             "timeout": 5,
             "continueOnBlock": true,
             "statusMessage": "Checking for pending close obligations..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-one-copy-drift.sh\"",
+            "timeout": 6,
+            "continueOnBlock": true,
+            "statusMessage": "Checking one-copy drift..."
           }
         ]
       },

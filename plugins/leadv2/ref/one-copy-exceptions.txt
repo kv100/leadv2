@@ -1,0 +1,11 @@
+# APPLY-ONE-COPY-01 — declared shared-tree overrides.
+# Format: <root-key>/<relpath>   one per line, '#' comments, blank lines ignored.
+# root-key: "agents" = ~/.claude/agents-shared ; "scripts" = ~/.claude/leadv2-shared/scripts
+# A path here reports EXPECTED-OVERRIDE and never gates the drift check.
+# Founder decision 2026-07-30: persona-engine keeps its own agent definitions.
+# Neither side is a superset — shared carries the PE framing/project-id/layer names,
+# canonical carries the `Agent` tool, `capabilities:`, `modern-web-guidance`.
+# Retire a line only when the delta is ported to a declared small override.
+agents/architect.md
+agents/critic.md
+agents/security-auditor.md
