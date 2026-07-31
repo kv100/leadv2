@@ -138,7 +138,32 @@ else
   # printf builtin only — zero spawns (the shared renderer above is a bash
   # function, not a subprocess).
   _leadv2_render_colored_base "$MODEL" "$DISP_CWD" "$STYLE" "$REMAINING"
-  printf ' \033[34m| lanes ?\033[0m\n'
+  # D4 (STATUSLINE fix round 2): the tail script writes a count-only sidecar
+  # (COUNT_SIDECAR_FILE) immediately after every liveness read, specifically
+  # so THIS cold-cache path can render a real number instead of the literal
+  # "lanes ?" — but nothing here ever read it. `read` is a bash builtin, zero
+  # spawns, so it costs nothing against the B13 no-subprocess contract. Same
+  # CACHE_KEY formula as the tail script's own COUNT_SIDECAR_FILE derivation
+  # (both from CWD, here $PWD == the tail script's CWD_FROM_INPUT on a
+  # cache-miss first call) — a mismatch here would silently fall back to
+  # "lanes ?" forever, so this must track that formula exactly.
+  _sidecar_lanes=""
+  _count_sidecar="${TMPDIR:-/tmp}/leadv2-statusline-lanecount-${CACHE_KEY}"
+  if [[ -s "$_count_sidecar" ]]; then
+    # `read` returns non-zero at EOF without a trailing newline -- and the
+    # sidecar is written via Python's plain fh.write(), which never adds
+    # one. It still populates _sidecar_lanes correctly before returning
+    # that status, so the exit code must NOT gate whether the read counts:
+    # `read ... || _sidecar_lanes=""` would clobber a perfectly good read on
+    # every single call, since EOF-without-newline is the normal case here,
+    # not a failure. `[[ -z ]]` right below is what actually detects a
+    # missing/unreadable sidecar.
+    IFS= read -r _sidecar_lanes < "$_count_sidecar" 2>/dev/null
+  fi
+  # An unreadable/missing sidecar is UNKNOWN, never a confident zero — render
+  # "lanes ?", the same as before this fix, rather than fabricate a count.
+  [[ -z "$_sidecar_lanes" ]] && _sidecar_lanes="lanes ?"
+  printf ' \033[34m| %s\033[0m\n' "$_sidecar_lanes"
 fi
 
 # ---- fire-and-forget: one throttled detached refresher, never awaited ----

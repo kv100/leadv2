@@ -83,13 +83,62 @@ if [[ "$WRAPPED_OK" != "1" ]]; then
   [[ -n "$BRANCH" ]] && BASE="${BASE} (${BRANCH})"
 fi
 
+# D4 (dispatch-98cc5cf7, founder ask): the founder's own burn statusline.sh
+# appends " | 5h:<used> ↑<pct>%" after the FIRST " | " in its own output --
+# that segment's width belongs to the lanes now. Flag-gated (not a mutation
+# of the founder's own script) so `=0` restores it in one flip.
+if [[ "${LEADV2_STATUSLINE_DROP_BURN:-1}" == "1" ]]; then
+  BASE="${BASE%% | *}"
+fi
+
+# D6 (STATUSLINE fix round 2): the WHOLE line must fit, not just the lane
+# segment -- DIGEST_BUDGET used to be a flat default (100) with no relation
+# to how much width BASE itself already consumed, so a real BASE (colorized
+# model/cwd/ctx%) plus a "full-budget" lane digest routinely wrapped past 80
+# cols. Width precedence: an explicit override, else the terminal's own
+# COLUMNS (set by the shell that invoked this render), else 80 -- no `tput`
+# fork; this script always runs detached with no tty, and `tput` would
+# report 80 there anyway. BASE_VISIBLE_LEN strips ANSI color codes before
+# measuring -- an escape sequence costs stdin bytes but zero terminal cells.
+STATUSLINE_WIDTH="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
+BASE_VISIBLE_LEN="$(printf '%s' "$BASE" | sed -E $'s/\x1b\\[[0-9;]*m//g' | awk '{print length}')"
+[[ -z "$BASE_VISIBLE_LEN" ]] && BASE_VISIBLE_LEN=0
+
 LANES="lanes ?"
+# STATUSLINE-DESTROYS-PROBER-01: every cache/memo path this script can ever
+# write is derived from this ONE dir, never from a binary's own path -- the
+# structural guard below (safe_replace / _leadv2_statusline_safe_write)
+# allowlists writes against exactly this resolved dir.
+CACHE_DIR="${TMPDIR:-/tmp}"
+
+# STATUSLINE-DESTROYS-PROBER-01 Step 1: bash-side mirror of the python
+# safe_replace guard, for the one write this script performs outside the
+# embedded python block (line ~748 below). Refuses the same four ways.
+_leadv2_statusline_safe_write() {
+  local dest="$1" content="$2"
+  case "$dest" in
+    "$CACHE_DIR"/*) ;;
+    *) return 1 ;;
+  esac
+  [[ -x "$dest" ]] && return 1
+  case "$(basename -- "$dest")" in
+    *.sh|*.py|*.js) return 1 ;;
+  esac
+  [[ "$(basename -- "$(dirname -- "$dest")")" == "scripts" ]] && return 1
+  printf '%s' "$content" > "$dest" 2>/dev/null
+}
+
 CACHE_KEY="${CWD_FROM_INPUT//\//_}"
 [[ -z "$CACHE_KEY" ]] && CACHE_KEY="default"
-LANE_CACHE_FILE="${TMPDIR:-/tmp}/leadv2-statusline-lane-${CACHE_KEY}"
+LANE_CACHE_FILE="${CACHE_DIR}/leadv2-statusline-lane-${CACHE_KEY}"
+# D1.5/R6 (dispatch-98cc5cf7): same CACHE_KEY formula as the hot path
+# (leadv2-lane-status-line.sh derives its own key from `${PWD//\//_}`) --
+# load-bearing: if the two ever diverge, the sidecar is written under a key
+# the hot path never reads and it falls back to "lanes ?" forever. Verified
+# by test-leadv2-lane-status-line.sh (both scripts invoked against the same
+# CWD_FROM_INPUT/$PWD in the fixture).
+COUNT_SIDECAR_FILE="${CACHE_DIR}/leadv2-statusline-lanecount-${CACHE_KEY}"
 
-# Hoisted (was inside the CACHE_FRESH=0 branch only): also needed below,
-# unconditionally, to resolve the pulse log for the "last:" digest.
 RESOLVER="${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR}/scripts/leadv2-state-path.sh"
 [[ -x "$RESOLVER" ]] || RESOLVER="${SCRIPT_DIR}/leadv2-state-path.sh"
 
@@ -113,8 +162,22 @@ LABEL_MEMO_FILE="${LANE_CACHE_FILE}.labels"
 # liveness changes.
 LIVENESS_BIN="${CLAUDE_PLUGIN_ROOT:-$SCRIPT_DIR}/scripts/leadv2-lane-liveness.sh"
 [[ -x "$LIVENESS_BIN" ]] || LIVENESS_BIN="${SCRIPT_DIR}/leadv2-lane-liveness.sh"
+# STATUSLINE-DESTROYS-PROBER-01 E6: a corpse (JSON overwrite, mode 0644)
+# leaves neither candidate executable -- fail CLOSED instead of handing a
+# non-executable path to `bash` on every single repaint forever. Empty
+# LIVENESS_BIN means "skip the subprocess entirely" below.
+[[ -x "$LIVENESS_BIN" ]] || LIVENESS_BIN=""
 LIVENESS_MEMO_FILE="${LANE_CACHE_FILE}.liveness"
 LIVENESS_MEMO_TTL_S="${LEADV2_LANE_LIVENESS_MEMO_TTL_S:-10}"
+
+# STATUSLINE-DESTROYS-PROBER-01 Step 0: opt-in repaint trace, never on by
+# default (this script repaints far too often to log unconditionally).
+if [[ "${LEADV2_STATUSLINE_TRACE:-0}" == "1" ]]; then
+  printf '%s %s %s %s %s %s %s %s\n' \
+    "$$" "${PPID:-?}" "${CLAUDE_PLUGIN_ROOT:-}" "$SCRIPT_DIR" \
+    "$LANE_CACHE_FILE" "$LIVENESS_BIN" "$LIVENESS_MEMO_FILE" "$(date +%s 2>/dev/null || echo 0)" \
+    >> "${CACHE_DIR}/leadv2-statusline-trace.log" 2>/dev/null || true
+fi
 
 CACHE_FRESH=0
 if [[ -f "$LANE_CACHE_FILE" ]]; then
@@ -147,8 +210,8 @@ else
       # runs regressed all the way to "lanes ?"). Same FIX5c reasoning
       # applies: this script only ever runs detached in the background, so a
       # generous outer bound here costs nothing downstream.
-      LANES="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 4 python3 -c "
-import sys, os, time, glob, subprocess
+      LANES="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout "${LEADV2_LANE_CALC_TIMEOUT_S:-10}" python3 -c "
+import json, sys, os, time, glob, subprocess
 try:
     import yaml
 except Exception:
@@ -168,6 +231,9 @@ if os.path.isfile(path):
 
 meta = data.get('meta') or {}
 sessions = data.get('sessions') or []
+# D2 (dispatch-98cc5cf7): n is now recomputed below from the authoritative
+# liveness payload's count_live once it is fetched -- len(sessions) is only
+# the pre-liveness-call placeholder/fallback.
 n = len(sessions)
 
 # Cap precedence: active.yaml's own meta.hard_limit (set by the last real
@@ -184,48 +250,177 @@ if cap is None and os.path.isfile(limits_path):
 if cap is None:
     cap = 3
 
-def lane_log(s):
-    # B14 fix: consult the row's own log_path first (dispatch-code.sh
-    # funnel lanes never write under docs/handoff/<task_id>/) — same
-    # precedence as leadv2-lane-liveness.sh's resolve(). Never falls back to
-    # the self-reported pulse_log field.
-    tid = str(s.get('task_id', '?'))
-    raw_log_path = s.get('log_path')
-    if raw_log_path:
-        candidate = raw_log_path if os.path.isabs(raw_log_path) else os.path.join(root, raw_log_path)
-        if os.path.isfile(candidate):
-            return candidate
-    lane_dir = os.path.join(root, 'docs', 'handoff', tid)
-    candidates = [os.path.join(lane_dir, 'session.log'), os.path.join(lane_dir, 'fanout.log')]
-    existing = [p for p in candidates if os.path.isfile(p)]
-    if existing:
-        return max(existing, key=lambda p: os.path.getmtime(p))
-    try:
-        files = [p for p in glob.glob(os.path.join(lane_dir, '*')) if os.path.isfile(p)]
-    except Exception:
-        files = []
-    return max(files, key=lambda p: os.path.getmtime(p)) if files else None
+# ---- authoritative liveness: ONE batch call for ALL lanes ----
+# C5 (STATUSLINE-SHOWS-LANES-QUESTIONMARK-01): lane_log() (a hand-rolled
+# duplicate of leadv2-lane-liveness.sh's own path precedence) and a
+# per-lane lane_verdict() subprocess are BOTH gone. This script now shells
+# out to leadv2-lane-liveness.sh exactly ONCE per repaint (--all --json
+# --no-codex), and that single authoritative payload is the sole source of
+# BOTH age_s (sort order below) and verdict (digest suffix further down)
+# for every lane -- N lanes now cost one process, not N, and there is only
+# ONE place left that knows how to find a lane's artifact across its six
+# possible shapes.
+liveness_bin, liveness_memo_file, liveness_ttl_raw = sys.argv[7], sys.argv[8], sys.argv[9]
+count_sidecar_file = sys.argv[10]
+width_raw, base_visible_len_raw = sys.argv[11], sys.argv[12]
+cache_dir_raw = sys.argv[13] if len(sys.argv) > 13 else ''
+try:
+    liveness_ttl = float(liveness_ttl_raw)
+except ValueError:
+    liveness_ttl = 10.0
 
-now = time.time()
-rows = []
-sessions_by_tid = {}
-for s in sessions:
-    tid = str(s.get('task_id', '?'))
-    phase = str(s.get('phase', '?'))
-    log = lane_log(s)
-    age_s = None
-    if log:
+# STATUSLINE-DESTROYS-PROBER-01: single chokepoint for every write this
+# script performs. Refuses (never raises -- every caller below already
+# swallows exceptions, so a raise here would be invisible) when the
+# resolved destination is not under the resolved cache dir, is already an
+# executable, looks like a script by extension, or lives in a directory
+# named 'scripts'. A refusal is unconditionally traced -- it should never
+# fire in normal operation, so the cost of always logging it is zero.
+_CACHE_DIR_ABS = os.path.abspath(cache_dir_raw) if cache_dir_raw else None
+_TRACE_ON = os.environ.get('LEADV2_STATUSLINE_TRACE') == '1'
+_TRACE_LOG = os.path.join(_CACHE_DIR_ABS or '/tmp', 'leadv2-statusline-trace.log')
+
+def _trace(msg):
+    try:
+        with open(_TRACE_LOG, 'a', encoding='utf-8') as tf:
+            tf.write(f'{time.time()} {msg}\n')
+    except Exception:
+        pass
+
+def safe_replace(tmp_path, dest_path):
+    dest_abs = os.path.abspath(dest_path)
+    refuse_reason = None
+    if _CACHE_DIR_ABS is None or not (
+        dest_abs == _CACHE_DIR_ABS or dest_abs.startswith(_CACHE_DIR_ABS + os.sep)
+    ):
+        refuse_reason = 'outside-cache-dir'
+    elif os.path.exists(dest_abs) and os.access(dest_abs, os.X_OK):
+        refuse_reason = 'target-executable'
+    elif os.path.basename(dest_abs).endswith(('.sh', '.py', '.js')):
+        refuse_reason = 'script-extension'
+    elif os.path.basename(os.path.dirname(dest_abs)) == 'scripts':
+        refuse_reason = 'scripts-dir'
+    if refuse_reason:
         try:
-            age_s = int(now - os.path.getmtime(log))
+            os.unlink(tmp_path)
         except Exception:
-            age_s = None
-    rows.append((age_s, tid, phase))
-    sessions_by_tid[tid] = s
+            pass
+        _trace(f'REFUSE {refuse_reason} dest={dest_abs}')
+        return False
+    if _TRACE_ON:
+        _trace(f'safe_replace dest={dest_abs}')
+    os.replace(tmp_path, dest_abs)
+    return True
+
+liveness_by_tid = {}
+count_live = None
+memo_fresh = False
+if os.path.isfile(liveness_memo_file):
+    try:
+        if (time.time() - os.path.getmtime(liveness_memo_file)) < liveness_ttl:
+            with open(liveness_memo_file, encoding='utf-8') as fh:
+                memo_payload = json.load(fh)
+            liveness_by_tid = memo_payload.get('lanes') or {}
+            count_live = memo_payload.get('count_live')
+            memo_fresh = True
+    except Exception:
+        liveness_by_tid = {}
+        count_live = None
+        memo_fresh = False
+if not memo_fresh and liveness_bin:
+    try:
+        proc = subprocess.run(
+            ['bash', liveness_bin, '--project-root', root, '--all', '--json', '--no-codex'],
+            capture_output=True, text=True, timeout=8,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            payload = json.loads(proc.stdout)
+            liveness_by_tid = {str(row.get('lane')): row for row in (payload.get('lanes') or [])
+                                if isinstance(row, dict) and row.get('lane')}
+            count_live = payload.get('count_live')
+    except Exception:
+        liveness_by_tid = {}
+        count_live = None
+    # C8: tmp + safe_replace so a concurrent repaint's read of this file
+    # never observes a partial write (repaints are throttled to every ~2s
+    # but run detached, so two can overlap).
+    try:
+        tmp_path = f'{liveness_memo_file}.tmp.{os.getpid()}'
+        with open(tmp_path, 'w', encoding='utf-8') as fh:
+            json.dump({'lanes': liveness_by_tid, 'count_live': count_live}, fh)
+        safe_replace(tmp_path, liveness_memo_file)
+    except Exception:
+        pass
+
+# D1.5 (dispatch-98cc5cf7): count sidecar written IMMEDIATELY after a
+# successful liveness read, before any label/digest work below -- a later
+# digest failure (PyYAML missing, tasks-lib timeout, ...) can no longer
+# erase a count that was already computable. The hot path
+# (leadv2-lane-status-line.sh) reads this file as its cache-miss fallback
+# instead of a bare 'lanes ?'.
+# STATUSLINE-DESTROYS-PROBER-01 Step 3: additionally gated on liveness_bin
+# -- an unusable prober must never let a stale sidecar masquerade as a
+# freshly-confirmed count (the hot path treats this file's mere presence as
+# fresh-enough, so refreshing its mtime from a dead source is a lie).
+if count_live is not None and liveness_bin:
+    try:
+        tmp_path = f'{count_sidecar_file}.tmp.{os.getpid()}'
+        with open(tmp_path, 'w', encoding='utf-8') as fh:
+            fh.write(f'lanes {count_live}/{cap}')
+        safe_replace(tmp_path, count_sidecar_file)
+    except Exception:
+        pass
+
+# D2 (dispatch-98cc5cf7): the count and the row set now come straight from
+# the authoritative liveness payload -- NOT from active.yaml's own
+# sessions list, which misses every lane launched outside
+# leadv2-fanout.sh's registration path (the direct-dispatch-code gap this
+# task exists to fix). sessions_by_tid is kept as a DECORATION lookup only
+# (kind/model/title), never as the source of which lanes exist or how many.
+now = time.time()
+sessions_by_tid = {str(s.get('task_id', '?')): s for s in sessions if isinstance(s, dict)}
+# D4 (STATUSLINE fix round 2): len(sessions) as a fallback here rendered a
+# CONFIDENT lanes 0/5 whenever the liveness read failed (subprocess
+# timeout/crash/bad JSON) and active.yaml's own sessions list was also empty
+# or absent -- indistinguishable, on the line, from genuinely zero lanes
+# running. An unreadable count and an empty count are not the same fact;
+# only one of them is true. Render the honest unknown instead.
+n = count_live if count_live is not None else '?'
+
+def _is_live_verdict(verdict):
+    # D3/D6 (STATUSLINE fix round 2): the --all id set was deliberately
+    # widened (silent_max -> discovery_max) to fix the --lane vs --all
+    # flicker -- but that widened set now also carries lanes past
+    # abandon_max, which leadv2-lane-liveness.sh itself already resolves to
+    # a 'dead:*' verdict. Rendering EVERY id the widened set surfaces would
+    # put hours/days-old dead lanes back on the line permanently -- the same
+    # disease D1 just fixed for the count. Only alive/starting/silent
+    # (silent:* is only ever emitted for age <= abandon_max, see
+    # leadv2-lane-liveness.sh resolve()) reach the digest.
+    if not isinstance(verdict, str):
+        return False
+    return verdict == 'alive' or verdict.startswith('starting:') or verdict.startswith('silent:')
+
+rows = []
+for lane_id, lrow in liveness_by_tid.items():
+    verdict = lrow.get('verdict')
+    if not _is_live_verdict(verdict):
+        continue
+    rows.append((lrow.get('age_s'), lane_id, verdict))
 
 # Pulse digest (founder ask, fix5 attempt 2): only the top-2 MOST
 # recently-active lanes, not the first 8 in file order — smallest age_s
 # first; unknown-age lanes (no discoverable log) sort last, never first.
-rows.sort(key=lambda r: (r[0] is None, r[0] if r[0] is not None else 0))
+# STATUSLINE-COUNT-TRUTH-01 (3.4): stale (silent:*) rows stay visible but
+# sort AFTER every counted (alive/starting) row, so the digest reads as
+# "what's actually working" followed by "what's stale", never interleaved --
+# separated, not deleted. Verdict is still on each token as a '·silent'
+# suffix (unchanged, below), so which group a row is in stays legible.
+rows.sort(key=lambda r: (
+    isinstance(r[2], str) and r[2].startswith('silent:'),
+    r[0] is None,
+    r[0] if r[0] is not None else 0,
+))
 
 # FIX5d: task-name digest instead of a raw id. Precedence: the active.yaml
 # row's own title/mission field (not populated by any current schema, but
@@ -248,49 +443,6 @@ if os.path.isfile(label_memo_file):
     except Exception:
         label_memo = {}
 
-# FIX5e: liveness verdict memo, same tab-separated-file shape as label_memo
-# above, keyed by task_id -> (verdict, resolved_at_epoch). A fresh memo entry
-# (age < liveness_ttl) is reused as-is; only an expired or missing entry pays
-# for a real leadv2-lane-liveness.sh subprocess.
-liveness_bin, liveness_memo_file, liveness_ttl_raw = sys.argv[7], sys.argv[8], sys.argv[9]
-try:
-    liveness_ttl = float(liveness_ttl_raw)
-except ValueError:
-    liveness_ttl = 10.0
-liveness_memo = {}
-if os.path.isfile(liveness_memo_file):
-    try:
-        with open(liveness_memo_file, encoding='utf-8') as fh:
-            for line in fh:
-                parts = line.rstrip('\n').split('\t')
-                if len(parts) == 3:
-                    k, v, ts = parts
-                    try:
-                        liveness_memo[k] = (v, float(ts))
-                    except ValueError:
-                        pass
-    except Exception:
-        liveness_memo = {}
-
-def lane_verdict(tid):
-    now_ts = time.time()
-    cached = liveness_memo.get(tid)
-    if cached and (now_ts - cached[1]) < liveness_ttl:
-        return cached[0]
-    verdict = None
-    try:
-        proc = subprocess.run(
-            ['bash', liveness_bin, '--project-root', root, '--lane', tid],
-            capture_output=True, text=True, timeout=2,
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            verdict = proc.stdout.strip().splitlines()[0].strip()
-    except Exception:
-        verdict = None
-    if verdict:
-        liveness_memo[tid] = (verdict, now_ts)
-    return verdict
-
 def cap_label(text, label_cap):
     text = text.strip()
     label_cap = max(label_cap, 1)
@@ -298,40 +450,148 @@ def cap_label(text, label_cap):
         return text
     return text[:label_cap - 1] + '…' if label_cap > 1 else '…'
 
+def prepass_label(tid):
+    # D5 (STATUSLINE fix round 2), step 3: a lane doing its own architect
+    # prepass names ITSELF far better than any hash -- read it with a plain
+    # open(), no fork, so this costs nothing against the label-resolution
+    # budget below. First markdown heading wins; else the first non-empty
+    # line. Collapsed to <=4 words so one long sentence never dominates the
+    # digest the way a raw id used to.
+    path = os.path.join(root, 'docs', 'handoff', tid, 'architect-prepass.md')
+    try:
+        with open(path, encoding='utf-8') as fh:
+            lines = fh.readlines()
+    except Exception:
+        return None
+    heading, first_line = None, None
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if first_line is None:
+            first_line = stripped
+        if stripped.startswith('# '):
+            heading = stripped[2:].strip()
+            break
+    text = heading or first_line
+    if not text:
+        return None
+    for marker in ('#', '*', '_'):
+        text = text.replace(marker, '')
+    # Every architect-prepass.md heading observed in this repo follows the
+    # same boilerplate shape ('Architect prepass -- fix round for
+    # <TASK-NAME>') -- the first 4 words of THAT is 'Architect prepass --
+    # fix' for every single lane, which is the exact indistinguishable-label
+    # defect this fix exists to remove, just relocated from the hash to the
+    # heading. The task name is the part that actually varies, and it always
+    # follows the last ' for '/' FOR ' -- prefer that tail when present.
+    lower = text.lower()
+    marker_pos = lower.rfind(' for ')
+    if marker_pos != -1:
+        text = text[marker_pos + len(' for '):].strip()
+    words = text.split()
+    return ' '.join(words[:4]) if words else None
+
+# D5 step 4: tasks-lib resolution is a subprocess per uncached lane -- cheap
+# for one lane, unbounded for N. Cap it so a cold repaint with many lanes
+# degrades to the raw-id fallback (step 5) for the overflow instead of
+# blowing the whole tail script past its own timeout -- the exact
+# 'cap the label work, not the id set' half of the D3 fix.
+LABEL_RESOLVE_MAX = int(os.environ.get('LEADV2_STATUSLINE_LABEL_RESOLVE_MAX', '') or 4)
+label_resolve_budget = [LABEL_RESOLVE_MAX]
+
 def raw_label(tid, s):
     # Returns the UNCAPPED label text; capping is applied later, per-row,
     # once the digest-wide length budget is known (fix5d-addendum).
+    # Precedence (D5): active.yaml title/mission -> label memo -> this
+    # lane's own architect-prepass.md -> tasks-lib intent tag (rate-capped)
+    # -> raw id (de-prefixed against its siblings in a later pass below).
     for key in ('title', 'mission'):
         val = s.get(key)
         if val:
             return str(val)
     if tid in label_memo:
         return label_memo[tid]
+    prepass = prepass_label(tid)
+    if prepass:
+        label_memo[tid] = prepass
+        return prepass
     label = tid
-    try:
-        import subprocess
-        proc = subprocess.run(
-            ['bash', '-c', 'source "\$1" 2>/dev/null && leadv2_tasks_by_id "\$2"',
-             '_', tasks_lib_path, tid],
-            capture_output=True, text=True, timeout=1,
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            item = (yaml.safe_load(proc.stdout) or [{}])[0]
-            intent = str(item.get('intent', '') or '')
-            tag = intent.split(':', 1)[0].strip()
-            if tag:
-                label = tag
-    except Exception:
-        pass
+    if label_resolve_budget[0] > 0:
+        label_resolve_budget[0] -= 1
+        try:
+            import subprocess
+            proc = subprocess.run(
+                ['bash', '-c', 'source "\$1" 2>/dev/null && leadv2_tasks_by_id "\$2"',
+                 '_', tasks_lib_path, tid],
+                capture_output=True, text=True, timeout=1,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                item = (yaml.safe_load(proc.stdout) or [{}])[0]
+                intent = str(item.get('intent', '') or '')
+                tag = intent.split(':', 1)[0].strip()
+                if tag:
+                    label = tag
+        except Exception:
+            pass
     label_memo[tid] = label
     return label
 
-# FIX5d-addendum (founder ask): digest also carries dispatch kind (sw =
-# leadv2-dispatch-code.sh's single-worker funnel, identified by backend/
-# where == "dispatch-code"; everything else -- headless/terminal/tmux -- is
-# a full-cycle fanout.sh child, so "full") and the model that ran the lane.
+def strip_common_affix(ids):
+    # D5 step 5: labels that reached here are still bare lane ids -- every
+    # dispatch-code lane shares the 'dispatch-' prefix, which is exactly why
+    # every digest token rendered as the same 'dispa...' before this fix.
+    # Strip the longest common prefix AND suffix across this batch of ids
+    # together (not per-id), so distinguishing characters survive instead of
+    # being truncated away one at a time by cap_label's head-preserving cut.
+    if len(ids) < 2:
+        return {tid: tid for tid in ids}
+
+    def common_prefix(strs):
+        if not strs:
+            return ''
+        p = strs[0]
+        for s in strs[1:]:
+            while p and not s.startswith(p):
+                p = p[:-1]
+        return p
+
+    def common_suffix(strs):
+        return common_prefix([s[::-1] for s in strs])[::-1]
+
+    def apply(prefix, suffix):
+        out = {}
+        for tid in ids:
+            s = tid
+            if prefix and s.startswith(prefix):
+                s = s[len(prefix):]
+            if suffix and s.endswith(suffix) and len(s) > len(suffix):
+                s = s[:len(s) - len(suffix)]
+            out[tid] = s or tid
+        return out
+
+    prefix = common_prefix(ids)
+    suffix = common_suffix(ids)
+    stripped = apply(prefix, suffix)
+    if len(set(stripped.values())) == len(ids):
+        return stripped
+    # Collision guard: back the prefix off one '-'-segment and retry once.
+    segments = prefix.split('-')
+    if len(segments) > 1:
+        shorter_prefix = '-'.join(segments[:-1])
+        if shorter_prefix and shorter_prefix != prefix:
+            retry = apply(shorter_prefix, suffix)
+            if len(set(retry.values())) == len(ids):
+                return retry
+    # Floor: stripping cannot distinguish these ids -- render the raw id.
+    return {tid: tid for tid in ids}
+
+# D4 (dispatch-98cc5cf7): ALL live lanes, never just the first 2 -- rows[:2]
+# was the direct cause of a founder-visible lane going missing from the
+# digest. kind/model are now a strictly-optional tail appended only if width
+# remains after every lane already has its full label (never a fixed cost).
 lane_meta = []
-for age_s, tid, phase in rows[:2]:
+for age_s, lane_id, verdict in rows:
     if age_s is None:
         age = '?'
     elif age_s < 60:
@@ -340,20 +600,25 @@ for age_s, tid, phase in rows[:2]:
         age = f'{age_s // 60}m'
     else:
         age = f'{age_s // 3600}h'
-    s = sessions_by_tid.get(tid, {})
-    kind = 'sw' if str(s.get('backend') or s.get('where') or '') == 'dispatch-code' else 'full'
+    s = sessions_by_tid.get(lane_id, {})
+    if s:
+        kind = 'sw' if str(s.get('backend') or s.get('where') or '') == 'dispatch-code' else 'full'
+    else:
+        # A lane surfaced only via the widened id union (D2 Gap B) has no
+        # active.yaml session row to read backend/where from -- a bare
+        # dispatch-<hash> id IS by construction a dispatch-code funnel lane.
+        kind = 'sw' if lane_id.startswith('dispatch-') else 'full'
     model = str(s.get('lead_model') or s.get('provider') or '?')
-    label = raw_label(tid, s)
+    label = raw_label(lane_id, s)
     # FIX5e: a '·verdict-prefix' suffix only when the authoritative verdict
     # is NOT 'alive' -- the prefix (everything before the first ':') is whatever
-    # leadv2-lane-liveness.sh itself returns ('dead', 'silent', ...), never a
-    # hand-kept enum here, so a future verdict category renders correctly
-    # with no code change. A lookup failure (no verdict resolved at all)
-    # renders no suffix -- absence of evidence is not evidence of death.
-    verdict = lane_verdict(tid)
+    # leadv2-lane-liveness.sh itself returns ('dead', 'silent', 'starting', ...),
+    # never a hand-kept enum here, so a future verdict category renders
+    # correctly with no code change. A lookup failure (no verdict resolved at
+    # all) renders no suffix -- absence of evidence is not evidence of death.
     vsuffix = ''
-    if verdict and not verdict.startswith('alive'):
-        vprefix = verdict.split(':', 1)[0].strip()
+    if verdict and not str(verdict).startswith('alive'):
+        vprefix = str(verdict).split(':', 1)[0].strip()
         if vprefix:
             vsuffix = '·' + vprefix
     # NB: tuples, not a dict-with-string-keys -- this whole heredoc-style
@@ -362,109 +627,165 @@ for age_s, tid, phase in rows[:2]:
     # any bracket lookup needing its OWN quotes inside an f-string) would
     # prematurely close the outer bash quoting. Every line in this block
     # stays single-quote-only for that reason.
-    lane_meta.append((label, kind, model, phase, age, vsuffix))
+    lane_meta.append((label, kind, model, age, vsuffix, lane_id))
 
-# Whole line stays under ~90 chars, per-lane label absorbs the squeeze
-# first (founder ask) -- everything else (kind/model/phase/age/verdict) is
-# short and load-bearing, so it is never shrunk.
-DIGEST_BUDGET = 90
+# D5 step 5: apply the batch-wide common-affix strip to every lane whose
+# label never resolved past the raw id (title/memo/prepass/tasks-lib all
+# came up empty) -- computed together so 'dispatch-3d46872c' and
+# 'dispatch-8a9177d7-architect' become distinguishable stems instead of both
+# still starting with the same 'dispatch-' that caused every label to render
+# identically before this fix.
+_unresolved_ids = [lid for lbl, _k, _mo, _ag, _vs, lid in lane_meta if lbl == lid]
+if _unresolved_ids:
+    _stems = strip_common_affix(_unresolved_ids)
+    lane_meta = [
+        ((_stems.get(lid, lbl) if lbl == lid else lbl), k, mo, ag, vs, lid)
+        for lbl, k, mo, ag, vs, lid in lane_meta
+    ]
+
+# D4 degradation ladder: shorten, NEVER drop a lane. D6: budget is now
+# derived from the ACTUAL remaining terminal width after BASE, not a flat
+# guess -- an explicit LEADV2_STATUSLINE_LANE_BUDGET override still wins.
+try:
+    _width = max(1, int(width_raw))
+except ValueError:
+    _width = 80
+try:
+    _base_visible_len = max(0, int(base_visible_len_raw))
+except ValueError:
+    _base_visible_len = 0
+_explicit_budget = os.environ.get('LEADV2_STATUSLINE_LANE_BUDGET', '')
+if _explicit_budget:
+    try:
+        DIGEST_BUDGET = int(_explicit_budget)
+    except ValueError:
+        DIGEST_BUDGET = max(20, _width - _base_visible_len - len(' | '))
+else:
+    DIGEST_BUDGET = max(20, _width - _base_visible_len - len(' | '))
 base_prefix = f'lanes {n}/{cap}'
-id_parts = []
+
+def digest_len(tokens):
+    if not tokens:
+        return len(base_prefix)
+    return len(base_prefix) + len(' | ') + sum(len(t) for t in tokens) + (len(tokens) - 1)
+
+def render_step12(label_cap, with_meta):
+    toks = []
+    for lbl, k, mo, ag, vs, _lid in lane_meta:
+        tok = f'{cap_label(lbl, label_cap)}·{ag}{vs}'
+        if with_meta:
+            tok += f'·{k}·{mo}'
+        toks.append(tok)
+    return toks
+
+def render_step3(label_cap):
+    return [f'{cap_label(lbl, label_cap)}:{ag}{vs}' for lbl, _k, _mo, ag, vs, _lid in lane_meta]
+
+def render_step5_floor():
+    # D6 floor: 2-char (already de-prefixed, per D5 step 5) stems + age.
+    # Verdict suffix dropped here only, age always kept -- unlike the old
+    # id-only floor this replaces, this is never a bare hash with zero
+    # information about how stale the lane is. cap_label's own budget is 3,
+    # not 2: with an ellipsis costing one of the two, a literal cap of 2
+    # shows only ONE real character (the other char slot spent on '…'),
+    # which is exactly what made distinct stems collide under heavy load --
+    # 3 keeps both stem characters visible.
+    return [f'{cap_label(lbl, 3)}·{ag}' for lbl, _k, _mo, ag, _vs, _lid in lane_meta]
+
+id_parts = None
 if lane_meta:
-    fixed_len = len(base_prefix) + len(' | ') + (len(lane_meta) - 1) * len(' ')
-    overheads = [1 + len(k) + 1 + len(mo) + 1 + len(ph) + 1 + len(ag) + len(vs)
-                 for _, k, mo, ph, ag, vs in lane_meta]
-    fixed_len += sum(overheads)
-    available = DIGEST_BUDGET - fixed_len
-    per_label_cap = max(6, min(LABEL_CAP, available // len(lane_meta) if available > 0 else 6))
-    for lbl, k, mo, ph, ag, vs in lane_meta:
-        lbl = cap_label(lbl, per_label_cap)
-        id_parts.append(f'{lbl}·{k}·{mo}·{ph}:{ag}{vs}')
+    # Step 1: full labels (cap 24), meta appended only while it still fits.
+    for with_meta in (True, False):
+        cand = render_step12(LABEL_CAP, with_meta)
+        if digest_len(cand) <= DIGEST_BUDGET:
+            id_parts = cand
+            break
+    # Step 2: shrink the per-label cap, no meta.
+    if id_parts is None:
+        for label_cap in (16, 12, 9, 6):
+            cand = render_step12(label_cap, False)
+            if digest_len(cand) <= DIGEST_BUDGET:
+                id_parts = cand
+                break
+    # Step 3: compact 'lbl:age' form, cap 4 -- verdict suffix retained.
+    if id_parts is None:
+        cand = render_step3(4)
+        if digest_len(cand) <= DIGEST_BUDGET:
+            id_parts = cand
+    # Step 5 floor: 2-char de-prefixed stem + age, verdict suffix dropped.
+    # There is no step that removes a lane -- if this still overflows, width
+    # is released by shortening BASE's own cwd instead (see the bash tail
+    # below this heredoc).
+    if id_parts is None:
+        id_parts = render_step5_floor()
 
 out = base_prefix
 if id_parts:
     out += ' | ' + ' '.join(id_parts)
 print(out)
-try:
-    with open(cache_file, 'w', encoding='utf-8') as fh:
-        fh.write(out)
-except Exception:
-    pass
-try:
-    with open(label_memo_file, 'w', encoding='utf-8') as fh:
-        for k, v in label_memo.items():
-            fh.write(f'{k}\t{v}\n')
-except Exception:
-    pass
-try:
-    with open(liveness_memo_file, 'w', encoding='utf-8') as fh:
-        for k, (v, ts) in liveness_memo.items():
-            fh.write(f'{k}\t{v}\t{ts}\n')
-except Exception:
-    pass
-" "$ACTIVE_YAML" "$CWD_FROM_INPUT" "$LANE_CACHE_FILE" "$LIMITS_YAML" "$LABEL_MEMO_FILE" "$TASKS_LIB" "$LIVENESS_BIN" "$LIVENESS_MEMO_FILE" "$LIVENESS_MEMO_TTL_S" 2>/dev/null || true)"
-      [[ -z "$LANES" ]] && LANES="lanes ?"
-    fi
-  fi
-  [[ -f "$LANE_CACHE_FILE" ]] || printf '%s' "$LANES" > "$LANE_CACHE_FILE" 2>/dev/null || true
-fi
+# C8 (STATUSLINE-SHOWS-LANES-QUESTIONMARK-01): tmp + os.replace for every
+# shared cache file this script writes -- concurrent detached refreshers
+# (one per repaint, throttled to ~2s) can interleave a plain open(...,'w')
+# with the NEXT run's read of the same file. A rename is atomic; a
+# truncate-then-write is not. (The liveness memo above already uses this
+# same pattern at its own write site.)
+def atomic_write_text(path, text):
+    tmp_path = f'{path}.tmp.{os.getpid()}'
+    with open(tmp_path, 'w', encoding='utf-8') as fh:
+        fh.write(text)
+    safe_replace(tmp_path, path)
 
-# ---- pulse digest "last:" fragment ----
-# Read ONLY here (the detached background tail script), never in the hot
-# path (leadv2-lane-status-line.sh just `cat`s the cache). Resolved via the
-# supervise loop's own path config (leadv2-supervise-loop.sh: LOG_FILE via
-# leadv2-state-path.sh supervise-loop.log) — never a hardcoded docs/leadv2
-# path, same reasoning as the active.yaml lookup above. Independent of the
-# lane cache TTL: cheap (one file tail), so it is recomputed every tail-
-# script run rather than folded into the lane cache's freshness window.
-# FIX5c: same stale fix-round-3 budgets as above (0.08s vs. this resolver's
-# own measured ~100-110ms) — bumped for the same reason.
-# FIX5e: a non-running supervise loop leaves the last pulse line as a
-# fossil forever -- the founder's live repro showed a 2-day-old UTC line
-# rendering as if it were live. Age is measured off the LINE'S OWN leading
-# ISO8601 timestamp (never the log file's mtime, which an unrelated write
-# could refresh); once that age is >= PULSE_STALE_MAX_S the fragment is
-# omitted entirely rather than shown stale. When rendered, the leading UTC
-# stamp is converted to local HH:MM (never raw UTC ISO) — BSD `date -j` first
-# (mac), GNU `date -d`/`date -r @` fallback (VPS), matching the rest of this
-# repo's date-portability convention.
-PULSE_STALE_MAX_S="${LEADV2_LANE_PULSE_STALE_MAX_S:-7200}"
-PULSE_FRAG=""
-if [[ -x "$RESOLVER" ]]; then
-  PULSE_LOG="$(PROJECT_ROOT="$CWD_FROM_INPUT" timeout 1 "$RESOLVER" --no-link supervise-loop.log 2>/dev/null || true)"
-  if [[ -n "$PULSE_LOG" && -f "$PULSE_LOG" ]]; then
-    PULSE_TEXT="$(timeout 0.5 grep -v '^[[:space:]]*$' "$PULSE_LOG" 2>/dev/null | tail -n 1 || true)"
-    if [[ -n "$PULSE_TEXT" ]]; then
-      PULSE_TS="$(printf '%s' "$PULSE_TEXT" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z?' || true)"
-      PULSE_EPOCH="" PULSE_LOCAL_HHMM=""
-      if [[ -n "$PULSE_TS" ]]; then
-        # -u is load-bearing on BSD: the source stamp is UTC (the trailing
-        # Z), and `date -j -f` with no -u would silently parse those digits
-        # as LOCAL wall-clock instead, skewing the epoch by the machine's
-        # UTC offset (measured: a 5-minute-old EEST stamp mis-parsed this
-        # way computed as >3h old and got wrongly treated as stale).
-        PULSE_EPOCH="$(timeout 0.2 date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$PULSE_TS" +%s 2>/dev/null || timeout 0.2 date -d "$PULSE_TS" +%s 2>/dev/null || true)"
-        if [[ -n "$PULSE_EPOCH" ]]; then
-          PULSE_LOCAL_HHMM="$(timeout 0.2 date -r "$PULSE_EPOCH" +%H:%M 2>/dev/null || timeout 0.2 date -d "@${PULSE_EPOCH}" +%H:%M 2>/dev/null || true)"
+try:
+    atomic_write_text(cache_file, out)
+except Exception:
+    pass
+try:
+    atomic_write_text(label_memo_file, ''.join(f'{k}\t{v}\n' for k, v in label_memo.items()))
+except Exception:
+    pass
+" "$ACTIVE_YAML" "$CWD_FROM_INPUT" "$LANE_CACHE_FILE" "$LIMITS_YAML" "$LABEL_MEMO_FILE" "$TASKS_LIB" "$LIVENESS_BIN" "$LIVENESS_MEMO_FILE" "$LIVENESS_MEMO_TTL_S" "$COUNT_SIDECAR_FILE" "$STATUSLINE_WIDTH" "$BASE_VISIBLE_LEN" "$CACHE_DIR" 2>/dev/null || true)"
+      # C7: a real prior number beats a fresh "lanes ?" -- an empty result
+      # (timeout/crash) or an explicit "lanes ?" from the calc itself no
+      # longer overwrites a good cached digest; it only falls back to "lanes
+      # ?" when there is truly no prior value to fall back to. D4 extends the
+      # match to "lanes ?/<cap>" too -- n now renders as the literal string
+      # '?' inside base_prefix (e.g. "lanes ?/5"), not just the bare "lanes
+      # ?", so the guard must recognize both shapes as "the reader failed",
+      # never overwrite a good cache with either.
+      if [[ -z "$LANES" || "$LANES" == "lanes ?" || "$LANES" == "lanes ?"/* ]]; then
+        STALE_LANES=""
+        [[ -f "$LANE_CACHE_FILE" ]] && STALE_LANES="$(cat "$LANE_CACHE_FILE" 2>/dev/null || true)"
+        if [[ -n "$STALE_LANES" && "$STALE_LANES" != "lanes ?" ]]; then
+          LANES="$STALE_LANES"
+        else
+          LANES="lanes ?"
         fi
-      fi
-      PULSE_AGE=""
-      if [[ -n "$PULSE_EPOCH" ]]; then
-        NOW_PULSE_S="${EPOCHSECONDS:-$(date +%s)}"
-        PULSE_AGE=$(( NOW_PULSE_S - PULSE_EPOCH ))
-      fi
-      if [[ -z "$PULSE_AGE" || "$PULSE_AGE" -lt "$PULSE_STALE_MAX_S" ]]; then
-        if [[ -n "$PULSE_TS" && -n "$PULSE_LOCAL_HHMM" ]]; then
-          PULSE_TEXT="${PULSE_LOCAL_HHMM}${PULSE_TEXT#"$PULSE_TS"}"
-        fi
-        PULSE_TEXT="${PULSE_TEXT:0:40}"
-        PULSE_FRAG=" | \033[2mlast: ${PULSE_TEXT}\033[0m"
       fi
     fi
   fi
+  [[ -f "$LANE_CACHE_FILE" ]] || _leadv2_statusline_safe_write "$LANE_CACHE_FILE" "$LANES" || true
 fi
 
-FINAL_LINE="$(printf '%s \033[34m| %s\033[0m%b' "$BASE" "$LANES" "$PULSE_FRAG")"
+# D6 (STATUSLINE fix round 2): the trailing pulse "last: ..." fragment is
+# gone -- the founder asked for it to be dropped twice, and its width budget
+# now belongs to the lane digest (see STATUSLINE_WIDTH/BASE_VISIBLE_LEN
+# above). LEADV2_LANE_PULSE_STALE_MAX_S is dead along with it.
+FINAL_LINE="$(printf '%s \033[34m| %s\033[0m' "$BASE" "$LANES")"
+
+# D6 last-resort width release valve: the degradation ladder above never
+# drops a lane, so if the line STILL overflows after every lane is already
+# at its 2-char floor, shrink BASE's own cwd segments to their first letter
+# instead (~/Projects/persona-engine -> ~/P/persona-engine). Only fires when
+# genuinely needed -- the common case never touches BASE.
+FINAL_VISIBLE_LEN="$(printf '%s' "$FINAL_LINE" | sed -E $'s/\x1b\\[[0-9;]*m//g' | awk '{print length}')"
+[[ -z "$FINAL_VISIBLE_LEN" ]] && FINAL_VISIBLE_LEN=0
+if (( FINAL_VISIBLE_LEN > STATUSLINE_WIDTH )) && [[ "$BASE" == *'~/'* ]]; then
+  SHRUNK_BASE="$(printf '%s' "$BASE" | sed -E 's#~/([A-Za-z0-9_.-])[A-Za-z0-9_.-]*/#~/\1/#g')"
+  if [[ "$SHRUNK_BASE" != "$BASE" ]]; then
+    FINAL_LINE="$(printf '%s \033[34m| %s\033[0m' "$SHRUNK_BASE" "$LANES")"
+  fi
+fi
+
 printf '%s\n' "$FINAL_LINE"
 
 if [[ -n "$OUT_FILE" ]]; then
