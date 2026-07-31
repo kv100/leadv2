@@ -273,21 +273,79 @@ elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${ROOT}")"; the
   exit 4
 else
   bash -c "${e2e_cmd} --scope changed" > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+  # GATE-FOREIGN-FAILURE-01: WRITES_CSV present + ownership enabled means the
+  # passed sentinel is stamped as scoped to the lane's own write set (the
+  # apparatus that can tell "my regression" from "someone else's unfinished
+  # file" is active for this lane), never a behavioural difference on green.
+  _e2e_ownership="${LEADV2_E2E_OWNERSHIP:-1}"
+  _e2e_pass_scope="changed"
+  [[ "${_e2e_ownership}" == "1" && -n "${WRITES_CSV}" ]] && _e2e_pass_scope="lane_writes"
   if [[ ${e2e_rc} -eq 0 ]]; then
-    printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: changed\nbypassed: false\n' \
-      "${TASK}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${HANDOFF}/e2e-gate-passed.flag"
+    printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: %s\nbypassed: false\n' \
+      "${TASK}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_e2e_pass_scope}" > "${HANDOFF}/e2e-gate-passed.flag"
     emit decision "e2e_gate task=${TASK} status=ran verdict=pass"
   else
     rm -f "${HANDOFF}/e2e-gate-passed.flag"
     emit decision "e2e_gate task=${TASK} status=ran verdict=fail rc=${e2e_rc}"
-    # wave2 finding 6: an e2e regression is a `dead` outcome in the ledger taxonomy --
-    # falling through into the review gate below (which CAN end in `landed`) let a real
-    # regression be finalized as delivered. Distinct from the kill-switch branch above
-    # (E2E_ON!=1 is a deliberate disabled state, never a failure) -- this only fires when
-    # the gate actually RAN and reported a real non-zero verdict.
-    printf 'status: fail\nreason: e2e_regression\nrc: %s\n' "${e2e_rc}" > "${HANDOFF}/e2e-gate.md"
-    _dl_note dead e2e_regression "rc=${e2e_rc}"
-    exit 8
+    # GATE-FOREIGN-FAILURE-01: four lanes died 2026-07-31 05:06-05:19Z on a
+    # suite none of them touched -- it was mid-edit by a fifth lane in the
+    # SAME shared working tree. Before treating every blocking failure as
+    # this lane's own regression, classify by ownership (differential re-run
+    # against a lane-only scratch tree, see leadv2-e2e-ownership.sh). Own
+    # failures ALWAYS win over foreign ones -- a lane can never launder its
+    # own regression behind someone else's unfinished file.
+    _own_csv=""; _foreign_csv=""; _undecidable_csv=""; _owner_lane="unknown"
+    if [[ "${_e2e_ownership}" == "1" && -n "${WRITES_CSV}" ]]; then
+      _own_out="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${ROOT}" "${TASK}" "${WRITES_CSV}" "${HANDOFF}/e2e-gate.log" 2>/dev/null || true)"
+      _own_csv="$(sed -n 's/^own=//p' <<< "${_own_out}")"
+      _foreign_csv="$(sed -n 's/^foreign=//p' <<< "${_own_out}")"
+      _undecidable_csv="$(sed -n 's/^undecidable=//p' <<< "${_own_out}")"
+      _owner_lane="$(sed -n 's/^owner_lane=//p' <<< "${_own_out}")"
+      [[ -z "${_owner_lane}" ]] && _owner_lane="unknown"
+    fi
+
+    if [[ -n "${_foreign_csv}" && -z "${_own_csv}" && -z "${_undecidable_csv}" ]]; then
+      # Pure foreign failure: not a single blocking suite reproduces against
+      # this lane's own write set alone. Do NOT kill the lane -- but never
+      # swallow the red suite silently either (loudness contract below).
+      IFS=',' read -r -a _lane_writes <<< "${WRITES_CSV}"
+      mapfile -t _all_changed < <(
+        { git -C "${ROOT}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+          git -C "${ROOT}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
+      )
+      _foreign_files=()
+      for _f in "${_all_changed[@]}"; do
+        [[ -z "${_f}" ]] && continue
+        _is_write=0
+        for _w in "${_lane_writes[@]}"; do [[ "${_f}" == "${_w}" ]] && { _is_write=1; break; }; done
+        (( _is_write )) || _foreign_files+=("${_f}")
+      done
+      _foreign_files_csv="$(IFS=,; echo "${_foreign_files[*]:-}")"
+      printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: lane_writes\nbypassed: false\nforeign_failures: %s\n' \
+        "${TASK}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_foreign_csv}" > "${HANDOFF}/e2e-gate-passed.flag"
+      printf 'status: fail_foreign\nreason: foreign_failure\nforeign_suites: %s\nforeign_files: %s\nowner_lane: %s\n' \
+        "${_foreign_csv}" "${_foreign_files_csv}" "${_owner_lane}" > "${HANDOFF}/e2e-gate.md"
+      emit decision "e2e_gate task=${TASK} status=ran verdict=foreign_failure scope=lane_writes foreign_suites=${_foreign_csv} foreign_files=${_foreign_files_csv} owner_lane=${_owner_lane} own_failures=0"
+      IFS=',' read -r -a _foreign_suite_arr <<< "${_foreign_csv}"
+      for _s in "${_foreign_suite_arr[@]}"; do
+        [[ -z "${_s}" ]] && continue
+        emit decision "foreign_failure task=${TASK} suite=${_s} file=${_foreign_files_csv} owner_lane=${_owner_lane}"
+      done
+      # NOT dead, NOT exit 8 -- falls through to the review gate below.
+    else
+      # wave2 finding 6: an e2e regression is a `dead` outcome in the ledger taxonomy --
+      # falling through into the review gate below (which CAN end in `landed`) let a real
+      # regression be finalized as delivered. Distinct from the kill-switch branch above
+      # (E2E_ON!=1 is a deliberate disabled state, never a failure) -- this only fires when
+      # the gate actually RAN and reported a real non-zero verdict.
+      if [[ "${_e2e_ownership}" == "1" && -z "${WRITES_CSV}" ]]; then
+        printf 'status: fail\nreason: e2e_regression\nrc: %s\nscope: whole_tree_fallback\n' "${e2e_rc}" > "${HANDOFF}/e2e-gate.md"
+      else
+        printf 'status: fail\nreason: e2e_regression\nrc: %s\n' "${e2e_rc}" > "${HANDOFF}/e2e-gate.md"
+      fi
+      _dl_note dead e2e_regression "rc=${e2e_rc}"
+      exit 8
+    fi
   fi
 fi
 
