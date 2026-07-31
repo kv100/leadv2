@@ -104,6 +104,24 @@ _now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 _pid_birth() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' || true; }
 _pid_alive() { kill -0 "$1" 2>/dev/null; }
 
+# ── Alarm dedupe (SUPERVISOR-HARDENING-01 item 5) ──────────────────────────
+# Transition-based: an alarm fires only on (key->value) change, so a
+# persistent breach repeats once, not every poll. Source the shared lib; if it
+# is unavailable, fall back to pass-through (every candidate fires) so an alarm
+# is never silently lost to a missing lib.
+if [[ -f "${SCRIPT_DIR}/lib/leadv2-alarm-dedupe.sh" ]]; then
+  # shellcheck source=lib/leadv2-alarm-dedupe.sh
+  source "${SCRIPT_DIR}/lib/leadv2-alarm-dedupe.sh"
+fi
+if ! command -v _leadv2_alarm_fire >/dev/null 2>&1; then
+  _LEADV2_ALARM_DEDUPE_LOADED=0
+  leadv2_alarm_filter()      { cat; }                 # pass-through fallback
+  leadv2_alarm_filter_seen() { cat; }
+  leadv2_alarm_sweep()       { :; }
+else
+  _LEADV2_ALARM_DEDUPE_LOADED=1
+fi
+
 # ── --ensure: attach-or-start via PID+birth sentinel (no duplicate loop) ──
 # R2-2 fix (codex-review-2.md finding 2): the old version did an UNLOCKED
 # check-then-create — two concurrent `--ensure` calls could both observe a
@@ -187,6 +205,73 @@ fi
 printf -- '%s [supervise-loop] started pid=%s log=%s event_poll=%ss pulse=%ss\n' \
   "$(_now_iso)" "$MY_PID" "$LOG_FILE" "$EVENT_POLL_S" "$PULSE_S" >>"$LOG_FILE"
 
+# ── Item 2/3 shared paths ──────────────────────────────────────────────────
+# Heartbeat (item 2): written at the TOP of every cycle so a hang inside
+# supervise.sh shows up as heartbeat staleness. Lives beside the ownership
+# sentinel (same control-plane dir).
+HEARTBEAT_FILE="$(PROJECT_ROOT="$PROJECT_ROOT" "$STATE_PATH_SH" .supervise-loop.heartbeat)"
+WATCHDOG_SH="${SCRIPT_DIR}/leadv2-supervise-watchdog.sh"
+
+_write_heartbeat() {  # <cycle>
+  local cycle="$1"
+  python3 -c "
+import sys, os, json, tempfile, datetime
+path, pid, birth, cyc = sys.argv[1:5]
+out = {'pid': int(pid), 'pid_birth': birth, 'cycle': cyc,
+       'ts_iso': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
+d = os.path.dirname(path) or '.'
+os.makedirs(d, exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=d, suffix='.tmp')
+with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+    json.dump(out, fh)
+os.replace(tmp, path)
+" "$HEARTBEAT_FILE" "$MY_PID" "$MY_BIRTH" "$cycle" 2>/dev/null || true
+}
+
+# ── Item 3: cron-owned status beat ─────────────────────────────────────────
+# Attaching supervision installs ONE idempotent crontab entry whose payload is
+# the watchdog (item 2) — which both alarms on loop silence AND calls --ensure
+# to self-heal. One entry covers failure classes 1 (silent loop) and 2 (dead
+# loop, no beat). Idempotent by a marker tag; re-running --ensure never
+# accumulates duplicates. Kill-switch LEADV2_SUPERVISE_BEAT_CRON=0 (tests +
+# founder opt-out). CRONTAB_BIN is injectable so tests never touch the real
+# crontab.
+_install_beat_cron() {
+  [[ "${LEADV2_SUPERVISE_BEAT_CRON:-1}" == "1" ]] || return 0
+  [[ -x "$WATCHDOG_SH" ]] || return 0
+  local crontab_bin="${CRONTAB_BIN:-crontab}"
+  command -v "$crontab_bin" >/dev/null 2>&1 || return 0
+  # Repo slug for the marker (basename of the main repo toplevel).
+  local repo_slug
+  repo_slug="$(basename "${PROJECT_ROOT}")"
+  local marker="# LEADV2_SUPERVISE_BEAT ${repo_slug}"
+  local cron_line="*/10 * * * * ${WATCHDOG_SH} --project-root ${PROJECT_ROOT} ${marker}"
+  # Read-modify-write under a sibling lock (no unlocked crontab rewrite — two
+  # concurrent --ensure could otherwise race). python3 fcntl, same convention
+  # as the ownership sentinel above (no bash `flock` binary on macOS/BSD).
+  python3 -c "
+import sys, os, fcntl, subprocess
+lock_path, crontab_bin, marker, line = sys.argv[1:5]
+os.makedirs(os.path.dirname(lock_path) or '.', exist_ok=True)
+lf = open(lock_path, 'a+')
+fcntl.flock(lf, fcntl.LOCK_EX)
+try:
+    cur = subprocess.run([crontab_bin, '-l'], capture_output=True, text=True)
+    rows = (cur.stdout or '').splitlines()
+    rows = [r for r in rows if marker not in r]
+    rows.append(line)
+    new = '\n'.join(rows) + '\n'
+    p = subprocess.run([crontab_bin, '-'], input=new, capture_output=True, text=True)
+    sys.exit(0 if p.returncode == 0 else 0)  # never fail --ensure on a cron hiccup
+finally:
+    fcntl.flock(lf, fcntl.LOCK_UN)
+    lf.close()
+" "${HEARTBEAT_FILE}.crontab.lock" "$crontab_bin" "$marker" "$cron_line" 2>/dev/null || true
+}
+
+# Install the beat whenever supervision is attached (both --ensure outcomes).
+_install_beat_cron
+
 # R2-2 fix: the EXIT trap used to unconditionally `rm -f` the sentinel — if
 # another `--ensure` call raced in between (e.g. a PostCompact re-entry that
 # started a second loop after this one's ownership check but before this
@@ -247,7 +332,15 @@ for tid in (d.get('closed_since_last') or []):
 
 _render_events() {
   local out_json="$1"
-  python3 - "$out_json" "$LOG_FILE" <<'PYEV'
+  local alarm_rows
+  # Non-alarm events (QUESTION/DEAD/STUCK/CLOSED/DEGRADED) are written to the
+  # log directly — they are already delta-deduped by the `--since loop` call.
+  # TRUTH_RED rows are printed to stdout as `<key>\t<value>\t<line>` and piped
+  # through the transition dedupe below (item 5) so a persistent breach does
+  # not repeat every poll. No SWEEP here — the authoritative truth-probe runs
+  # on the pulse cadence (_render_pulse); sweeping at the 5s event cadence
+  # would clear still-active breaches between probes.
+  alarm_rows="$(python3 - "$out_json" "$LOG_FILE" <<'PYEV'
 import json, sys, datetime
 
 out_str, log_path = sys.argv[1], sys.argv[2]
@@ -258,7 +351,9 @@ except Exception:
 if not isinstance(d, dict):
     sys.exit(0)
 
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 events = []
+alarm_keys = []  # (key, value) for truth_red — emitted via stdout for dedupe
 for q in (d.get("requires_founder") or d.get("questions") or []):
     summary = (q.get("summary_for_lead") or q.get("question") or "")[:100]
     options = ",".join(str(o) for o in (q.get("options") or []))[:80]
@@ -266,8 +361,6 @@ for q in (d.get("requires_founder") or d.get("questions") or []):
         events.append(f"QUESTION_ESCALATED {q.get('task_id', '?')} qid={q.get('qid', '?')} age={q.get('age_seconds', '?')}s options={options} \"{summary}\"")
     else:
         events.append(f"QUESTION {q.get('task_id', '?')} qid={q.get('qid', '?')} options={options} \"{summary}\"")
-# forward-compat: 'dead' key does not exist until item 4 lands corroborated
-# death detection in leadv2-supervise.sh; read defensively either way.
 for st in (d.get("dead") or []):
     reasons = "; ".join(st.get("reasons", []))[:100]
     events.append(f"DEAD {st.get('task_id', '?')} {reasons}")
@@ -278,27 +371,40 @@ for st in (d.get("stuck") or []):
     events.append(f"STUCK {st.get('task_id', '?')} {reasons}")
 for tid in (d.get("closed_since_last") or []):
     events.append(f"CLOSED {tid}")
-# forward-compat: 'truth_breaches' populated once item 3's hook is wired.
+
+if events:
+    with open(log_path, "a", encoding="utf-8") as fh:
+        for e in events:
+            line = f"{now} [SUPERVISE-URGENT] {e}"
+            if len(line.encode("utf-8")) > 220:
+                line = line[:217] + "..."
+            fh.write(line + "\n")
+
+# TRUTH_RED → dedupe candidates (stdout). value = severity (semantic, stable
+# while the breach holds; NOT the summary/timestamp which would churn).
 for b in (d.get("truth_breaches") or []):
+    bid = str(b.get("id", "?"))
+    sev = str(b.get("severity", "?"))
     summary = str(b.get("summary", ""))[:80]
-    events.append(f"TRUTH_RED {b.get('id', '?')} {b.get('severity', '?')} {summary}")
-
-if not events:
-    sys.exit(0)
-
-now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-with open(log_path, "a", encoding="utf-8") as fh:
-    for e in events:
-        line = f"{now} [SUPERVISE-URGENT] {e}"
-        if len(line.encode("utf-8")) > 220:
-            line = line[:217] + "..."
-        fh.write(line + "\n")
+    line = f"{now} [SUPERVISE-URGENT] TRUTH_RED {bid} {sev} {summary}"
+    if len(line.encode("utf-8")) > 220:
+        line = line[:217] + "..."
+    sys.stdout.write(f"truth_red:{bid}\t{sev}\t{line}\n")
 PYEV
+)"
+  [[ -z "$alarm_rows" ]] || printf '%s\n' "$alarm_rows" | leadv2_alarm_filter >>"$LOG_FILE"
 }
 
 _render_pulse() {
   local pulse_json="$1"
-  python3 - "$pulse_json" "$ACTIVE_YAML" "$LOG_FILE" <<'PYPULSE'
+  # Pulse table → log directly. TRUTH_RED → stdout dedupe candidates. This is
+  # the AUTHORITATIVE truth-probe cadence (truth_probe==checked only here), so
+  # the wrapper sweeps the truth_red keyspace: a breach that disappears is
+  # CLEARed so a later re-breach fires again (item 5 recovery edge, A5).
+  # First stdout line `#PROBE <checked|unchecked>` tells the wrapper whether to
+  # sweep (never sweep an unchecked probe — it would clear active breaches).
+  local raw
+  raw="$(python3 - "$pulse_json" "$ACTIVE_YAML" "$LOG_FILE" <<'PYPULSE'
 import json, sys, os, datetime
 
 pulse_str, active_yaml_path, log_path = sys.argv[1:4]
@@ -308,6 +414,9 @@ except Exception:
     sys.exit(0)
 if not isinstance(d, dict):
     sys.exit(0)
+
+probe_checked = (d.get("truth_probe") == "checked")
+print(f"#PROBE {'checked' if probe_checked else 'unchecked'}")
 
 table = d.get("table") or []
 stuck_ids = {st.get("task_id") for st in (d.get("stuck") or [])}
@@ -358,15 +467,33 @@ with open(log_path, "a", encoding="utf-8") as fh:
     fh.write(f"--- pulse {now} ({len(lines)} lane(s)) ---\n")
     for ln in lines:
         fh.write(ln + "\n")
-    # F2 truth-probe (item 3): the hook runs only on this full-call cadence
-    # (once per 300s pulse) — surface any breach as a typed URGENT line here,
-    # never as a silent "clear" when status != "checked".
-    if d.get("truth_probe") == "checked":
-        for b in (d.get("truth_breaches") or []):
-            summary = str(b.get("summary", ""))[:80]
-            line = f"{now} [SUPERVISE-URGENT] TRUTH_RED {b.get('id', '?')} {b.get('severity', '?')} {summary}"
-            fh.write(line[:220] + "\n")
+
+# TRUTH_RED → dedupe candidates (stdout). value = severity (semantic, stable
+# while the breach holds). Emitted only when the probe actually ran.
+if probe_checked:
+    for b in (d.get("truth_breaches") or []):
+        bid = str(b.get("id", "?"))
+        sev = str(b.get("severity", "?"))
+        summary = str(b.get("summary", ""))[:80]
+        line = f"{now} [SUPERVISE-URGENT] TRUTH_RED {bid} {sev} {summary}"
+        if len(line.encode("utf-8")) > 220:
+            line = line[:217] + "..."
+        sys.stdout.write(f"truth_red:{bid}\t{sev}\t{line}\n")
 PYPULSE
+)"
+  [[ -z "$raw" ]] && return 0
+  local probe_status rest
+  probe_status="$(printf '%s\n' "$raw" | sed -n '1p' | sed -n 's/^#PROBE //p')"
+  rest="$(printf '%s\n' "$raw" | tail -n +2)"
+  local cyc="${PULSE_CYCLE:-$(date +%s)}"
+  if [[ "$probe_status" == "checked" ]]; then
+    [[ -n "$rest" ]] && printf '%s\n' "$rest" | leadv2_alarm_filter_seen truth_red "$cyc" >>"$LOG_FILE"
+    # ALWAYS sweep on a checked probe — a breach that disappeared must CLEAR so
+    # a re-breach fires again (item 5 recovery edge, A5).
+    leadv2_alarm_sweep truth_red "$cyc"
+  else
+    [[ -n "$rest" ]] && printf '%s\n' "$rest" | leadv2_alarm_filter >>"$LOG_FILE"
+  fi
 }
 
 # EFFICIENCY-TUNE-01 C: scans /tmp/leadv2-job-registry/*/<job_id> entries
@@ -384,7 +511,11 @@ PYPULSE
 # cleanly. upgrade when codex-task.sh's companion writes a per-job run_dir
 # into the registry line instead of $PWD.
 _render_job_registry() {
-  python3 - "$JOB_REG_ROOT" "$JOB_REG_SEEN" "$PROJECT_ROOT" "$JOB_STALL_MIN" "$LOG_FILE" <<'PYJOBS'
+  local alarm_rows
+  # DONE lines → log directly (progress, not noisy). JOB_STALLED → stdout dedupe
+  # candidates (item 5) so a job stalled across many pulses alarms once; when it
+  # completes (registry entry gone) the sweep CLEARs it so a re-stall re-fires.
+  alarm_rows="$(python3 - "$JOB_REG_ROOT" "$JOB_REG_SEEN" "$PROJECT_ROOT" "$JOB_STALL_MIN" "$LOG_FILE" <<'PYJOBS'
 import sys, os, json, glob, datetime, tempfile
 
 reg_root, seen_path, project_root, stall_min_s, log_path = sys.argv[1:6]
@@ -417,8 +548,8 @@ for path in glob.glob(os.path.join(reg_root, "*", "*")):
     if age_s >= stall_min:
         now_s = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         line_out = f"{now_s} [SUPERVISE-URGENT] JOB_STALLED {kind} job={job_id} age={int(age_s)}s"
-        with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(line_out[:220] + "\n")
+        # → dedupe candidate (stdout). value = kind (stable while stalled).
+        sys.stdout.write(f"job_stalled:{job_id}\t{kind}\t{line_out[:220]}\n")
 
 for job_id, meta in seen.items():
     if job_id in current:
@@ -443,6 +574,123 @@ with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
     json.dump(current, fh)
 os.replace(tmp_path, seen_path)
 PYJOBS
+)"
+  local cyc="${PULSE_CYCLE:-$(date +%s)}"
+  [[ -z "$alarm_rows" ]] || printf '%s\n' "$alarm_rows" | leadv2_alarm_filter_seen job_stalled "$cyc" >>"$LOG_FILE"
+  # ALWAYS sweep — a job that completed (registry entry gone) must CLEAR so a
+  # later re-stall re-fires (item 5 recovery edge).
+  leadv2_alarm_sweep job_stalled "$cyc"
+}
+
+# ── Item 6: dead-without-deliverable terminal check ────────────────────────
+# Run on the PULSE tick (not the 5s poll — it costs a git log per lane). Fires
+# one LANE_DEAD_NO_ARTIFACT <task_id> URGENT when ALL four hold:
+#   1. lane process gone — lane-liveness verdict dead:* (NEVER a hand-rolled
+#      PID check; that duplication is called out in the tail script's comments)
+#   2. recorded result is success — dead:provider_{completed,done} (not a
+#      crash/timeout shape like dead:silent_*/dead:wedged/failed/cancelled)
+#   3. no deliverable file under docs/handoff/<TASK_ID>/ (build-report.md /
+#      *-report.md)
+#   4. no commit on its branch beyond the fork point (rev-list count == 0)
+# Deduped via item 5, key lane_no_artifact:<task_id>, value = branch head sha
+# (a lane that later commits transitions and stops alarming). Placed in the
+# LOOP, not in leadv2-supervise.sh, so supervise.sh's JSON contract is intact.
+_render_terminal_check() {
+  local liveness_json alarm_rows
+  liveness_json="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-lane-liveness.sh" --json --all --no-codex 2>/dev/null || true)"
+  [[ -n "$liveness_json" ]] || return 0
+  alarm_rows="$(PROJECT_ROOT="$PROJECT_ROOT" python3 - "$liveness_json" "$ACTIVE_YAML" "$PROJECT_ROOT" "$LOG_FILE" <<'PYTC'
+import sys, os, json, subprocess, datetime
+
+liveness_str, active_yaml_path, project_root, log_path = sys.argv[1:5]
+try:
+    liv = json.loads(liveness_str)
+except Exception:
+    sys.exit(0)
+lanes = (liv or {}).get("lanes") or []
+if not lanes:
+    sys.exit(0)
+
+# branch/worktree per task_id from active.yaml
+meta_by_task = {}
+try:
+    import yaml
+    with open(active_yaml_path, encoding="utf-8") as fh:
+        ay = yaml.safe_load(fh) or {}
+    for s in (ay.get("sessions") or []):
+        tid = s.get("task_id")
+        if tid:
+            meta_by_task[tid] = {"branch": s.get("branch"), "worktree": s.get("worktree")}
+except Exception:
+    pass
+
+SUCCESS_VERDICTS = ("dead:provider_completed", "dead:provider_done")
+
+def deliverable_present(task_id):
+    d = os.path.join(project_root, "docs", "handoff", task_id)
+    if not os.path.isdir(d):
+        return False
+    for name in os.listdir(d):
+        if name == "build-report.md" or name.endswith("-report.md") or name == "report.md":
+            return True
+    return False
+
+def commits_beyond_fork(branch, worktree):
+    # rev-list --count <base>..<branch>; base = merge-base with main. Returns
+    # (ok, count). On any resolution failure ok=False (skip the alarm rather
+    # than false-fire — a missing main must not invent a dead lane).
+    if not branch or not worktree or not os.path.isdir(worktree):
+        return False, 0
+    git = ["git", "-C", worktree]
+    try:
+        base = subprocess.run(git + ["merge-base", branch, "main"],
+                              capture_output=True, text=True, timeout=10)
+        if base.returncode != 0 or not base.stdout.strip():
+            return False, 0
+        cnt = subprocess.run(git + ["rev-list", "--count", base.stdout.strip() + ".." + branch],
+                             capture_output=True, text=True, timeout=10)
+        if cnt.returncode != 0:
+            return False, 0
+        return True, int((cnt.stdout or "0").strip() or "0")
+    except Exception:
+        return False, 0
+
+def head_sha(branch, worktree):
+    if not branch or not worktree:
+        return "?"
+    try:
+        r = subprocess.run(["git", "-C", worktree, "rev-parse", branch],
+                           capture_output=True, text=True, timeout=10)
+        return (r.stdout or "?").strip()[:12] if r.returncode == 0 else "?"
+    except Exception:
+        return "?"
+
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+for row in lanes:
+    tid = row.get("lane") or row.get("task_id")
+    verdict = str(row.get("verdict") or "")
+    if not verdict.startswith("dead:"):
+        continue
+    if verdict not in SUCCESS_VERDICTS:
+        continue  # crash/timeout/abandoned — not a "success" end
+    if deliverable_present(tid):
+        continue
+    m = meta_by_task.get(tid) or {}
+    ok, count = commits_beyond_fork(m.get("branch"), m.get("worktree"))
+    if not ok:
+        continue        # could not verify — never false-fire
+    if count > 0:
+        continue        # branch has commits → there IS an artifact
+    sha = head_sha(m.get("branch"), m.get("worktree"))
+    line = f"{now} [SUPERVISE-URGENT] LANE_DEAD_NO_ARTIFACT {tid} branch={m.get('branch','?')} sha={sha}"
+    sys.stdout.write(f"lane_no_artifact:{tid}\t{sha}\t{line[:220]}\n")
+PYTC
+)"
+  local cyc="${PULSE_CYCLE:-$(date +%s)}"
+  [[ -z "$alarm_rows" ]] || printf '%s\n' "$alarm_rows" | leadv2_alarm_filter_seen lane_no_artifact "$cyc" >>"$LOG_FILE"
+  # ALWAYS sweep — a lane that later commits / gains a deliverable must CLEAR
+  # so a future dead-no-artifact re-fires (item 5 recovery edge).
+  leadv2_alarm_sweep lane_no_artifact "$cyc"
 }
 
 LAST_PULSE_EPOCH=0
@@ -457,6 +705,9 @@ CYCLE=0
 
 while true; do
   CYCLE=$((CYCLE + 1))
+  # Item 2 heartbeat: written FIRST, before the supervise.sh call, so a hang
+  # inside that call shows up as heartbeat staleness (the watchdog's signal).
+  _write_heartbeat "$CYCLE"
   RC=0
   OUT="$("$SUPERVISE_SH" --json --since loop 2>/dev/null)" || RC=$?
   if [[ "$RC" -ne 0 ]]; then
@@ -475,6 +726,7 @@ while true; do
       _render_pulse "$PULSE_JSON"
     fi
     _render_job_registry
+    _render_terminal_check        # item 6 — pulse cadence only (git log per lane)
     LAST_PULSE_EPOCH=$NOW_EPOCH
   fi
 

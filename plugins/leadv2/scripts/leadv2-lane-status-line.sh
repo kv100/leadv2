@@ -104,11 +104,87 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LANE_CACHE_TTL_S="${LEADV2_STATUSLINE_LANE_CACHE_TTL_S:-3}"
 REFRESH_MIN_INTERVAL_S="${LEADV2_STATUSLINE_REFRESH_MIN_INTERVAL_S:-2}"
-CACHE_KEY="${PWD//\//_}"
-[[ -z "$CACHE_KEY" ]] && CACHE_KEY="default"
+STATE_PATH_SH="${SCRIPT_DIR}/leadv2-state-path.sh"
+TAIL_SCRIPT="${SCRIPT_DIR}/leadv2-lane-status-line-tail.sh"
+
+# Resolve the cwd this paint is for (statusLine payload current_dir/cwd), used
+# both to resolve the supervisor sentinel and to key the cache per-repo.
+PAINT_CWD="$PWD"
+if [[ "$INPUT" =~ \"current_dir\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+  PAINT_CWD="${BASH_REMATCH[1]}"
+elif [[ "$INPUT" =~ \"cwd\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+  PAINT_CWD="${BASH_REMATCH[1]}"
+fi
+[[ -z "$PAINT_CWD" ]] && PAINT_CWD="$PWD"
+BASE_KEY="${PAINT_CWD//\//_}"
+[[ -z "$BASE_KEY" ]] && BASE_KEY="default"
+
+# ── Item 4a: supervisor-only gate ─────────────────────────────────────────
+# The lanes digest is for a SUPERVISING session only. A plain /leadv2 session
+# in the same repo must see the founder's own line, never a supervisor-painted
+# lanes segment. Detection is memoised (TTL 30s): the hot path is read-memo +
+# one `date +%s` + two builtins (`[[ -f $sentinel ]]`, `kill -0 $pid`); a cold
+# memo pays one state-path resolve + one PID probe. When the memo'd pid is dead
+# (session ended OR a new session took over), the cold resolve re-runs.
+_leadv2_statusline_sup_active() {
+  local memo="${TMPDIR:-/tmp}/leadv2-statusline-supmode-${BASE_KEY}"
+  local sentinel="" pid="" epoch=0 now
+  if [[ -f "$memo" ]]; then
+    { IFS=$'\t' read -r sentinel pid epoch < "$memo"; } 2>/dev/null || true
+    now="$(date +%s)"
+    if (( now - epoch < 30 )); then
+      # Within TTL: trust the memo'd verdict, re-checked by sentinel+pid builtins.
+      [[ -n "$pid" && -n "$sentinel" && -f "$sentinel" ]] && kill -0 "$pid" 2>/dev/null && return 0
+      return 1
+    fi
+  fi
+  # Cold / TTL-expired: resolve once and memo.
+  sentinel="$(PROJECT_ROOT="$PAINT_CWD" "$STATE_PATH_SH" --no-link .supervise-active 2>/dev/null || true)"
+  pid=""
+  if [[ -n "$sentinel" && -f "$sentinel" ]]; then
+    pid="$(python3 -c '
+import sys, json, os
+try:
+    d = json.load(open(sys.argv[1])) or {}
+    p = d.get("pid")
+    if p is not None:
+        os.kill(int(p), 0); print(int(p))
+except Exception:
+    pass
+' "$sentinel" 2>/dev/null || true)"
+  fi
+  printf '%s\t%s\t%s' "$sentinel" "${pid:-}" "$(date +%s)" >"$memo" 2>/dev/null || true
+  [[ -n "$pid" ]] && return 0
+  return 1
+}
+
+IS_SUPERVISOR=0
+{ _leadv2_statusline_sup_active && IS_SUPERVISOR=1; } || true
+
+# Fold supervisor-state into the cache key so a supervisor-painted line is
+# never served to a non-supervisor session in the same repo dir (and vice-
+# versa) — the shared-PWD cache-poisoning defence. Either this OR a gate
+# before every cache read+write is mandatory; this does both.
+CACHE_KEY="${BASE_KEY}_sup${IS_SUPERVISOR}"
 LAST_KNOWN_FILE="${TMPDIR:-/tmp}/leadv2-statusline-last-known-${CACHE_KEY}"
 REFRESH_LOCK="${TMPDIR:-/tmp}/leadv2-statusline-refresh-lock-${CACHE_KEY}"
-TAIL_SCRIPT="${SCRIPT_DIR}/leadv2-lane-status-line-tail.sh"
+
+# Non-supervisor session (gate enabled): render ONLY the founder's own
+# statusLine.command and exit — no lanes digest, no refresher spawn, no cache
+# write. LEADV2_STATUSLINE_SUPERVISOR_ONLY=0 restores lanes-for-everyone.
+if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0" ]]; then
+  USER_CMD="$(jq -r '(.statusLine.command // "")' "$SETTINGS_JSON" 2>/dev/null || true)"
+  if [[ -n "$USER_CMD" ]]; then
+    printf '%s' "$INPUT" | timeout 2 bash -c "$USER_CMD" 2>/dev/null || true
+  else
+    # No user command configured: emit a minimal base line (no lanes segment)
+    # so the status line is never blank for a non-supervisor session.
+    _BM="?" _BC="$PAINT_CWD"
+    [[ "$INPUT" =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && _BM="${BASH_REMATCH[1]}"
+    _leadv2_render_colored_base "$_BM" "$_BC" "" ""
+  fi
+  exit 0
+fi
 
 # ---- instant emit: cache hit (no spawn) or pure-builtin static line ----
 if [[ -s "$LAST_KNOWN_FILE" ]]; then
