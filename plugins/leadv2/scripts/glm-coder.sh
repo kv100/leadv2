@@ -61,16 +61,23 @@ readonly ZAI_BASE_URL="https://api.z.ai/api/anthropic"
 readonly RUNS_DIR="${GLM_RUNS_DIR:-${HOME}/.claude/cache/glm-runs}"
 # GLM_TIMEOUT: wall-clock backstop. Turn and no-progress guards below stop
 # superlinear conversation replay before a run reaches this outer bound.
-readonly GLM_TIMEOUT="${GLM_TIMEOUT:-900}"
+# WORKER-RESILIENCE-01 (founder order 2026-07-31): defaults raised
+# 900/300/40/40 -> 3600/1200/120/120. Workers kept dying to their own guards
+# (4 stall-kills + 1 max-turns death in one day); each false kill costs a
+# redispatch + observation turn, which is more expensive than letting a
+# long-thinking worker run. F1: TIMEOUT had to rise too, else 1200s no-progress
+# was structurally unreachable (900s wall-clock killed first). F2: both
+# turn knobs had to rise, else the watchdog still killed at turn 40.
+readonly GLM_TIMEOUT="${GLM_TIMEOUT:-3600}"
 # GLM-REVIVE-01 legacy compatibility: when configured lower than the explicit
 # no-progress guard below, GLM_STALL_S still kills and revives once. At the
 # defaults, GLM_NO_PROGRESS_S reaches the timeout/fallback path first.
-readonly GLM_STALL_S="${GLM_STALL_S:-300}"
-readonly GLM_MAX_TURNS="${GLM_MAX_TURNS:-40}"
+readonly GLM_STALL_S="${GLM_STALL_S:-1200}"
+readonly GLM_MAX_TURNS="${GLM_MAX_TURNS:-120}"
 # Hard watchdog limits. GLM_MAX_TURNS remains the Claude CLI request limit and
 # --max-turns remains backward compatible; GLM_TURN_LIMIT is independently
 # enforced from observed stream turns through the timeout/fallback path.
-readonly GLM_TURN_LIMIT="${GLM_TURN_LIMIT:-40}"
+readonly GLM_TURN_LIMIT="${GLM_TURN_LIMIT:-120}"
 readonly GLM_NO_PROGRESS_S="${GLM_NO_PROGRESS_S:-${GLM_STALL_S}}"
 # Dedicated non-zero exit code for "GLM gave up, fall back to sonnet" —
 # distinct from 75 (lock busy, pre-existing) and from ordinary shell exit 1.
@@ -152,8 +159,8 @@ Usage:
   list    Last N runs: id, status, repo, started_at. Default N=10.
   test    Self-test: sends a short prompt and prints the tail of the response.
 
-Env knobs: GLM_TIMEOUT (default 900s), GLM_MAX_TURNS (default 40),
-  GLM_TURN_LIMIT (default 40), GLM_NO_PROGRESS_S (default 300s),
+Env knobs: GLM_TIMEOUT (default 3600s), GLM_MAX_TURNS (default 120),
+  GLM_TURN_LIMIT (default 120), GLM_NO_PROGRESS_S (default 1200s),
   GLM_FALLBACK_EXIT_CODE (default 76).
 
 Terminal sentinels (GLM-RELIABILITY-529-01) — mutually exclusive, appended to

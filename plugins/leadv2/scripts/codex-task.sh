@@ -59,10 +59,18 @@ fi
 # (amortized: the next interaction sweeps first). =0 disables it entirely
 # (byte-identical to pre-T-f behavior; only an active codex-guard.sh or an
 # explicit `codex-task.sh reap` call reaps anything).
-# CODEX_QUEUED_KILL_MIN=15   -- a `queued` job with no live pid past this age is dead.
+# CODEX_QUEUED_KILL_MIN=45  -- a `queued`/pid-less `running` job past this age is dead.
+#   Raised 15->45 (WORKER-RESILIENCE-02): this window fires on ABSENCE of
+#   evidence (no pid recorded yet), not proof of death -- a job waiting behind
+#   a long lock holder or slow to register looks identical to a dead one at
+#   15min. False-kill cost > idle-runtime cost, so the window is widened; a
+#   truly dead job just lingers longer in `queued` before being marked failed.
 # CODEX_RUNNING_DEAD_KILL_MIN=5 -- a `running` job whose pid died past this age is dead.
+#   Deliberately UNCHANGED: this branch has proof (pid_alive() returned false
+#   for a recorded pid), so it carries no false-kill risk -- raising it would
+#   only delay cleanup of a confirmed corpse, never save a live worker.
 CODEX_REAP_STATE_ROOT="${CODEX_GUARD_STATE_ROOT:-$HOME/.claude/plugins/data/codex-openai-codex/state}"
-CODEX_QUEUED_KILL_MIN="${CODEX_QUEUED_KILL_MIN:-15}"
+CODEX_QUEUED_KILL_MIN="${CODEX_QUEUED_KILL_MIN:-45}"
 CODEX_RUNNING_DEAD_KILL_MIN="${CODEX_RUNNING_DEAD_KILL_MIN:-5}"
 CODEX_AUTOREAP="${CODEX_AUTOREAP:-1}"
 # review-wave2-verdict-5 finding 3: a repair marker written next to the job file can itself

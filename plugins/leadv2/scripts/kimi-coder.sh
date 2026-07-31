@@ -84,16 +84,23 @@ readonly TOKENROUTER_MODEL_DEFAULT="moonshotai/kimi-k3-free"
 readonly RUNS_DIR="${KIMI_RUNS_DIR:-${HOME}/.claude/cache/kimi-runs}"
 # KIMI_TIMEOUT: wall-clock backstop. Turn and no-progress guards below stop
 # superlinear conversation replay before a run reaches this outer bound.
-readonly KIMI_TIMEOUT="${KIMI_TIMEOUT:-900}"
+# WORKER-RESILIENCE-01 (founder order 2026-07-31): defaults raised
+# 900/300/40/40 -> 3600/1200/120/120. Workers kept dying to their own guards
+# (4 stall-kills + 1 max-turns death in one day); each false kill costs a
+# redispatch + observation turn, which is more expensive than letting a
+# long-thinking worker run. F1: TIMEOUT had to rise too, else 1200s no-progress
+# was structurally unreachable (900s wall-clock killed first). F2: both
+# turn knobs had to rise, else the watchdog still killed at turn 40.
+readonly KIMI_TIMEOUT="${KIMI_TIMEOUT:-3600}"
 # KIMI-CHANNEL-01 (adapted from GLM-REVIVE-01) legacy compatibility: when configured lower than the explicit
 # no-progress guard below, KIMI_STALL_S still kills and revives once. At the
 # defaults, KIMI_NO_PROGRESS_S reaches the timeout/fallback path first.
-readonly KIMI_STALL_S="${KIMI_STALL_S:-300}"
-readonly KIMI_MAX_TURNS="${KIMI_MAX_TURNS:-40}"
+readonly KIMI_STALL_S="${KIMI_STALL_S:-1200}"
+readonly KIMI_MAX_TURNS="${KIMI_MAX_TURNS:-120}"
 # Hard watchdog limits. KIMI_MAX_TURNS remains the Claude CLI request limit and
 # --max-turns remains backward compatible; KIMI_TURN_LIMIT is independently
 # enforced from observed stream turns through the timeout/fallback path.
-readonly KIMI_TURN_LIMIT="${KIMI_TURN_LIMIT:-40}"
+readonly KIMI_TURN_LIMIT="${KIMI_TURN_LIMIT:-120}"
 readonly KIMI_NO_PROGRESS_S="${KIMI_NO_PROGRESS_S:-${KIMI_STALL_S}}"
 # Dedicated non-zero exit code for "kimi gave up, fall back to sonnet" —
 # distinct from 75 (lock busy/config error, pre-existing), from 77 (launch

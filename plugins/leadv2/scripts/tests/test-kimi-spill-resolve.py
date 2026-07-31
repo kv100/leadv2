@@ -23,6 +23,8 @@ resolver = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(resolver)
 
 resolve_glm_policy = resolver.resolve_glm_policy
+# UI-TO-KIMI-01 tests monkey-patch resolver.kimi_review_available (the name the
+# resolver looks up in its own module at call time) -- never a live network call.
 
 
 def _glm_policy(build_spill_order, review_arm_exclusions=None):
@@ -86,6 +88,93 @@ class KimiSpillWalkTests(unittest.TestCase):
         self.assertEqual(result["arm"], "glm")
         self.assertEqual(result["rule"], "none")
         self.assertIs(result["codex_quota_blocked"], False)
+
+
+class UiToKimiOverrideTests(unittest.TestCase):
+    """UI-TO-KIMI-01: ui_design_judgment exception routes to kimi when the probe
+    is reachable, sonnet otherwise. Only this ONE exception row is dynamic; every
+    other row is byte-identical. The probe is monkey-patched -- NEVER a live
+    network call in a unit test."""
+
+    def _ui_policy(self):
+        # sonnet_exceptions carries ui_design_judgment (the gate: rid must be in
+        # exc_ids to fire). No codex_quota_gate -- the override is upstream of the
+        # gate block and kimi is never in `blocked`, so the gate is irrelevant.
+        return {"sonnet_exceptions": [{"id": "ui_design_judgment"},
+                                      {"id": "safety_gate_publish_payments"}]}
+
+    def _patch_probe(self, retval):
+        # Patch on the module the resolver reads its own name from.
+        original = resolver.kimi_review_available
+        resolver.kimi_review_available = lambda _bin: retval
+        self.addCleanup(setattr, resolver, "kimi_review_available", original)
+
+    def test_ui_kimi_available_routes_to_kimi(self):
+        self._patch_probe(True)
+        result = resolve_glm_policy(self._ui_policy(), {"ui_design_judgment": True},
+                                    job="build", base_arm="glm",
+                                    kimi_bin="/fake/kimi-coder.sh")
+        self.assertEqual(result["arm"], "kimi")
+        self.assertEqual(result["rule"], "ui_design_judgment")
+        self.assertEqual(result["reason"], "sonnet_exception:kimi")
+
+    def test_ui_kimi_unavailable_routes_to_sonnet_false(self):
+        self._patch_probe(False)
+        result = resolve_glm_policy(self._ui_policy(), {"ui_design_judgment": True},
+                                    job="build", base_arm="glm",
+                                    kimi_bin="/fake/kimi-coder.sh")
+        self.assertEqual(result["arm"], "sonnet")
+        self.assertEqual(result["rule"], "ui_design_judgment")
+        self.assertEqual(result["reason"], "sonnet_exception:kimi_probe_down")
+
+    def test_ui_kimi_unknown_routes_to_sonnet_none(self):
+        # None (bin present but rc 75 / timeout / exception) fails CLOSED to
+        # sonnet -- different from resolve_review_pool's fail-open-to-UNKNOWN.
+        self._patch_probe(None)
+        result = resolve_glm_policy(self._ui_policy(), {"ui_design_judgment": True},
+                                    job="build", base_arm="glm",
+                                    kimi_bin="/fake/kimi-coder.sh")
+        self.assertEqual(result["arm"], "sonnet")
+        self.assertEqual(result["reason"], "sonnet_exception:kimi_probe_unknown")
+
+    def test_safety_overrides_ui_even_with_kimi_available(self):
+        # safety_gate_publish_payments sits ABOVE ui_design_judgment in the
+        # precedence list and breaks first; a safety-touched UI task is sonnet,
+        # rule safety_gate_publish_payments, and the kimi probe is never reached.
+        self._patch_probe(True)
+        result = resolve_glm_policy(self._ui_policy(),
+                                    {"protected_path": True, "ui_design_judgment": True},
+                                    job="build", base_arm="glm",
+                                    kimi_bin="/fake/kimi-coder.sh")
+        self.assertEqual(result["arm"], "sonnet")
+        self.assertEqual(result["rule"], "safety_gate_publish_payments")
+
+    def test_no_probe_when_not_ui(self):
+        # LAZINESS: a non-UI build must NEVER pay the probe subprocess. A raising
+        # stub fails the test if the resolver calls it.
+        def _boom(_bin):
+            raise AssertionError("kimi probe must not run on a non-UI task")
+        original = resolver.kimi_review_available
+        resolver.kimi_review_available = _boom
+        self.addCleanup(setattr, resolver, "kimi_review_available", original)
+        result = resolve_glm_policy(self._ui_policy(), {"mission_kind": "doc_fix"},
+                                    job="build", base_arm="glm",
+                                    kimi_bin="/fake/kimi-coder.sh")
+        self.assertEqual(result["arm"], "glm")  # no exception matched -> base arm
+
+    def test_no_kimi_bin_is_byte_identical_to_today(self):
+        # A caller that never passes kimi_bin gets exact pre-UI-TO-KIMI-01
+        # behaviour: arm sonnet, reason sonnet_exception, no probe.
+        def _boom(_bin):
+            raise AssertionError("probe must not run when kimi_bin is absent")
+        original = resolver.kimi_review_available
+        resolver.kimi_review_available = _boom
+        self.addCleanup(setattr, resolver, "kimi_review_available", original)
+        result = resolve_glm_policy(self._ui_policy(), {"ui_design_judgment": True},
+                                    job="build", base_arm="glm")
+        self.assertEqual(result["arm"], "sonnet")
+        self.assertEqual(result["rule"], "ui_design_judgment")
+        self.assertEqual(result["reason"], "sonnet_exception")
 
 
 if __name__ == "__main__":

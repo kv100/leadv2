@@ -2,6 +2,9 @@
 # repo-local at .claude/ref/leadv2-routing.yaml; this canonical registry is
 # copied there by plugin sync when v2 is enabled.
 router_v2:
+  # Advisory capability data (per-arm scores + confidence + sources):
+  #   plugins/leadv2/config/model-capability.yaml
+  # Not consumed by scoring yet (MODEL-BENCH-DATA-01). Cost policy wins.
   # Used only when the current session credential cannot be identified.  The
   # quota reader reports account_resolution=pinned_unresolved in that case.
   active_account: max_20x
@@ -56,3 +59,20 @@ router_v2:
       bucket: anthropic:max_20x
       reserve_threshold: 2
       reserve_allow: [review]
+
+# CODEX-GATE-01 item 6: in-lane DEFAULT protected-path patterns consumed by
+# lib/leadv2-review-signals.sh (the safety source for the product-close review pool). This is
+# the safety net so a tenant override (.claude/ref/leadv2-routing.yaml) that lacks this key
+# never silently fail-closes kimi review everywhere. Patterns are bash globs (`*` spans `/`),
+# matched against the task's lane-write paths. Covers the same three areas the routing yaml's
+# sonnet_exceptions `safety_gate_publish_payments / when: protected_path` rule names:
+# safety-gate, publish, payments. First yaml in the ordered lookup that carries this key wins.
+router:
+  glm_policy:
+    protected_path_patterns:
+      - "*safety-gate*"
+      - "*safety_gate*"
+      - "*safety*gate*"
+      - "*publish*"
+      - "*payments*"
+      - "*payment*"

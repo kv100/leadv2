@@ -364,7 +364,8 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
 
 def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
                         base_arm: str = "glm", quota_live_bin: str = None,
-                        quota_codex_pct=None, enable_codex_fitting_rule: bool = True) -> dict:
+                        quota_codex_pct=None, enable_codex_fitting_rule: bool = True,
+                        kimi_bin: str = None) -> dict:
     """ONE authority for GLM-FIRST-01 predicates + T-q codex_quota_gate.
 
     base_arm: the arm the caller would pick with NO glm_policy applied at all.
@@ -431,6 +432,40 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
                 continue  # rule id absent from yaml -> cannot fire (single source of truth)
             arm, rule, reason = rbase, (rid or ("codex_fitting_kind" if rbase == "codex" else "opus_only_kind")), rsn
             break
+
+    # UI-TO-KIMI-01 (founder decision, no A/B): the ui_design_judgment exception
+    # resolves to kimi when the kimi channel probe is reachable, sonnet otherwise.
+    # This is the ONE exception row whose arm becomes dynamic; every other row is
+    # byte-identical to before.
+    #
+    # LAZY: the probe is a 15s-timeout subprocess, so it runs ONLY after the UI
+    # rule matched (rule == "ui_design_judgment") AND a kimi bin was supplied. A
+    # caller that never passes kimi_bin gets EXACT today's behaviour -- arm
+    # "sonnet", reason "sonnet_exception", no subprocess, no per-build tax.
+    #   probe True  -> arm kimi,    reason sonnet_exception:kimi
+    #   probe False -> arm sonnet,  reason sonnet_exception:kimi_probe_down
+    #   probe None  -> arm sonnet,  reason sonnet_exception:kimi_probe_unknown
+    # Both non-True states collapse to sonnet -- UNKNOWN must fail CLOSED here
+    # (deliberately different from resolve_review_pool's fail-open-to-UNKNOWN):
+    # stranding a UI task on an unreachable arm is a stall, not a downgrade.
+    # rule stays "ui_design_judgment" in every branch -- it is the yaml
+    # sonnet_exceptions id and the single-source-of-truth gate (rid not in
+    # exc_ids -> cannot fire), and downstream consumers key on it (router.sh:595-
+    # 609 passes reason through verbatim; the bandit special-case keys on
+    # glm_default). Only arm + reason vary. Precedence is untouched:
+    # safety_gate_publish_payments and integration_critical_4subsystems sit ABOVE
+    # this row and break first, so a safety-touched UI task still resolves sonnet.
+    if rule == "ui_design_judgment" and kimi_bin:
+        _kimi_avail = kimi_review_available(kimi_bin)
+        if _kimi_avail is True:
+            arm = "kimi"
+            reason = "sonnet_exception:kimi"
+        elif _kimi_avail is False:
+            arm = "sonnet"
+            reason = "sonnet_exception:kimi_probe_down"
+        else:  # None -- bin missing / rc 75 / other rc / timeout / exception
+            arm = "sonnet"
+            reason = "sonnet_exception:kimi_probe_unknown"
 
     tier = codex_default_tier if arm == "codex" else ""
     job = job if job in ("build", "review") else "build"
@@ -551,7 +586,8 @@ def _main(argv):
     if kimi_bin is None:
         kimi_bin = str(Path(__file__).resolve().parent.parent / "kimi-coder.sh")
 
-    result = resolve_glm_policy(glm_policy, signals, args.job, args.base_arm, quota_live_bin)
+    result = resolve_glm_policy(glm_policy, signals, args.job, args.base_arm, quota_live_bin,
+                                kimi_bin=kimi_bin)
     print("arm=%s" % result["arm"])
     print("rule=%s" % result["rule"])
     print("reason=%s" % result["reason"])

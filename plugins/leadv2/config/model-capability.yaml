@@ -1,0 +1,212 @@
+# model-capability.yaml — ADVISORY capability data (MODEL-BENCH-DATA-01).
+# NOT a routing policy. Cost policy (glm/kimi first) always wins over any score here.
+# Entries whose `confidence` is low MUST NOT be used in scoring.
+# Nothing reads this file yet — it is data-only until a resolver change lands.
+# MODEL-BENCH-DATA-01 — machine-readable model capability data for router weighting.
+# asof: 2026-07-31. See model-capability-data.md in the same directory for full sourcing,
+# caveats, and the trust-filter narrative behind every number here.
+#
+# score_basis matters: swebench-verified and swebench-pro are NOT the same scale
+# (same model can score ~19pts lower on Pro than Verified). Never compare coding_score
+# across arms with different score_basis values as if they were equivalent.
+#
+# confidence:
+#   high   = independent leaderboard (vals.ai / artificialanalysis.ai), fetched directly
+#   medium = aggregator citing an independent source, or a single vendor-adjacent source
+#            with no contradiction found
+#   low    = vendor self-report only, conflicting sources, or no independent confirmation found
+#
+# cost_class here is COST-TO-US under existing subscription/quota arrangements, not public
+# list price (list price is included in notes where found, for context).
+
+fable:
+  underlying_model: claude-fable-5
+  coding_score: 95.0
+  score_basis: swebench-verified
+  agentic_score: 80.52
+  agentic_basis: terminal-bench-2.1
+  speed_class: slow
+  context_k: 200
+  cost_class: quota-scarce
+  confidence: high
+  notes: >
+    SWE-V and TB2.1 both vals.ai-direct (high confidence). Context_k=200 is the Anthropic-
+    standard assumption; no Fable-specific 1M citation found (medium confidence on context
+    specifically). Speed_class=slow is an inference from reasoning-tier positioning, not a
+    measured tok/s (low confidence on speed specifically).
+  sources:
+    - https://www.vals.ai/benchmarks/swebench
+    - https://www.vals.ai/benchmarks/terminal-bench-2-1
+  asof: "2026-07-31"
+
+opus:
+  underlying_model: claude-opus-5
+  coding_score: 97.0
+  score_basis: swebench-verified
+  agentic_score: 84.64
+  agentic_basis: terminal-bench-2.1
+  speed_class: slow
+  context_k: 1000
+  cost_class: quota-scarce
+  confidence: high
+  notes: >
+    SWE-V and TB2.1 both vals.ai-direct (high confidence, current #1 on both in our fleet).
+    context_k=1000 (1M) sourced from a single pricing aggregator (eesel/coursiv) — could not
+    independently verify against Anthropic's own model card; treat context_k as medium
+    confidence only. Escalation tier per existing routing policy; this data supports keeping
+    it as the ceiling arm, not as a default.
+  sources:
+    - https://www.vals.ai/benchmarks/swebench
+    - https://www.vals.ai/benchmarks/terminal-bench-2-1
+    - https://www.eesel.ai/blog/claude-opus-5-pricing
+  asof: "2026-07-31"
+
+sonnet:
+  underlying_model: claude-sonnet-5
+  coding_score: 72.7
+  score_basis: swebench-verified
+  agentic_score: 74.53
+  agentic_basis: terminal-bench-2.1
+  speed_class: medium
+  context_k: 200
+  cost_class: quota-scarce
+  confidence: low
+  notes: >
+    coding_score is DISPUTED: one aggregator cites 72.7% (attributed to Anthropic's own
+    launch post), another cites 82.1% for what should be the same figure — a 10pt spread I
+    could not resolve without reaching Anthropic's model card directly. Used the more
+    conservative number. Not present in vals.ai's own top-7 SWE-V list (below Grok 4.5's
+    86.6%), which is at least consistent with the lower figure. agentic_score (TB2.1 74.53) IS
+    vals.ai-direct and high confidence on its own. Re-verify coding_score before using it in
+    any weighted formula.
+  sources:
+    - https://www.vals.ai/benchmarks/terminal-bench-2-1
+    - https://baeseokjae.github.io/posts/claude-sonnet-5-review-2026/
+    - https://www.siliconreport.com/anthropics-claude-sonnet-5-breaks-80-on-swe-bench-verified-widens-benchmarks-over-competit-220e6417
+  asof: "2026-07-31"
+
+haiku:
+  underlying_model: claude-haiku-4-5-20251001
+  coding_score: 73.3
+  score_basis: swebench-verified
+  agentic_score: null
+  agentic_basis: null
+  speed_class: fast
+  context_k: 200
+  cost_class: quota-scarce
+  confidence: medium
+  notes: >
+    coding_score sourced from a single aggregator citing Anthropic; not contradicted elsewhere
+    but not independently cross-checked either (medium, not high). No Terminal-Bench number
+    found for Haiku 4.5 specifically — agentic_score left null rather than guessed. Artificial
+    Analysis Intelligence Index page showed "24", which is far below Kimi K3's 57.1 on the
+    same index — inconsistent with everything else in this dataset, flagged as likely-stale
+    and NOT included as agentic_score. Speed: 88-150 t/s across multiple independent sources
+    (OpenRouter, Anthropic API observed rates) — high confidence, clearly the fastest arm.
+  sources:
+    - https://artificialanalysis.ai/models/claude-4-5-haiku
+    - https://openrouter.ai/anthropic/claude-haiku-4.5
+  asof: "2026-07-31"
+
+codex-standard:
+  underlying_model: gpt-5.5
+  coding_score: 76.4
+  score_basis: terminal-bench-2.1
+  agentic_score: 58.6
+  agentic_basis: swebench-pro
+  speed_class: medium
+  context_k: null
+  cost_class: quota-scarce
+  confidence: medium
+  notes: >
+    No independent SWE-bench-Verified number found for GPT-5.5 anywhere searched — OpenAI's
+    GPT-5.6 benchmark suite reportedly emphasizes Terminal-Bench over SWE-bench-Verified per
+    one aggregator, and GPT-5.5 coverage is thinner still. TB2.1 76.40 is vals.ai-direct (high
+    confidence on that one number). swebench-pro agentic_score conflicts across two aggregators
+    (58.6% vs 59.4%) — low confidence on that field specifically. context_k not found in any
+    source searched; left null rather than guessed.
+  sources:
+    - https://www.vals.ai/benchmarks/terminal-bench-2-1
+    - https://www.morphllm.com/swe-bench-pro
+  asof: "2026-07-31"
+
+codex-top:
+  underlying_model: gpt-5.6-terra
+  coding_score: 87.4
+  score_basis: terminal-bench-2.1
+  agentic_score: 63.4
+  agentic_basis: swebench-pro
+  speed_class: medium
+  context_k: null
+  cost_class: quota-scarce
+  confidence: low
+  notes: >
+    Terra was NOT isolated on vals.ai's own leaderboard in anything I fetched (only Sol/Luna
+    broken out there); this coding_score comes from a secondary aggregator (eesel/cometapi)
+    citing what they attribute to a benchmark run, not confirmed vals.ai-direct — treat as
+    lower-confidence than the fable/opus/kimi TB2.1 numbers above. swebench-pro 63.4% is
+    similarly aggregator-only. No context_k found. Given the thin coverage, this project's
+    existing policy (top tier reserved for risky review, chosen by task risk not benchmark
+    score) is a reasonable prior that this data cannot meaningfully sharpen yet.
+  sources:
+    - https://www.eesel.ai/blog/gpt-5-6-terra
+    - https://the-agent-report.com/2026/07/gpt-5-6-sol-terra-luna-benchmarks-pricing-analysis/
+  asof: "2026-07-31"
+
+glm:
+  underlying_model: glm-5.2
+  coding_score: 62.1
+  score_basis: swebench-pro
+  agentic_score: null
+  agentic_basis: null
+  speed_class: medium
+  context_k: 1000
+  cost_class: cheap
+  confidence: low
+  notes: >
+    coding_score (SWE-bench Pro 62.1%, beating GPT-5.5's Pro score) is vendor (Zhipu) +
+    aggregator only — no independent-leaderboard confirmation found on vals.ai or
+    Artificial Analysis. No Terminal-Bench number found; agentic_score left null. context_k
+    =1000 (1M) IS high confidence: confirmed independently across OpenRouter, Requesty, and
+    multiple aggregators, and matches this project's pre-existing memory
+    (reference_glm_5_2_1m_context). cost_class=cheap reflects our GLM-FIRST-01 subscription
+    arrangement (primary code writer, ~1% of quota used per prior memory), not Zhipu's
+    list price ($1.40/$4.40 per 1M direct, cheaper still via OpenRouter at $0.60/$1.25).
+  sources:
+    - https://groundy.com/articles/glm-5-2-benchmarks-what-62-1-swe-bench-pro-and-99-2-aime-actually-mean/
+    - https://www.requesty.ai/models/zai/glm-5.2
+  asof: "2026-07-31"
+
+kimi:
+  underlying_model: kimi-k3
+  coding_score: 93.4
+  score_basis: swebench-verified
+  agentic_score: 80.9
+  agentic_basis: terminal-bench-2.1
+  speed_class: slow
+  context_k: 1000
+  cost_class: free
+  confidence: high
+  notes: >
+    coding_score and agentic_score both vals.ai-direct, high confidence. Moonshot's OWN
+    self-report SWE-bench number is only 76.8% — 17pts BELOW the independent number, an
+    unusual under-claim direction worth remembering when comparing vendor vs independent
+    numbers elsewhere in this dataset. Also holds rank 1 on the Frontend Code Arena (Elo
+    1679, ahead of Fable 5's 1631 and GPT-5.6 Sol's 1618) — a real independently-observed
+    result, but narrow to frontend/UI code, not general agentic coding; do not read this as
+    "kimi beats Fable 5 and GPT Sol 5.6" in general (see verdict in the .md report — that
+    broader claim is NOT supported by SWE-V or TB2.1, where kimi trails or ties both).
+    context_k=1000 (1M) high confidence (Moonshot official + OpenRouter). speed_class=slow is
+    an OPERATIONAL finding, not a benchmark: Moonshot's own docs confirm reasoning_effort is
+    currently locked to max with reasoning tokens billed as output — matches this project's
+    own experience needing stall-guards for kimi. cost_class=free reflects our internal
+    TokenRouter arrangement as described by the team; Moonshot's PUBLIC list price is
+    $3/1M input ($0.30 cache-hit) / $15/1M output — NOT free. The free-to-us status is
+    trusted-but-unverified from Moonshot's side; flag if TokenRouter behavior ever changes.
+  sources:
+    - https://www.vals.ai/benchmarks/swebench
+    - https://www.vals.ai/benchmarks/terminal-bench-2-1
+    - https://codersera.com/blog/kimi-k3-benchmarks-comparison-2026/
+    - https://www.eesel.ai/blog/kimi-k3-pricing
+    - https://openrouter.ai/moonshotai/kimi-k3
+  asof: "2026-07-31"

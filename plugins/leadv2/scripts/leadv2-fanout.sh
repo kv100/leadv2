@@ -160,7 +160,7 @@ while [[ $# -gt 0 ]]; do
     --lead-model) LEAD_MODEL_OVERRIDE="$2"; shift 2 ;;
     --provider)   PROVIDER_REQUEST="$2";   shift 2 ;;
     -h|--help)
-      printf -- 'Usage: leadv2-fanout.sh [--n N] [--filter STR] [--tasks ID1,ID2] [--provider auto|claude|codex|glm] [--dry-run] [--tmux|--windows|--headless] [--force] [--lead-model MODEL]\n'
+      printf -- 'Usage: leadv2-fanout.sh [--n N] [--filter STR] [--tasks ID1,ID2] [--provider auto|claude|codex|glm|kimi] [--dry-run] [--tmux|--windows|--headless] [--force] [--lead-model MODEL]\n'
       printf -- '  --tmux: one shared tmux session "leadv2", one window per task. Default\n'
       printf -- '          backend on macOS when tmux is on PATH.\n'
       printf -- '  --windows: force Terminal.app/iTerm2 osascript windows (old default).\n'
@@ -172,7 +172,7 @@ while [[ $# -gt 0 ]]; do
       printf -- '           launched by this invocation (default: classifier picks sonnet for\n'
       printf -- '           Light/Standard, opus for Heavy/Strategic). Use `--lead-model opus`\n'
       printf -- '           when the founder explicitly wants an Opus child; never on by default.\n'
-      printf -- '  --provider auto|claude|codex|glm: provider for COMPLETE Phase 0..8 child\n'
+      printf -- '  --provider auto|claude|codex|glm|kimi: provider for COMPLETE Phase 0..8 child\n'
       printf -- '           sessions. auto routes routine work by live policy/quota; high-risk\n'
       printf -- '           classes/tags remain on Claude unless an explicit policy override exists.\n'
       exit 0
@@ -182,8 +182,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$PROVIDER_REQUEST" in
-  auto|claude|codex|glm) ;;
-  *) log_error "--provider must be auto, claude, codex, or glm (got: $PROVIDER_REQUEST)"; exit 1 ;;
+  auto|claude|codex|glm|kimi) ;;
+  *) log_error "--provider must be auto, claude, codex, glm, or kimi (got: $PROVIDER_REQUEST)"; exit 1 ;;
 esac
 
 if [[ -n "$LEAD_MODEL_OVERRIDE" ]]; then

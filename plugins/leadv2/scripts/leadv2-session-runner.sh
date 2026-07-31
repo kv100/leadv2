@@ -30,12 +30,15 @@
 #   LEADV2_RUNNER_RETRY_SLEEP_S (default: 5) — backoff between resume attempts.
 #   LEADV2_FANOUT_CLAUDE_BIN (default: claude) — override for tests (mirrors
 #       scripts/leadv2-fanout.sh's CLAUDE_BIN convention).
-#   LEADV2_SESSION_PROVIDER (default: claude) — claude|codex. `auto` must be
-#       resolved by leadv2-session-route.sh before this runner is launched.
-#   LEADV2_CLAUDE_MAX_TURNS (default: 60) — per-attempt runaway guard. A
+#   LEADV2_SESSION_PROVIDER (default: claude) — claude|codex|glm|kimi. `auto`
+#       must be resolved by leadv2-session-route.sh before this runner is launched.
+#   LEADV2_CLAUDE_MAX_TURNS (default: 150) — per-attempt runaway guard. A
 #       nine-phase Heavy pipeline routinely needs more than 30 tool turns;
 #       each resumed attempt receives this fresh budget. Set the variable to
-#       override the default for a specific lane.
+#       override the default for a specific lane. Raised 60->150: false-kill
+#       cost > runtime cost — a nine-phase Heavy pipeline plus recovery
+#       routinely exceeds 60 tool turns, and a cap death costs a full
+#       re-dispatch.
 #   LEADV2_CLAUDE_MAX_BUDGET_USD — optional per-attempt API budget ceiling.
 #
 # Idempotency: a per-task flock (docs/handoff/<task>/.session-runner.lock)
@@ -107,6 +110,14 @@ case "$SESSION_PROVIDER" in
     fi
     exec "$GLM_RUNNER"
     ;;
+  kimi)
+    KIMI_RUNNER="${SCRIPT_DIR}/leadv2-kimi-session-runner.sh"
+    if [[ ! -x "$KIMI_RUNNER" ]]; then
+      log_error "provider=kimi but runner is missing/not executable: $KIMI_RUNNER"
+      exit 1
+    fi
+    exec "$KIMI_RUNNER"
+    ;;
   auto)
     log_error "provider=auto reached the session runner unresolved; call leadv2-session-route.sh first"
     exit 1
@@ -131,7 +142,7 @@ RETRY_SLEEP_S="${LEADV2_RUNNER_RETRY_SLEEP_S:-5}"
 NOOP_MAX="${LEADV2_RUNNER_NOOP_MAX:-3}"
 STALL_MAX="${LEADV2_RUNNER_STALL_MAX:-6}"
 CLAUDE_BIN="${LEADV2_FANOUT_CLAUDE_BIN:-claude}"
-CLAUDE_MAX_TURNS="${LEADV2_CLAUDE_MAX_TURNS:-60}"
+CLAUDE_MAX_TURNS="${LEADV2_CLAUDE_MAX_TURNS:-150}"
 CLAUDE_MAX_BUDGET_USD="${LEADV2_CLAUDE_MAX_BUDGET_USD:-}"
 CLAUDE_PERMISSION_MODE="${LEADV2_CLAUDE_PERMISSION_MODE:-acceptEdits}"
 # LANE-TURNCAP-CHECKPOINT-01: exported so leadv2-turncap-checkpoint-hook.sh

@@ -418,8 +418,12 @@ _kimi_available=false
 # probed (glm eligible and within quota)", NOT "endpoint is down" -- see
 # `_kimi_unavailable_reason` for which case applies. A downstream consumer
 # that treats `_kimi_available=false` as evidence of kimi endpoint health
-# would be reading it wrong.
-if [[ "$_kimi_eligible" == "true" && ( "$_glm_eligible" != "true" || "$_glm_quota_ok" != "true" ) ]]; then
+# would be reading it wrong. NOTE: this skip is an AUTO-MODE latency
+# optimization only; an explicit `--provider kimi` request wins over it --
+# its result IS observed (the `PROVIDER_REQUEST == "kimi"` branch at :459),
+# so a skipped probe there becomes a permanent refusal.
+if [[ "$_kimi_eligible" == "true" && ( "$PROVIDER_REQUEST" == "kimi" \
+      || "$_glm_eligible" != "true" || "$_glm_quota_ok" != "true" ) ]]; then
   _kimi_bin="${LEADV2_KIMI_BIN:-$SCRIPT_DIR/kimi-coder.sh}"
   if [[ -f "$_kimi_bin" ]]; then
     if bash "$_kimi_bin" probe >/dev/null 2>/dev/null; then

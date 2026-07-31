@@ -156,6 +156,24 @@ else
   pass "glm-wins path never invokes the kimi launch probe"
 fi
 
+# ── explicit --provider kimi + glm healthy: probe MUST fire despite the M2 skip ──
+# The M2 guard is an auto-mode latency optimization only; an explicit request
+# wins over it (otherwise _kimi_available stays false -> permanent refusal at
+# :459). Reuses the sentinel-touching stub; probe-ok stub rc 0.
+rm -f "$SANDBOX/kimi-probe-hit"
+TEST_GLM_GATE_RC=0
+TEST_KIMI_PROBE_RC=0
+TEST_QUOTA_JSON='{"codex":{"windows":[{"used_percent":20}]},"anthropic":{"accounts":[{"five_hour_pct":50,"seven_day_pct":40}]}}'
+out="$(route --class Light --provider kimi)"
+assert_fields "explicit --provider kimi + glm healthy -> kimi honored" "$out" \
+  'provider=kimi' 'kimi_available=true'
+assert_not_contains "explicit --provider kimi must not refuse" "$out" 'explicit kimi request refused'
+if [[ -f "$SANDBOX/kimi-probe-hit" ]]; then
+  pass "explicit --provider kimi spends the launch probe (deliberate)"
+else
+  fail "explicit --provider kimi must invoke the kimi launch probe"
+fi
+
 printf -- '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 if (( FAIL > 0 )); then
   printf -- '[TEST] %s\n' "${ERRORS[@]}"
