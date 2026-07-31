@@ -243,7 +243,23 @@ set -uo pipefail   # -u safe (quote everything, no unbound vars); NO -e (refusal
 
 SCRIPT_NAME="leadv2-dispatch-code"
 PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}}"
+# LANDING-BLOCKER-R2 (C1): WORK_ROOT is the tree the lane's code edits land in -- it is
+# NOT PROJECT_ROOT. PROJECT_ROOT stays the control-plane root (journal, docs/handoff,
+# active.yaml, cache, ledger) everywhere below; only worker --cwd and the review-gate's
+# diff_root use WORK_ROOT. The launcher exports LEADV2_LANE_WORK_ROOT after `ensure`-ing
+# the lane worktree; fall back to PROJECT_ROOT (today's shared-tree behavior) if unset or
+# the path no longer exists (fail-open, matches leadv2-lane-worktree.sh's own fail-open).
+WORK_ROOT="${LEADV2_LANE_WORK_ROOT:-}"
+[[ -n "$WORK_ROOT" && -d "$WORK_ROOT" ]] || WORK_ROOT="$PROJECT_ROOT"
+export LEADV2_LANE_WORK_ROOT="$WORK_ROOT"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-"$0"}")" 2>/dev/null && pwd)"
+# STATUSLINE-COUNT-TRUTH-01: single source of truth for the architect-prepass
+# dir suffix -- leadv2-lane-liveness.sh folds dispatch-<sig8>-<role> ids back
+# into their parent using this SAME constant, so the registrar and the fold
+# rule can never drift apart. Export-only, no flock, safe to source directly.
+# shellcheck source=leadv2-lane-child-suffixes.sh
+source "${SCRIPT_DIR}/leadv2-lane-child-suffixes.sh"
+ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
@@ -349,6 +365,18 @@ ARCHITECT_PREPASS_REASON=""
 PREPASS_CACHE="${LEADV2_PREPASS_CACHE:-1}"
 E2E_GATE="${LEADV2_DISPATCH_E2E_GATE:-1}"
 REVIEW_GATE="${LEADV2_DISPATCH_REVIEW_GATE:-1}"
+# P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01: a product lane must declare which files it will
+# touch -- either the founder-supplied row `writes` field or the architect prepass's own
+# `LANE_WRITES:` line -- or its finished diff cannot be scoped to its own tree at review
+# time (leadv2-dispatch-product-close.sh unscopable_diff). =0 restores today byte-for-byte
+# (no writes declaration required, no park).
+REQUIRE_LANE_WRITES="${LEADV2_REQUIRE_LANE_WRITES:-1}"
+# RED-FIRST-GATE-01 R2: the prepass mission prompt now asks for a surface-observable
+# `acceptance:` block (see architect_prepass's printf text). =1 parks a design that
+# lacks it, same PARK-and-surface mechanism as REQUIRE_LANE_WRITES. Default 0 -- this
+# is a landing-day opt-in so no in-flight or historical dispatch retro-parks; flip to
+# 1 after a soak, mirroring LEADV2_REQUIRE_LANE_WRITES's own rollout.
+REQUIRE_ACCEPTANCE="${LEADV2_REQUIRE_ACCEPTANCE:-0}"
 
 log()        { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
 log_err()    { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
@@ -980,16 +1008,99 @@ classify_product_work() { # <kind> <mission> -> product|non_product<TAB>reason
 
 _prepass_file() { printf '%s/docs/handoff/dispatch-%s/architect-prepass.md' "${PROJECT_ROOT}" "$1"; }
 
+# Harvest the architect's `LANE_WRITES:` declaration out of its prepass artifact.
+# M7 (LANDING-BLOCKER-R2): match tolerantly -- markdown emphasis (`**LANE_WRITES:**`) or
+# leading indentation must not read as "absent" (fail-closed still applies: no match at
+# all -> empty, guard decides).
+# L12 (LANDING-BLOCKER-R2): reject an over-broad entry rather than trusting it -- one that
+# is empty/`.`/`/`, one built entirely of `*`/`/` (the whole `*`, `**`, `*/*`, `**/*`,
+# `**/**` family), or a bare wildcard-free top-level segment that is an existing directory
+# under WORK_ROOT (a repo-root dir name like `plugins` or `agent`). Each of those over-
+# declares the whole tree and would re-mix lanes at review time exactly like no
+# declaration at all.
+_prepass_writes() { # <sig8> -> CSV writes or empty
+  local f line entry norm
+  f="$(_prepass_file "$1")"
+  [[ -s "${f}" ]] || return 0
+  line="$(grep -m1 -iE '^[[:space:]*_]*LANE_WRITES[*_]*:' "${f}" 2>/dev/null)" || return 0
+  line="$(printf '%s' "${line}" | sed -E 's/^[[:space:]*_]*LANE_WRITES[*_]*:[[:space:]]*//I')"
+  local -a raw_entries kept=()
+  IFS=',' read -ra raw_entries <<< "${line}"
+  for entry in "${raw_entries[@]}"; do
+    entry="$(printf '%s' "${entry}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [[ -z "${entry}" ]] && continue
+    norm="${entry#./}"
+    while [[ "${norm}" == *//* ]]; do norm="${norm//\/\//\/}"; done
+    norm="${norm%/}"
+    [[ -z "${norm}" || "${norm}" == "." || "${norm}" == "/" ]] && continue
+    [[ -z "$(printf '%s' "${norm}" | tr -d '*/')" ]] && continue
+    if [[ "${norm}" != *'*'* && "${norm}" != */* && -d "${WORK_ROOT}/${norm}" ]]; then continue; fi
+    kept+=("${norm}")
+  done
+  (IFS=','; printf '%s' "${kept[*]:-}")
+}
+
+# _lane_writes_guard <sig8> <row_writes> <have_prepass:0|1> -> 0 ok, 1 park
+# H6 (LANDING-BLOCKER-R2): one call site per architect_prepass exit path, including the
+# ARCHITECT_GATE kill-switch and the provably_one_file early return -- neither may dispatch
+# an undeclared, unisolated lane. Fail-closed unless REQUIRE_LANE_WRITES=1: a row-declared
+# writes CSV, the prepass artifact's own LANE_WRITES: line, or an existing lane worktree
+# (isolation substitutes for a declaration) each independently satisfy the guard.
+_lane_writes_guard() {
+  local sig8="$1" row_writes="$2" have_prepass="$3"
+  [[ "${REQUIRE_LANE_WRITES}" == "1" ]] || return 0
+  [[ -n "${row_writes}" ]] && return 0
+  if [[ "${have_prepass}" == "1" ]] && [[ -n "$(_prepass_writes "${sig8}")" ]]; then return 0; fi
+  local _wt=""
+  [[ -n "${founder_task_id:-}" ]] && _wt="$(bash "${LANE_WORKTREE_BIN}" path-of "${founder_task_id}" 2>/dev/null)"
+  [[ -n "${_wt}" ]] && return 0
+  ARCHITECT_PREPASS_REASON="no_lane_writes"
+  emit decision "architect_prepass task=${sig8} status=failed reason=no_lane_writes"
+  return 1
+}
+
+# _acceptance_guard <sig8> <design_file> -> 0 ok, 1 park
+# RED-FIRST-GATE-01 R2: refuses a design whose acceptance is missing, not one
+# of the five surface types, or reads as an internal contract (the exact
+# phrasing skills/leadv2-plan/SKILL.md used to mandate, and the root cause of
+# tautological review). Heuristic content scan of the prepass artifact itself
+# -- this dispatch flow has no context.yaml to run leadv2-acceptance-shape.sh
+# validate against; the full leadv2-plan pipeline (Phase 2) is the path that
+# writes context.yaml and runs the real validator.
+_acceptance_guard() {
+  local sig8="$1" design_file="$2"
+  [[ "${REQUIRE_ACCEPTANCE}" == "1" ]] || return 0
+  [[ -f "${design_file}" ]] || return 0
+  if grep -q '^acceptance:' "${design_file}" \
+     && grep -qE '^[[:space:]]*surface:[[:space:]]*(rendered_line|prod_db_row|log_line|http_response|file_artifact)[[:space:]]*$' "${design_file}" \
+     && grep -qE '^[[:space:]]*observable:' "${design_file}" \
+     && grep -qE '^[[:space:]]*authored_at:' "${design_file}" \
+     && ! grep -qiE '^[[:space:]]*observable:.*(function |returns |exit code|variable|is set to)' "${design_file}"; then
+    return 0
+  fi
+  ARCHITECT_PREPASS_REASON="no_acceptance_block"
+  emit decision "architect_prepass task=${sig8} status=failed reason=no_acceptance_block"
+  return 1
+}
+
 architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled, 1 failed
   local raw="$1" sig8="$2" writes="$3" f mfile out rc count
   ARCHITECT_PREPASS_REASON=""
   if [[ "${ARCHITECT_GATE}" != "1" ]]; then
+    # H6 (LANDING-BLOCKER-R2): the kill-switch used to return before any writes check ran,
+    # so ARCHITECT_GATE=0 could dispatch an undeclared, unisolated lane silently. Row-
+    # declared writes or an existing lane worktree still satisfy the guard, so the
+    # kill-switch remains usable -- it just can no longer bypass isolation.
+    _lane_writes_guard "${sig8}" "${writes}" 0 || return 1
     emit decision "architect_prepass task=${sig8} status=disabled reason=kill_switch"
     return 0
   fi
   # A comma-separated declaration is proof only when it has exactly one non-empty entry.
   count="$(printf '%s' "${writes}" | tr ',' '\n' | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
   if [[ "${count}" == "1" ]]; then
+    # H6: trivially satisfied (count==1 implies non-empty writes) -- called anyway so
+    # there is exactly one guard call site per exit path.
+    _lane_writes_guard "${sig8}" "${writes}" 0 || return 1
     emit decision "architect_prepass task=${sig8} status=skipped reason=provably_one_file writes=${writes}"
     return 0
   fi
@@ -1004,8 +1115,17 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
     _pc_raw_sig="$(printf '%s' "${raw}" | compute_sig)"
     _pc_stamp="$(cat "${f}.sig" 2>/dev/null)"
     if [[ -n "${_pc_raw_sig}" && "${_pc_raw_sig}" == "${_pc_stamp}" ]]; then
-      emit decision "architect_prepass task=${sig8} status=cached reason=sig_match artifact=docs/handoff/dispatch-${sig8}/architect-prepass.md"
-      return 0
+      # H4 (LANDING-BLOCKER-R2): every pre-existing .sig stamp predates the LANE_WRITES
+      # prompt line, so a byte-identical retry of a row with no declared writes would
+      # otherwise serve a cached artifact the park guard never checked and skip straight
+      # to dispatch. Treat "no row writes AND cached artifact has no LANE_WRITES line" as
+      # a cache miss -- fall through and re-run the architect once -- instead of trusting
+      # the stamp blindly.
+      if [[ -n "${writes}" || -n "$(_prepass_writes "${sig8}")" ]]; then
+        emit decision "architect_prepass task=${sig8} status=cached reason=sig_match artifact=docs/handoff/dispatch-${sig8}/architect-prepass.md"
+        return 0
+      fi
+      emit decision "architect_prepass task=${sig8} status=cache_miss reason=cached_artifact_no_lane_writes"
     fi
   fi
 
@@ -1016,14 +1136,14 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
   local _pc_lines
   _pc_lines="$(printf '%s\n' "${raw}" | grep -c .)"
   if [[ "${PREPASS_CACHE}" == "1" && "${_pc_lines}" -lt 15 ]]; then
-    printf '%s\n' "Architect prepass (short mission). Terse scoped design only: changes, exact files, acceptance evidence, explicit non-goals. Do not implement.\n\nMISSION:\n${raw}" > "${mfile}"
+    printf '%s\n' "Architect prepass (short mission). Terse scoped design only: changes, exact files, explicit non-goals. State acceptance as an 'acceptance:' block with surface (rendered_line|prod_db_row|log_line|http_response|file_artifact), observable (what a human sees at that surface -- never a function name, return value, exit code, or variable), and authored_at (now, ISO-8601) -- never a shell command, grep pattern, or test invocation; that is an internal contract, not acceptance (RED-FIRST-GATE-01 R2). End with a line 'LANE_WRITES: <comma-separated repo-relative paths or globs>' listing every file the implementation will write -- no docs/leadv2 or docs/handoff entries; this line is required.\n\nMISSION:\n${raw}" > "${mfile}"
   else
-    printf '%s\n' "You are the architect prepass. Turn this mission into a scoped implementation design. State: changes, exact files, acceptance evidence, and explicit non-goals. Do not implement.\n\nMISSION:\n${raw}" > "${mfile}"
+    printf '%s\n' "You are the architect prepass. Turn this mission into a scoped implementation design. State: changes, exact files, and explicit non-goals. Do not implement. State acceptance as an 'acceptance:' block with surface (rendered_line|prod_db_row|log_line|http_response|file_artifact), observable (what a human sees at that surface -- never a function name, return value, exit code, or variable), and authored_at (now, ISO-8601) -- never a shell command, grep pattern, or test invocation; that is an internal contract, not acceptance (RED-FIRST-GATE-01 R2). End with a line 'LANE_WRITES: <comma-separated repo-relative paths or globs>' listing every file the implementation will write -- no docs/leadv2 or docs/handoff entries; this line is required.\n\nMISSION:\n${raw}" > "${mfile}"
   fi
   # macOS has no portable `timeout`. Python waits for the launcher only; a
   # timed-out advisory prepass is deliberately allowed to finish or be reaped
   # independently while this dispatch immediately continues with the raw task.
-  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" "dispatch-${sig8}-architect" "${mfile}" <<'PY' 2>&1
+  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" "dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}" "${mfile}" <<'PY' 2>&1
 import os, signal, subprocess, sys
 timeout, binary, model, task_id, mission_file = sys.argv[1:]
 proc = None
@@ -1057,7 +1177,7 @@ PY
   # metadata into architect-prepass.md, workers found no design, and the gate then killed
   # or stalled every product dispatch (observed live 2026-07-29: the architect had in fact
   # produced a correct 21KB design that nobody ever read). Read the ARTIFACT.
-  local adir="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}-architect"
+  local adir="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}"
   local design=""
   for cand in "${adir}/architect.full.md" "${adir}/architect.md" "${adir}/architect.summary.md"; do
     [[ -s "${cand}" ]] && { design="${cand}"; break; }
@@ -1074,6 +1194,21 @@ PY
     printf '%s\n' "${out}" > "${f}" || return 1
   fi
   [[ -s "${f}" ]] || { ARCHITECT_PREPASS_REASON="empty_output"; emit decision "architect_prepass task=${sig8} status=failed reason=empty_output"; return 1; }
+  # P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01: a product lane with no declared writes -- neither
+  # the founder's row `writes` field (this function's own `writes` arg) nor the architect's
+  # own LANE_WRITES: line -- cannot be scoped to its own tree when review builds the diff
+  # (leadv2-dispatch-product-close.sh unscopable_diff). A lane worktree already isolates the
+  # lane on its own branch, so it substitutes for a declaration. LEADV2_REQUIRE_LANE_WRITES=0
+  # restores today (never guard).
+  if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _acceptance_guard "${sig8}" "${f}"; then
+    # M7 (LANDING-BLOCKER-R2): stamp the .sig cache BEFORE returning so a byte-identical
+    # retry of this same non-compliant mission hits the cache path (H4 re-runs once, then
+    # parks) instead of paying a second full architect run before parking.
+    if [[ "${PREPASS_CACHE}" == "1" ]]; then
+      printf '%s' "$(printf '%s' "${raw}" | compute_sig)" > "${f}.sig" 2>/dev/null || true
+    fi
+    return 1
+  fi
   # T-c: stamp the mission-text hash that produced this design so a later byte-identical
   # retry (same sig8) can be served from cache. Fail-open: a stamp write failure never
   # fails the prepass itself, it only means the NEXT call re-runs (safe, just slower).
@@ -1095,6 +1230,7 @@ ARCHITECT_BIN="${LEADV2_DISPATCH_ARCHITECT_BIN:-${SUBSESSION_BIN}}"
 # (--tier top|standard|volume), detach (task --background), and its own job registry;
 # this script never reimplements any of that, only calls it and reads its handle/status.
 CODEX_BIN="${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}"
+LANE_WORKTREE_BIN="${LEADV2_DISPATCH_LANE_WORKTREE_BIN:-${SCRIPT_DIR}/leadv2-lane-worktree.sh}"
 
 # <arm> <mission> <sig8> -> prints `worker_spawned ...`, journals it, returns 0/1.
 # Both launchers detach on their own (glm-coder.sh: setsid_wrapper + disown;
@@ -1144,7 +1280,8 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     LEADV2_DISPATCH_ARCHITECT_BIN="${ARCHITECT_BIN}" \
     LEADV2_DISPATCH_REVIEWER_ARMS="${reviewer_arms}" \
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
-    bash "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" \
+    LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" \
+    "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" \
       >/dev/null 2>&1 &
   local _pc_pid=$!
   # wave2 round2 finding 3: stamp the close-owner record with the REAL os pid of the
@@ -1203,7 +1340,7 @@ _spawn_worker_body() {
       # left open by an outer caller (e.g. this script invoked from inside another
       # script's own fd-9 flock scope) and keep that lock held for the worker's lifetime
       # -- exactly the bug this redesign fixes (see FIX PASS 4 doc block).
-      out="$(bash "${GLM_BIN}" bg "${mission}" --cwd "${PROJECT_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      out="$(bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
         local refusal
@@ -1246,7 +1383,12 @@ _spawn_worker_body() {
       # FIX PASS 4: same `9>&-` defense-in-depth as the glm arm above -- claude-subsession.sh
       # without --wait forks `run_subsession &`, a DETACHED worker that would otherwise
       # inherit any inherited fd 9.
-      out="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${SUBSESSION_BIN}" \
+      # LANDING-BLOCKER-R2 (C1): claude-subsession.sh takes no --cwd flag and relies on
+      # inherited $PWD; make that explicit (cd "${WORK_ROOT}") instead of relying on this
+      # process having already been `cd`'d there by its caller -- same value glm/codex now
+      # get via --cwd, so all three arms are cwd-independent of how dispatch-code.sh itself
+      # was invoked.
+      out="$(cd "${WORK_ROOT}" && PROJECT_ROOT="${PROJECT_ROOT}" bash "${SUBSESSION_BIN}" \
              --role developer --model sonnet \
              --task-id "dispatch-${sig8}" --mission-file "${mfile}" 2>"${errf}" 9>&-)"; rc=$?
       rm -f "${mfile}"
@@ -1308,7 +1450,7 @@ _spawn_worker_body() {
       # `9>&-` closes the lock fd for this call as defense-in-depth -- same rationale as
       # the glm/sonnet arms above: codex-task.sh's --background path detaches a job worker
       # that must never inherit an open fd 9.
-      out="$(bash "${CODEX_BIN}" task "${mission}" --background --cwd "${PROJECT_ROOT}"              "${tier_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
+      out="$(bash "${CODEX_BIN}" task "${mission}" --background --cwd "${WORK_ROOT}"              "${tier_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
         local refusal
@@ -1633,6 +1775,14 @@ cmd_resolve() {
       log_err "architect prepass produced no design for product task=${sig8} after ${ARCHITECT_PREPASS_ATTEMPTS} attempts -- task PARKED, not dispatched."
       _dl_note "${sig8}" parked "no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts" "" "${founder_task_id}"
       exit 3
+    fi
+    # P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01: the row-declared `lane_writes` always wins --
+    # a founder declaration is never overridden. Only when the row carried none does the
+    # architect's own LANE_WRITES: line (already proven present by the guard above) fill it,
+    # so it flows unchanged into lane-shape classify and spawn_product_close below.
+    if [[ -z "${lane_writes}" ]]; then
+      lane_writes="$(_prepass_writes "${sig8}")"
+      [[ -n "${lane_writes}" ]] && emit decision "lane_writes task=${sig8} source=prepass writes=${lane_writes}"
     fi
     # The developer receives the independently-produced design -- but INLINE, and only
     # when one actually exists. Two failures on 2026-07-29 came from this line: it replaced

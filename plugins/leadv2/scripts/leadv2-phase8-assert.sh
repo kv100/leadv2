@@ -526,11 +526,68 @@ if [[ "${LEADV2_LANE_SHAPE:-off}" != "off" && -f "${A9_CTX}" && -x "${A9_BIN}" ]
   fi
 fi
 
+# ── A10: red-first proof (RED-FIRST-GATE-01 R1) ──────────────────────────────
+# Additive/optional, symmetric with A9: only evaluated when mode != off. Runs
+# leadv2-red-first-gate.sh probe against THIS project's own working tree (the
+# repo the task closes in) -- cross-repo corpora (e.g. a task whose diff spans
+# persona-engine + this repo) are the architect/manual `probe --repo` path,
+# not this generic per-task close gate. warn = runs and logs, never fails
+# (landing-day default, so today's in-flight closes are unaffected); enforce =
+# a BLOCK verdict (NOT_RED/DIFF_BROKEN present) or a setup failure both count
+# as a hard failure.
+A10_EVALUATED=0
+A10_MODE="${LEADV2_RED_FIRST:-warn}"
+A10_BIN="${SCRIPT_DIR}/leadv2-red-first-gate.sh"
+if [[ "${A10_MODE}" != "off" && -x "${A10_BIN}" ]]; then
+  A10_EVALUATED=1
+  mkdir -p "${LEADV2_HANDOFF_DIR}/${TASK_ID}"
+  if "${A10_BIN}" probe --task-id "${TASK_ID}" --repo "${LEADV2_PROJECT_ROOT}" >/dev/null 2>"${LEADV2_HANDOFF_DIR}/${TASK_ID}/red-first-gate.assert-stderr.log"; then
+    log_pass "A10 red-first: ${TASK_ID} — PASS (see red-first-report.json)"
+  else
+    A10_RC=$?
+    if [[ "${A10_MODE}" == "enforce" ]]; then
+      failures+=("A10: ${TASK_ID} — red-first gate did not clear (rc=${A10_RC}); run: ${A10_BIN} report --task-id ${TASK_ID}")
+      log_fail "A10 red-first: ${TASK_ID} failed (rc=${A10_RC})"
+    else
+      log_warning "A10 red-first: ${TASK_ID} did not clear (rc=${A10_RC}) — non-blocking (LEADV2_RED_FIRST=warn); run: ${A10_BIN} report --task-id ${TASK_ID}"
+    fi
+  fi
+fi
+
+# ── A11: acceptance is a surface observable, authored before the diff (R2) ───
+# Additive/optional, symmetric with A9: only evaluated when context.yaml
+# already carries an `acceptance:` block -- tasks that never adopted the new
+# schema (every task today) are completely unaffected: A11_EVALUATED stays 0.
+# This is the deliberate "new tasks only" migration boundary from the design's
+# out-of-scope section -- historical context.yaml files never retro-fail.
+A11_EVALUATED=0
+A11_BIN="${SCRIPT_DIR}/leadv2-acceptance-shape.sh"
+A11_CTX="${LEADV2_HANDOFF_DIR}/${TASK_ID}/context.yaml"
+if [[ -f "${A11_CTX}" && -x "${A11_BIN}" ]]; then
+  if python3 -c "import yaml,sys; sys.exit(0 if (yaml.safe_load(open(sys.argv[1]))or{}).get('acceptance') else 1)" "${A11_CTX}" 2>/dev/null; then
+    A11_EVALUATED=1
+    A11_FAIL=0
+    if ! "${A11_BIN}" validate "${A11_CTX}"; then
+      A11_FAIL=1
+      failures+=("A11: ${TASK_ID} — acceptance block invalid, see stderr above; run: ${A11_BIN} validate ${A11_CTX}")
+    fi
+    if ! "${A11_BIN}" assert-precedence --task-id "${TASK_ID}"; then
+      A11_FAIL=1
+      failures+=("A11: ${TASK_ID} — acceptance.authored_at is not before the diff existed, see stderr above")
+    fi
+    if [[ "${A11_FAIL}" -eq 0 ]]; then
+      log_pass "A11 acceptance-shape: ${TASK_ID} block valid + authored before diff"
+    else
+      log_fail "A11 acceptance-shape: ${TASK_ID} failed (see failures above)"
+    fi
+  fi
+fi
+
 # ── result ────────────────────────────────────────────────────────────────────
 # M2: TOTAL_HARD reflects whether A8 was actually evaluated (7 base checks
 # A1-A7 + A8 only when A8_EVALUATED=1) -- a warn-skipped A8 (non-deploy task,
 # check script not vendored) must not inflate the receipt to a false "8/8".
-TOTAL_HARD=$((7 + A8_EVALUATED + A9_EVALUATED))
+TOTAL_HARD=$((7 + A8_EVALUATED + A9_EVALUATED + A10_EVALUATED + A11_EVALUATED))
 A8_SUFFIX=""
 [[ "$A8_EVALUATED" -eq 0 ]] && A8_SUFFIX=" (A8 not evaluated)"
 log_info "=== Phase 8 assertions for ${TASK_ID}: $((TOTAL_HARD - ${#failures[@]})) / ${TOTAL_HARD} HARD checks PASS${A8_SUFFIX} ==="

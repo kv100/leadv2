@@ -250,6 +250,19 @@ else
   log_info "[skip] leadv2-phase8-assert.sh not yet present — skipping gate assertions"
 fi
 
+# ── R3 headline: red-first ratio (RED-FIRST-GATE-01) ──────────────────────────
+# A10 above (inside leadv2-phase8-assert.sh) already ran the probe when
+# LEADV2_RED_FIRST != off; fold its report into the close summary so
+# red_proven/not_red/regression_only is visible on every close, not just on
+# gate failure. Report absent (LEADV2_RED_FIRST=off, or nothing to probe) is
+# silently skipped -- this is a headline, never a second gate.
+RED_FIRST_BIN="${SCRIPTS_DIR}/leadv2-red-first-gate.sh"
+RED_FIRST_REPORT="${LEADV2_HANDOFF_DIR}/${TASK_ID}/red-first-report.json"
+if [[ -x "$RED_FIRST_BIN" && -f "$RED_FIRST_REPORT" ]]; then
+  log_info "--- red-first headline ---"
+  bash "$RED_FIRST_BIN" report --task-id "$TASK_ID" 2>/dev/null | while IFS= read -r line; do log_info "$line"; done
+fi
+
 # ── Outcome-watch: schedule for Heavy/Standard tasks ─────────────────────────
 # Deterministic shell dispatch — not prose the lead skips.
 # Writes docs/leadv2/watches/<TASK_ID>.yaml; swept at every SessionStart by stale-sweeper.
