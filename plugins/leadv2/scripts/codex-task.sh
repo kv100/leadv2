@@ -71,6 +71,329 @@ CODEX_AUTOREAP="${CODEX_AUTOREAP:-1}"
 # later `reap` still has something to reconcile against instead of nothing.
 CODEX_REPAIR_DIR="${CODEX_REPAIR_DIR:-$HOME/.claude/cache/codex-repair}"
 
+# ── CODEX-GATE-01 ─ quota gate + post-launch watcher ─────────────────────────
+# A codex dispatch that hits the account usage limit ("Codex error: You've hit
+# your usage limit … try again at Aug 5th, 2026 10:55 AM") is dead until that
+# reset time; re-dispatching just burns another job slot for an identical
+# instant failure. This gate refuses a launch while a known lockout is active
+# (C3 state file) OR live quota is over threshold (C2 reader). It FAILS OPEN on
+# every error path so a missing reader/yaml/python3 never bricks codex.
+#
+# Refusal contract (C2, aligned with the router): on refusal emit the
+# LEADV2_DISPATCH_REFUSED: quota_gate marker on STDERR and exit 2 -- the router
+# (leadv2-dispatch-code.sh refusal_reason()) recognises a refusal ONLY when the
+# marker appears in stdout+stderr AND rc is in {1,2} (77 for kimi only). rc 2 is
+# accepted for every arm, so the router maps it to "arm refused -> next
+# candidate" with ZERO router change. stdout stays clean (marker is stderr-only)
+# so a caller capturing `JOB=$(codex-task.sh …)` still gets empty, not garbage.
+# Escape hatch: CODEX_SKIP_QUOTA_GATE=1 skips the gate entirely.
+_CODEX_LOCKOUT_FILE="$HOME/.claude/cache/codex-lockout.state"
+
+# C3 (tenant-generic) -- resolve the routing yaml. SAME convention as
+# leadv2-dispatch-product-close.sh:196 and leadv2-dispatch-code.sh:263:
+#   ${LEADV2_ROUTING_YAML:-<repo_root>/.claude/ref/leadv2-routing.yaml}
+# <repo_root>, first hit wins: --cwd/-C value carried by the invocation, else
+# `git -C "$PWD" rev-parse --show-toplevel`, else $PWD. Reads "$@" (the launch
+# args); called from _codex_quota_gate which still has the original args in
+# scope. Absent/unreadable yaml => the caller FAIL-OPENs (proceeds).
+_codex_quota_routing_yaml() {
+  if [[ -n "${LEADV2_ROUTING_YAML:-}" ]]; then
+    printf '%s' "$LEADV2_ROUTING_YAML"
+    return 0
+  fi
+  local _root="" _prev=""
+  local _a
+  for _a in "$@"; do
+    if [[ "$_prev" == "--cwd" || "$_prev" == "-C" ]]; then _root="$_a"; break; fi
+    _prev="$_a"
+  done
+  if [[ -z "$_root" ]]; then
+    _root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+  fi
+  [[ -z "$_root" ]] && _root="$PWD"
+  printf '%s/.claude/ref/leadv2-routing.yaml' "$_root"
+}
+
+# C4 -- read build/review threshold pct from the routing yaml. Same keys the
+# T-q resolver already reads (this gate is a SECOND consumer, not a second
+# source). $1=SUB, $2=yaml-path (empty/unreadable => fail-open, empty stdout).
+_codex_quota_thresholds() {
+  local _sub="$1" _cfg="${2:-}"
+  [[ -z "$_cfg" || ! -r "$_cfg" ]] && return 0   # no/unreadable config → skip live-quota check silently
+  command -v python3 >/dev/null 2>&1 || {
+    printf '[codex-task] quota-gate FAIL-OPEN: python3-missing (thresholds)\n' >&2
+    return 0
+  }
+  local _kind="build"
+  case "$_sub" in
+    review|adversarial-review|review-bg) _kind="review" ;;
+  esac
+  local _val
+  _val="$(python3 -c '
+import sys, re
+try:
+    txt = open(sys.argv[1]).read()
+except Exception:
+    sys.exit(1)
+try:
+    import yaml
+except Exception:
+    yaml = None
+gate = None
+if yaml is not None:
+    try:
+        doc = yaml.safe_load(txt)
+        gate = (doc or {}).get("codex_quota_gate") if isinstance(doc, dict) else None
+    except Exception:
+        gate = None
+key = sys.argv[2] + "_threshold_pct"
+val = None
+if isinstance(gate, dict) and gate.get(key) is not None:
+    val = gate[key]
+else:
+    m = re.search(r"^\s*%s:\s*(\d+)" % key, txt, re.M)
+    if m:
+        val = m.group(1)
+try:
+    print(int(val))
+except Exception:
+    sys.exit(1)
+' "$_cfg" "$_kind" 2>/dev/null)" || true
+  [[ -z "$_val" ]] && return 0
+  printf '%s' "$_val"
+}
+
+# C2 -- resolve the quota reader, invoke `python3 <reader> codex` (no --no-cache:
+# the reader caches 120s for codex, LEADV2_QUOTA_TTL_CODEX) under a portable
+# 8s deadline (macOS has no timeout(1) by default), and return the integer
+# used_percent on stdout. Empty stdout = fail-open (reader/quota unavailable).
+_codex_quota_read() {
+  local _reader=""
+  if [[ -n "${LEADV2_QUOTA_READ:-}" ]]; then
+    _reader="$LEADV2_QUOTA_READ"
+  elif [[ -f "$HOME/Projects/leadv2/plugins/leadv2/scripts/leadv2-quota-read.py" ]]; then
+    _reader="$HOME/Projects/leadv2/plugins/leadv2/scripts/leadv2-quota-read.py"
+  elif [[ -f "$HOME/.claude/plugins/local/leadv2/plugins/leadv2/scripts/leadv2-quota-read.py" ]]; then
+    _reader="$HOME/.claude/plugins/local/leadv2/plugins/leadv2/scripts/leadv2-quota-read.py"
+  fi
+  if [[ -z "$_reader" ]]; then
+    printf '[codex-task] quota-gate FAIL-OPEN: reader-missing\n' >&2
+    return 0
+  fi
+  command -v python3 >/dev/null 2>&1 || {
+    printf '[codex-task] quota-gate FAIL-OPEN: python3-missing (reader)\n' >&2
+    return 0
+  }
+  local _deadline_s="${LEADV2_QUOTA_READ_TIMEOUT:-8}"
+  local _ticks=$(( _deadline_s * 2 ))
+  local _tmp_out _pid _t=0
+  _tmp_out="$(mktemp)"
+  # M1 (CODEX-GATE-01): NO wrapping subshell -- background python3 directly so
+  # $_pid is python3's REAL pid and `kill "$_pid"` reaches it. The old
+  # `( python3 … ) &` made $_pid the subshell's pid; killing it left python3
+  # orphaned. A process-group kill is deliberately NOT used: a launcher must
+  # never risk taking siblings with it.
+  python3 "$_reader" codex > "$_tmp_out" 2>/dev/null &
+  _pid=$!
+  while (( _t < _ticks )); do
+    kill -0 "$_pid" 2>/dev/null || break
+    sleep 0.5
+    _t=$((_t + 1))
+  done
+  local _raw=""
+  if kill -0 "$_pid" 2>/dev/null; then
+    kill "$_pid" 2>/dev/null || true
+    wait "$_pid" 2>/dev/null || true
+    rm -f "$_tmp_out"
+    printf '[codex-task] quota-gate FAIL-OPEN: reader-timeout\n' >&2
+    return 0
+  fi
+  wait "$_pid" 2>/dev/null || true
+  [[ -s "$_tmp_out" ]] && _raw="$(cat "$_tmp_out")"
+  rm -f "$_tmp_out"
+  [[ -z "$_raw" ]] && { printf '[codex-task] quota-gate FAIL-OPEN: reader-empty\n' >&2; return 0; }
+  local _used
+  _used="$(printf '%s' "$_raw" | python3 -c '
+import sys, json
+try:
+    o = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+if o.get("status") != "ok":
+    sys.exit(1)
+wins = o.get("windows") or []
+bw = o.get("binding_window")
+if bw:
+    for w in wins:
+        if w.get("kind") == bw:
+            try:
+                print(int(round(float(w.get("used_percent")))))
+                sys.exit(0)
+            except Exception:
+                pass
+vals = []
+for w in wins:
+    try:
+        vals.append(float(w.get("used_percent")))
+    except Exception:
+        pass
+if vals:
+    print(int(round(max(vals))))
+    sys.exit(0)
+sys.exit(1)
+' 2>/dev/null)" || true
+  if [[ -z "$_used" ]]; then
+    printf '[codex-task] quota-gate FAIL-OPEN: reader-status-not-ok-or-no-used\n' >&2
+    return 0
+  fi
+  printf '%s' "$_used"
+}
+
+# C1 -- launch gate. Called once, early, only for SUB in {task,review,
+# adversarial-review,review-bg}. Cheapest checks first: (1) lockout memory,
+# (2) live quota over threshold. Refuse => LEADV2_DISPATCH_REFUSED marker on
+# stderr + exit 2 (router contract; see file header).
+_codex_quota_gate() {
+  [[ "${CODEX_SKIP_QUOTA_GATE:-0}" == "1" ]] && return 0
+  case "$SUB" in
+    task|review|adversarial-review|review-bg) ;;
+    *) return 0 ;;
+  esac
+
+  # check 1 -- lockout memory (offline, newest-wins).
+  if [[ -f "$_CODEX_LOCKOUT_FILE" ]]; then
+    local _until=""
+    _until="$(grep -E 'CODEX_JOB_FAILED_QUOTA until=' "$_CODEX_LOCKOUT_FILE" 2>/dev/null \
+      | tail -1 | sed -n 's/.*until=\([0-9T:+Z-]*\).*/\1/p')" || true
+    if [[ -n "$_until" ]]; then
+      local _u="${_until%%.*}"; _u="${_u%Z}Z"
+      local _now_e _until_e
+      _now_e=$(date -u +%s 2>/dev/null || echo 0)
+      _until_e=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$_u" +%s 2>/dev/null || echo 0)
+      if [[ "$_until_e" -gt 0 && "$_until_e" -gt "$_now_e" ]]; then
+        printf '[codex-task] CODEX_REFUSED_QUOTA reason=lockout used=na threshold=na until=%s\n' "$_until" >&2
+        printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+        exit 2
+      fi
+    fi
+  fi
+
+  # check 2 -- live quota over threshold (threshold from yaml; empty => skip).
+  local _cfg
+  _cfg="$(_codex_quota_routing_yaml "$@")" || _cfg=""
+  local _threshold
+  _threshold="$(_codex_quota_thresholds "$SUB" "$_cfg")" || _threshold=""
+  [[ -z "$_threshold" ]] && return 0
+  local _used
+  _used="$(_codex_quota_read)" || _used=""
+  [[ -z "$_used" ]] && return 0
+  if (( _used >= _threshold )); then
+    printf '[codex-task] CODEX_REFUSED_QUOTA reason=threshold used=%s threshold=%s until=na\n' "$_used" "$_threshold" >&2
+    printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+    exit 2
+  fi
+  return 0
+}
+
+# C5 helper -- record a quota failure: parse "try again at <text>" → UTC ISO,
+# append one lockout line, also echo it to stderr (the nohup log). $1=jobId $2=log.
+_codex_quota_watch_record() {
+  local _jid="$1" _log="$2"
+  local _reset_text=""
+  if [[ -f "$_log" ]]; then
+    _reset_text="$(grep -oiE 'try again at [^.)]+' "$_log" 2>/dev/null | head -1 \
+      | sed -E 's/^[Tt]ry again at[[:space:]]*//; s/[.)]+$//')" || true
+  fi
+  local _until_iso="" _src=""
+  if [[ -n "$_reset_text" ]]; then
+    _until_iso="$(printf '%s' "$_reset_text" | python3 -c '
+import sys, re, datetime, calendar, time
+s = sys.stdin.read().strip()
+s2 = re.sub(r"(\d+)(st|nd|rd|th)", r"\1", s)
+fmts = ["%b %d, %Y %I:%M %p", "%b %d, %Y %H:%M", "%B %d, %Y %I:%M %p",
+        "%B %d, %Y %H:%M", "%d %b %Y %I:%M %p", "%d %B %Y %I:%M %p"]
+for f in fmts:
+    try:
+        dt = datetime.datetime.strptime(s2, f)
+        print(dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        sys.exit(0)
+    except Exception:
+        continue
+sys.exit(1)
+' 2>/dev/null)" || true
+  fi
+  if [[ -n "$_until_iso" ]]; then
+    _src="parsed"
+  else
+    _until_iso="$(python3 -c 'import datetime; print((datetime.datetime.utcnow()+datetime.timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"))' 2>/dev/null)" || true
+    _src="default-6h"
+  fi
+  [[ -z "$_until_iso" ]] && return 0
+  # Idempotent on rerun (CODEX-GATE-01 item4 / q5). The mkdir watcher-lock above
+  # only guards against CONCURRENT watchers for the same job, and it is removed
+  # by the EXIT trap when the watcher finishes -- so a second SEQUENTIAL
+  # invocation of `__quota-watch <jid>` would otherwise pass the lock and append
+  # a duplicate lockout line. The lockout line is keyed by job id; if one
+  # already exists for this job, do not append again. Fixed-string match: every
+  # line carries ` job=<jid> src=`, so the trailing space anchors it exactly.
+  if [[ -f "$_CODEX_LOCKOUT_FILE" ]] \
+     && grep -qF " job=${_jid} " "$_CODEX_LOCKOUT_FILE" 2>/dev/null; then
+    return 0
+  fi
+  mkdir -p "$HOME/.claude/cache" 2>/dev/null || true
+  local _line
+  _line="$(date -u +%Y-%m-%dT%H:%M:%SZ) CODEX_JOB_FAILED_QUOTA until=$_until_iso job=$_jid src=$_src"
+  printf '%s\n' "$_line" >> "$_CODEX_LOCKOUT_FILE"
+  printf '%s\n' "$_line" >&2
+}
+
+# C5 -- post-launch watcher (hidden subcommand __quota-watch). Idempotent per job
+# (mkdir lock dir), bounded lifetime, cross-workspace scan (NEVER cwd-scoped --
+# that is exactly the trap that makes companion `status` lie). On a terminal
+# status whose log matches a usage-limit signature, record a lockout line.
+_codex_quota_watch() {
+  local _jid="${1:-}"
+  [[ -z "$_jid" ]] && return 0
+  _codex_watch_lockdir="$HOME/.claude/cache/codex-watch.${_jid}.lock"
+  mkdir "$_codex_watch_lockdir" 2>/dev/null || return 0   # a watcher already exists → exit 0
+  trap 'rm -rf "${_codex_watch_lockdir:-}" 2>/dev/null || true' EXIT
+  local _max="${CODEX_WATCH_MAX_S:-3600}" _poll="${CODEX_WATCH_POLL_S:-30}"
+  local _state_root="$HOME/.claude/plugins/data/codex-openai-codex/state"
+  local _elapsed=0
+  command -v python3 >/dev/null 2>&1 || return 0
+  while (( _elapsed < _max )); do
+    local _jf=""
+    for _f in "$_state_root"/*/jobs/"$_jid".json; do
+      [[ -f "$_f" ]] || continue
+      _jf="$_f"; break
+    done
+    if [[ -n "$_jf" ]]; then
+      local _status=""
+      _status="$(python3 -c 'import sys,json
+try:
+    print(json.load(open(sys.argv[1])).get("status") or "")
+except Exception:
+    sys.exit(1)' "$_jf" 2>/dev/null)" || _status=""
+      case "$_status" in
+        failed|terminated)
+          local _log="${_jf%.json}.log" _isq=0
+          if [[ -f "$_log" ]]; then
+            grep -iE "hit your usage limit|usage limit reached|rate limit exceeded" "$_log" >/dev/null 2>&1 && _isq=1
+          fi
+          [[ "$_isq" -eq 1 ]] && _codex_quota_watch_record "$_jid" "$_log"
+          return 0
+          ;;
+        completed|cancelled)
+          return 0
+          ;;
+      esac
+    fi
+    sleep "$_poll"
+    _elapsed=$((_elapsed + _poll))
+  done
+  return 0
+}
+
 # _codex_reap [job_id] -- scans $CODEX_REAP_STATE_ROOT (or just one job's file
 # when job_id is given, forcing the age check regardless of elapsed time) for
 # jobs stuck without a live babysitter and marks them terminal failed with a
@@ -725,6 +1048,52 @@ for ((_i = 1; _i <= $#; _i++)); do
   fi
 done
 
+# C5 dispatch -- hidden watcher subcommand. Runs detached via nohup from the
+# launch blocks below; never reaches the gate (SUB not in the gate set).
+if [[ "$SUB" == "__quota-watch" ]]; then
+  shift  # drop "__quota-watch"
+  _codex_quota_watch "${1:-}" "${2:-}"
+  exit 0
+fi
+
+# CODEX-GATE-01 -- quota launch gate. Runs once, early, for the four dispatch
+# subcommands. Refuses (marker + exit 2, router contract) on active lockout or
+# quota-over-threshold; fails open (continue) on any reader/yaml/python3 gap.
+_codex_quota_gate "$@"
+
+# C6 (CODEX-GATE-01) -- `status <id>` cross-workspace resolution. The companion's
+# status is cwd-scoped and reports "No job found" for a job launched from a
+# different workspaceRoot (the same trap that made zombies survive `cancel`).
+# Keep the companion call on the happy path; only when it fails or says "No job
+# found" do we fall back to the cross-workspace glob scan (same idiom as the
+# zombie reaper) and render <id> <status> <phase> workspaceRoot=<root> log=<log>.
+if [[ "$SUB" == "status" ]]; then
+  shift  # drop "status"
+  _st_id=""
+  for _a in "$@"; do [[ -z "$_st_id" && "$_a" != -* ]] && _st_id="$_a"; done
+  _st_out="" _st_rc=0
+  _st_out="$(node "$COMPANION" status "$@" 2>/dev/null)" || _st_rc=$?
+  if [[ $_st_rc -eq 0 && -n "$_st_out" ]] \
+     && ! printf '%s' "$_st_out" | grep -q "No job found"; then
+    printf '%s\n' "$_st_out"
+    exit 0
+  fi
+  # fallback: cross-workspace scan
+  if [[ -n "$_st_id" ]] && command -v python3 >/dev/null 2>&1; then
+    _st_root="$HOME/.claude/plugins/data/codex-openai-codex/state"
+    for _f in "$_st_root"/*/jobs/"$_st_id".json; do
+      [[ -f "$_f" ]] || continue
+      python3 -c 'import sys,json
+o=json.load(open(sys.argv[1]))
+print("%s %s %s workspaceRoot=%s log=%s" % (
+    o.get("id",""), o.get("status",""), o.get("phase",""),
+    o.get("workspaceRoot",""), o.get("logFile","")))' "$_f" 2>/dev/null && exit 0
+    done
+  fi
+  [[ -n "$_st_out" ]] && printf '%s\n' "$_st_out"
+  exit "$_st_rc"
+fi
+
 # Default (no --tier given): plugin 1.0.4 (codex-plugin-cc#270) ships gpt-5.5
 # with working structured output for adversarial-review -- empirically verified
 # 2026-04-28. No model pin in that case; codex-companion inherits its default
@@ -1003,6 +1372,16 @@ if [[ ( "$SUB" == "task" || "$SUB" == "review" ) && "$_has_background" -eq 1 ]];
     else
       echo "[codex-task] WARN: codex-guard.sh not found next to codex-task.sh -- background job $_JOB_ID is unguarded" >&2
     fi
+    # CODEX-GATE-01 C5 -- arm the quota watcher too (same nohup shape as the
+    # guard above). It records a lockout line if this job dies on a usage-limit
+    # error, so the next launch is refused up-front instead of burning another
+    # instant-failed slot. Resolves self via BASH_SOURCE so it works whether this
+    # script was invoked directly or through a sibling symlink (e.g. the
+    # ~/.claude/scripts/codex-task.sh link to this file).
+    _WRAPPER_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-task.sh"
+    nohup "$_WRAPPER_SELF" __quota-watch "$_JOB_ID" "$_GUARD_CWD" >/dev/null 2>&1 < /dev/null &
+    disown 2>/dev/null || true
+    echo "[codex-task] armed quota-watch for $_JOB_ID" >&2
   else
     # T-f item 3 (spawn failure visibility): no jobId means codex-companion
     # never wrote a job record at all -- today this WARNs and the failure

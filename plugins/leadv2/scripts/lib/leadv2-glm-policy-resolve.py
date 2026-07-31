@@ -52,7 +52,14 @@ DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
 # reviews up to its OWN 90% band (deliberately above the 80% BUILD gate -- review-only
 # headroom, same shape as Codex's existing 80-build/95-review reserve). Defaults carry
 # the fix so a repo whose yaml never opts into these keys still gets it (R7).
-DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "opus", "sonnet"]
+#
+# KIMI-CHANNEL-01b (2026-07-31): kimi joins the review pool BETWEEN glm and the paid
+# Anthropic arms -- a cheap extra free voice (TokenRouter kimi-k3-free) after the two
+# proven arms, before opus/sonnet (unproven quality, never the only reviewer if the
+# proven arms have headroom). Same positioning rationale as DEFAULT_BUILD_SPILL above.
+# kimi is PROBE-gated, not quota-gated: it has NO *_review_threshold_pct key, and its
+# only admission signal is kimi-coder.sh probe reachability (see kimi_review_available).
+DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "kimi", "opus", "sonnet"]
 DEFAULT_GLM_REVIEW_THRESHOLD_PCT = 90.0
 DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT = 95.0
 
@@ -111,6 +118,12 @@ def extract_glm_policy_block(routing_yaml_text: str) -> dict:
                 gate["review_arm_exclusions"] = [s.strip() for s in rex.group(1).split(',') if s.strip()]
             # dispatch-00629379: pool-mode-only keys, all optional -- absent means
             # resolve_review_pool() falls back to its own DEFAULT_* constants.
+            # KIMI-CHANNEL-01b: review_arm_order is the per-repo opt-out for kimi --
+            # an explicit list (e.g. [codex, glm, opus, sonnet]) OVERRIDES the default
+            # and so omits kimi entirely; listing it (e.g. [codex, glm, kimi, opus,
+            # sonnet]) opts in. kimi is probe-gated, so it has NO *_review_threshold_pct
+            # key here -- glm_review_threshold_pct and anthropic_review_threshold_pct
+            # are the only threshold keys the pool reads.
             rao = re.search(r'(?m)^[ \t]*review_arm_order:[ \t]*\[([^\]]*)\]', block)
             if rao:
                 gate["review_arm_order"] = [s.strip() for s in rao.group(1).split(',') if s.strip()]
@@ -209,6 +222,36 @@ def live_anthropic_pct(quota_live_bin):
         return None
 
 
+def kimi_review_available(kimi_bin):
+    """KIMI-CHANNEL-01b: probe-gate for kimi as a reviewer arm. kimi rides a FREE
+    TokenRouter arm (kimi-k3-free) so it has NO quota concept -- its only admission
+    signal is reachability of kimi-coder.sh's `probe` (GET /v1/models only, no lock,
+    no run-id -- see kimi-coder.sh:1483 cmd_probe / kimi_launch_probe).
+
+    Returns True | False | None (tri-state, same posture as live_*_pct):
+      True  -- rc 0 (channel up);
+      False -- rc 77 (channel down / unreachable, kimi-coder.sh emits the
+               LEADV2_DISPATCH_REFUSED marker here);
+      None  -- bin falsy/missing, OR rc 75 (secret/usage/lock error), OR any other
+               rc, OR timeout/subprocess exception. None is fail-open-to-UNKNOWN:
+               it blocks kimi UNLESS kimi is the terminal arm in `order` (it is not,
+               in the default) -- identical to how an unmeasured bucket blocks a
+               non-terminal arm. 15s timeout > kimi-coder.sh's own 10s curl cap so
+               the probe's own deadline always fires before we kill it."""
+    if not kimi_bin or not os.path.exists(kimi_bin):
+        return None
+    try:
+        out = subprocess.run(["bash", kimi_bin, "probe"], capture_output=True,
+                             timeout=15)
+        if out.returncode == 0:
+            return True
+        if out.returncode == 77:
+            return False
+        return None
+    except Exception:
+        return None
+
+
 def _fmt_pct(pct):
     try:
         f = float(pct)
@@ -218,7 +261,8 @@ def _fmt_pct(pct):
 
 
 def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = None,
-                         pcts: dict = None) -> dict:
+                         pcts: dict = None, kimi_bin: str = None,
+                         signals: dict = None) -> dict:
     """dispatch-00629379 §3.2: the ordered, quota-filtered, author-excluding reviewer
     pool -- the fix for "review gate has no available reviewer". Unlike
     resolve_glm_policy() (single arm, build+review), this always returns every
@@ -228,6 +272,15 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     pcts: optional injection for pure/test use -- keys "codex"/"glm"/"anthropic"
     (opus and sonnet share the single "anthropic" account reading). When a key is
     absent, the live read is fetched via quota_live_bin (fail-open to None).
+
+    kimi_bin / signals (KIMI-CHANNEL-01b): both optional and defaulted so every
+    existing caller is byte-compatible. kimi is PROBE-gated (kimi_review_available),
+    not quota-gated -- it has no entry in `pcts` and no threshold key. If a signals
+    dict carries safety_touched or protected_path, kimi is dropped with
+    kimi:excluded:safety (safety reviews never route to a free unproven arm). NB: the
+    live close-gate caller (resolve_review_pool_call) currently passes --signals '{}',
+    so this safety guard is latent in prod today -- it protects any caller that plumbs
+    signals and is unit-tested; plumbing real signals is OUT OF SCOPE for KIMI-CHANNEL-01b.
 
     Unknown-quota rule (§3.3): an unknown read blocks an arm ONLY if a later arm
     exists in the pool -- the terminal arm in `order` is never blocked by an unknown
@@ -268,6 +321,29 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     for i, arm in enumerate(order):
         if arm == author:
             entries.append("%s:author:" % arm)
+            continue
+        # KIMI-CHANNEL-01b: kimi is probe-gated, not quota-gated. It has NO threshold
+        # key and MUST branch here BEFORE the pct/threshold logic -- _threshold_for()'s
+        # fallback returns the Anthropic threshold for any non-codex/non-glm arm, which
+        # would silently treat kimi as a 95%-Anthropic arm and block it; _pct_for() has
+        # no kimi branch and would return None (unknown) on the live read path, but the
+        # threshold trap is the one this ordering kills. Author-exclusion is handled by
+        # the branch above. Safety (signals) excludes kimi outright (see §2.2).
+        if arm == "kimi":
+            if signals and (signals.get("safety_touched") or signals.get("protected_path")):
+                entries.append("kimi:excluded:safety")
+                continue
+            avail = kimi_review_available(kimi_bin)
+            if avail is True:
+                entries.append("kimi:ok:")  # empty 3rd field -- kimi has no pct
+                if not reviewer:
+                    reviewer = arm
+            elif avail is False:
+                entries.append("kimi:blocked:probe")
+            else:  # None -- bin missing / rc 75 / other rc / timeout
+                entries.append("kimi:unknown:")
+                if i == last_idx and not reviewer:
+                    reviewer = arm
             continue
         pct = _pct_for(arm)
         if pct is None:
@@ -444,6 +520,10 @@ def _main(argv):
     ap.add_argument("--quota-live", default=None)
     ap.add_argument("--review-pool", action="store_true")
     ap.add_argument("--author", default="")
+    ap.add_argument("--kimi-bin", default=None,
+                    help="kimi-coder.sh path for the review-pool probe gate "
+                         "(KIMI-CHANNEL-01b); falls back to LEADV2_DISPATCH_KIMI_BIN "
+                         "then scripts/kimi-coder.sh, mirroring dispatch-code.sh:1243.")
     args = ap.parse_args(argv)
 
     try:
@@ -462,6 +542,15 @@ def _main(argv):
     if quota_live_bin is None:
         quota_live_bin = str(Path(__file__).resolve().parent.parent / "leadv2-quota-live.sh")
 
+    # KIMI-CHANNEL-01b: --kimi-bin -> LEADV2_DISPATCH_KIMI_BIN (same env name
+    # leadv2-dispatch-code.sh:1243 reads) -> scripts/kimi-coder.sh, so tests and prod
+    # share one knob. Only consumed on the --review-pool path.
+    kimi_bin = args.kimi_bin
+    if kimi_bin is None:
+        kimi_bin = os.environ.get("LEADV2_DISPATCH_KIMI_BIN")
+    if kimi_bin is None:
+        kimi_bin = str(Path(__file__).resolve().parent.parent / "kimi-coder.sh")
+
     result = resolve_glm_policy(glm_policy, signals, args.job, args.base_arm, quota_live_bin)
     print("arm=%s" % result["arm"])
     print("rule=%s" % result["rule"])
@@ -472,7 +561,8 @@ def _main(argv):
     # dispatch-00629379: additive-only -- absent --review-pool, output above is
     # byte-identical to pre-change (v1-equivalence, design §7 test f).
     if args.review_pool:
-        pool_result = resolve_review_pool(glm_policy, args.author, quota_live_bin)
+        pool_result = resolve_review_pool(glm_policy, args.author, quota_live_bin,
+                                          kimi_bin=kimi_bin, signals=signals)
         print("reviewer=%s" % pool_result["reviewer"])
         print("pool=%s" % ",".join(pool_result["pool"]))
         print("refusal=%s" % pool_result["refusal"])

@@ -194,8 +194,39 @@ resolve_review_pool_call() {
     return
   fi
   local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
+  # CODEX-GATE-01 item 6: compute REAL safety signals from the lane's write paths vs the
+  # protected_path_patterns in routing yaml (fail-closed), instead of the hardcoded
+  # --signals '{}' that left the resolver's kimi:excluded:safety branch unreachable on the
+  # live review path. WRITES_CSV is resolved at line 18, long before this call. If the lib
+  # is missing -> fail-closed JSON (protected_path=true) so the free arm is never admitted.
+  local _signals_json='{"protected_path":true,"safety_touched":true}'
+  local _signals_lib="${SCRIPT_DIR}/lib/leadv2-review-signals.sh"
+  local _sig_source="lib_missing_failclosed" _sig_protected="1" _sig_matched="-"
+  if [[ -f "${_signals_lib}" ]]; then
+    # shellcheck source=lib/leadv2-review-signals.sh
+    source "${_signals_lib}"
+    # The lib is invoked under $(), a subshell that cannot propagate globals back, so it also
+    # emits signals_source=/signals_matched= on stderr -- capture that to a temp file.
+    local _sig_cap
+    _sig_cap="$(mktemp "${TMPDIR:-/tmp}/leadv2-rev-sig.XXXXXX" 2>/dev/null || printf '%s/leadv2-rev-sig.%s' "${TMPDIR:-/tmp}" "$$")"
+    _signals_json="$(leadv2_review_signals "${routing_yaml}" "${WRITES_CSV}" 2>"${_sig_cap}" || true)"
+    _sig_source="$(sed -n 's/^signals_source=//p' "${_sig_cap}" | head -n1)"
+    _sig_matched="$(sed -n 's/^signals_matched=//p' "${_sig_cap}" | head -n1)"
+    rm -f "${_sig_cap}" 2>/dev/null || true
+    [[ -n "${_sig_source}" ]] || _sig_source="lib_missing_failclosed"
+    [[ -n "${_sig_matched}" ]] || _sig_matched="-"
+    # protected_path bool: read straight off the JSON the lib produced (its own source of truth).
+    case "${_signals_json}" in
+      *'"protected_path":false'*) _sig_protected="0" ;;
+      *) _sig_protected="1" ;;
+    esac
+  fi
+  # Observability (D5): without this line the fix is unobservable at any human surface --
+  # which is exactly what let --signals '{}' live. matched=- means no path matched (or scope
+  # unknown); source token distinguishes lane_writes from the two fail-closed reasons.
+  emit decision "review_signals task=${TASK} protected_path=${_sig_protected} source=${_sig_source} matched=${_sig_matched}"
   local -a resolver_args=(--routing-yaml "${routing_yaml}" --job review --base-arm codex \
-    --review-pool --author "${AUTHOR}" --signals '{}')
+    --review-pool --author "${AUTHOR}" --signals "${_signals_json}")
   [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
   python3 "${resolver}" "${resolver_args[@]}" 2>/dev/null || printf 'reviewer=\npool=\nrefusal=resolver_error_failclosed\n'
 }
@@ -383,7 +414,54 @@ fi
 
 diff_file="${HANDOFF}/review.diff"
 : > "${diff_file}"
+repos_file="${HANDOFF}/review.diff.repos"
+: > "${repos_file}"
 blocked_reason=""
+CROSS_REPO_DIFF="${LEADV2_REVIEW_DIFF_CROSS_REPO:-1}"
+# P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01 (M3) / C1+C3 (LANDING-BLOCKER-R2): diff_root is
+# gated by CROSS_REPO_DIFF itself so the flag OFF is a genuine one-flip full revert to
+# pre-fix behaviour (diff against ${ROOT}), not a half-revert that still points at a
+# worktree. When the flag is on, prefer LEADV2_LANE_WORK_ROOT -- the SAME value
+# dispatch-code.sh gave every worker's --cwd, so diff_root can never disagree with where
+# the code actually landed (C1: glm/codex used to write to PROJECT_ROOT while this always
+# diffed the worktree). `path-of` (keyed by the FOUNDER task id -- worktrees are created
+# keyed by founder tid in leadv2-fanout.sh, not this script's own sig8 TASK) is only the
+# fallback for a close gate started outside the launcher lineage (manual re-run, test
+# harness invoking this script directly).
+diff_root="${ROOT}"
+if [[ "${CROSS_REPO_DIFF}" == "1" ]]; then
+  _lane_root="${LEADV2_LANE_WORK_ROOT:-}"
+  if [[ -z "${_lane_root}" || ! -d "${_lane_root}" ]]; then
+    _lane_root="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
+  fi
+  [[ -n "${_lane_root}" && -d "${_lane_root}" ]] && diff_root="${_lane_root}"
+fi
+# Resolve a possibly-symlinked path to the repo that actually owns it. persona-engine's
+# .claude/scripts/leadv2-*.sh are git-tracked symlinks into a SEPARATE ~/Projects/leadv2
+# checkout -- a symlink blob only stores its target path string, so `git -C "${diff_root}"
+# diff -- <that path>` is empty by construction. No portable `readlink -f` on macOS.
+_pc_realpath() { python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1"; }
+# C2 (LANDING-BLOCKER-R2): `git diff HEAD` never sees untracked paths, and a brand-new
+# file is a large share of lane deliverables -- LANE_WRITES=agent/newmod.py, created but
+# never `git add`ed, used to yield an empty diff every time. Diff against a THROWAWAY COPY
+# of the real index (never the real one -- other live sessions share this tree, and an
+# empty GIT_INDEX_FILE makes every tracked file read as deleted) so `git add -N` can
+# register the new path without mutating anything a concurrent session or a later
+# `git commit` would see. Falls back to a plain diff (loses untracked coverage, never
+# lies) if the index copy itself cannot be made.
+_pc_repo_diff() { # <repo_abs> <path...> -> diff on stdout (tracked + untracked + deletions)
+  local repo="$1"; shift
+  local gitdir tmpidx
+  gitdir="$(git -C "${repo}" rev-parse --absolute-git-dir 2>/dev/null)" || { git -C "${repo}" diff HEAD -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; return 0; }
+  tmpidx="$(mktemp "${TMPDIR:-/tmp}/leadv2-pc-idx.XXXXXX")" || { git -C "${repo}" diff HEAD -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; return 0; }
+  if cp "${gitdir}/index" "${tmpidx}" 2>/dev/null; then
+    GIT_INDEX_FILE="${tmpidx}" git -C "${repo}" add -N -- "$@" >/dev/null 2>&1 || true
+    GIT_INDEX_FILE="${tmpidx}" git -C "${repo}" diff HEAD -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+  else
+    git -C "${repo}" diff HEAD -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+  fi
+  rm -f "${tmpidx}"
+}
 if [[ -n "${WRITES_CSV}" ]]; then
   IFS=',' read -r -a raw_writes <<< "${WRITES_CSV}"
   writes=()
@@ -392,13 +470,64 @@ if [[ -n "${WRITES_CSV}" ]]; then
     [[ -n "${w}" ]] && writes+=("${w}")
   done
   if [[ ${#writes[@]} -gt 0 ]]; then
-    git -C "${ROOT}" diff HEAD -- "${writes[@]}" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' > "${diff_file}" 2>/dev/null || true
+    if [[ "${CROSS_REPO_DIFF}" == "1" ]]; then
+      # M8/M9 (LANDING-BLOCKER-R2): no associative arrays -- `declare -A` hard-errors under
+      # bash 3.2, and dispatch-code.sh resolves `bash` from PATH, which can be /bin/bash
+      # 3.2 without homebrew on PATH -- and no space-joined path strings (word-splits any
+      # path containing a space). Two parallel INDEXED arrays instead; both constructs are
+      # bash-3.2-safe.
+      repo_order=()
+      repo_of=()
+      rel_of=()
+      for i in "${!writes[@]}"; do
+        real_abs="$(_pc_realpath "${diff_root}/${writes[$i]}")"
+        r="$(git -C "$(dirname "${real_abs}")" rev-parse --show-toplevel 2>/dev/null || true)"
+        [[ -z "${r}" ]] && r="${diff_root}"
+        repo_of[$i]="${r}"
+        rel_of[$i]="${real_abs#"${r}"/}"
+        _seen=0
+        for q in "${repo_order[@]:-}"; do [[ "${q}" == "${r}" ]] && { _seen=1; break; }; done
+        (( _seen )) || repo_order+=("${r}")
+      done
+      # H5 (LANDING-BLOCKER-R2): a repo that contributes nothing used to be skipped
+      # silently and the block check fired only when EVERY repo was empty, so a lane
+      # spanning two repos with one side empty got an unrecorded APPROVE on half a diff.
+      # Journal a per-repo byte count and a sidecar (L11) for every declared repo, and
+      # block as `partial_diff` (distinct from `unscopable_diff`, so the two failure
+      # modes stay separable in the journal) whenever the group is a genuine MIX of
+      # zero-byte and non-zero-byte repos. A group where every repo is empty falls
+      # through to the pre-existing `unscopable_diff` check below unchanged.
+      _zero_repos=0
+      _nonzero_repos=0
+      for repo in "${repo_order[@]}"; do
+        paths=()
+        for i in "${!writes[@]}"; do
+          [[ "${repo_of[$i]}" == "${repo}" ]] && paths+=("${rel_of[$i]}")
+        done
+        repo_diff="$(_pc_repo_diff "${repo}" "${paths[@]}")"
+        n=${#repo_diff}
+        emit decision "review_diff task=${TASK} repo=$(basename "${repo}") bytes=${n}"
+        printf '%s %s\n' "$(basename "${repo}")" "${n}" >> "${repos_file}"
+        if [[ -z "${repo_diff}" ]]; then
+          _zero_repos=$((_zero_repos + 1))
+        else
+          _nonzero_repos=$((_nonzero_repos + 1))
+          printf '%s\n' "${repo_diff}" >> "${diff_file}"
+        fi
+      done
+      if [[ ${_zero_repos} -gt 0 && ${_nonzero_repos} -gt 0 ]]; then
+        blocked_reason="partial_diff"
+      fi
+    else
+      repo_diff="$(_pc_repo_diff "${diff_root}" "${writes[@]}")"
+      printf '%s' "${repo_diff}" > "${diff_file}"
+    fi
   fi
-  [[ -s "${diff_file}" ]] || blocked_reason="unscopable_diff"
+  [[ -s "${diff_file}" ]] || blocked_reason="${blocked_reason:-unscopable_diff}"
 else
-  wt="$(bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${TASK}" 2>/dev/null || true)"
-  if [[ -n "${wt}" && -d "${wt}" ]]; then
-    git -C "${wt}" diff HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' > "${diff_file}" 2>/dev/null || true
+  if [[ -d "${diff_root}" ]]; then
+    repo_diff="$(_pc_repo_diff "${diff_root}")"
+    printf '%s' "${repo_diff}" > "${diff_file}"
   fi
   [[ -s "${diff_file}" ]] || blocked_reason="unscopable_diff"
 fi
@@ -418,58 +547,125 @@ if [[ -f "${ledger}" ]] && grep -qF "\"diff_hash\":\"${diff_hash}\"" "${ledger}"
   _dl_note landed review_dedup "diff=${diff_hash:0:8}"
   exit 0
 fi
-review_out="${HANDOFF}/review-${reviewer}.md"
-review_err="${HANDOFF}/review-${reviewer}.err"
+# KIMI-CHANNEL-01b §2.3.1-2.3.2: the reviewer launcher is now a function so the new
+# kimi arm can be added WITHOUT touching the codex/glm/opus/sonnet branches. The
+# per-arm output/err paths move inside it keyed on ${arm} (was review-${reviewer}).
+# No behaviour change for the existing four arms -- a pure move + one new kimi branch.
+run_reviewer_arm() { # <arm>
+  local arm="$1"
+  review_out="${HANDOFF}/review-${arm}.md"
+  review_err="${HANDOFF}/review-${arm}.err"
+  mission_file="${HANDOFF}/review-mission.md"
+  if [[ "${arm}" == codex ]]; then
+    bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait \
+      --focus "Review ONLY the diff at ${diff_file}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract}" \
+      > "${review_out}" 2> "${review_err}"; review_rc=$?
+  elif [[ "${arm}" == glm ]]; then
+    # dispatch-00629379: new branch -- GLM is now a valid reviewer arm (founder decision
+    # 2026-07-30, gated at its own 90% review threshold by the resolver above, never a
+    # blind fallback). Primary channel glm-coder.sh; second channel omp-task.sh when the
+    # per-repo glm-coder.sh lock is busy (exit 75), per CLAUDE.md Model routing v2. Both
+    # must land the SAME REVIEW_VERDICT:/REVIEW_FINDINGS: contract in ${review_out} that
+    # parse_review_verdict() below already enforces for every other reviewer branch.
+    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+      "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+    glm_bin="${LEADV2_DISPATCH_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
+    omp_bin="${LEADV2_DISPATCH_OMP_BIN:-${ROOT}/.claude/leadv2-overrides/omp-task.sh}"
+    review_rc=75
+    if [[ -x "${glm_bin}" ]]; then
+      bash "${glm_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
+      review_rc=$?
+    fi
+    if [[ ${review_rc} -eq 75 && -x "${omp_bin}" ]]; then
+      omp_run_id="$(bash "${omp_bin}" task "$(cat "${mission_file}")" --dir "${ROOT}" 2>> "${review_err}")"
+      if [[ -n "${omp_run_id}" ]]; then
+        omp_status=""
+        omp_waited=0
+        while (( omp_waited < 900 )); do
+          omp_status="$(bash "${omp_bin}" status "${omp_run_id}" 2>/dev/null)"
+          [[ "${omp_status}" == status=done* || "${omp_status}" == status=failed* ]] && break
+          sleep 5
+          omp_waited=$((omp_waited + 5))
+        done
+        cat "/tmp/omp-task-${omp_run_id}.log" > "${review_out}" 2>/dev/null || true
+        [[ "${omp_status}" == status=done* ]] && review_rc=0 || review_rc=1
+      fi
+    fi
+  elif [[ "${arm}" == kimi ]]; then
+    # KIMI-CHANNEL-01b: kimi joins the review pool between glm and opus/sonnet (cheap
+    # free voice, probe-gated by the resolver above). Same REVIEW_VERDICT:/REVIEW_FINDINGS:
+    # contract as every other branch. kimi-coder.sh `probe` is lock-free (GET /v1/models
+    # only) and `run` blocks, so this is a straight two-step: probe first, then run.
+    # rc 77 (channel down) and rc 75 (lock/secret/usage) are BOTH admission refusals --
+    # there is no omp-task.sh second channel for kimi (that is a GLM-lock construct), so
+    # either rc is handled by the one-shot re-selection at the call site below, never here.
+    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+      "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+    kimi_bin="${LEADV2_DISPATCH_KIMI_BIN:-${SCRIPT_DIR}/kimi-coder.sh}"
+    if ! bash "${kimi_bin}" probe >/dev/null 2> "${review_err}"; then
+      review_rc=77
+      return
+    fi
+    bash "${kimi_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
+    review_rc=$?
+  else
+    # sonnet or opus (R1 fix: launcher must pass the RESOLVED arm, not a hardcoded
+    # model -- the old `--model sonnet` here meant a resolver that returned opus still
+    # ran sonnet, a lying-green review).
+    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+      "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+    PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model "${arm}" --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait \
+      > "${review_out}" 2> "${review_err}"; review_rc=$?
+  fi
+}
+
+# KIMI-CHANNEL-01b §2.3.3: read the first entry AFTER <after-arm> whose disposition is
+# :ok: in the already-computed ${pool} (comma-joined, e.g. codex:blocked:100,glm:ok:,...).
+# Prints the arm name on stdout, exit 1 if none. Used for the bounded one-shot
+# re-selection -- called at most once, only for kimi, so the gate can never loop.
+next_ok_arm_after() { # <after-arm>  reads ${pool}
+  local after="$1" found=0 entry arm
+  local _pool="${pool}"
+  local IFS=','
+  for entry in ${_pool}; do
+    arm="${entry%%:*}"
+    if [[ "${found}" == "1" && "${entry}" == "${arm}:ok:"* ]]; then
+      printf '%s' "${arm}"
+      return 0
+    fi
+    [[ "${arm}" == "${after}" ]] && found=1
+  done
+  return 1
+}
+
 review_adir="${ROOT}/docs/handoff/dispatch-${TASK}-review"
 mkdir -p "${review_adir}"
 REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
 touch "${REVIEW_STAMP}"
 review_contract=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.'
-if [[ "${reviewer}" == codex ]]; then
-  bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait \
-    --focus "Review ONLY the diff at ${diff_file}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract}" \
-    > "${review_out}" 2> "${review_err}"; review_rc=$?
-elif [[ "${reviewer}" == glm ]]; then
-  # dispatch-00629379: new branch -- GLM is now a valid reviewer arm (founder decision
-  # 2026-07-30, gated at its own 90% review threshold by the resolver above, never a
-  # blind fallback). Primary channel glm-coder.sh; second channel omp-task.sh when the
-  # per-repo glm-coder.sh lock is busy (exit 75), per CLAUDE.md Model routing v2. Both
-  # must land the SAME REVIEW_VERDICT:/REVIEW_FINDINGS: contract in ${review_out} that
-  # parse_review_verdict() below already enforces for every other reviewer branch.
-  mission_file="${HANDOFF}/review-mission.md"
-  printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
-    "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
-  glm_bin="${LEADV2_DISPATCH_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
-  omp_bin="${LEADV2_DISPATCH_OMP_BIN:-${ROOT}/.claude/leadv2-overrides/omp-task.sh}"
-  review_rc=75
-  if [[ -x "${glm_bin}" ]]; then
-    bash "${glm_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
-    review_rc=$?
+run_reviewer_arm "${reviewer}"
+# KIMI-CHANNEL-01b §2.3.3: ONE bounded re-selection. kimi's probe is lock-free, so a
+# probe-ok can still race to a run that fails (rc 77 = channel dropped between probe
+# and run; rc 75 = lock/secret/usage). The omp-task.sh second channel is GLM-only, so
+# for kimi either rc means: skip to the next :ok: arm in the already-computed pool and
+# run THAT exactly once. Hard cap: this branch fires at most once and only for kimi --
+# the gate can never loop. If no later :ok: arm exists (or it is the author), fall
+# through to the existing no_reviewer path with refusal=kimi_unavailable_no_next_arm.
+if [[ "${reviewer}" == kimi && ( ${review_rc} -eq 77 || ${review_rc} -eq 75 ) ]]; then
+  next_arm="$(next_ok_arm_after kimi || true)"
+  if [[ -n "${next_arm}" && "${next_arm}" != "${AUTHOR}" ]]; then
+    # R9 defense-in-depth: the re-selected arm is re-checked against the author too.
+    emit decision "review_gate task=${TASK} status=arm_skipped arm=kimi rc=${review_rc} next=${next_arm}"
+    reviewer="${next_arm}"
+    run_reviewer_arm "${reviewer}"
+  else
+    refusal="kimi_unavailable_no_next_arm"
+    printf 'status: no_reviewer\nauthor: %s\nrefusal: %s\npool: %s\n' \
+      "${AUTHOR}" "${refusal}" "${pool}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=no_reviewer author=${AUTHOR} refusal=${refusal} pool=${pool}"
+    _dl_note parked "${refusal}" "author=${AUTHOR} pool=${pool}"
+    exit 0
   fi
-  if [[ ${review_rc} -eq 75 && -x "${omp_bin}" ]]; then
-    omp_run_id="$(bash "${omp_bin}" task "$(cat "${mission_file}")" --dir "${ROOT}" 2>> "${review_err}")"
-    if [[ -n "${omp_run_id}" ]]; then
-      omp_status=""
-      omp_waited=0
-      while (( omp_waited < 900 )); do
-        omp_status="$(bash "${omp_bin}" status "${omp_run_id}" 2>/dev/null)"
-        [[ "${omp_status}" == status=done* || "${omp_status}" == status=failed* ]] && break
-        sleep 5
-        omp_waited=$((omp_waited + 5))
-      done
-      cat "/tmp/omp-task-${omp_run_id}.log" > "${review_out}" 2>/dev/null || true
-      [[ "${omp_status}" == status=done* ]] && review_rc=0 || review_rc=1
-    fi
-  fi
-else
-  # sonnet or opus (R1 fix: launcher must pass the RESOLVED arm, not a hardcoded
-  # model -- the old `--model sonnet` here meant a resolver that returned opus still
-  # ran sonnet, a lying-green review).
-  mission_file="${HANDOFF}/review-mission.md"
-  printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
-    "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
-  PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model "${reviewer}" --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait \
-    > "${review_out}" 2> "${review_err}"; review_rc=$?
 fi
 
 resolve_review_artifact || true
