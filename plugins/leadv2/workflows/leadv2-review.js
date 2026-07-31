@@ -148,7 +148,7 @@ if (SAFETY) {
 if (CODEX_ON) {
   // Codex is primary: unshift to run before agent-critic in parallel (first slot = primary adversarial brain)
   reviewers.unshift(() => agent(
-    `Run and wait: bash ~/.claude/scripts/codex-task.sh adversarial-review --wait --base ${BASE} --tier top. Then read findings with: bash ~/.claude/scripts/cx-tail.sh <output-file>. Parse [critical]/[high]/[medium]/[low] lines into findings (dimension="codex"). If codex unavailable (exit non-zero), return empty findings with summary_for_lead="codex unavailable". Do NOT invent findings.`,
+    `Run and wait: bash ~/.claude/scripts/codex-task.sh adversarial-review --wait --base ${BASE} --tier top. Then read findings with: bash ~/.claude/scripts/cx-tail.sh <output-file>. Parse [critical]/[high]/[medium]/[low] lines into findings (dimension="codex"). If codex unavailable (exit non-zero), return empty findings with summary_for_lead="codex unavailable". Do NOT invent findings. Authoritative surfaces for this repo: \`.claude/CLAUDE.md\`, \`docs/reference/ENGINE-REFERENCE.md\`, \`docs/systems-map/CONTROL-TRUTH.md\`, \`docs/systems-map/TRUTH-TABLE.md\`. Read only the ones the diff touches. Treat any \`docs/specs/*.md\` as possibly stale unless corroborated by code. Before promoting a Codex finding, corroborate it against those surfaces; drop or downgrade any finding whose sole basis is a \`docs/specs/*.md\` claim.`,
     { label: 'codex-adversarial', phase: 'Review', model: 'haiku', effort: 'low', schema: FINDINGS_SCHEMA }))
   reviewerFamilies.unshift('openai')
 }
