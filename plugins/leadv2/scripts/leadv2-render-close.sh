@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# leadv2-render-close.sh — Render a closed YAML into BOARD.md, LEAD_V2_STATE.md,
+# leadv2-render-close.sh — Render a closed YAML into LEAD_V2_STATE.md,
 # DIALOGUE.md, and QUEUE.md. Idempotent via <!-- rendered: <task_id> --> markers.
 #
 # Usage:
@@ -16,7 +16,7 @@
 # YAML schema required fields:
 #   task_id, closed_at, title, summary_one_line, class, outcome,
 #   files_touched, commit, vps_deployed, also_closes, followups,
-#   board_prose, dialogue_prose
+#   dialogue_prose
 
 set -euo pipefail
 
@@ -54,7 +54,6 @@ else
 fi
 
 CLOSED_DIR="${LEADV2_LEADV2_DIR}/closed"
-BOARD_FILE="${LEADV2_BOARD_PATH}"
 STATE_FILE="${LEADV2_LEAD_STATE_PATH}"
 DIALOGUE_FILE="${LEADV2_DIALOGUE_PATH}"
 QUEUE_FILE="${LEADV2_QUEUE_PATH}"
@@ -93,7 +92,7 @@ required = [
     "task_id", "closed_at", "title", "summary_one_line",
     "class", "outcome", "files_touched", "commit",
     "vps_deployed", "also_closes", "followups",
-    "board_prose", "dialogue_prose",
+    "dialogue_prose",
 ]
 missing = [k for k in required if k not in data]
 if missing:
@@ -111,13 +110,9 @@ print(f"YAML_COMMIT='{esc(data['commit'])}'")
 print(f"YAML_CLASS='{esc(data['class'])}'")
 print(f"YAML_OUTCOME='{esc(data['outcome'])}'")
 
-board_tmp = tempfile.mktemp(suffix=".board_prose")
 dial_tmp  = tempfile.mktemp(suffix=".dial_prose")
-with open(board_tmp, "w") as f:
-    f.write(data["board_prose"])
 with open(dial_tmp, "w") as f:
     f.write(data["dialogue_prose"])
-print(f"BOARD_PROSE_FILE='{board_tmp}'")
 print(f"DIAL_PROSE_FILE='{dial_tmp}'")
 PYEOF
     ); then
@@ -132,40 +127,16 @@ PYEOF
   local rendered_any=0
 
   # Pre-flight: only LEAD_V2_STATE.md is a hard requirement.
-  # BOARD.md, DIALOGUE.md, QUEUE.md are best-effort — missing is a warning, not a failure.
+  # DIALOGUE.md, QUEUE.md are best-effort — missing is a warning, not a failure.
   if [[ ! -f "$STATE_FILE" ]]; then
     log_error "Target missing: $STATE_FILE — aborting render for ${task_id}"
     return 1
   fi
 
   # cleanup prose temp files on exit
-  trap 'rm -f "${BOARD_PROSE_FILE:-}" "${DIAL_PROSE_FILE:-}"' RETURN
+  trap 'rm -f "${DIAL_PROSE_FILE:-}"' RETURN
 
-  # ── 1. BOARD.md — targeted-prepend (best-effort) ───────────────────────────
-  if [[ ! -f "$BOARD_FILE" ]]; then
-    log_warning "BOARD.md missing: ${BOARD_FILE} — skipping (non-blocking)"
-  elif grep -qF "$marker" "$BOARD_FILE"; then
-    log_info "BOARD.md already rendered for ${YAML_TASK_ID} — skipping"
-  else
-    local board_prose
-    board_prose="$(cat "$BOARD_PROSE_FILE")"
-    # Build new HEAD block
-    local new_block
-    new_block="## HEAD — ${YAML_DATE} Kyiv (${YAML_TASK_ID} — ${YAML_TITLE})"$'\n\n'
-    new_block+="${board_prose}"$'\n\n'
-    new_block+="${marker}"$'\n'
-
-    # Insert immediately after the first line (the <!-- BOARD HEAD --> comment)
-    {
-      head -1 "$BOARD_FILE"
-      printf -- '%s\n' "$new_block"
-      tail -n +2 "$BOARD_FILE"
-    } | atomic_write "$BOARD_FILE" || log_warning "BOARD.md write failed for ${YAML_TASK_ID} — non-blocking"
-    log_info "BOARD.md: prepended HEAD block for ${YAML_TASK_ID}"
-    rendered_any=1
-  fi
-
-  # ── 2. LEAD_V2_STATE.md — targeted-insert after history: ───────────────────
+  # ── 1. LEAD_V2_STATE.md — targeted-insert after history: ───────────────────
   if [[ ! -f "$STATE_FILE" ]]; then
     log_error "Target missing: $STATE_FILE — aborting"
     return 1
@@ -205,7 +176,7 @@ PYEOF
     rendered_any=1
   fi
 
-  # ── 3. DIALOGUE.md — targeted-prepend after line 1 (best-effort) ───────────
+  # ── 2. DIALOGUE.md — targeted-prepend after line 1 (best-effort) ───────────
   if [[ ! -f "$DIALOGUE_FILE" ]]; then
     log_warning "DIALOGUE.md missing: ${DIALOGUE_FILE} — skipping (non-blocking)"
   elif grep -qF "$marker" "$DIALOGUE_FILE"; then
@@ -229,7 +200,7 @@ PYEOF
     rendered_any=1
   fi
 
-  # ── 4. QUEUE.md [x] mark (best-effort; skip when frozen redirect banner) ────
+  # ── 3. QUEUE.md [x] mark (best-effort; skip when frozen redirect banner) ────
   if [[ -f "$QUEUE_FILE" ]]; then
     # Check if QUEUE.md is a frozen redirect banner — first non-blank line contains
     # "frozen" or "redirected" → skip write entirely.
@@ -261,7 +232,7 @@ sys.exit(1)
     log_warning "QUEUE.md missing: ${QUEUE_FILE} — skipping [x] write (non-blocking)"
   fi
 
-  # ── 5. tasks.yaml summary_one_line update (best-effort via lib) ─────────────
+  # ── 4. tasks.yaml summary_one_line update (best-effort via lib) ─────────────
   local _lib_sh="${SCRIPT_DIR}/leadv2-tasks-lib.sh"
   if [[ -f "$_lib_sh" ]]; then
     # shellcheck source=leadv2-tasks-lib.sh

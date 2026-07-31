@@ -84,7 +84,7 @@ lv2_script() {
 }
 
 # ── Path loader — reads .claude/leadv2-overrides/state-paths.yaml ────────
-# Exports LEADV2_BOARD_PATH, LEADV2_DIALOGUE_PATH, LEADV2_QUEUE_PATH,
+# Exports LEADV2_DIALOGUE_PATH, LEADV2_QUEUE_PATH,
 # LEADV2_LEAD_STATE_PATH, LEADV2_HANDOFF_DIR, LEADV2_LEADV2_DIR.
 # Callers that need portable paths must call _lv2_load_paths at top.
 # Values from yaml override defaults; existing env vars are preserved.
@@ -106,7 +106,6 @@ with open(yaml_path) as f:
     d = yaml.safe_load(f) or {}
 # Path keys — resolved relative to project_root
 path_defaults = {
-    "LEADV2_BOARD_PATH":        project_root + "/docs/BOARD.md",
     "LEADV2_DIALOGUE_PATH":     project_root + "/docs/agents/product-owner/DIALOGUE.md",
     "LEADV2_QUEUE_PATH":        project_root + "/docs/agents/product-owner/QUEUE.md",
     "LEADV2_LEAD_STATE_PATH":   project_root + "/docs/LEAD_V2_STATE.md",
@@ -122,7 +121,6 @@ path_defaults = {
     "LEADV2_TASKS_RELEASE_CMD": "",
 }
 path_key_map = {
-    "board_path":        "LEADV2_BOARD_PATH",
     "dialogue_path":     "LEADV2_DIALOGUE_PATH",
     "queue_path":        "LEADV2_QUEUE_PATH",
     "lead_state_path":   "LEADV2_LEAD_STATE_PATH",
@@ -162,7 +160,6 @@ for ek, val in out.items():
   done <<< "$_parsed"
 
   # Hard defaults only for keys NOT produced by Python (no yaml / no python).
-  [[ -z "${_lv2_produced[LEADV2_BOARD_PATH]+x}"        ]] && : "${LEADV2_BOARD_PATH:=${LEADV2_PROJECT_ROOT}/docs/BOARD.md}"
   [[ -z "${_lv2_produced[LEADV2_DIALOGUE_PATH]+x}"     ]] && : "${LEADV2_DIALOGUE_PATH:=${LEADV2_PROJECT_ROOT}/docs/agents/product-owner/DIALOGUE.md}"
   [[ -z "${_lv2_produced[LEADV2_QUEUE_PATH]+x}"        ]] && : "${LEADV2_QUEUE_PATH:=${LEADV2_PROJECT_ROOT}/docs/agents/product-owner/QUEUE.md}"
   [[ -z "${_lv2_produced[LEADV2_LEAD_STATE_PATH]+x}"   ]] && : "${LEADV2_LEAD_STATE_PATH:=${LEADV2_PROJECT_ROOT}/docs/LEAD_V2_STATE.md}"
@@ -170,7 +167,7 @@ for ek, val in out.items():
   [[ -z "${_lv2_produced[LEADV2_LEADV2_DIR]+x}"        ]] && : "${LEADV2_LEADV2_DIR:=${LEADV2_PROJECT_ROOT}/docs/leadv2}"
   [[ -z "${_lv2_produced[LEADV2_QUEUE_ARCHIVE_DIR]+x}" ]] && : "${LEADV2_QUEUE_ARCHIVE_DIR:=${LEADV2_PROJECT_ROOT}/docs/agents/product-owner/queue/_archive}"
   [[ -z "${_lv2_produced[LEADV2_TASKS_DIR]+x}"         ]] && : "${LEADV2_TASKS_DIR:=${LEADV2_PROJECT_ROOT}/docs/leadv2/tasks}"
-  export LEADV2_BOARD_PATH LEADV2_DIALOGUE_PATH LEADV2_QUEUE_PATH \
+  export LEADV2_DIALOGUE_PATH LEADV2_QUEUE_PATH \
          LEADV2_LEAD_STATE_PATH LEADV2_HANDOFF_DIR LEADV2_LEADV2_DIR \
          LEADV2_QUEUE_ARCHIVE_DIR LEADV2_TASKS_DIR
 }
@@ -437,7 +434,6 @@ _lv2_stack_list() {
 # Keys defined in state-paths.yaml (with PE fallback defaults):
 #   leadv2_dir  → docs/leadv2
 #   handoff_dir → docs/handoff
-#   board_path  → docs/BOARD.md
 _lv2_statepath() {
   local _key="${1:-}" _default="${2:-}"
   : "${LEADV2_PROJECT_ROOT:=$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"

@@ -22,10 +22,9 @@
 #       failure when the check script itself is not yet vendored here.
 #
 # Best-effort warnings (log_warning + continue; never exit 1):
-#   W1  docs/BOARD.md HEAD section has today's date AND task_id
-#   W2  docs/agents/product-owner/DIALOGUE.md  has an entry for task_id
-#   W3  docs/leadv2/tasks/<task_id>/STATE.md  has "status: closed"
-#   W4  docs/agents/product-owner/QUEUE.md  has "[x]" line for task_id
+#   W1  docs/agents/product-owner/DIALOGUE.md  has an entry for task_id
+#   W2  docs/leadv2/tasks/<task_id>/STATE.md  has "status: closed"
+#   W3  docs/agents/product-owner/QUEUE.md  has "[x]" line for task_id
 #
 # Exit codes:
 #   0   all HARD assertions PASS — writes the worktree-local sentinel and a
@@ -152,15 +151,12 @@ CLOSED_YAML="${LEADV2_LEADV2_DIR}/closed/${TASK_ID}.yaml"
 TASK_STATE="${LEADV2_LEADV2_DIR}/tasks/${TASK_ID}/STATE.md"
 ACTIVE_YAML="${LEADV2_LEADV2_DIR}/active.yaml"
 STATE_FILE="${LEADV2_LEAD_STATE_PATH}"
-BOARD_FILE="${LEADV2_BOARD_PATH}"
 DIALOGUE_FILE="${LEADV2_DIALOGUE_PATH}"
 QUEUE_FILE="${LEADV2_QUEUE_PATH}"
 TASKS_YAML="${LEADV2_PROJECT_ROOT}/docs/tasks.yaml"
 QUEUE_DIR="${LEADV2_PROJECT_ROOT}/docs/agents/product-owner/queue"
 SENTINEL="${LEADV2_HANDOFF_DIR}/${TASK_ID}/phase8-passed.flag"
 REFLECT_HISTORY="${LEADV2_PROJECT_ROOT}/docs/leadv2/reflect-history.yaml"
-
-TODAY="$(date '+%Y-%m-%d')"
 
 # ── A1: closed YAML exists ────────────────────────────────────────────────────
 if [[ -f "$CLOSED_YAML" ]]; then
@@ -422,32 +418,7 @@ else
   log_pass "A6 merge-blocker: absent (Phase 6 clean)"
 fi
 
-# ── W1 (best-effort): BOARD.md HEAD has today's date AND task_id ─────────────
-if [[ -f "$BOARD_FILE" ]]; then
-  has_today=0
-  has_taskid=0
-  if python3 -c "
-import sys, re
-content = open('${BOARD_FILE}').read()[:4000]
-if re.search(r'${TODAY}', content): sys.exit(0)
-sys.exit(1)
-" 2>/dev/null; then has_today=1; fi
-  if python3 -c "
-import sys, re
-content = open('${BOARD_FILE}').read()[:4000]
-if re.search(r'\b${TASK_ID}\b', content): sys.exit(0)
-sys.exit(1)
-" 2>/dev/null; then has_taskid=1; fi
-  if [[ $has_today -eq 1 && $has_taskid -eq 1 ]]; then
-    log_pass "W1 BOARD.md HEAD: has today (${TODAY}) and ${TASK_ID}"
-  else
-    log_warning "W1 BOARD.md HEAD: missing today=(${has_today}) or task_id=(${has_taskid}) — non-blocking"
-  fi
-else
-  log_warning "W1 BOARD.md not found: ${BOARD_FILE} — non-blocking"
-fi
-
-# ── W2 (best-effort): DIALOGUE.md has entry for task_id ──────────────────────
+# ── W1 (best-effort): DIALOGUE.md has entry for task_id ──────────────────────
 if [[ -f "$DIALOGUE_FILE" ]]; then
   if python3 - "$TASK_ID" "$DIALOGUE_FILE" <<'PYEOF' 2>/dev/null
 import sys, re
@@ -456,30 +427,30 @@ content = open(sys.argv[2]).read()
 sys.exit(0 if re.search(r'\b' + re.escape(task_id) + r'\b', content) else 1)
 PYEOF
   then
-    log_pass "W2 DIALOGUE.md: has entry for ${TASK_ID}"
+    log_pass "W1 DIALOGUE.md: has entry for ${TASK_ID}"
   else
-    log_warning "W2 DIALOGUE.md: no entry for ${TASK_ID} — non-blocking"
+    log_warning "W1 DIALOGUE.md: no entry for ${TASK_ID} — non-blocking"
   fi
 else
-  log_warning "W2 DIALOGUE.md not found: ${DIALOGUE_FILE} — non-blocking"
+  log_warning "W1 DIALOGUE.md not found: ${DIALOGUE_FILE} — non-blocking"
 fi
 
-# ── W3 (best-effort): per-task STATE.md has status: closed ───────────────────
+# ── W2 (best-effort): per-task STATE.md has status: closed ───────────────────
 if [[ -f "$TASK_STATE" ]]; then
   if python3 -c "
 import sys, re
 content = open('${TASK_STATE}').read()
 sys.exit(0 if re.search(r'status\s*:\s*closed', content) else 1)
 " 2>/dev/null; then
-    log_pass "W3 task STATE.md: status=closed"
+    log_pass "W2 task STATE.md: status=closed"
   else
-    log_warning "W3 task STATE.md: 'status: closed' not found in ${TASK_STATE} — non-blocking"
+    log_warning "W2 task STATE.md: 'status: closed' not found in ${TASK_STATE} — non-blocking"
   fi
 else
-  log_warning "W3 task STATE.md missing: ${TASK_STATE} — non-blocking"
+  log_warning "W2 task STATE.md missing: ${TASK_STATE} — non-blocking"
 fi
 
-# ── W4 (best-effort): QUEUE.md has [x] for task_id ───────────────────────────
+# ── W3 (best-effort): QUEUE.md has [x] for task_id ───────────────────────────
 if [[ -f "$QUEUE_FILE" ]]; then
   if python3 - "$TASK_ID" "$QUEUE_FILE" <<'PYEOF' 2>/dev/null
 import sys, re
@@ -488,12 +459,12 @@ content = open(sys.argv[2]).read()
 sys.exit(0 if re.search(r'\[x\].*' + re.escape(task_id), content) else 1)
 PYEOF
   then
-    log_pass "W4 QUEUE.md: has [x] for ${TASK_ID}"
+    log_pass "W3 QUEUE.md: has [x] for ${TASK_ID}"
   else
-    log_warning "W4 QUEUE.md: no [x] for ${TASK_ID} — non-blocking (QUEUE.md may be frozen redirect)"
+    log_warning "W3 QUEUE.md: no [x] for ${TASK_ID} — non-blocking (QUEUE.md may be frozen redirect)"
   fi
 else
-  log_warning "W4 QUEUE.md not found: ${QUEUE_FILE} — non-blocking"
+  log_warning "W3 QUEUE.md not found: ${QUEUE_FILE} — non-blocking"
 fi
 
 # ── A9: lane-shape artifact set + retro shape check (LANE-SHAPE-01) ──────────

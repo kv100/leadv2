@@ -7,9 +7,6 @@ Usage:
 
   python3 leadv2-drain-warn-check.py check_tasks <tasks_yaml> <key>
       Exit 0 if key found in tasks.yaml titles/ids, 1 otherwise.
-
-  python3 leadv2-drain-warn-check.py check_board <board_md> <key>
-      Exit 0 if key found in BOARD.md content, 1 otherwise.
 """
 import os
 import re
@@ -48,15 +45,6 @@ def check_tasks(tasks_yaml: str, key: str) -> int:
         return 1
 
 
-def check_board(board_md: str, key: str) -> int:
-    try:
-        with open(board_md, encoding="utf-8", errors="replace") as fh:
-            content = fh.read().lower()
-        return 0 if key.lower() in content else 1
-    except Exception:
-        return 1
-
-
 def main() -> None:
     if len(sys.argv) < 3:
         print(__doc__, file=sys.stderr)
@@ -67,8 +55,6 @@ def main() -> None:
         extract_items(sys.argv[2])
     elif cmd == "check_tasks":
         sys.exit(check_tasks(sys.argv[2], sys.argv[3]))
-    elif cmd == "check_board":
-        sys.exit(check_board(sys.argv[2], sys.argv[3]))
     else:
         print(f"unknown command: {cmd}", file=sys.stderr)
         sys.exit(2)

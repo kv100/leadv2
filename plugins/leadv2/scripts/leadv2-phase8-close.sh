@@ -484,7 +484,7 @@ fi
 
 
 # ── [SYS-DRAIN-FOLLOWUPS-AT-CLOSE-01] Followup drain warning ────────────────
-# Grep handoff dir for followups*.md / decision items not yet in tasks.yaml or BOARD.
+# Grep handoff dir for followups*.md / decision items not yet in tasks.yaml.
 # Non-blocking: logs warnings, never aborts close. lean: no auto-promotion — upgrade when tasks API stable.
 _drain_warn_count=0
 if [[ -d "$HANDOFF_DIR" ]]; then
@@ -499,9 +499,6 @@ if [[ -d "$HANDOFF_DIR" ]]; then
       if [[ -f "${PROJECT_ROOT}/docs/tasks.yaml" ]]; then
         python3 "$_drain_py" check_tasks "${PROJECT_ROOT}/docs/tasks.yaml" "$_key" 2>/dev/null && _ref_found=1
       fi
-      if [[ "$_ref_found" -eq 0 ]] && [[ -f "${PROJECT_ROOT}/docs/BOARD.md" ]]; then
-        python3 "$_drain_py" check_board "${PROJECT_ROOT}/docs/BOARD.md" "$_key" 2>/dev/null && _ref_found=1
-      fi
       if [[ "$_ref_found" -eq 0 ]]; then
         log_info "[DRAIN-WARN] Untracked followup in $(basename "$_fu_file"): $_line"
         _drain_warn_count=$(( _drain_warn_count + 1 ))
@@ -510,7 +507,7 @@ if [[ -d "$HANDOFF_DIR" ]]; then
   done < <(find "$HANDOFF_DIR" -maxdepth 1 \( -name "followups*.md" -o -name "*followup*.md" \) 2>/dev/null || true)
 fi
 if [[ "$_drain_warn_count" -gt 0 ]]; then
-  log_info "[DRAIN-WARN] ${_drain_warn_count} untracked followup item(s) in ${HANDOFF_DIR} — add to tasks.yaml or BOARD.md before closing."
+  log_info "[DRAIN-WARN] ${_drain_warn_count} untracked followup item(s) in ${HANDOFF_DIR} — add to tasks.yaml before closing."
 else
   log_info "[drain-check] no untracked followup items in ${HANDOFF_DIR}"
 fi
