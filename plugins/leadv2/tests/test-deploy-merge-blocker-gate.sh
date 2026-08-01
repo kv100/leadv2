@@ -60,6 +60,30 @@ TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
+# every sandboxed invocation must anchor PROJECT_ROOT, or leadv2-state-path.sh
+# fail-closes (it sees LEADV2_STATE_ROOT without an anchor and refuses to
+# touch a resolved LINK_ROOT it can't prove is the sandbox — see N-4). A test
+# sandbox git-clone legitimately "has a git remote" (it was cloned from a
+# local bare origin), so a caller that forgets to thread the anchor here
+# doesn't fall back to a safe default: it fails closed exactly as it would
+# against a real checkout. Route every sub-invocation through this helper so
+# the anchor can never be forgotten on one call site again. Sets every name
+# a callee might read (leadv2-helpers.sh reads LEADV2_PROJECT_ROOT /
+# CLAUDE_PROJECT_DIR / PROJECT_ROOT; phase8-assert.sh / render-close.sh read
+# CLAUDE_PROJECT_ROOT) so it is correct regardless of which script is called.
+sandbox_env() {   # usage: sandbox_env <state_root> <project_root> -- cmd...
+  local _state_root="$1" _project_root="$2"
+  shift 2
+  [[ "${1:-}" == "--" ]] && shift
+  LEADV2_STATE_ROOT="$_state_root" \
+  LEADV2_PROJECT_ROOT="$_project_root" \
+  CLAUDE_PROJECT_ROOT="$_project_root" \
+  CLAUDE_PROJECT_DIR="$_project_root" \
+  PROJECT_ROOT="$_project_root" \
+  CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    "$@"
+}
+
 # =============================================================================
 # Scenario 1 — Step-0 divergence-preflight rebase conflict
 # =============================================================================
@@ -113,9 +137,7 @@ rc=0
 (
   cd "$WORK"
   LEADV2_TASK_ID="$TASK_ID" \
-  CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
-  LEADV2_STATE_ROOT="$STATE_ROOT" \
-    bash "${SCRIPTS_DIR}/leadv2-deploy-merge.sh"
+    sandbox_env "$STATE_ROOT" "$WORK" -- bash "${SCRIPTS_DIR}/leadv2-deploy-merge.sh"
 ) > "$DM_OUT" 2>&1 || rc=$?
 
 if [[ "$rc" -ne 0 ]]; then
@@ -142,6 +164,12 @@ else
 fi
 
 # ── seed A1-A5 close artifacts (non-terminal tasks.yaml status) ────────────
+# Also seed A7 (e2e-gate-passed.flag, added cdc4636 2026-07-31, predates this
+# fixture) so A6 remains the SOLE isolatable failure below (S1.6) -- without
+# this the fixture's own "A6 is the sole failure" assertion is broken by an
+# unrelated, already-passing-in-this-scenario gate.
+mkdir -p "${WORK}/docs/handoff/${TASK_ID}"
+touch "${WORK}/docs/handoff/${TASK_ID}/e2e-gate-passed.flag"
 mkdir -p "${WORK}/docs/leadv2/closed"
 cat > "${WORK}/docs/leadv2/closed/${TASK_ID}.yaml" <<EOF
 task_id: ${TASK_ID}
@@ -205,10 +233,7 @@ PA_OUT="${TMP_DIR}/phase8-assert.out"
 rc=0
 (
   cd "$WORK"
-  CLAUDE_PROJECT_ROOT="$WORK" \
-  LEADV2_PROJECT_ROOT="$WORK" \
-  LEADV2_STATE_ROOT="$STATE_ROOT" \
-    bash "${SCRIPTS_DIR}/leadv2-phase8-assert.sh" "$TASK_ID"
+  sandbox_env "$STATE_ROOT" "$WORK" -- bash "${SCRIPTS_DIR}/leadv2-phase8-assert.sh" "$TASK_ID"
 ) > "$PA_OUT" 2>&1 || rc=$?
 
 if [[ "$rc" -eq 1 ]]; then
@@ -241,8 +266,7 @@ QR_OUT="${TMP_DIR}/queue-release.out"
 rc=0
 (
   cd "$WORK"
-  PROJECT_ROOT="$WORK" \
-    bash "${SCRIPTS_DIR}/leadv2-queue-release.sh" --lane action --id "$TASK_ID" --outcome success
+  sandbox_env "$STATE_ROOT" "$WORK" -- bash "${SCRIPTS_DIR}/leadv2-queue-release.sh" --lane action --id "$TASK_ID" --outcome success
 ) > "$QR_OUT" 2>&1 || rc=$?
 
 STATUS_AFTER_QR="$(tasks_yaml_status)"
@@ -264,10 +288,7 @@ RC_OUT="${TMP_DIR}/render-close.out"
 rc=0
 (
   cd "$WORK"
-  CLAUDE_PROJECT_ROOT="$WORK" \
-  LEADV2_PROJECT_ROOT="$WORK" \
-  PROJECT_ROOT="$WORK" \
-    bash "${SCRIPTS_DIR}/leadv2-render-close.sh" "$TASK_ID"
+  sandbox_env "$STATE_ROOT" "$WORK" -- bash "${SCRIPTS_DIR}/leadv2-render-close.sh" "$TASK_ID"
 ) > "$RC_OUT" 2>&1 || rc=$?
 
 if [[ "$rc" -eq 0 ]]; then
@@ -310,10 +331,7 @@ PA_OUT2="${TMP_DIR}/phase8-assert-sole.out"
 rc=0
 (
   cd "$WORK"
-  CLAUDE_PROJECT_ROOT="$WORK" \
-  LEADV2_PROJECT_ROOT="$WORK" \
-  LEADV2_STATE_ROOT="$STATE_ROOT" \
-    bash "${SCRIPTS_DIR}/leadv2-phase8-assert.sh" "$TASK_ID"
+  sandbox_env "$STATE_ROOT" "$WORK" -- bash "${SCRIPTS_DIR}/leadv2-phase8-assert.sh" "$TASK_ID"
 ) > "$PA_OUT2" 2>&1 || rc=$?
 
 if [[ "$rc" -eq 1 ]]; then
@@ -344,10 +362,7 @@ PA_OUT3="${TMP_DIR}/phase8-assert-pass.out"
 rc=0
 (
   cd "$WORK"
-  CLAUDE_PROJECT_ROOT="$WORK" \
-  LEADV2_PROJECT_ROOT="$WORK" \
-  LEADV2_STATE_ROOT="$STATE_ROOT" \
-    bash "${SCRIPTS_DIR}/leadv2-phase8-assert.sh" "$TASK_ID"
+  sandbox_env "$STATE_ROOT" "$WORK" -- bash "${SCRIPTS_DIR}/leadv2-phase8-assert.sh" "$TASK_ID"
 ) > "$PA_OUT3" 2>&1 || rc=$?
 
 COMPLETION_RECEIPT="${STATE_ROOT}/completions/${TASK_ID}.json"
@@ -359,16 +374,23 @@ else
 fi
 
 if python3 - "$COMPLETION_RECEIPT" "$TASK_ID" <<'PYEOF'
-import json, sys
+import json, re, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
+# "assertions" is "N/N" where N = TOTAL_HARD (7 base + however many of the
+# A8/A9/A10/A11 optional gates are evaluated in this environment -- not a
+# fixed 7, since more optional HARD gates have landed since this fixture was
+# written). Assert the shape (equal numerator/denominator, i.e. "all
+# evaluated HARD checks passed"), not a stale literal count.
+m = re.fullmatch(r"(\d+)/(\d+)", data.get("assertions", ""))
 raise SystemExit(0 if data.get("task_id") == sys.argv[2]
                  and data.get("status") == "phase8_passed"
-                 and data.get("assertions") == "7/7" else 1)
+                 and m and m.group(1) == m.group(2) else 1)
 PYEOF
 then
   pass "S1: shared completion receipt has the fail-closed schema"
 else
   fail "S1: shared completion receipt content invalid"
+  cat "$COMPLETION_RECEIPT" >&2 || true
 fi
 
 if python3 - "$STATE_ROOT/bus.jsonl" "$TASK_ID" <<'PYEOF'
@@ -456,9 +478,7 @@ rc=0
   cd "$WORKFF"
   PATH="${BIN_DIR_FF}:${PATH}" \
   LEADV2_TASK_ID="$TASK_ID2" \
-  CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
-  LEADV2_STATE_ROOT="$STATE_ROOT_FF" \
-    bash "${SCRIPTS_DIR}/leadv2-deploy-merge.sh"
+    sandbox_env "$STATE_ROOT_FF" "$WORKFF" -- bash "${SCRIPTS_DIR}/leadv2-deploy-merge.sh"
 ) > "$DM_FF_OUT" 2>&1 || rc=$?
 
 if [[ "$rc" -ne 0 ]]; then
@@ -489,6 +509,8 @@ fi
 # =============================================================================
 STATE_ROOT_LOCK="${TMP_DIR}/state-lock"
 mkdir -p "$STATE_ROOT_LOCK"
+PROJECT_ROOT_LOCK="${TMP_DIR}/project-lock"
+mkdir -p "$PROJECT_ROOT_LOCK"
 MQ_SH="${SCRIPTS_DIR}/leadv2-merge-queue.sh"
 
 A_ACQUIRED="${TMP_DIR}/lockA.acquired"
@@ -496,10 +518,10 @@ A_RELEASE_NOW="${TMP_DIR}/lockA.release-now"
 A_DONE="${TMP_DIR}/lockA.done"
 
 (
-  LEADV2_STATE_ROOT="$STATE_ROOT_LOCK" LEADV2_MERGE_POLL_SEC=0.1 LEADV2_MERGE_TIMEOUT_SEC=10 \
-    bash "$MQ_SH" acquire LOCKTEST-A && touch "$A_ACQUIRED"
+  LEADV2_MERGE_POLL_SEC=0.1 LEADV2_MERGE_TIMEOUT_SEC=10 \
+    sandbox_env "$STATE_ROOT_LOCK" "$PROJECT_ROOT_LOCK" -- bash "$MQ_SH" acquire LOCKTEST-A && touch "$A_ACQUIRED"
   while [[ ! -f "$A_RELEASE_NOW" ]]; do sleep 0.1; done
-  LEADV2_STATE_ROOT="$STATE_ROOT_LOCK" bash "$MQ_SH" release LOCKTEST-A
+  sandbox_env "$STATE_ROOT_LOCK" "$PROJECT_ROOT_LOCK" -- bash "$MQ_SH" release LOCKTEST-A
   touch "$A_DONE"
 ) &
 A_PID=$!
@@ -513,8 +535,8 @@ fi
 
 B_ACQUIRED="${TMP_DIR}/lockB.acquired"
 (
-  LEADV2_STATE_ROOT="$STATE_ROOT_LOCK" LEADV2_MERGE_POLL_SEC=0.1 LEADV2_MERGE_TIMEOUT_SEC=10 \
-    bash "$MQ_SH" acquire LOCKTEST-B && touch "$B_ACQUIRED"
+  LEADV2_MERGE_POLL_SEC=0.1 LEADV2_MERGE_TIMEOUT_SEC=10 \
+    sandbox_env "$STATE_ROOT_LOCK" "$PROJECT_ROOT_LOCK" -- bash "$MQ_SH" acquire LOCKTEST-B && touch "$B_ACQUIRED"
 ) &
 B_PID=$!
 
@@ -525,7 +547,7 @@ else
   fail "S3: LOCKTEST-B acquired despite LOCKTEST-A still holding"
 fi
 
-STATUS_WHILE_HELD="$(LEADV2_STATE_ROOT="$STATE_ROOT_LOCK" bash "$MQ_SH" status)"
+STATUS_WHILE_HELD="$(sandbox_env "$STATE_ROOT_LOCK" "$PROJECT_ROOT_LOCK" -- bash "$MQ_SH" status)"
 if echo "$STATUS_WHILE_HELD" | grep -q '"holder": "LOCKTEST-A"' \
    && echo "$STATUS_WHILE_HELD" | grep -q "LOCKTEST-B"; then
   pass "S3: status shows LOCKTEST-A holding, LOCKTEST-B queued"
@@ -588,7 +610,7 @@ EVIDENCE_FILE="${TMP_DIR}/release-before-deploy-evidence.json"
 cat > "${WORK4}/.claude/leadv2-overrides/deploy.sh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-LEADV2_STATE_ROOT="${STATE_ROOT4}" bash "${SCRIPTS_DIR}/leadv2-merge-queue.sh" status > "${EVIDENCE_FILE}"
+LEADV2_STATE_ROOT="${STATE_ROOT4}" LEADV2_PROJECT_ROOT="${WORK4}" CLAUDE_PROJECT_ROOT="${WORK4}" CLAUDE_PROJECT_DIR="${WORK4}" PROJECT_ROOT="${WORK4}" bash "${SCRIPTS_DIR}/leadv2-merge-queue.sh" status > "${EVIDENCE_FILE}"
 exit 0
 EOF
 chmod +x "${WORK4}/.claude/leadv2-overrides/deploy.sh"
@@ -598,10 +620,7 @@ rc=0
 (
   cd "$WORK4"
   LEADV2_TASK_ID="$TASK_ID4" \
-  CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
-  CLAUDE_PROJECT_ROOT="$WORK4" \
-  LEADV2_STATE_ROOT="$STATE_ROOT4" \
-    bash "${SCRIPTS_DIR}/leadv2-deploy-merge.sh"
+    sandbox_env "$STATE_ROOT4" "$WORK4" -- bash "${SCRIPTS_DIR}/leadv2-deploy-merge.sh"
 ) > "$DM4_OUT" 2>&1 || rc=$?
 
 if [[ "$rc" -eq 0 ]]; then
@@ -616,6 +635,16 @@ if [[ -f "$EVIDENCE_FILE" ]] && grep -q '"holder": null' "$EVIDENCE_FILE"; then
 else
   fail "S4: expected the lock to be free during deploy; evidence:"
   [[ -f "$EVIDENCE_FILE" ]] && cat "$EVIDENCE_FILE" >&2 || echo "(evidence file not written — deploy override never ran)" >&2
+fi
+
+# ── negative guard: a future un-threaded sandbox_env call site must name
+#    itself via this one assertion instead of regressing into an opaque
+#    cascade of downstream assertion failures (N-4 §2).
+if grep -rl "\[leadv2-state-path\] ABORT" "$TMP_DIR"/*.out >/dev/null 2>&1; then
+  fail "zero [leadv2-state-path] ABORT lines across the whole run"
+  grep -H "\[leadv2-state-path\] ABORT" "$TMP_DIR"/*.out >&2
+else
+  pass "zero [leadv2-state-path] ABORT lines across the whole run"
 fi
 
 # ── result ───────────────────────────────────────────────────────────────

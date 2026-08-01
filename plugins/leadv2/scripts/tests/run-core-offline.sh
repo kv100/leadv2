@@ -10,11 +10,19 @@ PLUGIN_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
 PASS=0
 FAIL=0
+MISSING=0
 
 run_check() {
   local name="$1"
   shift
   printf -- '\n[CORE-OFFLINE] %s\n' "$name"
+  # A missing suite file must not be indistinguishable from a failing
+  # assertion (N-4): preflight `bash <path>` invocations before executing.
+  if [[ "$1" == "bash" && "$2" == /* && ! -r "$2" ]]; then
+    MISSING=$((MISSING + 1))
+    printf -- '[CORE-OFFLINE] MISSING: %s — %s does not exist\n' "$name" "$2" >&2
+    return
+  fi
   if "$@"; then
     PASS=$((PASS + 1))
   else
@@ -60,5 +68,5 @@ run_check "subsession model downgrade" bash "$TEST_DIR/test-leadv2-model-arg-reb
 run_check "plugin sync quarantine/dry-run safety" bash "$TEST_DIR/test-drift-guard-quarantine-perimeter.sh"
 run_check "skill lint" bash "$TEST_DIR/test-leadv2-skill-lint.sh"
 
-printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d repo=%s\n' "$PASS" "$FAIL" "$REPO_ROOT"
-(( FAIL == 0 ))
+printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
+(( FAIL == 0 && MISSING == 0 ))

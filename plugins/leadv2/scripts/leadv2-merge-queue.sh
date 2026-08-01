@@ -38,7 +38,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-LEADV2_DIR="${LEADV2_DIR:-$("${SCRIPT_DIR}/leadv2-state-path.sh")}"
+# --no-link: this call only wants a directory location for merge-queue.jsonl
+# / .merge.lock, never docs/leadv2/* symlink repair (that's this script's own
+# business, not merge-queue's) -- and --no-link also skips state-path.sh's
+# LEADV2_STATE_ROOT-set-but-real-repo B1 safety-net ABORT, which is otherwise
+# unavoidable for any hermetic test sandbox that legitimately configures a
+# git remote (needed to simulate a push/pull race) while sandboxing the
+# control plane via LEADV2_STATE_ROOT (N-4 root-cause-B).
+LEADV2_DIR="${LEADV2_DIR:-$("${SCRIPT_DIR}/leadv2-state-path.sh" --no-link)}"
 QUEUE_FILE="${LEADV2_DIR}/merge-queue.jsonl"
 QUEUE_LOCK="${LEADV2_DIR}/.merge.lock"
 BUS_SH="${SCRIPT_DIR}/leadv2-bus.sh"

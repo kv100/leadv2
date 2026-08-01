@@ -37,7 +37,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-LEADV2_DIR="${LEADV2_DIR:-$("${SCRIPT_DIR}/leadv2-state-path.sh")}"
+# --no-link: same rationale as leadv2-merge-queue.sh -- this call only wants
+# a directory location, never docs/leadv2/* symlink repair, and --no-link
+# also skips the LEADV2_STATE_ROOT-set-but-real-repo B1 ABORT that otherwise
+# fires for any hermetic test sandbox with a legitimate git remote (N-4
+# root-cause-B).
+LEADV2_DIR="${LEADV2_DIR:-$("${SCRIPT_DIR}/leadv2-state-path.sh" --no-link)}"
 BUS_FILE="${LEADV2_DIR}/bus.jsonl"
 BUS_LOCK="${LEADV2_DIR}/.bus.lock"
 OFFSETS_DIR="${LEADV2_DIR}/.bus-offsets"

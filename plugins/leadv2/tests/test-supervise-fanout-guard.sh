@@ -89,7 +89,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# (b) Live sentinel (our own pid, definitely alive) + worker spawn -> BLOCKED
+# (b) Live sentinel (our own pid, definitely alive), NO mode key + worker spawn
+# -> ALLOWED. Default flip (e060fd1, "supervisor spawn-gate default
+# interactive-lanes, any subagent_type" -- founder ruling): a missing/unknown
+# mode normalizes to "interactive-lanes", which is a permissive allow, not a
+# deny. Only an explicit mode="legacy-relay" reaches the strict deny-worker
+# gate (see (b2) below).
 # ---------------------------------------------------------------------------
 python3 -c "
 import json
@@ -99,11 +104,35 @@ b_stdout=""
 b_exit=0
 LEADV2_STATE_ROOT="$STATE_ROOT" bash "$GUARD" <<<"$WORKER_PAYLOAD" >"$TMP_DIR/b.stdout" 2>/dev/null || b_exit=$?
 b_stdout="$(<"$TMP_DIR/b.stdout")"
-if [[ $b_exit -eq 2 ]] && printf '%s' "$b_stdout" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); assert d['hookSpecificOutput']['permissionDecision']=='deny'" 2>/dev/null; then
-  pass "(b) live sentinel + worker spawn (developer) is denied (exit 2 + deny JSON)"
+if [[ $b_exit -eq 0 ]]; then
+  pass "(b) live sentinel, no mode + worker spawn (developer) is allowed (default=interactive-lanes)"
 else
-  fail "(b) live sentinel + worker spawn should deny (exit=$b_exit stdout=${b_stdout:0:120})"
+  fail "(b) live sentinel, no mode + worker spawn should allow (exit=$b_exit stdout=${b_stdout:0:120})"
 fi
+
+# ---------------------------------------------------------------------------
+# (b2) Live sentinel with explicit mode="legacy-relay" + worker spawn -> BLOCKED.
+# Keeps the strict-mode deny contract under test after (b) moved to ALLOW.
+# ---------------------------------------------------------------------------
+python3 -c "
+import json
+json.dump({'pid': $SELF_PID, 'started_at': '2026-07-16T00:00:00Z', 'mode': 'legacy-relay'}, open('$SENTINEL', 'w'))
+"
+b2_stdout=""
+b2_exit=0
+LEADV2_STATE_ROOT="$STATE_ROOT" bash "$GUARD" <<<"$WORKER_PAYLOAD" >"$TMP_DIR/b2.stdout" 2>/dev/null || b2_exit=$?
+b2_stdout="$(<"$TMP_DIR/b2.stdout")"
+if [[ $b2_exit -eq 2 ]] && printf '%s' "$b2_stdout" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); assert d['hookSpecificOutput']['permissionDecision']=='deny'" 2>/dev/null; then
+  pass "(b2) legacy-relay sentinel + worker spawn (developer) is denied (exit 2 + deny JSON)"
+else
+  fail "(b2) legacy-relay sentinel + worker spawn should deny (exit=$b2_exit stdout=${b2_stdout:0:120})"
+fi
+
+# Reset sentinel to the no-mode (interactive-lanes default) form used by (c)-(e).
+python3 -c "
+import json
+json.dump({'pid': $SELF_PID, 'started_at': '2026-07-16T00:00:00Z'}, open('$SENTINEL', 'w'))
+"
 
 # ---------------------------------------------------------------------------
 # (c) Live sentinel + Explore/haiku discovery -> ALLOWED (exit 0), sentinel untouched
@@ -117,31 +146,70 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# (d) H1: live sentinel (self session) + WORKER on a haiku model -> BLOCKED.
-# The haiku model= carve-out used to bypass the gate for ANY subagent_type;
-# it must now only exempt subagent_type=Explore (case c above), never a
-# worker like `developer`.
+# (d) H1: live sentinel, NO mode key + WORKER on a haiku model -> ALLOWED.
+# Post-e060fd1 default (interactive-lanes) does not gate on model at all; the
+# haiku carve-out is orthogonal to this case. Model is not a gate under the
+# permissive default.
 # ---------------------------------------------------------------------------
 d_exit=0
 run_guard "$WORKER_HAIKU_PAYLOAD" || d_exit=$?
-if [[ $d_exit -eq 2 ]]; then
-  pass "(d) H1: live sentinel (self session) + developer on haiku model is denied (haiku no longer bypasses worker gate)"
+if [[ $d_exit -eq 0 ]]; then
+  pass "(d) H1: live sentinel, no mode + developer on haiku model is allowed (default=interactive-lanes)"
 else
-  fail "(d) H1: haiku worker spawn should be denied (exit=$d_exit)"
+  fail "(d) H1: haiku worker spawn should be allowed (exit=$d_exit)"
 fi
 
 # ---------------------------------------------------------------------------
-# (e) H2: live sentinel (self session) + an UNRECOGNIZED subagent_type ->
-# BLOCKED (fail-closed default-deny; previously fell through the blocklist's
-# open default branch and was allowed).
+# (d2) H1: live sentinel with explicit mode="legacy-relay" + WORKER on a haiku
+# model -> BLOCKED. No model carve-out under the strict gate.
+# ---------------------------------------------------------------------------
+python3 -c "
+import json
+json.dump({'pid': $SELF_PID, 'started_at': '2026-07-16T00:00:00Z', 'mode': 'legacy-relay'}, open('$SENTINEL', 'w'))
+"
+d2_exit=0
+run_guard "$WORKER_HAIKU_PAYLOAD" || d2_exit=$?
+if [[ $d2_exit -eq 2 ]]; then
+  pass "(d2) H1: legacy-relay sentinel + developer on haiku model is denied (no model carve-out)"
+else
+  fail "(d2) H1: legacy-relay haiku worker spawn should be denied (exit=$d2_exit)"
+fi
+python3 -c "
+import json
+json.dump({'pid': $SELF_PID, 'started_at': '2026-07-16T00:00:00Z'}, open('$SENTINEL', 'w'))
+"
+
+# ---------------------------------------------------------------------------
+# (e) H2: live sentinel, NO mode key + an UNRECOGNIZED subagent_type ->
+# ALLOWED under the permissive interactive-lanes default (any subagent_type).
 # ---------------------------------------------------------------------------
 e_exit=0
 run_guard "$UNKNOWN_TYPE_PAYLOAD" || e_exit=$?
-if [[ $e_exit -eq 2 ]]; then
-  pass "(e) H2: live sentinel (self session) + unrecognized subagent_type (qa-engineer) is denied (fail-closed)"
+if [[ $e_exit -eq 0 ]]; then
+  pass "(e) H2: live sentinel, no mode + unrecognized subagent_type (qa-engineer) is allowed (default=interactive-lanes)"
 else
-  fail "(e) H2: unrecognized subagent_type should be denied (exit=$e_exit)"
+  fail "(e) H2: unrecognized subagent_type should be allowed (exit=$e_exit)"
 fi
+
+# ---------------------------------------------------------------------------
+# (e2) H2: live sentinel with explicit mode="legacy-relay" + an UNRECOGNIZED
+# subagent_type -> BLOCKED (fail-closed default branch under the strict gate).
+# ---------------------------------------------------------------------------
+python3 -c "
+import json
+json.dump({'pid': $SELF_PID, 'started_at': '2026-07-16T00:00:00Z', 'mode': 'legacy-relay'}, open('$SENTINEL', 'w'))
+"
+e2_exit=0
+run_guard "$UNKNOWN_TYPE_PAYLOAD" || e2_exit=$?
+if [[ $e2_exit -eq 2 ]]; then
+  pass "(e2) H2: legacy-relay sentinel + unrecognized subagent_type (qa-engineer) is denied (fail-closed)"
+else
+  fail "(e2) H2: legacy-relay unrecognized subagent_type should be denied (exit=$e2_exit)"
+fi
+python3 -c "
+import json
+json.dump({'pid': $SELF_PID, 'started_at': '2026-07-16T00:00:00Z'}, open('$SENTINEL', 'w'))
+"
 
 # ---------------------------------------------------------------------------
 # (f) Stale sentinel (dead pid) + worker spawn -> ALLOWED and sentinel self-cleaned
