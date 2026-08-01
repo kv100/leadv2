@@ -110,8 +110,35 @@ else
   fi
   MAIN_REPO_ROOT="$(cd "$(dirname "$COMMON_DIR")" && pwd)"
   REPO_SLUG="$(basename "$MAIN_REPO_ROOT")"
+
+  # ── EPHEMERAL-REDIRECT (STATE-DIR-JUNK-01) ───────────────────────────────
+  # Production never sets LEADV2_STATE_ROOT or LEADV2_STATE_BASE (see the B1
+  # SAFETY NET below, which relies on the same fact). When NEITHER is set AND
+  # MAIN_REPO_ROOT is a scratch repo -- no git remote, no REAL-REPO /
+  # .git/leadv2-real-repo-marker (the exact predicate the B1 net already uses
+  # to tell a real checkout from a fixture) -- redirect under
+  # <base>/.ephemeral/<slug> instead of the top level. This is the unguarded
+  # direction the B1 net doesn't cover: no sandbox signal + scratch repo used
+  # to mean "write straight into production" -- ~100 `leadv2-lwt.*` dirs from
+  # test-lane-writes-scoping.sh alone, one per run, never cleaned up. The
+  # renderer (leadv2-status-projects.sh) globs "$BASE"/*/ with no dotglob, so
+  # a dot-prefixed subtree is already invisible to it -- no renderer change
+  # needed.
   STATE_BASE="${LEADV2_STATE_BASE:-${HOME}/.claude/leadv2-state}"
-  STATE_ROOT="${STATE_BASE}/${REPO_SLUG}"
+  if [[ -z "${LEADV2_STATE_ROOT:-}" && -z "${LEADV2_STATE_BASE:-}" ]] \
+     && ! { git -C "$MAIN_REPO_ROOT" remote 2>/dev/null | grep -q .; } \
+     && [[ ! -f "$MAIN_REPO_ROOT/REAL-REPO" && ! -f "$MAIN_REPO_ROOT/.git/leadv2-real-repo-marker" ]]; then
+    STATE_ROOT="${STATE_BASE}/.ephemeral/${REPO_SLUG}"
+    mkdir -p "$STATE_ROOT"
+    _eph_marker="${STATE_ROOT}/.ephemeral"
+    if [[ ! -f "$_eph_marker" ]]; then
+      printf -- 'source=%s\ncreated=%s\n' "$MAIN_REPO_ROOT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${_eph_marker}.tmp.$$" 2>/dev/null \
+        && mv -f "${_eph_marker}.tmp.$$" "$_eph_marker" 2>/dev/null || rm -f "${_eph_marker}.tmp.$$" 2>/dev/null || true
+    fi
+    unset _eph_marker
+  else
+    STATE_ROOT="${STATE_BASE}/${REPO_SLUG}"
+  fi
 fi
 
 mkdir -p "$STATE_ROOT"
