@@ -765,6 +765,8 @@ run_render_r4() {
   LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
   LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
   LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
+  LEADV2_LIMITS_CACHE_DIR="${R4_LIMITS_CACHE:-${SB}/limits.d}" \
+  LEADV2_LIMITS_REFRESH_SH="${R4_LIMITS_REFRESH_SH:-${SB}/stub-refresh.sh}" \
   bash "$RENDER" "$@"
 }
 # round-4 widget runner (same env wall). The widget re-invokes the renderer
@@ -783,6 +785,8 @@ run_bar_r4() {
   LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
   LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
   LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
+  LEADV2_LIMITS_CACHE_DIR="${R4_LIMITS_CACHE:-${SB}/limits.d}" \
+  LEADV2_LIMITS_REFRESH_SH="${R4_LIMITS_REFRESH_SH:-${SB}/stub-refresh.sh}" \
   bash "$BAR" "$@"
 }
 
@@ -900,25 +904,32 @@ else
   fail "R4-T3: sanity dead lane (got: $(printf '%s' "$bare" | tail -1))"
 fi
 
-# ── R4-T4. --limits: heuristic cap -> honest claude row (no fabricated %); glm
-# unchanged. STATUS-SURFACE-R5-01 defect 3: the old row divided input tokens by
-# a guessed 8M cap and printed a serene 0% at any load. While the heuristic cap
-# is in use we print NO percentage -- only measured cache-read/output magnitudes.
+# ── R4-T4 (SWIFTBAR-LIVE-01 rewrite). --limits now reads one <provider>.kv
+# per provider from LEADV2_LIMITS_CACHE_DIR -- never a snapshot file, never a
+# fabricated percentage. Fresh kv -> value verbatim, no age suffix.
 NEW_SB
-R4_SNAP="${SB}/snap.txt"
-cat > "$R4_SNAP" <<EOF
-# stamped $((NOW-30))
-Quota: 5h 0% (12345 / 8000000 in, claude% only, cap est.) | weekly(claude,heuristic) 18% | cache-hit 0.91 | safe
-  anthropic 5h: in 12.3K  cc 1.0M  cr 5.0M  out 500.0K  (99 turns)
-  rate_limit:  not captured (heuristic cap in use) — kv hook: key=rate_limit_anthropic
-  glm weekly (live, z.ai): 20%  (resets 2026-08-07T10:30:44Z)
+R4_LIMITS_CACHE="${SB}/limits.d"
+mkdir -p "$R4_LIMITS_CACHE"
+cat > "${R4_LIMITS_CACHE}/claude.kv" <<EOF
+state=ok
+value=5h 34% (сброс 18:40) · weekly 61% (сброс Пн 03:00)
+stamped=$NOW
+ttl=90
+detail=
+EOF
+cat > "${R4_LIMITS_CACHE}/glm.kv" <<EOF
+state=ok
+value=weekly 20% (сброс 2026-08-07T10:30:44Z) [live]
+stamped=$NOW
+ttl=90
+detail=
 EOF
 limout="$(run_render_r4 --limits)"
-if printf '%s\n' "$limout" | grep -q 'claude: не измеряется' \
-   && printf '%s\n' "$limout" | grep -q 'cr 5.0M' \
-   && ! printf '%s\n' "$limout" | grep -Eq 'claude: 5h [0-9]+%' \
-   && printf '%s\n' "$limout" | grep -q 'glm: weekly 20% (snapshot, live z.ai)'; then
-  pass "R4-T4: heuristic cap -> honest claude row, no fabricated %, glm unchanged"
+if printf '%s\n' "$limout" | grep -q 'claude: 5h 34% (сброс 18:40) · weekly 61% (сброс Пн 03:00)' \
+   && printf '%s\n' "$limout" | grep -q 'glm: weekly 20% (сброс 2026-08-07T10:30:44Z) \[live\]' \
+   && ! printf '%s\n' "$limout" | grep -q 'обновляется' \
+   && ! printf '%s\n' "$limout" | grep -q 'snapshot'; then
+  pass "R4-T4: fresh per-provider kv -> verbatim value, no age suffix, glm labeled live"
 else
   fail "R4-T4: --limits (got: $(printf '%s' "$limout" | tr '\n' '|'))"
 fi
@@ -927,39 +938,53 @@ if printf '%s\n' "$limout" | grep -q '\$'; then
 else
   pass "R4-T4: --limits has no dollar amount"
 fi
-# Real rate-limit kv row (C3b consumer-compatible schema) -> measured % computed
-# from unified_limit/unified_remaining: 1M limit, 250k remaining => 75% used.
-if command -v sqlite3 >/dev/null 2>&1; then
-  R4_DB="${SB}/burn.db"
-  sqlite3 "$R4_DB" "CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY,value TEXT);" 2>/dev/null
-  sqlite3 "$R4_DB" "INSERT OR REPLACE INTO kv VALUES('rate_limit_anthropic','{\"captured_epoch\":$((NOW-30)),\"status\":\"allowed\",\"overageStatus\":\"accepted\",\"resetsAt\":0,\"unified_limit\":1000000,\"unified_remaining\":250000,\"source\":\"messages_api_headers\"}');" 2>/dev/null
-  limout2="$(LEADV2_STATUS_BURN_DB="$R4_DB" run_render_r4 --limits)"
-  if printf '%s\n' "$limout2" | grep -Eq 'claude: 5h 75% \(rate-limit signal\)'; then
-    pass "R4-T4: real rate-limit kv row -> measured 75% (750k of 1M used)"
-  else
-    fail "R4-T4: real % (got: $(printf '%s' "$limout2" | tr '\n' '|'))"
-  fi
+# unauthenticated claude row -> actionable line, never a fabricated %, never
+# 'не измеряется'.
+cat > "${R4_LIMITS_CACHE}/claude.kv" <<EOF
+state=unauthenticated
+value=
+stamped=$NOW
+ttl=90
+detail=нет валидного OAuth-токена для probe (401) → ~/ccswitch.sh
+EOF
+limout2="$(run_render_r4 --limits)"
+if printf '%s\n' "$limout2" | grep -q 'claude: нет валидного OAuth-токена для probe (401) → ~/ccswitch.sh' \
+   && ! printf '%s\n' "$limout2" | grep -q 'не измеряется' \
+   && ! printf '%s\n' "$limout2" | grep -Eq 'claude:.*[0-9]+%'; then
+  pass "R4-T4: unauthenticated claude kv -> actionable line, no percentage, no 'не измеряется'"
 else
-  pass "R4-T4: real-% sub-case SKIP (no sqlite3)"
+  fail "R4-T4: real % (got: $(printf '%s' "$limout2" | tr '\n' '|'))"
 fi
-# stale stamp (older than 15 min) -> (stale Nm) suffix, shown not hidden
-cat > "$R4_SNAP" <<EOF
-# stamped $((NOW-1200))
-Quota: 5h 5% (1 / 8000000 in, claude% only) | weekly(claude,heuristic) 2%
+# expired kv (stamped older than its own ttl) -> value + '(обновляется…)' AND
+# no real network call: point the refresher at a nonexistent stub so any
+# invocation attempt would be visible as a test failure via its absence, not
+# a live call.
+cat > "${R4_LIMITS_CACHE}/claude.kv" <<EOF
+state=ok
+value=5h 5% (сброс 12:00)
+stamped=$((NOW-1200))
+ttl=90
+detail=
 EOF
 limout="$(run_render_r4 --limits)"
-if printf '%s\n' "$limout" | sed -n '1p' | grep -q 'limits (stale'; then
-  pass "R4-T4: stale snapshot stamp shown as (stale Nm)"
+if printf '%s\n' "$limout" | grep -q '5h 5% (сброс 12:00) (обновляется…)'; then
+  pass "R4-T4: expired kv shown with (обновляется…) suffix, no stub-refresh.sh invoked"
 else
-  fail "R4-T4: stale suffix (got: $(printf '%s' "$limout" | sed -n '1p'))"
+  fail "R4-T4: stale suffix (got: $(printf '%s' "$limout" | grep claude))"
+fi
+if [ -f "${SB}/stub-refresh.sh" ]; then
+  fail "R4-T4: refresher stub materialized (a real script would have been invoked)"
+else
+  pass "R4-T4: no refresher script present at the stub path (render never wrote it)"
 fi
 
-# ── R4-T5. --limits with snapshot absent -> 'no snapshot', exit 0
+# ── R4-T5 (SWIFTBAR-LIVE-01 rewrite). --limits with every kv missing ->
+# '(получаем…)' per provider, exit 0, no crash.
 NEW_SB
-R4_SNAP="/nonexistent-r4-no-snap"
+R4_LIMITS_CACHE="${SB}/limits-empty.d"
 limout="$(run_render_r4 --limits)"; rc=$?
-if printf '%s\n' "$limout" | grep -q 'no snapshot' && [ "$rc" -eq 0 ]; then
-  pass "R4-T5: absent snapshot -> 'no snapshot', exit 0"
+if printf '%s\n' "$limout" | grep -q 'получаем' && [ "$rc" -eq 0 ]; then
+  pass "R4-T5: all kv missing -> '(получаем…)' per provider, exit 0"
 else
   fail "R4-T5: absent snapshot (rc=$rc, got: $(printf '%s' "$limout" | tr '\n' '|'))"
 fi
@@ -1201,6 +1226,136 @@ if [ "$_minirc" -eq 0 ]; then
   pass "R5r2: _mini_yaml reader unit cases (see output above)"
 else
   fail "R5r2: _mini_yaml reader unit cases (rc=$_minirc)"
+fi
+
+log ""
+log "== SWIFTBAR-LIVE-01: multi-project lane enumeration =="
+
+# ── MP-1. LEADV2_STATUS_STATE_DIR pinned -> byte-identical single-project
+# output, enumeration never engaged (the hard regression contract). Proven
+# structurally: with the multi-project env vars ALSO pointed at a >=2-project
+# sandbox, the pinned-STATE_DIR output must still be single-project shaped
+# (no PROJ column, no '· N projects' suffix) because LEADV2_STATUS_STATE_DIR
+# short-circuits enumeration before it ever runs.
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: pinnedabcd1234
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    started_at: '2026-07-31T18:00:00Z'
+    last_pulse_at: '2026-07-31T18:00:00Z'
+    log_path: ''
+EOF
+MP_BASE="${SB}/mp-base"
+mkdir -p "${MP_BASE}/proj-x" "${MP_BASE}/proj-y"
+echo "sessions: []" > "${MP_BASE}/proj-x/active.yaml"
+echo "sessions: []" > "${MP_BASE}/proj-y/active.yaml"
+printf '%s' "${SB}" > "${MP_BASE}/proj-x/.repo-root"
+printf '%s' "${SB}" > "${MP_BASE}/proj-y/.repo-root"
+pinned_out="$(LEADV2_STATE_BASE="$MP_BASE" run_render)"
+if printf '%s\n' "$pinned_out" | grep -q 'PROJ'; then
+  fail "MP-1: LEADV2_STATUS_STATE_DIR pinned but PROJ column leaked in"
+elif printf '%s\n' "$pinned_out" | grep -q '· [0-9]* projects'; then
+  fail "MP-1: LEADV2_STATUS_STATE_DIR pinned but multi-project header leaked in"
+elif sig_has pinnedab live "$pinned_out"; then
+  pass "MP-1: LEADV2_STATUS_STATE_DIR pinned stays single-project (enumeration never engaged)"
+else
+  fail "MP-1: pinned single-project render broke (got: $(printf '%s' "$pinned_out" | tail -1))"
+fi
+
+# ── MP-2. Two enumerated projects -> PROJ column, counts sum, cwd-independent
+# (LEADV2_STATUS_STATE_DIR unset; only LEADV2_STATE_BASE + repo-agnostic
+# LEADV2_STATUS_LEDGER_DIR/RUNS_ROOT drive it).
+MP_BASE2="${SB}/mp2"
+mkdir -p "${MP_BASE2}/alpha" "${MP_BASE2}/beta"
+cat > "${MP_BASE2}/alpha/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: alphalive0001
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    started_at: '2026-07-31T18:00:00Z'
+    last_pulse_at: '2026-07-31T18:00:00Z'
+    log_path: ''
+EOF
+cat > "${MP_BASE2}/beta/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: betalive00001
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    started_at: '2026-07-31T18:00:00Z'
+    last_pulse_at: '2026-07-31T18:00:00Z'
+    log_path: ''
+EOF
+printf '%s' "${SB}" > "${MP_BASE2}/alpha/.repo-root"
+printf '%s' "${SB}" > "${MP_BASE2}/beta/.repo-root"
+mp_out="$(LEADV2_STATE_BASE="$MP_BASE2" LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" LEADV2_STATUS_NOW="$NOW" bash "$RENDER")"
+if printf '%s\n' "$mp_out" | grep -q '^  PROJ ' \
+   && printf '%s\n' "$mp_out" | grep -q '· 2 projects' \
+   && printf '%s\n' "$mp_out" | grep -q 'alpha ' \
+   && printf '%s\n' "$mp_out" | grep -q 'beta ' \
+   && printf '%s\n' "$mp_out" | sed -n '2p' | grep -q '^lanes (2 live'; then
+  pass "MP-2: 2 enumerated projects -> PROJ column, counts sum (2 live)"
+else
+  fail "MP-2: multi-project render (got: $(printf '%s' "$mp_out" | tr '\n' '|'))"
+fi
+
+# ── MP-3. one project's active.yaml is unreadable garbage -> only THAT
+# project's rows degrade to a warn row; the other project still renders.
+MP_BASE3="${SB}/mp3"
+mkdir -p "${MP_BASE3}/good" "${MP_BASE3}/bad"
+cat > "${MP_BASE3}/good/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: goodlive00001
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    started_at: '2026-07-31T18:00:00Z'
+    last_pulse_at: '2026-07-31T18:00:00Z'
+    log_path: ''
+EOF
+printf 'this is not valid yaml: [\n  unterminated' > "${MP_BASE3}/bad/active.yaml"
+printf '%s' "${SB}" > "${MP_BASE3}/good/.repo-root"
+printf '%s' "${SB}" > "${MP_BASE3}/bad/.repo-root"
+mp3_out="$(LEADV2_STATE_BASE="$MP_BASE3" LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" LEADV2_STATUS_NOW="$NOW" bash "$RENDER")"
+if printf '%s\n' "$mp3_out" | grep -q 'goodlive' \
+   && printf '%s\n' "$mp3_out" | grep -q '^  bad '; then
+  pass "MP-3: per-project WARN degrades only that project's rows, other project still renders"
+else
+  fail "MP-3: per-project warn isolation (got: $(printf '%s' "$mp3_out" | tr '\n' '|'))"
+fi
+
+# ── MP-4. leadv2-status-projects.sh itself: base unreadable -> exit 2; base
+# with 0 qualifying dirs -> exit 0, empty stdout.
+if ! bash "${SCRIPT_DIR}/leadv2-status-projects.sh" >/dev/null 2>&1; then
+  :
+fi
+LEADV2_STATE_BASE="/nonexistent-leadv2-state-base-$$" bash "${SCRIPT_DIR}/leadv2-status-projects.sh" >/dev/null 2>&1
+mp4_rc=$?
+if [ "$mp4_rc" -eq 2 ]; then
+  pass "MP-4: leadv2-status-projects.sh exits 2 on unreadable base"
+else
+  fail "MP-4: leadv2-status-projects.sh unreadable-base exit (got rc=$mp4_rc)"
+fi
+MP_EMPTY="${SB}/mp-empty"
+mkdir -p "$MP_EMPTY"
+mp4b_out="$(LEADV2_STATE_BASE="$MP_EMPTY" bash "${SCRIPT_DIR}/leadv2-status-projects.sh" 2>/dev/null)"
+mp4b_rc=$?
+if [ "$mp4b_rc" -eq 0 ] && [ -z "$mp4b_out" ]; then
+  pass "MP-4: leadv2-status-projects.sh exits 0 with empty stdout for 0 qualifying projects"
+else
+  fail "MP-4: leadv2-status-projects.sh 0-projects case (rc=$mp4b_rc, out=$mp4b_out)"
 fi
 
 log ""

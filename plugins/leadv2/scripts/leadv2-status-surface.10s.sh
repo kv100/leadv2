@@ -137,6 +137,14 @@ case "$lane_line" in *⚠*) LANES_BROKEN=1 ;; esac
 LIVE_N=0
 DEAD_N=0
 DONE_N=0
+# SWIFTBAR-LIVE-01: a PROJ column shifts every field by one. Detect it from
+# the column-header row's FIRST field (never field count -- a lane row can
+# legally carry an empty trailing SIG field, which is not a reliable count).
+_col_hdr="$(printf '%s\n' "$LANES_BLOCK" | sed -n '3p')"
+_cause_start=6
+case "$(printf '%s' "$_col_hdr" | awk '{print $1}')" in
+  PROJ) _cause_start=7 ;;
+esac
 _rows="$(printf '%s\n' "$LANES_BLOCK" | tail -n +4)"
 # data rows = everything after the column header, minus the collapsed
 # '+ N done earlier today' summary line (which stands for N lanes by itself).
@@ -144,11 +152,11 @@ _data="$(printf '%s\n' "$_rows" | grep -vE '^ *\+ [0-9][0-9]* done earlier today
 if printf '%s\n' "$_data" | grep -q .; then
   # SIG is now its own trailing column, so STATE/cause is no longer the last
   # token (and `stale(Nm silent)` already spanned two tokens). Reconstruct the
-  # cause as fields 6..NF-1 of each data row (the SIG is the trailing field),
-  # then count by cause. No hex assumption: the cause patterns are distinctive
-  # and the column header's field-6 ('STATE') matches none of them.
-  _causes="$(printf '%s\n' "$_data" | awk 'NF>=2{
-    c=""; for(i=6;i<NF;i++) c=(c?c" ":"")$i; print c
+  # cause as fields _cause_start..NF-1 of each data row (SIG is the trailing
+  # field), then count by cause. No hex assumption: the cause patterns are
+  # distinctive and the column header's STATE field matches none of them.
+  _causes="$(printf '%s\n' "$_data" | awk -v start="$_cause_start" 'NF>=2{
+    c=""; for(i=start;i<NF;i++) c=(c?c" ":"")$i; print c
   }')"
   LIVE_N="$(printf '%s\n' "$_causes" | grep -Exc 'live' || true)"
   case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0 ;; esac

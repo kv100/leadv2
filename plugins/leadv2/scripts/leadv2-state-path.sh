@@ -86,7 +86,19 @@ else
     # plane of an unrelated repo just because it happens to be the caller's
     # ambient cwd.
     STATE_ROOT="${LINK_ROOT}/docs/leadv2"
-    mkdir -p "$STATE_ROOT"
+    # SWIFTBAR-LIVE-01: a caller with no cwd-derived repo (LINK_ROOT resolves to
+    # "/" — e.g. SwiftBar launching this script with cwd=/ and no PROJECT_ROOT)
+    # used to `mkdir -p //docs/leadv2`, which either crashes under a caller's
+    # `set -e` or half-creates a stray root-owned dir. Refuse instead of
+    # guessing: no mkdir, one-line stderr diagnostic, exit 3.
+    if [[ "$LINK_ROOT" == "/" ]]; then
+      printf -- '[leadv2-state-path] ABORT: no git repo resolved and LINK_ROOT is "/" (cwd=/, no PROJECT_ROOT) -- refusing to mkdir "%s". Pass PROJECT_ROOT or run from inside a repo checkout.\n' "$STATE_ROOT" >&2
+      exit 3
+    fi
+    if ! mkdir -p "$STATE_ROOT" 2>/dev/null; then
+      printf -- '[leadv2-state-path] ABORT: parent of "%s" is not writable -- refusing to proceed.\n' "$STATE_ROOT" >&2
+      exit 3
+    fi
     if [[ "$NAME" == "root" || -z "$NAME" ]]; then
       printf -- '%s\n' "$STATE_ROOT"
       exit 0
@@ -103,6 +115,26 @@ else
 fi
 
 mkdir -p "$STATE_ROOT"
+
+# SWIFTBAR-LIVE-01: a marker recording which real repo checkout this
+# control-plane root belongs to, so a cwd-independent reader (leadv2-status-
+# projects.sh) can enumerate every project under LEADV2_STATE_BASE without
+# ever calling git or depending on the caller's cwd. Additive, atomic,
+# write-only-on-change (avoid mtime churn on every invocation). Only written
+# when MAIN_REPO_ROOT is known (the git branch above) -- the no-git fallback
+# returns early and never reaches here.
+if [[ -n "${MAIN_REPO_ROOT:-}" ]]; then
+  _repo_root_marker="${STATE_ROOT}/.repo-root"
+  _cur_marker=""
+  [[ -f "$_repo_root_marker" ]] && _cur_marker="$(cat "$_repo_root_marker" 2>/dev/null || true)"
+  if [[ "$_cur_marker" != "$MAIN_REPO_ROOT" ]]; then
+    _repo_root_tmp="${_repo_root_marker}.tmp.$$"
+    if printf -- '%s' "$MAIN_REPO_ROOT" > "$_repo_root_tmp" 2>/dev/null; then
+      mv -f "$_repo_root_tmp" "$_repo_root_marker" 2>/dev/null || rm -f "$_repo_root_tmp"
+    fi
+  fi
+  unset _repo_root_marker _cur_marker _repo_root_tmp
+fi
 
 # ── B1 SAFETY NET (SUPERVISOR-AUDIT-01, third recurrence, fix-round-3) ─────
 # Twice before, a test that sandboxes the control plane via LEADV2_STATE_ROOT

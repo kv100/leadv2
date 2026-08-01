@@ -95,6 +95,66 @@ else
 fi
 unset _top
 
+# ── SWIFTBAR-LIVE-01: cwd-independent multi-project lane enumeration ───────
+# Only engaged when the caller did NOT pin LEADV2_STATUS_STATE_DIR — that env
+# var remains the single-project, byte-identical-output regression contract
+# (the existing test suite's run_render() always sets it, so this whole block
+# is a strict no-op for every pre-existing test). The supervisor gate above
+# is deliberately left resolved from the single default STATE_DIR/REPO
+# computed above (not swept per-project) — sweeping supervisor state across
+# projects is out of scope for this round; see developer.full.md deviation.
+MULTI_PROJECT=0
+PROJ_SLUGS=()
+PROJ_STATE_DIRS=()
+PROJ_REPO_ROOTS=()
+if [ -z "${LEADV2_STATUS_STATE_DIR:-}" ]; then
+  PROJECTS_SH="${LEADV2_STATUS_PROJECTS_SH:-${SCRIPT_DIR}/leadv2-status-projects.sh}"
+  if [ -x "$PROJECTS_SH" ]; then
+    _proj_tsv="$(bash "$PROJECTS_SH" 2>/dev/null || true)"
+    if [ -n "$_proj_tsv" ]; then
+      while IFS="$(printf '\t')" read -r _pslug _psdir _prroot; do
+        [ -n "$_pslug" ] || continue
+        PROJ_SLUGS+=("$_pslug")
+        PROJ_STATE_DIRS+=("$_psdir")
+        PROJ_REPO_ROOTS+=("$_prroot")
+      done <<EOF
+$_proj_tsv
+EOF
+    fi
+    unset _proj_tsv
+  fi
+  PROJECT_COUNT="${#PROJ_SLUGS[@]}"
+  if [ "$PROJECT_COUNT" -ge 2 ]; then
+    MULTI_PROJECT=1
+  elif [ "$PROJECT_COUNT" -eq 1 ]; then
+    # Single enumerated project: point the existing single-project vars at it
+    # so the rest of the script (unchanged) renders exactly as if
+    # LEADV2_STATUS_STATE_DIR had been pinned to it -- no PROJ column.
+    STATE_DIR="${PROJ_STATE_DIRS[0]}"
+    REPO="${PROJ_SLUGS[0]}"
+    _p_root="${PROJ_REPO_ROOTS[0]}"
+    TASKS_YAML=""
+    [ -f "${_p_root}/docs/tasks.yaml" ] && TASKS_YAML="${_p_root}/docs/tasks.yaml"
+    HANDOFF_DIR=""
+    [ -d "${_p_root}/docs/handoff" ] && HANDOFF_DIR="${_p_root}/docs/handoff"
+    export LEADV2_STATUS_REPO_ROOT="${_p_root}"
+    unset _p_root
+  fi
+  # PROJECT_COUNT -eq 0: leave the pre-existing cwd/git-derived STATE_DIR/etc
+  # resolved above as-is (so a checkout with a valid cwd-derived STATE_DIR
+  # but no .repo-root marker yet does not regress). Only when THAT fallback
+  # also produced nothing usable do we surface the named "no project state"
+  # cause instead of the generic "active.yaml не прочитан" warning.
+  if [ "$PROJECT_COUNT" -eq 0 ]; then
+    if [ -z "$STATE_DIR" ] || [ ! -f "${STATE_DIR}/active.yaml" ]; then
+      ZERO_PROJECTS=1
+      ZERO_PROJECTS_BASE="${LEADV2_STATE_BASE:-${HOME}/.claude/leadv2-state}"
+    fi
+  fi
+fi
+ZERO_PROJECTS="${ZERO_PROJECTS:-0}"
+ZERO_PROJECTS_BASE="${ZERO_PROJECTS_BASE:-}"
+
 # Round 4: opt-in section flags. BARE invocation stays byte-identical to the
 # pre-round-4 renderer (the regression contract for the 32 existing tests) —
 # only an explicit flag changes the output. Unknown flag → usage, exit 2.
@@ -1070,40 +1130,102 @@ PYEOF
 LANES=""
 LIVE_N=0
 DEAD_N=0
+DONE_RECENT_N=0
+AGED_OUT_N=0
 WARN_MSG=""
+LANE_ROWS=""
+LANE_COUNT=0
+
+_run_lanes_for_project() {
+  # args: state_dir ledger_file tasks_yaml handoff_dir  -> prints raw LANES
+  # (control lines + TSV rows) for that one project, via the shared
+  # _ss_lanes_py block. Zero side effects on any global.
+  LEADV2_SS_STATE_DIR="$1" \
+  LEADV2_SS_LEDGER_FILE="$2" \
+  LEADV2_SS_RUNS_ROOT="$RUNS_ROOT" \
+  LEADV2_SS_NOW="$NOW" \
+  LEADV2_SS_TASKS_YAML="$3" \
+  LEADV2_SS_HANDOFF_DIR="$4" \
+  LEADV2_SS_DONE_TTL="$DONE_TTL" \
+  LEADV2_SS_DEAD_TTL="$DEAD_TTL" \
+  _ss_lanes_py
+}
+
 if ! command -v python3 >/dev/null 2>&1; then
   LANES="$(printf 'warn\tactive.yaml\tpython3\t-\tpython3 missing - active.yaml not parsed\tdead\n')"
   DEAD_N=1
+  LANE_ROWS="$LANES"
+  LANE_COUNT=1
+elif [ "$MULTI_PROJECT" -eq 1 ]; then
+  # ── Multi-project aggregation (SWIFTBAR-LIVE-01) ──────────────────────────
+  _mp_idx=0
+  while [ "$_mp_idx" -lt "${#PROJ_SLUGS[@]}" ]; do
+    _mp_slug="${PROJ_SLUGS[$_mp_idx]}"
+    _mp_sd="${PROJ_STATE_DIRS[$_mp_idx]}"
+    _mp_root="${PROJ_REPO_ROOTS[$_mp_idx]}"
+    _mp_ledger="${LEDGER_DIR}/${_mp_slug}.jsonl"
+    _mp_tasks=""
+    [ -f "${_mp_root}/docs/tasks.yaml" ] && _mp_tasks="${_mp_root}/docs/tasks.yaml"
+    _mp_handoff=""
+    [ -d "${_mp_root}/docs/handoff" ] && _mp_handoff="${_mp_root}/docs/handoff"
+    _mp_lanes="$(_run_lanes_for_project "$_mp_sd" "$_mp_ledger" "$_mp_tasks" "$_mp_handoff")"
+
+    _mp_live="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#LIVE //p' | head -1)"
+    _mp_dead="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#DEAD //p' | head -1)"
+    _mp_done="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#DONE_RECENT //p' | head -1)"
+    _mp_aged="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#AGED_OUT //p' | head -1)"
+    _mp_warn="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#WARN //p' | head -1)"
+    case "$_mp_live" in ''|*[!0-9]*) _mp_live=0 ;; esac
+    case "$_mp_dead" in ''|*[!0-9]*) _mp_dead=0 ;; esac
+    case "$_mp_done" in ''|*[!0-9]*) _mp_done=0 ;; esac
+    case "$_mp_aged" in ''|*[!0-9]*) _mp_aged=0 ;; esac
+
+    if [ -n "$_mp_warn" ]; then
+      # STATUS-SURFACE R10 (SWIFTBAR-LIVE-01): a per-project WARN degrades
+      # only THIS project's rows -- one synthetic dead row, table continues.
+      _mp_rows="$(printf 'warn\t-\t%s\t-\t-\twarn\tdead\t\n' "$_mp_warn")"
+      _mp_dead=$(( _mp_dead + 1 ))
+    else
+      _mp_rows="$(printf '%s\n' "$_mp_lanes" | grep -v '^#' || true)"
+    fi
+    if [ -n "$_mp_rows" ]; then
+      LANE_ROWS="${LANE_ROWS}$(printf '%s\n' "$_mp_rows" | sed "s/^/${_mp_slug}\t/")
+"
+    fi
+    LIVE_N=$(( LIVE_N + _mp_live ))
+    DEAD_N=$(( DEAD_N + _mp_dead ))
+    DONE_RECENT_N=$(( DONE_RECENT_N + _mp_done ))
+    AGED_OUT_N=$(( AGED_OUT_N + _mp_aged ))
+    _mp_idx=$(( _mp_idx + 1 ))
+  done
+  unset _mp_idx _mp_slug _mp_sd _mp_root _mp_ledger _mp_tasks _mp_handoff _mp_lanes \
+        _mp_live _mp_dead _mp_done _mp_aged _mp_warn _mp_rows
+  LANE_ROWS="$(printf '%s\n' "$LANE_ROWS" | grep -v '^ *$' || true)"
+  LANE_COUNT=0
+  if [ -n "$LANE_ROWS" ]; then
+    LANE_COUNT="$(printf '%s\n' "$LANE_ROWS" | grep -c . || true)"
+  fi
 else
-  LANES="$(LEADV2_SS_STATE_DIR="$STATE_DIR" \
-           LEADV2_SS_LEDGER_FILE="$LEDGER_FILE" \
-           LEADV2_SS_RUNS_ROOT="$RUNS_ROOT" \
-           LEADV2_SS_NOW="$NOW" \
-           LEADV2_SS_TASKS_YAML="$TASKS_YAML" \
-           LEADV2_SS_HANDOFF_DIR="$HANDOFF_DIR" \
-           LEADV2_SS_DONE_TTL="$DONE_TTL" \
-           LEADV2_SS_DEAD_TTL="$DEAD_TTL" \
-           _ss_lanes_py)"
-fi
+  LANES="$(_run_lanes_for_project "$STATE_DIR" "$LEDGER_FILE" "$TASKS_YAML" "$HANDOFF_DIR")"
 
-
-# parse the control lines + rows out of LANES
-if [ -n "$LANES" ]; then
-  LIVE_N="$(printf '%s\n' "$LANES" | sed -n 's/^#LIVE //p' | head -1)"
-  DEAD_N="$(printf '%s\n' "$LANES" | sed -n 's/^#DEAD //p' | head -1)"
-  DONE_RECENT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#DONE_RECENT //p' | head -1)"
-  AGED_OUT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#AGED_OUT //p' | head -1)"
-  WARN_MSG="$(printf '%s\n' "$LANES" | sed -n 's/^#WARN //p' | head -1)"
-  case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0 ;; esac
-  case "$DEAD_N" in ''|*[!0-9]*) DEAD_N=0 ;; esac
-  case "$DONE_RECENT_N" in ''|*[!0-9]*) DONE_RECENT_N=0 ;; esac
-  case "$AGED_OUT_N" in ''|*[!0-9]*) AGED_OUT_N=0 ;; esac
-fi
-# drop every control line (#…) so only TSV rows remain
-LANE_ROWS="$(printf '%s\n' "$LANES" | grep -v '^#' || true)"
-LANE_COUNT=0
-if [ -n "$LANE_ROWS" ]; then
-  LANE_COUNT="$(printf '%s\n' "$LANE_ROWS" | grep -c . || true)"
+  # parse the control lines + rows out of LANES
+  if [ -n "$LANES" ]; then
+    LIVE_N="$(printf '%s\n' "$LANES" | sed -n 's/^#LIVE //p' | head -1)"
+    DEAD_N="$(printf '%s\n' "$LANES" | sed -n 's/^#DEAD //p' | head -1)"
+    DONE_RECENT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#DONE_RECENT //p' | head -1)"
+    AGED_OUT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#AGED_OUT //p' | head -1)"
+    WARN_MSG="$(printf '%s\n' "$LANES" | sed -n 's/^#WARN //p' | head -1)"
+    case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0 ;; esac
+    case "$DEAD_N" in ''|*[!0-9]*) DEAD_N=0 ;; esac
+    case "$DONE_RECENT_N" in ''|*[!0-9]*) DONE_RECENT_N=0 ;; esac
+    case "$AGED_OUT_N" in ''|*[!0-9]*) AGED_OUT_N=0 ;; esac
+  fi
+  # drop every control line (#…) so only TSV rows remain
+  LANE_ROWS="$(printf '%s\n' "$LANES" | grep -v '^#' || true)"
+  LANE_COUNT=0
+  if [ -n "$LANE_ROWS" ]; then
+    LANE_COUNT="$(printf '%s\n' "$LANE_ROWS" | grep -c . || true)"
+  fi
 fi
 
 # ── Render ─────────────────────────────────────────────────────────────────
@@ -1118,7 +1240,12 @@ emit_oneline() {
     *)      head="sup:OFF(${SUP_SHORT})" ;;
   esac
   lane_str=""
-  if [ "$LANE_COUNT" -gt 0 ]; then
+  if [ "$LANE_COUNT" -gt 0 ] && [ "$MULTI_PROJECT" -eq 1 ]; then
+    lane_str="$(printf '%s\n' "$LANE_ROWS" | awk -F '\t' '
+      { printf "%s%s/%s %s %s %s %s", (NR>1?" | ":""), $1, $2, $3, $4, $6, $7 }
+      END { printf "\n" }')"
+    lane_str="$(printf '%s' "$lane_str" | tr -d '\n')"
+  elif [ "$LANE_COUNT" -gt 0 ]; then
     lane_str="$(printf '%s\n' "$LANE_ROWS" | awk -F '\t' '
       { printf "%s%s %s %s %s %s", (NR>1?" | ":""), $1, $2, $3, $5, $6 }
       END { printf "\n" }')"
@@ -1142,6 +1269,10 @@ emit_lanes_table() {
   # "N live" count -- it renders an explicit warning and the menu-bar title
   # carries ⚠ (see leadv2-status-surface.10s.sh). First token stays `lanes` so
   # the section parser keeps matching; the ⚠ glyph is the breakage signal.
+  if [ "$ZERO_PROJECTS" -eq 1 ]; then
+    printf 'lanes (⚠ no project state under %s)\n' "$ZERO_PROJECTS_BASE"
+    return 0
+  fi
   if [ -n "$WARN_MSG" ]; then
     printf 'lanes (⚠ active.yaml не прочитан — список не отражает реальность)\n'
     printf '  %s\n' "$WARN_MSG"
@@ -1150,7 +1281,17 @@ emit_lanes_table() {
   # STATUS-SURFACE-R5-01 (C2/C1d): header carries the live + recent-terminal
   # counts and, only when rows were aged out, how many were hidden -- so a drop
   # is never silent. First token stays `lanes` (section parser + statusline).
-  if [ "$AGED_OUT_N" -gt 0 ]; then
+  # SWIFTBAR-LIVE-01: multi-project header additionally carries the project
+  # count so "lanes" stays the parseable first token in every mode.
+  if [ "$MULTI_PROJECT" -eq 1 ]; then
+    if [ "$AGED_OUT_N" -gt 0 ]; then
+      printf 'lanes (%d live, %d done в последний час, %d скрыто по возрасту · %d projects)\n' \
+        "$LIVE_N" "$DONE_RECENT_N" "$AGED_OUT_N" "${#PROJ_SLUGS[@]}"
+    else
+      printf 'lanes (%d live, %d done в последний час · %d projects)\n' \
+        "$LIVE_N" "$DONE_RECENT_N" "${#PROJ_SLUGS[@]}"
+    fi
+  elif [ "$AGED_OUT_N" -gt 0 ]; then
     printf 'lanes (%d live, %d done в последний час, %d скрыто по возрасту)\n' \
       "$LIVE_N" "$DONE_RECENT_N" "$AGED_OUT_N"
   else
@@ -1158,6 +1299,9 @@ emit_lanes_table() {
   fi
   if [ "$LANE_COUNT" -eq 0 ]; then
     printf '  (none)\n'
+  elif [ "$MULTI_PROJECT" -eq 1 ]; then
+    printf '  %-14s %-28s %-6s %-12s %-7s %-5s %-18s %s\n' "PROJ" "NAME" "TYPE" "PHASE/STATE" "MODEL" "AGE" "STATE" "SIG"
+    printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{ printf "  %-14s %-28s %-6s %-12s %-7s %-5s %-18s %s\n", $1, $2, $3, $4, $5, $6, $7, $9 }'
   else
     printf '  %-28s %-6s %-12s %-7s %-5s %-18s %s\n' "NAME" "TYPE" "PHASE/STATE" "MODEL" "AGE" "STATE" "SIG"
     printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{ printf "  %-28s %-6s %-12s %-7s %-5s %-18s %s\n", $1, $2, $3, $4, $5, $6, $8 }'
@@ -1474,118 +1618,87 @@ for qid, text, labels in items:
 PYEOF
 }
 
-# Per-provider limits. Reads a SNAPSHOT FILE only — never the live tool. The
-# snapshot is the verbatim stdout of leadv2-quota-status.sh plus a first
-# '# stamped <epoch>' line, written atomically by --refresh-limits. A snapshot
-# older than 15 min is shown with a ' (stale Nm)' suffix — shown, never hidden,
-# never refreshed in-band (no network on the read path).
+# Per-provider limits (SWIFTBAR-LIVE-01 rewrite). Reads ONE small kv file per
+# provider under LEADV2_LIMITS_CACHE_DIR — never a network/keychain call on
+# this path, so the 10s SwiftBar tick never blocks. Staleness is per-provider
+# now (the old block-level "limits (stale Nm)" suffix is gone): a fresh kv
+# prints its value verbatim; a stale or missing kv prints the last-known value
+# (or a placeholder) plus a short human suffix AND fires
+# leadv2-limits-refresh.sh --provider <p> detached, non-blocking, capped by
+# that script's own per-provider mkdir lock.
 render_limits() {
-  local snap
-  snap="${LEADV2_STATUS_LIMITS_SNAPSHOT:-${HOME}/.claude/cache/leadv2-limits-snapshot.txt}"
-  if [ ! -f "$snap" ]; then
-    printf 'limits\n'
-    printf '  no snapshot\n'
+  local cache_dir refresher
+  cache_dir="${LEADV2_LIMITS_CACHE_DIR:-${HOME}/.claude/cache/leadv2-limits.d}"
+  refresher="${LEADV2_LIMITS_REFRESH_SH:-${SCRIPT_DIR}/leadv2-limits-refresh.sh}"
+  printf 'limits\n'
+  local p
+  for p in claude glm codex kimi; do
+    _render_one_limit "$cache_dir" "$refresher" "$p"
+  done
+}
+
+# Reads <cache_dir>/<provider>.kv (state/value/stamped/ttl/detail, first '='
+# splits) and renders exactly one line, firing a detached non-blocking
+# refresh when the row is stale or missing. Never touches the network itself.
+_render_one_limit() {
+  local cache_dir="$1" refresher="$2" provider="$3"
+  local f="${cache_dir}/${provider}.kv"
+  local state="" value="" stamped="" ttl="" detail=""
+  if [ -f "$f" ]; then
+    while IFS='=' read -r k v; do
+      case "$k" in
+        state)   state="$v" ;;
+        value)   value="$v" ;;
+        stamped) stamped="$v" ;;
+        ttl)     ttl="$v" ;;
+        detail)  detail="$v" ;;
+      esac
+    done < "$f"
+  fi
+  local fresh=0
+  case "$stamped" in
+    ''|*[!0-9]*) fresh=0 ;;
+    *)
+      case "$ttl" in ''|*[!0-9]*) ttl=90 ;; esac
+      [ $(( NOW - stamped )) -le "$ttl" ] && fresh=1
+      ;;
+  esac
+  if [ -z "$state" ]; then
+    printf '  %s: (получаем…)\n' "$provider"
+    _fire_limits_refresh "$refresher" "$provider"
     return 0
   fi
-  local stamp_epoch age stale=""
-  stamp_epoch="$(sed -n 's/^# stamped \([0-9][0-9]*\).*/\1/p' "$snap" | head -1)"
-  case "$stamp_epoch" in
-    ''|*[!0-9]*) ;;
+  if [ "$fresh" -eq 1 ]; then
+    _print_limit_line "$provider" "$state" "$value" "$detail" ""
+  else
+    _print_limit_line "$provider" "$state" "$value" "$detail" " (обновляется…)"
+    _fire_limits_refresh "$refresher" "$provider"
+  fi
+}
+
+_fire_limits_refresh() {
+  local refresher="$1" provider="$2"
+  [ -x "$refresher" ] || return 0
+  ( bash "$refresher" --provider "$provider" >/dev/null 2>&1 & ) 2>/dev/null || true
+}
+
+_print_limit_line() {
+  local provider="$1" state="$2" value="$3" detail="$4" suffix="$5"
+  case "$state" in
+    ok)
+      printf '  %s: %s%s\n' "$provider" "$value" "$suffix"
+      ;;
+    unauthenticated)
+      printf '  %s: %s\n' "$provider" "${detail:-нет валидного OAuth-токена}"
+      ;;
     *)
-      age=$(( NOW - stamp_epoch ))
-      [ "$age" -lt 0 ] && age=0
-      if [ "$age" -gt 900 ]; then
-        stale=" (stale $(( age / 60 ))m)"
+      if [ -n "$value" ]; then
+        printf '  %s: %s%s\n' "$provider" "$value" "$suffix"
+      else
+        printf '  %s: (получаем…)%s\n' "$provider" "$suffix"
       fi
       ;;
   esac
-  printf 'limits%s\n' "$stale"
-  # STATUS-SURFACE-R5-01 (defect 3, C3a): the old claude row divided INPUT
-  # tokens by a guessed 8M cap while the real burn is hundreds of MB of
-  # cache-read -- so it printed a serene 0% at any load. The snapshot's own
-  # Quota line always carries 'cap est.' and its rate_limit line says 'not
-  # captured' while no real Anthropic rate-limit signal is on disk. While that
-  # heuristic cap is in use we print NO fabricated percentage -- only measured
-  # magnitudes (cache-read + output) lifted verbatim from the anthropic 5h line.
-  # When a real rate_limit_anthropic kv row IS present (written by the
-  # --refresh-limits probe), we compute the percentage from its measured
-  # unified_limit/unified_remaining instead. A read of the local sqlite kv row
-  # is NOT network. Never a second heuristic: any failure -> honest text.
-  local qline rline aline cap_est rcap_not
-  qline="$(grep '^Quota:' "$snap" | head -1)"
-  rline="$(grep '^  rate_limit:' "$snap" | head -1)"
-  aline="$(grep '^  anthropic 5h:' "$snap" | head -1)"
-  cap_est=0; rcap_not=0
-  case "$qline" in *"cap est."*) cap_est=1 ;; esac
-  case "$rline" in *"not captured"*) rcap_not=1 ;; esac
-  if [ "$cap_est" -eq 1 ] || [ "$rcap_not" -eq 1 ]; then
-    # Try the measured real number first (kv row from the ratelimit probe). If a
-    # fresh, parseable, real cap is there, use it -- otherwise the honest text.
-    local bdb kv_real
-    bdb="${LEADV2_STATUS_BURN_DB:-${HOME}/.claude/burn/history.db}"
-    kv_real=""
-    [ -f "$bdb" ] && kv_real="$(LEADV2_R4_DB="$bdb" python3 -c 'import os,json,sqlite3
-try:
-    db=os.environ["LEADV2_R4_DB"]
-    r=sqlite3.connect(db).execute("SELECT value FROM kv WHERE key=\x27rate_limit_anthropic\x27 ORDER BY rowid DESC LIMIT 1").fetchone()
-    if not r: raise SystemExit
-    d=json.loads(r[0])
-    lim=d.get("unified_limit"); rem=d.get("unified_remaining")
-    if isinstance(lim,(int,float)) and isinstance(rem,(int,float)) and lim>0:
-        print("%d" % round((lim-rem)*100.0/lim))
-except Exception:
-    pass' 2>/dev/null || true)"
-    case "$kv_real" in
-      ''|*[!0-9]*)
-        # no real number -> honest text + measured magnitudes
-        local _crv _outv _mag
-        _crv="$(printf '%s\n' "$aline" | grep -oE ' cr [0-9.]+[KMGT]?' | awk '{print $2}')"
-        _outv="$(printf '%s\n' "$aline" | grep -oE ' out [0-9.]+[KMGT]?' | awk '{print $2}')"
-        _mag=""
-        [ -n "$_crv" ] && _mag=" (5h: cr $_crv out $_outv)"
-        printf '  claude: не измеряется — cache-dominated, cap est.%s\n' "$_mag"
-        ;;
-      *)
-        printf '  claude: 5h %s%% (rate-limit signal)\n' "$kv_real"
-        ;;
-    esac
-  else
-    # A real rate_limit line is present in the snapshot (not 'not captured') --
-    # print the measured percentage from the snapshot's Quota line.
-    local c5h cwk
-    c5h="$(printf '%s' "$qline" | sed -n 's/^Quota: 5h \([0-9][0-9]*\)%.*/\1/p')"
-    cwk="$(printf '%s' "$qline" | sed -n 's/.*weekly(claude[^)]*) \([0-9][0-9]*\)%.*/\1/p')"
-    case "$c5h" in ''|*[!0-9]*) c5h="?" ;; esac
-    case "$cwk" in ''|*[!0-9]*) cwk="?" ;; esac
-    printf '  claude: 5h %s%% weekly %s%% (snapshot)\n' "$c5h" "$cwk"
-  fi
-  # glm weekly — from "  glm weekly (live, z.ai): X%"
-  local gline gwk
-  gline="$(grep '^  glm weekly' "$snap" | head -1)"
-  gwk="$(printf '%s' "$gline" | sed -n 's/.*(live, z.ai): \([0-9][0-9]*\)%.*/\1/p')"
-  case "$gwk" in ''|*[!0-9]*) gwk="unmeasured" ;; esac
-  printf '  glm: weekly %s%% (snapshot, live z.ai)\n' "$gwk"
-  # codex lockout — ~/.claude/cache/codex-lockout.state; show lockout-until only
-  # when it is in the future, else the subscription baseline.
-  local clf until uepoch
-  clf="${LEADV2_STATUS_CODEX_LOCKOUT:-${HOME}/.claude/cache/codex-lockout.state}"
-  until=""
-  [ -f "$clf" ] && until="$(sed -n 's/.*until=\([^ ]*\).*/\1/p' "$clf" | head -1)"
-  uepoch=""
-  if [ -n "$until" ]; then
-    uepoch="$(LEADV2_R4_ISO="$until" python3 -c 'import os,datetime
-t=os.environ["LEADV2_R4_ISO"].rstrip("Z")+"+00:00"
-try: print(int(datetime.datetime.fromisoformat(t).timestamp()))
-except Exception: print("")' 2>/dev/null || true)"
-  fi
-  if [ -n "$uepoch" ] && [ "$uepoch" -gt "$NOW" ]; then
-    printf '  codex: lockout-until %s (state)\n' "$until"
-  else
-    printf '  codex: unmeasured (subscription)\n'
-  fi
-  # kimi — no probe-result cache file exists; spec-sanctioned 'unknown'. A live
-  # probe would be a scope violation (R4 §3 / §8 non-goal: no new network probe).
-  printf '  kimi: unknown\n'
 }
 
 # Scheduled-decisions due/overdue count. Source is the cross-repo
@@ -1651,26 +1764,19 @@ print(len(seen))' 2>/dev/null || true)"
   printf 'urgent: %d (4h)\n' "$n"
 }
 
-# The ONLY code path allowed to run leadv2-quota-status.sh. Writes the snapshot
-# atomically (tmp + mv -f) so a concurrent reader never sees a half file. Not
-# wired to any cron in this round — absent snapshot is the normal first-run
-# state and renders cleanly via render_limits.
+# SWIFTBAR-LIVE-01 migration: --refresh-limits is now a thin, BLOCKING alias
+# for `leadv2-limits-refresh.sh --provider all --force` (the render path
+# itself never blocks -- see render_limits above). Kept for backward compat
+# with any caller still invoking `--refresh-limits` directly.
 render_refresh_limits() {
-  local snap qs tmp
-  snap="${LEADV2_STATUS_LIMITS_SNAPSHOT:-${HOME}/.claude/cache/leadv2-limits-snapshot.txt}"
-  qs="${SCRIPT_DIR}/leadv2-quota-status.sh"
-  mkdir -p "$(dirname "$snap")" 2>/dev/null || true
-  tmp="${snap}.tmp.$$"
-  {
-    printf '# stamped %s\n' "$NOW"
-    if [ -x "$qs" ]; then
-      bash "$qs" 2>/dev/null || true
-    else
-      printf '# leadv2-quota-status.sh missing\n'
-    fi
-  } > "$tmp"
-  mv -f "$tmp" "$snap"
-  printf 'limits snapshot written to %s\n' "$snap"
+  local refresher
+  refresher="${LEADV2_LIMITS_REFRESH_SH:-${SCRIPT_DIR}/leadv2-limits-refresh.sh}"
+  if [ -x "$refresher" ]; then
+    bash "$refresher" --provider all --force 2>/dev/null || true
+    printf 'limits refreshed via %s\n' "$refresher"
+  else
+    printf 'limits refresh unavailable (missing %s)\n' "$refresher"
+  fi
 }
 
 # ── Dispatch ───────────────────────────────────────────────────────────────
