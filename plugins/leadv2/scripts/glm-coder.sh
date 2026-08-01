@@ -1108,29 +1108,151 @@ capture_deliverable() {
     || echo "LEADV2_DEADHAND_WRITE_FAILED .deliverable" >> "${run_dir}/progress.log"
 }
 
-# DISPATCH-DEADHAND-01: terminal dead-hand guard. Called from cmd_supervise
-# AFTER finalize_meta (which mktemp+mvs meta.yaml, so anything appended before
-# that call is clobbered -- R1) and BEFORE release_lock. If a .deliverable
-# contract exists, the run is satisfied iff the file exists AND its last
-# non-empty line is exactly DELIVERABLE_COMPLETE (terminal marker by contract,
-# not a mid-file mention). Not satisfied => flag in progress.log + meta.yaml +
-# .no-deliverable sentinel. Never false-alarms when no contract is derivable.
+# N2-DEADHAND-SUBSTANCE (2026-08-01): sha256 helper with a macOS-safe
+# fallback chain (sha256sum absent on darwin by default). Reads stdin,
+# prints the hex digest only.
+_deadhand_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    cksum | cut -d' ' -f1
+  fi
+}
+
+# N2-DEADHAND-SUBSTANCE: run-scoped work baseline, captured at dispatch time
+# (same call site as capture_deliverable, before the child is spawned) so a
+# later "did this run touch the tree" check compares against THIS run's
+# starting point, not a snapshot polluted by a neighbour lane's concurrent
+# edits in a shared tree. `docs/` is excluded from the dirty hash so writing
+# the deliverable itself can never count as work -- the deliverable cannot
+# be its own proof. Degrades silently (no file written) when cwd is not a
+# git work tree; deadhand_check treats a missing .workbase as "skip G3".
+work_baseline() {
+  local run_dir="$1" cwd_dir="$2"
+  git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  local head dirty
+  head="$(git -C "${cwd_dir}" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "${head}" ]] || return 0
+  dirty="$(git -C "${cwd_dir}" status --porcelain -- . ':(exclude)docs/' 2>/dev/null | _deadhand_sha256 || true)"
+  {
+    printf 'head=%s\n' "${head}"
+    printf 'dirty=%s\n' "${dirty}"
+  } > "${run_dir}/.workbase" 2>/dev/null \
+    || echo "LEADV2_DEADHAND_WRITE_FAILED .workbase" >> "${run_dir}/progress.log"
+}
+
+# N2-DEADHAND-SUBSTANCE: is this mission expected to write code (outside
+# docs/)? Resolution order, first hit wins: explicit LEADV2_MISSION_CODE env
+# > a `LANE_WRITES:` line in prompt.txt listing >=1 non-docs/ path > cannot
+# be derived -> not code-shaped (conservative: an undetectable mission kind
+# degrades to pre-existing marker-only behaviour, so this can only turn a
+# false-green red, never turn a green red by surprise). Prints 1 or 0.
+mission_is_code_shaped() {
+  local run_dir="$1"
+  case "${LEADV2_MISSION_CODE:-}" in
+    1) echo 1; return 0 ;;
+    0) echo 0; return 0 ;;
+  esac
+  local line
+  line="$(grep -m1 -E '^LANE_WRITES:' "${run_dir}/prompt.txt" 2>/dev/null || true)"
+  if [[ -n "${line}" ]]; then
+    local paths_part p trimmed
+    paths_part="${line#LANE_WRITES:}"
+    IFS=',' read -ra _lw_paths <<< "${paths_part}"
+    for p in "${_lw_paths[@]}"; do
+      trimmed="$(printf '%s' "${p}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+      [[ -n "${trimmed}" ]] || continue
+      if [[ "${trimmed}" != docs/* ]]; then
+        echo 1
+        return 0
+      fi
+    done
+  fi
+  echo 0
+}
+
+# N2-DEADHAND-SUBSTANCE: has the tree changed since work_baseline, relative
+# to THIS run's own baseline (never a bare `git status` snapshot -- that
+# would mis-attribute a neighbour lane's concurrent edits in a shared tree).
+# Prints yes/no/skip; skip means "no baseline available, G3 not applicable".
+work_delta_present() {
+  local run_dir="$1" cwd_dir="$2"
+  [[ -f "${run_dir}/.workbase" ]] || { echo skip; return 0; }
+  git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo skip; return 0; }
+  local base_head base_dirty cur_head cur_dirty
+  base_head="$(grep '^head=' "${run_dir}/.workbase" | head -1 | cut -d= -f2-)"
+  base_dirty="$(grep '^dirty=' "${run_dir}/.workbase" | head -1 | cut -d= -f2-)"
+  cur_head="$(git -C "${cwd_dir}" rev-parse HEAD 2>/dev/null || true)"
+  cur_dirty="$(git -C "${cwd_dir}" status --porcelain -- . ':(exclude)docs/' 2>/dev/null | _deadhand_sha256 || true)"
+  if [[ "${cur_head}" != "${base_head}" || "${cur_dirty}" != "${base_dirty}" ]]; then
+    echo yes
+  else
+    echo no
+  fi
+}
+
+# DISPATCH-DEADHAND-01 / N2-DEADHAND-SUBSTANCE: terminal dead-hand guard.
+# Called from cmd_supervise AFTER finalize_meta (which mktemp+mvs meta.yaml,
+# so anything appended before that call is clobbered -- R1) and BEFORE
+# release_lock. If a .deliverable contract exists, satisfaction is now a
+# CONJUNCTION of three gates, not a single marker test -- a worker-asserted
+# DELIVERABLE_COMPLETE alone can no longer rescue an empty file (S-4) or a
+# prose-only deliverable on a code mission with a clean tree (SWIFTBAR):
+#   G1 marker  -- last non-empty line of the deliverable is DELIVERABLE_COMPLETE
+#   G2 substance floor -- byte size >= LEADV2_DEADHAND_MIN_BYTES (default 200)
+#   G3 work delta -- for a code-shaped mission, the run left a tracked diff
+#                    outside docs/ (skipped when not code-shaped, or when no
+#                    .workbase baseline could be captured -- never false-reds
+#                    an undetectable or non-git mission).
+# Not satisfied => flag in progress.log + meta.yaml + .no-deliverable
+# sentinel, each carrying reason=missing|marker|too_small|no_work_delta.
 # ALWAYS returns 0 -- must never abort finalization or strand the lock under
-# `set -euo pipefail` (R6) -- but reports write failures explicitly rather than
-# `|| true`-swallowing them (pre-build checklist). The bare flag line appended
-# to meta.yaml is inert to meta_get (matches ^key: only), so no reader breaks.
+# `set -euo pipefail` (R6) -- but reports write/probe failures explicitly
+# rather than `|| true`-swallowing them (pre-build checklist: `2>/dev/null`
+# is fine per-command for a best-effort probe, but the failure itself is
+# still logged, never silently absorbed into a false verdict). The bare flag
+# line appended to meta.yaml is inert to meta_get (matches ^key: only), so
+# no reader breaks.
 deadhand_check() {
   local run_dir="$1" exit_code="$2"
   [[ -f "${run_dir}/.deliverable" ]] || return 0
   local path
   path="$(cat "${run_dir}/.deliverable" 2>/dev/null)"
   [[ -n "${path}" ]] || return 0
-  local last_line=""
-  if [[ -f "${path}" ]]; then
+
+  local min_bytes="${LEADV2_DEADHAND_MIN_BYTES:-200}"
+  local reason=""
+
+  if [[ ! -f "${path}" ]]; then
+    reason="missing"
+  else
+    local last_line byte_count
     last_line="$(awk 'NF{l=$0} END{print l}' "${path}" 2>/dev/null)"
+    byte_count="$(wc -c < "${path}" 2>/dev/null | tr -d '[:space:]')"
+    [[ -n "${byte_count}" ]] || byte_count=0
+    if [[ "${last_line}" != "DELIVERABLE_COMPLETE" ]]; then
+      reason="marker"
+    elif [[ "${byte_count}" -lt "${min_bytes}" ]]; then
+      reason="too_small"
+    else
+      local cwd_dir code_shaped
+      cwd_dir="$(meta_get "${run_dir}" cwd || true)"
+      if [[ -n "${cwd_dir}" ]]; then
+        code_shaped="$(mission_is_code_shaped "${run_dir}" || echo 0)"
+        if [[ "${code_shaped}" == "1" ]]; then
+          local delta
+          delta="$(work_delta_present "${run_dir}" "${cwd_dir}" || echo skip)"
+          [[ "${delta}" == "no" ]] && reason="no_work_delta"
+        fi
+      fi
+    fi
   fi
-  [[ "${last_line}" == "DELIVERABLE_COMPLETE" ]] && return 0
-  local flag_line="LEADV2_WORKER_NO_DELIVERABLE path=${path} exit=${exit_code}"
+
+  [[ -z "${reason}" ]] && return 0
+
+  local flag_line="LEADV2_WORKER_NO_DELIVERABLE path=${path} exit=${exit_code} reason=${reason}"
   {
     printf '%s\n' "${flag_line}" >> "${run_dir}/progress.log"
     printf '%s\n' "${flag_line}" >> "${run_dir}/meta.yaml"
@@ -1138,6 +1260,7 @@ deadhand_check() {
   {
     printf 'path=%s\n' "${path}"
     printf 'at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf 'reason=%s\n' "${reason}"
   } > "${run_dir}/.no-deliverable" 2>/dev/null \
     || echo "LEADV2_DEADHAND_WRITE_FAILED no_deliverable_sentinel" >> "${run_dir}/progress.log"
   return 0
@@ -1199,6 +1322,10 @@ cmd_supervise() {
       # DISPATCH-DEADHAND-01 (R2): carry the deliverable contract into the
       # revived run_dir, else a revived run silently loses it and can never flag.
       [[ -f "${run_dir}/.deliverable" ]] && cp "${run_dir}/.deliverable" "${new_run_dir}/.deliverable" 2>/dev/null || true
+      # N2-DEADHAND-SUBSTANCE: carry the work baseline too, else a revived
+      # run's G3 check silently skips (missing .workbase) instead of
+      # comparing against the ORIGINAL dispatch-time tree state.
+      [[ -f "${run_dir}/.workbase" ]] && cp "${run_dir}/.workbase" "${new_run_dir}/.workbase" 2>/dev/null || true
       max_turns_val="$(meta_get "${run_dir}" max_turns)"
       write_meta_initial "${new_run_dir}" "${new_run_id}" "${repo_name}" "${cwd_dir}" "${max_turns_val}" "${timeout_s}" "$$"
       printf 'revived_from: %s\n' "$(meta_get "${run_dir}" run_id)" >> "${new_run_dir}/meta.yaml"
@@ -1341,6 +1468,12 @@ cmd_supervise() {
 
   # EFFICIENCY-TUNE-01 C: clear job registry entry at real completion.
   rm -f "/tmp/leadv2-job-registry/${CLAUDE_SESSION_ID:-nosession}/$(basename "${run_dir}")" 2>/dev/null || true
+
+  # N2-DEADHAND-SUBSTANCE r2: terminal sentinel meaning "this run is fully
+  # finalized" (finalize_meta + deadhand_check have both run). `.done` is
+  # the watchdog's stop condition and cannot serve this purpose without
+  # risking a TERM on a healthy run.
+  touch "${run_dir}/.finalized" 2>/dev/null || true
 }
 
 cmd_bg() {
@@ -1421,6 +1554,9 @@ cmd_bg() {
   # DISPATCH-DEADHAND-01: capture the deliverable contract now, before the
   # child is even spawned (no cwd state change between here and the run).
   capture_deliverable "${run_dir}" "${cwd_dir}"
+  # N2-DEADHAND-SUBSTANCE: same call site, same "before the child is spawned"
+  # guarantee -- baseline the tree for the later work-delta check (G3).
+  work_baseline "${run_dir}" "${cwd_dir}"
 
   write_meta_initial "${run_dir}" "${run_id}" "${repo}" "${cwd_dir}" "${max_turns}" "${timeout_s}" "$$"
   printf '%s\n' "${repo_hash}" > "${run_dir}/.lockref"
