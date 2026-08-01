@@ -91,6 +91,15 @@ _run() {
   : > "${d}/journal.jsonl"
   [ "$off" -gt 0 ] && _setage "${d}/journal.jsonl" "$off"
 }
+# write a REAL .outcome file (the key=value block leadv2-lane-outcome.sh emits),
+# NOT a bare token. _outcome <handle> <arm> <completed|died-with-work|died-clean>.
+# Writing a bare token here would mask a reader that only accepts bare tokens
+# (codex P1-a) -- this matches production so the parse is exercised for real.
+_outcome() {
+  local d="${RUNS_ROOT}/$2-runs/$1" tk="$3" nx="none"
+  case "$tk" in died-with-work) nx="continue" ;; died-clean) nx="respawn" ;; esac
+  { printf 'outcome=%s\nbound=none\nwork=-\nnext=%s\nat=2026-07-31T18:00:00Z\n' "$tk" "$nx"; } > "${d}/.outcome"
+}
 # STATUS-SURFACE-R5-01: the SIG column is now its own last field, so name-first
 # grep patterns no longer work. sig_has <sig8> <cause_substr> <output> succeeds
 # when the rendered row whose LAST whitespace field == sig also contains the
@@ -1059,7 +1068,7 @@ sessions: []
 EOF
 bare="$(run_render_r4)"
 expected='supervisor: OFF  (no sentinel, no heartbeat)
-lanes (0 live, 0 done в последний час)
+lanes (0 live, 0 dead, 0 done в последний час)
   (none)'
 if [ "$bare" = "$expected" ]; then
   pass "R4-T7: bare invocation matches R5 header contract for empty stub"
@@ -1213,8 +1222,29 @@ def raises(txt):
     except ValueError: return True
     except Exception: return False
 chk("tab indent raises",      raises("meta:\n\tbad: 1\n"))
-chk("populated flow raises",  raises("k: [a, b]\n"))
 chk("unclosed quote raises",  raises("k: 'unclosed\n"))
+
+# SWIFTBAR-R4 RC-3: populated flow collections now PARSE (they used to raise).
+# The real writer emits `options:` as a flow sequence of flow mappings -- the
+# only shape that occurs in practice -- and the old raise silently dropped it
+# under _load_yaml's own "raise -> loud warning" contract in the caller, but
+# render_questions() treats a missing `options` key as merely absent rather
+# than surfacing the warning, so it under-reported as a rendered-without-
+# options row instead. These cases must be exact structural parses, not just
+# "does not raise".
+chk("flow seq of scalars",
+    mini("k: [a, b, 3]\n") == {"k": ["a", "b", 3]})
+chk("flow seq of flow mappings",
+    mini("options: [{label: restart, text: Restart it}, {label: wait, text: Wait}]\n")
+    == {"options": [{"label": "restart", "text": "Restart it"},
+                     {"label": "wait", "text": "Wait"}]})
+chk("block seq of flow mappings",
+    mini("options:\n- {label: a, text: 'x, y'}\n- {label: b, text: z}\n")
+    == {"options": [{"label": "a", "text": "x, y"}, {"label": "b", "text": "z"}]})
+chk("flow map quoted keys/values",
+    mini('k: {"a b": 1, c: "d, e"}\n') == {"k": {"a b": 1, "c": "d, e"}})
+chk("malformed flow still raises",
+    raises("k: [a, b\n"))
 
 # 4: cross-reader equality on a tasks.yaml fixture (titles map). SKIP if no PyYAML.
 try:
@@ -1472,6 +1502,405 @@ if sig_has namedwrk N4-TESTRUNNER-FALSE-RED "$out"; then
 else
   fail "LN-1: worker row named by task_id (got: $(printf '%s' "$out" | tail -1))"
 fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SWIFTBAR-LIVE-01 round 4 (§Fix 1): badge title counts == table header counts
+# ──────────────────────────────────────────────────────────────────────────────
+log ""
+log "== SWIFTBAR-R4 (§Fix 1): badge title counts == table header counts =="
+
+# The badge (leadv2-status-surface.10s.sh) used to RE-DERIVE its own live/dead
+# counts by awk-slicing the rendered table; the renderer's header already carried
+# the authoritative numbers. Two derivations drifted. Now the badge parses the
+# header directly -- capture ONE render, compare title vs header from the SAME
+# output, never two separate renders.
+
+# _title_counts <bar_output> -> "<live> <dead>" from line 1 (either glyph order)
+_title_counts() {
+  printf '%s\n' "$1" | sed -n '1p' | sed -n \
+    -e 's/.*🟢 \([0-9][0-9]*\) \/ 🔴 \([0-9][0-9]*\).*/\1 \2/p' \
+    -e 's/.*🔴 \([0-9][0-9]*\) \/ 🟢 \([0-9][0-9]*\).*/\2 \1/p'
+}
+# _header_counts <bar_output> -> "<live> <dead>" from the 'lanes (...)' header
+# line (found by content, never by section/line position -- the badge prints the
+# title BEFORE the first '---', so a positional section-1 parse would grab the
+# title instead).
+_header_counts() {
+  local hdr l d
+  hdr="$(printf '%s\n' "$1" | sed -n '/^lanes (/p' | head -1)"
+  l="$(printf '%s' "$hdr" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) live.*/\1/p')"
+  d="$(printf '%s' "$hdr" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) dead.*/\1/p')"
+  printf '%s %s\n' "${l:-X}" "${d:-X}"
+}
+_run_bar() {
+  LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
+  LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
+  LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
+  LEADV2_STATUS_REPO="testrepo" \
+  LEADV2_STATUS_REPO_ROOT="$SB" \
+  LEADV2_STATUS_NOW="$NOW" \
+  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
+  bash "$BAR" 2>/dev/null
+}
+_empty_active() {
+  cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+}
+
+# BADGE-1: live-only (2 live, 0 dead). handle=$$ is our own alive pid -> live.
+NEW_SB
+_empty_active
+_ledger badgel001 glm "$$" confirmed $((NOW-60))
+_ledger badgel002 glm "$$" confirmed $((NOW-90))
+barout="$(_run_bar)"
+tc="$(_title_counts "$barout")"; hc="$(_header_counts "$barout")"
+if [ -n "$tc" ] && [ "$tc" = "$hc" ]; then
+  pass "BADGE-1: live-only badge/header agree ($tc)"
+else
+  fail "BADGE-1: live-only badge/header agree (title='$tc' header='$hc'; line1: $(printf '%s' "$barout" | sed -n '1p'))"
+fi
+
+# BADGE-2: dead-only (0 live, 2 dead). Definitely-unallocated handle + exit=1.
+NEW_SB
+_empty_active
+_ledger badged001 glm badged1-h confirmed $((NOW-1200))
+_run badged1-h glm failed 1 1200
+_ledger badged002 glm badged2-h confirmed $((NOW-1300))
+_run badged2-h glm failed 1 1300
+barout="$(_run_bar)"
+tc="$(_title_counts "$barout")"; hc="$(_header_counts "$barout")"
+if [ -n "$tc" ] && [ "$tc" = "$hc" ]; then
+  pass "BADGE-2: dead-only badge/header agree ($tc)"
+else
+  fail "BADGE-2: dead-only badge/header agree (title='$tc' header='$hc'; line1: $(printf '%s' "$barout" | sed -n '1p'))"
+fi
+
+# BADGE-3: mixed (1 live, 1 dead) -- the exact shape that used to disagree.
+NEW_SB
+_empty_active
+_ledger badgem001 glm "$$" confirmed $((NOW-60))
+_ledger badgem002 glm badgem2-h confirmed $((NOW-1200))
+_run badgem2-h glm failed 1 1200
+barout="$(_run_bar)"
+tc="$(_title_counts "$barout")"; hc="$(_header_counts "$barout")"
+if [ -n "$tc" ] && [ "$tc" = "$hc" ]; then
+  pass "BADGE-3: mixed live+dead badge/header agree ($tc)"
+else
+  fail "BADGE-3: mixed live+dead badge/header agree (title='$tc' header='$hc'; line1: $(printf '%s' "$barout" | sed -n '1p'))"
+fi
+
+# BADGE-4: multi-project header carries the new 'N dead' field (the multi-proj
+# emit_lanes_table branch I edited). Driven via LEADV2_STATE_BASE like MP-2 so it
+# never touches the real ~/.claude/leadv2-state. The badge's anchored-sed parse
+# is column-position-independent (PROJ shift is irrelevant), already covered by
+# BADGE-1/2/3 -- here we only assert the multi-project header itself renders
+# 'dead', proving all four header branches were updated.
+NEW_SB
+MP_BASE4="${SB}/mp4"
+mkdir -p "${MP_BASE4}/alpha" "${MP_BASE4}/beta"
+cat > "${MP_BASE4}/alpha/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: alpha4live01
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    started_at: '2026-07-31T18:00:00Z'
+    last_pulse_at: '2026-07-31T18:00:00Z'
+    log_path: ''
+EOF
+echo "sessions: []" > "${MP_BASE4}/beta/active.yaml"
+printf '%s' "${SB}" > "${MP_BASE4}/alpha/.repo-root"
+printf '%s' "${SB}" > "${MP_BASE4}/beta/.repo-root"
+mp4_out="$(LEADV2_STATE_BASE="$MP_BASE4" LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" LEADV2_STATUS_NOW="$NOW" bash "$RENDER")"
+mp4_hdr="$(printf '%s\n' "$mp4_out" | sed -n '/^lanes (/p' | head -1)"
+if printf '%s' "$mp4_hdr" | grep -q 'live' && printf '%s' "$mp4_hdr" | grep -q 'dead' && printf '%s' "$mp4_hdr" | grep -q 'projects'; then
+  pass "BADGE-4: multi-project header carries live+dead+projects ($mp4_hdr)"
+else
+  fail "BADGE-4: multi-project header carries dead (got: $mp4_hdr)"
+fi
+
+# BADGE-5 (R4): a header the badge cannot parse must route to ⚠, never a
+# confident 0 -- LANES_BROKEN must fire, not a silent zeroed count.
+if grep -q 'LANES_BROKEN=1' "$BAR"; then
+  pass "BADGE-5: badge source still carries the LANES_BROKEN fail-safe path"
+else
+  fail "BADGE-5: badge source still carries the LANES_BROKEN fail-safe path"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SWIFTBAR-LIVE-01 round 4 (§Fix 2): a finished lane is not a red lane
+# ──────────────────────────────────────────────────────────────────────────────
+log ""
+log "== SWIFTBAR-R4 (§Fix 2): .outcome consumed -- finished != failed =="
+
+# Common: a row whose newest signal (journal/created_epoch) is > 120s old falls
+# past live(fresh) to the exit_code branch, so .outcome can apply. Ages use 300s
+# (within DONE_TTL=900 / DEAD_TTL=3600 so the row stays visible + counted).
+
+# OUTCOME-1: .outcome=completed + exit=0 -> done(completed), in done, NOT in red.
+NEW_SB
+printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: oc1doneeeeeee
+    phase: build
+    class: Standard
+    log_path: ''
+EOF
+_ledger oc1donee glm oc-h confirmed $((NOW-300))
+_run oc-h glm complete 0 300
+_outcome oc-h glm completed
+out="$(run_render)"
+if sig_has oc1donee 'done(completed)' "$out"; then
+  pass "OUTCOME-1: .outcome=completed renders done(completed)"
+else
+  fail "OUTCOME-1: .outcome=completed renders done(completed) (got: $(printf '%s' "$out" | grep oc1donee | tail -1))"
+fi
+
+# OUTCOME-2: .outcome=died-clean + exit=1 -> dead(died-clean), in dead/red.
+NEW_SB
+printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: oc2deadeeeeee
+    phase: build
+    class: Standard
+    log_path: ''
+EOF
+_ledger oc2deade glm od-h confirmed $((NOW-300))
+_run od-h glm failed 1 300
+_outcome od-h glm died-clean
+out="$(run_render)"
+if sig_has oc2deade 'dead(died-clean)' "$out"; then
+  pass "OUTCOME-2: .outcome=died-clean renders dead(died-clean)"
+else
+  fail "OUTCOME-2: .outcome=died-clean renders dead(died-clean) (got: $(printf '%s' "$out" | grep oc2deade | tail -1))"
+fi
+
+# OUTCOME-3: BOTH in one fleet -> different cause strings AND different counts
+# (completed NOT in the red badge, died-clean IS). One comparison, not two greps.
+NEW_SB
+printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: oc3doneeeeeee
+    phase: build
+    class: Standard
+    log_path: ''
+  - task_id: oc3deadeeee
+    phase: build
+    class: Standard
+    log_path: ''
+EOF
+_ledger oc3donee glm o3d-h confirmed $((NOW-300)); _run o3d-h glm complete 0 300
+_outcome o3d-h glm completed
+_ledger oc3deade glm o3x-h confirmed $((NOW-300)); _run o3x-h glm failed 1 300
+_outcome o3x-h glm died-clean
+out="$(run_render)"
+_oc_done="$(printf '%s' "$out" | grep oc3donee | tail -1)"
+_oc_dead="$(printf '%s' "$out" | grep oc3deade | tail -1)"
+if printf '%s' "$_oc_done" | grep -q 'done(completed)' \
+  && printf '%s' "$_oc_dead" | grep -q 'dead(died-clean)' \
+  && [ "$_oc_done" != "$_oc_dead" ]; then
+  _oc_causes_ok=1
+else
+  _oc_causes_ok=0
+fi
+_oc_bar="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
+  LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
+  LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
+  LEADV2_STATUS_REPO="testrepo" \
+  LEADV2_STATUS_REPO_ROOT="$SB" \
+  LEADV2_STATUS_NOW="$NOW" \
+  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
+  bash "$BAR" 2>/dev/null)"
+_oc_red="$(printf '%s' "$_oc_bar" | sed -n '1p' | sed -n 's/.*🔴 \([0-9][0-9]*\).*/\1/p')"
+case "$_oc_red" in ''|*[!0-9]*) _oc_red=X ;; esac
+if [ "$_oc_causes_ok" -eq 1 ] && [ "$_oc_red" = "1" ]; then
+  pass "OUTCOME-3: completed vs died-clean differ + red count is 1 (causes differ, 🔴=$_oc_red)"
+else
+  fail "OUTCOME-3: differ + red=1 (causes_ok=$_oc_causes_ok red=$_oc_red; done='$_oc_done' dead='$_oc_dead' line1='$(printf '%s' "$_oc_bar" | sed -n '1p')')"
+fi
+
+# SWIFTBAR-R4 §2.5 (acceptance A1): the badge title's red/green counts must
+# equal a reader's OWN count of the table rows underneath, IN THE SAME
+# capture (_oc_bar, reused verbatim -- never a second invocation, which is
+# exactly how BADGE-1..5 could disagree while each individually passed).
+# Only a dead(...) row is red; only a live(...) row is green -- a done(...)
+# row (Fix 2) is neither, it is not an alarm AND not "currently running", so
+# the OUTCOME-3 fixture (one done(completed), one dead(died-clean)) is
+# expected to show 🔴=1 / 🟢=0, counted structurally instead of by a single
+# hand-picked field.
+_oc_table_red="$(printf '%s\n' "$_oc_bar" | awk '
+  /^lanes \(/ { insec=1; next }
+  insec && /^---/ { exit }
+  insec && / dead\(/ { n++ }
+  END { print n+0 }
+')"
+_oc_table_green="$(printf '%s\n' "$_oc_bar" | awk '
+  /^lanes \(/ { insec=1; next }
+  insec && /^---/ { exit }
+  insec && / live\(/ { n++ }
+  END { print n+0 }
+')"
+_oc_title_green="$(printf '%s' "$_oc_bar" | sed -n '1p' | sed -n \
+  -e 's/.*🟢 \([0-9][0-9]*\) \/ 🔴 [0-9][0-9]*.*/\1/p' \
+  -e 's/.*🔴 [0-9][0-9]*.*🟢 \([0-9][0-9]*\).*/\1/p')"
+case "$_oc_title_green" in ''|*[!0-9]*) _oc_title_green=X ;; esac
+if [ "$_oc_red" = "$_oc_table_red" ] && [ "$_oc_title_green" = "$_oc_table_green" ]; then
+  pass "A1: title (🔴=$_oc_red 🟢=$_oc_title_green) equals same-render table row count (🔴=$_oc_table_red 🟢=$_oc_table_green)"
+else
+  fail "A1: title (🔴=$_oc_red 🟢=$_oc_title_green) vs same-render table row count (🔴=$_oc_table_red 🟢=$_oc_table_green)"
+fi
+
+# OUTCOME-4: no .outcome file -> cause carries the unknown marker, never silently
+# classified as died-clean.
+NEW_SB
+printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: oc4unknowneee
+    phase: build
+    class: Standard
+    log_path: ''
+EOF
+_ledger oc4unkno glm o4-h confirmed $((NOW-300)); _run o4-h glm failed 1 300
+# NB: deliberately NO .outcome file written.
+out="$(run_render)"
+_oc4row="$(printf '%s' "$out" | grep oc4unkno | tail -1)"
+if printf '%s' "$_oc4row" | grep -q '?' && ! printf '%s' "$_oc4row" | grep -q 'died-clean'; then
+  pass "OUTCOME-4: no .outcome -> unknown marker present, not died-clean (got: $_oc4row)"
+else
+  fail "OUTCOME-4: no .outcome -> unknown marker (got: $_oc4row)"
+fi
+
+# OUTCOME-5: a LIVE row with a stale .outcome=completed still renders live
+# (outcome never overrides a live process). Worker row proven live by handle=$$.
+NEW_SB
+printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+_ledger oc5livee glm "$$" confirmed $((NOW-60))
+_run "$$" glm NONE 0 0
+_outcome "$$" glm completed
+out="$(run_render)"
+if sig_has oc5livee 'live(pid' "$out"; then
+  pass "OUTCOME-5: live row with stale .outcome=completed still renders live"
+else
+  fail "OUTCOME-5: live overrides stale outcome (got: $(printf '%s' "$out" | grep oc5livee | tail -1))"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SWIFTBAR-LIVE-01 round 4 (§Fix 3): task_id survives a terminal row
+# ──────────────────────────────────────────────────────────────────────────────
+log ""
+log "== SWIFTBAR-R4 (§Fix 3): task_id reaches the surface on real dispatches =="
+
+# TID-1: reserve row with task_id FOLLOWED BY a write-terminal row for the same
+# sig8 -> the lane still renders its task_id, NOT "unnamed". This is the
+# regression test for the real bug (terminal row replaced the reserve row).
+NEW_SB
+_empty_active
+_ledger tid01001 glm tid-h confirmed $((NOW-300))
+_run tid-h glm complete 0 60
+# reserve row already written by _ledger (state=confirmed, task_id absent here).
+# Add a task_id to the reserve row by appending a self-describing reserve row.
+printf '{"task_sig":"tid01001ffffffffffffffffffffffffffffffffffffffffff","arm":"glm","state":"confirmed","handle":"tid-h","created_epoch":%s,"task_id":"R4-PROBE-01"}\n' \
+  "$((NOW-300))" >> "$LEDGER"
+# now write a TERMINAL row for the same sig via the real writer.
+LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$LEDGER" \
+LEADV2_DISPATCH_CACHE_DIR="${SB}/cache" \
+HOME="$SB" \
+  bash "${SCRIPT_DIR}/leadv2-dispatch-ledger.sh" write-terminal tid01001 R4-PROBE-01 landed close ok $$ >/dev/null 2>&1
+out="$(run_render)"
+if printf '%s' "$out" | grep -q 'R4-PROBE-01' && ! printf '%s' "$out" | grep -qi 'unnamed'; then
+  pass "TID-1: task_id survives a terminal row (lane named R4-PROBE-01)"
+else
+  fail "TID-1: task_id survives a terminal row (got: $(printf '%s' "$out" | grep -i 'tid01\|unnamed\|R4-PROBE' | tail -3 | tr '\n' '|'))"
+fi
+
+# TID-2: a terminal row written by leadv2-dispatch-ledger.sh carries a task_id
+# key equal to its founder_task_id.
+NEW_SB
+: > "$LEDGER"
+LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$LEDGER" \
+LEADV2_DISPATCH_CACHE_DIR="${SB}/cache" \
+HOME="$SB" \
+  bash "${SCRIPT_DIR}/leadv2-dispatch-ledger.sh" write-terminal tid02001 R4-PROBE-02 landed close ok $$ >/dev/null 2>&1
+_t2row="$(grep '"task_sig":"tid02001"' "$LEDGER" | tail -1)"
+_t2ft="$(printf '%s' "$_t2row" | sed -n 's/.*"founder_task_id":"\([^"]*\)".*/\1/p')"
+_t2tid="$(printf '%s' "$_t2row" | sed -n 's/.*"task_id":"\([^"]*\)".*/\1/p')"
+if [ -n "$_t2tid" ] && [ "$_t2tid" = "$_t2ft" ] && [ "$_t2tid" = "R4-PROBE-02" ]; then
+  pass "TID-2: terminal row carries task_id == founder_task_id ($_t2tid)"
+else
+  fail "TID-2: terminal row task_id == founder_task_id (ft='$_t2ft' tid='$_t2tid' row='$_t2row')"
+fi
+
+# TID-3: a --task-id containing " and \ still produces a parseable terminal row
+# (R3.4: JSON-injection must not break the terminal row).
+NEW_SB
+: > "$LEDGER"
+LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$LEDGER" \
+LEADV2_DISPATCH_CACHE_DIR="${SB}/cache" \
+HOME="$SB" \
+  bash "${SCRIPT_DIR}/leadv2-dispatch-ledger.sh" write-terminal tid03001 'R4"PRO\BE03' landed close ok $$ >/dev/null 2>&1
+# parseable: python json.loads every non-blank line of the ledger.
+if python3 - "$LEDGER" <<'PYEOF' 2>/dev/null; then
+import json, sys
+ok = True
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            json.loads(line)
+        except Exception:
+            ok = False
+            break
+sys.exit(0 if ok else 1)
+PYEOF
+  _t3parse=1
+else
+  _t3parse=0
+fi
+_t3row="$(grep '"task_sig":"tid03001"' "$LEDGER" | tail -1)"
+_t3tid="$(printf '%s' "$_t3row" | sed -n 's/.*"task_id":"\([^"]*\)".*/\1/p')"
+if [ "$_t3parse" -eq 1 ] && [ "$_t3tid" = 'R4PROBE03' ]; then
+  pass "TID-3: quote/backslash task_id -> parseable row, task_id sanitized (got '$_t3tid')"
+else
+  fail "TID-3: parseable + sanitized (parse=$_t3parse tid='$_t3tid' row='$_t3row')"
+fi
+
+log ""
+log "== SWIFTBAR-R4 RC-2: every touched script parses under bash 3.2 =="
+# macOS ships /bin/bash 3.2.57; a dev shell's `bash` resolves to homebrew's 5.x
+# and would never catch a bash-4-only construct (${var,,} etc) the way the
+# widget's real acceptance PATH (env -i PATH=/usr/bin:/bin) does. Must be
+# /bin/bash specifically, not whatever `bash` resolves to on this PATH.
+for _rc2_f in leadv2-dispatch-code.sh leadv2-dispatch-ledger.sh \
+              leadv2-status-surface.sh leadv2-status-surface.10s.sh; do
+  if /bin/bash -n "${SCRIPT_DIR}/${_rc2_f}" 2>/dev/null; then
+    pass "/bin/bash -n ${_rc2_f}"
+  else
+    fail "/bin/bash -n ${_rc2_f}"
+  fi
+done
 
 log ""
 log "=== ${PASS} passed, ${FAIL} failed ==="

@@ -73,6 +73,10 @@ PROJECT_ROOT="${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-topl
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 STATE_PATH_BIN="${LEADV2_STATE_PATH_BIN:-${SCRIPT_DIR}/leadv2-state-path.sh}"
 LANE_LIVENESS_BIN="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lane-liveness.sh}"
+# SWIFTBAR-R4 RC-1: flock(1) is absent on the widget's acceptance PATH (no
+# util-linux on macOS). Same rc0/rc3 acquire contract as flock -w -x.
+# shellcheck source=leadv2-portable-lock.sh
+source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
 
 log()     { printf '[%s] %s\n' "${SCRIPT_NAME}" "$*" >&2; }
@@ -84,7 +88,13 @@ repo_slug() {
 }
 
 # strip quotes/backslashes/newlines from a free-form field (cause/evidence/founder id).
-json_safe() { printf '%s' "$1" | tr -d '"\\' | tr '\n' ' '; }
+# strip quotes/backslashes from a free-form field (cause/evidence/founder id) and
+# collapse newlines to spaces. SWIFTBAR-LIVE-01 round 4 (§Fix 3, codex P2-b): also
+# delete every other JSON control char (tab, CR, etc.) -- a founder_task_id / task_id
+# carrying a literal tab wrote `..."task_id":"R4\tPROBE"...` which json.loads rejects
+# (Invalid control character), breaking the whole terminal row AND the reader's
+# per-line parse. Stripping 0x00-0x1F (except LF, collapsed above) is strictly safer.
+json_safe() { printf '%s' "$1" | tr -d '"\\' | tr '\n' ' ' | tr -d '\000-\011\013-\037'; }
 
 # Resolves the shared, cross-worktree ledger path via the control-plane resolver
 # (LEAD-CONTROL-PLANE-01) so every worktree of the same repo sees the SAME file -- a
@@ -175,12 +185,19 @@ dispatch_ledger_write_terminal() {
   cause="$(json_safe "${cause}")"
   evidence="$(json_safe "${evidence}")"
   attempt="$(json_safe "${attempt}")"
+  # SWIFTBAR-LIVE-01 round 4 (§Fix 3): emit task_id alongside founder_task_id so a
+  # terminal row is self-describing -- the status-surface reader keyed the lane
+  # name off task_id, and this row REPLACES the reserve row that carried it, so
+  # without task_id here the lane rendered "unnamed". Same json_safe + 64-char
+  # clamp the reserve writer applies (R3.4: a --task-id with a quote/backslash
+  # must not break the terminal row's JSON).
+  local _tid="${founder:0:64}"
   local f lockf; f="$(dispatch_terminal_ledger_file)"; lockf="$(dispatch_terminal_ledger_lock_file)"
   mkdir -p "$(dirname "${f}")" 2>/dev/null
   mkdir -p "$(dirname "${lockf}")" 2>/dev/null
   local rc
   (
-    flock -w 10 -x 9 || exit 3
+    lv2_lock_wait "${lockf}" 10 || exit 3
     local _last_terminal _same_attempt_row
     _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
     case "${_last_terminal}" in
@@ -195,8 +212,8 @@ dispatch_ledger_write_terminal() {
       [[ -n "${_same_attempt_row}" ]] && exit 2
     fi
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
-    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","terminal":"%s","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
-      "${ts}" "${sig8}" "${founder}" "${terminal}" "${cause}" "${evidence}" "${attempt}" >> "${f}" || exit 1
+    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","task_id":"%s","terminal":"%s","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
+      "${ts}" "${sig8}" "${founder}" "${_tid}" "${terminal}" "${cause}" "${evidence}" "${attempt}" >> "${f}" || exit 1
     exit 0
   ) 9>"${lockf}"
   rc=$?
@@ -253,12 +270,15 @@ dispatch_ledger_sweep_write_dead() {
   cause_s="$(json_safe "${cause}")"
   evidence_s="$(json_safe "${evidence}")"
   attempt_s="$(json_safe "${attempt}")"
+  # SWIFTBAR-LIVE-01 round 4 (§Fix 3): task_id on the sweep's dead row too
+  # (same self-describing rationale + json_safe/64-char clamp as write-terminal).
+  local _tid="${founder:0:64}"
   local f lockf; f="$(dispatch_terminal_ledger_file)"; lockf="$(dispatch_terminal_ledger_lock_file)"
   mkdir -p "$(dirname "${f}")" 2>/dev/null
   mkdir -p "$(dirname "${lockf}")" 2>/dev/null
   local rc
   (
-    flock -w 10 -x 9 || exit 3
+    lv2_lock_wait "${lockf}" 10 || exit 3
     local _last_terminal _same_attempt_row
     _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
     case "${_last_terminal}" in
@@ -269,8 +289,8 @@ dispatch_ledger_sweep_write_dead() {
       [[ -n "${_same_attempt_row}" ]] && exit 2  # a row for THIS exact attempt already exists (refused/parked/landed/dead) -- never append dead on top of it
     fi
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
-    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","terminal":"dead","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
-      "${ts}" "${sig8}" "${founder}" "${cause_s}" "${evidence_s}" "${attempt_s}" >> "${f}" || exit 1
+    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","task_id":"%s","terminal":"dead","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
+      "${ts}" "${sig8}" "${founder}" "${_tid}" "${cause_s}" "${evidence_s}" "${attempt_s}" >> "${f}" || exit 1
     exit 0
   ) 9>"${lockf}"
   rc=$?

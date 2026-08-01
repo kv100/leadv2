@@ -72,12 +72,18 @@ _lanes_rows_of() {
   # AGE is a live-ticking column (0s -> 1s -> ...) between the three
   # sequential real invocations below, so it is blanked before comparing --
   # cwd-invariance is about which rows/identities render, not the wall-clock
-  # instant each invocation happened to sample.
+  # instant each invocation happened to sample. SWIFTBAR-R4 RC-4: a stale-
+  # worker row ALSO embeds a second live-ticking minute count inside
+  # `stale(Nm silent)?`, which can tick over a minute boundary between the
+  # three sequential invocations below and was misread as a cwd-dependence
+  # bug -- it never was one (boundary-walk with bash -x showed root/home/tmp
+  # renders identical except for this one field). Blank it too.
   printf '%s\n' "$1" | awk '
     /^lanes \(/ { insec=1; next }
     insec && /^---/ { exit }
     insec && $0 !~ /^  (none)/ && NF { print }
-  ' | sed -E 's/[[:space:]]+[0-9]+[smh][[:space:]]+/ <AGE> /'
+  ' | sed -E 's/[[:space:]]+[0-9]+[smh][[:space:]]+/ <AGE> /' \
+    | sed -E 's/\(([0-9]+)m silent\)/(<AGE>m silent)/'
 }
 OUT_HOME="$(_run_from "$HOME")"
 OUT_TMP="$(_run_from /tmp)"

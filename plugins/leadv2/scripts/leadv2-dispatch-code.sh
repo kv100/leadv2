@@ -269,6 +269,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-"$0"}")" 2>/dev/null && pwd)"
 # shellcheck source=leadv2-lane-child-suffixes.sh
 source "${SCRIPT_DIR}/leadv2-lane-child-suffixes.sh"
 ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
+# SWIFTBAR-R4 RC-1: flock(1) doesn't exist on the widget's acceptance PATH (no
+# util-linux on macOS) -- lv2_lock_wait delegates to real flock when present,
+# else an mkdir-based fallback with the same rc0/rc3 contract.
+# shellcheck source=leadv2-portable-lock.sh
+source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
@@ -905,7 +910,7 @@ dispatch_reserve() {  # <sig> <arm> <rule> -> stdout: token (rc0 only)
   fi
 
   (
-    flock -w 10 -x 9 || exit 3
+    lv2_lock_wait "${lockf}" 10 || exit 3
     local now2 token
     now2="$(_now_epoch)"
     if [[ "${ENFORCE}" == "1" ]] && _dispatch_sig_blocked_fast "${f}" "${sig}" "${now2}" "${reclaimed}"; then
@@ -967,14 +972,14 @@ _dispatch_abort_locked() {  # <file> <token> -> rc0 removed (or already absent);
 dispatch_confirm() {  # <token> <handle> -> rc0 confirmed; rc1 write-fail(hard); rc2 not-found; rc3 lock-timeout
   local token="$1" handle="${2:-}" f lockf
   f="$(dispatch_ledger_file)"; lockf="$(dispatch_lock_file)"
-  ( flock -w 10 -x 9 || exit 3
+  ( lv2_lock_wait "${lockf}" 10 || exit 3
     _dispatch_confirm_locked "${f}" "${token}" "${handle}"
   ) 9>"${lockf}"
 }
 dispatch_abort() {  # <token> -> rc0 removed/absent; rc1 write-fail(hard); rc3 lock-timeout
   local token="$1" f lockf
   f="$(dispatch_ledger_file)"; lockf="$(dispatch_lock_file)"
-  ( flock -w 10 -x 9 || exit 3
+  ( lv2_lock_wait "${lockf}" 10 || exit 3
     _dispatch_abort_locked "${f}" "${token}"
   ) 9>"${lockf}"
 }
@@ -1013,7 +1018,7 @@ atomic_review_check_and_record() {  # <diff_hash> <verdict> <reviewer> <run_id>
   mkdir -p "${REVIEW_LEDGER_DIR}"
   lockf="$(review_lock_file)"
   (
-    flock -w 10 -x 9 || exit 3
+    lv2_lock_wait "${lockf}" 10 || exit 3
     if [[ "${ENFORCE}" == "1" ]] && diff_seen "${hash}"; then
       exit 2
     fi
@@ -1031,7 +1036,9 @@ sanitize_field() { printf '%s' "$1" | tr -d '"\\' | tr '\n' ' ' | tr -cd 'A-Za-z
 # diagnosis is harmless merely because its prose contains no change verb: unknown means
 # product and gets all three gates.
 classify_product_work() { # <kind> <mission> -> product|non_product<TAB>reason
-  local kind="${1,,}" mission="${2,,}"
+  local kind mission
+  kind="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  mission="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
   case "${kind}" in
     plugin|tooling|tool|docs|documentation|diagnosis|diagnostic|investigation)
       printf 'non_product\texplicit_kind_%s' "${kind}"; return ;;

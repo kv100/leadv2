@@ -554,9 +554,8 @@ def _mini_yaml(text):
         if v == "":
             return None
         if v[:1] in ("[", "{"):
-            # populated inline flow collection -- outside the supported subset
-            # (only empty [] / {} are handled, at the call site). Raise so a
-            # malformed doc warns loudly instead of parsing to garbage.
+            # Reached only if a caller forgot to route through _flow_parse first
+            # (every real call site below does). Fail loud rather than garbage.
             raise ValueError("inline flow collection unsupported")
         if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
             if v[0] == "'":
@@ -599,6 +598,119 @@ def _mini_yaml(text):
             pass
         return v
 
+    # ---- SWIFTBAR-R4 RC-3: flow-style collections ------------------------
+    # `key: [a, b]`, `key: [{k: v}, {k: v}]`, and `- {k: v, k2: v}` (a block
+    # sequence item written as a flow mapping). Without this, an operator's
+    # question `options:` written as a flow sequence of flow mappings -- the
+    # only shape the real writer emits -- silently vanished (dropped to ""),
+    # under-reporting the pending-question count as 0 instead of raising.
+    def _flow_ws(s, pos):
+        while pos < len(s) and s[pos] in " \t":
+            pos += 1
+        return pos
+
+    def _flow_quoted(s, pos):
+        q = s[pos]; pos += 1
+        out = []
+        if q == "'":
+            while pos < len(s):
+                if s[pos] == "'":
+                    if pos + 1 < len(s) and s[pos + 1] == "'":
+                        out.append("'"); pos += 2; continue
+                    return "".join(out), pos + 1
+                out.append(s[pos]); pos += 1
+            raise ValueError("unterminated quoted scalar in flow value")
+        while pos < len(s):
+            c = s[pos]
+            if c == "\\" and pos + 1 < len(s):
+                nx = s[pos + 1]
+                if nx == "n": out.append("\n")
+                elif nx == "t": out.append("\t")
+                elif nx == '"': out.append('"')
+                elif nx == "'": out.append("'")
+                elif nx == "\\": out.append("\\")
+                else: out.append(nx)
+                pos += 2; continue
+            if c == '"':
+                return "".join(out), pos + 1
+            out.append(c); pos += 1
+        raise ValueError("unterminated quoted scalar in flow value")
+
+    def _flow_bare(s, pos, stop):
+        start = pos
+        while pos < len(s) and s[pos] not in stop:
+            pos += 1
+        return s[start:pos].strip(), pos
+
+    def _flow_value(s, pos):
+        pos = _flow_ws(s, pos)
+        if pos >= len(s):
+            raise ValueError("unexpected end of flow value")
+        c = s[pos]
+        if c == "[":
+            return _flow_seq(s, pos)
+        if c == "{":
+            return _flow_map(s, pos)
+        if c in ("'", '"'):
+            raw, pos = _flow_quoted(s, pos)
+            return raw, pos
+        raw, pos = _flow_bare(s, pos, ",]}\n")
+        if raw == "":
+            raise ValueError("empty scalar in flow value")
+        return _scalar(raw), pos
+
+    def _flow_seq(s, pos):
+        pos += 1  # consume '['
+        arr = []
+        pos = _flow_ws(s, pos)
+        if pos < len(s) and s[pos] == "]":
+            return arr, pos + 1
+        while True:
+            val, pos = _flow_value(s, pos)
+            arr.append(val)
+            pos = _flow_ws(s, pos)
+            if pos >= len(s):
+                raise ValueError("unterminated flow sequence")
+            if s[pos] == ",":
+                pos = _flow_ws(s, pos + 1); continue
+            if s[pos] == "]":
+                return arr, pos + 1
+            raise ValueError("expected ',' or ']' in flow sequence")
+
+    def _flow_map(s, pos):
+        pos += 1  # consume '{'
+        d = {}
+        pos = _flow_ws(s, pos)
+        if pos < len(s) and s[pos] == "}":
+            return d, pos + 1
+        while True:
+            pos = _flow_ws(s, pos)
+            if pos < len(s) and s[pos] in ("'", '"'):
+                key, pos = _flow_quoted(s, pos)
+            else:
+                key, pos = _flow_bare(s, pos, ":,{}[]'\"")
+            if key == "":
+                raise ValueError("empty key in flow mapping")
+            pos = _flow_ws(s, pos)
+            if pos >= len(s) or s[pos] != ":":
+                raise ValueError("expected ':' in flow mapping")
+            val, pos = _flow_value(s, pos + 1)
+            d[key] = val
+            pos = _flow_ws(s, pos)
+            if pos >= len(s):
+                raise ValueError("unterminated flow mapping")
+            if s[pos] == ",":
+                pos = _flow_ws(s, pos + 1); continue
+            if s[pos] == "}":
+                return d, pos + 1
+            raise ValueError("expected ',' or '}' in flow mapping")
+
+    def _flow_parse(v):
+        val, pos = _flow_value(v, 0)
+        if v[pos:].strip() != "":
+            raise ValueError("trailing content after flow value")
+        return val
+
     def _map(lines, pos, indent):
         d = {}
         while pos < len(lines):
@@ -625,8 +737,8 @@ def _mini_yaml(text):
                     d[key] = child
                 else:
                     d[key] = None
-            elif val in ("[]", "{}"):
-                d[key] = [] if val == "[]" else {}
+            elif val[:1] in ("[", "{"):
+                d[key] = _flow_parse(val)
             elif val[:1] in ("|", ">"):
                 # block scalar (| literal / > folded, optional -/+ chomp).
                 # Consume every deeper-indented logical line as content so the
@@ -678,7 +790,9 @@ def _mini_yaml(text):
                 else:
                     arr.append(None)
                 continue
-            if ":" in rest:
+            if rest[:1] in ("[", "{"):
+                arr.append(_flow_parse(rest))
+            elif ":" in rest:
                 # inline first key of a mapping item; its siblings live at +2.
                 vindent = indent + 2
                 sub = [(vindent, rest)] + lines[pos:]
@@ -776,6 +890,38 @@ def provider_meta(handle, arm):
     j = journal_mtime(handle, arm)
     return (status, ec, model, j)
 
+def lane_outcome(handle, arm):
+    # SWIFTBAR-LIVE-01 round 4 (§Fix 2): .outcome is written by
+    # leadv2-lane-outcome.sh (called only from glm-coder.sh / kimi-coder.sh) into
+    # the run dir beside meta.yaml. The file is a SMALL key=value block, NOT a
+    # bare token:
+    #     outcome=<completed|died-with-work|died-clean>
+    #     bound=...
+    #     work=...
+    #     next=...
+    #     at=<iso8601>
+    # (codex review P1-a: an earlier draft compared the WHOLE file to a bare
+    # token and so rejected every real file -> the override was unreachable in
+    # production. Parse the `outcome=` line instead.) Whitelist the three tokens;
+    # anything else (absent file, junk, unreadable, unknown value) -> "" unknown.
+    if not handle or not arm or not RUNS_ROOT:
+        return ""
+    p = os.path.join(RUNS_ROOT, "%s-runs" % arm, handle, ".outcome")
+    try:
+        with open(p, "r") as f:
+            text = f.read()
+    except Exception:
+        return ""
+    val = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("outcome="):
+            val = line[len("outcome="):].strip()
+            break
+    if val in ("completed", "died-with-work", "died-clean"):
+        return val
+    return ""
+
 def lstart(pid):
     try:
         out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
@@ -830,8 +976,16 @@ def is_terminal(status, ledger_state):
     # meta.yaml exit code) in add_row below, never by the ledger state alone.
     # "pending" is NON-terminal on purpose: a stale pending == crashed dispatch, keep visible.
     # closed/failed/cancelled: no writer attested in-tree; kept as forward-compat only.
+    # SWIFTBAR-LIVE-01 round 4 (§Fix 3, R3.2): the terminal ledger's
+    # write-terminal rows carry `terminal` in {landed|parked|refused|dead}; the
+    # ingest now maps that into `state` (a terminal row has no real `state`),
+    # so is_terminal() must accept these tokens or a terminal-only row stops
+    # counting as terminal. parked/refused are retryable in the WRITER's mind
+    # but on the READER's side a row that reached write-terminal is done
+    # dispatching for this attempt -- it is terminal for display/TTL purposes.
     return status in ("complete", "failed", "cancelled") or \
-           ledger_state in ("closed", "failed", "cancelled")
+           ledger_state in ("closed", "failed", "cancelled",
+                            "landed", "parked", "refused", "dead")
 
 # ---- R1 (fix round 3): tasks.yaml title map -- ONE parse ----------------
 # Source for rule 1 of name resolution. tasks.yaml is mapping-shaped
@@ -932,14 +1086,41 @@ if LEDGER_FILE and os.path.exists(LEDGER_FILE):
             if len(sig) < 8:
                 continue
             sig8 = sig[:8]
-            ledger[sig8] = {
-                "arm": row.get("arm") or "",
-                "handle": row.get("handle") or "",
-                "state": row.get("state") or "",
-                "created_epoch": row.get("created_epoch"),
-                "task_id": row.get("task_id") or "",
-                "mission_path": row.get("mission_path") or row.get("mission") or "",
-            }
+            # SWIFTBAR-LIVE-01 round 4 (§Fix 3): KEY-WISE MERGE, not wholesale
+            # assignment. There are TWO writers into this ledger with
+            # incompatible schemas: dispatch-code.sh's reserve row carries
+            # {task_sig,arm,handle,state,created_epoch,task_id,mission_path};
+            # dispatch-ledger.sh's write-terminal row carries
+            # {task_sig,founder_task_id,terminal,cause,...} and NO arm/handle/
+            # state/created_epoch/task_id. Wholesale `ledger[sig8] = {...}`
+            # let the terminal row REPLACE the reserve row for a real product
+            # dispatch (product-close always writes a terminal row), blanking
+            # task_id (-> "unnamed") AND arm/handle/state/created_epoch. A merge
+            # that writes a field ONLY when the incoming value is non-empty keeps
+            # the reserve row's fields and lets the terminal row contribute its
+            # own (terminal-ness, terminal task_id). R3.1: no writer ever
+            # intentionally blanks a field, so a surviving stale field is not a
+            # real risk today.
+            d = ledger.setdefault(sig8, {})
+            for k, v in (
+                ("arm", row.get("arm")),
+                ("handle", row.get("handle")),
+                ("state", row.get("state")),
+                ("created_epoch", row.get("created_epoch")),
+                ("mission_path", row.get("mission_path") or row.get("mission")),
+                # R3: read the id from EITHER key -- reserve rows name it task_id,
+                # terminal rows (round 4+) name it founder_task_id; either is the
+                # lane name.
+                ("task_id", row.get("task_id") or row.get("founder_task_id")),
+            ):
+                if v not in (None, ""):
+                    d[k] = v
+            # R3.2: a terminal row has no `state`, but its `terminal` field
+            # (landed|parked|refused|dead) IS terminal-ness. Map it into state so
+            # is_terminal() still fires for terminal-only rows. is_terminal()
+            # (extended this round) accepts these tokens.
+            if not row.get("state") and row.get("terminal"):
+                d["state"] = row.get("terminal")
     except Exception:
         pass
 
@@ -969,6 +1150,11 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
             mtimes.append(int(created_epoch))
         except Exception:
             pass
+    # NB: .outcome mtime is deliberately NOT folded into max_mtime. .outcome is a
+    # POST-MORTEM signal (leadv2-lane-outcome.sh writes it at worker exit), not a
+    # liveness signal; including its fresh mtime would push every finished lane
+    # back into live(fresh) (NOW-mtime<120) and so defeat the outcome override.
+    # Aging stays based on the lane's real activity (journal/created_epoch).
     max_mtime = max(mtimes) if mtimes else None
 
     # SWIFTBAR-LIVE-01 round 2 (§2.1): process truth, three signals in priority
@@ -1012,6 +1198,29 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
     else:
         cause, cls = "dead(no-signal)", "dead"
 
+    # SWIFTBAR-LIVE-01 round 4 (§Fix 2): consume the run dir's .outcome so a
+    # FINISHED lane is not indistinguishable from a FAILED one. .outcome is
+    # written by leadv2-lane-outcome.sh as one of {completed, died-with-work,
+    # died-clean}; lane_outcome() whitelists those and returns "" for
+    # absent/junk. Apply ONLY to already-terminal rows (cls in dead|done): a
+    # live process always wins, even if a stale .outcome sits in a reused run
+    # dir (R2.2). cls stays three-valued (live|done|dead); a completed lane
+    # becomes done(completed) (green, excluded from the red count) and a
+    # died-clean lane becomes dead(died-clean) (red) -- distinguished by cause
+    # text, not a new class. A terminal row with NO outcome keeps its
+    # process-derived class and gains a "?" suffix on the cause so "unknown"
+    # is visible, never silently mislabelled as died-clean.
+    outcome = lane_outcome(handle, arm)
+    if cls in ("dead", "done"):
+        if outcome == "completed":
+            cause, cls = "done(completed)", "done"
+        elif outcome == "died-with-work":
+            cause, cls = "dead(work-left)", "dead"
+        elif outcome == "died-clean":
+            cause, cls = "dead(died-clean)", "dead"
+        elif "?" not in cause:
+            cause = cause + "?"
+
     terminal = is_terminal(status, ledger_state)
     # terminal last-resort-stale reinterpretation: a ledger-only terminal row
     # (no pid, no exit code, only an old timestamp) lands on the stale("...")
@@ -1049,6 +1258,7 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
         "cls": cls,
         "max_mtime": max_mtime,
         "sig": sig8,
+        "outcome": outcome,
         "alive": alive,
     }
 
@@ -1108,10 +1318,16 @@ for _r in rows:
         _r["cls"] = "live"
 
 # Counts BEFORE collapse AND before TTL drop: the #DEAD control line and any
-# badge must report the real number of dead/finished dispatches, never the
-# post-drop / post-collapse visible count.
+# badge must report the real number of dead dispatches, never the post-drop /
+# post-collapse visible count.
+# SWIFTBAR-LIVE-01 round 3 (§2.4): dead_n used to be `cls != "live"`, silently
+# folding "done" rows into the dead count -- invisible until this same count
+# was first exposed in the header text (a done(exit=0) row rendering
+# "dead(exit=0)" in the count while the human table correctly showed
+# "done(exit=0)"). "dead" and "done" are distinct classes; dead_n now honors
+# that distinction instead of conflating them.
 live_n = sum(1 for r in rows if r["cls"] == "live")
-dead_n = sum(1 for r in rows if r["cls"] != "live")
+dead_n = sum(1 for r in rows if r["cls"] == "dead")
 
 # STATUS-SURFACE-R5-01 (defect 2, C2): TTL drop. A terminal row (done/dead)
 # disappears after its window; live rows survive at ANY age (R3). Age basis =
@@ -1145,7 +1361,12 @@ for r in rows:
         continue
     _kept.append(r)
 rows = _kept
-done_recent = sum(1 for r in rows if r["cls"] != "live")
+# SWIFTBAR-LIVE-01 round 3 (§2.4): same conflation as dead_n above -- this
+# counted "not live" (done AND dead) post-TTL-drop rows under the name
+# DONE_RECENT, so a fleet with both dead and done rows reported the SAME
+# number for #DEAD and #DONE_RECENT. Restrict to cls == "done" to match what
+# the header text ("N done в последний час") and the variable name claim.
+done_recent = sum(1 for r in rows if r["cls"] == "done")
 
 # R3 (fix round 3): collapse terminal/done rows so a wall of 90 finished rows is
 # structurally impossible. Keep the NEWEST 10 done rows, fold the rest into ONE
@@ -1190,6 +1411,10 @@ for r in rows:
         str(r["name"]), str(r["kind"]), str(r["display"]),
         str(r["model"]), str(r["age"]), str(r["cause"]), str(r["cls"]),
         str(r.get("sig", "")),
+        # SWIFTBAR-LIVE-01 round 4 (§Fix 2): outcome appended after sig (field
+        # 9, field 10 in multi-project after the PROJ prepend) so no existing
+        # field offset shifts -- every TSV-consuming awk reads $<=9.
+        str(r.get("outcome", "")),
     ]))
 sys.stdout.write("\n".join(out) + "\n")
 PYEOF
@@ -1352,19 +1577,26 @@ emit_lanes_table() {
   # is never silent. First token stays `lanes` (section parser + statusline).
   # SWIFTBAR-LIVE-01: multi-project header additionally carries the project
   # count so "lanes" stays the parseable first token in every mode.
+  # SWIFTBAR-LIVE-01 round 3 (§2.4): the header is now the SOLE producer of
+  # live/dead counts -- leadv2-status-surface.10s.sh used to re-derive its own
+  # LIVE_N/DEAD_N by awk-slicing this rendered table, so the two disagreed
+  # ("🔴 3 / 🟢 0" badge vs "1 live" header, same render). DEAD_N is computed
+  # above from the same per-lane state LIVE_N comes from -- it was just never
+  # printed. Printing it here means the badge's sed-parse reads this exact
+  # number instead of re-deriving one.
   if [ "$MULTI_PROJECT" -eq 1 ]; then
     if [ "$AGED_OUT_N" -gt 0 ]; then
-      printf 'lanes (%d live, %d done в последний час, %d скрыто по возрасту · %d projects)\n' \
-        "$LIVE_N" "$DONE_RECENT_N" "$AGED_OUT_N" "${#PROJ_SLUGS[@]}"
+      printf 'lanes (%d live, %d dead, %d done в последний час, %d скрыто по возрасту · %d projects)\n' \
+        "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$AGED_OUT_N" "${#PROJ_SLUGS[@]}"
     else
-      printf 'lanes (%d live, %d done в последний час · %d projects)\n' \
-        "$LIVE_N" "$DONE_RECENT_N" "${#PROJ_SLUGS[@]}"
+      printf 'lanes (%d live, %d dead, %d done в последний час · %d projects)\n' \
+        "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "${#PROJ_SLUGS[@]}"
     fi
   elif [ "$AGED_OUT_N" -gt 0 ]; then
-    printf 'lanes (%d live, %d done в последний час, %d скрыто по возрасту)\n' \
-      "$LIVE_N" "$DONE_RECENT_N" "$AGED_OUT_N"
+    printf 'lanes (%d live, %d dead, %d done в последний час, %d скрыто по возрасту)\n' \
+      "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$AGED_OUT_N"
   else
-    printf 'lanes (%d live, %d done в последний час)\n' "$LIVE_N" "$DONE_RECENT_N"
+    printf 'lanes (%d live, %d dead, %d done в последний час)\n' "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N"
   fi
   if [ "$LANE_COUNT" -eq 0 ]; then
     printf '  (none)\n'
@@ -1473,9 +1705,8 @@ def _mini_yaml(text):
         if v == "":
             return None
         if v[:1] in ("[", "{"):
-            # populated inline flow collection -- outside the supported subset
-            # (only empty [] / {} are handled, at the call site). Raise so a
-            # malformed doc warns loudly instead of parsing to garbage.
+            # Reached only if a caller forgot to route through _flow_parse first
+            # (every real call site below does). Fail loud rather than garbage.
             raise ValueError("inline flow collection unsupported")
         if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
             if v[0] == "'":
@@ -1518,6 +1749,119 @@ def _mini_yaml(text):
             pass
         return v
 
+    # ---- SWIFTBAR-R4 RC-3: flow-style collections ------------------------
+    # `key: [a, b]`, `key: [{k: v}, {k: v}]`, and `- {k: v, k2: v}` (a block
+    # sequence item written as a flow mapping). Without this, an operator's
+    # question `options:` written as a flow sequence of flow mappings -- the
+    # only shape the real writer emits -- silently vanished (dropped to ""),
+    # under-reporting the pending-question count as 0 instead of raising.
+    def _flow_ws(s, pos):
+        while pos < len(s) and s[pos] in " \t":
+            pos += 1
+        return pos
+
+    def _flow_quoted(s, pos):
+        q = s[pos]; pos += 1
+        out = []
+        if q == "'":
+            while pos < len(s):
+                if s[pos] == "'":
+                    if pos + 1 < len(s) and s[pos + 1] == "'":
+                        out.append("'"); pos += 2; continue
+                    return "".join(out), pos + 1
+                out.append(s[pos]); pos += 1
+            raise ValueError("unterminated quoted scalar in flow value")
+        while pos < len(s):
+            c = s[pos]
+            if c == "\\" and pos + 1 < len(s):
+                nx = s[pos + 1]
+                if nx == "n": out.append("\n")
+                elif nx == "t": out.append("\t")
+                elif nx == '"': out.append('"')
+                elif nx == "'": out.append("'")
+                elif nx == "\\": out.append("\\")
+                else: out.append(nx)
+                pos += 2; continue
+            if c == '"':
+                return "".join(out), pos + 1
+            out.append(c); pos += 1
+        raise ValueError("unterminated quoted scalar in flow value")
+
+    def _flow_bare(s, pos, stop):
+        start = pos
+        while pos < len(s) and s[pos] not in stop:
+            pos += 1
+        return s[start:pos].strip(), pos
+
+    def _flow_value(s, pos):
+        pos = _flow_ws(s, pos)
+        if pos >= len(s):
+            raise ValueError("unexpected end of flow value")
+        c = s[pos]
+        if c == "[":
+            return _flow_seq(s, pos)
+        if c == "{":
+            return _flow_map(s, pos)
+        if c in ("'", '"'):
+            raw, pos = _flow_quoted(s, pos)
+            return raw, pos
+        raw, pos = _flow_bare(s, pos, ",]}\n")
+        if raw == "":
+            raise ValueError("empty scalar in flow value")
+        return _scalar(raw), pos
+
+    def _flow_seq(s, pos):
+        pos += 1  # consume '['
+        arr = []
+        pos = _flow_ws(s, pos)
+        if pos < len(s) and s[pos] == "]":
+            return arr, pos + 1
+        while True:
+            val, pos = _flow_value(s, pos)
+            arr.append(val)
+            pos = _flow_ws(s, pos)
+            if pos >= len(s):
+                raise ValueError("unterminated flow sequence")
+            if s[pos] == ",":
+                pos = _flow_ws(s, pos + 1); continue
+            if s[pos] == "]":
+                return arr, pos + 1
+            raise ValueError("expected ',' or ']' in flow sequence")
+
+    def _flow_map(s, pos):
+        pos += 1  # consume '{'
+        d = {}
+        pos = _flow_ws(s, pos)
+        if pos < len(s) and s[pos] == "}":
+            return d, pos + 1
+        while True:
+            pos = _flow_ws(s, pos)
+            if pos < len(s) and s[pos] in ("'", '"'):
+                key, pos = _flow_quoted(s, pos)
+            else:
+                key, pos = _flow_bare(s, pos, ":,{}[]'\"")
+            if key == "":
+                raise ValueError("empty key in flow mapping")
+            pos = _flow_ws(s, pos)
+            if pos >= len(s) or s[pos] != ":":
+                raise ValueError("expected ':' in flow mapping")
+            val, pos = _flow_value(s, pos + 1)
+            d[key] = val
+            pos = _flow_ws(s, pos)
+            if pos >= len(s):
+                raise ValueError("unterminated flow mapping")
+            if s[pos] == ",":
+                pos = _flow_ws(s, pos + 1); continue
+            if s[pos] == "}":
+                return d, pos + 1
+            raise ValueError("expected ',' or '}' in flow mapping")
+
+    def _flow_parse(v):
+        val, pos = _flow_value(v, 0)
+        if v[pos:].strip() != "":
+            raise ValueError("trailing content after flow value")
+        return val
+
     def _map(lines, pos, indent):
         d = {}
         while pos < len(lines):
@@ -1544,8 +1888,8 @@ def _mini_yaml(text):
                     d[key] = child
                 else:
                     d[key] = None
-            elif val in ("[]", "{}"):
-                d[key] = [] if val == "[]" else {}
+            elif val[:1] in ("[", "{"):
+                d[key] = _flow_parse(val)
             elif val[:1] in ("|", ">"):
                 # block scalar (| literal / > folded, optional -/+ chomp).
                 # Consume every deeper-indented logical line as content so the
@@ -1597,7 +1941,9 @@ def _mini_yaml(text):
                 else:
                     arr.append(None)
                 continue
-            if ":" in rest:
+            if rest[:1] in ("[", "{"):
+                arr.append(_flow_parse(rest))
+            elif ":" in rest:
                 vindent = indent + 2
                 sub = [(vindent, rest)] + lines[pos:]
                 item, csub = _map(sub, 0, vindent)

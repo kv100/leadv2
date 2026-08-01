@@ -130,46 +130,31 @@ lane_line="$(printf '%s\n' "$LANES_BLOCK" | sed -n '2p')"
 # zero (the lying-green shape). Highest title priority: the lane data is suspect.
 LANES_BROKEN=0
 case "$lane_line" in *⚠*) LANES_BROKEN=1 ;; esac
-# STATUS-SURFACE-R5-01: the header is now 'lanes (N live, M done ...)', so the
-# old 'lanes (N)' number parse no longer matches. Gate row-parsing on whether a
-# data row is present (a dead-only fleet has live=0 but still has rows to count
-# for the 🔴 total) instead of a header count.
+# SWIFTBAR-LIVE-01 round 3 (§2.4): the renderer's header (leadv2-status-surface.sh,
+# emit_lanes_table) is now the SOLE producer of live/dead/done counts -- this badge
+# used to RE-DERIVE its own LIVE_N/DEAD_N by awk-slicing the rendered human table
+# (guessing the cause-column start from whether a PROJ header was present), so the
+# two independently-computed numbers disagreed: "🔴 3 / 🟢 0" in the title vs "1 live"
+# in the very same table's own header. Two derivations of one quantity always drift.
+# Parse header line 2 directly instead -- one anchored sed per field, keyed on the
+# numeral's position relative to its label word, never on word order (so Russian
+# labels stay free to reorder without breaking the parse).
 LIVE_N=0
 DEAD_N=0
 DONE_N=0
-# SWIFTBAR-LIVE-01: a PROJ column shifts every field by one. Detect it from
-# the column-header row's FIRST field (never field count -- a lane row can
-# legally carry an empty trailing SIG field, which is not a reliable count).
-_col_hdr="$(printf '%s\n' "$LANES_BLOCK" | sed -n '3p')"
-_cause_start=6
-case "$(printf '%s' "$_col_hdr" | awk '{print $1}')" in
-  PROJ) _cause_start=7 ;;
-esac
-_rows="$(printf '%s\n' "$LANES_BLOCK" | tail -n +4)"
-# data rows = everything after the column header, minus the collapsed
-# '+ N done earlier today' summary line (which stands for N lanes by itself).
-_data="$(printf '%s\n' "$_rows" | grep -vE '^ *\+ [0-9][0-9]* done earlier today' || true)"
-if printf '%s\n' "$_data" | grep -q .; then
-  # SIG is now its own trailing column, so STATE/cause is no longer the last
-  # token (and `stale(Nm silent)` already spanned two tokens). Reconstruct the
-  # cause as fields _cause_start..NF-1 of each data row (SIG is the trailing
-  # field), then count by cause. No hex assumption: the cause patterns are
-  # distinctive and the column header's STATE field matches none of them.
-  _causes="$(printf '%s\n' "$_data" | awk -v start="$_cause_start" 'NF>=2{
-    c=""; for(i=start;i<NF;i++) c=(c?c" ":"")$i; print c
-  }')"
-  LIVE_N="$(printf '%s\n' "$_causes" | grep -Exc 'live' || true)"
-  case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0 ;; esac
-  DEAD_N="$(printf '%s\n' "$_causes" | grep -Ec '^(dead\(|stale\()' || true)"
-  case "$DEAD_N" in ''|*[!0-9]*) DEAD_N=0 ;; esac
-  # Done rows: each `done(...)` cause is one finished lane, but the collapsed
-  # summary `+ N done earlier today` stands for N lanes in a single line, so
-  # fold its N in and do NOT count the summary line itself as a done row.
-  DONE_N="$(printf '%s\n' "$_causes" | grep -Ec '^done\(' || true)"
-  case "$DONE_N" in ''|*[!0-9]*) DONE_N=0 ;; esac
-  _collapsed="$(printf '%s\n' "$_rows" | sed -n 's/^ *+ \([0-9][0-9]*\) done earlier today.*/\1/p')"
-  case "$_collapsed" in ''|*[!0-9]*) _collapsed=0 ;; esac
-  DONE_N=$(( DONE_N + _collapsed ))
+_hdr_parse_ok=1
+LIVE_N="$(printf '%s' "$lane_line" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) live.*/\1/p')"
+DEAD_N="$(printf '%s' "$lane_line" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) dead.*/\1/p')"
+DONE_N="$(printf '%s' "$lane_line" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) done.*/\1/p')"
+case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0; _hdr_parse_ok=0 ;; esac
+case "$DEAD_N" in ''|*[!0-9]*) DEAD_N=0; _hdr_parse_ok=0 ;; esac
+case "$DONE_N" in ''|*[!0-9]*) DONE_N=0; _hdr_parse_ok=0 ;; esac
+# R4: an absent/non-numeric parse must never render as a confident 0 -- that's the
+# lying-green shape (indistinguishable from "no lanes"). Route it through the same
+# ⚠ LANES_BROKEN path a bad active.yaml read already uses (set above from this same
+# line), unless it's already set.
+if [ "$_hdr_parse_ok" -eq 0 ] && [ "$LANES_BROKEN" -eq 0 ]; then
+  LANES_BROKEN=1
 fi
 
 # ── parse the questions block (section 2) — pending count + rows ────────────
