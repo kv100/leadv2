@@ -63,6 +63,10 @@ DONE_TTL="${LEADV2_STATUS_DONE_TTL_S:-900}"   # 15 min for done(exit=0) rows
 DEAD_TTL="${LEADV2_STATUS_DEAD_TTL_S:-3600}"  # 60 min for dead(...) rows (a
                                               # crashed lane needs a longer
                                               # window than a clean finish)
+# N-7c: freshness window for a ledger handle we cannot identity-check (argv
+# lacks dispatch-<sig8>). 0 = identity-only (strictest). No value restores
+# bare-pid trust.
+HANDLE_TRUST_S="${LEADV2_STATUS_HANDLE_TRUST_S:-900}"
 # R1 (fix round 3): tasks.yaml title-lookup source. Default = <git toplevel>/
 # docs/tasks.yaml if present, else empty (degrades to dispatch-<sig8> names).
 TASKS_YAML="${LEADV2_STATUS_TASKS_YAML:-}"
@@ -466,6 +470,14 @@ try:
     DEAD_TTL = int(os.environ.get("LEADV2_SS_DEAD_TTL", "3600") or "3600")
 except Exception:
     DEAD_TTL = 3600
+# N-7c: a ledger `handle` we cannot identity-check (its argv lacks the lane's
+# dispatch-<sig8> marker) is trusted only while the row is still demonstrably
+# fresh. 0 disables the fresh fallback -> identity-only (strictest). There is
+# no value that restores the old bare-pid trust, by design.
+try:
+    HANDLE_TRUST_S = int(os.environ.get("LEADV2_SS_HANDLE_TRUST_S", "900") or "900")
+except Exception:
+    HANDLE_TRUST_S = 900
 
 # ---- R5-01 round 2: PyYAML-optional YAML reader --------------------------
 # SwiftBar/xbar run under a minimal PATH where `python3` resolves to the
@@ -967,6 +979,24 @@ def sig_process_alive(sig8):
             return True
     return False
 
+# N-7c: identity, not existence. The process behind `handle` must be THIS lane's
+# worker -- same needle as sig_process_alive() so the two signals can never
+# disagree. A bare pid is not identity: pids are recycled, and a foreign-uid pid
+# (EPERM->alive in pid_alive) is exactly how a dead fleet renders green.
+def pid_argv_matches_sig(pid, sig8):
+    if not pid or not sig8 or not PS_SNAPSHOT:
+        return False
+    try:
+        spid = str(int(pid))
+    except Exception:
+        return False
+    needle = "task-id dispatch-" + sig8
+    for line in PS_SNAPSHOT.split("\n"):
+        parts = line.strip().split(None, 1)   # "<pid> <argv...>"
+        if len(parts) == 2 and parts[0] == spid:
+            return needle in parts[1]
+    return False
+
 def is_terminal(status, ledger_state):
     # ledger vocabulary is written ONLY by leadv2-dispatch-code.sh:860 ("pending")
     # and :913 ("pending"->"confirmed"). SWIFTBAR-LIVE-01 round 2: "confirmed" is
@@ -1168,7 +1198,16 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
     # developer.full.md); a recycled pid over-reports live, which is strictly
     # safer than the current under-report.
     _pid_alive_session = pid_alive(pid, birth)
-    _pid_alive_handle = (not _pid_alive_session) and pid_alive(handle, None)
+    # N-7c: signal 2 gains identity. A handle that is alive but whose argv is NOT
+    # this lane's worker is trusted only while the row is still fresh (a
+    # re-exec/wrapper that drops --task-id dispatch-<sig8>, with recent artifact
+    # motion). Age is the SECOND signal: identity or freshness, never a bare pid.
+    _handle_pid_alive = (not _pid_alive_session) and pid_alive(handle, None)
+    _handle_identity  = _handle_pid_alive and pid_argv_matches_sig(handle, sig8)
+    _handle_fresh     = (_handle_pid_alive and not _handle_identity
+                         and max_mtime is not None
+                         and (NOW - max_mtime) <= HANDLE_TRUST_S)
+    _pid_alive_handle = _handle_identity or _handle_fresh
     _argv_alive = (not _pid_alive_session) and (not _pid_alive_handle) and sig_process_alive(sig8)
     alive = _pid_alive_session or _pid_alive_handle or _argv_alive
 
@@ -1452,6 +1491,7 @@ _run_lanes_for_project() {
   LEADV2_SS_HANDOFF_DIR="$4" \
   LEADV2_SS_DONE_TTL="$DONE_TTL" \
   LEADV2_SS_DEAD_TTL="$DEAD_TTL" \
+  LEADV2_SS_HANDLE_TRUST_S="$HANDLE_TRUST_S" \
   LEADV2_SS_PS_SNAPSHOT="$PS_SNAPSHOT" \
   _ss_lanes_py
 }

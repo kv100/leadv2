@@ -1551,7 +1551,12 @@ sessions: []
 EOF
 _ledger liveTTL1 glm "$$" confirmed $((NOW-1200))
 _run "$$" glm NONE 0 1200
-out="$(run_render)"
+# N-7c: liveness now needs IDENTITY, not a bare pid. Inject a ps line whose
+# argv carries this lane's --task-id dispatch-liveTTL1 so the handle ($$) is
+# provably this worker; the row then stays live past DONE_TTL (never hidden),
+# which is LT-4's actual intent.
+_ps_line="$(printf '  %s /usr/bin/env claude --task-id dispatch-liveTTL1\n' "$$")"
+out="$(LEADV2_STATUS_PS_SNAPSHOT="$_ps_line" run_render)"
 if sig_has liveTTL1 "live(pid $$)" "$out"; then
   pass "LT-4: live row survives past DONE_TTL (never hidden by the age filter)"
 else
