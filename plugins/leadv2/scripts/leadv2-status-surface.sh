@@ -67,6 +67,13 @@ DEAD_TTL="${LEADV2_STATUS_DEAD_TTL_S:-3600}"  # 60 min for dead(...) rows (a
 # lacks dispatch-<sig8>). 0 = identity-only (strictest). No value restores
 # bare-pid trust.
 HANDLE_TRUST_S="${LEADV2_STATUS_HANDLE_TRUST_S:-900}"
+# N-7d: close-phase (act two) signals. Motion inside a lane's
+# docs/handoff/dispatch-<sig8>/ newer than CLOSE_FRESH_S names the act "gate"
+# and resets the silence clock, but never by itself yields live (see §2 of
+# the N-7d design: a process makes a row live, an artifact only moves the
+# clock). SCAN_MAX bounds the per-lane directory stat cost.
+CLOSE_FRESH_S="${LEADV2_STATUS_CLOSE_FRESH_S:-600}"
+CLOSE_SCAN_MAX="${LEADV2_STATUS_CLOSE_SCAN_MAX:-400}"
 # R1 (fix round 3): tasks.yaml title-lookup source. Default = <git toplevel>/
 # docs/tasks.yaml if present, else empty (degrades to dispatch-<sig8> names).
 TASKS_YAML="${LEADV2_STATUS_TASKS_YAML:-}"
@@ -478,6 +485,15 @@ try:
     HANDLE_TRUST_S = int(os.environ.get("LEADV2_SS_HANDLE_TRUST_S", "900") or "900")
 except Exception:
     HANDLE_TRUST_S = 900
+# N-7d: close-phase (act two) signals. See close_dir_mtime()/close_process_alive().
+try:
+    CLOSE_FRESH_S = int(os.environ.get("LEADV2_SS_CLOSE_FRESH_S", "600") or "600")
+except Exception:
+    CLOSE_FRESH_S = 600
+try:
+    CLOSE_SCAN_MAX = int(os.environ.get("LEADV2_SS_CLOSE_SCAN_MAX", "400") or "400")
+except Exception:
+    CLOSE_SCAN_MAX = 400
 
 # ---- R5-01 round 2: PyYAML-optional YAML reader --------------------------
 # SwiftBar/xbar run under a minimal PATH where `python3` resolves to the
@@ -890,6 +906,41 @@ def journal_mtime(handle, arm):
     except Exception:
         return None
 
+def close_dir_mtime(sig8):
+    # N-7d signal 5: newest mtime across a lane's docs/handoff/dispatch-<sig8>/
+    # directory (the directory itself plus every entry one level down -- the
+    # close gate writes e2e-gate.log/deliverable.md/review-verdict.md at that
+    # top level, so one hand-picked filename would miss the general case).
+    # Deliberately NOT recursive and deliberately NOT prefix-matching sibling
+    # dirs (dispatch-<sig8>-architect, -review): those are a different phase
+    # and would let one subsession vouch for a lane whose own gate is dead.
+    # Never raises -- a permission error here must not break the render.
+    if not HANDOFF_DIR or not sig8:
+        return None
+    d = os.path.join(HANDOFF_DIR, "dispatch-%s" % sig8)
+    try:
+        if not os.path.isdir(d):
+            return None
+        best = int(os.path.getmtime(d))
+    except Exception:
+        return None
+    try:
+        n = 0
+        with os.scandir(d) as it:
+            for entry in it:
+                n += 1
+                if n > CLOSE_SCAN_MAX:
+                    break
+                try:
+                    m = int(entry.stat(follow_symlinks=False).st_mtime)
+                    if m > best:
+                        best = m
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return best
+
 def provider_meta(handle, arm):
     # returns (status, exit_code, model, j_mtime)
     if not handle or not arm or not RUNS_ROOT:
@@ -996,6 +1047,38 @@ def pid_argv_matches_sig(pid, sig8):
         if len(parts) == 2 and parts[0] == spid:
             return needle in parts[1]
     return False
+
+# N-7d signal 6: identity, not existence, for the CLOSE phase (act two) --
+# same standard N-7c set for the worker. A line proves THIS lane's close
+# process iff all three hold on its argv tokens:
+#   1. some token's basename is leadv2-dispatch-product-close.sh
+#   2. sig8 is present as an exact token (not a substring -- a different sig
+#      that happens to contain these 8 chars inside a path must not match)
+#   3. PROJECT_ROOT is present as a substring of the raw argv (substring, not
+#      token, on purpose: a worktree path nests under the root). If the
+#      derived root is empty, this clause is skipped -- (1)+(2) alone are
+#      already lane-unique, so we degrade to sig-identity, never to false-dead.
+# Returns (alive, pid) so the cause text can name the pid.
+def close_process_alive(sig8):
+    if not sig8 or not PS_SNAPSHOT:
+        return (False, "")
+    root = ""
+    if HANDOFF_DIR:
+        root = os.path.dirname(os.path.dirname(HANDOFF_DIR))
+    for line in PS_SNAPSHOT.split("\n"):
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid, argv = parts[0], parts[1]
+        tokens = argv.split()
+        if not any(os.path.basename(t) == "leadv2-dispatch-product-close.sh" for t in tokens):
+            continue
+        if sig8 not in tokens:
+            continue
+        if root and root not in argv:
+            continue
+        return (True, pid)
+    return (False, "")
 
 def is_terminal(status, ledger_state):
     # ledger vocabulary is written ONLY by leadv2-dispatch-code.sh:860 ("pending")
@@ -1209,7 +1292,27 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
                          and (NOW - max_mtime) <= HANDLE_TRUST_S)
     _pid_alive_handle = _handle_identity or _handle_fresh
     _argv_alive = (not _pid_alive_session) and (not _pid_alive_handle) and sig_process_alive(sig8)
-    alive = _pid_alive_session or _pid_alive_handle or _argv_alive
+    _worker_alive = _pid_alive_session or _pid_alive_handle or _argv_alive
+
+    # N-7d: a lane has two acts. Act two (the close/review gate) legitimately
+    # freezes the worker's own signals for 20+ minutes, so a lane's silence
+    # clock must also see motion inside its docs/handoff/dispatch-<sig8>/ dir,
+    # and a live leadv2-dispatch-product-close.sh process must count as proof
+    # of life. Per the design's core rule: a PROCESS makes a row live; an
+    # ARTIFACT only moves the clock and names the act (never yields live by
+    # itself) -- otherwise a stale handoff dir from a killed gate would relive
+    # a genuinely dead lane (acceptance 2).
+    _close_mtime = close_dir_mtime(sig8)
+    _close_alive, _close_pid = close_process_alive(sig8)
+    _close_fresh = (_close_mtime is not None
+                    and (NOW - _close_mtime) <= CLOSE_FRESH_S)
+    alive = _worker_alive or _close_alive
+    # motion_mtime feeds the age column and the stale(...) branch ONLY; it
+    # must NEVER feed the live(fresh) branch below (that still reads
+    # max_mtime) or close-artifact freshness would smuggle its way to live
+    # through the side door.
+    _motion_candidates = [m for m in (max_mtime, _close_mtime) if m is not None]
+    motion_mtime = max(_motion_candidates) if _motion_candidates else None
 
     # liveness rule (STANDING) — cause never empty, never "?"
     if _pid_alive_session:
@@ -1218,8 +1321,13 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
         cause, cls = "live(pid %s)" % handle, "live"
     elif _argv_alive:
         cause, cls = "live(argv)", "live"
+    elif _close_alive:
+        cause, cls = "live(close pid %s)" % _close_pid, "live"
     elif max_mtime is not None and (NOW - max_mtime) < 120:
         cause, cls = "live(fresh)", "live"
+    elif _close_fresh:
+        cause = "gate(%s ago)" % age_label(NOW - _close_mtime)
+        cls = "dead"
     elif ec not in (None, ""):
         try:
             eci = int(ec)
@@ -1231,8 +1339,8 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
             cause, cls = "dead(no-signal)", "dead"
     elif pid not in (None, "", 0):
         cause, cls = "dead(no-process)", "dead"
-    elif max_mtime is not None:
-        cause = "stale(%s silent)" % age_label(NOW - max_mtime)
+    elif motion_mtime is not None:
+        cause = "stale(%s silent)" % age_label(NOW - motion_mtime)
         cls = "dead"
     else:
         cause, cls = "dead(no-signal)", "dead"
@@ -1271,11 +1379,26 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
         cause = "done(%s)" % (ledger_state or status or "terminal")
         cls = "done"
     # age-out: terminal + silent > 7200s -> drop. Non-terminal never dropped
-    # (a 9h silent lane stays visible as stale).
+    # (a 9h silent lane stays visible as stale). Uses motion_mtime (§3.6): a
+    # lane whose close gate is still writing must not age out on the same
+    # clock the table's age/stale text now reads.
     if terminal:
-        ref = max_mtime if max_mtime is not None else 0
+        ref = motion_mtime if motion_mtime is not None else 0
         if ref and (NOW - ref) > 7200:
             return None
+
+    # N-7d: PHASE/STATE names the act -- worker (worker signal alive), gate
+    # (close signal alive or its artifacts are fresh), done (terminal, neither
+    # of the above), else unknown. Folded into the existing single-field
+    # `display` (no new TSV column -> no downstream awk $N shift).
+    if _worker_alive:
+        act = "worker"
+    elif _close_alive or _close_fresh:
+        act = "gate"
+    elif cls in ("done", "dead"):
+        act = "done"
+    else:
+        act = "-"
 
     # R2 (fix round 3): display by kind. A lane shows its phase; a worker shows
     # its ledger state. The old `phase or ledger_state` fallback conflated the
@@ -1285,8 +1408,12 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
         display = phase or "-"
     else:
         display = ledger_state or "-"
+    if act != "-":
+        display = act if display == "-" else "%s·%s" % (display, act)
     mdl = model or pmodel or arm or "-"
-    age = age_label(NOW - max_mtime) if max_mtime is not None else "-"
+    # age column reads motion_mtime (§3.6): close-gate motion keeps the age
+    # fresh even while the worker's own signals are frozen for act two.
+    age = age_label(NOW - motion_mtime) if motion_mtime is not None else "-"
     return {
         "name": resolve_name(task_id, mission_path, sig8),
         "kind": kind,
@@ -1295,7 +1422,7 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
         "age": age,
         "cause": cause,
         "cls": cls,
-        "max_mtime": max_mtime,
+        "max_mtime": motion_mtime,
         "sig": sig8,
         "outcome": outcome,
         "alive": alive,
@@ -1492,6 +1619,8 @@ _run_lanes_for_project() {
   LEADV2_SS_DONE_TTL="$DONE_TTL" \
   LEADV2_SS_DEAD_TTL="$DEAD_TTL" \
   LEADV2_SS_HANDLE_TRUST_S="$HANDLE_TRUST_S" \
+  LEADV2_SS_CLOSE_FRESH_S="$CLOSE_FRESH_S" \
+  LEADV2_SS_CLOSE_SCAN_MAX="$CLOSE_SCAN_MAX" \
   LEADV2_SS_PS_SNAPSHOT="$PS_SNAPSHOT" \
   _ss_lanes_py
 }
@@ -1652,11 +1781,11 @@ emit_lanes_table() {
   if [ "$LANE_COUNT" -eq 0 ]; then
     printf '  (none)\n'
   elif [ "$MULTI_PROJECT" -eq 1 ]; then
-    printf '  %-14s %-28s %-6s %-12s %-7s %-5s %-18s %s\n' "PROJ" "NAME" "TYPE" "PHASE/STATE" "MODEL" "AGE" "STATE" "SIG"
-    printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{ printf "  %-14s %-28s %-6s %-12s %-7s %-5s %-18s %s\n", $1, $2, $3, $4, $5, $6, $7, $9 }'
+    printf '  %-14s %-28s %-6s %-18s %-7s %-5s %-18s %s\n' "PROJ" "NAME" "TYPE" "PHASE/STATE" "MODEL" "AGE" "STATE" "SIG"
+    printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{ printf "  %-14s %-28s %-6s %-18s %-7s %-5s %-18s %s\n", $1, $2, $3, $4, $5, $6, $7, $9 }'
   else
-    printf '  %-28s %-6s %-12s %-7s %-5s %-18s %s\n' "NAME" "TYPE" "PHASE/STATE" "MODEL" "AGE" "STATE" "SIG"
-    printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{ printf "  %-28s %-6s %-12s %-7s %-5s %-18s %s\n", $1, $2, $3, $4, $5, $6, $8 }'
+    printf '  %-28s %-6s %-18s %-7s %-5s %-18s %s\n' "NAME" "TYPE" "PHASE/STATE" "MODEL" "AGE" "STATE" "SIG"
+    printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{ printf "  %-28s %-6s %-18s %-7s %-5s %-18s %s\n", $1, $2, $3, $4, $5, $6, $8 }'
   fi
 }
 
