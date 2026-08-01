@@ -179,13 +179,28 @@ def read_last_nonblank_lines(path, n):
         return []
 
 
-def count_due_rows(path):
+def nearest_due_line(root):
+    # LEDGER-NEAREST-DUE-01: the old count_due_rows() was a bare word-count
+    # over the whole ledger (matched every "**Due**" label + CLOSED rows +
+    # prose "due date") -> a large meaningless number, not a row count, and
+    # it could never shrink on close. Delegate to the project-local renderer
+    # (grammar lives once, in persona-engine, not duplicated here) which
+    # prints the single nearest-due row, or nothing if already surfaced this
+    # session. Generic across repos: a project without the renderer just
+    # loses the (wrong) line, gains nothing to maintain.
+    renderer = os.path.join(root, ".claude", "hooks", "scheduled-decisions-nearest.sh")
+    if not (os.path.exists(renderer) and os.access(renderer, os.X_OK)):
+        return None
     try:
-        with open(path, encoding="utf-8") as f:
-            txt = f.read()
-        return len(re.findall(r"\b(?:DUE|OVERDUE)\b", txt, re.IGNORECASE))
+        r = subprocess.run(
+            [renderer], cwd=root, capture_output=True, text=True, timeout=2
+        )
     except Exception:
-        return 0
+        return None
+    if r.returncode != 0:
+        return None
+    line = r.stdout.strip()
+    return line or None
 
 
 def build_thread_anchor(root, leadv2_dir):
@@ -221,7 +236,9 @@ def build_thread_anchor(root, leadv2_dir):
             content.append("open threads (last 8 lines):")
             content.extend(tail)
     if has_sd:
-        content.append(f"scheduled-decisions: {count_due_rows(sd_path)} DUE/OVERDUE row(s)")
+        nd_line = nearest_due_line(root)
+        if nd_line:
+            content.append(nd_line)
     footer = [""] + THREAD_DIRECTIVE.splitlines() + ["</task-anchor>"]
 
     budget = 40 - len(header) - len(footer)
