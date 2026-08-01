@@ -169,32 +169,157 @@ _age_label() {
   fi
 }
 
-# ── Supervisor gate (S2 + S3), pure bash ────────────────────────────────────
-# Emits globals: SUP_STATE (on|off|stale), SUP_PID, SUP_BEAT (e.g. "beat 12s"
-# or empty), SUP_BEAT_AGE_SECS.
+# ── Supervisor gate (SUP-OFF-IS-A-LIE-01), pure bash ────────────────────────
+# Heartbeat is the PRIMARY liveness signal; the sentinel is corroborating. The
+# supervise loop writes .supervise-loop.heartbeat every ~60s — a fresh beat IS
+# the supervisor alive, even when the sentinel bookkeeping file is missing or
+# split across two directories. Gating the whole block on `[ -f $SENTINEL ]`
+# (the pre-fix reader) collapsed three distinct worlds (nothing running /
+# stale sentinel / reader looking in the wrong place) into one bare `OFF` —
+# false-RED, the mirror of lying-green. Now both signals are stat'd
+# unconditionally and the truth table below decides.
+#
+# Emits globals: SUP_STATE (on|off|stale), SUP_PID (int or "" — ON no longer
+# implies a non-empty pid), SUP_BEAT ("beat <label>" or "", now populated in
+# every state that has a beat file), SUP_BEAT_AGE_SECS, SUP_WHY (always a
+# non-empty reason), SUP_SHORT (compact reason for the width-constrained
+# statusline head).
 SUP_STATE="off"
 SUP_PID=""
 SUP_BEAT=""
 SUP_BEAT_AGE_SECS=""
+SUP_WHY=""
+SUP_SHORT=""
+# SUP-OFF-IS-A-LIE-01 D5: beat freshness TTL. The loop beats ~60s; the default
+# 300s tolerates ~4 missed beats. Non-numeric/empty => silently fall back to
+# 300 — a malformed knob must never `set -u`-abort the whole statusline (the
+# R6 failure mode this file already guards against).
+SUP_BEAT_TTL="${LEADV2_SUPERVISE_BEAT_TTL_SECS:-300}"
+case "$SUP_BEAT_TTL" in
+  ''|*[!0-9]*) SUP_BEAT_TTL=300 ;;
+esac
 SENTINEL="${STATE_DIR}/.supervise-active"
 BEAT="${STATE_DIR}/.supervise-loop.heartbeat"
-if [ -f "$SENTINEL" ]; then
-  SUP_PID="$(awk 'match($0,/[0-9]+/){print substr($0,RSTART,RLENGTH); exit}' "$SENTINEL" 2>/dev/null || true)"
-  if [ -z "$SUP_PID" ]; then
-    SUP_STATE="off"
-  elif _pid_alive "$SUP_PID"; then
-    SUP_STATE="on"
-    _bm="$(_mtime "$BEAT")"
-    if [ -n "$_bm" ]; then
-      SUP_BEAT_AGE_SECS=$(( NOW - _bm ))
-      [ "$SUP_BEAT_AGE_SECS" -lt 0 ] && SUP_BEAT_AGE_SECS=0
-      SUP_BEAT="beat $(_age_label "$SUP_BEAT_AGE_SECS")"
-    fi
-  else
-    SUP_STATE="stale"
+
+# Stat the heartbeat UNCONDITIONALLY — it is the primary signal. Require a
+# regular file (`-f`, not `-e`): a directory or FIFO accidentally on the beat
+# path would otherwise supply an mtime and false-ON (or hang on a FIFO read).
+if [ -f "$BEAT" ]; then
+  _bm="$(_mtime "$BEAT")"
+  if [ -n "$_bm" ]; then
+    SUP_BEAT_AGE_SECS=$(( NOW - _bm ))
+    [ "$SUP_BEAT_AGE_SECS" -lt 0 ] && SUP_BEAT_AGE_SECS=0
+    SUP_BEAT="beat $(_age_label "$SUP_BEAT_AGE_SECS")"
   fi
   unset _bm
 fi
+_beat_fresh=0
+if [ -n "$SUP_BEAT_AGE_SECS" ] && [ "$SUP_BEAT_AGE_SECS" -le "$SUP_BEAT_TTL" ]; then
+  _beat_fresh=1
+fi
+
+# Parse the sentinel pid (corroborating). SUP_STATE is decided below, not by
+# a sentinel-only gate.
+if [ -f "$SENTINEL" ]; then
+  SUP_PID="$(awk 'match($0,/[0-9]+/){print substr($0,RSTART,RLENGTH); exit}' "$SENTINEL" 2>/dev/null || true)"
+fi
+
+# A live supervisor = fresh beat OR live sentinel pid (each is independently
+# sufficient). Truth table rows map 1:1 to the design.
+_live_pid=0
+if [ -f "$SENTINEL" ] && [ -n "$SUP_PID" ] && _pid_alive "$SUP_PID"; then
+  _live_pid=1
+fi
+
+if [ "$_beat_fresh" -eq 1 ] || [ "$_live_pid" -eq 1 ]; then
+  SUP_STATE="on"
+  if [ "$_live_pid" -eq 1 ]; then
+    if [ -n "$SUP_BEAT_AGE_SECS" ]; then
+      SUP_WHY="pid ${SUP_PID}, beat $(_age_label "$SUP_BEAT_AGE_SECS")"
+      SUP_SHORT="${SUP_PID},$(_age_label "$SUP_BEAT_AGE_SECS")"
+    else
+      SUP_WHY="pid ${SUP_PID}, no beat"
+      SUP_SHORT="${SUP_PID},nobeat"
+    fi
+  elif [ -n "$SUP_PID" ]; then
+    SUP_WHY="heartbeat only, beat $(_age_label "$SUP_BEAT_AGE_SECS"), sentinel pid ${SUP_PID} gone"
+    SUP_SHORT="beat $(_age_label "$SUP_BEAT_AGE_SECS")"
+  elif [ -f "$SENTINEL" ]; then
+    SUP_WHY="heartbeat only, beat $(_age_label "$SUP_BEAT_AGE_SECS"), sentinel unparsable"
+    SUP_SHORT="beat $(_age_label "$SUP_BEAT_AGE_SECS")"
+  else
+    SUP_WHY="heartbeat only, beat $(_age_label "$SUP_BEAT_AGE_SECS"), no sentinel"
+    SUP_SHORT="beat $(_age_label "$SUP_BEAT_AGE_SECS")"
+  fi
+else
+  # Not ON: STALE (half-alive) or OFF (nothing). Bare OFF must never render —
+  # every branch carries a reason so the founder can tell the three worlds apart.
+  if [ -n "$SUP_PID" ]; then
+    SUP_STATE="stale"
+    if [ -n "$SUP_BEAT_AGE_SECS" ]; then
+      SUP_WHY="sentinel pid ${SUP_PID} gone, beat $(_age_label "$SUP_BEAT_AGE_SECS") old"
+      SUP_SHORT="pid ${SUP_PID}"
+    else
+      SUP_WHY="sentinel pid ${SUP_PID} gone, no beat"
+      SUP_SHORT="pid ${SUP_PID}"
+    fi
+  elif [ -f "$SENTINEL" ]; then
+    SUP_STATE="stale"
+    if [ -n "$SUP_BEAT_AGE_SECS" ]; then
+      SUP_WHY="sentinel unparsable, beat $(_age_label "$SUP_BEAT_AGE_SECS") old"
+      SUP_SHORT="beat $(_age_label "$SUP_BEAT_AGE_SECS") old"
+    else
+      SUP_WHY="sentinel unparsable, no beat"
+      SUP_SHORT="unparsable"
+    fi
+  else
+    # canonical sentinel absent
+    if [ -n "$SUP_BEAT_AGE_SECS" ]; then
+      SUP_STATE="stale"
+      SUP_WHY="no sentinel, beat $(_age_label "$SUP_BEAT_AGE_SECS") old"
+      SUP_SHORT="beat $(_age_label "$SUP_BEAT_AGE_SECS") old"
+    else
+      # SUP-OFF-IS-A-LIE-01 D2: legacy-location sweep (read-only diagnostic).
+      # A stale real-file sentinel can linger at the pre-fix repo path
+      # (docs/leadv2/.supervise-active) when the writer's no-git fallback put
+      # it there and the canonical control plane never adopted the orphan.
+      # A hit here NEVER yields `on` by itself — it surfaces the split as
+      # STALE so it is visible rather than silent. Skip when STATE_DIR already
+      # resolves to docs/leadv2 (the no-git fallback) to avoid a double stat.
+      _legacy_sentinel=""
+      case "$STATE_DIR" in
+        */docs/leadv2) : ;;
+        *)
+          # LEADV2_STATUS_REPO_ROOT lets a test sandbox pin the repo root;
+          # otherwise derive it from this invocation's own checkout. The sweep
+          # never escapes a sandbox that sets the var (the 5-var isolation wall
+          # gains a 6th for this one new read path).
+          _lr="${LEADV2_STATUS_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
+          if [ -n "$_lr" ] && [ -f "${_lr}/docs/leadv2/.supervise-active" ]; then
+            _legacy_sentinel="${_lr}/docs/leadv2/.supervise-active"
+          fi
+          ;;
+      esac
+      if [ -n "$_legacy_sentinel" ]; then
+        _lpid="$(awk 'match($0,/[0-9]+/){print substr($0,RSTART,RLENGTH); exit}' "$_legacy_sentinel" 2>/dev/null || true)"
+        SUP_STATE="stale"
+        if [ -n "$_lpid" ]; then
+          SUP_WHY="legacy sentinel at docs/leadv2 (pid ${_lpid}), canonical missing"
+          SUP_SHORT="legacy pid ${_lpid}"
+        else
+          SUP_WHY="legacy sentinel at docs/leadv2, canonical missing"
+          SUP_SHORT="legacy"
+        fi
+      else
+        SUP_STATE="off"
+        SUP_WHY="no sentinel, no heartbeat"
+        SUP_SHORT="no beat"
+      fi
+      unset _legacy_sentinel _lr _lpid
+    fi
+  fi
+fi
+unset _beat_fresh _live_pid
 
 # ── Lanes via one python3 start ─────────────────────────────────────────────
 # Emits control lines then one TSV row per surviving lane:
@@ -988,9 +1113,9 @@ fi
 emit_oneline() {
   local head lane_str
   case "$SUP_STATE" in
-    on)     head="sup:ON pid=${SUP_PID}${SUP_BEAT:+ ${SUP_BEAT}}" ;;
-    stale)  head="sup:OFF(stale pid ${SUP_PID})" ;;
-    *)      head="sup:OFF" ;;
+    on)     head="sup:ON(${SUP_SHORT})" ;;
+    stale)  head="sup:STALE(${SUP_SHORT})" ;;
+    *)      head="sup:OFF(${SUP_SHORT})" ;;
   esac
   lane_str=""
   if [ "$LANE_COUNT" -gt 0 ]; then
@@ -1008,9 +1133,9 @@ emit_oneline() {
 
 emit_lanes_table() {
   case "$SUP_STATE" in
-    on)     printf 'supervisor: ON  pid=%s  %s\n' "$SUP_PID" "$SUP_BEAT" ;;
-    stale)  printf 'supervisor: OFF  (stale sentinel, pid %s gone)\n' "$SUP_PID" ;;
-    *)      printf 'supervisor: OFF\n' ;;
+    on)     printf 'supervisor: ON   (%s)\n' "$SUP_WHY" ;;
+    stale)  printf 'supervisor: STALE (%s)\n' "$SUP_WHY" ;;
+    *)      printf 'supervisor: OFF  (%s)\n' "$SUP_WHY" ;;
   esac
   # STATUS-SURFACE-R5-01 round 2: when active.yaml could not be read the lane
   # list does NOT reflect reality, so the header must not render a calm

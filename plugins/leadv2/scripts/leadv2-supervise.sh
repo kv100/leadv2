@@ -152,7 +152,26 @@ fi
 ACTIVE_YAML="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" active.yaml)"
 HANDOFF_DIR="${PROJECT_ROOT}/docs/handoff"
 SNAPSHOT="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" .supervise-last.json)"
-SUPERVISE_SENTINEL="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" .supervise-active)"
+# SUP-OFF-IS-A-LIE-01 D3: resolve the sentinel through --no-link so writer and
+# the status-surface reader use byte-identical path resolution (the reader's
+# STATE_DIR also goes through `--no-link root`). The pre-fix writer omitted
+# --no-link, so a no-git fallback resolved the sentinel into
+# docs/leadv2/.supervise-active while the reader looked in the control plane —
+# the split that produced false-RED `supervisor: OFF`. --no-link also drops the
+# writer's symlink/migration side effect, which it never needed for a file
+# outside leadv2-state-path.sh's STANDARD set.
+SUPERVISE_SENTINEL="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link .supervise-active)"
+# Fail-loud guard: if the resolved path escaped the control-plane base and we
+# are not in a sandbox (LEADV2_STATE_ROOT unset), warn so the degradation stops
+# being silent. Writing is NEVER skipped (losing the sentinel would break the
+# fanout guard); D1 means reader liveness no longer depends on this path alone.
+if [[ -z "${LEADV2_STATE_ROOT:-}" ]]; then
+  _SP_BASE="${LEADV2_STATE_BASE:-${HOME}/.claude/leadv2-state}/"
+  if [[ -n "$SUPERVISE_SENTINEL" && "${SUPERVISE_SENTINEL#"$_SP_BASE"}" == "$SUPERVISE_SENTINEL" ]]; then
+    printf 'leadv2-supervise: WARN control-plane unresolved, sentinel degraded to %s\n' "$SUPERVISE_SENTINEL" >&2
+  fi
+  unset _SP_BASE
+fi
 
 # SUPERVISE-GUARD-01 (restored, SUPERVISE-V2-01 fix-1 C1; mode split fix-2
 # R2-1; DEFAULT FLIPPED fix-3 75051ca2507f gate-2, 2026-07-27 per explicit

@@ -70,6 +70,7 @@ run_render() {
   LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
   LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
   LEADV2_STATUS_REPO="testrepo" \
+  LEADV2_STATUS_REPO_ROOT="$SB" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="${TASKS_YAML:-${SB}/tasks.yaml}" \
   bash "$RENDER" "$@"
@@ -225,7 +226,7 @@ else
   pass "T23: old(17h) pending dropped after dead-TTL (non-terminal stale still ages out)"
 fi
 
-# ── 5. no sentinel -> supervisor: OFF and no "?" ───────────────────────────
+# ── 5. no sentinel, no heartbeat -> supervisor: OFF (+reason, never bare) ──
 NEW_SB
 cat > "${STATE_DIR}/active.yaml" <<EOF
 meta: {}
@@ -236,6 +237,13 @@ if printf '%s\n' "$out" | grep -q '^supervisor: OFF'; then
   pass "no sentinel -> supervisor: OFF"
 else
   fail "no sentinel -> supervisor: OFF (got: $(printf '%s' "$out" | sed -n '1p'))"
+fi
+# SUP-OFF-IS-A-LIE-01 D4: a bare `supervisor: OFF` with no reason must NEVER
+# render. The line must carry a parenthetical reason.
+if printf '%s\n' "$out" | grep -Eq '^supervisor: OFF +\('; then
+  pass "no-sentinel OFF carries a reason"
+else
+  fail "no-sentinel OFF is bare / has no reason (got: $(printf '%s' "$out" | sed -n '1p'))"
 fi
 if printf '%s\n' "$out" | grep -q '?'; then
   fail "output contains a bare '?'"
@@ -253,13 +261,15 @@ meta: {}
 sessions: []
 EOF
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q "^supervisor: ON  pid=$$  beat"; then
+if printf '%s\n' "$out" | grep -Eq "^supervisor: ON +\\(pid $$, beat"; then
   pass "supervisor ON with beat age"
 else
   fail "supervisor ON with beat age (got: $(printf '%s' "$out" | sed -n '1p'))"
 fi
 
-# ── 5c. stale sentinel: dead pid -> OFF (stale sentinel...) ────────────────
+# ── 5c. stale sentinel: dead pid -> STALE (not OFF) ───────────────────────
+# SUP-OFF-IS-A-LIE-01 D4: the founder must read STALE — not OFF — when a
+# sentinel's pid is gone, so the three worlds stay distinguishable.
 NEW_SB
 printf 'pid 999999\n' > "${STATE_DIR}/.supervise-active"
 cat > "${STATE_DIR}/active.yaml" <<EOF
@@ -267,10 +277,135 @@ meta: {}
 sessions: []
 EOF
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q '^supervisor: OFF  (stale sentinel'; then
-  pass "stale sentinel -> OFF (stale sentinel, pid gone)"
+if printf '%s\n' "$out" | grep -Eq '^supervisor: STALE +\(sentinel pid 999999 gone'; then
+  pass "stale sentinel -> STALE (pid gone)"
 else
-  fail "stale sentinel -> OFF (got: $(printf '%s' "$out" | sed -n '1p'))"
+  fail "stale sentinel -> STALE (got: $(printf '%s' "$out" | sed -n '1p'))"
+fi
+
+# ── SUP-OFF-IS-A-LIE-01 T-A..T-F: heartbeat-primary truth table ────────────
+# These FAIL on the pre-fix reader (which gated everything on the sentinel and
+# rendered a bare OFF whenever the sentinel was absent). Each seeds exactly
+# the files the named row needs and asserts the rendered long form.
+#
+# T-A (the red test): fresh heartbeat, NO sentinel -> ON, mentioning "no
+# sentinel". Pre-fix rendered `supervisor: OFF`.
+NEW_SB
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+_setage "${STATE_DIR}/.supervise-loop.heartbeat" 30
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -Eq '^supervisor: ON' \
+   && printf '%s\n' "$out" | grep -q 'no sentinel'; then
+  pass "T-A: fresh beat, no sentinel -> ON (heartbeat only)"
+else
+  fail "T-A: fresh beat, no sentinel -> ON (got: $(printf '%s' "$out" | sed -n '1p'))"
+fi
+
+# T-B: heartbeat aged 3h, no sentinel -> STALE, NOT starting with OFF.
+NEW_SB
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+_setage "${STATE_DIR}/.supervise-loop.heartbeat" 10800
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -Eq '^supervisor: STALE' \
+   && ! printf '%s\n' "$out" | grep -Eq '^supervisor: OFF'; then
+  pass "T-B: old beat, no sentinel -> STALE (not OFF)"
+else
+  fail "T-B: old beat, no sentinel -> STALE (got: $(printf '%s' "$out" | sed -n '1p'))"
+fi
+
+# T-C: neither file -> OFF, and the line carries a reason (bare OFF never
+# renders). Pre-fix rendered a bare `supervisor: OFF`.
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -Eq '^supervisor: OFF +\('; then
+  pass "T-C: nothing -> OFF with a reason (never bare)"
+else
+  fail "T-C: nothing -> OFF with a reason (got: $(printf '%s' "$out" | sed -n '1p'))"
+fi
+
+# T-D: sentinel with dead pid 999999 + fresh heartbeat -> ON, naming the gone
+# pid. Pre-fix rendered STALE (the live beat was invisible inside the sentinel
+# gate).
+NEW_SB
+printf 'pid 999999\n' > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+_setage "${STATE_DIR}/.supervise-loop.heartbeat" 41
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -Eq '^supervisor: ON' \
+   && printf '%s\n' "$out" | grep -q 'sentinel pid 999999 gone'; then
+  pass "T-D: dead-pid sentinel + fresh beat -> ON"
+else
+  fail "T-D: dead-pid sentinel + fresh beat -> ON (got: $(printf '%s' "$out" | sed -n '1p'))"
+fi
+
+# T-D2: unparsable sentinel (no pid digits) + OLD heartbeat -> STALE naming the
+# beat age, NOT "no beat" (Codex review fix: the unparsable branch must honour
+# SUP_BEAT_AGE_SECS just like the dead-pid branch).
+NEW_SB
+printf '{"mode":"x"}\n' > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+_setage "${STATE_DIR}/.supervise-loop.heartbeat" 7200
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -Eq '^supervisor: STALE' \
+   && printf '%s\n' "$out" | grep -q 'beat 2h old' \
+   && ! printf '%s\n' "$out" | grep -q 'unparsable, no beat'; then
+  pass "T-D2: unparsable sentinel + old beat -> STALE (beat age, not 'no beat')"
+else
+  fail "T-D2: unparsable + old beat (got: $(printf '%s' "$out" | sed -n '1p'))"
+fi
+
+# T-E: legacy docs/leadv2/.supervise-active present, canonical absent, no
+# heartbeat -> STALE mentioning "legacy".
+NEW_SB
+mkdir -p "${SB}/docs/leadv2"
+printf 'pid 55555\n' > "${SB}/docs/leadv2/.supervise-active"
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -Eq '^supervisor: STALE' \
+   && printf '%s\n' "$out" | grep -q 'legacy'; then
+  pass "T-E: legacy sentinel, canonical absent, no beat -> STALE (legacy)"
+else
+  fail "T-E: legacy -> STALE (got: $(printf '%s' "$out" | sed -n '1p'))"
+fi
+
+# T-F (writer parity): leadv2-supervise.sh and leadv2-status-surface.sh must
+# resolve the SAME sentinel path for a given sandboxed control plane, so the
+# writer/reader split that caused this bug cannot recur. We sandbox both via
+# LEADV2_STATE_ROOT and compare the resolved strings.
+NEW_SB
+mkdir -p "${SB}/.git"
+SENT_WRITER="$(PROJECT_ROOT="$SB" LEADV2_STATE_ROOT="${SB}/state" \
+  bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link .supervise-active 2>/dev/null || true)"
+SENT_READER="$(PROJECT_ROOT="$SB" LEADV2_STATE_ROOT="${SB}/state" \
+  bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link root 2>/dev/null || true)"
+SENT_READER="${SENT_READER}/.supervise-active"
+if [ -n "$SENT_WRITER" ] && [ "$SENT_WRITER" = "$SENT_READER" ]; then
+  pass "T-F: writer and reader resolve the same sentinel path (${SENT_WRITER})"
+else
+  fail "T-F: writer/reader path split (writer=${SENT_WRITER} reader=${SENT_READER})"
 fi
 
 # ── 6. terminal row aged 3h dropped; same at 10m present ───────────────────
@@ -347,7 +482,7 @@ EOF
 out="$(run_render --oneline)"
 nlines="$(printf '%s\n' "$out" | grep -c .)"
 if [ "$nlines" -eq 1 ] \
-   && printf '%s' "$out" | grep -q '^sup:\(ON\|OFF\)' \
+   && printf '%s' "$out" | grep -q '^sup:\(ON\|OFF\|STALE\)' \
    && printf '%s' "$out" | grep -q 'lanes '; then
   pass "--oneline shape (1 line, sup:, lanes)"
 else
@@ -621,6 +756,7 @@ run_render_r4() {
   LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
   LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
   LEADV2_STATUS_REPO="testrepo" \
+  LEADV2_STATUS_REPO_ROOT="$SB" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
   LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-}" \
@@ -638,6 +774,7 @@ run_bar_r4() {
   LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
   LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
   LEADV2_STATUS_REPO="testrepo" \
+  LEADV2_STATUS_REPO_ROOT="$SB" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
   LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-}" \
@@ -867,7 +1004,7 @@ meta: {}
 sessions: []
 EOF
 bare="$(run_render_r4)"
-expected='supervisor: OFF
+expected='supervisor: OFF  (no sentinel, no heartbeat)
 lanes (0 live, 0 done в последний час)
   (none)'
 if [ "$bare" = "$expected" ]; then
