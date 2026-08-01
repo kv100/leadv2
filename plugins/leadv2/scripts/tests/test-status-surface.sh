@@ -1163,6 +1163,85 @@ else
   fail "R6-T2: only done -> ✅ 2 (got: $_l1)"
 fi
 
+# ── N7B-T1. one dead lane INSIDE DEAD_TTL (age NOW-1200 < 3600) -> 1 dead ──
+# N-7b: the badge/"N dead" figure must honour the recency window, the same way
+# `done` already does. A dead lane silent 1200s is inside the 3600s window, so
+# it stays in the table and the header's dead count is 1.
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: n7bt1000000001
+    phase: build
+    class: Standard
+    pid: 999999
+    lead_model: glm
+    log_path: ''
+EOF
+_ledger n7bt1000 glm n7bt1-h confirmed $((NOW-1200))
+_run n7bt1-h glm failed 1 1200
+out="$(run_render)"
+_hdr="$(printf '%s\n' "$out" | sed -n 's/^lanes (//p')"
+if printf '%s' "$_hdr" | grep -Eq '^0 live, 1 dead,'; then
+  pass "N7B-T1: in-window dead lane -> header '1 dead' (got: $_hdr)"
+else
+  fail "N7B-T1: in-window dead lane -> '1 dead' (got: $_hdr)"
+fi
+
+# ── N7B-T2. dead lane OUTSIDE DEAD_TTL (age NOW-7000, still < 7200 terminal
+# age-out) -> TTL-dropped: header '0 dead' + non-zero 'скрыто по возрасту'.
+# 7000 > DEAD_TTL(3600) so the row is removed by the drop loop and counted into
+# _aged; 7000 < 7200 so it was genuinely built first (not never-built).
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: n7bt2000000001
+    phase: build
+    class: Standard
+    pid: 999999
+    lead_model: glm
+    log_path: ''
+EOF
+_ledger n7bt2000 glm n7bt2-h confirmed $((NOW-7000))
+_run n7bt2-h glm failed 1 7000
+out="$(run_render)"
+_hdr="$(printf '%s\n' "$out" | sed -n 's/^lanes (//p')"
+if printf '%s' "$_hdr" | grep -Eq '^0 live, 0 dead,' \
+  && printf '%s' "$_hdr" | grep -Eq 'скрыто по возрасту' \
+  && ! printf '%s' "$_hdr" | grep -Eq ', 0 скрыто по возрасту'; then
+  pass "N7B-T2: out-of-window dead -> '0 dead' + hidden-by-age (got: $_hdr)"
+else
+  fail "N7B-T2: out-of-window dead -> '0 dead' + hidden-by-age (got: $_hdr)"
+fi
+
+# ── N7B-T3. a terminal lane whose .outcome=completed -> '0 dead', rendered
+# done(completed). A completed lane is never a red, even though its process
+# signal (failed/1) would otherwise classify it dead. Belt-and-braces counter
+# guard matches the row-construction invariant.
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: n7bt3000000001
+    phase: build
+    class: Standard
+    pid: 999999
+    lead_model: glm
+    log_path: ''
+EOF
+_ledger n7bt3000 glm n7bt3-h confirmed $((NOW-600))
+_run n7bt3-h glm failed 1 600
+_outcome n7bt3-h glm completed
+out="$(run_render)"
+_hdr="$(printf '%s\n' "$out" | sed -n 's/^lanes (//p')"
+if printf '%s' "$_hdr" | grep -Eq '^0 live, 0 dead,' \
+  && sig_has n7bt3000 "done(completed)" "$out"; then
+  pass "N7B-T3: completed lane -> '0 dead', row done(completed) (got: $_hdr)"
+else
+  fail "N7B-T3: completed lane -> '0 dead' + done(completed) (got: $_hdr)"
+fi
+
 # ── R5-01 round 2: _mini_yaml unit tests (PyYAML-optional reader) ──────────
 # The reader lives inside the renderer's lanes heredoc; extract it and exercise
 # the leadv2 machine-written subset directly. The cross-reader equality case

@@ -1317,23 +1317,30 @@ for _r in rows:
         _r["cause"] = "live(invariant: %s)" % _r["cause"]
         _r["cls"] = "live"
 
-# Counts BEFORE collapse AND before TTL drop: the #DEAD control line and any
-# badge must report the real number of dead dispatches, never the post-drop /
-# post-collapse visible count.
-# SWIFTBAR-LIVE-01 round 3 (§2.4): dead_n used to be `cls != "live"`, silently
-# folding "done" rows into the dead count -- invisible until this same count
-# was first exposed in the header text (a done(exit=0) row rendering
-# "dead(exit=0)" in the count while the human table correctly showed
-# "done(exit=0)"). "dead" and "done" are distinct classes; dead_n now honors
-# that distinction instead of conflating them.
+# live_n is computed BEFORE the TTL drop: live rows are never dropped (R3),
+# so pre-drop and post-drop are identical for it.
+#
+# dead_n is computed AFTER the TTL drop (N-7b): an all-time archive count is
+# not an alarm count. A dead lane older than DEAD_TTL has already been removed
+# from the table and counted into _aged, so the badge's red number must match
+# what the table actually shows. DEAD_TTL (LEADV2_STATUS_DEAD_TTL_S, default
+# 3600s) is the window -- the same window the drop loop applies to dead rows,
+# and the same notion the header already uses for done ("done в последний час")
+# and for the hidden-by-age line. Collapse only touches done rows (below), so
+# pre/post-collapse is irrelevant for the dead count.
+#
+# SWIFTBAR-LIVE-01 round 3 (§2.4): "dead" and "done" are distinct classes;
+# dead_n honors that distinction. Belt-and-braces (matching the invariant at
+# the row-construction guard above): a completed outcome is never a red, even
+# if a future refactor of the cause/cls chain re-conflated them.
 live_n = sum(1 for r in rows if r["cls"] == "live")
-dead_n = sum(1 for r in rows if r["cls"] == "dead")
 
 # STATUS-SURFACE-R5-01 (defect 2, C2): TTL drop. A terminal row (done/dead)
 # disappears after its window; live rows survive at ANY age (R3). Age basis =
 # max_mtime when present, else the ledger created_epoch; a row with NEITHER is
-# never dropped (unknown age != old). Runs AFTER the live_n/dead_n counts
-# (those stay pre-drop) and BEFORE the collapse rule.
+# never dropped (unknown age != old). Runs AFTER live_n (live rows are never
+# dropped, so pre/post is identical for it) and BEFORE dead_n (N-7b: dead_n is
+# now post-drop, in-window) and BEFORE the collapse rule.
 def _age_of(r):
     m = r.get("max_mtime")
     if m is not None:
@@ -1361,6 +1368,10 @@ for r in rows:
         continue
     _kept.append(r)
 rows = _kept
+# N-7b: dead_n now lives AFTER the TTL drop (see comment above live_n) so the
+# red number counts only dead rows still in-window (and never a completed lane).
+dead_n = sum(1 for r in rows
+             if r["cls"] == "dead" and r.get("outcome") != "completed")
 # SWIFTBAR-LIVE-01 round 3 (§2.4): same conflation as dead_n above -- this
 # counted "not live" (done AND dead) post-TTL-drop rows under the name
 # DONE_RECENT, so a fleet with both dead and done rows reported the SAME
