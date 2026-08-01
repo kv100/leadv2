@@ -615,6 +615,13 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervise-sentinel-cleanup.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-promise-guard.sh\"",
+            "timeout": 5,
+            "continueOnBlock": true,
+            "statusMessage": "Promise-guard: checking for unkept commitments..."
           }
         ]
       }
