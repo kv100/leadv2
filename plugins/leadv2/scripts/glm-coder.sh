@@ -1464,6 +1464,14 @@ cmd_supervise() {
   # meta.yaml) and before release_lock. Detect-only; never alters status.
   deadhand_check "${run_dir}" "${exit_code}"
 
+  # N-3 (TURN-CAP-OUTCOME-01): same window as deadhand_check -- after
+  # finalize_meta, before release_lock -- so the outcome classifier sees the
+  # final .no-deliverable verdict and appends to meta.yaml before it is done
+  # being written to for this run. Passes this run's own work_delta_present()
+  # result so the delta has exactly one implementation.
+  "$(dirname "${SELF}")/leadv2-lane-outcome.sh" "${run_dir}" "${exit_code}" \
+    "$(work_delta_present "${run_dir}" "${cwd_dir}" || echo skip)" >/dev/null
+
   [[ -n "${repo_hash}" ]] && release_lock "${repo_hash}"
 
   # EFFICIENCY-TUNE-01 C: clear job registry entry at real completion.
