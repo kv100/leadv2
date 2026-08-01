@@ -71,6 +71,7 @@ run_render() {
   LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
   LEADV2_STATUS_REPO="testrepo" \
   LEADV2_STATUS_NOW="$NOW" \
+  LEADV2_STATUS_TASKS_YAML="${TASKS_YAML:-${SB}/tasks.yaml}" \
   bash "$RENDER" "$@"
 }
 # append a ledger row: _ledger <sig8> <arm> <handle> <state> <created_epoch>
@@ -89,6 +90,19 @@ _run() {
   : > "${d}/journal.jsonl"
   [ "$off" -gt 0 ] && _setage "${d}/journal.jsonl" "$off"
 }
+
+# ── sandbox-leak guard (verify-notes §7): the suite's sentinel writes all use
+# THIS process's pid ($$, e.g. `printf 'pid %s\n' "$$"`) and target the sandbox
+# STATE_DIR. If any escaped to the REAL leadv2-state, a real .supervise-active
+# would carry $$ as its pid. leadv2's own writers (supervise.sh:175, the
+# PreToolUse snapshot hook) NEVER use this test bash's pid, so the presence of
+# $$ in any real sentinel is an unambiguous, deterministic leak signature --
+# stable against the live supervisor/hook churn that makes content/path/mtime
+# fingerprints flaky on this machine. (Static proof the suite can't be the
+# writer at all: the only .supervise-active writer in-tree is
+# leadv2-supervise.sh:175, and the suite env-injects every path it reads.)
+REAL_STATE="${HOME}/.claude/leadv2-state"
+TEST_PID=$$
 
 # ── 2. live lane: session pid=$$ renders live ──────────────────────────────
 NEW_SB
@@ -148,10 +162,60 @@ _ledger stale001 glm stale-h confirmed $((NOW-840))
 _run stale-h glm NONE 0 840
 rm -f "${RUNS_ROOT}/glm-runs/stale-h/meta.yaml" 2>/dev/null || true
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q 'stale001.*stale(14m silent)'; then
-  pass "stale renders stale(14m silent)"
+# state=confirmed is now terminal (is_terminal), so a recent (<7200s)
+# ledger-only terminal row reinterprets the last-resort stale() branch as
+# done(confirmed) rather than stale. See round-2 fix C1/C2.
+if printf '%s\n' "$out" | grep -q 'stale001.*done(confirmed)'; then
+  pass "recent terminal confirmed renders done(confirmed)"
 else
-  fail "stale renders stale(14m silent) (got: $(printf '%s' "$out" | tail -1))"
+  fail "recent terminal confirmed renders done(confirmed) (got: $(printf '%s' "$out" | tail -1))"
+fi
+
+# ── 4a/T21. ledger-only confirmed @ 17h -> DROPPED (old terminal ages out) ─
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+_ledger dropcnf1 glm drop-h confirmed $((NOW-61200))
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -q 'dropcnf1'; then
+  fail "T21: old(17h) terminal confirmed row should be dropped (got: $(printf '%s' "$out" | tail -1))"
+else
+  pass "T21: old(17h) terminal confirmed row dropped"
+fi
+
+# ── 4b/T22. ledger-only confirmed @ 1h -> done(confirmed), NOT stale ───────
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+_ledger donecnf1 glm done-h confirmed $((NOW-3600))
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -q 'donecnf1.*done(confirmed)'; then
+  pass "T22: recent(1h) confirmed renders done(confirmed)"
+else
+  fail "T22: recent(1h) confirmed renders done(confirmed) (got: $(printf '%s' "$out" | tail -1))"
+fi
+if printf '%s\n' "$out" | grep -q 'donecnf1.*stale('; then
+  fail "T22: recent(1h) confirmed must not render stale (got: $(printf '%s' "$out" | tail -1))"
+else
+  pass "T22: recent(1h) confirmed not labelled stale"
+fi
+
+# ── 4c/T23. ledger-only PENDING @ 17h -> still stale (non-terminal never drops)
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+_ledger pendcnf1 glm pend-h pending $((NOW-61200))
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -q 'pendcnf1.*stale('; then
+  pass "T23: old(17h) pending stays visible as stale (non-terminal)"
+else
+  fail "T23: old(17h) pending stays visible as stale (got: $(printf '%s' "$out" | tail -1))"
 fi
 
 # ── 5. no sentinel -> supervisor: OFF and no "?" ───────────────────────────
@@ -251,7 +315,7 @@ sessions:
     class: Standard
     log_path: ''
 EOF
-_ledger liveunkw glm liveunk-h confirmed $((NOW-10800))
+_ledger liveunkw glm liveunk-h pending $((NOW-10800))
 _run liveunk-h glm NONE 0 10800
 rm -f "${RUNS_ROOT}/glm-runs/liveunk-h/meta.yaml" 2>/dev/null || true
 out="$(run_render)"
@@ -335,6 +399,7 @@ barout="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
   LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
   LEADV2_STATUS_REPO="testrepo" \
   LEADV2_STATUS_NOW="$NOW" \
+  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
   bash "$BAR" 2>/dev/null)"
 if printf '%s\n' "$barout" | sed -n '1p' | grep -Eq '🟢 [0-9]+ / 🔴 [0-9]+'; then
   pass "SwiftBar line-1 emoji summary"
@@ -351,11 +416,442 @@ baroff="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
   LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
   LEADV2_STATUS_REPO="testrepo" \
   LEADV2_STATUS_NOW="$NOW" \
+  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
   bash "$BAR" 2>/dev/null)"
 if printf '%s\n' "$baroff" | sed -n '1p' | grep -q '⚪ sup OFF'; then
   pass "SwiftBar sup-OFF prefix"
 else
   fail "SwiftBar sup-OFF prefix (got: $(printf '%s' "$baroff" | sed -n '1p'))"
+fi
+
+# ── 11/R1. name resolution: tasks.yaml id -> external_id shown ─────────────
+NEW_SB
+cat > "${SB}/tasks.yaml" <<EOF
+total_open: 1
+tasks:
+- id: nameabcd1234
+  external_id: ALERTS-TO-LEAD-01
+  node_id: leadv2:ALERTS-TO-LEAD-01
+EOF
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: nameabcd1234
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    log_path: ''
+EOF
+TASKS_YAML="${SB}/tasks.yaml" out="$(run_render)"
+if printf '%s\n' "$out" | grep -q 'ALERTS-TO-LEAD-01'; then
+  pass "R1: tasks.yaml id resolves to human name"
+else
+  fail "R1: name resolution (got: $(printf '%s' "$out" | tail -1))"
+fi
+# last-resort fallback still embeds sig8 (no bare hash column can appear)
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: lastres01abcd
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    log_path: ''
+EOF
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -q 'dispatch-lastres0' && ! printf '%s\n' "$out" | grep -Eq '^[[:space:]]*lastres0'; then
+  pass "R1: last-resort name is dispatch-<sig8>, no bare hash column"
+else
+  fail "R1: last-resort name (got: $(printf '%s' "$out" | tail -1))"
+fi
+
+# ── 12/R2. TYPE column: lane (session) vs worker (ledger-only) ─────────────
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: lane0001abcd
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    log_path: ''
+EOF
+_ledger workr001 glm work-h confirmed $((NOW-300))
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -q 'dispatch-lane0001[[:space:]]*lane' \
+   && printf '%s\n' "$out" | grep -q 'dispatch-workr001[[:space:]]*worker'; then
+  pass "R2: TYPE column lane vs worker"
+else
+  fail "R2: TYPE column (got: $(printf '%s' "$out" | tail -3 | tr '\n' '|'))"
+fi
+
+# ── 13/R3. >10 terminal rows collapse to 10 + one summary line ─────────────
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do
+  _ledger "$(printf 'colp%04d' "$i")" glm "c$i-h" confirmed $((NOW-300-i))
+done
+out="$(run_render)"
+done_n="$(printf '%s\n' "$out" | grep -c 'done(confirmed)')"
+if printf '%s\n' "$out" | grep -q '+ 3 done earlier today' && [ "$done_n" -eq 10 ]; then
+  pass "R3: 13 done rows -> 10 + '+ 3 done earlier today'"
+else
+  fail "R3: collapse (done rows=${done_n}, got: $(printf '%s' "$out" | tail -2 | tr '\n' '|'))"
+fi
+
+# ── 13b/R3. live + stale rows are NEVER collapsed ─────────────────────────
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: liveone0abcd
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    log_path: ''
+EOF
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  _ledger "$(printf 'stly%04d' "$i")" glm "s$i-h" pending $((NOW-300-i))
+done
+out="$(run_render)"
+if printf '%s\n' "$out" | grep -q 'dispatch-liveone0' \
+   && [ "$(printf '%s\n' "$out" | grep -c 'stale(')" -eq 12 ]; then
+  pass "R3: live + non-terminal stale rows never collapsed"
+else
+  fail "R3: no-collapse of live/stale (got: $(printf '%s' "$out" | tail -3 | tr '\n' '|'))"
+fi
+
+# ── 14/R4. --oneline contains 'live' when a live lane exists ───────────────
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: oneliveabcd
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    log_path: ''
+EOF
+out="$(run_render --oneline)"
+if printf '%s' "$out" | grep -q 'live'; then
+  pass "R4: oneline reports live lane"
+else
+  fail "R4: oneline live (got: $out)"
+fi
+
+# ── 15/§6. dash-leading name does not break the SwiftBar dropdown ─────────
+NEW_SB
+cat > "${SB}/tasks.yaml" <<EOF
+total_open: 1
+tasks:
+- id: dashname0abcd
+  external_id: '--dash-leading-name'
+EOF
+printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: dashname0abcd
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    log_path: ''
+EOF
+TASKS_YAML="${SB}/tasks.yaml" barout="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
+  LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
+  LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
+  LEADV2_STATUS_REPO="testrepo" \
+  LEADV2_STATUS_NOW="$NOW" \
+  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
+  bash "$BAR" 2>/dev/null)"
+# the dash-leading row must still render as a well-formed dropdown line (printf
+# '%s | font=...' -- never interpreted as a format string / option).
+if printf '%s\n' "$barout" | grep -- '--dash-leading-name.*font=Menlo size=12'; then
+  pass "§6: dash-leading name renders a well-formed dropdown line"
+else
+  fail "§6: dash-leading dropdown (got: $(printf '%s' "$barout" | grep -- '--dash' | head -1))"
+fi
+
+# ── sandbox-leak guard (verify-notes §7): the test's own pid must not appear
+# in any real .supervise-active (would mean a sandboxed sentinel write escaped).
+_leak_paths=""
+while IFS= read -r _p; do
+  [ -z "$_p" ] && continue
+  if grep -Eq "(\"pid\"[[:space:]]*:[[:space:]]*|^pid[[:space:]+])${TEST_PID}([^0-9]|\$)" "$_p" 2>/dev/null; then
+    _leak_paths="${_leak_paths}${_p}"$'\n'
+  fi
+done <<EOF
+$(find "$REAL_STATE" -type f -name '.supervise-active' 2>/dev/null)
+EOF
+if [ -z "$_leak_paths" ]; then
+  pass "sandbox-leak: real leadv2-state dir not written by suite (test pid $$ absent)"
+else
+  fail "sandbox-leak: test pid $$ found in a real sentinel (sandbox write escaped):
+$_leak_paths"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# ROUND 4 (2026-08-01): questions / limits / due / alarms sections + widget.
+# Every round-4 source is env-injected (R4_* → LEADV2_STATUS_*); SD hook, codex
+# lockout, urgent log, and limits snapshot all default to /nonexistent so NO
+# round-4 test reads the founder's real ~/.claude state.
+# ════════════════════════════════════════════════════════════════════════════
+
+# round-4 renderer runner: full env isolation, all R4 sources defaulted off.
+run_render_r4() {
+  LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
+  LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
+  LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
+  LEADV2_STATUS_REPO="testrepo" \
+  LEADV2_STATUS_NOW="$NOW" \
+  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
+  LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-}" \
+  LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-}" \
+  LEADV2_STATUS_LIMITS_SNAPSHOT="${R4_SNAP:-/nonexistent}" \
+  LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
+  LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
+  LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
+  bash "$RENDER" "$@"
+}
+# round-4 widget runner (same env wall). The widget re-invokes the renderer
+# with --all, so the renderer inherits these vars.
+run_bar_r4() {
+  LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
+  LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
+  LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
+  LEADV2_STATUS_REPO="testrepo" \
+  LEADV2_STATUS_NOW="$NOW" \
+  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
+  LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-}" \
+  LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-}" \
+  LEADV2_STATUS_LIMITS_SNAPSHOT="${R4_SNAP:-/nonexistent}" \
+  LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
+  LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
+  LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
+  bash "$BAR" "$@"
+}
+
+# ── R4-T1. --questions: 1 CP pending + answered, 1 legacy pending + sibling-answered
+NEW_SB
+mkdir -p "${STATE_DIR}/questions"
+R4_QDIR="${STATE_DIR}/questions"
+R4_HANDOFF="${SB}/handoff"
+mkdir -p "${R4_HANDOFF}/taskA/questions-async" "${R4_HANDOFF}/taskB/questions-async"
+cat > "${R4_QDIR}/qPEND0001.yaml" <<EOF
+status: pending
+task_id: taskA
+question: Should we restart the failed codex job?
+options:
+  - {label: restart, text: restart the task}
+  - {label: wait, text: wait 10 min}
+EOF
+cat > "${R4_QDIR}/qANS0001.yaml" <<EOF
+status: answered
+task_id: taskA
+question: already resolved
+options: [{label: a, text: x}]
+EOF
+cat > "${R4_HANDOFF}/taskA/questions-async/qLEGPEND-pending.yaml" <<EOF
+question: legacy pending question
+options: [{label: yes, text: y}, {label: no, text: n}]
+EOF
+cat > "${R4_HANDOFF}/taskB/questions-async/qLEGANS-pending.yaml" <<EOF
+question: legacy answered-by-sibling
+options: [{label: go, text: g}]
+EOF
+: > "${R4_HANDOFF}/taskB/questions-async/qLEGANS-answered.yaml"
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+qout="$(run_render_r4 --questions)"
+if printf '%s\n' "$qout" | grep -q '^questions (2)$' \
+   && printf '%s\n' "$qout" | grep -q '^qPEND0001 ' \
+   && printf '%s\n' "$qout" | grep -q '^qLEGPEND ' \
+   && ! printf '%s\n' "$qout" | grep -q 'qANS0001' \
+   && ! printf '%s\n' "$qout" | grep -q 'qLEGANS'; then
+  pass "R4-T1: --questions counts pending only (CP status + legacy sibling)"
+else
+  fail "R4-T1: --questions (got: $(printf '%s' "$qout" | tr '\n' '|'))"
+fi
+# option labels survive, | joined, no answered qid
+if printf '%s\n' "$qout" | grep -q '\[restart|wait\]'; then
+  pass "R4-T1: question options rendered [restart|wait]"
+else
+  fail "R4-T1: options (got: $(printf '%s' "$qout" | grep qPEND | tr '\n' '|'))"
+fi
+
+# ── R4-T2. widget title starts with ❓1 when exactly one question is pending
+NEW_SB
+mkdir -p "${STATE_DIR}/questions"
+R4_QDIR="${STATE_DIR}/questions"
+R4_HANDOFF=""
+printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+cat > "${R4_QDIR}/qSOLO0001.yaml" <<EOF
+status: pending
+task_id: taskS
+question: a single pending question
+options: [{label: a, text: x}, {label: b, text: y}]
+EOF
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+barout="$(run_bar_r4)"
+if printf '%s\n' "$barout" | sed -n '1p' | grep -q '^❓1'; then
+  pass "R4-T2: widget title is ❓1 with a pending question"
+else
+  fail "R4-T2: widget title ❓1 (got: $(printf '%s' "$barout" | sed -n '1p'))"
+fi
+
+# ── R4-T3. title priority: 1 pending question AND a dead lane -> ❓ wins over 🔴
+NEW_SB
+mkdir -p "${STATE_DIR}/questions"
+R4_QDIR="${STATE_DIR}/questions"
+R4_HANDOFF=""
+printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+cat > "${R4_QDIR}/qDEAD01.yaml" <<EOF
+status: pending
+task_id: taskD
+question: question alongside a dead lane
+options: [{label: a, text: x}]
+EOF
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: deadexit76abcd
+    phase: build
+    class: Standard
+    pid: 999999
+    lead_model: glm
+    log_path: ''
+EOF
+_ledger deadexit glm deadd76 confirmed $((NOW-1200))
+_run deadd76 glm failed 76 1200
+barout="$(run_bar_r4)"
+if printf '%s\n' "$barout" | sed -n '1p' | grep -q '^❓1' \
+   && ! printf '%s\n' "$barout" | sed -n '1p' | grep -q '^🔴'; then
+  pass "R4-T3: ❓1 wins over 🔴 (question + dead lane)"
+else
+  fail "R4-T3: priority (got: $(printf '%s' "$barout" | sed -n '1p'))"
+fi
+# dead lane must actually be dead in this stub (sanity for the priority assertion)
+bare="$(run_render_r4)"
+if printf '%s\n' "$bare" | grep -q 'deadexit.*dead(exit=76)'; then
+  pass "R4-T3: sanity — dead lane renders dead(exit=76)"
+else
+  fail "R4-T3: sanity dead lane (got: $(printf '%s' "$bare" | tail -1))"
+fi
+
+# ── R4-T4. --limits: stubbed snapshot -> claude/glm %, source labels, no '$'
+NEW_SB
+R4_SNAP="${SB}/snap.txt"
+cat > "$R4_SNAP" <<EOF
+# stamped $((NOW-30))
+Quota: 5h 42% (12345 / 8000000 in, claude% only, cap est.) | weekly(claude,heuristic) 18% | cache-hit 0.91 | safe
+  glm weekly (live, z.ai): 20%  (resets 2026-08-07T10:30:44Z)
+EOF
+limout="$(run_render_r4 --limits)"
+if printf '%s\n' "$limout" | grep -q 'claude: 5h 42% weekly 18% (snapshot)' \
+   && printf '%s\n' "$limout" | grep -q 'glm: weekly 20% (snapshot, live z.ai)'; then
+  pass "R4-T4: --limits renders claude/glm % with source labels"
+else
+  fail "R4-T4: --limits (got: $(printf '%s' "$limout" | tr '\n' '|'))"
+fi
+if printf '%s\n' "$limout" | grep -q '\$'; then
+  fail "R4-T4: --limits contains a dollar sign"
+else
+  pass "R4-T4: --limits has no dollar amount"
+fi
+# stale stamp (older than 15 min) -> (stale Nm) suffix, shown not hidden
+cat > "$R4_SNAP" <<EOF
+# stamped $((NOW-1200))
+Quota: 5h 5% (1 / 8000000 in, claude% only) | weekly(claude,heuristic) 2%
+EOF
+limout="$(run_render_r4 --limits)"
+if printf '%s\n' "$limout" | sed -n '1p' | grep -q 'limits (stale'; then
+  pass "R4-T4: stale snapshot stamp shown as (stale Nm)"
+else
+  fail "R4-T4: stale suffix (got: $(printf '%s' "$limout" | sed -n '1p'))"
+fi
+
+# ── R4-T5. --limits with snapshot absent -> 'no snapshot', exit 0
+NEW_SB
+R4_SNAP="/nonexistent-r4-no-snap"
+limout="$(run_render_r4 --limits)"; rc=$?
+if printf '%s\n' "$limout" | grep -q 'no snapshot' && [ "$rc" -eq 0 ]; then
+  pass "R4-T5: absent snapshot -> 'no snapshot', exit 0"
+else
+  fail "R4-T5: absent snapshot (rc=$rc, got: $(printf '%s' "$limout" | tr '\n' '|'))"
+fi
+
+# ── R4-T6. --due: stub hook echoes a known count; hook not executable -> omit
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+R4_SDHOOK="${SB}/sdhook.sh"
+cat > "$R4_SDHOOK" <<'EOF'
+#!/usr/bin/env bash
+python3 - <<'PY'
+import json
+print(json.dumps({"additionalContext":"[OVERDUE] SD-1 - x\n[DUE TODAY] SD-2 - y\n[CONDITION-BOUND] SD-3 - z"}))
+PY
+EOF
+chmod +x "$R4_SDHOOK"
+dueout="$(run_render_r4 --due)"
+if printf '%s' "$dueout" | grep -q '^due: 3 overdue: 1$'; then
+  pass "R4-T6: --due counts 3 due / 1 overdue from hook JSON"
+else
+  fail "R4-T6: --due (got: $dueout)"
+fi
+# hook not executable -> no due: line, exit 0
+R4_SDHOOK="${SB}/sdhook.sh.nox"
+: > "$R4_SDHOOK"
+dueout="$(run_render_r4 --due)"; rc=$?
+if [ -z "$dueout" ] && [ "$rc" -eq 0 ]; then
+  pass "R4-T6: non-executable hook -> due line omitted, exit 0"
+else
+  fail "R4-T6: omit (rc=$rc, got: '$dueout')"
+fi
+
+# ── R4-T7. bare invocation byte-compare against pre-round-4 (regression lock)
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+bare="$(run_render_r4)"
+expected='supervisor: OFF
+lanes (0)
+  (none)'
+if [ "$bare" = "$expected" ]; then
+  pass "R4-T7: bare invocation byte-identical for empty stub"
+else
+  fail "R4-T7: bare drift (got: $(printf '%s' "$bare" | tr '\n' '|'))"
+fi
+
+# ── R4-T8. unknown flag -> usage to stderr, exit 2
+NEW_SB
+run_render_r4 --no-such-flag >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "R4-T8: unknown flag exits 2"
+else
+  fail "R4-T8: unknown flag exit (rc=$rc)"
 fi
 
 log ""

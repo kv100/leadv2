@@ -66,14 +66,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JSON_MODE=0
 SINCE=""
 PRINT_MODE=0
+ENTER_MODE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --json)  JSON_MODE=1; shift ;;
     --since) SINCE="${2:-}"; shift 2 ;;
     --print) PRINT_MODE=1; shift ;;
+    --enter) ENTER_MODE=1; shift ;;
     -h|--help)
-      printf -- 'Usage: leadv2-supervise.sh [--json] [--since <ISO>] [--print]\n'
+      printf -- 'Usage: leadv2-supervise.sh [--json] [--since <ISO>] [--print] [--enter]\n'
       exit 0
       ;;
     *)
@@ -82,6 +84,24 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# SENTINEL-ON-PROBE-01: the PYSENTINEL block below writes (and mtime-refreshes)
+# `.supervise-active`. Read-only probes (--json status, --since deltas, --print
+# handoff) must NOT stamp a sentinel — every probe used to overwrite it with the
+# caller's $PPID and go dead moments later, ghosting the guard/statusline/reinject
+# with all-day stale sentinels. Derive a read-only flag from the existing parse:
+# any of JSON_MODE / a SINCE filter / PRINT_MODE means this invocation is a probe.
+# `--enter` (explicit opt-in) and the LEADV2_SUPERVISE_ENTER=1 env override force
+# a write, since a legitimate entry caller may also request JSON. A bare
+# invocation (interactive attach) carries none of these flags and keeps writing —
+# that path is the unchanged supervisor entry point.
+_SUP_READONLY=0
+if [[ "$JSON_MODE" -eq 1 || -n "$SINCE" || "$PRINT_MODE" -eq 1 ]]; then
+  _SUP_READONLY=1
+fi
+if [[ "$ENTER_MODE" -eq 1 || "${LEADV2_SUPERVISE_ENTER:-0}" -eq 1 ]]; then
+  _SUP_READONLY=0
+fi
 
 # ── B1 fail-closed root resolution (SUPERVISE-V2-01 D-b/item-2) ────────────
 # Order: LEADV2_PROJECT_ROOT -> CLAUDE_PROJECT_DIR -> `git -C "$PWD" rev-parse
@@ -167,7 +187,7 @@ _SUP_MODE="${LEADV2_SUPERVISE_MODE:-interactive-lanes}"
 if [[ "$_SUP_MODE" != "interactive-lanes" && "$_SUP_MODE" != "legacy-relay" ]]; then
   _SUP_MODE="interactive-lanes"
 fi
-if [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
+if [[ "$_SUP_READONLY" -eq 0 && -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
   # shellcheck source=leadv2-active-registry.sh
   source "${SCRIPT_DIR}/leadv2-active-registry.sh"
   _SUP_PID="$(_lv2_durable_pid 2>/dev/null || echo "$PPID")"
