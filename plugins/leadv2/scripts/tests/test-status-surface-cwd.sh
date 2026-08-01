@@ -90,6 +90,27 @@ else
   fail "cwd-invariance: lane rows differ by cwd (root vs home vs tmp)"
 fi
 
+# SWIFTBAR-LIVE-01 round 2 (§2.5): the supervisor row (line 1, `supervisor:
+# ON/OFF/STALE (reason)`) must be byte-identical across cwds too -- this is
+# the third time this exact row lied to the founder (same beat, two
+# answers). The beat age inside the reason parenthetical is a live-ticking
+# value across these 3 sequential real invocations (e.g. "beat 12s" ->
+# "beat 13s"), so it is blanked the same way lane AGE is blanked above --
+# this test is about which WORD (ON/OFF/STALE) and which REASON SHAPE
+# render, not the wall-clock instant each invocation happened to sample.
+_sup_row_of() {
+  printf '%s\n' "$1" | sed -n '/^supervisor: /p' | head -1 \
+    | sed -E 's/beat [0-9]+[smh]/beat <AGE>/g'
+}
+SUP_ROOT="$(_sup_row_of "$OUT_ROOT")"
+SUP_HOME="$(_sup_row_of "$OUT_HOME")"
+SUP_TMP="$(_sup_row_of "$OUT_TMP")"
+if [ -n "$SUP_ROOT" ] && [ "$SUP_ROOT" = "$SUP_HOME" ] && [ "$SUP_ROOT" = "$SUP_TMP" ]; then
+  pass "cwd-invariance: identical supervisor row (word + reason) from /, \$HOME, and /tmp"
+else
+  fail "cwd-invariance: supervisor row differs by cwd (root='$SUP_ROOT' home='$SUP_HOME' tmp='$SUP_TMP')"
+fi
+
 log ""
 log "=== ${PASS} passed, ${FAIL} failed ==="
 [ "$FAIL" -eq 0 ]

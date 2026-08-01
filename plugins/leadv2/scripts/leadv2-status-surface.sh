@@ -99,10 +99,11 @@ unset _top
 # Only engaged when the caller did NOT pin LEADV2_STATUS_STATE_DIR — that env
 # var remains the single-project, byte-identical-output regression contract
 # (the existing test suite's run_render() always sets it, so this whole block
-# is a strict no-op for every pre-existing test). The supervisor gate above
-# is deliberately left resolved from the single default STATE_DIR/REPO
-# computed above (not swept per-project) — sweeping supervisor state across
-# projects is out of scope for this round; see developer.full.md deviation.
+# is a strict no-op for every pre-existing test). The supervisor gate below
+# (round 2, §2.5) resolves over the UNION of PROJ_STATE_DIRS populated by
+# THIS block — the supervisor is a machine-wide singleton, not swept
+# per-project, but its beat/sentinel lookup no longer pins to a single cwd-
+# derived STATE_DIR.
 MULTI_PROJECT=0
 PROJ_SLUGS=()
 PROJ_STATE_DIRS=()
@@ -189,6 +190,13 @@ unset -f _usage_r4 2>/dev/null || true
 
 LEDGER_FILE="${LEDGER_DIR}/${REPO}.jsonl"
 
+# SWIFTBAR-LIVE-01 round 2 (§2.1): one `ps` snapshot, not N pgreps per row --
+# the surface renders on a 10s SwiftBar tick and must not fork per row.
+# Absolute path: SwiftBar's stripped PATH is /usr/bin:/bin, where `ps` may
+# not resolve unqualified. Overridable so tests can inject a synthetic
+# snapshot and get a deterministic offline liveness signal.
+PS_SNAPSHOT="${LEADV2_STATUS_PS_SNAPSHOT:-$(/bin/ps -Ao pid=,args= 2>/dev/null || true)}"
+
 # ── Portable mtime (macOS stat -f %m, Linux stat -c %Y) ─────────────────────
 _mtime() {
   # echo epoch seconds or empty; never fails the pipeline
@@ -258,8 +266,59 @@ SUP_BEAT_TTL="${LEADV2_SUPERVISE_BEAT_TTL_SECS:-300}"
 case "$SUP_BEAT_TTL" in
   ''|*[!0-9]*) SUP_BEAT_TTL=300 ;;
 esac
-SENTINEL="${STATE_DIR}/.supervise-active"
-BEAT="${STATE_DIR}/.supervise-loop.heartbeat"
+# SWIFTBAR-LIVE-01 round 2 (§2.5): the supervisor is a machine-wide
+# singleton, not one per repo -- so its state must resolve over the UNION of
+# enumerated projects (already cwd-independent, PROJ_STATE_DIRS is rooted at
+# $HOME via leadv2-status-projects.sh), never the single cwd-derived
+# STATE_DIR. LEADV2_STATUS_STATE_DIR stays the pinned single-project test
+# contract, unchanged. Bash 3.2: indexed arrays only.
+SUP_DIRS=()
+if [ -n "${LEADV2_STATUS_STATE_DIR:-}" ]; then
+  SUP_DIRS=("$STATE_DIR")
+elif [ "${#PROJ_STATE_DIRS[@]}" -gt 0 ]; then
+  SUP_DIRS=("${PROJ_STATE_DIRS[@]}")
+else
+  SUP_DIRS=("$STATE_DIR")
+fi
+
+# BEAT = the .supervise-loop.heartbeat with the NEWEST mtime across all
+# resolved dirs -- a singleton loop writes exactly one; "newest" is the safe
+# reducer if a stale one lingers from an old project.
+BEAT=""
+_sup_beat_mtime=-1
+for _sd in "${SUP_DIRS[@]}"; do
+  [ -n "$_sd" ] || continue
+  _cand="${_sd}/.supervise-loop.heartbeat"
+  [ -f "$_cand" ] || continue
+  _cm="$(_mtime "$_cand")"
+  [ -n "$_cm" ] || continue
+  if [ "$_cm" -gt "$_sup_beat_mtime" ]; then
+    _sup_beat_mtime="$_cm"
+    BEAT="$_cand"
+  fi
+done
+unset _sd _cand _cm _sup_beat_mtime
+[ -n "$BEAT" ] || BEAT="${STATE_DIR}/.supervise-loop.heartbeat"
+
+# SENTINEL = the first .supervise-active whose parsed pid is alive; else the
+# first that exists (so "sentinel pid gone" still fires); else empty (falls
+# through to the canonical-sentinel-absent branch below, unchanged).
+SENTINEL=""
+_sup_sentinel_fallback=""
+for _sd in "${SUP_DIRS[@]}"; do
+  [ -n "$_sd" ] || continue
+  _cand="${_sd}/.supervise-active"
+  [ -f "$_cand" ] || continue
+  [ -n "$_sup_sentinel_fallback" ] || _sup_sentinel_fallback="$_cand"
+  _cpid="$(awk 'match($0,/[0-9]+/){print substr($0,RSTART,RLENGTH); exit}' "$_cand" 2>/dev/null || true)"
+  if [ -n "$_cpid" ] && _pid_alive "$_cpid"; then
+    SENTINEL="$_cand"
+    break
+  fi
+done
+[ -n "$SENTINEL" ] || SENTINEL="$_sup_sentinel_fallback"
+[ -n "$SENTINEL" ] || SENTINEL="${STATE_DIR}/.supervise-active"
+unset _sd _cand _cpid _sup_sentinel_fallback
 
 # Stat the heartbeat UNCONDITIONALLY — it is the primary signal. Require a
 # regular file (`-f`, not `-e`): a directory or FIFO accidentally on the beat
@@ -398,6 +457,7 @@ RUNS_ROOT   = os.environ.get("LEADV2_SS_RUNS_ROOT", "")
 NOW         = int(os.environ.get("LEADV2_SS_NOW", "0") or "0")
 TASKS_YAML  = os.environ.get("LEADV2_SS_TASKS_YAML", "")
 HANDOFF_DIR = os.environ.get("LEADV2_SS_HANDOFF_DIR", "")
+PS_SNAPSHOT = os.environ.get("LEADV2_SS_PS_SNAPSHOT", "")
 try:
     DONE_TTL = int(os.environ.get("LEADV2_SS_DONE_TTL", "900") or "900")
 except Exception:
@@ -747,14 +807,31 @@ def pid_alive(pid, birth):
     except OSError:
         return False
 
+# SWIFTBAR-LIVE-01 round 2 (§2.1, signal 3): true iff some live process' argv
+# contains "task-id dispatch-<sig8>" -- a plain substring scan over the ONE
+# ps snapshot the bash layer captured before this python block started (no
+# subprocess call from here). Survives a worker whose handle was never
+# recorded on the ledger row, which is exactly the "0 live" reproduction.
+def sig_process_alive(sig8):
+    if not sig8 or not PS_SNAPSHOT:
+        return False
+    needle = "task-id dispatch-" + sig8
+    for line in PS_SNAPSHOT.split("\n"):
+        if needle in line:
+            return True
+    return False
+
 def is_terminal(status, ledger_state):
     # ledger vocabulary is written ONLY by leadv2-dispatch-code.sh:860 ("pending")
-    # and :913 ("pending"->"confirmed"). "confirmed" is the terminal write of a row --
-    # nothing mutates it again, so a silent confirmed row is noise, not a stall.
+    # and :913 ("pending"->"confirmed"). SWIFTBAR-LIVE-01 round 2: "confirmed" is
+    # INTENT -- the row was journalled the instant it was written, nothing mutates
+    # it again -- NOT fact that the worker finished. A confirmed row's liveness/
+    # completion is decided by process evidence (pid_alive / sig_process_alive /
+    # meta.yaml exit code) in add_row below, never by the ledger state alone.
     # "pending" is NON-terminal on purpose: a stale pending == crashed dispatch, keep visible.
     # closed/failed/cancelled: no writer attested in-tree; kept as forward-compat only.
     return status in ("complete", "failed", "cancelled") or \
-           ledger_state in ("confirmed", "closed", "failed", "cancelled")
+           ledger_state in ("closed", "failed", "cancelled")
 
 # ---- R1 (fix round 3): tasks.yaml title map -- ONE parse ----------------
 # Source for rule 1 of name resolution. tasks.yaml is mapping-shaped
@@ -803,61 +880,22 @@ def resolve_name(task_id, mission_path, sig8):
         _nm = titles.get(str(task_id))
         if _nm:
             return _clip40(_nm)
-    # Rule 2: mission-file first line (bounded: 200 bytes; skip if unreadable).
-    if mission_path and os.path.exists(mission_path):
-        try:
-            with open(mission_path, "rb") as _fh:
-                _first = _fh.read(200).split(b"\n", 1)[0]
-            _first = _first.decode("utf-8", "replace").lstrip("#").strip()
-            if _first:
-                return _clip40(_first)
-        except Exception:
-            pass
-    # Rule 2.5 (STATUS-SURFACE-R5-01, C1a): handoff-dir mission title. Every
-    # dispatched lane owns a docs/handoff/dispatch-<sig8>/ dir; its design/
-    # mission file's first line carries a human task id (e.g. the
-    # architect-prepass heading "# PROMISE-GUARD-01 — ..."). Fixes the lanes
-    # running RIGHT NOW with no new store and no re-dispatch. Bounded: <=3
-    # os.path.exists + one 200-byte read per lane (R1 budget).
-    if HANDOFF_DIR and sig8:
-        _base = os.path.join(HANDOFF_DIR, "dispatch-" + sig8)
-        for _cand in ("mission.md", "architect-prepass.md", "context.yaml"):
-            _p = os.path.join(_base, _cand)
-            if os.path.exists(_p):
-                try:
-                    with open(_p, "rb") as _fh:
-                        _line = _fh.read(200).split(b"\n", 1)[0]
-                    _line = _line.decode("utf-8", "replace").strip()
-                    if not _line:
-                        continue
-                    # context.yaml: pull a title:/external_id: value, not the
-                    # whole line. For md files: strip leading '#' and cut at
-                    # the first em-dash / "--" / ':' delimiter so
-                    # "# PROMISE-GUARD-01 — implementation design" -> "PROMISE-GUARD-01".
-                    if _cand.endswith(".yaml"):
-                        _low = _line.lower()
-                        _val = ""
-                        for _key in ("title:", "external_id:"):
-                            _i = _low.find(_key)
-                            if _i >= 0:
-                                _val = _line[_i + len(_key):].strip().strip("'\"")
-                                break
-                        _line = _val
-                    else:
-                        _line = _line.lstrip("#").strip()
-                    # cut at the first delimiter that splits a task id from its prose
-                    for _sep in (" — ", " -- ", " — ", " - ", " : "):
-                        _i = _line.find(_sep)
-                        if _i > 0:
-                            _line = _line[:_i].strip()
-                            break
-                    if _line:
-                        return _clip40(_line)
-                except Exception:
-                    pass
-    # Rule 3 (STATUS-SURFACE-R5-01, C1b): a hash is not a name. Return the
-    # literal 'unnamed'; the sig8 lives in its own SIG column so it stays
-    # greppable and the handoff dir stays findable.
+    # Rule 1b (SWIFTBAR-LIVE-01 round 2, §2.4): task_id recorded but no
+    # tasks.yaml title match -- render the id itself. The writer fix
+    # (leadv2-dispatch-code.sh dispatch_reserve) now persists the founder's
+    # --task-id onto every new ledger row, so this is the common case for a
+    # task not yet (or never) tracked in tasks.yaml. Still a name, never a
+    # hash.
+    if task_id:
+        return _clip40(str(task_id))
+    # Rules 2/2.5 (mission-file first line / handoff-dir mission title) are
+    # DELETED, not patched (SWIFTBAR-LIVE-01 round 2, §2.4): prose is never a
+    # name -- scraping it produced exactly the defect this round fixes
+    # ("You are implementing task dispatch-14b3b worker confirmed" rendered
+    # as a lane's name). `mission_path` stays in the signature/ledger (other
+    # consumers still use it) but is no longer read here.
+    # Rule 2 (was 3): a hash is not a name either. Return the literal
+    # 'unnamed'; the sig8 lives in its own SIG column so it stays greppable.
     return "unnamed"
 
 # ---- S1: active.yaml ---------------------------------------------------
@@ -933,13 +971,30 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
             pass
     max_mtime = max(mtimes) if mtimes else None
 
-    alive = pid_alive(pid, birth)
+    # SWIFTBAR-LIVE-01 round 2 (§2.1): process truth, three signals in priority
+    # order. Signal 1 (session pid) only fires for lane rows -- `pid` is always
+    # None for ledger-only worker rows (see the add_row call below). Signal 2
+    # is NEW: the ledger's `handle` field IS the worker's pid, so a worker row
+    # with no session pid recorded can still prove itself alive. Signal 3 is
+    # NEW: an argv match survives a handle that was never recorded at all --
+    # this is the exact "0 live while a worker runs" reproduction. No pid_birth
+    # is recorded alongside `handle` (out of scope this round, see Risks in
+    # developer.full.md); a recycled pid over-reports live, which is strictly
+    # safer than the current under-report.
+    _pid_alive_session = pid_alive(pid, birth)
+    _pid_alive_handle = (not _pid_alive_session) and pid_alive(handle, None)
+    _argv_alive = (not _pid_alive_session) and (not _pid_alive_handle) and sig_process_alive(sig8)
+    alive = _pid_alive_session or _pid_alive_handle or _argv_alive
 
     # liveness rule (STANDING) — cause never empty, never "?"
-    if alive:
+    if _pid_alive_session:
         cause, cls = "live", "live"
+    elif _pid_alive_handle:
+        cause, cls = "live(pid %s)" % handle, "live"
+    elif _argv_alive:
+        cause, cls = "live(argv)", "live"
     elif max_mtime is not None and (NOW - max_mtime) < 120:
-        cause, cls = "live", "live"
+        cause, cls = "live(fresh)", "live"
     elif ec not in (None, ""):
         try:
             eci = int(ec)
@@ -994,6 +1049,7 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
         "cls": cls,
         "max_mtime": max_mtime,
         "sig": sig8,
+        "alive": alive,
     }
 
 for s in sessions:
@@ -1037,7 +1093,19 @@ if warn_msg and not rows:
     rows = [{
         "name": "warn", "kind": "-", "display": "active.yaml", "model": "-",
         "age": "-", "cause": warn_msg, "cls": "dead", "max_mtime": None, "sig": "",
+        "alive": False,
     }]
+
+# SWIFTBAR-LIVE-01 round 2 (§2.3): defensive invariant, belt and braces. A row
+# whose `alive` signal fired must never be classified as anything but live,
+# even if a future refactor of the cause/cls chain in add_row disagrees. This
+# is the SAME class of bug that hid a running worker under "6 скрыто по
+# возрасту" -- the invariant re-asserts it here, structurally, so it can never
+# reoccur silently.
+for _r in rows:
+    if _r.get("alive") and _r["cls"] != "live":
+        _r["cause"] = "live(invariant: %s)" % _r["cause"]
+        _r["cls"] = "live"
 
 # Counts BEFORE collapse AND before TTL drop: the #DEAD control line and any
 # badge must report the real number of dead/finished dispatches, never the
@@ -1148,6 +1216,7 @@ _run_lanes_for_project() {
   LEADV2_SS_HANDOFF_DIR="$4" \
   LEADV2_SS_DONE_TTL="$DONE_TTL" \
   LEADV2_SS_DEAD_TTL="$DEAD_TTL" \
+  LEADV2_SS_PS_SNAPSHOT="$PS_SNAPSHOT" \
   _ss_lanes_py
 }
 

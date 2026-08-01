@@ -241,6 +241,15 @@
 
 set -uo pipefail   # -u safe (quote everything, no unbound vars); NO -e (refusals must journal)
 
+# SWIFTBAR-LIVE-01 round 2 (§2.4): script-scope globals carrying the founder
+# task id + mission file path from `main`'s arg parse to dispatch_reserve.
+# Globals, not locals passed down the call stack: dispatch_reserve is also
+# reachable from atomic_dispatch_reserve_confirm_opus and from tests where
+# `main` never ran, so bash dynamic scoping cannot be relied on. `:-""`
+# default keeps `set -u` safe before main ever sets them.
+DISPATCH_FOUNDER_TASK_ID="${DISPATCH_FOUNDER_TASK_ID:-}"
+DISPATCH_MISSION_PATH="${DISPATCH_MISSION_PATH:-}"
+
 SCRIPT_NAME="leadv2-dispatch-code"
 PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}}"
 # LANDING-BLOCKER-R2 (C1): WORK_ROOT is the tree the lane's code edits land in -- it is
@@ -863,6 +872,9 @@ _dispatch_append_pending_locked() {  # <file> <sig> <arm> <rule> <token> <create
   # compatible). Strip backslash + double-quote so neither can break the JSON.
   local task_id="${7:-}" mission_path="${8:-}"
   task_id="${task_id//\\/}"; task_id="${task_id//\"/}"
+  # SWIFTBAR-LIVE-01 round 2: clamp task_id to 64 chars so a pathological
+  # --task-id cannot produce an unbounded ledger line.
+  task_id="${task_id:0:64}"
   mission_path="${mission_path//\\/}"; mission_path="${mission_path//\"/}"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
   printf '{"task_sig":"%s","arm":"%s","rule":"%s","repo":"%s","ts":"%s","token":"%s","state":"pending","created_epoch":%s,"task_id":"%s","mission_path":"%s"}\n' \
@@ -900,7 +912,8 @@ dispatch_reserve() {  # <sig> <arm> <rule> -> stdout: token (rc0 only)
       exit 2
     fi
     token="$(_dispatch_new_token)"
-    if ! _dispatch_append_pending_locked "${f}" "${sig}" "${arm}" "${rule}" "${token}" "${now2}"; then
+    if ! _dispatch_append_pending_locked "${f}" "${sig}" "${arm}" "${rule}" "${token}" "${now2}" \
+      "${DISPATCH_FOUNDER_TASK_ID:-}" "${DISPATCH_MISSION_PATH:-}"; then
       exit 1
     fi
     printf '%s' "${token}"
@@ -1181,7 +1194,7 @@ try:
     sys.stdout.write(stdout or "")
     sys.exit(proc.returncode)
 except subprocess.TimeoutExpired as exc:
-    # Kill the launcher's complete process group: otherwise a descendant that
+    # Kill the launcher process group entirely: otherwise a descendant that
     # inherited stdout keeps communicate() open until its own long timeout.
     if proc is not None:
         try: os.killpg(proc.pid, signal.SIGKILL)
@@ -1568,6 +1581,12 @@ _spawn_worker_body() {
   local _spawn_attempt; _spawn_attempt="$(_dl_attempt_token "${sig8}")"
   emit decision "worker_spawned by=router model=${arm} task=${sig8} attempt=${_spawn_attempt} handle=${handle}"
   printf 'worker_spawned model=%s task=%s attempt=%s handle=%s\n' "${arm}" "${sig8}" "${_spawn_attempt}" "${handle}"
+  # S7-RETARGET-PERSIST-01: names which mission version this dispatch launched, so
+  # "it relaunched the old premise" is a grep of this log, not archaeology. Fail-open
+  # by construction: sig/head are already-in-hand local values (no failure mode), rev
+  # is env-passed only (task-retarget.sh --json prints `export LEADV2_MISSION_REV=<n>`
+  # for a retarget-then-dispatch sequence to carry) -- never a DB call in this hot path.
+  emit decision "mission-version task=${founder_task_id:--} sig=${sig8} rev=${LEADV2_MISSION_REV:-?} head=\"$(printf '%s' "${mission}" | tr '\n' ' ' | cut -c1-90)\""
   return 0
 }
 
@@ -1794,10 +1813,12 @@ cmd_resolve() {
   if [[ -z "${raw}" ]]; then
     log_err "missing mission (positional arg, @file, or -)"; usage
   fi
+  local mission_file=""
   if [[ "${raw}" == @* ]]; then
     local p="${raw#@}"
     [[ -r "$p" ]] || { log_err "cannot read mission file: $p"; exit 1; }
     mission="$(cat "$p")"
+    mission_file="$p"
   elif [[ "${raw}" == "-" ]]; then
     mission="$(cat)"
   fi
@@ -1811,6 +1832,11 @@ cmd_resolve() {
     log_err "signature computation failed"; exit 1
   fi
   [[ -n "${founder_task_id}" ]] && emit decision "dispatch_task_bound task=${sig8} founder_task=${founder_task_id}"
+  # SWIFTBAR-LIVE-01 round 2 (§2.4): persist onto the script-scope globals so
+  # dispatch_reserve can write them onto the ledger row -- this was the missing
+  # link; founder_task_id was already bound above but never reached the row.
+  DISPATCH_FOUNDER_TASK_ID="${founder_task_id}"
+  DISPATCH_MISSION_PATH="${mission_file}"
 
   # Product classifications are visible even when a later shape/router/ledger gate refuses
   # the task.  This is intentionally before any reservation/spawn side effect.

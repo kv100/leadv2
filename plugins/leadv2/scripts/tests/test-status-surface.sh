@@ -170,16 +170,18 @@ _ledger stale001 glm stale-h confirmed $((NOW-840))
 _run stale-h glm NONE 0 840
 rm -f "${RUNS_ROOT}/glm-runs/stale-h/meta.yaml" 2>/dev/null || true
 out="$(run_render)"
-# state=confirmed is now terminal (is_terminal), so a recent (<7200s)
-# ledger-only terminal row reinterprets the last-resort stale() branch as
-# done(confirmed) rather than stale. See round-2 fix C1/C2.
-if sig_has stale001 'done(confirmed)' "$out"; then
-  pass "recent terminal confirmed renders done(confirmed)"
+# SWIFTBAR-LIVE-01 round 2 (§2.2): "confirmed" is intent, not fact -- it is
+# no longer in is_terminal's vocabulary. A ledger-only confirmed row with no
+# process evidence (no live pid/handle/argv, no meta.yaml exit code) must
+# render its honest unknown state, stale(...), never a fabricated
+# done(confirmed) completion claim.
+if sig_has stale001 'stale(14m silent)' "$out"; then
+  pass "confirmed w/o process evidence renders stale, not a false done claim"
 else
-  fail "recent terminal confirmed renders done(confirmed) (got: $(printf '%s' "$out" | tail -1))"
+  fail "confirmed w/o process evidence renders stale (got: $(printf '%s' "$out" | tail -1))"
 fi
 
-# ── 4a/T21. ledger-only confirmed @ 17h -> DROPPED (old terminal ages out) ─
+# ── 4a/T21. ledger-only confirmed @ 17h -> DROPPED (non-terminal dead-TTL ages it out) ─
 NEW_SB
 cat > "${STATE_DIR}/active.yaml" <<EOF
 meta: {}
@@ -188,12 +190,12 @@ EOF
 _ledger dropcnf1 glm drop-h confirmed $((NOW-61200))
 out="$(run_render)"
 if printf '%s\n' "$out" | grep -q 'dropcnf1'; then
-  fail "T21: old(17h) terminal confirmed row should be dropped (got: $(printf '%s' "$out" | tail -1))"
+  fail "T21: old(17h) confirmed-w/o-evidence row should be dropped (got: $(printf '%s' "$out" | tail -1))"
 else
-  pass "T21: old(17h) terminal confirmed row dropped"
+  pass "T21: old(17h) confirmed-w/o-evidence row dropped (dead-TTL, not terminal age-out)"
 fi
 
-# ── 4b/T22. ledger-only confirmed @ 1h -> done(confirmed), NOT stale ───────
+# ── 4b/T22. ledger-only confirmed @ 5m, no process evidence -> stale, NEVER a false done(confirmed) claim ───────
 NEW_SB
 cat > "${STATE_DIR}/active.yaml" <<EOF
 meta: {}
@@ -201,15 +203,15 @@ sessions: []
 EOF
 _ledger donecnf1 glm done-h confirmed $((NOW-300))
 out="$(run_render)"
-if sig_has donecnf1 'done(confirmed)' "$out"; then
-  pass "T22: recent(1h) confirmed renders done(confirmed)"
+if sig_has donecnf1 'stale(5m silent)' "$out"; then
+  pass "T22: recent(5m) confirmed w/o evidence renders stale, not falsely done"
 else
-  fail "T22: recent(1h) confirmed renders done(confirmed) (got: $(printf '%s' "$out" | tail -1))"
+  fail "T22: recent(5m) confirmed w/o evidence renders stale (got: $(printf '%s' "$out" | tail -1))"
 fi
-if sig_seen donecnf1 "$out" && printf '%s\n' "$out" | grep -q 'stale('; then
-  fail "T22: recent(1h) confirmed must not render stale (got: $(printf '%s' "$out" | tail -1))"
+if sig_seen donecnf1 "$out" && printf '%s\n' "$out" | grep -q 'done(confirmed)'; then
+  fail "T22: recent(5m) confirmed must NEVER render a fabricated done(confirmed) claim (got: $(printf '%s' "$out" | tail -1))"
 else
-  pass "T22: recent(1h) confirmed not labelled stale"
+  pass "T22: recent(5m) confirmed never renders a fabricated done(confirmed) claim"
 fi
 
 # ── 4c/T23. ledger-only PENDING @ 17h -> still stale (non-terminal never drops)
@@ -591,7 +593,8 @@ if printf '%s\n' "$out" | grep -q 'ALERTS-TO-LEAD-01'; then
 else
   fail "R1: name resolution (got: $(printf '%s' "$out" | tail -1))"
 fi
-# last-resort fallback still embeds sig8 (no bare hash column can appear)
+# SWIFTBAR-LIVE-01 round 2 (§2.4 Rule 1b): a task_id with no tasks.yaml title
+# match renders the id itself, verbatim -- still a name, never a hash.
 NEW_SB
 cat > "${STATE_DIR}/active.yaml" <<EOF
 meta: {}
@@ -604,10 +607,32 @@ sessions:
     log_path: ''
 EOF
 out="$(run_render)"
-if sig_seen lastres0 "$out" && printf '%s\n' "$out" | grep -q 'unnamed'; then
-  pass "R1: last-resort name is 'unnamed', sig in SIG column (no hash dressed as name)"
+if sig_seen lastres0 "$out" && printf '%s\n' "$out" | grep -q 'lastres01abcd'; then
+  pass "R1b: task_id w/o a tasks.yaml title renders the id verbatim"
 else
-  fail "R1: last-resort name (got: $(printf '%s' "$out" | tail -1))"
+  fail "R1b: task_id verbatim fallback (got: $(printf '%s' "$out" | tail -1))"
+fi
+
+# SWIFTBAR-LIVE-01 round 2 (§2.4 Rule 2, final fallback): a ledger-only
+# worker row with a genuinely EMPTY task_id (the pre-writer-fix shape) must
+# render 'unnamed' -- never mission prose, even when a mission_path pointing
+# at prose-bearing text is on the row. Rules 2/2.5 (mission-file /
+# handoff-dir scraping) are deleted; there is nothing left to fall back to.
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+_prose_mission="${SB}/prose-mission.md"
+printf 'You are implementing task dispatch-14b3b worker confirmed\n' > "$_prose_mission"
+printf '{"task_sig":"unnamed0ffffffffffffffffffffffffffffffffffffffffff","arm":"glm","state":"confirmed","handle":"%s","created_epoch":%s,"task_id":"","mission_path":"%s"}\n' \
+  "$$" "$((NOW-60))" "$_prose_mission" >> "$LEDGER"
+out="$(run_render)"
+if sig_has unnamed0 'unnamed' "$out" \
+   && ! printf '%s\n' "$out" | grep -q 'You are implementing'; then
+  pass "R2-final: empty task_id renders 'unnamed', never mission prose"
+else
+  fail "R2-final: empty task_id vs mission prose (got: $(printf '%s' "$out" | tail -1))"
 fi
 
 # ── 12/R2. TYPE column: lane (session) vs worker (ledger-only) ─────────────
@@ -639,9 +664,13 @@ sessions: []
 EOF
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do
   _ledger "$(printf 'colp%04d' "$i")" glm "c$i-h" confirmed $((NOW-300-i))
+  # SWIFTBAR-LIVE-01 round 2: "confirmed" alone is no longer terminal/done
+  # evidence -- give each row a real meta.yaml exit=0 so it earns
+  # done(exit=0) on process evidence, same as any other completed worker.
+  _run "c$i-h" glm complete 0 $((300+i))
 done
 out="$(run_render)"
-done_n="$(printf '%s\n' "$out" | grep -c 'done(confirmed)')"
+done_n="$(printf '%s\n' "$out" | grep -c 'done(exit=0)')"
 if printf '%s\n' "$out" | grep -q '+ 3 done earlier today' && [ "$done_n" -eq 10 ]; then
   pass "R3: 13 done rows -> 10 + '+ 3 done earlier today'"
 else
@@ -1356,6 +1385,92 @@ if [ "$mp4b_rc" -eq 0 ] && [ -z "$mp4b_out" ]; then
   pass "MP-4: leadv2-status-projects.sh exits 0 with empty stdout for 0 qualifying projects"
 else
   fail "MP-4: leadv2-status-projects.sh 0-projects case (rc=$mp4b_rc, out=$mp4b_out)"
+fi
+
+log ""
+log "== SWIFTBAR-LIVE-01 round 2: process-truth liveness signals (§2.1) =="
+
+# ── LT-1. dead handle (definitely-unallocated pid), no other evidence -> NOT live ─
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+_ledger deadhndl glm 99999999 confirmed $((NOW-300))
+out="$(run_render)"
+if sig_has deadhndl 'live' "$out"; then
+  fail "LT-1: dead handle (no other evidence) must NOT render live (got: $(printf '%s' "$out" | tail -1))"
+else
+  pass "LT-1: dead handle (no other evidence) does not render live"
+fi
+
+# ── LT-2. handle == our own live pid, old timestamp -> live(pid $$) ─────────
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+_ledger alivehnd glm "$$" confirmed $((NOW-300))
+out="$(run_render)"
+if sig_has alivehnd "live(pid $$)" "$out"; then
+  pass "LT-2: alive handle renders live(pid N)"
+else
+  fail "LT-2: alive handle renders live(pid N) (got: $(printf '%s' "$out" | tail -1))"
+fi
+
+# ── LT-3. no handle at all, argv match via injected ps snapshot -> live(argv) ─
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+_ledger argvlive glm "" confirmed $((NOW-300))
+export LEADV2_STATUS_PS_SNAPSHOT="54321 /usr/bin/some-worker --task-id dispatch-argvlive --other-flag"
+out="$(run_render)"
+unset LEADV2_STATUS_PS_SNAPSHOT
+if sig_has argvlive 'live(argv)' "$out"; then
+  pass "LT-3: handle-less row proven live by argv match (survives a never-recorded handle)"
+else
+  fail "LT-3: argv-only liveness (got: $(printf '%s' "$out" | tail -1))"
+fi
+
+# ── LT-4. live row (alive handle) with a stale journal past DONE_TTL -> STILL shown, never dropped ─
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+_ledger liveTTL1 glm "$$" confirmed $((NOW-1200))
+_run "$$" glm NONE 0 1200
+out="$(run_render)"
+if sig_has liveTTL1 "live(pid $$)" "$out"; then
+  pass "LT-4: live row survives past DONE_TTL (never hidden by the age filter)"
+else
+  fail "LT-4: live row past DONE_TTL should still render live (got: $(printf '%s' "$out" | tail -1))"
+fi
+
+log ""
+log "== SWIFTBAR-LIVE-01 round 2: worker-row naming from the ledger task_id (§2.4) =="
+
+# ── LN-1. worker row with a bound task_id resolves via tasks.yaml title ────
+NEW_SB
+cat > "${SB}/tasks.yaml" <<EOF
+total_open: 1
+tasks:
+- id: n4testrunner1
+  external_id: N4-TESTRUNNER-FALSE-RED
+EOF
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions: []
+EOF
+printf '{"task_sig":"namedwrk0ffffffffffffffffffffffffffffffffffffffffff","arm":"glm","state":"confirmed","handle":"%s","created_epoch":%s,"task_id":"n4testrunner1","mission_path":""}\n' \
+  "$$" "$((NOW-60))" >> "$LEDGER"
+TASKS_YAML="${SB}/tasks.yaml" out="$(run_render)"
+if sig_has namedwrk N4-TESTRUNNER-FALSE-RED "$out"; then
+  pass "LN-1: worker row named by its bound task_id, not the sig hash"
+else
+  fail "LN-1: worker row named by task_id (got: $(printf '%s' "$out" | tail -1))"
 fi
 
 log ""
