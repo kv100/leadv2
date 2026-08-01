@@ -1141,6 +1141,73 @@ watchdog_loop() {
   done
 }
 
+# DISPATCH-DEADHAND-01 (2026-08-01): capture the mission's deliverable contract
+# at launch so a child that exits 0 WITHOUT writing its named deliverable is
+# still detectable at finalize (the dead-hand disease -- 3 live occurrences on
+# 2026-08-01). Resolution order: explicit LEADV2_DELIVERABLE env > auto-parse of
+# prompt.txt (first line mentioning "deliverable" that also carries a
+# docs/handoff/... path; first match only) > nothing derivable (feature inert).
+# Non-absolute paths are resolved against the run's --cwd and stored absolute
+# (R5) so the exit-side check needs no cwd. AGENT_BAN_PREAMBLE /
+# FINISH_CONTRACT_TRAILER contain neither the word deliverable nor a
+# docs/handoff path (verified), so wrapping the mission in prompt.txt adds no
+# false positives.
+capture_deliverable() {
+  local run_dir="$1" cwd_dir="$2"
+  local deliverable=""
+  if [[ -n "${LEADV2_DELIVERABLE:-}" ]]; then
+    deliverable="${LEADV2_DELIVERABLE}"
+  else
+    local handoff_re='docs/handoff/[A-Za-z0-9_./-]+'
+    local line
+    line="$(grep -m1 -i -E "deliverable.*${handoff_re}|${handoff_re}.*deliverable" "${run_dir}/prompt.txt" 2>/dev/null || true)"
+    if [[ -n "${line}" ]]; then
+      deliverable="$(printf '%s\n' "${line}" | grep -oE "${handoff_re}" | head -1)"
+    fi
+  fi
+  [[ -n "${deliverable}" ]] || return 0
+  if [[ "${deliverable}" != /* ]]; then
+    deliverable="${cwd_dir%/}/${deliverable}"
+  fi
+  printf '%s\n' "${deliverable}" > "${run_dir}/.deliverable" 2>/dev/null \
+    || echo "LEADV2_DEADHAND_WRITE_FAILED .deliverable" >> "${run_dir}/progress.log"
+}
+
+# DISPATCH-DEADHAND-01: terminal dead-hand guard. Called from cmd_supervise
+# AFTER finalize_meta (which mktemp+mvs meta.yaml, so anything appended before
+# that call is clobbered -- R1) and BEFORE release_lock. If a .deliverable
+# contract exists, the run is satisfied iff the file exists AND its last
+# non-empty line is exactly DELIVERABLE_COMPLETE (terminal marker by contract,
+# not a mid-file mention). Not satisfied => flag in progress.log + meta.yaml +
+# .no-deliverable sentinel. Never false-alarms when no contract is derivable.
+# ALWAYS returns 0 -- must never abort finalization or strand the lock under
+# `set -euo pipefail` (R6) -- but reports write failures explicitly rather than
+# `|| true`-swallowing them (pre-build checklist). The bare flag line appended
+# to meta.yaml is inert to meta_get (matches ^key: only), so no reader breaks.
+deadhand_check() {
+  local run_dir="$1" exit_code="$2"
+  [[ -f "${run_dir}/.deliverable" ]] || return 0
+  local path
+  path="$(cat "${run_dir}/.deliverable" 2>/dev/null)"
+  [[ -n "${path}" ]] || return 0
+  local last_line=""
+  if [[ -f "${path}" ]]; then
+    last_line="$(awk 'NF{l=$0} END{print l}' "${path}" 2>/dev/null)"
+  fi
+  [[ "${last_line}" == "DELIVERABLE_COMPLETE" ]] && return 0
+  local flag_line="LEADV2_WORKER_NO_DELIVERABLE path=${path} exit=${exit_code}"
+  {
+    printf '%s\n' "${flag_line}" >> "${run_dir}/progress.log"
+    printf '%s\n' "${flag_line}" >> "${run_dir}/meta.yaml"
+  } 2>/dev/null || echo "LEADV2_DEADHAND_WRITE_FAILED progress_or_meta" >> "${run_dir}/progress.log"
+  {
+    printf 'path=%s\n' "${path}"
+    printf 'at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  } > "${run_dir}/.no-deliverable" 2>/dev/null \
+    || echo "LEADV2_DEADHAND_WRITE_FAILED no_deliverable_sentinel" >> "${run_dir}/progress.log"
+  return 0
+}
+
 # Internal: supervisor. Launches the child in its own process group, runs a
 # timeout watchdog against ONLY that group (never its own), reaps the child,
 # and only then finalizes meta.yaml and releases the lock (R4).
@@ -1194,6 +1261,9 @@ cmd_supervise() {
       mkdir -p "${new_run_dir}"
       chmod 700 "${new_run_dir}"
       cp "${run_dir}/prompt.txt" "${new_run_dir}/prompt.txt"
+      # DISPATCH-DEADHAND-01 (R2): carry the deliverable contract into the
+      # revived run_dir, else a revived run silently loses it and can never flag.
+      [[ -f "${run_dir}/.deliverable" ]] && cp "${run_dir}/.deliverable" "${new_run_dir}/.deliverable" 2>/dev/null || true
       max_turns_val="$(meta_get "${run_dir}" max_turns)"
       write_meta_initial "${new_run_dir}" "${new_run_id}" "${repo_name}" "${cwd_dir}" "${max_turns_val}" "${timeout_s}" "$$"
       printf 'revived_from: %s\n' "$(meta_get "${run_dir}" run_id)" >> "${new_run_dir}/meta.yaml"
@@ -1328,6 +1398,10 @@ cmd_supervise() {
 
   finalize_meta "${run_dir}" "${status}" "${exit_code}" "${duration}" "${tokens_in}" "${tokens_out}" "${turns}"
 
+  # DISPATCH-DEADHAND-01: MUST run after finalize_meta (it mv-clobbers
+  # meta.yaml) and before release_lock. Detect-only; never alters status.
+  deadhand_check "${run_dir}" "${exit_code}"
+
   [[ -n "${repo_hash}" ]] && release_lock "${repo_hash}"
 
   # EFFICIENCY-TUNE-01 C: clear job registry entry at real completion.
@@ -1408,6 +1482,10 @@ cmd_bg() {
     resolved_prompt="$(cat "${prompt_file}")"
   fi
   printf '%s%s%s' "${AGENT_BAN_PREAMBLE}" "${resolved_prompt}" "${FINISH_CONTRACT_TRAILER}" > "${run_dir}/prompt.txt"
+
+  # DISPATCH-DEADHAND-01: capture the deliverable contract now, before the
+  # child is even spawned (no cwd state change between here and the run).
+  capture_deliverable "${run_dir}" "${cwd_dir}"
 
   write_meta_initial "${run_dir}" "${run_id}" "${repo}" "${cwd_dir}" "${max_turns}" "${timeout_s}" "$$"
   printf '%s\n' "${repo_hash}" > "${run_dir}/.lockref"
