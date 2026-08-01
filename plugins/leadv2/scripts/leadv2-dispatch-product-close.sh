@@ -26,6 +26,15 @@ DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
 # (never sourced) -- see leadv2-dispatch-ledger.sh's own doc header.
 LEDGER_BIN="${LEADV2_DISPATCH_LEDGER_BIN:-${SCRIPT_DIR}/leadv2-dispatch-ledger.sh}"
 TERMINAL_LEDGER="${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}"
+# N-5: refusal classification (classify_arm_failure) for the arm-agnostic review
+# fallback loop below. Private synced copy, not a shared source of dispatch-code.sh --
+# see lib/leadv2-refusal-classify.sh's own header for why. `set -uo pipefail` only, no
+# `-e` (SILENT-DEATH-01), so sourcing it cannot silently change this script's own set.
+_REFUSAL_CLASSIFY_SH="${LEADV2_REFUSAL_CLASSIFY_BIN:-${SCRIPT_DIR}/lib/leadv2-refusal-classify.sh}"
+if [[ ! -f "${_REFUSAL_CLASSIFY_SH}" ]]; then
+  _REFUSAL_CLASSIFY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-refusal-classify.sh"
+fi
+[[ -f "${_REFUSAL_CLASSIFY_SH}" ]] && source "${_REFUSAL_CLASSIFY_SH}"
 # LOW-2 (fixround-tails): qualified <sig8>-<epoch>-<pid> attempt token, computed ONCE so the
 # explicit call and the EXIT trap's own retry (same process) reuse the identical value; a
 # bare pid would recycle across days/reboots and could be misread as the same attempt.
@@ -104,6 +113,9 @@ fi
 # the tasks-lib unclaim (below) so the terminal write always happens first regardless of
 # whether FOUNDER_TASK_ID/tasks-lib are even available.
 _pc_exit_handler() {
+  # Capture the triggering exit code FIRST -- every statement below (including the
+  # `[[` tests) would otherwise overwrite $? before the review_crashed row could log it.
+  local _pc_exit_rc=$?
   # wave2 round2 finding 4: retry the explicitly-recorded terminal state (if any
   # branch below ever reached one) instead of unconditionally writing crashed_
   # unfinished. write-once dedup (leadv2-dispatch-ledger.sh) makes this call a no-op
@@ -115,6 +127,16 @@ _pc_exit_handler() {
     _dl_note "${_PC_TERMINAL_STATE}" "${_PC_TERMINAL_CAUSE}" "${_PC_TERMINAL_EVIDENCE}" >/dev/null 2>&1 || true
   else
     _dl_note dead crashed_unfinished "exit_trap" >/dev/null 2>&1 || true
+  fi
+  # N-5 D3: once the review phase is entered (_PC_REVIEW_ENTERED=1, set right after the
+  # REVIEW_ON kill-switch check), review-gate.md must exist on EVERY exit path -- a crash
+  # (unbound var, SIGTERM mid-poll, a killed provider launcher) must never leave it
+  # silently absent, which is exactly the "review-gate.md was never created at all"
+  # defect this lane exists to close. Existence-gated so this can never clobber a real
+  # artifact an explicit terminal branch above already wrote.
+  if [[ "${_PC_REVIEW_ENTERED:-0}" == "1" && ! -f "${HANDOFF}/review-gate.md" ]]; then
+    printf 'status: unreviewed\nreason: review_crashed\nrc: %s\n' "${_pc_exit_rc}" > "${HANDOFF}/review-gate.md" 2>/dev/null || true
+    _stamp_active_phase "${FOUNDER_TASK_ID}" "review:unreviewed" 2>/dev/null || true
   fi
   if [[ -n "${FOUNDER_TASK_ID}" ]] && declare -F leadv2_tasks_unclaim >/dev/null 2>&1; then
     leadv2_tasks_unclaim "${FOUNDER_TASK_ID}" >/dev/null 2>&1 || true
@@ -161,6 +183,15 @@ _stamp_active_phase() { # <task_id> <phase>
   [[ -n "${1:-}" ]] || return 0
   declare -F leadv2_active_update_phase >/dev/null || return 0
   LEADV2_PROJECT_ROOT="${ROOT}" leadv2_active_update_phase "$1" "$2" >/dev/null 2>&1 || true
+}
+# N-5 §2.4: re-stamp active.yaml's phase on every TERMINAL review outcome (pass/fail/
+# unreviewed/blocked), not just once at entry -- the founder-facing status surface
+# renders whatever phase string it finds, so `review:unreviewed` (etc.) appears in the
+# lane row without any change to leadv2-status-surface.sh/leadv2-state-path.sh (both
+# off-limits). If the surface ever truncates at `:`, this degrades to today's bare
+# `review` -- strictly no worse than before this change.
+_stamp_review_terminal() { # <pass|fail|unreviewed|blocked>
+  _stamp_active_phase "${FOUNDER_TASK_ID}" "review:$1"
 }
 
 # dispatch-00629379 (P0, 2026-07-30): Fix6 (SUPERVISOR-AUDIT-01) called the resolver
@@ -286,6 +317,28 @@ parse_review_verdict() { # review-file
   fi
 }
 
+# N-5 §2.2 D4: plausibility floor -- a review-glm.md that is 1 line of unrelated text
+# must never reach parse_review_verdict and pass by accident of that parser rejecting
+# it under a misleading "review_unusable" label. Reject below the floor UNLESS the file
+# already carries both contract markers regardless of size (lenient: a legitimately
+# terse-but-valid review must never be false-red -- see N-5 risk table). Overridable via
+# LEADV2_REVIEW_MIN_BYTES for the test harness only; default matches the design doc.
+review_floor_ok() { # <file> -> 0 if it clears the floor, 1 if not
+  local f="$1"
+  local min_bytes="${LEADV2_REVIEW_MIN_BYTES:-200}"
+  if grep -q '^[[:space:]]*REVIEW_VERDICT:' "${f}" 2>/dev/null && \
+     grep -q '^[[:space:]]*REVIEW_FINDINGS:' "${f}" 2>/dev/null; then
+    return 0
+  fi
+  local bytes lines
+  bytes="$(wc -c < "${f}" 2>/dev/null | tr -d '[:space:]')"; bytes="${bytes:-0}"
+  lines="$(wc -l < "${f}" 2>/dev/null | tr -d '[:space:]')"; lines="${lines:-0}"
+  if [[ "${bytes}" -lt "${min_bytes}" || "${lines}" -lt 3 ]]; then
+    return 1
+  fi
+  return 0
+}
+
 # Wait only for a positively known local PID. Other providers may expose only a durable
 # job/run handle, so their lifecycle owner writes the close evidence; we never guess done.
 if [[ "${AUTHOR}" == sonnet && "${HANDLE}" =~ ^[0-9]+$ ]]; then
@@ -386,6 +439,10 @@ if [[ "${REVIEW_ON}" != 1 ]]; then
   _dl_note landed review_gate_disabled
   exit 0
 fi
+# N-5 D3: from this point on the review phase is genuinely entered -- the EXIT trap
+# backstop (_pc_exit_handler above) now guarantees review-gate.md exists on every exit
+# path, including a crash this script never explicitly handles.
+_PC_REVIEW_ENTERED=1
 
 # dispatch-00629379: resolved via the pool resolver (job=review, base-arm=codex,
 # --review-pool --author) -- see resolve_review_pool_call() above. The pool already
@@ -404,12 +461,18 @@ if [[ -n "${reviewer}" && "${reviewer}" == "${AUTHOR}" ]]; then
   reviewer=""
 fi
 if [[ -z "${reviewer}" ]]; then
+  # N-5 D1/D5: the resolver found nobody at all -- the SAME "unreviewed, not silently
+  # landed" shape as the fallback loop below exhausting the pool, just zero arms ever
+  # attempted. This used to be `status: no_reviewer` / exit 0, indistinguishable from
+  # success to anything reading the exit code (which nothing does -- D2) or the ledger
+  # (which recorded `parked`, not a failure state).
   refusal="${refusal:-all_review_arms_unavailable}"
-  printf 'status: no_reviewer\nauthor: %s\nrefusal: %s\npool: %s\n' \
-    "${AUTHOR}" "${refusal}" "${pool}" > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=no_reviewer author=${AUTHOR} refusal=${refusal} pool=${pool}"
-  _dl_note parked "${refusal}" "author=${AUTHOR} pool=${pool}"
-  exit 0
+  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: \n' \
+    "${AUTHOR}" "${pool}" > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} refusal=${refusal} tried="
+  _dl_note dead all_arms_unavailable "author=${AUTHOR} pool=${pool} refusal=${refusal}"
+  _stamp_review_terminal unreviewed
+  exit 9
 fi
 
 diff_file="${HANDOFF}/review.diff"
@@ -532,9 +595,13 @@ else
   [[ -s "${diff_file}" ]] || blocked_reason="unscopable_diff"
 fi
 if [[ -n "${blocked_reason}" ]]; then
+  # N-5: unscopable_diff/partial_diff are kept as the diff-scoping alias of
+  # no_diff_to_review (design §2.1) -- same reason string, same exit 5, now also
+  # visible in the lane row via review:blocked.
   printf 'status: blocked\nreason: %s\n' "${blocked_reason}" > "${HANDOFF}/review-gate.md"
   emit decision "review_gate task=${TASK} status=blocked reason=${blocked_reason}"
   _dl_note refused "${blocked_reason}"
+  _stamp_review_terminal blocked
   exit 5
 fi
 diff_hash="$(shasum -a 256 "${diff_file}" | awk '{print $1}')"
@@ -619,10 +686,11 @@ run_reviewer_arm() { # <arm>
   fi
 }
 
-# KIMI-CHANNEL-01b §2.3.3: read the first entry AFTER <after-arm> whose disposition is
-# :ok: in the already-computed ${pool} (comma-joined, e.g. codex:blocked:100,glm:ok:,...).
-# Prints the arm name on stdout, exit 1 if none. Used for the bounded one-shot
-# re-selection -- called at most once, only for kimi, so the gate can never loop.
+# KIMI-CHANNEL-01b §2.3.3, generalised by N-5 §2.3: read the first entry AFTER
+# <after-arm> whose disposition is :ok: in the already-computed ${pool} (comma-joined,
+# e.g. codex:blocked:100,glm:ok:,...). Prints the arm name on stdout, exit 1 if none.
+# Used by the arm-agnostic fallback loop below -- a forward-only walk of a FIXED pool,
+# so repeated calls can visit each arm at most once and the loop always terminates.
 next_ok_arm_after() { # <after-arm>  reads ${pool}
   local after="$1" found=0 entry arm
   local _pool="${pool}"
@@ -643,49 +711,74 @@ mkdir -p "${review_adir}"
 REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
 touch "${REVIEW_STAMP}"
 review_contract=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.'
-run_reviewer_arm "${reviewer}"
-# KIMI-CHANNEL-01b §2.3.3: ONE bounded re-selection. kimi's probe is lock-free, so a
-# probe-ok can still race to a run that fails (rc 77 = channel dropped between probe
-# and run; rc 75 = lock/secret/usage). The omp-task.sh second channel is GLM-only, so
-# for kimi either rc means: skip to the next :ok: arm in the already-computed pool and
-# run THAT exactly once. Hard cap: this branch fires at most once and only for kimi --
-# the gate can never loop. If no later :ok: arm exists (or it is the author), fall
-# through to the existing no_reviewer path with refusal=kimi_unavailable_no_next_arm.
-if [[ "${reviewer}" == kimi && ( ${review_rc} -eq 77 || ${review_rc} -eq 75 ) ]]; then
-  next_arm="$(next_ok_arm_after kimi || true)"
-  if [[ -n "${next_arm}" && "${next_arm}" != "${AUTHOR}" ]]; then
-    # R9 defense-in-depth: the re-selected arm is re-checked against the author too.
-    emit decision "review_gate task=${TASK} status=arm_skipped arm=kimi rc=${review_rc} next=${next_arm}"
-    reviewer="${next_arm}"
-    run_reviewer_arm "${reviewer}"
-  else
-    refusal="kimi_unavailable_no_next_arm"
-    printf 'status: no_reviewer\nauthor: %s\nrefusal: %s\npool: %s\n' \
-      "${AUTHOR}" "${refusal}" "${pool}" > "${HANDOFF}/review-gate.md"
-    emit decision "review_gate task=${TASK} status=no_reviewer author=${AUTHOR} refusal=${refusal} pool=${pool}"
-    _dl_note parked "${refusal}" "author=${AUTHOR} pool=${pool}"
-    exit 0
+
+# N-5 §2.3: arm-agnostic refusal fallback, generalising the old kimi-only bounded
+# re-selection (KIMI-CHANNEL-01b) to every arm. A peak_hours/quota/channel-down refusal
+# from ANY arm now walks forward through the resolver's own pre-ordered, quota-filtered,
+# author-excluding pool instead of vanishing into the old silent no_reviewer/exit 0
+# (D1, D5) -- a GLM peak_hours refusal used to fall straight through to a garbage/empty
+# review-glm.md with no fallback attempted at all. Bounded two ways: next_ok_arm_after
+# walks the FIXED ${pool} strictly forward (each arm visited at most once) AND an
+# explicit tried[] cap belt-and-braces the loop -- it cannot spin.
+tried=()
+_pc_unavailable=0
+while :; do
+  run_reviewer_arm "${reviewer}"
+  cls="$(classify_arm_failure "${review_rc}" "${review_err}" "${review_out}")"
+  if [[ "${cls}" != refused_* ]]; then
+    break
   fi
+  emit decision "review_gate task=${TASK} status=arm_refused arm=${reviewer} reason=${cls}"
+  tried+=("${reviewer}")
+  if [[ ${#tried[@]} -ge 4 ]]; then
+    _pc_unavailable=1
+    break
+  fi
+  # R9 defense-in-depth (kept from the kimi-only version): the re-selected arm is
+  # re-checked against the author too, not just trusted from the resolver's pool.
+  next_arm="$(next_ok_arm_after "${reviewer}" || true)"
+  if [[ -z "${next_arm}" || "${next_arm}" == "${AUTHOR}" ]]; then
+    _pc_unavailable=1
+    break
+  fi
+  reviewer="${next_arm}"
+done
+if [[ "${_pc_unavailable}" == "1" ]]; then
+  _pc_tried_csv="$(IFS=,; echo "${tried[*]:-}")"
+  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: %s\n' \
+    "${AUTHOR}" "${pool}" "${_pc_tried_csv}" > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} tried=${_pc_tried_csv}"
+  _dl_note dead all_arms_unavailable "author=${AUTHOR} pool=${pool} tried=${_pc_tried_csv}"
+  _stamp_review_terminal unreviewed
+  exit 9
 fi
 
 resolve_review_artifact || true
 review_file="${REVIEW_ARTIFACT:-${review_out}}"
+# N-5 D4: the old `review_unusable` catch-all collapsed three distinct causes into one
+# reason -- a provider that errored, a reviewer that produced nothing/sub-floor, and a
+# reviewer that produced real prose with no verdict marker all looked identical in
+# review-gate.md. Split per the named-reason vocabulary (design §2.1); each keeps its
+# own exit 6 (unchanged from today) but is now distinguishable at a glance.
 if [[ ${review_rc} -ne 0 && -z "${REVIEW_ARTIFACT}" ]]; then
-  printf 'status: blocked\nreason: review_unusable\n' > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=blocked reason=review_unusable rc=${review_rc}"
-  _dl_note dead review_unusable "rc=${review_rc}"
+  printf 'status: blocked\nreason: provider_error\nrc: %s\n' "${review_rc}" > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=provider_error rc=${review_rc}"
+  _dl_note dead provider_error "rc=${review_rc}"
+  _stamp_review_terminal blocked
   exit 6
 fi
-if [[ ! -s "${review_file}" ]]; then
-  printf 'status: blocked\nreason: review_unusable\n' > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=blocked reason=review_unusable detail=empty"
-  _dl_note dead review_unusable detail=empty
+if [[ ! -s "${review_file}" ]] || ! review_floor_ok "${review_file}"; then
+  printf 'status: blocked\nreason: empty_response\n' > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=empty_response"
+  _dl_note dead empty_response "file=${review_file}"
+  _stamp_review_terminal blocked
   exit 6
 fi
 if ! parse_review_verdict "${review_file}"; then
-  printf 'status: blocked\nreason: review_unusable\n' > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=blocked reason=review_unusable detail=no_verdict_marker"
-  _dl_note dead review_unusable detail=no_verdict_marker
+  printf 'status: blocked\nreason: no_verdict_marker\n' > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=no_verdict_marker"
+  _dl_note dead no_verdict_marker
+  _stamp_review_terminal blocked
   exit 6
 fi
 review_source="${REVIEW_SOURCE:-stream}"
@@ -701,9 +794,11 @@ if [[ "${verdict}" == FAIL ]]; then
   printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
     "${FINDINGS_CRITICAL}" "${FINDINGS_HIGH}" "${FINDINGS_MEDIUM}" "${FINDINGS_LOW}" > "${HANDOFF}/review-gate.md"
   _dl_note dead review_verdict_fail "critical=${FINDINGS_CRITICAL} high=${FINDINGS_HIGH}"
+  _stamp_review_terminal fail
   exit 7
 fi
 # PASS must overwrite review-gate.md too, or a stale fail/blocked artifact from an earlier
 # attempt keeps lying after the gate has actually cleared (hit live on fe5307b3, 2026-07-30).
 printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}" > "${HANDOFF}/review-gate.md"
 _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}"
+_stamp_review_terminal pass
