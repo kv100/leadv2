@@ -297,6 +297,7 @@ fi
 # worktree-collision safety net this task exists to protect.
 set +e
 PLAN_TSV="$(python3 - "$TASKS_YAML" "$ACTIVE_YAML" "$N" "$FILTER" "$EXPLICIT_TASKS" "$FORCE" "$SCRIPT_DIR" <<'PYEOF'
+import datetime as _dt
 import os, subprocess, sys, yaml
 
 tasks_yaml, active_yaml, n_str, filt, explicit_csv, force_str, script_dir = sys.argv[1:8]
@@ -500,6 +501,47 @@ def task_title(t):
 
 by_id = {str(t.get("id")): t for t in tasks}
 
+# S4-DEAD-LANE-REQUEUE-01: a dead lane can leave a work_items row at
+# status=pending (docs/tasks.yaml's local-only dispatcher overlay -- see
+# scripts/task-sync-yaml.sh) with claimed_by already null and no supported
+# write path back to queued. _is_dispatchable() is the SHARED predicate for
+# both candidate-scan sites in this file (D-1: the automatic scan below AND
+# the explicit --task re-dispatch check further down) -- patching only one
+# leaves the other's manual escape hatch closed, which is the exact defect
+# this task fixes.
+#
+# Backward compatibility: against a docs/tasks.yaml generated before the
+# requeue columns land, claim_lease_until/dispatch_attempts are simply
+# absent, .get() defaults to None/0, and this predicate degrades to exactly
+# today's `status == "queued"` -- no flag-day required.
+REQUEUE_MAX_ATTEMPTS = int(os.environ.get("LEADV2_REQUEUE_MAX_ATTEMPTS", "2"))
+
+def _lease_expired(t):
+    v = t.get("claim_lease_until")
+    if not v:
+        return False  # no lease ever taken -- never treat a null lease as expired
+    try:
+        ts = _dt.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=_dt.timezone.utc)
+    return ts < _dt.datetime.now(_dt.timezone.utc)
+
+def _is_dispatchable(t):
+    attempts = int(t.get("dispatch_attempts", 0) or 0)
+    if attempts >= REQUEUE_MAX_ATTEMPTS:
+        return False  # give-up ceiling: reported via a skip row, never selected
+    if str(t.get("status", "")) == "queued":
+        return True
+    # A pending row with a NULL lease was never claimed -- nothing died, it
+    # stays out. Without this guard the predicate would sweep the entire
+    # pending backlog into the candidate set on the first run (R-7).
+    return str(t.get("status", "")) in ("pending", "in_progress") and _lease_expired(t)
+
+def _requeue_giveup_reason(t):
+    return t.get("requeue_giveup_reason") or f"requeue attempts exhausted {t.get('dispatch_attempts', 0)}/{REQUEUE_MAX_ATTEMPTS}"
+
 rows = []  # (decision, task_id, label, cls, priority, reason, risk_tags, lead_model, lead_effort)
 
 if explicit_ids:
@@ -513,8 +555,19 @@ if explicit_ids:
 else:
     candidates = [
         t for t in tasks
-        if str(t.get("status", "")) == "queued" and str(t.get("id")) not in active_task_ids
+        if _is_dispatchable(t) and str(t.get("id")) not in active_task_ids
     ]
+    give_up_candidates = [
+        t for t in tasks
+        if not _is_dispatchable(t)
+        and int(t.get("dispatch_attempts", 0) or 0) >= REQUEUE_MAX_ATTEMPTS
+        and str(t.get("id")) not in active_task_ids
+    ]
+    for t in give_up_candidates:
+        tid = str(t.get("id"))
+        rows.append(("skip", tid, task_title(t), "?", t.get("priority", ""),
+                     f"requeue give-up ({t.get('dispatch_attempts', 0)}/{REQUEUE_MAX_ATTEMPTS}) — {_requeue_giveup_reason(t)}",
+                     "", "", "", t.get("group_key")))
     if filt:
         candidates = [
             t for t in candidates
@@ -549,8 +602,21 @@ for t in ordered:
         rows.append(("skip", tid, label, cls, pri, "already in active.yaml (session running)", risk_tags, lead_model, lead_effort, cand_group_key))
         continue
 
-    if explicit_ids and str(t.get("status", "")) != "queued":
-        rows.append(("skip", tid, label, cls, pri, f"not queued (status={t.get('status')})", risk_tags, lead_model, lead_effort, cand_group_key))
+    # D-1: this is the manual escape hatch a human hits to respawn a dead
+    # lane by name -- it MUST use the same _is_dispatchable() as the
+    # automatic scan above, or a lease-expired/pending row stays refused
+    # here even after the scan above starts finding it.
+    if explicit_ids and not _is_dispatchable(t):
+        attempts = int(t.get("dispatch_attempts", 0) or 0)
+        if attempts >= REQUEUE_MAX_ATTEMPTS:
+            reason = f"requeue give-up ({attempts}/{REQUEUE_MAX_ATTEMPTS}) — {_requeue_giveup_reason(t)}"
+        else:
+            lease = t.get("claim_lease_until")
+            if lease:
+                reason = f"lease still held until {lease}"
+            else:
+                reason = f"not queued (status={t.get('status')})"
+        rows.append(("skip", tid, label, cls, pri, reason, risk_tags, lead_model, lead_effort, cand_group_key))
         continue
 
     # hard_violation: NEVER --force-bypassable (F5) -- hard_limit and
