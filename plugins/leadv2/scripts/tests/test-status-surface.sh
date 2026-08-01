@@ -90,6 +90,13 @@ _run() {
   : > "${d}/journal.jsonl"
   [ "$off" -gt 0 ] && _setage "${d}/journal.jsonl" "$off"
 }
+# STATUS-SURFACE-R5-01: the SIG column is now its own last field, so name-first
+# grep patterns no longer work. sig_has <sig8> <cause_substr> <output> succeeds
+# when the rendered row whose LAST whitespace field == sig also contains the
+# literal cause substring. cause is matched with index() (literal, regex-safe).
+sig_has() { printf '%s\n' "$3" | awk -v s="$1" -v c="$2" 'index($0,c)&&$NF==s{f=1} END{exit !f}'; }
+# sig_seen <sig8> <output>: any row whose last field == sig (presence/absence).
+sig_seen() { printf '%s\n' "$2" | awk -v s="$1" '$NF==s{f=1} END{exit !f}'; }
 
 # ── sandbox-leak guard (verify-notes §7): the suite's sentinel writes all use
 # THIS process's pid ($$, e.g. `printf 'pid %s\n' "$$"`) and target the sandbox
@@ -119,7 +126,7 @@ sessions:
     log_path: ''
 EOF
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q 'liveabcd.*live$'; then
+if sig_has liveabcd live "$out"; then
   pass "live lane renders live"
 else
   fail "live lane renders live (got: $(printf '%s' "$out" | tail -1))"
@@ -146,7 +153,7 @@ EOF
 _ledger deadexit glm deadd76 confirmed $((NOW-1200))
 _run deadd76 glm failed 76 1200
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q 'deadexit.*dead(exit=76)'; then
+if sig_has deadexit 'dead(exit=76)' "$out"; then
   pass "dead-with-exit renders dead(exit=76)"
 else
   fail "dead-with-exit renders dead(exit=76) (got: $(printf '%s' "$out" | tail -1))"
@@ -165,7 +172,7 @@ out="$(run_render)"
 # state=confirmed is now terminal (is_terminal), so a recent (<7200s)
 # ledger-only terminal row reinterprets the last-resort stale() branch as
 # done(confirmed) rather than stale. See round-2 fix C1/C2.
-if printf '%s\n' "$out" | grep -q 'stale001.*done(confirmed)'; then
+if sig_has stale001 'done(confirmed)' "$out"; then
   pass "recent terminal confirmed renders done(confirmed)"
 else
   fail "recent terminal confirmed renders done(confirmed) (got: $(printf '%s' "$out" | tail -1))"
@@ -191,14 +198,14 @@ cat > "${STATE_DIR}/active.yaml" <<EOF
 meta: {}
 sessions: []
 EOF
-_ledger donecnf1 glm done-h confirmed $((NOW-3600))
+_ledger donecnf1 glm done-h confirmed $((NOW-300))
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q 'donecnf1.*done(confirmed)'; then
+if sig_has donecnf1 'done(confirmed)' "$out"; then
   pass "T22: recent(1h) confirmed renders done(confirmed)"
 else
   fail "T22: recent(1h) confirmed renders done(confirmed) (got: $(printf '%s' "$out" | tail -1))"
 fi
-if printf '%s\n' "$out" | grep -q 'donecnf1.*stale('; then
+if sig_seen donecnf1 "$out" && printf '%s\n' "$out" | grep -q 'stale('; then
   fail "T22: recent(1h) confirmed must not render stale (got: $(printf '%s' "$out" | tail -1))"
 else
   pass "T22: recent(1h) confirmed not labelled stale"
@@ -212,10 +219,10 @@ sessions: []
 EOF
 _ledger pendcnf1 glm pend-h pending $((NOW-61200))
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q 'pendcnf1.*stale('; then
-  pass "T23: old(17h) pending stays visible as stale (non-terminal)"
+if sig_seen pendcnf1 "$out"; then
+  fail "T23: old(17h) pending should drop after dead-TTL (got: $(printf '%s' "$out" | tail -1))"
 else
-  fail "T23: old(17h) pending stays visible as stale (got: $(printf '%s' "$out" | tail -1))"
+  pass "T23: old(17h) pending dropped after dead-TTL (non-terminal stale still ages out)"
 fi
 
 # ── 5. no sentinel -> supervisor: OFF and no "?" ───────────────────────────
@@ -299,7 +306,7 @@ EOF
 _ledger termrow0 glm term-h confirmed $((NOW-600))
 _run term-h glm complete 0 600
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q 'termrow.*done(exit=0)'; then
+if sig_has termrow0 'done(exit=0)' "$out"; then
   pass "terminal row aged 10m present as done(exit=0)"
 else
   fail "terminal row aged 10m present (got: $(printf '%s' "$out" | tail -1))"
@@ -315,14 +322,14 @@ sessions:
     class: Standard
     log_path: ''
 EOF
-_ledger liveunkw glm liveunk-h pending $((NOW-10800))
-_run liveunk-h glm NONE 0 10800
+_ledger liveunkw glm liveunk-h pending $((NOW-1800))
+_run liveunk-h glm NONE 0 1800
 rm -f "${RUNS_ROOT}/glm-runs/liveunk-h/meta.yaml" 2>/dev/null || true
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q 'liveunkw.*stale(3h silent)'; then
-  pass "non-terminal row aged 3h present as stale"
+if sig_has liveunkw 'stale(30m silent)' "$out"; then
+  pass "non-terminal row aged 30m present as stale (within dead-TTL)"
 else
-  fail "non-terminal row aged 3h present as stale (got: $(printf '%s' "$out" | tail -1))"
+  fail "non-terminal row aged 30m present as stale (got: $(printf '%s' "$out" | tail -1))"
 fi
 
 # ── 8. --oneline shape: 1 line, ^sup:(ON|OFF), contains "lanes " ───────────
@@ -462,8 +469,8 @@ sessions:
     log_path: ''
 EOF
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q 'dispatch-lastres0' && ! printf '%s\n' "$out" | grep -Eq '^[[:space:]]*lastres0'; then
-  pass "R1: last-resort name is dispatch-<sig8>, no bare hash column"
+if sig_seen lastres0 "$out" && printf '%s\n' "$out" | grep -q 'unnamed'; then
+  pass "R1: last-resort name is 'unnamed', sig in SIG column (no hash dressed as name)"
 else
   fail "R1: last-resort name (got: $(printf '%s' "$out" | tail -1))"
 fi
@@ -482,8 +489,8 @@ sessions:
 EOF
 _ledger workr001 glm work-h confirmed $((NOW-300))
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q 'dispatch-lane0001[[:space:]]*lane' \
-   && printf '%s\n' "$out" | grep -q 'dispatch-workr001[[:space:]]*worker'; then
+if printf '%s\n' "$out" | awk '$NF=="lane0001"&&$2=="lane"' | grep -q . \
+   && printf '%s\n' "$out" | awk '$NF=="workr001"&&$2=="worker"' | grep -q .; then
   pass "R2: TYPE column lane vs worker"
 else
   fail "R2: TYPE column (got: $(printf '%s' "$out" | tail -3 | tr '\n' '|'))"
@@ -522,7 +529,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   _ledger "$(printf 'stly%04d' "$i")" glm "s$i-h" pending $((NOW-300-i))
 done
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -q 'dispatch-liveone0' \
+if sig_seen liveone0 "$out" \
    && [ "$(printf '%s\n' "$out" | grep -c 'stale(')" -eq 12 ]; then
   pass "R3: live + non-terminal stale rows never collapsed"
 else
@@ -750,24 +757,31 @@ else
 fi
 # dead lane must actually be dead in this stub (sanity for the priority assertion)
 bare="$(run_render_r4)"
-if printf '%s\n' "$bare" | grep -q 'deadexit.*dead(exit=76)'; then
+if sig_has deadexit 'dead(exit=76)' "$bare"; then
   pass "R4-T3: sanity — dead lane renders dead(exit=76)"
 else
   fail "R4-T3: sanity dead lane (got: $(printf '%s' "$bare" | tail -1))"
 fi
 
-# ── R4-T4. --limits: stubbed snapshot -> claude/glm %, source labels, no '$'
+# ── R4-T4. --limits: heuristic cap -> honest claude row (no fabricated %); glm
+# unchanged. STATUS-SURFACE-R5-01 defect 3: the old row divided input tokens by
+# a guessed 8M cap and printed a serene 0% at any load. While the heuristic cap
+# is in use we print NO percentage -- only measured cache-read/output magnitudes.
 NEW_SB
 R4_SNAP="${SB}/snap.txt"
 cat > "$R4_SNAP" <<EOF
 # stamped $((NOW-30))
-Quota: 5h 42% (12345 / 8000000 in, claude% only, cap est.) | weekly(claude,heuristic) 18% | cache-hit 0.91 | safe
+Quota: 5h 0% (12345 / 8000000 in, claude% only, cap est.) | weekly(claude,heuristic) 18% | cache-hit 0.91 | safe
+  anthropic 5h: in 12.3K  cc 1.0M  cr 5.0M  out 500.0K  (99 turns)
+  rate_limit:  not captured (heuristic cap in use) — kv hook: key=rate_limit_anthropic
   glm weekly (live, z.ai): 20%  (resets 2026-08-07T10:30:44Z)
 EOF
 limout="$(run_render_r4 --limits)"
-if printf '%s\n' "$limout" | grep -q 'claude: 5h 42% weekly 18% (snapshot)' \
+if printf '%s\n' "$limout" | grep -q 'claude: не измеряется' \
+   && printf '%s\n' "$limout" | grep -q 'cr 5.0M' \
+   && ! printf '%s\n' "$limout" | grep -Eq 'claude: 5h [0-9]+%' \
    && printf '%s\n' "$limout" | grep -q 'glm: weekly 20% (snapshot, live z.ai)'; then
-  pass "R4-T4: --limits renders claude/glm % with source labels"
+  pass "R4-T4: heuristic cap -> honest claude row, no fabricated %, glm unchanged"
 else
   fail "R4-T4: --limits (got: $(printf '%s' "$limout" | tr '\n' '|'))"
 fi
@@ -775,6 +789,21 @@ if printf '%s\n' "$limout" | grep -q '\$'; then
   fail "R4-T4: --limits contains a dollar sign"
 else
   pass "R4-T4: --limits has no dollar amount"
+fi
+# Real rate-limit kv row (C3b consumer-compatible schema) -> measured % computed
+# from unified_limit/unified_remaining: 1M limit, 250k remaining => 75% used.
+if command -v sqlite3 >/dev/null 2>&1; then
+  R4_DB="${SB}/burn.db"
+  sqlite3 "$R4_DB" "CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY,value TEXT);" 2>/dev/null
+  sqlite3 "$R4_DB" "INSERT OR REPLACE INTO kv VALUES('rate_limit_anthropic','{\"captured_epoch\":$((NOW-30)),\"status\":\"allowed\",\"overageStatus\":\"accepted\",\"resetsAt\":0,\"unified_limit\":1000000,\"unified_remaining\":250000,\"source\":\"messages_api_headers\"}');" 2>/dev/null
+  limout2="$(LEADV2_STATUS_BURN_DB="$R4_DB" run_render_r4 --limits)"
+  if printf '%s\n' "$limout2" | grep -Eq 'claude: 5h 75% \(rate-limit signal\)'; then
+    pass "R4-T4: real rate-limit kv row -> measured 75% (750k of 1M used)"
+  else
+    fail "R4-T4: real % (got: $(printf '%s' "$limout2" | tr '\n' '|'))"
+  fi
+else
+  pass "R4-T4: real-% sub-case SKIP (no sqlite3)"
 fi
 # stale stamp (older than 15 min) -> (stale Nm) suffix, shown not hidden
 cat > "$R4_SNAP" <<EOF
@@ -829,7 +858,9 @@ else
   fail "R4-T6: omit (rc=$rc, got: '$dueout')"
 fi
 
-# ── R4-T7. bare invocation byte-compare against pre-round-4 (regression lock)
+# ── R4-T7. bare invocation contract (STATUS-SURFACE-R5-01: header now carries
+# live + recent-terminal counts). The empty stub renders the supervisor line,
+# the new 'lanes (0 live, 0 done ...)' header, and the (none) placeholder.
 NEW_SB
 cat > "${STATE_DIR}/active.yaml" <<EOF
 meta: {}
@@ -837,10 +868,10 @@ sessions: []
 EOF
 bare="$(run_render_r4)"
 expected='supervisor: OFF
-lanes (0)
+lanes (0 live, 0 done в последний час)
   (none)'
 if [ "$bare" = "$expected" ]; then
-  pass "R4-T7: bare invocation byte-identical for empty stub"
+  pass "R4-T7: bare invocation matches R5 header contract for empty stub"
 else
   fail "R4-T7: bare drift (got: $(printf '%s' "$bare" | tr '\n' '|'))"
 fi
@@ -930,6 +961,109 @@ if printf '%s' "$_l1" | grep -Eq '✅ 2'; then
   pass "R6-T2: only done -> ✅ 2 (got: $_l1)"
 else
   fail "R6-T2: only done -> ✅ 2 (got: $_l1)"
+fi
+
+# ── R5-01 round 2: _mini_yaml unit tests (PyYAML-optional reader) ──────────
+# The reader lives inside the renderer's lanes heredoc; extract it and exercise
+# the leadv2 machine-written subset directly. The cross-reader equality case
+# (mini vs PyYAML on a tasks.yaml fixture) is the assertion that keeps both
+# readers honest; it SKIPS if PyYAML is not importable on the test host.
+log ""
+log "== R5r2: _mini_yaml reader unit cases =="
+MiniFix="$(mktemp -d -t leadv2-ss-mini)"
+cleanup_mini() { rm -rf "$MiniFix"; }
+trap cleanup_mini EXIT 2>/dev/null || true
+_minirc=0
+LEADV2_R5_REN="$RENDER" LEADV2_R5_FIX="$MiniFix" python3 - <<'PY' || _minirc=$?
+import os, re, pathlib, sys
+ren = pathlib.Path(os.environ["LEADV2_R5_REN"]).read_text()
+m = re.search(r"\ndef _mini_yaml\(text\):.*?(?=\n# ---- helpers)", ren, re.S)
+if not m:
+    print("FAIL: could not extract _mini_yaml from renderer"); sys.exit(1)
+ns = {}; exec(m.group(0), ns); mini = ns["_mini_yaml"]
+P = F = 0
+def chk(name, cond):
+    global P, F
+    if cond: P += 1; print("  ok   - %s" % name)
+    else:    F += 1; print("  FAIL - %s" % name)
+
+# 1: empty sessions inline collection
+chk("sessions: [] -> {sessions: []}", mini("sessions: []\n") == {"sessions": []})
+
+# 2: two populated sessions; scalar keys present, quotes stripped, null/bool/int typed
+doc = mini('''
+meta:
+  hard_limit: 5
+  rendered_at: '2026-07-30T18:05:35Z'
+sessions:
+- session_id: abc
+  task_id: verify-stub-1
+  pid: 71401
+  pid_birth: null
+  daemon_mode: false
+  branch: 'HEAD unknown'
+- session_id: def
+  task_id: verify-stub-2
+  pid: null
+  phase: spawning
+''')
+s = doc.get("sessions") or []
+chk("two sessions parsed", isinstance(s, list) and len(s) == 2)
+chk("scalar keys present", s[0].get("task_id") == "verify-stub-1")
+chk("int typed", s[0].get("pid") == 71401)
+chk("null typed", s[0].get("pid_birth") is None)
+chk("bool typed", s[0].get("daemon_mode") is False)
+chk("quotes stripped", s[0].get("branch") == "HEAD unknown")
+chk("nested meta mapping", doc.get("meta", {}).get("hard_limit") == 5)
+
+# 3: unsupported constructs raise (never a partial doc)
+def raises(txt):
+    try: mini(txt); return False
+    except ValueError: return True
+    except Exception: return False
+chk("tab indent raises",      raises("meta:\n\tbad: 1\n"))
+chk("populated flow raises",  raises("k: [a, b]\n"))
+chk("unclosed quote raises",  raises("k: 'unclosed\n"))
+
+# 4: cross-reader equality on a tasks.yaml fixture (titles map). SKIP if no PyYAML.
+try:
+    import yaml as _pyyaml
+    fixture = os.path.join(os.environ["LEADV2_R5_FIX"], "tasks.yaml")
+    pathlib.Path(fixture).write_text(
+        "total_open: 2\n"
+        "tasks:\n"
+        "- id: STATUS-SURFACE-R5-01\n"
+        "  title: 'STATUS-SURFACE-R5-01 round 2'\n"
+        "  external_id: dispatch-d1c53811\n"
+        "  node_id: 'leadv2:STATUS-SURFACE-R5-01'\n"
+        "- id: OTHER-01\n"
+        "  external_id: dispatch-abcdef01\n"
+        "  node_id: 'leadv2:OTHER-01'\n"
+    )
+    ref = _pyyaml.safe_load(open(fixture)) or {}
+    got = mini(open(fixture).read())
+    # build the titles map the renderer builds, from each
+    def titles(doc):
+        out = {}
+        for t in (doc.get("tasks") or []):
+            tid = str(t.get("id") or "")
+            nm  = str(t.get("title") or t.get("external_id") or "")
+            if tid and nm:
+                out[tid] = nm
+                eid = str(t.get("external_id") or "")
+                if eid: out[eid] = nm
+        return out
+    chk("titles map: mini == PyYAML", titles(ref) == titles(got))
+    chk("titles map non-empty", len(titles(got)) >= 4)
+except ImportError:
+    print("  SKIP - cross-reader equality (PyYAML not importable on host)")
+print("R5r2-mini: %d passed, %d failed" % (P, F))
+sys.exit(1 if F else 0)
+PY
+if [ "$_minirc" -eq 0 ]; then
+  pass "R5r2: _mini_yaml reader unit cases (see output above)"
+else
+  fail "R5r2: _mini_yaml reader unit cases (rc=$_minirc)"
 fi
 
 log ""

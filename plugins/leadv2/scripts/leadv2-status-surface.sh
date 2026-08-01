@@ -55,6 +55,14 @@ fi
 LEDGER_DIR="${LEADV2_STATUS_LEDGER_DIR:-${HOME}/.claude/cache/dispatch-ledger}"
 RUNS_ROOT="${LEADV2_STATUS_RUNS_ROOT:-${HOME}/.claude/cache}"
 NOW="${LEADV2_STATUS_NOW:-$(date +%s)}"
+# STATUS-SURFACE-R5-01 (defect 2): terminal-lane retention. A done/dead row
+# drops off the list after a short window so a wall of corpses stops burying
+# the one genuinely stuck lane. Live rows are NEVER aged out (any age). Both
+# knobs are env-overridable for the regression suite.
+DONE_TTL="${LEADV2_STATUS_DONE_TTL_S:-900}"   # 15 min for done(exit=0) rows
+DEAD_TTL="${LEADV2_STATUS_DEAD_TTL_S:-3600}"  # 60 min for dead(...) rows (a
+                                              # crashed lane needs a longer
+                                              # window than a clean finish)
 # R1 (fix round 3): tasks.yaml title-lookup source. Default = <git toplevel>/
 # docs/tasks.yaml if present, else empty (degrades to dispatch-<sig8> names).
 TASKS_YAML="${LEADV2_STATUS_TASKS_YAML:-}"
@@ -65,6 +73,16 @@ if [ -z "$TASKS_YAML" ]; then
   fi
 fi
 unset _ty_top
+# STATUS-SURFACE-R5-01 (defect 1, C1a): handoff dir for Rule 2.5 name
+# resolution. Reuses the render_questions() resolution pattern (env override
+# else <git toplevel>/docs/handoff), lifted to a single shell-level resolution
+# so the lanes python block can read it without each lane re-resolving.
+HANDOFF_DIR="${LEADV2_STATUS_HANDOFF_DIR:-}"
+if [ -z "$HANDOFF_DIR" ]; then
+  _hd_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$_hd_top" ] && [ -d "${_hd_top}/docs/handoff" ] && HANDOFF_DIR="${_hd_top}/docs/handoff"
+fi
+unset _hd_top
 if [ -n "${LEADV2_STATUS_REPO:-}" ]; then
   REPO="${LEADV2_STATUS_REPO}"
 else
@@ -185,19 +203,8 @@ fi
 #   <id>\t<display>\t<model>\t<age>\t<cause>\t<class>
 # <class> in {live, done, dead}. If python3 is absent OR active.yaml is
 # unreadable, a single warn row is emitted instead — never a blank screen (R6).
-LANES=""
-LIVE_N=0
-DEAD_N=0
-if ! command -v python3 >/dev/null 2>&1; then
-  LANES="$(printf 'warn\tactive.yaml\tpython3\t-\tpython3 missing - active.yaml not parsed\tdead\n')"
-  DEAD_N=1
-else
-  LANES="$(LEADV2_SS_STATE_DIR="$STATE_DIR" \
-           LEADV2_SS_LEDGER_FILE="$LEDGER_FILE" \
-           LEADV2_SS_RUNS_ROOT="$RUNS_ROOT" \
-           LEADV2_SS_NOW="$NOW" \
-           LEADV2_SS_TASKS_YAML="$TASKS_YAML" \
-           python3 2>/dev/null <<'PYEOF'
+_ss_lanes_py() {
+  python3 2>/dev/null <<'PYEOF'
 import os, sys, subprocess
 
 STATE_DIR   = os.environ.get("LEADV2_SS_STATE_DIR", "")
@@ -205,6 +212,264 @@ LEDGER_FILE = os.environ.get("LEADV2_SS_LEDGER_FILE", "")
 RUNS_ROOT   = os.environ.get("LEADV2_SS_RUNS_ROOT", "")
 NOW         = int(os.environ.get("LEADV2_SS_NOW", "0") or "0")
 TASKS_YAML  = os.environ.get("LEADV2_SS_TASKS_YAML", "")
+HANDOFF_DIR = os.environ.get("LEADV2_SS_HANDOFF_DIR", "")
+try:
+    DONE_TTL = int(os.environ.get("LEADV2_SS_DONE_TTL", "900") or "900")
+except Exception:
+    DONE_TTL = 900
+try:
+    DEAD_TTL = int(os.environ.get("LEADV2_SS_DEAD_TTL", "3600") or "3600")
+except Exception:
+    DEAD_TTL = 3600
+
+# ---- R5-01 round 2: PyYAML-optional YAML reader --------------------------
+# SwiftBar/xbar run under a minimal PATH where `python3` resolves to the
+# Xcode-shipped interpreter, which has NO PyYAML -- so active.yaml /
+# tasks.yaml went unread and the lanes table silently emptied (same
+# works-in-a-terminal-dead-in-the-menu-bar class as the bash-3.2 bug). Both
+# documents are MACHINE-WRITTEN by leadv2's own renderers, never hand-edited,
+# so a tiny indent-based reader covering the leadv2 subset is sufficient.
+# PyYAML stays preferred when importable (terminal path byte-identical).
+# Anything outside the subset RAISES so the caller renders a LOUD warning
+# instead of a calm wrong-zero. NOTE: a copy of (_mini_yaml,_load_yaml) is
+# duplicated verbatim in the render_questions() heredoc (a *separate*
+# `python3 <<PYEOF`); sharing a sourced .py would add a runtime artifact to
+# this 150 ms read path. See the comment there.
+def _mini_yaml(text):
+    """Parse the leadv2 machine-written YAML subset -> dict.
+    Supports: space indent, 'key: scalar', 'key:' + block child, '- ' list
+    items with an inline first key, single/double-quoted scalars (incl.
+    multi-line), '[]'/'{}' empty collections, null/bool/int/float scalars.
+    Full-line '#' comments are skipped (trailing inline comments are NOT
+    stripped -- leadv2 emits none and stripping would risk eating '#' inside
+    values). Raises ValueError on anything it cannot handle -- never partial."""
+    def _unclosed(v):
+        # If v opens a quoted scalar it does not close on this line, return the
+        # quote char; else None.
+        j, L = 0, len(v)
+        while j < L:
+            c = v[j]
+            if c == "'":
+                k = j + 1
+                while k < L:
+                    if v[k] == "'":
+                        if k + 1 < L and v[k + 1] == "'":
+                            k += 2; continue
+                        return None
+                    k += 1
+                return "'"
+            if c == '"':
+                k = j + 1
+                while k < L:
+                    if v[k] == "\\":
+                        k += 2; continue
+                    if v[k] == '"':
+                        return None
+                    k += 1
+                return '"'
+            j += 1
+        return None
+
+    def _vsub(body):
+        # value portion of a logical line (after the first 'key:' or '- ').
+        if body.startswith("- "):
+            inner = body[2:]
+            return inner.split(":", 1)[1] if ":" in inner else inner
+        return body.split(":", 1)[1] if ":" in body else body
+
+    # Build logical lines, merging multi-line quoted scalars into one line.
+    raw = text.replace("\r\n", "\n").split("\n")
+    lines = []
+    i, n = 0, len(raw)
+    while i < n:
+        line = raw[i]
+        m = 0
+        while m < len(line) and line[m] == " ":
+            m += 1
+        if m < len(line) and line[m] == "\t":
+            raise ValueError("tab indentation unsupported")
+        body = line[m:]
+        if body == "" or body.startswith("#"):
+            i += 1; continue
+        q = _unclosed(_vsub(body))
+        if q is None:
+            lines.append((m, body)); i += 1; continue
+        parts = [body]; i += 1; closed = False
+        while i < n:
+            parts.append(raw[i].lstrip(" "))
+            if _unclosed(_vsub(" ".join(parts))) is None:
+                closed = True; i += 1; break
+            i += 1
+        if not closed:
+            raise ValueError("unterminated quoted scalar")
+        lines.append((m, " ".join(parts)))
+
+    def _scalar(v):
+        v = v.strip()
+        if v == "":
+            return None
+        if v[:1] in ("[", "{"):
+            # populated inline flow collection -- outside the supported subset
+            # (only empty [] / {} are handled, at the call site). Raise so a
+            # malformed doc warns loudly instead of parsing to garbage.
+            raise ValueError("inline flow collection unsupported")
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            if v[0] == "'":
+                return v[1:-1].replace("''", "'")
+            s, out, k, L = v[1:-1], [], 0, len(v) - 2
+            while k < L:
+                c = s[k]
+                if c == "\\" and k + 1 < L:
+                    n = s[k + 1]
+                    if n == "n": out.append("\n"); k += 2
+                    elif n == "t": out.append("\t"); k += 2
+                    elif n == '"': out.append('"'); k += 2
+                    elif n == "'": out.append("'"); k += 2
+                    elif n == "\\": out.append("\\"); k += 2
+                    elif n == " ": k += 2  # folded line continuation (merge artifact)
+                    elif n == "u" and k + 6 <= L:
+                        try: out.append(chr(int(s[k + 2:k + 6], 16))); k += 6
+                        except ValueError: out.append(c); k += 1
+                    elif n == "x" and k + 4 <= L:
+                        try: out.append(chr(int(s[k + 2:k + 4], 16))); k += 4
+                        except ValueError: out.append(c); k += 1
+                    else: out.append(c); k += 1
+                else:
+                    out.append(c); k += 1
+            return "".join(out)
+        low = v.lower()
+        if low in ("null", "~", ""):
+            return None
+        if low == "true":
+            return True
+        if low == "false":
+            return False
+        try:
+            return int(v)
+        except Exception:
+            pass
+        try:
+            return float(v)
+        except Exception:
+            pass
+        return v
+
+    def _map(lines, pos, indent):
+        d = {}
+        while pos < len(lines):
+            ind, body = lines[pos]
+            if ind < indent:
+                break
+            if ind > indent:
+                raise ValueError("unexpected indent in mapping")
+            if body == "-" or body.startswith("- "):
+                raise ValueError("sequence item where mapping key expected")
+            key, sep, val = body.partition(":")
+            if sep != ":":
+                raise ValueError("expected 'key:'")
+            key = key.strip()
+            if key == "":
+                raise ValueError("empty key")
+            val = val.strip()
+            pos += 1
+            if val == "":
+                nind, nbody = (lines[pos] if pos < len(lines) else (None, None))
+                if nind is not None and (nind > indent or
+                        (nind == indent and (nbody == "-" or nbody.startswith("- ")))):
+                    child, pos = _node(lines, pos)
+                    d[key] = child
+                else:
+                    d[key] = None
+            elif val in ("[]", "{}"):
+                d[key] = [] if val == "[]" else {}
+            elif val[:1] in ("|", ">"):
+                # block scalar (| literal / > folded, optional -/+ chomp).
+                # Consume every deeper-indented logical line as content so the
+                # parser never chokes on a machine-written block field. Exact
+                # value is unused by the renderers (they read scalar keys), so
+                # best-effort folding is fine; the contract is: consume the
+                # span, never raise.
+                buf = []
+                while pos < len(lines) and lines[pos][0] > indent:
+                    buf.append(lines[pos][1]); pos += 1
+                d[key] = " ".join(buf) if val[:1] == ">" else "\n".join(buf)
+            elif val.startswith("- "):
+                raise ValueError("inline sequence unsupported")
+            else:
+                # plain (or single-line quoted) scalar. A PLAIN scalar may fold
+                # across following more-indented lines (YAML plain-scalar
+                # continuation); quoted multi-line is already one logical line.
+                v = val
+                if not (len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"')):
+                    while pos < len(lines) and lines[pos][0] > indent:
+                        v = v + " " + lines[pos][1]; pos += 1
+                d[key] = _scalar(v)
+        return d, pos
+
+    def _seq(lines, pos, indent):
+        arr = []
+        while pos < len(lines):
+            ind, body = lines[pos]
+            if ind < indent:
+                break
+            if ind > indent:
+                raise ValueError("unexpected indent in sequence")
+            if body == "-":
+                pos += 1
+                nind = lines[pos][0] if pos < len(lines) else None
+                if nind is not None and nind > indent:
+                    child, pos = _node(lines, pos); arr.append(child)
+                else:
+                    arr.append(None)
+                continue
+            if not body.startswith("- "):
+                break
+            pos += 1
+            rest = body[2:].strip()
+            if rest == "":
+                nind = lines[pos][0] if pos < len(lines) else None
+                if nind is not None and nind > indent:
+                    child, pos = _node(lines, pos); arr.append(child)
+                else:
+                    arr.append(None)
+                continue
+            if ":" in rest:
+                # inline first key of a mapping item; its siblings live at +2.
+                vindent = indent + 2
+                sub = [(vindent, rest)] + lines[pos:]
+                item, csub = _map(sub, 0, vindent)
+                arr.append(item)
+                pos += csub - 1  # minus the one synthesized line
+            else:
+                arr.append(_scalar(rest))
+        return arr, pos
+
+    def _node(lines, pos):
+        if pos >= len(lines):
+            return None, pos
+        ind, body = lines[pos]
+        if body == "-" or body.startswith("- "):
+            return _seq(lines, pos, ind)
+        return _map(lines, pos, ind)
+
+    doc, _ = _node(lines, 0)
+    if not isinstance(doc, dict):
+        raise ValueError("top-level document is not a mapping")
+    return doc
+
+def _load_yaml(path):
+    """PyYAML when importable, else _mini_yaml. Returns {} only for a genuinely
+    empty file. Raises on any read/parse error (caller decides the warning)."""
+    try:
+        import yaml
+    except ImportError:
+        with open(path, "r", encoding="utf-8") as fh:
+            txt = fh.read()
+        if txt.strip() == "":
+            return {}
+        return _mini_yaml(txt)
+    with open(path, "r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
 
 # ---- helpers -----------------------------------------------------------
 def iso_to_epoch(s):
@@ -317,8 +582,7 @@ def is_terminal(status, ledger_state):
 titles = {}  # any-of{id, external_id, node_id} -> display name
 if TASKS_YAML and os.path.exists(TASKS_YAML):
     try:
-        import yaml as _ty
-        _doc = _ty.safe_load(open(TASKS_YAML)) or {}
+        _doc = _load_yaml(TASKS_YAML)
         for _t in (_doc.get("tasks") or []):
             _tid = str(_t.get("id") or "")
             _name = str(_t.get("title") or _t.get("external_id") or "")
@@ -361,28 +625,66 @@ def resolve_name(task_id, mission_path, sig8):
                 _first = _fh.read(200).split(b"\n", 1)[0]
             _first = _first.decode("utf-8", "replace").lstrip("#").strip()
             if _first:
-                return _first[:40]
+                return _clip40(_first)
         except Exception:
             pass
-    # Rule 3: last resort -- the dispatch id (embeds sig8, stays greppable, and
-    # matches the docs/handoff/dispatch-<sig8>/ dir name).
-    return "dispatch-" + sig8
+    # Rule 2.5 (STATUS-SURFACE-R5-01, C1a): handoff-dir mission title. Every
+    # dispatched lane owns a docs/handoff/dispatch-<sig8>/ dir; its design/
+    # mission file's first line carries a human task id (e.g. the
+    # architect-prepass heading "# PROMISE-GUARD-01 — ..."). Fixes the lanes
+    # running RIGHT NOW with no new store and no re-dispatch. Bounded: <=3
+    # os.path.exists + one 200-byte read per lane (R1 budget).
+    if HANDOFF_DIR and sig8:
+        _base = os.path.join(HANDOFF_DIR, "dispatch-" + sig8)
+        for _cand in ("mission.md", "architect-prepass.md", "context.yaml"):
+            _p = os.path.join(_base, _cand)
+            if os.path.exists(_p):
+                try:
+                    with open(_p, "rb") as _fh:
+                        _line = _fh.read(200).split(b"\n", 1)[0]
+                    _line = _line.decode("utf-8", "replace").strip()
+                    if not _line:
+                        continue
+                    # context.yaml: pull a title:/external_id: value, not the
+                    # whole line. For md files: strip leading '#' and cut at
+                    # the first em-dash / "--" / ':' delimiter so
+                    # "# PROMISE-GUARD-01 — implementation design" -> "PROMISE-GUARD-01".
+                    if _cand.endswith(".yaml"):
+                        _low = _line.lower()
+                        _val = ""
+                        for _key in ("title:", "external_id:"):
+                            _i = _low.find(_key)
+                            if _i >= 0:
+                                _val = _line[_i + len(_key):].strip().strip("'\"")
+                                break
+                        _line = _val
+                    else:
+                        _line = _line.lstrip("#").strip()
+                    # cut at the first delimiter that splits a task id from its prose
+                    for _sep in (" — ", " -- ", " — ", " - ", " : "):
+                        _i = _line.find(_sep)
+                        if _i > 0:
+                            _line = _line[:_i].strip()
+                            break
+                    if _line:
+                        return _clip40(_line)
+                except Exception:
+                    pass
+    # Rule 3 (STATUS-SURFACE-R5-01, C1b): a hash is not a name. Return the
+    # literal 'unnamed'; the sig8 lives in its own SIG column so it stays
+    # greppable and the handoff dir stays findable.
+    return "unnamed"
 
 # ---- S1: active.yaml ---------------------------------------------------
 sessions = []
 warn_msg = None
 try:
-    import yaml
-    try:
-        with open(os.path.join(STATE_DIR, "active.yaml"), "r") as fh:
-            doc = yaml.safe_load(fh) or {}
-        sessions = doc.get("sessions") or []
-        if not isinstance(sessions, list):
-            sessions = []
-    except Exception as e:
-        warn_msg = "active.yaml unreadable"
-except ImportError:
-    warn_msg = "active.yaml unreadable (yaml module missing)"
+    doc = _load_yaml(os.path.join(STATE_DIR, "active.yaml"))
+    sessions = doc.get("sessions") or []
+    if not isinstance(sessions, list):
+        sessions = []
+except Exception:
+    warn_msg = "active.yaml unreadable"
 
 # ---- S4: dispatch ledger, tail -n 400, last row per task_sig wins -------
 # R5: the ledger grows unbounded; tail -n 400 is a documented coverage cap
@@ -506,6 +808,7 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
         "cause": cause,
         "cls": cls,
         "max_mtime": max_mtime,
+        "sig": sig8,
     }
 
 for s in sessions:
@@ -548,13 +851,48 @@ for sig8, le in ledger.items():
 if warn_msg and not rows:
     rows = [{
         "name": "warn", "kind": "-", "display": "active.yaml", "model": "-",
-        "age": "-", "cause": warn_msg, "cls": "dead", "max_mtime": None,
+        "age": "-", "cause": warn_msg, "cls": "dead", "max_mtime": None, "sig": "",
     }]
 
-# Counts BEFORE collapse: the #DEAD control line and any badge must report the
-# real number of dead/finished dispatches, never the post-collapse visible count.
+# Counts BEFORE collapse AND before TTL drop: the #DEAD control line and any
+# badge must report the real number of dead/finished dispatches, never the
+# post-drop / post-collapse visible count.
 live_n = sum(1 for r in rows if r["cls"] == "live")
 dead_n = sum(1 for r in rows if r["cls"] != "live")
+
+# STATUS-SURFACE-R5-01 (defect 2, C2): TTL drop. A terminal row (done/dead)
+# disappears after its window; live rows survive at ANY age (R3). Age basis =
+# max_mtime when present, else the ledger created_epoch; a row with NEITHER is
+# never dropped (unknown age != old). Runs AFTER the live_n/dead_n counts
+# (those stay pre-drop) and BEFORE the collapse rule.
+def _age_of(r):
+    m = r.get("max_mtime")
+    if m is not None:
+        try:
+            return int(m)
+        except Exception:
+            return None
+    return None
+
+_aged = 0
+_kept = []
+for r in rows:
+    if r["cls"] == "live":
+        _kept.append(r)
+        continue
+    _age = _age_of(r)
+    if _age is None:
+        # no mtime -> fall back to created_epoch is impossible here (not in the
+        # row); a terminal row with no age signal is kept, not guessed away.
+        _kept.append(r)
+        continue
+    _ttl = DONE_TTL if r["cls"] == "done" else DEAD_TTL
+    if (NOW - _age) > _ttl:
+        _aged += 1
+        continue
+    _kept.append(r)
+rows = _kept
+done_recent = sum(1 for r in rows if r["cls"] != "live")
 
 # R3 (fix round 3): collapse terminal/done rows so a wall of 90 finished rows is
 # structurally impossible. Keep the NEWEST 10 done rows, fold the rest into ONE
@@ -568,42 +906,76 @@ if len(_done_idx) > 10:
             return int(m) if m is not None else 0
         except Exception:
             return 0
-    _kept = set(sorted(_done_idx, key=lambda i: _mk(rows[i]), reverse=True)[:10])
+    _kept2 = set(sorted(_done_idx, key=lambda i: _mk(rows[i]), reverse=True)[:10])
     _dropped = len(_done_idx) - 10
     _new = []
     for i, r in enumerate(rows):
-        if r["cls"] == "done" and i not in _kept:
+        if r["cls"] == "done" and i not in _kept2:
             continue
         _new.append(r)
     _new.append({
         "name": "+ %d done earlier today" % _dropped,
         "kind": "-", "display": "-", "model": "-", "age": "-",
-        "cause": "collapsed", "cls": "done", "max_mtime": None,
+        "cause": "collapsed", "cls": "done", "max_mtime": None, "sig": "",
     })
     rows = _new
 
-out = ["#LIVE %d" % live_n, "#DEAD %d" % dead_n]
+out = ["#LIVE %d" % live_n, "#DEAD %d" % dead_n,
+       "#DONE_RECENT %d" % done_recent, "#AGED_OUT %d" % _aged]
+# R5-01 round 2: when active.yaml could not be read, flag it for the bash
+# layer so the header stops rendering a calm "0 live" and the menu-bar title
+# carries ⚠. Machine-readable: '#WARN <human message>'.
+if warn_msg:
+    out.append("#WARN " + warn_msg)
 for r in rows:
-    # TSV order: name kind display model age cause cls -- cls is the LAST tab
-    # field (.10s.sh counts live rows via the rendered STATE column, and the
-    # statusline oneline live-detection depends on `live` appearing in cause).
+    # TSV order: name kind display model age cause cls sig -- cls stays field-7
+    # (.10s.sh counts live rows via the rendered STATE column, and the statusline
+    # oneline live-detection depends on `live` appearing in cause). sig is
+    # appended AFTER cls (STATUS-SURFACE-R5-01, C1d) so the old field offsets are
+    # unchanged.
     out.append("\t".join([
         str(r["name"]), str(r["kind"]), str(r["display"]),
         str(r["model"]), str(r["age"]), str(r["cause"]), str(r["cls"]),
+        str(r.get("sig", "")),
     ]))
 sys.stdout.write("\n".join(out) + "\n")
 PYEOF
-  )"
+}
+
+LANES=""
+LIVE_N=0
+DEAD_N=0
+WARN_MSG=""
+if ! command -v python3 >/dev/null 2>&1; then
+  LANES="$(printf 'warn\tactive.yaml\tpython3\t-\tpython3 missing - active.yaml not parsed\tdead\n')"
+  DEAD_N=1
+else
+  LANES="$(LEADV2_SS_STATE_DIR="$STATE_DIR" \
+           LEADV2_SS_LEDGER_FILE="$LEDGER_FILE" \
+           LEADV2_SS_RUNS_ROOT="$RUNS_ROOT" \
+           LEADV2_SS_NOW="$NOW" \
+           LEADV2_SS_TASKS_YAML="$TASKS_YAML" \
+           LEADV2_SS_HANDOFF_DIR="$HANDOFF_DIR" \
+           LEADV2_SS_DONE_TTL="$DONE_TTL" \
+           LEADV2_SS_DEAD_TTL="$DEAD_TTL" \
+           _ss_lanes_py)"
 fi
+
 
 # parse the control lines + rows out of LANES
 if [ -n "$LANES" ]; then
   LIVE_N="$(printf '%s\n' "$LANES" | sed -n 's/^#LIVE //p' | head -1)"
   DEAD_N="$(printf '%s\n' "$LANES" | sed -n 's/^#DEAD //p' | head -1)"
+  DONE_RECENT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#DONE_RECENT //p' | head -1)"
+  AGED_OUT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#AGED_OUT //p' | head -1)"
+  WARN_MSG="$(printf '%s\n' "$LANES" | sed -n 's/^#WARN //p' | head -1)"
   case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0 ;; esac
   case "$DEAD_N" in ''|*[!0-9]*) DEAD_N=0 ;; esac
+  case "$DONE_RECENT_N" in ''|*[!0-9]*) DONE_RECENT_N=0 ;; esac
+  case "$AGED_OUT_N" in ''|*[!0-9]*) AGED_OUT_N=0 ;; esac
 fi
-LANE_ROWS="$(printf '%s\n' "$LANES" | grep -v '^#LIVE ' | grep -v '^#DEAD ' || true)"
+# drop every control line (#…) so only TSV rows remain
+LANE_ROWS="$(printf '%s\n' "$LANES" | grep -v '^#' || true)"
 LANE_COUNT=0
 if [ -n "$LANE_ROWS" ]; then
   LANE_COUNT="$(printf '%s\n' "$LANE_ROWS" | grep -c . || true)"
@@ -640,12 +1012,30 @@ emit_lanes_table() {
     stale)  printf 'supervisor: OFF  (stale sentinel, pid %s gone)\n' "$SUP_PID" ;;
     *)      printf 'supervisor: OFF\n' ;;
   esac
-  printf 'lanes (%d)\n' "$LANE_COUNT"
+  # STATUS-SURFACE-R5-01 round 2: when active.yaml could not be read the lane
+  # list does NOT reflect reality, so the header must not render a calm
+  # "N live" count -- it renders an explicit warning and the menu-bar title
+  # carries ⚠ (see leadv2-status-surface.10s.sh). First token stays `lanes` so
+  # the section parser keeps matching; the ⚠ glyph is the breakage signal.
+  if [ -n "$WARN_MSG" ]; then
+    printf 'lanes (⚠ active.yaml не прочитан — список не отражает реальность)\n'
+    printf '  %s\n' "$WARN_MSG"
+    return 0
+  fi
+  # STATUS-SURFACE-R5-01 (C2/C1d): header carries the live + recent-terminal
+  # counts and, only when rows were aged out, how many were hidden -- so a drop
+  # is never silent. First token stays `lanes` (section parser + statusline).
+  if [ "$AGED_OUT_N" -gt 0 ]; then
+    printf 'lanes (%d live, %d done в последний час, %d скрыто по возрасту)\n' \
+      "$LIVE_N" "$DONE_RECENT_N" "$AGED_OUT_N"
+  else
+    printf 'lanes (%d live, %d done в последний час)\n' "$LIVE_N" "$DONE_RECENT_N"
+  fi
   if [ "$LANE_COUNT" -eq 0 ]; then
     printf '  (none)\n'
   else
-    printf '  %-28s %-6s %-12s %-7s %-5s %s\n' "NAME" "TYPE" "PHASE/STATE" "MODEL" "AGE" "STATE"
-    printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{ printf "  %-28s %-6s %-12s %-7s %-5s %s\n", $1, $2, $3, $4, $5, $6 }'
+    printf '  %-28s %-6s %-12s %-7s %-5s %-18s %s\n' "NAME" "TYPE" "PHASE/STATE" "MODEL" "AGE" "STATE" "SIG"
+    printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{ printf "  %-28s %-6s %-12s %-7s %-5s %-18s %s\n", $1, $2, $3, $4, $5, $6, $8 }'
   fi
 }
 
@@ -673,18 +1063,241 @@ render_questions() {
   unset _r4h_top 2>/dev/null || true
   LEADV2_R4_QDIR="$qdir" LEADV2_R4_HANDOFF="$handoff" python3 2>/dev/null <<'PYEOF'
 import os, sys, glob
-try:
-    import yaml
-except Exception:
-    yaml = None
 qdir = os.environ.get("LEADV2_R4_QDIR", "")
 handoff = os.environ.get("LEADV2_R4_HANDOFF", "")
 
-def parse(path):
-    if yaml is None:
+# ---- R5-01 round 2: PyYAML-optional YAML reader (VERBATIM COPY of the one in
+# the _ss_lanes_py heredoc above). SwiftBar's minimal-PATH python3 has no
+# PyYAML, so without this the pending-question count silently under-reports.
+# Duplicated rather than sourced from a shared .py to avoid adding a runtime
+# artifact to this read path; keep both copies in sync. See the lanes heredoc
+# for the full design notes.
+def _mini_yaml(text):
+    def _unclosed(v):
+        j, L = 0, len(v)
+        while j < L:
+            c = v[j]
+            if c == "'":
+                k = j + 1
+                while k < L:
+                    if v[k] == "'":
+                        if k + 1 < L and v[k + 1] == "'":
+                            k += 2; continue
+                        return None
+                    k += 1
+                return "'"
+            if c == '"':
+                k = j + 1
+                while k < L:
+                    if v[k] == "\\":
+                        k += 2; continue
+                    if v[k] == '"':
+                        return None
+                    k += 1
+                return '"'
+            j += 1
         return None
+
+    def _vsub(body):
+        if body.startswith("- "):
+            inner = body[2:]
+            return inner.split(":", 1)[1] if ":" in inner else inner
+        return body.split(":", 1)[1] if ":" in body else body
+
+    raw = text.replace("\r\n", "\n").split("\n")
+    lines = []
+    i, n = 0, len(raw)
+    while i < n:
+        line = raw[i]
+        m = 0
+        while m < len(line) and line[m] == " ":
+            m += 1
+        if m < len(line) and line[m] == "\t":
+            raise ValueError("tab indentation unsupported")
+        body = line[m:]
+        if body == "" or body.startswith("#"):
+            i += 1; continue
+        q = _unclosed(_vsub(body))
+        if q is None:
+            lines.append((m, body)); i += 1; continue
+        parts = [body]; i += 1; closed = False
+        while i < n:
+            parts.append(raw[i].lstrip(" "))
+            if _unclosed(_vsub(" ".join(parts))) is None:
+                closed = True; i += 1; break
+            i += 1
+        if not closed:
+            raise ValueError("unterminated quoted scalar")
+        lines.append((m, " ".join(parts)))
+
+    def _scalar(v):
+        v = v.strip()
+        if v == "":
+            return None
+        if v[:1] in ("[", "{"):
+            # populated inline flow collection -- outside the supported subset
+            # (only empty [] / {} are handled, at the call site). Raise so a
+            # malformed doc warns loudly instead of parsing to garbage.
+            raise ValueError("inline flow collection unsupported")
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            if v[0] == "'":
+                return v[1:-1].replace("''", "'")
+            s, out, k, L = v[1:-1], [], 0, len(v) - 2
+            while k < L:
+                c = s[k]
+                if c == "\\" and k + 1 < L:
+                    n = s[k + 1]
+                    if n == "n": out.append("\n"); k += 2
+                    elif n == "t": out.append("\t"); k += 2
+                    elif n == '"': out.append('"'); k += 2
+                    elif n == "'": out.append("'"); k += 2
+                    elif n == "\\": out.append("\\"); k += 2
+                    elif n == " ": k += 2  # folded line continuation (merge artifact)
+                    elif n == "u" and k + 6 <= L:
+                        try: out.append(chr(int(s[k + 2:k + 6], 16))); k += 6
+                        except ValueError: out.append(c); k += 1
+                    elif n == "x" and k + 4 <= L:
+                        try: out.append(chr(int(s[k + 2:k + 4], 16))); k += 4
+                        except ValueError: out.append(c); k += 1
+                    else: out.append(c); k += 1
+                else:
+                    out.append(c); k += 1
+            return "".join(out)
+        low = v.lower()
+        if low in ("null", "~", ""):
+            return None
+        if low == "true":
+            return True
+        if low == "false":
+            return False
+        try:
+            return int(v)
+        except Exception:
+            pass
+        try:
+            return float(v)
+        except Exception:
+            pass
+        return v
+
+    def _map(lines, pos, indent):
+        d = {}
+        while pos < len(lines):
+            ind, body = lines[pos]
+            if ind < indent:
+                break
+            if ind > indent:
+                raise ValueError("unexpected indent in mapping")
+            if body == "-" or body.startswith("- "):
+                raise ValueError("sequence item where mapping key expected")
+            key, sep, val = body.partition(":")
+            if sep != ":":
+                raise ValueError("expected 'key:'")
+            key = key.strip()
+            if key == "":
+                raise ValueError("empty key")
+            val = val.strip()
+            pos += 1
+            if val == "":
+                nind, nbody = (lines[pos] if pos < len(lines) else (None, None))
+                if nind is not None and (nind > indent or
+                        (nind == indent and (nbody == "-" or nbody.startswith("- ")))):
+                    child, pos = _node(lines, pos)
+                    d[key] = child
+                else:
+                    d[key] = None
+            elif val in ("[]", "{}"):
+                d[key] = [] if val == "[]" else {}
+            elif val[:1] in ("|", ">"):
+                # block scalar (| literal / > folded, optional -/+ chomp).
+                # Consume every deeper-indented logical line as content so the
+                # parser never chokes on a machine-written block field. Exact
+                # value is unused by the renderers (they read scalar keys), so
+                # best-effort folding is fine; the contract is: consume the
+                # span, never raise.
+                buf = []
+                while pos < len(lines) and lines[pos][0] > indent:
+                    buf.append(lines[pos][1]); pos += 1
+                d[key] = " ".join(buf) if val[:1] == ">" else "\n".join(buf)
+            elif val.startswith("- "):
+                raise ValueError("inline sequence unsupported")
+            else:
+                # plain (or single-line quoted) scalar. A PLAIN scalar may fold
+                # across following more-indented lines (YAML plain-scalar
+                # continuation); quoted multi-line is already one logical line.
+                v = val
+                if not (len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"')):
+                    while pos < len(lines) and lines[pos][0] > indent:
+                        v = v + " " + lines[pos][1]; pos += 1
+                d[key] = _scalar(v)
+        return d, pos
+
+    def _seq(lines, pos, indent):
+        arr = []
+        while pos < len(lines):
+            ind, body = lines[pos]
+            if ind < indent:
+                break
+            if ind > indent:
+                raise ValueError("unexpected indent in sequence")
+            if body == "-":
+                pos += 1
+                nind = lines[pos][0] if pos < len(lines) else None
+                if nind is not None and nind > indent:
+                    child, pos = _node(lines, pos); arr.append(child)
+                else:
+                    arr.append(None)
+                continue
+            if not body.startswith("- "):
+                break
+            pos += 1
+            rest = body[2:].strip()
+            if rest == "":
+                nind = lines[pos][0] if pos < len(lines) else None
+                if nind is not None and nind > indent:
+                    child, pos = _node(lines, pos); arr.append(child)
+                else:
+                    arr.append(None)
+                continue
+            if ":" in rest:
+                vindent = indent + 2
+                sub = [(vindent, rest)] + lines[pos:]
+                item, csub = _map(sub, 0, vindent)
+                arr.append(item)
+                pos += csub - 1
+            else:
+                arr.append(_scalar(rest))
+        return arr, pos
+
+    def _node(lines, pos):
+        if pos >= len(lines):
+            return None, pos
+        ind, body = lines[pos]
+        if body == "-" or body.startswith("- "):
+            return _seq(lines, pos, ind)
+        return _map(lines, pos, ind)
+
+    doc, _ = _node(lines, 0)
+    if not isinstance(doc, dict):
+        raise ValueError("top-level document is not a mapping")
+    return doc
+
+def _load_yaml(path):
     try:
-        d = yaml.safe_load(open(path, encoding="utf-8")) or {}
+        import yaml
+    except ImportError:
+        with open(path, "r", encoding="utf-8") as fh:
+            txt = fh.read()
+        if txt.strip() == "":
+            return {}
+        return _mini_yaml(txt)
+    with open(path, "r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
+
+def parse(path):
+    # returns the question dict, or None if unreadable/non-mapping (-> skipped)
+    try:
+        d = _load_yaml(path)
     except Exception:
         return None
     if not isinstance(d, dict):
@@ -762,15 +1375,65 @@ render_limits() {
       ;;
   esac
   printf 'limits%s\n' "$stale"
-  # claude 5h + weekly — from the report header line:
-  #   "Quota: 5h N% (... weekly(claude,heuristic) M% ...)"
-  local qline c5h cwk
+  # STATUS-SURFACE-R5-01 (defect 3, C3a): the old claude row divided INPUT
+  # tokens by a guessed 8M cap while the real burn is hundreds of MB of
+  # cache-read -- so it printed a serene 0% at any load. The snapshot's own
+  # Quota line always carries 'cap est.' and its rate_limit line says 'not
+  # captured' while no real Anthropic rate-limit signal is on disk. While that
+  # heuristic cap is in use we print NO fabricated percentage -- only measured
+  # magnitudes (cache-read + output) lifted verbatim from the anthropic 5h line.
+  # When a real rate_limit_anthropic kv row IS present (written by the
+  # --refresh-limits probe), we compute the percentage from its measured
+  # unified_limit/unified_remaining instead. A read of the local sqlite kv row
+  # is NOT network. Never a second heuristic: any failure -> honest text.
+  local qline rline aline cap_est rcap_not
   qline="$(grep '^Quota:' "$snap" | head -1)"
-  c5h="$(printf '%s' "$qline" | sed -n 's/^Quota: 5h \([0-9][0-9]*\)%.*/\1/p')"
-  cwk="$(printf '%s' "$qline" | sed -n 's/.*weekly(claude[^)]*) \([0-9][0-9]*\)%.*/\1/p')"
-  case "$c5h" in ''|*[!0-9]*) c5h="?" ;; esac
-  case "$cwk" in ''|*[!0-9]*) cwk="?" ;; esac
-  printf '  claude: 5h %s%% weekly %s%% (snapshot)\n' "$c5h" "$cwk"
+  rline="$(grep '^  rate_limit:' "$snap" | head -1)"
+  aline="$(grep '^  anthropic 5h:' "$snap" | head -1)"
+  cap_est=0; rcap_not=0
+  case "$qline" in *"cap est."*) cap_est=1 ;; esac
+  case "$rline" in *"not captured"*) rcap_not=1 ;; esac
+  if [ "$cap_est" -eq 1 ] || [ "$rcap_not" -eq 1 ]; then
+    # Try the measured real number first (kv row from the ratelimit probe). If a
+    # fresh, parseable, real cap is there, use it -- otherwise the honest text.
+    local bdb kv_real
+    bdb="${LEADV2_STATUS_BURN_DB:-${HOME}/.claude/burn/history.db}"
+    kv_real=""
+    [ -f "$bdb" ] && kv_real="$(LEADV2_R4_DB="$bdb" python3 -c 'import os,json,sqlite3
+try:
+    db=os.environ["LEADV2_R4_DB"]
+    r=sqlite3.connect(db).execute("SELECT value FROM kv WHERE key=\x27rate_limit_anthropic\x27 ORDER BY rowid DESC LIMIT 1").fetchone()
+    if not r: raise SystemExit
+    d=json.loads(r[0])
+    lim=d.get("unified_limit"); rem=d.get("unified_remaining")
+    if isinstance(lim,(int,float)) and isinstance(rem,(int,float)) and lim>0:
+        print("%d" % round((lim-rem)*100.0/lim))
+except Exception:
+    pass' 2>/dev/null || true)"
+    case "$kv_real" in
+      ''|*[!0-9]*)
+        # no real number -> honest text + measured magnitudes
+        local _crv _outv _mag
+        _crv="$(printf '%s\n' "$aline" | grep -oE ' cr [0-9.]+[KMGT]?' | awk '{print $2}')"
+        _outv="$(printf '%s\n' "$aline" | grep -oE ' out [0-9.]+[KMGT]?' | awk '{print $2}')"
+        _mag=""
+        [ -n "$_crv" ] && _mag=" (5h: cr $_crv out $_outv)"
+        printf '  claude: не измеряется — cache-dominated, cap est.%s\n' "$_mag"
+        ;;
+      *)
+        printf '  claude: 5h %s%% (rate-limit signal)\n' "$kv_real"
+        ;;
+    esac
+  else
+    # A real rate_limit line is present in the snapshot (not 'not captured') --
+    # print the measured percentage from the snapshot's Quota line.
+    local c5h cwk
+    c5h="$(printf '%s' "$qline" | sed -n 's/^Quota: 5h \([0-9][0-9]*\)%.*/\1/p')"
+    cwk="$(printf '%s' "$qline" | sed -n 's/.*weekly(claude[^)]*) \([0-9][0-9]*\)%.*/\1/p')"
+    case "$c5h" in ''|*[!0-9]*) c5h="?" ;; esac
+    case "$cwk" in ''|*[!0-9]*) cwk="?" ;; esac
+    printf '  claude: 5h %s%% weekly %s%% (snapshot)\n' "$c5h" "$cwk"
+  fi
   # glm weekly — from "  glm weekly (live, z.ai): X%"
   local gline gwk
   gline="$(grep '^  glm weekly' "$snap" | head -1)"

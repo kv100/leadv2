@@ -66,7 +66,7 @@ _resolve() {
   cd "$(dirname "$p")" 2>/dev/null && pwd -P
 }
 SCRIPT_DIR="$(_resolve "$_self")"
-RENDERER="${SCRIPT_DIR}/leadv2-status-surface.sh"
+RENDERER="${LEADV2_STATUS_RENDERER:-${SCRIPT_DIR}/leadv2-status-surface.sh}"
 SELF_PATH="${SCRIPT_DIR}/leadv2-status-surface.10s.sh"
 
 if [ ! -f "$RENDERER" ]; then
@@ -79,7 +79,28 @@ fi
 
 # ── ONE renderer invocation (--all): lanes + questions + limits + due + alarms,
 #    separated by '---' lines. ───────────────────────────────────────────────
-OUT_ALL="$(bash "$RENDERER" --all 2>/dev/null || true)"
+_ss_err="$(mktemp -t leadv2-ss-err)"
+OUT_ALL="$(bash "$RENDERER" --all 2>"$_ss_err")"
+_ss_rc=$?
+
+# A crashed/empty renderer must never render as a confident 🟢/🔴 zero — that
+# zero is indistinguishable from "no lanes" (the lying-green shape). Fail loud
+# instead, replacing the whole title/dropdown, and still exit 0 so SwiftBar
+# renders the ⚠️ title at all.
+if [ "$_ss_rc" -ne 0 ] || [ -z "$OUT_ALL" ]; then
+  _ss_msg="$(head -1 "$_ss_err" 2>/dev/null)"
+  [ -z "$_ss_msg" ] && _ss_msg="renderer exited $_ss_rc with no output"
+  _ss_msg="$(printf '%s' "$_ss_msg" | cut -c1-120)"
+  printf '⚠️ renderer failed\n'
+  printf -- '---\n'
+  printf 'rc=%s | %s | font=Menlo size=12\n' "$_ss_rc" "$_ss_msg"
+  printf 'renderer: %s | font=Menlo size=12\n' "$RENDERER"
+  printf -- '---\n'
+  printf 'Refresh | refresh=true\n'
+  rm -f "$_ss_err"
+  exit 0
+fi
+rm -f "$_ss_err"
 
 # Section N (1=lanes, 2=questions, 3=limits, 4=due, 5=alarms) — positional, per
 # the renderer's fixed --all contract. An omitted section (e.g. due when the SD
@@ -103,23 +124,40 @@ case "$hdr" in
   *)               SUP_ON=0 ;;
 esac
 lane_line="$(printf '%s\n' "$LANES_BLOCK" | sed -n '2p')"
-LANE_N="$(printf '%s' "$lane_line" | sed -n 's/^lanes (\([0-9]*\)).*/\1/p')"
-case "$LANE_N" in ''|*[!0-9]*) LANE_N=0 ;; esac
+# STATUS-SURFACE-R5-01 round 2: when active.yaml could not be read the renderer
+# turns the lanes header into 'lanes (⚠ ...)' (no count). Detect that glyph and
+# raise a ⚠ title -- a broken lane read must never render as a confident 🟢/🔴
+# zero (the lying-green shape). Highest title priority: the lane data is suspect.
+LANES_BROKEN=0
+case "$lane_line" in *⚠*) LANES_BROKEN=1 ;; esac
+# STATUS-SURFACE-R5-01: the header is now 'lanes (N live, M done ...)', so the
+# old 'lanes (N)' number parse no longer matches. Gate row-parsing on whether a
+# data row is present (a dead-only fleet has live=0 but still has rows to count
+# for the 🔴 total) instead of a header count.
 LIVE_N=0
 DEAD_N=0
 DONE_N=0
-if [ "$LANE_N" -gt 0 ]; then
-  _rows="$(printf '%s\n' "$LANES_BLOCK" | tail -n +4)"
-  # Count by STATE token anchored at end-of-line (NOT $NF: tokens like
-  # `stale(2h silent)` contain spaces, so `$NF` yields `silent)`).
-  LIVE_N="$(printf '%s\n' "$_rows" | grep -Ec 'live$' || true)"
+_rows="$(printf '%s\n' "$LANES_BLOCK" | tail -n +4)"
+# data rows = everything after the column header, minus the collapsed
+# '+ N done earlier today' summary line (which stands for N lanes by itself).
+_data="$(printf '%s\n' "$_rows" | grep -vE '^ *\+ [0-9][0-9]* done earlier today' || true)"
+if printf '%s\n' "$_data" | grep -q .; then
+  # SIG is now its own trailing column, so STATE/cause is no longer the last
+  # token (and `stale(Nm silent)` already spanned two tokens). Reconstruct the
+  # cause as fields 6..NF-1 of each data row (the SIG is the trailing field),
+  # then count by cause. No hex assumption: the cause patterns are distinctive
+  # and the column header's field-6 ('STATE') matches none of them.
+  _causes="$(printf '%s\n' "$_data" | awk 'NF>=2{
+    c=""; for(i=6;i<NF;i++) c=(c?c" ":"")$i; print c
+  }')"
+  LIVE_N="$(printf '%s\n' "$_causes" | grep -Exc 'live' || true)"
   case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0 ;; esac
-  DEAD_N="$(printf '%s\n' "$_rows" | grep -Ec '(dead\([^)]*\)|stale\([^)]*\))$' || true)"
+  DEAD_N="$(printf '%s\n' "$_causes" | grep -Ec '^(dead\(|stale\()' || true)"
   case "$DEAD_N" in ''|*[!0-9]*) DEAD_N=0 ;; esac
-  # Done rows: each `done(...)` line is one finished lane, but the collapsed
+  # Done rows: each `done(...)` cause is one finished lane, but the collapsed
   # summary `+ N done earlier today` stands for N lanes in a single line, so
   # fold its N in and do NOT count the summary line itself as a done row.
-  DONE_N="$(printf '%s\n' "$_rows" | grep -Ec 'done\([^)]*\)$' || true)"
+  DONE_N="$(printf '%s\n' "$_causes" | grep -Ec '^done\(' || true)"
   case "$DONE_N" in ''|*[!0-9]*) DONE_N=0 ;; esac
   _collapsed="$(printf '%s\n' "$_rows" | sed -n 's/^ *+ \([0-9][0-9]*\) done earlier today.*/\1/p')"
   case "$_collapsed" in ''|*[!0-9]*) _collapsed=0 ;; esac
@@ -132,14 +170,21 @@ _q_hdr="$(printf '%s\n' "$Q_BLOCK" | sed -n '1p')"
 Q_N="$(printf '%s' "$_q_hdr" | sed -n 's/^questions (\([0-9]*\)).*/\1/p')"
 case "$Q_N" in ''|*[!0-9]*) Q_N=0 ;; esac
 
-# ── line 1: menu-bar title (priority ❓ > 🔴 > 🟢 > ⚪) ─────────────────────
+# ── line 1: menu-bar title (priority ⚠ > ❓ > 🔴 > 🟢 > ⚪) ──────────────────
 # Regression contract: supervisor OFF + no pending questions keeps the
 # `⚪ sup OFF · ` prefix.
 _prefix=""
 if [ "$SUP_ON" -eq 0 ] && [ "$Q_N" -eq 0 ]; then
   _prefix="⚪ sup OFF · "
 fi
-if [ "$Q_N" -gt 0 ]; then
+if [ "$LANES_BROKEN" -eq 1 ]; then
+  # R5-01 round 2: unreadable active.yaml — lane counts are unreliable, so the
+  # title leads with ⚠ instead of a confident 🟢/🔴 figure. Pending questions
+  # still ride along (they come from a separate, readable source).
+  printf '%s⚠️ lanes не прочитаны' "$_prefix"
+  [ "$Q_N" -gt 0 ] && printf ' · ❓%d' "$Q_N"
+  printf '\n'
+elif [ "$Q_N" -gt 0 ]; then
   printf '%s❓%d · 🟢 %d / 🔴 %d\n' "$_prefix" "$Q_N" "$LIVE_N" "$DEAD_N"
 elif [ "$DEAD_N" -gt 0 ]; then
   printf '%s🔴 %d / 🟢 %d\n' "$_prefix" "$DEAD_N" "$LIVE_N"

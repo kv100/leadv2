@@ -54,6 +54,12 @@ add_suite() { # <path>
 # Always-on: the plugin's own curated offline regression set.
 add_suite "${ROOT}/.claude/scripts/tests/run-core-offline.sh"
 
+# Always-on: SwiftBar runs the status-surface scripts under macOS /bin/bash 3.2
+# (PATH-resolved, not Homebrew bash 5) — a stem-based --scope=changed match on
+# the renderer/wrapper filenames is not enough, since a change to an unrelated
+# script must not silently drop this guard from a run. See SWIFTBAR-BASH32-01.
+add_suite "${ROOT}/tests/test-status-surface-bash32.sh"
+
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
     find "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \
