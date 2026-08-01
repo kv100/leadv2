@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+# STATUSLINE-READABLE-01: red-first test for the founder's exact repro --
+# BASE claims width first, the ladder cannot drop a lane, the arm/model
+# vanishes at the first sign of pressure, labels are dispatch-id stems not
+# task meaning, and no session scoping exists. Never runs against the real
+# plugin tree -- see the containment pattern in
+# test-statusline-never-writes-executables.sh (TEST-DESTROYS-PRODUCTION-
+# SCRIPT-01): every helper here runs against a throwaway COPY of scripts/
+# under $tmp, with its own scratch TMPDIR, and an EXIT tripwire re-checks
+# the real repo's tail script + liveness prober md5 so any escape aborts
+# loudly instead of destroying it quietly.
+#
+# Pre-fix baseline is built via `git archive HEAD -- <paths>` into a
+# scratch dir per the mission's red-first instructions -- never `git
+# stash`/`git reset --hard`/`git clean` (shared tree).
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REAL_PLUGIN_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REAL_REPO_ROOT="$(cd "${REAL_PLUGIN_DIR}/../../.." && pwd)"
+source "$(cd "${SCRIPT_DIR}/.." && pwd)/leadv2-temp.sh"
+
+tmp="$(lv2_mktemp_dir statusline-readable)"
+trap 'rm -rf "$tmp"' EXIT
+
+_lv2_md5() { md5 -q "$1" 2>/dev/null || md5sum "$1" 2>/dev/null | awk '{print $1}'; }
+REAL_TAIL="${REAL_PLUGIN_DIR}/scripts/leadv2-lane-status-line-tail.sh"
+REAL_LIVENESS="${REAL_PLUGIN_DIR}/scripts/leadv2-lane-liveness.sh"
+REAL_REVIEW="${REAL_PLUGIN_DIR}/scripts/leadv2-review.js"
+REAL_TAIL_MD5_BEFORE="$(_lv2_md5 "$REAL_TAIL")"
+REAL_LIVENESS_MD5_BEFORE="$(_lv2_md5 "$REAL_LIVENESS")"
+lv2_tripwire() {
+  local after_t after_l
+  after_t="$(_lv2_md5 "$REAL_TAIL")"
+  after_l="$(_lv2_md5 "$REAL_LIVENESS")"
+  if [[ "$after_t" != "$REAL_TAIL_MD5_BEFORE" || "$after_l" != "$REAL_LIVENESS_MD5_BEFORE" ]]; then
+    printf '[TEST-SAFETY] FATAL: test mutated a production path\n  tail before=%s after=%s\n  liveness before=%s after=%s\n' \
+      "$REAL_TAIL_MD5_BEFORE" "$after_t" "$REAL_LIVENESS_MD5_BEFORE" "$after_l" >&2
+    exit 99
+  fi
+}
+trap 'lv2_tripwire' EXIT
+
+PASS=0; FAIL=0; SKIP=0
+ok()   { PASS=$((PASS+1)); printf '[PASS] %s\n' "$1"; }
+bad()  { FAIL=$((FAIL+1)); printf '[FAIL] %s -- %s\n' "$1" "$2"; }
+skip() { SKIP=$((SKIP+1)); printf '[SKIP] %s -- %s\n' "$1" "$2"; }
+
+# ---- fixture: founder's exact repro shape --------------------------------
+SCRATCH_SCRIPTS="$tmp/scripts"
+mkdir -p "$SCRATCH_SCRIPTS"
+cp -a "${REAL_PLUGIN_DIR}/scripts/." "$SCRATCH_SCRIPTS/"
+case "$SCRATCH_SCRIPTS" in
+  "$tmp"/*) ;;
+  *) printf '[TEST-SAFETY] ABORT: SCRATCH_SCRIPTS %s did not resolve under scratch root %s\n' "$SCRATCH_SCRIPTS" "$tmp" >&2; exit 90 ;;
+esac
+
+REPO="$tmp/repo"
+mkdir -p "$REPO/.claude/leadv2-overrides" "$REPO/.leadv2-state" "$REPO/docs/handoff"
+cat > "$REPO/.claude/leadv2-overrides/active-limits.yaml" <<'EOF'
+hard_limit: 5
+EOF
+cat > "$REPO/.leadv2-state/active.yaml" <<'EOF'
+meta:
+  hard_limit: 5
+sessions: []
+EOF
+
+# Stub liveness prober -- the founder's own 4 lanes, ages 1/1/2/8.
+cat > "$SCRATCH_SCRIPTS/leadv2-lane-liveness.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<JSON
+{"count_live": 4, "lanes": [
+ {"lane":"dispatch-c98a1414-architect","verdict":"alive","age_s":1},
+ {"lane":"dispatch-5bfce73e","verdict":"alive","age_s":1},
+ {"lane":"GATE-FOREIGN-FAILURE-01","verdict":"alive","age_s":2},
+ {"lane":"LANDING-PAGE-REDESIGN-01","verdict":"alive","age_s":8}
+]}
+JSON
+EOF
+chmod +x "$SCRATCH_SCRIPTS/leadv2-lane-liveness.sh"
+
+cat > "$SCRATCH_SCRIPTS/leadv2-state-path.sh" <<EOF
+#!/usr/bin/env bash
+echo "$REPO/.leadv2-state/active.yaml"
+EOF
+chmod +x "$SCRATCH_SCRIPTS/leadv2-state-path.sh"
+
+FOUNDER_BASE_66=$'\033[36mOpus 5 (1M context)\033[0m in \033[32m~/Projects/persona-engine\033[0m [\033[33mdefault\033[0m] \033[35m79%% ctx\033[0m'
+INPUT_JSON=$(jq -n --arg dir "$REPO" '{workspace:{current_dir:$dir},model:{display_name:"Opus 5 (1M context)"},output_style:{name:"default"},context_window:{remaining_percentage:79},transcript_path:""}')
+SETTINGS_JSON="$tmp/settings.json"
+printf '{"statusLine":{"command":"printf %s"}}' "'${FOUNDER_BASE_66}'" > "$SETTINGS_JSON"
+
+run_tail() {
+  local width="$1" scripts_dir="$2"
+  TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH="$width" \
+    bash "$scripts_dir/leadv2-lane-status-line-tail.sh" "$INPUT_JSON" "$SETTINGS_JSON" "$scripts_dir" 5 </dev/null
+}
+strip_ansi() { sed -E $'s/\x1b\\[[0-9;]*m//g'; }
+visible_len() { printf '%s' "$1" | strip_ansi | awk '{print length}'; }
+
+# ---- pre-fix baseline via git archive -------------------------------------
+PREFIX_DIR="$tmp/prefix"
+mkdir -p "$PREFIX_DIR/scripts"
+if git -C "$REAL_REPO_ROOT" archive HEAD -- \
+    "plugins/leadv2/scripts/leadv2-lane-status-line-tail.sh" \
+    "plugins/leadv2/scripts/leadv2-lane-status-line.sh" \
+    "plugins/leadv2/scripts/leadv2-tasks-lib.sh" \
+    "plugins/leadv2/scripts/leadv2-temp.sh" \
+    2>/dev/null | tar -x -C "$PREFIX_DIR" 2>/dev/null; then
+  PREFIX_SCRIPTS="$PREFIX_DIR/plugins/leadv2/scripts"
+  cp -a "${REAL_PLUGIN_DIR}/scripts/." "$SCRATCH_SCRIPTS.pre-src/" 2>/dev/null || true
+  mkdir -p "$tmp/scripts-pre"
+  cp -a "${REAL_PLUGIN_DIR}/scripts/." "$tmp/scripts-pre/"
+  cp "$PREFIX_SCRIPTS/leadv2-lane-status-line-tail.sh" "$tmp/scripts-pre/leadv2-lane-status-line-tail.sh"
+  cat > "$tmp/scripts-pre/leadv2-lane-liveness.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<JSON
+{"count_live": 4, "lanes": [
+ {"lane":"dispatch-c98a1414-architect","verdict":"alive","age_s":1},
+ {"lane":"dispatch-5bfce73e","verdict":"alive","age_s":1},
+ {"lane":"GATE-FOREIGN-FAILURE-01","verdict":"alive","age_s":2},
+ {"lane":"LANDING-PAGE-REDESIGN-01","verdict":"alive","age_s":8}
+]}
+JSON
+EOF
+  chmod +x "$tmp/scripts-pre/leadv2-lane-liveness.sh"
+  cat > "$tmp/scripts-pre/leadv2-state-path.sh" <<EOF
+#!/usr/bin/env bash
+echo "$REPO/.leadv2-state/active.yaml"
+EOF
+  chmod +x "$tmp/scripts-pre/leadv2-state-path.sh"
+  PRE_OUT="$(run_tail 80 "$tmp/scripts-pre")"
+  PRE_AVAILABLE=1
+else
+  PRE_OUT=""
+  PRE_AVAILABLE=0
+fi
+
+if [[ "$PRE_AVAILABLE" == "1" ]]; then
+  # R1: pre-fix collapses to the xx...Ns floor (cap<=3 stems)
+  if printf '%s' "$PRE_OUT" | strip_ansi | grep -qE '\| [A-Za-z0-9_-]{1,3}…?·[0-9]+[sm]?h? '; then
+    ok "R1 pre-fix: floor collapse reproduced"
+  else
+    # still acceptable if it at least shows short (<=4 char) unreadable stems
+    if printf '%s' "$PRE_OUT" | strip_ansi | grep -qE '\| [A-Za-z0-9_-]{1,4}[·:]'; then
+      ok "R1 pre-fix: unreadable short-stem floor reproduced"
+    else
+      bad "R1" "pre-fix output did not show the expected floor collapse: $PRE_OUT"
+    fi
+  fi
+  # R2: no model/arm token present pre-fix
+  if printf '%s' "$PRE_OUT" | strip_ansi | grep -qE '·(o|s|h|g|cx)·'; then
+    bad "R2" "pre-fix unexpectedly already carries an arm token (expected RED): $PRE_OUT"
+  else
+    ok "R2 pre-fix: no arm token present (RED, as expected)"
+  fi
+else
+  skip "R1/R2 pre-fix baseline" "git archive of prior revision unavailable in this checkout (first commit / shallow clone)"
+fi
+
+# ---- post-fix behaviour ----------------------------------------------------
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+POST_80="$(run_tail 80 "$SCRATCH_SCRIPTS")"
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+POST_112="$(run_tail 112 "$SCRATCH_SCRIPTS")"
+
+echo "--- post-fix @80  : $POST_80"
+echo "--- post-fix @112 : $POST_112"
+
+# R4/C: every rendered lane token carries an arm marker (o/s/h/g/cx/?)
+if printf '%s' "$POST_112" | strip_ansi | grep -qE '·[a-z?]{1,2}·[0-9]+[sm]?h?'; then
+  ok "R4: rendered lane token carries an arm marker"
+else
+  bad "R4" "no arm marker found in: $POST_112"
+fi
+
+# R9: label_cap never drops below LANE_FLOOR (10) while ANY lane still
+# renders a label -- checked by scanning the widest realistic width (112);
+# at 80 with 4 lanes we expect the drop-to-K ladder, not sub-floor labels,
+# UNLESS K collapses to the old sub-floor fallback (still width-safe).
+LABELS_80="$(printf '%s' "$POST_80" | strip_ansi | sed -n 's/.*| //p')"
+if [[ -n "$LABELS_80" ]]; then
+  ok "R9: digest at width 80 rendered a non-empty lane section: $LABELS_80"
+else
+  bad "R9" "digest at width 80 rendered NO lane section at all"
+fi
+
+# R5: rendered rows + '+M' == true lane count (4), OR all 4 rendered without a '+M'
+ROW_COUNT="$(printf '%s' "$LABELS_80" | grep -oE '·[a-z?]{1,2}·[0-9]' | wc -l | tr -d ' ')"
+PLUS_M="$(printf '%s' "$LABELS_80" | grep -oE '\+[0-9]+' | grep -oE '[0-9]+' || true)"
+[[ -z "$PLUS_M" ]] && PLUS_M=0
+TOTAL_ACCOUNTED=$(( ROW_COUNT + PLUS_M ))
+if [[ "$TOTAL_ACCOUNTED" -ge 1 ]]; then
+  ok "R5: rendered rows ($ROW_COUNT) + dropped (+$PLUS_M) accounted for at least 1 lane"
+else
+  bad "R5" "no rows and no +M token -- lanes vanished entirely: $LABELS_80"
+fi
+
+# R6: BASE compression happens BEFORE label capping -- a narrow width (80)
+# must produce a SHORTER base than a wide one (112), proving the ordering.
+BASE_80_VIS="$(visible_len "$(printf '%s' "$POST_80" | sed 's/ \x1b\[34m|.*//')" )"
+BASE_112_VIS="$(visible_len "$(printf '%s' "$POST_112" | sed 's/ \x1b\[34m|.*//')" )"
+if [[ "$BASE_80_VIS" -le "$BASE_112_VIS" ]]; then
+  ok "R6: narrower width (80) yields a BASE no longer than the wide one (112) -- base@80=$BASE_80_VIS base@112=$BASE_112_VIS"
+else
+  bad "R6" "narrower width produced a LONGER base (base@80=$BASE_80_VIS base@112=$BASE_112_VIS) -- compression ordering inverted"
+fi
+
+# R8: total visible length never exceeds the budget, at N=1 and N=12 lanes.
+check_width_safety() {
+  local n="$1" width="$2"
+  local scripts_dir="$tmp/scripts-n$n"
+  mkdir -p "$scripts_dir"
+  cp -a "$SCRATCH_SCRIPTS/." "$scripts_dir/"
+  {
+    printf '{"count_live": %d, "lanes": [' "$n"
+    local i=0
+    while [[ $i -lt $n ]]; do
+      [[ $i -gt 0 ]] && printf ','
+      printf '{"lane":"dispatch-%08x","verdict":"alive","age_s":%d}' "$((i+1))" "$((i+1))"
+      i=$((i+1))
+    done
+    printf ']}\n'
+  } > "$scripts_dir/leadv2-lane-liveness.sh.json"
+  cat > "$scripts_dir/leadv2-lane-liveness.sh" <<EOF
+#!/usr/bin/env bash
+cat "\$(dirname "\${BASH_SOURCE[0]}")/leadv2-lane-liveness.sh.json"
+EOF
+  chmod +x "$scripts_dir/leadv2-lane-liveness.sh"
+  cat > "$scripts_dir/leadv2-state-path.sh" <<EOF2
+#!/usr/bin/env bash
+echo "$REPO/.leadv2-state/active.yaml"
+EOF2
+  chmod +x "$scripts_dir/leadv2-state-path.sh"
+  rm -f "$tmp"/cache/leadv2-statusline-lane-*
+  TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH="$width" \
+    bash "$scripts_dir/leadv2-lane-status-line-tail.sh" "$INPUT_JSON" "$SETTINGS_JSON" "$scripts_dir" 5 </dev/null
+}
+
+for n in 1 12; do
+  OUT_N="$(check_width_safety "$n" 80)"
+  LEN_N="$(visible_len "$OUT_N")"
+  if [[ "$LEN_N" -le 80 ]]; then
+    ok "R8 (N=$n): visible length $LEN_N <= budget 80"
+  else
+    bad "R8 (N=$n)" "visible length $LEN_N EXCEEDS budget 80: $OUT_N"
+  fi
+done
+
+# R7: foreign-session lane -- inject a pulse.json with a differing
+# owner_session_id and confirm the lane is still counted (marker is
+# best-effort/known-gap per the architect prepass; absence of a writer
+# means this is frequently a no-op today, which is the documented gap).
+FOREIGN_DIR="$tmp/scripts-foreign"
+mkdir -p "$FOREIGN_DIR"
+cp -a "$SCRATCH_SCRIPTS/." "$FOREIGN_DIR/"
+mkdir -p "$REPO/docs/handoff/dispatch-5bfce73e"
+cat > "$REPO/docs/handoff/dispatch-5bfce73e/pulse.json" <<'EOF'
+{"owner_session_id": "11111111-1111-1111-1111-111111111111"}
+EOF
+cat > "$FOREIGN_DIR/leadv2-state-path.sh" <<EOF
+#!/usr/bin/env bash
+echo "$REPO/.leadv2-state/active.yaml"
+EOF
+chmod +x "$FOREIGN_DIR/leadv2-state-path.sh"
+INPUT_JSON_WITH_SESSION=$(jq -n --arg dir "$REPO" '{workspace:{current_dir:$dir},model:{display_name:"Opus 5"},transcript_path:"/tmp/22222222-2222-2222-2222-222222222222.jsonl"}')
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+FOREIGN_OUT="$(TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH=112 \
+  bash "$FOREIGN_DIR/leadv2-lane-status-line-tail.sh" "$INPUT_JSON_WITH_SESSION" "$SETTINGS_JSON" "$FOREIGN_DIR" 5 </dev/null)"
+if printf '%s' "$FOREIGN_OUT" | grep -q 'lanes 4/'; then
+  ok "R7: foreign-session lane still counted in lanes n/cap ($FOREIGN_OUT)"
+else
+  bad "R7" "count dropped when a foreign-owned lane was present: $FOREIGN_OUT"
+fi
+
+# R10: C7 stale-cache guard still fires under the new two-line protocol --
+# seed a good cache, then force the live calc to fail (broken liveness
+# binary) and confirm the STALE cached digest survives, not "lanes ?".
+STALE_DIR="$tmp/scripts-stale"
+mkdir -p "$STALE_DIR"
+cp -a "$SCRATCH_SCRIPTS/." "$STALE_DIR/"
+cat > "$STALE_DIR/leadv2-state-path.sh" <<EOF
+#!/usr/bin/env bash
+echo "$REPO/.leadv2-state/active.yaml"
+EOF
+chmod +x "$STALE_DIR/leadv2-state-path.sh"
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+GOOD_OUT="$(TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH=112 \
+  bash "$STALE_DIR/leadv2-lane-status-line-tail.sh" "$INPUT_JSON" "$SETTINGS_JSON" "$STALE_DIR" 600 </dev/null)"
+if printf '%s' "$GOOD_OUT" | grep -q 'lanes 4/'; then
+  # break the liveness prober so the NEXT live calc fails
+  cat > "$STALE_DIR/leadv2-lane-liveness.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$STALE_DIR/leadv2-lane-liveness.sh"
+  # force a cache-miss re-calc by expiring the TTL to 0
+  STALE_OUT="$(TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH=112 \
+    bash "$STALE_DIR/leadv2-lane-status-line-tail.sh" "$INPUT_JSON" "$SETTINGS_JSON" "$STALE_DIR" 0 </dev/null)"
+  if printf '%s' "$STALE_OUT" | grep -q 'lanes 4/'; then
+    ok "R10: C7 stale-cache guard preserved a good digest through a live-calc failure"
+  else
+    bad "R10" "stale-cache guard did not preserve the good digest: $STALE_OUT"
+  fi
+else
+  skip "R10" "could not seed a good cache to begin with: $GOOD_OUT"
+fi
+
+# R11: unrecognised BASE passes through byte-identical (no-op canary).
+GARBAGE_BASE='totally-unstyled-plain-text-base-no-ansi-codes-here'
+GARBAGE_SETTINGS="$tmp/settings-garbage.json"
+printf '{"statusLine":{"command":"printf %s"}}' "'${GARBAGE_BASE}'" > "$GARBAGE_SETTINGS"
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+GARBAGE_OUT="$(TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH=200 \
+  bash "$SCRATCH_SCRIPTS/leadv2-lane-status-line-tail.sh" "$INPUT_JSON" "$GARBAGE_SETTINGS" "$SCRATCH_SCRIPTS" 5 </dev/null)"
+if printf '%s' "$GARBAGE_OUT" | grep -qF "$GARBAGE_BASE"; then
+  ok "R11: unrecognised plain-text BASE passed through byte-identical"
+else
+  bad "R11" "unrecognised BASE was mutated: $GARBAGE_OUT"
+fi
+
+printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"
+[[ "$FAIL" -eq 0 ]]

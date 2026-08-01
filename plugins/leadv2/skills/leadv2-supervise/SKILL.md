@@ -132,6 +132,14 @@ Only things that need the founder reach chat.
      the next pulse.
    - All other status is relayed VERBATIM from loop lines. **Zero narration**
      between polls — no "запустил", "читаю", "синтезирую".
+   - The 30-minute broad status is a `[BROAD_STATUS] ... [BROAD_STATUS_END]`
+     block the loop already writes to `supervise-loop.log` (see
+     `docs/supervisor-role.md` §Status reporting standard for the exact
+     table shape). Paste that block VERBATIM as one chat turn when it
+     appears — the lead never hand-composes a status, never re-tables the
+     lane rows, and never spins up a `CronCreate` job to produce one; the
+     cadence is a plugin-owned loop beat (`leadv2-supervise-loop.sh`,
+     `LEADV2_SUPERVISE_BROAD_STATUS_S`), not something the lead schedules.
    - A corroborated-dead lane is **NEVER auto-restarted.** It is tombstoned
      (already done by step 1's reconciliation) and escalated to the founder
      via `scripts/leadv2-ask.sh` with exactly three options: `inspect` (logs

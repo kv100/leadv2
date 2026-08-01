@@ -423,6 +423,29 @@ additive `criteria[]` of programmatic/judge/human checks — schema at
 Full field-by-field YAML template with inline comments for every key above: see
 [SCHEMAS.md](./SCHEMAS.md) § context.yaml Schema.
 
+### Acceptance block (mandatory, top-level — RED-FIRST-GATE-01 R2)
+
+`context.yaml` MUST carry a top-level `acceptance:` block, authored by the
+architect/planner BEFORE any code exists — never by the implementer, and
+never restated in terms only the code speaks. It states what a human sees at
+the surface the founder actually uses, not an internal contract:
+
+```yaml
+acceptance:
+  authored_at: 2026-07-30T21:48:00Z      # now, ISO-8601 — set when this block is written
+  surface: rendered_line                  # rendered_line|prod_db_row|log_line|http_response|file_artifact
+  observable: "supervise status line shows exactly the 5 live lanes, full labels, no trailing segment"
+  probe_cmd: "leadv2-lane-liveness.sh render"   # optional: how to reproduce the observable
+  regression_only: []                     # optional: assertion labels that legitimately cannot go red
+```
+
+`observable` must be phrased as what a human sees, never as an internal
+contract — banned phrasing: "function ... returns", "exit code", "variable",
+"is set to". A 25/25-green test suite that never once ran the rendered line
+and read it (2026-07-30) is exactly the failure this block exists to catch;
+see `leadv2-acceptance-shape.sh validate`, which enforces this mechanically
+at dispatch (`LEADV2_REQUIRE_ACCEPTANCE`) and at close (A11).
+
 ### Plan schema (mandatory for every step)
 
 Each `plan.steps[i]` MUST contain:
@@ -430,7 +453,14 @@ Each `plan.steps[i]` MUST contain:
 - `mission` — concrete description, ≥30 words, no «developer decides» / «figure out»
 - `reads` — list of file paths to read FIRST (≥1 entry; pure-new-file steps may use `[]` with explicit comment)
 - `writes` — list of files to create/modify
-- `acceptance` — ≥1 verifiable check: shell command, grep pattern, mypy/pytest invocation
+- `acceptance` — ≥1 verifiable check phrased as an OBSERVABLE OUTCOME at this step's own
+  surface (a rendered value, a row, a log line, a response, a file's content) — e.g. "the
+  written file contains the new flag" or "the script's stdout shows PASS for the new case".
+  NOT an internal contract: do not phrase this as a bare shell command, grep pattern, or
+  mypy/pytest invocation with no stated observable — a command with nothing it's expected to
+  show is the same tautology-inviting phrasing R2 bans at the top level (RED-FIRST-GATE-01;
+  this bullet used to read "shell command, grep pattern, mypy/pytest invocation" verbatim,
+  which is what made the plan schema itself the drift source — fixed here, not layered over).
 - `tests` — optional, expected for new logic
 
 A step missing any required field is invalid. Lead must reject the plan and re-prompt the planner.
@@ -443,6 +473,11 @@ Run this snippet immediately after drafting `plan.steps` and before calling `_at
 python3 -c "
 import yaml, sys
 d = yaml.safe_load(open('docs/handoff/<task-id>/context.yaml'))
+acc = d.get('acceptance') or {}
+acc_required = {'authored_at','surface','observable'}
+missing_acc = acc_required - set(acc.keys())
+if missing_acc:
+    print(f'top-level acceptance: missing {missing_acc}', file=sys.stderr); sys.exit(1)
 required = {'id','mission','reads','writes','acceptance'}
 for i, s in enumerate(d.get('plan',{}).get('steps', []) or []):
     missing = required - set(s.keys())

@@ -113,6 +113,19 @@ _sc_lanes_section() {
 }
 _sc_run_section "lanes" _sc_lanes_section
 
+# ── generic section: lane_detail — per-lane ownership/worker/disk facts for
+#    the founder status table (SUPERVISOR-STATUS-TABLE-IN-PLUGIN-01).
+#    Deterministic, additive-only: a failure here never loses "lanes" or
+#    "repo_facts" (same _sc_run_section isolation as every other section). ──
+_sc_lane_detail_section() {
+  cd "$PROJECT_ROOT"
+  LEADV2_PROJECT_ROOT="$PROJECT_ROOT" \
+    CLAUDE_PROJECT_DIR="$PROJECT_ROOT" \
+    PROJECT_ROOT="$PROJECT_ROOT" \
+    bash "${LEADV2_LANE_DETAIL_BIN:-$_SC_DIR/leadv2-lane-detail.sh}" --project-root "$PROJECT_ROOT" --json
+}
+_sc_run_section "lane_detail" _sc_lane_detail_section
+
 # ── repo-specific facts (optional hook) ──────────────────────────────────
 # Canonical location is .claude/leadv2-overrides/status-collector-facts.sh
 # (per-repo extension point, same convention as deploy.sh/verify.sh/etc).

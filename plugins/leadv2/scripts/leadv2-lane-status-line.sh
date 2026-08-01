@@ -173,15 +173,57 @@ REFRESH_LOCK="${TMPDIR:-/tmp}/leadv2-statusline-refresh-lock-${CACHE_KEY}"
 # statusLine.command and exit — no lanes digest, no refresher spawn, no cache
 # write. LEADV2_STATUSLINE_SUPERVISOR_ONLY=0 restores lanes-for-everyone.
 if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0" ]]; then
+  # ── R4 (fix round 3): append a live-lane summary to the base line ──────
+  # The lanes digest used to be supervisor-only, so a plain session that had
+  # dispatched workers saw NOTHING. Now: if the status-surface renderer reports
+  # any LIVE lane, append its oneline (<=120 chars) to the founder's normal
+  # line. A quiet machine shows the base line only, unchanged. Foreground is
+  # builtins only ([[ ]], read, stat, case, ${v:0:120}); the only spawn is the
+  # already-idiomatic detached refresher (setsid/nohup, never awaited) -- the
+  # <100ms budget is preserved by construction. Memo: 5s TTL, write-tmp-then-
+  # mv (atomic) so two sessions sharing CACHE_KEY never see a torn line.
+  SURFACE="${SCRIPT_DIR}/leadv2-status-surface.sh"
+  MEMO="${TMPDIR:-/tmp}/leadv2-status-oneline-${CACHE_KEY}"
+  _now_r4="${EPOCHSECONDS:-$(date +%s)}"
+  _surf_oneline=""
+  if [[ -f "$MEMO" ]]; then
+    _memo_mtime="$(stat -f %m "$MEMO" 2>/dev/null || stat -c %Y "$MEMO" 2>/dev/null || echo 0)"
+    if (( _now_r4 - _memo_mtime < 5 )); then
+      # read returns non-zero at EOF-without-newline (the normal case here, the
+      # surface prints one line); do NOT gate on its exit status, same caveat as
+      # the sidecar read above.
+      IFS= read -r _surf_oneline < "$MEMO" 2>/dev/null || true
+    fi
+  fi
+  _surf_tail=""
+  if [[ -n "$_surf_oneline" ]]; then
+    # Append only when a LIVE lane is reported; a quiet/errored surface adds
+    # nothing so the base line is byte-identical to before.
+    case "$_surf_oneline" in
+      *live*) _surf_tail=" ${_surf_oneline:0:120}" ;;
+    esac
+  fi
   USER_CMD="$(jq -r '(.statusLine.command // "")' "$SETTINGS_JSON" 2>/dev/null || true)"
   if [[ -n "$USER_CMD" ]]; then
-    printf '%s' "$INPUT" | timeout 2 bash -c "$USER_CMD" 2>/dev/null || true
+    _base_out="$(printf '%s' "$INPUT" | timeout 2 bash -c "$USER_CMD" 2>/dev/null || true)"
+    printf '%s%s\n' "$_base_out" "$_surf_tail"
   else
     # No user command configured: emit a minimal base line (no lanes segment)
     # so the status line is never blank for a non-supervisor session.
     _BM="?" _BC="$PAINT_CWD"
     [[ "$INPUT" =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && _BM="${BASH_REMATCH[1]}"
     _leadv2_render_colored_base "$_BM" "$_BC" "" ""
+    printf '%s\n' "$_surf_tail"
+  fi
+  # Detached refresh of the memo (fire-and-forget). A missing renderer is a
+  # silent no-op -- never a broken statusline.
+  if [[ -x "$SURFACE" || -f "$SURFACE" ]]; then
+    if command -v setsid >/dev/null 2>&1; then
+      ( setsid bash "$SURFACE" --oneline >"$MEMO".tmp 2>/dev/null && mv -f "$MEMO".tmp "$MEMO"; ) </dev/null >/dev/null 2>&1 &
+    else
+      ( nohup bash "$SURFACE" --oneline >"$MEMO".tmp 2>/dev/null && mv -f "$MEMO".tmp "$MEMO"; ) </dev/null >/dev/null 2>&1 &
+    fi
+    disown -a 2>/dev/null || true
   fi
   exit 0
 fi

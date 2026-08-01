@@ -352,12 +352,29 @@ fi
 # ── Run dispatch-code.sh SYNCHRONOUSLY -- this is the (up to 840s) call that
 # used to block fanout's own foreground. We are in our own session now, so
 # there is no caller deadline to race. ───────────────────────────────────────
+# P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01 (M2 -- LANE-WORKTREE-ISOLATION-01 for product
+# lanes): the three lead-session launch paths in fanout.sh already `ensure` a worktree
+# before dispatch (see launch_headless/launch_windowed/launch_tmux); THIS path (the
+# detached per-lane launcher) never did, so every product lane's edits landed in the
+# shared tree with no scoping. `ensure` is fail-open by construction (falls back to
+# PROJECT_ROOT on any git failure), so a worktree failure here degrades to today's
+# shared-tree behavior rather than killing the lane. LEADV2_PROJECT_ROOT is already
+# exported above -- pinned to the ORIGINAL shared root so control-plane files
+# (active.yaml, docs/handoff, bus.jsonl) still resolve there regardless of which
+# worktree the child's code edits land in.
+_lane_dir="$("${SCRIPT_DIR}/leadv2-lane-worktree.sh" ensure "$TASK_ID" "$CLS")"
+[[ -n "$_lane_dir" && -d "$_lane_dir" ]] || _lane_dir="$PROJECT_ROOT"
+# LANDING-BLOCKER-R2 (C1): make the worker's actual cwd an explicit, propagated value
+# instead of relying on dispatch-code.sh inheriting our `cd` below -- glm/codex pass
+# --cwd explicitly and were reading PROJECT_ROOT (shared root), not this worktree.
+export LEADV2_LANE_WORK_ROOT="$_lane_dir"
+
 declare -a dc_args=("$MISSION" --kind "fanout-class-funnel" --task-id "$TASK_ID")
 [[ -n "$LANE_WRITES" ]] && dc_args+=(--writes "$LANE_WRITES")
 [[ -n "$LANE_ACCEPTANCE" ]] && dc_args+=(--acceptance-cmd "$LANE_ACCEPTANCE")
 [[ "$LANE_ROLLBACK" == "1" ]] && dc_args+=(--rollback-onestep)
 
-dc_out="$(bash "$DISPATCH_BIN" "${dc_args[@]}" 2>&1)"; dc_rc=$?
+dc_out="$(cd "$_lane_dir" && bash "$DISPATCH_BIN" "${dc_args[@]}" 2>&1)"; dc_rc=$?
 
 # ── Case block moved VERBATIM from leadv2-fanout.sh's launch_via_dispatch_code
 # (the synchronous tail, rc==0/2/3/*) -- same log lines, same field
@@ -371,6 +388,24 @@ dc_out="$(bash "$DISPATCH_BIN" "${dc_args[@]}" 2>&1)"; dc_rc=$?
 # task returns to `pending` and is picked up by the next fanout/backlog-pump
 # run rather than being silently dropped. See developer.full.md for why this
 # is judged an acceptable, non-silent narrowing of scope.
+# M10 (LANDING-BLOCKER-R2): a worktree is created per lane per dispatch (M2) and
+# leadv2-lane-worktree.sh has no prune of its own -- reap it here on the three terminal
+# outcomes below that produced no landable work, via the existing Phase-8 reaper
+# (leadv2-lane-worktree.sh:35, leadv2-worktree-cleanup.sh --name <id>). Never on `landed`
+# (the work must survive for merge). Requires BOTH a clean tree AND zero commits ahead of
+# upstream -- a dirty or ahead worktree is left alone and is the operator's to reap; never
+# `git clean`/`reset` here. `|| true` throughout: reaping is best-effort and must never
+# fail this launcher's own exit path.
+_reap_lane_worktree_if_unused() {
+  [[ -n "$_lane_dir" && "$_lane_dir" != "$PROJECT_ROOT" ]] || return 0
+  [[ -z "$(git -C "$_lane_dir" status --porcelain 2>/dev/null)" ]] || return 0
+  local _upstream _ahead
+  _upstream="$(git -C "$_lane_dir" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || printf 'main')"
+  _ahead="$(git -C "$_lane_dir" rev-list --count "${_upstream}.." 2>/dev/null || printf '0')"
+  [[ "$_ahead" == "0" ]] || return 0
+  bash "${SCRIPT_DIR}/leadv2-worktree-cleanup.sh" --name "$TASK_ID" >/dev/null 2>&1 || true
+}
+
 case "$dc_rc" in
   0)
     handle="$(printf '%s\n' "$dc_out" | sed -n 's/.*worker_spawned .*handle=\(.*\)$/\1/p' | tail -1)"
@@ -412,6 +447,7 @@ case "$dc_rc" in
     leadv2_tasks_unclaim "$TASK_ID" >/dev/null 2>&1 || true
     leadv2_active_unregister "$TASK_ID" >/dev/null 2>&1 || true
     _fanout_write_lane_terminal refused "duplicate_task_signature" ""
+    _reap_lane_worktree_if_unused
     exit 2
     ;;
   3)
@@ -419,6 +455,7 @@ case "$dc_rc" in
     leadv2_tasks_unclaim "$TASK_ID" >/dev/null 2>&1 || true
     leadv2_active_unregister "$TASK_ID" >/dev/null 2>&1 || true
     _fanout_write_lane_terminal parked "requires_opus_lead_judgment" ""
+    _reap_lane_worktree_if_unused
     exit 3
     ;;
   *)
@@ -426,6 +463,7 @@ case "$dc_rc" in
     leadv2_tasks_unclaim "$TASK_ID" >/dev/null 2>&1 || true
     leadv2_active_unregister "$TASK_ID" >/dev/null 2>&1 || true
     _fanout_write_lane_terminal dead "dispatch_code_failed_rc_${dc_rc}" "$(printf '%s' "$dc_out" | tail -20)"
+    _reap_lane_worktree_if_unused
     exit 1
     ;;
 esac

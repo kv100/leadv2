@@ -101,10 +101,71 @@ fi
 # report 80 there anyway. BASE_VISIBLE_LEN strips ANSI color codes before
 # measuring -- an escape sequence costs stdin bytes but zero terminal cells.
 STATUSLINE_WIDTH="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
-BASE_VISIBLE_LEN="$(printf '%s' "$BASE" | sed -E $'s/\x1b\\[[0-9;]*m//g' | awk '{print length}')"
-[[ -z "$BASE_VISIBLE_LEN" ]] && BASE_VISIBLE_LEN=0
+
+# STATUSLINE-READABLE-01 A: BASE used to claim width first and only shrink
+# AFTER the lane digest already collapsed (the old tilde-squeeze this
+# replaces, further down). Invert it: build every compression candidate for
+# BASE up front, cheapest information loss first, and let the python calc
+# below pick the SMALLEST amount of BASE compression that still lets every
+# lane render at LEADV2_STATUSLINE_LANE_FLOOR. compress_base is idempotent
+# and shape-guarded per step -- a BASE that doesn't match the expected
+# colorized shape (a founder edit to burn/statusline.sh, or a plain-text
+# fallback) simply passes a step through unchanged rather than corrupting
+# it. Step 0 = as-is. 1 = drop "(NNN context)" parenthetical. 2 = drop the
+# " [style]" segment (colorized or plain). 3 = shrink the cwd path to its
+# repo basename. 4 = drop the trailing "NN% ctx" (colorized or plain).
+compress_base() {
+  local input="$1" step="${2:-0}"
+  local out="$input"
+  if (( step >= 1 )); then
+    out="$(printf '%s' "$out" | sed -E 's/ \([^)]*context\)//')"
+  fi
+  if (( step >= 2 )); then
+    out="$(printf '%s' "$out" | sed -E $'s/ \\[\x1b\\[[0-9;]*m[^]]*\x1b\\[0m\\]//; s/ \\[[^]]*\\]//')"
+  fi
+  if (( step >= 3 )); then
+    out="$(printf '%s' "$out" | sed -E $'s#(\x1b\\[32m)[^\x1b]*/([^/\x1b]+)(\x1b\\[0m)#\\1\\2\\3#')"
+  fi
+  if (( step >= 4 )); then
+    out="$(printf '%s' "$out" | sed -E $'s/ \x1b\\[35m[0-9]+% ctx\x1b\\[0m//; s/ [0-9]+% ctx//')"
+  fi
+  printf '%s' "$out"
+}
+
+# An explicit LEADV2_STATUSLINE_LANE_BUDGET override pins the digest budget
+# directly -- BASE-first compression would be meaningless against a pinned
+# budget, so when it's set we skip compression entirely and keep the old
+# single-BASE semantics (mandatory constraint checklist #5).
+_EXPLICIT_LANE_BUDGET="${LEADV2_STATUSLINE_LANE_BUDGET:-}"
+BASE_STEP=("$BASE" "$BASE" "$BASE" "$BASE" "$BASE")
+if [[ -z "$_EXPLICIT_LANE_BUDGET" ]]; then
+  for _k in 1 2 3 4; do
+    BASE_STEP[_k]="$(compress_base "$BASE" "$_k")"
+  done
+fi
+BASE_LEN=()
+for _k in 0 1 2 3 4; do
+  BASE_LEN[_k]="$(printf '%s' "${BASE_STEP[$_k]}" | sed -E $'s/\x1b\\[[0-9;]*m//g' | awk '{print length}')"
+  [[ -z "${BASE_LEN[$_k]}" ]] && BASE_LEN[_k]=0
+done
+BASE_VISIBLE_LEN="${BASE_LEN[0]}"
+LANE_FLOOR="${LEADV2_STATUSLINE_LANE_FLOOR:-10}"
+
+# STATUSLINE-READABLE-01 E: best-effort session scoping. The founder's own
+# session id is parsed from the stdin JSON's transcript_path (the same field
+# ~/.claude/burn/statusline.sh already reads at :9) -- transcript files are
+# named "<session-uuid>.jsonl". No ownership writer exists yet (see the
+# python calc's foreign-lane comment below) so this is frequently empty;
+# that is a known, documented gap, not a bug in this script.
+OWN_SESSION_ID="$(printf '%s' "$INPUT" | jq -r '(.transcript_path // "") | if . == "" then "" else (split("/") | last | rtrimstr(".jsonl")) end' 2>/dev/null || true)"
 
 LANES="lanes ?"
+# STATUSLINE-READABLE-01 A: which BASE-compression candidate to render.
+# Stays 0 (uncompressed BASE, today's behaviour) unless the live calc below
+# overrides it via its "basestep=<k>" second output line -- so a cache-hit
+# repaint (which never sees that line, only the single-line cached digest)
+# and an unparseable/missing trailer both degrade to the pre-fix rendering.
+BASESTEP=0
 # STATUSLINE-DESTROYS-PROBER-01: every cache/memo path this script can ever
 # write is derived from this ONE dir, never from a binary's own path -- the
 # structural guard below (safe_replace / _leadv2_statusline_safe_write)
@@ -125,6 +186,7 @@ _leadv2_statusline_safe_write() {
     *.sh|*.py|*.js) return 1 ;;
   esac
   [[ "$(basename -- "$(dirname -- "$dest")")" == "scripts" ]] && return 1
+  mkdir -p "$CACHE_DIR" 2>/dev/null
   printf '%s' "$content" > "$dest" 2>/dev/null
 }
 
@@ -264,6 +326,25 @@ liveness_bin, liveness_memo_file, liveness_ttl_raw = sys.argv[7], sys.argv[8], s
 count_sidecar_file = sys.argv[10]
 width_raw, base_visible_len_raw = sys.argv[11], sys.argv[12]
 cache_dir_raw = sys.argv[13] if len(sys.argv) > 13 else ''
+# STATUSLINE-READABLE-01 A/B/E: five BASE-compression candidate lengths
+# (step0..step4, cheapest-first), the readable-label floor, and this
+# session's own id for foreign-lane marking.
+base_len_csv = sys.argv[14] if len(sys.argv) > 14 else ''
+lane_floor_raw = sys.argv[15] if len(sys.argv) > 15 else ''
+own_session_id = sys.argv[16] if len(sys.argv) > 16 else ''
+try:
+    base_lens = [max(0, int(x)) for x in base_len_csv.split(',')] if base_len_csv else []
+except ValueError:
+    base_lens = []
+if len(base_lens) != 5:
+    try:
+        base_lens = [max(0, int(base_visible_len_raw))] * 5
+    except ValueError:
+        base_lens = [0] * 5
+try:
+    lane_floor = max(1, int(lane_floor_raw))
+except ValueError:
+    lane_floor = 10
 try:
     liveness_ttl = float(liveness_ttl_raw)
 except ValueError:
@@ -413,7 +494,7 @@ for lane_id, lrow in liveness_by_tid.items():
 # first; unknown-age lanes (no discoverable log) sort last, never first.
 # STATUSLINE-COUNT-TRUTH-01 (3.4): stale (silent:*) rows stay visible but
 # sort AFTER every counted (alive/starting) row, so the digest reads as
-# "what's actually working" followed by "what's stale", never interleaved --
+# what is actually working followed by what is stale, never interleaved --
 # separated, not deleted. Verdict is still on each token as a '·silent'
 # suffix (unchanged, below), so which group a row is in stays legible.
 rows.sort(key=lambda r: (
@@ -431,15 +512,20 @@ rows.sort(key=lambda r: (
 # id if every source comes up empty, so the digest never renders blank.
 LABEL_CAP = 24
 label_memo_file, tasks_lib_path = sys.argv[5], sys.argv[6]
+# STATUSLINE-READABLE-01 D: memo lines now carry a 'v2' schema tag so the
+# precedence reorder below (memo -> tasks-lib title -> active.yaml ->
+# prepass -> id) can never silently resurrect a label resolved under the
+# OLD precedence. An untagged (pre-fix) line is simply ignored -- the next
+# repaint re-resolves that lane fresh instead of pinning a stale 3-char stem
+# forever.
 label_memo = {}
 if os.path.isfile(label_memo_file):
     try:
         with open(label_memo_file, encoding='utf-8') as fh:
             for line in fh:
-                line = line.rstrip('\n')
-                if '\t' in line:
-                    k, v = line.split('\t', 1)
-                    label_memo[k] = v
+                parts = line.rstrip('\n').split('\t')
+                if len(parts) == 3 and parts[1] == 'v2':
+                    label_memo[parts[0]] = parts[2]
     except Exception:
         label_memo = {}
 
@@ -500,23 +586,37 @@ def prepass_label(tid):
 LABEL_RESOLVE_MAX = int(os.environ.get('LEADV2_STATUSLINE_LABEL_RESOLVE_MAX', '') or 4)
 label_resolve_budget = [LABEL_RESOLVE_MAX]
 
+def strip_scaffolding(text):
+    # STATUSLINE-READABLE-01 D: applied only to a label that came from a
+    # REAL source (title/tasks-lib/active.yaml/prepass) -- never to a bare
+    # raw id, which strip_common_affix below still needs intact (it compares
+    # label == tid to know a lane's label never resolved).
+    for pre in ('dispatch-', 'architect-', 'm-'):
+        if text.startswith(pre):
+            text = text[len(pre):]
+            break
+    for suf in ('-architect', '-review'):
+        if text.endswith(suf):
+            text = text[:-len(suf)]
+            break
+    if text.endswith('.md'):
+        text = text[:-3]
+    return text.strip() or text
+
 def raw_label(tid, s):
     # Returns the UNCAPPED label text; capping is applied later, per-row,
     # once the digest-wide length budget is known (fix5d-addendum).
-    # Precedence (D5): active.yaml title/mission -> label memo -> this
-    # lane's own architect-prepass.md -> tasks-lib intent tag (rate-capped)
-    # -> raw id (de-prefixed against its siblings in a later pass below).
-    for key in ('title', 'mission'):
-        val = s.get(key)
-        if val:
-            return str(val)
+    # STATUSLINE-READABLE-01 D precedence (a raw id/dispatch-hash is not the
+    # task's meaning -- reorder so the task's OWN title wins): (1) label
+    # memo -- the cache of whichever source previously won, checked FIRST so
+    # a resolved id never re-spends LABEL_RESOLVE_MAX; (2) docs/tasks.yaml
+    # 'title' via tasks-lib (rate-capped), falling back to the pre-colon
+    # 'intent' tag when no title is set; (3) active.yaml title/mission; (4)
+    # this lane's own architect-prepass.md; (5) raw id (de-prefixed against
+    # its siblings in a later pass below).
     if tid in label_memo:
         return label_memo[tid]
-    prepass = prepass_label(tid)
-    if prepass:
-        label_memo[tid] = prepass
-        return prepass
-    label = tid
+    label = None
     if label_resolve_budget[0] > 0:
         label_resolve_budget[0] -= 1
         try:
@@ -528,12 +628,28 @@ def raw_label(tid, s):
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 item = (yaml.safe_load(proc.stdout) or [{}])[0]
-                intent = str(item.get('intent', '') or '')
-                tag = intent.split(':', 1)[0].strip()
-                if tag:
-                    label = tag
+                title = str(item.get('title', '') or '').strip()
+                if title:
+                    label = title
+                else:
+                    intent = str(item.get('intent', '') or '')
+                    tag = intent.split(':', 1)[0].strip()
+                    if tag:
+                        label = tag
         except Exception:
             pass
+    if label is None:
+        for key in ('title', 'mission'):
+            val = s.get(key)
+            if val:
+                label = str(val)
+                break
+    if label is None:
+        label = prepass_label(tid)
+    if label is None:
+        label = tid
+    else:
+        label = strip_scaffolding(label)
     label_memo[tid] = label
     return label
 
@@ -590,6 +706,43 @@ def strip_common_affix(ids):
 # was the direct cause of a founder-visible lane going missing from the
 # digest. kind/model are now a strictly-optional tail appended only if width
 # remains after every lane already has its full label (never a fixed cost).
+def arm_char(s):
+    # STATUSLINE-READABLE-01 C: 1-2 char arm token that must survive every
+    # degradation step that still shows a label at all -- unlike 'kind',
+    # which stays the only droppable meta.
+    val = str(s.get('lead_model') or s.get('provider') or '').lower()
+    if 'opus' in val:
+        return 'o'
+    if 'sonnet' in val:
+        return 's'
+    if 'haiku' in val:
+        return 'h'
+    if 'glm' in val:
+        return 'g'
+    if 'codex' in val:
+        return 'cx'
+    return '?'
+
+def is_foreign_lane(lane_id):
+    # STATUSLINE-READABLE-01 E: mark, don't exclude, and only when the lane
+    # is PROVABLY foreign -- pulse.json.owner_session_id present AND
+    # different from this session's own id. No record at all (the common
+    # case today -- no writer ships this field yet) is UNKNOWN, not foreign,
+    # and stays unmarked. See the KNOWN GAP note in the deliverable: the
+    # owner_session_id WRITER is out of this task's scope.
+    if not own_session_id:
+        return False
+    pulse_path = os.path.join(root, 'docs', 'handoff', lane_id, 'pulse.json')
+    try:
+        with open(pulse_path, encoding='utf-8') as fh:
+            pulse = json.load(fh)
+    except Exception:
+        return False
+    owner = pulse.get('owner_session_id')
+    if not owner:
+        return False
+    return str(owner) != own_session_id
+
 lane_meta = []
 for age_s, lane_id, verdict in rows:
     if age_s is None:
@@ -621,13 +774,15 @@ for age_s, lane_id, verdict in rows:
         vprefix = str(verdict).split(':', 1)[0].strip()
         if vprefix:
             vsuffix = '·' + vprefix
+    arm = arm_char(s)
+    foreign = is_foreign_lane(lane_id)
     # NB: tuples, not a dict-with-string-keys -- this whole heredoc-style
     # block is embedded inside the OUTER bash script's double-quoted
     # 'python3 -c \"...\"' string, so a python double-quoted f-string (or
     # any bracket lookup needing its OWN quotes inside an f-string) would
     # prematurely close the outer bash quoting. Every line in this block
     # stays single-quote-only for that reason.
-    lane_meta.append((label, kind, model, age, vsuffix, lane_id))
+    lane_meta.append((label, kind, model, age, vsuffix, lane_id, arm, foreign, age_s))
 
 # D5 step 5: apply the batch-wide common-affix strip to every lane whose
 # label never resolved past the raw id (title/memo/prepass/tasks-lib all
@@ -635,94 +790,153 @@ for age_s, lane_id, verdict in rows:
 # 'dispatch-8a9177d7-architect' become distinguishable stems instead of both
 # still starting with the same 'dispatch-' that caused every label to render
 # identically before this fix.
-_unresolved_ids = [lid for lbl, _k, _mo, _ag, _vs, lid in lane_meta if lbl == lid]
+_unresolved_ids = [lid for lbl, _k, _mo, _ag, _vs, lid, _arm, _fo, _ags in lane_meta if lbl == lid]
 if _unresolved_ids:
     _stems = strip_common_affix(_unresolved_ids)
     lane_meta = [
-        ((_stems.get(lid, lbl) if lbl == lid else lbl), k, mo, ag, vs, lid)
-        for lbl, k, mo, ag, vs, lid in lane_meta
+        ((_stems.get(lid, lbl) if lbl == lid else lbl), k, mo, ag, vs, lid, arm, fo, ags)
+        for lbl, k, mo, ag, vs, lid, arm, fo, ags in lane_meta
     ]
 
-# D4 degradation ladder: shorten, NEVER drop a lane. D6: budget is now
-# derived from the ACTUAL remaining terminal width after BASE, not a flat
-# guess -- an explicit LEADV2_STATUSLINE_LANE_BUDGET override still wins.
-try:
-    _width = max(1, int(width_raw))
-except ValueError:
-    _width = 80
-try:
-    _base_visible_len = max(0, int(base_visible_len_raw))
-except ValueError:
-    _base_visible_len = 0
-_explicit_budget = os.environ.get('LEADV2_STATUSLINE_LANE_BUDGET', '')
-if _explicit_budget:
-    try:
-        DIGEST_BUDGET = int(_explicit_budget)
-    except ValueError:
-        DIGEST_BUDGET = max(20, _width - _base_visible_len - len(' | '))
-else:
-    DIGEST_BUDGET = max(20, _width - _base_visible_len - len(' | '))
-base_prefix = f'lanes {n}/{cap}'
-
-def digest_len(tokens):
-    if not tokens:
-        return len(base_prefix)
-    return len(base_prefix) + len(' | ') + sum(len(t) for t in tokens) + (len(tokens) - 1)
+def cap_lbl_marked(lbl, foreign, label_cap):
+    # '~' foreign marker never eats into the label's own visible budget --
+    # it is prepended after capping so a marked and unmarked lane at the
+    # same cap show the same amount of actual label text.
+    text = cap_label(lbl, label_cap)
+    return ('~' + text) if foreign else text
 
 def render_step12(label_cap, with_meta):
     toks = []
-    for lbl, k, mo, ag, vs, _lid in lane_meta:
-        tok = f'{cap_label(lbl, label_cap)}·{ag}{vs}'
+    for lbl, k, mo, ag, vs, _lid, arm, fo, _ags in lane_meta:
+        tok = f'{cap_lbl_marked(lbl, fo, label_cap)}·{arm}·{ag}{vs}'
         if with_meta:
-            tok += f'·{k}·{mo}'
+            tok += f'·{k}'
         toks.append(tok)
     return toks
 
 def render_step3(label_cap):
-    return [f'{cap_label(lbl, label_cap)}:{ag}{vs}' for lbl, _k, _mo, ag, vs, _lid in lane_meta]
+    return [f'{cap_lbl_marked(lbl, fo, label_cap)}:{arm}:{ag}{vs}'
+            for lbl, _k, _mo, ag, vs, _lid, arm, fo, _ags in lane_meta]
 
-def render_step5_floor():
-    # D6 floor: 2-char (already de-prefixed, per D5 step 5) stems + age.
-    # Verdict suffix dropped here only, age always kept -- unlike the old
-    # id-only floor this replaces, this is never a bare hash with zero
+def render_step5_floor(rows_subset=None):
+    # D6 floor: 3-char (already de-prefixed, per D5 step 5) stems + arm +
+    # age. Verdict suffix dropped here only, age always kept -- unlike the
+    # old id-only floor this replaces, this is never a bare hash with zero
     # information about how stale the lane is. cap_label's own budget is 3,
     # not 2: with an ellipsis costing one of the two, a literal cap of 2
     # shows only ONE real character (the other char slot spent on '…'),
     # which is exactly what made distinct stems collide under heavy load --
     # 3 keeps both stem characters visible.
-    return [f'{cap_label(lbl, 3)}·{ag}' for lbl, _k, _mo, ag, _vs, _lid in lane_meta]
+    subset = rows_subset if rows_subset is not None else lane_meta
+    return [f'{cap_lbl_marked(lbl, fo, 3)}·{arm}·{ag}' for lbl, _k, _mo, ag, _vs, _lid, arm, fo, _ags in subset]
 
-id_parts = None
-if lane_meta:
-    # Step 1: full labels (cap 24), meta appended only while it still fits.
+try:
+    _width = max(1, int(width_raw))
+except ValueError:
+    _width = 80
+_explicit_lane_budget = os.environ.get('LEADV2_STATUSLINE_LANE_BUDGET', '')
+base_prefix = f'lanes {n}/{cap}'
+
+def digest_len(tokens, prefix=None):
+    bp = prefix if prefix is not None else base_prefix
+    if not tokens:
+        return len(bp)
+    return len(bp) + len(' | ') + sum(len(t) for t in tokens) + (len(tokens) - 1)
+
+def try_no_drop(budget):
+    # STATUSLINE-READABLE-01 B: no lane below LEADV2_STATUSLINE_LANE_FLOOR
+    # in this path -- caps below the floor belong only to the drop-lanes
+    # ladder / old sub-floor fallback further down, never here.
+    if not lane_meta:
+        return []
     for with_meta in (True, False):
         cand = render_step12(LABEL_CAP, with_meta)
-        if digest_len(cand) <= DIGEST_BUDGET:
-            id_parts = cand
-            break
-    # Step 2: shrink the per-label cap, no meta.
-    if id_parts is None:
-        for label_cap in (16, 12, 9, 6):
-            cand = render_step12(label_cap, False)
-            if digest_len(cand) <= DIGEST_BUDGET:
-                id_parts = cand
-                break
-    # Step 3: compact 'lbl:age' form, cap 4 -- verdict suffix retained.
-    if id_parts is None:
+        if digest_len(cand) <= budget:
+            return cand
+    for label_cap in (16, 12, 9, 6):
+        if label_cap < lane_floor:
+            continue
+        cand = render_step12(label_cap, False)
+        if digest_len(cand) <= budget:
+            return cand
+    if lane_floor <= 4:
         cand = render_step3(4)
-        if digest_len(cand) <= DIGEST_BUDGET:
-            id_parts = cand
-    # Step 5 floor: 2-char de-prefixed stem + age, verdict suffix dropped.
-    # There is no step that removes a lane -- if this still overflows, width
-    # is released by shortening BASE's own cwd instead (see the bash tail
-    # below this heredoc).
+        if digest_len(cand) <= budget:
+            return cand
+    return None
+
+def try_drop_to_k(budget):
+    # STATUSLINE-READABLE-01 B: drop from the TAIL (least recently active --
+    # lane_meta is already sorted stale-last/oldest-last upstream) and
+    # append one '+M' token. Choose the largest K >= 1 that fits at
+    # label_cap == lane_floor including the '+M' token. lanes n/cap already
+    # carries the true total, so a dropped row loses no fact.
+    if not lane_meta:
+        return None, 0
+    total = len(lane_meta)
+    for k in range(total, 0, -1):
+        subset = lane_meta[:k]
+        toks = [f'{cap_lbl_marked(lbl, fo, lane_floor)}·{arm}·{ag}{vs}'
+                for lbl, _kd, _mo, ag, vs, _lid, arm, fo, _ags in subset]
+        dropped = total - k
+        if dropped:
+            toks = toks + [f'+{dropped}']
+        if digest_len(toks) <= budget:
+            return toks, k
+    return None, 0
+
+def sub_floor_fallback(budget):
+    # Last resort ONLY: K=1 + '+M' still didn't fit at the floor. Falls
+    # back to the pre-STATUSLINE-READABLE-01 ladder (which never drops a
+    # lane and can render below the floor) -- a hard clamp in the bash tail
+    # below is what makes 'never exceeds the budget' provable even here.
+    for label_cap in (9, 6, 4):
+        cand = render_step12(label_cap, False) if label_cap > 4 else render_step3(label_cap)
+        if digest_len(cand) <= budget:
+            return cand
+    return render_step5_floor()
+
+chosen_k = 0
+id_parts = None
+if _explicit_lane_budget:
+    try:
+        _pinned_budget = int(_explicit_lane_budget)
+    except ValueError:
+        _pinned_budget = max(20, base_lens[0] - len(' | '))
+    id_parts = try_no_drop(_pinned_budget)
     if id_parts is None:
-        id_parts = render_step5_floor()
+        id_parts, _k_used = try_drop_to_k(_pinned_budget)
+    if id_parts is None:
+        id_parts = sub_floor_fallback(_pinned_budget)
+    chosen_k = 0
+else:
+    # STATUSLINE-READABLE-01 A two-pass contract, step 2: iterate BASE
+    # compression candidates largest-BASE-first (k=0 = uncompressed) and
+    # accept the first one where every lane still fits at the readable
+    # floor with NO drop. Only once every candidate fails at k=4 (maximum
+    # compression) do we fall through to dropping lanes.
+    for _k in range(5):
+        _budget_k = max(0, _width - base_lens[_k] - len(' | '))
+        cand = try_no_drop(_budget_k)
+        if cand is not None:
+            id_parts, chosen_k = cand, _k
+            break
+    if id_parts is None:
+        chosen_k = 4
+        _budget_k = max(0, _width - base_lens[4] - len(' | '))
+        id_parts, _k_used = try_drop_to_k(_budget_k)
+        if id_parts is None:
+            id_parts = sub_floor_fallback(_budget_k)
 
 out = base_prefix
 if id_parts:
     out += ' | ' + ' '.join(id_parts)
 print(out)
+# STATUSLINE-READABLE-01 A: second stdout line, read by the bash tail to
+# pick which BASE-compression candidate to render. A caller on an older
+# build of this script (missing line 2 entirely) degrades to basestep=0,
+# i.e. today's uncompressed-BASE behaviour -- see the bash split below.
+print(f'basestep={chosen_k}')
 # C8 (STATUSLINE-SHOWS-LANES-QUESTIONMARK-01): tmp + os.replace for every
 # shared cache file this script writes -- concurrent detached refreshers
 # (one per repaint, throttled to ~2s) can interleave a plain open(...,'w')
@@ -740,10 +954,24 @@ try:
 except Exception:
     pass
 try:
-    atomic_write_text(label_memo_file, ''.join(f'{k}\t{v}\n' for k, v in label_memo.items()))
+    atomic_write_text(label_memo_file, ''.join(f'{k}\tv2\t{v}\n' for k, v in label_memo.items()))
 except Exception:
     pass
-" "$ACTIVE_YAML" "$CWD_FROM_INPUT" "$LANE_CACHE_FILE" "$LIMITS_YAML" "$LABEL_MEMO_FILE" "$TASKS_LIB" "$LIVENESS_BIN" "$LIVENESS_MEMO_FILE" "$LIVENESS_MEMO_TTL_S" "$COUNT_SIDECAR_FILE" "$STATUSLINE_WIDTH" "$BASE_VISIBLE_LEN" "$CACHE_DIR" 2>/dev/null || true)"
+" "$ACTIVE_YAML" "$CWD_FROM_INPUT" "$LANE_CACHE_FILE" "$LIMITS_YAML" "$LABEL_MEMO_FILE" "$TASKS_LIB" "$LIVENESS_BIN" "$LIVENESS_MEMO_FILE" "$LIVENESS_MEMO_TTL_S" "$COUNT_SIDECAR_FILE" "$STATUSLINE_WIDTH" "$BASE_VISIBLE_LEN" "$CACHE_DIR" "${BASE_LEN[0]},${BASE_LEN[1]},${BASE_LEN[2]},${BASE_LEN[3]},${BASE_LEN[4]}" "$LANE_FLOOR" "$OWN_SESSION_ID" 2>/dev/null || true)"
+      # STATUSLINE-READABLE-01 A, two-pass contract step 3/4: the python
+      # calc above now prints TWO lines -- the digest (unchanged shape, so
+      # the cache file and the C7 stale-guard below keep seeing exactly what
+      # they see today) and a "basestep=<k>" trailer that names which BASE
+      # candidate to render. Split FIRST, then apply C7 to the digest half
+      # ONLY -- applying it to the raw two-line capture would stop matching
+      # "lanes ?" and silently kill the stale-cache guard (the single
+      # highest-risk edit in this change, per the architect prepass).
+      _LANES_RAW="$LANES"
+      _BASESTEP_LINE="$(printf '%s\n' "$_LANES_RAW" | sed -n '2p')"
+      LANES="$(printf '%s\n' "$_LANES_RAW" | sed -n '1p')"
+      if [[ "$_BASESTEP_LINE" =~ ^basestep=([0-4])$ ]]; then
+        BASESTEP="${BASH_REMATCH[1]}"
+      fi
       # C7: a real prior number beats a fresh "lanes ?" -- an empty result
       # (timeout/crash) or an explicit "lanes ?" from the calc itself no
       # longer overwrites a good cached digest; it only falls back to "lanes
@@ -770,20 +998,32 @@ fi
 # gone -- the founder asked for it to be dropped twice, and its width budget
 # now belongs to the lane digest (see STATUSLINE_WIDTH/BASE_VISIBLE_LEN
 # above). LEADV2_LANE_PULSE_STALE_MAX_S is dead along with it.
-FINAL_LINE="$(printf '%s \033[34m| %s\033[0m' "$BASE" "$LANES")"
+# STATUSLINE-READABLE-01 A: render whichever BASE-compression candidate the
+# live calc picked (BASESTEP, 0 if unchanged/cache-hit/unparseable). An
+# explicit LEADV2_STATUSLINE_LANE_BUDGET always keeps BASESTEP at its 0
+# default (mandatory constraint checklist #5) -- BASE stays uncompressed.
+FINAL_BASE="${BASE_STEP[$BASESTEP]:-$BASE}"
+FINAL_LINE="$(printf '%s \033[34m| %s\033[0m' "$FINAL_BASE" "$LANES")"
 
-# D6 last-resort width release valve: the degradation ladder above never
-# drops a lane, so if the line STILL overflows after every lane is already
-# at its 2-char floor, shrink BASE's own cwd segments to their first letter
-# instead (~/Projects/persona-engine -> ~/P/persona-engine). Only fires when
-# genuinely needed -- the common case never touches BASE.
+# STATUSLINE-READABLE-01 B/7 hard clamp: the degradation ladder above only
+# GUARANTEES a fit down to lane_floor plus a drop-lanes '+M' token; the old
+# sub-floor fallback it falls through to when even K=1+'+M' doesn't fit can
+# still, in principle, overflow. LANES is always plain ASCII (no ANSI codes
+# ever enter it), so truncating it by character count here is safe and
+# makes 'never exceeds the budget, at 1 lane and at 12 lanes' provable
+# rather than merely hoped for -- this replaces the old cwd-first-letter
+# squeeze, which is now dead: BASE compression (step A) already owns
+# shrinking the path, so keeping both would be two path compressors racing
+# each other.
 FINAL_VISIBLE_LEN="$(printf '%s' "$FINAL_LINE" | sed -E $'s/\x1b\\[[0-9;]*m//g' | awk '{print length}')"
 [[ -z "$FINAL_VISIBLE_LEN" ]] && FINAL_VISIBLE_LEN=0
-if (( FINAL_VISIBLE_LEN > STATUSLINE_WIDTH )) && [[ "$BASE" == *'~/'* ]]; then
-  SHRUNK_BASE="$(printf '%s' "$BASE" | sed -E 's#~/([A-Za-z0-9_.-])[A-Za-z0-9_.-]*/#~/\1/#g')"
-  if [[ "$SHRUNK_BASE" != "$BASE" ]]; then
-    FINAL_LINE="$(printf '%s \033[34m| %s\033[0m' "$SHRUNK_BASE" "$LANES")"
-  fi
+if (( FINAL_VISIBLE_LEN > STATUSLINE_WIDTH )); then
+  OVERFLOW=$(( FINAL_VISIBLE_LEN - STATUSLINE_WIDTH ))
+  LANES_LEN=${#LANES}
+  KEEP=$(( LANES_LEN - OVERFLOW ))
+  (( KEEP < 0 )) && KEEP=0
+  LANES="${LANES:0:KEEP}"
+  FINAL_LINE="$(printf '%s \033[34m| %s\033[0m' "$FINAL_BASE" "$LANES")"
 fi
 
 printf '%s\n' "$FINAL_LINE"

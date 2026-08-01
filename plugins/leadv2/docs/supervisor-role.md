@@ -94,17 +94,53 @@ the dispatch funnel; the supervisor does not claim work manually.
 
 ## Status reporting standard
 
-The 30-minute broad status uses this exact per-lane shape (founder-approved
-format, 2026-07-29 — do not improvise a new one):
+The 30-minute broad status uses this exact table shape (founder-approved
+format, SUPERVISOR-STATUS-TABLE-IN-PLUGIN-01, 2026-07-30 — supersedes the
+2026-07-29 slash-line format; do not improvise a new one):
 
 ```
-<задача> / что решаем: <одна фраза> / кто: <воркер+модель> /
-<синг-воркер | полная leadv2> / апдейт: <что изменилось с прошлого статуса>
+| Линия | Что делает | Кто делает | Состояние | Уже на диске |
+|---|---|---|---|---|
+| dispatch-<id> | <короткое название> — <одна фраза> | <воркер>/<модель> | <пишет сейчас | тихо N мин | terminal-причина> | <diff/stat или "пока ничего"> |
 ```
 
-One line per lane, plus one closing line: freed slots, pending questions,
-rate-limit window usage. Frequent (sub-30-min) updates go to the status
-line / pulse log surface, never as extra chat turns.
+One row per lane (running AND terminal — a dead/cancelled/never-started lane
+keeps its row and its recorded reason; it is never subtracted from the
+count), followed by prose lines: what's queued and why, what landed today
+with commit hashes, today's throughput against target and position in the
+working window, open questions needing a decision (verbatim + a
+recommendation), any degraded dispatch, and one honest caveat.
+
+**The table itself is rendered deterministically (`leadv2-broad-status.sh`,
+python3, no LLM).** A cheap model composes only the prose lines below the
+table, from a curated facts payload — never the table's cells. This is not
+a style choice: the table carries ids, worker/model, byte sizes, diff
+stats, and commit hashes that must be exact, and an LLM asked to also
+render the table will eventually drift the column set or invent a number.
+A composer-model outage still yields the full table; only the prose tail
+says "unavailable".
+
+Three hard rules on the table's content — keep them true when touching
+`leadv2-lane-detail.sh` / `leadv2-broad-status.sh`:
+
+1. **"Что делает" (ownership) is never derived from a lane's
+   `*.stream.jsonl`.** It comes from the dispatch's
+   `docs/handoff/dispatch-<id>/architect-prepass.md` (first heading + first
+   summary line), falling back to the fanout mission file, falling back to
+   the task's declared intent. When the source isn't the prepass, say so
+   inline (e.g. "из миссии, prepass не сработал") — never render a
+   degraded-dispatch ownership guess as if it were architect-owned scope.
+2. **"Состояние" (liveness) is taken verbatim from
+   `leadv2-lane-liveness.sh --all --json`.** Never re-derive alive/dead,
+   and never infer liveness from a live PID alone — the liveness helper's
+   verdict is the sole authority, resolved via the caller's own
+   `SCRIPT_DIR` so a drifted `.claude/scripts/` copy shows up as a visible
+   `liveness_source_path` instead of a silently wrong verdict.
+3. **A lane whose stream bytes AND diff are byte-identical to the previous
+   beat renders `молчит N мин (без изменений с прошлого статуса)`**, with
+   the silence age as evidence — never a fabricated "нет изменений" claim
+   when there is no previous beat to compare against (first beat in a
+   session says so explicitly instead).
 
 - **Short status**: plain words, no jargon, no UUIDs, no dollar figures
   (report the 5-hour / weekly rate-limit-window usage instead). The broad
