@@ -352,7 +352,14 @@ _sync_project_root() {
           log "DRY_RUN [project/scripts-toplevel]: cp ${cf_src} ${proj_scripts_toplevel}/${cf}"
         else
           mkdir -p "${proj_scripts_toplevel}"
-          cp -p "${cf_src}" "${proj_scripts_toplevel}/${cf}"
+          # A symlink-managed dst (e.g. persona-engine scripts/leadv2-supervise-loop.sh
+          # -> canonical) makes cp exit 1 ("are identical"), aborting the whole sync
+          # under set -e before later repos are reached — skip same-inode targets.
+          if [[ "${cf_src}" -ef "${proj_scripts_toplevel}/${cf}" ]]; then
+            log "(c2): ${proj_scripts_toplevel}/${cf} is symlink-managed (same inode as canonical) — skip"
+          else
+            cp -p "${cf_src}" "${proj_scripts_toplevel}/${cf}"
+          fi
         fi
       fi
     done
