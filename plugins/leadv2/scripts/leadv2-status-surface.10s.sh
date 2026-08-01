@@ -107,11 +107,23 @@ LANE_N="$(printf '%s' "$lane_line" | sed -n 's/^lanes (\([0-9]*\)).*/\1/p')"
 case "$LANE_N" in ''|*[!0-9]*) LANE_N=0 ;; esac
 LIVE_N=0
 DEAD_N=0
+DONE_N=0
 if [ "$LANE_N" -gt 0 ]; then
-  LIVE_N="$(printf '%s\n' "$LANES_BLOCK" | tail -n +4 | awk '{ print $NF }' | grep -c '^live$' || true)"
+  _rows="$(printf '%s\n' "$LANES_BLOCK" | tail -n +4)"
+  # Count by STATE token anchored at end-of-line (NOT $NF: tokens like
+  # `stale(2h silent)` contain spaces, so `$NF` yields `silent)`).
+  LIVE_N="$(printf '%s\n' "$_rows" | grep -Ec 'live$' || true)"
   case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0 ;; esac
-  DEAD_N=$(( LANE_N - LIVE_N ))
-  [ "$DEAD_N" -lt 0 ] && DEAD_N=0
+  DEAD_N="$(printf '%s\n' "$_rows" | grep -Ec '(dead\([^)]*\)|stale\([^)]*\))$' || true)"
+  case "$DEAD_N" in ''|*[!0-9]*) DEAD_N=0 ;; esac
+  # Done rows: each `done(...)` line is one finished lane, but the collapsed
+  # summary `+ N done earlier today` stands for N lanes in a single line, so
+  # fold its N in and do NOT count the summary line itself as a done row.
+  DONE_N="$(printf '%s\n' "$_rows" | grep -Ec 'done\([^)]*\)$' || true)"
+  case "$DONE_N" in ''|*[!0-9]*) DONE_N=0 ;; esac
+  _collapsed="$(printf '%s\n' "$_rows" | sed -n 's/^ *+ \([0-9][0-9]*\) done earlier today.*/\1/p')"
+  case "$_collapsed" in ''|*[!0-9]*) _collapsed=0 ;; esac
+  DONE_N=$(( DONE_N + _collapsed ))
 fi
 
 # ── parse the questions block (section 2) — pending count + rows ────────────
@@ -131,6 +143,10 @@ if [ "$Q_N" -gt 0 ]; then
   printf '%s❓%d · 🟢 %d / 🔴 %d\n' "$_prefix" "$Q_N" "$LIVE_N" "$DEAD_N"
 elif [ "$DEAD_N" -gt 0 ]; then
   printf '%s🔴 %d / 🟢 %d\n' "$_prefix" "$DEAD_N" "$LIVE_N"
+elif [ "$LIVE_N" -gt 0 ]; then
+  printf '%s🟢 %d / 🔴 %d\n' "$_prefix" "$LIVE_N" "$DEAD_N"
+elif [ "$DONE_N" -gt 0 ]; then
+  printf '%s✅ %d\n' "$_prefix" "$DONE_N"
 else
   printf '%s🟢 %d / 🔴 %d\n' "$_prefix" "$LIVE_N" "$DEAD_N"
 fi

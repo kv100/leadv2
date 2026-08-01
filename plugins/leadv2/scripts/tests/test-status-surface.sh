@@ -854,6 +854,84 @@ else
   fail "R4-T8: unknown flag exit (rc=$rc)"
 fi
 
+# ── R6-T1. 2 done(exit=0) + 1 dead(exit=1) -> title 🔴 1, NOT 🔴 3 ──────────
+# round-6 fix: done lanes must NOT be counted as dead. Supervisor ON (sentinel
+# pid=$$) so line 1 carries no `⚪ sup OFF · ` prefix and anchors cleanly.
+NEW_SB
+printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: done0001r6abcd
+    phase: build
+    class: Standard
+    log_path: ''
+  - task_id: done0002r6abcd
+    phase: build
+    class: Standard
+    log_path: ''
+  - task_id: dead0001r6abcd
+    phase: build
+    class: Standard
+    pid: 999999
+    lead_model: glm
+    log_path: ''
+EOF
+_ledger done0001r glm done1-h confirmed $((NOW-600))
+_run done1-h glm complete 0 600
+_ledger done0002r glm done2-h confirmed $((NOW-590))
+_run done2-h glm complete 0 590
+_ledger dead0001r glm dead1-h confirmed $((NOW-1200))
+_run dead1-h glm failed 1 1200
+barout="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
+  LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
+  LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
+  LEADV2_STATUS_REPO="testrepo" \
+  LEADV2_STATUS_NOW="$NOW" \
+  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
+  bash "$BAR" 2>/dev/null)"
+_l1="$(printf '%s\n' "$barout" | sed -n '1p')"
+if printf '%s' "$_l1" | grep -Eq '^🔴 1 ' && ! printf '%s' "$_l1" | grep -q '🔴 3'; then
+  pass "R6-T1: 2 done + 1 dead -> 🔴 1 (got: $_l1)"
+else
+  fail "R6-T1: 2 done + 1 dead -> 🔴 1 (got: $_l1)"
+fi
+
+# ── R6-T2. only 2 done(exit=0) -> title ✅ 2 ────────────────────────────────
+NEW_SB
+printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
+: > "${STATE_DIR}/.supervise-loop.heartbeat"
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: doneonly1abcd
+    phase: build
+    class: Standard
+    log_path: ''
+  - task_id: doneonly2abcd
+    phase: build
+    class: Standard
+    log_path: ''
+EOF
+_ledger doneonly1 glm donly1-h confirmed $((NOW-600))
+_run donly1-h glm complete 0 600
+_ledger doneonly2 glm donly2-h confirmed $((NOW-590))
+_run donly2-h glm complete 0 590
+barout="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
+  LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
+  LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
+  LEADV2_STATUS_REPO="testrepo" \
+  LEADV2_STATUS_NOW="$NOW" \
+  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
+  bash "$BAR" 2>/dev/null)"
+_l1="$(printf '%s\n' "$barout" | sed -n '1p')"
+if printf '%s' "$_l1" | grep -Eq '✅ 2'; then
+  pass "R6-T2: only done -> ✅ 2 (got: $_l1)"
+else
+  fail "R6-T2: only done -> ✅ 2 (got: $_l1)"
+fi
+
 log ""
 log "=== ${PASS} passed, ${FAIL} failed ==="
 [ "$FAIL" -eq 0 ]
