@@ -76,6 +76,23 @@ SH
   chmod +x "${path}"
 }
 
+# LEADV2_DISPATCH_KIMI_BIN fake: kimi is the arm tried immediately after glm in the
+# free-arm chain (glm -> kimi -> codex -> sonnet). Every scenario below that makes glm
+# refuse/fail MUST also fake this bin -- otherwise the real kimi-coder.sh launches a
+# live, token-spending kimi-k3-free session against this checkout (discovered live
+# during this task: an unfaked run spawned a real background session under
+# ~/.claude/cache/kimi-runs/, killed once found). Exit 77 + the REFUSED marker mirrors
+# kimi-coder.sh's own documented launch-probe-failure contract (KIMI-CHANNEL-01).
+make_refusing_kimi() {
+  local path="$1"
+  cat > "${path}" <<'SH'
+#!/usr/bin/env bash
+echo '[kimi-coder] LEADV2_DISPATCH_REFUSED: kimi_unavailable_offline_test' >&2
+exit 77
+SH
+  chmod +x "${path}"
+}
+
 make_live_codex() {
   local path="$1"
   cat > "${path}" <<'SH'
@@ -120,13 +137,15 @@ fi
 
 make_root "${TMP_ROOT}/refusal-root"
 make_refusing_glm "${TMP_ROOT}/refusing-glm.sh"
+make_refusing_kimi "${TMP_ROOT}/refusing-kimi-1.sh"
 make_live_codex "${TMP_ROOT}/live-codex.sh"
 refusal_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/refusal-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/refusal-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/refusing-glm.sh" \
+  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/refusing-kimi-1.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/live-codex.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'quota refusal advances chain' 2>&1)"
+  bash "${DISPATCH_BIN}" 'plugin-only quota refusal advances chain' 2>&1)"
 refusal_rc=$?
 if [[ ${refusal_rc} -eq 0 ]] \
   && grep -q 'reason=glm_refused_quota_gate' <<<"${refusal_out}" \
@@ -140,12 +159,14 @@ fi
 
 make_root "${TMP_ROOT}/peak-root"
 make_peak_refusing_glm "${TMP_ROOT}/peak-glm.sh"
+make_refusing_kimi "${TMP_ROOT}/refusing-kimi-2.sh"
 peak_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/peak-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/peak-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/peak-glm.sh" \
+  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/refusing-kimi-2.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/live-codex.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'peak refusal advances chain' 2>&1)"
+  bash "${DISPATCH_BIN}" 'plugin-only peak refusal advances chain' 2>&1)"
 peak_rc=$?
 if [[ ${peak_rc} -eq 0 ]] \
   && grep -q 'reason=glm_refused_peak_hours' <<<"${peak_out}" \
@@ -158,15 +179,17 @@ fi
 
 make_root "${TMP_ROOT}/crash-root"
 make_crashing_glm "${TMP_ROOT}/crashing-glm.sh"
+make_failing_launcher "${TMP_ROOT}/failing-kimi.sh"
 make_failing_launcher "${TMP_ROOT}/failing-codex.sh"
 make_failing_launcher "${TMP_ROOT}/failing-sonnet.sh"
 crash_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/crash-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/crash-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/crashing-glm.sh" \
+  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/failing-kimi.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/failing-codex.sh" \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/failing-sonnet.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'launcher crash stays failure' 2>&1)"
+  bash "${DISPATCH_BIN}" 'plugin-only launcher crash stays failure' 2>&1)"
 crash_rc=$?
 if [[ ${crash_rc} -eq 4 ]] \
   && grep -q 'spawn_failed by=router model=glm.*rc=42.*reason=launcher_nonzero_exit' <<<"${crash_out}" \
@@ -183,13 +206,13 @@ dedup_first="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/dedup-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/dedup-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/live-glm.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'one mission only once' 2>&1)"
+  bash "${DISPATCH_BIN}" 'plugin-only one mission only once' 2>&1)"
 dedup_first_rc=$?
 dedup_second="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/dedup-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/dedup-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/live-glm.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'one mission only once' 2>&1)"
+  bash "${DISPATCH_BIN}" 'plugin-only one mission only once' 2>&1)"
 dedup_second_rc=$?
 if [[ ${dedup_first_rc} -eq 0 && ${dedup_second_rc} -eq 2 ]] \
   && grep -q 'dispatch_refused reason=duplicate_task_signature' <<<"${dedup_second}"; then
@@ -217,12 +240,12 @@ make_live_glm "${TMP_ROOT}/slow-glm.sh" 1
 race_cache="${TMP_ROOT}/race-cache"
 CLAUDE_PROJECT_ROOT="${TMP_ROOT}/race-root" LEADV2_DISPATCH_CACHE_DIR="${race_cache}" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/slow-glm.sh" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'racing reservation' >"${TMP_ROOT}/race-one.out" 2>&1 &
+  bash "${DISPATCH_BIN}" 'plugin-only racing reservation' >"${TMP_ROOT}/race-one.out" 2>&1 &
 race_one_pid=$!
 sleep 0.1
 CLAUDE_PROJECT_ROOT="${TMP_ROOT}/race-root" LEADV2_DISPATCH_CACHE_DIR="${race_cache}" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/slow-glm.sh" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'racing reservation' >"${TMP_ROOT}/race-two.out" 2>&1 &
+  bash "${DISPATCH_BIN}" 'plugin-only racing reservation' >"${TMP_ROOT}/race-two.out" 2>&1 &
 race_two_pid=$!
 wait "${race_one_pid}"; race_one_rc=$?
 wait "${race_two_pid}"; race_two_rc=$?

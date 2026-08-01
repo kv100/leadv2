@@ -81,6 +81,15 @@ else
   fail "runner syntax"
 fi
 
+# dispatch-reliability work of 2026-07-24 raised STALL_MAX 2 -> 6; read the runner's live
+# default straight from source instead of re-hardcoding it, so the next tuning pass can't
+# silently re-break this assertion the way it broke it before.
+runner_stall_max="$(sed -n 's/^STALL_MAX="\${LEADV2_RUNNER_STALL_MAX:-\([0-9][0-9]*\)}".*/\1/p' "$RUNNER" | head -1)"
+if [[ -z "$runner_stall_max" ]]; then
+  fail "could not read STALL_MAX default from $RUNNER"
+  runner_stall_max=6
+fi
+
 task_id="CODEX-SMOKE-COMPLETE"
 project="$(new_case complete "$task_id")"
 set +e
@@ -151,12 +160,12 @@ stall_out="$(run_case "$project" "$task_id" incomplete 6 2>&1)"
 stall_rc=$?
 set -e
 stall_calls="$(grep -c '^exec' "$project/codex.args" || true)"
-if [[ "$stall_rc" -eq 4 && "$stall_calls" -eq 2 \
+if [[ "$stall_rc" -eq 4 && "$stall_calls" -eq "$runner_stall_max" \
    && "$stall_out" == *"CODEX-LEAD RECURSION suspected"* \
    && "$stall_out" == *"stopping early to prevent token-burning resumes"* ]]; then
-  pass "two turns without phase/git/handoff progress stop before the six-attempt budget"
+  pass "stall_max turns without phase/git/handoff progress stop the runner (STALL_MAX=$runner_stall_max)"
 else
-  fail "stall cap case rc=$stall_rc calls=$stall_calls out=$stall_out"
+  fail "stall cap case rc=$stall_rc calls=$stall_calls (expected $runner_stall_max) out=$stall_out"
 fi
 
 task_id="CODEX-SMOKE-RECURSION"
