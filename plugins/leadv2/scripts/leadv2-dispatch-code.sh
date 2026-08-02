@@ -249,6 +249,12 @@ set -uo pipefail   # -u safe (quote everything, no unbound vars); NO -e (refusal
 # default keeps `set -u` safe before main ever sets them.
 DISPATCH_FOUNDER_TASK_ID="${DISPATCH_FOUNDER_TASK_ID:-}"
 DISPATCH_MISSION_PATH="${DISPATCH_MISSION_PATH:-}"
+# N7F-LANE-NAME: display-only lane name, resolved ONCE in `main` (precedence: --task-id
+# > mission H1 heading > empty -> "unnamed" at the surface). Deliberately separate from
+# DISPATCH_FOUNDER_TASK_ID -- that value is a real identity consumed by active.yaml
+# stamping, tasks.yaml unclaim, and lane-worktree path resolution; synthesising a name
+# into it would corrupt those. DISPATCH_LANE_NAME is fed ONLY to the two ledger writers.
+DISPATCH_LANE_NAME="${DISPATCH_LANE_NAME:-}"
 
 SCRIPT_NAME="leadv2-dispatch-code"
 PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}}"
@@ -470,7 +476,11 @@ emit() {
 # reboots/days can never be misread as the same attempt.
 _dl_note() {
   [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
-  bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$(_dl_attempt_token "$1")" >/dev/null 2>&1 9>&- || true
+  # N7F-LANE-NAME: 7th positional is the display name, read from the DISPATCH_LANE_NAME
+  # global (never from this fn's own args -- its 5-arg signature stays unchanged so its
+  # ~15 callsites need zero edits). write-terminal falls back to founder_task_id itself
+  # when this is empty.
+  bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$(_dl_attempt_token "$1")" "${DISPATCH_LANE_NAME:-}" >/dev/null 2>&1 9>&- || true
 }
 
 # ── task signature: normalize mission text, sha256 ────────────────────────────────
@@ -478,6 +488,39 @@ _dl_note() {
 # in indentation/case-folded-by-whitespace collapse to the same sig (one task = one model).
 compute_sig() {
   tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print $1}'
+}
+
+# ── N7F-LANE-NAME: display-name extraction (pure fn of mission text) ──────────────
+# Precedence lives in `main` (--task-id wins outright); this fn is only rule 2, the
+# mission-H1 fallback. bash 3.2 safe -- no declare -A, no ${var^^}, no mapfile, no <<<.
+# Steps mirror the design doc 1:1 so a future reader can diff behaviour against spec:
+#   1. first line matching ^#[[:space:]]; none -> empty (-> caller renders "unnamed")
+#   2. strip the leading '#' + whitespace
+#   3. keep the segment before the first ' — ' / ' – ' / ' -- ' / ': ' separator
+#   4. collapse internal whitespace, trim both ends
+#   5. strip \ and " (same sanitiser the reserve writer already applies), then other
+#      JSON control chars
+#   6. clamp to 64 chars (surface applies its own _clip40 on top)
+#   7. empty after 1-6 -> empty
+_dispatch_lane_name_from_mission() {
+  local mission="$1" heading name
+  heading="$(printf '%s\n' "${mission}" | grep '^#[[:space:]]' | head -n 1)"
+  [[ -n "${heading}" ]] || { printf ''; return 0; }
+  name="${heading#\#}"
+  name="${name#"${name%%[![:space:]]*}"}"
+  case "${name}" in
+    *" — "*)  name="${name%% — *}" ;;
+    *" – "*)  name="${name%% – *}" ;;
+    *" -- "*) name="${name%% -- *}" ;;
+    *": "*)   name="${name%%: *}" ;;
+  esac
+  name="$(printf '%s' "${name}" | tr -s '[:space:]' ' ')"
+  name="${name#"${name%%[![:space:]]*}"}"
+  name="${name%"${name##*[![:space:]]}"}"
+  name="${name//\\/}"; name="${name//\"/}"
+  name="$(printf '%s' "${name}" | tr -d '\000-\037')"
+  name="${name:0:64}"
+  printf '%s' "${name}"
 }
 
 sig_is_hex() { printf '%s' "$1" | grep -qxE '[0-9a-f]{64}'; }
@@ -940,7 +983,7 @@ dispatch_reserve() {  # <sig> <arm> <rule> -> stdout: token (rc0 only)
     fi
     token="$(_dispatch_new_token)"
     if ! _dispatch_append_pending_locked "${f}" "${sig}" "${arm}" "${rule}" "${token}" "${now2}" \
-      "${DISPATCH_FOUNDER_TASK_ID:-}" "${DISPATCH_MISSION_PATH:-}"; then
+      "${DISPATCH_LANE_NAME:-}" "${DISPATCH_MISSION_PATH:-}"; then
       exit 1
     fi
     printf '%s' "${token}"
@@ -1334,6 +1377,9 @@ spawn_worker() {
 }
 
 spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id>
+  # N7F-LANE-NAME: forwards DISPATCH_LANE_NAME as close_bin's 8th positional (not a 7th
+  # param on this fn -- read from the global, same pattern as _dl_note above) so the
+  # display name survives the worker->close-phase handoff for act two.
   local sig8="$1" author="$2" handle="$3" reviewer_arms="${4:-}" lane_writes_csv="${5:-}"
   local founder_task_id="${6:-}"
   [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]] || return 0
@@ -1349,7 +1395,7 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
     LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" \
     LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
-    "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" \
+    "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" "${DISPATCH_LANE_NAME:-}" \
       >/dev/null 2>&1 &
   local _pc_pid=$!
   # wave2 round2 finding 3: stamp the close-owner record with the REAL os pid of the
@@ -1871,6 +1917,17 @@ cmd_resolve() {
   # link; founder_task_id was already bound above but never reached the row.
   DISPATCH_FOUNDER_TASK_ID="${founder_task_id}"
   DISPATCH_MISSION_PATH="${mission_file}"
+  # N7F-LANE-NAME: resolve the display name ONCE, here, before any spawn side effect.
+  # Rule 1 (--task-id) wins outright over rule 2 (mission H1) -- a caller that already
+  # bound an identity gets that as its name too, and this also guards the fanout path
+  # (which always passes --task-id) against ever being hijacked by mission prose. Rule 3
+  # is load-bearing: no fallback to sig8, filename, or prose -- genuinely nameless stays
+  # empty and the surface renders "unnamed".
+  if [[ -n "${founder_task_id}" ]]; then
+    DISPATCH_LANE_NAME="${founder_task_id}"
+  else
+    DISPATCH_LANE_NAME="$(_dispatch_lane_name_from_mission "${mission}")"
+  fi
 
   # Product classifications are visible even when a later shape/router/ledger gate refuses
   # the task.  This is intentionally before any reservation/spawn side effect.

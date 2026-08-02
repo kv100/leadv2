@@ -15,6 +15,13 @@ E2E_ON="${5:-1}"; REVIEW_ON="${6:-1}"
 # lifecycle owner that unclaims the SAME id fanout.sh claimed, on every exit
 # path (pass, fail, blocked) -- omitted entirely when no founder id is known.
 FOUNDER_TASK_ID="${7:-}"
+# N7F-LANE-NAME: optional 8th arg, the display-only lane name threaded from
+# leadv2-dispatch-code.sh's DISPATCH_LANE_NAME (spawn_product_close's close_bin call).
+# This process holds it for its whole lifetime -- the close gate's own act-two --
+# so the name survives the worker->close-phase handoff. Falls back to FOUNDER_TASK_ID
+# for a 7-arg caller predating this change (back-compat, R6).
+LANE_NAME="${8:-}"
+[[ -z "${LANE_NAME}" ]] && LANE_NAME="${FOUNDER_TASK_ID}"
 WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
@@ -61,7 +68,11 @@ _dl_note() {  # <terminal> <cause> [<evidence>]
   # dedup uses it to recognize that retry as the SAME attempt (still write-once), while a
   # genuinely later, separate invocation of this script for the same TASK sig8 gets its own
   # token and is never blocked by an earlier refused/parked row.
-  bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${3:-}" "${_PC_ATTEMPT}" >/dev/null 2>&1 9>&- || true
+  # N7F-LANE-NAME: 7th positional is the display name -- LANE_NAME already falls back
+  # to FOUNDER_TASK_ID above when no name was threaded, so write-terminal's own
+  # display_name-or-founder fallback is redundant here but harmless (never empty when
+  # founder isn't either).
+  bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${3:-}" "${_PC_ATTEMPT}" "${LANE_NAME}" >/dev/null 2>&1 9>&- || true
 }
 HANDOFF="${ROOT}/docs/handoff/dispatch-${TASK}"
 mkdir -p "${HANDOFF}"

@@ -78,12 +78,19 @@ _lanes_rows_of() {
   # three sequential invocations below and was misread as a cwd-dependence
   # bug -- it never was one (boundary-walk with bash -x showed root/home/tmp
   # renders identical except for this one field). Blank it too.
+  # N7F 2026-08-02: the STATE column carries a THIRD live clock -- a close-phase
+  # row renders `gate(55s ago)` / `gate(6m ago)`, whose seconds tick between the
+  # three sequential invocations below. Observed failing as `gate(55s ago)` vs
+  # `gate(57s ago)` with root/home/tmp otherwise byte-identical, i.e. the same
+  # clock-not-cwd false positive the (Nm silent) rule above already documents.
+  # Blank every `<word>(<N><unit> ago)` clock the same way, not just this one.
   printf '%s\n' "$1" | awk '
     /^lanes \(/ { insec=1; next }
     insec && /^---/ { exit }
     insec && $0 !~ /^  (none)/ && NF { print }
   ' | sed -E 's/[[:space:]]+[0-9]+[smh][[:space:]]+/ <AGE> /' \
-    | sed -E 's/\(([0-9]+)m silent\)/(<AGE>m silent)/'
+    | sed -E 's/\(([0-9]+)m silent\)/(<AGE>m silent)/' \
+    | sed -E 's/\(([0-9]+)[smh] ago\)/(<AGE> ago)/g'
 }
 OUT_HOME="$(_run_from "$HOME")"
 OUT_TMP="$(_run_from /tmp)"

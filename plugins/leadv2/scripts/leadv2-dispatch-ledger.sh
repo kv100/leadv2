@@ -43,7 +43,7 @@
 #
 # CLI (this script is a SUBPROCESS CALLED via `bash ... "$@"` by its two callers, NEVER
 # `source`d -- see the "WHY A CLI, NOT A LIBRARY" note below):
-#   leadv2-dispatch-ledger.sh write-terminal <sig8> <founder_task_id> <terminal> <cause> [<evidence>]
+#   leadv2-dispatch-ledger.sh write-terminal <sig8> <founder_task_id> <terminal> <cause> [<evidence>] [<attempt>] [<display_name>]
 #   leadv2-dispatch-ledger.sh exists <sig8>            -- rc0 iff a TRUE terminal (landed|dead)
 #                                                          row already exists (a refused/parked-
 #                                                          only history returns rc1: retryable)
@@ -173,9 +173,9 @@ dispatch_any_terminal_exists() {
 # across its own explicit call and its own EXIT-trap retry, but different across separate
 # process invocations even for the same sig8) is what tells the two apart. Callers that omit
 # it (e.g. the sweep below, which never double-calls for the same sig8) always append.
-# <sig8> <founder_task_id> <terminal:landed|parked|refused|dead> <cause> [<evidence>] [<attempt>]
+# <sig8> <founder_task_id> <terminal:landed|parked|refused|dead> <cause> [<evidence>] [<attempt>] [<display_name>]
 dispatch_ledger_write_terminal() {
-  local sig8="$1" founder="${2:-}" terminal="$3" cause="${4:-}" evidence="${5:-}" attempt="${6:-}"
+  local sig8="$1" founder="${2:-}" terminal="$3" cause="${4:-}" evidence="${5:-}" attempt="${6:-}" display_name="${7:-}"
   [[ -n "${sig8}" ]] || { log_err "write_terminal: empty task_sig, refusing to write"; return 1; }
   case "${terminal}" in
     landed|parked|refused|dead) : ;;
@@ -185,13 +185,23 @@ dispatch_ledger_write_terminal() {
   cause="$(json_safe "${cause}")"
   evidence="$(json_safe "${evidence}")"
   attempt="$(json_safe "${attempt}")"
+  display_name="$(json_safe "${display_name}")"
   # SWIFTBAR-LIVE-01 round 4 (§Fix 3): emit task_id alongside founder_task_id so a
   # terminal row is self-describing -- the status-surface reader keyed the lane
   # name off task_id, and this row REPLACES the reserve row that carried it, so
   # without task_id here the lane rendered "unnamed". Same json_safe + 64-char
   # clamp the reserve writer applies (R3.4: a --task-id with a quote/backslash
   # must not break the terminal row's JSON).
-  local _tid="${founder:0:64}"
+  # N7F-LANE-NAME: prefer the optional display_name (a real human name resolved by
+  # dispatch-code.sh's DISPATCH_LANE_NAME, which may itself just BE founder_task_id --
+  # see that file's --task-id/mission-H1 precedence) over founder_task_id itself. A
+  # 6-arg caller (display_name absent) gets byte-identical output to before this change.
+  local _tid
+  if [[ -n "${display_name}" ]]; then
+    _tid="${display_name:0:64}"
+  else
+    _tid="${founder:0:64}"
+  fi
   local f lockf; f="$(dispatch_terminal_ledger_file)"; lockf="$(dispatch_terminal_ledger_lock_file)"
   mkdir -p "$(dirname "${f}")" 2>/dev/null
   mkdir -p "$(dirname "${lockf}")" 2>/dev/null
@@ -270,12 +280,18 @@ dispatch_ledger_sweep_write_dead() {
   cause_s="$(json_safe "${cause}")"
   evidence_s="$(json_safe "${evidence}")"
   attempt_s="$(json_safe "${attempt}")"
-  # SWIFTBAR-LIVE-01 round 4 (§Fix 3): task_id on the sweep's dead row too
-  # (same self-describing rationale + json_safe/64-char clamp as write-terminal).
-  local _tid="${founder:0:64}"
   local f lockf; f="$(dispatch_terminal_ledger_file)"; lockf="$(dispatch_terminal_ledger_lock_file)"
   mkdir -p "$(dirname "${f}")" 2>/dev/null
   mkdir -p "$(dirname "${lockf}")" 2>/dev/null
+  # SWIFTBAR-LIVE-01 round 4 (§Fix 3) + N7F-LANE-NAME: task_id on the sweep's dead row
+  # too (same self-describing rationale as write-terminal). The sweep's own `lane` arg
+  # is often the founder task id (leadv2-fanout.sh's shape, see doc header above), but
+  # when this sig8 already has an EARLIER terminal row (refused/parked, since a TRUE
+  # terminal short-circuits before this point) carrying a real display name, prefer
+  # THAT -- it is more likely the mission-H1-derived name than `lane` is. Falls back to
+  # founder_task_id when no prior row (or no task_id on it) exists.
+  local _tid; _tid="$(_dispatch_terminal_last_field "${sig8}" "${f}" task_id)"
+  [[ -n "${_tid}" ]] || _tid="${founder:0:64}"
   local rc
   (
     lv2_lock_wait "${lockf}" 10 || exit 3
@@ -526,7 +542,7 @@ for row in d.get("lanes") or []:
 usage() {
   cat >&2 <<EOF
 Usage:
-  ${SCRIPT_NAME}.sh write-terminal <sig8> <founder_task_id> <landed|parked|refused|dead> <cause> [<evidence>] [<attempt>]
+  ${SCRIPT_NAME}.sh write-terminal <sig8> <founder_task_id> <landed|parked|refused|dead> <cause> [<evidence>] [<attempt>] [<display_name>]
   ${SCRIPT_NAME}.sh exists <sig8>
   ${SCRIPT_NAME}.sh sweep
 EOF
@@ -537,7 +553,7 @@ case "${1:-}" in
   write-terminal)
     shift
     [[ $# -ge 3 ]] || usage
-    dispatch_ledger_write_terminal "$1" "${2:-}" "$3" "${4:-}" "${5:-}" "${6:-}"
+    dispatch_ledger_write_terminal "$1" "${2:-}" "$3" "${4:-}" "${5:-}" "${6:-}" "${7:-}"
     exit $?
     ;;
   exists)
