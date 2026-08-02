@@ -279,6 +279,61 @@ else
   fail "merge-blocker.flag refusal removed the worktree anyway"
 fi
 
+# ── W-1a §3.1: dispatch-code.sh reaps a no-worker lane worktree on EXIT ──────
+# The direct-dispatch path (backlog/supervisor pump) reaches dispatch-code.sh's own
+# EXIT trap, not the fanout launcher's reap. _reap_lane_worktree_if_unused must reap an
+# orphaned empty worktree, KEEP a dirty one, and NEVER touch the tree of a lane that
+# spawned a live worker. Source the REAL function text from dispatch-code.sh (not a copy).
+DISPATCH_SH="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
+REAP_FN="$(sed -n '/^_reap_lane_worktree_if_unused() {/,/^}$/p' "$DISPATCH_SH")"
+if [[ -n "$REAP_FN" ]]; then
+  SCRATCH4="$(mktemp -d)"
+  git -C "$SCRATCH4" init -q -b main
+  git -C "$SCRATCH4" config user.email "test@test"; git -C "$SCRATCH4" config user.name "test"
+  printf 'seed\n' > "$SCRATCH4/seed.txt"; git -C "$SCRATCH4" add seed.txt; git -C "$SCRATCH4" commit -q -m seed
+  export LEADV2_PROJECT_ROOT="$SCRATCH4"
+  export LEADV2_LANE_WORKTREE_ERRF="$SCRATCH4/.lane-worktree.err"
+
+  # define the real reap fn in this shell; it resolves cleanup.sh via ${SCRIPT_DIR},
+  # which inside dispatch-code.sh is the scripts/ dir -- repoint SCRIPT_DIR there for
+  # the reap calls (this test's SCRIPT_DIR is scripts/tests/), then restore it.
+  eval "$REAP_FN"
+  PROJECT_ROOT="$SCRATCH4"
+  _SAVED_SD="$SCRIPT_DIR"; SCRIPT_DIR="${SCRIPT_DIR}/.."
+
+  reap_empty="$(bash "$LANE_SH" ensure reapEmpty standard)"   # no-worker + empty
+  reap_dirty="$(bash "$LANE_SH" ensure reapDirty standard)"   # no-worker + dirty
+  reap_live="$(bash "$LANE_SH" ensure reapLive standard)"     # worker-live (kept)
+  printf 'uncommitted\n' > "$reap_dirty/scratch.txt"
+
+  WORK_ROOT="$reap_live"; founder_task_id="reapLive"; _DISPATCH_WORKER_LIVE=1
+  _reap_lane_worktree_if_unused
+  WORK_ROOT="$reap_empty"; founder_task_id="reapEmpty"; _DISPATCH_WORKER_LIVE=0
+  ( cd "$SCRATCH4" && _reap_lane_worktree_if_unused )
+  WORK_ROOT="$reap_dirty"; founder_task_id="reapDirty"; _DISPATCH_WORKER_LIVE=0
+  ( cd "$SCRATCH4" && _reap_lane_worktree_if_unused )
+
+  wt4="$(git -C "$SCRATCH4" worktree list --porcelain | awk '/^worktree /{print $2}')"
+  if ! grep -qF "$reap_empty" <<<"$wt4"; then
+    pass "dispatch-reap: no-worker + empty lane worktree reaped on EXIT"
+  else
+    fail "dispatch-reap: no-worker + empty lane worktree NOT reaped (should be gone)"
+  fi
+  if grep -qF "$reap_dirty" <<<"$wt4"; then
+    pass "dispatch-reap: no-worker + dirty lane worktree KEPT (never forced)"
+  else
+    fail "dispatch-reap: dirty lane worktree was reaped (should be kept)"
+  fi
+  if grep -qF "$reap_live" <<<"$wt4"; then
+    pass "dispatch-reap: live-worker lane worktree KEPT (never reaped on success)"
+  else
+    fail "dispatch-reap: live-worker lane worktree was reaped (must survive for the worker)"
+  fi
+  SCRIPT_DIR="$_SAVED_SD"
+else
+  fail "dispatch-reap: could not extract _reap_lane_worktree_if_unused from dispatch-code.sh"
+fi
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 if [[ "$FAIL" -gt 0 ]]; then

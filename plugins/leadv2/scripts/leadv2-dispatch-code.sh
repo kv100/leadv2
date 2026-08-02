@@ -267,6 +267,11 @@ PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git
 WORK_ROOT="${LEADV2_LANE_WORK_ROOT:-}"
 [[ -n "$WORK_ROOT" && -d "$WORK_ROOT" ]] || WORK_ROOT="$PROJECT_ROOT"
 export LEADV2_LANE_WORK_ROOT="$WORK_ROOT"
+# W-1a §3.1: set to 1 the moment a dispatch confirms a live worker (arc==0). The EXIT-trap
+# reap (_reap_lane_worktree_if_unused, called from cleanup_pending_dispatch) uses this to
+# reap an orphaned lane worktree ONLY when no worker was spawned -- a successful spawn
+# leaves the worktree on disk for the async worker + close gate (§3.3 emits the loud line).
+_DISPATCH_WORKER_LIVE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-"$0"}")" 2>/dev/null && pwd)"
 # STATUSLINE-COUNT-TRUTH-01: single source of truth for the architect-prepass
 # dir suffix -- leadv2-lane-liveness.sh folds dispatch-<sig8>-<role> ids back
@@ -1058,7 +1063,31 @@ dispatch_abort() {  # <token> -> rc0 removed/absent; rc1 write-fail(hard); rc3 l
 # An interruption after reserve but before confirm used to leave a PENDING claim until
 # its TTL elapsed.  Normal failure paths still finalize explicitly; this is only the
 # process-lifetime safety net for signals/unexpected exits in that small window.
+# W-1a §3.1: reap an orphaned lane worktree when this dispatch produced NO live worker.
+# Mirrors leadv2-fanout-lane-launcher.sh's _reap_lane_worktree_if_unused (its rc 2/3/*
+# branches) -- that launcher reap only covers the FANOUT lineage. The direct-dispatch path
+# (backlog pump, supervisor pump) reaches THIS EXIT trap instead, and without this it would
+# leak a worktree per dead lane (acceptance item 3). Non-destructive by construction: a dirty
+# tree, unmerged commits, or a merge-blocker.flag keep the worktree (cleanup.sh --name
+# refuses without --force, and this never passes --force). A successful spawn set
+# _DISPATCH_WORKER_LIVE=1 and is explicitly skipped so the async worker's tree survives.
+# Keyed on ${founder_task_id:-sig8} -- the SAME key `ensure` (cmd_resolve) and the close
+# gate's path-of fallback use. Best-effort: `|| true` throughout, never fails the exit path.
+_reap_lane_worktree_if_unused() {
+  [[ "${_DISPATCH_WORKER_LIVE:-0}" != "1" ]] || return 0
+  local _wt="${WORK_ROOT:-}"
+  [[ -n "${_wt}" && -d "${_wt}" && "${_wt}" != "${PROJECT_ROOT:-}" ]] || return 0
+  local _key="${founder_task_id:-${sig8:-}}"
+  [[ -n "${_key}" ]] || return 0
+  [[ -z "$(git -C "${_wt}" status --porcelain 2>/dev/null)" ]] || return 0
+  local _upstream _ahead
+  _upstream="$(git -C "${_wt}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || printf 'main')"
+  _ahead="$(git -C "${_wt}" rev-list --count "${_upstream}.." 2>/dev/null || printf '0')"
+  [[ "${_ahead}" == "0" ]] || return 0
+  bash "${SCRIPT_DIR}/leadv2-worktree-cleanup.sh" --name "${_key}" >/dev/null 2>&1 || true
+}
 cleanup_pending_dispatch() {
+  _reap_lane_worktree_if_unused
   local token="${ACTIVE_DISPATCH_TOKEN:-}"
   [[ -n "${token}" ]] || return 0
   ACTIVE_DISPATCH_TOKEN=""
@@ -2366,6 +2395,15 @@ confirmation-seeking; only for a decision you cannot make yourself."
       # script lose the write-once race. Non-product spawns have nothing else that will
       # ever check back on them, so THIS is their one and only terminal write.
       [[ "${product_class}" != "product" ]] && _dl_note "${sig8}" landed "spawned_${candidate}" "" "${founder_task_id}"
+      # W-1a §3.1: a live worker was spawned -- do NOT reap this lane's worktree on EXIT
+      # (the async worker + close gate still need it). §3.3: emit the loud interim line
+      # naming the absolute path where the finished lane's worktree is left on disk --
+      # the stated interim behaviour (a finished lane leaves its worktree with a loud line).
+      _DISPATCH_WORKER_LIVE=1
+      if [[ -n "${WORK_ROOT}" && "${WORK_ROOT}" != "${PROJECT_ROOT}" ]]; then
+        emit decision "lane_worktree_left task=${sig8} founder_task=${founder_task_id:-} path=${WORK_ROOT}"
+        log "lane worktree left on disk for task=${sig8}: ${WORK_ROOT}"
+      fi
       exit 0
       ;;
     7)
