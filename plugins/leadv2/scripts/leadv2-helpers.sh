@@ -2481,6 +2481,43 @@ _leadv2_claude_agents_json() {
   fi
 }
 
+# ── lv2_lane_diff_is_empty ───────────────────────────────────────────────────
+# N1-EMPTY-LANE-IS-NOT-A-PASS: a standalone predicate (NOT the full cross-repo /
+# start-sha never-smaller machinery in leadv2-dispatch-product-close.sh) that
+# answers the narrower question the e2e gate needs: "did this lane's own declared
+# writes produce ANY diff at all?" Used by leadv2-phase8-e2e-gate.sh (the second
+# writer of e2e-gate-passed.flag) to refuse to stamp the passed sentinel for a
+# lane that wrote nothing.
+#   rc0 = empty (no diff on any declared write / whole tree)
+#   rc1 = non-empty (at least one declared write has a diff)
+#   rc2 = undeterminable (no repo / not a git tree) -- caller treats as non-empty,
+#         never block a real lane on a guess.
+# Bash-3.2-safe: no declare -A, no mapfile, plain read -a.
+lv2_lane_diff_is_empty() {  # <repo_abs> [writes_csv]
+  local repo="$1" writes_csv="${2:-}" w _any=""
+  [[ -n "${repo}" && -d "${repo}" ]] || return 2
+  git -C "${repo}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 2
+  if [[ -z "${writes_csv}" ]]; then
+    # no declared writes -> whole-tree check (tracked diff + untracked), excluding
+    # the docs noise lanes never own.
+    _any="$(git -C "${repo}" diff HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null)"
+    _any="${_any}$(git -C "${repo}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null)"
+    [[ -z "${_any}" ]] && return 0
+    return 1
+  fi
+  local -a _writes=()
+  local _oldifs="${IFS}"
+  IFS=',' read -r -a _writes <<< "${writes_csv}"
+  IFS="${_oldifs}"
+  for w in "${_writes[@]}"; do
+    w="${w#"${w%%[![:space:]]*}"}"; w="${w%"${w##*[![:space:]]}"}"
+    [[ -z "${w}" ]] && continue
+    if git -C "${repo}" diff HEAD -- "${w}" 2>/dev/null | grep -q '.'; then return 1; fi
+    if git -C "${repo}" ls-files --others --exclude-standard -- "${w}" 2>/dev/null | grep -q '.'; then return 1; fi
+  done
+  return 0
+}
+
 # Export fun names so subshells see them.
 # `export -f` is bash-only — in zsh it is interpreted as `typeset -f` and
 # prints the entire function body to stdout (200+ lines per source). Only run
@@ -2532,6 +2569,7 @@ if [[ -n "${BASH_VERSION:-}" ]]; then
   export -f leadv2_settings_acquire
   export -f leadv2_settings_release
   export -f leadv2_pulse_log
+  export -f lv2_lane_diff_is_empty
   export -f leadv2_ask_async
   export -f leadv2_wait_answer
   export -f _leadv2_claude_agents_json

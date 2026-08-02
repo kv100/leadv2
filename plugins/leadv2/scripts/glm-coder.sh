@@ -326,6 +326,12 @@ acquire_lock() {
     # mkdir-critical-section (or crashed before writing it) — NEVER treat
     # this as age=now-0 (which reclaims a lock microseconds old). Refuse.
     log_error "another GLM run is active for this repo (lock initializing, no started marker yet): ${lock_dir}"
+    # N1-EMPTY-LANE-IS-NOT-A-PASS (B.1): the contract marker that lets
+    # dispatch-code.sh's refusal_reason() type this as an ADMISSION refusal
+    # (rc 75 + marker -> lock_busy), not a launcher crash. Without it the
+    # dispatcher blind-spills to the next arm and the lock_busy policy rule
+    # never fires.
+    printf 'LEADV2_DISPATCH_REFUSED: lock_busy\n' >&2
     exit 75
   fi
   now="$(date +%s)"
@@ -336,6 +342,8 @@ acquire_lock() {
     log_info "reclaiming stale lock (age ${age}s > timeout+10m): ${lock_dir}"
   else
     log_error "another GLM run is active for this repo (lock: ${lock_dir}, pid: ${lock_pid:-unknown}). Use 'glm-coder.sh list' to inspect."
+    # N1-EMPTY-LANE-IS-NOT-A-PASS (B.1): admission-refusal contract marker (see above).
+    printf 'LEADV2_DISPATCH_REFUSED: lock_busy\n' >&2
     exit 75
   fi
 
@@ -1428,6 +1436,30 @@ cmd_supervise() {
     # Monitor pattern can additionally catch the warning without losing the
     # original success signal.
     echo "RUN_COMPLETE" >> "${run_dir}/progress.log"
+    # N1-EMPTY-LANE-IS-NOT-A-PASS (C): a worker that finishes by asking the
+    # operator a question nobody answered is NOT done. Detection: the last
+    # non-empty line of result.md ends in '?' (or fullwidth '？'). bash-3.2-safe
+    # (no PCRE -- a `case` glob). The design's condition-3 (no question artifact
+    # in the control plane) is logically subsumed: leadv2-ask.sh BLOCKS until
+    # answered, so a run that reached RUN_COMPLETE cannot have a pending
+    # blocking-ask -- any trailing question here was asked into the void. R9:
+    # bias to loud (a false positive costs one marker+retry; a false negative is
+    # the failure this exists to end). Emits the marker, the dedicated progress
+    # line (after RUN_COMPLETE, byte-identical placement to WITH_WARNINGS so
+    # existing RUN_COMPLETE greps keep working), and bumps finish_warnings.
+    local _aiv=0
+    if [[ -s "${run_dir}/result.md" ]]; then
+      local _last_q
+      _last_q="$(grep -v '^[[:space:]]*$' "${run_dir}/result.md" 2>/dev/null | tail -n1)"
+      case "${_last_q}" in
+        *\?|*？) _aiv=1 ;;
+      esac
+    fi
+    if [[ "${_aiv}" -eq 1 ]]; then
+      touch "${run_dir}/.asked_into_void" 2>/dev/null || true
+      echo "RUN_COMPLETE_ASKED_INTO_VOID" >> "${run_dir}/progress.log"
+      finish_warnings=$((finish_warnings + 1))
+    fi
     if [[ "${finish_warnings}" -gt 0 ]]; then
       echo "RUN_COMPLETE_WITH_WARNINGS" >> "${run_dir}/progress.log"
       echo "FINISH_WARNINGS=${finish_warnings}" >> "${run_dir}/progress.log"

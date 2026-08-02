@@ -1103,7 +1103,7 @@ def is_terminal(status, ledger_state):
     # dispatching for this attempt -- it is terminal for display/TTL purposes.
     return status in ("complete", "failed", "cancelled") or \
            ledger_state in ("closed", "failed", "cancelled",
-                            "landed", "parked", "refused", "dead")
+                            "landed", "parked", "refused", "dead", "no_work")
 
 # ---- R1 (fix round 3): tasks.yaml title map -- ONE parse ----------------
 # Source for rule 1 of name resolution. tasks.yaml is mapping-shaped
@@ -1237,6 +1237,11 @@ if LEDGER_FILE and os.path.exists(LEDGER_FILE):
                 # rows carry it; terminal rows do not). Merged key-wise so a
                 # terminal row's absence never blanks a reserve row's label.
                 ("lane_label", row.get("lane_label")),
+                # N1-EMPTY-LANE-IS-NOT-A-PASS: a terminal row carries its own
+                # `cause` (empty_diff / asked_into_void / partial_diff / ...).
+                # Read it so a no_work row can render no-work(<cause>) instead of
+                # the process-derived stale/dead text it would otherwise inherit.
+                ("tcause", row.get("cause")),
             ):
                 if v not in (None, ""):
                     d[k] = v
@@ -1254,7 +1259,8 @@ rows = []        # each: dict(name, kind, display, model, age, cause, cls, max_m
 seen_sig8 = set()
 
 def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
-            created_epoch, ledger_state, handle, arm, task_id, mission_path, lane_label):
+            created_epoch, ledger_state, handle, arm, task_id, mission_path, lane_label,
+            tcause=""):
     # gather mtimes
     status, ec, pmodel, j_mtime = provider_meta(handle, arm)
     mtimes = []
@@ -1380,6 +1386,18 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
         elif "?" not in cause:
             cause = cause + "?"
 
+    # N1-EMPTY-LANE-IS-NOT-A-PASS: a lane whose terminal is no_work (it RAN but its
+    # own diff was empty) is RED, never success. Override whatever process-derived
+    # cause/cls landed above with an unmistakable no-work(<cause>) on cls=dead. This
+    # MUST sit before the stale->done reinterpretation below: a no_work row with no
+    # pid/exit lands on stale(...) and that branch would otherwise launder it into
+    # green done(terminal) -- the exact lying-green disease this task exists to kill
+    # (R1). The cause prefix "no-work(" is also what keeps it out of that branch
+    # (it matches `cause.startswith("stale(")` -> False).
+    if ledger_state == "no_work":
+        _nw = (tcause or "empty-diff").replace("_", "-")
+        cause, cls = "no-work(%s)" % _nw, "dead"
+
     terminal = is_terminal(status, ledger_state)
     # terminal last-resort-stale reinterpretation: a ledger-only terminal row
     # (no pid, no exit code, only an old timestamp) lands on the stale("...")
@@ -1387,7 +1405,8 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
     # done — but ONLY there: dead(exit=N)/dead(no-process)/dead(no-signal)
     # are real failure evidence and must stay dead. Sits after `terminal` is
     # computed and before the age-out so old-terminal still drops.
-    if terminal and cls == "dead" and cause.startswith("stale("):
+    if terminal and cls == "dead" and cause.startswith("stale(") \
+            and ledger_state != "no_work":
         cause = "done(%s)" % (ledger_state or status or "terminal")
         cls = "done"
     # age-out: terminal + silent > 7200s -> drop. Non-terminal never dropped
@@ -1458,7 +1477,8 @@ for s in sessions:
     r = add_row(sig8, "lane", s.get("phase"), s.get("lead_model"),
                 s.get("pid"), s.get("pid_birth"), log_path,
                 iso_to_epoch(s.get("last_pulse_at")) or iso_to_epoch(s.get("started_at")),
-                created_epoch, ledger_state, handle, arm, _tid, _mpath, _llabel)
+                created_epoch, ledger_state, handle, arm, _tid, _mpath, _llabel,
+                le.get("tcause") or "")
     if r:
         rows.append(r)
 
@@ -1475,7 +1495,8 @@ for sig8, le in ledger.items():
     _mpath = le.get("mission_path") or ""
     _llabel = le.get("lane_label") or ""
     r = add_row(sig8, "worker", None, None, None, None, None, None,
-                le.get("created_epoch"), ledger_state, handle, arm, _tid, _mpath, _llabel)
+                le.get("created_epoch"), ledger_state, handle, arm, _tid, _mpath, _llabel,
+                le.get("tcause") or "")
     if r:
         rows.append(r)
 

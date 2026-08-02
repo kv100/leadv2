@@ -16,7 +16,7 @@
 #   LATER, separate attempt at the same sig8 will end, so recording one never blocks a
 #   later write from the SAME sig8 -- landed/dead still wins write-once against it. Row
 #   shape:
-#     {"ts","task_sig","founder_task_id","terminal":"landed|parked|refused|dead","cause","evidence"}
+#     {"ts","task_sig","founder_task_id","terminal":"landed|parked|refused|dead|no_work","cause","evidence"}
 #   task_sig is the dispatch-<sig8> identifier BOTH writer scripts already share (dispatch-
 #   code.sh computes the full mission-text sig but only ever hands sig8 to dispatch-product-
 #   close.sh -- keying on the 8-char form here is what lets a single ledger row be extended
@@ -35,11 +35,22 @@
 #             recording landed/dead.
 #   refused — declined at admission before any real work started (dedup, quota exhausted,
 #             lane-shape violation, opus-requires-lead-judgment, a gate structurally could
-#             not run at all -- missing e2e entrypoint, unscopable diff, no reviewer).
+#             not run at all -- missing e2e entrypoint, no reviewer). Note: an EMPTY diff
+#             is NOT refused -- see no_work below; a lane that ran for 40 minutes and
+#             produced nothing is not "declined at admission".
 #             RETRYABLE -- does not block a later attempt at the same sig8 from later
 #             recording landed/dead (quota exhaustion is the canonical case: quota
 #             recovers, an identical dispatch is retried, and its real outcome must still
 #             be recordable against the same sig8).
+#   no_work — the lane RAN but its own diff is empty: it wrote nothing. (N1-EMPTY-LANE-
+#             IS-NOT-A-PASS.) cause is empty_diff (the diff-scope block found zero bytes
+#             across every declared write) or asked_into_void (the worker finished by
+#             asking an operator a question nobody answered). A retryable disposition,
+#             exactly the argument recorded above for refused/parked: a lane that did
+#             nothing says nothing about a LATER attempt at the same signature. It is NOT
+#             `dead` (dead is write-once and would block that retry) and it is NOT
+#             `refused` (it ran past admission). partial_diff stays `refused` -- a mixed
+#             group DID produce work.
 #
 # CLI (this script is a SUBPROCESS CALLED via `bash ... "$@"` by its two callers, NEVER
 # `source`d -- see the "WHY A CLI, NOT A LIBRARY" note below):
@@ -178,7 +189,7 @@ dispatch_ledger_write_terminal() {
   local sig8="$1" founder="${2:-}" terminal="$3" cause="${4:-}" evidence="${5:-}" attempt="${6:-}" display_name="${7:-}"
   [[ -n "${sig8}" ]] || { log_err "write_terminal: empty task_sig, refusing to write"; return 1; }
   case "${terminal}" in
-    landed|parked|refused|dead) : ;;
+    landed|parked|refused|dead|no_work) : ;;
     *) log_err "write_terminal: invalid terminal='${terminal}' for sig=${sig8}"; return 1 ;;
   esac
   founder="$(json_safe "${founder}")"

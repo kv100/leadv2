@@ -356,136 +356,12 @@ if [[ "${AUTHOR}" == sonnet && "${HANDLE}" =~ ^[0-9]+$ ]]; then
   while kill -0 "${HANDLE}" 2>/dev/null; do sleep 2; done
 fi
 
-_stamp_active_phase "${FOUNDER_TASK_ID}" "e2e"
-if [[ "${E2E_ON}" != 1 ]]; then
-  emit decision "e2e_gate task=${TASK} status=disabled reason=kill_switch"
-elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${ROOT}")"; then
-  repo="$(basename "${ROOT}")"
-  printf 'status: blocked\nreason: no_e2e_entrypoint\nrepo: %s\n' "${repo}" > "${HANDOFF}/e2e-gate.md"
-  rm -f "${HANDOFF}/e2e-gate-passed.flag"
-  emit decision "e2e_gate task=${TASK} status=blocked reason=no_e2e_entrypoint repo=${repo}"
-  _dl_note refused no_e2e_entrypoint "repo=${repo}"
-  exit 4
-else
-  bash -c "${e2e_cmd} --scope changed" > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
-  # GATE-FOREIGN-FAILURE-01: WRITES_CSV present + ownership enabled means the
-  # passed sentinel is stamped as scoped to the lane's own write set (the
-  # apparatus that can tell "my regression" from "someone else's unfinished
-  # file" is active for this lane), never a behavioural difference on green.
-  _e2e_ownership="${LEADV2_E2E_OWNERSHIP:-1}"
-  _e2e_pass_scope="changed"
-  [[ "${_e2e_ownership}" == "1" && -n "${WRITES_CSV}" ]] && _e2e_pass_scope="lane_writes"
-  if [[ ${e2e_rc} -eq 0 ]]; then
-    printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: %s\nbypassed: false\n' \
-      "${TASK}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_e2e_pass_scope}" > "${HANDOFF}/e2e-gate-passed.flag"
-    emit decision "e2e_gate task=${TASK} status=ran verdict=pass"
-  else
-    rm -f "${HANDOFF}/e2e-gate-passed.flag"
-    emit decision "e2e_gate task=${TASK} status=ran verdict=fail rc=${e2e_rc}"
-    # GATE-FOREIGN-FAILURE-01: four lanes died 2026-07-31 05:06-05:19Z on a
-    # suite none of them touched -- it was mid-edit by a fifth lane in the
-    # SAME shared working tree. Before treating every blocking failure as
-    # this lane's own regression, classify by ownership (differential re-run
-    # against a lane-only scratch tree, see leadv2-e2e-ownership.sh). Own
-    # failures ALWAYS win over foreign ones -- a lane can never launder its
-    # own regression behind someone else's unfinished file.
-    _own_csv=""; _foreign_csv=""; _undecidable_csv=""; _owner_lane="unknown"
-    if [[ "${_e2e_ownership}" == "1" && -n "${WRITES_CSV}" ]]; then
-      _own_out="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${ROOT}" "${TASK}" "${WRITES_CSV}" "${HANDOFF}/e2e-gate.log" 2>/dev/null || true)"
-      _own_csv="$(sed -n 's/^own=//p' <<< "${_own_out}")"
-      _foreign_csv="$(sed -n 's/^foreign=//p' <<< "${_own_out}")"
-      _undecidable_csv="$(sed -n 's/^undecidable=//p' <<< "${_own_out}")"
-      _owner_lane="$(sed -n 's/^owner_lane=//p' <<< "${_own_out}")"
-      [[ -z "${_owner_lane}" ]] && _owner_lane="unknown"
-    fi
-
-    if [[ -n "${_foreign_csv}" && -z "${_own_csv}" && -z "${_undecidable_csv}" ]]; then
-      # Pure foreign failure: not a single blocking suite reproduces against
-      # this lane's own write set alone. Do NOT kill the lane -- but never
-      # swallow the red suite silently either (loudness contract below).
-      IFS=',' read -r -a _lane_writes <<< "${WRITES_CSV}"
-      mapfile -t _all_changed < <(
-        { git -C "${ROOT}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
-          git -C "${ROOT}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
-      )
-      _foreign_files=()
-      for _f in "${_all_changed[@]}"; do
-        [[ -z "${_f}" ]] && continue
-        _is_write=0
-        for _w in "${_lane_writes[@]}"; do [[ "${_f}" == "${_w}" ]] && { _is_write=1; break; }; done
-        (( _is_write )) || _foreign_files+=("${_f}")
-      done
-      _foreign_files_csv="$(IFS=,; echo "${_foreign_files[*]:-}")"
-      printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: lane_writes\nbypassed: false\nforeign_failures: %s\n' \
-        "${TASK}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_foreign_csv}" > "${HANDOFF}/e2e-gate-passed.flag"
-      printf 'status: fail_foreign\nreason: foreign_failure\nforeign_suites: %s\nforeign_files: %s\nowner_lane: %s\n' \
-        "${_foreign_csv}" "${_foreign_files_csv}" "${_owner_lane}" > "${HANDOFF}/e2e-gate.md"
-      emit decision "e2e_gate task=${TASK} status=ran verdict=foreign_failure scope=lane_writes foreign_suites=${_foreign_csv} foreign_files=${_foreign_files_csv} owner_lane=${_owner_lane} own_failures=0"
-      IFS=',' read -r -a _foreign_suite_arr <<< "${_foreign_csv}"
-      for _s in "${_foreign_suite_arr[@]}"; do
-        [[ -z "${_s}" ]] && continue
-        emit decision "foreign_failure task=${TASK} suite=${_s} file=${_foreign_files_csv} owner_lane=${_owner_lane}"
-      done
-      # NOT dead, NOT exit 8 -- falls through to the review gate below.
-    else
-      # wave2 finding 6: an e2e regression is a `dead` outcome in the ledger taxonomy --
-      # falling through into the review gate below (which CAN end in `landed`) let a real
-      # regression be finalized as delivered. Distinct from the kill-switch branch above
-      # (E2E_ON!=1 is a deliberate disabled state, never a failure) -- this only fires when
-      # the gate actually RAN and reported a real non-zero verdict.
-      if [[ "${_e2e_ownership}" == "1" && -z "${WRITES_CSV}" ]]; then
-        printf 'status: fail\nreason: e2e_regression\nrc: %s\nscope: whole_tree_fallback\n' "${e2e_rc}" > "${HANDOFF}/e2e-gate.md"
-      else
-        printf 'status: fail\nreason: e2e_regression\nrc: %s\n' "${e2e_rc}" > "${HANDOFF}/e2e-gate.md"
-      fi
-      _dl_note dead e2e_regression "rc=${e2e_rc}"
-      exit 8
-    fi
-  fi
-fi
-
-_stamp_active_phase "${FOUNDER_TASK_ID}" "review"
-if [[ "${REVIEW_ON}" != 1 ]]; then
-  emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
-  _dl_note landed review_gate_disabled
-  exit 0
-fi
-# N-5 D3: from this point on the review phase is genuinely entered -- the EXIT trap
-# backstop (_pc_exit_handler above) now guarantees review-gate.md exists on every exit
-# path, including a crash this script never explicitly handles.
-_PC_REVIEW_ENTERED=1
-
-# dispatch-00629379: resolved via the pool resolver (job=review, base-arm=codex,
-# --review-pool --author) -- see resolve_review_pool_call() above. The pool already
-# excludes AUTHOR and orders codex > glm > opus > sonnet by live quota headroom; an
-# empty reviewer here means every arm in the pool was genuinely unavailable (quota or
-# author-collision), which IS a finding -- it must never silently skip the gate.
-resolver_out="$(resolve_review_pool_call)"
-reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"
-pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
-refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
-# Defense-in-depth (R9): the resolver already filters the author out of its pool, but
-# a reviewer==author slip (stale cache, a launcher default) must never reach a live
-# self-review -- assert it here too rather than trusting a single enforcement point.
-if [[ -n "${reviewer}" && "${reviewer}" == "${AUTHOR}" ]]; then
-  refusal="reviewer_equals_author"
-  reviewer=""
-fi
-if [[ -z "${reviewer}" ]]; then
-  # N-5 D1/D5: the resolver found nobody at all -- the SAME "unreviewed, not silently
-  # landed" shape as the fallback loop below exhausting the pool, just zero arms ever
-  # attempted. This used to be `status: no_reviewer` / exit 0, indistinguishable from
-  # success to anything reading the exit code (which nothing does -- D2) or the ledger
-  # (which recorded `parked`, not a failure state).
-  refusal="${refusal:-all_review_arms_unavailable}"
-  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: \n' \
-    "${AUTHOR}" "${pool}" > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} refusal=${refusal} tried="
-  _dl_note dead all_arms_unavailable "author=${AUTHOR} pool=${pool} refusal=${refusal}"
-  _stamp_review_terminal unreviewed
-  exit 9
-fi
-
+# N1-EMPTY-LANE-IS-NOT-A-PASS: the lane's diff is scoped ONCE, here, BEFORE the
+# e2e gate stamps its passed sentinel -- so a lane that wrote nothing exits as
+# no_work before e2e-gate-passed.flag can ever be created. The review gate below
+# consumes the already-computed ${diff_file} / ${_pc_base_used}; the dedup block
+# after it reuses ${diff_file} (global -- no `local` on the diff vars) too.
+pc_scope_diff() {
 diff_file="${HANDOFF}/review.diff"
 : > "${diff_file}"
 repos_file="${HANDOFF}/review.diff.repos"
@@ -662,17 +538,193 @@ else
 fi
 rm -f "${_PC_LAST_BASE_FILE}" 2>/dev/null || true
 if [[ -n "${blocked_reason}" ]]; then
-  # N-5: unscopable_diff/partial_diff are kept as the diff-scoping alias of
-  # no_diff_to_review (design §2.1) -- same reason string, same exit 5, now also
-  # visible in the lane row via review:blocked. base= names the diff base that produced
-  # the empty/partial result (HEAD or an abbreviated start-sha), so a blocked lane is
-  # diagnosable without re-running anything (S-3 round 3).
-  printf 'status: blocked\nreason: %s\nbase: %s\n' "${blocked_reason}" "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=blocked reason=${blocked_reason}"
-  _dl_note refused "${blocked_reason}"
+  # N1-EMPTY-LANE-IS-NOT-A-PASS: a lane that produced NOTHING is its own outcome --
+  # never passed, never a silently-blocked unscopable_diff. partial_diff stays
+  # `refused` (a mixed group DID produce work, R10); the whole-empty cases become
+  # `no_work` (retryable, like refused/parked) with cause empty_diff, or
+  # asked_into_void when the worker's run dir carries the Design-C marker
+  # (_PC_ASKED_INTO_VOID, set by the asked-into-void probe below the e2e block).
+  # Exit code stays 5 -- no caller-contract change.
+  _pc_terminal="refused"; _pc_cause="${blocked_reason}"; _pc_rg_reason="${blocked_reason}"
+  if [[ "${blocked_reason}" != "partial_diff" ]]; then
+    _pc_terminal="no_work"; _pc_cause="empty_diff"; _pc_rg_reason="no_work"
+    if [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
+      _pc_cause="asked_into_void"
+    fi
+  fi
+  # review-gate.md reason mirrors the ledger word so the on-disk artifact and the
+  # row agree (was unscopable_diff for the empty case). base= names the diff base
+  # (HEAD or an abbreviated start-sha) so a blocked lane is diagnosable without
+  # re-running anything (S-3 round 3).
+  printf 'status: blocked\nreason: %s\nbase: %s\n' "${_pc_rg_reason}" "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=${_pc_rg_reason} terminal=${_pc_terminal} cause=${_pc_cause}"
+  _dl_note "${_pc_terminal}" "${_pc_cause}"
   _stamp_review_terminal blocked
   exit 5
 fi
+}
+
+# N1-EMPTY-LANE-IS-NOT-A-PASS (C.3): resolve the worker's run dir the SAME way the
+# status surface does (${RUNS_ROOT}/${arm}-runs/${handle}) so we can read the
+# .asked_into_void marker the coder's finish guard writes. Empty when no handle/arm
+# -> the asked-into-void cause never fires (degrades to empty_diff). Resolved ONCE
+# here, before pc_scope_diff, so the empty-diff branch (cause asked_into_void) and
+# the non-empty-diff branch (parked) below share one definition.
+_PC_RUNS_ROOT="${LEADV2_PC_RUNS_ROOT:-${HOME}/.claude/cache}"
+_PC_ASKED_INTO_VOID=""
+if [[ -n "${AUTHOR:-}" && -n "${HANDLE:-}" ]]; then
+  case "${AUTHOR}" in
+    glm)  _PC_ASKED_INTO_VOID="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${HANDLE}/.asked_into_void" ;;
+    kimi) _PC_ASKED_INTO_VOID="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${HANDLE}/.asked_into_void" ;;
+    *)    _PC_ASKED_INTO_VOID="${_PC_RUNS_ROOT}/${AUTHOR}-runs/${HANDLE}/.asked_into_void" ;;
+  esac
+fi
+
+pc_scope_diff
+
+# C.3: a NON-empty diff whose worker still asked into the void is parked, never
+# landed -- work exists and a human answering the question unblocks it, which is
+# exactly what parked means (ledger.sh taxonomy). pc_scope_diff already exited
+# (no_work/asked_into_void) on the empty-diff case, so this only runs when there
+# IS a diff. Belt-and-braces: review-gate.md mirrors the parked terminal too.
+if [[ -n "${_PC_ASKED_INTO_VOID}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
+  printf 'status: blocked\nreason: asked_into_void\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=asked_into_void terminal=parked cause=asked_into_void"
+  _dl_note parked asked_into_void
+  _stamp_review_terminal blocked
+  exit 5
+fi
+
+_stamp_active_phase "${FOUNDER_TASK_ID}" "e2e"
+if [[ "${E2E_ON}" != 1 ]]; then
+  emit decision "e2e_gate task=${TASK} status=disabled reason=kill_switch"
+elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${ROOT}")"; then
+  repo="$(basename "${ROOT}")"
+  printf 'status: blocked\nreason: no_e2e_entrypoint\nrepo: %s\n' "${repo}" > "${HANDOFF}/e2e-gate.md"
+  rm -f "${HANDOFF}/e2e-gate-passed.flag"
+  emit decision "e2e_gate task=${TASK} status=blocked reason=no_e2e_entrypoint repo=${repo}"
+  _dl_note refused no_e2e_entrypoint "repo=${repo}"
+  exit 4
+else
+  bash -c "${e2e_cmd} --scope changed" > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+  # GATE-FOREIGN-FAILURE-01: WRITES_CSV present + ownership enabled means the
+  # passed sentinel is stamped as scoped to the lane's own write set (the
+  # apparatus that can tell "my regression" from "someone else's unfinished
+  # file" is active for this lane), never a behavioural difference on green.
+  _e2e_ownership="${LEADV2_E2E_OWNERSHIP:-1}"
+  _e2e_pass_scope="changed"
+  [[ "${_e2e_ownership}" == "1" && -n "${WRITES_CSV}" ]] && _e2e_pass_scope="lane_writes"
+  if [[ ${e2e_rc} -eq 0 ]]; then
+    printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: %s\nbypassed: false\n' \
+      "${TASK}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_e2e_pass_scope}" > "${HANDOFF}/e2e-gate-passed.flag"
+    emit decision "e2e_gate task=${TASK} status=ran verdict=pass"
+  else
+    rm -f "${HANDOFF}/e2e-gate-passed.flag"
+    emit decision "e2e_gate task=${TASK} status=ran verdict=fail rc=${e2e_rc}"
+    # GATE-FOREIGN-FAILURE-01: four lanes died 2026-07-31 05:06-05:19Z on a
+    # suite none of them touched -- it was mid-edit by a fifth lane in the
+    # SAME shared working tree. Before treating every blocking failure as
+    # this lane's own regression, classify by ownership (differential re-run
+    # against a lane-only scratch tree, see leadv2-e2e-ownership.sh). Own
+    # failures ALWAYS win over foreign ones -- a lane can never launder its
+    # own regression behind someone else's unfinished file.
+    _own_csv=""; _foreign_csv=""; _undecidable_csv=""; _owner_lane="unknown"
+    if [[ "${_e2e_ownership}" == "1" && -n "${WRITES_CSV}" ]]; then
+      _own_out="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${ROOT}" "${TASK}" "${WRITES_CSV}" "${HANDOFF}/e2e-gate.log" 2>/dev/null || true)"
+      _own_csv="$(sed -n 's/^own=//p' <<< "${_own_out}")"
+      _foreign_csv="$(sed -n 's/^foreign=//p' <<< "${_own_out}")"
+      _undecidable_csv="$(sed -n 's/^undecidable=//p' <<< "${_own_out}")"
+      _owner_lane="$(sed -n 's/^owner_lane=//p' <<< "${_own_out}")"
+      [[ -z "${_owner_lane}" ]] && _owner_lane="unknown"
+    fi
+
+    if [[ -n "${_foreign_csv}" && -z "${_own_csv}" && -z "${_undecidable_csv}" ]]; then
+      # Pure foreign failure: not a single blocking suite reproduces against
+      # this lane's own write set alone. Do NOT kill the lane -- but never
+      # swallow the red suite silently either (loudness contract below).
+      IFS=',' read -r -a _lane_writes <<< "${WRITES_CSV}"
+      mapfile -t _all_changed < <(
+        { git -C "${ROOT}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+          git -C "${ROOT}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
+      )
+      _foreign_files=()
+      for _f in "${_all_changed[@]}"; do
+        [[ -z "${_f}" ]] && continue
+        _is_write=0
+        for _w in "${_lane_writes[@]}"; do [[ "${_f}" == "${_w}" ]] && { _is_write=1; break; }; done
+        (( _is_write )) || _foreign_files+=("${_f}")
+      done
+      _foreign_files_csv="$(IFS=,; echo "${_foreign_files[*]:-}")"
+      printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: lane_writes\nbypassed: false\nforeign_failures: %s\n' \
+        "${TASK}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_foreign_csv}" > "${HANDOFF}/e2e-gate-passed.flag"
+      printf 'status: fail_foreign\nreason: foreign_failure\nforeign_suites: %s\nforeign_files: %s\nowner_lane: %s\n' \
+        "${_foreign_csv}" "${_foreign_files_csv}" "${_owner_lane}" > "${HANDOFF}/e2e-gate.md"
+      emit decision "e2e_gate task=${TASK} status=ran verdict=foreign_failure scope=lane_writes foreign_suites=${_foreign_csv} foreign_files=${_foreign_files_csv} owner_lane=${_owner_lane} own_failures=0"
+      IFS=',' read -r -a _foreign_suite_arr <<< "${_foreign_csv}"
+      for _s in "${_foreign_suite_arr[@]}"; do
+        [[ -z "${_s}" ]] && continue
+        emit decision "foreign_failure task=${TASK} suite=${_s} file=${_foreign_files_csv} owner_lane=${_owner_lane}"
+      done
+      # NOT dead, NOT exit 8 -- falls through to the review gate below.
+    else
+      # wave2 finding 6: an e2e regression is a `dead` outcome in the ledger taxonomy --
+      # falling through into the review gate below (which CAN end in `landed`) let a real
+      # regression be finalized as delivered. Distinct from the kill-switch branch above
+      # (E2E_ON!=1 is a deliberate disabled state, never a failure) -- this only fires when
+      # the gate actually RAN and reported a real non-zero verdict.
+      if [[ "${_e2e_ownership}" == "1" && -z "${WRITES_CSV}" ]]; then
+        printf 'status: fail\nreason: e2e_regression\nrc: %s\nscope: whole_tree_fallback\n' "${e2e_rc}" > "${HANDOFF}/e2e-gate.md"
+      else
+        printf 'status: fail\nreason: e2e_regression\nrc: %s\n' "${e2e_rc}" > "${HANDOFF}/e2e-gate.md"
+      fi
+      _dl_note dead e2e_regression "rc=${e2e_rc}"
+      exit 8
+    fi
+  fi
+fi
+
+_stamp_active_phase "${FOUNDER_TASK_ID}" "review"
+if [[ "${REVIEW_ON}" != 1 ]]; then
+  emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
+  _dl_note landed review_gate_disabled
+  exit 0
+fi
+# N-5 D3: from this point on the review phase is genuinely entered -- the EXIT trap
+# backstop (_pc_exit_handler above) now guarantees review-gate.md exists on every exit
+# path, including a crash this script never explicitly handles.
+_PC_REVIEW_ENTERED=1
+
+# dispatch-00629379: resolved via the pool resolver (job=review, base-arm=codex,
+# --review-pool --author) -- see resolve_review_pool_call() above. The pool already
+# excludes AUTHOR and orders codex > glm > opus > sonnet by live quota headroom; an
+# empty reviewer here means every arm in the pool was genuinely unavailable (quota or
+# author-collision), which IS a finding -- it must never silently skip the gate.
+resolver_out="$(resolve_review_pool_call)"
+reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"
+pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
+refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
+# Defense-in-depth (R9): the resolver already filters the author out of its pool, but
+# a reviewer==author slip (stale cache, a launcher default) must never reach a live
+# self-review -- assert it here too rather than trusting a single enforcement point.
+if [[ -n "${reviewer}" && "${reviewer}" == "${AUTHOR}" ]]; then
+  refusal="reviewer_equals_author"
+  reviewer=""
+fi
+if [[ -z "${reviewer}" ]]; then
+  # N-5 D1/D5: the resolver found nobody at all -- the SAME "unreviewed, not silently
+  # landed" shape as the fallback loop below exhausting the pool, just zero arms ever
+  # attempted. This used to be `status: no_reviewer` / exit 0, indistinguishable from
+  # success to anything reading the exit code (which nothing does -- D2) or the ledger
+  # (which recorded `parked`, not a failure state).
+  refusal="${refusal:-all_review_arms_unavailable}"
+  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: \n' \
+    "${AUTHOR}" "${pool}" > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} refusal=${refusal} tried="
+  _dl_note dead all_arms_unavailable "author=${AUTHOR} pool=${pool} refusal=${refusal}"
+  _stamp_review_terminal unreviewed
+  exit 9
+fi
+
 diff_hash="$(shasum -a 256 "${diff_file}" | awk '{print $1}')"
 # Dedup is checked BEFORE spending a second provider. record-review below remains the
 # atomic writer that resolves a concurrent race; in that case the duplicate result is also

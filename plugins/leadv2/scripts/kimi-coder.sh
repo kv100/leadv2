@@ -1493,6 +1493,24 @@ cmd_supervise() {
     # Monitor pattern can additionally catch the warning without losing the
     # original success signal.
     echo "RUN_COMPLETE" >> "${run_dir}/progress.log"
+    # N1-EMPTY-LANE-IS-NOT-A-PASS (C): see glm-coder.sh's twin block. kimi is the
+    # arm observed ending RUN_COMPLETE after asking the operator an unanswered
+    # question into the void -- the dedicated marker + progress line make that
+    # outcome distinguishable from success. Conditions 1+2 (trailing '?'); the
+    # blocking-ask argument subsumes condition 3 (R9: bias to loud).
+    local _aiv=0
+    if [[ -s "${run_dir}/result.md" ]]; then
+      local _last_q
+      _last_q="$(grep -v '^[[:space:]]*$' "${run_dir}/result.md" 2>/dev/null | tail -n1)"
+      case "${_last_q}" in
+        *\?|*？) _aiv=1 ;;
+      esac
+    fi
+    if [[ "${_aiv}" -eq 1 ]]; then
+      touch "${run_dir}/.asked_into_void" 2>/dev/null || true
+      echo "RUN_COMPLETE_ASKED_INTO_VOID" >> "${run_dir}/progress.log"
+      finish_warnings=$((finish_warnings + 1))
+    fi
     if [[ "${finish_warnings}" -gt 0 ]]; then
       echo "RUN_COMPLETE_WITH_WARNINGS" >> "${run_dir}/progress.log"
       echo "FINISH_WARNINGS=${finish_warnings}" >> "${run_dir}/progress.log"

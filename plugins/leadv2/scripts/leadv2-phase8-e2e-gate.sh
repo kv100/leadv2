@@ -55,6 +55,37 @@ if ! flock -n 9; then
   exit 1
 fi
 
+# N1-EMPTY-LANE-IS-NOT-A-PASS: a lane that wrote nothing is never a pass. This is
+# the SECOND writer of e2e-gate-passed.flag (the first, leadv2-dispatch-product-
+# close.sh, now exits before stamping on an empty diff). Refuse to stamp the
+# sentinel here too -- checked ONCE up front so NONE of the three stamp sites below
+# (PE_SKIP bypass, rc==0 pass, foreign-failure) can launder a do-nothing lane into
+# green. Reads the SAME architect-prepass.md LANE_WRITES the rest of this script
+# resolves lower down; lv2_lane_diff_is_empty comes from leadv2-helpers.sh.
+_p8_prepass_writes_early() {
+  local f="${OUT_DIR}/architect-prepass.md" line
+  [[ -s "${f}" ]] || return 0
+  line="$(grep -m1 -iE '^[[:space:]*_]*LANE_WRITES[*_]*:' "${f}" 2>/dev/null)" || return 0
+  line="$(printf '%s' "${line}" | sed -E 's/^[[:space:]*_]*LANE_WRITES[*_]*:[[:space:]]*//I')"
+  local -a raw kept=()
+  IFS=',' read -ra raw <<< "${line}"
+  for e in "${raw[@]}"; do
+    e="$(printf '%s' "${e}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [[ -n "${e}" ]] && kept+=("${e}")
+  done
+  (IFS=','; printf '%s' "${kept[*]:-}")
+}
+_p8_refuse_empty_lane() {
+  local _wc; _wc="$(_p8_prepass_writes_early)"
+  if lv2_lane_diff_is_empty "${PROJECT_ROOT}" "${_wc}"; then
+    rm -f "$SENTINEL"
+    printf 'status: blocked\nreason: no_work\n' > "${OUT_DIR}/review-gate.md" 2>/dev/null || true
+    echo "leadv2-phase8-e2e-gate: lane diff is empty (no_work) -- refusing to stamp sentinel" | tee "$LOG" >&2
+    exit 1
+  fi
+}
+_p8_refuse_empty_lane
+
 # ── D6: deploy-class verify gate (DEPLOY-CLASS-VERIFY-GATE-01) ──────────────
 # Runs BEFORE the PE_SKIP_TESTS branch so that bypass cannot skip deploy
 # verification. When the classifier says `deploy`, requires

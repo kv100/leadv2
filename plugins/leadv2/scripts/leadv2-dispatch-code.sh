@@ -1379,6 +1379,14 @@ spawn_worker() {
     fi
   fi
   rm -f "${errf}"
+  # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): LAST_ARM_OUTCOME is set inside this
+  # function, but spawn_worker runs inside a command substitution
+  # (spawn_out="$(spawn_worker ...)") so a plain global does NOT escape the
+  # subshell back to the caller. Persist it to a per-process temp file so
+  # atomic_dispatch_reserve_spawn_confirm can restore it in its OWN scope -- the
+  # candidate loop's arc==7 branch reads it to decide whether a refusal carries
+  # a routing signal worth re-resolving on (glm_refused_lock_busy).
+  printf '%s' "${LAST_ARM_OUTCOME}" > "${TMPDIR:-/tmp}/leadv2-spawn-outcome.$$" 2>/dev/null || true
   return ${rc}
 }
 
@@ -1443,13 +1451,27 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
   # admission codes AND emits the LEADV2_DISPATCH_REFUSED marker counts as a
   # refusal (safe to silently reroute); any other non-zero exit is a genuine
   # launcher failure.
-  if [[ -n "${marker}" && ( "${rc}" == "1" || "${rc}" == "2" || ( "${arm}" == "kimi" && "${rc}" == "77" ) ) ]]; then
+  if [[ -n "${marker}" && ( "${rc}" == "1" || "${rc}" == "2" \
+        || ( "${arm}" == "kimi" && "${rc}" == "77" ) \
+        || ( "${arm}" == "glm" && "${rc}" == "75" ) ) ]]; then
     printf '%s' "${marker}"
     return 0
   fi
   # Compatibility only for older GLM quota gates.  Source gates now emit the marker.
   if [[ "${arm}" == "glm" && "${rc}" == "1" && "${combined}" == *"[glm-quota-gate] REROUTE"* ]]; then
     printf '%s' quota_gate
+    return 0
+  fi
+  # N1-EMPTY-LANE-IS-NOT-A-PASS (B.1): legacy-compat shim for a glm launcher build
+  # that predates the LEADV2_DISPATCH_REFUSED: lock_busy marker. The portable-lock
+  # path exits 75 with a plain-English "another GLM run is active for this repo"
+  # message; without this it was mis-typed as a launcher crash (spawn_failed ...
+  # launcher_nonzero_exit) and blind-spilled to kimi. The marker is the contract;
+  # this narrow string match is the back-compat belt -- comment-tagged like the
+  # REROUTE shim above.
+  if [[ "${arm}" == "glm" && "${rc}" == "75" \
+        && "${combined}" == *"another GLM run is active for this repo"* ]]; then
+    printf '%s' lock_busy
     return 0
   fi
   return 1
@@ -1709,6 +1731,12 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
   if [[ "${do_spawn}" == "1" ]]; then
     spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
     printf '%s\n' "${spawn_out}"
+    # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): restore the outcome spawn_worker set
+    # inside its subshell (see spawn_worker's temp-file write) so the candidate
+    # loop's arc branches read the REAL refusal reason, not a value lost to the
+    # command substitution. Plain assignment (no `local`) reaches the caller.
+    _spawn_oc="$(cat "${TMPDIR:-/tmp}/leadv2-spawn-outcome.$$" 2>/dev/null || true)"
+    [[ -n "${_spawn_oc}" ]] && LAST_ARM_OUTCOME="${_spawn_oc}"
   fi
   if [[ "${do_spawn}" == "1" && ${src} -eq 0 ]]; then
     # spawn_worker only ever returns 0 after POSITIVELY verifying liveness (glm: run-dir
@@ -2244,7 +2272,15 @@ confirmation-seeking; only for a decision you cannot make yourself."
   # mid-loop (e.g. glm quota-gate refusal falling to sonnet), so that second
   # stamp is the one that ends up truthful, not this one.
   _stamp_active_phase "${founder_task_id}" "build" "${arm}"
-  local candidate arc
+  # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): the candidate loop is wrapped in a restartable
+  # while so a lock-busy refusal can re-resolve the arm mid-loop and re-enter over a
+  # rebuilt chain. bash expands "${candidate_arms[@]}" once at for-entry, so merely
+  # reassigning the array would NOT change the remaining iterations -- the break+reenter
+  # handshake (_reenter=1 -> break for -> outer while continues) is what makes a
+  # mid-loop chain swap effective. One-shot via _reresolved_lock_busy (no unbounded retry).
+  local candidate arc _reresolved_lock_busy="" _reenter
+  while true; do
+  _reenter=0
   for candidate in "${candidate_arms[@]}"; do
     [[ "${candidate}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
     atomic_dispatch_reserve_spawn_confirm "${sig}" "${candidate}" "${rule}" "${mission}" "${sig8}" "${spawn}"
@@ -2293,6 +2329,39 @@ confirmation-seeking; only for a decision you cannot make yourself."
       ;;
     7)
       attempted+=("${LAST_ARM_OUTCOME:-${candidate}_refused}")
+      # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): a lock-busy refusal carries a routing
+      # signal (DC_GLM_LOCK_BUSY) the resolver consumes only at CLASSIFICATION time
+      # -- before any spawn is attempted (resolve_arm at :2101 binds arm/rule/reason
+      # once, up front). A lock that becomes busy AT spawn time never reached it, so
+      # the PRIMARY arm was resolved against a pre-lock picture and the policy rule
+      # glm_lock_busy_no_second_channel (routing.yaml sonnet_exceptions) could not
+      # fire. Re-resolve NOW with the signal set: the resolver -- not a hardcoded
+      # list -- decides where the refused work goes. If it returns a DIFFERENT arm,
+      # rebuild the candidate chain from it and re-enter the loop; if it returns the
+      # same arm (rule not configured), fall through to the existing chain. One-shot.
+      if [[ "${LAST_ARM_OUTCOME:-}" == "glm_refused_lock_busy" && -z "${_reresolved_lock_busy}" ]]; then
+        _reresolved_lock_busy=1
+        if [[ "${DC_GLM_LOCK_BUSY:-}" != "1" ]]; then
+          export DC_GLM_LOCK_BUSY=1
+          local _rr _rr_arm _rr_rule _rr_reason
+          _rr="$(resolve_arm)"
+          _rr_arm="$(printf '%s\n' "${_rr}" | sed -n 's/^arm=//p')"
+          _rr_rule="$(printf '%s\n' "${_rr}" | sed -n 's/^rule=//p')"
+          _rr_reason="$(printf '%s\n' "${_rr}" | sed -n 's/^reason=//p')"
+          if [[ -n "${_rr_arm}" && "${_rr_arm}" != "${arm}" ]]; then
+            arm="${_rr_arm}"; rule="${_rr_rule}"; reason="${_rr_reason}"
+            emit decision "arm_reresolved by=router trigger=glm_lock_busy arm=${arm} rule=${rule} reason=${reason} task=${sig8} router=${router_label}"
+            case "${arm}" in
+              glm)   candidate_arms=(glm kimi codex sonnet) ;;
+              codex) candidate_arms=(codex sonnet) ;;
+              sonnet) candidate_arms=(sonnet) ;;
+              *) : ;;  # unknown arm: leave the chain; loop continues as-is
+            esac
+            _reenter=1
+            break   # break the for; outer while re-enters over the rebuilt chain
+          fi
+        fi
+      fi
       continue
       ;;
     4)
@@ -2339,6 +2408,9 @@ confirmation-seeking; only for a decision you cannot make yourself."
       exit 1
       ;;
     esac
+  done
+  [[ "${_reenter}" == "1" ]] && continue
+  break
   done
 
   local attempted_csv
