@@ -20,8 +20,36 @@ router_v2:
     - min_usable_now: null
       weight: 0.2
 
+  # ── Quota ceilings, founder decision 2026-08-02 ───────────────────────────
+  # Two ceilings per provider: ordinary work, and a HIGHER one for review, because
+  # review is the last thing we want to skip when quota gets tight. A provider is
+  # withdrawn from the ladder for ordinary work at `work_pct` and stays available
+  # for review until `review_pct`.
+  #
+  #   glm    work 80  · review 90
+  #   codex  work 90  · review 95
+  #   claude work 95  · review 95   (weekly)
+  #
+  # These are ceilings on the WEEKLY window. Today only glm has an enforcing
+  # reader (leadv2-glm-quota-gate.sh, default 80) and it does not distinguish
+  # review from ordinary work; codex and claude have no ceiling reader at all.
+  # Until that lands, these numbers are declared policy, NOT enforced behaviour —
+  # do not cite them as if the machine obeyed them.
+  quota_ceilings:
+    glm:    { work_pct: 80, review_pct: 90 }
+    codex:  { work_pct: 90, review_pct: 95 }
+    claude: { work_pct: 95, review_pct: 95 }
+
   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
   # Anthropic arms deliberately share the active Max x20 account bucket.
+  #
+  # NOTE 2026-08-02: this list is NOT what the dispatcher selects from. The
+  # ladder in leadv2-dispatch-code.sh is hardcoded `glm -> codex -> sonnet`, so
+  # claude-haiku and claude-opus are declared here and UNREACHABLE, and fable is
+  # not declared at all. Every provider also has more than one model (glm ≥2,
+  # codex ≥3) and none of those are expressible here. Making this file the actual
+  # source the ladder reads — with a per-model "when to use it and at what effort"
+  # policy — is queued as its own task.
   arms:
     - id: glm
       channel: glm-coder.sh
