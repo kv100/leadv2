@@ -1166,7 +1166,14 @@ _lane_writes_guard() {
   [[ -n "${row_writes}" ]] && return 0
   if [[ "${have_prepass}" == "1" ]] && [[ -n "$(_prepass_writes "${sig8}")" ]]; then return 0; fi
   local _wt=""
-  [[ -n "${founder_task_id:-}" ]] && _wt="$(bash "${LANE_WORKTREE_BIN}" path-of "${founder_task_id}" 2>/dev/null)"
+  # R2 (W-1 lane-worktree-isolation prepass): pin LEADV2_PROJECT_ROOT to the main
+  # checkout. Unpinned, `resolve_root()` falls back to `git rev-parse --show-toplevel`
+  # of cwd -- inside a lane worktree that resolves to the WORKTREE itself, so
+  # lane_dir() computes <worktree>/.claude/worktrees (a nested-worktree path that never
+  # exists) and path-of silently returns empty. The other two call sites
+  # (leadv2-fanout-lane-launcher.sh:366, leadv2-dispatch-product-close.sh:386) already
+  # pin this; this was the one that didn't.
+  [[ -n "${founder_task_id:-}" ]] && _wt="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${founder_task_id}" 2>/dev/null)"
   [[ -n "${_wt}" ]] && return 0
   ARCHITECT_PREPASS_REASON="no_lane_writes"
   emit decision "architect_prepass task=${sig8} status=failed reason=no_lane_writes"
@@ -1940,6 +1947,40 @@ cmd_resolve() {
   JOURNAL_TASK="dispatch-${sig8}"
   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
     log_err "signature computation failed"; exit 1
+  fi
+  # LANE-WORKTREE-ISOLATION-01 lane-entry fix (W-1 architect prepass §0.1/§1.1 step 3):
+  # this is the ONE call site every lane passes through regardless of who invoked it --
+  # fanout's three lead-session launch paths, the detached per-lane launcher, AND a
+  # direct lead dispatch that skips fanout entirely. The prepass found that the direct-
+  # dispatch path (the one every real dispatch-<sig8> lane on 08-01/08-02 actually took)
+  # never called `ensure`, so isolation was committed, tested, and documented, and had
+  # never once fired for a real lane -- every lane silently ran in the shared tree.
+  # `ensure` here closes that gap unconditionally, keyed on the FOUNDER task id (falling
+  # back to this dispatch's own sig8 when no --task-id was given) -- the SAME key
+  # leadv2-fanout-lane-launcher.sh:366 and the close gate's path-of fallback
+  # (leadv2-dispatch-product-close.sh:386, `path-of "${FOUNDER_TASK_ID:-${TASK}}"`) use.
+  # Keying on this script's own sig8 instead would make the close gate look in the wrong
+  # worktree -- filed CRITICAL (R1) in the prepass.
+  #
+  # Idempotent + fail-open by construction: if LEADV2_LANE_WORK_ROOT already points at a
+  # real dir other than PROJECT_ROOT (the launcher already `ensure`d it), this is a no-op
+  # -- `ensure` itself just re-confirms the existing worktree and returns the same path.
+  # `ensure` never fails the dispatch: on any git failure it falls back to PROJECT_ROOT
+  # (today's shared-tree behavior), so isolation failing here only ever degrades, never
+  # blocks. R8: a silent fallback is indistinguishable from a working feature -- that IS
+  # the disease this task exists to end -- so every fallback is journaled loudly below.
+  if [[ -z "${WORK_ROOT}" || ! -d "${WORK_ROOT}" || "${WORK_ROOT}" == "${PROJECT_ROOT}" ]]; then
+    local _lane_ensure_key="${founder_task_id:-${sig8}}"
+    local _lane_dir
+    _lane_dir="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" ensure "${_lane_ensure_key}" "${kind:-standard}" 2>/dev/null)"
+    if [[ -n "${_lane_dir}" && -d "${_lane_dir}" ]]; then
+      if [[ "${_lane_dir}" == "${PROJECT_ROOT}" ]]; then
+        emit decision "lane_worktree_fallback task=${sig8} founder_task=${_lane_ensure_key} reason=ensure_fell_back_to_shared_tree"
+      else
+        WORK_ROOT="${_lane_dir}"
+        export LEADV2_LANE_WORK_ROOT="${WORK_ROOT}"
+      fi
+    fi
   fi
   # LANE-START-SHA-01: unconditional, before any arm spawn -- overwrites any stale value
   # from a prior dispatch that reused this cache dir (mitigates R2: a nested/child dispatch

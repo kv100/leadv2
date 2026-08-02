@@ -168,6 +168,117 @@ else
   fi
 fi
 
+# ── W-1: direct-dispatch path-of must resolve pinned, even from a nested cwd ─
+# R2 (architect prepass §1.3): leadv2-dispatch-code.sh:1169 called `path-of`
+# without pinning LEADV2_PROJECT_ROOT, so cwd inside a lane worktree made
+# resolve_root() pick the WORKTREE as root -- lane_dir() then computed
+# <worktree>/.claude/worktrees (never exists) and path-of silently returned
+# empty. Reproduce the bug unpinned, then prove the pin (what the fix now
+# does at every call site) resolves correctly from the same cwd.
+CLEANUP_SH="${SCRIPT_DIR}/../leadv2-worktree-cleanup.sh"
+
+( cd "$laneA_dir" && unset LEADV2_PROJECT_ROOT && bash "$LANE_SH" path-of taskA 2>/dev/null > "$SCRATCH/unpinned.out" )
+if [[ ! -s "$SCRATCH/unpinned.out" ]]; then
+  pass "R2 repro: path-of from inside a lane worktree, unpinned, resolves empty (the bug)"
+else
+  fail "R2 repro: expected empty path-of from an unpinned nested cwd, got '$(cat "$SCRATCH/unpinned.out")'"
+fi
+
+pinned_out="$(cd "$laneA_dir" && LEADV2_PROJECT_ROOT="$SCRATCH" bash "$LANE_SH" path-of taskA 2>/dev/null)"
+if [[ "$pinned_out" == "$laneA_dir" ]]; then
+  pass "R2 fix: path-of from the SAME nested cwd resolves correctly when LEADV2_PROJECT_ROOT is pinned"
+else
+  fail "R2 fix: pinned path-of mismatch (got '$pinned_out', want '$laneA_dir')"
+fi
+
+# ── W-1: leadv2-worktree-cleanup.sh --sweep-dead ─────────────────────────────
+SCRATCH3="$(mktemp -d)"
+git -C "$SCRATCH3" init -q -b main
+git -C "$SCRATCH3" config user.email "test@test"
+git -C "$SCRATCH3" config user.name "test"
+printf 'seed\n' > "$SCRATCH3/seed.txt"
+git -C "$SCRATCH3" add seed.txt
+git -C "$SCRATCH3" commit -q -m seed
+
+export LEADV2_PROJECT_ROOT="$SCRATCH3"
+export LEADV2_LANE_WORKTREE_ERRF="$SCRATCH3/.lane-worktree.err"
+
+# dead + empty -> must be swept
+dead_empty_dir="$(bash "$LANE_SH" ensure deadEmpty standard)"
+# dead + dirty -> must be kept
+dead_dirty_dir="$(bash "$LANE_SH" ensure deadDirty standard)"
+printf 'uncommitted\n' > "$dead_dirty_dir/scratch.txt"
+# dead + unmerged commit -> must be kept
+dead_unmerged_dir="$(bash "$LANE_SH" ensure deadUnmerged standard)"
+printf 'work\n' > "$dead_unmerged_dir/work.txt"
+git -C "$dead_unmerged_dir" add work.txt
+git -C "$dead_unmerged_dir" commit -q -m "unmerged work"
+# alive + empty -> must be kept (liveness wins over emptiness)
+alive_empty_dir="$(bash "$LANE_SH" ensure aliveEmpty standard)"
+mkdir -p "$SCRATCH3/docs/handoff/aliveEmpty"
+: > "$SCRATCH3/docs/handoff/aliveEmpty/developer.stream.jsonl"
+
+sweep_out="$(cd "$SCRATCH3" && bash "$CLEANUP_SH" --sweep-dead 2>&1)"
+
+wt_list="$(git -C "$SCRATCH3" worktree list --porcelain | awk '/^worktree /{print $2}')"
+if ! grep -qF "$dead_empty_dir" <<<"$wt_list"; then
+  pass "sweep-dead: dead+empty lane worktree removed"
+else
+  fail "sweep-dead: dead+empty lane worktree NOT removed"
+fi
+if grep -qF "$dead_dirty_dir" <<<"$wt_list"; then
+  pass "sweep-dead: dead+dirty lane worktree KEPT"
+else
+  fail "sweep-dead: dead+dirty lane worktree was removed (should be kept)"
+fi
+if grep -qF "$dead_unmerged_dir" <<<"$wt_list"; then
+  pass "sweep-dead: dead+unmerged-commits lane worktree KEPT"
+else
+  fail "sweep-dead: dead+unmerged lane worktree was removed (should be kept)"
+fi
+if grep -qF "$alive_empty_dir" <<<"$wt_list"; then
+  pass "sweep-dead: alive lane worktree KEPT even though empty (liveness wins)"
+else
+  fail "sweep-dead: alive lane worktree was removed (should be kept)"
+fi
+if grep -q "^sweep-dead: [0-9]* removed / [0-9]* kept$" <<<"$sweep_out"; then
+  pass "sweep-dead: prints a removed/kept tally"
+else
+  fail "sweep-dead: missing removed/kept tally line (got: $sweep_out)"
+fi
+
+# ── W-1: leadv2-worktree-cleanup.sh --name refuses an unmerged lane ─────────
+if ( cd "$SCRATCH3" && bash "$CLEANUP_SH" --name deadUnmerged >/dev/null 2>&1 ); then
+  fail "--name removed a worktree with unmerged commits without --force"
+else
+  pass "--name refuses to reap a worktree with unmerged commits (no --force)"
+fi
+if git -C "$SCRATCH3" worktree list --porcelain | grep -qF "$dead_unmerged_dir"; then
+  pass "--name refusal left the unmerged worktree intact"
+else
+  fail "--name refusal removed the worktree anyway"
+fi
+if ( cd "$SCRATCH3" && bash "$CLEANUP_SH" --name deadUnmerged --force >/dev/null 2>&1 ); then
+  pass "--name --force overrides the unmerged-commits refusal"
+else
+  fail "--name --force failed to remove the unmerged worktree"
+fi
+
+# ── W-1: leadv2-worktree-cleanup.sh --name refuses on merge-blocker.flag ────
+blocked_dir="$(bash "$LANE_SH" ensure blockedLane standard)"
+mkdir -p "$SCRATCH3/docs/handoff/blockedLane"
+printf 'merge_blocked: true\nreason: ff_only_conflict\n' > "$SCRATCH3/docs/handoff/blockedLane/merge-blocker.flag"
+if ( cd "$SCRATCH3" && bash "$CLEANUP_SH" --name blockedLane >/dev/null 2>&1 ); then
+  fail "--name removed a worktree carrying merge-blocker.flag without --force"
+else
+  pass "--name refuses to reap a worktree carrying merge-blocker.flag (no --force)"
+fi
+if git -C "$SCRATCH3" worktree list --porcelain | grep -qF "$blocked_dir"; then
+  pass "merge-blocker.flag refusal left the worktree intact"
+else
+  fail "merge-blocker.flag refusal removed the worktree anyway"
+fi
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 if [[ "$FAIL" -gt 0 ]]; then
