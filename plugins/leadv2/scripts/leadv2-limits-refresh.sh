@@ -19,9 +19,13 @@
 #   LEADV2_LIMITS_TTL_GLM/CLAUDE/CODEX/KIMI   override per-provider TTL seconds
 #   LEADV2_QUOTA_LIVE_SH       override path to leadv2-quota-live.sh (tests)
 #   LEADV2_RATELIMIT_PROBE_SH  override path to leadv2-ratelimit-probe.sh (tests)
-#   LEADV2_STATUS_CODEX_LOCKOUT override path to codex-lockout.state (unused
-#                               now that codex reads leadv2-quota-live.sh --
-#                               kept only as a legacy-compat detail note)
+#   LEADV2_STATUS_CODEX_LOCKOUT override path to codex-lockout.state -- read
+#                               by leadv2-codex-lockout.sh (N7E-SURFACE-
+#                               DISAGREES), the SAME file codex-task.sh's
+#                               launch gate consults. Live again: the codex
+#                               row now checks lockout memory first, before
+#                               the live-quota read.
+#   LEADV2_CODEX_LOCKOUT_SH    override path to leadv2-codex-lockout.sh (tests)
 #   LEADV2_LIMITS_SNAPSHOT_COMPAT  legacy snapshot path for one-time seed
 #                                  (default ~/.claude/cache/leadv2-limits-snapshot.txt)
 
@@ -30,6 +34,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 QUOTA_LIVE="${LEADV2_QUOTA_LIVE_SH:-${SCRIPT_DIR}/leadv2-quota-live.sh}"
 PROBE="${LEADV2_RATELIMIT_PROBE_SH:-${SCRIPT_DIR}/leadv2-ratelimit-probe.sh}"
+CODEX_LOCKOUT_SH="${LEADV2_CODEX_LOCKOUT_SH:-${SCRIPT_DIR}/leadv2-codex-lockout.sh}"
 CACHE_DIR="${LEADV2_LIMITS_CACHE_DIR:-${HOME}/.claude/cache/leadv2-limits.d}"
 BURN_DB="${LEADV2_BURN_DB:-${HOME}/.claude/burn/history.db}"
 SNAPSHOT_COMPAT="${LEADV2_LIMITS_SNAPSHOT_COMPAT:-${HOME}/.claude/cache/leadv2-limits-snapshot.txt}"
@@ -175,6 +180,26 @@ EOF
 }
 
 _refresh_codex() {
+  # N7E-SURFACE-DISAGREES: lockout memory dominates -- it refuses
+  # unconditionally, so it is checked FIRST, before any live-quota read. This
+  # is the same source codex-task.sh's launch gate consults (codex-task.sh:98,
+  # 271-286); leadv2-codex-lockout.sh duplicates the parse (bonded by
+  # tests/test-codex-lockout-agreement.sh) since codex-task.sh is off limits
+  # this lane. `state=ok` on a lockout is correct: `ok` means "we know the
+  # answer" (a lockout is known), `unavailable` means "we could not read".
+  local lk lk_until
+  lk=""
+  if [ -x "$CODEX_LOCKOUT_SH" ]; then
+    lk="$(bash "$CODEX_LOCKOUT_SH" 2>/dev/null || true)"
+  fi
+  case "$lk" in
+    locked\ *)
+      lk_until="${lk#locked }"
+      _write_kv codex ok "lockout до ${lk_until}" ""
+      return 0
+      ;;
+  esac
+
   local json st used reset val
   json=""
   if [ -x "$QUOTA_LIVE" ]; then
@@ -201,7 +226,7 @@ EOF
     if [ "$used" = "1" ]; then
       val="lockout до ${reset}"
     else
-      val="доступен (lockout истёк $(date -u +%Y-%m-%dT%H:%M:%SZ))"
+      val="доступен"
     fi
     _write_kv codex ok "$val" ""
   else

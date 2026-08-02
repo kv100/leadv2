@@ -32,6 +32,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/leadv2-arm-cooldown.sh
+source "${SCRIPT_DIR}/lib/leadv2-arm-cooldown.sh"
 LIVE="${LEADV2_QUOTA_LIVE:-"${SCRIPT_DIR}/leadv2-quota-live.sh"}"
 THRESHOLD="${GLM_QUOTA_THRESHOLD:-80}"
 
@@ -113,6 +115,8 @@ if (( five_pct >= THRESHOLD || wk_pct >= THRESHOLD )); then
   tripped=""
   (( five_pct >= THRESHOLD )) && tripped="5h=${five_pct}% (resets ${five_reset}Z)"
   (( wk_pct >= THRESHOLD )) && tripped="${tripped:+$tripped AND }weekly=${wk_pct}% (resets ${wk_reset}Z)"
+  arm_cooldown_record glm quota_gate
+  arm_cooldown_ladder_note glm quota_gate "$(arm_cooldown_state glm | awk '/^cooling / {print $2}')"
   cat >&2 <<EOF
 [glm-quota-gate] LEADV2_DISPATCH_REFUSED: quota_gate
 [glm-quota-gate] REROUTE — GLM quota ≥ ${THRESHOLD}% on: ${tripped}.
@@ -135,6 +139,9 @@ fi
 # ── §2 peak awareness ────────────────────────────────────────────────────────
 if (( in_peak )); then
   if [[ "${GLM_ALLOW_PEAK:-0}" != "1" ]]; then
+    peak_end_iso="$(_arm_cooldown_epoch_iso $(( $(_arm_cooldown_now_epoch) + mins_until_peak_ends * 60 )))"
+    arm_cooldown_record glm peak_hours "$peak_end_iso"
+    arm_cooldown_ladder_note glm peak_hours "$(arm_cooldown_state glm | awk '/^cooling / {print $2}')"
     cat >&2 <<EOF
 [glm-quota-gate] LEADV2_DISPATCH_REFUSED: peak_hours
 [glm-quota-gate] PEAK HOURS — GLM-5.2 costs 3× during 06:00–10:00 UTC (14:00–18:00 UTC+8).

@@ -378,7 +378,11 @@ if [ "$_beat_fresh" -eq 1 ] || [ "$_live_pid" -eq 1 ]; then
     SUP_WHY="heartbeat only, beat $(_age_label "$SUP_BEAT_AGE_SECS"), sentinel unparsable"
     SUP_SHORT="beat $(_age_label "$SUP_BEAT_AGE_SECS")"
   else
-    SUP_WHY="heartbeat only, beat $(_age_label "$SUP_BEAT_AGE_SECS"), no sentinel"
+    # N7E-SURFACE-DISAGREES defect 2: the sentinel is corroborating-only. An
+    # ABSENT sentinel contributes nothing to the reason -- the beat alone
+    # already proves the supervisor is alive, and "no sentinel" named an
+    # unactionable absence as if it were a finding.
+    SUP_WHY="beat $(_age_label "$SUP_BEAT_AGE_SECS")"
     SUP_SHORT="beat $(_age_label "$SUP_BEAT_AGE_SECS")"
   fi
 else
@@ -403,10 +407,11 @@ else
       SUP_SHORT="unparsable"
     fi
   else
-    # canonical sentinel absent
+    # canonical sentinel absent -- N7E-SURFACE-DISAGREES defect 2: absent
+    # contributes nothing, the beat alone is the reason.
     if [ -n "$SUP_BEAT_AGE_SECS" ]; then
       SUP_STATE="stale"
-      SUP_WHY="no sentinel, beat $(_age_label "$SUP_BEAT_AGE_SECS") old"
+      SUP_WHY="beat $(_age_label "$SUP_BEAT_AGE_SECS") old"
       SUP_SHORT="beat $(_age_label "$SUP_BEAT_AGE_SECS") old"
     else
       # SUP-OFF-IS-A-LIE-01 D2: legacy-location sweep (read-only diagnostic).
@@ -442,7 +447,7 @@ else
         fi
       else
         SUP_STATE="off"
-        SUP_WHY="no sentinel, no heartbeat"
+        SUP_WHY="no supervise loop running"
         SUP_SHORT="no beat"
       fi
       unset _legacy_sentinel _lr _lpid

@@ -299,8 +299,10 @@ fi
 # rendered a bare OFF whenever the sentinel was absent). Each seeds exactly
 # the files the named row needs and asserts the rendered long form.
 #
-# T-A (the red test): fresh heartbeat, NO sentinel -> ON, mentioning "no
-# sentinel". Pre-fix rendered `supervisor: OFF`.
+# T-A (the red test): fresh heartbeat, NO sentinel -> ON, naming the beat and
+# NOT mentioning a missing sentinel (N7E-SURFACE-DISAGREES defect 2: an
+# absent sentinel is corroborating-only and contributes nothing to the
+# reason). Pre-fix rendered `supervisor: OFF`.
 NEW_SB
 : > "${STATE_DIR}/.supervise-loop.heartbeat"
 _setage "${STATE_DIR}/.supervise-loop.heartbeat" 30
@@ -309,9 +311,9 @@ meta: {}
 sessions: []
 EOF
 out="$(run_render)"
-if printf '%s\n' "$out" | grep -Eq '^supervisor: ON' \
-   && printf '%s\n' "$out" | grep -q 'no sentinel'; then
-  pass "T-A: fresh beat, no sentinel -> ON (heartbeat only)"
+if printf '%s\n' "$out" | grep -Eq '^supervisor: ON +\(beat 30s\)' \
+   && ! printf '%s\n' "$out" | grep -q 'no sentinel'; then
+  pass "T-A: fresh beat, no sentinel -> ON (beat only, no sentinel mention)"
 else
   fail "T-A: fresh beat, no sentinel -> ON (got: $(printf '%s' "$out" | sed -n '1p'))"
 fi
@@ -1067,7 +1069,7 @@ meta: {}
 sessions: []
 EOF
 bare="$(run_render_r4)"
-expected='supervisor: OFF  (no sentinel, no heartbeat)
+expected='supervisor: OFF  (no supervise loop running)
 lanes (0 live, 0 dead, 0 done в последний час)
   (none)'
 if [ "$bare" = "$expected" ]; then

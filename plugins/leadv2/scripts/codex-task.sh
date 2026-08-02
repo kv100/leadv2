@@ -95,7 +95,11 @@ CODEX_REPAIR_DIR="${CODEX_REPAIR_DIR:-$HOME/.claude/cache/codex-repair}"
 # candidate" with ZERO router change. stdout stays clean (marker is stderr-only)
 # so a caller capturing `JOB=$(codex-task.sh …)` still gets empty, not garbage.
 # Escape hatch: CODEX_SKIP_QUOTA_GATE=1 skips the gate entirely.
-_CODEX_LOCKOUT_FILE="$HOME/.claude/cache/codex-lockout.state"
+# The cooldown is deliberately bounded and self-correcting; the legacy
+# codex-lockout.state is neither read nor written.
+_CODEX_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/leadv2-arm-cooldown.sh
+source "${_CODEX_SCRIPT_DIR}/lib/leadv2-arm-cooldown.sh"
 
 # C3 (tenant-generic) -- resolve the routing yaml. SAME convention as
 # leadv2-dispatch-product-close.sh:196 and leadv2-dispatch-code.sh:263:
@@ -268,23 +272,18 @@ _codex_quota_gate() {
     *) return 0 ;;
   esac
 
-  # check 1 -- lockout memory (offline, newest-wins).
-  if [[ -f "$_CODEX_LOCKOUT_FILE" ]]; then
-    local _until=""
-    _until="$(grep -E 'CODEX_JOB_FAILED_QUOTA until=' "$_CODEX_LOCKOUT_FILE" 2>/dev/null \
-      | tail -1 | sed -n 's/.*until=\([0-9T:+Z-]*\).*/\1/p')" || true
-    if [[ -n "$_until" ]]; then
-      local _u="${_until%%.*}"; _u="${_u%Z}Z"
-      local _now_e _until_e
-      _now_e=$(date -u +%s 2>/dev/null || echo 0)
-      _until_e=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$_u" +%s 2>/dev/null || echo 0)
-      if [[ "$_until_e" -gt 0 && "$_until_e" -gt "$_now_e" ]]; then
-        printf '[codex-task] CODEX_REFUSED_QUOTA reason=lockout used=na threshold=na until=%s\n' "$_until" >&2
-        printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
-        exit 2
-      fi
-    fi
-  fi
+  # check 1 -- bounded cooldown memory.  Once reprobe_at passes, the next
+  # dispatch launches and provider evidence is authoritative again.
+  local _cooldown _cooldown_until
+  _cooldown="$(arm_cooldown_state codex)"
+  case "$_cooldown" in
+    cooling\ *)
+      _cooldown_until="${_cooldown#cooling }"; _cooldown_until="${_cooldown_until%% *}"
+      printf '[codex-task] CODEX_REFUSED_QUOTA reason=cooldown used=na threshold=na until=%s\n' "$_cooldown_until" >&2
+      printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+      exit 2
+      ;;
+  esac
 
   # check 2 -- live quota over threshold (threshold from yaml; empty => skip).
   local _cfg
@@ -312,7 +311,7 @@ _codex_quota_watch_record() {
     _reset_text="$(grep -oiE 'try again at [^.)]+' "$_log" 2>/dev/null | head -1 \
       | sed -E 's/^[Tt]ry again at[[:space:]]*//; s/[.)]+$//')" || true
   fi
-  local _until_iso="" _src=""
+  local _until_iso=""
   if [[ -n "$_reset_text" ]]; then
     _until_iso="$(printf '%s' "$_reset_text" | python3 -c '
 import sys, re, datetime, calendar, time
@@ -330,29 +329,28 @@ for f in fmts:
 sys.exit(1)
 ' 2>/dev/null)" || true
   fi
-  if [[ -n "$_until_iso" ]]; then
-    _src="parsed"
-  else
-    _until_iso="$(python3 -c 'import datetime; print((datetime.datetime.utcnow()+datetime.timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"))' 2>/dev/null)" || true
-    _src="default-6h"
-  fi
-  [[ -z "$_until_iso" ]] && return 0
+  # _until_iso is now purely advisory: empty when the provider text did not parse,
+  # and arm_cooldown_record already maps empty to "na" and falls back to its own
+  # bounded default. The normalising if/else that used to stand here became a
+  # no-op with an EMPTY then-branch when _src was removed, which bash rejects at
+  # parse time -- it made this whole file unparseable, i.e. the codex arm was dead
+  # rather than merely refused. Deleted rather than repaired: there is nothing
+  # left for it to normalise.
   # Idempotent on rerun (CODEX-GATE-01 item4 / q5). The mkdir watcher-lock above
   # only guards against CONCURRENT watchers for the same job, and it is removed
   # by the EXIT trap when the watcher finishes -- so a second SEQUENTIAL
   # invocation of `__quota-watch <jid>` would otherwise pass the lock and append
   # a duplicate lockout line. The lockout line is keyed by job id; if one
-  # already exists for this job, do not append again. Fixed-string match: every
-  # line carries ` job=<jid> src=`, so the trailing space anchors it exactly.
-  if [[ -f "$_CODEX_LOCKOUT_FILE" ]] \
-     && grep -qF " job=${_jid} " "$_CODEX_LOCKOUT_FILE" 2>/dev/null; then
+  # already exists for this job, do not append again. The shared state is
+  # append-only and the optional job tag keeps sequential watcher reruns safe.
+  local _cooldown_file
+  _cooldown_file="${LEADV2_ARM_COOLDOWN_DIR:-$HOME/.claude/cache/arm-cooldown}/codex.state"
+  if [[ -f "$_cooldown_file" ]] \
+     && grep -qF " job=${_jid}" "$_cooldown_file" 2>/dev/null; then
     return 0
   fi
-  mkdir -p "$HOME/.claude/cache" 2>/dev/null || true
-  local _line
-  _line="$(date -u +%Y-%m-%dT%H:%M:%SZ) CODEX_JOB_FAILED_QUOTA until=$_until_iso job=$_jid src=$_src"
-  printf '%s\n' "$_line" >> "$_CODEX_LOCKOUT_FILE"
-  printf '%s\n' "$_line" >&2
+  LEADV2_ARM_COOLDOWN_JOB="$_jid" arm_cooldown_record codex quota "$_until_iso"
+  arm_cooldown_ladder_note codex quota "$(arm_cooldown_state codex | awk '/^cooling / {print $2}')"
 }
 
 # C5 -- post-launch watcher (hidden subcommand __quota-watch). Idempotent per job
