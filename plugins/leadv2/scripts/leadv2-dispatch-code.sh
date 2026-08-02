@@ -933,22 +933,28 @@ _dispatch_sig_blocked_fast() {  # <ledger_file> <sig> <now_epoch> <exclude_token
   ' "${f}" | grep -q '^blocked$'
 }
 
-_dispatch_append_pending_locked() {  # <file> <sig> <arm> <rule> <token> <created_epoch> [task_id] [mission_path]
+_dispatch_append_pending_locked() {  # <file> <sig> <arm> <rule> <token> <created_epoch> [task_id] [mission_path] [lane_label]
   local f="$1" sig="$2" arm="$3" rule="$4" token="$5" created="$6" ts
   # STATUS-SURFACE-R5-01 (C1c): carry a human task_id + mission_path on the
   # pending row so the status surface can show a name without falling back to
   # the handoff-dir read. Both are optional and empty when the dispatcher
   # genuinely has neither; the reader tolerates absent keys (backward/forward
   # compatible). Strip backslash + double-quote so neither can break the JSON.
-  local task_id="${7:-}" mission_path="${8:-}"
+  local task_id="${7:-}" mission_path="${8:-}" lane_label="${9:-}"
   task_id="${task_id//\\/}"; task_id="${task_id//\"/}"
   # SWIFTBAR-LIVE-01 round 2: clamp task_id to 64 chars so a pathological
   # --task-id cannot produce an unbounded ledger line.
   task_id="${task_id:0:64}"
   mission_path="${mission_path//\\/}"; mission_path="${mission_path//\"/}"
+  # N1B F4: lane_label is a DISPLAY label (prose-derived), never an identity.
+  # It gets the same sanitiser task_id does -- a prose-derived value is exactly
+  # the input that needs backslash/quote stripping + length clamping. It is
+  # NEVER eligible for the tasks.yaml identity lookup in the reader.
+  lane_label="${lane_label//\\/}"; lane_label="${lane_label//\"/}"
+  lane_label="${lane_label:0:64}"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
-  printf '{"task_sig":"%s","arm":"%s","rule":"%s","repo":"%s","ts":"%s","token":"%s","state":"pending","created_epoch":%s,"task_id":"%s","mission_path":"%s"}\n' \
-    "${sig}" "${arm}" "${rule}" "$(repo_slug)" "${ts}" "${token}" "${created}" "${task_id}" "${mission_path}" >> "${f}"
+  printf '{"task_sig":"%s","arm":"%s","rule":"%s","repo":"%s","ts":"%s","token":"%s","state":"pending","created_epoch":%s,"task_id":"%s","mission_path":"%s","lane_label":"%s"}\n' \
+    "${sig}" "${arm}" "${rule}" "$(repo_slug)" "${ts}" "${token}" "${created}" "${task_id}" "${mission_path}" "${lane_label}" >> "${f}"
 }
 
 # reserve (SHORT lock: ledger read-check + append ONLY -- milliseconds, never across spawn).
@@ -983,7 +989,7 @@ dispatch_reserve() {  # <sig> <arm> <rule> -> stdout: token (rc0 only)
     fi
     token="$(_dispatch_new_token)"
     if ! _dispatch_append_pending_locked "${f}" "${sig}" "${arm}" "${rule}" "${token}" "${now2}" \
-      "${DISPATCH_LANE_NAME:-}" "${DISPATCH_MISSION_PATH:-}"; then
+      "${DISPATCH_FOUNDER_TASK_ID:-}" "${DISPATCH_MISSION_PATH:-}" "${DISPATCH_LANE_NAME:-}"; then
       exit 1
     fi
     printf '%s' "${token}"

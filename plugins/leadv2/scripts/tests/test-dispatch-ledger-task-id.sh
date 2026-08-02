@@ -144,9 +144,11 @@ fi
 
 LEDGER_SH="${SCRIPTS_DIR}/leadv2-dispatch-ledger.sh"
 
-# C1: @file mission WITH an H1 heading, NO --task-id -> reserve row task_id == the H1's
-# name-token (this is the live shape the original suite never drove; would fail on the
-# pre-N7F-LANE-NAME writer).
+# C1: @file mission WITH an H1 heading, NO --task-id. N1B F4 changed the schema:
+# the H1 name-token is now a DISPLAY label (lane_label), NOT an identity. So the
+# reserve row carries task_id="" (no founder identity bound) AND
+# lane_label="N7F-C1" (the prose-derived display name). Before F4 the label went
+# into task_id and collided with tasks.yaml identities -- exactly Finding 4.
 c1_mission_file="${TMPDIR_ROOT}/c1-mission.md"
 cat > "${c1_mission_file}" <<EOF
 # N7F-C1 — case one heading, dispatch-ledger-task-id $$ $(date +%s 2>/dev/null || echo 0)
@@ -167,10 +169,15 @@ out_c1="$(
 )"
 rc_c1=$?
 row_c1="$(tail -1 "${LEDGER_FILE}" 2>/dev/null)"
-if [[ "${rc_c1}" -eq 0 ]] && grep -q '"task_id":"N7F-C1"' <<<"${row_c1}"; then
-  pass "C1: no --task-id, mission has H1 -> reserve row task_id == H1 name-token (N7F-C1)"
+if [[ "${rc_c1}" -eq 0 ]] && grep -q '"task_id":""' <<<"${row_c1}"; then
+  pass "C1: no --task-id -> reserve row task_id is EMPTY (identity absent, not the H1)"
 else
-  fail "C1: no --task-id, mission has H1 -> reserve row task_id == H1 name-token (got rc=${rc_c1}, row: ${row_c1}, out: ${out_c1})"
+  fail "C1: no --task-id -> task_id empty (got rc=${rc_c1}, row: ${row_c1})"
+fi
+if [[ "${rc_c1}" -eq 0 ]] && grep -q '"lane_label":"N7F-C1"' <<<"${row_c1}"; then
+  pass "C1: no --task-id, mission has H1 -> reserve row lane_label == H1 name-token (N7F-C1)"
+else
+  fail "C1: no --task-id, mission has H1 -> lane_label == H1 name-token (got row: ${row_c1})"
 fi
 
 # C2: mission with NO H1, NO --task-id -> reserve row task_id is empty (rule 3: no
@@ -262,6 +269,97 @@ if grep -q "\"task_id\":\"${C5_FOUNDER}\"" <<<"${row_c5}"; then
   pass "C5: write-terminal with 6 args (no display name) -> task_id falls back to founder (back-compat)"
 else
   fail "C5: write-terminal with 6 args (no display name) -> task_id falls back to founder (got row: ${row_c5})"
+fi
+
+# ── N1B-ARM-COOLDOWN-HARDEN F4: identity vs display-label collision ───────────
+# Finding 4: a no-`--task-id` mission headed `# OPS-42 — cleanup` used to land
+# the H1 name-token "OPS-42" in the identity field, which the status reader then
+# resolved against tasks.yaml -> rendered an UNRELATED record's title. After F4
+# the label lives in lane_label (rendered verbatim, never looked up), so the row
+# shows "OPS-42", not "Totally unrelated record".
+RENDER_SH="${SCRIPTS_DIR}/leadv2-status-surface.sh"
+F4_REPO="$(printf '%s' "$(basename "${ROOT}")" | tr -cd 'A-Za-z0-9._-')"
+# render NOW ~= the reserve moment so the freshly-reserved row is within the
+# freshness window (a dead handle at +166 days is age-dropped and never reaches
+# resolve_name, which would make this test assert against nothing).
+F4_NOW="$(date +%s 2>/dev/null || echo 1800000000)"
+
+# tasks.yaml fixture: an OPS-42 id that is NOT this mission.
+F4_TASKS="${TMPDIR_ROOT}/f4-tasks.yaml"
+cat > "${F4_TASKS}" <<'YAML'
+meta: {}
+tasks:
+  - id: OPS-42
+    title: Totally unrelated record
+YAML
+
+# render the worker rows for one isolated ledger; echo the NAME (field 1) of the
+# single data row. empty STATE_DIR (no active.yaml) -> reserve row renders as a
+# worker row, name = resolve_name(task_id, lane_label, ...).
+_f4_render_name() {  # <ledger_dir> <state_dir> <runs_root>
+  LEADV2_STATUS_STATE_DIR="$2" \
+  LEADV2_STATUS_LEDGER_DIR="$1" \
+  LEADV2_STATUS_RUNS_ROOT="$3" \
+  LEADV2_STATUS_REPO="${F4_REPO}" \
+  LEADV2_STATUS_REPO_ROOT="${ROOT}" \
+  LEADV2_STATUS_NOW="${F4_NOW}" \
+  LEADV2_STATUS_TASKS_YAML="${F4_TASKS}" \
+  bash "${RENDER_SH}" 2>/dev/null | awk '$NF ~ /^[0-9a-f]{6,}$/ {sub(/^ +/,""); sub(/ +(worker|lane) .*/,""); print; exit}'
+}
+
+# F4: NO --task-id, mission H1 `# OPS-42 — cleanup` -> renders "OPS-42" (the
+# label verbatim), NOT "Totally unrelated record" (the tasks.yaml title).
+F4A_CACHE="${TMPDIR_ROOT}/f4a-cache"; F4A_LDIR="${F4A_CACHE}/dispatch-ledger"
+F4A_STATE="${TMPDIR_ROOT}/f4a-state"; F4A_RUNS="${TMPDIR_ROOT}/f4a-runs"
+mkdir -p "${F4A_LDIR}" "${F4A_STATE}" "${F4A_RUNS}"
+# an empty-but-readable active.yaml keeps the renderer on its normal row path
+# (a missing active.yaml takes the warn branch and suppresses the worker row).
+printf 'meta: {}\nsessions: []\n' > "${F4A_STATE}/active.yaml"
+f4a_mission="${TMPDIR_ROOT}/f4a-mission.md"
+cat > "${f4a_mission}" <<EOF
+# OPS-42 — cleanup, N1B-F4 no-task-id $$ $(date +%s 2>/dev/null || echo 0)
+body: display label must not collide with the tasks.yaml OPS-42 identity
+EOF
+LEADV2_DISPATCH_CACHE_DIR="${F4A_CACHE}" \
+  CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
+  LEADV2_DISPATCH_SUBSESSION_BIN="${FAKE_SUBSESSION}" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
+  LEADV2_JOURNAL_BIN=/bin/true LEADV2_ROUTER_V2=0 \
+  LEADV2_EXCLUDED_ARMS="__none__" LEADV2_LANE_SHAPE=off \
+  "${DISPATCH_SH}" "@${f4a_mission}" --protected --spawn --kind docs >/dev/null 2>&1
+f4a_name="$(_f4_render_name "${F4A_LDIR}" "${F4A_STATE}" "${F4A_RUNS}")"
+if [[ "${f4a_name}" == "OPS-42" ]]; then
+  pass "F4: no --task-id, mission H1 `# OPS-42 — cleanup` -> renders OPS-42 (not the tasks.yaml title)"
+else
+  fail "F4: no --task-id collision (got name=[${f4a_name}], want OPS-42)"
+fi
+
+# F4b: WITH --task-id OPS-42 + same fixture -> renders the tasks.yaml title
+# (the identity lookup is PRESERVED; this guards against the fix over-reaching
+# and breaking the bound-identity path).
+F4B_CACHE="${TMPDIR_ROOT}/f4b-cache"; F4B_LDIR="${F4B_CACHE}/dispatch-ledger"
+F4B_STATE="${TMPDIR_ROOT}/f4b-state"; F4B_RUNS="${TMPDIR_ROOT}/f4b-runs"
+mkdir -p "${F4B_LDIR}" "${F4B_STATE}" "${F4B_RUNS}"
+printf 'meta: {}\nsessions: []\n' > "${F4B_STATE}/active.yaml"
+f4b_mission="${TMPDIR_ROOT}/f4b-mission.md"
+cat > "${f4b_mission}" <<EOF
+# OPS-42 — cleanup, N1B-F4b with-task-id $$ $(date +%s 2>/dev/null || echo 0)
+body: bound --task-id OPS-42 must still resolve via tasks.yaml
+EOF
+LEADV2_DISPATCH_CACHE_DIR="${F4B_CACHE}" \
+  CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
+  LEADV2_DISPATCH_SUBSESSION_BIN="${FAKE_SUBSESSION}" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
+  LEADV2_JOURNAL_BIN=/bin/true LEADV2_ROUTER_V2=0 \
+  LEADV2_EXCLUDED_ARMS="__none__" LEADV2_LANE_SHAPE=off \
+  "${DISPATCH_SH}" "@${f4b_mission}" --protected --spawn --kind docs --task-id OPS-42 >/dev/null 2>&1
+f4b_name="$(_f4_render_name "${F4B_LDIR}" "${F4B_STATE}" "${F4B_RUNS}")"
+if [[ "${f4b_name}" == "Totally unrelated record" ]]; then
+  pass "F4b: --task-id OPS-42 -> renders the tasks.yaml title (identity lookup preserved)"
+else
+  fail "F4b: identity lookup (got name=[${f4b_name}], want 'Totally unrelated record')"
 fi
 
 printf '[TEST] === %s passed, %s failed ===\n' "${PASS}" "${FAIL}"

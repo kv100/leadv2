@@ -1146,28 +1146,31 @@ def _clip40(s):
         head = head[:i]
     return head.strip()[:40]
 
-def resolve_name(task_id, mission_path, sig8):
-    # Rule 1: tasks.yaml name by id/external_id/node_id.
+def resolve_name(task_id, lane_label, mission_path, sig8):
+    # N1B F4: identity and display label are now separate fields. task_id is an
+    # IDENTITY (founder-bound --task-id); lane_label is a DISPLAY label
+    # (prose-derived mission H1). ONLY an identity may be looked up in
+    # tasks.yaml -- a prose-derived label must NEVER be, or a mission headed
+    # `# OPS-42 -- cleanup` with no --task-id renders an unrelated OPS-42
+    # record's title. mission_path stays in the signature (other consumers use
+    # it) but is no longer read here (SWIFTBAR-LIVE-01 round 2, §2.4).
+    # Rule 1: tasks.yaml name by id/external_id/node_id (the ONLY lookup).
     if task_id:
         _nm = titles.get(str(task_id))
         if _nm:
             return _clip40(_nm)
-    # Rule 1b (SWIFTBAR-LIVE-01 round 2, §2.4): task_id recorded but no
-    # tasks.yaml title match -- render the id itself. The writer fix
-    # (leadv2-dispatch-code.sh dispatch_reserve) now persists the founder's
-    # --task-id onto every new ledger row, so this is the common case for a
-    # task not yet (or never) tracked in tasks.yaml. Still a name, never a
-    # hash.
+    # Rule 2: task_id recorded but no tasks.yaml title match -- render the id
+    # itself. The writer (dispatch_reserve) persists the founder's --task-id,
+    # so this is the common case for a task not yet tracked in tasks.yaml.
+    # Still a name, never a hash.
     if task_id:
         return _clip40(str(task_id))
-    # Rules 2/2.5 (mission-file first line / handoff-dir mission title) are
-    # DELETED, not patched (SWIFTBAR-LIVE-01 round 2, §2.4): prose is never a
-    # name -- scraping it produced exactly the defect this round fixes
-    # ("You are implementing task dispatch-14b3b worker confirmed" rendered
-    # as a lane's name). `mission_path` stays in the signature/ledger (other
-    # consumers still use it) but is no longer read here.
-    # Rule 2 (was 3): a hash is not a name either. Return the literal
-    # 'unnamed'; the sig8 lives in its own SIG column so it stays greppable.
+    # Rule 3: lane_label rendered VERBATIM -- never looked up in tasks.yaml.
+    # This is the no-`--task-id` path: the mission's H1 name-token, shown as-is.
+    if lane_label:
+        return _clip40(str(lane_label))
+    # Rule 4: a hash is not a name either. Return the literal 'unnamed'; the
+    # sig8 lives in its own SIG column so it stays greppable.
     return "unnamed"
 
 # ---- S1: active.yaml ---------------------------------------------------
@@ -1230,6 +1233,10 @@ if LEDGER_FILE and os.path.exists(LEDGER_FILE):
                 # terminal rows (round 4+) name it founder_task_id; either is the
                 # lane name.
                 ("task_id", row.get("task_id") or row.get("founder_task_id")),
+                # N1B F4: lane_label is the prose-derived DISPLAY label (reserve
+                # rows carry it; terminal rows do not). Merged key-wise so a
+                # terminal row's absence never blanks a reserve row's label.
+                ("lane_label", row.get("lane_label")),
             ):
                 if v not in (None, ""):
                     d[k] = v
@@ -1247,7 +1254,7 @@ rows = []        # each: dict(name, kind, display, model, age, cause, cls, max_m
 seen_sig8 = set()
 
 def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
-            created_epoch, ledger_state, handle, arm, task_id, mission_path):
+            created_epoch, ledger_state, handle, arm, task_id, mission_path, lane_label):
     # gather mtimes
     status, ec, pmodel, j_mtime = provider_meta(handle, arm)
     mtimes = []
@@ -1420,7 +1427,7 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
     # fresh even while the worker's own signals are frozen for act two.
     age = age_label(NOW - motion_mtime) if motion_mtime is not None else "-"
     return {
-        "name": resolve_name(task_id, mission_path, sig8),
+        "name": resolve_name(task_id, lane_label, mission_path, sig8),
         "kind": kind,
         "display": display,
         "model": mdl,
@@ -1446,11 +1453,12 @@ for s in sessions:
     created_epoch = le.get("created_epoch")
     _tid = tid or le.get("task_id") or ""
     _mpath = le.get("mission_path") or ""
+    _llabel = le.get("lane_label") or ""
     log_path = s.get("log_path") or s.get("pulse_log") or ""
     r = add_row(sig8, "lane", s.get("phase"), s.get("lead_model"),
                 s.get("pid"), s.get("pid_birth"), log_path,
                 iso_to_epoch(s.get("last_pulse_at")) or iso_to_epoch(s.get("started_at")),
-                created_epoch, ledger_state, handle, arm, _tid, _mpath)
+                created_epoch, ledger_state, handle, arm, _tid, _mpath, _llabel)
     if r:
         rows.append(r)
 
@@ -1465,8 +1473,9 @@ for sig8, le in ledger.items():
         continue
     _tid = le.get("task_id") or ""
     _mpath = le.get("mission_path") or ""
+    _llabel = le.get("lane_label") or ""
     r = add_row(sig8, "worker", None, None, None, None, None, None,
-                le.get("created_epoch"), ledger_state, handle, arm, _tid, _mpath)
+                le.get("created_epoch"), ledger_state, handle, arm, _tid, _mpath, _llabel)
     if r:
         rows.append(r)
 
