@@ -149,7 +149,27 @@ LAST=0
 [[ -f "$STAMP" ]] && LAST="$(cat "$STAMP" 2>/dev/null || echo 0)"
 [[ "$LAST" =~ ^[0-9]+$ ]] || LAST=0
 
-if (( NOW - LAST < 180 )); then
+# C-1 (LANE-CONCURRENCY-IN-PLUGIN): when the pump is below its floor (fewer
+# than FLOOR lanes running with a non-empty queue), it touches a sentinel in
+# the project-scoped pump cache. Shorten this hook's throttle from 180 s to 45 s
+# so an idle session is re-checked for floor recovery in ~one lead turn, not 3
+# minutes. The sentinel's own mtime ages it out if the pump stops touching it.
+THROTTLE_S="${LEADV2_SUPERVISOR_PUMP_CALLER_THROTTLE_S:-180}"
+THROTTLE_BELOW_FLOOR_S="${LEADV2_SUPERVISOR_PUMP_CALLER_THROTTLE_BELOW_FLOOR_S:-45}"
+BELOW_FLOOR_SENTINEL="${CWD_FROM_INPUT}/.claude/cache/backlog-pump/backlog-pump-below-floor"
+EFFECTIVE_THROTTLE="$THROTTLE_S"
+if [[ -f "$BELOW_FLOOR_SENTINEL" ]]; then
+  # Resolve the sentinel mtime to a validated integer FIRST, then do the
+  # arithmetic — bash 3.2 rejects an embedded $(...) inside $(( )).
+  sentinel_mtime="$(stat -f %m "$BELOW_FLOOR_SENTINEL" 2>/dev/null || stat -c %Y "$BELOW_FLOOR_SENTINEL" 2>/dev/null || printf '0')"
+  [[ "$sentinel_mtime" =~ ^[0-9]+$ ]] || sentinel_mtime=0
+  sentinel_age=$(( NOW - sentinel_mtime ))
+  if (( sentinel_age < 120 )); then
+    EFFECTIVE_THROTTLE="$THROTTLE_BELOW_FLOOR_S"
+  fi
+fi
+
+if (( NOW - LAST < EFFECTIVE_THROTTLE )); then
   exit 0
 fi
 

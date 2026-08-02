@@ -1,0 +1,138 @@
+{
+  "glm": {
+    "provider": "glm",
+    "status": "ok",
+    "level": "pro",
+    "fetched_at": "2026-08-02T10:45:29Z",
+    "five_hour": {
+      "pct": 13,
+      "reset_epoch_ms": 1785678006431,
+      "reset_iso": "2026-08-02T13:40:06Z",
+      "unit": 3,
+      "number": 5,
+      "remaining_pct": 87.0,
+      "hours_to_reset": 2.90313,
+      "usable_now": 29.967655599301445
+    },
+    "weekly": {
+      "pct": 68,
+      "reset_epoch_ms": 1786098644998,
+      "reset_iso": "2026-08-07T10:30:44Z",
+      "unit": 6,
+      "number": 1,
+      "remaining_pct": 32.0,
+      "hours_to_reset": 119.74701865916666,
+      "usable_now": 0.26723003510493154
+    },
+    "binding_window": "weekly",
+    "search_credits": {
+      "percentage": 1,
+      "usage": 1000,
+      "remaining": 995,
+      "reset_iso": "2026-08-03T10:30:44Z"
+    }
+  },
+  "codex": {
+    "provider": "codex",
+    "status": "ok",
+    "plan_type": "plus",
+    "fetched_at": "2026-08-02T10:45:48Z",
+    "refreshed": true,
+    "wrote_back": true,
+    "limit_reached": false,
+    "allowed": true,
+    "windows": [
+      {
+        "kind": "primary",
+        "used_percent": 17,
+        "limit_window_seconds": 604800,
+        "reset_epoch": 1786168140,
+        "reset_iso": "2026-08-08T05:49:00Z",
+        "limit_reached": false,
+        "remaining_pct": 83.0,
+        "hours_to_reset": 139.05142651833333,
+        "usable_now": 0.5969014635679182
+      }
+    ],
+    "binding_window": "primary",
+    "credits": {
+      "has_credits": false,
+      "balance": "0"
+    }
+  },
+  "anthropic": {
+    "provider": "anthropic",
+    "status": "ok",
+    "accounts": [
+      {
+        "entry_suffix": "eb6c5b97",
+        "service": "Claude Code-credentials-eb6c5b97",
+        "subscription_type": "max",
+        "tier": "default_claude_max_20x",
+        "http": 200,
+        "account_label": "max_20x",
+        "active": true,
+        "status": "ok",
+        "five_hour_pct": 2.0,
+        "five_hour_reset_iso": "2026-08-02T15:40:00.515502+00:00",
+        "seven_day_pct": 17.0,
+        "seven_day_reset_iso": "2026-08-07T22:00:00.515524+00:00",
+        "five_hour": {
+          "pct": 2.0,
+          "reset_iso": "2026-08-02T15:40:00.515502+00:00",
+          "remaining_pct": 98.0,
+          "hours_to_reset": 4.901533640555556,
+          "usable_now": 19.993742201245478
+        },
+        "seven_day": {
+          "pct": 17.0,
+          "reset_iso": "2026-08-07T22:00:00.515524+00:00",
+          "remaining_pct": 83.0,
+          "hours_to_reset": 131.23486674027777,
+          "usable_now": 0.632453874961921
+        },
+        "binding_window": "seven_day",
+        "limits": [
+          {
+            "kind": "session",
+            "group": "session",
+            "percent": 2,
+            "severity": "normal",
+            "resets_at": "2026-08-02T15:40:00.515502+00:00",
+            "scope": null,
+            "is_active": false
+          },
+          {
+            "kind": "weekly_all",
+            "group": "weekly",
+            "percent": 17,
+            "severity": "normal",
+            "resets_at": "2026-08-07T22:00:00.515524+00:00",
+            "scope": null,
+            "is_active": true
+          },
+          {
+            "kind": "weekly_scoped",
+            "group": "weekly",
+            "percent": 3,
+            "severity": "normal",
+            "resets_at": "2026-08-07T21:59:59.515783+00:00",
+            "scope": {
+              "model": {
+                "id": null,
+                "display_name": "Fable"
+              },
+              "surface": null
+            },
+            "is_active": false
+          }
+        ]
+      }
+    ],
+    "active_account": "max_20x",
+    "account_resolution": "pinned_unresolved",
+    "account_resolution_journal": "account=pinned_unresolved",
+    "binding_window": "seven_day",
+    "fetched_at": "2026-08-02T10:45:28Z"
+  }
+}
