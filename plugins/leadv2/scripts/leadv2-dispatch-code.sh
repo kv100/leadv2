@@ -2252,10 +2252,12 @@ confirmation-seeking; only for a decision you cannot make yourself."
     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
   else
     case "${arm}" in
-      # KIMI-CHANNEL-01: kimi inserted one rung below glm (founder-approved
-      # downgrade_chain glm -> kimi -> sonnet). Additive only -- codex/sonnet
-      # remain reachable exactly as before if kimi also refuses/fails.
-      glm)   candidate_arms=(glm kimi codex sonnet) ;;
+      # KIMI REMOVED 2026-08-02 by founder decision — the provider is gone, not cooled down.
+      # Measured that day: 19 dispatches, 19 returned `work=no`; it was picked as the spill arm
+      # every time glm's lock was busy, so it consumed the day's largest share of tokens and
+      # produced nothing. The ladder is now glm -> codex -> sonnet; codex/sonnet were already
+      # reachable and are unaffected. Do not re-add without the founder saying so.
+      glm)   candidate_arms=(glm codex sonnet) ;;
       codex) candidate_arms=(codex sonnet) ;;
       sonnet) candidate_arms=(sonnet) ;;
       *) log_err "unsupported resolved dispatch arm: ${arm}"; exit 1 ;;
@@ -2431,7 +2433,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
             arm="${_rr_arm}"; rule="${_rr_rule}"; reason="${_rr_reason}"
             emit decision "arm_reresolved by=router trigger=glm_lock_busy arm=${arm} rule=${rule} reason=${reason} task=${sig8} router=${router_label}"
             case "${arm}" in
-              glm)   candidate_arms=(glm kimi codex sonnet) ;;
+              glm)   candidate_arms=(glm codex sonnet) ;;
               codex) candidate_arms=(codex sonnet) ;;
               sonnet) candidate_arms=(sonnet) ;;
               *) : ;;  # unknown arm: leave the chain; loop continues as-is
