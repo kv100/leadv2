@@ -421,6 +421,28 @@ close_owner_pidfile() {
   printf '%s' "${p}"
 }
 
+# S-3 round 3 (LANE-START-SHA-01): the lane's start commit in WORK_ROOT, recorded once per
+# dispatch so a later close gate (a different process, possibly a manual re-run) can rebuild
+# a `git diff <start-sha> -- <lane_writes>` even when the lane has since committed its own
+# work and `git diff HEAD` would show nothing. File, not just an env var passed to the one
+# child that reads it immediately -- see leadv2-dispatch-product-close.sh's _pc_diff_base().
+lane_start_sha_file() { printf '%s/dispatch-%s.start-sha' "${CACHE_BASE}" "$1"; }
+
+record_lane_start_sha() {  # <sig8> -> writes LANE_START_SHA best-effort, never fails the caller
+  local sig8="$1" sha f tmp
+  sha="$(git -C "${WORK_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+  LANE_START_SHA="${sha}"
+  [[ -n "${sha}" ]] || return 0
+  f="$(lane_start_sha_file "${sig8}")"
+  mkdir -p "$(dirname "${f}")" 2>/dev/null || return 0
+  tmp="${f}.tmp.$$"
+  if printf '%s\n' "${sha}" > "${tmp}" 2>/dev/null; then
+    mv -f "${tmp}" "${f}" 2>/dev/null || true
+  else
+    rm -f "${tmp}" 2>/dev/null || true
+  fi
+}
+
 # Journal + stderr-emit one structured line. $1=journal-type, $2..=text (one logical line).
 # Invoked via `bash <path>` (not direct exec): leadv2-journal.sh ships non-executable, and
 # leadv2-state-atomic-write.sh:260 sets this idiom. LEADV2_JOURNAL_BIN override (e.g.
@@ -1326,6 +1348,7 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     LEADV2_DISPATCH_REVIEWER_ARMS="${reviewer_arms}" \
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
     LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" \
+    LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
     "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" \
       >/dev/null 2>&1 &
   local _pc_pid=$!
@@ -1838,6 +1861,10 @@ cmd_resolve() {
   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
     log_err "signature computation failed"; exit 1
   fi
+  # LANE-START-SHA-01: unconditional, before any arm spawn -- overwrites any stale value
+  # from a prior dispatch that reused this cache dir (mitigates R2: a nested/child dispatch
+  # never inherits a parent's start sha because it always re-records its own here first).
+  record_lane_start_sha "${sig8}"
   [[ -n "${founder_task_id}" ]] && emit decision "dispatch_task_bound task=${sig8} founder_task=${founder_task_id}"
   # SWIFTBAR-LIVE-01 round 2 (§2.4): persist onto the script-scope globals so
   # dispatch_reserve can write them onto the ledger row -- this was the missing

@@ -88,17 +88,19 @@ EOF
   chmod +x "$1"
 }
 # Direct call into the gate itself, with every hazard in §5 neutralized.
-run_gate() { # <scripts_dir> <root> <task_sig8> <author> <lane_writes_csv> <lane_work_root> <cross_repo> <resolver_dir>
-  local sd="$1" root="$2" sig="$3" author="$4" writes="$5" lane="$6" cross="$7" d="$8"
+run_gate() { # <scripts_dir> <root> <task_sig8> <author> <lane_writes_csv> <lane_work_root> <cross_repo> <resolver_dir> [<start_sha>]
+  local sd="$1" root="$2" sig="$3" author="$4" writes="$5" lane="$6" cross="$7" d="$8" start_sha="${9:-}"
   LEADV2_DISPATCH_CACHE_DIR="${d}/cache" LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
   LEADV2_JOURNAL_BIN=/bin/true LEADV2_DISPATCH_LANE_WRITES="${writes}" \
   LEADV2_LANE_WORK_ROOT="${lane}" LEADV2_REVIEW_DIFF_CROSS_REPO="${cross}" \
   LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
+  LEADV2_LANE_START_SHA="${start_sha}" \
   bash "${sd}/leadv2-dispatch-product-close.sh" "${root}" "${sig}" "${author}" "" 0 1 "${sig}-founder" \
     >/dev/null 2>&1
 }
 gate_bytes() { local root="$1" sig="$2"; wc -c < "${root}/docs/handoff/dispatch-${sig}/review.diff" 2>/dev/null | tr -d ' '; }
 gate_blocked() { local root="$1" sig="$2"; grep -q '^status: blocked' "${root}/docs/handoff/dispatch-${sig}/review-gate.md" 2>/dev/null; }
+gate_base() { local root="$1" sig="$2"; grep '^base:' "${root}/docs/handoff/dispatch-${sig}/review-gate.md" 2>/dev/null | awk '{print $2}'; }
 
 # ── Q1 — arm parity. Force each arm by excluding the OTHER two; never hardcode a
 # single pair for all three (that is exactly the C-B trap this harness exists to
@@ -266,6 +268,110 @@ case_q_unset_workroot_safety() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-
   return "${ok}"
 }
 
+# ── Q4 — committed-lane-in-shared-tree (S-3 round 3, LANE-START-SHA-01). A lane that
+# COMMITTED its own work before the close gate ran produces an empty `git diff HEAD` by
+# definition -- exactly the case the mission calls out as producing an empty review.diff
+# today. lane_work_root == root itself (the shared tree, no worktree), LANE_START_SHA
+# recorded BEFORE the lane's commit. ─────────────────────────────────────────────────────
+case_q4_committed_lane() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  [[ -f "${scripts_dir}/leadv2-dispatch-product-close.sh" ]] || return 2
+  local root start_sha d
+  root="$(new_repo)"
+  start_sha="$(git -C "${root}" rev-parse HEAD)"
+  mkdir -p "${root}/agent"
+  printf 'q4 committed deliverable\n' > "${root}/agent/q4new.py"
+  ( cd "${root}" && git add agent/q4new.py && git commit -qm 'lane commit' ) >/dev/null 2>&1
+  d="$(mktemp -d)"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+  # cross=0: exercises the plain (non-cross-repo) branch's base too, since that group
+  # was never touched by round 2's cross-repo-only fix.
+  run_gate "${scripts_dir}" "${root}" q4sig001 sonnet "agent/q4new.py" "${root}" 0 "${d}" "${start_sha}"
+  local diff="${root}/docs/handoff/dispatch-q4sig001/review.diff" ok=1
+  [[ -s "${diff}" ]] && grep -q 'q4new' "${diff}" && ok=0
+  rm -rf "${root}" "${d}"
+  return "${ok}"
+}
+
+# ── Q5 — never-smaller guard, both arms, real lane shape. For a fixture whose HEAD-diff
+# is already non-empty (uncommitted work on top of a committed lane-start), assert the
+# base-aware gate NEVER returns fewer bytes than a HEAD-only run of the identical
+# fixture -- the acceptance that killed round 1. Run once per "arm" label (glm, codex)
+# to match the mission's explicit "both arms" requirement; AUTHOR only affects reviewer
+# selection here, but two independent gate runs on the same fixture shape is the
+# meaningful repeat. Resolver is fixed to "codex" (matching every other case in this
+# file), so the arm under test must be something other than codex or the reviewer-
+# equals-author refusal fires BEFORE diff scoping even runs (an unrelated gate, not
+# the mechanism under test here). ──────────────────────────────────────────────────
+case_q5_never_smaller() { # <scripts_dir> <arm> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1" arm="$2"
+  [[ -f "${scripts_dir}/leadv2-dispatch-product-close.sh" ]] || return 2
+  local root start_sha d
+  root="$(new_repo)"
+  start_sha="$(git -C "${root}" rev-parse HEAD)"
+  mkdir -p "${root}/agent"
+  printf 'q5 committed deliverable\n' > "${root}/agent/q5new.py"
+  ( cd "${root}" && git add agent/q5new.py && git commit -qm 'lane commit 1' ) >/dev/null 2>&1
+  # further uncommitted edit on top -- this is what a plain HEAD diff already sees today.
+  printf 'q5 committed deliverable\nplus an uncommitted follow-up edit\n' > "${root}/agent/q5new.py"
+  d="$(mktemp -d)"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+
+  run_gate "${scripts_dir}" "${root}" "q5${arm}headonly" "${arm}" "agent/q5new.py" "${root}" 0 "${d}" ""
+  local n_head; n_head="$(gate_bytes "${root}" "q5${arm}headonly")"
+
+  run_gate "${scripts_dir}" "${root}" "q5${arm}withbase" "${arm}" "agent/q5new.py" "${root}" 0 "${d}" "${start_sha}"
+  local n_base; n_base="$(gate_bytes "${root}" "q5${arm}withbase")"
+
+  local ok=1
+  # base-aware run must be >= the HEAD-only run, and strictly greater here since the base
+  # run also picks up the committed hunk the HEAD-only run cannot see.
+  if [[ -n "${n_head}" && -n "${n_base}" && "${n_base}" -ge "${n_head}" && "${n_base}" -gt 0 ]]; then
+    ok=0
+  fi
+  rm -rf "${root}" "${d}"
+  return "${ok}"
+}
+
+# ── Q6 — bad/foreign sha falls back to HEAD, byte-identical to today. Covers both
+# ladder rungs: a sha that resolves in NO repo (foreign/garbage) and a sha that is a
+# real commit but NOT an ancestor of HEAD (diverged history, simulated via an orphan
+# branch commit). Either must fall back to exactly the HEAD-only diff -- never smaller,
+# never different -- so the mechanism can never make things worse than today. ──────────
+case_q6_bad_sha_fallback() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  [[ -f "${scripts_dir}/leadv2-dispatch-product-close.sh" ]] || return 2
+  local root d foreign_sha diverged_sha
+  root="$(new_repo)"
+  printf 'q6 uncommitted deliverable\n' > "${root}/agent/q6new.py"
+  d="$(mktemp -d)"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+
+  run_gate "${scripts_dir}" "${root}" q6baseline sonnet "agent/q6new.py" "${root}" 0 "${d}" ""
+  local n_baseline; n_baseline="$(gate_bytes "${root}" q6baseline)"
+
+  foreign_sha="0123456789abcdef0123456789abcdef01234567"
+  run_gate "${scripts_dir}" "${root}" q6foreign sonnet "agent/q6new.py" "${root}" 0 "${d}" "${foreign_sha}"
+  local n_foreign; n_foreign="$(gate_bytes "${root}" q6foreign)"
+
+  ( cd "${root}" && git checkout -q --orphan diverged-branch >/dev/null 2>&1 \
+      && git commit --allow-empty -qm orphan-diverged >/dev/null 2>&1 )
+  diverged_sha="$(cd "${root}" && git rev-parse diverged-branch 2>/dev/null)"
+  ( cd "${root}" && git checkout -q main >/dev/null 2>&1 )
+  run_gate "${scripts_dir}" "${root}" q6diverged sonnet "agent/q6new.py" "${root}" 0 "${d}" "${diverged_sha}"
+  local n_diverged; n_diverged="$(gate_bytes "${root}" q6diverged)"
+
+  local ok=1
+  if [[ "${n_foreign:-x}" == "${n_baseline:-y}" && "${n_diverged:-x}" == "${n_baseline:-y}" && -n "${n_baseline}" && "${n_baseline}" -gt 0 ]]; then
+    ok=0
+  fi
+  rm -rf "${root}" "${d}"
+  return "${ok}"
+}
+
 # ── runner ──────────────────────────────────────────────────────────────────────
 # Parallel indexed arrays (bash-3.2-safe: no associative arrays). run_all_cases is
 # always called in the SAME order, so index i means the same case in every pass.
@@ -294,6 +400,10 @@ run_all_cases() {
   run_case "Q2-self"         case_q2_self
   run_case "Q3-pair"         case_q3_pair
   run_case "Q0-unset-safety" case_q_unset_workroot_safety
+  run_case "Q4-committed-lane"    case_q4_committed_lane
+  run_case "Q5-never-smaller-glm"    case_q5_never_smaller glm
+  run_case "Q5-never-smaller-sonnet" case_q5_never_smaller sonnet
+  run_case "Q6-bad-sha-fallback"   case_q6_bad_sha_fallback
 }
 
 report_single_pass() {

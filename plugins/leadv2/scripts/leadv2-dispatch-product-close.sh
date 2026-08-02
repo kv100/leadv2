@@ -480,6 +480,7 @@ diff_file="${HANDOFF}/review.diff"
 repos_file="${HANDOFF}/review.diff.repos"
 : > "${repos_file}"
 blocked_reason=""
+_pc_base_used="HEAD"
 CROSS_REPO_DIFF="${LEADV2_REVIEW_DIFF_CROSS_REPO:-1}"
 # P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01 (M3) / C1+C3 (LANDING-BLOCKER-R2): diff_root is
 # gated by CROSS_REPO_DIFF itself so the flag OFF is a genuine one-flip full revert to
@@ -512,18 +513,69 @@ _pc_realpath() { python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))'
 # register the new path without mutating anything a concurrent session or a later
 # `git commit` would see. Falls back to a plain diff (loses untracked coverage, never
 # lies) if the index copy itself cannot be made.
-_pc_repo_diff() { # <repo_abs> <path...> -> diff on stdout (tracked + untracked + deletions)
-  local repo="$1"; shift
+_pc_git_diff() {  # <repo_abs> <base_rev> <path...> -> diff on stdout (tracked + untracked + deletions)
+  local repo="$1" base="$2"; shift 2
   local gitdir tmpidx
-  gitdir="$(git -C "${repo}" rev-parse --absolute-git-dir 2>/dev/null)" || { git -C "${repo}" diff HEAD -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; return 0; }
-  tmpidx="$(mktemp "${TMPDIR:-/tmp}/leadv2-pc-idx.XXXXXX")" || { git -C "${repo}" diff HEAD -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; return 0; }
+  gitdir="$(git -C "${repo}" rev-parse --absolute-git-dir 2>/dev/null)" || { git -C "${repo}" diff "${base}" -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; return 0; }
+  tmpidx="$(mktemp "${TMPDIR:-/tmp}/leadv2-pc-idx.XXXXXX")" || { git -C "${repo}" diff "${base}" -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; return 0; }
   if cp "${gitdir}/index" "${tmpidx}" 2>/dev/null; then
     GIT_INDEX_FILE="${tmpidx}" git -C "${repo}" add -N -- "$@" >/dev/null 2>&1 || true
-    GIT_INDEX_FILE="${tmpidx}" git -C "${repo}" diff HEAD -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+    GIT_INDEX_FILE="${tmpidx}" git -C "${repo}" diff "${base}" -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
   else
-    git -C "${repo}" diff HEAD -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+    git -C "${repo}" diff "${base}" -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
   fi
   rm -f "${tmpidx}"
+}
+# S-3 round 3 (LANE-START-SHA-01): `git diff HEAD` is empty by definition for a lane that
+# already COMMITTED its own work -- the normal end state of a finished lane -- and can also
+# lose part of an uncommitted lane's changes once another lane's commit moves HEAD forward
+# in the shared tree. Resolve the dispatcher's recorded start commit as an alternative base,
+# with a validity ladder that fails open to "no base" (caller then uses HEAD only, i.e.
+# today's exact behaviour) on any doubt:
+#   - no sha recorded at all (env, then the cache-file fallback for a close gate started
+#     outside the launcher lineage) -> no base
+#   - sha does not resolve to a commit IN THIS repo (cross-repo lane; a multi-repo group can
+#     touch a repo the sha never belonged to) -> no base
+#   - sha is not an ancestor of HEAD (rebase, branch switch, any divergence) -> no base
+_pc_diff_base() {  # <repo_abs> -> a rev to diff FROM on stdout; empty stdout => caller uses HEAD
+  local repo="$1" sha="${LEADV2_LANE_START_SHA:-}"
+  if [[ -z "${sha}" ]]; then
+    sha="$(cat "${CACHE_BASE}/dispatch-${TASK}.start-sha" 2>/dev/null || true)"
+  fi
+  [[ -n "${sha}" ]] || return 0
+  git -C "${repo}" cat-file -e "${sha}^{commit}" 2>/dev/null || return 0
+  git -C "${repo}" merge-base --is-ancestor "${sha}" HEAD 2>/dev/null || return 0
+  printf '%s' "${sha}"
+}
+# _pc_repo_diff runs inside a `repo_diff="$(...)"` command substitution at every call site,
+# i.e. its own subshell -- a plain variable it set would never reach the caller. Record
+# which base it picked (HEAD, or an abbreviated sha) to a file instead, mirroring the
+# tmpidx idiom just above; the caller reads it back immediately after, single-threaded, no
+# concurrent writer.
+_PC_LAST_BASE_FILE="${TMPDIR:-/tmp}/leadv2-pc-lastbase.$$"
+_pc_last_diff_base() { cat "${_PC_LAST_BASE_FILE}" 2>/dev/null || printf 'HEAD'; }
+# The never-smaller guard: compute the diff both against HEAD (today's exact query,
+# unchanged) and against the recorded start commit (if one validly resolves), and keep
+# whichever is LARGER. This is a mechanical guarantee independent of any ancestry argument
+# -- it cannot regress any arm below today's HEAD-diff baseline by construction.
+_pc_repo_diff() { # <repo_abs> <path...> -> diff on stdout (tracked + untracked + deletions)
+  local repo="$1"; shift
+  local base head_out base_out chosen
+  head_out="$(_pc_git_diff "${repo}" HEAD "$@")"
+  base="$(_pc_diff_base "${repo}")"
+  if [[ -n "${base}" ]]; then
+    base_out="$(_pc_git_diff "${repo}" "${base}" "$@")"
+  else
+    base_out=""
+  fi
+  if [[ ${#base_out} -gt ${#head_out} ]]; then
+    chosen="${base:0:8}"
+    printf '%s' "${base_out}"
+  else
+    chosen="HEAD"
+    printf '%s' "${head_out}"
+  fi
+  printf '%s' "${chosen}" > "${_PC_LAST_BASE_FILE}" 2>/dev/null || true
 }
 if [[ -n "${WRITES_CSV}" ]]; then
   IFS=',' read -r -a raw_writes <<< "${WRITES_CSV}"
@@ -569,7 +621,8 @@ if [[ -n "${WRITES_CSV}" ]]; then
         done
         repo_diff="$(_pc_repo_diff "${repo}" "${paths[@]}")"
         n=${#repo_diff}
-        emit decision "review_diff task=${TASK} repo=$(basename "${repo}") bytes=${n}"
+        _pc_base_used="$(_pc_last_diff_base)"
+        emit decision "review_diff task=${TASK} repo=$(basename "${repo}") bytes=${n} base=${_pc_base_used}"
         printf '%s %s\n' "$(basename "${repo}")" "${n}" >> "${repos_file}"
         if [[ -z "${repo_diff}" ]]; then
           _zero_repos=$((_zero_repos + 1))
@@ -584,6 +637,7 @@ if [[ -n "${WRITES_CSV}" ]]; then
     else
       repo_diff="$(_pc_repo_diff "${diff_root}" "${writes[@]}")"
       printf '%s' "${repo_diff}" > "${diff_file}"
+      _pc_base_used="$(_pc_last_diff_base)"
     fi
   fi
   [[ -s "${diff_file}" ]] || blocked_reason="${blocked_reason:-unscopable_diff}"
@@ -591,14 +645,18 @@ else
   if [[ -d "${diff_root}" ]]; then
     repo_diff="$(_pc_repo_diff "${diff_root}")"
     printf '%s' "${repo_diff}" > "${diff_file}"
+    _pc_base_used="$(_pc_last_diff_base)"
   fi
   [[ -s "${diff_file}" ]] || blocked_reason="unscopable_diff"
 fi
+rm -f "${_PC_LAST_BASE_FILE}" 2>/dev/null || true
 if [[ -n "${blocked_reason}" ]]; then
   # N-5: unscopable_diff/partial_diff are kept as the diff-scoping alias of
   # no_diff_to_review (design §2.1) -- same reason string, same exit 5, now also
-  # visible in the lane row via review:blocked.
-  printf 'status: blocked\nreason: %s\n' "${blocked_reason}" > "${HANDOFF}/review-gate.md"
+  # visible in the lane row via review:blocked. base= names the diff base that produced
+  # the empty/partial result (HEAD or an abbreviated start-sha), so a blocked lane is
+  # diagnosable without re-running anything (S-3 round 3).
+  printf 'status: blocked\nreason: %s\nbase: %s\n' "${blocked_reason}" "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
   emit decision "review_gate task=${TASK} status=blocked reason=${blocked_reason}"
   _dl_note refused "${blocked_reason}"
   _stamp_review_terminal blocked
