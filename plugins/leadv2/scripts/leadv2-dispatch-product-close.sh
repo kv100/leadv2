@@ -495,6 +495,52 @@ PY
   leadv2_tasks_update "${FOUNDER_TASK_ID}" --key "claim.lease_expires" --value "${expires}" >/dev/null 2>&1 || true
 }
 
+# QUESTION-DELIVERY-OWNERSHIP-01 — scan the control-plane questions/ dir for
+# pending questions whose task_id (or owner_task) matches THIS lane's TASK,
+# and emit a `question_pending` decision line per unanswered qid. This reaches
+# the lead session's existing watchers/journal without any new daemon — it
+# piggybacks on pc_await_worker_exit's existing poll loop. Tolerates old rows
+# without owner fields (matches on task_id only). Never blocks or fails the
+# close gate on a question-dir error (fail-open: emit nothing, return 0).
+_pc_emit_pending_questions() {
+  local qdir
+  qdir="$(PROJECT_ROOT="${ROOT}" bash "${STATE_PATH_BIN}" questions 2>/dev/null || true)"
+  [[ -n "$qdir" && -d "$qdir" ]] || return 0
+  local _qlines _ql
+  _qlines="$(LEADV2_PC_QDIR="$qdir" LEADV2_PC_TASK="$TASK" python3 2>/dev/null <<'PYEOF' || true
+import glob, os, sys, datetime, yaml
+qdir = os.environ.get("LEADV2_PC_QDIR", "")
+task = os.environ.get("LEADV2_PC_TASK", "")
+if not qdir or not task:
+    sys.exit(0)
+now = datetime.datetime.utcnow()
+for fp in sorted(glob.glob(os.path.join(qdir, "*.yaml"))):
+    try:
+        with open(fp, encoding="utf-8") as f:
+            d = yaml.safe_load(f) or {}
+    except Exception:
+        continue
+    if d.get("status") != "pending":
+        continue
+    q_task = d.get("task_id") or d.get("owner_task") or ""
+    if q_task != task:
+        continue
+    qid = d.get("qid", os.path.basename(fp).replace(".yaml", ""))
+    asked = d.get("asked_at", "") or ""
+    age_s = "?"
+    try:
+        dt = datetime.datetime.strptime(asked, "%Y-%m-%dT%H:%M:%SZ")
+        age_s = str(int((now - dt).total_seconds()))
+    except Exception:
+        pass
+    print("question_pending task=%s qid=%s age=%s" % (task, qid, age_s))
+PYEOF
+  )"
+  while IFS= read -r _ql; do
+    [[ -n "$_ql" ]] && emit decision "$_ql"
+  done <<< "$_qlines"
+}
+
 pc_await_worker_exit() {
   if [[ "${LEADV2_PC_AWAIT_WORKER:-1}" != 1 ]]; then
     # One-flip rollback is byte-for-byte equivalent to the former Sonnet-only wait.
@@ -544,6 +590,11 @@ pc_await_worker_exit() {
     fi
     if [[ "${last_log}" -eq 0 || $(( now - last_log )) -ge "${log_every_s}" ]]; then
       emit decision "product_close task=${TASK} status=waiting_worker author=${AUTHOR} handle=${HANDLE} waited=${_PC_WORKER_WAITED_S}s"
+      # QUESTION-DELIVERY-OWNERSHIP-01: push-deliver unanswered questions
+      # belonging to THIS task so the lead session's watchers/journal see them
+      # without any founder input. Runs at the same log-interval — no new
+      # daemon, piggybacks on the existing 10s poll.
+      _pc_emit_pending_questions
       last_log="${now}"
     fi
     remaining=$(( max_wait_s - _PC_WORKER_WAITED_S ))
