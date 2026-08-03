@@ -33,6 +33,26 @@ leadv2-memory-gc.sh --project-root <path>   # defaults to $PWD
                     --max-age-days N         # default 90
 ```
 
+## Memory-index mode
+
+For a Claude-style project memory directory, use the same script explicitly:
+
+```
+leadv2-memory-gc.sh --memory-dir /path/to/memory [--cap 100] [--sim 0.34]
+                    [--model haiku] [--max-clusters 40] [--apply]
+leadv2-memory-gc.sh --memory-dir /path/to/memory --restore archive/gc-...
+```
+
+This mode is dry-run by default and writes only `memory-gc-report.md`. It makes one
+batched verdict request for its deterministic, same-section/type clusters; `--apply`
+is required to rewrite `MEMORY.md` and move absorbed entry files into
+`archive/gc-<timestamp>/`. Restore refuses if the live index has changed since that run.
+
+`STANDING:` entries, `metadata.type: user`, `metadata.memory_gc: keep`, ACTIVE entries
+from optional leadv2 YAML stores, and orphan index lines are immune: they can be anchors,
+but cannot be absorbed. Index prose, blank lines, and section headers are retained verbatim.
+The legacy four-store mode above is unchanged and remains the weekly Phase-8 action.
+
 ## Weekly Phase-8 trigger
 
 `leadv2-phase8-close.sh` runs this script in report-only mode if

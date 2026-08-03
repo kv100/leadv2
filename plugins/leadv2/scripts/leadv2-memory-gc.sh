@@ -8,6 +8,83 @@
 
 set -euo pipefail
 
+# Index mode deliberately dispatches before the legacy argument parser below.
+# With no --memory-dir this file continues through the original code verbatim.
+if [[ " ${*:-} " == *" --memory-dir "* ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  MEMORY_DIR=""; INDEX_CAP="${LEADV2_MEMGC_CAP:-100}"; INDEX_SIM="${LEADV2_MEMGC_SIM:-0.34}"
+  INDEX_MODEL="${LEADV2_MEMGC_MODEL:-haiku}"; INDEX_APPLY=0; INDEX_RESTORE=""
+  VERDICTS_FILE=""; MAX_CLUSTERS=40
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --memory-dir) MEMORY_DIR="${2:-}"; shift 2 ;;
+      --cap) INDEX_CAP="${2:-}"; shift 2 ;;
+      --sim) INDEX_SIM="${2:-}"; shift 2 ;;
+      --model) INDEX_MODEL="${2:-}"; shift 2 ;;
+      --max-clusters) MAX_CLUSTERS="${2:-}"; shift 2 ;;
+      --verdicts-file) VERDICTS_FILE="${2:-}"; shift 2 ;;
+      --restore) INDEX_RESTORE="${2:-}"; shift 2 ;;
+      --apply) INDEX_APPLY=1; shift ;;
+      -h|--help) echo "Usage: $0 --memory-dir DIR [--cap N] [--sim F] [--model M] [--max-clusters N] [--apply] [--verdicts-file FILE] [--restore RUN_DIR]"; exit 0 ;;
+      *) echo "[leadv2-memory-gc] unknown index-mode arg: $1" >&2; exit 1 ;;
+    esac
+  done
+  [[ -n "$MEMORY_DIR" && -f "$MEMORY_DIR/MEMORY.md" ]] || { echo "[leadv2-memory-gc] --memory-dir must contain MEMORY.md" >&2; exit 1; }
+  command -v python3 >/dev/null || { echo "[leadv2-memory-gc] python3 required" >&2; exit 1; }
+  INDEX_GC="${SCRIPT_DIR}/leadv2-memory-index-gc.py"
+  [[ -f "$INDEX_GC" ]] || { echo "[leadv2-memory-gc] missing $INDEX_GC" >&2; exit 1; }
+  exec 9>"$MEMORY_DIR/.memory-gc.lock"
+  flock -n 9 || { echo "[leadv2-memory-gc] index GC busy: $MEMORY_DIR" >&2; exit 4; }
+  if [[ -n "$INDEX_RESTORE" ]]; then
+    python3 "$INDEX_GC" restore --memory-dir "$MEMORY_DIR" --run-dir "$INDEX_RESTORE"
+    exit $?
+  fi
+  PLAN="$(mktemp "${TMPDIR:-/tmp}/leadv2-memory-gc.XXXXXX.json")"
+  trap 'rm -f "$PLAN"' EXIT
+  python3 "$INDEX_GC" prepare --memory-dir "$MEMORY_DIR" --cap "$INDEX_CAP" --sim "$INDEX_SIM" --max-clusters "$MAX_CLUSTERS" --plan "$PLAN" > /dev/null
+  if [[ -s "$PLAN" ]] && [[ "$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p.get("early_exit", False) or p.get("skip_llm", False))' "$PLAN")" == "True" ]]; then
+    python3 "$INDEX_GC" finalize --plan "$PLAN" --memory-dir "$MEMORY_DIR" --model "$INDEX_MODEL"
+    exit 0
+  fi
+  if [[ -n "$VERDICTS_FILE" ]]; then
+    VERDICTS="$VERDICTS_FILE"
+  else
+    TMPL="${SCRIPT_DIR}/../prompts/memory-gc-verdict.md"
+    [[ -f "$TMPL" ]] || { echo "[leadv2-memory-gc] missing prompt template: $TMPL" >&2; exit 1; }
+    REQUEST="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["request"], separators=(",",":")))' "$PLAN")"
+    PROMPT="$(python3 - "$TMPL" "$REQUEST" <<'PY'
+import sys
+print(open(sys.argv[1], encoding='utf-8').read().replace('<<<CLUSTERS_JSON>>>', sys.argv[2]))
+PY
+)"
+    RAW="$(mktemp "${TMPDIR:-/tmp}/leadv2-memory-gc-verdict.XXXXXX.json")"
+    trap 'rm -f "$PLAN" "$RAW"' EXIT
+    TIMEOUT_CMD="$(command -v gtimeout || command -v timeout || true)"
+    if [[ -z "$TIMEOUT_CMD" ]]; then echo "[leadv2-memory-gc] timeout command unavailable" >&2; VERDICTS="";
+    else
+      set +e
+      "$TIMEOUT_CMD" "${LEADV2_MEMGC_TIMEOUT:-45}" "${CLAUDE_BIN:-claude}" -p "$PROMPT" --model "$INDEX_MODEL" --max-turns 3 --permission-mode bypassPermissions --output-format json > "$RAW"
+      CALL_RC=$?
+      set -e
+      if [[ $CALL_RC -eq 0 ]]; then
+        python3 - "$RAW" > "${RAW}.result" <<'PY'
+import json, re, sys
+try: text=json.load(open(sys.argv[1], encoding='utf-8')).get('result','')
+except Exception: text=''
+m=re.search(r'\{.*\}', text, re.S)
+if m: print(m.group(0))
+PY
+        VERDICTS="${RAW}.result"
+      else VERDICTS=""; fi
+    fi
+  fi
+  ARGS=(finalize --plan "$PLAN" --memory-dir "$MEMORY_DIR" --model "$INDEX_MODEL")
+  [[ -n "${VERDICTS:-}" ]] && ARGS+=(--verdicts-file "$VERDICTS")
+  [[ "$INDEX_APPLY" == 1 ]] && ARGS+=(--apply)
+  python3 "$INDEX_GC" "${ARGS[@]}"
+  exit $?
+fi
+
 log()      { printf -- '[%s] %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_info() { log "INFO:  $*"; }
 log_error(){ log "ERROR: $*"; }
