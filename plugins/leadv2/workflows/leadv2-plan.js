@@ -24,10 +24,11 @@ const TASK_CLASS = a.taskClass || 'general'
 // args.models absent (or LEADV2_ROUTE_BANDIT != 1) => falls back to existing pinned defaults.
 // Flag-off guarantee: if args.models is not provided, model values are identical to pre-BANDIT-WIRE-01.
 const _MODELS = (a.models && typeof a.models === 'object') ? a.models : {}
-// [CODEX-56-ROUTING] Architect downgraded to sonnet ALWAYS (never opus, even Heavy) — Codex
-// GPT-5.6 (--tier top/standard below) is now the PRIMARY plan author; architect is a
-// lightweight cross-check that challenges/augments Codex's plan, not a competing full author.
-const ARCH_MODEL = 'sonnet'
+// [PLANNER-MODELS-DECISION-01, founder 2026-08-03] Architect/planner = opus (Standard) or
+// fable (Heavy); Codex (--tier standard/top below) is the SAME-TIER second planning brain,
+// not the sole author. GLM/Kimi are build-only — never admitted to plan/architect roles.
+// Supersedes CODEX-56-ROUTING's sonnet-always downgrade.
+const ARCH_MODEL = HEAVY ? 'fable' : 'opus'
 const CRITIC_MODEL = _MODELS.critic || 'sonnet'
 
 // [CODEMAP-CONTEXT-01] Flag-gated repomap-style code_map. The JS workflow runtime has no
@@ -275,7 +276,7 @@ if (recommendedRoles.includes('architect')) {
     `Emit exactly one decisions[] string entry recording it, always — even a "no fit" verdict: ` +
     `'capability-search: considered=[x,y]; chosen="reuse <x>" | "custom (no fit)"; why="<one line>"'.` +
     contextEnvelope,
-    { label: 'architect', phase: 'Plan', agentType: 'architect', model: ARCH_MODEL, effort: HEAVY ? 'high' : 'medium', schema: ARCH_SCHEMA }))
+    { label: 'architect', phase: 'Plan', agentType: 'architect', model: ARCH_MODEL, effort: HEAVY ? 'xhigh' : 'high', schema: ARCH_SCHEMA }))
 }
 if (recommendedRoles.includes('critic')) {
   spawns.push(() => agent(
@@ -298,10 +299,10 @@ if (recommendedRoles.includes('security-auditor')) {
     { label: 'security-plan', phase: 'Plan', agentType: 'security-auditor', model: 'sonnet', effort: 'high', schema: CRITIC_SCHEMA }))
 }
 // lean: devops-engineer and frontend-developer plan-phase spawns omitted — rarely needed at Plan stage; upgrade when task_class=ops|ui is common
-// [CODEX-56-ROUTING] Codex (GPT-5.6, tiered top/standard) is the PRIMARY plan author for Plan
-// phase — it runs first in dispatch order (unshift below) and its findings are weighted first
-// during concern dedup (higher signal-to-token ratio). The Claude architect above is downgraded
-// to sonnet ALWAYS and reframed as a lightweight cross-check, not a competing full author.
+// [PLANNER-MODELS-DECISION-01] Codex (GPT-5.6, tier matched to the architect: standard↔opus,
+// top↔fable) is the SAME-TIER second planning brain — it runs first in dispatch order
+// (unshift below) and its findings are weighted first during concern dedup. The architect
+// above is a full co-author on opus/fable, not a downgraded cross-check.
 // Agent critic above is the fallback second voice when CODEX_ON=false.
 if (CODEX_ON) {
   spawns.unshift(() => agent(
@@ -391,7 +392,7 @@ await agent(
   `Each criterion: {id, type:programmatic|judge|human, expect?:exit_zero|exit_nonzero|stdout_contains, check?:argv-array, contains?:string, rubric?:string, prompt?:string}.` +
   persistInstructions + ledgerFlushInstructions +
   `Return "ok" once the context.yaml write, the persist command, and the ledger-flush commands have all completed.`,
-  { label: 'synthesize', phase: 'Synthesize', model: 'sonnet', effort: 'medium' })
+  { label: 'synthesize', phase: 'Synthesize', model: ARCH_MODEL, effort: HEAVY ? 'xhigh' : 'high' })
 
 // [fix-round-1 #2] code_map joins REQUIRED_FIELDS only when it was actually supposed to be
 // present (CODEMAP_ON && CODE_MAP) — flag-off runs never require it, so this stays
@@ -416,7 +417,7 @@ if (validationResult && !validationResult.valid) {
     // the retry prompt above doesn't even mention them, so without this it would vanish).
     persistInstructions +
     ` Return "ok" once the context.yaml write and the persist command have both completed.`,
-    { label: 'synthesize-retry', phase: 'Synthesize', model: 'sonnet', effort: 'medium' })
+    { label: 'synthesize-retry', phase: 'Synthesize', model: ARCH_MODEL, effort: HEAVY ? 'xhigh' : 'high' })
 }
 
 return {
