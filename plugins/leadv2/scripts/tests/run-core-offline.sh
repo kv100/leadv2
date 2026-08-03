@@ -74,6 +74,7 @@ run_check "status surface single-lead + census" bash "$REPO_ROOT/tests/test-stat
 run_check "reply router dual-store resolution" bash "$TEST_DIR/test-reply-router-01.sh"
 run_check "question delivery ownership" bash "$TEST_DIR/test-question-delivery-ownership-01.sh"
 run_check "landed-at-spawn (no terminal=landed at spawn; target repo keying)" bash "$TEST_DIR/test-landed-at-spawn.sh"
+run_check "lane placement pin (--resume-lane/--worktree)" bash "$TEST_DIR/test-lane-placement-pin.sh"
 
 printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
 (( FAIL == 0 && MISSING == 0 ))
