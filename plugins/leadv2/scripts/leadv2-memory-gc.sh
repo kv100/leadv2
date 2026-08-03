@@ -12,24 +12,26 @@ set -euo pipefail
 # With no --memory-dir this file continues through the original code verbatim.
 if [[ " ${*:-} " == *" --memory-dir "* ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  MEMORY_DIR=""; INDEX_CAP="${LEADV2_MEMGC_CAP:-100}"; INDEX_SIM="${LEADV2_MEMGC_SIM:-0.34}"
-  INDEX_MODEL="${LEADV2_MEMGC_MODEL:-haiku}"; INDEX_APPLY=0; INDEX_RESTORE=""
-  VERDICTS_FILE=""; MAX_CLUSTERS=40
+  MEMORY_DIR=""; INDEX_PROJECT_ROOT=""; INDEX_MODEL="${LEADV2_MEMGC_MODEL:-haiku}"
+  INDEX_APPLY=0; INDEX_RESTORE=""; INDEX_AUDIT=""; VERDICTS_FILE=""
+  INDEX_BYTE_CAP="${LEADV2_MEMGC_BYTE_CAP:-}"; INDEX_LINE_LIMIT="${LEADV2_MEMGC_LINE_LIMIT:-}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --memory-dir) MEMORY_DIR="${2:-}"; shift 2 ;;
-      --cap) INDEX_CAP="${2:-}"; shift 2 ;;
-      --sim) INDEX_SIM="${2:-}"; shift 2 ;;
+      --project-root) INDEX_PROJECT_ROOT="${2:-}"; shift 2 ;;
+      --byte-cap) INDEX_BYTE_CAP="${2:-}"; shift 2 ;;
+      --line-limit) INDEX_LINE_LIMIT="${2:-}"; shift 2 ;;
       --model) INDEX_MODEL="${2:-}"; shift 2 ;;
-      --max-clusters) MAX_CLUSTERS="${2:-}"; shift 2 ;;
       --verdicts-file) VERDICTS_FILE="${2:-}"; shift 2 ;;
       --restore) INDEX_RESTORE="${2:-}"; shift 2 ;;
+      --audit) INDEX_AUDIT="${2:-}"; shift 2 ;;
       --apply) INDEX_APPLY=1; shift ;;
-      -h|--help) echo "Usage: $0 --memory-dir DIR [--cap N] [--sim F] [--model M] [--max-clusters N] [--apply] [--verdicts-file FILE] [--restore RUN_DIR]"; exit 0 ;;
+      -h|--help) echo "Usage: $0 --memory-dir DIR --project-root PROJECT [--byte-cap BYTES --line-limit N] [--model M] [--apply] [--verdicts-file FILE] [--restore RUN_DIR] [--audit RUN_DIR]"; exit 0 ;;
       *) echo "[leadv2-memory-gc] unknown index-mode arg: $1" >&2; exit 1 ;;
     esac
   done
   [[ -n "$MEMORY_DIR" && -f "$MEMORY_DIR/MEMORY.md" ]] || { echo "[leadv2-memory-gc] --memory-dir must contain MEMORY.md" >&2; exit 1; }
+  [[ -n "$INDEX_PROJECT_ROOT" && -d "$INDEX_PROJECT_ROOT" ]] || { echo "[leadv2-memory-gc] --project-root must be an accessible project directory" >&2; exit 1; }
   command -v python3 >/dev/null || { echo "[leadv2-memory-gc] python3 required" >&2; exit 1; }
   INDEX_GC="${SCRIPT_DIR}/leadv2-memory-index-gc.py"
   [[ -f "$INDEX_GC" ]] || { echo "[leadv2-memory-gc] missing $INDEX_GC" >&2; exit 1; }
@@ -39,10 +41,18 @@ if [[ " ${*:-} " == *" --memory-dir "* ]]; then
     python3 "$INDEX_GC" restore --memory-dir "$MEMORY_DIR" --run-dir "$INDEX_RESTORE"
     exit $?
   fi
+  if [[ -n "$INDEX_AUDIT" ]]; then
+    python3 "$INDEX_GC" audit --run-dir "$INDEX_AUDIT" --project-root "$INDEX_PROJECT_ROOT"
+    exit $?
+  fi
   PLAN="$(mktemp "${TMPDIR:-/tmp}/leadv2-memory-gc.XXXXXX.json")"
   trap 'rm -f "$PLAN"' EXIT
-  python3 "$INDEX_GC" prepare --memory-dir "$MEMORY_DIR" --cap "$INDEX_CAP" --sim "$INDEX_SIM" --max-clusters "$MAX_CLUSTERS" --plan "$PLAN" > /dev/null
-  if [[ -s "$PLAN" ]] && [[ "$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(p.get("early_exit", False) or p.get("skip_llm", False))' "$PLAN")" == "True" ]]; then
+  PREPARE=(prepare --memory-dir "$MEMORY_DIR" --project-root "$INDEX_PROJECT_ROOT" --plan "$PLAN")
+  if [[ -n "$INDEX_BYTE_CAP" || -n "$INDEX_LINE_LIMIT" ]]; then
+    PREPARE+=(--byte-cap "$INDEX_BYTE_CAP" --line-limit "$INDEX_LINE_LIMIT")
+  fi
+  python3 "$INDEX_GC" "${PREPARE[@]}" > /dev/null
+  if [[ -s "$PLAN" ]] && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("early_exit", False))' "$PLAN")" == "True" ]]; then
     python3 "$INDEX_GC" finalize --plan "$PLAN" --memory-dir "$MEMORY_DIR" --model "$INDEX_MODEL"
     exit 0
   fi
