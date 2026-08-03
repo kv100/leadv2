@@ -52,6 +52,7 @@ run_check "Claude plugin manifest/components" validate_plugin
 run_check "provider/model router" bash "$TEST_DIR/test-session-route.sh"
 run_check "dispatch refusal fallback chain" bash "$TEST_DIR/test-routing-enforcement-p1.sh"
 run_check "product-close waits for worker exit" bash "$TEST_DIR/test-no-work-terminal.sh"
+run_check "product-close resumes a died-with-work lane once" bash "$TEST_DIR/test-dwr-resume.sh"
 run_check "Codex full-cycle runner" bash "$TEST_DIR/test-codex-session-runner.sh"
 run_check "Codex terminal lead intake" bash "$TEST_DIR/test-codex-lead-intake.sh"
 run_check "Codex child-session recursion boundary" bash "$TEST_DIR/test-codex-child-session-boundary.sh"
@@ -73,6 +74,8 @@ run_check "skill proof gate unit tests" bash "$TEST_DIR/test-skill-proof-gate.sh
 run_check "status surface single-lead + census" bash "$REPO_ROOT/tests/test-status-surface-single-lead.sh"
 run_check "reply router dual-store resolution" bash "$TEST_DIR/test-reply-router-01.sh"
 run_check "question delivery ownership" bash "$TEST_DIR/test-question-delivery-ownership-01.sh"
+run_check "landed-at-spawn (no terminal=landed at spawn; target repo keying)" bash "$TEST_DIR/test-landed-at-spawn.sh"
+run_check "lane placement pin (--resume-lane/--worktree)" bash "$TEST_DIR/test-lane-placement-pin.sh"
 
 printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
 (( FAIL == 0 && MISSING == 0 ))

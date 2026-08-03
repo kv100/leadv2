@@ -4,6 +4,12 @@
 # product worker is confirmed.  It reports a missing e2e entrypoint, an unscopable diff, or
 # a cross-provider conflict as a finding; none is silently passed.  Kill switches are passed
 # explicitly by dispatch.
+#
+# GLM-DIED-WITH-WORK-RESUME-01: after the first worker exits with outcome:
+# died-with-work, this gate relaunches the provider's `bg` on the SAME worktree
+# exactly once (marker-guarded), then waits for the second run before gating.
+# Worst-case wall clock therefore doubles (4200s → 8400s) for a died-with-work
+# lane.  Kill switch: LEADV2_PC_DWR_RESUME=0 restores single-wait behaviour.
 set -uo pipefail
 
 ROOT="${1:?root}"; TASK="${2:?task}"; AUTHOR="${3:?author}"; HANDLE="${4:-}"
@@ -360,6 +366,166 @@ _PC_RUNS_ROOT="${LEADV2_PC_RUNS_ROOT:-${HOME}/.claude/cache}"
 _PC_JOB_REGISTRY_ROOT="${LEADV2_JOB_REGISTRY_ROOT:-/tmp/leadv2-job-registry}"
 _PC_WORKER_WAITED_S=0
 _PC_WORKER_PROBE_TIMEOUT_S=20
+
+# GLM-DIED-WITH-WORK-RESUME-01: resume a died-with-work lane exactly once.
+# When the first worker finishes with outcome: died-with-work (the run hit a bound
+# -- stall/turn-cap/wall-clock -- but left real work behind), relaunch the SAME
+# provider's `bg` entrypoint on the SAME worktree with a resume prefix, so a
+# recoverable death is not silently buried as a permanent no-work/e2e_regression.
+# Exactly once: a per-lane marker file prevents any second attempt.  Kill switch:
+# LEADV2_PC_DWR_RESUME=0 restores byte-for-byte current behaviour.
+
+# Resolve the run-dir path for a given author+handle (mirrors the liveness probe
+# and the asked-into-void block).  Empty when unresolvable.
+_pc_run_dir_for() { # <author> <handle> -> path on stdout
+  local author="$1" handle="$2" run_dir=""
+  [[ -n "${author}" && -n "${handle}" ]] || { printf ''; return 0; }
+  case "${author}" in
+    glm)  run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${handle}" ;;
+    kimi) run_dir="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${handle}" ;;
+    *)    run_dir="${_PC_RUNS_ROOT}/${author}-runs/${handle}" ;;
+  esac
+  printf '%s' "${run_dir}"
+}
+
+# Set global _PC_ASKED_INTO_VOID from current AUTHOR/HANDLE.  Called before the
+# first wait AND after a successful resume (R5: stale marker from run A must not
+# park a lane that run B unblocked).
+_pc_resolve_asked_into_void() {
+  _PC_ASKED_INTO_VOID=""
+  [[ -n "${AUTHOR:-}" && -n "${HANDLE:-}" ]] || return 0
+  _PC_ASKED_INTO_VOID="$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/.asked_into_void"
+}
+
+# Read the classifier outcome from a run dir's meta.yaml, falling back to the
+# .outcome sentinel (outcome= form) for legacy runs that predate the meta append.
+_pc_lane_outcome() { # <run_dir> -> completed|died-with-work|died-clean|""
+  local run_dir="$1" meta outcome
+  meta="${run_dir}/meta.yaml"
+  if [[ -f "${meta}" ]]; then
+    outcome="$(_pc_meta_value "${meta}" outcome)"
+    [[ -n "${outcome}" ]] && { printf '%s' "${outcome}"; return 0; }
+  fi
+  # Fallback: .outcome sentinel written by leadv2-lane-outcome.sh.
+  local sentinel="${run_dir}/.outcome"
+  [[ -f "${sentinel}" ]] || { printf ''; return 0; }
+  sed -n 's/^outcome=//p' "${sentinel}" 2>/dev/null | head -n 1
+}
+
+# Resolve the provider launcher script.  Empty when no regular file exists
+# (e.g. sonnet/codex authors have no <author>-coder.sh).
+_pc_resume_launcher_for() { # <author> -> absolute path or empty
+  local author="$1" launcher
+  [[ -n "${LEADV2_PC_RESUME_LAUNCHER_BIN:-}" ]] && { printf '%s' "${LEADV2_PC_RESUME_LAUNCHER_BIN}"; return 0; }
+  [[ -n "${author}" ]] || { printf ''; return 0; }
+  launcher="${SCRIPT_DIR}/${author}-coder.sh"
+  [[ -f "${launcher}" ]] && { printf '%s' "${launcher}"; return 0; }
+  printf ''
+}
+
+# Attempt one died-with-work resume.  Returns 0 if a resume was launched and
+# HANDLE was reassigned to the new run; 1 if no resume happened (every other
+# case including kill-switch, not-eligible, marker present, gate refusal, or
+# launch failure).  In all cases the decision is journaled via emit.
+pc_dwr_resume_once() {
+  local marker="${HANDOFF}/.dwr-resume-attempted"
+  local prompt_file="${HANDOFF}/.dwr-resume-prompt.txt"
+  local launch_log="${HANDOFF}/.dwr-resume-launch.log"
+
+  # Kill switch.
+  [[ "${LEADV2_PC_DWR_RESUME:-1}" == "1" ]] || return 1
+
+  # Need author + handle.
+  [[ -n "${AUTHOR:-}" && -n "${HANDLE:-}" ]] || return 1
+
+  # Resolve the dead run's dir and read its outcome.
+  local old_run_dir old_outcome
+  old_run_dir="$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")"
+  [[ -n "${old_run_dir}" && -f "${old_run_dir}/meta.yaml" ]] || return 1
+  old_outcome="$(_pc_lane_outcome "${old_run_dir}")"
+  [[ "${old_outcome}" == "died-with-work" ]] || return 1
+
+  # Marker short-circuit: exactly once per lane.
+  if [[ -f "${marker}" ]]; then
+    local from_run
+    from_run="$(sed -n 's/^from_run=//p' "${marker}" 2>/dev/null | head -n 1)"
+    emit decision "dwr_resume task=${TASK} from_run=${from_run:-${HANDLE}} new_run=skipped reason=already_attempted"
+    return 1
+  fi
+
+  # Launcher must exist before we write the marker (so authors without a coder
+  # script are a pure no-op with no journal noise).
+  local launcher
+  launcher="$(_pc_resume_launcher_for "${AUTHOR}")"
+  if [[ -z "${launcher}" ]]; then
+    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed reason=no_launcher"
+    return 1
+  fi
+
+  # Read cwd / max_turns / timeout from the dead run's meta.
+  local old_meta="${old_run_dir}/meta.yaml" cwd max_turns timeout_s
+  cwd="$(_pc_meta_value "${old_meta}" cwd)"
+  max_turns="$(_pc_meta_value "${old_meta}" max_turns)"
+  timeout_s="$(_pc_meta_value "${old_meta}" timeout)"
+  if [[ -z "${cwd}" || ! -d "${cwd}" ]]; then
+    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed reason=no_cwd"
+    return 1
+  fi
+
+  # Build the resume prompt: a 4-line prefix + the verbatim original prompt.
+  local old_prompt="${old_run_dir}/prompt.txt"
+  if [[ ! -s "${old_prompt}" ]]; then
+    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed reason=no_prompt"
+    return 1
+  fi
+  {
+    printf '## Resume after a prior partial run\n'
+    printf 'A previous run on this worktree died mid-work (stall/turn-cap/wall-clock) after producing real output. '
+    printf 'Your changes so far are already on disk in this worktree. Review what is present, then continue the mission to completion.\n'
+    printf 'Do NOT redo work that is already done; pick up where the prior run left off.\n'
+    printf -- '---\n\n'
+    cat "${old_prompt}"
+  } > "${prompt_file}"
+
+  # Write the marker BEFORE launching (R1: fail-closed, never loop).
+  # On marker-write failure, do not launch.
+  local marker_tmp="${marker}.tmp.$$"
+  if ! printf 'from_run=%s\nat=%s\nby=%s\n' "${HANDLE}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$$" \
+       > "${marker_tmp}" 2>/dev/null; then
+    rm -f "${marker_tmp}" 2>/dev/null || true
+    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed reason=marker_write"
+    return 1
+  fi
+  mv -f "${marker_tmp}" "${marker}" 2>/dev/null || { rm -f "${marker_tmp}" 2>/dev/null || true; \
+    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed reason=marker_write"; return 1; }
+
+  # Launch the provider's `bg` entrypoint with the resume prompt.
+  # `|| rc=$?` (never `!`) so gate codes (1|2) survive — same idiom as glm-coder.sh:1349.
+  local rc=0 new_run_id=""
+  bash "${launcher}" bg "@${prompt_file}" --cwd "${cwd}" \
+       --max-turns "${max_turns:-50}" --timeout "${timeout_s:-3600}" \
+       > "${launch_log}" 2>&1 || rc=$?
+
+  if [[ ${rc} -eq 0 ]]; then
+    # Parse the run-id from the last stdout line.
+    new_run_id="$(tail -n 1 "${launch_log}" 2>/dev/null)"
+    if [[ "${new_run_id}" =~ ^[0-9]{6}-[0-9]{6}- ]]; then
+      emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=${new_run_id}"
+      HANDLE="${new_run_id}"
+      _pc_resolve_asked_into_void
+      return 0
+    else
+      emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed rc=0 reason=no_run_id"
+      return 1
+    fi
+  elif [[ ${rc} -eq 1 || ${rc} -eq 2 ]]; then
+    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=blocked_by_gate rc=${rc}"
+    return 1
+  else
+    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed rc=${rc} reason=bad_rc"
+    return 1
+  fi
+}
 
 _pc_job_registry_has_handle() { # <handle> -> 0 while the exact launch handle is registered
   local handle="$1" entry
@@ -819,14 +985,7 @@ fi
 # -> the asked-into-void cause never fires (degrades to empty_diff). Resolved ONCE
 # here, before pc_scope_diff, so the empty-diff branch (cause asked_into_void) and
 # the non-empty-diff branch (parked) below share one definition.
-_PC_ASKED_INTO_VOID=""
-if [[ -n "${AUTHOR:-}" && -n "${HANDLE:-}" ]]; then
-  case "${AUTHOR}" in
-    glm)  _PC_ASKED_INTO_VOID="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${HANDLE}/.asked_into_void" ;;
-    kimi) _PC_ASKED_INTO_VOID="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${HANDLE}/.asked_into_void" ;;
-    *)    _PC_ASKED_INTO_VOID="${_PC_RUNS_ROOT}/${AUTHOR}-runs/${HANDLE}/.asked_into_void" ;;
-  esac
-fi
+_pc_resolve_asked_into_void
 
 if ! pc_await_worker_exit; then
   printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
@@ -834,6 +993,28 @@ if ! pc_await_worker_exit; then
   _dl_note dead timeout "waited=${_PC_WORKER_WAITED_S}s author=${AUTHOR} handle=${HANDLE}"
   _stamp_review_terminal blocked
   exit 5
+fi
+
+# GLM-DIED-WITH-WORK-RESUME-01: after the first worker exits, attempt one
+# died-with-work resume.  On success, re-enter the wait for the second run;
+# on any non-success, fall through to gating the partial diff exactly as today.
+if pc_dwr_resume_once; then
+  # Second wait with its own ceiling (LEADV2_PC_RESUME_MAX_WAIT_S, default
+  # = first-wait budget).  The lease-refresh inside pc_await_worker_exit
+  # keeps extending the claim across this second wait (R2).  Wall-clock
+  # worst case doubles — documented in the script header.
+  # Critic r1 HIGH: the second wait's timeout must be the same hard stop as the
+  # first wait's -- `|| true` here would fall through to pc_scope_diff while the
+  # resumed worker may still be writing (the exact race PREMATURE-NO-WORK-
+  # TERMINAL-01 closed for the first wait).
+  if ! LEADV2_PC_WORKER_MAX_WAIT_S="${LEADV2_PC_RESUME_MAX_WAIT_S:-${LEADV2_PC_WORKER_MAX_WAIT_S:-4200}}" \
+      pc_await_worker_exit; then
+    printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout resumed=1"
+    _dl_note dead timeout "waited=${_PC_WORKER_WAITED_S}s author=${AUTHOR} handle=${HANDLE} resumed=1"
+    _stamp_review_terminal blocked
+    exit 5
+  fi
 fi
 
 pc_scope_diff
