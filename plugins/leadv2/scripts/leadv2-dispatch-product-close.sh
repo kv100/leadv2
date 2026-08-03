@@ -350,11 +350,208 @@ review_floor_ok() { # <file> -> 0 if it clears the floor, 1 if not
   return 0
 }
 
-# Wait only for a positively known local PID. Other providers may expose only a durable
-# job/run handle, so their lifecycle owner writes the close evidence; we never guess done.
-if [[ "${AUTHOR}" == sonnet && "${HANDLE}" =~ ^[0-9]+$ ]]; then
-  while kill -0 "${HANDLE}" 2>/dev/null; do sleep 2; done
-fi
+# PREMATURE-NO-WORK-TERMINAL-01: this process starts as soon as the worker is
+# confirmed, not when it finishes. Keep every terminal-producing gate behind a
+# provider-aware exit proof so an early watcher wake cannot classify an untouched
+# worktree as no_work. The 4200s default is the longest in-worker timeout (GLM/Kimi:
+# 3600s) plus ten minutes of finalization grace; callers can align it to a stricter
+# lane timeout with LEADV2_PC_WORKER_MAX_WAIT_S.
+_PC_RUNS_ROOT="${LEADV2_PC_RUNS_ROOT:-${HOME}/.claude/cache}"
+_PC_JOB_REGISTRY_ROOT="${LEADV2_JOB_REGISTRY_ROOT:-/tmp/leadv2-job-registry}"
+_PC_WORKER_WAITED_S=0
+_PC_WORKER_PROBE_TIMEOUT_S=20
+
+_pc_job_registry_has_handle() { # <handle> -> 0 while the exact launch handle is registered
+  local handle="$1" entry
+  [[ -n "${handle}" && "${handle}" == "$(basename "${handle}")" ]] || return 1
+  for entry in "${_PC_JOB_REGISTRY_ROOT%/}"/*/"${handle}"; do
+    [[ -f "${entry}" ]] && return 0
+  done
+  return 1
+}
+
+_pc_meta_value() { # <meta.yaml> <key>
+  sed -n "s/^$2:[[:space:]]*//p" "$1" 2>/dev/null | head -n 1
+}
+
+_pc_codex_provider_state() { # running|done|unknown
+  local liveness_bin="${LEADV2_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lane-liveness.sh}"
+  local probe_timeout="${_PC_WORKER_PROBE_TIMEOUT_S:-20}"
+  [[ -f "${liveness_bin}" ]] || { printf 'unknown'; return; }
+  [[ "${probe_timeout}" =~ ^[1-9][0-9]*$ ]] || probe_timeout=20
+  CODEX_TASK_SH="${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" \
+    python3 - "${liveness_bin}" "${ROOT}" "${HANDLE}" "${probe_timeout}" 2>/dev/null <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["bash", sys.argv[1], "--project-root", sys.argv[2], "--job", sys.argv[3], "--json"],
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+        text=True,
+        timeout=float(sys.argv[4]),
+    )
+    payload = json.loads(result.stdout)
+    jobs = payload.get("jobs") or []
+    verdict = str((jobs[0].get("verdict") if jobs else payload.get("verdict")) or "unknown").lower()
+    if verdict in ("running", "queued") or verdict.startswith("alive") or verdict.startswith("starting:"):
+        print("running")
+    elif verdict in ("done", "completed", "failed", "cancelled") or verdict.startswith("dead:"):
+        print("done")
+    else:
+        print("unknown")
+except Exception:
+    # A failed or wedged status probe is not permission to emit a terminal row.
+    print("unknown")
+PY
+}
+
+pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
+  local provider_state registry_alive run_dir meta status pid
+  if [[ -z "${HANDLE}" ]]; then
+    emit decision "product_close task=${TASK} worker_liveness=unknown author=${AUTHOR:-unknown} handle=- action=proceed_legacy"
+    return 1
+  fi
+  case "${AUTHOR}" in
+    sonnet)
+      if [[ "${HANDLE}" =~ ^[0-9]+$ ]]; then
+        kill -0 "${HANDLE}" 2>/dev/null && return 0
+        return 1
+      fi
+      ;;
+    codex)
+      provider_state="$(_pc_codex_provider_state)"
+      registry_alive=0
+      _pc_job_registry_has_handle "${HANDLE}" && registry_alive=1
+      [[ "${provider_state}" == running || "${registry_alive}" == 1 ]] && return 0
+      [[ "${provider_state}" == "done" && "${registry_alive}" == 0 ]] && return 1
+      # Unknown provider state is conservative: the hard ceiling owns recovery.
+      return 0
+      ;;
+    glm|kimi)
+      if [[ "${AUTHOR}" == glm ]]; then
+        run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${HANDLE}"
+      else
+        run_dir="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${HANDLE}"
+      fi
+      meta="${run_dir}/meta.yaml"
+      status="$(_pc_meta_value "${meta}" status)"
+      # GLM/Kimi stall revival finalizes the ORIGINAL run with one of these
+      # statuses, then returns before clearing its original registry entry. They
+      # are therefore terminal evidence for this handle even while that stale
+      # registry file remains; treating the registry as live here would run the
+      # full ceiling and write a permanent dead/timeout row for completed work.
+      [[ "${status}" == revived || "${status}" == revive_blocked_by_gate ]] && return 1
+      pid="$(_pc_meta_value "${meta}" pid)"
+      registry_alive=0
+      _pc_job_registry_has_handle "${HANDLE}" && registry_alive=1
+      [[ "${status}" == running || "${registry_alive}" == 1 ]] && return 0
+      [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null && return 0
+      [[ ( "${status}" == complete || "${status}" == failed ) && "${registry_alive}" == 0 ]] && return 1
+      # The coder writes this only from its finish guard. It is terminal provider
+      # evidence for legacy runs that predate meta.yaml, once no exact registry or
+      # process evidence remains.
+      [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" && "${registry_alive}" == 0 ]] && return 1
+      # Missing/malformed provider evidence is never treated as completion.
+      return 0
+      ;;
+  esac
+
+  # Direct/manual legacy invocations can omit a handle. Preserve their historical
+  # immediate behavior, but make the relaxed proof visible instead of silently guessing.
+  emit decision "product_close task=${TASK} worker_liveness=unknown author=${AUTHOR:-unknown} handle=${HANDLE:--} action=proceed_legacy"
+  return 1
+}
+
+_pc_refresh_founder_lease() { # <extend_seconds> -> best-effort, only for our live claim
+  local extend_s="$1" task_yaml expires
+  [[ -n "${FOUNDER_TASK_ID}" && -f "${ROOT}/docs/tasks.yaml" ]] || return 0
+  declare -F leadv2_tasks_by_id >/dev/null 2>&1 || return 0
+  declare -F leadv2_tasks_update >/dev/null 2>&1 || return 0
+  task_yaml="$(leadv2_tasks_by_id "${FOUNDER_TASK_ID}" 2>/dev/null)" || return 0
+  # Never resurrect or alter a task that another lifecycle owner already
+  # completed/unclaimed while this close watcher was alive.
+  printf '%s' "${task_yaml}" | python3 -c '
+import sys, yaml
+items = yaml.safe_load(sys.stdin.read()) or []
+item = items[0] if isinstance(items, list) and items else {}
+claim = item.get("claim") or {}
+sys.exit(0 if item.get("status") == "in_progress" and claim.get("by") is not None else 1)
+' >/dev/null 2>&1 || return 0
+  expires="$(python3 - "${extend_s}" 2>/dev/null <<'PY'
+import datetime
+import sys
+
+now = datetime.datetime.now(datetime.timezone.utc)
+expires = now + datetime.timedelta(seconds=int(sys.argv[1]))
+print(expires.strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)"
+  [[ -n "${expires}" ]] || return 0
+  leadv2_tasks_update "${FOUNDER_TASK_ID}" --key "claim.lease_expires" --value "${expires}" >/dev/null 2>&1 || true
+}
+
+pc_await_worker_exit() {
+  if [[ "${LEADV2_PC_AWAIT_WORKER:-1}" != 1 ]]; then
+    # One-flip rollback is byte-for-byte equivalent to the former Sonnet-only wait.
+    if [[ "${AUTHOR}" == sonnet && "${HANDLE}" =~ ^[0-9]+$ ]]; then
+      while kill -0 "${HANDLE}" 2>/dev/null; do sleep 2; done
+    fi
+    return 0
+  fi
+
+  local poll_s="${LEADV2_PC_WORKER_POLL_S:-10}"
+  local max_wait_s="${LEADV2_PC_WORKER_MAX_WAIT_S:-4200}"
+  local log_every_s="${LEADV2_PC_WORKER_LOG_EVERY_S:-300}"
+  local lease_refresh_s="${LEADV2_PC_LEASE_REFRESH_EVERY_S:-300}"
+  [[ "${poll_s}" =~ ^[1-9][0-9]*$ ]] || poll_s=10
+  [[ "${max_wait_s}" =~ ^[1-9][0-9]*$ ]] || max_wait_s=4200
+  [[ "${log_every_s}" =~ ^[0-9]+$ ]] || log_every_s=300
+  [[ "${lease_refresh_s}" =~ ^[1-9][0-9]*$ ]] || lease_refresh_s=300
+
+  local started now last_log=0 last_lease_refresh=0 remaining sleep_s
+  local lease_extend_s=$(( max_wait_s + poll_s + 20 ))
+  started="$(date +%s)"
+  while true; do
+    now="$(date +%s)"
+    _PC_WORKER_WAITED_S=$(( now - started ))
+    if [[ "${_PC_WORKER_WAITED_S}" -ge "${max_wait_s}" ]]; then
+      return 1
+    fi
+    # Bound the potentially-slow Codex probe by the watcher's remaining wall
+    # clock budget. Without this, a final 20s probe plus a full poll sleep could
+    # overshoot a tightened ceiling by roughly 30 seconds.
+    remaining=$(( max_wait_s - _PC_WORKER_WAITED_S ))
+    _PC_WORKER_PROBE_TIMEOUT_S=20
+    [[ "${remaining}" -lt "${_PC_WORKER_PROBE_TIMEOUT_S}" ]] && _PC_WORKER_PROBE_TIMEOUT_S="${remaining}"
+    if ! pc_worker_alive; then
+      now="$(date +%s)"
+      _PC_WORKER_WAITED_S=$(( now - started ))
+      return 0
+    fi
+    now="$(date +%s)"
+    _PC_WORKER_WAITED_S=$(( now - started ))
+    if [[ "${_PC_WORKER_WAITED_S}" -ge "${max_wait_s}" ]]; then
+      return 1
+    fi
+    if [[ "${last_lease_refresh}" -eq 0 || $(( now - last_lease_refresh )) -ge "${lease_refresh_s}" ]]; then
+      _pc_refresh_founder_lease "${lease_extend_s}"
+      last_lease_refresh="${now}"
+    fi
+    if [[ "${last_log}" -eq 0 || $(( now - last_log )) -ge "${log_every_s}" ]]; then
+      emit decision "product_close task=${TASK} status=waiting_worker author=${AUTHOR} handle=${HANDLE} waited=${_PC_WORKER_WAITED_S}s"
+      last_log="${now}"
+    fi
+    remaining=$(( max_wait_s - _PC_WORKER_WAITED_S ))
+    sleep_s="${poll_s}"
+    [[ "${remaining}" -lt "${sleep_s}" ]] && sleep_s="${remaining}"
+    sleep "${sleep_s}"
+  done
+}
 
 # N1-EMPTY-LANE-IS-NOT-A-PASS: the lane's diff is scoped ONCE, here, BEFORE the
 # e2e gate stamps its passed sentinel -- so a lane that wrote nothing exits as
@@ -416,23 +613,24 @@ _pc_git_diff() {  # <repo_abs> <base_rev> <path...> -> diff on stdout (tracked +
 # S-3 round 3 (LANE-START-SHA-01): `git diff HEAD` is empty by definition for a lane that
 # already COMMITTED its own work -- the normal end state of a finished lane -- and can also
 # lose part of an uncommitted lane's changes once another lane's commit moves HEAD forward
-# in the shared tree. Resolve the dispatcher's recorded start commit as an alternative base,
-# with a validity ladder that fails open to "no base" (caller then uses HEAD only, i.e.
-# today's exact behaviour) on any doubt:
-#   - no sha recorded at all (env, then the cache-file fallback for a close gate started
-#     outside the launcher lineage) -> no base
-#   - sha does not resolve to a commit IN THIS repo (cross-repo lane; a multi-repo group can
-#     touch a repo the sha never belonged to) -> no base
-#   - sha is not an ancestor of HEAD (rebase, branch switch, any divergence) -> no base
+# in the shared tree. Resolve the merge-base with the dispatcher's recorded start commit;
+# if no usable recorded base belongs to this repo, fall back to origin/main. A multi-repo
+# lane can legitimately carry a start SHA from a different repo, and manual close-gate runs
+# may have no cache file, so each candidate is independently best-effort. Empty output means
+# neither candidate had a merge-base with HEAD and the caller preserves the HEAD-only path.
 _pc_diff_base() {  # <repo_abs> -> a rev to diff FROM on stdout; empty stdout => caller uses HEAD
-  local repo="$1" sha="${LEADV2_LANE_START_SHA:-}"
+  local repo="$1" sha="${LEADV2_LANE_START_SHA:-}" base
   if [[ -z "${sha}" ]]; then
     sha="$(cat "${CACHE_BASE}/dispatch-${TASK}.start-sha" 2>/dev/null || true)"
   fi
-  [[ -n "${sha}" ]] || return 0
-  git -C "${repo}" cat-file -e "${sha}^{commit}" 2>/dev/null || return 0
-  git -C "${repo}" merge-base --is-ancestor "${sha}" HEAD 2>/dev/null || return 0
-  printf '%s' "${sha}"
+  if [[ -n "${sha}" ]] && git -C "${repo}" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+    base="$(git -C "${repo}" merge-base "${sha}" HEAD 2>/dev/null || true)"
+    [[ -n "${base}" ]] && { printf '%s' "${base}"; return 0; }
+  fi
+  if git -C "${repo}" cat-file -e "origin/main^{commit}" 2>/dev/null; then
+    base="$(git -C "${repo}" merge-base origin/main HEAD 2>/dev/null || true)"
+    [[ -n "${base}" ]] && printf '%s' "${base}"
+  fi
 }
 # _pc_repo_diff runs inside a `repo_diff="$(...)"` command substitution at every call site,
 # i.e. its own subshell -- a plain variable it set would never reach the caller. Record
@@ -570,7 +768,6 @@ fi
 # -> the asked-into-void cause never fires (degrades to empty_diff). Resolved ONCE
 # here, before pc_scope_diff, so the empty-diff branch (cause asked_into_void) and
 # the non-empty-diff branch (parked) below share one definition.
-_PC_RUNS_ROOT="${LEADV2_PC_RUNS_ROOT:-${HOME}/.claude/cache}"
 _PC_ASKED_INTO_VOID=""
 if [[ -n "${AUTHOR:-}" && -n "${HANDLE:-}" ]]; then
   case "${AUTHOR}" in
@@ -578,6 +775,14 @@ if [[ -n "${AUTHOR:-}" && -n "${HANDLE:-}" ]]; then
     kimi) _PC_ASKED_INTO_VOID="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${HANDLE}/.asked_into_void" ;;
     *)    _PC_ASKED_INTO_VOID="${_PC_RUNS_ROOT}/${AUTHOR}-runs/${HANDLE}/.asked_into_void" ;;
   esac
+fi
+
+if ! pc_await_worker_exit; then
+  printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout"
+  _dl_note dead timeout "waited=${_PC_WORKER_WAITED_S}s author=${AUTHOR} handle=${HANDLE}"
+  _stamp_review_terminal blocked
+  exit 5
 fi
 
 pc_scope_diff

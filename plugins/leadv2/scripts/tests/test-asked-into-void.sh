@@ -59,6 +59,8 @@ SH
   chmod +x "${d}/codex.sh"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/journal.log"\n' "${d}" > "${d}/journal.sh"
   chmod +x "${d}/journal.sh"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/ledger.log"\n' "${d}" > "${d}/ledger.sh"
+  chmod +x "${d}/ledger.sh"
 }
 
 # ---- Case 2: empty diff + .asked_into_void -> no_work/asked_into_void --------
@@ -71,8 +73,9 @@ case_empty_asked() {
   CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_CACHE_DIR="${d}/cache2" \
     LEADV2_LANE_WORK_ROOT="${root}" \
     LEADV2_PC_RUNS_ROOT="${runs}" \
+    LEADV2_JOB_REGISTRY_ROOT="${d}/job-registry" \
     LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" \
-    LEADV2_JOURNAL_BIN="${d}/journal.sh" \
+    LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
     LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
     bash "${PC}" "${root}" av1sig001 kimi "${handle}" 0 1 "founder-av1" >/dev/null 2>&1
   if grep -q 'terminal=no_work cause=asked_into_void' "${d}/journal.log" 2>/dev/null; then
@@ -91,8 +94,9 @@ case_nonempty_asked_parked() {
   CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_CACHE_DIR="${d}/cache2" \
     LEADV2_LANE_WORK_ROOT="${root}" \
     LEADV2_PC_RUNS_ROOT="${runs}" \
+    LEADV2_JOB_REGISTRY_ROOT="${d}/job-registry" \
     LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" \
-    LEADV2_JOURNAL_BIN="${d}/journal.sh" \
+    LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
     LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
     bash "${PC}" "${root}" av2sig002 kimi "${handle}" 0 1 "founder-av2" >/dev/null 2>&1
   if grep -q 'terminal=parked cause=asked_into_void' "${d}/journal.log" 2>/dev/null; then
