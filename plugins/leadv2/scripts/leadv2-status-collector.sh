@@ -126,6 +126,52 @@ _sc_lane_detail_section() {
 }
 _sc_run_section "lane_detail" _sc_lane_detail_section
 
+# ── generic section: single_lead — raw snapshot pulse data. Mode is decided
+# once by leadv2-status-surface.sh; the collector deliberately records facts
+# without a second, potentially divergent mode predicate. status-render.sh
+# consumes this section for periodic status output, while SwiftBar reads the
+# live ledgers because its 10-second refresh must not inherit collector staleness.
+_sc_single_lead_state_dir="${LEADV2_STATUS_STATE_DIR:-$(PROJECT_ROOT="$PROJECT_ROOT" bash "$_SC_DIR/leadv2-state-path.sh" --no-link root 2>/dev/null || true)}"
+[ -n "$_sc_single_lead_state_dir" ] || _sc_single_lead_state_dir="${HOME}/.claude/leadv2-state/$(basename "$PROJECT_ROOT")"
+_sc_single_lead_section() {
+  local repo state_dir ledger_dir ledger_path supervise_path
+  repo="$(basename "$PROJECT_ROOT")"
+  state_dir="$_sc_single_lead_state_dir"
+  supervise_path="${state_dir}/.supervise-active"
+  ledger_dir="${LEADV2_STATUS_LEDGER_DIR:-${HOME}/.claude/cache/dispatch-ledger}"
+  ledger_path="${ledger_dir}/${repo}.jsonl"
+  LEADV2_SC_SUPERVISE="$supervise_path" LEADV2_SC_LEDGER="$ledger_path" python3 <<'PYEOF'
+import json, os, subprocess
+path = os.environ["LEADV2_SC_LEDGER"]
+supervise = os.environ["LEADV2_SC_SUPERVISE"]
+tail, ok = [], True
+try:
+    if os.path.exists(path):
+        raw = subprocess.check_output(
+            ["tail", "-n", "20", path], stderr=subprocess.STDOUT,
+            universal_newlines=True,
+        )
+        for n, line in enumerate(raw.splitlines(), 1):
+            if line.strip():
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("tail row %d is not an object" % n)
+                tail.append({k: row.get(k) for k in ("task_sig", "arm", "state", "ts", "lane_label")})
+except Exception:
+    ok = False
+    tail = []
+print(json.dumps({
+    "supervise_active": os.path.isfile(supervise),
+    "supervise_active_path": supervise if os.path.isfile(supervise) else None,
+    "ledger_tail": tail[-20:],
+    "ledger_path": path,
+    "ledger_ok": ok,
+}))
+PYEOF
+}
+_sc_run_section "single_lead" _sc_single_lead_section
+unset _sc_single_lead_state_dir
+
 # ── repo-specific facts (optional hook) ──────────────────────────────────
 # Canonical location is .claude/leadv2-overrides/status-collector-facts.sh
 # (per-repo extension point, same convention as deploy.sh/verify.sh/etc).
