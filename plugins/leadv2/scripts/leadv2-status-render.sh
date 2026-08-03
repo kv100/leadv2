@@ -130,6 +130,28 @@ else:
     if isinstance(stuck, list) and stuck:
         lines.append(f'  ЗАСТРЯЛО ({len(stuck)}): ' + ', '.join(s.get('task_id','?') for s in stuck[:10]))
 
+# single_lead is raw collector data, not a second mode decision. Rendering it
+# here keeps the collector section live while the SwiftBar surface remains the
+# sole owner of the single-lead-vs-legacy predicate.
+ok, data = sec('single_lead')
+if ok is None:
+    pass
+elif not ok:
+    lines.append('  DISPATCH LEDGER: не удалось измерить')
+elif isinstance(data, dict):
+    ledger_ok = data.get('ledger_ok') is True
+    ledger_tail = data.get('ledger_tail')
+    if not ledger_ok or not isinstance(ledger_tail, list):
+        lines.append('  DISPATCH LEDGER: ⚠ не прочитан')
+    elif ledger_tail:
+        row = ledger_tail[-1] if isinstance(ledger_tail[-1], dict) else {}
+        sig = str(row.get('task_sig') or '?')[:8]
+        arm = row.get('arm') or '?'
+        state = row.get('state') or '?'
+        lines.append(f'  DISPATCH LEDGER: {len(ledger_tail)} recent; newest={sig} arm={arm} state={state}')
+    else:
+        lines.append('  DISPATCH LEDGER: no recent rows')
+
 # repo_facts — repo-specific, rendered generically key by key so this stays
 # repo-agnostic; a repo's facts hook controls exactly what shows up here.
 ok, data = sec('repo_facts')

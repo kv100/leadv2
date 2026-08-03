@@ -113,6 +113,8 @@ Q_BLOCK="$(_sec 2)"
 LIM_BLOCK="$(_sec 3)"
 DUE_BLOCK="$(_sec 4)"
 ALM_BLOCK="$(_sec 5)"
+SINGLE_LEAD_BLOCK="$(_sec 6)"
+REPO_FACTS_BLOCK="$(_sec 7)"
 
 # ── parse the lanes block (section 1) — supervisor on/off + live/dead ───────
 # Legacy sed parse of the human table for live/dead (accepted debt, not
@@ -162,6 +164,77 @@ Q_N=0
 _q_hdr="$(printf '%s\n' "$Q_BLOCK" | sed -n '1p')"
 Q_N="$(printf '%s' "$_q_hdr" | sed -n 's/^questions (\([0-9]*\)).*/\1/p')"
 case "$Q_N" in ''|*[!0-9]*) Q_N=0 ;; esac
+
+# The renderer is the sole producer of mode. Re-deriving from SUP_ON here
+# caused previous widget drift when a supervisor paused between refreshes.
+_sl_hdr="$(printf '%s\n' "$SINGLE_LEAD_BLOCK" | sed -n '1p')"
+case "$_sl_hdr" in mode=single-lead*) WIDGET_SINGLE_LEAD=1 ;; *) WIDGET_SINGLE_LEAD=0 ;; esac
+
+if [ "$WIDGET_SINGLE_LEAD" -eq 1 ]; then
+  _sl_warning=0
+  case "$_sl_hdr" in *"active ⚠"*) _sl_warning=1 ;; esac
+  _rf_corrupt=0
+  case "$REPO_FACTS_BLOCK" in *"⚠ snapshot corrupt"*) _rf_corrupt=1 ;; esac
+  _rf_alarms="$(LEADV2_RF_BLOCK="$REPO_FACTS_BLOCK" python3 2>/dev/null <<'PYEOF'
+import json, os
+n = 0
+for line in os.environ.get("LEADV2_RF_BLOCK", "").splitlines():
+    key, sep, raw = line.partition(": ")
+    if sep and key.endswith("_alarm"):
+        try: value = json.loads(raw)
+        except Exception: continue
+        if value: n += 1
+print(n)
+PYEOF
+)"
+  case "$_rf_alarms" in ''|*[!0-9]*) _rf_alarms=0 ;; esac
+  _sl_active=0
+  _sl_sig=""
+  _sl_arm=""
+  _sl_age=""
+  case "$_sl_hdr" in
+    "mode=single-lead active "*" arm="*" state="*" age="*)
+      _sl_active=1
+      _sl_sig="$(printf '%s' "$_sl_hdr" | awk '{print $3}')"
+      _sl_arm="$(printf '%s' "$_sl_hdr" | sed -n 's/.* arm=\([^ ]*\).*/\1/p')"
+      _sl_age="$(printf '%s' "$_sl_hdr" | sed -n 's/.* age=\([^ ]*\).*/\1/p')"
+      ;;
+  esac
+
+  # Priority is intentionally independent of legacy lanes parsing: idle is a
+  # claim only after render_single_lead successfully read both ledgers.
+  if [ "$_sl_warning" -eq 1 ] || [ "$_rf_corrupt" -eq 1 ]; then
+    if [ "$_rf_corrupt" -eq 1 ]; then printf '⚠️ snapshot не прочитан\n'; else printf '⚠️ ledger не прочитан\n'; fi
+  elif [ "$Q_N" -gt 0 ]; then
+    printf '❓%d\n' "$Q_N"
+  elif [ "$_rf_alarms" -gt 0 ]; then
+    printf '🔴 %d\n' "$_rf_alarms"
+  elif [ "$_sl_active" -eq 1 ]; then
+    printf '🛠 %s %s %s\n' "$_sl_sig" "$_sl_arm" "$_sl_age"
+  else
+    printf '⚪ idle\n'
+  fi
+
+  printf -- '---\n'
+  printf '%s | font=Menlo size=12\n' "$SINGLE_LEAD_BLOCK"
+  printf -- '---\n'
+  if [ -n "$REPO_FACTS_BLOCK" ]; then
+    printf '%s\n' "$REPO_FACTS_BLOCK" | while IFS= read -r ln; do printf '%s | font=Menlo size=12\n' "$ln"; done
+    printf -- '---\n'
+  fi
+  if [ -n "$DUE_BLOCK" ]; then printf '%s | font=Menlo size=12\n' "$DUE_BLOCK"; printf -- '---\n'; fi
+  if [ -n "$LIM_BLOCK" ]; then
+    printf '%s\n' "$LIM_BLOCK" | while IFS= read -r ln; do printf '%s | font=Menlo size=12\n' "$ln"; done
+    printf -- '---\n'
+  fi
+  if [ "$Q_N" -gt 0 ]; then
+    printf '%s\n' "$Q_BLOCK" | while IFS= read -r qln; do printf '%s | font=Menlo size=12\n' "$(printf '%s' "$qln" | tr -d '|')"; done
+    printf -- '---\n'
+  fi
+  if [ -n "$ALM_BLOCK" ]; then printf '%s | font=Menlo size=12\n' "$ALM_BLOCK"; printf -- '---\n'; fi
+  printf 'Refresh | refresh=true\n'
+  exit 0
+fi
 
 # ── line 1: menu-bar title (priority ⚠ > ❓ > 🔴 > 🟢 > ⚪) ──────────────────
 # Regression contract: supervisor OFF + no pending questions keeps the

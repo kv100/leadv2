@@ -133,19 +133,25 @@ PY
 render_fix() { LEADV2_STATUS_STATE_DIR="$F_STATE" LEADV2_STATUS_LEDGER_DIR="$F_LED" \
                LEADV2_STATUS_RUNS_ROOT="$F_RUNS" LEADV2_STATUS_REPO="$REPO_FIX" \
                LEADV2_STATUS_NOW="$F_NOW" LEADV2_STATUS_TASKS_YAML="$FIX/nope.yaml" \
-               LEADV2_STATUS_HANDOFF_DIR="$F_HAND" /bin/bash "$RENDERER" "$@"; }
+               LEADV2_STATUS_HANDOFF_DIR="$F_HAND" \
+               LEADV2_STATUS_SINGLE_LEAD="${LEADV2_STATUS_SINGLE_LEAD:-0}" \
+               /bin/bash "$RENDERER" "$@"; }
 
-# --- R5-C1: name resolution from handoff architect-prepass.md + SIG column ---
+# --- R5-C1: handoff fallback is single-lead-only; legacy stays byte-compatible ---
 mkdir -p "$F_HAND/dispatch-deadbeef"
 printf '# FOO-BAR-01 — implementation design (architect prepass)\nbody\n' > "$F_HAND/dispatch-deadbeef/architect-prepass.md"
 printf 'meta: {}\nsessions: []\n' > "$F_STATE/active.yaml"
 _fl deadbeef glm h1 confirmed $((F_NOW-60))
 _fr h1 glm complete 0 60
-_o1="$(render_fix)"
-if printf '%s\n' "$_o1" | grep -Eq 'FOO-BAR-01' && printf '%s\n' "$_o1" | grep -Eq 'deadbeef'; then
-  ok "R5-C1: handoff architect-prepass.md title resolved into NAME, sig in SIG column"
+_o1_legacy="$(render_fix)"
+_o1_single="$(LEADV2_STATUS_SINGLE_LEAD=1 render_fix)"
+if printf '%s\n' "$_o1_legacy" | grep -Eq 'unnamed' \
+   && ! printf '%s\n' "$_o1_legacy" | grep -Eq 'FOO-BAR-01' \
+   && printf '%s\n' "$_o1_single" | grep -Eq 'FOO-BAR-01' \
+   && printf '%s\n' "$_o1_single" | grep -Eq 'deadbeef'; then
+  ok "R5-C1: legacy stays unnamed; single-lead may resolve handoff title"
 else
-  bad "R5-C1: name/sig (got: $(printf '%s' "$_o1" | tr '\n' '|'))"
+  bad "R5-C1: mode-gated name fallback (legacy=$(printf '%s' "$_o1_legacy" | tr '\n' '|'); single=$(printf '%s' "$_o1_single" | tr '\n' '|'))"
 fi
 
 # --- R5-C2: a sig with no handoff dir and no tasks.yaml entry -> 'unnamed' ---

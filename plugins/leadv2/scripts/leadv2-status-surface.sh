@@ -179,6 +179,8 @@ _usage_r4() {
   printf -- '  --limits          per-provider quota limits section (reads a snapshot)\n' >&2
   printf -- '  --due             scheduled-decisions due/overdue count\n' >&2
   printf -- '  --alarms          urgent alarm count (supervise events, 4h)\n' >&2
+  printf -- '  --single-lead     current single-lead dispatch state\n' >&2
+  printf -- '  --repo-facts      generic repo_facts from the collector snapshot\n' >&2
   printf -- '  --all             lanes table + --- + every section above\n' >&2
   printf -- '  --refresh-limits  run leadv2-quota-status.sh and write the limits snapshot\n' >&2
 }
@@ -189,6 +191,8 @@ while [ $# -gt 0 ]; do
     --limits)         MODE="limits" ;;
     --due)            MODE="due" ;;
     --alarms)         MODE="alarms" ;;
+    --single-lead)    MODE="single-lead" ;;
+    --repo-facts)     MODE="repo-facts" ;;
     --all)            MODE="all" ;;
     --refresh-limits) MODE="refresh-limits" ;;
     -h|--help)        _usage_r4; exit 0 ;;
@@ -456,6 +460,74 @@ else
 fi
 unset _beat_fresh _live_pid
 
+# ── Single-lead mode ───────────────────────────────────────────────────────
+# The badge consumes this rendered mode marker rather than independently
+# re-deriving supervisor state. A paused supervisor is the normal single-lead
+# world; an empty active.yaml session list is the other safe signal.
+SINGLE_LEAD=0
+# Return success only when active.yaml has no sessions. Prefer the real YAML
+# parser, but retain an awk fallback so a SwiftBar PATH without python3 can
+# still recognize the documented "sessions empty" half of the mode predicate.
+_status_sessions_empty() {
+  local active_yaml="${STATE_DIR}/active.yaml"
+  [ -f "$active_yaml" ] || return 0
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$active_yaml" <<'PYEOF' >/dev/null 2>&1
+import sys
+p = sys.argv[1]
+try:
+    import yaml
+    doc = yaml.safe_load(open(p, encoding="utf-8")) or {}
+    sys.exit(0 if not (doc.get("sessions") or []) else 1)
+except Exception:
+    lines = open(p, encoding="utf-8").read().splitlines()
+    in_sessions = False
+    for line in lines:
+        if line.startswith("sessions:"):
+            in_sessions = True
+            continue
+        if in_sessions and line and not line.startswith((" ", "\t")):
+            break
+        if in_sessions and line.lstrip().startswith("-"):
+            sys.exit(1)
+    sys.exit(0)
+PYEOF
+    return $?
+  fi
+
+  awk '
+    BEGIN { in_sessions=0; nonempty=0 }
+    /^sessions:[[:space:]]*/ {
+      in_sessions=1
+      rest=$0
+      sub(/^sessions:[[:space:]]*/, "", rest)
+      sub(/[[:space:]]*#.*/, "", rest)
+      if (rest != "" && rest != "[]") nonempty=1
+      next
+    }
+    in_sessions && /^[[:space:]]*-/ { nonempty=1; exit }
+    in_sessions && /^[^[:space:]]/ { exit }
+    END { exit nonempty ? 1 : 0 }
+  ' "$active_yaml" >/dev/null 2>&1
+}
+
+# The one mode predicate: single-lead iff the canonical supervise marker is
+# absent OR active.yaml has no sessions. Collector records only raw facts and
+# the SwiftBar wrapper consumes this renderer's mode marker.
+_status_single_lead_mode() {
+  [ ! -f "${STATE_DIR}/.supervise-active" ] && return 0
+  _status_sessions_empty
+}
+
+if _status_single_lead_mode; then
+  SINGLE_LEAD=1
+fi
+case "${LEADV2_STATUS_SINGLE_LEAD:-}" in
+  0) SINGLE_LEAD=0 ;;
+  1) SINGLE_LEAD=1 ;;
+esac
+LEGACY_MODE=$(( 1 - SINGLE_LEAD ))
+
 # ── Lanes via one python3 start ─────────────────────────────────────────────
 # Emits control lines then one TSV row per surviving lane:
 #   #LIVE <n>
@@ -474,6 +546,7 @@ NOW         = int(os.environ.get("LEADV2_SS_NOW", "0") or "0")
 TASKS_YAML  = os.environ.get("LEADV2_SS_TASKS_YAML", "")
 HANDOFF_DIR = os.environ.get("LEADV2_SS_HANDOFF_DIR", "")
 PS_SNAPSHOT = os.environ.get("LEADV2_SS_PS_SNAPSHOT", "")
+LEGACY_MODE = os.environ.get("LEADV2_SS_LEGACY_MODE", "0") == "1"
 try:
     DONE_TTL = int(os.environ.get("LEADV2_SS_DONE_TTL", "900") or "900")
 except Exception:
@@ -1169,6 +1242,37 @@ def resolve_name(task_id, lane_label, mission_path, sig8):
     # This is the no-`--task-id` path: the mission's H1 name-token, shown as-is.
     if lane_label:
         return _clip40(str(lane_label))
+    # Single-lead-only convenience fallback. Legacy lanes must retain their
+    # pre-change terminal behavior (literal "unnamed") byte-for-byte.
+    if not LEGACY_MODE and HANDOFF_DIR and sig8:
+        _base = os.path.join(HANDOFF_DIR, "dispatch-" + sig8)
+        for _cand in ("mission.md", "architect-prepass.md", "context.yaml"):
+            _p = os.path.join(_base, _cand)
+            if not os.path.exists(_p):
+                continue
+            try:
+                with open(_p, "rb") as _fh:
+                    _line = _fh.read(200).split(b"\n", 1)[0]
+                _line = _line.decode("utf-8", "replace").strip()
+                if _cand.endswith(".yaml"):
+                    _low = _line.lower()
+                    _value = ""
+                    for _key in ("title:", "external_id:"):
+                        _i = _low.find(_key)
+                        if _i >= 0:
+                            _value = _line[_i + len(_key):].strip().strip("'\"")
+                            break
+                    _line = _value
+                else:
+                    _line = _line.lstrip("#").strip()
+                    for _sep in ("—", "--", ":"):
+                        if _sep in _line:
+                            _line = _line.split(_sep, 1)[0].strip()
+                            break
+                if _line:
+                    return _clip40(_line)
+            except Exception:
+                pass
     # Rule 4: a hash is not a name either. Return the literal 'unnamed'; the
     # sig8 lives in its own SIG column so it stays greppable.
     return "unnamed"
@@ -1651,6 +1755,7 @@ _run_lanes_for_project() {
   LEADV2_SS_NOW="$NOW" \
   LEADV2_SS_TASKS_YAML="$3" \
   LEADV2_SS_HANDOFF_DIR="$4" \
+  LEADV2_SS_LEGACY_MODE="$LEGACY_MODE" \
   LEADV2_SS_DONE_TTL="$DONE_TTL" \
   LEADV2_SS_DEAD_TTL="$DEAD_TTL" \
   LEADV2_SS_HANDLE_TRUST_S="$HANDLE_TRUST_S" \
@@ -2257,6 +2362,13 @@ PYEOF
 # leadv2-limits-refresh.sh --provider <p> detached, non-blocking, capped by
 # that script's own per-provider mkdir lock.
 render_limits() {
+  # The old snapshot override is also the legacy test/caller injection point.
+  # Keep that explicit path byte-compatible; normal single-lead rendering uses
+  # the live per-provider cache below.
+  if [ "${LEADV2_STATUS_LIMITS_SNAPSHOT+x}" = x ]; then
+    _render_legacy_limits_snapshot "$LEADV2_STATUS_LIMITS_SNAPSHOT"
+    return 0
+  fi
   local cache_dir refresher
   cache_dir="${LEADV2_LIMITS_CACHE_DIR:-${HOME}/.claude/cache/leadv2-limits.d}"
   refresher="${LEADV2_LIMITS_REFRESH_SH:-${SCRIPT_DIR}/leadv2-limits-refresh.sh}"
@@ -2265,6 +2377,94 @@ render_limits() {
   for p in claude glm codex kimi; do
     _render_one_limit "$cache_dir" "$refresher" "$p"
   done
+}
+
+_render_legacy_limits_snapshot() {
+  local snap="$1"
+  if [ ! -f "$snap" ]; then
+    printf 'limits\n'
+    printf '  no snapshot\n'
+    return 0
+  fi
+  local stamp_epoch age stale=""
+  stamp_epoch="$(sed -n 's/^# stamped \([0-9][0-9]*\).*/\1/p' "$snap" | head -1)"
+  case "$stamp_epoch" in
+    ''|*[!0-9]*) ;;
+    *)
+      age=$(( NOW - stamp_epoch ))
+      [ "$age" -lt 0 ] && age=0
+      [ "$age" -gt 900 ] && stale=" (stale $(( age / 60 ))m)"
+      ;;
+  esac
+  printf 'limits%s\n' "$stale"
+
+  local qline rline aline cap_est rcap_not
+  qline="$(grep '^Quota:' "$snap" | head -1)"
+  rline="$(grep '^  rate_limit:' "$snap" | head -1)"
+  aline="$(grep '^  anthropic 5h:' "$snap" | head -1)"
+  cap_est=0; rcap_not=0
+  case "$qline" in *"cap est."*) cap_est=1 ;; esac
+  case "$rline" in *"not captured"*) rcap_not=1 ;; esac
+  if [ "$cap_est" -eq 1 ] || [ "$rcap_not" -eq 1 ]; then
+    local bdb kv_real
+    bdb="${LEADV2_STATUS_BURN_DB:-${HOME}/.claude/burn/history.db}"
+    kv_real=""
+    [ -f "$bdb" ] && kv_real="$(LEADV2_R4_DB="$bdb" python3 -c 'import os,json,sqlite3
+try:
+    db=os.environ["LEADV2_R4_DB"]
+    r=sqlite3.connect(db).execute("SELECT value FROM kv WHERE key=\x27rate_limit_anthropic\x27 ORDER BY rowid DESC LIMIT 1").fetchone()
+    if not r: raise SystemExit
+    d=json.loads(r[0])
+    lim=d.get("unified_limit"); rem=d.get("unified_remaining")
+    if isinstance(lim,(int,float)) and isinstance(rem,(int,float)) and lim>0:
+        print("%d" % round((lim-rem)*100.0/lim))
+except Exception:
+    pass' 2>/dev/null || true)"
+    case "$kv_real" in
+      ''|*[!0-9]*)
+        local _crv _outv _mag
+        _crv="$(printf '%s\n' "$aline" | grep -oE ' cr [0-9.]+[KMGT]?' | awk '{print $2}')"
+        _outv="$(printf '%s\n' "$aline" | grep -oE ' out [0-9.]+[KMGT]?' | awk '{print $2}')"
+        _mag=""
+        [ -n "$_crv" ] && _mag=" (5h: cr $_crv out $_outv)"
+        printf '  claude: не измеряется — cache-dominated, cap est.%s\n' "$_mag"
+        ;;
+      *)
+        printf '  claude: 5h %s%% (rate-limit signal)\n' "$kv_real"
+        ;;
+    esac
+  else
+    local c5h cwk
+    c5h="$(printf '%s' "$qline" | sed -n 's/^Quota: 5h \([0-9][0-9]*\)%.*/\1/p')"
+    cwk="$(printf '%s' "$qline" | sed -n 's/.*weekly(claude[^)]*) \([0-9][0-9]*\)%.*/\1/p')"
+    case "$c5h" in ''|*[!0-9]*) c5h="?" ;; esac
+    case "$cwk" in ''|*[!0-9]*) cwk="?" ;; esac
+    printf '  claude: 5h %s%% weekly %s%% (snapshot)\n' "$c5h" "$cwk"
+  fi
+
+  local gline gwk
+  gline="$(grep '^  glm weekly' "$snap" | head -1)"
+  gwk="$(printf '%s' "$gline" | sed -n 's/.*(live, z.ai): \([0-9][0-9]*\)%.*/\1/p')"
+  case "$gwk" in ''|*[!0-9]*) gwk="unmeasured" ;; esac
+  printf '  glm: weekly %s%% (snapshot, live z.ai)\n' "$gwk"
+
+  local clf until uepoch
+  clf="${LEADV2_STATUS_CODEX_LOCKOUT:-${HOME}/.claude/cache/codex-lockout.state}"
+  until=""
+  [ -f "$clf" ] && until="$(sed -n 's/.*until=\([^ ]*\).*/\1/p' "$clf" | head -1)"
+  uepoch=""
+  if [ -n "$until" ]; then
+    uepoch="$(LEADV2_R4_ISO="$until" python3 -c 'import os,datetime
+t=os.environ["LEADV2_R4_ISO"].rstrip("Z")+"+00:00"
+try: print(int(datetime.datetime.fromisoformat(t).timestamp()))
+except Exception: print("")' 2>/dev/null || true)"
+  fi
+  if [ -n "$uepoch" ] && [ "$uepoch" -gt "$NOW" ]; then
+    printf '  codex: lockout-until %s (state)\n' "$until"
+  else
+    printf '  codex: unmeasured (subscription)\n'
+  fi
+  printf '  kimi: unknown\n'
 }
 
 # Reads <cache_dir>/<provider>.kv (state/value/stamped/ttl/detail, first '='
@@ -2394,6 +2594,133 @@ print(len(seen))' 2>/dev/null || true)"
   printf 'urgent: %d (4h)\n' "$n"
 }
 
+# Single-lead dispatch truth comes from the reservation ledger joined against
+# the write-once terminal ledger. Do not use the collector snapshot here: this
+# surface refreshes every 10 seconds while the collector intentionally does not.
+render_single_lead() {
+  if [ "$SINGLE_LEAD" -eq 0 ]; then
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf 'mode=single-lead active ⚠ ledger unreadable: python3 unavailable\n'
+    return 0
+  fi
+  if ! LEADV2_SL_RESERVATIONS="$LEDGER_FILE" \
+    LEADV2_SL_TERMINALS="${STATE_DIR}/dispatch-ledger.jsonl" \
+    LEADV2_SL_NOW="$NOW" \
+    LEADV2_SL_TTL="${LEADV2_STATUS_ACTIVE_TTL_S:-7200}" \
+    python3 2>/dev/null <<'PYEOF'
+import json, os, sys, datetime, subprocess
+
+def fail(reason):
+    print("mode=single-lead active ⚠ ledger unreadable: %s" % reason.replace("|", ""))
+    sys.exit(0)
+
+def epoch(row):
+    value = row.get("created_epoch", row.get("ts", 0))
+    try:
+        return int(float(value))
+    except Exception:
+        try:
+            return int(datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+        except Exception:
+            raise ValueError("row has invalid timestamp")
+
+def tail_lines(path):
+    # Match the established lanes-reader cap: these ledgers grow unbounded,
+    # and old malformed history must not poison every 10-second refresh.
+    proc = subprocess.Popen(
+        ["tail", "-n", "400", path], stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, universal_newlines=True,
+    )
+    out, err = proc.communicate()
+    if proc.returncode != 0:
+        raise OSError("tail -n 400 failed: %s" % (err.strip() or proc.returncode))
+    return out.splitlines()
+
+try:
+    now = int(os.environ["LEADV2_SL_NOW"])
+    ttl = int(os.environ.get("LEADV2_SL_TTL", "7200"))
+    if ttl < 0: raise ValueError("invalid ACTIVE_TTL")
+    reservations = []
+    reservation_path = os.environ["LEADV2_SL_RESERVATIONS"]
+    if os.path.exists(reservation_path):
+        for n, line in enumerate(tail_lines(reservation_path), 1):
+            if line.strip():
+                row = json.loads(line)
+                if not isinstance(row, dict) or not row.get("task_sig"):
+                    raise ValueError("reservation tail row %d malformed" % n)
+                reservations.append((epoch(row), row))
+    terminals = set()
+    terminal_path = os.environ["LEADV2_SL_TERMINALS"]
+    if os.path.exists(terminal_path):
+        for n, line in enumerate(tail_lines(terminal_path), 1):
+            if line.strip():
+                row = json.loads(line)
+                if not isinstance(row, dict) or not row.get("task_sig"):
+                    raise ValueError("terminal tail row %d malformed" % n)
+                terminals.add(str(row["task_sig"])[:8])
+except Exception as exc:
+    fail(str(exc))
+
+open_rows = [(when, row) for when, row in reservations if str(row["task_sig"])[:8] not in terminals]
+open_rows.sort(key=lambda pair: pair[0], reverse=True)
+if not open_rows:
+    print("mode=single-lead active none")
+    sys.exit(0)
+when, row = open_rows[0]
+age = max(0, now - when)
+sig = str(row["task_sig"])[:8].replace("|", "")
+if age > ttl:
+    print("mode=single-lead active none (last open %s %dh ago, no terminal row)" % (sig, age // 3600))
+    sys.exit(0)
+arm = str(row.get("arm") or "unknown").replace("|", "")
+state = str(row.get("state") or "unknown").replace("|", "")
+print("mode=single-lead active %s arm=%s state=%s age=%dm" % (sig, arm, state, age // 60))
+PYEOF
+  then
+    # A command/runtime/heredoc failure must preserve the mode marker so the
+    # wrapper cannot fall through to the confident legacy title hierarchy.
+    printf 'mode=single-lead active ⚠ ledger unreadable: renderer failed\n'
+  fi
+}
+
+# Repo facts are owned by the repository hook, not this plugin. Snapshot absent
+# means no hook and is intentionally silent; a present corrupt snapshot is loud.
+render_repo_facts() {
+  [ "$SINGLE_LEAD" -eq 1 ] || return 0
+  local project_root snapshot
+  project_root="${LEADV2_STATUS_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
+  snapshot="${LEADV2_STATUS_SNAPSHOT:-${project_root}/docs/leadv2/status-snapshot.json}"
+  [ -e "$snapshot" ] || return 0
+  LEADV2_RF_PATH="$snapshot" LEADV2_RF_NOW="$NOW" \
+    LEADV2_RF_MAX_AGE="${LEADV2_STATUS_SNAPSHOT_MAX_AGE_S:-900}" \
+    python3 2>/dev/null <<'PYEOF'
+import datetime, json, os, sys
+try:
+    doc = json.load(open(os.environ["LEADV2_RF_PATH"], encoding="utf-8"))
+    section = (doc.get("sections") or {}).get("repo_facts")
+    if section is None:
+        sys.exit(0)
+    if not isinstance(section, dict): raise ValueError("repo_facts invalid")
+    if section.get("ok") is False:
+        print("repo facts: не удалось измерить")
+        sys.exit(0)
+    data = section.get("data")
+    if not isinstance(data, dict): raise ValueError("repo_facts data invalid")
+    raw = doc.get("collected_at")
+    if raw:
+        stamped = int(datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp())
+        age = max(0, int(os.environ["LEADV2_RF_NOW"]) - stamped)
+        if age > int(os.environ.get("LEADV2_RF_MAX_AGE", "900")):
+            print("repo facts ⚠ stale %dm" % (age // 60))
+    for key, value in data.items():
+        print("%s: %s" % (str(key).replace("|", ""), json.dumps(value, ensure_ascii=False).replace("|", "")))
+except Exception:
+    print("repo facts: ⚠ snapshot corrupt")
+PYEOF
+}
+
 # SWIFTBAR-LIVE-01 migration: --refresh-limits is now a thin, BLOCKING alias
 # for `leadv2-limits-refresh.sh --provider all --force` (the render path
 # itself never blocks -- see render_limits above). Kept for backward compat
@@ -2417,6 +2744,8 @@ case "$MODE" in
   limits)         render_limits; exit 0 ;;
   due)            render_due; exit 0 ;;
   alarms)         render_alarms; exit 0 ;;
+  single-lead)    render_single_lead; exit 0 ;;
+  repo-facts)     render_repo_facts; exit 0 ;;
   refresh-limits) render_refresh_limits; exit 0 ;;
   all)
     emit_lanes_table
@@ -2428,6 +2757,12 @@ case "$MODE" in
     render_due
     printf -- '---\n'
     render_alarms
+    if [ "$SINGLE_LEAD" -eq 1 ]; then
+      printf -- '---\n'
+      render_single_lead
+      printf -- '---\n'
+      render_repo_facts
+    fi
     exit 0
     ;;
 esac
