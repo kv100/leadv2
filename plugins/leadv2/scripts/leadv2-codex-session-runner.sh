@@ -71,6 +71,9 @@ LOCK_FILE="$TASK_DIR/.session-runner.lock"
 PID_FILE="$TASK_DIR/.session-runner.pid"
 THREAD_ID_FILE="$TASK_DIR/.session-runner.codex-thread-id"
 LOGF="$TASK_DIR/codex-session-runner.log"
+: >> "$LOGF"          # create-if-absent; the first turn's `wc -c < "$LOGF"` otherwise
+                      # prints a bogus "No such file or directory" that reads like the
+                      # log was never written (CORE-OFFLINE-CODEX-RECURSION-01)
 # CODEX-LANE-FALSEKILL-0726: the codex child session runs the leadv2 Phase-0
 # worktree protocol itself and does all of its work (incl. writing the phase-8
 # sentinel) inside the conventional worktree, not in this main repo that the
@@ -254,6 +257,19 @@ XARGS_ARG_OPTS = {
     "-I", "--replace", "-n", "--max-args", "-P", "--max-procs",
     "-d", "--delimiter", "-E", "-s", "--max-chars", "-L", "--max-lines",
 }
+# GNU `env` options that take an argument (consume the NEXT token before the
+# program): -u/--unset, -C/--chdir, -a/--argv0. `-S` is parsed below
+# because its argument is an executable command string, not an opaque operand.
+ENV_ARG_OPTS = {"-u", "--unset", "-C", "--chdir", "-a", "--argv0"}
+ENV_SPLIT_OPTS = {"-S", "--split-string"}
+# `exec -a name` consumes the name before the program.
+EXEC_ARG_OPTS = {"-a"}
+# Shell reserved words that head a command list but consume no operand into
+# non-execution position. Closing words (`fi`, `done`, `}`) deliberately are
+# not skipped: a closing word followed by a launcher is syntax-invalid.
+CONTROL_WORDS = {
+    "if", "then", "else", "elif", "do", "while", "until", "!", "{",
+}
 
 def _next_operand(toks, i, arg_opts):
     # From index i (the token AFTER a `timeout`/`xargs` wrapper), advance past
@@ -285,8 +301,52 @@ def eval_tokens(toks, depth):
     i = 0
     while i < len(toks):  # strip leading wrappers so the real program is checked
         t = toks[i]
-        if t in ("sudo", "env", "command", "nohup", "setsid") or re.match(r"^[A-Za-z_]\w*=", t):
+        if t in CONTROL_WORDS:
             i += 1
+            continue
+        if t in ("sudo", "command", "nohup", "setsid") or re.match(r"^[A-Za-z_]\w*=", t):
+            i += 1
+            continue
+        if t == "env":
+            # `env -S` turns its argument into the command line it executes;
+            # inspect that line before advancing to env's eventual program.
+            j = i + 1
+            while j < len(toks) and toks[j].startswith("-") and toks[j] != "-":
+                opt = toks[j]
+                if opt == "--":
+                    j += 1
+                    break
+                if opt.startswith("--"):
+                    name, attached = opt.split("=", 1)[0], "=" in opt
+                    split_arg = opt.split("=", 1)[1] if attached else None
+                else:
+                    name, attached = "-" + opt[1:2], len(opt) > 2
+                    split_arg = opt[2:] if attached else None
+                if name in ENV_SPLIT_OPTS:
+                    if not attached and j + 1 < len(toks):
+                        split_arg = toks[j + 1]
+                    if split_arg and depth < 4 and scan_command(split_arg, depth + 1):
+                        return True
+                j += 1
+                if name in (ENV_ARG_OPTS | ENV_SPLIT_OPTS) and not attached:
+                    j += 1
+            i = j
+            continue
+        if t == "exec":  # skip option flags (and their args), then the program
+            i = _next_operand(toks, i + 1, EXEC_ARG_OPTS)
+            continue
+        if t == "time":  # time only takes flags, then executes the real program
+            i = _next_operand(toks, i + 1, set())
+            continue
+        if t == "coproc":
+            # A NAME is permitted only before a compound group. For a simple
+            # command, the next token is always its program.
+            j = i + 1
+            if j < len(toks) and toks[j] == "{":
+                return depth < 4 and eval_tokens(toks[j + 1:], depth + 1)
+            if j + 1 < len(toks) and toks[j + 1] == "{":
+                return depth < 4 and eval_tokens(toks[j + 2:], depth + 1)
+            i = j
             continue
         if t == "timeout":  # skip options (and their args), then the DURATION, then the program
             j = _next_operand(toks, i + 1, TIMEOUT_ARG_OPTS)

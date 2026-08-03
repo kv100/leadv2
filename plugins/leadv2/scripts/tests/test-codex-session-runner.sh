@@ -31,7 +31,65 @@ if [[ "${STUB_MODE:-complete}" != "no-thread" && "${1:-}" == "exec" && "${2:-}" 
 fi
 printf -- '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\n'
 if [[ "${STUB_MODE:-complete}" == "recursion" ]]; then
-  printf -- '{"type":"response_item","item":{"type":"function_call","name":"exec_command","arguments":"{\\"cmd\\":\\"env LEADV2_TASK_ID=CODEX-SMOKE-RECURSION bash .claude/scripts/leadv2-supervise.sh\\"}"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"env LEADV2_TASK_ID=CODEX-SMOKE-RECURSION bash .claude/scripts/leadv2-supervise.sh\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "recursion-exec" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"exec .claude/scripts/leadv2-supervise.sh\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "recursion-env" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"env -i LEADV2_TASK_ID=x bash .claude/scripts/leadv2-supervise.sh\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "recursion-if" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"if .claude/scripts/leadv2-supervise.sh; then :; fi\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "recursion-bash" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"bash .claude/scripts/leadv2-supervise.sh\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "recursion-env-split" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -S '\''bash .claude/scripts/leadv2-supervise.sh'\''"}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "recursion-env-split-long" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env --split-string='\''bash .claude/scripts/leadv2-supervise.sh'\''"}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "recursion-time" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"time -p .claude/scripts/leadv2-supervise.sh\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "recursion-coproc" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc worker { .claude/scripts/leadv2-supervise.sh; }\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "recursion-coproc-direct" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc .claude/scripts/leadv2-supervise.sh --flag\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "recursion-coproc-unnamed-group" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc { .claude/scripts/leadv2-supervise.sh; }\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "negative-coproc-direct" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc grep .claude/scripts/leadv2-supervise.sh somefile.txt\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "negative-coproc-named-group" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc worker { grep .claude/scripts/leadv2-supervise.sh f; }\\""}}\n'
+fi
+if [[ "${STUB_MODE:-complete}" == "negative" ]]; then
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"grep -n leadv2-supervise.sh docs/x.md"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"sed -n 1,5p .claude/scripts/leadv2-codex-session-runner.sh"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"echo see .claude/scripts/leadv2-fanout.sh for details"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -i FOO=bar grep leadv2-supervise.sh x.md"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"cat .claude/scripts/leadv2-fanout.sh"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -u PATH grep leadv2-supervise.sh f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"exec -a name grep leadv2-supervise.sh f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"time cat leadv2-supervise.sh"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"{ echo leadv2-supervise.sh; }"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -S \\"grep leadv2-supervise.sh f\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"if grep -q leadv2-supervise.sh f; then :; fi"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -- grep leadv2-supervise.sh f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"exec -- grep leadv2-supervise.sh f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"time -- cat leadv2-supervise.sh"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"timeout -- 1 cat leadv2-supervise.sh"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"xargs -- grep leadv2-supervise.sh f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -a leadv2-supervise.sh grep pattern f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env --argv0 leadv2-supervise.sh grep pattern f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env --argv0=leadv2-supervise.sh grep pattern f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"if true; then :; fi leadv2-supervise.sh"}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "complete" && "${1:-}" == "exec" && "${2:-}" == "resume" ]]; then
   mkdir -p "$STUB_PROJECT_ROOT/docs/handoff/$STUB_TASK_ID"
@@ -180,6 +238,76 @@ if [[ "$recursion_rc" -eq 5 && "$recursion_calls" -eq 1 \
   pass "launcher self-invocation fails immediately before retrying"
 else
   fail "recursion case rc=$recursion_rc calls=$recursion_calls out=$recursion_out"
+fi
+
+# --- CODEX-LEAD-RECURSION-01: round-1 positive shapes + regression (bash)
+
+for shape in exec env if bash; do
+  task_id="CODEX-SMOKE-RECURSION-${shape^^}"
+  project="$(new_case "recursion-${shape}" "$task_id")"
+  set +e
+  shape_out="$(run_case "$project" "$task_id" "recursion-${shape}" 6 2>&1)"
+  shape_rc=$?
+  set -e
+  shape_calls="$(grep -c '^exec' "$project/codex.args" || true)"
+  if [[ "$shape_rc" -eq 5 && "$shape_calls" -eq 1 \
+     && "$shape_out" == *"CODEX-LEAD RECURSION"* ]]; then
+    pass "recursion via ${shape} wrapper is caught"
+  else
+    fail "recursion-${shape} case rc=$shape_rc calls=$shape_calls out=$shape_out"
+  fi
+done
+
+# --- CORE-OFFLINE-CODEX-RECURSION-01: round-2 parser paths
+
+for shape in env-split env-split-long time coproc coproc-direct coproc-unnamed-group; do
+  task_id="CODEX-SMOKE-RECURSION-${shape^^}"
+  project="$(new_case "recursion-${shape}" "$task_id")"
+  set +e
+  shape_out="$(run_case "$project" "$task_id" "recursion-${shape}" 6 2>&1)"
+  shape_rc=$?
+  set -e
+  shape_calls="$(grep -c '^exec' "$project/codex.args" || true)"
+  if [[ "$shape_rc" -eq 5 && "$shape_calls" -eq 1 \
+     && "$shape_out" == *"CODEX-LEAD RECURSION"* ]]; then
+    pass "round-2 recursion via ${shape} is caught"
+  else
+    fail "recursion-${shape} case rc=$shape_rc calls=$shape_calls out=$shape_out"
+  fi
+done
+
+# `coproc CMD args...` has no NAME: CMD remains the program. A NAME is valid
+# only before a compound group, whose inner grep operand must also remain safe.
+for shape in coproc-direct coproc-named-group; do
+  task_id="CODEX-SMOKE-FALSEKILL-${shape^^}"
+  project="$(new_case "falsekill-${shape}" "$task_id")"
+  set +e
+  shape_out="$(run_case "$project" "$task_id" "negative-${shape}" 6 2>&1)"
+  shape_rc=$?
+  set -e
+  shape_calls="$(grep -c '^exec' "$project/codex.args" || true)"
+  if [[ "$shape_rc" -eq 4 && "$shape_calls" -eq "$runner_stall_max" \
+     && "$shape_out" != *"CODEX-LEAD RECURSION:"* ]]; then
+    pass "coproc ${shape} launcher mention does not trip falsekill"
+  else
+    fail "negative-${shape} case rc=$shape_rc calls=$shape_calls out=$shape_out"
+  fi
+done
+
+# --- CODEX-LEAD-RECURSION-FALSEKILL-01: all known non-executing mentions
+
+task_id="CODEX-SMOKE-FALSEKILL"
+project="$(new_case falsekill "$task_id")"
+set +e
+falsekill_out="$(run_case "$project" "$task_id" negative 6 2>&1)"
+falsekill_rc=$?
+set -e
+falsekill_calls="$(grep -c '^exec' "$project/codex.args" || true)"
+if [[ "$falsekill_rc" -eq 4 && "$falsekill_calls" -eq "$runner_stall_max" \
+   && "$falsekill_out" != *"CODEX-LEAD RECURSION:"* ]]; then
+  pass "all launcher-mention, option-operand, closing-word, and sentinel shapes do not trip falsekill"
+else
+  fail "falsekill case rc=$falsekill_rc calls=$falsekill_calls out=$falsekill_out"
 fi
 
 printf -- '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
