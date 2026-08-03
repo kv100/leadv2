@@ -69,6 +69,7 @@ run_check "Phase-8 merge/completion proof" bash "$PLUGIN_ROOT/tests/test-deploy-
 run_check "subsession model downgrade" bash "$TEST_DIR/test-leadv2-model-arg-rebuild.sh"
 run_check "plugin sync quarantine/dry-run safety" bash "$TEST_DIR/test-drift-guard-quarantine-perimeter.sh"
 run_check "skill lint" bash "$TEST_DIR/test-leadv2-skill-lint.sh"
+run_check "skill proof gate unit tests" bash "$TEST_DIR/test-skill-proof-gate.sh"
 
 printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
 (( FAIL == 0 && MISSING == 0 ))

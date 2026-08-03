@@ -69,3 +69,8 @@ Document tuning history in `.claude/ref/leadv2-premortem-calibration.md`.
 - **Non-blocking for proceed.** Do not add latency to the happy path.
 - **Verbose factor list.** Always write all factors with triggered: true|false. LLM-judge reads this.
 - **Audit trail.** premortem-<phase>.yaml is append-once — never overwrite an existing run.
+
+## Proof
+
+This skill carries a runnable proof at [`PROOF.sh`](./PROOF.sh).
+Run the gate: `bash plugins/leadv2/scripts/leadv2-skill-proof.sh --only leadv2-premortem`

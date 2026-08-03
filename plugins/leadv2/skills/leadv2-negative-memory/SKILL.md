@@ -178,3 +178,8 @@ Before architect(opus) retry brief is written:
 - Auto-approving a candidate entry without founder Tier B confirmation.
 - Blocking on an expired entry — check `status == "active"` strictly.
 - Writing to the archive instead of the main file for new candidates.
+
+## Proof
+
+This skill carries a runnable proof at [`PROOF.sh`](./PROOF.sh).
+Run the gate: `bash plugins/leadv2/scripts/leadv2-skill-proof.sh --only leadv2-negative-memory`

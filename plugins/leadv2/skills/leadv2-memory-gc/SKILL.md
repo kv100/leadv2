@@ -97,3 +97,8 @@ Archive Candidates / Summary counts.
 `docs/leadv2/memory-gc-archive.yaml` with `archived_at`).
 Stale paths and archive-candidates are **always report-only** — founder reviews
 the report and deletes entries manually.
+
+## Proof
+
+This skill carries a runnable proof at [`PROOF.sh`](./PROOF.sh).
+Run the gate: `bash plugins/leadv2/scripts/leadv2-skill-proof.sh --only leadv2-memory-gc`
