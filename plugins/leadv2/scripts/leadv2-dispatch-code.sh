@@ -267,6 +267,18 @@ PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git
 WORK_ROOT="${LEADV2_LANE_WORK_ROOT:-}"
 [[ -n "$WORK_ROOT" && -d "$WORK_ROOT" ]] || WORK_ROOT="$PROJECT_ROOT"
 export LEADV2_LANE_WORK_ROOT="$WORK_ROOT"
+# LANDED-AT-SPAWN-01: Ledger keying follows the DISPATCH TARGET (the main checkout that
+# owns the lane worktree), never the caller session's env. PROJECT_ROOT above is resolved
+# from CLAUDE_PROJECT_ROOT/CLAUDE_PROJECT_DIR -- i.e. wherever the HUMAN launched the
+# session -- so a persona-engine session dispatching into a leadv2 lane would write
+# terminals and reservations into persona-engine's state dir. LEDGER_REPO_ROOT is the
+# main checkout that owns WORK_ROOT's linked worktree; every _dl_note call and every
+# repo_slug-derived path (reservation ledger, review ledger, dispatch lock) keys off it.
+# The cd must happen INSIDE WORK_ROOT: --git-common-dir returns a relative path (".git")
+# for an ordinary checkout and an absolute path for a linked worktree, so resolving from
+# anywhere else silently yields the wrong root. bash 3.2 safe.
+LEDGER_REPO_ROOT="$(cd "${WORK_ROOT}" 2>/dev/null && cd "$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)")" 2>/dev/null && pwd)"
+[[ -n "${LEDGER_REPO_ROOT}" && -d "${LEDGER_REPO_ROOT}" ]] || LEDGER_REPO_ROOT="${PROJECT_ROOT}"
 # W-1a §3.1: set to 1 the moment a dispatch confirms a live worker (arc==0). The EXIT-trap
 # reap (_reap_lane_worktree_if_unused, called from cleanup_pending_dispatch) uses this to
 # reap an orphaned lane worktree ONLY when no worker was spawned -- a successful spawn
@@ -407,9 +419,12 @@ log()        { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
 log_err()    { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
 
 # repo slug (ledger file naming; sanitized to filesystem-safe).
+# LANDED-AT-SPAWN-01: slug the DISPATCH TARGET (LEDGER_REPO_ROOT), not PROJECT_ROOT.
+# One edit covers dispatch_ledger_file (reserve/confirm/abort), review_ledger_file, and
+# dispatch_lock_file -- every repo_slug callsite follows the target uniformly.
 repo_slug() {
   local base
-  base="$(basename "${PROJECT_ROOT}")"
+  base="$(basename "${LEDGER_REPO_ROOT:-${PROJECT_ROOT}}")"
   printf '%s' "${base}" | tr -cd 'A-Za-z0-9._-'
 }
 
@@ -485,7 +500,11 @@ _dl_note() {
   # global (never from this fn's own args -- its 5-arg signature stays unchanged so its
   # ~15 callsites need zero edits). write-terminal falls back to founder_task_id itself
   # when this is empty.
-  bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$(_dl_attempt_token "$1")" "${DISPATCH_LANE_NAME:-}" >/dev/null 2>&1 9>&- || true
+  # LANDED-AT-SPAWN-01: key the terminal ledger to the DISPATCH TARGET, not the caller
+  # session. Both names because ledger:83 prefers PROJECT_ROOT while other leadv2 callers
+  # key off LEADV2_PROJECT_ROOT -- threading both keeps the fix uniform.
+  PROJECT_ROOT="${LEDGER_REPO_ROOT}" LEADV2_PROJECT_ROOT="${LEDGER_REPO_ROOT}" \
+    bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$(_dl_attempt_token "$1")" "${DISPATCH_LANE_NAME:-}" >/dev/null 2>&1 9>&- || true
 }
 
 # ── task signature: normalize mission text, sha256 ────────────────────────────────
@@ -2508,9 +2527,15 @@ confirmation-seeking; only for a decision you cannot make yourself."
       # A product dispatch's terminal state is owned by dispatch-product-close.sh (it runs
       # the e2e/review gates and knows the real outcome) -- writing "landed" HERE for a
       # product task would let a later, more informative dead/parked verdict from that
-      # script lose the write-once race. Non-product spawns have nothing else that will
-      # ever check back on them, so THIS is their one and only terminal write.
-      [[ "${product_class}" != "product" ]] && _dl_note "${sig8}" landed "spawned_${candidate}" "" "${founder_task_id}"
+      # script lose the write-once race. A non-product spawn has no terminal at spawn time
+      # either: every non-product arm reaches rc=0 here only after launching an ASYNC
+      # background worker that has done zero work, and "landed" is a future-claim that
+      # permanently blocks the lane's real terminal under write-once semantics and trips
+      # the codex-lead dup-guard. Absence of a terminal row IS the honest state until the
+      # lane's own close/sweep path resolves it. The already-written confirmed reservation
+      # row (dispatch_confirm) remains the only spawn-time record; no new row type is
+      # needed -- dispatch_ledger_sweep_write_dead already recovers abandoned lanes.
+      # (LANDED-AT-SPAWN-01)
       # W-1a §3.1: a live worker was spawned -- do NOT reap this lane's worktree on EXIT
       # (the async worker + close gate still need it). §3.3: emit the loud interim line
       # naming the absolute path where the finished lane's worktree is left on disk --
