@@ -70,6 +70,9 @@ run_check "subsession model downgrade" bash "$TEST_DIR/test-leadv2-model-arg-reb
 run_check "plugin sync quarantine/dry-run safety" bash "$TEST_DIR/test-drift-guard-quarantine-perimeter.sh"
 run_check "skill lint" bash "$TEST_DIR/test-leadv2-skill-lint.sh"
 run_check "skill proof gate unit tests" bash "$TEST_DIR/test-skill-proof-gate.sh"
+run_check "status surface single-lead + census" bash "$REPO_ROOT/tests/test-status-surface-single-lead.sh"
+run_check "reply router dual-store resolution" bash "$TEST_DIR/test-reply-router-01.sh"
+run_check "question delivery ownership" bash "$TEST_DIR/test-question-delivery-ownership-01.sh"
 
 printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
 (( FAIL == 0 && MISSING == 0 ))

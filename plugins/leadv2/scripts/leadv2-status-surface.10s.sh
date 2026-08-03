@@ -188,18 +188,34 @@ print(n)
 PYEOF
 )"
   case "$_rf_alarms" in ''|*[!0-9]*) _rf_alarms=0 ;; esac
-  _sl_active=0
-  _sl_sig=""
+  # SWIFTBAR-ACTIVE-SOURCE-02: the renderer now emits a multi-worker header:
+  #   mode=single-lead active <N> [<task_id> <arm> <age>]
+  # followed by per-worker detail lines (indented).  N=0 means idle.
+  _sl_count=0
+  _sl_tid=""
   _sl_arm=""
   _sl_age=""
   case "$_sl_hdr" in
-    "mode=single-lead active "*" arm="*" state="*" age="*)
-      _sl_active=1
-      _sl_sig="$(printf '%s' "$_sl_hdr" | awk '{print $3}')"
-      _sl_arm="$(printf '%s' "$_sl_hdr" | sed -n 's/.* arm=\([^ ]*\).*/\1/p')"
-      _sl_age="$(printf '%s' "$_sl_hdr" | sed -n 's/.* age=\([^ ]*\).*/\1/p')"
+    "mode=single-lead active "*" "*" "*" "*)
+      # active <N> <task_id> <arm> <age>
+      _sl_count="$(printf '%s' "$_sl_hdr" | awk '{print $3}')"
+      _sl_tid="$(printf '%s' "$_sl_hdr" | awk '{print $4}')"
+      _sl_arm="$(printf '%s' "$_sl_hdr" | awk '{print $5}')"
+      _sl_age="$(printf '%s' "$_sl_hdr" | awk '{print $6}')"
+      ;;
+    "mode=single-lead active "*" "*" "*)
+      # active <N> <task_id> <arm>   (no age for process-only workers)
+      _sl_count="$(printf '%s' "$_sl_hdr" | awk '{print $3}')"
+      _sl_tid="$(printf '%s' "$_sl_hdr" | awk '{print $4}')"
+      _sl_arm="$(printf '%s' "$_sl_hdr" | awk '{print $5}')"
+      _sl_age="?"
+      ;;
+    "mode=single-lead active "*)
+      # active <N>  or  active none  (legacy)
+      _sl_count=0
       ;;
   esac
+  case "$_sl_count" in ''|*[!0-9]*) _sl_count=0 ;; esac
 
   # Priority is intentionally independent of legacy lanes parsing: idle is a
   # claim only after render_single_lead successfully read both ledgers.
@@ -209,14 +225,20 @@ PYEOF
     printf '❓%d\n' "$Q_N"
   elif [ "$_rf_alarms" -gt 0 ]; then
     printf '🔴 %d\n' "$_rf_alarms"
-  elif [ "$_sl_active" -eq 1 ]; then
-    printf '🛠 %s %s %s\n' "$_sl_sig" "$_sl_arm" "$_sl_age"
+  elif [ "$_sl_count" -eq 1 ]; then
+    printf '🛠 %s %s %s\n' "$_sl_tid" "$_sl_arm" "$_sl_age"
+  elif [ "$_sl_count" -gt 1 ]; then
+    printf '🛠 %d: %s %s %s\n' "$_sl_count" "$_sl_tid" "$_sl_arm" "$_sl_age"
   else
     printf '⚪ idle\n'
   fi
 
   printf -- '---\n'
-  printf '%s | font=Menlo size=12\n' "$SINGLE_LEAD_BLOCK"
+  # Render each line of the single-lead block as its own dropdown row so
+  # multi-worker detail lines are individually visible.
+  printf '%s\n' "$SINGLE_LEAD_BLOCK" | while IFS= read -r _sline; do
+    printf '%s | font=Menlo size=12\n' "$_sline"
+  done
   printf -- '---\n'
   if [ -n "$REPO_FACTS_BLOCK" ]; then
     printf '%s\n' "$REPO_FACTS_BLOCK" | while IFS= read -r ln; do printf '%s | font=Menlo size=12\n' "$ln"; done

@@ -45,6 +45,13 @@
           },
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-pending-questions-inject.sh\"",
+            "timeout": 5,
+            "continueOnBlock": true,
+            "statusMessage": "Checking for stale pending questions..."
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-one-copy-drift.sh\"",
             "timeout": 6,
             "continueOnBlock": true,

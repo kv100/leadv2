@@ -165,6 +165,19 @@ if [[ -n "$DEFAULT_OPTION" ]]; then
   [[ "$_default_found" -eq 1 ]] || { printf -- '[leadv2-ask] --default-option must name an --option label\n' >&2; exit 1; }
 fi
 
+# QUESTION-DELIVERY-OWNERSHIP-01 — stamp owner fields at write time so a
+# downstream reply-router can distinguish own vs foreign questions, and a
+# SessionStart/product-close delivery path can route to the right lead.
+# owner_session: best available stable session id ($CLAUDE_SESSION_ID from
+#   the Claude Code env, or LEADV2_ASK_OWNER_SESSION override for tests).
+# owner_task: the task_id/sig8 of the lane asking — same as $TASK_ID (first
+#   positional), but LEADV2_ASK_OWNER_TASK can override for tests.
+# asked_repo: basename of the project root where the question originated.
+OWNER_SESSION="${LEADV2_ASK_OWNER_SESSION:-${CLAUDE_SESSION_ID:-}}"
+OWNER_TASK="${LEADV2_ASK_OWNER_TASK:-${TASK_ID}}"
+ASKED_REPO="$(basename "${LEGACY_PROJECT_ROOT:-${PROJECT_ROOT:-$(pwd)}}")"
+export OWNER_SESSION OWNER_TASK ASKED_REPO
+
 QDIR="$("${SCRIPT_DIR}/leadv2-state-path.sh" questions)"
 LOCK="${QDIR}/.write.lock"
 
@@ -195,10 +208,15 @@ if ! {
   python3 - "$QFILE" "$LOCK" "$QID" "$TASK_ID" "$QUESTION" "$ASKED_AT" "$PHASE" "$PRIORITY" "$WAIT_POLICY" "$DEFAULT_OPTION" "${OPTIONS[@]}" <<'PYEOF'
 import fcntl, os, sys
 import yaml
-
 qid, task_id, question, asked_at, phase, priority, wait_policy, default_option = sys.argv[3:11]
 qfile, lock_path = sys.argv[1:3]
 raw_options = sys.argv[11:]
+
+# QUESTION-DELIVERY-OWNERSHIP-01: owner fields read from env (the heredoc is
+# single-quoted, so no shell interpolation; env vars are exported by ask.sh).
+owner_session = os.environ.get("OWNER_SESSION", "") or None
+owner_task = os.environ.get("OWNER_TASK", "") or None
+asked_repo = os.environ.get("ASKED_REPO", "") or None
 
 options = []
 for raw in raw_options:
@@ -222,6 +240,11 @@ doc = {
     "wait_policy": wait_policy or "blocking",
     "status": "pending",
     "answer": {"selected": None, "decided_by": None, "answered_at": None},
+    # QUESTION-DELIVERY-OWNERSHIP-01 — additive owner fields. Readers must
+    # tolerate old rows where these are absent (None in Python = null in YAML).
+    "owner_session": owner_session,
+    "owner_task": owner_task,
+    "asked_repo": asked_repo,
 }
 
 lockf = open(lock_path, "a+")
@@ -272,6 +295,10 @@ doc = {
     "wait_indefinitely": False,
     "priority": "P1",
     "created_at": created_at,
+    # QUESTION-DELIVERY-OWNERSHIP-01 — additive owner fields (same env source).
+    "owner_session": os.environ.get("OWNER_SESSION", "") or None,
+    "owner_task": os.environ.get("OWNER_TASK", "") or None,
+    "asked_repo": os.environ.get("ASKED_REPO", "") or None,
 }
 
 try:

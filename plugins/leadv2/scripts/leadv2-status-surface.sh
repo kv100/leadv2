@@ -2609,8 +2609,17 @@ render_single_lead() {
     LEADV2_SL_TERMINALS="${STATE_DIR}/dispatch-ledger.jsonl" \
     LEADV2_SL_NOW="$NOW" \
     LEADV2_SL_TTL="${LEADV2_STATUS_ACTIVE_TTL_S:-7200}" \
+    LEADV2_SL_PS_SNAPSHOT="$PS_SNAPSHOT" \
+    LEADV2_SL_PROJECT_ROOT="${LEADV2_STATUS_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || true)}" \
+    LEADV2_SL_GLM_RUNS_SEG="$(basename "${GLM_RUNS_DIR:-glm-runs}")" \
+    LEADV2_SL_KIMI_RUNS_SEG="$(basename "${KIMI_RUNS_DIR:-kimi-runs}")" \
     python3 2>/dev/null <<'PYEOF'
-import json, os, sys, datetime, subprocess
+import json, os, sys, re, datetime, subprocess
+
+PS_SNAPSHOT = os.environ.get("LEADV2_SL_PS_SNAPSHOT", "")
+PROJECT_ROOT = os.environ.get("LEADV2_SL_PROJECT_ROOT", "")
+GLM_RUNS_SEG = os.environ.get("LEADV2_SL_GLM_RUNS_SEG", "glm-runs")
+KIMI_RUNS_SEG = os.environ.get("LEADV2_SL_KIMI_RUNS_SEG", "kimi-runs")
 
 def fail(reason):
     print("mode=single-lead active ⚠ ledger unreadable: %s" % reason.replace("|", ""))
@@ -2638,6 +2647,123 @@ def tail_lines(path):
         raise OSError("tail -n 400 failed: %s" % (err.strip() or proc.returncode))
     return out.splitlines()
 
+# ── SWIFTBAR-ACTIVE-SOURCE-02: live process census ─────────────────────────
+# Scan the ONE ps snapshot (already captured by the bash layer, no subprocess
+# call here) for leadv2 worker patterns. Returns dict: sig8 -> {arm, pid,
+# source, task_id}.  A worker found ONLY here (no reservation row) is the
+# exact "idle while a worker runs" bug this function exists to fix.
+def census_workers(ps_text):
+    found = {}
+    for line in ps_text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid, argv = parts[0], parts[1]
+
+        # Pattern 1: claude-subsession.sh --task-id dispatch-<sig8> [--model <arm>]
+        if "claude-subsession.sh" in argv:
+            m = re.search(r'--task-id\s+dispatch-([a-f0-9]{8})', argv)
+            if m:
+                sig8 = m.group(1)
+                m_arm = re.search(r'--model\s+(\S+)', argv)
+                arm = m_arm.group(1) if m_arm else "claude"
+                found[sig8] = {"arm": arm, "pid": pid,
+                               "source": "claude-subsession", "task_id": sig8}
+                continue
+
+        # Pattern 2: glm-coder.sh __run_child|__supervise <run_dir>
+        # Run-dir name: <runs-seg>/YYMMDD-HHMMSS-<lane>-<rand4hex>. The lane
+        # segment is the founder_task_id (a human string like
+        # FEED-SCAN-USABLE-CANDIDATES-01, per dispatch-code line 2108 where
+        # _lane_ensure_key = founder_task_id preferentially) or the sig8 hex
+        # as fallback. Use the lane segment AS the task_id/display key
+        # directly; treat it as sig8 for reservation/terminal cross-ref ONLY
+        # when it is exactly 8 hex chars; otherwise correlate by task_id
+        # string match. Both __supervise and __run_child carry the run-dir.
+        if "glm-coder.sh" in argv and ("__run_child" in argv or "__supervise" in argv):
+            m = re.search(re.escape(GLM_RUNS_SEG) + r'/(\d{6})-(\d{6})-(.+)-([a-f0-9]{4})(?=\s|$)',
+                          argv)
+            if m:
+                date_s, time_s, lane_seg = m.group(1), m.group(2), m.group(3)
+                try:
+                    run_epoch = int(datetime.datetime.strptime(
+                        "20" + date_s + time_s, "%Y%m%d%H%M%S").timestamp())
+                except Exception:
+                    run_epoch = 0
+                _sig8 = lane_seg if re.match(r'^[a-f0-9]{8}$', lane_seg) else None
+                _entry = {"arm": "glm", "pid": pid, "source": "glm-coder",
+                          "task_id": lane_seg, "epoch": run_epoch}
+                if _sig8:
+                    _entry["sig8"] = _sig8
+                found[lane_seg] = _entry
+                continue
+
+        # Pattern 3: kimi-coder.sh __run_child|__supervise <run_dir>
+        if "kimi-coder.sh" in argv and ("__run_child" in argv or "__supervise" in argv):
+            m = re.search(re.escape(KIMI_RUNS_SEG) + r'/(\d{6})-(\d{6})-(.+)-([a-f0-9]{4})(?=\s|$)',
+                          argv)
+            if m:
+                date_s, time_s, lane_seg = m.group(1), m.group(2), m.group(3)
+                try:
+                    run_epoch = int(datetime.datetime.strptime(
+                        "20" + date_s + time_s, "%Y%m%d%H%M%S").timestamp())
+                except Exception:
+                    run_epoch = 0
+                _sig8 = lane_seg if re.match(r'^[a-f0-9]{8}$', lane_seg) else None
+                _entry = {"arm": "kimi", "pid": pid, "source": "kimi-coder",
+                          "task_id": lane_seg, "epoch": run_epoch}
+                if _sig8:
+                    _entry["sig8"] = _sig8
+                found[lane_seg] = _entry
+                continue
+
+    return found
+
+# ── codex lane census via .session-runner.pid files ────────────────────────
+# Codex workers are launched by leadv2-codex-session-runner.sh, which writes a
+# pid file at <PROJECT_ROOT>/docs/handoff/<task_id>/.session-runner.pid. The
+# runner's argv is `codex exec ... -C <shared-root>` with no worktree ref, so a
+# ps-argv scan is useless. Instead, enumerate the pid files and check liveness
+# with os.kill(pid, 0) (no subprocess spawn). task_id = the handoff dir name.
+def codex_census(project_root):
+    found = {}
+    if not project_root:
+        return found
+    handoff_dir = os.path.join(project_root, "docs", "handoff")
+    if not os.path.isdir(handoff_dir):
+        return found
+    for entry in os.listdir(handoff_dir):
+        pid_file = os.path.join(handoff_dir, entry, ".session-runner.pid")
+        if not os.path.isfile(pid_file):
+            continue
+        try:
+            with open(pid_file) as fh:
+                raw = fh.read().strip()
+            pid = int(raw)
+        except (IOError, ValueError):
+            continue
+        try:
+            os.kill(pid, 0)  # liveness check — no signal sent, no subprocess
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass  # EPERM -> presume ALIVE (aligns with pid_alive / leadv2-codex-lead.sh posture)
+        except OSError:
+            continue
+        # entry is the handoff dir name = task_id (founder_task_id per
+        # dispatch-code line 2108, or sig8 fallback). Use it as the census
+        # key directly; treat as sig8 ONLY when it is exactly 8 hex chars.
+        _sig8 = entry if re.match(r'^[a-f0-9]{8}$', entry) else None
+        _cent = {"arm": "codex", "pid": str(pid),
+                 "source": "codex-pidfile", "task_id": entry}
+        if _sig8:
+            _cent["sig8"] = _sig8
+        found[entry] = _cent
+    return found
+
 try:
     now = int(os.environ["LEADV2_SL_NOW"])
     ttl = int(os.environ.get("LEADV2_SL_TTL", "7200"))
@@ -2650,8 +2776,17 @@ try:
                 row = json.loads(line)
                 if not isinstance(row, dict) or not row.get("task_sig"):
                     raise ValueError("reservation tail row %d malformed" % n)
+                # Finding 1: only pending|confirmed reservations are active.
+                # Real writer values are exclusively "pending" or "confirmed"
+                # (leadv2-dispatch-code.sh _dispatch_append_pending_locked /
+                # _dispatch_confirm_locked). Any other state (including the
+                # legacy "running") is stale/foreign and must not count.
+                st = str(row.get("state", ""))
+                if st not in ("pending", "confirmed"):
+                    continue
                 reservations.append((epoch(row), row))
     terminals = set()
+    terminal_task_ids = set()
     terminal_path = os.environ["LEADV2_SL_TERMINALS"]
     if os.path.exists(terminal_path):
         for n, line in enumerate(tail_lines(terminal_path), 1):
@@ -2660,23 +2795,130 @@ try:
                 if not isinstance(row, dict) or not row.get("task_sig"):
                     raise ValueError("terminal tail row %d malformed" % n)
                 terminals.add(str(row["task_sig"])[:8])
+                _ttid = str(row.get("task_id") or row.get("founder_task_id") or "")
+                if _ttid:
+                    terminal_task_ids.add(_ttid)
 except Exception as exc:
     fail(str(exc))
 
-open_rows = [(when, row) for when, row in reservations if str(row["task_sig"])[:8] not in terminals]
-open_rows.sort(key=lambda pair: pair[0], reverse=True)
-if not open_rows:
-    print("mode=single-lead active none")
+# ── build the active-worker set: process census ∪ unexpired reservations ───
+live_procs = census_workers(PS_SNAPSHOT)
+live_procs.update(codex_census(PROJECT_ROOT))
+
+# reservation sig8 -> (when, row), most-recent wins
+res_by_sig = {}
+# reservation task_id string -> (when, row) — for human-named lane correlation
+res_by_task_id = {}
+for when, row in reservations:
+    sig8 = str(row["task_sig"])[:8]
+    if sig8 not in res_by_sig or when > res_by_sig[sig8][0]:
+        res_by_sig[sig8] = (when, row)
+    _rid = str(row.get("task_id") or row.get("founder_task_id") or "")
+    if _rid and (_rid not in res_by_task_id or when > res_by_task_id[_rid][0]):
+        res_by_task_id[_rid] = (when, row)
+
+# Each worker: {task_id, arm, age_s, state}
+# state = "closing" if process alive AND terminal row exists, else "active".
+workers = []
+seen_keys = set()
+
+# (a) live process census workers
+for key, info in live_procs.items():
+    sig8 = None
+    # If the census key IS a sig8 (claude-subsession pattern), cross-ref
+    # reservation for human task_id.  Otherwise check an explicit sig8 field
+    # from the census entry (glm/kimi/codex set it when the lane segment
+    # happens to be hex8).
+    if re.match(r'^[a-f0-9]{8}$', key):
+        sig8 = key
+    elif info.get("sig8"):
+        sig8 = info["sig8"]
+    task_id = info.get("task_id", key)
+    arm = info.get("arm", "?")
+    # Cross-ref reservation: by sig8 first, then by task_id string match
+    # (for human-named lanes whose founder_task_id is not hex8).
+    _res = None
+    if sig8 and sig8 in res_by_sig:
+        _res = res_by_sig[sig8]
+    elif str(task_id) in res_by_task_id:
+        _res = res_by_task_id[str(task_id)]
+    if _res:
+        _tid = _res[1].get("task_id") or _res[1].get("founder_task_id")
+        if _tid:
+            task_id = str(_tid)
+    # Terminal cross-ref: by sig8, then by task_id string match.
+    has_terminal = (sig8 is not None and sig8 in terminals) \
+        or str(task_id) in terminal_task_ids
+    state = "closing" if has_terminal else "active"
+    # Age: reservation epoch if available, else run-dir epoch
+    age_s = 0
+    if _res:
+        age_s = max(0, now - _res[0])
+    elif "epoch" in info and info["epoch"]:
+        age_s = max(0, now - info["epoch"])
+    wk_key = sig8 or key
+    if wk_key in seen_keys or str(task_id) in seen_keys:
+        continue
+    seen_keys.add(wk_key)
+    seen_keys.add(str(task_id))
+    workers.append({"task_id": str(task_id).replace("|", ""),
+                    "arm": arm, "age_s": age_s, "state": state,
+                    "_sort": age_s})
+
+# (b) unexpired reservation rows not already covered by a live process
+for sig8, (when, row) in res_by_sig.items():
+    if sig8 in seen_keys:
+        continue
+    task_id = str(row.get("task_id") or row.get("founder_task_id") or sig8)
+    if task_id in seen_keys:
+        continue
+    if sig8 in terminals:
+        continue
+    age = max(0, now - when)
+    if age > ttl:
+        continue
+    arm = str(row.get("arm") or "unknown")
+    seen_keys.add(task_id)
+    workers.append({"task_id": task_id.replace("|", ""),
+                    "arm": arm.replace("|", ""), "age_s": age,
+                    "state": "active", "_sort": age})
+
+if not workers:
+    # Check if there's a stale open reservation (expired but no terminal)
+    stale = [(sig8, when) for sig8, (when, row) in res_by_sig.items()
+             if sig8 not in terminals]
+    if stale:
+        stale.sort(key=lambda p: p[1], reverse=True)
+        sig, sw = stale[0]
+        sage = max(0, now - sw)
+        print("mode=single-lead active 0")
+        print("  (last open %s %dh ago, no terminal row)" % (sig, sage // 3600))
+    else:
+        print("mode=single-lead active 0")
     sys.exit(0)
-when, row = open_rows[0]
-age = max(0, now - when)
-sig = str(row["task_sig"])[:8].replace("|", "")
-if age > ttl:
-    print("mode=single-lead active none (last open %s %dh ago, no terminal row)" % (sig, age // 3600))
-    sys.exit(0)
-arm = str(row.get("arm") or "unknown").replace("|", "")
-state = str(row.get("state") or "unknown").replace("|", "")
-print("mode=single-lead active %s arm=%s state=%s age=%dm" % (sig, arm, state, age // 60))
+
+# Sort newest first (largest age_s = oldest first; we want NEWEST = smallest age)
+workers.sort(key=lambda w: w["_sort"])
+newest = workers[0]
+
+def age_label(s):
+    if s <= 0:
+        return "now"
+    if s < 3600:
+        return "%dm" % (s // 60)
+    return "%dh" % (s // 3600)
+
+# Header line: count + newest worker summary
+_n = len(workers)
+_tid = newest["task_id"][:20]
+_arm = newest["arm"]
+_age = age_label(newest["age_s"])
+print("mode=single-lead active %d %s %s %s" % (_n, _tid, _arm, _age))
+# Worker detail lines (for dropdown)
+for w in workers:
+    _a = age_label(w["age_s"])
+    _s = w["state"]
+    print("  %s %s %s %s" % (w["task_id"][:20], w["arm"], _a, _s))
 PYEOF
   then
     # A command/runtime/heredoc failure must preserve the mode marker so the
