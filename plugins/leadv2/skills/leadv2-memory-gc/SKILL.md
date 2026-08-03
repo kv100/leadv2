@@ -43,9 +43,16 @@ leadv2-memory-gc.sh --memory-dir /path/to/memory [--cap 100] [--sim 0.34]
 leadv2-memory-gc.sh --memory-dir /path/to/memory --restore archive/gc-...
 ```
 
-This mode is dry-run by default and writes only `memory-gc-report.md`. It makes one
-batched verdict request for its deterministic, same-section/type clusters; `--apply`
-is required to rewrite `MEMORY.md` and move absorbed entry files into
+This mode is dry-run by default and writes only `memory-gc-report.md`. Unless
+`--verdicts-file` supplies an explicit offline/test override, it invokes
+`${CLAUDE_BIN:-claude}` exactly once with every deterministic, same-section/type
+cluster in one prompt. `--model` is passed to that invocation (default: `haiku`).
+A missing CLI, timeout, non-zero exit, or malformed model response is reported as
+an `llm: error`, exits non-zero, and never applies index/archive changes. When no
+pair reaches `--sim`, the report shows the pair counts and maximum similarity and
+skips the model call explicitly.
+
+`--apply` is required to rewrite `MEMORY.md` and move absorbed entry files into
 `archive/gc-<timestamp>/`. Restore refuses if the live index has changed since that run.
 
 `STANDING:` entries, `metadata.type: user`, `metadata.memory_gc: keep`, ACTIVE entries

@@ -46,40 +46,8 @@ if [[ " ${*:-} " == *" --memory-dir "* ]]; then
     python3 "$INDEX_GC" finalize --plan "$PLAN" --memory-dir "$MEMORY_DIR" --model "$INDEX_MODEL"
     exit 0
   fi
-  if [[ -n "$VERDICTS_FILE" ]]; then
-    VERDICTS="$VERDICTS_FILE"
-  else
-    TMPL="${SCRIPT_DIR}/../prompts/memory-gc-verdict.md"
-    [[ -f "$TMPL" ]] || { echo "[leadv2-memory-gc] missing prompt template: $TMPL" >&2; exit 1; }
-    REQUEST="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["request"], separators=(",",":")))' "$PLAN")"
-    PROMPT="$(python3 - "$TMPL" "$REQUEST" <<'PY'
-import sys
-print(open(sys.argv[1], encoding='utf-8').read().replace('<<<CLUSTERS_JSON>>>', sys.argv[2]))
-PY
-)"
-    RAW="$(mktemp "${TMPDIR:-/tmp}/leadv2-memory-gc-verdict.XXXXXX.json")"
-    trap 'rm -f "$PLAN" "$RAW"' EXIT
-    TIMEOUT_CMD="$(command -v gtimeout || command -v timeout || true)"
-    if [[ -z "$TIMEOUT_CMD" ]]; then echo "[leadv2-memory-gc] timeout command unavailable" >&2; VERDICTS="";
-    else
-      set +e
-      "$TIMEOUT_CMD" "${LEADV2_MEMGC_TIMEOUT:-45}" "${CLAUDE_BIN:-claude}" -p "$PROMPT" --model "$INDEX_MODEL" --max-turns 3 --permission-mode bypassPermissions --output-format json > "$RAW"
-      CALL_RC=$?
-      set -e
-      if [[ $CALL_RC -eq 0 ]]; then
-        python3 - "$RAW" > "${RAW}.result" <<'PY'
-import json, re, sys
-try: text=json.load(open(sys.argv[1], encoding='utf-8')).get('result','')
-except Exception: text=''
-m=re.search(r'\{.*\}', text, re.S)
-if m: print(m.group(0))
-PY
-        VERDICTS="${RAW}.result"
-      else VERDICTS=""; fi
-    fi
-  fi
   ARGS=(finalize --plan "$PLAN" --memory-dir "$MEMORY_DIR" --model "$INDEX_MODEL")
-  [[ -n "${VERDICTS:-}" ]] && ARGS+=(--verdicts-file "$VERDICTS")
+  [[ -n "$VERDICTS_FILE" ]] && ARGS+=(--verdicts-file "$VERDICTS_FILE")
   [[ "$INDEX_APPLY" == 1 ]] && ARGS+=(--apply)
   python3 "$INDEX_GC" "${ARGS[@]}"
   exit $?

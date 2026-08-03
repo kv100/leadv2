@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic index-mode implementation for leadv2-memory-gc."""
-import argparse, datetime, hashlib, json, os, re, shutil, sys
+import argparse, datetime, hashlib, itertools, json, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 STOP = {"the","a","is","to","for","not","and","leadv2","feedback","project","reference"}
@@ -46,7 +46,18 @@ def parse(mem, root):
         if slug in active or yval(raw,"name") in active: immune.append("active")
         entries.append({"line_no":n,"section":section,"title":title,"slug":slug,"hook":hook.split(". Also:",1)[0],"raw_line":line,"description":desc,"type":typ,"exists":exists,"immune":immune})
     return lines,entries
+def similarity(a, b):
+    left, right=toks(a),toks(b)
+    return (len(left&right)/len(left|right) if left|right else 0)+(0.15 if prefix(a,b) else 0)
 def clusters(entries, sim, maxc):
+    diagnostics={"all_pairs":0,"same_section_type_pairs":0,"eligible_pairs_any":0,"eligible_pairs_same_section_type":0,"max_similarity_any":0.0,"max_similarity_same_section_type":0.0}
+    for a,b in itertools.combinations(entries,2):
+        score=similarity(a,b); same=a["section"]==b["section"] and a["type"]==b["type"]
+        diagnostics["all_pairs"]+=1; diagnostics["max_similarity_any"]=max(diagnostics["max_similarity_any"],score)
+        if score>=sim: diagnostics["eligible_pairs_any"]+=1
+        if same:
+            diagnostics["same_section_type_pairs"]+=1; diagnostics["max_similarity_same_section_type"]=max(diagnostics["max_similarity_same_section_type"],score)
+            if score>=sim: diagnostics["eligible_pairs_same_section_type"]+=1
     groups={}
     for e in entries: groups.setdefault((e["section"],e["type"]),[]).append(e)
     result=[]
@@ -60,8 +71,7 @@ def clusters(entries, sim, maxc):
             if a!=b: parent[b]=a
         for i in range(len(es)):
             for j in range(i):
-                a,b=toks(es[i]),toks(es[j]); score=(len(a&b)/len(a|b) if a|b else 0)+(0.15 if prefix(es[i],es[j]) else 0)
-                if score>=sim: union(i,j)
+                if similarity(es[i],es[j])>=sim: union(i,j)
         buckets={}
         for i,e in enumerate(es): buckets.setdefault(find(i),[]).append(e)
         for members in buckets.values():
@@ -69,7 +79,8 @@ def clusters(entries, sim, maxc):
             if len(members)>1 and any(not x["immune"] for x in members): result.append(members)
     result.sort(key=lambda x:x[0]["line_no"])
     kept=result[:maxc]
-    return kept, max(0,len(result)-len(kept))
+    diagnostics["clusters_before_limit"]=len(result)
+    return kept, max(0,len(result)-len(kept)), diagnostics
 def fingerprint(members, sim): return hashlib.sha256(("|".join(sorted(x["slug"] for x in members))+"|"+str(sim)).encode()).hexdigest()
 def request_for(cs, cap, current):
     out=[]
@@ -81,10 +92,54 @@ def load_seen(mem):
     p=mem/".memory-gc-state.yaml"
     if not p.exists(): return set()
     return set(re.findall(r"fingerprint:\s*['\"]?([a-f0-9]{64})",p.read_text(encoding="utf-8",errors="replace")))
-def verdicts(plan, vf):
-    if not vf: return {}, "unavailable"
-    try: data=json.loads(Path(vf).read_text(encoding="utf-8")); return {x["cluster_id"]:x for x in data["verdicts"]}, "available"
-    except Exception: return {}, "unavailable"
+class VerdictError(RuntimeError): pass
+def verdict_map(data):
+    if not isinstance(data,dict) or not isinstance(data.get("verdicts"),list): raise VerdictError("response does not contain a verdicts list")
+    result={}
+    for item in data["verdicts"]:
+        if not isinstance(item,dict) or not isinstance(item.get("cluster_id"),str): raise VerdictError("verdict is missing cluster_id")
+        if item["cluster_id"] in result: raise VerdictError("response contains duplicate cluster_id")
+        result[item["cluster_id"]]=item
+    return result
+def json_object(text):
+    decoder=json.JSONDecoder()
+    for match in re.finditer(r"\{",text):
+        try: value,_=decoder.raw_decode(text[match.start():])
+        except json.JSONDecodeError: continue
+        if isinstance(value,dict) and "verdicts" in value: return value
+    raise VerdictError("model result did not contain a JSON verdict object")
+def call_model(plan, model):
+    binary=os.environ.get("CLAUDE_BIN","claude"); resolved=shutil.which(binary)
+    if not resolved: raise VerdictError(f"model CLI not found: {binary}")
+    template=Path(__file__).resolve().parent.parent/"prompts"/"memory-gc-verdict.md"
+    if not template.is_file(): raise VerdictError(f"prompt template not found: {template}")
+    prompt=template.read_text(encoding="utf-8").replace("<<<CLUSTERS_JSON>>>",json.dumps(plan["request"],separators=(",",":")))
+    try: timeout=int(os.environ.get("LEADV2_MEMGC_TIMEOUT","45"))
+    except ValueError: raise VerdictError("LEADV2_MEMGC_TIMEOUT must be an integer")
+    if timeout<=0: raise VerdictError("LEADV2_MEMGC_TIMEOUT must be positive")
+    command=[resolved,"-p",prompt,"--model",model,"--max-turns","1","--tools","","--safe-mode","--no-session-persistence","--output-format","json"]
+    try: result=subprocess.run(command,capture_output=True,text=True,timeout=timeout,check=False)
+    except subprocess.TimeoutExpired: raise VerdictError(f"model call timed out after {timeout}s")
+    except OSError as exc: raise VerdictError(f"model call could not start: {exc}")
+    if result.returncode:
+        detail=(result.stderr or result.stdout).strip().replace("\n"," ")[-500:] or "no error output"
+        raise VerdictError(f"model call exited {result.returncode}: {detail}")
+    try: envelope=json.loads(result.stdout)
+    except json.JSONDecodeError as exc: raise VerdictError(f"model CLI returned invalid JSON: {exc}")
+    payload=envelope.get("structured_output") if isinstance(envelope,dict) else None
+    if not isinstance(payload,dict):
+        raw=envelope.get("result","") if isinstance(envelope,dict) else ""
+        payload=json_object(raw if isinstance(raw,str) else json.dumps(raw))
+    return verdict_map(payload)
+def verdicts(plan, vf, model):
+    if vf:
+        try: data=json.loads(Path(vf).read_text(encoding="utf-8"))
+        except (OSError,json.JSONDecodeError) as exc: raise VerdictError(f"cannot load verdicts file: {exc}")
+        result,status=verdict_map(data),"verdicts-file override"
+    else: result,status=call_model(plan,model),f"available (model={model})"
+    expected={c["cluster_id"] for c in plan["clusters"]}
+    if set(result)!=expected: raise VerdictError(f"verdict IDs do not match request (missing={sorted(expected-set(result))}, unknown={sorted(set(result)-expected)})")
+    return result,status
 def validate(plan, got):
     accepted=[]; rejected=[]; ids={c["cluster_id"] for c in plan["clusters"]}
     if set(got)-ids or len(got)!=len(ids):
@@ -119,7 +174,11 @@ def validate(plan, got):
     return accepted,rejected
 def report(plan, rows, rejected, llm):
     absorbed=sum(1 for _,v in rows for m in v.get("members",[]) if m.get("action")=="absorb")
-    lines=["# Memory index GC plan","",f"llm: {llm}",f"current total lines: {plan['total_lines']}; current entry lines: {plan['entry_lines']}",f"projected post-GC index size: {plan['total_lines']-absorbed} (cap: {plan['cap']})",f"deferred_clusters: {plan['deferred']}","","## Per-cluster verdicts"]
+    lines=["# Memory index GC plan","",f"llm: {llm}",f"current total lines: {plan['total_lines']}; current entry lines: {plan['entry_lines']}",f"projected post-GC index size: {plan['total_lines']-absorbed} (cap: {plan['cap']})",f"candidate_clusters: {len(plan['clusters'])}",f"deferred_clusters: {plan['deferred']}"]
+    if plan.get("clustering"):
+        d=plan["clustering"]
+        lines.append(f"clustering: {d['eligible_pairs_same_section_type']}/{d['same_section_type_pairs']} same-section/type pairs met sim {plan['sim']}; max={d['max_similarity_same_section_type']:.6f}; all-pair eligible={d['eligible_pairs_any']}/{d['all_pairs']} max={d['max_similarity_any']:.6f}; seen-filtered clusters={d['clusters_filtered_seen']}")
+    lines.extend(["","## Per-cluster verdicts"])
     for c,v in rows: lines.append(f"- {c['cluster_id']}: {v.get('verdict','keep')} into={v.get('into','')} — {v.get('rationale','')}")
     for r in rejected: lines.append(f"- rejected_verdict: {r['cluster_id']} {r['reason']}")
     return "\n".join(lines)+"\n", absorbed
@@ -139,12 +198,19 @@ def main():
   lines,es=parse(index,mem.parent); plan={"memory_dir":str(mem),"index_sha256_pre":sha(index),"cap":a.cap,"sim":a.sim,"total_lines":len(lines),"entry_lines":len(es),"lines":lines,"entries":es}
   if len(lines)<=a.cap: plan["early_exit"]=True; plan["request"]={"cap":a.cap,"current_lines":len(lines),"clusters":[]}; plan["clusters"]=[]; plan["deferred"]=0
   else:
-   cs,defer=clusters(es,a.sim,a.max_clusters); seen=load_seen(mem); cs=[x for x in cs if fingerprint(x,a.sim) not in seen]; req=request_for(cs,a.cap,len(lines)); plan["clusters"]=req; plan["deferred"]=defer; plan["skip_llm"]=not bool(req); plan["request"]={"cap":a.cap,"current_lines":len(lines),"clusters":[{k:v for k,v in c.items() if k!="_members"} for c in req]}
+   cs,defer,diagnostics=clusters(es,a.sim,a.max_clusters); seen=load_seen(mem); before_seen=len(cs); cs=[x for x in cs if fingerprint(x,a.sim) not in seen]; diagnostics["seen_fingerprints"]=len(seen); diagnostics["clusters_filtered_seen"]=before_seen-len(cs); req=request_for(cs,a.cap,len(lines)); plan["clusters"]=req; plan["deferred"]=defer; plan["clustering"]=diagnostics; plan["skip_llm"]=not bool(req); plan["request"]={"cap":a.cap,"current_lines":len(lines),"clusters":[{k:v for k,v in c.items() if k!="_members"} for c in req]}
   Path(a.plan).write_text(json.dumps(plan),encoding="utf-8"); return 0
  plan=json.loads(Path(a.plan).read_text());
  if plan.get("early_exit"):
   print(f"memory-index-gc: no-op (index size {plan['total_lines']}, cap {plan['cap']})"); return 0
- got,llm=verdicts(plan,a.verdicts_file); rows,rejected=validate(plan,got); text,absorbed=report(plan,rows,rejected,llm); (mem/"memory-gc-report.md").write_text(text,encoding="utf-8")
+ if not plan["clusters"]:
+  text,_=report(plan,[],[],"skipped (no candidate clusters)"); (mem/"memory-gc-report.md").write_text(text,encoding="utf-8")
+  print(f"memory-index-gc: no-op (no candidate clusters at sim {plan['sim']}; report {mem/'memory-gc-report.md'})"); return 0
+ try: got,llm=verdicts(plan,a.verdicts_file,a.model)
+ except VerdictError as exc:
+  rows,rejected=validate(plan,{}); text,_=report(plan,rows,rejected,"error: "+str(exc)); (mem/"memory-gc-report.md").write_text(text,encoding="utf-8")
+  print(f"memory-index-gc: model verdict call failed: {exc}",file=sys.stderr); return 7
+ rows,rejected=validate(plan,got); text,absorbed=report(plan,rows,rejected,llm); (mem/"memory-gc-report.md").write_text(text,encoding="utf-8")
  if not a.apply: print(f"memory-index-gc: dry-run report {mem/'memory-gc-report.md'}"); return 0
  if sha(index)!=plan["index_sha256_pre"]: print("index changed during GC",file=sys.stderr); return 5
  moves=[]; changes={}
