@@ -440,6 +440,10 @@ close_owner_pidfile() {
 lane_start_sha_file() { printf '%s/dispatch-%s.start-sha' "${CACHE_BASE}" "$1"; }
 
 record_lane_start_sha() {  # <sig8> -> writes LANE_START_SHA best-effort, never fails the caller
+  # LANE-PLACEMENT-01: on a --resume-lane/--worktree pin this HEAD is the PINNED tree's HEAD.
+  # Chosen deliberately: the close-gate diff then covers the new round, plus any uncommitted
+  # carry-over from the prior round (HEAD predates it).  Over-inclusive by construction, and it
+  # can never HIDE prior uncommitted work — only a base LATER than HEAD could do that.
   local sig8="$1" sha f tmp
   sha="$(git -C "${WORK_ROOT}" rev-parse HEAD 2>/dev/null || true)"
   LANE_START_SHA="${sha}"
@@ -452,6 +456,112 @@ record_lane_start_sha() {  # <sig8> -> writes LANE_START_SHA best-effort, never 
   else
     rm -f "${tmp}" 2>/dev/null || true
   fi
+}
+
+# LANE-PLACEMENT-NOT-ADDRESSABLE-01: resolve an EXISTING lane worktree by lane key or by
+# explicit absolute path, validate it, and pin WORK_ROOT to it instead of ensure-creating
+# a new one.  Called from cmd_resolve after sig8/JOURNAL_TASK exist (so refusals are
+# journalable) but BEFORE record_lane_start_sha, _dl_note, dispatch_reserve, architect_prepass
+# — no ledger row, no terminal row, no reservation, no spawn can precede a refusal.
+#
+# Inputs (script-scope, set by the arg loop):
+#   placement_lane_ref  — value of --resume-lane (a task-sig8 or founder-id)
+#   placement_path      — value of --worktree (absolute path)
+# Both empty → no-op (return 0 immediately; the ensure path runs unchanged).
+# Both set  → impossible (mutual exclusion enforced in the arg loop before we get here).
+#
+# Refusal contract: journal the decision, print one stderr line, exit 5.
+# (Codes 1=usage, 2=dup-sig, 3=arm=opus, 4=spawn-fail are already taken.)
+_resolve_pinned_placement() {
+  [[ -n "${placement_lane_ref:-}" || -n "${placement_path:-}" ]] || return 0
+
+  local candidate="" key="" reason="" ref=""
+  local project_root_phys
+  project_root_phys="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)"
+
+  # Step 1: Candidate.
+  if [[ -n "${placement_lane_ref}" ]]; then
+    ref="${placement_lane_ref}"
+    key="${placement_lane_ref}"
+    candidate="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${placement_lane_ref}" 2>/dev/null)"
+    if [[ -z "${candidate}" ]]; then
+      reason="no_lane_worktree_for_ref"
+      local _wt_dir="${LEADV2_WORKTREE_DIR:-${PROJECT_ROOT}/.claude/worktrees}"
+      emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} looked_for=${_wt_dir}/${ref}"
+      printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
+        "${reason}" "${ref}" "${_wt_dir}/${ref}" >&2
+      exit 5
+    fi
+  else
+    # --worktree: explicit absolute path
+    ref="${placement_path}"
+    key="$(basename "${placement_path}")"
+    if [[ "${placement_path}" != /* ]]; then
+      reason="not_absolute"
+      emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref}"
+      printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
+        "${reason}" "${ref}" "${placement_path}" >&2
+      exit 5
+    fi
+    candidate="${placement_path}"
+  fi
+
+  # Step 2: Exists.
+  if [[ ! -d "${candidate}" ]]; then
+    reason="placement_not_found"
+    emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate}"
+    printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
+      "${reason}" "${ref}" "${candidate}" >&2
+    exit 5
+  fi
+
+  # Step 3: Physical form (macOS /tmp → /private/tmp).
+  candidate="$(cd "${candidate}" 2>/dev/null && pwd -P)"
+
+  # Step 4: Same-repo — the candidate's git-common-dir parent must equal PROJECT_ROOT.
+  local cand_root
+  cand_root="$(cd "${candidate}" 2>/dev/null && cd "$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null)" 2>/dev/null && pwd -P)"
+  if [[ -z "${cand_root}" ]]; then
+    reason="not_a_git_worktree"
+    emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate}"
+    printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
+      "${reason}" "${ref}" "${candidate}" >&2
+    exit 5
+  fi
+  if [[ "${cand_root}" != "${project_root_phys}" ]]; then
+    reason="foreign_repo"
+    emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate} cand_root=${cand_root} project_root=${project_root_phys}"
+    printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
+      "${reason}" "${ref}" "${candidate}" >&2
+    exit 5
+  fi
+
+  # Step 5: Not live-claimed.  Probe both id spellings the handoff tree uses.
+  # Fail-open: probe failure/empty → treated as not live (advisory, never blocks a resume).
+  local _v _live=0 _probe_id
+  for _probe_id in "dispatch-${key}" "${key}"; do
+    _v="$(bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --lane "${_probe_id}" --no-codex 2>/dev/null || true)"
+    if [[ "${_v}" == "alive" || "${_v}" == starting:* ]]; then
+      _live=1
+      break
+    fi
+  done
+  if (( _live == 1 )); then
+    reason="lane_is_live"
+    emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate} probe_id=${_probe_id} verdict=${_v}"
+    printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
+      "${reason}" "${ref}" "${candidate}" >&2
+    exit 5
+  fi
+
+  # Step 6: Commit the pin.
+  WORK_ROOT="${candidate}"
+  export LEADV2_LANE_WORK_ROOT="${WORK_ROOT}"
+  PLACEMENT_PINNED=1
+  WORKTREE_PIN_LINE="WORKTREE PIN: all edits go in ${WORK_ROOT}; do NOT cd to the main checkout even if the mission text names it."
+  local _mode="resume-lane"
+  [[ -n "${placement_path}" ]] && _mode="worktree"
+  emit decision "lane_placement_pinned task=${sig8:-?} mode=${_mode} path=${WORK_ROOT} key=${key}"
 }
 
 # Journal + stderr-emit one structured line. $1=journal-type, $2..=text (one logical line).
@@ -1435,6 +1545,9 @@ ARCHITECT_BIN="${LEADV2_DISPATCH_ARCHITECT_BIN:-${SUBSESSION_BIN}}"
 # this script never reimplements any of that, only calls it and reads its handle/status.
 CODEX_BIN="${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}"
 LANE_WORKTREE_BIN="${LEADV2_DISPATCH_LANE_WORKTREE_BIN:-${SCRIPT_DIR}/leadv2-lane-worktree.sh}"
+# LANE-PLACEMENT-01: liveness probe seam — the placement validator uses this to refuse
+# hijacking a still-live lane.  Overridable for tests (stub returns dead/alive on demand).
+LANE_LIVENESS_BIN="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lane-liveness.sh}"
 
 # <arm> <mission> <sig8> -> prints `worker_spawned ...`, journals it, returns 0/1.
 # Both launchers detach on their own (glm-coder.sh: setsid_wrapper + disown;
@@ -1568,6 +1681,11 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
 _spawn_worker_body() {
   local arm="$1" mission="$2" sig8="$3" errf="$4"
   local out rc handle err
+  # LANE-PLACEMENT-01: prepend the worktree pin line ONCE here — covers all four arms
+  # (glm/kimi/sonnet/codex) with a single insertion, no per-arm drift.  Prepended AFTER
+  # compute_sig/classify/router so sig8, dedup ledger, and routing are byte-identical with
+  # or without a flag (prepending before compute_sig would change sig8 and defeat dedup).
+  [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
   case "${arm}" in
     glm)
       # FIX PASS 4: `9>&-` closes the lock fd for this call as defense-in-depth -- the
@@ -1935,13 +2053,18 @@ Usage:
   $SCRIPT_NAME <mission|@file|-> [--protected] [--safety] [--subsystems N]
                 [--ui-judgment] [--interactive] [--kind <k>] [--glm-failures N]
                 [--glm-lock-busy] [--force] [--no-spawn]
+                [--resume-lane <task-sig8|founder-id>] [--worktree <abs-path>]
                 Resolve the code-writing model (glm|sonnet|codex) via routing.yaml glm_policy,
                 journal route_resolved, refuse a duplicate task-signature (ATOMIC; --force
                 never bypasses it), then LAUNCH the resolved worker and print its handle
                 (--no-spawn / LEADV2_DISPATCH_SPAWN=0 for resolve-only). Default arm=glm.
+                --resume-lane / --worktree pin WORK_ROOT to an EXISTING lane worktree instead
+                of ensure-creating a new one (mutually exclusive; resumes finished/dead lanes,
+                never hijacks a running one).
                 Exit codes: 0 spawned/resolved, 2 duplicate task-sig, 3 arm=opus (lead
                 judgment, not auto-dispatched), 4 spawn failed (retryable -- a failed
-                spawn or --no-spawn never leaves a blocking ledger row behind).
+                spawn or --no-spawn never leaves a blocking ledger row behind), 5 placement
+                refused (nonexistent/foreign-repo/live lane — no ledger row, no spawn).
   $SCRIPT_NAME record-review --diff-hash <h> --verdict <PASS|FAIL|PASS_WITH_NITS>
                 [--reviewer <s>] [--run-id <s>]
                 Record a Codex review verdict; refuse a duplicate diff-hash (ATOMIC).
@@ -2022,6 +2145,8 @@ cmd_resolve() {
   # and lets the close gate release the ORIGINAL claim on the same id (see
   # spawn_product_close below and leadv2-dispatch-product-close.sh's EXIT trap).
   local founder_task_id=""
+  # LANE-PLACEMENT-01: explicit lane placement (--resume-lane / --worktree).
+  local placement_lane_ref="" placement_path=""
   local spawn="${LEADV2_DISPATCH_SPAWN:-1}"
   local raw
   while [[ $# -gt 0 ]]; do
@@ -2052,6 +2177,13 @@ cmd_resolve() {
       --acceptance-cmd)  [[ $# -ge 2 ]] || { log_err "--acceptance-cmd requires a value"; usage; }
                           lane_acceptance_cmd="$2"; shift 2 ;;
       --rollback-onestep) lane_rollback=1; shift ;;
+      # LANE-PLACEMENT-01: pin WORK_ROOT to an EXISTING lane worktree instead of
+      # ensure-creating a new one.  Two spellings, one code path.  Mutual-exclusion
+      # is enforced here (before any state write, exit 1 = usage).
+      --resume-lane)  [[ $# -ge 2 ]] || { log_err "--resume-lane requires a value"; usage; }
+                      placement_lane_ref="$2"; shift 2 ;;
+      --worktree)     [[ $# -ge 2 ]] || { log_err "--worktree requires a value"; usage; }
+                      placement_path="$2"; shift 2 ;;
       --task-id)      [[ $# -ge 2 ]] || { log_err "--task-id requires a value"; usage; }
                       founder_task_id="$2"; shift 2 ;;
       -h|--help)      usage ;;
@@ -2059,6 +2191,11 @@ cmd_resolve() {
       *)              mission="${mission}${mission:+ }$1"; shift ;;  # collect positional mission
     esac
   done
+
+  # LANE-PLACEMENT-01: both placement flags together = usage error (exit 1, no state write).
+  if [[ -n "${placement_lane_ref}" && -n "${placement_path}" ]]; then
+    log_err "--resume-lane and --worktree are mutually exclusive"; usage
+  fi
 
   # Resolve the mission text: @file -> read file; "-" -> stdin; else inline.
   raw="${mission}"
@@ -2083,6 +2220,11 @@ cmd_resolve() {
   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
     log_err "signature computation failed"; exit 1
   fi
+  # LANE-PLACEMENT-01: resolve an explicit --resume-lane/--worktree pin BEFORE the ensure
+  # block, BEFORE record_lane_start_sha, BEFORE any reservation/terminal/spawn.  Refuses
+  # (exit 5) on: nonexistent path, not-a-worktree, foreign repo, live-claimed lane.  No
+  # flag set → no-op (returns 0 immediately; ensure path runs byte-identical to today).
+  _resolve_pinned_placement
   # LANE-WORKTREE-ISOLATION-01 lane-entry fix (W-1 architect prepass §0.1/§1.1 step 3):
   # this is the ONE call site every lane passes through regardless of who invoked it --
   # fanout's three lead-session launch paths, the detached per-lane launcher, AND a
@@ -2104,7 +2246,8 @@ cmd_resolve() {
   # (today's shared-tree behavior), so isolation failing here only ever degrades, never
   # blocks. R8: a silent fallback is indistinguishable from a working feature -- that IS
   # the disease this task exists to end -- so every fallback is journaled loudly below.
-  if [[ -z "${WORK_ROOT}" || ! -d "${WORK_ROOT}" || "${WORK_ROOT}" == "${PROJECT_ROOT}" ]]; then
+  if [[ "${PLACEMENT_PINNED:-0}" != "1" ]]; then
+   if [[ -z "${WORK_ROOT}" || ! -d "${WORK_ROOT}" || "${WORK_ROOT}" == "${PROJECT_ROOT}" ]]; then
     local _lane_ensure_key="${founder_task_id:-${sig8}}"
     local _lane_dir
     _lane_dir="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" ensure "${_lane_ensure_key}" "${kind:-standard}" 2>/dev/null)"
@@ -2117,6 +2260,7 @@ cmd_resolve() {
       fi
     fi
   fi
+  fi  # LANE-PLACEMENT-01: close PLACEMENT_PINNED guard
   # LANE-START-SHA-01: unconditional, before any arm spawn -- overwrites any stale value
   # from a prior dispatch that reused this cache dir (mitigates R2: a nested/child dispatch
   # never inherits a parent's start sha because it always re-records its own here first).
