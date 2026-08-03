@@ -462,6 +462,7 @@ no_progress_s: ${KIMI_NO_PROGRESS_S}
 pid: ${pid}
 status: running
 exit_code:
+channel_outcome:
 turns: 0
 duration_s: 0
 tokens_in: 0
@@ -486,7 +487,7 @@ finalize_meta() {
   local run_dir="$1" status="$2" exit_code="$3" duration="$4" tokens_in="$5" tokens_out="$6" turns="$7"
   local run_id repo cwd_dir prompt_file endpoint model max_turns timeout_s turn_limit no_progress_s pid started_at
   local cache_read cache_creation usage_source usage_is_estimate estimate_turns
-  local estimate_elapsed estimate_bytes estimate_output usage_updated_at termination_bound
+  local estimate_elapsed estimate_bytes estimate_output usage_updated_at termination_bound channel_outcome
   run_id="$(meta_get "${run_dir}" run_id)"
   repo="$(meta_get "${run_dir}" repo)"
   cwd_dir="$(meta_get "${run_dir}" cwd)"
@@ -509,6 +510,8 @@ finalize_meta() {
   estimate_output="$(meta_get "${run_dir}" usage_estimate_output_tokens)"
   usage_updated_at="$(meta_get "${run_dir}" usage_updated_at)"
   termination_bound="$(cat "${run_dir}/.bound_reason" 2>/dev/null || meta_get "${run_dir}" termination_bound)"
+  channel_outcome="$(meta_get "${run_dir}" channel_outcome)"
+  [[ -f "${run_dir}/.channel_no_work" ]] && channel_outcome="no_work"
   cache_read="${cache_read:-0}"
   cache_creation="${cache_creation:-0}"
   usage_source="${usage_source:-stream_proxy}"
@@ -537,6 +540,7 @@ no_progress_s: ${no_progress_s:-${KIMI_NO_PROGRESS_S}}
 pid: ${pid}
 status: ${status}
 exit_code: ${exit_code}
+channel_outcome: ${channel_outcome}
 turns: ${turns}
 duration_s: ${duration}
 tokens_in: ${tokens_in}
@@ -1510,6 +1514,20 @@ cmd_supervise() {
       touch "${run_dir}/.asked_into_void" 2>/dev/null || true
       echo "RUN_COMPLETE_ASKED_INTO_VOID" >> "${run_dir}/progress.log"
       finish_warnings=$((finish_warnings + 1))
+    fi
+    # A coherent end_turn on a non-empty code mission with a provably clean
+    # work tree is retryable on another channel.  `skip` is intentionally not
+    # a bail: without a baseline (or outside git), absence of a delta is not
+    # knowable.  This must precede finalize_meta, which replaces meta.yaml.
+    local _kimi_code_shaped _kimi_delta
+    _kimi_code_shaped="$(mission_is_code_shaped "${run_dir}" || echo 0)"
+    _kimi_delta="$(work_delta_present "${run_dir}" "${cwd_dir}" || echo skip)"
+    if [[ -s "${run_dir}/prompt.txt" && "${_kimi_code_shaped}" == "1" && "${_kimi_delta}" == "no" ]]; then
+      status="failed"
+      exit_code="${KIMI_FALLBACK_EXIT_CODE}"
+      touch "${run_dir}/.channel_no_work"
+      echo "KIMI_CHANNEL_NO_WORK reason=no_work_delta" >> "${run_dir}/progress.log"
+      echo "${KIMI_FALLBACK_SENTINEL}" >> "${run_dir}/progress.log"
     fi
     if [[ "${finish_warnings}" -gt 0 ]]; then
       echo "RUN_COMPLETE_WITH_WARNINGS" >> "${run_dir}/progress.log"

@@ -116,7 +116,8 @@ FANOUT_CLASS_FUNNEL="${LEADV2_FANOUT_CLASS_FUNNEL:-1}"
 # P0-FANOUT-EXIT-KILLS-ITS-OWN-LANES-01: the funnel path above ran
 # leadv2-dispatch-code.sh SYNCHRONOUSLY in this script's own foreground,
 # strictly sequentially across LAUNCH_IDS -- up to ARCHITECT_PREPASS_TIMEOUT_SEC
-# x ARCHITECT_PREPASS_ATTEMPTS (840s) per lane. On this machine (no `setsid`
+# x ARCHITECT_PREPASS_ATTEMPTS (840s) per lane. Kimi adds a 60s caller-side
+# verdict window after spawn (overrideable). On this machine (no `setsid`
 # binary) nothing this script launches gets its own OS session, so when a
 # caller (e.g. the harness Bash tool's 600s ceiling) reaps this script's
 # process GROUP, every already-spawned lane -- prepass and worker alike --
@@ -1643,7 +1644,8 @@ _fanout_write_lane_terminal() {
 # P0-FANOUT-EXIT-KILLS-ITS-OWN-LANES-01 default path (LEADV2_FANOUT_LANE_
 # DETACH=1). Hands the (up to 840s) architect-prepass + worker-spawn call to
 # leadv2-dispatch-code.sh off to a per-lane launcher script running in its own
-# OS session, and blocks only for a short handoff ack (LEADV2_FANOUT_LANE_
+# OS session. Kimi adds a 60s caller-side verdict window after spawn
+# (overrideable). Fanout blocks only for a short handoff ack (LEADV2_FANOUT_LANE_
 # ACK_TIMEOUT_SEC, default 15s) instead of the full synchronous call --
 # letting fanout return promptly regardless of how many lanes are launched or
 # how long any one prepass takes. The launcher (leadv2-fanout-lane-launcher.sh)

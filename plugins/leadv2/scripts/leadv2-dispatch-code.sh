@@ -1183,6 +1183,58 @@ _prepass_writes() { # <sig8> -> CSV writes or empty
   (IFS=','; printf '%s' "${kept[*]:-}")
 }
 
+# KIMI-CHANNEL-REHAB-01: only narrow, bounded implementation missions enter the
+# Kimi rung. A founder's --kimi-fit override deliberately bypasses every
+# heuristic. On the explicit non-product/no-prepass path, an absent write-set
+# means unknown-but-small rather than broad; the char cap remains the bound.
+# Sets KIMI_ADMISSION_WRITES / KIMI_ADMISSION_PREPASS / KIMI_ADMISSION_REASON
+# for the decision journal.
+_kimi_admissible() { # <mission> <sig8> <writes_csv> <kimi_fit> -> 0 admissible, 1 not
+  local mission="$1" sig8="$2" writes_csv="$3" kimi_fit="$4"
+  local max_chars="${LEADV2_KIMI_MAX_MISSION_CHARS:-2500}"
+  local max_writes="${LEADV2_KIMI_MAX_WRITES:-2}"
+  local prepass_file entry
+  KIMI_ADMISSION_WRITES=0
+  KIMI_ADMISSION_PREPASS=0
+  KIMI_ADMISSION_REASON=""
+  [[ "${kimi_fit}" == "1" ]] && return 0
+  [[ "${max_chars}" =~ ^[0-9]+$ ]] || max_chars=2500
+  [[ "${max_writes}" =~ ^[0-9]+$ ]] || max_writes=2
+
+  prepass_file="$(_prepass_file "${sig8}")"
+  [[ -f "${prepass_file}" ]] && KIMI_ADMISSION_PREPASS=1
+  if [[ ${#mission} -gt ${max_chars} ]]; then
+    KIMI_ADMISSION_REASON="chars_over"
+    return 1
+  fi
+
+  [[ -n "${writes_csv}" ]] || writes_csv="$(_prepass_writes "${sig8}")"
+  local -a entries=()
+  [[ -n "${writes_csv}" ]] && IFS=',' read -r -a entries <<< "${writes_csv}"
+  for entry in "${entries[@]}"; do
+    entry="$(printf '%s' "${entry}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [[ -n "${entry}" ]] && KIMI_ADMISSION_WRITES=$((KIMI_ADMISSION_WRITES + 1))
+  done
+  if [[ ${KIMI_ADMISSION_WRITES} -gt ${max_writes} ]]; then
+    KIMI_ADMISSION_REASON="writes_over"
+    return 1
+  fi
+  if [[ ${KIMI_ADMISSION_PREPASS} == "1" ]]; then
+    KIMI_ADMISSION_REASON="prepass_present"
+    return 1
+  fi
+  return 0
+}
+
+_apply_kimi_admission() { # <mission> <sig8> <writes_csv> <kimi_fit>; mutates candidate_arms
+  local mission="$1" sig8="$2" writes_csv="$3" kimi_fit="$4" _a
+  _kimi_admissible "${mission}" "${sig8}" "${writes_csv}" "${kimi_fit}" && return 0
+  local -a _filtered=()
+  for _a in "${candidate_arms[@]}"; do [[ "${_a}" == "kimi" ]] || _filtered+=("${_a}"); done
+  candidate_arms=("${_filtered[@]}")
+  emit decision "kimi_skipped reason=${KIMI_ADMISSION_REASON:-chars_over} task=${sig8} chars=${#mission} writes=${KIMI_ADMISSION_WRITES:-0} prepass=${KIMI_ADMISSION_PREPASS:-0}"
+}
+
 # _lane_writes_guard <sig8> <row_writes> <have_prepass:0|1> -> 0 ok, 1 park
 # H6 (LANDING-BLOCKER-R2): one call site per architect_prepass exit path, including the
 # ARCHITECT_GATE kill-switch and the provably_one_file early return -- neither may dispatch
@@ -1730,6 +1782,42 @@ _spawn_worker_body() {
   return 0
 }
 
+# KIMI-CHANNEL-REHAB-01 C1: `kimi-coder.sh bg` only reports launch success; its
+# no-work verdict arrives later from the detached supervisor. Poll the launcher's
+# own `status` view of meta.yaml until a terminal artifact appears. The caller-side
+# verdict window defaults to 60s, independent of the detached worker timeout; an
+# explicit LEADV2_KIMI_VERDICT_WAIT_S override may lengthen or shorten it. Expiry is
+# fire-and-forget success because the supervisor keeps finalizing the async dispatch.
+# Only the explicit channel_outcome+exit-code pair is a spill signal, so other exit-78
+# fallback causes are not conflated with no-work.
+_wait_kimi_verdict() { # <handle> <sig8> -> 0 terminal-other/no-verdict-yet, 78 no-work
+  local handle="$1" sig8="$2"
+  local timeout_s="${LEADV2_KIMI_VERDICT_WAIT_S:-60}"
+  local poll_s="${LEADV2_KIMI_VERDICT_POLL_S:-1}"
+  [[ "${timeout_s}" =~ ^[0-9]+$ ]] || timeout_s=60
+  [[ "${poll_s}" =~ ^[0-9]+([.][0-9]+)?$ ]] || poll_s=1
+  [[ "${poll_s}" != "0" && "${poll_s}" != "0.0" ]] || poll_s=0.1
+
+  local started="${SECONDS}" raw status exit_code channel_outcome
+  while true; do
+    raw="$(bash "${KIMI_BIN}" status "${handle}" 2>/dev/null || true)"
+    status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
+    exit_code="$(printf '%s\n' "${raw}" | sed -n 's/^exit_code:[[:space:]]*//p' | head -1)"
+    channel_outcome="$(printf '%s\n' "${raw}" | sed -n 's/^channel_outcome:[[:space:]]*//p' | head -1)"
+    if [[ "${status}" == "failed" && "${exit_code}" == "78" && "${channel_outcome}" == "no_work" ]]; then
+      return 78
+    fi
+    case "${status}" in
+      complete|failed) return 0 ;;
+    esac
+    if (( SECONDS - started >= timeout_s )); then
+      emit decision "kimi_verdict_wait task=${sig8} handle=${handle} outcome=no_verdict_yet timeout_s=${timeout_s}"
+      return 0
+    fi
+    sleep "${poll_s}"
+  done
+}
+
 # ── CORE FIX (fix-pass-4 REDESIGN): reserve (short lock) -> spawn (NO lock) -> confirm/
 # abort (short lock) -- see the FIX PASS 4 doc block at the top of this file for why
 # fix-pass-3's "one held flock across the whole sequence" was itself blocked (FD-inheritance
@@ -1750,7 +1838,7 @@ _spawn_worker_body() {
 #       success
 #   6 = the RESERVATION write itself failed (read-only/full fs) -- hard error, nothing was
 #       ever written, no spawn was attempted (mission: APPEND-FAIL)
-#   7 = arm refused admission (for example, the GLM quota gate) -- abort SUCCEEDED
+#   7 = arm refused admission, or Kimi completed with channel_no_work -- abort SUCCEEDED
 atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8> <do_spawn>
   local sig="$1" arm="$2" rule="$3" mission="$4" sig8="$5" do_spawn="$6"
   local token trc
@@ -1788,8 +1876,25 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
     LAST_WORKER_HANDLE="${handle}"
     dispatch_confirm "${token}" "${handle}"; crc=$?
     ACTIVE_DISPATCH_TOKEN=""
-    [[ ${crc} -eq 0 ]] && return 0
-    return 5   # worker IS live but the ledger write to record it failed -- hard error
+    [[ ${crc} -eq 0 ]] || return 5   # live worker, but confirmation write failed
+
+    # Confirm BEFORE waiting so the pending TTL cannot expire during a long Kimi
+    # run. If the terminal artifact says no-work, remove this exact confirmed row
+    # and hand rc=7 to the existing candidate-loop spill branch.
+    if [[ "${arm}" == "kimi" ]]; then
+      local verdict_rc=0
+      _wait_kimi_verdict "${handle}" "${sig8}" || verdict_rc=$?
+      if [[ ${verdict_rc} -eq 78 ]]; then
+        LAST_ARM_OUTCOME="kimi_channel_no_work"
+        emit decision "arm_refused by=router model=kimi task=${sig8} reason=channel_no_work"
+        log "spawn(kimi) completed: channel_no_work; spilling to next arm"
+        local kimi_abort_rc=0
+        dispatch_abort "${token}" || kimi_abort_rc=$?
+        [[ ${kimi_abort_rc} -eq 0 ]] && return 7
+        return 5
+      fi
+    fi
+    return 0
   fi
 
   # Not confirmed -- either do_spawn=0 (dry-run, never confirms) or spawn_worker failed
@@ -1907,7 +2012,7 @@ cmd_status() {
 
 # ── resolve (default) path ────────────────────────────────────────────────────────
 cmd_resolve() {
-  local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 task_class="Standard"
+  local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0
   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
   # for callers (leadv2-fanout.sh's funnel) that dispatch on behalf of a specific
@@ -1936,6 +2041,7 @@ cmd_resolve() {
                       glmfails="$2"; shift 2 ;;
       --glm-lock-busy) lockbusy=1;   shift ;;
       --force)        force=1;       shift ;;
+      --kimi-fit)     kimi_fit=1;    shift ;;
       --spawn)        spawn=1;       shift ;;  # default; kept explicit for callers/back-compat
       --no-spawn)     spawn=0;       shift ;;  # resolve+journal only, no worker launched (tests)
       # LANE-SHAPE-01: optional lane-shape declaration inputs (spec §8 context.yaml
@@ -2089,6 +2195,11 @@ $(cat "${_pp_file}")
 ${mission}"
     fi
   fi
+
+  # KIMI-CHANNEL-REHAB-01 M4: admission measures the actual scoped mission,
+  # before the fixed async-question boilerplate below. The 2500-char cap is a
+  # mission-scope bound, not a budget for dispatcher-owned instructions.
+  local kimi_admission_mission="${mission}"
 
   # QUESTION-CHANNEL-DEAD-01 (willingness half): dispatch-code.sh is a lane
   # launcher with NO instruction of its own about the async question channel
@@ -2250,14 +2361,11 @@ confirmation-seeking; only for a decision you cannot make yourself."
   if [[ "${router_label}" == "v2" ]]; then
     IFS=',' read -r -a candidate_arms <<< "${v2_eligible}"
     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
+    _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
   else
     case "${arm}" in
-      # KIMI REMOVED 2026-08-02 by founder decision — the provider is gone, not cooled down.
-      # Measured that day: 19 dispatches, 19 returned `work=no`; it was picked as the spill arm
-      # every time glm's lock was busy, so it consumed the day's largest share of tokens and
-      # produced nothing. The ladder is now glm -> codex -> sonnet; codex/sonnet were already
-      # reachable and are unaffected. Do not re-add without the founder saying so.
-      glm)   candidate_arms=(glm codex sonnet) ;;
+      # Kimi's presence is guarded below by _apply_kimi_admission.
+      glm)   candidate_arms=(glm kimi codex sonnet) ;;
       codex) candidate_arms=(codex sonnet) ;;
       sonnet) candidate_arms=(sonnet) ;;
       *) log_err "unsupported resolved dispatch arm: ${arm}"; exit 1 ;;
@@ -2272,6 +2380,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
       for _a in "${candidate_arms[@]}"; do [[ "${_a}" == "codex" ]] || _filtered+=("${_a}"); done
       candidate_arms=("${_filtered[@]}")
     fi
+    _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
   fi
 
   # ROUTER-QUOTA-DRIVEN-01 (T6): filter candidate_arms by LIVE quota truth
@@ -2334,6 +2443,11 @@ confirmation-seeking; only for a decision you cannot make yourself."
     fi
     candidate_arms=("${_kept[@]}")
   fi
+
+  # Record the final chain before the candidate loop consumes it.  In
+  # particular, this makes a Kimi admission skip observable in the same
+  # decision journal as the resolved route.
+  emit decision "candidate_chain task=${sig8} arms=$(IFS=,; printf '%s' "${candidate_arms[*]}")"
 
   # SUPERVISOR-AUDIT-01 model-stamp extension (founder 2026-07-30): stamp the
   # arm_resolved value now (the resolver's PRIMARY pick) so the row is never
@@ -2433,11 +2547,12 @@ confirmation-seeking; only for a decision you cannot make yourself."
             arm="${_rr_arm}"; rule="${_rr_rule}"; reason="${_rr_reason}"
             emit decision "arm_reresolved by=router trigger=glm_lock_busy arm=${arm} rule=${rule} reason=${reason} task=${sig8} router=${router_label}"
             case "${arm}" in
-              glm)   candidate_arms=(glm codex sonnet) ;;
+              glm)   candidate_arms=(glm kimi codex sonnet) ;;
               codex) candidate_arms=(codex sonnet) ;;
               sonnet) candidate_arms=(sonnet) ;;
               *) : ;;  # unknown arm: leave the chain; loop continues as-is
             esac
+            _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
             _reenter=1
             break   # break the for; outer while re-enters over the rebuilt chain
           fi

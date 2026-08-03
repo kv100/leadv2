@@ -57,15 +57,14 @@ router_v2:
       bucket: glm
       reserve_threshold: 2
       reserve_allow: [review]
-    # KIMI REMOVED 2026-08-02 by founder decision — «убери кими, нам не нужен этот провайдер,
-    # никогда больше ничего не надо через него делать». Measured that day: 19 dispatches, 19
-    # returned `work=no` — zero productive lanes — while it was picked as the spill arm every
-    # time glm's lock was busy, which made it the session's single largest waste. This is NOT
-    # the usual "cool an arm down by measurement" case the house rule protects; it is an
-    # explicit founder removal of a provider. Do not re-add without the founder saying so.
-    # NOTE: removing the arm here is necessary but NOT sufficient — leadv2-dispatch-code.sh
-    # carries hardcoded `kimi)` cases (_spawn_worker_body, refusal handling ~1483-1574) that
-    # do not read this file. Those are being removed in their own lane.
+    # KIMI-CHANNEL-REHAB-01: the arm is back. Dispatch-time mission-shape admission,
+    # not membership here, decides whether Kimi may receive a particular task.
+    # dispatch: hardcoded `kimi)` case in leadv2-dispatch-code.sh; no data-driven channel field.
+    - id: kimi
+      model: moonshotai/kimi-k3-free
+      bucket: kimi
+      reserve_threshold: 2
+      reserve_allow: [review]
     - id: codex
       channel: codex-task.sh
       model: gpt-5.6-terra

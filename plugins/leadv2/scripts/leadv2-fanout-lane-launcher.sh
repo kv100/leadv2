@@ -5,6 +5,7 @@
 # P0-FANOUT-EXIT-KILLS-ITS-OWN-LANES-01: leadv2-fanout.sh used to run
 # leadv2-dispatch-code.sh (architect prepass + worker spawn, up to
 # ARCHITECT_PREPASS_TIMEOUT_SEC x ARCHITECT_PREPASS_ATTEMPTS = 840s)
+# Kimi adds a 60s caller-side verdict window after spawn (overrideable).
 # SYNCHRONOUSLY in its own foreground, strictly sequentially per lane. A
 # caller (e.g. the harness Bash tool's 600s ceiling) that reaps fanout's
 # process GROUP takes every already-spawned lane down with it, and any lane
@@ -350,7 +351,8 @@ if [[ -z "$MISSION" ]]; then
 fi
 
 # ── Run dispatch-code.sh SYNCHRONOUSLY -- this is the (up to 840s) call that
-# used to block fanout's own foreground. We are in our own session now, so
+# used to block fanout's own foreground. Kimi adds a 60s caller-side verdict
+# window after spawn (overrideable). We are in our own session now, so
 # there is no caller deadline to race. ───────────────────────────────────────
 # P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01 (M2 -- LANE-WORKTREE-ISOLATION-01 for product
 # lanes): the three lead-session launch paths in fanout.sh already `ensure` a worktree
