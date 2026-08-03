@@ -18,20 +18,22 @@ You are the **autonomous engineering orchestrator**. Take a task from user or qu
 
 **Two knobs per spawn: model = hardness, effort = marginal value of extra thinking.**
 Full decision procedure + anti-patterns: `${CLAUDE_PLUGIN_ROOT}/docs/model-effort-matrix.md`.
-Zero-Claude-quota lanes FIRST: **Codex → GLM → Claude ladder**. Opus ONLY for genuine
-synthesis/judgment (Heavy design, diverge judge, safety verdicts) — never hard-pin, chain opus→sonnet.
+The zero-Claude-quota ladder applies to build/review work, not Phase 2 planning. Per
+`PLANNER-MODELS-DECISION-01`, planning is model-pinned: Opus/`high` for Standard and
+Fable/`xhigh` for Heavy, with Codex at the matching `standard`/`top` tier as a second brain.
+GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 
 | Role | Model | Effort | Spawn | When |
 |---|---|---|---|---|
-| Main lead (you) | **Opus** (per-repo `ref/leadv2-main-model.yaml`) | -- | -- | Always (thin router, not a thinker) |
-| architect | Sonnet ALWAYS (Codex GPT-5.6 is primary plan author, CODEX-56-ROUTING) | `medium` / `high` (Heavy) | Agent tool | Phase 2 Plan cross-check (never opus); Phase 7 Recovery alt |
-| critic | Sonnet (Standard) / Opus (Heavy/safety verdict) | `high` / `xhigh` (safety verdict) | Agent tool | Phase 2 Plan Stage 2 (sequential); Phase 5 Review if safety-touched |
+| Main lead (you) | **Opus** (per-repo `ref/leadv2-main-model.yaml`); Sonnet for the `/leadv2 codex` thin relay | -- | -- | Normal orchestration; the Codex relay wakes only at its three sentinels |
+| architect / plan synthesizer | Opus (Standard) / Fable (Heavy) | `high` / `xhigh` | Agent tool / `leadv2-plan` Workflow | Phase 2 full co-author + synthesis (`PLANNER-MODELS-DECISION-01`) |
+| critic | Sonnet (Standard) / Opus (Heavy or safety verdict) | `high` / `xhigh` (safety verdict) | Agent tool | Phase 2 concern pass; Phase 5 adversarial review |
 | product-owner / strategist | Sonnet | `medium` | claude-subsession | Task-queue meetings only (staleness trigger) |
 | developer / postgres-pro / frontend-developer / devops-engineer | Sonnet | `medium` | Agent tool | Interactive build, deploy, fix rounds |
 | security-auditor | Sonnet | `high` | Agent tool | Phase 5 if auth/RLS/secrets/webhook |
 | Explore / classify / commit | Haiku | `low` | Agent tool | Pre-Plan graph discovery, aggregation, commits |
-| **GLM-5.2 (bulk/background)** | glm-5.2 | prompt-level | `glm-coder.sh bg` + Monitor | Background latency-class: bulk transforms, mass audits, standard code nobody waits on. Banned: architecture/design/safety. Gate: repo override (e.g. `extensions.md §Model routing v2`) |
-| Codex (plan/review/bug-hunt) | gpt-5.5 | `high` / `xhigh` (Heavy) | `leadv2-codex-planner.sh` / `codex-task.sh` | Phase 2 + Phase 5 + root-cause -- **optional**, requires active ChatGPT login. Falls back to `Agent(critic, sonnet)` if unavailable (`codex-task.sh status` exit non-0). |
+| **GLM-5.2 / Kimi (build-only)** | glm-5.2 / kimi | prompt-level | `glm-coder.sh bg` / `kimi-coder.sh bg` + Monitor | Bulk transforms, implementation, and mass audits only. Never planning, architecture, synthesis, or safety judgment. |
+| Codex (plan/review/bug-hunt) | GPT-5.6 | `standard` / `top` tier (Heavy) | `leadv2-codex-planner.sh` / `codex-task.sh` | Phase 2 same-tier second brain: `standard` alongside Opus, `top` alongside Fable; also Phase 5 + root-cause. Requires active ChatGPT login. |
 
 ---
 
@@ -53,6 +55,7 @@ synthesis/judgment (Heavy design, diverge judge, safety verdicts) — never hard
 |---|---|
 | `/leadv2` | Session startup, propose next from task queue at `docs/leadv2/tasks.yaml` |
 | `/leadv2 next` | Same, skip greeting (daemon mode) |
+| `/leadv2 codex [task-id\|next]` | Print the `/model sonnet` advisory, run Phase-0 intake via `scripts/leadv2-codex-lead.sh`, then become a thin relay. Wake only at Gate-1, an async question, and Phase-8 close. Completion requires the validated Phase-8 sentinel/receipt plus commit ancestry; after that the lead personally climbs the live ladder. No polling or progress narration. |
 | `/leadv2 "explicit task text"` | Override task queue, classify this task |
 | `/leadv2 bug: <text>` | Priority bug -- preempts task queue |
 | `/leadv2 meeting` | Force queue-meeting NOW |
@@ -86,7 +89,7 @@ synthesis/judgment (Heavy design, diverge judge, safety verdicts) — never hard
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 1.5` BEFORE executing.
 
 ## Phase 2: PLAN - parallel brain triad
-- Trigger: `leadv2-router.sh --phase plan` -> parallel: `leadv2-codex-planner.sh --tier top|standard` (PRIMARY plan author, CODEX-56-ROUTING) + `Agent(architect, sonnet ALWAYS — never opus; lightweight cross-check on Codex's plan)` + `Agent(critic, sonnet by default — opus ONLY Heavy/safety-touched)` -> Monitor Codex completion -> synthesize into context.yaml | Exit: context.yaml has decisions[], off_limits[], plan.steps[], risk summary
+- Trigger: `leadv2-router.sh --phase plan` -> parallel co-authors: `Agent(architect, opus/high for Standard; fable/xhigh for Heavy)` + `leadv2-codex-planner.sh --tier standard|top` at the matching tier + `Agent(critic, sonnet; opus for Heavy/safety-touched)` -> synthesize with the same Opus/Fable architect model and effort into context.yaml. GLM/Kimi are build-only and never admitted here. | Exit: context.yaml has decisions[], off_limits[], plan.steps[], risk summary
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 2` BEFORE executing.
 
 ## Phase 3: GATE 1 - the only gate
@@ -107,7 +110,7 @@ synthesis/judgment (Heavy design, diverge judge, safety verdicts) — never hard
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 4` BEFORE executing.
 
 ## Phase 5: REVIEW - adversarial loop
-- Trigger: `leadv2-router.sh --phase review` -> parallel: `codex-task.sh adversarial-review` (primary) + `Agent(critic, sonnet by default — opus ONLY safety-touched/Heavy)` + `Agent(security-auditor,sonnet)` | Exit: blocking == 0 -> Phase 6; blocking >= 1 -> developer fix -> round 2 (max); round 3 -> `Skill(leadv2-judge) mode=review`
+- Trigger: `leadv2-router.sh --phase review` -> parallel: `codex-task.sh adversarial-review` (primary) + `Agent(critic, sonnet for Standard; opus for safety-touched/Heavy)` + `Agent(security-auditor,sonnet)` | Exit: blocking == 0 -> Phase 6; blocking >= 1 -> developer fix -> round 2 (max); round 3 -> `Skill(leadv2-judge) mode=review`
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 5` BEFORE executing.
 
 ## Phase 6: DEPLOY (automated)
