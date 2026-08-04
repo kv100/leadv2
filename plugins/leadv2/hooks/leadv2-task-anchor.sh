@@ -231,10 +231,12 @@ def build_thread_anchor(root, leadv2_dir, session_id=""):
     ]
     content = []
     if has_ot:
-        # OT-SESSION-SCOPE-01: scan a wider window, drop other sessions' tagged
-        # entries, then take the last 8 of what remains. Untagged (legacy) lines
-        # are always kept.
-        tail = read_last_nonblank_lines(ot_path, THREAD_TAIL_SCAN)
+        # OT-SESSION-SCOPE-01 round 3: filter-by-session over the FULL file
+        # BEFORE windowing (mirrors pre-compact-task-freeze.sh order). Reading
+        # first then filtering would window-then-filter, starving this session's
+        # own entries when foreign-session volume inside the raw tail is high.
+        # hidden = foreign-tagged lines in the WHOLE file, not an arbitrary slice.
+        tail = read_last_nonblank_lines(ot_path, THREAD_SCAN_MAX)
         tail, hidden = _filter_by_session(tail, session_id)
         tail = tail[-8:]
         if tail:
@@ -266,10 +268,12 @@ _ANSWER_WORDS = {"да", "нет", "ок", "окей", "yes", "no", "approve", "
 # keep the text identical so a diff between them makes drift visible.
 _ENTRY_RE = re.compile(r"^- \[ \] (\S+)(?: \[s:([A-Za-z0-9._-]{1,8})\])? — (.*)$")
 
-# Width of the tail scan window for build_thread_anchor; the visible block still
-# caps at 8 lines (+1 hidden-count line). Wider window so a foreign-session entry
-# buried under other content still gets filtered out.
-THREAD_TAIL_SCAN = 40
+# OT-SESSION-SCOPE-01 round 3: read bound (NOT a visible-window knob). We
+# filter-by-session over the FULL set BEFORE any windowing, so this just caps
+# the read against a pathological file. open-threads.md is self-pruned
+# (OPEN-THREADS-HYGIENE-01), so 2000 ≡ "the whole file" in practice. The
+# visible block still caps at 8 lines (+1 hidden-count line).
+THREAD_SCAN_MAX = 2000
 
 
 def _filter_by_session(lines, session_id):
@@ -345,6 +349,10 @@ def capture_ask(root, leadv2_dir, prompt, session_id=""):
     if _TAG_RE.search(single_line):
         return  # belt-and-braces: never persist an angle-bracket tag fragment
     dedupe_key = single_line[:60]
+    # OT-SESSION-SCOPE-01 round 3: hoist the sanitized sid ONCE so the writer
+    # and the matcher below can never diverge. tag entries with it; dedupe
+    # session-scoped so each session keeps its own tagged copy.
+    sid8 = re.sub(r"[^A-Za-z0-9._-]", "", str(session_id or ""))[:8]
 
     lockf = None
     try:
@@ -362,16 +370,19 @@ def capture_ask(root, leadv2_dir, prompt, session_id=""):
 
         for line in existing.splitlines():
             m = _ENTRY_RE.match(line)
-            # OT-SESSION-SCOPE-01: text is now group(3) (group(2) is the sid).
+            # OT-SESSION-SCOPE-01 round 3: text is group(3) (group(2) is the sid).
             if m and m.group(3)[:60] == dedupe_key:
-                return  # already captured — dedupe
+                # Session-scoped dedupe so an identical ask from another session
+                # does not get folded into THIS session's tag and then hidden.
+                #   - untagged (group(2) is None): legacy text-only dedupe.
+                #   - this session has no sid8: legacy text-only dedupe.
+                #   - tagged with THIS sid8: same-session-twice -> dedupe.
+                #   - tagged with a FOREIGN sid8: keep going, add our own copy.
+                if m.group(2) is None or not sid8 or m.group(2) == sid8:
+                    return  # already captured — dedupe
 
         heading = "## Captured asks (auto)"
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        # OT-SESSION-SCOPE-01: tag the entry with an 8-char session id so the
-        # anchor view can hide other sessions' asks. No session_id -> legacy
-        # untagged form (still parsed, still listed).
-        sid8 = re.sub(r"[^A-Za-z0-9._-]", "", str(session_id or ""))[:8]
         tag = f" [s:{sid8}]" if sid8 else ""
         new_entry = f"- [ ] {ts}{tag} — {single_line}"
 

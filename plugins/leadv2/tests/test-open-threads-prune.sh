@@ -287,6 +287,79 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# (11) OT-SESSION-SCOPE-01 round 3 (BLOCKING regression): build_thread_anchor
+#      must filter-by-session over the FULL file BEFORE windowing. Fixture is
+#      1 own-tagged line (oldest) followed by 45 foreign-tagged lines. The old
+#      window-then-filter order read only the last 40 raw lines (all foreign),
+#      so the session's own line fell outside the window and vanished, and the
+#      hidden count lied at 40. Assert: own line IS shown AND hidden == 45.
+#      This case must FAIL against the pre-fix hook.
+# ---------------------------------------------------------------------------
+PROJ_STARVE="${TMPDIR_BASE}/proj_starve"
+mkdir -p "${PROJ_STARVE}/docs/leadv2" "${PROJ_STARVE}/.claude/leadv2-overrides"
+git -C "$PROJ_STARVE" init -q
+git -C "$PROJ_STARVE" config user.email test@test.local
+git -C "$PROJ_STARVE" config user.name test
+{
+  printf -- '## Captured asks (auto)\n'
+  printf -- '- [ ] 2026-08-04T11:00:00Z [s:aaaaaaaa] — OWN STARVATION PROBE thread that must remain visible\n'
+  for _i in $(seq 1 45); do
+    printf -- '- [ ] 2026-08-04T11:00:%02dZ [s:bbbbbbbb] — foreign filler thread number %d from session B\n' "$_i" "$_i"
+  done
+} > "${PROJ_STARVE}/docs/leadv2/open-threads.md"
+STARVE_PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1], 'prompt': sys.argv[2], 'session_id': 'aaaaaaaa-1111-2222-3333-444455556666'}))" "$PROJ_STARVE" "[starvation probe message]")
+STARVE_OUT="$(printf '%s' "$STARVE_PAYLOAD" | bash "$TASK_ANCHOR" 2>/dev/null || true)"
+if printf '%s\n' "$STARVE_OUT" | grep -q "OWN STARVATION PROBE thread that must remain visible" \
+  && printf '%s\n' "$STARVE_OUT" | grep -q "(45 thread(s) from other sessions hidden)" \
+  && ! printf '%s\n' "$STARVE_OUT" | grep -q "(40 thread(s) from other sessions hidden)"; then
+  pass "(11) own line survives 45 foreign lines; hidden count reports 45 not 40"
+else
+  fail "(11) starvation regression — own line hidden or count wrong:"$'\n'"${STARVE_OUT}"
+fi
+
+# ---------------------------------------------------------------------------
+# (12) OT-SESSION-SCOPE-01 round 3 (NIT regression): capture_ask dedupe is
+#      session-scoped. Two sessions typing the IDENTICAL prompt each get their
+#      own tagged copy — neither is folded into the other's tag and hidden from
+#      its own anchor. Old text-only dedupe kept only the first session's tag.
+#      Assert: file holds both [s:aaaaaaaa] and [s:bbbbbbbb] entries; A's anchor
+#      shows A's and not B's; B's anchor shows B's and not A's.
+# ---------------------------------------------------------------------------
+PROJ_XDD="${TMPDIR_BASE}/proj_xdd"
+mkdir -p "${PROJ_XDD}/docs/leadv2" "${PROJ_XDD}/.claude/leadv2-overrides"
+git -C "$PROJ_XDD" init -q
+git -C "$PROJ_XDD" config user.email test@test.local
+git -C "$PROJ_XDD" config user.name test
+printf -- '## Captured asks (auto)\n' > "${PROJ_XDD}/docs/leadv2/open-threads.md"
+XDD_PROMPT="identical cross-session founder ask text long enough to pass the capture heuristic"
+XDD_A=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1], 'prompt': sys.argv[2], 'session_id': 'aaaaaaaa-1111-2222-3333-444455556666'}))" "$PROJ_XDD" "$XDD_PROMPT")
+XDD_B=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1], 'prompt': sys.argv[2], 'session_id': 'bbbbbbbb-1111-2222-3333-444455556666'}))" "$PROJ_XDD" "$XDD_PROMPT")
+printf '%s' "$XDD_A" | bash "$TASK_ANCHOR" >/dev/null 2>&1 || true
+printf '%s' "$XDD_B" | bash "$TASK_ANCHOR" >/dev/null 2>&1 || true
+XDD_FILE="$(cat "${PROJ_XDD}/docs/leadv2/open-threads.md")"
+XDD_A_COUNT="$(printf '%s\n' "$XDD_FILE" | grep -c '\[s:aaaaaaaa\]')"
+XDD_B_COUNT="$(printf '%s\n' "$XDD_FILE" | grep -c '\[s:bbbbbbbb\]')"
+if [[ "$XDD_A_COUNT" -eq 1 && "$XDD_B_COUNT" -eq 1 ]]; then
+  pass "(12a) cross-session dedupe keeps one tagged copy per session"
+else
+  fail "(12a) expected 1 [s:aaaaaaaa] + 1 [s:bbbbbbbb], got A=${XDD_A_COUNT} B=${XDD_B_COUNT}:"$'\n'"${XDD_FILE}"
+fi
+# A's anchor shows A's, not B's; B's anchor shows B's, not A's
+XDD_ANCH_A_PL=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1], 'prompt': sys.argv[2], 'session_id': 'aaaaaaaa-1111-2222-3333-444455556666'}))" "$PROJ_XDD" "[xdd anchor probe a]")
+XDD_ANCH_B_PL=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1], 'prompt': sys.argv[2], 'session_id': 'bbbbbbbb-1111-2222-3333-444455556666'}))" "$PROJ_XDD" "[xdd anchor probe b]")
+XDD_ANCH_A="$(printf '%s' "$XDD_ANCH_A_PL" | bash "$TASK_ANCHOR" 2>/dev/null || true)"
+XDD_ANCH_B="$(printf '%s' "$XDD_ANCH_B_PL" | bash "$TASK_ANCHOR" 2>/dev/null || true)"
+if printf '%s\n' "$XDD_ANCH_A" | grep -q '\[s:aaaaaaaa\]' \
+  && ! printf '%s\n' "$XDD_ANCH_A" | grep -q '\[s:bbbbbbbb\]' \
+  && printf '%s\n' "$XDD_ANCH_B" | grep -q '\[s:bbbbbbbb\]' \
+  && ! printf '%s\n' "$XDD_ANCH_B" | grep -q '\[s:aaaaaaaa\]'; then
+  pass "(12b) each session's anchor shows its own copy and hides the other's"
+else
+  fail "(12b) cross-session anchor isolation failed — A-block and B-block above"
+  printf '--- A anchor ---\n%s\n--- B anchor ---\n%s\n' "$XDD_ANCH_A" "$XDD_ANCH_B" >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
