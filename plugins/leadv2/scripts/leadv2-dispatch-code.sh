@@ -1618,22 +1618,29 @@ spawn_worker() {
   return ${rc}
 }
 
-spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id>
+spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id> <lane_mission_path>
   # N7F-LANE-NAME: forwards DISPATCH_LANE_NAME as close_bin's 8th positional (not a 7th
   # param on this fn -- read from the global, same pattern as _dl_note above) so the
   # display name survives the worker->close-phase handoff for act two.
   local sig8="$1" author="$2" handle="$3" reviewer_arms="${4:-}" lane_writes_csv="${5:-}"
-  local founder_task_id="${6:-}"
+  local founder_task_id="${6:-}" lane_mission_path="${7:-}"
   [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]] || return 0
   local close_bin="${LEADV2_DISPATCH_PRODUCT_CLOSE_BIN:-${SCRIPT_DIR}/leadv2-dispatch-product-close.sh}"
   if [[ ! -f "${close_bin}" ]]; then
     emit decision "product_close task=${sig8} status=failed reason=close_script_missing"
     return 1
   fi
+  # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01: thread the resolved candidate
+  # chain (same CSV as the vestigial LEADV2_DISPATCH_REVIEWER_ARMS below, but this one
+  # IS read -- by the close gate's silent-arm probe to find the next arm to advance to)
+  # and the ONE lane-mission artifact this dispatch already wrote to disk, so the close
+  # gate can re-spawn the next arm on an identical mission without re-deriving it.
   PROJECT_ROOT="${PROJECT_ROOT}" LEADV2_DISPATCH_CACHE_DIR="${CACHE_BASE}" \
     LEADV2_JOURNAL_BIN="${JOURNAL_BIN}" LEADV2_DISPATCH_CODEX_BIN="${CODEX_BIN}" \
     LEADV2_DISPATCH_ARCHITECT_BIN="${ARCHITECT_BIN}" \
     LEADV2_DISPATCH_REVIEWER_ARMS="${reviewer_arms}" \
+    LEADV2_DISPATCH_CANDIDATE_ARMS="${reviewer_arms}" \
+    LEADV2_DISPATCH_LANE_MISSION="${lane_mission_path}" \
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
     LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" \
     LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
@@ -2673,7 +2680,17 @@ confirmation-seeking; only for a decision you cannot make yourself."
       # Kept (not deleted) only to avoid an unrelated call-signature change here.
       local reviewer_arms
       reviewer_arms="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
-      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}"; then
+      # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (3a): persist the lane's
+      # mission text ONCE here, at spawn time, so a later `advance-arm` re-spawn (fired
+      # from the close gate's silent-arm probe) can launch the next candidate on the
+      # SAME mission without re-deriving it from router state that may have moved on.
+      local _lane_mission_path=""
+      if [[ "${product_class}" == "product" ]]; then
+        _lane_mission_path="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-mission.md"
+        mkdir -p "$(dirname "${_lane_mission_path}")" 2>/dev/null
+        printf '%s' "${mission}" > "${_lane_mission_path}" 2>/dev/null || _lane_mission_path=""
+      fi
+      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}"; then
         # The worker is already live; make the failed postflight launch visible rather than
         # pretending close evidence will arrive.  Do not kill the independently-owned worker.
         log_err "product close gate could not be launched for task=${sig8}"
@@ -2798,11 +2815,83 @@ confirmation-seeking; only for a decision you cannot make yourself."
   exit 4
 }
 
+# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (3b): re-spawns the NEXT candidate arm
+# on the SAME lane worktree/mission after the close gate's silent-arm probe (Fix 1, in
+# leadv2-dispatch-product-close.sh) determined the current arm produced nothing. Reuses
+# the existing spawn machinery (spawn_worker + _stamp_active_phase + spawn_product_close)
+# instead of reimplementing any of it. Deliberately does NOT call dispatch_reserve/
+# atomic_dispatch_reserve_spawn_confirm -- the duplicate-signature guard exists to stop
+# TWO callers racing to claim the SAME sig8; here the sig8 is already confirmed to this
+# lane (checked below) and this is a continuation of that same lane, not a new claim.
+#   leadv2-dispatch-code.sh advance-arm --sig8 <sig8> --arm <next_arm>
+#     --mission-file <path> --task-id <founder_task_id> [--worktree <lane_root>]
+#     [--writes <csv>]
+# exit 4 (no journal-worthy spawn attempted) when no CONFIRMED reservation row exists for
+# this sig8 in the dispatch_reserve/confirm ledger (dispatch_ledger_file, NOT the terminal
+# ledger) -- that row is this function's proof the sig8 legitimately belongs to a lane
+# that already went through admission once.
+cmd_advance_arm() {
+  local sig8="" arm="" mission_file="" task_id="" worktree="" writes=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --sig8)         [[ $# -ge 2 ]] || { log_err "--sig8 requires a value"; exit 4; }; sig8="$2"; shift 2 ;;
+      --arm)          [[ $# -ge 2 ]] || { log_err "--arm requires a value"; exit 4; }; arm="$2"; shift 2 ;;
+      --mission-file) [[ $# -ge 2 ]] || { log_err "--mission-file requires a value"; exit 4; }; mission_file="$2"; shift 2 ;;
+      --task-id)      [[ $# -ge 2 ]] || { log_err "--task-id requires a value"; exit 4; }; task_id="$2"; shift 2 ;;
+      --worktree)     [[ $# -ge 2 ]] || { log_err "--worktree requires a value"; exit 4; }; worktree="$2"; shift 2 ;;
+      --writes)       [[ $# -ge 2 ]] || { log_err "--writes requires a value"; exit 4; }; writes="$2"; shift 2 ;;
+      *) log_err "advance-arm: unknown argument: $1"; exit 4 ;;
+    esac
+  done
+  if [[ -z "${sig8}" || -z "${arm}" || -z "${mission_file}" ]]; then
+    log_err "advance-arm: --sig8, --arm and --mission-file are required"
+    exit 4
+  fi
+  if [[ ! -f "${mission_file}" ]]; then
+    emit decision "arm_advance_refused task=${sig8} reason=no_mission_file"
+    exit 4
+  fi
+
+  local ledger_f confirmed
+  ledger_f="$(dispatch_ledger_file)"
+  confirmed=""
+  if [[ -f "${ledger_f}" ]]; then
+    confirmed="$(grep -F "\"task_sig\":\"${sig8}" "${ledger_f}" 2>/dev/null | grep -F '"state":"confirmed"' | tail -1)"
+  fi
+  if [[ -z "${confirmed}" ]]; then
+    emit decision "arm_advance_refused task=${sig8} reason=no_confirmed_reservation"
+    log_err "advance-arm: no confirmed reservation for task=${sig8}; refusing"
+    exit 4
+  fi
+
+  local mission
+  mission="$(cat "${mission_file}" 2>/dev/null)"
+  [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
+
+  local spawn_out src
+  spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
+  if [[ ${src} -ne 0 ]]; then
+    emit decision "arm_advance_failed task=${sig8} arm=${arm} reason=spawn_failed"
+    exit 1
+  fi
+  local handle
+  handle="$(printf '%s\n' "${spawn_out}" | sed -n 's/.*handle=\(.*\)$/\1/p' | tail -1)"
+  _stamp_active_phase "${task_id}" "build" "${arm}"
+  emit decision "worker_spawned by=arm_advance model=${arm} handle=${handle}"
+
+  if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then
+    spawn_product_close "${sig8}" "${arm}" "${handle}" "" "${writes}" "${task_id}" "${mission_file}"
+  fi
+  printf 'arm_advance model=%s task=%s handle=%s\n' "${arm}" "${sig8}" "${handle}"
+  exit 0
+}
+
 # ── dispatch ──────────────────────────────────────────────────────────────────────
 [[ $# -eq 0 ]] && usage
 case "${1:-}" in
   record-review) shift; cmd_record_review "$@" ;;
   status)        cmd_status ;;
+  advance-arm)   shift; cmd_advance_arm "$@" ;;
   sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;
   -h|--help)     usage ;;
   *)             cmd_resolve "$@" ;;
