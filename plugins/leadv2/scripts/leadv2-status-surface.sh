@@ -2605,14 +2605,52 @@ render_single_lead() {
     printf 'mode=single-lead active ⚠ ledger unreadable: python3 unavailable\n'
     return 0
   fi
+
+  # MENUBAR-SHOWS-DEAD-LANES-AND-HASH-NAMES-01 C1: aggregate across every
+  # repo's dispatch ledger, not just the cwd's. bash 3.2 has no associative
+  # arrays, so the source list is one tab/newline-joined string (repo, res
+  # path, terminal path, verifiable) built here; all indexing happens in
+  # python. LEADV2_STATUS_STATE_ROOT is a test seam; production default is
+  # dirname(STATE_DIR) because leadv2-state-path.sh already names STATE_DIR
+  # after the repo slug (STATE_ROOT/<repo> == STATE_DIR for the CURRENT repo)
+  # -- so the current repo's own terminal path stays the literal
+  # ${STATE_DIR}/dispatch-ledger.jsonl expression below, unchanged from
+  # before this fix, while every OTHER (aggregated) repo is located via the
+  # STATE_ROOT/<repo> formula.
+  _sl_state_root="${LEADV2_STATUS_STATE_ROOT:-$(dirname "$STATE_DIR")}"
+  _sl_aggregate="${LEADV2_STATUS_AGGREGATE:-1}"
+  _sl_cur_term="${STATE_DIR}/dispatch-ledger.jsonl"
+  if [ -f "$_sl_cur_term" ]; then _sl_cur_ver=1; else _sl_cur_ver=0; fi
+  _sl_sources="$(printf '%s\t%s\t%s\t%s' "$REPO" "$LEDGER_FILE" "$_sl_cur_term" "$_sl_cur_ver")"
+  _sl_seen=" ${REPO} "
+  if [ "$_sl_aggregate" != "0" ] && [ -d "$LEDGER_DIR" ]; then
+    for _sl_f in "$LEDGER_DIR"/*.jsonl; do
+      [ -e "$_sl_f" ] || continue
+      _sl_base="$(basename "$_sl_f" .jsonl)"
+      case "$_sl_seen" in
+        *" ${_sl_base} "*) continue ;;
+      esac
+      _sl_seen="${_sl_seen}${_sl_base} "
+      _sl_term2="${_sl_state_root}/${_sl_base}/dispatch-ledger.jsonl"
+      if [ -f "$_sl_term2" ]; then _sl_ver2=1; else _sl_ver2=0; fi
+      _sl_sources="${_sl_sources}
+$(printf '%s\t%s\t%s\t%s' "$_sl_base" "$_sl_f" "$_sl_term2" "$_sl_ver2")"
+    done
+  fi
+  unset _sl_f _sl_base _sl_term2 _sl_ver2 _sl_seen _sl_cur_term _sl_cur_ver
+
   if ! LEADV2_SL_RESERVATIONS="$LEDGER_FILE" \
     LEADV2_SL_TERMINALS="${STATE_DIR}/dispatch-ledger.jsonl" \
     LEADV2_SL_NOW="$NOW" \
     LEADV2_SL_TTL="${LEADV2_STATUS_ACTIVE_TTL_S:-7200}" \
+    LEADV2_SL_CLOSING_GRACE="${LEADV2_SL_CLOSING_GRACE_S:-300}" \
     LEADV2_SL_PS_SNAPSHOT="$PS_SNAPSHOT" \
     LEADV2_SL_PROJECT_ROOT="${LEADV2_STATUS_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || true)}" \
     LEADV2_SL_GLM_RUNS_SEG="$(basename "${GLM_RUNS_DIR:-glm-runs}")" \
     LEADV2_SL_KIMI_RUNS_SEG="$(basename "${KIMI_RUNS_DIR:-kimi-runs}")" \
+    LEADV2_SL_SOURCES="$_sl_sources" \
+    LEADV2_SL_REPO="$REPO" \
+    LEADV2_SL_STATE_DIR="$STATE_DIR" \
     python3 2>/dev/null <<'PYEOF'
 import json, os, sys, re, datetime, subprocess
 
@@ -2620,6 +2658,8 @@ PS_SNAPSHOT = os.environ.get("LEADV2_SL_PS_SNAPSHOT", "")
 PROJECT_ROOT = os.environ.get("LEADV2_SL_PROJECT_ROOT", "")
 GLM_RUNS_SEG = os.environ.get("LEADV2_SL_GLM_RUNS_SEG", "glm-runs")
 KIMI_RUNS_SEG = os.environ.get("LEADV2_SL_KIMI_RUNS_SEG", "kimi-runs")
+CUR_REPO = os.environ.get("LEADV2_SL_REPO", "")
+SL_STATE_DIR = os.environ.get("LEADV2_SL_STATE_DIR", "")
 
 def fail(reason):
     print("mode=single-lead active ⚠ ledger unreadable: %s" % reason.replace("|", ""))
@@ -2635,16 +2675,17 @@ def epoch(row):
         except Exception:
             raise ValueError("row has invalid timestamp")
 
-def tail_lines(path):
-    # Match the established lanes-reader cap: these ledgers grow unbounded,
-    # and old malformed history must not poison every 10-second refresh.
+def tail_lines(path, n):
+    # Rule T (MENUBAR-SHOWS-DEAD-LANES-AND-HASH-NAMES-01 C2): reservations
+    # stay at 400, terminals read deeper (2000) -- losing an old reservation
+    # only hides a lane, losing an old TERMINAL invents one.
     proc = subprocess.Popen(
-        ["tail", "-n", "400", path], stdout=subprocess.PIPE,
+        ["tail", "-n", str(n), path], stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, universal_newlines=True,
     )
     out, err = proc.communicate()
     if proc.returncode != 0:
-        raise OSError("tail -n 400 failed: %s" % (err.strip() or proc.returncode))
+        raise OSError("tail -n %d failed: %s" % (n, err.strip() or proc.returncode))
     return out.splitlines()
 
 # ── SWIFTBAR-ACTIVE-SOURCE-02: live process census ─────────────────────────
@@ -2728,7 +2769,58 @@ def census_workers(ps_text):
 # runner's argv is `codex exec ... -C <shared-root>` with no worktree ref, so a
 # ps-argv scan is useless. Instead, enumerate the pid files and check liveness
 # with os.kill(pid, 0) (no subprocess spawn). task_id = the handoff dir name.
-def codex_census(project_root):
+#
+# MENUBAR-SHOWS-DEAD-LANES-AND-HASH-NAMES-01 C3: leadv2-codex-lead.sh writes
+# this EXACT same pid-file name for the lead's OWN session (line 367), so a
+# liveness-only check enumerates the lead as a worker. Corroborate against the
+# one ps snapshot already in scope (no new subprocess) and default-deny: an
+# argv we cannot find or do not recognize hides the lane rather than inventing
+# one (R3 — a re-exec that drops the script name is recoverable via the
+# reservation-only render path, never via a false ACTIVE).
+def _build_pid_argv(ps_text):
+    m = {}
+    for line in ps_text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid, argv = parts[0], parts[1]
+        m[pid] = argv
+    return m
+
+_WORKER_ARGV_PATTERNS = (
+    "leadv2-codex-session-runner.sh",
+    "leadv2-session-runner.sh",
+    "leadv2-session-spawner.sh",
+    "codex exec",
+)
+
+def _codex_pid_is_worker(pid_argv, pid_str):
+    argv = pid_argv.get(str(pid_str))
+    if argv is None:
+        return False  # cannot prove worker-hood -> reject
+    if "leadv2-codex-lead.sh" in argv:
+        return False  # this IS the lead -> reject
+    for pat in _WORKER_ARGV_PATTERNS:
+        if pat in argv:
+            return True
+    return False
+
+def _supervise_pid(state_dir):
+    if not state_dir:
+        return None
+    p = os.path.join(state_dir, ".supervise-active")
+    try:
+        with open(p) as fh:
+            raw = fh.read()
+    except (IOError, OSError):
+        return None
+    m = re.search(r'\d+', raw)
+    return m.group(0) if m else None
+
+def codex_census(project_root, pid_argv):
     found = {}
     if not project_root:
         return found
@@ -2753,6 +2845,8 @@ def codex_census(project_root):
             pass  # EPERM -> presume ALIVE (aligns with pid_alive / leadv2-codex-lead.sh posture)
         except OSError:
             continue
+        if not _codex_pid_is_worker(pid_argv, pid):
+            continue
         # entry is the handoff dir name = task_id (founder_task_id per
         # dispatch-code line 2108, or sig8 fallback). Use it as the census
         # key directly; treat as sig8 ONLY when it is exactly 8 hex chars.
@@ -2764,15 +2858,100 @@ def codex_census(project_root):
         found[entry] = _cent
     return found
 
+def _parse_sources(raw):
+    out = []
+    for line in raw.split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        repo, res_path, term_path, ver = parts
+        out.append({"repo": repo, "res_path": res_path, "term_path": term_path,
+                     "verifiable": ver == "1"})
+    return out
+
+SOURCES = _parse_sources(os.environ.get("LEADV2_SL_SOURCES", ""))
+if not SOURCES:
+    SOURCES = [{"repo": CUR_REPO,
+                "res_path": os.environ.get("LEADV2_SL_RESERVATIONS", ""),
+                "term_path": os.environ.get("LEADV2_SL_TERMINALS", ""),
+                "verifiable": True}]
+
 try:
     now = int(os.environ["LEADV2_SL_NOW"])
     ttl = int(os.environ.get("LEADV2_SL_TTL", "7200"))
     if ttl < 0: raise ValueError("invalid ACTIVE_TTL")
-    reservations = []
-    reservation_path = os.environ["LEADV2_SL_RESERVATIONS"]
-    if os.path.exists(reservation_path):
-        for n, line in enumerate(tail_lines(reservation_path), 1):
-            if line.strip():
+    grace = int(os.environ.get("LEADV2_SL_CLOSING_GRACE", "300"))
+    if grace < 0: raise ValueError("invalid CLOSING_GRACE")
+
+    # ── terminals: per-repo exact-key indices (C2) ──────────────────────────
+    # Rule U: a repo whose terminal ledger cannot be read contributes ZERO
+    # rows (only a warning) — without it, that repo's reservations would
+    # resurrect closed lanes, defect 1 in a new place. The CURRENT repo is the
+    # one exception: a missing (never-yet-written) terminal ledger has always
+    # rendered everything as active (pre-existing contract); a READ failure
+    # (permission, malformed JSON) still raises into fail() same as before.
+    term_by_sig = {}
+    term_by_name = {}
+    unverifiable_repos = set()
+    warnings = []
+
+    def _read_terminal_source(term_path, by_sig, by_name):
+        for n, line in enumerate(tail_lines(term_path, 2000), 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict) or not row.get("task_sig"):
+                raise ValueError("terminal tail row %d malformed" % n)
+            ts = epoch(row)
+            sig8 = str(row["task_sig"])[:8]
+            if sig8 not in by_sig or ts > by_sig[sig8][0]:
+                by_sig[sig8] = (ts, row)
+            for cand in (row.get("task_id"), row.get("founder_task_id")):
+                cand = str(cand or "")
+                if cand and (cand not in by_name or ts > by_name[cand][0]):
+                    by_name[cand] = (ts, row)
+
+    for src in SOURCES:
+        repo = src["repo"]
+        term_path = src["term_path"]
+        is_current = (repo == CUR_REPO)
+        exists = bool(term_path) and os.path.exists(term_path)
+        if not exists:
+            if not is_current:
+                unverifiable_repos.add(repo)
+                warnings.append("%s terminals unreadable" % repo)
+            continue
+        by_sig, by_name = {}, {}
+        if is_current:
+            _read_terminal_source(term_path, by_sig, by_name)
+        else:
+            try:
+                _read_terminal_source(term_path, by_sig, by_name)
+            except Exception:
+                unverifiable_repos.add(repo)
+                warnings.append("%s terminals unreadable" % repo)
+                continue
+        term_by_sig[repo] = by_sig
+        term_by_name[repo] = by_name
+
+    # ── reservations: skip any repo Rule U already excluded ─────────────────
+    res_entries = []
+    for src in SOURCES:
+        repo = src["repo"]
+        if repo in unverifiable_repos:
+            continue
+        res_path = src["res_path"]
+        if not res_path or not os.path.exists(res_path):
+            continue
+        is_current = (repo == CUR_REPO)
+
+        def _read_reservation_rows():
+            rows = []
+            for n, line in enumerate(tail_lines(res_path, 400), 1):
+                if not line.strip():
+                    continue
                 row = json.loads(line)
                 if not isinstance(row, dict) or not row.get("task_sig"):
                     raise ValueError("reservation tail row %d malformed" % n)
@@ -2784,122 +2963,204 @@ try:
                 st = str(row.get("state", ""))
                 if st not in ("pending", "confirmed"):
                     continue
-                reservations.append((epoch(row), row))
-    terminals = set()
-    terminal_task_ids = set()
-    terminal_path = os.environ["LEADV2_SL_TERMINALS"]
-    if os.path.exists(terminal_path):
-        for n, line in enumerate(tail_lines(terminal_path), 1):
-            if line.strip():
-                row = json.loads(line)
-                if not isinstance(row, dict) or not row.get("task_sig"):
-                    raise ValueError("terminal tail row %d malformed" % n)
-                terminals.add(str(row["task_sig"])[:8])
-                _ttid = str(row.get("task_id") or row.get("founder_task_id") or "")
-                if _ttid:
-                    terminal_task_ids.add(_ttid)
+                rows.append(row)
+            return rows
+
+        if is_current:
+            rows = _read_reservation_rows()
+        else:
+            try:
+                rows = _read_reservation_rows()
+            except Exception:
+                unverifiable_repos.add(repo)
+                warnings.append("%s terminals unreadable" % repo)
+                continue
+
+        for row in rows:
+            res_entries.append({
+                "repo": repo,
+                "sig8": str(row["task_sig"])[:8],
+                "task_id": str(row.get("task_id") or ""),
+                "founder_task_id": str(row.get("founder_task_id") or ""),
+                "lane_label": str(row.get("lane_label") or ""),
+                "when": epoch(row),
+                "row": row,
+            })
 except Exception as exc:
     fail(str(exc))
 
-# ── build the active-worker set: process census ∪ unexpired reservations ───
-live_procs = census_workers(PS_SNAPSHOT)
-live_procs.update(codex_census(PROJECT_ROOT))
-
-# reservation sig8 -> (when, row), most-recent wins
+# reservation indices, scoped per repo so a coincidental sig8/name collision
+# across two unrelated repos can never cross-match.
 res_by_sig = {}
-# reservation task_id string -> (when, row) — for human-named lane correlation
-res_by_task_id = {}
-for when, row in reservations:
-    sig8 = str(row["task_sig"])[:8]
-    if sig8 not in res_by_sig or when > res_by_sig[sig8][0]:
-        res_by_sig[sig8] = (when, row)
-    _rid = str(row.get("task_id") or row.get("founder_task_id") or "")
-    if _rid and (_rid not in res_by_task_id or when > res_by_task_id[_rid][0]):
-        res_by_task_id[_rid] = (when, row)
+res_by_name = {}
+for e in res_entries:
+    repo = e["repo"]
+    d_sig = res_by_sig.setdefault(repo, {})
+    d_name = res_by_name.setdefault(repo, {})
+    if e["sig8"] not in d_sig or e["when"] > d_sig[e["sig8"]][0]:
+        d_sig[e["sig8"]] = (e["when"], e)
+    for nm in (e["task_id"], e["founder_task_id"], e["lane_label"]):
+        if nm and (nm not in d_name or e["when"] > d_name[nm][0]):
+            d_name[nm] = (e["when"], e)
 
-# Each worker: {task_id, arm, age_s, state}
-# state = "closing" if process alive AND terminal row exists, else "active".
+def _match_reservation(sig8, task_id):
+    # sig8 wins over name, current-repo-first ordering preserved via SOURCES.
+    for src in SOURCES:
+        repo = src["repo"]
+        if sig8 and sig8 in res_by_sig.get(repo, {}):
+            return repo, res_by_sig[repo][sig8][1]
+    for src in SOURCES:
+        repo = src["repo"]
+        if str(task_id) in res_by_name.get(repo, {}):
+            return repo, res_by_name[repo][str(task_id)][1]
+    return None, None
+
+def _terminal_hit(repo, sig8, task_id, lane_label):
+    tsig = term_by_sig.get(repo, {})
+    tname = term_by_name.get(repo, {})
+    if sig8 and sig8 in tsig:
+        return tsig[sig8]
+    if task_id and str(task_id) in tname:
+        return tname[str(task_id)]
+    if lane_label and lane_label in tname:
+        return tname[lane_label]
+    return None
+
+def _terminal_state(hit):
+    # Rule R (retention): fresh terminal -> "closing" (rendered, excluded from
+    # the active count); stale terminal -> "drop" (never rendered again); no
+    # hit -> None (not a terminal lane at all).
+    if hit is None:
+        return None, None
+    ts, _row = hit
+    if (now - ts) <= grace:
+        return "closing", "terminal"
+    return "drop", None
+
+def lane_name(res_entry, term_hit, census_task_id, sig8):
+    # C4 precedence: reservation fields (task_id/founder_task_id/lane_label
+    # -- lane_label is the field the writers actually populate) win, then the
+    # terminal row's own name fields, then a non-hex8 census task_id, then the
+    # sig8 fallback.
+    if res_entry is not None:
+        row = res_entry["row"]
+        for k in ("task_id", "founder_task_id", "lane_label"):
+            v = str(row.get(k) or "")
+            if v:
+                return v
+    if term_hit is not None:
+        _ts, trow = term_hit
+        for k in ("task_id", "founder_task_id"):
+            v = str(trow.get(k) or "")
+            if v:
+                return v
+    if census_task_id and not re.match(r'^[a-f0-9]{8}$', str(census_task_id)):
+        return str(census_task_id)
+    return sig8 or (str(census_task_id) if census_task_id else "unknown")
+
+def lane_phase(repo, sig8, terminal_phase, in_census):
+    if terminal_phase:
+        return terminal_phase
+    # Foreign aggregated repos: HANDOFF is unknown, phase degrades honestly.
+    if repo == CUR_REPO and PROJECT_ROOT and sig8:
+        review_dir = os.path.join(PROJECT_ROOT, "docs", "handoff",
+                                   "dispatch-%s-review" % sig8)
+        if os.path.isdir(review_dir):
+            return "review"
+    if in_census:
+        return "worker"
+    if repo == CUR_REPO and PROJECT_ROOT and sig8:
+        arch_dir = os.path.join(PROJECT_ROOT, "docs", "handoff",
+                                 "dispatch-%s-architect" % sig8)
+        if os.path.isdir(arch_dir):
+            return "architect"
+    return "queued"
+
+# ── build the active-worker set: process census ∪ unexpired reservations ───
+PID_ARGV = _build_pid_argv(PS_SNAPSHOT)
+SUPERVISE_PID = _supervise_pid(SL_STATE_DIR)
+live_procs = census_workers(PS_SNAPSHOT)
+live_procs.update(codex_census(PROJECT_ROOT, PID_ARGV))
+if SUPERVISE_PID is not None:
+    # C3 item 3: the supervise sentinel's own pid is never a lane, for every
+    # census pattern (not just codex).
+    live_procs = {k: v for k, v in live_procs.items()
+                  if str(v.get("pid")) != SUPERVISE_PID}
+
 workers = []
 seen_keys = set()
 
 # (a) live process census workers
 for key, info in live_procs.items():
     sig8 = None
-    # If the census key IS a sig8 (claude-subsession pattern), cross-ref
-    # reservation for human task_id.  Otherwise check an explicit sig8 field
-    # from the census entry (glm/kimi/codex set it when the lane segment
-    # happens to be hex8).
     if re.match(r'^[a-f0-9]{8}$', key):
         sig8 = key
     elif info.get("sig8"):
         sig8 = info["sig8"]
-    task_id = info.get("task_id", key)
+    census_task_id = info.get("task_id", key)
     arm = info.get("arm", "?")
-    # Cross-ref reservation: by sig8 first, then by task_id string match
-    # (for human-named lanes whose founder_task_id is not hex8).
-    _res = None
-    if sig8 and sig8 in res_by_sig:
-        _res = res_by_sig[sig8]
-    elif str(task_id) in res_by_task_id:
-        _res = res_by_task_id[str(task_id)]
-    if _res:
-        _tid = _res[1].get("task_id") or _res[1].get("founder_task_id")
-        if _tid:
-            task_id = str(_tid)
-    # Terminal cross-ref: by sig8, then by task_id string match.
-    has_terminal = (sig8 is not None and sig8 in terminals) \
-        or str(task_id) in terminal_task_ids
-    state = "closing" if has_terminal else "active"
-    # Age: reservation epoch if available, else run-dir epoch
+
+    repo, res_entry = _match_reservation(sig8, census_task_id)
+    if repo is None:
+        repo = CUR_REPO
+
+    lane_label = res_entry["lane_label"] if res_entry else ""
+    term_hit = _terminal_hit(repo, sig8, census_task_id, lane_label)
+    if term_hit is None and res_entry:
+        for nm in (res_entry["task_id"], res_entry["founder_task_id"]):
+            if nm and nm in term_by_name.get(repo, {}):
+                term_hit = term_by_name[repo][nm]
+                break
+
+    tstate, tphase = _terminal_state(term_hit)
+    if tstate == "drop":
+        continue
+
+    name = lane_name(res_entry, term_hit, census_task_id, sig8)
+    phase = lane_phase(repo, sig8, tphase, True)
+    state = "closing" if tstate == "closing" else "active"
+
     age_s = 0
-    if _res:
-        age_s = max(0, now - _res[0])
+    if res_entry:
+        age_s = max(0, now - res_entry["when"])
     elif "epoch" in info and info["epoch"]:
         age_s = max(0, now - info["epoch"])
+
     wk_key = sig8 or key
-    if wk_key in seen_keys or str(task_id) in seen_keys:
+    dedupe_name = str(name).replace("|", "")
+    if wk_key in seen_keys or dedupe_name in seen_keys:
         continue
     seen_keys.add(wk_key)
-    seen_keys.add(str(task_id))
-    workers.append({"task_id": str(task_id).replace("|", ""),
-                    "arm": arm, "age_s": age_s, "state": state,
+    seen_keys.add(dedupe_name)
+    workers.append({"name": dedupe_name, "arm": arm, "age_s": age_s,
+                    "state": state, "phase": phase, "repo": repo,
                     "_sort": age_s})
 
 # (b) unexpired reservation rows not already covered by a live process
-for sig8, (when, row) in res_by_sig.items():
+for e in res_entries:
+    repo = e["repo"]
+    sig8 = e["sig8"]
     if sig8 in seen_keys:
         continue
-    task_id = str(row.get("task_id") or row.get("founder_task_id") or sig8)
-    if task_id in seen_keys:
+    name0 = e["task_id"] or e["founder_task_id"] or e["lane_label"] or sig8
+    if name0 in seen_keys:
         continue
-    if sig8 in terminals:
+    term_hit = _terminal_hit(repo, sig8, name0, e["lane_label"])
+    tstate, tphase = _terminal_state(term_hit)
+    if tstate == "drop":
         continue
-    age = max(0, now - when)
-    if age > ttl:
+    age = max(0, now - e["when"])
+    if tstate is None and age > ttl:
         continue
-    arm = str(row.get("arm") or "unknown")
-    seen_keys.add(task_id)
-    workers.append({"task_id": task_id.replace("|", ""),
+    arm = str(e["row"].get("arm") or "unknown")
+    phase = lane_phase(repo, sig8, tphase, False)
+    state = "closing" if tstate == "closing" else "active"
+    seen_keys.add(sig8)
+    seen_keys.add(name0)
+    workers.append({"name": str(name0).replace("|", ""),
                     "arm": arm.replace("|", ""), "age_s": age,
-                    "state": "active", "_sort": age})
-
-if not workers:
-    # Check if there's a stale open reservation (expired but no terminal)
-    stale = [(sig8, when) for sig8, (when, row) in res_by_sig.items()
-             if sig8 not in terminals]
-    if stale:
-        stale.sort(key=lambda p: p[1], reverse=True)
-        sig, sw = stale[0]
-        sage = max(0, now - sw)
-        print("mode=single-lead active 0")
-        print("  (last open %s %dh ago, no terminal row)" % (sig, sage // 3600))
-    else:
-        print("mode=single-lead active 0")
-    sys.exit(0)
-
-# Sort newest first (largest age_s = oldest first; we want NEWEST = smallest age)
-workers.sort(key=lambda w: w["_sort"])
-newest = workers[0]
+                    "state": state, "phase": phase, "repo": repo,
+                    "_sort": age})
 
 def age_label(s):
     if s <= 0:
@@ -2908,17 +3169,50 @@ def age_label(s):
         return "%dm" % (s // 60)
     return "%dh" % (s // 3600)
 
-# Header line: count + newest worker summary
-_n = len(workers)
-_tid = newest["task_id"][:20]
-_arm = newest["arm"]
-_age = age_label(newest["age_s"])
-print("mode=single-lead active %d %s %s %s" % (_n, _tid, _arm, _age))
-# Worker detail lines (for dropdown)
+multi_repo = len(SOURCES) > 1
+
+if not workers:
+    # Check if there's a stale open reservation (expired but no terminal) —
+    # scoped to the current repo, matching the pre-aggregation contract.
+    stale = [(e["sig8"], e["when"]) for e in res_entries
+             if e["repo"] == CUR_REPO and e["sig8"] not in term_by_sig.get(CUR_REPO, {})]
+    if stale:
+        stale.sort(key=lambda p: p[1], reverse=True)
+        sig, sw = stale[0]
+        sage = max(0, now - sw)
+        print("mode=single-lead active 0")
+        print("  (last open %s %dh ago, no terminal row)" % (sig, sage // 3600))
+    else:
+        print("mode=single-lead active 0")
+    for w in warnings:
+        print("  ⚠ %s" % w)
+    sys.exit(0)
+
+workers.sort(key=lambda w: w["_sort"])
+active_workers = [w for w in workers if w["state"] != "closing"]
+
+# Header line: count of ACTIVE (non-closing) workers + newest one's summary.
+_n = len(active_workers)
+if _n >= 1:
+    newest = active_workers[0]
+    _tid = newest["name"][:20]
+    _arm = newest["arm"]
+    _age = age_label(newest["age_s"])
+    print("mode=single-lead active %d %s %s %s" % (_n, _tid, _arm, _age))
+else:
+    print("mode=single-lead active 0")
+
+# Worker detail lines (for dropdown) — closing rows are shown but excluded
+# from the header count above.
 for w in workers:
     _a = age_label(w["age_s"])
-    _s = w["state"]
-    print("  %s %s %s %s" % (w["task_id"][:20], w["arm"], _a, _s))
+    if multi_repo:
+        print("  %s · %s · %s %s · %s" % (w["name"][:24], w["phase"], w["arm"], _a, w["repo"]))
+    else:
+        print("  %s · %s · %s %s" % (w["name"][:24], w["phase"], w["arm"], _a))
+
+for w in warnings:
+    print("  ⚠ %s" % w)
 PYEOF
   then
     # A command/runtime/heredoc failure must preserve the mode marker so the

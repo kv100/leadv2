@@ -72,6 +72,8 @@ widget() {
   LEADV2_STATUS_LEDGER_DIR="$LEDGERS" \
   LEADV2_STATUS_RUNS_ROOT="$RUNS" \
   LEADV2_STATUS_REPO="$REPO" \
+  LEADV2_STATUS_STATE_ROOT="${SL_STATE_ROOT:-}" \
+  LEADV2_STATUS_AGGREGATE="${SL_AGGREGATE:-1}" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="$TASKS" \
   LEADV2_STATUS_HANDOFF_DIR="$HANDOFF" \
@@ -169,7 +171,7 @@ _title="$(printf '%s\n' "$_out" | sed -n '1p')"
 case "$_title" in
   "🛠 deadbeef sonnet "*)
     # Also verify the detail line appears in the dropdown
-    if printf '%s\n' "$_out" | grep -q 'deadbeef sonnet.*active'; then
+    if printf '%s\n' "$_out" | grep -q 'deadbeef · worker · sonnet'; then
       ok "(a) live claude-subsession → active with sig8"
     else
       bad "(a) detail line missing for live worker (out=$(printf '%s' "$_out" | tr '\n' '|'))"
@@ -221,7 +223,7 @@ _title="$(printf '%s\n' "$_out" | sed -n '1p')"
 case "$_title" in
   "🛠 3: "*)
     # Verify all 3 worker detail lines appear in the dropdown
-    _wkrs="$(printf '%s\n' "$_out" | grep -c '^  .* \(active\|closing\) | font=Menlo' || true)"
+    _wkrs="$(printf '%s\n' "$_out" | grep -cE '^  [^|]+ · [^|]+ · [^|]+ \| font=Menlo' || true)"
     if [ "$_wkrs" -eq 3 ]; then
       ok "(c) exactly 3 entries (2 live + 1 reservation-only)"
     else
@@ -238,10 +240,10 @@ esac
 : > "$RESERVATIONS"
 : > "$TERMINALS"
 printf '{"task_sig":"beef00001234567890ab","arm":"glm","state":"confirmed","created_epoch":%s,"task_id":"CLO-B"}\n' "$((NOW - 60))" > "$RESERVATIONS"
-printf '{"task_sig":"beef00001234567890ab","terminal":"landed","cause":"empty_diff"}\n' > "$TERMINALS"
+printf '{"task_sig":"beef00001234567890ab","terminal":"landed","cause":"empty_diff","created_epoch":%s}\n' "$((NOW - 30))" > "$TERMINALS"
 PS_STUB="100 bash /scripts/glm-coder.sh __run_child /home/.claude/cache/glm-runs/260803-160000-beef0000-abcd"
 _out="$(widget)"
-if printf '%s\n' "$_out" | grep -q 'CLO-B.*closing'; then
+if printf '%s\n' "$_out" | grep -q 'CLO-B · terminal'; then
   ok "(d) glm worker + terminal → closing state"
 else
   _title="$(printf '%s\n' "$_out" | sed -n '1p')"
@@ -277,7 +279,7 @@ _title="$(printf '%s\n' "$_out" | sed -n '1p')"
 case "$_title" in
   "🛠 FEED-SCAN-USABLE-CAN glm "*)
     # Must appear exactly ONCE in the dropdown (not doubled by reservation-only)
-    _detail_count="$(printf '%s\n' "$_out" | grep -c 'FEED-SCAN-USABLE-CAN.*active' || true)"
+    _detail_count="$(printf '%s\n' "$_out" | grep -cE '^  FEED-SCAN-USABLE-CAN.* · glm ' || true)"
     if [ "$_detail_count" -eq 1 ]; then
       ok "(f) founder-named glm lane → ACTIVE once with human name"
     else
@@ -297,12 +299,15 @@ printf '{"task_sig":"codexfnd1234567000","arm":"codex","state":"confirmed","crea
 mkdir -p "$HANDOFF/CODEX-FOUNDER-TASK-02"
 # Write a fake pid that is guaranteed alive: use $$ (the test shell itself).
 printf '%s\n' "$$" > "$HANDOFF/CODEX-FOUNDER-TASK-02/.session-runner.pid"
-PS_STUB="1 sleep 1"
+# MENUBAR-SHOWS-DEAD-LANES-AND-HASH-NAMES-01 C3: codex census now requires
+# argv corroboration against the ps snapshot, so the pid must actually show
+# up there running a recognized worker script (not just be alive).
+PS_STUB="$$ codex exec --sandbox workspace-write -C /tmp"
 _out="$(widget)"
 _title="$(printf '%s\n' "$_out" | sed -n '1p')"
 case "$_title" in
   "🛠 CODEX-FOUNDER-TASK-0 codex "*)
-    _detail_count="$(printf '%s\n' "$_out" | grep -c 'CODEX-FOUNDER-TASK-0.*active' || true)"
+    _detail_count="$(printf '%s\n' "$_out" | grep -cE '^  CODEX-FOUNDER-TASK-0.* · codex ' || true)"
     if [ "$_detail_count" -eq 1 ]; then
       ok "(g) founder-named codex pid-file → ACTIVE once with human name"
     else
@@ -314,6 +319,133 @@ case "$_title" in
     ;;
 esac
 rm -rf "$HANDOFF/CODEX-FOUNDER-TASK-02"
+
+# ── MENUBAR-SHOWS-DEAD-LANES-AND-HASH-NAMES-01 §4 ─────────────────────────
+echo ""
+echo "== T-term: fresh vs stale terminal rows (Rule R retention) =="
+: > "$RESERVATIONS"
+: > "$TERMINALS"
+printf '{"task_sig":"aaaaaaaa11112222","arm":"sonnet","state":"confirmed","created_epoch":%s,"task_id":"M1A-FACT-QUALITY-01"}\n' \
+  "$((NOW - 3000))" > "$RESERVATIONS"
+printf '{"task_sig":"aaaaaaaa11112222","terminal":"no_work","task_id":"M1A-FACT-QUALITY-01","created_epoch":%s}\n' \
+  "$((NOW - 600))" > "$TERMINALS"
+PS_STUB="1 sleep 1"
+_out="$(widget)"
+_title="$(printf '%s\n' "$_out" | sed -n '1p')"
+if [ "$_title" = "⚪ idle" ] && ! printf '%s\n' "$_out" | grep -q 'M1A-FACT-QUALITY-01'; then
+  ok "(T-term-1) stale terminal (10m) drops the lane entirely"
+else
+  bad "(T-term-1) expected idle + no trace of the lane, got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+fi
+
+printf '{"task_sig":"aaaaaaaa11112222","terminal":"no_work","task_id":"M1A-FACT-QUALITY-01","created_epoch":%s}\n' \
+  "$((NOW - 60))" > "$TERMINALS"
+_out="$(widget)"
+_title="$(printf '%s\n' "$_out" | sed -n '1p')"
+if [ "$_title" = "⚪ idle" ] && printf '%s\n' "$_out" | grep -q 'M1A-FACT-QUALITY-01 · terminal'; then
+  ok "(T-term-2) fresh terminal (60s) shows closing, excluded from active count"
+else
+  bad "(T-term-2) expected idle title + closing detail line, got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+fi
+
+echo ""
+echo "== T-lead: the lead's own session is never a lane (C3) =="
+# codex_census() reads <PROJECT_ROOT>/docs/handoff (hardcoded), NOT the
+# overridable LEADV2_STATUS_HANDOFF_DIR ($HANDOFF) used elsewhere in this
+# fixture — the pid file must live under $PROJECT/docs/handoff to actually
+# exercise the census path rather than accidentally passing via reservation
+# fallback.
+PHANDOFF="$PROJECT/docs/handoff"
+: > "$RESERVATIONS"
+: > "$TERMINALS"
+rm -rf "$PHANDOFF"
+mkdir -p "$PHANDOFF/dispatch-ff000000"
+printf '%s\n' "$$" > "$PHANDOFF/dispatch-ff000000/.session-runner.pid"
+PS_STUB="$$ bash /scripts/leadv2-codex-lead.sh --task-id dispatch-ff000000"
+_out="$(widget)"
+if printf '%s\n' "$_out" | grep -q 'ff000000'; then
+  bad "(T-lead-1) lead's own session rendered as a lane (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+else
+  ok "(T-lead-1) lead's own session excluded from lanes"
+fi
+rm -rf "$PHANDOFF/dispatch-ff000000"
+
+# Companion positive: same shape, but the pid's argv is a real worker runner.
+mkdir -p "$PHANDOFF/dispatch-ff111111"
+printf '%s\n' "$$" > "$PHANDOFF/dispatch-ff111111/.session-runner.pid"
+PS_STUB="$$ bash /scripts/leadv2-codex-session-runner.sh --task-id dispatch-ff111111"
+_out="$(widget)"
+if printf '%s\n' "$_out" | grep -q 'ff111111'; then
+  ok "(T-lead-2) real codex session-runner still visible (exclusion is targeted)"
+else
+  bad "(T-lead-2) real session-runner wrongly excluded (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+fi
+rm -rf "$PHANDOFF/dispatch-ff111111"
+
+echo ""
+echo "== T-multi: aggregation across repos (repo label on foreign lanes) =="
+: > "$RESERVATIONS"
+: > "$TERMINALS"
+SL_STATE_ROOT="$FIX/state_root"
+mkdir -p "$SL_STATE_ROOT/repo-b"
+: > "$SL_STATE_ROOT/repo-b/dispatch-ledger.jsonl"
+printf '{"task_sig":"bb112233bbccdd","arm":"sonnet","state":"confirmed","created_epoch":%s,"task_id":"REPO-B-TASK-01"}\n' \
+  "$((NOW - 120))" > "$LEDGERS/repo-b.jsonl"
+PS_STUB="1 sleep 1"
+_out="$(widget)"
+unset SL_STATE_ROOT
+if printf '%s\n' "$_out" | grep -q 'REPO-B-TASK-01.*· repo-b | font=Menlo'; then
+  ok "(T-multi) foreign-repo lane visible with its repo label"
+else
+  bad "(T-multi) expected repo-b lane with repo suffix (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+fi
+rm -f "$LEDGERS/repo-b.jsonl"
+
+echo ""
+echo "== T-unverifiable: repo lacking a terminal ledger contributes zero rows =="
+: > "$RESERVATIONS"
+: > "$TERMINALS"
+SL_STATE_ROOT="$FIX/state_root2"
+mkdir -p "$SL_STATE_ROOT"
+printf '{"task_sig":"cc998877ccddee","arm":"glm","state":"confirmed","created_epoch":%s,"task_id":"REPO-C-TASK-01"}\n' \
+  "$((NOW - 60))" > "$LEDGERS/repo-c.jsonl"
+PS_STUB="1 sleep 1"
+_out="$(widget)"
+unset SL_STATE_ROOT
+if ! printf '%s\n' "$_out" | grep -q 'REPO-C-TASK-01' && printf '%s\n' "$_out" | grep -q '⚠ repo-c terminals unreadable'; then
+  ok "(T-unverifiable) repo with unreadable terminals contributes no rows + warns"
+else
+  bad "(T-unverifiable) expected no REPO-C lane + warning (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+fi
+rm -f "$LEDGERS/repo-c.jsonl"
+
+echo ""
+echo "== T-name: lane_label fallback + architect phase (C4) =="
+# lane_phase()'s architect/review dir check is also hardcoded to
+# <PROJECT_ROOT>/docs/handoff (see T-lead comment above), not $HANDOFF.
+: > "$RESERVATIONS"
+: > "$TERMINALS"
+rm -rf "$PHANDOFF"
+printf '{"task_sig":"m1afact0011223344","arm":"opus","state":"confirmed","created_epoch":%s,"task_id":"","lane_label":"M1A-FACT-QUALITY-01"}\n' \
+  "$((NOW - 720))" > "$RESERVATIONS"
+mkdir -p "$PHANDOFF/dispatch-m1afact0-architect"
+PS_STUB="1 sleep 1"
+_out="$(widget)"
+if printf '%s\n' "$_out" | grep -q 'M1A-FACT-QUALITY-01 · architect'; then
+  ok "(T-name-1) lane_label resolves the human name + architect phase"
+else
+  bad "(T-name-1) expected 'M1A-FACT-QUALITY-01 · architect' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+fi
+
+printf '{"task_sig":"deadfeed99887766","arm":"sonnet","state":"confirmed","created_epoch":%s}\n' \
+  "$((NOW - 30))" >> "$RESERVATIONS"
+_out="$(widget)"
+if printf '%s\n' "$_out" | grep -q 'deadfeed · queued'; then
+  ok "(T-name-2) no name fields at all -> sig8 fallback"
+else
+  bad "(T-name-2) expected sig8 fallback 'deadfeed · queued' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+fi
+rm -rf "$PHANDOFF/dispatch-m1afact0-architect"
 
 printf '\ntest-status-surface-single-lead: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
