@@ -87,6 +87,12 @@ fi
 # the renderer/wrapper filenames is not enough, since a change to an unrelated
 # script must not silently drop this guard from a run. See SWIFTBAR-BASH32-01.
 add_suite "${ROOT}/tests/test-status-surface-bash32.sh"
+# SWIFTBAR-FAST-NAMES-01: the widget's async-cache + label-resolver contract —
+# always-on for the same reason as bash32 (the wrapper filename stem no longer
+# matches the test stems after the .10s -> .5s rename, so a changed-scope match
+# is not reliable).
+add_suite "${ROOT}/tests/test-status-surface-single-lead.sh"
+add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(

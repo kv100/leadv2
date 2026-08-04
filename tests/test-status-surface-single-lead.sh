@@ -6,7 +6,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
 SURFACE="${ROOT}/plugins/leadv2/scripts/leadv2-status-surface.sh"
-WRAPPER="${ROOT}/plugins/leadv2/scripts/leadv2-status-surface.10s.sh"
+WRAPPER="${ROOT}/plugins/leadv2/scripts/leadv2-status-surface.5s.sh"
 STATUS_RENDER="${ROOT}/plugins/leadv2/scripts/leadv2-status-render.sh"
 
 PASS=0
@@ -67,6 +67,7 @@ PS_STUB="1 sleep 1"
 
 widget() {
   PATH="${TEST_PATH:-$PATH}" \
+  LEADV2_STATUS_SYNC=1 \
   LEADV2_STATUS_RENDERER="$SURFACE" \
   LEADV2_STATUS_STATE_DIR="$STATE" \
   LEADV2_STATUS_LEDGER_DIR="$LEDGERS" \

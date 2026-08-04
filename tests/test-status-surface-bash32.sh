@@ -18,7 +18,14 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
 RENDERER="${ROOT}/plugins/leadv2/scripts/leadv2-status-surface.sh"
-WRAPPER="${ROOT}/plugins/leadv2/scripts/leadv2-status-surface.10s.sh"
+WRAPPER="${ROOT}/plugins/leadv2/scripts/leadv2-status-surface.5s.sh"
+# SWIFTBAR-FAST-NAMES-01: the widget now reads an async cache by default and
+# only calls the renderer from a detached refresher. The cache path can't
+# produce a synchronous title from a one-shot invocation, so this suite
+# (which drives the wrapper once per assertion) forces the synchronous
+# escape hatch — the pre-FAST-NAMES behaviour. SwiftBar never sets this, so
+# prod runs the cached path; the fast-names test covers that path.
+export LEADV2_STATUS_SYNC=1
 
 PASS=0
 FAIL=0
@@ -65,9 +72,9 @@ echo "== T3: env -i minimal PATH (the actual SwiftBar launch shape) renders lane
 # renders, not just the renderer's own "0 lanes" empty state. If the renderer
 # reports zero lane rows under bash 5 too, there is nothing live to observe —
 # SKIP rather than FAIL, so a quiet machine doesn't red a passing fix.
-_t3_out="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash "$WRAPPER" 2>&1)"
+_t3_out="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin LEADV2_STATUS_SYNC=1 /bin/bash "$WRAPPER" 2>&1)"
 _t3_rc=$?
-_t3_bash5_out="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin bash "$WRAPPER" 2>&1 || true)"
+_t3_bash5_out="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin LEADV2_STATUS_SYNC=1 bash "$WRAPPER" 2>&1 || true)"
 _t3_bash5_rows="$(printf '%s\n' "$_t3_bash5_out" | awk 'BEGIN{c=0} $0=="---"{c++; next} c==1 && $0!="" {print}' | wc -l | tr -d ' ')"
 if [[ "$_t3_rc" -ne 0 ]]; then
   bad "wrapper exited ${_t3_rc} under minimal PATH (should always exit 0): ${_t3_out}"
@@ -92,7 +99,7 @@ echo "simulated renderer crash for test-status-surface-bash32" >&2
 exit 3
 STUBEOF
 chmod +x "$STUB"
-_t4_out="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin LEADV2_STATUS_RENDERER="$STUB" /bin/bash "$WRAPPER" 2>&1)"
+_t4_out="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin LEADV2_STATUS_SYNC=1 LEADV2_STATUS_RENDERER="$STUB" /bin/bash "$WRAPPER" 2>&1)"
 rm -f "$STUB"
 if printf '%s' "$_t4_out" | grep -q 'renderer failed'; then
   if printf '%s' "$_t4_out" | grep -qE '🟢 0 / 🔴 0'; then
@@ -203,7 +210,7 @@ echo "== T6: STATUS-SURFACE-R5-01 round 2 — minimal-env parity (PyYAML-optiona
 # (Xcode python3, no PyYAML). The reader now falls back to a pure-python
 # mini-parser, so the minimal-PATH render must (a) contain none of the broken
 # substrings and (b) match the full-env render's lane row-count AND urgent count.
-_t6_min="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash "$WRAPPER" 2>&1 || true)"
+_t6_min="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin LEADV2_STATUS_SYNC=1 /bin/bash "$WRAPPER" 2>&1 || true)"
 _t6_full="$(bash "$WRAPPER" 2>&1 || true)"
 _t6_rc=0
 # (a) no broken substring under the SwiftBar launch shape
