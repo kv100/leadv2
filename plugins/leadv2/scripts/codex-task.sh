@@ -72,6 +72,18 @@ fi
 CODEX_REAP_STATE_ROOT="${CODEX_GUARD_STATE_ROOT:-$HOME/.claude/plugins/data/codex-openai-codex/state}"
 CODEX_QUEUED_KILL_MIN="${CODEX_QUEUED_KILL_MIN:-45}"
 CODEX_RUNNING_DEAD_KILL_MIN="${CODEX_RUNNING_DEAD_KILL_MIN:-5}"
+# CODEX-QUOTA-BLIND-SPOT-01 -- queued-stall detector (__quota-watch). A job still
+# `queued`/`started` past CODEX_QUEUED_STALL_MIN with no progress is treated as a
+# quota-blind stall and records a bounded cooldown (reason=queued_stall) so the
+# NEXT dispatch is refused instead of queueing a second blind corpse. Does NOT
+# kill the job and does NOT open the circuit breaker -- only records + refuses.
+# Deliberately shorter than CODEX_QUEUED_KILL_MIN=45 above: 10min = "stop sending
+# new work here", 45min = "declare this job dead" -- they must not collapse.
+# CODEX_QUEUED_STALL_COOLDOWN_S=1800 is the bounded cooldown length (reuses the
+# arm-cooldown lib's bounded-default machinery via LEADV2_ARM_COOLDOWN_S; the lib
+# clamps it to [60,3600]). Both job-lifecycle knobs, hence CODEX_* not LEADV2_*.
+CODEX_QUEUED_STALL_MIN="${CODEX_QUEUED_STALL_MIN:-10}"
+CODEX_QUEUED_STALL_COOLDOWN_S="${CODEX_QUEUED_STALL_COOLDOWN_S:-1800}"
 CODEX_AUTOREAP="${CODEX_AUTOREAP:-1}"
 # review-wave2-verdict-5 finding 3: a repair marker written next to the job file can itself
 # fail (directory unwritable, disk full, the job dir gone entirely) -- an independent
@@ -265,6 +277,39 @@ sys.exit(1)
   printf '%s' "$_used"
 }
 
+# CODEX-QUOTA-BLIND-SPOT-01 C -- when the live quota reader returns nothing
+# (infra gap), _codex_quota_gate deliberately fails open. But if a queued-stall
+# cooldown was recorded within the last 24h, the operator should SEE that the
+# blind reader is masking a known stall. Emits exactly one WARN line; no
+# exit-code change, no refusal, silent when the state file is missing/unreadable
+# or holds no recent stall. Bounded read (tail -n 200) -- matches the lib's own
+# bounded-read discipline; an append-only store cannot grow this scan.
+_codex_warn_blind_spot() {
+  local _cooldown_file
+  _cooldown_file="${LEADV2_ARM_COOLDOWN_DIR:-$HOME/.claude/cache/arm-cooldown}/codex.state"
+  [[ -f "$_cooldown_file" ]] || return 0
+  local _found
+  _found="$(tail -n 200 "$_cooldown_file" 2>/dev/null | python3 -c '
+import sys, datetime
+now = datetime.datetime.now(datetime.UTC).timestamp()
+best = ""
+for line in sys.stdin:
+    if "reason=queued_stall" not in line:
+        continue
+    iso = line.split(" ", 1)[0]
+    try:
+        dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except Exception:
+        continue
+    if now - dt.timestamp() < 86400 and (not best or iso > best):
+        best = iso
+print(best)
+' 2>/dev/null)" || _found=""
+  [[ -n "$_found" ]] || return 0
+  printf '[codex-task] WARN: codex quota reader blind + recent queued_stall (last=%s) -- dispatch proceeding fail-open\n' \
+    "$_found" >&2
+}
+
 # C1 -- launch gate. Called once, early, only for SUB in {task,review,
 # adversarial-review,review-bg}. Cheapest checks first: (1) lockout memory,
 # (2) live quota over threshold. Refuse => LEADV2_DISPATCH_REFUSED marker on
@@ -288,7 +333,10 @@ _codex_quota_gate() {
   [[ -z "$_threshold" ]] && return 0
   local _used
   _used="$(_codex_quota_read)" || _used=""
-  [[ -z "$_used" ]] && return 0
+  if [[ -z "$_used" ]]; then
+    _codex_warn_blind_spot   # CODEX-QUOTA-BLIND-SPOT-01 C: see-through, not refuse
+    return 0
+  fi
   if (( _used >= _threshold )); then
     printf '[codex-task] CODEX_REFUSED_QUOTA reason=threshold used=%s threshold=%s until=na\n' "$_used" "$_threshold" >&2
     printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
@@ -351,6 +399,48 @@ sys.exit(1)
   codex_circuit_open "$_until_iso" "codex-task" 2>/dev/null || true
 }
 
+# CODEX-QUOTA-BLIND-SPOT-01 A1 -- record a queued-stall cooldown. $1=jobId $2=job
+# log path $3=age_min (for the visibility line). Records a BOUNDED cooldown
+# (reason=queued_stall) so the NEXT dispatch is refused via codex_spawn_gate's
+# arm_cooldown_state check, instead of queueing another blind corpse. Does NOT
+# open the circuit breaker (a stall is a local inference, not a provider-declared
+# lockout) -- it self-expires in CODEX_QUEUED_STALL_COOLDOWN_S. Does NOT kill the
+# job; this only records + refuses.
+# Idempotent per job: keyed on BOTH `reason=queued_stall` AND ` job=<jid>` on the
+# SAME line (awk index, literal). Must NOT reuse the quota recorder's bare
+# ` job=<jid>` grep -- that would let a prior reason=quota record for this job
+# suppress a stall (or vice-versa), silently losing one of the two signals.
+_codex_queued_stall_record() {
+  local _jid="${1:-}" _log="${2:-}" _age_min="${3:-0}"
+  [[ -z "$_jid" ]] && return 0
+  local _min="${CODEX_QUEUED_STALL_MIN:-10}" _cooldown_file
+  _cooldown_file="${LEADV2_ARM_COOLDOWN_DIR:-$HOME/.claude/cache/arm-cooldown}/codex.state"
+  if [[ -f "$_cooldown_file" ]] && awk -v j=" job=${_jid}" '
+      /reason=queued_stall/ && index($0, j) { found = 1 }
+      END { exit !found }
+    ' "$_cooldown_file" 2>/dev/null; then
+    return 0
+  fi
+  # No advisory arg => arm_cooldown_record maps empty to "na" and falls back to
+  # its own bounded default (LEADV2_ARM_COOLDOWN_S, clamped [60,3600]). The lib
+  # computes effective=default, src=default -- no new env plumbing in the lib.
+  LEADV2_ARM_COOLDOWN_JOB="$_jid" \
+  LEADV2_ARM_COOLDOWN_S="${CODEX_QUEUED_STALL_COOLDOWN_S:-1800}" \
+    arm_cooldown_record codex queued_stall
+  arm_cooldown_ladder_note codex queued_stall \
+    "$(arm_cooldown_state codex | awk '/^cooling / {print $2}')"
+  # Visibility: one line to the nohup stderr ledger AND the job's own log so the
+  # failure is not silent (arm_cooldown_record already echoes its ARM_COOLDOWN
+  # line to stderr). >> creates the job log if Codex never wrote one.
+  printf '[codex-task] CODEX_QUEUED_STALL jid=%s age_min=%s threshold_min=%s -- recording bounded cooldown\n' \
+    "$_jid" "$_age_min" "$_min" >&2
+  if [[ -n "$_log" ]]; then
+    printf '[codex-task] CODEX_QUEUED_STALL jid=%s age_min=%s threshold_min=%s -- recording bounded cooldown\n' \
+      "$_jid" "$_age_min" "$_min" >> "$_log" 2>/dev/null || true
+  fi
+  return 0
+}
+
 # C5 -- post-launch watcher (hidden subcommand __quota-watch). Idempotent per job
 # (mkdir lock dir), bounded lifetime, cross-workspace scan (NEVER cwd-scoped --
 # that is exactly the trap that makes companion `status` lie). On a terminal
@@ -389,6 +479,44 @@ except Exception:
           ;;
         completed|cancelled)
           return 0
+          ;;
+        queued|started)
+          # CODEX-QUOTA-BLIND-SPOT-01 A2 -- a job stuck queued/started past
+          # the stall threshold with no progress: record a bounded cooldown so the
+          # next dispatch is refused. Terminal arms above are checked FIRST and
+          # are unchanged. Age source order: job-JSON startedAt/createdAt -> job-
+          # file mtime -> watcher _elapsed (last resort; wrong for a re-armed
+          # watcher on an already-old job, which would restart the clock at 0 and
+          # never trip -- that is why it is last).
+          local _age_min="" _ts=""
+          _ts="$(python3 -c 'import sys,json
+try:
+    j = json.load(open(sys.argv[1]))
+    print(j.get("startedAt") or j.get("createdAt") or "")
+except Exception:
+    sys.exit(1)' "$_jf" 2>/dev/null)" || _ts=""
+          if [[ -n "$_ts" ]]; then
+            _age_min="$(python3 -c 'import sys,datetime
+try:
+    dt = datetime.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00"))
+    print(int((datetime.datetime.now(datetime.UTC) - dt).total_seconds() // 60))
+except Exception:
+    sys.exit(1)' "$_ts" 2>/dev/null)" || _age_min=""
+          fi
+          if [[ -z "$_age_min" ]]; then
+            local _mt
+            _mt="$(stat -f '%m' "$_jf" 2>/dev/null || stat -c '%Y' "$_jf" 2>/dev/null || echo '')"
+            if [[ -n "$_mt" ]]; then
+              _age_min=$(( ( $(date +%s) - _mt ) / 60 ))
+            else
+              _age_min=$(( _elapsed / 60 ))
+            fi
+          fi
+          local _stall_min="${CODEX_QUEUED_STALL_MIN:-10}"
+          if (( _age_min >= _stall_min )); then
+            _codex_queued_stall_record "$_jid" "${_jf%.json}.log" "$_age_min"
+            return 0
+          fi
           ;;
       esac
     fi
@@ -1376,13 +1504,32 @@ if [[ ( "$SUB" == "task" || "$SUB" == "review" ) && "$_has_background" -eq 1 ]];
   # --json payload, so one regex covers both output modes.
   _JOB_ID="$(printf '%s\n' "$_BG_OUT" | grep -oE '(task|review)-[a-z0-9]+-[a-z0-9]+' | head -1 || true)"
   if [[ -n "$_JOB_ID" ]]; then
-    _GUARD_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-guard.sh"
-    if [[ -x "$_GUARD_SCRIPT" ]]; then
+    # CODEX-QUOTA-BLIND-SPOT-01 B -- resolve codex-guard.sh by ordered probe
+    # (first executable wins). Script-dir stays candidate #1 so per-repo
+    # invocations are unchanged; the plugin-source path (no guard next to it) now
+    # finds one via $PWD / the job's _GUARD_CWD / CLAUDE_PROJECT_DIR instead of
+    # leaving the background job unguarded. The resolved path is echoed in the
+    # armed line so a wrong pick is visible at the log surface, not silent.
+    _GUARD_SCRIPT=""
+    _GUARD_TRIED=""
+    _GUARD_CANDS=()
+    _GUARD_CANDS+=("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-guard.sh")
+    _GUARD_CANDS+=("$PWD/.claude/scripts/codex-guard.sh")
+    _GUARD_CANDS+=("$_GUARD_CWD/.claude/scripts/codex-guard.sh")
+    [[ -z "${CLAUDE_PROJECT_DIR:-}" ]] || _GUARD_CANDS+=("$CLAUDE_PROJECT_DIR/.claude/scripts/codex-guard.sh")
+    for _cand in "${_GUARD_CANDS[@]}"; do
+      if [[ -x "$_cand" ]]; then
+        _GUARD_SCRIPT="$_cand"
+        break
+      fi
+      _GUARD_TRIED="${_GUARD_TRIED:+$_GUARD_TRIED }$_cand"
+    done
+    if [[ -n "$_GUARD_SCRIPT" ]]; then
       nohup "$_GUARD_SCRIPT" "$_JOB_ID" "$_GUARD_CWD" >/dev/null 2>&1 < /dev/null &
       disown 2>/dev/null || true
-      echo "[codex-task] armed codex-guard.sh for $_JOB_ID (cwd=$_GUARD_CWD)" >&2
+      echo "[codex-task] armed codex-guard.sh for $_JOB_ID (cwd=$_GUARD_CWD, guard=$_GUARD_SCRIPT)" >&2
     else
-      echo "[codex-task] WARN: codex-guard.sh not found next to codex-task.sh -- background job $_JOB_ID is unguarded" >&2
+      echo "[codex-task] WARN: codex-guard.sh not found -- tried: ${_GUARD_TRIED:-<none>} -- background job $_JOB_ID is unguarded" >&2
     fi
     # CODEX-GATE-01 C5 -- arm the quota watcher too (same nohup shape as the
     # guard above). It records a lockout line if this job dies on a usage-limit
