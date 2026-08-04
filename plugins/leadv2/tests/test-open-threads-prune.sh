@@ -16,8 +16,17 @@
 # Exit 0 = all pass; non-zero = failure count.
 set -euo pipefail
 
-HOOKS_DIR="${BASH_SOURCE[0]%/*}/../hooks"
-SCRIPTS_DIR="${BASH_SOURCE[0]%/*}/../scripts"
+# Absolutise this file's dir ONCE, before any sandbox `cd`. Capturing the dir
+# relatively ("${BASH_SOURCE[0]%/*}") breaks two ways: (a) once a test does
+# `cd "$PROJ"`, the relative "../scripts" resolves against the sandbox; (b) a
+# slashless invocation (`bash test-open-threads-prune.sh` from the tests dir)
+# makes ${BASH_SOURCE[0]%/*} yield the filename itself, not a directory.
+# `cd … && pwd` is preferred over `realpath` (GNU-only `-m` is absent on macOS).
+_src="${BASH_SOURCE[0]}"
+case "$_src" in */*) _dir="${_src%/*}" ;; *) _dir="." ;; esac
+TESTS_DIR="$(cd "$_dir" && pwd)"
+HOOKS_DIR="${TESTS_DIR}/../hooks"
+SCRIPTS_DIR="${TESTS_DIR}/../scripts"
 PRUNE_SCRIPT="${SCRIPTS_DIR}/leadv2-thread-prune.sh"
 TASK_ANCHOR="${HOOKS_DIR}/leadv2-task-anchor.sh"
 FREEZE_HOOK="${HOOKS_DIR}/pre-compact-task-freeze.sh"
@@ -132,7 +141,13 @@ fi
 #     supervisor-role.md, NOT a giant embedded role/status block.
 # ---------------------------------------------------------------------------
 INPUT_JSON=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1]}))" "$PROJ")
-FREEZE_OUT="$(CLAUDE_PLUGIN_ROOT="/fake/plugin/root" bash -c "printf '%s' '$INPUT_JSON' | bash '$FREEZE_HOOK'")"
+# COMPACT-DEDUP-02: the freeze hook gates STDOUT behind a session-keyed run-once
+# lock under ${TMPDIR}/leadv2-precompact-freeze-locks (60 s TTL). Give this
+# invocation its own TMPDIR so a back-to-back suite run (<60 s apart) is not
+# silently suppressed by the previous run's lock — and never clobbers a real
+# session lock on the developer's machine. trap-on-EXIT still cleans TMPDIR_BASE.
+_FZ_LOCK="$(mktemp -d "${TMPDIR_BASE}/fzlockXXXX")"
+FREEZE_OUT="$(TMPDIR="$_FZ_LOCK" CLAUDE_PLUGIN_ROOT="/fake/plugin/root" bash -c "printf '%s' '$INPUT_JSON' | bash '$FREEZE_HOOK'")"
 if printf '%s\n' "$FREEZE_OUT" | grep -q "OPEN THREADS" \
   && printf '%s\n' "$FREEZE_OUT" | grep -q "supervisor-role.md" \
   && printf '%s\n' "$FREEZE_OUT" | grep -q "question two"; then

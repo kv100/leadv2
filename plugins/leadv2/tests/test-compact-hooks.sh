@@ -5,7 +5,13 @@
 # Exit 0 = all pass; non-zero = failure count
 set -euo pipefail
 
-HOOKS_DIR="${BASH_SOURCE[0]%/*}/../hooks"
+# Absolutise this file's dir ONCE (see test-open-threads-prune.sh for the full
+# rationale): a relative "${BASH_SOURCE[0]%/*}" breaks under a sandbox `cd` and
+# under a slashless invocation. `cd … && pwd`, not `realpath` (macOS-safe).
+_src="${BASH_SOURCE[0]}"
+case "$_src" in */*) _dir="${_src%/*}" ;; *) _dir="." ;; esac
+TESTS_DIR="$(cd "$_dir" && pwd)"
+HOOKS_DIR="${TESTS_DIR}/../hooks"
 PRE_HOOK="${HOOKS_DIR}/leadv2-pre-compact-checkpoint.sh"
 POST_HOOK="${HOOKS_DIR}/leadv2-postcompact-goal-reinject.sh"
 ACTIVE_CACHE_SRC="${HOOKS_DIR}/leadv2-active-cache.sh"
@@ -107,16 +113,22 @@ if [[ $POST_RC -eq 0 ]]; then
 else
   fail "(0b) postcompact hook must exit 0 (got rc=$POST_RC)"
 fi
-POST_LINES=$(printf '%s\n' "$POST_OUT" | wc -l | tr -d ' ')
-
-if printf '%s' "$POST_OUT" | grep -q "active task: T-ALPHA" \
-  && printf '%s' "$POST_OUT" | grep -q "scaffolded pre-compact loop" \
-  && printf '%s' "$POST_OUT" | grep -q "T-BETA (phase: review)" \
-  && printf '%s' "$POST_OUT" | grep -q "confirm dedupe order" \
-  && [[ "$POST_LINES" -le 60 ]]; then
-  pass "(3) postcompact stdout has T-ALPHA block + journal tail + T-BETA line + threads line, <=60 lines"
+# COMPACT-DEDUP-01 (2026-07-23): postcompact STDOUT was silenced — the canonical
+# context now lands in <leadv2_dir>/.compact-freeze.md (written pre-compact by
+# pre-compact-task-freeze.sh, reinjected by post-compact-reground.sh). Assert
+# THAT sink, not the old stdout. The freeze hook picks the single newest journal
+# by mtime (here T-BETA, written last), so accept either task's journal line.
+_FZ3_LOCK="$(mktemp -d "${TMPDIR_BASE}/fz3XXXX")"
+_FZ3_JSON=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1]}))" "$PROJ")
+TMPDIR="$_FZ3_LOCK" CLAUDE_PLUGIN_ROOT="/fake/plugin/root" \
+  bash -c "printf '%s' '$_FZ3_JSON' | bash '$FREEZE_HOOK'" >/dev/null 2>&1 || true
+FREEZE_FILE="${PROJ}/docs/leadv2/.compact-freeze.md"
+if [[ -f "$FREEZE_FILE" ]] \
+  && grep -q "confirm dedupe order" "$FREEZE_FILE" \
+  && grep -qE "scaffolded pre-compact loop|review pass 1 started" "$FREEZE_FILE"; then
+  pass "(3) freeze file carries an active journal tail + open thread (postcompact stdout silenced by DEDUP-01)"
 else
-  fail "(3) postcompact stdout missing expected content or exceeds 60 lines (lines=$POST_LINES)"
+  fail "(3) freeze file missing journal tail / open thread:"$'\n'"$(cat "$FREEZE_FILE" 2>/dev/null)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -140,12 +152,20 @@ else
   fail "(0c) postcompact hook must exit 0 (got rc=$POST_RC2)"
 fi
 
-if printf '%s' "$POST_OUT2" | grep -q "Open threads:" \
-  && printf '%s' "$POST_OUT2" | grep -q "lone open thread" \
-  && ! printf '%s' "$POST_OUT2" | grep -q "POSTCOMPACT CONTEXT RESTORE"; then
-  pass "(4) no-active-task + open threads -> stdout contains threads block only"
+# COMPACT-DEDUP-01: re-pointed from postcompact stdout to the freeze sink. With
+# no active task there is no journal -> the freeze file must carry the open
+# thread and NO ACTIVE JOURNAL TAIL section.
+_FZ4_LOCK="$(mktemp -d "${TMPDIR_BASE}/fz4XXXX")"
+_FZ4_JSON=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1]}))" "$PROJ2")
+TMPDIR="$_FZ4_LOCK" CLAUDE_PLUGIN_ROOT="/fake/plugin/root" \
+  bash -c "printf '%s' '$_FZ4_JSON' | bash '$FREEZE_HOOK'" >/dev/null 2>&1 || true
+FREEZE_FILE2="${PROJ2}/docs/leadv2/.compact-freeze.md"
+if [[ -f "$FREEZE_FILE2" ]] \
+  && grep -q "lone open thread" "$FREEZE_FILE2" \
+  && ! grep -q "ACTIVE JOURNAL TAIL" "$FREEZE_FILE2"; then
+  pass "(4) no-active-task + open threads -> freeze file carries threads only (no journal tail)"
 else
-  fail "(4) expected threads-only stdout (got: ${POST_OUT2:0:200})"
+  fail "(4) freeze file threads-only contract broken:"$'\n'"$(cat "$FREEZE_FILE2" 2>/dev/null)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -173,11 +193,21 @@ else
   fail "(0d) postcompact hook must exit 0 with no STATE.md (got rc=$POST_RC3)"
 fi
 
-if printf '%s' "$POST_OUT3" | grep -q "T-GAMMA" \
-  && printf '%s' "$POST_OUT3" | grep -q "gamma work in progress"; then
-  pass "(5) active task with journal but no STATE.md -> stdout contains task id and journal line"
+# COMPACT-DEDUP-01: re-pointed from postcompact stdout to the freeze sink. With
+# only T-GAMMA's journal present, the freeze file's ACTIVE JOURNAL TAIL section
+# carries both the task id (in the heading) and the journal line — the
+# regression this case guards (context survives even with no STATE.md).
+_FZ5_LOCK="$(mktemp -d "${TMPDIR_BASE}/fz5XXXX")"
+_FZ5_JSON=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1]}))" "$PROJ3")
+TMPDIR="$_FZ5_LOCK" CLAUDE_PLUGIN_ROOT="/fake/plugin/root" \
+  bash -c "printf '%s' '$_FZ5_JSON' | bash '$FREEZE_HOOK'" >/dev/null 2>&1 || true
+FREEZE_FILE3="${PROJ3}/docs/leadv2/.compact-freeze.md"
+if [[ -f "$FREEZE_FILE3" ]] \
+  && grep -q "T-GAMMA" "$FREEZE_FILE3" \
+  && grep -q "gamma work in progress" "$FREEZE_FILE3"; then
+  pass "(5) active task with journal but no STATE.md -> freeze file carries task id + journal line"
 else
-  fail "(5) postcompact with no STATE.md missing task id or journal line (got: ${POST_OUT3:0:300})"
+  fail "(5) freeze file missing task id / journal line:"$'\n'"$(cat "$FREEZE_FILE3" 2>/dev/null)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -197,7 +227,11 @@ cat > "${PROJ_FZ}/docs/leadv2/open-threads.md" <<'MD'
 - [ ] 2026-08-04T11:02:00Z [s:bbbbbbbb] — freeze beta for session B
 MD
 FZA_JSON=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1], 'session_id': 'aaaaaaaa-1111-2222-3333-444455556666'}))" "$PROJ_FZ")
-FZA_OUT="$(CLAUDE_PLUGIN_ROOT="/fake/plugin/root" bash -c "printf '%s' '$FZA_JSON' | bash '$FREEZE_HOOK'")"
+# COMPACT-DEDUP-02: isolate the run-once lock (see test-open-threads-prune.sh).
+# Without this, case (6)'s stdout is suppressed by (6) of a prior suite run
+# within the same 60 s window — the reported cwd-dependent non-determinism.
+_FZ6_LOCK="$(mktemp -d "${TMPDIR_BASE}/fz6XXXX")"
+FZA_OUT="$(TMPDIR="$_FZ6_LOCK" CLAUDE_PLUGIN_ROOT="/fake/plugin/root" bash -c "printf '%s' '$FZA_JSON' | bash '$FREEZE_HOOK'")"
 if printf '%s\n' "$FZA_OUT" | grep -q "OPEN THREADS" \
   && printf '%s\n' "$FZA_OUT" | grep -q "freeze legacy untagged line" \
   && printf '%s\n' "$FZA_OUT" | grep -q "freeze alpha for session A" \
@@ -214,7 +248,11 @@ fi
 #     to the pre-change hook.
 # ---------------------------------------------------------------------------
 FZN_JSON=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1]}))" "$PROJ_FZ")
-FZN_OUT="$(CLAUDE_PLUGIN_ROOT="/fake/plugin/root" bash -c "printf '%s' '$FZN_JSON' | bash '$FREEZE_HOOK'")"
+# COMPACT-DEDUP-02: isolate the lock. Case (7) has no session_id -> the lock
+# falls back to a shared "nosession" key, which collides with itself across
+# back-to-back runs without an isolated TMPDIR.
+_FZ7_LOCK="$(mktemp -d "${TMPDIR_BASE}/fz7XXXX")"
+FZN_OUT="$(TMPDIR="$_FZ7_LOCK" CLAUDE_PLUGIN_ROOT="/fake/plugin/root" bash -c "printf '%s' '$FZN_JSON' | bash '$FREEZE_HOOK'")"
 if printf '%s\n' "$FZN_OUT" | grep -q "freeze legacy untagged line" \
   && printf '%s\n' "$FZN_OUT" | grep -q "freeze alpha for session A" \
   && printf '%s\n' "$FZN_OUT" | grep -q "freeze beta for session B" \
