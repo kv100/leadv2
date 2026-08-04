@@ -350,11 +350,51 @@ else
   bad "P-g: worker cwd='${CWD_G_PHYS}' == RESUME or empty (regression)"
 fi
 
-# P-h (no flag): prompt pin line absent
-if ! grep -q '^WORKTREE PIN:' "${SANDBOX}/pg-mission.txt" 2>/dev/null; then
-  ok "P-h(g): prompt pin line absent with no flag"
+# P-h(g): pin line present on the DEFAULT ensure-created path (PLACEMENT-PIN-DEFAULT-01)
+if head -1 "${SANDBOX}/pg-mission.txt" 2>/dev/null | grep -q '^WORKTREE PIN: all edits go in '; then
+  ok "P-h(g): prompt pin line present on default ensure-created path"
 else
-  bad "P-h(g): prompt pin line PRESENT with no flag (regression)"
+  bad "P-h(g): prompt pin line MISSING on default ensure-created path"
+fi
+
+# P-h(g2): pin line names the tree the worker actually ran in
+if head -1 "${SANDBOX}/pg-mission.txt" 2>/dev/null | grep -q -- "${CWD_G}"; then
+  ok "P-h(g2): pin line names the ensure-created worktree path"
+else
+  bad "P-h(g2): pin line does NOT name the worktree (expected '${CWD_G}')"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# P-i: shared-tree dispatch (WORK_ROOT == PROJECT_ROOT) → no pin line (regression)
+# ════════════════════════════════════════════════════════════════════════════
+setup_env
+export LEADV2_STUB_CWD_OUT="${SANDBOX}/pi-cwd.txt"
+export LEADV2_STUB_MISSION_OUT="${SANDBOX}/pi-mission.txt"
+# Stub the lane-worktree binary to "ensure" by printing $TARGET → fallback to shared tree
+LANE_WT_STUB="${SANDBOX}/lane-wt-stub.sh"
+cat > "${LANE_WT_STUB}" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  ensure) printf '%s\n' "${TARGET}" ;;
+  path-of) exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+export LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_WT_STUB}"
+dispatch_rc=0
+bash "${DC}" --kind tooling \
+  "P-i shared tree no pin test fix the validator" >/dev/null 2>&1 || dispatch_rc=$?
+
+if [[ ${dispatch_rc} -eq 0 ]]; then
+  ok "P-i: dispatch exited 0 (shared-tree fallback)"
+else
+  bad "P-i: dispatch exited ${dispatch_rc} (expected 0)"
+fi
+
+if ! grep -q '^WORKTREE PIN:' "${SANDBOX}/pi-mission.txt" 2>/dev/null; then
+  ok "P-i: no pin line on shared-tree dispatch"
+else
+  bad "P-i: pin line PRESENT on shared-tree dispatch (regression)"
 fi
 
 printf '\n[LANE-PLACEMENT-01] passed=%d failed=%d\n' "${PASS}" "${FAIL}"

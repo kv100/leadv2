@@ -573,10 +573,18 @@ _resolve_pinned_placement() {
   WORK_ROOT="${candidate}"
   export LEADV2_LANE_WORK_ROOT="${WORK_ROOT}"
   PLACEMENT_PINNED=1
-  WORKTREE_PIN_LINE="WORKTREE PIN: all edits go in ${WORK_ROOT}; do NOT cd to the main checkout even if the mission text names it."
+  _set_worktree_pin_line
   local _mode="resume-lane"
   [[ -n "${placement_path}" ]] && _mode="worktree"
   emit decision "lane_placement_pinned task=${sig8:-?} mode=${_mode} path=${WORK_ROOT} key=${key}"
+}
+
+# PLACEMENT-PIN-DEFAULT-01: single construction site for the worker-prompt pin prefix.
+# Idempotent + value-stable: safe to call from the flagged path and again from the
+# default path.  No-op when WORK_ROOT is the shared tree (nothing to pin to).
+_set_worktree_pin_line() {
+  [[ -n "${WORK_ROOT:-}" && "${WORK_ROOT}" != "${PROJECT_ROOT}" ]] || return 0
+  WORKTREE_PIN_LINE="WORKTREE PIN: all edits go in ${WORK_ROOT}; do NOT cd to the main checkout even if the mission text names it."
 }
 
 # Journal + stderr-emit one structured line. $1=journal-type, $2..=text (one logical line).
@@ -2280,6 +2288,10 @@ cmd_resolve() {
     fi
   fi
   fi  # LANE-PLACEMENT-01: close PLACEMENT_PINNED guard
+  # PLACEMENT-PIN-DEFAULT-01: pin the prompt on EVERY dispatch whose work root is a lane
+  # worktree — the ensure-created path (2272) and the launcher-pre-exported path (267)
+  # both land here, and both were unpinned.  Idempotent w.r.t. the flagged path above.
+  _set_worktree_pin_line
   # LANE-START-SHA-01: unconditional, before any arm spawn -- overwrites any stale value
   # from a prior dispatch that reused this cache dir (mitigates R2: a nested/child dispatch
   # never inherits a parent's start sha because it always re-records its own here first).
