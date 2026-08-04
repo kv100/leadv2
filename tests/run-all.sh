@@ -16,6 +16,16 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
 
+# C2 (GATE-WRONG-ROOT-FALSE-DEAD-01): root-escape guard. If ROOT does not
+# resolve to a git toplevel, every downstream path derivation (PLUGIN_ROOT,
+# REPO_ROOT in run-core-offline.sh, etc.) walks to a parent — the exact
+# defect that produced repo=/Users/.../Projects. Fail hard, never silently.
+_git_toplevel="$(git -C "${ROOT}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ "${_git_toplevel}" != "${ROOT}" ]]; then
+  echo "run-all: FATAL root_escape expected=${ROOT} resolved=${_git_toplevel:-<not-a-repo>}" >&2
+  exit 2
+fi
+
 SCOPE="changed"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,11 +49,20 @@ esac
 PASS=0
 FAIL=0
 declare -a SUITES=()
+declare -a FAILED_REL=()
 
 add_suite() { # <path>
   local p="$1" real
   real="$(cd "$(dirname "$p")" 2>/dev/null && pwd)/$(basename "$p")" || return 0
   [[ -f "$real" ]] || return 0
+  # C2 (GATE-WRONG-ROOT-FALSE-DEAD-01): containment check. A resolved suite
+  # path outside ROOT is a D2-class escape (symlink following, wrong-depth
+  # anchor) — skip it loudly rather than running tests from a foreign tree.
+  case "${real}" in
+    "${ROOT}/"*) ;;
+    "${ROOT}")   ;;
+    *) echo "run-all: SKIP out_of_tree ${real}" >&2; return 0 ;;
+  esac
   local existing
   for existing in "${SUITES[@]:-}"; do
     [[ "$existing" == "$real" ]] && return 0
@@ -51,8 +70,17 @@ add_suite() { # <path>
   SUITES+=("$real")
 }
 
-# Always-on: the plugin's own curated offline regression set.
-add_suite "${ROOT}/.claude/scripts/tests/run-core-offline.sh"
+# C3 (GATE-WRONG-ROOT-FALSE-DEAD-01): Always-on: the plugin's own curated
+# offline regression set. Plugin-preferred — the canonical 111-file set at
+# plugins/leadv2/scripts/tests/ has the correct ../../.. path arithmetic
+# (D2) and is never a stale fork (D3). Repos without plugins/leadv2/
+# (persona-engine, m3-market) fall through to .claude/ verbatim — zero
+# behavioural delta outside this repo (case (g) guard).
+if [[ -f "${ROOT}/plugins/leadv2/scripts/tests/run-core-offline.sh" ]]; then
+  add_suite "${ROOT}/plugins/leadv2/scripts/tests/run-core-offline.sh"
+else
+  add_suite "${ROOT}/.claude/scripts/tests/run-core-offline.sh"
+fi
 
 # Always-on: SwiftBar runs the status-surface scripts under macOS /bin/bash 3.2
 # (PATH-resolved, not Homebrew bash 5) — a stem-based --scope=changed match on
@@ -62,7 +90,7 @@ add_suite "${ROOT}/tests/test-status-surface-bash32.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
-    find "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \
+    find "${ROOT}/plugins/leadv2/scripts/tests" "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \
       -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
   )
 else
@@ -74,7 +102,8 @@ else
     while IFS= read -r cf; do
       [[ "${cf}" == plugins/leadv2/scripts/*.sh ]] || continue
       stem="$(basename "${cf}" .sh)"
-      for cand in "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
+      for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
+                  "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \
                   "${ROOT}/tests/test-${stem}.sh"; do
         add_suite "${cand}"
@@ -91,8 +120,24 @@ for suite in "${SUITES[@]}"; do
   else
     printf '[FAIL] %s\n' "${suite}"
     FAIL=$((FAIL + 1))
+    # C4 (GATE-WRONG-ROOT-FALSE-DEAD-01): record repo-relative path for the
+    # machine-readable failure block (consumed by leadv2-e2e-ownership.sh).
+    rel="${suite#"${ROOT}/"}"
+    [[ "${rel}" == "${suite}" ]] && rel="${suite}"   # outside ROOT → absolute
+    FAILED_REL+=("${rel}")
   fi
 done
+
+# C4: emit the Failures (blocking) block that leadv2-e2e-ownership.sh already
+# documents as the contract. Suite names are repo-relative to ROOT so the
+# classifier can locate them in the scratch tree by direct path. Additive —
+# existing [FAIL] lines and the run-all: summary are untouched.
+if [[ ${FAIL} -gt 0 ]]; then
+  printf '  Failures (blocking):\n'
+  for rel in "${FAILED_REL[@]}"; do
+    printf '    - %s\n' "${rel}"
+  done
+fi
 
 printf 'run-all: %d passed, %d failed, scope=%s\n' "${PASS}" "${FAIL}" "${SCOPE}"
 (( FAIL == 0 ))

@@ -32,6 +32,11 @@ PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null
 # shellcheck source=leadv2-helpers.sh
 source "${SCRIPT_DIR}/leadv2-helpers.sh"
 _lv2_load_paths
+# C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): source the shared e2e-root validation
+# lib so the SAME mechanism product-close uses is available here — one path
+# resolution, not two.
+# shellcheck source=lib/leadv2-e2e-root.sh
+source "${SCRIPT_DIR}/lib/leadv2-e2e-root.sh"
 cd "$PROJECT_ROOT"
 
 TASK_ID="${1:-${LEADV2_TASK_ID:-}}"
@@ -143,13 +148,29 @@ fi
 
 rc=0
 e2e_cmd=""
-if ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${PROJECT_ROOT}")"; then
-  echo "leadv2-phase8-e2e-gate: no e2e entrypoint in $(basename "${PROJECT_ROOT}") -- blocked" \
+# C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): resolve and validate a lane worktree root
+# (same diff_root logic as product-close). Prefer LEADV2_LANE_WORK_ROOT, fall
+# back to lane-worktree path-of, then to PROJECT_ROOT itself.
+_p8_e2e_root="${PROJECT_ROOT}"
+_lane_wt="${LEADV2_LANE_WORK_ROOT:-}"
+if [[ -z "${_lane_wt}" || ! -d "${_lane_wt}" ]]; then
+  _lane_wt="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${TASK_ID}" 2>/dev/null || true)"
+fi
+[[ -n "${_lane_wt}" && -d "${_lane_wt}" ]] && _p8_e2e_root="${_lane_wt}"
+if ! _lv2_e2e_resolve_root "${_p8_e2e_root}" "${PROJECT_ROOT}"; then
+  rm -f "$SENTINEL"
+  printf 'status: blocked\nreason: %s\n' "${_lv2_e2e_root_reason}" > "${OUT_DIR}/e2e-gate.md" 2>/dev/null || true
+  echo "leadv2-phase8-e2e-gate: e2e root validation FAILED (${_lv2_e2e_root_reason}) — blocked, no suite executed" | tee "$LOG" >&2
+  exit 1
+fi
+_p8_e2e_root="${_lv2_e2e_root}"
+if ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_p8_e2e_root}")"; then
+  echo "leadv2-phase8-e2e-gate: no e2e entrypoint in $(basename "${_p8_e2e_root}") -- blocked" \
     | tee "$LOG" >&2
   rm -f "$SENTINEL"
   exit 1
 fi
-bash -c "${e2e_cmd} --scope changed" > "$LOG" 2>&1 || rc=$?
+{ printf 'e2e-root: %s\n' "${_p8_e2e_root}"; ( cd "${_p8_e2e_root}" && bash -c "${e2e_cmd} --scope changed" ); } > "$LOG" 2>&1 || rc=$?
 
 # GATE-FOREIGN-FAILURE-01: resolves the lane's own write set itself (this
 # path has no LEADV2_DISPATCH_LANE_WRITES export -- it is standalone-
@@ -192,7 +213,9 @@ fi
 # foreign ones, and undecidable folds into own (fail-closed).
 OWN_CSV=""; FOREIGN_CSV=""; UNDECIDABLE_CSV=""; OWNER_LANE="unknown"
 if [[ "${E2E_OWNERSHIP}" == "1" && -n "${WRITES_CSV}" ]]; then
-  OWN_OUT="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${PROJECT_ROOT}" "${TASK_ID}" "${WRITES_CSV}" "$LOG" 2>/dev/null || true)"
+  # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): pass the validated e2e root so the
+  # overlay uses the lane's actual working tree state.
+  OWN_OUT="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${_p8_e2e_root}" "${TASK_ID}" "${WRITES_CSV}" "$LOG" 2>/dev/null || true)"
   OWN_CSV="$(sed -n 's/^own=//p' <<< "${OWN_OUT}")"
   FOREIGN_CSV="$(sed -n 's/^foreign=//p' <<< "${OWN_OUT}")"
   UNDECIDABLE_CSV="$(sed -n 's/^undecidable=//p' <<< "${OWN_OUT}")"
@@ -203,8 +226,8 @@ fi
 if [[ -n "${FOREIGN_CSV}" && -z "${OWN_CSV}" && -z "${UNDECIDABLE_CSV}" ]]; then
   IFS=',' read -r -a _lane_writes <<< "${WRITES_CSV}"
   mapfile -t _all_changed < <(
-    { git -C "${PROJECT_ROOT}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
-      git -C "${PROJECT_ROOT}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
+    { git -C "${_p8_e2e_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+      git -C "${_p8_e2e_root}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
   )
   _foreign_files=()
   for _f in "${_all_changed[@]}"; do

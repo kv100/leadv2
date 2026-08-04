@@ -75,17 +75,16 @@ EOF
   cat > "${root}/fake-e2e.sh" <<'EOF'
 #!/usr/bin/env bash
 # fixture-only fake e2e entrypoint. Mirrors tests/run-all.sh's exact
-# "Failures (blocking):" summary block so leadv2-e2e-ownership.sh's parser
-# is exercised against the real format, not a hand-simplified one.
+# "Failures (blocking):" summary block (C4, GATE-WRONG-ROOT-FALSE-DEAD-01)
+# with repo-relative suite names — the real format ownership.sh parses.
 set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT_DIR}"
 failed=()
 for f in tests/unit/*.sh; do
   [[ -f "${f}" ]] || continue
-  name="$(basename "${f}")"
   if ! ( env RUN_MODE=dry_run bash "${f}" ) >/dev/null 2>&1; then
-    failed+=("${name}")
+    failed+=("${f}")
   fi
 done
 if [[ ${#failed[@]} -gt 0 ]]; then
@@ -110,9 +109,12 @@ run_gate() { # <root> <sig8> <writes_csv> <ownership_flag> -> sets RC, MD, FLAG
   local handoff="${root}/docs/handoff/dispatch-${sig8}"
   rm -rf "${handoff}"
   RC=0
+  # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): CROSS_REPO_DIFF=0 so diff_root stays
+  # ROOT (no worktree lookup that would resolve into the real leadv2 repo).
   LEADV2_E2E_CMD="bash ${root}/fake-e2e.sh" \
   LEADV2_E2E_OWNERSHIP="${ownership}" \
   LEADV2_DISPATCH_LANE_WRITES="${writes}" \
+  LEADV2_REVIEW_DIFF_CROSS_REPO=0 \
   LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
   LEADV2_JOURNAL_BIN=/bin/true \
     bash "$PRODUCT_CLOSE_SH" "${root}" "${sig8}" codex "" 1 0 "" >/dev/null 2>&1 || RC=$?
@@ -123,8 +125,10 @@ run_gate() { # <root> <sig8> <writes_csv> <ownership_flag> -> sets RC, MD, FLAG
 TMP="$(lv2_mktemp_dir "e2e-foreign-failure-test")"; trap 'rm -rf "$TMP"' EXIT
 
 # ── R1: lane writes A only; B broken (this morning's exact shape) ───────────
+# a_working differs from committed A-fixed (creates a diff for the gate);
+# test-A.sh still passes since A-fixed-v2 != broken-A.
 R1="${TMP}/r1"; mkdir -p "${R1}"
-build_fixture "${R1}" "A-fixed" "broken-B"
+build_fixture "${R1}" "A-fixed-v2" "broken-B"
 lv2_assert_scratch_repo "${R1}"
 
 run_gate "${R1}" "r1sig001" "A.txt" "0"
@@ -140,7 +144,7 @@ if [[ "${RC}" -ne 8 ]] \
   && grep -q 'reason: foreign_failure' <<<"${MD}" \
   && grep -q 'foreign_files:.*B\.txt' <<<"${MD}" \
   && grep -q 'scope: lane_writes' <<<"${FLAG}" \
-  && grep -q '^foreign_failures: test-B\.sh$' <<<"${FLAG}"; then
+  && grep -q '^foreign_failures: tests/unit/test-B\.sh$' <<<"${FLAG}"; then
   pass "R1 post-fix (OWNERSHIP=1): foreign_failure, lane NOT killed, B.txt named"
 else
   fail "R1 post-fix: expected non-8 rc + fail_foreign + foreign_files naming B.txt, got rc=${RC} md=<${MD}> flag=<${FLAG}>"
@@ -198,7 +202,7 @@ fi
 
 # ── R5: all suites green ─────────────────────────────────────────────────────
 R5="${TMP}/r5"; mkdir -p "${R5}"
-build_fixture "${R5}" "A-fixed" "B-fixed"
+build_fixture "${R5}" "A-fixed-v2" "B-fixed"
 lv2_assert_scratch_repo "${R5}"
 
 run_gate "${R5}" "r5sig001" "A.txt" "1"
@@ -219,23 +223,24 @@ STUB
 chmod +x "${STUB_JOURNAL}"
 
 R6="${TMP}/r6"; mkdir -p "${R6}"
-build_fixture "${R6}" "A-fixed" "broken-B"
+build_fixture "${R6}" "A-fixed-v2" "broken-B"
 lv2_assert_scratch_repo "${R6}"
 handoff6="${R6}/docs/handoff/dispatch-r6sig001"
 rm -rf "${handoff6}"
 LEADV2_E2E_CMD="bash ${R6}/fake-e2e.sh" \
 LEADV2_E2E_OWNERSHIP=1 \
 LEADV2_DISPATCH_LANE_WRITES="A.txt" \
+LEADV2_REVIEW_DIFF_CROSS_REPO=0 \
 LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
 LEADV2_JOURNAL_BIN="${STUB_JOURNAL}" \
   bash "$PRODUCT_CLOSE_SH" "${R6}" "r6sig001" codex "" 1 0 "" >/dev/null 2>&1 || true
 
-if grep -qE '^append dispatch-r6sig001 decision e2e_gate task=r6sig001 status=ran verdict=foreign_failure scope=lane_writes foreign_suites=test-B\.sh foreign_files=B\.txt owner_lane=unknown own_failures=0$' "${JOURNAL_LOG}"; then
+if grep -qE '^append dispatch-r6sig001 decision e2e_gate task=r6sig001 status=ran verdict=foreign_failure scope=lane_writes foreign_suites=tests/unit/test-B\.sh foreign_files=B\.txt owner_lane=unknown own_failures=0$' "${JOURNAL_LOG}"; then
   pass "loudness (1/4): exact journal decision line present"
 else
   fail "loudness (1/4): missing/mismatched e2e_gate decision line -- $(cat "${JOURNAL_LOG}")"
 fi
-if grep -qE '^append dispatch-r6sig001 decision foreign_failure task=r6sig001 suite=test-B\.sh file=B\.txt owner_lane=unknown$' "${JOURNAL_LOG}"; then
+if grep -qE '^append dispatch-r6sig001 decision foreign_failure task=r6sig001 suite=tests/unit/test-B\.sh file=B\.txt owner_lane=unknown$' "${JOURNAL_LOG}"; then
   pass "loudness (2/4): separate per-suite foreign_failure line present"
 else
   fail "loudness (2/4): missing per-suite foreign_failure line -- $(cat "${JOURNAL_LOG}")"
