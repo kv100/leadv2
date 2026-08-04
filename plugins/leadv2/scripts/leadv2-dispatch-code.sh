@@ -622,7 +622,7 @@ _dl_note() {
   # session. Both names because ledger:83 prefers PROJECT_ROOT while other leadv2 callers
   # key off LEADV2_PROJECT_ROOT -- threading both keeps the fix uniform.
   PROJECT_ROOT="${LEDGER_REPO_ROOT}" LEADV2_PROJECT_ROOT="${LEDGER_REPO_ROOT}" \
-    bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$(_dl_attempt_token "$1")" "${DISPATCH_LANE_NAME:-}" >/dev/null 2>&1 9>&- || true
+    bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$(_dl_attempt_token "$1")" "${DISPATCH_LANE_NAME:-}" "${6:-}" "${7:-}" >/dev/null 2>&1 9>&- || true
 }
 
 # ── task signature: normalize mission text, sha256 ────────────────────────────────
@@ -2804,6 +2804,7 @@ case "${1:-}" in
   record-review) shift; cmd_record_review "$@" ;;
   status)        cmd_status ;;
   sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;
+  reconcile)     shift; [[ -f "${LEDGER_BIN}" ]] && exec bash "${LEDGER_BIN}" reconcile "$@"; exit $? ;;
   -h|--help)     usage ;;
   *)             cmd_resolve "$@" ;;
 esac

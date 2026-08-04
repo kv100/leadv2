@@ -184,9 +184,18 @@ dispatch_any_terminal_exists() {
 # across its own explicit call and its own EXIT-trap retry, but different across separate
 # process invocations even for the same sig8) is what tells the two apart. Callers that omit
 # it (e.g. the sweep below, which never double-calls for the same sig8) always append.
-# <sig8> <founder_task_id> <terminal:landed|parked|refused|dead> <cause> [<evidence>] [<attempt>] [<display_name>]
+# <sig8> <founder_task_id> <terminal:landed|parked|refused|dead> <cause> [<evidence>] [<attempt>] [<display_name>] [<commit>] [<deliverable>]
+# LANE-CLOSE-LOOP-01: args 8/9 (commit, deliverable) are ADDITIVE -- appended after
+# display_name so every existing 7-arg callsite keeps its meaning byte-for-byte. They
+# surface two new keys ("commit", "deliverable") in the row so reconcile can carry the
+# git sha and deliverable presence it derived into the persistent row. Defaults "none" /
+# "unknown" so the keys are ALWAYS present (a sometimes-absent key is the shape that
+# breaks a future jq -r .commit). All current readers are grep -F + per-field sed
+# (_dispatch_terminal_last_field, :135) -- key order and unknown keys are irrelevant to
+# them, so inserting the two keys between "evidence" and "attempt" changes no reader.
 dispatch_ledger_write_terminal() {
   local sig8="$1" founder="${2:-}" terminal="$3" cause="${4:-}" evidence="${5:-}" attempt="${6:-}" display_name="${7:-}"
+  local commit="${8:-none}" deliverable="${9:-unknown}"
   [[ -n "${sig8}" ]] || { log_err "write_terminal: empty task_sig, refusing to write"; return 1; }
   case "${terminal}" in
     landed|parked|refused|dead|no_work) : ;;
@@ -197,6 +206,12 @@ dispatch_ledger_write_terminal() {
   evidence="$(json_safe "${evidence}")"
   attempt="$(json_safe "${attempt}")"
   display_name="$(json_safe "${display_name}")"
+  # LANE-CLOSE-LOOP-01: keep commit to a bare sha (hex), deliverable to its enum word --
+  # json_safe strips quotes/backslashes/control chars, sufficient for these bounded inputs.
+  commit="$(printf '%s' "${commit}" | tr -cd '0-9A-Za-z._:/-')"
+  [[ -n "${commit}" ]] || commit="none"
+  deliverable="$(json_safe "${deliverable}")"
+  [[ -n "${deliverable}" ]] || deliverable="unknown"
   # SWIFTBAR-LIVE-01 round 4 (§Fix 3): emit task_id alongside founder_task_id so a
   # terminal row is self-describing -- the status-surface reader keyed the lane
   # name off task_id, and this row REPLACES the reserve row that carried it, so
@@ -233,8 +248,8 @@ dispatch_ledger_write_terminal() {
       [[ -n "${_same_attempt_row}" ]] && exit 2
     fi
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
-    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","task_id":"%s","terminal":"%s","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
-      "${ts}" "${sig8}" "${founder}" "${_tid}" "${terminal}" "${cause}" "${evidence}" "${attempt}" >> "${f}" || exit 1
+    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","task_id":"%s","terminal":"%s","cause":"%s","evidence":"%s","commit":"%s","deliverable":"%s","attempt":"%s"}\n' \
+      "${ts}" "${sig8}" "${founder}" "${_tid}" "${terminal}" "${cause}" "${evidence}" "${commit}" "${deliverable}" "${attempt}" >> "${f}" || exit 1
     exit 0
   ) 9>"${lockf}"
   rc=$?
@@ -550,12 +565,350 @@ for row in d.get("lanes") or []:
   log "sweep: checked=${checked} swept=${swept} skipped_alive=${skipped_alive} skipped_attemptless=${skipped_attemptless} skipped_indeterminate=${skipped_indeterminate}"
 }
 
+# ── LANE-CLOSE-LOOP-01: terminal-state reconcile ─────────────────────────────────
+#
+# PROBLEM THIS SOLVES (D2/D3/D4 in the task design): the close gate stamps terminal
+# rows on SOME paths but not all, and the rows it DOES stamp can be wrong (D1: a cross-
+# repo start-sha makes a lane that committed real work read as empty_diff). So lanes end
+# up either with no terminal row at all (b5c26011: spawned-and-forgotten) or with a lying
+# no_work. Reconcile closes that loop AFTER the fact: anti-join the reservation ledger
+# (every confirmed spawn) against the terminal ledger, derive each unmatched lane's real
+# state from runtime evidence, and write ONE terminal row for it. Idempotent by structure
+# (a second run finds the row the first wrote) -- not a dedupe pass.
+#
+# The derivation deliberately does NOT use the close gate's sha-diff (_pc_diff_base): that
+# is the source of D1. It uses a time-windowed + path-scoped `git log --since=@<spawn>
+# -- <lane_writes>` instead, which needs no cross-repo start sha and survives the merge/
+# push case that produces D1's false empty. A dirty working tree in the lane's write-set
+# is OR'd in so an uncommitted-but-real lane is not called no_work.
+#
+# Write path is the SAME locked, write-once writer everything else uses -- no new lock,
+# no new path, no second schema. The two new keys (commit, deliverable) are additive.
+
+# Extract the lane_writes CSV from the architect prepass artifact (preferred -- it is the
+# scoped declaration) or, failing that, from the mission file itself. Best-effort: an
+# empty return degrades _dl_derive_lane_state to an unscoped --since window (still finds a
+# commit if one landed, just over-attributes -- accepted, R4).
+_dl_harvest_writes() {  # <dispatch_root> <sig8> <mission_path>
+  local disp_root="$1" sig8="$2" mission="$3" line
+  local prepass="${disp_root}/docs/handoff/dispatch-${sig8}/architect-prepass.md"
+  if [[ -s "${prepass}" ]]; then
+    line="$(grep -m1 -iE '^[[:space:]*_]*LANE_WRITES[*_]*:' "${prepass}" 2>/dev/null || true)"
+    line="$(printf '%s' "${line}" | sed -E 's/^[[:space:]*_]*LANE_WRITES[*_]*:[[:space:]]*//I')"
+    [[ -n "${line}" ]] && { printf '%s' "${line}"; return 0; }
+  fi
+  if [[ -n "${mission}" && -s "${mission}" ]]; then
+    line="$(grep -m1 -iE '^[[:space:]*_]*LANE_WRITES[*_]*:' "${mission}" 2>/dev/null || true)"
+    line="$(printf '%s' "${line}" | sed -E 's/^[[:space:]*_]*LANE_WRITES[*_]*:[[:space:]]*//I')"
+    [[ -n "${line}" ]] && printf '%s' "${line}"
+  fi
+  return 0
+}
+
+# Extract the declared deliverable path from the mission file (a scratchpad .md). Empty
+# return => deliverable presence is UNKNOWN, never "missing" -- a lane with no declared
+# deliverable must not be reported as a deliverable failure (R5).
+_dl_harvest_deliverable() {  # <mission_path>
+  local mission="$1" p
+  [[ -n "${mission}" && -s "${mission}" ]] || return 0
+  p="$(grep -m1 -oE '/[^[:space:]"]*scratchpad/[^[:space:]"]*\.md' "${mission}" 2>/dev/null || true)"
+  [[ -z "${p}" ]] && p="$(grep -m1 -oE '/private/tmp/[^[:space:]"]*\.md' "${mission}" 2>/dev/null || true)"
+  [[ -n "${p}" ]] && printf '%s' "${p}"
+  return 0
+}
+
+# Derive a lane's terminal state from runtime evidence (read-only). Prints three
+# \x1f-separated fields: <terminal>\x1f<commit_sha|none>\x1f<deliverable present|missing|unknown>
+# <lane_repo_abs> <spawn_epoch> <lane_writes_csv> <deliverable_path> <lane_id> <arm>
+#
+# terminal is one of: landed | no_work | dead | running | unknown -- the FIRST THREE map
+# onto the existing ledger taxonomy (landed|dead|no_work) so reconcile stamps no new enum;
+# running/unknown mean "do not stamp" (a live or indeterminate lane -- stamping it would
+# poison the sig8 under write-once, the exact HIGH-1 bug cmd_sweep already documents).
+_dl_derive_lane_state() {
+  local repo="$1" spawn_epoch="$2" writes_csv="$3" deliverable="$4" lane_id="${5:-}" arm="${6:-}"
+  local commit_sha="none" deliverable_state="unknown" dirty=0
+
+  # 1. COMMIT EVIDENCE -- time-windowed + path-scoped, NOT sha-diff (survives D1).
+  if git -C "${repo}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local since_arg=""
+    if [[ "${spawn_epoch}" =~ ^-?[0-9]+$ ]]; then since_arg="--since=@${spawn_epoch}"; fi
+    # build a pathspec from the CSV, excluding docs/leadv2 + docs/handoff (the same
+    # exclusion set _pc_git_diff uses -- those are dispatcher bookkeeping, never the lane's
+    # product work).
+    local -a pathspec=() entries=()
+    local e
+    if [[ -n "${writes_csv}" ]]; then
+      IFS=',' read -ra entries <<< "${writes_csv}"
+      for e in "${entries[@]}"; do
+        e="${e#"${e%%[![:space:]]*}"}"; e="${e%"${e##*[![:space:]]}"}"; e="${e#./}"
+        [[ -z "${e}" ]] && continue
+        case "${e}" in docs/leadv2/*|docs/handoff/*) continue ;; esac
+        pathspec+=("${e}")
+      done
+    fi
+    local found=""
+    if [[ ${#pathspec[@]} -gt 0 && -n "${since_arg}" ]]; then
+      found="$(git -C "${repo}" log ${since_arg} --pretty=%H -n 1 -- "${pathspec[@]}" 2>/dev/null || true)"
+    fi
+    # NOTE: there is deliberately NO unscoped `git log --since` fallback. An unscoped window
+    # attributes the repo's LATEST commit to every lane with no declared lane_writes -- found
+    # live 2026-08-04: a cross-repo --repo stamped `landed` + the newest leadv2 commit onto
+    # 137 unrelated persona-engine lanes in one run. `landed` requires a PATH-SCOPED hit (an
+    # attributable commit touching this lane's declared writes). No pathspec / no scoped hit
+    # => the lane falls through to liveness (conservative), never a mass false-landed.
+    [[ -n "${found}" ]] && commit_sha="${found}"
+    # OR a dirty working tree in the lane's write-set (uncommitted-but-real work).
+    if [[ ${#pathspec[@]} -gt 0 ]]; then
+      local st
+      st="$(git -C "${repo}" status --porcelain -uall -- "${pathspec[@]}" 2>/dev/null || true)"
+      [[ -n "${st}" ]] && dirty=1
+    fi
+  fi
+
+  # 2. DELIVERABLE EVIDENCE -- present iff a non-empty file exists at the declared path,
+  # or at <path>.full.md. No declared path => unknown (never "missing").
+  if [[ -n "${deliverable}" ]]; then
+    deliverable_state="missing"
+    local alt="${deliverable%.md}.full.md"
+    if [[ -s "${deliverable}" ]] || { [[ "${alt}" != "${deliverable}" && -s "${alt}" ]]; }; then
+      deliverable_state="present"
+    fi
+  fi
+
+  # 3. VERDICT. Positive commit/dirty evidence is safe to stamp -- landed is what the lane
+  # would have earned, so write-once cannot discard a better verdict here. Only the NO-work
+  # case needs liveness to avoid poisoning a live lane (R1).
+  if [[ "${commit_sha}" != "none" || ${dirty} -eq 1 ]]; then
+    printf 'landed\x1f%s\x1f%s' "${commit_sha}" "${deliverable_state}"
+    return 0
+  fi
+  local verdict="${LEADV2_RECONCILE_VERDICT:-}"
+  # If the caller did not pre-supply a verdict (the batched reconcile path builds ONE
+  # --all map and hands each lane its verdict via this env var), fall back to a single
+  # per-lane spawn. The batched path is what makes a full reconcile over hundreds of lanes
+  # affordable; this fallback keeps _dl_derive_lane_state usable standalone.
+  if [[ -z "${verdict}" && -n "${lane_id}" && -f "${LANE_LIVENESS_BIN}" ]]; then
+    verdict="$(LEADV2_PROJECT_ROOT="${repo}" bash "${LANE_LIVENESS_BIN}" --project-root "${repo}" --lane "${lane_id}" 2>/dev/null || true)"
+  fi
+  case "${verdict}" in
+    alive|starting:*|silent:*)
+      # process is alive (or freshly starting, or alive-but-silent) -- NOT terminal. Stamping
+      # here would discard the real outcome the live worker is about to record (R1).
+      printf 'running\x1fnone\x1f%s' "${deliverable_state}" ;;
+    dead:no_handoff_dir|dead:no_log_artifact)
+      # the lane has no work artifacts at all -- it wrote nothing. no_work (retryable), not
+      # dead (dead is write-once and would block a retry).
+      printf 'no_work\x1fnone\x1f%s' "${deliverable_state}" ;;
+    dead:*)
+      # a verdict that consulted the process and concluded dead (provider_failed/cancelled,
+      # wedged, silent_no_process, log_stat_failed) -- the worker ran and died. dead.
+      printf 'dead\x1fnone\x1f%s' "${deliverable_state}" ;;
+    *)
+      # liveness unavailable / indeterminate -- do NOT stamp (R1: a live lane this repo
+      # cannot see would be poisoned). Surface as unknown; counts toward exit-1.
+      printf 'unknown\x1fnone\x1f%s' "${deliverable_state}" ;;
+  esac
+}
+
+# Print one lane as a table row (default) or a JSON object (--json). Trailing arg is the
+# json flag (0/1) so this stays a plain positional fn (no subshell-global peeking).
+_dl_emit_row() {  # <sig8> <label> <spawn_epoch> <state> <commit> <deliverable> <json>
+  local sig8="$1" label="$2" spawn="$3" state="$4" commit="$5" del="$6" json="${7:-0}"
+  if [[ ${json} -eq 1 ]]; then
+    printf '{"task_sig":"%s","lane_label":"%s","spawned":%s,"state":"%s","commit":"%s","deliverable":"%s"}\n' \
+      "${sig8}" "${label}" "${spawn:-0}" "${state}" "${commit:-none}" "${del:-unknown}"
+  else
+    printf '%s | %s | %s | %s | %s\n' "${label:-${sig8}}" "${spawn:-?}" "${state}" "${commit:-none}" "${del:-unknown}"
+  fi
+}
+
+cmd_reconcile() {
+  local repo_arg="" since_arg="" json_mode=0 lane_filter=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo)  repo_arg="${2:-}";  shift 2 ;;
+      --since) since_arg="${2:-}"; shift 2 ;;
+      --json)  json_mode=1; shift ;;
+      --lane)  lane_filter+="${lane_filter:+ }${2:-}"; shift 2 ;;
+      *) log_err "reconcile: unknown arg: $1"; return 2 ;;
+    esac
+  done
+
+  # Dispatch repo root (worktree-aware) -- mirrors dispatch-code.sh's LEDGER_REPO_ROOT
+  # derivation so the reservation-ledger slug resolves to the MAIN checkout even when
+  # reconcile is launched from a linked worktree (a per-worktree slug would fragment it).
+  local disp_root
+  disp_root="$(cd "${PROJECT_ROOT}" 2>/dev/null && cd "$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)")" 2>/dev/null && pwd)"
+  [[ -n "${disp_root}" && -d "${disp_root}" ]] || disp_root="${PROJECT_ROOT}"
+  # --repo overrides ONLY the git-evidence repo (where commits landed). The reservation
+  # ledger + handoff lookups stay on the dispatch repo, because that is where the spawn
+  # rows and docs/handoff/dispatch-<sig8>/ live. Printed in the header (R6) so a wrong-repo
+  # read is visible, never silent.
+  local evidence_repo="${repo_arg:-${disp_root}}"
+
+  # Reservation ledger (dispatch-code.sh's dispatch_ledger_file shape: every confirmed
+  # spawn). Overridable for tests.
+  local res_file
+  if [[ -n "${LEADV2_DISPATCH_RESERVATION_LEDGER_FILE:-}" ]]; then
+    res_file="${LEADV2_DISPATCH_RESERVATION_LEDGER_FILE}"
+  else
+    local slug; slug="$(printf '%s' "$(basename "${disp_root}")" | tr -cd 'A-Za-z0-9._-')"
+    res_file="${CACHE_BASE}/dispatch-ledger/${slug}.jsonl"
+  fi
+  local term_file; term_file="$(dispatch_terminal_ledger_file)"
+
+  [[ ${json_mode} -eq 0 ]] && printf 'reconcile: repo=%s reservation=%s\n' "${evidence_repo}" "${res_file}" >&2
+  if [[ ! -f "${res_file}" ]]; then
+    log "reconcile: no reservation ledger at ${res_file} (repo=$(basename "${disp_root}"))"
+    return 0
+  fi
+  [[ ${json_mode} -eq 0 ]] && printf 'lane_label | spawned | state | commit | deliverable\n' >&2
+
+  # BATCH liveness: ONE `--all --json` call against the dispatch repo builds a sig8->verdict
+  # map, consulted per-lane inside the loop. Spawning lane-liveness (python) per lane over
+  # hundreds of reservation rows is what made a full reconcile time out (found live
+  # 2026-08-04). Liveness runs against disp_root (where docs/handoff + active.yaml live),
+  # NOT the evidence repo -- a cross-repo evidence repo has none of a persona-engine lane's
+  # handoff dirs and would verdict dead:no_handoff_dir for every lane.
+  local liv_map=""
+  if [[ -f "${LANE_LIVENESS_BIN}" ]]; then
+    liv_map="$(mktemp 2>/dev/null || mktemp -t liv)"
+    LEADV2_PROJECT_ROOT="${disp_root}" bash "${LANE_LIVENESS_BIN}" --project-root "${disp_root}" --all --json 2>/dev/null \
+      | python3 -c '
+import json, sys, re
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for r in (d.get("lanes") or []):
+    lane = r.get("lane") or ""
+    v = r.get("verdict") or ""
+    m = re.match(r"dispatch-([0-9a-f]{8})", lane)
+    if m:
+        sys.stdout.write(m.group(1) + "\x1f" + v + "\n")
+' > "${liv_map}" 2>/dev/null || true
+  fi
+
+  local ln sig sig8 lane_label created handle mission_path spawn_epoch
+  local der term rest commit_sha deliverable_state cause
+  local existing=0 stamped=0 running=0 stalled=0 warned=0
+  # Read the reservation ledger once; per-row work is all read-only except the one locked
+  # append through dispatch_ledger_write_terminal (same lock every other writer uses).
+  while IFS= read -r ln || [[ -n "${ln}" ]]; do
+    [[ "${ln}" == *'"state":"confirmed"'* ]] || continue
+    sig="$(printf '%s' "${ln}" | sed -n 's/.*"task_sig":"\([^"]*\)".*/\1/p')"
+    [[ -n "${sig}" ]] || continue
+    sig8="${sig:0:8}"
+    # --lane allowlist: when the founder names specific sig8s, process ONLY those (a full
+    # reconcile over every confirmed row is correct but noisy; --lane scopes the table).
+    if [[ -n "${lane_filter}" ]]; then
+      case " ${lane_filter} " in *" ${sig8} "*) : ;; *) continue ;; esac
+    fi
+    lane_label="$(printf '%s' "${ln}" | sed -n 's/.*"lane_label":"\([^"]*\)".*/\1/p')"
+    created="$(printf '%s' "${ln}" | sed -n 's/.*"created_epoch":\([0-9][0-9]*\).*/\1/p')"
+    handle="$(printf '%s' "${ln}" | sed -n 's/.*"handle":"\([^"]*\)".*/\1/p')"
+    mission_path="$(printf '%s' "${ln}" | sed -n 's/.*"mission_path":"\([^"]*\)".*/\1/p')"
+    spawn_epoch="${since_arg:-${created}}"
+
+    # Step 2: a terminal row already exists => print its recorded state, derive nothing,
+    # write nothing. Reconcile is a CLOSE-LOOP for lanes with NO terminal, not a re-judge
+    # of lanes the close gate already verdicted (D1's lying no_work is a separate task).
+    if dispatch_any_terminal_exists "${sig8}"; then
+      existing=$((existing + 1))
+      local eterm ecommit edel
+      eterm="$(_dispatch_terminal_last_field "${sig8}" "${term_file}" terminal)"
+      ecommit="$(_dispatch_terminal_last_field "${sig8}" "${term_file}" commit)"
+      edel="$(_dispatch_terminal_last_field "${sig8}" "${term_file}" deliverable)"
+      _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "${eterm:-recorded}" "${ecommit}" "${edel}" "${json_mode}"
+      continue
+    fi
+
+    # Steps 3-5: derive lane_writes + deliverable, then the lane state. Hand the lane its
+    # precomputed liveness verdict (from the batched --all map) via env so _dl_derive_lane_
+    # state does not spawn lane-liveness itself.
+    local lane_writes="" deliverable="" vrd=""
+    lane_writes="$(_dl_harvest_writes "${disp_root}" "${sig8}" "${mission_path}")"
+    deliverable="$(_dl_harvest_deliverable "${mission_path}")"
+    # Look up this lane's precomputed verdict in the batched map. The map key is the sig8
+    # followed by a unit-separator byte; anchor the grep on BOTH so one sig8 that is a
+    # prefix of another cannot mismatch. printf emits the real US byte (ANSI-C $'\x1f'
+    # would NOT expand inside a double-quoted grep pattern -- a bug this line had briefly).
+    local _us; _us="$(printf '\x1f')"
+    [[ -n "${liv_map}" && -f "${liv_map}" ]] && vrd="$(grep -m1 "^${sig8}${_us}" "${liv_map}" 2>/dev/null | cut -d"${_us}" -f2-)"
+    der="$(LEADV2_RECONCILE_VERDICT="${vrd}" _dl_derive_lane_state "${evidence_repo}" "${spawn_epoch}" "${lane_writes}" "${deliverable}" "dispatch-${sig8}" "${handle}")"
+    term="${der%%$'\x1f'*}"
+    rest="${der#*$'\x1f'}"
+    commit_sha="${rest%%$'\x1f'*}"
+    deliverable_state="${rest#*$'\x1f'}"
+
+    case "${term}" in
+      landed)
+        cause="reconciled"
+        if [[ "${deliverable_state}" == "missing" ]]; then
+          cause="no_deliverable"
+          warned=$((warned + 1))
+          # LOUD: this is today's exact failure shape -- GLM committed and skipped the
+          # deliverable file. Name the lane AND the commit so a human can check it.
+          printf 'WARN: lane %s (%s) committed %s but wrote NO deliverable at %s\n' \
+            "${lane_label:-${sig8}}" "${sig8}" "${commit_sha}" "${deliverable:-<unknown>}" >&2
+        fi
+        if dispatch_ledger_write_terminal "${sig8}" "${lane_label}" landed "${cause}" \
+            "reconciled commit=${commit_sha}" "reconcile-$$" "${lane_label}" "${commit_sha}" "${deliverable_state}"; then
+          stamped=$((stamped + 1))
+        fi
+        _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "landed:${cause}" "${commit_sha}" "${deliverable_state}" "${json_mode}"
+        ;;
+      dead)
+        if dispatch_ledger_write_terminal "${sig8}" "${lane_label}" dead worker_died \
+            "reconciled no_commit liveness=dead" "reconcile-$$" "${lane_label}" "none" "${deliverable_state}"; then
+          stamped=$((stamped + 1))
+        fi
+        stalled=$((stalled + 1))
+        _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "dead:worker_died" "none" "${deliverable_state}" "${json_mode}"
+        ;;
+      no_work)
+        if dispatch_ledger_write_terminal "${sig8}" "${lane_label}" no_work empty_diff \
+            "reconciled no_commit no_dirty" "reconcile-$$" "${lane_label}" "none" "${deliverable_state}"; then
+          stamped=$((stamped + 1))
+        fi
+        stalled=$((stalled + 1))
+        _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "no_work:empty_diff" "none" "${deliverable_state}" "${json_mode}"
+        ;;
+      running)
+        running=$((running + 1))
+        # NOT stamped -- a terminal for a live lane is the write-once poisoning bug.
+        _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "running" "none" "${deliverable_state}" "${json_mode}"
+        ;;
+      *)
+        # unknown/indeterminate -- NOT stamped. This is the unresolved lost-lane shape and
+        # the one condition that makes reconcile exit non-zero.
+        stalled=$((stalled + 1))
+        _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "unknown" "none" "${deliverable_state}" "${json_mode}"
+        ;;
+    esac
+  done < "${res_file}"
+
+  [[ -n "${liv_map}" && -f "${liv_map}" ]] && rm -f "${liv_map}" 2>/dev/null
+
+  [[ ${json_mode} -eq 0 ]] && log "reconcile: existing=${existing} stamped=${stamped} running=${running} stalled=${stalled} warned=${warned}" >&2
+
+  # Exit 1 iff >=1 lane is live-and-stalled (no commit, no dirty tree, process dead or
+  # indeterminate, no prior terminal) -- exactly the shape that was silently lost. Lanes
+  # reconcile successfully RESOLVED (landed, or stamped dead/no_work) do NOT set this; they
+  # now have a terminal row and are no longer lost. Second run: those rows are "existing",
+  # stalled stays 0 => exit 0 (idempotent).
+  [[ ${stalled} -gt 0 ]] && return 1
+  return 0
+}
+
 usage() {
   cat >&2 <<EOF
 Usage:
-  ${SCRIPT_NAME}.sh write-terminal <sig8> <founder_task_id> <landed|parked|refused|dead> <cause> [<evidence>] [<attempt>] [<display_name>]
+  ${SCRIPT_NAME}.sh write-terminal <sig8> <founder_task_id> <landed|parked|refused|dead|no_work> <cause> [<evidence>] [<attempt>] [<display_name>] [<commit>] [<deliverable>]
   ${SCRIPT_NAME}.sh exists <sig8>
   ${SCRIPT_NAME}.sh sweep
+  ${SCRIPT_NAME}.sh reconcile [--repo <abs>] [--since <epoch|ISO>] [--lane <sig8>]... [--json]
 EOF
   exit 2
 }
@@ -564,7 +917,7 @@ case "${1:-}" in
   write-terminal)
     shift
     [[ $# -ge 3 ]] || usage
-    dispatch_ledger_write_terminal "$1" "${2:-}" "$3" "${4:-}" "${5:-}" "${6:-}" "${7:-}"
+    dispatch_ledger_write_terminal "$1" "${2:-}" "$3" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" "${9:-}"
     exit $?
     ;;
   exists)
@@ -575,6 +928,11 @@ case "${1:-}" in
     ;;
   sweep)
     cmd_sweep
+    exit $?
+    ;;
+  reconcile)
+    shift
+    cmd_reconcile "$@"
     exit $?
     ;;
   *) usage ;;
