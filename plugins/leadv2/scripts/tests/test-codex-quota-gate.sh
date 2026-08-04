@@ -6,10 +6,12 @@
 # isolated HOME so the founder's real lockout file, codex job store, and account
 # are never touched or seeded.
 #
-# Isolation contract — the gate reads three things, all redirectable:
-#   _CODEX_LOCKOUT_FILE = $HOME/.claude/cache/codex-lockout.state   -> overridden via HOME
-#   routing yaml        = LEADV2_ROUTING_YAML                        -> overridden per case
-#   quota reader        = LEADV2_QUOTA_READ (python3 <reader> codex) -> stubbed per case
+# Isolation contract — the gate reads cooldown memory + circuit + routing + reader,
+# all redirectable:
+#   arm-cooldown store  = $HOME/.claude/cache/arm-cooldown/codex.state -> overridden via HOME
+#   codex circuit file  = LEADV2_CODEX_CIRCUIT_FILE (test seam)        -> set per case (q9)
+#   routing yaml        = LEADV2_ROUTING_YAML                          -> overridden per case
+#   quota reader        = LEADV2_QUOTA_READ (python3 <reader> codex)   -> stubbed per case
 # The companion resolution at the top of codex-task.sh (`find ... codex-companion.mjs`)
 # is HOME-relative, so the isolated HOME carries a mirrored copy of the real companion
 # file (find succeeds); a fake `node` on PATH makes any "proceed" case fail fast
@@ -17,13 +19,15 @@
 #
 # Cases (each asserts BOTH the stderr marker AND the exit code):
 #   q1  live cooldown         -> refused: CODEX_REFUSED_QUOTA reason=cooldown + marker, rc 2, NO job dir
-#   q2  no cooldown           -> proceeds: no marker, rc != 2
+#   q2  past cooldown expires -> proceeds: no marker, rc != 2 (genuinely exercises arm-cooldown expiry)
 #   q3  reader hangs > deadline -> fail-open proceeds: 'quota-gate FAIL-OPEN', rc != 2
 #   q4  reader prints 99      -> refused: reason=threshold used=99 + marker, rc 2, NO job dir
 #   q5  watcher rerun         -> exactly ONE cooldown line after two runs (idempotent)
 #   q6  queued-stall (D1)     -> exactly ONE reason=queued_stall cooldown line + job-log line (idempotent)
 #   q7  dispatch while cooling (D2) -> refused: marker + rc 2
-#   q8  blind reader + recent stall (C) -> one WARN line, dispatch proceeds (rc != 2)
+#   q8  started job past stall threshold does NOT record a queued_stall cooldown
+#   q9  queued stall then terminal quota death still records the quota cooldown (+ circuit)
+#   q10 blind reader + recent stall (C) -> one WARN line, dispatch proceeds (rc != 2)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -120,15 +124,23 @@ else
   fail "q1 live cooldown refused (marker + rc 2) before any job launch (rc=$RUN_RC, jobs=$(count_jobs))"
 fi
 
-# ── q2: past lockout -> proceeds (no marker, rc != 2) ──────────────────────
+# ── q2: past cooldown expires -> proceeds (no marker, rc != 2) ─────────────
 build_home q2
-printf '%s CODEX_JOB_FAILED_QUOTA until=%s job=x-1 src=parsed\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(iso_now -2)" > "$LOCKOUT"
+# CODEX-QUOTA-BLIND-SPOT-01 FIX2: seed the arm-cooldown store (NOT the dead
+# legacy $LOCKOUT file) with a PAST reprobe_at, mirroring q1's line format but
+# with a distinct job tag. A reprobe_at 2h ago (and past advisory_until) means
+# codex_spawn_gate's cooldown has EXPIRED (leadv2-arm-cooldown.sh:184-189: a
+# record is cooling only while reprobe_at > now), so the gate reaches the reader
+# and -- no threshold yaml -- proceeds. This now genuinely exercises expiry;
+# the old $LOCKOUT seed was read by nothing, so q2 passed vacuously.
+printf '%s ARM_COOLDOWN arm=codex reason=quota reprobe_at=%s cooldown_s=7200 advisory_until=%s advisory=ignored src=parsed job=q2-1\n' \
+  "$(iso_now -2)" "$(iso_now -2)" "$(iso_now -2)" > "$ARM_CD"
 # no LEADV2_ROUTING_YAML threshold -> gate skips live-quota check and proceeds.
 run_case q2 task "q2-probe" --cwd "$BASE"
 if [[ "$RUN_RC" -ne 2 ]] && ! grep -q 'LEADV2_DISPATCH_REFUSED: quota_gate' "$RUN_ERR"; then
-  pass "q2 past lockout proceeds (no marker, rc=$RUN_RC != 2)"
+  pass "q2 past cooldown expires -> proceeds (no marker, rc=$RUN_RC != 2)"
 else
-  fail "q2 past lockout proceeds (rc=$RUN_RC, marker present?)"
+  fail "q2 past cooldown expires -> proceeds (rc=$RUN_RC, marker present?)"
 fi
 
 # ── q3: reader hangs past deadline -> fail-open, proceeds ──────────────────
@@ -233,10 +245,66 @@ else
   fail "q7 next dispatch during live queued_stall cooldown refused (rc=$RUN_RC)"
 fi
 
-# ── q8 (C): empty reader + a queued_stall recorded <24h ago (cooldown ─────
+# ── q8 (FIX2): a `started` job past the stall threshold must NOT trip a ────
+# queued_stall cooldown. FIX2 split the case arm so only `queued` records; a
+# started job has pid/log-progress signals and wall-clock age alone must not
+# condemn it. Fresh HOME; startedAt 30 min in the past (>= CODEX_QUEUED_STALL_MIN).
+build_home q8-started
+WS="$STATE_ROOT/ws/jobs"; mkdir -p "$WS"
+JID="job-q8s-33333"
+printf '{"status":"started","id":"%s","startedAt":"%s"}' "$JID" "$(iso_min -30)" > "$WS/$JID.json"
+printf 'running...\n' > "$WS/$JID.log"
+HOME="$HOME_DIR" LEADV2_ARM_COOLDOWN_DIR="$HOME_DIR/.claude/cache/arm-cooldown" \
+CODEX_QUEUED_STALL_MIN=10 CODEX_WATCH_POLL_S=1 CODEX_WATCH_MAX_S=3 \
+  bash "$CODEX_TASK_SH" __quota-watch "$JID" "$BASE" >/dev/null 2>&1 || true
+Q8S_COUNT=0
+[[ -f "$ARM_CD" ]] && Q8S_COUNT="$(grep -E "reason=queued_stall .* job=${JID}" "$ARM_CD" 2>/dev/null | wc -l | tr -d ' ')"
+Q8S_LOG=0; grep -q 'CODEX_QUEUED_STALL' "$WS/$JID.log" 2>/dev/null && Q8S_LOG=1
+if [[ "$Q8S_COUNT" -eq 0 ]] && [[ "$Q8S_LOG" -eq 0 ]]; then
+  pass "q8 started job past stall threshold does NOT record a queued_stall cooldown"
+else
+  fail "q8 started job past stall threshold does NOT record a queued_stall cooldown (cooldown lines=$Q8S_COUNT, job-log line=$Q8S_LOG)"
+fi
+
+# ── q9 (FIX2): a queued stall recorded, THEN the job dies on a real usage ──
+# limit -> the terminal-state handler STILL records the quota cooldown (and
+# opens the circuit). This is the whole point of FIX2 (no `return 0` on stall):
+# the watcher keeps polling, so a genuine later usage-limit death reaches
+# failed|terminated -> _codex_quota_watch_record -> codex_circuit_open, which
+# the bare `return 0` previously made unreachable. Requires the quota recorder's
+# dedupe to be reason-scoped (a prior queued_stall line must not suppress the
+# quota record) -- also fixed under FIX2. Fresh HOME; job queued + 30 min old.
+build_home q9
+WS="$STATE_ROOT/ws/jobs"; mkdir -p "$WS"
+JID="job-q9-44444"
+printf '{"status":"queued","id":"%s","createdAt":"%s"}' "$JID" "$(iso_min -30)" > "$WS/$JID.json"
+printf 'queued — waiting for slot\n' > "$WS/$JID.log"
+# Flipper: after 3 s, flip the job to failed + a usage-limit signature so the
+# watcher's later poll hits the terminal quota arm.
+( sleep 3; \
+  printf '{"status":"failed","id":"%s","createdAt":"%s"}' "$JID" "$(iso_min -30)" > "$WS/$JID.json"; \
+  printf 'Codex error: You have hit your usage limit. Please try again at Aug 5th, 2026 10:55 AM.\n' > "$WS/$JID.log" \
+) &
+Q9_FLIPPER=$!
+HOME="$HOME_DIR" \
+LEADV2_ARM_COOLDOWN_DIR="$HOME_DIR/.claude/cache/arm-cooldown" \
+LEADV2_CODEX_CIRCUIT_FILE="$HOME_DIR/.claude/cache/codex-circuit.json" \
+CODEX_QUEUED_STALL_MIN=10 CODEX_WATCH_POLL_S=1 CODEX_WATCH_MAX_S=20 \
+  bash "$CODEX_TASK_SH" __quota-watch "$JID" "$BASE" >/dev/null 2>&1 || true
+wait "$Q9_FLIPPER" 2>/dev/null || true
+Q9_STALL="$(grep -E "reason=queued_stall .* job=${JID}" "$ARM_CD" 2>/dev/null | wc -l | tr -d ' ')"
+Q9_QUOTA="$(grep -E "reason=quota .* job=${JID}" "$ARM_CD" 2>/dev/null | wc -l | tr -d ' ')"
+Q9_CIRCUIT=0; [[ -s "$HOME_DIR/.claude/cache/codex-circuit.json" ]] && Q9_CIRCUIT=1
+if [[ "$Q9_STALL" -eq 1 ]] && [[ "$Q9_QUOTA" -eq 1 ]] && [[ "$Q9_CIRCUIT" -eq 1 ]]; then
+  pass "q9 queued stall then terminal quota death still records the quota cooldown (+ circuit)"
+else
+  fail "q9 queued stall then terminal quota death still records the quota cooldown (stall=$Q9_STALL, quota=$Q9_QUOTA, circuit=$Q9_CIRCUIT)"
+fi
+
+# ── q10 (C): empty reader + a queued_stall recorded <24h ago (cooldown ────
 # EXPIRED so the gate reaches the reader instead of refusing) -> one WARN line
 # naming the blind spot, dispatch still proceeds (fail-open policy unchanged).
-build_home q8
+build_home q10-blind
 cat > "$BASE/reader_empty.py" <<'EOF'
 import sys; sys.exit(0)
 EOF
@@ -248,12 +316,12 @@ printf '%s ARM_COOLDOWN arm=codex reason=queued_stall reprobe_at=%s cooldown_s=1
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(iso_min -5)" > "$ARM_CD"
 HOME="$HOME_DIR" PATH="$STUBBIN:$PATH" \
 LEADV2_ROUTING_YAML="$BASE/routing.yaml" LEADV2_QUOTA_READ="$BASE/reader_empty.py" \
-  bash "$CODEX_TASK_SH" task "q8-probe" --cwd "$BASE" >"$BASE/q8.out" 2>"$BASE/q8.err" || RUN_RC=$?
-if grep -q 'codex quota reader blind + recent queued_stall' "$BASE/q8.err" \
+  bash "$CODEX_TASK_SH" task "q10-probe" --cwd "$BASE" >"$BASE/q10.out" 2>"$BASE/q10.err" || RUN_RC=$?
+if grep -q 'codex quota reader blind + recent queued_stall' "$BASE/q10.err" \
    && [[ "${RUN_RC:-0}" -ne 2 ]]; then
-  pass "q8 blind reader + recent queued_stall -> one WARN line, dispatch proceeds (rc=${RUN_RC:-0})"
+  pass "q10 blind reader + recent queued_stall -> one WARN line, dispatch proceeds (rc=${RUN_RC:-0})"
 else
-  fail "q8 blind reader + recent queued_stall -> WARN + proceed (rc=${RUN_RC:-0})"
+  fail "q10 blind reader + recent queued_stall -> WARN + proceed (rc=${RUN_RC:-0})"
 fi
 
 # ── isolation guard: real lockout file untouched (NOT counted toward PASS;

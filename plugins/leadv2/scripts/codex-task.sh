@@ -386,10 +386,17 @@ sys.exit(1)
   # a duplicate lockout line. The lockout line is keyed by job id; if one
   # already exists for this job, do not append again. The shared state is
   # append-only and the optional job tag keeps sequential watcher reruns safe.
+  # FIX2: dedupe is reason-scoped (reason=quota AND job=<jid>) -- the mirror of
+  # _codex_queued_stall_record's guard. A prior reason=queued_stall line for this
+  # job must NOT suppress the quota record, or a genuine later usage-limit death
+  # (the exact terminal state the watcher now keeps polling for under FIX2) is
+  # silently lost. Scan bounded to tail -n 200 (matches _codex_warn_blind_spot);
+  # the jobId match is anchored to end-of-field so a prefix collision cannot
+  # false-suppress.
   local _cooldown_file
   _cooldown_file="${LEADV2_ARM_COOLDOWN_DIR:-$HOME/.claude/cache/arm-cooldown}/codex.state"
   if [[ -f "$_cooldown_file" ]] \
-     && grep -qF " job=${_jid}" "$_cooldown_file" 2>/dev/null; then
+     && tail -n 200 "$_cooldown_file" 2>/dev/null | grep -qE "reason=quota([[:space:]].*)? job=${_jid}([[:space:]]|$)"; then
     return 0
   fi
   LEADV2_ARM_COOLDOWN_JOB="$_jid" arm_cooldown_record codex quota "$_until_iso"
@@ -415,10 +422,15 @@ _codex_queued_stall_record() {
   [[ -z "$_jid" ]] && return 0
   local _min="${CODEX_QUEUED_STALL_MIN:-10}" _cooldown_file
   _cooldown_file="${LEADV2_ARM_COOLDOWN_DIR:-$HOME/.claude/cache/arm-cooldown}/codex.state"
-  if [[ -f "$_cooldown_file" ]] && awk -v j=" job=${_jid}" '
-      /reason=queued_stall/ && index($0, j) { found = 1 }
+  if [[ -f "$_cooldown_file" ]] && tail -n 200 "$_cooldown_file" 2>/dev/null | awk -v j=" job=${_jid}" '
+      /reason=queued_stall/ && (p = index($0, j)) {
+        # anchor: the matched " job=<jid>" must be end-of-field (whitespace or
+        # EOL) so a prefix collision cannot false-suppress a record.
+        c = substr($0, p + length(j), 1)
+        if (c == "" || c == " " || c == "\t") found = 1
+      }
       END { exit !found }
-    ' "$_cooldown_file" 2>/dev/null; then
+    '; then
     return 0
   fi
   # No advisory arg => arm_cooldown_record maps empty to "na" and falls back to
@@ -480,14 +492,24 @@ except Exception:
         completed|cancelled)
           return 0
           ;;
-        queued|started)
-          # CODEX-QUOTA-BLIND-SPOT-01 A2 -- a job stuck queued/started past
-          # the stall threshold with no progress: record a bounded cooldown so the
-          # next dispatch is refused. Terminal arms above are checked FIRST and
-          # are unchanged. Age source order: job-JSON startedAt/createdAt -> job-
+        queued)
+          # CODEX-QUOTA-BLIND-SPOT-01 A2 -- a job still queued past the stall
+          # threshold with no progress: record a bounded cooldown so the next
+          # dispatch is refused. Terminal arms above are checked FIRST and are
+          # unchanged. Age source order: job-JSON startedAt/createdAt -> job-
           # file mtime -> watcher _elapsed (last resort; wrong for a re-armed
           # watcher on an already-old job, which would restart the clock at 0 and
           # never trip -- that is why it is last).
+          # FIX2 (CODEX-QUOTA-BLIND-SPOT-01): gated on `queued` ONLY -- a
+          # `started` job has pid/log-progress signals and wall-clock alone must
+          # not condemn it (see the separate `started)` no-op arm below). After
+          # recording the stall we DO NOT return: the watcher keeps polling to
+          # terminal state so a genuine later usage-limit death still reaches
+          # failed|terminated -> _codex_quota_watch_record -> codex_circuit_open.
+          # Re-entry into this branch on every subsequent poll is safe only
+          # because _codex_queued_stall_record's dedupe (reason=queued_stall AND
+          # job=<jid>, same line) is once-per-job -- that guard is load-bearing
+          # here and must not be weakened.
           local _age_min="" _ts=""
           _ts="$(python3 -c 'import sys,json
 try:
@@ -515,8 +537,14 @@ except Exception:
           local _stall_min="${CODEX_QUEUED_STALL_MIN:-10}"
           if (( _age_min >= _stall_min )); then
             _codex_queued_stall_record "$_jid" "${_jf%.json}.log" "$_age_min"
-            return 0
+            # FIX2: no return here -- keep polling (see comment above).
           fi
+          ;;
+        started)
+          # FIX2 (CODEX-QUOTA-BLIND-SPOT-01): a started job is actively running
+          # (pid/log-progress signals); wall-clock age alone must not trip a
+          # stall cooldown. No-op -> falls through to sleep/_elapsed accumulation
+          # and the watcher keeps polling until a terminal status wins above.
           ;;
       esac
     fi
@@ -1505,18 +1533,22 @@ if [[ ( "$SUB" == "task" || "$SUB" == "review" ) && "$_has_background" -eq 1 ]];
   _JOB_ID="$(printf '%s\n' "$_BG_OUT" | grep -oE '(task|review)-[a-z0-9]+-[a-z0-9]+' | head -1 || true)"
   if [[ -n "$_JOB_ID" ]]; then
     # CODEX-QUOTA-BLIND-SPOT-01 B -- resolve codex-guard.sh by ordered probe
-    # (first executable wins). Script-dir stays candidate #1 so per-repo
-    # invocations are unchanged; the plugin-source path (no guard next to it) now
-    # finds one via $PWD / the job's _GUARD_CWD / CLAUDE_PROJECT_DIR instead of
-    # leaving the background job unguarded. The resolved path is echoed in the
-    # armed line so a wrong pick is visible at the log surface, not silent.
+    # (first executable wins). FIX2: the dispatch-site repo owns the guard, so
+    # $PWD/.claude/scripts and the job's _GUARD_CWD/.claude/scripts are probed
+    # BEFORE the invocation-relative script dir. The script dir is now the
+    # last-resort fallback -- previously it was #1, and via the literal
+    # ~/.claude/scripts/codex-task.sh invocation path dirname(BASH_SOURCE)
+    # resolved to ~/.claude/scripts, picking the stale 4KB guard there ahead of
+    # the real per-repo copy at $PWD. CLAUDE_PROJECT_DIR is probed only when set.
+    # The resolved path is echoed in the armed line so a wrong pick stays visible
+    # at the log surface, not silent.
     _GUARD_SCRIPT=""
     _GUARD_TRIED=""
     _GUARD_CANDS=()
-    _GUARD_CANDS+=("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-guard.sh")
     _GUARD_CANDS+=("$PWD/.claude/scripts/codex-guard.sh")
     _GUARD_CANDS+=("$_GUARD_CWD/.claude/scripts/codex-guard.sh")
     [[ -z "${CLAUDE_PROJECT_DIR:-}" ]] || _GUARD_CANDS+=("$CLAUDE_PROJECT_DIR/.claude/scripts/codex-guard.sh")
+    _GUARD_CANDS+=("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-guard.sh")
     for _cand in "${_GUARD_CANDS[@]}"; do
       if [[ -x "$_cand" ]]; then
         _GUARD_SCRIPT="$_cand"
