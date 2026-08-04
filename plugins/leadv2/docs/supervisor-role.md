@@ -33,6 +33,19 @@ relearned per session:
 4. Attach the supervise loop ONLY via the URGENT-filter pattern
    (`tail -F -n0 <loop-log> | grep --line-buffered URGENT`) — a raw
    Monitor on the log wakes a turn per pulse and silently burns the budget.
+5. **A watcher costs per TURN, not per event** (founder 2026-08-04, after a
+   session accrued ~20 duplicate events). Every Monitor event and every
+   background-command completion is appended to the conversation and re-sent on
+   every later turn, so a careless watcher is paid again on each remaining turn.
+   - One watcher per journal. `TaskStop` the earlier Monitor before arming a new
+     one over the same file — overlapping watchers multiply every event.
+   - Filter to the ONE line you act on, then end the stream. A lane close writes
+     `review_gate`, `dispatch_terminal` and `dispatch_terminal_dedup`
+     back-to-back; matching all three pays three notifications for one fact.
+     `grep -E "dispatch_terminal task=" | head -1` fires once and closes.
+   - Never `run_in_background` a wait loop. It returns a completion notification
+     and no information — wait in the foreground with a timeout, or let the real
+     job's own notification wake you.
 
 ## What a supervisor session IS
 
