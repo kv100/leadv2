@@ -273,6 +273,30 @@ def due_rows_diet(path, today, max_rows=15, max_chars=200):
     return rows
 
 
+# OT-SESSION-SCOPE-01: optional advisory [s:<sid8>] session tag between the
+# timestamp and the em-dash. group(1)=ts  group(2)=sid8 or None  group(3)=text.
+# Both hooks carry this helper verbatim (separate processes, no shared module);
+# keep the text identical so a diff between them makes drift visible.
+_ENTRY_RE = re.compile(r"^- \[ \] (\S+)(?: \[s:([A-Za-z0-9._-]{1,8})\])? — (.*)$")
+
+
+def _filter_by_session(lines, session_id):
+    """OT-SESSION-SCOPE-01: keep untagged lines + lines tagged for THIS session.
+    Returns (kept, hidden_count). Unknown session -> behave exactly as before
+    (every line kept). Non-entry lines are never dropped."""
+    mine = re.sub(r"[^A-Za-z0-9._-]", "", str(session_id or ""))[:8]
+    if not mine:
+        return lines, 0
+    kept, hidden = [], 0
+    for line in lines:
+        m = _ENTRY_RE.match(line)
+        if m and m.group(2) and m.group(2) != mine:
+            hidden += 1
+            continue
+        kept.append(line)
+    return kept, hidden
+
+
 def _leading_date(line):
     stripped = re.sub(r"^[\s\-#*\[\]]*", "", line)
     m = re.match(r"(\d{4}-\d{2}-\d{2})", stripped)
@@ -358,6 +382,9 @@ def main():
     if not os.path.isdir(leadv2_abs):
         return  # other repo without a leadv2 tree — silent no-op
 
+    # OT-SESSION-SCOPE-01: scope the open-threads view to THIS session.
+    session_id = payload.get("session_id")
+
     tasks_yaml = os.path.join(root, "docs", "tasks.yaml")
     open_tasks = parse_tasks_yaml(tasks_yaml) if os.path.isfile(tasks_yaml) else []
 
@@ -409,6 +436,9 @@ def main():
     # being re-injected into chat context every time) and is only pointed to
     # here, never embedded.
     ot_lines = read_file(os.path.join(leadv2_abs, "open-threads.md"))
+    # OT-SESSION-SCOPE-01: drop other sessions' tagged asks BEFORE diet/legacy
+    # capping so both paths inherit the scoped set. No session_id -> unchanged.
+    ot_lines, ot_hidden = _filter_by_session(ot_lines, session_id)
     ot_section = []
     if ot_lines:
         threads_tail_n = int(os.environ.get("LEADV2_FREEZE_THREADS_TAIL", "40"))
@@ -418,6 +448,10 @@ def main():
             + os.environ.get("CLAUDE_PLUGIN_ROOT", "${CLAUDE_PLUGIN_ROOT}")
             + "/docs/supervisor-role.md",
         ]
+        if ot_hidden:
+            ot_section.append(
+                f"({ot_hidden} thread(s) from other sessions hidden)"
+            )
         if diet:
             threads_cap = int(os.environ.get("LEADV2_FREEZE_THREADS_CAP", "30"))
             ot_section += filter_threads_diet(ot_lines, today, tail_n=threads_tail_n, cap=threads_cap)

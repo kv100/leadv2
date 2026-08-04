@@ -9,6 +9,7 @@ HOOKS_DIR="${BASH_SOURCE[0]%/*}/../hooks"
 PRE_HOOK="${HOOKS_DIR}/leadv2-pre-compact-checkpoint.sh"
 POST_HOOK="${HOOKS_DIR}/leadv2-postcompact-goal-reinject.sh"
 ACTIVE_CACHE_SRC="${HOOKS_DIR}/leadv2-active-cache.sh"
+FREEZE_HOOK="${HOOKS_DIR}/pre-compact-task-freeze.sh"
 
 PASS=0
 FAIL=0
@@ -177,6 +178,50 @@ if printf '%s' "$POST_OUT3" | grep -q "T-GAMMA" \
   pass "(5) active task with journal but no STATE.md -> stdout contains task id and journal line"
 else
   fail "(5) postcompact with no STATE.md missing task id or journal line (got: ${POST_OUT3:0:300})"
+fi
+
+# ---------------------------------------------------------------------------
+# (6) OT-SESSION-SCOPE-01: pre-compact-task-freeze.sh scopes its OPEN THREADS
+#     section by session_id. Mixed file (A-tagged + B-tagged + untagged):
+#     freeze with session A keeps untagged + A, hides B, reports the count.
+# ---------------------------------------------------------------------------
+PROJ_FZ="${TMPDIR_BASE}/proj_freeze"
+mkdir -p "${PROJ_FZ}/docs/leadv2" "${PROJ_FZ}/.claude/leadv2-overrides"
+git -C "$PROJ_FZ" init -q
+git -C "$PROJ_FZ" config user.email test@test.local
+git -C "$PROJ_FZ" config user.name test
+cat > "${PROJ_FZ}/docs/leadv2/open-threads.md" <<'MD'
+## Captured asks (auto)
+- [ ] 2026-08-04T11:00:00Z — freeze legacy untagged line
+- [ ] 2026-08-04T11:01:00Z [s:aaaaaaaa] — freeze alpha for session A
+- [ ] 2026-08-04T11:02:00Z [s:bbbbbbbb] — freeze beta for session B
+MD
+FZA_JSON=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1], 'session_id': 'aaaaaaaa-1111-2222-3333-444455556666'}))" "$PROJ_FZ")
+FZA_OUT="$(CLAUDE_PLUGIN_ROOT="/fake/plugin/root" bash -c "printf '%s' '$FZA_JSON' | bash '$FREEZE_HOOK'")"
+if printf '%s\n' "$FZA_OUT" | grep -q "OPEN THREADS" \
+  && printf '%s\n' "$FZA_OUT" | grep -q "freeze legacy untagged line" \
+  && printf '%s\n' "$FZA_OUT" | grep -q "freeze alpha for session A" \
+  && ! printf '%s\n' "$FZA_OUT" | grep -q "freeze beta for session B" \
+  && printf '%s\n' "$FZA_OUT" | grep -q "thread(s) from other sessions hidden"; then
+  pass "(6) freeze with session A keeps untagged + A, hides B, reports hidden"
+else
+  fail "(6) freeze session scoping failed:"$'\n'"${FZA_OUT}"
+fi
+
+# ---------------------------------------------------------------------------
+# (7) OT-SESSION-SCOPE-01 (backward-compat guard): freeze with NO session_id
+#     sees every entry (legacy + both tags) and never hides — byte-equivalent
+#     to the pre-change hook.
+# ---------------------------------------------------------------------------
+FZN_JSON=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1]}))" "$PROJ_FZ")
+FZN_OUT="$(CLAUDE_PLUGIN_ROOT="/fake/plugin/root" bash -c "printf '%s' '$FZN_JSON' | bash '$FREEZE_HOOK'")"
+if printf '%s\n' "$FZN_OUT" | grep -q "freeze legacy untagged line" \
+  && printf '%s\n' "$FZN_OUT" | grep -q "freeze alpha for session A" \
+  && printf '%s\n' "$FZN_OUT" | grep -q "freeze beta for session B" \
+  && ! printf '%s\n' "$FZN_OUT" | grep -q "thread(s) from other sessions hidden"; then
+  pass "(7) freeze with no session_id keeps all entries (backward compat)"
+else
+  fail "(7) freeze backward-compat failed:"$'\n'"${FZN_OUT}"
 fi
 
 # ---------------------------------------------------------------------------

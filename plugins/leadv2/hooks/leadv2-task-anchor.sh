@@ -203,7 +203,7 @@ def nearest_due_line(root):
     return line or None
 
 
-def build_thread_anchor(root, leadv2_dir):
+def build_thread_anchor(root, leadv2_dir, session_id=""):
     ot_path = os.path.join(root, leadv2_dir, "open-threads.md")
     sd_path = os.path.join(root, leadv2_dir, "scheduled-decisions.md")
     has_ot = os.path.exists(ot_path)
@@ -231,10 +231,17 @@ def build_thread_anchor(root, leadv2_dir):
     ]
     content = []
     if has_ot:
-        tail = read_last_nonblank_lines(ot_path, 8)
+        # OT-SESSION-SCOPE-01: scan a wider window, drop other sessions' tagged
+        # entries, then take the last 8 of what remains. Untagged (legacy) lines
+        # are always kept.
+        tail = read_last_nonblank_lines(ot_path, THREAD_TAIL_SCAN)
+        tail, hidden = _filter_by_session(tail, session_id)
+        tail = tail[-8:]
         if tail:
             content.append("open threads (last 8 lines):")
             content.extend(tail)
+        if hidden:
+            content.append(f"({hidden} thread(s) from other sessions hidden)")
     if has_sd:
         nd_line = nearest_due_line(root)
         if nd_line:
@@ -253,7 +260,33 @@ def build_thread_anchor(root, leadv2_dir):
 # ── LEAD-ANCHOR-01 round 2: Hole 2 — auto-capture new founder asks ─────────
 
 _ANSWER_WORDS = {"да", "нет", "ок", "окей", "yes", "no", "approve", "approved", "ok"}
-_ENTRY_RE = re.compile(r"^- \[ \] (\S+) — (.*)$")
+# OT-SESSION-SCOPE-01: optional advisory [s:<sid8>] session tag between the
+# timestamp and the em-dash. group(1)=ts  group(2)=sid8 or None  group(3)=text.
+# Both hooks carry this helper verbatim (separate processes, no shared module);
+# keep the text identical so a diff between them makes drift visible.
+_ENTRY_RE = re.compile(r"^- \[ \] (\S+)(?: \[s:([A-Za-z0-9._-]{1,8})\])? — (.*)$")
+
+# Width of the tail scan window for build_thread_anchor; the visible block still
+# caps at 8 lines (+1 hidden-count line). Wider window so a foreign-session entry
+# buried under other content still gets filtered out.
+THREAD_TAIL_SCAN = 40
+
+
+def _filter_by_session(lines, session_id):
+    """OT-SESSION-SCOPE-01: keep untagged lines + lines tagged for THIS session.
+    Returns (kept, hidden_count). Unknown session -> behave exactly as before
+    (every line kept). Non-entry lines are never dropped."""
+    mine = re.sub(r"[^A-Za-z0-9._-]", "", str(session_id or ""))[:8]
+    if not mine:
+        return lines, 0
+    kept, hidden = [], 0
+    for line in lines:
+        m = _ENTRY_RE.match(line)
+        if m and m.group(2) and m.group(2) != mine:
+            hidden += 1
+            continue
+        kept.append(line)
+    return kept, hidden
 
 # LEAD-ANCHOR-01 round 3: harness/system events must never be captured as
 # founder asks — these are machine-emitted, not prose typed by a human.
@@ -300,7 +333,7 @@ def looks_like_new_ask(prompt):
     return True
 
 
-def capture_ask(root, leadv2_dir, prompt):
+def capture_ask(root, leadv2_dir, prompt, session_id=""):
     if not looks_like_new_ask(prompt):
         return
     leadv2_path = os.path.join(root, leadv2_dir)
@@ -329,12 +362,18 @@ def capture_ask(root, leadv2_dir, prompt):
 
         for line in existing.splitlines():
             m = _ENTRY_RE.match(line)
-            if m and m.group(2)[:60] == dedupe_key:
+            # OT-SESSION-SCOPE-01: text is now group(3) (group(2) is the sid).
+            if m and m.group(3)[:60] == dedupe_key:
                 return  # already captured — dedupe
 
         heading = "## Captured asks (auto)"
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        new_entry = f"- [ ] {ts} — {single_line}"
+        # OT-SESSION-SCOPE-01: tag the entry with an 8-char session id so the
+        # anchor view can hide other sessions' asks. No session_id -> legacy
+        # untagged form (still parsed, still listed).
+        sid8 = re.sub(r"[^A-Za-z0-9._-]", "", str(session_id or ""))[:8]
+        tag = f" [s:{sid8}]" if sid8 else ""
+        new_entry = f"- [ ] {ts}{tag} — {single_line}"
 
         # OPEN-THREADS-HYGIENE-01: self-prune any resolved ("- [x] ") lines on
         # every capture — resolution (leadv2-thread-prune.sh resolve) already
@@ -376,7 +415,11 @@ def capture_ask(root, leadv2_dir, prompt):
 def safe_capture(root, leadv2_dir, payload):
     # Capture must NEVER affect hook exit status or stdout — swallow everything.
     try:
-        capture_ask(root, leadv2_dir, payload.get("prompt") or payload.get("message") or "")
+        capture_ask(
+            root, leadv2_dir,
+            payload.get("prompt") or payload.get("message") or "",
+            payload.get("session_id") or "",
+        )
     except Exception:
         pass
 
@@ -494,7 +537,7 @@ def main():
 
     if not task_id:
         safe_capture(root, leadv2_dir, payload)
-        thread_out = build_thread_anchor(root, leadv2_dir)
+        thread_out = build_thread_anchor(root, leadv2_dir, payload.get("session_id"))
         if thread_out:
             print(thread_out)
         return  # no active leadv2 task — THREAD anchor (if any) already printed
