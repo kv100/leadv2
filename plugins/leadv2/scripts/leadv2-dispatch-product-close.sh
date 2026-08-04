@@ -297,6 +297,71 @@ resolve_review_artifact() {
   return 1
 }
 
+# REVIEW-BODY-PERSIST-01: after an opus/sonnet arm finishes, claude-subsession has
+# written the full review body to the handoff deliverable files (critic.full.md etc.)
+# but printed only a label/session header on stdout -- which is all review_out captured.
+# This function appends the best-available body into review_out, preserving the label
+# line as a header. The same freshness gate (-nt REVIEW_STAMP) the resolver uses ensures
+# a stale deliverable from a prior arm/attempt is never adopted. Fallback: extract the
+# final assistant text blocks from the stream transcript.  Returns 0 if body was
+# materialised, 1 if nothing was found.
+materialize_subsession_body() { # <review_out> <review_stamp> <task_id>
+  local rfile="$1" rstamp="$2" tid="$3"
+  local adir="${ROOT}/docs/handoff/dispatch-${tid}-review"
+  local cand body_file="" rel_path=""
+
+  for cand in "${adir}/critic.full.md" "${adir}/critic.md" "${adir}/critic.summary.md"; do
+    if [[ -s "${cand}" && "${cand}" -nt "${rstamp}" ]]; then
+      body_file="${cand}"
+      rel_path="${cand#"${ROOT}/"}"
+      break
+    fi
+  done
+
+  if [[ -z "${body_file}" ]]; then
+    # Fallback: extract final assistant text blocks from the stream transcript.
+    local stream="${adir}/critic.stream.jsonl"
+    if [[ -s "${stream}" && "${stream}" -nt "${rstamp}" ]] && command -v python3 >/dev/null 2>&1; then
+      local tmp_body
+      tmp_body="$(python3 - "$stream" 2>/dev/null <<'PY'
+import json, sys
+texts = []
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        continue
+    # stream-json: collect text from assistant message content blocks
+    if obj.get("type") == "assistant":
+        msg = obj.get("message", {})
+        for block in msg.get("content", []):
+            if isinstance(block, dict) and block.get("type") == "text":
+                texts.append(block.get("text", ""))
+if texts:
+    print(texts[-1])
+PY
+      )"
+      if [[ -n "${tmp_body}" ]]; then
+        local label_line
+        label_line="$(cat "${rfile}" 2>/dev/null)"
+        printf '%s\n--- body from: %s ---\n%s\n' "${label_line}" "${stream#"${ROOT}/"}" "${tmp_body}" > "${rfile}"
+        return 0
+      fi
+    fi
+    return 1
+  fi
+
+  local label_line
+  label_line="$(cat "${rfile}" 2>/dev/null)"
+  printf '%s\n--- body from: %s ---\n' "${label_line}" "${rel_path}" > "${rfile}.tmp"
+  cat "${body_file}" >> "${rfile}.tmp"
+  mv "${rfile}.tmp" "${rfile}"
+  return 0
+}
+
 parse_review_verdict() { # review-file
   local review_file="$1"
   PARSED_VERDICT=""
@@ -1259,6 +1324,13 @@ run_reviewer_arm() { # <arm>
       "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
     PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model "${arm}" --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait \
       > "${review_out}" 2> "${review_err}"; review_rc=$?
+    # REVIEW-BODY-PERSIST-01: the subsession prints only a label line on stdout; the
+    # real body is in the deliverable files.  Materialise it into review_out so a human
+    # can read the findings next to the verdict counts.  rc==0 means the subsession
+    # itself succeeded; do not clobber a genuine error rc.
+    if [[ ${review_rc} -eq 0 ]]; then
+      materialize_subsession_body "${review_out}" "${REVIEW_STAMP}" "${TASK}" || true
+    fi
   fi
 }
 
@@ -1302,6 +1374,28 @@ while :; do
   run_reviewer_arm "${reviewer}"
   cls="$(classify_arm_failure "${review_rc}" "${review_err}" "${review_out}")"
   if [[ "${cls}" != refused_* ]]; then
+    # REVIEW-BODY-PERSIST-01 §2.2: shared post-arm guard. A paid review whose body
+    # was lost (rc==0 but review_out has no REVIEW_VERDICT: marker AND is below the
+    # byte floor) while evidence of real output exists must surface as a blocked
+    # failure, not silence.  This MUST run before resolve_review_artifact() below --
+    # the deliverable fallback would otherwise mask a lost body into a silent
+    # pass-through, the exact shape of the 2026-08-03 incident.  review_body_lost is
+    # NOT a refused_* class: it does not trigger re-selection to another arm.
+    if [[ ${review_rc} -eq 0 ]]; then
+      _pc_body_min="${LEADV2_REVIEW_BODY_MIN_BYTES:-300}"
+      _pc_body_bytes="0"
+      _pc_body_bytes="$(wc -c < "${review_out}" 2>/dev/null | tr -d '[:space:]')"; _pc_body_bytes="${_pc_body_bytes:-0}"
+      if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${review_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
+        # Evidence-of-real-output: non-empty stderr or a cost-recorded line in it.
+        if [[ -s "${review_err}" ]] || grep -q 'cost recorded:' "${review_err}" 2>/dev/null; then
+          printf 'status: blocked\nreason: review_body_lost\narm: %s\n' "${reviewer}" > "${HANDOFF}/review-gate.md"
+          emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${reviewer}"
+          _dl_note dead review_body_lost "arm=${reviewer} bytes=${_pc_body_bytes}"
+          _stamp_review_terminal blocked
+          exit 6
+        fi
+      fi
+    fi
     break
   fi
   emit decision "review_gate task=${TASK} status=arm_refused arm=${reviewer} reason=${cls}"
