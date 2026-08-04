@@ -840,152 +840,6 @@ pc_await_worker_exit() {
 # no_work before e2e-gate-passed.flag can ever be created. The review gate below
 # consumes the already-computed ${diff_file} / ${_pc_base_used}; the dedup block
 # after it reuses ${diff_file} (global -- no `local` on the diff vars) too.
-
-# GATE-LANE-DIFF-ONLY-WHEN-CROSS-REPO-01: distinguishes "the lane genuinely did nothing"
-# from "the lane did something the diff-scoping above failed to capture". rc0 iff <root> is
-# a git work tree with >=1 uncommitted tracked change or untracked file, after excluding
-# docs/leadv2/ and docs/handoff/ -- the SAME exclusion set _pc_git_diff uses, so a lane
-# whose only churn is its own handoff artifacts does not flip from no_work to a false
-# rescue. Read-only: never touches the index or working tree (unlike _pc_git_diff's
-# throwaway-index `add -N`, which is unnecessary here since porcelain already reports
-# untracked paths). Tolerates quoted porcelain paths (paths with spaces/special chars).
-_pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding docs/leadv2, docs/handoff), rc1 otherwise
-  local root="$1"
-  [[ -n "${root}" && -d "${root}" ]] || return 1
-  git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
-  local status
-  status="$(git -C "${root}" status --porcelain --untracked-files=all 2>/dev/null | \
-    grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/')"
-  [[ -n "${status}" ]]
-}
-
-# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01: bash-3.2-safe mtime probe (no
-# portable `stat -f/-c` flag exists across darwin/linux) -- try darwin's `-f %m` first,
-# fall back to linux's `-c %Y`. rc1 on ANY stat failure (missing file, permission,
-# unknown stat dialect) -- callers fail OPEN (treat as "not proven stale") on rc1.
-_pc_stat_mtime() {  # <file> -> stdout epoch mtime; rc1 on failure
-  local f="$1" m
-  m="$(stat -f %m "${f}" 2>/dev/null)" || m="$(stat -c %Y "${f}" 2>/dev/null)" || return 1
-  [[ "${m}" =~ ^[0-9]+$ ]] || return 1
-  printf '%s' "${m}"
-}
-
-# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01: bash-3.2-safe CSV chain walk -- no
-# associative arrays. `set --` over IFS=, split positional params, then a single linear
-# scan for the element strictly AFTER <cur>. rc1 (empty stdout) whenever <cur> is the
-# last element, absent from the chain, or the chain has 0/1 elements -- callers treat
-# rc1 as "no next arm" (chain_exhausted), never a wrap-around to element 0.
-_pc_next_arm_in_chain() {  # <chain_csv> <cur_arm> -> stdout next arm; rc1 if none
-  local chain="$1" cur="$2" tok found=0
-  [[ -n "${chain}" ]] || return 1
-  local _oldifs="${IFS}"
-  IFS=','
-  set -- ${chain}
-  IFS="${_oldifs}"
-  for tok in "$@"; do
-    tok="${tok#"${tok%%[![:space:]]*}"}"; tok="${tok%"${tok##*[![:space:]]}"}"
-    [[ -z "${tok}" ]] && continue
-    if [[ ${found} -eq 1 ]]; then
-      printf '%s' "${tok}"
-      return 0
-    fi
-    [[ "${tok}" == "${cur}" ]] && found=1
-  done
-  return 1
-}
-
-# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (Fix 1): a lane that RAN (worker exited
-# cleanly, no timeout) but never actually produced a single assistant turn is a distinct
-# failure mode from an empty diff after real work -- the arm never engaged at all. rc0
-# (silent) requires ALL THREE: (1) developer.stream.jsonl is missing or has zero
-# `"type":"assistant"` events, (2) the stream is not fresh (mtime older than
-# LEADV2_PC_SILENT_GROWTH_S, default 60s -- a worker that only just started writing is
-# NOT silent, it is working), (3) the resolved lane worktree is clean (no _lane_root
-# resolved at all is conservative NOT-silent, matching today's behaviour exactly for
-# lanes without one). Any failure to prove silence fails OPEN (rc1, NOT silent) -- this
-# predicate must never manufacture a false no_work verdict from a stat hiccup.
-# Sets _PC_SILENT_STREAM_STATE (absent|no_assistant_events) and _PC_SILENT_LANE_BASENAME
-# for the caller's evidence string; both are only meaningful when this returns rc0.
-_PC_SILENT_STREAM_STATE=""
-_PC_SILENT_LANE_BASENAME=""
-pc_silent_arm_probe() {
-  local stream="${HANDOFF}/developer.stream.jsonl"
-  local assistant_n=0
-  _PC_SILENT_STREAM_STATE="absent"
-  _PC_SILENT_LANE_BASENAME=""
-  if [[ -f "${stream}" ]]; then
-    _PC_SILENT_STREAM_STATE="no_assistant_events"
-    assistant_n="$(grep -c '"type":"assistant"' "${stream}" 2>/dev/null || printf '0')"
-    [[ "${assistant_n}" =~ ^[0-9]+$ ]] || assistant_n=0
-  fi
-  # 1) >=1 assistant event -- NOT silent, done.
-  [[ ${assistant_n} -ge 1 ]] && return 1
-  # 2) growth guard -- only applies when a stream file exists at all.
-  if [[ -f "${stream}" ]]; then
-    local growth_s="${LEADV2_PC_SILENT_GROWTH_S:-60}" mtime now
-    [[ "${growth_s}" =~ ^[0-9]+$ ]] || growth_s=60
-    if mtime="$(_pc_stat_mtime "${stream}")"; then
-      now="$(date +%s 2>/dev/null || printf '0')"
-      if [[ "${now}" =~ ^[0-9]+$ ]] && (( now - mtime < growth_s )); then
-        return 1  # fresh -- still working, NOT silent
-      fi
-    else
-      return 1  # stat failed -- fail OPEN, NOT silent
-    fi
-  fi
-  # 3) worktree dirty-check -- no resolved lane worktree is conservative NOT-silent.
-  [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] || return 1
-  _pc_lane_dirty "${_lane_root}" && return 1
-  _PC_SILENT_LANE_BASENAME="$(basename "${_lane_root}")"
-  return 0
-}
-
-# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (Fix 2, one-shot discipline): fires
-# ONLY from the silent-arm branch below. Marker file written BEFORE the advance attempt
-# (idempotent guard against a re-run of this same close gate re-advancing twice); kill
-# switch and chain-exhaustion both skip the actual advance but are still journaled.
-_pc_arm_advance() {
-  local marker="${HANDOFF}/.arm-advanced-${AUTHOR}"
-  if [[ -f "${marker}" ]]; then
-    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=already_advanced"
-    return 0
-  fi
-  : > "${marker}" 2>/dev/null || true
-  if [[ "${LEADV2_ARM_ADVANCE:-1}" == "0" ]]; then
-    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=kill_switch"
-    return 0
-  fi
-  local chain_csv="${LEADV2_DISPATCH_CANDIDATE_ARMS:-}"
-  if [[ -z "${chain_csv}" ]]; then
-    # journal fallback for a close gate spawned by an older dispatcher that never
-    # threaded the env var -- same "candidate_chain task=<sig8> arms=..." line
-    # leadv2-dispatch-code.sh's own candidate loop already journals.
-    chain_csv="$(bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null | \
-      grep -F "candidate_chain task=${TASK} arms=" | tail -1 | sed -n 's/.*arms=//p')"
-  fi
-  local next_arm
-  if ! next_arm="$(_pc_next_arm_in_chain "${chain_csv}" "${AUTHOR}")" || [[ -z "${next_arm}" ]]; then
-    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=chain_exhausted"
-    return 0
-  fi
-  local mission_file="${LEADV2_DISPATCH_LANE_MISSION:-}"
-  if [[ -z "${mission_file}" || ! -f "${mission_file}" ]]; then
-    mission_file="${ROOT}/docs/handoff/dispatch-${TASK}/lane-mission.md"
-  fi
-  if [[ ! -f "${mission_file}" ]]; then
-    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=no_mission_file"
-    return 0
-  fi
-  emit decision "arm_advance task=${TASK} from=${AUTHOR} to=${next_arm} reason=arm_produced_nothing"
-  local adv_args=(--sig8 "${TASK}" --arm "${next_arm}" --mission-file "${mission_file}" --task-id "${FOUNDER_TASK_ID}")
-  [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && adv_args+=(--worktree "${_lane_root}")
-  [[ -n "${WRITES_CSV:-}" ]] && adv_args+=(--writes "${WRITES_CSV}")
-  bash "${DISPATCH_BIN}" advance-arm "${adv_args[@]}" >/dev/null 2>&1 || true
-}
-
-# WARNING: pc_scope_diff() below defines helper functions in its body that are
-# NOT available until it is first invoked (line ~1277 in the original layout).
-# Top-level code that runs before pc_scope_diff() must not call those helpers.
 pc_scope_diff() {
 diff_file="${HANDOFF}/review.diff"
 : > "${diff_file}"
@@ -1067,7 +921,23 @@ _pc_diff_base() {  # <repo_abs> -> a rev to diff FROM on stdout; empty stdout =>
     [[ -n "${base}" ]] && printf '%s' "${base}"
   fi
 }
-
+# GATE-LANE-DIFF-ONLY-WHEN-CROSS-REPO-01: distinguishes "the lane genuinely did nothing"
+# from "the lane did something the diff-scoping above failed to capture". rc0 iff <root> is
+# a git work tree with >=1 uncommitted tracked change or untracked file, after excluding
+# docs/leadv2/ and docs/handoff/ -- the SAME exclusion set _pc_git_diff uses, so a lane
+# whose only churn is its own handoff artifacts does not flip from no_work to a false
+# rescue. Read-only: never touches the index or working tree (unlike _pc_git_diff's
+# throwaway-index `add -N`, which is unnecessary here since porcelain already reports
+# untracked paths). Tolerates quoted porcelain paths (paths with spaces/special chars).
+_pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding docs/leadv2, docs/handoff), rc1 otherwise
+  local root="$1"
+  [[ -n "${root}" && -d "${root}" ]] || return 1
+  git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  local status
+  status="$(git -C "${root}" status --porcelain --untracked-files=all 2>/dev/null | \
+    grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/')"
+  [[ -n "${status}" ]]
+}
 # _pc_repo_diff runs inside a `repo_diff="$(...)"` command substitution at every call site,
 # i.e. its own subshell -- a plain variable it set would never reach the caller. Record
 # which base it picked (HEAD, or an abbreviated sha) to a file instead, mirroring the
@@ -1164,7 +1034,7 @@ if [[ -n "${WRITES_CSV}" ]]; then
   [[ -s "${diff_file}" ]] || blocked_reason="${blocked_reason:-unscopable_diff}"
 else
   if [[ -d "${diff_root}" ]]; then
-    repo_diff="$(_pc_repo_diff "${diff_root}" .)"
+    repo_diff="$(_pc_repo_diff "${diff_root}")"
     printf '%s' "${repo_diff}" > "${diff_file}"
     _pc_base_used="$(_pc_last_diff_base)"
   fi
@@ -1256,27 +1126,6 @@ if pc_dwr_resume_once; then
     _stamp_review_terminal blocked
     exit 5
   fi
-fi
-
-# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (Fix 1): resolve _lane_root the SAME
-# way pc_scope_diff will below (idempotent -- that function recomputes the identical
-# value) so the silent-arm probe can see the lane worktree BEFORE pc_scope_diff runs.
-# Must run before pc_scope_diff: the probe classifies "worker exited, never engaged" as
-# its own no_work cause, distinct from empty_diff/unscoped_lane_work, and those verdict
-# paths must stay byte-identical -- unreached for a genuinely silent arm, never altered.
-_lane_root="${LEADV2_LANE_WORK_ROOT:-}"
-if [[ -z "${_lane_root}" || ! -d "${_lane_root}" ]]; then
-  _lane_root="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
-fi
-
-if pc_silent_arm_probe; then
-  _pc_silent_evidence="arm=${AUTHOR} stream=${_PC_SILENT_STREAM_STATE} lane=${_PC_SILENT_LANE_BASENAME}"
-  printf 'status: blocked\nreason: arm_produced_nothing\narm: %s\n' "${AUTHOR}" > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=blocked reason=arm_produced_nothing terminal=no_work cause=arm_produced_nothing arm=${AUTHOR}"
-  _dl_note no_work arm_produced_nothing "${_pc_silent_evidence}"
-  _pc_arm_advance
-  _stamp_review_terminal blocked
-  exit 5
 fi
 
 pc_scope_diff
