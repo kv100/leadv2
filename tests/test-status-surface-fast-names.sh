@@ -100,7 +100,15 @@ make_payload() {
   else printf -- '---\nquestions (0)\n'; fi
   printf -- '---\n\n---\n\n---\n\n---\n'
   printf 'mode=single-lead active 1 ff3b7059 sonnet 3m\n'
-  printf '  ff3b7059 sonnet 3m active\n'
+  # Real render_single_lead detail-line shape (single-repo, non-multi):
+  # "  <name> · <phase> · <arm> <age>" -- this fixture used to hand-write a
+  # legacy space-delimited row ("  ff3b7059 sonnet 3m active"), which never
+  # matched what the renderer actually emits (confirmed by reading
+  # render_single_lead directly). It only "worked" because the widget's old
+  # CACHED-branch parser also (coincidentally, buggily) split on whitespace.
+  # Now that the widget parser correctly splits on ' · ' (see leadv2-status-
+  # surface.5s.sh's CACHED branch), the fixture must use the real format.
+  printf '  ff3b7059 · worker · sonnet 3m\n'
   printf -- '---\n'
 }
 
@@ -139,9 +147,15 @@ _title="$(printf '%s\n' "$_out" | sed -n '1p')"
 _warm_pass=1
 printf '%s' "$_title" | grep -q 'HUMAN-LANE-NAME-01' || _warm_pass=0     # title has the label
 printf '%s' "$_title" | grep -q 'ff3b7059' && _warm_pass=0               # title has NO raw sig8
-printf '%s\n' "$_out" | grep -q 'HUMAN-LANE-NAME-01 · sonnet · 3m' || _warm_pass=0   # row uses · form
-printf '%s\n' "$_out" | grep -q '  sig ff3b7059' || _warm_pass=0          # sig8 demoted to detail line
-if [ "$_warm_pass" -eq 1 ]; then ok "warm cache: label in title+row, sig8 demoted"
+# Real detail-line shape after label substitution: label + the untouched
+# ' · '-delimited remainder (phase · arm age). The old assertion expected
+# 'label · arm · age' (no phase) -- that shape was never real, only the old
+# whitespace-splitting widget bug produced it.
+printf '%s\n' "$_out" | grep -q 'HUMAN-LANE-NAME-01 · worker · sonnet 3m' || _warm_pass=0
+# D1/tier-2: the `sig <hex>` sub-row is deleted entirely (pure duplication
+# once the label is shown inline) -- assert it is GONE, not present.
+printf '%s\n' "$_out" | grep -q '  sig ff3b7059' && _warm_pass=0          # no sig8 sub-row
+if [ "$_warm_pass" -eq 1 ]; then ok "warm cache: label in title+row, no sig8 sub-row"
 else bad "warm cache (title='$_title' out=$(printf '%s' "$_out" | tr '\n' '|'))"; fi
 if [ $(( _e - _s )) -le 1 ]; then ok "warm render <1s (wall $(( _e - _s ))s)"
 else bad "warm render too slow (wall $(( _e - _s ))s)"; fi

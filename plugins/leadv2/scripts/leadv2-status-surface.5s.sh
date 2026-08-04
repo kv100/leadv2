@@ -246,6 +246,14 @@ _compute_age_suffix() {
     _TITLE_OVERRIDE="$(printf '⚠️ кэш устарел (%s)' "$(_age_short "$PAYLOAD_AGE")")"
     return
   fi
+  # A payload that is stale AND the last refresh attempt errored is a
+  # stronger stale signal than age alone (the refresher has been failing,
+  # not just running behind cadence) -- surface it well before the generic
+  # 600s threshold instead of waiting it out silently.
+  if [ -s "$ERRFILE" ] && [ "$PAYLOAD_AGE" -gt $(( TTL * 3 )) ]; then
+    _TITLE_OVERRIDE="$(printf '⚠️ кэш устарел (%s)' "$(_age_short "$PAYLOAD_AGE")")"
+    return
+  fi
   [ "$PAYLOAD_AGE" -gt 6 ] && _AGE_SUFFIX="$(printf ' (%s)' "$(_age_short "$PAYLOAD_AGE")")"
 }
 _emit_title() {  # <title>
@@ -338,6 +346,11 @@ if [ "$CACHED" -eq 0 ]; then
 else
   # ── CACHED path: read two files, never call the renderer ──────────────────
   if [ ! -f "$PAYLOAD" ]; then
+    # A missing payload is the worst case, not the best -- PAYLOAD_AGE must
+    # never read as 0/fresh here. Nothing downstream currently consumes it
+    # before this early exit, but a future addition that does must not
+    # inherit a false "just refreshed" reading.
+    PAYLOAD_AGE=999999
     printf '⏳ leadv2 (нет кэша)\n'; printf -- '---\n'
     printf 'первый сбор… | font=Menlo size=12\n'
     printf 'Refresh | refresh=true\n'
@@ -456,16 +469,23 @@ PYEOF
   # renderer's verbatim line so the fixture suite's `active`/`closing` greps
   # stay byte-compatible.
   if [ "$CACHED" -eq 1 ]; then
+    # The detail line is '·'-delimited (see render_single_lead), not
+    # whitespace-delimited -- an arm/age field like "sonnet 2m" or a repo
+    # suffix both contain spaces of their own. Splitting on whitespace here
+    # (the old awk '{print $N}' approach) tore those fields apart and
+    # produced "name · · ·" garbage plus a duplicated `sig <hex>` sub-row.
+    # Split off only the first '·'-delimited field via bash 3.2-safe
+    # parameter expansion and pass the remainder through untouched.
     printf '%s\n' "$SINGLE_LEAD_BLOCK" | sed -n '2,$p' | while IFS= read -r _sline; do
       _s_trim="$(printf '%s' "$_sline" | sed 's/^[[:space:]]*//')"
       [ -n "$_s_trim" ] || continue
-      _s_id="$(printf '%s' "$_s_trim" | awk '{print $1}')"
-      _s_arm="$(printf '%s' "$_s_trim" | awk '{print $2}')"
-      _s_age="$(printf '%s' "$_s_trim" | awk '{print $3}')"
-      _s_label="$(_lookup_label "$_s_id")"
-      printf '%s · %s · %s | font=Menlo size=12\n' "$_s_label" "$_s_arm" "$_s_age"
-      if _is_sig8 "$_s_id"; then
-        printf '  sig %s | font=Menlo size=12\n' "$_s_id"
+      _s_first="${_s_trim%% · *}"
+      _s_rest="${_s_trim#* · }"
+      _s_label="$(_lookup_label "$_s_first")"
+      if [ "$_s_rest" = "$_s_trim" ]; then
+        printf '%s | font=Menlo size=12\n' "$_s_label"
+      else
+        printf '%s · %s | font=Menlo size=12\n' "$_s_label" "$_s_rest"
       fi
     done
   else

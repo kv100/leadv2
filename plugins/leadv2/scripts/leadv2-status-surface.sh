@@ -1461,6 +1461,18 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
             cause, cls = "dead(no-signal)", "dead"
     elif pid not in (None, "", 0):
         cause, cls = "dead(no-process)", "dead"
+    # D1: a ledger-ONLY reservation (kind == "worker", i.e. never appeared in
+    # active.yaml) that never had a pid or exit code and whose ledger state is
+    # still one of the pre-start reservation states is genuinely QUEUED, not
+    # dead -- it has not failed, it simply has not started yet. Placed after
+    # every live/done/dead-with-evidence branch above (never overrides real
+    # process/exit evidence) and before the stale/no-signal fallbacks below
+    # (a queued row would otherwise misreport as "stale(...) silent" or
+    # "dead(no-signal)", which is exactly the false-red this class fixes).
+    # Additive only: a row whose ledger_state is NOT one of these three tokens
+    # takes the same branch it always did.
+    elif kind == "worker" and ledger_state in ("pending", "queued", "reserved"):
+        cause, cls = "queued", "queued"
     elif motion_mtime is not None:
         cause = "stale(%s silent)" % age_label(NOW - motion_mtime)
         cls = "dead"
@@ -1683,6 +1695,10 @@ dead_n = sum(1 for r in rows
 # number for #DEAD and #DONE_RECENT. Restrict to cls == "done" to match what
 # the header text ("N done в последний час") and the variable name claim.
 done_recent = sum(1 for r in rows if r["cls"] == "done")
+# D1: queued_n mirrors dead_n/done_recent -- computed AFTER the TTL drop so
+# the count matches what the table actually still shows (a queued row not
+# picked up within DEAD_TTL ages out the same as any other non-live row).
+queued_n = sum(1 for r in rows if r["cls"] == "queued")
 
 # R3 (fix round 3): collapse terminal/done rows so a wall of 90 finished rows is
 # structurally impossible. Keep the NEWEST 10 done rows, fold the rest into ONE
@@ -1711,7 +1727,8 @@ if len(_done_idx) > 10:
     rows = _new
 
 out = ["#LIVE %d" % live_n, "#DEAD %d" % dead_n,
-       "#DONE_RECENT %d" % done_recent, "#AGED_OUT %d" % _aged]
+       "#DONE_RECENT %d" % done_recent, "#AGED_OUT %d" % _aged,
+       "#QUEUED %d" % queued_n]
 # R5-01 round 2: when active.yaml could not be read, flag it for the bash
 # layer so the header stops rendering a calm "0 live" and the menu-bar title
 # carries ⚠. Machine-readable: '#WARN <human message>'.
@@ -1741,6 +1758,7 @@ LIVE_N=0
 DEAD_N=0
 DONE_RECENT_N=0
 AGED_OUT_N=0
+QUEUED_N=0
 WARN_MSG=""
 LANE_ROWS=""
 LANE_COUNT=0
@@ -1788,11 +1806,13 @@ elif [ "$MULTI_PROJECT" -eq 1 ]; then
     _mp_dead="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#DEAD //p' | head -1)"
     _mp_done="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#DONE_RECENT //p' | head -1)"
     _mp_aged="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#AGED_OUT //p' | head -1)"
+    _mp_queued="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#QUEUED //p' | head -1)"
     _mp_warn="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#WARN //p' | head -1)"
     case "$_mp_live" in ''|*[!0-9]*) _mp_live=0 ;; esac
     case "$_mp_dead" in ''|*[!0-9]*) _mp_dead=0 ;; esac
     case "$_mp_done" in ''|*[!0-9]*) _mp_done=0 ;; esac
     case "$_mp_aged" in ''|*[!0-9]*) _mp_aged=0 ;; esac
+    case "$_mp_queued" in ''|*[!0-9]*) _mp_queued=0 ;; esac
 
     if [ -n "$_mp_warn" ]; then
       # STATUS-SURFACE R10 (SWIFTBAR-LIVE-01): a per-project WARN degrades
@@ -1810,10 +1830,11 @@ elif [ "$MULTI_PROJECT" -eq 1 ]; then
     DEAD_N=$(( DEAD_N + _mp_dead ))
     DONE_RECENT_N=$(( DONE_RECENT_N + _mp_done ))
     AGED_OUT_N=$(( AGED_OUT_N + _mp_aged ))
+    QUEUED_N=$(( QUEUED_N + _mp_queued ))
     _mp_idx=$(( _mp_idx + 1 ))
   done
   unset _mp_idx _mp_slug _mp_sd _mp_root _mp_ledger _mp_tasks _mp_handoff _mp_lanes \
-        _mp_live _mp_dead _mp_done _mp_aged _mp_warn _mp_rows
+        _mp_live _mp_dead _mp_done _mp_aged _mp_queued _mp_warn _mp_rows
   LANE_ROWS="$(printf '%s\n' "$LANE_ROWS" | grep -v '^ *$' || true)"
   LANE_COUNT=0
   if [ -n "$LANE_ROWS" ]; then
@@ -1828,11 +1849,13 @@ else
     DEAD_N="$(printf '%s\n' "$LANES" | sed -n 's/^#DEAD //p' | head -1)"
     DONE_RECENT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#DONE_RECENT //p' | head -1)"
     AGED_OUT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#AGED_OUT //p' | head -1)"
+    QUEUED_N="$(printf '%s\n' "$LANES" | sed -n 's/^#QUEUED //p' | head -1)"
     WARN_MSG="$(printf '%s\n' "$LANES" | sed -n 's/^#WARN //p' | head -1)"
     case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0 ;; esac
     case "$DEAD_N" in ''|*[!0-9]*) DEAD_N=0 ;; esac
     case "$DONE_RECENT_N" in ''|*[!0-9]*) DONE_RECENT_N=0 ;; esac
     case "$AGED_OUT_N" in ''|*[!0-9]*) AGED_OUT_N=0 ;; esac
+    case "$QUEUED_N" in ''|*[!0-9]*) QUEUED_N=0 ;; esac
   fi
   # drop every control line (#…) so only TSV rows remain
   LANE_ROWS="$(printf '%s\n' "$LANES" | grep -v '^#' || true)"
@@ -1904,20 +1927,30 @@ emit_lanes_table() {
   # above from the same per-lane state LIVE_N comes from -- it was just never
   # printed. Printing it here means the badge's sed-parse reads this exact
   # number instead of re-deriving one.
+  # D1: a " · N queued" clause is appended ONLY when QUEUED_N>0 (mirrors the
+  # existing AGED_OUT_N conditional immediately below) -- QUEUED_N==0 leaves
+  # the header byte-identical to pre-D1. Built once so it composes with every
+  # existing multi/single-project × aged-out/not branch below without
+  # duplicating the "if QUEUED_N>0" check four times.
+  _queued_suffix=""
+  if [ "$QUEUED_N" -gt 0 ]; then
+    _queued_suffix="$(printf ', %d queued' "$QUEUED_N")"
+  fi
   if [ "$MULTI_PROJECT" -eq 1 ]; then
     if [ "$AGED_OUT_N" -gt 0 ]; then
-      printf 'lanes (%d live, %d dead, %d done в последний час, %d скрыто по возрасту · %d projects)\n' \
-        "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$AGED_OUT_N" "${#PROJ_SLUGS[@]}"
+      printf 'lanes (%d live, %d dead, %d done в последний час, %d скрыто по возрасту%s · %d projects)\n' \
+        "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$AGED_OUT_N" "$_queued_suffix" "${#PROJ_SLUGS[@]}"
     else
-      printf 'lanes (%d live, %d dead, %d done в последний час · %d projects)\n' \
-        "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "${#PROJ_SLUGS[@]}"
+      printf 'lanes (%d live, %d dead, %d done в последний час%s · %d projects)\n' \
+        "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$_queued_suffix" "${#PROJ_SLUGS[@]}"
     fi
   elif [ "$AGED_OUT_N" -gt 0 ]; then
-    printf 'lanes (%d live, %d dead, %d done в последний час, %d скрыто по возрасту)\n' \
-      "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$AGED_OUT_N"
+    printf 'lanes (%d live, %d dead, %d done в последний час, %d скрыто по возрасту%s)\n' \
+      "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$AGED_OUT_N" "$_queued_suffix"
   else
-    printf 'lanes (%d live, %d dead, %d done в последний час)\n' "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N"
+    printf 'lanes (%d live, %d dead, %d done в последний час%s)\n' "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$_queued_suffix"
   fi
+  unset _queued_suffix
   if [ "$LANE_COUNT" -eq 0 ]; then
     printf '  (none)\n'
   elif [ "$MULTI_PROJECT" -eq 1 ]; then
