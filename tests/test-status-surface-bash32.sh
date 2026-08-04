@@ -278,6 +278,47 @@ else
   bad "T7: expected a clean 'mode=single-lead active N...' rc=0, got rc=${_t7_rc} out=$(printf '%s' "$_t7_out" | tr '\n' '|')"
 fi
 
+echo "== T8: bash 3.2 param-expansion split on the multibyte '·' delimiter =="
+# The widget's cached-mode detail-line reformat (leadv2-status-surface.5s.sh)
+# splits off only the FIRST ' · '-delimited field via ${var%% · *} / ${var#* · }
+# -- no arrays, no `read -a`, no awk field-splitting (which tore multi-word
+# fields like "sonnet 3m" or a trailing repo suffix apart). '·' is a
+# multibyte (UTF-8) byte sequence; bash 3.2 parameter expansion matches it
+# byte-wise via the glob, same as any other literal substring, so this must
+# hold under /bin/bash -n's runtime too, not just the syntax check in T2.
+_t8_line="taskname · phase · sonnet 3m · repo-x"
+_t8_first="${_t8_line%% · *}"
+_t8_rest="${_t8_line#* · }"
+if [ "$_t8_first" = "taskname" ] && [ "$_t8_rest" = "phase · sonnet 3m · repo-x" ]; then
+  ok "T8a: multi-field line splits into first field + untouched remainder"
+else
+  bad "T8a: split mismatch (first='$_t8_first' rest='$_t8_rest')"
+fi
+
+_t8_line2="onlyname"
+_t8_first2="${_t8_line2%% · *}"
+_t8_rest2="${_t8_line2#* · }"
+if [ "$_t8_first2" = "onlyname" ] && [ "$_t8_rest2" = "$_t8_line2" ]; then
+  ok "T8b: line with no ' · ' delimiter leaves remainder equal to the input (no-suffix case)"
+else
+  bad "T8b: no-delimiter case mismatch (first='$_t8_first2' rest='$_t8_rest2')"
+fi
+
+# Run the same two assertions under the real /bin/bash 3.2 binary (not just
+# whatever interpreter is running this test file) to prove the glob-vs-bytes
+# behaviour actually holds there, not merely under -n syntax parsing.
+_t8_out="$(/bin/bash -c '
+  line="taskname · phase · sonnet 3m · repo-x"
+  first="${line%% · *}"
+  rest="${line#* · }"
+  printf "%s|%s\n" "$first" "$rest"
+')"
+if [ "$_t8_out" = "taskname|phase · sonnet 3m · repo-x" ]; then
+  ok "T8c: same split verified under /bin/bash 3.2 runtime"
+else
+  bad "T8c: /bin/bash 3.2 runtime split mismatch (got '$_t8_out')"
+fi
+
 echo
 printf 'test-status-surface-bash32: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 (( FAIL == 0 ))
