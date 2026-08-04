@@ -848,24 +848,26 @@ repos_file="${HANDOFF}/review.diff.repos"
 blocked_reason=""
 _pc_base_used="HEAD"
 CROSS_REPO_DIFF="${LEADV2_REVIEW_DIFF_CROSS_REPO:-1}"
-# P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01 (M3) / C1+C3 (LANDING-BLOCKER-R2): diff_root is
-# gated by CROSS_REPO_DIFF itself so the flag OFF is a genuine one-flip full revert to
-# pre-fix behaviour (diff against ${ROOT}), not a half-revert that still points at a
-# worktree. When the flag is on, prefer LEADV2_LANE_WORK_ROOT -- the SAME value
-# dispatch-code.sh gave every worker's --cwd, so diff_root can never disagree with where
-# the code actually landed (C1: glm/codex used to write to PROJECT_ROOT while this always
-# diffed the worktree). `path-of` (keyed by the FOUNDER task id -- worktrees are created
-# keyed by founder tid in leadv2-fanout.sh, not this script's own sig8 TASK) is only the
-# fallback for a close gate started outside the launcher lineage (manual re-run, test
-# harness invoking this script directly).
+# P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01 (M3) / C1+C3 (LANDING-BLOCKER-R2): diff_root
+# resolution to the lane worktree is UNCONDITIONAL (GATE-LANE-DIFF-ONLY-WHEN-CROSS-REPO-01,
+# 2026-08-04) -- prefer LEADV2_LANE_WORK_ROOT -- the SAME value dispatch-code.sh gave every
+# worker's --cwd, so diff_root can never disagree with where the code actually landed (C1:
+# glm/codex used to write to PROJECT_ROOT while this always diffed the worktree). `path-of`
+# (keyed by the FOUNDER task id -- worktrees are created keyed by founder tid in
+# leadv2-fanout.sh, not this script's own sig8 TASK) is only the fallback for a close gate
+# started outside the launcher lineage (manual re-run, test harness invoking this script
+# directly). CROSS_REPO_DIFF no longer gates this: it used to double as a full revert to
+# pre-fix diffing-the-main-checkout behaviour, but that made a single-repo close (the flag
+# OFF/unset default) diff the wrong tree whenever a lane worktree existed, discarding real
+# work as `no_work` (persona-engine 0db1da80, 2026-08-04). CROSS_REPO_DIFF now controls only
+# the multi-repo per-write grouping branch below; a genuinely empty lane still resolves to
+# `no_work` via the dirty-lane check further down.
 diff_root="${ROOT}"
-if [[ "${CROSS_REPO_DIFF}" == "1" ]]; then
-  _lane_root="${LEADV2_LANE_WORK_ROOT:-}"
-  if [[ -z "${_lane_root}" || ! -d "${_lane_root}" ]]; then
-    _lane_root="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
-  fi
-  [[ -n "${_lane_root}" && -d "${_lane_root}" ]] && diff_root="${_lane_root}"
+_lane_root="${LEADV2_LANE_WORK_ROOT:-}"
+if [[ -z "${_lane_root}" || ! -d "${_lane_root}" ]]; then
+  _lane_root="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
 fi
+[[ -n "${_lane_root}" && -d "${_lane_root}" ]] && diff_root="${_lane_root}"
 # Resolve a possibly-symlinked path to the repo that actually owns it. persona-engine's
 # .claude/scripts/leadv2-*.sh are git-tracked symlinks into a SEPARATE ~/Projects/leadv2
 # checkout -- a symlink blob only stores its target path string, so `git -C "${diff_root}"
@@ -918,6 +920,23 @@ _pc_diff_base() {  # <repo_abs> -> a rev to diff FROM on stdout; empty stdout =>
     base="$(git -C "${repo}" merge-base origin/main HEAD 2>/dev/null || true)"
     [[ -n "${base}" ]] && printf '%s' "${base}"
   fi
+}
+# GATE-LANE-DIFF-ONLY-WHEN-CROSS-REPO-01: distinguishes "the lane genuinely did nothing"
+# from "the lane did something the diff-scoping above failed to capture". rc0 iff <root> is
+# a git work tree with >=1 uncommitted tracked change or untracked file, after excluding
+# docs/leadv2/ and docs/handoff/ -- the SAME exclusion set _pc_git_diff uses, so a lane
+# whose only churn is its own handoff artifacts does not flip from no_work to a false
+# rescue. Read-only: never touches the index or working tree (unlike _pc_git_diff's
+# throwaway-index `add -N`, which is unnecessary here since porcelain already reports
+# untracked paths). Tolerates quoted porcelain paths (paths with spaces/special chars).
+_pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding docs/leadv2, docs/handoff), rc1 otherwise
+  local root="$1"
+  [[ -n "${root}" && -d "${root}" ]] || return 1
+  git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  local status
+  status="$(git -C "${root}" status --porcelain --untracked-files=all 2>/dev/null | \
+    grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/')"
+  [[ -n "${status}" ]]
 }
 # _pc_repo_diff runs inside a `repo_diff="$(...)"` command substitution at every call site,
 # i.e. its own subshell -- a plain variable it set would never reach the caller. Record
@@ -1032,18 +1051,40 @@ if [[ -n "${blocked_reason}" ]]; then
   # Exit code stays 5 -- no caller-contract change.
   _pc_terminal="refused"; _pc_cause="${blocked_reason}"; _pc_rg_reason="${blocked_reason}"
   if [[ "${blocked_reason}" != "partial_diff" ]]; then
-    _pc_terminal="no_work"; _pc_cause="empty_diff"; _pc_rg_reason="no_work"
-    if [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
-      _pc_cause="asked_into_void"
+    # GATE-LANE-DIFF-ONLY-WHEN-CROSS-REPO-01: an empty diff whose resolved lane worktree is
+    # DIRTY is a diff-scoping failure, not an absent-work outcome -- the worker demonstrably
+    # produced something the gate could not scope. Gate on _lane_root (whether a lane
+    # worktree resolved), not on diff_root != ROOT: when no lane worktree exists, workers
+    # write into the main checkout, and unrelated founder edits sitting there must never be
+    # mistaken for lane work. Checked BEFORE asked_into_void: a lane that both asked into
+    # the void and left dirt is a scoping failure first -- the discarded diff is not
+    # recoverable once the lead re-dispatches, but the void question can be re-asked later.
+    # `refused` (not a new terminal word -- see leadv2-dispatch-ledger.sh vocabulary) keeps
+    # this retryable, matching landed|dead-only write-once semantics.
+    _pc_dirty_evidence=""
+    if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && _pc_lane_dirty "${_lane_root}"; then
+      _pc_terminal="refused"; _pc_cause="unscoped_lane_work"; _pc_rg_reason="unscoped_lane_work"
+      _pc_dirty_n="$(git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null | grep -vcE '^.. "?docs/leadv2/|^.. "?docs/handoff/')"
+      _pc_dirty_evidence="lane_root=$(basename "${_lane_root}") dirty=${_pc_dirty_n}"
+    else
+      _pc_terminal="no_work"; _pc_cause="empty_diff"; _pc_rg_reason="no_work"
+      if [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
+        _pc_cause="asked_into_void"
+      fi
     fi
   fi
   # review-gate.md reason mirrors the ledger word so the on-disk artifact and the
   # row agree (was unscopable_diff for the empty case). base= names the diff base
   # (HEAD or an abbreviated start-sha) so a blocked lane is diagnosable without
-  # re-running anything (S-3 round 3).
-  printf 'status: blocked\nreason: %s\nbase: %s\n' "${_pc_rg_reason}" "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
+  # re-running anything (S-3 round 3). dirty= (unscoped_lane_work only) records the
+  # filtered porcelain line count that flipped this from no_work.
+  if [[ -n "${_pc_dirty_evidence:-}" ]]; then
+    printf 'status: blocked\nreason: %s\nbase: %s\ndirty: %s\n' "${_pc_rg_reason}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}" > "${HANDOFF}/review-gate.md"
+  else
+    printf 'status: blocked\nreason: %s\nbase: %s\n' "${_pc_rg_reason}" "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
+  fi
   emit decision "review_gate task=${TASK} status=blocked reason=${_pc_rg_reason} terminal=${_pc_terminal} cause=${_pc_cause}"
-  _dl_note "${_pc_terminal}" "${_pc_cause}"
+  _dl_note "${_pc_terminal}" "${_pc_cause}" "${_pc_dirty_evidence}"
   _stamp_review_terminal blocked
   exit 5
 fi
