@@ -92,8 +92,18 @@ foreign=()
 undecidable=()
 for suite in "${F[@]}"; do
   [[ -z "${suite}" ]] && continue
-  suite_path="${SCRATCH}/tests/unit/${suite}"
-  if [[ ! -f "${suite_path}" ]]; then
+  # C5 (GATE-WRONG-ROOT-FALSE-DEAD-01): ordered suite location, first hit wins.
+  # 1. ${SCRATCH}/${suite} — repo-relative path (what C4's run-all.sh emits,
+  #    e.g. plugins/leadv2/scripts/tests/test-foo.sh or tests/unit/test-A.sh).
+  # 2. ${SCRATCH}/tests/unit/${suite} — legacy basename convention (other repos,
+  #    pre-C4 fixtures that emit basenames only).
+  suite_path=""
+  if [[ -f "${SCRATCH}/${suite}" ]]; then
+    suite_path="${SCRATCH}/${suite}"
+  elif [[ -f "${SCRATCH}/tests/unit/${suite}" ]]; then
+    suite_path="${SCRATCH}/tests/unit/${suite}"
+  fi
+  if [[ -z "${suite_path}" ]]; then
     # Not a locatable tests/unit/<name> script (aggregate "pytest" name, a
     # "(missing)"/"(TIMEOUT)" suffixed entry, an E2E break-matrix suite,
     # etc.) -- cannot safely re-run in isolation. Fail-closed to own.

@@ -805,7 +805,12 @@ fi
 # .claude/scripts/leadv2-*.sh are git-tracked symlinks into a SEPARATE ~/Projects/leadv2
 # checkout -- a symlink blob only stores its target path string, so `git -C "${diff_root}"
 # diff -- <that path>` is empty by construction. No portable `readlink -f` on macOS.
-_pc_realpath() { python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1"; }
+# Source the shared e2e-root validation lib (C1, GATE-WRONG-ROOT-FALSE-DEAD-01):
+# one mechanism for both product-close and phase8-e2e-gate. Provides
+# _lv2_realpath and _lv2_e2e_resolve_root; _pc_realpath is a backward-compat alias.
+# shellcheck source=lib/leadv2-e2e-root.sh
+source "${SCRIPT_DIR}/lib/leadv2-e2e-root.sh"
+_pc_realpath() { _lv2_realpath "$@"; }
 # C2 (LANDING-BLOCKER-R2): `git diff HEAD` never sees untracked paths, and a brand-new
 # file is a large share of lane deliverables -- LANE_WRITES=agent/newmod.py, created but
 # never `git add`ed, used to yield an empty diff every time. Diff against a THROWAWAY COPY
@@ -1033,17 +1038,27 @@ if [[ -n "${_PC_ASKED_INTO_VOID}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
 fi
 
 _stamp_active_phase "${FOUNDER_TASK_ID}" "e2e"
+# C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): validate the e2e root BEFORE running any
+# suite. diff_root (the lane's worktree, resolved :796-802) is the single source
+# of truth for "where the lane's code actually is" — reuse it, do not re-derive.
+# On any failure: blocked (infrastructure fault), never dead (lane regression).
 if [[ "${E2E_ON}" != 1 ]]; then
   emit decision "e2e_gate task=${TASK} status=disabled reason=kill_switch"
-elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${ROOT}")"; then
-  repo="$(basename "${ROOT}")"
+elif ! _lv2_e2e_resolve_root "${diff_root}" "${ROOT}"; then
+  rm -f "${HANDOFF}/e2e-gate-passed.flag"
+  printf 'status: blocked\nreason: %s\n' "${_lv2_e2e_root_reason}" > "${HANDOFF}/e2e-gate.md"
+  emit decision "e2e_gate task=${TASK} status=blocked reason=${_lv2_e2e_root_reason}"
+  _dl_note refused "${_lv2_e2e_root_reason}"
+  exit 4
+elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_lv2_e2e_root}")"; then
+  repo="$(basename "${_lv2_e2e_root}")"
   printf 'status: blocked\nreason: no_e2e_entrypoint\nrepo: %s\n' "${repo}" > "${HANDOFF}/e2e-gate.md"
   rm -f "${HANDOFF}/e2e-gate-passed.flag"
   emit decision "e2e_gate task=${TASK} status=blocked reason=no_e2e_entrypoint repo=${repo}"
   _dl_note refused no_e2e_entrypoint "repo=${repo}"
   exit 4
 else
-  bash -c "${e2e_cmd} --scope changed" > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+  { printf 'e2e-root: %s\n' "${_lv2_e2e_root}"; ( cd "${_lv2_e2e_root}" && bash -c "${e2e_cmd} --scope changed" ); } > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
   # GATE-FOREIGN-FAILURE-01: WRITES_CSV present + ownership enabled means the
   # passed sentinel is stamped as scoped to the lane's own write set (the
   # apparatus that can tell "my regression" from "someone else's unfinished
@@ -1067,7 +1082,10 @@ else
     # own regression behind someone else's unfinished file.
     _own_csv=""; _foreign_csv=""; _undecidable_csv=""; _owner_lane="unknown"
     if [[ "${_e2e_ownership}" == "1" && -n "${WRITES_CSV}" ]]; then
-      _own_out="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${ROOT}" "${TASK}" "${WRITES_CSV}" "${HANDOFF}/e2e-gate.log" 2>/dev/null || true)"
+      # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): pass the validated e2e root
+      # (the lane's worktree) so the overlay copies the lane's ACTUAL working
+      # tree state, not the main checkout's committed values.
+      _own_out="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${_lv2_e2e_root}" "${TASK}" "${WRITES_CSV}" "${HANDOFF}/e2e-gate.log" 2>/dev/null || true)"
       _own_csv="$(sed -n 's/^own=//p' <<< "${_own_out}")"
       _foreign_csv="$(sed -n 's/^foreign=//p' <<< "${_own_out}")"
       _undecidable_csv="$(sed -n 's/^undecidable=//p' <<< "${_own_out}")"
@@ -1081,8 +1099,8 @@ else
       # swallow the red suite silently either (loudness contract below).
       IFS=',' read -r -a _lane_writes <<< "${WRITES_CSV}"
       mapfile -t _all_changed < <(
-        { git -C "${ROOT}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
-          git -C "${ROOT}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
+        { git -C "${_lv2_e2e_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+          git -C "${_lv2_e2e_root}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
       )
       _foreign_files=()
       for _f in "${_all_changed[@]}"; do
