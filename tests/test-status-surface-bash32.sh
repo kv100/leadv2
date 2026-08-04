@@ -213,8 +213,13 @@ echo "== T6: STATUS-SURFACE-R5-01 round 2 — minimal-env parity (PyYAML-optiona
 _t6_min="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin LEADV2_STATUS_SYNC=1 /bin/bash "$WRAPPER" 2>&1 || true)"
 _t6_full="$(bash "$WRAPPER" 2>&1 || true)"
 _t6_rc=0
-# (a) no broken substring under the SwiftBar launch shape
-for _bad in "module missing" "not parsed" "unreadable"; do
+# (a) no broken substring under the SwiftBar launch shape. "active.yaml
+# unreadable" is the specific PyYAML-fallback failure signature this test
+# guards against — a blanket "unreadable" would also flag the legitimate
+# MENUBAR-SHOWS-DEAD-LANES-AND-HASH-NAMES-01 Rule U warning
+# ("<repo> terminals unreadable") that fires for any live repo whose state
+# dir genuinely has no terminal ledger yet, which is expected, not broken.
+for _bad in "module missing" "not parsed" "active.yaml unreadable"; do
   if printf '%s' "$_t6_min" | grep -q "$_bad"; then
     bad "_t6: minimal-env render contains '$_bad'"; _t6_rc=1
   fi
@@ -244,6 +249,33 @@ else
   # deliberately left to this parity test to SURFACE. A mismatch here is a
   # follow-up task, recorded -- not a silent lie. FAIL loud so it gets filed.
   bad "_t6c: urgent divergence (min=$_min_u full=$_full_u) — file as follow-up"; _t6_rc=1
+fi
+
+echo
+echo "== T7: env -i minimal PATH single-lead render (MENUBAR-SHOWS-DEAD-LANES-AND-HASH-NAMES-01) =="
+# The multi-repo source-list build in render_single_lead() is new bash 3.2
+# territory (string concatenation in a for/glob loop, no arrays) — prove it
+# parses and runs, not just that the file parses under -n, under the exact
+# stripped SwiftBar launch shape.
+F7_STATE="$FIX/r7-state"; F7_LED="$FIX/r7-ledger"
+mkdir -p "$F7_STATE" "$F7_LED"
+F7_REPO="r7repo"
+: > "$F7_LED/${F7_REPO}.jsonl"
+_t7_out="$(env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  LEADV2_STATUS_STATE_DIR="$F7_STATE" LEADV2_STATUS_LEDGER_DIR="$F7_LED" \
+  LEADV2_STATUS_REPO="$F7_REPO" LEADV2_STATUS_NOW="$F_NOW" \
+  LEADV2_STATUS_SINGLE_LEAD=1 /bin/bash "$RENDERER" --single-lead 2>&1)"
+_t7_rc=$?
+# PS_SNAPSHOT is intentionally left un-stubbed here (unlike every other case
+# in this file) specifically to exercise the real `ps -Ao pid=,args=` call
+# under bash 3.2 + a stripped PATH — so the exact active count is whatever is
+# really running on this machine right now; only structural health (rc0, a
+# well-formed mode= header, no ⚠) is asserted.
+if [ "$_t7_rc" -eq 0 ] && printf '%s\n' "$_t7_out" | grep -qE '^mode=single-lead active [0-9]+( |$)' \
+   && ! printf '%s\n' "$_t7_out" | grep -q '⚠'; then
+  ok "T7: single-lead source-list loop parses/runs under stripped env (rc=0, no ⚠)"
+else
+  bad "T7: expected a clean 'mode=single-lead active N...' rc=0, got rc=${_t7_rc} out=$(printf '%s' "$_t7_out" | tr '\n' '|')"
 fi
 
 echo
