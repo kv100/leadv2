@@ -193,6 +193,12 @@
             "timeout": 5,
             "statusMessage": "Context-glossary close reminder (domain-modeling)...",
             "continueOnBlock": true
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-codex-direct-exec-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Codex direct-exec guard..."
           }
         ]
       },

@@ -100,6 +100,10 @@ CODEX_REPAIR_DIR="${CODEX_REPAIR_DIR:-$HOME/.claude/cache/codex-repair}"
 _CODEX_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/leadv2-arm-cooldown.sh
 source "${_CODEX_SCRIPT_DIR}/lib/leadv2-arm-cooldown.sh"
+# CODEX-QUOTA-GUARDRAILS-01 — circuit breaker for usage-limit refusals.
+source "${_CODEX_SCRIPT_DIR}/lib/leadv2-codex-circuit.sh"
+# CODEX-QUOTA-GUARDRAILS-01 — shared spawn gate (cooldown + circuit).
+source "${_CODEX_SCRIPT_DIR}/lib/leadv2-codex-quota-gate.sh"
 
 # C3 (tenant-generic) -- resolve the routing yaml. SAME convention as
 # leadv2-dispatch-product-close.sh:196 and leadv2-dispatch-code.sh:263:
@@ -272,18 +276,9 @@ _codex_quota_gate() {
     *) return 0 ;;
   esac
 
-  # check 1 -- bounded cooldown memory.  Once reprobe_at passes, the next
-  # dispatch launches and provider evidence is authoritative again.
-  local _cooldown _cooldown_until
-  _cooldown="$(arm_cooldown_state codex)"
-  case "$_cooldown" in
-    cooling\ *)
-      _cooldown_until="${_cooldown#cooling }"; _cooldown_until="${_cooldown_until%% *}"
-      printf '[codex-task] CODEX_REFUSED_QUOTA reason=cooldown used=na threshold=na until=%s\n' "$_cooldown_until" >&2
-      printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
-      exit 2
-      ;;
-  esac
+  # CODEX-QUOTA-GUARDRAILS-01 — delegate cooldown + circuit checks to the shared
+  # gate (identical stderr markers, same exit codes).
+  codex_spawn_gate "$SUB" || exit "$?"
 
   # check 2 -- live quota over threshold (threshold from yaml; empty => skip).
   local _cfg
@@ -351,6 +346,9 @@ sys.exit(1)
   fi
   LEADV2_ARM_COOLDOWN_JOB="$_jid" arm_cooldown_record codex quota "$_until_iso"
   arm_cooldown_ladder_note codex quota "$(arm_cooldown_state codex | awk '/^cooling / {print $2}')"
+  # CODEX-QUOTA-GUARDRAILS-01 — also open the circuit breaker (longer-horizon
+  # than the 1h cooldown cap; covers multi-day weekly limits). Idempotent.
+  codex_circuit_open "$_until_iso" "codex-task" 2>/dev/null || true
 }
 
 # C5 -- post-launch watcher (hidden subcommand __quota-watch). Idempotent per job
@@ -816,6 +814,10 @@ _record_spawn_failure() {
 # the call returns immediately (the CODEX-WAIT-AND-TIER-01 P0 bug).
 _TIER=""
 _REASON=""
+# CODEX-QUOTA-GUARDRAILS-01 — no-tier path must still pin model+effort.
+# Default to standard (terra/medium) instead of leaving the companion default
+# (which was gpt-5.5 with no effort pin — the CLI default for `codex exec` is
+# xhigh, the primary burn vector from RCA CODEX-QUOTA-BURN-RCA-01).
 _WAIT=0
 _pre_args=()
 _i=1
@@ -980,6 +982,10 @@ _has_flag() {
   return 1
 }
 
+# CODEX-QUOTA-GUARDRAILS-01 — default _TIER to standard when unset so model
+# and effort are always explicitly pinned (never left to the CLI default,
+# which is xhigh for `codex exec` — the primary RCA burn vector).
+[[ -z "${_TIER:-}" ]] && _TIER="standard"
 if [[ -n "$_TIER" ]]; then
   MODELS_CACHE="${CODEX_MODELS_CACHE:-$HOME/.codex/models_cache.json}"
   case "$_TIER" in
@@ -1100,11 +1106,10 @@ print("%s %s %s workspaceRoot=%s log=%s" % (
   exit "$_st_rc"
 fi
 
-# Default (no --tier given): plugin 1.0.4 (codex-plugin-cc#270) ships gpt-5.5
-# with working structured output for adversarial-review -- empirically verified
-# 2026-04-28. No model pin in that case; codex-companion inherits its default
-# model (gpt-5.5). --tier (above) is the only thing that pins a model now --
-# keep this comment in sync if the default model changes.
+# Default tier is now `standard` (pinned above: gpt-5.6-terra/medium).
+# CODEX-QUOTA-GUARDRAILS-01: the no-tier path previously left model+effort to
+# the companion default (gpt-5.5, no effort pin). It now always resolves to
+# standard. An explicit --tier still wins (already handled above).
 
 # adversarial-review MUST run synchronously. Without --wait, codex-companion starts an
 # async job and returns immediately — the findings land in the plugin job-log and the
@@ -1225,7 +1230,8 @@ _run_node() {
 # to a tee-based streaming retry if interactive live-progress becomes a
 # complaint.
 _FALLBACK_MODEL="gpt-5.5"
-_FALLBACK_EFFORT="high"
+# CODEX-QUOTA-GUARDRAILS-01 — was "high"; align with standard tier (medium).
+_FALLBACK_EFFORT="medium"
 
 _extract_model_arg() {
   local _prev=""

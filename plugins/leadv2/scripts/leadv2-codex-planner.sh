@@ -35,8 +35,8 @@ Usage: leadv2-codex-planner.sh --task-id <id> (--mission "<text>" | --mission-fi
   --tier <t>             top | standard | volume (default: standard). Resolves model+effort:
                            top      -> gpt-5.6-sol/high, falls back to gpt-5.6-terra/ultra if
                                        sol is absent from ~/.codex/models_cache.json (gov-gated)
-                           standard -> gpt-5.6-terra/high
-                           volume   -> gpt-5.6-luna/medium
+                           standard -> gpt-5.6-terra/medium  (EFFORT-RECAL 2026-07-10)
+                           volume   -> gpt-5.6-luna/low       (EFFORT-RECAL 2026-07-10)
                          Explicit --effort (if also given) overrides the tier's resolved effort.
   --print-model          Dry-run: print resolved "model=<slug> effort=<level>" and exit 0.
                          Skips --task-id/--mission validation and does not call Codex.
@@ -49,7 +49,7 @@ EOF
 
 TASK_ID=""; MISSION=""; MISSION_FILE=""; EFFORT=""; WAIT=0
 MODE="plan"; OUT_FILE=""; DIFF_PATHS=""; LOG_PATH=""; PRIOR_VERDICT=""
-TIER="standard"; PRINT_MODEL=0
+TIER="standard"; PRINT_MODEL=0; REASON=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -64,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --log-path)      LOG_PATH="$2"; shift 2 ;;
     --prior-verdict) PRIOR_VERDICT="$2"; shift 2 ;;
     --tier)          TIER="$2"; shift 2 ;;
+    --reason)        REASON="$2"; shift 2 ;;
     --print-model)   PRINT_MODEL=1; shift ;;
     --model)
       echo "[leadv2-codex-planner] --model is no longer accepted directly; use --tier <top|standard|volume>" >&2
@@ -72,6 +73,19 @@ while [[ $# -gt 0 ]]; do
     *) echo "[leadv2-codex-planner] unknown arg: $1" >&2; usage ;;
   esac
 done
+
+# CODEX-QUOTA-GUARDRAILS-01 — --tier top requires --reason, mirroring codex-task.sh.
+# `top` is the scarce Codex tier (Sol -> Terra-ultra); without an explicit reason
+# attesting this run earns top, refuse. standard (default) and volume pass through.
+if [[ "$TIER" == "top" && -z "$REASON" ]]; then
+  cat >&2 <<'EOF'
+[leadv2-codex-planner] REFUSED: --tier top requires --reason "<why this run earns top>".
+  Founder rule (CODEX-WAIT-AND-TIER-01): `top` is the scarce Codex tier, reserved
+  for adversarial review + Heavy/arch plans. Default is `standard` (Terra/medium);
+  use `volume` (Luna/low) for mechanical/bulk work.
+EOF
+  exit 2
+fi
 
 # Tier resolver -- logical-tier -> (codex model slug, reasoning effort).
 # Spark is never a tier target; the codex-task.sh spark ban is a second gate.
@@ -89,10 +103,14 @@ _resolve_tier() {
       fi
       ;;
     standard)
-      TIER_MODEL="gpt-5.6-terra"; TIER_EFFORT="high"
+      # CODEX-QUOTA-GUARDRAILS-01 — was "high"; align with codex-task.sh
+      # standard=medium (EFFORT-RECAL 2026-07-10). Rollback: restore "high".
+      TIER_MODEL="gpt-5.6-terra"; TIER_EFFORT="medium"
       ;;
     volume)
-      TIER_MODEL="gpt-5.6-luna"; TIER_EFFORT="medium"
+      # CODEX-QUOTA-GUARDRAILS-01 — was "medium"; align with codex-task.sh
+      # volume=low. Rollback: restore "medium".
+      TIER_MODEL="gpt-5.6-luna"; TIER_EFFORT="low"
       ;;
     *)
       echo "[leadv2-codex-planner] unknown --tier: $TIER (expected top|standard|volume)" >&2

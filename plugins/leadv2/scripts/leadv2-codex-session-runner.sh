@@ -19,6 +19,9 @@ fi
 log() { printf -- '[leadv2-codex-session-runner] %s\n' "$*" >&2; }
 log_error() { printf -- '[leadv2-codex-session-runner] ERROR: %s\n' "$*" >&2; }
 
+# CODEX-QUOTA-GUARDRAILS-01 — quota gate (cooldown + circuit) before every spawn.
+source "$SCRIPT_DIR/lib/leadv2-codex-quota-gate.sh" 2>/dev/null || true
+
 TASK_ID="${LEADV2_TASK_ID:-}"
 if [[ -z "$TASK_ID" ]]; then
   log_error "LEADV2_TASK_ID is required"
@@ -487,7 +490,20 @@ while (( attempt < MAX_ATTEMPTS )); do
     _mode="resume"
   fi
 
-  log "attempt $attempt/$MAX_ATTEMPTS: codex $_mode"
+  log "attempt $attempt/$MAX_ATTEMPTS: codex $_mode (model=$MODEL effort=$EFFORT)"
+  # CODEX-QUOTA-GUARDRAILS-01 — gate every spawn through cooldown + circuit.
+  # Fail-closed: if the gate function is unavailable and the skip hatch is not
+  # set, refuse rather than spawn unguarded.
+  if [[ "${CODEX_SKIP_QUOTA_GATE:-0}" != "1" ]]; then
+    if ! declare -F codex_spawn_gate >/dev/null 2>&1; then
+      log_error "quota gate unavailable (lib not sourced) and CODEX_SKIP_QUOTA_GATE not set — refusing codex spawn"
+      exit 2
+    fi
+    if ! codex_spawn_gate exec >> "$LOGF" 2>&1; then
+      log_error "codex spawn refused by quota gate (cooldown/circuit) — stopping"
+      exit 2
+    fi
+  fi
   progress_before="$("$PROGRESS_TOOL" "$TASK_ID" 2>/dev/null || printf -- 'unknown-before')"
   log_size_before="$(wc -c < "$LOGF" 2>/dev/null || printf -- '0')"
   set +e
@@ -508,6 +524,23 @@ while (( attempt < MAX_ATTEMPTS )); do
     _append_receipt "recursion_detected" "$rc" "$attempt"
     log_error "CODEX-LEAD RECURSION: Codex tried to spawn a leadv2 launcher/dispatcher from its already-running child session; stopping immediately"
     exit 5
+  fi
+  # CODEX-QUOTA-GUARDRAILS-01 — detect usage-limit refusal and open the circuit.
+  # Only inspect bytes appended by THIS attempt (log_size_before captured pre-spawn
+  # at line ~508) so a stale wall message from a prior attempt cannot re-open the
+  # circuit forever. Same signature as codex-task.sh:413.
+  _lim_new="$(tail -c "+$((log_size_before + 1))" "$LOGF" 2>/dev/null || true)"
+  if printf '%s' "$_lim_new" | grep -qiE 'hit your usage limit|usage limit reached|rate limit exceeded'; then
+    _lim_until=""
+    if declare -F codex_circuit_parse_until >/dev/null 2>&1; then
+      _lim_until="$(printf '%s' "$_lim_new" | codex_circuit_parse_until 2>/dev/null || true)"
+    fi
+    if declare -F codex_circuit_open >/dev/null 2>&1; then
+      codex_circuit_open "$_lim_until" "session-runner"
+    fi
+    _append_receipt "quota_refused" "$rc" "$attempt"
+    log_error "codex usage limit hit (until=${_lim_until:-default-24h}) — circuit opened, no further attempts"
+    exit 2
   fi
   if [[ "$progress_before" == "$progress_after" ]]; then
     stall_streak=$((stall_streak + 1))
