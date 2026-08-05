@@ -418,6 +418,13 @@ REQUIRE_LANE_WRITES="${LEADV2_REQUIRE_LANE_WRITES:-1}"
 # is a landing-day opt-in so no in-flight or historical dispatch retro-parks; flip to
 # 1 after a soak, mirroring LEADV2_REQUIRE_LANE_WRITES's own rollout.
 REQUIRE_ACCEPTANCE="${LEADV2_REQUIRE_ACCEPTANCE:-0}"
+# PHASES-ARE-THE-ONLY-PATH-01: three-valued phase precondition gate.
+# 0 = disabled (byte-identical to today's behaviour, one-flip rollback);
+# warn (default) = journal phase_precondition_warn + proceed;
+# 1 = refuse dispatch on missing mandatory phases.
+# The flip to 1 is ledgered separately as SD-PHASE-ENFORCE-01.
+REQUIRE_PHASES="${LEADV2_REQUIRE_PHASES:-warn}"
+PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.sh}"
 
 log()        { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
 log_err()    { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
@@ -1486,6 +1493,70 @@ _acceptance_guard() {
   return 1
 }
 
+# _phase_precondition_guard <sig8> <class> <writes> [waiver-args...] -> 0 proceed, 1 refuse
+# PHASES-ARE-THE-ONLY-PATH-01: sits at the same structural slot as _lane_writes_guard/
+# _acceptance_guard, after arg validation, before any spawn side effect and before
+# _stamp_active_phase prepass. Exit code 4 from phase-record.sh (config error / refused
+# waiver) ALWAYS refuses in every mode including 0 — a malformed override is a
+# configuration error, not a phase gap.
+_phase_precondition_guard() {
+  local sig8="$1" cls="$2" writes="${3:-}"
+  shift 3 2>/dev/null || shift $# 2>/dev/null || true
+  local -a waiver_args=()
+  while [[ $# -gt 0 ]]; do
+    waiver_args+=("$1"); shift
+  done
+
+  # 0 = disabled: return before any subprocess, byte-identical to today.
+  if [[ "${REQUIRE_PHASES}" == "0" ]]; then
+    return 0
+  fi
+
+  # Resolve mode: warn (default), 1 (enforce). Unrecognised → warn with journal.
+  local mode="${REQUIRE_PHASES}"
+  if [[ "$mode" != "warn" && "$mode" != "1" ]]; then
+    emit decision "phase_precondition_badmode value=${mode}"
+    mode="warn"
+  fi
+
+  local assert_out assert_rc
+  assert_out="$(bash "${PHASE_RECORD_BIN}" assert "${sig8}" --class "${cls}" \
+    ${writes:+--writes "${writes}"} "${waiver_args[@]+"${waiver_args[@]}"}" 2>&1)" || assert_rc=$?
+  assert_rc="${assert_rc:-0}"
+
+  case "$assert_rc" in
+    0)
+      return 0
+      ;;
+    3)
+      local missing_csv="${assert_out#missing=}"
+      if [[ "$mode" == "1" ]]; then
+        emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} mode=1"
+        log_err "dispatch refused: missing mandatory phases: ${missing_csv}"
+        local mp
+        for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
+          log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
+        done
+        return 1
+      else
+        emit decision "phase_precondition_warn task=${sig8} class=${cls} missing=${missing_csv} mode=warn"
+        return 0
+      fi
+      ;;
+    4)
+      # Config error / refused waiver — always refuse, even in mode 0
+      emit decision "phase_precondition_config_error task=${sig8} detail=${assert_out}"
+      log_err "phase precondition config error: ${assert_out}"
+      return 1
+      ;;
+    *)
+      emit decision "phase_precondition_config_error task=${sig8} detail=unexpected_rc=${assert_rc}"
+      log_err "phase precondition: unexpected exit ${assert_rc}: ${assert_out}"
+      return 1
+      ;;
+  esac
+}
+
 architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled, 1 failed
   local raw="$1" sig8="$2" writes="$3" f mfile out rc count
   ARCHITECT_PREPASS_REASON=""
@@ -2240,6 +2311,7 @@ cmd_status() {
 cmd_resolve() {
   local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0
+  local -a phase_waivers=()
   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
   # for callers (leadv2-fanout.sh's funnel) that dispatch on behalf of a specific
   # docs/tasks.yaml row. Additive/optional -- callers that omit it (backlog-pump,
@@ -2280,6 +2352,8 @@ cmd_resolve() {
       --acceptance-cmd)  [[ $# -ge 2 ]] || { log_err "--acceptance-cmd requires a value"; usage; }
                           lane_acceptance_cmd="$2"; shift 2 ;;
       --rollback-onestep) lane_rollback=1; shift ;;
+      --phase-waiver) [[ $# -ge 2 ]] || { log_err "--phase-waiver requires a value"; usage; }
+                      phase_waivers+=("$2"); shift 2 ;;
       # LANE-PLACEMENT-01: pin WORK_ROOT to an EXISTING lane worktree instead of
       # ensure-creating a new one.  Two spellings, one code path.  Mutual-exclusion
       # is enforced here (before any state write, exit 1 = usage).
@@ -2395,6 +2469,30 @@ cmd_resolve() {
   local product_class classification_reason
   IFS=$'\t' read -r product_class classification_reason <<< "$(classify_product_work "${kind}" "${mission}")"
   emit decision "dispatch_classified task=${sig8} class=${product_class} reason=${classification_reason} kind=${kind:-unknown}"
+
+  # PHASES-ARE-THE-ONLY-PATH-01 §7: register the dispatch lane in active.yaml.
+  # Without this, leadv2_active_update_phase finds no row to patch and the mirror
+  # stays empty forever (backlog-pump.sh:250-256 states this outright).
+  # leadv2_active_register is idempotent (refreshes existing row if PID alive).
+  if [[ -n "${founder_task_id}" ]] && [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
+    if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null \
+       || ! leadv2_active_register "${founder_task_id}" "${task_class}" "${PROJECT_ROOT}" "worktree-d4d014e1" 2>/dev/null; then
+      emit decision "active_register_miss task=${sig8}"
+    fi
+  fi
+
+  # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
+  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
+    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
+
+  # PHASES-ARE-THE-ONLY-PATH-01 §5: precondition guard at the same structural slot
+  # as _lane_writes_guard / _acceptance_guard — after arg validation, before spawn.
+  local _phase_waiver_args=()
+  for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
+    _phase_waiver_args+=(--waiver "$_pw")
+  done
+  _phase_precondition_guard "${sig8}" "${task_class}" "${lane_writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
+
   if [[ "${product_class}" == "product" ]]; then
     # PREPASS-DEGRADES-01 (2026-07-29): a prepass failure must NEVER stop the work. On
     # 2026-07-29 this hard exit killed product dispatches outright -- the task never
@@ -2419,6 +2517,13 @@ cmd_resolve() {
       log_err "architect prepass produced no design for product task=${sig8} after ${ARCHITECT_PREPASS_ATTEMPTS} attempts -- task PARKED, not dispatched."
       _dl_note "${sig8}" parked "no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts" "" "${founder_task_id}"
       exit 3
+    fi
+    # PHASES-ARE-THE-ONLY-PATH-01: record plan phase done (prepass produced a design).
+    local _pp_file_record; _pp_file_record="$(_prepass_file "${sig8}")"
+    if [[ -s "${_pp_file_record}" ]]; then
+      bash "${PHASE_RECORD_BIN}" record "${sig8}" plan --status done \
+        --artifact "docs/handoff/dispatch-${sig8}/architect-prepass.md" \
+        --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
     fi
     # P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01: the row-declared `lane_writes` always wins --
     # a founder declaration is never overridden. Only when the row carried none does the
@@ -2703,6 +2808,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
   # mid-loop (e.g. glm quota-gate refusal falling to sonnet), so that second
   # stamp is the one that ends up truthful, not this one.
   _stamp_active_phase "${founder_task_id}" "build" "${arm}"
+  # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
+  bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
+    --handle "dispatch-${sig8}-build" \
+    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
   # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): the candidate loop is wrapped in a restartable
   # while so a lock-busy refusal can re-resolve the arm mid-loop and re-enter over a
   # rebuilt chain. bash expands "${candidate_arms[@]}" once at for-entry, so merely
@@ -2733,6 +2842,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
       # Re-stamp with the CONFIRMED-launched arm, phase unchanged -- the truthful value
       # once the primary arm_resolved pick was refused and the loop fell to a fallback.
       _stamp_active_phase "${founder_task_id}" "build" "${candidate}"
+      # PHASES-ARE-THE-ONLY-PATH-01: re-record build with the confirmed candidate.
+      bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
+        --handle "dispatch-${sig8}-${candidate}" \
+        --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
       # VESTIGIAL (dispatch-00629379, 2026-07-30): reviewer_arms / the
       # LEADV2_DISPATCH_REVIEWER_ARMS env it feeds is DEAD -- leadv2-dispatch-
       # product-close.sh no longer reads it. Reusing the BUILD candidate chain as the

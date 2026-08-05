@@ -2627,6 +2627,7 @@ $(printf '%s\t%s\t%s\t%s' "$_sl_base" "$_sl_f" "$_sl_term2" "$_sl_ver2")"
     LEADV2_SL_SOURCES="$_sl_sources" \
     LEADV2_SL_REPO="$REPO" \
     LEADV2_SL_STATE_DIR="$STATE_DIR" \
+    LEADV2_SS_LANE_LIVENESS_BIN="${SCRIPT_DIR}/leadv2-lane-liveness.sh" \
     python3 2>/dev/null <<'PYEOF'
 import json, os, sys, re, datetime, subprocess
 
@@ -3032,21 +3033,109 @@ def lane_name(res_entry, term_hit, census_task_id, sig8):
         return str(census_task_id)
     return sig8 or (str(census_task_id) if census_task_id else "unknown")
 
-def lane_phase(repo, sig8, in_census):
-    # Foreign aggregated repos: HANDOFF is unknown, phase degrades honestly.
+def legacy_infer(repo, sig8):
+    """Pre-migration inference: visible ~ prefix so it is never equal to a real phase."""
     if repo == CUR_REPO and PROJECT_ROOT and sig8:
         review_dir = os.path.join(PROJECT_ROOT, "docs", "handoff",
                                    "dispatch-%s-review" % sig8)
         if os.path.isdir(review_dir):
-            return "review"
-    if in_census:
-        return "worker"
-    if repo == CUR_REPO and PROJECT_ROOT and sig8:
+            return "~review"
         arch_dir = os.path.join(PROJECT_ROOT, "docs", "handoff",
                                  "dispatch-%s-architect" % sig8)
         if os.path.isdir(arch_dir):
-            return "architect"
-    return "queued"
+            return "~architect"
+    return "~"
+
+# PHASES-ARE-THE-ONLY-PATH-01: lane_phase reads phases.d/, corroborates against
+# LANE_LIVENESS_BIN, and never infers from directory existence alone.
+_liveness_probe_cache = {}
+def _liveness_probe(sig8):
+    """Returns 'alive', 'dead', or 'unknown'. Memoized per sig8 per render."""
+    if sig8 in _liveness_probe_cache:
+        return _liveness_probe_cache[sig8]
+    bin_path = os.environ.get("LEADV2_SS_LANE_LIVENESS_BIN", "")
+    if not bin_path or not PROJECT_ROOT:
+        _liveness_probe_cache[sig8] = "unknown"
+        return "unknown"
+    try:
+        result = subprocess.run(
+            ["bash", bin_path, "--project-root", PROJECT_ROOT,
+             "--lane", sig8, "--no-codex", "--json"],
+            capture_output=True, text=True, timeout=3)
+        out = result.stdout.strip()
+        if '"alive"' in out or '"status": "alive"' in out:
+            _liveness_probe_cache[sig8] = "alive"
+        elif '"dead"' in out or '"status": "dead"' in out:
+            _liveness_probe_cache[sig8] = "dead"
+        else:
+            _liveness_probe_cache[sig8] = "unknown"
+    except Exception:
+        _liveness_probe_cache[sig8] = "unknown"
+    return _liveness_probe_cache[sig8]
+
+def lane_phase(repo, sig8, terminal_phase, in_census):
+    if terminal_phase:
+        return terminal_phase
+    # Foreign aggregated repos: HANDOFF is unknown, phase degrades honestly.
+    if repo != CUR_REPO or not PROJECT_ROOT or not sig8:
+        return legacy_infer(repo, sig8) if sig8 else ("worker" if in_census else "queued")
+
+    # Read phases.d/*.yaml via flat_yaml
+    phases_d = os.path.join(PROJECT_ROOT, "docs", "handoff",
+                             "dispatch-%s" % sig8, "phases.d")
+    if not os.path.isdir(phases_d):
+        # Pre-migration lane: degrade honestly with ~ prefix
+        return legacy_infer(repo, sig8)
+
+    records = []
+    for fname in os.listdir(phases_d):
+        if not fname.endswith(".yaml"):
+            continue
+        rec = flat_yaml(os.path.join(phases_d, fname))
+        if rec.get("phase"):
+            records.append(rec)
+
+    if not records:
+        return legacy_infer(repo, sig8)
+
+    # Step 4: running records → newest by started_at
+    running = [r for r in records if r.get("status") == "running"]
+    if running:
+        running.sort(key=lambda r: r.get("started_at", ""), reverse=True)
+        newest = running[0]
+        # ended_at non-empty → treat as done (crash between fields)
+        if newest.get("ended_at", "").strip():
+            return "%s (done)" % newest["phase"]
+        # Corroborate against liveness probe
+        probe = _liveness_probe(sig8)
+        handle = newest.get("handle", "")
+        if probe == "dead":
+            started = newest.get("started_at", "")
+            age_str = ""
+            try:
+                st = datetime.datetime.fromisoformat(
+                    started.replace("Z", "+00:00"))
+                age_s = max(0, int(now - st.timestamp()))
+                if age_s < 3600:
+                    age_str = "%dm" % (age_s // 60)
+                else:
+                    age_str = "%dh" % (age_s // 3600)
+            except Exception:
+                age_str = "?"
+            return "%s (stalled, started %s ago)" % (newest["phase"], age_str)
+        # ALIVE or UNKNOWN → render plain phase (never claim stalled on probe failure)
+        return newest["phase"]
+
+    # Step 5: no running records → newest done/n-a/waived by ended_at
+    done_recs = [r for r in records
+                  if r.get("status") in ("done", "n/a", "waived")]
+    if done_recs:
+        done_recs.sort(key=lambda r: r.get("ended_at", "") or r.get("started_at", ""),
+                        reverse=True)
+        return "%s (done)" % done_recs[0]["phase"]
+
+    # Step 6: nothing renderable
+    return "worker" if in_census else "queued"
 
 # ── build the live-worker set: process census + classify (PANEL-TWO-IMPLEMENTATIONS-MERGE-01)
 # Only lanes classified "live" by the shared classifier appear.  A terminal

@@ -1333,6 +1333,11 @@ if [[ -n "${_PC_ASKED_INTO_VOID}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
 fi
 
 _stamp_active_phase "${FOUNDER_TASK_ID}" "e2e"
+# PHASES-ARE-THE-ONLY-PATH-01: record e2e phase as running.
+[[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
+  bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" e2e --status running \
+    --handle "dispatch-${TASK}-e2e" \
+    --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):e2e_gate" 2>/dev/null || true
 # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): validate the e2e root BEFORE running any
 # suite. diff_root (the lane's worktree, resolved :796-802) is the single source
 # of truth for "where the lane's code actually is" — reuse it, do not re-derive.
@@ -1434,6 +1439,11 @@ else
 fi
 
 _stamp_active_phase "${FOUNDER_TASK_ID}" "review"
+# PHASES-ARE-THE-ONLY-PATH-01: record review phase as running.
+[[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
+  bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status running \
+    --handle "dispatch-${TASK}-review" \
+    --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
 if [[ "${REVIEW_ON}" != 1 ]]; then
   emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
   _dl_note landed review_gate_disabled
@@ -1702,3 +1712,8 @@ fi
 printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}" > "${HANDOFF}/review-gate.md"
 _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}"
 _stamp_review_terminal pass
+# PHASES-ARE-THE-ONLY-PATH-01: record review phase as done (verdict PASS).
+[[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
+  bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status done \
+    --artifact "docs/handoff/dispatch-${TASK}/review-gate.md" \
+    --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true

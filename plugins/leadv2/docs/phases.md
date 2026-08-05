@@ -267,7 +267,7 @@ Parallel Agent spawns per `context.yaml plan.parallel_groups:` — developer / p
 
 ## §Phase 5: REVIEW
 
-**Route first:** `eval "$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-router.sh" --phase review --step <step> --task-id <id> --class <class> --signals '{...}' 2>/dev/null)" || true`. `model=skip` → no review (CX-03 light_low_risk). When `USE_WORKFLOW=1` is emitted, use the Workflow path below.
+**Route first:** `eval "$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-router.sh" --phase review --step <step> --task-id <id> --class <class> --signals '{...}' 2>/dev/null)" || true`. Review is mandatory in every class. The router may only select the **cheapest reviewer arm**; a `model=skip` emission for the review step is ignored and the cheapest arm is used instead. When `USE_WORKFLOW=1` is emitted, use the Workflow path below.
 
 **Dispatch (check `USE_WORKFLOW` from router output):**
 

@@ -250,6 +250,16 @@ else
   log_info "[skip] leadv2-phase8-assert.sh not yet present — skipping gate assertions"
 fi
 
+# PHASES-ARE-THE-ONLY-PATH-01: record close phase as done.
+# The phase8-passed.flag was just written by leadv2-phase8-assert.sh above.
+_close_sig8="${TASK_ID#dispatch-}"
+_close_flag="${LEADV2_HANDOFF_DIR}/${TASK_ID}/phase8-passed.flag"
+[[ -x "${SCRIPTS_DIR}/leadv2-phase-record.sh" ]] && \
+  bash "${SCRIPTS_DIR}/leadv2-phase-record.sh" record "${_close_sig8}" close --status done \
+    --artifact "docs/handoff/${TASK_ID}/phase8-passed.flag" \
+    --task-id "${TASK_ID}" --owner "$(basename "$0"):G2_gate" 2>/dev/null || true
+unset _close_sig8 _close_flag
+
 # ── R3 headline: red-first ratio (RED-FIRST-GATE-01) ──────────────────────────
 # A10 above (inside leadv2-phase8-assert.sh) already ran the probe when
 # LEADV2_RED_FIRST != off; fold its report into the close summary so
