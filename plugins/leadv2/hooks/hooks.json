@@ -153,6 +153,12 @@
           },
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-block-fg-dispatch.sh\"",
+            "timeout": 5,
+            "statusMessage": "Foreground-dispatch guard..."
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-codex-round-cap.sh\"",
             "timeout": 5,
             "statusMessage": "Checking codex round cap..."
