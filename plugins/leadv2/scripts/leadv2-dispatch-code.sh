@@ -425,6 +425,9 @@ REQUIRE_ACCEPTANCE="${LEADV2_REQUIRE_ACCEPTANCE:-0}"
 # The flip to 1 is ledgered separately as SD-PHASE-ENFORCE-01.
 REQUIRE_PHASES="${LEADV2_REQUIRE_PHASES:-warn}"
 PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.sh}"
+# B1 R2: record-review refuses to run from inside a lane worktree so a build worker
+# cannot mint its own review row. Set to 0 to disable the check (emergency escape).
+REVIEW_RECORDER_GUARD="${LEADV2_REVIEW_RECORDER_GUARD:-1}"
 
 log()        { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
 log_err()    { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
@@ -1302,6 +1305,29 @@ review_lock_file() { printf '%s/.%s.review.lock' "${REVIEW_LEDGER_DIR}" "$(repo_
 
 # Same atomicity fix as atomic_dispatch_check_and_record, for the review ledger's
 # diff_hash race (Finding 3/4 both name diff_hash alongside task_sig).
+# B1 R3: also maintains a row-count sidecar so raw >> appends are detectable.
+_review_sidecar_file() { printf '%s/%s.jsonl.rows' "${REVIEW_LEDGER_DIR}" "$(repo_slug)"; }
+_increment_review_sidecar() {
+  local sidecar rows bootstrap=0
+  sidecar="$(_review_sidecar_file)"
+  if [[ ! -f "$sidecar" ]]; then
+    # Bootstrap: seed to current line count (record_review already appended)
+    rows="$(wc -l < "$(review_ledger_file)" 2>/dev/null | tr -d ' ')"
+    rows="${rows:-0}"
+    bootstrap=1
+  else
+    rows="$(<"$sidecar")"
+    rows="${rows// /}"
+    rows="${rows:-0}"
+  fi
+  # On normal increments, +1 for the row just written.
+  # On bootstrap, the wc -l already counts it.
+  [[ "$bootstrap" == "0" ]] && rows=$((rows + 1))
+  local tmp
+  tmp="$(mktemp "${REVIEW_LEDGER_DIR}/.rows.XXXXXX")" || return 0
+  printf '%d\n' "$rows" > "$tmp"
+  mv -f "$tmp" "$sidecar" 2>/dev/null || true
+}
 atomic_review_check_and_record() {  # <diff_hash> <verdict> <reviewer> <run_id>
   local hash="$1" verdict="$2" reviewer="$3" run_id="$4" lockf
   mkdir -p "${REVIEW_LEDGER_DIR}"
@@ -1312,6 +1338,7 @@ atomic_review_check_and_record() {  # <diff_hash> <verdict> <reviewer> <run_id>
       exit 2
     fi
     record_review "${hash}" "${verdict}" "${reviewer}" "${run_id}"
+    _increment_review_sidecar
     exit 0
   ) 9>"${lockf}"
 }
@@ -1500,6 +1527,11 @@ _acceptance_guard() {
 # waiver) ALWAYS refuses in every mode including 0 — a malformed override is a
 # configuration error, not a phase gap.
 _phase_precondition_guard() {
+  # B2: mode 0 is the documented rollback and the emergency kill switch. It must be
+  # byte-identical to pre-C4 behaviour: no subprocess, no journal event, no refusal for
+  # ANY reason including a malformed phases.yaml or a refused waiver. Round 4 removed
+  # this return and made `=0` able to refuse on rc 4 — that is not a kill switch.
+  [[ "${REQUIRE_PHASES}" == "0" ]] && return 0
   local sig8="$1" cls="$2" writes="${3:-}"
   shift 3 2>/dev/null || shift $# 2>/dev/null || true
   local -a waiver_args=()
@@ -1507,9 +1539,6 @@ _phase_precondition_guard() {
     waiver_args+=("$1"); shift
   done
 
-  # 0 = disabled: phase gaps (rc 3) do not block, but config errors (rc 4)
-  # still refuse — a refused waiver or malformed phases.yaml is a configuration
-  # error, not a phase gap, and must not be silently swallowed.
   local mode="${REQUIRE_PHASES}"
   if [[ "$mode" != "warn" && "$mode" != "1" && "$mode" != "0" ]]; then
     emit decision "phase_precondition_badmode value=${mode}"
@@ -1543,7 +1572,7 @@ _phase_precondition_guard() {
       fi
       ;;
     4)
-      # Config error / refused waiver — always refuse, even in mode 0
+      # Config error / refused waiver — always refuse in modes warn and 1.
       emit decision "phase_precondition_config_error task=${sig8} detail=${assert_out}"
       log_err "phase precondition config error: ${assert_out}"
       return 1
@@ -2280,6 +2309,24 @@ cmd_record_review() {
   esac
   reviewer="$(sanitize_field "${reviewer}")"; run_id="$(sanitize_field "${run_id}")"
   JOURNAL_TASK="review-${diff_hash:0:8}"
+
+  # B1 R2: refuse to record a review from inside a lane worktree.  A build worker
+  # lives in .claude/worktrees/<sig8>; product-close (the only legitimate caller)
+  # runs from the main repo root.  Linked-worktree detection via git-dir comparison
+  # catches the general case; the path heuristic catches edge cases.
+  if [[ "${REVIEW_RECORDER_GUARD}" == "1" ]]; then
+    local _cwd _git_dir _common_dir
+    _cwd="$PWD"
+    _git_dir="$(git -C "$_cwd" rev-parse --git-dir 2>/dev/null || true)"
+    _common_dir="$(git -C "$_cwd" rev-parse --git-common-dir 2>/dev/null || true)"
+    if [[ -n "$_git_dir" && -n "$_common_dir" && "$_git_dir" != "$_common_dir" ]] \
+       || [[ "$_cwd" == */.claude/worktrees/* ]]; then
+      emit decision "review_record_refused reason=lane_worktree cwd=${_cwd}"
+      printf 'review_refused reason=lane_worktree\n'
+      exit 1
+    fi
+  fi
+
   local rrc
   atomic_review_check_and_record "${diff_hash}" "${verdict}" "${reviewer}" "${run_id}"
   rrc=$?

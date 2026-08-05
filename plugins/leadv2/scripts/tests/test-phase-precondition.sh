@@ -337,9 +337,11 @@ else
   fail "G3: spawn sentinel should exist"
 fi
 
-# ── G4: --phase-waiver review=x refused under unset / 1 / 0 ──────────────────
-printf 'test: G4 phase-waiver review refused in all modes\n'
-for mode in unset 1 0; do
+# ── G4: --phase-waiver review=x refused under unset / 1 (NOT 0) ──────────────
+# B2: mode 0 is now a full kill switch — the guard returns before any subprocess,
+# so the waiver is never processed and dispatch proceeds. G4 tests unset and 1 only.
+printf 'test: G4 phase-waiver review refused in modes unset/1 (0 proceeds, see G8)\n'
+for mode in unset 1; do
   e2e_setup
   E2E_STUB_RUNS="${E2E_SANDBOX}/glm-runs-g4-${mode}"
   export LEADV2_STUB_GLM_RUNS="${E2E_STUB_RUNS}"
@@ -486,6 +488,247 @@ else
   fail "G6c: deploy with non-ancestor commit should show deploy in missing= (got: $G6C_OUT)"
 fi
 rm -rf "$G6C_SANDBOX"
+
+# ── G7: B1 review provenance (de-self-attestation) ─────────────────────────
+printf 'test: G7 review provenance — de-self-attestation\n'
+G7_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g7-XXXXXX)"
+G7_REPO="${G7_SANDBOX}/repo"
+mkdir -p "${G7_REPO}"
+( cd "${G7_REPO}" && git init -q -b main \
+  && git config user.email t@e.com && git config user.name t \
+  && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
+# Unset work-tree env so dispatch-code.sh's LEDGER_REPO_ROOT resolves to G7_REPO,
+# not the caller session's worktree (different slug = different ledger file).
+unset LEADV2_LANE_WORK_ROOT
+G7_CACHE="${G7_SANDBOX}/cache"
+G7_SLUG="$(basename "${G7_REPO}" | tr -cd 'A-Za-z0-9._-')"
+G7_LEDGER_DIR="${G7_CACHE}/code-review-ledger"
+G7_JOURNAL="${G7_SANDBOX}/journal.sh"
+G7_JOURNAL_LOG="${G7_SANDBOX}/journal.log"
+cat > "${G7_JOURNAL}" <<'SH'
+#!/usr/bin/env bash
+echo "$@" >> "${G7_JOURNAL_LOG}" 2>/dev/null || true
+SH
+chmod +x "${G7_JOURNAL}"
+export G7_JOURNAL_LOG
+
+_g7_setup_review() {
+  local sig8="$1"
+  mkdir -p "${G7_REPO}/docs/handoff/dispatch-${sig8}/phases.d"
+  printf 'diff content for %s\n' "$sig8" > "${G7_REPO}/docs/handoff/dispatch-${sig8}/review.diff"
+  LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+    LEADV2_JOURNAL_BIN="${G7_JOURNAL}" \
+    bash "$PHASE_RECORD" record "$sig8" review --status done \
+      --artifact "docs/handoff/dispatch-${sig8}/review.diff" --owner test >/dev/null 2>&1
+}
+
+# G7a: correctly-hashed row, reviewer="self-forged", sidecar matches → review in missing
+G7A_SIG8="g7dea01"
+_g7_setup_review "$G7A_SIG8"
+G7A_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7A_SIG8}/review.diff" | awk '{print $1}')"
+mkdir -p "$G7_LEDGER_DIR"
+printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"self-forged","run_id":"r1","repo":"%s","ts":"2026-01-01T00:00:00Z"}\n' \
+  "$G7A_HASH" "$G7_SLUG" > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl"
+printf '1\n' > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows"
+G7A_OUT="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$PHASE_RECORD" assert "$G7A_SIG8" --class Standard 2>/dev/null)"
+if printf '%s' "$G7A_OUT" | grep -q 'missing=.*review'; then
+  ok
+else
+  fail "G7a: self-forged reviewer should show review in missing= (got: $G7A_OUT)"
+fi
+
+# G7b: correctly-hashed PASS row, allowlisted "codex" reviewer, hand-appended (sidecar not incremented)
+G7B_SIG8="g7deb02"
+_g7_setup_review "$G7B_SIG8"
+G7B_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7B_SIG8}/review.diff" | awk '{print $1}')"
+printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"codex","run_id":"r2","repo":"%s","ts":"2026-01-01T00:00:00Z"}\n' \
+  "$G7B_HASH" "$G7_SLUG" > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl"
+printf '0\n' > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows"
+: > "${G7_JOURNAL_LOG}"
+G7B_OUT="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$PHASE_RECORD" assert "$G7B_SIG8" --class Standard 2>/dev/null)"
+if printf '%s' "$G7B_OUT" | grep -q 'missing=.*review'; then
+  ok
+else
+  fail "G7b: hand-appended row (sidecar mismatch) should show review in missing= (got: $G7B_OUT)"
+fi
+if grep -q 'review_ledger_tamper' "${G7_JOURNAL_LOG}" 2>/dev/null; then
+  ok
+else
+  fail "G7b: review_ledger_tamper should be journaled"
+fi
+
+# G7c: row written by real record-review path → review satisfied + sidecar matches
+G7C_SIG8="g7dec03"
+_g7_setup_review "$G7C_SIG8"
+G7C_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7C_SIG8}/review.diff" | awk '{print $1}')"
+rm -f "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl" "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows"
+rc_g7c=0
+( cd "${G7_REPO}" && env -u LEADV2_LANE_WORK_ROOT \
+  LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$DISPATCH_BIN" record-review \
+  --diff-hash "$G7C_HASH" --verdict PASS --reviewer "codex:standard" --run-id "dispatch-test" ) >/dev/null 2>&1 || rc_g7c=$?
+if [[ $rc_g7c -eq 0 ]]; then ok; else fail "G7c: record-review should succeed from main root (rc=$rc_g7c)"; fi
+G7C_OUT="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$PHASE_RECORD" assert "$G7C_SIG8" --class Standard 2>/dev/null)"
+if ! printf '%s' "$G7C_OUT" | grep -q 'missing=.*review'; then
+  ok
+else
+  fail "G7c: legitimate record-review should satisfy review phase (got: $G7C_OUT)"
+fi
+G7C_ROWS="$(cat "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows" 2>/dev/null | tr -d ' \n')"
+G7C_LINES="$(wc -l < "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl" 2>/dev/null | tr -d ' ')"
+if [[ "$G7C_ROWS" == "$G7C_LINES" && -n "$G7C_ROWS" ]]; then
+  ok
+else
+  fail "G7c: sidecar rows ($G7C_ROWS) should equal ledger lines ($G7C_LINES)"
+fi
+
+# G7d: record-review from inside a linked worktree → refused, ledger unchanged
+G7D_SIG8="g7ded04"
+_g7_setup_review "$G7D_SIG8"
+G7D_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7D_SIG8}/review.diff" | awk '{print $1}')"
+mkdir -p "${G7_REPO}/.claude/worktrees"
+( cd "${G7_REPO}" && git worktree add -q ".claude/worktrees/${G7D_SIG8}" main 2>/dev/null )
+G7D_LINES_BEFORE="$(wc -l < "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl" 2>/dev/null | tr -d ' ')"
+rc_g7d=0
+( cd "${G7_REPO}/.claude/worktrees/${G7D_SIG8}" \
+  && env -u LEADV2_LANE_WORK_ROOT \
+  LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$DISPATCH_BIN" record-review \
+  --diff-hash "$G7D_HASH" --verdict PASS --reviewer "codex:standard" --run-id "dispatch-test" ) >/dev/null 2>&1 || rc_g7d=$?
+if [[ $rc_g7d -ne 0 ]]; then ok; else fail "G7d: record-review from worktree should fail (rc=$rc_g7d)"; fi
+G7D_LINES_AFTER="$(wc -l < "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl" 2>/dev/null | tr -d ' ')"
+if [[ "$G7D_LINES_BEFORE" == "$G7D_LINES_AFTER" ]]; then
+  ok
+else
+  fail "G7d: ledger line count should be unchanged (before=$G7D_LINES_BEFORE after=$G7D_LINES_AFTER)"
+fi
+( cd "${G7_REPO}" && git worktree remove -q ".claude/worktrees/${G7D_SIG8}" 2>/dev/null; true )
+
+# G7e: sidecar absent (legacy), correctly-hashed PASS row with "reviewer":"glm" → review satisfied
+G7E_SIG8="g7dee05"
+_g7_setup_review "$G7E_SIG8"
+G7E_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7E_SIG8}/review.diff" | awk '{print $1}')"
+printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"glm","run_id":"r5","repo":"%s","ts":"2026-01-01T00:00:00Z"}\n' \
+  "$G7E_HASH" "$G7_SLUG" > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl"
+rm -f "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows"
+G7E_OUT="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$PHASE_RECORD" assert "$G7E_SIG8" --class Standard 2>/dev/null)"
+if ! printf '%s' "$G7E_OUT" | grep -q 'missing=.*review'; then
+  ok
+else
+  fail "G7e: legacy ledger (no sidecar) with valid glm row should pass (got: $G7E_OUT)"
+fi
+
+# G7f: malformed JSON line should not hide a good row later in the file
+G7F_SIG8="g7def06"
+_g7_setup_review "$G7F_SIG8"
+G7F_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7F_SIG8}/review.diff" | awk '{print $1}')"
+printf 'this is not json\n' > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl"
+printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"codex","run_id":"r6","repo":"%s","ts":"2026-01-01T00:00:00Z"}\n' \
+  "$G7F_HASH" "$G7_SLUG" >> "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl"
+printf '2\n' > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows"
+G7F_OUT="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$PHASE_RECORD" assert "$G7F_SIG8" --class Standard 2>/dev/null)"
+if ! printf '%s' "$G7F_OUT" | grep -q 'missing=.*review'; then
+  ok
+else
+  fail "G7f: malformed line should not hide valid row (got: $G7F_OUT)"
+fi
+
+rm -rf "$G7_SANDBOX"
+
+# ── G8: B2 REQUIRE_PHASES=0 is a full disable (kill switch) ─────────────────
+printf 'test: G8 REQUIRE_PHASES=0 proceeds despite broken phases.yaml + refused waiver\n'
+e2e_setup
+E2E_STUB_RUNS_G8="${E2E_SANDBOX}/glm-runs-g8"
+export LEADV2_STUB_GLM_RUNS="${E2E_STUB_RUNS_G8}"
+mkdir -p "${E2E_STUB_RUNS_G8}"
+export LEADV2_REQUIRE_PHASES=0
+# Create a phases.yaml with a removal key (guaranteed rc-4 producer)
+mkdir -p "${E2E_REPO}/.claude/leadv2-overrides"
+cat > "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml" <<'YEOF'
+version: 1
+class_overrides:
+  Standard:
+    remove: [review]
+YEOF
+MISSION_G8="PPC-G8: fix the integration test harness timeout"
+rc_g8=0
+bash "$DISPATCH_BIN" --kind tooling --phase-waiver "review=whatever" "$MISSION_G8" >/dev/null 2>&1 || rc_g8=$?
+# With B2: mode 0 returns immediately, never processes the config error or waiver
+if ! grep -q 'phase_precondition_' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
+  ok
+else
+  fail "G8: journal should contain NO phase_precondition_* event with mode=0"
+fi
+if [[ -n "$(ls -A "${E2E_STUB_RUNS_G8}" 2>/dev/null)" ]]; then
+  ok
+else
+  fail "G8: spawn sentinel should exist (worker was spawned despite broken config)"
+fi
+# Cleanup
+rm -f "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
+
+# ── G9: deploy ancestor positive-pass test (§4 non-blocking, DO) ─────────────
+printf 'test: G9 deploy ancestor positive-pass\n'
+G9_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g9-XXXXXX)"
+G9_REPO="${G9_SANDBOX}/repo"
+mkdir -p "${G9_REPO}"
+( cd "${G9_REPO}" && git init -q -b main \
+  && git config user.email t@e.com && git config user.name t \
+  && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
+G9_SIG8="g9bee01"
+mkdir -p "${G9_REPO}/docs/handoff/dispatch-${G9_SIG8}/phases.d"
+printf 'deploy artifact\n' > "${G9_REPO}/deploy-out.txt"
+LEADV2_PROJECT_ROOT="${G9_REPO}" bash "$PHASE_RECORD" record "$G9_SIG8" deploy --status done \
+  --artifact "deploy-out.txt" --owner test >/dev/null 2>&1
+# The recorded commit should be HEAD (ancestor of origin/main = HEAD → ancestor of itself)
+G9_HEAD="$(cd "${G9_REPO}" && git rev-parse HEAD)"
+printf 'commit: %s\n' "$G9_HEAD" >> "${G9_REPO}/docs/handoff/dispatch-${G9_SIG8}/phases.d/deploy.yaml"
+( cd "${G9_REPO}" && git update-ref refs/remotes/origin/main HEAD )
+G9_OUT="$(cd "${G9_REPO}" && LEADV2_PROJECT_ROOT="${G9_REPO}" bash "$PHASE_RECORD" assert "$G9_SIG8" --class Standard --writes "app.py" 2>/dev/null)"
+if ! printf '%s' "$G9_OUT" | grep -q 'missing=.*deploy'; then
+  ok
+else
+  fail "G9: deploy with ancestor commit should pass (got: $G9_OUT)"
+fi
+rm -rf "$G9_SANDBOX"
+
+# ── G10: §3 honesty — PROOF column in show output ───────────────────────────
+printf 'test: G10 PROOF column — self-attested vs verified\n'
+G10_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g10-XXXXXX)"
+G10_REPO="${G10_SANDBOX}/repo"
+mkdir -p "${G10_REPO}"
+( cd "${G10_REPO}" && git init -q -b main \
+  && git config user.email t@e.com && git config user.name t \
+  && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
+G10_SIG8="g10be01"
+mkdir -p "${G10_REPO}/docs/handoff/dispatch-${G10_SIG8}/phases.d"
+printf 'review diff\n' > "${G10_REPO}/review.diff"
+printf 'test artifact\n' > "${G10_REPO}/test-out.txt"
+LEADV2_PROJECT_ROOT="${G10_REPO}" bash "$PHASE_RECORD" record "$G10_SIG8" review --status done \
+  --artifact "review.diff" --owner test >/dev/null 2>&1
+LEADV2_PROJECT_ROOT="${G10_REPO}" bash "$PHASE_RECORD" record "$G10_SIG8" test --status done \
+  --artifact "test-out.txt" --owner test >/dev/null 2>&1
+G10_SHOW="$(LEADV2_PROJECT_ROOT="${G10_REPO}" bash "$PHASE_RECORD" show "$G10_SIG8" 2>/dev/null)"
+# Header should contain PROOF column
+if printf '%s' "$G10_SHOW" | grep -q 'PROOF'; then ok; else fail "G10: show should have PROOF column"; fi
+# test row should read self-attested
+if printf '%s' "$G10_SHOW" | grep -E '^test\b' | grep -q 'self-attested'; then
+  ok
+else
+  fail "G10: test phase should show self-attested (got: $G10_SHOW)"
+fi
+# review row should read verified
+if printf '%s' "$G10_SHOW" | grep -E '^review\b' | grep -q 'verified'; then
+  ok
+else
+  fail "G10: review phase should show verified (got: $G10_SHOW)"
+fi
+rm -rf "$G10_SANDBOX"
 
 # Cleanup e2e sandbox
 rm -rf "${E2E_SANDBOX}"

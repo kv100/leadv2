@@ -17,6 +17,7 @@
 #   started_at: <ISO-8601>
 #   ended_at: <ISO-8601 or "">
 #   reason: <text or "">
+#   proof: verified|attested   (§3: attested for test/live_verify/e2e; absent on older records)
 #   commit: <40-hex sha>  (deploy only; additive, may be absent on older records)
 #
 # Proof level per phase (what _verify_artifact actually checks):
@@ -82,6 +83,11 @@ _emit() {
 }
 
 _now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+# B1 R1: the review-arm vocabulary. Source of truth:
+# scripts/lib/leadv2-glm-policy-resolve.py:66 (DEFAULT_REVIEW_ARM_ORDER).
+# A repo with a novel arm overrides via LEADV2_REVIEW_ARMS.
+REVIEW_ARMS="${LEADV2_REVIEW_ARMS:-codex,glm,kimi,opus,sonnet}"
 
 _sha256() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
 
@@ -399,21 +405,66 @@ _verify_artifact() {
     review)
       # F1: require a code-review-ledger row whose diff_hash matches this lane's
       # review.diff and whose verdict is PASS or PASS_WITH_NITS.
+      # B1 R1: reviewer must be one of the five review arms.
+      # B1 R3: row-count sidecar must agree (detects raw >> appends).
       local lane_diff="${PHASES_DIR_BASE}/dispatch-${sig8}/review.diff"
       [[ -s "$lane_diff" ]] || return 1
       local h
       h="$(_sha256 "$lane_diff")"
-      local slug ledger_file
+      local slug ledger_file sidecar
       slug="$(_repo_slug)"
       ledger_file="${CACHE_BASE}/code-review-ledger/${slug}.jsonl"
       [[ -f "$ledger_file" ]] || return 1
-      # One JSON object per line (record_review's printf is the only writer).
-      # Filter by exact diff_hash, then check verdict on the same line.
-      if grep -F "\"diff_hash\":\"${h}\"" "$ledger_file" 2>/dev/null \
-         | grep -qE '"verdict":"(PASS|PASS_WITH_NITS)"'; then
-        return 0
+
+      # B1 R3: sidecar row-count check
+      sidecar="${CACHE_BASE}/code-review-ledger/${slug}.jsonl.rows"
+      if [[ -f "$sidecar" ]]; then
+        local _recorded_rows _ledger_rows
+        _recorded_rows="$(cat "$sidecar" 2>/dev/null | tr -d ' \n')"
+        _ledger_rows="$(wc -l < "$ledger_file" 2>/dev/null | tr -d ' ')"
+        if [[ "$_ledger_rows" != "$_recorded_rows" ]]; then
+          # R-4 mitigation: ledger_rows == recorded+1 is an in-flight append.
+          if [[ "$_ledger_rows" -eq $((_recorded_rows + 1)) ]] 2>/dev/null; then
+            sleep 0.2
+            _ledger_rows="$(wc -l < "$ledger_file" 2>/dev/null | tr -d ' ')"
+          fi
+          if [[ "$_ledger_rows" != "$_recorded_rows" ]]; then
+            _emit "review_ledger_tamper" "repo=${slug} ledger_rows=${_ledger_rows} recorded_rows=${_recorded_rows}"
+            return 1
+          fi
+        fi
+      else
+        # Legacy ledger: no sidecar → accept, journal the unchained status.
+        _emit "review_ledger_unchained" "repo=${slug}"
       fi
-      return 1
+
+      # B1 R1+R2: single python3 pass — checks reviewer allowlist, verdict,
+      # and diff_hash together.  Malformed JSON lines are skipped, not fatal.
+      LEADV2_REVIEW_ARMS="${REVIEW_ARMS}" python3 - "$ledger_file" "$h" <<'PYEOF' || return 1
+import json, os, sys
+ledger_file, target_hash = sys.argv[1], sys.argv[2]
+arms = set(os.environ.get("LEADV2_REVIEW_ARMS", "codex,glm,kimi,opus,sonnet").split(","))
+with open(ledger_file) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue  # skip malformed/truncated lines
+        if obj.get("diff_hash") != target_hash:
+            continue
+        if obj.get("verdict") not in ("PASS", "PASS_WITH_NITS"):
+            continue
+        reviewer = obj.get("reviewer", "")
+        arm = reviewer.split(":")[0]  # codex:standard → codex
+        if arm not in arms:
+            continue
+        sys.exit(0)  # all checks passed
+sys.exit(1)  # no matching row
+PYEOF
+      return 0
       ;;
     test|live_verify|e2e)
       # F2: integrity-only — declared unprovable beyond sha256 match.
@@ -530,6 +581,11 @@ cmd_record() {
     printf 'started_at: %s\n' "$started_at"
     printf 'ended_at: %s\n' "$ended_at"
     printf 'reason: %s\n' "$reason"
+    # §3 honesty: disclose proof level derived from phase id.
+    # test/live_verify/e2e are self-attested (sha256 match only); all else is verified.
+    local _proof="verified"
+    case "$phase" in test|live_verify|e2e) _proof="attested" ;; esac
+    printf 'proof: %s\n' "$_proof"
     [[ -n "$commit" ]] && printf 'commit: %s\n' "$commit"
   } > "$tmp_file"
 
@@ -701,17 +757,22 @@ cmd_show() {
     printf 'No phase records for %s\n' "$sig8"
     return 0
   fi
-  printf '%-14s %-10s %-24s %-12s\n' "PHASE" "STATUS" "OWNER" "STARTED"
-  printf '%s\n' "----------------------------------------------"
+  printf '%-14s %-10s %-14s %-24s %-12s\n' "PHASE" "STATUS" "PROOF" "OWNER" "STARTED"
+  printf '%s\n' "------------------------------------------------------------"
   local f
   for f in "$phases_d"/*.yaml; do
     [[ -f "$f" ]] || continue
-    local p s o st
+    local p s o st pr
     p="$(grep '^phase:' "$f" | awk '{print $2}')"
     s="$(grep '^status:' "$f" | awk '{print $2}')"
     o="$(grep '^owner:' "$f" | awk '{print $2}')"
     st="$(grep '^started_at:' "$f" | awk '{print $2}')"
-    printf '%-14s %-10s %-24s %-12s\n' "$p" "$s" "$o" "$st"
+    pr="$(grep '^proof:' "$f" | awk '{print $2}')"
+    case "$pr" in
+      attested) pr="self-attested" ;;
+      *) pr="verified" ;;
+    esac
+    printf '%-14s %-10s %-14s %-24s %-12s\n' "$p" "$s" "$pr" "$o" "$st"
   done
 }
 
