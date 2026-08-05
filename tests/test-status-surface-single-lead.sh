@@ -237,18 +237,20 @@ case "$_title" in
 esac
 
 # (d) Finding 5: "closing" for a NON-sonnet arm — glm-shaped argv (run-id
-# contains sig8) + terminal row for that sig8 → expect "closing".
+# contains sig8) + terminal row for that sig8. Founder rule: no terminal
+# lanes in the title or the body; a "closing" detail row is a terminal lane
+# in the body.  Expect idle + no trace of the lane.
 : > "$RESERVATIONS"
 : > "$TERMINALS"
 printf '{"task_sig":"beef00001234567890ab","arm":"glm","state":"confirmed","created_epoch":%s,"task_id":"CLO-B"}\n' "$((NOW - 60))" > "$RESERVATIONS"
 printf '{"task_sig":"beef00001234567890ab","terminal":"landed","cause":"empty_diff","created_epoch":%s}\n' "$((NOW - 30))" > "$TERMINALS"
 PS_STUB="100 bash /scripts/glm-coder.sh __run_child /home/.claude/cache/glm-runs/260803-160000-beef0000-abcd"
 _out="$(widget)"
-if printf '%s\n' "$_out" | grep -q 'CLO-B · terminal'; then
-  ok "(d) glm worker + terminal → closing state"
+_title="$(printf '%s\n' "$_out" | sed -n '1p')"
+if [ "$_title" = "⚪ idle" ] && ! printf '%s\n' "$_out" | grep -q 'CLO-B'; then
+  ok "(d) glm worker + terminal → idle (no terminal lanes in body)"
 else
-  _title="$(printf '%s\n' "$_out" | sed -n '1p')"
-  bad "(d) expected closing state, got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+  bad "(d) expected idle + no trace of the lane, got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
 fi
 
 # (e) empty everything → idle
@@ -278,7 +280,7 @@ PS_STUB="300 bash /scripts/glm-coder.sh __run_child /home/.claude/cache/glm-runs
 _out="$(widget)"
 _title="$(printf '%s\n' "$_out" | sed -n '1p')"
 case "$_title" in
-  "🛠 FEED-SCAN-USABLE-CAN glm "*)
+  "🛠 FEED-SCAN-USABLE-CA… glm "*)
     # Must appear exactly ONCE in the dropdown (not doubled by reservation-only)
     _detail_count="$(printf '%s\n' "$_out" | grep -cE '^  FEED-SCAN-USABLE-CAN.* · glm ' || true)"
     if [ "$_detail_count" -eq 1 ]; then
@@ -288,7 +290,7 @@ case "$_title" in
     fi
     ;;
   *)
-    bad "(f) expected '🛠 FEED-SCAN-USABLE-CAN glm ...', got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+    bad "(f) expected '🛠 FEED-SCAN-USABLE-CA… glm ...', got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
     ;;
 esac
 
@@ -307,7 +309,7 @@ PS_STUB="$$ codex exec --sandbox workspace-write -C /tmp"
 _out="$(widget)"
 _title="$(printf '%s\n' "$_out" | sed -n '1p')"
 case "$_title" in
-  "🛠 CODEX-FOUNDER-TASK-0 codex "*)
+  "🛠 CODEX-FOUNDER-TASK-… codex "*)
     _detail_count="$(printf '%s\n' "$_out" | grep -cE '^  CODEX-FOUNDER-TASK-0.* · codex ' || true)"
     if [ "$_detail_count" -eq 1 ]; then
       ok "(g) founder-named codex pid-file → ACTIVE once with human name"
@@ -316,7 +318,7 @@ case "$_title" in
     fi
     ;;
   *)
-    bad "(g) expected '🛠 CODEX-FOUNDER-TASK-0 codex ...', got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+    bad "(g) expected '🛠 CODEX-FOUNDER-TASK-… codex ...', got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
     ;;
 esac
 rm -rf "$HANDOFF/CODEX-FOUNDER-TASK-02"
@@ -343,10 +345,12 @@ printf '{"task_sig":"aaaaaaaa11112222","terminal":"no_work","task_id":"M1A-FACT-
   "$((NOW - 60))" > "$TERMINALS"
 _out="$(widget)"
 _title="$(printf '%s\n' "$_out" | sed -n '1p')"
-if [ "$_title" = "⚪ idle" ] && printf '%s\n' "$_out" | grep -q 'M1A-FACT-QUALITY-01 · terminal'; then
-  ok "(T-term-2) fresh terminal (60s) shows closing, excluded from active count"
+# Founder rule: no terminal lanes in the title or body.  A fresh terminal
+# row drops the lane entirely, same as a stale one.
+if [ "$_title" = "⚪ idle" ] && ! printf '%s\n' "$_out" | grep -q 'M1A-FACT-QUALITY-01'; then
+  ok "(T-term-2) fresh terminal (60s) drops the lane entirely"
 else
-  bad "(T-term-2) expected idle title + closing detail line, got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+  bad "(T-term-2) expected idle + no trace of the lane, got '$_title' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
 fi
 
 echo ""
@@ -413,10 +417,12 @@ printf '{"task_sig":"cc998877ccddee","arm":"glm","state":"confirmed","created_ep
 PS_STUB="1 sleep 1"
 _out="$(widget)"
 unset SL_STATE_ROOT
-if ! printf '%s\n' "$_out" | grep -q 'REPO-C-TASK-01' && printf '%s\n' "$_out" | grep -q '⚠ repo-c terminals unreadable'; then
-  ok "(T-unverifiable) repo with unreadable terminals contributes no rows + warns"
+# Founder rule: no 'terminals unreadable' rows at all. The suppression
+# still holds (no REPO-C lane); the warning is gone.
+if ! printf '%s\n' "$_out" | grep -q 'REPO-C-TASK-01'; then
+  ok "(T-unverifiable) repo with unreadable terminals contributes no rows"
 else
-  bad "(T-unverifiable) expected no REPO-C lane + warning (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+  bad "(T-unverifiable) expected no REPO-C lane (out=$(printf '%s' "$_out" | tr '\n' '|'))"
 fi
 rm -f "$LEDGERS/repo-c.jsonl"
 

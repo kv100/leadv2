@@ -41,6 +41,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_PATH_SH="${SCRIPT_DIR}/leadv2-state-path.sh"
+export LEADV2_LANE_CLASS_PY="${SCRIPT_DIR}/leadv2-lane-class.py"
 
 # ── Resolve env ─────────────────────────────────────────────────────────────
 # STATE_DIR default MUST go through leadv2-state-path.sh --no-link: rendering
@@ -538,6 +539,17 @@ LEGACY_MODE=$(( 1 - SINGLE_LEAD ))
 _ss_lanes_py() {
   python3 2>/dev/null <<'PYEOF'
 import os, sys, subprocess
+
+# ---- shared lane classifier (PANEL-TWO-IMPLEMENTATIONS-MERGE-01) ----
+# One source of truth for what a lane IS.  Both heredocs exec() this file
+# so classify() / join_fields() / clip_name() are available without a second
+# subprocess or a pip install.  Path is absolute and bash-resolved.
+try:
+    exec(open(os.environ["LEADV2_LANE_CLASS_PY"]).read(), globals())
+except Exception:
+    # The lanes path already has a loud-warn route; raise so the caller
+    # renders the warning row instead of a silent zero.
+    raise
 
 STATE_DIR   = os.environ.get("LEADV2_SS_STATE_DIR", "")
 LEDGER_FILE = os.environ.get("LEADV2_SS_LEDGER_FILE", "")
@@ -1436,83 +1448,34 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
     _motion_candidates = [m for m in (max_mtime, _close_mtime) if m is not None]
     motion_mtime = max(_motion_candidates) if _motion_candidates else None
 
-    # liveness rule (STANDING) — cause never empty, never "?"
-    if _pid_alive_session:
-        cause, cls = "live", "live"
-    elif _pid_alive_handle:
-        cause, cls = "live(pid %s)" % handle, "live"
-    elif _argv_alive:
-        cause, cls = "live(argv)", "live"
-    elif _close_alive:
-        cause, cls = "live(close pid %s)" % _close_pid, "live"
-    elif max_mtime is not None and (NOW - max_mtime) < 120:
-        cause, cls = "live(fresh)", "live"
-    elif _close_fresh:
-        cause = "gate(%s ago)" % age_label(NOW - _close_mtime)
-        cls = "dead"
-    elif ec not in (None, ""):
-        try:
-            eci = int(ec)
-            if eci == 0:
-                cause, cls = "done(exit=0)", "done"
-            else:
-                cause, cls = "dead(exit=%d)" % eci, "dead"
-        except Exception:
-            cause, cls = "dead(no-signal)", "dead"
-    elif pid not in (None, "", 0):
-        cause, cls = "dead(no-process)", "dead"
-    elif motion_mtime is not None:
-        cause = "stale(%s silent)" % age_label(NOW - motion_mtime)
-        cls = "dead"
-    else:
-        cause, cls = "dead(no-signal)", "dead"
-
-    # SWIFTBAR-LIVE-01 round 4 (§Fix 2): consume the run dir's .outcome so a
-    # FINISHED lane is not indistinguishable from a FAILED one. .outcome is
-    # written by leadv2-lane-outcome.sh as one of {completed, died-with-work,
-    # died-clean}; lane_outcome() whitelists those and returns "" for
-    # absent/junk. Apply ONLY to already-terminal rows (cls in dead|done): a
-    # live process always wins, even if a stale .outcome sits in a reused run
-    # dir (R2.2). cls stays three-valued (live|done|dead); a completed lane
-    # becomes done(completed) (green, excluded from the red count) and a
-    # died-clean lane becomes dead(died-clean) (red) -- distinguished by cause
-    # text, not a new class. A terminal row with NO outcome keeps its
-    # process-derived class and gains a "?" suffix on the cause so "unknown"
-    # is visible, never silently mislabelled as died-clean.
+    # liveness rule — delegated to the shared classifier (PANEL-TWO-IMPLEMENTATIONS-MERGE-01).
+    # The branch chain, outcome overlay, no_work override and terminal
+    # reinterpretation all live in classify(); this renderer projects its
+    # pre-computed signals into LaneFacts and reads cls/cause/terminal back.
     outcome = lane_outcome(handle, arm)
-    if cls in ("dead", "done"):
-        if outcome == "completed":
-            cause, cls = "done(completed)", "done"
-        elif outcome == "died-with-work":
-            cause, cls = "dead(work-left)", "dead"
-        elif outcome == "died-clean":
-            cause, cls = "dead(died-clean)", "dead"
-        elif "?" not in cause:
-            cause = cause + "?"
-
-    # N1-EMPTY-LANE-IS-NOT-A-PASS: a lane whose terminal is no_work (it RAN but its
-    # own diff was empty) is RED, never success. Override whatever process-derived
-    # cause/cls landed above with an unmistakable no-work(<cause>) on cls=dead. This
-    # MUST sit before the stale->done reinterpretation below: a no_work row with no
-    # pid/exit lands on stale(...) and that branch would otherwise launder it into
-    # green done(terminal) -- the exact lying-green disease this task exists to kill
-    # (R1). The cause prefix "no-work(" is also what keeps it out of that branch
-    # (it matches `cause.startswith("stale(")` -> False).
-    if ledger_state == "no_work":
-        _nw = (tcause or "empty-diff").replace("_", "-")
-        cause, cls = "no-work(%s)" % _nw, "dead"
-
-    terminal = is_terminal(status, ledger_state)
-    # terminal last-resort-stale reinterpretation: a ledger-only terminal row
-    # (no pid, no exit code, only an old timestamp) lands on the stale("...")
-    # branch purely for lack of any signal. Reinterpret that one branch as
-    # done — but ONLY there: dead(exit=N)/dead(no-process)/dead(no-signal)
-    # are real failure evidence and must stay dead. Sits after `terminal` is
-    # computed and before the age-out so old-terminal still drops.
-    if terminal and cls == "dead" and cause.startswith("stale(") \
-            and ledger_state != "no_work":
-        cause = "done(%s)" % (ledger_state or status or "terminal")
-        cls = "done"
+    _lc = classify({
+        "kind": kind,
+        "pid": pid,
+        "handle": handle,
+        "pid_alive_session": _pid_alive_session,
+        "pid_alive_handle": _pid_alive_handle,
+        "argv_alive": _argv_alive,
+        "close_alive": _close_alive,
+        "close_pid": _close_pid,
+        "close_fresh": _close_fresh,
+        "close_mtime": _close_mtime,
+        "max_mtime": max_mtime,
+        "motion_mtime": motion_mtime,
+        "exit_code": ec,
+        "ledger_state": ledger_state,
+        "status": status,
+        "outcome": outcome,
+        "tcause": tcause,
+        "terminal_token": "",
+        "now": NOW,
+    })
+    cause, cls = _lc["cause"], _lc["cls"]
+    terminal = _lc["terminal"]
     # age-out: terminal + silent > 7200s -> drop. Non-terminal never dropped
     # (a 9h silent lane stays visible as stale). Uses motion_mtime (§3.6): a
     # lane whose close gate is still writing must not age out on the same
@@ -1683,6 +1646,9 @@ dead_n = sum(1 for r in rows
 # number for #DEAD and #DONE_RECENT. Restrict to cls == "done" to match what
 # the header text ("N done в последний час") and the variable name claim.
 done_recent = sum(1 for r in rows if r["cls"] == "done")
+# D1 (89217a1): queued_n mirrors dead_n/done_recent -- computed AFTER the TTL
+# drop so the count matches what the table actually still shows.
+queued_n = sum(1 for r in rows if r["cls"] == "queued")
 
 # R3 (fix round 3): collapse terminal/done rows so a wall of 90 finished rows is
 # structurally impossible. Keep the NEWEST 10 done rows, fold the rest into ONE
@@ -1711,7 +1677,8 @@ if len(_done_idx) > 10:
     rows = _new
 
 out = ["#LIVE %d" % live_n, "#DEAD %d" % dead_n,
-       "#DONE_RECENT %d" % done_recent, "#AGED_OUT %d" % _aged]
+       "#DONE_RECENT %d" % done_recent, "#AGED_OUT %d" % _aged,
+       "#QUEUED %d" % queued_n]
 # R5-01 round 2: when active.yaml could not be read, flag it for the bash
 # layer so the header stops rendering a calm "0 live" and the menu-bar title
 # carries ⚠. Machine-readable: '#WARN <human message>'.
@@ -1741,6 +1708,7 @@ LIVE_N=0
 DEAD_N=0
 DONE_RECENT_N=0
 AGED_OUT_N=0
+QUEUED_N=0
 WARN_MSG=""
 LANE_ROWS=""
 LANE_COUNT=0
@@ -1789,10 +1757,12 @@ elif [ "$MULTI_PROJECT" -eq 1 ]; then
     _mp_done="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#DONE_RECENT //p' | head -1)"
     _mp_aged="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#AGED_OUT //p' | head -1)"
     _mp_warn="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#WARN //p' | head -1)"
+    _mp_queued="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#QUEUED //p' | head -1)"
     case "$_mp_live" in ''|*[!0-9]*) _mp_live=0 ;; esac
     case "$_mp_dead" in ''|*[!0-9]*) _mp_dead=0 ;; esac
     case "$_mp_done" in ''|*[!0-9]*) _mp_done=0 ;; esac
     case "$_mp_aged" in ''|*[!0-9]*) _mp_aged=0 ;; esac
+    case "$_mp_queued" in ''|*[!0-9]*) _mp_queued=0 ;; esac
 
     if [ -n "$_mp_warn" ]; then
       # STATUS-SURFACE R10 (SWIFTBAR-LIVE-01): a per-project WARN degrades
@@ -1810,10 +1780,11 @@ elif [ "$MULTI_PROJECT" -eq 1 ]; then
     DEAD_N=$(( DEAD_N + _mp_dead ))
     DONE_RECENT_N=$(( DONE_RECENT_N + _mp_done ))
     AGED_OUT_N=$(( AGED_OUT_N + _mp_aged ))
+    QUEUED_N=$(( QUEUED_N + _mp_queued ))
     _mp_idx=$(( _mp_idx + 1 ))
   done
   unset _mp_idx _mp_slug _mp_sd _mp_root _mp_ledger _mp_tasks _mp_handoff _mp_lanes \
-        _mp_live _mp_dead _mp_done _mp_aged _mp_warn _mp_rows
+        _mp_live _mp_dead _mp_done _mp_aged _mp_queued _mp_warn _mp_rows
   LANE_ROWS="$(printf '%s\n' "$LANE_ROWS" | grep -v '^ *$' || true)"
   LANE_COUNT=0
   if [ -n "$LANE_ROWS" ]; then
@@ -1829,10 +1800,12 @@ else
     DONE_RECENT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#DONE_RECENT //p' | head -1)"
     AGED_OUT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#AGED_OUT //p' | head -1)"
     WARN_MSG="$(printf '%s\n' "$LANES" | sed -n 's/^#WARN //p' | head -1)"
+    QUEUED_N="$(printf '%s\n' "$LANES" | sed -n 's/^#QUEUED //p' | head -1)"
     case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0 ;; esac
     case "$DEAD_N" in ''|*[!0-9]*) DEAD_N=0 ;; esac
     case "$DONE_RECENT_N" in ''|*[!0-9]*) DONE_RECENT_N=0 ;; esac
     case "$AGED_OUT_N" in ''|*[!0-9]*) AGED_OUT_N=0 ;; esac
+    case "$QUEUED_N" in ''|*[!0-9]*) QUEUED_N=0 ;; esac
   fi
   # drop every control line (#…) so only TSV rows remain
   LANE_ROWS="$(printf '%s\n' "$LANES" | grep -v '^#' || true)"
@@ -1904,20 +1877,23 @@ emit_lanes_table() {
   # above from the same per-lane state LIVE_N comes from -- it was just never
   # printed. Printing it here means the badge's sed-parse reads this exact
   # number instead of re-deriving one.
-  if [ "$MULTI_PROJECT" -eq 1 ]; then
-    if [ "$AGED_OUT_N" -gt 0 ]; then
-      printf 'lanes (%d live, %d dead, %d done в последний час, %d скрыто по возрасту · %d projects)\n' \
-        "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$AGED_OUT_N" "${#PROJ_SLUGS[@]}"
-    else
-      printf 'lanes (%d live, %d dead, %d done в последний час · %d projects)\n' \
-        "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "${#PROJ_SLUGS[@]}"
-    fi
-  elif [ "$AGED_OUT_N" -gt 0 ]; then
-    printf 'lanes (%d live, %d dead, %d done в последний час, %d скрыто по возрасту)\n' \
-      "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$AGED_OUT_N"
-  else
-    printf 'lanes (%d live, %d dead, %d done в последний час)\n' "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N"
+  # Build the optional suffixes (aged-out + queued) so the header is
+  # byte-identical to the pre-queued form when QUEUED_N is 0.
+  _hdr_suffix=""
+  if [ "$AGED_OUT_N" -gt 0 ]; then
+    _hdr_suffix=", ${AGED_OUT_N} скрыто по возрасту"
   fi
+  if [ "$QUEUED_N" -gt 0 ]; then
+    _hdr_suffix="${_hdr_suffix}, ${QUEUED_N} queued"
+  fi
+  if [ "$MULTI_PROJECT" -eq 1 ]; then
+    printf 'lanes (%d live, %d dead, %d done в последний час%s · %d projects)\n' \
+      "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$_hdr_suffix" "${#PROJ_SLUGS[@]}"
+  else
+    printf 'lanes (%d live, %d dead, %d done в последний час%s)\n' \
+      "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$_hdr_suffix"
+  fi
+  unset _hdr_suffix
   if [ "$LANE_COUNT" -eq 0 ]; then
     printf '  (none)\n'
   elif [ "$MULTI_PROJECT" -eq 1 ]; then
@@ -2665,6 +2641,12 @@ def fail(reason):
     print("mode=single-lead active ⚠ ledger unreadable: %s" % reason.replace("|", ""))
     sys.exit(0)
 
+# ---- shared lane classifier (PANEL-TWO-IMPLEMENTATIONS-MERGE-01) ----
+try:
+    exec(open(os.environ["LEADV2_LANE_CLASS_PY"]).read(), globals())
+except Exception as e:
+    fail("lane classifier unloadable: %s" % e)
+
 def epoch(row):
     value = row.get("created_epoch", row.get("ts", 0))
     try:
@@ -2895,7 +2877,7 @@ try:
     term_by_sig = {}
     term_by_name = {}
     unverifiable_repos = set()
-    warnings = []
+    _debug = os.environ.get("LEADV2_STATUS_DEBUG", "") == "1"
 
     def _read_terminal_source(term_path, by_sig, by_name):
         for n, line in enumerate(tail_lines(term_path, 2000), 1):
@@ -2921,7 +2903,8 @@ try:
         if not exists:
             if not is_current:
                 unverifiable_repos.add(repo)
-                warnings.append("%s terminals unreadable" % repo)
+                if _debug:
+                    sys.stderr.write("%s terminals unreadable (no file)\n" % repo)
             continue
         by_sig, by_name = {}, {}
         if is_current:
@@ -2931,7 +2914,8 @@ try:
                 _read_terminal_source(term_path, by_sig, by_name)
             except Exception:
                 unverifiable_repos.add(repo)
-                warnings.append("%s terminals unreadable" % repo)
+                if _debug:
+                    sys.stderr.write("%s terminals unreadable (read error)\n" % repo)
                 continue
         term_by_sig[repo] = by_sig
         term_by_name[repo] = by_name
@@ -2973,7 +2957,8 @@ try:
                 rows = _read_reservation_rows()
             except Exception:
                 unverifiable_repos.add(repo)
-                warnings.append("%s terminals unreadable" % repo)
+                if _debug:
+                    sys.stderr.write("%s terminals unreadable (reservation read error)\n" % repo)
                 continue
 
         for row in rows:
@@ -3026,17 +3011,6 @@ def _terminal_hit(repo, sig8, task_id, lane_label):
         return tname[lane_label]
     return None
 
-def _terminal_state(hit):
-    # Rule R (retention): fresh terminal -> "closing" (rendered, excluded from
-    # the active count); stale terminal -> "drop" (never rendered again); no
-    # hit -> None (not a terminal lane at all).
-    if hit is None:
-        return None, None
-    ts, _row = hit
-    if (now - ts) <= grace:
-        return "closing", "terminal"
-    return "drop", None
-
 def lane_name(res_entry, term_hit, census_task_id, sig8):
     # C4 precedence: reservation fields (task_id/founder_task_id/lane_label
     # -- lane_label is the field the writers actually populate) win, then the
@@ -3058,9 +3032,7 @@ def lane_name(res_entry, term_hit, census_task_id, sig8):
         return str(census_task_id)
     return sig8 or (str(census_task_id) if census_task_id else "unknown")
 
-def lane_phase(repo, sig8, terminal_phase, in_census):
-    if terminal_phase:
-        return terminal_phase
+def lane_phase(repo, sig8, in_census):
     # Foreign aggregated repos: HANDOFF is unknown, phase degrades honestly.
     if repo == CUR_REPO and PROJECT_ROOT and sig8:
         review_dir = os.path.join(PROJECT_ROOT, "docs", "handoff",
@@ -3076,21 +3048,71 @@ def lane_phase(repo, sig8, terminal_phase, in_census):
             return "architect"
     return "queued"
 
-# ── build the active-worker set: process census ∪ unexpired reservations ───
+# ── build the live-worker set: process census + classify (PANEL-TWO-IMPLEMENTATIONS-MERGE-01)
+# Only lanes classified "live" by the shared classifier appear.  A terminal
+# lane, a queued reservation, a stale row — none are listed or counted.
 PID_ARGV = _build_pid_argv(PS_SNAPSHOT)
 SUPERVISE_PID = _supervise_pid(SL_STATE_DIR)
 live_procs = census_workers(PS_SNAPSHOT)
 live_procs.update(codex_census(PROJECT_ROOT, PID_ARGV))
 if SUPERVISE_PID is not None:
-    # C3 item 3: the supervise sentinel's own pid is never a lane, for every
-    # census pattern (not just codex).
     live_procs = {k: v for k, v in live_procs.items()
                   if str(v.get("pid")) != SUPERVISE_PID}
 
 workers = []
 seen_keys = set()
 
-# (a) live process census workers
+def _term_token(hit):
+    if hit is None:
+        return ""
+    _ts, row = hit
+    return str(row.get("terminal") or "")
+
+def _term_ledger_state(hit):
+    """Map a terminal hit into a ledger_state the classifier understands
+    (mirrors the lanes path's R3.2 mapping at :1369)."""
+    tok = _term_token(hit)
+    return tok  # "" if no hit → classifier treats as non-terminal
+
+def _project(kind, pid_alive_session, pid, handle, ledger_state, terminal_hit,
+             motion_mtime, exit_code, now_val,
+             arm="", res_state="", res_age_s=None, res_ttl=None):
+    """Project discovery signals into a LaneFacts dict for classify()."""
+    tok = _term_token(terminal_hit)
+    ls = ledger_state
+    if not ls and tok:
+        ls = tok  # terminal row maps terminal→state (R3.2)
+    return {
+        "kind": kind,
+        "pid": pid,
+        "handle": handle,
+        "pid_alive_session": pid_alive_session,
+        "pid_alive_handle": False,
+        "argv_alive": False,
+        "close_alive": False,
+        "exit_code": exit_code,
+        "ledger_state": ls,
+        "status": "",
+        "outcome": "",
+        "tcause": "",
+        "terminal_token": tok,
+        "max_mtime": motion_mtime,
+        "motion_mtime": motion_mtime,
+        "now": now_val,
+        "arm": arm,
+        "res_state": res_state,
+        "res_age_s": res_age_s,
+        "res_ttl": res_ttl,
+    }
+
+def _age_label(s):
+    if s <= 0:
+        return "now"
+    if s < 3600:
+        return "%dm" % (s // 60)
+    return "%dh" % (s // 3600)
+
+# (a) live process census workers — a running process is always live
 for key, info in live_procs.items():
     sig8 = None
     if re.match(r'^[a-f0-9]{8}$', key):
@@ -3112,17 +3134,13 @@ for key, info in live_procs.items():
                 term_hit = term_by_name[repo][nm]
                 break
 
-    tstate, tphase = _terminal_state(term_hit)
-    if tstate == "drop":
-        continue
-
     name = lane_name(res_entry, term_hit, census_task_id, sig8)
-    phase = lane_phase(repo, sig8, tphase, True)
-    state = "closing" if tstate == "closing" else "active"
+    phase = lane_phase(repo, sig8, True)
 
     age_s = 0
-    if res_entry:
-        age_s = max(0, now - res_entry["when"])
+    res_when = res_entry["when"] if res_entry else None
+    if res_when:
+        age_s = max(0, now - res_when)
     elif "epoch" in info and info["epoch"]:
         age_s = max(0, now - info["epoch"])
 
@@ -3130,13 +3148,30 @@ for key, info in live_procs.items():
     dedupe_name = str(name).replace("|", "")
     if wk_key in seen_keys or dedupe_name in seen_keys:
         continue
+    # A census worker is alive by definition; classify confirms it.
+    _res_state = res_entry and str(res_entry["row"].get("state") or "") or ""
+    _res_arm = res_entry and str(res_entry["row"].get("arm") or "") or ""
+    _res_age = max(0, now - res_when) if res_when else None
+    facts = _project("lane", True, str(info.get("pid", "")),
+                     "", _res_state,
+                     term_hit, res_when or info.get("epoch") or 0, None, now,
+                     arm=_res_arm, res_state=_res_state,
+                     res_age_s=_res_age, res_ttl=ttl)
+    lc = classify(facts)
+    if lc["terminal"]:          continue
+    if lc["cls"] == "queued":   continue
+    if lc["cls"] == "dead" and not lc["unknown"]:
+                                continue
+    if not (lc["live"] or lc["live_process"] or lc["unknown"]):
+                                continue
     seen_keys.add(wk_key)
     seen_keys.add(dedupe_name)
     workers.append({"name": dedupe_name, "arm": arm, "age_s": age_s,
-                    "state": state, "phase": phase, "repo": repo,
-                    "_sort": age_s})
+                    "phase": phase, "repo": repo, "_sort": age_s,
+                    "unknown": lc["unknown"]})
 
-# (b) unexpired reservation rows not already covered by a live process
+# (b) reservation rows not already covered by a live process — classify
+# decides whether they are live (almost never, since no process), queued, etc.
 for e in res_entries:
     repo = e["repo"]
     sig8 = e["sig8"]
@@ -3146,28 +3181,27 @@ for e in res_entries:
     if name0 in seen_keys:
         continue
     term_hit = _terminal_hit(repo, sig8, name0, e["lane_label"])
-    tstate, tphase = _terminal_state(term_hit)
-    if tstate == "drop":
-        continue
     age = max(0, now - e["when"])
-    if tstate is None and age > ttl:
-        continue
     arm = str(e["row"].get("arm") or "unknown")
-    phase = lane_phase(repo, sig8, tphase, False)
-    state = "closing" if tstate == "closing" else "active"
+    res_state = str(e["row"].get("state") or "")
+    facts = _project("worker", False, None, "", res_state, term_hit,
+                     None, None, now,
+                     arm=arm, res_state=res_state,
+                     res_age_s=age, res_ttl=ttl)
+    lc = classify(facts)
+    if lc["terminal"]:          continue
+    if lc["cls"] == "queued":   continue
+    if lc["cls"] == "dead" and not lc["unknown"]:
+                                continue
+    if not (lc["live"] or lc["live_process"] or lc["unknown"]):
+                                continue
+    phase = lane_phase(repo, sig8, False)
     seen_keys.add(sig8)
     seen_keys.add(name0)
     workers.append({"name": str(name0).replace("|", ""),
                     "arm": arm.replace("|", ""), "age_s": age,
-                    "state": state, "phase": phase, "repo": repo,
-                    "_sort": age})
-
-def age_label(s):
-    if s <= 0:
-        return "now"
-    if s < 3600:
-        return "%dm" % (s // 60)
-    return "%dh" % (s // 3600)
+                    "phase": phase, "repo": repo, "_sort": age,
+                    "unknown": lc["unknown"]})
 
 multi_repo = len(SOURCES) > 1
 
@@ -3184,35 +3218,40 @@ if not workers:
         print("  (last open %s %dh ago, no terminal row)" % (sig, sage // 3600))
     else:
         print("mode=single-lead active 0")
-    for w in warnings:
-        print("  ⚠ %s" % w)
+        print("  нет активных lane")
     sys.exit(0)
 
 workers.sort(key=lambda w: w["_sort"])
-active_workers = [w for w in workers if w["state"] != "closing"]
 
-# Header line: count of ACTIVE (non-closing) workers + newest one's summary.
-_n = len(active_workers)
+# Header line: count of live workers + newest one's summary.
+_n = len(workers)
 if _n >= 1:
-    newest = active_workers[0]
-    _tid = newest["name"][:20]
+    newest = workers[0]
+    _tid = clip_name(newest["name"], 20)
     _arm = newest["arm"]
-    _age = age_label(newest["age_s"])
+    _age = _age_label(newest["age_s"])
     print("mode=single-lead active %d %s %s %s" % (_n, _tid, _arm, _age))
 else:
     print("mode=single-lead active 0")
+    print("  нет активных lane")
 
-# Worker detail lines (for dropdown) — closing rows are shown but excluded
-# from the header count above.
+# Worker detail lines (for dropdown) — only live lanes, one row each.
 for w in workers:
-    _a = age_label(w["age_s"])
-    if multi_repo:
-        print("  %s · %s · %s %s · %s" % (w["name"][:24], w["phase"], w["arm"], _a, w["repo"]))
+    _a = _age_label(w["age_s"])
+    _nm = clip_name(w["name"], 24)
+    if w.get("unknown"):
+        _arm_age = join_fields([w["arm"] if w["arm"] != "unknown" else "?", _a], " ")
+        if multi_repo:
+            line = join_fields([_nm, "unknown", _arm_age, w["repo"]])
+        else:
+            line = join_fields([_nm, "unknown", _arm_age])
     else:
-        print("  %s · %s · %s %s" % (w["name"][:24], w["phase"], w["arm"], _a))
-
-for w in warnings:
-    print("  ⚠ %s" % w)
+        _arm_age = join_fields([w["arm"], _a], " ")
+        if multi_repo:
+            line = join_fields([_nm, w["phase"], _arm_age, w["repo"]])
+        else:
+            line = join_fields([_nm, w["phase"], _arm_age])
+    print("  " + line)
 PYEOF
   then
     # A command/runtime/heredoc failure must preserve the mode marker so the
