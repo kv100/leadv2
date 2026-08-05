@@ -854,7 +854,7 @@ fi
 rm -rf "$G9_SANDBOX"
 
 # ── G10: §3 honesty — PROOF column in show output ───────────────────────────
-printf 'test: G10 PROOF column — self-attested vs verified\n'
+printf 'test: G10 PROOF column — self-attested vs verified vs unverified\n'
 G10_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g10-XXXXXX)"
 G10_REPO="${G10_SANDBOX}/repo"
 mkdir -p "${G10_REPO}"
@@ -863,13 +863,34 @@ mkdir -p "${G10_REPO}"
   && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
 G10_SIG8="g10be01"
 mkdir -p "${G10_REPO}/docs/handoff/dispatch-${G10_SIG8}/phases.d"
-printf 'review diff\n' > "${G10_REPO}/review.diff"
+
+# Set up review proof: review.diff at the canonical path + ledger row
+printf 'review diff content\n' > "${G10_REPO}/docs/handoff/dispatch-${G10_SIG8}/review.diff"
+G10_DIFF_HASH="$(shasum -a 256 "${G10_REPO}/docs/handoff/dispatch-${G10_SIG8}/review.diff" | awk '{print $1}')"
+G10_CACHE="${G10_SANDBOX}/cache"
+G10_LEDGER_DIR="${G10_CACHE}/code-review-ledger"
+mkdir -p "$G10_LEDGER_DIR"
+printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"codex:standard"}\n' "$G10_DIFF_HASH" \
+  > "${G10_LEDGER_DIR}/repo.jsonl"
+
 printf 'test artifact\n' > "${G10_REPO}/test-out.txt"
-LEADV2_PROJECT_ROOT="${G10_REPO}" bash "$PHASE_RECORD" record "$G10_SIG8" review --status done \
-  --artifact "review.diff" --owner test >/dev/null 2>&1
+
+# Record review WITH valid proof infrastructure → should be verified
+LEADV2_PROJECT_ROOT="${G10_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G10_CACHE}" \
+  bash "$PHASE_RECORD" record "$G10_SIG8" review --status done \
+  --artifact "docs/handoff/dispatch-${G10_SIG8}/review.diff" --owner test >/dev/null 2>&1
+
+# Record test → should be self-attested
 LEADV2_PROJECT_ROOT="${G10_REPO}" bash "$PHASE_RECORD" record "$G10_SIG8" test --status done \
   --artifact "test-out.txt" --owner test >/dev/null 2>&1
-G10_SHOW="$(LEADV2_PROJECT_ROOT="${G10_REPO}" bash "$PHASE_RECORD" show "$G10_SIG8" 2>/dev/null)"
+
+# Record build with a directory artifact (unverifiable) → should be unverified
+mkdir -p "${G10_REPO}/build-dir"
+LEADV2_PROJECT_ROOT="${G10_REPO}" bash "$PHASE_RECORD" record "$G10_SIG8" build --status done \
+  --artifact "build-dir" --owner test >/dev/null 2>&1
+
+G10_SHOW="$(LEADV2_PROJECT_ROOT="${G10_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G10_CACHE}" \
+  bash "$PHASE_RECORD" show "$G10_SIG8" 2>/dev/null)"
 # Header should contain PROOF column
 if printf '%s' "$G10_SHOW" | grep -q 'PROOF'; then ok; else fail "G10: show should have PROOF column"; fi
 # test row should read self-attested
@@ -878,11 +899,17 @@ if printf '%s' "$G10_SHOW" | grep -E '^test\b' | grep -q 'self-attested'; then
 else
   fail "G10: test phase should show self-attested (got: $G10_SHOW)"
 fi
-# review row should read verified
+# review row should read verified (full proof infrastructure set up)
 if printf '%s' "$G10_SHOW" | grep -E '^review\b' | grep -q 'verified'; then
   ok
 else
   fail "G10: review phase should show verified (got: $G10_SHOW)"
+fi
+# build row should read UNVERIFIED (directory artifact cannot be sha256'd)
+if printf '%s' "$G10_SHOW" | grep -E '^build\b' | grep -q 'UNVERIFIED'; then
+  ok
+else
+  fail "G10: build phase should show UNVERIFIED (got: $G10_SHOW)"
 fi
 rm -rf "$G10_SANDBOX"
 
@@ -951,6 +978,116 @@ unset LEADV2_PHASE_RECORD_BIN
 
 # Cleanup e2e sandbox
 rm -rf "${E2E_SANDBOX}"
+
+# ════════════════════════════════════════════════════════════════════════════
+# PHASE-GATE-RECORD-VS-ASSERT-01: F1, F2, F3 regression tests
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── F1: record stamps proof=unverified when _verify_artifact would refuse ─────
+printf 'test: F1 record stamps unverified when proof fails\n'
+F1_SANDBOX="$(mktemp -d /tmp/leadv2-pc-f1-XXXXXX)"
+F1_REPO="${F1_SANDBOX}/repo"
+mkdir -p "${F1_REPO}"
+( cd "${F1_REPO}" && git init -q -b main \
+  && git config user.email t@e.com && git config user.name t \
+  && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
+F1_SIG8="f1aa0001"
+mkdir -p "${F1_REPO}/docs/handoff/dispatch-${F1_SIG8}/phases.d"
+
+# Record build with a DIRECTORY artifact — _verify_artifact cannot sha256 it
+mkdir -p "${F1_REPO}/build-output"
+LEADV2_PROJECT_ROOT="${F1_REPO}" bash "$PHASE_RECORD" record "$F1_SIG8" build --status done \
+  --artifact "build-output" --owner test >/dev/null 2>&1
+
+# The yaml should say proof: unverified
+F1_YAML="${F1_REPO}/docs/handoff/dispatch-${F1_SIG8}/phases.d/build.yaml"
+if grep -q '^proof: unverified' "$F1_YAML" 2>/dev/null; then
+  ok
+else
+  fail "F1: build with directory artifact should have proof: unverified (got: $(cat "$F1_YAML" 2>/dev/null))"
+fi
+
+# show should render UNVERIFIED
+F1_SHOW="$(LEADV2_PROJECT_ROOT="${F1_REPO}" bash "$PHASE_RECORD" show "$F1_SIG8" 2>/dev/null)"
+if printf '%s' "$F1_SHOW" | grep -E '^build\b' | grep -q 'UNVERIFIED'; then
+  ok
+else
+  fail "F1: show should render UNVERIFIED for unproven build (got: $F1_SHOW)"
+fi
+
+# assert should also refuse this phase
+F1_ASSERT="$(LEADV2_PROJECT_ROOT="${F1_REPO}" bash "$PHASE_RECORD" assert "$F1_SIG8" --class Standard \
+  --writes "platform/lib/foo.sh" 2>/dev/null)"
+if printf '%s' "$F1_ASSERT" | grep '^missing=' | grep -q 'build'; then
+  ok
+else
+  fail "F1: assert should list build as missing (unverified record) (got: $F1_ASSERT)"
+fi
+rm -rf "$F1_SANDBOX"
+
+# ── F2: plan-for --writes flips deploy to MANDATORY ───────────────────────────
+printf 'test: F2 plan-for --writes makes deploy mandatory\n'
+# Heavy with --writes containing a .sh path → deploy should be MANDATORY
+F2_PLAN="$(bash "$PHASE_RECORD" plan-for --class Heavy --writes "platform/lib/foo.sh" 2>/dev/null)"; rc=$?
+if [[ $rc -eq 0 ]]; then
+  ok
+else
+  fail "F2: plan-for Heavy --writes should succeed (got rc=$rc)"
+fi
+if printf '%s' "$F2_PLAN" | grep -q 'MANDATORY deploy'; then
+  ok
+else
+  fail "F2: deploy should be MANDATORY when --writes has a runtime path (got: $F2_PLAN)"
+fi
+
+# Heavy with --writes containing only .md → deploy should be NA
+F2_PLAN_DOCS="$(bash "$PHASE_RECORD" plan-for --class Heavy --writes "docs/handoff/foo.md" 2>/dev/null)"; rc=$?
+if [[ $rc -eq 0 ]]; then
+  ok
+else
+  fail "F2: plan-for Heavy --writes docs should succeed (got rc=$rc)"
+fi
+if printf '%s' "$F2_PLAN_DOCS" | grep -q 'NA deploy no_runtime_surface'; then
+  ok
+else
+  fail "F2: deploy should be NA no_runtime_surface for docs-only writes (got: $F2_PLAN_DOCS)"
+fi
+
+# Without --writes at all → deploy should still be NA (backward compatible)
+F2_PLAN_NONE="$(bash "$PHASE_RECORD" plan-for --class Heavy 2>/dev/null)"; rc=$?
+if printf '%s' "$F2_PLAN_NONE" | grep -q 'NA deploy no_runtime_surface'; then
+  ok
+else
+  fail "F2: deploy should be NA when no --writes given (got: $F2_PLAN_NONE)"
+fi
+
+# ── F3: plan-for rejects invalid class strings ────────────────────────────────
+printf 'test: F3 plan-for rejects invalid class\n'
+# BANANA is not a valid class
+bash "$PHASE_RECORD" plan-for --class BANANA 2>/dev/null; rc=$?
+if [[ $rc -eq 4 ]]; then
+  ok
+else
+  fail "F3: plan-for --class BANANA should exit 4 (got $rc)"
+fi
+
+# Lowercase heavy is not valid (case-sensitive)
+bash "$PHASE_RECORD" plan-for --class heavy 2>/dev/null; rc=$?
+if [[ $rc -eq 4 ]]; then
+  ok
+else
+  fail "F3: plan-for --class heavy (lowercase) should exit 4 (got $rc)"
+fi
+
+# Valid classes should still work
+for cls in Trivial Light Standard Heavy; do
+  bash "$PHASE_RECORD" plan-for --class "$cls" 2>/dev/null; rc=$?
+  if [[ $rc -eq 0 ]]; then
+    ok
+  else
+    fail "F3: plan-for --class $cls should succeed (got $rc)"
+  fi
+done
 
 printf '\n[PHASE-PRECONDITION] pass=%d fail=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

@@ -17,7 +17,7 @@
 #   started_at: <ISO-8601>
 #   ended_at: <ISO-8601 or "">
 #   reason: <text or "">
-#   proof: verified|attested   (§3: attested for test/live_verify/e2e; absent on older records)
+#   proof: verified|attested|unverified   (§3: attested for test/live_verify/e2e; unverified when _verify_artifact fails; absent on older records)
 #   commit: <40-hex sha>  (deploy only; additive, may be absent on older records)
 #
 # Proof level per phase (what _verify_artifact actually checks):
@@ -54,6 +54,14 @@
 #   filesystem boundary between them — this cannot be closed by file layout
 #   alone, only by an authority outside the process (or by making a forged
 #   row visible in a diff that a human reads).
+#
+# gate1 — residual forgery surface (honest scope):
+#   The .gate1-passed sentinel need only be non-empty, and any process with
+#   write access to docs/handoff/dispatch-<sig>/ can create it.  This is the
+#   same residual class as the review provenance directory above: the worker
+#   and the verifier are the same Unix user, so no file-based sentinel can
+#   carry founder authority.  The sentinel proves only that a file exists at
+#   that path, not that a human approved the gate.
 #
 # Usage:
 #   leadv2-phase-record.sh record <sig8> <phase> [flags]
@@ -647,10 +655,19 @@ cmd_record() {
     printf 'started_at: %s\n' "$started_at"
     printf 'ended_at: %s\n' "$ended_at"
     printf 'reason: %s\n' "$reason"
-    # §3 honesty: disclose proof level derived from phase id.
-    # test/live_verify/e2e are self-attested (sha256 match only); all else is verified.
-    local _proof="verified"
-    case "$phase" in test|live_verify|e2e) _proof="attested" ;; esac
+    # §3 honesty: run the SAME _verify_artifact path that assert uses.
+    # proof=verified only when _verify_artifact accepts; otherwise unverified.
+    # test/live_verify/e2e are "attested" (sha256 match only, not semantic proof).
+    # Running/n/a/waived phases get an empty proof — it does not apply.
+    local _proof=""
+    if [[ "$status" == "done" ]]; then
+      if _verify_artifact "$sig8" "$phase" "$artifact" "$sha" "$commit" 2>/dev/null; then
+        case "$phase" in test|live_verify|e2e) _proof="attested" ;; *) _proof="verified" ;; esac
+      else
+        _proof="unverified"
+        _log "WARN: phase '$phase' for $sig8 recorded done but proof NOT verified — assert will refuse"
+      fi
+    fi
     printf 'proof: %s\n' "$_proof"
     [[ -n "$commit" ]] && printf 'commit: %s\n' "$commit"
   } > "$tmp_file"
@@ -836,7 +853,9 @@ cmd_show() {
     pr="$(grep '^proof:' "$f" | awk '{print $2}')"
     case "$pr" in
       attested) pr="self-attested" ;;
-      *) pr="verified" ;;
+      verified) pr="verified" ;;
+      unverified) pr="UNVERIFIED" ;;
+      *) pr="-" ;;
     esac
     printf '%-14s %-10s %-14s %-24s %-12s\n' "$p" "$s" "$pr" "$o" "$st"
   done
@@ -844,15 +863,23 @@ cmd_show() {
 
 # ── plan-for subcommand ──────────────────────────────────────────────────────
 cmd_plan_for() {
-  local cls=""
+  local cls="" writes=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --class) cls="$2"; shift 2 ;;
+      --writes) writes="$2"; shift 2 ;;
+      --*) _log_err "plan-for: unknown flag: $1"; exit 4 ;;
       *) shift ;;
     esac
   done
   [[ -n "$cls" ]] || { _log_err "plan-for: --class required"; exit 4; }
-  _resolve_mandatory "$cls"
+
+  case "$cls" in
+    Trivial|Light|Standard|Heavy) ;;
+    *) _log_err "plan-for: invalid class '$cls'"; exit 4 ;;
+  esac
+
+  _resolve_mandatory "$cls" "$writes"
 }
 
 # ── main ──────────────────────────────────────────────────────────────────────
