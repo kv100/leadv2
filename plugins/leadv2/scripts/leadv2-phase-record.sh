@@ -453,7 +453,9 @@ _verify_artifact() {
       # diff_hash, and guard_token together.  Malformed JSON lines are skipped,
       # not fatal.  B1 R5: the guard_token must appear in the provenance tokens
       # file (outside the ledger dir), proving the row was written by the
-      # guarded path, not raw file append.
+      # guarded path, not raw file append.  R9: the token is bound to the
+      # diff_hash it was minted for — a stolen token from a different diff
+      # cannot satisfy the check.
       local _tokens_file="${CACHE_BASE}/code-review-provenance/${slug}.tokens"
       local _has_tokens="0"
       [[ -f "$_tokens_file" ]] && _has_tokens="1"
@@ -464,14 +466,19 @@ ledger_file, target_hash = sys.argv[1], sys.argv[2]
 arms = set(os.environ.get("LEADV2_REVIEW_ARMS", "codex,glm,kimi,opus,sonnet").split(","))
 has_tokens = os.environ.get("LEADV2_HAS_TOKENS", "0") == "1"
 tokens_file = os.environ.get("LEADV2_TOKENS_FILE", "")
-valid_tokens = set()
+valid_pairs = set()  # (diff_hash, token) pairs
 if has_tokens and tokens_file:
     try:
         with open(tokens_file) as tf:
-            for t in tf:
-                t = t.strip()
-                if t:
-                    valid_tokens.add(t)
+            for line in tf:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    # R9 format: <diff_hash> <token>
+                    valid_pairs.add((parts[0], parts[1]))
+                # Old token-only lines (no diff_hash binding) are ignored.
     except OSError:
         pass
 with open(ledger_file) as f:
@@ -492,10 +499,12 @@ with open(ledger_file) as f:
         if arm not in arms:
             continue
         # B1 R5: if the tokens file exists, the row must carry a guard_token
-        # that was minted by the guarded write path.
+        # that was minted by the guarded write path.  R9: the token must
+        # be bound to this row's diff_hash — a stolen token from a
+        # different diff does not satisfy the check.
         if has_tokens:
             gt = obj.get("guard_token", "")
-            if not gt or gt not in valid_tokens:
+            if not gt or (target_hash, gt) not in valid_pairs:
                 continue
         sys.exit(0)  # all checks passed
 sys.exit(1)  # no matching row

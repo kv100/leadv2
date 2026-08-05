@@ -1366,7 +1366,9 @@ atomic_review_check_and_record() {  # <diff_hash> <verdict> <reviewer> <run_id>
     fi
     record_review "${hash}" "${verdict}" "${reviewer}" "${run_id}" "${_gt}"
     _increment_review_sidecar
-    printf '%s\n' "${_gt}" >> "$_gt_file" 2>/dev/null || true
+    # R9: bind the token to the diff_hash it was minted for, so a stolen
+    # token cannot vouch for a different diff's ledger row.
+    printf '%s %s\n' "${hash}" "${_gt}" >> "$_gt_file" 2>/dev/null || true
     exit 0
   ) 9>"${lockf}"
 }

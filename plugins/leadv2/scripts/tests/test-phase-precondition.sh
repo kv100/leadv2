@@ -724,6 +724,44 @@ else
   fail "G7g: review_sidecar_tamper should be journaled"
 fi
 
+# G7h (R9): stolen-token forgery — token minted for diff_A reused on a row for diff_B.
+# Uses the G7 sandbox where G7c's record-review already wrote the tokens file.
+# The tokens file now stores <diff_hash> <token> pairs; a token bound to G7C_HASH
+# must NOT satisfy a row for a different diff_hash.
+G7H_SIG8="g7deh08"
+_g7_setup_review "$G7H_SIG8"
+G7H_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7H_SIG8}/review.diff" | awk '{print $1}')"
+# Steal a token that was minted for G7C's diff_hash (NOT G7H's).
+G7H_STOLEN_TOKEN="$(awk '{print $2}' "${G7_CACHE}/code-review-provenance/${G7_SLUG}.tokens" 2>/dev/null | head -1)"
+G7H_STOLEN_HASH="$(awk '{print $1}' "${G7_CACHE}/code-review-provenance/${G7_SLUG}.tokens" 2>/dev/null | head -1)"
+# Write a forged ledger file: row for G7H_HASH carrying the token minted for G7H_STOLEN_HASH.
+printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"codex","run_id":"stolen","repo":"%s","ts":"2026-01-01T00:00:00Z","guard_token":"%s"}\n' \
+  "$G7H_HASH" "$G7_SLUG" "$G7H_STOLEN_TOKEN" > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl"
+printf '1\n' > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows"
+G7H_OUT="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$PHASE_RECORD" assert "$G7H_SIG8" --class Standard 2>/dev/null)"
+if printf '%s' "$G7H_OUT" | grep -q 'missing=.*review'; then
+  ok
+else
+  fail "G7h: stolen token (bound to ${G7H_STOLEN_HASH:0:8}) must not satisfy diff ${G7H_HASH:0:8} (got: $G7H_OUT)"
+fi
+
+# G7h-2: legitimate record-review for G7H's own diff → review satisfied (positive control)
+rm -f "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl" "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows"
+rc_g7h2=0
+( cd "${G7_REPO}" && env -u LEADV2_LANE_WORK_ROOT \
+  LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$DISPATCH_BIN" record-review \
+  --diff-hash "$G7H_HASH" --verdict PASS --reviewer "codex:standard" --run-id "dispatch-test" ) >/dev/null 2>&1 || rc_g7h2=$?
+if [[ $rc_g7h2 -eq 0 ]]; then ok; else fail "G7h-2: legitimate record-review should succeed (rc=$rc_g7h2)"; fi
+G7H2_OUT="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$PHASE_RECORD" assert "$G7H_SIG8" --class Standard 2>/dev/null)"
+if ! printf '%s' "$G7H2_OUT" | grep -q 'missing=.*review'; then
+  ok
+else
+  fail "G7h-2: legitimate record-review should satisfy review phase (got: $G7H2_OUT)"
+fi
+
 rm -rf "$G7_SANDBOX" "$G7E_SANDBOX" "$G7F_SANDBOX"
 
 # ── G8: B2 REQUIRE_PHASES=0 is a full disable (kill switch) ─────────────────
