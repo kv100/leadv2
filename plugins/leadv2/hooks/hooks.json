@@ -635,6 +635,13 @@
             "timeout": 5,
             "continueOnBlock": true,
             "statusMessage": "Promise-guard: checking for unkept commitments..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-idle-lead-guard.sh\"",
+            "timeout": 10,
+            "continueOnBlock": true,
+            "statusMessage": "Idle-guard: checking queued work vs live lanes..."
           }
         ]
       }
