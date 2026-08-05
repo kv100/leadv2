@@ -172,7 +172,7 @@ _title="$(printf '%s\n' "$_out" | sed -n '1p')"
 case "$_title" in
   "🛠 deadbeef sonnet "*)
     # Also verify the detail line appears in the dropdown
-    if printf '%s\n' "$_out" | grep -q 'deadbeef · worker · sonnet'; then
+    if printf '%s\n' "$_out" | grep -q 'deadbeef · ~ · sonnet'; then
       ok "(a) live claude-subsession → active with sig8"
     else
       bad "(a) detail line missing for live worker (out=$(printf '%s' "$_out" | tr '\n' '|'))"
@@ -438,19 +438,19 @@ printf '{"task_sig":"m1afact0011223344","arm":"opus","state":"confirmed","create
 mkdir -p "$PHANDOFF/dispatch-m1afact0-architect"
 PS_STUB="1 sleep 1"
 _out="$(widget)"
-if printf '%s\n' "$_out" | grep -q 'M1A-FACT-QUALITY-01 · architect'; then
-  ok "(T-name-1) lane_label resolves the human name + architect phase"
+if printf '%s\n' "$_out" | grep -q 'M1A-FACT-QUALITY-01 · ~architect'; then
+  ok "(T-name-1) lane_label resolves the human name + legacy architect phase"
 else
-  bad "(T-name-1) expected 'M1A-FACT-QUALITY-01 · architect' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+  bad "(T-name-1) expected 'M1A-FACT-QUALITY-01 · ~architect' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
 fi
 
 printf '{"task_sig":"deadfeed99887766","arm":"sonnet","state":"confirmed","created_epoch":%s}\n' \
   "$((NOW - 30))" >> "$RESERVATIONS"
 _out="$(widget)"
-if printf '%s\n' "$_out" | grep -q 'deadfeed · queued'; then
-  ok "(T-name-2) no name fields at all -> sig8 fallback"
+if printf '%s\n' "$_out" | grep -q 'deadfeed · ~'; then
+  ok "(T-name-2) no name fields at all -> sig8 fallback (legacy ~ phase)"
 else
-  bad "(T-name-2) expected sig8 fallback 'deadfeed · queued' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
+  bad "(T-name-2) expected sig8 fallback 'deadfeed · ~' (out=$(printf '%s' "$_out" | tr '\n' '|'))"
 fi
 rm -rf "$PHANDOFF/dispatch-m1afact0-architect"
 
