@@ -41,6 +41,20 @@
 # These three phases are declared UNPROVABLE beyond integrity — there is no
 # writer that records them `done` today, and no semantic assertion is available.
 #
+# review — residual forgery surface (honest scope):
+#   What the review proof DOES establish: the ledger row's diff_hash matches
+#   the target diff, the verdict is PASS/PASS_WITH_NITS, the reviewer arm is
+#   allowed, and the row carries a guard_token that was minted for THIS exact
+#   diff_hash by the guarded write path (record-review in leadv2-dispatch-code).
+#   A token stolen from a different diff will not satisfy the check.
+#   What it does NOT establish: it does not stop a process that has write
+#   access to ${CACHE_BASE}/code-review-provenance/ from appending a matching
+#   <diff_hash> <token> pair and forging a valid-looking row.  Every build
+#   worker runs as the same Unix user as the verifier, so there is no
+#   filesystem boundary between them — this cannot be closed by file layout
+#   alone, only by an authority outside the process (or by making a forged
+#   row visible in a diff that a human reads).
+#
 # Usage:
 #   leadv2-phase-record.sh record <sig8> <phase> [flags]
 #       --artifact <path>           required unless --status running|n/a|waived
