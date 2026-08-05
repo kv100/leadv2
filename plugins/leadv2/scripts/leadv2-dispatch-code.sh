@@ -1363,6 +1363,25 @@ _kimi_admissible() { # <mission> <sig8> <writes_csv> <kimi_fit> -> 0 admissible,
   return 0
 }
 
+# DISPATCH-KIMI-ARM-MISMATCH-01 (2026-08-05): single source of truth for the
+# fixed-order candidate chain. The launcher and resolver vocabularies must
+# agree — the matching allowlist on the resolver side is
+# DISPATCHABLE_BUILD_ARMS in leadv2-glm-policy-resolve.py.
+_candidate_chain_for_arm() { # <arm> <sig8> ; mutates candidate_arms
+  local arm="$1" sig8="$2"
+  case "${arm}" in
+    glm)    candidate_arms=(glm codex sonnet) ;;
+    codex)  candidate_arms=(codex sonnet) ;;
+    sonnet) candidate_arms=(sonnet) ;;
+    *)
+      candidate_arms=(sonnet)
+      emit decision "arm_vocabulary_mismatch by=router arm=${arm} fallback=sonnet task=${sig8} reason=launcher_unknown_arm"
+      log_err "arm_vocabulary_mismatch: unknown arm=${arm} for task=${sig8}, falling back to sonnet"
+      ;;
+  esac
+  return 0
+}
+
 _apply_kimi_admission() { # <mission> <sig8> <writes_csv> <kimi_fit>; mutates candidate_arms
   local mission="$1" sig8="$2" writes_csv="$3" kimi_fit="$4" _a
   _kimi_admissible "${mission}" "${sig8}" "${writes_csv}" "${kimi_fit}" && return 0
@@ -2538,13 +2557,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
   else
-    case "${arm}" in
-      # Kimi's presence is guarded below by _apply_kimi_admission.
-      glm)   candidate_arms=(glm kimi codex sonnet) ;;
-      codex) candidate_arms=(codex sonnet) ;;
-      sonnet) candidate_arms=(sonnet) ;;
-      *) log_err "unsupported resolved dispatch arm: ${arm}"; exit 1 ;;
-    esac
+    _candidate_chain_for_arm "${arm}" "${sig8}"
     # T-q codex_quota_gate (SUPERVISOR-AUDIT-01 T-b): strip codex from the fixed
     # glm->codex->sonnet fallback chain when the resolver's live codex-quota read
     # is >= build_threshold_pct — an arm the resolver itself refuses to hand out
@@ -2727,12 +2740,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
           if [[ -n "${_rr_arm}" && "${_rr_arm}" != "${arm}" ]]; then
             arm="${_rr_arm}"; rule="${_rr_rule}"; reason="${_rr_reason}"
             emit decision "arm_reresolved by=router trigger=glm_lock_busy arm=${arm} rule=${rule} reason=${reason} task=${sig8} router=${router_label}"
-            case "${arm}" in
-              glm)   candidate_arms=(glm kimi codex sonnet) ;;
-              codex) candidate_arms=(codex sonnet) ;;
-              sonnet) candidate_arms=(sonnet) ;;
-              *) : ;;  # unknown arm: leave the chain; loop continues as-is
-            esac
+            _candidate_chain_for_arm "${arm}" "${sig8}"
             _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
             _reenter=1
             break   # break the for; outer while re-enters over the rebuilt chain
