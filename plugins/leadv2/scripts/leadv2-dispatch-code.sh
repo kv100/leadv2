@@ -418,6 +418,16 @@ REQUIRE_LANE_WRITES="${LEADV2_REQUIRE_LANE_WRITES:-1}"
 # is a landing-day opt-in so no in-flight or historical dispatch retro-parks; flip to
 # 1 after a soak, mirroring LEADV2_REQUIRE_LANE_WRITES's own rollout.
 REQUIRE_ACCEPTANCE="${LEADV2_REQUIRE_ACCEPTANCE:-0}"
+# PHASES-ARE-THE-ONLY-PATH-01: three-valued phase precondition gate.
+# 0 = disabled (byte-identical to today's behaviour, one-flip rollback);
+# warn (default) = journal phase_precondition_warn + proceed;
+# 1 = refuse dispatch on missing mandatory phases.
+# The flip to 1 is ledgered separately as SD-PHASE-ENFORCE-01.
+REQUIRE_PHASES="${LEADV2_REQUIRE_PHASES:-warn}"
+PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.sh}"
+# B1 R2: record-review refuses a build worker minting a review of ITS OWN diff from
+# inside a lane worktree (self-attestation). Set to 0 to disable the check (emergency escape).
+REVIEW_RECORDER_GUARD="${LEADV2_REVIEW_RECORDER_GUARD:-1}"
 
 log()        { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
 log_err()    { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
@@ -1284,27 +1294,81 @@ diff_seen() {  # <hash> -> 0 if already reviewed
   [[ -f "$f" ]] || return 1
   grep -qF "\"diff_hash\":\"$1\"" "$f"
 }
-record_review() {  # <diff_hash> <verdict> <reviewer> <run_id>
-  local f ts
+record_review() {  # <diff_hash> <verdict> <reviewer> <run_id> [guard_token]
+  local f ts guard_token="${5:-}"
   f="$(review_ledger_file)"; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
   mkdir -p "${REVIEW_LEDGER_DIR}"
-  printf '{"diff_hash":"%s","verdict":"%s","reviewer":"%s","run_id":"%s","repo":"%s","ts":"%s"}\n' \
-    "$1" "$2" "$3" "$4" "$(repo_slug)" "$ts" >> "$f"
+  if [[ -n "$guard_token" ]]; then
+    printf '{"diff_hash":"%s","verdict":"%s","reviewer":"%s","run_id":"%s","repo":"%s","ts":"%s","guard_token":"%s"}\n' \
+      "$1" "$2" "$3" "$4" "$(repo_slug)" "$ts" "$guard_token" >> "$f"
+  else
+    printf '{"diff_hash":"%s","verdict":"%s","reviewer":"%s","run_id":"%s","repo":"%s","ts":"%s"}\n' \
+      "$1" "$2" "$3" "$4" "$(repo_slug)" "$ts" >> "$f"
+  fi
 }
 review_lock_file() { printf '%s/.%s.review.lock' "${REVIEW_LEDGER_DIR}" "$(repo_slug)"; }
 
 # Same atomicity fix as atomic_dispatch_check_and_record, for the review ledger's
 # diff_hash race (Finding 3/4 both name diff_hash alongside task_sig).
+# B1 R3: also maintains a row-count sidecar so raw >> appends are detectable.
+# B1 R4: also maintains an "adopted" marker outside the ledger dir so that
+# sidecar-absent can be distinguished from "never used" vs "deleted after use".
+# B1 R5: also mints a per-invocation guard token stored in the provenance dir
+# (outside the ledger), checked back by _verify_artifact.  An attacker writing
+# raw ledger rows must also forge the tokens file outside the ledger dir.
+_review_sidecar_file() { printf '%s/%s.jsonl.rows' "${REVIEW_LEDGER_DIR}" "$(repo_slug)"; }
+_review_adopted_marker() { printf '%s/code-review-provenance/%s.adopted' "${CACHE_BASE}" "$(repo_slug)"; }
+_review_tokens_file() { printf '%s/code-review-provenance/%s.tokens' "${CACHE_BASE}" "$(repo_slug)"; }
+_increment_review_sidecar() {
+  local sidecar rows bootstrap=0
+  sidecar="$(_review_sidecar_file)"
+  if [[ ! -f "$sidecar" ]]; then
+    # Bootstrap: seed to current line count (record_review already appended)
+    rows="$(wc -l < "$(review_ledger_file)" 2>/dev/null | tr -d ' ')"
+    rows="${rows:-0}"
+    bootstrap=1
+    # B1 R4: write the adopted marker once — outside the ledger dir so a raw
+    # attacker who can write to code-review-ledger/ cannot remove it by accident.
+    local _adopted_dir _adopted_file
+    _adopted_file="$(_review_adopted_marker)"
+    _adopted_dir="$(dirname "$_adopted_file")"
+    mkdir -p "$_adopted_dir" 2>/dev/null || true
+    : > "$_adopted_file" 2>/dev/null || true
+  else
+    rows="$(<"$sidecar")"
+    rows="${rows// /}"
+    rows="${rows:-0}"
+  fi
+  # On normal increments, +1 for the row just written.
+  # On bootstrap, the wc -l already counts it.
+  [[ "$bootstrap" == "0" ]] && rows=$((rows + 1))
+  local tmp
+  tmp="$(mktemp "${REVIEW_LEDGER_DIR}/.rows.XXXXXX")" || return 0
+  printf '%d\n' "$rows" > "$tmp"
+  mv -f "$tmp" "$sidecar" 2>/dev/null || true
+}
 atomic_review_check_and_record() {  # <diff_hash> <verdict> <reviewer> <run_id>
   local hash="$1" verdict="$2" reviewer="$3" run_id="$4" lockf
   mkdir -p "${REVIEW_LEDGER_DIR}"
   lockf="$(review_lock_file)"
+  # B1 R5: mint a per-invocation guard token under flock.  The caller cannot
+  # supply this — it is generated here, embedded in the ledger row, and recorded
+  # in the provenance dir (outside the attacker-writable ledger dir).
+  local _gt _gt_file _gt_dir
+  _gt="$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' || printf 'fallback%d' $$)"
+  _gt_file="$(_review_tokens_file)"
+  _gt_dir="$(dirname "$_gt_file")"
+  mkdir -p "$_gt_dir" 2>/dev/null || true
   (
     lv2_lock_wait "${lockf}" 10 || exit 3
     if [[ "${ENFORCE}" == "1" ]] && diff_seen "${hash}"; then
       exit 2
     fi
-    record_review "${hash}" "${verdict}" "${reviewer}" "${run_id}"
+    record_review "${hash}" "${verdict}" "${reviewer}" "${run_id}" "${_gt}"
+    _increment_review_sidecar
+    # R9: bind the token to the diff_hash it was minted for, so a stolen
+    # token cannot vouch for a different diff's ledger row.
+    printf '%s %s\n' "${hash}" "${_gt}" >> "$_gt_file" 2>/dev/null || true
     exit 0
   ) 9>"${lockf}"
 }
@@ -1484,6 +1548,82 @@ _acceptance_guard() {
   ARCHITECT_PREPASS_REASON="no_acceptance_block"
   emit decision "architect_prepass task=${sig8} status=failed reason=no_acceptance_block"
   return 1
+}
+
+# _phase_precondition_guard <sig8> <class> <writes> [waiver-args...] -> 0 proceed, 1 refuse
+# PHASES-ARE-THE-ONLY-PATH-01: sits at the same structural slot as _lane_writes_guard/
+# _acceptance_guard, after arg validation, before any spawn side effect and before
+# _stamp_active_phase prepass. Exit code 4 from phase-record.sh (config error / refused
+# waiver) ALWAYS refuses in every mode including 0 — a malformed override is a
+# configuration error, not a phase gap.
+_phase_precondition_guard() {
+  # B2: mode 0 is the documented rollback and the emergency kill switch. It must be
+  # byte-identical to pre-C4 behaviour: no subprocess, no journal event, no refusal for
+  # ANY reason including a malformed phases.yaml or a refused waiver. Round 4 removed
+  # this return and made `=0` able to refuse on rc 4 — that is not a kill switch.
+  [[ "${REQUIRE_PHASES}" == "0" ]] && return 0
+  local sig8="$1" cls="$2" writes="${3:-}"
+  shift 3 2>/dev/null || shift $# 2>/dev/null || true
+  local -a waiver_args=()
+  while [[ $# -gt 0 ]]; do
+    waiver_args+=("$1"); shift
+  done
+
+  local mode="${REQUIRE_PHASES}"
+  if [[ "$mode" != "warn" && "$mode" != "1" && "$mode" != "0" ]]; then
+    emit decision "phase_precondition_badmode value=${mode}"
+    mode="warn"
+  fi
+
+  local assert_out assert_rc
+  assert_out="$(bash "${PHASE_RECORD_BIN}" assert "${sig8}" --class "${cls}" \
+    ${writes:+--writes "${writes}"} "${waiver_args[@]+"${waiver_args[@]}"}" 2>&1)" || assert_rc=$?
+  assert_rc="${assert_rc:-0}"
+
+  case "$assert_rc" in
+    0)
+      return 0
+      ;;
+    3)
+      local missing_csv="${assert_out#missing=}"
+      if [[ "$mode" == "1" ]]; then
+        emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} mode=1"
+        log_err "dispatch refused: missing mandatory phases: ${missing_csv}"
+        local mp
+        for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
+          log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
+        done
+        return 1
+      else
+        # mode 0 or warn: missing phases do not block
+        [[ "$mode" == "warn" ]] \
+          && emit decision "phase_precondition_warn task=${sig8} class=${cls} missing=${missing_csv} mode=warn"
+        return 0
+      fi
+      ;;
+    4)
+      # Config error / refused waiver — always refuse in modes warn and 1.
+      emit decision "phase_precondition_config_error task=${sig8} detail=${assert_out}"
+      log_err "phase precondition config error: ${assert_out}"
+      return 1
+      ;;
+    *)
+      # B4: unexpected exit code (e.g. python3 missing → rc=127, disk-full
+      # mktemp, unbound-variable abort).  In enforce mode this refuses (must
+      # say WHY).  In warn mode it must journal a distinct line and PROCEED —
+      # the "warn" contract is that infra trouble never silently becomes a
+      # hard repo-wide refusal.
+      if [[ "$mode" == "1" ]]; then
+        emit decision "phase_precondition_refused task=${sig8} class=${cls} reason=unexpected_rc value=${assert_rc}"
+        log_err "phase precondition: unexpected exit ${assert_rc}: ${assert_out}"
+        return 1
+      else
+        emit decision "phase_precondition_warn task=${sig8} class=${cls} reason=unexpected_rc value=${assert_rc} mode=${mode}"
+        log_err "phase precondition: unexpected exit ${assert_rc} (proceeding in ${mode} mode): ${assert_out}"
+        return 0
+      fi
+      ;;
+  esac
 }
 
 architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled, 1 failed
@@ -2210,6 +2350,60 @@ cmd_record_review() {
   esac
   reviewer="$(sanitize_field "${reviewer}")"; run_id="$(sanitize_field "${run_id}")"
   JOURNAL_TASK="review-${diff_hash:0:8}"
+
+  # B1 R2 (PHASES-ARE-THE-ONLY-PATH-01): refuse a build worker minting a review of
+  # ITS OWN diff from inside a lane worktree (self-attestation).  Recording a review
+  # of a DIFFERENT diff from inside a worktree is allowed -- the guard compares the
+  # provided diff_hash against the SHA-256 of the current worktree's own diff against
+  # its base, computed with the same scheme as leadv2-dispatch-product-close.sh's
+  # _pc_repo_diff: git diff <base> with docs/leadv2+docs/handoff excluded, taking the
+  # larger of HEAD-diff and base-diff ("never-smaller" guard).  Base resolution mirrors
+  # _pc_diff_base: lane start-sha (env or cache file) → origin/main merge-base → HEAD.
+  if [[ "${REVIEW_RECORDER_GUARD}" == "1" ]]; then
+    local _cwd _git_dir _common_dir
+    _cwd="$PWD"
+    _git_dir="$(git -C "$_cwd" rev-parse --git-dir 2>/dev/null || true)"
+    _common_dir="$(git -C "$_cwd" rev-parse --git-common-dir 2>/dev/null || true)"
+    if [[ -n "$_git_dir" && -n "$_common_dir" && "$_git_dir" != "$_common_dir" ]] \
+       || [[ "$_cwd" == */.claude/worktrees/* ]]; then
+      local _repo_root _base _head_diff _base_diff _wt_diff _wt_hash _wt_sig8 _start_sha
+      _repo_root="$(git -C "$_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+      if [[ -n "$_repo_root" ]]; then
+        # Resolve base: same candidates as _pc_diff_base (start-sha cache → origin/main → HEAD).
+        _start_sha="${LEADV2_LANE_START_SHA:-}"
+        if [[ -z "$_start_sha" ]]; then
+          _wt_sig8="$(basename "$_cwd")"
+          _start_sha="$(cat "$(lane_start_sha_file "${_wt_sig8}")" 2>/dev/null || true)"
+        fi
+        _base=""
+        if [[ -n "$_start_sha" ]] && git -C "$_repo_root" cat-file -e "${_start_sha}^{commit}" 2>/dev/null; then
+          _base="$(git -C "$_repo_root" merge-base "${_start_sha}" HEAD 2>/dev/null || true)"
+        fi
+        if [[ -z "$_base" ]] && git -C "$_repo_root" cat-file -e "origin/main^{commit}" 2>/dev/null; then
+          _base="$(git -C "$_repo_root" merge-base origin/main HEAD 2>/dev/null || true)"
+        fi
+        # Never-smaller: compute both HEAD-diff and base-diff, keep the larger.
+        _head_diff="$(git -C "$_repo_root" diff HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true)"
+        if [[ -n "$_base" ]]; then
+          _base_diff="$(git -C "$_repo_root" diff "$_base" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true)"
+        else
+          _base_diff=""
+        fi
+        if [[ ${#_base_diff} -gt ${#_head_diff} ]]; then
+          _wt_diff="$_base_diff"
+        else
+          _wt_diff="$_head_diff"
+        fi
+        _wt_hash="$(printf '%s' "${_wt_diff}" | shasum -a 256 | awk '{print $1}')"
+        if [[ "$_wt_hash" == "$diff_hash" ]]; then
+          emit decision "review_record_refused reason=self_review_worktree diff=${diff_hash:0:8} cwd=${_cwd}"
+          printf 'review_refused reason=self_review_worktree\n'
+          exit 1
+        fi
+      fi
+    fi
+  fi
+
   local rrc
   atomic_review_check_and_record "${diff_hash}" "${verdict}" "${reviewer}" "${run_id}"
   rrc=$?
@@ -2240,6 +2434,7 @@ cmd_status() {
 cmd_resolve() {
   local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0
+  local -a phase_waivers=()
   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
   # for callers (leadv2-fanout.sh's funnel) that dispatch on behalf of a specific
   # docs/tasks.yaml row. Additive/optional -- callers that omit it (backlog-pump,
@@ -2280,6 +2475,8 @@ cmd_resolve() {
       --acceptance-cmd)  [[ $# -ge 2 ]] || { log_err "--acceptance-cmd requires a value"; usage; }
                           lane_acceptance_cmd="$2"; shift 2 ;;
       --rollback-onestep) lane_rollback=1; shift ;;
+      --phase-waiver) [[ $# -ge 2 ]] || { log_err "--phase-waiver requires a value"; usage; }
+                      phase_waivers+=("$2"); shift 2 ;;
       # LANE-PLACEMENT-01: pin WORK_ROOT to an EXISTING lane worktree instead of
       # ensure-creating a new one.  Two spellings, one code path.  Mutual-exclusion
       # is enforced here (before any state write, exit 1 = usage).
@@ -2395,6 +2592,30 @@ cmd_resolve() {
   local product_class classification_reason
   IFS=$'\t' read -r product_class classification_reason <<< "$(classify_product_work "${kind}" "${mission}")"
   emit decision "dispatch_classified task=${sig8} class=${product_class} reason=${classification_reason} kind=${kind:-unknown}"
+
+  # PHASES-ARE-THE-ONLY-PATH-01 §7: register the dispatch lane in active.yaml.
+  # Without this, leadv2_active_update_phase finds no row to patch and the mirror
+  # stays empty forever (backlog-pump.sh:250-256 states this outright).
+  # leadv2_active_register is idempotent (refreshes existing row if PID alive).
+  if [[ -n "${founder_task_id}" ]] && [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
+    if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null \
+       || ! leadv2_active_register "${founder_task_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null; then
+      emit decision "active_register_miss task=${sig8}"
+    fi
+  fi
+
+  # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
+  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
+    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
+
+  # PHASES-ARE-THE-ONLY-PATH-01 §5: precondition guard at the same structural slot
+  # as _lane_writes_guard / _acceptance_guard — after arg validation, before spawn.
+  local _phase_waiver_args=()
+  for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
+    _phase_waiver_args+=(--waiver "$_pw")
+  done
+  _phase_precondition_guard "${sig8}" "${task_class}" "${lane_writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
+
   if [[ "${product_class}" == "product" ]]; then
     # PREPASS-DEGRADES-01 (2026-07-29): a prepass failure must NEVER stop the work. On
     # 2026-07-29 this hard exit killed product dispatches outright -- the task never
@@ -2419,6 +2640,13 @@ cmd_resolve() {
       log_err "architect prepass produced no design for product task=${sig8} after ${ARCHITECT_PREPASS_ATTEMPTS} attempts -- task PARKED, not dispatched."
       _dl_note "${sig8}" parked "no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts" "" "${founder_task_id}"
       exit 3
+    fi
+    # PHASES-ARE-THE-ONLY-PATH-01: record plan phase done (prepass produced a design).
+    local _pp_file_record; _pp_file_record="$(_prepass_file "${sig8}")"
+    if [[ -s "${_pp_file_record}" ]]; then
+      bash "${PHASE_RECORD_BIN}" record "${sig8}" plan --status done \
+        --artifact "docs/handoff/dispatch-${sig8}/architect-prepass.md" \
+        --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
     fi
     # P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01: the row-declared `lane_writes` always wins --
     # a founder declaration is never overridden. Only when the row carried none does the
@@ -2703,6 +2931,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
   # mid-loop (e.g. glm quota-gate refusal falling to sonnet), so that second
   # stamp is the one that ends up truthful, not this one.
   _stamp_active_phase "${founder_task_id}" "build" "${arm}"
+  # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
+  bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
+    --handle "dispatch-${sig8}-build" \
+    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
   # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): the candidate loop is wrapped in a restartable
   # while so a lock-busy refusal can re-resolve the arm mid-loop and re-enter over a
   # rebuilt chain. bash expands "${candidate_arms[@]}" once at for-entry, so merely
@@ -2733,6 +2965,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
       # Re-stamp with the CONFIRMED-launched arm, phase unchanged -- the truthful value
       # once the primary arm_resolved pick was refused and the loop fell to a fallback.
       _stamp_active_phase "${founder_task_id}" "build" "${candidate}"
+      # PHASES-ARE-THE-ONLY-PATH-01: re-record build with the confirmed candidate.
+      bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
+        --handle "dispatch-${sig8}-${candidate}" \
+        --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
       # VESTIGIAL (dispatch-00629379, 2026-07-30): reviewer_arms / the
       # LEADV2_DISPATCH_REVIEWER_ARMS env it feeds is DEAD -- leadv2-dispatch-
       # product-close.sh no longer reads it. Reusing the BUILD candidate chain as the
@@ -2890,6 +3126,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
 # that already went through admission once.
 cmd_advance_arm() {
   local sig8="" arm="" mission_file="" task_id="" worktree="" writes=""
+  local -a phase_waivers=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --sig8)         [[ $# -ge 2 ]] || { log_err "--sig8 requires a value"; exit 4; }; sig8="$2"; shift 2 ;;
@@ -2898,6 +3135,7 @@ cmd_advance_arm() {
       --task-id)      [[ $# -ge 2 ]] || { log_err "--task-id requires a value"; exit 4; }; task_id="$2"; shift 2 ;;
       --worktree)     [[ $# -ge 2 ]] || { log_err "--worktree requires a value"; exit 4; }; worktree="$2"; shift 2 ;;
       --writes)       [[ $# -ge 2 ]] || { log_err "--writes requires a value"; exit 4; }; writes="$2"; shift 2 ;;
+      --phase-waiver) [[ $# -ge 2 ]] || { log_err "--phase-waiver requires a value"; exit 4; }; phase_waivers+=("$2"); shift 2 ;;
       *) log_err "advance-arm: unknown argument: $1"; exit 4 ;;
     esac
   done
@@ -2922,6 +3160,21 @@ cmd_advance_arm() {
     exit 4
   fi
 
+  # PHASES-ARE-THE-ONLY-PATH-01 §5/D2: advance-arm also spawns a worker, so the
+  # guard must run here too. cmd_advance_arm has no --class flag; resolve it
+  # from the confirmed dispatch-ledger row, default to Standard if absent.
+  local _adv_class
+  _adv_class="$(printf '%s' "${confirmed}" | sed -n 's/.*"task_class":"\([^"]*\)".*/\1/p')"
+  if [[ -z "${_adv_class}" ]]; then
+    _adv_class="Standard"
+    emit decision "phase_class_defaulted task=${sig8}"
+  fi
+  local _phase_waiver_args=()
+  for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
+    _phase_waiver_args+=(--waiver "$_pw")
+  done
+  _phase_precondition_guard "${sig8}" "${_adv_class}" "${writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
+
   local mission
   mission="$(cat "${mission_file}" 2>/dev/null)"
   [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
@@ -2935,6 +3188,10 @@ cmd_advance_arm() {
   local handle
   handle="$(printf '%s\n' "${spawn_out}" | sed -n 's/.*handle=\(.*\)$/\1/p' | tail -1)"
   _stamp_active_phase "${task_id}" "build" "${arm}"
+  # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
+  bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
+    --handle "dispatch-${sig8}-build" \
+    --task-id "${task_id}" --owner "$(basename "$0"):cmd_advance_arm" 2>/dev/null || true
   emit decision "worker_spawned by=arm_advance model=${arm} handle=${handle}"
 
   if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then

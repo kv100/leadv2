@@ -116,6 +116,9 @@ run_check "core-offline root arithmetic (git-derived REPO_ROOT)" bash "$TEST_DIR
 run_check "dispatch arm vocabulary (kimi retirement)" bash "$TEST_DIR/test-dispatch-arm-vocabulary.sh"
 run_check "foreground-dispatch guard hook" bash "$TEST_DIR/test-fg-dispatch-guard.sh"
 run_check "idle-lead guard hook" bash "$TEST_DIR/test-idle-lead-guard.sh"
+run_check "phase record round-trip" bash "$TEST_DIR/test-phase-record.sh"
+run_check "phase precondition guard matrix" bash "$TEST_DIR/test-phase-precondition.sh"
+run_check "lane phase render" bash "$TEST_DIR/test-lane-phase-render.sh"
 
 printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
 (( FAIL == 0 && MISSING == 0 ))

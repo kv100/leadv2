@@ -63,6 +63,9 @@ DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
 # proven arms have headroom). Same positioning rationale as DEFAULT_BUILD_SPILL above.
 # kimi is PROBE-gated, not quota-gated: it has NO *_review_threshold_pct key, and its
 # only admission signal is kimi-coder.sh probe reachability (see kimi_review_available).
+# B1 R1: this list is the source of truth for the review-arm allowlist enforced by
+# leadv2-phase-record.sh's _verify_artifact review check (LEADV2_REVIEW_ARMS env var).
+# If you add/remove an arm here, update the default there too.
 DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "kimi", "opus", "sonnet"]
 DEFAULT_GLM_REVIEW_THRESHOLD_PCT = 90.0
 DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT = 95.0
