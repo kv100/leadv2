@@ -17,6 +17,28 @@
 #   started_at: <ISO-8601>
 #   ended_at: <ISO-8601 or "">
 #   reason: <text or "">
+#   commit: <40-hex sha>  (deploy only; additive, may be absent on older records)
+#
+# Proof level per phase (what _verify_artifact actually checks):
+#
+#   Phase        Proof                                        Level
+#   -----        -----                                        -----
+#   plan         context.yaml or prepass exists + has body    full
+#   gate1        .gate1-passed sentinel non-empty             full
+#   build        artifact integrity + lane diff non-empty     full
+#   review       diff_hash match + verdict PASS/PASS_NITS     full
+#   deploy       artifact integrity + commit ancestor of main full
+#   close        phase8-passed.flag non-empty                 full
+#   test         artifact integrity only                      unprovable
+#   live_verify  artifact integrity only                      unprovable
+#   e2e          artifact integrity only                      unprovable
+#   classify     dispatch dir exists                          full (meta)
+#   diverge      dispatch dir exists                          full (meta)
+#
+# test / live_verify / e2e: integrity (sha256 match) is strictly stronger than
+# bare existence, but is NOT semantic proof that a test ran or a deploy is live.
+# These three phases are declared UNPROVABLE beyond integrity — there is no
+# writer that records them `done` today, and no semantic assertion is available.
 #
 # Usage:
 #   leadv2-phase-record.sh record <sig8> <phase> [flags]
@@ -298,10 +320,56 @@ sys.exit(1)
   done
 }
 
+# ── repo slug (mirrors dispatch-code.sh:repo_slug byte-for-byte) ─────────────
+# Sanitized to filesystem-safe so the ledger file assert reads matches the file
+# the writer (dispatch-code.sh) created.
+_repo_slug() {
+  local base
+  base="$(basename "${LEDGER_REPO_ROOT:-${PROJECT_ROOT}}")"
+  printf '%s' "${base}" | tr -cd 'A-Za-z0-9._-'
+}
+
+# ── artifact integrity (applies to every artifact-bearing phase) ─────────────
+# Resolves the artifact path the same way cmd_record does (:417-421), then
+# compares the on-disk sha256 to the recorded sha.  rc 0 = intact, 1 = not.
+_artifact_integrity() {
+  local artifact="$1" recorded_sha="$2"
+  local resolved=""
+  if [[ -n "$artifact" && -f "${PROJECT_ROOT}/${artifact}" ]]; then
+    resolved="${PROJECT_ROOT}/${artifact}"
+  elif [[ -n "$artifact" && -f "$artifact" ]]; then
+    resolved="$artifact"
+  else
+    return 1
+  fi
+  [[ -n "$recorded_sha" ]] || return 1
+  local actual_sha
+  actual_sha="$(_sha256 "$resolved")"
+  [[ "$actual_sha" == "$recorded_sha" ]] || return 1
+  return 0
+}
+
+# ── resolve the lane diff base (mirrors product-close.sh:_pc_diff_base) ──────
+# Returns the merge-base sha on stdout, or empty if none resolves.
+_resolve_lane_diff_base() {
+  local sig8="$1" sha="${LEADV2_LANE_START_SHA:-}" base
+  if [[ -z "$sha" ]]; then
+    sha="$(cat "${CACHE_BASE}/dispatch-${sig8}.start-sha" 2>/dev/null || true)"
+  fi
+  if [[ -n "$sha" ]] && git -C "$PROJECT_ROOT" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+    base="$(git -C "$PROJECT_ROOT" merge-base "$sha" HEAD 2>/dev/null || true)"
+    [[ -n "$base" ]] && { printf '%s' "$base"; return 0; }
+  fi
+  if git -C "$PROJECT_ROOT" cat-file -e "origin/main^{commit}" 2>/dev/null; then
+    base="$(git -C "$PROJECT_ROOT" merge-base origin/main HEAD 2>/dev/null || true)"
+    [[ -n "$base" ]] && printf '%s' "$base"
+  fi
+}
+
 # ── verify artifact for a phase ──────────────────────────────────────────────
 # Returns 0 if artifact is proven, 1 otherwise.
 _verify_artifact() {
-  local sig8="$1" phase="$2" artifact="${3:-}" sha="${4:-}"
+  local sig8="$1" phase="$2" artifact="${3:-}" sha="${4:-}" commit="${5:-}"
   case "$phase" in
     plan)
       # context.yaml or prepass file with non-empty design
@@ -318,22 +386,49 @@ _verify_artifact() {
       return 1
       ;;
     build)
-      # non-empty git diff vs lane base — checked at call site; here just check record exists
-      [[ -n "$artifact" && -f "$artifact" ]] && return 0
-      return 1
+      # F2: artifact integrity first, then non-empty lane diff vs base.
+      _artifact_integrity "$artifact" "$sha" || return 1
+      # Non-empty git diff vs lane base proves build produced changes.
+      git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 1
+      local base
+      base="$(_resolve_lane_diff_base "$sig8")"
+      [[ -n "$base" ]] || return 1
+      git -C "$PROJECT_ROOT" diff --quiet "$base" 2>/dev/null && return 1
+      return 0
       ;;
     review)
-      # review ledger row exists
-      local ledger_dir="${CACHE_BASE}/code-review-ledger"
-      local slug
-      slug="$(basename "${LEDGER_REPO_ROOT:-${PROJECT_ROOT}}")" || slug="repo"
-      local ledger_file="${ledger_dir}/${slug}.jsonl"
-      [[ -s "$ledger_file" ]] && return 0
+      # F1: require a code-review-ledger row whose diff_hash matches this lane's
+      # review.diff and whose verdict is PASS or PASS_WITH_NITS.
+      local lane_diff="${PHASES_DIR_BASE}/dispatch-${sig8}/review.diff"
+      [[ -s "$lane_diff" ]] || return 1
+      local h
+      h="$(_sha256 "$lane_diff")"
+      local slug ledger_file
+      slug="$(_repo_slug)"
+      ledger_file="${CACHE_BASE}/code-review-ledger/${slug}.jsonl"
+      [[ -f "$ledger_file" ]] || return 1
+      # One JSON object per line (record_review's printf is the only writer).
+      # Filter by exact diff_hash, then check verdict on the same line.
+      if grep -F "\"diff_hash\":\"${h}\"" "$ledger_file" 2>/dev/null \
+         | grep -qE '"verdict":"(PASS|PASS_WITH_NITS)"'; then
+        return 0
+      fi
       return 1
       ;;
-    test|deploy|live_verify|e2e)
-      [[ -n "$artifact" && -f "$artifact" ]] && return 0
-      return 1
+    test|live_verify|e2e)
+      # F2: integrity-only — declared unprovable beyond sha256 match.
+      # See the proof-level table in the header doc-block.
+      _artifact_integrity "$artifact" "$sha" || return 1
+      return 0
+      ;;
+    deploy)
+      # F2: artifact integrity + recorded commit is an ancestor of origin/main.
+      _artifact_integrity "$artifact" "$sha" || return 1
+      [[ -n "$commit" ]] || return 1
+      git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 1
+      git -C "$PROJECT_ROOT" cat-file -e "origin/main^{commit}" 2>/dev/null || return 1
+      git -C "$PROJECT_ROOT" merge-base --is-ancestor "$commit" origin/main 2>/dev/null || return 1
+      return 0
       ;;
     close)
       local flag_file="${PHASES_DIR_BASE}/dispatch-${sig8}/phase8-passed.flag"
@@ -353,7 +448,7 @@ _prepass_file() { printf '%s/dispatch-%s/architect-prepass.md' "$PHASES_DIR_BASE
 
 # ── record subcommand ─────────────────────────────────────────────────────────
 cmd_record() {
-  local sig8="" phase="" artifact="" status="done" handle="" reason="" task_id="" owner=""
+  local sig8="" phase="" artifact="" status="done" handle="" reason="" task_id="" owner="" commit=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --artifact) artifact="$2"; shift 2 ;;
@@ -362,6 +457,7 @@ cmd_record() {
       --reason)   reason="$2"; shift 2 ;;
       --task-id)  task_id="$2"; shift 2 ;;
       --owner)    owner="$2"; shift 2 ;;
+      --commit)   commit="$2"; shift 2 ;;
       --*)  _log_err "record: unknown flag: $1"; exit 4 ;;
       *)
         if [[ -z "$sig8" ]]; then sig8="$1"
@@ -434,6 +530,7 @@ cmd_record() {
     printf 'started_at: %s\n' "$started_at"
     printf 'ended_at: %s\n' "$ended_at"
     printf 'reason: %s\n' "$reason"
+    [[ -n "$commit" ]] && printf 'commit: %s\n' "$commit"
   } > "$tmp_file"
 
   mv -f "$tmp_file" "$phase_file" || { _log_err "record: mv failed"; rm -f "$tmp_file"; exit 4; }
@@ -560,13 +657,14 @@ for w in (d.get('waivers_allowed') or []):
       case "$p_status" in
         done|waived)
           # Verify artifact
-          local p_artifact p_sha
+          local p_artifact p_sha p_commit
           p_artifact="$(grep '^artifact:' "$pfile" 2>/dev/null | sed 's/^artifact:[[:space:]]*//' || true)"
           p_sha="$(grep '^artifact_sha256:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
+          p_commit="$(grep '^commit:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
 
           # For non-conditional phases, verify artifact
           if [[ "$pname" != "classify" && "$pname" != "diverge" ]]; then
-            if _verify_artifact "$sig8" "$pname" "$p_artifact" "$p_sha"; then
+            if _verify_artifact "$sig8" "$pname" "$p_artifact" "$p_sha" "$p_commit"; then
               continue
             fi
           else

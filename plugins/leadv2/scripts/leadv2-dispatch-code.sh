@@ -1507,14 +1507,11 @@ _phase_precondition_guard() {
     waiver_args+=("$1"); shift
   done
 
-  # 0 = disabled: return before any subprocess, byte-identical to today.
-  if [[ "${REQUIRE_PHASES}" == "0" ]]; then
-    return 0
-  fi
-
-  # Resolve mode: warn (default), 1 (enforce). Unrecognised → warn with journal.
+  # 0 = disabled: phase gaps (rc 3) do not block, but config errors (rc 4)
+  # still refuse — a refused waiver or malformed phases.yaml is a configuration
+  # error, not a phase gap, and must not be silently swallowed.
   local mode="${REQUIRE_PHASES}"
-  if [[ "$mode" != "warn" && "$mode" != "1" ]]; then
+  if [[ "$mode" != "warn" && "$mode" != "1" && "$mode" != "0" ]]; then
     emit decision "phase_precondition_badmode value=${mode}"
     mode="warn"
   fi
@@ -1539,7 +1536,9 @@ _phase_precondition_guard() {
         done
         return 1
       else
-        emit decision "phase_precondition_warn task=${sig8} class=${cls} missing=${missing_csv} mode=warn"
+        # mode 0 or warn: missing phases do not block
+        [[ "$mode" == "warn" ]] \
+          && emit decision "phase_precondition_warn task=${sig8} class=${cls} missing=${missing_csv} mode=warn"
         return 0
       fi
       ;;
@@ -2476,7 +2475,7 @@ cmd_resolve() {
   # leadv2_active_register is idempotent (refreshes existing row if PID alive).
   if [[ -n "${founder_task_id}" ]] && [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
     if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null \
-       || ! leadv2_active_register "${founder_task_id}" "${task_class}" "${PROJECT_ROOT}" "worktree-d4d014e1" 2>/dev/null; then
+       || ! leadv2_active_register "${founder_task_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null; then
       emit decision "active_register_miss task=${sig8}"
     fi
   fi
