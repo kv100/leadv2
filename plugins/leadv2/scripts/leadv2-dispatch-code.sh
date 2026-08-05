@@ -1294,19 +1294,31 @@ diff_seen() {  # <hash> -> 0 if already reviewed
   [[ -f "$f" ]] || return 1
   grep -qF "\"diff_hash\":\"$1\"" "$f"
 }
-record_review() {  # <diff_hash> <verdict> <reviewer> <run_id>
-  local f ts
+record_review() {  # <diff_hash> <verdict> <reviewer> <run_id> [guard_token]
+  local f ts guard_token="${5:-}"
   f="$(review_ledger_file)"; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
   mkdir -p "${REVIEW_LEDGER_DIR}"
-  printf '{"diff_hash":"%s","verdict":"%s","reviewer":"%s","run_id":"%s","repo":"%s","ts":"%s"}\n' \
-    "$1" "$2" "$3" "$4" "$(repo_slug)" "$ts" >> "$f"
+  if [[ -n "$guard_token" ]]; then
+    printf '{"diff_hash":"%s","verdict":"%s","reviewer":"%s","run_id":"%s","repo":"%s","ts":"%s","guard_token":"%s"}\n' \
+      "$1" "$2" "$3" "$4" "$(repo_slug)" "$ts" "$guard_token" >> "$f"
+  else
+    printf '{"diff_hash":"%s","verdict":"%s","reviewer":"%s","run_id":"%s","repo":"%s","ts":"%s"}\n' \
+      "$1" "$2" "$3" "$4" "$(repo_slug)" "$ts" >> "$f"
+  fi
 }
 review_lock_file() { printf '%s/.%s.review.lock' "${REVIEW_LEDGER_DIR}" "$(repo_slug)"; }
 
 # Same atomicity fix as atomic_dispatch_check_and_record, for the review ledger's
 # diff_hash race (Finding 3/4 both name diff_hash alongside task_sig).
 # B1 R3: also maintains a row-count sidecar so raw >> appends are detectable.
+# B1 R4: also maintains an "adopted" marker outside the ledger dir so that
+# sidecar-absent can be distinguished from "never used" vs "deleted after use".
+# B1 R5: also mints a per-invocation guard token stored in the provenance dir
+# (outside the ledger), checked back by _verify_artifact.  An attacker writing
+# raw ledger rows must also forge the tokens file outside the ledger dir.
 _review_sidecar_file() { printf '%s/%s.jsonl.rows' "${REVIEW_LEDGER_DIR}" "$(repo_slug)"; }
+_review_adopted_marker() { printf '%s/code-review-provenance/%s.adopted' "${CACHE_BASE}" "$(repo_slug)"; }
+_review_tokens_file() { printf '%s/code-review-provenance/%s.tokens' "${CACHE_BASE}" "$(repo_slug)"; }
 _increment_review_sidecar() {
   local sidecar rows bootstrap=0
   sidecar="$(_review_sidecar_file)"
@@ -1315,6 +1327,13 @@ _increment_review_sidecar() {
     rows="$(wc -l < "$(review_ledger_file)" 2>/dev/null | tr -d ' ')"
     rows="${rows:-0}"
     bootstrap=1
+    # B1 R4: write the adopted marker once — outside the ledger dir so a raw
+    # attacker who can write to code-review-ledger/ cannot remove it by accident.
+    local _adopted_dir _adopted_file
+    _adopted_file="$(_review_adopted_marker)"
+    _adopted_dir="$(dirname "$_adopted_file")"
+    mkdir -p "$_adopted_dir" 2>/dev/null || true
+    : > "$_adopted_file" 2>/dev/null || true
   else
     rows="$(<"$sidecar")"
     rows="${rows// /}"
@@ -1332,13 +1351,22 @@ atomic_review_check_and_record() {  # <diff_hash> <verdict> <reviewer> <run_id>
   local hash="$1" verdict="$2" reviewer="$3" run_id="$4" lockf
   mkdir -p "${REVIEW_LEDGER_DIR}"
   lockf="$(review_lock_file)"
+  # B1 R5: mint a per-invocation guard token under flock.  The caller cannot
+  # supply this — it is generated here, embedded in the ledger row, and recorded
+  # in the provenance dir (outside the attacker-writable ledger dir).
+  local _gt _gt_file _gt_dir
+  _gt="$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' || printf 'fallback%d' $$)"
+  _gt_file="$(_review_tokens_file)"
+  _gt_dir="$(dirname "$_gt_file")"
+  mkdir -p "$_gt_dir" 2>/dev/null || true
   (
     lv2_lock_wait "${lockf}" 10 || exit 3
     if [[ "${ENFORCE}" == "1" ]] && diff_seen "${hash}"; then
       exit 2
     fi
-    record_review "${hash}" "${verdict}" "${reviewer}" "${run_id}"
+    record_review "${hash}" "${verdict}" "${reviewer}" "${run_id}" "${_gt}"
     _increment_review_sidecar
+    printf '%s\n' "${_gt}" >> "$_gt_file" 2>/dev/null || true
     exit 0
   ) 9>"${lockf}"
 }
@@ -1578,9 +1606,20 @@ _phase_precondition_guard() {
       return 1
       ;;
     *)
-      emit decision "phase_precondition_config_error task=${sig8} detail=unexpected_rc=${assert_rc}"
-      log_err "phase precondition: unexpected exit ${assert_rc}: ${assert_out}"
-      return 1
+      # B4: unexpected exit code (e.g. python3 missing → rc=127, disk-full
+      # mktemp, unbound-variable abort).  In enforce mode this refuses (must
+      # say WHY).  In warn mode it must journal a distinct line and PROCEED —
+      # the "warn" contract is that infra trouble never silently becomes a
+      # hard repo-wide refusal.
+      if [[ "$mode" == "1" ]]; then
+        emit decision "phase_precondition_refused task=${sig8} class=${cls} reason=unexpected_rc value=${assert_rc}"
+        log_err "phase precondition: unexpected exit ${assert_rc}: ${assert_out}"
+        return 1
+      else
+        emit decision "phase_precondition_warn task=${sig8} class=${cls} reason=unexpected_rc value=${assert_rc} mode=${mode}"
+        log_err "phase precondition: unexpected exit ${assert_rc} (proceeding in ${mode} mode): ${assert_out}"
+        return 0
+      fi
       ;;
   esac
 }

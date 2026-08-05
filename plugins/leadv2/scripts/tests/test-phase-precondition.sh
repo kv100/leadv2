@@ -460,32 +460,32 @@ else
 fi
 rm -rf "$G6B_SANDBOX"
 
-# G6c: deploy with non-ancestor commit → deploy in missing
+# G6c: deploy with a commit that is NOT a descendant of the lane base → deploy in missing
 G6C_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g6c-XXXXXX)"
 G6C_REPO="${G6C_SANDBOX}/repo"
 mkdir -p "${G6C_REPO}"
 ( cd "${G6C_REPO}" && git init -q -b main \
   && git config user.email t@e.com && git config user.name t \
   && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
-# Create a second commit so we have a non-ancestor SHA (a branch off main)
-( cd "${G6C_REPO}" && git checkout -q -b side && printf 'side\n' > side.txt \
-  && git add side.txt && git commit -qm side && git checkout -q main )
-SIDE_SHA="$(cd "${G6C_REPO}" && git rev-parse side)"
+# Create an orphan commit with no relationship to the lane's history.
+( cd "${G6C_REPO}" && git checkout -q --orphan orphan && git rm -q -f .gitignore \
+  && printf 'orphan\n' > orphan.txt && git add orphan.txt && git commit -qm orphan )
+ORPHAN_SHA="$(cd "${G6C_REPO}" && git rev-parse HEAD)"
+( cd "${G6C_REPO}" && git checkout -q main )
 G6C_SIG8="g6bee03"
 mkdir -p "${G6C_REPO}/docs/handoff/dispatch-${G6C_SIG8}/phases.d"
 printf 'deploy artifact\n' > "${G6C_REPO}/deploy-out.txt"
 # Record deploy normally, then append a commit line to the yaml
 LEADV2_PROJECT_ROOT="${G6C_REPO}" bash "$PHASE_RECORD" record "$G6C_SIG8" deploy --status done \
   --artifact "deploy-out.txt" --owner test >/dev/null 2>&1
-# Append commit field manually (avoids using --commit which doesn't exist on 5ba7620)
-printf 'commit: %s\n' "$SIDE_SHA" >> "${G6C_REPO}/docs/handoff/dispatch-${G6C_SIG8}/phases.d/deploy.yaml"
-# Set up origin/main so the ancestor check can run
+printf 'commit: %s\n' "$ORPHAN_SHA" >> "${G6C_REPO}/docs/handoff/dispatch-${G6C_SIG8}/phases.d/deploy.yaml"
+# Set up origin/main so the lane base can resolve.
 ( cd "${G6C_REPO}" && git update-ref refs/remotes/origin/main HEAD )
 G6C_OUT="$(cd "${G6C_REPO}" && LEADV2_PROJECT_ROOT="${G6C_REPO}" bash "$PHASE_RECORD" assert "$G6C_SIG8" --class Standard --writes "app.py" 2>/dev/null)"
 if printf '%s' "$G6C_OUT" | grep -q 'missing=.*deploy'; then
   ok
 else
-  fail "G6c: deploy with non-ancestor commit should show deploy in missing= (got: $G6C_OUT)"
+  fail "G6c: deploy with non-descendant commit should show deploy in missing= (got: $G6C_OUT)"
 fi
 rm -rf "$G6C_SANDBOX"
 
@@ -606,6 +606,7 @@ if [[ ${#G7D_BASE_DIFF} -gt ${#G7D_HEAD_DIFF} ]]; then G7D_WT_DIFF="$G7D_BASE_DI
 G7D_HASH="$(printf '%s' "${G7D_WT_DIFF}" | shasum -a 256 | awk '{print $1}')"
 G7D_LINES_BEFORE="$(wc -l < "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl" 2>/dev/null | tr -d ' ')"
 # G7d-1: self-review (own diff hash) → refused
+: > "${G7_JOURNAL_LOG}"
 rc_g7d=0
 ( cd "${G7_REPO}/.claude/worktrees/${G7D_SIG8}" \
   && env -u LEADV2_LANE_WORK_ROOT \
@@ -613,6 +614,12 @@ rc_g7d=0
   LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$DISPATCH_BIN" record-review \
   --diff-hash "$G7D_HASH" --verdict PASS --reviewer "codex:standard" --run-id "dispatch-test" ) >/dev/null 2>&1 || rc_g7d=$?
 if [[ $rc_g7d -ne 0 ]]; then ok; else fail "G7d: self-review from worktree should fail (rc=$rc_g7d)"; fi
+# B3: assert on the specific refusal journal line, not merely a nonzero rc
+if grep -q 'review_record_refused' "${G7_JOURNAL_LOG}" 2>/dev/null; then
+  ok
+else
+  fail "G7d: review_record_refused should be journaled for self-review"
+fi
 G7D_LINES_AFTER="$(wc -l < "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl" 2>/dev/null | tr -d ' ')"
 if [[ "$G7D_LINES_BEFORE" == "$G7D_LINES_AFTER" ]]; then
   ok
@@ -629,30 +636,63 @@ rc_g7d2=0
 if [[ $rc_g7d2 -eq 0 ]]; then ok; else fail "G7d-2: review of different diff from worktree should succeed (rc=$rc_g7d2)"; fi
 ( cd "${G7_REPO}" && git worktree remove -q ".claude/worktrees/${G7D_SIG8}" 2>/dev/null; git branch -q -D "wt-${G7D_SIG8}" 2>/dev/null; true )
 
-# G7e: sidecar absent (legacy), correctly-hashed PASS row with "reviewer":"glm" → review satisfied
+# G7e: sidecar absent (true legacy — never adopted), correctly-hashed PASS row → review satisfied.
+# Uses a SEPARATE repo so the adopted marker from G7c's guarded write doesn't apply.
+G7E_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g7e-XXXXXX)"
+G7E_REPO="${G7E_SANDBOX}/repo"
+mkdir -p "${G7E_REPO}"
+( cd "${G7E_REPO}" && git init -q -b main \
+  && git config user.email t@e.com && git config user.name t \
+  && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
+G7E_CACHE="${G7E_SANDBOX}/cache"
+G7E_LEDGER_DIR="${G7E_CACHE}/code-review-ledger"
+G7E_SLUG="$(basename "${G7E_REPO}" | tr -cd 'A-Za-z0-9._-')"
 G7E_SIG8="g7dee05"
-_g7_setup_review "$G7E_SIG8"
-G7E_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7E_SIG8}/review.diff" | awk '{print $1}')"
+mkdir -p "${G7E_REPO}/docs/handoff/dispatch-${G7E_SIG8}/phases.d"
+printf 'diff content for %s\n' "$G7E_SIG8" > "${G7E_REPO}/docs/handoff/dispatch-${G7E_SIG8}/review.diff"
+LEADV2_PROJECT_ROOT="${G7E_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7E_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" \
+  bash "$PHASE_RECORD" record "$G7E_SIG8" review --status done \
+  --artifact "docs/handoff/dispatch-${G7E_SIG8}/review.diff" --owner test >/dev/null 2>&1
+G7E_HASH="$(shasum -a 256 "${G7E_REPO}/docs/handoff/dispatch-${G7E_SIG8}/review.diff" | awk '{print $1}')"
+mkdir -p "$G7E_LEDGER_DIR"
 printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"glm","run_id":"r5","repo":"%s","ts":"2026-01-01T00:00:00Z"}\n' \
-  "$G7E_HASH" "$G7_SLUG" > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl"
-rm -f "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows"
-G7E_OUT="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  "$G7E_HASH" "$G7E_SLUG" > "${G7E_LEDGER_DIR}/${G7E_SLUG}.jsonl"
+# No sidecar, no adopted marker → true legacy path
+G7E_OUT="$(LEADV2_PROJECT_ROOT="${G7E_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7E_CACHE}" \
   LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$PHASE_RECORD" assert "$G7E_SIG8" --class Standard 2>/dev/null)"
 if ! printf '%s' "$G7E_OUT" | grep -q 'missing=.*review'; then
   ok
 else
-  fail "G7e: legacy ledger (no sidecar) with valid glm row should pass (got: $G7E_OUT)"
+  fail "G7e: legacy ledger (no sidecar, never adopted) with valid glm row should pass (got: $G7E_OUT)"
 fi
 
-# G7f: malformed JSON line should not hide a good row later in the file
+# G7f: malformed JSON line should not hide a good row later in the file.
+# Uses a SEPARATE repo+cache so no guard tokens file exists (B1 R5 would
+# otherwise reject the hand-written row).
+G7F_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g7f-XXXXXX)"
+G7F_REPO="${G7F_SANDBOX}/repo"
+mkdir -p "${G7F_REPO}"
+( cd "${G7F_REPO}" && git init -q -b main \
+  && git config user.email t@e.com && git config user.name t \
+  && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
+G7F_CACHE="${G7F_SANDBOX}/cache"
+G7F_LEDGER_DIR="${G7F_CACHE}/code-review-ledger"
+G7F_SLUG="$(basename "${G7F_REPO}" | tr -cd 'A-Za-z0-9._-')"
 G7F_SIG8="g7def06"
-_g7_setup_review "$G7F_SIG8"
-G7F_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7F_SIG8}/review.diff" | awk '{print $1}')"
-printf 'this is not json\n' > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl"
+mkdir -p "${G7F_REPO}/docs/handoff/dispatch-${G7F_SIG8}/phases.d"
+printf 'diff content for %s\n' "$G7F_SIG8" > "${G7F_REPO}/docs/handoff/dispatch-${G7F_SIG8}/review.diff"
+LEADV2_PROJECT_ROOT="${G7F_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7F_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" \
+  bash "$PHASE_RECORD" record "$G7F_SIG8" review --status done \
+  --artifact "docs/handoff/dispatch-${G7F_SIG8}/review.diff" --owner test >/dev/null 2>&1
+G7F_HASH="$(shasum -a 256 "${G7F_REPO}/docs/handoff/dispatch-${G7F_SIG8}/review.diff" | awk '{print $1}')"
+mkdir -p "$G7F_LEDGER_DIR"
+printf 'this is not json\n' > "${G7F_LEDGER_DIR}/${G7F_SLUG}.jsonl"
 printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"codex","run_id":"r6","repo":"%s","ts":"2026-01-01T00:00:00Z"}\n' \
-  "$G7F_HASH" "$G7_SLUG" >> "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl"
-printf '2\n' > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows"
-G7F_OUT="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  "$G7F_HASH" "$G7F_SLUG" >> "${G7F_LEDGER_DIR}/${G7F_SLUG}.jsonl"
+printf '2\n' > "${G7F_LEDGER_DIR}/${G7F_SLUG}.jsonl.rows"
+G7F_OUT="$(LEADV2_PROJECT_ROOT="${G7F_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7F_CACHE}" \
   LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$PHASE_RECORD" assert "$G7F_SIG8" --class Standard 2>/dev/null)"
 if ! printf '%s' "$G7F_OUT" | grep -q 'missing=.*review'; then
   ok
@@ -660,7 +700,31 @@ else
   fail "G7f: malformed line should not hide valid row (got: $G7F_OUT)"
 fi
 
-rm -rf "$G7_SANDBOX"
+# G7g (B1 R4): sidecar adopted, then deleted → must be rejected as tamper.
+# Reuses the main G7 sandbox where G7c's record-review already wrote the
+# sidecar and the adopted marker.
+G7G_SIG8="g7deg07"
+_g7_setup_review "$G7G_SIG8"
+G7G_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7G_SIG8}/review.diff" | awk '{print $1}')"
+printf '{"diff_hash":"%s","verdict":"PASS","reviewer":"codex","run_id":"r7","repo":"%s","ts":"2026-01-01T00:00:00Z"}\n' \
+  "$G7G_HASH" "$G7_SLUG" > "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl"
+# Delete the sidecar to simulate the attack — adopted marker persists
+rm -f "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl.rows"
+: > "${G7_JOURNAL_LOG}"
+G7G_OUT="$(LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$PHASE_RECORD" assert "$G7G_SIG8" --class Standard 2>/dev/null)"
+if printf '%s' "$G7G_OUT" | grep -q 'missing=.*review'; then
+  ok
+else
+  fail "G7g: sidecar deleted after adoption should be rejected as tamper (got: $G7G_OUT)"
+fi
+if grep -q 'review_sidecar_tamper' "${G7_JOURNAL_LOG}" 2>/dev/null; then
+  ok
+else
+  fail "G7g: review_sidecar_tamper should be journaled"
+fi
+
+rm -rf "$G7_SANDBOX" "$G7E_SANDBOX" "$G7F_SANDBOX"
 
 # ── G8: B2 REQUIRE_PHASES=0 is a full disable (kill switch) ─────────────────
 printf 'test: G8 REQUIRE_PHASES=0 proceeds despite broken phases.yaml + refused waiver\n'
@@ -694,8 +758,8 @@ fi
 # Cleanup
 rm -f "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
 
-# ── G9: deploy ancestor positive-pass test (§4 non-blocking, DO) ─────────────
-printf 'test: G9 deploy ancestor positive-pass\n'
+# ── G9: deploy requires a descendant of the lane's own start-sha (B2) ──────────
+printf 'test: G9 deploy descendant-of-lane-base\n'
 G9_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g9-XXXXXX)"
 G9_REPO="${G9_SANDBOX}/repo"
 mkdir -p "${G9_REPO}"
@@ -703,20 +767,47 @@ mkdir -p "${G9_REPO}"
   && git config user.email t@e.com && git config user.name t \
   && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
 G9_SIG8="g9bee01"
+# Lane start-sha = seed commit; create a second commit as the lane's work.
+G9_START="$(cd "${G9_REPO}" && git rev-parse HEAD)"
+( cd "${G9_REPO}" && printf 'app\n' > app.py && git add app.py && git commit -qm 'lane work' )
+G9_DEPLOY_COMMIT="$(cd "${G9_REPO}" && git rev-parse HEAD)"
+( cd "${G9_REPO}" && git update-ref refs/remotes/origin/main HEAD )
+# Seed the start-sha cache so _resolve_lane_diff_base finds it.
+G9_CACHE="${G9_SANDBOX}/cache"
+mkdir -p "${G9_CACHE}"
+printf '%s\n' "$G9_START" > "${G9_CACHE}/dispatch-${G9_SIG8}.start-sha"
+
+# Positive: deploy commit = G9_DEPLOY_COMMIT (descendant of G9_START) → pass
 mkdir -p "${G9_REPO}/docs/handoff/dispatch-${G9_SIG8}/phases.d"
 printf 'deploy artifact\n' > "${G9_REPO}/deploy-out.txt"
-LEADV2_PROJECT_ROOT="${G9_REPO}" bash "$PHASE_RECORD" record "$G9_SIG8" deploy --status done \
+LEADV2_PROJECT_ROOT="${G9_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G9_CACHE}" \
+  bash "$PHASE_RECORD" record "$G9_SIG8" deploy --status done \
   --artifact "deploy-out.txt" --owner test >/dev/null 2>&1
-# The recorded commit should be HEAD (ancestor of origin/main = HEAD → ancestor of itself)
-G9_HEAD="$(cd "${G9_REPO}" && git rev-parse HEAD)"
-printf 'commit: %s\n' "$G9_HEAD" >> "${G9_REPO}/docs/handoff/dispatch-${G9_SIG8}/phases.d/deploy.yaml"
-( cd "${G9_REPO}" && git update-ref refs/remotes/origin/main HEAD )
-G9_OUT="$(cd "${G9_REPO}" && LEADV2_PROJECT_ROOT="${G9_REPO}" bash "$PHASE_RECORD" assert "$G9_SIG8" --class Standard --writes "app.py" 2>/dev/null)"
+printf 'commit: %s\n' "$G9_DEPLOY_COMMIT" >> "${G9_REPO}/docs/handoff/dispatch-${G9_SIG8}/phases.d/deploy.yaml"
+G9_OUT="$(cd "${G9_REPO}" && LEADV2_PROJECT_ROOT="${G9_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G9_CACHE}" \
+  bash "$PHASE_RECORD" assert "$G9_SIG8" --class Standard --writes "app.py" 2>/dev/null)"
 if ! printf '%s' "$G9_OUT" | grep -q 'missing=.*deploy'; then
   ok
 else
-  fail "G9: deploy with ancestor commit should pass (got: $G9_OUT)"
+  fail "G9a: deploy with descendant commit should pass (got: $G9_OUT)"
 fi
+
+# Negative (B2): deploy commit = lane start-sha itself (zero work) → fail
+G9B_SIG8="g9bee02"
+mkdir -p "${G9_REPO}/docs/handoff/dispatch-${G9B_SIG8}/phases.d"
+printf '%s\n' "$G9_START" > "${G9_CACHE}/dispatch-${G9B_SIG8}.start-sha"
+LEADV2_PROJECT_ROOT="${G9_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G9_CACHE}" \
+  bash "$PHASE_RECORD" record "$G9B_SIG8" deploy --status done \
+  --artifact "deploy-out.txt" --owner test >/dev/null 2>&1
+printf 'commit: %s\n' "$G9_START" >> "${G9_REPO}/docs/handoff/dispatch-${G9B_SIG8}/phases.d/deploy.yaml"
+G9B_OUT="$(cd "${G9_REPO}" && LEADV2_PROJECT_ROOT="${G9_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G9_CACHE}" \
+  bash "$PHASE_RECORD" assert "$G9B_SIG8" --class Standard --writes "app.py" 2>/dev/null)"
+if printf '%s' "$G9B_OUT" | grep -q 'missing=.*deploy'; then
+  ok
+else
+  fail "G9b: deploy with start-sha (zero work) should fail (got: $G9B_OUT)"
+fi
+
 rm -rf "$G9_SANDBOX"
 
 # ── G10: §3 honesty — PROOF column in show output ───────────────────────────
@@ -751,6 +842,69 @@ else
   fail "G10: review phase should show verified (got: $G10_SHOW)"
 fi
 rm -rf "$G10_SANDBOX"
+
+# ── G11: B4 — unexpected cmd_assert exit (rc=127) is mode-aware ──────────────
+printf 'test: G11 unexpected assert exit code (B4)\n'
+e2e_setup
+E2E_STUB_RUNS_G11="${E2E_SANDBOX}/glm-runs-g11"
+export LEADV2_STUB_GLM_RUNS="${E2E_STUB_RUNS_G11}"
+mkdir -p "${E2E_STUB_RUNS_G11}"
+# Create a valid phases.yaml so _read_phases_yaml runs (not just absent).
+mkdir -p "${E2E_REPO}/.claude/leadv2-overrides"
+printf 'version: 1\n' > "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
+# Stub PHASE_RECORD_BIN: exit 127 for `assert`, pass-through for `record`.
+G11_PR="${E2E_SANDBOX}/phase-record-stub.sh"
+cat > "$G11_PR" <<SH
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "assert" ]]; then
+  echo "python3: command not found" >&2
+  exit 127
+fi
+exec bash "$PHASE_RECORD" "\$@"
+SH
+chmod +x "$G11_PR"
+export LEADV2_PHASE_RECORD_BIN="$G11_PR"
+
+MISSION_G11="PPC-G11: fix the integration test harness timeout"
+# G11a: warn mode → journals unexpected_rc + PROCEEDS
+export LEADV2_REQUIRE_PHASES=warn
+rc_g11a=0
+bash "$DISPATCH_BIN" --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11a=$?
+if [[ -n "$(ls -A "${E2E_STUB_RUNS_G11}" 2>/dev/null)" ]]; then
+  ok
+else
+  fail "G11a: warn mode should spawn despite unexpected assert rc"
+fi
+if grep -q 'phase_precondition_warn.*unexpected_rc.*127' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
+  ok
+else
+  fail "G11a: warn mode should journal unexpected_rc=127 (got: $(cat "${E2E_JOURNAL_LOG}" 2>/dev/null))"
+fi
+
+# G11b: enforce mode → refuses with the specific unexpected_rc line
+e2e_setup
+E2E_STUB_RUNS_G11B="${E2E_SANDBOX}/glm-runs-g11b"
+export LEADV2_STUB_GLM_RUNS="${E2E_STUB_RUNS_G11B}"
+mkdir -p "${E2E_STUB_RUNS_G11B}"
+printf 'version: 1\n' > "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
+export LEADV2_PHASE_RECORD_BIN="$G11_PR"
+export LEADV2_REQUIRE_PHASES=1
+rc_g11b=0
+bash "$DISPATCH_BIN" --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11b=$?
+if [[ $rc_g11b -ne 0 ]]; then
+  ok
+else
+  fail "G11b: enforce mode should refuse on unexpected assert rc"
+fi
+if grep -q 'phase_precondition_refused.*unexpected_rc.*127' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
+  ok
+else
+  fail "G11b: enforce mode should journal refused unexpected_rc=127 (got: $(cat "${E2E_JOURNAL_LOG}" 2>/dev/null))"
+fi
+
+# Cleanup
+rm -f "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
+unset LEADV2_PHASE_RECORD_BIN
 
 # Cleanup e2e sandbox
 rm -rf "${E2E_SANDBOX}"

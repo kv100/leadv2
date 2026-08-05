@@ -28,7 +28,7 @@
 #   gate1        .gate1-passed sentinel non-empty             full
 #   build        artifact integrity + lane diff non-empty     full
 #   review       diff_hash match + verdict PASS/PASS_NITS     full
-#   deploy       artifact integrity + commit ancestor of main full
+#   deploy       artifact integrity + commit descendant of lane base full
 #   close        phase8-passed.flag non-empty                 full
 #   test         artifact integrity only                      unprovable
 #   live_verify  artifact integrity only                      unprovable
@@ -416,8 +416,13 @@ _verify_artifact() {
       ledger_file="${CACHE_BASE}/code-review-ledger/${slug}.jsonl"
       [[ -f "$ledger_file" ]] || return 1
 
-      # B1 R3: sidecar row-count check
+      # B1 R4: sidecar row-count check + adopted-marker tamper detection.
+      # The sidecar is created exclusively by _increment_review_sidecar (the guarded
+      # write path).  An "adopted" marker outside the ledger dir records that the
+      # sidecar mechanism has been used for this slug.  Once adopted, sidecar-absent
+      # is tamper (e.g. attacker ran `rm <slug>.jsonl.rows`), not legacy.
       sidecar="${CACHE_BASE}/code-review-ledger/${slug}.jsonl.rows"
+      local _adopted="${CACHE_BASE}/code-review-provenance/${slug}.adopted"
       if [[ -f "$sidecar" ]]; then
         local _recorded_rows _ledger_rows
         _recorded_rows="$(cat "$sidecar" 2>/dev/null | tr -d ' \n')"
@@ -434,16 +439,41 @@ _verify_artifact() {
           fi
         fi
       else
-        # Legacy ledger: no sidecar → accept, journal the unchained status.
+        # Sidecar absent.  If the adopted marker exists, the sidecar was created
+        # (and later deleted) → tamper, reject.  Only a repo that never used the
+        # sidecar mechanism gets the legacy accept.
+        if [[ -f "$_adopted" ]]; then
+          _emit "review_sidecar_tamper" "repo=${slug} sidecar=${sidecar##*/} adopted=${_adopted##*/}"
+          return 1
+        fi
         _emit "review_ledger_unchained" "repo=${slug}"
       fi
 
       # B1 R1+R2: single python3 pass — checks reviewer allowlist, verdict,
-      # and diff_hash together.  Malformed JSON lines are skipped, not fatal.
-      LEADV2_REVIEW_ARMS="${REVIEW_ARMS}" python3 - "$ledger_file" "$h" <<'PYEOF' || return 1
+      # diff_hash, and guard_token together.  Malformed JSON lines are skipped,
+      # not fatal.  B1 R5: the guard_token must appear in the provenance tokens
+      # file (outside the ledger dir), proving the row was written by the
+      # guarded path, not raw file append.
+      local _tokens_file="${CACHE_BASE}/code-review-provenance/${slug}.tokens"
+      local _has_tokens="0"
+      [[ -f "$_tokens_file" ]] && _has_tokens="1"
+      LEADV2_REVIEW_ARMS="${REVIEW_ARMS}" LEADV2_TOKENS_FILE="${_tokens_file}" \
+      LEADV2_HAS_TOKENS="${_has_tokens}" python3 - "$ledger_file" "$h" <<'PYEOF' || return 1
 import json, os, sys
 ledger_file, target_hash = sys.argv[1], sys.argv[2]
 arms = set(os.environ.get("LEADV2_REVIEW_ARMS", "codex,glm,kimi,opus,sonnet").split(","))
+has_tokens = os.environ.get("LEADV2_HAS_TOKENS", "0") == "1"
+tokens_file = os.environ.get("LEADV2_TOKENS_FILE", "")
+valid_tokens = set()
+if has_tokens and tokens_file:
+    try:
+        with open(tokens_file) as tf:
+            for t in tf:
+                t = t.strip()
+                if t:
+                    valid_tokens.add(t)
+    except OSError:
+        pass
 with open(ledger_file) as f:
     for line in f:
         line = line.strip()
@@ -461,6 +491,12 @@ with open(ledger_file) as f:
         arm = reviewer.split(":")[0]  # codex:standard → codex
         if arm not in arms:
             continue
+        # B1 R5: if the tokens file exists, the row must carry a guard_token
+        # that was minted by the guarded write path.
+        if has_tokens:
+            gt = obj.get("guard_token", "")
+            if not gt or gt not in valid_tokens:
+                continue
         sys.exit(0)  # all checks passed
 sys.exit(1)  # no matching row
 PYEOF
@@ -473,12 +509,19 @@ PYEOF
       return 0
       ;;
     deploy)
-      # F2: artifact integrity + recorded commit is an ancestor of origin/main.
+      # F2: artifact integrity + recorded commit is a descendant of the lane's
+      # own start-sha (B2: was merely "ancestor of origin/main" which accepts
+      # origin/main's tip with zero work from this lane).
       _artifact_integrity "$artifact" "$sha" || return 1
       [[ -n "$commit" ]] || return 1
       git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 1
-      git -C "$PROJECT_ROOT" cat-file -e "origin/main^{commit}" 2>/dev/null || return 1
-      git -C "$PROJECT_ROOT" merge-base --is-ancestor "$commit" origin/main 2>/dev/null || return 1
+      local _deploy_base
+      _deploy_base="$(_resolve_lane_diff_base "$sig8")"
+      [[ -n "$_deploy_base" ]] || return 1
+      # commit must be a STRICT descendant of the lane base: base is an ancestor
+      # of commit AND commit ≠ base (otherwise zero-work deploy passes).
+      [[ "$commit" != "$_deploy_base" ]] || return 1
+      git -C "$PROJECT_ROOT" merge-base --is-ancestor "$_deploy_base" "$commit" 2>/dev/null || return 1
       return 0
       ;;
     close)
