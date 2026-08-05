@@ -241,6 +241,10 @@
 
 set -uo pipefail   # -u safe (quote everything, no unbound vars); NO -e (refusals must journal)
 
+# DISPATCH-FG-GUARD-01 C3: snapshot argv BEFORE any parsing/shift so the
+# live-lane refusal can echo back the caller's own command verbatim.
+LEADV2_DISPATCH_ARGV_REPLAY="$(printf '%q ' "$0" "$@")"
+
 # SWIFTBAR-LIVE-01 round 2 (§2.4): script-scope globals carrying the founder
 # task id + mission file path from `main`'s arg parse to dispatch_reserve.
 # Globals, not locals passed down the call stack: dispatch_reserve is also
@@ -587,9 +591,26 @@ _resolve_pinned_placement() {
   done
   if (( _live == 1 )); then
     reason="lane_is_live"
-    emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate} probe_id=${_probe_id} verdict=${_v}"
+    # Re-probe with --json to get age_s (only reachable via --json).
+    local _row _age="?"
+    _row="$(bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --lane "${_probe_id}" --no-codex --json 2>/dev/null || true)"
+    _age="$(printf '%s' "${_row}" | python3 -c '
+import sys, json
+try:
+    r = json.loads(sys.stdin.read())
+    a = r.get("age_s")
+    if a is not None: print(a)
+except Exception:
+    pass
+' 2>/dev/null || true)"
+    [[ -z "${_age}" ]] && _age="?"
+    emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate} probe_id=${_probe_id} verdict=${_v} age=${_age}"
     printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
       "${reason}" "${ref}" "${candidate}" >&2
+    printf '  verdict=%s age=%ss probe_id=%s\n' \
+      "${_v}" "${_age}" "${_probe_id}" >&2
+    printf 'The lane is still running. Re-run once it clears:\n  %s &\n' \
+      "${LEADV2_DISPATCH_ARGV_REPLAY}" >&2
     exit 5
   fi
 

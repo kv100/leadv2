@@ -114,6 +114,7 @@ run_check "e2e gate lane root + suite family" bash "$TEST_DIR/test-e2e-gate-lane
 run_check "review body persist (opus/sonnet materialisation + body_lost guard)" bash "$TEST_DIR/test-review-body-persist.sh"
 run_check "core-offline root arithmetic (git-derived REPO_ROOT)" bash "$TEST_DIR/test-core-offline-root-arith.sh"
 run_check "dispatch arm vocabulary (kimi retirement)" bash "$TEST_DIR/test-dispatch-arm-vocabulary.sh"
+run_check "foreground-dispatch guard hook" bash "$TEST_DIR/test-fg-dispatch-guard.sh"
 
 printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
 (( FAIL == 0 && MISSING == 0 ))
