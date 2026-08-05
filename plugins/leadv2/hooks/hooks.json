@@ -56,6 +56,13 @@
             "timeout": 6,
             "continueOnBlock": true,
             "statusMessage": "Checking one-copy drift..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-idle-guard-arm.sh\"",
+            "timeout": 5,
+            "continueOnBlock": true,
+            "statusMessage": "Arming idle-lead guard..."
           }
         ]
       },

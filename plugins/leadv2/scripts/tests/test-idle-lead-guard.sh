@@ -22,6 +22,10 @@ fail() { FAIL=$((FAIL + 1)); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
 
 TMPROOT=""
 cleanup() {
+  # Case 11 chmod's FIXTURE_STATE to 555; restore write perms before rm -rf,
+  # else the removal silently fails and the temp dir leaks.
+  [[ -n "${FIXTURE_STATE:-}" && -d "$FIXTURE_STATE" ]] && chmod 755 "$FIXTURE_STATE" 2>/dev/null
+  [[ -n "$TMPROOT" && -d "$TMPROOT" ]] && chmod -R u+w "$TMPROOT" 2>/dev/null
   [[ -n "$TMPROOT" && -d "$TMPROOT" ]] && rm -rf "$TMPROOT"
   return 0
 }
@@ -61,14 +65,26 @@ setup_fixture() {
   chmod +x "$FIXTURE_LIVENESS"
 }
 
+# Builds an isolated copy of the hook under $TMPROOT/isolated/hooks/, whose
+# sibling scripts/ dir has NO leadv2-state-path.sh — simulates a broken
+# plugin install for case 12. Sets FIXTURE_HOOK_SH.
+setup_hook_copy_without_statepath() {
+  mkdir -p "$TMPROOT/isolated/hooks" "$TMPROOT/isolated/scripts"
+  cp "$HOOK_SH" "$TMPROOT/isolated/hooks/leadv2-idle-lead-guard.sh"
+  chmod +x "$TMPROOT/isolated/hooks/leadv2-idle-lead-guard.sh"
+  FIXTURE_HOOK_SH="$TMPROOT/isolated/hooks/leadv2-idle-lead-guard.sh"
+}
+
 # ── hook runner ──────────────────────────────────────────────────────────────
 # Pipes a JSON payload to the hook, captures stdout, stderr, rc.
 # Uses globals: HOOK_OUT, HOOK_ERR, HOOK_RC
+# Optional 3rd arg overrides the hook path (default $HOOK_SH).
 run_hook() {
   local payload="$1"
   local extra_env="$2"
+  local hook_path="${3:-$HOOK_SH}"
 
-  HOOK_OUT="$(eval "$extra_env" "$HOOK_SH" 2>"$TMPROOT/err.txt" <<<"$payload" || true)"
+  HOOK_OUT="$(eval "$extra_env" "$hook_path" 2>"$TMPROOT/err.txt" <<<"$payload" || true)"
   HOOK_RC=$?
   HOOK_ERR="$(cat "$TMPROOT/err.txt" 2>/dev/null || true)"
 }
@@ -411,6 +427,203 @@ assert ig_idx == len(ids) - 1, f"idle-guard is not last (idx {ig_idx}, last {len
     pass "case 10: hooks.json has idle-lead-guard last after promise-guard"
   else
     fail "case 10: registration assertion failed"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# Case 11: unwritable state dir (chmod 555) + queued + 0 live → ALLOWS every
+# call, no {"decision":"block"} on any of 10 consecutive calls (F1).
+# ════════════════════════════════════════════════════════════════════════════
+{
+  TASKS_YAML='- id: task-aaa
+  status: queued
+  lane: main
+  title: "Implement feature A"
+'
+  setup_fixture "$TASKS_YAML" '{"availability":"authoritative","count_live":0}'
+  PAYLOAD_CWD="${PAYLOAD/PLACEHOLDER/$FIXTURE_ROOT}"
+  LEADV2_ENV="LEADV2_IDLE_GUARD=1 LEADV2_IDLE_GUARD_TASKS_FILE=$FIXTURE_TASKS LEADV2_IDLE_GUARD_LIVENESS_SH=$FIXTURE_LIVENESS LEADV2_IDLE_GUARD_QUESTIONS_DIR=$FIXTURE_QDIR LEADV2_IDLE_GUARD_STATE_DIR=$FIXTURE_STATE"
+
+  chmod 555 "$FIXTURE_STATE"
+
+  all_empty=1
+  check_calls=""
+  for i in $(seq 1 10); do
+    run_hook "$PAYLOAD_CWD" "$LEADV2_ENV"
+    if [[ -n "$HOOK_OUT" ]]; then
+      all_empty=0
+    fi
+    if [[ "$i" == 2 || "$i" == 5 || "$i" == 10 ]]; then
+      if [[ -n "$HOOK_OUT" ]]; then
+        check_calls="${check_calls}call${i}=NONEMPTY(${HOOK_OUT}) "
+      else
+        check_calls="${check_calls}call${i}=empty "
+      fi
+    fi
+  done
+
+  chmod 755 "$FIXTURE_STATE"
+
+  if [[ "$all_empty" == 1 ]]; then
+    pass "case 11: unwritable state dir allows stop on all 10 calls (${check_calls})"
+  else
+    fail "case 11: expected empty stdout on every call, got: ${check_calls}"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# Case 12: leadv2-state-path.sh unresolvable (absent sibling script), a real
+# pending question exists, QUESTIONS_DIR override unset → ALLOWS, stderr
+# names the resolution failure (F2).
+# ════════════════════════════════════════════════════════════════════════════
+{
+  TASKS_YAML='- id: task-aaa
+  status: queued
+  lane: main
+  title: "Implement feature A"
+'
+  setup_fixture "$TASKS_YAML" '{"availability":"authoritative","count_live":0}' yes
+  setup_hook_copy_without_statepath
+  PAYLOAD_CWD="${PAYLOAD/PLACEHOLDER/$FIXTURE_ROOT}"
+
+  # LEADV2_IDLE_GUARD_QUESTIONS_DIR deliberately unset — forces the
+  # leadv2-state-path.sh resolution path, which is absent in the isolated copy.
+  run_hook "$PAYLOAD_CWD" \
+    "LEADV2_IDLE_GUARD=1 LEADV2_IDLE_GUARD_TASKS_FILE=$FIXTURE_TASKS LEADV2_IDLE_GUARD_LIVENESS_SH=$FIXTURE_LIVENESS LEADV2_IDLE_GUARD_STATE_DIR=$FIXTURE_STATE" \
+    "$FIXTURE_HOOK_SH"
+
+  if [[ -z "$HOOK_OUT" ]] && [[ "$HOOK_ERR" == *"questions dir unresolvable"* ]]; then
+    pass "case 12: unresolvable questions dir allows stop, stderr names it"
+  else
+    fail "case 12: expected empty stdout + 'questions dir unresolvable' stderr, got: out=$HOOK_OUT err=$HOOK_ERR"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# Case 13: QDIR resolvable and contains a pending question → ALLOWS, stderr
+# names "question pending" and the question id.
+# ════════════════════════════════════════════════════════════════════════════
+{
+  TASKS_YAML='- id: task-aaa
+  status: queued
+  lane: main
+  title: "Implement feature A"
+'
+  setup_fixture "$TASKS_YAML" '{"availability":"authoritative","count_live":0}' yes
+  PAYLOAD_CWD="${PAYLOAD/PLACEHOLDER/$FIXTURE_ROOT}"
+
+  run_hook "$PAYLOAD_CWD" \
+    "LEADV2_IDLE_GUARD=1 LEADV2_IDLE_GUARD_TASKS_FILE=$FIXTURE_TASKS LEADV2_IDLE_GUARD_LIVENESS_SH=$FIXTURE_LIVENESS LEADV2_IDLE_GUARD_QUESTIONS_DIR=$FIXTURE_QDIR LEADV2_IDLE_GUARD_STATE_DIR=$FIXTURE_STATE"
+
+  if [[ -z "$HOOK_OUT" ]] && [[ "$HOOK_ERR" == *"question pending"* ]] && [[ "$HOOK_ERR" == *"q001"* ]]; then
+    pass "case 13: pending question allows stop, stderr names id"
+  else
+    fail "case 13: expected empty stdout + 'question pending (q001)' stderr, got: out=$HOOK_OUT err=$HOOK_ERR"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# Case 14: writable state dir, regression guard — still reaches the cap at 8
+# (proves F1's fix did not disable the cap).
+# ════════════════════════════════════════════════════════════════════════════
+{
+  TASKS_YAML='- id: task-aaa
+  status: queued
+  lane: main
+  title: "Implement feature A"
+'
+  setup_fixture "$TASKS_YAML" '{"availability":"authoritative","count_live":0}'
+  PAYLOAD_CWD="${PAYLOAD/PLACEHOLDER/$FIXTURE_ROOT}"
+
+  SHARED_STATE="$TMPROOT/shared-state-14"
+  mkdir -p "$SHARED_STATE"
+  LEADV2_ENV="LEADV2_IDLE_GUARD=1 LEADV2_IDLE_GUARD_TASKS_FILE=$FIXTURE_TASKS LEADV2_IDLE_GUARD_LIVENESS_SH=$FIXTURE_LIVENESS LEADV2_IDLE_GUARD_QUESTIONS_DIR=$FIXTURE_QDIR LEADV2_IDLE_GUARD_STATE_DIR=$SHARED_STATE"
+
+  blocked_count=0
+  for i in $(seq 1 8); do
+    run_hook "$PAYLOAD_CWD" "$LEADV2_ENV"
+    if printf '%s' "$HOOK_OUT" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+assert d["decision"] == "block"
+' 2>/dev/null; then
+      blocked_count=$((blocked_count + 1))
+    fi
+  done
+
+  run_hook "$PAYLOAD_CWD" "$LEADV2_ENV"
+
+  if [[ $blocked_count -eq 8 && -z "$HOOK_OUT" && "$HOOK_ERR" == *"cap reached (8/8)"* ]]; then
+    pass "case 14: writable state dir still reaches cap at 8/8"
+  else
+    fail "case 14: blocked=$blocked_count, 9th out=$HOOK_OUT err=$HOOK_ERR"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# Case 15: session-goal.yaml present but unsatisfiable → behaves like case 1
+# (still blocks). Proves the goal file cannot accidentally suppress a
+# legitimate block (F5.1).
+# ════════════════════════════════════════════════════════════════════════════
+{
+  TASKS_YAML='- id: task-aaa
+  status: queued
+  lane: main
+  title: "Implement feature A"
+'
+  setup_fixture "$TASKS_YAML" '{"availability":"authoritative","count_live":0}'
+  PAYLOAD_CWD="${PAYLOAD/PLACEHOLDER/$FIXTURE_ROOT}"
+
+  # NOTE: the design's fixture used {task-aaa: queued} as the "unsatisfiable"
+  # goal, but task-aaa's actual status IS "queued" — under the exact-match
+  # tasks_status semantics defined in §5.1 that is trivially SATISFIED, the
+  # opposite of what the case intends to prove. Using {task-aaa: done}
+  # instead: genuinely unsatisfied (the task is still queued, not done),
+  # which is what "goal present, not reached, still blocks" requires.
+  GOAL_FILE="$TMPROOT/session-goal-15.yaml"
+  printf 'goal: "close IDLE-LEAD-GUARD-01"\ndone_when:\n  tasks_status: {task-aaa: done}\n' > "$GOAL_FILE"
+
+  run_hook "$PAYLOAD_CWD" \
+    "LEADV2_IDLE_GUARD=1 LEADV2_IDLE_GUARD_TASKS_FILE=$FIXTURE_TASKS LEADV2_IDLE_GUARD_LIVENESS_SH=$FIXTURE_LIVENESS LEADV2_IDLE_GUARD_QUESTIONS_DIR=$FIXTURE_QDIR LEADV2_IDLE_GUARD_STATE_DIR=$FIXTURE_STATE LEADV2_IDLE_GUARD_GOAL_FILE=$GOAL_FILE"
+
+  if printf '%s' "$HOOK_OUT" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+assert d["decision"] == "block", "decision is not block"
+' 2>/dev/null; then
+    pass "case 15: unsatisfied goal does not suppress a legitimate block"
+  else
+    fail "case 15: expected block, got: out=$HOOK_OUT err=$HOOK_ERR"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# Case 16: session-goal.yaml with file_exists pointing at a file that exists,
+# plus a queued row and 0 live lanes → ALLOWS, stderr names "goal reached".
+# ════════════════════════════════════════════════════════════════════════════
+{
+  TASKS_YAML='- id: task-aaa
+  status: queued
+  lane: main
+  title: "Implement feature A"
+'
+  setup_fixture "$TASKS_YAML" '{"availability":"authoritative","count_live":0}'
+  PAYLOAD_CWD="${PAYLOAD/PLACEHOLDER/$FIXTURE_ROOT}"
+
+  RESULT_FILE="$FIXTURE_ROOT/docs/handoff/x/result.md"
+  mkdir -p "$(dirname "$RESULT_FILE")"
+  printf 'done\n' > "$RESULT_FILE"
+
+  GOAL_FILE="$TMPROOT/session-goal-16.yaml"
+  printf 'goal: "close IDLE-LEAD-GUARD-01"\ndone_when:\n  file_exists: docs/handoff/x/result.md\n' > "$GOAL_FILE"
+
+  run_hook "$PAYLOAD_CWD" \
+    "LEADV2_IDLE_GUARD=1 LEADV2_IDLE_GUARD_TASKS_FILE=$FIXTURE_TASKS LEADV2_IDLE_GUARD_LIVENESS_SH=$FIXTURE_LIVENESS LEADV2_IDLE_GUARD_QUESTIONS_DIR=$FIXTURE_QDIR LEADV2_IDLE_GUARD_STATE_DIR=$FIXTURE_STATE LEADV2_IDLE_GUARD_GOAL_FILE=$GOAL_FILE"
+
+  if [[ -z "$HOOK_OUT" ]] && [[ "$HOOK_ERR" == *"goal reached"* ]]; then
+    pass "case 16: satisfied file_exists goal allows stop"
+  else
+    fail "case 16: expected empty stdout + 'goal reached' stderr, got: out=$HOOK_OUT err=$HOOK_ERR"
   fi
 }
 
