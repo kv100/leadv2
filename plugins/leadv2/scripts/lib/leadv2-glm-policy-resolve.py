@@ -32,14 +32,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-# KIMI-CHANNEL-01: kimi sits between glm and codex in the build spill chain
-# (glm -> kimi -> sonnet is the founder-approved default; codex stays in the
-# chain for repos/configs that already rely on codex_quota_gate spill).
-# Additive only -- sonnet_exceptions and the task-shape precedence rules below
-# (resolve_glm_policy's `rules` list) stay glm/kimi-blind: a safety/payments/
-# UI-judgment/glm-failed-twice/lock-busy signal routes straight to sonnet or
-# opus and never touches this spill order.
-DEFAULT_BUILD_SPILL = ["glm", "kimi", "codex", "sonnet"]
+# DISPATCH-KIMI-ARM-MISMATCH-01 (2026-08-05, founder order 2026-08-04 «Кими
+# убрать»): kimi removed from the build spill chain. Kimi remains a valid
+# review arm (see kimi_review_available below) — only build dispatch retired.
+# The launcher-side vocabulary mirror is _candidate_chain_for_arm in
+# leadv2-dispatch-code.sh; both lists must agree.
+DEFAULT_BUILD_SPILL = ["glm", "codex", "sonnet"]
+
+# Launcher vocabulary: the set of arms the dispatcher can actually run as
+# primary build arms. Applied to the spill walk so a stale tenant yaml that
+# still lists a retired arm (e.g. kimi) cannot resurrect it. Must match the
+# case-rows in _candidate_chain_for_arm (leadv2-dispatch-code.sh).
+DISPATCHABLE_BUILD_ARMS = {"glm", "codex", "sonnet"}
 DEFAULT_REVIEW_EXCLUSIONS = ["glm"]
 DEFAULT_BUILD_THRESHOLD_PCT = 80.0
 DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
@@ -508,7 +512,9 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
         blocked = {"codex"} if codex_blocked else set()
         if arm in blocked:
             skip = {arm, base_arm} | blocked
-            nxt = [a for a in spill if a not in skip and not (job == "review" and a in exclusions)]
+            nxt = [a for a in spill if a not in skip
+                   and a in DISPATCHABLE_BUILD_ARMS
+                   and not (job == "review" and a in exclusions)]
             arm = nxt[0] if nxt else "sonnet"
             rule = "codex_quota_gate_%dpct" % int(threshold)
             reason = "codex_quota_gate"

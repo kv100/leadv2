@@ -57,14 +57,15 @@ router_v2:
       bucket: glm
       reserve_threshold: 2
       reserve_allow: [review]
-    # KIMI-CHANNEL-REHAB-01: the arm is back. Dispatch-time mission-shape admission,
-    # not membership here, decides whether Kimi may receive a particular task.
-    # dispatch: hardcoded `kimi)` case in leadv2-dispatch-code.sh; no data-driven channel field.
-    - id: kimi
-      model: moonshotai/kimi-k3-free
-      bucket: kimi
-      reserve_threshold: 2
-      reserve_allow: [review]
+    # RETIRED 2026-08-05 (DISPATCH-KIMI-ARM-MISMATCH-01, founder order 2026-08-04
+    # «Кими убрать»): kimi is not a dispatchable build arm. Uncomment this block to
+    # restore it — the launcher implementation (kimi) spawn case, _apply_kimi_admission,
+    # _wait_kimi_verdict, KIMI_BIN) is intact and still works.
+    # - id: kimi
+    #   model: moonshotai/kimi-k3-free
+    #   bucket: kimi
+    #   reserve_threshold: 2
+    #   reserve_allow: [review]
     - id: codex
       channel: codex-task.sh
       model: gpt-5.6-terra
