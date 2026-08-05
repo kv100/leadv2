@@ -585,27 +585,49 @@ else
   fail "G7c: sidecar rows ($G7C_ROWS) should equal ledger lines ($G7C_LINES)"
 fi
 
-# G7d: record-review from inside a linked worktree → refused, ledger unchanged
+# G7d: record-review from inside a linked worktree with the worktree's OWN diff hash
+# → refused (self-attestation); recording a DIFFERENT diff from the same worktree is allowed.
 G7D_SIG8="g7ded04"
 _g7_setup_review "$G7D_SIG8"
-G7D_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7D_SIG8}/review.diff" | awk '{print $1}')"
+G7D_OTHER_HASH="$(shasum -a 256 "${G7_REPO}/docs/handoff/dispatch-${G7D_SIG8}/review.diff" | awk '{print $1}')"
 mkdir -p "${G7_REPO}/.claude/worktrees"
-( cd "${G7_REPO}" && git worktree add -q ".claude/worktrees/${G7D_SIG8}" main 2>/dev/null )
+# Set origin/main so the guard's _pc_diff_base finds a valid merge-base.
+( cd "${G7_REPO}" && git update-ref refs/remotes/origin/main HEAD \
+  && git worktree add -q ".claude/worktrees/${G7D_SIG8}" -b "wt-${G7D_SIG8}" 2>/dev/null )
+# Make a committed change inside the worktree so its diff is non-empty.
+( cd "${G7_REPO}/.claude/worktrees/${G7D_SIG8}" \
+  && mkdir -p src && printf 'changed\n' > src/file.txt && git add src/file.txt && git commit -qm 'worktree change' )
+# Compute the worktree's own diff hash using the same scheme as the guard:
+# never-smaller of (HEAD-diff, base-diff) with docs/leadv2+docs/handoff excluded.
+G7D_BASE="$(cd "${G7_REPO}/.claude/worktrees/${G7D_SIG8}" && git merge-base origin/main HEAD)"
+G7D_HEAD_DIFF="$(cd "${G7_REPO}/.claude/worktrees/${G7D_SIG8}" && git diff HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true)"
+G7D_BASE_DIFF="$(cd "${G7_REPO}/.claude/worktrees/${G7D_SIG8}" && git diff "$G7D_BASE" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true)"
+if [[ ${#G7D_BASE_DIFF} -gt ${#G7D_HEAD_DIFF} ]]; then G7D_WT_DIFF="$G7D_BASE_DIFF"; else G7D_WT_DIFF="$G7D_HEAD_DIFF"; fi
+G7D_HASH="$(printf '%s' "${G7D_WT_DIFF}" | shasum -a 256 | awk '{print $1}')"
 G7D_LINES_BEFORE="$(wc -l < "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl" 2>/dev/null | tr -d ' ')"
+# G7d-1: self-review (own diff hash) → refused
 rc_g7d=0
 ( cd "${G7_REPO}/.claude/worktrees/${G7D_SIG8}" \
   && env -u LEADV2_LANE_WORK_ROOT \
   LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
   LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$DISPATCH_BIN" record-review \
   --diff-hash "$G7D_HASH" --verdict PASS --reviewer "codex:standard" --run-id "dispatch-test" ) >/dev/null 2>&1 || rc_g7d=$?
-if [[ $rc_g7d -ne 0 ]]; then ok; else fail "G7d: record-review from worktree should fail (rc=$rc_g7d)"; fi
+if [[ $rc_g7d -ne 0 ]]; then ok; else fail "G7d: self-review from worktree should fail (rc=$rc_g7d)"; fi
 G7D_LINES_AFTER="$(wc -l < "${G7_LEDGER_DIR}/${G7_SLUG}.jsonl" 2>/dev/null | tr -d ' ')"
 if [[ "$G7D_LINES_BEFORE" == "$G7D_LINES_AFTER" ]]; then
   ok
 else
   fail "G7d: ledger line count should be unchanged (before=$G7D_LINES_BEFORE after=$G7D_LINES_AFTER)"
 fi
-( cd "${G7_REPO}" && git worktree remove -q ".claude/worktrees/${G7D_SIG8}" 2>/dev/null; true )
+# G7d-2: review of a DIFFERENT diff from the same worktree → allowed
+rc_g7d2=0
+( cd "${G7_REPO}/.claude/worktrees/${G7D_SIG8}" \
+  && env -u LEADV2_LANE_WORK_ROOT \
+  LEADV2_PROJECT_ROOT="${G7_REPO}" LEADV2_DISPATCH_CACHE_DIR="${G7_CACHE}" \
+  LEADV2_JOURNAL_BIN="${G7_JOURNAL}" bash "$DISPATCH_BIN" record-review \
+  --diff-hash "$G7D_OTHER_HASH" --verdict PASS --reviewer "codex:standard" --run-id "dispatch-test" ) >/dev/null 2>&1 || rc_g7d2=$?
+if [[ $rc_g7d2 -eq 0 ]]; then ok; else fail "G7d-2: review of different diff from worktree should succeed (rc=$rc_g7d2)"; fi
+( cd "${G7_REPO}" && git worktree remove -q ".claude/worktrees/${G7D_SIG8}" 2>/dev/null; git branch -q -D "wt-${G7D_SIG8}" 2>/dev/null; true )
 
 # G7e: sidecar absent (legacy), correctly-hashed PASS row with "reviewer":"glm" → review satisfied
 G7E_SIG8="g7dee05"

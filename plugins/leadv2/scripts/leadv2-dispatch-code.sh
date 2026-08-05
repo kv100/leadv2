@@ -425,8 +425,8 @@ REQUIRE_ACCEPTANCE="${LEADV2_REQUIRE_ACCEPTANCE:-0}"
 # The flip to 1 is ledgered separately as SD-PHASE-ENFORCE-01.
 REQUIRE_PHASES="${LEADV2_REQUIRE_PHASES:-warn}"
 PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.sh}"
-# B1 R2: record-review refuses to run from inside a lane worktree so a build worker
-# cannot mint its own review row. Set to 0 to disable the check (emergency escape).
+# B1 R2: record-review refuses a build worker minting a review of ITS OWN diff from
+# inside a lane worktree (self-attestation). Set to 0 to disable the check (emergency escape).
 REVIEW_RECORDER_GUARD="${LEADV2_REVIEW_RECORDER_GUARD:-1}"
 
 log()        { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
@@ -2310,10 +2310,14 @@ cmd_record_review() {
   reviewer="$(sanitize_field "${reviewer}")"; run_id="$(sanitize_field "${run_id}")"
   JOURNAL_TASK="review-${diff_hash:0:8}"
 
-  # B1 R2: refuse to record a review from inside a lane worktree.  A build worker
-  # lives in .claude/worktrees/<sig8>; product-close (the only legitimate caller)
-  # runs from the main repo root.  Linked-worktree detection via git-dir comparison
-  # catches the general case; the path heuristic catches edge cases.
+  # B1 R2 (PHASES-ARE-THE-ONLY-PATH-01): refuse a build worker minting a review of
+  # ITS OWN diff from inside a lane worktree (self-attestation).  Recording a review
+  # of a DIFFERENT diff from inside a worktree is allowed -- the guard compares the
+  # provided diff_hash against the SHA-256 of the current worktree's own diff against
+  # its base, computed with the same scheme as leadv2-dispatch-product-close.sh's
+  # _pc_repo_diff: git diff <base> with docs/leadv2+docs/handoff excluded, taking the
+  # larger of HEAD-diff and base-diff ("never-smaller" guard).  Base resolution mirrors
+  # _pc_diff_base: lane start-sha (env or cache file) → origin/main merge-base → HEAD.
   if [[ "${REVIEW_RECORDER_GUARD}" == "1" ]]; then
     local _cwd _git_dir _common_dir
     _cwd="$PWD"
@@ -2321,9 +2325,41 @@ cmd_record_review() {
     _common_dir="$(git -C "$_cwd" rev-parse --git-common-dir 2>/dev/null || true)"
     if [[ -n "$_git_dir" && -n "$_common_dir" && "$_git_dir" != "$_common_dir" ]] \
        || [[ "$_cwd" == */.claude/worktrees/* ]]; then
-      emit decision "review_record_refused reason=lane_worktree cwd=${_cwd}"
-      printf 'review_refused reason=lane_worktree\n'
-      exit 1
+      local _repo_root _base _head_diff _base_diff _wt_diff _wt_hash _wt_sig8 _start_sha
+      _repo_root="$(git -C "$_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+      if [[ -n "$_repo_root" ]]; then
+        # Resolve base: same candidates as _pc_diff_base (start-sha cache → origin/main → HEAD).
+        _start_sha="${LEADV2_LANE_START_SHA:-}"
+        if [[ -z "$_start_sha" ]]; then
+          _wt_sig8="$(basename "$_cwd")"
+          _start_sha="$(cat "$(lane_start_sha_file "${_wt_sig8}")" 2>/dev/null || true)"
+        fi
+        _base=""
+        if [[ -n "$_start_sha" ]] && git -C "$_repo_root" cat-file -e "${_start_sha}^{commit}" 2>/dev/null; then
+          _base="$(git -C "$_repo_root" merge-base "${_start_sha}" HEAD 2>/dev/null || true)"
+        fi
+        if [[ -z "$_base" ]] && git -C "$_repo_root" cat-file -e "origin/main^{commit}" 2>/dev/null; then
+          _base="$(git -C "$_repo_root" merge-base origin/main HEAD 2>/dev/null || true)"
+        fi
+        # Never-smaller: compute both HEAD-diff and base-diff, keep the larger.
+        _head_diff="$(git -C "$_repo_root" diff HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true)"
+        if [[ -n "$_base" ]]; then
+          _base_diff="$(git -C "$_repo_root" diff "$_base" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true)"
+        else
+          _base_diff=""
+        fi
+        if [[ ${#_base_diff} -gt ${#_head_diff} ]]; then
+          _wt_diff="$_base_diff"
+        else
+          _wt_diff="$_head_diff"
+        fi
+        _wt_hash="$(printf '%s' "${_wt_diff}" | shasum -a 256 | awk '{print $1}')"
+        if [[ "$_wt_hash" == "$diff_hash" ]]; then
+          emit decision "review_record_refused reason=self_review_worktree diff=${diff_hash:0:8} cwd=${_cwd}"
+          printf 'review_refused reason=self_review_worktree\n'
+          exit 1
+        fi
+      fi
     fi
   fi
 
