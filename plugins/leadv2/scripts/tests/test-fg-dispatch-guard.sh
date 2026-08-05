@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # DISPATCH-FG-GUARD-01 — offline regression for leadv2-block-fg-dispatch.sh hook.
 # Tests: deny foreground launcher, allow backgrounded, allow exemptions, allow override,
-# fail-open on malformed/empty stdin, hooks.json validity, trailing-& regex precision.
+# fail-open on malformed/empty stdin, hooks.json validity, trailing-& regex precision,
+# F1 (exemption-in-sibling-segment), F2 (read-only-verb false positive), lexer guards.
 set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -210,13 +211,127 @@ else
 fi
 
 # ================================================================
-# 21. status subcommand does not match path fragment (e.g. status-surface.sh)
+# 21. (replaced) later segment named *status*-something does NOT exempt
+#      the dispatch segment — the exemption checks the dispatch segment only.
 # ================================================================
-payload="$(make_payload 'bash leadv2-status-surface.sh --task x')"
+payload="$(make_payload 'bash leadv2-dispatch-code.sh @m.md && bash leadv2-status-surface.sh')"
 if run_hook "$payload"; then
-  pass "status-surface.sh not confused with status subcommand"
+  fail "status-surface in sibling segment should not exempt dispatch segment"
 else
-  fail "status-surface.sh should not match status subcommand exemption"
+  pass "status-surface sibling segment correctly does not exempt dispatch"
+fi
+
+# ================================================================
+# 22. F1: exemption token in sibling segment does NOT exempt (&&)
+# ================================================================
+payload="$(make_payload 'bash leadv2-dispatch-code.sh @m.md && git status')"
+if run_hook "$payload"; then
+  fail "git status in sibling should not exempt dispatch (F1 &&)"
+else
+  pass "git status sibling does not exempt dispatch (F1 &&)"
+fi
+
+# ================================================================
+# 23. F1: exemption token in sibling segment does NOT exempt (;)
+# ================================================================
+payload="$(make_payload 'bash leadv2-dispatch-code.sh @m.md ; git status')"
+if run_hook "$payload"; then
+  fail "git status after ; should not exempt dispatch (F1 ;)"
+else
+  pass "git status after ; does not exempt dispatch (F1 ;)"
+fi
+
+# ================================================================
+# 24. F1: --help in sibling segment does NOT exempt dispatch
+# ================================================================
+payload="$(make_payload 'bash leadv2-dispatch-code.sh @m.md && echo done --help')"
+if run_hook "$payload"; then
+  fail "--help in sibling should not exempt dispatch (F1 --help)"
+else
+  pass "--help sibling does not exempt dispatch (F1 --help)"
+fi
+
+# ================================================================
+# 25. Real status subcommand still exempt (no regression)
+# ================================================================
+payload="$(make_payload 'bash leadv2-dispatch-code.sh status')"
+run_hook "$payload" && pass "real status subcommand still allowed" \
+  || fail "real status subcommand should still be allowed"
+
+# ================================================================
+# 26. Real --no-spawn flag still exempt (no regression)
+# ================================================================
+payload="$(make_payload 'bash leadv2-dispatch-code.sh @m.md --no-spawn')"
+run_hook "$payload" && pass "real --no-spawn flag still allowed" \
+  || fail "real --no-spawn flag should still be allowed"
+
+# ================================================================
+# 27. F2: cat launcher file → ALLOW, no override, no stderr
+# ================================================================
+payload="$(make_payload 'cat leadv2-dispatch-code.sh')"
+if run_hook "$payload"; then
+  if [[ -s /tmp/fg-guard-last-stderr ]]; then
+    fail "cat launcher: allowed but stderr not empty"
+  else
+    pass "cat launcher allowed with no override and no stderr (F2)"
+  fi
+else
+  fail "cat launcher should be allowed (F2)"
+fi
+
+# ================================================================
+# 28. F2: git log on launcher path → ALLOW, no override, no stderr
+# ================================================================
+payload="$(make_payload 'git log -- plugins/leadv2/scripts/leadv2-dispatch-code.sh')"
+if run_hook "$payload"; then
+  if [[ -s /tmp/fg-guard-last-stderr ]]; then
+    fail "git log launcher: allowed but stderr not empty"
+  else
+    pass "git log launcher path allowed with no stderr (F2)"
+  fi
+else
+  fail "git log launcher path should be allowed (F2)"
+fi
+
+# ================================================================
+# 29. Background dispatch survives segmentation → ALLOW
+# ================================================================
+payload="$(make_payload 'bash leadv2-dispatch-code.sh @m.md &')"
+run_hook "$payload" && pass "background dispatch survives segmentation" \
+  || fail "background dispatch should survive segmentation"
+
+# ================================================================
+# 30. Lexer guard: quoted separator/token not mistaken for structure
+# ================================================================
+payload="$(make_payload 'echo "run leadv2-dispatch-code.sh status" && bash leadv2-dispatch-code.sh @m.md')"
+if run_hook "$payload"; then
+  fail "quoted launcher in echo should not mask real dispatch segment"
+else
+  pass "quoted launcher in echo correctly ignored; real dispatch denied"
+fi
+
+# ================================================================
+# 31. Lexer guard: pipe splits, dispatch segment still foreground → DENY
+# ================================================================
+payload="$(make_payload 'bash leadv2-dispatch-code.sh @m.md | tee /tmp/x.log')"
+if run_hook "$payload"; then
+  fail "dispatch piped to tee should be denied (foreground in its segment)"
+else
+  pass "dispatch piped to tee correctly denied (segment is foreground)"
+fi
+
+# ================================================================
+# 32. F2: grep for a second guarded launcher basename → ALLOW, no stderr
+# ================================================================
+payload="$(make_payload 'grep -rn "leadv2-fanout.sh" plugins/')"
+if run_hook "$payload"; then
+  if [[ -s /tmp/fg-guard-last-stderr ]]; then
+    fail "grep fanout: allowed but stderr not empty"
+  else
+    pass "grep for fanout launcher allowed with no stderr (F2 second launcher)"
+  fi
+else
+  fail "grep for fanout launcher should be allowed (F2)"
 fi
 
 printf -- '\n[fg-dispatch-guard] PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
