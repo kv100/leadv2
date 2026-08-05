@@ -168,8 +168,9 @@ while IFS= read -r -d $'\x1f' _seg; do
   [[ $_allowed -eq 0 ]] && printf '%s' "$_seg" | grep -Eq '[[:space:]]&[[:space:]]*(#.*)?$' && _allowed=1
   # f. nohup ... &.
   [[ $_allowed -eq 0 ]] && printf '%s' "$_seg" | grep -Eq 'nohup.*&' && _allowed=1
-  # g. setsid.
-  [[ $_allowed -eq 0 ]] && printf '%s' "$_seg" | grep -Eq 'setsid' && _allowed=1
+  # g. setsid — only counts as backgrounding where setsid actually exists (absent on macOS).
+  [[ $_allowed -eq 0 ]] && command -v setsid >/dev/null 2>&1 \
+    && printf '%s' "$_seg" | grep -Eq '(^|[[:space:]])setsid([[:space:]]|$)' && _allowed=1
   # Any unguarded segment → deny.
   if [[ $_allowed -eq 0 ]]; then
     _DENIED=1

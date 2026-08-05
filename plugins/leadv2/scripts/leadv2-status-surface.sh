@@ -3224,7 +3224,7 @@ for key, info in live_procs.items():
                 break
 
     name = lane_name(res_entry, term_hit, census_task_id, sig8)
-    phase = lane_phase(repo, sig8, True)
+    phase = lane_phase(repo, sig8, None, True)
 
     age_s = 0
     res_when = res_entry["when"] if res_entry else None
@@ -3284,7 +3284,7 @@ for e in res_entries:
                                 continue
     if not (lc["live"] or lc["live_process"] or lc["unknown"]):
                                 continue
-    phase = lane_phase(repo, sig8, False)
+    phase = lane_phase(repo, sig8, None, False)
     seen_keys.add(sig8)
     seen_keys.add(name0)
     workers.append({"name": str(name0).replace("|", ""),

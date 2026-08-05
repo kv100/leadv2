@@ -3003,6 +3003,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
 # that already went through admission once.
 cmd_advance_arm() {
   local sig8="" arm="" mission_file="" task_id="" worktree="" writes=""
+  local -a phase_waivers=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --sig8)         [[ $# -ge 2 ]] || { log_err "--sig8 requires a value"; exit 4; }; sig8="$2"; shift 2 ;;
@@ -3011,6 +3012,7 @@ cmd_advance_arm() {
       --task-id)      [[ $# -ge 2 ]] || { log_err "--task-id requires a value"; exit 4; }; task_id="$2"; shift 2 ;;
       --worktree)     [[ $# -ge 2 ]] || { log_err "--worktree requires a value"; exit 4; }; worktree="$2"; shift 2 ;;
       --writes)       [[ $# -ge 2 ]] || { log_err "--writes requires a value"; exit 4; }; writes="$2"; shift 2 ;;
+      --phase-waiver) [[ $# -ge 2 ]] || { log_err "--phase-waiver requires a value"; exit 4; }; phase_waivers+=("$2"); shift 2 ;;
       *) log_err "advance-arm: unknown argument: $1"; exit 4 ;;
     esac
   done
@@ -3035,6 +3037,21 @@ cmd_advance_arm() {
     exit 4
   fi
 
+  # PHASES-ARE-THE-ONLY-PATH-01 §5/D2: advance-arm also spawns a worker, so the
+  # guard must run here too. cmd_advance_arm has no --class flag; resolve it
+  # from the confirmed dispatch-ledger row, default to Standard if absent.
+  local _adv_class
+  _adv_class="$(printf '%s' "${confirmed}" | sed -n 's/.*"task_class":"\([^"]*\)".*/\1/p')"
+  if [[ -z "${_adv_class}" ]]; then
+    _adv_class="Standard"
+    emit decision "phase_class_defaulted task=${sig8}"
+  fi
+  local _phase_waiver_args=()
+  for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
+    _phase_waiver_args+=(--waiver "$_pw")
+  done
+  _phase_precondition_guard "${sig8}" "${_adv_class}" "${writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
+
   local mission
   mission="$(cat "${mission_file}" 2>/dev/null)"
   [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
@@ -3048,6 +3065,10 @@ cmd_advance_arm() {
   local handle
   handle="$(printf '%s\n' "${spawn_out}" | sed -n 's/.*handle=\(.*\)$/\1/p' | tail -1)"
   _stamp_active_phase "${task_id}" "build" "${arm}"
+  # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
+  bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
+    --handle "dispatch-${sig8}-build" \
+    --task-id "${task_id}" --owner "$(basename "$0"):cmd_advance_arm" 2>/dev/null || true
   emit decision "worker_spawned by=arm_advance model=${arm} handle=${handle}"
 
   if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then

@@ -191,11 +191,19 @@ run_hook "$payload" && pass "nohup & allowed" \
   || fail "nohup & should be allowed"
 
 # ================================================================
-# 19. setsid → ALLOW
+# 19. setsid → ALLOW only where setsid exists; DENY on macOS (R9)
 # ================================================================
 payload="$(make_payload 'setsid bash leadv2-dispatch-code.sh @mission.md')"
-run_hook "$payload" && pass "setsid allowed" \
-  || fail "setsid should be allowed"
+if command -v setsid >/dev/null 2>&1; then
+  run_hook "$payload" && pass "setsid allowed (setsid present)" \
+    || fail "setsid should be allowed where setsid exists"
+else
+  if run_hook "$payload"; then
+    fail "setsid should be DENIED on macOS (setsid absent, R9)"
+  else
+    pass "setsid denied on macOS (setsid absent, R9)"
+  fi
+fi
 
 # ================================================================
 # 20. hooks.json is valid JSON and hook is registered
