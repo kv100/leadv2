@@ -11,7 +11,11 @@
 #   C2 — lane worktree with a new UNTRACKED file matching LANE_WRITES -> non-empty diff,
 #        no no_work terminal.
 #   C3 — lane worktree clean (worker did nothing) -> terminal=no_work cause=empty_diff.
+#        (negative half of the ARM-PRODUCES-NOTHING-02 minimal pair: no arm registered)
 #   C4 — lane dirty ONLY under docs/handoff/ -> terminal=no_work (exclusion-set case).
+#   C5 — same clean lane as C3 but WITH an arm-registered file -> terminal=no_work
+#        cause=arm_produced_nothing. (positive half of the ARM-PRODUCES-NOTHING-02
+#        minimal pair: C3 and C5 differ ONLY in the arm-registered file's presence.)
 #
 # Red-first: every case also runs against a `git archive HEAD` extraction (pre-fix). A
 # case that is GREEN against pre-fix is reported as GREEN-PRE-FIX, never silently counted
@@ -32,7 +36,8 @@ if [[ -z "${LDS1_SANDBOXED:-}" ]]; then
   export HOME="${SANDBOX_HOME}" TMPDIR="${SANDBOX_HOME}/tmp" LDS1_SANDBOXED=1
 fi
 
-log() { printf -- '[TEST] %s\n' "$*"; }
+PASS_LABEL="${PASS_LABEL:-unlabelled}"
+log() { printf -- '[TEST][%s] %s\n' "${PASS_LABEL}" "$*"; }
 
 new_repo() {
   local d
@@ -169,7 +174,33 @@ case_c4_handoff_only_dirt() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
   return "${ok}"
 }
 
-# ── runner ──────────────────────────────────────────────────────────────────────
+# ── C5 — ARM-PRODUCES-NOTHING-02 positive twin: same clean lane as C3 but WITH an
+#   arm-registered file naming the AUTHOR (sonnet). The probe MUST fire and produce
+#   cause=arm_produced_nothing. C3 and C5 are a minimal pair — identical clean worktree,
+#   identical absent stream, differing ONLY in the arm-registered file. ───────────────
+case_c5_registered_arm_silent() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  [[ -f "${scripts_dir}/leadv2-dispatch-product-close.sh" ]] || return 2
+  local root tid wt d errf
+  root="$(new_repo)"; tid="c5-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  # ARM-PRODUCES-NOTHING-02: write the registration file the gate checks.
+  # AUTHOR is sonnet (run_gate's 3rd positional).
+  mkdir -p "${root}/docs/handoff/dispatch-c5sig001"
+  printf 'arm=sonnet handle=PID=0 epoch=0\n' > "${root}/docs/handoff/dispatch-c5sig001/arm-registered"
+  d="$(mktemp -d)"; errf="$(mktemp)"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+  run_gate "${scripts_dir}" "${root}" c5sig001 "${wt}" "${d}" "${errf}"
+  local line; line="$(gate_terminal_line "${errf}")"
+  local ok=1
+  if grep -q 'terminal=no_work' <<<"${line}" && grep -q 'cause=arm_produced_nothing' <<<"${line}"; then
+    ok=0
+  fi
+  rm -rf "${root}" "${d}"; rm -f "${errf}"
+  return "${ok}"
+}
 CASE_NAMES=(); CASE_RCS=()
 
 run_case() { # <name> <fn>
@@ -181,6 +212,9 @@ run_case() { # <name> <fn>
     log "SKIPPED-CANNOT-RUN: ${name}"
   elif [[ ${rc} -eq 0 ]]; then
     log "PASS ${name}"
+  elif [[ "${PASS_LABEL}" == "pre-fix" ]] && [[ "${POST_RCS[${#CASE_NAMES[@]}-1]:-2}" == "0" ]]; then
+    # pre-fix block: this case passed post-fix, so red here is evidence, not regression
+    log "RED-AS-EXPECTED ${name}"
   else
     log "FAIL ${name}"
   fi
@@ -192,6 +226,7 @@ run_all_cases() {
   run_case "C2-untracked-new"      case_c2_untracked_new
   run_case "C3-clean-anti-rescue"  case_c3_clean_anti_rescue
   run_case "C4-handoff-only-dirt"  case_c4_handoff_only_dirt
+  run_case "C5-registered-arm-silent" case_c5_registered_arm_silent
 }
 
 report_single_pass() {
@@ -212,6 +247,7 @@ report_single_pass() {
 
 if [[ "${1:-}" == "--pre-fix" ]]; then
   TARGET="${2:?scratchdir required}"
+  PASS_LABEL="single"
   run_all_cases
   report_single_pass; frc=$?
   [[ ${frc} -gt 0 ]] && exit 1
@@ -221,6 +257,8 @@ fi
 STAMP="$(mktemp "${TMPDIR}/leadv2-lds1-stamp.XXXXXX")"
 
 TARGET="${SELF_DIR}"
+PASS_LABEL="post-fix"
+echo "=== pass 1/2: post-fix (live tree: ${TARGET}) ==="
 run_all_cases
 POST_NAMES=("${CASE_NAMES[@]}"); POST_RCS=("${CASE_RCS[@]}")
 POST_FAIL_COUNT=0; POST_ERRORS=()
@@ -236,6 +274,9 @@ if [[ -n "${LEADV2_REPO}" ]]; then
   PREFIX_SCRIPTS="${PREFIX_DIR}/plugins/leadv2/scripts"
   if [[ -f "${PREFIX_SCRIPTS}/leadv2-dispatch-product-close.sh" ]]; then
     TARGET="${PREFIX_SCRIPTS}"
+    PASS_LABEL="pre-fix"
+    echo ""
+    echo "=== pass 2/2: red-first pre-fix (git archive HEAD) — reds here are EVIDENCE ==="
     run_all_cases
     PRE_RCS=("${CASE_RCS[@]}")
     for i in "${!POST_RCS[@]}"; do
@@ -254,7 +295,14 @@ if [[ -n "${LEADV2_REPO}" ]]; then
   rm -rf "${PREFIX_DIR}"
 fi
 
-TRIPWIRE_HITS="$(find "${LEADV2_REPO}/plugins" -newer "${STAMP}" 2>/dev/null; find "${ORIG_HOME}/.claude" -maxdepth 2 -newer "${STAMP}" 2>/dev/null)"
+TRIPWIRE_HITS="$(
+  find "${LEADV2_REPO}/plugins" -newer "${STAMP}" 2>/dev/null
+  find "${ORIG_HOME}/.claude" -maxdepth 2 -newer "${STAMP}" \
+    \! -path '*/.claude/cache/*' \
+    \! -name '.claude.json' \
+    \! -path '*/.claude/todos/*' \
+    2>/dev/null
+)"
 
 echo ""
 echo "Results (post-fix, live tree): $(( ${#POST_RCS[@]} - POST_FAIL_COUNT )) passed, ${POST_FAIL_COUNT} failed"
