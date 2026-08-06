@@ -59,12 +59,12 @@ if [[ "$NO_CODEX" -ne 1 && -f "$CODEX_TASK" ]]; then
 fi
 
 # --all resolves every lane in one Python pass.
-python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" <<'PY'
+python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" "${LEADV2_LANE_SENTINEL_DEAD:-1}" "${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" "${LEADV2_LANE_RUNS_ROOT:-}" <<'PY'
 import glob, json, os, re, subprocess, sys, time
 
 (root, active_path, tombstones_path, wanted_lane, wanted_job, all_mode, json_mode,
  codex_raw, silent_max_raw, v2_raw, starting_max_raw, abandon_max_raw,
- child_suffixes_raw) = sys.argv[1:]
+ child_suffixes_raw, sentinel_dead_raw, sentinel_settle_raw, runs_root_raw) = sys.argv[1:]
 all_mode = all_mode == "1"
 json_mode = json_mode == "1"
 # LEADV2_LANE_LIVENESS_V2=0 is the one-flag rollback to the exact prior
@@ -81,6 +81,16 @@ def _int_env(raw, default):
 silent_max = _int_env(silent_max_raw, 900)
 starting_max = _int_env(starting_max_raw, 300)
 abandon_max = _int_env(abandon_max_raw, 3600)
+
+# SENTINEL-COMPLETION-01 (LANE-LIVENESS-IGNORES-ITS-OWN-COMPLETION-SENTINEL-01):
+# a runner-written .finalized sentinel + dead process group is proof, not a
+# report — it outranks log freshness because the fresh mtime IS the completion
+# flush.  These tunables are threaded via argv (like every other tunable here),
+# not read from os.environ.  GLM_RUNS_DIR / KIMI_RUNS_DIR are consumed, not
+# defined, by this script — they belong to the runners and are read via
+# os.environ.get in resolve_run_dir().
+sentinel_dead = sentinel_dead_raw != "0"
+sentinel_settle_s = _int_env(sentinel_settle_raw, 60)
 
 CHILD_SUFFIXES = [s.strip() for s in child_suffixes_raw.split(",") if s.strip()]
 _FOLD_RE = re.compile(r'^(dispatch-[0-9a-f]{8})-(.+)$')
@@ -208,6 +218,124 @@ def lane_job_id(tid):
         return ""
 
 WORKER_STREAM_NAMES = ("developer.stream.jsonl", "architect.stream.jsonl", "session.log", "fanout.log")
+
+# --- SENTINEL-COMPLETION-01 helpers -------------------------------------------
+# Run-dir resolution contract (design §3.6):
+#   resolve_run_dir(tid) -> (arm, run_dir) | (None, None)
+#     for arm in ("glm", "kimi"):
+#         idfile = <root>/docs/handoff/<tid>/.<arm>-session-runner.run-id
+#         run_id = first non-empty stripped line of idfile        # else continue
+#         reject run_id containing "/" or ".." or empty           # path-traversal guard
+#         base = ${GLM_RUNS_DIR|KIMI_RUNS_DIR} if set
+#                else ${LEADV2_LANE_RUNS_ROOT:-$HOME/.claude/cache}/<arm>-runs
+#         if isdir(base/run_id): return (arm, base/run_id)
+#     return (None, None)
+def resolve_run_dir(tid):
+    for arm in ("glm", "kimi"):
+        idfile = os.path.join(root, "docs", "handoff", tid, f".{arm}-session-runner.run-id")
+        run_id = ""
+        try:
+            with open(idfile, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        run_id = line
+                        break
+        except OSError:
+            continue
+        # Path-traversal guard (design R9): a crafted run-id must never escape base.
+        if not run_id or "/" in run_id or ".." in run_id:
+            continue
+        env_var = "GLM_RUNS_DIR" if arm == "glm" else "KIMI_RUNS_DIR"
+        base = os.environ.get(env_var)
+        if not base:
+            base = os.path.join(
+                runs_root_raw if runs_root_raw else os.path.expanduser("~/.claude/cache"),
+                f"{arm}-runs",
+            )
+        run_dir = os.path.join(base, run_id)
+        if os.path.isdir(run_dir):
+            return (arm, run_dir)
+    return (None, None)
+
+def pgid_group_alive(pgid):
+    # Establish process-group death the same way glm-coder.sh does: kill(-pgid, 0).
+    #   ProcessLookupError → group gone (dead).
+    #   PermissionError     → group exists but is not ours → treat as ALIVE (never fire).
+    #   Any other exception → cannot determine → treat as ALIVE (fail-safe).
+    try:
+        os.kill(-pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+
+def sentinel_check(tid, row):
+    """Return True if the sentinel-completion dead verdict was set on row.
+
+    Conditions (design §3.2, all must hold):
+      1. Kill switch on, run dir exists and contains .finalized.
+      2. pgid file parses as positive int AND os.kill(-pgid, 0) raises ProcessLookupError.
+      3. active.yaml pid, IF explicitly recorded, must be dead.
+      4. .finalized mtime must be at least sentinel_settle_s old.
+    """
+    if not sentinel_dead:
+        return False
+    arm, run_dir = resolve_run_dir(tid)
+    if arm is None:
+        return False
+    sentinel_path = os.path.join(run_dir, ".finalized")
+    if not os.path.isfile(sentinel_path):
+        return False
+    # Settle window (design R1): closes the runner-retry race.
+    sentinel_mtime = file_mtime(sentinel_path)
+    if sentinel_mtime is None:
+        return False
+    sentinel_age = max(0, int(time.time()) - sentinel_mtime)
+    if sentinel_age < sentinel_settle_s:
+        return False
+    # pgid check — positive proof the process group is gone.
+    pgid = None
+    try:
+        with open(os.path.join(run_dir, "pgid"), encoding="utf-8") as fh:
+            pgid = int(fh.read().strip())
+    except (OSError, ValueError):
+        pgid = None
+    if pgid is None or pgid <= 0:
+        return False  # cannot positively establish death — fall through
+    alive = pgid_group_alive(pgid)
+    if alive:
+        row["pgid"] = pgid
+        row["pgid_alive"] = True
+        return False  # group still alive — do not fire
+    # active.yaml pid (condition 3): only blocks if it was explicitly recorded.
+    pid_recorded = row.get("pid") is not None and str(row.get("pid")).strip() != ""
+    if pid_recorded and row.get("pid_alive"):
+        return False  # recorded-and-alive pid → do not fire
+    # Verdict
+    row["pgid"] = pgid
+    row["pgid_alive"] = False
+    row["pid_recorded"] = pid_recorded
+    row["arm"] = arm
+    row["run_dir"] = run_dir
+    row["sentinel_path"] = sentinel_path
+    row["sentinel_age_s"] = sentinel_age
+    # Corroborating .outcome (display-only, never gates the verdict)
+    try:
+        with open(os.path.join(run_dir, ".outcome"), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("outcome="):
+                    row["lane_outcome"] = line.split("=", 1)[1]
+                    break
+    except OSError:
+        pass
+    row.update(verdict="dead:sentinel_finalized", reason="sentinel_finalized")
+    return True
+# --- end SENTINEL-COMPLETION-01 helpers ---------------------------------------
 
 def resolve(tid):
     lane_dir = os.path.join(root, "docs", "handoff", tid)
@@ -408,6 +536,15 @@ def resolve(tid):
         # resolve alive (or silent, never dead) because something is still
         # actively writing regardless of what the provider job says finished.
         row.update(verdict=f"dead:provider_{provider_status}", reason=f"provider_{provider_status}")
+        return row
+    # SENTINEL-COMPLETION-01 (LANE-LIVENESS-IGNORES-ITS-OWN-COMPLETION-SENTINEL-01):
+    # a runner-written .finalized sentinel combined with a dead process group
+    # is proof (not a report) that the lane is finished — it outranks log
+    # freshness because the fresh mtime IS the completion flush.  Placed after
+    # B8 (so B8's not-fresh + terminal-status path wins on ties) and before the
+    # wedged-process / fresh / stale ladder below (which is untouched).
+    # Fires regardless of is_fresh — that is the whole point.
+    if sentinel_check(tid, row):
         return row
     # Provider queued/running (v2_mode) is now ANNOTATION ONLY — it never
     # short-circuits the verdict; log mtime + process evidence below decide.
