@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
 # Offline regression for ROUTER-DOOR-ENFORCE-01 Part 0.
+#
+# dispatch-a24b1588 round-1b item 2 verification (2026-08-06): swept every
+# `env -u CLAUDE_PROJECT_ROOT`/`CLAUDE_PROJECT_DIR` invocation in this file --
+# only Test 5 (selfhost) and Test 6 (degraded) use it, and both already pin
+# `PROJECT_ROOT` to a sandbox root (5e69c0b), so no further code change was
+# needed here. Cross-cwd demonstration (fresh a1afed9 worktree + this file,
+# `PROJECT_ROOT`/`LEADV2_PROJECT_ROOT` ambient-env isolated): this file run
+# from /private/tmp, this lane worktree, and persona-engine (which carries its
+# own .claude/ref/leadv2-routing.yaml) all print "18 passed, 0 failed"-shaped
+# results. The UNPINNED a1afed9 source of this same file diverges exactly as
+# predicted: 18/18 from /private/tmp, but Test 6 (degraded mode) FAILS from
+# persona-engine because unpinned `PROJECT_ROOT` resolves via
+# `git rev-parse --show-toplevel` on the caller's cwd and finds persona-
+# engine's own routing config instead of hitting the degraded/no-config path.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
