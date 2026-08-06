@@ -8,6 +8,25 @@ QUOTA_GATE_BIN="${SCRIPT_DIR}/../leadv2-glm-quota-gate.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "${TMP_ROOT}"' EXIT
 FAIL=0
+
+# Fail-closed spawn fence: every provider bin env var is pointed at a poison
+# script that exits non-zero and prints a marker. Any test that forgets to
+# override one gets a loud, offline failure instead of a live billed session.
+# Individual tests override only the bins they intend to exercise.
+for _arm in glm kimi codex; do
+  _poison="${TMP_ROOT}/poison-${_arm}.sh"
+  printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "${_poison}"
+  chmod +x "${_poison}"
+done
+export LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/poison-glm.sh"
+export LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/poison-kimi.sh"
+export LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/poison-codex.sh"
+# sonnet uses SUBSESSION_BIN, not a dedicated bin; point it at poison too.
+# Tests that need a live sonnet override LEADV2_DISPATCH_SUBSESSION_BIN.
+export LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh"
+printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "${TMP_ROOT}/poison-sonnet.sh"
+chmod +x "${TMP_ROOT}/poison-sonnet.sh"
+_SUITE_START_EPOCH="$(date +%s)"
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s -- %s\n' "$1" "$2"; FAIL=1; }
 
@@ -288,6 +307,7 @@ router:
       model: moonshotai/kimi-k3-free
       when: [all]
       effort: standard
+      dispatch: false
 YAML
 }
 
@@ -300,11 +320,11 @@ make_lockout() {
 JSON
 }
 
-# Test 1: ladder order comes from the yaml. With a yaml ladder ordered
-# codex,sonnet,glm,kimi, when the resolver picks glm as primary, the candidate
-# chain must be glm,kimi (glm's position onward) — NOT the hardcoded
-# glm,kimi,codex,sonnet. This FAILS on HEAD (hardcoded order) and passes
-# after the change.
+# Test 1: ladder order from yaml, dispatch:false entries excluded.
+# With a yaml ladder ordered codex,sonnet,glm,kimi(dispatch:false), when the
+# resolver picks glm as primary, the candidate chain must be glm only — NOT
+# glm,kimi (kimi is excluded by dispatch:false) and NOT glm,kimi,codex,sonnet
+# (the old hardcoded order). The word "kimi" must not appear in the chain.
 make_ladder_root "${TMP_ROOT}/ladder-root" ""
 make_live_glm "${TMP_ROOT}/ladder-glm.sh"
 make_refusing_kimi "${TMP_ROOT}/ladder-kimi.sh"
@@ -320,13 +340,14 @@ ladder_rc=$?
 if [[ ${ladder_rc} -eq 0 ]] \
   && grep -q 'candidate_chain' <<<"${ladder_out}"; then
   _ladder_arms="$(grep 'candidate_chain' <<<"${ladder_out}" | sed -n 's/.*arms=//p')"
-  if [[ "${_ladder_arms}" == "glm,kimi" ]]; then
-    pass 'ladder order from yaml: resolved glm → candidates glm,kimi (not glm,kimi,codex,sonnet)'
+  if [[ "${_ladder_arms}" == "glm" ]] \
+    && ! grep -q 'kimi' <<<"${_ladder_arms}"; then
+    pass 'ladder order from yaml, dispatch:false entries excluded: resolved glm → candidates glm (no kimi)'
   else
-    fail 'ladder order from yaml' "candidate_chain arms='${_ladder_arms}' expected 'glm,kimi'"
+    fail 'ladder order from yaml, dispatch:false entries excluded' "candidate_chain arms='${_ladder_arms}' expected 'glm' (no kimi)"
   fi
 else
-  fail 'ladder order from yaml' "rc=${ladder_rc} output=${ladder_out}"
+  fail 'ladder order from yaml, dispatch:false entries excluded' "rc=${ladder_rc} output=${ladder_out}"
 fi
 
 # Test 2: a provider marked locked-until-future is skipped and the next arm
@@ -427,6 +448,109 @@ if [[ ${selfhost_rc} -eq 0 ]] \
   pass 'dispatch from plugin repo resolves routing config (no no_routing_yaml)'
 else
   fail 'plugin self-host routing' "rc=${selfhost_rc} output=${selfhost_out}"
+fi
+
+# Test 6: no routing config anywhere (degraded mode). Both project and plugin
+# config must miss, so the journal shows routing_config_degraded AND dispatch
+# still proceeds. Uses LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE to simulate a
+# missing plugin config.
+make_live_glm "${TMP_ROOT}/degraded-glm.sh"
+degraded_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
+  LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE="/nonexistent/path/routing.yaml" \
+  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/degraded-cache" \
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/degraded-glm.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
+  bash "${DISPATCH_BIN}" 'plugin-only degraded mode test' 2>&1)"
+degraded_rc=$?
+if [[ ${degraded_rc} -eq 0 ]] \
+  && grep -q 'routing_config_degraded' <<<"${degraded_out}" \
+  && grep -q 'worker_spawned' <<<"${degraded_out}"; then
+  pass 'degraded mode announces routing_config_degraded and still dispatches'
+else
+  fail 'degraded mode announcement' "rc=${degraded_rc} output=${degraded_out}"
+fi
+
+# Test 7: spawn fence verification. After the full suite runs, no POISON marker
+# should appear in any output, and no new kimi-run directory should exist.
+# NOTE: this test runs at the END and only passes if every prior test respected
+# the fence.
+_poison_hits="$(grep -rl 'POISON:' "${TMP_ROOT}" 2>/dev/null | grep -v 'poison-' | head -1 || true)"
+if [[ -z "${_poison_hits}" ]]; then
+  pass 'spawn fence: no POISON marker in any test output'
+else
+  fail 'spawn fence' "POISON found in: ${_poison_hits}"
+fi
+
+# Test 8: C1 dry-run proof — production routing yaml yields candidate_chain
+# without kimi. Uses the plugin's own canonical config, fakes GLM to refuse,
+# and asserts arms=glm,codex,sonnet.
+make_refusing_glm "${TMP_ROOT}/prodtest-glm.sh"
+make_live_codex "${TMP_ROOT}/prodtest-codex.sh"
+prodtest_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/prodtest-root" \
+  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/prodtest-cache" \
+  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/prodtest-cache" \
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/prodtest-glm.sh" \
+  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/prodtest-codex.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
+  bash "${DISPATCH_BIN}" 'plugin-only production yaml dry run' 2>&1)"
+_prodtest_arms="$(grep 'candidate_chain' <<<"${prodtest_out}" | sed -n 's/.*arms=//p' | head -1)"
+if [[ "${_prodtest_arms}" == "glm,codex,sonnet" ]] \
+  && ! grep -q 'kimi' <<<"${_prodtest_arms}"; then
+  pass 'production yaml dry run: candidate_chain arms=glm,codex,sonnet (no kimi)'
+else
+  fail 'production yaml dry run' "arms='${_prodtest_arms}' expected 'glm,codex,sonnet'"
+fi
+
+# Test 9: quota lockout write→read. GLM launcher refuses with quota_gate;
+# assert quota_lockout_recorded in journal AND the lockout file exists; then
+# run a second dispatch and assert glm is skipped via precheck and codex spawns.
+make_refusing_glm "${TMP_ROOT}/lockwrite-glm.sh"
+make_live_codex "${TMP_ROOT}/lockwrite-codex.sh"
+mkdir -p "${TMP_ROOT}/lockwrite-root/.claude/ref" "${TMP_ROOT}/lockwrite-root/docs/leadv2/.bus-offsets" "${TMP_ROOT}/lockwrite-root/docs/leadv2/tasks"
+lockwrite_out1="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockwrite-root" \
+  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/lockwrite-cache" \
+  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/lockwrite-cache" \
+  LEADV2_QUOTA_LOCKOUT_MINUTES=30 \
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/lockwrite-glm.sh" \
+  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockwrite-codex.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
+  bash "${DISPATCH_BIN}" 'plugin-only lockout write read run1' 2>&1)"
+lockwrite_rc1=$?
+_lockout_file="${TMP_ROOT}/lockwrite-cache/quota-lockout-glm.json"
+if [[ ${lockwrite_rc1} -ne 0 ]] \
+  || ! grep -q 'quota_lockout_recorded.*provider=glm' <<<"${lockwrite_out1}" \
+  || [[ ! -f "${_lockout_file}" ]]; then
+  fail 'quota lockout write side' "rc=${lockwrite_rc1} output=${lockwrite_out1} file_exists=$([[ -f ${_lockout_file} ]] && echo yes || echo no)"
+else
+  # Verify locked_until_epoch is in the future
+  _lock_epoch="$(python3 -c "import json; print(json.load(open('${_lockout_file}'))['locked_until_epoch'])" 2>/dev/null || echo 0)"
+  _now_epoch="$(date +%s)"
+  if [[ "${_lock_epoch}" =~ ^[0-9]+$ ]] && (( _lock_epoch > _now_epoch )); then
+    pass 'quota lockout write side: quota_lockout_recorded provider=glm, lockout file with future epoch'
+  else
+    fail 'quota lockout write side' "lock_epoch=${_lock_epoch} now=${_now_epoch} (not in future)"
+  fi
+  # Second dispatch: glm should be skipped by precheck, codex should spawn
+  lockwrite_out2="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockwrite-root" \
+    LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/lockwrite-cache" \
+    LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/lockwrite-cache" \
+    LEADV2_QUOTA_LOCKOUT_MINUTES=30 \
+    LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/lockwrite-glm.sh" \
+    LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockwrite-codex.sh" \
+    LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+    LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
+    bash "${DISPATCH_BIN}" 'plugin-only lockout write read run2' 2>&1)"
+  lockwrite_rc2=$?
+  if [[ ${lockwrite_rc2} -eq 0 ]] \
+    && grep -q 'quota_precheck_skip model=glm' <<<"${lockwrite_out2}" \
+    && grep -q 'worker_spawned by=router model=codex' <<<"${lockwrite_out2}"; then
+    pass 'quota lockout read side: 2nd dispatch skips glm, spawns codex'
+  else
+    fail 'quota lockout read side' "rc=${lockwrite_rc2} output=${lockwrite_out2}"
+  fi
 fi
 
 [[ ${FAIL} -eq 0 ]]

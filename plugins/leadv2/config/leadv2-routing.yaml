@@ -117,11 +117,16 @@ router:
       model: glm-5.2
       when: [all]
       effort: standard
+    # RETIRED as a build arm (founder order 2026-08-04 «Кими убрать», executed as
+    # 3398d11 / DISPATCH-KIMI-ARM-MISMATCH-01). The entry stays so _arm_provider
+    # can name the provider if a stale tenant yaml ever hands back arm=kimi, but
+    # dispatch: false makes the ladder loader skip it.
     - id: kimi
       provider: kimi
       model: moonshotai/kimi-k3-free
       when: [all]
       effort: standard
+      dispatch: false
     - id: codex
       provider: codex
       model: gpt-5.6-terra
