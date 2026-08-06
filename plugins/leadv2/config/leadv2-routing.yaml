@@ -43,13 +43,10 @@ router_v2:
   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
   # Anthropic arms deliberately share the active Max x20 account bucket.
   #
-  # NOTE 2026-08-02: this list is NOT what the dispatcher selects from. The
-  # ladder in leadv2-dispatch-code.sh is hardcoded `glm -> codex -> sonnet`, so
-  # claude-haiku and claude-opus are declared here and UNREACHABLE, and fable is
-  # not declared at all. Every provider also has more than one model (glm ≥2,
-  # codex ≥3) and none of those are expressible here. Making this file the actual
-  # source the ladder reads — with a per-model "when to use it and at what effort"
-  # policy — is queued as its own task.
+  # NOTE 2026-08-02 (updated ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01): the dispatch
+  # order now comes from router.dispatch_ladder above. This arms list remains
+  # for advisory/quota-bucket purposes. The dispatcher builds candidate_arms
+  # from dispatch_ladder, not from this list.
   arms:
     - id: glm
       channel: glm-coder.sh
@@ -98,6 +95,51 @@ router_v2:
 # sonnet_exceptions `safety_gate_publish_payments / when: protected_path` rule names:
 # safety-gate, publish, payments. First yaml in the ordered lookup that carries this key wins.
 router:
+  # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P1: the ordered dispatch ladder.
+  # dispatch-code.sh reads this list to build candidate_arms — it no longer
+  # carries a hardcoded fallback order. The resolver's primary arm starts the
+  # candidate list; every arm after it in this order is a fallback. Changing
+  # this list changes dispatch routing.
+  #
+  # Each entry:
+  #   id       — arm identifier used in the dispatch script's case/spawn logic
+  #   provider — the quota/lockout scope (one lockout record covers all arms
+  #              on the same provider)
+  #   model    — the model the arm dispatches
+  #   when     — task kinds this arm is eligible for (advisory; the resolver
+  #              decides the primary arm from glm_policy rules, this list
+  #              governs fallback eligibility)
+  #   effort   — effort tier for the arm's provider
+  dispatch_ladder:
+    - id: glm
+      provider: glm
+      model: glm-5.2
+      when: [all]
+      effort: standard
+    - id: kimi
+      provider: kimi
+      model: moonshotai/kimi-k3-free
+      when: [all]
+      effort: standard
+    - id: codex
+      provider: codex
+      model: gpt-5.6-terra
+      when: [all]
+      effort: standard
+    - id: sonnet
+      provider: anthropic
+      model: sonnet
+      when: [all]
+      effort: standard
+    # Architect-path models — expressed here so the config is the single
+    # source of truth, but never dispatched by dispatch-code.sh (the plan
+    # workflow uses fable directly via workflows/leadv2-plan.js).
+    - id: fable
+      provider: anthropic
+      model: fable
+      when: [architect, heavy]
+      effort: high
+      dispatch: false
   glm_policy:
     protected_path_patterns:
       - "*safety-gate*"

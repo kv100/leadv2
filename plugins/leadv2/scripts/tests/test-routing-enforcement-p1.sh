@@ -258,4 +258,175 @@ else
   fail 'racing reserve exclusivity' "rcs=${race_one_rc},${race_two_rc} outputs=$(cat "${TMP_ROOT}/race-one.out") $(cat "${TMP_ROOT}/race-two.out")"
 fi
 
+# ── ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 tests ──────────────────────────────────
+
+# Helper: make a root whose routing YAML has a custom dispatch_ladder.
+make_ladder_root() {
+  local root="$1" ladder_yaml="$2"
+  mkdir -p "${root}/.claude/ref"
+  cat > "${root}/.claude/ref/leadv2-routing.yaml" <<YAML
+${ladder_yaml}
+router:
+  dispatch_ladder:
+    - id: codex
+      provider: codex
+      model: gpt-5.6-terra
+      when: [all]
+      effort: standard
+    - id: sonnet
+      provider: anthropic
+      model: sonnet
+      when: [all]
+      effort: standard
+    - id: glm
+      provider: glm
+      model: glm-5.2
+      when: [all]
+      effort: standard
+    - id: kimi
+      provider: kimi
+      model: moonshotai/kimi-k3-free
+      when: [all]
+      effort: standard
+YAML
+}
+
+# Helper: write a per-provider quota lockout record.
+make_lockout() {
+  local dir="$1" provider="$2" locked_until_epoch="$3" source="${4:-test}"
+  mkdir -p "${dir}" 2>/dev/null
+  cat > "${dir}/quota-lockout-${provider}.json" <<JSON
+{"provider":"${provider}","locked_until":"${locked_until_epoch}","locked_until_epoch":${locked_until_epoch},"source":"${source}"}
+JSON
+}
+
+# Test 1: ladder order comes from the yaml. With a yaml ladder ordered
+# codex,sonnet,glm,kimi, when the resolver picks glm as primary, the candidate
+# chain must be glm,kimi (glm's position onward) — NOT the hardcoded
+# glm,kimi,codex,sonnet. This FAILS on HEAD (hardcoded order) and passes
+# after the change.
+make_ladder_root "${TMP_ROOT}/ladder-root" ""
+make_live_glm "${TMP_ROOT}/ladder-glm.sh"
+make_refusing_kimi "${TMP_ROOT}/ladder-kimi.sh"
+make_live_codex "${TMP_ROOT}/ladder-codex.sh"
+ladder_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/ladder-root" \
+  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/ladder-cache" \
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/ladder-glm.sh" \
+  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/ladder-kimi.sh" \
+  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/ladder-codex.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  bash "${DISPATCH_BIN}" 'plugin-only ladder from yaml' 2>&1)"
+ladder_rc=$?
+if [[ ${ladder_rc} -eq 0 ]] \
+  && grep -q 'candidate_chain' <<<"${ladder_out}"; then
+  _ladder_arms="$(grep 'candidate_chain' <<<"${ladder_out}" | sed -n 's/.*arms=//p')"
+  if [[ "${_ladder_arms}" == "glm,kimi" ]]; then
+    pass 'ladder order from yaml: resolved glm → candidates glm,kimi (not glm,kimi,codex,sonnet)'
+  else
+    fail 'ladder order from yaml' "candidate_chain arms='${_ladder_arms}' expected 'glm,kimi'"
+  fi
+else
+  fail 'ladder order from yaml' "rc=${ladder_rc} output=${ladder_out}"
+fi
+
+# Test 2: a provider marked locked-until-future is skipped and the next arm
+# is chosen, with the skip journalled. FAILS on HEAD (no precheck exists).
+make_root "${TMP_ROOT}/lockout-root"
+make_live_glm "${TMP_ROOT}/lockout-glm.sh"
+make_refusing_kimi "${TMP_ROOT}/lockout-kimi.sh"
+make_live_codex "${TMP_ROOT}/lockout-codex.sh"
+_future_epoch=$(( $(date +%s) + 86400 ))
+make_lockout "${TMP_ROOT}/lockout-cache" "glm" "${_future_epoch}" "test_quota_lockout"
+lockout_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockout-root" \
+  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/lockout-cache" \
+  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/lockout-cache" \
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/lockout-glm.sh" \
+  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/lockout-kimi.sh" \
+  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockout-codex.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  bash "${DISPATCH_BIN}" 'plugin-only lockout skips glm' 2>&1)"
+lockout_rc=$?
+if [[ ${lockout_rc} -eq 0 ]] \
+  && grep -q 'quota_precheck_skip model=glm' <<<"${lockout_out}" \
+  && grep -q 'worker_spawned by=router model=codex' <<<"${lockout_out}"; then
+  pass 'quota precheck skips locked provider and journals the skip'
+else
+  fail 'quota precheck skip' "rc=${lockout_rc} output=${lockout_out}"
+fi
+
+# Test 3: a lockout in the past is ignored — glm dispatches AND codex is
+# simultaneously skipped (locked future). On HEAD neither the past-lockout
+# check nor the codex skip exists. FAILS on HEAD.
+make_root "${TMP_ROOT}/pastlock-root"
+make_live_glm "${TMP_ROOT}/pastlock-glm.sh"
+make_refusing_kimi "${TMP_ROOT}/pastlock-kimi.sh"
+make_live_codex "${TMP_ROOT}/pastlock-codex.sh"
+_past_epoch=$(( $(date +%s) - 3600 ))
+make_lockout "${TMP_ROOT}/pastlock-cache" "glm" "${_past_epoch}" "expired_lockout"
+# Also lock codex with a FUTURE timestamp so the test asserts the precheck
+# ran (codex IS skipped) while glm (past lockout) is NOT skipped.
+make_lockout "${TMP_ROOT}/pastlock-cache" "codex" "${_future_epoch}" "test_codex_lock"
+pastlock_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/pastlock-root" \
+  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/pastlock-cache" \
+  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/pastlock-cache" \
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/pastlock-glm.sh" \
+  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/pastlock-kimi.sh" \
+  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/pastlock-codex.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  bash "${DISPATCH_BIN}" 'plugin-only past lockout ignored future codex locked' 2>&1)"
+pastlock_rc=$?
+if [[ ${pastlock_rc} -eq 0 ]] \
+  && grep -q 'worker_spawned by=router model=glm' <<<"${pastlock_out}" \
+  && ! grep -q 'quota_precheck_skip model=glm' <<<"${pastlock_out}" \
+  && grep -q 'quota_precheck_skip model=codex' <<<"${pastlock_out}"; then
+  pass 'past lockout is ignored for glm while future lockout skips codex'
+else
+  fail 'past lockout ignored' "rc=${pastlock_rc} output=${pastlock_out}"
+fi
+
+# Test 4: an absent lockout record does not block glm, AND a present
+# future-lockout on codex IS enforced. On HEAD the codex skip does not
+# happen. FAILS on HEAD.
+make_root "${TMP_ROOT}/nolock-root"
+make_live_glm "${TMP_ROOT}/nolock-glm.sh"
+make_refusing_kimi "${TMP_ROOT}/nolock-kimi.sh"
+make_live_codex "${TMP_ROOT}/nolock-codex.sh"
+# No lockout for glm — but lock codex with a future timestamp.
+make_lockout "${TMP_ROOT}/nolock-cache" "codex" "${_future_epoch}" "test_codex_lock2"
+nolock_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/nolock-root" \
+  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/nolock-cache" \
+  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/nolock-cache" \
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/nolock-glm.sh" \
+  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/nolock-kimi.sh" \
+  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/nolock-codex.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  bash "${DISPATCH_BIN}" 'plugin-only no glm lockout codex locked' 2>&1)"
+nolock_rc=$?
+if [[ ${nolock_rc} -eq 0 ]] \
+  && grep -q 'worker_spawned by=router model=glm' <<<"${nolock_out}" \
+  && ! grep -q 'quota_precheck_skip model=glm' <<<"${nolock_out}" \
+  && grep -q 'quota_precheck_skip model=codex' <<<"${nolock_out}"; then
+  pass 'absent glm lockout does not block while codex lockout is enforced'
+else
+  fail 'absent lockout no-block' "rc=${nolock_rc} output=${nolock_out}"
+fi
+
+# Test 5: dispatch with cwd = the plugin repo resolves a routing config
+# rather than logging no_routing_yaml. FAILS on HEAD (logs no_routing_yaml).
+make_live_glm "${TMP_ROOT}/selfhost-glm.sh"
+make_refusing_kimi "${TMP_ROOT}/selfhost-kimi.sh"
+selfhost_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
+  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/selfhost-cache" \
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/selfhost-glm.sh" \
+  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/selfhost-kimi.sh" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  bash "${DISPATCH_BIN}" 'plugin-only selfhost routing' 2>&1)"
+selfhost_rc=$?
+if [[ ${selfhost_rc} -eq 0 ]] \
+  && ! grep -q 'no_routing_yaml' <<<"${selfhost_out}"; then
+  pass 'dispatch from plugin repo resolves routing config (no no_routing_yaml)'
+else
+  fail 'plugin self-host routing' "rc=${selfhost_rc} output=${selfhost_out}"
+fi
+
 [[ ${FAIL} -eq 0 ]]
