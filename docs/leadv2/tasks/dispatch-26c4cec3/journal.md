@@ -1,0 +1,7 @@
+- 2026-08-05T01:26:16Z [decision] dispatch_classified task=26c4cec3 class=product reason=conservative_default kind=product
+- 2026-08-05T01:26:16Z [decision] architect_prepass task=26c4cec3 status=failed reason=failed_rc_127 rc=127
+- 2026-08-05T01:26:16Z [decision] architect_prepass task=26c4cec3 status=retrying attempt=1/2 reason=failed_rc_127
+- 2026-08-05T01:26:16Z [decision] architect_prepass task=26c4cec3 status=failed reason=failed_rc_127 rc=127
+- 2026-08-05T01:26:16Z [decision] architect_prepass task=26c4cec3 status=retrying attempt=2/2 reason=failed_rc_127
+- 2026-08-05T01:26:16Z [decision] architect_prepass task=26c4cec3 status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-05T01:26:16Z [decision] dispatch_terminal task=26c4cec3 terminal=parked cause=no_design_after_2_attempts
