@@ -1,0 +1,70 @@
+- 2026-08-06T00:13:41Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T00:13:41Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T00:13:41Z [decision] candidate_chain task=59ae8b51 arms=glm,kimi,codex,sonnet
+- 2026-08-06T00:13:42Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1785975220-99785 handle=glm-test-run
+- 2026-08-06T00:13:42Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T00:13:42Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-06T00:13:42Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3d20a1bc/.claude/worktrees/59ae8b51
+- 2026-08-06T00:14:39Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T00:14:40Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T00:14:40Z [decision] candidate_chain task=59ae8b51 arms=glm,kimi,codex,sonnet
+- 2026-08-06T00:14:40Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1785975279-18645 handle=glm-test-run
+- 2026-08-06T00:14:40Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T00:14:40Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-06T00:14:40Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3d20a1bc/.claude/worktrees/59ae8b51
+- 2026-08-06T00:15:45Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T00:15:45Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T00:15:46Z [decision] candidate_chain task=59ae8b51 arms=glm,kimi,codex,sonnet
+- 2026-08-06T00:15:46Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1785975345-34731 handle=glm-test-run
+- 2026-08-06T00:15:46Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T00:15:46Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=no_routing_yaml
+- 2026-08-06T00:15:46Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3d20a1bc/.claude/worktrees/59ae8b51
+- 2026-08-06T00:17:26Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T00:17:26Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T00:17:26Z [decision] candidate_chain task=59ae8b51 arms=glm,kimi,codex,sonnet
+- 2026-08-06T00:17:27Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1785975446-51253 handle=glm-test-run
+- 2026-08-06T00:17:27Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T00:17:27Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=no_routing_yaml
+- 2026-08-06T00:17:27Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3d20a1bc/.claude/worktrees/59ae8b51
+- 2026-08-06T00:18:22Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T00:18:22Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T00:18:22Z [decision] candidate_chain task=59ae8b51 arms=glm,kimi,codex,sonnet
+- 2026-08-06T00:18:23Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1785975501-66717 handle=glm-test-run
+- 2026-08-06T00:18:24Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T00:18:26Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-06T00:18:26Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3d20a1bc/.claude/worktrees/59ae8b51
+- 2026-08-06T00:19:43Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T00:19:43Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T00:19:44Z [decision] candidate_chain task=59ae8b51 arms=glm,kimi,codex,sonnet
+- 2026-08-06T00:19:44Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1785975583-86802 handle=glm-test-run
+- 2026-08-06T00:19:44Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T00:19:44Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-06T00:19:44Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3d20a1bc/.claude/worktrees/59ae8b51
+- 2026-08-06T00:27:24Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T00:27:24Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T00:27:24Z [decision] candidate_chain task=59ae8b51 arms=glm,kimi,codex,sonnet
+- 2026-08-06T00:27:25Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1785976044-5025 handle=glm-test-run
+- 2026-08-06T00:27:25Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T00:27:25Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-06T00:27:25Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3d20a1bc/.claude/worktrees/59ae8b51
+- 2026-08-06T00:29:14Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T00:29:14Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T00:29:15Z [decision] candidate_chain task=59ae8b51 arms=glm,kimi,codex,sonnet
+- 2026-08-06T00:29:15Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1785976154-56143 handle=glm-test-run
+- 2026-08-06T00:29:15Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T00:29:15Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-06T00:29:15Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3d20a1bc
+- 2026-08-06T00:55:37Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T00:55:38Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T00:55:38Z [decision] candidate_chain task=59ae8b51 arms=glm,kimi,codex,sonnet
+- 2026-08-06T00:55:38Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1785977737-15789 handle=glm-test-run
+- 2026-08-06T00:55:38Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T00:55:38Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-06T00:55:38Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3d20a1bc/.claude/worktrees/59ae8b51
+- 2026-08-06T00:56:50Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T00:56:50Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T00:56:50Z [decision] candidate_chain task=59ae8b51 arms=glm,kimi,codex,sonnet
+- 2026-08-06T00:56:51Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1785977810-38852 handle=glm-test-run
+- 2026-08-06T00:56:51Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T00:56:51Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-06T00:56:51Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3d20a1bc/.claude/worktrees/59ae8b51
