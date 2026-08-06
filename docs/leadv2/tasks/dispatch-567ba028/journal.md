@@ -1,0 +1,45 @@
+- 2026-08-06T01:45:55Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T01:45:57Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T01:45:57Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T01:45:57Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-06T01:45:57Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-06T01:45:58Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1785980755-52739 handle=glm-test-run
+- 2026-08-06T01:45:58Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T01:45:58Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=no_routing_yaml
+- 2026-08-06T01:45:58Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/759ec34f/.claude/worktrees/567ba028
+- 2026-08-06T01:47:05Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T01:47:06Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T01:47:06Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T01:47:06Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-06T01:47:07Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-06T01:47:07Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1785980824-93466 handle=glm-test-run
+- 2026-08-06T01:47:07Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T01:47:07Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=no_routing_yaml
+- 2026-08-06T01:47:07Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/759ec34f/.claude/worktrees/567ba028
+- 2026-08-06T01:49:22Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T01:49:23Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T01:49:23Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T01:49:24Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-06T01:49:24Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-06T01:49:24Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1785980961-79090 handle=glm-test-run
+- 2026-08-06T01:49:24Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T01:49:25Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=no_routing_yaml
+- 2026-08-06T01:49:25Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/759ec34f/.claude/worktrees/567ba028
+- 2026-08-06T01:50:23Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T01:50:24Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T01:50:24Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T01:50:24Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-06T01:50:25Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-06T01:50:25Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1785981023-21500 handle=glm-test-run
+- 2026-08-06T01:50:25Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T01:50:25Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=no_routing_yaml
+- 2026-08-06T01:50:26Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/759ec34f/.claude/worktrees/567ba028
+- 2026-08-06T01:51:48Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-06T01:51:49Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T01:51:50Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T01:51:50Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-06T01:51:50Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-06T01:51:50Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1785981108-71918 handle=glm-test-run
+- 2026-08-06T01:51:50Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T01:51:51Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=no_routing_yaml
+- 2026-08-06T01:51:51Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/759ec34f
