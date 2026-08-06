@@ -1,0 +1,2 @@
+- 2026-08-06T07:26:53Z [decision] dispatch_terminal task=tid02001 terminal=landed cause=close
+- 2026-08-06T08:10:04Z [decision] dispatch_terminal task=tid02001 terminal=landed cause=close
