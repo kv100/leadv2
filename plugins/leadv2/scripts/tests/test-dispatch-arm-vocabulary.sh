@@ -36,6 +36,18 @@ WORKER="$ROOT/worker.sh"
 printf '#!/usr/bin/env bash\nprintf "PID=%%s LABEL=test SESSION_ID=test\\n" "$$"\n' > "$WORKER"
 chmod +x "$WORKER"
 
+# Fail-closed spawn fence: every provider bin is pointed at a poison script.
+# Any code path that forgets to override one gets a loud, offline failure.
+for _arm in glm kimi codex; do
+  _poison="$ROOT/poison-${_arm}.sh"
+  printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "$_poison"
+  chmod +x "$_poison"
+done
+export LEADV2_DISPATCH_GLM_BIN="$ROOT/poison-glm.sh"
+export LEADV2_DISPATCH_KIMI_BIN="$ROOT/poison-kimi.sh"
+export LEADV2_DISPATCH_CODEX_BIN="$ROOT/poison-codex.sh"
+export LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER"  # sonnet uses SUBSESSION_BIN; stubbed above
+
 # ============================================================================
 # Case 1: resolver returns kimi as PRIMARY → dispatch does NOT exit 1, falls
 #         back to sonnet, emits arm_vocabulary_mismatch
@@ -98,7 +110,8 @@ EOF
 }
 
 # ============================================================================
-# Cases 2/3/4: _candidate_chain_for_arm via source-harness
+# Cases 2/3/4: _build_candidate_chain via source-harness (repointed from the
+# deleted _candidate_chain_for_arm — identical unknown-arm semantics).
 # ============================================================================
 harness() {
   local harness_script="$ROOT/harness.sh"
@@ -107,38 +120,53 @@ harness() {
 set -uo pipefail
 
 PASS=0; FAIL=0
-emit() { :; }
+_MISMATCH_EMITTED=0
+emit() { [[ "$*" == *"arm_vocabulary_mismatch"* ]] && _MISMATCH_EMITTED=1; }
 log_err() { :; }
 log() { :; }
 
 HEAD
-  # Extract _candidate_chain_for_arm from the dispatch script
-  sed -n '/^_candidate_chain_for_arm()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  # Extract _load_dispatch_ladder, _arm_provider, _filter_ladder_to_dispatchable,
+  # and _build_candidate_chain from the dispatch script.
+  sed -n '/^_load_dispatch_ladder()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_build_candidate_chain()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_arm_provider()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_filter_ladder_to_dispatchable()/,/^}$/p' "$DISPATCH" >> "$harness_script"
   cat >> "$harness_script" <<'BODY'
 
 run_test() {
-  local arm="$1" expected="$2" desc="$3"
+  local arm="$1" expected="$2" desc="$3" expect_mismatch="${4:-0}"
   local -a candidate_arms=()
-  _candidate_chain_for_arm "$arm" "TEST0000"
+  _MISMATCH_EMITTED=0
+  _build_candidate_chain "$arm" "TEST0000"
   local result="${candidate_arms[*]}"
-  if [[ "$result" == "$expected" ]]; then
+  if [[ "$result" == "$expected" ]] && { [[ "$expect_mismatch" == "0" ]] || [[ "$_MISMATCH_EMITTED" == "1" ]]; }; then
     echo "PASS: $desc (got: $result)"
   else
-    echo "FAIL: $desc (expected: '$expected', got: '$result')"
+    echo "FAIL: $desc (expected: '$expected', got: '$result', mismatch_emitted=$_MISMATCH_EMITTED)"
   fi
 }
 
-# Case 2: glm chain must not contain kimi
-run_test "glm" "glm codex sonnet" "case2: glm chain excludes kimi"
+# Load the production ladder: glm, codex, sonnet (kimi dispatch:false, fable dispatch:false).
+ROUTING_YAML="$1"
+SCRIPT_DIR="$2"
+_load_dispatch_ladder
+_filter_ladder_to_dispatchable "TEST0000"
+
+# Case 2: glm chain = glm onward in the ladder
+run_test "glm" "glm codex sonnet" "case2: glm chain from ladder (excludes kimi)"
 
 # Case 3: codex chain (regression guard)
 run_test "codex" "codex sonnet" "case3: codex chain unchanged"
 
 # Case 4: sonnet chain (regression guard)
 run_test "sonnet" "sonnet" "case4: sonnet chain unchanged"
+
+# Case 4b: kimi (not in ladder) -> sonnet + mismatch line
+run_test "kimi" "sonnet" "case4b: kimi unknown arm -> sonnet + mismatch" 1
 BODY
 
-  bash "$harness_script"
+  bash "$harness_script" "$ROUTING_YAML_FILE" "$SCRIPTS_ROOT"
 }
 
 # ============================================================================

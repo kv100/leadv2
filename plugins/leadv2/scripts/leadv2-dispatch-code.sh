@@ -302,12 +302,19 @@ ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
 # shellcheck source=leadv2-portable-lock.sh
 source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
+ROUTING_CONFIG_ABSENT=0
 # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
 # config (dispatching from inside the plugin repo itself), fall back to the
 # plugin's own canonical config so we do not log no_routing_yaml and route blind.
+# LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE: test-only seam to simulate a missing
+# plugin config.
 if [[ ! -f "${ROUTING_YAML}" ]]; then
-  _plugin_routing_yaml="${SCRIPT_DIR}/../config/leadv2-routing.yaml"
-  [[ -f "${_plugin_routing_yaml}" ]] && ROUTING_YAML="${_plugin_routing_yaml}"
+  _plugin_routing_yaml="${LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE:-${SCRIPT_DIR}/../config/leadv2-routing.yaml}"
+  if [[ -f "${_plugin_routing_yaml}" ]]; then
+    ROUTING_YAML="${_plugin_routing_yaml}"
+  else
+    ROUTING_CONFIG_ABSENT=1
+  fi
 fi
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
@@ -852,15 +859,20 @@ for e in ladder:
   fi
   # Fallback: legacy hardcoded order.
   if [[ ${#_LADDER_IDS[@]} -eq 0 ]]; then
-    _LADDER_IDS=(glm kimi codex sonnet)
-    _LADDER_PROVIDERS=(glm kimi codex anthropic)
+    # Degraded-mode mirror of DISPATCHABLE_BUILD_ARMS in
+    # lib/leadv2-glm-policy-resolve.py — asserted equal by
+    # tests/test-arm-ladder-vocabulary-drift.sh.
+    # kimi retired as a build arm (founder order 2026-08-04,
+    # DISPATCH-KIMI-ARM-MISMATCH-01 / 3398d11).
+    _LADDER_IDS=(glm codex sonnet)
+    _LADDER_PROVIDERS=(glm codex anthropic)
   fi
 }
 
 # Build candidate_arms from the ladder: the resolved arm and every arm after
 # it in ladder order. If the arm is not in the ladder, return the full ladder.
-_build_candidate_chain() {  # <arm> ; mutates candidate_arms
-  local _arm="$1" _i _found=0
+_build_candidate_chain() {  # <arm> <sig8> ; mutates candidate_arms
+  local _arm="$1" _sig8="$2" _i _found=0
   candidate_arms=()
   for _i in "${!_LADDER_IDS[@]}"; do
     if [[ "${_found}" == "1" ]]; then
@@ -870,7 +882,11 @@ _build_candidate_chain() {  # <arm> ; mutates candidate_arms
       candidate_arms+=("${_LADDER_IDS[$_i]}")
     fi
   done
-  [[ ${#candidate_arms[@]} -gt 0 ]] || { candidate_arms=("${_LADDER_IDS[@]}"); }
+  if [[ "${_found}" != "1" ]]; then
+    candidate_arms=(sonnet)
+    emit decision "arm_vocabulary_mismatch by=router arm=${_arm} fallback=sonnet task=${_sig8} reason=launcher_unknown_arm"
+    log_err "arm_vocabulary_mismatch: unknown arm=${_arm} for task=${_sig8}, falling back to sonnet"
+  fi
 }
 
 # Return the provider for a given arm id from the loaded ladder.
@@ -885,13 +901,44 @@ _arm_provider() {  # <arm_id> -> provider string
   printf '%s' "${_arm}"
 }
 
+# C1 tenant-yaml resurrection guard: after _load_dispatch_ladder populates
+# _LADDER_IDS from the (possibly stale) project or plugin yaml, drop any id
+# not in DISPATCHABLE_BUILD_ARMS. This prevents a stale tenant yaml that still
+# lists kimi as dispatchable from resurrecting a retired arm.
+_filter_ladder_to_dispatchable() {  # <sig8>
+  local _sig8="$1" _dispatchable _id _i _j _keep
+  _dispatchable="$(python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("_pr", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))
+' "${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py" 2>/dev/null)" || _dispatchable="glm codex sonnet"
+  local -a _new_ids=() _new_provs=()
+  for _i in "${!_LADDER_IDS[@]}"; do
+    _id="${_LADDER_IDS[$_i]}"
+    _keep=0
+    for _d in ${_dispatchable}; do
+      [[ "${_id}" == "${_d}" ]] && { _keep=1; break; }
+    done
+    if [[ "${_keep}" == "1" ]]; then
+      _new_ids+=("${_id}")
+      _new_provs+=("${_LADDER_PROVIDERS[$_i]}")
+    else
+      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} reason=not_in_DISPATCHABLE_BUILD_ARMS"
+    fi
+  done
+  _LADDER_IDS=("${_new_ids[@]}")
+  _LADDER_PROVIDERS=("${_new_provs[@]}")
+}
+
 # P2: per-provider lockout record directory. Lives alongside the dispatch ledger.
 QUOTA_LOCKOUT_DIR="${LEADV2_QUOTA_LOCKOUT_DIR:-${DISPATCH_LEDGER_DIR}}"
 
 # Check whether a provider is currently locked out.
 # Returns 0 (available) or 1 (locked). A missing/unreadable record ALWAYS
 # means "not locked" — never fail closed.
-_quota_locked() {  # <provider> -> 0=available, 1=locked
+_provider_available() {  # <provider> -> 0=available, 1=locked
   local provider="$1" _lock_file _now_epoch _locked_until
   _lock_file="${QUOTA_LOCKOUT_DIR}/quota-lockout-${provider}.json"
   [[ -f "${_lock_file}" ]] || return 0
@@ -925,13 +972,30 @@ except Exception:
 " "${_iso}" 2>/dev/null)" || return 0
   [[ "${_epoch}" =~ ^[0-9]+$ && "${_epoch}" != "0" ]] || return 0
   mkdir -p "${QUOTA_LOCKOUT_DIR}" 2>/dev/null || true
+  local _tmp_file="${_lock_file}.tmp.$$"
   python3 -c "
 import json, sys
 d = {'provider': sys.argv[1], 'locked_until': sys.argv[2],
      'locked_until_epoch': int(sys.argv[3]), 'source': sys.argv[4]}
 with open(sys.argv[5], 'w') as f:
     json.dump(d, f)
-" "${provider}" "${_iso}" "${_epoch}" "${_source}" "${_lock_file}" 2>/dev/null || true
+" "${provider}" "${_iso}" "${_epoch}" "${_source}" "${_tmp_file}" 2>/dev/null || true
+  mv -f "${_tmp_file}" "${_lock_file}" 2>/dev/null || true
+}
+
+# _maybe_record_quota_lockout: called from each arm's refusal branch when the
+# refusal reason is quota-shaped. Writes a lockout record so the NEXT dispatch
+# skips this provider via the quota precheck.
+_maybe_record_quota_lockout() {  # <arm> <refusal_reason>
+  case "${2}" in
+    quota|quota_gate|quota_exhausted|rate_limit*) ;;
+    *) return 0 ;;
+  esac
+  _record_quota_lockout "$(_arm_provider "${1}")" \
+    "$(date -u -v+"${LEADV2_QUOTA_LOCKOUT_MINUTES:-30}"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+       || date -u -d "+${LEADV2_QUOTA_LOCKOUT_MINUTES:-30} minutes" +%Y-%m-%dT%H:%M:%SZ)" \
+    "launcher_refusal:${2}"
+  emit decision "quota_lockout_recorded provider=$(_arm_provider "${1}") arm=${1} reason=${2} minutes=${LEADV2_QUOTA_LOCKOUT_MINUTES:-30}"
 }
 
 # ── end ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 ───────────────────────────────────
@@ -1602,24 +1666,6 @@ _kimi_admissible() { # <mission> <sig8> <writes_csv> <kimi_fit> -> 0 admissible,
 }
 
 # DISPATCH-KIMI-ARM-MISMATCH-01 (2026-08-05): single source of truth for the
-# fixed-order candidate chain. The launcher and resolver vocabularies must
-# agree — the matching allowlist on the resolver side is
-# DISPATCHABLE_BUILD_ARMS in leadv2-glm-policy-resolve.py.
-_candidate_chain_for_arm() { # <arm> <sig8> ; mutates candidate_arms
-  local arm="$1" sig8="$2"
-  case "${arm}" in
-    glm)    candidate_arms=(glm codex sonnet) ;;
-    codex)  candidate_arms=(codex sonnet) ;;
-    sonnet) candidate_arms=(sonnet) ;;
-    *)
-      candidate_arms=(sonnet)
-      emit decision "arm_vocabulary_mismatch by=router arm=${arm} fallback=sonnet task=${sig8} reason=launcher_unknown_arm"
-      log_err "arm_vocabulary_mismatch: unknown arm=${arm} for task=${sig8}, falling back to sonnet"
-      ;;
-  esac
-  return 0
-}
-
 _apply_kimi_admission() { # <mission> <sig8> <writes_csv> <kimi_fit>; mutates candidate_arms
   local mission="$1" sig8="$2" writes_csv="$3" kimi_fit="$4" _a
   _kimi_admissible "${mission}" "${sig8}" "${writes_csv}" "${kimi_fit}" && return 0
@@ -2070,6 +2116,7 @@ _spawn_worker_body() {
         if [[ -n "${refusal}" ]]; then
           LAST_ARM_OUTCOME="glm_refused_${refusal}"
           emit decision "arm_refused by=router model=glm task=${sig8} reason=glm_refused_${refusal}"
+          _maybe_record_quota_lockout "glm" "${refusal}"
           log "spawn(glm) refused: ${refusal}"
           return 2
         fi
@@ -2109,6 +2156,7 @@ _spawn_worker_body() {
         if [[ -n "${refusal}" ]]; then
           LAST_ARM_OUTCOME="kimi_refused_${refusal}"
           emit decision "arm_refused by=router model=kimi task=${sig8} reason=kimi_refused_${refusal}"
+          _maybe_record_quota_lockout "kimi" "${refusal}"
           log "spawn(kimi) refused: ${refusal}"
           return 2
         fi
@@ -2155,6 +2203,7 @@ _spawn_worker_body() {
         if [[ -n "${refusal}" ]]; then
           LAST_ARM_OUTCOME="sonnet_refused_${refusal}"
           emit decision "arm_refused by=router model=sonnet task=${sig8} reason=sonnet_refused_${refusal}"
+          _maybe_record_quota_lockout "sonnet" "${refusal}"
           log "spawn(sonnet) refused: ${refusal}"
           return 2
         fi
@@ -2214,6 +2263,7 @@ _spawn_worker_body() {
         if [[ -n "${refusal}" ]]; then
           LAST_ARM_OUTCOME="codex_refused_${refusal}"
           emit decision "arm_refused by=router model=codex task=${sig8} reason=codex_refused_${refusal}"
+          _maybe_record_quota_lockout "codex" "${refusal}"
           log "spawn(codex) refused: ${refusal}"
           return 2
         fi
@@ -2972,8 +3022,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
   else
     _load_dispatch_ladder
-    _build_candidate_chain "${arm}"
-    [[ ${#candidate_arms[@]} -gt 0 ]] || { log_err "unsupported resolved dispatch arm: ${arm}"; exit 1; }
+    _filter_ladder_to_dispatchable "${sig8}"
+    [[ "${ROUTING_CONFIG_ABSENT:-0}" == "1" ]] && \
+      emit decision "routing_config_degraded task=${sig8} reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=$(IFS=,; printf '%s' "${_LADDER_IDS[*]}")"
+    _build_candidate_chain "${arm}" "${sig8}"
     # T-q codex_quota_gate (SUPERVISOR-AUDIT-01 T-b): strip codex from the fixed
     # glm->codex->sonnet fallback chain when the resolver's live codex-quota read
     # is >= build_threshold_pct — an arm the resolver itself refuses to hand out
@@ -2998,7 +3050,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
     local _qpc_arm _qpc_prov
     for _qpc_arm in "${candidate_arms[@]}"; do
       _qpc_prov="$(_arm_provider "${_qpc_arm}")"
-      if _quota_locked "${_qpc_prov}"; then
+      if _provider_available "${_qpc_prov}"; then
         _qpc_kept+=("${_qpc_arm}")
       else
         emit decision "quota_precheck_skip model=${_qpc_arm} provider=${_qpc_prov} task=${sig8} reason=provider_quota_locked"
@@ -3200,7 +3252,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
           if [[ -n "${_rr_arm}" && "${_rr_arm}" != "${arm}" ]]; then
             arm="${_rr_arm}"; rule="${_rr_rule}"; reason="${_rr_reason}"
             emit decision "arm_reresolved by=router trigger=glm_lock_busy arm=${arm} rule=${rule} reason=${reason} task=${sig8} router=${router_label}"
-            _build_candidate_chain "${arm}"
+            _build_candidate_chain "${arm}" "${sig8}"
             _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
             _reenter=1
             break   # break the for; outer while re-enters over the rebuilt chain
