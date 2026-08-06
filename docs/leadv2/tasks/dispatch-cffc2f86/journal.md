@@ -1,0 +1,3 @@
+- 2026-08-03T09:48:10Z [decision] e2e_gate task=cffc2f86 status=disabled reason=kill_switch
+- 2026-08-03T09:48:10Z [decision] review_signals task=cffc2f86 protected_path=1 source=no_lane_writes_failclosed matched=-
+- 2026-08-03T09:48:10Z [decision] review_gate task=cffc2f86 status=unreviewed reason=all_arms_unavailable author=codex pool= refusal=all_review_arms_unavailable tried=
