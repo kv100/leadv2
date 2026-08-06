@@ -6,6 +6,19 @@
 # leadv2-lane-liveness.sh (not a stub) so the sentinel path is exercised
 # end-to-end.
 #
+# dispatch-a24b1588 round-1b item 3 verification (2026-08-06): the S7
+# `rc == 0` tightening (from `rc != 5`) does NOT fail against a1afed9's own
+# source -- a1afed9 genuinely returns rc=0 here, so this is a false-PASS-class
+# removal, not a live bug fix. The correct evidence is a negative control on
+# the clean a1afed9 baseline: fault-inject LEADV2_DISPATCH_GLM_BIN to hard-fail
+# (exit 7, no PID/LABEL/SESSION_ID emitted), which drives real dispatch rc to 4
+# (dispatch_rolled_back reason=all_arms_unavailable...glm_failed_launcher).
+# Same source, same injected fault, opposite verdict: the OLD `rc != 5`
+# assertion PASSES (4 != 5) while the NEW `rc == 0` assertion FAILS
+# (rc=4, expected 0) -- proving the tightening catches a class of false PASS
+# the old assertion could not. This is a negative-control demonstration, not a
+# fail-against-HEAD run.
+#
 # Run: bash plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
 
 set -uo pipefail
