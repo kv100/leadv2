@@ -6,6 +6,19 @@
 # leadv2-lane-liveness.sh (not a stub) so the sentinel path is exercised
 # end-to-end.
 #
+# dispatch-a24b1588 round-1b item 3 verification (2026-08-06): the S7
+# `rc == 0` tightening (from `rc != 5`) does NOT fail against a1afed9's own
+# source -- a1afed9 genuinely returns rc=0 here, so this is a false-PASS-class
+# removal, not a live bug fix. The correct evidence is a negative control on
+# the clean a1afed9 baseline: fault-inject LEADV2_DISPATCH_GLM_BIN to hard-fail
+# (exit 7, no PID/LABEL/SESSION_ID emitted), which drives real dispatch rc to 4
+# (dispatch_rolled_back reason=all_arms_unavailable...glm_failed_launcher).
+# Same source, same injected fault, opposite verdict: the OLD `rc != 5`
+# assertion PASSES (4 != 5) while the NEW `rc == 0` assertion FAILS
+# (rc=4, expected 0) -- proving the tightening catches a class of false PASS
+# the old assertion could not. This is a negative-control demonstration, not a
+# fail-against-HEAD run.
+#
 # Run: bash plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
 
 set -uo pipefail
@@ -142,10 +155,14 @@ dispatch_stderr_file="${SANDBOX}/s7-stderr.txt"
 bash "${DC}" --kind tooling --resume-lane "${LANE_REF}" \
   "S7 sentinel resume test" 2>"${dispatch_stderr_file}" >/dev/null || dispatch_rc=$?
 
-if [[ ${dispatch_rc} -ne 5 ]]; then
-  ok "S7: dispatch did NOT refuse with rc 5 (got rc=${dispatch_rc})"
+# dispatch-a24b1588 Item 3: rc != 5 only proves "not one of the six refusal
+# reasons exit 5 covers" -- a future unrelated crash exiting any other nonzero
+# code would false-PASS this. The observed rc really is 0 (confirmed below),
+# so assert exactly what was observed, not a weaker superset of it.
+if [[ ${dispatch_rc} -eq 0 ]]; then
+  ok "S7: dispatch resumed the finalized lane (rc=0)"
 else
-  bad "S7: dispatch refused with rc 5"
+  bad "S7: dispatch did not resume the finalized lane (rc=${dispatch_rc}, expected 0)"
 fi
 
 if ! grep -q 'lane_is_live' "${dispatch_stderr_file}" 2>/dev/null; then
@@ -160,12 +177,13 @@ if grep -q 'lane_placement_pinned' "${dispatch_stderr_file}" 2>/dev/null \
   ok "S7: placement was pinned (accepted)"
 else
   # The journal is a stub, so the decision line might be in stderr only
-  # (emit goes to the journal which is /bin/true). Check rc != 5 as the
-  # primary assertion, and stderr as secondary.
-  if [[ ${dispatch_rc} -ne 5 ]]; then
-    ok "S7: placement accepted (rc != 5, journal is a stub)"
+  # (emit goes to the journal which is /bin/true). Check rc == 0 as the
+  # primary assertion (same tightening as the main S7 assertion above), and
+  # stderr as secondary.
+  if [[ ${dispatch_rc} -eq 0 ]]; then
+    ok "S7: placement accepted (rc=0, journal is a stub)"
   else
-    bad "S7: no evidence of placement pin"
+    bad "S7: no evidence of placement pin (rc=${dispatch_rc}, expected 0)"
   fi
 fi
 
