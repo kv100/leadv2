@@ -302,6 +302,13 @@ ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
 # shellcheck source=leadv2-portable-lock.sh
 source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
+# ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
+# config (dispatching from inside the plugin repo itself), fall back to the
+# plugin's own canonical config so we do not log no_routing_yaml and route blind.
+if [[ ! -f "${ROUTING_YAML}" ]]; then
+  _plugin_routing_yaml="${SCRIPT_DIR}/../config/leadv2-routing.yaml"
+  [[ -f "${_plugin_routing_yaml}" ]] && ROUTING_YAML="${_plugin_routing_yaml}"
+fi
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 # T-o (SUPERVISOR-AUDIT-01): the terminal-state ledger CLI. ALWAYS invoked as a subprocess
@@ -805,7 +812,129 @@ print(json.dumps({
     }
 }
 
-# v2's sole dispatch composition: L1 -> L2 -> L3 -> L4.  Policy remains in
+# ── ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 ──────────────────────────────────────
+# P1: read the dispatch ladder from the routing YAML instead of hardcoding it.
+# P2: quota precheck that skips arms whose provider is locked out.
+# Both are fail-open: a missing/unreadable config or lockout record never blocks
+# an arm we could have used.
+
+# Global arrays populated by _load_dispatch_ladder().
+_LADDER_IDS=()
+_LADDER_PROVIDERS=()
+
+# Read the dispatch_ladder from router: in the routing YAML.
+# Populates _LADDER_IDS and _LADDER_PROVIDERS. Falls back to the legacy
+# hardcoded order (glm,kimi,codex,sonnet) if the YAML or key is absent.
+_load_dispatch_ladder() {
+  _LADDER_IDS=()
+  _LADDER_PROVIDERS=()
+  local _parsed
+  _parsed="$(python3 -c '
+import sys, yaml
+try:
+    d = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    sys.exit(1)
+ladder = (d.get("router") or {}).get("dispatch_ladder") or []
+for e in ladder:
+    eid = e.get("id", "")
+    if not eid:
+        continue
+    if e.get("dispatch", True) is False:
+        continue
+    print(eid + "\t" + e.get("provider", eid))
+' "${ROUTING_YAML}" 2>/dev/null)" || _parsed=""
+  if [[ -n "${_parsed}" ]]; then
+    while IFS=$'\t' read -r _id _prov; do
+      _LADDER_IDS+=("${_id}")
+      _LADDER_PROVIDERS+=("${_prov}")
+    done <<< "${_parsed}"
+  fi
+  # Fallback: legacy hardcoded order.
+  if [[ ${#_LADDER_IDS[@]} -eq 0 ]]; then
+    _LADDER_IDS=(glm kimi codex sonnet)
+    _LADDER_PROVIDERS=(glm kimi codex anthropic)
+  fi
+}
+
+# Build candidate_arms from the ladder: the resolved arm and every arm after
+# it in ladder order. If the arm is not in the ladder, return the full ladder.
+_build_candidate_chain() {  # <arm> ; mutates candidate_arms
+  local _arm="$1" _i _found=0
+  candidate_arms=()
+  for _i in "${!_LADDER_IDS[@]}"; do
+    if [[ "${_found}" == "1" ]]; then
+      candidate_arms+=("${_LADDER_IDS[$_i]}")
+    elif [[ "${_LADDER_IDS[$_i]}" == "${_arm}" ]]; then
+      _found=1
+      candidate_arms+=("${_LADDER_IDS[$_i]}")
+    fi
+  done
+  [[ ${#candidate_arms[@]} -gt 0 ]] || { candidate_arms=("${_LADDER_IDS[@]}"); }
+}
+
+# Return the provider for a given arm id from the loaded ladder.
+_arm_provider() {  # <arm_id> -> provider string
+  local _arm="$1" _i
+  for _i in "${!_LADDER_IDS[@]}"; do
+    if [[ "${_LADDER_IDS[$_i]}" == "${_arm}" ]]; then
+      printf '%s' "${_LADDER_PROVIDERS[$_i]}"
+      return
+    fi
+  done
+  printf '%s' "${_arm}"
+}
+
+# P2: per-provider lockout record directory. Lives alongside the dispatch ledger.
+QUOTA_LOCKOUT_DIR="${LEADV2_QUOTA_LOCKOUT_DIR:-${DISPATCH_LEDGER_DIR}}"
+
+# Check whether a provider is currently locked out.
+# Returns 0 (available) or 1 (locked). A missing/unreadable record ALWAYS
+# means "not locked" — never fail closed.
+_quota_locked() {  # <provider> -> 0=available, 1=locked
+  local provider="$1" _lock_file _now_epoch _locked_until
+  _lock_file="${QUOTA_LOCKOUT_DIR}/quota-lockout-${provider}.json"
+  [[ -f "${_lock_file}" ]] || return 0
+  _now_epoch="$(date +%s 2>/dev/null || printf '0')"
+  _locked_until="$(python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(d.get('locked_until_epoch', 0))
+except Exception:
+    print(0)
+" "${_lock_file}" 2>/dev/null)" || return 0
+  [[ "${_locked_until}" =~ ^[0-9]+$ ]] || return 0
+  (( _locked_until > _now_epoch )) || return 0
+  return 1
+}
+
+# Record a quota lockout for a provider.
+# <provider> <locked_until_iso> <source>
+_record_quota_lockout() {
+  local provider="$1" _iso="$2" _source="$3" _lock_file _epoch
+  _lock_file="${QUOTA_LOCKOUT_DIR}/quota-lockout-${provider}.json"
+  _epoch="$(python3 -c "
+import sys
+from datetime import datetime
+try:
+    dt = datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'))
+    print(int(dt.timestamp()))
+except Exception:
+    print(0)
+" "${_iso}" 2>/dev/null)" || return 0
+  [[ "${_epoch}" =~ ^[0-9]+$ && "${_epoch}" != "0" ]] || return 0
+  mkdir -p "${QUOTA_LOCKOUT_DIR}" 2>/dev/null || true
+  python3 -c "
+import json, sys
+d = {'provider': sys.argv[1], 'locked_until': sys.argv[2],
+     'locked_until_epoch': int(sys.argv[3]), 'source': sys.argv[4]}
+with open(sys.argv[5], 'w') as f:
+    json.dump(d, f)
+" "${provider}" "${_iso}" "${_epoch}" "${_source}" "${_lock_file}" 2>/dev/null || true
+}
+
+# ── end ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 ───────────────────────────────────
 # router-v2's filter, not in this funnel.
 resolve_v2_dispatch() {
   local mission="$1" sig8="$2" class="$3" kind="$4" protected="$5" tmp out estimate allowed task_class rc
@@ -2832,9 +2961,9 @@ confirmation-seeking; only for a decision you cannot make yourself."
     exit 3
   fi
 
-  # A refusal is an admission signal, not a broken launcher.  Preserve the existing
-  # fixed order while Part 0 is in force: the resolved arm is first, followed by
-  # the remaining eligible arms in glm -> codex -> sonnet order.  A hard class
+  # A refusal is an admission signal, not a broken launcher.  The candidate
+  # chain follows the dispatch_ladder from the routing YAML (P1): the resolved
+  # arm is first, followed by every arm after it in ladder order.  A hard class
   # exception resolving directly to sonnet therefore cannot escape back to GLM.
   local -a candidate_arms attempted
   if [[ "${router_label}" == "v2" ]]; then
@@ -2842,7 +2971,9 @@ confirmation-seeking; only for a decision you cannot make yourself."
     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
   else
-    _candidate_chain_for_arm "${arm}" "${sig8}"
+    _load_dispatch_ladder
+    _build_candidate_chain "${arm}"
+    [[ ${#candidate_arms[@]} -gt 0 ]] || { log_err "unsupported resolved dispatch arm: ${arm}"; exit 1; }
     # T-q codex_quota_gate (SUPERVISOR-AUDIT-01 T-b): strip codex from the fixed
     # glm->codex->sonnet fallback chain when the resolver's live codex-quota read
     # is >= build_threshold_pct — an arm the resolver itself refuses to hand out
@@ -2854,6 +2985,32 @@ confirmation-seeking; only for a decision you cannot make yourself."
       candidate_arms=("${_filtered[@]}")
     fi
     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
+  fi
+
+  # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P2: skip arms whose provider is locked
+  # out before attempting to spawn. A per-provider lockout record
+  # (quota-lockout-<provider>.json in the ledger dir) carries locked_until_epoch.
+  # A missing/unreadable record means "not locked" — never fail closed. Each
+  # skip is journalled so a lead reading the journal sees WHY an arm was passed
+  # over.
+  if [[ ${#candidate_arms[@]} -gt 0 ]]; then
+    local -a _qpc_kept=()
+    local _qpc_arm _qpc_prov
+    for _qpc_arm in "${candidate_arms[@]}"; do
+      _qpc_prov="$(_arm_provider "${_qpc_arm}")"
+      if _quota_locked "${_qpc_prov}"; then
+        _qpc_kept+=("${_qpc_arm}")
+      else
+        emit decision "quota_precheck_skip model=${_qpc_arm} provider=${_qpc_prov} task=${sig8} reason=provider_quota_locked"
+      fi
+    done
+    if [[ ${#_qpc_kept[@]} -eq 0 ]]; then
+      emit decision "dispatch_rolled_back reason=all_arms_quota_locked task=${sig8}"
+      log_err "every candidate arm is quota-locked; refusing to dispatch"
+      _dl_note "${sig8}" refused all_arms_quota_locked "" "${founder_task_id}"
+      exit 4
+    fi
+    candidate_arms=("${_qpc_kept[@]}")
   fi
 
   # ROUTER-QUOTA-DRIVEN-01 (T6): filter candidate_arms by LIVE quota truth
@@ -3043,7 +3200,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
           if [[ -n "${_rr_arm}" && "${_rr_arm}" != "${arm}" ]]; then
             arm="${_rr_arm}"; rule="${_rr_rule}"; reason="${_rr_reason}"
             emit decision "arm_reresolved by=router trigger=glm_lock_busy arm=${arm} rule=${rule} reason=${reason} task=${sig8} router=${router_label}"
-            _candidate_chain_for_arm "${arm}" "${sig8}"
+            _build_candidate_chain "${arm}"
             _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
             _reenter=1
             break   # break the for; outer while re-enters over the rebuilt chain
