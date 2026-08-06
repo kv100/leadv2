@@ -298,11 +298,21 @@ Critical/High finding on a distinct arm, and writes `docs/handoff/<id>/review-ga
   `all_arms_unavailable`) — this is a finding about the review process itself, never
   silently treated as a pass.
 
-`workflows/leadv2-review.js` (and its shared copy at `~/.claude/workflows/leadv2-review.js`)
-is deleted; there is no separate Workflow-based path or inline-fallback path anymore — the
-engine is the only reviewer dispatcher. Codex/critic/security-auditor selection logic that
-used to live in the Workflow's `reviewers[]` array now lives in the engine's
-`run_reviewer_arm()` (codex/glm/kimi/sonnet/opus branches) and `resolve_review_pool_call()`.
+The lead/interactive path above is unconditional — it never falls back to
+`workflows/leadv2-review.js`. Codex/critic/security-auditor selection logic that used to
+live in the Workflow's `reviewers[]` array now lives in the engine's `run_reviewer_arm()`
+(codex/glm/kimi/sonnet/opus branches) and `resolve_review_pool_call()`.
+
+**Deletion of `workflows/leadv2-review.js` is DEFERRED, not done.** Both copies (plugin
+canonical and `~/.claude/workflows/leadv2-review.js`) still exist on disk: three existing
+test suites (`test-codex-doc-pointer.sh`, `test-leadv2-review-routing.sh`,
+`test-leadv2-phase8-learn-counter.sh`) assert its presence/content, and deleting it now
+would strand those callers — the exact outcome the design's own stop condition forbids.
+Do not delete either copy until those tests are migrated or the founder accepts stranding
+them (separate task). Likewise, `leadv2-dispatch-product-close.sh` still contains its own
+inline `run_reviewer_arm()` fallback body, used only when `LEADV2_REVIEW_ENGINE=0` (the
+default everywhere) — this is intentional so a mid-flight lane sees byte-identical
+behavior at flag=0, not a leftover duplicate to clean up.
 
 **Reading review deliverables:** `bash "${CLAUDE_PLUGIN_ROOT}/scripts/critic-tail.sh" <file>` returns Verdict + summary_for_lead + Critical/High/Medium counts. Full body read ONLY when verdict signals REVISE/no-ship. Mirror cx-tail.sh discipline — never `Read` the whole review file by default.
 

@@ -4,13 +4,21 @@
 # `adversarial-review`, or an `agentType: 'critic'` fan-out). Intended end-state is
 # leadv2-review-run.sh as the sole owner after workflows/leadv2-review.js is deleted.
 #
-# KNOWN GAP (see deliverable): workflows/leadv2-review.js was NOT deleted this run —
-# grep found live callers in the existing test suite (test-codex-doc-pointer.sh,
-# test-leadv2-review-routing.sh, test-leadv2-phase8-learn-counter.sh) that assert its
-# presence/content, which is exactly the STOP condition the task spec named ("do not
-# strand a caller"). This test therefore currently reports TWO owners and is expected
-# to FAIL until that stranding is resolved (either those tests are migrated first, or
-# the founder accepts stranding them). It still passes the "fails against a stash of
+# KNOWN GAP (see deliverable): this test currently reports THREE owners, not one:
+#   1. workflows/leadv2-review.js — NOT deleted this run. grep found live callers in
+#      the existing test suite (test-codex-doc-pointer.sh, test-leadv2-review-routing.sh,
+#      test-leadv2-phase8-learn-counter.sh) that assert its presence/content, which is
+#      exactly the STOP condition the task spec named ("do not strand a caller").
+#   2. leadv2-dispatch-product-close.sh — still defines its own run_reviewer_arm()
+#      inside the LEADV2_REVIEW_ENGINE=0 fallback body. This is REQUIRED by the design's
+#      own §5 resolution ("a mid-flight lane that spawns product-close after the edit
+#      still runs today's inline body" — byte-for-byte inertness at flag=0), which
+#      overrides the design's A3 mitigation ("delete the lane copy in the same commit")
+#      for as long as the flag defaults to 0 everywhere. Deleting it now would violate
+#      §5, not satisfy it.
+# This test is expected to FAIL until both are resolved (workflows/leadv2-review.js
+# migration/deletion, and the eventual LEADV2_REVIEW_ENGINE=1 flip that lets the lane's
+# dead fallback body be removed). It still passes the "fails against a stash of
 # leadv2-review-run.sh" bar: on main (no engine at all), the count is 1
 # (workflows/leadv2-review.js only) and the assertion below ('== 1 AND is the engine')
 # fails there too, for a different, equally correct reason.
