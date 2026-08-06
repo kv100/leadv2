@@ -641,6 +641,27 @@ except Exception:
 PY
 }
 
+# CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01: relaxes _pc_arm_advance's reachability
+# (previously reachable ONLY from pc_silent_arm_probe's silent-arm branch, further down
+# this file) -- a quota-shaped failed status is exactly as much "this arm produced
+# nothing and the chain must advance" as a silent lane is, so it calls _pc_arm_advance
+# directly. Idempotent: leadv2-dispatch-code.sh's record-quota-lockout is best-effort/
+# rc0-always and _record_quota_lockout's own write is last-write-wins per provider, so a
+# duplicate call here (e.g. this close gate re-polling the same failed status) is
+# harmless; _pc_arm_advance's own per-arm marker file already prevents a double-advance.
+_pc_maybe_quota_advance() {  # <arm> <handle>
+  local arm="$1" handle="$2"
+  [[ -n "${arm}" && -n "${handle}" && -f "${DISPATCH_BIN}" ]] || return 0
+  local lockout_dir="${LEADV2_QUOTA_LOCKOUT_DIR:-${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}/dispatch-ledger}"
+  local before after
+  before="$(ls -1 "${lockout_dir}"/quota-lockout-*.json 2>/dev/null | while IFS= read -r _f; do _pc_stat_mtime "${_f}" 2>/dev/null; printf ' %s\n' "${_f}"; done)"
+  bash "${DISPATCH_BIN}" record-quota-lockout --arm "${arm}" --handle "${handle}" --sig8 "${TASK}" >/dev/null 2>&1 || true
+  after="$(ls -1 "${lockout_dir}"/quota-lockout-*.json 2>/dev/null | while IFS= read -r _f; do _pc_stat_mtime "${_f}" 2>/dev/null; printf ' %s\n' "${_f}"; done)"
+  [[ "${before}" != "${after}" ]] || return 0
+  emit decision "arm_quota_failed task=${TASK} arm=${arm} handle=${handle}"
+  _pc_arm_advance
+}
+
 pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
   local provider_state registry_alive run_dir meta status pid
   if [[ -z "${HANDLE}" ]]; then
@@ -682,6 +703,12 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
       _pc_job_registry_has_handle "${HANDLE}" && registry_alive=1
       [[ "${status}" == running || "${registry_alive}" == 1 ]] && return 0
       [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null && return 0
+      # CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01 (close-gate out-of-window path):
+      # this close gate is discovering status==failed possibly long after
+      # leadv2-dispatch-code.sh's own in-process post-spawn verdict window
+      # (_wait_arm_early_verdict) already expired -- classify it here too, so a late
+      # quota death still gets a lockout AND advances the chain instead of sitting dead.
+      [[ "${status}" == failed && "${registry_alive}" == 0 ]] && _pc_maybe_quota_advance "${AUTHOR}" "${HANDLE}"
       [[ ( "${status}" == complete || "${status}" == failed ) && "${registry_alive}" == 0 ]] && return 1
       # The coder writes this only from its finish guard. It is terminal provider
       # evidence for legacy runs that predate meta.yaml, once no exact registry or
