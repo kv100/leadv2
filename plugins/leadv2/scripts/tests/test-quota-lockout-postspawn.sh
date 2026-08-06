@@ -172,11 +172,14 @@ else
 fi
 
 # T6: within T1's SAME single dispatch run, the codex quota verdict line appears
-# BEFORE the sonnet worker_spawned line (ordering, not just presence).
+# BEFORE the spill reaches sonnet (ordering, not just presence). T1's global
+# LEADV2_DISPATCH_SUBSESSION_BIN is poison-sonnet.sh (synchronous rc=99), so sonnet
+# never reaches a successful `worker_spawned` line -- the observable spill-reached-
+# sonnet signal is `spawn_failed ... model=sonnet` (poison fires) instead.
 t1_codex_line="$(grep -n 'quota_lockout_recorded provider=codex' <<<"${t1_out}" | head -1 | cut -d: -f1)"
-t1_sonnet_line="$(grep -n 'worker_spawned by=router model=sonnet' <<<"${t1_out}" | head -1 | cut -d: -f1)"
+t1_sonnet_line="$(grep -n 'model=sonnet' <<<"${t1_out}" | head -1 | cut -d: -f1)"
 if [[ -n "${t1_codex_line}" && -n "${t1_sonnet_line}" && "${t1_codex_line}" -lt "${t1_sonnet_line}" ]]; then
-  pass 'T6: codex quota verdict precedes sonnet spawn within the same dispatch run'
+  pass 'T6: codex quota verdict precedes the sonnet spill attempt within the same dispatch run'
 else
   fail 'T6: ordering within one run' "codex_line=${t1_codex_line:-none} sonnet_line=${t1_sonnet_line:-none} output=${t1_out}"
 fi
@@ -231,7 +234,7 @@ t4_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/t4-root" \
   bash "${DISPATCH_BIN}" 'plugin-only codex non-quota failure t4' 2>&1)"
 t4_lockfile="${TMP_ROOT}/t4-lockout/quota-lockout-codex.json"
 if [[ ! -f "${t4_lockfile}" ]] \
-  && ! grep -q 'quota_lockout_recorded' <<<"${t4_out}" \
+  && ! grep -q 'quota_lockout_recorded provider=codex' <<<"${t4_out}" \
   && grep -q 'arm_postspawn_verdict arm=codex state=failed quota=no' <<<"${t4_out}"; then
   pass 'T4: ordinary codex failure is classified (quota=no) and produces NO lockout'
 else

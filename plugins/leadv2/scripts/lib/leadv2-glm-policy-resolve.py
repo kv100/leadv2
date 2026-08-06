@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # DISPATCH-KIMI-ARM-MISMATCH-01 (2026-08-05, founder order 2026-08-04 «Кими
@@ -147,6 +148,123 @@ def extract_glm_policy_block(routing_yaml_text: str) -> dict:
         "codex_default_tier": codex_default_tier,
         "codex_quota_gate": gate,
     }
+
+
+# ── dispatch-8e2a32be round 2: review pool must never be empty ──────────────────────
+# D1: routing-yaml self-heal (mirrors resolve_review_pool_call()'s bash-side ordered
+# candidate search -- tenant override, plugin-local canonical, canonical-root fallback).
+_REVIEW_POOL_NEVER_EMPTY_CANDIDATES_DOC = (
+    "order: --routing-yaml arg (tenant/test override) -> plugin-local "
+    "(this file's own ../../config/leadv2-routing.yaml) -> "
+    "$LEADV2_CANONICAL_ROOT (or ~/Projects/leadv2)/plugins/leadv2/config/leadv2-routing.yaml"
+)
+
+
+def _resolve_routing_yaml_path(explicit: str):
+    """D1: first-existing-file-wins search. Returns (path_or_None, source) where
+    source is one of tenant|plugin|canonical|none. Deliberately does NOT know about
+    ${ROOT}/.claude/ref/leadv2-routing.yaml -- that tenant-override tier is resolved
+    bash-side (resolve_review_pool_call) BEFORE --routing-yaml is even passed here;
+    this is the safety net for callers that hand this script a stale/missing path."""
+    candidates = []
+    if explicit:
+        candidates.append(("tenant", explicit))
+    here = Path(__file__).resolve()
+    plugin_local = here.parent.parent.parent / "config" / "leadv2-routing.yaml"
+    candidates.append(("plugin", str(plugin_local)))
+    canonical_root = os.environ.get("LEADV2_CANONICAL_ROOT") or str(Path.home() / "Projects" / "leadv2")
+    canonical = os.path.join(canonical_root, "plugins", "leadv2", "config", "leadv2-routing.yaml")
+    candidates.append(("canonical", canonical))
+    for source, path in candidates:
+        if path and os.path.isfile(path):
+            return path, source
+    return None, "none"
+
+
+def extract_dispatch_ladder(routing_yaml_text: str) -> list:
+    """router.dispatch_ladder entries (id/provider/review_rank/dispatch), for the
+    review-pool floor (D3) and the on-disk lockout provider mapping (D4). Uses
+    PyYAML -- already a hard dependency elsewhere in this codebase (see
+    leadv2-dispatch-code.sh:_load_dispatch_ladder's own `import sys, yaml`), so this
+    is not a new dependency surface. Fail-safe: any parse error -> empty list; every
+    caller degrades gracefully (provider==arm, no rank table) rather than raising."""
+    try:
+        import yaml
+        d = yaml.safe_load(routing_yaml_text) or {}
+    except Exception:
+        return []
+    ladder = ((d.get("router") or {}).get("dispatch_ladder")) or []
+    out = []
+    for e in ladder:
+        if not isinstance(e, dict):
+            continue
+        eid = e.get("id")
+        if not eid:
+            continue
+        out.append({
+            "id": eid,
+            "provider": e.get("provider", eid),
+            "review_rank": e.get("review_rank"),
+            "dispatch": e.get("dispatch", True),
+        })
+    return out
+
+
+def _now_epoch() -> int:
+    """LEADV2_QUOTA_NOW_EPOCH override for deterministic tests (D4)."""
+    raw = os.environ.get("LEADV2_QUOTA_NOW_EPOCH")
+    if raw:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    return int(time.time())
+
+
+def _lockout_blocked(provider: str, now_epoch: int, lockout_dir: str = None) -> bool:
+    """D4: fail-open read of the on-disk quota-lockout store leadv2-dispatch-code.sh's
+    record-quota-lockout / _record_quota_lockout writes (schema: provider/locked_until/
+    locked_until_epoch/source -- see leadv2-dispatch-code.sh:_record_quota_lockout).
+    Missing/malformed/expired file => NOT blocked. A corrupt cache file must never
+    remove an arm from consideration -- same fail-open posture as every other quota
+    read in this file (live_codex_weekly_pct etc.)."""
+    if not provider:
+        return False
+    d = lockout_dir or os.environ.get("LEADV2_QUOTA_LOCKOUT_DIR") or os.path.join(
+        os.environ.get("LEADV2_DISPATCH_CACHE_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "cache"),
+        "dispatch-ledger")
+    path = os.path.join(d, "quota-lockout-%s.json" % provider)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        until_epoch = int(data.get("locked_until_epoch"))
+    except Exception:
+        return False
+    return now_epoch < until_epoch
+
+
+def _review_floor(author: str, rank_table: dict):
+    """D3: TOTAL, non-hardcoded floor over the review_rank table. Returns
+    (arm_or_None, ok) -- ok is False iff the table has fewer than 2 entries, which
+    the caller must treat as pool_floor_table_degenerate (a hard resolver error, not
+    a silent empty pool) rather than a normal "floor not needed" outcome.
+
+    floor(author) = the entry with rank > rank(author) that has the smallest such
+    rank (escalate one step up), or -- if none exists (author at/above the top, or
+    author absent from the table, i.e. rank(author) treated as -infinity) -- the
+    entry with the largest rank. Total for any author string, including "" or an
+    arm the table has never heard of."""
+    rank_table = rank_table or {}
+    if len(rank_table) < 2:
+        return None, False
+    author_rank = rank_table.get(author, float("-inf"))
+    candidates = [(rid, r) for rid, r in rank_table.items() if rid != author]
+    if not candidates:
+        return None, False
+    higher = [c for c in candidates if c[1] > author_rank]
+    chosen = min(higher, key=lambda c: c[1]) if higher else max(candidates, key=lambda c: c[1])
+    return chosen[0], True
+# ── end dispatch-8e2a32be round 2 helpers ────────────────────────────────────────────
 
 
 def live_codex_weekly_pct(quota_live_bin):
@@ -269,7 +387,9 @@ def _fmt_pct(pct):
 
 def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = None,
                          pcts: dict = None, kimi_bin: str = None,
-                         signals: dict = None) -> dict:
+                         signals: dict = None, rank_table: dict = None,
+                         ladder_providers: dict = None, lockout_dir: str = None,
+                         now_epoch: int = None) -> dict:
     """dispatch-00629379 §3.2: the ordered, quota-filtered, author-excluding reviewer
     pool -- the fix for "review gate has no available reviewer". Unlike
     resolve_glm_policy() (single arm, build+review), this always returns every
@@ -301,6 +421,11 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     glm_threshold = gate.get("glm_review_threshold_pct", DEFAULT_GLM_REVIEW_THRESHOLD_PCT)
     anthropic_threshold = gate.get("anthropic_review_threshold_pct", DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT)
     pcts = dict(pcts) if pcts else {}
+    ladder_providers = ladder_providers or {}
+    now_epoch = now_epoch if now_epoch is not None else _now_epoch()
+
+    def _provider_for(arm):
+        return ladder_providers.get(arm, arm)
 
     def _pct_for(arm):
         if arm in pcts:
@@ -328,6 +453,14 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     for i, arm in enumerate(order):
         if arm == author:
             entries.append("%s:author:" % arm)
+            continue
+        # D4 (dispatch-8e2a32be): a live on-disk quota lockout for this arm's provider
+        # bars it outright, BEFORE the kimi probe-gate and the pct/threshold gate below
+        # -- a locked-out provider is never even quota-checked. Runs for every arm
+        # uniformly (kimi included) via the ladder-derived provider mapping, never a
+        # literal arm-name comparison.
+        if _lockout_blocked(_provider_for(arm), now_epoch, lockout_dir):
+            entries.append("%s:blocked:lockout" % arm)
             continue
         # KIMI-CHANNEL-01b: kimi is probe-gated, not quota-gated. It has NO threshold
         # key and MUST branch here BEFORE the pct/threshold logic -- _threshold_for()'s
@@ -366,6 +499,29 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
                 reviewer = arm
 
     refusal = "" if reviewer else "all_review_arms_unavailable"
+
+    # D3 (dispatch-8e2a32be): the preferred pool above is genuinely exhausted (every
+    # candidate author-excluded/locked-out/blocked/never assigned) -- fall to the
+    # rank-table floor so the pool is NEVER empty just because codex+glm are both
+    # quota-locked and the author happens to be excluded from reviewing itself. The
+    # floor bypasses lockout/pct gating entirely (unconditional guarantee) and is
+    # flagged via the pool entry's :floor:<pct|degraded> suffix -- "reason:
+    # floor_reviewer" in the design doc's vocabulary, expressed here as the entry
+    # disposition since --review-pool's CLI contract has no separate reason= line.
+    if not reviewer:
+        floor_arm, floor_ok = _review_floor(author, rank_table)
+        if floor_ok and floor_arm:
+            floor_pct = _pct_for(floor_arm)
+            suffix = _fmt_pct(floor_pct) if floor_pct is not None and _fmt_pct(floor_pct) else "degraded"
+            entries.append("%s:floor:%s" % (floor_arm, suffix))
+            reviewer = floor_arm
+            refusal = ""
+        elif rank_table:
+            # A rank table exists but has < 2 usable entries -- a config bug, not the
+            # ordinary "feature not adopted" case (empty rank_table, handled by the
+            # `elif` falling through and keeping all_review_arms_unavailable below).
+            refusal = "pool_floor_table_degenerate"
+
     return {"reviewer": reviewer, "pool": entries, "refusal": refusal}
 
 
@@ -554,6 +710,52 @@ def _job_from_argv(argv) -> str:
     return "build"
 
 
+def _emit_pool_lines(reviewer: str, entries, refusal: str) -> None:
+    """D2 (dispatch-8e2a32be): the ONE place that prints reviewer=/pool=/refusal= --
+    every --review-pool return path in _main (including every degraded/error path)
+    calls this exactly once, so none of them can silently skip the pool output the
+    way the pre-fix `no_routing_yaml` / `resolver_error` / top-level except paths did."""
+    print("reviewer=%s" % (reviewer or ""))
+    print("pool=%s" % ",".join(entries or []))
+    print("refusal=%s" % (refusal or ""))
+
+
+def _arg_from_argv(argv, flag: str) -> str:
+    """Best-effort single-value argv sniff, same idiom as _job_from_argv, used by the
+    degraded/error --review-pool paths that must re-derive a floor WITHOUT trusting
+    any state from a _main() run that may have crashed partway through."""
+    for i, tok in enumerate(argv):
+        if tok == flag and i + 1 < len(argv):
+            return argv[i + 1]
+        if tok.startswith(flag + "="):
+            return tok.split("=", 1)[1]
+    return ""
+
+
+def _best_effort_floor_pool(argv):
+    """D2: independent, exception-safe re-derivation of just the review floor, used
+    by every degraded/error --review-pool path so a resolver crash anywhere in the
+    main body still leaves the review gate with a non-empty pool where possible.
+    Deliberately does NOT reuse any state from the failed run -- re-resolves the
+    routing yaml from scratch via the same D1 candidate search. Returns
+    (reviewer, pool_entries, refusal)."""
+    try:
+        routing_yaml_arg = _arg_from_argv(argv, "--routing-yaml")
+        author = _arg_from_argv(argv, "--author")
+        path, _source = _resolve_routing_yaml_path(routing_yaml_arg)
+        if not path:
+            return "", [], "no_routing_yaml"
+        text = Path(path).read_text()
+        ladder = extract_dispatch_ladder(text)
+        rank_table = {e["id"]: e["review_rank"] for e in ladder if e.get("review_rank") is not None}
+        arm, ok = _review_floor(author, rank_table)
+        if not ok or not arm:
+            return "", [], "pool_floor_table_degenerate" if rank_table else "all_review_arms_unavailable"
+        return arm, ["%s:floor:degraded" % arm], ""
+    except Exception:
+        return "", [], "resolver_error"
+
+
 def _main(argv):
     import argparse
     ap = argparse.ArgumentParser()
@@ -571,53 +773,100 @@ def _main(argv):
     args = ap.parse_args(argv)
 
     try:
-        text = Path(args.routing_yaml).read_text()
-    except Exception:
-        _emit_fallback(args.job, "no_routing_yaml")
+        # D1: ordered self-heal search (tenant --routing-yaml -> plugin-local ->
+        # canonical) BEFORE giving up -- the pre-fix code gave up the instant the
+        # single passed-in path was unreadable, which is exactly the root cause of
+        # this whole round (no routing yaml at .claude/ref/leadv2-routing.yaml ->
+        # silent no-op fallback with zero reviewer=/pool=/refusal= output at all).
+        routing_yaml_path, ry_source = _resolve_routing_yaml_path(args.routing_yaml)
+        if routing_yaml_path is None:
+            # DEFAULT_REVIEW_ARM_ORDER-level last resort: no yaml found ANYWHERE, so
+            # there is no dispatch_ladder/review_rank data to float from either --
+            # honest empty pool with a distinct refusal, not a fabricated arm. D1
+            # should make this basically unreachable in any real deployment.
+            _emit_fallback(args.job, "no_routing_yaml")
+            if args.review_pool:
+                _emit_pool_lines("", [], "no_routing_yaml")
+            return 0
+        text = Path(routing_yaml_path).read_text()
+
+        glm_policy = extract_glm_policy_block(text)
+        ladder = extract_dispatch_ladder(text)
+        ladder_providers = {e["id"]: e["provider"] for e in ladder}
+        rank_table = {e["id"]: e["review_rank"] for e in ladder if e.get("review_rank") is not None}
+
+        try:
+            signals = json.loads(args.signals)
+        except Exception:
+            signals = {}
+
+        quota_live_bin = args.quota_live
+        if quota_live_bin is None:
+            quota_live_bin = str(Path(__file__).resolve().parent.parent / "leadv2-quota-live.sh")
+
+        # KIMI-CHANNEL-01b: --kimi-bin -> LEADV2_DISPATCH_KIMI_BIN (same env name
+        # leadv2-dispatch-code.sh:1243 reads) -> scripts/kimi-coder.sh, so tests and
+        # prod share one knob. Only consumed on the --review-pool path.
+        kimi_bin = args.kimi_bin
+        if kimi_bin is None:
+            kimi_bin = os.environ.get("LEADV2_DISPATCH_KIMI_BIN")
+        if kimi_bin is None:
+            kimi_bin = str(Path(__file__).resolve().parent.parent / "kimi-coder.sh")
+
+        now_epoch = _now_epoch()
+        lockout_dir = os.environ.get("LEADV2_QUOTA_LOCKOUT_DIR")
+
+        result = resolve_glm_policy(glm_policy, signals, args.job, args.base_arm, quota_live_bin,
+                                    kimi_bin=kimi_bin)
+        # D4: a live codex lockout forces codex_quota_blocked=1 in THIS (non-pool)
+        # output block too, independent of whatever live_codex_weekly_pct's own read
+        # returned -- the resolver previously had zero awareness of the on-disk store.
+        if _lockout_blocked(ladder_providers.get("codex", "codex"), now_epoch, lockout_dir):
+            result["codex_quota_blocked"] = True
+        print("arm=%s" % result["arm"])
+        print("rule=%s" % result["rule"])
+        print("reason=%s" % result["reason"])
+        print("tier=%s" % result["tier"])
+        print("codex_quota_blocked=%s" % ("1" if result["codex_quota_blocked"] else "0"))
+        # ry_source (tenant|plugin|canonical) is journaled bash-side by
+        # resolve_review_pool_call() -- that's the caller with TASK/emit() access;
+        # this CLI process only needs its own routing-yaml resolution to be correct,
+        # not to duplicate the journal write.
+
+        # dispatch-00629379: additive-only -- absent --review-pool, output above is
+        # byte-identical to pre-change (v1-equivalence, design §7 test f).
+        if args.review_pool:
+            pool_result = resolve_review_pool(glm_policy, args.author, quota_live_bin,
+                                              kimi_bin=kimi_bin, signals=signals,
+                                              rank_table=rank_table, ladder_providers=ladder_providers,
+                                              lockout_dir=lockout_dir, now_epoch=now_epoch)
+            _emit_pool_lines(pool_result["reviewer"], pool_result["pool"], pool_result["refusal"])
         return 0
-
-    glm_policy = extract_glm_policy_block(text)
-    try:
-        signals = json.loads(args.signals)
     except Exception:
-        signals = {}
-
-    quota_live_bin = args.quota_live
-    if quota_live_bin is None:
-        quota_live_bin = str(Path(__file__).resolve().parent.parent / "leadv2-quota-live.sh")
-
-    # KIMI-CHANNEL-01b: --kimi-bin -> LEADV2_DISPATCH_KIMI_BIN (same env name
-    # leadv2-dispatch-code.sh:1243 reads) -> scripts/kimi-coder.sh, so tests and prod
-    # share one knob. Only consumed on the --review-pool path.
-    kimi_bin = args.kimi_bin
-    if kimi_bin is None:
-        kimi_bin = os.environ.get("LEADV2_DISPATCH_KIMI_BIN")
-    if kimi_bin is None:
-        kimi_bin = str(Path(__file__).resolve().parent.parent / "kimi-coder.sh")
-
-    result = resolve_glm_policy(glm_policy, signals, args.job, args.base_arm, quota_live_bin,
-                                kimi_bin=kimi_bin)
-    print("arm=%s" % result["arm"])
-    print("rule=%s" % result["rule"])
-    print("reason=%s" % result["reason"])
-    print("tier=%s" % result["tier"])
-    print("codex_quota_blocked=%s" % ("1" if result["codex_quota_blocked"] else "0"))
-
-    # dispatch-00629379: additive-only -- absent --review-pool, output above is
-    # byte-identical to pre-change (v1-equivalence, design §7 test f).
-    if args.review_pool:
-        pool_result = resolve_review_pool(glm_policy, args.author, quota_live_bin,
-                                          kimi_bin=kimi_bin, signals=signals)
-        print("reviewer=%s" % pool_result["reviewer"])
-        print("pool=%s" % ",".join(pool_result["pool"]))
-        print("refusal=%s" % pool_result["refusal"])
-    return 0
+        # D2: resolver_error path -- MUST still print reviewer=/pool=/refusal= when
+        # --review-pool was requested, via the SAME independent floor re-derivation
+        # the top-level except in __main__ uses, so a crash anywhere above (a bad
+        # signals JSON that somehow slips past its own try/except, a resolve_glm_policy
+        # bug, anything) never regresses to the old silent no-op.
+        _emit_fallback(args.job, "resolver_error")
+        if args.review_pool:
+            reviewer, pool, refusal = _best_effort_floor_pool(argv)
+            _emit_pool_lines(reviewer, pool, refusal)
+        return 0
 
 
 if __name__ == "__main__":
     try:
         sys.exit(_main(sys.argv[1:]) or 0)
     except Exception as _e:
+        # D2: the true last-resort catch -- something failed even before/around
+        # _main's own internal try/except (e.g. argparse itself, or an exception
+        # inside _main's except block). Same independent floor re-derivation, so
+        # --review-pool still gets non-empty output here too.
         sys.stderr.write("leadv2-glm-policy-resolve.py: resolver_error: %s\n" % _e)
-        _emit_fallback(_job_from_argv(sys.argv[1:]), "resolver_error")
+        _argv = sys.argv[1:]
+        _emit_fallback(_job_from_argv(_argv), "resolver_error")
+        if "--review-pool" in _argv:
+            _reviewer, _pool, _refusal = _best_effort_floor_pool(_argv)
+            _emit_pool_lines(_reviewer, _pool, _refusal)
         sys.exit(0)

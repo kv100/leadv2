@@ -3293,7 +3293,20 @@ confirmation-seeking; only for a decision you cannot make yourself."
     if [[ "${codex_quota_blocked:-0}" == "1" ]]; then
       local -a _filtered=()
       local _a
-      for _a in "${candidate_arms[@]}"; do [[ "${_a}" == "codex" ]] || _filtered+=("${_a}"); done
+      for _a in "${candidate_arms[@]}"; do
+        if [[ "${_a}" == "codex" ]]; then
+          # dispatch-8e2a32be: this silent strip predates the resolver's D4 on-disk
+          # lockout read -- once D4 started setting codex_quota_blocked=1 from the
+          # lockout file (not just a live quota pct read), this branch started firing
+          # for the lockout case too, BEFORE the ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01
+          # loop below ever sees "codex" in candidate_arms -- so that loop's own
+          # quota_precheck_skip line never fires for codex. Emit the same-shaped line
+          # here so a lockout-caused strip is exactly as loud as a live-quota-caused one.
+          emit decision "quota_precheck_skip model=codex provider=codex task=${sig8} reason=provider_quota_locked"
+        else
+          _filtered+=("${_a}")
+        fi
+      done
       candidate_arms=("${_filtered[@]}")
     fi
     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"

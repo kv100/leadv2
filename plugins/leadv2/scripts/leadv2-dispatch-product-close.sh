@@ -211,6 +211,30 @@ _stamp_review_terminal() { # <pass|fail|unreviewed|blocked>
   _stamp_active_phase "${FOUNDER_TASK_ID}" "review:$1"
 }
 
+# dispatch-8e2a32be D5: literal "-" instead of a blank field for "nothing here" --
+# a blank pool:/tried: was indistinguishable from "field not populated by this code
+# path" vs "resolver/loop genuinely produced zero entries". Used by BOTH terminal
+# no-reviewer branches so review-gate.md's shape is identical regardless of which
+# one fired.
+_pc_or_dash() { [[ -n "${1:-}" ]] && printf '%s' "$1" || printf '%s' '-'; }
+
+# dispatch-8e2a32be A3: the ONE writer for "no reviewer was ever seated" -- both the
+# resolver-returned-nothing branch and the loop-exhausted branch call this, so their
+# review-gate.md shape can never diverge again (the pre-fix divergence -- one branch
+# hardcoded `tried: ` and printed no refusal:/resolver_rc: line at all -- is exactly
+# what made the live artifact undiagnosable). merge_blocked: true is a published
+# contract field; no consumer reads it yet (explicitly out of scope, see design §5).
+# <refusal> <pool> <tried> <resolver_rc> <resolver_stderr_path>
+_pc_write_unreviewed() {
+  local refusal="$1" pool="$2" tried="$3" resolver_rc="$4" resolver_stderr="$5"
+  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: %s\nrefusal: %s\nresolver_rc: %s\nresolver_stderr: %s\nmerge_blocked: true\n' \
+    "${AUTHOR}" "$(_pc_or_dash "${pool}")" "$(_pc_or_dash "${tried}")" "${refusal:-all_arms_unavailable}" \
+    "$(_pc_or_dash "${resolver_rc}")" "$(_pc_or_dash "${resolver_stderr}")" > "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=$(_pc_or_dash "${pool}") tried=$(_pc_or_dash "${tried}") refusal=${refusal:-all_arms_unavailable} resolver_rc=$(_pc_or_dash "${resolver_rc}")" || true
+  _dl_note dead all_arms_unavailable "author=${AUTHOR} pool=${pool} tried=${tried} refusal=${refusal}"
+  _stamp_review_terminal unreviewed
+}
+
 # dispatch-00629379 (P0, 2026-07-30): Fix6 (SUPERVISOR-AUDIT-01) called the resolver
 # for exactly ONE arm (job=review, base-arm=codex) -- with codex quota-gated out and
 # GLM structurally banned from review, EVERY build resolved to sonnet, so the single
@@ -241,7 +265,32 @@ resolve_review_pool_call() {
     printf 'reviewer=\npool=\nrefusal=resolver_missing_failclosed\n'
     return
   fi
-  local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
+  # dispatch-8e2a32be D1: ordered first-existing-file-wins search. Root cause this
+  # fixes: the pre-fix single lookup (${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/
+  # leadv2-routing.yaml}) never found a file at runtime -- .claude/ref/
+  # leadv2-routing.yaml does not exist in ANY of the three live repos -- so the
+  # resolver silently ran its no-op/fail-closed fallback and this function never
+  # printed a real reviewer=/pool=/refusal= line at all. Tenant-override precedence
+  # (env var, then repo-local .claude/ref/) is UNCHANGED; this only adds the
+  # plugin-local and canonical tiers so a repo that never opted into a tenant
+  # override still resolves against a real routing yaml instead of nothing.
+  local routing_yaml="" _ry_source="none"
+  if [[ -n "${LEADV2_ROUTING_YAML:-}" && -f "${LEADV2_ROUTING_YAML}" ]]; then
+    routing_yaml="${LEADV2_ROUTING_YAML}"; _ry_source="tenant"
+  elif [[ -f "${ROOT}/.claude/ref/leadv2-routing.yaml" ]]; then
+    routing_yaml="${ROOT}/.claude/ref/leadv2-routing.yaml"; _ry_source="tenant"
+  elif [[ -f "${SCRIPT_DIR}/../config/leadv2-routing.yaml" ]]; then
+    routing_yaml="${SCRIPT_DIR}/../config/leadv2-routing.yaml"; _ry_source="plugin"
+  elif [[ -f "${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/config/leadv2-routing.yaml" ]]; then
+    routing_yaml="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/config/leadv2-routing.yaml"
+    _ry_source="canonical"
+  else
+    # True last resort: keep the OLD default expression so a caller that somehow has
+    # none of the above still gets exactly the pre-fix path (and therefore the
+    # resolver's own D1 self-heal gets one more chance at it).
+    routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
+  fi
+  emit decision "review_routing_yaml task=${TASK} source=${_ry_source}" || true
   # CODEX-GATE-01 item 6: compute REAL safety signals from the lane's write paths vs the
   # protected_path_patterns in routing yaml (fail-closed), instead of the hardcoded
   # --signals '{}' that left the resolver's kimi:excluded:safety branch unreachable on the
@@ -252,7 +301,7 @@ resolve_review_pool_call() {
   local _sig_source="lib_missing_failclosed" _sig_protected="1" _sig_matched="-"
   if [[ -f "${_signals_lib}" ]]; then
     # shellcheck source=lib/leadv2-review-signals.sh
-    source "${_signals_lib}"
+    source "${_signals_lib}" || true
     # The lib is invoked under $(), a subshell that cannot propagate globals back, so it also
     # emits signals_source=/signals_matched= on stderr -- capture that to a temp file.
     local _sig_cap
@@ -272,11 +321,30 @@ resolve_review_pool_call() {
   # Observability (D5): without this line the fix is unobservable at any human surface --
   # which is exactly what let --signals '{}' live. matched=- means no path matched (or scope
   # unknown); source token distinguishes lane_writes from the two fail-closed reasons.
-  emit decision "review_signals task=${TASK} protected_path=${_sig_protected} source=${_sig_source} matched=${_sig_matched}"
+  emit decision "review_signals task=${TASK} protected_path=${_sig_protected} source=${_sig_source} matched=${_sig_matched}" || true
   local -a resolver_args=(--routing-yaml "${routing_yaml}" --job review --base-arm codex \
     --review-pool --author "${AUTHOR}" --signals "${_signals_json}")
   [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
-  python3 "${resolver}" "${resolver_args[@]}" 2>/dev/null || printf 'reviewer=\npool=\nrefusal=resolver_error_failclosed\n'
+  # dispatch-8e2a32be A2: the resolver's own stderr used to be thrown away
+  # (`2>/dev/null`) -- the single reason a resolver crash was invisible all day. It now
+  # lands in a per-lane file (never the console) and the rc is captured explicitly
+  # instead of only being observable via the `|| printf fallback` firing. Both are
+  # surfaced as resolver_rc=/resolver_stderr= lines so BOTH terminal branches below can
+  # report them (A3) -- a non-zero rc with a real reviewer=/pool= line (the resolver's
+  # own internal fallback already degrades gracefully) is not itself a failure; the
+  # verdict field for "did review actually run" stays reviewer=, never resolver_rc=.
+  local _resolver_err_file="${HANDOFF}/review-pool-resolver.err"
+  local _resolver_out _resolver_rc
+  mkdir -p "${HANDOFF}" 2>/dev/null || true
+  _resolver_out="$(python3 "${resolver}" "${resolver_args[@]}" 2>"${_resolver_err_file}")"
+  _resolver_rc=$?
+  if [[ -z "${_resolver_out}" ]]; then
+    _resolver_out=$'reviewer=\npool=\nrefusal=resolver_error_failclosed'
+  fi
+  emit decision "review_pool_resolve task=${TASK} rc=${_resolver_rc} reviewer=$(printf '%s\n' "${_resolver_out}" | sed -n 's/^reviewer=//p' | head -n1) pool_n=$(printf '%s\n' "${_resolver_out}" | sed -n 's/^pool=//p' | head -n1 | awk -F',' '{n=0; for(i=1;i<=NF;i++) if ($i!="") n++; print n}')" || true
+  printf '%s\n' "${_resolver_out}"
+  printf 'resolver_rc=%s\n' "${_resolver_rc}"
+  printf 'resolver_stderr=%s\n' "${_resolver_err_file}"
 }
 
 # The reviewer wrapper and the reviewer do not necessarily use the same stream.  In
@@ -1490,6 +1558,8 @@ resolver_out="$(resolve_review_pool_call)"
 reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"
 pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
 refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
+resolver_rc="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_rc=//p' | head -n1)"
+resolver_stderr="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_stderr=//p' | head -n1)"
 # Defense-in-depth (R9): the resolver already filters the author out of its pool, but
 # a reviewer==author slip (stale cache, a launcher default) must never reach a live
 # self-review -- assert it here too rather than trusting a single enforcement point.
@@ -1504,11 +1574,7 @@ if [[ -z "${reviewer}" ]]; then
   # success to anything reading the exit code (which nothing does -- D2) or the ledger
   # (which recorded `parked`, not a failure state).
   refusal="${refusal:-all_review_arms_unavailable}"
-  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: \n' \
-    "${AUTHOR}" "${pool}" > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} refusal=${refusal} tried="
-  _dl_note dead all_arms_unavailable "author=${AUTHOR} pool=${pool} refusal=${refusal}"
-  _stamp_review_terminal unreviewed
+  _pc_write_unreviewed "${refusal}" "${pool}" "" "${resolver_rc}" "${resolver_stderr}"
   exit 9
 fi
 
@@ -1635,9 +1701,14 @@ review_contract=$'Your review MUST contain these two lines, verbatim format, bef
 # review-glm.md with no fallback attempted at all. Bounded two ways: next_ok_arm_after
 # walks the FIXED ${pool} strictly forward (each arm visited at most once) AND an
 # explicit tried[] cap belt-and-braces the loop -- it cannot spin.
-tried=()
+# dispatch-8e2a32be D5: PC_TRIED is appended BEFORE run_reviewer_arm is called (not
+# after classifying its outcome), so a mid-review crash inside run_reviewer_arm still
+# leaves this arm recorded as attempted -- "tried" means "the gate actually invoked
+# this arm's launcher", not "this arm refused cleanly and returned control".
+PC_TRIED=()
 _pc_unavailable=0
 while :; do
+  PC_TRIED+=("${reviewer}")
   run_reviewer_arm "${reviewer}"
   cls="$(classify_arm_failure "${review_rc}" "${review_err}" "${review_out}")"
   if [[ "${cls}" != refused_* ]]; then
@@ -1666,8 +1737,7 @@ while :; do
     break
   fi
   emit decision "review_gate task=${TASK} status=arm_refused arm=${reviewer} reason=${cls}"
-  tried+=("${reviewer}")
-  if [[ ${#tried[@]} -ge 4 ]]; then
+  if [[ ${#PC_TRIED[@]} -ge 4 ]]; then
     _pc_unavailable=1
     break
   fi
@@ -1681,12 +1751,9 @@ while :; do
   reviewer="${next_arm}"
 done
 if [[ "${_pc_unavailable}" == "1" ]]; then
-  _pc_tried_csv="$(IFS=,; echo "${tried[*]:-}")"
-  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: %s\n' \
-    "${AUTHOR}" "${pool}" "${_pc_tried_csv}" > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} tried=${_pc_tried_csv}"
-  _dl_note dead all_arms_unavailable "author=${AUTHOR} pool=${pool} tried=${_pc_tried_csv}"
-  _stamp_review_terminal unreviewed
+  _pc_tried_csv="$(IFS=,; echo "${PC_TRIED[*]:-}")"
+  _pc_refusal="${refusal:-all_arms_unavailable}"
+  _pc_write_unreviewed "${_pc_refusal}" "${pool}" "${_pc_tried_csv}" "${resolver_rc}" "${resolver_stderr}"
   exit 9
 fi
 
