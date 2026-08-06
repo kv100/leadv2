@@ -2058,14 +2058,16 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     return 1
   fi
   # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01: thread the resolved candidate
-  # chain (same CSV as the vestigial LEADV2_DISPATCH_REVIEWER_ARMS below, but this one
-  # IS read -- by the close gate's silent-arm probe to find the next arm to advance to)
-  # and the ONE lane-mission artifact this dispatch already wrote to disk, so the close
-  # gate can re-spawn the next arm on an identical mission without re-deriving it.
+  # chain (LEADV2_DISPATCH_CANDIDATE_ARMS -- read by the close gate's silent-arm probe
+  # to find the next arm to advance to) and the ONE lane-mission artifact this dispatch
+  # already wrote to disk, so the close gate can re-spawn the next arm on an identical
+  # mission without re-deriving it. ONE-PATH-EVERYWHERE-01: the sibling
+  # LEADV2_DISPATCH_REVIEWER_ARMS export was deleted here -- it was dead (see the
+  # `reviewer_arms` local's own comment below); leadv2-dispatch-product-close.sh /
+  # leadv2-review-run.sh resolve their own reviewer pool independently.
   PROJECT_ROOT="${PROJECT_ROOT}" LEADV2_DISPATCH_CACHE_DIR="${CACHE_BASE}" \
     LEADV2_JOURNAL_BIN="${JOURNAL_BIN}" LEADV2_DISPATCH_CODEX_BIN="${CODEX_BIN}" \
     LEADV2_DISPATCH_ARCHITECT_BIN="${ARCHITECT_BIN}" \
-    LEADV2_DISPATCH_REVIEWER_ARMS="${reviewer_arms}" \
     LEADV2_DISPATCH_CANDIDATE_ARMS="${reviewer_arms}" \
     LEADV2_DISPATCH_LANE_MISSION="${lane_mission_path}" \
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
@@ -3238,14 +3240,16 @@ confirmation-seeking; only for a decision you cannot make yourself."
       bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
         --handle "dispatch-${sig8}-${candidate}" \
         --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
-      # VESTIGIAL (dispatch-00629379, 2026-07-30): reviewer_arms / the
-      # LEADV2_DISPATCH_REVIEWER_ARMS env it feeds is DEAD -- leadv2-dispatch-
-      # product-close.sh no longer reads it. Reusing the BUILD candidate chain as the
-      # reviewer list was the root cause of "review gate has no available reviewer"
-      # (candidate==author always collided). product-close now resolves its own
-      # reviewer pool via lib/leadv2-glm-policy-resolve.py --review-pool --author, an
-      # ordered, quota-filtered, author-excluding pool independent of this build chain.
-      # Kept (not deleted) only to avoid an unrelated call-signature change here.
+      # (dispatch-00629379, 2026-07-30; env cleaned up under ONE-PATH-EVERYWHERE-01):
+      # `reviewer_arms` here now feeds ONLY LEADV2_DISPATCH_CANDIDATE_ARMS (the silent-
+      # arm advance-arm probe) -- the sibling LEADV2_DISPATCH_REVIEWER_ARMS export was
+      # DEAD (leadv2-dispatch-product-close.sh never read it) and has been deleted.
+      # Reusing the BUILD candidate chain as the reviewer list was the root cause of
+      # "review gate has no available reviewer" (candidate==author always collided);
+      # product-close / leadv2-review-run.sh resolve their own reviewer pool via
+      # lib/leadv2-glm-policy-resolve.py --review-pool --author, an ordered, quota-
+      # filtered, author-excluding pool independent of this build chain. The local var
+      # itself is kept (not deleted) to avoid an unrelated call-signature change here.
       local reviewer_arms
       reviewer_arms="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
       # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (3a): persist the lane's

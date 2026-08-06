@@ -28,8 +28,13 @@ done
 ACTIVE_PHASE="$(leadv2_hook_resolve_phase "$INPUT" "$ACTIVE_YAML" 2>/dev/null || true)"
 TASK_ID="$(leadv2_hook_resolve_task_id "$INPUT" "$ACTIVE_YAML" 2>/dev/null || true)"
 
+# ONE-PATH-EVERYWHERE-01: review enforcement moved off the sentinel mechanism
+# entirely (see leadv2-workflow-bypass-guard.sh's review branch) — the lead/
+# interactive review phase now calls leadv2-review-run.sh directly and the
+# guard's pass predicate for review reads review-gate.md itself, not a
+# Workflow-touched sentinel. Only `plan` still uses the sentinel.
 case "${ACTIVE_PHASE:-}" in
-  plan|review) ;;
+  plan) ;;
   *) exit 0 ;;
 esac
 [[ -n "$TASK_ID" ]] || exit 0

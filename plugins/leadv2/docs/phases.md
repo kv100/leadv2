@@ -267,37 +267,42 @@ Parallel Agent spawns per `context.yaml plan.parallel_groups:` — developer / p
 
 ## §Phase 5: REVIEW
 
-**Route first:** `eval "$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-router.sh" --phase review --step <step> --task-id <id> --class <class> --signals '{...}' 2>/dev/null)" || true`. Review is mandatory in every class. The router may only select the **cheapest reviewer arm**; a `model=skip` emission for the review step is ignored and the cheapest arm is used instead. When `USE_WORKFLOW=1` is emitted, use the Workflow path below.
+**Route first:** `eval "$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-router.sh" --phase review --step <step> --task-id <id> --class <class> --signals '{...}' 2>/dev/null)" || true`. Review is mandatory in every class. The router may only select the **cheapest reviewer arm**; a `model=skip` emission for the review step is ignored and the cheapest arm is used instead.
 
-**Dispatch (check `USE_WORKFLOW` from router output):**
+**Dispatch (ONE-PATH-EVERYWHERE-01 — sole-owner engine, unconditional):**
 
-When `LEADV2_WORKFLOW_ENABLED=1`, the router emits `USE_WORKFLOW=1`. Use the Workflow path:
+The lead/interactive Review phase, and the product-close lane (when
+`LEADV2_REVIEW_ENGINE=1`), both call the sole-owner review engine,
+`plugins/leadv2/scripts/leadv2-review-run.sh`, over Bash:
 
 ```
-review_result=$(Workflow('leadv2-review', {
-  taskId: "$LEADV2_TASK_ID",
-  base: "main",
-  safetyTouched: <true if auth/RLS/publish in diff>,
-  missionPath: "/tmp/mission-review-${LEADV2_TASK_ID}.md",
-  diffPath: "docs/handoff/${LEADV2_TASK_ID}/build-attempt-1.diff",
-  codexEnabled: <true if codex-task.sh available>,
-  models: { critic: "opus", security_auditor: "sonnet", codex: "default" }
-}))
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-review-run.sh" \
+  --task "$LEADV2_TASK_ID" --root "$(pwd)" \
+  --handoff "docs/handoff/${LEADV2_TASK_ID}" \
+  --diff "docs/handoff/${LEADV2_TASK_ID}/build-attempt-1.diff" \
+  --author "<arm>" [--fanout 3]
 ```
 
-`Workflow('leadv2-review')` returns `{blocking_count, verdict, findings_path}`. Lead reads `blocking_count`:
-- `blocking_count == 0` → ACCEPT, append findings to followups.md, proceed to Phase 6.
-- `blocking_count >= 1` → spawn developer fix round (same as inline path), call Workflow again (round 2, max).
-- Round cap is enforced by LEAD, not workflow. Round 3+ → `Skill(leadv2-judge) mode=review`.
+The engine resolves the reviewer pool itself (quota-filtered, author-excluding), fans out
+to the first N `:ok:` arms in parallel plus an always-on hack-detect pass, verifies every
+Critical/High finding on a distinct arm, and writes `docs/handoff/<id>/review-gate.md`
+(`status:`/`reason:` contract unchanged, plus additive `arms:`/`verified:` lines) and
+`docs/handoff/<id>/review-findings.json`. Lead reads `review-gate.md`'s `status:` line and
+`review-findings.json`'s `findings[]`:
+- `status: pass` → ACCEPT, append findings to followups.md, proceed to Phase 6.
+- `status: fail` → spawn developer fix round on the blocking (Critical/High, non-refuted)
+  findings, re-run the engine (round 2, max).
+- Round cap is enforced by LEAD, not the engine. Round 3+ → `Skill(leadv2-judge) mode=review`.
+- `status: blocked` / `status: unreviewed` → see the engine's `reason:` line
+  (`provider_error` / `review_body_lost` / `empty_response` / `no_verdict_marker` /
+  `all_arms_unavailable`) — this is a finding about the review process itself, never
+  silently treated as a pass.
 
-**Schema-death fallback (null-check on Workflow return — MANDATORY):** If `review_result` is null/undefined → log to pulse `review-workflow: schema-death, falling back to inline` and fall through to the inline path below.
-
-**Inline path (flag off or Workflow schema-death):**
-
-Parallel in one message:
-- `codex-task.sh adversarial-review --wait --base main` — background, always when not skipped (requires Codex CLI on PATH)
-- Agent(critic, opus) via claude-subsession — if safety/auth/RLS/publish touched
-- Agent(security-auditor, sonnet) via Agent tool — if secrets/webhook/auth touched
+`workflows/leadv2-review.js` (and its shared copy at `~/.claude/workflows/leadv2-review.js`)
+is deleted; there is no separate Workflow-based path or inline-fallback path anymore — the
+engine is the only reviewer dispatcher. Codex/critic/security-auditor selection logic that
+used to live in the Workflow's `reviewers[]` array now lives in the engine's
+`run_reviewer_arm()` (codex/glm/kimi/sonnet/opus branches) and `resolve_review_pool_call()`.
 
 **Reading review deliverables:** `bash "${CLAUDE_PLUGIN_ROOT}/scripts/critic-tail.sh" <file>` returns Verdict + summary_for_lead + Critical/High/Medium counts. Full body read ONLY when verdict signals REVISE/no-ship. Mirror cx-tail.sh discipline — never `Read` the whole review file by default.
 

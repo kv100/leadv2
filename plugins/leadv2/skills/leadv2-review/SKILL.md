@@ -94,17 +94,25 @@ runs detached, and the captured output file gets only the start banner (findings
 the plugin job-log). With `--wait` the full review lands in the Bash output file and
 `cx-tail.sh` reads it directly.
 
+**Sole-owner engine path (ONE-PATH-EVERYWHERE-01), UNCONDITIONAL:** the lead/interactive
+Review phase calls `plugins/leadv2/scripts/leadv2-review-run.sh` over Bash directly — this
+is not gated by `LEADV2_WORKFLOW_ENABLED` or `LEADV2_REVIEW_ENGINE` (those flags gate the
+*plan* phase's Workflow and the product-close *lane*'s internal call respectively; the
+engine script itself exists on disk regardless and this skill always invokes it). Full
+invocation, args, and exit-code contract → **`WORKFLOW-PATH.md`**. `workflows/leadv2-review.js`
+and its shared copy at `~/.claude/workflows/leadv2-review.js` are deleted; the Cases A/B/C
+manual-dispatch table below is superseded by the engine's own pool-resolution + fan-out
+(codex/glm/kimi/sonnet/opus, quota-filtered, author-excluding) — kept here only as
+historical reference for what the engine's `run_reviewer_arm` branches replicate.
+
 **Step 0 — Bandit model selection, MANDATORY when `LEADV2_ROUTE_BANDIT=1`:** run
-`leadv2-route-bandit.sh select-for-workflow --phase review ...` BEFORE calling `Workflow()`
-and pass the result as `args.models`. Skipping this step freezes arm posteriors — the bandit
-never learns from this task. Flag-off → skip entirely (byte-identical to pre-BANDIT-WIRE-01).
-Full command + Workflow args wiring: **`ref/route-bandit-step0.md`**.
+`leadv2-route-bandit.sh select-for-workflow --phase review ...` BEFORE calling the engine
+and thread the result via `--fanout`/pool hints where applicable. Skipping this step
+freezes arm posteriors — the bandit never learns from this task. Flag-off → skip entirely
+(byte-identical to pre-BANDIT-WIRE-01). Full command wiring: **`ref/route-bandit-step0.md`**.
 
-**Opt-in Workflow-based path** (preferred when `LEADV2_WORKFLOW_ENABLED=1` and the `Workflow`
-tool is available): full invocation, args, and fallback rules → **`WORKFLOW-PATH.md`**.
-
-**Manual path (Cases A/B/C, default when `LEADV2_WORKFLOW_ENABLED` unset or ≠ 1)** — exact spawn
-commands + critic mission file: **`ref/manual-dispatch-cases.md`**.
+**Historical manual path (Cases A/B/C, pre-engine reference)** — exact spawn commands +
+critic mission file: **`ref/manual-dispatch-cases.md`**.
 
 | Case | Condition | Spawns (ONE message, parallel) |
 |---|---|---|
@@ -170,6 +178,14 @@ If `docs/leadv2-negative-memory.yaml` missing → skip, no error.
 | Round 2: Critical still present | **Escape hatch** — spawn `architect(opus)` with full history → alt approach |
 | After architect alt: Critical still | **Circuit break** — PushNotification + AskUserQuestion with 2 options |
 | Any round: workflow returns `stall:true` | **Skip further REVISE** — go straight to Judge (`Skill(leadv2-judge)` mode=review); do NOT spawn another developer fix round |
+
+> **ONE-PATH-EVERYWHERE-01 note:** `stall:true` was computed by the deleted
+> `workflows/leadv2-review.js` Reflect phase (STALL-DETECT-01: identical blocking signature
+> across 2 rounds). `leadv2-review-run.sh` does not reproduce this — it was out of scope for
+> the engine's numbered behavior contract (design §2 steps 1-8, pool/fan-out/verify/synthesis
+> only, no cross-round Reflect state). Until a follow-up ports stall detection into the
+> engine or a lead-side equivalent, treat this row as inert; do not assume the engine emits
+> `stall`.
 
 **Stall detection — lead persistence contract:**
 - Workflow returns `signature` (string) and `stall` (boolean) in every call.

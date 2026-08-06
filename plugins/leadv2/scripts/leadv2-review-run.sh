@@ -1,0 +1,740 @@
+#!/usr/bin/env bash
+# leadv2-review-run.sh — ONE-PATH-EVERYWHERE-01: sole-owner review engine.
+#
+# WRITE-RACE NOTE (risk A1): this engine writes docs/handoff/<task>/review-gate.md via
+# `.tmp` + `mv` (atomic). The lane's own EXIT trap (leadv2-dispatch-product-close.sh)
+# only writes review-gate.md when the file is ABSENT — it is a fallback-only writer.
+# Ordering is therefore: this engine writes FIRST; the lane's trap only fires if the
+# engine crashed before writing anything at all. There is no second writer racing this
+# one under normal operation.
+#
+# OWNERSHIP: this script is self-contained. It does NOT source the lane
+# (leadv2-dispatch-product-close.sh) and never calls the lane's _stamp_review_terminal,
+# _dl_note, or its journal `emit` — those remain lane-owned; the lane wraps this call
+# with its own process model / EXIT trap / terminal-state stamping. This is what makes
+# the engine callable from a bare bash session (e.g. a Codex-led session) with none of
+# the lane's helper functions loaded.
+#
+# DEVIATION NOTE: resolve_review_pool_call() below is lifted verbatim from the lane
+# (including its one `emit decision ...` observability line), but this file defines
+# its OWN minimal `emit()` — a stderr-only logger — instead of depending on the lane's
+# journal emit. This keeps the lifted function's body byte-identical while honoring the
+# "never call the lane's emit" rule above.
+#
+# FLAG: LEADV2_REVIEW_ENGINE gates whether the LANE calls this script (default 0, must
+# stay 0 in production per ONE-PATH-EVERYWHERE-01 rollout). This script itself carries
+# no internal flag — once invoked, it always runs its full pipeline. The lead/interactive
+# skill path calls it unconditionally (design §5), independent of the lane's flag.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# 1. Arg parsing
+# ---------------------------------------------------------------------------
+TASK=""; ROOT=""; HANDOFF=""; DIFF_FILE=""; AUTHOR=""; FANOUT_ARG=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --task)    TASK="${2:-}"; shift 2 ;;
+    --root)    ROOT="${2:-}"; shift 2 ;;
+    --handoff) HANDOFF="${2:-}"; shift 2 ;;
+    --diff)    DIFF_FILE="${2:-}"; shift 2 ;;
+    --author)  AUTHOR="${2:-}"; shift 2 ;;
+    --fanout)  FANOUT_ARG="${2:-}"; shift 2 ;;
+    *) printf 'leadv2-review-run.sh: unknown arg: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "${TASK}" || -z "${ROOT}" || -z "${HANDOFF}" || -z "${DIFF_FILE}" || -z "${AUTHOR}" ]]; then
+  printf 'leadv2-review-run.sh: --task, --root, --handoff, --diff and --author are all required\n' >&2
+  exit 2
+fi
+
+REVIEW_FANOUT="${FANOUT_ARG:-${LEADV2_REVIEW_FANOUT:-3}}"
+[[ "${REVIEW_FANOUT}" =~ ^[1-9][0-9]*$ ]] || REVIEW_FANOUT=3
+
+mkdir -p "${HANDOFF}" 2>/dev/null || true
+
+# Engine-local logger. See DEVIATION NOTE above — the lane's real journal `emit` is
+# never called from this file.
+emit() { printf '[leadv2-review-run] %s %s\n' "${1:-}" "${2:-}" >&2; }
+
+WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
+
+# ---------------------------------------------------------------------------
+# 2. Pool resolution — lifted verbatim from leadv2-dispatch-product-close.sh
+#    (dispatch-00629379 / CODEX-GATE-01 item 6 / N-5 D5). See that file's own
+#    comments at resolve_review_pool_call() for the full incident history; do
+#    not re-derive the fail-closed signals contract here.
+# ---------------------------------------------------------------------------
+resolve_review_pool_call() {
+  local resolver="${LEADV2_GLM_POLICY_RESOLVER:-}"
+  if [[ -z "${resolver}" ]]; then
+    if [[ -f "${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py" ]]; then
+      resolver="${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py"
+    else
+      local _canonical="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py"
+      [[ -f "${_canonical}" ]] && resolver="${_canonical}"
+    fi
+  fi
+  if [[ -z "${resolver}" || ! -f "${resolver}" ]]; then
+    printf 'reviewer=\npool=\nrefusal=resolver_missing_failclosed\n'
+    return
+  fi
+  local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
+  local _signals_json='{"protected_path":true,"safety_touched":true}'
+  local _signals_lib="${SCRIPT_DIR}/lib/leadv2-review-signals.sh"
+  local _sig_source="lib_missing_failclosed" _sig_protected="1" _sig_matched="-"
+  if [[ -f "${_signals_lib}" ]]; then
+    # shellcheck source=lib/leadv2-review-signals.sh
+    source "${_signals_lib}"
+    local _sig_cap
+    _sig_cap="$(mktemp "${TMPDIR:-/tmp}/leadv2-rev-sig.XXXXXX" 2>/dev/null || printf '%s/leadv2-rev-sig.%s' "${TMPDIR:-/tmp}" "$$")"
+    _signals_json="$(leadv2_review_signals "${routing_yaml}" "${WRITES_CSV}" 2>"${_sig_cap}" || true)"
+    _sig_source="$(sed -n 's/^signals_source=//p' "${_sig_cap}" | head -n1)"
+    _sig_matched="$(sed -n 's/^signals_matched=//p' "${_sig_cap}" | head -n1)"
+    rm -f "${_sig_cap}" 2>/dev/null || true
+    [[ -n "${_sig_source}" ]] || _sig_source="lib_missing_failclosed"
+    [[ -n "${_sig_matched}" ]] || _sig_matched="-"
+    case "${_signals_json}" in
+      *'"protected_path":false'*) _sig_protected="0" ;;
+      *) _sig_protected="1" ;;
+    esac
+  fi
+  emit decision "review_signals task=${TASK} protected_path=${_sig_protected} source=${_sig_source} matched=${_sig_matched}"
+  local -a resolver_args=(--routing-yaml "${routing_yaml}" --job review --base-arm codex \
+    --review-pool --author "${AUTHOR}" --signals "${_signals_json}")
+  [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
+  python3 "${resolver}" "${resolver_args[@]}" 2>/dev/null || printf 'reviewer=\npool=\nrefusal=resolver_error_failclosed\n'
+}
+
+# ---------------------------------------------------------------------------
+# 3. Reviewer artifact / verdict parsing — lifted verbatim (same contract the
+#    lane's parser already tolerates unknown additive lines like arms:/verified:).
+# ---------------------------------------------------------------------------
+resolve_review_artifact() { # <arm> -> sets REVIEW_ARTIFACT/REVIEW_SOURCE
+  local arm="$1"
+  local adir="${ROOT}/docs/handoff/dispatch-${TASK}-review" cand
+  REVIEW_ARTIFACT=""
+  REVIEW_SOURCE=""
+  for cand in "${adir}/critic.full.md" "${adir}/critic.md" "${adir}/critic.summary.md"; do
+    if [[ -s "${cand}" && "${cand}" -nt "${REVIEW_STAMP}" ]]; then
+      REVIEW_ARTIFACT="${cand}"
+      REVIEW_SOURCE="artifact:${cand#"${ROOT}/"}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+materialize_subsession_body() { # <review_out> <review_stamp> <task_id>
+  local rfile="$1" rstamp="$2" tid="$3"
+  local adir="${ROOT}/docs/handoff/dispatch-${tid}-review"
+  local cand body_file="" rel_path=""
+
+  for cand in "${adir}/critic.full.md" "${adir}/critic.md" "${adir}/critic.summary.md"; do
+    if [[ -s "${cand}" && "${cand}" -nt "${rstamp}" ]]; then
+      body_file="${cand}"
+      rel_path="${cand#"${ROOT}/"}"
+      break
+    fi
+  done
+
+  if [[ -z "${body_file}" ]]; then
+    local stream="${adir}/critic.stream.jsonl"
+    if [[ -s "${stream}" && "${stream}" -nt "${rstamp}" ]] && command -v python3 >/dev/null 2>&1; then
+      local tmp_body
+      tmp_body="$(python3 - "$stream" 2>/dev/null <<'PY'
+import json, sys
+texts = []
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except Exception:
+        continue
+    if obj.get("type") == "assistant":
+        msg = obj.get("message", {})
+        for block in msg.get("content", []):
+            if isinstance(block, dict) and block.get("type") == "text":
+                texts.append(block.get("text", ""))
+if texts:
+    print(texts[-1])
+PY
+      )"
+      if [[ -n "${tmp_body}" ]]; then
+        local label_line
+        label_line="$(cat "${rfile}" 2>/dev/null)"
+        printf '%s\n--- body from: %s ---\n%s\n' "${label_line}" "${stream#"${ROOT}/"}" "${tmp_body}" > "${rfile}"
+        return 0
+      fi
+    fi
+    return 1
+  fi
+
+  local label_line
+  label_line="$(cat "${rfile}" 2>/dev/null)"
+  printf '%s\n--- body from: %s ---\n' "${label_line}" "${rel_path}" > "${rfile}.tmp"
+  cat "${body_file}" >> "${rfile}.tmp"
+  mv "${rfile}.tmp" "${rfile}"
+  return 0
+}
+
+parse_review_verdict() { # review-file
+  local review_file="$1"
+  PARSED_VERDICT=""
+  VERDICT_SOURCE=""
+  FINDINGS_CRITICAL=0
+  FINDINGS_HIGH=0
+  FINDINGS_MEDIUM=0
+  FINDINGS_LOW=0
+
+  PARSED_VERDICT="$(sed -nE 's/^[[:space:]]*REVIEW_VERDICT:[[:space:]]*(FAIL|PASS_WITH_NITS|PASS)([[:space:]]|$).*/\1/p' "${review_file}" | head -n 1)"
+  if [[ -n "${PARSED_VERDICT}" ]]; then
+    VERDICT_SOURCE="marker"
+  else
+    PARSED_VERDICT="$(sed -nE 's/^[[:space:]]*(VERDICT|Verdict):[[:space:]]*(FAIL|PASS_WITH_NITS|PASS)([[:space:]]|$).*/\2/p' "${review_file}" | head -n 1)"
+    [[ -n "${PARSED_VERDICT}" ]] && VERDICT_SOURCE="alt_marker"
+  fi
+  [[ -n "${PARSED_VERDICT}" ]] || return 1
+
+  local findings_matches findings_count
+  findings_matches="$(sed -nE 's/^[[:space:]]*REVIEW_FINDINGS:[[:space:]]*critical=([0-9]+)[[:space:]]+high=([0-9]+)[[:space:]]+medium=([0-9]+)[[:space:]]+low=([0-9]+)[[:space:]]*$/\1 \2 \3 \4/p' "${review_file}")"
+  findings_count="$(printf '%s\n' "${findings_matches}" | grep -c .)"
+  if [[ "${findings_count}" -ne 1 ]]; then
+    PARSED_VERDICT=""
+    return 1
+  fi
+  read -r FINDINGS_CRITICAL FINDINGS_HIGH FINDINGS_MEDIUM FINDINGS_LOW <<< "${findings_matches}"
+  if [[ "${PARSED_VERDICT}" != FAIL && ( ${FINDINGS_CRITICAL} -gt 0 || ${FINDINGS_HIGH} -gt 0 ) ]]; then
+    PARSED_VERDICT=FAIL
+    VERDICT_SOURCE="contradiction_override"
+  fi
+}
+
+review_floor_ok() { # <file> -> 0 if it clears the floor, 1 if not
+  local f="$1"
+  local min_bytes="${LEADV2_REVIEW_MIN_BYTES:-200}"
+  if grep -q '^[[:space:]]*REVIEW_VERDICT:' "${f}" 2>/dev/null && \
+     grep -q '^[[:space:]]*REVIEW_FINDINGS:' "${f}" 2>/dev/null; then
+    return 0
+  fi
+  local bytes lines
+  bytes="$(wc -c < "${f}" 2>/dev/null | tr -d '[:space:]')"; bytes="${bytes:-0}"
+  lines="$(wc -l < "${f}" 2>/dev/null | tr -d '[:space:]')"; lines="${lines:-0}"
+  if [[ "${bytes}" -lt "${min_bytes}" || "${lines}" -lt 3 ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# 4. run_reviewer_arm — lifted verbatim (KIMI-CHANNEL-01b §2.3.1-2.3.2 /
+#    dispatch-00629379). One behaviour change from the lane copy: output/err
+#    filenames are keyed per fan-out slot (arm name is already unique per
+#    fan-out by construction — see the dedup guard in step 6 below), so
+#    parallel jobs never collide on the same review-${arm}.md/.err pair.
+# ---------------------------------------------------------------------------
+run_reviewer_arm() { # <arm>
+  local arm="$1"
+  review_out="${HANDOFF}/review-${arm}.md"
+  review_err="${HANDOFF}/review-${arm}.err"
+  mission_file="${HANDOFF}/review-mission-${arm}.md"
+  if [[ "${arm}" == codex ]]; then
+    bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait \
+      --focus "Review ONLY the diff at ${DIFF_FILE}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract}" \
+      > "${review_out}" 2> "${review_err}"; review_rc=$?
+  elif [[ "${arm}" == glm ]]; then
+    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+      "${DIFF_FILE}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+    glm_bin="${LEADV2_DISPATCH_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
+    omp_bin="${LEADV2_DISPATCH_OMP_BIN:-${ROOT}/.claude/leadv2-overrides/omp-task.sh}"
+    review_rc=75
+    if [[ -x "${glm_bin}" ]]; then
+      bash "${glm_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
+      review_rc=$?
+    fi
+    if [[ ${review_rc} -eq 75 && -x "${omp_bin}" ]]; then
+      omp_run_id="$(bash "${omp_bin}" task "$(cat "${mission_file}")" --dir "${ROOT}" 2>> "${review_err}")"
+      if [[ -n "${omp_run_id}" ]]; then
+        omp_status=""
+        omp_waited=0
+        while (( omp_waited < 900 )); do
+          omp_status="$(bash "${omp_bin}" status "${omp_run_id}" 2>/dev/null)"
+          [[ "${omp_status}" == status=done* || "${omp_status}" == status=failed* ]] && break
+          sleep 5
+          omp_waited=$((omp_waited + 5))
+        done
+        cat "/tmp/omp-task-${omp_run_id}.log" > "${review_out}" 2>/dev/null || true
+        [[ "${omp_status}" == status=done* ]] && review_rc=0 || review_rc=1
+      fi
+    fi
+  elif [[ "${arm}" == kimi ]]; then
+    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+      "${DIFF_FILE}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+    kimi_bin="${LEADV2_DISPATCH_KIMI_BIN:-${SCRIPT_DIR}/kimi-coder.sh}"
+    if ! bash "${kimi_bin}" probe >/dev/null 2> "${review_err}"; then
+      review_rc=77
+      return
+    fi
+    bash "${kimi_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
+    review_rc=$?
+  else
+    # sonnet or opus — MUST go through claude-subsession.sh, never a bare `claude -p`
+    # (that combination requires --verbose or the process dies instantly; see
+    # claude-subsession.sh ~line 338-342).
+    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+      "${DIFF_FILE}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+    PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model "${arm}" --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait \
+      > "${review_out}" 2> "${review_err}"; review_rc=$?
+    if [[ ${review_rc} -eq 0 ]]; then
+      materialize_subsession_body "${review_out}" "${REVIEW_STAMP}" "${TASK}" || true
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 5. classify_arm_failure / next_ok_arm_after — lifted verbatim.
+# ---------------------------------------------------------------------------
+classify_arm_failure() { # <rc> <err-file> <out-file>
+  local rc="${1:-}" err_file="${2:-}" out_file="${3:-}"
+  local combined
+  combined="$(cat "${out_file}" 2>/dev/null || true)"$'\n'"$(cat "${err_file}" 2>/dev/null || true)"
+
+  if [[ "${rc}" == "77" ]]; then
+    printf 'refused_channel_down'
+    return 0
+  fi
+
+  local marker
+  marker="$(printf '%s\n' "${combined}" | sed -n 's/.*LEADV2_DISPATCH_REFUSED:[[:space:]]*\([A-Za-z0-9._-][A-Za-z0-9._-]*\).*/\1/p' | head -1)"
+  if [[ -n "${marker}" && ( "${rc}" == "1" || "${rc}" == "2" || "${rc}" == "75" ) ]]; then
+    if [[ "${marker}" == "peak_hours" ]]; then
+      printf 'refused_peak_hours'
+    else
+      printf 'refused_quota'
+    fi
+    return 0
+  fi
+
+  if [[ "${rc}" == "1" && "${combined}" == *"[glm-quota-gate] REROUTE"* ]]; then
+    printf 'refused_quota'
+    return 0
+  fi
+
+  if [[ "${rc}" == "75" ]]; then
+    printf 'refused_quota'
+    return 0
+  fi
+
+  printf 'ran'
+  return 0
+}
+
+next_ok_arm_after() { # <after-arm>  reads ${pool}
+  local after="$1" found=0 entry arm
+  local _pool="${pool}"
+  local IFS=','
+  for entry in ${_pool}; do
+    arm="${entry%%:*}"
+    if [[ "${found}" == "1" && "${entry}" == "${arm}:ok:"* ]]; then
+      printf '%s' "${arm}"
+      return 0
+    fi
+    [[ "${arm}" == "${after}" ]] && found=1
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# 6. Fan-out helpers (new — design §2 step 3/4)
+# ---------------------------------------------------------------------------
+
+# _engine_pool_ok_arms — extract the ordered list of :ok: arms from ${pool},
+# deduplicated (risk A4: the same arm must never appear twice in one fan-out).
+# Prints one arm per line.
+_engine_pool_ok_arms() {
+  local entry arm
+  local IFS=','
+  local seen=""
+  for entry in ${pool}; do
+    arm="${entry%%:*}"
+    [[ "${entry}" == "${arm}:ok:"* ]] || continue
+    case ",${seen}," in
+      *",${arm},"*) continue ;;
+    esac
+    seen="${seen},${arm}"
+    printf '%s\n' "${arm}"
+  done
+}
+
+# Per-arm job wrapper: runs run_reviewer_arm in a background-safe subshell,
+# then persists the result (rc/out/err are file-based so the parent can read
+# them back after `wait`, since subshell locals do not propagate).
+_engine_arm_job() { # <arm>
+  local arm="$1"
+  run_reviewer_arm "${arm}"
+  printf '%s' "${review_rc}" > "${HANDOFF}/review-${arm}.rc"
+}
+
+# Bounded-wait wrapper: bash 3.2 has no built-in per-background-job timeout, so
+# a watcher subshell kills the job after ${ARM_TIMEOUT_S}. Portable, no GNU
+# coreutils `timeout` dependency.
+ARM_TIMEOUT_S="${LEADV2_REVIEW_ARM_TIMEOUT_S:-900}"
+_engine_run_arm_with_timeout() { # <arm>
+  local arm="$1"
+  ( _engine_arm_job "${arm}" ) &
+  local job_pid=$!
+  ( sleep "${ARM_TIMEOUT_S}"; kill -TERM "${job_pid}" 2>/dev/null ) &
+  local watcher_pid=$!
+  wait "${job_pid}" 2>/dev/null
+  kill "${watcher_pid}" 2>/dev/null
+  wait "${watcher_pid}" 2>/dev/null
+  true
+}
+
+# Hack-detect: always-on, cheap, haiku, ported from workflows/leadv2-review.js:136-137.
+# Never counted as one of the N fan-out arms. Findings use the same additive
+# `FINDING:` line contract (see step 7) so they merge into review-findings.json
+# with dimension="hack", but they do NOT gate REVIEW_VERDICT/REVIEW_FINDINGS.
+HACKDETECT_OUT="${HANDOFF}/review-hackdetect.md"
+HACKDETECT_ERR="${HANDOFF}/review-hackdetect.err"
+_engine_hack_detect_job() {
+  local mission="${HANDOFF}/review-mission-hackdetect.md"
+  {
+    printf 'Run hack-detection on the diff at %s: TODO/FIXME band-aids, magic numbers, broad except, hardcoded creds/secrets, silent fallbacks.\n' "${DIFF_FILE}"
+    printf 'Report each as one line, exact format:\nFINDING: severity=<Critical|High|Medium|Low> file=<path> line=<n> dimension=hack desc=<one line>\n'
+    printf 'Emit nothing else.\n'
+  } > "${mission}"
+  PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role hack-detect --model haiku --task-id "dispatch-${TASK}-review" --mission-file "${mission}" --wait \
+    > "${HACKDETECT_OUT}" 2> "${HACKDETECT_ERR}" || true
+}
+
+# Verify/refute: for every Critical/High FINDING: line, spawn one refutation job on
+# an arm != the arm that raised it. Ported prompt from workflows/leadv2-review.js:196.
+_engine_verify_job() { # <arm> <out-file> <severity> <dimension> <desc>
+  local arm="$1" out="$2" sev="$3" dim="$4" desc="$5"
+  local mission="${out}.mission"
+  printf 'Try to REFUTE this finding. Default is_real=false if you cannot concretely confirm it against %s.\nFinding [%s/%s]: %s\nReport exactly one line: VERIFY_VERDICT: <upheld|refuted>\n' \
+    "${DIFF_FILE}" "${sev}" "${dim}" "${desc}" > "${mission}"
+  PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model "${arm}" --task-id "dispatch-${TASK}-review" --mission-file "${mission}" --wait \
+    > "${out}" 2>>"${out}.err" || true
+}
+
+# ---------------------------------------------------------------------------
+# 7. Main
+# ---------------------------------------------------------------------------
+review_adir="${ROOT}/docs/handoff/dispatch-${TASK}-review"
+mkdir -p "${review_adir}" 2>/dev/null || true
+REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
+touch "${REVIEW_STAMP}" 2>/dev/null || true
+review_contract=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.\nAlso report every Critical/High finding on its own line, exact format:\nFINDING: severity=<Critical|High> file=<path> line=<n> dimension=<correctness|security|design|perf> desc=<one line>'
+
+# Step 2: pool resolve.
+resolver_out="$(resolve_review_pool_call)"
+reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"
+pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
+refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
+
+if [[ -n "${reviewer}" && "${reviewer}" == "${AUTHOR}" ]]; then
+  refusal="reviewer_equals_author"
+  reviewer=""
+fi
+
+if [[ -z "${reviewer}" ]]; then
+  refusal="${refusal:-all_review_arms_unavailable}"
+  {
+    printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: \n' "${AUTHOR}" "${pool}"
+  } > "${HANDOFF}/review-gate.md.tmp"
+  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} refusal=${refusal} tried="
+  exit 9
+fi
+
+diff_hash="$(shasum -a 256 "${DIFF_FILE}" | awk '{print $1}')"
+
+# Step 3/4: fan-out list — first REVIEW_FANOUT distinct :ok: arms, dedup guard (A4).
+fanout_list=()
+while IFS= read -r _arm; do
+  [[ -n "${_arm}" ]] || continue
+  fanout_list+=("${_arm}")
+  [[ "${#fanout_list[@]}" -ge "${REVIEW_FANOUT}" ]] && break
+done < <(_engine_pool_ok_arms)
+
+if [[ "${#fanout_list[@]}" -eq 0 ]]; then
+  # Should not happen (reviewer is non-empty above), but fail closed rather than
+  # silently landing with zero arms run.
+  fanout_list=("${reviewer}")
+fi
+
+# A4 guard: assert no duplicate arm made it into the fan-out list. NOTE: iterate
+# fanout_list WITHOUT the `${arr[@]:-}` default-operator form — on a bash array
+# with zero elements that form expands to ONE empty-string word (a documented
+# bash quirk, not the "no elements" behaviour `${arr[@]}` alone gives under
+# `set -u`), which would make this guard false-positive "duplicate ''" the very
+# first time the pool degrades to zero live arms. Reached AFTER the zero-arm
+# fallback above, so fanout_list is guaranteed non-empty here.
+_dedup_check=""
+for _arm in "${fanout_list[@]}"; do
+  case ",${_dedup_check}," in
+    *",${_arm},"*)
+      printf 'leadv2-review-run.sh: INTERNAL: duplicate arm %s in fan-out list — refusing to run\n' "${_arm}" >&2
+      exit 2
+      ;;
+  esac
+  _dedup_check="${_dedup_check},${_arm}"
+done
+
+# Launch fan-out arms in parallel, plus the always-on hack-detect pass (not counted
+# as one of the N arms).
+for _arm in "${fanout_list[@]}"; do
+  _engine_run_arm_with_timeout "${_arm}" &
+done
+( _engine_hack_detect_job ) &
+wait
+
+# Step 5: per-arm refusal reselection. Walk fan-out results; any refused_* arm is
+# re-selected forward through ${pool} (bounded, tried[] cap) so one refusing arm
+# does not stall the arms that already succeeded.
+ran_arms=()
+tried=()
+_pc_unavailable=0
+for _arm in "${fanout_list[@]}"; do
+  _rc_file="${HANDOFF}/review-${_arm}.rc"
+  _rc="$(cat "${_rc_file}" 2>/dev/null || printf '')"
+  _out="${HANDOFF}/review-${_arm}.md"
+  _err="${HANDOFF}/review-${_arm}.err"
+  _slot_arm="${_arm}"
+  _slot_rc="${_rc}"
+  while :; do
+    cls="$(classify_arm_failure "${_slot_rc}" "${_err}" "${_out}")"
+    if [[ "${cls}" != refused_* ]]; then
+      break
+    fi
+    emit decision "review_gate task=${TASK} status=arm_refused arm=${_slot_arm} reason=${cls}"
+    tried+=("${_slot_arm}")
+    if [[ "${#tried[@]}" -ge 4 ]]; then
+      _slot_arm=""
+      break
+    fi
+    next_arm="$(next_ok_arm_after "${_slot_arm}" || true)"
+    if [[ -z "${next_arm}" || "${next_arm}" == "${AUTHOR}" ]]; then
+      _slot_arm=""
+      break
+    fi
+    _slot_arm="${next_arm}"
+    _out="${HANDOFF}/review-${_slot_arm}.md"
+    _err="${HANDOFF}/review-${_slot_arm}.err"
+    run_reviewer_arm "${_slot_arm}"
+    _slot_rc="${review_rc}"
+    printf '%s' "${_slot_rc}" > "${HANDOFF}/review-${_slot_arm}.rc"
+  done
+  [[ -n "${_slot_arm}" ]] && ran_arms+=("${_slot_arm}")
+done
+
+if [[ "${#ran_arms[@]}" -eq 0 ]]; then
+  _pc_tried_csv="$(IFS=,; echo "${tried[*]:-}")"
+  {
+    printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: %s\n' \
+      "${AUTHOR}" "${pool}" "${_pc_tried_csv}"
+  } > "${HANDOFF}/review-gate.md.tmp"
+  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} tried=${_pc_tried_csv}"
+  exit 9
+fi
+
+# REVIEW-BODY-PERSIST-01 guard: applied per surviving arm — a paid review whose
+# body was lost must surface as blocked, never silently pass through.
+for _arm in "${ran_arms[@]}"; do
+  _out="${HANDOFF}/review-${_arm}.md"
+  _err="${HANDOFF}/review-${_arm}.err"
+  _rc="$(cat "${HANDOFF}/review-${_arm}.rc" 2>/dev/null || printf '1')"
+  if [[ "${_rc}" -eq 0 ]]; then
+    _pc_body_min="${LEADV2_REVIEW_BODY_MIN_BYTES:-300}"
+    _pc_body_bytes="$(wc -c < "${_out}" 2>/dev/null | tr -d '[:space:]')"; _pc_body_bytes="${_pc_body_bytes:-0}"
+    if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
+      if [[ -s "${_err}" ]] || grep -q 'cost recorded:' "${_err}" 2>/dev/null; then
+        printf 'status: blocked\nreason: review_body_lost\narm: %s\n' "${_arm}" > "${HANDOFF}/review-gate.md.tmp"
+        mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+        emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${_arm}"
+        exit 6
+      fi
+    fi
+  fi
+done
+
+# Resolve verdicts across all surviving arms; primary verdict comes from the
+# first arm in ran_arms whose file parses (preserves today's single-verdict
+# gate semantics — a fan-out is extra corroboration, not N independent gates).
+verdict=""
+reviewer_primary=""
+for _arm in "${ran_arms[@]}"; do
+  resolve_review_artifact "${_arm}" || true
+  _file="${REVIEW_ARTIFACT:-${HANDOFF}/review-${_arm}.md}"
+  _rc="$(cat "${HANDOFF}/review-${_arm}.rc" 2>/dev/null || printf '1')"
+  if [[ "${_rc}" -ne 0 && -z "${REVIEW_ARTIFACT}" ]]; then
+    continue
+  fi
+  if [[ ! -s "${_file}" ]] || ! review_floor_ok "${_file}"; then
+    continue
+  fi
+  if ! parse_review_verdict "${_file}"; then
+    continue
+  fi
+  verdict="${PARSED_VERDICT}"
+  reviewer_primary="${_arm}"
+  break
+done
+
+if [[ -z "${verdict}" ]]; then
+  # No surviving arm produced a usable verdict — same three-way named-reason
+  # vocabulary the lane already uses (N-5 D4), scoped to the whole fan-out.
+  _first_arm="${ran_arms[0]}"
+  _first_rc="$(cat "${HANDOFF}/review-${_first_arm}.rc" 2>/dev/null || printf '1')"
+  if [[ "${_first_rc}" -ne 0 ]]; then
+    printf 'status: blocked\nreason: provider_error\nrc: %s\n' "${_first_rc}" > "${HANDOFF}/review-gate.md.tmp"
+    emit decision "review_gate task=${TASK} status=blocked reason=provider_error rc=${_first_rc}"
+  else
+    printf 'status: blocked\nreason: empty_response\n' > "${HANDOFF}/review-gate.md.tmp"
+    emit decision "review_gate task=${TASK} status=blocked reason=empty_response"
+  fi
+  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  exit 6
+fi
+
+FINDINGS_CRITICAL_TOTAL="${FINDINGS_CRITICAL}"
+FINDINGS_HIGH_TOTAL="${FINDINGS_HIGH}"
+FINDINGS_MEDIUM_TOTAL="${FINDINGS_MEDIUM}"
+FINDINGS_LOW_TOTAL="${FINDINGS_LOW}"
+
+# --- Step 6/7: synthesis — union FINDING: lines across ran_arms + hack-detect,
+# dedup by (file,line,severity,dimension), then verify each Critical/High on an
+# arm != its raiser. -------------------------------------------------------
+FINDINGS_RAW="${HANDOFF}/.review-findings-raw.tsv"
+: > "${FINDINGS_RAW}"
+for _arm in "${ran_arms[@]}"; do
+  _file="${HANDOFF}/review-${_arm}.md"
+  [[ -f "${REVIEW_ARTIFACT:-}" && "${_arm}" == "${reviewer_primary}" ]] && _file="${REVIEW_ARTIFACT}"
+  grep -E '^FINDING:' "${_file}" 2>/dev/null | while IFS= read -r _line; do
+    _sev="$(printf '%s\n' "${_line}" | sed -nE 's/.*severity=([A-Za-z]+).*/\1/p')"
+    _f="$(printf '%s\n' "${_line}" | sed -nE 's/.*file=([^ ]+).*/\1/p')"
+    _ln="$(printf '%s\n' "${_line}" | sed -nE 's/.*line=([0-9]+).*/\1/p')"
+    _dim="$(printf '%s\n' "${_line}" | sed -nE 's/.*dimension=([A-Za-z]+).*/\1/p')"
+    _desc="$(printf '%s\n' "${_line}" | sed -nE 's/.*desc=(.*)$/\1/p')"
+    [[ -n "${_sev}" ]] || continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${_arm}" "${_sev}" "${_f}" "${_ln}" "${_dim}" "${_desc}" >> "${FINDINGS_RAW}"
+  done
+done
+grep -E '^FINDING:' "${HACKDETECT_OUT}" 2>/dev/null | while IFS= read -r _line; do
+  _sev="$(printf '%s\n' "${_line}" | sed -nE 's/.*severity=([A-Za-z]+).*/\1/p')"
+  _f="$(printf '%s\n' "${_line}" | sed -nE 's/.*file=([^ ]+).*/\1/p')"
+  _ln="$(printf '%s\n' "${_line}" | sed -nE 's/.*line=([0-9]+).*/\1/p')"
+  _dim="hack"
+  _desc="$(printf '%s\n' "${_line}" | sed -nE 's/.*desc=(.*)$/\1/p')"
+  [[ -n "${_sev}" ]] || continue
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "hackdetect" "${_sev}" "${_f}" "${_ln}" "${_dim}" "${_desc}" >> "${FINDINGS_RAW}"
+done
+
+# Dedup by (file,line,severity,dimension) — keep the first arm to report it.
+FINDINGS_DEDUP="${HANDOFF}/.review-findings-dedup.tsv"
+awk -F'\t' '{key=$3"|"$4"|"$2"|"$5; if (!(key in seen)) {seen[key]=1; print}}' "${FINDINGS_RAW}" > "${FINDINGS_DEDUP}" 2>/dev/null || : > "${FINDINGS_DEDUP}"
+
+# Build review-findings.json with verification per Critical/High finding.
+FINDINGS_JSON="${HANDOFF}/review-findings.json"
+{
+  printf '{"task":"%s","arms":[' "${TASK}"
+  _first=1
+  for _arm in "${ran_arms[@]}"; do
+    [[ "${_first}" -eq 1 ]] || printf ','
+    printf '"%s"' "${_arm}"
+    _first=0
+  done
+  printf '],"fanout":%s,"findings":[' "${#fanout_list[@]}"
+
+  _needs_verify=0
+  _verified_count=0
+  _first=1
+  while IFS=$'\t' read -r _arm _sev _f _ln _dim _desc; do
+    [[ -n "${_arm}" ]] || continue
+    _verifier_arm=""
+    _verifier_verdict="unverified"
+    if [[ "${_sev}" == "Critical" || "${_sev}" == "High" ]]; then
+      _needs_verify=$((_needs_verify + 1))
+      # Pick a verifier arm != raiser from ran_arms (>1 live arm required — A6/design §2 step 6).
+      for _cand in "${ran_arms[@]}"; do
+        [[ "${_cand}" != "${_arm}" ]] && { _verifier_arm="${_cand}"; break; }
+      done
+      if [[ -n "${_verifier_arm}" ]]; then
+        _vout="${HANDOFF}/review-verify-$(printf '%s' "${_f}_${_ln}_${_sev}" | tr -c 'A-Za-z0-9' '_').${_verifier_arm}.md"
+        _engine_verify_job "${_verifier_arm}" "${_vout}" "${_sev}" "${_dim}" "${_desc}" || true
+        if grep -qE '^VERIFY_VERDICT:[[:space:]]*upheld' "${_vout}" 2>/dev/null; then
+          _verifier_verdict="upheld"
+          _verified_count=$((_verified_count + 1))
+        elif grep -qE '^VERIFY_VERDICT:[[:space:]]*refuted' "${_vout}" 2>/dev/null; then
+          _verifier_verdict="refuted"
+          _verified_count=$((_verified_count + 1))
+        fi
+      fi
+    fi
+    [[ "${_first}" -eq 1 ]] || printf ','
+    _first=0
+    _desc_esc="$(printf '%s' "${_desc}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+    printf '{"dimension":"%s","severity":"%s","file":"%s","line":%s,"arm":"%s","verifier_arm":"%s","verifier_verdict":"%s","desc":"%s"}' \
+      "${_dim}" "${_sev}" "${_f}" "${_ln:-0}" "${_arm}" "${_verifier_arm}" "${_verifier_verdict}" "${_desc_esc}"
+  done < "${FINDINGS_DEDUP}"
+  printf ']}'
+} > "${FINDINGS_JSON}.tmp"
+mv -f "${FINDINGS_JSON}.tmp" "${FINDINGS_JSON}"
+
+# Recompute _needs_verify/_verified_count outside the subshell the while-loop
+# ran in (pipes/process substitution create subshells; re-derive from the JSON
+# so the counts are accurate in THIS shell).
+_needs_verify="$(grep -oE '"severity":"(Critical|High)"' "${FINDINGS_JSON}" 2>/dev/null | wc -l | tr -d '[:space:]')"; _needs_verify="${_needs_verify:-0}"
+_verified_count="$(grep -oE '"verifier_verdict":"(upheld|refuted)"' "${FINDINGS_JSON}" 2>/dev/null | wc -l | tr -d '[:space:]')"; _verified_count="${_verified_count:-0}"
+
+if [[ "${#ran_arms[@]}" -le 1 && "${_needs_verify}" -gt 0 && "${_verified_count}" -eq 0 ]]; then
+  VERIFIED_LINE="verified: 0/${_needs_verify} reason=single_arm_pool"
+else
+  VERIFIED_LINE="verified: ${_verified_count}/${_needs_verify}"
+fi
+
+# A refuted Critical/High drops from the blocking count but stays in JSON
+# (verifier_verdict: refuted) — recompute blocking severity from JSON minus refuted.
+_blocking_refuted="$(grep -oE '"severity":"(Critical|High)"[^}]*"verifier_verdict":"refuted"' "${FINDINGS_JSON}" 2>/dev/null | wc -l | tr -d '[:space:]')"; _blocking_refuted="${_blocking_refuted:-0}"
+_effective_critical=$((FINDINGS_CRITICAL_TOTAL))
+_effective_high=$((FINDINGS_HIGH_TOTAL))
+# Best-effort: only decrement if we can attribute the refuted counts to a severity
+# via the JSON grep above (coarse; the two counters below still reflect the
+# reviewer's own REVIEW_FINDINGS: counts and are what today's gate contract keys on).
+
+ARMS_CSV="$(IFS=,; echo "${ran_arms[*]}")"
+
+DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
+record_out="$(bash "${DISPATCH_BIN}" record-review --diff-hash "${diff_hash}" --verdict "${verdict}" --reviewer "${reviewer_primary}" --run-id "dispatch-${TASK}" 2>&1)"; record_rc=$?
+if [[ ${record_rc} -eq 2 ]]; then
+  emit decision "review_gate task=${TASK} status=dedup diff=${diff_hash:0:8}"
+else
+  emit decision "review_gate task=${TASK} status=ran author=${AUTHOR} reviewer=${reviewer_primary} verdict=${verdict} diff=${diff_hash:0:8} arms=${ARMS_CSV}"
+fi
+
+if [[ "${verdict}" == FAIL ]]; then
+  {
+    printf 'arms: %s\n%s\n' "${ARMS_CSV}" "${VERIFIED_LINE}"
+    printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
+      "${FINDINGS_CRITICAL_TOTAL}" "${FINDINGS_HIGH_TOTAL}" "${FINDINGS_MEDIUM_TOTAL}" "${FINDINGS_LOW_TOTAL}"
+  } > "${HANDOFF}/review-gate.md.tmp"
+  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=fail critical=${FINDINGS_CRITICAL_TOTAL} high=${FINDINGS_HIGH_TOTAL}"
+  exit 7
+fi
+
+{
+  printf 'arms: %s\n%s\n' "${ARMS_CSV}" "${VERIFIED_LINE}"
+  printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer_primary}" "${diff_hash:0:8}"
+} > "${HANDOFF}/review-gate.md.tmp"
+mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+emit decision "review_gate task=${TASK} status=pass diff=${diff_hash:0:8} arms=${ARMS_CSV}"
+exit 0

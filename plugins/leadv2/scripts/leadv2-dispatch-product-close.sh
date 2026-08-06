@@ -1444,6 +1444,40 @@ _stamp_active_phase "${FOUNDER_TASK_ID}" "review"
   bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status running \
     --handle "dispatch-${TASK}-review" \
     --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
+# ONE-PATH-EVERYWHERE-01: when LEADV2_REVIEW_ENGINE=1, this lane's whole inline review
+# body (below) is replaced by a call to the sole-owner engine, leadv2-review-run.sh.
+# Flag DEFAULTS TO 0 -- when unset (the production default, everywhere, per the rollout
+# plan) the lane falls through unchanged into the original inline body byte-for-byte.
+# The lane still owns its process model / EXIT trap / _stamp_review_terminal /
+# review_crashed fallback -- the engine itself never calls those (it is a bare,
+# self-contained script callable with none of this lane's helper functions loaded).
+if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" ]]; then
+  if [[ "${REVIEW_ON}" != 1 ]]; then
+    emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
+    _dl_note landed review_gate_disabled
+    exit 0
+  fi
+  _PC_REVIEW_ENTERED=1
+  _ENGINE_BIN="${LEADV2_REVIEW_RUN_BIN:-${SCRIPT_DIR}/leadv2-review-run.sh}"
+  bash "${_ENGINE_BIN}" --task "${TASK}" --root "${ROOT}" --handoff "${HANDOFF}" --diff "${diff_file}" --author "${AUTHOR}"
+  _engine_rc=$?
+  case ${_engine_rc} in
+    0)
+      _dl_note landed review_verdict_pass "engine=1"
+      _stamp_review_terminal pass
+      [[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
+        bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status done \
+          --artifact "docs/handoff/dispatch-${TASK}/review-gate.md" \
+          --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
+      ;;
+    7) _dl_note dead review_verdict_fail "engine=1"; _stamp_review_terminal fail ;;
+    6) _dl_note dead review_blocked "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
+    9) _dl_note dead all_arms_unavailable "engine=1"; _stamp_review_terminal unreviewed ;;
+    *) _dl_note dead review_engine_error "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
+  esac
+  exit ${_engine_rc}
+fi
+
 if [[ "${REVIEW_ON}" != 1 ]]; then
   emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
   _dl_note landed review_gate_disabled

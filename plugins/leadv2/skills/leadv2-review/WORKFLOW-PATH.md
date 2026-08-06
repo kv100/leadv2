@@ -1,26 +1,38 @@
-# Workflow-based Review path (opt-in, `LEADV2_WORKFLOW_ENABLED=1`)
+# Review path — sole-owner engine (ONE-PATH-EVERYWHERE-01)
 
-**Workflow fan-out toggle:** `LEADV2_WORKFLOW_ENABLED=1` enables the dynamic-Workflow path (requires Max/Team plan `Workflow` tool). Default (unset) uses the manual Cases A/B/C in SKILL.md.
-> **Self-enable (orchestrator-judged):** you MAY set `LEADV2_WORKFLOW_ENABLED=1` for the session yourself — without a founder prompt — when Review meets the fan-out test (multi-dimension review / adversarial verify). See `docs/goal-workflow-autonomy.md`.
+The lead/interactive Review phase calls the sole-owner review engine,
+`plugins/leadv2/scripts/leadv2-review-run.sh`, over **Bash**, **unconditionally** — this
+does NOT depend on `LEADV2_WORKFLOW_ENABLED` (that flag remains plan-phase-only; see
+SKILL.md) and does NOT depend on `LEADV2_REVIEW_ENGINE` either (that flag only gates
+whether the product-close *lane* calls the engine internally — the interactive path
+below always calls the engine script directly, because it exists on disk regardless of
+the flag's value).
 
-**If `LEADV2_WORKFLOW_ENABLED=1` and the `Workflow` tool is available — PREFERRED path**
-(ships at `~/.claude/workflows/leadv2-review.js`, all repos):
 ```
-Workflow({ name: "leadv2-review", args: { taskId: "<id>", base: "main",
-           safetyTouched: <bool>, codexEnabled: <bool>, missionPath: "docs/handoff/<id>/review-mission.md" } })
+bash plugins/leadv2/scripts/leadv2-review-run.sh \
+  --task "<sig8>" --root "$(pwd)" \
+  --handoff "docs/handoff/<id>" \
+  --diff "docs/handoff/<id>/review.diff" \
+  --author "<arm>" [--fanout 3]
 ```
-Returns ONE synthesized verdict `{verdict, blocking_count, blocking[], followups[]}` — lead context
-stays clean. `blocking_count==0` → ACCEPT → Phase 6. `blocking_count>=1` → developer fix → re-run
-(max 2 rounds) → judge. The workflow is **model-pinned** (critic sonnet / opus-on-safety, hack+codex
-haiku, verify sonnet) — never Opus-by-inheritance. `m3-market`: set `codexEnabled:false` if managed
-settings disable Codex/workflows; fall back to manual Cases A/B/C.
 
-The reference JS shape for that workflow is at **`ref/workflow-review-reference.md`** — illustrative
-only (the saved `.js` is canonical); do NOT hand-inline a fresh script from it. The Workflow returns
-structured JSON findings directly — no Monitor polling, no manual deliverable-file reads. Write the
-JSON results to `docs/handoff/<id>/reviews/round1-findings.json` and proceed to §3 (SKILL.md) using
-the structured output. Codex review stays orthogonal: fire it as an optional background Bash call
-outside the Workflow if available.
+The engine resolves an ordered, quota-filtered, author-excluding reviewer pool
+(`resolve_review_pool_call`, lifted from the product-close lane), fans out to the first
+`--fanout` (default 3, `LEADV2_REVIEW_FANOUT`) distinct `:ok:` arms in parallel, runs an
+always-on cheap hack-detect pass alongside them (not counted toward the fan-out), and
+verifies every Critical/High finding on an arm distinct from the one that raised it. It
+writes `docs/handoff/<id>/review-gate.md` (status/reason contract unchanged, plus two new
+additive lines: `arms: <csv>` and `verified: <n>/<m>`) and
+`docs/handoff/<id>/review-findings.json` via `.tmp` + `mv` (atomic).
 
-**Note:** `Workflow` requires Max or Team plan. If the tool is not available in the current session,
-fall through to the manual path in SKILL.md.
+Exit codes: `0` reviewed/pass, `6` blocked (provider_error / review_body_lost /
+empty_response / no_verdict_marker), `7` reviewed/FAIL, `9` unreviewed
+(all_arms_unavailable). Read `review-gate.md`'s `status:` line, then proceed to §3
+(SKILL.md) using the structured findings in `review-findings.json`.
+
+**Former Workflow path (deleted):** `workflows/leadv2-review.js` and its shared copy at
+`~/.claude/workflows/leadv2-review.js` are gone (ONE-PATH-EVERYWHERE-01) — the lane never
+called it (the workflow-bypass-guard hook was structurally blind to the Bash-invoked
+product-close lane) and this skill now calls the engine directly instead of the
+`Workflow(name: "leadv2-review", ...)` shape described here previously. If you still see
+a reference to that Workflow anywhere, it is stale — file it, do not resurrect the `.js`.
