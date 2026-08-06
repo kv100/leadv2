@@ -901,19 +901,67 @@ _arm_provider() {  # <arm_id> -> provider string
   printf '%s' "${_arm}"
 }
 
-# C1 tenant-yaml resurrection guard: after _load_dispatch_ladder populates
-# _LADDER_IDS from the (possibly stale) project or plugin yaml, drop any id
-# not in DISPATCHABLE_BUILD_ARMS. This prevents a stale tenant yaml that still
-# lists kimi as dispatchable from resurrecting a retired arm.
-_filter_ladder_to_dispatchable() {  # <sig8>
-  local _sig8="$1" _dispatchable _id _i _j _keep
+# Single reader for the DISPATCHABLE_BUILD_ARMS set (lib/leadv2-glm-policy-resolve.py).
+# Fail-open default matches the pre-extraction inline behaviour: a broken
+# importlib read must never fail the dispatcher closed. Emits a distinct
+# journal line when the read itself fails, so a silent fallback is visible.
+_dispatchable_arms() {  # () -> stdout: space-separated ids
+  local _sig8="${1:-}" _dispatchable
   _dispatchable="$(python3 -c '
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("_pr", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))
-' "${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py" 2>/dev/null)" || _dispatchable="glm codex sonnet"
+' "${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py" 2>/dev/null)"
+  if [[ -z "${_dispatchable}" ]]; then
+    _dispatchable="glm codex sonnet"
+    emit decision "dispatchable_arms_read_failed task=${_sig8} fallback=glm,codex,sonnet reason=importlib_read_failed"
+  fi
+  printf '%s' "${_dispatchable}"
+}
+
+# Map a router_v2 arm id to the launcher's spawn-case vocabulary. Table-free
+# prefix strip: claude-<model> -> <model>. Everything else is identity, so a
+# future claude-fable needs no edit here.
+_normalize_v2_arm() {  # <v2_arm_id> -> stdout: launcher arm id
+  local _id="$1"
+  case "${_id}" in
+    claude-*) printf '%s' "${_id#claude-}" ;;
+    *) printf '%s' "${_id}" ;;
+  esac
+}
+
+# Drop any id in candidate_arms that is not in DISPATCHABLE_BUILD_ARMS.
+# Shared by both v1 (ladder-derived) and v2 (resolver-derived) candidate
+# chains so the retirement of an arm (dispatch:false / commented-out) is
+# enforced identically on both paths -- never a second hand-kept exclusion
+# list. Mutates the caller's candidate_arms array in place.
+_filter_arms_to_dispatchable() {  # <sig8> <router_label:v1|v2>
+  local _sig8="$1" _router="$2" _dispatchable _id _keep _d
+  _dispatchable="$(_dispatchable_arms "${_sig8}")"
+  local -a _kept=()
+  for _id in "${candidate_arms[@]}"; do
+    _keep=0
+    for _d in ${_dispatchable}; do
+      [[ "${_id}" == "${_d}" ]] && { _keep=1; break; }
+    done
+    if [[ "${_keep}" == "1" ]]; then
+      _kept+=("${_id}")
+    else
+      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} router=${_router} reason=not_in_DISPATCHABLE_BUILD_ARMS"
+    fi
+  done
+  candidate_arms=("${_kept[@]}")
+}
+
+# C1 tenant-yaml resurrection guard: after _load_dispatch_ladder populates
+# _LADDER_IDS from the (possibly stale) project or plugin yaml, drop any id
+# not in DISPATCHABLE_BUILD_ARMS. This prevents a stale tenant yaml that still
+# lists kimi as dispatchable from resurrecting a retired arm.
+_filter_ladder_to_dispatchable() {  # <sig8>
+  local _sig8="$1" _dispatchable _id _i _keep _d
+  _dispatchable="$(_dispatchable_arms "${_sig8}")"
   local -a _new_ids=() _new_provs=()
   for _i in "${!_LADDER_IDS[@]}"; do
     _id="${_LADDER_IDS[$_i]}"
@@ -925,7 +973,7 @@ print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))
       _new_ids+=("${_id}")
       _new_provs+=("${_LADDER_PROVIDERS[$_i]}")
     else
-      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} reason=not_in_DISPATCHABLE_BUILD_ARMS"
+      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} router=v1 reason=not_in_DISPATCHABLE_BUILD_ARMS"
     fi
   done
   _LADDER_IDS=("${_new_ids[@]}")
@@ -3019,6 +3067,18 @@ confirmation-seeking; only for a decision you cannot make yourself."
   if [[ "${router_label}" == "v2" ]]; then
     IFS=',' read -r -a candidate_arms <<< "${v2_eligible}"
     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
+    # ARM-LADDER-KIMI-RESURRECTED-01 follow-up: v2's eligible= comes straight
+    # from the router-v2 resolver, which never consulted DISPATCHABLE_BUILD_ARMS
+    # and speaks a different arm-id vocabulary (claude-sonnet, not sonnet).
+    # Normalize first so a legitimate id survives the filter, then filter so a
+    # retired id (e.g. a stale tenant yaml still listing kimi) cannot.
+    local -a _v2_normalized=() _v2_a
+    for _v2_a in "${candidate_arms[@]}"; do
+      _v2_normalized+=("$(_normalize_v2_arm "${_v2_a}")")
+    done
+    candidate_arms=("${_v2_normalized[@]}")
+    _filter_arms_to_dispatchable "${sig8}" v2
+    [[ ${#candidate_arms[@]} -gt 0 ]] || { emit decision "dispatch_rolled_back reason=all_arms_not_dispatchable_v2 task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_not_dispatchable_v2 "" "${founder_task_id}"; exit 4; }
     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
   else
     _load_dispatch_ladder

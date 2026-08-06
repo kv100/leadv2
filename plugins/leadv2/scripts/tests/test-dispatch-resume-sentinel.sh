@@ -142,10 +142,14 @@ dispatch_stderr_file="${SANDBOX}/s7-stderr.txt"
 bash "${DC}" --kind tooling --resume-lane "${LANE_REF}" \
   "S7 sentinel resume test" 2>"${dispatch_stderr_file}" >/dev/null || dispatch_rc=$?
 
-if [[ ${dispatch_rc} -ne 5 ]]; then
-  ok "S7: dispatch did NOT refuse with rc 5 (got rc=${dispatch_rc})"
+# dispatch-a24b1588 Item 3: rc != 5 only proves "not one of the six refusal
+# reasons exit 5 covers" -- a future unrelated crash exiting any other nonzero
+# code would false-PASS this. The observed rc really is 0 (confirmed below),
+# so assert exactly what was observed, not a weaker superset of it.
+if [[ ${dispatch_rc} -eq 0 ]]; then
+  ok "S7: dispatch resumed the finalized lane (rc=0)"
 else
-  bad "S7: dispatch refused with rc 5"
+  bad "S7: dispatch did not resume the finalized lane (rc=${dispatch_rc}, expected 0)"
 fi
 
 if ! grep -q 'lane_is_live' "${dispatch_stderr_file}" 2>/dev/null; then
@@ -160,12 +164,13 @@ if grep -q 'lane_placement_pinned' "${dispatch_stderr_file}" 2>/dev/null \
   ok "S7: placement was pinned (accepted)"
 else
   # The journal is a stub, so the decision line might be in stderr only
-  # (emit goes to the journal which is /bin/true). Check rc != 5 as the
-  # primary assertion, and stderr as secondary.
-  if [[ ${dispatch_rc} -ne 5 ]]; then
-    ok "S7: placement accepted (rc != 5, journal is a stub)"
+  # (emit goes to the journal which is /bin/true). Check rc == 0 as the
+  # primary assertion (same tightening as the main S7 assertion above), and
+  # stderr as secondary.
+  if [[ ${dispatch_rc} -eq 0 ]]; then
+    ok "S7: placement accepted (rc=0, journal is a stub)"
   else
-    bad "S7: no evidence of placement pin"
+    bad "S7: no evidence of placement pin (rc=${dispatch_rc}, expected 0)"
   fi
 fi
 

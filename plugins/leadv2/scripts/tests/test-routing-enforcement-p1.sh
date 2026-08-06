@@ -432,11 +432,22 @@ else
   fail 'absent lockout no-block' "rc=${nolock_rc} output=${nolock_out}"
 fi
 
-# Test 5: dispatch with cwd = the plugin repo resolves a routing config
-# rather than logging no_routing_yaml. FAILS on HEAD (logs no_routing_yaml).
+# Test 5: dispatch with NO project routing config resolves the plugin's own
+# canonical routing config (self-host fallback) rather than logging
+# no_routing_yaml. dispatch-a24b1588 Item 2 sweep: this test's *intent* is
+# self-host resolution, but without a PROJECT_ROOT pin it is cwd-dependent --
+# `PROJECT_ROOT` falls back to `git rev-parse --show-toplevel` on the CALLER's
+# cwd (dispatch-code.sh:264), so run from inside a repo that carries its OWN
+# `.claude/ref/leadv2-routing.yaml` (persona-engine, m3-market, respiro-ios),
+# this test would find THAT config and pass for the wrong reason -- it would
+# never actually exercise the plugin-fallback path it claims to prove. Pin
+# PROJECT_ROOT to a config-less sandbox root so the only way this test can
+# pass is via the plugin-preferred self-host probe.
 make_live_glm "${TMP_ROOT}/selfhost-glm.sh"
 make_refusing_kimi "${TMP_ROOT}/selfhost-kimi.sh"
+mkdir -p "${TMP_ROOT}/selfhost-root"
 selfhost_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
+  PROJECT_ROOT="${TMP_ROOT}/selfhost-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/selfhost-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/selfhost-glm.sh" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/selfhost-kimi.sh" \
@@ -453,9 +464,17 @@ fi
 # Test 6: no routing config anywhere (degraded mode). Both project and plugin
 # config must miss, so the journal shows routing_config_degraded AND dispatch
 # still proceeds. Uses LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE to simulate a
-# missing plugin config.
+# missing plugin config. dispatch-a24b1588 Item 2: PROJECT_ROOT is pinned to a
+# config-less sandbox root (same disease as Test 5) -- unpinned, the same
+# `git rev-parse --show-toplevel`-on-caller's-cwd fallback makes this test's
+# verdict depend on where it was invoked from: run from /private/tmp it finds
+# no repo and passes; run from inside a repo carrying its own routing config
+# it finds that config, degraded mode is never exercised, and the test fails
+# to prove degraded mode at all -- same commit, opposite verdict.
+mkdir -p "${TMP_ROOT}/degraded-root"
 make_live_glm "${TMP_ROOT}/degraded-glm.sh"
 degraded_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
+  PROJECT_ROOT="${TMP_ROOT}/degraded-root" \
   LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE="/nonexistent/path/routing.yaml" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/degraded-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/degraded-glm.sh" \
