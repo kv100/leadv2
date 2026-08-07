@@ -45,6 +45,8 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 
 **Explicit task id -> claim, never greet.** If invoked as `/leadv2 <task-id>` (bare token matching an existing `docs/leadv2/tasks.yaml` id or an existing `docs/handoff/<id>/`), OR with `LEADV2_ASYNC_QUESTIONS=1` set, this is a **fanned-out child session** (spawned by `leadv2-fanout.sh`/`leadv2-supervise.sh`) -- claim that task_id immediately via Phase 0 and proceed straight to CLASSIFY. **Do NOT render the greeting AskUserQuestion picker** in this path -- a picker left waiting on a headless child is a silent multi-hour stall (bug: `f83037a57907` sat 2.5h on it). The picker below is ONLY for a bare `/leadv2` / `/leadv2 next` with no task id.
 
+**Question wake-up (CC 2.1.224+, additive):** in a fanned-out child session, immediately after launching `scripts/leadv2-ask.sh`, attempt `ListAgents` and, if a supervisor session is discoverable, `SendMessage` it one line: `[leadv2-q] <task-id> <q-id>: <question, <=15 words> — answer via /leadv2 reply <q-id> <option>`. This is a wake-up only — the control-plane question store stays the source of truth, and failure of this step is non-fatal (fall back to the blocking poll silently).
+
 **Greet via AskUserQuestion tool** (direct tool call, bare `/leadv2` only): top-5 unclaimed tasks, #1 marked `* Recommended`, always include "Other". After pick -> one line: `Taking TASK-XXX -> Gate 1 in ~5s.` Then auto-proceed. No chat until Phase 8 Close.
 
 ---
@@ -236,7 +238,7 @@ The orchestrator decides on its own when to fire `/goal` and when to author a `W
 | Promoted classification rules | `.claude/ref/lead-patterns.md` |
 | Full walkthrough, daemon internals, IPC proxy (consuming-repo, optional) | `docs/leadv2-guide.md` |
 
-## Post-Fable Opus-lead compensations
+## Post-Fable Opus-lead compensations (historical — written for the Fable-4 sunset window; Claude Fable 5 is live again, `ref/leadv2-main-model.yaml` decides the lead model per repo; the compensations below stand for Opus-led repos)
 
 - Bias to action: if the task is unambiguous, proceed without asking — make the reasonable assumption and STATE it. Ask only at irreversible/destructive forks or genuine PRODUCT decisions (those still route via AskUserQuestion / founder-question-router). Autonomy is scoped to EXECUTION ambiguity ONLY — product forks still go to the founder.
 - The routing matrix is BINDING: never do inline what the matrix routes to a subagent/Codex/GLM, even when inline feels faster. 3+ tool calls into ≥Standard work done yourself = stop, spawn.

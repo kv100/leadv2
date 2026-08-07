@@ -39,7 +39,7 @@ the effort. Sonnet's effort cap is `high` — if a sonnet spawn seems to need `x
 it needs opus (or Codex), not a longer sonnet run. Thinking tokens are output
 tokens — the most quota-expensive thing a spawn emits.
 
-## Opus — only the hardest thinking (founder directive 2026-07-03; FABLE-RETIRE-01 2026-07-06: fable sunset, opus absorbs its slots)
+## Opus — only the hardest thinking (founder directive 2026-07-03; FABLE-RETIRE-01 2026-07-06 covered Fable 4.x — Claude Fable 5 is live again since 2026-08; the lead model is decided per-repo by `ref/leadv2-main-model.yaml`, and "Fable" rows below apply only where that file selects it)
 
 Opus (the repo's top-tier lead/heavy model) is allowed ONLY where genuinely novel reasoning or
 judgment happens:

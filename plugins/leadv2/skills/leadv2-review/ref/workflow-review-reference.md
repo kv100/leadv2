@@ -11,7 +11,7 @@ const DIFF_PATH = `/tmp/leadv2-review-<id>.diff`;
 
 const round1 = await parallel([
   agent("critic", {
-    model: safetyTouched ? "claude-opus-4-8" : "claude-sonnet-5",
+    model: safetyTouched ? "claude-opus-5" : "claude-sonnet-5",
     prompt: `Adversarial code review. Diff: ${DIFF_PATH}. Brief: /tmp/review-mission-<id>.md.
              Output CHALLENGE blocks per critic role format with severity tags.`,
     outputSchema: {

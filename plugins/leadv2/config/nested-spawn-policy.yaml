@@ -15,6 +15,14 @@
 # caps total nested sub-runs per task (counted from the task audit log); tool_class
 # documents that nested spawns are read/plan/probe only -- write-capable
 # roles are hard-denied regardless of this file's contents.
+#
+# PLATFORM TRUTH (CC 2.1.224, CC-ADOPT-01b): Claude Code's own defaults are now
+# MORE permissive than this policy — spawn depth 3 by default
+# (CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH, v2.1.219), no per-session subagent cap
+# (v2.1.224), 20 concurrent (CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS, v2.1.217).
+# THIS file + the routing-guard hook remain the governing limit. User settings
+# additionally pin CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2 as a platform-level
+# backstop so a hook bypass still cannot nest deeper than one level below lead.
 max_depth: 1
 max_nested_per_task: 3
 tool_class: read_only

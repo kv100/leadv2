@@ -1,8 +1,8 @@
-## 2.5. Nested spawns (v2.1.172+) — 5-LEVEL HARD CAP
+## 2.5. Nested spawns — leadv2 policy is the governing limit
 
-**5-LEVEL NESTING HARD CAP (2.1.172):** Claude Code enforces a maximum of 5 nesting levels across the entire spawn chain. The current leadv2 architecture (lead → workflow → developer → subagent) consumes 3 levels. Subagents in that chain may spawn one more level (level 4), but NEVER level 5 — that is the platform ceiling. Any spawn that would exceed level 5 is silently dropped by the runtime with no error. Design nested workflows to stay within levels 1–4.
+**Platform truth (CC 2.1.224, CC-ADOPT-01b):** Claude Code's default subagent spawn depth is now **3** (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`, v2.1.219; was 1), the 200-subagent-per-session cap is **removed** (v2.1.224), and concurrent subagents are capped at 20 (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, v2.1.217). The platform is therefore MORE permissive than leadv2 policy — do not read platform defaults as permission. The governing limit is `config/nested-spawn-policy.yaml` (max_depth: 1 — one nested level; max_nested_per_task: 3) enforced by `leadv2-routing-guard.sh`. As defense-in-depth, user settings pin `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2` so a hook bypass still cannot nest deeper than the policy intends.
 
-Claude Code v2.1.172+ allows subagents to spawn sub-subagents (up to 5 levels deep). This capability is **gated** — only cheap discovery probes are permitted.
+Subagents may spawn sub-subagents, but the capability is **gated** — only cheap discovery probes are permitted.
 
 **Allowed nested spawns:**
 ```
