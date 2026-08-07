@@ -430,9 +430,13 @@ test_9_select_route_decisions_path() {
   local rd_exists=0
   [[ -f "$rd_file" ]] && rd_exists=1
 
-  # Must NOT have written inside the plugin scripts/ tree
+  # Must NOT have written this test's own artifact inside the plugin tree.
+  # NOTE: plugins/leadv2/docs/handoff/ itself is a real, git-tracked directory
+  # (committed mission docs under hermes-adopt/) -- asserting its absence
+  # false-fails unconditionally. Assert instead that THIS test's task-id did
+  # not leak a route-decisions.yaml into the plugin tree.
   local no_plugin_leak=1
-  if [[ -d "${SCRIPT_DIR}/../../docs/handoff" ]]; then
+  if [[ -f "${SCRIPT_DIR}/../../docs/handoff/TEST-SELECT-03/route-decisions.yaml" ]]; then
     no_plugin_leak=0
   fi
 

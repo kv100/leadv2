@@ -301,19 +301,23 @@ test_7_js_resolution_three_cwds() {
   # Canonicalize expected paths the same way git does (resolves macOS /tmp ->
   # /private/tmp symlink) -- otherwise a correct resolution false-fails on path
   # form alone (bash-scripting skill: "Path comparison -- normalize first").
-  local tmp_main_real
+  local tmp_main_real tmp_unrelated_real
   tmp_main_real="$(cd "$tmp_main" 2>/dev/null && pwd -P || printf '%s' "$tmp_main")"
-  # tmp_unrelated stays raw/uncanonicalized: its resolution falls through to the
-  # bare `pwd` fallback (no docs/leadv2 marker), which does not resolve symlinks
-  # the way `git rev-parse` does for the main/worktree branches above.
+  # tmp_unrelated's resolution falls through to the bare `pwd` fallback (no
+  # docs/leadv2 marker), which does not resolve symlinks the way `git
+  # rev-parse` does for the main/worktree branches above -- so canonicalize
+  # it the same way r_unrelated was produced (cd + plain pwd, no -P) rather
+  # than comparing against the raw mktemp path, which can carry a double
+  # slash when TMPDIR itself ends in "/" (macOS default).
+  tmp_unrelated_real="$(cd "$tmp_unrelated" 2>/dev/null && pwd || printf '%s' "$tmp_unrelated")"
 
   (cd "$tmp_main" && git worktree remove --force "$tmp_wt" >/dev/null 2>&1) || true
   rm -rf "$tmp_main" "$tmp_wt" "$tmp_unrelated" 2>/dev/null || true
 
-  if [[ "$r_main" == "$tmp_main_real" && "$r_wt" == "$tmp_main_real" && "$r_unrelated" == "$tmp_unrelated" ]]; then
+  if [[ "$r_main" == "$tmp_main_real" && "$r_wt" == "$tmp_main_real" && "$r_unrelated" == "$tmp_unrelated_real" ]]; then
     pass "Test 7: main->main ('$r_main'), worktree->main ('$r_wt'), unrelated->fails-safe-to-own-pwd ('$r_unrelated')"
   else
-    fail "Test 7: expected main='$tmp_main_real' wt='$tmp_main_real' unrelated='$tmp_unrelated'; got main='$r_main' wt='$r_wt' unrelated='$r_unrelated'"
+    fail "Test 7: expected main='$tmp_main_real' wt='$tmp_main_real' unrelated='$tmp_unrelated_real'; got main='$r_main' wt='$r_wt' unrelated='$r_unrelated'"
   fi
 }
 
