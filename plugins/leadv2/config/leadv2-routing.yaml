@@ -111,6 +111,17 @@ router:
   #              decides the primary arm from glm_policy rules, this list
   #              governs fallback eligibility)
   #   effort   — effort tier for the arm's provider
+  #   review_rank — dispatch-8e2a32be (D3): integer rank used ONLY by the review-pool
+  #              resolver's non-empty floor (leadv2-glm-policy-resolve.py:_review_floor).
+  #              Present only on Anthropic-account arms today (haiku < sonnet < opus <
+  #              fable). floor(author) escalates to the next-higher rank above the
+  #              author, or the highest rank if the author is already at/above the top
+  #              -- so the review pool can never end up genuinely empty just because
+  #              codex+glm are both quota-locked and the author is an Anthropic arm.
+  #              Absent key on an entry = that arm never participates in the floor
+  #              (build-only arms like glm/codex/kimi keep their own quota gating
+  #              instead). Never read for build-ladder ordering -- see dispatch: false
+  #              note on the two review-only entries below.
   dispatch_ladder:
     - id: glm
       provider: glm
@@ -137,6 +148,26 @@ router:
       model: sonnet
       when: [all]
       effort: standard
+      review_rank: 2
+    # dispatch-8e2a32be (D3): review-only entries, never build-dispatched (dispatch:
+    # false, same posture as fable below) -- they exist here solely so the review-pool
+    # floor has a provider mapping + rank for every Anthropic-account arm the review
+    # path can actually invoke (run_reviewer_arm's generic claude-subsession.sh --model
+    # <arm> branch already handles any arm name, haiku/opus included).
+    - id: haiku
+      provider: anthropic
+      model: haiku
+      when: [review]
+      effort: standard
+      dispatch: false
+      review_rank: 1
+    - id: opus
+      provider: anthropic
+      model: opus
+      when: [review]
+      effort: high
+      dispatch: false
+      review_rank: 3
     # Architect-path models — expressed here so the config is the single
     # source of truth, but never dispatched by dispatch-code.sh (the plan
     # workflow uses fable directly via workflows/leadv2-plan.js).
@@ -146,6 +177,7 @@ router:
       when: [architect, heavy]
       effort: high
       dispatch: false
+      review_rank: 4
   glm_policy:
     protected_path_patterns:
       - "*safety-gate*"
