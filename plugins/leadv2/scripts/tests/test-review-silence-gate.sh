@@ -161,8 +161,13 @@ arch1="$(make_arch_stub t1 empty)"
 out1="$(LEADV2_DISPATCH_ARCHITECT_BIN="$arch1" run_close "$root1" t1sig001 codex "$resolver1")"; rc1=$?
 gate1="${root1}/docs/handoff/dispatch-t1sig001/review-gate.md"
 if [[ $rc1 -eq 6 ]]; then pass "Test 1 (empty_output): exit 6"; else fail "Test 1: expected exit 6, got ${rc1} -- ${out1}"; fi
-if [[ -f "$gate1" ]] && grep -q '^status: blocked$' "$gate1" && grep -q '^reason: empty_response$' "$gate1"; then
-  pass "Test 1 (empty_output): review-gate.md status=blocked reason=empty_response"
+# ARM-NO-VERDICT-01: a single-arm pool that produces empty output now dies via the
+# SAME collapsed exhaustion reason (no_verdict_marker) every "arm ran but produced
+# nothing usable" outcome shares once the pool is exhausted -- see the arm_no_verdict
+# fallthrough tests in test-review-arm-no-verdict.sh for the per-arm reason
+# (empty_response) still being visible on the journal line BEFORE exhaustion.
+if [[ -f "$gate1" ]] && grep -q '^status: blocked$' "$gate1" && grep -q '^reason: no_verdict_marker$' "$gate1"; then
+  pass "Test 1 (empty_output): review-gate.md status=blocked reason=no_verdict_marker (pool exhausted)"
 else
   fail "Test 1: review-gate.md wrong -- $(cat "$gate1" 2>/dev/null || echo MISSING)"
 fi
@@ -174,8 +179,10 @@ arch2="$(make_arch_stub t2 thin)"
 out2="$(LEADV2_DISPATCH_ARCHITECT_BIN="$arch2" run_close "$root2" t2sig002 codex "$resolver2")"; rc2=$?
 gate2="${root2}/docs/handoff/dispatch-t2sig002/review-gate.md"
 if [[ $rc2 -eq 6 ]]; then pass "Test 2 (thin_output): exit 6"; else fail "Test 2: expected exit 6, got ${rc2} -- ${out2}"; fi
-if [[ -f "$gate2" ]] && grep -q '^status: blocked$' "$gate2" && grep -q '^reason: empty_response$' "$gate2"; then
-  pass "Test 2 (thin_output): review-gate.md status=blocked reason=empty_response (floor rejects a 1-line unrelated file)"
+# ARM-NO-VERDICT-01: same collapse as Test 1 -- floor-reject is one of the
+# "produced nothing usable" reasons folded into no_verdict_marker at exhaustion.
+if [[ -f "$gate2" ]] && grep -q '^status: blocked$' "$gate2" && grep -q '^reason: no_verdict_marker$' "$gate2"; then
+  pass "Test 2 (thin_output): review-gate.md status=blocked reason=no_verdict_marker (floor rejects a 1-line unrelated file, pool exhausted)"
 else
   fail "Test 2: review-gate.md wrong -- $(cat "$gate2" 2>/dev/null || echo MISSING)"
 fi
@@ -242,7 +249,32 @@ LEADV2_DISPATCH_ARCHITECT_BIN="$arch6" LEADV2_GLM_POLICY_RESOLVER="$resolver6" \
 LEADV2_DISPATCH_CACHE_DIR="${SUITE_TMP}/t6/cache" LEADV2_JOURNAL_BIN=/bin/true LEADV2_E2E_OWNERSHIP=0 \
   bash "$PRODUCT_CLOSE_SH" "$root6" t6sig006 codex "" 0 1 "" > "$out6_file" 2>&1 &
 pc6_pid=$!
-sleep 0.7
+# INVESTIGATE-30e50f97: a fixed `sleep 0.7` here raced the close-gate's own startup
+# cost (fixture git init/commit already paid before this point, then the resolver
+# python3 fork, review-signals/pool-resolve, THEN the arm launch) against a load-
+# dependent wall clock -- on a busy box 0.7s can elapse before the hung arch stub
+# (the thing SIGTERM is meant to interrupt) ever starts, so the signal lands before
+# _PC_REVIEW_ENTERED is even set and the backstop legitimately has nothing to write.
+# Confirmed by interleaved A/B runs of this exact scenario against main and this
+# worktree's script: both showed the SAME flake rate (main also drops the gate write
+# under load) -- this was a test synchronisation bug, not a fall-through regression.
+# Poll for a plain file marker instead of `pgrep -f` (a per-iteration fork+exec that
+# on a loaded box costs more than the 0.05s sleep beside it, defeating the point of
+# polling): run_reviewer_arm's sonnet/opus branch writes "${HANDOFF}/review-mission.md"
+# BEFORE invoking the launcher (the arch6 stub, which then hangs in `sleep 30`) -- its
+# existence is cheap-to-check, load-independent evidence that the review arm has
+# actually started, i.e. that _PC_REVIEW_ENTERED (set well before this, at kill-switch
+# check time) is already true. Fast machines proceed almost immediately; slow/loaded
+# machines wait as long as they actually need, bounded so a genuine setup failure
+# still surfaces instead of hanging forever.
+mission6="${root6}/docs/handoff/dispatch-t6sig006/review-mission.md"
+_t6_waited=0
+while (( _t6_waited < 100 )); do
+  [[ -f "$mission6" ]] && break
+  kill -0 "$pc6_pid" 2>/dev/null || break
+  sleep 0.05
+  _t6_waited=$((_t6_waited + 1))
+done
 if kill -0 "$pc6_pid" 2>/dev/null; then
   kill -TERM "$pc6_pid" 2>/dev/null
 else
