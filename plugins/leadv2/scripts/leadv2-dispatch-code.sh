@@ -1942,9 +1942,30 @@ try:
     sys.stdout.write(stdout or "")
     sys.exit(proc.returncode)
 except subprocess.TimeoutExpired as exc:
-    # Kill the launcher process group entirely: otherwise a descendant that
-    # inherited stdout keeps communicate() open until its own long timeout.
+    # ARCHITECT-PREPASS-ORPHAN-01: os.killpg alone only reaches processes still
+    # in the launcher own process group. A descendant that calls os.setsid()
+    # (observed: the underlying agent CLI or an MCP helper it spawns) moves
+    # itself to a new session/group and survives killpg indefinitely -- the
+    # mechanism behind a lane that was still writing to its stream file 63
+    # minutes after prepass entered. Walk the actual descendant tree via pgrep
+    # and kill every PID individually; killpg stays as a backstop for the
+    # common (non-escaped) case. NOTE: no apostrophes in this heredoc -- a
+    # bash quirk with $(...) around <<'PY' breaks parsing on unmatched single
+    # quotes even inside the quoted heredoc body.
     if proc is not None:
+        def _descendants(pid):
+            try:
+                out = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True, timeout=5)
+                kids = [int(x) for x in out.stdout.split()]
+            except Exception:
+                kids = []
+            found = list(kids)
+            for k in kids:
+                found.extend(_descendants(k))
+            return found
+        for pid in _descendants(proc.pid) + [proc.pid]:
+            try: os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError: pass
         try: os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError: pass
         stdout, _ = proc.communicate()
@@ -1962,9 +1983,20 @@ PY
   # or stalled every product dispatch (observed live 2026-07-29: the architect had in fact
   # produced a correct 21KB design that nobody ever read). Read the ARTIFACT.
   local adir="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}"
-  local design=""
-  for cand in "${adir}/architect.full.md" "${adir}/architect.md" "${adir}/architect.summary.md"; do
-    [[ -s "${cand}" ]] && { design="${cand}"; break; }
+  local design="" _pp_wait_tries=0
+  while :; do
+    for cand in "${adir}/architect.full.md" "${adir}/architect.md" "${adir}/architect.summary.md"; do
+      [[ -s "${cand}" ]] && { design="${cand}"; break; }
+    done
+    [[ -n "${design}" ]] && break
+    # ARTIFACT-LAND-AFTER-READ-01: only on a non-zero launcher rc is there any
+    # reason to doubt a first empty read -- a rc=0 return already implies
+    # claude-subsession.sh itself found the deliverable on disk. Poll briefly
+    # (bounded 2s) rather than declaring the prepass failed off a single stat
+    # that can race the artifact's own write finishing.
+    _pp_wait_tries=$((_pp_wait_tries + 1))
+    [[ ${rc} -ne 0 && ${_pp_wait_tries} -le 10 ]] || break
+    sleep 0.2
   done
   if [[ ${rc} -ne 0 && -z "${design}" ]]; then
     ARCHITECT_PREPASS_REASON=$([[ ${rc} -eq 124 ]] && printf 'timeout' || printf 'failed_rc_%s' "${rc}")
