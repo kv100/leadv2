@@ -25,7 +25,6 @@ trap 'rm -rf "$tmp"' EXIT
 _lv2_md5() { md5 -q "$1" 2>/dev/null || md5sum "$1" 2>/dev/null | awk '{print $1}'; }
 REAL_TAIL="${REAL_PLUGIN_DIR}/scripts/leadv2-lane-status-line-tail.sh"
 REAL_LIVENESS="${REAL_PLUGIN_DIR}/scripts/leadv2-lane-liveness.sh"
-REAL_REVIEW="${REAL_PLUGIN_DIR}/scripts/leadv2-review.js"
 REAL_TAIL_MD5_BEFORE="$(_lv2_md5 "$REAL_TAIL")"
 REAL_LIVENESS_MD5_BEFORE="$(_lv2_md5 "$REAL_LIVENESS")"
 lv2_tripwire() {

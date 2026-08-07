@@ -1,8 +1,9 @@
 # Workflow review fan-out — reference JS shape (leadv2-review §2)
 
 Referenced from `leadv2-review/SKILL.md` §2. This is the REFERENCE SHAPE only — the canonical,
-maintained script is `~/.claude/workflows/leadv2-review.js`. Do NOT hand-inline a fresh script
-from this file; it exists purely so the shape of the fan-out is legible without opening the .js.
+maintained script is `plugins/leadv2/scripts/leadv2-review-run.sh` (ONE-PATH-EVERYWHERE-01;
+`workflows/leadv2-review.js` is deleted). Do NOT hand-inline a fresh script from this file; it
+exists purely so the shape of the fan-out is legible without opening the engine script.
 
 ```js
 // Workflow script — review fan-out

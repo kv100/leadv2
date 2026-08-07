@@ -1,103 +1,139 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# test-leadv2-review-routing.sh — engine degradation suite (dispatch-4fb7381a, per
+# dispatch-75d151fe-architect §2b). Rewritten from a workflows/leadv2-review.js harness
+# (that file is deleted, see dispatch-75d151fe-architect §1/§5) to run the REAL sole-owner
+# engine (leadv2-review-run.sh) end to end with stubbed provider bins. No live
+# provider/network calls.
+#
+# KNOWN COVERAGE DELTA: the original suite asserted a critic prompt-BREADTH promotion —
+# a narrow "structural cross-check" prompt vs. a full "adversarial code review" prompt,
+# chosen based on whether Codex was available. The engine has NO analogue: its
+# degradation model is classify_arm_failure() + next_ok_arm_after() rotating to the next
+# :ok: arm in the resolver's pool (a distinct PROVIDER, not a distinct PROMPT BREADTH for
+# the same provider). Per architect §2b this is a real, permanent coverage delta, not
+# something to invent in the engine to satisfy an old test. Recorded here and in
+# plugins/leadv2/docs/phases.md.
+set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKFLOW_FILE="${SCRIPT_DIR}/../../workflows/leadv2-review.js"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPTS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ENGINE="$SCRIPTS_ROOT/leadv2-review-run.sh"
 
-node --input-type=module - "$WORKFLOW_FILE" <<'NODE'
-import fs from 'node:fs'
+PASS=0; FAIL=0
+log()  { printf '%s\n' "$*"; }
+pass() { log "PASS: $*"; PASS=$((PASS + 1)); }
+fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
 
-const workflowPath = process.argv[2]
-const source = fs.readFileSync(workflowPath, 'utf8')
-  .replace(/^export const meta =/m, 'const meta =')
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
-const runWorkflow = new AsyncFunction(
-  'args', 'agent', 'parallel', 'pipeline', 'log', 'phase', 'budget', 'process',
-  source,
-)
+bash -n "$SCRIPT_DIR/test-leadv2-review-routing.sh" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
 
-function assert(condition, message) {
-  if (!condition) throw new Error(`ASSERTION FAILED: ${message}`)
+if [[ ! -f "$ENGINE" ]]; then
+  fail "leadv2-review-run.sh does not exist"
+  log "PASS=$PASS FAIL=$FAIL"; exit 1
+fi
+
+# --- shared fixture builders ---------------------------------------------------
+mk_fixture() { # <tag> -> sets ROOT/HANDOFF/DIFF, mkdirs
+  local tag="$1"
+  ROOT="$TMP/repo-$tag"
+  mkdir -p "$ROOT/.claude/ref"
+  HANDOFF="$ROOT/docs/handoff/dispatch-ROUTE$tag"
+  mkdir -p "$HANDOFF"
+  DIFF="$HANDOFF/review.diff"
+  printf 'diff --git a/x b/x\n+hello\n' > "$DIFF"
 }
 
-async function runScenario(name, args, codexUnavailable = false) {
-  const calls = []
-  const logs = []
-  const agent = async (prompt, opts = {}) => {
-    calls.push({ label: opts.label || '(none)', prompt })
-    if (opts.label === 'codex-adversarial') {
-      return codexUnavailable
-        ? { findings: [], summary_for_lead: 'codex unavailable: simulated quota exhausted' }
-        : { findings: [], summary_for_lead: 'codex normal: full adversarial review completed' }
-    }
-    if (opts.label === 'quality-scorer') {
-      return {
-        diff_coherence: 4,
-        test_coverage: 3,
-        security_pass: 3,
-        novelty_bonus: 0,
-        quality_score: 10,
-        diff_summary: 'routing harness diff',
-      }
-    }
-    if (opts.schema && opts.schema.properties && opts.schema.properties.findings) {
-      return { findings: [], summary_for_lead: `${opts.label}: completed` }
-    }
-    return 'ok'
-  }
-  const parallel = async (jobs) => Promise.all(jobs.map(job => job()))
-  const result = await runWorkflow(
-    args,
-    agent,
-    parallel,
-    async () => null,
-    message => logs.push(message),
-    () => {},
-    {},
-    { env: { LEADV2_REVIEW_FAMILY_GATE: '1' } },
-  )
-  return { name, calls, logs, result }
-}
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
-const normal = await runScenario(
-  'codex-normal',
-  { taskId: 'routing-normal', base: 'main', diffPath: '/tmp/routing.diff', codexEnabled: true },
-)
-const normalCritic = normal.calls.find(call => call.label === 'critic-structural-cross-check')
-assert(normal.calls.some(call => call.label === 'codex-adversarial'), 'normal round must run Codex')
-assert(normalCritic, 'normal round must run structural critic cross-check')
-assert(normalCritic.prompt.includes('do NOT repeat a full line-by-line review'), 'critic must be explicitly narrow')
-assert(normalCritic.prompt.includes('cross-module API/data-contract drift'), 'critic must cover structural blind spots')
-assert(!normal.calls.some(call => call.label === 'critic-full-fallback'), 'normal round must not run full critic')
+cat > "$TMP/resolver.py" <<'PY'
+#!/usr/bin/env python3
+print("reviewer=codex")
+print("pool=codex:ok:,glm:ok:,sonnet:ok:")
+print("refusal=")
+PY
+chmod +x "$TMP/resolver.py"
 
-const unavailable = await runScenario(
-  'codex-forced-unavailable',
-  { taskId: 'routing-unavailable', base: 'main', diffPath: '/tmp/routing.diff', codexEnabled: false },
-)
-const fallbackCritic = unavailable.calls.find(call => call.label === 'critic-full-fallback')
-assert(!unavailable.calls.some(call => call.label === 'codex-adversarial'), 'preflight-unavailable round must not dispatch Codex')
-assert(fallbackCritic, 'preflight-unavailable round must run full critic fallback')
-assert(fallbackCritic.prompt.includes('FULL adversarial code review'), 'fallback critic must have full breadth')
-assert(fallbackCritic.prompt.includes('correctness bugs, type/data/RLS gaps, N+1'), 'fallback critic must inherit general review coverage')
+cat > "$TMP/codex-ok.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\n'
+SH
+chmod +x "$TMP/codex-ok.sh"
 
-const midrun = await runScenario(
-  'codex-midrun-unavailable',
-  { taskId: 'routing-midrun', base: 'main', diffPath: '/tmp/routing.diff', codexEnabled: true },
-  true,
-)
-assert(midrun.calls.some(call => call.label === 'critic-structural-cross-check'), 'mid-run failure starts with narrow cross-check')
-assert(midrun.calls.some(call => call.label === 'critic-full-fallback'), 'mid-run failure must promote critic to full review')
-assert(midrun.logs.some(line => line.includes('Codex unavailable after dispatch; critic=full-fallback')), 'mid-run fallback must be logged')
+# Simulates a quota-refused Codex (LEADV2_DISPATCH_REFUSED marker + rc=75, the
+# `classify_arm_failure` refused_quota path).
+cat > "$TMP/codex-refused.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'LEADV2_DISPATCH_REFUSED: quota\n' >&2
+exit 75
+SH
+chmod +x "$TMP/codex-refused.sh"
 
-for (const scenario of [normal, unavailable, midrun]) {
-  const reviewCalls = scenario.calls
-    .filter(call => call.label.startsWith('codex-') || call.label.startsWith('critic-'))
-    .map(call => call.label)
-    .join(', ')
-  console.log(`${scenario.name}: ${reviewCalls}`)
-  for (const line of scenario.logs.filter(line => line.startsWith('Review routing:'))) {
-    console.log(`  log: ${line}`)
-  }
-}
-console.log('PASS: review routing gives Codex the general review, critic a structural cross-check, and critic full fallback on unavailability')
-NODE
+cat > "$TMP/glm.sh" <<'SH'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do case "$1" in --out) out="$2"; shift 2 ;; *) shift ;; esac; done
+printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\n' > "$out"
+SH
+chmod +x "$TMP/glm.sh"
+
+cat > "$TMP/architect.sh" <<'SH'
+#!/usr/bin/env bash
+role=""
+while [[ $# -gt 0 ]]; do case "$1" in --role) role="$2"; shift 2 ;; *) shift ;; esac; done
+[[ "$role" == "hack-detect" ]] && exit 0
+printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\n'
+SH
+chmod +x "$TMP/architect.sh"
+
+cat > "$TMP/dispatch.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$TMP/dispatch.sh"
+
+# --- Scenario 1: normal round -- codex is the base arm and the first fan-out arm -------
+mk_fixture normal
+LEADV2_GLM_POLICY_RESOLVER="$TMP/resolver.py" \
+LEADV2_DISPATCH_CODEX_BIN="$TMP/codex-ok.sh" \
+LEADV2_DISPATCH_GLM_BIN="$TMP/glm.sh" \
+LEADV2_DISPATCH_ARCHITECT_BIN="$TMP/architect.sh" \
+LEADV2_DISPATCH_BIN="$TMP/dispatch.sh" \
+LEADV2_REVIEW_FANOUT=1 \
+bash "$ENGINE" --task ROUTEnormal --root "$ROOT" --handoff "$HANDOFF" --diff "$DIFF" --author sonnet >/dev/null 2>"$TMP/normal.err"
+rc=$?
+arms_line="$(sed -n 's/^arms:[[:space:]]*//p' "$HANDOFF/review-gate.md" 2>/dev/null | head -n1)"
+if [[ $rc -eq 0 && "$arms_line" == codex* ]]; then
+  pass "normal round: codex is base-arm and ran as the (first) fan-out arm — arms: $arms_line"
+else
+  fail "normal round: expected codex as base/first arm, got rc=$rc arms='$arms_line'"
+fi
+
+# --- Scenario 2: codex unavailable -- pool degrades to a distinct non-codex arm, logged
+mk_fixture unavailable
+LEADV2_GLM_POLICY_RESOLVER="$TMP/resolver.py" \
+LEADV2_DISPATCH_CODEX_BIN="$TMP/codex-refused.sh" \
+LEADV2_DISPATCH_GLM_BIN="$TMP/glm.sh" \
+LEADV2_DISPATCH_ARCHITECT_BIN="$TMP/architect.sh" \
+LEADV2_DISPATCH_BIN="$TMP/dispatch.sh" \
+LEADV2_REVIEW_FANOUT=1 \
+bash "$ENGINE" --task ROUTEunavail --root "$ROOT" --handoff "$HANDOFF" --diff "$DIFF" --author sonnet >/dev/null 2>"$TMP/unavail.err"
+rc=$?
+arms_line="$(sed -n 's/^arms:[[:space:]]*//p' "$HANDOFF/review-gate.md" 2>/dev/null | head -n1)"
+if [[ $rc -eq 0 && -n "$arms_line" && "$arms_line" != codex* && "$arms_line" != *codex* ]]; then
+  pass "codex-unavailable round: pool reselected to a distinct non-codex arm — arms: $arms_line"
+else
+  fail "codex-unavailable round: expected reselection off codex, got rc=$rc arms='$arms_line'"
+fi
+
+if grep -q 'review_gate task=ROUTEunavail status=arm_refused arm=codex reason=refused_quota' "$TMP/unavail.err"; then
+  pass "codex-unavailable round: arm_refused/refused_quota logged on the human-visible stderr line"
+else
+  fail "codex-unavailable round: expected arm_refused log line naming codex/refused_quota not found"
+  log "  --- engine stderr ---"
+  sed 's/^/  /' "$TMP/unavail.err"
+fi
+
+log ""
+log "================================================"
+log "  review routing (engine degradation): PASS=$PASS FAIL=$FAIL"
+log "================================================"
+[[ "$FAIL" -eq 0 ]]

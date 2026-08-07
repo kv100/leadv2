@@ -543,7 +543,7 @@ cmd_select_for_workflow() {
   proj_root="${LEADV2_PROJECT_ROOT:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 
   # ── Pinned defaults (flag-off => byte-identical to current JS hardcodes) ──────
-  # Mirrors hardcoded models in leadv2-plan.js / leadv2-review.js.
+  # Mirrors hardcoded models in leadv2-plan.js / leadv2-review-run.sh.
   local default_architect="sonnet"
   local default_critic="sonnet"
   local default_verify="sonnet"

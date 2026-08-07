@@ -245,7 +245,7 @@ run_reviewer_arm() { # <arm>
   mission_file="${HANDOFF}/review-mission-${arm}.md"
   if [[ "${arm}" == codex ]]; then
     bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait \
-      --focus "Review ONLY the diff at ${DIFF_FILE}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract}" \
+      --focus "Review ONLY the diff at ${DIFF_FILE}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract} Authoritative surfaces for this repo: \`.claude/CLAUDE.md\`, \`docs/reference/ENGINE-REFERENCE.md\`, \`docs/systems-map/CONTROL-TRUTH.md\`, \`docs/systems-map/TRUTH-TABLE.md\`, \`docs/BOARD.md\`. Read only the ones the diff touches. Treat any \`docs/specs/*.md\` as possibly stale unless corroborated by code. Before promoting a Codex finding, corroborate it against those surfaces; drop or downgrade any finding whose sole basis is a \`docs/specs/*.md\` claim." \
       > "${review_out}" 2> "${review_err}"; review_rc=$?
   elif [[ "${arm}" == glm ]]; then
     printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \

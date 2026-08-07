@@ -19,9 +19,13 @@
 #      leadv2-phase8-close.sh (not a hand-duplicated copy), run from inside a real linked
 #      git worktree -> must resolve to the MAIN repo root, not the worktree.
 #   7. [MEM-WRITE-PATH-FIX-01 round2] REAL JS-side one-liner, extracted live from
-#      leadv2-review.js, run from (a) main repo (b) linked worktree (c) an unrelated
-#      git repo with no docs/leadv2/ marker -> (a)/(b) resolve to main repo, (c) fails
-#      safe to pwd instead of silently landing in the wrong repo.
+#      leadv2-causal-critique.js (ONE-PATH-EVERYWHERE-01: leadv2-review.js deleted; this is
+#      the one surviving JS consumer that keeps the resolve command as its own standalone
+#      backtick-delimited const rather than splicing it into a multi-line concatenated
+#      agent() prompt string, so the extractor regex -- which requires the closing backtick
+#      immediately after `pwd` -- still matches), run from (a) main repo (b) linked worktree
+#      (c) an unrelated git repo with no docs/leadv2/ marker -> (a)/(b) resolve to main repo,
+#      (c) fails safe to pwd instead of silently landing in the wrong repo.
 #
 # Run: bash scripts/tests/test-leadv2-phase8-learn-counter.sh
 # Exit 0 = all pass; non-zero = failures found.
@@ -31,7 +35,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PHASE8_SH="${SCRIPT_DIR}/../leadv2-phase8-close.sh"
-JS_FILE="${SCRIPT_DIR}/../../workflows/leadv2-review.js"
+JS_FILE="${SCRIPT_DIR}/../../workflows/leadv2-causal-critique.js"
 # phase8-close.sh will resolve PROJECT_ROOT=$(dirname PHASE8_SH)/.. = plugin root
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LEADV2_DIR="${PLUGIN_ROOT}/docs/leadv2"
@@ -252,12 +256,13 @@ test_6_durable_root_worktree() {
 }
 
 # -- Test 7: REAL JS one-liner across main / worktree / unrelated-repo cwds --
-# WORKFLOW-BASH-FIX-01: leadv2-review.js no longer has any `await bash(...)` call-sites (the
+# WORKFLOW-BASH-FIX-01: the JS workflow consumers have no `await bash(...)` call-sites (the
 # runtime provides no bash() global -- the git-common-dir resolve now runs inside an agent()
 # prompt via the agent's own Bash tool). The one-liner itself is unchanged and lives in a single
-# canonical constant (ROOT_RESOLVE_CMD) reused by both consumers, so anchor on the
-# git-common-dir marker inside ANY backtick-delimited template literal instead of requiring the
-# (now-removed) `await bash(` prefix.
+# canonical one-liner reused verbatim across every JS consumer (leadv2-plan.js, leadv2-learn.js,
+# leadv2-intake-enrich.js, leadv2-causal-critique.js), so anchor on the git-common-dir marker
+# inside ANY backtick-delimited template literal instead of requiring the (now-removed)
+# `await bash(` prefix.
 _extract_js_resolve_snippet() {
   python3 -c "
 import re, sys

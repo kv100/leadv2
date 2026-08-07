@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
-# test-codex-doc-pointer.sh — RETIRE-CODEX-BUNDLE-01
+# test-codex-doc-pointer.sh — RETIRE-CODEX-BUNDLE-01 / ONE-PATH-EVERYWHERE-01 retarget
+# (dispatch-4fb7381a, per dispatch-75d151fe-architect §2a).
 #
-# R1/R2: the codex-adversarial dispatcher prompt in leadv2-review.js carries a doc pointer
-# naming the maintained authoritative surfaces, and the staleness caveat on docs/specs/*.md.
-# This is the function that replaces codex-context-bundle.sh's role for the ONE reachable
-# call site (leadv2-review.js:151, the haiku dispatcher agent) -- NOT a claim that Codex
-# itself reads this text; codex-task.sh/codex-companion take no prompt-injection flag today.
+# R1/R2: the codex-adversarial dispatch inside leadv2-review-run.sh's run_reviewer_arm()
+# `codex` arm carries a doc pointer naming the maintained authoritative surfaces, and the
+# staleness caveat on docs/specs/*.md. This is the sole-owner engine's analogue of what
+# workflows/leadv2-review.js used to carry (that file is now deleted -- see
+# dispatch-75d151fe-architect §1/§5; leadv2-review-run.sh is the one reachable owner at
+# LEADV2_REVIEW_ENGINE=1, and is unconditionally on the lead/skill path).
 #
-# R4: all three live copies of leadv2-review.js (canonical, ~/.claude/workflows,
-# plugin cache) are byte-identical after the edit -- catches the missed-copy defect that
-# left ~/.claude/workflows/leadv2-review.js and the plugin cache as real (non-symlink)
-# copies that a canonical-only edit would silently miss.
+# R3/R4 DROPPED (architect §2a): R3 reconstructed a pre-fix state of leadv2-review.js via
+# git archive -- meaningless once that file no longer exists. R4 asserted 3-copy
+# byte-identity of a file that no longer exists. Replaced below with the equivalent
+# anti-drift invariant expressed against the surviving owner: leadv2-review-run.sh has
+# exactly one copy under plugins/leadv2/scripts/ and no shadow copy resurfaces under
+# ~/.claude/ (the same "missed-copy" defect class R4 protected against).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-CANONICAL="$REPO_ROOT/plugins/leadv2/workflows/leadv2-review.js"
-LIVE_HOME="$HOME/.claude/workflows/leadv2-review.js"
-LIVE_CACHE="$HOME/.claude/plugins/cache/leadv2-local/leadv2/0.1.0/workflows/leadv2-review.js"
+CANONICAL="$REPO_ROOT/plugins/leadv2/scripts/leadv2-review-run.sh"
 
 SURFACES=(
   '.claude/CLAUDE.md'
@@ -40,50 +42,37 @@ check() {
   fi
 }
 
-# --- R3 (pre-req, informational): reconstruct the pre-fix prompt via git archive, never
-# git stash/reset/clean (shared-tree rule -- other lanes hold uncommitted work in this repo).
-SCRATCH="$(mktemp -d)"
-trap 'rm -rf "$SCRATCH"' EXIT
-git -C "$REPO_ROOT" archive HEAD -- plugins/leadv2/workflows/leadv2-review.js \
-  | tar -x -C "$SCRATCH"
-PRE_FIX="$SCRATCH/plugins/leadv2/workflows/leadv2-review.js"
-
-if [[ -f "$PRE_FIX" ]] && grep -q 'ENGINE-REFERENCE.md' "$PRE_FIX"; then
-  echo "UNEXPECTED: pre-fix HEAD already carries the pointer -- RED reconstruction invalid"
-  fail=$((fail + 1))
-else
-  echo "RED confirmed: pre-fix HEAD (git archive) does not carry the doc pointer"
-fi
-
-# --- R1/R2: live (working-tree) canonical file carries all 5 surfaces + staleness caveat
+# --- R1/R2: live (working-tree) engine carries all 5 surfaces + staleness caveat, inside
+# the codex arm's --focus string.
 for surface in "${SURFACES[@]}"; do
   if grep -qF "$surface" "$CANONICAL"; then
-    check "canonical names $surface" 0
+    check "engine names $surface" 0
   else
-    check "canonical names $surface" 1
+    check "engine names $surface" 1
   fi
 done
 
 if grep -q 'docs/specs/\*\.md.*possibly stale' "$CANONICAL"; then
-  check "canonical carries the docs/specs staleness caveat" 0
+  check "engine carries the docs/specs staleness caveat" 0
 else
-  check "canonical carries the docs/specs staleness caveat" 1
+  check "engine carries the docs/specs staleness caveat" 1
 fi
 
-# --- R4: three live copies are byte-identical
-if [[ ! -f "$LIVE_HOME" ]]; then
-  check "R4: $LIVE_HOME exists" 1
-elif [[ ! -f "$LIVE_CACHE" ]]; then
-  check "R4: $LIVE_CACHE exists" 1
+# --- anti-drift (replaces R4): exactly one copy of leadv2-review-run.sh under
+# plugins/leadv2/scripts/, and no shadow copy under ~/.claude/ (workflows/ or the plugin
+# cache) that would silently diverge from canonical.
+copy_count="$(find "$REPO_ROOT/plugins/leadv2/scripts" -name 'leadv2-review-run.sh' | grep -c . || true)"
+if [[ "$copy_count" -eq 1 ]]; then
+  check "exactly one copy of leadv2-review-run.sh under plugins/leadv2/scripts/" 0
 else
-  h1="$(md5 -q "$CANONICAL" 2>/dev/null || md5sum "$CANONICAL" | awk '{print $1}')"
-  h2="$(md5 -q "$LIVE_HOME" 2>/dev/null || md5sum "$LIVE_HOME" | awk '{print $1}')"
-  h3="$(md5 -q "$LIVE_CACHE" 2>/dev/null || md5sum "$LIVE_CACHE" | awk '{print $1}')"
-  if [[ "$h1" == "$h2" && "$h2" == "$h3" ]]; then
-    check "R4: canonical == ~/.claude/workflows == plugin-cache ($h1)" 0
-  else
-    check "R4: canonical($h1) == home($h2) == cache($h3)" 1
-  fi
+  check "exactly one copy of leadv2-review-run.sh under plugins/leadv2/scripts/ (found $copy_count)" 1
+fi
+
+shadow_count="$(find "$HOME/.claude" -name 'leadv2-review-run.sh' -not -path '*/plugins/cache/*' 2>/dev/null | grep -c . || true)"
+if [[ "$shadow_count" -eq 0 ]]; then
+  check "no shadow copy of leadv2-review-run.sh under ~/.claude/ (outside plugin cache)" 0
+else
+  check "no shadow copy of leadv2-review-run.sh under ~/.claude/ (outside plugin cache, found $shadow_count)" 1
 fi
 
 echo "---"

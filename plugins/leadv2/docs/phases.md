@@ -303,13 +303,13 @@ The lead/interactive path above is unconditional — it never falls back to
 live in the Workflow's `reviewers[]` array now lives in the engine's `run_reviewer_arm()`
 (codex/glm/kimi/sonnet/opus branches) and `resolve_review_pool_call()`.
 
-**Deletion of `workflows/leadv2-review.js` is DEFERRED, not done.** Both copies (plugin
-canonical and `~/.claude/workflows/leadv2-review.js`) still exist on disk: three existing
-test suites (`test-codex-doc-pointer.sh`, `test-leadv2-review-routing.sh`,
-`test-leadv2-phase8-learn-counter.sh`) assert its presence/content, and deleting it now
-would strand those callers — the exact outcome the design's own stop condition forbids.
-Do not delete either copy until those tests are migrated or the founder accepts stranding
-them (separate task). Likewise, `leadv2-dispatch-product-close.sh` still contains its own
+**`workflows/leadv2-review.js` is deleted** (ONE-PATH-EVERYWHERE-01) — canonical, the
+`~/.claude/workflows/` shared copy, and the plugin cache copy are all gone. The three test
+suites that used to assert its presence/content (`test-codex-doc-pointer.sh`,
+`test-leadv2-review-routing.sh`, `test-leadv2-phase8-learn-counter.sh`) were migrated to
+assert the same invariants against `leadv2-review-run.sh` (or, for the JS-side
+git-common-dir one-liner, against `leadv2-causal-critique.js`) rather than dropped —
+nothing was left stranded. `leadv2-dispatch-product-close.sh` still contains its own
 inline `run_reviewer_arm()` fallback body, used only when `LEADV2_REVIEW_ENGINE=0` (the
 default everywhere) — this is intentional so a mid-flight lane sees byte-identical
 behavior at flag=0, not a leftover duplicate to clean up.
