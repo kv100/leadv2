@@ -1,9 +1,16 @@
 {
-  "description": "leadv2 autonomous orchestrator hooks \u2014 guards, counters, delegations, lifecycle",
+  "description": "leadv2 autonomous orchestrator hooks — guards, counters, delegations, lifecycle",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-link-tree-heal.sh\"",
+            "timeout": 8,
+            "continueOnBlock": true,
+            "statusMessage": "Healing plugin link tree..."
+          },
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-truth-card-inject.sh\"",
