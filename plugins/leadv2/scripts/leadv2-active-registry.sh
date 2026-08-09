@@ -118,7 +118,7 @@ INITIAL = {
         # can flip True to force serialize; legacy active.yaml files written
         # before this change (no heavy_max key at all) still fall back to the
         # old True default at read time -- see leadv2_active_check_limits().
-        "heavy_max": 2,
+        "heavy_max": 3,
         "heavy_strategic_solo": False,
         "light_max": 3,
         "standard_max": 2,
@@ -236,6 +236,17 @@ try:
     elif op == "unregister":
         task_id = args[0]
         data["sessions"] = [s for s in sessions if s.get("task_id") != task_id]
+
+    elif op == "set_worktree":
+        task_id, worktree = args
+        row = next((s for s in sessions if s.get("task_id") == task_id), None)
+        if row is None:
+            # A launcher can resolve its lane before its direct fanout
+            # registration has committed. Treat that ordering race as a
+            # harmless no-op; the post-register retry supplies the value.
+            sys.exit(0)
+        row["worktree"] = worktree
+        row["updated_at"] = _now_iso()
 
     elif op == "update_phase":
         # Accepts legacy 1-arg (phase only — task_id resolved by the bash
@@ -549,6 +560,15 @@ leadv2_active_register() {
   }
 }
 
+# leadv2_active_set_worktree <task_id> <worktree>
+# Idempotently records where this lane actually runs. Unknown task IDs are a
+# no-op in the python op so launcher/register ordering races never kill a lane.
+leadv2_active_set_worktree() {
+  local task_id="${1:?task_id required}" wt="${2:?worktree required}"
+  [[ -d "$wt" ]] || return 0
+  _leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" set_worktree "$task_id" "$wt"
+}
+
 # leadv2_active_unregister <task_id>
 leadv2_active_unregister() {
   local task_id="${1:?task_id required}"
@@ -858,7 +878,7 @@ standard_max = _resolve("standard_max", 2)
 # honored as the fallback default ONLY when heavy_max is absent entirely
 # (very old active.yaml, back-compat) -- otherwise it is an explicit
 # kill-switch a founder can flip True to force serialize.
-heavy_max = _resolve("heavy_max", 2)
+heavy_max = _resolve("heavy_max", 3)
 if _key_present("heavy_max"):
     heavy_strategic_solo = _resolve("heavy_strategic_solo", False)
 else:

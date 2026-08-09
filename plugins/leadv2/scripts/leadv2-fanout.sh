@@ -328,7 +328,7 @@ hard_limit           = int(meta.get("hard_limit", 2))
 # when heavy_max is absent from meta (very old active.yaml, back-compat) --
 # or as an explicit kill-switch when a founder sets it True even with
 # heavy_max present (forces serialize, heavy_max effectively 1).
-heavy_max            = int(meta.get("heavy_max", 2))
+heavy_max            = int(meta.get("heavy_max", 3))
 if "heavy_max" in meta:
     heavy_strategic_solo = bool(meta.get("heavy_strategic_solo", False))
 else:
@@ -957,7 +957,7 @@ try:
         # on every subsequent run (this literal only fires once, at first
         # bootstrap of a missing active.yaml).
         data = {"meta": {"schema_version": 2, "hard_limit": 2,
-                          "heavy_max": 2, "heavy_strategic_solo": False,
+                          "heavy_max": 3, "heavy_strategic_solo": False,
                           "light_max": 3, "standard_max": 2, "rendered_at": ""},
                 "sessions": []}
     data.setdefault("meta", {})
@@ -979,7 +979,7 @@ try:
     # hard invariants (F5, never --force-bypassable), so no force flag is
     # threaded through here -- only the numeric ceiling is re-verified.
     meta_live = data.get("meta") or {}
-    heavy_max_live = int(meta_live.get("heavy_max", 2))
+    heavy_max_live = int(meta_live.get("heavy_max", 3))
     hard_limit_live = int(meta_live.get("hard_limit", 2))
     live_sessions = [s for s in sessions if not s.get("stale")]
     live_heavy = sum(1 for s in live_sessions if str(s.get("class", "")).lower() in ("heavy", "strategic"))
@@ -1151,6 +1151,7 @@ launch_headless() {
   local _lane_dir
   _lane_dir="$("${SCRIPT_DIR}/leadv2-lane-worktree.sh" ensure "$tid" "$cls" 2>>"$logf")"
   [[ -n "$_lane_dir" ]] || _lane_dir="$PROJECT_ROOT"
+  leadv2_active_set_worktree "$tid" "$_lane_dir" || true
   local _used_setsid=false
   if command -v setsid >/dev/null 2>&1; then
     _used_setsid=true
@@ -1174,6 +1175,7 @@ launch_headless() {
   local _reg_rc=0
   _fanout_register_session "$tid" "$cls" "$pid" "leadv2: ${tid}" "true" "false" "headless" \
     "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" "$provider" "$route_reason" "$group_key" || _reg_rc=$?
+  leadv2_active_set_worktree "$tid" "$_lane_dir" || true
   if [[ "$_reg_rc" -eq 3 ]]; then
     log "WARN: ${tid} admission refused under lock (F6/FIX3) — killing spawned child pid=${pid} (setsid=${_used_setsid})"
     _fanout_kill_child "$pid" "$_used_setsid"
@@ -1264,6 +1266,7 @@ launch_windowed() {
   local _lane_dir
   _lane_dir="$("${SCRIPT_DIR}/leadv2-lane-worktree.sh" ensure "$tid" "$cls")"
   [[ -n "$_lane_dir" ]] || _lane_dir="$PROJECT_ROOT"
+  leadv2_active_set_worktree "$tid" "$_lane_dir" || true
   printf -v cmd 'cd %q && export LEADV2_DAEMON=1 LEADV2_ASYNC_QUESTIONS=1 LEADV2_FANOUT=1 LEADV2_TASK_ID=%q LEADV2_LEAD_MODEL=%q LEADV2_LEAD_EFFORT=%q LEADV2_SESSION_PROVIDER=%q LEADV2_RUNNER_FORCE_FRESH=%q LEADV2_PROJECT_ROOT=%q; exec %q' \
     "$_lane_dir" "$tid" "$lead_model" "$lead_effort" "$provider" "$FORCE" "$PROJECT_ROOT" "$_runner"
 
@@ -1319,6 +1322,7 @@ OSA
     log "windowed launch: task=${tid} resolved pid=${_resolved_pid} model=${lead_model}/${lead_effort}"
     _fanout_register_session "$tid" "$cls" "$_resolved_pid" "$title" "false" "false" "terminal" \
       "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" "$provider" "$route_reason" "$group_key" || _reg_rc=$?
+    leadv2_active_set_worktree "$tid" "$_lane_dir" || true
     if [[ "$_reg_rc" -eq 3 ]]; then
       # FIX4: this script never spawned the resolved pid itself (osascript
       # handed it to Terminal/iTerm2), so there is no setsid process-group we
@@ -1332,6 +1336,7 @@ OSA
     # marks this row for the stale-sweeper's grace-window handling.
     _fanout_register_session "$tid" "$cls" "null" "$title" "false" "true" "terminal" \
       "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" "$provider" "$route_reason" "$group_key" || true
+    leadv2_active_set_worktree "$tid" "$_lane_dir" || true
   fi
 }
 
@@ -1360,6 +1365,7 @@ launch_tmux() {
   local _lane_dir
   _lane_dir="$("${SCRIPT_DIR}/leadv2-lane-worktree.sh" ensure "$tid" "$cls" 2>>"$logf")"
   [[ -n "$_lane_dir" ]] || _lane_dir="$PROJECT_ROOT"
+  leadv2_active_set_worktree "$tid" "$_lane_dir" || true
 
   # Some hosts (observed: no-tty parent shells with no pty anywhere in the
   # chain) run an intermittently unstable tmux server that can exit between
@@ -1447,6 +1453,7 @@ launch_tmux() {
     log "tmux launch: task=${tid} window=${window} resolved pid=${_resolved_pid} provider=${provider} model=${lead_model}/${lead_effort}"
     _fanout_register_session "$tid" "$cls" "$_resolved_pid" "$window" "true" "false" "tmux" \
       "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" "$provider" "$route_reason" "$group_key" || _reg_rc=$?
+    leadv2_active_set_worktree "$tid" "$_lane_dir" || true
     if [[ "$_reg_rc" -eq 3 ]]; then
       # FIX4: kill the tmux window outright (cleaner than a bare pid kill for
       # this backend -- it also tears down the pane/shell, not just the
@@ -1462,6 +1469,7 @@ launch_tmux() {
     # grace-window handling.
     _fanout_register_session "$tid" "$cls" "null" "$window" "true" "true" "tmux" \
       "$risk_tags" "$lead_model" "$lead_effort" "$class_reason" "$provider" "$route_reason" "$group_key" || true
+    leadv2_active_set_worktree "$tid" "$_lane_dir" || true
   fi
 
   TMUX_LAUNCHED_IDS+=("$tid")
