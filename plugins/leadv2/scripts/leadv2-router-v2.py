@@ -159,11 +159,19 @@ def select_arms(arms, l1_result, quota, estimate, samples, headroom_weights):
                        "headroom_weight": weight, "score": sample * weight})
     winner_row = max(vector, key=lambda row: (row["score"], -l1_result["eligible"].index(row["arm"])),
                      default=None)
+    # `eligible` is an L1 compatibility surface: callers that use it retain
+    # their chain order.  `ordered` is the explicit, scored consumption
+    # surface.  Compute both from this one vector/quota read.
+    ordered_rows = sorted(
+        vector,
+        key=lambda row: (-row["score"], l1_result["eligible"].index(row["arm"])),
+    )
     return {
         "eligible": [row["arm"] for row in vector], "filtered": filtered,
+        "ordered": [row["arm"] for row in ordered_rows],
         "vector": vector, "headroom": {row["arm"]: row["usable_now"] for row in vector},
         "samples": {row["arm"]: row["sample"] for row in vector},
-        "winner": winner_row["arm"] if winner_row else None,
+        "winner": ordered_rows[0]["arm"] if ordered_rows else None,
         "winner_reason": "max_sample_x_headroom" if winner_row else "all_arms_filtered",
         "task_class": "%s:%s" % (estimate.get("work_kind", "unknown"),
                                      "short" if estimate.get("duration_class") == "short" and estimate.get("complexity") in ("trivial", "simple") else "long"),
@@ -261,21 +269,32 @@ def resolve(chain, quota):
     vector = [classify_arm(arm, quota) for arm in chain]
     eligible = [v for v in vector if v["eligible"]]
     filtered = [v for v in vector if not v["eligible"]]
-    # Known-healthy first (chain order preserved), unknown-headroom after --
-    # never let an unread bucket outrank a provably-healthy one, but never
-    # exclude it either (fail-open).
+    # Known-healthy first in *live headroom* order, then unknown-headroom in
+    # chain order.  The static chain is only a deterministic tie-breaker: it
+    # must not decide between two observable buckets.  `score` is deliberately
+    # the same usable_now value that chooses the arm, so the dispatch journal
+    # can show the exact numbers behind a quota-gate reroute.
     known = [v for v in eligible if v["usable_now"] is not None]
     unknown = [v for v in eligible if v["usable_now"] is None]
+    for row in vector:
+        row["score"] = row["usable_now"]
+    known.sort(key=lambda row: (-float(row["usable_now"]), chain.index(row["arm"])))
     ordered_eligible = known + unknown
     winner = ordered_eligible[0] if ordered_eligible else None
     return {
         "chain": chain,
         "vector": vector,
-        "eligible": [v["arm"] for v in ordered_eligible],
+        "eligible": [v["arm"] for v in eligible],
+        "ordered": [v["arm"] for v in ordered_eligible],
         "filtered": [{"arm": v["arm"], "reason": v["reason"]} for v in filtered],
         "winner": winner["arm"] if winner else None,
         "winner_reason": winner["reason"] if winner else "all_arms_exhausted",
         "headroom": {v["arm"]: v["usable_now"] for v in vector},
+        # Credits are deliberately journaled, not turned into a second
+        # eligibility meter: the routing policy's sole numeric truth remains
+        # the binding-window usable_now value above.
+        "credits": {v["arm"]: (quota.get(v["bucket"]) or {}).get("credits")
+                    for v in vector if (quota.get(v["bucket"]) or {}).get("credits") is not None},
     }
 
 
@@ -546,8 +565,11 @@ def main(argv=None):
         print("winner=%s" % (result["winner"] or ""))
         print("reason=%s" % result["winner_reason"])
         print("eligible=%s" % ",".join(result["eligible"]))
+        print("ordered=%s" % ",".join(result["ordered"]))
         print("filtered=%s" % json.dumps(result["filtered"], sort_keys=True))
         print("headroom=%s" % json.dumps(result["headroom"], sort_keys=True))
+        print("credits=%s" % json.dumps(result.get("credits", {}), sort_keys=True))
+        print("vector=%s" % json.dumps(result["vector"], sort_keys=True))
         print("samples=%s" % json.dumps(result["samples"], sort_keys=True))
         print("task_class=%s" % result["task_class"])
         print("estimate_id=%s" % result["estimate_id"])
@@ -570,8 +592,11 @@ def main(argv=None):
     print("winner=%s" % (result["winner"] or ""))
     print("reason=%s" % result["winner_reason"])
     print("eligible=%s" % ",".join(result["eligible"]))
+    print("ordered=%s" % ",".join(result["ordered"]))
     print("filtered=%s" % json.dumps(result["filtered"], sort_keys=True))
     print("headroom=%s" % json.dumps(result["headroom"], sort_keys=True))
+    print("credits=%s" % json.dumps(result.get("credits", {}), sort_keys=True))
+    print("vector=%s" % json.dumps(result["vector"], sort_keys=True))
     return 0 if result["winner"] else 3
 
 

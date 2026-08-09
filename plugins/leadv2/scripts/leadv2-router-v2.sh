@@ -30,8 +30,9 @@
 #                                [--channel-down a,b] [--task-id T]
 #                                [--routing-yaml FILE] [--skip-quota-gate-check]
 #
-# resolve: stdout `key=value` lines (winner, reason, eligible, filtered,
-#   headroom); exit 0 = winner chosen, exit 3 = every candidate arm exhausted
+# resolve: stdout `key=value` lines (winner, reason, eligible, ordered, filtered,
+#   headroom); `eligible` remains chain ordered while `ordered` is score ordered.
+#   Exit 0 = winner chosen, exit 3 = every candidate arm exhausted
 #   (caller's existing all_arms_exhausted rollback path). --task-id also
 #   journals one `route_v2_resolved` line (leadv2-journal.sh) carrying the
 #   full per-arm vector, so a wrong route is auditable after the fact.
@@ -207,13 +208,15 @@ if [[ "${MODE}" == "resolve" && -n "${TASK_ID}" && -f "${JOURNAL_BIN}" ]]; then
   winner="$(printf '%s\n' "${OUT}" | sed -n 's/^winner=//p')"
   reason="$(printf '%s\n' "${OUT}" | sed -n 's/^reason=//p')"
   eligible="$(printf '%s\n' "${OUT}" | sed -n 's/^eligible=//p')"
+  ordered="$(printf '%s\n' "${OUT}" | sed -n 's/^ordered=//p')"
   filtered="$(printf '%s\n' "${OUT}" | sed -n 's/^filtered=//p')"
   headroom="$(printf '%s\n' "${OUT}" | sed -n 's/^headroom=//p')"
+  credits="$(printf '%s\n' "${OUT}" | sed -n 's/^credits=//p')"
   samples="$(printf '%s\n' "${OUT}" | sed -n 's/^samples=//p')"
   task_class="$(printf '%s\n' "${OUT}" | sed -n 's/^task_class=//p')"
   estimate_id="$(printf '%s\n' "${OUT}" | sed -n 's/^estimate_id=//p')"
   bash "${JOURNAL_BIN}" append "${TASK_ID}" decision \
-    "route_v2_resolved winner=${winner} reason=${reason} eligible=${eligible} filtered=${filtered} headroom=${headroom} samples=${samples:-{}} class=${task_class:-unknown} estimate_id=${estimate_id:-unknown} account=${ACCOUNT:-unknown}" \
+    "route_v2_resolved winner=${winner} reason=${reason} eligible=${eligible} ordered=${ordered} filtered=${filtered} headroom=${headroom} credits=${credits:-{}} samples=${samples:-{}} class=${task_class:-unknown} estimate_id=${estimate_id:-unknown} account=${ACCOUNT:-unknown}" \
     >/dev/null 2>&1 || true
 fi
 

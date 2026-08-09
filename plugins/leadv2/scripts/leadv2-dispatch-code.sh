@@ -3221,7 +3221,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
   export DC_PROTECTED="${protected}" DC_SAFETY="${safety}" DC_SUBSYSTEM_COUNT="${subsystems}" \
          DC_INTERACTIVE="${interactive}" DC_UI_JUDGMENT="${ui}" DC_KIND="${kind}" \
          DC_GLM_FAILURES="${glmfails}" DC_GLM_LOCK_BUSY="${lockbusy}"
-  local resolved arm rule reason tier router_label v2_eligible
+  local resolved arm rule reason tier router_label v2_eligible v2_ordered v2_headroom v2_vector v2_credits
   router_label="v1"
   if [[ "${LEADV2_ROUTER_V2:-0}" == "1" ]]; then
     router_label="v2"
@@ -3241,6 +3241,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
   reason="$(printf '%s\n' "${resolved}" | sed -n 's/^reason=//p')"
   tier="$(printf '%s\n' "${resolved}" | sed -n 's/^tier=//p')"
   v2_eligible="$(printf '%s\n' "${resolved}" | sed -n 's/^eligible=//p')"
+  v2_ordered="$(printf '%s\n' "${resolved}" | sed -n 's/^ordered=//p')"
+  v2_headroom="$(printf '%s\n' "${resolved}" | sed -n 's/^headroom=//p')"
+  v2_vector="$(printf '%s\n' "${resolved}" | sed -n 's/^vector=//p')"
+  v2_credits="$(printf '%s\n' "${resolved}" | sed -n 's/^credits=//p')"
   local codex_quota_blocked
   codex_quota_blocked="$(printf '%s\n' "${resolved}" | sed -n 's/^codex_quota_blocked=//p')"
   [[ "${router_label}" == "v2" ]] && rule="router_v2"
@@ -3299,7 +3303,15 @@ confirmation-seeking; only for a decision you cannot make yourself."
   # exception resolving directly to sonnet therefore cannot escape back to GLM.
   local -a candidate_arms attempted
   if [[ "${router_label}" == "v2" ]]; then
-    IFS=',' read -r -a candidate_arms <<< "${v2_eligible}"
+    # ordered= is additive.  Old/stubbed resolvers may not know it, in which
+    # case preserve their eligible= behavior rather than failing closed.
+    local _v2_chain="${v2_eligible}"
+    if [[ "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" && -n "${v2_ordered}" ]]; then
+      _v2_chain="${v2_ordered}"
+    elif [[ "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" ]]; then
+      emit decision "router_v2_no_ordered_key task=${sig8}"
+    fi
+    IFS=',' read -r -a candidate_arms <<< "${_v2_chain}"
     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
     # ARM-LADDER-KIMI-RESURRECTED-01 follow-up: v2's eligible= comes straight
     # from the router-v2 resolver, which never consulted DISPATCHABLE_BUILD_ARMS
@@ -3388,11 +3400,12 @@ confirmation-seeking; only for a decision you cannot make yourself."
   if [[ "${LEADV2_ROUTER_V2:-0}" == "1" && "${LEADV2_ROUTER_V2_QUOTA_FILTER:-1}" != "0" && "${router_label}" != "v2" ]]; then
     local _rv2_bin="${LEADV2_ROUTER_V2_BIN:-${SCRIPT_DIR}/leadv2-router-v2.sh}"
     if [[ -f "${_rv2_bin}" ]]; then
-      local _rv2_chain _rv2_out _rv2_rc _rv2_eligible
+      local _rv2_chain _rv2_out _rv2_rc _rv2_eligible _rv2_ordered
       _rv2_chain="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
       _rv2_out="$(bash "${_rv2_bin}" resolve --chain "${_rv2_chain}" --task-id "${sig8}" 2>/dev/null)"
       _rv2_rc=$?
       _rv2_eligible="$(printf '%s\n' "${_rv2_out}" | sed -n 's/^eligible=//p')"
+      _rv2_ordered="$(printf '%s\n' "${_rv2_out}" | sed -n 's/^ordered=//p')"
       if [[ ${_rv2_rc} -eq 3 || -z "${_rv2_eligible}" ]]; then
         emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} by=router_v2 chain=${_rv2_chain}"
         log_err "every candidate arm is quota-exhausted (chain='${_rv2_chain}'); refusing to dispatch"
@@ -3400,7 +3413,12 @@ confirmation-seeking; only for a decision you cannot make yourself."
         exit 4
       fi
       local -a _rv2_kept=()
-      IFS=',' read -r -a _rv2_kept <<< "${_rv2_eligible}"
+      if [[ "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" && -n "${_rv2_ordered}" ]]; then
+        IFS=',' read -r -a _rv2_kept <<< "${_rv2_ordered}"
+      else
+        [[ "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" ]] && emit decision "router_v2_no_ordered_key task=${sig8}"
+        IFS=',' read -r -a _rv2_kept <<< "${_rv2_eligible}"
+      fi
       candidate_arms=("${_rv2_kept[@]}")
     fi
   fi
@@ -3437,6 +3455,12 @@ confirmation-seeking; only for a decision you cannot make yourself."
   # particular, this makes a Kimi admission skip observable in the same
   # decision journal as the resolved route.
   emit decision "candidate_chain task=${sig8} arms=$(IFS=,; printf '%s' "${candidate_arms[*]}")"
+  if [[ "${router_label}" == "v2" && "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" && -n "${v2_headroom}" ]]; then
+    local _v2_scores _v2_unknown
+    _v2_scores="$(python3 -c 'import json,sys; v=json.loads(sys.argv[1] or "[]"); print(json.dumps({r["arm"]:r.get("score") for r in v}, sort_keys=True, separators=(",", ":")))' "${v2_vector:-[]}" 2>/dev/null || printf '{}')"
+    _v2_unknown="$(python3 -c 'import json,sys; h=json.loads(sys.argv[1]); print(",".join(sorted(k for k,v in h.items() if v is None)) or "none")' "${v2_headroom}" 2>/dev/null || printf 'none')"
+    emit decision "route_headroom_chosen task=${sig8} arm=${candidate_arms[0]} after=initial ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") headroom=${v2_headroom} credits=${v2_credits:-{}} scores=${_v2_scores} source=router_v2 unknown=${_v2_unknown}"
+  fi
 
   # SUPERVISOR-AUDIT-01 model-stamp extension (founder 2026-07-30): stamp the
   # arm_resolved value now (the resolver's PRIMARY pick) so the row is never
@@ -3457,12 +3481,19 @@ confirmation-seeking; only for a decision you cannot make yourself."
   # reassigning the array would NOT change the remaining iterations -- the break+reenter
   # handshake (_reenter=1 -> break for -> outer while continues) is what makes a
   # mid-loop chain swap effective. One-shot via _reresolved_lock_busy (no unbounded retry).
-  local candidate arc _reresolved_lock_busy="" _reenter
+  local candidate arc _reresolved_lock_busy="" _reordered_after_quota_gate="" _quota_gate_reroute=0 _reenter
   while true; do
   _reenter=0
   for candidate in "${candidate_arms[@]}"; do
     [[ "${candidate}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
-    atomic_dispatch_reserve_spawn_confirm "${sig}" "${candidate}" "${rule}" "${mission}" "${sig8}" "${spawn}"
+    local _candidate_mission="${mission}"
+    if [[ "${candidate}" == "sonnet" && "${_quota_gate_reroute}" == "1" ]]; then
+      _candidate_mission="GLM_FIRST_EXCEPTION=glm_quota_gate_80
+(router-issued: GLM quota gate refused this lane at >=80%; arm chosen from live headroom.)
+
+${mission}"
+    fi
+    atomic_dispatch_reserve_spawn_confirm "${sig}" "${candidate}" "${rule}" "${_candidate_mission}" "${sig8}" "${spawn}"
     arc=$?
     case "${arc}" in
     2)
@@ -3539,6 +3570,39 @@ confirmation-seeking; only for a decision you cannot make yourself."
       ;;
     7)
       attempted+=("${LAST_ARM_OUTCOME:-${candidate}_refused}")
+      if [[ "${LAST_ARM_OUTCOME:-}" == "glm_refused_quota_gate" && -z "${_reordered_after_quota_gate}" && "${LEADV2_ROUTER_V2_ON_QUOTA_GATE:-1}" != "0" ]]; then
+        _reordered_after_quota_gate=1
+        local _qg_bin="${LEADV2_ROUTER_V2_BIN:-${SCRIPT_DIR}/leadv2-router-v2.sh}" _qg_chain _qg_out _qg_rc _qg_eligible _qg_ordered _qg_headroom _qg_vector _qg_credits
+        local _qg_remaining
+        local -a _qg_next=()
+        for _qg_remaining in "${candidate_arms[@]}"; do
+          [[ "${_qg_remaining}" == "glm" ]] || _qg_next+=("${_qg_remaining}")
+        done
+        _qg_chain="$(IFS=,; printf '%s' "${_qg_next[*]}")"
+        if [[ -n "${_qg_chain}" && -f "${_qg_bin}" ]]; then
+          _qg_out="$(bash "${_qg_bin}" resolve --chain "${_qg_chain}" --task-id "${sig8}" 2>/dev/null)"; _qg_rc=$?
+          _qg_eligible="$(printf '%s\n' "${_qg_out}" | sed -n 's/^eligible=//p')"
+          _qg_ordered="$(printf '%s\n' "${_qg_out}" | sed -n 's/^ordered=//p')"
+          _qg_headroom="$(printf '%s\n' "${_qg_out}" | sed -n 's/^headroom=//p')"
+          _qg_vector="$(printf '%s\n' "${_qg_out}" | sed -n 's/^vector=//p')"
+          _qg_credits="$(printf '%s\n' "${_qg_out}" | sed -n 's/^credits=//p')"
+          if [[ ${_qg_rc} -eq 0 && -n "${_qg_eligible}" ]]; then
+            if [[ "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" && -n "${_qg_ordered}" ]]; then
+              IFS=',' read -r -a candidate_arms <<< "${_qg_ordered}"
+            else
+              [[ "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" ]] && emit decision "router_v2_no_ordered_key task=${sig8}"
+              IFS=',' read -r -a candidate_arms <<< "${_qg_eligible}"
+            fi
+            local _qg_scores _qg_unknown
+            _qg_scores="$(python3 -c 'import json,sys; v=json.loads(sys.argv[1] or "[]"); print(json.dumps({r["arm"]:r.get("score") for r in v}, sort_keys=True, separators=(",", ":")))' "${_qg_vector:-[]}" 2>/dev/null || printf '{}')"
+            _qg_unknown="$(python3 -c 'import json,sys; h=json.loads(sys.argv[1]); print(",".join(sorted(k for k,v in h.items() if v is None)) or "none")' "${_qg_headroom}" 2>/dev/null || printf 'none')"
+            emit decision "route_headroom_chosen task=${sig8} arm=${candidate_arms[0]} after=glm_quota_gate ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") headroom=${_qg_headroom} credits=${_qg_credits:-{}} scores=${_qg_scores} source=router_v2 unknown=${_qg_unknown}"
+            _quota_gate_reroute=1
+            _reenter=1
+            break
+          fi
+        fi
+      fi
       # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): a lock-busy refusal carries a routing
       # signal (DC_GLM_LOCK_BUSY) the resolver consumes only at CLASSIFICATION time
       # -- before any spawn is attempted (resolve_arm at :2101 binds arm/rule/reason
