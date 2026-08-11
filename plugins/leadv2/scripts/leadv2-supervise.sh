@@ -473,11 +473,41 @@ except Exception:
 lane_liveness_by_id = {str(row["lane"]): row for row in (codex_liveness.get("lanes") or [])
                        if isinstance(row, dict) and row.get("lane")}
 
+warnings = []
+
 CAP_ROWS = 20
 try:
     QUESTION_ESCALATE_S = max(0, int(question_escalate_s_raw))
 except (TypeError, ValueError):
     QUESTION_ESCALATE_S = 300
+
+# STATUS-SURFACE-SHOWS-STALE-TRUTH-01: a dead lane silent longer than this
+# is reaped from the printed table (never from the underlying store — this
+# is a render-time filter, not a prune). 86400s (24h) = one full working
+# day: a lane silent across a whole day with no process cannot be state
+# anyone is still waiting on, while anything shorter risks hiding a lane
+# that stalled overnight and is still being triaged. 0 disables reaping.
+try:
+    LEADV2_SUPERVISE_REAP_S = int(os.environ.get("LEADV2_SUPERVISE_REAP_S", "86400"))
+except (TypeError, ValueError):
+    LEADV2_SUPERVISE_REAP_S = 86400
+try:
+    LEADV2_SUPERVISE_TOMBSTONE_ROWS = max(0, int(os.environ.get("LEADV2_SUPERVISE_TOMBSTONE_ROWS", "5")))
+except (TypeError, ValueError):
+    LEADV2_SUPERVISE_TOMBSTONE_ROWS = 5
+try:
+    _LANE_ABANDON_MAX_S = int(os.environ.get("LEADV2_LANE_ABANDON_MAX_S", "3600"))
+except (TypeError, ValueError):
+    _LANE_ABANDON_MAX_S = 3600
+if LEADV2_SUPERVISE_REAP_S and LEADV2_SUPERVISE_REAP_S < _LANE_ABANDON_MAX_S:
+    # A lane cannot legitimately be reaped before leadv2-lane-liveness.sh
+    # itself has had a chance to classify it dead — clamp up rather than
+    # silently reap fresher rows than the liveness ladder intends.
+    warnings.append(
+        f"LEADV2_SUPERVISE_REAP_S={LEADV2_SUPERVISE_REAP_S} is below the lane-liveness "
+        f"abandon threshold ({_LANE_ABANDON_MAX_S}s); clamped up to {_LANE_ABANDON_MAX_S}"
+    )
+    LEADV2_SUPERVISE_REAP_S = _LANE_ABANDON_MAX_S
 
 def now_iso():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -515,7 +545,6 @@ def emit_fatal(kind, message):
 # Only a file that exists AND parses to a dict with a `sessions` list is a
 # "successfully reconciled" registry (individual malformed rows are dropped
 # with a warning, per-row — that's reconciliation, not a registry defect).
-warnings = []
 sessions = []
 if not os.path.isfile(active_yaml):
     emit_fatal("registry_error", f"active.yaml not found at {active_yaml} (never initialized — run leadv2-active-registry.sh to create it)")
@@ -1064,9 +1093,10 @@ for q in legacy_pending:
     legacy_by_task.setdefault(q["task_id"], []).append(q)
 
 # ── Table + waiting + stuck (registry ∪ handoff-log lanes) ─────────────────
-table = []
+_scored_table = []  # (status_rank, age_key, entry) — ranked before the cap below
 waiting_items = []
 stuck_items = []
+reaped_count = 0
 
 # The liveness helper has already filtered .close and tombstoned lanes.  Do
 # not fall back to a local verdict: this table only maps its authoritative
@@ -1116,15 +1146,35 @@ for tid, lane in sorted(lane_rows.items()):
     # registry-honesty fields) simply lacks the key -- absence means V1.
     protocol_version = s.get("protocol_version", 1)
 
-    table.append({
+    age_s = lane.get("age_s")
+    pid_alive_flag = bool(lane.get("pid_alive"))
+    # Reap = do not render, never delete. A live PID is never reaped no
+    # matter how old its timestamp; an indeterminate age (None) is treated
+    # as NOT reapable — unknown is not the same as old.
+    if (status == "dead" and not pid_alive_flag and LEADV2_SUPERVISE_REAP_S
+            and isinstance(age_s, (int, float)) and age_s > LEADV2_SUPERVISE_REAP_S):
+        reaped_count += 1
+        continue
+
+    entry = {
         "task_id": tid, "phase": phase,
         "minutes_in_phase": minutes if minutes is not None else "?",
         "status": status,
         "status_reason": status_reason,
         "waiting": is_waiting, "where": where,
         "protocol_version": protocol_version,
-    })
+    }
+    # Rank active > stale > dead, freshest first within a group, so a fixed
+    # row cap drops the least-informative rows rather than truncating an
+    # alphabetically-sorted list that can bury today's live lanes behind
+    # thousands of never-reaped dead ones (STATUS-SURFACE-SHOWS-STALE-TRUTH-01).
+    status_rank = {"active": 0, "stale": 1, "dead": 2}.get(status, 3)
+    age_key = age_s if isinstance(age_s, (int, float)) else -1
+    _scored_table.append((status_rank, age_key, entry))
 
+_scored_table.sort(key=lambda t: (t[0], t[1]))
+table = [entry for _, _, entry in _scored_table]
+capped_count = max(0, len(table) - CAP_ROWS)
 table = table[:CAP_ROWS]
 
 # Tombstones are durable terminal lanes, not bookkeeping to hide from the
@@ -1138,7 +1188,16 @@ try:
                 terminal_by_task[item["task_id"]] = item
 except Exception:
     pass
-for tid, item in sorted(terminal_by_task.items()):
+# Newest tombstoned_at first, capped — the tombstone loop used to append
+# EVERY row unbounded past CAP_ROWS, which is half of why a 21-day-old
+# corpse could still show up (STATUS-SURFACE-SHOWS-STALE-TRUTH-01 C3).
+_tombstone_items = sorted(
+    terminal_by_task.items(),
+    key=lambda kv: kv[1].get("tombstoned_at") or "",
+    reverse=True,
+)
+tombstone_capped_count = max(0, len(_tombstone_items) - LEADV2_SUPERVISE_TOMBSTONE_ROWS)
+for tid, item in _tombstone_items[:LEADV2_SUPERVISE_TOMBSTONE_ROWS]:
     state = item.get("last_state") or {}
     started = parse_iso(state.get("started_at"))
     mins = max(0, int((now - started).total_seconds() // 60)) if started else "?"
@@ -1147,6 +1206,13 @@ for tid, item in sorted(terminal_by_task.items()):
                   "minutes_in_phase": mins, "status": "dead", "status_reason": reason,
                   "waiting": False, "where": state.get("where") or "terminal record",
                   "protocol_version": state.get("protocol_version", "terminal")})
+
+_hidden_total = reaped_count + capped_count + tombstone_capped_count
+hidden_lanes_summary = (
+    f"{_hidden_total} older/dead lanes hidden (reap>{LEADV2_SUPERVISE_REAP_S}s, cap={CAP_ROWS}, "
+    f"tombstone_cap={LEADV2_SUPERVISE_TOMBSTONE_ROWS})"
+    if _hidden_total else None
+)
 
 # Codex app-server jobs are first-class lanes even when they have no active.yaml
 # row. Their status/phase comes only from codex-task.sh, never codex-guard/ps.
@@ -1347,6 +1413,9 @@ if json_mode:
         # {"status":"degraded",...} stub if the composer failed/timed out,
         # never a fabricated block. See leadv2-supervise-resume.sh.
         "resume": resume_obj,
+        # STATUS-SURFACE-SHOWS-STALE-TRUTH-01 C4: never let a capped/reaped
+        # table read as "this is the whole store" — null when nothing hidden.
+        "hidden_lanes_summary": hidden_lanes_summary,
     }
     print(json.dumps(result, indent=2))
     sys.exit(0)
@@ -1381,6 +1450,8 @@ print(f"{'TASK-ID':<28} {'phase':<12} {'min':>4} {'status':<8} {'waiting?':<9} {
 for row in table:
     print(f"{row['task_id']:<28} {row['phase']:<12} {str(row['minutes_in_phase']):>4} "
           f"{row['status']:<8} {'yes' if row['waiting'] else 'no':<9} {row['where']}")
+if hidden_lanes_summary:
+    print(f"... {hidden_lanes_summary}")
 
 if waiting_items:
     print("\n=== TREBUET TEBYA (open questions) ===")

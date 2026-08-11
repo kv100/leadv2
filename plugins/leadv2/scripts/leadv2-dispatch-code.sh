@@ -3058,9 +3058,20 @@ cmd_resolve() {
   # Without this, leadv2_active_update_phase finds no row to patch and the mirror
   # stays empty forever (backlog-pump.sh:250-256 states this outright).
   # leadv2_active_register is idempotent (refreshes existing row if PID alive).
-  if [[ -n "${founder_task_id}" ]] && [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
+  #
+  # STATUS-SURFACE-SHOWS-STALE-TRUTH-01 C5: this used to be gated on
+  # `-n "${founder_task_id}"` alone, so every hand-dispatched lane (i.e. every
+  # lane outside fanout, which always passes --task-id) skipped registration
+  # entirely and never showed a phase/PID in the supervise table. Every lane
+  # has an identity even without --task-id: the worker is spawned with
+  # --task-id "dispatch-${sig8}" (see the sonnet arm above) and that same id
+  # names its docs/handoff/dispatch-${sig8}/ dir, so register under that
+  # identity when founder_task_id is absent -- byte-identical to today for
+  # fanout (which always sets founder_task_id).
+  local reg_id="${founder_task_id:-dispatch-${sig8}}"
+  if [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
     if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null \
-       || ! leadv2_active_register "${founder_task_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null; then
+       || ! leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null; then
       emit decision "active_register_miss task=${sig8}"
     fi
   fi
