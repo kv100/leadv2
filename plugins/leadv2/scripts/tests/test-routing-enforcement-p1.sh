@@ -40,6 +40,14 @@ export LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/poison-codex.sh"
 export LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh"
 printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "${TMP_ROOT}/poison-sonnet.sh"
 chmod +x "${TMP_ROOT}/poison-sonnet.sh"
+# _wait_arm_early_verdict (fb1c7da, 2026-08-06) polls each spawned worker's status
+# adapter for a 20 s window by default. The fake launchers in this suite return
+# empty status text, so the poller stays in "unknown" for the full window — every
+# successful spawn pays 20 s. With ~12 spawn-involving test cases the suite took
+# 4+ minutes, causing e2e_gate timeouts. The kill switch (LEADV2_ARM_EARLY_VERDICT_S=0)
+# is the documented bypass: these tests assert routing/refusal-chain logic, not
+# post-spawn quota-verdict behaviour.
+export LEADV2_ARM_EARLY_VERDICT_S=0
 _SUITE_START_EPOCH="$(date +%s)"
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s -- %s\n' "$1" "$2"; FAIL=1; }

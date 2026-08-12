@@ -359,7 +359,12 @@ case_revived_status_is_terminal_for_handle() {
     rc=$?; elapsed=$(( $(date +%s) - started ))
     gate="${root}/docs/handoff/dispatch-nwrv000${idx}/review-gate.md"
     assert_eq "${rc}" "5" "${status} reaches ordinary empty-diff terminal"
-    if [[ "${elapsed}" -lt 2 ]] && grep -q '^reason: no_work$' "${gate}" 2>/dev/null; then
+    # elapsed is wall-clock (date +%s resolution).  The script's own startup
+    # (source lib, mkdir handoff, write pidfile, parse args) can push the
+    # total to exactly max_wait_s (2 s) even though pc_worker_alive returned
+    # promptly — the intent is "did NOT hit the worker_timeout ceiling", which
+    # is proven by the no_work gate + absence of dead/timeout, not by elapsed.
+    if [[ "${elapsed}" -le 2 ]] && grep -q '^reason: no_work$' "${gate}" 2>/dev/null; then
       ok "${status} ignores stale original registry handle"
     else bad "${status} waited to timeout instead of finalizing original handle"
     fi
