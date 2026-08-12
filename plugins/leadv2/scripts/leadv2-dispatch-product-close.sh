@@ -783,16 +783,19 @@ _pc_process_alive() { # <run_dir> [meta_pid] -> 0 if any live process found
 _pc_reap_worker() { # <run_dir> [meta_pid]
   local run_dir="$1" meta_pid="${2:-}" _pid _killed=""
   local -A _skip=( ["$$"]=1 ["$PPID"]=1 )
-  local -a _pids=()
+  local -a _bare_pids=()   # pids signalled as bare pids (meta_pid, lock_dir/pid)
+  local -a _grp_pids=()    # process-group ids signalled with negative sign (pgid files)
   local -A _seen=()
   # Collect + dedup live pids from spawn-record files
+  # meta_pid is a bare pid (the coder child)
   if [[ "${meta_pid}" =~ ^[0-9]+$ && -z "${_skip[${meta_pid}]:-}" && -z "${_seen[${meta_pid}]:-}" ]]; then
-    kill -0 "${meta_pid}" 2>/dev/null && { _pids+=("${meta_pid}"); _seen[${meta_pid}]=1; }
+    kill -0 "${meta_pid}" 2>/dev/null && { _bare_pids+=("${meta_pid}"); _seen[${meta_pid}]=1; }
   fi
+  # run_dir/pgid is a setsid process-GROUP id — signal as group
   if [[ -f "${run_dir}/pgid" ]]; then
     _pid="$(cat "${run_dir}/pgid" 2>/dev/null || true)"
     if [[ "${_pid}" =~ ^[0-9]+$ && -z "${_skip[${_pid}]:-}" && -z "${_seen[${_pid}]:-}" ]]; then
-      kill -0 "${_pid}" 2>/dev/null && { _pids+=("${_pid}"); _seen[${_pid}]=1; }
+      kill -0 "${_pid}" 2>/dev/null && { _grp_pids+=("${_pid}"); _seen[${_pid}]=1; }
     fi
   fi
   local _runs_dir _repo_hash _lock_dir _lf
@@ -804,25 +807,36 @@ _pc_reap_worker() { # <run_dir> [meta_pid]
       [[ -f "${_lock_dir}/${_lf}" ]] || continue
       _pid="$(cat "${_lock_dir}/${_lf}" 2>/dev/null || true)"
       if [[ "${_pid}" =~ ^[0-9]+$ && -z "${_skip[${_pid}]:-}" && -z "${_seen[${_pid}]:-}" ]]; then
-        kill -0 "${_pid}" 2>/dev/null && { _pids+=("${_pid}"); _seen[${_pid}]=1; }
+        kill -0 "${_pid}" 2>/dev/null && {
+          if [[ "${_lf}" == pgid ]]; then
+            _grp_pids+=("${_pid}")
+          else
+            _bare_pids+=("${_pid}")
+          fi
+          _seen[${_pid}]=1
+        }
       fi
     done
   fi
-  [[ ${#_pids[@]} -eq 0 ]] && return 0
-  # SIGTERM
-  for _pid in "${_pids[@]}"; do kill -TERM "${_pid}" 2>/dev/null || true; done
+  [[ ${#_bare_pids[@]} -eq 0 && ${#_grp_pids[@]} -eq 0 ]] && return 0
+  # SIGTERM — groups signalled as groups (negative pid), bare pids as-is
+  for _pid in "${_bare_pids[@]}"; do kill -TERM "${_pid}" 2>/dev/null || true; done
+  for _pid in "${_grp_pids[@]}";  do kill -TERM -"${_pid}" 2>/dev/null || true; done
   # Wait up to 5s for them to die
   local _w=0
   while (( _w < 10 )); do
     _killed=""
-    for _pid in "${_pids[@]}"; do kill -0 "${_pid}" 2>/dev/null && _killed=1; done
+    for _pid in "${_bare_pids[@]}"; do kill -0 "${_pid}" 2>/dev/null && _killed=1; done
+    for _pid in "${_grp_pids[@]}";  do kill -0 "${_pid}" 2>/dev/null && _killed=1; done
     [[ -z "${_killed}" ]] && return 0
     sleep 0.5
     _w=$(( _w + 1 ))
   done
   # SIGKILL stragglers
-  for _pid in "${_pids[@]}"; do kill -KILL "${_pid}" 2>/dev/null || true; done
-  emit decision "product_close task=${TASK} worker_reaped pids=$(IFS=,; printf '%s' "${_pids[*]}")"
+  for _pid in "${_bare_pids[@]}"; do kill -KILL "${_pid}" 2>/dev/null || true; done
+  for _pid in "${_grp_pids[@]}";  do kill -KILL -"${_pid}" 2>/dev/null || true; done
+  local _all_pids="${_bare_pids[*]:-}${_grp_pids[*]:+ ${_grp_pids[*]}}"
+  emit decision "product_close task=${TASK:-} worker_reaped pids=$(IFS=,; printf '%s' "${_all_pids}")"
 }
 
 pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
@@ -885,6 +899,11 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
         _pc_reap_worker "${run_dir}" "${pid}"
         return 1
       fi
+      # The coder writes this only from its finish guard. It is terminal provider
+      # evidence for legacy runs that predate meta.yaml, once no exact registry or
+      # process evidence remains. PLUGIN-RELIABILITY-02: this must run BEFORE the
+      # empty-status grace guard so legacy terminal evidence still wins.
+      [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" && "${registry_alive}" == 0 ]] && return 1
       # PLUGIN-RELIABILITY-01 D4 (round 2): pid gone + empty/unparseable status
       # = dead, not keep-waiting (which caused 4200s false waits). Grace guard:
       # meta.yaml must exist and be older than 30s — a just-spawned worker that
@@ -907,10 +926,6 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
         emit decision "product_close task=${TASK} worker_liveness=dead author=${AUTHOR} handle=${HANDLE} reason=empty_status_pid_gone meta_age_s=${_meta_age_s}"
         return 1
       fi
-      # The coder writes this only from its finish guard. It is terminal provider
-      # evidence for legacy runs that predate meta.yaml, once no exact registry or
-      # process evidence remains.
-      [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" && "${registry_alive}" == 0 ]] && return 1
       # Missing/malformed provider evidence is never treated as completion.
       return 0
       ;;
@@ -1491,7 +1506,7 @@ fi
 _pc_resolve_asked_into_void
 
 if ! pc_await_worker_exit; then
-  _pc_reap_worker "${HANDLE}" "$(_pc_meta_value "${_PC_RUNS_ROOT:-${RUNS_ROOT:-${ROOT}}}/${AUTHOR}-runs/${HANDLE}/meta.yaml" pid 2>/dev/null)"
+  _pc_reap_worker "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")" "$(_pc_meta_value "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/meta.yaml" pid 2>/dev/null)"
   printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
   emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout"
   _dl_note dead timeout "waited=${_PC_WORKER_WAITED_S}s author=${AUTHOR} handle=${HANDLE}"
@@ -1513,7 +1528,7 @@ if pc_dwr_resume_once; then
   # TERMINAL-01 closed for the first wait).
   if ! LEADV2_PC_WORKER_MAX_WAIT_S="${LEADV2_PC_RESUME_MAX_WAIT_S:-${LEADV2_PC_WORKER_MAX_WAIT_S:-4200}}" \
       pc_await_worker_exit; then
-    _pc_reap_worker "${HANDLE}" "$(_pc_meta_value "${_PC_RUNS_ROOT:-${RUNS_ROOT:-${ROOT}}}/${AUTHOR}-runs/${HANDLE}/meta.yaml" pid 2>/dev/null)"
+    _pc_reap_worker "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")" "$(_pc_meta_value "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/meta.yaml" pid 2>/dev/null)"
     printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
     emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout resumed=1"
     _dl_note dead timeout "waited=${_PC_WORKER_WAITED_S}s author=${AUTHOR} handle=${HANDLE} resumed=1"

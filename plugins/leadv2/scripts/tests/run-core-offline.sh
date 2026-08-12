@@ -120,6 +120,7 @@ run_check "phase record round-trip" bash "$TEST_DIR/test-phase-record.sh"
 run_check "phase precondition guard matrix" bash "$TEST_DIR/test-phase-precondition.sh"
 run_check "lane phase render" bash "$TEST_DIR/test-lane-phase-render.sh"
 run_check "plugin reliability (process liveness + role fallback + prepass/reorder signals)" bash "$TEST_DIR/test-plugin-reliability-01.sh"
+run_check "plugin reliability-02 (zombie-reaper: run_dir arg + group signaling + ordering + TASK)" bash "$TEST_DIR/test-plugin-reliability-02.sh"
 
 printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
 (( FAIL == 0 && MISSING == 0 ))
