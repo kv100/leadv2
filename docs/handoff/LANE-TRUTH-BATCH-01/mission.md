@@ -38,3 +38,16 @@ divergent copy quarantined once, not on every sync (reviewer proved 3 syncs = 3 
 (3) mutation gate: deleting dispatch-code.sh:3076 must fail your suite — add the
 behavioral assertion that catches it; (4) suite registered twice in run-core-offline.sh
 — one label. All suites + run-core-offline rc=0 after rebase. DELIVERABLE_COMPLETE.
+
+## TEST-GATE ROUND (2026-08-13 ~00:45Z, per PR02 judge precedent) — Codex, closed scope
+Code is committed (e6f8e72). THREE items only:
+1. REBASE the worktree branch onto CURRENT origin/main (plan-engine+PR02 merges landed
+   after your last rebase; resolve conflicts keeping both sides intact).
+2. plugin-sync.sh:167 — sha256sum failure is masked by the pipeline (`|| return 1`
+   never fires; two empty hashes compare equal → CHANGED divergent copy treated as
+   duplicate). Compute hashes without a masking pipeline; empty hash = hard error.
+3. Row-1 mutation gate must be BEHAVIORAL, not grep-on-source: mutate the stamped
+   log_path back to pulse.md in a scratch copy and prove liveness goes stale/wrong by
+   EXECUTING the registry read path. Gate: rc!=0 on mutated copy, rc=0 on HEAD — both
+   runs demonstrated in summary.
+All suites + run-core-offline rc=0 after rebase. DELIVERABLE_COMPLETE.
