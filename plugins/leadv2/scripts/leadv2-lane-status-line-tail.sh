@@ -70,24 +70,58 @@ fi
 # budgets — so USER_CMD, the git-branch fallback, and the lane resolver were
 # timing out on 100% of calls, not occasionally. Generous now that nothing
 # downstream waits on this script.
+# STATUSLINE-FLICKER-PARTIAL-CACHE-01: read the previous cached line BEFORE
+# computing a new one, so a failed user command can preserve the prior BASE
+# instead of replacing it with a different FALLBACK_BASE — the root cause of
+# the "статуслайн скачет" flicker. The BASE changed identity between
+# refreshes whenever the wrapped command timed out (FALLBACK_BASE lacks the
+# style segment and burn fragment the founder's own statusline.sh produces).
+PREV_CACHED=""
+if [[ -n "$OUT_FILE" && -s "$OUT_FILE" ]]; then
+  PREV_CACHED="$(cat "$OUT_FILE" 2>/dev/null || true)"
+fi
+
 BASE="" WRAPPED_OK=0
 if [[ -n "$USER_CMD" ]]; then
   BASE="$(printf '%s' "$INPUT" | timeout -k 0.2 2 bash -c "$USER_CMD" 2>/dev/null || true)"
   [[ -n "$BASE" ]] && WRAPPED_OK=1
 fi
-[[ -z "$BASE" ]] && BASE="$FALLBACK_BASE"
-[[ -z "$BASE" ]] && BASE="?"
 
-if [[ "$WRAPPED_OK" != "1" ]]; then
+if [[ "$WRAPPED_OK" == "1" ]]; then
+  : # User command succeeded — BASE carries the founder's full line.
+elif [[ -n "$PREV_CACHED" ]]; then
+  # STATUSLINE-FLICKER-PARTIAL-CACHE-01: preserve the previous BASE from the
+  # cached line instead of replacing it with FALLBACK_BASE. The cached line
+  # format is "<BASE> <ESC>[34m| <LANES><ESC>[0m" — split on the last
+  # separator to recover BASE. This keeps every segment stable between
+  # refreshes: no segment may appear or disappear while the underlying data
+  # is unchanged. Skip the git-branch fallback — the preserved BASE already
+  # carries its own formatting from a prior successful render.
+  _flicker_sep=$' \x1b[34m| '
+  BASE="${PREV_CACHED%"$_flicker_sep"*}"
+  if [[ -z "$BASE" || "$BASE" == "$PREV_CACHED" ]]; then
+    # Separator not found (malformed cache) — degrade to fallback.
+    BASE="$FALLBACK_BASE"
+    BRANCH="$(timeout 1 git -C "$CWD_FROM_INPUT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    [[ -n "$BRANCH" ]] && BASE="${BASE} (${BRANCH})"
+  fi
+else
+  # No previous cache (first-ever render) — FALLBACK_BASE + git branch.
+  BASE="$FALLBACK_BASE"
   BRANCH="$(timeout 1 git -C "$CWD_FROM_INPUT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   [[ -n "$BRANCH" ]] && BASE="${BASE} (${BRANCH})"
 fi
+[[ -z "$BASE" ]] && BASE="?"
 
-# D4 (dispatch-98cc5cf7, founder ask): the founder's own burn statusline.sh
-# appends " | 5h:<used> ↑<pct>%" after the FIRST " | " in its own output --
-# that segment's width belongs to the lanes now. Flag-gated (not a mutation
-# of the founder's own script) so `=0` restores it in one flip.
-if [[ "${LEADV2_STATUSLINE_DROP_BURN:-1}" == "1" ]]; then
+# SD-STATUSLINE-BURN-FIRSTCLASS-01: the founder's own burn statusline.sh
+# appends " | <N>t <Hh MMm>" (turns + session lifetime) after the base
+# segments. The burn segment now gets first-class width budget — it is
+# preserved by default and survives every BASE-compression step (none of
+# them target the pipe-delimited burn fragment). The lanes digest compresses
+# to accommodate it, which is the correct precedence: burn is context the
+# founder asked for, lanes are supplementary. Flag-gated so `=1` restores
+# the old drop in one flip if width is ever needed back for lanes.
+if [[ "${LEADV2_STATUSLINE_DROP_BURN:-0}" == "1" ]]; then
   BASE="${BASE%% | *}"
 fi
 
