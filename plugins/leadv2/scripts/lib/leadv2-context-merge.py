@@ -47,15 +47,13 @@ def deep_merge(skeleton: dict, arm: dict) -> dict:
 
 
 def check_required(doc: dict) -> list:
-    """Return list of missing required field names."""
+    """Return list of missing required field names.
+    Only flags absence (None) — empty lists/strings are structurally valid;
+    semantic emptiness is the real validator's (leadv2-acceptance-shape.sh) job."""
     missing = []
     for field in REQUIRED_FIELDS:
         val = doc.get(field)
         if val is None:
-            missing.append(field)
-        elif isinstance(val, str) and not val.strip():
-            missing.append(field)
-        elif isinstance(val, list) and len(val) == 0:
             missing.append(field)
     return missing
 
