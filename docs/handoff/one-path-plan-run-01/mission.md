@@ -6,8 +6,10 @@ Goal: implement the Plan half of ONE-PATH-EVERYWHERE-01 — a sole-owner bash en
 quota-filter / journal patterns, do not fork new conventions).
 
 Authoritative design: `docs/handoff/one-review-path-2026-08-06/design-plan-diagnose.md`
-(census rebuilt from source; §0 documents the missing-prerequisite gap — trust its
-file:line census, treat §7 as open questions, not verdicts).
+(census rebuilt from source). Its §0 "missing prerequisite" gap is now CLOSED — the files
+were recovered into the same dir: read `design.md` (one-review-path consolidation design)
+and `mission-build-r1.md` too; where design-plan-diagnose.md §7 raised conditional
+questions against the unseen design.md, resolve them against the real file.
 
 Scope:
 1. `leadv2-plan-run.sh` owns Phase 2 Plan end-to-end: resolves a planner arm pool
