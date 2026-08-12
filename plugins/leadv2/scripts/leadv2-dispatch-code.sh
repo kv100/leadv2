@@ -3098,8 +3098,22 @@ cmd_resolve() {
     done
     if (( _pp_ok == 0 )); then
       emit decision "architect_prepass task=${sig8} status=parked reason=no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts action=not_dispatched"
+      # PLUGIN-RELIABILITY-01 D3: loud prepass_parked signal so supervise surfaces it.
+      emit decision "prepass_parked task=${sig8} founder_task_id=${founder_task_id} reason=no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts last_reason=${ARCHITECT_PREPASS_REASON:-unknown}"
       log_err "architect prepass produced no design for product task=${sig8} after ${ARCHITECT_PREPASS_ATTEMPTS} attempts -- task PARKED, not dispatched."
       _dl_note "${sig8}" parked "no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts" "" "${founder_task_id}"
+      # PLUGIN-RELIABILITY-01 D3 (round 2): write a questions/ pending entry
+      # so the supervise loop's _pc_emit_pending_questions surfaces it to the
+      # founder. --no-block: writes the V2 control-plane record and returns
+      # immediately — the question is visible in the questions dir for the
+      # founder/supervise loop, but the dispatcher does NOT hang for 1800s
+      # (round 1 Critical: --timeout 1800 blocked cmd_resolve synchronously).
+      _ask_bin="${SCRIPT_DIR}/leadv2-ask.sh"
+      if [[ -x "${_ask_bin}" ]]; then
+        bash "${_ask_bin}" "dispatch-${sig8}" "Architect prepass parked after ${ARCHITECT_PREPASS_ATTEMPTS} attempts (last: ${ARCHITECT_PREPASS_REASON:-unknown}). Retry or abort?" \
+          --option "retry|Retry prepass" --option "abort|Abort task" \
+          --default-option "retry" --no-block >/dev/null 2>&1 || true
+      fi
       exit 3
     fi
     # PHASES-ARE-THE-ONLY-PATH-01: record plan phase done (prepass produced a design).
@@ -3600,6 +3614,13 @@ ${mission}"
             _quota_gate_reroute=1
             _reenter=1
             break
+          fi
+          # PLUGIN-RELIABILITY-01 D5: journal reorder failure so refusal chains
+          # are debuggable instead of silently falling through.
+          if [[ ${_qg_rc} -ne 0 ]]; then
+            emit decision "router_v2_reorder_failed task=${sig8} rc=${_qg_rc} reason=resolve_nonzero"
+          elif [[ -z "${_qg_eligible}" ]]; then
+            emit decision "router_v2_reorder_failed task=${sig8} rc=0 reason=no_eligible_arms"
           fi
         fi
       fi
