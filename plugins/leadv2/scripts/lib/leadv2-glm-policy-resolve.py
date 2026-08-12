@@ -45,6 +45,10 @@ DEFAULT_BUILD_SPILL = ["glm", "codex", "sonnet"]
 # still lists a retired arm (e.g. kimi) cannot resurrect it. Must match the
 # case-rows in _candidate_chain_for_arm (leadv2-dispatch-code.sh).
 DISPATCHABLE_BUILD_ARMS = {"glm", "codex", "sonnet"}
+
+# PLANNER-MODELS-DECISION-01: glm and kimi are build-only and are never admitted
+# to a planning role. Role decides the SET; the ladder still decides the ORDER.
+DISPATCHABLE_PLAN_ARMS = {"codex", "sonnet", "opus", "fable"}
 DEFAULT_REVIEW_EXCLUSIONS = ["glm"]
 DEFAULT_BUILD_THRESHOLD_PCT = 80.0
 DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
@@ -389,7 +393,7 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
                          pcts: dict = None, kimi_bin: str = None,
                          signals: dict = None, rank_table: dict = None,
                          ladder_providers: dict = None, lockout_dir: str = None,
-                         now_epoch: int = None) -> dict:
+                         now_epoch: int = None, job: str = "review") -> dict:
     """dispatch-00629379 §3.2: the ordered, quota-filtered, author-excluding reviewer
     pool -- the fix for "review gate has no available reviewer". Unlike
     resolve_glm_policy() (single arm, build+review), this always returns every
@@ -417,6 +421,10 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     """
     gate = glm_policy.get("codex_quota_gate") or {}
     order = gate.get("review_arm_order") or list(DEFAULT_REVIEW_ARM_ORDER)
+    # PLANNER-MODELS-DECISION-01: plan job filters the pool against DISPATCHABLE_PLAN_ARMS
+    # (excludes glm/kimi). Review and build keep the existing unfiltered order.
+    if job == "plan":
+        order = [a for a in order if a in DISPATCHABLE_PLAN_ARMS]
     codex_threshold = gate.get("review_threshold_pct", DEFAULT_REVIEW_THRESHOLD_PCT)
     glm_threshold = gate.get("glm_review_threshold_pct", DEFAULT_GLM_REVIEW_THRESHOLD_PCT)
     anthropic_threshold = gate.get("anthropic_review_threshold_pct", DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT)
@@ -669,10 +677,11 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
         # blocked arm in spill (true for every shipped config today; glm is
         # always first).
         blocked = {"codex"} if codex_blocked else set()
+        _dispatchable = DISPATCHABLE_PLAN_ARMS if job == "plan" else DISPATCHABLE_BUILD_ARMS
         if arm in blocked:
             skip = {arm, base_arm} | blocked
             nxt = [a for a in spill if a not in skip
-                   and a in DISPATCHABLE_BUILD_ARMS
+                   and a in _dispatchable
                    and not (job == "review" and a in exclusions)]
             arm = nxt[0] if nxt else "sonnet"
             rule = "codex_quota_gate_%dpct" % int(threshold)
@@ -765,6 +774,10 @@ def _main(argv):
     ap.add_argument("--base-arm", default="glm")
     ap.add_argument("--quota-live", default=None)
     ap.add_argument("--review-pool", action="store_true")
+    ap.add_argument("--plan-pool", action="store_true",
+                    help="ONE-PATH-PLAN-RUN-01: resolve a planner arm pool "
+                         "(--job plan, DISPATCHABLE_PLAN_ARMS filter, no author "
+                         "exclusion). Structurally identical to --review-pool.")
     ap.add_argument("--author", default="")
     ap.add_argument("--kimi-bin", default=None,
                     help="kimi-coder.sh path for the review-pool probe gate "
@@ -835,21 +848,26 @@ def _main(argv):
 
         # dispatch-00629379: additive-only -- absent --review-pool, output above is
         # byte-identical to pre-change (v1-equivalence, design §7 test f).
-        if args.review_pool:
+        if args.review_pool or args.plan_pool:
+            # ONE-PATH-PLAN-RUN-01: --plan-pool uses the same resolve_review_pool
+            # with job=plan (already filtered by DISPATCHABLE_PLAN_ARMS at line 427)
+            # and no author exclusion (plan has no author-exclusion concept).
+            _pool_job = "plan" if args.plan_pool else args.job
             pool_result = resolve_review_pool(glm_policy, args.author, quota_live_bin,
                                               kimi_bin=kimi_bin, signals=signals,
                                               rank_table=rank_table, ladder_providers=ladder_providers,
-                                              lockout_dir=lockout_dir, now_epoch=now_epoch)
+                                              lockout_dir=lockout_dir, now_epoch=now_epoch,
+                                              job=_pool_job)
             _emit_pool_lines(pool_result["reviewer"], pool_result["pool"], pool_result["refusal"])
         return 0
     except Exception:
         # D2: resolver_error path -- MUST still print reviewer=/pool=/refusal= when
-        # --review-pool was requested, via the SAME independent floor re-derivation
-        # the top-level except in __main__ uses, so a crash anywhere above (a bad
-        # signals JSON that somehow slips past its own try/except, a resolve_glm_policy
-        # bug, anything) never regresses to the old silent no-op.
+        # --review-pool/--plan-pool was requested, via the SAME independent floor
+        # re-derivation the top-level except in __main__ uses, so a crash anywhere
+        # above (a bad signals JSON that somehow slips past its own try/except, a
+        # resolve_glm_policy bug, anything) never regresses to the old silent no-op.
         _emit_fallback(args.job, "resolver_error")
-        if args.review_pool:
+        if args.review_pool or args.plan_pool:
             reviewer, pool, refusal = _best_effort_floor_pool(argv)
             _emit_pool_lines(reviewer, pool, refusal)
         return 0
@@ -866,7 +884,7 @@ if __name__ == "__main__":
         sys.stderr.write("leadv2-glm-policy-resolve.py: resolver_error: %s\n" % _e)
         _argv = sys.argv[1:]
         _emit_fallback(_job_from_argv(_argv), "resolver_error")
-        if "--review-pool" in _argv:
+        if "--review-pool" in _argv or "--plan-pool" in _argv:
             _reviewer, _pool, _refusal = _best_effort_floor_pool(_argv)
             _emit_pool_lines(_reviewer, _pool, _refusal)
         sys.exit(0)
