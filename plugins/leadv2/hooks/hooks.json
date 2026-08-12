@@ -658,6 +658,13 @@
           },
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-continuation-guard.sh\"",
+            "timeout": 5,
+            "continueOnBlock": true,
+            "statusMessage": "Continuation-guard: checking for silent stops..."
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-idle-lead-guard.sh\"",
             "timeout": 10,
             "continueOnBlock": true,
