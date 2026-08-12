@@ -298,13 +298,19 @@ run_planner_arm() { # <arm> <role> — sets planner_rc, writes output to plan-ar
     {
       printf '%s\n' "${engine_owned_notice}"
       printf '\nMISSION:\n%s\n' "${MISSION_TEXT}"
-      printf '\nYou are the architect. Produce a YAML document with ONLY these judgment fields.\n'
-      printf 'Answer with one fenced block:\n\n```yaml\nPLAN_YAML:\ndecisions: [...]\noff_limits: [...]\nplan:\n  steps: [...]\nacceptance:\n  surface: <rendered_line|prod_db_row|log_line|http_response|file_artifact>\n  observable: <what a human sees at the surface>\nrisk: <low|medium|high>\n```\n'
+      if [[ "${MODE}" == "diagnose" ]]; then
+        printf '\nYou are the diagnostic architect. Produce a root-cause analysis.\n'
+        printf 'Answer with one fenced block:\n\n```yaml\nPLAN_YAML:\nroot_cause: <one-sentence root cause>\nconfidence: <high|medium|low>\nevidence_files: [<paths>]\nfix_hint: <suggested fix direction>\nalternates:\n  - <alternate explanation>\n```\n'
+        [[ -n "${_diag_input:-}" ]] && printf '\nEVIDENCE INPUT:\n%s\n' "${_diag_input}"
+      else
+        printf '\nYou are the architect. Produce a YAML document with ONLY these judgment fields.\n'
+        printf 'Answer with one fenced block:\n\n```yaml\nPLAN_YAML:\ndecisions: [...]\noff_limits: [...]\nplan:\n  steps: [...]\nacceptance:\n  surface: <rendered_line|prod_db_row|log_line|http_response|file_artifact>\n  observable: <what a human sees at the surface>\nrisk: <low|medium|high>\n```\n'
+      fi
     } > "${planner_mission}"
   else
     # Critic role: read the architect draft and emit findings + revised judgment.
-    local arch_draft="${HANDOFF}/plan-arm-${arm}.yaml"
-    [[ -f "${arch_draft}" ]] || arch_draft="${HANDOFF}/plan-arm-codex.yaml"
+    # _ARCHITECT_DRAFT_ARM is set before the critic pass (plan/prepass only).
+    local arch_draft="${HANDOFF}/plan-arm-${_ARCHITECT_DRAFT_ARM:-${arm}}.yaml"
     {
       printf '%s\n' "${engine_owned_notice}"
       printf '\nMISSION:\n%s\n' "${MISSION_TEXT}"
@@ -313,6 +319,12 @@ run_planner_arm() { # <arm> <role> — sets planner_rc, writes output to plan-ar
       printf '\n--- ARCHITECT DRAFT ---\n'
       cat "${arch_draft}" 2>/dev/null
     } > "${planner_mission}"
+  fi
+
+  # Append retry overlay if present — the retry path writes instructions here
+  # because this function truncates planner_mission with > on every dispatch.
+  if [[ -f "${HANDOFF}/plan-arm-${suffix}.retry-overlay" ]]; then
+    cat "${HANDOFF}/plan-arm-${suffix}.retry-overlay" >> "${planner_mission}"
   fi
 
   if [[ "${arm}" == "codex" ]]; then
@@ -372,12 +384,18 @@ extract_plan_yaml() { # <file> → stdout: extracted YAML
 # ---------------------------------------------------------------------------
 # 7. Diagnose mode main flow
 # ---------------------------------------------------------------------------
+# Initialise planner early so set -u doesn't trip in the diagnose block
+# (it's assigned at line ~519 in the plan flow, after this block exits).
+planner=""
+
 if [[ "${MODE}" == "diagnose" ]]; then
   ROOT_CAUSE="${HANDOFF}/root-cause.md"
 
   resolver_out="$(resolve_plan_pool_call)"
   pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
   refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
+  # Extract planner fallback (same as plan flow line ~519).
+  planner="$(printf '%s\n' "${resolver_out}" | sed -nE 's/^(reviewer|planner)=//p' | head -n1)"
 
   fanout_list=()
   while IFS= read -r _arm; do
@@ -396,7 +414,7 @@ if [[ "${MODE}" == "diagnose" ]]; then
     fi
   fi
 
-  # Build diagnose-specific input — no persona-engine constants (design §2.2).
+  # Build diagnose-specific input — no repo-specific constants (design §2.2).
   _diag_input=""
   if [[ -n "${LOG_PATH}" && -f "${LOG_PATH}" ]]; then
     _diag_input="$(tail -100 "${LOG_PATH}" 2>/dev/null || true)"
@@ -445,6 +463,14 @@ if [[ "${MODE}" == "diagnose" ]]; then
   # Read the diagnose artifact from disk (not stdout — §3.3 artifact discipline).
   _diag_artifact="${HANDOFF}/plan-arm-${ran_arm}.yaml"
   [[ -s "${_diag_artifact}" ]] || _diag_artifact="${HANDOFF}/plan-arm-${ran_arm}.md"
+
+  # Extract PLAN_YAML fenced block (same as plan mode) so the validator reads
+  # clean YAML with root_cause/confidence keys, not raw fenced output.
+  _diag_extracted="${HANDOFF}/.diag-extracted.yaml"
+  extract_plan_yaml "${_diag_artifact}" > "${_diag_extracted}" 2>/dev/null || true
+  if [[ -s "${_diag_extracted}" ]]; then
+    _diag_artifact="${_diag_extracted}"
+  fi
 
   # Validate: root_cause and confidence must be present and non-empty.
   _has_root_cause="$(python3 -c '
@@ -495,7 +521,9 @@ NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'acceptance:\n'
   printf '  authored_at: %s\n' "${NOW_ISO}"
 } > "${CONTEXT_YAML}.skeleton"
-mv -f "${CONTEXT_YAML}.skeleton" "${CONTEXT_YAML}"
+# Do NOT mv skeleton to CONTEXT_YAML here — a blocked run must preserve a
+# pre-existing valid context.yaml. The merge step (validate_and_merge) reads
+# the skeleton file and writes the final context.yaml only on success.
 
 # ---------------------------------------------------------------------------
 # 9. Pool resolution + fan-out for plan/prepass
@@ -620,6 +648,7 @@ ran_arms_csv="${architect_arm}"
 # ---------------------------------------------------------------------------
 if [[ "${MODE}" != "prepass" ]]; then
   _critic_arm="$(next_ok_arm_after "${architect_arm}" || true)"
+  _ARCHITECT_DRAFT_ARM="${architect_arm}"
   if [[ -z "${_critic_arm}" ]]; then
     _critic_arm="${architect_arm}"
   fi
@@ -669,7 +698,7 @@ fi
 VALIDATE_REASON=""
 validate_and_merge() {
   local out_ctx="${CONTEXT_YAML}"
-  local -a merge_args=(--skeleton "${out_ctx}" --out "${out_ctx}.merged")
+  local -a merge_args=(--skeleton "${out_ctx}.skeleton" --out "${out_ctx}.merged")
   local d
   for d in ${_arm_drafts}; do
     merge_args+=(--arm "${d}")
@@ -724,11 +753,13 @@ else
   [[ -n "${_retry_arm}" ]] || _retry_arm="${architect_arm}"
 
   _retry_reason="$(cat "${HANDOFF}/.merge-err" "${HANDOFF}/.validate-err" "${HANDOFF}/.precedence-err" 2>/dev/null | head -20)"
+  # Write retry instructions to a .retry-overlay file — run_planner_arm will
+  # append this AFTER writing its base mission (which truncates with >).
   {
     printf '\n\n--- RETRY: previous attempt failed validation. Fix these issues: ---\n'
     printf '%s\n' "${_retry_reason}"
     printf '\nRe-emit the complete judgment block with these issues fixed.\n'
-  } >> "${HANDOFF}/plan-arm-${_retry_arm}.mission"
+  } > "${HANDOFF}/plan-arm-${_retry_arm}.retry-overlay"
 
   _engine_run_arm_with_timeout "${_retry_arm}" "architect"
   _retry_out="${HANDOFF}/plan-arm-${_retry_arm}.yaml"

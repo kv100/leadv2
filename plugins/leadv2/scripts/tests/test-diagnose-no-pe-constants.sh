@@ -21,15 +21,17 @@ fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
 
 bash -n "$0" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
 
-# Search for any persona-engine constant.
+# Search for any persona-engine constant in NON-COMMENT lines only
+# (engine comments may reference the concept without embedding it in code).
+_engine_nocomments="$(grep -vE '^\s*#' "${ENGINE}" 2>/dev/null)"
 _pe_found=""
-if grep -qi 'journalctl.*persona-engine' "${ENGINE}" 2>/dev/null; then
+if printf '%s\n' "${_engine_nocomments}" | grep -qi 'journalctl.*persona-engine' 2>/dev/null; then
   _pe_found="${_pe_found} journalctl-persona-engine"
 fi
-if grep -qi 'persona_engine\b' "${ENGINE}" 2>/dev/null; then
+if printf '%s\n' "${_engine_nocomments}" | grep -qiE 'persona_engine\b' 2>/dev/null; then
   _pe_found="${_pe_found} persona_engine-identifier"
 fi
-if grep -qi 'persona-engine' "${ENGINE}" 2>/dev/null; then
+if printf '%s\n' "${_engine_nocomments}" | grep -qi 'persona-engine' 2>/dev/null; then
   _pe_found="${_pe_found} persona-engine-string"
 fi
 
@@ -40,7 +42,7 @@ else
 fi
 
 # Also verify the engine does not default --log-path to any PE-specific path.
-if grep -q 'journalctl' "${ENGINE}" 2>/dev/null; then
+if printf '%s\n' "${_engine_nocomments}" | grep -q 'journalctl' 2>/dev/null; then
   fail "engine contains a journalctl call (not portable)"
 else
   pass "engine has no journalctl calls"
