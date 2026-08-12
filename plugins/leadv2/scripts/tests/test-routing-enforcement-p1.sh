@@ -23,6 +23,34 @@ TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "${TMP_ROOT}"' EXIT
 FAIL=0
 
+# ── Hermeticity: clean parent-session LEADV2_* env vars ──────────────────
+# The dispatch code reads LEADV2_PROJECT_ROOT (active.yaml, LEAD_V2_STATE.md)
+# and LEADV2_LANE_WORK_ROOT (WORK_ROOT override) directly from the environment
+# — it never re-sets them from CLAUDE_PROJECT_ROOT.  When the suite runs
+# inside a leadv2 dispatch lane, these are inherited from the parent lead
+# session and point at persona-engine's state, leaking real registry data
+# into the test sandbox and hanging on real file locks.  (E2E-GATE-RESIDUE-01)
+unset LEADV2_PROJECT_ROOT LEADV2_LANE_WORK_ROOT LEADV2_TASK_ID \
+      LEADV2_PARENT_SESSION_ID LEADV2_DISPATCH_LANE_NAME
+
+# Skip the post-spawn early-verdict poll window — the stub codex/sonnet bins
+# never report "complete", so the poll loop would sleep for the full 20s
+# default per successful spawn, making the suite time out.  (E2E-GATE-RESIDUE-01)
+export LEADV2_ARM_EARLY_VERDICT_S=0
+
+# Pin CACHE_BASE to the sandbox so the dispatch ledger, quota-lockout files,
+# fence log, review provenance and every other CACHE_BASE-derived store lives
+# inside TMP_ROOT.  Individual tests may override with a per-test sub-dir;
+# this global default ensures any test that forgets to override still hits the
+# sandbox and not the real shared HOME cache (which can block on a live
+# session's flock).  (E2E-GATE-RESIDUE-01 round-3)
+export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache"
+mkdir -p "${LEADV2_DISPATCH_CACHE_DIR}"
+
+# Prevent a real ~/.claude/leadv2-excluded-arms file from leaking into the
+# test sandbox and silently removing candidate arms.  (E2E-GATE-RESIDUE-01)
+unset LEADV2_EXCLUDED_ARMS
+
 # Fail-closed spawn fence: every provider bin env var is pointed at a poison
 # script that exits non-zero and prints a marker. Any test that forgets to
 # override one gets a loud, offline failure instead of a live billed session.
@@ -41,6 +69,24 @@ export LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh"
 printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "${TMP_ROOT}/poison-sonnet.sh"
 chmod +x "${TMP_ROOT}/poison-sonnet.sh"
 _SUITE_START_EPOCH="$(date +%s)"
+
+# Hermetic dispatch wrapper: the dispatch code resolves PROJECT_ROOT from
+# CLAUDE_PROJECT_ROOT / PROJECT_ROOT, but helper functions (active.yaml,
+# LEAD_V2_STATE.md) read LEADV2_PROJECT_ROOT directly.  This wrapper derives
+# LEADV2_PROJECT_ROOT from the same source as the dispatch code so the
+# registry never leaks into a parent-session tree.  (E2E-GATE-RESIDUE-01)
+DISPATCH_WRAPPER="${TMP_ROOT}/dispatch-hermetic.sh"
+cat > "${DISPATCH_WRAPPER}" <<WEOF
+#!/usr/bin/env bash
+_cr="\${CLAUDE_PROJECT_ROOT:-\${CLAUDE_PROJECT_DIR:-\${PROJECT_ROOT:-}}}"
+[[ -n "\$_cr" ]] && export LEADV2_PROJECT_ROOT="\$_cr"
+exec bash "${DISPATCH_BIN}" "\$@"
+WEOF
+chmod +x "${DISPATCH_WRAPPER}"
+# Every test below uses DISPATCH_WRAPPER instead of DISPATCH_BIN.
+# Tests that set CLAUDE_PROJECT_ROOT or PROJECT_ROOT as a command-prefix env
+# var will have LEADV2_PROJECT_ROOT derived from it by the wrapper.
+
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s -- %s\n' "$1" "$2"; FAIL=1; }
 
@@ -178,7 +224,7 @@ refusal_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/refusal-root" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/refusing-kimi-1.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/live-codex.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only quota refusal advances chain' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only quota refusal advances chain' 2>&1)"
 refusal_rc=$?
 if [[ ${refusal_rc} -eq 0 ]] \
   && grep -q 'reason=glm_refused_quota_gate' <<<"${refusal_out}" \
@@ -199,7 +245,7 @@ peak_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/peak-root" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/refusing-kimi-2.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/live-codex.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only peak refusal advances chain' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only peak refusal advances chain' 2>&1)"
 peak_rc=$?
 if [[ ${peak_rc} -eq 0 ]] \
   && grep -q 'reason=glm_refused_peak_hours' <<<"${peak_out}" \
@@ -222,7 +268,7 @@ crash_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/crash-root" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/failing-codex.sh" \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/failing-sonnet.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only launcher crash stays failure' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only launcher crash stays failure' 2>&1)"
 crash_rc=$?
 if [[ ${crash_rc} -eq 4 ]] \
   && grep -q 'spawn_failed by=router model=glm.*rc=42.*reason=launcher_nonzero_exit' <<<"${crash_out}" \
@@ -239,13 +285,13 @@ dedup_first="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/dedup-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/dedup-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/live-glm.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only one mission only once' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only one mission only once' 2>&1)"
 dedup_first_rc=$?
 dedup_second="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/dedup-root" \
   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/dedup-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/live-glm.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only one mission only once' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only one mission only once' 2>&1)"
 dedup_second_rc=$?
 if [[ ${dedup_first_rc} -eq 0 && ${dedup_second_rc} -eq 2 ]] \
   && grep -q 'dispatch_refused reason=duplicate_task_signature' <<<"${dedup_second}"; then
@@ -256,10 +302,10 @@ fi
 
 diff_hash='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 review_first="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/dedup-root" LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/review-cache" \
-  bash "${DISPATCH_BIN}" record-review --diff-hash "${diff_hash}" --verdict PASS 2>&1)"
+  bash "${DISPATCH_WRAPPER}" record-review --diff-hash "${diff_hash}" --verdict PASS 2>&1)"
 review_first_rc=$?
 review_second="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/dedup-root" LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/review-cache" \
-  bash "${DISPATCH_BIN}" record-review --diff-hash "${diff_hash}" --verdict PASS 2>&1)"
+  bash "${DISPATCH_WRAPPER}" record-review --diff-hash "${diff_hash}" --verdict PASS 2>&1)"
 review_second_rc=$?
 if [[ ${review_first_rc} -eq 0 && ${review_second_rc} -eq 2 ]] \
   && grep -q 'review_refused reason=duplicate_diff_hash' <<<"${review_second}"; then
@@ -273,12 +319,12 @@ make_live_glm "${TMP_ROOT}/slow-glm.sh" 1
 race_cache="${TMP_ROOT}/race-cache"
 CLAUDE_PROJECT_ROOT="${TMP_ROOT}/race-root" LEADV2_DISPATCH_CACHE_DIR="${race_cache}" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/slow-glm.sh" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only racing reservation' >"${TMP_ROOT}/race-one.out" 2>&1 &
+  bash "${DISPATCH_WRAPPER}" 'plugin-only racing reservation' >"${TMP_ROOT}/race-one.out" 2>&1 &
 race_one_pid=$!
 sleep 0.1
 CLAUDE_PROJECT_ROOT="${TMP_ROOT}/race-root" LEADV2_DISPATCH_CACHE_DIR="${race_cache}" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/slow-glm.sh" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only racing reservation' >"${TMP_ROOT}/race-two.out" 2>&1 &
+  bash "${DISPATCH_WRAPPER}" 'plugin-only racing reservation' >"${TMP_ROOT}/race-two.out" 2>&1 &
 race_two_pid=$!
 wait "${race_one_pid}"; race_one_rc=$?
 wait "${race_two_pid}"; race_two_rc=$?
@@ -349,7 +395,7 @@ ladder_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/ladder-root" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/ladder-kimi.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/ladder-codex.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only ladder from yaml' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only ladder from yaml' 2>&1)"
 ladder_rc=$?
 if [[ ${ladder_rc} -eq 0 ]] \
   && grep -q 'candidate_chain' <<<"${ladder_out}"; then
@@ -379,7 +425,7 @@ lockout_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockout-root" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/lockout-kimi.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockout-codex.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only lockout skips glm' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only lockout skips glm' 2>&1)"
 lockout_rc=$?
 if [[ ${lockout_rc} -eq 0 ]] \
   && grep -q 'quota_precheck_skip model=glm' <<<"${lockout_out}" \
@@ -408,7 +454,7 @@ pastlock_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/pastlock-root" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/pastlock-kimi.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/pastlock-codex.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only past lockout ignored future codex locked' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only past lockout ignored future codex locked' 2>&1)"
 pastlock_rc=$?
 if [[ ${pastlock_rc} -eq 0 ]] \
   && grep -q 'worker_spawned by=router model=glm' <<<"${pastlock_out}" \
@@ -435,7 +481,7 @@ nolock_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/nolock-root" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/nolock-kimi.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/nolock-codex.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only no glm lockout codex locked' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only no glm lockout codex locked' 2>&1)"
 nolock_rc=$?
 if [[ ${nolock_rc} -eq 0 ]] \
   && grep -q 'worker_spawned by=router model=glm' <<<"${nolock_out}" \
@@ -466,7 +512,7 @@ selfhost_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/selfhost-glm.sh" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/selfhost-kimi.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
-  bash "${DISPATCH_BIN}" 'plugin-only selfhost routing' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only selfhost routing' 2>&1)"
 selfhost_rc=$?
 if [[ ${selfhost_rc} -eq 0 ]] \
   && ! grep -q 'no_routing_yaml' <<<"${selfhost_out}"; then
@@ -494,7 +540,7 @@ degraded_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/degraded-glm.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
-  bash "${DISPATCH_BIN}" 'plugin-only degraded mode test' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only degraded mode test' 2>&1)"
 degraded_rc=$?
 if [[ ${degraded_rc} -eq 0 ]] \
   && grep -q 'routing_config_degraded' <<<"${degraded_out}" \
@@ -527,7 +573,7 @@ prodtest_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/prodtest-root" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/prodtest-codex.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
-  bash "${DISPATCH_BIN}" 'plugin-only production yaml dry run' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only production yaml dry run' 2>&1)"
 _prodtest_arms="$(grep 'candidate_chain' <<<"${prodtest_out}" | sed -n 's/.*arms=//p' | head -1)"
 if [[ "${_prodtest_arms}" == "glm,codex,sonnet" ]] \
   && ! grep -q 'kimi' <<<"${_prodtest_arms}"; then
@@ -550,7 +596,7 @@ lockwrite_out1="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockwrite-root" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockwrite-codex.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
-  bash "${DISPATCH_BIN}" 'plugin-only lockout write read run1' 2>&1)"
+  bash "${DISPATCH_WRAPPER}" 'plugin-only lockout write read run1' 2>&1)"
 lockwrite_rc1=$?
 _lockout_file="${TMP_ROOT}/lockwrite-cache/quota-lockout-glm.json"
 if [[ ${lockwrite_rc1} -ne 0 ]] \
@@ -575,7 +621,7 @@ else
     LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockwrite-codex.sh" \
     LEADV2_DISPATCH_ARCHITECT_GATE=0 \
     LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
-    bash "${DISPATCH_BIN}" 'plugin-only lockout write read run2' 2>&1)"
+    bash "${DISPATCH_WRAPPER}" 'plugin-only lockout write read run2' 2>&1)"
   lockwrite_rc2=$?
   if [[ ${lockwrite_rc2} -eq 0 ]] \
     && grep -q 'quota_precheck_skip model=glm' <<<"${lockwrite_out2}" \
