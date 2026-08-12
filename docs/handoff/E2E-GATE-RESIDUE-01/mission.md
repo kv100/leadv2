@@ -55,6 +55,22 @@ other CACHE_BASE-derived store live in the sandbox. Audit the suite for any othe
 HOME-scoped path the dispatcher touches (glm-runs handles etc.) and pin those too.
 Prove: p1 suite completes < 3 min with rc=0, run twice.
 
+## Round 4 addendum (2026-08-12 ~15:35Z) — cwd-dependent divergence, the last one
+
+Rounds 2-3 are merged; p1 + vocab are byte-identical between main and the lane worktree
+(verified by md5). Yet: the SAME p1 suite passes rc=0 when run with cwd = the lane
+worktree, and fails when run with cwd = ~/Projects/leadv2. Failing cases: "quota refusal
+advances chain" and "peak-hours ..." — glm refusal happens correctly, but the dispatcher
+never advances to the stubbed codex arm on main-cwd (no `worker_spawned model=codex`),
+exits rc=2. Traces saved side by side in THIS directory: `m-p1-final.log` (main cwd,
+red) vs `r3-p1b.log` (worktree cwd, green).
+
+Find the cwd-dependent read in leadv2-dispatch-code.sh on the path between
+`arm_refused ... glm` and the codex arm attempt (suspects: quota precheck files, ref/
+routing yaml discovery walking up from PWD, codex circuit state, WORK_ROOT derivation)
+and sandbox it in the suite (or fix the dispatcher read if it's genuinely wrong to
+depend on PWD). Prove: p1 rc=0 run from BOTH cwds, twice each.
+
 Green proof required: `bash plugins/leadv2/scripts/tests/run-core-offline.sh` rc=0 ON
 THE MAIN TREE (~/Projects/leadv2), run twice consecutively (proves no self-pollution),
 full tail attached to summary. Never weaken assertions to pass. NOTE: a foreign session
