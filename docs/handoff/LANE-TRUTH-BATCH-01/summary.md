@@ -48,4 +48,4 @@
 
 - `test-lane-truth-batch-01.sh`: **pass=15 fail=0**
 - Mutation test: removing set_log_path → **pass=14 fail=1** (gate fires)
-- `run-core-offline.sh`: pending (running)
+- `run-core-offline.sh`: **suites passed=44 failed=0 missing=0** (rc=0)
