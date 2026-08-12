@@ -152,6 +152,9 @@ find "$CACHE_DIR" -name 'prefix-*.md' -mmin "+$((CACHE_TTL_SEC / 60))" -delete 2
 
 # Primary source: .claude/agents/<role>.md (full definition with skills, MCP, model)
 # Fallback: .claude/roles/<role>.md (legacy leadv2-specific roles, being phased out)
+# PLUGIN-RELIABILITY-01 D2: lane worktrees do not materialize .claude/agents/.
+# When the role file is absent in WORK_ROOT ($PROJECT_ROOT), fall back to the
+# main checkout's agents dir via git's common-dir before giving up.
 ROLE_FILE_AGENT="$PROJECT_ROOT/.claude/agents/${ROLE}.md"
 ROLE_FILE_ROLES="$PROJECT_ROOT/.claude/roles/${ROLE}.md"
 
@@ -162,8 +165,22 @@ elif [[ -f "$ROLE_FILE_ROLES" ]]; then
   ROLE_FILE="$ROLE_FILE_ROLES"
   ROLE_SOURCE="roles"
 else
-  echo "[claude-subsession] role file not found in agents/ or roles/: $ROLE" >&2
-  exit 1
+  # PLUGIN-RELIABILITY-01 D2: try the main checkout (worktree common dir).
+  _main_checkout=""
+  _common_dir="$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$_common_dir" ]]; then
+    _main_checkout="$(cd "$PROJECT_ROOT" && cd "$_common_dir/.." && pwd 2>/dev/null || true)"
+  fi
+  if [[ -n "$_main_checkout" && -f "$_main_checkout/.claude/agents/${ROLE}.md" ]]; then
+    ROLE_FILE="$_main_checkout/.claude/agents/${ROLE}.md"
+    ROLE_SOURCE="agents_worktree_fallback"
+  elif [[ -n "$_main_checkout" && -f "$_main_checkout/.claude/roles/${ROLE}.md" ]]; then
+    ROLE_FILE="$_main_checkout/.claude/roles/${ROLE}.md"
+    ROLE_SOURCE="roles_worktree_fallback"
+  else
+    echo "[claude-subsession] role file not found in agents/ or roles/: $ROLE" >&2
+    exit 1
+  fi
 fi
 
 [[ -f "$MISSION_FILE" ]] || { echo "[claude-subsession] mission file missing: $MISSION_FILE" >&2; exit 1; }
@@ -186,8 +203,12 @@ fi
 SESSION_MAP_FILE="$HANDOFF_DIR/sessions.map"
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$SESSION_LABEL" "$SESSION_ID" >> "$SESSION_MAP_FILE"
 
-# Strip YAML frontmatter if source is agents/ (body-only as system prompt)
-if [[ "$ROLE_SOURCE" == "agents" ]]; then
+# Strip YAML frontmatter if source is agents/ (body-only as system prompt).
+# PLUGIN-RELIABILITY-01 D2 (round 2): agents_worktree_fallback uses the same
+# agents/<role>.md format (with YAML frontmatter), so it must also be stripped.
+# Round 1 tested only == "agents", so the fallback injected raw YAML frontmatter
+# as the system prompt and loaded zero skills.
+if [[ "$ROLE_SOURCE" == "agents" || "$ROLE_SOURCE" == "agents_worktree_fallback" ]]; then
   SYSTEM_PROMPT=$(awk 'BEGIN{c=0} /^---$/{c++; next} c>=2 {print}' "$ROLE_FILE")
   # Extract skills list via python3 yaml (robust vs awk for multi-line frontmatter values)
   AGENT_SKILLS=$(python3 -c "
