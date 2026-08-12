@@ -406,6 +406,21 @@ try:
         target["writes"] = writes_csv
         target["updated_at"] = _now_iso()
 
+    # LANE-TRUTH-BATCH-01 Row 1: stamp the authoritative log_path AFTER
+    # registration. dispatch-code.sh self-registers; the register op defaults
+    # log_path to pulse.md, but the real worker stream lives at
+    # docs/handoff/dispatch-<sig8>/developer.stream.jsonl. fanout's finalize
+    # register (_fanout_register_session) cannot update it because its live-PID
+    # guard sees dispatch-code.sh's durable PID and skips the overwrite.
+    elif op == "set_log_path":
+        task_id, log_path = args
+        target = next((s for s in sessions if s.get("task_id") == task_id), None)
+        if target is None:
+            print(f"[registry] task not registered for set_log_path: {task_id}", file=sys.stderr)
+            sys.exit(4)
+        target["log_path"] = log_path
+        target["updated_at"] = _now_iso()
+
     # SD-LEDGER-SWEEP-HARDEN-01: stamps the dispatch-code.sh attempt token (its own $$,
     # already used to key the dispatch-ledger's write-once-per-attempt check -- see
     # leadv2-dispatch-ledger.sh's dispatch_ledger_write_terminal doc header) onto the
@@ -567,6 +582,16 @@ leadv2_active_set_worktree() {
   local task_id="${1:?task_id required}" wt="${2:?worktree required}"
   [[ -d "$wt" ]] || return 0
   _leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" set_worktree "$task_id" "$wt"
+}
+
+# leadv2_active_set_log_path <task_id> <log_path>
+# Stamps the authoritative log_path (stream file) for liveness resolution.
+# LANE-TRUTH-BATCH-01 Row 1: dispatch-code.sh self-registers with the default
+# pulse.md path; this corrects it to docs/handoff/dispatch-<sig8>/developer.stream.jsonl
+# so liveness resolves the real stream instead of falling through to dead:no_handoff_dir.
+leadv2_active_set_log_path() {
+  local task_id="${1:?task_id required}" log_path="${2:?log_path required}"
+  _leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" set_log_path "$task_id" "$log_path"
 }
 
 # leadv2_active_unregister <task_id>
