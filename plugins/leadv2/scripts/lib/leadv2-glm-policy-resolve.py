@@ -45,6 +45,10 @@ DEFAULT_BUILD_SPILL = ["glm", "codex", "sonnet"]
 # still lists a retired arm (e.g. kimi) cannot resurrect it. Must match the
 # case-rows in _candidate_chain_for_arm (leadv2-dispatch-code.sh).
 DISPATCHABLE_BUILD_ARMS = {"glm", "codex", "sonnet"}
+
+# PLANNER-MODELS-DECISION-01: glm and kimi are build-only and are never admitted
+# to a planning role. Role decides the SET; the ladder still decides the ORDER.
+DISPATCHABLE_PLAN_ARMS = {"codex", "sonnet", "opus", "fable"}
 DEFAULT_REVIEW_EXCLUSIONS = ["glm"]
 DEFAULT_BUILD_THRESHOLD_PCT = 80.0
 DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
@@ -389,7 +393,7 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
                          pcts: dict = None, kimi_bin: str = None,
                          signals: dict = None, rank_table: dict = None,
                          ladder_providers: dict = None, lockout_dir: str = None,
-                         now_epoch: int = None) -> dict:
+                         now_epoch: int = None, job: str = "review") -> dict:
     """dispatch-00629379 §3.2: the ordered, quota-filtered, author-excluding reviewer
     pool -- the fix for "review gate has no available reviewer". Unlike
     resolve_glm_policy() (single arm, build+review), this always returns every
@@ -417,6 +421,10 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     """
     gate = glm_policy.get("codex_quota_gate") or {}
     order = gate.get("review_arm_order") or list(DEFAULT_REVIEW_ARM_ORDER)
+    # PLANNER-MODELS-DECISION-01: plan job filters the pool against DISPATCHABLE_PLAN_ARMS
+    # (excludes glm/kimi). Review and build keep the existing unfiltered order.
+    if job == "plan":
+        order = [a for a in order if a in DISPATCHABLE_PLAN_ARMS]
     codex_threshold = gate.get("review_threshold_pct", DEFAULT_REVIEW_THRESHOLD_PCT)
     glm_threshold = gate.get("glm_review_threshold_pct", DEFAULT_GLM_REVIEW_THRESHOLD_PCT)
     anthropic_threshold = gate.get("anthropic_review_threshold_pct", DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT)
@@ -669,10 +677,11 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
         # blocked arm in spill (true for every shipped config today; glm is
         # always first).
         blocked = {"codex"} if codex_blocked else set()
+        _dispatchable = DISPATCHABLE_PLAN_ARMS if job == "plan" else DISPATCHABLE_BUILD_ARMS
         if arm in blocked:
             skip = {arm, base_arm} | blocked
             nxt = [a for a in spill if a not in skip
-                   and a in DISPATCHABLE_BUILD_ARMS
+                   and a in _dispatchable
                    and not (job == "review" and a in exclusions)]
             arm = nxt[0] if nxt else "sonnet"
             rule = "codex_quota_gate_%dpct" % int(threshold)
@@ -839,7 +848,8 @@ def _main(argv):
             pool_result = resolve_review_pool(glm_policy, args.author, quota_live_bin,
                                               kimi_bin=kimi_bin, signals=signals,
                                               rank_table=rank_table, ladder_providers=ladder_providers,
-                                              lockout_dir=lockout_dir, now_epoch=now_epoch)
+                                              lockout_dir=lockout_dir, now_epoch=now_epoch,
+                                              job=args.job)
             _emit_pool_lines(pool_result["reviewer"], pool_result["pool"], pool_result["refusal"])
         return 0
     except Exception:
