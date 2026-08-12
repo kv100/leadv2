@@ -129,6 +129,7 @@ HEAD
   # Extract _load_dispatch_ladder, _arm_provider, _filter_ladder_to_dispatchable,
   # and _build_candidate_chain from the dispatch script.
   sed -n '/^_load_dispatch_ladder()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_dispatchable_arms()/,/^}$/p' "$DISPATCH" >> "$harness_script"
   sed -n '/^_build_candidate_chain()/,/^}$/p' "$DISPATCH" >> "$harness_script"
   sed -n '/^_arm_provider()/,/^}$/p' "$DISPATCH" >> "$harness_script"
   sed -n '/^_filter_ladder_to_dispatchable()/,/^}$/p' "$DISPATCH" >> "$harness_script"
