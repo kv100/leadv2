@@ -1,5 +1,28 @@
 # PLUGIN-RELIABILITY-01 — audited product-close/dispatch defects (5 + 1 found today)
 
+## FIX ROUND (2026-08-12 ~19:15Z) — review FAIL: 3 Critical + 4 High
+
+Findings: docs/handoff/PLUGIN-RELIABILITY-01/review-findings.json (in the lane worktree).
+Blocking essence:
+- `_pc_process_alive` / `_pc_reap_worker` use unscoped `pgrep -f "$handle"`: SELF-MATCH
+  (the close gate's own argv contains the handle → always "alive", and reap would
+  SIGKILL the close gate itself) and can match/kill UNRELATED processes. Fix: track the
+  worker's own pid/pgid from the spawn record (glm-runs handle dir has the pids), match
+  by exact pid + verify its argv, never by substring pgrep of the whole host.
+- prepass-parked path calls leadv2-ask.sh SYNCHRONOUSLY with --timeout 1800 inside
+  cmd_resolve (dispatcher can hang 35 min) and then discards the answer, exit 3
+  unconditionally. Fix: fire-and-forget question write (or short timeout <=60s), honor
+  the retry answer or drop the option.
+- claude-subsession.sh:190 tests `== "agents"` so ROLE_SOURCE=agents_worktree_fallback
+  injects raw YAML frontmatter. Fix the comparison to accept the fallback source.
+- empty-status→dead needs a run-age/meta-existence grace guard (a just-spawned worker
+  without meta.yaml must not be declared dead).
+- Tests MUST be behavioral: source the real functions / run claude-subsession.sh and
+  assert observable behavior (a fake worker process, a fake handle collision, the
+  self-match case). Grep-on-source tests are forbidden — that is the lying-green
+  disease and it is why round 1 failed.
+All suites + run-core-offline rc=0. Then DELIVERABLE_COMPLETE.
+
 All confirmed 2026-08-12 (audit with file:line + two live incidents in one day).
 
 1. BREAKS-LANES — `leadv2-dispatch-product-close.sh:780` pc_worker_alive marks a worker
