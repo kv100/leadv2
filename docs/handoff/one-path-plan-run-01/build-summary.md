@@ -41,7 +41,7 @@ Key invariants:
   Empty `reads: []` is a valid engine-owned value; semantic emptiness is the
   acceptance-shape validator's job.
 
-### 4. Test suites (6 files, 27 assertions total)
+### 4. Test suites (8 files, 35 assertions total)
 
 | Suite | Design tests | Cases |
 |---|---|---|
@@ -49,7 +49,9 @@ Key invariants:
 | `test-plan-run-contract.sh` | 4, 5, acc | context.yaml validates after prepass; engine self-contained in bare bash with stub arms; **empty-body arm → blocked empty_response (acceptance observable)** |
 | `test-plan-run-arms-role-scoped.sh` | 6 | DISPATCHABLE_PLAN_ARMS membership via importlib; --plan-pool pool filters glm/kimi |
 | `test-plan-run-codex-disabled-degrades.sh` | 7 | codex_skipped_by_policy → arm_unavailable; end-to-end m3-market degrade → status=pass |
-| `test-plan-run-diagnose-mode.sh` | 10, 12 | no persona-engine constants; diagnose_run verbs; exit 9 for blocked; acceptance: skipped |
+| `test-plan-run-diagnose-mode.sh` | 10, 12 | no persona-engine constants; diagnose_run verbs; exit 9 for blocked; acceptance: skipped; **D1: diagnose stub → root-cause.md + gate pass; D2: empty-body → blocked empty_response** |
+| `test-diagnose-codex-disabled-degrades.sh` | 12 | diagnose_run verbs; root-cause.md artifact; no parked; **codex-disabled diagnose → non-codex arm produces root-cause.md** |
+| `test-diagnose-no-pe-constants.sh` | 10 | engine source (non-comment lines) has no persona-engine constants or journalctl calls |
 | `test-plan-run-codemap.sh` | 14 | BANDIT-WIRE-01 invariants; engine syntactically valid; reasonable size |
 
 ### 5. Fixtures
@@ -59,14 +61,16 @@ Key invariants:
 
 ## Test results
 
-### Plan-run suites (all pass)
+### Plan-run + diagnose suites (all pass)
 ```
 test-plan-run-acceptance-real.sh:       4 pass, 0 fail  rc=0
 test-plan-run-arms-role-scoped.sh:      4 pass, 0 fail  rc=0
 test-plan-run-codemap.sh:               4 pass, 0 fail  rc=0
 test-plan-run-codex-disabled-degrades:  4 pass, 0 fail  rc=0
 test-plan-run-contract.sh:              5 pass, 0 fail  rc=0
-test-plan-run-diagnose-mode.sh:         6 pass, 0 fail  rc=0
+test-plan-run-diagnose-mode.sh:         7 pass, 0 fail  rc=0
+test-diagnose-codex-disabled-degrades:  5 pass, 0 fail  rc=0
+test-diagnose-no-pe-constants.sh:       2 pass, 0 fail  rc=0
 ```
 
 ### Regression suites (all pass)
@@ -99,9 +103,26 @@ These are exactly the follow-up lane's diff (plan.js deletion + dispatch-code.sh
 - **Created:** `plugins/leadv2/scripts/tests/test-plan-run-arms-role-scoped.sh`
 - **Modified:** `plugins/leadv2/scripts/tests/test-plan-run-codex-disabled-degrades.sh`
 - **Created:** `plugins/leadv2/scripts/tests/test-plan-run-diagnose-mode.sh`
+- **Created:** `plugins/leadv2/scripts/tests/test-diagnose-no-pe-constants.sh`
+- **Created:** `plugins/leadv2/scripts/tests/test-diagnose-codex-disabled-degrades.sh`
 - **Created:** `plugins/leadv2/scripts/tests/test-plan-run-codemap.sh`
 - **Created:** `plugins/leadv2/scripts/tests/fixtures/plan-run/stub-architect.sh`
 - **Created:** `plugins/leadv2/scripts/tests/fixtures/plan-run/stub-codex-disabled.sh`
 - **Created:** `plugins/leadv2/scripts/tests/fixtures/plan-run/stub-quota-ok.sh`
 - **Created:** `plugins/leadv2/scripts/tests/fixtures/plan-run/README.md`
 - **Removed:** `plugins/leadv2/scripts/tests/test-plan-run-engine.sh` (consolidated suite replaced by named suites)
+
+## Fix round (2026-08-12 ~17:30Z) — 1 Critical + 6 High resolved
+
+Commit `5957df5`. All 8 suites green (35 pass, 0 fail).
+
+| Finding | Severity | Fix |
+|---|---|---|
+| Diagnose mode dispatches PLAN_YAML prompt but validates root_cause+confidence → always blocked | Critical | Architect prompt branches on MODE==diagnose (emits root_cause/confidence/evidence/fix_hint/alternates); extract_plan_yaml applied before validation so yaml.safe_load sees clean keys |
+| `planner` unbound under set -u in diagnose mode | High | Initialise `planner=""` before diagnose block; extract from resolver output (`reviewer=\|planner=`) |
+| Retry appends to mission file that run_planner_arm truncates with `>` | High | Retry writes `.retry-overlay` file; run_planner_arm appends it after writing base mission |
+| Critic reads hardcoded `plan-arm-codex.yaml` fallback | High | `_ARCHITECT_DRAFT_ARM` global set before critic pass; critic reads architect's actual arm output |
+| Skeleton clobbers pre-existing valid context.yaml | High | Skeleton stays as `.skeleton`; merge writes context.yaml only on success |
+| Both diagnose suites grep-on-source only | High | Added execution tests (D1: stub→root-cause.md+pass; D2: empty→blocked) to both diagnose suites |
+| test-diagnose-no-pe-constants trips on engine comment | High | grep non-comment lines only; engine comment rephrased |
+| Regex `claude  +-p` requires 2+ spaces | High | Fixed to `claude[[:space:]]+-p` |
