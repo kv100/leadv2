@@ -51,6 +51,21 @@ eval "$(_extract_funcs "${_pc_src}")"
 # Stub emit (required by _pc_reap_worker)
 emit() { :; }
 
+# PLUGIN-RELIABILITY-02: TASK is referenced by _pc_reap_worker's emit decision
+# line. Under set -u (line 15) an unset TASK aborts the SIGKILL-escalation path.
+TASK="PLUGIN-RELIABILITY-01-test"
+
+# macOS lacks setsid; use python3 to create a new session/group.
+# Sets _GROUP_PID to the python process's PID (= pgid = sid).
+_start_group_simple() {
+  python3 -c '
+import os, sys
+os.setsid()
+os.execvp("sleep", ["sleep", "300"])
+' &
+  _GROUP_PID=$!
+}
+
 # ── D1: _pc_process_alive behavioral tests ────────────────────────────────────
 test_d1_process_alive() {
   printf '\n[D1] _pc_process_alive — pid-file liveness (behavioral)\n'
@@ -142,15 +157,17 @@ test_d1_reap_worker() {
   local run_dir="${TMP_ROOT}/reap-test"
   mkdir -p "$run_dir"
 
-  # --- Test 1: reap a live process from run_dir/pgid ---
-  local victim_pid
-  sleep 300 &
-  victim_pid=$!
+  # --- Test 1: reap a live process group from run_dir/pgid ---
+  # PLUGIN-RELIABILITY-02: pgid entries are process-GROUP ids (from setsid),
+  # now signalled as groups (kill -TERM -<pgid>). Must use a real group leader.
+  _start_group_simple
+  local victim_pid=$_GROUP_PID
+  sleep 0.2  # let setsid take effect
   printf '%s\n' "$victim_pid" > "$run_dir/pgid"
 
   _pc_reap_worker "$run_dir" ""
   if ! kill -0 "$victim_pid" 2>/dev/null; then
-    ok "victim process from pgid file was reaped (killed)"
+    ok "victim process group from pgid file was reaped (killed)"
   else
     fail "victim process still alive after reap"
     kill -KILL "$victim_pid" 2>/dev/null; wait "$victim_pid" 2>/dev/null
