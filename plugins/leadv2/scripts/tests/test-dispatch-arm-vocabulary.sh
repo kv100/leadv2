@@ -19,6 +19,31 @@ log()  { printf '%s\n' "$*"; }
 pass() { log "PASS: $*"; PASS=$((PASS + 1)); }
 fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
 
+# ── Hermeticity: clean parent-session LEADV2_* env vars ──────────────────
+# The dispatch code reads LEADV2_PROJECT_ROOT (active.yaml, LEAD_V2_STATE.md)
+# and LEADV2_LANE_WORK_ROOT (WORK_ROOT override) directly from the environment
+# — it never re-sets them from CLAUDE_PROJECT_ROOT.  An inherited value from
+# the parent lead session leaks real registry state into the test sandbox.
+# (E2E-GATE-RESIDUE-01)
+unset LEADV2_PROJECT_ROOT LEADV2_LANE_WORK_ROOT LEADV2_TASK_ID \
+      LEADV2_PARENT_SESSION_ID LEADV2_DISPATCH_LANE_NAME
+
+# Skip the post-spawn early-verdict poll window — the stub worker bin never
+# reports "complete", so the poll loop would sleep for 20s per spawn.
+# (E2E-GATE-RESIDUE-01)
+export LEADV2_ARM_EARLY_VERDICT_S=0
+
+# Pin CACHE_BASE to a throwaway dir as a belt-and-suspenders default
+# (individual tests override with per-test sub-dirs).  Prevents the dispatch
+# ledger and quota-lockout files from touching the real shared HOME cache.
+# (E2E-GATE-RESIDUE-01 round-3)
+export LEADV2_DISPATCH_CACHE_DIR="/tmp/leadv2-vocab-default-cache"
+mkdir -p "${LEADV2_DISPATCH_CACHE_DIR}" 2>/dev/null || true
+
+# Prevent a real ~/.claude/leadv2-excluded-arms file from leaking in.
+# (E2E-GATE-RESIDUE-01)
+unset LEADV2_EXCLUDED_ARMS
+
 # --- syntax gate ---------------------------------------------------------------
 bash -n "$SCRIPT_DIR/test-dispatch-arm-vocabulary.sh" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
 
