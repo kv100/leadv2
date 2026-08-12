@@ -164,21 +164,33 @@ _quarantine_copy() {
   local dst_file="$1" copy_name="$2" relpath="$3"
   [[ -f "${dst_file}" ]] || return 0
   local content_hash
-  content_hash="$(sha256sum "${dst_file}" 2>/dev/null | cut -d' ' -f1)" || return 1
+  # Do not pipe sha256sum through cut: without pipefail, a failed hash command
+  # becomes an empty successful substitution and two unreadable files compare
+  # equal. Empty hashes are never valid content identities.
+  content_hash="$(sha256sum "${dst_file}" 2>/dev/null)" || return 1
+  content_hash="${content_hash%% *}"
+  [[ -n "${content_hash}" ]] || return 1
   # Check for an existing quarantine copy with identical content (convergence)
   local existing
-  existing="$(find "${_QUARANTINE_ROOT}" -path "*/${copy_name}/${relpath}" -type f 2>/dev/null | while IFS= read -r prev; do
-    if [[ "$(sha256sum "${prev}" 2>/dev/null | cut -d' ' -f1)" == "${content_hash}" ]]; then
+  existing="$(while IFS= read -r prev; do
+    local prev_hash
+    prev_hash="$(sha256sum "${prev}" 2>/dev/null)" || return 1
+    prev_hash="${prev_hash%% *}"
+    [[ -n "${prev_hash}" ]] || return 1
+    if [[ "${prev_hash}" == "${content_hash}" ]]; then
       printf -- '%s\n' "${prev}"; break
     fi
-  done)"
+  done < <(find "${_QUARANTINE_ROOT}" -path "*/${copy_name}/${relpath}" -type f 2>/dev/null))" || return 1
   if [[ -n "${existing}" ]]; then
     printf -- '%s\n' "${existing}"
     return 0
   fi
   local ts qpath
   ts="$(date -u '+%Y%m%dT%H%M%SZ')" || return 1
-  qpath="${_QUARANTINE_ROOT}/${ts}/${copy_name}/${relpath}"
+  # Include the content identity in the run directory. Two edits can be
+  # quarantined within the same UTC second; without this, the later edit
+  # overwrites the earlier recovery copy despite having a different hash.
+  qpath="${_QUARANTINE_ROOT}/${ts}-${content_hash}/${copy_name}/${relpath}"
   mkdir -p "$(dirname "${qpath}")" || return 1
   cp -p "${dst_file}" "${qpath}" || return 1
   printf -- '%s\n' "${qpath}"

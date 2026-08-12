@@ -12,7 +12,7 @@
 - `leadv2-active-registry.sh`: `set_log_path` python op + `leadv2_active_set_log_path()` wrapper
 - `leadv2-dispatch-code.sh`: `leadv2_active_set_log_path "${reg_id}" "docs/handoff/dispatch-${sig8}/developer.stream.jsonl"` after register (line ~3076)
 
-**Mutation gate proven:** deleting the `set_log_path` call from dispatch-code.sh fails test "Row 1 mutation gate" (pass=14 fail=1).
+**Behavioral mutation gate:** a hermetic scratch dispatch is executed, then its active registry is read through `leadv2-lane-liveness.sh`. HEAD stamps the real stream and returns `alive` (rc=0); a scratch mutant that stamps `pulse.md` instead returns a non-alive verdict (gate rc!=0). No source-grep assertion is used.
 
 ### Row 2: LANE-REGISTRATION-ONLY-ON-FANOUT-PATH-01 — **already-fixed**
 
@@ -46,6 +46,6 @@
 
 ## Test Results
 
-- `test-lane-truth-batch-01.sh`: **pass=15 fail=0**
-- Mutation test: removing set_log_path → **pass=14 fail=1** (gate fires)
+- `test-lane-truth-batch-01.sh`: **pass=16 fail=0**
+- Row 1 behavioral mutation proof: HEAD registry/liveness run **rc=0**; `pulse.md` mutant run **rc!=0**.
 - `run-core-offline.sh`: **suites passed=44 failed=0 missing=0** (rc=0)

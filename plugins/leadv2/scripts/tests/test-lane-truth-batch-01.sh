@@ -91,29 +91,73 @@ else
   printf '[TEST] FAIL: set_log_path on unregistered task should return non-zero\n' >&2; fail=$((fail+1))
 fi
 
-# ── Row 2: STATUS-SURFACE-SHOWS-STALE-TRUTH-01 C5 already-fixed verification
-# dispatch-code.sh must register with dispatch-<sig8> when no founder_task_id.
-# This is a grep check on the REAL dispatch script (not the fixture copy) to
-# confirm the already-landed fix is present.
-if grep -q 'reg_id="${founder_task_id:-dispatch-${sig8}}"' "$DISPATCH"; then
-  printf '[TEST] PASS: Row 2: dispatch-code.sh uses dispatch-<sig8> key (already-fixed)\n'; pass=$((pass+1))
-else
-  printf '[TEST] FAIL: Row 2: dispatch-code.sh missing dispatch-<sig8> registration key\n' >&2; fail=$((fail+1))
-fi
-
 # ── Row 2: unregistered dispatch lane discoverable via glob ────────────────
 mkdir -p "$repo/docs/handoff/dispatch-cafebabe"
 printf '{"type":"assistant","text":"hello"}\n' > "$repo/docs/handoff/dispatch-cafebabe/developer.stream.jsonl"
 all_lanes="$(bash "$LIVENESS" --project-root "$repo" --json)"
 check "$all_lanes" 'dispatch-cafebabe' 'Row 2: unregistered dispatch lane discoverable via glob'
 
-# ── Row 1 MUTATION GATE: dispatch-code.sh stamps set_log_path after register
-# Deleting the set_log_path call must fail this assertion.  This is the
-# behavioral guard the reviewer proved was missing.
-if grep -q 'leadv2_active_set_log_path' "$DISPATCH"; then
-  printf '[TEST] PASS: Row 1 mutation gate: dispatch-code.sh stamps set_log_path\n'; pass=$((pass+1))
+# ── Row 1 MUTATION GATE: execute the dispatch -> registry -> liveness path ──
+# This intentionally runs a complete scratch copy of dispatch-code.sh, then
+# reads its active.yaml through liveness.  A mutant whose stamped stream path
+# is changed back to pulse.md must fail; HEAD must pass.  This is behavioral:
+# it does not inspect dispatch source text for the call.
+run_dispatch_liveness_gate() { # <dispatch-copy> [task-id] -> liveness JSON
+  local dispatch_copy="$1" task_id="$2"
+  local sig8 lane_id gate_root
+  sig8="$(printf '%s' 'behavioral lane liveness gate' | sha256sum | cut -c1-8)"
+  lane_id="${task_id:-dispatch-${sig8}}"
+  gate_root="$tmp/dispatch-gate-${lane_id}"
+  mkdir -p "$gate_root/.claude/ref" "$gate_root/docs/handoff" "$gate_root/scripts"
+  cp "$PLUGIN_DIR/scripts/leadv2-state-path.sh" "$gate_root/scripts/"
+  chmod +x "$gate_root/scripts/leadv2-state-path.sh"
+  printf 'glm_policy:\n  sonnet_exceptions:\n    - id: safety_gate_publish_payments\n' \
+    > "$gate_root/.claude/ref/leadv2-routing.yaml"
+  (cd "$gate_root" && git init -q && git config user.email test@example.invalid && git config user.name lane-truth-test && git add -A && git commit -q -m init)
+
+  # --no-spawn keeps this hermetic. Registration happens before the later
+  # product/prepass gate, so it exercises exactly the lifecycle transition
+  # that stamps log_path without launching a provider.
+  local -a task_arg=()
+  [[ -n "$task_id" ]] && task_arg=(--task-id "$task_id")
+  CLAUDE_PROJECT_ROOT="$gate_root" PROJECT_ROOT="$gate_root" LEADV2_PROJECT_ROOT="$gate_root" LEADV2_STATE_ROOT="$gate_root/state" LEADV2_DISPATCH_CACHE_DIR="$gate_root/cache" \
+    LEADV2_DISPATCH_SPAWN=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
+    bash "$dispatch_copy" --no-spawn --kind tooling --worktree "$gate_root" "${task_arg[@]}" \
+    'behavioral lane liveness gate' >/dev/null 2>&1 || true
+
+  local stream_dir="$gate_root/docs/handoff/dispatch-${sig8}"
+  mkdir -p "$stream_dir"
+  printf '{"type":"assistant","text":"working"}\n' > "$stream_dir/developer.stream.jsonl"
+  LEADV2_PROJECT_ROOT="$gate_root" LEADV2_STATE_ROOT="$gate_root/state" bash "$LIVENESS" --project-root "$gate_root" --lane "$lane_id" --json
+}
+
+head_dispatch="$DISPATCH"
+direct_gate="$(run_dispatch_liveness_gate "$head_dispatch" '')"
+if grep -q '"verdict":"alive"' <<<"$direct_gate"; then
+  printf '[TEST] PASS: Row 2: direct dispatch registers its dispatch-<sig8> lane\n'; pass=$((pass+1))
 else
-  printf '[TEST] FAIL: Row 1 mutation gate: dispatch-code.sh is missing set_log_path stamping\n' >&2; fail=$((fail+1))
+  printf '[TEST] FAIL: Row 2: direct dispatch must register its dispatch-<sig8> lane\n  got: %s\n' "$direct_gate" >&2; fail=$((fail+1))
+fi
+
+head_gate="$(run_dispatch_liveness_gate "$head_dispatch" 'MUT-HEAD')"
+if grep -q '"verdict":"alive"' <<<"$head_gate"; then
+  printf '[TEST] PASS: Row 1 mutation gate HEAD: dispatch registry read resolves stamped stream alive\n'; pass=$((pass+1))
+else
+  printf '[TEST] FAIL: Row 1 mutation gate HEAD must resolve stamped stream alive\n  got: %s\n' "$head_gate" >&2; fail=$((fail+1))
+fi
+
+mutant_scripts="$tmp/mutant-scripts"
+cp -a "$PLUGIN_DIR/scripts" "$mutant_scripts"
+mutant_dispatch="$mutant_scripts/leadv2-dispatch-code.sh"
+# The mutation changes the actual stamped registry log_path, rather than
+# deleting a line or asserting its spelling.
+sed -i.bak 's|"docs/handoff/dispatch-${sig8}/developer.stream.jsonl"|"pulse.md"|' "$mutant_dispatch"
+rm -f "$mutant_dispatch.bak"
+mutant_gate="$(run_dispatch_liveness_gate "$mutant_dispatch" 'MUT-MUTANT')"
+if ! grep -q '"verdict":"alive"' <<<"$mutant_gate"; then
+  printf '[TEST] PASS: Row 1 mutation gate mutant: registry read does not treat pulse.md as live stream\n'; pass=$((pass+1))
+else
+  printf '[TEST] FAIL: Row 1 mutation gate mutant must not resolve stream alive\n  got: %s\n' "$mutant_gate" >&2; fail=$((fail+1))
 fi
 
 # ── Row 3: exclude-mode DIRECTION-SAFETY quarantines divergent copy ─────────
@@ -123,7 +167,7 @@ QUARANTINE_ROOT="$tmp/quarantine"
 # Build an isolated canonical tree and user home
 canon="$tmp/canon"
 mkdir -p "$canon/plugins/leadv2"
-cp -a "$PLUGIN_DIR/scripts" "$canon/plugins/leadv2/"
+mkdir -p "$canon/plugins/leadv2/scripts"
 printf '#!/usr/bin/env bash\necho "original v1"\n' > "$canon/plugins/leadv2/scripts/leadv2-test-target.sh"
 (cd "$canon" && git init -q && git config user.email test@example.invalid && git config user.name lane-truth-test && git add -A && git commit -q -m "init")
 
