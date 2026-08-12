@@ -774,6 +774,10 @@ def _main(argv):
     ap.add_argument("--base-arm", default="glm")
     ap.add_argument("--quota-live", default=None)
     ap.add_argument("--review-pool", action="store_true")
+    ap.add_argument("--plan-pool", action="store_true",
+                    help="ONE-PATH-PLAN-RUN-01: resolve a planner arm pool "
+                         "(--job plan, DISPATCHABLE_PLAN_ARMS filter, no author "
+                         "exclusion). Structurally identical to --review-pool.")
     ap.add_argument("--author", default="")
     ap.add_argument("--kimi-bin", default=None,
                     help="kimi-coder.sh path for the review-pool probe gate "
@@ -844,22 +848,26 @@ def _main(argv):
 
         # dispatch-00629379: additive-only -- absent --review-pool, output above is
         # byte-identical to pre-change (v1-equivalence, design §7 test f).
-        if args.review_pool:
+        if args.review_pool or args.plan_pool:
+            # ONE-PATH-PLAN-RUN-01: --plan-pool uses the same resolve_review_pool
+            # with job=plan (already filtered by DISPATCHABLE_PLAN_ARMS at line 427)
+            # and no author exclusion (plan has no author-exclusion concept).
+            _pool_job = "plan" if args.plan_pool else args.job
             pool_result = resolve_review_pool(glm_policy, args.author, quota_live_bin,
                                               kimi_bin=kimi_bin, signals=signals,
                                               rank_table=rank_table, ladder_providers=ladder_providers,
                                               lockout_dir=lockout_dir, now_epoch=now_epoch,
-                                              job=args.job)
+                                              job=_pool_job)
             _emit_pool_lines(pool_result["reviewer"], pool_result["pool"], pool_result["refusal"])
         return 0
     except Exception:
         # D2: resolver_error path -- MUST still print reviewer=/pool=/refusal= when
-        # --review-pool was requested, via the SAME independent floor re-derivation
-        # the top-level except in __main__ uses, so a crash anywhere above (a bad
-        # signals JSON that somehow slips past its own try/except, a resolve_glm_policy
-        # bug, anything) never regresses to the old silent no-op.
+        # --review-pool/--plan-pool was requested, via the SAME independent floor
+        # re-derivation the top-level except in __main__ uses, so a crash anywhere
+        # above (a bad signals JSON that somehow slips past its own try/except, a
+        # resolve_glm_policy bug, anything) never regresses to the old silent no-op.
         _emit_fallback(args.job, "resolver_error")
-        if args.review_pool:
+        if args.review_pool or args.plan_pool:
             reviewer, pool, refusal = _best_effort_floor_pool(argv)
             _emit_pool_lines(reviewer, pool, refusal)
         return 0
@@ -876,7 +884,7 @@ if __name__ == "__main__":
         sys.stderr.write("leadv2-glm-policy-resolve.py: resolver_error: %s\n" % _e)
         _argv = sys.argv[1:]
         _emit_fallback(_job_from_argv(_argv), "resolver_error")
-        if "--review-pool" in _argv:
+        if "--review-pool" in _argv or "--plan-pool" in _argv:
             _reviewer, _pool, _refusal = _best_effort_floor_pool(_argv)
             _emit_pool_lines(_reviewer, _pool, _refusal)
         sys.exit(0)
