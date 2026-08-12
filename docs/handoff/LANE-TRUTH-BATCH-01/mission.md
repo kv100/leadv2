@@ -23,3 +23,8 @@ outside your summary.
 
 Deliverable: commits + docs/handoff/LANE-TRUTH-BATCH-01/summary.md (per-row verdict
 fixed / already-fixed / blocked+why with proof), DELIVERABLE_COMPLETE.
+
+## RESUME NOTE (2026-08-12 ~20:55Z)
+Previous worker died after editing leadv2-active-registry.sh / leadv2-dispatch-code.sh /
+leadv2-plugin-sync.sh (uncommitted in the lane worktree — check `git status` FIRST and
+continue from those edits). Missing: behavioral tests + summary.md + commits.
