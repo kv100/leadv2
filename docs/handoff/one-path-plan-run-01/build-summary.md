@@ -41,12 +41,12 @@ Key invariants:
   Empty `reads: []` is a valid engine-owned value; semantic emptiness is the
   acceptance-shape validator's job.
 
-### 4. Test suites (6 files, 26 assertions total)
+### 4. Test suites (6 files, 27 assertions total)
 
 | Suite | Design tests | Cases |
 |---|---|---|
 | `test-plan-run-acceptance-real.sh` | 1, 2, 3 | empty observable, internal-contract phrasing, fenced-only acceptance — all against the real validator |
-| `test-plan-run-contract.sh` | 4, 5 | context.yaml validates after prepass; engine self-contained in bare bash with stub arms |
+| `test-plan-run-contract.sh` | 4, 5, acc | context.yaml validates after prepass; engine self-contained in bare bash with stub arms; **empty-body arm → blocked empty_response (acceptance observable)** |
 | `test-plan-run-arms-role-scoped.sh` | 6 | DISPATCHABLE_PLAN_ARMS membership via importlib; --plan-pool pool filters glm/kimi |
 | `test-plan-run-codex-disabled-degrades.sh` | 7 | codex_skipped_by_policy → arm_unavailable; end-to-end m3-market degrade → status=pass |
 | `test-plan-run-diagnose-mode.sh` | 10, 12 | no persona-engine constants; diagnose_run verbs; exit 9 for blocked; acceptance: skipped |
@@ -65,7 +65,7 @@ test-plan-run-acceptance-real.sh:       4 pass, 0 fail  rc=0
 test-plan-run-arms-role-scoped.sh:      4 pass, 0 fail  rc=0
 test-plan-run-codemap.sh:               4 pass, 0 fail  rc=0
 test-plan-run-codex-disabled-degrades:  4 pass, 0 fail  rc=0
-test-plan-run-contract.sh:              4 pass, 0 fail  rc=0
+test-plan-run-contract.sh:              5 pass, 0 fail  rc=0
 test-plan-run-diagnose-mode.sh:         6 pass, 0 fail  rc=0
 ```
 

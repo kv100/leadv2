@@ -67,6 +67,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 5a: empty body → blocked, empty_response (never pass).
+# Acceptance observable: "With an arm that exits zero but returns an empty body,
+# the same reader sees status: blocked and reason: empty_response — never pass."
+# ---------------------------------------------------------------------------
+log "Test 5a: empty-body arm → blocked empty_response"
+
+ROOT_E="${TMP}/repo-empt"
+HANDOFF_E="${ROOT_E}/docs/handoff/test-empty"
+mkdir -p "${ROOT_E}/.claude/ref" "${HANDOFF_E}"
+cat > "${ROOT_E}/.claude/ref/leadv2-routing.yaml" <<'YAML'
+router:
+  glm_policy:
+    codex_quota_gate:
+      review_arm_order: [codex, sonnet, opus]
+      review_threshold_pct: 95
+YAML
+
+# Stub architect that exits 0 but writes nothing to stdout (empty body).
+cat > "${TMP}/stub-empty.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "${TMP}/stub-empty.sh"
+
+printf 'Demo mission for empty body test.' > "${TMP}/mission-empty.txt"
+
+env -i HOME="${HOME}" PATH="${PATH}" \
+  LEADV2_ROUTING_YAML="${ROOT_E}/.claude/ref/leadv2-routing.yaml" \
+  GLM_POLICY_QUOTA_LIVE="${TMP}/stub-quota.sh" \
+  LEADV2_DISPATCH_ARCHITECT_BIN="${TMP}/stub-empty.sh" \
+  LEADV2_DISPATCH_CODEX_BIN="${TMP}/stub-codex.sh" \
+  LEADV2_PLAN_FANOUT=1 \
+  bash "${ENGINE}" --task test-empty --root "${ROOT_E}" --handoff "${HANDOFF_E}" \
+    --mode plan --mission-file "${TMP}/mission-empty.txt" --no-cache \
+    >"${TMP}/empty-stdout.log" 2>"${TMP}/empty-stderr.log"
+rc_e=$?
+_gate_e="${HANDOFF_E}/plan-gate.md"
+
+if [[ ${rc_e} -eq 9 && -f "${_gate_e}" ]]; then
+  _status_e="$(sed -n 's/^status:[[:space:]]*//p' "${_gate_e}" | head -1)"
+  _reason_e="$(sed -n 's/^reason:[[:space:]]*//p' "${_gate_e}" | head -1)"
+  if [[ "${_status_e}" == "blocked" && "${_reason_e}" == "empty_response" ]]; then
+    pass "empty-body arm → status=blocked reason=empty_response"
+  else
+    fail "empty-body arm: status='${_status_e}' reason='${_reason_e}' (expected blocked/empty_response)"
+  fi
+else
+  fail "empty-body arm: rc=${rc_e} (expected 9), gate=$( [[ -f "${_gate_e}" ]] && echo exists || echo missing)"
+fi
+
+# ---------------------------------------------------------------------------
 # Test 5: engine is self-contained (no Workflow/Agent dependency).
 # Runs the engine with stub arms in an env-scrubbed subshell and checks it
 # produces a plan-gate.md.
