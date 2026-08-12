@@ -28,3 +28,13 @@ fixed / already-fixed / blocked+why with proof), DELIVERABLE_COMPLETE.
 Previous worker died after editing leadv2-active-registry.sh / leadv2-dispatch-code.sh /
 leadv2-plugin-sync.sh (uncommitted in the lane worktree — check `git status` FIRST and
 continue from those edits). Missing: behavioral tests + summary.md + commits.
+
+## FIX ROUND (2026-08-13 ~00:15Z) — review FAIL 3-4 High
+Findings in review-findings.json here. Essence: (1) REBASE onto current origin/main first
+— your diff is on a stale base and Row-2 registration re-implements already-landed
+STATUS-SURFACE-SHOWS-STALE-TRUTH-01 C5: reconcile with it, keep one implementation;
+(2) plugin-sync quarantine must CONVERGE — dedupe by content hash: a permanently
+divergent copy quarantined once, not on every sync (reviewer proved 3 syncs = 3 copies);
+(3) mutation gate: deleting dispatch-code.sh:3076 must fail your suite — add the
+behavioral assertion that catches it; (4) suite registered twice in run-core-offline.sh
+— one label. All suites + run-core-offline rc=0 after rebase. DELIVERABLE_COMPLETE.
