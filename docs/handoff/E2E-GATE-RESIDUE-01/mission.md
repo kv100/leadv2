@@ -40,9 +40,26 @@ to the test sandbox regardless of which tree runs them. Stub arm admission probe
 unit test must never depend on live codex CLI workspace state. Do not change production
 dispatch logic.
 
+## Round 3 addendum (2026-08-12 ~14:45Z) — one store still shared: the HOME ledger
+
+Round-2 edits are good (env unset + wrapper + early-verdict kill; vocab suite now rc=0
+everywhere) but p1 case 3 "quota refusal advances chain" HANGS >25 min: the dispatcher
+inside the test still uses the REAL shared ledger dir — DISPATCH_LEDGER_DIR defaults to
+`${HOME}/.claude/cache/dispatch-ledger` (leadv2-dispatch-code.sh:374-375,
+CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}") — and blocks on its
+flock (`.leadv2.dispatch.lock`), which live dispatches from OTHER sessions hold.
+
+Surgical fix: in the p1 suite header (next to the round-2 unset block) export
+`LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache"` so ledger, quota-lockout files and any
+other CACHE_BASE-derived store live in the sandbox. Audit the suite for any other
+HOME-scoped path the dispatcher touches (glm-runs handles etc.) and pin those too.
+Prove: p1 suite completes < 3 min with rc=0, run twice.
+
 Green proof required: `bash plugins/leadv2/scripts/tests/run-core-offline.sh` rc=0 ON
 THE MAIN TREE (~/Projects/leadv2), run twice consecutively (proves no self-pollution),
-full tail attached to summary. Never weaken assertions to pass.
+full tail attached to summary. Never weaken assertions to pass. NOTE: a foreign session
+runs its own lane on this machine — do not assume an idle machine; hermetic tests must
+pass anyway.
 
 Off-limits: workflows/, leadv2-review-run.sh, leadv2-plan-run work in the
 ONE-PATH-PLAN-RUN-01 worktree.
