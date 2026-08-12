@@ -1,5 +1,18 @@
 # ONE-PATH-PLAN-RUN-01 — build leadv2-plan-run.sh (Plan consolidation)
 
+## FIX ROUND (2026-08-12 ~17:30Z) — review verdict FAIL: 1 Critical + 6 High
+
+The engine is built and reviewed; fix the blocking findings in
+`docs/handoff/ONE-PATH-PLAN-RUN-01/review-findings.json` (in the lane worktree). Key:
+diagnose mode validates the PLAN schema instead of root_cause+confidence (always exits
+blocked); `planner` unbound under set -u in diagnose mode; retry rewrites the mission
+file it just appended failure reasons to; critic reads plan-arm-codex.yaml hardcoded
+fallback in cross-arm case; skeleton write clobbers pre-existing valid context.yaml
+before any arm runs; both diagnose suites are grep-on-source only — replace with tests
+that EXECUTE --mode diagnose; test-plan-run-contract.sh:224 regex needs single-space
+`claude -p`; remove/fix the stray failing test-diagnose-no-pe-constants.sh. Every fixed
+finding needs an executing test. All suites rc=0. Then DELIVERABLE_COMPLETE.
+
 Goal: implement the Plan half of ONE-PATH-EVERYWHERE-01 — a sole-owner bash engine
 `plugins/leadv2/scripts/leadv2-plan-run.sh`, mirroring the shipped review engine
 `plugins/leadv2/scripts/leadv2-review-run.sh` (read it first; reuse its arm-pool /
