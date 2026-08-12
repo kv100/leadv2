@@ -3102,13 +3102,17 @@ cmd_resolve() {
       emit decision "prepass_parked task=${sig8} founder_task_id=${founder_task_id} reason=no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts last_reason=${ARCHITECT_PREPASS_REASON:-unknown}"
       log_err "architect prepass produced no design for product task=${sig8} after ${ARCHITECT_PREPASS_ATTEMPTS} attempts -- task PARKED, not dispatched."
       _dl_note "${sig8}" parked "no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts" "" "${founder_task_id}"
-      # PLUGIN-RELIABILITY-01 D3: write a questions/ pending entry so the
-      # supervise loop's _pc_emit_pending_questions surfaces it to the founder.
+      # PLUGIN-RELIABILITY-01 D3 (round 2): write a questions/ pending entry
+      # so the supervise loop's _pc_emit_pending_questions surfaces it to the
+      # founder. --no-block: writes the V2 control-plane record and returns
+      # immediately — the question is visible in the questions dir for the
+      # founder/supervise loop, but the dispatcher does NOT hang for 1800s
+      # (round 1 Critical: --timeout 1800 blocked cmd_resolve synchronously).
       _ask_bin="${SCRIPT_DIR}/leadv2-ask.sh"
       if [[ -x "${_ask_bin}" ]]; then
         bash "${_ask_bin}" "dispatch-${sig8}" "Architect prepass parked after ${ARCHITECT_PREPASS_ATTEMPTS} attempts (last: ${ARCHITECT_PREPASS_REASON:-unknown}). Retry or abort?" \
           --option "retry|Retry prepass" --option "abort|Abort task" \
-          --default-option "retry" --timeout 1800 >/dev/null 2>&1 || true
+          --default-option "retry" --no-block >/dev/null 2>&1 || true
       fi
       exit 3
     fi

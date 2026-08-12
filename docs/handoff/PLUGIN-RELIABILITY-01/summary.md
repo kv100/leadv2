@@ -2,67 +2,80 @@
 
 **Date:** 2026-08-12
 **Branch:** worktree-PLUGIN-RELIABILITY-01
+**Round:** 2 (fix round for review findings: 3 Critical + 4 High)
 
 ## Scope
 
-Five audited defects in product-close/dispatch pipeline, confirmed by file:line audit and two live incidents on 2026-08-12.
+Five audited defects in product-close/dispatch pipeline, confirmed by file:line audit and two live incidents on 2026-08-12. Round 1 passed its own test suite but the suite had zero behavioral coverage — all Criticals passed green via grep-on-source. Round 2 fixes the root causes and rewrites tests as behavioral.
 
-## Defects & Fixes
+## Round 2 Review Findings (all addressed)
 
-### D1: BREAKS-LANES — pc_worker_alive false-dead without kill -0
+### Critical 1+2: `_pc_process_alive` / `_pc_reap_worker` self-match via `pgrep -f "$handle"`
 
-**Root cause:** `leadv2-dispatch-product-close.sh:780` — `pc_worker_alive` for the `glm|kimi` case declared a worker dead from `meta.yaml status=complete/failed` + registry absence, but the `kill -0` pid check (line 773) only fired on the meta pid, which could be stale (the coder child that already exited while the parent `__supervise` process still held the GLM lock). Twice today a lane got `terminal=dead` while its GLM supervise kept running 30–50 min, blocking all other GLM lanes.
+**Root cause:** Round 1 used `pgrep -f "$handle"` to find the supervise process. The close gate's own argv contains the handle (it's the 4th positional), so `pgrep` always self-matched → `_pc_process_alive` always returned alive → every GLM/Kimi lane burned the full 4200s ceiling. Worse, `_pc_reap_worker` SIGKILL'd the self-matched list including the close gate's own PID, killing it before it could write review-gate.md or the terminal ledger row. The unscoped pgrep could also match/kill unrelated processes (tail, grep) referencing the handle string.
 
-**Fix:** Added `_pc_process_alive()` — checks meta pid via `kill -0`, then falls back to `pgrep -f <handle>` to catch the supervise process that outlived the coder. This check runs BEFORE the complete/failed → dead decision. Added `_pc_reap_worker()` — sends TERM, waits 5s, then KILL to all handle-associated PIDs. Called at every `terminal=dead` path (both timeout exits + the complete/failed dead path) so the GLM lock is released before the ledger row is written.
+**Fix:** Both functions now take `<run_dir>` instead of `<handle>` and read exact PIDs from spawn-record files only:
+1. `run_dir/meta.yaml` → `pid:` (the glm-coder.sh start process)
+2. `run_dir/pgid` (the `__run_child` process)
+3. `<runs_dir>/.lock-<repo_hash>/pid` (the `__supervise` process, repo_hash from `run_dir/.lockref`)
+4. `<runs_dir>/.lock-<repo_hash>/pgid` (child pid from lock perspective)
 
-**Proof:** `grep -c '_pc_process_alive\|_pc_reap_worker' leadv2-dispatch-product-close.sh` — function defs + call sites present; test suite verifies kill -0 fast path + pgrep fallback logic.
+Self (`$$`) and parent (`$PPID`) are always excluded via an associative array. `_pc_reap_worker` deduplicates PIDs before sending TERM→5s→KILL. No `pgrep` is used anywhere.
 
-### D2: Worktree lanes review-blind — role file not found: critic
+### Critical 3: Synchronous `leadv2-ask.sh --timeout 1800` in prepass-park
 
-**Root cause:** `claude-subsession.sh:155-167` — role file resolution checked `$PROJECT_ROOT/.claude/agents/` and `$PROJECT_ROOT/.claude/roles/`, but lane worktrees don't materialize `.claude/agents/`. Every in-lane Phase-5 died with `role file not found: critic` and parked `all_review_arms_unavailable`.
+**Root cause:** Round 1 called `leadv2-ask.sh` with `--timeout 1800` synchronously in `cmd_resolve`, blocking the dispatcher for up to 30 minutes before `exit 3`. The ask's answer was discarded and `exit 3` ran unconditionally.
 
-**Fix:** Added a fallback in the `else` branch: derive the main checkout via `git rev-parse --git-common-dir`, then check `$_main_checkout/.claude/agents/<role>.md` and `.claude/roles/<role>.md` before giving up. `ROLE_SOURCE` is tagged `agents_worktree_fallback` / `roles_worktree_fallback` for diagnostics.
+**Fix:** Changed `--timeout 1800` to `--no-block`. This writes the V2 control-plane question record (visible in the questions dir for `_pc_emit_pending_questions`) and returns immediately. The dispatcher exits 3 without blocking. The prepass_parked journal line remains for supervise visibility.
 
-**Proof:** Test creates a fake worktree with `gitdir:` pointer and verifies the critic role is found via the common-dir derivation.
+### High 1: `claude-subsession.sh` `== "agents"` excludes `agents_worktree_fallback`
 
-### D3: Architect prepass parks silently
+**Root cause:** Round 1's frontmatter-strip branch tested `ROLE_SOURCE == "agents"` only. The worktree fallback correctly set `ROLE_SOURCE="agents_worktree_fallback"` but the comparison missed it, so the raw YAML frontmatter was injected as the system prompt and zero skills were loaded.
 
-**Root cause:** `leadv2-dispatch-code.sh:3099-3103` — after `ARCHITECT_PREPASS_ATTEMPTS` (2 × 420s) exhausted, the park was journaled as `architect_prepass status=parked` and logged to stderr, but no loud `prepass_parked` signal existed for supervise to surface, and no pending question was written.
+**Fix:** Changed the comparison to `[[ "$ROLE_SOURCE" == "agents" || "$ROLE_SOURCE" == "agents_worktree_fallback" ]]`. Both use `agents/<role>.md` format with YAML frontmatter that must be stripped.
 
-**Fix:** Added `emit decision "prepass_parked ..."` with last failure reason + a `leadv2-ask.sh` call that writes a questions/ pending entry ("Retry or abort?") so `_pc_emit_pending_questions` surfaces it to the founder on the next poll.
+### High 2: Ask answer discarded + exit 3 unconditional
 
-**Proof:** `grep 'prepass_parked' dispatch-code.sh` — present; test verifies both the journal line and the ask.sh call.
+**Root cause:** Same as Critical 3 — the ask answer was never captured.
 
-### D4: Malformed/truncated meta.yaml → 4200s false wait
+**Fix:** Resolved by switching to `--no-block` (no answer to discard; the question surfaces via the control plane for manual founder retry).
 
-**Root cause:** `leadv2-dispatch-product-close.sh:786` — when meta.yaml was empty/truncated (status empty, pid empty), `pc_worker_alive` fell through to the default `return 0` (keep waiting), causing a full `LEADV2_PC_WORKER_MAX_WAIT_S` (4200s) false wait for a process that was already dead.
+### High 3: Empty-status→dead has no run-age/meta-existence grace guard
 
-**Fix:** Added an explicit check: empty status + registry absence → `return 1` (dead) with a `worker_liveness=dead reason=empty_status_pid_gone` journal line. Also reordered the pid check to run BEFORE the status checks (via `_pc_process_alive`) so a pid-gone signal is primary, not secondary.
+**Root cause:** Round 1's empty-status dead path (`-z "${status}" && registry_alive == 0 → return 1`) could fire on the very first poll of a just-spawned worker that hadn't written meta.yaml yet, declaring it dead before it started.
 
-**Proof:** Test simulates empty-status meta.yaml and verifies the empty status + missing pid condition triggers dead classification.
+**Fix:** Added a grace guard: if meta.yaml doesn't exist → `return 0` (keep watching). If it exists but is <30s old (by mtime) → `return 0`. Only after 30s with empty status → dead.
 
-### D5: Cosmetic — router_v2 reorder failure silent
+### High 4: Zero behavioral test coverage
 
-**Root cause:** `leadv2-dispatch-code.sh:3589-3614` — when the router_v2 quota-gate resolver returned non-zero (`_qg_rc != 0`) or empty eligible list, the code fell through with no journal line, making refusal chains undebuggable.
+**Root cause:** Round 1's test suite used grep-on-source assertions and hand-rewritten shell — none of the real functions were ever sourced or invoked.
 
-**Fix:** Added two `emit decision "router_v2_reorder_failed ..."` lines — one for `rc != 0` (reason=resolve_nonzero) and one for empty eligible (reason=no_eligible_arms) — in the else path after the `if [[ ${_qg_rc} -eq 0 && -n "${_qg_eligible}" ]]` check.
-
-**Proof:** `grep 'router_v2_reorder_failed' dispatch-code.sh` — present; test verifies both reason variants.
+**Fix:** Complete test rewrite. Tests source the real `_pc_process_alive` and `_pc_reap_worker` via `eval "$(awk ...)"` extraction and assert observable behavior:
+- Live meta pid → alive; dead → dead
+- Live pgid → alive; dead → dead
+- Live lock_dir/pid → alive; dead → dead
+- **Self pid ($$) excluded — no self-match** (the round-1 Critical)
+- Parent pid ($PPID) excluded
+- _pc_reap_worker kills the victim process, does NOT kill self/parent
+- Reap from lock_dir/pid works
+- No live processes → no-op
+- agents_worktree_fallback frontmatter stripped correctly
+- Grace guard: fresh meta → not dead; old meta → dead-eligible
 
 ## Files Changed
 
-| File | Lines changed |
-|------|--------------|
-| `plugins/leadv2/scripts/leadv2-dispatch-product-close.sh` | D1 + D4: added `_pc_process_alive`, `_pc_reap_worker`, reordered liveness logic, reaping at timeout paths |
-| `plugins/leadv2/scripts/leadv2-dispatch-code.sh` | D3: prepass_parked signal + ask.sh question; D5: reorder_failed journal lines |
-| `plugins/leadv2/scripts/claude-subsession.sh` | D2: worktree role-file fallback via git common-dir |
-| `plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh` | New hermetic test suite (15 assertions) |
-| `plugins/leadv2/scripts/tests/run-core-offline.sh` | Wired new suite into runner |
+| File | Changes |
+|------|---------|
+| `plugins/leadv2/scripts/leadv2-dispatch-product-close.sh` | D1: `_pc_process_alive` + `_pc_reap_worker` rewritten to pid-file-only (no pgrep), call sites pass `run_dir`. D4: grace guard (meta existence + 30s mtime check) |
+| `plugins/leadv2/scripts/leadv2-dispatch-code.sh` | D3: `--timeout 1800` → `--no-block` (fire-and-forget question write) |
+| `plugins/leadv2/scripts/claude-subsession.sh` | D2: frontmatter-strip comparison accepts `agents_worktree_fallback` |
+| `plugins/leadv2/scripts/tests/test-plugin-reliability-01.sh` | Complete rewrite: 21 behavioral assertions (source real functions, spawn fake processes, assert kill behavior) |
 
 ## Test Results
 
 ```
-[PLUGIN-RELIABILITY-01] passed=15 failed=0
+[PLUGIN-RELIABILITY-01] passed=21 failed=0
 ```
 
-All existing core-offline suites pass except `test-codex-quota-guardrails` f2 (pre-existing, unrelated to this task).
+Syntax checks: all three modified scripts pass `bash -n` (rc=0).
+Related suites: test-no-work-terminal (42/1 — the 1 failure is pre-existing "revived waited to timeout"), test-dwr-resume (20/0), test-question-delivery-ownership (10/0) — all rc=0.

@@ -730,34 +730,84 @@ _pc_maybe_quota_advance() {  # <arm> <handle>
   _pc_arm_advance
 }
 
-# PLUGIN-RELIABILITY-01 D1: broadened process liveness for the kill -0 gap.
-# The pid in meta.yaml may be stale (the coder child that wrote status=complete
-# while its __supervise parent is still alive holding the GLM lock). This helper
-# checks (a) the meta pid if parseable, then (b) any process whose command line
-# mentions the HANDLE — catching the supervise process that outlived the coder.
-_pc_process_alive() { # <handle> [meta_pid] -> 0 if any live process found
-  local handle="$1" meta_pid="${2:-}" _pid
-  # Fast path: meta pid
-  [[ "${meta_pid}" =~ ^[0-9]+$ ]] && kill -0 "${meta_pid}" 2>/dev/null && return 0
-  # Broad: any process mentioning the handle in its command line
-  while IFS= read -r _pid; do
-    [[ "${_pid}" =~ ^[0-9]+$ ]] || continue
-    kill -0 "${_pid}" 2>/dev/null && return 0
-  done < <(pgrep -f "${handle}" 2>/dev/null || true)
+# PLUGIN-RELIABILITY-01 D1 (round 2): pid-file-only process liveness.
+# The pid in meta.yaml may be stale (the glm-coder.sh start process that wrote
+# status=complete, while its __supervise parent still holds the GLM lock).
+# This helper checks exact pids from the spawn record files:
+#   1. meta.yaml pid (the start process)
+#   2. run_dir/pgid   (the __run_child process)
+#   3. lock_dir/pid    (the __supervise process)
+#   4. lock_dir/pgid   (also __run_child, from the lock perspective)
+# NEVER uses pgrep -f "$handle" — the close gate's own argv contains the handle
+# string, so a substring pgrep self-matches and always reports alive (round 1
+# Critical bug). The lock_dir is derived from the run_dir's .lockref (repo_hash):
+#   lock_dir = <runs_dir>/.lock-<repo_hash>
+# Self ($$) and parent ($PPID) are always excluded.
+_pc_process_alive() { # <run_dir> [meta_pid] -> 0 if any live process found
+  local run_dir="$1" meta_pid="${2:-}" _pid _runs_dir _repo_hash _lock_dir
+  local -A _skip=( ["$$"]=1 ["$PPID"]=1 )
+  # 1. meta pid
+  if [[ "${meta_pid}" =~ ^[0-9]+$ && -z "${_skip[${meta_pid}]:-}" ]]; then
+    kill -0 "${meta_pid}" 2>/dev/null && return 0
+  fi
+  # 2. child pid from run_dir/pgid
+  if [[ -f "${run_dir}/pgid" ]]; then
+    _pid="$(cat "${run_dir}/pgid" 2>/dev/null || true)"
+    if [[ "${_pid}" =~ ^[0-9]+$ && -z "${_skip[${_pid}]:-}" ]]; then
+      kill -0 "${_pid}" 2>/dev/null && return 0
+    fi
+  fi
+  # 3. supervisor + child pids from lock dir
+  _runs_dir="$(dirname "${run_dir}")"
+  _repo_hash="$(cat "${run_dir}/.lockref" 2>/dev/null || true)"
+  if [[ -n "${_repo_hash}" ]]; then
+    _lock_dir="${_runs_dir}/.lock-${_repo_hash}"
+    local _lf
+    for _lf in pid pgid; do
+      [[ -f "${_lock_dir}/${_lf}" ]] || continue
+      _pid="$(cat "${_lock_dir}/${_lf}" 2>/dev/null || true)"
+      if [[ "${_pid}" =~ ^[0-9]+$ && -z "${_skip[${_pid}]:-}" ]]; then
+        kill -0 "${_pid}" 2>/dev/null && return 0
+      fi
+    done
+  fi
   return 1
 }
 
-# PLUGIN-RELIABILITY-01 D1: reap a worker's process group before terminal=dead.
-# Sends TERM, waits up to 5s, then KILL. Best-effort — errors are logged, not fatal.
-_pc_reap_worker() { # <handle> [meta_pid]
-  local handle="$1" meta_pid="${2:-}" _pid _killed=""
-  # Collect candidate PIDs: meta pid + any process with the handle in its cmdline
+# PLUGIN-RELIABILITY-01 D1 (round 2): reap a worker's processes before
+# terminal=dead. Only kills exact pids from the spawn record files — same
+# sources as _pc_process_alive. NEVER uses pgrep -f "$handle" (round 1 Critical:
+# that self-matched the close gate's own pid and SIGKILLed it before it could
+# write review-gate.md or the terminal ledger row, and could kill unrelated
+# processes like a tail -f on the handle's log). Self/parent always excluded.
+_pc_reap_worker() { # <run_dir> [meta_pid]
+  local run_dir="$1" meta_pid="${2:-}" _pid _killed=""
+  local -A _skip=( ["$$"]=1 ["$PPID"]=1 )
   local -a _pids=()
-  [[ "${meta_pid}" =~ ^[0-9]+$ ]] && _pids+=("${meta_pid}")
-  while IFS= read -r _pid; do
-    [[ "${_pid}" =~ ^[0-9]+$ ]] || continue
-    kill -0 "${_pid}" 2>/dev/null && _pids+=("${_pid}")
-  done < <(pgrep -f "${handle}" 2>/dev/null || true)
+  local -A _seen=()
+  # Collect + dedup live pids from spawn-record files
+  if [[ "${meta_pid}" =~ ^[0-9]+$ && -z "${_skip[${meta_pid}]:-}" && -z "${_seen[${meta_pid}]:-}" ]]; then
+    kill -0 "${meta_pid}" 2>/dev/null && { _pids+=("${meta_pid}"); _seen[${meta_pid}]=1; }
+  fi
+  if [[ -f "${run_dir}/pgid" ]]; then
+    _pid="$(cat "${run_dir}/pgid" 2>/dev/null || true)"
+    if [[ "${_pid}" =~ ^[0-9]+$ && -z "${_skip[${_pid}]:-}" && -z "${_seen[${_pid}]:-}" ]]; then
+      kill -0 "${_pid}" 2>/dev/null && { _pids+=("${_pid}"); _seen[${_pid}]=1; }
+    fi
+  fi
+  local _runs_dir _repo_hash _lock_dir _lf
+  _runs_dir="$(dirname "${run_dir}")"
+  _repo_hash="$(cat "${run_dir}/.lockref" 2>/dev/null || true)"
+  if [[ -n "${_repo_hash}" ]]; then
+    _lock_dir="${_runs_dir}/.lock-${_repo_hash}"
+    for _lf in pid pgid; do
+      [[ -f "${_lock_dir}/${_lf}" ]] || continue
+      _pid="$(cat "${_lock_dir}/${_lf}" 2>/dev/null || true)"
+      if [[ "${_pid}" =~ ^[0-9]+$ && -z "${_skip[${_pid}]:-}" && -z "${_seen[${_pid}]:-}" ]]; then
+        kill -0 "${_pid}" 2>/dev/null && { _pids+=("${_pid}"); _seen[${_pid}]=1; }
+      fi
+    done
+  fi
   [[ ${#_pids[@]} -eq 0 ]] && return 0
   # SIGTERM
   for _pid in "${_pids[@]}"; do kill -TERM "${_pid}" 2>/dev/null || true; done
@@ -772,7 +822,7 @@ _pc_reap_worker() { # <handle> [meta_pid]
   done
   # SIGKILL stragglers
   for _pid in "${_pids[@]}"; do kill -KILL "${_pid}" 2>/dev/null || true; done
-  emit decision "product_close task=${TASK} worker_reaped handle=${handle} pids=$(IFS=,; printf '%s' "${_pids[*]}")"
+  emit decision "product_close task=${TASK} worker_reaped pids=$(IFS=,; printf '%s' "${_pids[*]}")"
 }
 
 pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
@@ -818,27 +868,43 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
       registry_alive=0
       _pc_job_registry_has_handle "${HANDLE}" && registry_alive=1
       [[ "${status}" == running || "${registry_alive}" == 1 ]] && return 0
-      # PLUGIN-RELIABILITY-01 D1: broadened pid check FIRST. The pid in
-      # meta.yaml may be the coder child (already exited) while the parent
-      # __supervise process still holds the GLM lock. _pc_process_alive
-      # checks the meta pid then falls back to pgrep for the supervise pid.
-      _pc_process_alive "${HANDLE}" "${pid}" && return 0
+      # PLUGIN-RELIABILITY-01 D1 (round 2): pid-file-based liveness check.
+      # The pid in meta.yaml may be the coder child (already exited) while the
+      # parent __supervise process still holds the GLM lock. _pc_process_alive
+      # checks exact pids from the spawn record (meta, pgid, lock_dir).
+      _pc_process_alive "${run_dir}" "${pid}" && return 0
       # CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01 (close-gate out-of-window path):
       # this close gate is discovering status==failed possibly long after
       # leadv2-dispatch-code.sh's own in-process post-spawn verdict window
       # (_wait_arm_early_verdict) already expired -- classify it here too, so a late
       # quota death still gets a lockout AND advances the chain instead of sitting dead.
       [[ "${status}" == failed && "${registry_alive}" == 0 ]] && _pc_maybe_quota_advance "${AUTHOR}" "${HANDLE}"
-      # PLUGIN-RELIABILITY-01 D1: before declaring terminal=dead, reap any
-      # straggler processes so the GLM lock is released for the next lane.
+      # PLUGIN-RELIABILITY-01 D1 (round 2): before declaring terminal=dead,
+      # reap any straggler processes so the GLM lock is released for the next lane.
       if [[ ( "${status}" == complete || "${status}" == failed ) && "${registry_alive}" == 0 ]]; then
-        _pc_reap_worker "${HANDLE}" "${pid}"
+        _pc_reap_worker "${run_dir}" "${pid}"
         return 1
       fi
-      # PLUGIN-RELIABILITY-01 D4: pid gone + empty/unparseable status = dead,
-      # not the old default of keep-waiting (which caused 4200s false waits).
+      # PLUGIN-RELIABILITY-01 D4 (round 2): pid gone + empty/unparseable status
+      # = dead, not keep-waiting (which caused 4200s false waits). Grace guard:
+      # meta.yaml must exist and be older than 30s — a just-spawned worker that
+      # hasn't written meta yet (or wrote a truncated initial copy) must not be
+      # declared dead on the first poll.
       if [[ -z "${status}" && "${registry_alive}" == 0 ]]; then
-        emit decision "product_close task=${TASK} worker_liveness=dead author=${AUTHOR} handle=${HANDLE} reason=empty_status_pid_gone"
+        if [[ ! -f "${meta}" ]]; then
+          # meta.yaml doesn't exist yet — the worker may have just spawned.
+          # Give it time to write meta before declaring dead.
+          return 0
+        fi
+        local _meta_age_s=0
+        local _now_s _meta_mtime_s
+        _now_s="$(date +%s)"
+        _meta_mtime_s="$(stat -f %m "${meta}" 2>/dev/null || stat -c %Y "${meta}" 2>/dev/null || echo 0)"
+        _meta_age_s=$(( _now_s - _meta_mtime_s ))
+        if (( _meta_age_s < 30 )); then
+          return 0
+        fi
+        emit decision "product_close task=${TASK} worker_liveness=dead author=${AUTHOR} handle=${HANDLE} reason=empty_status_pid_gone meta_age_s=${_meta_age_s}"
         return 1
       fi
       # The coder writes this only from its finish guard. It is terminal provider

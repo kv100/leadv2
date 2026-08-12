@@ -203,8 +203,12 @@ fi
 SESSION_MAP_FILE="$HANDOFF_DIR/sessions.map"
 printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$SESSION_LABEL" "$SESSION_ID" >> "$SESSION_MAP_FILE"
 
-# Strip YAML frontmatter if source is agents/ (body-only as system prompt)
-if [[ "$ROLE_SOURCE" == "agents" ]]; then
+# Strip YAML frontmatter if source is agents/ (body-only as system prompt).
+# PLUGIN-RELIABILITY-01 D2 (round 2): agents_worktree_fallback uses the same
+# agents/<role>.md format (with YAML frontmatter), so it must also be stripped.
+# Round 1 tested only == "agents", so the fallback injected raw YAML frontmatter
+# as the system prompt and loaded zero skills.
+if [[ "$ROLE_SOURCE" == "agents" || "$ROLE_SOURCE" == "agents_worktree_fallback" ]]; then
   SYSTEM_PROMPT=$(awk 'BEGIN{c=0} /^---$/{c++; next} c>=2 {print}' "$ROLE_FILE")
   # Extract skills list via python3 yaml (robust vs awk for multi-line frontmatter values)
   AGENT_SKILLS=$(python3 -c "
