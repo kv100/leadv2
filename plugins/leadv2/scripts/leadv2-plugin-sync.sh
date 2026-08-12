@@ -154,12 +154,43 @@ SYNC_HYGIENE_FILTERS=(--exclude='__pycache__/' --exclude='*.pyc' --exclude='.DS_
 # proceeded without a safety net. One UTC timestamp per process groups a single
 # sync run's quarantines together; each (copy_name, relpath) is visited at most
 # once per run, so there is no in-run clobber of preserved content.
+#
+# LANE-TRUTH-BATCH-01 Row 3: CONVERGENCE — deduplicate by content hash.  A
+# permanently-divergent copy synced N times must produce ONE quarantine copy,
+# not N.  Before writing, hash the content and check whether an identical copy
+# already exists anywhere in the quarantine tree for this (copy_name, relpath).
+# If so, return that existing path instead of creating a duplicate.
 _quarantine_copy() {
   local dst_file="$1" copy_name="$2" relpath="$3"
   [[ -f "${dst_file}" ]] || return 0
+  local content_hash
+  # Do not pipe sha256sum through cut: without pipefail, a failed hash command
+  # becomes an empty successful substitution and two unreadable files compare
+  # equal. Empty hashes are never valid content identities.
+  content_hash="$(sha256sum "${dst_file}" 2>/dev/null)" || return 1
+  content_hash="${content_hash%% *}"
+  [[ -n "${content_hash}" ]] || return 1
+  # Check for an existing quarantine copy with identical content (convergence)
+  local existing
+  existing="$(while IFS= read -r prev; do
+    local prev_hash
+    prev_hash="$(sha256sum "${prev}" 2>/dev/null)" || return 1
+    prev_hash="${prev_hash%% *}"
+    [[ -n "${prev_hash}" ]] || return 1
+    if [[ "${prev_hash}" == "${content_hash}" ]]; then
+      printf -- '%s\n' "${prev}"; break
+    fi
+  done < <(find "${_QUARANTINE_ROOT}" -path "*/${copy_name}/${relpath}" -type f 2>/dev/null))" || return 1
+  if [[ -n "${existing}" ]]; then
+    printf -- '%s\n' "${existing}"
+    return 0
+  fi
   local ts qpath
   ts="$(date -u '+%Y%m%dT%H%M%SZ')" || return 1
-  qpath="${_QUARANTINE_ROOT}/${ts}/${copy_name}/${relpath}"
+  # Include the content identity in the run directory. Two edits can be
+  # quarantined within the same UTC second; without this, the later edit
+  # overwrites the earlier recovery copy despite having a different hash.
+  qpath="${_QUARANTINE_ROOT}/${ts}-${content_hash}/${copy_name}/${relpath}"
   mkdir -p "$(dirname "${qpath}")" || return 1
   cp -p "${dst_file}" "${qpath}" || return 1
   printf -- '%s\n' "${qpath}"
@@ -189,7 +220,25 @@ _direction_safety_excludes() {
     local canonical_relpath="plugins/leadv2/${subdir}/${relpath}"
     if ! python3 "${_DIRECTION_SAFETY_CHECK}" "${PLUGIN_GIT_ROOT}" "${canonical_relpath}" "${dst_file}"; then
       if [[ "${mode}" == "exclude" ]]; then
-        log_warn "DIRECTION-SAFETY (block): refusing to overwrite ${dst_file} — its content is not reachable anywhere in canonical's git history for ${canonical_relpath} (possible un-landed fix on this copy). Excluding this file from the sync; land the fix in canonical first."
+        # LANE-TRUTH-BATCH-01 Row 3: quarantine the divergent copy BEFORE
+        # excluding, so a later manual cleanup or forced sync cannot silently
+        # lose an un-landed fix.  The exclude itself is unchanged — rsync skips
+        # the file, the copy stays divergent.  The quarantine is the safety net
+        # the old exclude lacked (warn mode already quarantines+reconciles;
+        # exclude mode was the only path with no preservation at all).
+        # _quarantine_copy deduplicates by content hash (convergence): a
+        # permanently-divergent copy is quarantined once, not on every sync.
+        if [[ "${DRY_RUN}" == "true" ]]; then
+          log_warn "DRY_RUN DIRECTION-SAFETY (block+would-quarantine): ${dst_file} content not reachable in canonical history for ${canonical_relpath}. No quarantine or target write performed."
+        else
+          local qpath
+          qpath="$(_quarantine_copy "${dst_file}" "${copy_name}" "${relpath}")" || qpath=""
+          if [[ -n "${qpath}" ]]; then
+            log_warn "DIRECTION-SAFETY (block+quarantine): refusing to overwrite ${dst_file} — its content is not reachable anywhere in canonical's git history for ${canonical_relpath} (possible un-landed fix on this copy). Excluding this file from the sync. ORIGINAL CONTENT PRESERVED at: ${qpath} — if this was a real fix: cp it into canonical (${canonical_relpath}) and re-sync."
+          else
+            log_warn "DIRECTION-SAFETY (block): refusing to overwrite ${dst_file} — its content is not reachable anywhere in canonical's git history for ${canonical_relpath} (possible un-landed fix on this copy). Excluding this file from the sync; quarantine unavailable. Land the fix in canonical first."
+          fi
+        fi
         printf -- '%s\n' "${relpath}"
       else
         # warn mode: PRESERVE first (quarantine), THEN let rsync reconcile.

@@ -3074,6 +3074,12 @@ cmd_resolve() {
        || ! leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null; then
       emit decision "active_register_miss task=${sig8}"
     fi
+    # LANE-TRUTH-BATCH-01 Row 1: stamp the real stream path so liveness resolves
+    # this lane, not pulse.md.  leadv2_active_register defaults log_path to
+    # pulse.md; the worker stream lives at developer.stream.jsonl.  fanout's
+    # finalize register cannot fix this — its live-PID guard sees the durable
+    # PID from self-registration and skips the overwrite.
+    leadv2_active_set_log_path "${reg_id}" "docs/handoff/dispatch-${sig8}/developer.stream.jsonl" 2>/dev/null || true
   fi
   # SILENT-DEATH-01 sibling guard: leadv2-active-registry.sh sets `set -euo
   # pipefail` for standalone use.  The `source` inside the if-block above runs
