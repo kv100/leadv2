@@ -3064,6 +3064,15 @@ cmd_resolve() {
       emit decision "active_register_miss task=${sig8}"
     fi
   fi
+  # SILENT-DEATH-01 sibling guard: leadv2-active-registry.sh sets `set -euo
+  # pipefail` for standalone use.  The `source` inside the if-block above runs
+  # in THIS shell, so it silently re-enables -e (which line 242 deliberately
+  # opts out of — "NO -e (refusals must journal)").  The first guard at line
+  # 367 covers the initial source at line 356; this covers the re-source that
+  # happens at dispatch time.  Without it, spawn_worker returning rc=2 (arm
+  # refusal) kills the process before the candidate loop can advance to the
+  # next arm.  (E2E-GATE-RESIDUE-01 round 4 root cause.)
+  set +e
 
   # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
   bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
