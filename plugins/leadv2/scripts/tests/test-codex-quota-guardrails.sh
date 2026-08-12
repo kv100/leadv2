@@ -414,16 +414,28 @@ fi
 
 # f2 — stubbed codex emits the usage-limit line ⇒ circuit marker appears with
 # the parsed horizon. Proves the runner DETECTS the wall and OPENS the circuit.
+# The horizon must be in the FUTURE so codex_circuit_state still reads "open"
+# when we assert; a hardcoded past date auto-closes and gives a false fail.
+F2_HORIZON_ISO="$(python3 -c '
+import datetime
+now = datetime.datetime.now(datetime.UTC).replace(microsecond=0, second=0)
+print((now + datetime.timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+')"
+F2_HORIZON_TEXT="$(python3 -c '
+import datetime, sys
+dt = datetime.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ")
+print(dt.strftime("%b %d, %Y %I:%M %p"))
+' "$F2_HORIZON_ISO" 2>/dev/null)"
 F2_ROOT="$BASE/f2-root"; mkdir -p "$F2_ROOT"
 F2_CIRCUIT="$BASE/f2-circuit.json"
 F2_COOLDOWN="$BASE/f2-cooldown"; mkdir -p "$F2_COOLDOWN"
 F2_BIN="$BASE/f2-bin"; mkdir -p "$F2_BIN"
 F2_ARGV="$BASE/f2.argv"
-cat > "$F2_BIN/codex" <<'STUB'
+cat > "$F2_BIN/codex" <<STUB
 #!/usr/bin/env bash
-echo "INVOKED" >> "$F2_ARGV_LOG"
+echo "INVOKED" >> "\$F2_ARGV_LOG"
 printf '{"type":"thread.started","thread_id":"th_f2"}\n'
-printf "Codex error: You've hit your usage limit. Please try again at Aug 8th, 2026 08:49 AM\n"
+printf "Codex error: You've hit your usage limit. Please try again at ${F2_HORIZON_TEXT}\n"
 exit 1
 STUB
 chmod +x "$F2_BIN/codex"
@@ -444,11 +456,11 @@ PATH="$STUBBIN:$PATH" \
 F2_STATE=""
 [[ -f "$F2_CIRCUIT" ]] && F2_STATE="$(LEADV2_CODEX_CIRCUIT_FILE="$F2_CIRCUIT" \
   bash -c "source '$CIRCUIT_LIB'; codex_circuit_state" 2>/dev/null || true)"
-F2_JOURNAL_COUNT="$(grep -c 'codex_circuit_open until=2026-08-08T08:49:00Z' /tmp/f2.err 2>/dev/null || true)"
+F2_JOURNAL_COUNT="$(grep -c "codex_circuit_open until=${F2_HORIZON_ISO}" /tmp/f2.err 2>/dev/null || true)"
 F2_JOURNAL_COUNT="$(printf '%s' "$F2_JOURNAL_COUNT" | tr -d '[:space:]')"
 F2_SPAWN_COUNT="$(wc -l < "$F2_ARGV" 2>/dev/null | tr -d '[:space:]')"
 if [[ $F2_RC -eq 2 ]] \
-   && [[ "$F2_STATE" == "open 2026-08-08T08:49:00Z session-runner" ]] \
+   && [[ "$F2_STATE" == "open ${F2_HORIZON_ISO} session-runner" ]] \
    && [[ "$F2_JOURNAL_COUNT" == "1" ]] \
    && [[ "$F2_SPAWN_COUNT" == "1" ]]; then
   pass "f2 codex usage-limit → circuit opened with parsed horizon, 1 spawn"
