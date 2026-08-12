@@ -221,7 +221,7 @@ else
 fi
 
 # Verify no bare claude -p in the engine (check non-comment lines only).
-if grep -vE '^\s*#' "${ENGINE}" | grep -qE 'claude  +-p' 2>/dev/null; then
+if grep -vE '^\s*#' "${ENGINE}" | grep -qE 'claude[[:space:]]+-p' 2>/dev/null; then
   fail "engine contains bare 'claude -p' (CRITICAL)"
 else
   pass "engine has no bare 'claude -p'"
