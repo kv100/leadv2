@@ -588,10 +588,24 @@ if [[ -z "${architect_arm}" ]]; then
 fi
 
 # Body persistence guard (REVIEW-BODY-PERSIST-01 port): arm ran (rc=0) but
-# artifact body is missing → blocked, never silent pass.
+# artifact body is unusable → blocked, never silent pass.
+#   - File missing entirely                → body_lost (process/filesystem error)
+#   - File exists but no PLAN_YAML: block  → empty_response (no parseable block)
+#   - File has PLAN_YAML: but < 50 bytes   → body_lost (truncated/suspicious)
 _arch_out="${HANDOFF}/plan-arm-${architect_arm}.yaml"
+if [[ ! -f "${_arch_out}" ]]; then
+  emit decision "plan_run task=${TASK} status=blocked reason=body_lost arm=${architect_arm}"
+  write_gate "blocked" "body_lost" "${architect_arm}" "skipped"
+  printf '%s' "${MISSION_SIG}" > "${HANDOFF}/context.yaml.sig" 2>/dev/null || true
+  exit 9
+fi
 _arch_bytes="$(wc -c < "${_arch_out}" 2>/dev/null | tr -d '[:space:]')"; _arch_bytes="${_arch_bytes:-0}"
-if [[ "${_arch_bytes}" -lt 50 ]]; then
+if ! grep -q 'PLAN_YAML:' "${_arch_out}" 2>/dev/null; then
+  emit decision "plan_run task=${TASK} status=blocked reason=empty_response arm=${architect_arm}"
+  write_gate "blocked" "empty_response" "${architect_arm}" "skipped"
+  printf '%s' "${MISSION_SIG}" > "${HANDOFF}/context.yaml.sig" 2>/dev/null || true
+  exit 9
+elif [[ "${_arch_bytes}" -lt 50 ]]; then
   emit decision "plan_run task=${TASK} status=blocked reason=body_lost arm=${architect_arm}"
   write_gate "blocked" "body_lost" "${architect_arm}" "skipped"
   printf '%s' "${MISSION_SIG}" > "${HANDOFF}/context.yaml.sig" 2>/dev/null || true
