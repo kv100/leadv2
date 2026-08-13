@@ -1,0 +1,3 @@
+Try to REFUTE this finding. Default is_real=false if you cannot concretely confirm it against docs/handoff/PLAN-FOLLOWUPS-01/build-attempt-3.diff.
+Finding [High/correctness]: _best_effort_floor_pool has the identical regression: `if not ok` replaces `if rank_table`, so an empty rank_table returns the hard degenerate error instead of the unavailable fallback
+Report exactly one line: VERIFY_VERDICT: <upheld|refuted>

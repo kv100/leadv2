@@ -1,0 +1,53 @@
+diff --git a/plugins/leadv2/scripts/leadv2-plan-run.sh b/plugins/leadv2/scripts/leadv2-plan-run.sh
+index e1e4d8b..32940ae 100755
+--- a/plugins/leadv2/scripts/leadv2-plan-run.sh
++++ b/plugins/leadv2/scripts/leadv2-plan-run.sh
+@@ -386,7 +386,11 @@ extract_plan_yaml() { # <file> → stdout: extracted YAML
+   # Try order B: opening ``` fence appears, then PLAN_YAML: marker inside.
+   extracted="$(awk '
+     !in_fence && /^```/ { in_fence=1; next }
+-    in_fence && /^```/ { exit }
++    in_fence && /^```/ {
++      if (seen_marker) exit
++      in_fence=0
++      next
++    }
+     in_fence && /^PLAN_YAML:/ { seen_marker=1; next }
+     in_fence && seen_marker { print }
+   ' "$f" 2>/dev/null)"
+diff --git a/plugins/leadv2/scripts/tests/test-plan-followups-01.sh b/plugins/leadv2/scripts/tests/test-plan-followups-01.sh
+index 8cf6536..a304d63 100644
+--- a/plugins/leadv2/scripts/tests/test-plan-followups-01.sh
++++ b/plugins/leadv2/scripts/tests/test-plan-followups-01.sh
+@@ -213,6 +213,31 @@ else
+   fail "Order B extraction failed (got: ${_out_2b})"
+ fi
+ 
++# --- 2bb: Order B scans past an unrelated prose fence for the marker-bearing block ---
++log "Caveat 2bb: Order B ignores a preceding prose fence"
++cat > "${TMP}/2bb.txt" <<'TXT'
++Some preamble text.
++```
++Example prose code block; this is not the plan.
++```
++```yaml
++PLAN_YAML:
++decisions:
++  - Decision B after prose fence
++plan:
++  steps:
++    - Step B after prose fence
++```
++TXT
++
++_out_2bb="$(extract_plan_yaml "${TMP}/2bb.txt")"
++if grep -q 'Decision B after prose fence' <<<"${_out_2bb}" \
++    && ! grep -q 'Example prose\|PLAN_YAML\|preamble' <<<"${_out_2bb}"; then
++  pass "Order B selects the marker-bearing fence after prose"
++else
++  fail "Order B prose-fence extraction failed (got: ${_out_2bb})"
++fi
++
+ # --- 2c: Order B ignores prose after the closing fence ---
+ log "Caveat 2c: Order B extraction ignores trailing prose"
+ cat > "${TMP}/2c.txt" <<'TXT'

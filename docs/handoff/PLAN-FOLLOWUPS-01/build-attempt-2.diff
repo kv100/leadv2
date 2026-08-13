@@ -1,0 +1,671 @@
+diff --git a/docs/handoff/PLAN-FOLLOWUPS-01/summary.md b/docs/handoff/PLAN-FOLLOWUPS-01/summary.md
+new file mode 100644
+index 0000000..718e122
+--- /dev/null
++++ b/docs/handoff/PLAN-FOLLOWUPS-01/summary.md
+@@ -0,0 +1,8 @@
++# PLAN-FOLLOWUPS-01 summary
++
++1. Refused architect arms spill to the next eligible arm: [leadv2-plan-run.sh:591](../../../plugins/leadv2/scripts/leadv2-plan-run.sh:591); covered by `Caveat 1a` and `Caveat 1b` in `test-plan-followups-01.sh`.
++2. YAML extraction accepts marker→fence and fence→marker: [leadv2-plan-run.sh:371](../../../plugins/leadv2/scripts/leadv2-plan-run.sh:371); covered by `Caveat 2a`, `Caveat 2b`, and `Caveat 2c`.
++3. Non-mapping acceptance fails and preserves `authored_at`: [leadv2-context-merge.py:41](../../../plugins/leadv2/scripts/lib/leadv2-context-merge.py:41); covered by `Caveat 3a` and `Caveat 3b`.
++4. Planning review floors exclude non-dispatchable arms: [leadv2-glm-policy-resolve.py:250](../../../plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py:250), [leadv2-glm-policy-resolve.py:526](../../../plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py:526), and [leadv2-glm-policy-resolve.py:755](../../../plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py:755); covered by `Caveat 4a`, `Caveat 4b`, and `Caveat 4c`.
++
++Mutation proof: `MUT_RC=1` with 4 failures pre-fix; green verification: 13/13.
+diff --git a/plugins/leadv2/scripts/leadv2-plan-run.sh b/plugins/leadv2/scripts/leadv2-plan-run.sh
+index 59414a7..b1ce52b 100755
+--- a/plugins/leadv2/scripts/leadv2-plan-run.sh
++++ b/plugins/leadv2/scripts/leadv2-plan-run.sh
+@@ -364,15 +364,30 @@ _engine_run_arm_with_timeout() { # <arm> <role>
+ # Extract the PLAN_YAML fenced block from an arm output file.
+ # If no fenced block exists, returns the whole file (for stub/test arms that
+ # emit raw YAML directly).
++# Accepts BOTH orderings (PLAN-FOLLOWUPS-01 caveat 2):
++#   A) marker THEN fence:  PLAN_YAML:\n```yaml\n...\n```
++#   B) fence THEN marker:  ```yaml\nPLAN_YAML:\n...\n```
++# The mission prompt tells arms order B; some stubs emit order A. Both must work.
+ extract_plan_yaml() { # <file> → stdout: extracted YAML
+   local f="$1"
+   local extracted
+-  # awk: after PLAN_YAML:, skip the opening ``` fence, print content until
+-  # the closing ``` fence, then exit.
++  # Try order A first: PLAN_YAML: marker appears, then the opening ``` fence.
+   extracted="$(awk '
+     /^PLAN_YAML:/ { found=1; next }
+-    found && /^```/ { fence++ ; if (fence==1) next; exit }
+-    found { print }
++    found && !in_fence && /^```/ { in_fence=1; next }
++    in_fence && /^```/ { exit }
++    in_fence { print }
++  ' "$f" 2>/dev/null)"
++  if [[ -n "${extracted}" ]]; then
++    printf '%s\n' "${extracted}"
++    return 0
++  fi
++  # Try order B: opening ``` fence appears, then PLAN_YAML: marker inside.
++  extracted="$(awk '
++    !in_fence && /^```/ { in_fence=1; next }
++    in_fence && /^```/ { exit }
++    in_fence && /^PLAN_YAML:/ { seen_marker=1; next }
++    in_fence && seen_marker { print }
+   ' "$f" 2>/dev/null)"
+   if [[ -n "${extracted}" ]]; then
+     printf '%s\n' "${extracted}"
+@@ -575,37 +590,54 @@ for _arm in "${fanout_list[@]}"; do
+ done
+ 
+ # ---------------------------------------------------------------------------
+-# 10. Architect pass
++# 10. Architect pass — with refusal spill (PLAN-FOLLOWUPS-01 caveat 1).
++#     refused_quota / refused_peak_hours / refused_channel_down are NOT terminal:
++#     the engine walks forward through ${pool} to the next :ok: arm, bounded by
++#     the same 4-try cap used in leadv2-review-run.sh:519.
+ # ---------------------------------------------------------------------------
+-_first_arm="${fanout_list[0]}"
+-_engine_run_arm_with_timeout "${_first_arm}" "architect"
+-
+-_first_rc="$(cat "${HANDOFF}/plan-arm-${_first_arm}.rc" 2>/dev/null || printf '1')"
+-_first_err="${HANDOFF}/plan-arm-${_first_arm}.err"
+-_first_out="${HANDOFF}/plan-arm-${_first_arm}.yaml"
+-_cls="$(classify_arm_failure "${_first_rc}" "${_first_err}" "${_first_out}")"
+-
+ architect_arm=""
+-if [[ "${_cls}" == "ran" ]]; then
+-  architect_arm="${_first_arm}"
+-elif [[ "${_cls}" == "arm_unavailable" ]]; then
+-  emit decision "plan_run arm_unavailable arm=${_first_arm} reason=policy task=${TASK}"
+-  _next_arm="$(next_ok_arm_after "${_first_arm}" || true)"
+-  if [[ -n "${_next_arm}" ]]; then
+-    _engine_run_arm_with_timeout "${_next_arm}" "architect"
+-    _next_rc="$(cat "${HANDOFF}/plan-arm-${_next_arm}.rc" 2>/dev/null || printf '1')"
+-    _next_err="${HANDOFF}/plan-arm-${_next_arm}.err"
+-    _next_out="${HANDOFF}/plan-arm-${_next_arm}.yaml"
+-    _cls2="$(classify_arm_failure "${_next_rc}" "${_next_err}" "${_next_out}")"
+-    if [[ "${_cls2}" == "ran" ]]; then
+-      architect_arm="${_next_arm}"
+-    fi
++_tried_arch=()
++_slot_arm="${fanout_list[0]}"
++_engine_run_arm_with_timeout "${_slot_arm}" "architect"
++while :; do
++  _slot_rc="$(cat "${HANDOFF}/plan-arm-${_slot_arm}.rc" 2>/dev/null || printf '1')"
++  _slot_err="${HANDOFF}/plan-arm-${_slot_arm}.err"
++  _slot_out="${HANDOFF}/plan-arm-${_slot_arm}.yaml"
++  _cls="$(classify_arm_failure "${_slot_rc}" "${_slot_err}" "${_slot_out}")"
++
++  case "${_cls}" in
++    ran)
++      architect_arm="${_slot_arm}"
++      break
++      ;;
++    arm_unavailable)
++      emit decision "plan_run arm_unavailable arm=${_slot_arm} reason=policy task=${TASK}"
++      ;;
++    refused_*)
++      emit decision "plan_run arm_refused arm=${_slot_arm} reason=${_cls} task=${TASK}"
++      ;;
++    *)
++      # Unexpected classification — treat as terminal failure.
++      break
++      ;;
++  esac
++
++  # Spill to next :ok: arm, bounded at 4 total tries.
++  _tried_arch+=("${_slot_arm}")
++  if [[ "${#_tried_arch[@]}" -ge 4 ]]; then
++    break
+   fi
+-fi
++  _next_arm="$(next_ok_arm_after "${_slot_arm}" || true)"
++  if [[ -z "${_next_arm}" ]]; then
++    break
++  fi
++  _slot_arm="${_next_arm}"
++  _engine_run_arm_with_timeout "${_slot_arm}" "architect"
++done
+ 
+ if [[ -z "${architect_arm}" ]]; then
+-  if [[ "${_first_rc}" -ne 0 ]]; then
+-    emit decision "plan_run task=${TASK} status=blocked reason=provider_error rc=${_first_rc}"
++  if [[ "${_slot_rc:-1}" -ne 0 ]]; then
++    emit decision "plan_run task=${TASK} status=blocked reason=provider_error rc=${_slot_rc:-1}"
+     write_gate "blocked" "provider_error" "-" "skipped"
+   else
+     emit decision "plan_run task=${TASK} status=blocked reason=empty_response"
+diff --git a/plugins/leadv2/scripts/lib/leadv2-context-merge.py b/plugins/leadv2/scripts/lib/leadv2-context-merge.py
+index 2f9404e..0a9587d 100644
+--- a/plugins/leadv2/scripts/lib/leadv2-context-merge.py
++++ b/plugins/leadv2/scripts/lib/leadv2-context-merge.py
+@@ -27,17 +27,30 @@ REQUIRED_FIELDS = [
+ 
+ 
+ def deep_merge(skeleton: dict, arm: dict) -> dict:
+-    """Merge arm judgment fields into skeleton. Engine-owned keys always win."""
++    """Merge arm judgment fields into skeleton. Engine-owned keys always win.
++
++    Raises TypeError if an arm emits a non-dict ``acceptance`` value (a scalar,
++    list, or null) — that is a structural error that must NOT be silently
++    accepted, because it would clobber the engine-stamped ``authored_at``.
++    """
+     result = dict(skeleton)  # shallow copy — we handle nesting explicitly
+ 
+     for key, val in arm.items():
+         if key in ENGINE_OWNED_TOP:
+             continue  # engine owns these — discard arm value
+-        if key == "acceptance" and isinstance(val, dict) and isinstance(result.get("acceptance"), dict):
+-            # Merge acceptance sub-keys, but engine owns authored_at
++        if key == "acceptance":
++            if not isinstance(val, dict):
++                raise TypeError(
++                    "acceptance must be a mapping (got %s); a non-dict acceptance "
++                    "would overwrite the engine-owned authored_at — refusing to "
++                    "merge" % type(val).__name__
++                )
++            if not isinstance(result.get("acceptance"), dict):
++                result["acceptance"] = {}
++            # Merge acceptance sub-keys, preserving engine-owned authored_at.
+             for ak, av in val.items():
+                 if ak in ENGINE_OWNED_ACCEPTANCE:
+-                    continue
++                    continue  # engine owns authored_at — never overwritten
+                 result["acceptance"][ak] = av
+         elif key not in result or key not in ENGINE_OWNED_TOP:
+             # Judgment field from the arm — arm wins (skeleton has no opinion)
+@@ -90,7 +103,11 @@ def main(argv):
+             # check below will catch the consequence.
+             continue
+         if isinstance(arm_doc, dict):
+-            merged = deep_merge(merged, arm_doc)
++            try:
++                merged = deep_merge(merged, arm_doc)
++            except TypeError as exc:
++                print("merge: %s" % exc, file=sys.stderr)
++                return 1
+ 
+     # Check required fields
+     missing = check_required(merged)
+diff --git a/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py b/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
+index 2cef6f2..97d99fd 100644
+--- a/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
++++ b/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
+@@ -247,24 +247,37 @@ def _lockout_blocked(provider: str, now_epoch: int, lockout_dir: str = None) ->
+     return now_epoch < until_epoch
+ 
+ 
+-def _review_floor(author: str, rank_table: dict):
++def _review_floor(author: str, rank_table: dict, dispatchable=None):
+     """D3: TOTAL, non-hardcoded floor over the review_rank table. Returns
+-    (arm_or_None, ok) -- ok is False iff the table has fewer than 2 entries, which
+-    the caller must treat as pool_floor_table_degenerate (a hard resolver error, not
+-    a silent empty pool) rather than a normal "floor not needed" outcome.
++    (arm_or_None, ok) -- ok is False iff the original rank table has fewer than 2
++    entries, which the caller must treat as pool_floor_table_degenerate (a hard
++    resolver error, not a silent empty pool) rather than a normal "floor not needed"
++    outcome. If an optional dispatchable filter leaves fewer than 2 entries, there
++    simply is no eligible floor: return (None, True) so the caller degrades to the
++    documented all_review_arms_unavailable fallback instead of misclassifying a
++    valid ladder as degenerate.
+ 
+     floor(author) = the entry with rank > rank(author) that has the smallest such
+     rank (escalate one step up), or -- if none exists (author at/above the top, or
+     author absent from the table, i.e. rank(author) treated as -infinity) -- the
+     entry with the largest rank. Total for any author string, including "" or an
+-    arm the table has never heard of."""
++    arm the table has never heard of.
++
++    dispatchable: optional set of allowed arm names. When provided, arms NOT in
++    this set are excluded from the rank table BEFORE floor selection. Used by
++    the plan phase to ensure DISPATCHABLE_PLAN_ARMS filtering applies to the
++    floor too (PLAN-FOLLOWUPS-01 caveat 4 — haiku must never enter the pool)."""
+     rank_table = rank_table or {}
+     if len(rank_table) < 2:
+         return None, False
++    if dispatchable is not None:
++        rank_table = {k: v for k, v in rank_table.items() if k in dispatchable}
++    if len(rank_table) < 2:
++        return None, True
+     author_rank = rank_table.get(author, float("-inf"))
+     candidates = [(rid, r) for rid, r in rank_table.items() if rid != author]
+     if not candidates:
+-        return None, False
++        return None, True
+     higher = [c for c in candidates if c[1] > author_rank]
+     chosen = min(higher, key=lambda c: c[1]) if higher else max(candidates, key=lambda c: c[1])
+     return chosen[0], True
+@@ -517,7 +530,11 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
+     # floor_reviewer" in the design doc's vocabulary, expressed here as the entry
+     # disposition since --review-pool's CLI contract has no separate reason= line.
+     if not reviewer:
+-        floor_arm, floor_ok = _review_floor(author, rank_table)
++        # PLAN-FOLLOWUPS-01 caveat 4: when job=plan, filter the floor by
++        # DISPATCHABLE_PLAN_ARMS so haiku (or any non-plan arm) never enters
++        # the planning pool via the floor path.
++        _floor_dispatchable = DISPATCHABLE_PLAN_ARMS if job == "plan" else None
++        floor_arm, floor_ok = _review_floor(author, rank_table, dispatchable=_floor_dispatchable)
+         if floor_ok and floor_arm:
+             floor_pct = _pct_for(floor_arm)
+             suffix = _fmt_pct(floor_pct) if floor_pct is not None and _fmt_pct(floor_pct) else "degraded"
+@@ -747,7 +764,10 @@ def _best_effort_floor_pool(argv):
+     main body still leaves the review gate with a non-empty pool where possible.
+     Deliberately does NOT reuse any state from the failed run -- re-resolves the
+     routing yaml from scratch via the same D1 candidate search. Returns
+-    (reviewer, pool_entries, refusal)."""
++    (reviewer, pool_entries, refusal).
++
++    PLAN-FOLLOWUPS-01 caveat 4: when --plan-pool is present, filters the floor by
++    DISPATCHABLE_PLAN_ARMS (haiku must never enter the planning pool)."""
+     try:
+         routing_yaml_arg = _arg_from_argv(argv, "--routing-yaml")
+         author = _arg_from_argv(argv, "--author")
+@@ -757,9 +777,14 @@ def _best_effort_floor_pool(argv):
+         text = Path(path).read_text()
+         ladder = extract_dispatch_ladder(text)
+         rank_table = {e["id"]: e["review_rank"] for e in ladder if e.get("review_rank") is not None}
+-        arm, ok = _review_floor(author, rank_table)
++        # PLAN-FOLLOWUPS-01 caveat 4: filter floor by DISPATCHABLE_PLAN_ARMS for plan job.
++        _dispatchable = DISPATCHABLE_PLAN_ARMS if "--plan-pool" in argv else None
++        arm, ok = _review_floor(author, rank_table, dispatchable=_dispatchable)
+         if not ok or not arm:
+-            return "", [], "pool_floor_table_degenerate" if rank_table else "all_review_arms_unavailable"
++            # A valid ladder can legitimately have no plan-dispatchable floor after
++            # filtering (for example, only haiku ranks remain). That is an ordinary
++            # unavailable-pool fallback, not a malformed rank-table hard error.
++            return "", [], "pool_floor_table_degenerate" if not ok else "all_review_arms_unavailable"
+         return arm, ["%s:floor:degraded" % arm], ""
+     except Exception:
+         return "", [], "resolver_error"
+diff --git a/plugins/leadv2/scripts/tests/run-core-offline.sh b/plugins/leadv2/scripts/tests/run-core-offline.sh
+index 6898c5f..98d64d2 100755
+--- a/plugins/leadv2/scripts/tests/run-core-offline.sh
++++ b/plugins/leadv2/scripts/tests/run-core-offline.sh
+@@ -122,6 +122,7 @@ run_check "lane phase render" bash "$TEST_DIR/test-lane-phase-render.sh"
+ run_check "lane truth batch (log_path + quarantine convergence)" bash "$TEST_DIR/test-lane-truth-batch-01.sh"
+ run_check "plugin reliability (process liveness + role fallback + prepass/reorder signals)" bash "$TEST_DIR/test-plugin-reliability-01.sh"
+ run_check "plugin reliability-02 (zombie-reaper: run_dir arg + group signaling + ordering + TASK)" bash "$TEST_DIR/test-plugin-reliability-02.sh"
++run_check "plan-followups-01" bash "$TEST_DIR/test-plan-followups-01.sh"
+ 
+ printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
+ (( FAIL == 0 && MISSING == 0 ))
+diff --git a/plugins/leadv2/scripts/tests/test-plan-followups-01.sh b/plugins/leadv2/scripts/tests/test-plan-followups-01.sh
+new file mode 100644
+index 0000000..0360ca4
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-plan-followups-01.sh
+@@ -0,0 +1,377 @@
++#!/usr/bin/env bash
++# tests/test-plan-followups-01.sh — behavioral tests for the 4 High judge caveats.
++#
++# Each test is hermetic (mktemp sandbox) and MUST FAIL when its fix is reverted.
++# No grep-on-source assertions — every test exercises real runtime behavior.
++#
++# Run: bash plugins/leadv2/scripts/tests/test-plan-followups-01.sh
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
++ENGINE="${SCRIPTS_ROOT}/leadv2-plan-run.sh"
++RESOLVER="${SCRIPTS_ROOT}/lib/leadv2-glm-policy-resolve.py"
++MERGE_PY="${SCRIPTS_ROOT}/lib/leadv2-context-merge.py"
++FIXTURES="${SCRIPT_DIR}/fixtures/plan-run"
++
++PASS=0; FAIL=0
++log()  { printf -- '[TEST] %s\n' "$*"; }
++pass() { log "PASS: $*"; PASS=$((PASS + 1)); }
++fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
++
++bash -n "$0" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
++
++TMP="$(mktemp -d)"; trap 'rm -rf "${TMP}"' EXIT
++
++# Shared: quota stub — codex needs windows/binding_window schema;
++# anthropic needs accounts[]/active/five_hour_pct/seven_day_pct.
++printf '#!/usr/bin/env bash\ncase "$1" in\n  codex) printf '"'"'{"status":"ok","windows":[{"kind":"primary","used_percent":10.0}],"binding_window":"primary"}\\n'"'"' ;;\n  *) printf '"'"'{"status":"ok","accounts":[{"active":true,"five_hour_pct":10.0,"seven_day_pct":10.0}]}\\n'"'"' ;;\nesac\n' > "${TMP}/stub-quota.sh"
++chmod +x "${TMP}/stub-quota.sh"
++
++# ===========================================================================
++# Caveat 1: arm loop must CONSUME refused_* and spill to next :ok: arm
++#           (not treat a refusal as terminal).
++# ===========================================================================
++
++# --- 1a: classify_arm_failure correctly returns refused_quota ---
++log "Caveat 1a: classify_arm_failure returns refused_quota for LEADV2_DISPATCH_REFUSED"
++mkdir -p "${TMP}/1a"
++echo "LEADV2_DISPATCH_REFUSED: quota_exhausted" > "${TMP}/1a/err"
++echo "" > "${TMP}/1a/out"
++
++# Source classify_arm_failure from the engine and test it.
++_cls="$(bash -c '
++  source <(sed -n "/^classify_arm_failure/,/^}/p" "'${ENGINE}'")
++  classify_arm_failure 1 "'${TMP}'/1a/err" "'${TMP}'/1a/out"
++')"
++if [[ "${_cls}" == "refused_quota" ]]; then
++  pass "classify_arm_failure returns refused_quota"
++else
++  fail "classify_arm_failure returned '${_cls}' (expected refused_quota)"
++fi
++
++# --- 1b: refused arm spills to next arm — engine reaches status=pass ---
++log "Caveat 1b: refused_quota arm spills to next :ok: arm → status=pass"
++ROOT1="${TMP}/repo1"
++HANDOFF1="${ROOT1}/docs/handoff/c1b"
++mkdir -p "${ROOT1}/.claude/ref" "${HANDOFF1}"
++
++cat > "${ROOT1}/.claude/ref/leadv2-routing.yaml" <<'YAML'
++router:
++  glm_policy:
++    codex_quota_gate:
++      review_arm_order: [codex, sonnet, opus]
++      review_threshold_pct: 95
++      anthropic_review_threshold_pct: 95
++dispatch_ladder:
++  - id: codex
++    review_rank: 1
++    provider: codex
++  - id: sonnet
++    review_rank: 2
++    provider: anthropic
++  - id: opus
++    review_rank: 3
++    provider: anthropic
++YAML
++
++# First-call-refuses stub: codex refuses with quota, sonnet succeeds.
++# The engine dispatches codex first; if it refuses, spills to sonnet.
++cat > "${TMP}/stub-codex-refuse.sh" <<'SH'
++#!/usr/bin/env bash
++# Codex stub: refuses with quota exhausted.
++# Called as LEADV2_DISPATCH_CODEX_BIN (--task-id --mode --mission-file --wait).
++echo "LEADV2_DISPATCH_REFUSED: quota_exhausted" >&2
++exit 75
++SH
++chmod +x "${TMP}/stub-codex-refuse.sh"
++
++# Stub for non-codex arms (sonnet, opus): succeeds with valid PLAN_YAML.
++# Called as LEADV2_DISPATCH_ARCHITECT_BIN (--role --model --task-id --mission-file --wait).
++cat > "${TMP}/stub-ok.sh" <<'SH'
++#!/usr/bin/env bash
++cat <<'YAML'
++```yaml
++PLAN_YAML:
++decisions:
++  - Spilled to fallback arm
++off_limits:
++  - nothing
++plan:
++  steps:
++    - One step
++acceptance:
++  surface: file_artifact
++  observable: >
++    Reader sees valid plan-gate.md.
++risk: low
++```
++YAML
++SH
++chmod +x "${TMP}/stub-ok.sh"
++
++printf 'Test mission for refusal spill.' > "${TMP}/mission1.txt"
++
++LEADV2_ROUTING_YAML="${ROOT1}/.claude/ref/leadv2-routing.yaml" \
++GLM_POLICY_QUOTA_LIVE="${TMP}/stub-quota.sh" \
++LEADV2_DISPATCH_ARCHITECT_BIN="${TMP}/stub-ok.sh" \
++LEADV2_DISPATCH_CODEX_BIN="${TMP}/stub-codex-refuse.sh" \
++LEADV2_PLAN_ARM_TIMEOUT_S=10 \
++bash "${ENGINE}" --task c1b --root "${ROOT1}" --handoff "${HANDOFF1}" \
++  --mode prepass --mission-file "${TMP}/mission1.txt" --no-cache \
++  >"${TMP}/1b-stdout.log" 2>"${TMP}/1b-stderr.log"
++rc1b=$?
++
++_status1b="$(sed -n 's/^status:[[:space:]]*//p' "${HANDOFF1}/plan-gate.md" 2>/dev/null | head -1)"
++_stderr1b="$(cat "${TMP}/1b-stderr.log" 2>/dev/null)"
++
++if [[ "${_status1b}" == "pass" ]]; then
++  pass "refused codex spilled to next arm → status=pass (rc=${rc1b})"
++else
++  fail "refused codex did NOT spill → status='${_status1b}' (expected pass)"
++  log "  stderr (tail): $(tail -5 "${TMP}/1b-stderr.log" 2>/dev/null)"
++fi
++
++# Verify the spill was journaled.
++if grep -q 'arm_refused.*codex' <<<"${_stderr1b}" 2>/dev/null; then
++  pass "journal recorded arm_refused for codex"
++else
++  fail "no arm_refused journal line for codex"
++fi
++
++# ===========================================================================
++# Caveat 2: extract_plan_yaml accepts BOTH marker/fence orderings.
++# ===========================================================================
++
++# Source extract_plan_yaml from the engine.
++source <(sed -n '/^extract_plan_yaml()/,/^}/p' "${ENGINE}")
++
++# --- 2a: Order A (marker THEN fence) — stub fixture format ---
++log "Caveat 2a: extract_plan_yaml handles marker→fence order (A)"
++cat > "${TMP}/2a.txt" <<'TXT'
++Some preamble text.
++PLAN_YAML:
++```yaml
++decisions:
++  - Decision A
++plan:
++  steps:
++    - Step A
++```
++TXT
++
++_out_2a="$(extract_plan_yaml "${TMP}/2a.txt")"
++if grep -q 'Decision A' <<<"${_out_2a}" && ! grep -q 'PLAN_YAML' <<<"${_out_2a}"; then
++  pass "Order A (marker→fence) extracts YAML content correctly"
++else
++  fail "Order A extraction failed (got: ${_out_2a})"
++fi
++
++# --- 2b: Order B (fence THEN marker) — mission prompt format ---
++log "Caveat 2b: extract_plan_yaml handles fence→marker order (B)"
++cat > "${TMP}/2b.txt" <<'TXT'
++Some preamble text.
++```yaml
++PLAN_YAML:
++decisions:
++  - Decision B
++plan:
++  steps:
++    - Step B
++```
++TXT
++
++_out_2b="$(extract_plan_yaml "${TMP}/2b.txt")"
++if grep -q 'Decision B' <<<"${_out_2b}" && ! grep -q 'PLAN_YAML' <<<"${_out_2b}"; then
++  pass "Order B (fence→marker) extracts YAML content correctly"
++else
++  fail "Order B extraction failed (got: ${_out_2b})"
++fi
++
++# --- 2c: Extract from real fixture stub-architect.sh output ---
++log "Caveat 2c: extract_plan_yaml on real stub-architect.sh output"
++_out_fixture="$(bash "${FIXTURES}/stub-architect.sh" | extract_plan_yaml /dev/stdin)"
++if grep -q 'Use leadv2-plan-run.sh' <<<"${_out_fixture}"; then
++  pass "Real fixture (stub-architect) extracts correctly"
++else
++  fail "Real fixture extraction failed"
++fi
++
++# ===========================================================================
++# Caveat 3: non-dict acceptance is a hard error; authored_at preserved.
++# ===========================================================================
++
++# --- 3a: non-dict acceptance exits nonzero ---
++log "Caveat 3a: non-dict acceptance causes nonzero exit"
++cat > "${TMP}/skeleton3.yaml" <<'YAML'
++id: dispatch-test3
++mission: |
++  Test mission.
++acceptance:
++  authored_at: 2026-08-12T00:00:00Z
++reads: []
++writes: []
++lane_writes: []
++YAML
++
++cat > "${TMP}/arm3-bad.yaml" <<'YAML'
++acceptance: "just a string"
++decisions:
++  - Some decision
++off_limits: []
++plan:
++  steps:
++    - One step
++YAML
++
++python3 "${MERGE_PY}" --skeleton "${TMP}/skeleton3.yaml" --arm "${TMP}/arm3-bad.yaml" \
++  --out "${TMP}/merged3-bad.yaml" 2>"${TMP}/merge3-bad.err"
++_rc3a=$?
++
++if [[ "${_rc3a}" -ne 0 ]]; then
++  pass "Non-dict acceptance rejected with nonzero exit (rc=${_rc3a})"
++else
++  fail "Non-dict acceptance was silently accepted (rc=0)"
++fi
++
++# --- 3b: dict acceptance preserves authored_at ---
++log "Caveat 3b: dict acceptance preserves engine-authored_at"
++cat > "${TMP}/arm3-ok.yaml" <<'YAML'
++acceptance:
++  surface: file_artifact
++  observable: >
++    Reader sees valid output.
++  authored_at: 2099-01-01T00:00:00Z
++decisions:
++  - Some decision
++off_limits: []
++plan:
++  steps:
++    - One step
++YAML
++
++python3 "${MERGE_PY}" --skeleton "${TMP}/skeleton3.yaml" --arm "${TMP}/arm3-ok.yaml" \
++  --out "${TMP}/merged3-ok.yaml" 2>/dev/null
++
++_authored="$(python3 -c '
++import yaml
++d = yaml.safe_load(open("'"${TMP}"'/merged3-ok.yaml"))
++print(str(d.get("acceptance", {}).get("authored_at", "")))
++')"
++
++if [[ "${_authored}" == *"2026-08-12"* ]]; then
++  pass "authored_at preserved (arm value 2099-01-01 was discarded, got '${_authored}')"
++else
++  fail "authored_at was overwritten to '${_authored}' (expected 2026-08-12)"
++fi
++
++# ===========================================================================
++# Caveat 4: review-floor / _best_effort_floor_pool filtered by
++#           DISPATCHABLE_PLAN_ARMS when job=plan (no haiku in planning pool).
++# ===========================================================================
++
++# --- 4a: _review_floor excludes non-dispatchable arms for plan job ---
++log "Caveat 4a: _review_floor filters by DISPATCHABLE_PLAN_ARMS for plan"
++printf '#!/usr/bin/env python3\nimport importlib.util, sys\nspec = importlib.util.spec_from_file_location("resolve", "%s")\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\nrank_table = {"sonnet": 1, "haiku": 2}\narm_review, _ = mod._review_floor("sonnet", rank_table, dispatchable=None)\narm_plan, _ = mod._review_floor("sonnet", rank_table, dispatchable=mod.DISPATCHABLE_PLAN_ARMS)\nprint("review=%%s" %% arm_review)\nprint("plan=%%s" %% arm_plan)\n' "${RESOLVER}" > "${TMP}/test4a.py"
++_out_4a="$(python3 "${TMP}/test4a.py" 2>&1)"
++
++_arm_review="$(printf '%s\n' "${_out_4a}" | grep '^review=' | cut -d= -f2)"
++_arm_plan="$(printf '%s\n' "${_out_4a}" | grep '^plan=' | cut -d= -f2)"
++
++if [[ "${_arm_plan}" != "haiku" ]]; then
++  pass "Plan floor does not pick haiku (got '${_arm_plan}')"
++else
++  fail "Plan floor picked haiku — should be filtered"
++fi
++
++if [[ "${_arm_review}" == "haiku" ]]; then
++  pass "Review floor CAN pick haiku (unfiltered — got '${_arm_review}')"
++else
++  fail "Review floor unexpectedly avoided haiku (got '${_arm_review}')"
++fi
++
++# --- 4b: end-to-end resolver with --plan-pool never picks haiku ---
++log "Caveat 4b: --plan-pool resolver never selects haiku"
++ROOT4="${TMP}/repo4"
++mkdir -p "${ROOT4}/.claude/ref"
++
++cat > "${ROOT4}/.claude/ref/leadv2-routing.yaml" <<'YAML'
++router:
++  glm_policy:
++    codex_quota_gate:
++      review_arm_order: [codex, sonnet, haiku]
++      review_threshold_pct: 95
++dispatch_ladder:
++  - id: codex
++    review_rank: 1
++    provider: codex
++  - id: sonnet
++    review_rank: 2
++    provider: anthropic
++  - id: haiku
++    review_rank: 3
++    provider: anthropic
++YAML
++
++_out_4b="$(python3 "${RESOLVER}" --routing-yaml "${ROOT4}/.claude/ref/leadv2-routing.yaml" \
++  --job plan --base-arm codex --plan-pool --signals '{}' \
++  --quota-live "${TMP}/stub-quota.sh" 2>/dev/null)"
++
++# Check pool= line does not contain haiku
++if ! grep 'haiku' <<<"${_out_4b}" | grep -q ':ok:\|:floor:\|:unknown:'; then
++  pass "--plan-pool output excludes haiku from active pool"
++else
++  fail "--plan-pool output includes haiku in active pool"
++fi
++
++# Verify reviewer= is not haiku
++_reviewer_4b="$(grep '^reviewer=' <<<"${_out_4b}" | cut -d= -f2)"
++if [[ "${_reviewer_4b}" != "haiku" ]]; then
++  pass "--plan-pool reviewer is not haiku (got '${_reviewer_4b}')"
++else
++  fail "--plan-pool reviewer is haiku — should never happen"
++fi
++
++# --- 4c: _best_effort_floor_pool filters for --plan-pool ---
++log "Caveat 4c: _best_effort_floor_pool filters haiku under --plan-pool"
++printf '#!/usr/bin/env python3\nimport importlib.util\nspec = importlib.util.spec_from_file_location("resolve", "%s")\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\nargv = ["--routing-yaml", "%s/.claude/ref/leadv2-routing.yaml", "--plan-pool", "--job", "plan"]\nreviewer, pool, refusal = mod._best_effort_floor_pool(argv)\nprint("reviewer=%%s" %% reviewer)\nprint("refusal=%%s" %% refusal)\n' "${RESOLVER}" "${ROOT4}" > "${TMP}/test4c.py"
++_out_4c="$(python3 "${TMP}/test4c.py" 2>&1)"
++
++_floor_reviewer="$(grep '^reviewer=' <<<"${_out_4c}" | cut -d= -f2)"
++if [[ "${_floor_reviewer}" != "haiku" && -n "${_floor_reviewer}" ]]; then
++  pass "_best_effort_floor_pool excludes haiku under --plan-pool (got '${_floor_reviewer}')"
++elif [[ -z "${_floor_reviewer}" ]]; then
++  # Acceptable: no floor arm available after filtering
++  pass "_best_effort_floor_pool returned no reviewer (acceptable — haiku was the only candidate post-filter)"
++else
++  fail "_best_effort_floor_pool picked haiku under --plan-pool"
++fi
++
++# --- 4d: a valid ladder emptied by plan filtering is unavailable, not degenerate ---
++log "Caveat 4d: empty post-filter plan pool degrades without degenerate hard error"
++ROOT4D="${TMP}/repo4d"
++mkdir -p "${ROOT4D}/.claude/ref"
++cat > "${ROOT4D}/.claude/ref/leadv2-routing.yaml" <<'YAML'
++router:
++  glm_policy:
++    codex_quota_gate:
++      review_arm_order: [glm, haiku]
++dispatch_ladder:
++  - id: glm
++    review_rank: 1
++  - id: haiku
++    review_rank: 2
++YAML
++_out_4d="$(python3 "${RESOLVER}" --routing-yaml "${ROOT4D}/.claude/ref/leadv2-routing.yaml" \
++  --job plan --plan-pool --signals '{}' --quota-live "${TMP}/stub-quota.sh" 2>/dev/null)"
++_refusal_4d="$(grep '^refusal=' <<<"${_out_4d}" | cut -d= -f2)"
++if [[ "${_refusal_4d}" == "all_review_arms_unavailable" ]]; then
++  pass "Empty post-filter plan pool uses all_review_arms_unavailable fallback"
++else
++  fail "Empty post-filter plan pool returned '${_refusal_4d}' (expected all_review_arms_unavailable)"
++fi
++
++# ===========================================================================
++printf -- '\nResults: %d pass, %d fail\n' "${PASS}" "${FAIL}"
++[[ "${FAIL}" == "0" ]] || exit 1
++exit 0

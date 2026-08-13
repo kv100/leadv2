@@ -1,0 +1,2 @@
+[claude-subsession] stable prefix file reused for critic (server cache status comes from usage telemetry)
+[claude-subsession] cost recorded: critic/opus in=18 out=3784 usd=0.284070 cache_hit=0.9199

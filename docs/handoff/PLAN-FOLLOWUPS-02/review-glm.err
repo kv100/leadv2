@@ -1,0 +1,11 @@
+2026-08-13T11:26:16Z ARM_COOLDOWN arm=glm reason=quota_gate reprobe_at=2026-08-13T11:41:16Z cooldown_s=900 advisory_until=na advisory=ignored src=default
+2026-08-13T11:26:30Z ARM_COOLDOWN_LADDER arm=glm reason=quota_gate reprobe_at=2026-08-13T11:41:16Z
+/Users/kostiantyn.vlasenko/Projects/leadv2/plugins/leadv2/scripts/leadv2-glm-quota-gate.sh: line 120: glm_quota_gate_80: command not found
+[glm-quota-gate] LEADV2_DISPATCH_REFUSED: quota_gate
+[glm-quota-gate] REROUTE — GLM quota ≥ 80% on: weekly=80% (resets 2026-08-17T02:00:41Z).
+  The GLM bucket is low; protect its headroom by running this work elsewhere.
+  The dispatcher computes the fallback from its live quota-headroom decision;
+  this message deliberately does not prescribe a hand-kept provider order.
+  A Sonnet arm selected after this quota-gate reroute carries the live approved
+  exception id , which the GLM-FIRST hook allowlist admits.
+[2026-08-13 14:26:30] ERROR: GLM quota gate refused this launch (code 1) - reroute per the message above (leadv2-quota-live.sh for live numbers).

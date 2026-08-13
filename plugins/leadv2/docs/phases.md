@@ -140,28 +140,24 @@ generators BEFORE the convergent Plan triad commits. Ported from ADHD
 
 **Route first:** `eval "$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-router.sh" --phase plan --step <step> --task-id <id> --class <class> --signals '{...}' 2>/dev/null)" || true` (exit 2 = fall through to class-based default). When `USE_WORKFLOW=1` is emitted, use the Workflow path below.
 
-**Dispatch (check `USE_WORKFLOW` from router output):**
+**Dispatch — ONE PATH (ONE-PATH-EVERYWHERE-01, canonical since 0.3.0):**
 
-When `LEADV2_WORKFLOW_ENABLED=1` (default in persona-engine), the router emits `USE_WORKFLOW=1`. Use the Workflow path:
+Phase 2 Plan runs through the sole-owner bash engine — native GLM/Codex/Kimi/Sonnet/Opus
+arms, quota-filtered, refusal-spill, dual-order `PLAN_YAML` extraction, journaled:
 
-```
-plan_result=$(Workflow('leadv2-plan', {
-  taskId: "$LEADV2_TASK_ID",
-  taskBrief: "<one-sentence task description>",
-  heavy: <true|false>,
-  missionPath: "/tmp/mission-${LEADV2_TASK_ID}.md",
-  codexEnabled: <true if codex-task.sh available>,
-  models: { architect: "opus", critic: "opus", codex: "default" }
-}))
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-plan-run.sh" \
+  --task "$LEADV2_TASK_ID" --root "$(pwd)" \
+  --handoff "docs/handoff/${LEADV2_TASK_ID}" --mode plan \
+  --mission-file "/tmp/mission-${LEADV2_TASK_ID}.md"
 ```
 
-`Workflow('leadv2-plan')` handles: Codex background launch + Monitor watchdog, parallel architect/critic spawns, synthesis into `docs/handoff/<id>/context.yaml`. Returns `{decisions_count, steps_count, blocking_concerns, context_path}`.
+The engine writes `docs/handoff/<id>/context.yaml` (merged via `lib/leadv2-context-merge.py`)
+and journals `plan_run …` decision lines. Modes: `prepass|plan|diagnose`.
+`Workflow('leadv2-plan')` is DELETED (was: no GLM arm, Codex wrapped in a haiku agent) —
+if a session still calls it, its plugin cache is stale (<0.3.0): restart the session.
 
-**Code map pre-fetch (CODEMAP-CONTEXT-01, flag-gated, default OFF):** When `LEADV2_CODEMAP=1` (unset/`0` = full no-op — skip this paragraph entirely, no MCP call, no extra Workflow args, output byte-identical to pre-CODEMAP-CONTEXT-01), BEFORE calling `Workflow('leadv2-plan', ...)` lead makes ONE bounded `get_architecture` MCP call (optionally one follow-up `search_graph` for task-relevant symbols) against the project, catches any error/timeout/empty result, and builds a compact code_map string (architecture summary + key modules + dependency edges — target ≤2000 chars, never the full graph). Pass it as `codeMap: "<text>", codemapEnabled: true` in the Workflow args. On MCP failure: omit both fields and proceed — never block or retry Phase 2 on this. `leadv2-plan.js` size-caps `codeMap` again defensively (2000 chars, deterministic truncation note) and folds it into the architect's context envelope + `context.yaml.code_map`.
-
-**Schema-death fallback (null-check on Workflow return — MANDATORY):** If `plan_result` is null/undefined or `context_path` is missing → log to pulse `plan-workflow: schema-death, falling back to inline` and fall through to the inline path below.
-
-**Inline path (flag off or Workflow schema-death):**
+**Inline path (fallback ONLY if the engine script is absent — pre-0.3.0 cache):**
 
 Single message, parallel spawns:
 1. `${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-codex-planner.sh --task-id <id> --mission-file /tmp/mission-<id>.md --effort <high|xhigh>` — background, **only if** `command -v codex-task.sh >/dev/null 2>&1 && codex-task.sh status >/dev/null 2>&1` exits 0 (requires Codex CLI installed; see docs/INSTALLATION.md). If unavailable → skip, Agent(critic) covers Stage 1.

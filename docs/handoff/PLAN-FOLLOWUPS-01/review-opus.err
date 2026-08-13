@@ -1,0 +1,3 @@
+[claude-subsession] stable prefix materialised for critic → /tmp/leadv2-cache/prefix-critic.9f312fb68999b4518095066b8ac47d5c.md
+[claude-subsession] cost recorded: critic/opus in=33 out=15805 usd=1.185870 cache_hit=0.9466
+[claude-subsession] WARN: empty_session — critic.summary.md has       43 words (< 50)
