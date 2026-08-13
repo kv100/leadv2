@@ -373,11 +373,11 @@ extract_plan_yaml() { # <file> → stdout: extracted YAML
   local extracted
   # Try order A first: PLAN_YAML: marker appears, then the opening ``` fence.
   extracted="$(awk '
-    !found && /^```/ { fence_before_marker=1 }
-    /^PLAN_YAML:/ && !fence_before_marker { found=1; next }
-    found && !in_fence && /^```/ { in_fence=1; next }
-    in_fence && /^```/ { exit }
-    in_fence { print }
+    !found && /^```/ { prose_fence = !prose_fence; next }
+    !found && !prose_fence && /^PLAN_YAML:/ { found=1; next }
+    found && !yaml_fence && /^```/ { yaml_fence=1; next }
+    yaml_fence && /^```/ { exit }
+    yaml_fence { print }
   ' "$f" 2>/dev/null)"
   if [[ -n "${extracted}" ]]; then
     printf '%s\n' "${extracted}"

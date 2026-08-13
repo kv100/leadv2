@@ -540,7 +540,7 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
             entries.append("%s:floor:%s" % (floor_arm, suffix))
             reviewer = floor_arm
             refusal = ""
-        elif not floor_ok:
+        elif rank_table and not floor_ok:
             # The original rank table has < 2 entries -- a config bug, not an
             # ordinary post-filter-empty result from an otherwise valid ladder.
             refusal = "pool_floor_table_degenerate"
@@ -778,11 +778,11 @@ def _best_effort_floor_pool(argv):
         # PLAN-FOLLOWUPS-01 caveat 4: filter floor by DISPATCHABLE_PLAN_ARMS for plan job.
         _dispatchable = DISPATCHABLE_PLAN_ARMS if "--plan-pool" in argv else None
         arm, ok = _review_floor(author, rank_table, dispatchable=_dispatchable)
-        if not ok or not arm:
+        if not arm:
             # A valid ladder can legitimately have no plan-dispatchable floor after
             # filtering (for example, only haiku ranks remain). That is an ordinary
             # unavailable-pool fallback, not a malformed rank-table hard error.
-            return "", [], "pool_floor_table_degenerate" if not ok else "all_review_arms_unavailable"
+            return "", [], "pool_floor_table_degenerate" if rank_table and not ok else "all_review_arms_unavailable"
         return arm, ["%s:floor:degraded" % arm], ""
     except Exception:
         return "", [], "resolver_error"

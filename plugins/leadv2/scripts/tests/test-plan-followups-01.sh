@@ -167,6 +167,31 @@ else
   fail "Order A extraction failed (got: ${_out_2a})"
 fi
 
+# --- 2aa: Order A survives an earlier, unrelated prose fence ---
+log "Caveat 2aa: Order A ignores prose fences before the marker"
+cat > "${TMP}/2aa.txt" <<'TXT'
+Some preamble text.
+```
+Example prose code block; this is not the plan.
+```
+PLAN_YAML:
+```yaml
+decisions:
+  - Decision A after prose fence
+plan:
+  steps:
+    - Step A after prose fence
+```
+TXT
+
+_out_2aa="$(extract_plan_yaml "${TMP}/2aa.txt")"
+if grep -q 'Decision A after prose fence' <<<"${_out_2aa}" \
+    && ! grep -q 'Example prose\|PLAN_YAML' <<<"${_out_2aa}"; then
+  pass "Order A extracts YAML after a preceding prose fence"
+else
+  fail "Order A prose-fence extraction failed (got: ${_out_2aa})"
+fi
+
 # --- 2b: Order B (fence THEN marker) — mission prompt format ---
 log "Caveat 2b: extract_plan_yaml handles fence→marker order (B)"
 cat > "${TMP}/2b.txt" <<'TXT'
@@ -441,6 +466,39 @@ if [[ "${_reviewer_4e}" == "sonnet" && -z "${_refusal_4e}" ]] \
   pass "Sole dispatchable arm is honored as the plan floor"
 else
   fail "Sole dispatchable floor failed (reviewer='${_reviewer_4e}', refusal='${_refusal_4e}')"
+fi
+
+# --- 4f: no review ranks is an unavailable pool, not a malformed table ---
+log "Caveat 4f: empty rank table returns all_review_arms_unavailable"
+ROOT4F="${TMP}/repo4f"
+mkdir -p "${ROOT4F}/.claude/ref"
+cat > "${ROOT4F}/.claude/ref/leadv2-routing.yaml" <<'YAML'
+router:
+  glm_policy:
+    codex_quota_gate:
+      review_arm_order: [glm, haiku]
+  dispatch_ladder:
+    - id: glm
+    - id: haiku
+YAML
+_out_4f="$(python3 "${RESOLVER}" --routing-yaml "${ROOT4F}/.claude/ref/leadv2-routing.yaml" \
+  --job plan --plan-pool --signals '{}' --quota-live "${TMP}/stub-quota.sh" 2>/dev/null)"
+_refusal_4f="$(grep '^refusal=' <<<"${_out_4f}" | cut -d= -f2)"
+if [[ "${_refusal_4f}" == "all_review_arms_unavailable" ]]; then
+  pass "Empty rank table uses all_review_arms_unavailable fallback"
+else
+  fail "Empty rank table returned '${_refusal_4f}' (expected all_review_arms_unavailable)"
+fi
+
+# --- 4g: degraded resolver's independent floor has the same empty-table rule ---
+log "Caveat 4g: best-effort empty rank table returns all_review_arms_unavailable"
+printf '#!/usr/bin/env python3\nimport importlib.util\nspec = importlib.util.spec_from_file_location("resolve", "%s")\nmod = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(mod)\nreviewer, pool, refusal = mod._best_effort_floor_pool(["--routing-yaml", "%s/.claude/ref/leadv2-routing.yaml", "--plan-pool", "--job", "plan"])\nprint("reviewer=%%s" %% reviewer)\nprint("pool=%%s" %% pool)\nprint("refusal=%%s" %% refusal)\n' "${RESOLVER}" "${ROOT4F}" > "${TMP}/test4g.py"
+_out_4g="$(python3 "${TMP}/test4g.py" 2>&1)"
+_refusal_4g="$(grep '^refusal=' <<<"${_out_4g}" | cut -d= -f2)"
+if [[ "${_refusal_4g}" == "all_review_arms_unavailable" ]]; then
+  pass "Best-effort empty rank table uses all_review_arms_unavailable fallback"
+else
+  fail "Best-effort empty rank table returned '${_refusal_4g}' (expected all_review_arms_unavailable)"
 fi
 
 # ===========================================================================
