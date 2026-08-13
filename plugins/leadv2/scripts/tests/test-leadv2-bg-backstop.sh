@@ -11,7 +11,7 @@ log()  { printf -- "[TEST] %s\n" "$*"; }
 pass() { PASS=$(( PASS + 1 )); log "PASS: $1"; }
 fail() { FAIL=$(( FAIL + 1 )); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
 _sid() { printf -- "test-sess-%s%s" "$(date +%s)" "$$"; }
-_clean() { rm -f "/tmp/leadv2-bg-ledger/${1}.log" "/tmp/leadv2-bg-ledger/${1}.stop-count"; }
+_clean() { rm -f "/tmp/leadv2-bg-ledger/${1}.log" "/tmp/leadv2-bg-ledger/${1}.stop-count" "/tmp/leadv2-bg-ledger/${1}.last-warn"; }
 
 T1="$(_sid)"; _clean "$T1"
 printf '{"session_id":"%s","tool_name":"Agent","agent_type":"dev","tool_input":{"run_in_background":true,"description":"t1"}}' "$T1" | bash "$LEDGER_SH" >/dev/null 2>&1 || true
@@ -58,6 +58,22 @@ printf '{"session_id":"%s","stop_hook_active":false}' "$T8" | LEADV2_BG_WARN_EVE
 OUT="$(printf '{"session_id":"%s","stop_hook_active":false}' "$T8" | LEADV2_BG_WARN_EVERY=3 bash "$WARN_SH" 2>/dev/null || true)"
 [[ -z "$OUT" ]] && pass "T8: throttle suppresses 2nd stop" || fail "T8: should suppress, got: $OUT"
 _clean "$T8"
+
+T9="$(_sid)"; _clean "$T9"
+printf -- '%s\tBG_SPAWN\tfirst-agent\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "/tmp/leadv2-bg-ledger/${T9}.log"
+printf '{"session_id":"%s","stop_hook_active":false}' "$T9" | LEADV2_BG_WARN_EVERY=1 bash "$WARN_SH" >/dev/null 2>&1 || true
+OUT="$(printf '{"session_id":"%s","stop_hook_active":false}' "$T9" | LEADV2_BG_WARN_EVERY=1 bash "$WARN_SH" 2>/dev/null || true)"
+[[ -z "$OUT" ]] && pass "T9: unchanged spawn set emits nothing on second stop" || fail "T9: duplicate advisory: $OUT"
+_clean "$T9"
+
+T10="$(_sid)"; _clean "$T10"
+TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf -- '%s\tBG_SPAWN\tfirst-agent\n' "$TS" > "/tmp/leadv2-bg-ledger/${T10}.log"
+printf '{"session_id":"%s","stop_hook_active":false}' "$T10" | LEADV2_BG_WARN_EVERY=1 bash "$WARN_SH" >/dev/null 2>&1 || true
+printf -- '%s\tBG_SPAWN\tsecond-agent\n' "$TS" >> "/tmp/leadv2-bg-ledger/${T10}.log"
+OUT="$(printf '{"session_id":"%s","stop_hook_active":false}' "$T10" | LEADV2_BG_WARN_EVERY=1 bash "$WARN_SH" 2>/dev/null || true)"
+printf -- "%s" "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert \"systemMessage\" in d" 2>/dev/null && pass "T10: new BG_SPAWN emits advisory again" || fail "T10: no advisory after new spawn, got: $OUT"
+_clean "$T10"
 
 echo ""; echo "Results: ${PASS} passed, ${FAIL} failed"
 [[ ${#ERRORS[@]} -gt 0 ]] && { for e in "${ERRORS[@]}"; do echo "  $e"; done; exit 1; }

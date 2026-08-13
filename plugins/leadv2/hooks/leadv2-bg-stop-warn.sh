@@ -103,14 +103,23 @@ if age_minutes > 30:
 
 n = len(bg_spawns)
 descs = '; '.join(d for _, d in bg_spawns[-3:])  # last 3 descs for context
-print(f"{n}|{descs}")
+print(f"{n}|{newest_ts_str}|{descs}")
 PYEOF
 )"
 
 [[ -z "$RESULT" ]] && exit 0
 
 N_SPAWNS="${RESULT%%|*}"
-DESCS="${RESULT#*|}"
+RESULT_REMAINDER="${RESULT#*|}"
+NEWEST_TS="${RESULT_REMAINDER%%|*}"
+DESCS="${RESULT_REMAINDER#*|}"
+
+FINGERPRINT="${N_SPAWNS}|${NEWEST_TS}"
+LAST_WARN_FILE="/tmp/leadv2-bg-ledger/${SAFE_SID}.last-warn"
+if [[ -f "$LAST_WARN_FILE" ]] && [[ "$(cat "$LAST_WARN_FILE" 2>/dev/null || true)" == "$FINGERPRINT" ]]; then
+  exit 0
+fi
+printf -- '%s\n' "$FINGERPRINT" > "$LAST_WARN_FILE" 2>/dev/null || true
 
 # Emit advisory via systemMessage (non-blocking, exit 0).
 # Valid for all hook events (PreToolUse, PostToolUse, Stop etc.): top-level
