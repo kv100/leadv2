@@ -386,7 +386,11 @@ extract_plan_yaml() { # <file> → stdout: extracted YAML
   # Try order B: opening ``` fence appears, then PLAN_YAML: marker inside.
   extracted="$(awk '
     !in_fence && /^```/ { in_fence=1; next }
-    in_fence && /^```/ { exit }
+    in_fence && /^```/ {
+      if (seen_marker) exit
+      in_fence=0
+      next
+    }
     in_fence && /^PLAN_YAML:/ { seen_marker=1; next }
     in_fence && seen_marker { print }
   ' "$f" 2>/dev/null)"

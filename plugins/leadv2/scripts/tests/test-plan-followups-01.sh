@@ -213,6 +213,31 @@ else
   fail "Order B extraction failed (got: ${_out_2b})"
 fi
 
+# --- 2bb: Order B scans past an unrelated prose fence for the marker-bearing block ---
+log "Caveat 2bb: Order B ignores a preceding prose fence"
+cat > "${TMP}/2bb.txt" <<'TXT'
+Some preamble text.
+```
+Example prose code block; this is not the plan.
+```
+```yaml
+PLAN_YAML:
+decisions:
+  - Decision B after prose fence
+plan:
+  steps:
+    - Step B after prose fence
+```
+TXT
+
+_out_2bb="$(extract_plan_yaml "${TMP}/2bb.txt")"
+if grep -q 'Decision B after prose fence' <<<"${_out_2bb}" \
+    && ! grep -q 'Example prose\|PLAN_YAML\|preamble' <<<"${_out_2bb}"; then
+  pass "Order B selects the marker-bearing fence after prose"
+else
+  fail "Order B prose-fence extraction failed (got: ${_out_2bb})"
+fi
+
 # --- 2c: Order B ignores prose after the closing fence ---
 log "Caveat 2c: Order B extraction ignores trailing prose"
 cat > "${TMP}/2c.txt" <<'TXT'
