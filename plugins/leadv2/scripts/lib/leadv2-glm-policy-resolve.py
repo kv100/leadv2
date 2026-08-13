@@ -249,9 +249,13 @@ def _lockout_blocked(provider: str, now_epoch: int, lockout_dir: str = None) -> 
 
 def _review_floor(author: str, rank_table: dict, dispatchable=None):
     """D3: TOTAL, non-hardcoded floor over the review_rank table. Returns
-    (arm_or_None, ok) -- ok is False iff the table has fewer than 2 entries, which
-    the caller must treat as pool_floor_table_degenerate (a hard resolver error, not
-    a silent empty pool) rather than a normal "floor not needed" outcome.
+    (arm_or_None, ok) -- ok is False iff the original rank table has fewer than 2
+    entries, which the caller must treat as pool_floor_table_degenerate (a hard
+    resolver error, not a silent empty pool) rather than a normal "floor not needed"
+    outcome. If an optional dispatchable filter leaves fewer than 2 entries, there
+    simply is no eligible floor: return (None, True) so the caller degrades to the
+    documented all_review_arms_unavailable fallback instead of misclassifying a
+    valid ladder as degenerate.
 
     floor(author) = the entry with rank > rank(author) that has the smallest such
     rank (escalate one step up), or -- if none exists (author at/above the top, or
@@ -264,14 +268,16 @@ def _review_floor(author: str, rank_table: dict, dispatchable=None):
     the plan phase to ensure DISPATCHABLE_PLAN_ARMS filtering applies to the
     floor too (PLAN-FOLLOWUPS-01 caveat 4 — haiku must never enter the pool)."""
     rank_table = rank_table or {}
+    if len(rank_table) < 2:
+        return None, False
     if dispatchable is not None:
         rank_table = {k: v for k, v in rank_table.items() if k in dispatchable}
     if len(rank_table) < 2:
-        return None, False
+        return None, True
     author_rank = rank_table.get(author, float("-inf"))
     candidates = [(rid, r) for rid, r in rank_table.items() if rid != author]
     if not candidates:
-        return None, False
+        return None, True
     higher = [c for c in candidates if c[1] > author_rank]
     chosen = min(higher, key=lambda c: c[1]) if higher else max(candidates, key=lambda c: c[1])
     return chosen[0], True
@@ -775,7 +781,10 @@ def _best_effort_floor_pool(argv):
         _dispatchable = DISPATCHABLE_PLAN_ARMS if "--plan-pool" in argv else None
         arm, ok = _review_floor(author, rank_table, dispatchable=_dispatchable)
         if not ok or not arm:
-            return "", [], "pool_floor_table_degenerate" if rank_table else "all_review_arms_unavailable"
+            # A valid ladder can legitimately have no plan-dispatchable floor after
+            # filtering (for example, only haiku ranks remain). That is an ordinary
+            # unavailable-pool fallback, not a malformed rank-table hard error.
+            return "", [], "pool_floor_table_degenerate" if not ok else "all_review_arms_unavailable"
         return arm, ["%s:floor:degraded" % arm], ""
     except Exception:
         return "", [], "resolver_error"

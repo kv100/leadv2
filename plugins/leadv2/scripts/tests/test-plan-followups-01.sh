@@ -347,6 +347,30 @@ else
   fail "_best_effort_floor_pool picked haiku under --plan-pool"
 fi
 
+# --- 4d: a valid ladder emptied by plan filtering is unavailable, not degenerate ---
+log "Caveat 4d: empty post-filter plan pool degrades without degenerate hard error"
+ROOT4D="${TMP}/repo4d"
+mkdir -p "${ROOT4D}/.claude/ref"
+cat > "${ROOT4D}/.claude/ref/leadv2-routing.yaml" <<'YAML'
+router:
+  glm_policy:
+    codex_quota_gate:
+      review_arm_order: [glm, haiku]
+dispatch_ladder:
+  - id: glm
+    review_rank: 1
+  - id: haiku
+    review_rank: 2
+YAML
+_out_4d="$(python3 "${RESOLVER}" --routing-yaml "${ROOT4D}/.claude/ref/leadv2-routing.yaml" \
+  --job plan --plan-pool --signals '{}' --quota-live "${TMP}/stub-quota.sh" 2>/dev/null)"
+_refusal_4d="$(grep '^refusal=' <<<"${_out_4d}" | cut -d= -f2)"
+if [[ "${_refusal_4d}" == "all_review_arms_unavailable" ]]; then
+  pass "Empty post-filter plan pool uses all_review_arms_unavailable fallback"
+else
+  fail "Empty post-filter plan pool returned '${_refusal_4d}' (expected all_review_arms_unavailable)"
+fi
+
 # ===========================================================================
 printf -- '\nResults: %d pass, %d fail\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" == "0" ]] || exit 1

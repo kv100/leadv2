@@ -374,16 +374,18 @@ extract_plan_yaml() { # <file> → stdout: extracted YAML
   # Try order A first: PLAN_YAML: marker appears, then the opening ``` fence.
   extracted="$(awk '
     /^PLAN_YAML:/ { found=1; next }
-    found && /^```/ { fence++ ; if (fence==1) next; exit }
-    found { print }
+    found && !in_fence && /^```/ { in_fence=1; next }
+    in_fence && /^```/ { exit }
+    in_fence { print }
   ' "$f" 2>/dev/null)"
   if [[ -n "${extracted}" ]]; then
     printf '%s\n' "${extracted}"
     return 0
   fi
-  ### MUTATED Try order B: opening ``` fence appears, then PLAN_YAML: marker inside.
+  # Try order B: opening ``` fence appears, then PLAN_YAML: marker inside.
   extracted="$(awk '
-    /^```/ { in_fence=0; next # MUTATED }
+    !in_fence && /^```/ { in_fence=1; next }
+    in_fence && /^```/ { exit }
     in_fence && /^PLAN_YAML:/ { seen_marker=1; next }
     in_fence && seen_marker { print }
   ' "$f" 2>/dev/null)"
