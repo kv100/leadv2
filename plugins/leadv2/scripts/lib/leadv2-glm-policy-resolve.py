@@ -247,24 +247,36 @@ def _lockout_blocked(provider: str, now_epoch: int, lockout_dir: str = None) -> 
     return now_epoch < until_epoch
 
 
-def _review_floor(author: str, rank_table: dict):
+def _review_floor(author: str, rank_table: dict, dispatchable=None):
     """D3: TOTAL, non-hardcoded floor over the review_rank table. Returns
-    (arm_or_None, ok) -- ok is False iff the table has fewer than 2 entries, which
-    the caller must treat as pool_floor_table_degenerate (a hard resolver error, not
-    a silent empty pool) rather than a normal "floor not needed" outcome.
+    (arm_or_None, ok) -- ok is False iff the original rank table has fewer than 2
+    entries, which the caller must treat as pool_floor_table_degenerate (a hard
+    resolver error, not a silent empty pool) rather than a normal "floor not needed"
+    outcome. If an optional dispatchable filter leaves no eligible entry, there
+    simply is no eligible floor: return (None, True) so the caller degrades to the
+    documented all_review_arms_unavailable fallback instead of misclassifying a
+    valid ladder as degenerate. A sole dispatchable entry remains a legitimate
+    floor arm.
 
     floor(author) = the entry with rank > rank(author) that has the smallest such
     rank (escalate one step up), or -- if none exists (author at/above the top, or
     author absent from the table, i.e. rank(author) treated as -infinity) -- the
     entry with the largest rank. Total for any author string, including "" or an
-    arm the table has never heard of."""
+    arm the table has never heard of.
+
+    dispatchable: optional set of allowed arm names. When provided, arms NOT in
+    this set are excluded from the rank table BEFORE floor selection. Used by
+    the plan phase to ensure DISPATCHABLE_PLAN_ARMS filtering applies to the
+    floor too (PLAN-FOLLOWUPS-01 caveat 4 — haiku must never enter the pool)."""
     rank_table = rank_table or {}
     if len(rank_table) < 2:
         return None, False
+    if dispatchable is not None:
+        rank_table = {k: v for k, v in rank_table.items() if k in dispatchable}
     author_rank = rank_table.get(author, float("-inf"))
     candidates = [(rid, r) for rid, r in rank_table.items() if rid != author]
     if not candidates:
-        return None, False
+        return None, True
     higher = [c for c in candidates if c[1] > author_rank]
     chosen = min(higher, key=lambda c: c[1]) if higher else max(candidates, key=lambda c: c[1])
     return chosen[0], True
@@ -517,17 +529,20 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     # floor_reviewer" in the design doc's vocabulary, expressed here as the entry
     # disposition since --review-pool's CLI contract has no separate reason= line.
     if not reviewer:
-        floor_arm, floor_ok = _review_floor(author, rank_table)
+        # PLAN-FOLLOWUPS-01 caveat 4: when job=plan, filter the floor by
+        # DISPATCHABLE_PLAN_ARMS so haiku (or any non-plan arm) never enters
+        # the planning pool via the floor path.
+        _floor_dispatchable = DISPATCHABLE_PLAN_ARMS if job == "plan" else None
+        floor_arm, floor_ok = _review_floor(author, rank_table, dispatchable=_floor_dispatchable)
         if floor_ok and floor_arm:
             floor_pct = _pct_for(floor_arm)
             suffix = _fmt_pct(floor_pct) if floor_pct is not None and _fmt_pct(floor_pct) else "degraded"
             entries.append("%s:floor:%s" % (floor_arm, suffix))
             reviewer = floor_arm
             refusal = ""
-        elif rank_table:
-            # A rank table exists but has < 2 usable entries -- a config bug, not the
-            # ordinary "feature not adopted" case (empty rank_table, handled by the
-            # `elif` falling through and keeping all_review_arms_unavailable below).
+        elif not floor_ok:
+            # The original rank table has < 2 entries -- a config bug, not an
+            # ordinary post-filter-empty result from an otherwise valid ladder.
             refusal = "pool_floor_table_degenerate"
 
     return {"reviewer": reviewer, "pool": entries, "refusal": refusal}
@@ -747,7 +762,10 @@ def _best_effort_floor_pool(argv):
     main body still leaves the review gate with a non-empty pool where possible.
     Deliberately does NOT reuse any state from the failed run -- re-resolves the
     routing yaml from scratch via the same D1 candidate search. Returns
-    (reviewer, pool_entries, refusal)."""
+    (reviewer, pool_entries, refusal).
+
+    PLAN-FOLLOWUPS-01 caveat 4: when --plan-pool is present, filters the floor by
+    DISPATCHABLE_PLAN_ARMS (haiku must never enter the planning pool)."""
     try:
         routing_yaml_arg = _arg_from_argv(argv, "--routing-yaml")
         author = _arg_from_argv(argv, "--author")
@@ -757,9 +775,14 @@ def _best_effort_floor_pool(argv):
         text = Path(path).read_text()
         ladder = extract_dispatch_ladder(text)
         rank_table = {e["id"]: e["review_rank"] for e in ladder if e.get("review_rank") is not None}
-        arm, ok = _review_floor(author, rank_table)
+        # PLAN-FOLLOWUPS-01 caveat 4: filter floor by DISPATCHABLE_PLAN_ARMS for plan job.
+        _dispatchable = DISPATCHABLE_PLAN_ARMS if "--plan-pool" in argv else None
+        arm, ok = _review_floor(author, rank_table, dispatchable=_dispatchable)
         if not ok or not arm:
-            return "", [], "pool_floor_table_degenerate" if rank_table else "all_review_arms_unavailable"
+            # A valid ladder can legitimately have no plan-dispatchable floor after
+            # filtering (for example, only haiku ranks remain). That is an ordinary
+            # unavailable-pool fallback, not a malformed rank-table hard error.
+            return "", [], "pool_floor_table_degenerate" if not ok else "all_review_arms_unavailable"
         return arm, ["%s:floor:degraded" % arm], ""
     except Exception:
         return "", [], "resolver_error"
