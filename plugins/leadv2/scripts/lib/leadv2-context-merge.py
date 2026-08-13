@@ -27,17 +27,30 @@ REQUIRED_FIELDS = [
 
 
 def deep_merge(skeleton: dict, arm: dict) -> dict:
-    """Merge arm judgment fields into skeleton. Engine-owned keys always win."""
+    """Merge arm judgment fields into skeleton. Engine-owned keys always win.
+
+    Raises TypeError if an arm emits a non-dict ``acceptance`` value (a scalar,
+    list, or null) — that is a structural error that must NOT be silently
+    accepted, because it would clobber the engine-stamped ``authored_at``.
+    """
     result = dict(skeleton)  # shallow copy — we handle nesting explicitly
 
     for key, val in arm.items():
         if key in ENGINE_OWNED_TOP:
             continue  # engine owns these — discard arm value
-        if key == "acceptance" and isinstance(val, dict) and isinstance(result.get("acceptance"), dict):
-            # Merge acceptance sub-keys, but engine owns authored_at
+        if key == "acceptance":
+            if not isinstance(val, dict):
+                raise TypeError(
+                    "acceptance must be a mapping (got %s); a non-dict acceptance "
+                    "would overwrite the engine-owned authored_at — refusing to "
+                    "merge" % type(val).__name__
+                )
+            if not isinstance(result.get("acceptance"), dict):
+                result["acceptance"] = {}
+            # Merge acceptance sub-keys, preserving engine-owned authored_at.
             for ak, av in val.items():
                 if ak in ENGINE_OWNED_ACCEPTANCE:
-                    continue
+                    continue  # engine owns authored_at — never overwritten
                 result["acceptance"][ak] = av
         elif key not in result or key not in ENGINE_OWNED_TOP:
             # Judgment field from the arm — arm wins (skeleton has no opinion)
@@ -90,7 +103,11 @@ def main(argv):
             # check below will catch the consequence.
             continue
         if isinstance(arm_doc, dict):
-            merged = deep_merge(merged, arm_doc)
+            try:
+                merged = deep_merge(merged, arm_doc)
+            except TypeError as exc:
+                print("merge: %s" % exc, file=sys.stderr)
+                return 1
 
     # Check required fields
     missing = check_required(merged)

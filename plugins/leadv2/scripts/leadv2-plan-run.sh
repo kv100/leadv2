@@ -364,15 +364,28 @@ _engine_run_arm_with_timeout() { # <arm> <role>
 # Extract the PLAN_YAML fenced block from an arm output file.
 # If no fenced block exists, returns the whole file (for stub/test arms that
 # emit raw YAML directly).
+# Accepts BOTH orderings (PLAN-FOLLOWUPS-01 caveat 2):
+#   A) marker THEN fence:  PLAN_YAML:\n```yaml\n...\n```
+#   B) fence THEN marker:  ```yaml\nPLAN_YAML:\n...\n```
+# The mission prompt tells arms order B; some stubs emit order A. Both must work.
 extract_plan_yaml() { # <file> → stdout: extracted YAML
   local f="$1"
   local extracted
-  # awk: after PLAN_YAML:, skip the opening ``` fence, print content until
-  # the closing ``` fence, then exit.
+  # Try order A first: PLAN_YAML: marker appears, then the opening ``` fence.
   extracted="$(awk '
     /^PLAN_YAML:/ { found=1; next }
     found && /^```/ { fence++ ; if (fence==1) next; exit }
     found { print }
+  ' "$f" 2>/dev/null)"
+  if [[ -n "${extracted}" ]]; then
+    printf '%s\n' "${extracted}"
+    return 0
+  fi
+  ### MUTATED Try order B: opening ``` fence appears, then PLAN_YAML: marker inside.
+  extracted="$(awk '
+    /^```/ { in_fence=0; next # MUTATED }
+    in_fence && /^PLAN_YAML:/ { seen_marker=1; next }
+    in_fence && seen_marker { print }
   ' "$f" 2>/dev/null)"
   if [[ -n "${extracted}" ]]; then
     printf '%s\n' "${extracted}"
@@ -575,37 +588,54 @@ for _arm in "${fanout_list[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# 10. Architect pass
+# 10. Architect pass — with refusal spill (PLAN-FOLLOWUPS-01 caveat 1).
+#     refused_quota / refused_peak_hours / refused_channel_down are NOT terminal:
+#     the engine walks forward through ${pool} to the next :ok: arm, bounded by
+#     the same 4-try cap used in leadv2-review-run.sh:519.
 # ---------------------------------------------------------------------------
-_first_arm="${fanout_list[0]}"
-_engine_run_arm_with_timeout "${_first_arm}" "architect"
-
-_first_rc="$(cat "${HANDOFF}/plan-arm-${_first_arm}.rc" 2>/dev/null || printf '1')"
-_first_err="${HANDOFF}/plan-arm-${_first_arm}.err"
-_first_out="${HANDOFF}/plan-arm-${_first_arm}.yaml"
-_cls="$(classify_arm_failure "${_first_rc}" "${_first_err}" "${_first_out}")"
-
 architect_arm=""
-if [[ "${_cls}" == "ran" ]]; then
-  architect_arm="${_first_arm}"
-elif [[ "${_cls}" == "arm_unavailable" ]]; then
-  emit decision "plan_run arm_unavailable arm=${_first_arm} reason=policy task=${TASK}"
-  _next_arm="$(next_ok_arm_after "${_first_arm}" || true)"
-  if [[ -n "${_next_arm}" ]]; then
-    _engine_run_arm_with_timeout "${_next_arm}" "architect"
-    _next_rc="$(cat "${HANDOFF}/plan-arm-${_next_arm}.rc" 2>/dev/null || printf '1')"
-    _next_err="${HANDOFF}/plan-arm-${_next_arm}.err"
-    _next_out="${HANDOFF}/plan-arm-${_next_arm}.yaml"
-    _cls2="$(classify_arm_failure "${_next_rc}" "${_next_err}" "${_next_out}")"
-    if [[ "${_cls2}" == "ran" ]]; then
-      architect_arm="${_next_arm}"
-    fi
+_tried_arch=()
+_slot_arm="${fanout_list[0]}"
+_engine_run_arm_with_timeout "${_slot_arm}" "architect"
+while :; do
+  _slot_rc="$(cat "${HANDOFF}/plan-arm-${_slot_arm}.rc" 2>/dev/null || printf '1')"
+  _slot_err="${HANDOFF}/plan-arm-${_slot_arm}.err"
+  _slot_out="${HANDOFF}/plan-arm-${_slot_arm}.yaml"
+  _cls="$(classify_arm_failure "${_slot_rc}" "${_slot_err}" "${_slot_out}")"
+
+  case "${_cls}" in
+    ran)
+      architect_arm="${_slot_arm}"
+      break
+      ;;
+    arm_unavailable)
+      emit decision "plan_run arm_unavailable arm=${_slot_arm} reason=policy task=${TASK}"
+      ;;
+    refused_*)
+      emit decision "plan_run arm_refused arm=${_slot_arm} reason=${_cls} task=${TASK}"
+      ;;
+    *)
+      # Unexpected classification — treat as terminal failure.
+      break
+      ;;
+  esac
+
+  # Spill to next :ok: arm, bounded at 4 total tries.
+  _tried_arch+=("${_slot_arm}")
+  if [[ "${#_tried_arch[@]}" -ge 4 ]]; then
+    break
   fi
-fi
+  _next_arm="$(next_ok_arm_after "${_slot_arm}" || true)"
+  if [[ -z "${_next_arm}" ]]; then
+    break
+  fi
+  _slot_arm="${_next_arm}"
+  _engine_run_arm_with_timeout "${_slot_arm}" "architect"
+done
 
 if [[ -z "${architect_arm}" ]]; then
-  if [[ "${_first_rc}" -ne 0 ]]; then
-    emit decision "plan_run task=${TASK} status=blocked reason=provider_error rc=${_first_rc}"
+  if [[ "${_slot_rc:-1}" -ne 0 ]]; then
+    emit decision "plan_run task=${TASK} status=blocked reason=provider_error rc=${_slot_rc:-1}"
     write_gate "blocked" "provider_error" "-" "skipped"
   else
     emit decision "plan_run task=${TASK} status=blocked reason=empty_response"
