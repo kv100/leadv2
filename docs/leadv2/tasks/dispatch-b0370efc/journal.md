@@ -1,0 +1,17 @@
+- 2026-08-04T15:26:16Z [decision] dispatch_classified task=b0370efc class=product reason=conservative_default kind=unknown
+- 2026-08-04T15:30:57Z [decision] architect_prepass task=b0370efc status=failed reason=failed_rc_1 rc=1
+- 2026-08-04T15:30:57Z [decision] architect_prepass task=b0370efc status=retrying attempt=1/2 reason=failed_rc_1
+- 2026-08-04T15:37:39Z [decision] architect_prepass task=b0370efc status=ran artifact=docs/handoff/dispatch-b0370efc/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-b0370efc-architect/architect.full.md
+- 2026-08-04T15:37:40Z [decision] lane_writes task=b0370efc source=prepass writes=plugins/leadv2/scripts/leadv2-status-surface.sh,tests/test-status-surface-single-lead.sh,tests/test-status-surface-lane-truth.sh,tests/test-status-surface-bash32.sh,plugins/leadv2/scripts/tests/run-core-offline.sh
+- 2026-08-04T15:37:40Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T15:37:40Z [decision] kimi_skipped reason=chars_over task=b0370efc chars=24631 writes=0 prepass=1
+- 2026-08-04T15:37:40Z [decision] arm_excluded by=router model=codex task=b0370efc reason=operator_excluded
+- 2026-08-04T15:37:40Z [decision] candidate_chain task=b0370efc arms=glm,sonnet
+- 2026-08-04T15:37:41Z [decision] worker_spawned by=router model=glm task=b0370efc attempt=b0370efc-1785857174-93671 handle=260804-183741-b0370efc-0026
+- 2026-08-04T15:37:41Z [decision] mission-version task=- sig=b0370efc rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-04T15:37:42Z [decision] product_close task=b0370efc status=spawned author=glm
+- 2026-08-04T15:37:42Z [decision] route_resolved by=router router=v1 model=glm task=b0370efc rule=none reason=no_routing_yaml
+- 2026-08-04T15:37:42Z [decision] lane_worktree_left task=b0370efc founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/b0370efc
+- 2026-08-04T15:43:42Z [decision] e2e_gate task=b0370efc status=ran verdict=fail rc=1
+- 2026-08-04T15:43:44Z [decision] dispatch_terminal task=b0370efc terminal=dead cause=e2e_regression
+- 2026-08-04T15:43:44Z [decision] dispatch_terminal_dedup task=b0370efc attempted=dead reason=terminal_already_recorded

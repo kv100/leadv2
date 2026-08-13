@@ -1,0 +1,18 @@
+- 2026-08-12T10:24:35Z [decision] dispatch_task_bound task=a88918ee founder_task=ONE-PATH-PLAN-RUN-01
+- 2026-08-12T10:24:35Z [decision] dispatch_classified task=a88918ee class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T10:24:40Z [decision] phase_precondition_warn task=a88918ee class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T10:31:20Z [decision] architect_prepass task=a88918ee status=ran artifact=docs/handoff/dispatch-a88918ee/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-a88918ee-architect/architect.full.md
+- 2026-08-12T10:31:20Z [decision] lane_writes task=a88918ee source=prepass writes=plugins/leadv2/scripts/leadv2-plan-run.sh,plugins/leadv2/scripts/lib/leadv2-context-merge.py,plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py,plugins/leadv2/scripts/tests/test-plan-run-engine.sh,plugins/leadv2/scripts/tests/test-plan-arms-role-scoped.sh,plugins/leadv2/scripts/tests/test-plan-run-codex-disabled-degrades.sh,plugins/leadv2/scripts/tests/test-diagnose-no-pe-constants.sh,plugins/leadv2/scripts/tests/test-diagnose-codex-disabled-degrades.sh,plugins/leadv2/scripts/tests/test-workflows-copies-are-symlinks.sh
+- 2026-08-12T10:31:21Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T10:31:21Z [decision] dispatchable_arms_read_failed task=a88918ee fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T10:31:21Z [decision] routing_config_degraded task=a88918ee reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T10:31:21Z [decision] kimi_skipped reason=chars_over task=a88918ee chars=34632 writes=0 prepass=1
+- 2026-08-12T10:31:21Z [decision] candidate_chain task=a88918ee arms=glm,codex,sonnet
+- 2026-08-12T10:31:25Z [decision] worker_spawned by=router model=glm task=a88918ee attempt=a88918ee-1786530260-45454 handle=260812-133124-ONE-PATH-PLAN-RUN-01-33d2
+- 2026-08-12T10:31:25Z [decision] mission-version task=ONE-PATH-PLAN-RUN-01 sig=a88918ee rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T10:31:46Z [decision] product_close task=a88918ee status=spawned author=glm
+- 2026-08-12T10:31:46Z [decision] route_resolved by=router router=v1 model=glm task=a88918ee rule=none reason=no_routing_yaml
+- 2026-08-12T10:31:46Z [decision] lane_worktree_left task=a88918ee founder_task=ONE-PATH-PLAN-RUN-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/ONE-PATH-PLAN-RUN-01
+- 2026-08-12T10:55:59Z [decision] e2e_gate task=a88918ee status=ran verdict=fail rc=1
+- 2026-08-12T10:56:02Z [decision] dispatch_terminal task=a88918ee terminal=dead cause=e2e_regression
+- 2026-08-12T10:56:02Z [decision] dispatch_terminal_dedup task=a88918ee attempted=dead reason=terminal_already_recorded

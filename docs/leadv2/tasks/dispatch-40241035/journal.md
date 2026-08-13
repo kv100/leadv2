@@ -1,0 +1,36 @@
+- 2026-08-05T10:02:12Z [decision] dispatch_classified task=40241035 class=product reason=conservative_default kind=unknown
+- 2026-08-05T10:04:46Z [decision] architect_prepass task=40241035 status=ran artifact=docs/handoff/dispatch-40241035/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-40241035-architect/architect.full.md
+- 2026-08-05T10:04:46Z [decision] lane_writes task=40241035 source=prepass writes=plugins/leadv2/hooks/leadv2-block-fg-dispatch.sh,plugins/leadv2/hooks/hooks.json,plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/tests/test-fg-dispatch-guard.sh,plugins/leadv2/scripts/tests/run-core-offline.sh
+- 2026-08-05T10:04:46Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-05T10:04:46Z [decision] kimi_skipped reason=chars_over task=40241035 chars=17641 writes=0 prepass=1
+- 2026-08-05T10:04:46Z [decision] candidate_chain task=40241035 arms=glm,codex,sonnet
+- 2026-08-05T10:04:47Z [decision] worker_spawned by=router model=glm task=40241035 attempt=40241035-1785924131-88586 handle=260805-130447-40241035-776f
+- 2026-08-05T10:04:47Z [decision] mission-version task=- sig=40241035 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-05T10:04:47Z [decision] product_close task=40241035 status=spawned author=glm
+- 2026-08-05T10:04:47Z [decision] product_close task=40241035 status=waiting_worker author=glm handle=260805-130447-40241035-776f waited=0s
+- 2026-08-05T10:04:47Z [decision] route_resolved by=router router=v1 model=glm task=40241035 rule=none reason=no_routing_yaml
+- 2026-08-05T10:04:47Z [decision] lane_worktree_left task=40241035 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/40241035
+- 2026-08-05T10:09:49Z [decision] product_close task=40241035 status=waiting_worker author=glm handle=260805-130447-40241035-776f waited=302s
+- 2026-08-05T10:14:53Z [decision] product_close task=40241035 status=waiting_worker author=glm handle=260805-130447-40241035-776f waited=606s
+- 2026-08-05T10:19:56Z [decision] product_close task=40241035 status=waiting_worker author=glm handle=260805-130447-40241035-776f waited=909s
+- 2026-08-05T10:21:17Z [decision] review_gate task=40241035 status=blocked reason=arm_produced_nothing terminal=no_work cause=arm_produced_nothing arm=glm
+- 2026-08-05T10:21:18Z [decision] dispatch_terminal task=40241035 terminal=no_work cause=arm_produced_nothing
+- 2026-08-05T10:21:18Z [decision] arm_advance task=40241035 from=glm to=codex reason=arm_produced_nothing
+- 2026-08-05T10:21:28Z [decision] dispatch_terminal_dedup task=40241035 attempted=no_work reason=terminal_already_recorded
+- 2026-08-05T10:21:31Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=4s
+- 2026-08-05T10:26:36Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=309s
+- 2026-08-05T10:31:40Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=613s
+- 2026-08-05T10:36:53Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=926s
+- 2026-08-05T10:41:53Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=1226s
+- 2026-08-05T10:47:06Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=1539s
+- 2026-08-05T10:52:14Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=1847s
+- 2026-08-05T10:57:14Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=2147s
+- 2026-08-05T11:02:25Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=2458s
+- 2026-08-05T11:07:32Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=2765s
+- 2026-08-05T11:12:34Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=3066s
+- 2026-08-05T11:17:42Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=3375s
+- 2026-08-05T11:22:50Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=3683s
+- 2026-08-05T11:28:04Z [decision] product_close task=40241035 status=waiting_worker author=codex handle=task-msfxsvhc-0vpy50 waited=3997s
+- 2026-08-05T11:31:27Z [decision] review_gate task=40241035 status=blocked reason=worker_timeout terminal=dead cause=timeout
+- 2026-08-05T11:31:28Z [decision] dispatch_terminal task=40241035 terminal=dead cause=timeout
+- 2026-08-05T11:31:28Z [decision] dispatch_terminal_dedup task=40241035 attempted=dead reason=terminal_already_recorded

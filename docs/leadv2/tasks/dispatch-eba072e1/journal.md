@@ -1,0 +1,20 @@
+- 2026-08-12T19:34:08Z [decision] dispatch_task_bound task=eba072e1 founder_task=PLUGIN-RELIABILITY-02
+- 2026-08-12T19:34:08Z [decision] dispatch_classified task=eba072e1 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T19:34:10Z [decision] phase_precondition_warn task=eba072e1 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T19:34:10Z [decision] architect_prepass task=eba072e1 status=disabled reason=kill_switch
+- 2026-08-12T19:34:11Z [decision] glm_failures_flag_ignored value=2 reason=unverified_caller_input_not_ledger_backed task=eba072e1
+- 2026-08-12T19:34:11Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T19:34:11Z [decision] dispatchable_arms_read_failed task=eba072e1 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T19:34:11Z [decision] routing_config_degraded task=eba072e1 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T19:34:12Z [decision] kimi_skipped reason=writes_over task=eba072e1 chars=2050 writes=4 prepass=0
+- 2026-08-12T19:34:12Z [decision] candidate_chain task=eba072e1 arms=glm,codex,sonnet
+- 2026-08-12T19:34:15Z [decision] worker_spawned by=router model=glm task=eba072e1 attempt=eba072e1-1786563246-40887 handle=260812-223414-PLUGIN-RELIABILITY-02-1b78
+- 2026-08-12T19:34:15Z [decision] mission-version task=PLUGIN-RELIABILITY-02 sig=eba072e1 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T19:34:35Z [decision] product_close task=eba072e1 status=spawned author=glm
+- 2026-08-12T19:34:35Z [decision] route_resolved by=router router=v1 model=glm task=eba072e1 rule=none reason=no_routing_yaml
+- 2026-08-12T19:34:35Z [decision] lane_worktree_left task=eba072e1 founder_task=PLUGIN-RELIABILITY-02 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-RELIABILITY-02
+- 2026-08-12T19:49:22Z [decision] e2e_gate task=eba072e1 status=ran verdict=pass
+- 2026-08-12T19:49:22Z [decision] review_signals task=eba072e1 protected_path=0 source=lane_writes matched=-
+- 2026-08-12T19:49:22Z [decision] review_gate task=eba072e1 status=no_reviewer author=glm refusal=all_review_arms_unavailable pool=
+- 2026-08-12T19:49:23Z [decision] dispatch_terminal task=eba072e1 terminal=parked cause=all_review_arms_unavailable
+- 2026-08-12T19:49:23Z [decision] dispatch_terminal_dedup task=eba072e1 attempted=parked reason=terminal_already_recorded

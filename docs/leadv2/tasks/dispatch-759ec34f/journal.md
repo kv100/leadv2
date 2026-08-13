@@ -1,0 +1,22 @@
+- 2026-08-06T01:29:58Z [decision] dispatch_classified task=759ec34f class=product reason=conservative_default kind=unknown
+- 2026-08-06T01:29:59Z [decision] phase_precondition_warn task=759ec34f class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T01:33:31Z [decision] architect_prepass task=759ec34f status=ran artifact=docs/handoff/dispatch-759ec34f/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-759ec34f-architect/architect.full.md
+- 2026-08-06T01:33:31Z [decision] lane_writes task=759ec34f source=prepass writes=plugins/leadv2/config/leadv2-routing.yaml,plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh,plugins/leadv2/scripts/tests/test-dispatch-arm-vocabulary.sh,plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh
+- 2026-08-06T01:33:31Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T01:33:31Z [decision] kimi_skipped reason=chars_over task=759ec34f chars=26188 writes=0 prepass=1
+- 2026-08-06T01:33:32Z [decision] candidate_chain task=759ec34f arms=glm,codex,sonnet
+- 2026-08-06T01:33:34Z [decision] worker_spawned by=router model=glm task=759ec34f attempt=759ec34f-1785979797-86748 handle=260806-043334-759ec34f-41dc
+- 2026-08-06T01:33:34Z [decision] mission-version task=- sig=759ec34f rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T01:33:35Z [decision] product_close task=759ec34f status=spawned author=glm
+- 2026-08-06T01:33:35Z [decision] route_resolved by=router router=v1 model=glm task=759ec34f rule=none reason=glm_default
+- 2026-08-06T01:33:35Z [decision] product_close task=759ec34f status=waiting_worker author=glm handle=260806-043334-759ec34f-41dc waited=0s
+- 2026-08-06T01:33:35Z [decision] lane_worktree_left task=759ec34f founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/759ec34f
+- 2026-08-06T01:38:38Z [decision] product_close task=759ec34f status=waiting_worker author=glm handle=260806-043334-759ec34f-41dc waited=303s
+- 2026-08-06T01:43:41Z [decision] product_close task=759ec34f status=waiting_worker author=glm handle=260806-043334-759ec34f-41dc waited=606s
+- 2026-08-06T01:48:43Z [decision] product_close task=759ec34f status=waiting_worker author=glm handle=260806-043334-759ec34f-41dc waited=908s
+- 2026-08-06T01:50:55Z [decision] review_diff task=759ec34f repo=759ec34f bytes=83018 base=7fd75df1
+- 2026-08-06T02:01:04Z [decision] e2e_gate task=759ec34f status=ran verdict=pass
+- 2026-08-06T02:01:05Z [decision] review_signals task=759ec34f protected_path=0 source=lane_writes matched=-
+- 2026-08-06T02:01:05Z [decision] review_gate task=759ec34f status=unreviewed reason=all_arms_unavailable author=glm pool= refusal=all_review_arms_unavailable tried=
+- 2026-08-06T02:01:05Z [decision] dispatch_terminal task=759ec34f terminal=dead cause=all_arms_unavailable
+- 2026-08-06T02:01:06Z [decision] dispatch_terminal_dedup task=759ec34f attempted=dead reason=terminal_already_recorded

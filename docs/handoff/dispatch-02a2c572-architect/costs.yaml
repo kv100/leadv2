@@ -1,0 +1,12 @@
+# leadv2 cost telemetry — appended by claude-subsession.sh
+- role: architect
+  model: opus
+  provider: claude
+  session_id: 5eb1d6c2-6bae-4df8-b16b-f1fb3371873b
+  input_tokens: 28
+  output_tokens: 17116
+  cost_usd: 1.284120
+  duration_sec: 273
+  timestamp: 2026-08-05T11:27:20Z
+  cache_hit_rate: 0.9297
+  prompt_prefix_checksum: c320fbf7255d27d63c26a030bbcbee76

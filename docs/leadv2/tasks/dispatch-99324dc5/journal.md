@@ -1,0 +1,9 @@
+- 2026-08-03T15:47:35Z [decision] dispatch_classified task=99324dc5 class=non_product reason=explicit_kind_plugin kind=plugin
+- 2026-08-03T15:47:36Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-03T15:47:36Z [decision] kimi_skipped reason=chars_over task=99324dc5 chars=3001 writes=0 prepass=0
+- 2026-08-03T15:47:36Z [decision] candidate_chain task=99324dc5 arms=glm,codex,sonnet
+- 2026-08-03T15:47:38Z [decision] worker_spawned by=router model=glm task=99324dc5 attempt=99324dc5-1785772054-36186 handle=260803-184738-99324dc5-0e28
+- 2026-08-03T15:47:39Z [decision] mission-version task=- sig=99324dc5 rev=? head="# QUESTION-DELIVERY-OWNERSHIP-01 — lane questions must reach their own lead (ownership + p"
+- 2026-08-03T15:47:39Z [decision] route_resolved by=router router=v1 model=glm task=99324dc5 rule=none reason=no_routing_yaml
+- 2026-08-03T15:47:41Z [decision] dispatch_terminal task=99324dc5 terminal=landed cause=spawned_glm
+- 2026-08-03T15:47:41Z [decision] lane_worktree_left task=99324dc5 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/99324dc5

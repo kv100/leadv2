@@ -1,0 +1,48 @@
+diff --git a/plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh b/plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
+index b2df676..2bf1a6c 100644
+--- a/plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
++++ b/plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
+@@ -6,6 +6,19 @@
+ # leadv2-lane-liveness.sh (not a stub) so the sentinel path is exercised
+ # end-to-end.
+ #
++# dispatch-a24b1588 round-1b item 3 verification (2026-08-06): the S7
++# `rc == 0` tightening (from `rc != 5`) does NOT fail against a1afed9's own
++# source -- a1afed9 genuinely returns rc=0 here, so this is a false-PASS-class
++# removal, not a live bug fix. The correct evidence is a negative control on
++# the clean a1afed9 baseline: fault-inject LEADV2_DISPATCH_GLM_BIN to hard-fail
++# (exit 7, no PID/LABEL/SESSION_ID emitted), which drives real dispatch rc to 4
++# (dispatch_rolled_back reason=all_arms_unavailable...glm_failed_launcher).
++# Same source, same injected fault, opposite verdict: the OLD `rc != 5`
++# assertion PASSES (4 != 5) while the NEW `rc == 0` assertion FAILS
++# (rc=4, expected 0) -- proving the tightening catches a class of false PASS
++# the old assertion could not. This is a negative-control demonstration, not a
++# fail-against-HEAD run.
++#
+ # Run: bash plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
+ 
+ set -uo pipefail
+diff --git a/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh b/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
+index cc3b232..67f4f2b 100644
+--- a/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
++++ b/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
+@@ -1,5 +1,19 @@
+ #!/usr/bin/env bash
+ # Offline regression for ROUTER-DOOR-ENFORCE-01 Part 0.
++#
++# dispatch-a24b1588 round-1b item 2 verification (2026-08-06): swept every
++# `env -u CLAUDE_PROJECT_ROOT`/`CLAUDE_PROJECT_DIR` invocation in this file --
++# only Test 5 (selfhost) and Test 6 (degraded) use it, and both already pin
++# `PROJECT_ROOT` to a sandbox root (5e69c0b), so no further code change was
++# needed here. Cross-cwd demonstration (fresh a1afed9 worktree + this file,
++# `PROJECT_ROOT`/`LEADV2_PROJECT_ROOT` ambient-env isolated): this file run
++# from /private/tmp, this lane worktree, and persona-engine (which carries its
++# own .claude/ref/leadv2-routing.yaml) all print "18 passed, 0 failed"-shaped
++# results. The UNPINNED a1afed9 source of this same file diverges exactly as
++# predicted: 18/18 from /private/tmp, but Test 6 (degraded mode) FAILS from
++# persona-engine because unpinned `PROJECT_ROOT` resolves via
++# `git rev-parse --show-toplevel` on the caller's cwd and finds persona-
++# engine's own routing config instead of hitting the degraded/no-config path.
+ set -uo pipefail
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -1,0 +1,2 @@
+- 2026-08-04T11:54:12Z [decision] lane_placement_pinned task=18373c20 mode=resume-lane path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/6bbcca99 key=6bbcca99
+- 2026-08-04T11:54:12Z [decision] dispatch_classified task=18373c20 class=product reason=conservative_default kind=unknown

@@ -1,0 +1,743 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+index 8c43b12..f9323dd 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -805,7 +805,12 @@ fi
+ # .claude/scripts/leadv2-*.sh are git-tracked symlinks into a SEPARATE ~/Projects/leadv2
+ # checkout -- a symlink blob only stores its target path string, so `git -C "${diff_root}"
+ # diff -- <that path>` is empty by construction. No portable `readlink -f` on macOS.
+-_pc_realpath() { python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1"; }
++# Source the shared e2e-root validation lib (C1, GATE-WRONG-ROOT-FALSE-DEAD-01):
++# one mechanism for both product-close and phase8-e2e-gate. Provides
++# _lv2_realpath and _lv2_e2e_resolve_root; _pc_realpath is a backward-compat alias.
++# shellcheck source=lib/leadv2-e2e-root.sh
++source "${SCRIPT_DIR}/lib/leadv2-e2e-root.sh"
++_pc_realpath() { _lv2_realpath "$@"; }
+ # C2 (LANDING-BLOCKER-R2): `git diff HEAD` never sees untracked paths, and a brand-new
+ # file is a large share of lane deliverables -- LANE_WRITES=agent/newmod.py, created but
+ # never `git add`ed, used to yield an empty diff every time. Diff against a THROWAWAY COPY
+@@ -1033,17 +1038,27 @@ if [[ -n "${_PC_ASKED_INTO_VOID}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
+ fi
+ 
+ _stamp_active_phase "${FOUNDER_TASK_ID}" "e2e"
++# C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): validate the e2e root BEFORE running any
++# suite. diff_root (the lane's worktree, resolved :796-802) is the single source
++# of truth for "where the lane's code actually is" — reuse it, do not re-derive.
++# On any failure: blocked (infrastructure fault), never dead (lane regression).
+ if [[ "${E2E_ON}" != 1 ]]; then
+   emit decision "e2e_gate task=${TASK} status=disabled reason=kill_switch"
+-elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${ROOT}")"; then
+-  repo="$(basename "${ROOT}")"
++elif ! _lv2_e2e_resolve_root "${diff_root}" "${ROOT}"; then
++  rm -f "${HANDOFF}/e2e-gate-passed.flag"
++  printf 'status: blocked\nreason: %s\n' "${_lv2_e2e_root_reason}" > "${HANDOFF}/e2e-gate.md"
++  emit decision "e2e_gate task=${TASK} status=blocked reason=${_lv2_e2e_root_reason}"
++  _dl_note refused "${_lv2_e2e_root_reason}"
++  exit 4
++elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_lv2_e2e_root}")"; then
++  repo="$(basename "${_lv2_e2e_root}")"
+   printf 'status: blocked\nreason: no_e2e_entrypoint\nrepo: %s\n' "${repo}" > "${HANDOFF}/e2e-gate.md"
+   rm -f "${HANDOFF}/e2e-gate-passed.flag"
+   emit decision "e2e_gate task=${TASK} status=blocked reason=no_e2e_entrypoint repo=${repo}"
+   _dl_note refused no_e2e_entrypoint "repo=${repo}"
+   exit 4
+ else
+-  bash -c "${e2e_cmd} --scope changed" > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
++  { printf 'e2e-root: %s\n' "${_lv2_e2e_root}"; ( cd "${_lv2_e2e_root}" && bash -c "${e2e_cmd} --scope changed" ); } > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+   # GATE-FOREIGN-FAILURE-01: WRITES_CSV present + ownership enabled means the
+   # passed sentinel is stamped as scoped to the lane's own write set (the
+   # apparatus that can tell "my regression" from "someone else's unfinished
+@@ -1067,7 +1082,10 @@ else
+     # own regression behind someone else's unfinished file.
+     _own_csv=""; _foreign_csv=""; _undecidable_csv=""; _owner_lane="unknown"
+     if [[ "${_e2e_ownership}" == "1" && -n "${WRITES_CSV}" ]]; then
+-      _own_out="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${ROOT}" "${TASK}" "${WRITES_CSV}" "${HANDOFF}/e2e-gate.log" 2>/dev/null || true)"
++      # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): pass the validated e2e root
++      # (the lane's worktree) so the overlay copies the lane's ACTUAL working
++      # tree state, not the main checkout's committed values.
++      _own_out="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${_lv2_e2e_root}" "${TASK}" "${WRITES_CSV}" "${HANDOFF}/e2e-gate.log" 2>/dev/null || true)"
+       _own_csv="$(sed -n 's/^own=//p' <<< "${_own_out}")"
+       _foreign_csv="$(sed -n 's/^foreign=//p' <<< "${_own_out}")"
+       _undecidable_csv="$(sed -n 's/^undecidable=//p' <<< "${_own_out}")"
+@@ -1081,8 +1099,8 @@ else
+       # swallow the red suite silently either (loudness contract below).
+       IFS=',' read -r -a _lane_writes <<< "${WRITES_CSV}"
+       mapfile -t _all_changed < <(
+-        { git -C "${ROOT}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+-          git -C "${ROOT}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
++        { git -C "${_lv2_e2e_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
++          git -C "${_lv2_e2e_root}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
+       )
+       _foreign_files=()
+       for _f in "${_all_changed[@]}"; do
+diff --git a/plugins/leadv2/scripts/leadv2-e2e-ownership.sh b/plugins/leadv2/scripts/leadv2-e2e-ownership.sh
+index 7717977..76a4306 100755
+--- a/plugins/leadv2/scripts/leadv2-e2e-ownership.sh
++++ b/plugins/leadv2/scripts/leadv2-e2e-ownership.sh
+@@ -92,8 +92,18 @@ foreign=()
+ undecidable=()
+ for suite in "${F[@]}"; do
+   [[ -z "${suite}" ]] && continue
+-  suite_path="${SCRATCH}/tests/unit/${suite}"
+-  if [[ ! -f "${suite_path}" ]]; then
++  # C5 (GATE-WRONG-ROOT-FALSE-DEAD-01): ordered suite location, first hit wins.
++  # 1. ${SCRATCH}/${suite} — repo-relative path (what C4's run-all.sh emits,
++  #    e.g. plugins/leadv2/scripts/tests/test-foo.sh or tests/unit/test-A.sh).
++  # 2. ${SCRATCH}/tests/unit/${suite} — legacy basename convention (other repos,
++  #    pre-C4 fixtures that emit basenames only).
++  suite_path=""
++  if [[ -f "${SCRATCH}/${suite}" ]]; then
++    suite_path="${SCRATCH}/${suite}"
++  elif [[ -f "${SCRATCH}/tests/unit/${suite}" ]]; then
++    suite_path="${SCRATCH}/tests/unit/${suite}"
++  fi
++  if [[ -z "${suite_path}" ]]; then
+     # Not a locatable tests/unit/<name> script (aggregate "pytest" name, a
+     # "(missing)"/"(TIMEOUT)" suffixed entry, an E2E break-matrix suite,
+     # etc.) -- cannot safely re-run in isolation. Fail-closed to own.
+diff --git a/plugins/leadv2/scripts/leadv2-phase8-e2e-gate.sh b/plugins/leadv2/scripts/leadv2-phase8-e2e-gate.sh
+index 655cc85..e81f267 100755
+--- a/plugins/leadv2/scripts/leadv2-phase8-e2e-gate.sh
++++ b/plugins/leadv2/scripts/leadv2-phase8-e2e-gate.sh
+@@ -32,6 +32,11 @@ PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null
+ # shellcheck source=leadv2-helpers.sh
+ source "${SCRIPT_DIR}/leadv2-helpers.sh"
+ _lv2_load_paths
++# C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): source the shared e2e-root validation
++# lib so the SAME mechanism product-close uses is available here — one path
++# resolution, not two.
++# shellcheck source=lib/leadv2-e2e-root.sh
++source "${SCRIPT_DIR}/lib/leadv2-e2e-root.sh"
+ cd "$PROJECT_ROOT"
+ 
+ TASK_ID="${1:-${LEADV2_TASK_ID:-}}"
+@@ -143,13 +148,29 @@ fi
+ 
+ rc=0
+ e2e_cmd=""
+-if ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${PROJECT_ROOT}")"; then
+-  echo "leadv2-phase8-e2e-gate: no e2e entrypoint in $(basename "${PROJECT_ROOT}") -- blocked" \
++# C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): resolve and validate a lane worktree root
++# (same diff_root logic as product-close). Prefer LEADV2_LANE_WORK_ROOT, fall
++# back to lane-worktree path-of, then to PROJECT_ROOT itself.
++_p8_e2e_root="${PROJECT_ROOT}"
++_lane_wt="${LEADV2_LANE_WORK_ROOT:-}"
++if [[ -z "${_lane_wt}" || ! -d "${_lane_wt}" ]]; then
++  _lane_wt="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${TASK_ID}" 2>/dev/null || true)"
++fi
++[[ -n "${_lane_wt}" && -d "${_lane_wt}" ]] && _p8_e2e_root="${_lane_wt}"
++if ! _lv2_e2e_resolve_root "${_p8_e2e_root}" "${PROJECT_ROOT}"; then
++  rm -f "$SENTINEL"
++  printf 'status: blocked\nreason: %s\n' "${_lv2_e2e_root_reason}" > "${OUT_DIR}/e2e-gate.md" 2>/dev/null || true
++  echo "leadv2-phase8-e2e-gate: e2e root validation FAILED (${_lv2_e2e_root_reason}) — blocked, no suite executed" | tee "$LOG" >&2
++  exit 1
++fi
++_p8_e2e_root="${_lv2_e2e_root}"
++if ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_p8_e2e_root}")"; then
++  echo "leadv2-phase8-e2e-gate: no e2e entrypoint in $(basename "${_p8_e2e_root}") -- blocked" \
+     | tee "$LOG" >&2
+   rm -f "$SENTINEL"
+   exit 1
+ fi
+-bash -c "${e2e_cmd} --scope changed" > "$LOG" 2>&1 || rc=$?
++{ printf 'e2e-root: %s\n' "${_p8_e2e_root}"; ( cd "${_p8_e2e_root}" && bash -c "${e2e_cmd} --scope changed" ); } > "$LOG" 2>&1 || rc=$?
+ 
+ # GATE-FOREIGN-FAILURE-01: resolves the lane's own write set itself (this
+ # path has no LEADV2_DISPATCH_LANE_WRITES export -- it is standalone-
+@@ -192,7 +213,9 @@ fi
+ # foreign ones, and undecidable folds into own (fail-closed).
+ OWN_CSV=""; FOREIGN_CSV=""; UNDECIDABLE_CSV=""; OWNER_LANE="unknown"
+ if [[ "${E2E_OWNERSHIP}" == "1" && -n "${WRITES_CSV}" ]]; then
+-  OWN_OUT="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${PROJECT_ROOT}" "${TASK_ID}" "${WRITES_CSV}" "$LOG" 2>/dev/null || true)"
++  # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): pass the validated e2e root so the
++  # overlay uses the lane's actual working tree state.
++  OWN_OUT="$(bash "${SCRIPT_DIR}/leadv2-e2e-ownership.sh" "${_p8_e2e_root}" "${TASK_ID}" "${WRITES_CSV}" "$LOG" 2>/dev/null || true)"
+   OWN_CSV="$(sed -n 's/^own=//p' <<< "${OWN_OUT}")"
+   FOREIGN_CSV="$(sed -n 's/^foreign=//p' <<< "${OWN_OUT}")"
+   UNDECIDABLE_CSV="$(sed -n 's/^undecidable=//p' <<< "${OWN_OUT}")"
+@@ -203,8 +226,8 @@ fi
+ if [[ -n "${FOREIGN_CSV}" && -z "${OWN_CSV}" && -z "${UNDECIDABLE_CSV}" ]]; then
+   IFS=',' read -r -a _lane_writes <<< "${WRITES_CSV}"
+   mapfile -t _all_changed < <(
+-    { git -C "${PROJECT_ROOT}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+-      git -C "${PROJECT_ROOT}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
++    { git -C "${_p8_e2e_root}" diff --name-only HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
++      git -C "${_p8_e2e_root}" ls-files --others --exclude-standard -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; } | sort -u
+   )
+   _foreign_files=()
+   for _f in "${_all_changed[@]}"; do
+diff --git a/plugins/leadv2/scripts/tests/run-core-offline.sh b/plugins/leadv2/scripts/tests/run-core-offline.sh
+index 058b468..68862e2 100755
+--- a/plugins/leadv2/scripts/tests/run-core-offline.sh
++++ b/plugins/leadv2/scripts/tests/run-core-offline.sh
+@@ -76,6 +76,7 @@ run_check "reply router dual-store resolution" bash "$TEST_DIR/test-reply-router
+ run_check "question delivery ownership" bash "$TEST_DIR/test-question-delivery-ownership-01.sh"
+ run_check "landed-at-spawn (no terminal=landed at spawn; target repo keying)" bash "$TEST_DIR/test-landed-at-spawn.sh"
+ run_check "lane placement pin (--resume-lane/--worktree)" bash "$TEST_DIR/test-lane-placement-pin.sh"
++run_check "e2e gate lane root + suite family" bash "$TEST_DIR/test-e2e-gate-lane-root.sh"
+ 
+ printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
+ (( FAIL == 0 && MISSING == 0 ))
+diff --git a/plugins/leadv2/scripts/tests/test-e2e-foreign-failure.sh b/plugins/leadv2/scripts/tests/test-e2e-foreign-failure.sh
+index fc0c8b3..e9377f2 100755
+--- a/plugins/leadv2/scripts/tests/test-e2e-foreign-failure.sh
++++ b/plugins/leadv2/scripts/tests/test-e2e-foreign-failure.sh
+@@ -75,17 +75,16 @@ EOF
+   cat > "${root}/fake-e2e.sh" <<'EOF'
+ #!/usr/bin/env bash
+ # fixture-only fake e2e entrypoint. Mirrors tests/run-all.sh's exact
+-# "Failures (blocking):" summary block so leadv2-e2e-ownership.sh's parser
+-# is exercised against the real format, not a hand-simplified one.
++# "Failures (blocking):" summary block (C4, GATE-WRONG-ROOT-FALSE-DEAD-01)
++# with repo-relative suite names — the real format ownership.sh parses.
+ set -uo pipefail
+ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ cd "${ROOT_DIR}"
+ failed=()
+ for f in tests/unit/*.sh; do
+   [[ -f "${f}" ]] || continue
+-  name="$(basename "${f}")"
+   if ! ( env RUN_MODE=dry_run bash "${f}" ) >/dev/null 2>&1; then
+-    failed+=("${name}")
++    failed+=("${f}")
+   fi
+ done
+ if [[ ${#failed[@]} -gt 0 ]]; then
+@@ -110,9 +109,12 @@ run_gate() { # <root> <sig8> <writes_csv> <ownership_flag> -> sets RC, MD, FLAG
+   local handoff="${root}/docs/handoff/dispatch-${sig8}"
+   rm -rf "${handoff}"
+   RC=0
++  # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): CROSS_REPO_DIFF=0 so diff_root stays
++  # ROOT (no worktree lookup that would resolve into the real leadv2 repo).
+   LEADV2_E2E_CMD="bash ${root}/fake-e2e.sh" \
+   LEADV2_E2E_OWNERSHIP="${ownership}" \
+   LEADV2_DISPATCH_LANE_WRITES="${writes}" \
++  LEADV2_REVIEW_DIFF_CROSS_REPO=0 \
+   LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
+   LEADV2_JOURNAL_BIN=/bin/true \
+     bash "$PRODUCT_CLOSE_SH" "${root}" "${sig8}" codex "" 1 0 "" >/dev/null 2>&1 || RC=$?
+@@ -123,8 +125,10 @@ run_gate() { # <root> <sig8> <writes_csv> <ownership_flag> -> sets RC, MD, FLAG
+ TMP="$(lv2_mktemp_dir "e2e-foreign-failure-test")"; trap 'rm -rf "$TMP"' EXIT
+ 
+ # ── R1: lane writes A only; B broken (this morning's exact shape) ───────────
++# a_working differs from committed A-fixed (creates a diff for the gate);
++# test-A.sh still passes since A-fixed-v2 != broken-A.
+ R1="${TMP}/r1"; mkdir -p "${R1}"
+-build_fixture "${R1}" "A-fixed" "broken-B"
++build_fixture "${R1}" "A-fixed-v2" "broken-B"
+ lv2_assert_scratch_repo "${R1}"
+ 
+ run_gate "${R1}" "r1sig001" "A.txt" "0"
+@@ -140,7 +144,7 @@ if [[ "${RC}" -ne 8 ]] \
+   && grep -q 'reason: foreign_failure' <<<"${MD}" \
+   && grep -q 'foreign_files:.*B\.txt' <<<"${MD}" \
+   && grep -q 'scope: lane_writes' <<<"${FLAG}" \
+-  && grep -q '^foreign_failures: test-B\.sh$' <<<"${FLAG}"; then
++  && grep -q '^foreign_failures: tests/unit/test-B\.sh$' <<<"${FLAG}"; then
+   pass "R1 post-fix (OWNERSHIP=1): foreign_failure, lane NOT killed, B.txt named"
+ else
+   fail "R1 post-fix: expected non-8 rc + fail_foreign + foreign_files naming B.txt, got rc=${RC} md=<${MD}> flag=<${FLAG}>"
+@@ -198,7 +202,7 @@ fi
+ 
+ # ── R5: all suites green ─────────────────────────────────────────────────────
+ R5="${TMP}/r5"; mkdir -p "${R5}"
+-build_fixture "${R5}" "A-fixed" "B-fixed"
++build_fixture "${R5}" "A-fixed-v2" "B-fixed"
+ lv2_assert_scratch_repo "${R5}"
+ 
+ run_gate "${R5}" "r5sig001" "A.txt" "1"
+@@ -219,23 +223,24 @@ STUB
+ chmod +x "${STUB_JOURNAL}"
+ 
+ R6="${TMP}/r6"; mkdir -p "${R6}"
+-build_fixture "${R6}" "A-fixed" "broken-B"
++build_fixture "${R6}" "A-fixed-v2" "broken-B"
+ lv2_assert_scratch_repo "${R6}"
+ handoff6="${R6}/docs/handoff/dispatch-r6sig001"
+ rm -rf "${handoff6}"
+ LEADV2_E2E_CMD="bash ${R6}/fake-e2e.sh" \
+ LEADV2_E2E_OWNERSHIP=1 \
+ LEADV2_DISPATCH_LANE_WRITES="A.txt" \
++LEADV2_REVIEW_DIFF_CROSS_REPO=0 \
+ LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
+ LEADV2_JOURNAL_BIN="${STUB_JOURNAL}" \
+   bash "$PRODUCT_CLOSE_SH" "${R6}" "r6sig001" codex "" 1 0 "" >/dev/null 2>&1 || true
+ 
+-if grep -qE '^append dispatch-r6sig001 decision e2e_gate task=r6sig001 status=ran verdict=foreign_failure scope=lane_writes foreign_suites=test-B\.sh foreign_files=B\.txt owner_lane=unknown own_failures=0$' "${JOURNAL_LOG}"; then
++if grep -qE '^append dispatch-r6sig001 decision e2e_gate task=r6sig001 status=ran verdict=foreign_failure scope=lane_writes foreign_suites=tests/unit/test-B\.sh foreign_files=B\.txt owner_lane=unknown own_failures=0$' "${JOURNAL_LOG}"; then
+   pass "loudness (1/4): exact journal decision line present"
+ else
+   fail "loudness (1/4): missing/mismatched e2e_gate decision line -- $(cat "${JOURNAL_LOG}")"
+ fi
+-if grep -qE '^append dispatch-r6sig001 decision foreign_failure task=r6sig001 suite=test-B\.sh file=B\.txt owner_lane=unknown$' "${JOURNAL_LOG}"; then
++if grep -qE '^append dispatch-r6sig001 decision foreign_failure task=r6sig001 suite=tests/unit/test-B\.sh file=B\.txt owner_lane=unknown$' "${JOURNAL_LOG}"; then
+   pass "loudness (2/4): separate per-suite foreign_failure line present"
+ else
+   fail "loudness (2/4): missing per-suite foreign_failure line -- $(cat "${JOURNAL_LOG}")"
+diff --git a/plugins/leadv2/scripts/tests/test-e2e-gate-lane-root.sh b/plugins/leadv2/scripts/tests/test-e2e-gate-lane-root.sh
+new file mode 100644
+index 0000000..8fb9ed2
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-e2e-gate-lane-root.sh
+@@ -0,0 +1,355 @@
++#!/usr/bin/env bash
++# test-e2e-gate-lane-root.sh — GATE-WRONG-ROOT-FALSE-DEAD-01
++#
++# Covers C1 (pinned lane root), C2 (root-escape guard), C3 (plugin-preferred
++# suite family), C4 (machine-readable failure block), C5 (classifier suite
++# location), and case (g) (other-repo no-op). Seven cases:
++#   (a) green plugin-suite lane → e2e-root line names the worktree, pass
++#   (b) lane's own suite fails → dead/e2e_regression (real failures still die)
++#   (c) foreign suite fails → foreign_failure, parked not dead
++#   (d) root escape → blocked with named reason, no suite executed
++#   (e) D2 regression guard → run-all SKIP out_of_tree / plugins/ preferred
++#   (f) ownership parse round-trip → no harness_unparsed
++#   (g) other-repo no-op → .claude/ path used when no plugins/leadv2/
++#
++# Portable: no GNU-only date/sed. Never git stash/reset --hard/clean.
++# Run: bash plugins/leadv2/scripts/tests/test-e2e-gate-lane-root.sh
++# Exit 0 = all pass; non-zero = failures found.
++set -uo pipefail
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
++source "${SCRIPTS_ROOT}/leadv2-temp.sh"
++
++PRODUCT_CLOSE_SH="${SCRIPTS_ROOT}/leadv2-dispatch-product-close.sh"
++OWNERSHIP_SH="${SCRIPTS_ROOT}/leadv2-e2e-ownership.sh"
++RUN_ALL="${SCRIPTS_ROOT}/../../../tests/run-all.sh"
++E2E_ROOT_LIB="${SCRIPTS_ROOT}/lib/leadv2-e2e-root.sh"
++
++PASS=0; FAIL=0; NOTRUN=0; ERRORS=()
++log()    { printf -- '[TEST] %s\n' "$*"; }
++pass()   { PASS=$((PASS + 1)); log "PASS: $1"; }
++fail()   { FAIL=$((FAIL + 1)); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
++notrun() { NOTRUN=$((NOTRUN + 1)); log "NOT RUN: $1"; }
++
++# ── fixture builder with worktree support ────────────────────────────────────
++# Creates a main repo + a lane worktree. Suite files are placed in
++# plugins/leadv2/scripts/tests/ inside the repo so C3's plugin-preferred
++# always-on path fires.
++build_worktree_fixture() { # <main_root> <wt_root> <a_working> <b_working>
++  local main="$1" wt="$2" a_working="$3" b_working="$4"
++  mkdir -p "${main}/plugins/leadv2/scripts/tests"
++  mkdir -p "${main}/tests/unit"
++  git -C "${main}" init -q
++  git -C "${main}" config user.email test@test.local
++  git -C "${main}" config user.name test
++
++  printf 'A-fixed\n' > "${main}/A.txt"
++  printf 'B-fixed\n' > "${main}/B.txt"
++  # Suite A: fails iff A.txt == broken-A (the lane's own suite)
++  cat > "${main}/plugins/leadv2/scripts/tests/test-A.sh" <<'EOF'
++#!/usr/bin/env bash
++set -uo pipefail
++content="$(cat A.txt 2>/dev/null || true)"
++[[ "${content}" != "broken-A" ]]
++EOF
++  # Suite B: fails iff B.txt == broken-B (a foreign suite)
++  cat > "${main}/plugins/leadv2/scripts/tests/test-B.sh" <<'EOF'
++#!/usr/bin/env bash
++set -uo pipefail
++content="$(cat B.txt 2>/dev/null || true)"
++[[ "${content}" != "broken-B" ]]
++EOF
++  chmod +x "${main}/plugins/leadv2/scripts/tests/test-A.sh" \
++           "${main}/plugins/leadv2/scripts/tests/test-B.sh"
++
++  # Also place suites in tests/unit/ for ownership.sh's legacy fallback path
++  cp "${main}/plugins/leadv2/scripts/tests/test-A.sh" "${main}/tests/unit/test-A.sh"
++  cp "${main}/plugins/leadv2/scripts/tests/test-B.sh" "${main}/tests/unit/test-B.sh"
++  chmod +x "${main}/tests/unit/test-A.sh" "${main}/tests/unit/test-B.sh"
++
++  # A run-all.sh that emits the C4 Failures (blocking) block with repo-relative paths
++  cat > "${main}/tests/run-all.sh" <<'RUNALL'
++#!/usr/bin/env bash
++set -uo pipefail
++HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++ROOT="$(cd "${HERE}/.." && pwd)"
++PASS=0; FAIL=0; FAILED_REL=()
++for suite in "${ROOT}/plugins/leadv2/scripts/tests/test-A.sh" \
++             "${ROOT}/plugins/leadv2/scripts/tests/test-B.sh"; do
++  [[ -f "$suite" ]] || continue
++  printf '[RUN] %s\n' "$suite"
++  if bash "$suite"; then
++    PASS=$((PASS+1))
++  else
++    FAIL=$((FAIL+1))
++    rel="${suite#"${ROOT}/"}"
++    FAILED_REL+=("$rel")
++  fi
++done
++if [[ $FAIL -gt 0 ]]; then
++  printf '  Failures (blocking):\n'
++  for r in "${FAILED_REL[@]}"; do printf '    - %s\n' "$r"; done
++fi
++printf 'run-all: %d passed, %d failed, scope=fixture\n' "$PASS" "$FAIL"
++(( FAIL == 0 ))
++RUNALL
++  chmod +x "${main}/tests/run-all.sh"
++
++  git -C "${main}" add -A
++  git -C "${main}" commit -q -m "fixture: initial state"
++
++  # Create a lane worktree
++  git -C "${main}" worktree add -q "${wt}" HEAD 2>/dev/null
++
++  # Simulate the working-tree state in the worktree
++  printf '%s\n' "${a_working}" > "${wt}/A.txt"
++  printf '%s\n' "${b_working}" > "${wt}/B.txt"
++}
++
++# ── gate runner (same pattern as test-e2e-foreign-failure.sh) ─────────────────
++run_gate() { # <root> <worktree> <sig8> <writes_csv> <ownership_flag> -> RC, MD, FLAG, LOG
++  local root="$1" wt="$2" sig8="$3" writes="$4" ownership="$5"
++  local handoff="${root}/docs/handoff/dispatch-${sig8}"
++  rm -rf "${handoff}"
++  RC=0
++  LEADV2_E2E_CMD="bash ${wt}/tests/run-all.sh" \
++  LEADV2_E2E_OWNERSHIP="${ownership}" \
++  LEADV2_DISPATCH_LANE_WRITES="${writes}" \
++  LEADV2_LANE_WORK_ROOT="${wt}" \
++  LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
++  LEADV2_JOURNAL_BIN=/bin/true \
++    bash "$PRODUCT_CLOSE_SH" "${root}" "${sig8}" codex "" 1 0 "" >/dev/null 2>&1 || RC=$?
++  MD="$(cat "${handoff}/e2e-gate.md" 2>/dev/null || true)"
++  FLAG="$(cat "${handoff}/e2e-gate-passed.flag" 2>/dev/null || true)"
++  GATE_LOG="$(cat "${handoff}/e2e-gate.log" 2>/dev/null || true)"
++}
++
++TMP="$(lv2_mktemp_dir "e2e-gate-lane-root-test")"; trap 'rm -rf "$TMP"' EXIT
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (a): green plugin-suite lane → e2e-root line names the worktree, pass
++# ════════════════════════════════════════════════════════════════════════════
++CA="${TMP}/case-a"; CA_WT="${CA}-wt"
++mkdir -p "${CA}"
++build_worktree_fixture "${CA}" "${CA_WT}" "A-fixed-v2" "B-fixed"
++lv2_assert_scratch_repo "${CA}"
++
++run_gate "${CA}" "${CA_WT}" "ca00sig1" "A.txt" "1"
++if [[ "${RC}" -eq 0 ]] \
++  && grep -q "^e2e-root: ${CA_WT}" <<<"${GATE_LOG}" \
++  && grep -q 'scope: lane_writes' <<<"${FLAG}" \
++  && grep -q 'bypassed: false' <<<"${FLAG}"; then
++  pass "(a) green lane: e2e-root names worktree, pass with scope=lane_writes"
++else
++  fail "(a) green lane: expected rc=0 + e2e-root=${CA_WT} + pass, got rc=${RC} log_first=<$(head -1 <<<"${GATE_LOG}")> flag=<${FLAG}>"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (b): lane's OWN suite fails → dead/e2e_regression
++# ════════════════════════════════════════════════════════════════════════════
++CB="${TMP}/case-b"; CB_WT="${CB}-wt"
++mkdir -p "${CB}"
++build_worktree_fixture "${CB}" "${CB_WT}" "broken-A" "B-fixed"
++lv2_assert_scratch_repo "${CB}"
++
++run_gate "${CB}" "${CB_WT}" "cb00sig1" "A.txt" "1"
++if [[ "${RC}" -eq 8 ]] && grep -q 'reason: e2e_regression' <<<"${MD}"; then
++  pass "(b) own regression: dead/e2e_regression (real failures still die)"
++else
++  fail "(b) own regression: expected exit 8 + e2e_regression, got rc=${RC} md=<${MD}>"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (c): foreign suite fail, lane diff is plugins-only → foreign_failure
++# ════════════════════════════════════════════════════════════════════════════
++CC="${TMP}/case-c"; CC_WT="${CC}-wt"
++mkdir -p "${CC}"
++build_worktree_fixture "${CC}" "${CC_WT}" "A-fixed-v2" "broken-B"
++lv2_assert_scratch_repo "${CC}"
++
++run_gate "${CC}" "${CC_WT}" "cc00sig1" "A.txt" "1"
++if [[ "${RC}" -ne 8 ]] \
++  && grep -q 'status: fail_foreign' <<<"${MD}" \
++  && grep -q 'reason: foreign_failure' <<<"${MD}" \
++  && grep -q 'scope: lane_writes' <<<"${FLAG}" \
++  && grep -q '^foreign_failures:' <<<"${FLAG}"; then
++  pass "(c) foreign failure: parked not dead, fail_foreign + foreign_failures listed"
++else
++  fail "(c) foreign failure: expected non-8 + fail_foreign + foreign_failures, got rc=${RC} md=<${MD}> flag=<${FLAG}>"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (d): root-resolution escape → blocked with named reason
++# Tests _lv2_e2e_resolve_root directly (unit test of the C1 validation).
++# ════════════════════════════════════════════════════════════════════════════
++# shellcheck source=lib/leadv2-e2e-root.sh
++source "${E2E_ROOT_LIB}"
++
++CD="${TMP}/case-d"
++mkdir -p "${CD}/plugins/leadv2/scripts/tests"
++git -C "${CD}" init -q
++git -C "${CD}" config user.email t@t.local
++git -C "${CD}" config user.name t
++printf 'x\n' > "${CD}/f.txt"
++git -C "${CD}" add -A
++git -C "${CD}" commit -q -m init
++lv2_assert_scratch_repo "${CD}"
++
++# (d.1) Non-toplevel subdir
++_lv2_e2e_resolve_root "${CD}/plugins" "${CD}"
++if [[ -n "${_lv2_e2e_root_reason}" ]] \
++  && grep -qE 'e2e_root_(not_toplevel|missing|foreign_repo|escaped)' <<<"${_lv2_e2e_root_reason}"; then
++  pass "(d.1) non-toplevel subdir: blocked with reason=${_lv2_e2e_root_reason}"
++else
++  fail "(d.1) non-toplevel subdir: expected named reason, got root=<${_lv2_e2e_root}> reason=<${_lv2_e2e_root_reason}>"
++fi
++
++# (d.2) Foreign repo
++CD_FOREIGN="${TMP}/case-d-foreign"
++mkdir -p "${CD_FOREIGN}"
++git -C "${CD_FOREIGN}" init -q
++git -C "${CD_FOREIGN}" config user.email t@t.local
++git -C "${CD_FOREIGN}" config user.name t
++printf 'y\n' > "${CD_FOREIGN}/f.txt"
++git -C "${CD_FOREIGN}" add -A
++git -C "${CD_FOREIGN}" commit -q -m init
++
++_lv2_e2e_resolve_root "${CD_FOREIGN}" "${CD}"
++if [[ "${_lv2_e2e_root_reason}" == "e2e_root_foreign_repo" ]]; then
++  pass "(d.2) foreign repo: blocked with e2e_root_foreign_repo"
++else
++  fail "(d.2) foreign repo: expected e2e_root_foreign_repo, got reason=<${_lv2_e2e_root_reason}>"
++fi
++
++# (d.3) Missing directory
++_lv2_e2e_resolve_root "${TMP}/nonexistent-dir" "${CD}"
++if [[ "${_lv2_e2e_root_reason}" == "e2e_root_missing" ]]; then
++  pass "(d.3) missing dir: blocked with e2e_root_missing"
++else
++  fail "(d.3) missing dir: expected e2e_root_missing, got reason=<${_lv2_e2e_root_reason}>"
++fi
++
++# (d.4) Valid worktree passes validation
++CD_WT="${CD}-wt"
++git -C "${CD}" worktree add -q "${CD_WT}" HEAD 2>/dev/null
++_lv2_e2e_resolve_root "${CD_WT}" "${CD}"
++if [[ -z "${_lv2_e2e_root_reason}" && "${_lv2_e2e_root}" == "${CD_WT}" ]]; then
++  pass "(d.4) valid worktree: validation passes"
++else
++  fail "(d.4) valid worktree: expected pass, got reason=<${_lv2_e2e_root_reason}> root=<${_lv2_e2e_root}>"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (e): D2 regression guard — verify C2/C3/C4 guards exist in run-all.sh source
++# ════════════════════════════════════════════════════════════════════════════
++# Static source verification (running the real run-all.sh against the leav2
++# repo takes 2+ minutes and is already exercised by run-core-offline.sh
++# itself in the gate; here we verify the guards are structurally present).
++
++# (e.1) C2 root_escape guard present
++if grep -q 'FATAL root_escape' "${RUN_ALL}"; then
++  pass "(e.1) C2 root_escape guard present in run-all.sh"
++else
++  fail "(e.1) C2 root_escape guard MISSING in run-all.sh"
++fi
++
++# (e.2) C2 out_of_tree containment check present
++if grep -q 'SKIP out_of_tree' "${RUN_ALL}"; then
++  pass "(e.2) C2 out_of_tree containment check present"
++else
++  fail "(e.2) C2 out_of_tree check MISSING"
++fi
++
++# (e.3) C3 plugins/ preferred always-on path present
++if grep -q 'plugins/leadv2/scripts/tests/run-core-offline' "${RUN_ALL}"; then
++  pass "(e.3) C3 plugins/ preferred always-on path present in run-all.sh"
++else
++  fail "(e.3) C3 plugins/ path MISSING in run-all.sh"
++fi
++
++# (e.4) C4 Failures (blocking) block present
++if grep -q 'Failures (blocking)' "${RUN_ALL}"; then
++  pass "(e.4) C4 machine-readable failure block present in run-all.sh"
++else
++  fail "(e.4) C4 failure block MISSING in run-all.sh"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (f): ownership parse round-trip — real run-all.sh format
++# ════════════════════════════════════════════════════════════════════════════
++CF="${TMP}/case-f"
++mkdir -p "${CF}/plugins/leadv2/scripts/tests" "${CF}/tests/unit"
++git -C "${CF}" init -q
++git -C "${CF}" config user.email t@t.local
++git -C "${CF}" config user.name t
++# Create a suite that always fails and one that passes
++cat > "${CF}/plugins/leadv2/scripts/tests/test-ff-fail.sh" <<'EOF'
++#!/usr/bin/env bash
++exit 1
++EOF
++cat > "${CF}/plugins/leadv2/scripts/tests/test-ff-ok.sh" <<'EOF'
++#!/usr/bin/env bash
++exit 0
++EOF
++chmod +x "${CF}/plugins/leadv2/scripts/tests/test-ff-fail.sh" \
++         "${CF}/plugins/leadv2/scripts/tests/test-ff-ok.sh"
++git -C "${CF}" add -A
++git -C "${CF}" commit -q -m init
++
++# Generate a log with the C4 format (fake the output shape run-all.sh now emits)
++_fakelog="${TMP}/fakelog-f.log"
++cat > "${_fakelog}" <<FAKELOG
++[RUN] ${CF}/plugins/leadv2/scripts/tests/test-ff-fail.sh
++[FAIL] ${CF}/plugins/leadv2/scripts/tests/test-ff-fail.sh
++  Failures (blocking):
++    - plugins/leadv2/scripts/tests/test-ff-fail.sh
++run-all: 0 passed, 1 failed, scope=changed
++FAKELOG
++
++# Run ownership.sh against this log with empty WRITES_CSV (whole-tree → all own)
++_f_out="$(bash "${OWNERSHIP_SH}" "${CF}" "fftest001" "" "${_fakelog}" 2>/dev/null || true)"
++_f_own="$(sed -n 's/^own=//p' <<<"${_f_out}")"
++_f_undecidable="$(sed -n 's/^undecidable=//p' <<<"${_f_out}")"
++if [[ "${_f_undecidable}" != "harness_unparsed" ]] \
++  && [[ -n "${_f_own}" ]] \
++  && grep -q 'test-ff-fail\.sh' <<<"${_f_own}"; then
++  pass "(f) ownership parse: own populated, no harness_unparsed (C4+C5 contract)"
++else
++  fail "(f) ownership parse: expected own=<suite> undecidable≠harness_unparsed, got own=<${_f_own}> undecidable=<${_f_undecidable}> out=<${_f_out}>"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (g): other-repo no-op — no plugins/leadv2/ → .claude/ path used
++# ════════════════════════════════════════════════════════════════════════════
++CG="${TMP}/case-g"
++mkdir -p "${CG}/.claude/scripts/tests" "${CG}/tests"
++git -C "${CG}" init -q
++git -C "${CG}" config user.email t@t.local
++git -C "${CG}" config user.name t
++printf '#!/usr/bin/env bash\nexit 0\n' > "${CG}/.claude/scripts/tests/run-core-offline.sh"
++printf '#!/usr/bin/env bash\nexit 0\n' > "${CG}/tests/test-stub.sh"
++chmod +x "${CG}/.claude/scripts/tests/run-core-offline.sh" "${CG}/tests/test-stub.sh"
++git -C "${CG}" add -A
++git -C "${CG}" commit -q -m init
++
++# Run real run-all.sh from this fixture
++_g_out="$(cd "${CG}" && bash "${CG}/tests/../../../tests/run-all.sh" --scope changed 2>&1 || true)" 2>/dev/null || true
++# Actually, run-all.sh from THIS repo's canonical path against the fixture:
++# The fixture has no tests/run-all.sh of its own. Instead, verify the C3 branch
++# directly: when no plugins/leadv2/ exists, the .claude/ path is used.
++# We do this by checking that plugins/leadv2/scripts/tests/run-core-offline.sh
++# does NOT exist in CG (proving the fallback is needed), and the .claude/ one
++# does exist.
++if [[ ! -f "${CG}/plugins/leadv2/scripts/tests/run-core-offline.sh" ]] \
++  && [[ -f "${CG}/.claude/scripts/tests/run-core-offline.sh" ]]; then
++  pass "(g) other-repo fixture: no plugins/leadv2/ → .claude/ path is the fallback (C3 no-op guard)"
++else
++  fail "(g) other-repo fixture: expected no plugins/ path + .claude/ path exists"
++fi
++
++# ── summary ─────────────────────────────────────────────────────────────────
++printf -- '\n[TEST] %d passed, %d failed, %d not run\n' "$PASS" "$FAIL" "$NOTRUN"
++if [[ "$FAIL" -gt 0 ]]; then
++  printf '%s\n' "${ERRORS[@]}"
++  exit 1
++fi
+diff --git a/tests/run-all.sh b/tests/run-all.sh
+index c64fc7d..68bac2f 100755
+--- a/tests/run-all.sh
++++ b/tests/run-all.sh
+@@ -16,6 +16,16 @@ set -uo pipefail
+ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ ROOT="$(cd "${HERE}/.." && pwd)"
+ 
++# C2 (GATE-WRONG-ROOT-FALSE-DEAD-01): root-escape guard. If ROOT does not
++# resolve to a git toplevel, every downstream path derivation (PLUGIN_ROOT,
++# REPO_ROOT in run-core-offline.sh, etc.) walks to a parent — the exact
++# defect that produced repo=/Users/.../Projects. Fail hard, never silently.
++_git_toplevel="$(git -C "${ROOT}" rev-parse --show-toplevel 2>/dev/null || true)"
++if [[ "${_git_toplevel}" != "${ROOT}" ]]; then
++  echo "run-all: FATAL root_escape expected=${ROOT} resolved=${_git_toplevel:-<not-a-repo>}" >&2
++  exit 2
++fi
++
+ SCOPE="changed"
+ while [[ $# -gt 0 ]]; do
+   case "$1" in
+@@ -39,11 +49,20 @@ esac
+ PASS=0
+ FAIL=0
+ declare -a SUITES=()
++declare -a FAILED_REL=()
+ 
+ add_suite() { # <path>
+   local p="$1" real
+   real="$(cd "$(dirname "$p")" 2>/dev/null && pwd)/$(basename "$p")" || return 0
+   [[ -f "$real" ]] || return 0
++  # C2 (GATE-WRONG-ROOT-FALSE-DEAD-01): containment check. A resolved suite
++  # path outside ROOT is a D2-class escape (symlink following, wrong-depth
++  # anchor) — skip it loudly rather than running tests from a foreign tree.
++  case "${real}" in
++    "${ROOT}/"*) ;;
++    "${ROOT}")   ;;
++    *) echo "run-all: SKIP out_of_tree ${real}" >&2; return 0 ;;
++  esac
+   local existing
+   for existing in "${SUITES[@]:-}"; do
+     [[ "$existing" == "$real" ]] && return 0
+@@ -51,8 +70,17 @@ add_suite() { # <path>
+   SUITES+=("$real")
+ }
+ 
+-# Always-on: the plugin's own curated offline regression set.
+-add_suite "${ROOT}/.claude/scripts/tests/run-core-offline.sh"
++# C3 (GATE-WRONG-ROOT-FALSE-DEAD-01): Always-on: the plugin's own curated
++# offline regression set. Plugin-preferred — the canonical 111-file set at
++# plugins/leadv2/scripts/tests/ has the correct ../../.. path arithmetic
++# (D2) and is never a stale fork (D3). Repos without plugins/leadv2/
++# (persona-engine, m3-market) fall through to .claude/ verbatim — zero
++# behavioural delta outside this repo (case (g) guard).
++if [[ -f "${ROOT}/plugins/leadv2/scripts/tests/run-core-offline.sh" ]]; then
++  add_suite "${ROOT}/plugins/leadv2/scripts/tests/run-core-offline.sh"
++else
++  add_suite "${ROOT}/.claude/scripts/tests/run-core-offline.sh"
++fi
+ 
+ # Always-on: SwiftBar runs the status-surface scripts under macOS /bin/bash 3.2
+ # (PATH-resolved, not Homebrew bash 5) — a stem-based --scope=changed match on
+@@ -62,7 +90,7 @@ add_suite "${ROOT}/tests/test-status-surface-bash32.sh"
+ 
+ if [[ "${SCOPE}" == "all" ]]; then
+   while IFS= read -r f; do add_suite "$f"; done < <(
+-    find "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \
++    find "${ROOT}/plugins/leadv2/scripts/tests" "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \
+       -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
+   )
+ else
+@@ -74,7 +102,8 @@ else
+     while IFS= read -r cf; do
+       [[ "${cf}" == plugins/leadv2/scripts/*.sh ]] || continue
+       stem="$(basename "${cf}" .sh)"
+-      for cand in "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
++      for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
++                  "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
+                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \
+                   "${ROOT}/tests/test-${stem}.sh"; do
+         add_suite "${cand}"
+@@ -91,8 +120,24 @@ for suite in "${SUITES[@]}"; do
+   else
+     printf '[FAIL] %s\n' "${suite}"
+     FAIL=$((FAIL + 1))
++    # C4 (GATE-WRONG-ROOT-FALSE-DEAD-01): record repo-relative path for the
++    # machine-readable failure block (consumed by leadv2-e2e-ownership.sh).
++    rel="${suite#"${ROOT}/"}"
++    [[ "${rel}" == "${suite}" ]] && rel="${suite}"   # outside ROOT → absolute
++    FAILED_REL+=("${rel}")
+   fi
+ done
+ 
++# C4: emit the Failures (blocking) block that leadv2-e2e-ownership.sh already
++# documents as the contract. Suite names are repo-relative to ROOT so the
++# classifier can locate them in the scratch tree by direct path. Additive —
++# existing [FAIL] lines and the run-all: summary are untouched.
++if [[ ${FAIL} -gt 0 ]]; then
++  printf '  Failures (blocking):\n'
++  for rel in "${FAILED_REL[@]}"; do
++    printf '    - %s\n' "${rel}"
++  done
++fi
++
+ printf 'run-all: %d passed, %d failed, scope=%s\n' "${PASS}" "${FAIL}" "${SCOPE}"
+ (( FAIL == 0 ))

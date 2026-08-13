@@ -1,0 +1,37 @@
+- 2026-08-05T01:11:37Z [decision] dispatch_classified task=604ed16d class=product reason=conservative_default kind=unknown
+- 2026-08-05T01:12:57Z [decision] dispatch_classified task=604ed16d class=product reason=conservative_default kind=unknown
+- 2026-08-05T01:17:18Z [decision] architect_prepass task=604ed16d status=ran artifact=docs/handoff/dispatch-604ed16d/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-604ed16d-architect/architect.full.md
+- 2026-08-05T01:17:18Z [decision] lane_writes task=604ed16d source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py,plugins/leadv2/config/leadv2-routing.yaml,plugins/leadv2/scripts/tests/test-dispatch-arm-vocabulary.sh
+- 2026-08-05T01:17:18Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-05T01:17:18Z [decision] kimi_skipped reason=chars_over task=604ed16d chars=23917 writes=0 prepass=1
+- 2026-08-05T01:17:18Z [decision] candidate_chain task=604ed16d arms=glm,codex,sonnet
+- 2026-08-05T01:17:21Z [decision] worker_spawned by=router model=glm task=604ed16d attempt=604ed16d-1785892369-17907 handle=260805-041719-604ed16d-5cd6
+- 2026-08-05T01:17:21Z [decision] mission-version task=- sig=604ed16d rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-05T01:17:21Z [decision] product_close task=604ed16d status=spawned author=glm
+- 2026-08-05T01:17:21Z [decision] route_resolved by=router router=v1 model=glm task=604ed16d rule=none reason=no_routing_yaml
+- 2026-08-05T01:17:21Z [decision] product_close task=604ed16d status=waiting_worker author=glm handle=260805-041719-604ed16d-5cd6 waited=0s
+- 2026-08-05T01:17:21Z [decision] lane_worktree_left task=604ed16d founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/604ed16d
+- 2026-08-05T01:22:28Z [decision] product_close task=604ed16d status=waiting_worker author=glm handle=260805-041719-604ed16d-5cd6 waited=306s
+- 2026-08-05T01:27:34Z [decision] product_close task=604ed16d status=waiting_worker author=glm handle=260805-041719-604ed16d-5cd6 waited=613s
+- 2026-08-05T01:32:36Z [decision] product_close task=604ed16d status=waiting_worker author=glm handle=260805-041719-604ed16d-5cd6 waited=915s
+- 2026-08-05T01:37:17Z [decision] review_gate task=604ed16d status=blocked reason=arm_produced_nothing terminal=no_work cause=arm_produced_nothing arm=glm
+- 2026-08-05T01:37:17Z [decision] dispatch_terminal task=604ed16d terminal=no_work cause=arm_produced_nothing
+- 2026-08-05T01:37:17Z [decision] arm_advance task=604ed16d from=glm to=codex reason=arm_produced_nothing
+- 2026-08-05T01:37:19Z [decision] dispatch_terminal_dedup task=604ed16d attempted=no_work reason=terminal_already_recorded
+- 2026-08-05T01:37:20Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=1s
+- 2026-08-05T01:42:25Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=306s
+- 2026-08-05T01:47:27Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=608s
+- 2026-08-05T01:52:30Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=911s
+- 2026-08-05T01:57:32Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=1213s
+- 2026-08-05T02:02:35Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=1516s
+- 2026-08-05T02:07:37Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=1818s
+- 2026-08-05T02:12:40Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=2121s
+- 2026-08-05T02:17:43Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=2424s
+- 2026-08-05T02:22:46Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=2727s
+- 2026-08-05T02:27:48Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=3029s
+- 2026-08-05T02:32:50Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=3331s
+- 2026-08-05T02:37:52Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=3633s
+- 2026-08-05T02:42:54Z [decision] product_close task=604ed16d status=waiting_worker author=codex handle=task-msff2wyu-zvt3vk waited=3935s
+- 2026-08-05T02:47:19Z [decision] review_gate task=604ed16d status=blocked reason=worker_timeout terminal=dead cause=timeout
+- 2026-08-05T02:47:19Z [decision] dispatch_terminal task=604ed16d terminal=dead cause=timeout
+- 2026-08-05T02:47:19Z [decision] dispatch_terminal_dedup task=604ed16d attempted=dead reason=terminal_already_recorded

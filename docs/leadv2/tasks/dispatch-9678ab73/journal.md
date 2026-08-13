@@ -1,0 +1,26 @@
+- 2026-08-02T17:18:26Z [decision] dispatch_classified task=9678ab73 class=product reason=conservative_default kind=backend
+- 2026-08-02T17:18:26Z [decision] architect_prepass task=9678ab73 status=failed reason=failed_rc_1 rc=1
+- 2026-08-02T17:18:26Z [decision] architect_prepass task=9678ab73 status=retrying attempt=1/2 reason=failed_rc_1
+- 2026-08-02T17:18:27Z [decision] architect_prepass task=9678ab73 status=failed reason=failed_rc_1 rc=1
+- 2026-08-02T17:18:27Z [decision] architect_prepass task=9678ab73 status=retrying attempt=2/2 reason=failed_rc_1
+- 2026-08-02T17:18:27Z [decision] architect_prepass task=9678ab73 status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-02T17:18:28Z [decision] dispatch_terminal task=9678ab73 terminal=parked cause=no_design_after_2_attempts
+- 2026-08-02T17:19:02Z [decision] dispatch_classified task=9678ab73 class=product reason=conservative_default kind=backend
+- 2026-08-02T17:21:09Z [decision] dispatch_classified task=9678ab73 class=product reason=conservative_default kind=backend
+- 2026-08-02T17:24:53Z [decision] architect_prepass task=9678ab73 status=ran artifact=docs/handoff/dispatch-9678ab73/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-9678ab73-architect/architect.full.md
+- 2026-08-02T17:24:54Z [decision] lane_writes task=9678ab73 source=prepass writes=plugins/leadv2/scripts/leadv2-status-surface.10s.sh,plugins/leadv2/scripts/leadv2-status-surface.sh,plugins/leadv2/scripts/leadv2-status-render.sh,plugins/leadv2/scripts/leadv2-status-collector.sh
+- 2026-08-02T17:24:55Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-02T17:24:56Z [decision] dispatch_terminal task=9678ab73 terminal=dead cause=lock_timeout
+- 2026-08-02T17:25:24Z [decision] dispatch_classified task=9678ab73 class=product reason=conservative_default kind=backend
+- 2026-08-02T17:25:24Z [decision] architect_prepass task=9678ab73 status=cached reason=sig_match artifact=docs/handoff/dispatch-9678ab73/architect-prepass.md
+- 2026-08-02T17:25:25Z [decision] lane_writes task=9678ab73 source=prepass writes=plugins/leadv2/scripts/leadv2-status-surface.10s.sh,plugins/leadv2/scripts/leadv2-status-surface.sh,plugins/leadv2/scripts/leadv2-status-render.sh,plugins/leadv2/scripts/leadv2-status-collector.sh
+- 2026-08-02T17:25:25Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-02T17:25:26Z [decision] arm_refused by=router model=glm task=9678ab73 reason=glm_refused_quota_gate
+- 2026-08-02T17:25:34Z [decision] worker_spawned by=router model=codex task=9678ab73 attempt=9678ab73-1785691523-12673 handle=task-msc2mr7m-2jby4f
+- 2026-08-02T17:25:34Z [decision] mission-version task=- sig=9678ab73 rev=? head="Product implementation task dispatch-9678ab73. Implement ONLY the scoped design below; pre"
+- 2026-08-02T17:25:35Z [decision] product_close task=9678ab73 status=spawned author=codex
+- 2026-08-02T17:25:35Z [decision] route_resolved by=router router=v1 model=codex task=9678ab73 rule=none reason=no_routing_yaml
+- 2026-08-02T17:25:35Z [decision] lane_worktree_left task=9678ab73 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/9678ab73
+- 2026-08-02T17:28:44Z [decision] e2e_gate task=9678ab73 status=ran verdict=fail rc=1
+- 2026-08-02T17:28:45Z [decision] dispatch_terminal task=9678ab73 terminal=dead cause=e2e_regression
+- 2026-08-02T17:28:45Z [decision] dispatch_terminal_dedup task=9678ab73 attempted=dead reason=terminal_already_recorded

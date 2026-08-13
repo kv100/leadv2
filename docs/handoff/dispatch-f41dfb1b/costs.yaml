@@ -1,0 +1,12 @@
+# leadv2 cost telemetry — appended by claude-subsession.sh
+- role: developer
+  model: sonnet
+  provider: claude
+  session_id: 5b907999-90b5-40a1-832c-4df91db69111
+  input_tokens: 0
+  output_tokens: 0
+  cost_usd: 0.000000
+  duration_sec: 0
+  timestamp: 2026-08-07T10:13:39Z
+  cache_hit_rate: null
+  prompt_prefix_checksum: bdcff1b9f5160c35e91d895d539c4630

@@ -1,0 +1,74 @@
+# leadv2 cost telemetry — appended by claude-subsession.sh
+- role: critic
+  model: sonnet
+  provider: claude
+  session_id: e73d001c-3962-447b-b1d3-76fd5e358df8
+  input_tokens: 28
+  output_tokens: 10323
+  cost_usd: 0.154929
+  duration_sec: 234
+  timestamp: 2026-08-13T11:01:09Z
+  cache_hit_rate: 0.92
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- event: empty_session
+  role: critic
+  model: sonnet
+  word_count:       46
+  timestamp: 2026-08-13T11:01:10Z- role: critic
+  model: opus
+  provider: claude
+  session_id: 3662edf7-d99d-4f28-ba27-e8352b874ae3
+  input_tokens: 35
+  output_tokens: 11756
+  cost_usd: 0.882225
+  duration_sec: 305
+  timestamp: 2026-08-13T11:02:20Z
+  cache_hit_rate: 0.9311
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: opus
+  provider: claude
+  session_id: da59bf82-792d-427d-abf6-5d07a65e71db
+  input_tokens: 18
+  output_tokens: 4952
+  cost_usd: 0.371670
+  duration_sec: 89
+  timestamp: 2026-08-13T11:03:50Z
+  cache_hit_rate: 0.9231
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: sonnet
+  provider: claude
+  session_id: 5549860c-57ea-46b6-a52a-d55c6b2c36bb
+  input_tokens: 24
+  output_tokens: 9098
+  cost_usd: 0.136542
+  duration_sec: 165
+  timestamp: 2026-08-13T11:29:00Z
+  cache_hit_rate: 0.9411
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- event: empty_session
+  role: critic
+  model: sonnet
+  word_count:       40
+  timestamp: 2026-08-13T11:29:00Z- role: critic
+  model: opus
+  provider: claude
+  session_id: 14d683e9-14eb-43b8-9aa8-1472db617d4d
+  input_tokens: 19
+  output_tokens: 8268
+  cost_usd: 0.620385
+  duration_sec: 208
+  timestamp: 2026-08-13T11:29:43Z
+  cache_hit_rate: 0.918
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: opus
+  provider: claude
+  session_id: 4c3afa54-291d-4388-9451-df6d33a615ac
+  input_tokens: 23
+  output_tokens: 12376
+  cost_usd: 0.928545
+  duration_sec: 235
+  timestamp: 2026-08-13T11:33:39Z
+  cache_hit_rate: 0.9333
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- event: empty_session
+  role: critic
+  model: opus
+  word_count:       46
+  timestamp: 2026-08-13T11:33:39Z

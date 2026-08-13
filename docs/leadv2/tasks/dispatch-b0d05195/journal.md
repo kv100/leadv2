@@ -1,0 +1,17 @@
+- 2026-08-13T10:57:32Z [decision] dispatch_task_bound task=b0d05195 founder_task=E2E-GATE-ARCH-01
+- 2026-08-13T10:57:33Z [decision] dispatch_classified task=b0d05195 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-13T10:57:35Z [decision] phase_precondition_warn task=b0d05195 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-13T10:57:35Z [decision] architect_prepass task=b0d05195 status=disabled reason=kill_switch
+- 2026-08-13T10:57:36Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-13T10:57:36Z [decision] dispatchable_arms_read_failed task=b0d05195 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-13T10:57:36Z [decision] routing_config_degraded task=b0d05195 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-13T10:57:37Z [decision] kimi_skipped reason=writes_over task=b0d05195 chars=1786 writes=3 prepass=0
+- 2026-08-13T10:57:37Z [decision] candidate_chain task=b0d05195 arms=glm,codex,sonnet
+- 2026-08-13T10:57:47Z [decision] worker_spawned by=router model=glm task=b0d05195 attempt=b0d05195-1786618646-11106 handle=260813-135746-E2E-GATE-ARCH-01-53f4
+- 2026-08-13T10:57:47Z [decision] mission-version task=E2E-GATE-ARCH-01 sig=b0d05195 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-13T10:58:17Z [decision] product_close task=b0d05195 status=spawned author=glm
+- 2026-08-13T10:58:17Z [decision] route_resolved by=router router=v1 model=glm task=b0d05195 rule=none reason=no_routing_yaml
+- 2026-08-13T10:58:17Z [decision] lane_worktree_left task=b0d05195 founder_task=E2E-GATE-ARCH-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-ARCH-01
+- 2026-08-13T11:17:54Z [decision] e2e_gate task=b0d05195 status=ran verdict=fail rc=1
+- 2026-08-13T11:17:56Z [decision] dispatch_terminal task=b0d05195 terminal=dead cause=e2e_regression
+- 2026-08-13T11:17:57Z [decision] dispatch_terminal_dedup task=b0d05195 attempted=dead reason=terminal_already_recorded

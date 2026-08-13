@@ -1,0 +1,17 @@
+# REVIEW-BODY-PERSIST-01 — a paid adversarial review's BODY must land next to its verdict counts
+
+Repo: ~/Projects/leadv2 (canonical plugin). Incident 2026-08-03 (lane 36ca3e70): the Opus critic ran to completion (review-opus.err: `cost recorded: critic/opus in=40 out=16109 usd=1.2`), review-gate.md captured the verdict COUNTS (1 critical / 3 high / 2 medium / 3 low) and the lane was killed dead/review_verdict_fail — but review-opus.md contained ONLY the label line `LABEL=critic-dispatch-36ca3e70-review-... SESSION_ID=...` (97 bytes, zero findings). A blocking verdict whose reasons are unreadable forces a blind fix round or a discard — the review money is spent and the information is lost.
+
+MECHANISM AREA (verified pointers, diagnose the exact drop before fixing):
+- leadv2-dispatch-product-close.sh run_reviewer_arm(): the opus/sonnet branch (~:1255-1262) runs `claude-subsession.sh --role critic --model <arm> --mission-file ... --wait > review_out 2> review_err`. The 97-byte label-only file means the subsession's STDOUT carried only its label/session header while the actual review text stayed in the subsession's own transcript/deliverable channel. 16109 output tokens were produced and never captured.
+- Compare with codex/glm/kimi branches, which capture via explicit --out/file contracts.
+
+REQUIREMENTS:
+1. DIAGNOSE FIRST with a live reproduction: run claude-subsession.sh --role critic with a trivial mission and --wait; show in the report exactly what lands on stdout vs where the full final message goes (transcript path? deliverable file? --out flag support?). Do not fix before the drop point is proven.
+2. FIX so the FULL review body lands in review-<arm>.md for the subsession arms (opus/sonnet): prefer an explicit file contract if claude-subsession.sh supports one (--out / deliverable path); else extract the final assistant message from the subsession transcript after --wait returns and write it to review_out (label line may stay as a header). The REVIEW_VERDICT:/REVIEW_FINDINGS: contract lines must be in the body as before — parse_review_verdict() must keep working unchanged.
+3. GUARD: after any reviewer arm returns rc=0, if review_out lacks a REVIEW_VERDICT: line OR is under a sanity floor (e.g. <300 bytes) while the arm's err/cost evidence shows real output was produced, classify the arm as failed (existing classify_arm_failure path) instead of letting a verdict-less/body-less file flow onward — a paid review with a lost body must surface as a review-arm failure, not as silence.
+4. NON-GOALS: no changes to codex/glm/kimi review branches beyond the shared guard in (3); no changes to verdict parsing/severity policy; no changes to claude-subsession.sh's non-review behavior (if it needs an --out flag added, keep it additive and default-off).
+5. TESTS: stubbed subsession binary: (a) stub emitting label-only stdout while writing full body to its transcript/deliverable location → review_out ends up with the full body incl. contract lines; (b) body genuinely absent everywhere → arm classified failed, not silent pass-through; (c) codex/glm-branch regression: existing behavior unchanged (reuse existing suite patterns). Register in run-core-offline.sh if a new suite file is created.
+
+ACCEPTANCE: bash -n (bash5 + /bin/bash 3.2); focused tests green; run-core-offline.sh green vs current-main baseline (32 as of 9158921). Report: diagnosis evidence + per-requirement status. Do NOT commit.
+Rollback: git checkout of touched files.

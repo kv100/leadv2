@@ -1,0 +1,16 @@
+- 2026-08-04T17:04:59Z [decision] dispatch_classified task=98705964 class=product reason=conservative_default kind=unknown
+- 2026-08-04T17:10:01Z [decision] architect_prepass task=98705964 status=ran artifact=docs/handoff/dispatch-98705964/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-98705964-architect/architect.full.md
+- 2026-08-04T17:10:01Z [decision] lane_writes task=98705964 source=prepass writes=plugins/leadv2/scripts/leadv2-status-surface.sh,plugins/leadv2/scripts/leadv2-status-surface.5s.sh,tests/test-status-surface-single-lead.sh,tests/test-status-surface-bash32.sh,tests/test-status-surface-parity.sh
+- 2026-08-04T17:10:02Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T17:10:02Z [decision] kimi_skipped reason=chars_over task=98705964 chars=25584 writes=0 prepass=1
+- 2026-08-04T17:10:02Z [decision] arm_excluded by=router model=glm task=98705964 reason=operator_excluded
+- 2026-08-04T17:10:02Z [decision] arm_excluded by=router model=codex task=98705964 reason=operator_excluded
+- 2026-08-04T17:10:02Z [decision] candidate_chain task=98705964 arms=sonnet
+- 2026-08-04T17:10:02Z [decision] worker_spawned by=router model=sonnet task=98705964 attempt=98705964-1785863096-78878 handle=PID=65874 LABEL=developer-dispatch-98705964-1785863402 SESSION_ID=01308452-419a-4ac6-977e-11b6e292e82c STREAM=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-98705964/developer.stream.jsonl
+- 2026-08-04T17:10:03Z [decision] mission-version task=- sig=98705964 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-04T17:10:03Z [decision] product_close task=98705964 status=spawned author=sonnet
+- 2026-08-04T17:10:03Z [decision] route_resolved by=router router=v1 model=sonnet task=98705964 rule=none reason=no_routing_yaml
+- 2026-08-04T17:10:03Z [decision] lane_worktree_left task=98705964 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/98705964
+- 2026-08-04T17:52:57Z [decision] e2e_gate task=98705964 status=ran verdict=fail rc=1
+- 2026-08-04T17:52:58Z [decision] dispatch_terminal task=98705964 terminal=dead cause=e2e_regression
+- 2026-08-04T17:52:58Z [decision] dispatch_terminal_dedup task=98705964 attempted=dead reason=terminal_already_recorded

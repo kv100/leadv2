@@ -1,0 +1,1 @@
+- 2026-08-07T11:52:24Z [decision] lane_placement_refused task=4e432dec reason=lane_is_live ref=be4c2e83 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/be4c2e83 probe_id=dispatch-be4c2e83 verdict=alive age=1

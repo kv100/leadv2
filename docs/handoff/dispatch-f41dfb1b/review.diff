@@ -1,0 +1,49 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index 7f3023f..66d2f5a 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -2736,7 +2736,9 @@ Usage:
+                 Exit codes: 0 spawned/resolved, 2 duplicate task-sig, 3 arm=opus (lead
+                 judgment, not auto-dispatched), 4 spawn failed (retryable -- a failed
+                 spawn or --no-spawn never leaves a blocking ledger row behind), 5 placement
+-                refused (nonexistent/foreign-repo/live lane — no ledger row, no spawn).
++                refused (nonexistent/foreign-repo/live lane — no ledger row, no spawn),
++                6 terminal already recorded (this task-sig already reached landed|dead —
++                no bypass; change the mission text for a fresh task-sig instead).
+   $SCRIPT_NAME record-review --diff-hash <h> --verdict <PASS|FAIL|PASS_WITH_NITS>
+                 [--reviewer <s>] [--run-id <s>]
+                 Record a Codex review verdict; refuse a duplicate diff-hash (ATOMIC).
+@@ -2949,6 +2951,33 @@ cmd_resolve() {
+   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
+     log_err "signature computation failed"; exit 1
+   fi
++  # DISPATCH-TERMINAL-PREFLIGHT-01: a re-dispatch of a sig8 whose TRUE terminal
++  # (landed|dead) is already recorded must never look like a normal run that did
++  # nothing. Before this fix, dispatch_reserve below only guarded the RESERVATION
++  # ledger (in-flight pending/confirmed rows, freed once liveness proves the worker
++  # dead) -- it never consulted this SEPARATE terminal ledger, so a re-dispatch sailed
++  # through reserve/confirm/spawn, then lost the write-once race on its OWN outcome
++  # write (leadv2-dispatch-product-close.sh's _dl_note, both its explicit call and its
++  # EXIT-trap retry) and exited 0 with no worker output, no diff, no error -- from the
++  # outside indistinguishable from "ran and changed nothing" (2026-08-07 repro:
++  # dispatch_terminal_dedup task=<sig8> attempted=dead reason=terminal_already_recorded
++  # x2, rc=0). Refusing here, before any reservation/spawn, is the write-once ledger's
++  # own stated design (doc block item 8 above: "--force is, by design, never permitted
++  # for dedup") applied consistently to the terminal ledger, not just the reservation
++  # one -- and matches _resolve_pinned_placement's own refusal, which already runs at
++  # this same point in cmd_resolve ("no ledger row, no terminal row, no reservation, no
++  # spawn can precede a refusal", see that function's doc comment below).
++  if [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]]; then
++    local _prior_terminal
++    _prior_terminal="$(PROJECT_ROOT="${LEDGER_REPO_ROOT}" LEADV2_PROJECT_ROOT="${LEDGER_REPO_ROOT}" \
++      bash "${LEDGER_BIN}" show "${sig8}" 2>/dev/null)"
++    if [[ -n "${_prior_terminal}" ]]; then
++      emit decision "dispatch_refused_terminal_exists task=${sig8} ${_prior_terminal}"
++      printf '[leadv2-dispatch-code] REFUSE dispatch: task=%s already has a recorded terminal (%s) -- this mission signature already reached a final outcome; re-dispatching it is a no-op by design (write-once terminal ledger, same "never permitted for dedup" rule the reservation ledger uses). If this re-dispatch produced a genuinely new diff, that is a SEPARATE fact from this refusal -- diffs are compared by the review-ledger diff-hash dedup, not here. If new work is actually needed, change the mission text (a different sig8 is a fresh task); there is no bypass flag for this refusal by design.\n' \
++        "${sig8}" "${_prior_terminal}" >&2
++      exit 6
++    fi
++  fi
+   # LANE-PLACEMENT-01: resolve an explicit --resume-lane/--worktree pin BEFORE the ensure
+   # block, BEFORE record_lane_start_sha, BEFORE any reservation/terminal/spawn.  Refuses
+   # (exit 5) on: nonexistent path, not-a-worktree, foreign repo, live-claimed lane.  No

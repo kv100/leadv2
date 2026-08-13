@@ -1,0 +1,487 @@
+diff --git a/.claude/worktrees/59ae8b51 b/.claude/worktrees/59ae8b51
+new file mode 160000
+index 0000000..7fd75df
+--- /dev/null
++++ b/.claude/worktrees/59ae8b51
+@@ -0,0 +1 @@
++Subproject commit 7fd75df1dd062c0fb514c6aa985caeee3b2c280d
+diff --git a/plugins/leadv2/config/leadv2-routing.yaml b/plugins/leadv2/config/leadv2-routing.yaml
+index 48420a9..4ac7b66 100644
+--- a/plugins/leadv2/config/leadv2-routing.yaml
++++ b/plugins/leadv2/config/leadv2-routing.yaml
+@@ -43,13 +43,10 @@ router_v2:
+   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
+   # Anthropic arms deliberately share the active Max x20 account bucket.
+   #
+-  # NOTE 2026-08-02: this list is NOT what the dispatcher selects from. The
+-  # ladder in leadv2-dispatch-code.sh is hardcoded `glm -> codex -> sonnet`, so
+-  # claude-haiku and claude-opus are declared here and UNREACHABLE, and fable is
+-  # not declared at all. Every provider also has more than one model (glm ≥2,
+-  # codex ≥3) and none of those are expressible here. Making this file the actual
+-  # source the ladder reads — with a per-model "when to use it and at what effort"
+-  # policy — is queued as its own task.
++  # NOTE 2026-08-02 (updated ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01): the dispatch
++  # order now comes from router.dispatch_ladder above. This arms list remains
++  # for advisory/quota-bucket purposes. The dispatcher builds candidate_arms
++  # from dispatch_ladder, not from this list.
+   arms:
+     - id: glm
+       channel: glm-coder.sh
+@@ -98,6 +95,51 @@ router_v2:
+ # sonnet_exceptions `safety_gate_publish_payments / when: protected_path` rule names:
+ # safety-gate, publish, payments. First yaml in the ordered lookup that carries this key wins.
+ router:
++  # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P1: the ordered dispatch ladder.
++  # dispatch-code.sh reads this list to build candidate_arms — it no longer
++  # carries a hardcoded fallback order. The resolver's primary arm starts the
++  # candidate list; every arm after it in this order is a fallback. Changing
++  # this list changes dispatch routing.
++  #
++  # Each entry:
++  #   id       — arm identifier used in the dispatch script's case/spawn logic
++  #   provider — the quota/lockout scope (one lockout record covers all arms
++  #              on the same provider)
++  #   model    — the model the arm dispatches
++  #   when     — task kinds this arm is eligible for (advisory; the resolver
++  #              decides the primary arm from glm_policy rules, this list
++  #              governs fallback eligibility)
++  #   effort   — effort tier for the arm's provider
++  dispatch_ladder:
++    - id: glm
++      provider: glm
++      model: glm-5.2
++      when: [all]
++      effort: standard
++    - id: kimi
++      provider: kimi
++      model: moonshotai/kimi-k3-free
++      when: [all]
++      effort: standard
++    - id: codex
++      provider: codex
++      model: gpt-5.6-terra
++      when: [all]
++      effort: standard
++    - id: sonnet
++      provider: anthropic
++      model: sonnet
++      when: [all]
++      effort: standard
++    # Architect-path models — expressed here so the config is the single
++    # source of truth, but never dispatched by dispatch-code.sh (the plan
++    # workflow uses fable directly via workflows/leadv2-plan.js).
++    - id: fable
++      provider: anthropic
++      model: fable
++      when: [architect, heavy]
++      effort: high
++      dispatch: false
+   glm_policy:
+     protected_path_patterns:
+       - "*safety-gate*"
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index 4bc65f3..36235a8 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -298,6 +298,13 @@ ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
+ # shellcheck source=leadv2-portable-lock.sh
+ source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
+ ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
++# ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
++# config (dispatching from inside the plugin repo itself), fall back to the
++# plugin's own canonical config so we do not log no_routing_yaml and route blind.
++if [[ ! -f "${ROUTING_YAML}" ]]; then
++  _plugin_routing_yaml="${SCRIPT_DIR}/../config/leadv2-routing.yaml"
++  [[ -f "${_plugin_routing_yaml}" ]] && ROUTING_YAML="${_plugin_routing_yaml}"
++fi
+ # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
+ JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
+ # T-o (SUPERVISOR-AUDIT-01): the terminal-state ledger CLI. ALWAYS invoked as a subprocess
+@@ -750,7 +757,129 @@ print(json.dumps({
+     }
+ }
+ 
+-# v2's sole dispatch composition: L1 -> L2 -> L3 -> L4.  Policy remains in
++# ── ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 ──────────────────────────────────────
++# P1: read the dispatch ladder from the routing YAML instead of hardcoding it.
++# P2: quota precheck that skips arms whose provider is locked out.
++# Both are fail-open: a missing/unreadable config or lockout record never blocks
++# an arm we could have used.
++
++# Global arrays populated by _load_dispatch_ladder().
++_LADDER_IDS=()
++_LADDER_PROVIDERS=()
++
++# Read the dispatch_ladder from router: in the routing YAML.
++# Populates _LADDER_IDS and _LADDER_PROVIDERS. Falls back to the legacy
++# hardcoded order (glm,kimi,codex,sonnet) if the YAML or key is absent.
++_load_dispatch_ladder() {
++  _LADDER_IDS=()
++  _LADDER_PROVIDERS=()
++  local _parsed
++  _parsed="$(python3 -c '
++import sys, yaml
++try:
++    d = yaml.safe_load(open(sys.argv[1])) or {}
++except Exception:
++    sys.exit(1)
++ladder = (d.get("router") or {}).get("dispatch_ladder") or []
++for e in ladder:
++    eid = e.get("id", "")
++    if not eid:
++        continue
++    if e.get("dispatch", True) is False:
++        continue
++    print(eid + "\t" + e.get("provider", eid))
++' "${ROUTING_YAML}" 2>/dev/null)" || _parsed=""
++  if [[ -n "${_parsed}" ]]; then
++    while IFS=$'\t' read -r _id _prov; do
++      _LADDER_IDS+=("${_id}")
++      _LADDER_PROVIDERS+=("${_prov}")
++    done <<< "${_parsed}"
++  fi
++  # Fallback: legacy hardcoded order.
++  if [[ ${#_LADDER_IDS[@]} -eq 0 ]]; then
++    _LADDER_IDS=(glm kimi codex sonnet)
++    _LADDER_PROVIDERS=(glm kimi codex anthropic)
++  fi
++}
++
++# Build candidate_arms from the ladder: the resolved arm and every arm after
++# it in ladder order. If the arm is not in the ladder, return the full ladder.
++_build_candidate_chain() {  # <arm> ; mutates candidate_arms
++  local _arm="$1" _i _found=0
++  candidate_arms=()
++  for _i in "${!_LADDER_IDS[@]}"; do
++    if [[ "${_found}" == "1" ]]; then
++      candidate_arms+=("${_LADDER_IDS[$_i]}")
++    elif [[ "${_LADDER_IDS[$_i]}" == "${_arm}" ]]; then
++      _found=1
++      candidate_arms+=("${_LADDER_IDS[$_i]}")
++    fi
++  done
++  [[ ${#candidate_arms[@]} -gt 0 ]] || { candidate_arms=("${_LADDER_IDS[@]}"); }
++}
++
++# Return the provider for a given arm id from the loaded ladder.
++_arm_provider() {  # <arm_id> -> provider string
++  local _arm="$1" _i
++  for _i in "${!_LADDER_IDS[@]}"; do
++    if [[ "${_LADDER_IDS[$_i]}" == "${_arm}" ]]; then
++      printf '%s' "${_LADDER_PROVIDERS[$_i]}"
++      return
++    fi
++  done
++  printf '%s' "${_arm}"
++}
++
++# P2: per-provider lockout record directory. Lives alongside the dispatch ledger.
++QUOTA_LOCKOUT_DIR="${LEADV2_QUOTA_LOCKOUT_DIR:-${DISPATCH_LEDGER_DIR}}"
++
++# Check whether a provider is currently locked out.
++# Returns 0 (available) or 1 (locked). A missing/unreadable record ALWAYS
++# means "not locked" — never fail closed.
++_quota_locked() {  # <provider> -> 0=available, 1=locked
++  local provider="$1" _lock_file _now_epoch _locked_until
++  _lock_file="${QUOTA_LOCKOUT_DIR}/quota-lockout-${provider}.json"
++  [[ -f "${_lock_file}" ]] || return 0
++  _now_epoch="$(date +%s 2>/dev/null || printf '0')"
++  _locked_until="$(python3 -c "
++import json, sys
++try:
++    d = json.load(open(sys.argv[1]))
++    print(d.get('locked_until_epoch', 0))
++except Exception:
++    print(0)
++" "${_lock_file}" 2>/dev/null)" || return 0
++  [[ "${_locked_until}" =~ ^[0-9]+$ ]] || return 0
++  (( _locked_until > _now_epoch )) || return 0
++  return 1
++}
++
++# Record a quota lockout for a provider.
++# <provider> <locked_until_iso> <source>
++_record_quota_lockout() {
++  local provider="$1" _iso="$2" _source="$3" _lock_file _epoch
++  _lock_file="${QUOTA_LOCKOUT_DIR}/quota-lockout-${provider}.json"
++  _epoch="$(python3 -c "
++import sys
++from datetime import datetime
++try:
++    dt = datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'))
++    print(int(dt.timestamp()))
++except Exception:
++    print(0)
++" "${_iso}" 2>/dev/null)" || return 0
++  [[ "${_epoch}" =~ ^[0-9]+$ && "${_epoch}" != "0" ]] || return 0
++  mkdir -p "${QUOTA_LOCKOUT_DIR}" 2>/dev/null || true
++  python3 -c "
++import json, sys
++d = {'provider': sys.argv[1], 'locked_until': sys.argv[2],
++     'locked_until_epoch': int(sys.argv[3]), 'source': sys.argv[4]}
++with open(sys.argv[5], 'w') as f:
++    json.dump(d, f)
++" "${provider}" "${_iso}" "${_epoch}" "${_source}" "${_lock_file}" 2>/dev/null || true
++}
++
++# ── end ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 ───────────────────────────────────
+ # router-v2's filter, not in this funnel.
+ resolve_v2_dispatch() {
+   local mission="$1" sig8="$2" class="$3" kind="$4" protected="$5" tmp out estimate allowed task_class rc
+@@ -2528,9 +2657,9 @@ confirmation-seeking; only for a decision you cannot make yourself."
+     exit 3
+   fi
+ 
+-  # A refusal is an admission signal, not a broken launcher.  Preserve the existing
+-  # fixed order while Part 0 is in force: the resolved arm is first, followed by
+-  # the remaining eligible arms in glm -> codex -> sonnet order.  A hard class
++  # A refusal is an admission signal, not a broken launcher.  The candidate
++  # chain follows the dispatch_ladder from the routing YAML (P1): the resolved
++  # arm is first, followed by every arm after it in ladder order.  A hard class
+   # exception resolving directly to sonnet therefore cannot escape back to GLM.
+   local -a candidate_arms attempted
+   if [[ "${router_label}" == "v2" ]]; then
+@@ -2538,13 +2667,9 @@ confirmation-seeking; only for a decision you cannot make yourself."
+     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
+     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
+   else
+-    case "${arm}" in
+-      # Kimi's presence is guarded below by _apply_kimi_admission.
+-      glm)   candidate_arms=(glm kimi codex sonnet) ;;
+-      codex) candidate_arms=(codex sonnet) ;;
+-      sonnet) candidate_arms=(sonnet) ;;
+-      *) log_err "unsupported resolved dispatch arm: ${arm}"; exit 1 ;;
+-    esac
++    _load_dispatch_ladder
++    _build_candidate_chain "${arm}"
++    [[ ${#candidate_arms[@]} -gt 0 ]] || { log_err "unsupported resolved dispatch arm: ${arm}"; exit 1; }
+     # T-q codex_quota_gate (SUPERVISOR-AUDIT-01 T-b): strip codex from the fixed
+     # glm->codex->sonnet fallback chain when the resolver's live codex-quota read
+     # is >= build_threshold_pct — an arm the resolver itself refuses to hand out
+@@ -2558,6 +2683,32 @@ confirmation-seeking; only for a decision you cannot make yourself."
+     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
+   fi
+ 
++  # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P2: skip arms whose provider is locked
++  # out before attempting to spawn. A per-provider lockout record
++  # (quota-lockout-<provider>.json in the ledger dir) carries locked_until_epoch.
++  # A missing/unreadable record means "not locked" — never fail closed. Each
++  # skip is journalled so a lead reading the journal sees WHY an arm was passed
++  # over.
++  if [[ ${#candidate_arms[@]} -gt 0 ]]; then
++    local -a _qpc_kept=()
++    local _qpc_arm _qpc_prov
++    for _qpc_arm in "${candidate_arms[@]}"; do
++      _qpc_prov="$(_arm_provider "${_qpc_arm}")"
++      if _quota_locked "${_qpc_prov}"; then
++        _qpc_kept+=("${_qpc_arm}")
++      else
++        emit decision "quota_precheck_skip model=${_qpc_arm} provider=${_qpc_prov} task=${sig8} reason=provider_quota_locked"
++      fi
++    done
++    if [[ ${#_qpc_kept[@]} -eq 0 ]]; then
++      emit decision "dispatch_rolled_back reason=all_arms_quota_locked task=${sig8}"
++      log_err "every candidate arm is quota-locked; refusing to dispatch"
++      _dl_note "${sig8}" refused all_arms_quota_locked "" "${founder_task_id}"
++      exit 4
++    fi
++    candidate_arms=("${_qpc_kept[@]}")
++  fi
++
+   # ROUTER-QUOTA-DRIVEN-01 (T6): filter candidate_arms by LIVE quota truth
+   # BEFORE the operator-override block below. An arm with zero usable headroom
+   # (leadv2-quota-read.py T1 usable_now = remaining_pct / max(hours_to_reset,1))
+@@ -2727,12 +2878,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
+           if [[ -n "${_rr_arm}" && "${_rr_arm}" != "${arm}" ]]; then
+             arm="${_rr_arm}"; rule="${_rr_rule}"; reason="${_rr_reason}"
+             emit decision "arm_reresolved by=router trigger=glm_lock_busy arm=${arm} rule=${rule} reason=${reason} task=${sig8} router=${router_label}"
+-            case "${arm}" in
+-              glm)   candidate_arms=(glm kimi codex sonnet) ;;
+-              codex) candidate_arms=(codex sonnet) ;;
+-              sonnet) candidate_arms=(sonnet) ;;
+-              *) : ;;  # unknown arm: leave the chain; loop continues as-is
+-            esac
++            _build_candidate_chain "${arm}"
+             _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
+             _reenter=1
+             break   # break the for; outer while re-enters over the rebuilt chain
+diff --git a/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh b/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
+index 8399998..335863f 100644
+--- a/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
++++ b/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
+@@ -258,4 +258,175 @@ else
+   fail 'racing reserve exclusivity' "rcs=${race_one_rc},${race_two_rc} outputs=$(cat "${TMP_ROOT}/race-one.out") $(cat "${TMP_ROOT}/race-two.out")"
+ fi
+ 
++# ── ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 tests ──────────────────────────────────
++
++# Helper: make a root whose routing YAML has a custom dispatch_ladder.
++make_ladder_root() {
++  local root="$1" ladder_yaml="$2"
++  mkdir -p "${root}/.claude/ref"
++  cat > "${root}/.claude/ref/leadv2-routing.yaml" <<YAML
++${ladder_yaml}
++router:
++  dispatch_ladder:
++    - id: codex
++      provider: codex
++      model: gpt-5.6-terra
++      when: [all]
++      effort: standard
++    - id: sonnet
++      provider: anthropic
++      model: sonnet
++      when: [all]
++      effort: standard
++    - id: glm
++      provider: glm
++      model: glm-5.2
++      when: [all]
++      effort: standard
++    - id: kimi
++      provider: kimi
++      model: moonshotai/kimi-k3-free
++      when: [all]
++      effort: standard
++YAML
++}
++
++# Helper: write a per-provider quota lockout record.
++make_lockout() {
++  local dir="$1" provider="$2" locked_until_epoch="$3" source="${4:-test}"
++  mkdir -p "${dir}" 2>/dev/null
++  cat > "${dir}/quota-lockout-${provider}.json" <<JSON
++{"provider":"${provider}","locked_until":"${locked_until_epoch}","locked_until_epoch":${locked_until_epoch},"source":"${source}"}
++JSON
++}
++
++# Test 1: ladder order comes from the yaml. With a yaml ladder ordered
++# codex,sonnet,glm,kimi, when the resolver picks glm as primary, the candidate
++# chain must be glm,kimi (glm's position onward) — NOT the hardcoded
++# glm,kimi,codex,sonnet. This FAILS on HEAD (hardcoded order) and passes
++# after the change.
++make_ladder_root "${TMP_ROOT}/ladder-root" ""
++make_live_glm "${TMP_ROOT}/ladder-glm.sh"
++make_refusing_kimi "${TMP_ROOT}/ladder-kimi.sh"
++make_live_codex "${TMP_ROOT}/ladder-codex.sh"
++ladder_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/ladder-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/ladder-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/ladder-glm.sh" \
++  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/ladder-kimi.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/ladder-codex.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only ladder from yaml' 2>&1)"
++ladder_rc=$?
++if [[ ${ladder_rc} -eq 0 ]] \
++  && grep -q 'candidate_chain' <<<"${ladder_out}"; then
++  _ladder_arms="$(grep 'candidate_chain' <<<"${ladder_out}" | sed -n 's/.*arms=//p')"
++  if [[ "${_ladder_arms}" == "glm,kimi" ]]; then
++    pass 'ladder order from yaml: resolved glm → candidates glm,kimi (not glm,kimi,codex,sonnet)'
++  else
++    fail 'ladder order from yaml' "candidate_chain arms='${_ladder_arms}' expected 'glm,kimi'"
++  fi
++else
++  fail 'ladder order from yaml' "rc=${ladder_rc} output=${ladder_out}"
++fi
++
++# Test 2: a provider marked locked-until-future is skipped and the next arm
++# is chosen, with the skip journalled. FAILS on HEAD (no precheck exists).
++make_root "${TMP_ROOT}/lockout-root"
++make_live_glm "${TMP_ROOT}/lockout-glm.sh"
++make_refusing_kimi "${TMP_ROOT}/lockout-kimi.sh"
++make_live_codex "${TMP_ROOT}/lockout-codex.sh"
++_future_epoch=$(( $(date +%s) + 86400 ))
++make_lockout "${TMP_ROOT}/lockout-cache" "glm" "${_future_epoch}" "test_quota_lockout"
++lockout_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockout-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/lockout-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/lockout-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/lockout-glm.sh" \
++  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/lockout-kimi.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockout-codex.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only lockout skips glm' 2>&1)"
++lockout_rc=$?
++if [[ ${lockout_rc} -eq 0 ]] \
++  && grep -q 'quota_precheck_skip model=glm' <<<"${lockout_out}" \
++  && grep -q 'worker_spawned by=router model=codex' <<<"${lockout_out}"; then
++  pass 'quota precheck skips locked provider and journals the skip'
++else
++  fail 'quota precheck skip' "rc=${lockout_rc} output=${lockout_out}"
++fi
++
++# Test 3: a lockout in the past is ignored — glm dispatches AND codex is
++# simultaneously skipped (locked future). On HEAD neither the past-lockout
++# check nor the codex skip exists. FAILS on HEAD.
++make_root "${TMP_ROOT}/pastlock-root"
++make_live_glm "${TMP_ROOT}/pastlock-glm.sh"
++make_refusing_kimi "${TMP_ROOT}/pastlock-kimi.sh"
++make_live_codex "${TMP_ROOT}/pastlock-codex.sh"
++_past_epoch=$(( $(date +%s) - 3600 ))
++make_lockout "${TMP_ROOT}/pastlock-cache" "glm" "${_past_epoch}" "expired_lockout"
++# Also lock codex with a FUTURE timestamp so the test asserts the precheck
++# ran (codex IS skipped) while glm (past lockout) is NOT skipped.
++make_lockout "${TMP_ROOT}/pastlock-cache" "codex" "${_future_epoch}" "test_codex_lock"
++pastlock_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/pastlock-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/pastlock-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/pastlock-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/pastlock-glm.sh" \
++  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/pastlock-kimi.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/pastlock-codex.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only past lockout ignored future codex locked' 2>&1)"
++pastlock_rc=$?
++if [[ ${pastlock_rc} -eq 0 ]] \
++  && grep -q 'worker_spawned by=router model=glm' <<<"${pastlock_out}" \
++  && ! grep -q 'quota_precheck_skip model=glm' <<<"${pastlock_out}" \
++  && grep -q 'quota_precheck_skip model=codex' <<<"${pastlock_out}"; then
++  pass 'past lockout is ignored for glm while future lockout skips codex'
++else
++  fail 'past lockout ignored' "rc=${pastlock_rc} output=${pastlock_out}"
++fi
++
++# Test 4: an absent lockout record does not block glm, AND a present
++# future-lockout on codex IS enforced. On HEAD the codex skip does not
++# happen. FAILS on HEAD.
++make_root "${TMP_ROOT}/nolock-root"
++make_live_glm "${TMP_ROOT}/nolock-glm.sh"
++make_refusing_kimi "${TMP_ROOT}/nolock-kimi.sh"
++make_live_codex "${TMP_ROOT}/nolock-codex.sh"
++# No lockout for glm — but lock codex with a future timestamp.
++make_lockout "${TMP_ROOT}/nolock-cache" "codex" "${_future_epoch}" "test_codex_lock2"
++nolock_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/nolock-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/nolock-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/nolock-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/nolock-glm.sh" \
++  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/nolock-kimi.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/nolock-codex.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only no glm lockout codex locked' 2>&1)"
++nolock_rc=$?
++if [[ ${nolock_rc} -eq 0 ]] \
++  && grep -q 'worker_spawned by=router model=glm' <<<"${nolock_out}" \
++  && ! grep -q 'quota_precheck_skip model=glm' <<<"${nolock_out}" \
++  && grep -q 'quota_precheck_skip model=codex' <<<"${nolock_out}"; then
++  pass 'absent glm lockout does not block while codex lockout is enforced'
++else
++  fail 'absent lockout no-block' "rc=${nolock_rc} output=${nolock_out}"
++fi
++
++# Test 5: dispatch with cwd = the plugin repo resolves a routing config
++# rather than logging no_routing_yaml. FAILS on HEAD (logs no_routing_yaml).
++make_live_glm "${TMP_ROOT}/selfhost-glm.sh"
++make_refusing_kimi "${TMP_ROOT}/selfhost-kimi.sh"
++selfhost_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/selfhost-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/selfhost-glm.sh" \
++  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/selfhost-kimi.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only selfhost routing' 2>&1)"
++selfhost_rc=$?
++if [[ ${selfhost_rc} -eq 0 ]] \
++  && ! grep -q 'no_routing_yaml' <<<"${selfhost_out}"; then
++  pass 'dispatch from plugin repo resolves routing config (no no_routing_yaml)'
++else
++  fail 'plugin self-host routing' "rc=${selfhost_rc} output=${selfhost_out}"
++fi
++
+ [[ ${FAIL} -eq 0 ]]

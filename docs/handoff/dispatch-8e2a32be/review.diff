@@ -1,0 +1,857 @@
+diff --git a/plugins/leadv2/config/leadv2-routing.yaml b/plugins/leadv2/config/leadv2-routing.yaml
+index 7711cea..1b5b370 100644
+--- a/plugins/leadv2/config/leadv2-routing.yaml
++++ b/plugins/leadv2/config/leadv2-routing.yaml
+@@ -111,6 +111,17 @@ router:
+   #              decides the primary arm from glm_policy rules, this list
+   #              governs fallback eligibility)
+   #   effort   — effort tier for the arm's provider
++  #   review_rank — dispatch-8e2a32be (D3): integer rank used ONLY by the review-pool
++  #              resolver's non-empty floor (leadv2-glm-policy-resolve.py:_review_floor).
++  #              Present only on Anthropic-account arms today (haiku < sonnet < opus <
++  #              fable). floor(author) escalates to the next-higher rank above the
++  #              author, or the highest rank if the author is already at/above the top
++  #              -- so the review pool can never end up genuinely empty just because
++  #              codex+glm are both quota-locked and the author is an Anthropic arm.
++  #              Absent key on an entry = that arm never participates in the floor
++  #              (build-only arms like glm/codex/kimi keep their own quota gating
++  #              instead). Never read for build-ladder ordering -- see dispatch: false
++  #              note on the two review-only entries below.
+   dispatch_ladder:
+     - id: glm
+       provider: glm
+@@ -137,6 +148,26 @@ router:
+       model: sonnet
+       when: [all]
+       effort: standard
++      review_rank: 2
++    # dispatch-8e2a32be (D3): review-only entries, never build-dispatched (dispatch:
++    # false, same posture as fable below) -- they exist here solely so the review-pool
++    # floor has a provider mapping + rank for every Anthropic-account arm the review
++    # path can actually invoke (run_reviewer_arm's generic claude-subsession.sh --model
++    # <arm> branch already handles any arm name, haiku/opus included).
++    - id: haiku
++      provider: anthropic
++      model: haiku
++      when: [review]
++      effort: standard
++      dispatch: false
++      review_rank: 1
++    - id: opus
++      provider: anthropic
++      model: opus
++      when: [review]
++      effort: high
++      dispatch: false
++      review_rank: 3
+     # Architect-path models — expressed here so the config is the single
+     # source of truth, but never dispatched by dispatch-code.sh (the plan
+     # workflow uses fable directly via workflows/leadv2-plan.js).
+@@ -146,6 +177,7 @@ router:
+       when: [architect, heavy]
+       effort: high
+       dispatch: false
++      review_rank: 4
+   glm_policy:
+     protected_path_patterns:
+       - "*safety-gate*"
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+index 0a4ec42..064d7ad 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -211,6 +211,13 @@ _stamp_review_terminal() { # <pass|fail|unreviewed|blocked>
+   _stamp_active_phase "${FOUNDER_TASK_ID}" "review:$1"
+ }
+ 
++# dispatch-8e2a32be D5: literal "-" instead of a blank field for "nothing here" --
++# a blank pool:/tried: was indistinguishable from "field not populated by this code
++# path" vs "resolver/loop genuinely produced zero entries". Used by BOTH terminal
++# no-reviewer branches so review-gate.md's shape is identical regardless of which
++# one fired.
++_pc_or_dash() { [[ -n "${1:-}" ]] && printf '%s' "$1" || printf '%s' '-'; }
++
+ # dispatch-00629379 (P0, 2026-07-30): Fix6 (SUPERVISOR-AUDIT-01) called the resolver
+ # for exactly ONE arm (job=review, base-arm=codex) -- with codex quota-gated out and
+ # GLM structurally banned from review, EVERY build resolved to sonnet, so the single
+@@ -241,7 +248,32 @@ resolve_review_pool_call() {
+     printf 'reviewer=\npool=\nrefusal=resolver_missing_failclosed\n'
+     return
+   fi
+-  local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
++  # dispatch-8e2a32be D1: ordered first-existing-file-wins search. Root cause this
++  # fixes: the pre-fix single lookup (${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/
++  # leadv2-routing.yaml}) never found a file at runtime -- .claude/ref/
++  # leadv2-routing.yaml does not exist in ANY of the three live repos -- so the
++  # resolver silently ran its no-op/fail-closed fallback and this function never
++  # printed a real reviewer=/pool=/refusal= line at all. Tenant-override precedence
++  # (env var, then repo-local .claude/ref/) is UNCHANGED; this only adds the
++  # plugin-local and canonical tiers so a repo that never opted into a tenant
++  # override still resolves against a real routing yaml instead of nothing.
++  local routing_yaml="" _ry_source="none"
++  if [[ -n "${LEADV2_ROUTING_YAML:-}" && -f "${LEADV2_ROUTING_YAML}" ]]; then
++    routing_yaml="${LEADV2_ROUTING_YAML}"; _ry_source="tenant"
++  elif [[ -f "${ROOT}/.claude/ref/leadv2-routing.yaml" ]]; then
++    routing_yaml="${ROOT}/.claude/ref/leadv2-routing.yaml"; _ry_source="tenant"
++  elif [[ -f "${SCRIPT_DIR}/../config/leadv2-routing.yaml" ]]; then
++    routing_yaml="${SCRIPT_DIR}/../config/leadv2-routing.yaml"; _ry_source="plugin"
++  elif [[ -f "${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/config/leadv2-routing.yaml" ]]; then
++    routing_yaml="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/config/leadv2-routing.yaml"
++    _ry_source="canonical"
++  else
++    # True last resort: keep the OLD default expression so a caller that somehow has
++    # none of the above still gets exactly the pre-fix path (and therefore the
++    # resolver's own D1 self-heal gets one more chance at it).
++    routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
++  fi
++  emit decision "review_routing_yaml task=${TASK} source=${_ry_source}"
+   # CODEX-GATE-01 item 6: compute REAL safety signals from the lane's write paths vs the
+   # protected_path_patterns in routing yaml (fail-closed), instead of the hardcoded
+   # --signals '{}' that left the resolver's kimi:excluded:safety branch unreachable on the
+@@ -1504,9 +1536,9 @@ if [[ -z "${reviewer}" ]]; then
+   # success to anything reading the exit code (which nothing does -- D2) or the ledger
+   # (which recorded `parked`, not a failure state).
+   refusal="${refusal:-all_review_arms_unavailable}"
+-  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: \n' \
+-    "${AUTHOR}" "${pool}" > "${HANDOFF}/review-gate.md"
+-  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} refusal=${refusal} tried="
++  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: %s\nrefusal: %s\n' \
++    "${AUTHOR}" "$(_pc_or_dash "${pool}")" "$(_pc_or_dash "")" "${refusal}" > "${HANDOFF}/review-gate.md"
++  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=$(_pc_or_dash "${pool}") refusal=${refusal} tried=$(_pc_or_dash "")"
+   _dl_note dead all_arms_unavailable "author=${AUTHOR} pool=${pool} refusal=${refusal}"
+   _stamp_review_terminal unreviewed
+   exit 9
+@@ -1635,9 +1667,14 @@ review_contract=$'Your review MUST contain these two lines, verbatim format, bef
+ # review-glm.md with no fallback attempted at all. Bounded two ways: next_ok_arm_after
+ # walks the FIXED ${pool} strictly forward (each arm visited at most once) AND an
+ # explicit tried[] cap belt-and-braces the loop -- it cannot spin.
+-tried=()
++# dispatch-8e2a32be D5: PC_TRIED is appended BEFORE run_reviewer_arm is called (not
++# after classifying its outcome), so a mid-review crash inside run_reviewer_arm still
++# leaves this arm recorded as attempted -- "tried" means "the gate actually invoked
++# this arm's launcher", not "this arm refused cleanly and returned control".
++PC_TRIED=()
+ _pc_unavailable=0
+ while :; do
++  PC_TRIED+=("${reviewer}")
+   run_reviewer_arm "${reviewer}"
+   cls="$(classify_arm_failure "${review_rc}" "${review_err}" "${review_out}")"
+   if [[ "${cls}" != refused_* ]]; then
+@@ -1666,8 +1703,7 @@ while :; do
+     break
+   fi
+   emit decision "review_gate task=${TASK} status=arm_refused arm=${reviewer} reason=${cls}"
+-  tried+=("${reviewer}")
+-  if [[ ${#tried[@]} -ge 4 ]]; then
++  if [[ ${#PC_TRIED[@]} -ge 4 ]]; then
+     _pc_unavailable=1
+     break
+   fi
+@@ -1681,10 +1717,11 @@ while :; do
+   reviewer="${next_arm}"
+ done
+ if [[ "${_pc_unavailable}" == "1" ]]; then
+-  _pc_tried_csv="$(IFS=,; echo "${tried[*]:-}")"
+-  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: %s\n' \
+-    "${AUTHOR}" "${pool}" "${_pc_tried_csv}" > "${HANDOFF}/review-gate.md"
+-  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} tried=${_pc_tried_csv}"
++  _pc_tried_csv="$(IFS=,; echo "${PC_TRIED[*]:-}")"
++  _pc_refusal="${refusal:-all_arms_unavailable}"
++  printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: %s\nrefusal: %s\n' \
++    "${AUTHOR}" "$(_pc_or_dash "${pool}")" "$(_pc_or_dash "${_pc_tried_csv}")" "${_pc_refusal}" > "${HANDOFF}/review-gate.md"
++  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=$(_pc_or_dash "${pool}") tried=$(_pc_or_dash "${_pc_tried_csv}") refusal=${_pc_refusal}"
+   _dl_note dead all_arms_unavailable "author=${AUTHOR} pool=${pool} tried=${_pc_tried_csv}"
+   _stamp_review_terminal unreviewed
+   exit 9
+diff --git a/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py b/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
+index 5750819..1cc618d 100644
+--- a/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
++++ b/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py
+@@ -30,6 +30,7 @@ import os
+ import re
+ import subprocess
+ import sys
++import time
+ from pathlib import Path
+ 
+ # DISPATCH-KIMI-ARM-MISMATCH-01 (2026-08-05, founder order 2026-08-04 «Кими
+@@ -149,6 +150,123 @@ def extract_glm_policy_block(routing_yaml_text: str) -> dict:
+     }
+ 
+ 
++# ── dispatch-8e2a32be round 2: review pool must never be empty ──────────────────────
++# D1: routing-yaml self-heal (mirrors resolve_review_pool_call()'s bash-side ordered
++# candidate search -- tenant override, plugin-local canonical, canonical-root fallback).
++_REVIEW_POOL_NEVER_EMPTY_CANDIDATES_DOC = (
++    "order: --routing-yaml arg (tenant/test override) -> plugin-local "
++    "(this file's own ../../config/leadv2-routing.yaml) -> "
++    "$LEADV2_CANONICAL_ROOT (or ~/Projects/leadv2)/plugins/leadv2/config/leadv2-routing.yaml"
++)
++
++
++def _resolve_routing_yaml_path(explicit: str):
++    """D1: first-existing-file-wins search. Returns (path_or_None, source) where
++    source is one of tenant|plugin|canonical|none. Deliberately does NOT know about
++    ${ROOT}/.claude/ref/leadv2-routing.yaml -- that tenant-override tier is resolved
++    bash-side (resolve_review_pool_call) BEFORE --routing-yaml is even passed here;
++    this is the safety net for callers that hand this script a stale/missing path."""
++    candidates = []
++    if explicit:
++        candidates.append(("tenant", explicit))
++    here = Path(__file__).resolve()
++    plugin_local = here.parent.parent.parent / "config" / "leadv2-routing.yaml"
++    candidates.append(("plugin", str(plugin_local)))
++    canonical_root = os.environ.get("LEADV2_CANONICAL_ROOT") or str(Path.home() / "Projects" / "leadv2")
++    canonical = os.path.join(canonical_root, "plugins", "leadv2", "config", "leadv2-routing.yaml")
++    candidates.append(("canonical", canonical))
++    for source, path in candidates:
++        if path and os.path.isfile(path):
++            return path, source
++    return None, "none"
++
++
++def extract_dispatch_ladder(routing_yaml_text: str) -> list:
++    """router.dispatch_ladder entries (id/provider/review_rank/dispatch), for the
++    review-pool floor (D3) and the on-disk lockout provider mapping (D4). Uses
++    PyYAML -- already a hard dependency elsewhere in this codebase (see
++    leadv2-dispatch-code.sh:_load_dispatch_ladder's own `import sys, yaml`), so this
++    is not a new dependency surface. Fail-safe: any parse error -> empty list; every
++    caller degrades gracefully (provider==arm, no rank table) rather than raising."""
++    try:
++        import yaml
++        d = yaml.safe_load(routing_yaml_text) or {}
++    except Exception:
++        return []
++    ladder = ((d.get("router") or {}).get("dispatch_ladder")) or []
++    out = []
++    for e in ladder:
++        if not isinstance(e, dict):
++            continue
++        eid = e.get("id")
++        if not eid:
++            continue
++        out.append({
++            "id": eid,
++            "provider": e.get("provider", eid),
++            "review_rank": e.get("review_rank"),
++            "dispatch": e.get("dispatch", True),
++        })
++    return out
++
++
++def _now_epoch() -> int:
++    """LEADV2_QUOTA_NOW_EPOCH override for deterministic tests (D4)."""
++    raw = os.environ.get("LEADV2_QUOTA_NOW_EPOCH")
++    if raw:
++        try:
++            return int(raw)
++        except (TypeError, ValueError):
++            pass
++    return int(time.time())
++
++
++def _lockout_blocked(provider: str, now_epoch: int, lockout_dir: str = None) -> bool:
++    """D4: fail-open read of the on-disk quota-lockout store leadv2-dispatch-code.sh's
++    record-quota-lockout / _record_quota_lockout writes (schema: provider/locked_until/
++    locked_until_epoch/source -- see leadv2-dispatch-code.sh:_record_quota_lockout).
++    Missing/malformed/expired file => NOT blocked. A corrupt cache file must never
++    remove an arm from consideration -- same fail-open posture as every other quota
++    read in this file (live_codex_weekly_pct etc.)."""
++    if not provider:
++        return False
++    d = lockout_dir or os.environ.get("LEADV2_QUOTA_LOCKOUT_DIR") or os.path.join(
++        os.environ.get("LEADV2_DISPATCH_CACHE_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "cache"),
++        "dispatch-ledger")
++    path = os.path.join(d, "quota-lockout-%s.json" % provider)
++    try:
++        with open(path) as f:
++            data = json.load(f)
++        until_epoch = int(data.get("locked_until_epoch"))
++    except Exception:
++        return False
++    return now_epoch < until_epoch
++
++
++def _review_floor(author: str, rank_table: dict):
++    """D3: TOTAL, non-hardcoded floor over the review_rank table. Returns
++    (arm_or_None, ok) -- ok is False iff the table has fewer than 2 entries, which
++    the caller must treat as pool_floor_table_degenerate (a hard resolver error, not
++    a silent empty pool) rather than a normal "floor not needed" outcome.
++
++    floor(author) = the entry with rank > rank(author) that has the smallest such
++    rank (escalate one step up), or -- if none exists (author at/above the top, or
++    author absent from the table, i.e. rank(author) treated as -infinity) -- the
++    entry with the largest rank. Total for any author string, including "" or an
++    arm the table has never heard of."""
++    rank_table = rank_table or {}
++    if len(rank_table) < 2:
++        return None, False
++    author_rank = rank_table.get(author, float("-inf"))
++    candidates = [(rid, r) for rid, r in rank_table.items() if rid != author]
++    if not candidates:
++        return None, False
++    higher = [c for c in candidates if c[1] > author_rank]
++    chosen = min(higher, key=lambda c: c[1]) if higher else max(candidates, key=lambda c: c[1])
++    return chosen[0], True
++# ── end dispatch-8e2a32be round 2 helpers ────────────────────────────────────────────
++
++
+ def live_codex_weekly_pct(quota_live_bin):
+     """Fail-open: any error -> None (gate never fires on an unknown reading).
+     Same live-quota script leadv2-glm-quota-gate.sh uses for GLM
+@@ -269,7 +387,9 @@ def _fmt_pct(pct):
+ 
+ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = None,
+                          pcts: dict = None, kimi_bin: str = None,
+-                         signals: dict = None) -> dict:
++                         signals: dict = None, rank_table: dict = None,
++                         ladder_providers: dict = None, lockout_dir: str = None,
++                         now_epoch: int = None) -> dict:
+     """dispatch-00629379 §3.2: the ordered, quota-filtered, author-excluding reviewer
+     pool -- the fix for "review gate has no available reviewer". Unlike
+     resolve_glm_policy() (single arm, build+review), this always returns every
+@@ -301,6 +421,11 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
+     glm_threshold = gate.get("glm_review_threshold_pct", DEFAULT_GLM_REVIEW_THRESHOLD_PCT)
+     anthropic_threshold = gate.get("anthropic_review_threshold_pct", DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT)
+     pcts = dict(pcts) if pcts else {}
++    ladder_providers = ladder_providers or {}
++    now_epoch = now_epoch if now_epoch is not None else _now_epoch()
++
++    def _provider_for(arm):
++        return ladder_providers.get(arm, arm)
+ 
+     def _pct_for(arm):
+         if arm in pcts:
+@@ -329,6 +454,14 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
+         if arm == author:
+             entries.append("%s:author:" % arm)
+             continue
++        # D4 (dispatch-8e2a32be): a live on-disk quota lockout for this arm's provider
++        # bars it outright, BEFORE the kimi probe-gate and the pct/threshold gate below
++        # -- a locked-out provider is never even quota-checked. Runs for every arm
++        # uniformly (kimi included) via the ladder-derived provider mapping, never a
++        # literal arm-name comparison.
++        if _lockout_blocked(_provider_for(arm), now_epoch, lockout_dir):
++            entries.append("%s:blocked:lockout" % arm)
++            continue
+         # KIMI-CHANNEL-01b: kimi is probe-gated, not quota-gated. It has NO threshold
+         # key and MUST branch here BEFORE the pct/threshold logic -- _threshold_for()'s
+         # fallback returns the Anthropic threshold for any non-codex/non-glm arm, which
+@@ -366,6 +499,29 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
+                 reviewer = arm
+ 
+     refusal = "" if reviewer else "all_review_arms_unavailable"
++
++    # D3 (dispatch-8e2a32be): the preferred pool above is genuinely exhausted (every
++    # candidate author-excluded/locked-out/blocked/never assigned) -- fall to the
++    # rank-table floor so the pool is NEVER empty just because codex+glm are both
++    # quota-locked and the author happens to be excluded from reviewing itself. The
++    # floor bypasses lockout/pct gating entirely (unconditional guarantee) and is
++    # flagged via the pool entry's :floor:<pct|degraded> suffix -- "reason:
++    # floor_reviewer" in the design doc's vocabulary, expressed here as the entry
++    # disposition since --review-pool's CLI contract has no separate reason= line.
++    if not reviewer:
++        floor_arm, floor_ok = _review_floor(author, rank_table)
++        if floor_ok and floor_arm:
++            floor_pct = _pct_for(floor_arm)
++            suffix = _fmt_pct(floor_pct) if floor_pct is not None and _fmt_pct(floor_pct) else "degraded"
++            entries.append("%s:floor:%s" % (floor_arm, suffix))
++            reviewer = floor_arm
++            refusal = ""
++        elif rank_table:
++            # A rank table exists but has < 2 usable entries -- a config bug, not the
++            # ordinary "feature not adopted" case (empty rank_table, handled by the
++            # `elif` falling through and keeping all_review_arms_unavailable below).
++            refusal = "pool_floor_table_degenerate"
++
+     return {"reviewer": reviewer, "pool": entries, "refusal": refusal}
+ 
+ 
+@@ -554,6 +710,52 @@ def _job_from_argv(argv) -> str:
+     return "build"
+ 
+ 
++def _emit_pool_lines(reviewer: str, entries, refusal: str) -> None:
++    """D2 (dispatch-8e2a32be): the ONE place that prints reviewer=/pool=/refusal= --
++    every --review-pool return path in _main (including every degraded/error path)
++    calls this exactly once, so none of them can silently skip the pool output the
++    way the pre-fix `no_routing_yaml` / `resolver_error` / top-level except paths did."""
++    print("reviewer=%s" % (reviewer or ""))
++    print("pool=%s" % ",".join(entries or []))
++    print("refusal=%s" % (refusal or ""))
++
++
++def _arg_from_argv(argv, flag: str) -> str:
++    """Best-effort single-value argv sniff, same idiom as _job_from_argv, used by the
++    degraded/error --review-pool paths that must re-derive a floor WITHOUT trusting
++    any state from a _main() run that may have crashed partway through."""
++    for i, tok in enumerate(argv):
++        if tok == flag and i + 1 < len(argv):
++            return argv[i + 1]
++        if tok.startswith(flag + "="):
++            return tok.split("=", 1)[1]
++    return ""
++
++
++def _best_effort_floor_pool(argv):
++    """D2: independent, exception-safe re-derivation of just the review floor, used
++    by every degraded/error --review-pool path so a resolver crash anywhere in the
++    main body still leaves the review gate with a non-empty pool where possible.
++    Deliberately does NOT reuse any state from the failed run -- re-resolves the
++    routing yaml from scratch via the same D1 candidate search. Returns
++    (reviewer, pool_entries, refusal)."""
++    try:
++        routing_yaml_arg = _arg_from_argv(argv, "--routing-yaml")
++        author = _arg_from_argv(argv, "--author")
++        path, _source = _resolve_routing_yaml_path(routing_yaml_arg)
++        if not path:
++            return "", [], "no_routing_yaml"
++        text = Path(path).read_text()
++        ladder = extract_dispatch_ladder(text)
++        rank_table = {e["id"]: e["review_rank"] for e in ladder if e.get("review_rank") is not None}
++        arm, ok = _review_floor(author, rank_table)
++        if not ok or not arm:
++            return "", [], "pool_floor_table_degenerate" if rank_table else "all_review_arms_unavailable"
++        return arm, ["%s:floor:degraded" % arm], ""
++    except Exception:
++        return "", [], "resolver_error"
++
++
+ def _main(argv):
+     import argparse
+     ap = argparse.ArgumentParser()
+@@ -571,53 +773,100 @@ def _main(argv):
+     args = ap.parse_args(argv)
+ 
+     try:
+-        text = Path(args.routing_yaml).read_text()
+-    except Exception:
+-        _emit_fallback(args.job, "no_routing_yaml")
++        # D1: ordered self-heal search (tenant --routing-yaml -> plugin-local ->
++        # canonical) BEFORE giving up -- the pre-fix code gave up the instant the
++        # single passed-in path was unreadable, which is exactly the root cause of
++        # this whole round (no routing yaml at .claude/ref/leadv2-routing.yaml ->
++        # silent no-op fallback with zero reviewer=/pool=/refusal= output at all).
++        routing_yaml_path, ry_source = _resolve_routing_yaml_path(args.routing_yaml)
++        if routing_yaml_path is None:
++            # DEFAULT_REVIEW_ARM_ORDER-level last resort: no yaml found ANYWHERE, so
++            # there is no dispatch_ladder/review_rank data to float from either --
++            # honest empty pool with a distinct refusal, not a fabricated arm. D1
++            # should make this basically unreachable in any real deployment.
++            _emit_fallback(args.job, "no_routing_yaml")
++            if args.review_pool:
++                _emit_pool_lines("", [], "no_routing_yaml")
++            return 0
++        text = Path(routing_yaml_path).read_text()
++
++        glm_policy = extract_glm_policy_block(text)
++        ladder = extract_dispatch_ladder(text)
++        ladder_providers = {e["id"]: e["provider"] for e in ladder}
++        rank_table = {e["id"]: e["review_rank"] for e in ladder if e.get("review_rank") is not None}
++
++        try:
++            signals = json.loads(args.signals)
++        except Exception:
++            signals = {}
++
++        quota_live_bin = args.quota_live
++        if quota_live_bin is None:
++            quota_live_bin = str(Path(__file__).resolve().parent.parent / "leadv2-quota-live.sh")
++
++        # KIMI-CHANNEL-01b: --kimi-bin -> LEADV2_DISPATCH_KIMI_BIN (same env name
++        # leadv2-dispatch-code.sh:1243 reads) -> scripts/kimi-coder.sh, so tests and
++        # prod share one knob. Only consumed on the --review-pool path.
++        kimi_bin = args.kimi_bin
++        if kimi_bin is None:
++            kimi_bin = os.environ.get("LEADV2_DISPATCH_KIMI_BIN")
++        if kimi_bin is None:
++            kimi_bin = str(Path(__file__).resolve().parent.parent / "kimi-coder.sh")
++
++        now_epoch = _now_epoch()
++        lockout_dir = os.environ.get("LEADV2_QUOTA_LOCKOUT_DIR")
++
++        result = resolve_glm_policy(glm_policy, signals, args.job, args.base_arm, quota_live_bin,
++                                    kimi_bin=kimi_bin)
++        # D4: a live codex lockout forces codex_quota_blocked=1 in THIS (non-pool)
++        # output block too, independent of whatever live_codex_weekly_pct's own read
++        # returned -- the resolver previously had zero awareness of the on-disk store.
++        if _lockout_blocked(ladder_providers.get("codex", "codex"), now_epoch, lockout_dir):
++            result["codex_quota_blocked"] = True
++        print("arm=%s" % result["arm"])
++        print("rule=%s" % result["rule"])
++        print("reason=%s" % result["reason"])
++        print("tier=%s" % result["tier"])
++        print("codex_quota_blocked=%s" % ("1" if result["codex_quota_blocked"] else "0"))
++        # ry_source (tenant|plugin|canonical) is journaled bash-side by
++        # resolve_review_pool_call() -- that's the caller with TASK/emit() access;
++        # this CLI process only needs its own routing-yaml resolution to be correct,
++        # not to duplicate the journal write.
++
++        # dispatch-00629379: additive-only -- absent --review-pool, output above is
++        # byte-identical to pre-change (v1-equivalence, design §7 test f).
++        if args.review_pool:
++            pool_result = resolve_review_pool(glm_policy, args.author, quota_live_bin,
++                                              kimi_bin=kimi_bin, signals=signals,
++                                              rank_table=rank_table, ladder_providers=ladder_providers,
++                                              lockout_dir=lockout_dir, now_epoch=now_epoch)
++            _emit_pool_lines(pool_result["reviewer"], pool_result["pool"], pool_result["refusal"])
+         return 0
+-
+-    glm_policy = extract_glm_policy_block(text)
+-    try:
+-        signals = json.loads(args.signals)
+     except Exception:
+-        signals = {}
+-
+-    quota_live_bin = args.quota_live
+-    if quota_live_bin is None:
+-        quota_live_bin = str(Path(__file__).resolve().parent.parent / "leadv2-quota-live.sh")
+-
+-    # KIMI-CHANNEL-01b: --kimi-bin -> LEADV2_DISPATCH_KIMI_BIN (same env name
+-    # leadv2-dispatch-code.sh:1243 reads) -> scripts/kimi-coder.sh, so tests and prod
+-    # share one knob. Only consumed on the --review-pool path.
+-    kimi_bin = args.kimi_bin
+-    if kimi_bin is None:
+-        kimi_bin = os.environ.get("LEADV2_DISPATCH_KIMI_BIN")
+-    if kimi_bin is None:
+-        kimi_bin = str(Path(__file__).resolve().parent.parent / "kimi-coder.sh")
+-
+-    result = resolve_glm_policy(glm_policy, signals, args.job, args.base_arm, quota_live_bin,
+-                                kimi_bin=kimi_bin)
+-    print("arm=%s" % result["arm"])
+-    print("rule=%s" % result["rule"])
+-    print("reason=%s" % result["reason"])
+-    print("tier=%s" % result["tier"])
+-    print("codex_quota_blocked=%s" % ("1" if result["codex_quota_blocked"] else "0"))
+-
+-    # dispatch-00629379: additive-only -- absent --review-pool, output above is
+-    # byte-identical to pre-change (v1-equivalence, design §7 test f).
+-    if args.review_pool:
+-        pool_result = resolve_review_pool(glm_policy, args.author, quota_live_bin,
+-                                          kimi_bin=kimi_bin, signals=signals)
+-        print("reviewer=%s" % pool_result["reviewer"])
+-        print("pool=%s" % ",".join(pool_result["pool"]))
+-        print("refusal=%s" % pool_result["refusal"])
+-    return 0
++        # D2: resolver_error path -- MUST still print reviewer=/pool=/refusal= when
++        # --review-pool was requested, via the SAME independent floor re-derivation
++        # the top-level except in __main__ uses, so a crash anywhere above (a bad
++        # signals JSON that somehow slips past its own try/except, a resolve_glm_policy
++        # bug, anything) never regresses to the old silent no-op.
++        _emit_fallback(args.job, "resolver_error")
++        if args.review_pool:
++            reviewer, pool, refusal = _best_effort_floor_pool(argv)
++            _emit_pool_lines(reviewer, pool, refusal)
++        return 0
+ 
+ 
+ if __name__ == "__main__":
+     try:
+         sys.exit(_main(sys.argv[1:]) or 0)
+     except Exception as _e:
++        # D2: the true last-resort catch -- something failed even before/around
++        # _main's own internal try/except (e.g. argparse itself, or an exception
++        # inside _main's except block). Same independent floor re-derivation, so
++        # --review-pool still gets non-empty output here too.
+         sys.stderr.write("leadv2-glm-policy-resolve.py: resolver_error: %s\n" % _e)
+-        _emit_fallback(_job_from_argv(sys.argv[1:]), "resolver_error")
++        _argv = sys.argv[1:]
++        _emit_fallback(_job_from_argv(_argv), "resolver_error")
++        if "--review-pool" in _argv:
++            _reviewer, _pool, _refusal = _best_effort_floor_pool(_argv)
++            _emit_pool_lines(_reviewer, _pool, _refusal)
+         sys.exit(0)
+diff --git a/plugins/leadv2/scripts/tests/test-review-pool-never-empty.sh b/plugins/leadv2/scripts/tests/test-review-pool-never-empty.sh
+new file mode 100644
+index 0000000..b69777a
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-review-pool-never-empty.sh
+@@ -0,0 +1,289 @@
++#!/usr/bin/env bash
++# tests/test-review-pool-never-empty.sh — dispatch-8e2a32be round 2: the review pool
++# must never be empty, even when codex+glm are both quota-locked and the author is
++# excluded from reviewing itself.
++#
++# Root cause (see leadv2-glm-policy-resolve.py / leadv2-dispatch-product-close.sh
++# headers): the review-pool resolver never found a routing yaml at runtime
++# (.claude/ref/leadv2-routing.yaml does not exist in any of the three live repos),
++# so it silently fell back to a degraded no-op path that printed NO
++# reviewer=/pool=/refusal= lines at all -- all_arms_unavailable was a bash-side
++# default, not a real resolver verdict. This suite proves:
++#   D1 -- ordered routing-yaml self-heal (tenant -> plugin -> canonical)
++#   D2 -- --review-pool output is now unconditional on every return path
++#   D3 -- a non-hardcoded review_rank floor guarantees a non-empty pool
++#   D4 -- the resolver reads the on-disk quota-lockout store
++#   D5 -- both terminal "no reviewer" shapes are loud and always-populated
++#
++# Hermetic: every test exports its OWN LEADV2_QUOTA_LOCKOUT_DIR / LEADV2_ROUTING_YAML
++# (only where a tenant override is deliberately under test) / LEADV2_QUOTA_NOW_EPOCH
++# under TMP_ROOT -- the real ~/.claude/cache/dispatch-ledger/quota-lockout-codex.json
++# is NEVER touched, and no test relies on a live network quota/kimi read (both are
++# stubbed via --quota-live / --kimi-bin / LEADV2_DISPATCH_KIMI_BIN fakes).
++#
++# T1/T6 drive the REAL leadv2-dispatch-product-close.sh end to end (same harness
++# pattern as test-review-silence-gate.sh) so "review actually runs" and the
++# tried:/pool: shape in review-gate.md are proven at the bash layer, not just the
++# python resolver's stdout. T2-T5 call the real resolver CLI directly -- lighter
++# weight, and the natural level to assert reviewer=/pool=/refusal=/codex_quota_blocked=.
++
++set -uo pipefail
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
++source "${SCRIPTS_ROOT}/leadv2-temp.sh"
++
++RESOLVER="${SCRIPTS_ROOT}/lib/leadv2-glm-policy-resolve.py"
++PRODUCT_CLOSE_SH="${SCRIPTS_ROOT}/leadv2-dispatch-product-close.sh"
++CANONICAL_ROUTING_YAML="${SCRIPTS_ROOT}/../config/leadv2-routing.yaml"
++
++FAIL=0
++pass() { printf 'PASS: %s\n' "$1"; }
++fail() { printf 'FAIL: %s -- %s\n' "$1" "$2"; FAIL=1; }
++
++if bash -n "${PRODUCT_CLOSE_SH}"; then pass "bash -n clean (leadv2-dispatch-product-close.sh)"; else fail "bash -n" "product-close.sh"; fi
++if python3 -m py_compile "${RESOLVER}"; then pass "py_compile clean (leadv2-glm-policy-resolve.py)"; else fail "py_compile" "resolver.py"; fi
++
++SUITE_TMP="$(lv2_mktemp_dir "review-pool-never-empty-test")"
++trap 'rm -rf "${SUITE_TMP}"' EXIT
++
++NOW_EPOCH=2000000000
++
++# write_lockout <dir> <provider> <relative_seconds_from_now> -- negative = expired.
++write_lockout() {
++  local dir="$1" provider="$2" rel="$3" until
++  mkdir -p "${dir}"
++  until=$(( NOW_EPOCH + rel ))
++  cat > "${dir}/quota-lockout-${provider}.json" <<JSON
++{"provider": "${provider}", "locked_until": "test", "locked_until_epoch": ${until}, "source": "test-seed"}
++JSON
++}
++
++# fake_quota_live <path> <mode> -- mode=unknown: every provider reads as unmeasured
++# (status=error, exactly today's real posture for codex/claude per the yaml's own
++# "codex and claude have no ceiling reader at all" comment). mode=anthropic_high:
++# anthropic reads as a KNOWN over-threshold 99% (forces opus/sonnet genuinely
++# :blocked:, not :unknown: -- the distinction that matters for the last-index
++# auto-pick rule in resolve_review_pool).
++make_fake_quota_live() {
++  local path="$1" mode="$2"
++  cat > "${path}" <<SH
++#!/usr/bin/env bash
++provider="\${1:-}"
++if [[ "${mode}" == anthropic_high && "\${provider}" == anthropic ]]; then
++  printf '{"status":"ok","accounts":[{"active":true,"five_hour_pct":99,"seven_day_pct":99}]}\n'
++else
++  printf '{"status":"error"}\n'
++fi
++exit 0
++SH
++  chmod +x "${path}"
++}
++
++# fake_kimi_probe_fail -- kimi-coder.sh `probe` contract: rc 77 = channel down
++# (deterministic, no network). Every test uses this so kimi never resolves True/None
++# from a real network probe.
++make_fake_kimi_fail() {
++  local path="$1"
++  cat > "${path}" <<'SH'
++#!/usr/bin/env bash
++case "${1:-}" in
++  probe) exit 77 ;;
++  *) exit 2 ;;
++esac
++SH
++  chmod +x "${path}"
++}
++
++# make_arch_pass <path> -- claude-subsession.sh stand-in: prints a clean PASS verdict
++# so run_reviewer_arm's sonnet/opus/haiku/fable branch actually completes review.
++make_arch_pass() {
++  local path="$1"
++  cat > "${path}" <<'SH'
++#!/usr/bin/env bash
++printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\nClean diff, floor reviewer, nothing to flag.\n'
++exit 0
++SH
++  chmod +x "${path}"
++}
++
++make_fixture_root() {
++  local name="$1" content="$2"
++  local repo="${SUITE_TMP}/${name}/root"
++  mkdir -p "${repo}"
++  git -C "${repo}" init -q
++  git -C "${repo}" config user.email "test@test.local"
++  git -C "${repo}" config user.name "test"
++  printf 'baseline\n' > "${repo}/file.txt"
++  git -C "${repo}" add file.txt
++  git -C "${repo}" commit -q -m init
++  lv2_assert_scratch_repo "${repo}"
++  printf '%s\n' "${content}" >> "${repo}/file.txt"
++  printf '%s' "${repo}"
++}
++
++# call_resolver <lockout_dir> <quota_live_mode> <author> [<routing_yaml>]
++# -> stdout of the resolver's full output (arm=.../reviewer=.../pool=.../refusal=...).
++call_resolver() {
++  local lockout_dir="$1" quota_mode="$2" author="$3" routing_yaml="${4:-${CANONICAL_ROUTING_YAML}}"
++  local ql kb
++  ql="${SUITE_TMP}/shared-quota-live-${quota_mode}.sh"
++  [[ -f "${ql}" ]] || make_fake_quota_live "${ql}" "${quota_mode}"
++  kb="${SUITE_TMP}/shared-kimi-fail.sh"
++  [[ -f "${kb}" ]] || make_fake_kimi_fail "${kb}"
++  LEADV2_QUOTA_LOCKOUT_DIR="${lockout_dir}" LEADV2_QUOTA_NOW_EPOCH="${NOW_EPOCH}" \
++    python3 "${RESOLVER}" --routing-yaml "${routing_yaml}" --job review --base-arm codex \
++      --review-pool --author "${author}" --quota-live "${ql}" --kimi-bin "${kb}" 2>&1
++}
++
++extract() { # <field> <resolver_output>
++  printf '%s\n' "$2" | sed -n "s/^$1=//p" | head -n1
++}
++
++# ── T1: author=sonnet, codex+glm locked out on disk => reviewer=opus, review runs ──
++root1="$(make_fixture_root t1 "t1-unique-diff-content")"
++lockout1="${SUITE_TMP}/t1/lockout"
++write_lockout "${lockout1}" codex 3600
++write_lockout "${lockout1}" glm 3600
++kimi1="${SUITE_TMP}/t1/kimi-fail.sh"; make_fake_kimi_fail "${kimi1}"
++ql1="${SUITE_TMP}/t1/quota-live-unknown.sh"; make_fake_quota_live "${ql1}" unknown
++arch1="${SUITE_TMP}/t1/arch-pass.sh"; make_arch_pass "${arch1}"
++out1="$(LEADV2_QUOTA_LOCKOUT_DIR="${lockout1}" LEADV2_QUOTA_NOW_EPOCH="${NOW_EPOCH}" \
++  GLM_POLICY_QUOTA_LIVE="${ql1}" \
++  LEADV2_DISPATCH_KIMI_BIN="${kimi1}" \
++  LEADV2_DISPATCH_ARCHITECT_BIN="${arch1}" \
++  LEADV2_JOURNAL_BIN=/bin/true LEADV2_E2E_OWNERSHIP=0 \
++  LEADV2_DISPATCH_CACHE_DIR="${SUITE_TMP}/t1/cache" \
++  bash "${PRODUCT_CLOSE_SH}" "${root1}" t1sig001 sonnet "" 0 1 "" 2>&1)"
++rc1=$?
++gate1="${root1}/docs/handoff/dispatch-t1sig001/review-gate.md"
++t1_reviewer="$(sed -n 's/^reviewer: //p' "${gate1}" 2>/dev/null | head -n1)"
++if [[ ${rc1} -eq 0 && "${t1_reviewer}" == "opus" ]] \
++  && grep -q '^status: pass$' "${gate1}" 2>/dev/null; then
++  pass "T1: author=sonnet, codex+glm locked -> reviewer=opus, review ran to status=pass"
++else
++  fail "T1: author=sonnet floor-to-opus" "rc=${rc1} reviewer=${t1_reviewer} gate=$(cat "${gate1}" 2>/dev/null || echo MISSING) out=${out1}"
++fi
++
++# ── T2: author=opus, codex+glm locked out => reviewer=fable ────────────────────────
++lockout2="${SUITE_TMP}/t2/lockout"
++write_lockout "${lockout2}" codex 3600
++write_lockout "${lockout2}" glm 3600
++out2="$(call_resolver "${lockout2}" anthropic_high opus)"
++reviewer2="$(extract reviewer "${out2}")"
++pool2="$(extract pool "${out2}")"
++if [[ "${reviewer2}" == "fable" ]] && [[ "${pool2}" == *"fable:floor:"* ]]; then
++  pass "T2: author=opus, codex+glm locked -> reviewer=fable (D3 floor)"
++else
++  fail "T2: author=opus floor-to-fable" "reviewer=${reviewer2} pool=${pool2} out=${out2}"
++fi
++
++# ── T3: codex lockout file present => codex_quota_blocked=1, codex absent from :ok: ──
++lockout3="${SUITE_TMP}/t3/lockout"
++write_lockout "${lockout3}" codex 3600
++out3="$(call_resolver "${lockout3}" unknown sonnet)"
++blocked3="$(extract codex_quota_blocked "${out3}")"
++pool3="$(extract pool "${out3}")"
++if [[ "${blocked3}" == "1" ]] && [[ "${pool3}" == *"codex:blocked:lockout"* ]] && [[ "${pool3}" != *"codex:ok:"* ]]; then
++  pass "T3: codex lockout -> codex_quota_blocked=1, codex:blocked:lockout (not :ok:)"
++else
++  fail "T3: codex lockout gating" "codex_quota_blocked=${blocked3} pool=${pool3} out=${out3}"
++fi
++
++# ── T4: routing yaml unreadable/nonexistent + --review-pool => self-heal (D1+D2) ───
++lockout4="${SUITE_TMP}/t4/lockout"
++out4="$(call_resolver "${lockout4}" unknown sonnet "${SUITE_TMP}/t4/does-not-exist.yaml")"
++reviewer4="$(extract reviewer "${out4}")"
++pool4="$(extract pool "${out4}")"
++if [[ -n "${reviewer4}" ]] && [[ -n "${pool4}" ]]; then
++  pass "T4: nonexistent --routing-yaml self-heals to plugin-local -- reviewer/pool non-empty"
++else
++  fail "T4: routing-yaml self-heal" "reviewer=${reviewer4} pool=${pool4} out=${out4}"
++fi
++
++# ── T5: author not in the rank table => pool non-empty, reviewer != author ─────────
++lockout5="${SUITE_TMP}/t5/lockout"
++write_lockout "${lockout5}" codex 3600
++write_lockout "${lockout5}" glm 3600
++out5="$(call_resolver "${lockout5}" anthropic_high "not-a-real-arm")"
++reviewer5="$(extract reviewer "${out5}")"
++pool5="$(extract pool "${out5}")"
++if [[ -n "${reviewer5}" ]] && [[ "${reviewer5}" != "not-a-real-arm" ]] && [[ -n "${pool5}" ]]; then
++  pass "T5: unknown author -> non-empty pool, reviewer(${reviewer5}) != author"
++else
++  fail "T5: unknown-author floor" "reviewer=${reviewer5} pool=${pool5} out=${out5}"
++fi
++# T5 detail: rank(unknown author) == -infinity, so floor must pick the LOWEST-ranked
++# table entry (haiku, rank 1) -- confirms the -infinity rule is real, not incidental.
++if [[ "${reviewer5}" == "haiku" ]]; then
++  pass "T5 detail: -infinity author rank floors to the lowest-ranked entry (haiku)"
++else
++  fail "T5 detail: expected floor=haiku for an unranked author" "reviewer=${reviewer5}"
++fi
++
++# ── T6: forced all_arms_unavailable (degenerate rank table) -- tried: is populated ──
++degenerate_yaml="${SUITE_TMP}/t6/degenerate-routing.yaml"
++mkdir -p "${SUITE_TMP}/t6"
++cat > "${degenerate_yaml}" <<'YAML'
++router:
++  dispatch_ladder:
++    - id: glm
++      provider: glm
++    - id: codex
++      provider: codex
++    - id: sonnet
++      provider: anthropic
++    - id: opus
++      provider: anthropic
++  glm_policy:
++    protected_path_patterns: []
++YAML
++root6="$(make_fixture_root t6 "t6-unique-diff-content")"
++lockout6="${SUITE_TMP}/t6/lockout"
++write_lockout "${lockout6}" codex 3600
++write_lockout "${lockout6}" glm 3600
++kimi6="${SUITE_TMP}/t6/kimi-fail.sh"; make_fake_kimi_fail "${kimi6}"
++ql6="${SUITE_TMP}/t6/quota-live-high.sh"; make_fake_quota_live "${ql6}" anthropic_high
++out6="$(LEADV2_ROUTING_YAML="${degenerate_yaml}" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${lockout6}" LEADV2_QUOTA_NOW_EPOCH="${NOW_EPOCH}" \
++  GLM_POLICY_QUOTA_LIVE="${ql6}" \
++  LEADV2_DISPATCH_KIMI_BIN="${kimi6}" \
++  LEADV2_JOURNAL_BIN=/bin/true LEADV2_E2E_OWNERSHIP=0 \
++  LEADV2_DISPATCH_CACHE_DIR="${SUITE_TMP}/t6/cache" \
++  bash "${PRODUCT_CLOSE_SH}" "${root6}" t6sig006 sonnet "" 0 1 "" 2>&1)"
++rc6=$?
++gate6="${root6}/docs/handoff/dispatch-t6sig006/review-gate.md"
++if [[ ${rc6} -eq 9 ]] \
++  && grep -q '^status: unreviewed$' "${gate6}" 2>/dev/null \
++  && grep -q '^tried: -$' "${gate6}" 2>/dev/null \
++  && grep -q '^pool: ' "${gate6}" 2>/dev/null; then
++  pass "T6: degenerate rank table -> genuine all_arms_unavailable, tried: - (populated dash)"
++else
++  fail "T6: forced all_arms_unavailable shape" "rc=${rc6} gate=$(cat "${gate6}" 2>/dev/null || echo MISSING) out=${out6}"
++fi
++
++# ── T7 (regression): across T1/T2/T5, reviewer is never equal to author ────────────
++t7_ok=1
++[[ "${t1_reviewer}" == "sonnet" ]] && t7_ok=0
++[[ "${reviewer2}" == "opus" ]] && t7_ok=0
++[[ "${reviewer5}" == "not-a-real-arm" ]] && t7_ok=0
++if [[ ${t7_ok} -eq 1 ]]; then
++  pass "T7: reviewer never equals author across T1(${t1_reviewer})/T2(${reviewer2})/T5(${reviewer5})"
++else
++  fail "T7: reviewer==author regression" "t1=${t1_reviewer} t2=${reviewer2} t5=${reviewer5}"
++fi
++
++# ── Regression: existing round-1 suite (5 cases) must still fully pass ─────────────
++POSTSPAWN_SUITE="${SCRIPT_DIR}/test-quota-lockout-postspawn.sh"
++if [[ -f "${POSTSPAWN_SUITE}" ]]; then
++  out_ps="$(bash "${POSTSPAWN_SUITE}" 2>&1)"; rc_ps=$?
++  fail_n_ps="$(grep -c '^FAIL:' <<<"${out_ps}")"
++  if [[ ${rc_ps} -eq 0 && ${fail_n_ps} -eq 0 ]]; then
++    pass "regression: test-quota-lockout-postspawn.sh still fully passes"
++  else
++    fail "regression: test-quota-lockout-postspawn.sh" "rc=${rc_ps} fail_n=${fail_n_ps} out=${out_ps}"
++  fi
++else
++  fail "regression suite missing" "expected at ${POSTSPAWN_SUITE}"
++fi
++
++[[ ${FAIL} -eq 0 ]]

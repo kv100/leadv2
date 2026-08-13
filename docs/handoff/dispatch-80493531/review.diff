@@ -1,0 +1,97 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index f4e3433..3c4ed54 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -573,12 +573,20 @@ _resolve_pinned_placement() {
+   WORK_ROOT="${candidate}"
+   export LEADV2_LANE_WORK_ROOT="${WORK_ROOT}"
+   PLACEMENT_PINNED=1
+-  WORKTREE_PIN_LINE="WORKTREE PIN: all edits go in ${WORK_ROOT}; do NOT cd to the main checkout even if the mission text names it."
++  _set_worktree_pin_line
+   local _mode="resume-lane"
+   [[ -n "${placement_path}" ]] && _mode="worktree"
+   emit decision "lane_placement_pinned task=${sig8:-?} mode=${_mode} path=${WORK_ROOT} key=${key}"
+ }
+ 
++# PLACEMENT-PIN-DEFAULT-01: single construction site for the worker-prompt pin prefix.
++# Idempotent + value-stable: safe to call from the flagged path and again from the
++# default path.  No-op when WORK_ROOT is the shared tree (nothing to pin to).
++_set_worktree_pin_line() {
++  [[ -n "${WORK_ROOT:-}" && "${WORK_ROOT}" != "${PROJECT_ROOT}" ]] || return 0
++  WORKTREE_PIN_LINE="WORKTREE PIN: all edits go in ${WORK_ROOT}; do NOT cd to the main checkout even if the mission text names it."
++}
++
+ # Journal + stderr-emit one structured line. $1=journal-type, $2..=text (one logical line).
+ # Invoked via `bash <path>` (not direct exec): leadv2-journal.sh ships non-executable, and
+ # leadv2-state-atomic-write.sh:260 sets this idiom. LEADV2_JOURNAL_BIN override (e.g.
+@@ -2280,6 +2288,10 @@ cmd_resolve() {
+     fi
+   fi
+   fi  # LANE-PLACEMENT-01: close PLACEMENT_PINNED guard
++  # PLACEMENT-PIN-DEFAULT-01: pin the prompt on EVERY dispatch whose work root is a lane
++  # worktree — the ensure-created path (2272) and the launcher-pre-exported path (267)
++  # both land here, and both were unpinned.  Idempotent w.r.t. the flagged path above.
++  _set_worktree_pin_line
+   # LANE-START-SHA-01: unconditional, before any arm spawn -- overwrites any stale value
+   # from a prior dispatch that reused this cache dir (mitigates R2: a nested/child dispatch
+   # never inherits a parent's start sha because it always re-records its own here first).
+diff --git a/plugins/leadv2/scripts/tests/test-lane-placement-pin.sh b/plugins/leadv2/scripts/tests/test-lane-placement-pin.sh
+index 082c743..8b407e7 100644
+--- a/plugins/leadv2/scripts/tests/test-lane-placement-pin.sh
++++ b/plugins/leadv2/scripts/tests/test-lane-placement-pin.sh
+@@ -350,11 +350,51 @@ else
+   bad "P-g: worker cwd='${CWD_G_PHYS}' == RESUME or empty (regression)"
+ fi
+ 
+-# P-h (no flag): prompt pin line absent
+-if ! grep -q '^WORKTREE PIN:' "${SANDBOX}/pg-mission.txt" 2>/dev/null; then
+-  ok "P-h(g): prompt pin line absent with no flag"
++# P-h(g): pin line present on the DEFAULT ensure-created path (PLACEMENT-PIN-DEFAULT-01)
++if head -1 "${SANDBOX}/pg-mission.txt" 2>/dev/null | grep -q '^WORKTREE PIN: all edits go in '; then
++  ok "P-h(g): prompt pin line present on default ensure-created path"
+ else
+-  bad "P-h(g): prompt pin line PRESENT with no flag (regression)"
++  bad "P-h(g): prompt pin line MISSING on default ensure-created path"
++fi
++
++# P-h(g2): pin line names the tree the worker actually ran in
++if head -1 "${SANDBOX}/pg-mission.txt" 2>/dev/null | grep -q -- "${CWD_G}"; then
++  ok "P-h(g2): pin line names the ensure-created worktree path"
++else
++  bad "P-h(g2): pin line does NOT name the worktree (expected '${CWD_G}')"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# P-i: shared-tree dispatch (WORK_ROOT == PROJECT_ROOT) → no pin line (regression)
++# ════════════════════════════════════════════════════════════════════════════
++setup_env
++export LEADV2_STUB_CWD_OUT="${SANDBOX}/pi-cwd.txt"
++export LEADV2_STUB_MISSION_OUT="${SANDBOX}/pi-mission.txt"
++# Stub the lane-worktree binary to "ensure" by printing $TARGET → fallback to shared tree
++LANE_WT_STUB="${SANDBOX}/lane-wt-stub.sh"
++cat > "${LANE_WT_STUB}" <<SH
++#!/usr/bin/env bash
++case "\${1:-}" in
++  ensure) printf '%s\n' "${TARGET}" ;;
++  path-of) exit 1 ;;
++  *) exit 0 ;;
++esac
++SH
++export LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_WT_STUB}"
++dispatch_rc=0
++bash "${DC}" --kind tooling \
++  "P-i shared tree no pin test fix the validator" >/dev/null 2>&1 || dispatch_rc=$?
++
++if [[ ${dispatch_rc} -eq 0 ]]; then
++  ok "P-i: dispatch exited 0 (shared-tree fallback)"
++else
++  bad "P-i: dispatch exited ${dispatch_rc} (expected 0)"
++fi
++
++if ! grep -q '^WORKTREE PIN:' "${SANDBOX}/pi-mission.txt" 2>/dev/null; then
++  ok "P-i: no pin line on shared-tree dispatch"
++else
++  bad "P-i: pin line PRESENT on shared-tree dispatch (regression)"
+ fi
+ 
+ printf '\n[LANE-PLACEMENT-01] passed=%d failed=%d\n' "${PASS}" "${FAIL}"

@@ -1,0 +1,18 @@
+- 2026-08-12T14:34:58Z [decision] lane_placement_pinned task=619f797b mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-RESIDUE-01 key=E2E-GATE-RESIDUE-01
+- 2026-08-12T14:34:59Z [decision] dispatch_task_bound task=619f797b founder_task=E2E-GATE-RESIDUE-01
+- 2026-08-12T14:34:59Z [decision] dispatch_classified task=619f797b class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T14:35:01Z [decision] phase_precondition_warn task=619f797b class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T14:35:01Z [decision] architect_prepass task=619f797b status=disabled reason=kill_switch
+- 2026-08-12T14:35:02Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T14:35:02Z [decision] dispatchable_arms_read_failed task=619f797b fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T14:35:02Z [decision] routing_config_degraded task=619f797b reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T14:35:03Z [decision] kimi_skipped reason=chars_over task=619f797b chars=4225 writes=0 prepass=0
+- 2026-08-12T14:35:03Z [decision] candidate_chain task=619f797b arms=glm,codex,sonnet
+- 2026-08-12T14:35:05Z [decision] worker_spawned by=router model=glm task=619f797b attempt=619f797b-1786545295-85053 handle=260812-173505-E2E-GATE-RESIDUE-01-6f86
+- 2026-08-12T14:35:05Z [decision] mission-version task=E2E-GATE-RESIDUE-01 sig=619f797b rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T14:35:26Z [decision] product_close task=619f797b status=spawned author=glm
+- 2026-08-12T14:35:26Z [decision] route_resolved by=router router=v1 model=glm task=619f797b rule=none reason=no_routing_yaml
+- 2026-08-12T14:35:26Z [decision] lane_worktree_left task=619f797b founder_task=E2E-GATE-RESIDUE-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-RESIDUE-01
+- 2026-08-12T14:55:24Z [decision] e2e_gate task=619f797b status=ran verdict=fail rc=1
+- 2026-08-12T14:55:28Z [decision] dispatch_terminal task=619f797b terminal=dead cause=e2e_regression
+- 2026-08-12T14:55:28Z [decision] dispatch_terminal_dedup task=619f797b attempted=dead reason=terminal_already_recorded

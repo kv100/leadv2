@@ -1,0 +1,3 @@
+Try to REFUTE this finding. Default is_real=false if you cannot concretely confirm it against docs/handoff/PR01-review/build.diff.
+Finding [Critical/correctness]: _pc_process_alive falls back to `pgrep -f "${handle}"`, an unscoped substring/regex match against every process's full command line on the host, not just descendants of this worker
+Report exactly one line: VERIFY_VERDICT: <upheld|refuted>

@@ -1,0 +1,535 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+index 1591197..76ea777 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -4,6 +4,12 @@
+ # product worker is confirmed.  It reports a missing e2e entrypoint, an unscopable diff, or
+ # a cross-provider conflict as a finding; none is silently passed.  Kill switches are passed
+ # explicitly by dispatch.
++#
++# GLM-DIED-WITH-WORK-RESUME-01: after the first worker exits with outcome:
++# died-with-work, this gate relaunches the provider's `bg` on the SAME worktree
++# exactly once (marker-guarded), then waits for the second run before gating.
++# Worst-case wall clock therefore doubles (4200s → 8400s) for a died-with-work
++# lane.  Kill switch: LEADV2_PC_DWR_RESUME=0 restores single-wait behaviour.
+ set -uo pipefail
+ 
+ ROOT="${1:?root}"; TASK="${2:?task}"; AUTHOR="${3:?author}"; HANDLE="${4:-}"
+@@ -361,6 +367,166 @@ _PC_JOB_REGISTRY_ROOT="${LEADV2_JOB_REGISTRY_ROOT:-/tmp/leadv2-job-registry}"
+ _PC_WORKER_WAITED_S=0
+ _PC_WORKER_PROBE_TIMEOUT_S=20
+ 
++# GLM-DIED-WITH-WORK-RESUME-01: resume a died-with-work lane exactly once.
++# When the first worker finishes with outcome: died-with-work (the run hit a bound
++# -- stall/turn-cap/wall-clock -- but left real work behind), relaunch the SAME
++# provider's `bg` entrypoint on the SAME worktree with a resume prefix, so a
++# recoverable death is not silently buried as a permanent no-work/e2e_regression.
++# Exactly once: a per-lane marker file prevents any second attempt.  Kill switch:
++# LEADV2_PC_DWR_RESUME=0 restores byte-for-byte current behaviour.
++
++# Resolve the run-dir path for a given author+handle (mirrors the liveness probe
++# and the asked-into-void block).  Empty when unresolvable.
++_pc_run_dir_for() { # <author> <handle> -> path on stdout
++  local author="$1" handle="$2" run_dir=""
++  [[ -n "${author}" && -n "${handle}" ]] || { printf ''; return 0; }
++  case "${author}" in
++    glm)  run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${handle}" ;;
++    kimi) run_dir="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${handle}" ;;
++    *)    run_dir="${_PC_RUNS_ROOT}/${author}-runs/${handle}" ;;
++  esac
++  printf '%s' "${run_dir}"
++}
++
++# Set global _PC_ASKED_INTO_VOID from current AUTHOR/HANDLE.  Called before the
++# first wait AND after a successful resume (R5: stale marker from run A must not
++# park a lane that run B unblocked).
++_pc_resolve_asked_into_void() {
++  _PC_ASKED_INTO_VOID=""
++  [[ -n "${AUTHOR:-}" && -n "${HANDLE:-}" ]] || return 0
++  _PC_ASKED_INTO_VOID="$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/.asked_into_void"
++}
++
++# Read the classifier outcome from a run dir's meta.yaml, falling back to the
++# .outcome sentinel (outcome= form) for legacy runs that predate the meta append.
++_pc_lane_outcome() { # <run_dir> -> completed|died-with-work|died-clean|""
++  local run_dir="$1" meta outcome
++  meta="${run_dir}/meta.yaml"
++  if [[ -f "${meta}" ]]; then
++    outcome="$(_pc_meta_value "${meta}" outcome)"
++    [[ -n "${outcome}" ]] && { printf '%s' "${outcome}"; return 0; }
++  fi
++  # Fallback: .outcome sentinel written by leadv2-lane-outcome.sh.
++  local sentinel="${run_dir}/.outcome"
++  [[ -f "${sentinel}" ]] || { printf ''; return 0; }
++  sed -n 's/^outcome=//p' "${sentinel}" 2>/dev/null | head -n 1
++}
++
++# Resolve the provider launcher script.  Empty when no regular file exists
++# (e.g. sonnet/codex authors have no <author>-coder.sh).
++_pc_resume_launcher_for() { # <author> -> absolute path or empty
++  local author="$1" launcher
++  [[ -n "${LEADV2_PC_RESUME_LAUNCHER_BIN:-}" ]] && { printf '%s' "${LEADV2_PC_RESUME_LAUNCHER_BIN}"; return 0; }
++  [[ -n "${author}" ]] || { printf ''; return 0; }
++  launcher="${SCRIPT_DIR}/${author}-coder.sh"
++  [[ -f "${launcher}" ]] && { printf '%s' "${launcher}"; return 0; }
++  printf ''
++}
++
++# Attempt one died-with-work resume.  Returns 0 if a resume was launched and
++# HANDLE was reassigned to the new run; 1 if no resume happened (every other
++# case including kill-switch, not-eligible, marker present, gate refusal, or
++# launch failure).  In all cases the decision is journaled via emit.
++pc_dwr_resume_once() {
++  local marker="${HANDOFF}/.dwr-resume-attempted"
++  local prompt_file="${HANDOFF}/.dwr-resume-prompt.txt"
++  local launch_log="${HANDOFF}/.dwr-resume-launch.log"
++
++  # Kill switch.
++  [[ "${LEADV2_PC_DWR_RESUME:-1}" == "1" ]] || return 1
++
++  # Need author + handle.
++  [[ -n "${AUTHOR:-}" && -n "${HANDLE:-}" ]] || return 1
++
++  # Resolve the dead run's dir and read its outcome.
++  local old_run_dir old_outcome
++  old_run_dir="$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")"
++  [[ -n "${old_run_dir}" && -f "${old_run_dir}/meta.yaml" ]] || return 1
++  old_outcome="$(_pc_lane_outcome "${old_run_dir}")"
++  [[ "${old_outcome}" == "died-with-work" ]] || return 1
++
++  # Marker short-circuit: exactly once per lane.
++  if [[ -f "${marker}" ]]; then
++    local from_run
++    from_run="$(sed -n 's/^from_run=//p' "${marker}" 2>/dev/null | head -n 1)"
++    emit decision "dwr_resume task=${TASK} from_run=${from_run:-${HANDLE}} new_run=skipped reason=already_attempted"
++    return 1
++  fi
++
++  # Launcher must exist before we write the marker (so authors without a coder
++  # script are a pure no-op with no journal noise).
++  local launcher
++  launcher="$(_pc_resume_launcher_for "${AUTHOR}")"
++  if [[ -z "${launcher}" ]]; then
++    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed reason=no_launcher"
++    return 1
++  fi
++
++  # Read cwd / max_turns / timeout from the dead run's meta.
++  local old_meta="${old_run_dir}/meta.yaml" cwd max_turns timeout_s
++  cwd="$(_pc_meta_value "${old_meta}" cwd)"
++  max_turns="$(_pc_meta_value "${old_meta}" max_turns)"
++  timeout_s="$(_pc_meta_value "${old_meta}" timeout)"
++  if [[ -z "${cwd}" || ! -d "${cwd}" ]]; then
++    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed reason=no_cwd"
++    return 1
++  fi
++
++  # Build the resume prompt: a 4-line prefix + the verbatim original prompt.
++  local old_prompt="${old_run_dir}/prompt.txt"
++  if [[ ! -s "${old_prompt}" ]]; then
++    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed reason=no_prompt"
++    return 1
++  fi
++  {
++    printf '## Resume after a prior partial run\n'
++    printf 'A previous run on this worktree died mid-work (stall/turn-cap/wall-clock) after producing real output. '
++    printf 'Your changes so far are already on disk in this worktree. Review what is present, then continue the mission to completion.\n'
++    printf 'Do NOT redo work that is already done; pick up where the prior run left off.\n'
++    printf -- '---\n\n'
++    cat "${old_prompt}"
++  } > "${prompt_file}"
++
++  # Write the marker BEFORE launching (R1: fail-closed, never loop).
++  # On marker-write failure, do not launch.
++  local marker_tmp="${marker}.tmp.$$"
++  if ! printf 'from_run=%s\nat=%s\nby=%s\n' "${HANDLE}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$$" \
++       > "${marker_tmp}" 2>/dev/null; then
++    rm -f "${marker_tmp}" 2>/dev/null || true
++    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed reason=marker_write"
++    return 1
++  fi
++  mv -f "${marker_tmp}" "${marker}" 2>/dev/null || { rm -f "${marker_tmp}" 2>/dev/null || true; \
++    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed reason=marker_write"; return 1; }
++
++  # Launch the provider's `bg` entrypoint with the resume prompt.
++  # `|| rc=$?` (never `!`) so gate codes (1|2) survive — same idiom as glm-coder.sh:1349.
++  local rc=0 new_run_id=""
++  bash "${launcher}" bg "@${prompt_file}" --cwd "${cwd}" \
++       --max-turns "${max_turns:-50}" --timeout "${timeout_s:-3600}" \
++       > "${launch_log}" 2>&1 || rc=$?
++
++  if [[ ${rc} -eq 0 ]]; then
++    # Parse the run-id from the last stdout line.
++    new_run_id="$(tail -n 1 "${launch_log}" 2>/dev/null)"
++    if [[ "${new_run_id}" =~ ^[0-9]{6}-[0-9]{6}- ]]; then
++      emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=${new_run_id}"
++      HANDLE="${new_run_id}"
++      _pc_resolve_asked_into_void
++      return 0
++    else
++      emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed rc=0 reason=no_run_id"
++      return 1
++    fi
++  elif [[ ${rc} -eq 1 || ${rc} -eq 2 ]]; then
++    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=blocked_by_gate rc=${rc}"
++    return 1
++  else
++    emit decision "dwr_resume task=${TASK} from_run=${HANDLE} new_run=launch_failed rc=${rc} reason=bad_rc"
++    return 1
++  fi
++}
++
+ _pc_job_registry_has_handle() { # <handle> -> 0 while the exact launch handle is registered
+   local handle="$1" entry
+   [[ -n "${handle}" && "${handle}" == "$(basename "${handle}")" ]] || return 1
+@@ -819,14 +985,7 @@ fi
+ # -> the asked-into-void cause never fires (degrades to empty_diff). Resolved ONCE
+ # here, before pc_scope_diff, so the empty-diff branch (cause asked_into_void) and
+ # the non-empty-diff branch (parked) below share one definition.
+-_PC_ASKED_INTO_VOID=""
+-if [[ -n "${AUTHOR:-}" && -n "${HANDLE:-}" ]]; then
+-  case "${AUTHOR}" in
+-    glm)  _PC_ASKED_INTO_VOID="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${HANDLE}/.asked_into_void" ;;
+-    kimi) _PC_ASKED_INTO_VOID="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${HANDLE}/.asked_into_void" ;;
+-    *)    _PC_ASKED_INTO_VOID="${_PC_RUNS_ROOT}/${AUTHOR}-runs/${HANDLE}/.asked_into_void" ;;
+-  esac
+-fi
++_pc_resolve_asked_into_void
+ 
+ if ! pc_await_worker_exit; then
+   printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
+@@ -836,6 +995,18 @@ if ! pc_await_worker_exit; then
+   exit 5
+ fi
+ 
++# GLM-DIED-WITH-WORK-RESUME-01: after the first worker exits, attempt one
++# died-with-work resume.  On success, re-enter the wait for the second run;
++# on any non-success, fall through to gating the partial diff exactly as today.
++if pc_dwr_resume_once; then
++  # Second wait with its own ceiling (LEADV2_PC_RESUME_MAX_WAIT_S, default
++  # = first-wait budget).  The lease-refresh inside pc_await_worker_exit
++  # keeps extending the claim across this second wait (R2).  Wall-clock
++  # worst case doubles — documented in the script header.
++  LEADV2_PC_WORKER_MAX_WAIT_S="${LEADV2_PC_RESUME_MAX_WAIT_S:-${LEADV2_PC_WORKER_MAX_WAIT_S:-4200}}" \
++    pc_await_worker_exit || true
++fi
++
+ pc_scope_diff
+ 
+ # C.3: a NON-empty diff whose worker still asked into the void is parked, never
+diff --git a/plugins/leadv2/scripts/tests/run-core-offline.sh b/plugins/leadv2/scripts/tests/run-core-offline.sh
+index 788b275..918a14c 100755
+--- a/plugins/leadv2/scripts/tests/run-core-offline.sh
++++ b/plugins/leadv2/scripts/tests/run-core-offline.sh
+@@ -52,6 +52,7 @@ run_check "Claude plugin manifest/components" validate_plugin
+ run_check "provider/model router" bash "$TEST_DIR/test-session-route.sh"
+ run_check "dispatch refusal fallback chain" bash "$TEST_DIR/test-routing-enforcement-p1.sh"
+ run_check "product-close waits for worker exit" bash "$TEST_DIR/test-no-work-terminal.sh"
++run_check "product-close resumes a died-with-work lane once" bash "$TEST_DIR/test-dwr-resume.sh"
+ run_check "Codex full-cycle runner" bash "$TEST_DIR/test-codex-session-runner.sh"
+ run_check "Codex terminal lead intake" bash "$TEST_DIR/test-codex-lead-intake.sh"
+ run_check "Codex child-session recursion boundary" bash "$TEST_DIR/test-codex-child-session-boundary.sh"
+diff --git a/plugins/leadv2/scripts/tests/test-dwr-resume.sh b/plugins/leadv2/scripts/tests/test-dwr-resume.sh
+new file mode 100644
+index 0000000..3761eb3
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-dwr-resume.sh
+@@ -0,0 +1,298 @@
++#!/usr/bin/env bash
++# GLM-DIED-WITH-WORK-RESUME-01 harness.
++# Proves product-close resumes a died-with-work lane exactly once via the
++# provider's `bg` entrypoint before gating its partial diff.  Uses the same
++# ok/bad/assert_eq helpers and GLM_RUNS_DIR / KIMI_RUNS_DIR / LEADV2_PC_RUNS_ROOT
++# / LEADV2_JOB_REGISTRY_ROOT / LEADV2_JOURNAL_BIN / LEADV2_DISPATCH_LEDGER_BIN
++# seams as test-no-work-terminal.sh.
++set -uo pipefail
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++PC="${SCRIPT_DIR}/leadv2-dispatch-product-close.sh"
++PASS=0; FAIL=0
++ok()   { printf '[TEST] PASS: %s\n' "$1"; PASS=$((PASS+1)); }
++bad()  { printf '[TEST] FAIL: %s\n' "$1"; FAIL=$((FAIL+1)); }
++assert_eq() { if [[ "$1" == "$2" ]]; then ok "$3"; else bad "$3 (got '$1' want '$2')"; fi; }
++
++make_stubs() { # <dir>
++  local d="$1"
++  cat > "${d}/resolver.py" <<'PY'
++print("reviewer=codex"); print("pool=codex"); print("refusal=")
++PY
++  cat > "${d}/codex.sh" <<'SH'
++#!/usr/bin/env bash
++mkdir -p "$2"; printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\n' > "$1"
++SH
++  chmod +x "${d}/codex.sh"
++  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/journal.log"\n' "${d}" > "${d}/journal.sh"
++  chmod +x "${d}/journal.sh"
++  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/ledger.log"\n' "${d}" > "${d}/ledger.sh"
++  chmod +x "${d}/ledger.sh"
++}
++
++new_repo() {
++  local root="$1"
++  mkdir -p "${root}/agent"
++  ( cd "${root}" && git init -q -b main && git config user.email t@e.com && git config user.name t \
++    && printf 'seed\n' > agent/seed.py && git add agent/seed.py && git commit -qm seed ) >/dev/null 2>&1
++}
++
++# Build a stub launcher that records argv, seeds a new completed run dir, and
++# exits with a configurable rc.  Reads at runtime:
++#   LEADV2_TEST_NEW_RUN_ID  — the run-id to print (must match ^[0-9]{6}-[0-9]{6}-)
++#   LEADV2_TEST_LAUNCHER_RC — exit code (0=success, 1|2=gate refuse, other=fail)
++#   LEADV2_TEST_RUNS_DIR    — root for the new run dir
++#   LEADV2_TEST_CALLS_LOG   — file to append argv to
++make_stub_launcher() { # <dir>
++  local d="$1"
++  cat > "${d}/stub-launcher.sh" <<'STUB'
++#!/usr/bin/env bash
++set -uo pipefail
++# Record argv.
++[[ -n "${LEADV2_TEST_CALLS_LOG:-}" ]] && printf '%s\n' "$*" >> "${LEADV2_TEST_CALLS_LOG}"
++# Seed a new run dir with status: complete so the second pc_await_worker_exit
++# returns 0 immediately.
++new_run="${LEADV2_TEST_NEW_RUN_ID:-260803-180000-resume00}"
++runs_dir="${LEADV2_TEST_RUNS_DIR:-${GLM_RUNS_DIR:-${KIMI_RUNS_DIR:-${LEADV2_PC_RUNS_ROOT:-/tmp}/glm-runs}}}"
++run_dir="${runs_dir}/${new_run}"
++mkdir -p "${run_dir}"
++# Parse --cwd from argv for a faithful meta.
++cwd_val="${PWD}"
++i=1
++while [[ ${i} -le $# ]]; do
++  if [[ "${!i}" == "--cwd" ]]; then
++    next=$((i + 1))
++    cwd_val="${!next}"
++    break
++  fi
++  i=$((i + 1))
++done
++printf 'run_id: %s\nstatus: complete\noutcome: completed\ncwd: %s\nmax_turns: 50\ntimeout: 3600\n' \
++  "${new_run}" "${cwd_val}" > "${run_dir}/meta.yaml"
++: > "${run_dir}/prompt.txt"
++echo "${new_run}"
++exit "${LEADV2_TEST_LAUNCHER_RC:-0}"
++STUB
++  chmod +x "${d}/stub-launcher.sh"
++}
++
++# Create a fake run dir with a given outcome.
++# Args: <runs_dir> <handle> <root> <outcome> <extra_meta...>
++make_dead_run() { # <runs_dir> <handle> <root> <outcome>
++  local runs_dir="$1" handle="$2" root="$3" outcome="$4"
++  local run_dir="${runs_dir}/${handle}"
++  mkdir -p "${run_dir}"
++  printf 'run_id: %s\nstatus: complete\ncwd: %s\nmax_turns: 50\ntimeout: 3600\noutcome: %s\n' \
++    "${handle}" "${root}" "${outcome}" > "${run_dir}/meta.yaml"
++  printf 'Write the deliverable described in the lane brief.\n' > "${run_dir}/prompt.txt"
++}
++
++# ---- Case (a): resume once on died-with-work -------------------------------
++case_resume_once() {
++  local d root handle runs launcher calls handoff rc new_run
++  d="$(mktemp -d)"; root="${d}/repo"; handle="260803-173809-deadrun1"
++  mkdir -p "${root}"; new_repo "${root}"; make_stubs "${d}"; make_stub_launcher "${d}"
++  runs="${d}/glm-runs"; launcher="${d}/stub-launcher.sh"; calls="${d}/launcher-calls.log"
++  new_run="260803-180000-resume01"
++  make_dead_run "${runs}" "${handle}" "${root}" "died-with-work"
++  : > "${calls}"
++  LEADV2_PC_RESUME_LAUNCHER_BIN="${launcher}" \
++    LEADV2_TEST_NEW_RUN_ID="${new_run}" LEADV2_TEST_LAUNCHER_RC=0 \
++    LEADV2_TEST_RUNS_DIR="${runs}" LEADV2_TEST_CALLS_LOG="${calls}" \
++    GLM_RUNS_DIR="${runs}" LEADV2_PC_RUNS_ROOT="${d}" \
++    LEADV2_JOB_REGISTRY_ROOT="${d}/job-registry" \
++    LEADV2_PC_WORKER_POLL_S=1 LEADV2_PC_WORKER_MAX_WAIT_S=10 \
++    LEADV2_PC_RESUME_MAX_WAIT_S=5 \
++    LEADV2_DISPATCH_CACHE_DIR="${d}/cache" LEADV2_LANE_WORK_ROOT="${root}" \
++    LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" \
++    LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
++    LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
++    bash "${PC}" "${root}" dwra0001 glm "${handle}" 0 0 "founder-dwr-a" >"${d}/close.log" 2>&1
++  rc=$?
++  handoff="${root}/docs/handoff/dispatch-dwra0001"
++  local n_calls
++  n_calls="$(wc -l < "${calls}" 2>/dev/null || echo 0)"
++  assert_eq "$(printf '%s' "${n_calls}" | tr -d ' ')" "1" "stub launcher invoked exactly once"
++  if grep -q -- '--cwd' "${calls}" 2>/dev/null && grep -q 'bg' "${calls}" 2>/dev/null; then
++    ok "stub argv contains bg and --cwd"
++  else bad "stub argv missing bg or --cwd (got: $(cat "${calls}" 2>/dev/null))"
++  fi
++  if [[ -f "${handoff}/.dwr-resume-attempted" ]]; then
++    ok ".dwr-resume-attempted exists"
++  else bad ".dwr-resume-attempted missing"
++  fi
++  if grep -q "dwr_resume task=dwra0001 from_run=${handle} new_run=${new_run}" "${d}/journal.log" 2>/dev/null; then
++    ok "journal has dwr_resume new_run=${new_run}"
++  else bad "journal dwr_resume line missing (got: $(grep dwr_resume "${d}/journal.log" 2>/dev/null || echo '<none>'))"
++  fi
++  if [[ -f "${handoff}/review.diff" ]]; then ok "gating ran (review.diff created)"; else bad "gating did not run"; fi
++  rm -rf "${d}"
++}
++
++# ---- Case (b): marker present -> no second resume --------------------------
++case_marker_present() {
++  local d root handle runs launcher calls handoff rc
++  d="$(mktemp -d)"; root="${d}/repo"; handle="260803-173809-deadrun2"
++  mkdir -p "${root}"; new_repo "${root}"; make_stubs "${d}"; make_stub_launcher "${d}"
++  runs="${d}/glm-runs"; launcher="${d}/stub-launcher.sh"; calls="${d}/launcher-calls.log"
++  make_dead_run "${runs}" "${handle}" "${root}" "died-with-work"
++  handoff="${root}/docs/handoff/dispatch-dwrb0002"
++  mkdir -p "${handoff}"
++  printf 'from_run=%s\nat=2026-08-03T17:00:00Z\nby=99999\n' "${handle}" > "${handoff}/.dwr-resume-attempted"
++  : > "${calls}"
++  LEADV2_PC_RESUME_LAUNCHER_BIN="${launcher}" \
++    LEADV2_TEST_NEW_RUN_ID="260803-180000-resume02" LEADV2_TEST_LAUNCHER_RC=0 \
++    LEADV2_TEST_RUNS_DIR="${runs}" LEADV2_TEST_CALLS_LOG="${calls}" \
++    GLM_RUNS_DIR="${runs}" LEADV2_PC_RUNS_ROOT="${d}" \
++    LEADV2_JOB_REGISTRY_ROOT="${d}/job-registry" \
++    LEADV2_PC_WORKER_POLL_S=1 LEADV2_PC_WORKER_MAX_WAIT_S=10 \
++    LEADV2_DISPATCH_CACHE_DIR="${d}/cache" LEADV2_LANE_WORK_ROOT="${root}" \
++    LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" \
++    LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
++    LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
++    bash "${PC}" "${root}" dwrb0002 glm "${handle}" 0 0 "founder-dwr-b" >"${d}/close.log" 2>&1
++  rc=$?
++  local n_calls
++  n_calls="$(wc -l < "${calls}" 2>/dev/null || echo 0)"
++  assert_eq "$(printf '%s' "${n_calls}" | tr -d ' ')" "0" "stub launcher NOT invoked when marker present"
++  if grep -q "dwr_resume task=dwrb0002 from_run=${handle} new_run=skipped reason=already_attempted" "${d}/journal.log" 2>/dev/null; then
++    ok "journal has new_run=skipped reason=already_attempted"
++  else bad "journal missing skipped line (got: $(grep dwr_resume "${d}/journal.log" 2>/dev/null || echo '<none>'))"
++  fi
++  if [[ -f "${handoff}/review.diff" ]]; then ok "gating still ran with marker present"; else bad "gating did not run"; fi
++  rm -rf "${d}"
++}
++
++# ---- Case (c): not eligible (completed / died-clean) -----------------------
++case_not_eligible() {
++  local outcome
++  for outcome in completed died-clean; do
++    local d root handle runs launcher calls rc
++    d="$(mktemp -d)"; root="${d}/repo"; handle="260803-173809-${outcome}"
++    mkdir -p "${root}"; new_repo "${root}"; make_stubs "${d}"; make_stub_launcher "${d}"
++    runs="${d}/glm-runs"; launcher="${d}/stub-launcher.sh"; calls="${d}/launcher-calls.log"
++    make_dead_run "${runs}" "${handle}" "${root}" "${outcome}"
++    : > "${calls}"
++    LEADV2_PC_RESUME_LAUNCHER_BIN="${launcher}" \
++      GLM_RUNS_DIR="${runs}" LEADV2_PC_RUNS_ROOT="${d}" \
++      LEADV2_JOB_REGISTRY_ROOT="${d}/job-registry" \
++      LEADV2_PC_WORKER_POLL_S=1 LEADV2_PC_WORKER_MAX_WAIT_S=10 \
++      LEADV2_DISPATCH_CACHE_DIR="${d}/cache" LEADV2_LANE_WORK_ROOT="${root}" \
++      LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" \
++      LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
++      LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
++      bash "${PC}" "${root}" "dwrc$(printf '%s' "${outcome}" | cut -c1-3)" glm "${handle}" 0 0 "founder-dwr-c" >"${d}/close.log" 2>&1
++    rc=$?
++    local n_calls
++    n_calls="$(wc -l < "${calls}" 2>/dev/null || echo 0)"
++    assert_eq "$(printf '%s' "${n_calls}" | tr -d ' ')" "0" "stub NOT invoked for outcome=${outcome}"
++    if grep -q 'dwr_resume' "${d}/journal.log" 2>/dev/null; then
++      bad "outcome=${outcome} emitted a dwr_resume line (should be silent)"
++    else ok "outcome=${outcome} has no dwr_resume journal line"
++    fi
++    rm -rf "${d}"
++  done
++}
++
++# ---- Case (d): gate refuses (rc 2) -> blocked_by_gate, gating proceeds -----
++case_gate_refuses() {
++  local d root handle runs launcher calls handoff rc
++  d="$(mktemp -d)"; root="${d}/repo"; handle="260803-173809-deadrun4"
++  mkdir -p "${root}"; new_repo "${root}"; make_stubs "${d}"; make_stub_launcher "${d}"
++  runs="${d}/glm-runs"; launcher="${d}/stub-launcher.sh"; calls="${d}/launcher-calls.log"
++  make_dead_run "${runs}" "${handle}" "${root}" "died-with-work"
++  : > "${calls}"
++  LEADV2_PC_RESUME_LAUNCHER_BIN="${launcher}" \
++    LEADV2_TEST_LAUNCHER_RC=2 \
++    LEADV2_TEST_RUNS_DIR="${runs}" LEADV2_TEST_CALLS_LOG="${calls}" \
++    GLM_RUNS_DIR="${runs}" LEADV2_PC_RUNS_ROOT="${d}" \
++    LEADV2_JOB_REGISTRY_ROOT="${d}/job-registry" \
++    LEADV2_PC_WORKER_POLL_S=1 LEADV2_PC_WORKER_MAX_WAIT_S=10 \
++    LEADV2_DISPATCH_CACHE_DIR="${d}/cache" LEADV2_LANE_WORK_ROOT="${root}" \
++    LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" \
++    LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
++    LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
++    bash "${PC}" "${root}" dwrd0004 glm "${handle}" 0 0 "founder-dwr-d" >"${d}/close.log" 2>&1
++  rc=$?
++  handoff="${root}/docs/handoff/dispatch-dwrd0004"
++  if grep -q "dwr_resume task=dwrd0004 from_run=${handle} new_run=blocked_by_gate rc=2" "${d}/journal.log" 2>/dev/null; then
++    ok "journal has blocked_by_gate rc=2"
++  else bad "journal missing blocked_by_gate (got: $(grep dwr_resume "${d}/journal.log" 2>/dev/null || echo '<none>'))"
++  fi
++  if [[ -f "${handoff}/review.diff" ]]; then ok "gating still ran after gate refusal"; else bad "gating did not run"; fi
++  if [[ -f "${handoff}/.dwr-resume-attempted" ]]; then ok "marker written despite gate refusal"; else bad "marker missing after gate refusal"; fi
++  rm -rf "${d}"
++}
++
++# ---- Case (e): kimi parity — same treatment keyed off outcome: --------------
++case_kimi_parity() {
++  local d root handle runs launcher calls handoff rc new_run
++  d="$(mktemp -d)"; root="${d}/repo"; handle="260803-173809-kimidead"
++  mkdir -p "${root}"; new_repo "${root}"; make_stubs "${d}"; make_stub_launcher "${d}"
++  runs="${d}/kimi-runs"; launcher="${d}/stub-launcher.sh"; calls="${d}/launcher-calls.log"
++  new_run="260803-180000-kimires"
++  make_dead_run "${runs}" "${handle}" "${root}" "died-with-work"
++  : > "${calls}"
++  LEADV2_PC_RESUME_LAUNCHER_BIN="${launcher}" \
++    LEADV2_TEST_NEW_RUN_ID="${new_run}" LEADV2_TEST_LAUNCHER_RC=0 \
++    LEADV2_TEST_RUNS_DIR="${runs}" LEADV2_TEST_CALLS_LOG="${calls}" \
++    KIMI_RUNS_DIR="${runs}" LEADV2_PC_RUNS_ROOT="${d}" \
++    LEADV2_JOB_REGISTRY_ROOT="${d}/job-registry" \
++    LEADV2_PC_WORKER_POLL_S=1 LEADV2_PC_WORKER_MAX_WAIT_S=10 \
++    LEADV2_PC_RESUME_MAX_WAIT_S=5 \
++    LEADV2_DISPATCH_CACHE_DIR="${d}/cache" LEADV2_LANE_WORK_ROOT="${root}" \
++    LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" \
++    LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
++    LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
++    bash "${PC}" "${root}" dwre0005 kimi "${handle}" 0 0 "founder-dwr-e" >"${d}/close.log" 2>&1
++  rc=$?
++  handoff="${root}/docs/handoff/dispatch-dwre0005"
++  local n_calls
++  n_calls="$(wc -l < "${calls}" 2>/dev/null || echo 0)"
++  assert_eq "$(printf '%s' "${n_calls}" | tr -d ' ')" "1" "kimi: stub launcher invoked once"
++  if grep -q "dwr_resume task=dwre0005 from_run=${handle} new_run=${new_run}" "${d}/journal.log" 2>/dev/null; then
++    ok "kimi: journal has dwr_resume new_run=${new_run}"
++  else bad "kimi: journal dwr_resume missing (got: $(grep dwr_resume "${d}/journal.log" 2>/dev/null || echo '<none>'))"
++  fi
++  if [[ -f "${handoff}/review.diff" ]]; then ok "kimi: gating ran"; else bad "kimi: gating did not run"; fi
++  rm -rf "${d}"
++}
++
++# ---- Case (f): kill switch off (LEADV2_PC_DWR_RESUME=0) --------------------
++case_kill_switch() {
++  local d root handle runs launcher calls rc
++  d="$(mktemp -d)"; root="${d}/repo"; handle="260803-173809-ksdead"
++  mkdir -p "${root}"; new_repo "${root}"; make_stubs "${d}"; make_stub_launcher "${d}"
++  runs="${d}/glm-runs"; launcher="${d}/stub-launcher.sh"; calls="${d}/launcher-calls.log"
++  make_dead_run "${runs}" "${handle}" "${root}" "died-with-work"
++  : > "${calls}"
++  LEADV2_PC_DWR_RESUME=0 \
++    LEADV2_PC_RESUME_LAUNCHER_BIN="${launcher}" \
++    LEADV2_TEST_RUNS_DIR="${runs}" LEADV2_TEST_CALLS_LOG="${calls}" \
++    GLM_RUNS_DIR="${runs}" LEADV2_PC_RUNS_ROOT="${d}" \
++    LEADV2_JOB_REGISTRY_ROOT="${d}/job-registry" \
++    LEADV2_PC_WORKER_POLL_S=1 LEADV2_PC_WORKER_MAX_WAIT_S=10 \
++    LEADV2_DISPATCH_CACHE_DIR="${d}/cache" LEADV2_LANE_WORK_ROOT="${root}" \
++    LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" \
++    LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
++    LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
++    bash "${PC}" "${root}" dwrf0006 glm "${handle}" 0 0 "founder-dwr-f" >"${d}/close.log" 2>&1
++  rc=$?
++  local n_calls
++  n_calls="$(wc -l < "${calls}" 2>/dev/null || echo 0)"
++  assert_eq "$(printf '%s' "${n_calls}" | tr -d ' ')" "0" "kill switch: stub NOT invoked"
++  if grep -q 'dwr_resume' "${d}/journal.log" 2>/dev/null; then
++    bad "kill switch: emitted dwr_resume line (should be silent)"
++  else ok "kill switch: no dwr_resume journal line"
++  fi
++  rm -rf "${d}"
++}
++
++case_resume_once
++case_marker_present
++case_not_eligible
++case_gate_refuses
++case_kimi_parity
++case_kill_switch
++
++printf '\n=== %d passed, %d failed ===\n' "${PASS}" "${FAIL}"
++[[ "${FAIL}" == 0 ]]

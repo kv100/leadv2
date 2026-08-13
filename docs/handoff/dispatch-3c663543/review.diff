@@ -1,0 +1,337 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index 1cc5e86..3a356cc 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -267,6 +267,18 @@ PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git
+ WORK_ROOT="${LEADV2_LANE_WORK_ROOT:-}"
+ [[ -n "$WORK_ROOT" && -d "$WORK_ROOT" ]] || WORK_ROOT="$PROJECT_ROOT"
+ export LEADV2_LANE_WORK_ROOT="$WORK_ROOT"
++# LANDED-AT-SPAWN-01: Ledger keying follows the DISPATCH TARGET (the main checkout that
++# owns the lane worktree), never the caller session's env. PROJECT_ROOT above is resolved
++# from CLAUDE_PROJECT_ROOT/CLAUDE_PROJECT_DIR -- i.e. wherever the HUMAN launched the
++# session -- so a persona-engine session dispatching into a leadv2 lane would write
++# terminals and reservations into persona-engine's state dir. LEDGER_REPO_ROOT is the
++# main checkout that owns WORK_ROOT's linked worktree; every _dl_note call and every
++# repo_slug-derived path (reservation ledger, review ledger, dispatch lock) keys off it.
++# The cd must happen INSIDE WORK_ROOT: --git-common-dir returns a relative path (".git")
++# for an ordinary checkout and an absolute path for a linked worktree, so resolving from
++# anywhere else silently yields the wrong root. bash 3.2 safe.
++LEDGER_REPO_ROOT="$(cd "${WORK_ROOT}" 2>/dev/null && cd "$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)")" 2>/dev/null && pwd)"
++[[ -n "${LEDGER_REPO_ROOT}" && -d "${LEDGER_REPO_ROOT}" ]] || LEDGER_REPO_ROOT="${PROJECT_ROOT}"
+ # W-1a §3.1: set to 1 the moment a dispatch confirms a live worker (arc==0). The EXIT-trap
+ # reap (_reap_lane_worktree_if_unused, called from cleanup_pending_dispatch) uses this to
+ # reap an orphaned lane worktree ONLY when no worker was spawned -- a successful spawn
+@@ -407,9 +419,12 @@ log()        { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
+ log_err()    { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
+ 
+ # repo slug (ledger file naming; sanitized to filesystem-safe).
++# LANDED-AT-SPAWN-01: slug the DISPATCH TARGET (LEDGER_REPO_ROOT), not PROJECT_ROOT.
++# One edit covers dispatch_ledger_file (reserve/confirm/abort), review_ledger_file, and
++# dispatch_lock_file -- every repo_slug callsite follows the target uniformly.
+ repo_slug() {
+   local base
+-  base="$(basename "${PROJECT_ROOT}")"
++  base="$(basename "${LEDGER_REPO_ROOT:-${PROJECT_ROOT}}")"
+   printf '%s' "${base}" | tr -cd 'A-Za-z0-9._-'
+ }
+ 
+@@ -485,7 +500,11 @@ _dl_note() {
+   # global (never from this fn's own args -- its 5-arg signature stays unchanged so its
+   # ~15 callsites need zero edits). write-terminal falls back to founder_task_id itself
+   # when this is empty.
+-  bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$(_dl_attempt_token "$1")" "${DISPATCH_LANE_NAME:-}" >/dev/null 2>&1 9>&- || true
++  # LANDED-AT-SPAWN-01: key the terminal ledger to the DISPATCH TARGET, not the caller
++  # session. Both names because ledger:83 prefers PROJECT_ROOT while other leadv2 callers
++  # key off LEADV2_PROJECT_ROOT -- threading both keeps the fix uniform.
++  PROJECT_ROOT="${LEDGER_REPO_ROOT}" LEADV2_PROJECT_ROOT="${LEDGER_REPO_ROOT}" \
++    bash "${LEDGER_BIN}" write-terminal "$1" "${5:-}" "$2" "$3" "${4:-}" "$(_dl_attempt_token "$1")" "${DISPATCH_LANE_NAME:-}" >/dev/null 2>&1 9>&- || true
+ }
+ 
+ # ── task signature: normalize mission text, sha256 ────────────────────────────────
+@@ -2508,9 +2527,15 @@ confirmation-seeking; only for a decision you cannot make yourself."
+       # A product dispatch's terminal state is owned by dispatch-product-close.sh (it runs
+       # the e2e/review gates and knows the real outcome) -- writing "landed" HERE for a
+       # product task would let a later, more informative dead/parked verdict from that
+-      # script lose the write-once race. Non-product spawns have nothing else that will
+-      # ever check back on them, so THIS is their one and only terminal write.
+-      [[ "${product_class}" != "product" ]] && _dl_note "${sig8}" landed "spawned_${candidate}" "" "${founder_task_id}"
++      # script lose the write-once race. A non-product spawn has no terminal at spawn time
++      # either: every non-product arm reaches rc=0 here only after launching an ASYNC
++      # background worker that has done zero work, and "landed" is a future-claim that
++      # permanently blocks the lane's real terminal under write-once semantics and trips
++      # the codex-lead dup-guard. Absence of a terminal row IS the honest state until the
++      # lane's own close/sweep path resolves it. The already-written confirmed reservation
++      # row (dispatch_confirm) remains the only spawn-time record; no new row type is
++      # needed -- dispatch_ledger_sweep_write_dead already recovers abandoned lanes.
++      # (LANDED-AT-SPAWN-01)
+       # W-1a §3.1: a live worker was spawned -- do NOT reap this lane's worktree on EXIT
+       # (the async worker + close gate still need it). §3.3: emit the loud interim line
+       # naming the absolute path where the finished lane's worktree is left on disk --
+diff --git a/plugins/leadv2/scripts/tests/run-core-offline.sh b/plugins/leadv2/scripts/tests/run-core-offline.sh
+index 1103adb..52075cc 100755
+--- a/plugins/leadv2/scripts/tests/run-core-offline.sh
++++ b/plugins/leadv2/scripts/tests/run-core-offline.sh
+@@ -70,6 +70,7 @@ run_check "subsession model downgrade" bash "$TEST_DIR/test-leadv2-model-arg-reb
+ run_check "plugin sync quarantine/dry-run safety" bash "$TEST_DIR/test-drift-guard-quarantine-perimeter.sh"
+ run_check "skill lint" bash "$TEST_DIR/test-leadv2-skill-lint.sh"
+ run_check "status surface single-lead + census" bash "$REPO_ROOT/tests/test-status-surface-single-lead.sh"
++run_check "landed-at-spawn (no terminal=landed at spawn; target repo keying)" bash "$TEST_DIR/test-landed-at-spawn.sh"
+ 
+ printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
+ (( FAIL == 0 && MISSING == 0 ))
+diff --git a/plugins/leadv2/scripts/tests/test-landed-at-spawn.sh b/plugins/leadv2/scripts/tests/test-landed-at-spawn.sh
+new file mode 100644
+index 0000000..f5f05c4
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-landed-at-spawn.sh
+@@ -0,0 +1,250 @@
++#!/usr/bin/env bash
++# LANDED-AT-SPAWN-01 — spawn must never write terminal=landed; ledger keyed to target repo.
++#
++# Four assertions:
++#   T-a  non-product async spawn → zero lines matching "terminal":"landed" in EITHER
++#        repo's terminal ledger; reservation ledger DOES carry a confirmed row.
++#   T-b  a genuine pre-spawn refusal → terminal row lands under the TARGET slug's
++#        state dir; decoy's state dir has no such row.
++#   T-c  regression: pre-spawn refused still writes at all (non-empty terminal file,
++#        correct terminal/cause).
++#   T-d  decoy state dir holds NO dispatch-ledger.jsonl line for this sig at all —
++#        proves the leak is closed, not merely duplicated.
++#
++# Sandbox: two git fixture repos (target/ with a linked lane worktree, decoy/),
++# sandbox LEADV2_STATE_BASE + LEADV2_DISPATCH_CACHE_DIR, stub GLM binary,
++# decoy wired in as the caller session via CLAUDE_PROJECT_DIR.
++
++set -uo pipefail
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++PLUGIN_SCRIPTS="$(cd "${SCRIPT_DIR}/.." && pwd)"
++DC="${PLUGIN_SCRIPTS}/leadv2-dispatch-code.sh"
++STATE_PATH="${PLUGIN_SCRIPTS}/leadv2-state-path.sh"
++
++PASS=0; FAIL=0
++ok()  { printf '[TEST] PASS: %s\n' "$1"; PASS=$((PASS+1)); }
++bad() { printf '[TEST] FAIL: %s\n' "$1"; FAIL=$((FAIL+1)); }
++
++SANDBOX="$(mktemp -d /tmp/leadv2-las-XXXXXX)"
++cleanup() {
++  rm -rf "${SANDBOX}"
++}
++trap cleanup EXIT
++
++# ── Fixture repos ────────────────────────────────────────────────────────────
++TARGET="${SANDBOX}/target"
++DECOY="${SANDBOX}/decoy"
++TARGET_WT="${SANDBOX}/target-wt"
++
++new_repo() {
++  local root="$1"
++  mkdir -p "${root}"
++  ( cd "${root}" && git init -q -b main \
++    && git config user.email t@e.com && git config user.name t \
++    && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
++}
++
++new_repo "${TARGET}"
++new_repo "${DECOY}"
++# Linked worktree of target so --git-common-dir resolves to target/.git
++( cd "${TARGET}" && git worktree add -q "${TARGET_WT}" ) 2>/dev/null
++
++# ── Sandbox state + cache dirs ───────────────────────────────────────────────
++export LEADV2_STATE_BASE="${SANDBOX}/state"
++export LEADV2_DISPATCH_CACHE_DIR="${SANDBOX}/cache"
++STUB_RUNS="${SANDBOX}/glm-runs"
++GLM_STUB="${SANDBOX}/glm-stub.sh"
++JOURNAL_STUB="${SANDBOX}/journal-stub.sh"
++
++# ── Stub GLM binary (bg creates a fake run record, status checks it) ─────────
++cat > "${GLM_STUB}" <<'SH'
++#!/usr/bin/env bash
++RUNS="${LEADV2_STUB_GLM_RUNS:-/tmp/leadv2-stub-glm-runs}"
++case "${1:-}" in
++  bg)
++    mkdir -p "$RUNS" 2>/dev/null
++    handle="stub-run-$(date +%s)-$$"
++    printf '%s' "$handle" > "$RUNS/$handle" 2>/dev/null
++    printf '%s\n' "$handle"
++    exit 0
++    ;;
++  status)
++    [[ -n "${2:-}" && -f "$RUNS/$2" ]] && exit 0
++    exit 1
++    ;;
++  *)
++    exit 0
++    ;;
++esac
++SH
++
++# Stub journal (no-op — dispatch-code.sh calls it via bash, never exec)
++cat > "${JOURNAL_STUB}" <<'SH'
++#!/usr/bin/env bash
++exit 0
++SH
++
++# ── Common dispatch env ──────────────────────────────────────────────────────
++# Decoy is the CALLER SESSION (simulates persona-engine session dispatching
++# into a leadv2 lane). Target worktree is the DISPATCH TARGET.
++setup_env() {
++  export CLAUDE_PROJECT_DIR="${DECOY}"
++  export CLAUDE_PROJECT_ROOT="${DECOY}"
++  unset PROJECT_ROOT 2>/dev/null || true
++  export LEADV2_LANE_WORK_ROOT="${TARGET_WT}"
++  export LEADV2_DISPATCH_GLM_BIN="${GLM_STUB}"
++  export LEADV2_STUB_GLM_RUNS="${STUB_RUNS}"
++  export LEADV2_JOURNAL_BIN="${JOURNAL_STUB}"
++  export LEADV2_DISPATCH_LEDGER_BIN="${PLUGIN_SCRIPTS}/leadv2-dispatch-ledger.sh"
++  export LEADV2_STATE_PATH_BIN="${STATE_PATH}"
++  # Use v1 router with resolver missing → defaults to arm=glm
++  export LEADV2_ROUTER_V2=0
++  export GLM_POLICY_RESOLVER=""
++  # Lane-shape gate off (default) — skip shape classification
++  export LEADV2_LANE_SHAPE=off
++  # No e2e/review gates — non-product dispatch
++  export LEADV2_DISPATCH_E2E_GATE=0
++  export LEADV2_DISPATCH_REVIEW_GATE=0
++  # Short TTLs so stale rows from a prior case don't block
++  export LEADV2_DISPATCH_PENDING_TTL_S=5
++  export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
++}
++
++# Resolve the terminal ledger path for a given repo root.
++terminal_ledger_path() { # <repo_root>
++  local repo="$1"
++  PROJECT_ROOT="${repo}" LEADV2_STATE_BASE="${LEADV2_STATE_BASE}" \
++    bash "${STATE_PATH}" --no-link dispatch-ledger.jsonl 2>/dev/null
++}
++
++# Resolve the reservation ledger path for a given slug.
++reservation_ledger_path() { # <slug>
++  printf '%s/dispatch-ledger/%s.jsonl' "${LEADV2_DISPATCH_CACHE_DIR}" "$1"
++}
++
++TARGET_SLUG="target"
++DECOY_SLUG="decoy"
++TARGET_TERMINAL="$(terminal_ledger_path "${TARGET}")"
++DECOY_TERMINAL="$(terminal_ledger_path "${DECOY}")"
++TARGET_RESERVATION="$(reservation_ledger_path "${TARGET_SLUG}")"
++DECOY_RESERVATION="$(reservation_ledger_path "${DECOY_SLUG}")"
++
++# ════════════════════════════════════════════════════════════════════════════
++# T-a: non-product async spawn → no terminal=landed in EITHER ledger
++# ════════════════════════════════════════════════════════════════════════════
++setup_env
++MISSION_A="LAS01-T-a: fix the flaky integration test in scripts/build.sh"
++SIG_A="$(printf '%s' "${MISSION_A}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print $1}')"
++SIG8_A="${SIG_A:0:8}"
++
++dispatch_rc=0
++bash "${DC}" --kind tooling "${MISSION_A}" >/dev/null 2>&1 || dispatch_rc=$?
++
++if [[ ${dispatch_rc} -eq 0 ]]; then
++  ok "T-a: dispatch exited 0 (spawn succeeded)"
++else
++  bad "T-a: dispatch exited ${dispatch_rc} (expected 0)"
++fi
++
++# T-a assertion 1: no landed row in target terminal ledger
++target_landed=""
++[[ -f "${TARGET_TERMINAL}" ]] && target_landed="$(grep -c '"terminal":"landed"' "${TARGET_TERMINAL}" 2>/dev/null || printf 0)"
++if [[ "${target_landed}" == "0" || -z "${target_landed}" ]]; then
++  ok "T-a: no terminal=landed in TARGET terminal ledger"
++else
++  bad "T-a: TARGET terminal ledger has ${target_landed} landed row(s)"
++fi
++
++# T-a assertion 2: no landed row in decoy terminal ledger
++decoy_landed=""
++[[ -f "${DECOY_TERMINAL}" ]] && decoy_landed="$(grep -c '"terminal":"landed"' "${DECOY_TERMINAL}" 2>/dev/null || printf 0)"
++if [[ "${decoy_landed}" == "0" || -z "${decoy_landed}" ]]; then
++  ok "T-a: no terminal=landed in DECOY terminal ledger"
++else
++  bad "T-a: DECOY terminal ledger has ${decoy_landed} landed row(s)"
++fi
++
++# T-a assertion 3: reservation ledger DOES carry a confirmed row for this sig
++target_confirmed=""
++[[ -f "${TARGET_RESERVATION}" ]] && target_confirmed="$(grep -c "\"task_sig\":\"${SIG_A}\"" "${TARGET_RESERVATION}" 2>/dev/null | head -1 || printf 0)"
++if [[ "${target_confirmed}" != "0" && -n "${target_confirmed}" ]]; then
++  ok "T-a: reservation ledger has a row for this sig"
++else
++  bad "T-a: reservation ledger has no row for sig ${SIG8_A}"
++fi
++
++# T-a assertion 4: confirmed state exists
++if [[ -f "${TARGET_RESERVATION}" ]] && grep -q "\"state\":\"confirmed\"" "${TARGET_RESERVATION}" 2>/dev/null; then
++  ok "T-a: reservation row is confirmed"
++else
++  bad "T-a: reservation row is NOT confirmed (or missing)"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# T-b: pre-spawn refusal → terminal lands under TARGET slug, NOT decoy
++# T-d: decoy has no row for this sig at all
++# ════════════════════════════════════════════════════════════════════════════
++setup_env
++# Exclude ALL arms → pre-spawn refusal (all_arms_excluded)
++export LEADV2_EXCLUDED_ARMS="glm kimi codex sonnet"
++
++MISSION_B="LAS01-T-b: refactor the plugin cache validator scripts/sync.sh"
++SIG_B="$(printf '%s' "${MISSION_B}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print $1}')"
++SIG8_B="${SIG_B:0:8}"
++
++dispatch_rc_b=0
++bash "${DC}" --kind tooling "${MISSION_B}" >/dev/null 2>&1 || dispatch_rc_b=$?
++
++if [[ ${dispatch_rc_b} -eq 4 ]]; then
++  ok "T-b: dispatch exited 4 (pre-spawn refusal)"
++else
++  bad "T-b: dispatch exited ${dispatch_rc_b} (expected 4)"
++fi
++
++# T-b: terminal row exists in TARGET terminal ledger for this sig
++if [[ -f "${TARGET_TERMINAL}" ]] && grep -q "\"task_sig\":\"${SIG8_B}\"" "${TARGET_TERMINAL}" 2>/dev/null; then
++  ok "T-b: terminal row landed in TARGET state dir for sig ${SIG8_B}"
++else
++  bad "T-b: NO terminal row in TARGET state dir for sig ${SIG8_B}"
++fi
++
++# T-d: NO terminal row in DECOY terminal ledger for this sig
++decoy_has_sig=""
++[[ -f "${DECOY_TERMINAL}" ]] && decoy_has_sig="$(grep -c "\"task_sig\":\"${SIG8_B}\"" "${DECOY_TERMINAL}" 2>/dev/null || printf 0)"
++if [[ "${decoy_has_sig}" == "0" || -z "${decoy_has_sig}" ]]; then
++  ok "T-d: NO terminal row in DECOY state dir for sig ${SIG8_B}"
++else
++  bad "T-d: DECOY state dir HAS a terminal row for sig ${SIG8_B} (leak not closed)"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# T-c: regression — pre-spawn refused still writes a terminal row (non-empty,
++#      correct terminal=refused, cause=all_arms_excluded)
++# ════════════════════════════════════════════════════════════════════════════
++if [[ -f "${TARGET_TERMINAL}" ]] && [[ -s "${TARGET_TERMINAL}" ]]; then
++  ok "T-c: terminal ledger is non-empty (pre-spawn refusal still writes)"
++else
++  bad "T-c: terminal ledger is empty or missing (regression: refusal writes nothing)"
++fi
++
++if [[ -f "${TARGET_TERMINAL}" ]] && grep -q '"terminal":"refused"' "${TARGET_TERMINAL}" 2>/dev/null; then
++  ok "T-c: terminal row has terminal=refused"
++else
++  bad "T-c: terminal row missing terminal=refused"
++fi
++
++if [[ -f "${TARGET_TERMINAL}" ]] && grep -q '"cause":"all_arms_excluded"' "${TARGET_TERMINAL}" 2>/dev/null; then
++  ok "T-c: terminal row has cause=all_arms_excluded"
++else
++  bad "T-c: terminal row missing cause=all_arms_excluded"
++fi
++
++# ── Static guard: no _dl_note ... landed on the spawn path ───────────────────
++if ! grep -q '_dl_note.*landed.*spawned_' "${DC}" 2>/dev/null; then
++  ok "T-static: no _dl_note landed/spawned_ call in dispatch-code.sh"
++else
++  bad "T-static: _dl_note landed/spawned_ STILL PRESENT in dispatch-code.sh"
++fi
++
++printf '\n[LANDED-AT-SPAWN-01] passed=%d failed=%d\n' "${PASS}" "${FAIL}"
++(( FAIL == 0 ))

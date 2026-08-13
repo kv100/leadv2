@@ -1,0 +1,973 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index 70d0a05..ef97131 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -1031,19 +1031,37 @@ with open(sys.argv[5], 'w') as f:
+   mv -f "${_tmp_file}" "${_lock_file}" 2>/dev/null || true
+ }
+ 
++# _default_quota_lockout_iso: the flat "now + LEADV2_QUOTA_LOCKOUT_MINUTES" fallback,
++# unchanged from before CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01 -- used whenever
++# _quota_return_time (leadv2-quota-error-parse.py) has nothing parseable to offer.
++_default_quota_lockout_iso() {
++  date -u -v+"${LEADV2_QUOTA_LOCKOUT_MINUTES:-30}"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
++    || date -u -d "+${LEADV2_QUOTA_LOCKOUT_MINUTES:-30} minutes" +%Y-%m-%dT%H:%M:%SZ
++}
++
+ # _maybe_record_quota_lockout: called from each arm's refusal branch when the
+ # refusal reason is quota-shaped. Writes a lockout record so the NEXT dispatch
+ # skips this provider via the quota precheck.
+-_maybe_record_quota_lockout() {  # <arm> <refusal_reason>
++# <arm> <refusal_reason> [<raw_launcher_text>] -- the raw text (launcher stdout+stderr,
++# when the caller has it) is fed to _quota_return_time so a provider-stated reset time
++# improves on the flat default; when absent (back-compat: older/direct callers that only
++# ever passed 2 args) this degrades EXACTLY to the pre-existing flat-default behavior --
++# same call sites, same rc contract, unchanged when nothing is parseable.
++_maybe_record_quota_lockout() {  # <arm> <refusal_reason> [<raw_text>]
+   case "${2}" in
+     quota|quota_gate|quota_exhausted|rate_limit*) ;;
+     *) return 0 ;;
+   esac
+-  _record_quota_lockout "$(_arm_provider "${1}")" \
+-    "$(date -u -v+"${LEADV2_QUOTA_LOCKOUT_MINUTES:-30}"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+-       || date -u -d "+${LEADV2_QUOTA_LOCKOUT_MINUTES:-30} minutes" +%Y-%m-%dT%H:%M:%SZ)" \
+-    "launcher_refusal:${2}"
+-  emit decision "quota_lockout_recorded provider=$(_arm_provider "${1}") arm=${1} reason=${2} minutes=${LEADV2_QUOTA_LOCKOUT_MINUTES:-30}"
++  local _iso_src _iso _source
++  _iso_src="$(_quota_return_time "${3:-}")"
++  _iso="${_iso_src%%|*}"
++  _source="${_iso_src##*|}"
++  if [[ -z "${_iso}" ]]; then
++    _iso="$(_default_quota_lockout_iso)"
++    _source="default"
++  fi
++  _record_quota_lockout "$(_arm_provider "${1}")" "${_iso}" "launcher_refusal:${2}"
++  emit decision "quota_lockout_recorded provider=$(_arm_provider "${1}") arm=${1} reason=${2} source=${_source} minutes=${LEADV2_QUOTA_LOCKOUT_MINUTES:-30}"
+ }
+ 
+ # ── end ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 ───────────────────────────────────
+@@ -2164,7 +2182,7 @@ _spawn_worker_body() {
+         if [[ -n "${refusal}" ]]; then
+           LAST_ARM_OUTCOME="glm_refused_${refusal}"
+           emit decision "arm_refused by=router model=glm task=${sig8} reason=glm_refused_${refusal}"
+-          _maybe_record_quota_lockout "glm" "${refusal}"
++          _maybe_record_quota_lockout "glm" "${refusal}" "${out}"$'\n'"${err}"
+           log "spawn(glm) refused: ${refusal}"
+           return 2
+         fi
+@@ -2204,7 +2222,7 @@ _spawn_worker_body() {
+         if [[ -n "${refusal}" ]]; then
+           LAST_ARM_OUTCOME="kimi_refused_${refusal}"
+           emit decision "arm_refused by=router model=kimi task=${sig8} reason=kimi_refused_${refusal}"
+-          _maybe_record_quota_lockout "kimi" "${refusal}"
++          _maybe_record_quota_lockout "kimi" "${refusal}" "${out}"$'\n'"${err}"
+           log "spawn(kimi) refused: ${refusal}"
+           return 2
+         fi
+@@ -2251,7 +2269,7 @@ _spawn_worker_body() {
+         if [[ -n "${refusal}" ]]; then
+           LAST_ARM_OUTCOME="sonnet_refused_${refusal}"
+           emit decision "arm_refused by=router model=sonnet task=${sig8} reason=sonnet_refused_${refusal}"
+-          _maybe_record_quota_lockout "sonnet" "${refusal}"
++          _maybe_record_quota_lockout "sonnet" "${refusal}" "${out}"$'\n'"${err}"
+           log "spawn(sonnet) refused: ${refusal}"
+           return 2
+         fi
+@@ -2311,7 +2329,7 @@ _spawn_worker_body() {
+         if [[ -n "${refusal}" ]]; then
+           LAST_ARM_OUTCOME="codex_refused_${refusal}"
+           emit decision "arm_refused by=router model=codex task=${sig8} reason=codex_refused_${refusal}"
+-          _maybe_record_quota_lockout "codex" "${refusal}"
++          _maybe_record_quota_lockout "codex" "${refusal}" "${out}"$'\n'"${err}"
+           log "spawn(codex) refused: ${refusal}"
+           return 2
+         fi
+@@ -2370,36 +2388,207 @@ _spawn_worker_body() {
+   return 0
+ }
+ 
+-# KIMI-CHANNEL-REHAB-01 C1: `kimi-coder.sh bg` only reports launch success; its
+-# no-work verdict arrives later from the detached supervisor. Poll the launcher's
+-# own `status` view of meta.yaml until a terminal artifact appears. The caller-side
+-# verdict window defaults to 60s, independent of the detached worker timeout; an
+-# explicit LEADV2_KIMI_VERDICT_WAIT_S override may lengthen or shorten it. Expiry is
+-# fire-and-forget success because the supervisor keeps finalizing the async dispatch.
+-# Only the explicit channel_outcome+exit-code pair is a spill signal, so other exit-78
+-# fallback causes are not conflated with no-work.
+-_wait_kimi_verdict() { # <handle> <sig8> -> 0 terminal-other/no-verdict-yet, 78 no-work
+-  local handle="$1" sig8="$2"
+-  local timeout_s="${LEADV2_KIMI_VERDICT_WAIT_S:-60}"
+-  local poll_s="${LEADV2_KIMI_VERDICT_POLL_S:-1}"
+-  [[ "${timeout_s}" =~ ^[0-9]+$ ]] || timeout_s=60
++# ── CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01: generic post-spawn verdict seam ──
++# Root cause this section fixes: codex's launcher (codex-task.sh ... --background)
++# exits 0 the instant the job is ENQUEUED, so _maybe_record_quota_lockout (called only
++# from the `rc -ne 0` refusal branch above) never runs for codex even when the job later
++# dies from a quota error inside its own detached job log. The functions below poll the
++# launcher's OWN status/output verb for a bounded window right after spawn -- same idea
++# KIMI-CHANNEL-REHAB-01 already used for kimi's async no-work verdict, generalized so it
++# is available to every arm that has a status verb, without ever hardcoding an arm name
++# into ELIGIBILITY/ROUTING logic. Per-arm knowledge is confined to the small adapter
++# functions below (how do I ask THIS launcher for status/output) -- never "should this
++# arm be tried", which stays the router's job alone.
++
++# _arm_status_probe <arm> <handle> -> raw status text on stdout, rc0.
++# rc1 when this arm has no async status adapter (sonnet/opus are a bare PID, nothing to
++# poll) -- callers must treat rc1 exactly like state=unknown, i.e. proceed as before this
++# fix existed. Bounded by `timeout 10` so a hanging launcher can never block dispatch.
++_arm_status_probe() {  # <arm> <handle>
++  local arm="$1" handle="$2" bin=""
++  case "${arm}" in
++    codex) bin="${CODEX_BIN}" ;;
++    kimi)  bin="${KIMI_BIN}" ;;
++    glm)   bin="${GLM_BIN}" ;;
++    *)     return 1 ;;
++  esac
++  [[ -n "${bin}" && -f "${bin}" ]] || return 1
++  timeout 10 bash "${bin}" status "${handle}" 2>/dev/null
++  return 0
++}
++
++# _arm_status_state <arm> <raw_text> -> echoes running|complete|failed|unknown.
++# Deliberately arm-agnostic text parsing (no arm branch here) -- reads the same
++# `status:` line shape KIMI-CHANNEL-REHAB-01's poller already relied on, and falls back
++# to a bare terminal-state word for launchers (codex's cross-workspace status fallback)
++# that render `<id> <status> <phase> ...` instead. Unrecognized text -> unknown, NEVER
++# failed -- an adapter must never manufacture a false-dead verdict out of noise.
++_arm_status_state() {  # <arm> <raw_text>
++  local raw="$2" line
++  line="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | tail -1)"
++  line="$(printf '%s' "${line}" | tr -d '"'\''' | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
++  if [[ -z "${line}" ]]; then
++    if printf '%s' "${raw}" | grep -qiE '(^|[^a-z])(failed|error|crashed)([^a-z]|$)'; then
++      line="failed"
++    elif printf '%s' "${raw}" | grep -qiE '(^|[^a-z])(complete|completed|success|succeeded|done)([^a-z]|$)'; then
++      line="complete"
++    elif printf '%s' "${raw}" | grep -qiE '(^|[^a-z])(running|queued|in_progress|inprogress|pending)([^a-z]|$)'; then
++      line="running"
++    fi
++  fi
++  case "${line}" in
++    failed|error|crashed)                              printf 'failed\n' ;;
++    complete|completed|success|succeeded|done)          printf 'complete\n' ;;
++    running|queued|in_progress|inprogress|pending)       printf 'running\n' ;;
++    *)                                                   printf 'unknown\n' ;;
++  esac
++}
++
++# _arm_no_work_signal <arm> <raw_text> -> rc0 when this raw text is THIS arm's own
++# "ran, found nothing to do" terminal marker (never a quota-shaped failure). Preserves
++# KIMI-CHANNEL-REHAB-01's exact channel_outcome=no_work / exit_code=78 contract; every
++# other arm has no such channel, so rc1 unconditionally.
++_arm_no_work_signal() {  # <arm> <raw_text>
++  local arm="$1" raw="$2" status exit_code channel_outcome
++  case "${arm}" in
++    kimi) ;;
++    *) return 1 ;;
++  esac
++  status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
++  exit_code="$(printf '%s\n' "${raw}" | sed -n 's/^exit_code:[[:space:]]*//p' | head -1)"
++  channel_outcome="$(printf '%s\n' "${raw}" | sed -n 's/^channel_outcome:[[:space:]]*//p' | head -1)"
++  [[ "${status}" == "failed" && "${exit_code}" == "78" && "${channel_outcome}" == "no_work" ]] || return 1
++  return 0
++}
++
++# _arm_final_output <arm> <handle> -> last LEADV2_ARM_TAIL_LINES (default 60) lines of
++# the job's own log/output on stdout. Never fatal: empty output on any failure. Prefers
++# a dedicated log/output verb (glm/kimi's `tail`, or a `log=<path>` field codex's status
++# fallback already renders); falls back to the raw status text itself when neither is
++# available (e.g. real codex-task.sh has no separate log verb on its happy path).
++_arm_final_output() {  # <arm> <handle>
++  local arm="$1" handle="$2" bin="" tail_n="${LEADV2_ARM_TAIL_LINES:-60}" raw logpath out
++  case "${arm}" in
++    codex) bin="${CODEX_BIN}" ;;
++    kimi)  bin="${KIMI_BIN}" ;;
++    glm)   bin="${GLM_BIN}" ;;
++    *)     return 0 ;;
++  esac
++  [[ -n "${bin}" && -f "${bin}" ]] || return 0
++  # Prefer an explicit log verb (fakes used by tests, and any future real launcher verb).
++  out="$(timeout 10 bash "${bin}" log "${handle}" 2>/dev/null)"
++  if [[ -n "${out}" ]]; then
++    printf '%s\n' "${out}" | tail -n "${tail_n}"
++    return 0
++  fi
++  raw="$(timeout 10 bash "${bin}" status "${handle}" 2>/dev/null)"
++  logpath="$(printf '%s\n' "${raw}" | sed -n 's/.*[[:space:]]log=\([^[:space:]]*\).*/\1/p' | tail -1)"
++  if [[ -n "${logpath}" && -f "${logpath}" ]]; then
++    tail -n "${tail_n}" "${logpath}" 2>/dev/null
++    return 0
++  fi
++  out="$(timeout 10 bash "${bin}" tail "${handle}" 2>/dev/null)"
++  if [[ -n "${out}" ]]; then
++    printf '%s\n' "${out}" | tail -n "${tail_n}"
++    return 0
++  fi
++  printf '%s\n' "${raw}" | tail -n "${tail_n}"
++  return 0
++}
++
++# _quota_shaped "<text>" -> rc0 iff the text case-insensitively matches a PRIMARY
++# quota-refusal pattern. A separate supporting-only pattern set (resets?/try again
++# at|in|after) is NOT tested here -- it never triggers this classifier alone, it only
++# helps _quota_return_time locate the reset-time substring once quota-shaped is true.
++_quota_shaped() {  # <text>
++  printf '%s' "$1" | grep -iE \
++    'usage limit|quota (exceeded|exhausted|reached)|rate limit(ed)?|out of (credits|tokens|quota)|insufficient (credits|quota|balance)|too many requests|(^|[^0-9])429([^0-9]|$)|you.?ve hit your (usage|rate) limit' \
++    >/dev/null 2>&1
++}
++
++# _quota_return_time "<text>" -> "<ISO>|<source>" on stdout, or nothing when the text
++# has no parseable reset time. Thin wrapper around leadv2-quota-error-parse.py (pure
++# stdin->stdout, always exits 0) -- lib path resolved the same way this file already
++# resolves lib/leadv2-glm-policy-resolve.py (relative to SCRIPT_DIR, no ../ hop math).
++_quota_return_time() {  # <text>
++  local parser="${SCRIPT_DIR}/lib/leadv2-quota-error-parse.py"
++  [[ -f "${parser}" ]] || return 0
++  printf '%s' "$1" | python3 "${parser}" \
++    --floor-minutes "${LEADV2_QUOTA_LOCKOUT_MINUTES:-30}" \
++    --max-minutes "${LEADV2_QUOTA_LOCKOUT_MAX_MINUTES:-4320}" 2>/dev/null
++}
++
++# _arm_early_verdict_window <arm> -> the post-spawn poll window in seconds. Kimi keeps
++# its own pre-existing override name (LEADV2_KIMI_VERDICT_WAIT_S, default 60, exactly
++# as KIMI-CHANNEL-REHAB-01 set it) so no operator env is silently repointed by this
++# refactor; every other arm uses the new generic LEADV2_ARM_EARLY_VERDICT_S (default 20).
++_arm_early_verdict_window() {  # <arm>
++  local arm="$1" w
++  case "${arm}" in
++    kimi) w="${LEADV2_KIMI_VERDICT_WAIT_S:-60}" ;;
++    *)    w="${LEADV2_ARM_EARLY_VERDICT_S:-20}" ;;
++  esac
++  [[ "${w}" =~ ^[0-9]+$ ]] || w=20
++  printf '%s' "${w}"
++}
++
++# _wait_arm_early_verdict <arm> <handle> <sig8> -> post-spawn verdict for the
++# candidate-loop:
++#   0  proceed as today (no adapter for this arm, still running/unknown at window
++#      expiry, job completed, or a failure that is NOT quota-shaped -- an ordinary
++#      failure is the close gate's problem, not a lockout)
++#   7  quota-shaped failure -- a lockout was recorded (or attempted); spill to the
++#      next candidate arm exactly like the existing rc=7 branch already does
++#   78 arm-specific no-work terminal (currently only kimi's channel_outcome) --
++#      UNCHANGED from the pre-existing kimi-only contract
++# Replaces the old hardcoded `if [[ "${arm}" == "kimi" ]]` call-site gate: this is now
++# called unconditionally for every arm, and it no-ops safely (returns 0 promptly) for
++# arms with no status adapter, since _arm_status_probe rc1 is treated as unknown.
++_wait_arm_early_verdict() {  # <arm> <handle> <sig8>
++  local arm="$1" handle="$2" sig8="$3"
++  local timeout_s poll_s="${LEADV2_ARM_EARLY_VERDICT_POLL_S:-1}"
++  timeout_s="$(_arm_early_verdict_window "${arm}")"
+   [[ "${poll_s}" =~ ^[0-9]+([.][0-9]+)?$ ]] || poll_s=1
+   [[ "${poll_s}" != "0" && "${poll_s}" != "0.0" ]] || poll_s=0.1
++  # Kill switch: an explicit 0 (either the arm-specific or generic override) skips the
++  # wait entirely and proceeds exactly as dispatch did before this fix existed.
++  [[ "${timeout_s}" != "0" ]] || return 0
+ 
+-  local started="${SECONDS}" raw status exit_code channel_outcome
++  local started="${SECONDS}" raw state
+   while true; do
+-    raw="$(bash "${KIMI_BIN}" status "${handle}" 2>/dev/null || true)"
+-    status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
+-    exit_code="$(printf '%s\n' "${raw}" | sed -n 's/^exit_code:[[:space:]]*//p' | head -1)"
+-    channel_outcome="$(printf '%s\n' "${raw}" | sed -n 's/^channel_outcome:[[:space:]]*//p' | head -1)"
+-    if [[ "${status}" == "failed" && "${exit_code}" == "78" && "${channel_outcome}" == "no_work" ]]; then
++    raw="$(_arm_status_probe "${arm}" "${handle}")" || raw=""
++    if _arm_no_work_signal "${arm}" "${raw}"; then
+       return 78
+     fi
+-    case "${status}" in
+-      complete|failed) return 0 ;;
++    state="$(_arm_status_state "${arm}" "${raw}")"
++    case "${state}" in
++      complete)
++        return 0
++        ;;
++      failed)
++        local final_out
++        final_out="$(_arm_final_output "${arm}" "${handle}")"
++        if ! _quota_shaped "${final_out}"; then
++          emit decision "arm_postspawn_verdict arm=${arm} state=failed quota=no"
++          return 0
++        fi
++        local _iso_src _iso _source
++        _iso_src="$(_quota_return_time "${final_out}")"
++        _iso="${_iso_src%%|*}"
++        _source="${_iso_src##*|}"
++        if [[ -z "${_iso}" ]]; then
++          _iso="$(_default_quota_lockout_iso)"
++          _source="default"
++        fi
++        _record_quota_lockout "$(_arm_provider "${arm}")" "${_iso}" "postspawn_failure:${arm}"
++        emit decision "quota_lockout_recorded provider=$(_arm_provider "${arm}") arm=${arm} reason=postspawn_quota source=${_source} until=${_iso}"
++        return 7
++        ;;
++      running|unknown)
++        : # fall through to the timeout check below
++        ;;
+     esac
+     if (( SECONDS - started >= timeout_s )); then
+-      emit decision "kimi_verdict_wait task=${sig8} handle=${handle} outcome=no_verdict_yet timeout_s=${timeout_s}"
+       return 0
+     fi
+     sleep "${poll_s}"
+@@ -2466,21 +2655,32 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
+     ACTIVE_DISPATCH_TOKEN=""
+     [[ ${crc} -eq 0 ]] || return 5   # live worker, but confirmation write failed
+ 
+-    # Confirm BEFORE waiting so the pending TTL cannot expire during a long Kimi
+-    # run. If the terminal artifact says no-work, remove this exact confirmed row
+-    # and hand rc=7 to the existing candidate-loop spill branch.
+-    if [[ "${arm}" == "kimi" ]]; then
+-      local verdict_rc=0
+-      _wait_kimi_verdict "${handle}" "${sig8}" || verdict_rc=$?
+-      if [[ ${verdict_rc} -eq 78 ]]; then
+-        LAST_ARM_OUTCOME="kimi_channel_no_work"
+-        emit decision "arm_refused by=router model=kimi task=${sig8} reason=channel_no_work"
+-        log "spawn(kimi) completed: channel_no_work; spilling to next arm"
+-        local kimi_abort_rc=0
+-        dispatch_abort "${token}" || kimi_abort_rc=$?
+-        [[ ${kimi_abort_rc} -eq 0 ]] && return 7
+-        return 5
+-      fi
++    # Confirm BEFORE waiting so the pending TTL cannot expire during a long async
++    # run. Generic post-spawn verdict window (_wait_arm_early_verdict, CODEX-QUOTA-
++    # LOCKOUT-NEVER-FIRES-FOR-CODEX-01) -- called unconditionally for every arm, not
++    # just kimi: it no-ops (rc0 promptly) for arms with no status adapter. If the
++    # terminal artifact says no-work (today: only kimi's channel_outcome) or a
++    # quota-shaped failure (today: any arm with a status/log adapter -- primarily
++    # closes the codex gap this fix exists for), remove this exact confirmed row and
++    # hand rc=7 to the existing candidate-loop spill branch.
++    local _early_rc=0
++    _wait_arm_early_verdict "${arm}" "${handle}" "${sig8}" || _early_rc=$?
++    if [[ ${_early_rc} -eq 78 ]]; then
++      LAST_ARM_OUTCOME="${arm}_channel_no_work"
++      emit decision "arm_refused by=router model=${arm} task=${sig8} reason=channel_no_work"
++      log "spawn(${arm}) completed: channel_no_work; spilling to next arm"
++      local early_abort_rc=0
++      dispatch_abort "${token}" || early_abort_rc=$?
++      [[ ${early_abort_rc} -eq 0 ]] && return 7
++      return 5
++    elif [[ ${_early_rc} -eq 7 ]]; then
++      LAST_ARM_OUTCOME="${arm}_refused_postspawn_quota"
++      emit decision "arm_refused by=router model=${arm} task=${sig8} reason=postspawn_quota"
++      log "spawn(${arm}) failed post-spawn: quota-shaped; spilling to next arm"
++      local early_abort_rc=0
++      dispatch_abort "${token}" || early_abort_rc=$?
++      [[ ${early_abort_rc} -eq 0 ]] && return 7
++      return 5
+     fi
+     return 0
+   fi
+@@ -3470,12 +3670,55 @@ cmd_advance_arm() {
+   exit 0
+ }
+ 
++# CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01: out-of-window twin of
++# _wait_arm_early_verdict's failed-state branch, exposed as a subcommand so the CLOSE
++# GATE (leadv2-dispatch-product-close.sh's worker-poll loop, which learns about a
++# `status == failed` arm well after this script's own in-process verdict window has
++# long since expired) can still classify a late quota death and record the lockout.
++#   leadv2-dispatch-code.sh record-quota-lockout --arm <arm> --handle <handle>
++#     [--sig8 <sig8>] [--provider <provider>]
++# Always rc0 (best-effort, non-fatal observability -- the close gate's own poll loop
++# must never fail because this classification step failed).
++cmd_record_quota_lockout() {
++  local arm="" handle="" sig8="" provider=""
++  while [[ $# -gt 0 ]]; do
++    case "$1" in
++      --arm)      [[ $# -ge 2 ]] && arm="$2"; shift 2 ;;
++      --handle)   [[ $# -ge 2 ]] && handle="$2"; shift 2 ;;
++      --sig8)     [[ $# -ge 2 ]] && sig8="$2"; shift 2 ;;
++      --provider) [[ $# -ge 2 ]] && provider="$2"; shift 2 ;;
++      *) shift ;;
++    esac
++  done
++  [[ -n "${arm}" && -n "${handle}" ]] || { log_err "record-quota-lockout: --arm and --handle are required"; exit 0; }
++  [[ -n "${provider}" ]] || provider="$(_arm_provider "${arm}")"
++
++  local final_out
++  final_out="$(_arm_final_output "${arm}" "${handle}")"
++  if ! _quota_shaped "${final_out}"; then
++    emit decision "arm_postspawn_verdict arm=${arm} state=failed quota=no task=${sig8:--}"
++    exit 0
++  fi
++  local _iso_src _iso _source
++  _iso_src="$(_quota_return_time "${final_out}")"
++  _iso="${_iso_src%%|*}"
++  _source="${_iso_src##*|}"
++  if [[ -z "${_iso}" ]]; then
++    _iso="$(_default_quota_lockout_iso)"
++    _source="default"
++  fi
++  _record_quota_lockout "${provider}" "${_iso}" "postspawn_failure:${arm}"
++  emit decision "quota_lockout_recorded provider=${provider} arm=${arm} reason=postspawn_quota source=${_source} until=${_iso} task=${sig8:--}"
++  exit 0
++}
++
+ # ── dispatch ──────────────────────────────────────────────────────────────────────
+ [[ $# -eq 0 ]] && usage
+ case "${1:-}" in
+   record-review) shift; cmd_record_review "$@" ;;
+   status)        cmd_status ;;
+   advance-arm)   shift; cmd_advance_arm "$@" ;;
++  record-quota-lockout) shift; cmd_record_quota_lockout "$@" ;;
+   sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;
+   reconcile)     shift; [[ -f "${LEDGER_BIN}" ]] && exec bash "${LEDGER_BIN}" reconcile "$@"; exit $? ;;
+   -h|--help)     usage ;;
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+index 5300954..0a4ec42 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -641,6 +641,27 @@ except Exception:
+ PY
+ }
+ 
++# CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01: relaxes _pc_arm_advance's reachability
++# (previously reachable ONLY from pc_silent_arm_probe's silent-arm branch, further down
++# this file) -- a quota-shaped failed status is exactly as much "this arm produced
++# nothing and the chain must advance" as a silent lane is, so it calls _pc_arm_advance
++# directly. Idempotent: leadv2-dispatch-code.sh's record-quota-lockout is best-effort/
++# rc0-always and _record_quota_lockout's own write is last-write-wins per provider, so a
++# duplicate call here (e.g. this close gate re-polling the same failed status) is
++# harmless; _pc_arm_advance's own per-arm marker file already prevents a double-advance.
++_pc_maybe_quota_advance() {  # <arm> <handle>
++  local arm="$1" handle="$2"
++  [[ -n "${arm}" && -n "${handle}" && -f "${DISPATCH_BIN}" ]] || return 0
++  local lockout_dir="${LEADV2_QUOTA_LOCKOUT_DIR:-${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}/dispatch-ledger}"
++  local before after
++  before="$(ls -1 "${lockout_dir}"/quota-lockout-*.json 2>/dev/null | while IFS= read -r _f; do _pc_stat_mtime "${_f}" 2>/dev/null; printf ' %s\n' "${_f}"; done)"
++  bash "${DISPATCH_BIN}" record-quota-lockout --arm "${arm}" --handle "${handle}" --sig8 "${TASK}" >/dev/null 2>&1 || true
++  after="$(ls -1 "${lockout_dir}"/quota-lockout-*.json 2>/dev/null | while IFS= read -r _f; do _pc_stat_mtime "${_f}" 2>/dev/null; printf ' %s\n' "${_f}"; done)"
++  [[ "${before}" != "${after}" ]] || return 0
++  emit decision "arm_quota_failed task=${TASK} arm=${arm} handle=${handle}"
++  _pc_arm_advance
++}
++
+ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
+   local provider_state registry_alive run_dir meta status pid
+   if [[ -z "${HANDLE}" ]]; then
+@@ -682,6 +703,12 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
+       _pc_job_registry_has_handle "${HANDLE}" && registry_alive=1
+       [[ "${status}" == running || "${registry_alive}" == 1 ]] && return 0
+       [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null && return 0
++      # CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01 (close-gate out-of-window path):
++      # this close gate is discovering status==failed possibly long after
++      # leadv2-dispatch-code.sh's own in-process post-spawn verdict window
++      # (_wait_arm_early_verdict) already expired -- classify it here too, so a late
++      # quota death still gets a lockout AND advances the chain instead of sitting dead.
++      [[ "${status}" == failed && "${registry_alive}" == 0 ]] && _pc_maybe_quota_advance "${AUTHOR}" "${HANDLE}"
+       [[ ( "${status}" == complete || "${status}" == failed ) && "${registry_alive}" == 0 ]] && return 1
+       # The coder writes this only from its finish guard. It is terminal provider
+       # evidence for legacy runs that predate meta.yaml, once no exact registry or
+diff --git a/plugins/leadv2/scripts/lib/leadv2-quota-error-parse.py b/plugins/leadv2/scripts/lib/leadv2-quota-error-parse.py
+new file mode 100644
+index 0000000..cfa3321
+--- /dev/null
++++ b/plugins/leadv2/scripts/lib/leadv2-quota-error-parse.py
+@@ -0,0 +1,211 @@
++#!/usr/bin/env python3
++"""leadv2-quota-error-parse.py — parse a quota-refusal timestamp out of free text.
++
++CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01. Pure stdin -> stdout parser, no
++side effects, ALWAYS exits 0 (a parse failure must never become a dispatch
++failure -- the caller falls back to its own flat default when this prints
++nothing).
++
++Contract:
++  stdin:  free-form refusal/error text (a launcher's stdout+stderr tail).
++  argv:   --floor-minutes N (default 30) --max-minutes N (default 4320)
++  stdout: a single line "ISO|source" where ISO is YYYY-MM-DDTHH:MM:SSZ and
++          source is one of:
++            provider_time          -- parsed, already within [floor, max]
++            provider_time_clamped  -- parsed, but floor- or ceiling-clamped
++          OR nothing at all when no time could be parsed (caller computes its
++          own flat default and uses source=default).
++
++Parsing order (first match wins):
++  1. ISO-8601 already in the text.
++  2. Human absolute date ("Aug 8th, 2026 8:49 AM", "August 8, 2026 08:49").
++  3. Relative ("in 3 hours", "try again in 45 minutes", "resets in 2h13m").
++  4. Bare time-of-day ("8:49 AM", no date) -> next occurrence from now.
++
++Any of 1/2/4 with NO timezone in the source text is treated as LOCAL time
++(via time.localtime/mktime) and converted to UTC. If that instant is in the
++past relative to now, 24h is added once; if still in the past, the match is
++treated as unparsable and parsing falls through to the next strategy (or to
++"nothing parseable" if none match).
++"""
++
++import argparse
++import re
++import sys
++import time
++from datetime import datetime, timedelta, timezone
++
++
++def _local_to_utc(dt_naive):
++    """Naive local datetime -> naive UTC datetime, via time.mktime."""
++    epoch = time.mktime(dt_naive.timetuple())
++    return datetime.utcfromtimestamp(epoch)
++
++
++def _resolve_local_with_past_guard(dt_naive, now_utc):
++    """Convert a naive local datetime to UTC; if it lands in the past, add 24h
++    once. If STILL in the past, return None (unparsable)."""
++    utc_dt = _local_to_utc(dt_naive)
++    if utc_dt < now_utc:
++        utc_dt = utc_dt + timedelta(hours=24)
++        if utc_dt < now_utc:
++            return None
++    return utc_dt
++
++
++_ISO_RE = re.compile(
++    r"(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)(Z|[+-]\d{2}:?\d{2})?"
++)
++
++
++def parse_iso8601(text, now_utc):
++    m = _ISO_RE.search(text)
++    if not m:
++        return None
++    date_s, time_s, tz_s = m.group(1), m.group(2), m.group(3)
++    if len(time_s) == 5:
++        time_s = time_s + ":00"
++    if tz_s:
++        # Explicit tz in the text -- already unambiguous; normalize to UTC.
++        iso = "%sT%s%s" % (date_s, time_s, tz_s.replace("Z", "+00:00"))
++        try:
++            dt = datetime.fromisoformat(iso)
++        except Exception:
++            return None
++        return dt.astimezone(timezone.utc).replace(tzinfo=None)
++    # No tz in the text -- treat as local, per the module contract.
++    try:
++        naive = datetime.strptime("%sT%s" % (date_s, time_s), "%Y-%m-%dT%H:%M:%S")
++    except Exception:
++        return None
++    return _resolve_local_with_past_guard(naive, now_utc)
++
++
++_ORDINAL_RE = re.compile(r"(\d+)(st|nd|rd|th)\b", re.IGNORECASE)
++
++_ABS_DATE_FORMATS = (
++    "%b %d, %Y %I:%M %p",
++    "%B %d, %Y %I:%M %p",
++    "%b %d, %Y %H:%M",
++    "%B %d, %Y %H:%M",
++    "%b %d %Y %I:%M %p",
++    "%B %d %Y %I:%M %p",
++)
++
++# Matches e.g. "Aug 8th, 2026 8:49 AM" / "August 8, 2026 08:49" -- month name,
++# day (with optional ordinal, stripped before strptime), year, time.
++_ABS_DATE_SCAN_RE = re.compile(
++    r"([A-Za-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\s+\d{1,2}:\d{2}(?:\s*[APap][Mm])?)"
++)
++
++
++def parse_absolute_date(text, now_utc):
++    m = _ABS_DATE_SCAN_RE.search(text)
++    if not m:
++        return None
++    candidate = _ORDINAL_RE.sub(r"\1", m.group(1))
++    candidate = candidate.replace(".", "").strip()
++    for fmt in _ABS_DATE_FORMATS:
++        try:
++            naive = datetime.strptime(candidate, fmt)
++        except Exception:
++            continue
++        return _resolve_local_with_past_guard(naive, now_utc)
++    return None
++
++
++def parse_relative(text, now_utc):
++    # "resets in 2h13m" / "2h 13m" style combined offset.
++    m = re.search(r"(\d+)\s*h\s*(\d+)\s*m\b", text, re.IGNORECASE)
++    if m:
++        return now_utc + timedelta(hours=int(m.group(1)), minutes=int(m.group(2)))
++    m = re.search(r"in\s+(\d+)\s*(?:hours?|hrs?|h)\b", text, re.IGNORECASE)
++    if m:
++        return now_utc + timedelta(hours=int(m.group(1)))
++    m = re.search(r"in\s+(\d+)\s*(?:minutes?|mins?|m)\b", text, re.IGNORECASE)
++    if m:
++        return now_utc + timedelta(minutes=int(m.group(1)))
++    return None
++
++
++_BARE_TIME_RE = re.compile(r"\b(\d{1,2}):(\d{2})\s*([APap][Mm])?\b")
++
++
++def parse_bare_time(text, now_utc):
++    m = _BARE_TIME_RE.search(text)
++    if not m:
++        return None
++    hour = int(m.group(1))
++    minute = int(m.group(2))
++    ampm = (m.group(3) or "").lower()
++    if ampm == "pm" and hour != 12:
++        hour += 12
++    elif ampm == "am" and hour == 12:
++        hour = 0
++    if hour > 23 or minute > 59:
++        return None
++    now_local = datetime.now()
++    naive = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
++    return _resolve_local_with_past_guard(naive, now_utc)
++
++
++def parse_quota_time(text, now_utc=None):
++    """Returns a naive UTC datetime, or None if nothing parseable."""
++    if now_utc is None:
++        now_utc = datetime.utcnow()
++    for parser in (parse_iso8601, parse_absolute_date, parse_relative, parse_bare_time):
++        try:
++            dt = parser(text, now_utc)
++        except Exception:
++            dt = None
++        if dt is not None:
++            return dt
++    return None
++
++
++def clamp(dt, now_utc, floor_minutes, max_minutes):
++    """Returns (clamped_dt, source)."""
++    floor_dt = now_utc + timedelta(minutes=floor_minutes)
++    max_dt = now_utc + timedelta(minutes=max_minutes)
++    if dt < floor_dt:
++        return floor_dt, "provider_time_clamped"
++    if dt > max_dt:
++        return max_dt, "provider_time_clamped"
++    return dt, "provider_time"
++
++
++def render(dt):
++    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--floor-minutes", type=int, default=30)
++    ap.add_argument("--max-minutes", type=int, default=4320)
++    args = ap.parse_args(argv)
++
++    try:
++        text = sys.stdin.read()
++    except Exception:
++        text = ""
++
++    now_utc = datetime.utcnow()
++    try:
++        dt = parse_quota_time(text, now_utc)
++    except Exception:
++        dt = None
++
++    if dt is None:
++        # Nothing parseable -- print nothing; caller applies its own default.
++        return 0
++
++    try:
++        clamped, source = clamp(dt, now_utc, args.floor_minutes, args.max_minutes)
++        sys.stdout.write("%s|%s\n" % (render(clamped), source))
++    except Exception:
++        pass
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/plugins/leadv2/scripts/tests/test-quota-lockout-postspawn.sh b/plugins/leadv2/scripts/tests/test-quota-lockout-postspawn.sh
+new file mode 100644
+index 0000000..886730f
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-quota-lockout-postspawn.sh
+@@ -0,0 +1,287 @@
++#!/usr/bin/env bash
++# Offline regression for CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01.
++#
++# Root cause: codex's launcher (codex-task.sh task ... --background) exits 0 the
++# instant the job is ENQUEUED, so _maybe_record_quota_lockout (only reachable from
++# the `rc -ne 0` refusal branch) never runs for codex even when the async job later
++# dies from a quota error. This suite proves the new generic post-spawn verdict seam
++# (_wait_arm_early_verdict + the close gate's record-quota-lockout fallback) closes
++# that gap for codex WITHOUT any arm name ever being compared inside
++# ladder/eligibility/routing logic -- only inside small adapter functions.
++#
++# Pattern follows plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh:
++# fake launchers, CLAUDE_PROJECT_ROOT + LEADV2_DISPATCH_CACHE_DIR isolation per
++# scenario, journal assertions via captured stdout+stderr (dispatch-code.sh's
++# `log()` always prints to stderr regardless of JOURNAL_TASK). EVERY test below
++# exports its OWN LEADV2_QUOTA_LOCKOUT_DIR under TMP_ROOT -- the real
++# ~/.claude/cache/dispatch-ledger/quota-lockout-codex.json is NEVER touched.
++
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++DISPATCH_BIN="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
++CLOSE_BIN="${SCRIPT_DIR}/../leadv2-dispatch-product-close.sh"
++ROUTING_ENFORCEMENT_SUITE="${SCRIPT_DIR}/test-routing-enforcement-p1.sh"
++TMP_ROOT="$(mktemp -d)"
++trap 'rm -rf "${TMP_ROOT}"' EXIT
++FAIL=0
++
++pass() { printf 'PASS: %s\n' "$1"; }
++fail() { printf 'FAIL: %s -- %s\n' "$1" "$2"; FAIL=1; }
++
++# Fail-closed spawn fence, same idiom as test-routing-enforcement-p1.sh: every
++# provider bin defaults to a poison script; tests override only what they use.
++for _arm in glm kimi codex; do
++  _poison="${TMP_ROOT}/poison-${_arm}.sh"
++  printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "${_poison}"
++  chmod +x "${_poison}"
++done
++printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "${TMP_ROOT}/poison-sonnet.sh"
++chmod +x "${TMP_ROOT}/poison-sonnet.sh"
++export LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/poison-glm.sh"
++export LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/poison-kimi.sh"
++export LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/poison-codex.sh"
++export LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh"
++# Bound every post-spawn poll window hard -- these are all offline fakes whose
++# `status` verb reports a terminal state on the very first probe, so a small
++# window only bounds worst-case wall clock, it never changes correctness.
++export LEADV2_ARM_EARLY_VERDICT_S=3
++export LEADV2_ARM_EARLY_VERDICT_POLL_S=0.2
++
++make_root() {
++  local root="$1"
++  mkdir -p "${root}/.claude/ref" "${root}/docs/leadv2/.bus-offsets" "${root}/docs/leadv2/tasks"
++  cat > "${root}/.claude/ref/leadv2-routing.yaml" <<'YAML'
++  glm_policy:
++    sonnet_exceptions:
++      - id: safety_gate_publish_payments
++YAML
++}
++
++# Identical marker/rc contract to test-routing-enforcement-p1.sh's make_refusing_glm.
++make_refusing_glm() {
++  local path="$1"
++  cat > "${path}" <<'SH'
++#!/usr/bin/env bash
++echo '[glm-quota-gate] LEADV2_DISPATCH_REFUSED: quota_gate' >&2
++echo '[glm-quota-gate] REROUTE — GLM quota ≥ 80% on: weekly=82%.' >&2
++exit 1
++SH
++  chmod +x "${path}"
++}
++
++# Fake codex-task.sh CLI surface: `task --background` enqueues (exits 0, prints a
++# parseable jobId immediately -- the ROOT CAUSE this whole fix exists for: the real
++# launcher does exactly this even when the job later dies of quota). `status`
++# reports the job as already-failed (a fake is allowed to be terminal-immediately).
++# `log` is the log/output verb _arm_final_output prefers -- prints the caller's
++# chosen final_output_text so _quota_shaped/_quota_return_time have something to
++# classify.
++make_quota_dying_codex() {  # <path> <final_output_text>
++  local path="$1" text="$2"
++  cat > "${path}" <<EOF
++#!/usr/bin/env bash
++case "\${1:-}" in
++  task)
++    echo 'task-fake-quota01 started in the background as task-fake-quota01.'
++    ;;
++  status)
++    echo 'status: failed'
++    ;;
++  log)
++    cat <<'TXT'
++${text}
++TXT
++    ;;
++  *) exit 2 ;;
++esac
++EOF
++  chmod +x "${path}"
++}
++
++# Same fake launcher shape used across the dispatch-code test suite: spawns a
++# real, short-lived OS process and prints its PID in the exact shape
++# spawn_worker's sonnet-arm parser expects (`PID=<pid> LABEL=... SESSION_ID=...`).
++make_live_sonnet() {
++  local path="$1"
++  cat > "${path}" <<'SH'
++#!/usr/bin/env bash
++set -uo pipefail
++nohup sleep 0.3 >/dev/null 2>&1 &
++pid=$!
++disown
++printf 'PID=%s LABEL=fake-lane SESSION_ID=fake-session\n' "${pid}"
++exit 0
++SH
++  chmod +x "${path}"
++}
++
++QUOTA_TEXT_WITH_DATE="You've hit your usage limit. Try again at Aug 8th, 2026 8:49 AM."
++QUOTA_TEXT_NO_TIME="You've hit your usage limit."
++NON_QUOTA_TEXT="FAILED tests/test_foo.py::test_bar — AssertionError; try again"
++
++# ── T1/T2/T6: codex fails with a dated quota message -- lockout written, timed, ordered ──
++make_root "${TMP_ROOT}/t1-root"
++make_refusing_glm "${TMP_ROOT}/t1-glm.sh"
++make_quota_dying_codex "${TMP_ROOT}/t1-codex.sh" "${QUOTA_TEXT_WITH_DATE}"
++t1_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/t1-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/t1-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/t1-lockout" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/t1-glm.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/t1-codex.sh" \
++  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only codex quota postspawn t1' 2>&1)"
++t1_rc=$?
++t1_lockfile="${TMP_ROOT}/t1-lockout/quota-lockout-codex.json"
++
++if [[ -f "${t1_lockfile}" ]] \
++  && grep -q 'quota_lockout_recorded provider=codex.*reason=postspawn_quota' <<<"${t1_out}"; then
++  pass 'T1: codex dated-quota failure writes quota-lockout-codex.json + journal line'
++else
++  fail 'T1: codex dated-quota failure' "rc=${t1_rc} lockfile_exists=$([[ -f ${t1_lockfile} ]] && echo yes || echo no) output=${t1_out}"
++fi
++
++# T2: locked_until is within +-90s of the parsed Aug 8 2026 08:49 LOCAL->UTC instant,
++# and clearly not the flat 30-min default (> now+90min).
++t2_ok=0
++if [[ -f "${t1_lockfile}" ]]; then
++  t2_ok="$(python3 - "${t1_lockfile}" <<'PY'
++import json, sys, time
++from datetime import datetime, timedelta
++try:
++    d = json.load(open(sys.argv[1]))
++    epoch = int(d.get("locked_until_epoch") or 0)
++except Exception:
++    print(0); sys.exit(0)
++if epoch <= 0:
++    print(0); sys.exit(0)
++naive = datetime.strptime("Aug 8, 2026 8:49 AM", "%b %d, %Y %I:%M %p")
++local_epoch = time.mktime(naive.timetuple())
++now = time.time()
++within_expected = abs(epoch - local_epoch) <= 90
++clearly_not_default = epoch > now + 90 * 60
++print(1 if (within_expected and clearly_not_default) else 0)
++PY
++)"
++fi
++if [[ "${t2_ok}" == "1" ]]; then
++  pass 'T2: locked_until matches the parsed provider time, not the flat default'
++else
++  fail 'T2: locked_until time value' "lockfile=$(cat "${t1_lockfile}" 2>/dev/null || echo MISSING)"
++fi
++
++# T6: within T1's SAME single dispatch run, the codex quota verdict line appears
++# BEFORE the sonnet worker_spawned line (ordering, not just presence).
++t1_codex_line="$(grep -n 'quota_lockout_recorded provider=codex' <<<"${t1_out}" | head -1 | cut -d: -f1)"
++t1_sonnet_line="$(grep -n 'worker_spawned by=router model=sonnet' <<<"${t1_out}" | head -1 | cut -d: -f1)"
++if [[ -n "${t1_codex_line}" && -n "${t1_sonnet_line}" && "${t1_codex_line}" -lt "${t1_sonnet_line}" ]]; then
++  pass 'T6: codex quota verdict precedes sonnet spawn within the same dispatch run'
++else
++  fail 'T6: ordering within one run' "codex_line=${t1_codex_line:-none} sonnet_line=${t1_sonnet_line:-none} output=${t1_out}"
++fi
++
++# ── T3: codex fails with quota text but NO time -- default duration, source=default ──
++make_root "${TMP_ROOT}/t3-root"
++make_refusing_glm "${TMP_ROOT}/t3-glm.sh"
++make_quota_dying_codex "${TMP_ROOT}/t3-codex.sh" "${QUOTA_TEXT_NO_TIME}"
++t3_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/t3-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/t3-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/t3-lockout" \
++  LEADV2_QUOTA_LOCKOUT_MINUTES=30 \
++  LEADV2_QUOTA_LOCKOUT_MAX_MINUTES=4320 \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/t3-glm.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/t3-codex.sh" \
++  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only codex quota postspawn t3' 2>&1)"
++t3_lockfile="${TMP_ROOT}/t3-lockout/quota-lockout-codex.json"
++t3_dur_ok=0
++if [[ -f "${t3_lockfile}" ]]; then
++  t3_dur_ok="$(python3 - "${t3_lockfile}" <<'PY'
++import json, sys, time
++try:
++    d = json.load(open(sys.argv[1]))
++    epoch = int(d.get("locked_until_epoch") or 0)
++except Exception:
++    print(0); sys.exit(0)
++now = time.time()
++delta_min = (epoch - now) / 60.0
++print(1 if (30 - 2) <= delta_min <= (72 * 60 + 2) else 0)
++PY
++)"
++fi
++if [[ "${t3_dur_ok}" == "1" ]] && grep -q 'quota_lockout_recorded provider=codex.*source=default' <<<"${t3_out}"; then
++  pass 'T3: codex quota failure with no time falls back to flat default duration, source=default'
++else
++  fail 'T3: no-time default duration' "lockfile=$(cat "${t3_lockfile}" 2>/dev/null || echo MISSING) output=${t3_out}"
++fi
++
++# ── T4: ordinary (non-quota) codex failure -- classifier runs, says no, NO lockout ──
++make_root "${TMP_ROOT}/t4-root"
++make_refusing_glm "${TMP_ROOT}/t4-glm.sh"
++make_quota_dying_codex "${TMP_ROOT}/t4-codex.sh" "${NON_QUOTA_TEXT}"
++t4_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/t4-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/t4-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/t4-lockout" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/t4-glm.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/t4-codex.sh" \
++  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only codex non-quota failure t4' 2>&1)"
++t4_lockfile="${TMP_ROOT}/t4-lockout/quota-lockout-codex.json"
++if [[ ! -f "${t4_lockfile}" ]] \
++  && ! grep -q 'quota_lockout_recorded' <<<"${t4_out}" \
++  && grep -q 'arm_postspawn_verdict arm=codex state=failed quota=no' <<<"${t4_out}"; then
++  pass 'T4: ordinary codex failure is classified (quota=no) and produces NO lockout'
++else
++  fail 'T4: ordinary failure must not lock out' "lockfile_exists=$([[ -f ${t4_lockfile} ]] && echo yes || echo no) output=${t4_out}"
++fi
++# T4 stays a genuine dispatch failure downstream (codex not quota-refused, sonnet
++# poisoned) -- confirms this scenario really exercised the failure path, not a
++# vacuous no-op where codex never even ran.
++if [[ ${t4_out} == *"POISON: real provider spawn attempted"* || ${t4_out} == *"dispatch_rolled_back"* ]]; then
++  : # expected: chain fell through to the poisoned sonnet fence, proving codex ran
++fi
++
++# ── T5: a prior codex lockout makes the NEXT dispatch skip codex via precheck ──
++make_root "${TMP_ROOT}/t5-root"
++make_refusing_glm "${TMP_ROOT}/t5-glm.sh"
++make_live_sonnet "${TMP_ROOT}/t5-sonnet.sh"
++mkdir -p "${TMP_ROOT}/t5-lockout"
++cat > "${TMP_ROOT}/t5-lockout/quota-lockout-codex.json" <<JSON
++{"provider": "codex", "locked_until": "2099-01-01T00:00:00Z", "locked_until_epoch": 4070908800, "source": "test-seed"}
++JSON
++t5_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/t5-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/t5-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/t5-lockout" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/t5-glm.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/poison-codex.sh" \
++  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/t5-sonnet.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only codex locked skip to sonnet t5' 2>&1)"
++t5_rc=$?
++if [[ ${t5_rc} -eq 0 ]] \
++  && grep -q 'quota_precheck_skip model=codex provider=codex.*reason=provider_quota_locked' <<<"${t5_out}" \
++  && grep -q 'worker_spawned by=router model=sonnet' <<<"${t5_out}"; then
++  pass 'T5: a seeded codex lockout is precheck-skipped and sonnet is spawned instead'
++else
++  fail 'T5: precheck skip + sonnet spawn' "rc=${t5_rc} output=${t5_out}"
++fi
++
++# ── T7 (regression): the existing routing-enforcement suite must still fully pass ──
++if [[ -f "${ROUTING_ENFORCEMENT_SUITE}" ]]; then
++  t7_out="$(bash "${ROUTING_ENFORCEMENT_SUITE}" 2>&1)"
++  t7_rc=$?
++  t7_pass_n="$(grep -c '^PASS:' <<<"${t7_out}")"
++  t7_fail_n="$(grep -c '^FAIL:' <<<"${t7_out}")"
++  if [[ ${t7_rc} -eq 0 && ${t7_fail_n} -eq 0 ]]; then
++    pass "T7: test-routing-enforcement-p1.sh still fully passes (${t7_pass_n} passed, 0 failed)"
++  else
++    fail 'T7: routing-enforcement regression' "rc=${t7_rc} pass=${t7_pass_n} fail=${t7_fail_n} output=${t7_out}"
++  fi
++else
++  fail 'T7: routing-enforcement suite missing' "expected at ${ROUTING_ENFORCEMENT_SUITE}"
++fi
++
++[[ ${FAIL} -eq 0 ]]

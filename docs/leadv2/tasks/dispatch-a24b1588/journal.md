@@ -1,0 +1,63 @@
+- 2026-08-06T06:10:23Z [decision] dispatch_classified task=a24b1588 class=product reason=conservative_default kind=unknown
+- 2026-08-06T06:10:24Z [decision] phase_precondition_warn task=a24b1588 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T06:14:13Z [decision] architect_prepass task=a24b1588 status=ran artifact=docs/handoff/dispatch-a24b1588/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-a24b1588-architect/architect.full.md
+- 2026-08-06T06:14:14Z [decision] lane_writes task=a24b1588 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/tests/test-router-v2-retired-arm.sh,plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh,plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh,plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
+- 2026-08-06T06:14:14Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T06:14:14Z [decision] kimi_skipped reason=chars_over task=a24b1588 chars=28719 writes=0 prepass=1
+- 2026-08-06T06:14:14Z [decision] candidate_chain task=a24b1588 arms=glm,codex,sonnet
+- 2026-08-06T06:14:19Z [decision] arm_refused by=router model=glm task=a24b1588 reason=glm_refused_quota_gate
+- 2026-08-06T06:14:19Z [decision] quota_lockout_recorded provider=glm arm=glm reason=quota_gate minutes=30
+- 2026-08-06T06:14:25Z [decision] worker_spawned by=router model=codex task=a24b1588 attempt=a24b1588-1785996622-56284 handle=task-msh4f31f-0toeaq
+- 2026-08-06T06:14:26Z [decision] mission-version task=- sig=a24b1588 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T06:14:26Z [decision] product_close task=a24b1588 status=spawned author=codex
+- 2026-08-06T06:14:26Z [decision] route_resolved by=router router=v1 model=codex task=a24b1588 rule=none reason=glm_default
+- 2026-08-06T06:14:26Z [decision] lane_worktree_left task=a24b1588 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/a24b1588
+- 2026-08-06T06:14:30Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=4s
+- 2026-08-06T06:19:38Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=312s
+- 2026-08-06T06:24:25Z [decision] dispatch_classified task=a24b1588 class=product reason=conservative_default kind=unknown
+- 2026-08-06T06:24:26Z [decision] phase_precondition_warn task=a24b1588 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T06:24:27Z [decision] architect_prepass task=a24b1588 status=cached reason=sig_match artifact=docs/handoff/dispatch-a24b1588/architect-prepass.md
+- 2026-08-06T06:24:27Z [decision] lane_writes task=a24b1588 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/tests/test-router-v2-retired-arm.sh,plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh,plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh,plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
+- 2026-08-06T06:24:27Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T06:24:27Z [decision] kimi_skipped reason=chars_over task=a24b1588 chars=28719 writes=0 prepass=1
+- 2026-08-06T06:24:27Z [decision] quota_precheck_skip model=glm provider=glm task=a24b1588 reason=provider_quota_locked
+- 2026-08-06T06:24:27Z [decision] candidate_chain task=a24b1588 arms=codex,sonnet
+- 2026-08-06T06:24:31Z [decision] dispatch_refused reason=duplicate_task_signature task=a24b1588 ledger=/Users/kostiantyn.vlasenko/.claude/cache/dispatch-ledger/leadv2.jsonl
+- 2026-08-06T06:24:51Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=625s
+- 2026-08-06T06:25:18Z [decision] dispatch_classified task=a24b1588 class=product reason=conservative_default kind=unknown
+- 2026-08-06T06:25:19Z [decision] phase_precondition_warn task=a24b1588 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T06:25:20Z [decision] architect_prepass task=a24b1588 status=cached reason=sig_match artifact=docs/handoff/dispatch-a24b1588/architect-prepass.md
+- 2026-08-06T06:25:20Z [decision] lane_writes task=a24b1588 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/tests/test-router-v2-retired-arm.sh,plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh,plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh,plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
+- 2026-08-06T06:25:20Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T06:25:20Z [decision] kimi_skipped reason=chars_over task=a24b1588 chars=28719 writes=0 prepass=1
+- 2026-08-06T06:25:20Z [decision] quota_precheck_skip model=glm provider=glm task=a24b1588 reason=provider_quota_locked
+- 2026-08-06T06:25:20Z [decision] candidate_chain task=a24b1588 arms=codex,sonnet
+- 2026-08-06T06:25:23Z [decision] arm_refused by=router model=codex task=a24b1588 reason=codex_refused_quota_gate
+- 2026-08-06T06:25:23Z [decision] quota_lockout_recorded provider=codex arm=codex reason=quota_gate minutes=30
+- 2026-08-06T06:25:24Z [decision] worker_spawned by=router model=sonnet task=a24b1588 attempt=a24b1588-1785997517-32462 handle=PID=33972 LABEL=developer-dispatch-a24b1588-1785997523 SESSION_ID=ae25e069-a938-4f37-b2bc-bffc64fbd66b STREAM=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-a24b1588/developer.stream.jsonl
+- 2026-08-06T06:25:24Z [decision] mission-version task=- sig=a24b1588 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T06:25:25Z [decision] product_close task=a24b1588 status=spawned author=sonnet
+- 2026-08-06T06:25:25Z [decision] product_close task=a24b1588 status=waiting_worker author=sonnet handle=33972 waited=0s
+- 2026-08-06T06:25:25Z [decision] route_resolved by=router router=v1 model=sonnet task=a24b1588 rule=none reason=glm_default
+- 2026-08-06T06:25:25Z [decision] lane_worktree_left task=a24b1588 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/a24b1588
+- 2026-08-06T06:30:03Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=937s
+- 2026-08-06T06:30:27Z [decision] product_close task=a24b1588 status=waiting_worker author=sonnet handle=33972 waited=302s
+- 2026-08-06T06:35:07Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=1241s
+- 2026-08-06T06:35:29Z [decision] product_close task=a24b1588 status=waiting_worker author=sonnet handle=33972 waited=604s
+- 2026-08-06T06:40:13Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=1547s
+- 2026-08-06T06:40:31Z [decision] product_close task=a24b1588 status=waiting_worker author=sonnet handle=33972 waited=905s
+- 2026-08-06T06:43:23Z [decision] review_diff task=a24b1588 repo=a24b1588 bytes=23528 base=HEAD
+- 2026-08-06T06:45:13Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=1847s
+- 2026-08-06T06:50:23Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=2157s
+- 2026-08-06T06:51:40Z [decision] e2e_gate task=a24b1588 status=ran verdict=fail rc=1
+- 2026-08-06T06:51:41Z [decision] dispatch_terminal task=a24b1588 terminal=dead cause=e2e_regression
+- 2026-08-06T06:51:42Z [decision] dispatch_terminal_dedup task=a24b1588 attempted=dead reason=terminal_already_recorded
+- 2026-08-06T06:55:35Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=2469s
+- 2026-08-06T07:00:37Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=2771s
+- 2026-08-06T07:05:49Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=3083s
+- 2026-08-06T07:10:53Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=3387s
+- 2026-08-06T07:15:54Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=3688s
+- 2026-08-06T07:21:00Z [decision] product_close task=a24b1588 status=waiting_worker author=codex handle=task-msh4f31f-0toeaq waited=3994s
+- 2026-08-06T07:24:27Z [decision] review_gate task=a24b1588 status=blocked reason=worker_timeout terminal=dead cause=timeout
+- 2026-08-06T07:24:27Z [decision] dispatch_terminal_dedup task=a24b1588 attempted=dead reason=terminal_already_recorded
+- 2026-08-06T07:24:28Z [decision] dispatch_terminal_dedup task=a24b1588 attempted=dead reason=terminal_already_recorded

@@ -1,0 +1,3 @@
+- 2026-07-30T14:43:04Z [decision] dispatch_terminal task=fanout-test-lane-timeout terminal=dead cause=launcher_handoff_timeout
+- 2026-08-04T16:08:50Z [decision] dispatch_terminal task=fanout-test-lane-timeout terminal=dead cause=launcher_handoff_timeout
+- 2026-08-04T17:32:00Z [decision] dispatch_terminal task=fanout-test-lane-timeout terminal=dead cause=launcher_handoff_timeout

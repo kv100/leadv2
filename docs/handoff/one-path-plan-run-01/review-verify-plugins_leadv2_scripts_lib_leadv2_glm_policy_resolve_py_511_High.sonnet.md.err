@@ -1,0 +1,5 @@
+[claude-subsession] stable prefix file reused for critic (server cache status comes from usage telemetry)
+[claude-subsession] cost recorded: critic/sonnet in=18 out=2432 usd=0.036534 cache_hit=0.9375
+[claude-subsession] WARN: empty_session — critic.summary.md has       25 words (< 50)
+[claude-subsession] SOFT_FINISH detected on critic.full.md (    1501 bytes, no marker) — auto-promoting
+/Users/kostiantyn.vlasenko/Projects/leadv2/plugins/leadv2/scripts/claude-subsession.sh: line 911: return: can only `return' from a function or sourced script

@@ -1,0 +1,16 @@
+- 2026-08-04T15:57:20Z [decision] dispatch_classified task=621328a0 class=product reason=conservative_default kind=unknown
+- 2026-08-04T16:01:03Z [decision] architect_prepass task=621328a0 status=ran artifact=docs/handoff/dispatch-621328a0/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-621328a0-architect/architect.full.md
+- 2026-08-04T16:01:04Z [decision] lane_writes task=621328a0 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/tests/test-dispatch-silent-arm.sh,plugins/leadv2/scripts/tests/test-dispatch-arm-advance.sh,plugins/leadv2/scripts/tests/run-core-offline.sh
+- 2026-08-04T16:01:04Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T16:01:04Z [decision] kimi_skipped reason=chars_over task=621328a0 chars=20115 writes=0 prepass=1
+- 2026-08-04T16:01:04Z [decision] arm_excluded by=router model=glm task=621328a0 reason=operator_excluded
+- 2026-08-04T16:01:04Z [decision] arm_excluded by=router model=codex task=621328a0 reason=operator_excluded
+- 2026-08-04T16:01:04Z [decision] candidate_chain task=621328a0 arms=sonnet
+- 2026-08-04T16:01:05Z [decision] worker_spawned by=router model=sonnet task=621328a0 attempt=621328a0-1785859039-88847 handle=PID=46518 LABEL=developer-dispatch-621328a0-1785859264 SESSION_ID=79e69691-455d-47f6-87ce-cfdf16133527 STREAM=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-621328a0/developer.stream.jsonl
+- 2026-08-04T16:01:05Z [decision] mission-version task=- sig=621328a0 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-04T16:01:05Z [decision] product_close task=621328a0 status=spawned author=sonnet
+- 2026-08-04T16:01:05Z [decision] route_resolved by=router router=v1 model=sonnet task=621328a0 rule=none reason=no_routing_yaml
+- 2026-08-04T16:01:05Z [decision] lane_worktree_left task=621328a0 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/621328a0
+- 2026-08-04T16:30:40Z [decision] e2e_gate task=621328a0 status=ran verdict=fail rc=1
+- 2026-08-04T16:30:41Z [decision] dispatch_terminal task=621328a0 terminal=dead cause=e2e_regression
+- 2026-08-04T16:30:41Z [decision] dispatch_terminal_dedup task=621328a0 attempted=dead reason=terminal_already_recorded

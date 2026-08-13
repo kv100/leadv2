@@ -1,0 +1,1695 @@
+diff --git a/plugins/leadv2/config/leadv2-routing.yaml b/plugins/leadv2/config/leadv2-routing.yaml
+index 48420a9..7711cea 100644
+--- a/plugins/leadv2/config/leadv2-routing.yaml
++++ b/plugins/leadv2/config/leadv2-routing.yaml
+@@ -43,13 +43,10 @@ router_v2:
+   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
+   # Anthropic arms deliberately share the active Max x20 account bucket.
+   #
+-  # NOTE 2026-08-02: this list is NOT what the dispatcher selects from. The
+-  # ladder in leadv2-dispatch-code.sh is hardcoded `glm -> codex -> sonnet`, so
+-  # claude-haiku and claude-opus are declared here and UNREACHABLE, and fable is
+-  # not declared at all. Every provider also has more than one model (glm ≥2,
+-  # codex ≥3) and none of those are expressible here. Making this file the actual
+-  # source the ladder reads — with a per-model "when to use it and at what effort"
+-  # policy — is queued as its own task.
++  # NOTE 2026-08-02 (updated ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01): the dispatch
++  # order now comes from router.dispatch_ladder above. This arms list remains
++  # for advisory/quota-bucket purposes. The dispatcher builds candidate_arms
++  # from dispatch_ladder, not from this list.
+   arms:
+     - id: glm
+       channel: glm-coder.sh
+@@ -57,14 +54,15 @@ router_v2:
+       bucket: glm
+       reserve_threshold: 2
+       reserve_allow: [review]
+-    # KIMI-CHANNEL-REHAB-01: the arm is back. Dispatch-time mission-shape admission,
+-    # not membership here, decides whether Kimi may receive a particular task.
+-    # dispatch: hardcoded `kimi)` case in leadv2-dispatch-code.sh; no data-driven channel field.
+-    - id: kimi
+-      model: moonshotai/kimi-k3-free
+-      bucket: kimi
+-      reserve_threshold: 2
+-      reserve_allow: [review]
++    # RETIRED 2026-08-05 (DISPATCH-KIMI-ARM-MISMATCH-01, founder order 2026-08-04
++    # «Кими убрать»): kimi is not a dispatchable build arm. Uncomment this block to
++    # restore it — the launcher implementation (kimi) spawn case, _apply_kimi_admission,
++    # _wait_kimi_verdict, KIMI_BIN) is intact and still works.
++    # - id: kimi
++    #   model: moonshotai/kimi-k3-free
++    #   bucket: kimi
++    #   reserve_threshold: 2
++    #   reserve_allow: [review]
+     - id: codex
+       channel: codex-task.sh
+       model: gpt-5.6-terra
+@@ -98,6 +96,56 @@ router_v2:
+ # sonnet_exceptions `safety_gate_publish_payments / when: protected_path` rule names:
+ # safety-gate, publish, payments. First yaml in the ordered lookup that carries this key wins.
+ router:
++  # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P1: the ordered dispatch ladder.
++  # dispatch-code.sh reads this list to build candidate_arms — it no longer
++  # carries a hardcoded fallback order. The resolver's primary arm starts the
++  # candidate list; every arm after it in this order is a fallback. Changing
++  # this list changes dispatch routing.
++  #
++  # Each entry:
++  #   id       — arm identifier used in the dispatch script's case/spawn logic
++  #   provider — the quota/lockout scope (one lockout record covers all arms
++  #              on the same provider)
++  #   model    — the model the arm dispatches
++  #   when     — task kinds this arm is eligible for (advisory; the resolver
++  #              decides the primary arm from glm_policy rules, this list
++  #              governs fallback eligibility)
++  #   effort   — effort tier for the arm's provider
++  dispatch_ladder:
++    - id: glm
++      provider: glm
++      model: glm-5.2
++      when: [all]
++      effort: standard
++    # RETIRED as a build arm (founder order 2026-08-04 «Кими убрать», executed as
++    # 3398d11 / DISPATCH-KIMI-ARM-MISMATCH-01). The entry stays so _arm_provider
++    # can name the provider if a stale tenant yaml ever hands back arm=kimi, but
++    # dispatch: false makes the ladder loader skip it.
++    - id: kimi
++      provider: kimi
++      model: moonshotai/kimi-k3-free
++      when: [all]
++      effort: standard
++      dispatch: false
++    - id: codex
++      provider: codex
++      model: gpt-5.6-terra
++      when: [all]
++      effort: standard
++    - id: sonnet
++      provider: anthropic
++      model: sonnet
++      when: [all]
++      effort: standard
++    # Architect-path models — expressed here so the config is the single
++    # source of truth, but never dispatched by dispatch-code.sh (the plan
++    # workflow uses fable directly via workflows/leadv2-plan.js).
++    - id: fable
++      provider: anthropic
++      model: fable
++      when: [architect, heavy]
++      effort: high
++      dispatch: false
+   glm_policy:
+     protected_path_patterns:
+       - "*safety-gate*"
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index 4bc65f3..982d648 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -241,6 +241,10 @@
+ 
+ set -uo pipefail   # -u safe (quote everything, no unbound vars); NO -e (refusals must journal)
+ 
++# DISPATCH-FG-GUARD-01 C3: snapshot argv BEFORE any parsing/shift so the
++# live-lane refusal can echo back the caller's own command verbatim.
++LEADV2_DISPATCH_ARGV_REPLAY="$(printf '%q ' "$0" "$@")"
++
+ # SWIFTBAR-LIVE-01 round 2 (§2.4): script-scope globals carrying the founder
+ # task id + mission file path from `main`'s arg parse to dispatch_reserve.
+ # Globals, not locals passed down the call stack: dispatch_reserve is also
+@@ -298,6 +302,20 @@ ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
+ # shellcheck source=leadv2-portable-lock.sh
+ source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
+ ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
++ROUTING_CONFIG_ABSENT=0
++# ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
++# config (dispatching from inside the plugin repo itself), fall back to the
++# plugin's own canonical config so we do not log no_routing_yaml and route blind.
++# LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE: test-only seam to simulate a missing
++# plugin config.
++if [[ ! -f "${ROUTING_YAML}" ]]; then
++  _plugin_routing_yaml="${LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE:-${SCRIPT_DIR}/../config/leadv2-routing.yaml}"
++  if [[ -f "${_plugin_routing_yaml}" ]]; then
++    ROUTING_YAML="${_plugin_routing_yaml}"
++  else
++    ROUTING_CONFIG_ABSENT=1
++  fi
++fi
+ # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
+ JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
+ # T-o (SUPERVISOR-AUDIT-01): the terminal-state ledger CLI. ALWAYS invoked as a subprocess
+@@ -414,6 +432,16 @@ REQUIRE_LANE_WRITES="${LEADV2_REQUIRE_LANE_WRITES:-1}"
+ # is a landing-day opt-in so no in-flight or historical dispatch retro-parks; flip to
+ # 1 after a soak, mirroring LEADV2_REQUIRE_LANE_WRITES's own rollout.
+ REQUIRE_ACCEPTANCE="${LEADV2_REQUIRE_ACCEPTANCE:-0}"
++# PHASES-ARE-THE-ONLY-PATH-01: three-valued phase precondition gate.
++# 0 = disabled (byte-identical to today's behaviour, one-flip rollback);
++# warn (default) = journal phase_precondition_warn + proceed;
++# 1 = refuse dispatch on missing mandatory phases.
++# The flip to 1 is ledgered separately as SD-PHASE-ENFORCE-01.
++REQUIRE_PHASES="${LEADV2_REQUIRE_PHASES:-warn}"
++PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.sh}"
++# B1 R2: record-review refuses a build worker minting a review of ITS OWN diff from
++# inside a lane worktree (self-attestation). Set to 0 to disable the check (emergency escape).
++REVIEW_RECORDER_GUARD="${LEADV2_REVIEW_RECORDER_GUARD:-1}"
+ 
+ log()        { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
+ log_err()    { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
+@@ -454,6 +482,30 @@ close_owner_pidfile() {
+ # child that reads it immediately -- see leadv2-dispatch-product-close.sh's _pc_diff_base().
+ lane_start_sha_file() { printf '%s/dispatch-%s.start-sha' "${CACHE_BASE}" "$1"; }
+ 
++# ARM-PRODUCES-NOTHING-02: the registration file that tells the close gate's silent-arm
++# probe whether an arm was ever spawned for this lane.  Same handoff dir both processes
++# already agree on by convention; trivially constructible in a test fixture.  Env override
++# for test isolation / non-conventional handoff root.
++_dispatch_arm_registered_file() {  # <sig8> -> path on stdout
++  if [[ -n "${LEADV2_DISPATCH_ARM_REGISTERED_FILE:-}" ]]; then
++    printf '%s' "${LEADV2_DISPATCH_ARM_REGISTERED_FILE}"
++  else
++    printf '%s/docs/handoff/dispatch-%s/arm-registered' "${PROJECT_ROOT}" "$1"
++  fi
++}
++
++# ARM-PRODUCES-NOTHING-02: append one line per spawn.  Every failure swallowed (|| true) —
++# a failed write degrades to the pre-existing empty_diff path, never a false verdict.
++_dispatch_register_arm() {  # <sig8> <arm> [handle] -> always rc0
++  local sig8="$1" arm="$2" handle="${3:-}" f dir
++  [[ -n "${arm}" ]] || return 0
++  f="$(_dispatch_arm_registered_file "${sig8}")"
++  dir="$(dirname "${f}")"
++  mkdir -p "${dir}" 2>/dev/null || true
++  printf 'arm=%s handle=%s epoch=%s\n' "${arm}" "${handle}" "$(date +%s 2>/dev/null || printf '0')" \
++    >> "${f}" 2>/dev/null || true
++}
++
+ record_lane_start_sha() {  # <sig8> -> writes LANE_START_SHA best-effort, never fails the caller
+   # LANE-PLACEMENT-01: on a --resume-lane/--worktree pin this HEAD is the PINNED tree's HEAD.
+   # Chosen deliberately: the close-gate diff then covers the new round, plus any uncommitted
+@@ -563,9 +615,26 @@ _resolve_pinned_placement() {
+   done
+   if (( _live == 1 )); then
+     reason="lane_is_live"
+-    emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate} probe_id=${_probe_id} verdict=${_v}"
++    # Re-probe with --json to get age_s (only reachable via --json).
++    local _row _age="?"
++    _row="$(bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --lane "${_probe_id}" --no-codex --json 2>/dev/null || true)"
++    _age="$(printf '%s' "${_row}" | python3 -c '
++import sys, json
++try:
++    r = json.loads(sys.stdin.read())
++    a = r.get("age_s")
++    if a is not None: print(a)
++except Exception:
++    pass
++' 2>/dev/null || true)"
++    [[ -z "${_age}" ]] && _age="?"
++    emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate} probe_id=${_probe_id} verdict=${_v} age=${_age}"
+     printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
+       "${reason}" "${ref}" "${candidate}" >&2
++    printf '  verdict=%s age=%ss probe_id=%s\n' \
++      "${_v}" "${_age}" "${_probe_id}" >&2
++    printf 'The lane is still running. Re-run once it clears:\n  %s &\n' \
++      "${LEADV2_DISPATCH_ARGV_REPLAY}" >&2
+     exit 5
+   fi
+ 
+@@ -750,7 +819,186 @@ print(json.dumps({
+     }
+ }
+ 
+-# v2's sole dispatch composition: L1 -> L2 -> L3 -> L4.  Policy remains in
++# ── ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 ──────────────────────────────────────
++# P1: read the dispatch ladder from the routing YAML instead of hardcoding it.
++# P2: quota precheck that skips arms whose provider is locked out.
++# Both are fail-open: a missing/unreadable config or lockout record never blocks
++# an arm we could have used.
++
++# Global arrays populated by _load_dispatch_ladder().
++_LADDER_IDS=()
++_LADDER_PROVIDERS=()
++
++# Read the dispatch_ladder from router: in the routing YAML.
++# Populates _LADDER_IDS and _LADDER_PROVIDERS. Falls back to the legacy
++# hardcoded order (glm,kimi,codex,sonnet) if the YAML or key is absent.
++_load_dispatch_ladder() {
++  _LADDER_IDS=()
++  _LADDER_PROVIDERS=()
++  local _parsed
++  _parsed="$(python3 -c '
++import sys, yaml
++try:
++    d = yaml.safe_load(open(sys.argv[1])) or {}
++except Exception:
++    sys.exit(1)
++ladder = (d.get("router") or {}).get("dispatch_ladder") or []
++for e in ladder:
++    eid = e.get("id", "")
++    if not eid:
++        continue
++    if e.get("dispatch", True) is False:
++        continue
++    print(eid + "\t" + e.get("provider", eid))
++' "${ROUTING_YAML}" 2>/dev/null)" || _parsed=""
++  if [[ -n "${_parsed}" ]]; then
++    while IFS=$'\t' read -r _id _prov; do
++      _LADDER_IDS+=("${_id}")
++      _LADDER_PROVIDERS+=("${_prov}")
++    done <<< "${_parsed}"
++  fi
++  # Fallback: legacy hardcoded order.
++  if [[ ${#_LADDER_IDS[@]} -eq 0 ]]; then
++    # Degraded-mode mirror of DISPATCHABLE_BUILD_ARMS in
++    # lib/leadv2-glm-policy-resolve.py — asserted equal by
++    # tests/test-arm-ladder-vocabulary-drift.sh.
++    # kimi retired as a build arm (founder order 2026-08-04,
++    # DISPATCH-KIMI-ARM-MISMATCH-01 / 3398d11).
++    _LADDER_IDS=(glm codex sonnet)
++    _LADDER_PROVIDERS=(glm codex anthropic)
++  fi
++}
++
++# Build candidate_arms from the ladder: the resolved arm and every arm after
++# it in ladder order. If the arm is not in the ladder, return the full ladder.
++_build_candidate_chain() {  # <arm> <sig8> ; mutates candidate_arms
++  local _arm="$1" _sig8="$2" _i _found=0
++  candidate_arms=()
++  for _i in "${!_LADDER_IDS[@]}"; do
++    if [[ "${_found}" == "1" ]]; then
++      candidate_arms+=("${_LADDER_IDS[$_i]}")
++    elif [[ "${_LADDER_IDS[$_i]}" == "${_arm}" ]]; then
++      _found=1
++      candidate_arms+=("${_LADDER_IDS[$_i]}")
++    fi
++  done
++  if [[ "${_found}" != "1" ]]; then
++    candidate_arms=(sonnet)
++    emit decision "arm_vocabulary_mismatch by=router arm=${_arm} fallback=sonnet task=${_sig8} reason=launcher_unknown_arm"
++    log_err "arm_vocabulary_mismatch: unknown arm=${_arm} for task=${_sig8}, falling back to sonnet"
++  fi
++}
++
++# Return the provider for a given arm id from the loaded ladder.
++_arm_provider() {  # <arm_id> -> provider string
++  local _arm="$1" _i
++  for _i in "${!_LADDER_IDS[@]}"; do
++    if [[ "${_LADDER_IDS[$_i]}" == "${_arm}" ]]; then
++      printf '%s' "${_LADDER_PROVIDERS[$_i]}"
++      return
++    fi
++  done
++  printf '%s' "${_arm}"
++}
++
++# C1 tenant-yaml resurrection guard: after _load_dispatch_ladder populates
++# _LADDER_IDS from the (possibly stale) project or plugin yaml, drop any id
++# not in DISPATCHABLE_BUILD_ARMS. This prevents a stale tenant yaml that still
++# lists kimi as dispatchable from resurrecting a retired arm.
++_filter_ladder_to_dispatchable() {  # <sig8>
++  local _sig8="$1" _dispatchable _id _i _j _keep
++  _dispatchable="$(python3 -c '
++import importlib.util, sys
++spec = importlib.util.spec_from_file_location("_pr", sys.argv[1])
++m = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(m)
++print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))
++' "${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py" 2>/dev/null)" || _dispatchable="glm codex sonnet"
++  local -a _new_ids=() _new_provs=()
++  for _i in "${!_LADDER_IDS[@]}"; do
++    _id="${_LADDER_IDS[$_i]}"
++    _keep=0
++    for _d in ${_dispatchable}; do
++      [[ "${_id}" == "${_d}" ]] && { _keep=1; break; }
++    done
++    if [[ "${_keep}" == "1" ]]; then
++      _new_ids+=("${_id}")
++      _new_provs+=("${_LADDER_PROVIDERS[$_i]}")
++    else
++      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} reason=not_in_DISPATCHABLE_BUILD_ARMS"
++    fi
++  done
++  _LADDER_IDS=("${_new_ids[@]}")
++  _LADDER_PROVIDERS=("${_new_provs[@]}")
++}
++
++# P2: per-provider lockout record directory. Lives alongside the dispatch ledger.
++QUOTA_LOCKOUT_DIR="${LEADV2_QUOTA_LOCKOUT_DIR:-${DISPATCH_LEDGER_DIR}}"
++
++# Check whether a provider is currently locked out.
++# Returns 0 (available) or 1 (locked). A missing/unreadable record ALWAYS
++# means "not locked" — never fail closed.
++_provider_available() {  # <provider> -> 0=available, 1=locked
++  local provider="$1" _lock_file _now_epoch _locked_until
++  _lock_file="${QUOTA_LOCKOUT_DIR}/quota-lockout-${provider}.json"
++  [[ -f "${_lock_file}" ]] || return 0
++  _now_epoch="$(date +%s 2>/dev/null || printf '0')"
++  _locked_until="$(python3 -c "
++import json, sys
++try:
++    d = json.load(open(sys.argv[1]))
++    print(d.get('locked_until_epoch', 0))
++except Exception:
++    print(0)
++" "${_lock_file}" 2>/dev/null)" || return 0
++  [[ "${_locked_until}" =~ ^[0-9]+$ ]] || return 0
++  (( _locked_until > _now_epoch )) || return 0
++  return 1
++}
++
++# Record a quota lockout for a provider.
++# <provider> <locked_until_iso> <source>
++_record_quota_lockout() {
++  local provider="$1" _iso="$2" _source="$3" _lock_file _epoch
++  _lock_file="${QUOTA_LOCKOUT_DIR}/quota-lockout-${provider}.json"
++  _epoch="$(python3 -c "
++import sys
++from datetime import datetime
++try:
++    dt = datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'))
++    print(int(dt.timestamp()))
++except Exception:
++    print(0)
++" "${_iso}" 2>/dev/null)" || return 0
++  [[ "${_epoch}" =~ ^[0-9]+$ && "${_epoch}" != "0" ]] || return 0
++  mkdir -p "${QUOTA_LOCKOUT_DIR}" 2>/dev/null || true
++  local _tmp_file="${_lock_file}.tmp.$$"
++  python3 -c "
++import json, sys
++d = {'provider': sys.argv[1], 'locked_until': sys.argv[2],
++     'locked_until_epoch': int(sys.argv[3]), 'source': sys.argv[4]}
++with open(sys.argv[5], 'w') as f:
++    json.dump(d, f)
++" "${provider}" "${_iso}" "${_epoch}" "${_source}" "${_tmp_file}" 2>/dev/null || true
++  mv -f "${_tmp_file}" "${_lock_file}" 2>/dev/null || true
++}
++
++# _maybe_record_quota_lockout: called from each arm's refusal branch when the
++# refusal reason is quota-shaped. Writes a lockout record so the NEXT dispatch
++# skips this provider via the quota precheck.
++_maybe_record_quota_lockout() {  # <arm> <refusal_reason>
++  case "${2}" in
++    quota|quota_gate|quota_exhausted|rate_limit*) ;;
++    *) return 0 ;;
++  esac
++  _record_quota_lockout "$(_arm_provider "${1}")" \
++    "$(date -u -v+"${LEADV2_QUOTA_LOCKOUT_MINUTES:-30}"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
++       || date -u -d "+${LEADV2_QUOTA_LOCKOUT_MINUTES:-30} minutes" +%Y-%m-%dT%H:%M:%SZ)" \
++    "launcher_refusal:${2}"
++  emit decision "quota_lockout_recorded provider=$(_arm_provider "${1}") arm=${1} reason=${2} minutes=${LEADV2_QUOTA_LOCKOUT_MINUTES:-30}"
++}
++
++# ── end ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 ───────────────────────────────────
+ # router-v2's filter, not in this funnel.
+ resolve_v2_dispatch() {
+   local mission="$1" sig8="$2" class="$3" kind="$4" protected="$5" tmp out estimate allowed task_class rc
+@@ -1239,27 +1487,81 @@ diff_seen() {  # <hash> -> 0 if already reviewed
+   [[ -f "$f" ]] || return 1
+   grep -qF "\"diff_hash\":\"$1\"" "$f"
+ }
+-record_review() {  # <diff_hash> <verdict> <reviewer> <run_id>
+-  local f ts
++record_review() {  # <diff_hash> <verdict> <reviewer> <run_id> [guard_token]
++  local f ts guard_token="${5:-}"
+   f="$(review_ledger_file)"; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
+   mkdir -p "${REVIEW_LEDGER_DIR}"
+-  printf '{"diff_hash":"%s","verdict":"%s","reviewer":"%s","run_id":"%s","repo":"%s","ts":"%s"}\n' \
+-    "$1" "$2" "$3" "$4" "$(repo_slug)" "$ts" >> "$f"
++  if [[ -n "$guard_token" ]]; then
++    printf '{"diff_hash":"%s","verdict":"%s","reviewer":"%s","run_id":"%s","repo":"%s","ts":"%s","guard_token":"%s"}\n' \
++      "$1" "$2" "$3" "$4" "$(repo_slug)" "$ts" "$guard_token" >> "$f"
++  else
++    printf '{"diff_hash":"%s","verdict":"%s","reviewer":"%s","run_id":"%s","repo":"%s","ts":"%s"}\n' \
++      "$1" "$2" "$3" "$4" "$(repo_slug)" "$ts" >> "$f"
++  fi
+ }
+ review_lock_file() { printf '%s/.%s.review.lock' "${REVIEW_LEDGER_DIR}" "$(repo_slug)"; }
+ 
+ # Same atomicity fix as atomic_dispatch_check_and_record, for the review ledger's
+ # diff_hash race (Finding 3/4 both name diff_hash alongside task_sig).
++# B1 R3: also maintains a row-count sidecar so raw >> appends are detectable.
++# B1 R4: also maintains an "adopted" marker outside the ledger dir so that
++# sidecar-absent can be distinguished from "never used" vs "deleted after use".
++# B1 R5: also mints a per-invocation guard token stored in the provenance dir
++# (outside the ledger), checked back by _verify_artifact.  An attacker writing
++# raw ledger rows must also forge the tokens file outside the ledger dir.
++_review_sidecar_file() { printf '%s/%s.jsonl.rows' "${REVIEW_LEDGER_DIR}" "$(repo_slug)"; }
++_review_adopted_marker() { printf '%s/code-review-provenance/%s.adopted' "${CACHE_BASE}" "$(repo_slug)"; }
++_review_tokens_file() { printf '%s/code-review-provenance/%s.tokens' "${CACHE_BASE}" "$(repo_slug)"; }
++_increment_review_sidecar() {
++  local sidecar rows bootstrap=0
++  sidecar="$(_review_sidecar_file)"
++  if [[ ! -f "$sidecar" ]]; then
++    # Bootstrap: seed to current line count (record_review already appended)
++    rows="$(wc -l < "$(review_ledger_file)" 2>/dev/null | tr -d ' ')"
++    rows="${rows:-0}"
++    bootstrap=1
++    # B1 R4: write the adopted marker once — outside the ledger dir so a raw
++    # attacker who can write to code-review-ledger/ cannot remove it by accident.
++    local _adopted_dir _adopted_file
++    _adopted_file="$(_review_adopted_marker)"
++    _adopted_dir="$(dirname "$_adopted_file")"
++    mkdir -p "$_adopted_dir" 2>/dev/null || true
++    : > "$_adopted_file" 2>/dev/null || true
++  else
++    rows="$(<"$sidecar")"
++    rows="${rows// /}"
++    rows="${rows:-0}"
++  fi
++  # On normal increments, +1 for the row just written.
++  # On bootstrap, the wc -l already counts it.
++  [[ "$bootstrap" == "0" ]] && rows=$((rows + 1))
++  local tmp
++  tmp="$(mktemp "${REVIEW_LEDGER_DIR}/.rows.XXXXXX")" || return 0
++  printf '%d\n' "$rows" > "$tmp"
++  mv -f "$tmp" "$sidecar" 2>/dev/null || true
++}
+ atomic_review_check_and_record() {  # <diff_hash> <verdict> <reviewer> <run_id>
+   local hash="$1" verdict="$2" reviewer="$3" run_id="$4" lockf
+   mkdir -p "${REVIEW_LEDGER_DIR}"
+   lockf="$(review_lock_file)"
++  # B1 R5: mint a per-invocation guard token under flock.  The caller cannot
++  # supply this — it is generated here, embedded in the ledger row, and recorded
++  # in the provenance dir (outside the attacker-writable ledger dir).
++  local _gt _gt_file _gt_dir
++  _gt="$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' || printf 'fallback%d' $$)"
++  _gt_file="$(_review_tokens_file)"
++  _gt_dir="$(dirname "$_gt_file")"
++  mkdir -p "$_gt_dir" 2>/dev/null || true
+   (
+     lv2_lock_wait "${lockf}" 10 || exit 3
+     if [[ "${ENFORCE}" == "1" ]] && diff_seen "${hash}"; then
+       exit 2
+     fi
+-    record_review "${hash}" "${verdict}" "${reviewer}" "${run_id}"
++    record_review "${hash}" "${verdict}" "${reviewer}" "${run_id}" "${_gt}"
++    _increment_review_sidecar
++    # R9: bind the token to the diff_hash it was minted for, so a stolen
++    # token cannot vouch for a different diff's ledger row.
++    printf '%s %s\n' "${hash}" "${_gt}" >> "$_gt_file" 2>/dev/null || true
+     exit 0
+   ) 9>"${lockf}"
+ }
+@@ -1363,6 +1665,7 @@ _kimi_admissible() { # <mission> <sig8> <writes_csv> <kimi_fit> -> 0 admissible,
+   return 0
+ }
+ 
++# DISPATCH-KIMI-ARM-MISMATCH-01 (2026-08-05): single source of truth for the
+ _apply_kimi_admission() { # <mission> <sig8> <writes_csv> <kimi_fit>; mutates candidate_arms
+   local mission="$1" sig8="$2" writes_csv="$3" kimi_fit="$4" _a
+   _kimi_admissible "${mission}" "${sig8}" "${writes_csv}" "${kimi_fit}" && return 0
+@@ -1422,6 +1725,82 @@ _acceptance_guard() {
+   return 1
+ }
+ 
++# _phase_precondition_guard <sig8> <class> <writes> [waiver-args...] -> 0 proceed, 1 refuse
++# PHASES-ARE-THE-ONLY-PATH-01: sits at the same structural slot as _lane_writes_guard/
++# _acceptance_guard, after arg validation, before any spawn side effect and before
++# _stamp_active_phase prepass. Exit code 4 from phase-record.sh (config error / refused
++# waiver) ALWAYS refuses in every mode including 0 — a malformed override is a
++# configuration error, not a phase gap.
++_phase_precondition_guard() {
++  # B2: mode 0 is the documented rollback and the emergency kill switch. It must be
++  # byte-identical to pre-C4 behaviour: no subprocess, no journal event, no refusal for
++  # ANY reason including a malformed phases.yaml or a refused waiver. Round 4 removed
++  # this return and made `=0` able to refuse on rc 4 — that is not a kill switch.
++  [[ "${REQUIRE_PHASES}" == "0" ]] && return 0
++  local sig8="$1" cls="$2" writes="${3:-}"
++  shift 3 2>/dev/null || shift $# 2>/dev/null || true
++  local -a waiver_args=()
++  while [[ $# -gt 0 ]]; do
++    waiver_args+=("$1"); shift
++  done
++
++  local mode="${REQUIRE_PHASES}"
++  if [[ "$mode" != "warn" && "$mode" != "1" && "$mode" != "0" ]]; then
++    emit decision "phase_precondition_badmode value=${mode}"
++    mode="warn"
++  fi
++
++  local assert_out assert_rc
++  assert_out="$(bash "${PHASE_RECORD_BIN}" assert "${sig8}" --class "${cls}" \
++    ${writes:+--writes "${writes}"} "${waiver_args[@]+"${waiver_args[@]}"}" 2>&1)" || assert_rc=$?
++  assert_rc="${assert_rc:-0}"
++
++  case "$assert_rc" in
++    0)
++      return 0
++      ;;
++    3)
++      local missing_csv="${assert_out#missing=}"
++      if [[ "$mode" == "1" ]]; then
++        emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} mode=1"
++        log_err "dispatch refused: missing mandatory phases: ${missing_csv}"
++        local mp
++        for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
++          log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
++        done
++        return 1
++      else
++        # mode 0 or warn: missing phases do not block
++        [[ "$mode" == "warn" ]] \
++          && emit decision "phase_precondition_warn task=${sig8} class=${cls} missing=${missing_csv} mode=warn"
++        return 0
++      fi
++      ;;
++    4)
++      # Config error / refused waiver — always refuse in modes warn and 1.
++      emit decision "phase_precondition_config_error task=${sig8} detail=${assert_out}"
++      log_err "phase precondition config error: ${assert_out}"
++      return 1
++      ;;
++    *)
++      # B4: unexpected exit code (e.g. python3 missing → rc=127, disk-full
++      # mktemp, unbound-variable abort).  In enforce mode this refuses (must
++      # say WHY).  In warn mode it must journal a distinct line and PROCEED —
++      # the "warn" contract is that infra trouble never silently becomes a
++      # hard repo-wide refusal.
++      if [[ "$mode" == "1" ]]; then
++        emit decision "phase_precondition_refused task=${sig8} class=${cls} reason=unexpected_rc value=${assert_rc}"
++        log_err "phase precondition: unexpected exit ${assert_rc}: ${assert_out}"
++        return 1
++      else
++        emit decision "phase_precondition_warn task=${sig8} class=${cls} reason=unexpected_rc value=${assert_rc} mode=${mode}"
++        log_err "phase precondition: unexpected exit ${assert_rc} (proceeding in ${mode} mode): ${assert_out}"
++        return 0
++      fi
++      ;;
++  esac
++}
++
+ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled, 1 failed
+   local raw="$1" sig8="$2" writes="$3" f mfile out rc count
+   ARCHITECT_PREPASS_REASON=""
+@@ -1618,22 +1997,29 @@ spawn_worker() {
+   return ${rc}
+ }
+ 
+-spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id>
++spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id> <lane_mission_path>
+   # N7F-LANE-NAME: forwards DISPATCH_LANE_NAME as close_bin's 8th positional (not a 7th
+   # param on this fn -- read from the global, same pattern as _dl_note above) so the
+   # display name survives the worker->close-phase handoff for act two.
+   local sig8="$1" author="$2" handle="$3" reviewer_arms="${4:-}" lane_writes_csv="${5:-}"
+-  local founder_task_id="${6:-}"
++  local founder_task_id="${6:-}" lane_mission_path="${7:-}"
+   [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]] || return 0
+   local close_bin="${LEADV2_DISPATCH_PRODUCT_CLOSE_BIN:-${SCRIPT_DIR}/leadv2-dispatch-product-close.sh}"
+   if [[ ! -f "${close_bin}" ]]; then
+     emit decision "product_close task=${sig8} status=failed reason=close_script_missing"
+     return 1
+   fi
++  # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01: thread the resolved candidate
++  # chain (same CSV as the vestigial LEADV2_DISPATCH_REVIEWER_ARMS below, but this one
++  # IS read -- by the close gate's silent-arm probe to find the next arm to advance to)
++  # and the ONE lane-mission artifact this dispatch already wrote to disk, so the close
++  # gate can re-spawn the next arm on an identical mission without re-deriving it.
+   PROJECT_ROOT="${PROJECT_ROOT}" LEADV2_DISPATCH_CACHE_DIR="${CACHE_BASE}" \
+     LEADV2_JOURNAL_BIN="${JOURNAL_BIN}" LEADV2_DISPATCH_CODEX_BIN="${CODEX_BIN}" \
+     LEADV2_DISPATCH_ARCHITECT_BIN="${ARCHITECT_BIN}" \
+     LEADV2_DISPATCH_REVIEWER_ARMS="${reviewer_arms}" \
++    LEADV2_DISPATCH_CANDIDATE_ARMS="${reviewer_arms}" \
++    LEADV2_DISPATCH_LANE_MISSION="${lane_mission_path}" \
+     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
+     LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" \
+     LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
+@@ -1730,6 +2116,7 @@ _spawn_worker_body() {
+         if [[ -n "${refusal}" ]]; then
+           LAST_ARM_OUTCOME="glm_refused_${refusal}"
+           emit decision "arm_refused by=router model=glm task=${sig8} reason=glm_refused_${refusal}"
++          _maybe_record_quota_lockout "glm" "${refusal}"
+           log "spawn(glm) refused: ${refusal}"
+           return 2
+         fi
+@@ -1769,6 +2156,7 @@ _spawn_worker_body() {
+         if [[ -n "${refusal}" ]]; then
+           LAST_ARM_OUTCOME="kimi_refused_${refusal}"
+           emit decision "arm_refused by=router model=kimi task=${sig8} reason=kimi_refused_${refusal}"
++          _maybe_record_quota_lockout "kimi" "${refusal}"
+           log "spawn(kimi) refused: ${refusal}"
+           return 2
+         fi
+@@ -1815,6 +2203,7 @@ _spawn_worker_body() {
+         if [[ -n "${refusal}" ]]; then
+           LAST_ARM_OUTCOME="sonnet_refused_${refusal}"
+           emit decision "arm_refused by=router model=sonnet task=${sig8} reason=sonnet_refused_${refusal}"
++          _maybe_record_quota_lockout "sonnet" "${refusal}"
+           log "spawn(sonnet) refused: ${refusal}"
+           return 2
+         fi
+@@ -1874,6 +2263,7 @@ _spawn_worker_body() {
+         if [[ -n "${refusal}" ]]; then
+           LAST_ARM_OUTCOME="codex_refused_${refusal}"
+           emit decision "arm_refused by=router model=codex task=${sig8} reason=codex_refused_${refusal}"
++          _maybe_record_quota_lockout "codex" "${refusal}"
+           log "spawn(codex) refused: ${refusal}"
+           return 2
+         fi
+@@ -1918,6 +2308,11 @@ _spawn_worker_body() {
+   local _spawn_attempt; _spawn_attempt="$(_dl_attempt_token "${sig8}")"
+   emit decision "worker_spawned by=router model=${arm} task=${sig8} attempt=${_spawn_attempt} handle=${handle}"
+   printf 'worker_spawned model=%s task=%s attempt=%s handle=%s\n' "${arm}" "${sig8}" "${_spawn_attempt}" "${handle}"
++  # ARM-PRODUCES-NOTHING-02: record the arm registration so the close gate's silent-arm
++  # probe can distinguish "arm was spawned but wrote nothing" from "no arm was ever spawned".
++  # This one site covers BOTH the router path and cmd_advance_arm (both call spawn_worker ->
++  # _spawn_worker_body).  A file write escapes this command-substitution subshell.
++  _dispatch_register_arm "${sig8}" "${arm}" "${handle}"
+   # S7-RETARGET-PERSIST-01: names which mission version this dispatch launched, so
+   # "it relaunched the old premise" is a grep of this log, not archaeology. Fail-open
+   # by construction: sig/head are already-in-hand local values (no failure mode), rev
+@@ -2134,6 +2529,60 @@ cmd_record_review() {
+   esac
+   reviewer="$(sanitize_field "${reviewer}")"; run_id="$(sanitize_field "${run_id}")"
+   JOURNAL_TASK="review-${diff_hash:0:8}"
++
++  # B1 R2 (PHASES-ARE-THE-ONLY-PATH-01): refuse a build worker minting a review of
++  # ITS OWN diff from inside a lane worktree (self-attestation).  Recording a review
++  # of a DIFFERENT diff from inside a worktree is allowed -- the guard compares the
++  # provided diff_hash against the SHA-256 of the current worktree's own diff against
++  # its base, computed with the same scheme as leadv2-dispatch-product-close.sh's
++  # _pc_repo_diff: git diff <base> with docs/leadv2+docs/handoff excluded, taking the
++  # larger of HEAD-diff and base-diff ("never-smaller" guard).  Base resolution mirrors
++  # _pc_diff_base: lane start-sha (env or cache file) → origin/main merge-base → HEAD.
++  if [[ "${REVIEW_RECORDER_GUARD}" == "1" ]]; then
++    local _cwd _git_dir _common_dir
++    _cwd="$PWD"
++    _git_dir="$(git -C "$_cwd" rev-parse --git-dir 2>/dev/null || true)"
++    _common_dir="$(git -C "$_cwd" rev-parse --git-common-dir 2>/dev/null || true)"
++    if [[ -n "$_git_dir" && -n "$_common_dir" && "$_git_dir" != "$_common_dir" ]] \
++       || [[ "$_cwd" == */.claude/worktrees/* ]]; then
++      local _repo_root _base _head_diff _base_diff _wt_diff _wt_hash _wt_sig8 _start_sha
++      _repo_root="$(git -C "$_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
++      if [[ -n "$_repo_root" ]]; then
++        # Resolve base: same candidates as _pc_diff_base (start-sha cache → origin/main → HEAD).
++        _start_sha="${LEADV2_LANE_START_SHA:-}"
++        if [[ -z "$_start_sha" ]]; then
++          _wt_sig8="$(basename "$_cwd")"
++          _start_sha="$(cat "$(lane_start_sha_file "${_wt_sig8}")" 2>/dev/null || true)"
++        fi
++        _base=""
++        if [[ -n "$_start_sha" ]] && git -C "$_repo_root" cat-file -e "${_start_sha}^{commit}" 2>/dev/null; then
++          _base="$(git -C "$_repo_root" merge-base "${_start_sha}" HEAD 2>/dev/null || true)"
++        fi
++        if [[ -z "$_base" ]] && git -C "$_repo_root" cat-file -e "origin/main^{commit}" 2>/dev/null; then
++          _base="$(git -C "$_repo_root" merge-base origin/main HEAD 2>/dev/null || true)"
++        fi
++        # Never-smaller: compute both HEAD-diff and base-diff, keep the larger.
++        _head_diff="$(git -C "$_repo_root" diff HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true)"
++        if [[ -n "$_base" ]]; then
++          _base_diff="$(git -C "$_repo_root" diff "$_base" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null || true)"
++        else
++          _base_diff=""
++        fi
++        if [[ ${#_base_diff} -gt ${#_head_diff} ]]; then
++          _wt_diff="$_base_diff"
++        else
++          _wt_diff="$_head_diff"
++        fi
++        _wt_hash="$(printf '%s' "${_wt_diff}" | shasum -a 256 | awk '{print $1}')"
++        if [[ "$_wt_hash" == "$diff_hash" ]]; then
++          emit decision "review_record_refused reason=self_review_worktree diff=${diff_hash:0:8} cwd=${_cwd}"
++          printf 'review_refused reason=self_review_worktree\n'
++          exit 1
++        fi
++      fi
++    fi
++  fi
++
+   local rrc
+   atomic_review_check_and_record "${diff_hash}" "${verdict}" "${reviewer}" "${run_id}"
+   rrc=$?
+@@ -2164,6 +2613,7 @@ cmd_status() {
+ cmd_resolve() {
+   local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
+   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0
++  local -a phase_waivers=()
+   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
+   # for callers (leadv2-fanout.sh's funnel) that dispatch on behalf of a specific
+   # docs/tasks.yaml row. Additive/optional -- callers that omit it (backlog-pump,
+@@ -2204,6 +2654,8 @@ cmd_resolve() {
+       --acceptance-cmd)  [[ $# -ge 2 ]] || { log_err "--acceptance-cmd requires a value"; usage; }
+                           lane_acceptance_cmd="$2"; shift 2 ;;
+       --rollback-onestep) lane_rollback=1; shift ;;
++      --phase-waiver) [[ $# -ge 2 ]] || { log_err "--phase-waiver requires a value"; usage; }
++                      phase_waivers+=("$2"); shift 2 ;;
+       # LANE-PLACEMENT-01: pin WORK_ROOT to an EXISTING lane worktree instead of
+       # ensure-creating a new one.  Two spellings, one code path.  Mutual-exclusion
+       # is enforced here (before any state write, exit 1 = usage).
+@@ -2319,6 +2771,30 @@ cmd_resolve() {
+   local product_class classification_reason
+   IFS=$'\t' read -r product_class classification_reason <<< "$(classify_product_work "${kind}" "${mission}")"
+   emit decision "dispatch_classified task=${sig8} class=${product_class} reason=${classification_reason} kind=${kind:-unknown}"
++
++  # PHASES-ARE-THE-ONLY-PATH-01 §7: register the dispatch lane in active.yaml.
++  # Without this, leadv2_active_update_phase finds no row to patch and the mirror
++  # stays empty forever (backlog-pump.sh:250-256 states this outright).
++  # leadv2_active_register is idempotent (refreshes existing row if PID alive).
++  if [[ -n "${founder_task_id}" ]] && [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
++    if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null \
++       || ! leadv2_active_register "${founder_task_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null; then
++      emit decision "active_register_miss task=${sig8}"
++    fi
++  fi
++
++  # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
++  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
++    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
++
++  # PHASES-ARE-THE-ONLY-PATH-01 §5: precondition guard at the same structural slot
++  # as _lane_writes_guard / _acceptance_guard — after arg validation, before spawn.
++  local _phase_waiver_args=()
++  for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
++    _phase_waiver_args+=(--waiver "$_pw")
++  done
++  _phase_precondition_guard "${sig8}" "${task_class}" "${lane_writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
++
+   if [[ "${product_class}" == "product" ]]; then
+     # PREPASS-DEGRADES-01 (2026-07-29): a prepass failure must NEVER stop the work. On
+     # 2026-07-29 this hard exit killed product dispatches outright -- the task never
+@@ -2344,6 +2820,13 @@ cmd_resolve() {
+       _dl_note "${sig8}" parked "no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts" "" "${founder_task_id}"
+       exit 3
+     fi
++    # PHASES-ARE-THE-ONLY-PATH-01: record plan phase done (prepass produced a design).
++    local _pp_file_record; _pp_file_record="$(_prepass_file "${sig8}")"
++    if [[ -s "${_pp_file_record}" ]]; then
++      bash "${PHASE_RECORD_BIN}" record "${sig8}" plan --status done \
++        --artifact "docs/handoff/dispatch-${sig8}/architect-prepass.md" \
++        --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
++    fi
+     # P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01: the row-declared `lane_writes` always wins --
+     # a founder declaration is never overridden. Only when the row carried none does the
+     # architect's own LANE_WRITES: line (already proven present by the guard above) fill it,
+@@ -2528,9 +3011,9 @@ confirmation-seeking; only for a decision you cannot make yourself."
+     exit 3
+   fi
+ 
+-  # A refusal is an admission signal, not a broken launcher.  Preserve the existing
+-  # fixed order while Part 0 is in force: the resolved arm is first, followed by
+-  # the remaining eligible arms in glm -> codex -> sonnet order.  A hard class
++  # A refusal is an admission signal, not a broken launcher.  The candidate
++  # chain follows the dispatch_ladder from the routing YAML (P1): the resolved
++  # arm is first, followed by every arm after it in ladder order.  A hard class
+   # exception resolving directly to sonnet therefore cannot escape back to GLM.
+   local -a candidate_arms attempted
+   if [[ "${router_label}" == "v2" ]]; then
+@@ -2538,13 +3021,11 @@ confirmation-seeking; only for a decision you cannot make yourself."
+     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
+     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
+   else
+-    case "${arm}" in
+-      # Kimi's presence is guarded below by _apply_kimi_admission.
+-      glm)   candidate_arms=(glm kimi codex sonnet) ;;
+-      codex) candidate_arms=(codex sonnet) ;;
+-      sonnet) candidate_arms=(sonnet) ;;
+-      *) log_err "unsupported resolved dispatch arm: ${arm}"; exit 1 ;;
+-    esac
++    _load_dispatch_ladder
++    _filter_ladder_to_dispatchable "${sig8}"
++    [[ "${ROUTING_CONFIG_ABSENT:-0}" == "1" ]] && \
++      emit decision "routing_config_degraded task=${sig8} reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=$(IFS=,; printf '%s' "${_LADDER_IDS[*]}")"
++    _build_candidate_chain "${arm}" "${sig8}"
+     # T-q codex_quota_gate (SUPERVISOR-AUDIT-01 T-b): strip codex from the fixed
+     # glm->codex->sonnet fallback chain when the resolver's live codex-quota read
+     # is >= build_threshold_pct — an arm the resolver itself refuses to hand out
+@@ -2558,6 +3039,32 @@ confirmation-seeking; only for a decision you cannot make yourself."
+     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
+   fi
+ 
++  # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P2: skip arms whose provider is locked
++  # out before attempting to spawn. A per-provider lockout record
++  # (quota-lockout-<provider>.json in the ledger dir) carries locked_until_epoch.
++  # A missing/unreadable record means "not locked" — never fail closed. Each
++  # skip is journalled so a lead reading the journal sees WHY an arm was passed
++  # over.
++  if [[ ${#candidate_arms[@]} -gt 0 ]]; then
++    local -a _qpc_kept=()
++    local _qpc_arm _qpc_prov
++    for _qpc_arm in "${candidate_arms[@]}"; do
++      _qpc_prov="$(_arm_provider "${_qpc_arm}")"
++      if _provider_available "${_qpc_prov}"; then
++        _qpc_kept+=("${_qpc_arm}")
++      else
++        emit decision "quota_precheck_skip model=${_qpc_arm} provider=${_qpc_prov} task=${sig8} reason=provider_quota_locked"
++      fi
++    done
++    if [[ ${#_qpc_kept[@]} -eq 0 ]]; then
++      emit decision "dispatch_rolled_back reason=all_arms_quota_locked task=${sig8}"
++      log_err "every candidate arm is quota-locked; refusing to dispatch"
++      _dl_note "${sig8}" refused all_arms_quota_locked "" "${founder_task_id}"
++      exit 4
++    fi
++    candidate_arms=("${_qpc_kept[@]}")
++  fi
++
+   # ROUTER-QUOTA-DRIVEN-01 (T6): filter candidate_arms by LIVE quota truth
+   # BEFORE the operator-override block below. An arm with zero usable headroom
+   # (leadv2-quota-read.py T1 usable_now = remaining_pct / max(hours_to_reset,1))
+@@ -2633,6 +3140,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
+   # mid-loop (e.g. glm quota-gate refusal falling to sonnet), so that second
+   # stamp is the one that ends up truthful, not this one.
+   _stamp_active_phase "${founder_task_id}" "build" "${arm}"
++  # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
++  bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
++    --handle "dispatch-${sig8}-build" \
++    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
+   # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): the candidate loop is wrapped in a restartable
+   # while so a lock-busy refusal can re-resolve the arm mid-loop and re-enter over a
+   # rebuilt chain. bash expands "${candidate_arms[@]}" once at for-entry, so merely
+@@ -2663,6 +3174,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
+       # Re-stamp with the CONFIRMED-launched arm, phase unchanged -- the truthful value
+       # once the primary arm_resolved pick was refused and the loop fell to a fallback.
+       _stamp_active_phase "${founder_task_id}" "build" "${candidate}"
++      # PHASES-ARE-THE-ONLY-PATH-01: re-record build with the confirmed candidate.
++      bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
++        --handle "dispatch-${sig8}-${candidate}" \
++        --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
+       # VESTIGIAL (dispatch-00629379, 2026-07-30): reviewer_arms / the
+       # LEADV2_DISPATCH_REVIEWER_ARMS env it feeds is DEAD -- leadv2-dispatch-
+       # product-close.sh no longer reads it. Reusing the BUILD candidate chain as the
+@@ -2673,7 +3188,17 @@ confirmation-seeking; only for a decision you cannot make yourself."
+       # Kept (not deleted) only to avoid an unrelated call-signature change here.
+       local reviewer_arms
+       reviewer_arms="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
+-      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}"; then
++      # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (3a): persist the lane's
++      # mission text ONCE here, at spawn time, so a later `advance-arm` re-spawn (fired
++      # from the close gate's silent-arm probe) can launch the next candidate on the
++      # SAME mission without re-deriving it from router state that may have moved on.
++      local _lane_mission_path=""
++      if [[ "${product_class}" == "product" ]]; then
++        _lane_mission_path="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-mission.md"
++        mkdir -p "$(dirname "${_lane_mission_path}")" 2>/dev/null
++        printf '%s' "${mission}" > "${_lane_mission_path}" 2>/dev/null || _lane_mission_path=""
++      fi
++      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}"; then
+         # The worker is already live; make the failed postflight launch visible rather than
+         # pretending close evidence will arrive.  Do not kill the independently-owned worker.
+         log_err "product close gate could not be launched for task=${sig8}"
+@@ -2727,12 +3252,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
+           if [[ -n "${_rr_arm}" && "${_rr_arm}" != "${arm}" ]]; then
+             arm="${_rr_arm}"; rule="${_rr_rule}"; reason="${_rr_reason}"
+             emit decision "arm_reresolved by=router trigger=glm_lock_busy arm=${arm} rule=${rule} reason=${reason} task=${sig8} router=${router_label}"
+-            case "${arm}" in
+-              glm)   candidate_arms=(glm kimi codex sonnet) ;;
+-              codex) candidate_arms=(codex sonnet) ;;
+-              sonnet) candidate_arms=(sonnet) ;;
+-              *) : ;;  # unknown arm: leave the chain; loop continues as-is
+-            esac
++            _build_candidate_chain "${arm}" "${sig8}"
+             _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
+             _reenter=1
+             break   # break the for; outer while re-enters over the rebuilt chain
+@@ -2798,11 +3318,104 @@ confirmation-seeking; only for a decision you cannot make yourself."
+   exit 4
+ }
+ 
++# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (3b): re-spawns the NEXT candidate arm
++# on the SAME lane worktree/mission after the close gate's silent-arm probe (Fix 1, in
++# leadv2-dispatch-product-close.sh) determined the current arm produced nothing. Reuses
++# the existing spawn machinery (spawn_worker + _stamp_active_phase + spawn_product_close)
++# instead of reimplementing any of it. Deliberately does NOT call dispatch_reserve/
++# atomic_dispatch_reserve_spawn_confirm -- the duplicate-signature guard exists to stop
++# TWO callers racing to claim the SAME sig8; here the sig8 is already confirmed to this
++# lane (checked below) and this is a continuation of that same lane, not a new claim.
++#   leadv2-dispatch-code.sh advance-arm --sig8 <sig8> --arm <next_arm>
++#     --mission-file <path> --task-id <founder_task_id> [--worktree <lane_root>]
++#     [--writes <csv>]
++# exit 4 (no journal-worthy spawn attempted) when no CONFIRMED reservation row exists for
++# this sig8 in the dispatch_reserve/confirm ledger (dispatch_ledger_file, NOT the terminal
++# ledger) -- that row is this function's proof the sig8 legitimately belongs to a lane
++# that already went through admission once.
++cmd_advance_arm() {
++  local sig8="" arm="" mission_file="" task_id="" worktree="" writes=""
++  local -a phase_waivers=()
++  while [[ $# -gt 0 ]]; do
++    case "$1" in
++      --sig8)         [[ $# -ge 2 ]] || { log_err "--sig8 requires a value"; exit 4; }; sig8="$2"; shift 2 ;;
++      --arm)          [[ $# -ge 2 ]] || { log_err "--arm requires a value"; exit 4; }; arm="$2"; shift 2 ;;
++      --mission-file) [[ $# -ge 2 ]] || { log_err "--mission-file requires a value"; exit 4; }; mission_file="$2"; shift 2 ;;
++      --task-id)      [[ $# -ge 2 ]] || { log_err "--task-id requires a value"; exit 4; }; task_id="$2"; shift 2 ;;
++      --worktree)     [[ $# -ge 2 ]] || { log_err "--worktree requires a value"; exit 4; }; worktree="$2"; shift 2 ;;
++      --writes)       [[ $# -ge 2 ]] || { log_err "--writes requires a value"; exit 4; }; writes="$2"; shift 2 ;;
++      --phase-waiver) [[ $# -ge 2 ]] || { log_err "--phase-waiver requires a value"; exit 4; }; phase_waivers+=("$2"); shift 2 ;;
++      *) log_err "advance-arm: unknown argument: $1"; exit 4 ;;
++    esac
++  done
++  if [[ -z "${sig8}" || -z "${arm}" || -z "${mission_file}" ]]; then
++    log_err "advance-arm: --sig8, --arm and --mission-file are required"
++    exit 4
++  fi
++  if [[ ! -f "${mission_file}" ]]; then
++    emit decision "arm_advance_refused task=${sig8} reason=no_mission_file"
++    exit 4
++  fi
++
++  local ledger_f confirmed
++  ledger_f="$(dispatch_ledger_file)"
++  confirmed=""
++  if [[ -f "${ledger_f}" ]]; then
++    confirmed="$(grep -F "\"task_sig\":\"${sig8}" "${ledger_f}" 2>/dev/null | grep -F '"state":"confirmed"' | tail -1)"
++  fi
++  if [[ -z "${confirmed}" ]]; then
++    emit decision "arm_advance_refused task=${sig8} reason=no_confirmed_reservation"
++    log_err "advance-arm: no confirmed reservation for task=${sig8}; refusing"
++    exit 4
++  fi
++
++  # PHASES-ARE-THE-ONLY-PATH-01 §5/D2: advance-arm also spawns a worker, so the
++  # guard must run here too. cmd_advance_arm has no --class flag; resolve it
++  # from the confirmed dispatch-ledger row, default to Standard if absent.
++  local _adv_class
++  _adv_class="$(printf '%s' "${confirmed}" | sed -n 's/.*"task_class":"\([^"]*\)".*/\1/p')"
++  if [[ -z "${_adv_class}" ]]; then
++    _adv_class="Standard"
++    emit decision "phase_class_defaulted task=${sig8}"
++  fi
++  local _phase_waiver_args=()
++  for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
++    _phase_waiver_args+=(--waiver "$_pw")
++  done
++  _phase_precondition_guard "${sig8}" "${_adv_class}" "${writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
++
++  local mission
++  mission="$(cat "${mission_file}" 2>/dev/null)"
++  [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
++
++  local spawn_out src
++  spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
++  if [[ ${src} -ne 0 ]]; then
++    emit decision "arm_advance_failed task=${sig8} arm=${arm} reason=spawn_failed"
++    exit 1
++  fi
++  local handle
++  handle="$(printf '%s\n' "${spawn_out}" | sed -n 's/.*handle=\(.*\)$/\1/p' | tail -1)"
++  _stamp_active_phase "${task_id}" "build" "${arm}"
++  # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
++  bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
++    --handle "dispatch-${sig8}-build" \
++    --task-id "${task_id}" --owner "$(basename "$0"):cmd_advance_arm" 2>/dev/null || true
++  emit decision "worker_spawned by=arm_advance model=${arm} handle=${handle}"
++
++  if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then
++    spawn_product_close "${sig8}" "${arm}" "${handle}" "" "${writes}" "${task_id}" "${mission_file}"
++  fi
++  printf 'arm_advance model=%s task=%s handle=%s\n' "${arm}" "${sig8}" "${handle}"
++  exit 0
++}
++
+ # ── dispatch ──────────────────────────────────────────────────────────────────────
+ [[ $# -eq 0 ]] && usage
+ case "${1:-}" in
+   record-review) shift; cmd_record_review "$@" ;;
+   status)        cmd_status ;;
++  advance-arm)   shift; cmd_advance_arm "$@" ;;
+   sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;
+   reconcile)     shift; [[ -f "${LEDGER_BIN}" ]] && exec bash "${LEDGER_BIN}" reconcile "$@"; exit $? ;;
+   -h|--help)     usage ;;
+diff --git a/plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh b/plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh
+new file mode 100755
+index 0000000..bde4bce
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh
+@@ -0,0 +1,121 @@
++#!/usr/bin/env bash
++# ARM-LADDER-KIMI-RESURRECTED-01: structural drift guard.
++#
++# Asserts that the legacy hardcoded fallback list and the yaml-loaded ladder
++# are both subsets of DISPATCHABLE_BUILD_ARMS in leadv2-glm-policy-resolve.py.
++# Kimi must not appear in either list (founder order 2026-08-04, 3398d11).
++#
++# Anti-tautology: this test FAILS at the base commit (1b8692e) because:
++#   - the legacy fallback contains kimi, which is not in DISPATCHABLE_BUILD_ARMS
++#   - the yaml ladder has kimi without dispatch:false
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++SCRIPTS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
++DISPATCH="$SCRIPTS_ROOT/leadv2-dispatch-code.sh"
++RESOLVER_PY="$SCRIPTS_ROOT/lib/leadv2-glm-policy-resolve.py"
++ROUTING_YAML="$SCRIPTS_ROOT/../config/leadv2-routing.yaml"
++
++PASS=0; FAIL=0
++log()  { printf '%s\n' "$*"; }
++pass() { log "PASS: $*"; PASS=$((PASS + 1)); }
++fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
++
++bash -n "$SCRIPT_DIR/test-arm-ladder-vocabulary-drift.sh" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
++
++# Spawn fence (same preamble as the p1 suite).
++_tmp_poisons="$(mktemp -d)"
++for _arm in glm kimi codex; do
++  printf '#!/usr/bin/env bash\nexit 99\n' > "${_tmp_poisons}/poison-${_arm}.sh"
++  chmod +x "${_tmp_poisons}/poison-${_arm}.sh"
++done
++export LEADV2_DISPATCH_GLM_BIN="${_tmp_poisons}/poison-glm.sh"
++export LEADV2_DISPATCH_KIMI_BIN="${_tmp_poisons}/poison-kimi.sh"
++export LEADV2_DISPATCH_CODEX_BIN="${_tmp_poisons}/poison-codex.sh"
++trap 'rm -rf "${_tmp_poisons}"' EXIT
++
++# Read DISPATCHABLE_BUILD_ARMS from the resolver via importlib (not regex).
++DISPATCHABLE="$(python3 -c '
++import importlib.util, sys
++spec = importlib.util.spec_from_file_location("_pr", sys.argv[1])
++m = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(m)
++print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))
++' "$RESOLVER_PY" 2>&1)" || { echo "ERROR: cannot import DISPATCHABLE_BUILD_ARMS"; exit 1; }
++
++# ============================================================================
++# Case 1: legacy hardcoded fallback (_LADDER_IDS when yaml is absent) must be
++#         a subset of DISPATCHABLE_BUILD_ARMS. Forces the fallback by pointing
++#         ROUTING_YAML at /dev/null.
++# ============================================================================
++_legacy_list="$(sed -n '/^_load_dispatch_ladder()/,/^}$/p' "$DISPATCH" \
++  | sed -n '/Fallback: legacy hardcoded/,/^  fi$/p' \
++  | grep '_LADDER_IDS=' \
++  | sed 's/.*_LADDER_IDS=(\(.*\)).*/\1/')"
++
++_legacy_ok=1
++for _id in ${_legacy_list}; do
++  _found=0
++  for _d in ${DISPATCHABLE}; do
++    [[ "${_id}" == "${_d}" ]] && { _found=1; break; }
++  done
++  [[ "${_found}" == "1" ]] || { _legacy_ok=0; break; }
++done
++
++if [[ "${_legacy_ok}" == "1" ]]; then
++  pass "case1: legacy fallback list (${_legacy_list}) ⊆ DISPATCHABLE_BUILD_ARMS (${DISPATCHABLE})"
++else
++  fail "case1: legacy fallback has '${_id}' not in DISPATCHABLE_BUILD_ARMS (${DISPATCHABLE})"
++fi
++
++# ============================================================================
++# Case 2: yaml-loaded ladder against the production routing yaml — every entry
++#         the loader yields must be in DISPATCHABLE_BUILD_ARMS. This is the
++#         assertion that fails at 1b8692e (kimi has no dispatch:false).
++# ============================================================================
++_yaml_list="$(python3 -c '
++import yaml, sys
++d = yaml.safe_load(open(sys.argv[1])) or {}
++ladder = (d.get("router") or {}).get("dispatch_ladder") or []
++for e in ladder:
++    if e.get("dispatch", True) is False:
++        continue
++    print(e.get("id", ""))
++' "$ROUTING_YAML" 2>/dev/null)"
++
++_yaml_ok=1
++for _id in ${_yaml_list}; do
++  _found=0
++  for _d in ${DISPATCHABLE}; do
++    [[ "${_id}" == "${_d}" ]] && { _found=1; break; }
++  done
++  [[ "${_found}" == "1" ]] || { _yaml_ok=0; break; }
++done
++
++if [[ "${_yaml_ok}" == "1" ]]; then
++  pass "case2: yaml ladder (${_yaml_list}) ⊆ DISPATCHABLE_BUILD_ARMS (${DISPATCHABLE})"
++else
++  fail "case2: yaml ladder has '${_id}' not in DISPATCHABLE_BUILD_ARMS (${DISPATCHABLE})"
++fi
++
++# ============================================================================
++# Case 3: kimi must not appear in either list (founder order 2026-08-04).
++# ============================================================================
++if [[ "${_legacy_list}" != *"kimi"* ]]; then
++  pass "case3a: kimi absent from legacy fallback list"
++else
++  fail "case3a: kimi found in legacy fallback list — resurrected as a build arm"
++fi
++
++if [[ "${_yaml_list}" != *"kimi"* ]]; then
++  pass "case3b: kimi absent from yaml-loaded ladder"
++else
++  fail "case3b: kimi found in yaml-loaded ladder — not filtered by dispatch:false"
++fi
++
++log ""
++log "================================================"
++log "  arm-ladder vocabulary-drift suite: PASS=$PASS FAIL=$FAIL"
++log "================================================"
++
++[[ "$FAIL" -eq 0 ]]
+diff --git a/plugins/leadv2/scripts/tests/test-dispatch-arm-vocabulary.sh b/plugins/leadv2/scripts/tests/test-dispatch-arm-vocabulary.sh
+new file mode 100755
+index 0000000..26141db
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-dispatch-arm-vocabulary.sh
+@@ -0,0 +1,246 @@
++#!/usr/bin/env bash
++# DISPATCH-KIMI-ARM-MISMATCH-01 (2026-08-05): arm-vocabulary suite.
++#
++# The resolver and launcher must agree on the set of dispatchable build arms.
++# Kimi was retired as a build arm (founder order 2026-08-04). These tests prove:
++#   1. A resolver that hands back kimi does NOT exit 1 — the launcher falls
++#      back to sonnet and emits arm_vocabulary_mismatch.
++#   2. The glm chain no longer contains kimi.
++#   3/4. codex/sonnet chains are unchanged (regression guard).
++#   5. A stale tenant yaml listing kimi in build_spill_order cannot resurrect it.
++#   6. router_v2.arms parses non-empty and excludes kimi.
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++SCRIPTS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
++
++PASS=0; FAIL=0; ERRORS=0
++log()  { printf '%s\n' "$*"; }
++pass() { log "PASS: $*"; PASS=$((PASS + 1)); }
++fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
++
++# --- syntax gate ---------------------------------------------------------------
++bash -n "$SCRIPT_DIR/test-dispatch-arm-vocabulary.sh" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
++
++ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
++REPO="$ROOT/repo"
++mkdir -p "$REPO/.claude/ref" "$REPO/docs/leadv2/.bus-offsets" "$REPO/docs/leadv2/tasks"
++(cd "$REPO" && git init -q && git config user.email test@example.com && git config user.name test && : > seed && git add seed && git commit -qm seed)
++
++DISPATCH="$SCRIPTS_ROOT/leadv2-dispatch-code.sh"
++RESOLVER="$SCRIPTS_ROOT/lib/leadv2-glm-policy-resolve.py"
++ROUTING_YAML_FILE="$SCRIPTS_ROOT/../config/leadv2-routing.yaml"
++
++# A no-op worker stub that prints the handle line dispatch expects.
++WORKER="$ROOT/worker.sh"
++printf '#!/usr/bin/env bash\nprintf "PID=%%s LABEL=test SESSION_ID=test\\n" "$$"\n' > "$WORKER"
++chmod +x "$WORKER"
++
++# Fail-closed spawn fence: every provider bin is pointed at a poison script.
++# Any code path that forgets to override one gets a loud, offline failure.
++for _arm in glm kimi codex; do
++  _poison="$ROOT/poison-${_arm}.sh"
++  printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "$_poison"
++  chmod +x "$_poison"
++done
++export LEADV2_DISPATCH_GLM_BIN="$ROOT/poison-glm.sh"
++export LEADV2_DISPATCH_KIMI_BIN="$ROOT/poison-kimi.sh"
++export LEADV2_DISPATCH_CODEX_BIN="$ROOT/poison-codex.sh"
++export LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER"  # sonnet uses SUBSESSION_BIN; stubbed above
++
++# ============================================================================
++# Case 1: resolver returns kimi as PRIMARY → dispatch does NOT exit 1, falls
++#         back to sonnet, emits arm_vocabulary_mismatch
++# ============================================================================
++case1() {
++  local stub="$ROOT/resolver-stub.py"
++  cat > "$stub" <<'EOF'
++#!/usr/bin/env python3
++print("arm=kimi")
++print("rule=codex_quota_gate_80pct")
++print("reason=codex_quota_gate")
++print("tier=")
++print("codex_quota_blocked=1")
++EOF
++  chmod +x "$stub"
++
++  local out rc
++  out="$(
++    CLAUDE_PROJECT_ROOT="$REPO" \
++    LEADV2_PROJECT_ROOT="$REPO" \
++    LEADV2_DISPATCH_CACHE_DIR="$ROOT/cache" \
++    LEADV2_DISPATCH_E2E_GATE=0 \
++    LEADV2_DISPATCH_REVIEW_GATE=0 \
++    LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++    LEADV2_ROUTER_V2=0 \
++    LEADV2_EXCLUDED_ARMS=__none__ \
++    LEADV2_LANE_SHAPE=off \
++    LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$ROOT/ledger.tsv" \
++    GLM_POLICY_RESOLVER="$stub" \
++    LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
++    bash "$DISPATCH" 'test mission for kimi mismatch' --kind code --writes src/main.py 2>&1
++  )" || rc=$?
++  rc=${rc:-0}
++
++  # Must NOT exit 1
++  if [[ "$rc" -eq 1 ]]; then
++    fail "case1: dispatch exited 1 (the original bug) — rc=$rc"
++    return
++  fi
++
++  # Journal must carry arm_vocabulary_mismatch with arm=kimi and fallback=sonnet
++  local journal
++  journal="$(find "$REPO/docs/leadv2/tasks" -name journal.md -print -quit 2>/dev/null)"
++  if [[ -z "$journal" ]]; then
++    # The emit function also goes to stdout via log()
++    if printf '%s\n' "$out" | grep -q 'arm_vocabulary_mismatch.*arm=kimi.*fallback=sonnet'; then
++      pass "case1: resolver returns kimi → dispatch survives on sonnet with mismatch line"
++      return
++    fi
++    fail "case1: no journal and no stdout mismatch line found"
++    return
++  fi
++
++  if grep -q 'arm_vocabulary_mismatch.*arm=kimi.*fallback=sonnet' "$journal" 2>/dev/null \
++     || printf '%s\n' "$out" | grep -q 'arm_vocabulary_mismatch.*arm=kimi.*fallback=sonnet'; then
++    pass "case1: resolver returns kimi → dispatch survives on sonnet with mismatch line"
++  else
++    fail "case1: missing arm_vocabulary_mismatch in journal and stdout"
++  fi
++}
++
++# ============================================================================
++# Cases 2/3/4: _build_candidate_chain via source-harness (repointed from the
++# deleted _candidate_chain_for_arm — identical unknown-arm semantics).
++# ============================================================================
++harness() {
++  local harness_script="$ROOT/harness.sh"
++  cat > "$harness_script" <<'HEAD'
++#!/usr/bin/env bash
++set -uo pipefail
++
++PASS=0; FAIL=0
++_MISMATCH_EMITTED=0
++emit() { [[ "$*" == *"arm_vocabulary_mismatch"* ]] && _MISMATCH_EMITTED=1; }
++log_err() { :; }
++log() { :; }
++
++HEAD
++  # Extract _load_dispatch_ladder, _arm_provider, _filter_ladder_to_dispatchable,
++  # and _build_candidate_chain from the dispatch script.
++  sed -n '/^_load_dispatch_ladder()/,/^}$/p' "$DISPATCH" >> "$harness_script"
++  sed -n '/^_build_candidate_chain()/,/^}$/p' "$DISPATCH" >> "$harness_script"
++  sed -n '/^_arm_provider()/,/^}$/p' "$DISPATCH" >> "$harness_script"
++  sed -n '/^_filter_ladder_to_dispatchable()/,/^}$/p' "$DISPATCH" >> "$harness_script"
++  cat >> "$harness_script" <<'BODY'
++
++run_test() {
++  local arm="$1" expected="$2" desc="$3" expect_mismatch="${4:-0}"
++  local -a candidate_arms=()
++  _MISMATCH_EMITTED=0
++  _build_candidate_chain "$arm" "TEST0000"
++  local result="${candidate_arms[*]}"
++  if [[ "$result" == "$expected" ]] && { [[ "$expect_mismatch" == "0" ]] || [[ "$_MISMATCH_EMITTED" == "1" ]]; }; then
++    echo "PASS: $desc (got: $result)"
++  else
++    echo "FAIL: $desc (expected: '$expected', got: '$result', mismatch_emitted=$_MISMATCH_EMITTED)"
++  fi
++}
++
++# Load the production ladder: glm, codex, sonnet (kimi dispatch:false, fable dispatch:false).
++ROUTING_YAML="$1"
++SCRIPT_DIR="$2"
++_load_dispatch_ladder
++_filter_ladder_to_dispatchable "TEST0000"
++
++# Case 2: glm chain = glm onward in the ladder
++run_test "glm" "glm codex sonnet" "case2: glm chain from ladder (excludes kimi)"
++
++# Case 3: codex chain (regression guard)
++run_test "codex" "codex sonnet" "case3: codex chain unchanged"
++
++# Case 4: sonnet chain (regression guard)
++run_test "sonnet" "sonnet" "case4: sonnet chain unchanged"
++
++# Case 4b: kimi (not in ladder) -> sonnet + mismatch line
++run_test "kimi" "sonnet" "case4b: kimi unknown arm -> sonnet + mismatch" 1
++BODY
++
++  bash "$harness_script" "$ROUTING_YAML_FILE" "$SCRIPTS_ROOT"
++}
++
++# ============================================================================
++# Case 5: stale tenant yaml with kimi in build_spill_order → resolver does
++#         NOT return kimi
++# ============================================================================
++case5() {
++  local fixture="$ROOT/routing-kimi-spill.yaml"
++  local quota_stub="$ROOT/quota-live-stub.sh"
++  cat > "$fixture" <<'YAML'
++router:
++  glm_policy:
++    codex_fitting_mission_kinds: [refactor]
++    codex_quota_gate:
++      build_threshold_pct: 80
++      build_spill_order: [glm, kimi, codex, sonnet]
++YAML
++  # Stub quota-live: codex at 90% → above threshold → triggers spill walk
++  cat > "$quota_stub" <<'QEOF'
++#!/usr/bin/env bash
++case "$1" in
++  codex) printf '90.0\n' ;;
++  *) printf '0.0\n' ;;
++esac
++QEOF
++  chmod +x "$quota_stub"
++
++  local out arm
++  out="$(python3 "$RESOLVER" --routing-yaml "$fixture" --job build --base-arm glm \
++    --signals '{"mission_kind":"refactor"}' --quota-live "$quota_stub" 2>&1)"
++  arm="$(printf '%s\n' "$out" | sed -n 's/^arm=//p')"
++
++  if [[ "$arm" != "kimi" ]]; then
++    pass "case5: resolver spill with kimi in tenant yaml → arm=$arm (not kimi)"
++  else
++    fail "case5: resolver returned arm=kimi despite allowlist — stale tenant yaml resurrected a retired arm"
++  fi
++}
++
++# ============================================================================
++# Case 6: router_v2.arms parses non-empty and excludes kimi
++# ============================================================================
++case6() {
++  local ids
++  ids="$(python3 -c '
++import yaml, sys
++d = yaml.safe_load(open(sys.argv[1]))
++ids = [a["id"] for a in d["router_v2"]["arms"]]
++print(" ".join(ids))
++' "$ROUTING_YAML_FILE" 2>&1)"
++
++  local count
++  count="$(printf '%s' "$ids" | wc -w | tr -d ' ')"
++  if [[ "$count" -ge 3 && "$ids" != *"kimi"* ]]; then
++    pass "case6: router_v2.arms has $count entries, kimi absent ($ids)"
++  else
++    fail "case6: router_v2.arms check failed — count=$count ids='$ids'"
++  fi
++}
++
++# --- run all cases -------------------------------------------------------------
++case1
++harness | while IFS= read -r line; do
++  case "$line" in
++    PASS:*) pass "${line#PASS: }" ;;
++    FAIL:*) fail "${line#FAIL: }" ;;
++  esac
++done
++case5
++case6
++
++log ""
++log "================================================"
++log "  arm-vocabulary suite: PASS=$PASS FAIL=$FAIL"
++log "================================================"
++
++[[ "$FAIL" -eq 0 ]]
+diff --git a/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh b/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
+index 8399998..d84b7b9 100644
+--- a/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
++++ b/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
+@@ -8,6 +8,25 @@ QUOTA_GATE_BIN="${SCRIPT_DIR}/../leadv2-glm-quota-gate.sh"
+ TMP_ROOT="$(mktemp -d)"
+ trap 'rm -rf "${TMP_ROOT}"' EXIT
+ FAIL=0
++
++# Fail-closed spawn fence: every provider bin env var is pointed at a poison
++# script that exits non-zero and prints a marker. Any test that forgets to
++# override one gets a loud, offline failure instead of a live billed session.
++# Individual tests override only the bins they intend to exercise.
++for _arm in glm kimi codex; do
++  _poison="${TMP_ROOT}/poison-${_arm}.sh"
++  printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "${_poison}"
++  chmod +x "${_poison}"
++done
++export LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/poison-glm.sh"
++export LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/poison-kimi.sh"
++export LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/poison-codex.sh"
++# sonnet uses SUBSESSION_BIN, not a dedicated bin; point it at poison too.
++# Tests that need a live sonnet override LEADV2_DISPATCH_SUBSESSION_BIN.
++export LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh"
++printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "${TMP_ROOT}/poison-sonnet.sh"
++chmod +x "${TMP_ROOT}/poison-sonnet.sh"
++_SUITE_START_EPOCH="$(date +%s)"
+ pass() { printf 'PASS: %s\n' "$1"; }
+ fail() { printf 'FAIL: %s -- %s\n' "$1" "$2"; FAIL=1; }
+ 
+@@ -258,4 +277,280 @@ else
+   fail 'racing reserve exclusivity' "rcs=${race_one_rc},${race_two_rc} outputs=$(cat "${TMP_ROOT}/race-one.out") $(cat "${TMP_ROOT}/race-two.out")"
+ fi
+ 
++# ── ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 tests ──────────────────────────────────
++
++# Helper: make a root whose routing YAML has a custom dispatch_ladder.
++make_ladder_root() {
++  local root="$1" ladder_yaml="$2"
++  mkdir -p "${root}/.claude/ref"
++  cat > "${root}/.claude/ref/leadv2-routing.yaml" <<YAML
++${ladder_yaml}
++router:
++  dispatch_ladder:
++    - id: codex
++      provider: codex
++      model: gpt-5.6-terra
++      when: [all]
++      effort: standard
++    - id: sonnet
++      provider: anthropic
++      model: sonnet
++      when: [all]
++      effort: standard
++    - id: glm
++      provider: glm
++      model: glm-5.2
++      when: [all]
++      effort: standard
++    - id: kimi
++      provider: kimi
++      model: moonshotai/kimi-k3-free
++      when: [all]
++      effort: standard
++      dispatch: false
++YAML
++}
++
++# Helper: write a per-provider quota lockout record.
++make_lockout() {
++  local dir="$1" provider="$2" locked_until_epoch="$3" source="${4:-test}"
++  mkdir -p "${dir}" 2>/dev/null
++  cat > "${dir}/quota-lockout-${provider}.json" <<JSON
++{"provider":"${provider}","locked_until":"${locked_until_epoch}","locked_until_epoch":${locked_until_epoch},"source":"${source}"}
++JSON
++}
++
++# Test 1: ladder order from yaml, dispatch:false entries excluded.
++# With a yaml ladder ordered codex,sonnet,glm,kimi(dispatch:false), when the
++# resolver picks glm as primary, the candidate chain must be glm only — NOT
++# glm,kimi (kimi is excluded by dispatch:false) and NOT glm,kimi,codex,sonnet
++# (the old hardcoded order). The word "kimi" must not appear in the chain.
++make_ladder_root "${TMP_ROOT}/ladder-root" ""
++make_live_glm "${TMP_ROOT}/ladder-glm.sh"
++make_refusing_kimi "${TMP_ROOT}/ladder-kimi.sh"
++make_live_codex "${TMP_ROOT}/ladder-codex.sh"
++ladder_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/ladder-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/ladder-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/ladder-glm.sh" \
++  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/ladder-kimi.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/ladder-codex.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only ladder from yaml' 2>&1)"
++ladder_rc=$?
++if [[ ${ladder_rc} -eq 0 ]] \
++  && grep -q 'candidate_chain' <<<"${ladder_out}"; then
++  _ladder_arms="$(grep 'candidate_chain' <<<"${ladder_out}" | sed -n 's/.*arms=//p')"
++  if [[ "${_ladder_arms}" == "glm" ]] \
++    && ! grep -q 'kimi' <<<"${_ladder_arms}"; then
++    pass 'ladder order from yaml, dispatch:false entries excluded: resolved glm → candidates glm (no kimi)'
++  else
++    fail 'ladder order from yaml, dispatch:false entries excluded' "candidate_chain arms='${_ladder_arms}' expected 'glm' (no kimi)"
++  fi
++else
++  fail 'ladder order from yaml, dispatch:false entries excluded' "rc=${ladder_rc} output=${ladder_out}"
++fi
++
++# Test 2: a provider marked locked-until-future is skipped and the next arm
++# is chosen, with the skip journalled. FAILS on HEAD (no precheck exists).
++make_root "${TMP_ROOT}/lockout-root"
++make_live_glm "${TMP_ROOT}/lockout-glm.sh"
++make_refusing_kimi "${TMP_ROOT}/lockout-kimi.sh"
++make_live_codex "${TMP_ROOT}/lockout-codex.sh"
++_future_epoch=$(( $(date +%s) + 86400 ))
++make_lockout "${TMP_ROOT}/lockout-cache" "glm" "${_future_epoch}" "test_quota_lockout"
++lockout_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockout-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/lockout-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/lockout-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/lockout-glm.sh" \
++  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/lockout-kimi.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockout-codex.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only lockout skips glm' 2>&1)"
++lockout_rc=$?
++if [[ ${lockout_rc} -eq 0 ]] \
++  && grep -q 'quota_precheck_skip model=glm' <<<"${lockout_out}" \
++  && grep -q 'worker_spawned by=router model=codex' <<<"${lockout_out}"; then
++  pass 'quota precheck skips locked provider and journals the skip'
++else
++  fail 'quota precheck skip' "rc=${lockout_rc} output=${lockout_out}"
++fi
++
++# Test 3: a lockout in the past is ignored — glm dispatches AND codex is
++# simultaneously skipped (locked future). On HEAD neither the past-lockout
++# check nor the codex skip exists. FAILS on HEAD.
++make_root "${TMP_ROOT}/pastlock-root"
++make_live_glm "${TMP_ROOT}/pastlock-glm.sh"
++make_refusing_kimi "${TMP_ROOT}/pastlock-kimi.sh"
++make_live_codex "${TMP_ROOT}/pastlock-codex.sh"
++_past_epoch=$(( $(date +%s) - 3600 ))
++make_lockout "${TMP_ROOT}/pastlock-cache" "glm" "${_past_epoch}" "expired_lockout"
++# Also lock codex with a FUTURE timestamp so the test asserts the precheck
++# ran (codex IS skipped) while glm (past lockout) is NOT skipped.
++make_lockout "${TMP_ROOT}/pastlock-cache" "codex" "${_future_epoch}" "test_codex_lock"
++pastlock_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/pastlock-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/pastlock-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/pastlock-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/pastlock-glm.sh" \
++  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/pastlock-kimi.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/pastlock-codex.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only past lockout ignored future codex locked' 2>&1)"
++pastlock_rc=$?
++if [[ ${pastlock_rc} -eq 0 ]] \
++  && grep -q 'worker_spawned by=router model=glm' <<<"${pastlock_out}" \
++  && ! grep -q 'quota_precheck_skip model=glm' <<<"${pastlock_out}" \
++  && grep -q 'quota_precheck_skip model=codex' <<<"${pastlock_out}"; then
++  pass 'past lockout is ignored for glm while future lockout skips codex'
++else
++  fail 'past lockout ignored' "rc=${pastlock_rc} output=${pastlock_out}"
++fi
++
++# Test 4: an absent lockout record does not block glm, AND a present
++# future-lockout on codex IS enforced. On HEAD the codex skip does not
++# happen. FAILS on HEAD.
++make_root "${TMP_ROOT}/nolock-root"
++make_live_glm "${TMP_ROOT}/nolock-glm.sh"
++make_refusing_kimi "${TMP_ROOT}/nolock-kimi.sh"
++make_live_codex "${TMP_ROOT}/nolock-codex.sh"
++# No lockout for glm — but lock codex with a future timestamp.
++make_lockout "${TMP_ROOT}/nolock-cache" "codex" "${_future_epoch}" "test_codex_lock2"
++nolock_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/nolock-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/nolock-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/nolock-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/nolock-glm.sh" \
++  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/nolock-kimi.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/nolock-codex.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only no glm lockout codex locked' 2>&1)"
++nolock_rc=$?
++if [[ ${nolock_rc} -eq 0 ]] \
++  && grep -q 'worker_spawned by=router model=glm' <<<"${nolock_out}" \
++  && ! grep -q 'quota_precheck_skip model=glm' <<<"${nolock_out}" \
++  && grep -q 'quota_precheck_skip model=codex' <<<"${nolock_out}"; then
++  pass 'absent glm lockout does not block while codex lockout is enforced'
++else
++  fail 'absent lockout no-block' "rc=${nolock_rc} output=${nolock_out}"
++fi
++
++# Test 5: dispatch with cwd = the plugin repo resolves a routing config
++# rather than logging no_routing_yaml. FAILS on HEAD (logs no_routing_yaml).
++make_live_glm "${TMP_ROOT}/selfhost-glm.sh"
++make_refusing_kimi "${TMP_ROOT}/selfhost-kimi.sh"
++selfhost_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/selfhost-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/selfhost-glm.sh" \
++  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/selfhost-kimi.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  bash "${DISPATCH_BIN}" 'plugin-only selfhost routing' 2>&1)"
++selfhost_rc=$?
++if [[ ${selfhost_rc} -eq 0 ]] \
++  && ! grep -q 'no_routing_yaml' <<<"${selfhost_out}"; then
++  pass 'dispatch from plugin repo resolves routing config (no no_routing_yaml)'
++else
++  fail 'plugin self-host routing' "rc=${selfhost_rc} output=${selfhost_out}"
++fi
++
++# Test 6: no routing config anywhere (degraded mode). Both project and plugin
++# config must miss, so the journal shows routing_config_degraded AND dispatch
++# still proceeds. Uses LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE to simulate a
++# missing plugin config.
++make_live_glm "${TMP_ROOT}/degraded-glm.sh"
++degraded_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
++  LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE="/nonexistent/path/routing.yaml" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/degraded-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/degraded-glm.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
++  bash "${DISPATCH_BIN}" 'plugin-only degraded mode test' 2>&1)"
++degraded_rc=$?
++if [[ ${degraded_rc} -eq 0 ]] \
++  && grep -q 'routing_config_degraded' <<<"${degraded_out}" \
++  && grep -q 'worker_spawned' <<<"${degraded_out}"; then
++  pass 'degraded mode announces routing_config_degraded and still dispatches'
++else
++  fail 'degraded mode announcement' "rc=${degraded_rc} output=${degraded_out}"
++fi
++
++# Test 7: spawn fence verification. After the full suite runs, no POISON marker
++# should appear in any output, and no new kimi-run directory should exist.
++# NOTE: this test runs at the END and only passes if every prior test respected
++# the fence.
++_poison_hits="$(grep -rl 'POISON:' "${TMP_ROOT}" 2>/dev/null | grep -v 'poison-' | head -1 || true)"
++if [[ -z "${_poison_hits}" ]]; then
++  pass 'spawn fence: no POISON marker in any test output'
++else
++  fail 'spawn fence' "POISON found in: ${_poison_hits}"
++fi
++
++# Test 8: C1 dry-run proof — production routing yaml yields candidate_chain
++# without kimi. Uses the plugin's own canonical config, fakes GLM to refuse,
++# and asserts arms=glm,codex,sonnet.
++make_refusing_glm "${TMP_ROOT}/prodtest-glm.sh"
++make_live_codex "${TMP_ROOT}/prodtest-codex.sh"
++prodtest_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/prodtest-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/prodtest-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/prodtest-cache" \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/prodtest-glm.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/prodtest-codex.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
++  bash "${DISPATCH_BIN}" 'plugin-only production yaml dry run' 2>&1)"
++_prodtest_arms="$(grep 'candidate_chain' <<<"${prodtest_out}" | sed -n 's/.*arms=//p' | head -1)"
++if [[ "${_prodtest_arms}" == "glm,codex,sonnet" ]] \
++  && ! grep -q 'kimi' <<<"${_prodtest_arms}"; then
++  pass 'production yaml dry run: candidate_chain arms=glm,codex,sonnet (no kimi)'
++else
++  fail 'production yaml dry run' "arms='${_prodtest_arms}' expected 'glm,codex,sonnet'"
++fi
++
++# Test 9: quota lockout write→read. GLM launcher refuses with quota_gate;
++# assert quota_lockout_recorded in journal AND the lockout file exists; then
++# run a second dispatch and assert glm is skipped via precheck and codex spawns.
++make_refusing_glm "${TMP_ROOT}/lockwrite-glm.sh"
++make_live_codex "${TMP_ROOT}/lockwrite-codex.sh"
++mkdir -p "${TMP_ROOT}/lockwrite-root/.claude/ref" "${TMP_ROOT}/lockwrite-root/docs/leadv2/.bus-offsets" "${TMP_ROOT}/lockwrite-root/docs/leadv2/tasks"
++lockwrite_out1="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockwrite-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/lockwrite-cache" \
++  LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/lockwrite-cache" \
++  LEADV2_QUOTA_LOCKOUT_MINUTES=30 \
++  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/lockwrite-glm.sh" \
++  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockwrite-codex.sh" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
++  bash "${DISPATCH_BIN}" 'plugin-only lockout write read run1' 2>&1)"
++lockwrite_rc1=$?
++_lockout_file="${TMP_ROOT}/lockwrite-cache/quota-lockout-glm.json"
++if [[ ${lockwrite_rc1} -ne 0 ]] \
++  || ! grep -q 'quota_lockout_recorded.*provider=glm' <<<"${lockwrite_out1}" \
++  || [[ ! -f "${_lockout_file}" ]]; then
++  fail 'quota lockout write side' "rc=${lockwrite_rc1} output=${lockwrite_out1} file_exists=$([[ -f ${_lockout_file} ]] && echo yes || echo no)"
++else
++  # Verify locked_until_epoch is in the future
++  _lock_epoch="$(python3 -c "import json; print(json.load(open('${_lockout_file}'))['locked_until_epoch'])" 2>/dev/null || echo 0)"
++  _now_epoch="$(date +%s)"
++  if [[ "${_lock_epoch}" =~ ^[0-9]+$ ]] && (( _lock_epoch > _now_epoch )); then
++    pass 'quota lockout write side: quota_lockout_recorded provider=glm, lockout file with future epoch'
++  else
++    fail 'quota lockout write side' "lock_epoch=${_lock_epoch} now=${_now_epoch} (not in future)"
++  fi
++  # Second dispatch: glm should be skipped by precheck, codex should spawn
++  lockwrite_out2="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockwrite-root" \
++    LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/lockwrite-cache" \
++    LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/lockwrite-cache" \
++    LEADV2_QUOTA_LOCKOUT_MINUTES=30 \
++    LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/lockwrite-glm.sh" \
++    LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockwrite-codex.sh" \
++    LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++    LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
++    bash "${DISPATCH_BIN}" 'plugin-only lockout write read run2' 2>&1)"
++  lockwrite_rc2=$?
++  if [[ ${lockwrite_rc2} -eq 0 ]] \
++    && grep -q 'quota_precheck_skip model=glm' <<<"${lockwrite_out2}" \
++    && grep -q 'worker_spawned by=router model=codex' <<<"${lockwrite_out2}"; then
++    pass 'quota lockout read side: 2nd dispatch skips glm, spawns codex'
++  else
++    fail 'quota lockout read side' "rc=${lockwrite_rc2} output=${lockwrite_out2}"
++  fi
++fi
++
+ [[ ${FAIL} -eq 0 ]]

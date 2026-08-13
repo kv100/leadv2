@@ -1,0 +1,16 @@
+- 2026-08-04T15:46:17Z [decision] dispatch_classified task=ff3b7059 class=product reason=conservative_default kind=unknown
+- 2026-08-04T15:51:46Z [decision] architect_prepass task=ff3b7059 status=ran artifact=docs/handoff/dispatch-ff3b7059/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-ff3b7059-architect/architect.full.md
+- 2026-08-04T15:51:46Z [decision] lane_writes task=ff3b7059 source=prepass writes=plugins/leadv2/scripts/leadv2-status-surface.sh,tests/test-status-surface-single-lead.sh,tests/test-status-surface-bash32.sh
+- 2026-08-04T15:51:46Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T15:51:47Z [decision] kimi_skipped reason=chars_over task=ff3b7059 chars=22583 writes=0 prepass=1
+- 2026-08-04T15:51:47Z [decision] arm_excluded by=router model=glm task=ff3b7059 reason=operator_excluded
+- 2026-08-04T15:51:47Z [decision] arm_excluded by=router model=codex task=ff3b7059 reason=operator_excluded
+- 2026-08-04T15:51:47Z [decision] candidate_chain task=ff3b7059 arms=sonnet
+- 2026-08-04T15:51:48Z [decision] worker_spawned by=router model=sonnet task=ff3b7059 attempt=ff3b7059-1785858376-84044 handle=PID=96002 LABEL=developer-dispatch-ff3b7059-1785858707 SESSION_ID=3090746a-e892-4c8f-82c1-ce39f7908e6a STREAM=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-ff3b7059/developer.stream.jsonl
+- 2026-08-04T15:51:48Z [decision] mission-version task=- sig=ff3b7059 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-04T15:51:49Z [decision] product_close task=ff3b7059 status=spawned author=sonnet
+- 2026-08-04T15:51:49Z [decision] route_resolved by=router router=v1 model=sonnet task=ff3b7059 rule=none reason=no_routing_yaml
+- 2026-08-04T15:51:49Z [decision] lane_worktree_left task=ff3b7059 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/ff3b7059
+- 2026-08-04T16:28:32Z [decision] e2e_gate task=ff3b7059 status=ran verdict=fail rc=1
+- 2026-08-04T16:28:34Z [decision] dispatch_terminal task=ff3b7059 terminal=dead cause=e2e_regression
+- 2026-08-04T16:28:34Z [decision] dispatch_terminal_dedup task=ff3b7059 attempted=dead reason=terminal_already_recorded

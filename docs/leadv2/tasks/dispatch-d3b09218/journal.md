@@ -1,0 +1,20 @@
+- 2026-08-12T20:41:32Z [decision] lane_placement_pinned task=d3b09218 mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/LANE-TRUTH-BATCH-01 key=LANE-TRUTH-BATCH-01
+- 2026-08-12T20:41:32Z [decision] dispatch_task_bound task=d3b09218 founder_task=LANE-TRUTH-BATCH-01
+- 2026-08-12T20:41:32Z [decision] dispatch_classified task=d3b09218 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T20:41:34Z [decision] phase_precondition_warn task=d3b09218 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T20:41:35Z [decision] architect_prepass task=d3b09218 status=disabled reason=kill_switch
+- 2026-08-12T20:41:35Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T20:41:36Z [decision] dispatchable_arms_read_failed task=d3b09218 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T20:41:36Z [decision] routing_config_degraded task=d3b09218 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T20:41:36Z [decision] candidate_chain task=d3b09218 arms=glm,codex,sonnet
+- 2026-08-12T20:41:37Z [decision] arm_refused by=router model=glm task=d3b09218 reason=glm_refused_lock_busy
+- 2026-08-12T20:41:49Z [decision] worker_spawned by=router model=codex task=d3b09218 attempt=d3b09218-1786567291-74779 handle=task-msqk1kaf-98eqcm
+- 2026-08-12T20:41:49Z [decision] mission-version task=LANE-TRUTH-BATCH-01 sig=d3b09218 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T20:42:10Z [decision] product_close task=d3b09218 status=spawned author=codex
+- 2026-08-12T20:42:10Z [decision] route_resolved by=router router=v1 model=codex task=d3b09218 rule=none reason=no_routing_yaml
+- 2026-08-12T20:42:10Z [decision] lane_worktree_left task=d3b09218 founder_task=LANE-TRUTH-BATCH-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/LANE-TRUTH-BATCH-01
+- 2026-08-12T20:56:47Z [decision] e2e_gate task=d3b09218 status=ran verdict=pass
+- 2026-08-12T20:56:48Z [decision] review_signals task=d3b09218 protected_path=1 source=no_lane_writes_failclosed matched=-
+- 2026-08-12T20:56:48Z [decision] review_gate task=d3b09218 status=no_reviewer author=codex refusal=all_review_arms_unavailable pool=
+- 2026-08-12T20:56:48Z [decision] dispatch_terminal task=d3b09218 terminal=parked cause=all_review_arms_unavailable
+- 2026-08-12T20:56:48Z [decision] dispatch_terminal_dedup task=d3b09218 attempted=parked reason=terminal_already_recorded

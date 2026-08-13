@@ -1,0 +1,2 @@
+[claude-subsession] stable prefix file reused for critic (server cache status comes from usage telemetry)
+[claude-subsession] cost recorded: critic/sonnet in=18 out=1810 usd=0.027204 cache_hit=0.9421

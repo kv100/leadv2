@@ -1,0 +1,41 @@
+- 2026-08-12T12:13:41Z [decision] lane_placement_refused task=54aaa0bf reason=no_lane_worktree_for_ref ref=a88918ee looked_for=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/a88918ee
+- 2026-08-12T12:14:10Z [decision] lane_placement_pinned task=54aaa0bf mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/ONE-PATH-PLAN-RUN-01 key=ONE-PATH-PLAN-RUN-01
+- 2026-08-12T12:14:10Z [decision] dispatch_task_bound task=54aaa0bf founder_task=ONE-PATH-PLAN-RUN-01
+- 2026-08-12T12:14:10Z [decision] dispatch_classified task=54aaa0bf class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T12:14:12Z [decision] phase_precondition_warn task=54aaa0bf class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T12:19:25Z [decision] architect_prepass task=54aaa0bf status=ran artifact=docs/handoff/dispatch-54aaa0bf/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-54aaa0bf-architect/architect.full.md
+- 2026-08-12T12:19:25Z [decision] lane_writes task=54aaa0bf source=prepass writes=plugins/leadv2/scripts/leadv2-plan-run.sh,plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py,plugins/leadv2/scripts/tests/test-plan-run-contract.sh,plugins/leadv2/scripts/tests/test-plan-run-acceptance-real.sh,plugins/leadv2/scripts/tests/test-plan-run-arms-role-scoped.sh,plugins/leadv2/scripts/tests/test-plan-run-codex-disabled-degrades.sh,plugins/leadv2/scripts/tests/test-plan-run-diagnose-mode.sh,plugins/leadv2/scripts/tests/test-plan-run-codemap.sh,plugins/leadv2/scripts/tests/fixtures/plan-run/*
+- 2026-08-12T12:19:26Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T12:19:26Z [decision] dispatchable_arms_read_failed task=54aaa0bf fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T12:19:26Z [decision] routing_config_degraded task=54aaa0bf reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T12:19:26Z [decision] kimi_skipped reason=chars_over task=54aaa0bf chars=30269 writes=0 prepass=1
+- 2026-08-12T12:19:27Z [decision] candidate_chain task=54aaa0bf arms=glm,codex,sonnet
+- 2026-08-12T12:19:29Z [decision] worker_spawned by=router model=glm task=54aaa0bf attempt=54aaa0bf-1786536848-18189 handle=260812-151929-ONE-PATH-PLAN-RUN-01-4f7e
+- 2026-08-12T12:19:29Z [decision] mission-version task=ONE-PATH-PLAN-RUN-01 sig=54aaa0bf rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T12:19:50Z [decision] product_close task=54aaa0bf status=spawned author=glm
+- 2026-08-12T12:19:50Z [decision] route_resolved by=router router=v1 model=glm task=54aaa0bf rule=none reason=no_routing_yaml
+- 2026-08-12T12:19:50Z [decision] lane_worktree_left task=54aaa0bf founder_task=ONE-PATH-PLAN-RUN-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/ONE-PATH-PLAN-RUN-01
+- 2026-08-12T12:55:31Z [decision] e2e_gate task=54aaa0bf status=ran verdict=fail rc=1
+- 2026-08-12T12:55:36Z [decision] dispatch_terminal task=54aaa0bf terminal=dead cause=e2e_regression
+- 2026-08-12T12:55:37Z [decision] dispatch_terminal_dedup task=54aaa0bf attempted=dead reason=terminal_already_recorded
+- 2026-08-12T16:25:28Z [decision] lane_placement_pinned task=54aaa0bf mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/ONE-PATH-PLAN-RUN-01 key=ONE-PATH-PLAN-RUN-01
+- 2026-08-12T16:25:29Z [decision] dispatch_task_bound task=54aaa0bf founder_task=ONE-PATH-PLAN-RUN-01
+- 2026-08-12T16:25:29Z [decision] dispatch_classified task=54aaa0bf class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T16:25:30Z [decision] phase_precondition_warn task=54aaa0bf class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T16:25:31Z [decision] architect_prepass task=54aaa0bf status=disabled reason=kill_switch
+- 2026-08-12T16:25:31Z [decision] lane_writes task=54aaa0bf source=prepass writes=plugins/leadv2/scripts/leadv2-plan-run.sh,plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py,plugins/leadv2/scripts/tests/test-plan-run-contract.sh,plugins/leadv2/scripts/tests/test-plan-run-acceptance-real.sh,plugins/leadv2/scripts/tests/test-plan-run-arms-role-scoped.sh,plugins/leadv2/scripts/tests/test-plan-run-codex-disabled-degrades.sh,plugins/leadv2/scripts/tests/test-plan-run-diagnose-mode.sh,plugins/leadv2/scripts/tests/test-plan-run-codemap.sh,plugins/leadv2/scripts/tests/fixtures/plan-run/*
+- 2026-08-12T16:25:32Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T16:25:32Z [decision] dispatchable_arms_read_failed task=54aaa0bf fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T16:25:32Z [decision] routing_config_degraded task=54aaa0bf reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T16:25:32Z [decision] kimi_skipped reason=chars_over task=54aaa0bf chars=30269 writes=0 prepass=1
+- 2026-08-12T16:25:33Z [decision] candidate_chain task=54aaa0bf arms=glm,codex,sonnet
+- 2026-08-12T16:25:34Z [decision] worker_spawned by=router model=glm task=54aaa0bf attempt=54aaa0bf-1786551927-97244 handle=260812-192534-ONE-PATH-PLAN-RUN-01-2067
+- 2026-08-12T16:25:34Z [decision] mission-version task=ONE-PATH-PLAN-RUN-01 sig=54aaa0bf rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T16:25:56Z [decision] product_close task=54aaa0bf status=spawned author=glm
+- 2026-08-12T16:25:56Z [decision] route_resolved by=router router=v1 model=glm task=54aaa0bf rule=none reason=no_routing_yaml
+- 2026-08-12T16:25:56Z [decision] lane_worktree_left task=54aaa0bf founder_task=ONE-PATH-PLAN-RUN-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/ONE-PATH-PLAN-RUN-01
+- 2026-08-12T16:45:02Z [decision] e2e_gate task=54aaa0bf status=ran verdict=pass
+- 2026-08-12T16:45:02Z [decision] review_signals task=54aaa0bf protected_path=0 source=lane_writes matched=-
+- 2026-08-12T16:45:02Z [decision] review_gate task=54aaa0bf status=no_reviewer author=glm refusal=all_review_arms_unavailable pool=
+- 2026-08-12T16:45:03Z [decision] dispatch_terminal_dedup task=54aaa0bf attempted=parked reason=terminal_already_recorded
+- 2026-08-12T16:45:03Z [decision] dispatch_terminal_dedup task=54aaa0bf attempted=parked reason=terminal_already_recorded

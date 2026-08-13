@@ -1,0 +1,478 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index 982d648..70d0a05 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -901,19 +901,67 @@ _arm_provider() {  # <arm_id> -> provider string
+   printf '%s' "${_arm}"
+ }
+ 
+-# C1 tenant-yaml resurrection guard: after _load_dispatch_ladder populates
+-# _LADDER_IDS from the (possibly stale) project or plugin yaml, drop any id
+-# not in DISPATCHABLE_BUILD_ARMS. This prevents a stale tenant yaml that still
+-# lists kimi as dispatchable from resurrecting a retired arm.
+-_filter_ladder_to_dispatchable() {  # <sig8>
+-  local _sig8="$1" _dispatchable _id _i _j _keep
++# Single reader for the DISPATCHABLE_BUILD_ARMS set (lib/leadv2-glm-policy-resolve.py).
++# Fail-open default matches the pre-extraction inline behaviour: a broken
++# importlib read must never fail the dispatcher closed. Emits a distinct
++# journal line when the read itself fails, so a silent fallback is visible.
++_dispatchable_arms() {  # () -> stdout: space-separated ids
++  local _sig8="${1:-}" _dispatchable
+   _dispatchable="$(python3 -c '
+ import importlib.util, sys
+ spec = importlib.util.spec_from_file_location("_pr", sys.argv[1])
+ m = importlib.util.module_from_spec(spec)
+ spec.loader.exec_module(m)
+ print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))
+-' "${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py" 2>/dev/null)" || _dispatchable="glm codex sonnet"
++' "${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py" 2>/dev/null)"
++  if [[ -z "${_dispatchable}" ]]; then
++    _dispatchable="glm codex sonnet"
++    emit decision "dispatchable_arms_read_failed task=${_sig8} fallback=glm,codex,sonnet reason=importlib_read_failed"
++  fi
++  printf '%s' "${_dispatchable}"
++}
++
++# Map a router_v2 arm id to the launcher's spawn-case vocabulary. Table-free
++# prefix strip: claude-<model> -> <model>. Everything else is identity, so a
++# future claude-fable needs no edit here.
++_normalize_v2_arm() {  # <v2_arm_id> -> stdout: launcher arm id
++  local _id="$1"
++  case "${_id}" in
++    claude-*) printf '%s' "${_id#claude-}" ;;
++    *) printf '%s' "${_id}" ;;
++  esac
++}
++
++# Drop any id in candidate_arms that is not in DISPATCHABLE_BUILD_ARMS.
++# Shared by both v1 (ladder-derived) and v2 (resolver-derived) candidate
++# chains so the retirement of an arm (dispatch:false / commented-out) is
++# enforced identically on both paths -- never a second hand-kept exclusion
++# list. Mutates the caller's candidate_arms array in place.
++_filter_arms_to_dispatchable() {  # <sig8> <router_label:v1|v2>
++  local _sig8="$1" _router="$2" _dispatchable _id _keep _d
++  _dispatchable="$(_dispatchable_arms "${_sig8}")"
++  local -a _kept=()
++  for _id in "${candidate_arms[@]}"; do
++    _keep=0
++    for _d in ${_dispatchable}; do
++      [[ "${_id}" == "${_d}" ]] && { _keep=1; break; }
++    done
++    if [[ "${_keep}" == "1" ]]; then
++      _kept+=("${_id}")
++    else
++      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} router=${_router} reason=not_in_DISPATCHABLE_BUILD_ARMS"
++    fi
++  done
++  candidate_arms=("${_kept[@]}")
++}
++
++# C1 tenant-yaml resurrection guard: after _load_dispatch_ladder populates
++# _LADDER_IDS from the (possibly stale) project or plugin yaml, drop any id
++# not in DISPATCHABLE_BUILD_ARMS. This prevents a stale tenant yaml that still
++# lists kimi as dispatchable from resurrecting a retired arm.
++_filter_ladder_to_dispatchable() {  # <sig8>
++  local _sig8="$1" _dispatchable _id _i _keep _d
++  _dispatchable="$(_dispatchable_arms "${_sig8}")"
+   local -a _new_ids=() _new_provs=()
+   for _i in "${!_LADDER_IDS[@]}"; do
+     _id="${_LADDER_IDS[$_i]}"
+@@ -925,7 +973,7 @@ print(" ".join(sorted(m.DISPATCHABLE_BUILD_ARMS)))
+       _new_ids+=("${_id}")
+       _new_provs+=("${_LADDER_PROVIDERS[$_i]}")
+     else
+-      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} reason=not_in_DISPATCHABLE_BUILD_ARMS"
++      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} router=v1 reason=not_in_DISPATCHABLE_BUILD_ARMS"
+     fi
+   done
+   _LADDER_IDS=("${_new_ids[@]}")
+@@ -3019,6 +3067,18 @@ confirmation-seeking; only for a decision you cannot make yourself."
+   if [[ "${router_label}" == "v2" ]]; then
+     IFS=',' read -r -a candidate_arms <<< "${v2_eligible}"
+     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
++    # ARM-LADDER-KIMI-RESURRECTED-01 follow-up: v2's eligible= comes straight
++    # from the router-v2 resolver, which never consulted DISPATCHABLE_BUILD_ARMS
++    # and speaks a different arm-id vocabulary (claude-sonnet, not sonnet).
++    # Normalize first so a legitimate id survives the filter, then filter so a
++    # retired id (e.g. a stale tenant yaml still listing kimi) cannot.
++    local -a _v2_normalized=() _v2_a
++    for _v2_a in "${candidate_arms[@]}"; do
++      _v2_normalized+=("$(_normalize_v2_arm "${_v2_a}")")
++    done
++    candidate_arms=("${_v2_normalized[@]}")
++    _filter_arms_to_dispatchable "${sig8}" v2
++    [[ ${#candidate_arms[@]} -gt 0 ]] || { emit decision "dispatch_rolled_back reason=all_arms_not_dispatchable_v2 task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_not_dispatchable_v2 "" "${founder_task_id}"; exit 4; }
+     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
+   else
+     _load_dispatch_ladder
+diff --git a/plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh b/plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh
+index bde4bce..5399b13 100755
+--- a/plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh
++++ b/plugins/leadv2/scripts/tests/test-arm-ladder-vocabulary-drift.sh
+@@ -113,6 +113,72 @@ else
+   fail "case3b: kimi found in yaml-loaded ladder — not filtered by dispatch:false"
+ fi
+ 
++# ============================================================================
++# Case 4: router_v2.arms ids, after claude-<model> normalization, are a subset
++#         of DISPATCHABLE_BUILD_ARMS (or advisory non-build ids). kimi must be
++#         specifically absent -- ARM-LADDER-KIMI-RESURRECTED-01 follow-up: v2's
++#         own registry must not resurrect a retired arm either.
++# ============================================================================
++_v2_arms_list="$(python3 -c '
++import yaml, sys
++d = yaml.safe_load(open(sys.argv[1])) or {}
++arms = (d.get("router_v2") or {}).get("arms") or []
++for e in arms:
++    print(e.get("id", ""))
++' "$ROUTING_YAML" 2>/dev/null)"
++
++_v2_normalized_list=""
++for _id in ${_v2_arms_list}; do
++  case "${_id}" in
++    claude-*) _norm="${_id#claude-}" ;;
++    *) _norm="${_id}" ;;
++  esac
++  _v2_normalized_list="${_v2_normalized_list} ${_norm}"
++done
++
++# advisory ids that are legitimately in router_v2.arms but never spawn as a
++# build arm: opus is intercepted as lead judgment before any spawn case;
++# haiku has no spawn case today (dispatch-a24b1588 R2, tracked as a follow-up
++# thread) but is not retired config the way kimi is, so it is not a
++# resurrection risk -- the new dispatchable filter drops and journals it.
++_v2_advisory="opus haiku"
++
++_v2_ok=1
++for _id in ${_v2_normalized_list}; do
++  _found=0
++  for _d in ${DISPATCHABLE} ${_v2_advisory}; do
++    [[ "${_id}" == "${_d}" ]] && { _found=1; break; }
++  done
++  [[ "${_found}" == "1" ]] || { _v2_ok=0; break; }
++done
++
++if [[ "${_v2_ok}" == "1" && "${_v2_normalized_list}" != *"kimi"* ]]; then
++  pass "case4: router_v2.arms (normalized: ${_v2_normalized_list}) ⊆ DISPATCHABLE_BUILD_ARMS ∪ advisory; kimi absent"
++else
++  fail "case4: router_v2.arms (normalized: ${_v2_normalized_list}) contains an id outside DISPATCHABLE_BUILD_ARMS ∪ advisory, or kimi is present"
++fi
++
++# ============================================================================
++# Case 5: v1/v2 agreement -- the dispatchable set derived from
++#         router.dispatch_ladder must equal the dispatchable set derived from
++#         router_v2.arms (after normalization). A divergence between the two
++#         independently-maintained arm registries fails here.
++# ============================================================================
++_v1_dispatchable_sorted="$(printf '%s\n' ${_yaml_list} | sort -u | tr '\n' ' ')"
++_v2_dispatchable_only=""
++for _id in ${_v2_normalized_list}; do
++  for _d in ${DISPATCHABLE}; do
++    [[ "${_id}" == "${_d}" ]] && { _v2_dispatchable_only="${_v2_dispatchable_only} ${_id}"; break; }
++  done
++done
++_v2_dispatchable_sorted="$(printf '%s\n' ${_v2_dispatchable_only} | sort -u | tr '\n' ' ')"
++
++if [[ "${_v1_dispatchable_sorted}" == "${_v2_dispatchable_sorted}" ]]; then
++  pass "case5: v1 dispatchable set (${_v1_dispatchable_sorted}) == v2 dispatchable set (${_v2_dispatchable_sorted})"
++else
++  fail "case5: v1/v2 divergence -- v1=(${_v1_dispatchable_sorted}) v2=(${_v2_dispatchable_sorted})"
++fi
++
+ log ""
+ log "================================================"
+ log "  arm-ladder vocabulary-drift suite: PASS=$PASS FAIL=$FAIL"
+diff --git a/plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh b/plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
+index c4b4a16..b2df676 100644
+--- a/plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
++++ b/plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
+@@ -142,10 +142,14 @@ dispatch_stderr_file="${SANDBOX}/s7-stderr.txt"
+ bash "${DC}" --kind tooling --resume-lane "${LANE_REF}" \
+   "S7 sentinel resume test" 2>"${dispatch_stderr_file}" >/dev/null || dispatch_rc=$?
+ 
+-if [[ ${dispatch_rc} -ne 5 ]]; then
+-  ok "S7: dispatch did NOT refuse with rc 5 (got rc=${dispatch_rc})"
++# dispatch-a24b1588 Item 3: rc != 5 only proves "not one of the six refusal
++# reasons exit 5 covers" -- a future unrelated crash exiting any other nonzero
++# code would false-PASS this. The observed rc really is 0 (confirmed below),
++# so assert exactly what was observed, not a weaker superset of it.
++if [[ ${dispatch_rc} -eq 0 ]]; then
++  ok "S7: dispatch resumed the finalized lane (rc=0)"
+ else
+-  bad "S7: dispatch refused with rc 5"
++  bad "S7: dispatch did not resume the finalized lane (rc=${dispatch_rc}, expected 0)"
+ fi
+ 
+ if ! grep -q 'lane_is_live' "${dispatch_stderr_file}" 2>/dev/null; then
+@@ -160,12 +164,13 @@ if grep -q 'lane_placement_pinned' "${dispatch_stderr_file}" 2>/dev/null \
+   ok "S7: placement was pinned (accepted)"
+ else
+   # The journal is a stub, so the decision line might be in stderr only
+-  # (emit goes to the journal which is /bin/true). Check rc != 5 as the
+-  # primary assertion, and stderr as secondary.
+-  if [[ ${dispatch_rc} -ne 5 ]]; then
+-    ok "S7: placement accepted (rc != 5, journal is a stub)"
++  # (emit goes to the journal which is /bin/true). Check rc == 0 as the
++  # primary assertion (same tightening as the main S7 assertion above), and
++  # stderr as secondary.
++  if [[ ${dispatch_rc} -eq 0 ]]; then
++    ok "S7: placement accepted (rc=0, journal is a stub)"
+   else
+-    bad "S7: no evidence of placement pin"
++    bad "S7: no evidence of placement pin (rc=${dispatch_rc}, expected 0)"
+   fi
+ fi
+ 
+diff --git a/plugins/leadv2/scripts/tests/test-router-v2-retired-arm.sh b/plugins/leadv2/scripts/tests/test-router-v2-retired-arm.sh
+new file mode 100644
+index 0000000..f74987a
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-router-v2-retired-arm.sh
+@@ -0,0 +1,199 @@
++#!/usr/bin/env bash
++# dispatch-a24b1588 Item 1: router_v2's own candidate-arm selection never went
++# through the DISPATCHABLE_BUILD_ARMS filter (_filter_ladder_to_dispatchable is
++# a v1-only call). A stale tenant .claude/ref/leadv2-routing.yaml that still
++# lists kimi under router_v2.arms can resurrect it as a dispatchable arm the
++# instant LEADV2_ROUTER_V2=1. This suite proves:
++#   T1 — a retired arm (kimi) cannot survive into the v2 candidate chain, and
++#        the drop is journalled (router=v2), without collapsing the chain.
++#   T2 — the naive fix (intersect eligible with DISPATCHABLE_BUILD_ARMS with no
++#        vocabulary normalization) is rejected: a canonical-shaped
++#        router_v2.arms entry (claude-sonnet) must survive as "sonnet", not be
++#        dropped for spelling a different vocabulary than the ladder.
++#
++# Both FAIL against current HEAD: HEAD's v2 branch (leadv2-dispatch-code.sh,
++# router_label == v2) does IFS=',' read straight from the resolver's eligible=
++# output into candidate_arms with no filter and no normalization at all.
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++DISPATCH_BIN="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
++TMP_ROOT="$(mktemp -d)"
++trap 'rm -rf "${TMP_ROOT}"' EXIT
++FAIL=0
++
++pass() { printf 'PASS: %s\n' "$1"; }
++fail() { printf 'FAIL: %s -- %s\n' "$1" "$2"; FAIL=1; }
++
++bash -n "${SCRIPT_DIR}/test-router-v2-retired-arm.sh" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
++
++# ── Fail-closed spawn fence (mirrors test-routing-enforcement-p1.sh's preamble,
++#    including LEADV2_DISPATCH_SUBSESSION_BIN, which test-arm-ladder-vocabulary-
++#    drift.sh's fence omits — dispatch-a24b1588 explicitly calls that gap out).
++for _arm in glm kimi codex; do
++  _poison="${TMP_ROOT}/poison-${_arm}.sh"
++  printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "${_poison}"
++  chmod +x "${_poison}"
++done
++printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "${TMP_ROOT}/poison-sonnet.sh"
++chmod +x "${TMP_ROOT}/poison-sonnet.sh"
++export LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/poison-glm.sh"
++export LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/poison-kimi.sh"
++export LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/poison-codex.sh"
++export LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh"
++# Belt-and-suspenders: no spawn is attempted at all in this suite (--no-spawn).
++export LEADV2_DISPATCH_SPAWN=0
++
++# ── Fake router_v2 dependency chain. resolve_v2_dispatch (leadv2-dispatch-
++#    code.sh:1051) shells out to leadv2-router-v2.sh (filter, resolve),
++#    leadv2-task-judge.sh (a REAL `claude -p --model haiku` call) and
++#    leadv2-route-bandit.sh. All three are env-overridable
++#    (LEADV2_ROUTER_V2_BIN / LEADV2_TASK_JUDGE_BIN / LEADV2_ROUTE_BANDIT_BIN);
++#    faking all three keeps this suite fully offline and deterministic instead
++#    of depending on the real L1/L2/L3 resolver's own live behaviour.
++make_fake_rv2() {
++  local path="$1" arm="$2" eligible="$3"
++  cat > "${path}" <<SH
++#!/usr/bin/env bash
++case "\${1:-}" in
++  filter)  printf 'eligible=${eligible}\nfiltered=[]\n' ;;
++  resolve) printf 'arm=${arm}\nrule=fake_test\nreason=fake_test\neligible=${eligible}\ncodex_quota_blocked=0\n' ;;
++  *) exit 1 ;;
++esac
++SH
++  chmod +x "${path}"
++}
++
++make_fake_judge() {
++  local path="$1"
++  cat > "${path}" <<'SH'
++#!/usr/bin/env bash
++printf '{"work_kind":"build","duration_class":"short","complexity":"simple"}\n'
++SH
++  chmod +x "${path}"
++}
++
++make_fake_bandit() {
++  local path="$1"
++  cat > "${path}" <<'SH'
++#!/usr/bin/env bash
++printf 'samples={}\n'
++SH
++  chmod +x "${path}"
++}
++
++make_tenant_root() {
++  local root="$1" arms_block="$2"
++  mkdir -p "${root}/.claude/ref"
++  cat > "${root}/.claude/ref/leadv2-routing.yaml" <<YAML
++router_v2:
++${arms_block}
++router:
++  dispatch_ladder:
++    - id: glm
++      provider: glm
++      model: glm-5.2
++      when: [all]
++      effort: standard
++    - id: codex
++      provider: codex
++      model: gpt-5.6-terra
++      when: [all]
++      effort: standard
++    - id: sonnet
++      provider: anthropic
++      model: sonnet
++      when: [all]
++      effort: standard
++YAML
++}
++
++# ============================================================================
++# T1: stale-tenant kimi resurrection. router_v2.arms still lists kimi (no
++# dispatch:false-equivalent exists for router_v2.arms -- retirement there is
++# expressed by simply not listing the id, so "still listing kimi" IS the
++# resurrection vector, matching the architect's C1-analogue for v2). The fake
++# resolver hands back kimi as PRIMARY with eligible=kimi,claude-sonnet -- the
++# shape a stale registry produces when kimi hasn't been pulled from arms yet.
++# ============================================================================
++make_tenant_root "${TMP_ROOT}/t1-root" "  arms:
++    - id: kimi
++      channel: kimi-coder.sh
++      model: moonshotai/kimi-k3-free
++      bucket: kimi
++    - id: claude-sonnet
++      channel: claude-subsession.sh
++      model: sonnet
++      bucket: anthropic:max_20x"
++
++make_fake_rv2  "${TMP_ROOT}/t1-rv2.sh"    "kimi" "kimi,claude-sonnet"
++make_fake_judge "${TMP_ROOT}/t1-judge.sh"
++make_fake_bandit "${TMP_ROOT}/t1-bandit.sh"
++
++t1_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/t1-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/t1-cache" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  LEADV2_ROUTER_V2=1 \
++  LEADV2_ROUTER_V2_BIN="${TMP_ROOT}/t1-rv2.sh" \
++  LEADV2_TASK_JUDGE_BIN="${TMP_ROOT}/t1-judge.sh" \
++  LEADV2_ROUTE_BANDIT_BIN="${TMP_ROOT}/t1-bandit.sh" \
++  bash "${DISPATCH_BIN}" 'plugin-only v2-retired-arm T1 stale tenant kimi' 2>&1)"
++t1_rc=$?
++
++if grep -qE 'candidate_chain.*arms=[^ ]*kimi' <<<"${t1_out}"; then
++  fail 'T1: kimi survives into v2 candidate_chain' "output=${t1_out}"
++elif ! grep -q 'arm_dropped_not_dispatchable arm=kimi' <<<"${t1_out}"; then
++  fail 'T1: no arm_dropped_not_dispatchable line for kimi' "output=${t1_out}"
++elif ! grep -q 'arm_dropped_not_dispatchable arm=kimi.*router=v2' <<<"${t1_out}"; then
++  fail 'T1: kimi drop line missing router=v2' "output=${t1_out}"
++elif [[ ${t1_rc} -eq 4 ]]; then
++  fail 'T1: chain collapsed to all_arms_exhausted instead of falling back to sonnet' "rc=${t1_rc} output=${t1_out}"
++else
++  pass 'T1: retired arm kimi dropped from v2 chain (router=v2), no collapse (rc='"${t1_rc}"')'
++fi
++
++# ============================================================================
++# T2: canonical-shaped router_v2.arms (claude-sonnet, claude-haiku — no kimi).
++# Guards against the naive fix: intersecting v2's eligible= with
++# DISPATCHABLE_BUILD_ARMS BEFORE normalizing claude-<model> -> <model> would
++# drop claude-sonnet too (it matches no id in {glm,codex,sonnet} verbatim),
++# emptying the chain and turning every v2 dispatch into all_arms_exhausted --
++# a resurrection bug traded for a total-outage bug. Must resolve to a chain
++# containing "sonnet", not "claude-sonnet", and must not exit 4.
++# ============================================================================
++make_fake_rv2 "${TMP_ROOT}/t2-rv2.sh" "claude-sonnet" "claude-sonnet,claude-haiku"
++make_fake_judge "${TMP_ROOT}/t2-judge.sh"
++make_fake_bandit "${TMP_ROOT}/t2-bandit.sh"
++
++t2_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/t1-root" \
++  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/t2-cache" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
++  LEADV2_ROUTER_V2=1 \
++  LEADV2_ROUTER_V2_BIN="${TMP_ROOT}/t2-rv2.sh" \
++  LEADV2_TASK_JUDGE_BIN="${TMP_ROOT}/t2-judge.sh" \
++  LEADV2_ROUTE_BANDIT_BIN="${TMP_ROOT}/t2-bandit.sh" \
++  bash "${DISPATCH_BIN}" 'plugin-only v2-retired-arm T2 canonical claude- ids' 2>&1)"
++t2_rc=$?
++
++_t2_chain="$(grep 'candidate_chain' <<<"${t2_out}" | sed -n 's/.*arms=//p' | head -1)"
++if [[ ${t2_rc} -eq 4 ]] || grep -q 'all_arms_not_dispatchable_v2\|all_arms_exhausted' <<<"${t2_out}"; then
++  fail 'T2: canonical claude-sonnet chain collapsed to an exhaustion refusal' "rc=${t2_rc} output=${t2_out}"
++elif [[ "${_t2_chain}" != *sonnet* ]] || [[ "${_t2_chain}" == *claude-sonnet* ]]; then
++  fail 'T2: candidate_chain does not contain normalized "sonnet"' "chain='${_t2_chain}' output=${t2_out}"
++else
++  pass 'T2: claude-sonnet normalizes to sonnet and survives the filter (chain='"'${_t2_chain}'"')'
++fi
++
++# ── Terminal poison-marker assertion (proves the fence held, not just that it
++#    was set — mirrors test-routing-enforcement-p1.sh Test 7).
++if grep -q 'POISON:' <<<"${t1_out}${t2_out}"; then
++  fail 'poison fence' 'a POISON marker appears in captured output -- a real provider bin was invoked'
++else
++  pass 'poison fence held -- no real provider bin invoked across T1/T2'
++fi
++
++printf '\n================================================\n'
++printf '  router-v2-retired-arm suite: FAIL=%s\n' "${FAIL}"
++printf '================================================\n'
++
++exit "${FAIL}"
+diff --git a/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh b/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
+index d84b7b9..cc3b232 100644
+--- a/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
++++ b/plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh
+@@ -432,11 +432,22 @@ else
+   fail 'absent lockout no-block' "rc=${nolock_rc} output=${nolock_out}"
+ fi
+ 
+-# Test 5: dispatch with cwd = the plugin repo resolves a routing config
+-# rather than logging no_routing_yaml. FAILS on HEAD (logs no_routing_yaml).
++# Test 5: dispatch with NO project routing config resolves the plugin's own
++# canonical routing config (self-host fallback) rather than logging
++# no_routing_yaml. dispatch-a24b1588 Item 2 sweep: this test's *intent* is
++# self-host resolution, but without a PROJECT_ROOT pin it is cwd-dependent --
++# `PROJECT_ROOT` falls back to `git rev-parse --show-toplevel` on the CALLER's
++# cwd (dispatch-code.sh:264), so run from inside a repo that carries its OWN
++# `.claude/ref/leadv2-routing.yaml` (persona-engine, m3-market, respiro-ios),
++# this test would find THAT config and pass for the wrong reason -- it would
++# never actually exercise the plugin-fallback path it claims to prove. Pin
++# PROJECT_ROOT to a config-less sandbox root so the only way this test can
++# pass is via the plugin-preferred self-host probe.
+ make_live_glm "${TMP_ROOT}/selfhost-glm.sh"
+ make_refusing_kimi "${TMP_ROOT}/selfhost-kimi.sh"
++mkdir -p "${TMP_ROOT}/selfhost-root"
+ selfhost_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
++  PROJECT_ROOT="${TMP_ROOT}/selfhost-root" \
+   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/selfhost-cache" \
+   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/selfhost-glm.sh" \
+   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/selfhost-kimi.sh" \
+@@ -453,9 +464,17 @@ fi
+ # Test 6: no routing config anywhere (degraded mode). Both project and plugin
+ # config must miss, so the journal shows routing_config_degraded AND dispatch
+ # still proceeds. Uses LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE to simulate a
+-# missing plugin config.
++# missing plugin config. dispatch-a24b1588 Item 2: PROJECT_ROOT is pinned to a
++# config-less sandbox root (same disease as Test 5) -- unpinned, the same
++# `git rev-parse --show-toplevel`-on-caller's-cwd fallback makes this test's
++# verdict depend on where it was invoked from: run from /private/tmp it finds
++# no repo and passes; run from inside a repo carrying its own routing config
++# it finds that config, degraded mode is never exercised, and the test fails
++# to prove degraded mode at all -- same commit, opposite verdict.
++mkdir -p "${TMP_ROOT}/degraded-root"
+ make_live_glm "${TMP_ROOT}/degraded-glm.sh"
+ degraded_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
++  PROJECT_ROOT="${TMP_ROOT}/degraded-root" \
+   LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE="/nonexistent/path/routing.yaml" \
+   LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/degraded-cache" \
+   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/degraded-glm.sh" \

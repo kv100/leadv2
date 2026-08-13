@@ -1,0 +1,16 @@
+- 2026-08-04T11:15:35Z [decision] dispatch_classified task=6bbcca99 class=product reason=conservative_default kind=unknown
+- 2026-08-04T11:18:22Z [decision] architect_prepass task=6bbcca99 status=ran artifact=docs/handoff/dispatch-6bbcca99/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-6bbcca99-architect/architect.full.md
+- 2026-08-04T11:18:22Z [decision] lane_writes task=6bbcca99 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/tests/test-lane-diff-single-repo.sh,plugins/leadv2/scripts/tests/run-core-offline.sh
+- 2026-08-04T11:18:23Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T11:18:23Z [decision] kimi_skipped reason=chars_over task=6bbcca99 chars=18146 writes=0 prepass=1
+- 2026-08-04T11:18:23Z [decision] arm_excluded by=router model=glm task=6bbcca99 reason=operator_excluded
+- 2026-08-04T11:18:23Z [decision] arm_excluded by=router model=codex task=6bbcca99 reason=operator_excluded
+- 2026-08-04T11:18:23Z [decision] candidate_chain task=6bbcca99 arms=sonnet
+- 2026-08-04T11:18:24Z [decision] worker_spawned by=router model=sonnet task=6bbcca99 attempt=6bbcca99-1785842134-19691 handle=PID=40811 LABEL=developer-dispatch-6bbcca99-1785842303 SESSION_ID=dceb786f-aafe-42cc-b4f8-d54cbede3582 STREAM=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-6bbcca99/developer.stream.jsonl
+- 2026-08-04T11:18:24Z [decision] mission-version task=- sig=6bbcca99 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-04T11:18:24Z [decision] product_close task=6bbcca99 status=spawned author=sonnet
+- 2026-08-04T11:18:24Z [decision] route_resolved by=router router=v1 model=sonnet task=6bbcca99 rule=none reason=no_routing_yaml
+- 2026-08-04T11:18:25Z [decision] lane_worktree_left task=6bbcca99 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/6bbcca99
+- 2026-08-04T11:43:10Z [decision] e2e_gate task=6bbcca99 status=ran verdict=fail rc=1
+- 2026-08-04T11:43:11Z [decision] dispatch_terminal task=6bbcca99 terminal=dead cause=e2e_regression
+- 2026-08-04T11:43:11Z [decision] dispatch_terminal_dedup task=6bbcca99 attempted=dead reason=terminal_already_recorded

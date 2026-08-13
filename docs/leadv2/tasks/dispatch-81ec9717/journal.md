@@ -1,0 +1,26 @@
+- 2026-08-04T09:26:49Z [decision] dispatch_classified task=81ec9717 class=product reason=conservative_default kind=unknown
+- 2026-08-04T09:29:26Z [decision] architect_prepass task=81ec9717 status=failed reason=failed_rc_1 rc=1
+- 2026-08-04T09:29:26Z [decision] architect_prepass task=81ec9717 status=retrying attempt=1/2 reason=failed_rc_1
+- 2026-08-04T09:32:42Z [decision] architect_prepass task=81ec9717 status=ran artifact=docs/handoff/dispatch-81ec9717/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-81ec9717-architect/architect.full.md
+- 2026-08-04T09:32:43Z [decision] lane_writes task=81ec9717 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/tests/test-lane-diff-scoping-single-repo.sh,plugins/leadv2/scripts/tests/test-lane-writes-scoping.sh,plugins/leadv2/scripts/tests/test-landing-diff-scoping.sh,plugins/leadv2/scripts/tests/run-core-offline.sh
+- 2026-08-04T09:32:43Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T09:32:43Z [decision] kimi_skipped reason=chars_over task=81ec9717 chars=19873 writes=0 prepass=1
+- 2026-08-04T09:32:43Z [decision] candidate_chain task=81ec9717 arms=glm,codex,sonnet
+- 2026-08-04T09:32:45Z [decision] arm_refused by=router model=glm task=81ec9717 reason=glm_refused_peak_hours
+- 2026-08-04T09:32:53Z [decision] worker_spawned by=router model=codex task=81ec9717 attempt=81ec9717-1785835607-58724 handle=task-msegmlfl-99g442
+- 2026-08-04T09:32:53Z [decision] mission-version task=- sig=81ec9717 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-04T09:32:53Z [decision] product_close task=81ec9717 status=spawned author=codex
+- 2026-08-04T09:32:53Z [decision] route_resolved by=router router=v1 model=codex task=81ec9717 rule=none reason=no_routing_yaml
+- 2026-08-04T09:32:53Z [decision] lane_worktree_left task=81ec9717 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/81ec9717
+- 2026-08-04T09:41:13Z [decision] e2e_gate task=81ec9717 status=ran verdict=fail rc=1
+- 2026-08-04T09:41:15Z [decision] dispatch_terminal task=81ec9717 terminal=dead cause=e2e_regression
+- 2026-08-04T09:41:15Z [decision] dispatch_terminal_dedup task=81ec9717 attempted=dead reason=terminal_already_recorded
+- 2026-08-04T09:48:34Z [decision] dispatch_classified task=81ec9717 class=product reason=conservative_default kind=unknown
+- 2026-08-04T09:48:34Z [decision] architect_prepass task=81ec9717 status=cached reason=sig_match artifact=docs/handoff/dispatch-81ec9717/architect-prepass.md
+- 2026-08-04T09:48:34Z [decision] lane_writes task=81ec9717 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/tests/test-lane-diff-scoping-single-repo.sh,plugins/leadv2/scripts/tests/test-lane-writes-scoping.sh,plugins/leadv2/scripts/tests/test-landing-diff-scoping.sh,plugins/leadv2/scripts/tests/run-core-offline.sh
+- 2026-08-04T09:48:35Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T09:48:35Z [decision] kimi_skipped reason=chars_over task=81ec9717 chars=19873 writes=0 prepass=1
+- 2026-08-04T09:48:35Z [decision] arm_excluded by=router model=glm task=81ec9717 reason=operator_excluded
+- 2026-08-04T09:48:35Z [decision] arm_excluded by=router model=codex task=81ec9717 reason=operator_excluded
+- 2026-08-04T09:48:35Z [decision] candidate_chain task=81ec9717 arms=sonnet
+- 2026-08-04T09:48:39Z [decision] dispatch_refused reason=duplicate_task_signature task=81ec9717 ledger=/Users/kostiantyn.vlasenko/.claude/cache/dispatch-ledger/leadv2.jsonl

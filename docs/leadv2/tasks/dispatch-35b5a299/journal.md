@@ -1,0 +1,18 @@
+- 2026-08-12T18:58:58Z [decision] lane_placement_pinned task=35b5a299 mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-RELIABILITY-01 key=PLUGIN-RELIABILITY-01
+- 2026-08-12T18:58:58Z [decision] dispatch_task_bound task=35b5a299 founder_task=PLUGIN-RELIABILITY-01
+- 2026-08-12T18:58:59Z [decision] dispatch_classified task=35b5a299 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T18:59:00Z [decision] phase_precondition_warn task=35b5a299 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T18:59:01Z [decision] architect_prepass task=35b5a299 status=disabled reason=kill_switch
+- 2026-08-12T18:59:01Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T18:59:01Z [decision] dispatchable_arms_read_failed task=35b5a299 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T18:59:01Z [decision] routing_config_degraded task=35b5a299 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T18:59:01Z [decision] kimi_skipped reason=chars_over task=35b5a299 chars=3906 writes=0 prepass=0
+- 2026-08-12T18:59:02Z [decision] candidate_chain task=35b5a299 arms=glm,codex,sonnet
+- 2026-08-12T18:59:04Z [decision] worker_spawned by=router model=glm task=35b5a299 attempt=35b5a299-1786561137-31717 handle=260812-215904-PLUGIN-RELIABILITY-01-39e6
+- 2026-08-12T18:59:04Z [decision] mission-version task=PLUGIN-RELIABILITY-01 sig=35b5a299 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T18:59:25Z [decision] product_close task=35b5a299 status=spawned author=glm
+- 2026-08-12T18:59:26Z [decision] route_resolved by=router router=v1 model=glm task=35b5a299 rule=none reason=no_routing_yaml
+- 2026-08-12T18:59:26Z [decision] lane_worktree_left task=35b5a299 founder_task=PLUGIN-RELIABILITY-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-RELIABILITY-01
+- 2026-08-12T19:13:37Z [decision] e2e_gate task=35b5a299 status=ran verdict=fail rc=1
+- 2026-08-12T19:13:37Z [decision] dispatch_terminal task=35b5a299 terminal=dead cause=e2e_regression
+- 2026-08-12T19:13:38Z [decision] dispatch_terminal_dedup task=35b5a299 attempted=dead reason=terminal_already_recorded

@@ -1,0 +1,8 @@
+- 2026-08-02T11:34:27Z [decision] dispatch_task_bound task=acb13cf6 founder_task=w1a-deadlane2
+- 2026-08-02T11:34:27Z [decision] dispatch_classified task=acb13cf6 class=product reason=conservative_default kind=standard
+- 2026-08-02T11:34:28Z [decision] architect_prepass task=acb13cf6 status=failed reason=failed_rc_1 rc=1
+- 2026-08-02T11:34:28Z [decision] architect_prepass task=acb13cf6 status=retrying attempt=1/2 reason=failed_rc_1
+- 2026-08-02T11:34:28Z [decision] architect_prepass task=acb13cf6 status=failed reason=failed_rc_1 rc=1
+- 2026-08-02T11:34:28Z [decision] architect_prepass task=acb13cf6 status=retrying attempt=2/2 reason=failed_rc_1
+- 2026-08-02T11:34:28Z [decision] architect_prepass task=acb13cf6 status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-02T11:34:29Z [decision] dispatch_terminal task=acb13cf6 terminal=parked cause=no_design_after_2_attempts

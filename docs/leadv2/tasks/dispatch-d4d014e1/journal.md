@@ -1,0 +1,30 @@
+- 2026-08-05T11:11:34Z [decision] dispatch_classified task=d4d014e1 class=product reason=conservative_default kind=unknown
+- 2026-08-05T11:17:23Z [decision] architect_prepass task=d4d014e1 status=ran artifact=docs/handoff/dispatch-d4d014e1/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-d4d014e1-architect/architect.full.md
+- 2026-08-05T11:17:23Z [decision] lane_writes task=d4d014e1 source=prepass writes=plugins/leadv2/scripts/leadv2-phase-record.sh,plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/leadv2-phase8-close.sh,plugins/leadv2/scripts/leadv2-status-surface.sh,plugins/leadv2/docs/phases.md,plugins/leadv2/hooks/leadv2-block-fg-dispatch.sh,plugins/leadv2/scripts/tests/test-phase-record.sh,plugins/leadv2/scripts/tests/test-phase-precondition.sh,plugins/leadv2/scripts/tests/test-lane-phase-render.sh,plugins/leadv2/scripts/tests/run-core-offline.sh,plugins/leadv2/scripts/tests/fixtures/phases/**
+- 2026-08-05T11:17:23Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-05T11:17:23Z [decision] kimi_skipped reason=chars_over task=d4d014e1 chars=39170 writes=0 prepass=1
+- 2026-08-05T11:17:23Z [decision] candidate_chain task=d4d014e1 arms=glm,codex,sonnet
+- 2026-08-05T11:17:25Z [decision] worker_spawned by=router model=glm task=d4d014e1 attempt=d4d014e1-1785928285-36796 handle=260805-141724-d4d014e1-4a73
+- 2026-08-05T11:17:25Z [decision] mission-version task=- sig=d4d014e1 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-05T11:17:25Z [decision] product_close task=d4d014e1 status=spawned author=glm
+- 2026-08-05T11:17:26Z [decision] route_resolved by=router router=v1 model=glm task=d4d014e1 rule=none reason=no_routing_yaml
+- 2026-08-05T11:17:26Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-141724-d4d014e1-4a73 waited=0s
+- 2026-08-05T11:17:26Z [decision] lane_worktree_left task=d4d014e1 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/d4d014e1
+- 2026-08-05T11:22:29Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-141724-d4d014e1-4a73 waited=303s
+- 2026-08-05T11:27:31Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-141724-d4d014e1-4a73 waited=606s
+- 2026-08-05T11:32:35Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-141724-d4d014e1-4a73 waited=910s
+- 2026-08-05T11:37:38Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-141724-d4d014e1-4a73 waited=1213s
+- 2026-08-05T11:42:41Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-141724-d4d014e1-4a73 waited=1516s
+- 2026-08-05T11:47:44Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-141724-d4d014e1-4a73 waited=1819s
+- 2026-08-05T11:52:47Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-141724-d4d014e1-4a73 waited=2122s
+- 2026-08-05T11:57:30Z [decision] dwr_resume task=d4d014e1 from_run=260805-141724-d4d014e1-4a73 new_run=260805-145730-d4d014e1-1bdd
+- 2026-08-05T11:57:31Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-145730-d4d014e1-1bdd waited=0s
+- 2026-08-05T12:02:34Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-145730-d4d014e1-1bdd waited=304s
+- 2026-08-05T12:07:37Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-145730-d4d014e1-1bdd waited=607s
+- 2026-08-05T12:12:39Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-145730-d4d014e1-1bdd waited=909s
+- 2026-08-05T12:17:42Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-145730-d4d014e1-1bdd waited=1212s
+- 2026-08-05T12:22:45Z [decision] product_close task=d4d014e1 status=waiting_worker author=glm handle=260805-145730-d4d014e1-1bdd waited=1515s
+- 2026-08-05T12:23:07Z [decision] review_diff task=d4d014e1 repo=d4d014e1 bytes=128962 base=7fd75df1
+- 2026-08-05T12:32:16Z [decision] e2e_gate task=d4d014e1 status=ran verdict=fail rc=1
+- 2026-08-05T12:32:17Z [decision] dispatch_terminal task=d4d014e1 terminal=dead cause=e2e_regression
+- 2026-08-05T12:32:18Z [decision] dispatch_terminal_dedup task=d4d014e1 attempted=dead reason=terminal_already_recorded

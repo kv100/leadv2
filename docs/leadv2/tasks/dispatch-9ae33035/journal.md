@@ -1,0 +1,9 @@
+- 2026-08-03T14:21:15Z [decision] dispatch_classified task=9ae33035 class=non_product reason=explicit_kind_plugin kind=plugin
+- 2026-08-03T14:21:15Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-03T14:21:15Z [decision] kimi_skipped reason=chars_over task=9ae33035 chars=2752 writes=0 prepass=0
+- 2026-08-03T14:21:15Z [decision] candidate_chain task=9ae33035 arms=glm,codex,sonnet
+- 2026-08-03T14:21:17Z [decision] worker_spawned by=router model=glm task=9ae33035 attempt=9ae33035-1785766874-69720 handle=260803-172116-9ae33035-5f5a
+- 2026-08-03T14:21:17Z [decision] mission-version task=- sig=9ae33035 rev=? head="# SWIFTBAR-ACTIVE-SOURCE-02 — widget active-source from live process census + reservations"
+- 2026-08-03T14:21:17Z [decision] route_resolved by=router router=v1 model=glm task=9ae33035 rule=none reason=no_routing_yaml
+- 2026-08-03T14:21:18Z [decision] dispatch_terminal task=9ae33035 terminal=landed cause=spawned_glm
+- 2026-08-03T14:21:18Z [decision] lane_worktree_left task=9ae33035 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/9ae33035

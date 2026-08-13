@@ -1,0 +1,11 @@
+- 2026-08-04T09:49:09Z [decision] dispatch_classified task=91df0dc4 class=product reason=conservative_default kind=unknown
+- 2026-08-04T09:51:30Z [decision] architect_prepass task=91df0dc4 status=ran artifact=docs/handoff/dispatch-91df0dc4/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-91df0dc4-architect/architect.full.md
+- 2026-08-04T09:51:30Z [decision] lane_writes task=91df0dc4 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/tests/test-lane-diff-single-repo.sh,plugins/leadv2/scripts/tests/run-core-offline.sh
+- 2026-08-04T09:51:30Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T09:51:30Z [decision] kimi_skipped reason=chars_over task=91df0dc4 chars=15598 writes=0 prepass=1
+- 2026-08-04T09:51:31Z [decision] arm_excluded by=router model=glm task=91df0dc4 reason=operator_excluded
+- 2026-08-04T09:51:31Z [decision] arm_excluded by=router model=codex task=91df0dc4 reason=operator_excluded
+- 2026-08-04T09:51:31Z [decision] candidate_chain task=91df0dc4 arms=sonnet
+- 2026-08-04T09:51:31Z [decision] spawn_failed by=router model=sonnet task=91df0dc4 rc=1 reason=launcher_nonzero_exit
+- 2026-08-04T09:51:31Z [decision] dispatch_rolled_back reason=all_arms_unavailable task=91df0dc4 attempts=sonnet_failed_launcher
+- 2026-08-04T09:51:32Z [decision] dispatch_terminal task=91df0dc4 terminal=dead cause=all_arms_unavailable

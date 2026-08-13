@@ -1,0 +1,423 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+index f9323dd..c2f62c2 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -297,6 +297,71 @@ resolve_review_artifact() {
+   return 1
+ }
+ 
++# REVIEW-BODY-PERSIST-01: after an opus/sonnet arm finishes, claude-subsession has
++# written the full review body to the handoff deliverable files (critic.full.md etc.)
++# but printed only a label/session header on stdout -- which is all review_out captured.
++# This function appends the best-available body into review_out, preserving the label
++# line as a header. The same freshness gate (-nt REVIEW_STAMP) the resolver uses ensures
++# a stale deliverable from a prior arm/attempt is never adopted. Fallback: extract the
++# final assistant text blocks from the stream transcript.  Returns 0 if body was
++# materialised, 1 if nothing was found.
++materialize_subsession_body() { # <review_out> <review_stamp> <task_id>
++  local rfile="$1" rstamp="$2" tid="$3"
++  local adir="${ROOT}/docs/handoff/dispatch-${tid}-review"
++  local cand body_file="" rel_path=""
++
++  for cand in "${adir}/critic.full.md" "${adir}/critic.md" "${adir}/critic.summary.md"; do
++    if [[ -s "${cand}" && "${cand}" -nt "${rstamp}" ]]; then
++      body_file="${cand}"
++      rel_path="${cand#"${ROOT}/"}"
++      break
++    fi
++  done
++
++  if [[ -z "${body_file}" ]]; then
++    # Fallback: extract final assistant text blocks from the stream transcript.
++    local stream="${adir}/critic.stream.jsonl"
++    if [[ -s "${stream}" && "${stream}" -nt "${rstamp}" ]] && command -v python3 >/dev/null 2>&1; then
++      local tmp_body
++      tmp_body="$(python3 - "$stream" 2>/dev/null <<'PY'
++import json, sys
++texts = []
++for line in open(sys.argv[1]):
++    line = line.strip()
++    if not line:
++        continue
++    try:
++        obj = json.loads(line)
++    except Exception:
++        continue
++    # stream-json: collect text from assistant message content blocks
++    if obj.get("type") == "assistant":
++        msg = obj.get("message", {})
++        for block in msg.get("content", []):
++            if isinstance(block, dict) and block.get("type") == "text":
++                texts.append(block.get("text", ""))
++if texts:
++    print(texts[-1])
++PY
++      )"
++      if [[ -n "${tmp_body}" ]]; then
++        local label_line
++        label_line="$(cat "${rfile}" 2>/dev/null)"
++        printf '%s\n--- body from: %s ---\n%s\n' "${label_line}" "${stream#"${ROOT}/"}" "${tmp_body}" > "${rfile}"
++        return 0
++      fi
++    fi
++    return 1
++  fi
++
++  local label_line
++  label_line="$(cat "${rfile}" 2>/dev/null)"
++  printf '%s\n--- body from: %s ---\n' "${label_line}" "${rel_path}" > "${rfile}.tmp"
++  cat "${body_file}" >> "${rfile}.tmp"
++  mv "${rfile}.tmp" "${rfile}"
++  return 0
++}
++
+ parse_review_verdict() { # review-file
+   local review_file="$1"
+   PARSED_VERDICT=""
+@@ -1259,6 +1324,13 @@ run_reviewer_arm() { # <arm>
+       "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+     PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model "${arm}" --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait \
+       > "${review_out}" 2> "${review_err}"; review_rc=$?
++    # REVIEW-BODY-PERSIST-01: the subsession prints only a label line on stdout; the
++    # real body is in the deliverable files.  Materialise it into review_out so a human
++    # can read the findings next to the verdict counts.  rc==0 means the subsession
++    # itself succeeded; do not clobber a genuine error rc.
++    if [[ ${review_rc} -eq 0 ]]; then
++      materialize_subsession_body "${review_out}" "${REVIEW_STAMP}" "${TASK}" || true
++    fi
+   fi
+ }
+ 
+@@ -1302,6 +1374,28 @@ while :; do
+   run_reviewer_arm "${reviewer}"
+   cls="$(classify_arm_failure "${review_rc}" "${review_err}" "${review_out}")"
+   if [[ "${cls}" != refused_* ]]; then
++    # REVIEW-BODY-PERSIST-01 §2.2: shared post-arm guard. A paid review whose body
++    # was lost (rc==0 but review_out has no REVIEW_VERDICT: marker AND is below the
++    # byte floor) while evidence of real output exists must surface as a blocked
++    # failure, not silence.  This MUST run before resolve_review_artifact() below --
++    # the deliverable fallback would otherwise mask a lost body into a silent
++    # pass-through, the exact shape of the 2026-08-03 incident.  review_body_lost is
++    # NOT a refused_* class: it does not trigger re-selection to another arm.
++    if [[ ${review_rc} -eq 0 ]]; then
++      _pc_body_min="${LEADV2_REVIEW_BODY_MIN_BYTES:-300}"
++      _pc_body_bytes="0"
++      _pc_body_bytes="$(wc -c < "${review_out}" 2>/dev/null | tr -d '[:space:]')"; _pc_body_bytes="${_pc_body_bytes:-0}"
++      if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${review_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
++        # Evidence-of-real-output: non-empty stderr or a cost-recorded line in it.
++        if [[ -s "${review_err}" ]] || grep -q 'cost recorded:' "${review_err}" 2>/dev/null; then
++          printf 'status: blocked\nreason: review_body_lost\narm: %s\n' "${reviewer}" > "${HANDOFF}/review-gate.md"
++          emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${reviewer}"
++          _dl_note dead review_body_lost "arm=${reviewer} bytes=${_pc_body_bytes}"
++          _stamp_review_terminal blocked
++          exit 6
++        fi
++      fi
++    fi
+     break
+   fi
+   emit decision "review_gate task=${TASK} status=arm_refused arm=${reviewer} reason=${cls}"
+diff --git a/plugins/leadv2/scripts/tests/run-core-offline.sh b/plugins/leadv2/scripts/tests/run-core-offline.sh
+index 9d1b486..f05773a 100755
+--- a/plugins/leadv2/scripts/tests/run-core-offline.sh
++++ b/plugins/leadv2/scripts/tests/run-core-offline.sh
+@@ -78,6 +78,7 @@ run_check "landed-at-spawn (no terminal=landed at spawn; target repo keying)" ba
+ run_check "lane placement pin (--resume-lane/--worktree)" bash "$TEST_DIR/test-lane-placement-pin.sh"
+ run_check "Codex quota guardrails (effort/circuit/hook)" bash "$TEST_DIR/test-codex-quota-guardrails.sh"
+ run_check "e2e gate lane root + suite family" bash "$TEST_DIR/test-e2e-gate-lane-root.sh"
++run_check "review body persist (opus/sonnet materialisation + body_lost guard)" bash "$TEST_DIR/test-review-body-persist.sh"
+ 
+ printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
+ (( FAIL == 0 && MISSING == 0 ))
+diff --git a/plugins/leadv2/scripts/tests/test-review-body-persist.sh b/plugins/leadv2/scripts/tests/test-review-body-persist.sh
+new file mode 100644
+index 0000000..19d754e
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-review-body-persist.sh
+@@ -0,0 +1,286 @@
++#!/usr/bin/env bash
++# tests/test-review-body-persist.sh — REVIEW-BODY-PERSIST-01: the opus/sonnet review
++# arm's full body must land in review-<arm>.md, not just the label line. And when no
++# body exists anywhere, the arm must surface as blocked/review_body_lost, not silence.
++#
++# Drives the REAL leadv2-dispatch-product-close.sh end to end (never a reimplementation).
++# Each scenario gets its own throwaway git repo. The resolver is stubbed via
++# LEADV2_GLM_POLICY_RESOLVER (python3) and the architect arm via
++# LEADV2_DISPATCH_ARCHITECT_BIN, reusing the test-review-silence-gate.sh patterns.
++#
++# Run: bash scripts/tests/test-review-body-persist.sh
++# Exit 0 = all pass; non-zero = failures found.
++
++set -uo pipefail
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
++source "${SCRIPTS_ROOT}/leadv2-temp.sh"
++
++PRODUCT_CLOSE_SH="${SCRIPTS_ROOT}/leadv2-dispatch-product-close.sh"
++
++PASS=0; FAIL=0; ERRORS=()
++log()  { printf -- '[TEST] %s\n' "$*"; }
++pass() { PASS=$((PASS + 1)); log "PASS: $1"; }
++fail() { FAIL=$((FAIL + 1)); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
++
++if bash -n "$PRODUCT_CLOSE_SH"; then
++  pass "bash -n clean (leadv2-dispatch-product-close.sh)"
++else
++  fail "bash -n failed on leadv2-dispatch-product-close.sh"
++fi
++if /bin/bash -n "$PRODUCT_CLOSE_SH" 2>/dev/null; then
++  pass "/bin/bash 3.2 -n clean (leadv2-dispatch-product-close.sh)"
++else
++  fail "/bin/bash 3.2 -n failed on leadv2-dispatch-product-close.sh"
++fi
++
++SUITE_TMP="$(lv2_mktemp_dir "review-body-persist-test")"
++trap 'rm -rf "$SUITE_TMP"' EXIT
++
++# make_fixture_root <name> <unique-content> -> prints the repo path on stdout.
++make_fixture_root() {
++  local name="$1" content="$2"
++  local repo="${SUITE_TMP}/${name}/root"
++  mkdir -p "$repo"
++  git -C "$repo" init -q
++  git -C "$repo" config user.email "test@test.local"
++  git -C "$repo" config user.name "test"
++  printf 'baseline\n' > "$repo/file.txt"
++  git -C "$repo" add file.txt
++  git -C "$repo" commit -q -m init
++  lv2_assert_scratch_repo "$repo"
++  printf '%s\n' "$content" >> "$repo/file.txt"
++  printf '%s' "$repo"
++}
++
++# make_resolver_stub <name> <reviewer> <pool> -> prints the stub path on stdout.
++make_resolver_stub() {
++  local name="$1" reviewer="$2" pool="$3"
++  local stub="${SUITE_TMP}/${name}/resolver.py"
++  mkdir -p "$(dirname "$stub")"
++  cat > "$stub" <<PY
++print("reviewer=${reviewer}")
++print("pool=${pool}")
++print("refusal=")
++PY
++  printf '%s' "$stub"
++}
++
++# make_arch_stub_deliverable <name> -> prints the stub path on stdout.
++# Simulates claude-subsession: prints only LABEL=.../SESSION_ID=... on stdout while
++# writing the full review body to docs/handoff/dispatch-<TASK>-review/critic.full.md
++# and critic.summary.md.
++make_arch_stub_deliverable() {
++  local name="$1"
++  local stub="${SUITE_TMP}/${name}/arch-stub.sh"
++  mkdir -p "$(dirname "$stub")"
++  cat > "$stub" <<'SH'
++#!/usr/bin/env bash
++# Parse --task-id from args
++tid=""
++for ((i=1; i<=$#; i++)); do
++  if [[ "${!i}" == "--task-id" ]]; then
++    j=$((i+1))
++    tid="${!j}"
++  fi
++done
++# PROJECT_ROOT is exported by the caller
++adir="${PROJECT_ROOT}/docs/handoff/${tid}"
++mkdir -p "$adir"
++cat > "$adir/critic.full.md" <<'BODY'
++REVIEW_VERDICT: PASS
++REVIEW_FINDINGS: critical=0 high=0 medium=1 low=0
++
++## Review
++
++The diff is well-structured and the changes are minimal. I found one medium
++issue with the naming convention but nothing blocking.
++
++1. **Medium**: Variable name `_pc_body_min` could be more descriptive.
++2. The rest of the changes look correct and follow existing patterns.
++3. No security concerns identified in this diff.
++4. Edge cases are handled properly with appropriate fallback logic.
++5. The test coverage is adequate for the scope of changes made here.
++BODY
++cat > "$adir/critic.summary.md" <<'SUMM'
++REVIEW_VERDICT: PASS
++REVIEW_FINDINGS: critical=0 high=0 medium=1 low=0
++One medium naming issue, otherwise clean.
++SUMM
++echo "LABEL=critic-${tid}-1234567890 SESSION_ID=sess-fake-001"
++exit 0
++SH
++  chmod +x "$stub"
++  printf '%s' "$stub"
++}
++
++# make_arch_stub_stream_only <name> -> prints the stub path on stdout.
++# Simulates claude-subsession: prints label on stdout, no deliverable files, but
++# writes critic.stream.jsonl with the final assistant message.
++make_arch_stub_stream_only() {
++  local name="$1"
++  local stub="${SUITE_TMP}/${name}/arch-stub.sh"
++  mkdir -p "$(dirname "$stub")"
++  cat > "$stub" <<'SH'
++#!/usr/bin/env bash
++tid=""
++for ((i=1; i<=$#; i++)); do
++  if [[ "${!i}" == "--task-id" ]]; then
++    j=$((i+1))
++    tid="${!j}"
++  fi
++done
++adir="${PROJECT_ROOT}/docs/handoff/${tid}"
++mkdir -p "$adir"
++# Write a stream-json transcript with one assistant message
++cat > "$adir/critic.stream.jsonl" <<'JSONL'
++{"type":"assistant","message":{"content":[{"type":"text","text":"REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\n\nThe diff is clean and well-written. No issues found by this reviewer.\nThe implementation follows existing patterns correctly.\nAll edge cases are handled and the test coverage is complete."}]}}
++JSONL
++echo "LABEL=critic-${tid}-1234567890 SESSION_ID=sess-fake-002"
++exit 0
++SH
++  chmod +x "$stub"
++  printf '%s' "$stub"
++}
++
++# make_arch_stub_label_only <name> -> prints the stub path on stdout.
++# Simulates the incident: label line on stdout, nothing written anywhere,
++# but writes a cost line to stderr (evidence of real output).
++make_arch_stub_label_only() {
++  local name="$1"
++  local stub="${SUITE_TMP}/${name}/arch-stub.sh"
++  mkdir -p "$(dirname "$stub")"
++  cat > "$stub" <<'SH'
++#!/usr/bin/env bash
++echo "cost recorded: critic/opus in=40 out=16109 usd=1.2" >&2
++echo "LABEL=critic-dispatch-fake SESSION_ID=sess-fake-003"
++exit 0
++SH
++  chmod +x "$stub"
++  printf '%s' "$stub"
++}
++
++# make_glm_stub_pass <name> -> prints the stub path on stdout.
++# Healthy glm arm: writes a full PASS body via --out, regression guard.
++make_glm_stub_pass() {
++  local name="$1"
++  local stub="${SUITE_TMP}/${name}/glm-stub.sh"
++  mkdir -p "$(dirname "$stub")"
++  cat > "$stub" <<'SH'
++#!/usr/bin/env bash
++outfile=""
++args=("$@")
++i=0
++while [[ $i -lt ${#args[@]} ]]; do
++  if [[ "${args[$i]}" == "--out" ]]; then
++    outfile="${args[$((i+1))]}"
++  fi
++  i=$((i+1))
++done
++printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\nClean diff, no issues found by the stub reviewer arm.\n' > "$outfile"
++exit 0
++SH
++  chmod +x "$stub"
++  printf '%s' "$stub"
++}
++
++run_close() { # <root> <sig8> <author> <resolver> [extra env assignments already exported by caller]
++  local root="$1" sig8="$2" author="$3" resolver="$4"
++  local cache="${SUITE_TMP}/${sig8}/cache"
++  mkdir -p "$cache"
++  LEADV2_GLM_POLICY_RESOLVER="$resolver" \
++  LEADV2_DISPATCH_CACHE_DIR="$cache" \
++  LEADV2_JOURNAL_BIN=/bin/true \
++  LEADV2_E2E_OWNERSHIP=0 \
++    bash "$PRODUCT_CLOSE_SH" "$root" "$sig8" "$author" "" 0 1 "" 2>&1
++}
++
++# ── Test (a): deliverable body materialised into review-opus.md ─────────────────────
++root_a="$(make_fixture_root ta "ta-unique-diff-content-for-deliverable")"
++resolver_a="$(make_resolver_stub ta sonnet "sonnet:ok:")"
++arch_a="$(make_arch_stub_deliverable ta)"
++out_a="$(LEADV2_DISPATCH_ARCHITECT_BIN="$arch_a" run_close "$root_a" tasig001 codex "$resolver_a")"; rc_a=$?
++rev_a="${root_a}/docs/handoff/dispatch-tasig001/review-sonnet.md"
++gate_a="${root_a}/docs/handoff/dispatch-tasig001/review-gate.md"
++if [[ $rc_a -eq 0 ]]; then pass "Test (a) deliverable: exit 0"; else fail "Test (a): expected exit 0, got ${rc_a} -- ${out_a}"; fi
++if [[ -f "$rev_a" ]]; then
++  if grep -q 'REVIEW_VERDICT:' "$rev_a" && grep -q 'REVIEW_FINDINGS:' "$rev_a"; then
++    pass "Test (a): review-sonnet.md has both contract lines"
++  else
++    fail "Test (a): review-sonnet.md missing contract lines -- $(head -5 "$rev_a")"
++  fi
++  rev_bytes="$(wc -c < "$rev_a" | tr -d '[:space:]')"
++  if [[ "${rev_bytes}" -gt 300 ]]; then
++    pass "Test (a): review-sonnet.md is ${rev_bytes} bytes (full body materialised, not 97)"
++  else
++    fail "Test (a): review-sonnet.md is only ${rev_bytes} bytes -- body not materialised"
++  fi
++  if grep -q 'Variable name' "$rev_a"; then
++    pass "Test (a): review-sonnet.md contains the numbered findings prose"
++  else
++    fail "Test (a): review-sonnet.md missing findings prose"
++  fi
++else
++  fail "Test (a): review-sonnet.md does not exist"
++fi
++
++# ── Test (a2): stream-only fallback (no deliverable files) ──────────────────────────
++root_a2="$(make_fixture_root ta2 "ta2-unique-diff-content-for-stream")"
++resolver_a2="$(make_resolver_stub ta2 sonnet "sonnet:ok:")"
++arch_a2="$(make_arch_stub_stream_only ta2)"
++out_a2="$(LEADV2_DISPATCH_ARCHITECT_BIN="$arch_a2" run_close "$root_a2" ta2sig002 codex "$resolver_a2")"; rc_a2=$?
++rev_a2="${root_a2}/docs/handoff/dispatch-ta2sig002/review-sonnet.md"
++gate_a2="${root_a2}/docs/handoff/dispatch-ta2sig002/review-gate.md"
++if [[ $rc_a2 -eq 0 ]]; then pass "Test (a2) stream-fallback: exit 0"; else fail "Test (a2): expected exit 0, got ${rc_a2} -- ${out_a2}"; fi
++if [[ -f "$rev_a2" ]]; then
++  if grep -q 'REVIEW_VERDICT:' "$rev_a2"; then
++    pass "Test (a2): review-sonnet.md has REVIEW_VERDICT from stream transcript"
++  else
++    fail "Test (a2): review-sonnet.md missing REVIEW_VERDICT -- $(head -5 "$rev_a2")"
++  fi
++  rev_a2_bytes="$(wc -c < "$rev_a2" | tr -d '[:space:]')"
++  if [[ "${rev_a2_bytes}" -gt 300 ]]; then
++    pass "Test (a2): review-sonnet.md is ${rev_a2_bytes} bytes (stream body recovered)"
++  else
++    fail "Test (a2): review-sonnet.md is only ${rev_a2_bytes} bytes"
++  fi
++else
++  fail "Test (a2): review-sonnet.md does not exist"
++fi
++
++# ── Test (b): body genuinely absent -> review_body_lost ─────────────────────────────
++root_b="$(make_fixture_root tb "tb-unique-diff-content-for-body-lost")"
++resolver_b="$(make_resolver_stub tb sonnet "sonnet:ok:")"
++arch_b="$(make_arch_stub_label_only tb)"
++out_b="$(LEADV2_DISPATCH_ARCHITECT_BIN="$arch_b" run_close "$root_b" tbsig003 codex "$resolver_b")"; rc_b=$?
++gate_b="${root_b}/docs/handoff/dispatch-tbsig003/review-gate.md"
++if [[ $rc_b -eq 6 ]]; then pass "Test (b) body_lost: exit 6"; else fail "Test (b): expected exit 6, got ${rc_b} -- ${out_b}"; fi
++if [[ -f "$gate_b" ]] && grep -q '^status: blocked$' "$gate_b" && grep -q '^reason: review_body_lost$' "$gate_b"; then
++  pass "Test (b): review-gate.md status=blocked reason=review_body_lost"
++else
++  fail "Test (b): review-gate.md wrong -- $(cat "$gate_b" 2>/dev/null || echo MISSING)"
++fi
++
++# ── Test (c): glm-arm regression — healthy arm unaffected by guard ──────────────────
++root_c="$(make_fixture_root tc "tc-unique-diff-content-for-glm-regression")"
++resolver_c="$(make_resolver_stub tc glm "glm:ok:")"
++glm_c="$(make_glm_stub_pass tc)"
++out_c="$(LEADV2_DISPATCH_GLM_BIN="$glm_c" run_close "$root_c" tcsig004 codex "$resolver_c")"; rc_c=$?
++gate_c="${root_c}/docs/handoff/dispatch-tcsig004/review-gate.md"
++rev_c="${root_c}/docs/handoff/dispatch-tcsig004/review-glm.md"
++if [[ $rc_c -eq 0 ]]; then pass "Test (c) glm-regression: exit 0"; else fail "Test (c): expected exit 0, got ${rc_c} -- ${out_c}"; fi
++if [[ -f "$gate_c" ]] && grep -q '^status: pass$' "$gate_c"; then
++  pass "Test (c): review-gate.md status=pass — guard did not trip on healthy glm arm"
++else
++  fail "Test (c): review-gate.md wrong -- $(cat "$gate_c" 2>/dev/null || echo MISSING)"
++fi
++
++# ── Test (d): bash -n already done above ────────────────────────────────────────────
++# (Covered by the syntax checks at the top of this suite.)
++
++printf -- '\n[TEST] %d passed, %d failed\n' "$PASS" "$FAIL"
++if [[ "$FAIL" -gt 0 ]]; then
++  printf '%s\n' "${ERRORS[@]}"
++  exit 1
++fi
++exit 0

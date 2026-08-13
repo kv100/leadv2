@@ -1,0 +1,7 @@
+- 2026-08-03T10:05:57Z [decision] dispatch_classified task=86ac6164 class=product reason=conservative_default kind=fix
+- 2026-08-03T10:05:57Z [decision] architect_prepass task=86ac6164 status=failed reason=no_lane_writes
+- 2026-08-03T10:05:57Z [decision] architect_prepass task=86ac6164 status=retrying attempt=1/2 reason=no_lane_writes
+- 2026-08-03T10:05:57Z [decision] architect_prepass task=86ac6164 status=failed reason=no_lane_writes
+- 2026-08-03T10:05:57Z [decision] architect_prepass task=86ac6164 status=retrying attempt=2/2 reason=no_lane_writes
+- 2026-08-03T10:05:57Z [decision] architect_prepass task=86ac6164 status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-03T10:05:58Z [decision] dispatch_terminal task=86ac6164 terminal=parked cause=no_design_after_2_attempts

@@ -1,0 +1,57 @@
+diff --git a/plugins/leadv2/scripts/tests/run-core-offline.sh b/plugins/leadv2/scripts/tests/run-core-offline.sh
+index 9d1b486..a47e8f7 100755
+--- a/plugins/leadv2/scripts/tests/run-core-offline.sh
++++ b/plugins/leadv2/scripts/tests/run-core-offline.sh
+@@ -5,9 +5,41 @@
+ 
+ set -euo pipefail
+ 
+-TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+-PLUGIN_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
+-REPO_ROOT="$(cd "$PLUGIN_ROOT/../.." && pwd)"
++# --- root arithmetic (GATE-ROOT-ARITH-01) -------------------------------------
++# LOGICAL_DIR: the entry path as written by the caller — symlink NOT resolved.
++# It is the only thing that answers "which checkout was this invoked from?".
++LOGICAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++
++# REPO_ROOT: derived from git, never from ../.. hops. A symlink entry from
++# persona-engine resolves to persona-engine's toplevel; a canonical entry (incl.
++# any leadv2 worktree lane) resolves to that worktree's toplevel.
++REPO_ROOT="$(git -C "$LOGICAL_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
++if [ -z "$REPO_ROOT" ] || [ ! -e "$REPO_ROOT/.git" ]; then
++  printf -- '[CORE-OFFLINE] FATAL repo_root_unresolvable from=%s resolved=%s\n' \
++    "$LOGICAL_DIR" "${REPO_ROOT:-<not-a-git-checkout>}" >&2
++  exit 2
++fi
++
++# PHYS_TEST_DIR / PLUGIN_ROOT: physical location of THIS file. Plugin-internal
++# siblings must resolve into the canonical plugin tree regardless of entry path.
++# bash-3.2 safe: manual readlink chain, no `readlink -f` / `realpath`.
++_src="${BASH_SOURCE[0]}"
++while [ -L "$_src" ]; do
++  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
++  _src="$(readlink "$_src")"
++  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
++done
++PHYS_TEST_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
++PLUGIN_ROOT="$(cd -P "$PHYS_TEST_DIR/../.." && pwd)"
++TEST_DIR="$PLUGIN_ROOT/scripts/tests"
++unset _src _dir
++# -----------------------------------------------------------------------------
++
++if [ -n "${LEADV2_CORE_OFFLINE_PROBE:-}" ]; then
++  printf -- '[CORE-OFFLINE] probe LOGICAL_DIR=%s REPO_ROOT=%s PLUGIN_ROOT=%s TEST_DIR=%s\n' \
++    "$LOGICAL_DIR" "$REPO_ROOT" "$PLUGIN_ROOT" "$TEST_DIR"
++  exit 0
++fi
+ PASS=0
+ FAIL=0
+ MISSING=0
+@@ -78,6 +110,7 @@ run_check "landed-at-spawn (no terminal=landed at spawn; target repo keying)" ba
+ run_check "lane placement pin (--resume-lane/--worktree)" bash "$TEST_DIR/test-lane-placement-pin.sh"
+ run_check "Codex quota guardrails (effort/circuit/hook)" bash "$TEST_DIR/test-codex-quota-guardrails.sh"
+ run_check "e2e gate lane root + suite family" bash "$TEST_DIR/test-e2e-gate-lane-root.sh"
++run_check "core-offline root arithmetic (git-derived REPO_ROOT)" bash "$TEST_DIR/test-core-offline-root-arith.sh"
+ 
+ printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
+ (( FAIL == 0 && MISSING == 0 ))

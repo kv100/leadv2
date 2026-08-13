@@ -1,0 +1,893 @@
+diff --git a/plugins/leadv2/scripts/tests/test-codex-doc-pointer.sh b/plugins/leadv2/scripts/tests/test-codex-doc-pointer.sh
+index 3a99328..b66f6b7 100755
+--- a/plugins/leadv2/scripts/tests/test-codex-doc-pointer.sh
++++ b/plugins/leadv2/scripts/tests/test-codex-doc-pointer.sh
+@@ -1,22 +1,24 @@
+ #!/usr/bin/env bash
+-# test-codex-doc-pointer.sh — RETIRE-CODEX-BUNDLE-01
++# test-codex-doc-pointer.sh — RETIRE-CODEX-BUNDLE-01 / ONE-PATH-EVERYWHERE-01 retarget
++# (dispatch-4fb7381a, per dispatch-75d151fe-architect §2a).
+ #
+-# R1/R2: the codex-adversarial dispatcher prompt in leadv2-review.js carries a doc pointer
+-# naming the maintained authoritative surfaces, and the staleness caveat on docs/specs/*.md.
+-# This is the function that replaces codex-context-bundle.sh's role for the ONE reachable
+-# call site (leadv2-review.js:151, the haiku dispatcher agent) -- NOT a claim that Codex
+-# itself reads this text; codex-task.sh/codex-companion take no prompt-injection flag today.
++# R1/R2: the codex-adversarial dispatch inside leadv2-review-run.sh's run_reviewer_arm()
++# `codex` arm carries a doc pointer naming the maintained authoritative surfaces, and the
++# staleness caveat on docs/specs/*.md. This is the sole-owner engine's analogue of what
++# workflows/leadv2-review.js used to carry (that file is now deleted -- see
++# dispatch-75d151fe-architect §1/§5; leadv2-review-run.sh is the one reachable owner at
++# LEADV2_REVIEW_ENGINE=1, and is unconditionally on the lead/skill path).
+ #
+-# R4: all three live copies of leadv2-review.js (canonical, ~/.claude/workflows,
+-# plugin cache) are byte-identical after the edit -- catches the missed-copy defect that
+-# left ~/.claude/workflows/leadv2-review.js and the plugin cache as real (non-symlink)
+-# copies that a canonical-only edit would silently miss.
++# R3/R4 DROPPED (architect §2a): R3 reconstructed a pre-fix state of leadv2-review.js via
++# git archive -- meaningless once that file no longer exists. R4 asserted 3-copy
++# byte-identity of a file that no longer exists. Replaced below with the equivalent
++# anti-drift invariant expressed against the surviving owner: leadv2-review-run.sh has
++# exactly one copy under plugins/leadv2/scripts/ and no shadow copy resurfaces under
++# ~/.claude/ (the same "missed-copy" defect class R4 protected against).
+ set -euo pipefail
+ 
+ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+-CANONICAL="$REPO_ROOT/plugins/leadv2/workflows/leadv2-review.js"
+-LIVE_HOME="$HOME/.claude/workflows/leadv2-review.js"
+-LIVE_CACHE="$HOME/.claude/plugins/cache/leadv2-local/leadv2/0.1.0/workflows/leadv2-review.js"
++CANONICAL="$REPO_ROOT/plugins/leadv2/scripts/leadv2-review-run.sh"
+ 
+ SURFACES=(
+   '.claude/CLAUDE.md'
+@@ -40,50 +42,37 @@ check() {
+   fi
+ }
+ 
+-# --- R3 (pre-req, informational): reconstruct the pre-fix prompt via git archive, never
+-# git stash/reset/clean (shared-tree rule -- other lanes hold uncommitted work in this repo).
+-SCRATCH="$(mktemp -d)"
+-trap 'rm -rf "$SCRATCH"' EXIT
+-git -C "$REPO_ROOT" archive HEAD -- plugins/leadv2/workflows/leadv2-review.js \
+-  | tar -x -C "$SCRATCH"
+-PRE_FIX="$SCRATCH/plugins/leadv2/workflows/leadv2-review.js"
+-
+-if [[ -f "$PRE_FIX" ]] && grep -q 'ENGINE-REFERENCE.md' "$PRE_FIX"; then
+-  echo "UNEXPECTED: pre-fix HEAD already carries the pointer -- RED reconstruction invalid"
+-  fail=$((fail + 1))
+-else
+-  echo "RED confirmed: pre-fix HEAD (git archive) does not carry the doc pointer"
+-fi
+-
+-# --- R1/R2: live (working-tree) canonical file carries all 5 surfaces + staleness caveat
++# --- R1/R2: live (working-tree) engine carries all 5 surfaces + staleness caveat, inside
++# the codex arm's --focus string.
+ for surface in "${SURFACES[@]}"; do
+   if grep -qF "$surface" "$CANONICAL"; then
+-    check "canonical names $surface" 0
++    check "engine names $surface" 0
+   else
+-    check "canonical names $surface" 1
++    check "engine names $surface" 1
+   fi
+ done
+ 
+ if grep -q 'docs/specs/\*\.md.*possibly stale' "$CANONICAL"; then
+-  check "canonical carries the docs/specs staleness caveat" 0
++  check "engine carries the docs/specs staleness caveat" 0
+ else
+-  check "canonical carries the docs/specs staleness caveat" 1
++  check "engine carries the docs/specs staleness caveat" 1
+ fi
+ 
+-# --- R4: three live copies are byte-identical
+-if [[ ! -f "$LIVE_HOME" ]]; then
+-  check "R4: $LIVE_HOME exists" 1
+-elif [[ ! -f "$LIVE_CACHE" ]]; then
+-  check "R4: $LIVE_CACHE exists" 1
++# --- anti-drift (replaces R4): exactly one copy of leadv2-review-run.sh under
++# plugins/leadv2/scripts/, and no shadow copy under ~/.claude/ (workflows/ or the plugin
++# cache) that would silently diverge from canonical.
++copy_count="$(find "$REPO_ROOT/plugins/leadv2/scripts" -name 'leadv2-review-run.sh' | grep -c . || true)"
++if [[ "$copy_count" -eq 1 ]]; then
++  check "exactly one copy of leadv2-review-run.sh under plugins/leadv2/scripts/" 0
+ else
+-  h1="$(md5 -q "$CANONICAL" 2>/dev/null || md5sum "$CANONICAL" | awk '{print $1}')"
+-  h2="$(md5 -q "$LIVE_HOME" 2>/dev/null || md5sum "$LIVE_HOME" | awk '{print $1}')"
+-  h3="$(md5 -q "$LIVE_CACHE" 2>/dev/null || md5sum "$LIVE_CACHE" | awk '{print $1}')"
+-  if [[ "$h1" == "$h2" && "$h2" == "$h3" ]]; then
+-    check "R4: canonical == ~/.claude/workflows == plugin-cache ($h1)" 0
+-  else
+-    check "R4: canonical($h1) == home($h2) == cache($h3)" 1
+-  fi
++  check "exactly one copy of leadv2-review-run.sh under plugins/leadv2/scripts/ (found $copy_count)" 1
++fi
++
++shadow_count="$(find "$HOME/.claude" -name 'leadv2-review-run.sh' -not -path '*/plugins/cache/*' 2>/dev/null | grep -c . || true)"
++if [[ "$shadow_count" -eq 0 ]]; then
++  check "no shadow copy of leadv2-review-run.sh under ~/.claude/ (outside plugin cache)" 0
++else
++  check "no shadow copy of leadv2-review-run.sh under ~/.claude/ (outside plugin cache, found $shadow_count)" 1
+ fi
+ 
+ echo "---"
+diff --git a/plugins/leadv2/scripts/tests/test-leadv2-phase8-learn-counter.sh b/plugins/leadv2/scripts/tests/test-leadv2-phase8-learn-counter.sh
+index 3a08ff9..cda1103 100644
+--- a/plugins/leadv2/scripts/tests/test-leadv2-phase8-learn-counter.sh
++++ b/plugins/leadv2/scripts/tests/test-leadv2-phase8-learn-counter.sh
+@@ -19,9 +19,13 @@
+ #      leadv2-phase8-close.sh (not a hand-duplicated copy), run from inside a real linked
+ #      git worktree -> must resolve to the MAIN repo root, not the worktree.
+ #   7. [MEM-WRITE-PATH-FIX-01 round2] REAL JS-side one-liner, extracted live from
+-#      leadv2-review.js, run from (a) main repo (b) linked worktree (c) an unrelated
+-#      git repo with no docs/leadv2/ marker -> (a)/(b) resolve to main repo, (c) fails
+-#      safe to pwd instead of silently landing in the wrong repo.
++#      leadv2-causal-critique.js (ONE-PATH-EVERYWHERE-01: leadv2-review.js deleted; this is
++#      the one surviving JS consumer that keeps the resolve command as its own standalone
++#      backtick-delimited const rather than splicing it into a multi-line concatenated
++#      agent() prompt string, so the extractor regex -- which requires the closing backtick
++#      immediately after `pwd` -- still matches), run from (a) main repo (b) linked worktree
++#      (c) an unrelated git repo with no docs/leadv2/ marker -> (a)/(b) resolve to main repo,
++#      (c) fails safe to pwd instead of silently landing in the wrong repo.
+ #
+ # Run: bash scripts/tests/test-leadv2-phase8-learn-counter.sh
+ # Exit 0 = all pass; non-zero = failures found.
+@@ -31,7 +35,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ PHASE8_SH="${SCRIPT_DIR}/../leadv2-phase8-close.sh"
+-JS_FILE="${SCRIPT_DIR}/../../workflows/leadv2-review.js"
++JS_FILE="${SCRIPT_DIR}/../../workflows/leadv2-causal-critique.js"
+ # phase8-close.sh will resolve PROJECT_ROOT=$(dirname PHASE8_SH)/.. = plugin root
+ PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ LEADV2_DIR="${PLUGIN_ROOT}/docs/leadv2"
+@@ -252,12 +256,13 @@ test_6_durable_root_worktree() {
+ }
+ 
+ # -- Test 7: REAL JS one-liner across main / worktree / unrelated-repo cwds --
+-# WORKFLOW-BASH-FIX-01: leadv2-review.js no longer has any `await bash(...)` call-sites (the
++# WORKFLOW-BASH-FIX-01: the JS workflow consumers have no `await bash(...)` call-sites (the
+ # runtime provides no bash() global -- the git-common-dir resolve now runs inside an agent()
+ # prompt via the agent's own Bash tool). The one-liner itself is unchanged and lives in a single
+-# canonical constant (ROOT_RESOLVE_CMD) reused by both consumers, so anchor on the
+-# git-common-dir marker inside ANY backtick-delimited template literal instead of requiring the
+-# (now-removed) `await bash(` prefix.
++# canonical one-liner reused verbatim across every JS consumer (leadv2-plan.js, leadv2-learn.js,
++# leadv2-intake-enrich.js, leadv2-causal-critique.js), so anchor on the git-common-dir marker
++# inside ANY backtick-delimited template literal instead of requiring the (now-removed)
++# `await bash(` prefix.
+ _extract_js_resolve_snippet() {
+   python3 -c "
+ import re, sys
+diff --git a/plugins/leadv2/scripts/tests/test-leadv2-review-routing.sh b/plugins/leadv2/scripts/tests/test-leadv2-review-routing.sh
+index ec23c85..ddb7274 100755
+--- a/plugins/leadv2/scripts/tests/test-leadv2-review-routing.sh
++++ b/plugins/leadv2/scripts/tests/test-leadv2-review-routing.sh
+@@ -1,103 +1,139 @@
+ #!/usr/bin/env bash
+-set -euo pipefail
++# test-leadv2-review-routing.sh — engine degradation suite (dispatch-4fb7381a, per
++# dispatch-75d151fe-architect §2b). Rewritten from a workflows/leadv2-review.js harness
++# (that file is deleted, see dispatch-75d151fe-architect §1/§5) to run the REAL sole-owner
++# engine (leadv2-review-run.sh) end to end with stubbed provider bins. No live
++# provider/network calls.
++#
++# KNOWN COVERAGE DELTA: the original suite asserted a critic prompt-BREADTH promotion —
++# a narrow "structural cross-check" prompt vs. a full "adversarial code review" prompt,
++# chosen based on whether Codex was available. The engine has NO analogue: its
++# degradation model is classify_arm_failure() + next_ok_arm_after() rotating to the next
++# :ok: arm in the resolver's pool (a distinct PROVIDER, not a distinct PROMPT BREADTH for
++# the same provider). Per architect §2b this is a real, permanent coverage delta, not
++# something to invent in the engine to satisfy an old test. Recorded here and in
++# plugins/leadv2/docs/phases.md.
++set -uo pipefail
+ 
+-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+-WORKFLOW_FILE="${SCRIPT_DIR}/../../workflows/leadv2-review.js"
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++SCRIPTS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
++ENGINE="$SCRIPTS_ROOT/leadv2-review-run.sh"
+ 
+-node --input-type=module - "$WORKFLOW_FILE" <<'NODE'
+-import fs from 'node:fs'
++PASS=0; FAIL=0
++log()  { printf '%s\n' "$*"; }
++pass() { log "PASS: $*"; PASS=$((PASS + 1)); }
++fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
+ 
+-const workflowPath = process.argv[2]
+-const source = fs.readFileSync(workflowPath, 'utf8')
+-  .replace(/^export const meta =/m, 'const meta =')
+-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+-const runWorkflow = new AsyncFunction(
+-  'args', 'agent', 'parallel', 'pipeline', 'log', 'phase', 'budget', 'process',
+-  source,
+-)
++bash -n "$SCRIPT_DIR/test-leadv2-review-routing.sh" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
+ 
+-function assert(condition, message) {
+-  if (!condition) throw new Error(`ASSERTION FAILED: ${message}`)
+-}
++if [[ ! -f "$ENGINE" ]]; then
++  fail "leadv2-review-run.sh does not exist"
++  log "PASS=$PASS FAIL=$FAIL"; exit 1
++fi
+ 
+-async function runScenario(name, args, codexUnavailable = false) {
+-  const calls = []
+-  const logs = []
+-  const agent = async (prompt, opts = {}) => {
+-    calls.push({ label: opts.label || '(none)', prompt })
+-    if (opts.label === 'codex-adversarial') {
+-      return codexUnavailable
+-        ? { findings: [], summary_for_lead: 'codex unavailable: simulated quota exhausted' }
+-        : { findings: [], summary_for_lead: 'codex normal: full adversarial review completed' }
+-    }
+-    if (opts.label === 'quality-scorer') {
+-      return {
+-        diff_coherence: 4,
+-        test_coverage: 3,
+-        security_pass: 3,
+-        novelty_bonus: 0,
+-        quality_score: 10,
+-        diff_summary: 'routing harness diff',
+-      }
+-    }
+-    if (opts.schema && opts.schema.properties && opts.schema.properties.findings) {
+-      return { findings: [], summary_for_lead: `${opts.label}: completed` }
+-    }
+-    return 'ok'
+-  }
+-  const parallel = async (jobs) => Promise.all(jobs.map(job => job()))
+-  const result = await runWorkflow(
+-    args,
+-    agent,
+-    parallel,
+-    async () => null,
+-    message => logs.push(message),
+-    () => {},
+-    {},
+-    { env: { LEADV2_REVIEW_FAMILY_GATE: '1' } },
+-  )
+-  return { name, calls, logs, result }
++# --- shared fixture builders ---------------------------------------------------
++mk_fixture() { # <tag> -> sets ROOT/HANDOFF/DIFF, mkdirs
++  local tag="$1"
++  ROOT="$TMP/repo-$tag"
++  mkdir -p "$ROOT/.claude/ref"
++  HANDOFF="$ROOT/docs/handoff/dispatch-ROUTE$tag"
++  mkdir -p "$HANDOFF"
++  DIFF="$HANDOFF/review.diff"
++  printf 'diff --git a/x b/x\n+hello\n' > "$DIFF"
+ }
+ 
+-const normal = await runScenario(
+-  'codex-normal',
+-  { taskId: 'routing-normal', base: 'main', diffPath: '/tmp/routing.diff', codexEnabled: true },
+-)
+-const normalCritic = normal.calls.find(call => call.label === 'critic-structural-cross-check')
+-assert(normal.calls.some(call => call.label === 'codex-adversarial'), 'normal round must run Codex')
+-assert(normalCritic, 'normal round must run structural critic cross-check')
+-assert(normalCritic.prompt.includes('do NOT repeat a full line-by-line review'), 'critic must be explicitly narrow')
+-assert(normalCritic.prompt.includes('cross-module API/data-contract drift'), 'critic must cover structural blind spots')
+-assert(!normal.calls.some(call => call.label === 'critic-full-fallback'), 'normal round must not run full critic')
+-
+-const unavailable = await runScenario(
+-  'codex-forced-unavailable',
+-  { taskId: 'routing-unavailable', base: 'main', diffPath: '/tmp/routing.diff', codexEnabled: false },
+-)
+-const fallbackCritic = unavailable.calls.find(call => call.label === 'critic-full-fallback')
+-assert(!unavailable.calls.some(call => call.label === 'codex-adversarial'), 'preflight-unavailable round must not dispatch Codex')
+-assert(fallbackCritic, 'preflight-unavailable round must run full critic fallback')
+-assert(fallbackCritic.prompt.includes('FULL adversarial code review'), 'fallback critic must have full breadth')
+-assert(fallbackCritic.prompt.includes('correctness bugs, type/data/RLS gaps, N+1'), 'fallback critic must inherit general review coverage')
+-
+-const midrun = await runScenario(
+-  'codex-midrun-unavailable',
+-  { taskId: 'routing-midrun', base: 'main', diffPath: '/tmp/routing.diff', codexEnabled: true },
+-  true,
+-)
+-assert(midrun.calls.some(call => call.label === 'critic-structural-cross-check'), 'mid-run failure starts with narrow cross-check')
+-assert(midrun.calls.some(call => call.label === 'critic-full-fallback'), 'mid-run failure must promote critic to full review')
+-assert(midrun.logs.some(line => line.includes('Codex unavailable after dispatch; critic=full-fallback')), 'mid-run fallback must be logged')
+-
+-for (const scenario of [normal, unavailable, midrun]) {
+-  const reviewCalls = scenario.calls
+-    .filter(call => call.label.startsWith('codex-') || call.label.startsWith('critic-'))
+-    .map(call => call.label)
+-    .join(', ')
+-  console.log(`${scenario.name}: ${reviewCalls}`)
+-  for (const line of scenario.logs.filter(line => line.startsWith('Review routing:'))) {
+-    console.log(`  log: ${line}`)
+-  }
+-}
+-console.log('PASS: review routing gives Codex the general review, critic a structural cross-check, and critic full fallback on unavailability')
+-NODE
++TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
++
++cat > "$TMP/resolver.py" <<'PY'
++#!/usr/bin/env python3
++print("reviewer=codex")
++print("pool=codex:ok:,glm:ok:,sonnet:ok:")
++print("refusal=")
++PY
++chmod +x "$TMP/resolver.py"
++
++cat > "$TMP/codex-ok.sh" <<'SH'
++#!/usr/bin/env bash
++printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\n'
++SH
++chmod +x "$TMP/codex-ok.sh"
++
++# Simulates a quota-refused Codex (LEADV2_DISPATCH_REFUSED marker + rc=75, the
++# `classify_arm_failure` refused_quota path).
++cat > "$TMP/codex-refused.sh" <<'SH'
++#!/usr/bin/env bash
++printf 'LEADV2_DISPATCH_REFUSED: quota\n' >&2
++exit 75
++SH
++chmod +x "$TMP/codex-refused.sh"
++
++cat > "$TMP/glm.sh" <<'SH'
++#!/usr/bin/env bash
++out=""
++while [[ $# -gt 0 ]]; do case "$1" in --out) out="$2"; shift 2 ;; *) shift ;; esac; done
++printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\n' > "$out"
++SH
++chmod +x "$TMP/glm.sh"
++
++cat > "$TMP/architect.sh" <<'SH'
++#!/usr/bin/env bash
++role=""
++while [[ $# -gt 0 ]]; do case "$1" in --role) role="$2"; shift 2 ;; *) shift ;; esac; done
++[[ "$role" == "hack-detect" ]] && exit 0
++printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\n'
++SH
++chmod +x "$TMP/architect.sh"
++
++cat > "$TMP/dispatch.sh" <<'SH'
++#!/usr/bin/env bash
++exit 0
++SH
++chmod +x "$TMP/dispatch.sh"
++
++# --- Scenario 1: normal round -- codex is the base arm and the first fan-out arm -------
++mk_fixture normal
++LEADV2_GLM_POLICY_RESOLVER="$TMP/resolver.py" \
++LEADV2_DISPATCH_CODEX_BIN="$TMP/codex-ok.sh" \
++LEADV2_DISPATCH_GLM_BIN="$TMP/glm.sh" \
++LEADV2_DISPATCH_ARCHITECT_BIN="$TMP/architect.sh" \
++LEADV2_DISPATCH_BIN="$TMP/dispatch.sh" \
++LEADV2_REVIEW_FANOUT=1 \
++bash "$ENGINE" --task ROUTEnormal --root "$ROOT" --handoff "$HANDOFF" --diff "$DIFF" --author sonnet >/dev/null 2>"$TMP/normal.err"
++rc=$?
++arms_line="$(sed -n 's/^arms:[[:space:]]*//p' "$HANDOFF/review-gate.md" 2>/dev/null | head -n1)"
++if [[ $rc -eq 0 && "$arms_line" == codex* ]]; then
++  pass "normal round: codex is base-arm and ran as the (first) fan-out arm — arms: $arms_line"
++else
++  fail "normal round: expected codex as base/first arm, got rc=$rc arms='$arms_line'"
++fi
++
++# --- Scenario 2: codex unavailable -- pool degrades to a distinct non-codex arm, logged
++mk_fixture unavailable
++LEADV2_GLM_POLICY_RESOLVER="$TMP/resolver.py" \
++LEADV2_DISPATCH_CODEX_BIN="$TMP/codex-refused.sh" \
++LEADV2_DISPATCH_GLM_BIN="$TMP/glm.sh" \
++LEADV2_DISPATCH_ARCHITECT_BIN="$TMP/architect.sh" \
++LEADV2_DISPATCH_BIN="$TMP/dispatch.sh" \
++LEADV2_REVIEW_FANOUT=1 \
++bash "$ENGINE" --task ROUTEunavail --root "$ROOT" --handoff "$HANDOFF" --diff "$DIFF" --author sonnet >/dev/null 2>"$TMP/unavail.err"
++rc=$?
++arms_line="$(sed -n 's/^arms:[[:space:]]*//p' "$HANDOFF/review-gate.md" 2>/dev/null | head -n1)"
++if [[ $rc -eq 0 && -n "$arms_line" && "$arms_line" != codex* && "$arms_line" != *codex* ]]; then
++  pass "codex-unavailable round: pool reselected to a distinct non-codex arm — arms: $arms_line"
++else
++  fail "codex-unavailable round: expected reselection off codex, got rc=$rc arms='$arms_line'"
++fi
++
++if grep -q 'review_gate task=ROUTEunavail status=arm_refused arm=codex reason=refused_quota' "$TMP/unavail.err"; then
++  pass "codex-unavailable round: arm_refused/refused_quota logged on the human-visible stderr line"
++else
++  fail "codex-unavailable round: expected arm_refused log line naming codex/refused_quota not found"
++  log "  --- engine stderr ---"
++  sed 's/^/  /' "$TMP/unavail.err"
++fi
++
++log ""
++log "================================================"
++log "  review routing (engine degradation): PASS=$PASS FAIL=$FAIL"
++log "================================================"
++[[ "$FAIL" -eq 0 ]]
+diff --git a/plugins/leadv2/scripts/tests/test-review-single-owner-census.sh b/plugins/leadv2/scripts/tests/test-review-single-owner-census.sh
+index 2826f0d..a91385b 100755
+--- a/plugins/leadv2/scripts/tests/test-review-single-owner-census.sh
++++ b/plugins/leadv2/scripts/tests/test-review-single-owner-census.sh
+@@ -1,31 +1,34 @@
+ #!/usr/bin/env bash
+-# ONE-PATH-EVERYWHERE-01 T6 (static, no execution): grep-based census — exactly ONE
+-# file in the repo should own review orchestration (spawn `--role critic`,
+-# `adversarial-review`, or an `agentType: 'critic'` fan-out). Intended end-state is
+-# leadv2-review-run.sh as the sole owner after workflows/leadv2-review.js is deleted.
++# ONE-PATH-EVERYWHERE-01 T6 (static, no execution): reachability census parameterised by
++# LEADV2_REVIEW_ENGINE, per dispatch-75d151fe-architect §3.
+ #
+-# KNOWN GAP (see deliverable): this test currently reports THREE owners, not one:
+-#   1. workflows/leadv2-review.js — NOT deleted this run. grep found live callers in
+-#      the existing test suite (test-codex-doc-pointer.sh, test-leadv2-review-routing.sh,
+-#      test-leadv2-phase8-learn-counter.sh) that assert its presence/content, which is
+-#      exactly the STOP condition the task spec named ("do not strand a caller").
+-#   2. leadv2-dispatch-product-close.sh — still defines its own run_reviewer_arm()
+-#      inside the LEADV2_REVIEW_ENGINE=0 fallback body. This is REQUIRED by the design's
+-#      own §5 resolution ("a mid-flight lane that spawns product-close after the edit
+-#      still runs today's inline body" — byte-for-byte inertness at flag=0), which
+-#      overrides the design's A3 mitigation ("delete the lane copy in the same commit")
+-#      for as long as the flag defaults to 0 everywhere. Deleting it now would violate
+-#      §5, not satisfy it.
+-# This test is expected to FAIL until both are resolved (workflows/leadv2-review.js
+-# migration/deletion, and the eventual LEADV2_REVIEW_ENGINE=1 flip that lets the lane's
+-# dead fallback body be removed). It still passes the "fails against a stash of
+-# leadv2-review-run.sh" bar: on main (no engine at all), the count is 1
+-# (workflows/leadv2-review.js only) and the assertion below ('== 1 AND is the engine')
+-# fails there too, for a different, equally correct reason.
++# A plain file-count census cannot be right: at LEADV2_REVIEW_ENGINE=0 (the mandated
++# production default everywhere) leadv2-review-run.sh is genuinely NOT the reviewer that
++# runs -- leadv2-dispatch-product-close.sh's inline run_reviewer_arm() is, and that inline
++# body is REQUIRED to stay byte-for-byte (see leadv2-dispatch-product-close.sh:1542-1548).
++# So the invariant this test proves is:
++#
++#   for each value of LEADV2_REVIEW_ENGINE (0 and 1), exactly one review-orchestration
++#   owner is reachable, and every owner file discovered on disk is accounted for by
++#   exactly one of those two buckets.
++#
++# Bucket table (allowlist BY PATH -- adding a row is a design decision, not a test fix):
++#   flag=0  scripts/leadv2-dispatch-product-close.sh   (inline run_reviewer_arm(), gated else-branch)
++#   flag=1  scripts/leadv2-review-run.sh                (engine; product-close's then-branch execs it)
++#
++# The test does NOT execute the lane or the engine. "Reachable" is proved by
++# re-verifying the SHAPE of the gate expression in product-close (the same branch that
++# picks the engine at flag=1 and the inline body at flag=0), not by running either path.
++#
++# Anything discovered that is not one of the two allowlisted paths -- a resurrected
++# workflows/leadv2-review.js, a second run_reviewer_arm() anywhere else, a new fan-out
++# file -- is UNCLASSIFIED and fails the census immediately, with its path printed.
+ set -uo pipefail
+ 
+ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ PLUGINS_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
++LEADV2_SCRIPTS="$PLUGINS_ROOT/leadv2/scripts"
++LEADV2_WORKFLOWS="$PLUGINS_ROOT/leadv2/workflows"
+ 
+ PASS=0; FAIL=0
+ log()  { printf '%s\n' "$*"; }
+@@ -34,26 +37,74 @@ fail() { log "FAIL: $*"; FAIL=$((FAIL + 1)); }
+ 
+ bash -n "$SCRIPT_DIR/test-review-single-owner-census.sh" 2>/dev/null || { echo "ERROR: self syntax check failed"; exit 1; }
+ 
+-# Narrower than a bare `--role critic` / `adversarial-review` string grep (those also
+-# match legitimate non-owner mentions: tool implementations, comments, callers that
+-# invoke the ONE owner). "Owns orchestration" = defines a reviewer FAN-OUT: the bash
+-# `run_reviewer_arm()` function definition, or JS `const reviewers = [` / `parallel(reviewers)`.
++# Allowlist-by-path. FLAG0_OWNER is reachable when LEADV2_REVIEW_ENGINE=0 (default,
++# everywhere). FLAG1_OWNER is reachable when LEADV2_REVIEW_ENGINE=1 (lane) and
++# unconditionally on the lead/skill path.
++FLAG0_OWNER="$LEADV2_SCRIPTS/leadv2-dispatch-product-close.sh"
++FLAG1_OWNER="$LEADV2_SCRIPTS/leadv2-review-run.sh"
++
++# 1. Discover -- same fan-out grep as before, excluding tests/docs/err logs.
+ owners="$(grep -rlE -- '^run_reviewer_arm\(\)|const[[:space:]]+reviewers[[:space:]]*=[[:space:]]*\[|parallel\(reviewers\)' \
+-  "$PLUGINS_ROOT/leadv2/scripts" "$PLUGINS_ROOT/leadv2/workflows" 2>/dev/null \
++  "$LEADV2_SCRIPTS" "$LEADV2_WORKFLOWS" 2>/dev/null \
+   | grep -vE '/tests/|\.err$|\.md$' \
+   | sort -u)"
+ 
+-owner_count="$(printf '%s\n' "$owners" | grep -c . || true)"
+-engine_is_owner=0
+-printf '%s\n' "$owners" | grep -q 'leadv2-review-run\.sh$' && engine_is_owner=1
+-
+ log "owners found:"
+-printf '%s\n' "$owners" | sed 's/^/  /'
++if [[ -n "$owners" ]]; then
++  while IFS= read -r o; do
++    case "$o" in
++      "$FLAG0_OWNER") log "  $o  [bucket: flag=0]" ;;
++      "$FLAG1_OWNER") log "  $o  [bucket: flag=1]" ;;
++      *)              log "  $o  [bucket: UNCLASSIFIED]" ;;
++    esac
++  done <<< "$owners"
++else
++  log "  (none)"
++fi
++
++# 2. Classify -- split discovered set into the two allowlisted buckets plus unclassified.
++flag0_members=""
++flag1_members=""
++unclassified=""
++if [[ -n "$owners" ]]; then
++  while IFS= read -r o; do
++    case "$o" in
++      "$FLAG0_OWNER") flag0_members="${flag0_members}${o}\n" ;;
++      "$FLAG1_OWNER") flag1_members="${flag1_members}${o}\n" ;;
++      *) unclassified="${unclassified}${o}\n" ;;
++    esac
++  done <<< "$owners"
++fi
++
++flag0_count="$(printf '%b' "$flag0_members" | grep -c . || true)"
++flag1_count="$(printf '%b' "$flag1_members" | grep -c . || true)"
++unclassified_count="$(printf '%b' "$unclassified" | grep -c . || true)"
++
++# 3a. flag=0 bucket must have exactly one member (leadv2-dispatch-product-close.sh), AND
++# its gate expression must still have the shape the bucket depends on: a branch on
++# LEADV2_REVIEW_ENGINE whose then-side execs leadv2-review-run.sh and whose else-side is
++# the inline body (i.e. product-close itself, unconditionally reachable, is the flag=0
++# fallback owner). Static re-verification of the gate SHAPE only -- no execution.
++if [[ "$flag0_count" -eq 1 ]] \
++   && grep -qE '\[\[[[:space:]]*"\$\{LEADV2_REVIEW_ENGINE:-0\}"[[:space:]]*==[[:space:]]*"1"[[:space:]]*\]\]' "$FLAG0_OWNER" 2>/dev/null \
++   && grep -qE 'leadv2-review-run\.sh' "$FLAG0_OWNER" 2>/dev/null; then
++  pass "flag=0 bucket has exactly one owner (leadv2-dispatch-product-close.sh) with gate expression routing flag=1 to leadv2-review-run.sh"
++else
++  fail "flag=0 bucket invariant broken: count=$flag0_count, gate-expression-shape-found=$(grep -qE '\[\[[[:space:]]*"\$\{LEADV2_REVIEW_ENGINE:-0\}"[[:space:]]*==[[:space:]]*"1"[[:space:]]*\]\]' "$FLAG0_OWNER" 2>/dev/null && echo yes || echo no)"
++fi
++
++# 3b. flag=1 bucket must have exactly one member: leadv2-review-run.sh.
++if [[ "$flag1_count" -eq 1 ]]; then
++  pass "flag=1 bucket has exactly one owner: leadv2-review-run.sh"
++else
++  fail "flag=1 bucket expected exactly 1 (leadv2-review-run.sh), found $flag1_count"
++fi
+ 
+-if [[ "$owner_count" -eq 1 && "$engine_is_owner" -eq 1 ]]; then
+-  pass "exactly one review-orchestration owner: leadv2-review-run.sh"
++# 3c. discovered set minus the two buckets must be empty -- fail-on-unclassified.
++if [[ "$unclassified_count" -eq 0 ]]; then
++  pass "no unclassified review-orchestration owners"
+ else
+-  fail "expected exactly one owner (leadv2-review-run.sh), found $owner_count: $(printf '%s' "$owners" | tr '\n' ',')"
++  fail "unclassified owner file(s) found (not in allowlist): $(printf '%b' "$unclassified" | tr '\n' ',')"
+ fi
+ 
+ log ""
+diff --git a/plugins/leadv2/workflows/leadv2-review.js b/plugins/leadv2/workflows/leadv2-review.js
+deleted file mode 100644
+index 79a3d93..0000000
+--- a/plugins/leadv2/workflows/leadv2-review.js
++++ /dev/null
+@@ -1,338 +0,0 @@
+-export const meta = {
+-  name: 'leadv2-review',
+-  description: 'leadv2 Phase 5 adversarial review: primary Codex + structural critic cross-check (or full critic fallback) + hack-detection + (security) → dedup → verify blocking → quality score → solutions-archive. Model-pinned.',
+-  whenToUse: 'leadv2 Phase 5 Review for class >= Standard. Lead invokes instead of hand-rolled Agent+Monitor. Returns one synthesized verdict + quality_score; lead context stays clean.',
+-  phases: [
+-    { title: 'Review', detail: 'primary codex-adversarial + structural critic cross-check (full fallback if Codex unavailable) + hack-detect + security(if safety)' },
+-    { title: 'Verify', detail: 'adversarial refute pass on each blocking finding' },
+-    { title: 'Reflect', detail: 'quality scoring + write solutions-archive + append signature' },
+-  ],
+-}
+-let a
+-if (typeof args === 'string') { try { a = JSON.parse(args) } catch { a = { problem: args } } }
+-else { a = args }
+-a = a || {}
+-const TASK_ID = a.taskId || 'adhoc'
+-const BASE = a.base || 'main'
+-const SAFETY = a.safetyTouched === true
+-const MISSION = a.missionPath || `docs/handoff/${TASK_ID}/review-mission.md`
+-const DIFF = a.diffPath || `/tmp/leadv2-review-${TASK_ID}.diff`
+-const CODEX_ON = a.codexEnabled !== false
+-const TASK_CLASS = a.taskClass || 'general'
+-// [FAMILY-GATE-01] Cross-provider-family review gate kill-switch — default ON; '0' disables
+-// the whole feature (no families/family_coverage fields, no downgrade, byte-identical to
+-// pre-FAMILY-GATE-01 behavior).
+-const FAMILY_GATE_ON = ((typeof process !== 'undefined' && process.env && process.env.LEADV2_REVIEW_FAMILY_GATE) || '1') !== '0'
+-// WORKFLOW-BASH-FIX-01: the real Workflow runtime provides ONLY agent()/parallel()/pipeline()/
+-// log()/phase()/args/budget — there is NO bash() global. This file used to make 4 real bare
+-// `await bash(...)` calls (undefined at runtime → crash): the TS derive (single consumer:
+-// the archive-write entry below), emitLedger (×3 runtime), the _archiveRoot git-common-dir
+-// resolve (single consumer: archive-write), and the semantic-index best-effort append (always
+-// sequenced right after archive-write). All 4 are folded into the SAME existing 'archive-write'
+-// / 'reflect' agent calls (Move 1 + Move 2) — zero net new agent() calls:
+-//   - TS: pass-through from args.ts if the caller supplied it; else the archive-write prompt
+-//     asks the agent to resolve it itself via Bash, verbatim, as one more instruction.
+-//   - _archiveRoot resolve: folded into the archive-write prompt (agent resolves it itself,
+-//     same pattern as leadv2-plan.js's archive-read).
+-//   - semantic-index append: built as ONE fully self-contained, already-escaped shell command
+-//     in JS (unchanged escaping logic — R1) and passed to the SAME archive-write agent call as
+-//     a best-effort trailing instruction (never blocks Reflect on failure).
+-//   - emitLedger → pure-JS in-memory ledgerEvents array (pushLedger, no I/O); flushed via the
+-//     'reflect' agent call at the end — that call runs UNCONDITIONALLY regardless of verdict,
+-//     so the ledger flush must live there (NOT inside the verdict==='ACCEPT' branch, since
+-//     ledger events must flush every round, not just on accept).
+-const TS = a.ts || ''
+-// [BANDIT-WIRE-01] Consume bandit model selections from args.models (set by lead before Workflow call).
+-// args.models absent (or LEADV2_ROUTE_BANDIT != 1) => falls back to existing pinned defaults.
+-// Flag-off guarantee: if args.models is not provided, model values are identical to pre-BANDIT-WIRE-01.
+-const _MODELS = (a.models && typeof a.models === 'object') ? a.models : {}
+-const CRITIC_MODEL = _MODELS.critic || (SAFETY ? 'opus' : 'sonnet')
+-const VERIFY_MODEL = _MODELS.verify || 'sonnet'
+-const projRoot = (typeof process !== 'undefined' && process.env && process.env.LEADV2_PROJECT_ROOT) || '.'
+-// Single canonical root-resolve one-liner, shared by both the archive-write prompt's own
+-// resolve instruction and the self-contained semantic-index command below — kept as ONE
+-// un-split literal (not concatenated across `+`-joined segments) so it stays a single
+-// extractable unit, e.g. for tests/tools that locate this exact resolution pattern by content.
+-const ROOT_RESOLVE_CMD = `_r="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null)"; [ -n "$_r" ] && [ -d "$_r/docs/leadv2" ] && printf '%s' "$_r" || pwd`
+-const FINDINGS_SCHEMA = {
+-  type: 'object', additionalProperties: false,
+-  properties: {
+-    findings: { type: 'array', items: {
+-      type: 'object', additionalProperties: false,
+-      properties: {
+-        severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'nit'] },
+-        dimension: { type: 'string' }, file: { type: 'string' },
+-        description: { type: 'string' }, suggested_fix: { type: 'string' },
+-      }, required: ['severity', 'dimension', 'description'],
+-    } },
+-    summary_for_lead: { type: 'string' },
+-  }, required: ['findings', 'summary_for_lead'],
+-}
+-const VERDICT_SCHEMA = {
+-  type: 'object', additionalProperties: false,
+-  properties: { is_real: { type: 'boolean' }, rationale: { type: 'string' } },
+-  required: ['is_real', 'rationale'],
+-}
+-// [F6] Quality scoring schema — structured rubric, not free-form
+-const QUALITY_SCHEMA = {
+-  type: 'object', additionalProperties: false,
+-  properties: {
+-    diff_coherence: { type: 'integer', minimum: 0, maximum: 4 },   // is diff focused, minimal, no dead code?
+-    test_coverage: { type: 'integer', minimum: 0, maximum: 3 },    // evidence of tests for new logic
+-    security_pass: { type: 'integer', minimum: 0, maximum: 3 },    // no obvious security gaps
+-    novelty_bonus: { type: 'integer', minimum: 0, maximum: 1 },    // touches new file paths (+1)
+-    quality_score: { type: 'number', minimum: 0, maximum: 10 },    // sum: coherence+coverage+security+novelty_bonus (capped 10)
+-    diff_summary: { type: 'string' },
+-  }, required: ['diff_coherence', 'test_coverage', 'security_pass', 'quality_score', 'diff_summary'],
+-}
+-const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, nit: 0 }
+-
+-// ── C3: Ledger emit helper ────────────────────────────────────────────────────
+-// Move 2 (Ledger-flush): accumulate in-memory, no I/O per event. Flushed via the final
+-// 'reflect' agent call, which runs unconditionally (every round, every verdict).
+-const ledgerEvents = []
+-function pushLedger(event, extra) {
+-  const _taskId = (typeof TASK_ID !== 'undefined' ? TASK_ID : null) || (typeof a !== 'undefined' && a.task_id) || 'unknown'
+-  ledgerEvents.push(Object.assign({ event, task_id: _taskId }, extra || {}))
+-}
+-
+-// synth stages: try top model, fall back on null/error
+-async function synthAgent(prompt, opts = {}) {
+-  const chain = [...new Set([opts.model || 'opus', 'sonnet'])]
+-  for (const m of chain) {
+-    try {
+-      const r = await agent(prompt, { ...opts, model: m })
+-      if (r !== null) return r
+-    } catch (e) { /* fall through */ }
+-    log(`synthAgent: ${m} unavailable, falling back`)
+-  }
+-  return null
+-}
+-const isUnavailableResult = (r) => !!(
+-  r &&
+-  typeof r.summary_for_lead === 'string' &&
+-  /unavailable|not logged in|quota|rate.?limit|429|timeout|command not found|missing cli/i.test(r.summary_for_lead)
+-)
+-
+-phase('Review')
+-pushLedger('phase_enter', { phase: 'Review' })
+-// [COST-LEVERS-01] Codex is the PRIMARY general-purpose adversarial brain for Review.
+-// When Codex is expected to run, critic is a deliberately NARROW structural cross-check,
+-// mirroring Plan's architect cross-check shape instead of re-reviewing the whole diff.
+-// If preflight disabled Codex, critic is the FULL primary reviewer. A post-dispatch Codex
+-// failure is handled below by an explicit full-critic fallback. Safety/Heavy only changes
+-// model depth and adds the security reviewer; it does NOT silently widen critic into a
+-// second full general-purpose review.
+-const CRITIC_FULL_BREADTH = !CODEX_ON
+-const criticPrompt = CRITIC_FULL_BREADTH
+-  ? `FULL adversarial code review of the diff at ${DIFF}; Codex is unavailable, so you are the primary reviewer. Brief: ${MISSION}. Read the diff yourself (git diff ${BASE}). Cover correctness bugs, type/data/RLS gaps, N+1 and performance traps, missing or weak tests, security boundaries, and design-system violations. Severity-tag each. Minimal-diff context only.`
+-  : `Cross-check Codex's adversarial review of the diff at ${DIFF}; Codex is the primary general-purpose reviewer, so do NOT repeat a full line-by-line review. Brief: ${MISSION}. Focus ONLY on structural blind spots Codex tends to miss: repository-specific invariants and off-limits, cross-module API/data-contract drift, lifecycle/concurrency/error-path behavior, rollout/backward-compatibility/rollback hazards, and whether tests can actually falsify those invariants. Report a line-level issue only when it proves one of those structural failures; skip style/naming and generic type/RLS/N+1/security checks covered by Codex, hack-detect, or security-auditor. Severity-tag each.`
+-log(`Review routing: codex=${CODEX_ON ? 'primary' : 'unavailable'}; critic=${CRITIC_FULL_BREADTH ? 'full-fallback' : 'structural-cross-check'}`)
+-const reviewers = [
+-  () => synthAgent(
+-    criticPrompt,
+-    { label: CRITIC_FULL_BREADTH ? 'critic-full-fallback' : 'critic-structural-cross-check', phase: 'Review', agentType: 'critic', model: CRITIC_MODEL, effort: (SAFETY && CRITIC_MODEL !== 'sonnet') ? 'xhigh' : 'high', schema: FINDINGS_SCHEMA }),
+-  () => agent(
+-    `Run hack-detection on the diff at ${DIFF}: TODO/FIXME band-aids, magic numbers, broad except, hardcoded creds/secrets, silent fallbacks. Return each as a finding (dimension="hack").`,
+-    { label: 'hack-detect', phase: 'Review', model: 'haiku', effort: 'low', schema: FINDINGS_SCHEMA }),
+-]
+-// [FAMILY-GATE-01] Provider family per reviewer, built in lockstep with `reviewers` (same
+-// push/unshift order) so index i in reviewerFamilies always matches index i in reviewers.
+-const reviewerFamilies = ['anthropic', 'anthropic']
+-if (SAFETY) {
+-  reviewers.push(() => agent(
+-    `Security review of the diff at ${DIFF}. Full-file read allowed for security paths. Check injection, auth/session, RLS correctness, webhook verification, secret handling, CSRF, rate-limit gaps. Severity-tag (dimension="security").`,
+-    { label: 'security-auditor', phase: 'Review', agentType: 'security-auditor', model: 'sonnet', effort: 'high', schema: FINDINGS_SCHEMA }))
+-  reviewerFamilies.push('anthropic')
+-}
+-if (CODEX_ON) {
+-  // Codex is primary: unshift to run before agent-critic in parallel (first slot = primary adversarial brain)
+-  reviewers.unshift(() => agent(
+-    `Run and wait: bash ~/.claude/scripts/codex-task.sh adversarial-review --wait --base ${BASE} --tier top. Then read findings with: bash ~/.claude/scripts/cx-tail.sh <output-file>. Parse [critical]/[high]/[medium]/[low] lines into findings (dimension="codex"). If codex unavailable (exit non-zero), return empty findings with summary_for_lead="codex unavailable". Do NOT invent findings. Authoritative surfaces for this repo: \`.claude/CLAUDE.md\`, \`docs/reference/ENGINE-REFERENCE.md\`, \`docs/systems-map/CONTROL-TRUTH.md\`, \`docs/systems-map/TRUTH-TABLE.md\`. Read only the ones the diff touches. Treat any \`docs/specs/*.md\` as possibly stale unless corroborated by code. Before promoting a Codex finding, corroborate it against those surfaces; drop or downgrade any finding whose sole basis is a \`docs/specs/*.md\` claim.`,
+-    { label: 'codex-adversarial', phase: 'Review', model: 'haiku', effort: 'low', schema: FINDINGS_SCHEMA }))
+-  reviewerFamilies.unshift('openai')
+-}
+-const rawReviewResults = await parallel(reviewers)
+-// Preflight can pass and Codex can still fail mid-run (quota exhaustion, login expiry,
+-// timeout, or CLI disappearance). The parallel critic above was intentionally narrow, so
+-// promote critic to a full review now instead of pretending that cross-check was sufficient.
+-if (CODEX_ON) {
+-  const codexResult = rawReviewResults[0]
+-  if (!codexResult || isUnavailableResult(codexResult)) {
+-    log('Review routing: Codex unavailable after dispatch; critic=full-fallback')
+-    const fallbackResult = await synthAgent(
+-      `FULL adversarial code review of the diff at ${DIFF}; Codex failed after dispatch, so you are now the primary reviewer. Brief: ${MISSION}. Read the diff yourself (git diff ${BASE}). Cover correctness bugs, type/data/RLS gaps, N+1 and performance traps, missing or weak tests, security boundaries, and design-system violations. Severity-tag each. Minimal-diff context only.`,
+-      { label: 'critic-full-fallback', phase: 'Review', agentType: 'critic', model: CRITIC_MODEL, effort: (SAFETY && CRITIC_MODEL !== 'sonnet') ? 'xhigh' : 'high', schema: FINDINGS_SCHEMA })
+-    rawReviewResults.push(fallbackResult)
+-    reviewerFamilies.push('anthropic')
+-  }
+-}
+-const reviewResults = rawReviewResults.filter(Boolean)
+-const allFindings = reviewResults.flatMap(r => r.findings || [])
+-const seen = new Map()
+-for (const f of allFindings) {
+-  const key = `${f.dimension || ''}|${f.file || ''}|${(f.description || '').slice(0, 80).toLowerCase()}`
+-  const prev = seen.get(key)
+-  if (!prev || (SEV_RANK[f.severity] || 0) > (SEV_RANK[prev.severity] || 0)) seen.set(key, f)
+-}
+-const deduped = [...seen.values()]
+-const blocking = deduped.filter(f => f.severity === 'critical' || f.severity === 'high')
+-log(`Review: ${allFindings.length} raw -> ${deduped.length} deduped, ${blocking.length} blocking`)
+-// [STALL-DETECT-01] Deterministic no-progress guard: identical blocking signature across rounds triggers escalation
+-const blocking_count = blocking.length
+-const sig = deduped.filter(f => /critical|high/i.test(f.severity || '')).map(f => (f.dimension || '?') + ':' + (f.severity || '?')).sort().join('|')
+-const prior = Array.isArray(a.priorSignatures) ? a.priorSignatures : []
+-const recent = [...prior, sig]
+-const stall = blocking_count > 0 && recent.length >= 2 && recent.slice(-2).every(s => s === sig)
+-phase('Verify')
+-pushLedger('phase_enter', { phase: 'Verify' })
+-const MAX_VERIFY = a.maxVerify || 10
+-const overflowFindings = blocking.length > MAX_VERIFY ? blocking.slice(MAX_VERIFY) : []
+-const cappedBlocking = blocking.slice(0, MAX_VERIFY)
+-let confirmedBlocking = cappedBlocking
+-if (cappedBlocking.length > 0) {
+-  const verdicts = await parallel(cappedBlocking.map(f => () =>
+-    agent(
+-      `Try to REFUTE this finding. Default is_real=false if you cannot concretely confirm it against ${DIFF}. Finding [${f.severity}/${f.dimension}]: ${f.description}. Fix: ${f.suggested_fix || '(none)'}.`,
+-      { label: `verify:${f.dimension}`, phase: 'Verify', model: VERIFY_MODEL, effort: 'high', schema: VERDICT_SCHEMA }
+-    ).then(v => ({ ...f, verdict: v }))))
+-  confirmedBlocking = verdicts.filter(Boolean).filter(f => f.verdict && f.verdict.is_real)
+-  log(`Verify: ${cappedBlocking.length} capped (${overflowFindings.length} overflow) -> ${confirmedBlocking.length} survived refutation`)
+-}
+-phase('Reflect')
+-pushLedger('phase_enter', { phase: 'Reflect' })
+-const ROUND = a.round || 1
+-const maxSev = deduped.reduce((m, f) => Math.max(m, SEV_RANK[f.severity] || 0), 0)
+-const ESCALATE_VERDICT = 'ESCALATE'
+-let verdict = confirmedBlocking.length === 0 ? 'ACCEPT' : (ROUND >= 2 ? ESCALATE_VERDICT : 'REVISE')
+-// [STALL-DETECT-01] Force escalation when blocking signature unchanged across 2+ rounds
+-if (stall) { verdict = ESCALATE_VERDICT }
+-
+-// [FAMILY-GATE-01] Cross-provider-family review gate. A panel that only ever ran reviewers
+-// from ONE provider family (e.g. Codex login down -> only anthropic-family critic/hack-detect
+-// ran) must not be allowed to self-certify ACCEPT -- downgrade to ESCALATE so the lead sees
+-// verification was partial. FAIL-SOFT: any error here falls through to the original verdict.
+-// A reviewer that FAILED still returns a non-null sentinel (e.g. the codex path returns
+-// `summary_for_lead="codex unavailable"` with empty findings on exit non-zero) -- that sentinel
+-// must NOT count toward family coverage, or a dead Codex silently satisfies the >=2-family bar.
+-let families = []
+-let family_coverage = null
+-if (FAMILY_GATE_ON) {
+-  try {
+-    families = [...new Set(rawReviewResults.map((r, i) => (r && !isUnavailableResult(r)) ? reviewerFamilies[i] : null).filter(Boolean))]
+-    if (families.length < 2 && verdict === 'ACCEPT') {
+-      family_coverage = `single:${families[0] || 'none'}`
+-      verdict = ESCALATE_VERDICT
+-      log(`family-gate: single-family panel (${family_coverage}) -- downgrading ACCEPT -> ESCALATE`)
+-      // TODO(family-gate): add zhipu (GLM) fallback reviewer here before downgrading. No
+-      // reviewer-spawn helper exists in this file beyond the reviewers[]/agent()/synthAgent()
+-      // wiring already built above -- wiring an automatic GLM reviewer spawn on gate-trip would
+-      // be new spawn infra, out of scope for this change.
+-    } else {
+-      family_coverage = families.length >= 2 ? 'multi' : (families.length === 1 ? `single:${families[0]}` : 'none')
+-    }
+-  } catch (e) {
+-    log(`family-gate: error computing family coverage, falling through to original verdict -- ${e && e.message}`)
+-    families = []
+-    family_coverage = null
+-  }
+-}
+-
+-// [F6] Quality scoring — structured rubric via JSON schema; only fires on ACCEPT or informational pass
+-// Score: diff_coherence(0-4) + test_coverage(0-3) + security_pass(0-3) + novelty_bonus(0-1) = max 10
+-const qualityResult = await agent(
+-  `Score the quality of this diff for task ${TASK_ID} using this rubric:\n` +
+-  `1. diff_coherence (0-4): Is the diff focused and minimal? 4=tight/no dead code, 0=sprawling/unrelated changes.\n` +
+-  `2. test_coverage (0-3): Evidence of tests for new logic? 3=full coverage, 0=none.\n` +
+-  `3. security_pass (0-3): No obvious security gaps (injection, missing auth, exposed secrets)? 3=clean, 0=critical gap.\n` +
+-  `4. novelty_bonus (0-1): Does the diff touch new file paths not previously seen? 1=yes, 0=no.\n` +
+-  `quality_score = min(10, diff_coherence + test_coverage + security_pass + novelty_bonus).\n` +
+-  `Read git diff ${BASE} to assess. Write a 1-sentence diff_summary.\n` +
+-  `Review findings context: ${confirmedBlocking.length} blocking, ${deduped.length} total findings.`,
+-  { label: 'quality-scorer', phase: 'Reflect', model: 'haiku', effort: 'low', schema: QUALITY_SCHEMA })
+-
+-const qualityScore = qualityResult ? qualityResult.quality_score : null
+-const diffSummary = qualityResult ? qualityResult.diff_summary : '(scoring unavailable)'
+-log(`Quality score: ${qualityScore}/10 — ${diffSummary}`)
+-
+-// [F6] Write scored entry to solutions-archive.yaml (append-safe via python3)
+-// Only write on ACCEPT; REVISE/ESCALATE entries have incomplete solutions — skip to avoid polluting archive
+-if (verdict === 'ACCEPT' && qualityScore !== null) {
+-  // MEM-WRITE-PATH-FIX-01: a bare relative path resolves inside the task's worktree
+-  // cwd, and solutions-archive.yaml is intentionally gitignored (local state, never
+-  // committed) -- so a worktree-local write is silently lost on worktree sweep.
+-  // Anchor to the shared main-repo root (git-common-dir, same .git for every worktree).
+-  // MEM-WRITE-PATH-FIX-01 round2: marker-check hardening. Ambient bash() cwd is
+-  // unverified (no platform contract found -- see build.md Fix round 2 finding #1);
+-  // if bash() ever ran from an unrelated git repo (e.g. plugin-cache dir), a bare
+-  // git-common-dir resolve would silently land in the WRONG repo's docs/leadv2.
+-  // Require the resolved root to actually contain docs/leadv2/ before trusting it;
+-  // otherwise fail safe to ambient pwd rather than writing into a foreign repo.
+-  const diffSummaryEsc = diffSummary.replace(/"/g, "'")
+-  // WORKFLOW-BASH-FIX-01: fully self-contained, already-escaped shell command built in JS
+-  // (unchanged escaping logic — R1). Independently re-resolves the archive root itself so it
+-  // does not depend on any shell state persisting from a prior instruction in this same
+-  // agent turn. Best-effort — must never block Reflect on failure.
+-  const diffSummaryShEsc = diffSummary.replace(/'/g, "'\\''")
+-  const semanticIndexCmd =
+-    `PLUGIN_SCRIPTS="\${CLAUDE_PLUGIN_ROOT:-}/scripts"; ` +
+-    `[ -f "$PLUGIN_SCRIPTS/leadv2-semantic-index.sh" ] || exit 0; ` +
+-    `text='${diffSummaryShEsc} ${TASK_CLASS}'; ` +
+-    `chash=$(printf '%s' "$text" | shasum -a 1 | awk '{print $1}'); ` +
+-    `_archive_root="$(${ROOT_RESOLVE_CMD})"; ` +
+-    `bash "$PLUGIN_SCRIPTS/leadv2-semantic-index.sh" solutions '${TASK_ID}' "" "$chash" "$text" "$(basename "$_archive_root")" >/dev/null 2>&1 || true`
+-  await agent(
+-    `First resolve the durable repo root by running this EXACT command via your Bash tool, ` +
+-    `verbatim (do not modify it):\n${ROOT_RESOLVE_CMD}\n` +
+-    `(this resolves the shared main-repo root even when cwd is a task worktree, but only trusts ` +
+-    `it if docs/leadv2 actually exists there — else falls back to pwd). ` +
+-    `Then append a new entry to <that_root>/docs/leadv2/solutions-archive.yaml. ` +
+-    `Create the file with an empty YAML list if it does not exist. ` +
+-    `Read the file first, append this entry to the list, then write the full file back:\n` +
+-    `  - task_id: "${TASK_ID}"\n` +
+-    `    task_class: "${TASK_CLASS}"\n` +
+-    `    score: ${qualityScore}\n` +
+-    `    diff_summary: "${diffSummaryEsc}"\n` +
+-    `    ts: "${TS || '<run: date -u +%Y-%m-%dT%H:%M:%SZ via Bash and use its trimmed stdout here>'}"\n` +
+-    `Use python3: import yaml; load existing or []; append entry; dump back. ` +
+-    `Then, best-effort (never fail this whole step if it errors — it is optional indexing, ` +
+-    `not required for the archive write above to count as done), run this EXACT command via ` +
+-    `Bash, verbatim (it is already fully constructed and shell-escaped, do not modify it):\n${semanticIndexCmd}\n` +
+-    `Return "ok".`,
+-    { label: 'archive-write', phase: 'Reflect', model: 'haiku', effort: 'low' })
+-}
+-
+-pushLedger('task_close', {
+-  verdict, blocking_count: confirmedBlocking.length, total_findings: deduped.length,
+-  quality_score: qualityScore,
+-})
+-// Move 2: ledger flush folded into this 'reflect' call, which runs UNCONDITIONALLY every
+-// round regardless of verdict — events must flush every round, not just on ACCEPT.
+-const ledgerFlushInstructions = ledgerEvents.length > 0
+-  ? `\n\nALSO append each of these ${ledgerEvents.length} JSON objects as its own line to the ` +
+-    `ledger, one at a time and in order, via this exact command per event (substitute ` +
+-    `<event-json> with the object, verbatim — it is already valid JSON, do not reformat or ` +
+-    `re-derive it):\n` +
+-    `_EMIT="${projRoot}/.claude/scripts/lv2-ledger-emit.py"; [ -f "$_EMIT" ] || _EMIT="$HOME/.claude/scripts/lv2-ledger-emit.py"; python3 "$_EMIT" '<event-json>' 2>/dev/null || true\n` +
+-    `Events (in order): ${JSON.stringify(ledgerEvents)}\n`
+-  : ''
+-await agent(
+-  `Append one line to docs/handoff/${TASK_ID}/review-signature.md (create if absent): "${TASK_ID} | verdict=${verdict} | blocking=${confirmedBlocking.length} | dims=${[...new Set(deduped.map(f => f.dimension))].join(',')} | quality=${qualityScore !== null ? qualityScore : 'n/a'}". One Bash echo, no analysis.` +
+-  ledgerFlushInstructions +
+-  `Return "ok" once the review-signature append${ledgerEvents.length > 0 ? ' and the ledger-flush commands have' : ' has'} completed.`,
+-  { label: 'reflect', phase: 'Reflect', model: 'haiku', effort: 'low' })
+-return {
+-  task_id: TASK_ID, verdict, round: ROUND, blocking_count: confirmedBlocking.length,
+-  blocking: confirmedBlocking.map(f => ({ severity: f.severity, dimension: f.dimension, file: f.file, description: f.description })),
+-  total_findings: deduped.length,
+-  max_severity: ['nit', 'low', 'medium', 'high', 'critical'][maxSev],
+-  quality_score: qualityScore,
+-  diff_summary: diffSummary,
+-  followups: deduped.filter(f => !(f.severity === 'critical' || f.severity === 'high')),
+-  overflow_findings: overflowFindings.map(f => ({ ...f, confirmed: false })),
+-  signature: sig,
+-  stall,
+-  ...(stall ? { stall_reason: 'identical blocking signature 2 rounds' } : {}),
+-  // [FAMILY-GATE-01] auditability -- omitted entirely when LEADV2_REVIEW_FAMILY_GATE=0
+-  ...(FAMILY_GATE_ON ? { families, family_coverage } : {}),
+-}

@@ -1,0 +1,19 @@
+- 2026-08-12T19:52:20Z [decision] lane_placement_pinned task=629ee3e8 mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-RELIABILITY-02 key=PLUGIN-RELIABILITY-02
+- 2026-08-12T19:52:20Z [decision] dispatch_task_bound task=629ee3e8 founder_task=PLUGIN-RELIABILITY-02-TESTGATE
+- 2026-08-12T19:52:20Z [decision] dispatch_classified task=629ee3e8 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T19:52:22Z [decision] phase_precondition_warn task=629ee3e8 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T19:52:22Z [decision] architect_prepass task=629ee3e8 status=disabled reason=kill_switch
+- 2026-08-12T19:52:23Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T19:52:23Z [decision] dispatchable_arms_read_failed task=629ee3e8 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T19:52:23Z [decision] routing_config_degraded task=629ee3e8 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T19:52:23Z [decision] kimi_skipped reason=writes_over task=629ee3e8 chars=1430 writes=4 prepass=0
+- 2026-08-12T19:52:24Z [decision] candidate_chain task=629ee3e8 arms=glm,codex,sonnet
+- 2026-08-12T19:52:24Z [decision] spawn_failed by=router model=glm task=629ee3e8 rc=126 reason=launcher_nonzero_exit
+- 2026-08-12T19:52:44Z [decision] worker_spawned by=router model=codex task=629ee3e8 attempt=629ee3e8-1786564338-71913 handle=task-msqiach4-vxn1so
+- 2026-08-12T19:52:44Z [decision] mission-version task=PLUGIN-RELIABILITY-02-TESTGATE sig=629ee3e8 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T19:53:07Z [decision] product_close task=629ee3e8 status=spawned author=codex
+- 2026-08-12T19:53:07Z [decision] route_resolved by=router router=v1 model=codex task=629ee3e8 rule=none reason=no_routing_yaml
+- 2026-08-12T19:53:07Z [decision] lane_worktree_left task=629ee3e8 founder_task=PLUGIN-RELIABILITY-02-TESTGATE path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-RELIABILITY-02
+- 2026-08-12T20:07:21Z [decision] e2e_gate task=629ee3e8 status=ran verdict=fail rc=1
+- 2026-08-12T20:07:23Z [decision] dispatch_terminal task=629ee3e8 terminal=dead cause=e2e_regression
+- 2026-08-12T20:07:23Z [decision] dispatch_terminal_dedup task=629ee3e8 attempted=dead reason=terminal_already_recorded

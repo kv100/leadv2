@@ -1,0 +1,436 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+index 83f21f3..653e39e 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -1599,7 +1599,108 @@ elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_lv2_e2e_root
+   _dl_note refused no_e2e_entrypoint "repo=${repo}"
+   exit 4
+ else
+-  { printf 'e2e-root: %s\n' "${_lv2_e2e_root}"; ( cd "${_lv2_e2e_root}" && bash -c "${e2e_cmd} --scope changed" ); } > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
++  # E2E-GATE-ARCH-01: serialize the e2e gate with a GLOBAL flock so only one
++  # gate runs at a time across all lanes. Without this, concurrent gate
++  # invocations share temp dirs and working-tree state → flaky e2e_regression
++  # deaths (SD-E2E-GATE-LOAD-FLAKE-01: dispatch-051b9490, -54aaa0bf 2026-08-12).
++  # Lock under ~/.claude/cache/, bounded timeout.  A gate must never run
++  # unlocked: contention is an infrastructure condition, not a regression.
++  _lv2_e2e_lock="${LEADV2_E2E_GATE_LOCK:-${HOME}/.claude/cache/leadv2-e2e-gate.lock}"
++  _lv2_e2e_lock_timeout="${LEADV2_E2E_GATE_LOCK_TIMEOUT:-300}"
++  [[ "${_lv2_e2e_lock_timeout}" =~ ^[0-9]+$ ]] || _lv2_e2e_lock_timeout=300
++  _lv2_e2e_lock_dir="${_lv2_e2e_lock}.d"
++  _lv2_e2e_lock_kind=""
++
++  # Returns: 0 acquired; 1 held; 2 lock infrastructure fault.  mkdir is the
++  # portable fallback for stock macOS, which does not ship flock.  Its pid
++  # marker lets a later caller recover a lock left by a crashed owner.
++  _lv2_e2e_mkdir_lock() { # <wait-seconds>
++    local _wait="$1" _started="${SECONDS}" _pid=""
++    while :; do
++      if mkdir "${_lv2_e2e_lock_dir}" 2>/dev/null; then
++        if ! printf '%s\n' "${BASHPID}" > "${_lv2_e2e_lock_dir}/pid" 2>/dev/null; then
++          rmdir "${_lv2_e2e_lock_dir}" 2>/dev/null || true
++          return 2
++        fi
++        _lv2_e2e_lock_kind="mkdir"
++        return 0
++      fi
++      [[ -d "${_lv2_e2e_lock_dir}" ]] || return 2
++      if [[ -f "${_lv2_e2e_lock_dir}/pid" ]]; then
++        IFS= read -r _pid < "${_lv2_e2e_lock_dir}/pid" || _pid=""
++        if [[ "${_pid}" =~ ^[0-9]+$ ]] && ! kill -0 "${_pid}" 2>/dev/null; then
++          echo "e2e_gate: removing stale portable lock pid=${_pid}"
++          rm -f -- "${_lv2_e2e_lock_dir}/pid" 2>/dev/null || return 2
++          rmdir "${_lv2_e2e_lock_dir}" 2>/dev/null || true
++          continue
++        fi
++      fi
++      (( SECONDS - _started >= _wait )) && return 1
++      sleep 1
++    done
++  }
++  _lv2_e2e_release_lock() {
++    if [[ "${_lv2_e2e_lock_kind}" == "mkdir" ]]; then
++      rm -f -- "${_lv2_e2e_lock_dir}/pid" 2>/dev/null || true
++      rmdir "${_lv2_e2e_lock_dir}" 2>/dev/null || true
++    fi
++  }
++  _lv2_e2e_acquire_lock() { # <wait-seconds>
++    local _wait="$1"
++    _lv2_e2e_lock_kind=""
++    if command -v flock >/dev/null 2>&1; then
++      exec 9>"${_lv2_e2e_lock}" || return 2
++      flock -x -w "${_wait}" 9 && { _lv2_e2e_lock_kind="flock"; return 0; }
++      return 1
++    fi
++    _lv2_e2e_mkdir_lock "${_wait}"
++  }
++  _lv2_e2e_run() {
++    printf 'e2e-root: %s\n' "${_lv2_e2e_root}"
++    ( cd "${_lv2_e2e_root}" && bash -c "${e2e_cmd} --scope changed" )
++  }
++  _lv2_e2e_infra() { # <detail>
++    local _detail="$1"
++    rm -f "${HANDOFF}/e2e-gate-passed.flag"
++    printf 'status: blocked\nreason: e2e_infra\ndetail: %s\n' "${_detail}" > "${HANDOFF}/e2e-gate.md" 2>/dev/null || true
++    emit decision "e2e_gate task=${TASK} status=blocked reason=e2e_infra detail=${_detail}"
++    _dl_note parked e2e_infra "detail=${_detail}"
++    exit 4
++  }
++
++  # Do not let a failed log or lock-file redirect turn into a suite failure.
++  # The journal line remains available even if the handoff filesystem is bad.
++  if ! mkdir -p "$(dirname "${_lv2_e2e_lock}")" 2>/dev/null; then
++    _lv2_e2e_infra lock_parent_create_failed
++  elif ! : > "${HANDOFF}/e2e-gate.log" 2>/dev/null; then
++    _lv2_e2e_infra e2e_log_create_failed
++  fi
++  if ! command -v flock >/dev/null 2>&1; then
++    echo "e2e_gate: flock unavailable; using portable mkdir lock fallback" >> "${HANDOFF}/e2e-gate.log"
++    emit decision "e2e_gate task=${TASK} status=running lock=mkdir_fallback reason=no_flock"
++  fi
++  if _lv2_e2e_acquire_lock "${_lv2_e2e_lock_timeout}" >> "${HANDOFF}/e2e-gate.log" 2>&1; then
++    _lv2_e2e_run >> "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
++    _lv2_e2e_release_lock
++  else
++    _lv2_e2e_lock_rc=$?
++    if [[ ${_lv2_e2e_lock_rc} -eq 2 ]]; then
++      _lv2_e2e_infra lock_acquire_failed
++    fi
++    # A bounded wait has elapsed.  Park/requeue once, then make only an
++    # immediate second acquisition after jitter: do not double a 300s wait.
++    echo "e2e_gate: e2e_gate_lock_timeout attempt=1; parking and retrying after jitter" >> "${HANDOFF}/e2e-gate.log"
++    emit decision "e2e_gate task=${TASK} status=parked reason=e2e_gate_lock_timeout attempt=1 retry=after_jitter"
++    sleep "${LEADV2_E2E_GATE_LOCK_JITTER:-1}"
++    if _lv2_e2e_acquire_lock 0 >> "${HANDOFF}/e2e-gate.log" 2>&1; then
++      _lv2_e2e_run >> "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
++      _lv2_e2e_release_lock
++    else
++      _lv2_e2e_lock_rc=$?
++      [[ ${_lv2_e2e_lock_rc} -eq 2 ]] && _lv2_e2e_infra lock_acquire_failed
++      _lv2_e2e_infra e2e_gate_lock_timeout
++    fi
++  fi
+   # GATE-FOREIGN-FAILURE-01: WRITES_CSV present + ownership enabled means the
+   # passed sentinel is stamped as scoped to the lane's own write set (the
+   # apparatus that can tell "my regression" from "someone else's unfinished
+diff --git a/plugins/leadv2/scripts/tests/test-e2e-gate-arch-01.sh b/plugins/leadv2/scripts/tests/test-e2e-gate-arch-01.sh
+new file mode 100755
+index 0000000..76f9e8d
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-e2e-gate-arch-01.sh
+@@ -0,0 +1,316 @@
++#!/usr/bin/env bash
++# E2E-GATE-ARCH-01 — behavioural proof that:
++#   (a) the e2e gate runs suites against the LANE WORKTREE (not the main
++#       checkout): a lane whose worktree fixes a suite that is RED on main
++#       passes the gate, proving lane-tree testing.
++#   (b) two concurrent gate invocations SERIALIZE via flock: their suite
++#       execution windows do not overlap.
++#
++# Mutation gate (red/green): each case must FAIL when the fix is reverted.
++#   (a) revert: force _lv2_e2e_root to ROOT (main checkout) — the red suite
++#       on main kills the lane → exit 8.
++#   (b) revert: remove the lock wrapper — two suites overlap in time →
++#       non-serialized windows detected.
++#   (c) revert the no-flock mkdir fallback — a stock-macOS-shaped PATH cannot
++#       serialize/run the gate.
++#   (d) revert the timeout parking path — a held lock runs the suite unlocked.
++#   (e) revert infra classification — an unopenable lock parent exits 8 as a
++#       false e2e_regression rather than blocked e2e_infra.
++#
++# Run normally for green. To gate against a reverted script:
++#   LEADV2_PC_SCRIPT=/path/to/reverted-product-close.sh bash "$0"
++#
++# Run: bash plugins/leadv2/scripts/tests/test-e2e-gate-arch-01.sh
++# Exit 0 = all pass; non-zero = failures found.
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
++source "${SCRIPTS_ROOT}/leadv2-temp.sh"
++
++PRODUCT_CLOSE_SH="${LEADV2_PC_SCRIPT:-${SCRIPTS_ROOT}/leadv2-dispatch-product-close.sh}"
++
++PASS=0; FAIL=0; ERRORS=()
++log()  { printf -- '[TEST] %s\n' "$*"; }
++pass() { PASS=$((PASS + 1)); log "PASS: $1"; }
++fail() { FAIL=$((FAIL + 1)); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
++
++# ── fixture: main repo + lane worktree ───────────────────────────────────────
++# Suite test-fix-A.sh: passes iff file A.txt contains "fixed".
++# On main: A.txt = "broken" (suite RED).
++# In worktree: A.txt = "fixed" (suite GREEN).
++# If the gate tests main → exit 8 (regression). If it tests worktree → pass.
++build_lane_fixture() { # <main_root> <wt_root>
++  local main="$1" wt="$2"
++  mkdir -p "${main}/plugins/leadv2/scripts/tests" "${main}/tests"
++  git -C "${main}" init -q
++  git -C "${main}" config user.email test@test.local
++  git -C "${main}" config user.name test
++
++  # A.txt is BROKEN on main
++  printf 'broken\n' > "${main}/A.txt"
++
++  # Suite that checks A.txt content
++  cat > "${main}/plugins/leadv2/scripts/tests/test-fix-A.sh" <<'EOF'
++#!/usr/bin/env bash
++set -uo pipefail
++content="$(cat A.txt 2>/dev/null || true)"
++if [[ "${content}" == "fixed" ]]; then
++  exit 0
++else
++  echo "FAIL: A.txt is '${content}', expected 'fixed'" >&2
++  exit 1
++fi
++EOF
++  chmod +x "${main}/plugins/leadv2/scripts/tests/test-fix-A.sh"
++
++  # run-all.sh entrypoint
++  cat > "${main}/tests/run-all.sh" <<'RUNALL'
++#!/usr/bin/env bash
++set -uo pipefail
++HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++ROOT="$(cd "${HERE}/.." && pwd)"
++FAIL=0
++for suite in "${ROOT}/plugins/leadv2/scripts/tests/"test-*.sh; do
++  [[ -f "$suite" ]] || continue
++  printf '[RUN] %s\n' "$suite"
++  if bash "$suite"; then
++    printf '[PASS] %s\n' "$suite"
++  else
++    FAIL=$((FAIL+1))
++    printf '[FAIL] %s\n' "$suite"
++  fi
++done
++if [[ $FAIL -gt 0 ]]; then
++  printf '  Failures (blocking):\n'
++  for s in "${ROOT}/plugins/leadv2/scripts/tests/"test-*.sh; do
++    [[ -f "$s" ]] || continue
++    rel="${s#"${ROOT}/"}"
++    if ! bash "$s" >/dev/null 2>&1; then
++      printf '    - %s\n' "$rel"
++    fi
++  done
++fi
++printf 'run-all: %d failed\n' "$FAIL"
++(( FAIL == 0 ))
++RUNALL
++  chmod +x "${main}/tests/run-all.sh"
++
++  git -C "${main}" add -A
++  git -C "${main}" commit -q -m "fixture: main with broken A.txt"
++
++  # Create lane worktree with the FIX
++  git -C "${main}" worktree add -q "${wt}" HEAD 2>/dev/null
++  printf 'fixed\n' > "${wt}/A.txt"
++}
++
++# ── gate runner ──────────────────────────────────────────────────────────────
++run_gate() { # <root> <worktree> <sig8> <writes_csv> <lock_file> <home_dir> [timeout] [path] -> RC, MD, FLAG, LOG
++  local root="$1" wt="$2" sig8="$3" writes="$4" lock="$5" home_dir="$6"
++  local timeout="${7:-300}" path_override="${8:-${PATH}}"
++  local handoff="${root}/docs/handoff/dispatch-${sig8}"
++  rm -rf "${handoff}"
++  mkdir -p "${home_dir}/.claude/cache"
++  RC=0; GATE_PROCESS_OUT=""
++  LEADV2_E2E_CMD="bash ${wt}/tests/run-all.sh" \
++  LEADV2_E2E_OWNERSHIP="1" \
++  LEADV2_DISPATCH_LANE_WRITES="${writes}" \
++  LEADV2_LANE_WORK_ROOT="${wt}" \
++  LEADV2_E2E_GATE_LOCK="${lock}" \
++  LEADV2_E2E_GATE_LOCK_TIMEOUT="${timeout}" \
++  LEADV2_E2E_GATE_LOCK_JITTER="0" \
++  LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
++  LEADV2_JOURNAL_BIN="${TEST_JOURNAL_BIN:-/bin/true}" \
++    env HOME="${home_dir}" PATH="${path_override}" \
++    bash "$PRODUCT_CLOSE_SH" "${root}" "${sig8}" codex "" 1 0 "" >"${home_dir}/gate.out" 2>&1 || RC=$?
++  GATE_PROCESS_OUT="$(cat "${home_dir}/gate.out" 2>/dev/null || true)"
++  MD="$(cat "${handoff}/e2e-gate.md" 2>/dev/null || true)"
++  FLAG="$(cat "${handoff}/e2e-gate-passed.flag" 2>/dev/null || true)"
++  GATE_LOG="$(cat "${handoff}/e2e-gate.log" 2>/dev/null || true)"
++}
++
++TMP="$(lv2_mktemp_dir "e2e-gate-arch-01")"; trap 'rm -rf "$TMP"' EXIT
++TEST_JOURNAL_CAPTURE="${TMP}/journal.log"
++TEST_JOURNAL_BIN="${TMP}/journal.sh"
++printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\n' "${TEST_JOURNAL_CAPTURE}" > "${TEST_JOURNAL_BIN}"
++chmod +x "${TEST_JOURNAL_BIN}"
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (a): lane worktree fixes a suite that is RED on main → gate PASSES
++# ════════════════════════════════════════════════════════════════════════════
++CA="${TMP}/case-a"; CA_WT="${CA}-wt"
++mkdir -p "${CA}"
++build_lane_fixture "${CA}" "${CA_WT}"
++lv2_assert_scratch_repo "${CA}"
++
++run_gate "${CA}" "${CA_WT}" "ea00sig1" "A.txt" "${TMP}/case-a.lock" "${TMP}/home-a"
++
++if [[ "${RC}" -eq 0 ]] \
++  && grep -q "^e2e-root: ${CA_WT}" <<<"${GATE_LOG}" \
++  && grep -q 'bypassed: false' <<<"${FLAG}"; then
++  pass "(a) lane-tree testing: worktree fix passes gate (rc=0, e2e-root=worktree)"
++else
++  fail "(a) lane-tree testing: expected rc=0 + e2e-root=${CA_WT} + pass, got rc=${RC} log_first=<$(head -1 <<<"${GATE_LOG}")> flag=<${FLAG}> md=<${MD}>"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (b): two concurrent gate invocations SERIALIZE via flock
++# ════════════════════════════════════════════════════════════════════════════
++# Strategy: two separate repos built with the proven build_lane_fixture, each
++# with its own worktree. Both share the SAME lock file. LEADV2_E2E_CMD points
++# to a timing script that writes start/end timestamps to a shared log and
++# sleeps 1s. If serialized via flock, the execution windows do not overlap.
++# If the flock is removed, the 1s sleep guarantees overlap.
++
++TIMING_LOG="${TMP}/timing.log"
++: > "${TIMING_LOG}"
++SHARED_LOCK="${TMP}/shared-e2e-gate.lock"
++
++CB1="${TMP}/case-b1"; CB1_WT="${CB1}-wt"
++CB2="${TMP}/case-b2"; CB2_WT="${CB2}-wt"
++mkdir -p "${CB1}" "${CB2}"
++build_lane_fixture "${CB1}" "${CB1_WT}"
++build_lane_fixture "${CB2}" "${CB2_WT}"
++lv2_assert_scratch_repo "${CB1}"
++lv2_assert_scratch_repo "${CB2}"
++
++HOME_B1="${TMP}/home-b1"; HOME_B2="${TMP}/home-b2"
++mkdir -p "${HOME_B1}/.claude/cache" "${HOME_B2}/.claude/cache"
++
++# Timing script that writes timestamps and sleeps (widens the execution window)
++TIMING_SCRIPT="${TMP}/timing-run-all.sh"
++printf '#!/usr/bin/env bash\nTL=$(python3 -c '\''import time;print(int(time.time()*1000))'\'')\necho "START pid=$$ ts=${TL}" >> "%s"\nsleep 1\nTR=$(python3 -c '\''import time;print(int(time.time()*1000))'\'')\necho "END pid=$$ ts=${TR}" >> "%s"\nexit 0\n' \
++  "${TIMING_LOG}" "${TIMING_LOG}" > "${TIMING_SCRIPT}"
++chmod +x "${TIMING_SCRIPT}"
++
++# Run two gates in parallel with the SAME lock file
++( LEADV2_E2E_CMD="bash ${TIMING_SCRIPT}" \
++  LEADV2_E2E_OWNERSHIP="1" \
++  LEADV2_DISPATCH_LANE_WRITES="A.txt" \
++  LEADV2_LANE_WORK_ROOT="${CB1_WT}" \
++  LEADV2_E2E_GATE_LOCK="${SHARED_LOCK}" \
++  LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
++  LEADV2_JOURNAL_BIN=/bin/true \
++    env HOME="${HOME_B1}" \
++    bash "$PRODUCT_CLOSE_SH" "${CB1}" "eb10001" codex "" 1 0 "" >"${TMP}/gate1.out" 2>&1 ) &
++PID1=$!
++
++( LEADV2_E2E_CMD="bash ${TIMING_SCRIPT}" \
++  LEADV2_E2E_OWNERSHIP="1" \
++  LEADV2_DISPATCH_LANE_WRITES="A.txt" \
++  LEADV2_LANE_WORK_ROOT="${CB2_WT}" \
++  LEADV2_E2E_GATE_LOCK="${SHARED_LOCK}" \
++  LEADV2_DISPATCH_TERMINAL_LEDGER=0 \
++  LEADV2_JOURNAL_BIN=/bin/true \
++    env HOME="${HOME_B2}" \
++    bash "$PRODUCT_CLOSE_SH" "${CB2}" "eb20002" codex "" 1 0 "" >"${TMP}/gate2.out" 2>&1 ) &
++PID2=$!
++
++wait "${PID1}" 2>/dev/null || true
++wait "${PID2}" 2>/dev/null || true
++
++# Parse timing log: extract START/END timestamps and verify no overlap
++# Expected serialized order: START1, END1, START2, END2 (or vice-versa)
++TIMING_CONTENT="$(cat "${TIMING_LOG}")"
++log "timing log:\n${TIMING_CONTENT}"
++
++# Extract all timestamps in order
++START_TS=(); END_TS=()
++while IFS= read -r line; do
++  [[ -z "$line" ]] && continue
++  ts="$(sed -n 's/.*ts=\([0-9]*\).*/\1/p' <<<"$line")"
++  if [[ "$line" == START* ]]; then
++    START_TS+=("$ts")
++  elif [[ "$line" == END* ]]; then
++    END_TS+=("$ts")
++  fi
++done <<<"${TIMING_CONTENT}"
++
++if [[ ${#START_TS[@]} -ge 2 && ${#END_TS[@]} -ge 2 ]]; then
++  # Sort the two intervals by start time
++  if [[ ${START_TS[0]} -le ${START_TS[1]} ]]; then
++    S1=${START_TS[0]}; E1=${END_TS[0]}; S2=${START_TS[1]}; E2=${END_TS[1]}
++  else
++    S1=${START_TS[1]}; E1=${END_TS[1]}; S2=${START_TS[0]}; E2=${END_TS[0]}
++  fi
++  # Serialized iff the second start >= first end
++  if [[ ${S2} -ge ${E1} ]]; then
++    pass "(b) flock serialization: intervals [${S1},${E1}] and [${S2},${E2}] do not overlap"
++  else
++    fail "(b) flock serialization: intervals OVERLAP [${S1},${E1}] vs [${S2},${E2}] (gap=$((S2 - E1))ms)"
++  fi
++else
++  fail "(b) flock serialization: expected 2 START + 2 END lines, got ${#START_TS[@]} starts + ${#END_TS[@]} ends in: ${TIMING_CONTENT}"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (c): no flock (stock macOS) uses the portable mkdir lock fallback
++# ════════════════════════════════════════════════════════════════════════════
++# Construct a complete command PATH deliberately omitting flock, rather than
++# assuming where a developer's package manager happened to install it.
++NOFLOCK_BIN="${TMP}/bin-no-flock"
++mkdir -p "${NOFLOCK_BIN}"
++for name in env bash dirname mkdir rm date git sed awk head sort stat ps sleep cat grep cut tr wc find basename ln touch rmdir mv readlink uname python3 mktemp; do
++  bin="$(command -v "${name}" 2>/dev/null || true)"
++  [[ -n "${bin}" && "${name}" != "flock" ]] || continue
++  ln -s "${bin}" "${NOFLOCK_BIN}/${name}" 2>/dev/null || true
++done
++CC="${TMP}/case-c"; CC_WT="${CC}-wt"
++mkdir -p "${CC}"
++build_lane_fixture "${CC}" "${CC_WT}"
++lv2_assert_scratch_repo "${CC}"
++run_gate "${CC}" "${CC_WT}" "ec30001" "A.txt" "${TMP}/case-c.lock" "${TMP}/home-c" 2 "${NOFLOCK_BIN}"
++if [[ "${RC}" -eq 0 ]] \
++  && grep -q 'flock unavailable; using portable mkdir lock fallback' <<<"${GATE_LOG}" \
++  && [[ ! -d "${TMP}/case-c.lock.d" ]]; then
++  pass "(c) no-flock fallback: portable mkdir lock runs and releases gate (rc=0)"
++else
++  fail "(c) no-flock fallback: expected rc=0 + fallback log + released lock, got rc=${RC} log=<${GATE_LOG}> out=<${GATE_PROCESS_OUT}>"
++fi
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (d): a held lock is parked then classified as infra, never run unlocked
++# ════════════════════════════════════════════════════════════════════════════
++CD="${TMP}/case-d"; CD_WT="${CD}-wt"; CD_LOCK="${TMP}/case-d.lock"
++mkdir -p "${CD}" "${CD_LOCK}.d"
++printf '%s\n' "$$" > "${CD_LOCK}.d/pid"
++build_lane_fixture "${CD}" "${CD_WT}"
++lv2_assert_scratch_repo "${CD}"
++: > "${TEST_JOURNAL_CAPTURE}"
++run_gate "${CD}" "${CD_WT}" "ed40001" "A.txt" "${CD_LOCK}" "${TMP}/home-d" 1 "${NOFLOCK_BIN}"
++if [[ "${RC}" -eq 4 ]] \
++  && grep -q 'reason: e2e_infra' <<<"${MD}" \
++  && grep -q 'detail: e2e_gate_lock_timeout' <<<"${MD}" \
++  && grep -q 'e2e_gate_lock_timeout attempt=1' <<<"${GATE_LOG}" \
++  && grep -q 'status=parked reason=e2e_gate_lock_timeout' "${TEST_JOURNAL_CAPTURE}"; then
++  pass "(d) lock timeout: parked/retried once then blocked as e2e_infra (rc=4)"
++else
++  fail "(d) lock timeout: expected rc=4 + parked journal + e2e_infra, got rc=${RC} md=<${MD}> log=<${GATE_LOG}> journal=<$(cat "${TEST_JOURNAL_CAPTURE}" 2>/dev/null)> out=<${GATE_PROCESS_OUT}>"
++fi
++rm -f "${CD_LOCK}.d/pid"; rmdir "${CD_LOCK}.d" 2>/dev/null || true
++
++# ════════════════════════════════════════════════════════════════════════════
++# Case (e): a lock-parent/redirect fault is infra, never e2e_regression/dead
++# ════════════════════════════════════════════════════════════════════════════
++CE="${TMP}/case-e"; CE_WT="${CE}-wt"; CE_PARENT="${TMP}/not-a-lock-dir"
++mkdir -p "${CE}"
++: > "${CE_PARENT}"
++build_lane_fixture "${CE}" "${CE_WT}"
++lv2_assert_scratch_repo "${CE}"
++: > "${TEST_JOURNAL_CAPTURE}"
++run_gate "${CE}" "${CE_WT}" "ee50001" "A.txt" "${CE_PARENT}/gate.lock" "${TMP}/home-e" 1 "${NOFLOCK_BIN}"
++if [[ "${RC}" -eq 4 ]] \
++  && grep -q 'reason: e2e_infra' <<<"${MD}" \
++  && grep -q 'detail: lock_parent_create_failed' <<<"${MD}" \
++  && grep -q 'status=blocked reason=e2e_infra detail=lock_parent_create_failed' "${TEST_JOURNAL_CAPTURE}"; then
++  pass "(e) lock infra fault: blocked as e2e_infra, not false regression (rc=4)"
++else
++  fail "(e) lock infra fault: expected rc=4 + e2e_infra journal, got rc=${RC} md=<${MD}> journal=<$(cat "${TEST_JOURNAL_CAPTURE}" 2>/dev/null)> out=<${GATE_PROCESS_OUT}>"
++fi
++
++# ── summary ─────────────────────────────────────────────────────────────────
++printf -- '\n[TEST] %d passed, %d failed\n' "$PASS" "$FAIL"
++if [[ "$FAIL" -gt 0 ]]; then
++  printf '%s\n' "${ERRORS[@]}"
++  exit 1
++fi

@@ -1,0 +1,8 @@
+- 2026-08-02T11:33:26Z [decision] dispatch_task_bound task=e665fb62 founder_task=w1a-nosspawn-probe
+- 2026-08-02T11:33:26Z [decision] dispatch_classified task=e665fb62 class=product reason=conservative_default kind=standard
+- 2026-08-02T11:33:26Z [decision] architect_prepass task=e665fb62 status=failed reason=failed_rc_1 rc=1
+- 2026-08-02T11:33:27Z [decision] architect_prepass task=e665fb62 status=retrying attempt=1/2 reason=failed_rc_1
+- 2026-08-02T11:33:27Z [decision] architect_prepass task=e665fb62 status=failed reason=failed_rc_1 rc=1
+- 2026-08-02T11:33:27Z [decision] architect_prepass task=e665fb62 status=retrying attempt=2/2 reason=failed_rc_1
+- 2026-08-02T11:33:27Z [decision] architect_prepass task=e665fb62 status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-02T11:33:28Z [decision] dispatch_terminal task=e665fb62 terminal=parked cause=no_design_after_2_attempts

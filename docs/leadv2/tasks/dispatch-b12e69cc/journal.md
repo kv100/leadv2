@@ -1,0 +1,14 @@
+- 2026-08-04T16:43:41Z [decision] dispatch_classified task=b12e69cc class=product reason=conservative_default kind=unknown
+- 2026-08-04T16:47:30Z [decision] architect_prepass task=b12e69cc status=ran artifact=docs/handoff/dispatch-b12e69cc/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-b12e69cc-architect/architect.full.md
+- 2026-08-04T16:47:31Z [decision] lane_writes task=b12e69cc source=prepass writes=plugins/leadv2/scripts/leadv2-status-surface.sh,plugins/leadv2/scripts/leadv2-status-surface.5s.sh,tests/test-status-surface-single-lead.sh,tests/test-status-surface-bash32.sh,tests/test-status-surface-fast-names.sh
+- 2026-08-04T16:47:31Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T16:47:31Z [decision] kimi_skipped reason=chars_over task=b12e69cc chars=22640 writes=0 prepass=1
+- 2026-08-04T16:47:31Z [decision] candidate_chain task=b12e69cc arms=glm,codex,sonnet
+- 2026-08-04T16:47:32Z [decision] worker_spawned by=router model=glm task=b12e69cc attempt=b12e69cc-1785861820-7071 handle=260804-194732-b12e69cc-2639
+- 2026-08-04T16:47:32Z [decision] mission-version task=- sig=b12e69cc rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-04T16:47:32Z [decision] product_close task=b12e69cc status=spawned author=glm
+- 2026-08-04T16:47:32Z [decision] route_resolved by=router router=v1 model=glm task=b12e69cc rule=none reason=no_routing_yaml
+- 2026-08-04T16:47:33Z [decision] lane_worktree_left task=b12e69cc founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/b12e69cc
+- 2026-08-04T16:54:40Z [decision] e2e_gate task=b12e69cc status=ran verdict=fail rc=1
+- 2026-08-04T16:54:41Z [decision] dispatch_terminal task=b12e69cc terminal=dead cause=e2e_regression
+- 2026-08-04T16:54:42Z [decision] dispatch_terminal_dedup task=b12e69cc attempted=dead reason=terminal_already_recorded

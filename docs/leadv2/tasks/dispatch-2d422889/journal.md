@@ -1,0 +1,17 @@
+- 2026-08-12T12:22:11Z [decision] dispatch_task_bound task=2d422889 founder_task=E2E-GATE-RESIDUE-01
+- 2026-08-12T12:22:11Z [decision] dispatch_classified task=2d422889 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T12:22:19Z [decision] phase_precondition_warn task=2d422889 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T12:22:19Z [decision] architect_prepass task=2d422889 status=disabled reason=kill_switch
+- 2026-08-12T12:22:20Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T12:22:20Z [decision] dispatchable_arms_read_failed task=2d422889 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T12:22:20Z [decision] routing_config_degraded task=2d422889 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T12:22:21Z [decision] kimi_skipped reason=writes_over task=2d422889 chars=1905 writes=6 prepass=0
+- 2026-08-12T12:22:21Z [decision] candidate_chain task=2d422889 arms=glm,codex,sonnet
+- 2026-08-12T12:22:23Z [decision] worker_spawned by=router model=glm task=2d422889 attempt=2d422889-1786537326-14147 handle=260812-152223-E2E-GATE-RESIDUE-01-7db9
+- 2026-08-12T12:22:24Z [decision] mission-version task=E2E-GATE-RESIDUE-01 sig=2d422889 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T12:22:51Z [decision] product_close task=2d422889 status=spawned author=glm
+- 2026-08-12T12:22:51Z [decision] route_resolved by=router router=v1 model=glm task=2d422889 rule=none reason=no_routing_yaml
+- 2026-08-12T12:22:51Z [decision] lane_worktree_left task=2d422889 founder_task=E2E-GATE-RESIDUE-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-RESIDUE-01
+- 2026-08-12T12:59:05Z [decision] e2e_gate task=2d422889 status=ran verdict=fail rc=1
+- 2026-08-12T12:59:08Z [decision] dispatch_terminal task=2d422889 terminal=dead cause=e2e_regression
+- 2026-08-12T12:59:08Z [decision] dispatch_terminal_dedup task=2d422889 attempted=dead reason=terminal_already_recorded

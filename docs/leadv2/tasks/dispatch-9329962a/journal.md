@@ -1,0 +1,2 @@
+- 2026-08-01T14:55:53Z [decision] dispatch_task_bound task=9329962a founder_task=R4-PROBE-PRE
+- 2026-08-01T14:55:53Z [decision] dispatch_classified task=9329962a class=product reason=conservative_default kind=product

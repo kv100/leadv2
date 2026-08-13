@@ -1,0 +1,8 @@
+- 2026-08-07T01:27:46Z [decision] dispatch_classified task=75d151fe class=product reason=conservative_default kind=unknown
+- 2026-08-07T01:27:47Z [decision] phase_precondition_warn task=75d151fe class=Standard missing=gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-07T01:32:17Z [decision] architect_prepass task=75d151fe status=failed reason=failed_rc_1 rc=1
+- 2026-08-07T01:32:17Z [decision] architect_prepass task=75d151fe status=retrying attempt=1/2 reason=failed_rc_1
+- 2026-08-07T01:33:08Z [decision] architect_prepass task=75d151fe status=failed reason=failed_rc_1 rc=1
+- 2026-08-07T01:33:08Z [decision] architect_prepass task=75d151fe status=retrying attempt=2/2 reason=failed_rc_1
+- 2026-08-07T01:33:08Z [decision] architect_prepass task=75d151fe status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-07T01:33:08Z [decision] dispatch_terminal task=75d151fe terminal=parked cause=no_design_after_2_attempts

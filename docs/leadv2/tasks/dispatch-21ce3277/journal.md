@@ -1,0 +1,17 @@
+- 2026-08-12T15:32:54Z [decision] dispatch_task_bound task=21ce3277 founder_task=CONTINUATION-GUARD-01
+- 2026-08-12T15:32:55Z [decision] dispatch_classified task=21ce3277 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T15:33:00Z [decision] phase_precondition_warn task=21ce3277 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T15:33:01Z [decision] architect_prepass task=21ce3277 status=disabled reason=kill_switch
+- 2026-08-12T15:33:01Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T15:33:02Z [decision] dispatchable_arms_read_failed task=21ce3277 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T15:33:02Z [decision] routing_config_degraded task=21ce3277 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T15:33:02Z [decision] kimi_skipped reason=writes_over task=21ce3277 chars=2113 writes=4 prepass=0
+- 2026-08-12T15:33:03Z [decision] candidate_chain task=21ce3277 arms=glm,codex,sonnet
+- 2026-08-12T15:33:09Z [decision] worker_spawned by=router model=glm task=21ce3277 attempt=21ce3277-1786548770-7761 handle=260812-183308-CONTINUATION-GUARD-01-75e4
+- 2026-08-12T15:33:10Z [decision] mission-version task=CONTINUATION-GUARD-01 sig=21ce3277 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T15:33:31Z [decision] product_close task=21ce3277 status=spawned author=glm
+- 2026-08-12T15:33:32Z [decision] route_resolved by=router router=v1 model=glm task=21ce3277 rule=none reason=no_routing_yaml
+- 2026-08-12T15:33:32Z [decision] lane_worktree_left task=21ce3277 founder_task=CONTINUATION-GUARD-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/CONTINUATION-GUARD-01
+- 2026-08-12T15:56:46Z [decision] e2e_gate task=21ce3277 status=ran verdict=fail rc=1
+- 2026-08-12T15:56:50Z [decision] dispatch_terminal task=21ce3277 terminal=dead cause=e2e_regression
+- 2026-08-12T15:56:50Z [decision] dispatch_terminal_dedup task=21ce3277 attempted=dead reason=terminal_already_recorded

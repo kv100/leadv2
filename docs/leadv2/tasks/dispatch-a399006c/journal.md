@@ -1,0 +1,8 @@
+- 2026-08-02T11:33:53Z [decision] dispatch_task_bound task=a399006c founder_task=w1a-deadlane
+- 2026-08-02T11:33:53Z [decision] dispatch_classified task=a399006c class=product reason=conservative_default kind=standard
+- 2026-08-02T11:33:54Z [decision] architect_prepass task=a399006c status=failed reason=failed_rc_1 rc=1
+- 2026-08-02T11:33:54Z [decision] architect_prepass task=a399006c status=retrying attempt=1/2 reason=failed_rc_1
+- 2026-08-02T11:33:54Z [decision] architect_prepass task=a399006c status=failed reason=failed_rc_1 rc=1
+- 2026-08-02T11:33:55Z [decision] architect_prepass task=a399006c status=retrying attempt=2/2 reason=failed_rc_1
+- 2026-08-02T11:33:55Z [decision] architect_prepass task=a399006c status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-02T11:33:55Z [decision] dispatch_terminal task=a399006c terminal=parked cause=no_design_after_2_attempts

@@ -1,0 +1,3 @@
+Try to REFUTE this finding. Default is_real=false if you cannot concretely confirm it against docs/handoff/LTB-review/build-r2.diff.
+Finding [High/correctness]: diff is still on a stale base (run-core-offline blob cbe056c, dispatch-code blob af0d961 vs main 74a2adf/14227f8); it does not merge onto main and reintroduces duplicate suite registration for test-plugin-reliability-01/02
+Report exactly one line: VERIFY_VERDICT: <upheld|refuted>

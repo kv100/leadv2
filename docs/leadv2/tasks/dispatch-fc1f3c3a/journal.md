@@ -1,0 +1,19 @@
+- 2026-08-12T21:05:51Z [decision] lane_placement_pinned task=fc1f3c3a mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/LANE-TRUTH-BATCH-01 key=LANE-TRUTH-BATCH-01
+- 2026-08-12T21:05:51Z [decision] dispatch_task_bound task=fc1f3c3a founder_task=LANE-TRUTH-BATCH-01
+- 2026-08-12T21:05:51Z [decision] dispatch_classified task=fc1f3c3a class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T21:05:53Z [decision] phase_precondition_warn task=fc1f3c3a class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T21:05:53Z [decision] architect_prepass task=fc1f3c3a status=disabled reason=kill_switch
+- 2026-08-12T21:05:53Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T21:05:54Z [decision] dispatchable_arms_read_failed task=fc1f3c3a fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T21:05:54Z [decision] routing_config_degraded task=fc1f3c3a reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T21:05:54Z [decision] candidate_chain task=fc1f3c3a arms=glm,codex,sonnet
+- 2026-08-12T21:05:55Z [decision] worker_spawned by=router model=glm task=fc1f3c3a attempt=fc1f3c3a-1786568750-76257 handle=260813-000555-LANE-TRUTH-BATCH-01-3278
+- 2026-08-12T21:05:55Z [decision] mission-version task=LANE-TRUTH-BATCH-01 sig=fc1f3c3a rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T21:06:15Z [decision] product_close task=fc1f3c3a status=spawned author=glm
+- 2026-08-12T21:06:15Z [decision] route_resolved by=router router=v1 model=glm task=fc1f3c3a rule=none reason=no_routing_yaml
+- 2026-08-12T21:06:16Z [decision] lane_worktree_left task=fc1f3c3a founder_task=LANE-TRUTH-BATCH-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/LANE-TRUTH-BATCH-01
+- 2026-08-12T21:20:16Z [decision] e2e_gate task=fc1f3c3a status=ran verdict=pass
+- 2026-08-12T21:20:16Z [decision] review_signals task=fc1f3c3a protected_path=1 source=no_lane_writes_failclosed matched=-
+- 2026-08-12T21:20:16Z [decision] review_gate task=fc1f3c3a status=no_reviewer author=glm refusal=all_review_arms_unavailable pool=
+- 2026-08-12T21:20:16Z [decision] dispatch_terminal task=fc1f3c3a terminal=parked cause=all_review_arms_unavailable
+- 2026-08-12T21:20:17Z [decision] dispatch_terminal_dedup task=fc1f3c3a attempted=parked reason=terminal_already_recorded

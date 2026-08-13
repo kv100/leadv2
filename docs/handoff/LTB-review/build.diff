@@ -1,0 +1,326 @@
+diff --git a/docs/handoff/LANE-TRUTH-BATCH-01/summary.md b/docs/handoff/LANE-TRUTH-BATCH-01/summary.md
+new file mode 100644
+index 0000000..d2cb2c9
+--- /dev/null
++++ b/docs/handoff/LANE-TRUTH-BATCH-01/summary.md
+@@ -0,0 +1,16 @@
++# LANE-TRUTH-BATCH-01 summary
++
++## Verdicts
++
++| Row | Verdict | Proof |
++| --- | --- | --- |
++| `LANE-LIVENESS-BLIND-TO-FUNNEL-PATH-01` | fixed | `plugins/leadv2/scripts/leadv2-active-registry.sh:418` has the guarded `set_log_path` operation; `plugins/leadv2/scripts/leadv2-dispatch-code.sh:3075` stamps the dispatch stream path after registration. The hermetic test creates only the stream and proves liveness is `alive` from its mtime, not a status field or a task handoff directory. |
++| `LANE-REGISTRATION-ONLY-ON-FANOUT-PATH-01` | fixed | `plugins/leadv2/scripts/leadv2-dispatch-code.sh:3069` uses `dispatch-<sig8>` when no founder task ID exists, and line 3076 stamps its authoritative stream path. The hermetic test proves the direct-lane registration key and path. |
++| `UNLANDED-FIXES-IN-USER-SCRIPTS-COPIES-01` | fixed | `plugins/leadv2/scripts/leadv2-plugin-sync.sh:191` quarantines a divergent copy before exclusion; the original remains excluded. The hermetic test proves dry-run creates no quarantine and a real run retains the un-landed content under the configured quarantine root. |
++
++## Validation
++
++- `bash plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh` — rc=0, 12 assertions passed.
++- `bash plugins/leadv2/scripts/tests/run-core-offline.sh` — blocked before this lane's suite by pre-existing `dispatch refusal fallback chain`: `test-routing-enforcement-p1.sh` rc=2 after `sysmond service not found` / `pgrep: Cannot get process list`. No routing files were changed by this lane.
++
++The added lane test is included in `run-core-offline.sh` for future full-suite coverage.
+diff --git a/plugins/leadv2/scripts/leadv2-active-registry.sh b/plugins/leadv2/scripts/leadv2-active-registry.sh
+index b135f40..a4960a2 100755
+--- a/plugins/leadv2/scripts/leadv2-active-registry.sh
++++ b/plugins/leadv2/scripts/leadv2-active-registry.sh
+@@ -406,6 +406,24 @@ try:
+         target["writes"] = writes_csv
+         target["updated_at"] = _now_iso()
+ 
++    # LANE-TRUTH-BATCH-01 Row 1+2: set the authoritative log_path AFTER
++    # registration. dispatch-code.sh self-registers with the default pulse.md
++    # path (it does not know its sig8 at register time — the registry function
++    # hardcodes pulse.md). The real stream lives at
++    # docs/handoff/dispatch-<sig8>/developer.stream.jsonl. fanout's finalize
++    # register (_fanout_register_session) CANNOT update it because the live
++    # PID guard (line 967: "already has a live registered session — not
++    # overwriting") sees dispatch-code.sh's durable PID and skips. This op
++    # unconditionally stamps the correct path so liveness can find the stream.
++    elif op == "set_log_path":
++        task_id, log_path = args
++        target = next((s for s in sessions if s.get("task_id") == task_id), None)
++        if target is None:
++            print(f"[registry] task not registered for set_log_path: {task_id}", file=sys.stderr)
++            sys.exit(4)
++        target["log_path"] = log_path
++        target["updated_at"] = _now_iso()
++
+     # SD-LEDGER-SWEEP-HARDEN-01: stamps the dispatch-code.sh attempt token (its own $$,
+     # already used to key the dispatch-ledger's write-once-per-attempt check -- see
+     # leadv2-dispatch-ledger.sh's dispatch_ledger_write_terminal doc header) onto the
+@@ -569,6 +587,15 @@ leadv2_active_set_worktree() {
+   _leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" set_worktree "$task_id" "$wt"
+ }
+ 
++# leadv2_active_set_log_path <task_id> <log_path>
++# Stamps the authoritative log_path (stream file) for liveness resolution.
++# LANE-TRUTH-BATCH-01 Row 1+2: dispatch-code.sh self-registers with the default
++# pulse.md path; this corrects it to docs/handoff/dispatch-<sig8>/developer.stream.jsonl.
++leadv2_active_set_log_path() {
++  local task_id="${1:?task_id required}" log_path="${2:?log_path required}"
++  _leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" set_log_path "$task_id" "$log_path"
++}
++
+ # leadv2_active_unregister <task_id>
+ leadv2_active_unregister() {
+   local task_id="${1:?task_id required}"
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index af0d961..01c98e6 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -3058,9 +3058,23 @@ cmd_resolve() {
+   # Without this, leadv2_active_update_phase finds no row to patch and the mirror
+   # stays empty forever (backlog-pump.sh:250-256 states this outright).
+   # leadv2_active_register is idempotent (refreshes existing row if PID alive).
+-  if [[ -n "${founder_task_id}" ]] && [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
+-    if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null \
+-       || ! leadv2_active_register "${founder_task_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null; then
++  #
++  # LANE-TRUTH-BATCH-01 Row 1+2: register with dispatch-<sig8> when no
++  # founder_task_id was given (direct/backlog-pump dispatch), so the lane is
++  # visible to the registry — not just to liveness glob discovery. Then stamp
++  # the REAL log_path: leadv2_active_register hardcodes pulse.md, but the
++  # worker stream lives at docs/handoff/dispatch-<sig8>/developer.stream.jsonl.
++  # fanout's finalize register cannot fix this — its live-PID guard sees the
++  # durable PID from self-registration and skips the overwrite (line 967).
++  local _reg_key="${founder_task_id:-dispatch-${sig8}}"
++  if [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
++    if LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null; then
++      if ! leadv2_active_register "${_reg_key}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null; then
++        emit decision "active_register_miss task=${sig8}"
++      fi
++      # Stamp the real stream path so liveness resolves this lane, not pulse.md.
++      leadv2_active_set_log_path "${_reg_key}" "docs/handoff/dispatch-${sig8}/developer.stream.jsonl" 2>/dev/null || true
++    else
+       emit decision "active_register_miss task=${sig8}"
+     fi
+   fi
+diff --git a/plugins/leadv2/scripts/leadv2-plugin-sync.sh b/plugins/leadv2/scripts/leadv2-plugin-sync.sh
+index 4e24267..5f6843f 100755
+--- a/plugins/leadv2/scripts/leadv2-plugin-sync.sh
++++ b/plugins/leadv2/scripts/leadv2-plugin-sync.sh
+@@ -189,7 +189,23 @@ _direction_safety_excludes() {
+     local canonical_relpath="plugins/leadv2/${subdir}/${relpath}"
+     if ! python3 "${_DIRECTION_SAFETY_CHECK}" "${PLUGIN_GIT_ROOT}" "${canonical_relpath}" "${dst_file}"; then
+       if [[ "${mode}" == "exclude" ]]; then
+-        log_warn "DIRECTION-SAFETY (block): refusing to overwrite ${dst_file} — its content is not reachable anywhere in canonical's git history for ${canonical_relpath} (possible un-landed fix on this copy). Excluding this file from the sync; land the fix in canonical first."
++        # LANE-TRUTH-BATCH-01 Row 3: quarantine the divergent copy BEFORE
++        # excluding, so a later manual cleanup or forced sync cannot silently
++        # lose an un-landed fix. The exclude itself is unchanged — rsync skips
++        # the file, the copy stays divergent. The quarantine is the safety net
++        # the old exclude lacked (warn mode already quarantines+reconciles;
++        # exclude mode was the only path with no preservation at all).
++        if [[ "${DRY_RUN}" != "true" ]]; then
++          local qpath
++          qpath="$(_quarantine_copy "${dst_file}" "${copy_name}" "${relpath}")" || qpath=""
++        fi
++        if [[ "${DRY_RUN}" == "true" ]]; then
++          log_warn "DIRECTION-SAFETY (block+would-quarantine): ${dst_file} content not reachable in canonical history for ${canonical_relpath}. DRY_RUN — no quarantine written, file excluded from sync."
++        elif [[ -n "${qpath}" ]]; then
++          log_warn "DIRECTION-SAFETY (block+quarantine): refusing to overwrite ${dst_file} — its content is not reachable anywhere in canonical's git history for ${canonical_relpath} (possible un-landed fix on this copy). Excluding this file from the sync. ORIGINAL CONTENT PRESERVED at: ${qpath} — if this was a real fix: cp it into canonical (${canonical_relpath}) and re-sync."
++        else
++          log_warn "DIRECTION-SAFETY (block): refusing to overwrite ${dst_file} — its content is not reachable anywhere in canonical's git history for ${canonical_relpath} (possible un-landed fix on this copy). Excluding this file from the sync; quarantine unavailable. Land the fix in canonical first."
++        fi
+         printf -- '%s\n' "${relpath}"
+       else
+         # warn mode: PRESERVE first (quarantine), THEN let rsync reconcile.
+diff --git a/plugins/leadv2/scripts/tests/run-core-offline.sh b/plugins/leadv2/scripts/tests/run-core-offline.sh
+index cbe056c..0489337 100755
+--- a/plugins/leadv2/scripts/tests/run-core-offline.sh
++++ b/plugins/leadv2/scripts/tests/run-core-offline.sh
+@@ -94,6 +94,7 @@ run_check "hook token + mode isolation" bash "$TEST_DIR/test-hook-token-mode-iso
+ run_check "main model/live quota" bash "$TEST_DIR/test-main-model-check.sh"
+ run_check "active registry fail-closed" bash "$TEST_DIR/test-active-registry-failclosed.sh"
+ run_check "active registry phase updates" bash "$TEST_DIR/test-active-registry-update-phase.sh"
++run_check "lane registry/liveness truth batch" bash "$TEST_DIR/test-lane-truth-batch-01.sh"
+ run_check "fanout classifier/runner guard" bash "$TEST_DIR/test-fanout-classify-guard.sh"
+ run_check "supervisor fail-closed" bash "$TEST_DIR/test-supervise-failclosed.sh"
+ run_check "supervisor reconciliation" bash "$TEST_DIR/test-supervise-v2.sh"
+@@ -119,6 +120,7 @@ run_check "idle-lead guard hook" bash "$TEST_DIR/test-idle-lead-guard.sh"
+ run_check "phase record round-trip" bash "$TEST_DIR/test-phase-record.sh"
+ run_check "phase precondition guard matrix" bash "$TEST_DIR/test-phase-precondition.sh"
+ run_check "lane phase render" bash "$TEST_DIR/test-lane-phase-render.sh"
++run_check "lane truth batch (log_path + quarantine)" bash "$TEST_DIR/test-lane-truth-batch-01.sh"
+ 
+ printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
+ (( FAIL == 0 && MISSING == 0 ))
+diff --git a/plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh b/plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh
+new file mode 100755
+index 0000000..7f4d5b7
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh
+@@ -0,0 +1,173 @@
++#!/usr/bin/env bash
++# LANE-TRUTH-BATCH-01: three P1 rows on lane registry/liveness truth.
++# Row 1: dispatch-code.sh self-registers with wrong log_path → dead:no_handoff_dir
++# Row 2: direct dispatch (no --task-id) was invisible to the registry
++# Row 3: exclude-mode DIRECTION-SAFETY had no quarantine safety net
++set -euo pipefail
++source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++REAL_PLUGIN_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
++tmp="$(lv2_mktemp_dir lane-truth)"; trap 'rm -rf "$tmp"' EXIT
++
++PLUGIN_DIR="$tmp/plugin"
++mkdir -p "$PLUGIN_DIR"
++cp -a "${REAL_PLUGIN_DIR}/scripts" "$PLUGIN_DIR/"
++# plugin-sync invokes its sibling workflow sync helper; carry that input into
++# the fixture as well so the test never falls back to a real user workflow dir.
++cp -a "${REAL_PLUGIN_DIR}/workflows" "$PLUGIN_DIR/"
++case "$PLUGIN_DIR" in
++  "$tmp"/*) ;;
++  *) printf '[TEST-SAFETY] ABORT: PLUGIN_DIR %s did not resolve under the scratch root %s\n' "$PLUGIN_DIR" "$tmp" >&2; exit 90 ;;
++esac
++case "$PLUGIN_DIR" in
++  "$REAL_PLUGIN_DIR"|"$REAL_PLUGIN_DIR"/*)
++    printf '[TEST-SAFETY] ABORT: PLUGIN_DIR %s resolves inside the real plugin tree %s -- refusing to run\n' "$PLUGIN_DIR" "$REAL_PLUGIN_DIR" >&2
++    exit 90
++    ;;
++esac
++export CLAUDE_PLUGIN_ROOT="$PLUGIN_DIR"
++
++repo="$tmp/repo"; state="$tmp/state"; mkdir -p "$repo/docs/leadv2" "$repo/docs/handoff" "$state"
++(cd "$repo" && git init -q)
++lv2_assert_scratch_repo "$repo"
++
++# Copy the state-path resolver into the repo so the registry (which looks for
++# it at ${LEADV2_PROJECT_ROOT}/scripts/leadv2-state-path.sh) and liveness
++# (SCRIPT_DIR/leadv2-state-path.sh) resolve active.yaml to the SAME path.
++mkdir -p "$repo/scripts"
++cp "${PLUGIN_DIR}/scripts/leadv2-state-path.sh" "$repo/scripts/"
++
++REGISTRY="${PLUGIN_DIR}/scripts/leadv2-active-registry.sh"
++STATE_PATH="${PLUGIN_DIR}/scripts/leadv2-state-path.sh"
++LIVENESS="${PLUGIN_DIR}/scripts/leadv2-lane-liveness.sh"
++
++# The registry deliberately resolves the state helper from the project root;
++# put the copied helper there so registry and liveness share this test's state
++# root instead of falling back to repo/docs/leadv2/active.yaml.
++mkdir -p "$repo/scripts"
++cp "$STATE_PATH" "$repo/scripts/leadv2-state-path.sh"
++chmod +x "$repo/scripts/leadv2-state-path.sh"
++
++export LEADV2_PROJECT_ROOT="$repo" LEADV2_STATE_ROOT="$state" PROJECT_ROOT="$repo"
++active="$(bash "$STATE_PATH" --no-link active.yaml)"
++mkdir -p "$(dirname "$active")"; printf 'sessions: []\n' > "$active"
++
++pass=0; fail=0
++check() {
++  if grep -q "$2" <<<"$1"; then
++    printf '[TEST] PASS: %s\n' "$3"; pass=$((pass+1))
++  else
++    printf '[TEST] FAIL: %s\n  got: %s\n' "$3" "$1" >&2; fail=$((fail+1))
++  fi
++}
++
++# ── Row 1+2: leadv2_active_set_log_path correctly stamps log_path ───────────
++# The registry must support the new set_log_path op. After calling register
++# (which sets log_path to pulse.md) and then set_log_path with the real stream
++# path, liveness must resolve via the new path, not fall through to
++# dead:no_handoff_dir.
++
++# Step 1: register a lane (simulates dispatch-code.sh's self-registration)
++source "$REGISTRY" 2>/dev/null
++leadv2_active_register "FOO-123" "Standard" "$repo" "main" 2>/dev/null || true
++
++# Verify the default log_path is pulse.md (the pre-fix state)
++reg_read="$(cat "$active")"
++check "$reg_read" 'pulse\.md' 'register sets default log_path to pulse.md'
++
++# Step 2: set_log_path to the real stream path (simulates the fix)
++leadv2_active_set_log_path "FOO-123" "docs/handoff/dispatch-deadbeef/developer.stream.jsonl" 2>/dev/null || true
++
++reg_read2="$(cat "$active")"
++check "$reg_read2" 'dispatch-deadbeef/developer\.stream\.jsonl' 'set_log_path stamps the real stream path'
++# Verify it does NOT still have the old pulse.md
++if grep -q 'pulse\.md' <<<"$(printf '%s\n' "$reg_read2" | grep 'log_path:')"; then
++  printf '[TEST] FAIL: log_path still shows pulse.md after set_log_path\n' >&2; fail=$((fail+1))
++else
++  printf '[TEST] PASS: log_path no longer defaults to pulse.md\n'; pass=$((pass+1))
++fi
++
++# Step 3: liveness resolves the lane via the stamped log_path
++mkdir -p "$repo/docs/handoff/dispatch-deadbeef"
++printf '{"type":"assistant","text":"working"}\n' > "$repo/docs/handoff/dispatch-deadbeef/developer.stream.jsonl"
++lane_verdict="$(bash "$LIVENESS" --project-root "$repo" --lane FOO-123 --json)"
++check "$lane_verdict" '"verdict":"alive"' 'Row 1: lane with set_log_path resolves alive via real stream'
++check "$lane_verdict" 'dispatch-deadbeef' 'Row 1: liveness source is the stamped log_path'
++
++# ── Row 1+2: set_log_path on an unregistered task fails gracefully ──────────
++set_missing_rc=0
++leadv2_active_set_log_path "NONEXISTENT-TASK" "docs/handoff/dispatch-f00f00f0/developer.stream.jsonl" 2>/dev/null || set_missing_rc=$?
++if [[ "$set_missing_rc" -ne 0 ]]; then
++  printf '[TEST] PASS: set_log_path on unregistered task returns non-zero (graceful)\n'; pass=$((pass+1))
++else
++  printf '[TEST] FAIL: set_log_path on unregistered task should return non-zero\n' >&2; fail=$((fail+1))
++fi
++
++# ── Row 2: a dispatch-<sig8> lane with no --task-id is still discoverable ──
++# Even without active.yaml registration, liveness glob discovery must find the
++# lane via its handoff dir. This was already working via the glob; the fix
++# adds REGISTRATION so phase tracking works.
++mkdir -p "$repo/docs/handoff/dispatch-cafebabe"
++printf '{"type":"assistant","text":"hello"}\n' > "$repo/docs/handoff/dispatch-cafebabe/developer.stream.jsonl"
++all_lanes="$(bash "$LIVENESS" --project-root "$repo" --json)"
++check "$all_lanes" 'dispatch-cafebabe' 'Row 2: unregistered dispatch lane is discoverable via glob'
++# Now register it (simulating the fix where dispatch-code.sh uses dispatch-<sig8> when no --task-id)
++leadv2_active_register "dispatch-cafebabe" "Standard" "$repo" "main" 2>/dev/null || true
++leadv2_active_set_log_path "dispatch-cafebabe" "docs/handoff/dispatch-cafebabe/developer.stream.jsonl" 2>/dev/null || true
++reg_read3="$(cat "$active")"
++check "$reg_read3" 'task_id: dispatch-cafebabe' 'Row 2: dispatch-<sig8> lane now registered with proper key'
++check "$reg_read3" 'dispatch-cafebabe/developer\.stream\.jsonl' 'Row 2: registered dispatch lane has correct log_path'
++
++# ── Row 3: exclude-mode DIRECTION-SAFETY preserves a quarantine copy ────────
++# When _direction_safety_excludes blocks in exclude mode, the divergent copy
++# must be quarantined so an un-landed fix is never silently lost.
++PLUGIN_SYNC="${PLUGIN_DIR}/scripts/leadv2-plugin-sync.sh"
++QUARANTINE_ROOT="$tmp/quarantine"
++
++# Build an isolated canonical tree and user home. The production sync script
++# accepts its canonical root through LEADV2_CANONICAL_ROOT; its user-scripts
++# target is always $HOME/.claude/scripts, so both roots stay in this sandbox.
++canon="$tmp/canon"
++mkdir -p "$canon/plugins/leadv2"
++cp -a "$PLUGIN_DIR/scripts" "$canon/plugins/leadv2/"
++printf '#!/usr/bin/env bash\necho "original v1"\n' > "$canon/plugins/leadv2/scripts/leadv2-test-target.sh"
++(cd "$canon" && git init -q && git config user.email test@example.invalid && git config user.name lane-truth-test && git add -A && git commit -q -m "init")
++
++home="$tmp/home"
++user_scripts="$home/.claude/scripts"
++mkdir -p "$user_scripts"
++# The copy has a fix canonical hasn't seen
++printf '#!/usr/bin/env bash\necho "fixed v2 with important change"\n' > "$user_scripts/leadv2-test-target.sh"
++
++# Run the sync — DIRECTION-SAFETY should quarantine the divergent copy
++env -u LEADV2_PROJECT_ROOT -u LEADV2_STATE_ROOT -u PROJECT_ROOT \
++  HOME="$home" LEADV2_CANONICAL_ROOT="$canon" LEADV2_QUARANTINE_ROOT="$QUARANTINE_ROOT" \
++  bash "$PLUGIN_SYNC" --dry-run 2>"$tmp/sync-stderr.log" || true
++if [[ -z "$(find "$QUARANTINE_ROOT" -type f -print -quit 2>/dev/null)" ]] \
++   && grep -q 'would-quarantine' "$tmp/sync-stderr.log"; then
++  printf '[TEST] PASS: Row 3: dry-run reports the block without writing quarantine\n'; pass=$((pass+1))
++else
++  printf '[TEST] FAIL: Row 3: dry-run must report block and write no quarantine\n' >&2; fail=$((fail+1))
++fi
++
++# In dry-run, no quarantine is written. Run for real.
++env -u LEADV2_PROJECT_ROOT -u LEADV2_STATE_ROOT -u PROJECT_ROOT \
++  HOME="$home" LEADV2_CANONICAL_ROOT="$canon" LEADV2_QUARANTINE_ROOT="$QUARANTINE_ROOT" \
++  bash "$PLUGIN_SYNC" 2>"$tmp/sync-stderr-real.log" || true
++
++# Check the quarantine copy was created
++quarantined="$(find "$QUARANTINE_ROOT" -name 'leadv2-test-target.sh' -type f 2>/dev/null | head -1)"
++if [[ -n "$quarantined" ]]; then
++  printf '[TEST] PASS: Row 3: divergent user-script quarantined in exclude mode\n'; pass=$((pass+1))
++  # Verify the quarantined content has the fix
++  q_content="$(cat "$quarantined")"
++  check "$q_content" 'fixed v2' 'Row 3: quarantined copy preserves the un-landed fix'
++else
++  printf '[TEST] FAIL: Row 3: no quarantine copy created in exclude mode\n' >&2
++  cat "$tmp/sync-stderr-real.log" >&2
++  fail=$((fail+1))
++fi
++
++# ── Summary ──────────────────────────────────────────────────────────────────
++printf '\n[LANE-TRUTH-BATCH-01] pass=%d fail=%d\n' "$pass" "$fail"
++(( fail == 0 ))

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CC-2.1.224-ADOPT-01 — Claude Code 2.1.216→2.1.224 feature adoption.**
+  (a) Cross-session `SendMessage`/`ListAgents` (CC 2.1.224) as an ADDITIVE
+  wake-up channel for async questions: any child worker session (fanout child
+  or dispatch-code Claude arm) SendMessages the lead/supervisor one
+  `[leadv2-q] <task-id> <q-id>: …` line right after `leadv2-ask.sh`; the file
+  control plane stays the sole source of truth, wake-up failure is non-fatal.
+  Interactive single-lead sessions are unaffected — with the founder watching
+  the same window, `AskUserQuestion` remains the direct path and no message is
+  needed. (b) Nested-spawn platform truth: CC default depth is now 3
+  (v2.1.219), 200-agent session cap removed (v2.1.224), 20 concurrent
+  (v2.1.217); `nested-spawn-policy.yaml` (max_depth 1) + routing-guard stay the
+  governing limit, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2` pinned in user
+  settings as backstop; stale "5-LEVEL HARD CAP (2.1.172)" claim removed from
+  NESTED-SPAWNS.md. (c) prompt-audit sweep: `claude-opus-4-8` →
+  `claude-opus-5` in the review workflow reference; FABLE-RETIRE-01 note scoped
+  to Fable 4.x (Claude Fable 5 live since 2026-08, per-repo
+  `ref/leadv2-main-model.yaml` decides the lead model); Codex `GPT-5.6` pin
+  verified live-correct. Handoff: `docs/handoff/CC-ADOPT-01/`.
+
 ### Fixed
 
 - **Pulse hook gagged the supervisor (LEAD-ANCHOR-01)** — `leadv2-lead-prose-guard.sh`

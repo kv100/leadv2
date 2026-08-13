@@ -1,0 +1,27 @@
+- 2026-08-12T20:24:04Z [decision] dispatch_task_bound task=5f9aab5b founder_task=LANE-TRUTH-BATCH-01
+- 2026-08-12T20:24:04Z [decision] dispatch_classified task=5f9aab5b class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T20:24:06Z [decision] phase_precondition_warn task=5f9aab5b class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T20:24:06Z [decision] architect_prepass task=5f9aab5b status=disabled reason=kill_switch
+- 2026-08-12T20:24:06Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T20:24:06Z [decision] dispatchable_arms_read_failed task=5f9aab5b fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T20:24:06Z [decision] routing_config_degraded task=5f9aab5b reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T20:24:06Z [decision] kimi_skipped reason=writes_over task=5f9aab5b chars=1395 writes=7 prepass=0
+- 2026-08-12T20:24:07Z [decision] candidate_chain task=5f9aab5b arms=glm,codex,sonnet
+- 2026-08-12T20:24:08Z [decision] worker_spawned by=router model=glm task=5f9aab5b attempt=5f9aab5b-1786566242-93025 handle=260812-232408-LANE-TRUTH-BATCH-01-11da
+- 2026-08-12T20:24:08Z [decision] mission-version task=LANE-TRUTH-BATCH-01 sig=5f9aab5b rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T20:24:29Z [decision] product_close task=5f9aab5b status=spawned author=glm
+- 2026-08-12T20:24:29Z [decision] route_resolved by=router router=v1 model=glm task=5f9aab5b rule=none reason=no_routing_yaml
+- 2026-08-12T20:24:29Z [decision] lane_worktree_left task=5f9aab5b founder_task=LANE-TRUTH-BATCH-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/LANE-TRUTH-BATCH-01
+- 2026-08-12T20:38:39Z [decision] e2e_gate task=5f9aab5b status=ran verdict=fail rc=1
+- 2026-08-12T20:38:41Z [decision] dispatch_terminal task=5f9aab5b terminal=dead cause=e2e_regression
+- 2026-08-12T20:38:42Z [decision] dispatch_terminal_dedup task=5f9aab5b attempted=dead reason=terminal_already_recorded
+- 2026-08-12T20:40:43Z [decision] lane_placement_pinned task=5f9aab5b mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/LANE-TRUTH-BATCH-01 key=LANE-TRUTH-BATCH-01
+- 2026-08-12T20:40:44Z [decision] dispatch_task_bound task=5f9aab5b founder_task=LANE-TRUTH-BATCH-01
+- 2026-08-12T20:40:44Z [decision] dispatch_classified task=5f9aab5b class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T20:40:45Z [decision] phase_precondition_warn task=5f9aab5b class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T20:40:46Z [decision] architect_prepass task=5f9aab5b status=disabled reason=kill_switch
+- 2026-08-12T20:40:46Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T20:40:46Z [decision] dispatchable_arms_read_failed task=5f9aab5b fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T20:40:46Z [decision] routing_config_degraded task=5f9aab5b reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T20:40:46Z [decision] candidate_chain task=5f9aab5b arms=glm,codex,sonnet
+- 2026-08-12T20:40:47Z [decision] dispatch_refused reason=duplicate_task_signature task=5f9aab5b ledger=/Users/kostiantyn.vlasenko/.claude/cache/dispatch-ledger/leadv2.jsonl

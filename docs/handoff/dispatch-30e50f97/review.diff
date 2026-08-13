@@ -1,0 +1,217 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+index 7f2e1fc..ba2fe4e 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -1721,6 +1721,24 @@ next_ok_arm_after() { # <after-arm>  reads ${pool}
+   return 1
+ }
+ 
++# ARM-NO-VERDICT-01 (dispatch-4fb7381a): companion to next_ok_arm_after -- counts how
++# many :ok: arms remain in the FIXED ${pool} after <after-arm>, without consuming one.
++# Purely informational (the `remaining=<n>` field on the arm_no_verdict journal line),
++# never used for loop control -- next_ok_arm_after / the tried[] cap still own that.
++_pc_remaining_ok_after() { # <after-arm>  reads ${pool}  -> prints count on stdout
++  local after="$1" found=0 entry arm count=0
++  local _pool="${pool}"
++  local IFS=','
++  for entry in ${_pool}; do
++    arm="${entry%%:*}"
++    if [[ "${found}" == "1" && "${entry}" == "${arm}:ok:"* ]]; then
++      count=$((count + 1))
++    fi
++    [[ "${arm}" == "${after}" ]] && found=1
++  done
++  printf '%s' "${count}"
++}
++
+ review_adir="${ROOT}/docs/handoff/dispatch-${TASK}-review"
+ mkdir -p "${review_adir}"
+ REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
+@@ -1741,84 +1759,125 @@ review_contract=$'Your review MUST contain these two lines, verbatim format, bef
+ # this arm's launcher", not "this arm refused cleanly and returned control".
+ PC_TRIED=()
+ _pc_unavailable=0
++_pc_exhaust_kind=""
+ while :; do
+   PC_TRIED+=("${reviewer}")
++  # ARM-NO-VERDICT-01: reset the freshness baseline before EVERY arm's run, not just
++  # once before the loop. resolve_review_artifact() below admits any critic.full.md
++  # newer than REVIEW_STAMP -- with a single pre-loop stamp, a second arm that never
++  # writes its own artifact (codex/glm/kimi) would silently inherit a FIRST arm's
++  # (opus/sonnet) stale-but-still-fresh-relative-to-the-old-stamp file.
++  touch "${REVIEW_STAMP}"
+   run_reviewer_arm "${reviewer}"
+   cls="$(classify_arm_failure "${review_rc}" "${review_err}" "${review_out}")"
+-  if [[ "${cls}" != refused_* ]]; then
+-    # REVIEW-BODY-PERSIST-01 §2.2: shared post-arm guard. A paid review whose body
+-    # was lost (rc==0 but review_out has no REVIEW_VERDICT: marker AND is below the
+-    # byte floor) while evidence of real output exists must surface as a blocked
+-    # failure, not silence.  This MUST run before resolve_review_artifact() below --
+-    # the deliverable fallback would otherwise mask a lost body into a silent
+-    # pass-through, the exact shape of the 2026-08-03 incident.  review_body_lost is
+-    # NOT a refused_* class: it does not trigger re-selection to another arm.
+-    if [[ ${review_rc} -eq 0 ]]; then
+-      _pc_body_min="${LEADV2_REVIEW_BODY_MIN_BYTES:-300}"
+-      _pc_body_bytes="0"
+-      _pc_body_bytes="$(wc -c < "${review_out}" 2>/dev/null | tr -d '[:space:]')"; _pc_body_bytes="${_pc_body_bytes:-0}"
+-      if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${review_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
+-        # Evidence-of-real-output: non-empty stderr or a cost-recorded line in it.
+-        if [[ -s "${review_err}" ]] || grep -q 'cost recorded:' "${review_err}" 2>/dev/null; then
+-          printf 'status: blocked\nreason: review_body_lost\narm: %s\n' "${reviewer}" > "${HANDOFF}/review-gate.md"
+-          emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${reviewer}"
+-          _dl_note dead review_body_lost "arm=${reviewer} bytes=${_pc_body_bytes}"
+-          _stamp_review_terminal blocked
+-          exit 6
+-        fi
++  if [[ "${cls}" == refused_* ]]; then
++    emit decision "review_gate task=${TASK} status=arm_refused arm=${reviewer} reason=${cls}"
++    if [[ ${#PC_TRIED[@]} -ge 4 ]]; then
++      _pc_unavailable=1
++      _pc_exhaust_kind="refused"
++      break
++    fi
++    # R9 defense-in-depth (kept from the kimi-only version): the re-selected arm is
++    # re-checked against the author too, not just trusted from the resolver's pool.
++    next_arm="$(next_ok_arm_after "${reviewer}" || true)"
++    if [[ -z "${next_arm}" || "${next_arm}" == "${AUTHOR}" ]]; then
++      _pc_unavailable=1
++      _pc_exhaust_kind="refused"
++      break
++    fi
++    reviewer="${next_arm}"
++    continue
++  fi
++
++  # REVIEW-BODY-PERSIST-01 §2.2: shared post-arm guard. A paid review whose body
++  # was lost (rc==0 but review_out has no REVIEW_VERDICT: marker AND is below the
++  # byte floor) while evidence of real output exists must surface as a blocked
++  # failure, not silence.  This MUST run before resolve_review_artifact() below --
++  # the deliverable fallback would otherwise mask a lost body into a silent
++  # pass-through, the exact shape of the 2026-08-03 incident.  review_body_lost is
++  # NOT a refused_* class: it does not trigger re-selection to another arm -- unlike
++  # ARM-NO-VERDICT-01 below, there IS positive evidence (stderr/cost) that real
++  # provider spend happened here, so silently burning a second arm's budget on a
++  # transport bug would be the wrong fix.
++  if [[ ${review_rc} -eq 0 ]]; then
++    _pc_body_min="${LEADV2_REVIEW_BODY_MIN_BYTES:-300}"
++    _pc_body_bytes="0"
++    _pc_body_bytes="$(wc -c < "${review_out}" 2>/dev/null | tr -d '[:space:]')"; _pc_body_bytes="${_pc_body_bytes:-0}"
++    if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${review_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
++      # Evidence-of-real-output: non-empty stderr or a cost-recorded line in it.
++      if [[ -s "${review_err}" ]] || grep -q 'cost recorded:' "${review_err}" 2>/dev/null; then
++        printf 'status: blocked\nreason: review_body_lost\narm: %s\n' "${reviewer}" > "${HANDOFF}/review-gate.md"
++        emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${reviewer}"
++        _dl_note dead review_body_lost "arm=${reviewer} bytes=${_pc_body_bytes}"
++        _stamp_review_terminal blocked
++        exit 6
+       fi
+     fi
+-    break
+   fi
+-  emit decision "review_gate task=${TASK} status=arm_refused arm=${reviewer} reason=${cls}"
+-  if [[ ${#PC_TRIED[@]} -ge 4 ]]; then
+-    _pc_unavailable=1
+-    break
++
++  # ARM-NO-VERDICT-01 (dispatch-4fb7381a): a reviewer that runs to completion (cls==
++  # "ran", not a refusal, and not review_body_lost -- that guard above already exited
++  # on the one case with positive evidence of lost spend) but produces output the gate
++  # cannot use -- a provider error, sub-floor/empty output, or real prose with no
++  # REVIEW_VERDICT: marker (e.g. a transcript ending in "[Tool use interrupted]") -- is
++  # EXACTLY as much "this arm produced nothing usable" as a refused_* arm. The pool
++  # resolver already ordered 3-5 quota-eligible arms for this task; killing the lane on
++  # the FIRST arm's truncation when others were resolved and available (lane 4fb7381a,
++  # 2026-08-07: reviewer=kimi, pool_n=5, dead on arm #1) is the defect this block fixes.
++  # Same tried[]/next_ok_arm_after bookkeeping as the refused_* branch above; only the
++  # reason vocabulary (provider_error/empty_response/no_verdict_marker) differs, and it
++  # is preserved verbatim from the pre-fallthrough N-5 D4 split below.
++  resolve_review_artifact || true
++  review_file="${REVIEW_ARTIFACT:-${review_out}}"
++  _pc_no_verdict_reason=""
++  if [[ ${review_rc} -ne 0 && -z "${REVIEW_ARTIFACT}" ]]; then
++    _pc_no_verdict_reason="provider_error"
++  elif [[ ! -s "${review_file}" ]] || ! review_floor_ok "${review_file}"; then
++    _pc_no_verdict_reason="empty_response"
++  elif ! parse_review_verdict "${review_file}"; then
++    _pc_no_verdict_reason="no_verdict_marker"
+   fi
+-  # R9 defense-in-depth (kept from the kimi-only version): the re-selected arm is
+-  # re-checked against the author too, not just trusted from the resolver's pool.
+-  next_arm="$(next_ok_arm_after "${reviewer}" || true)"
+-  if [[ -z "${next_arm}" || "${next_arm}" == "${AUTHOR}" ]]; then
+-    _pc_unavailable=1
+-    break
++
++  if [[ -n "${_pc_no_verdict_reason}" ]]; then
++    _pc_tried_csv="$(IFS=,; echo "${PC_TRIED[*]:-}")"
++    _pc_remaining="$(_pc_remaining_ok_after "${reviewer}")"
++    emit decision "review_gate task=${TASK} status=arm_no_verdict arm=${reviewer} reason=${_pc_no_verdict_reason} tried=${_pc_tried_csv} remaining=${_pc_remaining}"
++    if [[ ${#PC_TRIED[@]} -ge 4 ]]; then
++      _pc_unavailable=1
++      _pc_exhaust_kind="no_verdict"
++      break
++    fi
++    next_arm="$(next_ok_arm_after "${reviewer}" || true)"
++    if [[ -z "${next_arm}" || "${next_arm}" == "${AUTHOR}" ]]; then
++      _pc_unavailable=1
++      _pc_exhaust_kind="no_verdict"
++      break
++    fi
++    reviewer="${next_arm}"
++    continue
+   fi
+-  reviewer="${next_arm}"
++
++  break
+ done
+ if [[ "${_pc_unavailable}" == "1" ]]; then
+   _pc_tried_csv="$(IFS=,; echo "${PC_TRIED[*]:-}")"
++  if [[ "${_pc_exhaust_kind}" == "no_verdict" ]]; then
++    # Pool genuinely exhausted -- every arm ran but produced nothing usable. Keep the
++    # SAME terminal cause (no_verdict_marker) the pre-fallthrough code used for this
++    # exit path so downstream terminal-state consumers see no behaviour change for the
++    # exhausted case, only the new per-arm arm_no_verdict lines and the full tried= list
++    # attached to the death itself (dispatch-4fb7381a: reviewer never advanced past
++    # kimi, so tried= could only ever show one name -- this is the fix's proof).
++    printf 'status: blocked\nreason: no_verdict_marker\n' > "${HANDOFF}/review-gate.md"
++    emit decision "review_gate task=${TASK} status=blocked reason=no_verdict_marker tried=${_pc_tried_csv}"
++    _dl_note dead no_verdict_marker "tried=${_pc_tried_csv}"
++    _stamp_review_terminal blocked
++    exit 6
++  fi
+   _pc_refusal="${refusal:-all_arms_unavailable}"
+   _pc_write_unreviewed "${_pc_refusal}" "${pool}" "${_pc_tried_csv}" "${resolver_rc}" "${resolver_stderr}"
+   exit 9
+ fi
+-
+-resolve_review_artifact || true
+-review_file="${REVIEW_ARTIFACT:-${review_out}}"
+-# N-5 D4: the old `review_unusable` catch-all collapsed three distinct causes into one
+-# reason -- a provider that errored, a reviewer that produced nothing/sub-floor, and a
+-# reviewer that produced real prose with no verdict marker all looked identical in
+-# review-gate.md. Split per the named-reason vocabulary (design §2.1); each keeps its
+-# own exit 6 (unchanged from today) but is now distinguishable at a glance.
+-if [[ ${review_rc} -ne 0 && -z "${REVIEW_ARTIFACT}" ]]; then
+-  printf 'status: blocked\nreason: provider_error\nrc: %s\n' "${review_rc}" > "${HANDOFF}/review-gate.md"
+-  emit decision "review_gate task=${TASK} status=blocked reason=provider_error rc=${review_rc}"
+-  _dl_note dead provider_error "rc=${review_rc}"
+-  _stamp_review_terminal blocked
+-  exit 6
+-fi
+-if [[ ! -s "${review_file}" ]] || ! review_floor_ok "${review_file}"; then
+-  printf 'status: blocked\nreason: empty_response\n' > "${HANDOFF}/review-gate.md"
+-  emit decision "review_gate task=${TASK} status=blocked reason=empty_response"
+-  _dl_note dead empty_response "file=${review_file}"
+-  _stamp_review_terminal blocked
+-  exit 6
+-fi
+-if ! parse_review_verdict "${review_file}"; then
+-  printf 'status: blocked\nreason: no_verdict_marker\n' > "${HANDOFF}/review-gate.md"
+-  emit decision "review_gate task=${TASK} status=blocked reason=no_verdict_marker"
+-  _dl_note dead no_verdict_marker
+-  _stamp_review_terminal blocked
+-  exit 6
+-fi
+ review_source="${REVIEW_SOURCE:-stream}"
+ verdict="${PARSED_VERDICT}"
+ record_out="$(LEADV2_DISPATCH_CACHE_DIR="${LEADV2_DISPATCH_CACHE_DIR:-}" LEADV2_JOURNAL_BIN="${JOURNAL_BIN}" \

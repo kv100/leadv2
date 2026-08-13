@@ -1,0 +1,17 @@
+- 2026-08-12T15:42:28Z [decision] dispatch_task_bound task=f98be44b founder_task=STATUS-SURFACE-BATCH-01
+- 2026-08-12T15:42:29Z [decision] dispatch_classified task=f98be44b class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T15:42:32Z [decision] phase_precondition_warn task=f98be44b class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T15:42:32Z [decision] architect_prepass task=f98be44b status=disabled reason=kill_switch
+- 2026-08-12T15:42:33Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T15:42:34Z [decision] dispatchable_arms_read_failed task=f98be44b fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T15:42:34Z [decision] routing_config_degraded task=f98be44b reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T15:42:34Z [decision] kimi_skipped reason=writes_over task=f98be44b chars=1499 writes=8 prepass=0
+- 2026-08-12T15:42:35Z [decision] candidate_chain task=f98be44b arms=glm,codex,sonnet
+- 2026-08-12T15:42:41Z [decision] worker_spawned by=router model=glm task=f98be44b attempt=f98be44b-1786549346-56364 handle=260812-184240-STATUS-SURFACE-BATCH-01-6270
+- 2026-08-12T15:42:42Z [decision] mission-version task=STATUS-SURFACE-BATCH-01 sig=f98be44b rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T15:43:04Z [decision] product_close task=f98be44b status=spawned author=glm
+- 2026-08-12T15:43:04Z [decision] route_resolved by=router router=v1 model=glm task=f98be44b rule=none reason=no_routing_yaml
+- 2026-08-12T15:43:04Z [decision] lane_worktree_left task=f98be44b founder_task=STATUS-SURFACE-BATCH-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/STATUS-SURFACE-BATCH-01
+- 2026-08-12T16:05:44Z [decision] e2e_gate task=f98be44b status=ran verdict=fail rc=1
+- 2026-08-12T16:05:47Z [decision] dispatch_terminal task=f98be44b terminal=dead cause=e2e_regression
+- 2026-08-12T16:05:47Z [decision] dispatch_terminal_dedup task=f98be44b attempted=dead reason=terminal_already_recorded

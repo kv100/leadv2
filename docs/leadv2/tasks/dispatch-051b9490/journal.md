@@ -1,0 +1,26 @@
+- 2026-08-12T11:12:39Z [decision] dispatch_task_bound task=051b9490 founder_task=E2E-GATE-P1-REGRESSION-01
+- 2026-08-12T11:12:39Z [decision] dispatch_classified task=051b9490 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T11:12:42Z [decision] phase_precondition_warn task=051b9490 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T11:19:45Z [decision] architect_prepass task=051b9490 status=failed reason=timeout rc=124
+- 2026-08-12T11:19:45Z [decision] architect_prepass task=051b9490 status=retrying attempt=1/2 reason=timeout
+- 2026-08-12T11:26:48Z [decision] architect_prepass task=051b9490 status=failed reason=timeout rc=124
+- 2026-08-12T11:26:48Z [decision] architect_prepass task=051b9490 status=retrying attempt=2/2 reason=timeout
+- 2026-08-12T11:26:48Z [decision] architect_prepass task=051b9490 status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-12T11:26:49Z [decision] dispatch_terminal task=051b9490 terminal=parked cause=no_design_after_2_attempts
+- 2026-08-12T11:28:39Z [decision] dispatch_task_bound task=051b9490 founder_task=E2E-GATE-P1-REGRESSION-01
+- 2026-08-12T11:28:39Z [decision] dispatch_classified task=051b9490 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T11:28:41Z [decision] phase_precondition_warn task=051b9490 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T11:28:41Z [decision] architect_prepass task=051b9490 status=disabled reason=kill_switch
+- 2026-08-12T11:28:42Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T11:28:42Z [decision] dispatchable_arms_read_failed task=051b9490 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T11:28:42Z [decision] routing_config_degraded task=051b9490 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T11:28:43Z [decision] kimi_skipped reason=writes_over task=051b9490 chars=1844 writes=5 prepass=0
+- 2026-08-12T11:28:43Z [decision] candidate_chain task=051b9490 arms=glm,codex,sonnet
+- 2026-08-12T11:28:48Z [decision] worker_spawned by=router model=glm task=051b9490 attempt=051b9490-1786534116-2684 handle=260812-142847-E2E-GATE-P1-REGRESSION-01-2426
+- 2026-08-12T11:28:48Z [decision] mission-version task=E2E-GATE-P1-REGRESSION-01 sig=051b9490 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T11:29:09Z [decision] product_close task=051b9490 status=spawned author=glm
+- 2026-08-12T11:29:09Z [decision] route_resolved by=router router=v1 model=glm task=051b9490 rule=none reason=no_routing_yaml
+- 2026-08-12T11:29:09Z [decision] lane_worktree_left task=051b9490 founder_task=E2E-GATE-P1-REGRESSION-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-P1-REGRESSION-01
+- 2026-08-12T11:54:28Z [decision] e2e_gate task=051b9490 status=ran verdict=fail rc=1
+- 2026-08-12T11:54:31Z [decision] dispatch_terminal task=051b9490 terminal=dead cause=e2e_regression
+- 2026-08-12T11:54:31Z [decision] dispatch_terminal_dedup task=051b9490 attempted=dead reason=terminal_already_recorded

@@ -1,0 +1,10 @@
+phase: e2e
+status: running
+owner: leadv2-dispatch-product-close.sh:e2e_gate
+handle: dispatch-nw5sig005-e2e
+artifact: 
+artifact_sha256: 
+started_at: 2026-08-09T14:39:19Z
+ended_at: 
+reason: 
+proof: 

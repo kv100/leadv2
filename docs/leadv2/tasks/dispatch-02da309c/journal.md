@@ -1,0 +1,17 @@
+- 2026-08-07T17:31:36Z [decision] dispatch_classified task=02da309c class=product reason=conservative_default kind=unknown
+- 2026-08-07T17:31:37Z [decision] phase_precondition_warn task=02da309c class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-07T17:31:37Z [decision] architect_prepass task=02da309c status=disabled reason=kill_switch
+- 2026-08-07T17:31:37Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-07T17:31:37Z [decision] dispatchable_arms_read_failed task=02da309c fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-07T17:31:37Z [decision] routing_config_degraded task=02da309c reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-07T17:31:37Z [decision] kimi_skipped reason=chars_over task=02da309c chars=3962 writes=0 prepass=0
+- 2026-08-07T17:31:38Z [decision] quota_precheck_skip model=codex provider=codex task=02da309c reason=provider_quota_locked
+- 2026-08-07T17:31:38Z [decision] candidate_chain task=02da309c arms=glm,sonnet
+- 2026-08-07T17:32:09Z [decision] worker_spawned by=router model=glm task=02da309c attempt=02da309c-1786123890-55919 handle=260807-203209-02da309c-00ad
+- 2026-08-07T17:32:09Z [decision] mission-version task=- sig=02da309c rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-07T17:32:30Z [decision] product_close task=02da309c status=spawned author=glm
+- 2026-08-07T17:32:31Z [decision] route_resolved by=router router=v1 model=glm task=02da309c rule=none reason=no_routing_yaml
+- 2026-08-07T17:32:31Z [decision] lane_worktree_left task=02da309c founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/02da309c
+- 2026-08-07T17:50:36Z [decision] e2e_gate task=02da309c status=ran verdict=fail rc=1
+- 2026-08-07T17:50:37Z [decision] dispatch_terminal task=02da309c terminal=dead cause=e2e_regression
+- 2026-08-07T17:50:38Z [decision] dispatch_terminal_dedup task=02da309c attempted=dead reason=terminal_already_recorded

@@ -1,0 +1,17 @@
+- 2026-08-13T00:17:25Z [decision] dispatch_task_bound task=37649a05 founder_task=PLAN-FOLLOWUPS-01
+- 2026-08-13T00:17:25Z [decision] dispatch_classified task=37649a05 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-13T00:17:27Z [decision] phase_precondition_warn task=37649a05 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-13T00:17:27Z [decision] architect_prepass task=37649a05 status=disabled reason=kill_switch
+- 2026-08-13T00:17:27Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-13T00:17:28Z [decision] dispatchable_arms_read_failed task=37649a05 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-13T00:17:28Z [decision] routing_config_degraded task=37649a05 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-13T00:17:28Z [decision] kimi_skipped reason=writes_over task=37649a05 chars=1908 writes=5 prepass=0
+- 2026-08-13T00:17:28Z [decision] candidate_chain task=37649a05 arms=glm,codex,sonnet
+- 2026-08-13T00:17:30Z [decision] worker_spawned by=router model=glm task=37649a05 attempt=37649a05-1786580243-90960 handle=260813-031730-PLAN-FOLLOWUPS-01-2002
+- 2026-08-13T00:17:30Z [decision] mission-version task=PLAN-FOLLOWUPS-01 sig=37649a05 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-13T00:17:50Z [decision] product_close task=37649a05 status=spawned author=glm
+- 2026-08-13T00:17:50Z [decision] route_resolved by=router router=v1 model=glm task=37649a05 rule=none reason=no_routing_yaml
+- 2026-08-13T00:17:50Z [decision] lane_worktree_left task=37649a05 founder_task=PLAN-FOLLOWUPS-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLAN-FOLLOWUPS-01
+- 2026-08-13T00:36:28Z [decision] e2e_gate task=37649a05 status=ran verdict=fail rc=1
+- 2026-08-13T00:36:31Z [decision] dispatch_terminal task=37649a05 terminal=dead cause=e2e_regression
+- 2026-08-13T00:36:31Z [decision] dispatch_terminal_dedup task=37649a05 attempted=dead reason=terminal_already_recorded

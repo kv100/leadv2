@@ -1,0 +1,19 @@
+- 2026-08-12T18:22:46Z [decision] dispatch_task_bound task=0057aae6 founder_task=PLUGIN-RELIABILITY-01
+- 2026-08-12T18:22:46Z [decision] dispatch_classified task=0057aae6 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T18:22:48Z [decision] phase_precondition_warn task=0057aae6 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T18:22:48Z [decision] architect_prepass task=0057aae6 status=disabled reason=kill_switch
+- 2026-08-12T18:22:49Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T18:22:49Z [decision] dispatchable_arms_read_failed task=0057aae6 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T18:22:49Z [decision] routing_config_degraded task=0057aae6 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T18:22:49Z [decision] kimi_skipped reason=writes_over task=0057aae6 chars=2360 writes=7 prepass=0
+- 2026-08-12T18:22:49Z [decision] candidate_chain task=0057aae6 arms=glm,codex,sonnet
+- 2026-08-12T18:22:51Z [decision] worker_spawned by=router model=glm task=0057aae6 attempt=0057aae6-1786558964-76298 handle=260812-212251-PLUGIN-RELIABILITY-01-0333
+- 2026-08-12T18:22:52Z [decision] mission-version task=PLUGIN-RELIABILITY-01 sig=0057aae6 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T18:23:13Z [decision] product_close task=0057aae6 status=spawned author=glm
+- 2026-08-12T18:23:13Z [decision] route_resolved by=router router=v1 model=glm task=0057aae6 rule=none reason=no_routing_yaml
+- 2026-08-12T18:23:13Z [decision] lane_worktree_left task=0057aae6 founder_task=PLUGIN-RELIABILITY-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-RELIABILITY-01
+- 2026-08-12T18:41:27Z [decision] e2e_gate task=0057aae6 status=ran verdict=pass
+- 2026-08-12T18:41:28Z [decision] review_signals task=0057aae6 protected_path=0 source=lane_writes matched=-
+- 2026-08-12T18:41:28Z [decision] review_gate task=0057aae6 status=no_reviewer author=glm refusal=all_review_arms_unavailable pool=
+- 2026-08-12T18:41:28Z [decision] dispatch_terminal task=0057aae6 terminal=parked cause=all_review_arms_unavailable
+- 2026-08-12T18:41:29Z [decision] dispatch_terminal_dedup task=0057aae6 attempted=parked reason=terminal_already_recorded

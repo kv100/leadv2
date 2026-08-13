@@ -1,0 +1,3027 @@
+diff --git a/plugins/leadv2/docs/phases.md b/plugins/leadv2/docs/phases.md
+index d0024e4..2877dc3 100644
+--- a/plugins/leadv2/docs/phases.md
++++ b/plugins/leadv2/docs/phases.md
+@@ -267,7 +267,7 @@ Parallel Agent spawns per `context.yaml plan.parallel_groups:` — developer / p
+ 
+ ## §Phase 5: REVIEW
+ 
+-**Route first:** `eval "$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-router.sh" --phase review --step <step> --task-id <id> --class <class> --signals '{...}' 2>/dev/null)" || true`. `model=skip` → no review (CX-03 light_low_risk). When `USE_WORKFLOW=1` is emitted, use the Workflow path below.
++**Route first:** `eval "$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-router.sh" --phase review --step <step> --task-id <id> --class <class> --signals '{...}' 2>/dev/null)" || true`. Review is mandatory in every class. The router may only select the **cheapest reviewer arm**; a `model=skip` emission for the review step is ignored and the cheapest arm is used instead. When `USE_WORKFLOW=1` is emitted, use the Workflow path below.
+ 
+ **Dispatch (check `USE_WORKFLOW` from router output):**
+ 
+diff --git a/plugins/leadv2/hooks/leadv2-block-fg-dispatch.sh b/plugins/leadv2/hooks/leadv2-block-fg-dispatch.sh
+new file mode 100755
+index 0000000..32da5b5
+--- /dev/null
++++ b/plugins/leadv2/hooks/leadv2-block-fg-dispatch.sh
+@@ -0,0 +1,193 @@
++#!/usr/bin/env bash
++# PreToolUse:Bash — block foreground invocation of long-running leadv2 worker launchers.
++# The Bash tool's 2-minute foreground timeout SIGTERMs the whole process group, killing
++# a dispatch mid-flight with no diagnostic. This hook forces those launchers into the
++# background (run_in_background / trailing & / nohup / setsid).
++#
++# Round 2: predicates evaluate per launcher-execution segment, not the whole command
++# string.  A single python3 pass lexes and segments the command; only segments that
++# actually execute a guarded launcher are checked, fixing F1 (exemption-in-sibling) and
++# F2 (read-only-verb false positives).
++#
++# Known residual: subshells $(...), heredocs, xargs/find -exec, and ssh-remote
++# invocations are not parsed as execution-position launchers (needs a real shell
++# parser).  The override comment and run_in_background paths keep these recoverable.
++# The failure mode for exotic shapes is a false negative, matching fail-open philosophy.
++#
++# Fail-open: empty stdin, parse failure, or any uncaught error → exit 0 (never wedge the lead).
++# Override: append "# fg-dispatch: allow" to the command, or set LEADV2_ALLOW_FG_DISPATCH=1.
++set -euo pipefail
++trap 'echo "[$(basename "$0")] error at line $LINENO" >&2; exit 0' ERR
++
++INPUT="$(cat 2>/dev/null || true)"
++[[ -z "$INPUT" ]] && exit 0
++
++# Secondary escape hatch (mirrors LEADV2_ALLOW_FG in leadv2-block-fg-agent.sh).
++[[ "${LEADV2_ALLOW_FG_DISPATCH:-0}" == "1" ]] && exit 0
++
++# Single python3 pass: emit RIB (line 1), SEGS (line 2, \x1f-joined launcher-exec segments),
++# CMD (line 3+, verbatim — must be last because CMD may contain newlines).
++# On any exception the script writes nothing → fail-open.
++# NOTE: python code is inside bash single quotes — no single-quote chars allowed inside.
++_PARSE_OUT="$(printf '%s' "$INPUT" | python3 -c '
++import sys, json, os, re, shlex
++
++GUARDED = {
++    "leadv2-dispatch-code.sh",
++    "leadv2-codex-session-runner.sh",
++    "leadv2-fanout.sh",
++    "glm-coder.sh",
++    "omp-task.sh",
++}
++WRAPPERS = {"nohup", "setsid", "env", "command", "exec", "time", "sudo"}
++INTERPRETERS = {"bash", "sh", "zsh", "dash", "source", "."}
++VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
++SQ = chr(39)   # single quote
++DQ = chr(34)   # double quote
++
++def split_segments(cmd):
++    segs = []
++    cur = []
++    i = 0
++    n = len(cmd)
++    sq_on = False
++    dq_on = False
++    while i < n:
++        c = cmd[i]
++        if sq_on:
++            cur.append(c)
++            if c == SQ:
++                sq_on = False
++            i += 1
++            continue
++        if dq_on:
++            cur.append(c)
++            if c == "\\":
++                if i + 1 < n:
++                    cur.append(cmd[i + 1])
++                    i += 2
++                    continue
++            elif c == DQ:
++                dq_on = False
++            i += 1
++            continue
++        # Not inside quotes
++        if c == SQ:
++            cur.append(c); sq_on = True; i += 1; continue
++        if c == DQ:
++            cur.append(c); dq_on = True; i += 1; continue
++        if c == "\\":
++            if i + 1 < n:
++                cur.append(c); cur.append(cmd[i + 1]); i += 2; continue
++            cur.append(c); i += 1; continue
++        two = cmd[i:i+2]
++        if two in ("&&", "||"):
++            segs.append("".join(cur)); cur = []; i += 2; continue
++        if c in (";", "|", "\n"):
++            segs.append("".join(cur)); cur = []; i += 1; continue
++        cur.append(c); i += 1
++    segs.append("".join(cur))
++    return segs
++
++def is_launcher_exec(seg):
++    try:
++        tokens = shlex.split(seg)
++    except ValueError:
++        tokens = seg.split()
++    if not tokens:
++        return False
++    j = 0
++    # Drop leading VAR=value assignments.
++    while j < len(tokens) and VAR_RE.match(tokens[j]):
++        j += 1
++    # Drop leading wrapper commands.
++    while j < len(tokens) and os.path.basename(tokens[j]) in WRAPPERS:
++        j += 1
++    if j >= len(tokens):
++        return False
++    head = os.path.basename(tokens[j])
++    if head in GUARDED:
++        return True
++    if head in INTERPRETERS:
++        for t in tokens[j + 1:]:
++            if os.path.basename(t) in GUARDED:
++                return True
++    return False
++
++try:
++    r = json.loads(sys.stdin.read())
++    ti = r.get("tool_input", {})
++    cmd = ti.get("command", "")
++    rib = ti.get("run_in_background")
++    rib_norm = "" if rib is None else ("true" if rib else "false")
++
++    raw_segs = split_segments(cmd)
++    launcher_segs = []
++    for s in raw_segs:
++        flat = " ".join(s.split())
++        if flat and is_launcher_exec(flat):
++            launcher_segs.append(flat)
++
++    segs_field = chr(31).join(launcher_segs)
++    sys.stdout.write(rib_norm + "\n" + segs_field + "\n" + cmd)
++except Exception:
++    pass
++' 2>/dev/null || true)"
++
++# Bash-side split: line 1 = RIB, line 2 = SEGS, remainder = CMD.
++RIB="${_PARSE_OUT%%$'\n'*}"
++_REST="${_PARSE_OUT#*$'\n'}"
++SEGS_RAW="${_REST%%$'\n'*}"
++CMD="${_REST#*$'\n'}"
++
++# CMD empty → parse failed → fail-open.  (python3 absent → empty → exit 0.)
++[[ -z "${CMD:-}" ]] && exit 0
++
++# Override escape hatch (intentionally whole-string: author-intent marker).
++printf '%s' "$CMD" | grep -q '# fg-dispatch: allow' && exit 0
++
++# No launcher-execution segment → allow.  This is the F2 fix:
++# cat, git log, grep, etc. never execute a launcher.
++[[ -z "${SEGS_RAW:-}" ]] && exit 0
++
++# Evaluate each launcher-exec segment.  If ANY segment is unguarded → deny.
++# RIB is a tool-level field (global) — applies to all segments.
++_DENIED=0
++while IFS= read -r -d $'\x1f' _seg; do
++  [[ -z "$_seg" ]] && continue
++  _allowed=0
++  # a. run_in_background == true (tool-level field).
++  [[ "${RIB:-}" == "true" ]] && _allowed=1
++  # b. --no-spawn / LEADV2_DISPATCH_SPAWN=0.
++  [[ $_allowed -eq 0 ]] && printf '%s' "$_seg" | grep -Eq -- '--no-spawn|LEADV2_DISPATCH_SPAWN=0' && _allowed=1
++  # c. --help or whole-word -h.
++  [[ $_allowed -eq 0 ]] && printf '%s' "$_seg" | grep -Eq -- '--help|(^|[[:space:]])-h([[:space:]]|$)' && _allowed=1
++  # d. whole-word status or record-review subcommand.
++  [[ $_allowed -eq 0 ]] && printf '%s' "$_seg" | grep -Eq '[[:space:]](status|record-review)([[:space:]]|$)' && _allowed=1
++  # e. trailing & (background).
++  [[ $_allowed -eq 0 ]] && printf '%s' "$_seg" | grep -Eq '[[:space:]]&[[:space:]]*(#.*)?$' && _allowed=1
++  # f. nohup ... &.
++  [[ $_allowed -eq 0 ]] && printf '%s' "$_seg" | grep -Eq 'nohup.*&' && _allowed=1
++  # g. setsid — only counts as backgrounding where setsid actually exists (absent on macOS).
++  [[ $_allowed -eq 0 ]] && command -v setsid >/dev/null 2>&1 \
++    && printf '%s' "$_seg" | grep -Eq '(^|[[:space:]])setsid([[:space:]]|$)' && _allowed=1
++  # Any unguarded segment → deny.
++  if [[ $_allowed -eq 0 ]]; then
++    _DENIED=1
++    break
++  fi
++done < <(printf '%s\x1f' "$SEGS_RAW")
++
++[[ $_DENIED -eq 0 ]] && exit 0
++
++# Deny.
++cat >&2 <<MSG
++[leadv2-block-fg-dispatch] BLOCKED
++Foreground invocation of a leadv2 worker launcher — the 2-minute Bash tool timeout
++would SIGTERM the process group and silently kill the dispatch mid-flight.
++Run this instead:
++  ${CMD} &
++Override: set LEADV2_ALLOW_FG_DISPATCH=1
++MSG
++
++exit 2
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index 4bc65f3..f5b24b3 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -241,6 +241,10 @@
+ 
+ set -uo pipefail   # -u safe (quote everything, no unbound vars); NO -e (refusals must journal)
+ 
++# DISPATCH-FG-GUARD-01 C3: snapshot argv BEFORE any parsing/shift so the
++# live-lane refusal can echo back the caller's own command verbatim.
++LEADV2_DISPATCH_ARGV_REPLAY="$(printf '%q ' "$0" "$@")"
++
+ # SWIFTBAR-LIVE-01 round 2 (§2.4): script-scope globals carrying the founder
+ # task id + mission file path from `main`'s arg parse to dispatch_reserve.
+ # Globals, not locals passed down the call stack: dispatch_reserve is also
+@@ -414,6 +418,13 @@ REQUIRE_LANE_WRITES="${LEADV2_REQUIRE_LANE_WRITES:-1}"
+ # is a landing-day opt-in so no in-flight or historical dispatch retro-parks; flip to
+ # 1 after a soak, mirroring LEADV2_REQUIRE_LANE_WRITES's own rollout.
+ REQUIRE_ACCEPTANCE="${LEADV2_REQUIRE_ACCEPTANCE:-0}"
++# PHASES-ARE-THE-ONLY-PATH-01: three-valued phase precondition gate.
++# 0 = disabled (byte-identical to today's behaviour, one-flip rollback);
++# warn (default) = journal phase_precondition_warn + proceed;
++# 1 = refuse dispatch on missing mandatory phases.
++# The flip to 1 is ledgered separately as SD-PHASE-ENFORCE-01.
++REQUIRE_PHASES="${LEADV2_REQUIRE_PHASES:-warn}"
++PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.sh}"
+ 
+ log()        { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
+ log_err()    { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
+@@ -454,6 +465,30 @@ close_owner_pidfile() {
+ # child that reads it immediately -- see leadv2-dispatch-product-close.sh's _pc_diff_base().
+ lane_start_sha_file() { printf '%s/dispatch-%s.start-sha' "${CACHE_BASE}" "$1"; }
+ 
++# ARM-PRODUCES-NOTHING-02: the registration file that tells the close gate's silent-arm
++# probe whether an arm was ever spawned for this lane.  Same handoff dir both processes
++# already agree on by convention; trivially constructible in a test fixture.  Env override
++# for test isolation / non-conventional handoff root.
++_dispatch_arm_registered_file() {  # <sig8> -> path on stdout
++  if [[ -n "${LEADV2_DISPATCH_ARM_REGISTERED_FILE:-}" ]]; then
++    printf '%s' "${LEADV2_DISPATCH_ARM_REGISTERED_FILE}"
++  else
++    printf '%s/docs/handoff/dispatch-%s/arm-registered' "${PROJECT_ROOT}" "$1"
++  fi
++}
++
++# ARM-PRODUCES-NOTHING-02: append one line per spawn.  Every failure swallowed (|| true) —
++# a failed write degrades to the pre-existing empty_diff path, never a false verdict.
++_dispatch_register_arm() {  # <sig8> <arm> [handle] -> always rc0
++  local sig8="$1" arm="$2" handle="${3:-}" f dir
++  [[ -n "${arm}" ]] || return 0
++  f="$(_dispatch_arm_registered_file "${sig8}")"
++  dir="$(dirname "${f}")"
++  mkdir -p "${dir}" 2>/dev/null || true
++  printf 'arm=%s handle=%s epoch=%s\n' "${arm}" "${handle}" "$(date +%s 2>/dev/null || printf '0')" \
++    >> "${f}" 2>/dev/null || true
++}
++
+ record_lane_start_sha() {  # <sig8> -> writes LANE_START_SHA best-effort, never fails the caller
+   # LANE-PLACEMENT-01: on a --resume-lane/--worktree pin this HEAD is the PINNED tree's HEAD.
+   # Chosen deliberately: the close-gate diff then covers the new round, plus any uncommitted
+@@ -563,9 +598,26 @@ _resolve_pinned_placement() {
+   done
+   if (( _live == 1 )); then
+     reason="lane_is_live"
+-    emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate} probe_id=${_probe_id} verdict=${_v}"
++    # Re-probe with --json to get age_s (only reachable via --json).
++    local _row _age="?"
++    _row="$(bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --lane "${_probe_id}" --no-codex --json 2>/dev/null || true)"
++    _age="$(printf '%s' "${_row}" | python3 -c '
++import sys, json
++try:
++    r = json.loads(sys.stdin.read())
++    a = r.get("age_s")
++    if a is not None: print(a)
++except Exception:
++    pass
++' 2>/dev/null || true)"
++    [[ -z "${_age}" ]] && _age="?"
++    emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate} probe_id=${_probe_id} verdict=${_v} age=${_age}"
+     printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
+       "${reason}" "${ref}" "${candidate}" >&2
++    printf '  verdict=%s age=%ss probe_id=%s\n' \
++      "${_v}" "${_age}" "${_probe_id}" >&2
++    printf 'The lane is still running. Re-run once it clears:\n  %s &\n' \
++      "${LEADV2_DISPATCH_ARGV_REPLAY}" >&2
+     exit 5
+   fi
+ 
+@@ -1363,6 +1415,25 @@ _kimi_admissible() { # <mission> <sig8> <writes_csv> <kimi_fit> -> 0 admissible,
+   return 0
+ }
+ 
++# DISPATCH-KIMI-ARM-MISMATCH-01 (2026-08-05): single source of truth for the
++# fixed-order candidate chain. The launcher and resolver vocabularies must
++# agree — the matching allowlist on the resolver side is
++# DISPATCHABLE_BUILD_ARMS in leadv2-glm-policy-resolve.py.
++_candidate_chain_for_arm() { # <arm> <sig8> ; mutates candidate_arms
++  local arm="$1" sig8="$2"
++  case "${arm}" in
++    glm)    candidate_arms=(glm codex sonnet) ;;
++    codex)  candidate_arms=(codex sonnet) ;;
++    sonnet) candidate_arms=(sonnet) ;;
++    *)
++      candidate_arms=(sonnet)
++      emit decision "arm_vocabulary_mismatch by=router arm=${arm} fallback=sonnet task=${sig8} reason=launcher_unknown_arm"
++      log_err "arm_vocabulary_mismatch: unknown arm=${arm} for task=${sig8}, falling back to sonnet"
++      ;;
++  esac
++  return 0
++}
++
+ _apply_kimi_admission() { # <mission> <sig8> <writes_csv> <kimi_fit>; mutates candidate_arms
+   local mission="$1" sig8="$2" writes_csv="$3" kimi_fit="$4" _a
+   _kimi_admissible "${mission}" "${sig8}" "${writes_csv}" "${kimi_fit}" && return 0
+@@ -1422,6 +1493,70 @@ _acceptance_guard() {
+   return 1
+ }
+ 
++# _phase_precondition_guard <sig8> <class> <writes> [waiver-args...] -> 0 proceed, 1 refuse
++# PHASES-ARE-THE-ONLY-PATH-01: sits at the same structural slot as _lane_writes_guard/
++# _acceptance_guard, after arg validation, before any spawn side effect and before
++# _stamp_active_phase prepass. Exit code 4 from phase-record.sh (config error / refused
++# waiver) ALWAYS refuses in every mode including 0 — a malformed override is a
++# configuration error, not a phase gap.
++_phase_precondition_guard() {
++  local sig8="$1" cls="$2" writes="${3:-}"
++  shift 3 2>/dev/null || shift $# 2>/dev/null || true
++  local -a waiver_args=()
++  while [[ $# -gt 0 ]]; do
++    waiver_args+=("$1"); shift
++  done
++
++  # 0 = disabled: return before any subprocess, byte-identical to today.
++  if [[ "${REQUIRE_PHASES}" == "0" ]]; then
++    return 0
++  fi
++
++  # Resolve mode: warn (default), 1 (enforce). Unrecognised → warn with journal.
++  local mode="${REQUIRE_PHASES}"
++  if [[ "$mode" != "warn" && "$mode" != "1" ]]; then
++    emit decision "phase_precondition_badmode value=${mode}"
++    mode="warn"
++  fi
++
++  local assert_out assert_rc
++  assert_out="$(bash "${PHASE_RECORD_BIN}" assert "${sig8}" --class "${cls}" \
++    ${writes:+--writes "${writes}"} "${waiver_args[@]+"${waiver_args[@]}"}" 2>&1)" || assert_rc=$?
++  assert_rc="${assert_rc:-0}"
++
++  case "$assert_rc" in
++    0)
++      return 0
++      ;;
++    3)
++      local missing_csv="${assert_out#missing=}"
++      if [[ "$mode" == "1" ]]; then
++        emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} mode=1"
++        log_err "dispatch refused: missing mandatory phases: ${missing_csv}"
++        local mp
++        for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
++          log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
++        done
++        return 1
++      else
++        emit decision "phase_precondition_warn task=${sig8} class=${cls} missing=${missing_csv} mode=warn"
++        return 0
++      fi
++      ;;
++    4)
++      # Config error / refused waiver — always refuse, even in mode 0
++      emit decision "phase_precondition_config_error task=${sig8} detail=${assert_out}"
++      log_err "phase precondition config error: ${assert_out}"
++      return 1
++      ;;
++    *)
++      emit decision "phase_precondition_config_error task=${sig8} detail=unexpected_rc=${assert_rc}"
++      log_err "phase precondition: unexpected exit ${assert_rc}: ${assert_out}"
++      return 1
++      ;;
++  esac
++}
++
+ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled, 1 failed
+   local raw="$1" sig8="$2" writes="$3" f mfile out rc count
+   ARCHITECT_PREPASS_REASON=""
+@@ -1618,22 +1753,29 @@ spawn_worker() {
+   return ${rc}
+ }
+ 
+-spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id>
++spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id> <lane_mission_path>
+   # N7F-LANE-NAME: forwards DISPATCH_LANE_NAME as close_bin's 8th positional (not a 7th
+   # param on this fn -- read from the global, same pattern as _dl_note above) so the
+   # display name survives the worker->close-phase handoff for act two.
+   local sig8="$1" author="$2" handle="$3" reviewer_arms="${4:-}" lane_writes_csv="${5:-}"
+-  local founder_task_id="${6:-}"
++  local founder_task_id="${6:-}" lane_mission_path="${7:-}"
+   [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]] || return 0
+   local close_bin="${LEADV2_DISPATCH_PRODUCT_CLOSE_BIN:-${SCRIPT_DIR}/leadv2-dispatch-product-close.sh}"
+   if [[ ! -f "${close_bin}" ]]; then
+     emit decision "product_close task=${sig8} status=failed reason=close_script_missing"
+     return 1
+   fi
++  # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01: thread the resolved candidate
++  # chain (same CSV as the vestigial LEADV2_DISPATCH_REVIEWER_ARMS below, but this one
++  # IS read -- by the close gate's silent-arm probe to find the next arm to advance to)
++  # and the ONE lane-mission artifact this dispatch already wrote to disk, so the close
++  # gate can re-spawn the next arm on an identical mission without re-deriving it.
+   PROJECT_ROOT="${PROJECT_ROOT}" LEADV2_DISPATCH_CACHE_DIR="${CACHE_BASE}" \
+     LEADV2_JOURNAL_BIN="${JOURNAL_BIN}" LEADV2_DISPATCH_CODEX_BIN="${CODEX_BIN}" \
+     LEADV2_DISPATCH_ARCHITECT_BIN="${ARCHITECT_BIN}" \
+     LEADV2_DISPATCH_REVIEWER_ARMS="${reviewer_arms}" \
++    LEADV2_DISPATCH_CANDIDATE_ARMS="${reviewer_arms}" \
++    LEADV2_DISPATCH_LANE_MISSION="${lane_mission_path}" \
+     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
+     LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" \
+     LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
+@@ -1918,6 +2060,11 @@ _spawn_worker_body() {
+   local _spawn_attempt; _spawn_attempt="$(_dl_attempt_token "${sig8}")"
+   emit decision "worker_spawned by=router model=${arm} task=${sig8} attempt=${_spawn_attempt} handle=${handle}"
+   printf 'worker_spawned model=%s task=%s attempt=%s handle=%s\n' "${arm}" "${sig8}" "${_spawn_attempt}" "${handle}"
++  # ARM-PRODUCES-NOTHING-02: record the arm registration so the close gate's silent-arm
++  # probe can distinguish "arm was spawned but wrote nothing" from "no arm was ever spawned".
++  # This one site covers BOTH the router path and cmd_advance_arm (both call spawn_worker ->
++  # _spawn_worker_body).  A file write escapes this command-substitution subshell.
++  _dispatch_register_arm "${sig8}" "${arm}" "${handle}"
+   # S7-RETARGET-PERSIST-01: names which mission version this dispatch launched, so
+   # "it relaunched the old premise" is a grep of this log, not archaeology. Fail-open
+   # by construction: sig/head are already-in-hand local values (no failure mode), rev
+@@ -2164,6 +2311,7 @@ cmd_status() {
+ cmd_resolve() {
+   local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
+   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0
++  local -a phase_waivers=()
+   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
+   # for callers (leadv2-fanout.sh's funnel) that dispatch on behalf of a specific
+   # docs/tasks.yaml row. Additive/optional -- callers that omit it (backlog-pump,
+@@ -2204,6 +2352,8 @@ cmd_resolve() {
+       --acceptance-cmd)  [[ $# -ge 2 ]] || { log_err "--acceptance-cmd requires a value"; usage; }
+                           lane_acceptance_cmd="$2"; shift 2 ;;
+       --rollback-onestep) lane_rollback=1; shift ;;
++      --phase-waiver) [[ $# -ge 2 ]] || { log_err "--phase-waiver requires a value"; usage; }
++                      phase_waivers+=("$2"); shift 2 ;;
+       # LANE-PLACEMENT-01: pin WORK_ROOT to an EXISTING lane worktree instead of
+       # ensure-creating a new one.  Two spellings, one code path.  Mutual-exclusion
+       # is enforced here (before any state write, exit 1 = usage).
+@@ -2319,6 +2469,30 @@ cmd_resolve() {
+   local product_class classification_reason
+   IFS=$'\t' read -r product_class classification_reason <<< "$(classify_product_work "${kind}" "${mission}")"
+   emit decision "dispatch_classified task=${sig8} class=${product_class} reason=${classification_reason} kind=${kind:-unknown}"
++
++  # PHASES-ARE-THE-ONLY-PATH-01 §7: register the dispatch lane in active.yaml.
++  # Without this, leadv2_active_update_phase finds no row to patch and the mirror
++  # stays empty forever (backlog-pump.sh:250-256 states this outright).
++  # leadv2_active_register is idempotent (refreshes existing row if PID alive).
++  if [[ -n "${founder_task_id}" ]] && [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
++    if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null \
++       || ! leadv2_active_register "${founder_task_id}" "${task_class}" "${PROJECT_ROOT}" "worktree-d4d014e1" 2>/dev/null; then
++      emit decision "active_register_miss task=${sig8}"
++    fi
++  fi
++
++  # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
++  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
++    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
++
++  # PHASES-ARE-THE-ONLY-PATH-01 §5: precondition guard at the same structural slot
++  # as _lane_writes_guard / _acceptance_guard — after arg validation, before spawn.
++  local _phase_waiver_args=()
++  for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
++    _phase_waiver_args+=(--waiver "$_pw")
++  done
++  _phase_precondition_guard "${sig8}" "${task_class}" "${lane_writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
++
+   if [[ "${product_class}" == "product" ]]; then
+     # PREPASS-DEGRADES-01 (2026-07-29): a prepass failure must NEVER stop the work. On
+     # 2026-07-29 this hard exit killed product dispatches outright -- the task never
+@@ -2344,6 +2518,13 @@ cmd_resolve() {
+       _dl_note "${sig8}" parked "no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts" "" "${founder_task_id}"
+       exit 3
+     fi
++    # PHASES-ARE-THE-ONLY-PATH-01: record plan phase done (prepass produced a design).
++    local _pp_file_record; _pp_file_record="$(_prepass_file "${sig8}")"
++    if [[ -s "${_pp_file_record}" ]]; then
++      bash "${PHASE_RECORD_BIN}" record "${sig8}" plan --status done \
++        --artifact "docs/handoff/dispatch-${sig8}/architect-prepass.md" \
++        --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
++    fi
+     # P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01: the row-declared `lane_writes` always wins --
+     # a founder declaration is never overridden. Only when the row carried none does the
+     # architect's own LANE_WRITES: line (already proven present by the guard above) fill it,
+@@ -2538,13 +2719,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
+     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
+     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
+   else
+-    case "${arm}" in
+-      # Kimi's presence is guarded below by _apply_kimi_admission.
+-      glm)   candidate_arms=(glm kimi codex sonnet) ;;
+-      codex) candidate_arms=(codex sonnet) ;;
+-      sonnet) candidate_arms=(sonnet) ;;
+-      *) log_err "unsupported resolved dispatch arm: ${arm}"; exit 1 ;;
+-    esac
++    _candidate_chain_for_arm "${arm}" "${sig8}"
+     # T-q codex_quota_gate (SUPERVISOR-AUDIT-01 T-b): strip codex from the fixed
+     # glm->codex->sonnet fallback chain when the resolver's live codex-quota read
+     # is >= build_threshold_pct — an arm the resolver itself refuses to hand out
+@@ -2633,6 +2808,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
+   # mid-loop (e.g. glm quota-gate refusal falling to sonnet), so that second
+   # stamp is the one that ends up truthful, not this one.
+   _stamp_active_phase "${founder_task_id}" "build" "${arm}"
++  # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
++  bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
++    --handle "dispatch-${sig8}-build" \
++    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
+   # N1-EMPTY-LANE-IS-NOT-A-PASS (B.2): the candidate loop is wrapped in a restartable
+   # while so a lock-busy refusal can re-resolve the arm mid-loop and re-enter over a
+   # rebuilt chain. bash expands "${candidate_arms[@]}" once at for-entry, so merely
+@@ -2663,6 +2842,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
+       # Re-stamp with the CONFIRMED-launched arm, phase unchanged -- the truthful value
+       # once the primary arm_resolved pick was refused and the loop fell to a fallback.
+       _stamp_active_phase "${founder_task_id}" "build" "${candidate}"
++      # PHASES-ARE-THE-ONLY-PATH-01: re-record build with the confirmed candidate.
++      bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
++        --handle "dispatch-${sig8}-${candidate}" \
++        --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
+       # VESTIGIAL (dispatch-00629379, 2026-07-30): reviewer_arms / the
+       # LEADV2_DISPATCH_REVIEWER_ARMS env it feeds is DEAD -- leadv2-dispatch-
+       # product-close.sh no longer reads it. Reusing the BUILD candidate chain as the
+@@ -2673,7 +2856,17 @@ confirmation-seeking; only for a decision you cannot make yourself."
+       # Kept (not deleted) only to avoid an unrelated call-signature change here.
+       local reviewer_arms
+       reviewer_arms="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
+-      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}"; then
++      # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (3a): persist the lane's
++      # mission text ONCE here, at spawn time, so a later `advance-arm` re-spawn (fired
++      # from the close gate's silent-arm probe) can launch the next candidate on the
++      # SAME mission without re-deriving it from router state that may have moved on.
++      local _lane_mission_path=""
++      if [[ "${product_class}" == "product" ]]; then
++        _lane_mission_path="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-mission.md"
++        mkdir -p "$(dirname "${_lane_mission_path}")" 2>/dev/null
++        printf '%s' "${mission}" > "${_lane_mission_path}" 2>/dev/null || _lane_mission_path=""
++      fi
++      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}"; then
+         # The worker is already live; make the failed postflight launch visible rather than
+         # pretending close evidence will arrive.  Do not kill the independently-owned worker.
+         log_err "product close gate could not be launched for task=${sig8}"
+@@ -2727,12 +2920,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
+           if [[ -n "${_rr_arm}" && "${_rr_arm}" != "${arm}" ]]; then
+             arm="${_rr_arm}"; rule="${_rr_rule}"; reason="${_rr_reason}"
+             emit decision "arm_reresolved by=router trigger=glm_lock_busy arm=${arm} rule=${rule} reason=${reason} task=${sig8} router=${router_label}"
+-            case "${arm}" in
+-              glm)   candidate_arms=(glm kimi codex sonnet) ;;
+-              codex) candidate_arms=(codex sonnet) ;;
+-              sonnet) candidate_arms=(sonnet) ;;
+-              *) : ;;  # unknown arm: leave the chain; loop continues as-is
+-            esac
++            _candidate_chain_for_arm "${arm}" "${sig8}"
+             _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
+             _reenter=1
+             break   # break the for; outer while re-enters over the rebuilt chain
+@@ -2798,11 +2986,104 @@ confirmation-seeking; only for a decision you cannot make yourself."
+   exit 4
+ }
+ 
++# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (3b): re-spawns the NEXT candidate arm
++# on the SAME lane worktree/mission after the close gate's silent-arm probe (Fix 1, in
++# leadv2-dispatch-product-close.sh) determined the current arm produced nothing. Reuses
++# the existing spawn machinery (spawn_worker + _stamp_active_phase + spawn_product_close)
++# instead of reimplementing any of it. Deliberately does NOT call dispatch_reserve/
++# atomic_dispatch_reserve_spawn_confirm -- the duplicate-signature guard exists to stop
++# TWO callers racing to claim the SAME sig8; here the sig8 is already confirmed to this
++# lane (checked below) and this is a continuation of that same lane, not a new claim.
++#   leadv2-dispatch-code.sh advance-arm --sig8 <sig8> --arm <next_arm>
++#     --mission-file <path> --task-id <founder_task_id> [--worktree <lane_root>]
++#     [--writes <csv>]
++# exit 4 (no journal-worthy spawn attempted) when no CONFIRMED reservation row exists for
++# this sig8 in the dispatch_reserve/confirm ledger (dispatch_ledger_file, NOT the terminal
++# ledger) -- that row is this function's proof the sig8 legitimately belongs to a lane
++# that already went through admission once.
++cmd_advance_arm() {
++  local sig8="" arm="" mission_file="" task_id="" worktree="" writes=""
++  local -a phase_waivers=()
++  while [[ $# -gt 0 ]]; do
++    case "$1" in
++      --sig8)         [[ $# -ge 2 ]] || { log_err "--sig8 requires a value"; exit 4; }; sig8="$2"; shift 2 ;;
++      --arm)          [[ $# -ge 2 ]] || { log_err "--arm requires a value"; exit 4; }; arm="$2"; shift 2 ;;
++      --mission-file) [[ $# -ge 2 ]] || { log_err "--mission-file requires a value"; exit 4; }; mission_file="$2"; shift 2 ;;
++      --task-id)      [[ $# -ge 2 ]] || { log_err "--task-id requires a value"; exit 4; }; task_id="$2"; shift 2 ;;
++      --worktree)     [[ $# -ge 2 ]] || { log_err "--worktree requires a value"; exit 4; }; worktree="$2"; shift 2 ;;
++      --writes)       [[ $# -ge 2 ]] || { log_err "--writes requires a value"; exit 4; }; writes="$2"; shift 2 ;;
++      --phase-waiver) [[ $# -ge 2 ]] || { log_err "--phase-waiver requires a value"; exit 4; }; phase_waivers+=("$2"); shift 2 ;;
++      *) log_err "advance-arm: unknown argument: $1"; exit 4 ;;
++    esac
++  done
++  if [[ -z "${sig8}" || -z "${arm}" || -z "${mission_file}" ]]; then
++    log_err "advance-arm: --sig8, --arm and --mission-file are required"
++    exit 4
++  fi
++  if [[ ! -f "${mission_file}" ]]; then
++    emit decision "arm_advance_refused task=${sig8} reason=no_mission_file"
++    exit 4
++  fi
++
++  local ledger_f confirmed
++  ledger_f="$(dispatch_ledger_file)"
++  confirmed=""
++  if [[ -f "${ledger_f}" ]]; then
++    confirmed="$(grep -F "\"task_sig\":\"${sig8}" "${ledger_f}" 2>/dev/null | grep -F '"state":"confirmed"' | tail -1)"
++  fi
++  if [[ -z "${confirmed}" ]]; then
++    emit decision "arm_advance_refused task=${sig8} reason=no_confirmed_reservation"
++    log_err "advance-arm: no confirmed reservation for task=${sig8}; refusing"
++    exit 4
++  fi
++
++  # PHASES-ARE-THE-ONLY-PATH-01 §5/D2: advance-arm also spawns a worker, so the
++  # guard must run here too. cmd_advance_arm has no --class flag; resolve it
++  # from the confirmed dispatch-ledger row, default to Standard if absent.
++  local _adv_class
++  _adv_class="$(printf '%s' "${confirmed}" | sed -n 's/.*"task_class":"\([^"]*\)".*/\1/p')"
++  if [[ -z "${_adv_class}" ]]; then
++    _adv_class="Standard"
++    emit decision "phase_class_defaulted task=${sig8}"
++  fi
++  local _phase_waiver_args=()
++  for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
++    _phase_waiver_args+=(--waiver "$_pw")
++  done
++  _phase_precondition_guard "${sig8}" "${_adv_class}" "${writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
++
++  local mission
++  mission="$(cat "${mission_file}" 2>/dev/null)"
++  [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
++
++  local spawn_out src
++  spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
++  if [[ ${src} -ne 0 ]]; then
++    emit decision "arm_advance_failed task=${sig8} arm=${arm} reason=spawn_failed"
++    exit 1
++  fi
++  local handle
++  handle="$(printf '%s\n' "${spawn_out}" | sed -n 's/.*handle=\(.*\)$/\1/p' | tail -1)"
++  _stamp_active_phase "${task_id}" "build" "${arm}"
++  # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
++  bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
++    --handle "dispatch-${sig8}-build" \
++    --task-id "${task_id}" --owner "$(basename "$0"):cmd_advance_arm" 2>/dev/null || true
++  emit decision "worker_spawned by=arm_advance model=${arm} handle=${handle}"
++
++  if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then
++    spawn_product_close "${sig8}" "${arm}" "${handle}" "" "${writes}" "${task_id}" "${mission_file}"
++  fi
++  printf 'arm_advance model=%s task=%s handle=%s\n' "${arm}" "${sig8}" "${handle}"
++  exit 0
++}
++
+ # ── dispatch ──────────────────────────────────────────────────────────────────────
+ [[ $# -eq 0 ]] && usage
+ case "${1:-}" in
+   record-review) shift; cmd_record_review "$@" ;;
+   status)        cmd_status ;;
++  advance-arm)   shift; cmd_advance_arm "$@" ;;
+   sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;
+   reconcile)     shift; [[ -f "${LEDGER_BIN}" ]] && exec bash "${LEDGER_BIN}" reconcile "$@"; exit $? ;;
+   -h|--help)     usage ;;
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+index 1f7aae2..5300954 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -840,6 +840,190 @@ pc_await_worker_exit() {
+ # no_work before e2e-gate-passed.flag can ever be created. The review gate below
+ # consumes the already-computed ${diff_file} / ${_pc_base_used}; the dedup block
+ # after it reuses ${diff_file} (global -- no `local` on the diff vars) too.
++
++# GATE-LANE-DIFF-ONLY-WHEN-CROSS-REPO-01: distinguishes "the lane genuinely did nothing"
++# from "the lane did something the diff-scoping above failed to capture". rc0 iff <root> is
++# a git work tree with >=1 uncommitted tracked change or untracked file, after excluding
++# docs/leadv2/ and docs/handoff/ -- the SAME exclusion set _pc_git_diff uses, so a lane
++# whose only churn is its own handoff artifacts does not flip from no_work to a false
++# rescue. Read-only: never touches the index or working tree (unlike _pc_git_diff's
++# throwaway-index `add -N`, which is unnecessary here since porcelain already reports
++# untracked paths). Tolerates quoted porcelain paths (paths with spaces/special chars).
++_pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding docs/leadv2, docs/handoff), rc1 otherwise
++  local root="$1"
++  [[ -n "${root}" && -d "${root}" ]] || return 1
++  git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
++  local status
++  status="$(git -C "${root}" status --porcelain --untracked-files=all 2>/dev/null | \
++    grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/')"
++  [[ -n "${status}" ]]
++}
++
++# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01: bash-3.2-safe mtime probe (no
++# portable `stat -f/-c` flag exists across darwin/linux) -- try darwin's `-f %m` first,
++# fall back to linux's `-c %Y`. rc1 on ANY stat failure (missing file, permission,
++# unknown stat dialect) -- callers fail OPEN (treat as "not proven stale") on rc1.
++_pc_stat_mtime() {  # <file> -> stdout epoch mtime; rc1 on failure
++  local f="$1" m
++  m="$(stat -f %m "${f}" 2>/dev/null)" || m="$(stat -c %Y "${f}" 2>/dev/null)" || return 1
++  [[ "${m}" =~ ^[0-9]+$ ]] || return 1
++  printf '%s' "${m}"
++}
++
++# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01: bash-3.2-safe CSV chain walk -- no
++# associative arrays. `set --` over IFS=, split positional params, then a single linear
++# scan for the element strictly AFTER <cur>. rc1 (empty stdout) whenever <cur> is the
++# last element, absent from the chain, or the chain has 0/1 elements -- callers treat
++# rc1 as "no next arm" (chain_exhausted), never a wrap-around to element 0.
++_pc_next_arm_in_chain() {  # <chain_csv> <cur_arm> -> stdout next arm; rc1 if none
++  local chain="$1" cur="$2" tok found=0
++  [[ -n "${chain}" ]] || return 1
++  local _oldifs="${IFS}"
++  IFS=','
++  set -- ${chain}
++  IFS="${_oldifs}"
++  for tok in "$@"; do
++    tok="${tok#"${tok%%[![:space:]]*}"}"; tok="${tok%"${tok##*[![:space:]]}"}"
++    [[ -z "${tok}" ]] && continue
++    if [[ ${found} -eq 1 ]]; then
++      printf '%s' "${tok}"
++      return 0
++    fi
++    [[ "${tok}" == "${cur}" ]] && found=1
++  done
++  return 1
++}
++
++# ARM-PRODUCES-NOTHING-02: path to the arm-registration file written by the dispatcher at
++# spawn time (see _dispatch_register_arm in leadv2-dispatch-code.sh).  Same handoff dir,
++# same convention, trivially constructible in a test fixture.
++_pc_arm_registered_file() {  # -> path on stdout
++  if [[ -n "${LEADV2_DISPATCH_ARM_REGISTERED_FILE:-}" ]]; then
++    printf '%s' "${LEADV2_DISPATCH_ARM_REGISTERED_FILE}"
++  else
++    printf '%s/arm-registered' "${HANDOFF}"
++  fi
++}
++
++# ARM-PRODUCES-NOTHING-02: rc0 iff the registration file exists, is readable, is
++# non-empty, AND contains a line whose first field is arm=<author> (exact token match,
++# anchored — arm=sonnet never matches arm=sonnet-thinking).  Empty <author>: rc0 iff the
++# file is non-empty.  rc1 on EVERY other outcome, including any read error — fail-closed
++# to the pre-existing empty_diff path.
++_pc_arm_registered() {  # <author> -> rc0 registered, rc1 not
++  local author="$1" f line first_field
++  f="$(_pc_arm_registered_file)"
++  [[ -f "${f}" && -r "${f}" && -s "${f}" ]] || return 1
++  [[ -z "${author}" ]] && return 0
++  while IFS= read -r line || [[ -n "${line}" ]]; do
++    first_field="${line%%[[:space:]]*}"
++    [[ "${first_field}" == "arm=${author}" ]] && return 0
++  done < "${f}" 2>/dev/null
++  return 1
++}
++
++# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (Fix 1): a lane that RAN (worker exited
++# cleanly, no timeout) but never actually produced a single assistant turn is a distinct
++# failure mode from an empty diff after real work -- the arm never engaged at all. rc0
++# (silent) requires ALL THREE: (1) developer.stream.jsonl is missing or has zero
++# `"type":"assistant"` events, (2) the stream is not fresh (mtime older than
++# LEADV2_PC_SILENT_GROWTH_S, default 60s -- a worker that only just started writing is
++# NOT silent, it is working), (3) the resolved lane worktree is clean (no _lane_root
++# resolved at all is conservative NOT-silent, matching today's behaviour exactly for
++# lanes without one). Any failure to prove silence fails OPEN (rc1, NOT silent) -- this
++# predicate must never manufacture a false no_work verdict from a stat hiccup.
++# Sets _PC_SILENT_STREAM_STATE (absent|no_assistant_events) and _PC_SILENT_LANE_BASENAME
++# for the caller's evidence string; both are only meaningful when this returns rc0.
++#
++# ARM-PRODUCES-NOTHING-02: condition (0), the arm-registration gate, runs FIRST. The
++# clean-lane / no-stream state is owned by TWO callers depending on whether an arm was
++# ever registered for this lane: arm-registered => arm_produced_nothing (this probe +
++# _pc_arm_advance); NOT arm-registered => empty_diff (the existing C3 path, untouched).
++# The probe is now strictly narrower than on 3bffb24: it fires only when a registration
++# file exists and names AUTHOR.
++_PC_SILENT_STREAM_STATE=""
++_PC_SILENT_LANE_BASENAME=""
++pc_silent_arm_probe() {
++  # 0) ARM-PRODUCES-NOTHING-02: if no arm was ever registered for this lane, this is
++  # NOT a silent arm — it is an empty lane that belongs to the existing empty_diff path.
++  _pc_arm_registered "${AUTHOR}" || return 1
++  local stream="${HANDOFF}/developer.stream.jsonl"
++  local assistant_n=0
++  _PC_SILENT_STREAM_STATE="absent"
++  _PC_SILENT_LANE_BASENAME=""
++  if [[ -f "${stream}" ]]; then
++    _PC_SILENT_STREAM_STATE="no_assistant_events"
++    assistant_n="$(grep -c '"type":"assistant"' "${stream}" 2>/dev/null || printf '0')"
++    [[ "${assistant_n}" =~ ^[0-9]+$ ]] || assistant_n=0
++  fi
++  # 1) >=1 assistant event -- NOT silent, done.
++  [[ ${assistant_n} -ge 1 ]] && return 1
++  # 2) growth guard -- only applies when a stream file exists at all.
++  if [[ -f "${stream}" ]]; then
++    local growth_s="${LEADV2_PC_SILENT_GROWTH_S:-60}" mtime now
++    [[ "${growth_s}" =~ ^[0-9]+$ ]] || growth_s=60
++    if mtime="$(_pc_stat_mtime "${stream}")"; then
++      now="$(date +%s 2>/dev/null || printf '0')"
++      if [[ "${now}" =~ ^[0-9]+$ ]] && (( now - mtime < growth_s )); then
++        return 1  # fresh -- still working, NOT silent
++      fi
++    else
++      return 1  # stat failed -- fail OPEN, NOT silent
++    fi
++  fi
++  # 3) worktree dirty-check -- no resolved lane worktree is conservative NOT-silent.
++  [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] || return 1
++  _pc_lane_dirty "${_lane_root}" && return 1
++  _PC_SILENT_LANE_BASENAME="$(basename "${_lane_root}")"
++  return 0
++}
++
++# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (Fix 2, one-shot discipline): fires
++# ONLY from the silent-arm branch below. Marker file written BEFORE the advance attempt
++# (idempotent guard against a re-run of this same close gate re-advancing twice); kill
++# switch and chain-exhaustion both skip the actual advance but are still journaled.
++_pc_arm_advance() {
++  local marker="${HANDOFF}/.arm-advanced-${AUTHOR}"
++  if [[ -f "${marker}" ]]; then
++    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=already_advanced"
++    return 0
++  fi
++  : > "${marker}" 2>/dev/null || true
++  if [[ "${LEADV2_ARM_ADVANCE:-1}" == "0" ]]; then
++    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=kill_switch"
++    return 0
++  fi
++  local chain_csv="${LEADV2_DISPATCH_CANDIDATE_ARMS:-}"
++  if [[ -z "${chain_csv}" ]]; then
++    # journal fallback for a close gate spawned by an older dispatcher that never
++    # threaded the env var -- same "candidate_chain task=<sig8> arms=..." line
++    # leadv2-dispatch-code.sh's own candidate loop already journals.
++    chain_csv="$(bash "${JOURNAL_BIN}" tail "dispatch-${TASK}" 100000 2>/dev/null | \
++      grep -F "candidate_chain task=${TASK} arms=" | tail -1 | sed -n 's/.*arms=//p')"
++  fi
++  local next_arm
++  if ! next_arm="$(_pc_next_arm_in_chain "${chain_csv}" "${AUTHOR}")" || [[ -z "${next_arm}" ]]; then
++    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=chain_exhausted"
++    return 0
++  fi
++  local mission_file="${LEADV2_DISPATCH_LANE_MISSION:-}"
++  if [[ -z "${mission_file}" || ! -f "${mission_file}" ]]; then
++    mission_file="${ROOT}/docs/handoff/dispatch-${TASK}/lane-mission.md"
++  fi
++  if [[ ! -f "${mission_file}" ]]; then
++    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=no_mission_file"
++    return 0
++  fi
++  emit decision "arm_advance task=${TASK} from=${AUTHOR} to=${next_arm} reason=arm_produced_nothing"
++  local adv_args=(--sig8 "${TASK}" --arm "${next_arm}" --mission-file "${mission_file}" --task-id "${FOUNDER_TASK_ID}")
++  [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && adv_args+=(--worktree "${_lane_root}")
++  [[ -n "${WRITES_CSV:-}" ]] && adv_args+=(--writes "${WRITES_CSV}")
++  bash "${DISPATCH_BIN}" advance-arm "${adv_args[@]}" >/dev/null 2>&1 || true
++}
++
++# WARNING: pc_scope_diff() below defines helper functions in its body that are
++# NOT available until it is first invoked (line ~1277 in the original layout).
++# Top-level code that runs before pc_scope_diff() must not call those helpers.
+ pc_scope_diff() {
+ diff_file="${HANDOFF}/review.diff"
+ : > "${diff_file}"
+@@ -921,23 +1105,7 @@ _pc_diff_base() {  # <repo_abs> -> a rev to diff FROM on stdout; empty stdout =>
+     [[ -n "${base}" ]] && printf '%s' "${base}"
+   fi
+ }
+-# GATE-LANE-DIFF-ONLY-WHEN-CROSS-REPO-01: distinguishes "the lane genuinely did nothing"
+-# from "the lane did something the diff-scoping above failed to capture". rc0 iff <root> is
+-# a git work tree with >=1 uncommitted tracked change or untracked file, after excluding
+-# docs/leadv2/ and docs/handoff/ -- the SAME exclusion set _pc_git_diff uses, so a lane
+-# whose only churn is its own handoff artifacts does not flip from no_work to a false
+-# rescue. Read-only: never touches the index or working tree (unlike _pc_git_diff's
+-# throwaway-index `add -N`, which is unnecessary here since porcelain already reports
+-# untracked paths). Tolerates quoted porcelain paths (paths with spaces/special chars).
+-_pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding docs/leadv2, docs/handoff), rc1 otherwise
+-  local root="$1"
+-  [[ -n "${root}" && -d "${root}" ]] || return 1
+-  git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+-  local status
+-  status="$(git -C "${root}" status --porcelain --untracked-files=all 2>/dev/null | \
+-    grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/')"
+-  [[ -n "${status}" ]]
+-}
++
+ # _pc_repo_diff runs inside a `repo_diff="$(...)"` command substitution at every call site,
+ # i.e. its own subshell -- a plain variable it set would never reach the caller. Record
+ # which base it picked (HEAD, or an abbreviated sha) to a file instead, mirroring the
+@@ -1034,7 +1202,7 @@ if [[ -n "${WRITES_CSV}" ]]; then
+   [[ -s "${diff_file}" ]] || blocked_reason="${blocked_reason:-unscopable_diff}"
+ else
+   if [[ -d "${diff_root}" ]]; then
+-    repo_diff="$(_pc_repo_diff "${diff_root}")"
++    repo_diff="$(_pc_repo_diff "${diff_root}" .)"
+     printf '%s' "${repo_diff}" > "${diff_file}"
+     _pc_base_used="$(_pc_last_diff_base)"
+   fi
+@@ -1128,6 +1296,27 @@ if pc_dwr_resume_once; then
+   fi
+ fi
+ 
++# ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (Fix 1): resolve _lane_root the SAME
++# way pc_scope_diff will below (idempotent -- that function recomputes the identical
++# value) so the silent-arm probe can see the lane worktree BEFORE pc_scope_diff runs.
++# Must run before pc_scope_diff: the probe classifies "worker exited, never engaged" as
++# its own no_work cause, distinct from empty_diff/unscoped_lane_work, and those verdict
++# paths must stay byte-identical -- unreached for a genuinely silent arm, never altered.
++_lane_root="${LEADV2_LANE_WORK_ROOT:-}"
++if [[ -z "${_lane_root}" || ! -d "${_lane_root}" ]]; then
++  _lane_root="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
++fi
++
++if pc_silent_arm_probe; then
++  _pc_silent_evidence="arm=${AUTHOR} stream=${_PC_SILENT_STREAM_STATE} lane=${_PC_SILENT_LANE_BASENAME}"
++  printf 'status: blocked\nreason: arm_produced_nothing\narm: %s\n' "${AUTHOR}" > "${HANDOFF}/review-gate.md"
++  emit decision "review_gate task=${TASK} status=blocked reason=arm_produced_nothing terminal=no_work cause=arm_produced_nothing arm=${AUTHOR}"
++  _dl_note no_work arm_produced_nothing "${_pc_silent_evidence}"
++  _pc_arm_advance
++  _stamp_review_terminal blocked
++  exit 5
++fi
++
+ pc_scope_diff
+ 
+ # C.3: a NON-empty diff whose worker still asked into the void is parked, never
+@@ -1144,6 +1333,11 @@ if [[ -n "${_PC_ASKED_INTO_VOID}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
+ fi
+ 
+ _stamp_active_phase "${FOUNDER_TASK_ID}" "e2e"
++# PHASES-ARE-THE-ONLY-PATH-01: record e2e phase as running.
++[[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
++  bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" e2e --status running \
++    --handle "dispatch-${TASK}-e2e" \
++    --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):e2e_gate" 2>/dev/null || true
+ # C1 (GATE-WRONG-ROOT-FALSE-DEAD-01): validate the e2e root BEFORE running any
+ # suite. diff_root (the lane's worktree, resolved :796-802) is the single source
+ # of truth for "where the lane's code actually is" — reuse it, do not re-derive.
+@@ -1245,6 +1439,11 @@ else
+ fi
+ 
+ _stamp_active_phase "${FOUNDER_TASK_ID}" "review"
++# PHASES-ARE-THE-ONLY-PATH-01: record review phase as running.
++[[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
++  bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status running \
++    --handle "dispatch-${TASK}-review" \
++    --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
+ if [[ "${REVIEW_ON}" != 1 ]]; then
+   emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
+   _dl_note landed review_gate_disabled
+@@ -1513,3 +1712,8 @@ fi
+ printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}" > "${HANDOFF}/review-gate.md"
+ _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}"
+ _stamp_review_terminal pass
++# PHASES-ARE-THE-ONLY-PATH-01: record review phase as done (verdict PASS).
++[[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
++  bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status done \
++    --artifact "docs/handoff/dispatch-${TASK}/review-gate.md" \
++    --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
+diff --git a/plugins/leadv2/scripts/leadv2-phase-record.sh b/plugins/leadv2/scripts/leadv2-phase-record.sh
+new file mode 100755
+index 0000000..e141bf6
+--- /dev/null
++++ b/plugins/leadv2/scripts/leadv2-phase-record.sh
+@@ -0,0 +1,643 @@
++#!/usr/bin/env bash
++# leadv2-phase-record.sh — the ONE writer + sole phases.d reader + assert.
++#
++# PHASES-ARE-THE-ONLY-PATH-01: no work reaches a worker outside the phase pipeline,
++# and the phase a lane is in is a fact that one script writes and everything else reads.
++#
++# This script is the single source of truth for phase records:
++#   docs/handoff/dispatch-<sig8>/phases.d/<phase>.yaml
++#
++# Schema (flat, single-level, no nesting — parsed by flat_yaml()):
++#   phase: <id>
++#   status: running|done|n/a|waived
++#   owner: <script:function>
++#   handle: <worker handle>
++#   artifact: <repo-relative path>
++#   artifact_sha256: <hex digest>
++#   started_at: <ISO-8601>
++#   ended_at: <ISO-8601 or "">
++#   reason: <text or "">
++#
++# Usage:
++#   leadv2-phase-record.sh record <sig8> <phase> [flags]
++#       --artifact <path>           required unless --status running|n/a|waived
++#       --status running|done|n/a|waived   default: done
++#       --handle <worker handle>    required when --status running
++#       --reason <text>             required when --status n/a|waived
++#       --task-id <founder task id> for the active.yaml mirror
++#       --owner <script:function>   default: $(basename "$0")
++#
++#   leadv2-phase-record.sh assert <sig8> --class <Trivial|Light|Standard|Heavy>
++#       [--waiver <phase>=<reason>]...
++#       [--writes <csv>]
++#
++#   leadv2-phase-record.sh show <sig8>
++#   leadv2-phase-record.sh plan-for --class <C>
++#
++# Exit codes:
++#   0  ok / all mandatory phases satisfied
++#   3  one or more mandatory phases missing or unproven (stdout: missing=<csv>)
++#   4  usage error, malformed phases.yaml, refused waiver (stderr: error text)
++set -uo pipefail
++
++SCRIPT_NAME="$(basename "$0")"
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++
++# ── project root resolution ──────────────────────────────────────────────────
++PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
++CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
++PHASES_DIR_BASE="${PROJECT_ROOT}/docs/handoff"
++PHASES_YAML="${PROJECT_ROOT}/.claude/leadv2-overrides/phases.yaml"
++JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
++ACTIVE_REGISTRY="${SCRIPT_DIR}/leadv2-active-registry.sh"
++
++_log() { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
++_log_err() { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
++
++_emit() {
++  [[ -x "$JOURNAL_BIN" || -f "$JOURNAL_BIN" ]] || return 0
++  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "$JOURNAL_BIN" "$1" "$2" >/dev/null 2>&1 || true
++}
++
++_now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
++
++_sha256() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
++
++# ── phases.d path helpers ────────────────────────────────────────────────────
++_phases_d() { printf '%s/dispatch-%s/phases.d' "$PHASES_DIR_BASE" "$1"; }
++_phase_file() { printf '%s/%s.yaml' "$(_phases_d "$1")" "$2"; }
++
++# ── class → phase table (§4) ─────────────────────────────────────────────────
++# Returns mandatory/optional/conditional for a class+phase.
++# M=mandatory, O=optional, C=conditional, -=not in subset
++_phase_class_level() {
++  local cls="$1" phase="$2"
++  case "$phase" in
++    classify) printf 'M' ;;
++    diverge)
++      case "$cls" in Heavy) printf 'M' ;; Standard) printf 'O' ;; *) printf '-' ;; esac
++      ;;
++    plan)
++      case "$cls" in Trivial) printf '-' ;; Light) printf 'O' ;; *) printf 'M' ;; esac
++      ;;
++    gate1)
++      case "$cls" in Trivial|Light) printf '-' ;; *) printf 'M' ;; esac
++      ;;
++    build) printf 'M' ;;
++    test)
++      case "$cls" in
++        Trivial) printf 'C' ;;
++        *) printf 'M' ;;
++      esac
++      ;;
++    review) printf 'M' ;;
++    deploy) printf 'C' ;;
++    live_verify)
++      case "$cls" in Trivial) printf '-' ;; Light) printf 'C' ;; *) printf 'M' ;; esac
++      ;;
++    e2e)
++      case "$cls" in Trivial|Light) printf '-' ;; Standard) printf 'C' ;; Heavy) printf 'M' ;; esac
++      ;;
++    close) printf 'M' ;;
++    *) printf '-' ;;
++  esac
++}
++
++# Derived conditions: returns "mandatory" "n/a:<reason>" or "optional"
++_phase_derived() {
++  local cls="$1" phase="$2" writes="${3:-}" deploy_done="${4:-}"
++  local level
++  level="$(_phase_class_level "$cls" "$phase")"
++
++  case "$level" in
++    M) printf 'mandatory' ;;
++    O) printf 'optional' ;;
++    C)
++      case "$phase" in
++        test)
++          # Trivial: mandatory iff --writes matches stack.yaml source globs, else n/a
++          if [[ "$cls" == "Trivial" ]]; then
++            # Simplified: if writes is non-empty and contains .py/.ts/.js/.go/.rs/.swift, mandatory
++            if [[ -n "$writes" ]] && printf '%s' "$writes" | grep -qiE '\.(py|ts|js|go|rs|swift|rb|java|kt|c|cpp|h)$'; then
++              printf 'mandatory'
++            else
++              printf 'n/a:docs_only'
++            fi
++          else
++            printf 'mandatory'
++          fi
++          ;;
++        deploy)
++          # All classes: mandatory iff diff touches a runtime path per stack.yaml, else n/a
++          if [[ -n "$writes" ]] && ! printf '%s' "$writes" | grep -qiE '\.(md|txt|yaml|json|yml|csv)$'; then
++            printf 'mandatory'
++          else
++            printf 'n/a:no_runtime_surface'
++          fi
++          ;;
++        live_verify)
++          # Light: mandatory iff deploy recorded done
++          if [[ "$deploy_done" == "done" ]]; then
++            printf 'mandatory'
++          else
++            printf 'n/a:no_deploy'
++          fi
++          ;;
++        e2e)
++          # Standard: mandatory iff deploy recorded done
++          if [[ "$deploy_done" == "done" ]]; then
++            printf 'mandatory'
++          else
++            printf 'n/a:no_deploy'
++          fi
++          ;;
++        *) printf 'mandatory' ;;
++      esac
++      ;;
++    -) printf 'excluded' ;;
++  esac
++}
++
++# ── phases.yaml override reader (embedded python) ────────────────────────────
++# Parses .claude/leadv2-overrides/phases.yaml, returning a JSON object.
++# Union semantics for mandatory, strict validation. Exit 4 on any error.
++_read_phases_yaml() {
++  local pyfile="$PHASES_YAML"
++  if [[ ! -f "$pyfile" ]]; then
++    printf '{"version":1,"class_overrides":{},"waivers_allowed":[],"steps":{}}'
++    return 0
++  fi
++  python3 - "$pyfile" <<'PYEOF'
++import json, sys, os
++try:
++    import yaml
++except ImportError:
++    print("phases.yaml: PyYAML required but not found", file=sys.stderr)
++    sys.exit(4)
++
++path = sys.argv[1]
++try:
++    with open(path) as f:
++        data = yaml.safe_load(f) or {}
++except Exception as e:
++    print(f"phases.yaml: parse error: {e}", file=sys.stderr)
++    sys.exit(4)
++
++KNOWN_PHASES = {"classify","diverge","plan","gate1","build","test","review",
++                "deploy","live_verify","e2e","close"}
++KNOWN_CLASSES = {"Trivial","Light","Standard","Heavy"}
++KNOWN_HOOKS = {"plan.post","gate1.main","build.post","review.pre","review.post",
++               "deploy.main","deploy.post","verify.main","e2e.main","close.pre"}
++REMOVAL_KEYS = {"remove","exclude","skip","optional","drop"}
++
++version = data.get("version", 1)
++if version != 1:
++    print(f"phases.yaml: unsupported version {version}", file=sys.stderr)
++    sys.exit(4)
++
++# Validate top-level keys
++for key in data:
++    if key not in ("version","class_overrides","waivers_allowed","steps"):
++        print(f"phases.yaml: unknown top-level key '{key}'", file=sys.stderr)
++        sys.exit(4)
++
++class_overrides = data.get("class_overrides") or {}
++for cls, spec in class_overrides.items():
++    if cls not in KNOWN_CLASSES:
++        print(f"phases.yaml: class_overrides.{cls}: unknown class name", file=sys.stderr)
++        sys.exit(4)
++    if not isinstance(spec, dict):
++        print(f"phases.yaml: class_overrides.{cls}: expected mapping", file=sys.stderr)
++        sys.exit(4)
++    for key in spec:
++        if key == "mandatory":
++            vals = spec[key]
++            if not isinstance(vals, list):
++                print(f"phases.yaml: class_overrides.{cls}: mandatory must be a list", file=sys.stderr)
++                sys.exit(4)
++            for ph in vals:
++                if ph not in KNOWN_PHASES:
++                    print(f"phases.yaml: class_overrides.{cls}: unknown phase '{ph}'", file=sys.stderr)
++                    sys.exit(4)
++        elif key in REMOVAL_KEYS:
++            print(f"phases.yaml: class_overrides.{cls}: removals are not permitted (key '{key}'); shrink a class only via --phase-waiver", file=sys.stderr)
++            sys.exit(4)
++        else:
++            print(f"phases.yaml: class_overrides.{cls}: unknown key '{key}'", file=sys.stderr)
++            sys.exit(4)
++
++waivers_allowed = data.get("waivers_allowed") or []
++if not isinstance(waivers_allowed, list):
++    print("phases.yaml: waivers_allowed must be a list", file=sys.stderr)
++    sys.exit(4)
++for ph in waivers_allowed:
++    if ph not in KNOWN_PHASES:
++        print(f"phases.yaml: waivers_allowed: unknown phase '{ph}'", file=sys.stderr)
++        sys.exit(4)
++
++steps = data.get("steps") or {}
++if not isinstance(steps, dict):
++    print("phases.yaml: steps must be a mapping", file=sys.stderr)
++    sys.exit(4)
++for hook in steps:
++    if hook not in KNOWN_HOOKS:
++        print(f"phases.yaml: steps: unknown hook point '{hook}'", file=sys.stderr)
++        sys.exit(4)
++
++print(json.dumps({
++    "version": version,
++    "class_overrides": class_overrides,
++    "waivers_allowed": waivers_allowed,
++    "steps": steps,
++}))
++PYEOF
++}
++
++# ── resolve the mandatory set for a class ────────────────────────────────────
++# Prints one phase per line, each prefixed MANDATORY or DERIVED.
++# Union: base table ∪ class_overrides.<Class>.mandatory
++_resolve_mandatory() {
++  local cls="$1" writes="${2:-}"
++  local overrides_json waivers
++  overrides_json="$(_read_phases_yaml)"
++
++  # Check for deploy.done to feed derived conditions
++  local deploy_done=""
++  # deploy_done is passed as env, not computable here in isolation
++
++  local phase
++  for phase in classify diverge plan gate1 build test review deploy live_verify e2e close; do
++    local level derived
++    level="$(_phase_class_level "$cls" "$phase")"
++    derived="$(_phase_derived "$cls" "$phase" "$writes" "${LEADV2_DEPLOY_DONE:-}")"
++
++    # Check override: union semantics
++    local in_override=""
++    if printf '%s' "$overrides_json" | python3 -c "
++import json,sys
++d=json.load(sys.stdin)
++co=d.get('class_overrides',{})
++cls='$cls'
++if cls in co and '$phase' in (co[cls].get('mandatory') or []):
++    sys.exit(0)
++sys.exit(1)
++" 2>/dev/null; then
++      in_override="1"
++    fi
++
++    # Final resolution: base table derived, plus override union
++    if [[ "$derived" == "mandatory" || -n "$in_override" ]]; then
++      printf 'MANDATORY %s\n' "$phase"
++    elif [[ "$derived" == n/a:* ]]; then
++      printf 'NA %s %s\n' "$phase" "${derived#n/a:}"
++    elif [[ "$derived" == "optional" ]]; then
++      printf 'OPTIONAL %s\n' "$phase"
++    elif [[ "$derived" == "excluded" ]]; then
++      :
++    fi
++  done
++}
++
++# ── verify artifact for a phase ──────────────────────────────────────────────
++# Returns 0 if artifact is proven, 1 otherwise.
++_verify_artifact() {
++  local sig8="$1" phase="$2" artifact="${3:-}" sha="${4:-}"
++  case "$phase" in
++    plan)
++      # context.yaml or prepass file with non-empty design
++      local prepass_file
++      prepass_file="$(_prepass_file "$sig8" 2>/dev/null)"
++      if [[ -n "$prepass_file" && -s "$prepass_file" ]]; then return 0; fi
++      local ctx_file="${PHASES_DIR_BASE}/dispatch-${sig8}/context.yaml"
++      if [[ -s "$ctx_file" ]] && grep -q 'decisions' "$ctx_file" 2>/dev/null; then return 0; fi
++      return 1
++      ;;
++    gate1)
++      local gate_file="${PHASES_DIR_BASE}/dispatch-${sig8}/.gate1-passed"
++      [[ -s "$gate_file" ]] && return 0
++      return 1
++      ;;
++    build)
++      # non-empty git diff vs lane base — checked at call site; here just check record exists
++      [[ -n "$artifact" && -f "$artifact" ]] && return 0
++      return 1
++      ;;
++    review)
++      # review ledger row exists
++      local ledger_dir="${CACHE_BASE}/code-review-ledger"
++      local slug
++      slug="$(basename "${LEDGER_REPO_ROOT:-${PROJECT_ROOT}}")" || slug="repo"
++      local ledger_file="${ledger_dir}/${slug}.jsonl"
++      [[ -s "$ledger_file" ]] && return 0
++      return 1
++      ;;
++    test|deploy|live_verify|e2e)
++      [[ -n "$artifact" && -f "$artifact" ]] && return 0
++      return 1
++      ;;
++    close)
++      local flag_file="${PHASES_DIR_BASE}/dispatch-${sig8}/phase8-passed.flag"
++      [[ -s "$flag_file" ]] && return 0
++      return 1
++      ;;
++    classify|diverge)
++      # These are early phases — if the lane is dispatched, classify happened
++      [[ -d "${PHASES_DIR_BASE}/dispatch-${sig8}" ]] && return 0
++      return 1
++      ;;
++    *) return 1 ;;
++  esac
++}
++
++_prepass_file() { printf '%s/dispatch-%s/architect-prepass.md' "$PHASES_DIR_BASE" "$1"; }
++
++# ── record subcommand ─────────────────────────────────────────────────────────
++cmd_record() {
++  local sig8="" phase="" artifact="" status="done" handle="" reason="" task_id="" owner=""
++  while [[ $# -gt 0 ]]; do
++    case "$1" in
++      --artifact) artifact="$2"; shift 2 ;;
++      --status)   status="$2"; shift 2 ;;
++      --handle)   handle="$2"; shift 2 ;;
++      --reason)   reason="$2"; shift 2 ;;
++      --task-id)  task_id="$2"; shift 2 ;;
++      --owner)    owner="$2"; shift 2 ;;
++      --*)  _log_err "record: unknown flag: $1"; exit 4 ;;
++      *)
++        if [[ -z "$sig8" ]]; then sig8="$1"
++        elif [[ -z "$phase" ]]; then phase="$1"
++        else _log_err "record: unexpected positional: $1"; exit 4
++        fi
++        shift ;;
++    esac
++  done
++
++  [[ -n "$sig8" ]] || { _log_err "record: <sig8> required"; exit 4; }
++  [[ -n "$phase" ]] || { _log_err "record: <phase> required"; exit 4; }
++
++  case "$status" in
++    running|done|n/a|waived) ;;
++    *) _log_err "record: invalid status '$status'"; exit 4 ;;
++  esac
++
++  # --artifact required unless status is running|n/a|waived, or the phase is a
++  # meta-phase (classify/diverge) whose proof is the dispatch dir itself.
++  if [[ "$status" == "done" && -z "$artifact" ]] \
++     && [[ "$phase" != "classify" && "$phase" != "diverge" ]]; then
++    _log_err "record: --artifact required for status=done"
++    exit 4
++  fi
++  # --handle required when status=running
++  if [[ "$status" == "running" && -z "$handle" ]]; then
++    _log_err "record: --handle required for status=running"
++    exit 4
++  fi
++  # --reason required when status=n/a or waived
++  if [[ ("$status" == "n/a" || "$status" == "waived") && -z "$reason" ]]; then
++    _log_err "record: --reason required for status=$status"
++    exit 4
++  fi
++
++  [[ -n "$owner" ]] || owner="$(basename "$0")"
++
++  local phases_d phase_file
++  phases_d="$(_phases_d "$sig8")"
++  phase_file="${phases_d}/${phase}.yaml"
++
++  mkdir -p "$phases_d" || { _log_err "record: cannot mkdir $phases_d"; exit 4; }
++
++  local sha="" started_at ended_at
++  started_at="$(_now_iso)"
++  if [[ "$status" == "running" ]]; then
++    ended_at=""
++  else
++    ended_at="$started_at"
++  fi
++
++  if [[ -n "$artifact" && -f "${PROJECT_ROOT}/${artifact}" ]]; then
++    sha="$(_sha256 "${PROJECT_ROOT}/${artifact}")"
++  elif [[ -n "$artifact" && -f "$artifact" ]]; then
++    sha="$(_sha256 "$artifact")"
++  fi
++
++  # Atomic write: mktemp in same dir + mv -f
++  local tmp_file
++  tmp_file="$(mktemp "${phases_d}/.${phase}.XXXXXX")" || { _log_err "record: mktemp failed"; exit 4; }
++
++  {
++    printf 'phase: %s\n' "$phase"
++    printf 'status: %s\n' "$status"
++    printf 'owner: %s\n' "$owner"
++    printf 'handle: %s\n' "$handle"
++    printf 'artifact: %s\n' "$artifact"
++    printf 'artifact_sha256: %s\n' "$sha"
++    printf 'started_at: %s\n' "$started_at"
++    printf 'ended_at: %s\n' "$ended_at"
++    printf 'reason: %s\n' "$reason"
++  } > "$tmp_file"
++
++  mv -f "$tmp_file" "$phase_file" || { _log_err "record: mv failed"; rm -f "$tmp_file"; exit 4; }
++
++  # Journal observability
++  local tid="${task_id:-$sig8}"
++  _emit "phase_recorded" "phase=${phase} task=${tid} status=${status}"
++
++  # Mirror to active.yaml — must never fail a dispatch
++  if [[ "$status" == "running" || "$status" == "done" ]]; then
++    if [[ -n "$task_id" ]] && declare -F leadv2_active_update_phase >/dev/null 2>&1; then
++      if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_update_phase "$task_id" "$phase" >/dev/null 2>&1; then
++        _emit "phase_mirror_miss" "task=${tid} phase=${phase}"
++      fi
++    elif [[ -n "$task_id" ]] && [[ -f "$ACTIVE_REGISTRY" ]]; then
++      if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash -c 'source "%s"; leadv2_active_update_phase "%s" "%s"' "$ACTIVE_REGISTRY" "$task_id" "$phase" >/dev/null 2>&1; then
++        _emit "phase_mirror_miss" "task=${tid} phase=${phase}"
++      fi
++    fi
++  fi
++
++  return 0
++}
++
++# ── assert subcommand ─────────────────────────────────────────────────────────
++cmd_assert() {
++  local sig8="" cls="" writes=""
++  local -a waivers=()
++  while [[ $# -gt 0 ]]; do
++    case "$1" in
++      --class)
++        cls="$2"; shift 2 ;;
++      --waiver)
++        waivers+=("$2"); shift 2 ;;
++      --writes)
++        writes="$2"; shift 2 ;;
++      --*)
++        _log_err "assert: unknown flag: $1"; exit 4 ;;
++      *)
++        if [[ -z "$sig8" ]]; then sig8="$1"; else _log_err "assert: unexpected positional: $1"; exit 4; fi
++        shift ;;
++    esac
++  done
++
++  [[ -n "$sig8" ]] || { _log_err "assert: <sig8> required"; exit 4; }
++  [[ -n "$cls" ]] || { _log_err "assert: --class required"; exit 4; }
++
++  case "$cls" in
++    Trivial|Light|Standard|Heavy) ;;
++    *) _log_err "assert: invalid class '$cls'"; exit 4 ;;
++  esac
++
++  # Read phases.yaml
++  local overrides_json
++  overrides_json="$(_read_phases_yaml)" || exit $?
++
++  # Process waivers
++  local -a accepted_waivers=()
++  local waivers_allowed
++  waivers_allowed="$(printf '%s' "$overrides_json" | python3 -c "
++import json,sys
++d=json.load(sys.stdin)
++for w in (d.get('waivers_allowed') or []):
++    print(w)
++" 2>/dev/null)"
++
++  for w in "${waivers[@]}"; do
++    # Validate format
++    local w_phase w_reason
++    if [[ "$w" != *=* ]]; then
++      _log_err "waiver: bad format '$w' (expected <phase>=<reason>)"
++      exit 4
++    fi
++    w_phase="${w%%=*}"
++    w_reason="${w#*=}"
++    if [[ -z "$w_reason" ]]; then
++      _log_err "waiver: empty reason for phase '$w_phase'"
++      exit 4
++    fi
++
++    # Rule 3: review/close hard-excluded
++    if [[ "$w_phase" == "review" || "$w_phase" == "close" ]]; then
++      _log_err "waiver: phase '$w_phase' is non-waivable (hard-excluded in plugin code)"
++      exit 4
++    fi
++
++    # Validate phase is known
++    local known=""
++    for kp in classify diverge plan gate1 build test review deploy live_verify e2e close; do
++      [[ "$w_phase" == "$kp" ]] && known="1"
++    done
++    [[ -n "$known" ]] || { _log_err "waiver: unknown phase '$w_phase'"; exit 4; }
++
++    # Rule 4: must be in waivers_allowed
++    if ! printf '%s\n' "$waivers_allowed" | grep -qxF "$w_phase"; then
++      _log_err "waiver: phase '$w_phase' is not in waivers_allowed"
++      exit 4
++    fi
++
++    # Accepted: write the record
++    accepted_waivers+=("$w_phase")
++    cmd_record "$sig8" "$w_phase" --status waived --reason "$w_reason"
++    _emit "phase_waived" "task=${sig8} phase=${w_phase} reason=${w_reason}"
++  done
++
++  # Resolve mandatory set
++  local missing=()
++  while IFS=' ' read -r kind pname reason_text; do
++    [[ "$kind" == "MANDATORY" ]] || continue
++
++    # Skip accepted waivers
++    local waived=""
++    for aw in "${accepted_waivers[@]}"; do
++      [[ "$aw" == "$pname" ]] && waived="1"
++    done
++    [[ -n "$waived" ]] && continue
++
++    # Check if phase record exists and is proven
++    local pfile
++    pfile="$(_phase_file "$sig8" "$pname")"
++    if [[ -f "$pfile" ]]; then
++      local p_status
++      p_status="$(grep '^status:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
++      case "$p_status" in
++        done|waived)
++          # Verify artifact
++          local p_artifact p_sha
++          p_artifact="$(grep '^artifact:' "$pfile" 2>/dev/null | sed 's/^artifact:[[:space:]]*//' || true)"
++          p_sha="$(grep '^artifact_sha256:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
++
++          # For non-conditional phases, verify artifact
++          if [[ "$pname" != "classify" && "$pname" != "diverge" ]]; then
++            if _verify_artifact "$sig8" "$pname" "$p_artifact" "$p_sha"; then
++              continue
++            fi
++          else
++            continue
++          fi
++          ;;
++        n/a)
++          continue
++          ;;
++        running)
++          # Running is not proven
++          ;;
++      esac
++    fi
++    missing+=("$pname")
++  done < <(_resolve_mandatory "$cls" "$writes")
++
++  if [[ ${#missing[@]} -gt 0 ]]; then
++    local csv
++    csv="$(IFS=,; printf '%s' "${missing[*]}")"
++    printf 'missing=%s\n' "$csv"
++    exit 3
++  fi
++
++  exit 0
++}
++
++# ── show subcommand ──────────────────────────────────────────────────────────
++cmd_show() {
++  local sig8="$1"
++  local phases_d
++  phases_d="$(_phases_d "$sig8")"
++  if [[ ! -d "$phases_d" ]]; then
++    printf 'No phase records for %s\n' "$sig8"
++    return 0
++  fi
++  printf '%-14s %-10s %-24s %-12s\n' "PHASE" "STATUS" "OWNER" "STARTED"
++  printf '%s\n' "----------------------------------------------"
++  local f
++  for f in "$phases_d"/*.yaml; do
++    [[ -f "$f" ]] || continue
++    local p s o st
++    p="$(grep '^phase:' "$f" | awk '{print $2}')"
++    s="$(grep '^status:' "$f" | awk '{print $2}')"
++    o="$(grep '^owner:' "$f" | awk '{print $2}')"
++    st="$(grep '^started_at:' "$f" | awk '{print $2}')"
++    printf '%-14s %-10s %-24s %-12s\n' "$p" "$s" "$o" "$st"
++  done
++}
++
++# ── plan-for subcommand ──────────────────────────────────────────────────────
++cmd_plan_for() {
++  local cls=""
++  while [[ $# -gt 0 ]]; do
++    case "$1" in
++      --class) cls="$2"; shift 2 ;;
++      *) shift ;;
++    esac
++  done
++  [[ -n "$cls" ]] || { _log_err "plan-for: --class required"; exit 4; }
++  _resolve_mandatory "$cls"
++}
++
++# ── main ──────────────────────────────────────────────────────────────────────
++[[ $# -eq 0 ]] && { _log_err "usage: $0 <record|assert|show|plan-for> ..."; exit 4; }
++cmd="$1"; shift
++case "$cmd" in
++  record)   cmd_record "$@" ;;
++  assert)   cmd_assert "$@" ;;
++  show)     cmd_show "$@" ;;
++  plan-for) cmd_plan_for "$@" ;;
++  -h|--help) _log "usage: $0 <record|assert|show|plan-for> ..."; exit 0 ;;
++  *)        _log_err "unknown command: $cmd"; exit 4 ;;
++esac
+diff --git a/plugins/leadv2/scripts/leadv2-phase8-close.sh b/plugins/leadv2/scripts/leadv2-phase8-close.sh
+index b07a332..fb7c470 100755
+--- a/plugins/leadv2/scripts/leadv2-phase8-close.sh
++++ b/plugins/leadv2/scripts/leadv2-phase8-close.sh
+@@ -250,6 +250,16 @@ else
+   log_info "[skip] leadv2-phase8-assert.sh not yet present — skipping gate assertions"
+ fi
+ 
++# PHASES-ARE-THE-ONLY-PATH-01: record close phase as done.
++# The phase8-passed.flag was just written by leadv2-phase8-assert.sh above.
++_close_sig8="${TASK_ID#dispatch-}"
++_close_flag="${LEADV2_HANDOFF_DIR}/${TASK_ID}/phase8-passed.flag"
++[[ -x "${SCRIPTS_DIR}/leadv2-phase-record.sh" ]] && \
++  bash "${SCRIPTS_DIR}/leadv2-phase-record.sh" record "${_close_sig8}" close --status done \
++    --artifact "docs/handoff/${TASK_ID}/phase8-passed.flag" \
++    --task-id "${TASK_ID}" --owner "$(basename "$0"):G2_gate" 2>/dev/null || true
++unset _close_sig8 _close_flag
++
+ # ── R3 headline: red-first ratio (RED-FIRST-GATE-01) ──────────────────────────
+ # A10 above (inside leadv2-phase8-assert.sh) already ran the probe when
+ # LEADV2_RED_FIRST != off; fold its report into the close summary so
+diff --git a/plugins/leadv2/scripts/leadv2-status-surface.sh b/plugins/leadv2/scripts/leadv2-status-surface.sh
+index 1ccb763..823f120 100755
+--- a/plugins/leadv2/scripts/leadv2-status-surface.sh
++++ b/plugins/leadv2/scripts/leadv2-status-surface.sh
+@@ -41,6 +41,7 @@ set -uo pipefail
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ STATE_PATH_SH="${SCRIPT_DIR}/leadv2-state-path.sh"
++export LEADV2_LANE_CLASS_PY="${SCRIPT_DIR}/leadv2-lane-class.py"
+ 
+ # ── Resolve env ─────────────────────────────────────────────────────────────
+ # STATE_DIR default MUST go through leadv2-state-path.sh --no-link: rendering
+@@ -539,6 +540,17 @@ _ss_lanes_py() {
+   python3 2>/dev/null <<'PYEOF'
+ import os, sys, subprocess
+ 
++# ---- shared lane classifier (PANEL-TWO-IMPLEMENTATIONS-MERGE-01) ----
++# One source of truth for what a lane IS.  Both heredocs exec() this file
++# so classify() / join_fields() / clip_name() are available without a second
++# subprocess or a pip install.  Path is absolute and bash-resolved.
++try:
++    exec(open(os.environ["LEADV2_LANE_CLASS_PY"]).read(), globals())
++except Exception:
++    # The lanes path already has a loud-warn route; raise so the caller
++    # renders the warning row instead of a silent zero.
++    raise
++
+ STATE_DIR   = os.environ.get("LEADV2_SS_STATE_DIR", "")
+ LEDGER_FILE = os.environ.get("LEADV2_SS_LEDGER_FILE", "")
+ RUNS_ROOT   = os.environ.get("LEADV2_SS_RUNS_ROOT", "")
+@@ -1436,83 +1448,34 @@ def add_row(sig8, kind, phase, model, pid, birth, log_path, last_pulse_epoch,
+     _motion_candidates = [m for m in (max_mtime, _close_mtime) if m is not None]
+     motion_mtime = max(_motion_candidates) if _motion_candidates else None
+ 
+-    # liveness rule (STANDING) — cause never empty, never "?"
+-    if _pid_alive_session:
+-        cause, cls = "live", "live"
+-    elif _pid_alive_handle:
+-        cause, cls = "live(pid %s)" % handle, "live"
+-    elif _argv_alive:
+-        cause, cls = "live(argv)", "live"
+-    elif _close_alive:
+-        cause, cls = "live(close pid %s)" % _close_pid, "live"
+-    elif max_mtime is not None and (NOW - max_mtime) < 120:
+-        cause, cls = "live(fresh)", "live"
+-    elif _close_fresh:
+-        cause = "gate(%s ago)" % age_label(NOW - _close_mtime)
+-        cls = "dead"
+-    elif ec not in (None, ""):
+-        try:
+-            eci = int(ec)
+-            if eci == 0:
+-                cause, cls = "done(exit=0)", "done"
+-            else:
+-                cause, cls = "dead(exit=%d)" % eci, "dead"
+-        except Exception:
+-            cause, cls = "dead(no-signal)", "dead"
+-    elif pid not in (None, "", 0):
+-        cause, cls = "dead(no-process)", "dead"
+-    elif motion_mtime is not None:
+-        cause = "stale(%s silent)" % age_label(NOW - motion_mtime)
+-        cls = "dead"
+-    else:
+-        cause, cls = "dead(no-signal)", "dead"
+-
+-    # SWIFTBAR-LIVE-01 round 4 (§Fix 2): consume the run dir's .outcome so a
+-    # FINISHED lane is not indistinguishable from a FAILED one. .outcome is
+-    # written by leadv2-lane-outcome.sh as one of {completed, died-with-work,
+-    # died-clean}; lane_outcome() whitelists those and returns "" for
+-    # absent/junk. Apply ONLY to already-terminal rows (cls in dead|done): a
+-    # live process always wins, even if a stale .outcome sits in a reused run
+-    # dir (R2.2). cls stays three-valued (live|done|dead); a completed lane
+-    # becomes done(completed) (green, excluded from the red count) and a
+-    # died-clean lane becomes dead(died-clean) (red) -- distinguished by cause
+-    # text, not a new class. A terminal row with NO outcome keeps its
+-    # process-derived class and gains a "?" suffix on the cause so "unknown"
+-    # is visible, never silently mislabelled as died-clean.
++    # liveness rule — delegated to the shared classifier (PANEL-TWO-IMPLEMENTATIONS-MERGE-01).
++    # The branch chain, outcome overlay, no_work override and terminal
++    # reinterpretation all live in classify(); this renderer projects its
++    # pre-computed signals into LaneFacts and reads cls/cause/terminal back.
+     outcome = lane_outcome(handle, arm)
+-    if cls in ("dead", "done"):
+-        if outcome == "completed":
+-            cause, cls = "done(completed)", "done"
+-        elif outcome == "died-with-work":
+-            cause, cls = "dead(work-left)", "dead"
+-        elif outcome == "died-clean":
+-            cause, cls = "dead(died-clean)", "dead"
+-        elif "?" not in cause:
+-            cause = cause + "?"
+-
+-    # N1-EMPTY-LANE-IS-NOT-A-PASS: a lane whose terminal is no_work (it RAN but its
+-    # own diff was empty) is RED, never success. Override whatever process-derived
+-    # cause/cls landed above with an unmistakable no-work(<cause>) on cls=dead. This
+-    # MUST sit before the stale->done reinterpretation below: a no_work row with no
+-    # pid/exit lands on stale(...) and that branch would otherwise launder it into
+-    # green done(terminal) -- the exact lying-green disease this task exists to kill
+-    # (R1). The cause prefix "no-work(" is also what keeps it out of that branch
+-    # (it matches `cause.startswith("stale(")` -> False).
+-    if ledger_state == "no_work":
+-        _nw = (tcause or "empty-diff").replace("_", "-")
+-        cause, cls = "no-work(%s)" % _nw, "dead"
+-
+-    terminal = is_terminal(status, ledger_state)
+-    # terminal last-resort-stale reinterpretation: a ledger-only terminal row
+-    # (no pid, no exit code, only an old timestamp) lands on the stale("...")
+-    # branch purely for lack of any signal. Reinterpret that one branch as
+-    # done — but ONLY there: dead(exit=N)/dead(no-process)/dead(no-signal)
+-    # are real failure evidence and must stay dead. Sits after `terminal` is
+-    # computed and before the age-out so old-terminal still drops.
+-    if terminal and cls == "dead" and cause.startswith("stale(") \
+-            and ledger_state != "no_work":
+-        cause = "done(%s)" % (ledger_state or status or "terminal")
+-        cls = "done"
++    _lc = classify({
++        "kind": kind,
++        "pid": pid,
++        "handle": handle,
++        "pid_alive_session": _pid_alive_session,
++        "pid_alive_handle": _pid_alive_handle,
++        "argv_alive": _argv_alive,
++        "close_alive": _close_alive,
++        "close_pid": _close_pid,
++        "close_fresh": _close_fresh,
++        "close_mtime": _close_mtime,
++        "max_mtime": max_mtime,
++        "motion_mtime": motion_mtime,
++        "exit_code": ec,
++        "ledger_state": ledger_state,
++        "status": status,
++        "outcome": outcome,
++        "tcause": tcause,
++        "terminal_token": "",
++        "now": NOW,
++    })
++    cause, cls = _lc["cause"], _lc["cls"]
++    terminal = _lc["terminal"]
+     # age-out: terminal + silent > 7200s -> drop. Non-terminal never dropped
+     # (a 9h silent lane stays visible as stale). Uses motion_mtime (§3.6): a
+     # lane whose close gate is still writing must not age out on the same
+@@ -1683,6 +1646,9 @@ dead_n = sum(1 for r in rows
+ # number for #DEAD and #DONE_RECENT. Restrict to cls == "done" to match what
+ # the header text ("N done в последний час") and the variable name claim.
+ done_recent = sum(1 for r in rows if r["cls"] == "done")
++# D1 (89217a1): queued_n mirrors dead_n/done_recent -- computed AFTER the TTL
++# drop so the count matches what the table actually still shows.
++queued_n = sum(1 for r in rows if r["cls"] == "queued")
+ 
+ # R3 (fix round 3): collapse terminal/done rows so a wall of 90 finished rows is
+ # structurally impossible. Keep the NEWEST 10 done rows, fold the rest into ONE
+@@ -1711,7 +1677,8 @@ if len(_done_idx) > 10:
+     rows = _new
+ 
+ out = ["#LIVE %d" % live_n, "#DEAD %d" % dead_n,
+-       "#DONE_RECENT %d" % done_recent, "#AGED_OUT %d" % _aged]
++       "#DONE_RECENT %d" % done_recent, "#AGED_OUT %d" % _aged,
++       "#QUEUED %d" % queued_n]
+ # R5-01 round 2: when active.yaml could not be read, flag it for the bash
+ # layer so the header stops rendering a calm "0 live" and the menu-bar title
+ # carries ⚠. Machine-readable: '#WARN <human message>'.
+@@ -1741,6 +1708,7 @@ LIVE_N=0
+ DEAD_N=0
+ DONE_RECENT_N=0
+ AGED_OUT_N=0
++QUEUED_N=0
+ WARN_MSG=""
+ LANE_ROWS=""
+ LANE_COUNT=0
+@@ -1789,10 +1757,12 @@ elif [ "$MULTI_PROJECT" -eq 1 ]; then
+     _mp_done="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#DONE_RECENT //p' | head -1)"
+     _mp_aged="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#AGED_OUT //p' | head -1)"
+     _mp_warn="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#WARN //p' | head -1)"
++    _mp_queued="$(printf '%s\n' "$_mp_lanes" | sed -n 's/^#QUEUED //p' | head -1)"
+     case "$_mp_live" in ''|*[!0-9]*) _mp_live=0 ;; esac
+     case "$_mp_dead" in ''|*[!0-9]*) _mp_dead=0 ;; esac
+     case "$_mp_done" in ''|*[!0-9]*) _mp_done=0 ;; esac
+     case "$_mp_aged" in ''|*[!0-9]*) _mp_aged=0 ;; esac
++    case "$_mp_queued" in ''|*[!0-9]*) _mp_queued=0 ;; esac
+ 
+     if [ -n "$_mp_warn" ]; then
+       # STATUS-SURFACE R10 (SWIFTBAR-LIVE-01): a per-project WARN degrades
+@@ -1810,10 +1780,11 @@ elif [ "$MULTI_PROJECT" -eq 1 ]; then
+     DEAD_N=$(( DEAD_N + _mp_dead ))
+     DONE_RECENT_N=$(( DONE_RECENT_N + _mp_done ))
+     AGED_OUT_N=$(( AGED_OUT_N + _mp_aged ))
++    QUEUED_N=$(( QUEUED_N + _mp_queued ))
+     _mp_idx=$(( _mp_idx + 1 ))
+   done
+   unset _mp_idx _mp_slug _mp_sd _mp_root _mp_ledger _mp_tasks _mp_handoff _mp_lanes \
+-        _mp_live _mp_dead _mp_done _mp_aged _mp_warn _mp_rows
++        _mp_live _mp_dead _mp_done _mp_aged _mp_queued _mp_warn _mp_rows
+   LANE_ROWS="$(printf '%s\n' "$LANE_ROWS" | grep -v '^ *$' || true)"
+   LANE_COUNT=0
+   if [ -n "$LANE_ROWS" ]; then
+@@ -1829,10 +1800,12 @@ else
+     DONE_RECENT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#DONE_RECENT //p' | head -1)"
+     AGED_OUT_N="$(printf '%s\n' "$LANES" | sed -n 's/^#AGED_OUT //p' | head -1)"
+     WARN_MSG="$(printf '%s\n' "$LANES" | sed -n 's/^#WARN //p' | head -1)"
++    QUEUED_N="$(printf '%s\n' "$LANES" | sed -n 's/^#QUEUED //p' | head -1)"
+     case "$LIVE_N" in ''|*[!0-9]*) LIVE_N=0 ;; esac
+     case "$DEAD_N" in ''|*[!0-9]*) DEAD_N=0 ;; esac
+     case "$DONE_RECENT_N" in ''|*[!0-9]*) DONE_RECENT_N=0 ;; esac
+     case "$AGED_OUT_N" in ''|*[!0-9]*) AGED_OUT_N=0 ;; esac
++    case "$QUEUED_N" in ''|*[!0-9]*) QUEUED_N=0 ;; esac
+   fi
+   # drop every control line (#…) so only TSV rows remain
+   LANE_ROWS="$(printf '%s\n' "$LANES" | grep -v '^#' || true)"
+@@ -1904,20 +1877,23 @@ emit_lanes_table() {
+   # above from the same per-lane state LIVE_N comes from -- it was just never
+   # printed. Printing it here means the badge's sed-parse reads this exact
+   # number instead of re-deriving one.
++  # Build the optional suffixes (aged-out + queued) so the header is
++  # byte-identical to the pre-queued form when QUEUED_N is 0.
++  _hdr_suffix=""
++  if [ "$AGED_OUT_N" -gt 0 ]; then
++    _hdr_suffix=", ${AGED_OUT_N} скрыто по возрасту"
++  fi
++  if [ "$QUEUED_N" -gt 0 ]; then
++    _hdr_suffix="${_hdr_suffix}, ${QUEUED_N} queued"
++  fi
+   if [ "$MULTI_PROJECT" -eq 1 ]; then
+-    if [ "$AGED_OUT_N" -gt 0 ]; then
+-      printf 'lanes (%d live, %d dead, %d done в последний час, %d скрыто по возрасту · %d projects)\n' \
+-        "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$AGED_OUT_N" "${#PROJ_SLUGS[@]}"
+-    else
+-      printf 'lanes (%d live, %d dead, %d done в последний час · %d projects)\n' \
+-        "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "${#PROJ_SLUGS[@]}"
+-    fi
+-  elif [ "$AGED_OUT_N" -gt 0 ]; then
+-    printf 'lanes (%d live, %d dead, %d done в последний час, %d скрыто по возрасту)\n' \
+-      "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$AGED_OUT_N"
++    printf 'lanes (%d live, %d dead, %d done в последний час%s · %d projects)\n' \
++      "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$_hdr_suffix" "${#PROJ_SLUGS[@]}"
+   else
+-    printf 'lanes (%d live, %d dead, %d done в последний час)\n' "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N"
++    printf 'lanes (%d live, %d dead, %d done в последний час%s)\n' \
++      "$LIVE_N" "$DEAD_N" "$DONE_RECENT_N" "$_hdr_suffix"
+   fi
++  unset _hdr_suffix
+   if [ "$LANE_COUNT" -eq 0 ]; then
+     printf '  (none)\n'
+   elif [ "$MULTI_PROJECT" -eq 1 ]; then
+@@ -2651,6 +2627,7 @@ $(printf '%s\t%s\t%s\t%s' "$_sl_base" "$_sl_f" "$_sl_term2" "$_sl_ver2")"
+     LEADV2_SL_SOURCES="$_sl_sources" \
+     LEADV2_SL_REPO="$REPO" \
+     LEADV2_SL_STATE_DIR="$STATE_DIR" \
++    LEADV2_SS_LANE_LIVENESS_BIN="${SCRIPT_DIR}/leadv2-lane-liveness.sh" \
+     python3 2>/dev/null <<'PYEOF'
+ import json, os, sys, re, datetime, subprocess
+ 
+@@ -2665,6 +2642,12 @@ def fail(reason):
+     print("mode=single-lead active ⚠ ledger unreadable: %s" % reason.replace("|", ""))
+     sys.exit(0)
+ 
++# ---- shared lane classifier (PANEL-TWO-IMPLEMENTATIONS-MERGE-01) ----
++try:
++    exec(open(os.environ["LEADV2_LANE_CLASS_PY"]).read(), globals())
++except Exception as e:
++    fail("lane classifier unloadable: %s" % e)
++
+ def epoch(row):
+     value = row.get("created_epoch", row.get("ts", 0))
+     try:
+@@ -2895,7 +2878,7 @@ try:
+     term_by_sig = {}
+     term_by_name = {}
+     unverifiable_repos = set()
+-    warnings = []
++    _debug = os.environ.get("LEADV2_STATUS_DEBUG", "") == "1"
+ 
+     def _read_terminal_source(term_path, by_sig, by_name):
+         for n, line in enumerate(tail_lines(term_path, 2000), 1):
+@@ -2921,7 +2904,8 @@ try:
+         if not exists:
+             if not is_current:
+                 unverifiable_repos.add(repo)
+-                warnings.append("%s terminals unreadable" % repo)
++                if _debug:
++                    sys.stderr.write("%s terminals unreadable (no file)\n" % repo)
+             continue
+         by_sig, by_name = {}, {}
+         if is_current:
+@@ -2931,7 +2915,8 @@ try:
+                 _read_terminal_source(term_path, by_sig, by_name)
+             except Exception:
+                 unverifiable_repos.add(repo)
+-                warnings.append("%s terminals unreadable" % repo)
++                if _debug:
++                    sys.stderr.write("%s terminals unreadable (read error)\n" % repo)
+                 continue
+         term_by_sig[repo] = by_sig
+         term_by_name[repo] = by_name
+@@ -2973,7 +2958,8 @@ try:
+                 rows = _read_reservation_rows()
+             except Exception:
+                 unverifiable_repos.add(repo)
+-                warnings.append("%s terminals unreadable" % repo)
++                if _debug:
++                    sys.stderr.write("%s terminals unreadable (reservation read error)\n" % repo)
+                 continue
+ 
+         for row in rows:
+@@ -3026,17 +3012,6 @@ def _terminal_hit(repo, sig8, task_id, lane_label):
+         return tname[lane_label]
+     return None
+ 
+-def _terminal_state(hit):
+-    # Rule R (retention): fresh terminal -> "closing" (rendered, excluded from
+-    # the active count); stale terminal -> "drop" (never rendered again); no
+-    # hit -> None (not a terminal lane at all).
+-    if hit is None:
+-        return None, None
+-    ts, _row = hit
+-    if (now - ts) <= grace:
+-        return "closing", "terminal"
+-    return "drop", None
+-
+ def lane_name(res_entry, term_hit, census_task_id, sig8):
+     # C4 precedence: reservation fields (task_id/founder_task_id/lane_label
+     # -- lane_label is the field the writers actually populate) win, then the
+@@ -3058,39 +3033,175 @@ def lane_name(res_entry, term_hit, census_task_id, sig8):
+         return str(census_task_id)
+     return sig8 or (str(census_task_id) if census_task_id else "unknown")
+ 
+-def lane_phase(repo, sig8, terminal_phase, in_census):
+-    if terminal_phase:
+-        return terminal_phase
+-    # Foreign aggregated repos: HANDOFF is unknown, phase degrades honestly.
++def legacy_infer(repo, sig8):
++    """Pre-migration inference: visible ~ prefix so it is never equal to a real phase."""
+     if repo == CUR_REPO and PROJECT_ROOT and sig8:
+         review_dir = os.path.join(PROJECT_ROOT, "docs", "handoff",
+                                    "dispatch-%s-review" % sig8)
+         if os.path.isdir(review_dir):
+-            return "review"
+-    if in_census:
+-        return "worker"
+-    if repo == CUR_REPO and PROJECT_ROOT and sig8:
++            return "~review"
+         arch_dir = os.path.join(PROJECT_ROOT, "docs", "handoff",
+                                  "dispatch-%s-architect" % sig8)
+         if os.path.isdir(arch_dir):
+-            return "architect"
+-    return "queued"
++            return "~architect"
++    return "~"
++
++# PHASES-ARE-THE-ONLY-PATH-01: lane_phase reads phases.d/, corroborates against
++# LANE_LIVENESS_BIN, and never infers from directory existence alone.
++_liveness_probe_cache = {}
++def _liveness_probe(sig8):
++    """Returns 'alive', 'dead', or 'unknown'. Memoized per sig8 per render."""
++    if sig8 in _liveness_probe_cache:
++        return _liveness_probe_cache[sig8]
++    bin_path = os.environ.get("LEADV2_SS_LANE_LIVENESS_BIN", "")
++    if not bin_path or not PROJECT_ROOT:
++        _liveness_probe_cache[sig8] = "unknown"
++        return "unknown"
++    try:
++        result = subprocess.run(
++            ["bash", bin_path, "--project-root", PROJECT_ROOT,
++             "--lane", sig8, "--no-codex", "--json"],
++            capture_output=True, text=True, timeout=3)
++        out = result.stdout.strip()
++        if '"alive"' in out or '"status": "alive"' in out:
++            _liveness_probe_cache[sig8] = "alive"
++        elif '"dead"' in out or '"status": "dead"' in out:
++            _liveness_probe_cache[sig8] = "dead"
++        else:
++            _liveness_probe_cache[sig8] = "unknown"
++    except Exception:
++        _liveness_probe_cache[sig8] = "unknown"
++    return _liveness_probe_cache[sig8]
+ 
+-# ── build the active-worker set: process census ∪ unexpired reservations ───
++def lane_phase(repo, sig8, terminal_phase, in_census):
++    if terminal_phase:
++        return terminal_phase
++    # Foreign aggregated repos: HANDOFF is unknown, phase degrades honestly.
++    if repo != CUR_REPO or not PROJECT_ROOT or not sig8:
++        return legacy_infer(repo, sig8) if sig8 else ("worker" if in_census else "queued")
++
++    # Read phases.d/*.yaml via flat_yaml
++    phases_d = os.path.join(PROJECT_ROOT, "docs", "handoff",
++                             "dispatch-%s" % sig8, "phases.d")
++    if not os.path.isdir(phases_d):
++        # Pre-migration lane: degrade honestly with ~ prefix
++        return legacy_infer(repo, sig8)
++
++    records = []
++    for fname in os.listdir(phases_d):
++        if not fname.endswith(".yaml"):
++            continue
++        rec = flat_yaml(os.path.join(phases_d, fname))
++        if rec.get("phase"):
++            records.append(rec)
++
++    if not records:
++        return legacy_infer(repo, sig8)
++
++    # Step 4: running records → newest by started_at
++    running = [r for r in records if r.get("status") == "running"]
++    if running:
++        running.sort(key=lambda r: r.get("started_at", ""), reverse=True)
++        newest = running[0]
++        # ended_at non-empty → treat as done (crash between fields)
++        if newest.get("ended_at", "").strip():
++            return "%s (done)" % newest["phase"]
++        # Corroborate against liveness probe
++        probe = _liveness_probe(sig8)
++        handle = newest.get("handle", "")
++        if probe == "dead":
++            started = newest.get("started_at", "")
++            age_str = ""
++            try:
++                st = datetime.datetime.fromisoformat(
++                    started.replace("Z", "+00:00"))
++                age_s = max(0, int(now - st.timestamp()))
++                if age_s < 3600:
++                    age_str = "%dm" % (age_s // 60)
++                else:
++                    age_str = "%dh" % (age_s // 3600)
++            except Exception:
++                age_str = "?"
++            return "%s (stalled, started %s ago)" % (newest["phase"], age_str)
++        # ALIVE or UNKNOWN → render plain phase (never claim stalled on probe failure)
++        return newest["phase"]
++
++    # Step 5: no running records → newest done/n-a/waived by ended_at
++    done_recs = [r for r in records
++                  if r.get("status") in ("done", "n/a", "waived")]
++    if done_recs:
++        done_recs.sort(key=lambda r: r.get("ended_at", "") or r.get("started_at", ""),
++                        reverse=True)
++        return "%s (done)" % done_recs[0]["phase"]
++
++    # Step 6: nothing renderable
++    return "worker" if in_census else "queued"
++
++# ── build the live-worker set: process census + classify (PANEL-TWO-IMPLEMENTATIONS-MERGE-01)
++# Only lanes classified "live" by the shared classifier appear.  A terminal
++# lane, a queued reservation, a stale row — none are listed or counted.
+ PID_ARGV = _build_pid_argv(PS_SNAPSHOT)
+ SUPERVISE_PID = _supervise_pid(SL_STATE_DIR)
+ live_procs = census_workers(PS_SNAPSHOT)
+ live_procs.update(codex_census(PROJECT_ROOT, PID_ARGV))
+ if SUPERVISE_PID is not None:
+-    # C3 item 3: the supervise sentinel's own pid is never a lane, for every
+-    # census pattern (not just codex).
+     live_procs = {k: v for k, v in live_procs.items()
+                   if str(v.get("pid")) != SUPERVISE_PID}
+ 
+ workers = []
+ seen_keys = set()
+ 
+-# (a) live process census workers
++def _term_token(hit):
++    if hit is None:
++        return ""
++    _ts, row = hit
++    return str(row.get("terminal") or "")
++
++def _term_ledger_state(hit):
++    """Map a terminal hit into a ledger_state the classifier understands
++    (mirrors the lanes path's R3.2 mapping at :1369)."""
++    tok = _term_token(hit)
++    return tok  # "" if no hit → classifier treats as non-terminal
++
++def _project(kind, pid_alive_session, pid, handle, ledger_state, terminal_hit,
++             motion_mtime, exit_code, now_val,
++             arm="", res_state="", res_age_s=None, res_ttl=None):
++    """Project discovery signals into a LaneFacts dict for classify()."""
++    tok = _term_token(terminal_hit)
++    ls = ledger_state
++    if not ls and tok:
++        ls = tok  # terminal row maps terminal→state (R3.2)
++    return {
++        "kind": kind,
++        "pid": pid,
++        "handle": handle,
++        "pid_alive_session": pid_alive_session,
++        "pid_alive_handle": False,
++        "argv_alive": False,
++        "close_alive": False,
++        "exit_code": exit_code,
++        "ledger_state": ls,
++        "status": "",
++        "outcome": "",
++        "tcause": "",
++        "terminal_token": tok,
++        "max_mtime": motion_mtime,
++        "motion_mtime": motion_mtime,
++        "now": now_val,
++        "arm": arm,
++        "res_state": res_state,
++        "res_age_s": res_age_s,
++        "res_ttl": res_ttl,
++    }
++
++def _age_label(s):
++    if s <= 0:
++        return "now"
++    if s < 3600:
++        return "%dm" % (s // 60)
++    return "%dh" % (s // 3600)
++
++# (a) live process census workers — a running process is always live
+ for key, info in live_procs.items():
+     sig8 = None
+     if re.match(r'^[a-f0-9]{8}$', key):
+@@ -3112,17 +3223,13 @@ for key, info in live_procs.items():
+                 term_hit = term_by_name[repo][nm]
+                 break
+ 
+-    tstate, tphase = _terminal_state(term_hit)
+-    if tstate == "drop":
+-        continue
+-
+     name = lane_name(res_entry, term_hit, census_task_id, sig8)
+-    phase = lane_phase(repo, sig8, tphase, True)
+-    state = "closing" if tstate == "closing" else "active"
++    phase = lane_phase(repo, sig8, None, True)
+ 
+     age_s = 0
+-    if res_entry:
+-        age_s = max(0, now - res_entry["when"])
++    res_when = res_entry["when"] if res_entry else None
++    if res_when:
++        age_s = max(0, now - res_when)
+     elif "epoch" in info and info["epoch"]:
+         age_s = max(0, now - info["epoch"])
+ 
+@@ -3130,13 +3237,30 @@ for key, info in live_procs.items():
+     dedupe_name = str(name).replace("|", "")
+     if wk_key in seen_keys or dedupe_name in seen_keys:
+         continue
++    # A census worker is alive by definition; classify confirms it.
++    _res_state = res_entry and str(res_entry["row"].get("state") or "") or ""
++    _res_arm = res_entry and str(res_entry["row"].get("arm") or "") or ""
++    _res_age = max(0, now - res_when) if res_when else None
++    facts = _project("lane", True, str(info.get("pid", "")),
++                     "", _res_state,
++                     term_hit, res_when or info.get("epoch") or 0, None, now,
++                     arm=_res_arm, res_state=_res_state,
++                     res_age_s=_res_age, res_ttl=ttl)
++    lc = classify(facts)
++    if lc["terminal"]:          continue
++    if lc["cls"] == "queued":   continue
++    if lc["cls"] == "dead" and not lc["unknown"]:
++                                continue
++    if not (lc["live"] or lc["live_process"] or lc["unknown"]):
++                                continue
+     seen_keys.add(wk_key)
+     seen_keys.add(dedupe_name)
+     workers.append({"name": dedupe_name, "arm": arm, "age_s": age_s,
+-                    "state": state, "phase": phase, "repo": repo,
+-                    "_sort": age_s})
++                    "phase": phase, "repo": repo, "_sort": age_s,
++                    "unknown": lc["unknown"]})
+ 
+-# (b) unexpired reservation rows not already covered by a live process
++# (b) reservation rows not already covered by a live process — classify
++# decides whether they are live (almost never, since no process), queued, etc.
+ for e in res_entries:
+     repo = e["repo"]
+     sig8 = e["sig8"]
+@@ -3146,28 +3270,27 @@ for e in res_entries:
+     if name0 in seen_keys:
+         continue
+     term_hit = _terminal_hit(repo, sig8, name0, e["lane_label"])
+-    tstate, tphase = _terminal_state(term_hit)
+-    if tstate == "drop":
+-        continue
+     age = max(0, now - e["when"])
+-    if tstate is None and age > ttl:
+-        continue
+     arm = str(e["row"].get("arm") or "unknown")
+-    phase = lane_phase(repo, sig8, tphase, False)
+-    state = "closing" if tstate == "closing" else "active"
++    res_state = str(e["row"].get("state") or "")
++    facts = _project("worker", False, None, "", res_state, term_hit,
++                     None, None, now,
++                     arm=arm, res_state=res_state,
++                     res_age_s=age, res_ttl=ttl)
++    lc = classify(facts)
++    if lc["terminal"]:          continue
++    if lc["cls"] == "queued":   continue
++    if lc["cls"] == "dead" and not lc["unknown"]:
++                                continue
++    if not (lc["live"] or lc["live_process"] or lc["unknown"]):
++                                continue
++    phase = lane_phase(repo, sig8, None, False)
+     seen_keys.add(sig8)
+     seen_keys.add(name0)
+     workers.append({"name": str(name0).replace("|", ""),
+                     "arm": arm.replace("|", ""), "age_s": age,
+-                    "state": state, "phase": phase, "repo": repo,
+-                    "_sort": age})
+-
+-def age_label(s):
+-    if s <= 0:
+-        return "now"
+-    if s < 3600:
+-        return "%dm" % (s // 60)
+-    return "%dh" % (s // 3600)
++                    "phase": phase, "repo": repo, "_sort": age,
++                    "unknown": lc["unknown"]})
+ 
+ multi_repo = len(SOURCES) > 1
+ 
+@@ -3184,35 +3307,40 @@ if not workers:
+         print("  (last open %s %dh ago, no terminal row)" % (sig, sage // 3600))
+     else:
+         print("mode=single-lead active 0")
+-    for w in warnings:
+-        print("  ⚠ %s" % w)
++        print("  нет активных lane")
+     sys.exit(0)
+ 
+ workers.sort(key=lambda w: w["_sort"])
+-active_workers = [w for w in workers if w["state"] != "closing"]
+ 
+-# Header line: count of ACTIVE (non-closing) workers + newest one's summary.
+-_n = len(active_workers)
++# Header line: count of live workers + newest one's summary.
++_n = len(workers)
+ if _n >= 1:
+-    newest = active_workers[0]
+-    _tid = newest["name"][:20]
++    newest = workers[0]
++    _tid = clip_name(newest["name"], 20)
+     _arm = newest["arm"]
+-    _age = age_label(newest["age_s"])
++    _age = _age_label(newest["age_s"])
+     print("mode=single-lead active %d %s %s %s" % (_n, _tid, _arm, _age))
+ else:
+     print("mode=single-lead active 0")
++    print("  нет активных lane")
+ 
+-# Worker detail lines (for dropdown) — closing rows are shown but excluded
+-# from the header count above.
++# Worker detail lines (for dropdown) — only live lanes, one row each.
+ for w in workers:
+-    _a = age_label(w["age_s"])
+-    if multi_repo:
+-        print("  %s · %s · %s %s · %s" % (w["name"][:24], w["phase"], w["arm"], _a, w["repo"]))
++    _a = _age_label(w["age_s"])
++    _nm = clip_name(w["name"], 24)
++    if w.get("unknown"):
++        _arm_age = join_fields([w["arm"] if w["arm"] != "unknown" else "?", _a], " ")
++        if multi_repo:
++            line = join_fields([_nm, "unknown", _arm_age, w["repo"]])
++        else:
++            line = join_fields([_nm, "unknown", _arm_age])
+     else:
+-        print("  %s · %s · %s %s" % (w["name"][:24], w["phase"], w["arm"], _a))
+-
+-for w in warnings:
+-    print("  ⚠ %s" % w)
++        _arm_age = join_fields([w["arm"], _a], " ")
++        if multi_repo:
++            line = join_fields([_nm, w["phase"], _arm_age, w["repo"]])
++        else:
++            line = join_fields([_nm, w["phase"], _arm_age])
++    print("  " + line)
+ PYEOF
+   then
+     # A command/runtime/heredoc failure must preserve the mode marker so the
+diff --git a/plugins/leadv2/scripts/tests/run-core-offline.sh b/plugins/leadv2/scripts/tests/run-core-offline.sh
+index 445fa37..3d67dd7 100755
+--- a/plugins/leadv2/scripts/tests/run-core-offline.sh
++++ b/plugins/leadv2/scripts/tests/run-core-offline.sh
+@@ -113,6 +113,11 @@ run_check "Codex quota guardrails (effort/circuit/hook)" bash "$TEST_DIR/test-co
+ run_check "e2e gate lane root + suite family" bash "$TEST_DIR/test-e2e-gate-lane-root.sh"
+ run_check "review body persist (opus/sonnet materialisation + body_lost guard)" bash "$TEST_DIR/test-review-body-persist.sh"
+ run_check "core-offline root arithmetic (git-derived REPO_ROOT)" bash "$TEST_DIR/test-core-offline-root-arith.sh"
++run_check "dispatch arm vocabulary (kimi retirement)" bash "$TEST_DIR/test-dispatch-arm-vocabulary.sh"
++run_check "foreground-dispatch guard hook" bash "$TEST_DIR/test-fg-dispatch-guard.sh"
++run_check "phase record round-trip" bash "$TEST_DIR/test-phase-record.sh"
++run_check "phase precondition guard matrix" bash "$TEST_DIR/test-phase-precondition.sh"
++run_check "lane phase render" bash "$TEST_DIR/test-lane-phase-render.sh"
+ 
+ printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
+ (( FAIL == 0 && MISSING == 0 ))
+diff --git a/plugins/leadv2/scripts/tests/test-lane-phase-render.sh b/plugins/leadv2/scripts/tests/test-lane-phase-render.sh
+new file mode 100755
+index 0000000..f96a53d
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-lane-phase-render.sh
+@@ -0,0 +1,350 @@
++#!/usr/bin/env bash
++# test-lane-phase-render.sh — fixture test for lane_phase() rendering
++# PHASES-ARE-THE-ONLY-PATH-01 §11 test suite 3.
++#
++# Tests lane_phase() directly against fixture phase records, with a stub
++# liveness probe. No live lane, no network.
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
++SURFACE="${SCRIPT_DIR}/../leadv2-status-surface.sh"
++
++TMP_ROOT="$(mktemp -d)"
++trap 'rm -rf "$TMP_ROOT"' EXIT
++
++PASS=0
++FAIL=0
++ok() { PASS=$((PASS+1)); }
++fail() { FAIL=$((FAIL+1)); printf '  FAIL: %s\n' "$1" >&2; }
++
++# Create a stub liveness binary that reads its verdict from a control file
++STUB_LIVENESS="${TMP_ROOT}/stub-liveness.sh"
++LIVENESS_VERDICT_FILE="${TMP_ROOT}/liveness_verdict"
++printf 'alive' > "$LIVENESS_VERDICT_FILE"
++cat > "$STUB_LIVENESS" <<'STUBEOF'
++#!/usr/bin/env bash
++# Stub: reads verdict from control file
++VERDICT="$(cat "${LIVENESS_VERDICT_FILE}" 2>/dev/null || echo alive)"
++printf '{"status": "%s"}\n' "$VERDICT"
++STUBEOF
++chmod +x "$STUB_LIVENESS"
++
++SIG8="abc12345"
++HANDOFF_DIR="${TMP_ROOT}/docs/handoff/dispatch-${SIG8}"
++PHASES_D="${HANDOFF_DIR}/phases.d"
++
++# Helper: run the lane_phase python function in isolation against fixtures
++run_lane_phase() {
++  local status="$1" handle="$2" ended_at="$3" phase="${4:-review}" started_at="${5:-2026-08-05T14:00:00Z}"
++  mkdir -p "$PHASES_D"
++  # Clean previous records
++  rm -f "$PHASES_D"/*.yaml 2>/dev/null
++  cat > "${PHASES_D}/${phase}.yaml" <<YREC
++phase: ${phase}
++status: ${status}
++owner: test
++handle: ${handle}
++artifact: src/file.py
++artifact_sha256: abc123
++started_at: ${started_at}
++ended_at: ${ended_at}
++reason:
++YREC
++
++  LIVENESS_VERDICT_FILE="$LIVENESS_VERDICT_FILE" \
++  LEADV2_PROJECT_ROOT="$TMP_ROOT" \
++  LEADV2_SS_LANE_LIVENESS_BIN="$STUB_LIVENESS" \
++  python3 - "$SURFACE" "$SIG8" <<'PYEOF'
++import os, sys, types, datetime
++
++# We need to extract and run just the lane_phase function with mocked context.
++# Rather than sourcing the full surface (which needs a ledger), we inline the
++# function and its deps with controlled globals.
++
++TMP_ROOT = os.environ["LEADV2_PROJECT_ROOT"]
++SIG8 = sys.argv[2]
++PROJECT_ROOT = TMP_ROOT
++CUR_REPO = "test-repo"
++now = datetime.datetime(2026, 8, 5, 15, 0, 0).timestamp()
++
++# Minimal flat_yaml
++def flat_yaml(path):
++    d = {}
++    try:
++        with open(path) as fh:
++            for line in fh:
++                line = line.rstrip("\n")
++                if not line or line.lstrip().startswith("#") or ":" not in line:
++                    continue
++                k, _, v = line.partition(":")
++                d[k.strip()] = v.strip().strip("'\"")
++    except Exception:
++        pass
++    return d
++
++# Liveness probe stub
++_liveness_probe_cache = {}
++def _liveness_probe(sig8):
++    if sig8 in _liveness_probe_cache:
++        return _liveness_probe_cache[sig8]
++    import subprocess
++    bin_path = os.environ.get("LEADV2_SS_LANE_LIVENESS_BIN", "")
++    try:
++        result = subprocess.run(
++            ["bash", bin_path, "--project-root", PROJECT_ROOT,
++             "--lane", sig8, "--no-codex", "--json"],
++            capture_output=True, text=True, timeout=3)
++        out = result.stdout.strip()
++        if '"alive"' in out or '"status": "alive"' in out:
++            _liveness_probe_cache[sig8] = "alive"
++        elif '"dead"' in out or '"status": "dead"' in out:
++            _liveness_probe_cache[sig8] = "dead"
++        else:
++            _liveness_probe_cache[sig8] = "unknown"
++    except Exception:
++        _liveness_probe_cache[sig8] = "unknown"
++    return _liveness_probe_cache[sig8]
++
++def legacy_infer(repo, sig8):
++    return "~"
++
++def lane_phase(repo, sig8, terminal_phase, in_census):
++    if terminal_phase:
++        return terminal_phase
++    if repo != CUR_REPO or not PROJECT_ROOT or not sig8:
++        return legacy_infer(repo, sig8) if sig8 else ("worker" if in_census else "queued")
++    phases_d = os.path.join(PROJECT_ROOT, "docs", "handoff",
++                             "dispatch-%s" % sig8, "phases.d")
++    if not os.path.isdir(phases_d):
++        return legacy_infer(repo, sig8)
++    records = []
++    for fname in os.listdir(phases_d):
++        if not fname.endswith(".yaml"):
++            continue
++        rec = flat_yaml(os.path.join(phases_d, fname))
++        if rec.get("phase"):
++            records.append(rec)
++    if not records:
++        return legacy_infer(repo, sig8)
++    running = [r for r in records if r.get("status") == "running"]
++    if running:
++        running.sort(key=lambda r: r.get("started_at", ""), reverse=True)
++        newest = running[0]
++        if newest.get("ended_at", "").strip():
++            return "%s (done)" % newest["phase"]
++        probe = _liveness_probe(sig8)
++        if probe == "dead":
++            started = newest.get("started_at", "")
++            age_str = ""
++            try:
++                st = datetime.datetime.fromisoformat(
++                    started.replace("Z", "+00:00"))
++                age_s = max(0, int(now - st.timestamp()))
++                if age_s < 3600:
++                    age_str = "%dm" % (age_s // 60)
++                else:
++                    age_str = "%dh" % (age_s // 3600)
++            except Exception:
++                age_str = "?"
++            return "%s (stalled, started %s ago)" % (newest["phase"], age_str)
++        return newest["phase"]
++    done_recs = [r for r in records
++                  if r.get("status") in ("done", "n/a", "waived")]
++    if done_recs:
++        done_recs.sort(key=lambda r: r.get("ended_at", "") or r.get("started_at", ""),
++                        reverse=True)
++        return "%s (done)" % done_recs[0]["phase"]
++    return "worker" if in_census else "queued"
++
++result = lane_phase(CUR_REPO, SIG8, None, True)
++print(result)
++PYEOF
++}
++
++# ── Test 1: running, empty ended_at, dead probe → stalled ────────────────────
++printf 'test: running + dead probe → stalled\n'
++printf 'dead' > "$LIVENESS_VERDICT_FILE"
++OUT="$(run_lane_phase running dispatch-abc-review '' review '2026-08-05T14:22:00Z')"
++if printf '%s' "$OUT" | grep -q 'review (stalled'; then
++  ok
++else
++  fail "expected 'review (stalled, ...)', got: $OUT"
++fi
++
++# ── Test 2: running, empty ended_at, alive probe → plain phase ───────────────
++printf 'test: running + alive probe → plain\n'
++printf 'alive' > "$LIVENESS_VERDICT_FILE"
++OUT="$(run_lane_phase running dispatch-abc-review '' review '2026-08-05T14:22:00Z')"
++if [[ "$OUT" == "review" ]]; then
++  ok
++else
++  fail "expected 'review', got: $OUT"
++fi
++
++# ── Test 3: running, empty ended_at, unknown probe → plain phase ─────────────
++printf 'test: running + unknown probe → plain (never stalled)\n'
++# Make the probe fail
++cat > "$STUB_LIVENESS" <<'STUBEOF'
++#!/usr/bin/env bash
++exit 1
++STUBEOF
++chmod +x "$STUB_LIVENESS"
++OUT="$(run_lane_phase running dispatch-abc-review '' review '2026-08-05T14:22:00Z')"
++if [[ "$OUT" == "review" ]]; then
++  ok
++else
++  fail "expected 'review' on probe failure, got: $OUT"
++fi
++
++# Restore working stub
++cat > "$STUB_LIVENESS" <<STUBEOF
++#!/usr/bin/env bash
++VERDICT="\$(cat "${LIVENESS_VERDICT_FILE}" 2>/dev/null || echo alive)"
++printf '{"status": "%s"}\n' "\$VERDICT"
++STUBEOF
++chmod +x "$STUB_LIVENESS"
++
++# ── Test 4: no phases.d → legacy inference with ~ prefix ─────────────────────
++printf 'test: no phases.d → ~ prefix\n'
++rm -rf "$PHASES_D"
++OUT="$(LIVENESS_VERDICT_FILE="$LIVENESS_VERDICT_FILE" \
++  LEADV2_PROJECT_ROOT="$TMP_ROOT" \
++  LEADV2_SS_LANE_LIVENESS_BIN="$STUB_LIVENESS" \
++  python3 - <<'PYEOF'
++import os, sys, datetime
++TMP_ROOT = os.environ["LEADV2_PROJECT_ROOT"]
++SIG8 = "abc12345"
++PROJECT_ROOT = TMP_ROOT
++CUR_REPO = "test-repo"
++now = datetime.datetime(2026, 8, 5, 15, 0, 0).timestamp()
++
++def flat_yaml(path):
++    d = {}
++    try:
++        with open(path) as fh:
++            for line in fh:
++                line = line.rstrip("\n")
++                if not line or line.lstrip().startswith("#") or ":" not in line:
++                    continue
++                k, _, v = line.partition(":")
++                d[k.strip()] = v.strip().strip("'\"")
++    except Exception:
++        pass
++    return d
++
++_liveness_probe_cache = {}
++def _liveness_probe(sig8):
++    return "unknown"
++
++def legacy_infer(repo, sig8):
++    return "~"
++
++def lane_phase(repo, sig8, terminal_phase, in_census):
++    if terminal_phase:
++        return terminal_phase
++    if repo != CUR_REPO or not PROJECT_ROOT or not sig8:
++        return legacy_infer(repo, sig8) if sig8 else ("worker" if in_census else "queued")
++    phases_d = os.path.join(PROJECT_ROOT, "docs", "handoff",
++                             "dispatch-%s" % sig8, "phases.d")
++    if not os.path.isdir(phases_d):
++        return legacy_infer(repo, sig8)
++    return "should-not-reach"
++
++print(lane_phase(CUR_REPO, SIG8, None, True))
++PYEOF
++)"
++if [[ "$OUT" == "~" ]]; then
++  ok
++else
++  fail "expected '~' for no phases.d, got: $OUT"
++fi
++
++# ── Test 5: all records done → phase (done) ──────────────────────────────────
++printf 'test: all done → close (done)\n'
++mkdir -p "$PHASES_D"
++rm -f "$PHASES_D"/*.yaml 2>/dev/null
++cat > "${PHASES_D}/close.yaml" <<YREC
++phase: close
++status: done
++owner: test
++handle: dispatch-abc-close
++artifact: docs/handoff/dispatch-abc/phase8-passed.flag
++artifact_sha256: def456
++started_at: 2026-08-05T14:00:00Z
++ended_at: 2026-08-05T15:00:00Z
++reason:
++YREC
++printf 'alive' > "$LIVENESS_VERDICT_FILE"
++OUT="$(LIVENESS_VERDICT_FILE="$LIVENESS_VERDICT_FILE" \
++  LEADV2_PROJECT_ROOT="$TMP_ROOT" \
++  LEADV2_SS_LANE_LIVENESS_BIN="$STUB_LIVENESS" \
++  python3 - <<'PYEOF'
++import os, sys, datetime
++TMP_ROOT = os.environ["LEADV2_PROJECT_ROOT"]
++SIG8 = "abc12345"
++PROJECT_ROOT = TMP_ROOT
++CUR_REPO = "test-repo"
++now = datetime.datetime(2026, 8, 5, 15, 30, 0).timestamp()
++
++def flat_yaml(path):
++    d = {}
++    try:
++        with open(path) as fh:
++            for line in fh:
++                line = line.rstrip("\n")
++                if not line or line.lstrip().startswith("#") or ":" not in line:
++                    continue
++                k, _, v = line.partition(":")
++                d[k.strip()] = v.strip().strip("'\"")
++    except Exception:
++        pass
++    return d
++
++_liveness_probe_cache = {}
++def _liveness_probe(sig8):
++    return "unknown"
++
++def legacy_infer(repo, sig8):
++    return "~"
++
++def lane_phase(repo, sig8, terminal_phase, in_census):
++    if terminal_phase:
++        return terminal_phase
++    if repo != CUR_REPO or not PROJECT_ROOT or not sig8:
++        return legacy_infer(repo, sig8) if sig8 else ("worker" if in_census else "queued")
++    phases_d = os.path.join(PROJECT_ROOT, "docs", "handoff",
++                             "dispatch-%s" % sig8, "phases.d")
++    if not os.path.isdir(phases_d):
++        return legacy_infer(repo, sig8)
++    records = []
++    for fname in os.listdir(phases_d):
++        if not fname.endswith(".yaml"):
++            continue
++        rec = flat_yaml(os.path.join(phases_d, fname))
++        if rec.get("phase"):
++            records.append(rec)
++    if not records:
++        return legacy_infer(repo, sig8)
++    running = [r for r in records if r.get("status") == "running"]
++    if running:
++        return "running-should-not-happen"
++    done_recs = [r for r in records
++                  if r.get("status") in ("done", "n/a", "waived")]
++    if done_recs:
++        done_recs.sort(key=lambda r: r.get("ended_at", "") or r.get("started_at", ""),
++                        reverse=True)
++        return "%s (done)" % done_recs[0]["phase"]
++    return "worker" if in_census else "queued"
++
++print(lane_phase(CUR_REPO, SIG8, None, True))
++PYEOF
++)"
++if [[ "$OUT" == "close (done)" ]]; then
++  ok
++else
++  fail "expected 'close (done)', got: $OUT"
++fi
++
++printf '\n[LANE-PHASE-RENDER] pass=%d fail=%d\n' "$PASS" "$FAIL"
++(( FAIL == 0 ))
+diff --git a/plugins/leadv2/scripts/tests/test-phase-precondition.sh b/plugins/leadv2/scripts/tests/test-phase-precondition.sh
+new file mode 100755
+index 0000000..0b07530
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-phase-precondition.sh
+@@ -0,0 +1,192 @@
++#!/usr/bin/env bash
++# test-phase-precondition.sh — guard matrix for _phase_precondition_guard
++# PHASES-ARE-THE-ONLY-PATH-01 §11 test suite 2.
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
++PHASE_RECORD="${SCRIPT_DIR}/../leadv2-phase-record.sh"
++DISPATCH_BIN="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
++
++TMP_ROOT="$(mktemp -d)"
++trap 'rm -rf "$TMP_ROOT"' EXIT
++
++export LEADV2_PROJECT_ROOT="$TMP_ROOT"
++export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/.cache"
++export LEADV2_JOURNAL_BIN="${TMP_ROOT}/journal.sh"
++
++# Stub journal that records lines to a file
++JOURNAL_LOG="${TMP_ROOT}/journal.log"
++cat > "${LEADV2_JOURNAL_BIN}" <<'JEOF'
++#!/usr/bin/env bash
++echo "$@" >> "${LEADV2_JOURNAL_LOG}" 2>/dev/null || true
++JEOF
++chmod +x "${LEADV2_JOURNAL_BIN}"
++export LEADV2_JOURNAL_LOG
++
++PASS=0
++FAIL=0
++ok() { PASS=$((PASS+1)); }
++fail() { FAIL=$((FAIL+1)); printf '  FAIL: %s\n' "$1" >&2; }
++
++# We test phase-record.sh assert directly (it's what the guard calls)
++
++# ── Test 1: Standard, no plan/gate1 → missing=csv on stdout, exit 3 ───────────
++printf 'test: Standard missing plan/gate1\n'
++OUT="$(bash "$PHASE_RECORD" assert deadbeef --class Standard 2>/dev/null)"; rc=$?
++if [[ $rc -eq 3 ]]; then
++  ok
++else
++  fail "assert Standard should exit 3 (got $rc)"
++fi
++if printf '%s' "$OUT" | grep -q '^missing='; then
++  ok
++else
++  fail "assert should print missing= csv"
++fi
++if printf '%s' "$OUT" | grep -q 'plan'; then
++  ok
++else
++  fail "missing should include plan"
++fi
++
++# ── Test 2: --waiver review=anything → exit 4 ─────────────────────────────────
++printf 'test: waiver review refused\n'
++for cls in Trivial Light Standard Heavy; do
++  bash "$PHASE_RECORD" assert test01 --class "$cls" --waiver "review=anything" 2>/dev/null; rc=$?
++  if [[ $rc -eq 4 ]]; then
++    ok
++  else
++    fail "review waiver should exit 4 for class=$cls (got $rc)"
++  fi
++done
++
++# ── Test 3: --waiver close=anything → exit 4 ─────────────────────────────────
++printf 'test: waiver close refused\n'
++for cls in Trivial Light Standard Heavy; do
++  bash "$PHASE_RECORD" assert test02 --class "$cls" --waiver "close=anything" 2>/dev/null; rc=$?
++  if [[ $rc -eq 4 ]]; then
++    ok
++  else
++    fail "close waiver should exit 4 for class=$cls (got $rc)"
++  fi
++done
++
++# ── Test 4: --waiver plan= (empty reason) → exit 4 ───────────────────────────
++printf 'test: waiver empty reason\n'
++bash "$PHASE_RECORD" assert test03 --class Standard --waiver "plan=" 2>/dev/null; rc=$?
++if [[ $rc -eq 4 ]]; then
++  ok
++else
++  fail "empty reason waiver should exit 4 (got $rc)"
++fi
++
++# ── Test 5: phases.yaml with version: 2 → exit 4 ─────────────────────────────
++printf 'test: phases.yaml version 2 rejected\n'
++mkdir -p "${TMP_ROOT}/.claude/leadv2-overrides"
++printf 'version: 2\n' > "${TMP_ROOT}/.claude/leadv2-overrides/phases.yaml"
++bash "$PHASE_RECORD" assert test04 --class Standard 2>/dev/null; rc=$?
++if [[ $rc -eq 4 ]]; then
++  ok
++else
++  fail "version 2 should exit 4 (got $rc)"
++fi
++
++# ── Test 6: phases.yaml with class_overrides.Light.remove → exit 4 ────────────
++printf 'test: phases.yaml removal key rejected\n'
++cat > "${TMP_ROOT}/.claude/leadv2-overrides/phases.yaml" <<'YEOF'
++version: 1
++class_overrides:
++  Light:
++    remove:
++      - review
++YEOF
++ERR="$(bash "$PHASE_RECORD" assert test05 --class Light 2>&1 1>/dev/null)"; rc=$?
++if [[ $rc -eq 4 ]]; then
++  ok
++else
++  fail "remove key should exit 4 (got $rc)"
++fi
++if printf '%s' "$ERR" | grep -q 'removals are not permitted'; then
++  ok
++else
++  fail "error should name removals"
++fi
++
++# ── Test 7: phases.yaml with class_overrides.Light.mandatory: [e2e] → union ───
++printf 'test: phases.yaml union adds e2e to Light\n'
++cat > "${TMP_ROOT}/.claude/leadv2-overrides/phases.yaml" <<'YEOF'
++version: 1
++class_overrides:
++  Light:
++    mandatory:
++      - e2e
++YEOF
++PLAN_OUT="$(bash "$PHASE_RECORD" plan-for --class Light 2>/dev/null)"
++if printf '%s' "$PLAN_OUT" | grep -q 'MANDATORY.*e2e'; then
++  ok
++else
++  fail "Light + override should make e2e mandatory"
++fi
++
++# ── Test 8: waiver plan accepted when in waivers_allowed ──────────────────────
++printf 'test: waiver plan accepted\n'
++cat > "${TMP_ROOT}/.claude/leadv2-overrides/phases.yaml" <<'YEOF'
++version: 1
++waivers_allowed:
++  - plan
++YEOF
++bash "$PHASE_RECORD" assert w01 --class Standard --waiver "plan=no_prepass_needed" 2>/dev/null; rc=$?
++if [[ $rc -eq 3 ]]; then
++  # exit 3 is fine — plan is waived but gate1 still missing
++  ok
++else
++  if [[ $rc -eq 0 ]]; then
++    ok  # all satisfied somehow
++  else
++    fail "accepted waiver should not exit 4 (got $rc)"
++  fi
++fi
++# Verify the waiver was recorded
++if [[ -f "${TMP_ROOT}/docs/handoff/dispatch-w01/phases.d/plan.yaml" ]]; then
++  if grep -q 'status: waived' "${TMP_ROOT}/docs/handoff/dispatch-w01/phases.d/plan.yaml" \
++     && grep -q 'reason: no_prepass_needed' "${TMP_ROOT}/docs/handoff/dispatch-w01/phases.d/plan.yaml"; then
++    ok
++  else
++    fail "waiver record missing fields"
++  fi
++else
++  fail "waived plan.yaml not written"
++fi
++
++# ── Test 9: waiver plan NOT in waivers_allowed → exit 4 ───────────────────────
++printf 'test: waiver plan not allowed\n'
++rm -f "${TMP_ROOT}/.claude/leadv2-overrides/phases.yaml"
++bash "$PHASE_RECORD" assert w02 --class Standard --waiver "plan=test" 2>/dev/null; rc=$?
++if [[ $rc -eq 4 ]]; then
++  ok
++else
++  fail "waiver not in waivers_allowed should exit 4 (got $rc)"
++fi
++
++# ── Test 10: no phases.yaml → base table, no crash ───────────────────────────
++printf 'test: no phases.yaml → base table\n'
++PLAN_OUT="$(bash "$PHASE_RECORD" plan-for --class Trivial 2>/dev/null)"; rc=$?
++if [[ $rc -eq 0 ]]; then
++  ok
++else
++  fail "plan-for Trivial should succeed without phases.yaml (got $rc)"
++fi
++if printf '%s' "$PLAN_OUT" | grep -q 'MANDATORY.*classify'; then
++  ok
++else
++  fail "Trivial should have classify mandatory"
++fi
++if printf '%s' "$PLAN_OUT" | grep -q 'MANDATORY.*review'; then
++  ok
++else
++  fail "Trivial should have review mandatory"
++fi
++
++printf '\n[PHASE-PRECONDITION] pass=%d fail=%d\n' "$PASS" "$FAIL"
++(( FAIL == 0 ))
+diff --git a/plugins/leadv2/scripts/tests/test-phase-record.sh b/plugins/leadv2/scripts/tests/test-phase-record.sh
+new file mode 100755
+index 0000000..530b5f2
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-phase-record.sh
+@@ -0,0 +1,144 @@
++#!/usr/bin/env bash
++# test-phase-record.sh — record/assert/show round-trip for leadv2-phase-record.sh
++# PHASES-ARE-THE-ONLY-PATH-01 §11 test suite 1.
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++PHASE_RECORD="${SCRIPT_DIR}/../leadv2-phase-record.sh"
++
++# Use a temp project root
++TMP_ROOT="$(mktemp -d)"
++trap 'rm -rf "$TMP_ROOT"' EXIT
++
++export LEADV2_PROJECT_ROOT="$TMP_ROOT"
++export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/.cache"
++export LEADV2_JOURNAL_BIN=/dev/null  # silent — no real journal
++
++PASS=0
++FAIL=0
++ok() { PASS=$((PASS+1)); }
++fail() { FAIL=$((FAIL+1)); printf '  FAIL: %s\n' "$1" >&2; }
++
++SIG8="abc12345"
++PHASES_D="${TMP_ROOT}/docs/handoff/dispatch-${SIG8}/phases.d"
++
++# ── Test 1: record basic round-trip ──────────────────────────────────────────
++printf 'test: record basic round-trip\n'
++mkdir -p "${TMP_ROOT}/src"
++echo "content" > "${TMP_ROOT}/src/file.py"
++bash "$PHASE_RECORD" record "$SIG8" build --status done \
++  --artifact src/file.py --owner test:test 2>/dev/null
++if [[ -f "${PHASES_D}/build.yaml" ]]; then
++  ok
++else
++  fail "build.yaml not created"
++fi
++
++# Verify flat schema fields
++if grep -q '^phase: build' "${PHASES_D}/build.yaml" \
++   && grep -q '^status: done' "${PHASES_D}/build.yaml" \
++   && grep -q '^artifact: src/file.py' "${PHASES_D}/build.yaml" \
++   && grep -q '^artifact_sha256:' "${PHASES_D}/build.yaml"; then
++  ok
++else
++  fail "build.yaml missing expected fields"
++fi
++
++# ── Test 2: mkdir -p on a lane with no docs/handoff/<id>/ ────────────────────
++printf 'test: mkdir -p on missing dir\n'
++SIG8_B="deadbeef"
++bash "$PHASE_RECORD" record "$SIG8_B" classify --status done --owner test:test 2>/dev/null
++if [[ -f "${TMP_ROOT}/docs/handoff/dispatch-${SIG8_B}/phases.d/classify.yaml" ]]; then
++  ok
++else
++  fail "classify.yaml not created in fresh dir"
++fi
++
++# ── Test 3: atomic-rename leaves no .tmp behind ──────────────────────────────
++printf 'test: no tmp files left behind\n'
++TMP_FILES="$(find "${PHASES_D}" -name '.build.*' 2>/dev/null | head -5)"
++if [[ -z "$TMP_FILES" ]]; then
++  ok
++else
++  fail "temp files left behind: $TMP_FILES"
++fi
++
++# ── Test 4: concurrent record of two different phases ────────────────────────
++printf 'test: concurrent record of two phases\n'
++SIG8_C="cafe1234"
++bash "$PHASE_RECORD" record "$SIG8_C" build --status running --handle h1 --owner test 2>/dev/null &
++PID1=$!
++bash "$PHASE_RECORD" record "$SIG8_C" plan --status done --artifact src/file.py --owner test 2>/dev/null &
++PID2=$!
++wait $PID1
++wait $PID2
++PDIR="${TMP_ROOT}/docs/handoff/dispatch-${SIG8_C}/phases.d"
++if [[ -f "${PDIR}/build.yaml" && -f "${PDIR}/plan.yaml" ]]; then
++  ok
++else
++  fail "concurrent record produced incomplete files"
++fi
++
++# ── Test 5: n/a requires --reason ────────────────────────────────────────────
++printf 'test: n/a requires reason\n'
++bash "$PHASE_RECORD" record "$SIG8" test --status n/a 2>/dev/null
++rc=$?
++if [[ $rc -eq 4 ]]; then
++  ok
++else
++  fail "n/a without reason should exit 4 (got $rc)"
++fi
++
++bash "$PHASE_RECORD" record "$SIG8" test --status n/a --reason docs_only 2>/dev/null
++rc=$?
++if [[ $rc -eq 0 ]]; then
++  ok
++else
++  fail "n/a with reason should succeed (got $rc)"
++fi
++
++# ── Test 6: waived requires --reason ─────────────────────────────────────────
++printf 'test: waived requires reason\n'
++bash "$PHASE_RECORD" record "$SIG8" diverge --status waived 2>/dev/null
++rc=$?
++if [[ $rc -eq 4 ]]; then
++  ok
++else
++  fail "waived without reason should exit 4 (got $rc)"
++fi
++
++# ── Test 7: running requires --handle ────────────────────────────────────────
++printf 'test: running requires handle\n'
++bash "$PHASE_RECORD" record "$SIG8" build --status running 2>/dev/null
++rc=$?
++if [[ $rc -eq 4 ]]; then
++  ok
++else
++  fail "running without handle should exit 4 (got $rc)"
++fi
++
++# ── Test 8: show prints a table ──────────────────────────────────────────────
++printf 'test: show output\n'
++SHOW_OUT="$(bash "$PHASE_RECORD" show "$SIG8" 2>/dev/null)"
++if printf '%s' "$SHOW_OUT" | grep -q 'build'; then
++  ok
++else
++  fail "show should list build phase"
++fi
++
++# ── Test 9: plan-for prints mandatory set ────────────────────────────────────
++printf 'test: plan-for Standard\n'
++PLAN_OUT="$(bash "$PHASE_RECORD" plan-for --class Standard 2>/dev/null)"
++if printf '%s' "$PLAN_OUT" | grep -q 'MANDATORY.*review'; then
++  ok
++else
++  fail "plan-for Standard should include review as mandatory"
++fi
++if printf '%s' "$PLAN_OUT" | grep -q 'MANDATORY.*close'; then
++  ok
++else
++  fail "plan-for Standard should include close as mandatory"
++fi
++
++printf '\n[PORE-RECORD] pass=%d fail=%d\n' "$PASS" "$FAIL"
++(( FAIL == 0 ))

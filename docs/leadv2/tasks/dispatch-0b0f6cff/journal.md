@@ -1,0 +1,15 @@
+- 2026-08-04T23:03:22Z [decision] lane_placement_pinned task=0b0f6cff mode=resume-lane path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/b98371eb key=b98371eb
+- 2026-08-04T23:03:22Z [decision] dispatch_classified task=0b0f6cff class=product reason=conservative_default kind=unknown
+- 2026-08-04T23:08:18Z [decision] architect_prepass task=0b0f6cff status=ran artifact=docs/handoff/dispatch-0b0f6cff/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-0b0f6cff-architect/architect.full.md
+- 2026-08-04T23:08:18Z [decision] lane_writes task=0b0f6cff source=prepass writes=plugins/leadv2/scripts/leadv2-lane-class.py,plugins/leadv2/scripts/leadv2-status-surface.sh,tests/test-status-surface-parity.sh,tests/test-status-surface-single-lead.sh
+- 2026-08-04T23:08:18Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T23:08:18Z [decision] kimi_skipped reason=chars_over task=0b0f6cff chars=18601 writes=0 prepass=1
+- 2026-08-04T23:08:18Z [decision] candidate_chain task=0b0f6cff arms=glm,codex,sonnet
+- 2026-08-04T23:08:20Z [decision] worker_spawned by=router model=glm task=0b0f6cff attempt=0b0f6cff-1785884601-89530 handle=260805-020820-b98371eb-2a96
+- 2026-08-04T23:08:20Z [decision] mission-version task=- sig=0b0f6cff rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-04T23:08:21Z [decision] product_close task=0b0f6cff status=spawned author=glm
+- 2026-08-04T23:08:21Z [decision] route_resolved by=router router=v1 model=glm task=0b0f6cff rule=none reason=no_routing_yaml
+- 2026-08-04T23:08:21Z [decision] lane_worktree_left task=0b0f6cff founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/b98371eb
+- 2026-08-04T23:49:37Z [decision] e2e_gate task=0b0f6cff status=ran verdict=fail rc=1
+- 2026-08-04T23:50:50Z [decision] dispatch_terminal task=0b0f6cff terminal=dead cause=e2e_regression
+- 2026-08-04T23:50:54Z [decision] dispatch_terminal_dedup task=0b0f6cff attempted=dead reason=terminal_already_recorded

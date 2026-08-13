@@ -1,0 +1,25 @@
+- 2026-08-06T15:59:35Z [decision] dispatch_classified task=83c44855 class=product reason=conservative_default kind=unknown
+- 2026-08-06T15:59:36Z [decision] phase_precondition_warn task=83c44855 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-06T16:03:37Z [decision] architect_prepass task=83c44855 status=ran artifact=docs/handoff/dispatch-83c44855/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-83c44855-architect/architect.full.md
+- 2026-08-06T16:03:37Z [decision] lane_writes task=83c44855 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/lib/leadv2-quota-error-parse.py,plugins/leadv2/scripts/tests/test-quota-lockout-postspawn.sh
+- 2026-08-06T16:03:38Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-06T16:03:38Z [decision] kimi_skipped reason=chars_over task=83c44855 chars=23522 writes=0 prepass=1
+- 2026-08-06T16:03:38Z [decision] quota_precheck_skip model=glm provider=glm task=83c44855 reason=provider_quota_locked
+- 2026-08-06T16:03:38Z [decision] quota_precheck_skip model=codex provider=codex task=83c44855 reason=provider_quota_locked
+- 2026-08-06T16:03:38Z [decision] candidate_chain task=83c44855 arms=sonnet
+- 2026-08-06T16:03:39Z [decision] worker_spawned by=router model=sonnet task=83c44855 attempt=83c44855-1786031973-50888 handle=PID=2620 LABEL=developer-dispatch-83c44855-1786032219 SESSION_ID=4a5a8cce-e748-4f2b-8352-0183221f6d20 STREAM=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-83c44855/developer.stream.jsonl
+- 2026-08-06T16:03:39Z [decision] mission-version task=- sig=83c44855 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-06T16:03:40Z [decision] product_close task=83c44855 status=spawned author=sonnet
+- 2026-08-06T16:03:41Z [decision] product_close task=83c44855 status=waiting_worker author=sonnet handle=2620 waited=0s
+- 2026-08-06T16:03:41Z [decision] route_resolved by=router router=v1 model=sonnet task=83c44855 rule=none reason=glm_default
+- 2026-08-06T16:03:42Z [decision] lane_worktree_left task=83c44855 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/83c44855
+- 2026-08-06T16:08:44Z [decision] product_close task=83c44855 status=waiting_worker author=sonnet handle=2620 waited=304s
+- 2026-08-06T16:13:47Z [decision] product_close task=83c44855 status=waiting_worker author=sonnet handle=2620 waited=606s
+- 2026-08-06T16:18:49Z [decision] product_close task=83c44855 status=waiting_worker author=sonnet handle=2620 waited=909s
+- 2026-08-06T16:23:51Z [decision] product_close task=83c44855 status=waiting_worker author=sonnet handle=2620 waited=1211s
+- 2026-08-06T16:26:53Z [decision] review_diff task=83c44855 repo=83c44855 bytes=45546 base=HEAD
+- 2026-08-06T16:47:53Z [decision] e2e_gate task=83c44855 status=ran verdict=pass
+- 2026-08-06T16:47:54Z [decision] review_signals task=83c44855 protected_path=0 source=lane_writes matched=-
+- 2026-08-06T16:47:54Z [decision] review_gate task=83c44855 status=unreviewed reason=all_arms_unavailable author=sonnet pool= refusal=all_review_arms_unavailable tried=
+- 2026-08-06T16:47:55Z [decision] dispatch_terminal task=83c44855 terminal=dead cause=all_arms_unavailable
+- 2026-08-06T16:47:56Z [decision] dispatch_terminal_dedup task=83c44855 attempted=dead reason=terminal_already_recorded

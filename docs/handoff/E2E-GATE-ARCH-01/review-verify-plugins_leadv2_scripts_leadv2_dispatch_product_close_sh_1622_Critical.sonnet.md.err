@@ -1,0 +1,3 @@
+[claude-subsession] stable prefix materialised for critic → /tmp/leadv2-cache/prefix-critic.9f312fb68999b4518095066b8ac47d5c.md
+[claude-subsession] cost recorded: critic/sonnet in=22 out=6620 usd=0.099366 cache_hit=0.8482
+[claude-subsession] WARN: empty_session — critic.summary.md has       42 words (< 50)

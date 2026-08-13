@@ -1,0 +1,13 @@
+- 2026-08-03T00:20:03Z [decision] dispatch_classified task=0e90108c class=product reason=conservative_default kind=backend
+- 2026-08-03T00:22:59Z [decision] architect_prepass task=0e90108c status=ran artifact=docs/handoff/dispatch-0e90108c/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-0e90108c-architect/architect.full.md
+- 2026-08-03T00:22:59Z [decision] lane_writes task=0e90108c source=prepass writes=plugins/leadv2/config/leadv2-routing.yaml,plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/kimi-coder.sh,plugins/leadv2/tests/test-kimi-admission-guard.sh
+- 2026-08-03T00:22:59Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-03T00:23:03Z [decision] arm_refused by=router model=glm task=0e90108c reason=glm_refused_quota_gate
+- 2026-08-03T00:23:08Z [decision] worker_spawned by=router model=codex task=0e90108c attempt=0e90108c-1785716402-84751 handle=task-mschjrsb-7xq1iw
+- 2026-08-03T00:23:08Z [decision] mission-version task=- sig=0e90108c rev=? head="Product implementation task dispatch-0e90108c. Implement ONLY the scoped design below; pre"
+- 2026-08-03T00:23:08Z [decision] product_close task=0e90108c status=spawned author=codex
+- 2026-08-03T00:23:08Z [decision] route_resolved by=router router=v1 model=codex task=0e90108c rule=none reason=no_routing_yaml
+- 2026-08-03T00:23:09Z [decision] lane_worktree_left task=0e90108c founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/0e90108c
+- 2026-08-03T00:26:35Z [decision] e2e_gate task=0e90108c status=ran verdict=fail rc=1
+- 2026-08-03T00:26:36Z [decision] dispatch_terminal task=0e90108c terminal=dead cause=e2e_regression
+- 2026-08-03T00:26:36Z [decision] dispatch_terminal_dedup task=0e90108c attempted=dead reason=terminal_already_recorded

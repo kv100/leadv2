@@ -1,0 +1,3 @@
+Try to REFUTE this finding. Default is_real=false if you cannot concretely confirm it against docs/handoff/E2E-GATE-ARCH-01/build-attempt-1.diff.
+Finding [High/design]: After two lock-acquisition timeouts (up to 2×LEADV2_E2E_GATE_LOCK_TIMEOUT, default 600s), the gate proceeds UNLOCKED — this defeats the stated goal ("only one gate runs at a time across all lanes") under exactly the >=3-way concurrent-lane contention this fix targets, silently re-introducing SD-E2E-GATE-LOAD-FLAKE-01.
+Report exactly one line: VERIFY_VERDICT: <upheld|refuted>

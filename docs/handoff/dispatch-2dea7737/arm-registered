@@ -1,0 +1,4 @@
+arm=codex handle=task-msh6a6yk-x1c6xx epoch=1785999997
+arm=sonnet handle=PID=31039 LABEL=developer-dispatch-2dea7737-1786000056 SESSION_ID=c97e1748-5e85-4b07-ad58-d4e7c6badd2e STREAM=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-2dea7737/developer.stream.jsonl epoch=1786000056
+arm=codex handle=task-msh7sxin-bvoqo8 epoch=1786002550
+arm=sonnet handle=PID=37004 LABEL=developer-dispatch-2dea7737-1786002595 SESSION_ID=ddc6ff7b-c91f-4432-b03b-49e367ddeb68 STREAM=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-2dea7737/developer.stream.jsonl epoch=1786002595

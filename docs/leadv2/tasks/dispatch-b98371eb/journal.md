@@ -1,0 +1,15 @@
+- 2026-08-04T19:33:11Z [decision] dispatch_classified task=b98371eb class=product reason=conservative_default kind=unknown
+- 2026-08-04T21:59:05Z [decision] dispatch_classified task=b98371eb class=product reason=conservative_default kind=unknown
+- 2026-08-04T22:04:36Z [decision] architect_prepass task=b98371eb status=ran artifact=docs/handoff/dispatch-b98371eb/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-b98371eb-architect/architect.full.md
+- 2026-08-04T22:04:36Z [decision] lane_writes task=b98371eb source=prepass writes=plugins/leadv2/scripts/leadv2-lane-class.py,plugins/leadv2/scripts/leadv2-status-surface.sh,tests/test-status-surface-parity.sh,tests/test-status-surface-single-lead.sh,tests/test-status-surface-bash32.sh
+- 2026-08-04T22:04:36Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T22:04:36Z [decision] kimi_skipped reason=chars_over task=b98371eb chars=27226 writes=0 prepass=1
+- 2026-08-04T22:04:36Z [decision] candidate_chain task=b98371eb arms=glm,codex,sonnet
+- 2026-08-04T22:04:38Z [decision] worker_spawned by=router model=glm task=b98371eb attempt=b98371eb-1785880743-84127 handle=260805-010438-b98371eb-5790
+- 2026-08-04T22:04:39Z [decision] mission-version task=- sig=b98371eb rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-04T22:04:39Z [decision] product_close task=b98371eb status=spawned author=glm
+- 2026-08-04T22:04:39Z [decision] route_resolved by=router router=v1 model=glm task=b98371eb rule=none reason=no_routing_yaml
+- 2026-08-04T22:04:39Z [decision] lane_worktree_left task=b98371eb founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/b98371eb
+- 2026-08-04T22:11:27Z [decision] e2e_gate task=b98371eb status=ran verdict=fail rc=1
+- 2026-08-04T22:11:28Z [decision] dispatch_terminal task=b98371eb terminal=dead cause=e2e_regression
+- 2026-08-04T22:11:29Z [decision] dispatch_terminal_dedup task=b98371eb attempted=dead reason=terminal_already_recorded

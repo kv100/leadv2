@@ -1,0 +1,32 @@
+- 2026-08-12T21:43:13Z [decision] lane_placement_pinned task=6dff3eaf mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/LANE-TRUTH-BATCH-01 key=LANE-TRUTH-BATCH-01
+- 2026-08-12T21:43:13Z [decision] dispatch_task_bound task=6dff3eaf founder_task=LANE-TRUTH-BATCH-01-TG
+- 2026-08-12T21:43:13Z [decision] dispatch_classified task=6dff3eaf class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T21:43:15Z [decision] phase_precondition_warn task=6dff3eaf class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T21:43:15Z [decision] architect_prepass task=6dff3eaf status=failed reason=no_lane_writes
+- 2026-08-12T21:43:15Z [decision] architect_prepass task=6dff3eaf status=retrying attempt=1/2 reason=no_lane_writes
+- 2026-08-12T21:43:15Z [decision] architect_prepass task=6dff3eaf status=failed reason=no_lane_writes
+- 2026-08-12T21:43:15Z [decision] architect_prepass task=6dff3eaf status=retrying attempt=2/2 reason=no_lane_writes
+- 2026-08-12T21:43:15Z [decision] architect_prepass task=6dff3eaf status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-12T21:43:15Z [decision] prepass_parked task=6dff3eaf founder_task_id=LANE-TRUTH-BATCH-01-TG reason=no_design_after_2_attempts last_reason=no_lane_writes
+- 2026-08-12T21:43:16Z [decision] dispatch_terminal task=6dff3eaf terminal=parked cause=no_design_after_2_attempts
+- 2026-08-12T21:44:08Z [decision] lane_placement_pinned task=6dff3eaf mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/LANE-TRUTH-BATCH-01 key=LANE-TRUTH-BATCH-01
+- 2026-08-12T21:44:08Z [decision] dispatch_task_bound task=6dff3eaf founder_task=LANE-TRUTH-BATCH-01-TG
+- 2026-08-12T21:44:08Z [decision] dispatch_classified task=6dff3eaf class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T21:44:10Z [decision] phase_precondition_warn task=6dff3eaf class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T21:44:10Z [decision] architect_prepass task=6dff3eaf status=disabled reason=kill_switch
+- 2026-08-12T21:44:11Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T21:44:11Z [decision] dispatchable_arms_read_failed task=6dff3eaf fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T21:44:11Z [decision] routing_config_degraded task=6dff3eaf reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T21:44:11Z [decision] kimi_skipped reason=chars_over task=6dff3eaf chars=3327 writes=0 prepass=0
+- 2026-08-12T21:44:11Z [decision] candidate_chain task=6dff3eaf arms=glm,codex,sonnet
+- 2026-08-12T21:44:12Z [decision] spawn_failed by=router model=glm task=6dff3eaf rc=126 reason=launcher_nonzero_exit
+- 2026-08-12T21:44:21Z [decision] worker_spawned by=router model=codex task=6dff3eaf attempt=6dff3eaf-1786571047-21078 handle=task-msqma278-5im3le
+- 2026-08-12T21:44:21Z [decision] mission-version task=LANE-TRUTH-BATCH-01-TG sig=6dff3eaf rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T21:44:43Z [decision] product_close task=6dff3eaf status=spawned author=codex
+- 2026-08-12T21:44:44Z [decision] route_resolved by=router router=v1 model=codex task=6dff3eaf rule=none reason=no_routing_yaml
+- 2026-08-12T21:44:44Z [decision] lane_worktree_left task=6dff3eaf founder_task=LANE-TRUTH-BATCH-01-TG path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/LANE-TRUTH-BATCH-01
+- 2026-08-12T21:58:20Z [decision] e2e_gate task=6dff3eaf status=ran verdict=pass
+- 2026-08-12T21:58:20Z [decision] review_signals task=6dff3eaf protected_path=0 source=lane_writes matched=-
+- 2026-08-12T21:58:20Z [decision] review_gate task=6dff3eaf status=no_reviewer author=codex refusal=all_review_arms_unavailable pool=
+- 2026-08-12T21:58:21Z [decision] dispatch_terminal task=6dff3eaf terminal=parked cause=all_review_arms_unavailable
+- 2026-08-12T21:58:21Z [decision] dispatch_terminal_dedup task=6dff3eaf attempted=parked reason=terminal_already_recorded

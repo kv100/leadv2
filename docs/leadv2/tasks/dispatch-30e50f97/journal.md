@@ -1,0 +1,29 @@
+- 2026-08-07T10:13:24Z [decision] dispatch_classified task=30e50f97 class=product reason=conservative_default kind=unknown
+- 2026-08-07T10:13:25Z [decision] phase_precondition_warn task=30e50f97 class=Standard missing=plan,gate1,build,test,review,deploy,live_verify,close mode=warn
+- 2026-08-07T10:13:26Z [decision] architect_prepass task=30e50f97 status=disabled reason=kill_switch
+- 2026-08-07T10:13:26Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-07T10:13:27Z [decision] quota_precheck_skip model=codex provider=codex task=30e50f97 reason=provider_quota_locked
+- 2026-08-07T10:13:27Z [decision] kimi_skipped reason=chars_over task=30e50f97 chars=3644 writes=0 prepass=0
+- 2026-08-07T10:13:28Z [decision] quota_precheck_skip model=glm provider=glm task=30e50f97 reason=provider_quota_locked
+- 2026-08-07T10:13:28Z [decision] candidate_chain task=30e50f97 arms=sonnet
+- 2026-08-07T10:13:32Z [decision] worker_spawned by=router model=sonnet task=30e50f97 attempt=30e50f97-1786097601-51869 handle=PID=55386 LABEL=developer-dispatch-30e50f97-1786097610 SESSION_ID=0d73b85a-14d8-49d2-a776-412a2104ddb8 STREAM=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-30e50f97/developer.stream.jsonl
+- 2026-08-07T10:13:32Z [decision] mission-version task=- sig=30e50f97 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-07T10:13:55Z [decision] product_close task=30e50f97 status=spawned author=sonnet
+- 2026-08-07T10:13:55Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=0s
+- 2026-08-07T10:13:55Z [decision] route_resolved by=router router=v1 model=sonnet task=30e50f97 rule=none reason=glm_default
+- 2026-08-07T10:13:55Z [decision] lane_worktree_left task=30e50f97 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/30e50f97
+- 2026-08-07T10:18:57Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=302s
+- 2026-08-07T10:23:59Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=604s
+- 2026-08-07T10:29:01Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=906s
+- 2026-08-07T10:34:02Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=1207s
+- 2026-08-07T10:39:04Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=1509s
+- 2026-08-07T10:44:05Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=1810s
+- 2026-08-07T10:49:07Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=2112s
+- 2026-08-07T10:54:09Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=2414s
+- 2026-08-07T10:59:10Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=2715s
+- 2026-08-07T11:04:13Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=3018s
+- 2026-08-07T11:09:14Z [decision] product_close task=30e50f97 status=waiting_worker author=sonnet handle=55386 waited=3319s
+- 2026-08-07T11:09:36Z [decision] review_diff task=30e50f97 repo=30e50f97 bytes=11676 base=HEAD
+- 2026-08-07T11:29:39Z [decision] e2e_gate task=30e50f97 status=ran verdict=fail rc=1
+- 2026-08-07T11:29:41Z [decision] dispatch_terminal task=30e50f97 terminal=dead cause=e2e_regression
+- 2026-08-07T11:29:41Z [decision] dispatch_terminal_dedup task=30e50f97 attempted=dead reason=terminal_already_recorded

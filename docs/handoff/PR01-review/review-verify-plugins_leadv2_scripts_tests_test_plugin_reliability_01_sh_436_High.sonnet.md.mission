@@ -1,0 +1,3 @@
+Try to REFUTE this finding. Default is_real=false if you cannot concretely confirm it against docs/handoff/PR01-review/build-r2.diff.
+Finding [High/correctness]: TASK is never set despite the header comment claiming it is, so _pc_reap_worker's SIGKILL-escalation path (which expands ${TASK}) would abort the suite under set -u — that path is consequently untested
+Report exactly one line: VERIFY_VERDICT: <upheld|refuted>

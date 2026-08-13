@@ -1,0 +1,3 @@
+[claude-subsession] stable prefix file reused for critic (server cache status comes from usage telemetry)
+[claude-subsession] cost recorded: critic/sonnet in=14 out=4517 usd=0.067797 cache_hit=0.9157
+[claude-subsession] WARN: empty_session — critic.summary.md has       34 words (< 50)

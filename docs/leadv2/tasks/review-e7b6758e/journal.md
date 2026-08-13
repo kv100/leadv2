@@ -1,0 +1,1 @@
+- 2026-08-12T18:57:01Z [decision] review_recorded verdict=FAIL diff=e7b6758e reviewer=opus

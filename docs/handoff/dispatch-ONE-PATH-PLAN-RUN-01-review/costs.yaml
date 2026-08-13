@@ -1,0 +1,186 @@
+# leadv2 cost telemetry — appended by claude-subsession.sh
+- role: critic
+  model: sonnet
+  provider: claude
+  session_id: 7ba970a8-1571-4d5e-b8a5-5a968c9be573
+  input_tokens: 76
+  output_tokens: 22929
+  cost_usd: 0.344163
+  duration_sec: 387
+  timestamp: 2026-08-12T17:24:22Z
+  cache_hit_rate: 0.9673
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: opus
+  provider: claude
+  session_id: 87af2926-f0e4-4b13-bf0e-1b0d09e49557
+  input_tokens: 76
+  output_tokens: 35971
+  cost_usd: 2.698965
+  duration_sec: 673
+  timestamp: 2026-08-12T17:29:08Z
+  cache_hit_rate: 0.9673
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: sonnet
+  provider: claude
+  session_id: be95573b-d7af-4fe7-8dc1-1078b6682c58
+  input_tokens: 26
+  output_tokens: 2982
+  cost_usd: 0.044808
+  duration_sec: 83
+  timestamp: 2026-08-12T17:30:35Z
+  cache_hit_rate: 0.9532
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: sonnet
+  provider: claude
+  session_id: 56a46aa2-cae9-4db1-afce-b01108a88c66
+  input_tokens: 18
+  output_tokens: 1963
+  cost_usd: 0.029499
+  duration_sec: 164
+  timestamp: 2026-08-12T17:33:20Z
+  cache_hit_rate: 0.9395
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: sonnet
+  provider: claude
+  session_id: 91e86a93-5300-416d-884b-a1c28cef5f0d
+  input_tokens: 17
+  output_tokens: 2302
+  cost_usd: 0.034581
+  duration_sec: 57
+  timestamp: 2026-08-12T17:34:18Z
+  cache_hit_rate: 0.9415
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: sonnet
+  provider: claude
+  session_id: 0b6bef2a-3fce-4012-b90b-e4b09b788a85
+  input_tokens: 17
+  output_tokens: 4056
+  cost_usd: 0.060891
+  duration_sec: 70
+  timestamp: 2026-08-12T17:35:29Z
+  cache_hit_rate: 0.9406
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: sonnet
+  provider: claude
+  session_id: a1d73a2b-85f0-4e03-8e68-fd8b8d2a3d92
+  input_tokens: 18
+  output_tokens: 1810
+  cost_usd: 0.027204
+  duration_sec: 127
+  timestamp: 2026-08-12T17:37:36Z
+  cache_hit_rate: 0.9421
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: sonnet
+  provider: claude
+  session_id: 6e276d9f-0d41-4c09-94bb-2bc31c858b59
+  input_tokens: 16
+  output_tokens: 3415
+  cost_usd: 0.051273
+  duration_sec: 63
+  timestamp: 2026-08-12T17:38:40Z
+  cache_hit_rate: 0.9333
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- event: empty_session
+  role: critic
+  model: sonnet
+  word_count:       34
+  timestamp: 2026-08-12T17:38:40Z- role: critic
+  model: sonnet
+  provider: claude
+  session_id: 8a37b9ba-30d4-4d1c-ada3-d203ade7ab7a
+  input_tokens: 11
+  output_tokens: 1474
+  cost_usd: 0.022143
+  duration_sec: 41
+  timestamp: 2026-08-12T17:39:22Z
+  cache_hit_rate: 0.9149
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- event: empty_session
+  role: critic
+  model: sonnet
+  word_count:       34
+  timestamp: 2026-08-12T17:39:22Z- role: critic
+  model: opus
+  provider: claude
+  session_id: 2fb61e72-f0d7-4e2b-bcb9-3b09ea541c41
+  input_tokens: 12
+  output_tokens: 4168
+  cost_usd: 0.312780
+  duration_sec: 66
+  timestamp: 2026-08-12T17:40:28Z
+  cache_hit_rate: 0.8926
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: opus
+  provider: claude
+  session_id: 6f2c8f16-8b37-4fdf-9241-5240798bca45
+  input_tokens: 21
+  output_tokens: 5559
+  cost_usd: 0.417240
+  duration_sec: 97
+  timestamp: 2026-08-12T17:42:05Z
+  cache_hit_rate: 0.9347
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: opus
+  provider: claude
+  session_id: 5be33a9e-fb88-4029-9e6f-01139c03e957
+  input_tokens: 67
+  output_tokens: 27766
+  cost_usd: 2.083455
+  duration_sec: 468
+  timestamp: 2026-08-12T18:11:14Z
+  cache_hit_rate: 0.9685
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: sonnet
+  provider: claude
+  session_id: 52336fb6-d584-49ac-8880-8402b7f69f9c
+  input_tokens: 19
+  output_tokens: 2793
+  cost_usd: 0.041952
+  duration_sec: 60
+  timestamp: 2026-08-12T18:15:28Z
+  cache_hit_rate: 0.9447
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- event: empty_session
+  role: critic
+  model: sonnet
+  word_count:       38
+  timestamp: 2026-08-12T18:15:28Z- role: critic
+  model: sonnet
+  provider: claude
+  session_id: c80e5156-39ef-41bb-a173-c436eaa9fa17
+  input_tokens: 12
+  output_tokens: 2318
+  cost_usd: 0.034806
+  duration_sec: 48
+  timestamp: 2026-08-12T18:16:16Z
+  cache_hit_rate: 0.915
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- event: empty_session
+  role: critic
+  model: sonnet
+  word_count:       38
+  timestamp: 2026-08-12T18:16:17Z- role: critic
+  model: sonnet
+  provider: claude
+  session_id: e39166bd-cba5-4e4d-8b0e-e3909a840ec6
+  input_tokens: 18
+  output_tokens: 3964
+  cost_usd: 0.059514
+  duration_sec: 64
+  timestamp: 2026-08-12T18:17:21Z
+  cache_hit_rate: 0.9395
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- event: empty_session
+  role: critic
+  model: sonnet
+  word_count:       39
+  timestamp: 2026-08-12T18:17:21Z- role: critic
+  model: sonnet
+  provider: claude
+  session_id: 3918e27c-2e2c-4d6c-ae10-2ed8cc6642e5
+  input_tokens: 18
+  output_tokens: 2432
+  cost_usd: 0.036534
+  duration_sec: 53
+  timestamp: 2026-08-12T18:18:15Z
+  cache_hit_rate: 0.9375
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- event: empty_session
+  role: critic
+  model: sonnet
+  word_count:       25
+  timestamp: 2026-08-12T18:18:15Z

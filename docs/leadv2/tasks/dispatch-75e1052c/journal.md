@@ -1,0 +1,15 @@
+- 2026-08-03T08:50:53Z [decision] dispatch_classified task=75e1052c class=product reason=conservative_default kind=backend
+- 2026-08-03T08:54:37Z [decision] architect_prepass task=75e1052c status=ran artifact=docs/handoff/dispatch-75e1052c/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-75e1052c-architect/architect.full.md
+- 2026-08-03T08:54:37Z [decision] lane_writes task=75e1052c source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/tests/test-no-work-terminal.sh,plugins/leadv2/scripts/tests/run-core-offline.sh
+- 2026-08-03T08:54:37Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-03T08:54:37Z [decision] kimi_skipped reason=chars_over task=75e1052c chars=17301 writes=0 prepass=1
+- 2026-08-03T08:54:37Z [decision] candidate_chain task=75e1052c arms=glm,codex,sonnet
+- 2026-08-03T08:54:38Z [decision] arm_refused by=router model=glm task=75e1052c reason=glm_refused_peak_hours
+- 2026-08-03T08:54:46Z [decision] worker_spawned by=router model=codex task=75e1052c attempt=75e1052c-1785747051-23059 handle=task-mscztq0i-8kambi
+- 2026-08-03T08:54:46Z [decision] mission-version task=- sig=75e1052c rev=? head="Product implementation task dispatch-75e1052c. Implement ONLY the scoped design below; pre"
+- 2026-08-03T08:54:46Z [decision] product_close task=75e1052c status=spawned author=codex
+- 2026-08-03T08:54:46Z [decision] route_resolved by=router router=v1 model=codex task=75e1052c rule=none reason=no_routing_yaml
+- 2026-08-03T08:54:47Z [decision] lane_worktree_left task=75e1052c founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/75e1052c
+- 2026-08-03T08:57:58Z [decision] e2e_gate task=75e1052c status=ran verdict=fail rc=1
+- 2026-08-03T08:57:58Z [decision] dispatch_terminal task=75e1052c terminal=dead cause=e2e_regression
+- 2026-08-03T08:57:58Z [decision] dispatch_terminal_dedup task=75e1052c attempted=dead reason=terminal_already_recorded

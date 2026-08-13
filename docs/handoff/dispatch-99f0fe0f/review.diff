@@ -1,0 +1,51 @@
+diff --git a/plugins/leadv2/scripts/tests/run-core-offline.sh b/plugins/leadv2/scripts/tests/run-core-offline.sh
+index 8f772f4..5f6e2b3 100755
+--- a/plugins/leadv2/scripts/tests/run-core-offline.sh
++++ b/plugins/leadv2/scripts/tests/run-core-offline.sh
+@@ -69,6 +69,7 @@ run_check "Phase-8 merge/completion proof" bash "$PLUGIN_ROOT/tests/test-deploy-
+ run_check "subsession model downgrade" bash "$TEST_DIR/test-leadv2-model-arg-rebuild.sh"
+ run_check "plugin sync quarantine/dry-run safety" bash "$TEST_DIR/test-drift-guard-quarantine-perimeter.sh"
+ run_check "skill lint" bash "$TEST_DIR/test-leadv2-skill-lint.sh"
++run_check "skill proof gate unit tests" bash "$TEST_DIR/test-skill-proof-gate.sh"
+ 
+ printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
+ (( FAIL == 0 && MISSING == 0 ))
+diff --git a/plugins/leadv2/skills/leadv2-memory-gc/SKILL.md b/plugins/leadv2/skills/leadv2-memory-gc/SKILL.md
+index 1ef4021..7a2c1bd 100644
+--- a/plugins/leadv2/skills/leadv2-memory-gc/SKILL.md
++++ b/plugins/leadv2/skills/leadv2-memory-gc/SKILL.md
+@@ -97,3 +97,8 @@ Archive Candidates / Summary counts.
+ `docs/leadv2/memory-gc-archive.yaml` with `archived_at`).
+ Stale paths and archive-candidates are **always report-only** — founder reviews
+ the report and deletes entries manually.
++
++## Proof
++
++This skill carries a runnable proof at [`PROOF.sh`](./PROOF.sh).
++Run the gate: `bash plugins/leadv2/scripts/leadv2-skill-proof.sh --only leadv2-memory-gc`
+diff --git a/plugins/leadv2/skills/leadv2-negative-memory/SKILL.md b/plugins/leadv2/skills/leadv2-negative-memory/SKILL.md
+index 80d4ca2..b0edf01 100644
+--- a/plugins/leadv2/skills/leadv2-negative-memory/SKILL.md
++++ b/plugins/leadv2/skills/leadv2-negative-memory/SKILL.md
+@@ -178,3 +178,8 @@ Before architect(opus) retry brief is written:
+ - Auto-approving a candidate entry without founder Tier B confirmation.
+ - Blocking on an expired entry — check `status == "active"` strictly.
+ - Writing to the archive instead of the main file for new candidates.
++
++## Proof
++
++This skill carries a runnable proof at [`PROOF.sh`](./PROOF.sh).
++Run the gate: `bash plugins/leadv2/scripts/leadv2-skill-proof.sh --only leadv2-negative-memory`
+diff --git a/plugins/leadv2/skills/leadv2-premortem/SKILL.md b/plugins/leadv2/skills/leadv2-premortem/SKILL.md
+index b98e462..d57ad80 100644
+--- a/plugins/leadv2/skills/leadv2-premortem/SKILL.md
++++ b/plugins/leadv2/skills/leadv2-premortem/SKILL.md
+@@ -69,3 +69,8 @@ Document tuning history in `.claude/ref/leadv2-premortem-calibration.md`.
+ - **Non-blocking for proceed.** Do not add latency to the happy path.
+ - **Verbose factor list.** Always write all factors with triggered: true|false. LLM-judge reads this.
+ - **Audit trail.** premortem-<phase>.yaml is append-once — never overwrite an existing run.
++
++## Proof
++
++This skill carries a runnable proof at [`PROOF.sh`](./PROOF.sh).
++Run the gate: `bash plugins/leadv2/scripts/leadv2-skill-proof.sh --only leadv2-premortem`

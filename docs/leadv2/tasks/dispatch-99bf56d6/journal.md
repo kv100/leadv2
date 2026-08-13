@@ -1,0 +1,17 @@
+- 2026-08-04T19:33:19Z [decision] dispatch_classified task=99bf56d6 class=product reason=conservative_default kind=unknown
+- 2026-08-04T21:59:10Z [decision] dispatch_classified task=99bf56d6 class=product reason=conservative_default kind=unknown
+- 2026-08-04T22:02:55Z [decision] architect_prepass task=99bf56d6 status=ran artifact=docs/handoff/dispatch-99bf56d6/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-99bf56d6-architect/architect.full.md
+- 2026-08-04T22:02:56Z [decision] lane_writes task=99bf56d6 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/tests/test-dispatch-silent-arm.sh,plugins/leadv2/scripts/tests/test-lane-diff-single-repo.sh
+- 2026-08-04T22:02:56Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-04T22:02:56Z [decision] kimi_skipped reason=chars_over task=99bf56d6 chars=20550 writes=0 prepass=1
+- 2026-08-04T22:02:56Z [decision] candidate_chain task=99bf56d6 arms=glm,codex,sonnet
+- 2026-08-04T22:03:00Z [decision] worker_spawned by=router model=glm task=99bf56d6 attempt=99bf56d6-1785880749-86294 handle=260805-010259-99bf56d6-60e7
+- 2026-08-04T22:03:00Z [decision] mission-version task=- sig=99bf56d6 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-04T22:03:00Z [decision] product_close task=99bf56d6 status=spawned author=glm
+- 2026-08-04T22:03:00Z [decision] route_resolved by=router router=v1 model=glm task=99bf56d6 rule=none reason=no_routing_yaml
+- 2026-08-04T22:03:00Z [decision] lane_worktree_left task=99bf56d6 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/99bf56d6
+- 2026-08-04T22:09:53Z [decision] e2e_gate task=99bf56d6 status=ran verdict=pass
+- 2026-08-04T22:09:54Z [decision] review_signals task=99bf56d6 protected_path=0 source=lane_writes matched=-
+- 2026-08-04T22:09:54Z [decision] review_gate task=99bf56d6 status=no_reviewer author=glm refusal=all_review_arms_unavailable pool=
+- 2026-08-04T22:09:54Z [decision] dispatch_terminal task=99bf56d6 terminal=parked cause=all_review_arms_unavailable
+- 2026-08-04T22:09:54Z [decision] dispatch_terminal_dedup task=99bf56d6 attempted=parked reason=terminal_already_recorded

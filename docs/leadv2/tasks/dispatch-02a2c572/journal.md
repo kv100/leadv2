@@ -1,0 +1,26 @@
+- 2026-08-05T11:22:47Z [decision] dispatch_classified task=02a2c572 class=product reason=conservative_default kind=unknown
+- 2026-08-05T11:27:20Z [decision] architect_prepass task=02a2c572 status=ran artifact=docs/handoff/dispatch-02a2c572/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-02a2c572-architect/architect.full.md
+- 2026-08-05T11:27:20Z [decision] lane_writes task=02a2c572 source=prepass writes=plugins/leadv2/hooks/leadv2-idle-lead-guard.sh,plugins/leadv2/hooks/hooks.json,plugins/leadv2/scripts/tests/test-idle-lead-guard.sh,plugins/leadv2/scripts/tests/run-core-offline.sh
+- 2026-08-05T11:27:20Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-05T11:27:20Z [decision] kimi_skipped reason=chars_over task=02a2c572 chars=26806 writes=0 prepass=1
+- 2026-08-05T11:27:20Z [decision] candidate_chain task=02a2c572 arms=glm,codex,sonnet
+- 2026-08-05T11:27:23Z [decision] worker_spawned by=router model=glm task=02a2c572 attempt=02a2c572-1785928965-11348 handle=260805-142723-02a2c572-3e8b
+- 2026-08-05T11:27:23Z [decision] mission-version task=- sig=02a2c572 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-05T11:27:24Z [decision] product_close task=02a2c572 status=spawned author=glm
+- 2026-08-05T11:27:24Z [decision] route_resolved by=router router=v1 model=glm task=02a2c572 rule=none reason=no_routing_yaml
+- 2026-08-05T11:27:24Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=0s
+- 2026-08-05T11:27:24Z [decision] lane_worktree_left task=02a2c572 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/02a2c572
+- 2026-08-05T11:32:27Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=303s
+- 2026-08-05T11:37:30Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=606s
+- 2026-08-05T11:42:33Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=909s
+- 2026-08-05T11:47:37Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=1213s
+- 2026-08-05T11:52:40Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=1516s
+- 2026-08-05T11:57:42Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=1818s
+- 2026-08-05T12:02:45Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=2121s
+- 2026-08-05T12:07:48Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=2424s
+- 2026-08-05T12:12:51Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=2727s
+- 2026-08-05T12:17:55Z [decision] product_close task=02a2c572 status=waiting_worker author=glm handle=260805-142723-02a2c572-3e8b waited=3030s
+- 2026-08-05T12:18:27Z [decision] review_diff task=02a2c572 repo=02a2c572 bytes=42219 base=7fd75df1
+- 2026-08-05T12:27:15Z [decision] e2e_gate task=02a2c572 status=ran verdict=fail rc=1
+- 2026-08-05T12:27:17Z [decision] dispatch_terminal task=02a2c572 terminal=dead cause=e2e_regression
+- 2026-08-05T12:27:17Z [decision] dispatch_terminal_dedup task=02a2c572 attempted=dead reason=terminal_already_recorded

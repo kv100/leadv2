@@ -1,0 +1,19 @@
+- 2026-08-05T10:26:50Z [decision] lane_placement_pinned task=7f6f12e2 mode=resume-lane path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/40241035 key=40241035
+- 2026-08-05T10:26:51Z [decision] dispatch_classified task=7f6f12e2 class=product reason=conservative_default kind=unknown
+- 2026-08-05T10:30:25Z [decision] architect_prepass task=7f6f12e2 status=ran artifact=docs/handoff/dispatch-7f6f12e2/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-7f6f12e2-architect/architect.full.md
+- 2026-08-05T10:30:25Z [decision] lane_writes task=7f6f12e2 source=prepass writes=plugins/leadv2/hooks/leadv2-block-fg-dispatch.sh,plugins/leadv2/scripts/tests/test-fg-dispatch-guard.sh
+- 2026-08-05T10:30:25Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-05T10:30:25Z [decision] kimi_skipped reason=chars_over task=7f6f12e2 chars=19724 writes=0 prepass=1
+- 2026-08-05T10:30:26Z [decision] candidate_chain task=7f6f12e2 arms=glm,codex,sonnet
+- 2026-08-05T10:30:27Z [decision] worker_spawned by=router model=glm task=7f6f12e2 attempt=7f6f12e2-1785925608-47514 handle=260805-133027-40241035-1ab2
+- 2026-08-05T10:30:27Z [decision] mission-version task=- sig=7f6f12e2 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-05T10:30:28Z [decision] product_close task=7f6f12e2 status=spawned author=glm
+- 2026-08-05T10:30:28Z [decision] route_resolved by=router router=v1 model=glm task=7f6f12e2 rule=none reason=no_routing_yaml
+- 2026-08-05T10:30:28Z [decision] product_close task=7f6f12e2 status=waiting_worker author=glm handle=260805-133027-40241035-1ab2 waited=0s
+- 2026-08-05T10:30:28Z [decision] lane_worktree_left task=7f6f12e2 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/40241035
+- 2026-08-05T10:35:30Z [decision] product_close task=7f6f12e2 status=waiting_worker author=glm handle=260805-133027-40241035-1ab2 waited=302s
+- 2026-08-05T10:40:33Z [decision] product_close task=7f6f12e2 status=waiting_worker author=glm handle=260805-133027-40241035-1ab2 waited=605s
+- 2026-08-05T10:40:54Z [decision] review_diff task=7f6f12e2 repo=40241035 bytes=16047 base=HEAD
+- 2026-08-05T10:48:56Z [decision] e2e_gate task=7f6f12e2 status=ran verdict=fail rc=1
+- 2026-08-05T10:48:58Z [decision] dispatch_terminal task=7f6f12e2 terminal=dead cause=e2e_regression
+- 2026-08-05T10:48:58Z [decision] dispatch_terminal_dedup task=7f6f12e2 attempted=dead reason=terminal_already_recorded

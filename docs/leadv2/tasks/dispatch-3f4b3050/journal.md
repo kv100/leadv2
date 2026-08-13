@@ -1,0 +1,20 @@
+- 2026-08-12T17:43:43Z [decision] lane_placement_pinned task=3f4b3050 mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/ONE-PATH-PLAN-RUN-01 key=ONE-PATH-PLAN-RUN-01
+- 2026-08-12T17:43:43Z [decision] dispatch_task_bound task=3f4b3050 founder_task=ONE-PATH-PLAN-RUN-01
+- 2026-08-12T17:43:43Z [decision] dispatch_classified task=3f4b3050 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T17:43:49Z [decision] phase_precondition_warn task=3f4b3050 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T17:43:50Z [decision] architect_prepass task=3f4b3050 status=disabled reason=kill_switch
+- 2026-08-12T17:43:50Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T17:43:51Z [decision] dispatchable_arms_read_failed task=3f4b3050 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T17:43:51Z [decision] routing_config_degraded task=3f4b3050 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T17:43:51Z [decision] kimi_skipped reason=chars_over task=3f4b3050 chars=3139 writes=0 prepass=0
+- 2026-08-12T17:43:52Z [decision] candidate_chain task=3f4b3050 arms=glm,codex,sonnet
+- 2026-08-12T17:43:58Z [decision] worker_spawned by=router model=glm task=3f4b3050 attempt=3f4b3050-1786556621-35409 handle=260812-204357-ONE-PATH-PLAN-RUN-01-4f96
+- 2026-08-12T17:43:58Z [decision] mission-version task=ONE-PATH-PLAN-RUN-01 sig=3f4b3050 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T17:44:20Z [decision] product_close task=3f4b3050 status=spawned author=glm
+- 2026-08-12T17:44:20Z [decision] route_resolved by=router router=v1 model=glm task=3f4b3050 rule=none reason=no_routing_yaml
+- 2026-08-12T17:44:20Z [decision] lane_worktree_left task=3f4b3050 founder_task=ONE-PATH-PLAN-RUN-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/ONE-PATH-PLAN-RUN-01
+- 2026-08-12T18:02:44Z [decision] e2e_gate task=3f4b3050 status=ran verdict=pass
+- 2026-08-12T18:02:44Z [decision] review_signals task=3f4b3050 protected_path=1 source=no_lane_writes_failclosed matched=-
+- 2026-08-12T18:02:45Z [decision] review_gate task=3f4b3050 status=no_reviewer author=glm refusal=all_review_arms_unavailable pool=
+- 2026-08-12T18:02:45Z [decision] dispatch_terminal task=3f4b3050 terminal=parked cause=all_review_arms_unavailable
+- 2026-08-12T18:02:46Z [decision] dispatch_terminal_dedup task=3f4b3050 attempted=parked reason=terminal_already_recorded

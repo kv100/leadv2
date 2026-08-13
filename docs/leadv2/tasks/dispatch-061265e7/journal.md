@@ -1,0 +1,29 @@
+- 2026-08-12T13:22:57Z [decision] lane_placement_pinned task=061265e7 mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-RESIDUE-01 key=E2E-GATE-RESIDUE-01
+- 2026-08-12T13:22:58Z [decision] dispatch_task_bound task=061265e7 founder_task=E2E-GATE-RESIDUE-01
+- 2026-08-12T13:22:58Z [decision] dispatch_classified task=061265e7 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T13:23:00Z [decision] phase_precondition_warn task=061265e7 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T13:23:00Z [decision] architect_prepass task=061265e7 status=disabled reason=kill_switch
+- 2026-08-12T13:23:01Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T13:23:01Z [decision] dispatchable_arms_read_failed task=061265e7 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T13:23:01Z [decision] routing_config_degraded task=061265e7 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T13:23:01Z [decision] kimi_skipped reason=chars_over task=061265e7 chars=3126 writes=0 prepass=0
+- 2026-08-12T13:23:02Z [decision] candidate_chain task=061265e7 arms=glm,codex,sonnet
+- 2026-08-12T13:23:06Z [decision] arm_refused by=router model=glm task=061265e7 reason=glm_refused_lock_busy
+- 2026-08-12T13:24:24Z [decision] lane_placement_pinned task=061265e7 mode=worktree path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-RESIDUE-01 key=E2E-GATE-RESIDUE-01
+- 2026-08-12T13:24:25Z [decision] dispatch_task_bound task=061265e7 founder_task=E2E-GATE-RESIDUE-01
+- 2026-08-12T13:24:25Z [decision] dispatch_classified task=061265e7 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-12T13:24:28Z [decision] phase_precondition_warn task=061265e7 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-12T13:24:28Z [decision] architect_prepass task=061265e7 status=disabled reason=kill_switch
+- 2026-08-12T13:24:28Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T13:24:29Z [decision] dispatchable_arms_read_failed task=061265e7 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-12T13:24:29Z [decision] routing_config_degraded task=061265e7 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T13:24:29Z [decision] kimi_skipped reason=chars_over task=061265e7 chars=3126 writes=0 prepass=0
+- 2026-08-12T13:24:30Z [decision] candidate_chain task=061265e7 arms=glm,codex,sonnet
+- 2026-08-12T13:24:39Z [decision] worker_spawned by=router model=glm task=061265e7 attempt=061265e7-1786541061-35262 handle=260812-162439-E2E-GATE-RESIDUE-01-2da6
+- 2026-08-12T13:24:39Z [decision] mission-version task=E2E-GATE-RESIDUE-01 sig=061265e7 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T13:25:00Z [decision] product_close task=061265e7 status=spawned author=glm
+- 2026-08-12T13:25:01Z [decision] route_resolved by=router router=v1 model=glm task=061265e7 rule=none reason=no_routing_yaml
+- 2026-08-12T13:25:01Z [decision] lane_worktree_left task=061265e7 founder_task=E2E-GATE-RESIDUE-01 path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-RESIDUE-01
+- 2026-08-12T13:56:44Z [decision] e2e_gate task=061265e7 status=ran verdict=fail rc=1
+- 2026-08-12T13:56:48Z [decision] dispatch_terminal task=061265e7 terminal=dead cause=e2e_regression
+- 2026-08-12T13:56:49Z [decision] dispatch_terminal_dedup task=061265e7 attempted=dead reason=terminal_already_recorded
