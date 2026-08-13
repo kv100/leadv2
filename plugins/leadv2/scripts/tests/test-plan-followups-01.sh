@@ -63,16 +63,16 @@ router:
       review_arm_order: [codex, sonnet, opus]
       review_threshold_pct: 95
       anthropic_review_threshold_pct: 95
-dispatch_ladder:
-  - id: codex
-    review_rank: 1
-    provider: codex
-  - id: sonnet
-    review_rank: 2
-    provider: anthropic
-  - id: opus
-    review_rank: 3
-    provider: anthropic
+  dispatch_ladder:
+    - id: codex
+      review_rank: 1
+      provider: codex
+    - id: sonnet
+      review_rank: 2
+      provider: anthropic
+    - id: opus
+      review_rank: 3
+      provider: anthropic
 YAML
 
 # First-call-refuses stub: codex refuses with quota, sonnet succeeds.
@@ -188,8 +188,51 @@ else
   fail "Order B extraction failed (got: ${_out_2b})"
 fi
 
-# --- 2c: Extract from real fixture stub-architect.sh output ---
-log "Caveat 2c: extract_plan_yaml on real stub-architect.sh output"
+# --- 2c: Order B ignores prose after the closing fence ---
+log "Caveat 2c: Order B extraction ignores trailing prose"
+cat > "${TMP}/2c.txt" <<'TXT'
+Some preamble text.
+```yaml
+PLAN_YAML:
+decisions:
+  - Decision B trailing
+plan:
+  steps:
+    - Step B trailing
+```
+This trailing prose is not YAML.
+TXT
+
+_out_2c="$(extract_plan_yaml "${TMP}/2c.txt")"
+if grep -q 'Decision B trailing' <<<"${_out_2c}" \
+    && ! grep -q 'PLAN_YAML\|trailing prose' <<<"${_out_2c}"; then
+  pass "Order B extraction stops at the closing fence"
+else
+  fail "Order B trailing-prose extraction failed (got: ${_out_2c})"
+fi
+
+# --- 2d: Marker without fences returns everything after the marker ---
+log "Caveat 2d: marker-only extraction preserves legacy raw-YAML form"
+cat > "${TMP}/2d.txt" <<'TXT'
+Some preamble text.
+PLAN_YAML:
+decisions:
+  - Marker-only decision
+plan:
+  steps:
+    - Marker-only step
+TXT
+
+_out_2d="$(extract_plan_yaml "${TMP}/2d.txt")"
+if grep -q 'Marker-only decision' <<<"${_out_2d}" \
+    && ! grep -q 'PLAN_YAML\|preamble' <<<"${_out_2d}"; then
+  pass "Marker-only form extracts everything after PLAN_YAML"
+else
+  fail "Marker-only extraction failed (got: ${_out_2d})"
+fi
+
+# --- 2e: Extract from real fixture stub-architect.sh output ---
+log "Caveat 2e: extract_plan_yaml on real stub-architect.sh output"
 _out_fixture="$(bash "${FIXTURES}/stub-architect.sh" | extract_plan_yaml /dev/stdin)"
 if grep -q 'Use leadv2-plan-run.sh' <<<"${_out_fixture}"; then
   pass "Real fixture (stub-architect) extracts correctly"
@@ -301,16 +344,16 @@ router:
     codex_quota_gate:
       review_arm_order: [codex, sonnet, haiku]
       review_threshold_pct: 95
-dispatch_ladder:
-  - id: codex
-    review_rank: 1
-    provider: codex
-  - id: sonnet
-    review_rank: 2
-    provider: anthropic
-  - id: haiku
-    review_rank: 3
-    provider: anthropic
+  dispatch_ladder:
+    - id: codex
+      review_rank: 1
+      provider: codex
+    - id: sonnet
+      review_rank: 2
+      provider: anthropic
+    - id: haiku
+      review_rank: 3
+      provider: anthropic
 YAML
 
 _out_4b="$(python3 "${RESOLVER}" --routing-yaml "${ROOT4}/.claude/ref/leadv2-routing.yaml" \
@@ -356,11 +399,11 @@ router:
   glm_policy:
     codex_quota_gate:
       review_arm_order: [glm, haiku]
-dispatch_ladder:
-  - id: glm
-    review_rank: 1
-  - id: haiku
-    review_rank: 2
+  dispatch_ladder:
+    - id: glm
+      review_rank: 1
+    - id: haiku
+      review_rank: 2
 YAML
 _out_4d="$(python3 "${RESOLVER}" --routing-yaml "${ROOT4D}/.claude/ref/leadv2-routing.yaml" \
   --job plan --plan-pool --signals '{}' --quota-live "${TMP}/stub-quota.sh" 2>/dev/null)"
@@ -369,6 +412,35 @@ if [[ "${_refusal_4d}" == "all_review_arms_unavailable" ]]; then
   pass "Empty post-filter plan pool uses all_review_arms_unavailable fallback"
 else
   fail "Empty post-filter plan pool returned '${_refusal_4d}' (expected all_review_arms_unavailable)"
+fi
+
+# --- 4e: a sole dispatchable post-filter arm is still the floor ---
+log "Caveat 4e: sole dispatchable plan arm remains a valid floor"
+ROOT4E="${TMP}/repo4e"
+mkdir -p "${ROOT4E}/.claude/ref"
+cat > "${ROOT4E}/.claude/ref/leadv2-routing.yaml" <<'YAML'
+router:
+  glm_policy:
+    codex_quota_gate:
+      review_arm_order: [sonnet, haiku]
+      anthropic_review_threshold_pct: 0
+  dispatch_ladder:
+    - id: sonnet
+      review_rank: 1
+      provider: anthropic
+    - id: haiku
+      review_rank: 2
+      provider: anthropic
+YAML
+_out_4e="$(python3 "${RESOLVER}" --routing-yaml "${ROOT4E}/.claude/ref/leadv2-routing.yaml" \
+  --job plan --plan-pool --signals '{}' --quota-live "${TMP}/stub-quota.sh" 2>/dev/null)"
+_reviewer_4e="$(grep '^reviewer=' <<<"${_out_4e}" | cut -d= -f2)"
+_refusal_4e="$(grep '^refusal=' <<<"${_out_4e}" | cut -d= -f2)"
+if [[ "${_reviewer_4e}" == "sonnet" && -z "${_refusal_4e}" ]] \
+    && grep -q '^pool=.*sonnet:floor:' <<<"${_out_4e}"; then
+  pass "Sole dispatchable arm is honored as the plan floor"
+else
+  fail "Sole dispatchable floor failed (reviewer='${_reviewer_4e}', refusal='${_refusal_4e}')"
 fi
 
 # ===========================================================================

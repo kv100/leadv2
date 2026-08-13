@@ -252,10 +252,11 @@ def _review_floor(author: str, rank_table: dict, dispatchable=None):
     (arm_or_None, ok) -- ok is False iff the original rank table has fewer than 2
     entries, which the caller must treat as pool_floor_table_degenerate (a hard
     resolver error, not a silent empty pool) rather than a normal "floor not needed"
-    outcome. If an optional dispatchable filter leaves fewer than 2 entries, there
+    outcome. If an optional dispatchable filter leaves no eligible entry, there
     simply is no eligible floor: return (None, True) so the caller degrades to the
     documented all_review_arms_unavailable fallback instead of misclassifying a
-    valid ladder as degenerate.
+    valid ladder as degenerate. A sole dispatchable entry remains a legitimate
+    floor arm.
 
     floor(author) = the entry with rank > rank(author) that has the smallest such
     rank (escalate one step up), or -- if none exists (author at/above the top, or
@@ -272,8 +273,6 @@ def _review_floor(author: str, rank_table: dict, dispatchable=None):
         return None, False
     if dispatchable is not None:
         rank_table = {k: v for k, v in rank_table.items() if k in dispatchable}
-    if len(rank_table) < 2:
-        return None, True
     author_rank = rank_table.get(author, float("-inf"))
     candidates = [(rid, r) for rid, r in rank_table.items() if rid != author]
     if not candidates:
@@ -541,10 +540,9 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
             entries.append("%s:floor:%s" % (floor_arm, suffix))
             reviewer = floor_arm
             refusal = ""
-        elif rank_table:
-            # A rank table exists but has < 2 usable entries -- a config bug, not the
-            # ordinary "feature not adopted" case (empty rank_table, handled by the
-            # `elif` falling through and keeping all_review_arms_unavailable below).
+        elif not floor_ok:
+            # The original rank table has < 2 entries -- a config bug, not an
+            # ordinary post-filter-empty result from an otherwise valid ladder.
             refusal = "pool_floor_table_degenerate"
 
     return {"reviewer": reviewer, "pool": entries, "refusal": refusal}
