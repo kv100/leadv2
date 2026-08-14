@@ -48,6 +48,16 @@ if [[ ! -f "${_REFUSAL_CLASSIFY_SH}" ]]; then
   _REFUSAL_CLASSIFY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-refusal-classify.sh"
 fi
 [[ -f "${_REFUSAL_CLASSIFY_SH}" ]] && source "${_REFUSAL_CLASSIFY_SH}"
+# REVIEW-GATE-SHOWS-FINDINGS-01: shared findings renderer appended to review-gate.md
+# at the review fail/pass exits below (this lane path wrote every real gate to date —
+# both writers must render through the one shared renderer). Guarded source + no-op
+# stub so a missing/broken renderer degrades to today's exact gate, never to a
+# missing one (design R3).
+_REVIEW_FINDINGS_SH="${SCRIPT_DIR}/leadv2-review-findings.sh"
+[[ -f "${_REVIEW_FINDINGS_SH}" ]] || _REVIEW_FINDINGS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-review-findings.sh"
+# shellcheck source=leadv2-review-findings.sh
+[[ -f "${_REVIEW_FINDINGS_SH}" ]] && source "${_REVIEW_FINDINGS_SH}"
+command -v render_gate_findings >/dev/null 2>&1 || render_gate_findings() { :; }
 # LOW-2 (fixround-tails): qualified <sig8>-<epoch>-<pid> attempt token, computed ONCE so the
 # explicit call and the EXIT trap's own retry (same process) reuse the identical value; a
 # bare pid would recycle across days/reboots and could be misread as the same attempt.
@@ -2034,16 +2044,38 @@ else
   emit decision "review_gate task=${TASK} status=ran author=${AUTHOR} reviewer=${reviewer} verdict=${verdict} diff=${diff_hash:0:8} review_source=${review_source} verdict_source=${VERDICT_SOURCE} ledger_rc=${record_rc}"
 fi
 if [[ "${verdict}" == FAIL ]]; then
-  printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
-    "${FINDINGS_CRITICAL}" "${FINDINGS_HIGH}" "${FINDINGS_MEDIUM}" "${FINDINGS_LOW}" > "${HANDOFF}/review-gate.md"
+  # REVIEW-GATE-SHOWS-FINDINGS-01 (design R7): head lines stay byte-identical and
+  # first; the findings block is APPENDED. tmp+mv (replacing the old direct `>`,
+  # which was single-line-safe but not multi-line-safe against a torn read).
+  _rgf_rel="docs/handoff/dispatch-${TASK}/review-${reviewer}.md"
+  [[ -n "${REVIEW_SOURCE:-}" ]] && _rgf_rel="${REVIEW_SOURCE#artifact:}"
+  {
+    printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
+      "${FINDINGS_CRITICAL}" "${FINDINGS_HIGH}" "${FINDINGS_MEDIUM}" "${FINDINGS_LOW}"
+    render_gate_findings "${review_file}" "" "${reviewer}" "${_rgf_rel}" || true
+  } > "${HANDOFF}/review-gate.md.tmp"
+  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
+  emit decision "review_gate task=${TASK} status=fail critical=${FINDINGS_CRITICAL} high=${FINDINGS_HIGH}${_rgf_dnm}"
   _dl_note dead review_verdict_fail "critical=${FINDINGS_CRITICAL} high=${FINDINGS_HIGH}"
   _stamp_review_terminal fail
   exit 7
 fi
 # PASS must overwrite review-gate.md too, or a stale fail/blocked artifact from an earlier
 # attempt keeps lying after the gate has actually cleared (hit live on fe5307b3, 2026-07-30).
-printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}" > "${HANDOFF}/review-gate.md"
-_dl_note landed review_verdict_pass "diff=${diff_hash:0:8}"
+# REVIEW-GATE-SHOWS-FINDINGS-01: same append + tmp/mv discipline on the pass exit —
+# the block is written on EVERY pass/fail exit, so its absence can only mean an old
+# build, and a do-not-merge report shows on the face of a passing gate (advisory only:
+# status: stays pass, decision semantics unchanged).
+_rgf_rel="docs/handoff/dispatch-${TASK}/review-${reviewer}.md"
+[[ -n "${REVIEW_SOURCE:-}" ]] && _rgf_rel="${REVIEW_SOURCE#artifact:}"
+{
+  printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}"
+  render_gate_findings "${review_file}" "" "${reviewer}" "${_rgf_rel}" || true
+} > "${HANDOFF}/review-gate.md.tmp"
+mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+_rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
+_dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm}"
 _stamp_review_terminal pass
 # PHASES-ARE-THE-ONLY-PATH-01: record review phase as done (verdict PASS).
 [[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
