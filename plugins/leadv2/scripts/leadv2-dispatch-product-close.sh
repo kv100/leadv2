@@ -1528,6 +1528,16 @@ if [[ "${_pc_kind}" == "report" ]]; then
   {
     printf '# REPORT-ONLY LANE — review the ANALYSIS, not a diff.\n'
     printf '# deliverable: %s   bytes: %s\n' "${_pc_report_rel}" "${_pc_report_bytes}"
+    # Bind the founder's ask into the review input (codex r2 finding 6): an internally
+    # coherent but UNRELATED pre-existing report must not be able to pass — the reviewer
+    # judges the report against this mission excerpt, bounded like the report itself.
+    _pc_rl_mission="${LEADV2_DISPATCH_LANE_MISSION:-}"
+    [[ -n "${_pc_rl_mission}" && -f "${_pc_rl_mission}" ]] || _pc_rl_mission="${ROOT}/docs/handoff/dispatch-${TASK}/lane-mission.md"
+    if [[ -f "${_pc_rl_mission}" ]]; then
+      printf '# mission excerpt (first %s bytes — judge the report AGAINST this ask):\n' "${LEADV2_REPORT_MISSION_MAX_BYTES:-4000}"
+      head -c "${LEADV2_REPORT_MISSION_MAX_BYTES:-4000}" "${_pc_rl_mission}"
+      printf '\n\n'
+    fi
     # bytes reviewed come from the HARVESTED destination, not the mutable worktree
     # source (codex review finding 4): review approves exactly the durable deliverable.
     head -c "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_dest}"
@@ -2002,7 +2012,7 @@ _pc_review_intro="Review ONLY the diff at ${diff_file}."
 if [[ "${_pc_kind}" == "report" ]]; then
   _pc_review_intro="This is a REPORT-ONLY lane. Review ONLY the analysis document at ${diff_file} (it begins with a '# REPORT-ONLY LANE' header naming the deliverable)."
   review_contract="${review_contract}
-PROSE RUBRIC (report-only lane — the file is an ANALYSIS, not a diff): (a) is every load-bearing claim backed by a quoted file/line reference or command output included in the report itself; (b) list every unsupported claim explicitly as a finding; (c) state whether the recommendation follows from the evidence presented; (d) emit the same REVIEW_VERDICT:/REVIEW_FINDINGS: markers as a code review. FAIL if any load-bearing claim is unsupported or the recommendation does not follow from the evidence."
+PROSE RUBRIC (report-only lane — the file is an ANALYSIS, not a diff): (a) is every load-bearing claim backed by a quoted file/line reference or command output included in the report itself; (b) list every unsupported claim explicitly as a finding; (c) state whether the recommendation follows from the evidence presented; (d) emit the same REVIEW_VERDICT:/REVIEW_FINDINGS: markers as a code review; (e) judge whether the report answers the MISSION excerpt in the review body header — an internally coherent but unrelated report FAILS. FAIL if any load-bearing claim is unsupported, the recommendation does not follow from the evidence, or the report does not answer the mission."
 fi
 
 # N-5 §2.3: arm-agnostic refusal fallback, generalising the old kimi-only bounded

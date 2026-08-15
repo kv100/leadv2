@@ -3645,10 +3645,17 @@ ${mission}"
         mkdir -p "$(dirname "${_lane_mission_path}")" 2>/dev/null
         printf '%s' "${mission}" > "${_lane_mission_path}" 2>/dev/null || _lane_mission_path=""
       fi
-      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}" "${LANE_DELIVERABLE_DECL:-}"; then
-        # The worker is already live; make the failed postflight launch visible rather than
-        # pretending close evidence will arrive.  Do not kill the independently-owned worker.
-        log_err "product close gate could not be launched for task=${sig8}"
+      if [[ "${product_class}" == "product" ]]; then
+        if ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}" "${LANE_DELIVERABLE_DECL:-}"; then
+          # The worker is already live; make the failed postflight launch visible rather than
+          # pretending close evidence will arrive.  Do not kill the independently-owned worker.
+          log_err "product close gate could not be launched for task=${sig8}"
+        fi
+      elif [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
+        # REPORT-ONLY-GATE-01 (codex r2 finding 1): non-product classes never run the
+        # product close gate, so a report declaration there is NOT enforced — surface
+        # that loudly instead of letting a declared report lane pass unjudged in silence.
+        emit decision "lane_deliverable task=${sig8} status=unenforced reason=non_product_class decl=${LANE_DELIVERABLE_DECL}"
       fi
       emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}"
       printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}"
@@ -3875,6 +3882,17 @@ cmd_advance_arm() {
   mission="$(cat "${mission_file}" 2>/dev/null)"
   [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
 
+  # REPORT-ONLY-GATE-01 (codex r2 finding 2): recover the lane's deliverable
+  # declaration from the SAME persisted mission the replacement worker gets. Without
+  # this, a report lane recovered via advance-arm is re-judged as a diff lane and
+  # blocks no_work despite having produced its report.
+  local _adv_deliverable=""
+  _adv_deliverable="$(_mission_deliverable "${mission}")"
+  if [[ -n "${_adv_deliverable}" ]] && ! lv2_deliverable_parse "${_adv_deliverable}" >/dev/null; then
+    emit decision "lane_deliverable task=${sig8} status=ignored reason=unknown_kind decl=${_adv_deliverable} src=advance_arm"
+    _adv_deliverable=""
+  fi
+
   local spawn_out src
   spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
   if [[ ${src} -ne 0 ]]; then
@@ -3891,7 +3909,7 @@ cmd_advance_arm() {
   emit decision "worker_spawned by=arm_advance model=${arm} handle=${handle}"
 
   if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then
-    spawn_product_close "${sig8}" "${arm}" "${handle}" "" "${writes}" "${task_id}" "${mission_file}"
+    spawn_product_close "${sig8}" "${arm}" "${handle}" "" "${writes}" "${task_id}" "${mission_file}" "${_adv_deliverable}"
   fi
   printf 'arm_advance model=%s task=%s handle=%s\n' "${arm}" "${sig8}" "${handle}"
   exit 0

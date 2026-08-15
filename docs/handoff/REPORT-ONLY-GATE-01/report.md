@@ -86,6 +86,35 @@ pre-dispatch digest comparison would be a design change (new spawn-time state pl
 and re-introduces exactly the both-directions misfiring the mission rejected in a
 heuristic. If a lane ever needs it, that is a follow-up task, not this one.
 
+## Cross-provider review round 2 (Codex adversarial, 2026-08-16)
+
+`review-codex-r2.md` returned fail with 6 highs. Five fixed, one held by design:
+
+1. **Arm recovery dropped the declaration** — `advance-arm` re-spawned the close gate
+   without `LEADV2_DISPATCH_LANE_DELIVERABLE`, so a recovered report lane was re-judged
+   as a diff lane (`no_work` despite its report). Fixed: `cmd_advance_arm` re-harvests
+   the declaration from the same persisted `lane-mission.md` the replacement worker
+   gets, and threads it as `spawn_product_close`'s 8th arg.
+2. **Hardlinks bypass containment** — `lv2_report_locate` refuses `st_nlink > 1`
+   (BSD `stat -f %l` / GNU `stat -c %h`): a worker-written report is link-count 1.
+   Regression: test C9.
+3. **Symlink at the destination satisfied harvest** — `-f`/`-ef` follow links, so a
+   `report.md` symlink to the worktree source skipped the copy and dangled after the
+   sweep. Harvest refuses a symlink destination outright. Regression: test C10.
+4. **Non-product classes never enforce a declaration** — unchanged behaviour (they never
+   ran the close gate), but now surfaced loudly:
+   `lane_deliverable … status=unenforced reason=non_product_class` instead of silence.
+5. **Reviewer never saw the mission** — the review body now embeds a bounded mission
+   excerpt (`LEADV2_REPORT_MISSION_MAX_BYTES`, default 4000) and the prose rubric gained
+   (e): an internally coherent but unrelated report FAILs.
+6. **Only a 60k prefix is reviewed** — **held by design**: `LEADV2_REPORT_REVIEW_MAX_BYTES`
+   head-truncation with an in-body notice naming the full harvested file is the scoped
+   design (§2.4). Full-report mandatory review is a follow-up if report sizes grow.
+
+The advance-arm threading (fix 1) is verified by inspection + syntax + the unchanged
+6b/6c dispatch-harness cases; a full offline advance-arm fixture would need the close
+gate's silent-arm probe machinery and is not in this suite.
+
 ## Files
 
 - `plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh` — new shared lib:
