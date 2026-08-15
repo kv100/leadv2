@@ -1,0 +1,36 @@
+# GLM-FIRST-RECOVERY-01 — before/after, identical mission + readings
+# mission_kind=doc_fix (codex_fitting), base-arm glm, build_threshold 80%
+
+## Pair 1 — codex probe stuck (401 -> unknown), glm wide open (2%)
+
+### BEFORE (resolver at HEAD):
+arm=sonnet
+rule=codex_quota_gate_80pct
+reason=codex_quota_gate
+tier=
+codex_quota_blocked=1
+
+### AFTER (this change):
+arm=glm
+rule=codex_quota_gate_80pct
+reason=codex_quota_gate
+tier=
+codex_quota_blocked=1
+readings=glm=2% codex=unknown anthropic=44%
+
+## Pair 2 — codex still unknown, glm KNOWN-HOT (95% >= 80%)
+
+### BEFORE (resolver at HEAD):
+arm=sonnet
+rule=codex_quota_gate_80pct
+reason=codex_quota_gate
+tier=
+codex_quota_blocked=1
+
+### AFTER (this change) — sonnet is still chosen: the R2 guard holds
+arm=sonnet
+rule=codex_quota_gate_80pct
+reason=codex_quota_gate
+tier=
+codex_quota_blocked=1
+readings=glm=95% codex=unknown anthropic=44%
