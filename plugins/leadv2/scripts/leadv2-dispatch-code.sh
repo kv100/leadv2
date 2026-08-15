@@ -3261,7 +3261,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
   export DC_PROTECTED="${protected}" DC_SAFETY="${safety}" DC_SUBSYSTEM_COUNT="${subsystems}" \
          DC_INTERACTIVE="${interactive}" DC_UI_JUDGMENT="${ui}" DC_KIND="${kind}" \
          DC_GLM_FAILURES="${glmfails}" DC_GLM_LOCK_BUSY="${lockbusy}"
-  local resolved arm rule reason tier router_label v2_eligible v2_ordered v2_headroom v2_vector v2_credits
+  local resolved arm rule reason tier readings router_label v2_eligible v2_ordered v2_headroom v2_vector v2_credits
   router_label="v1"
   if [[ "${LEADV2_ROUTER_V2:-0}" == "1" ]]; then
     router_label="v2"
@@ -3287,9 +3287,14 @@ confirmation-seeking; only for a decision you cannot make yourself."
   v2_credits="$(printf '%s\n' "${resolved}" | sed -n 's/^credits=//p')"
   local codex_quota_blocked
   codex_quota_blocked="$(printf '%s\n' "${resolved}" | sed -n 's/^codex_quota_blocked=//p')"
+  # GLM-FIRST-RECOVERY-01 (C3): the resolver's gate-path-only live-reading line
+  # (glm=2% codex=unknown anthropic=44%) rides the journal emit so a lead can
+  # tell a correct peak-hour fallback from a stuck-probe inversion. Absent line
+  # (happy path / gate absent / resolver v1 fallback) -> byte-identical emit.
+  readings="$(printf '%s\n' "${resolved}" | sed -n 's/^readings=//p')"
   [[ "${router_label}" == "v2" ]] && rule="router_v2"
   [[ -n "${arm}" ]] || { log_err "resolver returned no arm: ${resolved}"; exit 1; }
-  emit decision "arm_resolved job=build arm=${arm} reason=${rule}"
+  emit decision "arm_resolved job=build arm=${arm} reason=${rule}${readings:+ readings=${readings}}"
   # RESOLVED_CODEX_TIER is read by _spawn_worker_body's codex case (global, not passed as
   # a positional -- spawn_worker's signature is shared across all three spawning arms).
   [[ "${arm}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
