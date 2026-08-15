@@ -45,7 +45,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 
 **Explicit task id -> claim, never greet.** If invoked as `/leadv2 <task-id>` (bare token matching an existing `docs/leadv2/tasks.yaml` id or an existing `docs/handoff/<id>/`), OR with `LEADV2_ASYNC_QUESTIONS=1` set, this is a **fanned-out child session** (spawned by `leadv2-fanout.sh`/`leadv2-supervise.sh`) -- claim that task_id immediately via Phase 0 and proceed straight to CLASSIFY. **Do NOT render the greeting AskUserQuestion picker** in this path -- a picker left waiting on a headless child is a silent multi-hour stall (bug: `f83037a57907` sat 2.5h on it). The picker below is ONLY for a bare `/leadv2` / `/leadv2 next` with no task id.
 
-**Question wake-up (CC 2.1.224+, additive):** in ANY child worker session — a fanned-out supervise child OR a single-lead-mode dispatched Claude arm (`leadv2-dispatch-code.sh`) — immediately after launching `scripts/leadv2-ask.sh`, attempt `ListAgents` and, if the dispatching lead/supervisor session is discoverable, `SendMessage` it one line: `[leadv2-q] <task-id> <q-id>: <question, <=15 words> — answer via /leadv2 reply <q-id> <option>`. This is a wake-up only — the control-plane question store stays the source of truth, and failure of this step is non-fatal (fall back to the blocking poll silently). An interactive lead with the founder in the same window keeps using `AskUserQuestion` directly — no message needed there.
+**Question wake-up (CC 2.1.224+, additive):** in ANY child worker session — a fanned-out supervise child OR a single-lead-mode dispatched Claude arm (`leadv2-dispatch-code.sh`) — immediately after launching `scripts/leadv2-ask.sh`, attempt `ListAgents` and, if the dispatching lead/supervisor session is discoverable, `SendMessage` it one line: `[leadv2-q] <task-id> <q-id>: <question, <=15 words> — answer via /leadv2 reply <q-id> <option>`. This is a wake-up only — the control-plane question store stays the source of truth, and failure of this step is non-fatal (fall back to the blocking poll silently). An interactive lead with the founder in the same window keeps using `AskUserQuestion` directly — no message needed there. Since CC 2.1.224 `SendMessage` silent write failures are fixed and 2.1.232 gives sessions stable unique names (`@`-addressable) — so treat a *returned error* as the only failure signal (retry once with the ` [ref]` from `ListAgents`), and do NOT add extra compensating re-sends: one wake-up per question, the poll remains the safety net.
 
 **Greet via AskUserQuestion tool** (direct tool call, bare `/leadv2` only): top-5 unclaimed tasks, #1 marked `* Recommended`, always include "Other". After pick -> one line: `Taking TASK-XXX -> Gate 1 in ~5s.` Then auto-proceed. No chat until Phase 8 Close.
 
@@ -144,6 +144,19 @@ Agent(subagent_type=<role>, model=<opus|sonnet>,
 # Wait for task-notification; Read(deliverable, limit=30); synthesize into context.yaml.
 ```
 
+**Fork spawns (CC 2.1.232+, FORK-ADOPT-01):** `Agent(subagent_type="fork")` inherits the
+lead's FULL conversation + prompt cache — near-zero context-rebuild cost. Use a fork whenever
+the agent needs what the lead already knows (plan synthesis, judging a fork, a fix-round that
+must see the whole task history) instead of re-serializing context into a prompt. Rules:
+- Forks always run the LEAD's model (`model=` is ignored) — so a fork is an Opus/Fable-cost
+  spawn. Cheap mechanical work (reads, greps, formatting) still goes to fresh
+  haiku/sonnet agents with a narrow mission; Codex/GLM arms are external processes and can
+  NEVER be forked — they get context via prompt/files as before.
+- A fork inherits the conversation, not your role: give it ONE narrow mission + deliverable
+  path, same as any spawn. `run_in_background=true` still MANDATORY.
+- The old 200-subagent session cap is removed (CC 2.1.224) — fan-out sizing is governed only
+  by quota + the workflow size guideline, not a platform ceiling.
+
 ## BG-agent liveness protocol (anti-silent-death, 2026-06-12)
 
 Background agents can die silently (org spend limit, crash) OR finish fine while their
@@ -168,6 +181,10 @@ deliverable as `<name>.full.md` instead of `<name>.md`.
    (/login or wait), do not respawn into the same wall.
 5. **Long pipeline sessions:** session cron heartbeat every ~20 min (off-minute) —
    compare running agents vs appeared deliverables, respawn the dead.
+6. **Platform fixes absorbed (CC 2.1.223+):** forked background agents no longer get stuck
+   in "already resuming" — a fork that stalls is a REAL stall, diagnose it (transcript tail,
+   step 2), don't reflex-respawn assuming the old platform bug. The two-name deliverable
+   check (`.md`/`.full.md`) stays — that one is our own trim hook, not a platform issue.
 
 ---
 
@@ -193,7 +210,7 @@ Principle: **context is cache, disk is truth.** Sessions run for days with many 
 - **No skipping yaml validation** on subagent deliverables.
 - **No chat narration.** Pulse mode (default): absolute silence except pulse lines + gate + close.
 - **No foreground Agent spawns.** Always `run_in_background=true`.
-- **No delegating `ExitWorktree` or `git worktree remove` to subagents.** Lead calls `ExitWorktree(action="keep")` directly in Phase 6 step 2.
+- **No delegating `ExitWorktree` or `git worktree remove` to subagents.** Lead calls `ExitWorktree(action="keep")` directly in Phase 6 step 2. (CC 2.1.222+ also blocks destructive git commands in worktree-isolated sessions at the platform level — that is a second safety layer, NOT a license to relax this ban or the shared-tree `reset --hard`/`clean`/`stash` prohibition.)
 - **No reading subagent deliverable without `limit=30`.** Use `critic-tail.sh` for review-class.
 - **No mission file >100 lines.** `leadv2-mission-lint.sh` enforces.
 - **No spawn prompt >300 words.** `leadv2-prompt-lint.sh` enforces.

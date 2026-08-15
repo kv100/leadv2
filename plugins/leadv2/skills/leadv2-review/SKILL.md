@@ -86,6 +86,12 @@ Full commands: **`ref/reviewer-setup-steps.md`**.
 
 Reviewers spawn via **Agent tool** (shared session) — their `.claude/agents/<role>.md` frontmatter activates skills (code-review-patterns, devils-advocate, codex-review, leadv2-subagent-protocol). claude-subsession loses these in headless mode. Hack-detection always runs in parallel with Codex/critic (see `leadv2-hack-detection` skill).
 
+**Built-in `/code-review` as an auxiliary arm (CC 2.1.232+):** at high/xhigh/max effort the
+built-in `/code-review` skill now runs as a background agent — it no longer blocks the lead, so
+it is a legitimate extra reviewer arm alongside the pool when quota allows (`/review` is an
+alias; the level you typed last is reused). It supplements, never replaces, the
+`leadv2-review-run.sh` gate — `review-gate.md` status remains the only pass/fail authority.
+
 **Codex invocation discipline (hard rule):** `codex-task.sh adversarial-review` MUST be passed
 `--wait` and run as a `run_in_background=true` Bash tool call. `--wait` makes codex-companion run
 synchronously; the Bash tool's background flag is the only async layer. Never use a bare

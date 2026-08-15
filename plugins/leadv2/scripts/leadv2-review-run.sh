@@ -29,6 +29,15 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# REVIEW-GATE-SHOWS-FINDINGS-01: shared findings renderer, appended to review-gate.md
+# at the fail/pass exits below. Guarded source + no-op stub so a missing/broken
+# renderer degrades to today's exact gate output, never to a missing gate (design R3).
+_REVIEW_FINDINGS_SH="${SCRIPT_DIR}/leadv2-review-findings.sh"
+[[ -f "${_REVIEW_FINDINGS_SH}" ]] || _REVIEW_FINDINGS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-review-findings.sh"
+# shellcheck source=leadv2-review-findings.sh
+[[ -f "${_REVIEW_FINDINGS_SH}" ]] && source "${_REVIEW_FINDINGS_SH}"
+command -v render_gate_findings >/dev/null 2>&1 || render_gate_findings() { :; }
+
 # ---------------------------------------------------------------------------
 # 1. Arg parsing
 # ---------------------------------------------------------------------------
@@ -725,16 +734,22 @@ if [[ "${verdict}" == FAIL ]]; then
     printf 'arms: %s\n%s\n' "${ARMS_CSV}" "${VERIFIED_LINE}"
     printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
       "${FINDINGS_CRITICAL_TOTAL}" "${FINDINGS_HIGH_TOTAL}" "${FINDINGS_MEDIUM_TOTAL}" "${FINDINGS_LOW_TOTAL}"
+    render_gate_findings "${REVIEW_ARTIFACT:-${HANDOFF}/review-${reviewer_primary}.md}" "${FINDINGS_JSON}" \
+      "${reviewer_primary}" "docs/handoff/dispatch-${TASK}/review-${reviewer_primary}.md" || true
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=fail critical=${FINDINGS_CRITICAL_TOTAL} high=${FINDINGS_HIGH_TOTAL}"
+  _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
+  emit decision "review_gate task=${TASK} status=fail critical=${FINDINGS_CRITICAL_TOTAL} high=${FINDINGS_HIGH_TOTAL}${_rgf_dnm}"
   exit 7
 fi
 
 {
   printf 'arms: %s\n%s\n' "${ARMS_CSV}" "${VERIFIED_LINE}"
   printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer_primary}" "${diff_hash:0:8}"
+  render_gate_findings "${REVIEW_ARTIFACT:-${HANDOFF}/review-${reviewer_primary}.md}" "${FINDINGS_JSON}" \
+    "${reviewer_primary}" "docs/handoff/dispatch-${TASK}/review-${reviewer_primary}.md" || true
 } > "${HANDOFF}/review-gate.md.tmp"
 mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-emit decision "review_gate task=${TASK} status=pass diff=${diff_hash:0:8} arms=${ARMS_CSV}"
+_rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
+emit decision "review_gate task=${TASK} status=pass diff=${diff_hash:0:8} arms=${ARMS_CSV}${_rgf_dnm}"
 exit 0

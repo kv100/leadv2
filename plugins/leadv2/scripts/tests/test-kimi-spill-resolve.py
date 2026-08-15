@@ -43,23 +43,34 @@ import unittest
 
 
 class KimiSpillWalkTests(unittest.TestCase):
-    def test_kimi_reachable_in_new_default_chain(self):
+    def test_kimi_chain_recovers_to_glm(self):
+        # GLM-FIRST-RECOVERY-01 R1 (expectation updated, not silently rewritten):
+        # codex_fitting is a PREFERENCE row, so a codex_quota_gate spill no
+        # longer deletes glm from the chain -- [glm, kimi, codex, sonnet] +
+        # codex blocked now yields glm, not kimi. (kimi was ALREADY unreachable
+        # here pre-GLM-FIRST-RECOVERY-01 -- DISPATCH-KIMI-ARM-MISMATCH-01
+        # removed it from DISPATCHABLE_BUILD_ARMS, which is why this test's old
+        # arm=="kimi" expectation failed on main. The GLM-first semantics the
+        # walk now expresses is the founder's standing GLM-FIRST-01 decision.)
         glm_policy = _glm_policy(["glm", "kimi", "codex", "sonnet"])
         signals = {"mission_kind": "doc_fix"}
         glm_policy["codex_fitting_mission_kinds"] = ["doc_fix"]
         result = resolve_glm_policy(glm_policy, signals, job="build", base_arm="glm",
                                      quota_codex_pct=95.0)
-        self.assertEqual(result["arm"], "kimi")
+        self.assertEqual(result["arm"], "glm")
         self.assertEqual(result["rule"], "codex_quota_gate_80pct")
         self.assertIs(result["codex_quota_blocked"], True)
 
-    def test_pre_kimi_chain_still_yields_sonnet(self):
+    def test_pre_kimi_chain_recovers_to_glm(self):
+        # GLM-FIRST-RECOVERY-01 R1: the 3-arm chain [glm, codex, sonnet] +
+        # codex blocked recovered to glm (unknown glm reading keeps it eligible
+        # per the resolver's stated posture), not sonnet.
         glm_policy = _glm_policy(["glm", "codex", "sonnet"])
         signals = {"mission_kind": "doc_fix"}
         glm_policy["codex_fitting_mission_kinds"] = ["doc_fix"]
         result = resolve_glm_policy(glm_policy, signals, job="build", base_arm="glm",
                                      quota_codex_pct=95.0)
-        self.assertEqual(result["arm"], "sonnet")
+        self.assertEqual(result["arm"], "glm")
         self.assertEqual(result["rule"], "codex_quota_gate_80pct")
 
     def test_safety_touched_overrides_gate_regardless_of_kimi(self):
@@ -71,14 +82,19 @@ class KimiSpillWalkTests(unittest.TestCase):
         self.assertEqual(result["arm"], "sonnet")
         self.assertEqual(result["rule"], "safety_gate_publish_payments")
 
-    def test_quota_unknown_is_blocked_and_falls_to_kimi(self):
+    def test_quota_unknown_is_blocked_and_recovers_to_glm(self):
+        # GLM-FIRST-RECOVERY-01 R1: codex quota unknown blocks codex (unchanged,
+        # the prior deliberate BLOCKING fix) -- and the spill now recovers to
+        # glm (preference row re-admits it; glm's own reading is unknown here,
+        # which keeps it eligible), the exact stuck-401 inversion this task
+        # fixes (90 journal rows, 2026-08-15).
         glm_policy = _glm_policy(["glm", "kimi", "codex", "sonnet"])
         signals = {"mission_kind": "doc_fix"}
         glm_policy["codex_fitting_mission_kinds"] = ["doc_fix"]
         result = resolve_glm_policy(glm_policy, signals, job="build", base_arm="glm",
                                      quota_codex_pct=None, quota_live_bin=None)
         self.assertIs(result["codex_quota_blocked"], True)
-        self.assertEqual(result["arm"], "kimi")
+        self.assertEqual(result["arm"], "glm")
 
     def test_gate_absent_v1_output_shape_unchanged(self):
         glm_policy = {}

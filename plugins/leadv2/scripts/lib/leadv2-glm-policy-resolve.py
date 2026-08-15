@@ -401,6 +401,50 @@ def _fmt_pct(pct):
         return ""
 
 
+# GLM-FIRST-RECOVERY-01 (R3): per-process memo of live quota readings. Each
+# bucket's reader is a 10s-timeout subprocess; the resolver must never pay it
+# twice in one process (CLI mode resolves once, but router.sh's import mode
+# can resolve several steps in one interpreter). Keyed (bucket, bin) so a test
+# swapping stubs between calls still reads each stub freshly.
+_LIVE_PCT_MEMO = {}
+
+
+def _live_pct_memo(bucket: str, quota_live_bin):
+    if (bucket, quota_live_bin) not in _LIVE_PCT_MEMO:
+        if bucket == "codex":
+            v = live_codex_weekly_pct(quota_live_bin)
+        elif bucket == "glm":
+            v = live_glm_pct(quota_live_bin)
+        else:
+            v = live_anthropic_pct(quota_live_bin)
+        _LIVE_PCT_MEMO[(bucket, quota_live_bin)] = v
+    return _LIVE_PCT_MEMO[(bucket, quota_live_bin)]
+
+
+def _live_pct_for_arm(arm: str, quota_live_bin):
+    """GLM-FIRST-RECOVERY-01 (C2): the live reading for a spill candidate, via
+    the same arm->bucket mapping resolve_review_pool's _pct_for uses (opus and
+    sonnet share the one Anthropic-account reading). Unknown arms (and any arm
+    when no bin was supplied) read None = unknown."""
+    if arm == "codex":
+        return _live_pct_memo("codex", quota_live_bin)
+    if arm == "glm":
+        return _live_pct_memo("glm", quota_live_bin)
+    if arm in ("opus", "sonnet"):
+        return _live_pct_memo("anthropic", quota_live_bin)
+    return None
+
+
+def _fmt_readings(glm, codex, anthropic):
+    """GLM-FIRST-RECOVERY-01 (C3): 'glm=2% codex=unknown anthropic=44%' -- each
+    bucket once, fixed order, None rendered as 'unknown' so a lead reading the
+    journal can tell a real 91% from a stuck probe."""
+    def _one(pct):
+        s = _fmt_pct(pct)
+        return "%s%%" % s if s else "unknown"
+    return "glm=%s codex=%s anthropic=%s" % (_one(glm), _one(codex), _one(anthropic))
+
+
 def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = None,
                          pcts: dict = None, kimi_bin: str = None,
                          signals: dict = None, rank_table: dict = None,
@@ -591,32 +635,41 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
     # (glm_default -> allowed=["glm"]) and forced GLM onto a review job, the
     # exact outcome GLM-FIRST-01/review_arm_exclusions exists to prevent.
     arm, rule, reason = base_arm, "none", ("glm_default" if base_arm == "glm" else "base_arm_default")
+    # GLM-FIRST-RECOVERY-01 (C1): each precedence row also states whether it
+    # EXCLUDES glm from the spill chain (six rows do -- glm is disqualified by
+    # kind/safety/complexity/judgment, or already failed, or is lock-busy) or
+    # merely PREFERS another arm (codex_fitting_mission_kind -- glm is fine,
+    # codex just fits better). Derived from this table, never a hand-kept rule
+    # list beside it; carried in glm_excluded so the spill walk can resurrect
+    # base_arm ONLY for the preference row.
+    glm_excluded = False
     if base_arm == "glm":
         # STRICT precedence, first match wins — identical order/semantics to
         # the two deleted duplicates (dispatch-code.sh:337-418,
         # router.sh:190-259 pre-T-b).
         rules = [
             (bool(signals.get("mission_kind")) and signals.get("mission_kind") in opus_kinds,
-             None, "opus", "opus_mission_kind"),
+             None, "opus", "opus_mission_kind", True),
             (bool(signals.get("protected_path") or signals.get("safety_touched")),
-             "safety_gate_publish_payments", "sonnet", "sonnet_exception"),
+             "safety_gate_publish_payments", "sonnet", "sonnet_exception", True),
             (_num_ge(signals.get("subsystem_count"), 4) or bool(signals.get("needs_midflight_interaction")),
-             "integration_critical_4subsystems", "sonnet", "sonnet_exception"),
+             "integration_critical_4subsystems", "sonnet", "sonnet_exception", True),
             (bool(signals.get("ui_design_judgment")),
-             "ui_design_judgment", "sonnet", "sonnet_exception"),
+             "ui_design_judgment", "sonnet", "sonnet_exception", True),
             (_num_ge(signals.get("glm_failure_count"), 2),
-             "glm_failed_twice", "sonnet", "sonnet_exception"),
+             "glm_failed_twice", "sonnet", "sonnet_exception", True),
             (bool(signals.get("glm_lock_busy")),
-             "glm_lock_busy_no_second_channel", "sonnet", "sonnet_exception"),
+             "glm_lock_busy_no_second_channel", "sonnet", "sonnet_exception", True),
             (bool(signals.get("mission_kind")) and signals.get("mission_kind") in codex_kinds,
-             None, "codex", "codex_fitting_mission_kind"),
+             None, "codex", "codex_fitting_mission_kind", False),
         ]
-        for pred, rid, rbase, rsn in rules:
+        for pred, rid, rbase, rsn, rexcl in rules:
             if not pred:
                 continue
             if rid is not None and rid not in exc_ids:
                 continue  # rule id absent from yaml -> cannot fire (single source of truth)
             arm, rule, reason = rbase, (rid or ("codex_fitting_kind" if rbase == "codex" else "opus_only_kind")), rsn
+            glm_excluded = rexcl
             break
 
     # UI-TO-KIMI-01 (founder decision, no A/B): the ui_design_judgment exception
@@ -656,6 +709,7 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
     tier = codex_default_tier if arm == "codex" else ""
     job = job if job in ("build", "review") else "build"
     codex_blocked = False
+    readings = ""
 
     # --- T-q enforcement (SUPERVISOR-AUDIT-01 T-b): codex_quota_gate + review_arm_exclusions ---
     # MAJOR fix (resolver:55-60): only enforce when the yaml explicitly
@@ -668,12 +722,23 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
                      else gate.get("build_threshold_pct", DEFAULT_BUILD_THRESHOLD_PCT))
 
         if quota_codex_pct is None and quota_live_bin:
-            quota_codex_pct = live_codex_weekly_pct(quota_live_bin)
+            quota_codex_pct = _live_pct_memo("codex", quota_live_bin)
         # BLOCKING fix (resolver:192-200): quota unknown != known-0%. A read
         # failure (None) must NOT resolve as "below threshold" -- treat it as
         # blocked (codex ineligible) until a valid weekly reading exists.
         quota_known = quota_codex_pct is not None
         codex_blocked = (not quota_known) or _num_ge(quota_codex_pct, threshold)
+
+        # GLM-FIRST-RECOVERY-01 (C3): say what the world looked like -- but only
+        # on the already-degraded path (gate evaluated AND codex blocked), so the
+        # happy 358-rows-of-arm=glm path pays zero extra subprocesses. glm /
+        # anthropic come from the same per-process memo the C2 filter uses.
+        readings = ""
+        if codex_blocked:
+            readings = _fmt_readings(
+                _live_pct_memo("glm", quota_live_bin) if quota_live_bin else None,
+                quota_codex_pct,
+                _live_pct_memo("anthropic", quota_live_bin) if quota_live_bin else None)
 
         # founder rule: GLM is NEVER a review arm, regardless of quota.
         if job == "review" and arm in exclusions:
@@ -685,26 +750,55 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
         # (spill[spill.index("codex")+1:]) is wrong once an arm sits BEFORE
         # codex in spill (e.g. kimi in [glm, kimi, codex, sonnet]) -- the
         # after-slice there is still just ["sonnet"], so kimi is unreachable.
-        # Walk the FULL spill chain instead, skipping the blocked arm(s), the
-        # currently-selected arm, and base_arm (base_arm was already
-        # overridden by the precedence rules above -- resurrecting it here
-        # would undo that decision). Assumes base_arm never appears AFTER the
-        # blocked arm in spill (true for every shipped config today; glm is
-        # always first).
+        # Walk the FULL spill chain instead, skipping the blocked arm(s) and the
+        # currently-selected arm. base_arm is skipped ONLY when the fired
+        # precedence row EXCLUDED glm (GLM-FIRST-RECOVERY-01 C1): of the seven
+        # rows, six disqualify glm outright -- resurrecting it would undo that
+        # decision -- but codex_fitting_mission_kind is a PREFERENCE, not an
+        # exclusion (glm is fine; codex merely fits better), and it is the only
+        # row that can reach this walk at all (the other six resolve to
+        # opus/sonnet/kimi, never codex, so `arm in blocked` is false and the
+        # walk never runs). Skipping base_arm there was wrong in 100% of the
+        # cases where it fired -- it deleted glm from the candidate chain and
+        # made sonnet the only arm left, permanently, whenever codex's quota
+        # probe was unreadable (90 journal rows, 2026-08-15).
         blocked = {"codex"} if codex_blocked else set()
         _dispatchable = DISPATCHABLE_PLAN_ARMS if job == "plan" else DISPATCHABLE_BUILD_ARMS
         if arm in blocked:
-            skip = {arm, base_arm} | blocked
-            nxt = [a for a in spill if a not in skip
-                   and a in _dispatchable
-                   and not (job == "review" and a in exclusions)]
+            skip = {arm} | blocked
+            if glm_excluded:
+                skip.add(base_arm)
+            # GLM-FIRST-RECOVERY-01 (C2): a candidate whose OWN reading is KNOWN
+            # and >= threshold steps aside (R2: re-admitting a hot glm would
+            # trade a downgrade for a stall). An UNKNOWN reading keeps the
+            # candidate eligible -- an unmeasured bucket beats an outage -- and
+            # sonnet, the terminal arm, is never filtered: the chain must never
+            # empty. codex's unknown-blocks semantics is untouched (it is in
+            # `blocked` here already). No threshold constant of its own: the
+            # same build/review threshold the gate just used.
+            nxt = []
+            for a in spill:
+                if a in skip or a not in _dispatchable:
+                    continue
+                if job == "review" and a in exclusions:
+                    continue
+                if a != "sonnet" and quota_live_bin:
+                    a_pct = _live_pct_for_arm(a, quota_live_bin)
+                    if a_pct is not None and _num_ge(a_pct, threshold):
+                        continue
+                nxt.append(a)
             arm = nxt[0] if nxt else "sonnet"
             rule = "codex_quota_gate_%dpct" % int(threshold)
             reason = "codex_quota_gate"
             tier = ""
 
-    return {"arm": arm, "rule": rule, "reason": reason, "tier": tier,
-            "codex_quota_blocked": codex_blocked, "job": job}
+    result = {"arm": arm, "rule": rule, "reason": reason, "tier": tier,
+              "codex_quota_blocked": codex_blocked, "job": job}
+    # GLM-FIRST-RECOVERY-01: additive key -- callers that read only the known
+    # keys (router.sh's import mode) are unaffected; the CLI prints it below.
+    if readings:
+        result["readings"] = readings
+    return result
 
 
 def _emit_fallback(job: str, reason: str) -> None:
@@ -864,6 +958,11 @@ def _main(argv):
         print("reason=%s" % result["reason"])
         print("tier=%s" % result["tier"])
         print("codex_quota_blocked=%s" % ("1" if result["codex_quota_blocked"] else "0"))
+        # GLM-FIRST-RECOVERY-01 (C3): gate-path-only additive line -- absent on
+        # every non-degraded path, so callers that do not parse `readings=`
+        # (and v1-equivalence tests) see byte-identical output.
+        if result.get("readings"):
+            print("readings=%s" % result["readings"])
         # ry_source (tenant|plugin|canonical) is journaled bash-side by
         # resolve_review_pool_call() -- that's the caller with TASK/emit() access;
         # this CLI process only needs its own routing-yaml resolution to be correct,
