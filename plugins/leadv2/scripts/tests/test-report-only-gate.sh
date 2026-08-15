@@ -26,6 +26,9 @@
 #        blocked report_missing, nothing harvested (rc 2 = cross-volume fixture).
 #  10 — symlink AT report.md destination (r2 finding 4) -> blocked harvest_failed;
 #        the -ef same-file guard must not be satisfiable by a dangling-to-be link.
+#  11 — report lane that ALSO edits source (r3 finding 2) -> blocked
+#        unscoped_lane_work, kind: report — code changes cannot land unreviewed
+#        under a report verdict.
 #
 # Red-first: cases 1/2/3/5/6a are also run against an extraction of the last commit
 # that predates the fix (walk HEAD back while lib/leadv2-report-deliverable.sh exists;
@@ -478,6 +481,32 @@ case_10_dest_symlink() { # <scripts_dir>
   return "${ok}"
 }
 
+# ── Case 11 — report lane with extra code changes -> unscoped_lane_work (r3 f2) ──
+# A report lane that ALSO edits source must not land those edits unreviewed under a
+# report verdict: blocked unscoped_lane_work (kind: report), nothing landed.
+case_11_report_plus_code() { # <scripts_dir>
+  local sd="$1"
+  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
+  local root tid wt d errf rrc gate
+  root="$(new_repo)"; tid="rog1c11-$$"
+  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  write_good_report "${wt}/analysis/report.md"
+  printf 'sabotage\n' >> "${wt}/agent/seed.py"   # unreviewed code change
+  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+  rrc="$(run_gate "${sd}" "${root}" rog1c11sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
+  gate="$(gate_md "${root}" rog1c11sig)"
+  local ok=0
+  [[ "${rrc}" == "rc=5" ]] || ok=1
+  grep -q '^status: blocked' <<<"${gate}" || ok=1
+  grep -q '^reason: unscoped_lane_work' <<<"${gate}" || ok=1
+  grep -q '^kind: report' <<<"${gate}" || ok=1
+  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
+  return "${ok}"
+}
+
 # ── harness ───────────────────────────────────────────────────────────────────────
 CASE_NAMES=(); CASE_RCS=()
 run_case() { # <name> <fn> <scripts_dir>
@@ -519,6 +548,7 @@ run_case "C7-symlink-report"    case_7_symlink_report    "${SCRIPTS_LIVE}"
 run_case "C8-dest-collision"    case_8_dest_collision    "${SCRIPTS_LIVE}"
 run_case "C9-hardlink-report"   case_9_hardlink_report   "${SCRIPTS_LIVE}"
 run_case "C10-dest-symlink"     case_10_dest_symlink     "${SCRIPTS_LIVE}"
+run_case "C11-report-plus-code" case_11_report_plus_code "${SCRIPTS_LIVE}"
 POST_NAMES=("${CASE_NAMES[@]}"); POST_RCS=("${CASE_RCS[@]}")
 
 echo ""

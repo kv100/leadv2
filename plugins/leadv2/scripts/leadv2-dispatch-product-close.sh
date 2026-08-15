@@ -1509,6 +1509,22 @@ if [[ "${_pc_kind}" == "report" ]]; then
     _stamp_review_terminal blocked
     exit 5
   fi
+  # codex r3 finding 2: a report lane must not LAUNDER code changes. Dirt in the lane
+  # worktree outside the declared report (and the usual journal/handoff noise) means the
+  # lane changed source that would never be diff-reviewed — block it as unscoped_lane_work
+  # rather than let it land under a report verdict. Gated on _lane_root exactly like the
+  # diff-lane dirty check below: with no lane worktree, ROOT-side founder edits must never
+  # be mistaken for lane work.
+  if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] \
+     && git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null \
+        | grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/' \
+        | grep -vF "${_pc_report_rel}" | grep -q .; then
+    printf 'status: blocked\nreason: unscoped_lane_work\nkind: report\ndeclared: %s\n' "${_pc_report_rel}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=unscoped_lane_work kind=report terminal=refused cause=unscoped_lane_work declared=${_pc_report_rel}"
+    _dl_note refused unscoped_lane_work "declared=${_pc_report_rel} kind=report"
+    _stamp_review_terminal blocked
+    exit 5
+  fi
   # harvest: ROOT-side docs/handoff/dispatch-<TASK>/report.md survives the lane sweep
   _pc_report_dest="$(lv2_report_harvest "${_pc_report_abs}" "${HANDOFF}")"
   # Fail closed on harvest failure (codex review finding 3): a pass that advertises a

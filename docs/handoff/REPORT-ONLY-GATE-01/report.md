@@ -115,6 +115,27 @@ The advance-arm threading (fix 1) is verified by inspection + syntax + the uncha
 6b/6c dispatch-harness cases; a full offline advance-arm fixture would need the close
 gate's silent-arm probe machinery and is not in this suite.
 
+## Cross-provider review round 3 (Codex adversarial, 2026-08-16)
+
+`review-codex-r3.md` returned fail with 2 highs:
+
+1. **Report lane could launder code changes** — fixed: after the substantive check, a
+   report lane whose worktree is dirty *outside* the declared report (excluding the
+   usual `docs/leadv2` / `docs/handoff` noise, and gated on a resolved lane worktree
+   exactly like the diff-lane dirty check, so ROOT-side founder edits are never mistaken
+   for lane work) blocks as `unscoped_lane_work` with `kind: report` and a `refused`
+   terminal — source changes cannot land unreviewed under a report verdict.
+   Regression: test C11.
+2. **TOCTOU on the report pathname** — mitigated by construction, held: the report is
+   read only after `pc_await_worker_exit` (there is no concurrent writer to race), and
+   since round 1 the reviewed bytes come from the harvested snapshot, never a re-opened
+   path. A dirfd/O_NOFOLLOW implementation is not expressible in the repo's bash-3.2
+   portability envelope; if a sandboxed-worker threat model ever lands, that is the
+   follow-up.
+
+Final suite state: **13/13** post-fix, **5/5** red-first against pre-fix `b90e40e`,
+diff-lane golden compare byte-identical (C4), product-close family suites green.
+
 ## Files
 
 - `plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh` — new shared lib:
