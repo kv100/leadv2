@@ -1,0 +1,202 @@
+# PLUGIN-REVIEW-ARMS-01 tenant override for the plugin's own repo (leadv2).
+# Copied from plugins/leadv2/config/leadv2-routing.yaml with the two blocks
+# noted below adjusted for a bash+markdown repo; every other key is verbatim.
+# This file is parsed by BOTH a regex extractor (lib/leadv2-review-signals.sh)
+# and yaml.safe_load (leadv2-glm-policy-resolve.py) -- key names and the
+# two-space glm_policy: indentation are load-bearing; do not reformat.
+#
+# Delta vs the shipped default:
+#   1. router.glm_policy.protected_path_patterns -- this repo has no DB, no
+#      auth, no payments; what breaks every consuming repo simultaneously is
+#      the dispatch/gate/hook surface, so that is what is protected here
+#      (glob syntax: `*` spans `/`, per lib/leadv2-review-signals.sh).
+#      Deliberately NOT protected: docs/** and plugins/leadv2/skills/**/*.md
+#      (markdown-only edits do not warrant a safety-tier review).
+#   2. Arm mix -- UNCHANGED on purpose (codex > glm > opus > sonnet ordering
+#      and both quota thresholds are the shipped defaults; kimi stays
+#      excluded:safety under a protected-path signal; glm stays a legitimate
+#      review arm at its own 90% band). Hand-pinning a different order here
+#      would make the plugin repo diverge from every tenant it ships to.
+router_v2:
+  # Advisory capability data (per-arm scores + confidence + sources):
+  #   plugins/leadv2/config/model-capability.yaml
+  # Not consumed by scoring yet (MODEL-BENCH-DATA-01). Cost policy wins.
+  # Used only when the current session credential cannot be identified.  The
+  # quota reader reports account_resolution=pinned_unresolved in that case.
+  active_account: max_20x
+
+  # usable_now is remaining percentage-points per hour, not percent used.
+  headroom_weights:
+    - min_usable_now: 8
+      weight: 1.0
+    - min_usable_now: 2
+      weight: 0.7
+    - min_usable_now: 0
+      weight: 0.4
+    - min_usable_now: null
+      weight: 0.2
+
+  # ── Quota ceilings, founder decision 2026-08-02 ───────────────────────────
+  # Two ceilings per provider: ordinary work, and a HIGHER one for review, because
+  # review is the last thing we want to skip when quota gets tight. A provider is
+  # withdrawn from the ladder for ordinary work at `work_pct` and stays available
+  # for review until `review_pct`.
+  #
+  #   glm    work 80  · review 90
+  #   codex  work 90  · review 95
+  #   claude work 95  · review 95   (weekly)
+  #
+  # These are ceilings on the WEEKLY window. Today only glm has an enforcing
+  # reader (leadv2-glm-quota-gate.sh, default 80) and it does not distinguish
+  # review from ordinary work; codex and claude have no ceiling reader at all.
+  # Until that lands, these numbers are declared policy, NOT enforced behaviour —
+  # do not cite them as if the machine obeyed them.
+  quota_ceilings:
+    glm:    { work_pct: 80, review_pct: 90 }
+    codex:  { work_pct: 90, review_pct: 95 }
+    claude: { work_pct: 95, review_pct: 95 }
+
+  # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
+  # Anthropic arms deliberately share the active Max x20 account bucket.
+  #
+  # NOTE 2026-08-02 (updated ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01): the dispatch
+  # order now comes from router.dispatch_ladder above. This arms list remains
+  # for advisory/quota-bucket purposes. The dispatcher builds candidate_arms
+  # from dispatch_ladder, not from this list.
+  arms:
+    - id: glm
+      channel: glm-coder.sh
+      model: glm-5.2
+      bucket: glm
+      reserve_threshold: 2
+      reserve_allow: [review]
+    # RETIRED 2026-08-05 (DISPATCH-KIMI-ARM-MISMATCH-01, founder order 2026-08-04
+    # «Кими убрать»): kimi is not a dispatchable build arm. Uncomment this block to
+    # restore it — the launcher implementation (kimi) spawn case, _apply_kimi_admission,
+    # _wait_kimi_verdict, KIMI_BIN) is intact and still works.
+    # - id: kimi
+    #   model: moonshotai/kimi-k3-free
+    #   bucket: kimi
+    #   reserve_threshold: 2
+    #   reserve_allow: [review]
+    - id: codex
+      channel: codex-task.sh
+      model: gpt-5.6-terra
+      bucket: codex
+      reserve_threshold: 2
+      reserve_allow: [review]
+    - id: claude-haiku
+      channel: claude-subsession.sh
+      model: haiku
+      bucket: anthropic:max_20x
+      reserve_threshold: 2
+      reserve_allow: [review]
+    - id: claude-sonnet
+      channel: claude-subsession.sh
+      model: sonnet
+      bucket: anthropic:max_20x
+      reserve_threshold: 2
+      reserve_allow: [review]
+    - id: claude-opus
+      channel: claude-subsession.sh
+      model: opus
+      bucket: anthropic:max_20x
+      reserve_threshold: 2
+      reserve_allow: [review]
+
+# CODEX-GATE-01 item 6: in-lane DEFAULT protected-path patterns consumed by
+# lib/leadv2-review-signals.sh (the safety source for the product-close review pool). This is
+# the safety net so a tenant override (.claude/ref/leadv2-routing.yaml) that lacks this key
+# never silently fail-closes kimi review everywhere. Patterns are bash globs (`*` spans `/`),
+# matched against the task's lane-write paths. Covers the same three areas the routing yaml's
+# sonnet_exceptions `safety_gate_publish_payments / when: protected_path` rule names:
+# safety-gate, publish, payments. First yaml in the ordered lookup that carries this key wins.
+router:
+  # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P1: the ordered dispatch ladder.
+  # dispatch-code.sh reads this list to build candidate_arms — it no longer
+  # carries a hardcoded fallback order. The resolver's primary arm starts the
+  # candidate list; every arm after it in this order is a fallback. Changing
+  # this list changes dispatch routing.
+  #
+  # Each entry:
+  #   id       — arm identifier used in the dispatch script's case/spawn logic
+  #   provider — the quota/lockout scope (one lockout record covers all arms
+  #              on the same provider)
+  #   model    — the model the arm dispatches
+  #   when     — task kinds this arm is eligible for (advisory; the resolver
+  #              decides the primary arm from glm_policy rules, this list
+  #              governs fallback eligibility)
+  #   effort   — effort tier for the arm's provider
+  #   review_rank — dispatch-8e2a32be (D3): integer rank used ONLY by the review-pool
+  #              resolver's non-empty floor (leadv2-glm-policy-resolve.py:_review_floor).
+  #              Present only on Anthropic-account arms today (haiku < sonnet < opus <
+  #              fable). floor(author) escalates to the next-higher rank above the
+  #              author, or the highest rank if the author is already at/above the top
+  #              -- so the review pool can never end up genuinely empty just because
+  #              codex+glm are both quota-locked and the author is an Anthropic arm.
+  #              Absent key on an entry = that arm never participates in the floor
+  #              (build-only arms like glm/codex/kimi keep their own quota gating
+  #              instead). Never read for build-ladder ordering -- see dispatch: false
+  #              note on the two review-only entries below.
+  dispatch_ladder:
+    - id: glm
+      provider: glm
+      model: glm-5.2
+      when: [all]
+      effort: standard
+    # RETIRED as a build arm (founder order 2026-08-04 «Кими убрать», executed as
+    # 3398d11 / DISPATCH-KIMI-ARM-MISMATCH-01). The entry stays so _arm_provider
+    # can name the provider if a stale tenant yaml ever hands back arm=kimi, but
+    # dispatch: false makes the ladder loader skip it.
+    - id: kimi
+      provider: kimi
+      model: moonshotai/kimi-k3-free
+      when: [all]
+      effort: standard
+      dispatch: false
+    - id: codex
+      provider: codex
+      model: gpt-5.6-terra
+      when: [all]
+      effort: standard
+    - id: sonnet
+      provider: anthropic
+      model: sonnet
+      when: [all]
+      effort: standard
+      review_rank: 2
+    # dispatch-8e2a32be (D3): review-only entries, never build-dispatched (dispatch:
+    # false, same posture as fable below) -- they exist here solely so the review-pool
+    # floor has a provider mapping + rank for every Anthropic-account arm the review
+    # path can actually invoke (run_reviewer_arm's generic claude-subsession.sh --model
+    # <arm> branch already handles any arm name, haiku/opus included).
+    - id: haiku
+      provider: anthropic
+      model: haiku
+      when: [review]
+      effort: standard
+      dispatch: false
+      review_rank: 1
+    - id: opus
+      provider: anthropic
+      model: opus
+      when: [review]
+      effort: high
+      dispatch: false
+      review_rank: 3
+    # Architect-path models — expressed here so the config is the single
+    # source of truth, but never dispatched by dispatch-code.sh (the plan
+    # workflow uses fable directly via workflows/leadv2-plan.js).
+    - id: fable
+      provider: anthropic
+      model: fable
+      when: [architect, heavy]
+      effort: high
+      dispatch: false
+      review_rank: 4
+  glm_policy:
+    protected_path_patterns:
+      - "plugins/leadv2/scripts/*"
+      - "plugins/leadv2/hooks/*"
+      - "plugins/leadv2/config/*"
+      - ".claude/settings.json"

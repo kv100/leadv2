@@ -106,7 +106,24 @@ resolve_review_pool_call() {
   local -a resolver_args=(--routing-yaml "${routing_yaml}" --job review --base-arm codex \
     --review-pool --author "${AUTHOR}" --signals "${_signals_json}")
   [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
-  python3 "${resolver}" "${resolver_args[@]}" 2>/dev/null || printf 'reviewer=\npool=\nrefusal=resolver_error_failclosed\n'
+  # PLUGIN-REVIEW-ARMS-01 §3.1: the resolver's stderr used to go to /dev/null and the rc
+  # was discarded -- the reason a resolver cannot resolve was ALREADY computed and simply
+  # dropped before it reached review-gate.md (same defect the lane writer fixed as
+  # dispatch-8e2a32be A2). Capture both (mktemp + $?) and re-emit as resolver_rc= /
+  # resolver_stderr= lines so the unreviewed artifact below can carry them. A non-zero rc
+  # with a real reviewer=/pool= line (the resolver degrades gracefully internally) is not
+  # itself a failure; the verdict for "did review actually run" stays reviewer=.
+  local _resolver_err_file _resolver_out _resolver_rc
+  _resolver_err_file="$(mktemp "${TMPDIR:-/tmp}/leadv2-rev-pool.XXXXXX" 2>/dev/null || printf '%s/leadv2-rev-pool.%s' "${TMPDIR:-/tmp}" "$$")"
+  _resolver_out="$(python3 "${resolver}" "${resolver_args[@]}" 2>"${_resolver_err_file}")"
+  _resolver_rc=$?
+  if [[ -z "${_resolver_out}" ]]; then
+    _resolver_out=$'reviewer=\npool=\nrefusal=resolver_error_failclosed'
+  fi
+  printf '%s\n' "${_resolver_out}"
+  printf 'resolver_rc=%s\n' "${_resolver_rc}"
+  printf 'resolver_stderr=%s\n' "$(head -n1 "${_resolver_err_file}" 2>/dev/null)"
+  rm -f "${_resolver_err_file}" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -438,6 +455,8 @@ resolver_out="$(resolve_review_pool_call)"
 reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"
 pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
 refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
+resolver_rc="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_rc=//p' | head -n1)"
+resolver_stderr="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_stderr=//p' | head -n1)"
 
 if [[ -n "${reviewer}" && "${reviewer}" == "${AUTHOR}" ]]; then
   refusal="reviewer_equals_author"
@@ -445,12 +464,19 @@ if [[ -n "${reviewer}" && "${reviewer}" == "${AUTHOR}" ]]; then
 fi
 
 if [[ -z "${reviewer}" ]]; then
+  # PLUGIN-REVIEW-ARMS-01 §3.1: the full 8-field diagnostic shape, field-for-field the
+  # lane writer's (_pc_write_unreviewed, leadv2-dispatch-product-close.sh) -- the engine
+  # path is the future default and must never emit a lossier artifact than the lane it
+  # replaces. refusal:/resolver_rc:/resolver_stderr:/merge_blocked: used to be silently
+  # absent, leaving a bare empty `pool:` as the last informative line (the live
+  # dispatch-4c9ddb05 failure mode). Literal "-" for empty, same as the lane writer.
   refusal="${refusal:-all_review_arms_unavailable}"
   {
-    printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: \n' "${AUTHOR}" "${pool}"
+    printf 'status: unreviewed\nreason: all_arms_unavailable\nauthor: %s\npool: %s\ntried: %s\nrefusal: %s\nresolver_rc: %s\nresolver_stderr: %s\nmerge_blocked: true\n' \
+      "${AUTHOR}" "${pool:--}" "${tried:--}" "${refusal}" "${resolver_rc:--}" "${resolver_stderr:--}"
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} refusal=${refusal} tried="
+  emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool:--} tried=${tried:--} refusal=${refusal} resolver_rc=${resolver_rc:--}"
   exit 9
 fi
 
