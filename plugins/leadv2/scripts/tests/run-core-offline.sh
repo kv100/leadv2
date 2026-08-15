@@ -124,6 +124,7 @@ run_check "plugin reliability (process liveness + role fallback + prepass/reorde
 run_check "plugin reliability-02 (zombie-reaper: run_dir arg + group signaling + ordering + TASK)" bash "$TEST_DIR/test-plugin-reliability-02.sh"
 run_check "plan-followups-01" bash "$TEST_DIR/test-plan-followups-01.sh"
 run_check "e2e gate arch-01 (lane-tree testing)" bash "$TEST_DIR/test-e2e-gate-arch-01.sh"
+run_check "report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)" bash "$TEST_DIR/test-report-only-gate.sh"
 
 printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
 (( FAIL == 0 && MISSING == 0 ))

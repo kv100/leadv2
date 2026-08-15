@@ -31,6 +31,23 @@ LANE_NAME="${8:-}"
 WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
+# REPORT-ONLY-GATE-01: optional lane deliverable declaration threaded from
+# leadv2-dispatch-code.sh (row/CLI --lane-deliverable wins; else the mission's own
+# LANE_DELIVERABLE: line). Guarded source + no-op stub, exactly the _REFUSAL_CLASSIFY_SH
+# idiom below: a missing lib degrades to today's diff-only gate, never to a broken one.
+LANE_DELIVERABLE="${LEADV2_DISPATCH_LANE_DELIVERABLE:-}"
+_REPORT_DELIVERABLE_SH="${SCRIPT_DIR}/lib/leadv2-report-deliverable.sh"
+if [[ ! -f "${_REPORT_DELIVERABLE_SH}" ]]; then
+  _REPORT_DELIVERABLE_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh"
+fi
+_pc_kind="diff"; _pc_report_rel=""
+if [[ -f "${_REPORT_DELIVERABLE_SH}" ]] && source "${_REPORT_DELIVERABLE_SH}" \
+   && [[ -n "${LANE_DELIVERABLE}" ]]; then
+  # only an exactly-parsable `report:<rel>` declaration flips the kind; anything else
+  # (already journalled status=ignored by dispatch-code.sh) keeps the diff gate.
+  _pc_rd="$(lv2_deliverable_parse "${LANE_DELIVERABLE}")" \
+    && { _pc_kind="report"; _pc_report_rel="${_pc_rd#*$'\x1f'}"; }
+fi
 DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
 # T-o (SUPERVISOR-AUDIT-01): this script owns the e2e/review half of a product task's
 # lifecycle, so ITS exit paths are where that task's real terminal state (landed/parked/
@@ -63,10 +80,16 @@ _PC_ATTEMPT="${TASK}-${_PC_ATTEMPT_EPOCH}-$$"
 _PC_TERMINAL_STATE=""
 _PC_TERMINAL_CAUSE=""
 _PC_TERMINAL_EVIDENCE=""
-_dl_note() {  # <terminal> <cause> [<evidence>]
+_dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
   _PC_TERMINAL_STATE="$1"
   _PC_TERMINAL_CAUSE="$2"
   _PC_TERMINAL_EVIDENCE="${3:-}"
+  # REPORT-ONLY-GATE-01: optional write-terminal args 8/9. Recorded in _PC_TERMINAL_*
+  # globals too so the EXIT trap's idempotent retry replays the SAME commit/deliverable,
+  # never a downgraded "none"/"unknown". Existing 3-arg callers keep write-terminal's own
+  # defaults — rows are byte-identical to pre-change for every non-report path.
+  [[ -n "${4:-}" ]] && _PC_TERMINAL_COMMIT="$4"
+  [[ -n "${5:-}" ]] && _PC_TERMINAL_DELIVERABLE="$5"
   [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
   # wave2 round3 finding 3 / LOW-2: _PC_ATTEMPT (qualified <sig8>-<epoch>-<pid>, not a bare
   # pid) is stable across BOTH this explicit call and the EXIT trap's own idempotent retry
@@ -78,7 +101,7 @@ _dl_note() {  # <terminal> <cause> [<evidence>]
   # to FOUNDER_TASK_ID above when no name was threaded, so write-terminal's own
   # display_name-or-founder fallback is redundant here but harmless (never empty when
   # founder isn't either).
-  bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${3:-}" "${_PC_ATTEMPT}" "${LANE_NAME}" >/dev/null 2>&1 9>&- || true
+  bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${3:-}" "${_PC_ATTEMPT}" "${LANE_NAME}" "${_PC_TERMINAL_COMMIT:-none}" "${_PC_TERMINAL_DELIVERABLE:-unknown}" >/dev/null 2>&1 9>&- || true
 }
 HANDOFF="${ROOT}/docs/handoff/dispatch-${TASK}"
 mkdir -p "${HANDOFF}"
@@ -1448,6 +1471,55 @@ else
   [[ -s "${diff_file}" ]] || blocked_reason="unscopable_diff"
 fi
 rm -f "${_PC_LAST_BASE_FILE}" 2>/dev/null || true
+# REPORT-ONLY-GATE-01: a declared report lane is gated on its FILE, not on diff bytes.
+# Runs BEFORE the blocked_reason block so it never falls into the empty-diff path — no
+# predicate a code lane traverses is edited (this branch is reachable only when kind=report,
+# i.e. an exactly-parsable report: declaration threaded by dispatch-code.sh). pc_scope_diff
+# is invoked only after pc_await_worker_exit, so the report is never read while the worker
+# may still be writing it. report_missing / report_too_thin are CAUSES on the unchanged
+# no_work terminal — "the worker produced nothing" stays distinguishable from "the report
+# exists and is here" without a new ledger word.
+if [[ "${_pc_kind}" == "report" ]]; then
+  _pc_report_abs=""
+  _pc_report_abs="$(lv2_report_locate "${diff_root}" "${ROOT}" "${_pc_report_rel}")"
+  if [[ -z "${_pc_report_abs}" ]]; then
+    printf 'status: blocked\nreason: report_missing\nkind: report\ndeclared: %s\n' "${_pc_report_rel}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=report_missing kind=report terminal=no_work cause=report_missing declared=${_pc_report_rel}"
+    _dl_note no_work report_missing "declared=${_pc_report_rel}"
+    _stamp_review_terminal blocked
+    exit 5
+  fi
+  _pc_report_bytes="$(wc -c < "${_pc_report_abs}" 2>/dev/null | tr -d '[:space:]')"
+  _pc_report_bytes="${_pc_report_bytes:-0}"
+  if ! lv2_report_substantive "${_pc_report_abs}"; then
+    printf 'status: blocked\nreason: report_too_thin\nkind: report\nbytes: %s\nmin: %s bytes / %s lines\n' \
+      "${_pc_report_bytes}" "${LEADV2_REPORT_MIN_BYTES:-600}" "${LEADV2_REPORT_MIN_LINES:-12}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=report_too_thin kind=report terminal=no_work cause=report_too_thin bytes=${_pc_report_bytes} declared=${_pc_report_rel}"
+    _dl_note no_work report_too_thin "bytes=${_pc_report_bytes} declared=${_pc_report_rel}"
+    _stamp_review_terminal blocked
+    exit 5
+  fi
+  # harvest: ROOT-side docs/handoff/dispatch-<TASK>/report.md survives the lane sweep
+  _pc_report_dest="$(lv2_report_harvest "${_pc_report_abs}" "${HANDOFF}")"
+  _pc_report_deliverable="docs/handoff/dispatch-${TASK}/report.md"
+  # Review-body substitution: the report IS the review body — the unmodified review
+  # path below (findings renderer, verdict-marker check, review_body_lost guard,
+  # pass/fail rendering) then works unchanged, so a wrong analysis is rejected by the
+  # same machinery that rejects a wrong diff.
+  {
+    printf '# REPORT-ONLY LANE — review the ANALYSIS, not a diff.\n'
+    printf '# deliverable: %s   bytes: %s\n' "${_pc_report_rel}" "${_pc_report_bytes}"
+    head -c "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_abs}"
+    printf '\n'
+    if [[ "${_pc_report_bytes}" -gt "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" ]]; then
+      printf '# [truncated for review at %s bytes; full report at %s]\n' "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_dest}"
+    fi
+  } > "${diff_file}"
+  # the diff-scoped blocked_reason (typically unscopable_diff — a report lane has no
+  # diff) is void here: the report lane passed its own gate above.
+  blocked_reason=""
+  emit decision "report_gate task=${TASK} status=located bytes=${_pc_report_bytes} declared=${_pc_report_rel} deliverable=${_pc_report_deliverable}"
+fi
 if [[ -n "${blocked_reason}" ]]; then
   # N1-EMPTY-LANE-IS-NOT-A-PASS: a lane that produced NOTHING is its own outcome --
   # never passed, never a silently-blocked unscopable_diff. partial_diff stays
@@ -1485,10 +1557,13 @@ if [[ -n "${blocked_reason}" ]]; then
   # (HEAD or an abbreviated start-sha) so a blocked lane is diagnosable without
   # re-running anything (S-3 round 3). dirty= (unscoped_lane_work only) records the
   # filtered porcelain line count that flipped this from no_work.
+  # kind: (REPORT-ONLY-GATE-01) is the ONLY additive key on a blocked diff-lane
+  # artifact: appended right after reason:, existing keys byte-identical, so the
+  # dead-worker family (kind: diff) never reads like a report-lane family.
   if [[ -n "${_pc_dirty_evidence:-}" ]]; then
-    printf 'status: blocked\nreason: %s\nbase: %s\ndirty: %s\n' "${_pc_rg_reason}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}" > "${HANDOFF}/review-gate.md"
+    printf 'status: blocked\nreason: %s\nkind: %s\nbase: %s\ndirty: %s\n' "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}" > "${HANDOFF}/review-gate.md"
   else
-    printf 'status: blocked\nreason: %s\nbase: %s\n' "${_pc_rg_reason}" "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
+    printf 'status: blocked\nreason: %s\nkind: %s\nbase: %s\n' "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
   fi
   emit decision "review_gate task=${TASK} status=blocked reason=${_pc_rg_reason} terminal=${_pc_terminal} cause=${_pc_cause}"
   _dl_note "${_pc_terminal}" "${_pc_cause}" "${_pc_dirty_evidence}"
@@ -1779,7 +1854,7 @@ run_reviewer_arm() { # <arm>
   mission_file="${HANDOFF}/review-mission.md"
   if [[ "${arm}" == codex ]]; then
     bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait \
-      --focus "Review ONLY the diff at ${diff_file}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract}" \
+      --focus "${_pc_review_intro} You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract}" \
       > "${review_out}" 2> "${review_err}"; review_rc=$?
   elif [[ "${arm}" == glm ]]; then
     # dispatch-00629379: new branch -- GLM is now a valid reviewer arm (founder decision
@@ -1788,8 +1863,8 @@ run_reviewer_arm() { # <arm>
     # per-repo glm-coder.sh lock is busy (exit 75), per CLAUDE.md Model routing v2. Both
     # must land the SAME REVIEW_VERDICT:/REVIEW_FINDINGS: contract in ${review_out} that
     # parse_review_verdict() below already enforces for every other reviewer branch.
-    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
-      "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+    printf '%s You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+      "${_pc_review_intro}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
     glm_bin="${LEADV2_DISPATCH_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
     omp_bin="${LEADV2_DISPATCH_OMP_BIN:-${ROOT}/.claude/leadv2-overrides/omp-task.sh}"
     review_rc=75
@@ -1820,8 +1895,8 @@ run_reviewer_arm() { # <arm>
     # rc 77 (channel down) and rc 75 (lock/secret/usage) are BOTH admission refusals --
     # there is no omp-task.sh second channel for kimi (that is a GLM-lock construct), so
     # either rc is handled by the one-shot re-selection at the call site below, never here.
-    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
-      "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+    printf '%s You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+      "${_pc_review_intro}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
     kimi_bin="${LEADV2_DISPATCH_KIMI_BIN:-${SCRIPT_DIR}/kimi-coder.sh}"
     if ! bash "${kimi_bin}" probe >/dev/null 2> "${review_err}"; then
       review_rc=77
@@ -1833,8 +1908,8 @@ run_reviewer_arm() { # <arm>
     # sonnet or opus (R1 fix: launcher must pass the RESOLVED arm, not a hardcoded
     # model -- the old `--model sonnet` here meant a resolver that returned opus still
     # ran sonnet, a lying-green review).
-    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
-      "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+    printf '%s You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+      "${_pc_review_intro}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
     PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model "${arm}" --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait \
       > "${review_out}" 2> "${review_err}"; review_rc=$?
     # REVIEW-BODY-PERSIST-01: the subsession prints only a label line on stdout; the
@@ -1890,6 +1965,17 @@ mkdir -p "${review_adir}"
 REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
 touch "${REVIEW_STAMP}"
 review_contract=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.'
+# REPORT-ONLY-GATE-01: a report lane substitutes the review body (diff_file now holds
+# the report text) but runs the UNMODIFIED review path — so the mission must tell the
+# reviewer it is judging prose, and what judging prose means. The verdict-marker
+# contract above is appended to verbatim; every existing renderer/guard downstream is
+# untouched. Diff lanes resolve _pc_review_intro to today's exact sentence.
+_pc_review_intro="Review ONLY the diff at ${diff_file}."
+if [[ "${_pc_kind}" == "report" ]]; then
+  _pc_review_intro="This is a REPORT-ONLY lane. Review ONLY the analysis document at ${diff_file} (it begins with a '# REPORT-ONLY LANE' header naming the deliverable)."
+  review_contract="${review_contract}
+PROSE RUBRIC (report-only lane — the file is an ANALYSIS, not a diff): (a) is every load-bearing claim backed by a quoted file/line reference or command output included in the report itself; (b) list every unsupported claim explicitly as a finding; (c) state whether the recommendation follows from the evidence presented; (d) emit the same REVIEW_VERDICT:/REVIEW_FINDINGS: markers as a code review. FAIL if any load-bearing claim is unsupported or the recommendation does not follow from the evidence."
+fi
 
 # N-5 §2.3: arm-agnostic refusal fallback, generalising the old kimi-only bounded
 # re-selection (KIMI-CHANNEL-01b) to every arm. A peak_hours/quota/channel-down refusal
@@ -2042,8 +2128,18 @@ if [[ "${verdict}" == FAIL ]]; then
 fi
 # PASS must overwrite review-gate.md too, or a stale fail/blocked artifact from an earlier
 # attempt keeps lying after the gate has actually cleared (hit live on fe5307b3, 2026-07-30).
-printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}" > "${HANDOFF}/review-gate.md"
-_dl_note landed review_verdict_pass "diff=${diff_hash:0:8}"
+if [[ "${_pc_kind}" == "report" ]]; then
+  # REPORT-ONLY-GATE-01: the report lane's pass shape — kind/deliverable/bytes/review
+  # name the file a human can open in the main checkout after the lane worktree is gone.
+  # Terminal is the unchanged `landed`; write-terminal's deliverable arg (9th) carries
+  # the harvested path, commit stays "none" (no code landed).
+  printf 'status: pass\nreviewer: %s\nkind: report\ndeliverable: %s\nbytes: %s\nreview: %s\n' \
+    "${reviewer}" "${_pc_report_deliverable}" "${_pc_report_bytes}" "${verdict}" > "${HANDOFF}/review-gate.md"
+  _dl_note landed review_verdict_pass "diff=${diff_hash:0:8} deliverable=${_pc_report_deliverable}" "" "${_pc_report_deliverable}"
+else
+  printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}" > "${HANDOFF}/review-gate.md"
+  _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}"
+fi
 _stamp_review_terminal pass
 # PHASES-ARE-THE-ONLY-PATH-01: record review phase as done (verdict PASS).
 [[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
