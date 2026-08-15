@@ -1,0 +1,61 @@
+# leadv2-routing.yaml — routing table for the PLUGIN'S OWN repo
+#
+# Written by the lead on 2026-08-15 to unblock plugin work. Until now this repo had no routing
+# table at all, and the consequences compounded all day:
+#   - every lane dispatched here resolved an EMPTY reviewer pool and ended `no_reviewer:
+#     all_review_arms_unavailable` (lane 4c9ddb05, a real change to the review gate, had to be
+#     reviewed by the lead by hand — a lead reviewing his own dispatch is exactly what the review
+#     gate exists to replace);
+#   - the dispatcher logged `route_resolved … rule=none reason=no_routing_yaml` on the way in;
+#   - the architect prepass timed out twice and PARKED two lanes (85d0e45e, cd219000) without
+#     dispatching them at all.
+#
+# The circularity worth noting: the lane meant to fix this (100a892d) could not start, for this
+# reason. Hence a hand-written minimum rather than a generated one.
+#
+# This is deliberately SMALLER than a consuming repo's table. This repo is bash + markdown with
+# no product surface, no database, no deploy target — so there is no frontend arm, no
+# postgres-pro, and no live-verify phase to route.
+
+phases:
+  review:
+    light_low_risk:
+      default: skip
+      expected_cost_usd: 0.00
+      expected_tokens: 0
+    standard:
+      default: codex-adversarial+sonnet-critic
+      tool: codex-task+agent-tool
+      # GLM is a write arm here, never a review arm — same rule as the consuming repos.
+      allowed_arms: [codex, sonnet, opus]
+      expected_cost_usd: 0.20
+      expected_tokens: 45000
+    standard_safety_touched:
+      default: codex+opus-critic
+      tool: codex-task+agent-tool
+      allowed_arms: [codex, sonnet, opus]
+      expected_cost_usd: 0.60
+      expected_tokens: 120000
+    heavy:
+      default: codex+opus-critic
+      tool: codex-task+agent-tool
+      allowed_arms: [codex, sonnet, opus]
+      expected_cost_usd: 1.20
+      expected_tokens: 240000
+
+# Paths where a change propagates to every consuming repo at once, so review escalates.
+# A bug in any of these is live in persona-engine, m3-market and respiro-ios simultaneously —
+# there is no per-repo blast radius here, which is why this list is broader than it looks.
+protected_paths:
+  - plugins/leadv2/scripts/leadv2-review-run.sh
+  - plugins/leadv2/scripts/leadv2-dispatch-code.sh
+  - plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+  - plugins/leadv2/scripts/leadv2-review-findings.sh
+  - plugins/leadv2/scripts/leadv2-active-registry.sh
+  - plugins/leadv2/scripts/leadv2-gate1-prompt.sh
+  - plugins/leadv2/hooks/**
+
+downgrade_chain:
+  opus: sonnet
+  sonnet: haiku
+  haiku: haiku    # floor — never below haiku for an LLM step
