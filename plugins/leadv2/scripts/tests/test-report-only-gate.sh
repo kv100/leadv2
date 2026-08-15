@@ -11,16 +11,22 @@
 #        ledger no_work:report_missing.
 #   3 — report lane, 3-line stub      -> reason report_too_thin, bytes: printed.
 #   4 — diff lane regression          -> declaration absent + real diff: review-gate.md
-#        byte-identical to the pre-change (git archive HEAD) gate output.
+#        byte-identical to the pre-change gate output.
 #   5 — dead worker regression        -> empty diff + clean tree: reason no_work WITH
 #        kind: diff (distinguishable from a report lane by review-gate.md alone).
 #   6 — unknown kind (artifact:x)     -> treated as a diff lane (case 6a: gate shape);
 #        dispatch journals lane_deliverable status=ignored (6b); a valid report
 #        declaration satisfies _lane_writes_guard (6c minimal pair: declared
 #        dispatches, undeclared parks no_lane_writes).
+#   7 — symlinked report (codex review finding 2) -> not a find: blocked
+#        report_missing, nothing harvested from the symlink target.
+#   8 — directory at report.md destination (finding 3) -> blocked harvest_failed,
+#        never a pass advertising a non-file deliverable.
 #
-# Red-first: cases 1/2/3/5/6a are also run against a `git archive HEAD` extraction
-# (pre-fix scripts, which do not know LANE_DELIVERABLE); reds there are evidence.
+# Red-first: cases 1/2/3/5/6a are also run against an extraction of the last commit
+# that predates the fix (walk HEAD back while lib/leadv2-report-deliverable.sh exists;
+# if it is absent at HEAD — fix uncommitted — HEAD itself is pre-fix). Archives a tree
+# whose scripts do not know LANE_DELIVERABLE; reds there are evidence.
 # Drives the REAL gate scripts (never a reimplementation). Sandboxed HOME/TMPDIR;
 # never touches the real repo's ledger or ~/.claude/cache.
 # Run: bash scripts/tests/test-report-only-gate.sh
@@ -354,6 +360,62 @@ LANE_DELIVERABLE: report:docs/handoff/R1/report.md')"
   return "${ok}"
 }
 
+# ── Case 7 — symlinked report is not a find (codex review finding 2) ─────────────
+# A worker (or a compromised one) leaving a SYMLINK at the declared path must not
+# let the gate harvest a host file into the handoff / external review. The gate
+# treats it as report_missing — locate refuses symlinks and escaped parents.
+case_7_symlink_report() { # <scripts_dir>
+  local sd="$1"
+  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
+  local root tid wt d errf rrc gate secret
+  root="$(new_repo)"; tid="rog1c7-$$"
+  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  secret="$(mktemp "${TMPDIR:-/tmp}/leadv2-rog1-s.XXXXXX")"
+  write_good_report "${secret}"
+  mkdir -p "${wt}/analysis"
+  ln -s "${secret}" "${wt}/analysis/report.md"
+  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+  rrc="$(run_gate "${sd}" "${root}" rog1c7sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
+  gate="$(gate_md "${root}" rog1c7sig)"
+  local ok=0
+  [[ "${rrc}" == "rc=5" ]] || ok=1
+  grep -q '^status: blocked' <<<"${gate}" || ok=1
+  grep -q '^reason: report_missing' <<<"${gate}" || ok=1
+  # the host file must NOT have been harvested into the handoff
+  [[ ! -e "${root}/docs/handoff/dispatch-rog1c7sig/report.md" ]] || ok=1
+  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}" "${secret}"
+  return "${ok}"
+}
+
+# ── Case 8 — non-regular report.md at destination -> harvest_failed (finding 3) ──
+# An existing DIRECTORY at docs/handoff/dispatch-<sig>/report.md must fail closed:
+# blocked harvest_failed, never a pass advertising a deliverable that is not a file.
+case_8_dest_collision() { # <scripts_dir>
+  local sd="$1"
+  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
+  local root tid wt d errf rrc gate
+  root="$(new_repo)"; tid="rog1c8-$$"
+  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  write_good_report "${wt}/analysis/report.md"
+  mkdir -p "${root}/docs/handoff/dispatch-rog1c8sig/report.md"   # the collision
+  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+  rrc="$(run_gate "${sd}" "${root}" rog1c8sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
+  gate="$(gate_md "${root}" rog1c8sig)"
+  local ok=0
+  [[ "${rrc}" == "rc=5" ]] || ok=1
+  grep -q '^status: blocked' <<<"${gate}" || ok=1
+  grep -q '^reason: harvest_failed' <<<"${gate}" || ok=1
+  grep -q '^kind: report' <<<"${gate}" || ok=1
+  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
+  return "${ok}"
+}
+
 # ── harness ───────────────────────────────────────────────────────────────────────
 CASE_NAMES=(); CASE_RCS=()
 run_case() { # <name> <fn> <scripts_dir>
@@ -391,14 +453,25 @@ run_case "C5-dead-worker-kind"   case_5_dead_worker       "${SCRIPTS_LIVE}"
 run_case "C6a-unknown-kind-gate" case_6a_unknown_kind_gate "${SCRIPTS_LIVE}"
 run_case "C6b-unknown-kind-journal" case_6b_unknown_kind_journal "${SCRIPTS_LIVE}"
 run_case "C6c-guard-exemption"   case_6c_guard_exemption  "${SCRIPTS_LIVE}"
+run_case "C7-symlink-report"    case_7_symlink_report    "${SCRIPTS_LIVE}"
+run_case "C8-dest-collision"    case_8_dest_collision    "${SCRIPTS_LIVE}"
 POST_NAMES=("${CASE_NAMES[@]}"); POST_RCS=("${CASE_RCS[@]}")
 
 echo ""
-echo "=== pass 2/2: red-first pre-fix (git archive HEAD) — reds here are EVIDENCE ==="
+echo "=== pass 2/2: red-first pre-fix — reds here are EVIDENCE ==="
 RF_RED=0; RF_TOTAL=0
 if [[ -n "${LEADV2_REPO}" ]]; then
+  # Pre-fix ref: the newest commit lacking lib/leadv2-report-deliverable.sh. Once the
+  # fix is committed, plain `git archive HEAD` contains the fix and "red-first" degenerates
+  # to fix-vs-fix (0 reds, no evidence) — walk back so the evidence survives the commit.
+  RF_REF="HEAD"
+  while git -C "${LEADV2_REPO}" cat-file -e "${RF_REF}:plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh" 2>/dev/null; do
+    RF_PARENT="$(git -C "${LEADV2_REPO}" rev-parse -q --verify "${RF_REF}^" 2>/dev/null)" || { RF_REF=""; break; }
+    RF_REF="${RF_PARENT}"
+  done
   PREFIX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-pre.XXXXXX")"
-  git -C "${LEADV2_REPO}" archive HEAD plugins/leadv2/scripts 2>/dev/null | tar -x -C "${PREFIX_DIR}" 2>/dev/null
+  [[ -n "${RF_REF}" ]] && git -C "${LEADV2_REPO}" archive "${RF_REF}" plugins/leadv2/scripts 2>/dev/null | tar -x -C "${PREFIX_DIR}" 2>/dev/null
+  [[ -n "${RF_REF}" ]] && log "pre-fix ref: ${RF_REF}"
   PREFIX_SCRIPTS="${PREFIX_DIR}/plugins/leadv2/scripts"
   if [[ -f "${PREFIX_SCRIPTS}/leadv2-dispatch-product-close.sh" ]]; then
     CASE_NAMES=(); CASE_RCS=()

@@ -1511,6 +1511,15 @@ if [[ "${_pc_kind}" == "report" ]]; then
   fi
   # harvest: ROOT-side docs/handoff/dispatch-<TASK>/report.md survives the lane sweep
   _pc_report_dest="$(lv2_report_harvest "${_pc_report_abs}" "${HANDOFF}")"
+  # Fail closed on harvest failure (codex review finding 3): a pass that advertises a
+  # deliverable which was never materialised is worse than a blocked lane.
+  if [[ -z "${_pc_report_dest}" || ! -f "${_pc_report_dest}" ]]; then
+    printf 'status: blocked\nreason: harvest_failed\nkind: report\ndeclared: %s\n' "${_pc_report_rel}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=harvest_failed kind=report terminal=no_work cause=harvest_failed declared=${_pc_report_rel}"
+    _dl_note no_work harvest_failed "declared=${_pc_report_rel}"
+    _stamp_review_terminal blocked
+    exit 5
+  fi
   _pc_report_deliverable="docs/handoff/dispatch-${TASK}/report.md"
   # Review-body substitution: the report IS the review body — the unmodified review
   # path below (findings renderer, verdict-marker check, review_body_lost guard,
@@ -1519,7 +1528,9 @@ if [[ "${_pc_kind}" == "report" ]]; then
   {
     printf '# REPORT-ONLY LANE — review the ANALYSIS, not a diff.\n'
     printf '# deliverable: %s   bytes: %s\n' "${_pc_report_rel}" "${_pc_report_bytes}"
-    head -c "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_abs}"
+    # bytes reviewed come from the HARVESTED destination, not the mutable worktree
+    # source (codex review finding 4): review approves exactly the durable deliverable.
+    head -c "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_dest}"
     printf '\n'
     if [[ "${_pc_report_bytes}" -gt "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" ]]; then
       printf '# [truncated for review at %s bytes; full report at %s]\n' "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_dest}"
@@ -1770,6 +1781,13 @@ _stamp_active_phase "${FOUNDER_TASK_ID}" "review"
   bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status running \
     --handle "dispatch-${TASK}-review" \
     --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
+# REPORT-ONLY-GATE-01 (codex review finding 5): the review engine does not carry
+# report-lane semantics (kind/deliverable/prose rubric), so an engine-mode PASS would
+# land a diff-shaped gate for a report lane. A report lane falls through to the inline
+# body instead -- skipped loudly, never silently.
+if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" && "${_pc_kind:-diff}" == "report" ]]; then
+  emit decision "review_engine task=${TASK} status=skipped reason=report_lane"
+fi
 # ONE-PATH-EVERYWHERE-01: when LEADV2_REVIEW_ENGINE=1, this lane's whole inline review
 # body (below) is replaced by a call to the sole-owner engine, leadv2-review-run.sh.
 # Flag DEFAULTS TO 0 -- when unset (the production default, everywhere, per the rollout
@@ -1777,7 +1795,7 @@ _stamp_active_phase "${FOUNDER_TASK_ID}" "review"
 # The lane still owns its process model / EXIT trap / _stamp_review_terminal /
 # review_crashed fallback -- the engine itself never calls those (it is a bare,
 # self-contained script callable with none of this lane's helper functions loaded).
-if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" ]]; then
+if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" && "${_pc_kind:-diff}" != "report" ]]; then
   if [[ "${REVIEW_ON}" != 1 ]]; then
     emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
     _dl_note landed review_gate_disabled
