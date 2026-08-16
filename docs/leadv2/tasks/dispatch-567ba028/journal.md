@@ -208,3 +208,46 @@
 - 2026-08-07T08:43:57Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786092234-94702 handle=glm-test-run
 - 2026-08-07T08:43:57Z [decision] mission-version task=- sig=567ba028 rev=? head="plugin-only degraded mode test  --- If you hit a decision you cannot safely make yourself "
 - 2026-08-07T08:44:00Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-12T11:45:29Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T11:45:33Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T11:45:34Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T11:45:34Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T11:45:34Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-12T11:45:35Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786535128-86421 handle=glm-test-run
+- 2026-08-12T11:45:35Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T11:45:56Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-12T11:45:56Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-P1-REGRESSION-01
+- 2026-08-12T11:49:03Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T11:49:04Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T11:49:05Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T11:49:05Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T11:49:05Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-12T11:49:06Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786535342-33512 handle=glm-test-run
+- 2026-08-12T11:49:07Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T11:49:07Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-12T11:49:07Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-P1-REGRESSION-01
+- 2026-08-12T11:53:14Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T11:53:16Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T11:53:17Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T11:53:17Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T11:53:17Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-12T11:53:18Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786535594-82417 handle=glm-test-run
+- 2026-08-12T11:53:18Z [decision] mission-version task=- sig=567ba028 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T11:53:18Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-12T11:53:19Z [decision] lane_worktree_left task=567ba028 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/E2E-GATE-P1-REGRESSION-01
+- 2026-08-12T12:12:01Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T12:12:02Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T12:12:03Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T12:12:03Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T12:12:03Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-12T12:12:04Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786536720-90950 handle=glm-test-run
+- 2026-08-12T12:12:04Z [decision] mission-version task=- sig=567ba028 rev=? head="plugin-only degraded mode test  --- If you hit a decision you cannot safely make yourself "
+- 2026-08-12T12:12:04Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-12T12:18:37Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T12:18:38Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T12:18:39Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T12:18:39Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-12T12:18:39Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-12T12:18:40Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786537117-68274 handle=glm-test-run
+- 2026-08-12T12:18:40Z [decision] mission-version task=- sig=567ba028 rev=? head="plugin-only degraded mode test  --- If you hit a decision you cannot safely make yourself "
+- 2026-08-12T12:18:40Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
