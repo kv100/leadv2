@@ -618,3 +618,45 @@
 - 2026-08-13T11:01:34Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786618891-67055 handle=glm-test-run
 - 2026-08-13T11:01:34Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
 - 2026-08-13T11:01:35Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-16T02:09:13Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-16T02:09:17Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-16T02:09:17Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-16T02:09:18Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-16T02:09:19Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786846152-3035 handle=glm-test-run
+- 2026-08-16T02:09:19Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
+- 2026-08-16T02:09:20Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-16T02:18:10Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-16T02:18:13Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-16T02:18:13Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-16T02:18:14Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-16T02:18:15Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786846690-3611 handle=glm-test-run
+- 2026-08-16T02:18:15Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
+- 2026-08-16T02:18:17Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-16T03:07:56Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-16T03:07:58Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-16T03:07:59Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-16T03:08:00Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-16T03:08:01Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786849676-5624 handle=glm-test-run
+- 2026-08-16T03:08:01Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
+- 2026-08-16T03:08:01Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-16T03:27:11Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-16T03:27:13Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-16T03:27:14Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-16T03:27:14Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-16T03:27:14Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786850831-90076 handle=glm-test-run
+- 2026-08-16T03:27:14Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
+- 2026-08-16T03:27:15Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-16T03:35:03Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-16T03:35:06Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-16T03:35:06Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-16T03:35:07Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-16T03:35:07Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786851303-89145 handle=glm-test-run
+- 2026-08-16T03:35:08Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
+- 2026-08-16T03:35:08Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-16T03:44:06Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-16T03:44:08Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-16T03:44:09Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-16T03:44:09Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-16T03:44:10Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786851846-34901 handle=glm-test-run
+- 2026-08-16T03:44:10Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
+- 2026-08-16T03:44:11Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
