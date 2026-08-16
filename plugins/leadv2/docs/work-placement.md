@@ -1,4 +1,4 @@
-# Work Placement — fork vs plain agent vs lane (WHEN-TO-FORK-01, 2026-08-16; round 2, 2026-08-17)
+# Work Placement — fork vs plain agent vs lane (WHEN-TO-FORK-01, 2026-08-16; round 3, 2026-08-17)
 
 Canonical rule for **where** work goes when the lead moves it off its own context. One
 **precondition asked first**, then **hard constraints (the must-not-fork gate)**, then a
@@ -24,7 +24,8 @@ If **yes**, you must do one of two things before dispatching anywhere:
 
 1. **Materialize it** — write the decision/statement verbatim into the mission text or
    `context.yaml` `decisions[]`. It is now on disk, the precondition is discharged, and
-   the work proceeds to the branch test below like any other work.
+   the work continues through the hard-constraint check and preference below like any
+   other work.
 2. **Fork** — when the dependency is the session's *whole* reasoning trail and not a
    quotable fact or two, so materializing it means transcribing the session. This
    discharge exists **only when the hard-constraint check below returns all-no**. When
@@ -36,7 +37,8 @@ If **yes**, you must do one of two things before dispatching anywhere:
 Materializing is the default; forking is the escape hatch for when materializing is not
 tractable. Never dispatch context-dependent work without discharging this step — that is
 the exact failure this rule exists to prevent. Forking is not discouraged: when the
-dependency really is the session's whole reasoning trail, a fork is the correct outcome.
+dependency really is the session's whole reasoning trail and the hard constraints leave
+it eligible, a fork is the correct discharge.
 **Step 0 never selects a destination. It only decides what must be written down before one
 is selected.**
 
@@ -55,8 +57,7 @@ overpay.
 ## Hard constraints — decided first (the must-not-fork gate)
 
 These are constraints, not preferences. Nothing below overrides them, and no Step-0
-discharge routes a yes away from a lane. The preference below is only safe because this
-list is unambiguous. Any yes → lane, always:
+discharge routes a yes away from a lane. Any yes → lane, always:
 
 1. **It must land a reviewed diff.** A fork buys no review gate. Diff work → lane, always.
 2. **It needs isolation from this session's uncommitted state.** A fork sees this tree as
