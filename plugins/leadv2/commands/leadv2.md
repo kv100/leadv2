@@ -243,9 +243,7 @@ Principle: **context is cache, disk is truth.** Sessions run for days with many 
 - **No skipping yaml validation** on subagent deliverables.
 - **No chat narration.** Pulse mode (default): absolute silence except pulse lines + gate + close.
 - **No foreground Agent spawns.** Always `run_in_background=true`.
-- **No delegating `ExitWorktree` or `git worktree remove` to subagents.** Lead calls `ExitWorktree(action="keep")` directly in Phase 6 step 2. (CC 2.1.222+ also blocks destructive git commands in worktree-isolated sessions at the platform level — that is a second safety layer, NOT a license to relax this ban or the shared-tree `reset --hard`/`clean`/`stash` prohibition.)
-
-- **No delegating `ExitWorktree` or `git worktree remove` to subagents.** Lead calls `ExitWorktree(action="keep")` directly in Phase 6 step 2. A fork-owned session never enters a tool worktree at all (FORK-RUNS-A-SESSION-01): it works by absolute path in a lead-created lane and lands via `leadv2-deploy-merge.sh`.
+- **No delegating `ExitWorktree` or `git worktree remove` to subagents.** Lead calls `ExitWorktree(action="keep")` directly in Phase 6 step 2. A fork-owned session never enters a tool worktree at all (FORK-RUNS-A-SESSION-01): it works by absolute path in a lead-created lane and lands via `leadv2-deploy-merge.sh`. (CC 2.1.222+ also blocks destructive git commands in worktree-isolated sessions at the platform level — a second safety layer, NOT a license to relax this ban or the shared-tree `reset --hard`/`clean`/`stash` prohibition.)
 - **No reading subagent deliverable without `limit=30`.** Use `critic-tail.sh` for review-class.
 - **No mission file >100 lines.** `leadv2-mission-lint.sh` enforces.
 - **No spawn prompt >300 words.** `leadv2-prompt-lint.sh` enforces.
