@@ -1,0 +1,52 @@
+# leadv2 cost telemetry — appended by claude-subsession.sh
+- role: critic
+  model: opus
+  provider: claude
+  session_id: 03632c44-d910-44ce-b85f-f4a400cc90e1
+  input_tokens: 40
+  output_tokens: 18078
+  cost_usd: 1.356450
+  duration_sec: 330
+  timestamp: 2026-08-16T21:36:31Z
+  cache_hit_rate: 0.9513
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: sonnet
+  provider: claude
+  session_id: 28461fac-6327-4eaa-8d12-8281f4997453
+  input_tokens: 22
+  output_tokens: 6137
+  cost_usd: 0.092121
+  duration_sec: 142
+  timestamp: 2026-08-16T22:48:54Z
+  cache_hit_rate: 0.9013
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: opus
+  provider: claude
+  session_id: 1ec9c3dd-d2af-4a37-9cb0-4e36f8ec639e
+  input_tokens: 24
+  output_tokens: 13818
+  cost_usd: 1.036710
+  duration_sec: 259
+  timestamp: 2026-08-16T22:50:51Z
+  cache_hit_rate: 0.8982
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: opus
+  provider: claude
+  session_id: ae111533-b7ab-4be4-9033-1edf6d408369
+  input_tokens: 20
+  output_tokens: 4440
+  cost_usd: 0.333300
+  duration_sec: 86
+  timestamp: 2026-08-16T22:52:18Z
+  cache_hit_rate: 0.9329
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: opus
+  provider: claude
+  session_id: 0a3de02a-07bf-461d-9ce1-7bf42462d5a5
+  input_tokens: 20
+  output_tokens: 3101
+  cost_usd: 0.232875
+  duration_sec: 74
+  timestamp: 2026-08-16T22:53:32Z
+  cache_hit_rate: 0.9267
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c
