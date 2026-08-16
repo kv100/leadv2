@@ -618,3 +618,17 @@
 - 2026-08-13T11:01:34Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786618891-67055 handle=glm-test-run
 - 2026-08-13T11:01:34Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
 - 2026-08-13T11:01:35Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-15T20:41:02Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-15T20:41:04Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-15T20:41:04Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-15T20:41:05Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-15T20:41:05Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786826462-99240 handle=glm-test-run
+- 2026-08-15T20:41:05Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
+- 2026-08-15T20:41:07Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-15T20:43:43Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-15T20:43:45Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-15T20:43:45Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-15T20:43:46Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-15T20:43:47Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786826623-49552 handle=glm-test-run
+- 2026-08-15T20:43:47Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
+- 2026-08-15T20:43:47Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
