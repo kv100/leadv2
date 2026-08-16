@@ -184,3 +184,31 @@
 - 2026-08-07T08:43:50Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786092228-92622 handle=glm-test-run
 - 2026-08-07T08:43:50Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
 - 2026-08-07T08:43:54Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-12T19:49:33Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T19:49:35Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T19:49:35Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T19:49:35Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-12T19:49:35Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786564173-36083 handle=glm-test-run
+- 2026-08-12T19:49:36Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T19:49:56Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-12T19:49:56Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-RELIABILITY-02
+- 2026-08-12T19:57:34Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T19:57:35Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T19:57:35Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T19:57:35Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-12T19:57:36Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786564653-96425 handle=glm-test-run
+- 2026-08-12T19:57:36Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T20:02:25Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T20:02:26Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T20:02:27Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T20:02:27Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-12T20:02:27Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786564944-2378 handle=glm-test-run
+- 2026-08-12T20:02:27Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T20:02:48Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-12T20:02:48Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-RELIABILITY-02
+- 2026-08-12T20:09:14Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T20:09:16Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T20:09:16Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T20:09:16Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-12T20:09:16Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786565354-31677 handle=glm-test-run
+- 2026-08-12T20:09:17Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
