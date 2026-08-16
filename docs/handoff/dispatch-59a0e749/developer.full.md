@@ -168,4 +168,23 @@ derived from the ladder's `provider:` field, and the new `quota_precheck_skip`
 observability line names whatever arm the (pre-existing, unchanged) T-q filter
 already decided to strip — it does not introduce a new decision.
 
+## Re-verification (resumed dispatch, same lane, no new commits)
+
+Re-dispatched into this same lane at HEAD `79ea26a` (the WIP-preserve commit that already
+carries everything described above, including this very deliverable). `git status` is clean —
+no drift since the report above was written. Re-ran the suites in the current worktree to
+confirm nothing regressed while the lane was idle:
+
+- `test-review-pool-empty-rootcause.sh`: 4/4 pass (T1 loud-failure shape, T2 ledger line).
+- `test-review-pool-never-empty.sh`: 11/11 pass, including its own nested regression run of
+  `test-quota-lockout-postspawn.sh` (full green) — T1 sonnet→opus, T2 opus→fable, T3 lockout
+  read, T5 unknown-author floors to haiku, T6 degenerate-table fail-closed with populated dash
+  fields, T7 reviewer≠author across all floor cases.
+- `test-quota-lockout-postspawn.sh` run standalone: 7/7 pass, including its own T7 nested
+  regression run of `test-routing-enforcement-p1.sh` (18/0) — so routing-enforcement-p1 is
+  covered transitively without a third redundant standalone run.
+
+No new edits made this dispatch. The prior developer's diff and DELIVERABLE_COMPLETE stand as
+final; PASS confirmed, not re-derived.
+
 DELIVERABLE_COMPLETE
