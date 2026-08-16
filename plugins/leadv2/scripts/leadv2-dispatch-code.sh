@@ -365,6 +365,20 @@ _ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
 # `bash -x`, not by theorizing about load/flock contention). Restore immediately after the
 # source so a library's own options can never leak into a caller that opted out of them.
 set +e
+# REPORT-ONLY-GATE-01: shared parse/locate/substantive/harvest lib for report-declaring
+# lanes (LANE_DELIVERABLE: report:<path>). Guarded source + no-op stub, the same
+# degrade-never-break idiom as _REFUSAL_CLASSIFY_SH in product-close: a missing lib
+# means no lane can flip to kind=report, never a broken dispatch. The lib sets
+# `-uo pipefail` only (no -e to leak past the `set +e` above).
+_REPORT_DELIVERABLE_SH="${SCRIPT_DIR}/lib/leadv2-report-deliverable.sh"
+if [[ ! -f "${_REPORT_DELIVERABLE_SH}" ]]; then
+  _REPORT_DELIVERABLE_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh"
+fi
+if [[ -f "${_REPORT_DELIVERABLE_SH}" ]]; then
+  source "${_REPORT_DELIVERABLE_SH}"
+else
+  lv2_deliverable_parse() { return 1; }
+fi
 _stamp_active_phase() { # <task_id> <phase>
   [[ -n "${1:-}" ]] || return 0
   declare -F leadv2_active_update_phase >/dev/null || return 0
@@ -1688,6 +1702,17 @@ _prepass_writes() { # <sig8> -> CSV writes or empty
   (IFS=','; printf '%s' "${kept[*]:-}")
 }
 
+# REPORT-ONLY-GATE-01: harvest the mission's own `LANE_DELIVERABLE:` declaration, using
+# the same tolerant matcher as _prepass_writes above (markdown emphasis / leading
+# indentation must not read as "absent"). Harvested from the MISSION, never from the
+# architect prepass: a report lane is a property of the founder's ask, not of a design.
+# Returns the raw declaration (e.g. "report:docs/handoff/X/report.md") or empty.
+_mission_deliverable() { # <mission-text> -> declaration or empty
+  local line
+  line="$(printf '%s' "$1" | grep -m1 -iE '^[[:space:]*_]*LANE_DELIVERABLE[*_]*:' 2>/dev/null)" || return 0
+  printf '%s' "${line}" | sed -E 's/^[[:space:]*_]*LANE_DELIVERABLE[*_]*:[[:space:]]*//I'
+}
+
 # KIMI-CHANNEL-REHAB-01: only narrow, bounded implementation missions enter the
 # Kimi rung. A founder's --kimi-fit override deliberately bypasses every
 # heuristic. On the explicit non-product/no-prepass path, an absent write-set
@@ -1751,6 +1776,16 @@ _lane_writes_guard() {
   local sig8="$1" row_writes="$2" have_prepass="$3"
   [[ "${REQUIRE_LANE_WRITES}" == "1" ]] || return 0
   [[ -n "${row_writes}" ]] && return 0
+  # REPORT-ONLY-GATE-01: a report lane legitimately has NO LANE_WRITES — its deliverable
+  # lives under docs/handoff/ by contract, which the writes grammar itself excludes. A
+  # lane that declared (and had validated, at resolve time) an exactly-parsable
+  # `report:<path>` deliverable satisfies the guard through that declaration instead.
+  # LANE_DELIVERABLE_DECL is set once in cmd_resolve before any prepass call site.
+  # REQUIRE_LANE_WRITES semantics for diff lanes above are untouched.
+  if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]] && lv2_deliverable_parse "${LANE_DELIVERABLE_DECL}" >/dev/null; then
+    emit decision "lane_writes task=${sig8} source=report_deliverable"
+    return 0
+  fi
   if [[ "${have_prepass}" == "1" ]] && [[ -n "$(_prepass_writes "${sig8}")" ]]; then return 0; fi
   local _wt=""
   # R2 (W-1 lane-worktree-isolation prepass): pin LEADV2_PROJECT_ROOT to the main
@@ -2095,12 +2130,12 @@ spawn_worker() {
   return ${rc}
 }
 
-spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id> <lane_mission_path>
+spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id> <lane_mission_path> [<lane_deliverable_decl>]
   # N7F-LANE-NAME: forwards DISPATCH_LANE_NAME as close_bin's 8th positional (not a 7th
   # param on this fn -- read from the global, same pattern as _dl_note above) so the
   # display name survives the worker->close-phase handoff for act two.
   local sig8="$1" author="$2" handle="$3" reviewer_arms="${4:-}" lane_writes_csv="${5:-}"
-  local founder_task_id="${6:-}" lane_mission_path="${7:-}"
+  local founder_task_id="${6:-}" lane_mission_path="${7:-}" lane_deliverable_decl="${8:-}"
   [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]] || return 0
   local close_bin="${LEADV2_DISPATCH_PRODUCT_CLOSE_BIN:-${SCRIPT_DIR}/leadv2-dispatch-product-close.sh}"
   if [[ ! -f "${close_bin}" ]]; then
@@ -2121,6 +2156,7 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     LEADV2_DISPATCH_CANDIDATE_ARMS="${reviewer_arms}" \
     LEADV2_DISPATCH_LANE_MISSION="${lane_mission_path}" \
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
+    LEADV2_DISPATCH_LANE_DELIVERABLE="${lane_deliverable_decl}" \
     LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" \
     LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
     "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" "${DISPATCH_LANE_NAME:-}" \
@@ -2894,7 +2930,7 @@ cmd_status() {
 # ── resolve (default) path ────────────────────────────────────────────────────────
 cmd_resolve() {
   local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
-  local lane_writes="" lane_acceptance_cmd="" lane_rollback=0
+  local lane_writes="" lane_acceptance_cmd="" lane_rollback=0 lane_deliverable=""
   local -a phase_waivers=()
   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
   # for callers (leadv2-fanout.sh's funnel) that dispatch on behalf of a specific
@@ -2933,6 +2969,12 @@ cmd_resolve() {
       # block below and leadv2-lane-shape.sh.
       --writes)          [[ $# -ge 2 ]] || { log_err "--writes requires a value"; usage; }
                           lane_writes="$2"; shift 2 ;;
+      # REPORT-ONLY-GATE-01: optional deliverable declaration "report:<repo-relative
+      # path>" — the row/dispatcher declaration, highest precedence; the mission's own
+      # LANE_DELIVERABLE: line is the fallback. Unknown kinds are ignored + journalled
+      # at resolve time (below), never a silent lane-kind flip.
+      --lane-deliverable) [[ $# -ge 2 ]] || { log_err "--lane-deliverable requires a value"; usage; }
+                          lane_deliverable="$2"; shift 2 ;;
       --acceptance-cmd)  [[ $# -ge 2 ]] || { log_err "--acceptance-cmd requires a value"; usage; }
                           lane_acceptance_cmd="$2"; shift 2 ;;
       --rollback-onestep) lane_rollback=1; shift ;;
@@ -2980,6 +3022,26 @@ cmd_resolve() {
   JOURNAL_TASK="dispatch-${sig8}"
   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
     log_err "signature computation failed"; exit 1
+  fi
+  # REPORT-ONLY-GATE-01: resolve the lane's deliverable declaration ONCE, before the
+  # architect prepass inlines its design into ${mission} (the declaration is the
+  # founder's statement of intent in the ORIGINAL mission, not a property of a design)
+  # and before _lane_writes_guard can park on a missing LANE_WRITES. Precedence mirrors
+  # lane_writes: row/CLI --lane-deliverable wins, else the mission's own LANE_DELIVERABLE
+  # line. Absent => kind=diff => today's behaviour byte-for-byte. Only an exactly-
+  # parsable `report:<path>` flips the kind; anything else is ignored AND journalled so
+  # the dispatcher notices, never a silent lane-kind change. The validated declaration
+  # also flows to product-close via spawn_product_close's LEADV2_DISPATCH_LANE_DELIVERABLE.
+  LANE_DELIVERABLE_DECL=""
+  local _ld_decl="${lane_deliverable}"
+  [[ -n "${_ld_decl}" ]] || _ld_decl="$(_mission_deliverable "${mission}")"
+  if [[ -n "${_ld_decl}" ]]; then
+    if lv2_deliverable_parse "${_ld_decl}" >/dev/null; then
+      LANE_DELIVERABLE_DECL="${_ld_decl}"
+      emit decision "lane_deliverable task=${sig8} status=declared decl=${_ld_decl}"
+    else
+      emit decision "lane_deliverable task=${sig8} status=ignored reason=unknown_kind decl=${_ld_decl}"
+    fi
   fi
   # LANE-PLACEMENT-01: resolve an explicit --resume-lane/--worktree pin BEFORE the ensure
   # block, BEFORE record_lane_start_sha, BEFORE any reservation/terminal/spawn.  Refuses
@@ -3261,7 +3323,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
   export DC_PROTECTED="${protected}" DC_SAFETY="${safety}" DC_SUBSYSTEM_COUNT="${subsystems}" \
          DC_INTERACTIVE="${interactive}" DC_UI_JUDGMENT="${ui}" DC_KIND="${kind}" \
          DC_GLM_FAILURES="${glmfails}" DC_GLM_LOCK_BUSY="${lockbusy}"
-  local resolved arm rule reason tier router_label v2_eligible v2_ordered v2_headroom v2_vector v2_credits
+  local resolved arm rule reason tier readings router_label v2_eligible v2_ordered v2_headroom v2_vector v2_credits
   router_label="v1"
   if [[ "${LEADV2_ROUTER_V2:-0}" == "1" ]]; then
     router_label="v2"
@@ -3287,9 +3349,14 @@ confirmation-seeking; only for a decision you cannot make yourself."
   v2_credits="$(printf '%s\n' "${resolved}" | sed -n 's/^credits=//p')"
   local codex_quota_blocked
   codex_quota_blocked="$(printf '%s\n' "${resolved}" | sed -n 's/^codex_quota_blocked=//p')"
+  # GLM-FIRST-RECOVERY-01 (C3): the resolver's gate-path-only live-reading line
+  # (glm=2% codex=unknown anthropic=44%) rides the journal emit so a lead can
+  # tell a correct peak-hour fallback from a stuck-probe inversion. Absent line
+  # (happy path / gate absent / resolver v1 fallback) -> byte-identical emit.
+  readings="$(printf '%s\n' "${resolved}" | sed -n 's/^readings=//p')"
   [[ "${router_label}" == "v2" ]] && rule="router_v2"
   [[ -n "${arm}" ]] || { log_err "resolver returned no arm: ${resolved}"; exit 1; }
-  emit decision "arm_resolved job=build arm=${arm} reason=${rule}"
+  emit decision "arm_resolved job=build arm=${arm} reason=${rule}${readings:+ readings=${readings}}"
   # RESOLVED_CODEX_TIER is read by _spawn_worker_body's codex case (global, not passed as
   # a positional -- spawn_worker's signature is shared across all three spawning arms).
   [[ "${arm}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
@@ -3578,10 +3645,17 @@ ${mission}"
         mkdir -p "$(dirname "${_lane_mission_path}")" 2>/dev/null
         printf '%s' "${mission}" > "${_lane_mission_path}" 2>/dev/null || _lane_mission_path=""
       fi
-      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}"; then
-        # The worker is already live; make the failed postflight launch visible rather than
-        # pretending close evidence will arrive.  Do not kill the independently-owned worker.
-        log_err "product close gate could not be launched for task=${sig8}"
+      if [[ "${product_class}" == "product" ]]; then
+        if ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}" "${LANE_DELIVERABLE_DECL:-}"; then
+          # The worker is already live; make the failed postflight launch visible rather than
+          # pretending close evidence will arrive.  Do not kill the independently-owned worker.
+          log_err "product close gate could not be launched for task=${sig8}"
+        fi
+      elif [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
+        # REPORT-ONLY-GATE-01 (codex r2 finding 1): non-product classes never run the
+        # product close gate, so a report declaration there is NOT enforced — surface
+        # that loudly instead of letting a declared report lane pass unjudged in silence.
+        emit decision "lane_deliverable task=${sig8} status=unenforced reason=non_product_class decl=${LANE_DELIVERABLE_DECL}"
       fi
       emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}"
       printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}"
@@ -3808,6 +3882,17 @@ cmd_advance_arm() {
   mission="$(cat "${mission_file}" 2>/dev/null)"
   [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
 
+  # REPORT-ONLY-GATE-01 (codex r2 finding 2): recover the lane's deliverable
+  # declaration from the SAME persisted mission the replacement worker gets. Without
+  # this, a report lane recovered via advance-arm is re-judged as a diff lane and
+  # blocks no_work despite having produced its report.
+  local _adv_deliverable=""
+  _adv_deliverable="$(_mission_deliverable "${mission}")"
+  if [[ -n "${_adv_deliverable}" ]] && ! lv2_deliverable_parse "${_adv_deliverable}" >/dev/null; then
+    emit decision "lane_deliverable task=${sig8} status=ignored reason=unknown_kind decl=${_adv_deliverable} src=advance_arm"
+    _adv_deliverable=""
+  fi
+
   local spawn_out src
   spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
   if [[ ${src} -ne 0 ]]; then
@@ -3824,7 +3909,7 @@ cmd_advance_arm() {
   emit decision "worker_spawned by=arm_advance model=${arm} handle=${handle}"
 
   if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then
-    spawn_product_close "${sig8}" "${arm}" "${handle}" "" "${writes}" "${task_id}" "${mission_file}"
+    spawn_product_close "${sig8}" "${arm}" "${handle}" "" "${writes}" "${task_id}" "${mission_file}" "${_adv_deliverable}"
   fi
   printf 'arm_advance model=%s task=%s handle=%s\n' "${arm}" "${sig8}" "${handle}"
   exit 0
