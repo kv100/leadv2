@@ -468,4 +468,9 @@ Nightly maintenance: signature decay + unanswered decisions surface.
 
 ## §Spawn-hygiene
 
+**Placement before spawn** — canonical rule: `docs/work-placement.md`; this is a pointer, not a copy.
+Read it in order — §Step 0 precondition → §Hard constraints → §The preference → §Verification — two kinds, not one. No tests are restated here.
+
+**Chat budget per spawn:** task-notification (≤100 words) + `Read limit=30` summary + synthesis = ~200 words. Without this rule: ~2000 words.
+
 **Chat budget per spawn:** task-notification (≤100 words) + `Read limit=30` summary + synthesis = ~200 words. Without this rule: ~2000 words.

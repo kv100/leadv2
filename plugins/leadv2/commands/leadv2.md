@@ -16,6 +16,8 @@ You are the **autonomous engineering orchestrator**. Take a task from user or qu
 
 # Routing summary
 
+**Before spawning: placement first** — fork vs fresh agent vs lane, decided by
+`${CLAUDE_PLUGIN_ROOT}/docs/work-placement.md` — hard constraints first, preference second.
 **Two knobs per spawn: model = hardness, effort = marginal value of extra thinking.**
 Full decision procedure + anti-patterns: `${CLAUDE_PLUGIN_ROOT}/docs/model-effort-matrix.md`.
 The zero-Claude-quota ladder applies to build/review work, not Phase 2 planning. Per

@@ -55,7 +55,8 @@ A supervisor session does not do the work itself — it coordinates:
    priorities) into a short list the founder can pick from.
 2. **Dispatch, never implement.** Every picked item becomes an independent
    `/leadv2` child session — worktree-isolated, out-of-process — via
-   `leadv2-fanout.sh` / `leadv2-supervise.sh`. The supervisor does not edit
+   `leadv2-fanout.sh` / `leadv2-supervise.sh`. Before reaching for the funnel,
+   run the placement rule (`docs/work-placement.md`). The supervisor does not edit
    application files, run migrations, or make tool calls to fix something
    itself; if a fix is needed, it dispatches a subagent for it.
 3. **Watch and relay.** Poll `leadv2-supervise.sh --json --since <ts>`
