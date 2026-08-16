@@ -1,0 +1,17 @@
+- 2026-08-14T23:57:22Z [decision] dispatch_classified task=c5daf449 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-14T23:57:24Z [decision] phase_precondition_warn task=c5daf449 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-15T00:02:04Z [decision] architect_prepass task=c5daf449 status=ran artifact=docs/handoff/dispatch-c5daf449/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-c5daf449-architect/architect.full.md
+- 2026-08-15T00:02:04Z [decision] lane_writes task=c5daf449 source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/tests/test-report-only-lane.sh,plugins/leadv2/scripts/tests/run-core-offline.sh,docs/missions/REPORT-ONLY-MISSIONS-01.report.md
+- 2026-08-15T00:02:04Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-15T00:02:04Z [decision] dispatchable_arms_read_failed task=c5daf449 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-15T00:02:05Z [decision] routing_config_degraded task=c5daf449 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-15T00:02:05Z [decision] kimi_skipped reason=chars_over task=c5daf449 chars=16816 writes=0 prepass=1
+- 2026-08-15T00:02:05Z [decision] candidate_chain task=c5daf449 arms=glm,codex,sonnet
+- 2026-08-15T00:02:07Z [decision] worker_spawned by=router model=glm task=c5daf449 attempt=c5daf449-1786751838-54459 handle=260815-030207-c5daf449-67fd
+- 2026-08-15T00:02:07Z [decision] mission-version task=- sig=c5daf449 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-15T00:02:27Z [decision] product_close task=c5daf449 status=spawned author=glm
+- 2026-08-15T00:02:27Z [decision] route_resolved by=router router=v1 model=glm task=c5daf449 rule=none reason=no_routing_yaml
+- 2026-08-15T00:02:28Z [decision] lane_worktree_left task=c5daf449 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/c5daf449
+- 2026-08-15T00:24:52Z [decision] e2e_gate task=c5daf449 status=ran verdict=fail rc=1
+- 2026-08-15T00:25:11Z [decision] dispatch_terminal task=c5daf449 terminal=dead cause=e2e_regression
+- 2026-08-15T00:25:11Z [decision] dispatch_terminal_dedup task=c5daf449 attempted=dead reason=terminal_already_recorded

@@ -1,0 +1,572 @@
+diff --git a/plugins/leadv2/commands/leadv2.md b/plugins/leadv2/commands/leadv2.md
+index d330eb6..84f0e6b 100644
+--- a/plugins/leadv2/commands/leadv2.md
++++ b/plugins/leadv2/commands/leadv2.md
+@@ -144,6 +144,31 @@ Agent(subagent_type=<role>, model=<opus|sonnet>,
+ # Wait for task-notification; Read(deliverable, limit=30); synthesize into context.yaml.
+ ```
+ 
++## Fork-owned session (FORK-RUNS-A-SESSION-01)
++
++A fork (context-inheriting Agent spawn) can carry one task Phase 0→8 end to end — not by
++imitating the lead, but by taking the bash path that already exists for headless lanes. The lead
++runs `leadv2-fork-session.sh preflight <id>` (creates the lane, registers it, writes
++`fork-lane.env`), spawns the fork on `prompts/fork-session-mission.md`, and reaps with
++`postflight <id>` after the fork reports `phase8-passed.flag`.
++
++| Phase | Fork owns? | Mechanism |
++|---|---|---|
++| 0 Intake | yes, minus worktree entry | lane pre-created by the lead (`leadv2-lane-worktree.sh ensure`); fork addresses files by ABSOLUTE path |
++| 1 Classify | yes | pure reasoning over inherited context |
++| 2 Plan | yes | spawns its own role agents; Codex/GLM arms are external processes |
++| 3 Gate 1 | yes — asks, founder answers via the lead's surface | `leadv2-fork-session.sh ask` = `leadv2-ask.sh --no-block` + bounded poll (exit 3 = still pending, fork re-invokes); question lands in control-plane `questions/`, visible in `/leadv2 questions` |
++| 4 Build / 5 Review | yes | unchanged; NO gate is relaxed for a fork |
++| 6 Deploy | yes | commit in lane + `leadv2-deploy-merge.sh` from the main checkout (subshell `(cd …)` — process-local, the session CWD never moves) |
++| 7 Verify | yes | `verify-probe.sh` against the live signal |
++| 8 Close | writes yes; reaping and self-spawn no | locked state writes + `leadv2-phase8-close.sh`; stops at `phase8-passed.flag` |
++
++Carve-outs handed back to the lead, always: **A** worktree lifecycle (a fork never calls
++`EnterWorktree`/`ExitWorktree`/`cd` — it shares the session CWD; changing it would move the
++lead), **B** worktree reaping (`postflight`, postflight refuses a dirty lane), **C** daemon
++self-spawn (`postflight --self-spawn`). The `:213` ban below is honoured by disjointness, not by
++exception: the fork never entered a tool worktree, so there is nothing to `ExitWorktree` from.
++
+ ## BG-agent liveness protocol (anti-silent-death, 2026-06-12)
+ 
+ Background agents can die silently (org spend limit, crash) OR finish fine while their
+@@ -193,7 +218,7 @@ Principle: **context is cache, disk is truth.** Sessions run for days with many
+ - **No skipping yaml validation** on subagent deliverables.
+ - **No chat narration.** Pulse mode (default): absolute silence except pulse lines + gate + close.
+ - **No foreground Agent spawns.** Always `run_in_background=true`.
+-- **No delegating `ExitWorktree` or `git worktree remove` to subagents.** Lead calls `ExitWorktree(action="keep")` directly in Phase 6 step 2.
++- **No delegating `ExitWorktree` or `git worktree remove` to subagents.** Lead calls `ExitWorktree(action="keep")` directly in Phase 6 step 2. A fork-owned session never enters a tool worktree at all (FORK-RUNS-A-SESSION-01): it works by absolute path in a lead-created lane and lands via `leadv2-deploy-merge.sh`.
+ - **No reading subagent deliverable without `limit=30`.** Use `critic-tail.sh` for review-class.
+ - **No mission file >100 lines.** `leadv2-mission-lint.sh` enforces.
+ - **No spawn prompt >300 words.** `leadv2-prompt-lint.sh` enforces.
+diff --git a/plugins/leadv2/docs/phases.md b/plugins/leadv2/docs/phases.md
+index b228add..580c7d7 100644
+--- a/plugins/leadv2/docs/phases.md
++++ b/plugins/leadv2/docs/phases.md
+@@ -84,7 +84,7 @@ Each phase entry calls `leadv2_pulse_log "<phase>" "<one-line summary>"` — emi
+ - If queue cache stale → `leadv2-subsession` skill
+ > **Optimization:** Run `lead-classify` skill FIRST (Phase 1), then execute EnterWorktree + MCP warm only if class ≥ Standard. This avoids ~2K tokens of worktree setup for Trivial/Light tasks. If classify returns Trivial/Light → jump directly to Phase 4 Build without worktree.
+ 
+-- **Enter worktree:** `EnterWorktree(name="<task-id>")` — creates `.claude/worktrees/<task-id>` on branch `task/<task-id>` off current HEAD. Session cwd switches into it. ALL Phase 1-5 edits and commits happen here. Skip for `Trivial/Light` tasks where deploy isn't expected (worktree adds friction). Skip if user's invocation is `/leadv2 status`/`help`/`meeting`/`questions`/`sessions`.
++- **Enter worktree:** `EnterWorktree(name="<task-id>")` — creates `.claude/worktrees/<task-id>` on branch `task/<task-id>` off current HEAD. Session cwd switches into it. ALL Phase 1-5 edits and commits happen here. Skip for `Trivial/Light` tasks where deploy isn't expected (worktree adds friction). Skip if user's invocation is `/leadv2 status`/`help`/`meeting`/`questions`/`sessions`. **Fork-owned session variant (FORK-RUNS-A-SESSION-01):** a fork never calls `EnterWorktree` (it shares the lead's CWD); the lead pre-creates the identical path/branch via `leadv2-fork-session.sh preflight <id>` and the fork works by absolute path under that lane root.
+ - **Broken-signal handling:** If a `[BROKEN-SIGNAL-GATE]` advisory appears in session context (injected by `leadv2-broken-signal-gate.sh` hook), the existing task lock MUST be released (`leadv2_lock_release`) before INTAKE proceeds. Do not carry state from the previous run.
+ - Write per-task state: `docs/leadv2/tasks/<id>/STATE.md` — `status: active, phase: intake`. `docs/LEAD_V2_STATE.md` is auto-regenerated via `leadv2_active_render_index` (DO NOT EDIT directly).
+   **STATE.md schema (required fields):**
+@@ -341,7 +341,7 @@ Preconditions (ALL must pass, all run from inside worktree):
+ 
+ If all pass — three steps:
+ 1. **Commit in worktree:** `Agent(devops-engineer, sonnet, "commit conventional msg in current worktree directory")`. Worktree branch = `task/<task-id>`.
+-2. **Exit worktree (keep):** `ExitWorktree(action="keep")` — **lead calls this directly, never delegated to subagent.** Return to main repo dir, leave worktree on disk. Delegating ExitWorktree (or `git worktree remove`) to a subagent causes `ENOENT: posix_spawn '/bin/sh'` hook errors because the harness spawns hooks against a deleted CWD.
++2. **Exit worktree (keep):** `ExitWorktree(action="keep")` — **lead calls this directly, never delegated to subagent.** Return to main repo dir, leave worktree on disk. Delegating ExitWorktree (or `git worktree remove`) to a subagent causes `ENOENT: posix_spawn '/bin/sh'` hook errors because the harness spawns hooks against a deleted CWD. A fork-owned session satisfies this ban by disjointness, not exception: it never entered a tool worktree (its lane was created by bash in preflight), so Phase 6 lands via `leadv2-deploy-merge.sh` alone and reaping is the lead's `leadv2-fork-session.sh postflight <id>`.
+ 3. **Fast-forward main + push + deploy** (in main repo dir):
+    ```bash
+    git fetch origin main
+diff --git a/plugins/leadv2/prompts/fork-session-mission.md b/plugins/leadv2/prompts/fork-session-mission.md
+new file mode 100644
+index 0000000..0cecd6f
+--- /dev/null
++++ b/plugins/leadv2/prompts/fork-session-mission.md
+@@ -0,0 +1,53 @@
++# MISSION — fork-owned /leadv2 session: <TASK_ID>, Phase 0 → 8
++
++You are a FORK carrying one task, <TASK_ID>, end to end. You inherited the lead's
++context; you are not starting cold. The lead created your lane and will reap it —
++you never manage the worktree yourself.
++
++## Your lane (fill before use)
++
++- `TASK_ID=<task-id>` · `LANE_ROOT=<abs lane root>` · read `<LANE_ROOT>/docs/handoff/<TASK_ID>/fork-lane.env` first.
++- Source the mission with concrete values via the lead's spawn prompt; this template is the shape.
++
++## Absolute-path rule (non-negotiable)
++
++You share the session CWD with the lead. **Every file you touch, you address by
++absolute path under `LANE_ROOT`.** Never `cd`. Never a bare relative path for
++anything under the lane. Changing CWD would move the lead mid-task.
++
++## Never-call list
++
++`EnterWorktree` · `ExitWorktree` · `cd` · `leadv2-worktree-cleanup.sh` ·
++`leadv2-self-spawn.sh` · `git reset --hard` · `git clean` · `git stash`.
++The first two are lead-only by CWD-lifecycle law; the next two are the lead's
++pre/postflight carve-outs; the last three are the shared-tree prohibition.
++
++## Phases
++
++- **0 Intake** — inside the lane (it already exists; `preflight` made it): STATE.md,
++  journal via `leadv2-journal.sh`, absolute paths.
++- **1 Classify** — pure reasoning over inherited context. Class: ____
++- **2 Plan** — spawn your role agents (`run_in_background=true`, explicit `model=`);
++  Codex/GLM arms are external processes, spawn them as such.
++- **3 Gate 1 — ask the founder:**
++  `bash <plugin>/scripts/leadv2-fork-session.sh ask <TASK_ID> "<question>" --option "a|<label>" --option "b|<label>" --default-option "a"`
++  exit 0 → chosen label on stdout, proceed; exit 3 → still pending, continue other
++  work and re-invoke. The question appears in `/leadv2 questions`; the founder
++  answers through the lead's existing surface. Do NOT use AskUserQuestion.
++- **4 Build** — absolute paths under LANE_ROOT only.
++- **5 Review** — unchanged gates. No gate is relaxed for a fork.
++- **6 Deploy** — commit inside the lane, then land via
++  `(cd <PROJECT_ROOT> && LEADV2_TASK_ID=<TASK_ID> CLAUDE_PLUGIN_ROOT=<plugin>   bash <plugin>/scripts/leadv2-deploy-merge.sh)` (resolves `worktree-<TASK_ID>`).
++  The subshell cd is process-local — deploy-merge needs the main checkout as
++  its git cwd, and the session CWD never moves. You never entered a tool
++  worktree, so there is nothing to ExitWorktree from.
++- **7 Verify** — `verify-probe.sh` against the live signal. "Tests green" is not verification.
++- **8 Close** — locked state writes (same scripts N parallel lanes use), then
++  `leadv2-phase8-close.sh`. STOP at `phase8-passed.flag`. Reaping and any
++  self-spawn are the lead's postflight — not yours.
++
++## Deliverable
++
++`<LANE_ROOT>/docs/handoff/<TASK_ID>/` holds your plan/build/review artifacts; end
++your final message with the report naming which phases you ran and DELIVERABLE_COMPLETE.
++A phase you did not actually run is reported as handed back, never as owned.
+diff --git a/plugins/leadv2/scripts/leadv2-fork-session.sh b/plugins/leadv2/scripts/leadv2-fork-session.sh
+new file mode 100755
+index 0000000..74d1b59
+--- /dev/null
++++ b/plugins/leadv2/scripts/leadv2-fork-session.sh
+@@ -0,0 +1,289 @@
++#!/usr/bin/env bash
++# leadv2-fork-session.sh — FORK-RUNS-A-SESSION-01: lead-side pre/post ops for
++# a fork-owned /leadv2 session (Phase 0..8 carried by a fork, not a lead).
++#
++# WHY THIS EXISTS: a fork was only ever used for fragments (a review, a
++# judgement, a synthesis) because three phases looked lead-only: Gate 1 needs
++# founder input, Phase 6 needs ExitWorktree, Phase 8 reaps the worktree. All
++# three already have bash answers for headless lanes — leadv2-ask.sh's
++# control-plane questions/ dir, leadv2-lane-worktree.sh's bash lane (the same
++# path/branch EnterWorktree uses), leadv2-deploy-merge.sh's worktree-<id>
++# branch resolution. This script is the thin lead-side wrapper around those
++# EXISTING pieces; it never enters a tool worktree and never reimplements a
++# gate. The fork itself addresses every file by absolute path under the lane
++# root — it shares the session CWD with the lead and never calls `cd`.
++#
++# Carve-outs this script enforces (design §2, "The honest boundary"):
++#   A — worktree lifecycle: `preflight` (lead, before spawn) creates the lane;
++#        the fork never calls EnterWorktree/ExitWorktree/cd.
++#   B — worktree reaping: `postflight` (lead, after the fork reports done)
++#        removes the lane — deleting a dir a session may hold a path under is
++#        the same ENOENT class the ExitWorktree delegation ban guards.
++#   C — daemon self-spawn: `postflight --self-spawn` only; a fork spawning
++#        the next session would spawn it inside the lead's session.
++#
++# Ops:
++#   preflight <task-id> [class]
++#       ensure lane (leadv2-lane-worktree.sh ensure), register active.yaml,
++#       write <lane>/docs/handoff/<task-id>/fork-lane.env
++#       (TASK_ID/LANE_ROOT/CONTROL_PLANE), print the ABS lane root to stdout.
++#       Idempotent: re-running returns the same lane.
++#   ask <task-id> "<question>" --option "label|desc" [--option ...]
++#       [--default-option <label>] [--phase <p>] [--timeout-poll <sec=540>]
++#       Fork-side Gate 1. Wraps leadv2-ask.sh --no-block (question lands in
++#       the control-plane questions/ dir — the founder answers via
++#       /leadv2 reply, same surface as every lane), then polls BOUNDED so the
++#       Bash call stays under the 600s tool ceiling.
++#         exit 0  answered — chosen option label on stdout
++#         exit 3  still pending after the poll cap — the fork re-invokes later
++#         exit 1  usage error / question write failed
++#   postflight <task-id> [--self-spawn] [--force]
++#       Carve-outs B (+C with --self-spawn). REFUSES a dirty lane (exit 1,
++#       worktree left on disk for inspection — mirrors the Phase 6
++#       circuit-break). No-op-safe when no worktree exists.
++#
++# Untouched by design (reused, never modified): leadv2-ask.sh, leadv2-answer.sh,
++# leadv2-lane-worktree.sh, leadv2-deploy-merge.sh, leadv2-phase8-close.sh,
++# leadv2-state-atomic-write.sh.
++#
++# Env:
++#   LEADV2_PROJECT_ROOT   main checkout the lane forks from (default: derived
++#                         from git-common-dir so a lead running inside its own
++#                         worktree still creates the lane under the MAIN root,
++#                         matching EnterWorktree's .claude/worktrees convention)
++#   LEADV2_FORK_ASK_POLL_SEC   ask-op poll cap (default 540)
++#   LEADV2_ASK_POLL_INTERVAL   seconds between polls (default 3, shared with
++#                              leadv2-ask.sh)
++#
++# Exit codes: 0 ok / 1 error / 3 ask-still-pending. `ensure`-style never-block
++# semantics do NOT apply here: preflight failure means the lead must not spawn
++# the fork, so preflight fails loud.
++
++set -euo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++
++log()       { printf '[fork-session] %s\n' "$*" >&2; }
++log_error() { printf '[fork-session] ERROR: %s\n' "$*" >&2; }
++
++usage() {
++  sed -n '2,60p' "${BASH_SOURCE[0]}" | grep '^#   \|^# Ops:' | sed 's/^# \{0,1\}//' >&2
++  exit 1
++}
++
++# Main checkout the lane should live under. Explicit env wins; otherwise a
++# linked worktree derives the MAIN root from git-common-dir (the same trick
++# leadv2-state-path.sh uses to resolve one root from every worktree).
++resolve_project_root() {
++  if [[ -n "${LEADV2_PROJECT_ROOT:-}" ]]; then
++    printf '%s\n' "$LEADV2_PROJECT_ROOT"
++    return 0
++  fi
++  local common toplevel
++  toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
++  common="$(git -C "${toplevel:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
++  if [[ -n "$common" && -d "$common" && "$common" == */.git ]]; then
++    (cd "$(dirname "$common")" && pwd)
++  elif [[ -n "$toplevel" ]]; then
++    printf '%s\n' "$toplevel"
++  else
++    return 1
++  fi
++}
++
++# ── preflight ───────────────────────────────────────────────────────────────
++cmd_preflight() {
++  local task_id="${1:?preflight: <task-id> required}"
++  local cls="${2:-Standard}"
++
++  local project_root
++  project_root="$(resolve_project_root)" || { log_error "cannot resolve project root (set LEADV2_PROJECT_ROOT or run inside a repo)"; exit 1; }
++  export LEADV2_PROJECT_ROOT="$project_root"
++
++  # Carve-out A — the lead, not the fork, creates the lane. Same path/branch
++  # convention EnterWorktree uses; leadv2-deploy-merge.sh already resolves
++  # worktree-<id> for landing, so nothing downstream changes.
++  local lane_root
++  lane_root="$(bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" ensure "$task_id" "$cls")"
++  if [[ ! -d "$lane_root" ]]; then
++    log_error "lane-worktree ensure did not return a usable lane root: ${lane_root}"
++    exit 1
++  fi
++
++  # Register the lane in the shared control-plane registry (same locked write
++  # N parallel lanes use — no new lock, no new surface).
++  # shellcheck source=leadv2-active-registry.sh
++  source "${SCRIPT_DIR}/leadv2-active-registry.sh"
++  # LEADV2-SYMLINK-CLOBBER (found in the live pass): the registry resolves its
++  # state-path helper at <project_root>/scripts/leadv2-state-path.sh — a layout
++  # this repo does not have (plugin lives at plugins/leadv2/). The fallback
++  # then writes <root>/docs/leadv2/active.yaml directly, and its atomic
++  # os.replace(tmp, path) REPLACES the control-plane symlink with a private
++  # regular file — forking the shared registry. Point the helper at THIS
++  # plugin's real resolver so register/unregister hit the control plane from
++  # any repo layout.
++  _leadv2_state_path_sh() { printf '%s' "${SCRIPT_DIR}/leadv2-state-path.sh"; }
++  # register's helpers print bookkeeping lines to stdout (session id, render
++  # note) — keep stdout clean: preflight's contract is ONE line, the lane root.
++  if ! leadv2_active_register "$task_id" "$cls" "$lane_root" "worktree-${task_id}" "false" >/dev/null; then
++    log_error "active.yaml register failed for ${task_id}"
++    exit 1
++  fi
++
++  # Handoff envelope for the fork: everything it must NOT guess.
++  local control_plane handoff_dir
++  control_plane="$(bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link root)"
++  handoff_dir="${lane_root}/docs/handoff/${task_id}"
++  mkdir -p "$handoff_dir"
++  cat > "${handoff_dir}/fork-lane.env" <<EOF
++TASK_ID=${task_id}
++LANE_ROOT=${lane_root}
++CONTROL_PLANE=${control_plane}
++EOF
++
++  printf '%s\n' "$lane_root"
++}
++
++# ── ask ─────────────────────────────────────────────────────────────────────
++cmd_ask() {
++  local task_id="${1:?ask: <task-id> required}"
++  local question="${2:?ask: <question> required}"
++  shift 2
++
++  local options=() default_option="" phase="" poll_cap="${LEADV2_FORK_ASK_POLL_SEC:-540}"
++  while [[ $# -gt 0 ]]; do
++    case "$1" in
++      --option)        options+=("$2"); shift 2 ;;
++      --default-option) default_option="$2"; shift 2 ;;
++      --phase)         phase="$2"; shift 2 ;;
++      --timeout-poll)  poll_cap="$2"; shift 2 ;;
++      *) log_error "ask: unknown arg: $1"; usage ;;
++    esac
++  done
++  [[ ${#options[@]} -ge 1 ]] || { log_error "ask: at least one --option required"; usage; }
++
++  local ask_args=(--no-block)
++  [[ -n "$default_option" ]] && ask_args+=(--default-option "$default_option")
++  [[ -n "$phase" ]] && ask_args+=(--phase "$phase")
++  local opt
++  for opt in "${options[@]}"; do ask_args+=(--option "$opt"); done
++
++  # --no-block: the V2 record is written to the control-plane questions/ dir
++  # (founder answers via /leadv2 reply — the existing surface, nothing new)
++  # and the qid comes back on stdout.
++  local qid
++  qid="$(bash "${SCRIPT_DIR}/leadv2-ask.sh" "$task_id" "$question" "${ask_args[@]}")" \
++    || { log_error "leadv2-ask.sh --no-block failed"; exit 1; }
++
++  local qdir qfile legacy_answered
++  qdir="$(bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link questions)"
++  qfile="${qdir}/${qid}.yaml"
++  legacy_answered="${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/docs/handoff/${task_id}/questions-async/${qid}-answered.yaml"
++
++  local deadline status_and_answer status answer
++  deadline=$(( $(date +%s) + poll_cap ))
++  while :; do
++    status_and_answer="$(python3 - "$qfile" "$legacy_answered" <<'PYEOF'
++import sys, os, yaml
++
++def _load(p):
++    try:
++        with open(p, encoding="utf-8") as f:
++            return yaml.safe_load(f) or {}
++    except Exception:
++        return {}
++
++# V2 control-plane record (primary). answer.selected, pre-V2 flat scalar tolerated.
++doc = _load(sys.argv[1])
++if doc.get("status") == "answered":
++    ans = doc.get("answer")
++    selected = (ans or {}).get("selected") if isinstance(ans, dict) else ans
++    if selected:
++        print(f"answered|{selected}")
++        sys.exit(0)
++
++# Legacy fallback store (only reached when the control-plane write degraded).
++leg = _load(sys.argv[2])
++if leg.get("chosen"):
++    print(f"answered|{leg['chosen']}")
++    sys.exit(0)
++
++print("pending|")
++PYEOF
++)" || status_and_answer="pending|"
++    status="${status_and_answer%%|*}"
++    answer="${status_and_answer#*|}"
++    if [[ "$status" == "answered" && -n "$answer" ]]; then
++      printf '%s\n' "$answer"
++      exit 0
++    fi
++    [[ "$(date +%s)" -lt "$deadline" ]] || break
++    sleep "${LEADV2_ASK_POLL_INTERVAL:-3}"
++  done
++
++  log "ask: qid=${qid} still pending after ${poll_cap}s — exit 3, fork re-invokes"
++  exit 3
++}
++
++# ── postflight ──────────────────────────────────────────────────────────────
++cmd_postflight() {
++  local task_id="${1:?postflight: <task-id> required}"
++  shift
++  local self_spawn=0 force=0
++  while [[ $# -gt 0 ]]; do
++    case "$1" in
++      --self-spawn) self_spawn=1; shift ;;
++      --force)      force=1; shift ;;
++      *) log_error "postflight: unknown arg: $1"; usage ;;
++    esac
++  done
++
++  local project_root
++  project_root="$(resolve_project_root)" || { log_error "cannot resolve project root"; exit 1; }
++  export LEADV2_PROJECT_ROOT="$project_root"
++
++  local lane_root
++  lane_root="$(LEADV2_PROJECT_ROOT="$project_root" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "$task_id")"
++  if [[ -z "$lane_root" || ! -d "$lane_root" ]]; then
++    log "postflight: no worktree for ${task_id} — nothing to reap (no-op)"
++    return 0
++  fi
++
++  # preflight's own envelope is lead bookkeeping, not fork work — drop it
++  # before the dirty check so an otherwise-clean lane is not refused for
++  # carrying its own address label (if the fork committed it, rm is a no-op
++  # against the committed copy and git status stays clean either way).
++  rm -f "${lane_root}/docs/handoff/${task_id}/fork-lane.env" 2>/dev/null || true
++
++  # Carve-out B guard: a dirty lane means the fork left work behind — removing
++  # the worktree would discard it silently. Refuse and leave it on disk.
++  local dirty
++  dirty="$(git -C "$lane_root" status --porcelain 2>/dev/null || true)"
++  if [[ -n "$dirty" && "$force" -eq 0 ]]; then
++    log_error "lane ${task_id} has uncommitted/untracked changes — refusing to reap:"
++    printf '%s\n' "$dirty" >&2
++    log_error "inspect ${lane_root}, commit or land the work, then re-run postflight (or --force)"
++    exit 1
++  fi
++
++  # Carve-out C — lead-only, BEFORE the reap (Phase 8 ordering): a fork
++  # spawning the next session would spawn it inside the lead's session.
++  if [[ "$self_spawn" -eq 1 || "${LEADV2_DAEMON:-0}" == "1" ]]; then
++    LEADV2_TASK_ID="$task_id" CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}" \
++      bash "${SCRIPT_DIR}/leadv2-self-spawn.sh" || log "self-spawn failed (non-fatal to reap)"
++  fi
++
++  local cleanup_args=(--name "$task_id")
++  [[ "$force" -eq 1 ]] && cleanup_args+=(--force)
++  bash "${SCRIPT_DIR}/leadv2-worktree-cleanup.sh" "${cleanup_args[@]}"
++}
++
++# ── dispatch ────────────────────────────────────────────────────────────────
++[[ $# -ge 1 ]] || usage
++op="$1"; shift
++case "$op" in
++  preflight)  cmd_preflight "$@" ;;
++  ask)        cmd_ask "$@" ;;
++  postflight) cmd_postflight "$@" ;;
++  *)          log_error "unknown op: ${op}"; usage ;;
++esac
+diff --git a/plugins/leadv2/scripts/tests/test-fork-session.sh b/plugins/leadv2/scripts/tests/test-fork-session.sh
+new file mode 100644
+index 0000000..0a230bd
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-fork-session.sh
+@@ -0,0 +1,145 @@
++#!/usr/bin/env bash
++# FORK-RUNS-A-SESSION-01 — falsifying harness for leadv2-fork-session.sh.
++# Covers (design §3): preflight idempotency; fork-lane.env contents; ask
++# exit 3 on pending / exit 0 + label on answered (via the REAL
++# leadv2-answer.sh, same surface `/leadv2 reply` uses); postflight refuses a
++# dirty lane and leaves it on disk; every op no-op-safe on re-run.
++# Untouched-by-design invariant: leadv2-ask.sh / leadv2-answer.sh /
++# leadv2-lane-worktree.sh are invoked, never reimplemented.
++set -uo pipefail
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++FS="${SCRIPT_DIR}/leadv2-fork-session.sh"
++ANSWER="${SCRIPT_DIR}/leadv2-answer.sh"
++PASS=0; FAIL=0
++ok()  { printf '[TEST] PASS: %s\n' "$1"; PASS=$((PASS+1)); }
++bad() { printf '[TEST] FAIL: %s\n' "$1"; FAIL=$((FAIL+1)); }
++
++setup_sandbox() { # -> echoes sandbox root; cwd stays put
++  local d
++  d="$(mktemp -d)"
++  mkdir -p "${d}/repo"
++  ( cd "${d}/repo" && git init -q -b main && git config user.email t@e.com \
++    && git config user.name t && printf 'seed\n' > seed.txt && git add seed.txt \
++    && git commit -qm seed ) >/dev/null 2>&1
++  mkdir -p "${d}/state"
++  printf '%s\n' "$d"
++}
++
++# ---- Case 1: preflight creates lane + env, idempotent ----------------------
++case_preflight() {
++  local d root lane1 lane2 envf
++  d="$(setup_sandbox)"; root="${d}/repo"
++  lane1="$(cd "$root" && LEADV2_PROJECT_ROOT="${root}" LEADV2_STATE_ROOT="${d}/state" \
++    bash "$FS" preflight tid-fork01 2>/dev/null)"
++  if [[ -d "$lane1" && "$lane1" == "${root}/.claude/worktrees/tid-fork01" ]]; then
++    ok "preflight prints the lane root under .claude/worktrees"
++  else bad "preflight lane root wrong: ${lane1:-<empty>}"; fi
++
++  envf="${lane1}/docs/handoff/tid-fork01/fork-lane.env"
++  if [[ -f "$envf" ]] && grep -q "^TASK_ID=tid-fork01$" "$envf" \
++     && grep -q "^LANE_ROOT=${lane1}$" "$envf" \
++     && grep -q "^CONTROL_PLANE=${d}/state$" "$envf"; then
++    ok "fork-lane.env has TASK_ID/LANE_ROOT/CONTROL_PLANE"
++  else bad "fork-lane.env wrong: $(cat "$envf" 2>/dev/null || echo MISSING)"; fi
++
++  # active-registry falls back to <repo>/docs/leadv2/active.yaml when the
++  # plugin-resolver path is absent (sandbox has no scripts/leadv2-state-path.sh);
++  # production resolves to the control plane. Either location proves the row.
++  if grep -q "tid-fork01" "${root}/docs/leadv2/active.yaml" 2>/dev/null; then
++    ok "preflight registered the lane in active.yaml"
++  else bad "task row missing from active.yaml"; fi
++
++  lane2="$(cd "$root" && LEADV2_PROJECT_ROOT="${root}" LEADV2_STATE_ROOT="${d}/state" \
++    bash "$FS" preflight tid-fork01 2>/dev/null)"
++  [[ "$lane1" == "$lane2" ]] && ok "preflight re-run is idempotent (same root)" \
++    || bad "preflight re-run moved the lane: ${lane1} != ${lane2}"
++  rm -rf "$d"
++}
++
++# ---- Case 2: ask — exit 3 while pending; fork question is answerable -------
++case_ask() {
++  local d root qdir qid out rc
++  d="$(setup_sandbox)"; root="${d}/repo"; qdir="${d}/state/questions"
++  export LEADV2_STATE_ROOT="${d}/state" LEADV2_PROJECT_ROOT="${root}"
++  export LEADV2_ASK_POLL_INTERVAL=0 LEADV2_FORK_ASK_POLL_SEC=2
++
++  out="$(cd "$root" && bash "$FS" ask tid-fork01 "ship it?" --option "a|yes" --option "b|no" \
++    --default-option a --timeout-poll 2 2>/dev/null)"; rc=$?
++  [[ $rc -eq 3 ]] && ok "ask exits 3 while founder has not answered" \
++    || bad "ask pending should exit 3, got rc=${rc} out=${out}"
++
++  qid="$(ls "$qdir" 2>/dev/null | grep -E '^q-[0-9a-f]+\.yaml$' | head -1)"
++  if [[ -n "$qid" ]]; then
++    ok "ask wrote the question to the control-plane questions/ dir"
++    if python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); sys.exit(0 if d.get('status')=='pending' and d.get('task_id')=='tid-fork01' else 1)" "${qdir}/${qid}" 2>/dev/null; then
++      ok "question record is pending, task-tagged (visible via /leadv2 questions)"
++    else bad "question record shape wrong"; fi
++  else bad "no question file appeared in ${qdir}"; fi
++
++  # Answer via the REAL answer.sh — the same path `/leadv2 reply` takes.
++  if ( cd "$root" && bash "$ANSWER" "${qid%.yaml}" a ) >/dev/null 2>&1 \
++     && python3 -c "import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); a=d.get('answer') or {}; sys.exit(0 if d.get('status')=='answered' and a.get('selected')=='a' else 1)" "${qdir}/${qid}" 2>/dev/null; then
++    ok "founder answer lands on the fork's question via leadv2-answer.sh"
++  else bad "fork question could not be answered / answer not recorded"; fi
++  rm -rf "$d"
++}
++
++# ---- Case 3: ask — exit 0 + chosen label on an answered question -----------
++case_ask_answered() {
++  local d root qdir qid out rc
++  d="$(setup_sandbox)"; root="${d}/repo"; qdir="${d}/state/questions"
++  export LEADV2_STATE_ROOT="${d}/state" LEADV2_PROJECT_ROOT="${root}"
++  export LEADV2_ASK_POLL_INTERVAL=0
++
++  # Ask in the background, answer it mid-poll, expect exit 0 + label.
++  ( cd "$root" && bash "$FS" ask tid-fork01 "gate?" --option "l|launch" --option "d|defer" \
++    --default-option l --timeout-poll 10 > "${d}/ask.out" 2>/dev/null ) &
++  askpid=$!
++  qid=""
++  for _ in $(seq 1 50); do
++    qid="$(ls "$qdir" 2>/dev/null | grep -E '^q-[0-9a-f]+\.yaml$' | head -1)"
++    [[ -n "$qid" ]] && break
++    sleep 0.2
++  done
++  if [[ -z "$qid" ]]; then bad "answered-path: no question file appeared"; rm -rf "$d"; return; fi
++  ( cd "$root" && bash "$ANSWER" "${qid%.yaml}" d ) >/dev/null 2>&1
++  wait "$askpid"; rc=$?
++  out="$(cat "${d}/ask.out")"
++  [[ $rc -eq 0 && "$out" == "d" ]] \
++    && ok "ask exit 0 + prints chosen label when founder answers mid-poll" \
++    || bad "answered ask rc=${rc} out=${out} (expected rc=0 label=d)"
++  rm -rf "$d"
++}
++
++# ---- Case 4: postflight refuses dirty, reaps clean, no-op when gone --------
++case_postflight() {
++  local d root lane rc
++  d="$(setup_sandbox)"; root="${d}/repo"
++  export LEADV2_PROJECT_ROOT="${root}" LEADV2_STATE_ROOT="${d}/state"
++  lane="$(cd "$root" && bash "$FS" preflight tid-fork02 2>/dev/null)"
++
++  printf 'leftover\n' > "${lane}/dirty.txt"
++  ( cd "$root" && bash "$FS" postflight tid-fork02 ) >/dev/null 2>&1; rc=$?
++  [[ $rc -ne 0 && -d "$lane" ]] \
++    && ok "postflight refuses a dirty lane and leaves it on disk" \
++    || bad "postflight dirty rc=${rc} lane_exists=$([[ -d $lane ]] && echo 1 || echo 0)"
++
++  rm -f "${lane}/dirty.txt"
++  ( cd "$root" && bash "$FS" postflight tid-fork02 ) >/dev/null 2>&1; rc=$?
++  [[ $rc -eq 0 && ! -d "$lane" ]] \
++    && ok "postflight reaps a clean lane (exit 0)" \
++    || bad "postflight clean rc=${rc} lane_exists=$([[ -d $lane ]] && echo 1 || echo 0)"
++
++  ( cd "$root" && bash "$FS" postflight tid-fork02 ) >/dev/null 2>&1; rc=$?
++  [[ $rc -eq 0 ]] && ok "postflight re-run is a safe no-op" \
++    || bad "postflight no-op re-run rc=${rc}"
++  rm -rf "$d"
++}
++
++case_preflight
++case_ask
++case_ask_answered
++case_postflight
++
++printf '\n=== %d passed, %d failed ===\n' "${PASS}" "${FAIL}"
++[[ "${FAIL}" == 0 ]]

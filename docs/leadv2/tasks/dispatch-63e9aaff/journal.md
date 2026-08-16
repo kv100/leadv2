@@ -1,0 +1,17 @@
+- 2026-08-14T23:58:49Z [decision] dispatch_classified task=63e9aaff class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-14T23:58:51Z [decision] phase_precondition_warn task=63e9aaff class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-15T00:04:12Z [decision] architect_prepass task=63e9aaff status=ran artifact=docs/handoff/dispatch-63e9aaff/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-63e9aaff-architect/architect.full.md
+- 2026-08-15T00:04:12Z [decision] lane_writes task=63e9aaff source=prepass writes=plugins/leadv2/scripts/leadv2-gate1-prompt.sh,plugins/leadv2/scripts/leadv2-fork-session.sh,plugins/leadv2/scripts/leadv2-active-registry.sh,plugins/leadv2/scripts/leadv2-lane-heartbeat.sh,plugins/leadv2/scripts/leadv2-lane-liveness.sh,plugins/leadv2/scripts/tests/test-gate1-async-route.sh,plugins/leadv2/scripts/tests/test-fork-session-guard.sh,plugins/leadv2/scripts/tests/test-fork-liveness-verdict.sh,plugins/leadv2/skills/leadv2-fork-session/SKILL.md,plugins/leadv2/commands/leadv2.md,plugins/leadv2/docs/phases.md,docs/missions/FORK-RUNS-FULL-SESSION-01.report.md
+- 2026-08-15T00:04:13Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-15T00:04:13Z [decision] dispatchable_arms_read_failed task=63e9aaff fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-15T00:04:13Z [decision] routing_config_degraded task=63e9aaff reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-15T00:04:13Z [decision] kimi_skipped reason=chars_over task=63e9aaff chars=21882 writes=0 prepass=1
+- 2026-08-15T00:04:13Z [decision] candidate_chain task=63e9aaff arms=glm,codex,sonnet
+- 2026-08-15T00:04:16Z [decision] worker_spawned by=router model=glm task=63e9aaff attempt=63e9aaff-1786751926-78254 handle=260815-030416-63e9aaff-0c35
+- 2026-08-15T00:04:16Z [decision] mission-version task=- sig=63e9aaff rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-15T00:04:37Z [decision] product_close task=63e9aaff status=spawned author=glm
+- 2026-08-15T00:04:38Z [decision] route_resolved by=router router=v1 model=glm task=63e9aaff rule=none reason=no_routing_yaml
+- 2026-08-15T00:04:38Z [decision] lane_worktree_left task=63e9aaff founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/63e9aaff
+- 2026-08-15T00:26:46Z [decision] e2e_gate task=63e9aaff status=ran verdict=fail rc=1
+- 2026-08-15T00:26:50Z [decision] dispatch_terminal task=63e9aaff terminal=dead cause=e2e_regression
+- 2026-08-15T00:26:50Z [decision] dispatch_terminal_dedup task=63e9aaff attempted=dead reason=terminal_already_recorded

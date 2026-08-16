@@ -1,0 +1,710 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index fdb8f1e..b4f78d9 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -2629,6 +2629,61 @@ _wait_arm_early_verdict() {  # <arm> <handle> <sig8>
+   done
+ }
+ 
++# CODEX-DOOR-DEAD-01 §2 mitigation: a first-byte deadline for the codex BUILDER arm
++# only. `task ... --background` (spawn_worker's codex branch) returns rc0 the instant
++# codex-companion's enqueueBackgroundTask ACCEPTS the job -- nothing upstream of this
++# proves the job actually STARTED producing output. leading hypothesis H3 (a job
++# accepted and then never run -- worker not draining the queue, or dying before its
++# first write) would present exactly as the four dead lanes did: valid jobId,
++# waiting_worker forever, zero bytes, no stream. The reproduction run for this task
++# (trivial task, --background --cwd <scratch>) did NOT trigger H3 -- the runtime was
++# healthy and the first byte landed in well under 15s -- so this is a bounded,
++# observable SAFETY NET for a fault this pass could not reproduce live, not a
++# confirmed fix. Default 180s (LEADV2_CODEX_FIRST_BYTE_SECS) converts a 20-minute
++# silent hang into a bounded, self-healing spill instead of leaving the close loop to
++# poll waiting_worker indefinitely.
++#
++# _codex_first_byte_probe <handle> -> rc0 iff codex-companion's own `log <handle>`
++# verb (the SAME verb _arm_final_output prefers) returns non-empty text. Deliberately
++# does NOT fall back to the raw `status` text the way _arm_final_output does -- a
++# live job always has SOME status text, so that fallback would make this probe
++# report "first byte" on every enqueued-but-silent job, defeating the whole point.
++_codex_first_byte_probe() {  # <handle>
++  local handle="$1" out
++  out="$(timeout 10 bash "${CODEX_BIN}" log "${handle}" 2>/dev/null)"
++  [[ -n "${out}" ]]
++}
++
++# _codex_first_byte_deadline_check <handle> <sig8> -> 0 = proceed (byte already
++# landed, or the deadline is disabled via LEADV2_CODEX_FIRST_BYTE_SECS=0), 7 =
++# declared dead (no byte within the deadline) -- caller must abort the reservation
++# and spill to the next candidate arm, exactly like the existing postspawn-quota
++# rc=7 branch. On declaring dead, stands codex down for a bounded window via the
++# CODEX-DOOR-DEAD-01 §3 stand-down mode (never the quota-classification mode --
++# there is no launcher output to classify here, only silence).
++_codex_first_byte_deadline_check() {  # <handle> <sig8>
++  local handle="$1" sig8="$2"
++  local deadline="${LEADV2_CODEX_FIRST_BYTE_SECS:-180}"
++  [[ "${deadline}" =~ ^[0-9]+$ ]] || deadline=180
++  [[ "${deadline}" != "0" ]] || return 0
++  local poll_s="${LEADV2_ARM_EARLY_VERDICT_POLL_S:-1}"
++  [[ "${poll_s}" =~ ^[0-9]+([.][0-9]+)?$ ]] || poll_s=1
++  [[ "${poll_s}" != "0" && "${poll_s}" != "0.0" ]] || poll_s=0.1
++  local started="${SECONDS}"
++  while true; do
++    if _codex_first_byte_probe "${handle}"; then
++      return 0
++    fi
++    if (( SECONDS - started >= deadline )); then
++      emit decision "arm_dead_no_first_byte arm=codex task=${sig8} job=${handle}"
++      bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
++        --provider codex --hours 1 --reason arm_dead_no_first_byte >/dev/null 2>&1 || true
++      return 7
++    fi
++    sleep "${poll_s}"
++  done
++}
++
+ # ── CORE FIX (fix-pass-4 REDESIGN): reserve (short lock) -> spawn (NO lock) -> confirm/
+ # abort (short lock) -- see the FIX PASS 4 doc block at the top of this file for why
+ # fix-pass-3's "one held flock across the whole sequence" was itself blocked (FD-inheritance
+@@ -2716,6 +2771,23 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
+       [[ ${early_abort_rc} -eq 0 ]] && return 7
+       return 5
+     fi
++    # CODEX-DOOR-DEAD-01 §2: codex builder only, and only reached here when the
++    # generic early-verdict window above found neither a terminal failure nor
++    # no-work -- i.e. the job is still "running/unknown" (or already completed,
++    # in which case the probe below finds output instantly and returns at once).
++    if [[ "${arm}" == "codex" ]]; then
++      local _fb_rc=0
++      _codex_first_byte_deadline_check "${handle}" "${sig8}" || _fb_rc=$?
++      if [[ ${_fb_rc} -eq 7 ]]; then
++        LAST_ARM_OUTCOME="codex_dead_no_first_byte"
++        emit decision "arm_refused by=router model=codex task=${sig8} reason=no_first_byte"
++        log "spawn(codex) no first byte within deadline; spilling to next arm"
++        local fb_abort_rc=0
++        dispatch_abort "${token}" || fb_abort_rc=$?
++        [[ ${fb_abort_rc} -eq 0 ]] && return 7
++        return 5
++      fi
++    fi
+     return 0
+   fi
+ 
+@@ -3837,19 +3909,55 @@ cmd_advance_arm() {
+ # long since expired) can still classify a late quota death and record the lockout.
+ #   leadv2-dispatch-code.sh record-quota-lockout --arm <arm> --handle <handle>
+ #     [--sig8 <sig8>] [--provider <provider>]
++#
++# CODEX-DOOR-DEAD-01 §3: a second, explicitly distinct mode -- STAND-DOWN. Given
++# --hours/--minutes, this asserts a provider is broken (e.g. the runtime is down,
++# not merely out of quota) and stands it down for a fixed duration, bypassing
++# _arm_final_output/_quota_shaped entirely (there is no output to classify --
++# stand-down is asserted, not detected). --handle becomes optional in this mode;
++# --provider (or --arm, resolved via _arm_provider) is required.
++#   leadv2-dispatch-code.sh record-quota-lockout --provider <p> --hours <N>
++#     [--reason <text>]
++# Mode selection is unambiguous: --hours/--minutes present -> stand-down mode.
++# Neither present -> today's quota-classification mode, byte-identical (no
++# existing call site passes a duration flag, so this is strictly additive).
+ # Always rc0 (best-effort, non-fatal observability -- the close gate's own poll loop
+ # must never fail because this classification step failed).
+ cmd_record_quota_lockout() {
+-  local arm="" handle="" sig8="" provider=""
++  local arm="" handle="" sig8="" provider="" hours="" minutes="" reason="provider_broken"
+   while [[ $# -gt 0 ]]; do
+     case "$1" in
+       --arm)      [[ $# -ge 2 ]] && arm="$2"; shift 2 ;;
+       --handle)   [[ $# -ge 2 ]] && handle="$2"; shift 2 ;;
+       --sig8)     [[ $# -ge 2 ]] && sig8="$2"; shift 2 ;;
+       --provider) [[ $# -ge 2 ]] && provider="$2"; shift 2 ;;
++      --hours)    [[ $# -ge 2 ]] && hours="$2"; shift 2 ;;
++      --minutes)  [[ $# -ge 2 ]] && minutes="$2"; shift 2 ;;
++      --reason)   [[ $# -ge 2 ]] && reason="$2"; shift 2 ;;
+       *) shift ;;
+     esac
+   done
++
++  if [[ -n "${hours}" || -n "${minutes}" ]]; then
++    [[ -n "${provider}" ]] || provider="$(_arm_provider "${arm}")"
++    [[ -n "${provider}" ]] || { log_err "record-quota-lockout: --provider (or --arm) is required for stand-down mode"; exit 0; }
++    local _total_minutes
++    if [[ -n "${minutes}" ]]; then
++      [[ "${minutes}" =~ ^[0-9]+$ && "${minutes}" -ge 1 && "${minutes}" -le 10080 ]] || { log_err "record-quota-lockout: --minutes must be an integer in 1..10080, got '${minutes}'"; exit 0; }
++      _total_minutes="${minutes}"
++    else
++      [[ "${hours}" =~ ^[0-9]+$ && "${hours}" -ge 1 && "${hours}" -le 168 ]] || { log_err "record-quota-lockout: --hours must be an integer in 1..168, got '${hours}'"; exit 0; }
++      _total_minutes=$(( hours * 60 ))
++    fi
++    local _iso
++    _iso="$(date -u -v+"${_total_minutes}"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
++      || date -u -d "+${_total_minutes} minutes" +%Y-%m-%dT%H:%M:%SZ)"
++    [[ -n "${_iso}" ]] || { log_err "record-quota-lockout: failed to compute stand-down timestamp"; exit 0; }
++    _record_quota_lockout "${provider}" "${_iso}" "standdown:${reason}"
++    emit decision "quota_standdown_recorded provider=${provider} hours=${hours:-0} minutes=${_total_minutes} until=${_iso} reason=${reason} task=${sig8:--}"
++    exit 0
++  fi
++
+   [[ -n "${arm}" && -n "${handle}" ]] || { log_err "record-quota-lockout: --arm and --handle are required"; exit 0; }
+   [[ -n "${provider}" ]] || provider="$(_arm_provider "${arm}")"
+ 
+diff --git a/plugins/leadv2/scripts/leadv2-review-run.sh b/plugins/leadv2/scripts/leadv2-review-run.sh
+index df46807..7d32a7d 100755
+--- a/plugins/leadv2/scripts/leadv2-review-run.sh
++++ b/plugins/leadv2/scripts/leadv2-review-run.sh
+@@ -231,6 +231,60 @@ review_floor_ok() { # <file> -> 0 if it clears the floor, 1 if not
+   return 0
+ }
+ 
++# _review_resolve_codex_base -> echoes a rev to diff FROM on stdout, rc0. rc1 when
++# no usable base resolves (caller must refuse rather than hand codex a bare `HEAD`
++# that would silently review nothing on an already-committed lane -- the exact
++# mechanism this function exists to avoid; see REVIEW-CODEX-EMPTY-BASE-01 below).
++#
++# REVIEW-CODEX-EMPTY-BASE-01: codex's own `--base HEAD` used to diff the lane's
++# CURRENT HEAD against itself once the lane had already committed its work --
++# collectReviewContext (codex-companion's lib/git.mjs resolveReviewTarget) treats
++# an explicit --base as authoritative and never falls back to working-tree mode,
++# so a committed lane always got an empty branch diff from codex, a short/empty
++# stdout, and the REVIEW-BODY-PERSIST-01 guard downstream (left untouched by this
++# fix, per design) then correctly declared review_body_lost because codex ALWAYS
++# writes its `[codex-task] tier=...` banner to stderr regardless of whether the
++# review body itself was real.
++#
++# This mirrors leadv2-dispatch-product-close.sh's _pc_diff_base exactly (same
++# two-candidate resolution: the lane's recorded start SHA first, origin/main
++# second) rather than re-deriving root/ancestry arithmetic here -- ROOT is this
++# engine's own --root arg (already resolved by the caller, never counted via
++# `../` hops), and LEADV2_LANE_START_SHA is an env var this process already
++# inherits from leadv2-dispatch-code.sh's spawn_product_close (which exports it
++# to leadv2-dispatch-product-close.sh, whose own child-process env -- this
++# engine included -- inherits it for free; no cross-file wiring needed).
++#
++# Degenerate-environment guard: if ROOT is not inside a git working tree at all
++# (a bare fixture tempdir, not a production lane worktree), there is no git
++# ancestry to resolve -- fall back to the OLD literal "HEAD" rather than
++# refusing outright, so this function only ever REFUSES (rc1) when ROOT genuinely
++# is a git repo but no usable merge-base exists in it. This keeps the refusal
++# path scoped to the real Fault B scenario (a committed lane in a real repo)
++# instead of firing on any caller that hands this engine a non-repo directory.
++_review_resolve_codex_base() {
++  if ! git -C "${ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
++    printf 'HEAD'
++    return 0
++  fi
++  local sha="${LEADV2_LANE_START_SHA:-}" base
++  if [[ -n "${sha}" ]] && git -C "${ROOT}" cat-file -e "${sha}^{commit}" 2>/dev/null; then
++    base="$(git -C "${ROOT}" merge-base "${sha}" HEAD 2>/dev/null || true)"
++    if [[ -n "${base}" ]]; then
++      printf '%s' "${base}"
++      return 0
++    fi
++  fi
++  if git -C "${ROOT}" cat-file -e "origin/main^{commit}" 2>/dev/null; then
++    base="$(git -C "${ROOT}" merge-base origin/main HEAD 2>/dev/null || true)"
++    if [[ -n "${base}" ]]; then
++      printf '%s' "${base}"
++      return 0
++    fi
++  fi
++  return 1
++}
++
+ # ---------------------------------------------------------------------------
+ # 4. run_reviewer_arm — lifted verbatim (KIMI-CHANNEL-01b §2.3.1-2.3.2 /
+ #    dispatch-00629379). One behaviour change from the lane copy: output/err
+@@ -244,7 +298,18 @@ run_reviewer_arm() { # <arm>
+   review_err="${HANDOFF}/review-${arm}.err"
+   mission_file="${HANDOFF}/review-mission-${arm}.md"
+   if [[ "${arm}" == codex ]]; then
+-    bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait \
++    local codex_base
++    if ! codex_base="$(_review_resolve_codex_base)"; then
++      emit decision "review_arm_skipped arm=codex reason=no_base_resolved task=${TASK}"
++      review_rc=77
++      return
++    fi
++    if git -C "${ROOT}" diff --quiet "${codex_base}" -- 2>/dev/null; then
++      emit decision "review_arm_skipped arm=codex reason=empty_diff task=${TASK}"
++      review_rc=77
++      return
++    fi
++    bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base "${codex_base}" --wait --cwd "${ROOT}" \
+       --focus "Review ONLY the diff at ${DIFF_FILE}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract} Authoritative surfaces for this repo: \`.claude/CLAUDE.md\`, \`docs/reference/ENGINE-REFERENCE.md\`, \`docs/systems-map/CONTROL-TRUTH.md\`, \`docs/systems-map/TRUTH-TABLE.md\`, \`docs/BOARD.md\`. Read only the ones the diff touches. Treat any \`docs/specs/*.md\` as possibly stale unless corroborated by code. Before promoting a Codex finding, corroborate it against those surfaces; drop or downgrade any finding whose sole basis is a \`docs/specs/*.md\` claim." \
+       > "${review_out}" 2> "${review_err}"; review_rc=$?
+   elif [[ "${arm}" == glm ]]; then
+diff --git a/plugins/leadv2/scripts/tests/run-core-offline.sh b/plugins/leadv2/scripts/tests/run-core-offline.sh
+index ca85106..e4f2a92 100755
+--- a/plugins/leadv2/scripts/tests/run-core-offline.sh
++++ b/plugins/leadv2/scripts/tests/run-core-offline.sh
+@@ -112,6 +112,8 @@ run_check "lane placement pin (--resume-lane/--worktree)" bash "$TEST_DIR/test-l
+ run_check "Codex quota guardrails (effort/circuit/hook)" bash "$TEST_DIR/test-codex-quota-guardrails.sh"
+ run_check "e2e gate lane root + suite family" bash "$TEST_DIR/test-e2e-gate-lane-root.sh"
+ run_check "review body persist (opus/sonnet materialisation + body_lost guard)" bash "$TEST_DIR/test-review-body-persist.sh"
++run_check "review codex base (committed lane never diffs HEAD↔HEAD)" bash "$TEST_DIR/test-review-codex-base.sh"
++run_check "quota stand-down duration (record-quota-lockout --hours)" bash "$TEST_DIR/test-quota-standdown-duration.sh"
+ run_check "core-offline root arithmetic (git-derived REPO_ROOT)" bash "$TEST_DIR/test-core-offline-root-arith.sh"
+ run_check "dispatch arm vocabulary (kimi retirement)" bash "$TEST_DIR/test-dispatch-arm-vocabulary.sh"
+ run_check "foreground-dispatch guard hook" bash "$TEST_DIR/test-fg-dispatch-guard.sh"
+diff --git a/plugins/leadv2/scripts/tests/test-quota-standdown-duration.sh b/plugins/leadv2/scripts/tests/test-quota-standdown-duration.sh
+new file mode 100755
+index 0000000..489ca3c
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-quota-standdown-duration.sh
+@@ -0,0 +1,169 @@
++#!/usr/bin/env bash
++# tests/test-quota-standdown-duration.sh — CODEX-DOOR-DEAD-01 §3: `record-quota-lockout`
++# gains a duration-based stand-down mode (--hours/--minutes), distinct from the
++# existing quota-classification mode. A stand-down asserts a provider is broken; it
++# does not classify launcher output, and it must overwrite an expired lockout file
++# rather than leave it stale (the exact reported failure: `--provider codex --hours 3`
++# recorded a `quota=no` verdict and left an expired lockout file untouched).
++#
++# Drives the REAL leadv2-dispatch-code.sh CLI (never a reimplementation).
++#
++# Run: bash scripts/tests/test-quota-standdown-duration.sh
++# Exit 0 = all pass; non-zero = failures found.
++
++set -uo pipefail
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
++source "${SCRIPTS_ROOT}/leadv2-temp.sh"
++
++DISPATCH_CODE_SH="${SCRIPTS_ROOT}/leadv2-dispatch-code.sh"
++
++PASS=0; FAIL=0; ERRORS=()
++log()  { printf -- '[TEST] %s\n' "$*"; }
++pass() { PASS=$((PASS + 1)); log "PASS: $1"; }
++fail() { FAIL=$((FAIL + 1)); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
++
++if bash -n "$DISPATCH_CODE_SH"; then
++  pass "bash -n clean (leadv2-dispatch-code.sh)"
++else
++  fail "bash -n failed on leadv2-dispatch-code.sh"
++fi
++if /bin/bash -n "$DISPATCH_CODE_SH" 2>/dev/null; then
++  pass "/bin/bash 3.2 -n clean (leadv2-dispatch-code.sh)"
++else
++  fail "/bin/bash 3.2 -n failed on leadv2-dispatch-code.sh"
++fi
++
++SUITE_TMP="$(lv2_mktemp_dir "quota-standdown-test")"
++trap 'rm -rf "$SUITE_TMP"' EXIT
++
++now_epoch() { date +%s; }
++
++run_code() { # <lockout-dir> [extra args...]
++  local lockout_dir="$1"; shift
++  LEADV2_QUOTA_LOCKOUT_DIR="$lockout_dir" \
++  LEADV2_JOURNAL_BIN=/bin/true \
++    bash "$DISPATCH_CODE_SH" record-quota-lockout "$@" 2>&1
++}
++
++journal_line() { # <lockout-dir> [extra args...] -> stderr `emit`/`log` line (JOURNAL_TASK is
++  # unset for this subcommand, so emit() only ever reaches its `log` stderr fallback, never
++  # LEADV2_JOURNAL_BIN -- capture that directly rather than stubbing a journal binary.
++  local lockout_dir="$1"; shift
++  LEADV2_QUOTA_LOCKOUT_DIR="$lockout_dir" \
++  LEADV2_JOURNAL_BIN=/bin/true \
++    bash "$DISPATCH_CODE_SH" record-quota-lockout "$@" 2>&1
++}
++
++# ── Test 1: --provider codex --hours 3 writes a lockout ~3h out, source starts standdown: ──
++dir1="${SUITE_TMP}/t1"; mkdir -p "$dir1"
++out1="$(run_code "$dir1" --provider codex --hours 3)"; rc1=$?
++lock1="${dir1}/quota-lockout-codex.json"
++if [[ $rc1 -eq 0 ]]; then pass "Test 1: exit 0"; else fail "Test 1: expected exit 0, got ${rc1} -- ${out1}"; fi
++if [[ -f "$lock1" ]]; then
++  epoch1="$(python3 -c "import json;print(json.load(open('$lock1')).get('locked_until_epoch',0))")"
++  source1="$(python3 -c "import json;print(json.load(open('$lock1')).get('source',''))")"
++  expect1=$(( $(now_epoch) + 10800 ))
++  delta1=$(( epoch1 - expect1 )); delta1=${delta1#-}
++  if [[ "$delta1" -le 120 ]]; then pass "Test 1: locked_until_epoch ~= now+10800 (delta=${delta1}s)"; else fail "Test 1: locked_until_epoch off by ${delta1}s"; fi
++  if [[ "$source1" == standdown:* ]]; then pass "Test 1: source starts 'standdown:' (got ${source1})"; else fail "Test 1: source is '${source1}', expected standdown:*"; fi
++else
++  fail "Test 1: quota-lockout-codex.json not written"
++fi
++
++# ── Test 2: overwrites a pre-existing EXPIRED lockout file (the exact reported failure) ──
++dir2="${SUITE_TMP}/t2"; mkdir -p "$dir2"
++lock2="${dir2}/quota-lockout-codex.json"
++python3 -c "
++import json
++json.dump({'provider':'codex','locked_until':'2020-01-01T00:00:00Z','locked_until_epoch':1577836800,'source':'launcher_refusal:quota'}, open('$lock2','w'))
++"
++run_code "$dir2" --provider codex --hours 3 >/dev/null; rc2=$?
++if [[ $rc2 -eq 0 ]]; then pass "Test 2: exit 0"; else fail "Test 2: expected exit 0, got ${rc2}"; fi
++epoch2="$(python3 -c "import json;print(json.load(open('$lock2')).get('locked_until_epoch',0))")"
++if [[ "$epoch2" -gt $(now_epoch) ]]; then
++  pass "Test 2: expired lockout file overwritten, epoch now in the future"
++else
++  fail "Test 2: lockout file still expired (epoch=${epoch2}, now=$(now_epoch))"
++fi
++
++# ── Test 3: quota precheck (_provider_available) refuses codex after the stand-down ──
++# _provider_available's own reader contract (leadv2-dispatch-code.sh:989) is exactly
++# "locked_until_epoch > now => locked" -- this test exercises the SAME file this
++# stand-down call wrote and applies that identical, unmodified contract to it.
++dir3="${SUITE_TMP}/t3"; mkdir -p "$dir3"
++run_code "$dir3" --provider codex --hours 3 >/dev/null
++lock3="${dir3}/quota-lockout-codex.json"
++epoch3="$(python3 -c "import json;print(json.load(open('$lock3')).get('locked_until_epoch',0))" 2>/dev/null || echo 0)"
++if [[ "$epoch3" -gt $(now_epoch) ]]; then
++  pass "Test 3: codex refused by the quota precheck (locked_until_epoch in the future)"
++else
++  fail "Test 3: codex would NOT be refused -- locked_until_epoch=${epoch3}, now=$(now_epoch)"
++fi
++
++# ── Test 4: legacy path intact -- --arm/--handle with non-quota output, no duration ──
++dir4="${SUITE_TMP}/t4"; mkdir -p "$dir4"
++handle4="${SUITE_TMP}/t4/handle.txt"
++printf 'plain error, nothing quota-shaped here\n' > "$handle4"
++# _arm_final_output reads from the ledger dir by handle; simplest is to point
++# LEADV2_QUOTA_LOCKOUT_DIR at dir4 and rely on _arm_final_output's fallback (a
++# missing/unreadable handle record yields empty output, which is not quota-shaped).
++out4="$(journal_line "$dir4" --arm codex --handle nonexistent-handle-4 --sig8 tsig004)"; rc4=$?
++lock4="${dir4}/quota-lockout-codex.json"
++if [[ $rc4 -eq 0 ]]; then pass "Test 4: exit 0"; else fail "Test 4: expected exit 0, got ${rc4} -- ${out4}"; fi
++if [[ ! -f "$lock4" ]]; then
++  pass "Test 4: no lockout file written (legacy quota=no path)"
++else
++  fail "Test 4: lockout file unexpectedly written for non-quota-shaped output"
++fi
++if [[ "$out4" == *'arm_postspawn_verdict arm=codex state=failed quota=no'* ]]; then
++  pass "Test 4: journal shows arm_postspawn_verdict ... quota=no"
++else
++  fail "Test 4: journal missing arm_postspawn_verdict quota=no line -- ${out4}"
++fi
++
++# ── Test 5: bad --hours values -- rc0, no file written, stderr names the bad value ──
++dir5a="${SUITE_TMP}/t5a"; mkdir -p "$dir5a"
++out5a="$(run_code "$dir5a" --provider codex --hours abc)"; rc5a=$?
++if [[ $rc5a -eq 0 && ! -f "${dir5a}/quota-lockout-codex.json" && "$out5a" == *"--hours"* ]]; then
++  pass "Test 5a: --hours abc -> rc0, no file, stderr names bad value"
++else
++  fail "Test 5a: --hours abc -- rc=${rc5a} out=${out5a} file=$(ls "$dir5a" 2>/dev/null)"
++fi
++
++dir5b="${SUITE_TMP}/t5b"; mkdir -p "$dir5b"
++out5b="$(run_code "$dir5b" --provider codex --hours 0)"; rc5b=$?
++if [[ $rc5b -eq 0 && ! -f "${dir5b}/quota-lockout-codex.json" ]]; then
++  pass "Test 5b: --hours 0 -> rc0, no file"
++else
++  fail "Test 5b: --hours 0 -- rc=${rc5b} out=${out5b} file=$(ls "$dir5b" 2>/dev/null)"
++fi
++
++dir5c="${SUITE_TMP}/t5c"; mkdir -p "$dir5c"
++out5c="$(run_code "$dir5c" --provider codex --hours 999)"; rc5c=$?
++if [[ $rc5c -eq 0 && ! -f "${dir5c}/quota-lockout-codex.json" ]]; then
++  pass "Test 5c: --hours 999 (out of 1..168 range) -> rc0, no file"
++else
++  fail "Test 5c: --hours 999 -- rc=${rc5c} out=${out5c} file=$(ls "$dir5c" 2>/dev/null)"
++fi
++
++# ── Test 6: journal shows quota_standdown_recorded, NOT quota_lockout_recorded ──
++dir6="${SUITE_TMP}/t6"; mkdir -p "$dir6"
++out6="$(journal_line "$dir6" --provider codex --hours 3)"
++if [[ "$out6" == *'quota_standdown_recorded provider=codex hours=3'* ]]; then
++  pass "Test 6: journal emits quota_standdown_recorded provider=codex hours=3"
++else
++  fail "Test 6: journal missing quota_standdown_recorded line -- ${out6}"
++fi
++if [[ "$out6" == *'quota_lockout_recorded'* ]]; then
++  fail "Test 6: journal ALSO emitted quota_lockout_recorded (must be distinct from stand-down)"
++else
++  pass "Test 6: journal does NOT emit quota_lockout_recorded for a stand-down"
++fi
++
++printf -- '\n[TEST] %d passed, %d failed\n' "$PASS" "$FAIL"
++if [[ "$FAIL" -gt 0 ]]; then
++  printf '%s\n' "${ERRORS[@]}"
++  exit 1
++fi
++exit 0
+diff --git a/plugins/leadv2/scripts/tests/test-review-codex-base.sh b/plugins/leadv2/scripts/tests/test-review-codex-base.sh
+new file mode 100755
+index 0000000..4fe42f0
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-review-codex-base.sh
+@@ -0,0 +1,284 @@
++#!/usr/bin/env bash
++# tests/test-review-codex-base.sh — REVIEW-CODEX-EMPTY-BASE-01: a committed lane must
++# never hand codex a bare `--base HEAD`, because codex-companion's resolveReviewTarget
++# treats an explicit --base as authoritative and never falls back to working-tree mode
++# -- diffing HEAD against itself yields an empty branch diff, a short/empty stdout, and
++# the REVIEW-BODY-PERSIST-01 guard downstream correctly (but misleadingly) reports
++# review_body_lost, because codex always writes its `[codex-task] tier=...` banner to
++# stderr regardless of whether a real review body exists.
++#
++# Drives the REAL leadv2-review-run.sh CLI end to end (never a reimplementation). The
++# codex launcher is stubbed via LEADV2_DISPATCH_CODEX_BIN with a recorder script that
++# appends its own argv to a file and exits 0 -- the assertion is on WHAT BASE codex was
++# handed, never on codex's output.
++#
++# Run: bash scripts/tests/test-review-codex-base.sh
++# Exit 0 = all pass; non-zero = failures found.
++
++set -uo pipefail
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
++source "${SCRIPTS_ROOT}/leadv2-temp.sh"
++
++REVIEW_RUN_SH="${SCRIPTS_ROOT}/leadv2-review-run.sh"
++
++PASS=0; FAIL=0; ERRORS=()
++log()  { printf -- '[TEST] %s\n' "$*"; }
++pass() { PASS=$((PASS + 1)); log "PASS: $1"; }
++fail() { FAIL=$((FAIL + 1)); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
++
++if bash -n "$REVIEW_RUN_SH"; then
++  pass "bash -n clean (leadv2-review-run.sh)"
++else
++  fail "bash -n failed on leadv2-review-run.sh"
++fi
++if /bin/bash -n "$REVIEW_RUN_SH" 2>/dev/null; then
++  pass "/bin/bash 3.2 -n clean (leadv2-review-run.sh)"
++else
++  fail "/bin/bash 3.2 -n failed on leadv2-review-run.sh"
++fi
++
++SUITE_TMP="$(lv2_mktemp_dir "review-codex-base-test")"
++trap 'rm -rf "$SUITE_TMP"' EXIT
++
++# make_committed_lane <name> -> prints repo path. History: init commit (becomes
++# refs/remotes/origin/main AND the recorded start SHA), then one committed lane change
++# on top (becomes HEAD) -- i.e. an ALREADY-COMMITTED lane, the exact Fault A scenario.
++make_committed_lane() {
++  local name="$1"
++  local repo="${SUITE_TMP}/${name}/root"
++  mkdir -p "$repo"
++  git -C "$repo" init -q
++  git -C "$repo" config user.email "test@test.local"
++  git -C "$repo" config user.name "test"
++  printf 'baseline\n' > "$repo/file.txt"
++  git -C "$repo" add file.txt
++  git -C "$repo" commit -q -m init
++  lv2_assert_scratch_repo "$repo"
++  local start_sha
++  start_sha="$(git -C "$repo" rev-parse HEAD)"
++  git -C "$repo" update-ref refs/remotes/origin/main "$start_sha"
++  printf '%s\n' "${name}-lane-change" >> "$repo/file.txt"
++  git -C "$repo" add file.txt
++  git -C "$repo" commit -q -m "lane change"
++  printf '%s' "$start_sha"
++}
++
++# make_codex_recorder <name> -> prints the stub path. Appends its own argv (one per
++# invocation) to ${SUITE_TMP}/<name>/codex-invocations.log and exits 0; never
++# invoked means the log file never appears.
++make_codex_recorder() {
++  local name="$1"
++  local stub="${SUITE_TMP}/${name}/codex-recorder.sh"
++  local logf="${SUITE_TMP}/${name}/codex-invocations.log"
++  mkdir -p "$(dirname "$stub")"
++  cat > "$stub" <<SH
++#!/usr/bin/env bash
++printf '%s\n' "\$*" >> "${logf}"
++printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\nstub codex review body, long enough to clear the floor check comfortably for this fixture.\n'
++exit 0
++SH
++  chmod +x "$stub"
++  printf '%s' "$stub"
++}
++
++# make_resolver_stub <name> -> resolver that always selects codex as sole reviewer/pool.
++make_resolver_stub() {
++  local name="$1"
++  local stub="${SUITE_TMP}/${name}/resolver.py"
++  mkdir -p "$(dirname "$stub")"
++  cat > "$stub" <<'PY'
++print("reviewer=codex")
++print("pool=codex:ok:")
++print("refusal=")
++PY
++  printf '%s' "$stub"
++}
++
++run_review() { # <root> <task> <handoff> <diff-file> <invoc-log-name>
++  # Internally this engine shells out to leadv2-dispatch-code.sh record-review, which
++  # by default writes a REAL dedup ledger (~/.claude/cache/code-review-ledger) and a
++  # REAL docs/leadv2/tasks/review-<hash>/journal.md in THIS repo -- LEADV2_DISPATCH_CACHE_DIR
++  # and LEADV2_JOURNAL_BIN redirect both into the scratch tempdir so this test never
++  # leaks artifacts into the real repo tree or a shared ledger other lanes read.
++  local root="$1" task="$2" handoff="$3" diff_file="$4" name="$5"
++  local resolver codex_bin
++  resolver="$(make_resolver_stub "$name")"
++  codex_bin="$(make_codex_recorder "$name")"
++  mkdir -p "$handoff" "${SUITE_TMP}/${name}/cache"
++  LEADV2_GLM_POLICY_RESOLVER="$resolver" \
++  LEADV2_DISPATCH_CODEX_BIN="$codex_bin" \
++  LEADV2_DISPATCH_CACHE_DIR="${SUITE_TMP}/${name}/cache" \
++  LEADV2_JOURNAL_BIN=/bin/true \
++  LEADV2_REVIEW_FANOUT=1 \
++    bash "$REVIEW_RUN_SH" --task "$task" --root "$root" --handoff "$handoff" --diff "$diff_file" --author sonnet >/dev/null 2>&1
++  printf '%s' $?
++}
++
++make_diff_file() { # <name> -> prints path of a non-empty scratch diff file, content
++  # unique per scenario so distinct runs never collide on the real diff-hash dedup
++  # ledger leadv2-review-run.sh consults (docs/leadv2/tasks/review-<hash>/journal.md).
++  local name="$1"
++  local f="${SUITE_TMP}/${name}/diff.txt"
++  mkdir -p "$(dirname "$f")"
++  printf -- '--- a/file.txt\n+++ b/file.txt\n@@\n-baseline\n+changed-%s-%s\n' "${name}" "$$" > "$f"
++  printf '%s' "$f"
++}
++
++# ── Scenario 1: LEADV2_LANE_START_SHA set to the pre-commit SHA ─────────────────────
++n1="s1"
++start1="$(make_committed_lane "$n1")"
++root1="${SUITE_TMP}/${n1}/root"
++head1="$(git -C "$root1" rev-parse HEAD)"
++handoff1="${SUITE_TMP}/${n1}/handoff"
++diff1="$(make_diff_file "$n1")"
++rc1="$(LEADV2_LANE_START_SHA="$start1" run_review "$root1" "tsig001" "$handoff1" "$diff1" "$n1")"
++log1="${SUITE_TMP}/${n1}/codex-invocations.log"
++if [[ -f "$log1" ]]; then
++  argv1="$(cat "$log1")"
++  base1="$(printf '%s\n' "$argv1" | sed -n 's/.*--base \([^ ]*\).*/\1/p' | head -1)"
++  if [[ -n "$base1" && "$base1" != "$head1" && "$base1" != "HEAD" ]]; then
++    pass "Scenario 1: recorded --base (${base1}) differs from HEAD (${head1})"
++  else
++    fail "Scenario 1: recorded --base='${base1}' should differ from HEAD='${head1}' -- argv: ${argv1}"
++  fi
++  if [[ "$argv1" == *"--cwd ${root1}"* ]]; then
++    pass "Scenario 1: argv contains --cwd ${root1}"
++  else
++    fail "Scenario 1: argv missing --cwd ${root1} -- argv: ${argv1}"
++  fi
++else
++  fail "Scenario 1: codex launcher never invoked -- ${log1} missing (rc=${rc1})"
++fi
++
++# ── Scenario 2: LEADV2_LANE_START_SHA unset -> falls back to origin/main ────────────
++n2="s2"
++make_committed_lane "$n2" >/dev/null
++root2="${SUITE_TMP}/${n2}/root"
++head2="$(git -C "$root2" rev-parse HEAD)"
++handoff2="${SUITE_TMP}/${n2}/handoff"
++diff2="$(make_diff_file "$n2")"
++unset LEADV2_LANE_START_SHA
++rc2="$(run_review "$root2" "tsig002" "$handoff2" "$diff2" "$n2")"
++log2="${SUITE_TMP}/${n2}/codex-invocations.log"
++if [[ -f "$log2" ]]; then
++  argv2="$(cat "$log2")"
++  base2="$(printf '%s\n' "$argv2" | sed -n 's/.*--base \([^ ]*\).*/\1/p' | head -1)"
++  if [[ -n "$base2" && "$base2" != "$head2" && "$base2" != "HEAD" ]]; then
++    pass "Scenario 2: base resolves from origin/main, still != HEAD (base=${base2})"
++  else
++    fail "Scenario 2: recorded --base='${base2}' should differ from HEAD='${head2}' -- argv: ${argv2}"
++  fi
++else
++  fail "Scenario 2: codex launcher never invoked -- ${log2} missing (rc=${rc2})"
++fi
++
++# ── Scenario 3: committed lane, no start-SHA and no origin/main -> refused, no base ──
++n3="s3"
++root3="${SUITE_TMP}/${n3}/root"
++mkdir -p "$root3"
++git -C "$root3" init -q
++git -C "$root3" config user.email "test@test.local"
++git -C "$root3" config user.name "test"
++printf 'baseline\n' > "$root3/file.txt"
++git -C "$root3" add file.txt
++git -C "$root3" commit -q -m init
++lv2_assert_scratch_repo "$root3"
++printf 's3-lane-change\n' >> "$root3/file.txt"
++git -C "$root3" add file.txt
++git -C "$root3" commit -q -m "lane change"
++handoff3="${SUITE_TMP}/${n3}/handoff"
++diff3="$(make_diff_file "$n3")"
++mkdir -p "$handoff3" "${SUITE_TMP}/${n3}/cache"
++resolver3="$(make_resolver_stub "$n3")"
++codex_bin3="$(make_codex_recorder "$n3")"
++LEADV2_GLM_POLICY_RESOLVER="$resolver3" \
++LEADV2_DISPATCH_CODEX_BIN="$codex_bin3" \
++LEADV2_DISPATCH_CACHE_DIR="${SUITE_TMP}/${n3}/cache" \
++LEADV2_JOURNAL_BIN=/bin/true \
++LEADV2_REVIEW_FANOUT=1 \
++  bash "$REVIEW_RUN_SH" --task "tsig003" --root "$root3" --handoff "$handoff3" --diff "$diff3" --author sonnet \
++  >/dev/null 2>"${SUITE_TMP}/${n3}/stderr.log"
++log3="${SUITE_TMP}/${n3}/codex-invocations.log"
++if [[ ! -f "$log3" ]]; then
++  pass "Scenario 3: codex launcher never invoked (no resolvable base)"
++else
++  fail "Scenario 3: codex launcher was invoked -- $(cat "$log3")"
++fi
++if grep -q 'review_arm_skipped arm=codex reason=no_base_resolved' "${SUITE_TMP}/${n3}/stderr.log" 2>/dev/null; then
++  pass "Scenario 3: journal shows review_arm_skipped arm=codex reason=no_base_resolved"
++else
++  fail "Scenario 3: missing review_arm_skipped reason=no_base_resolved -- $(cat "${SUITE_TMP}/${n3}/stderr.log" 2>/dev/null)"
++fi
++if grep -q 'review_body_lost' "${SUITE_TMP}/${n3}/stderr.log" 2>/dev/null; then
++  fail "Scenario 3: unexpectedly reported review_body_lost for a cleanly skipped arm"
++else
++  pass "Scenario 3: no review_body_lost verdict for the skipped arm"
++fi
++
++# ── Scenario 4: lane whose HEAD == base (nothing to review) -> empty_diff skip ──────
++n4="s4"
++root4="${SUITE_TMP}/${n4}/root"
++mkdir -p "$root4"
++git -C "$root4" init -q
++git -C "$root4" config user.email "test@test.local"
++git -C "$root4" config user.name "test"
++printf 'baseline\n' > "$root4/file.txt"
++git -C "$root4" add file.txt
++git -C "$root4" commit -q -m init
++lv2_assert_scratch_repo "$root4"
++start4="$(git -C "$root4" rev-parse HEAD)"
++git -C "$root4" update-ref refs/remotes/origin/main "$start4"
++# No further commit: HEAD == start4 == origin/main -> empty diff.
++handoff4="${SUITE_TMP}/${n4}/handoff"
++diff4="$(make_diff_file "$n4")"
++rc4="$(LEADV2_LANE_START_SHA="$start4" run_review "$root4" "tsig004" "$handoff4" "$diff4" "$n4")"
++log4="${SUITE_TMP}/${n4}/codex-invocations.log"
++if [[ ! -f "$log4" ]]; then
++  pass "Scenario 4: codex launcher never invoked (empty diff)"
++else
++  fail "Scenario 4: codex launcher was invoked -- $(cat "$log4")"
++fi
++
++# ── Scenario 5: ROOT is a non-git tempdir -> degenerate escape, literal --base HEAD ─
++n5="s5"
++root5="${SUITE_TMP}/${n5}/root"
++mkdir -p "$root5"
++handoff5="${SUITE_TMP}/${n5}/handoff"
++diff5="$(make_diff_file "$n5")"
++rc5="$(run_review "$root5" "tsig005" "$handoff5" "$diff5" "$n5")"
++log5="${SUITE_TMP}/${n5}/codex-invocations.log"
++if [[ -f "$log5" ]]; then
++  argv5="$(cat "$log5")"
++  if [[ "$argv5" == *"--base HEAD"* ]]; then
++    pass "Scenario 5: non-git ROOT preserves the degenerate escape (--base HEAD)"
++  else
++    fail "Scenario 5: expected literal --base HEAD on a non-git ROOT -- argv: ${argv5}"
++  fi
++else
++  fail "Scenario 5: codex launcher never invoked on the degenerate-escape path (rc=${rc5})"
++fi
++
++# ── Scenario 6: regression guard -- no committed-lane scenario (1-4) ever recorded a
++#    bare '--base HEAD' ─────────────────────────────────────────────────────────────
++any_bare_head=0
++for n in s1 s2 s4; do
++  lf="${SUITE_TMP}/${n}/codex-invocations.log"
++  [[ -f "$lf" ]] || continue
++  if grep -qE -- '--base HEAD( |$)' "$lf"; then
++    any_bare_head=1
++    fail "Scenario 6: ${n} recorded a bare --base HEAD -- $(cat "$lf")"
++  fi
++done
++# s3 is the refusal scenario: no invocation at all is the correct outcome, already
++# asserted above, so it is excluded from this bare-HEAD scan by construction.
++if [[ "$any_bare_head" -eq 0 ]]; then
++  pass "Scenario 6: no committed-lane scenario recorded a bare --base HEAD"
++fi
++
++printf -- '\n[TEST] %d passed, %d failed\n' "$PASS" "$FAIL"
++if [[ "$FAIL" -gt 0 ]]; then
++  printf '%s\n' "${ERRORS[@]}"
++  exit 1
++fi
++exit 0

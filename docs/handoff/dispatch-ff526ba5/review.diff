@@ -1,0 +1,135 @@
+diff --git a/plugins/leadv2/docs/work-placement.md b/plugins/leadv2/docs/work-placement.md
+new file mode 100644
+index 0000000..7da0fa9
+--- /dev/null
++++ b/plugins/leadv2/docs/work-placement.md
+@@ -0,0 +1,129 @@
++# Work Placement — fork vs fresh agent vs lane (WHEN-TO-FORK-01, 2026-08-16; fix round 1, 2026-08-17)
++
++Canonical rule for **where** work goes when the lead moves it off its own context. One
++**precondition asked first**, then **one yes/no branch test** — the precondition gates
++entry to the branch test; it is not a branch and cannot be routed around.
++
++> This doc decides *where* work runs. `docs/model-effort-matrix.md` decides *which model*
++> runs it. Orthogonal axes: answer placement here first, model there second.
++
++A rule that lives only in judgement degrades exactly when a session is long and tired —
++which is when it matters most. So everything below is a yes/no question about an
++**observable property of the work**, checkable in one look. Adjectives are not tests.
++
++---
++
++## Step 0 — precondition (asked first, always; not a branch)
++
++*Does doing this work require something that exists only in this conversation — a decision
++made earlier in this session, text this session authored, a founder statement not written
++to disk?*
++
++If **yes**, you must do one of two things before dispatching anywhere:
++
++1. **Materialize it** — write the decision/statement verbatim into the mission text or
++   `context.yaml` `decisions[]`. It is now on disk, the precondition is discharged, and
++   the work proceeds to the branch test below like any other work.
++2. **Fork** — when the dependency is the session's *whole* reasoning trail and not a
++   quotable fact or two, so materializing it means transcribing the session.
++
++Materializing is the default; forking is the escape hatch for when materializing is not
++tractable. Never dispatch context-dependent work without discharging this step — that is
++the exact failure this rule exists to prevent. Forking is not discouraged: when the
++dependency really is the session's whole reasoning trail, a fork is the correct outcome.
++
++## The branch test (after Step 0; exactly one outcome matches)
++
++*Does this work leave a durable artifact behind — a committed diff, or a file another
++session will cite after this one ends?*
++
++- **Yes → dispatch lane.** A lane exists to buy exactly three things: an isolated
++  worktree, a review gate, and a close that records what landed. Durable output needs all
++  three.
++- **No → fresh agent.** A bounded question answerable from repo, prod, or logs alone. One
++  spawn, one summary back to chat, no file. Session context is not neutral here, it is
++  noise: it costs tokens on every remaining turn of the parent and can poison the answer
++  with the session's own wrong turns.
++
++### Report-only work is not an edge case
++
++The branch test's second clause ("a file another session will cite after this one ends")
++already decides it. Report-only work (a deliverable file, not a diff) whose close-time
++handling is governed by `REPORT-ONLY-GATE-01` (prose rubric:
++`plugins/leadv2/scripts/leadv2-dispatch-product-close.sh:1987`) matches **lane**: the
++review gate is what makes the report citable; a report nobody reviewed is a claim, not
++evidence. If nothing will read the file after this session ends, it never passes the
++branch test — answer in ≤50 words to chat, no file.
++
++### Not tests
++
++"Complex", "important", "big", "risky", "it's been a long session" — none of these select
++an outcome. If Step 0 and the branch test do not decide it, the honest answer is that the
++work is under-specified; split it until each piece answers them.
++
++### Cost asymmetry (why the default stops being "lane")
++
++A lane = worktree claim + architect prepass + worker + review gate + close ≈ several agent
++hops and minutes of wall-clock. A fresh agent = one spawn, one summary back. A fork = the
++session's whole context re-sent. Reaching for a lane on a 70-second question is not
++caution, it is a ~50× overpay.
++
++And a fork is not a cheaper lane: it is the *only* way to carry un-materializable context,
++and it buys no review gate — which is why Step 0 prefers materializing.
++
++---
++
++## Verification — two kinds, not one
++
++### (b1) Read-only fact check → fresh agent
++
++*"Is this ledger row still true?"* — the answer is one of a small closed set (true/false,
++a number, a path), it is checkable against disk or prod without editing anything, nothing
++is written, and no gated lifecycle step branches on it. Nothing to isolate, nothing to
++review.
++
++### (b2) Phase 7 live verification → stays in the task-owning lane
++
++Phase 7 verification is **not output-free**. Its outputs:
++
++| Output | Where it lands | Why it is not "output-free" |
++|---|---|---|
++| The pass/fail verdict itself | verify/close state written by the lane's close path | A later session reads it as the record of whether the change actually worked |
++| Probe evidence (the live signal, re-probed on every 0/null) | task journal / handoff artifacts | It is the evidence backing the completion claim |
++| The deploy/rollback decision | acted on, not just reported | Phase 7 failing routes to Recovery — the verifier owns that handoff |
++
++Phase 7 verification is a **gated lifecycle step of the owning lane**, not a question the
++lane asks someone else. It is not dispatched anywhere; it runs where the task's ownership,
++worktree, and rollback authority already live. Routing it to a fresh agent would hand a
++deploy/rollback gate to an agent with no worktree, no ownership, and nothing to roll back
++with — the weakest accountability surface in the system.
++
++### The discriminator (mechanical, one look)
++
++*Does anything downstream branch on this answer, or does the answer get written somewhere
++a later session reads?*
++Either yes → it is not a fact check. It belongs to the lane that owns the thing being
++verified. Both no → fresh agent.
++
++---
++
++## If this needs teeth (not built here)
++
++Stated so a future task has a spec; this doc ships a rule, not machinery:
++
++- A `PreToolUse` advisory modelled exactly on `leadv2-routing-guard.sh` (see
++  `docs/routing-enforcement.md`): fires when a dispatch/fanout is opened, greps the
++  mission text for a diff-producing intent (`LANE_WRITES:` present, or an `acceptance:`
++  surface of `rendered_line|prod_db_row|http_response|file_artifact`), and when absent
++  emits to stderr: *"this mission produces no diff and names no durable deliverable — the
++  branch test says fresh agent; see docs/work-placement.md"*. **Advisory, exit 0, never
++  blocks** — the hook warns, the lead decides.
++- Cheaper still: the dispatch door already requires a `LANE_WRITES:` line. A mission
++  whose `LANE_WRITES` is empty is, by the branch test, a fresh-agent candidate — the
++  signal already exists on disk and only needs reading. Docs-only is *not*: a durable
++  deliverable is a lane.
++
++## Non-goals of this doc
++
++No hook, no script, no gate was added by the lane that authored this rule. Placement is
++advisory documentation the lead reads; nothing here blocks a dispatch.

@@ -1,0 +1,1404 @@
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-code.sh b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+index fdb8f1e..7a477e5 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-code.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-code.sh
+@@ -365,6 +365,20 @@ _ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+ # `bash -x`, not by theorizing about load/flock contention). Restore immediately after the
+ # source so a library's own options can never leak into a caller that opted out of them.
+ set +e
++# REPORT-ONLY-GATE-01: shared parse/locate/substantive/harvest lib for report-declaring
++# lanes (LANE_DELIVERABLE: report:<path>). Guarded source + no-op stub, the same
++# degrade-never-break idiom as _REFUSAL_CLASSIFY_SH in product-close: a missing lib
++# means no lane can flip to kind=report, never a broken dispatch. The lib sets
++# `-uo pipefail` only (no -e to leak past the `set +e` above).
++_REPORT_DELIVERABLE_SH="${SCRIPT_DIR}/lib/leadv2-report-deliverable.sh"
++if [[ ! -f "${_REPORT_DELIVERABLE_SH}" ]]; then
++  _REPORT_DELIVERABLE_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh"
++fi
++if [[ -f "${_REPORT_DELIVERABLE_SH}" ]]; then
++  source "${_REPORT_DELIVERABLE_SH}"
++else
++  lv2_deliverable_parse() { return 1; }
++fi
+ _stamp_active_phase() { # <task_id> <phase>
+   [[ -n "${1:-}" ]] || return 0
+   declare -F leadv2_active_update_phase >/dev/null || return 0
+@@ -1688,6 +1702,17 @@ _prepass_writes() { # <sig8> -> CSV writes or empty
+   (IFS=','; printf '%s' "${kept[*]:-}")
+ }
+ 
++# REPORT-ONLY-GATE-01: harvest the mission's own `LANE_DELIVERABLE:` declaration, using
++# the same tolerant matcher as _prepass_writes above (markdown emphasis / leading
++# indentation must not read as "absent"). Harvested from the MISSION, never from the
++# architect prepass: a report lane is a property of the founder's ask, not of a design.
++# Returns the raw declaration (e.g. "report:docs/handoff/X/report.md") or empty.
++_mission_deliverable() { # <mission-text> -> declaration or empty
++  local line
++  line="$(printf '%s' "$1" | grep -m1 -iE '^[[:space:]*_]*LANE_DELIVERABLE[*_]*:' 2>/dev/null)" || return 0
++  printf '%s' "${line}" | sed -E 's/^[[:space:]*_]*LANE_DELIVERABLE[*_]*:[[:space:]]*//I'
++}
++
+ # KIMI-CHANNEL-REHAB-01: only narrow, bounded implementation missions enter the
+ # Kimi rung. A founder's --kimi-fit override deliberately bypasses every
+ # heuristic. On the explicit non-product/no-prepass path, an absent write-set
+@@ -1751,6 +1776,16 @@ _lane_writes_guard() {
+   local sig8="$1" row_writes="$2" have_prepass="$3"
+   [[ "${REQUIRE_LANE_WRITES}" == "1" ]] || return 0
+   [[ -n "${row_writes}" ]] && return 0
++  # REPORT-ONLY-GATE-01: a report lane legitimately has NO LANE_WRITES — its deliverable
++  # lives under docs/handoff/ by contract, which the writes grammar itself excludes. A
++  # lane that declared (and had validated, at resolve time) an exactly-parsable
++  # `report:<path>` deliverable satisfies the guard through that declaration instead.
++  # LANE_DELIVERABLE_DECL is set once in cmd_resolve before any prepass call site.
++  # REQUIRE_LANE_WRITES semantics for diff lanes above are untouched.
++  if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]] && lv2_deliverable_parse "${LANE_DELIVERABLE_DECL}" >/dev/null; then
++    emit decision "lane_writes task=${sig8} source=report_deliverable"
++    return 0
++  fi
+   if [[ "${have_prepass}" == "1" ]] && [[ -n "$(_prepass_writes "${sig8}")" ]]; then return 0; fi
+   local _wt=""
+   # R2 (W-1 lane-worktree-isolation prepass): pin LEADV2_PROJECT_ROOT to the main
+@@ -2095,12 +2130,12 @@ spawn_worker() {
+   return ${rc}
+ }
+ 
+-spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id> <lane_mission_path>
++spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligible arms csv> <lane_writes_csv> <founder_task_id> <lane_mission_path> [<lane_deliverable_decl>]
+   # N7F-LANE-NAME: forwards DISPATCH_LANE_NAME as close_bin's 8th positional (not a 7th
+   # param on this fn -- read from the global, same pattern as _dl_note above) so the
+   # display name survives the worker->close-phase handoff for act two.
+   local sig8="$1" author="$2" handle="$3" reviewer_arms="${4:-}" lane_writes_csv="${5:-}"
+-  local founder_task_id="${6:-}" lane_mission_path="${7:-}"
++  local founder_task_id="${6:-}" lane_mission_path="${7:-}" lane_deliverable_decl="${8:-}"
+   [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]] || return 0
+   local close_bin="${LEADV2_DISPATCH_PRODUCT_CLOSE_BIN:-${SCRIPT_DIR}/leadv2-dispatch-product-close.sh}"
+   if [[ ! -f "${close_bin}" ]]; then
+@@ -2121,6 +2156,7 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
+     LEADV2_DISPATCH_CANDIDATE_ARMS="${reviewer_arms}" \
+     LEADV2_DISPATCH_LANE_MISSION="${lane_mission_path}" \
+     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
++    LEADV2_DISPATCH_LANE_DELIVERABLE="${lane_deliverable_decl}" \
+     LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" \
+     LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
+     "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" "${DISPATCH_LANE_NAME:-}" \
+@@ -2894,7 +2930,7 @@ cmd_status() {
+ # ── resolve (default) path ────────────────────────────────────────────────────────
+ cmd_resolve() {
+   local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
+-  local lane_writes="" lane_acceptance_cmd="" lane_rollback=0
++  local lane_writes="" lane_acceptance_cmd="" lane_rollback=0 lane_deliverable=""
+   local -a phase_waivers=()
+   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
+   # for callers (leadv2-fanout.sh's funnel) that dispatch on behalf of a specific
+@@ -2933,6 +2969,12 @@ cmd_resolve() {
+       # block below and leadv2-lane-shape.sh.
+       --writes)          [[ $# -ge 2 ]] || { log_err "--writes requires a value"; usage; }
+                           lane_writes="$2"; shift 2 ;;
++      # REPORT-ONLY-GATE-01: optional deliverable declaration "report:<repo-relative
++      # path>" — the row/dispatcher declaration, highest precedence; the mission's own
++      # LANE_DELIVERABLE: line is the fallback. Unknown kinds are ignored + journalled
++      # at resolve time (below), never a silent lane-kind flip.
++      --lane-deliverable) [[ $# -ge 2 ]] || { log_err "--lane-deliverable requires a value"; usage; }
++                          lane_deliverable="$2"; shift 2 ;;
+       --acceptance-cmd)  [[ $# -ge 2 ]] || { log_err "--acceptance-cmd requires a value"; usage; }
+                           lane_acceptance_cmd="$2"; shift 2 ;;
+       --rollback-onestep) lane_rollback=1; shift ;;
+@@ -2981,6 +3023,26 @@ cmd_resolve() {
+   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
+     log_err "signature computation failed"; exit 1
+   fi
++  # REPORT-ONLY-GATE-01: resolve the lane's deliverable declaration ONCE, before the
++  # architect prepass inlines its design into ${mission} (the declaration is the
++  # founder's statement of intent in the ORIGINAL mission, not a property of a design)
++  # and before _lane_writes_guard can park on a missing LANE_WRITES. Precedence mirrors
++  # lane_writes: row/CLI --lane-deliverable wins, else the mission's own LANE_DELIVERABLE
++  # line. Absent => kind=diff => today's behaviour byte-for-byte. Only an exactly-
++  # parsable `report:<path>` flips the kind; anything else is ignored AND journalled so
++  # the dispatcher notices, never a silent lane-kind change. The validated declaration
++  # also flows to product-close via spawn_product_close's LEADV2_DISPATCH_LANE_DELIVERABLE.
++  LANE_DELIVERABLE_DECL=""
++  local _ld_decl="${lane_deliverable}"
++  [[ -n "${_ld_decl}" ]] || _ld_decl="$(_mission_deliverable "${mission}")"
++  if [[ -n "${_ld_decl}" ]]; then
++    if lv2_deliverable_parse "${_ld_decl}" >/dev/null; then
++      LANE_DELIVERABLE_DECL="${_ld_decl}"
++      emit decision "lane_deliverable task=${sig8} status=declared decl=${_ld_decl}"
++    else
++      emit decision "lane_deliverable task=${sig8} status=ignored reason=unknown_kind decl=${_ld_decl}"
++    fi
++  fi
+   # LANE-PLACEMENT-01: resolve an explicit --resume-lane/--worktree pin BEFORE the ensure
+   # block, BEFORE record_lane_start_sha, BEFORE any reservation/terminal/spawn.  Refuses
+   # (exit 5) on: nonexistent path, not-a-worktree, foreign repo, live-claimed lane.  No
+@@ -3261,7 +3323,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
+   export DC_PROTECTED="${protected}" DC_SAFETY="${safety}" DC_SUBSYSTEM_COUNT="${subsystems}" \
+          DC_INTERACTIVE="${interactive}" DC_UI_JUDGMENT="${ui}" DC_KIND="${kind}" \
+          DC_GLM_FAILURES="${glmfails}" DC_GLM_LOCK_BUSY="${lockbusy}"
+-  local resolved arm rule reason tier router_label v2_eligible v2_ordered v2_headroom v2_vector v2_credits
++  local resolved arm rule reason tier readings router_label v2_eligible v2_ordered v2_headroom v2_vector v2_credits
+   router_label="v1"
+   if [[ "${LEADV2_ROUTER_V2:-0}" == "1" ]]; then
+     router_label="v2"
+@@ -3287,9 +3349,14 @@ confirmation-seeking; only for a decision you cannot make yourself."
+   v2_credits="$(printf '%s\n' "${resolved}" | sed -n 's/^credits=//p')"
+   local codex_quota_blocked
+   codex_quota_blocked="$(printf '%s\n' "${resolved}" | sed -n 's/^codex_quota_blocked=//p')"
++  # GLM-FIRST-RECOVERY-01 (C3): the resolver's gate-path-only live-reading line
++  # (glm=2% codex=unknown anthropic=44%) rides the journal emit so a lead can
++  # tell a correct peak-hour fallback from a stuck-probe inversion. Absent line
++  # (happy path / gate absent / resolver v1 fallback) -> byte-identical emit.
++  readings="$(printf '%s\n' "${resolved}" | sed -n 's/^readings=//p')"
+   [[ "${router_label}" == "v2" ]] && rule="router_v2"
+   [[ -n "${arm}" ]] || { log_err "resolver returned no arm: ${resolved}"; exit 1; }
+-  emit decision "arm_resolved job=build arm=${arm} reason=${rule}"
++  emit decision "arm_resolved job=build arm=${arm} reason=${rule}${readings:+ readings=${readings}}"
+   # RESOLVED_CODEX_TIER is read by _spawn_worker_body's codex case (global, not passed as
+   # a positional -- spawn_worker's signature is shared across all three spawning arms).
+   [[ "${arm}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
+@@ -3577,11 +3644,24 @@ ${mission}"
+         _lane_mission_path="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-mission.md"
+         mkdir -p "$(dirname "${_lane_mission_path}")" 2>/dev/null
+         printf '%s' "${mission}" > "${_lane_mission_path}" 2>/dev/null || _lane_mission_path=""
++        # codex r4 finding 4: persist the VALIDATED declaration (CLI/row wins over the
++        # mission line) beside the mission, so advance-arm recovery re-threads the exact
++        # value -- not a re-derivation that silently drops a --lane-deliverable override.
++        if [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
++          printf '%s' "${LANE_DELIVERABLE_DECL}" > "${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-deliverable" 2>/dev/null || true
++        fi
+       fi
+-      if [[ "${product_class}" == "product" ]] && ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}"; then
+-        # The worker is already live; make the failed postflight launch visible rather than
+-        # pretending close evidence will arrive.  Do not kill the independently-owned worker.
+-        log_err "product close gate could not be launched for task=${sig8}"
++      if [[ "${product_class}" == "product" ]]; then
++        if ! spawn_product_close "${sig8}" "${candidate}" "${LAST_WORKER_HANDLE:-}" "${reviewer_arms}" "${lane_writes}" "${founder_task_id}" "${_lane_mission_path}" "${LANE_DELIVERABLE_DECL:-}"; then
++          # The worker is already live; make the failed postflight launch visible rather than
++          # pretending close evidence will arrive.  Do not kill the independently-owned worker.
++          log_err "product close gate could not be launched for task=${sig8}"
++        fi
++      elif [[ -n "${LANE_DELIVERABLE_DECL:-}" ]]; then
++        # REPORT-ONLY-GATE-01 (codex r2 finding 1): non-product classes never run the
++        # product close gate, so a report declaration there is NOT enforced — surface
++        # that loudly instead of letting a declared report lane pass unjudged in silence.
++        emit decision "lane_deliverable task=${sig8} status=unenforced reason=non_product_class decl=${LANE_DELIVERABLE_DECL}"
+       fi
+       emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}"
+       printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}"
+@@ -3808,6 +3888,22 @@ cmd_advance_arm() {
+   mission="$(cat "${mission_file}" 2>/dev/null)"
+   [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
+ 
++  # REPORT-ONLY-GATE-01 (codex r2 finding 2 + r4 finding 4): recover the lane's
++  # deliverable declaration. Prefer the VALIDATED declaration persisted at spawn time
++  # (it carries the higher-precedence --lane-deliverable / row value); fall back to
++  # re-harvesting the mission line. Without this, a report lane recovered via
++  # advance-arm is re-judged as a diff lane and blocks no_work despite its report.
++  local _adv_deliverable=""
++  local _adv_decl_file="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-deliverable"
++  if [[ -f "${_adv_decl_file}" ]]; then
++    _adv_deliverable="$(cat "${_adv_decl_file}" 2>/dev/null)"
++  fi
++  [[ -n "${_adv_deliverable}" ]] || _adv_deliverable="$(_mission_deliverable "${mission}")"
++  if [[ -n "${_adv_deliverable}" ]] && ! lv2_deliverable_parse "${_adv_deliverable}" >/dev/null; then
++    emit decision "lane_deliverable task=${sig8} status=ignored reason=unknown_kind decl=${_adv_deliverable} src=advance_arm"
++    _adv_deliverable=""
++  fi
++
+   local spawn_out src
+   spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
+   if [[ ${src} -ne 0 ]]; then
+@@ -3824,7 +3920,7 @@ cmd_advance_arm() {
+   emit decision "worker_spawned by=arm_advance model=${arm} handle=${handle}"
+ 
+   if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then
+-    spawn_product_close "${sig8}" "${arm}" "${handle}" "" "${writes}" "${task_id}" "${mission_file}"
++    spawn_product_close "${sig8}" "${arm}" "${handle}" "" "${writes}" "${task_id}" "${mission_file}" "${_adv_deliverable}"
+   fi
+   printf 'arm_advance model=%s task=%s handle=%s\n' "${arm}" "${sig8}" "${handle}"
+   exit 0
+diff --git a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+index 83f21f3..9f9387d 100755
+--- a/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
++++ b/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+@@ -31,6 +31,23 @@ LANE_NAME="${8:-}"
+ WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
++# REPORT-ONLY-GATE-01: optional lane deliverable declaration threaded from
++# leadv2-dispatch-code.sh (row/CLI --lane-deliverable wins; else the mission's own
++# LANE_DELIVERABLE: line). Guarded source + no-op stub, exactly the _REFUSAL_CLASSIFY_SH
++# idiom below: a missing lib degrades to today's diff-only gate, never to a broken one.
++LANE_DELIVERABLE="${LEADV2_DISPATCH_LANE_DELIVERABLE:-}"
++_REPORT_DELIVERABLE_SH="${SCRIPT_DIR}/lib/leadv2-report-deliverable.sh"
++if [[ ! -f "${_REPORT_DELIVERABLE_SH}" ]]; then
++  _REPORT_DELIVERABLE_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh"
++fi
++_pc_kind="diff"; _pc_report_rel=""
++if [[ -f "${_REPORT_DELIVERABLE_SH}" ]] && source "${_REPORT_DELIVERABLE_SH}" \
++   && [[ -n "${LANE_DELIVERABLE}" ]]; then
++  # only an exactly-parsable `report:<rel>` declaration flips the kind; anything else
++  # (already journalled status=ignored by dispatch-code.sh) keeps the diff gate.
++  _pc_rd="$(lv2_deliverable_parse "${LANE_DELIVERABLE}")" \
++    && { _pc_kind="report"; _pc_report_rel="${_pc_rd#*$'\x1f'}"; }
++fi
+ DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
+ # T-o (SUPERVISOR-AUDIT-01): this script owns the e2e/review half of a product task's
+ # lifecycle, so ITS exit paths are where that task's real terminal state (landed/parked/
+@@ -48,6 +65,16 @@ if [[ ! -f "${_REFUSAL_CLASSIFY_SH}" ]]; then
+   _REFUSAL_CLASSIFY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-refusal-classify.sh"
+ fi
+ [[ -f "${_REFUSAL_CLASSIFY_SH}" ]] && source "${_REFUSAL_CLASSIFY_SH}"
++# REVIEW-GATE-SHOWS-FINDINGS-01: shared findings renderer appended to review-gate.md
++# at the review fail/pass exits below (this lane path wrote every real gate to date —
++# both writers must render through the one shared renderer). Guarded source + no-op
++# stub so a missing/broken renderer degrades to today's exact gate, never to a
++# missing one (design R3).
++_REVIEW_FINDINGS_SH="${SCRIPT_DIR}/leadv2-review-findings.sh"
++[[ -f "${_REVIEW_FINDINGS_SH}" ]] || _REVIEW_FINDINGS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-review-findings.sh"
++# shellcheck source=leadv2-review-findings.sh
++[[ -f "${_REVIEW_FINDINGS_SH}" ]] && source "${_REVIEW_FINDINGS_SH}"
++command -v render_gate_findings >/dev/null 2>&1 || render_gate_findings() { :; }
+ # LOW-2 (fixround-tails): qualified <sig8>-<epoch>-<pid> attempt token, computed ONCE so the
+ # explicit call and the EXIT trap's own retry (same process) reuse the identical value; a
+ # bare pid would recycle across days/reboots and could be misread as the same attempt.
+@@ -63,10 +90,16 @@ _PC_ATTEMPT="${TASK}-${_PC_ATTEMPT_EPOCH}-$$"
+ _PC_TERMINAL_STATE=""
+ _PC_TERMINAL_CAUSE=""
+ _PC_TERMINAL_EVIDENCE=""
+-_dl_note() {  # <terminal> <cause> [<evidence>]
++_dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
+   _PC_TERMINAL_STATE="$1"
+   _PC_TERMINAL_CAUSE="$2"
+   _PC_TERMINAL_EVIDENCE="${3:-}"
++  # REPORT-ONLY-GATE-01: optional write-terminal args 8/9. Recorded in _PC_TERMINAL_*
++  # globals too so the EXIT trap's idempotent retry replays the SAME commit/deliverable,
++  # never a downgraded "none"/"unknown". Existing 3-arg callers keep write-terminal's own
++  # defaults — rows are byte-identical to pre-change for every non-report path.
++  [[ -n "${4:-}" ]] && _PC_TERMINAL_COMMIT="$4"
++  [[ -n "${5:-}" ]] && _PC_TERMINAL_DELIVERABLE="$5"
+   [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
+   # wave2 round3 finding 3 / LOW-2: _PC_ATTEMPT (qualified <sig8>-<epoch>-<pid>, not a bare
+   # pid) is stable across BOTH this explicit call and the EXIT trap's own idempotent retry
+@@ -78,7 +111,7 @@ _dl_note() {  # <terminal> <cause> [<evidence>]
+   # to FOUNDER_TASK_ID above when no name was threaded, so write-terminal's own
+   # display_name-or-founder fallback is redundant here but harmless (never empty when
+   # founder isn't either).
+-  bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${3:-}" "${_PC_ATTEMPT}" "${LANE_NAME}" >/dev/null 2>&1 9>&- || true
++  bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${3:-}" "${_PC_ATTEMPT}" "${LANE_NAME}" "${_PC_TERMINAL_COMMIT:-none}" "${_PC_TERMINAL_DELIVERABLE:-unknown}" >/dev/null 2>&1 9>&- || true
+ }
+ HANDOFF="${ROOT}/docs/handoff/dispatch-${TASK}"
+ mkdir -p "${HANDOFF}"
+@@ -1448,6 +1481,118 @@ else
+   [[ -s "${diff_file}" ]] || blocked_reason="unscopable_diff"
+ fi
+ rm -f "${_PC_LAST_BASE_FILE}" 2>/dev/null || true
++# REPORT-ONLY-GATE-01: a declared report lane is gated on its FILE, not on diff bytes.
++# Runs BEFORE the blocked_reason block so it never falls into the empty-diff path — no
++# predicate a code lane traverses is edited (this branch is reachable only when kind=report,
++# i.e. an exactly-parsable report: declaration threaded by dispatch-code.sh). pc_scope_diff
++# is invoked only after pc_await_worker_exit, so the report is never read while the worker
++# may still be writing it. report_missing / report_too_thin are CAUSES on the unchanged
++# no_work terminal — "the worker produced nothing" stays distinguishable from "the report
++# exists and is here" without a new ledger word.
++if [[ "${_pc_kind}" == "report" ]]; then
++  _pc_report_abs=""
++  _pc_report_abs="$(lv2_report_locate "${diff_root}" "${ROOT}" "${_pc_report_rel}")"
++  if [[ -z "${_pc_report_abs}" ]]; then
++    printf 'status: blocked\nreason: report_missing\nkind: report\ndeclared: %s\n' "${_pc_report_rel}" > "${HANDOFF}/review-gate.md"
++    emit decision "review_gate task=${TASK} status=blocked reason=report_missing kind=report terminal=no_work cause=report_missing declared=${_pc_report_rel}"
++    _dl_note no_work report_missing "declared=${_pc_report_rel}"
++    _stamp_review_terminal blocked
++    exit 5
++  fi
++  _pc_report_bytes="$(wc -c < "${_pc_report_abs}" 2>/dev/null | tr -d '[:space:]')"
++  _pc_report_bytes="${_pc_report_bytes:-0}"
++  if ! lv2_report_substantive "${_pc_report_abs}"; then
++    printf 'status: blocked\nreason: report_too_thin\nkind: report\nbytes: %s\nmin: %s bytes / %s lines\n' \
++      "${_pc_report_bytes}" "${LEADV2_REPORT_MIN_BYTES:-600}" "${LEADV2_REPORT_MIN_LINES:-12}" > "${HANDOFF}/review-gate.md"
++    emit decision "review_gate task=${TASK} status=blocked reason=report_too_thin kind=report terminal=no_work cause=report_too_thin bytes=${_pc_report_bytes} declared=${_pc_report_rel}"
++    _dl_note no_work report_too_thin "bytes=${_pc_report_bytes} declared=${_pc_report_rel}"
++    _stamp_review_terminal blocked
++    exit 5
++  fi
++  # codex r3 finding 2 + r4 findings 1/2: a report lane must not LAUNDER code changes.
++  # Two probes, both fail-closed, both gated on a resolved lane worktree exactly like the
++  # diff-lane dirty check below (with no lane worktree, ROOT-side founder edits must never
++  # be mistaken for lane work — and the ROOT-side report find is the design's own
++  # documented fallback for a worker that ran in the main checkout):
++  #   (1) COMMITTED changes: the pre-overwrite diff_file holds the lane's full diff vs
++  #       the dispatch base — a worker that committed source changes leaves a clean
++  #       status but a non-empty diff, so emptiness is checked BEFORE the prose
++  #       substitution clobbers it;
++  #   (2) WORKTREE dirt: status records are parsed, not substring-filtered — renames and
++  #       copies into the report path (`R old -> analysis/report.md`) are impure (the old
++  #       side is a source change), and the ONLY allowed record is a plain add/modify
++  #       whose path EXACTLY equals the declared report (journal/handoff noise exempt,
++  #       as in the diff-lane dirty check). A quoted porcelain path that fails the exact
++  #       compare fails closed.
++  _pc_report_pure=0
++  if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]]; then
++    # (1) committed + untracked changes vs the dispatch base, EXCLUDING the declared
++    # report path itself (the temp-index `add -N` in _pc_git_diff makes untracked files
++    # visible, so the report's own appearance must be filtered out, not relied on).
++    _pc_base_for_report="$(_pc_diff_base "${_lane_root}")"
++    if [[ -n "$(_pc_git_diff "${_lane_root}" "${_pc_base_for_report:-HEAD}" . ':(exclude)docs/leadv2' ':(exclude)docs/handoff' ":(exclude)${_pc_report_rel}")" ]]; then
++      _pc_report_pure=1
++    fi
++    if [[ "${_pc_report_pure}" != "1" ]]; then
++      while IFS= read -r _pc_st; do
++        [[ -z "${_pc_st}" ]] && continue
++        _pc_st_path="${_pc_st:3}"
++        [[ "${_pc_st_path}" == *" -> "* ]] && { _pc_report_pure=1; continue; }
++        case "${_pc_st_path}" in docs/leadv2/*|docs/handoff/*|"\"docs/leadv2/*"|"\"docs/handoff/*") continue ;; esac
++        case "${_pc_st:0:2}" in '??'|'A '|' M'|'M ') ;; *) _pc_report_pure=1 ;; esac
++        [[ "${_pc_st_path}" == "${_pc_report_rel}" ]] || _pc_report_pure=1
++      done < <(git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null)
++    fi
++  fi
++  if [[ "${_pc_report_pure}" == "1" ]]; then
++    printf 'status: blocked\nreason: unscoped_lane_work\nkind: report\ndeclared: %s\n' "${_pc_report_rel}" > "${HANDOFF}/review-gate.md"
++    emit decision "review_gate task=${TASK} status=blocked reason=unscoped_lane_work kind=report terminal=refused cause=unscoped_lane_work declared=${_pc_report_rel}"
++    _dl_note refused unscoped_lane_work "declared=${_pc_report_rel} kind=report"
++    _stamp_review_terminal blocked
++    exit 5
++  fi
++  # harvest: ROOT-side docs/handoff/dispatch-<TASK>/report.md survives the lane sweep
++  _pc_report_dest="$(lv2_report_harvest "${_pc_report_abs}" "${HANDOFF}")"
++  # Fail closed on harvest failure (codex review finding 3): a pass that advertises a
++  # deliverable which was never materialised is worse than a blocked lane.
++  if [[ -z "${_pc_report_dest}" || ! -f "${_pc_report_dest}" ]]; then
++    printf 'status: blocked\nreason: harvest_failed\nkind: report\ndeclared: %s\n' "${_pc_report_rel}" > "${HANDOFF}/review-gate.md"
++    emit decision "review_gate task=${TASK} status=blocked reason=harvest_failed kind=report terminal=no_work cause=harvest_failed declared=${_pc_report_rel}"
++    _dl_note no_work harvest_failed "declared=${_pc_report_rel}"
++    _stamp_review_terminal blocked
++    exit 5
++  fi
++  _pc_report_deliverable="docs/handoff/dispatch-${TASK}/report.md"
++  # Review-body substitution: the report IS the review body — the unmodified review
++  # path below (findings renderer, verdict-marker check, review_body_lost guard,
++  # pass/fail rendering) then works unchanged, so a wrong analysis is rejected by the
++  # same machinery that rejects a wrong diff.
++  {
++    printf '# REPORT-ONLY LANE — review the ANALYSIS, not a diff.\n'
++    printf '# deliverable: %s   bytes: %s\n' "${_pc_report_rel}" "${_pc_report_bytes}"
++    # Bind the founder's ask into the review input (codex r2 finding 6): an internally
++    # coherent but UNRELATED pre-existing report must not be able to pass — the reviewer
++    # judges the report against this mission excerpt, bounded like the report itself.
++    _pc_rl_mission="${LEADV2_DISPATCH_LANE_MISSION:-}"
++    [[ -n "${_pc_rl_mission}" && -f "${_pc_rl_mission}" ]] || _pc_rl_mission="${ROOT}/docs/handoff/dispatch-${TASK}/lane-mission.md"
++    if [[ -f "${_pc_rl_mission}" ]]; then
++      printf '# mission excerpt (first %s bytes — judge the report AGAINST this ask):\n' "${LEADV2_REPORT_MISSION_MAX_BYTES:-4000}"
++      head -c "${LEADV2_REPORT_MISSION_MAX_BYTES:-4000}" "${_pc_rl_mission}"
++      printf '\n\n'
++    fi
++    # bytes reviewed come from the HARVESTED destination, not the mutable worktree
++    # source (codex review finding 4): review approves exactly the durable deliverable.
++    head -c "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_dest}"
++    printf '\n'
++    if [[ "${_pc_report_bytes}" -gt "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" ]]; then
++      printf '# [truncated for review at %s bytes; full report at %s]\n' "${LEADV2_REPORT_REVIEW_MAX_BYTES:-60000}" "${_pc_report_dest}"
++    fi
++  } > "${diff_file}"
++  # the diff-scoped blocked_reason (typically unscopable_diff — a report lane has no
++  # diff) is void here: the report lane passed its own gate above.
++  blocked_reason=""
++  emit decision "report_gate task=${TASK} status=located bytes=${_pc_report_bytes} declared=${_pc_report_rel} deliverable=${_pc_report_deliverable}"
++fi
+ if [[ -n "${blocked_reason}" ]]; then
+   # N1-EMPTY-LANE-IS-NOT-A-PASS: a lane that produced NOTHING is its own outcome --
+   # never passed, never a silently-blocked unscopable_diff. partial_diff stays
+@@ -1485,10 +1630,13 @@ if [[ -n "${blocked_reason}" ]]; then
+   # (HEAD or an abbreviated start-sha) so a blocked lane is diagnosable without
+   # re-running anything (S-3 round 3). dirty= (unscoped_lane_work only) records the
+   # filtered porcelain line count that flipped this from no_work.
++  # kind: (REPORT-ONLY-GATE-01) is the ONLY additive key on a blocked diff-lane
++  # artifact: appended right after reason:, existing keys byte-identical, so the
++  # dead-worker family (kind: diff) never reads like a report-lane family.
+   if [[ -n "${_pc_dirty_evidence:-}" ]]; then
+-    printf 'status: blocked\nreason: %s\nbase: %s\ndirty: %s\n' "${_pc_rg_reason}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}" > "${HANDOFF}/review-gate.md"
++    printf 'status: blocked\nreason: %s\nkind: %s\nbase: %s\ndirty: %s\n' "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}" > "${HANDOFF}/review-gate.md"
+   else
+-    printf 'status: blocked\nreason: %s\nbase: %s\n' "${_pc_rg_reason}" "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
++    printf 'status: blocked\nreason: %s\nkind: %s\nbase: %s\n' "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
+   fi
+   emit decision "review_gate task=${TASK} status=blocked reason=${_pc_rg_reason} terminal=${_pc_terminal} cause=${_pc_cause}"
+   _dl_note "${_pc_terminal}" "${_pc_cause}" "${_pc_dirty_evidence}"
+@@ -1685,6 +1833,13 @@ _stamp_active_phase "${FOUNDER_TASK_ID}" "review"
+   bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status running \
+     --handle "dispatch-${TASK}-review" \
+     --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
++# REPORT-ONLY-GATE-01 (codex review finding 5): the review engine does not carry
++# report-lane semantics (kind/deliverable/prose rubric), so an engine-mode PASS would
++# land a diff-shaped gate for a report lane. A report lane falls through to the inline
++# body instead -- skipped loudly, never silently.
++if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" && "${_pc_kind:-diff}" == "report" ]]; then
++  emit decision "review_engine task=${TASK} status=skipped reason=report_lane"
++fi
+ # ONE-PATH-EVERYWHERE-01: when LEADV2_REVIEW_ENGINE=1, this lane's whole inline review
+ # body (below) is replaced by a call to the sole-owner engine, leadv2-review-run.sh.
+ # Flag DEFAULTS TO 0 -- when unset (the production default, everywhere, per the rollout
+@@ -1692,7 +1847,7 @@ _stamp_active_phase "${FOUNDER_TASK_ID}" "review"
+ # The lane still owns its process model / EXIT trap / _stamp_review_terminal /
+ # review_crashed fallback -- the engine itself never calls those (it is a bare,
+ # self-contained script callable with none of this lane's helper functions loaded).
+-if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" ]]; then
++if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" && "${_pc_kind:-diff}" != "report" ]]; then
+   if [[ "${REVIEW_ON}" != 1 ]]; then
+     emit decision "review_gate task=${TASK} status=disabled reason=kill_switch"
+     _dl_note landed review_gate_disabled
+@@ -1779,7 +1934,7 @@ run_reviewer_arm() { # <arm>
+   mission_file="${HANDOFF}/review-mission.md"
+   if [[ "${arm}" == codex ]]; then
+     bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait \
+-      --focus "Review ONLY the diff at ${diff_file}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract}" \
++      --focus "${_pc_review_intro} You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract}" \
+       > "${review_out}" 2> "${review_err}"; review_rc=$?
+   elif [[ "${arm}" == glm ]]; then
+     # dispatch-00629379: new branch -- GLM is now a valid reviewer arm (founder decision
+@@ -1788,8 +1943,8 @@ run_reviewer_arm() { # <arm>
+     # per-repo glm-coder.sh lock is busy (exit 75), per CLAUDE.md Model routing v2. Both
+     # must land the SAME REVIEW_VERDICT:/REVIEW_FINDINGS: contract in ${review_out} that
+     # parse_review_verdict() below already enforces for every other reviewer branch.
+-    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+-      "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
++    printf '%s You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
++      "${_pc_review_intro}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+     glm_bin="${LEADV2_DISPATCH_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
+     omp_bin="${LEADV2_DISPATCH_OMP_BIN:-${ROOT}/.claude/leadv2-overrides/omp-task.sh}"
+     review_rc=75
+@@ -1820,8 +1975,8 @@ run_reviewer_arm() { # <arm>
+     # rc 77 (channel down) and rc 75 (lock/secret/usage) are BOTH admission refusals --
+     # there is no omp-task.sh second channel for kimi (that is a GLM-lock construct), so
+     # either rc is handled by the one-shot re-selection at the call site below, never here.
+-    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+-      "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
++    printf '%s You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
++      "${_pc_review_intro}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+     kimi_bin="${LEADV2_DISPATCH_KIMI_BIN:-${SCRIPT_DIR}/kimi-coder.sh}"
+     if ! bash "${kimi_bin}" probe >/dev/null 2> "${review_err}"; then
+       review_rc=77
+@@ -1833,8 +1988,8 @@ run_reviewer_arm() { # <arm>
+     # sonnet or opus (R1 fix: launcher must pass the RESOLVED arm, not a hardcoded
+     # model -- the old `--model sonnet` here meant a resolver that returned opus still
+     # ran sonnet, a lying-green review).
+-    printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
+-      "${diff_file}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
++    printf '%s You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
++      "${_pc_review_intro}" "${AUTHOR}" "${review_contract}" > "${mission_file}"
+     PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model "${arm}" --task-id "dispatch-${TASK}-review" --mission-file "${mission_file}" --wait \
+       > "${review_out}" 2> "${review_err}"; review_rc=$?
+     # REVIEW-BODY-PERSIST-01: the subsession prints only a label line on stdout; the
+@@ -1890,6 +2045,17 @@ mkdir -p "${review_adir}"
+ REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
+ touch "${REVIEW_STAMP}"
+ review_contract=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.'
++# REPORT-ONLY-GATE-01: a report lane substitutes the review body (diff_file now holds
++# the report text) but runs the UNMODIFIED review path — so the mission must tell the
++# reviewer it is judging prose, and what judging prose means. The verdict-marker
++# contract above is appended to verbatim; every existing renderer/guard downstream is
++# untouched. Diff lanes resolve _pc_review_intro to today's exact sentence.
++_pc_review_intro="Review ONLY the diff at ${diff_file}."
++if [[ "${_pc_kind}" == "report" ]]; then
++  _pc_review_intro="This is a REPORT-ONLY lane. Review ONLY the analysis document at ${diff_file} (it begins with a '# REPORT-ONLY LANE' header naming the deliverable)."
++  review_contract="${review_contract}
++PROSE RUBRIC (report-only lane — the file is an ANALYSIS, not a diff): (a) is every load-bearing claim backed by a quoted file/line reference or command output included in the report itself; (b) list every unsupported claim explicitly as a finding; (c) state whether the recommendation follows from the evidence presented; (d) emit the same REVIEW_VERDICT:/REVIEW_FINDINGS: markers as a code review; (e) judge whether the report answers the MISSION excerpt in the review body header — an internally coherent but unrelated report FAILS. FAIL if any load-bearing claim is unsupported, the recommendation does not follow from the evidence, or the report does not answer the mission."
++fi
+ 
+ # N-5 §2.3: arm-agnostic refusal fallback, generalising the old kimi-only bounded
+ # re-selection (KIMI-CHANNEL-01b) to every arm. A peak_hours/quota/channel-down refusal
+@@ -2034,16 +2200,54 @@ else
+   emit decision "review_gate task=${TASK} status=ran author=${AUTHOR} reviewer=${reviewer} verdict=${verdict} diff=${diff_hash:0:8} review_source=${review_source} verdict_source=${VERDICT_SOURCE} ledger_rc=${record_rc}"
+ fi
+ if [[ "${verdict}" == FAIL ]]; then
+-  printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
+-    "${FINDINGS_CRITICAL}" "${FINDINGS_HIGH}" "${FINDINGS_MEDIUM}" "${FINDINGS_LOW}" > "${HANDOFF}/review-gate.md"
++  # REVIEW-GATE-SHOWS-FINDINGS-01 (design R7): head lines stay byte-identical and
++  # first; the findings block is APPENDED. tmp+mv (replacing the old direct `>`,
++  # which was single-line-safe but not multi-line-safe against a torn read).
++  _rgf_rel="docs/handoff/dispatch-${TASK}/review-${reviewer}.md"
++  [[ -n "${REVIEW_SOURCE:-}" ]] && _rgf_rel="${REVIEW_SOURCE#artifact:}"
++  {
++    printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
++      "${FINDINGS_CRITICAL}" "${FINDINGS_HIGH}" "${FINDINGS_MEDIUM}" "${FINDINGS_LOW}"
++    render_gate_findings "${review_file}" "" "${reviewer}" "${_rgf_rel}" || true
++  } > "${HANDOFF}/review-gate.md.tmp"
++  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
++  _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
++  emit decision "review_gate task=${TASK} status=fail critical=${FINDINGS_CRITICAL} high=${FINDINGS_HIGH}${_rgf_dnm}"
+   _dl_note dead review_verdict_fail "critical=${FINDINGS_CRITICAL} high=${FINDINGS_HIGH}"
+   _stamp_review_terminal fail
+   exit 7
+ fi
+ # PASS must overwrite review-gate.md too, or a stale fail/blocked artifact from an earlier
+ # attempt keeps lying after the gate has actually cleared (hit live on fe5307b3, 2026-07-30).
+-printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}" > "${HANDOFF}/review-gate.md"
+-_dl_note landed review_verdict_pass "diff=${diff_hash:0:8}"
++# REVIEW-GATE-SHOWS-FINDINGS-01: same append + tmp/mv discipline on the pass exit —
++# the block is written on EVERY pass/fail exit, so its absence can only mean an old
++# build, and a do-not-merge report shows on the face of a passing gate (advisory only:
++# status: stays pass, decision semantics unchanged).
++_rgf_rel="docs/handoff/dispatch-${TASK}/review-${reviewer}.md"
++[[ -n "${REVIEW_SOURCE:-}" ]] && _rgf_rel="${REVIEW_SOURCE#artifact:}"
++_rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
++if [[ "${_pc_kind}" == "report" ]]; then
++  # REPORT-ONLY-GATE-01: the report lane's pass shape — kind/deliverable/bytes/review
++  # name the file a human can open in the main checkout after the lane worktree is gone.
++  # Terminal is the unchanged `landed`; write-terminal's deliverable arg (9th) carries
++  # the harvested path, commit stays "none" (no code landed).
++  {
++    printf 'status: pass\nreviewer: %s\nkind: report\ndeliverable: %s\nbytes: %s\nreview: %s\n' \
++      "${reviewer}" "${_pc_report_deliverable}" "${_pc_report_bytes}" "${verdict}"
++    render_gate_findings "${review_file}" "" "${reviewer}" "${_rgf_rel}" || true
++  } > "${HANDOFF}/review-gate.md.tmp"
++  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
++  _dl_note landed review_verdict_pass \
++    "diff=${diff_hash:0:8} deliverable=${_pc_report_deliverable}${_rgf_dnm}" \
++    "" "${_pc_report_deliverable}"
++else
++  {
++    printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}"
++    render_gate_findings "${review_file}" "" "${reviewer}" "${_rgf_rel}" || true
++  } > "${HANDOFF}/review-gate.md.tmp"
++  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
++  _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm}"
++fi
+ _stamp_review_terminal pass
+ # PHASES-ARE-THE-ONLY-PATH-01: record review phase as done (verdict PASS).
+ [[ -x "${SCRIPT_DIR}/leadv2-phase-record.sh" ]] && \
+diff --git a/plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh b/plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh
+new file mode 100644
+index 0000000..da39d20
+--- /dev/null
++++ b/plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh
+@@ -0,0 +1,126 @@
++#!/usr/bin/env bash
++# lib/leadv2-report-deliverable.sh — REPORT-ONLY-GATE-01 shared lib.
++#
++# A lane may declare its deliverable is a FILE (a report), not a diff:
++#   LANE_DELIVERABLE: report:<repo-relative path>
++# This lib is the single mechanism for that declaration: parse (both
++# leadv2-dispatch-code.sh and leadv2-dispatch-product-close.sh), locate,
++# substantiveness, harvest (product-close only). Sourced guarded everywhere
++# (missing lib => no-op stub => today's diff-gate behaviour, never a broken gate).
++#
++# Deliberately `set -uo pipefail`, never `-e` -- a sourced `-e` leaks into and
++# silently overrides the caller's own deliberate no--e policy (SILENT-DEATH-01,
++# see leadv2-dispatch-code.sh / leadv2-refusal-classify.sh's matching comments).
++set -uo pipefail
++
++# lv2_deliverable_parse <decl> -> prints "report\x1f<path>" on stdout, rc 0, for a
++# well-formed report declaration; rc 1 (nothing printed) for any other kind or a
++# path that cannot name a repo-relative file. Only `report:` is a known kind
++# (REPORT-ONLY-GATE-01 non-goal: no other kinds) — an unparsable declaration must
++# never silently convert a code lane into a report lane.
++lv2_deliverable_parse() { # <decl>
++  local decl="${1:-}" path
++  [[ "${decl}" == report:* ]] || return 1
++  path="${decl#report:}"
++  # trim surrounding whitespace
++  path="${path#"${path%%[![:space:]]*}"}"
++  path="${path%"${path##*[![:space:]]}"}"
++  path="${path#./}"
++  # reject empty / absolute / traversal / interior-empty-segment paths
++  [[ -n "${path}" && "${path}" != /* && "${path}" != "." && "${path}" != "/" ]] || return 1
++  [[ "${path}" == ".." || "${path}" == ../* || "${path}" == */.. || "${path}" == */../* ]] && return 1
++  # reject repo control metadata (codex r4 finding 5): .git/config et al. are inside the
++  # tree and pass containment, but a declared "report" must never ship repository
++  # configuration — including credential-bearing remote URLs — to external review.
++  [[ "${path}" == ".git" || "${path}" == .git/* ]] && return 1
++  case "/${path}/" in *//*) return 1 ;; esac
++  printf 'report\x1f%s' "${path}"
++}
++
++# lv2_report_locate <diff_root> <root> <rel> -> prints the first EXISTING absolute
++# path for <rel>, preferring the lane worktree (diff_root) over the main checkout
++# (root); rc 1 if neither exists. The report's canonical home is the lane worktree
++# (worker --cwd is LEADV2_LANE_WORK_ROOT), but a worker that ran in the main
++# checkout leaves it ROOT-side -- both are legitimate finds.
++# A symlink (the file itself, or any parent dir) is NOT a find: the report is copied
++# verbatim into the handoff and sent to an external reviewer, so a declaration must
++# never be able to harvest a host file outside its tree (codex review finding 2).
++lv2_report_locate() { # <diff_root> <root> <rel>
++  local diff_root="$1" root="$2" rel="$3" base cand phys_base phys_dir nlink
++  for base in "${diff_root}" "${root}"; do
++    [[ -d "${base}" ]] || continue
++    cand="${base}/${rel}"
++    [[ -f "${cand}" && ! -L "${cand}" ]] || continue
++    phys_base="$(cd "${base}" 2>/dev/null && pwd -P)" || continue
++    phys_dir="$(cd "$(dirname "${cand}")" 2>/dev/null && pwd -P)" || continue
++    # physical containment: pwd -P dereferences symlinked parents, so an escaped
++    # phys_dir means some path segment was a link out of the tree.
++    [[ "${phys_dir}" == "${phys_base}" || "${phys_dir}/" == "${phys_base}"/* ]] || continue
++    # a same-volume HARDLINK escapes containment without escaping the path (codex
++    # r2 finding 3): st_nlink > 1 means the inode is shared with something this find
++    # cannot see. A worker-written report is link-count 1. GNU form FIRST: on GNU stat,
++    # `-f %l` ALSO parses (filesystem mode: max filename length, usually 255), which
++    # would reject every report on Linux — and BSD stat has no `-c`, so the fallback
++    # order is unambiguous on both platforms (codex r4 finding 6).
++    nlink="$(stat -c %h "${cand}" 2>/dev/null || stat -f %l "${cand}" 2>/dev/null || printf '1')"
++    [[ "${nlink}" =~ ^[0-9]+$ ]] || nlink=1
++    (( nlink <= 1 )) || continue
++    printf '%s' "${cand}"
++    return 0
++  done
++  return 1
++}
++
++# lv2_report_substantive <abs> -> rc 0 iff the report clears BOTH floors:
++#   >= LEADV2_REPORT_MIN_BYTES  (default 600)  non-whitespace BYTES
++#   >= LEADV2_REPORT_MIN_LINES  (default 12)   non-blank LINES
++# Deliberately dumb — no LLM, no keyword sniff. "Non-trivial" must be a fact a
++# human can re-check by eye (mission REPORT-ONLY-GATE-01 hard constraint).
++lv2_report_substantive() { # <abs>
++  local abs="$1"
++  local min_bytes="${LEADV2_REPORT_MIN_BYTES:-600}"
++  local min_lines="${LEADV2_REPORT_MIN_LINES:-12}"
++  local bytes lines
++  [[ "${min_bytes}" =~ ^[0-9]+$ ]] || min_bytes=600
++  [[ "${min_lines}" =~ ^[0-9]+$ ]] || min_lines=12
++  [[ -f "${abs}" ]] || return 1
++  bytes="$(tr -d '[:space:]' < "${abs}" | wc -c | tr -d '[:space:]')"
++  lines="$(grep -c '[^[:space:]]' "${abs}" 2>/dev/null || true)"
++  [[ "${bytes}" =~ ^[0-9]+$ ]] || bytes=0
++  [[ "${lines}" =~ ^[0-9]+$ ]] || lines=0
++  (( bytes >= min_bytes && lines >= min_lines ))
++}
++
++# lv2_report_harvest <abs> <handoff_dir> -> copies the report to
++# <handoff_dir>/report.md (ROOT-side docs/handoff/dispatch-<TASK>/, which survives
++# lane-worktree sweep) and prints the destination. Atomic idiom: write a
++# same-directory tmp then mv -f (the :2056 rename idiom), so a concurrent reader
++# never sees a partial report.md. Copy-onto-itself (report already ROOT-side) is
++# a guarded no-op.
++lv2_report_harvest() { # <abs> <handoff_dir>
++  local abs="$1" handoff_dir="$2" dest tmp
++  dest="${handoff_dir}/report.md"
++  mkdir -p "${handoff_dir}" 2>/dev/null || return 1
++  # Fail closed on a non-regular destination (codex review finding 3): an existing
++  # DIRECTORY at report.md would make `mv` file the tmp INSIDE it and return success,
++  # advertising a deliverable that is not a file. Never silently delete the oddity.
++  # A SYMLINK destination is refused outright (codex r2 finding 4): `-f`/`-ef` follow
++  # links, so a dest symlinked at the worktree source would skip the copy and dangle
++  # the moment the worktree is swept.
++  [[ ! -L "${dest}" ]] || return 1
++  [[ ! -e "${dest}" || -f "${dest}" ]] || return 1
++  if [[ "${abs}" -ef "${dest}" ]]; then
++    printf '%s' "${dest}"
++    return 0
++  fi
++  tmp="$(mktemp "${handoff_dir}/report.md.tmp.XXXXXX")" || return 1
++  if ! cp "${abs}" "${tmp}" 2>/dev/null; then
++    rm -f "${tmp}" 2>/dev/null
++    return 1
++  fi
++  if ! mv -f "${tmp}" "${dest}" 2>/dev/null; then
++    rm -f "${tmp}" 2>/dev/null
++    return 1
++  fi
++  printf '%s' "${dest}"
++}
+diff --git a/plugins/leadv2/scripts/tests/test-report-only-gate.sh b/plugins/leadv2/scripts/tests/test-report-only-gate.sh
+new file mode 100644
+index 0000000..5f9ec57
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-report-only-gate.sh
+@@ -0,0 +1,699 @@
++#!/usr/bin/env bash
++# tests/test-report-only-gate.sh — REPORT-ONLY-GATE-01.
++#
++# A lane may declare its deliverable is a FILE (report:<rel path>), not a diff, and be
++# gated on that file existing and being non-trivial. Six cases (mission §5):
++#
++#   1 — report lane, good report      -> rc0, kind: report + deliverable: in
++#        review-gate.md; report.md survives under ROOT docs/handoff/dispatch-<sig>/
++#        AFTER the lane worktree is deleted (harvest proof).
++#   2 — report lane, no file          -> status blocked / reason report_missing,
++#        ledger no_work:report_missing.
++#   3 — report lane, 3-line stub      -> reason report_too_thin, bytes: printed.
++#   4 — diff lane regression          -> declaration absent + real diff: review-gate.md
++#        byte-identical to the pre-change gate output.
++#   5 — dead worker regression        -> empty diff + clean tree: reason no_work WITH
++#        kind: diff (distinguishable from a report lane by review-gate.md alone).
++#   6 — unknown kind (artifact:x)     -> treated as a diff lane (case 6a: gate shape);
++#        dispatch journals lane_deliverable status=ignored (6b); a valid report
++#        declaration satisfies _lane_writes_guard (6c minimal pair: declared
++#        dispatches, undeclared parks no_lane_writes).
++#   7 — symlinked report (codex review finding 2) -> not a find: blocked
++#        report_missing, nothing harvested from the symlink target.
++#   8 — directory at report.md destination (finding 3) -> blocked harvest_failed,
++#        never a pass advertising a non-file deliverable.
++#   9 — hardlinked report (codex r2 finding 3) -> st_nlink > 1 is not a find:
++#        blocked report_missing, nothing harvested (rc 2 = cross-volume fixture).
++#  10 — symlink AT report.md destination (r2 finding 4) -> blocked harvest_failed;
++#        the -ef same-file guard must not be satisfiable by a dangling-to-be link.
++#  11 — report lane that ALSO edits source (r3 finding 2) -> blocked
++#        unscoped_lane_work, kind: report — code changes cannot land unreviewed
++#        under a report verdict.
++#  12 — COMMITTED source change in the report lane (r4 finding 2) -> same block:
++#        clean status must not satisfy the guard, the base diff is checked.
++#  13 — report:.git/config (r4 finding 5) -> refused at parse, diff-lane shape.
++#  14 — rename into the report path (r4 finding 1) -> unscoped_lane_work: the
++#        porcelain " -> " record is impure however the paths are filtered.
++#
++# Red-first: cases 1/2/3/5/6a are also run against an extraction of the last commit
++# that predates the fix (walk HEAD back while lib/leadv2-report-deliverable.sh exists;
++# if it is absent at HEAD — fix uncommitted — HEAD itself is pre-fix). Archives a tree
++# whose scripts do not know LANE_DELIVERABLE; reds there are evidence.
++# Drives the REAL gate scripts (never a reimplementation). Sandboxed HOME/TMPDIR;
++# never touches the real repo's ledger or ~/.claude/cache.
++# Run: bash scripts/tests/test-report-only-gate.sh
++# Exit 0 = all pass; non-zero = failures found.
++
++set -uo pipefail
++
++TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++SCRIPTS_LIVE="$(cd "${TESTS_DIR}/.." && pwd)"
++LEADV2_REPO="$(git -C "${SCRIPTS_LIVE}" rev-parse --show-toplevel 2>/dev/null || true)"
++
++ORIG_HOME="${HOME}"
++if [[ -z "${ROG1_SANDBOXED:-}" ]]; then
++  SANDBOX_HOME="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-home.XXXXXX")"
++  mkdir -p "${SANDBOX_HOME}/tmp"
++  export HOME="${SANDBOX_HOME}" TMPDIR="${SANDBOX_HOME}/tmp" ROG1_SANDBOXED=1
++fi
++
++PASS=0; FAIL=0; ERRORS=()
++log()  { printf -- '[TEST] %s\n' "$*"; }
++pass() { PASS=$((PASS + 1)); log "PASS: $1"; }
++fail() { FAIL=$((FAIL + 1)); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
++
++new_repo() {
++  local d
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1.XXXXXX")"
++  ( cd "${d}" && git init -q -b main && git config user.email test@example.com \
++    && git config user.name test && mkdir -p agent \
++    && printf 'seed\n' > agent/seed.py && git add agent/seed.py && git commit -qm seed ) >/dev/null 2>&1
++  printf '%s' "${d}"
++}
++ensure_worktree() { # <scripts_dir> <repo> <tid> -> prints wt path
++  LEADV2_PROJECT_ROOT="$2" bash "$1/leadv2-lane-worktree.sh" ensure "$3" standard >/dev/null 2>&1
++  printf '%s/.claude/worktrees/%s' "$2" "$3"
++}
++make_resolver_stub() { # <path> <reviewer-arm>
++  cat > "$1" <<PYEOF
++#!/usr/bin/env python3
++print("reviewer=$2")
++print("pool=$2")
++print("refusal=")
++PYEOF
++  chmod +x "$1"
++}
++make_review_pass_stub() { # <path>
++  cat > "$1" <<'EOF'
++#!/usr/bin/env bash
++printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\n'
++exit 0
++EOF
++  chmod +x "$1"
++}
++# >=600 non-whitespace bytes across >=12 non-blank lines.
++write_good_report() { # <abs>
++  local i
++  mkdir -p "$(dirname "$1")"
++  {
++    printf '# Analysis report\n\n'
++    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
++      printf 'Finding %02d: file src/mod%d.c line %d contradicts claim %d; evidence quoted verbatim here.\n' "$i" "$i" $((i * 11)) "$i"
++    done
++    printf '\nRecommendation follows from the findings above.\n'
++  } > "$1"
++}
++write_stub_report() { # <abs>
++  mkdir -p "$(dirname "$1")"
++  printf 'short\nstub\nreport\n' > "$1"
++}
++
++# run_gate <scripts_dir> <root> <sig> <lane_wt> <d> <errf> <deliverable> <ledger_file|-> <writes_csv>
++# Captures the gate's rc on stdout ("rc=<n>"); stderr to <errf> (emit's target).
++# A real ledger file routes write-terminal to the REAL ledger (sandboxed file); "-" uses
++# /bin/true so no row is written.
++run_gate() {
++  local sd="$1" root="$2" sig="$3" lane="$4" d="$5" errf="$6" deliverable="$7" ledger="$8" writes="${9:-}"
++  local term_ledger=1 ledger_bin="${sd}/leadv2-dispatch-ledger.sh"
++  if [[ "${ledger}" == "-" ]]; then
++    term_ledger=0; ledger_bin=/bin/true; ledger="${d}/ledger-unused.jsonl"
++  fi
++  CLAUDE_PROJECT_ROOT="${root}" LEADV2_PROJECT_ROOT="${root}" \
++  LEADV2_DISPATCH_CACHE_DIR="${d}/cache" \
++  LEADV2_DISPATCH_TERMINAL_LEDGER="${term_ledger}" \
++  LEADV2_DISPATCH_LEDGER_BIN="${ledger_bin}" \
++  LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="${ledger}" \
++  LEADV2_JOURNAL_BIN=/bin/true LEADV2_DISPATCH_LANE_WRITES="${writes}" \
++  LEADV2_DISPATCH_LANE_DELIVERABLE="${deliverable}" \
++  LEADV2_LANE_WORK_ROOT="${lane}" LEADV2_REVIEW_DIFF_CROSS_REPO=0 \
++  LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
++    bash "${sd}/leadv2-dispatch-product-close.sh" "${root}" "${sig}" sonnet "" 0 1 "${sig}-founder" \
++    >/dev/null 2>"${errf}"
++  printf 'rc=%s' "$?"
++}
++gate_md() { local root="$1" sig="$2"; cat "${root}/docs/handoff/dispatch-${sig}/review-gate.md" 2>/dev/null; }
++gate_terminal_line() { local errf="$1"; grep 'review_gate ' "${errf}" 2>/dev/null | tail -1; }
++
++# ── Case 1 — good report: pass shape + survival after worktree deletion ───────────
++case_1_good_report() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate
++  root="$(new_repo)"; tid="rog1c1-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  write_good_report "${wt}/analysis/report.md"
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c1sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
++  gate="$(gate_md "${root}" rog1c1sig)"
++  local ok=0
++  [[ "${rrc}" == "rc=0" ]] || ok=1
++  grep -q '^status: pass' <<<"${gate}" || ok=1
++  grep -q '^kind: report' <<<"${gate}" || ok=1
++  grep -q '^deliverable: docs/handoff/dispatch-rog1c1sig/report.md' <<<"${gate}" || ok=1
++  grep -q '^review: PASS' <<<"${gate}" || ok=1
++  # survival: delete the lane worktree, the harvested report must still be ROOT-side
++  rm -rf "${wt}"
++  [[ -s "${root}/docs/handoff/dispatch-rog1c1sig/report.md" ]] || ok=1
++  rm -rf "${root}" "${d}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── Case 2 — report lane, no file -> blocked report_missing + ledger row ──────────
++case_2_missing() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate row
++  root="$(new_repo)"; tid="rog1c2-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c2sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "${d}/ledger.jsonl")"
++  gate="$(gate_md "${root}" rog1c2sig)"
++  row="$(grep '"task_sig":"rog1c2sig"' "${d}/ledger.jsonl" 2>/dev/null)"
++  local ok=0
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^status: blocked' <<<"${gate}" || ok=1
++  grep -q '^reason: report_missing' <<<"${gate}" || ok=1
++  grep -q '^kind: report' <<<"${gate}" || ok=1
++  grep -q '^declared: analysis/report.md' <<<"${gate}" || ok=1
++  grep -q '"terminal":"no_work"' <<<"${row}" || ok=1
++  grep -q '"cause":"report_missing"' <<<"${row}" || ok=1
++  rm -rf "${root}" "${d}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── Case 3 — 3-line stub -> report_too_thin with bytes ────────────────────────────
++case_3_thin() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate row
++  root="$(new_repo)"; tid="rog1c3-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  write_stub_report "${wt}/analysis/report.md"
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c3sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "${d}/ledger.jsonl")"
++  gate="$(gate_md "${root}" rog1c3sig)"
++  row="$(grep '"task_sig":"rog1c3sig"' "${d}/ledger.jsonl" 2>/dev/null)"
++  local ok=0
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^status: blocked' <<<"${gate}" || ok=1
++  grep -q '^reason: report_too_thin' <<<"${gate}" || ok=1
++  grep -q '^kind: report' <<<"${gate}" || ok=1
++  grep -q '^bytes: ' <<<"${gate}" || ok=1
++  grep -q '^min: ' <<<"${gate}" || ok=1
++  grep -q '"cause":"report_too_thin"' <<<"${row}" || ok=1
++  rm -rf "${root}" "${d}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── Case 4 — diff lane regression: byte-identical review-gate.md vs pre-change ────
++# Shared scenario runner: tracked modification in the lane worktree, NO deliverable.
++run_diff_lane_scenario() { # <scripts_dir> <out_gate_file>
++  local sd="$1" out="$2"
++  local root tid wt d errf
++  root="$(new_repo)"; tid="rog1c4-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  printf 'seed\nedited-in-worktree-for-golden\n' > "${wt}/agent/seed.py"
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  run_gate "${sd}" "${root}" rog1c4sig "${wt}" "${d}" "${errf}" "" "-" "agent/seed.py" >/dev/null
++  cp "${root}/docs/handoff/dispatch-rog1c4sig/review-gate.md" "${out}" 2>/dev/null || touch "${out}"
++  rm -rf "${root}" "${d}"; rm -f "${errf}"
++  return 0
++}
++case_4_diff_golden() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local live_gate pre_gate prefix_dir
++  live_gate="$(mktemp "${TMPDIR:-/tmp}/leadv1-g1.XXXXXX")"
++  pre_gate="$(mktemp "${TMPDIR:-/tmp}/leadv1-g2.XXXXXX")"
++  run_diff_lane_scenario "${sd}" "${live_gate}"
++  if ! grep -q '^status: pass' "${live_gate}"; then
++    rm -f "${live_gate}" "${pre_gate}"
++    return 1
++  fi
++  # no git history (no LEADV2_REPO) => no pre-change baseline to compare against
++  [[ -n "${LEADV2_REPO}" ]] || { rm -f "${live_gate}" "${pre_gate}"; return 2; }
++  prefix_dir="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-pre.XXXXXX")"
++  git -C "${LEADV2_REPO}" archive HEAD plugins/leadv2/scripts 2>/dev/null | tar -x -C "${prefix_dir}" 2>/dev/null
++  if [[ ! -f "${prefix_dir}/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh" ]]; then
++    rm -rf "${prefix_dir}"; rm -f "${live_gate}" "${pre_gate}"
++    return 2
++  fi
++  run_diff_lane_scenario "${prefix_dir}/plugins/leadv2/scripts" "${pre_gate}"
++  rm -rf "${prefix_dir}"
++  local ok=0
++  if ! cmp -s "${live_gate}" "${pre_gate}"; then
++    ok=1
++    log "golden mismatch: live=[$(cat "${live_gate}")] pre=[$(cat "${pre_gate}")]"
++  fi
++  rm -f "${live_gate}" "${pre_gate}"
++  return "${ok}"
++}
++
++# ── Case 5 — dead worker: empty diff + clean tree -> no_work WITH kind: diff ──────
++case_5_dead_worker() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate line
++  root="$(new_repo)"; tid="rog1c5-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c5sig "${wt}" "${d}" "${errf}" "" "-")"
++  gate="$(gate_md "${root}" rog1c5sig)"
++  line="$(gate_terminal_line "${errf}")"
++  local ok=0
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^status: blocked' <<<"${gate}" || ok=1
++  grep -q '^reason: no_work' <<<"${gate}" || ok=1
++  grep -q '^kind: diff' <<<"${gate}" || ok=1
++  grep -q 'terminal=no_work' <<<"${line}" || ok=1
++  grep -q 'cause=empty_diff' <<<"${line}" || ok=1
++  rm -rf "${root}" "${d}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── Case 6a — unknown kind through the GATE: treated as a diff lane ───────────────
++case_6a_unknown_kind_gate() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate
++  root="$(new_repo)"; tid="rog1c6-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c6sig "${wt}" "${d}" "${errf}" "artifact:docs/x.md" "-")"
++  gate="$(gate_md "${root}" rog1c6sig)"
++  local ok=0
++  # clean tree + unparsable declaration => exactly the dead-worker diff-lane shape
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^reason: no_work' <<<"${gate}" || ok=1
++  grep -q '^kind: diff' <<<"${gate}" || ok=1
++  if grep -q '^reason: report_' <<<"${gate}"; then ok=1; fi
++  rm -rf "${root}" "${d}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── Cases 6b/6c — dispatch-side: unknown-kind journal + writes-guard exemption ────
++# Modeled on test-dispatch-architect-degrades.sh: stub worker + architect, ARCHITECT
++# gate off, lane-worktree bin stubbed so isolation CANNOT substitute for a writes
++# declaration (the exemption is the only thing that can satisfy the guard).
++run_dispatch() { # <root> <mission> ; prints dispatch stdout
++  CLAUDE_PROJECT_ROOT="$1" LEADV2_PROJECT_ROOT="$1" \
++  LEADV2_DISPATCH_CACHE_DIR="$1/cache" \
++  LEADV2_DISPATCH_SUBSESSION_BIN="$1/worker" \
++  LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
++  LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off \
++  LEADV2_DISPATCH_LANE_WORKTREE_BIN="$1/wt-stub.sh" \
++    bash "${SCRIPTS_LIVE}/leadv2-dispatch-code.sh" "$2" --kind product --protected 2>&1
++}
++make_dispatch_repo() { # -> repo path with routing.yaml + worker/wt stubs
++  local root
++  root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-r.XXXXXX")"
++  mkdir -p "${root}/.claude/ref" "${root}/docs/leadv2/.bus-offsets"
++  ( cd "${root}" && git init -q && git config user.email test@example.com \
++    && git config user.name test && : > seed && git add seed && git commit -qm seed ) >/dev/null 2>&1
++  printf 'router:\n  glm_policy:\n    sonnet_exceptions: [safety_gate_publish_payments]\n    opus_only_mission_kinds: []\n    codex_fitting_mission_kinds: []\n' > "${root}/.claude/ref/leadv2-routing.yaml"
++  printf '#!/usr/bin/env bash\nnohup sleep 60 >/dev/null 2>&1 &\nprintf "PID=%%s LABEL=test SESSION_ID=test\\n" "$!"\n' > "${root}/worker"
++  # never provides an isolated worktree (echoes the main checkout): the guard's
++  # worktree fallback can never fire, so only writes/deliverable can satisfy it.
++  printf '#!/usr/bin/env bash\ncase "$1" in ensure) printf "%%s" "${LEADV2_PROJECT_ROOT}"; exit 0;; path-of) exit 1;; esac\nexit 0\n' > "${root}/wt-stub.sh"
++  chmod +x "${root}/worker" "${root}/wt-stub.sh"
++  printf '%s' "${root}"
++}
++journal_of() { find "$1/docs/leadv2/tasks" -name journal.md -print -quit 2>/dev/null; }
++
++case_6b_unknown_kind_journal() {
++  local root out jr
++  root="$(make_dispatch_repo)"
++  out="$(run_dispatch "${root}" 'diagnose nothing; no LANE_WRITES here
++LANE_DELIVERABLE: artifact:docs/x.md')"
++  jr="$(journal_of "${root}")"
++  local ok=0
++  [[ -n "${jr}" ]] || ok=1
++  grep -q 'lane_deliverable .*status=ignored' "${jr}" 2>/dev/null || ok=1
++  grep -q 'reason=unknown_kind' "${jr}" 2>/dev/null || ok=1
++  rm -rf "${root}"
++  return "${ok}"
++}
++case_6c_guard_exemption() {
++  # declared report lane dispatches (no park); undeclared twin parks no_lane_writes.
++  local root_decl root_und jr out ok
++  root_decl="$(make_dispatch_repo)"
++  out="$(run_dispatch "${root_decl}" 'produce the analysis report
++LANE_DELIVERABLE: report:docs/handoff/R1/report.md')"
++  jr="$(journal_of "${root_decl}")"
++  ok=0
++  grep -q 'lane_deliverable .*status=declared' "${jr}" 2>/dev/null || ok=1
++  grep -q 'lane_writes .*source=report_deliverable' "${jr}" 2>/dev/null || ok=1
++  if grep -q 'reason=no_lane_writes' "${jr}" 2>/dev/null; then ok=1; fi
++  rm -rf "${root_decl}"
++  # undeclared twin: same mission without the declaration must park (minimal pair)
++  root_und="$(make_dispatch_repo)"
++  run_dispatch "${root_und}" 'produce the analysis report, no declaration at all here' >/dev/null 2>&1
++  jr="$(journal_of "${root_und}")"
++  grep -q 'reason=no_lane_writes' "${jr}" 2>/dev/null || ok=1
++  rm -rf "${root_und}"
++  return "${ok}"
++}
++
++# ── Case 7 — symlinked report is not a find (codex review finding 2) ─────────────
++# A worker (or a compromised one) leaving a SYMLINK at the declared path must not
++# let the gate harvest a host file into the handoff / external review. The gate
++# treats it as report_missing — locate refuses symlinks and escaped parents.
++case_7_symlink_report() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate secret
++  root="$(new_repo)"; tid="rog1c7-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  secret="$(mktemp "${TMPDIR:-/tmp}/leadv2-rog1-s.XXXXXX")"
++  write_good_report "${secret}"
++  mkdir -p "${wt}/analysis"
++  ln -s "${secret}" "${wt}/analysis/report.md"
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c7sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
++  gate="$(gate_md "${root}" rog1c7sig)"
++  local ok=0
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^status: blocked' <<<"${gate}" || ok=1
++  grep -q '^reason: report_missing' <<<"${gate}" || ok=1
++  # the host file must NOT have been harvested into the handoff
++  [[ ! -e "${root}/docs/handoff/dispatch-rog1c7sig/report.md" ]] || ok=1
++  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}" "${secret}"
++  return "${ok}"
++}
++
++# ── Case 8 — non-regular report.md at destination -> harvest_failed (finding 3) ──
++# An existing DIRECTORY at docs/handoff/dispatch-<sig>/report.md must fail closed:
++# blocked harvest_failed, never a pass advertising a deliverable that is not a file.
++case_8_dest_collision() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate
++  root="$(new_repo)"; tid="rog1c8-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  write_good_report "${wt}/analysis/report.md"
++  mkdir -p "${root}/docs/handoff/dispatch-rog1c8sig/report.md"   # the collision
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c8sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
++  gate="$(gate_md "${root}" rog1c8sig)"
++  local ok=0
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^status: blocked' <<<"${gate}" || ok=1
++  grep -q '^reason: harvest_failed' <<<"${gate}" || ok=1
++  grep -q '^kind: report' <<<"${gate}" || ok=1
++  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── Case 9 — hardlinked report is not a find (codex r2 finding 3) ─────────────────
++# A same-volume hardlink to a host file shares the inode with something outside the
++# tree; st_nlink > 1 means the find is refused -> report_missing, nothing harvested.
++case_9_hardlink_report() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate secret
++  root="$(new_repo)"; tid="rog1c9-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  secret="$(mktemp "${TMPDIR:-/tmp}/leadv2-rog1-s.XXXXXX")"
++  write_good_report "${secret}"
++  mkdir -p "${wt}/analysis"
++  if ! ln "${secret}" "${wt}/analysis/report.md" 2>/dev/null; then
++    rm -rf "${root}" "${wt}"; rm -f "${secret}"   # cross-volume fixture: not runnable here
++    return 2
++  fi
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c9sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
++  gate="$(gate_md "${root}" rog1c9sig)"
++  local ok=0
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^status: blocked' <<<"${gate}" || ok=1
++  grep -q '^reason: report_missing' <<<"${gate}" || ok=1
++  [[ ! -e "${root}/docs/handoff/dispatch-rog1c9sig/report.md" ]] || ok=1
++  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}" "${secret}"
++  return "${ok}"
++}
++
++# ── Case 10 — symlink AT the destination -> harvest_failed (codex r2 finding 4) ──
++# A pre-existing report.md SYMLINK pointing at the worktree source would satisfy the
++# same-file (-ef) guard and dangle after the sweep; harvest must refuse it outright.
++case_10_dest_symlink() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate
++  root="$(new_repo)"; tid="rog1c10-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  write_good_report "${wt}/analysis/report.md"
++  mkdir -p "${root}/docs/handoff/dispatch-rog1c10sig"
++  ln -s "${wt}/analysis/report.md" "${root}/docs/handoff/dispatch-rog1c10sig/report.md"
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c10sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
++  gate="$(gate_md "${root}" rog1c10sig)"
++  local ok=0
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^status: blocked' <<<"${gate}" || ok=1
++  grep -q '^reason: harvest_failed' <<<"${gate}" || ok=1
++  grep -q '^kind: report' <<<"${gate}" || ok=1
++  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── Case 11 — report lane with extra code changes -> unscoped_lane_work (r3 f2) ──
++# A report lane that ALSO edits source must not land those edits unreviewed under a
++# report verdict: blocked unscoped_lane_work (kind: report), nothing landed.
++case_11_report_plus_code() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate
++  root="$(new_repo)"; tid="rog1c11-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  write_good_report "${wt}/analysis/report.md"
++  printf 'sabotage\n' >> "${wt}/agent/seed.py"   # unreviewed code change
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c11sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
++  gate="$(gate_md "${root}" rog1c11sig)"
++  local ok=0
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^status: blocked' <<<"${gate}" || ok=1
++  grep -q '^reason: unscoped_lane_work' <<<"${gate}" || ok=1
++  grep -q '^kind: report' <<<"${gate}" || ok=1
++  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── Case 12 — COMMITTED source change in the report lane -> unscoped_lane_work ───
++# A worker that commits its changes leaves a clean status; the pre-overwrite diff vs
++# the dispatch base still shows them, so the launder guard must block (r4 finding 2).
++case_12_committed_change() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate
++  root="$(new_repo)"; tid="rog1c12-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  write_good_report "${wt}/analysis/report.md"
++  ( cd "${wt}" && printf 'committed sabotage\n' >> agent/seed.py && git add agent/seed.py \
++    && git -c user.email=t@e.c -c user.name=t commit -qm dirt ) >/dev/null 2>&1
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c12sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
++  gate="$(gate_md "${root}" rog1c12sig)"
++  local ok=0
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^status: blocked' <<<"${gate}" || ok=1
++  grep -q '^reason: unscoped_lane_work' <<<"${gate}" || ok=1
++  grep -q '^kind: report' <<<"${gate}" || ok=1
++  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── Case 13 — .git deliverable path is refused at parse -> diff-lane shape ────────
++# report:.git/config parses as a path but is control metadata; the parser rejects it,
++# so the lane is judged as a diff lane (r4 finding 5).
++case_13_git_path() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate
++  root="$(new_repo)"; tid="rog1c13-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c13sig "${wt}" "${d}" "${errf}" "report:.git/config" "-")"
++  gate="$(gate_md "${root}" rog1c13sig)"
++  local ok=0
++  # refused at parse => exactly the dead-worker diff-lane shape, never a report pass
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^reason: no_work' <<<"${gate}" || ok=1
++  grep -q '^kind: diff' <<<"${gate}" || ok=1
++  if grep -q '^kind: report' <<<"${gate}"; then ok=1; fi
++  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── Case 14 — RENAME into the report path -> unscoped_lane_work (r4 finding 1) ────
++# `git mv agent/seed.py analysis/report.md` + prose is a tracked-source replacement,
++# not report work: the porcelain record carries " -> " and must block.
++case_14_rename_launder() { # <scripts_dir>
++  local sd="$1"
++  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
++  local root tid wt d errf rrc gate
++  root="$(new_repo)"; tid="rog1c14-$$"
++  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
++  [[ -d "${wt}" ]] || return 2
++  mkdir -p "${wt}/analysis"
++  ( cd "${wt}" && git mv agent/seed.py analysis/report.md ) >/dev/null 2>&1
++  write_good_report "${wt}/analysis/report.md"
++  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
++  make_resolver_stub "${d}/resolver.py" codex
++  make_review_pass_stub "${d}/codex.sh"
++  rrc="$(run_gate "${sd}" "${root}" rog1c14sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
++  gate="$(gate_md "${root}" rog1c14sig)"
++  local ok=0
++  [[ "${rrc}" == "rc=5" ]] || ok=1
++  grep -q '^status: blocked' <<<"${gate}" || ok=1
++  grep -q '^reason: unscoped_lane_work' <<<"${gate}" || ok=1
++  grep -q '^kind: report' <<<"${gate}" || ok=1
++  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
++  return "${ok}"
++}
++
++# ── harness ───────────────────────────────────────────────────────────────────────
++CASE_NAMES=(); CASE_RCS=()
++run_case() { # <name> <fn> <scripts_dir>
++  local name="$1" fn="$2" sd="$3" rc
++  "${fn}" "${sd}" >/dev/null 2>&1; rc=$?
++  CASE_NAMES+=("${name}"); CASE_RCS+=("${rc}")
++  if [[ ${rc} -eq 2 ]]; then
++    log "SKIPPED-CANNOT-RUN: ${name}"
++  elif [[ ${rc} -eq 0 ]]; then
++    log "PASS ${name}"
++  else
++    log "FAIL ${name}"
++  fi
++}
++
++if bash -n "${SCRIPTS_LIVE}/leadv2-dispatch-product-close.sh" && \
++   bash -n "${SCRIPTS_LIVE}/leadv2-dispatch-code.sh" && \
++   bash -n "${SCRIPTS_LIVE}/lib/leadv2-report-deliverable.sh"; then
++  pass "bash -n clean (gate scripts + lib)"
++else
++  fail "bash -n failed on a gate script or the lib"
++fi
++if /bin/bash -n "${SCRIPTS_LIVE}/leadv2-dispatch-product-close.sh" 2>/dev/null; then
++  pass "/bin/bash -n (bash 3.2 syntax) product-close"
++else
++  fail "/bin/bash -n failed on leadv2-dispatch-product-close.sh"
++fi
++
++echo "=== pass 1/2: post-fix (live tree) ==="
++run_case "C1-good-report"        case_1_good_report       "${SCRIPTS_LIVE}"
++run_case "C2-report-missing"     case_2_missing           "${SCRIPTS_LIVE}"
++run_case "C3-report-too-thin"    case_3_thin              "${SCRIPTS_LIVE}"
++run_case "C4-diff-lane-golden"   case_4_diff_golden       "${SCRIPTS_LIVE}"
++run_case "C5-dead-worker-kind"   case_5_dead_worker       "${SCRIPTS_LIVE}"
++run_case "C6a-unknown-kind-gate" case_6a_unknown_kind_gate "${SCRIPTS_LIVE}"
++run_case "C6b-unknown-kind-journal" case_6b_unknown_kind_journal "${SCRIPTS_LIVE}"
++run_case "C6c-guard-exemption"   case_6c_guard_exemption  "${SCRIPTS_LIVE}"
++run_case "C7-symlink-report"    case_7_symlink_report    "${SCRIPTS_LIVE}"
++run_case "C8-dest-collision"    case_8_dest_collision    "${SCRIPTS_LIVE}"
++run_case "C9-hardlink-report"   case_9_hardlink_report   "${SCRIPTS_LIVE}"
++run_case "C10-dest-symlink"     case_10_dest_symlink     "${SCRIPTS_LIVE}"
++run_case "C11-report-plus-code" case_11_report_plus_code "${SCRIPTS_LIVE}"
++run_case "C12-committed-change" case_12_committed_change "${SCRIPTS_LIVE}"
++run_case "C13-git-path"        case_13_git_path        "${SCRIPTS_LIVE}"
++run_case "C14-rename-launder"  case_14_rename_launder  "${SCRIPTS_LIVE}"
++POST_NAMES=("${CASE_NAMES[@]}"); POST_RCS=("${CASE_RCS[@]}")
++
++echo ""
++echo "=== pass 2/2: red-first pre-fix — reds here are EVIDENCE ==="
++RF_RED=0; RF_TOTAL=0
++if [[ -n "${LEADV2_REPO}" ]]; then
++  # Pre-fix ref: the newest commit lacking lib/leadv2-report-deliverable.sh. Once the
++  # fix is committed, plain `git archive HEAD` contains the fix and "red-first" degenerates
++  # to fix-vs-fix (0 reds, no evidence) — walk back so the evidence survives the commit.
++  RF_REF="HEAD"
++  while git -C "${LEADV2_REPO}" cat-file -e "${RF_REF}:plugins/leadv2/scripts/lib/leadv2-report-deliverable.sh" 2>/dev/null; do
++    RF_PARENT="$(git -C "${LEADV2_REPO}" rev-parse -q --verify "${RF_REF}^" 2>/dev/null)" || { RF_REF=""; break; }
++    RF_REF="${RF_PARENT}"
++  done
++  PREFIX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-pre.XXXXXX")"
++  [[ -n "${RF_REF}" ]] && git -C "${LEADV2_REPO}" archive "${RF_REF}" plugins/leadv2/scripts 2>/dev/null | tar -x -C "${PREFIX_DIR}" 2>/dev/null
++  [[ -n "${RF_REF}" ]] && log "pre-fix ref: ${RF_REF}"
++  PREFIX_SCRIPTS="${PREFIX_DIR}/plugins/leadv2/scripts"
++  if [[ -f "${PREFIX_SCRIPTS}/leadv2-dispatch-product-close.sh" ]]; then
++    CASE_NAMES=(); CASE_RCS=()
++    run_case "C1-good-report"      case_1_good_report        "${PREFIX_SCRIPTS}"
++    run_case "C2-report-missing"   case_2_missing            "${PREFIX_SCRIPTS}"
++    run_case "C3-report-too-thin"  case_3_thin               "${PREFIX_SCRIPTS}"
++    run_case "C5-dead-worker-kind" case_5_dead_worker        "${PREFIX_SCRIPTS}"
++    run_case "C6a-unknown-kind-gate" case_6a_unknown_kind_gate "${PREFIX_SCRIPTS}"
++    # compare by NAME (the pre-fix block runs a subset of the post-fix cases)
++    for i in "${!POST_RCS[@]}"; do
++      [[ "${POST_RCS[$i]}" == "0" ]] || continue
++      local_j=""; pre_rc=""
++      for local_j in "${!CASE_NAMES[@]}"; do
++        [[ "${CASE_NAMES[$local_j]}" == "${POST_NAMES[$i]}" ]] && pre_rc="${CASE_RCS[$local_j]}"
++      done
++      [[ -n "${pre_rc}" ]] || continue  # not run in the pre-fix block (C4/C6b/C6c)
++      RF_TOTAL=$((RF_TOTAL + 1))
++      [[ "${pre_rc}" != "0" ]] && RF_RED=$((RF_RED + 1))
++    done
++  else
++    log "pre-fix reconstruction unavailable (HEAD archive lacks gate script)"
++  fi
++  rm -rf "${PREFIX_DIR}"
++fi
++
++POST_FAIL=0; POST_ERR=()
++for i in "${!POST_RCS[@]}"; do
++  if [[ "${POST_RCS[$i]}" != "0" && "${POST_RCS[$i]}" != "2" ]]; then
++    POST_FAIL=$((POST_FAIL + 1)); POST_ERR+=("${POST_NAMES[$i]}")
++  fi
++done
++
++echo ""
++echo "Results (post-fix, live tree): $(( ${#POST_RCS[@]} - POST_FAIL )) passed, ${POST_FAIL} failed"
++[[ ${POST_FAIL} -gt 0 ]] && printf -- 'FAIL: %s\n' "${POST_ERR[@]}"
++echo "red-first: ${RF_RED}/${RF_TOTAL} post-fix-passing cases RED against pre-fix"
++
++printf '\n[TEST] %d passed, %d failed\n' "$PASS" "$FAIL"
++if [[ "$FAIL" -gt 0 ]]; then
++  printf '%s\n' "${ERRORS[@]}"
++  exit 1
++fi
++[[ ${POST_FAIL} -gt 0 ]] && exit 1
++exit 0

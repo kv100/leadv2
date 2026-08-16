@@ -1,0 +1,31 @@
+- 2026-08-16T19:02:19Z [decision] dispatch_classified task=810129d0 class=product reason=conservative_default kind=unknown
+- 2026-08-16T19:02:33Z [decision] phase_precondition_warn task=810129d0 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-16T19:06:56Z [decision] architect_prepass task=810129d0 status=ran artifact=docs/handoff/dispatch-810129d0/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-810129d0-architect/architect.full.md
+- 2026-08-16T19:06:58Z [decision] lane_writes task=810129d0 source=prepass writes=plugins/leadv2/scripts/leadv2-fork-session.sh,plugins/leadv2/scripts/tests/test-fork-session.sh,plugins/leadv2/prompts/fork-session-mission.md,plugins/leadv2/commands/leadv2.md,plugins/leadv2/docs/phases.md
+- 2026-08-16T19:07:01Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-16T19:07:01Z [decision] kimi_skipped reason=chars_over task=810129d0 chars=12906 writes=0 prepass=1
+- 2026-08-16T19:07:02Z [decision] candidate_chain task=810129d0 arms=glm,codex,sonnet
+- 2026-08-16T19:07:19Z [decision] worker_spawned by=router model=glm task=810129d0 attempt=810129d0-1786906925-81970 handle=260816-220711-810129d0-66ee
+- 2026-08-16T19:07:19Z [decision] mission-version task=- sig=810129d0 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-16T19:07:51Z [decision] product_close task=810129d0 status=spawned author=glm
+- 2026-08-16T19:07:51Z [decision] route_resolved by=router router=v1 model=glm task=810129d0 rule=none reason=glm_default
+- 2026-08-16T19:07:51Z [decision] lane_worktree_left task=810129d0 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/810129d0
+- 2026-08-16T19:07:52Z [decision] product_close task=810129d0 status=waiting_worker author=glm handle=260816-220711-810129d0-66ee waited=0s
+- 2026-08-16T19:13:00Z [decision] product_close task=810129d0 status=waiting_worker author=glm handle=260816-220711-810129d0-66ee waited=308s
+- 2026-08-16T19:18:07Z [decision] product_close task=810129d0 status=waiting_worker author=glm handle=260816-220711-810129d0-66ee waited=615s
+- 2026-08-16T19:23:07Z [decision] product_close task=810129d0 status=waiting_worker author=glm handle=260816-220711-810129d0-66ee waited=915s
+- 2026-08-16T19:28:15Z [decision] product_close task=810129d0 status=waiting_worker author=glm handle=260816-220711-810129d0-66ee waited=1223s
+- 2026-08-16T19:33:19Z [decision] product_close task=810129d0 status=waiting_worker author=glm handle=260816-220711-810129d0-66ee waited=1527s
+- 2026-08-16T19:38:22Z [decision] product_close task=810129d0 status=waiting_worker author=glm handle=260816-220711-810129d0-66ee waited=1830s
+- 2026-08-16T19:43:26Z [decision] product_close task=810129d0 status=waiting_worker author=glm handle=260816-220711-810129d0-66ee waited=2134s
+- 2026-08-16T19:44:08Z [decision] review_diff task=810129d0 repo=810129d0 bytes=30641 base=HEAD
+- 2026-08-16T20:02:36Z [decision] e2e_gate task=810129d0 status=ran verdict=fail rc=1
+- 2026-08-16T20:02:58Z [decision] e2e_gate task=810129d0 status=ran verdict=foreign_failure scope=lane_writes foreign_suites=tests/test-status-surface-fast-names.sh foreign_files= owner_lane=unknown own_failures=0
+- 2026-08-16T20:02:58Z [decision] foreign_failure task=810129d0 suite=tests/test-status-surface-fast-names.sh file= owner_lane=unknown
+- 2026-08-16T20:02:58Z [decision] review_routing_yaml task=810129d0 source=tenant
+- 2026-08-16T20:02:59Z [decision] review_signals task=810129d0 protected_path=0 source=lane_writes matched=-
+- 2026-08-16T20:03:02Z [decision] review_pool_resolve task=810129d0 rc=0 reviewer=codex pool_n=5
+- 2026-08-16T20:06:31Z [decision] review_gate task=810129d0 status=ran author=glm reviewer=codex verdict=FAIL diff=5de95e47 review_source=stream verdict_source=marker ledger_rc=0
+- 2026-08-16T20:06:31Z [decision] review_gate task=810129d0 status=fail critical=0 high=3
+- 2026-08-16T20:06:31Z [decision] dispatch_terminal task=810129d0 terminal=dead cause=review_verdict_fail
+- 2026-08-16T20:06:32Z [decision] dispatch_terminal_dedup task=810129d0 attempted=dead reason=terminal_already_recorded

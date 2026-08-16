@@ -1,0 +1,3 @@
+[claude-subsession] stable prefix file reused for critic (server cache status comes from usage telemetry)
+[claude-subsession] cost recorded: critic/opus in=20 out=4440 usd=0.333300 cache_hit=0.9329
+[claude-subsession] no DELIVERABLE_COMPLETE in critic.full.md (or missing .summary.md)

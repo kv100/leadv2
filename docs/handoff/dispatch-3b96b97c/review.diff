@@ -1,0 +1,85 @@
+diff --git a/plugins/leadv2/scripts/leadv2-review-run.sh b/plugins/leadv2/scripts/leadv2-review-run.sh
+index df46807..7d32a7d 100755
+--- a/plugins/leadv2/scripts/leadv2-review-run.sh
++++ b/plugins/leadv2/scripts/leadv2-review-run.sh
+@@ -231,6 +231,60 @@ review_floor_ok() { # <file> -> 0 if it clears the floor, 1 if not
+   return 0
+ }
+ 
++# _review_resolve_codex_base -> echoes a rev to diff FROM on stdout, rc0. rc1 when
++# no usable base resolves (caller must refuse rather than hand codex a bare `HEAD`
++# that would silently review nothing on an already-committed lane -- the exact
++# mechanism this function exists to avoid; see REVIEW-CODEX-EMPTY-BASE-01 below).
++#
++# REVIEW-CODEX-EMPTY-BASE-01: codex's own `--base HEAD` used to diff the lane's
++# CURRENT HEAD against itself once the lane had already committed its work --
++# collectReviewContext (codex-companion's lib/git.mjs resolveReviewTarget) treats
++# an explicit --base as authoritative and never falls back to working-tree mode,
++# so a committed lane always got an empty branch diff from codex, a short/empty
++# stdout, and the REVIEW-BODY-PERSIST-01 guard downstream (left untouched by this
++# fix, per design) then correctly declared review_body_lost because codex ALWAYS
++# writes its `[codex-task] tier=...` banner to stderr regardless of whether the
++# review body itself was real.
++#
++# This mirrors leadv2-dispatch-product-close.sh's _pc_diff_base exactly (same
++# two-candidate resolution: the lane's recorded start SHA first, origin/main
++# second) rather than re-deriving root/ancestry arithmetic here -- ROOT is this
++# engine's own --root arg (already resolved by the caller, never counted via
++# `../` hops), and LEADV2_LANE_START_SHA is an env var this process already
++# inherits from leadv2-dispatch-code.sh's spawn_product_close (which exports it
++# to leadv2-dispatch-product-close.sh, whose own child-process env -- this
++# engine included -- inherits it for free; no cross-file wiring needed).
++#
++# Degenerate-environment guard: if ROOT is not inside a git working tree at all
++# (a bare fixture tempdir, not a production lane worktree), there is no git
++# ancestry to resolve -- fall back to the OLD literal "HEAD" rather than
++# refusing outright, so this function only ever REFUSES (rc1) when ROOT genuinely
++# is a git repo but no usable merge-base exists in it. This keeps the refusal
++# path scoped to the real Fault B scenario (a committed lane in a real repo)
++# instead of firing on any caller that hands this engine a non-repo directory.
++_review_resolve_codex_base() {
++  if ! git -C "${ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
++    printf 'HEAD'
++    return 0
++  fi
++  local sha="${LEADV2_LANE_START_SHA:-}" base
++  if [[ -n "${sha}" ]] && git -C "${ROOT}" cat-file -e "${sha}^{commit}" 2>/dev/null; then
++    base="$(git -C "${ROOT}" merge-base "${sha}" HEAD 2>/dev/null || true)"
++    if [[ -n "${base}" ]]; then
++      printf '%s' "${base}"
++      return 0
++    fi
++  fi
++  if git -C "${ROOT}" cat-file -e "origin/main^{commit}" 2>/dev/null; then
++    base="$(git -C "${ROOT}" merge-base origin/main HEAD 2>/dev/null || true)"
++    if [[ -n "${base}" ]]; then
++      printf '%s' "${base}"
++      return 0
++    fi
++  fi
++  return 1
++}
++
+ # ---------------------------------------------------------------------------
+ # 4. run_reviewer_arm — lifted verbatim (KIMI-CHANNEL-01b §2.3.1-2.3.2 /
+ #    dispatch-00629379). One behaviour change from the lane copy: output/err
+@@ -244,7 +298,18 @@ run_reviewer_arm() { # <arm>
+   review_err="${HANDOFF}/review-${arm}.err"
+   mission_file="${HANDOFF}/review-mission-${arm}.md"
+   if [[ "${arm}" == codex ]]; then
+-    bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base HEAD --wait \
++    local codex_base
++    if ! codex_base="$(_review_resolve_codex_base)"; then
++      emit decision "review_arm_skipped arm=codex reason=no_base_resolved task=${TASK}"
++      review_rc=77
++      return
++    fi
++    if git -C "${ROOT}" diff --quiet "${codex_base}" -- 2>/dev/null; then
++      emit decision "review_arm_skipped arm=codex reason=empty_diff task=${TASK}"
++      review_rc=77
++      return
++    fi
++    bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base "${codex_base}" --wait --cwd "${ROOT}" \
+       --focus "Review ONLY the diff at ${DIFF_FILE}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract} Authoritative surfaces for this repo: \`.claude/CLAUDE.md\`, \`docs/reference/ENGINE-REFERENCE.md\`, \`docs/systems-map/CONTROL-TRUTH.md\`, \`docs/systems-map/TRUTH-TABLE.md\`, \`docs/BOARD.md\`. Read only the ones the diff touches. Treat any \`docs/specs/*.md\` as possibly stale unless corroborated by code. Before promoting a Codex finding, corroborate it against those surfaces; drop or downgrade any finding whose sole basis is a \`docs/specs/*.md\` claim." \
+       > "${review_out}" 2> "${review_err}"; review_rc=$?
+   elif [[ "${arm}" == glm ]]; then

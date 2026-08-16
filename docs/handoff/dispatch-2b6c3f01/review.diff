@@ -1,0 +1,613 @@
+diff --git a/plugins/leadv2/commands/leadv2.md b/plugins/leadv2/commands/leadv2.md
+index d330eb6..ded6a0b 100644
+--- a/plugins/leadv2/commands/leadv2.md
++++ b/plugins/leadv2/commands/leadv2.md
+@@ -211,7 +211,7 @@ Principle: **context is cache, disk is truth.** Sessions run for days with many
+ 
+ ---
+ 
+-**PULSE MODE (default ON):** between phases: absolute silence. Gate 1: one line + wait. Async question: one line + options. Phase 8 close: max 3 lines. Every extra sentence = protocol violation.
++**PULSE MODE (default ON):** between phases: absolute silence. Gate 1: one line + wait. Async question: one line + options. Phase 8 close: max 3 lines. A `[BROAD_STATUS]` relay when the plugin emits `BROAD_STATUS_READY` is an allowed output (paste `founder-status.md` verbatim; never compose one). Narration is model-generated prose about its own work; the pulse is a verbatim relay of a plugin-generated artifact — never a `CronCreate` job; the beat is plugin-owned (`leadv2-supervise-loop.sh`, `LEADV2_SUPERVISE_BROAD_STATUS_S`). Every extra sentence = protocol violation.
+ 
+ **Enforcement (plugin-default hooks, active on fresh install):**
+ - `leadv2-loop-detect-hook.sh` (PreToolUse `.*`): WARN at 30 tool calls, BLOCK at 50. Disable: `export LEADV2_LOOP_DETECT=0`. Adjust limits: `LEADV2_TOOL_FREQ_WARN=<n>`, `LEADV2_TOOL_HARD_LIMIT=<n>`. The Agent tool is exempt from this per-tool-type cap by default (`LEADV2_UNCAPPED_TOOLS=Agent`) — a supervisor's job is spawning subagents, so it must not share Bash's 50-call ceiling; override the exempt list with `LEADV2_UNCAPPED_TOOLS=<comma,separated,tool,names>`.
+diff --git a/plugins/leadv2/docs/supervisor-role.md b/plugins/leadv2/docs/supervisor-role.md
+index b533cb3..2193887 100644
+--- a/plugins/leadv2/docs/supervisor-role.md
++++ b/plugins/leadv2/docs/supervisor-role.md
+@@ -92,8 +92,13 @@ in `context.yaml` or `CLAUDE.md` is founder-only too.
+ - A lane opens, closes, dies, or stalls: announce it in 1–2 plain lines.
+ - A founder-only question: raise it in chat, immediately when it blocks a lane;
+   otherwise include it in the next status beat.
+-- The 30-minute broad-status beat: paste the generated block. It reports the
+-  5-hour and weekly rate-limit windows, never dollar figures.
++- The 30-minute broad-status beat: delivered by the plugin — one
++  `BROAD_STATUS_READY` line per beat reaches you through the URGENT filter;
++  paste `docs/leadv2/founder-status.md` verbatim, never hand-compose one and
++  never `CronCreate` a status job. It reports the 5-hour and weekly
++  rate-limit windows, never dollar figures. Narration is model-generated
++  prose about its own work; the pulse is a verbatim relay of a
++  plugin-generated artifact.
+ 
+ Everything else is silent. The steady-state budget is at most two supervisor
+ turns per 30 minutes plus one per lane event. A close announcement is an
+@@ -163,6 +168,20 @@ Three hard rules on the table's content — keep them true when touching
+    when there is no previous beat to compare against (first beat in a
+    session says so explicitly instead).
+ 
++**Delivery (PULSE-IS-A-PLUGIN-DUTY-01):** the beat is delivered, not
++narrated. `leadv2-broad-status.sh` appends exactly ONE
++`[SUPERVISE-URGENT] BROAD_STATUS_READY at=… path=docs/leadv2/founder-status.md
++rows=… dispatched=…` line to the loop log per beat; it passes the founder's
++`grep --line-buffered URGENT` watcher and is a POINTER to
++`founder-status.md`, never the payload. A beat that fails to render emits a
++`degraded=1` ready-line instead of silence. The backlog pump runs BEFORE the
++composer and its dispatched count is stamped into the beat
++(dispatch-before-report is code-enforced in `leadv2-supervise-loop.sh`, never
++an instruction). Hand-composing a status or spinning up a `CronCreate` job to
++produce one is banned: the cadence is plugin-owned
++(`LEADV2_SUPERVISE_BROAD_STATUS_S`; setting it to `0` disables the beat AND
++its ready-line).
++
+ - **Short status**: plain words, no jargon, no UUIDs, no dollar figures
+   (report the 5-hour / weekly rate-limit-window usage instead). The broad
+   status beat is every 30 minutes while supervision is active.
+diff --git a/plugins/leadv2/hooks/leadv2-supervisor-mode-reinject.sh b/plugins/leadv2/hooks/leadv2-supervisor-mode-reinject.sh
+index 27b509c..65c49e9 100755
+--- a/plugins/leadv2/hooks/leadv2-supervisor-mode-reinject.sh
++++ b/plugins/leadv2/hooks/leadv2-supervisor-mode-reinject.sh
+@@ -134,10 +134,15 @@ SUPERVISOR MODE IS ON ${_WHY}.
+ Role definition: plugins/leadv2/docs/supervisor-role.md (read it for the full
+ contract). You are the SUPERVISOR, not a hand-orchestrator.
+ 
+-Status beat: every ~30 min a [BROAD_STATUS] block is appended to the supervise
+-loop log by leadv2-broad-status.sh; you surface only what needs the founder.
+-Your only chat outputs are: the 5-min pulse line, an AskUserQuestion with
+-options, and silence. End every BROAD_STATUS block with a BROAD_STATUS_END line.
++Status beat: every ~30 min leadv2-broad-status.sh appends a [BROAD_STATUS]
++block to the supervise loop log and emits one BROAD_STATUS_READY line. Relay
++when your URGENT-filtered watcher wakes you on it: paste
++docs/leadv2/founder-status.md verbatim; never compose one. Narration is
++model-generated prose about its own work; the pulse is a verbatim relay of a
++plugin-generated artifact — never a CronCreate job; the beat is plugin-owned.
++Your only chat outputs are: the 5-min pulse line, that BROAD_STATUS_READY
++relay, an AskUserQuestion with options, and silence. End every BROAD_STATUS
++block with a BROAD_STATUS_END line.
+ 
+ Dispatch constraint: ALL work goes out as child /leadv2 sessions via
+   bash .claude/scripts/leadv2-fanout.sh --tasks <id1,id2> --tmux
+diff --git a/plugins/leadv2/hooks/leadv2-task-anchor.sh b/plugins/leadv2/hooks/leadv2-task-anchor.sh
+index 77200c9..2eaca32 100755
+--- a/plugins/leadv2/hooks/leadv2-task-anchor.sh
++++ b/plugins/leadv2/hooks/leadv2-task-anchor.sh
+@@ -219,7 +219,11 @@ def build_thread_anchor(root, leadv2_dir, session_id=""):
+         "2. Only an explicit stop/scope-change order pauses a thread. \"Also do X\" = queue X in\n"
+         "   docs/leadv2/open-threads.md, do NOT switch to it.\n"
+         "3. PULSE MODE: no narration. Chat output is allowed ONLY at: Gate-1, an async question,\n"
+-        "   Phase-8 close. Everything else is silent tool work.\n"
++        "   Phase-8 close, a [BROAD_STATUS] relay when the plugin emits BROAD_STATUS_READY\n"
++        "   (paste founder-status.md verbatim; never compose one). Narration is\n"
++        "   model-generated prose about its own work; the pulse is a verbatim relay of a\n"
++        "   plugin-generated artifact — never a CronCreate job; the beat is plugin-owned.\n"
++        "   Everything else is silent tool work.\n"
+         "4. Anything promised for later goes to docs/leadv2/scheduled-decisions.md the same turn."
+     )
+ 
+@@ -695,7 +699,11 @@ def main():
+         "2. Only an explicit stop/scope-change order pauses the task. \"Also do X\" = queue X in\n"
+         "   docs/leadv2/open-threads.md, do NOT switch to it.\n"
+         "3. PULSE MODE: no narration. Chat output is allowed ONLY at: Gate-1, an async question,\n"
+-        "   Phase-8 close. Everything else is silent tool work.\n"
++        "   Phase-8 close, a [BROAD_STATUS] relay when the plugin emits BROAD_STATUS_READY\n"
++        "   (paste founder-status.md verbatim; never compose one). Narration is\n"
++        "   model-generated prose about its own work; the pulse is a verbatim relay of a\n"
++        "   plugin-generated artifact — never a CronCreate job; the beat is plugin-owned.\n"
++        "   Everything else is silent tool work.\n"
+         "4. Anything promised for later goes to docs/leadv2/scheduled-decisions.md the same turn."
+     )
+ 
+diff --git a/plugins/leadv2/scripts/leadv2-broad-status.sh b/plugins/leadv2/scripts/leadv2-broad-status.sh
+index 935b121..c404c1a 100755
+--- a/plugins/leadv2/scripts/leadv2-broad-status.sh
++++ b/plugins/leadv2/scripts/leadv2-broad-status.sh
+@@ -9,7 +9,15 @@
+ # A Haiku outage (or --model haiku failing) still yields a real table with
+ # no prose tail, never the old "качество недоступно" whole-status failure.
+ #
+-# Rollback: LEADV2_SUPERVISE_BROAD_STATUS_S=0 disables the loop beat.
++# PULSE-IS-A-PLUGIN-DUTY-01 C1: delivery. The founder's watcher is
++# `tail -F | grep --line-buffered URGENT` on the loop log, and the
++# [BROAD_STATUS] block itself never contains that substring — before this
++# file emitted a ready-line, every beat was composed, timestamped, written to
++# two files, and woke nobody. See _emit_ready_line below.
++#
++# Rollback: LEADV2_SUPERVISE_BROAD_STATUS_S=0 disables the loop beat AND its
++# ready-line (the beat branch in leadv2-supervise-loop.sh is the only caller,
++# so the kill-switch cannot half-work).
+ 
+ set -uo pipefail
+ 
+@@ -30,10 +38,49 @@ COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector
+ TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
+ CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
+ 
++# Beat identity (also the alarm-dedupe VALUE — semantic, never the rendered
++# line). LEADV2_BROAD_STATUS_BEAT_AT pins it for tests so a re-run of the
++# same beat is a true no-op, not a second wake.
++BEAT_AT="${LEADV2_BROAD_STATUS_BEAT_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
++# PULSE-IS-A-PLUGIN-DUTY-01 C2: stamped by the loop AFTER the backlog pump
++# ran and BEFORE this composer — "dispatch before report" as a code-enforced
++# order. "unavailable" when the pump could not run: never 0, which would
++# fabricate the fact that the pump ran and dispatched nothing.
++DISPATCHED="${LEADV2_BROAD_STATUS_DISPATCHED:-unavailable}"
++
+ mkdir -p "$(dirname "$LOG_FILE")"
+ 
++# ── C1: ONE URGENT-tagged ready-line per beat ──────────────────────────────
++# INVARIANT (R1): exactly ONE line per beat, and it is a POINTER to
++# founder-status.md — never the payload, never per-lane. Do not "enrich" it:
++# every extra line is a model wake paid on every remaining turn of the
++# attached session. Transition-deduped (key broad_status_ready, value = beat
++# identity) so a re-read or a double --ensure cannot fire the same beat
++# twice; lib absent → pass-through emit (R2) — this script runs once per
++# BROAD_STATUS_S window, not per poll, so pass-through is still one line per
++# beat.
++ALARM_LIB="${LEADV2_ALARM_DEDUPE_BIN:-${SCRIPT_DIR}/lib/leadv2-alarm-dedupe.sh}"
++# shellcheck source=lib/leadv2-alarm-dedupe.sh
++[[ -f "$ALARM_LIB" ]] && source "$ALARM_LIB"
++_now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
++_emit_ready_line() {  # <rows|-> [degraded]
++  local rows="${1:--}" degraded="${2:-}"
++  local dedupe_value="$BEAT_AT${degraded:+ degraded}"
++  if command -v leadv2_alarm_transition >/dev/null 2>&1 \
++      && ! leadv2_alarm_transition broad_status_ready "$dedupe_value" 2>/dev/null; then
++    return 0  # same beat already delivered — suppressed
++  fi
++  local rel_path="${FOUNDER_STATUS_PATH#"$PROJECT_ROOT"/}"
++  printf '%s [SUPERVISE-URGENT] BROAD_STATUS_READY at=%s path=%s rows=%s dispatched=%s%s\n' \
++    "$(_now_iso)" "$BEAT_AT" "$rel_path" "$rows" "$DISPATCHED" \
++    "${degraded:+ degraded=1}" >>"$LOG_FILE"
++}
++
+ if ! bash "$COLLECTOR_SH" --project-root "$PROJECT_ROOT" --out "$SNAPSHOT_PATH" >/dev/null 2>&1; then
+-  printf '%s [BROAD_STATUS] collection failure: quality read unavailable\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$LOG_FILE"
++  printf '%s [BROAD_STATUS] collection failure: quality read unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
++  # A beat that fails must still wake the lead (C1) — a missing status is
++  # visible, never inferred from silence.
++  _emit_ready_line "-" degraded
+   exit 0
+ fi
+ 
+@@ -237,17 +284,19 @@ os.replace(tmp_prev, prev_path)
+ 
+ out_path = os.path.join(tmpdir, "render.json")
+ with open(out_path, "w", encoding="utf-8") as fh:
+-    json.dump({"table_md": table_md, "tail_facts": tail_facts}, fh)
++    json.dump({"table_md": table_md, "rows": len(table_rows), "tail_facts": tail_facts}, fh)
+ print(out_path)
+ PY
+ )"
+ RC=$?
+ if [[ $RC -ne 0 || -z "$RENDER_JSON" || ! -f "$RENDER_JSON" ]]; then
+-  printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$LOG_FILE"
++  printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
++  _emit_ready_line "-" degraded
+   exit 0
+ fi
+ 
+ TABLE_MD="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['table_md'])" "$RENDER_JSON")"
++ROWS_N="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['rows'])" "$RENDER_JSON")"
+ TAIL_FACTS_JSON="$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['tail_facts'], ensure_ascii=False))" "$RENDER_JSON")"
+ 
+ PROMPT="$(python3 - "$TAIL_FACTS_JSON" <<'PY'
+@@ -275,10 +324,13 @@ if [[ -z "$TAIL" ]]; then
+ fi
+ 
+ BLOCK="$(
+-  printf '%s [BROAD_STATUS]\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
++  printf '%s [BROAD_STATUS] dispatched=%s\n' "$BEAT_AT" "$DISPATCHED"
+   printf '%s\n\n%s\n' "$TABLE_MD" "$TAIL"
+   printf '[BROAD_STATUS_END]\n'
+ )"
+ 
+ printf '%s\n' "$BLOCK" >>"$LOG_FILE"
+ printf '%s\n' "$BLOCK" >"$FOUNDER_STATUS_PATH.tmp" && mv "$FOUNDER_STATUS_PATH.tmp" "$FOUNDER_STATUS_PATH"
++
++# C1 delivery: the ONE wake per beat, after both durable writes succeeded.
++_emit_ready_line "$ROWS_N"
+diff --git a/plugins/leadv2/scripts/leadv2-supervise-loop.sh b/plugins/leadv2/scripts/leadv2-supervise-loop.sh
+index caeb351..b29b3cc 100755
+--- a/plugins/leadv2/scripts/leadv2-supervise-loop.sh
++++ b/plugins/leadv2/scripts/leadv2-supervise-loop.sh
+@@ -153,7 +153,14 @@ _install_beat_cron() {
+   [[ "${LEADV2_SUPERVISE_BEAT_CRON:-1}" == "1" ]] || return 0
+   [[ -x "$WATCHDOG_SH" ]] || return 0
+   local crontab_bin="${CRONTAB_BIN:-crontab}"
+-  command -v "$crontab_bin" >/dev/null 2>&1 || return 0
++  command -v "$crontab_bin" >/dev/null 2>&1 || {
++    # Visible gap, not a silent one (PULSE-IS-A-PLUGIN-DUTY-01 §3): with no
++    # cron there is no resurrection after a session death — only a manual
++    # --ensure restarts the loop, and the founder should see that in the log.
++    printf -- '%s [supervise-loop] beat-cron install skipped: %s unavailable — restart after a session death needs a manual --ensure\n' \
++      "$(_now_iso)" "$crontab_bin" >>"$LOG_FILE" 2>/dev/null || true
++    return 0
++  }
+   # Repo slug for the marker (basename of the main repo toplevel).
+   local repo_slug
+   repo_slug="$(basename "${PROJECT_ROOT}")"
+@@ -374,9 +381,23 @@ except Exception:
+ }
+ trap _cleanup_sentinel EXIT
+ 
+-PUMP_SH="${SCRIPT_DIR}/leadv2-backlog-pump.sh"
++PUMP_SH="${LEADV2_BACKLOG_PUMP_BIN:-${SCRIPT_DIR}/leadv2-backlog-pump.sh}"
+ BROAD_STATUS_SH="${SCRIPT_DIR}/leadv2-broad-status.sh"
+ 
++# PULSE-IS-A-PLUGIN-DUTY-01 C1: a beat that cannot compose must still wake the
++# lead — a missing status is visible, never inferred from silence. Fires once
++# per occurrence (value carries the epoch), which at one beat per
++# BROAD_STATUS_S window is the same cadence the beat itself would have.
++_emit_broad_status_degraded() {  # <reason>
++  local reason="${1:-unknown}"
++  if command -v leadv2_alarm_transition >/dev/null 2>&1 \
++      && ! leadv2_alarm_transition broad_status_ready "degraded:${reason}:$(date +%s)" 2>/dev/null; then
++    return 0
++  fi
++  printf -- '%s [SUPERVISE-URGENT] BROAD_STATUS_READY at=%s path=docs/leadv2/founder-status.md rows=- dispatched=unavailable degraded=1 reason=%s\n' \
++    "$(_now_iso)" "$reason" >>"$LOG_FILE"
++}
++
+ # BACKLOG-PUMP-01: this loop already owns the sleep/poll cadence (off_limits:
+ # "no sleep/poll loop owned by the LLM") — the pump's refill trigger belongs
+ # here, not in the lead's turn. Gated by LEADV2_BACKLOG_PUMP so an explicit 0
+@@ -811,14 +832,36 @@ while true; do
+ 
+   # The supervisor never reads or composes this status: the helper gathers
+   # facts and makes one cheap model call, then writes a finished block here.
++  # PULSE-IS-A-PLUGIN-DUTY-01: (C2) the backlog pump runs BEFORE the composer
++  # and its dispatched count is exported into the beat, so "a pulse dispatches
++  # before it reports" is a code-enforced, after-the-fact auditable order —
++  # not an instruction. (C1) the composer emits one URGENT-tagged
++  # BROAD_STATUS_READY line per beat (the delivery contract); a beat that
++  # cannot compose still wakes via _emit_broad_status_degraded.
+   if [[ "$BROAD_STATUS_S" =~ ^[0-9]+$ ]] && (( BROAD_STATUS_S > 0 )) \
+       && (( NOW_EPOCH - LAST_BROAD_STATUS_EPOCH >= BROAD_STATUS_S )); then
++    export LEADV2_BROAD_STATUS_DISPATCHED="unavailable"
++    if [[ "${LEADV2_BACKLOG_PUMP:-1}" == "1" && -x "$PUMP_SH" ]]; then
++      _BS_PUMP_OUT="$(bash "$PUMP_SH" check 2>&1)" || true
++      [[ -z "$_BS_PUMP_OUT" ]] || printf '%s\n' "$_BS_PUMP_OUT" >>"$LOG_FILE"
++      # Parse the pump's own "check complete:" summary; absent summary →
++      # "unavailable", never 0 (a fabricated "ran and dispatched nothing").
++      export LEADV2_BROAD_STATUS_DISPATCHED="$(printf '%s\n' "$_BS_PUMP_OUT" \
++        | sed -n 's/.*check complete:.*dispatched=\([0-9][0-9]*\).*/\1/p' | tail -n1)"
++      [[ -n "${LEADV2_BROAD_STATUS_DISPATCHED}" ]] || export LEADV2_BROAD_STATUS_DISPATCHED="unavailable"
++    fi
+     if [[ -x "$BROAD_STATUS_SH" ]]; then
+-      bash "$BROAD_STATUS_SH" >>"$LOG_FILE" 2>&1 || \
++      if bash "$BROAD_STATUS_SH" >>"$LOG_FILE" 2>&1; then
++        :
++      else
+         printf -- '%s [BROAD_STATUS] failure: quality read unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
++        _emit_broad_status_degraded "composer_rc_nonzero"
++      fi
+     else
+       printf -- '%s [BROAD_STATUS] failure: composer unavailable; quality read unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
++      _emit_broad_status_degraded "composer_missing"
+     fi
++    unset LEADV2_BROAD_STATUS_DISPATCHED
+     LAST_BROAD_STATUS_EPOCH=$NOW_EPOCH
+   fi
+ 
+diff --git a/plugins/leadv2/scripts/tests/test-broad-status-duty.sh b/plugins/leadv2/scripts/tests/test-broad-status-duty.sh
+new file mode 100755
+index 0000000..801d359
+--- /dev/null
++++ b/plugins/leadv2/scripts/tests/test-broad-status-duty.sh
+@@ -0,0 +1,290 @@
++#!/usr/bin/env bash
++# tests/test-broad-status-duty.sh — PULSE-IS-A-PLUGIN-DUTY-01.
++#
++# The transition this suite exists to survive: the beat was composed,
++# timestamped, and written to two files — but contained no URGENT substring,
++# so the founder's `grep --line-buffered URGENT` watcher filtered it out and
++# no live session was ever woken. Cases:
++#
++#   1. one beat -> exactly ONE [SUPERVISE-URGENT] BROAD_STATUS_READY line
++#      that passes the REAL filter (grep URGENT), and founder-status.md
++#      carries the dispatched= stamp (C1+C2).
++#   2. dedupe: same beat identity re-run -> still one line; new identity ->
++#      fires; lib force-disabled -> pass-through still one line per run (R2).
++#   3. ordering: full loop, one cycle -> pump ran BEFORE the composer wrote
++#      founder-status.md, and the ready-line's dispatched= matches the pump.
++#   4. session-death survival (the demonstration, not a claim): kill the
++#      loop, age past 2xPULSE_S, run the watchdog -> LOOP_SILENT, a NEW live
++#      pid, and a fresh beat afterwards. Includes the --ensure adopt
++#      assertion (R3: single-owner sentinel, no sibling on double-ensure).
++#   5. degraded beat: collector missing -> BROAD_STATUS_READY degraded=1
++#      still appears (a missing status is visible, never silent).
++#   6. kill-switch: LEADV2_SUPERVISE_BROAD_STATUS_S=0 -> no beat, no
++#      ready-line (the rollback cannot half-work).
++#   7. crontab unavailable -> the skip is LOGGED, not silent.
++#   8. wording drift (R4): the relay sentence is present verbatim in every
++#      C3 surface, and the CronCreate ban lives where a non-supervisor lead
++#      reads it (C4).
++#
++# Hermetic: LEADV2_PROJECT_ROOT/LEADV2_STATE_ROOT point at throwaway dirs,
++# CRONTAB_BIN is a stub (the real crontab is never touched), the composer's
++# claude call is a stub (no model invoked), the pump is a stub.
++# Non-goals: real crontab, real reboot, real claude.
++#
++# NOTE on timing: one supervise.sh snapshot costs ~25s in a bare fixture
++# (liveness/pick retries against an empty control plane), so loop-running
++# cases use generous timeouts — a cycle completes in ~60s, not ~5s.
++# Run: bash scripts/tests/test-broad-status-duty.sh
++
++set -uo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++PLUGIN_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"   # plugins/leadv2
++source "${SCRIPT_DIR}/leadv2-temp.sh"
++
++LOOP_SH="${SCRIPT_DIR}/leadv2-supervise-loop.sh"
++BROAD_STATUS_SH="${SCRIPT_DIR}/leadv2-broad-status.sh"
++WATCHDOG_SH="${SCRIPT_DIR}/leadv2-supervise-watchdog.sh"
++STATE_PATH_SH="${SCRIPT_DIR}/leadv2-state-path.sh"
++
++PASS=0; FAIL=0; ERRORS=()
++log()  { printf -- '[TEST] %s\n' "$*"; }
++pass() { PASS=$(( PASS + 1 )); log "PASS: $1"; }
++fail() { FAIL=$(( FAIL + 1 )); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
++
++TMP="$(lv2_mktemp_dir broad-status-duty)"
++REPO="$TMP/proj"
++STATE="$TMP/state"
++STUBS="$TMP/stubs"
++PUMP_COUNTER="$TMP/pump-counter"
++CRONTAB_STUB_STATE="$TMP/crontab-state"
++mkdir -p "$REPO" "$STATE" "$STUBS"
++git -C "$REPO" init -q
++# TEST SAFETY: this suite writes through leadv2-state-path.sh — prove the
++# fixture is a throwaway before any control-plane write happens.
++lv2_assert_scratch_repo "$REPO"
++
++export LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE"
++
++LOG_FILE="$(PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" bash "$STATE_PATH_SH" supervise-loop.log)"
++FOUNDER_STATUS="$REPO/docs/leadv2/founder-status.md"
++ready_count()   { grep -c 'BROAD_STATUS_READY' "$LOG_FILE" 2>/dev/null || true; }
++urgent_count()  { grep 'URGENT' "$LOG_FILE" 2>/dev/null | grep -c 'BROAD_STATUS_READY' || true; }
++started_pids()  { sed -n 's/.*\[supervise-loop\] started pid=\([0-9]*\) .*/\1/p' "$LOG_FILE" 2>/dev/null; }
++
++# ── stubs ──────────────────────────────────────────────────────────────────
++cat >"$STUBS/collector.sh" <<'EOF'
++#!/usr/bin/env bash
++# Minimal snapshot: no lanes, no repo_facts — enough for the deterministic
++# renderer to produce the placeholder table.
++out=""
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    --out) out="$2"; shift 2 ;;
++    *) shift ;;
++  esac
++done
++[[ -z "$out" ]] && exit 1
++printf '{"sections": {}}' >"$out"
++EOF
++cat >"$STUBS/claude.sh" <<'EOF'
++#!/usr/bin/env bash
++# Fixed composer result — no model is called from this suite.
++printf '{"result":"тестовый хвост: очередь пуста, ничего не приземлилось."}'
++EOF
++cat >"$STUBS/pump.sh" <<EOF
++#!/usr/bin/env bash
++# Stub pump: increments a counter on every check (mtime = last run) and logs
++# the same "check complete:" summary line the real pump emits.
++if [[ "\${1:-}" == "check" ]]; then
++  n=0
++  [[ -f "\$PUMP_COUNTER" ]] && n="\$(cat "\$PUMP_COUNTER" 2>/dev/null || echo 0)"
++  echo \$((n + 1)) >"\$PUMP_COUNTER"
++  echo "check complete: examined=1 dispatched=2 live=0 remaining_capacity=5 below_floor=0" >&2
++fi
++exit 0
++EOF
++cat >"$STUBS/crontab.sh" <<EOF
++#!/usr/bin/env bash
++# Stub crontab: records installs into a state file, never touches the real one.
++case "\${1:-}" in
++  -l) cat "\$CRONTAB_STUB_STATE" 2>/dev/null; exit 0 ;;
++  -)  cat >"\$CRONTAB_STUB_STATE"; exit 0 ;;
++esac
++exit 0
++EOF
++chmod +x "$STUBS/collector.sh" "$STUBS/claude.sh" "$STUBS/pump.sh" "$STUBS/crontab.sh"
++
++# Common env for every direct broad-status invocation.
++beat_env() {  # <beat-at> [extra env assignments via caller]
++  env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" \
++    LEADV2_STATUS_COLLECTOR_BIN="$STUBS/collector.sh" \
++    LEADV2_BROAD_STATUS_CLAUDE_BIN="$STUBS/claude.sh" \
++    LEADV2_BROAD_STATUS_BEAT_AT="$1" \
++    LEADV2_BROAD_STATUS_DISPATCHED="2" \
++    "${@:2}"
++}
++loop_env() {  # extra env assignments
++  env LEADV2_PROJECT_ROOT="$REPO" CLAUDE_PROJECT_DIR="$REPO" LEADV2_STATE_ROOT="$STATE" \
++    LEADV2_STATUS_COLLECTOR_BIN="$STUBS/collector.sh" \
++    LEADV2_BROAD_STATUS_CLAUDE_BIN="$STUBS/claude.sh" \
++    LEADV2_BACKLOG_PUMP_BIN="$STUBS/pump.sh" \
++    CRONTAB_BIN="$STUBS/crontab.sh" \
++    "$@"
++}
++wait_for() {  # <desc> <timeout_s> <cmd...> — poll until cmd succeeds
++  local desc="$1" tmo="$2"; shift 2
++  local i=0
++  while (( i < tmo )); do
++    if "$@" >/dev/null 2>&1; then return 0; fi
++    sleep 1; i=$(( i + 1 ))
++  done
++  fail "$desc (waited ${tmo}s)"
++  return 1
++}
++
++cleanup() {
++  # Kill any loop this suite left behind (sentinel pid), then drop the tree.
++  local sent pid
++  sent="$(PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" bash "$STATE_PATH_SH" .supervise-loop.json 2>/dev/null || true)"
++  if [[ -n "$sent" && -f "$sent" ]]; then
++    pid="$(python3 -c "import json;print(json.load(open('$sent')).get('pid',0))" 2>/dev/null || echo 0)"
++    [[ "$pid" -gt 0 ]] && kill "$pid" 2>/dev/null || true
++  fi
++  rm -rf "$TMP"
++}
++trap cleanup EXIT
++
++# ── Test 1: ready-line emitted, passes the real filter, artifact written ───
++beat_env "2026-08-16T10:00:00Z" bash "$BROAD_STATUS_SH" >/dev/null 2>&1 || true
++if [[ -f "$FOUNDER_STATUS" ]]; then pass "T1a: founder-status.md written"; else fail "T1a: founder-status.md missing"; fi
++if [[ "$(urgent_count)" == "1" ]]; then pass "T1b: exactly one URGENT-filtered BROAD_STATUS_READY line"; else fail "T1b: expected 1 URGENT BROAD_STATUS_READY line, got $(urgent_count)"; fi
++if grep -q 'BROAD_STATUS_READY at=2026-08-16T10:00:00Z path=docs/leadv2/founder-status.md rows=0 dispatched=2$' "$LOG_FILE"; then
++  pass "T1c: ready-line carries at/path/rows/dispatched"
++else
++  fail "T1c: ready-line shape wrong: $(grep BROAD_STATUS_READY "$LOG_FILE" | tail -1)"
++fi
++if grep -q '\[BROAD_STATUS\] dispatched=2$' "$LOG_FILE" && grep -q 'dispatched=2' "$FOUNDER_STATUS"; then
++  pass "T1d: block header + artifact carry the dispatched= stamp"
++else
++  fail "T1d: dispatched= stamp missing from block/artifact"
++fi
++
++# ── Test 2: dedupe (same beat suppressed, new beat fires, lib-less R2) ─────
++beat_env "2026-08-16T10:00:00Z" bash "$BROAD_STATUS_SH" >/dev/null 2>&1 || true
++if [[ "$(ready_count)" == "1" ]]; then pass "T2a: same beat re-run -> still one line"; else fail "T2a: dedupe failed, $(ready_count) lines"; fi
++beat_env "2026-08-16T10:30:00Z" bash "$BROAD_STATUS_SH" >/dev/null 2>&1 || true
++if [[ "$(ready_count)" == "2" ]]; then pass "T2b: new beat -> fires"; else fail "T2b: expected 2 lines, got $(ready_count)"; fi
++beat_env "2026-08-16T11:00:00Z" LEADV2_ALARM_DEDUPE_BIN=/nonexistent-lib \
++  bash "$BROAD_STATUS_SH" >/dev/null 2>&1 || true
++if [[ "$(ready_count)" == "3" ]]; then pass "T2c: lib absent -> pass-through still one line per beat (R2)"; else fail "T2c: expected 3 lines, got $(ready_count)"; fi
++
++# ── Test 3: dispatch before report, through the real loop branch ───────────
++: >"$LOG_FILE"; : >"$PUMP_COUNTER" 2>/dev/null || true; rm -f "$PUMP_COUNTER" "$FOUNDER_STATUS"
++timeout 90 loop_env \
++  LEADV2_SUPERVISE_LOOP_MAX_CYCLES=1 LEADV2_SUPERVISE_LOOP_PULSE_ON_START=1 \
++  LEADV2_SUPERVISE_EVENT_POLL_S=0 \
++  bash "$LOOP_SH" >/dev/null 2>&1 || true
++if [[ -f "$PUMP_COUNTER" && -f "$FOUNDER_STATUS" ]]; then
++  ORDER="$(python3 -c "
++import os, sys
++pump, status = os.path.getmtime('$PUMP_COUNTER'), os.path.getmtime('$FOUNDER_STATUS')
++print('before' if pump < status else 'after')
++")"
++  if [[ "$ORDER" == "before" ]]; then pass "T3a: pump ran before founder-status.md was written"; else fail "T3a: pump ran AFTER the composer"; fi
++else
++  fail "T3a: pump counter or founder-status.md missing after one loop cycle"
++fi
++if grep -q 'BROAD_STATUS_READY at=.* path=docs/leadv2/founder-status.md rows=0 dispatched=2' "$LOG_FILE"; then
++  pass "T3b: loop-run beat stamps the pump's dispatched count"
++else
++  fail "T3b: no ready-line with dispatched=2 after loop cycle: $(grep BROAD_STATUS_READY "$LOG_FILE" || echo none)"
++fi
++
++# ── Test 4: session-death survival — the demonstration ─────────────────────
++: >"$LOG_FILE"; rm -f "$PUMP_COUNTER" "$FOUNDER_STATUS"
++timeout 240 loop_env \
++  LEADV2_SUPERVISE_LOOP_PULSE_ON_START=1 LEADV2_SUPERVISE_EVENT_POLL_S=1 \
++  LEADV2_SUPERVISE_PULSE_S=2 LEADV2_SUPERVISE_BROAD_STATUS_S=2 \
++  bash "$LOOP_SH" >/dev/null 2>&1 &
++T4_LOOP_SHELL=$!
++wait_for "T4a: first beat appears" 120 bash -c "grep -q BROAD_STATUS_READY '$LOG_FILE'"
++OLD_PID="$(started_pids | tail -n1)"
++# R3: a second --ensure while the loop is live must ADOPT, never spawn.
++STARTED_BEFORE="$(started_pids | grep -c . || true)"
++timeout 20 loop_env bash "$LOOP_SH" --ensure >/dev/null 2>&1 || true
++if grep -q 'adopt existing loop pid=' "$LOG_FILE" && [[ "$(started_pids | grep -c . || true)" == "$STARTED_BEFORE" ]]; then
++  pass "T4b: double --ensure adopts (no sibling loop, R3)"
++else
++  fail "T4b: --ensure did not cleanly adopt the live loop"
++fi
++kill "$OLD_PID" 2>/dev/null || true
++sleep 5   # heartbeat ages past 2xPULSE_S=4s AND the pid is dead
++timeout 240 loop_env LEADV2_SUPERVISE_PULSE_S=2 bash "$WATCHDOG_SH" --project-root "$REPO" >/dev/null 2>&1 &
++T4_WD=$!
++wait_for "T4c: LOOP_SILENT alarm" 60 bash -c "grep -q 'LOOP_SILENT' '$LOG_FILE'"
++wait_for "T4d: replacement loop started" 90 bash -c "[[ \"\$(started_pids | tail -n1)\" != \"$OLD_PID\" && -n \"\$(started_pids | tail -n1)\" ]]"
++NEW_PID="$(started_pids | tail -n1)"
++wait_for "T4e: fresh beat from the replacement loop" 150 bash -c "[[ \"\$(grep -c BROAD_STATUS_READY '$LOG_FILE')\" -ge 2 ]]"
++if kill -0 "$NEW_PID" 2>/dev/null; then pass "T4f: replacement loop pid=$NEW_PID is alive (old=$OLD_PID)"; else fail "T4f: replacement loop not alive"; fi
++kill "$T4_WD" "$NEW_PID" 2>/dev/null || true
++wait "$T4_WD" 2>/dev/null || true
++
++# ── Test 5: degraded beat is visible ───────────────────────────────────────
++: >"$LOG_FILE"
++env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" \
++  LEADV2_STATUS_COLLECTOR_BIN=/nonexistent-collector \
++  LEADV2_BROAD_STATUS_BEAT_AT="2026-08-16T12:00:00Z" \
++  bash "$BROAD_STATUS_SH" >/dev/null 2>&1 || true
++if grep -q 'BROAD_STATUS_READY at=.* degraded=1$' "$LOG_FILE"; then
++  pass "T5: collector failure -> degraded ready-line still wakes"
++else
++  fail "T5: no degraded=1 ready-line: $(cat "$LOG_FILE")"
++fi
++
++# ── Test 6: kill-switch disables beat AND ready-line ────────────────────────
++: >"$LOG_FILE"; rm -f "$FOUNDER_STATUS"
++timeout 40 loop_env \
++  LEADV2_SUPERVISE_LOOP_MAX_CYCLES=1 LEADV2_SUPERVISE_LOOP_PULSE_ON_START=1 \
++  LEADV2_SUPERVISE_EVENT_POLL_S=0 LEADV2_SUPERVISE_BROAD_STATUS_S=0 \
++  bash "$LOOP_SH" >/dev/null 2>&1 || true
++if [[ "$(ready_count)" == "0" && ! -f "$FOUNDER_STATUS" ]]; then
++  pass "T6: BROAD_STATUS_S=0 -> no beat, no ready-line (rollback whole)"
++else
++  fail "T6: kill-switch half-works (ready lines: $(ready_count))"
++fi
++
++# ── Test 7: crontab unavailable -> skip is logged ──────────────────────────
++: >"$LOG_FILE"
++timeout 40 loop_env CRONTAB_BIN=/nonexistent-crontab \
++  LEADV2_SUPERVISE_LOOP_MAX_CYCLES=1 LEADV2_SUPERVISE_LOOP_PULSE_ON_START=1 \
++  LEADV2_SUPERVISE_EVENT_POLL_S=0 \
++  bash "$LOOP_SH" >/dev/null 2>&1 || true
++if grep -q 'beat-cron install skipped: .* unavailable' "$LOG_FILE"; then
++  pass "T7: cron-install skip is logged, gap visible"
++else
++  fail "T7: skip not logged: $(grep -i cron "$LOG_FILE" || echo none)"
++fi
++
++# ── Test 8: wording drift across the C3/C4 surfaces (R4) ───────────────────
++ANCHOR="$PLUGIN_DIR/hooks/leadv2-task-anchor.sh"
++n="$(grep -c 'BROAD_STATUS_READY' "$ANCHOR" || true)"
++if [[ "$n" -eq 2 ]]; then pass "T8a: anchor DIRECTIVE lists the relay in BOTH blocks"; else fail "T8a: anchor has $n BROAD_STATUS_READY mentions (expected 2)"; fi
++for f in "$PLUGIN_DIR/commands/leadv2.md" "$PLUGIN_DIR/hooks/leadv2-supervisor-mode-reinject.sh" "$PLUGIN_DIR/docs/supervisor-role.md"; do
++  if grep -q 'BROAD_STATUS_READY' "$f" && grep -q 'verbatim relay of a' "$f"; then
++    pass "T8b: $(basename "$f") carries the relay contract"
++  else
++    fail "T8b: $(basename "$f") drifted from the relay wording"
++  fi
++done
++for f in "$ANCHOR" "$PLUGIN_DIR/commands/leadv2.md"; do
++  if grep -q 'CronCreate' "$f"; then pass "T8c: CronCreate ban present in $(basename "$f") (C4)"; else fail "T8c: CronCreate ban missing from $(basename "$f")"; fi
++done
++
++log ""
++log "=== ${PASS} passed, ${FAIL} failed ==="
++if [[ "$FAIL" -gt 0 ]]; then
++  printf -- '%s\n' "${ERRORS[@]:-}" >&2
++  exit 1
++fi
++exit 0
+diff --git a/plugins/leadv2/skills/leadv2-supervise/SKILL.md b/plugins/leadv2/skills/leadv2-supervise/SKILL.md
+index 1f46367..4d7fde0 100644
+--- a/plugins/leadv2/skills/leadv2-supervise/SKILL.md
++++ b/plugins/leadv2/skills/leadv2-supervise/SKILL.md
+@@ -135,8 +135,10 @@ Only things that need the founder reach chat.
+    - The 30-minute broad status is a `[BROAD_STATUS] ... [BROAD_STATUS_END]`
+      block the loop already writes to `supervise-loop.log` (see
+      `docs/supervisor-role.md` §Status reporting standard for the exact
+-     table shape). Paste that block VERBATIM as one chat turn when it
+-     appears — the lead never hand-composes a status, never re-tables the
++     table shape). The beat announces itself with ONE
++     `BROAD_STATUS_READY` line through the URGENT filter — paste
++     `docs/leadv2/founder-status.md` VERBATIM as one chat turn when that
++     line wakes you. The lead never hand-composes a status, never re-tables the
+      lane rows, and never spins up a `CronCreate` job to produce one; the
+      cadence is a plugin-owned loop beat (`leadv2-supervise-loop.sh`,
+      `LEADV2_SUPERVISE_BROAD_STATUS_S`), not something the lead schedules.

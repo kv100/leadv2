@@ -1,0 +1,9 @@
+meta:
+  schema_version: 2
+  rendered_at: ''
+  hard_limit: 3
+  heavy_max: 2
+  heavy_strategic_solo: false
+  light_max: 3
+  standard_max: 2
+sessions: []

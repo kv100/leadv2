@@ -1,0 +1,17 @@
+- 2026-08-14T23:57:24Z [decision] dispatch_classified task=100a892d class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-14T23:57:27Z [decision] phase_precondition_warn task=100a892d class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-15T00:03:49Z [decision] architect_prepass task=100a892d status=ran artifact=docs/handoff/dispatch-100a892d/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-100a892d-architect/architect.full.md
+- 2026-08-15T00:03:49Z [decision] lane_writes task=100a892d source=prepass writes=.claude/ref/leadv2-routing.yaml,.claude/config,.claude/scripts/leadv2-dispatch-code.sh,.claude/scripts/leadv2-dispatch-product-close.sh,.claude/scripts/leadv2-review-run.sh,.claude/scripts/leadv2-phase-record.sh,.claude/scripts/lib/leadv2-glm-policy-resolve.py,.claude/scripts/lib/leadv2-review-signals.sh,plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/leadv2-review-run.sh,plugins/leadv2/scripts/tests/test-plugin-review-arms.sh,docs/missions/PLUGIN-REVIEW-ARMS-01.report.md
+- 2026-08-15T00:03:50Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-15T00:03:51Z [decision] dispatchable_arms_read_failed task=100a892d fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-15T00:03:51Z [decision] routing_config_degraded task=100a892d reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-15T00:03:51Z [decision] kimi_skipped reason=chars_over task=100a892d chars=19699 writes=0 prepass=1
+- 2026-08-15T00:03:51Z [decision] candidate_chain task=100a892d arms=glm,codex,sonnet
+- 2026-08-15T00:03:53Z [decision] worker_spawned by=router model=glm task=100a892d attempt=100a892d-1786751842-55001 handle=260815-030353-100a892d-5308
+- 2026-08-15T00:03:53Z [decision] mission-version task=- sig=100a892d rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-15T00:04:15Z [decision] product_close task=100a892d status=spawned author=glm
+- 2026-08-15T00:04:15Z [decision] route_resolved by=router router=v1 model=glm task=100a892d rule=none reason=no_routing_yaml
+- 2026-08-15T00:04:15Z [decision] lane_worktree_left task=100a892d founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/100a892d
+- 2026-08-15T00:29:11Z [decision] e2e_gate task=100a892d status=ran verdict=fail rc=1
+- 2026-08-15T00:29:22Z [decision] dispatch_terminal task=100a892d terminal=dead cause=e2e_regression
+- 2026-08-15T00:29:23Z [decision] dispatch_terminal_dedup task=100a892d attempted=dead reason=terminal_already_recorded

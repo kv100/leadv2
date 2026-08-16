@@ -1,0 +1,19 @@
+- 2026-08-14T20:02:18Z [decision] dispatch_classified task=4c9ddb05 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-14T20:02:19Z [decision] phase_precondition_warn task=4c9ddb05 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-14T20:06:08Z [decision] architect_prepass task=4c9ddb05 status=ran artifact=docs/handoff/dispatch-4c9ddb05/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-4c9ddb05-architect/architect.full.md
+- 2026-08-14T20:06:08Z [decision] lane_writes task=4c9ddb05 source=prepass writes=plugins/leadv2/scripts/leadv2-review-findings.sh,plugins/leadv2/scripts/leadv2-review-run.sh,plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/tests/test-review-gate-shows-findings.sh,docs/missions/REVIEW-GATE-SHOWS-FINDINGS-01.report.md
+- 2026-08-14T20:06:09Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-14T20:06:09Z [decision] dispatchable_arms_read_failed task=4c9ddb05 fallback=glm,codex,sonnet reason=importlib_read_failed
+- 2026-08-14T20:06:09Z [decision] routing_config_degraded task=4c9ddb05 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-14T20:06:09Z [decision] kimi_skipped reason=chars_over task=4c9ddb05 chars=18428 writes=0 prepass=1
+- 2026-08-14T20:06:09Z [decision] candidate_chain task=4c9ddb05 arms=glm,codex,sonnet
+- 2026-08-14T20:06:12Z [decision] worker_spawned by=router model=glm task=4c9ddb05 attempt=4c9ddb05-1786737723-6166 handle=260814-230612-4c9ddb05-03f2
+- 2026-08-14T20:06:12Z [decision] mission-version task=- sig=4c9ddb05 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-14T20:06:33Z [decision] product_close task=4c9ddb05 status=spawned author=glm
+- 2026-08-14T20:06:33Z [decision] route_resolved by=router router=v1 model=glm task=4c9ddb05 rule=none reason=no_routing_yaml
+- 2026-08-14T20:06:34Z [decision] lane_worktree_left task=4c9ddb05 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/4c9ddb05
+- 2026-08-14T20:22:51Z [decision] e2e_gate task=4c9ddb05 status=ran verdict=pass
+- 2026-08-14T20:22:51Z [decision] review_signals task=4c9ddb05 protected_path=0 source=lane_writes matched=-
+- 2026-08-14T20:22:52Z [decision] review_gate task=4c9ddb05 status=no_reviewer author=glm refusal=all_review_arms_unavailable pool=
+- 2026-08-14T20:22:52Z [decision] dispatch_terminal task=4c9ddb05 terminal=parked cause=all_review_arms_unavailable
+- 2026-08-14T20:22:52Z [decision] dispatch_terminal_dedup task=4c9ddb05 attempted=parked reason=terminal_already_recorded

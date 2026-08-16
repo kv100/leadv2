@@ -1,0 +1,149 @@
+diff --git a/plugins/leadv2/commands/leadv2.md b/plugins/leadv2/commands/leadv2.md
+index d330eb6..bfa2397 100644
+--- a/plugins/leadv2/commands/leadv2.md
++++ b/plugins/leadv2/commands/leadv2.md
+@@ -16,6 +16,9 @@ You are the **autonomous engineering orchestrator**. Take a task from user or qu
+ 
+ # Routing summary
+ 
++**Before spawning: placement first** — fork vs fresh agent vs lane, decided by three
++yes/no tests: `${CLAUDE_PLUGIN_ROOT}/docs/work-placement.md` (diff test → lane;
++only-this-session-knows test → fork; otherwise → fresh agent).
+ **Two knobs per spawn: model = hardness, effort = marginal value of extra thinking.**
+ Full decision procedure + anti-patterns: `${CLAUDE_PLUGIN_ROOT}/docs/model-effort-matrix.md`.
+ The zero-Claude-quota ladder applies to build/review work, not Phase 2 planning. Per
+diff --git a/plugins/leadv2/docs/phases.md b/plugins/leadv2/docs/phases.md
+index b228add..721131b 100644
+--- a/plugins/leadv2/docs/phases.md
++++ b/plugins/leadv2/docs/phases.md
+@@ -468,4 +468,9 @@ Nightly maintenance: signature decay + unanswered decisions surface.
+ 
+ ## §Spawn-hygiene
+ 
++**Placement before spawn — three tests, first match wins** (canonical rule + edge cases: `docs/work-placement.md`):
++1. Diff test — work ends in a committed diff or a citable deliverable file? → dispatch lane.
++2. Only-this-session-knows test — answer requires a decision/text from this conversation, not on disk? → fork.
++3. Otherwise — bounded question answerable from repo/prod/logs alone? → fresh agent (verification always lands here; never a lane).
++
+ **Chat budget per spawn:** task-notification (≤100 words) + `Read limit=30` summary + synthesis = ~200 words. Without this rule: ~2000 words.
+diff --git a/plugins/leadv2/docs/supervisor-role.md b/plugins/leadv2/docs/supervisor-role.md
+index b533cb3..24d5ca2 100644
+--- a/plugins/leadv2/docs/supervisor-role.md
++++ b/plugins/leadv2/docs/supervisor-role.md
+@@ -55,7 +55,11 @@ A supervisor session does not do the work itself — it coordinates:
+    priorities) into a short list the founder can pick from.
+ 2. **Dispatch, never implement.** Every picked item becomes an independent
+    `/leadv2` child session — worktree-isolated, out-of-process — via
+-   `leadv2-fanout.sh` / `leadv2-supervise.sh`. The supervisor does not edit
++   `leadv2-fanout.sh` / `leadv2-supervise.sh`. Before reaching for the funnel,
++   run the three placement tests (`docs/work-placement.md`): a lane is only
++   for work that produces a diff or a citable deliverable — verification and
++   bounded repo/prod questions are fresh agents, session-context judgements
++   are forks. The supervisor does not edit
+    application files, run migrations, or make tool calls to fix something
+    itself; if a fix is needed, it dispatches a subagent for it.
+ 3. **Watch and relay.** Poll `leadv2-supervise.sh --json --since <ts>`
+diff --git a/plugins/leadv2/docs/work-placement.md b/plugins/leadv2/docs/work-placement.md
+new file mode 100644
+index 0000000..1270b05
+--- /dev/null
++++ b/plugins/leadv2/docs/work-placement.md
+@@ -0,0 +1,98 @@
++# Work Placement — fork vs fresh agent vs lane (WHEN-TO-FORK-01, 2026-08-16)
++
++Canonical rule for **where** work goes when the lead moves it off its own context. Three
++branches, three tests, ordered — **first match wins**.
++
++> This doc decides *where* work runs. `docs/model-effort-matrix.md` decides *which model*
++> runs it. Orthogonal axes: answer placement here first, model there second.
++
++A rule that lives only in judgement degrades exactly when a session is long and tired —
++which is when it matters most. So every test below is a yes/no question about an
++**observable property of the work**, checkable in one look. Adjectives are not tests.
++
++---
++
++## The three tests, ordered, first match wins
++
++### Test 1 — the diff test → **dispatch lane**
++
++*Does this work end in something that must be committed to the repo and reviewed before it
++is trusted — a diff, or a deliverable file another session will cite after this one ends?*
++
++Yes → lane. A lane exists to buy exactly three things: an isolated worktree, a review
++gate, and a close that records what landed. Work that produces nothing to land is paying
++for all three and using none.
++
++### Test 2 — the "only this session knows" test → **fork**
++
++*Does answering require something that exists only in this conversation — a decision made
++earlier in this session, text this session authored, a founder statement not written to
++disk?*
++
++Yes → fork. A fork inherits the session's history; that inheritance is the entire product
++being bought, and it is worth nothing when the answer is on disk.
++
++### Test 3 — otherwise → **fresh agent**
++
++A bounded question answerable from repo, prod, or logs alone. Session context is not
++neutral here, it is noise: it costs tokens on every remaining turn of the parent and can
++poison the answer with the session's own wrong turns.
++
++### Not tests
++
++"Complex", "important", "big", "risky", "it's been a long session" — none of these select
++a branch. If the three tests above do not decide it, the honest answer is that the work is
++under-specified; split it until each piece answers one test.
++
++### Cost asymmetry (why the default stops being "lane")
++
++A lane = worktree claim + architect prepass + worker + review gate + close ≈ several agent
++hops and minutes of wall-clock. A fresh agent = one spawn, one summary back. A fork = the
++session's whole context re-sent. Reaching for a lane on a 70-second question is not
++caution, it is a ~50× overpay.
++
++---
++
++## Edge case (a): report-only work
++
++Report-only work (produces a deliverable file, not a diff) is already handled at close
++time by `REPORT-ONLY-GATE-01` (prose rubric:
++`plugins/leadv2/scripts/leadv2-dispatch-product-close.sh:1987`). Placement is a separate
++question, answered by one test:
++
++> *Will anything read this file after this session ends — another lane, a later task, the
++> founder?*
++> Yes → **lane** (the review gate is what makes the report citable; a report nobody
++> reviewed is a claim, not evidence). No → **fresh agent**, answer in ≤50 words to chat,
++> no file.
++
++## Edge case (b): verification
++
++*"Is this ledger row still true?"* — **always a fresh agent. Never a lane.**
++
++The test that makes this mechanical: *the answer is one of a small closed set —
++true/false, a number, a path — and it is checkable against disk or prod without editing
++anything.* Nothing is produced, so there is nothing for a worktree to isolate and nothing
++for a review gate to review.
++
++---
++
++## If this needs teeth (not built here)
++
++Stated so a future task has a spec; this doc ships a rule, not machinery:
++
++- A `PreToolUse` advisory modelled exactly on `leadv2-routing-guard.sh` (see
++  `docs/routing-enforcement.md`): fires when a dispatch/fanout is opened, greps the
++  mission text for a diff-producing intent (`LANE_WRITES:` present, or an `acceptance:`
++  surface of `rendered_line|prod_db_row|http_response`), and when absent emits to stderr:
++  *"this mission produces no diff and names no durable deliverable — Test 1 says fresh
++  agent; see docs/work-placement.md"*. **Advisory, exit 0, never blocks** — the hook
++  warns, the lead decides.
++- Cheaper still: the dispatch door already requires a `LANE_WRITES:` line. A mission
++  whose `LANE_WRITES` is empty or docs-only is, by Test 1, a fresh-agent candidate — the
++  signal already exists on disk and only needs reading.
++
++## Non-goals of this doc
++
++No hook, no script, no gate was added by the lane that authored this rule. Placement is
++advisory documentation the lead reads; nothing here blocks a dispatch.

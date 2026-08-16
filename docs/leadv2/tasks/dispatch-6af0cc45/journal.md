@@ -1,0 +1,25 @@
+- 2026-08-14T17:40:04Z [decision] dispatch_classified task=6af0cc45 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-14T17:40:07Z [decision] phase_precondition_warn task=6af0cc45 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-14T17:44:02Z [decision] architect_prepass task=6af0cc45 status=ran artifact=docs/handoff/dispatch-6af0cc45/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-6af0cc45-architect/architect.full.md
+- 2026-08-14T17:44:02Z [decision] lane_writes task=6af0cc45 source=prepass writes=plugins/leadv2/scripts/leadv2-review-run.sh,plugins/leadv2/scripts/tests/test-review-gate-shows-findings.sh,plugins/leadv2/scripts/tests/run-core-offline.sh,plugins/leadv2/docs/phases.md,docs/missions/REVIEW-GATE-SHOWS-FINDINGS-01-report.md
+- 2026-08-14T17:44:03Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-14T17:44:04Z [decision] routing_config_degraded task=6af0cc45 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-14T17:44:04Z [decision] kimi_skipped reason=chars_over task=6af0cc45 chars=17356 writes=0 prepass=1
+- 2026-08-14T17:44:05Z [decision] candidate_chain task=6af0cc45 arms=glm,codex,sonnet
+- 2026-08-14T17:44:11Z [decision] worker_spawned by=router model=glm task=6af0cc45 attempt=6af0cc45-1786729183-9621 handle=260814-204410-6af0cc45-6c52
+- 2026-08-14T17:44:11Z [decision] mission-version task=- sig=6af0cc45 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-14T17:44:33Z [decision] product_close task=6af0cc45 status=spawned author=glm
+- 2026-08-14T17:44:33Z [decision] route_resolved by=router router=v1 model=glm task=6af0cc45 rule=none reason=glm_default
+- 2026-08-14T17:44:33Z [decision] product_close task=6af0cc45 status=waiting_worker author=glm handle=260814-204410-6af0cc45-6c52 waited=0s
+- 2026-08-14T17:44:33Z [decision] lane_worktree_left task=6af0cc45 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/6af0cc45
+- 2026-08-14T17:49:37Z [decision] product_close task=6af0cc45 status=waiting_worker author=glm handle=260814-204410-6af0cc45-6c52 waited=304s
+- 2026-08-14T17:54:43Z [decision] product_close task=6af0cc45 status=waiting_worker author=glm handle=260814-204410-6af0cc45-6c52 waited=609s
+- 2026-08-14T17:59:49Z [decision] review_diff task=6af0cc45 repo=6af0cc45 bytes=35499 base=HEAD
+- 2026-08-14T18:18:50Z [decision] e2e_gate task=6af0cc45 status=ran verdict=pass
+- 2026-08-14T18:18:50Z [decision] review_routing_yaml task=6af0cc45 source=canonical
+- 2026-08-14T18:18:50Z [decision] review_signals task=6af0cc45 protected_path=0 source=lane_writes matched=-
+- 2026-08-14T18:18:52Z [decision] review_pool_resolve task=6af0cc45 rc=0 reviewer=kimi pool_n=5
+- 2026-08-14T21:18:35Z [decision] review_gate task=6af0cc45 status=arm_no_verdict arm=kimi reason=provider_error tried=kimi remaining=2
+- 2026-08-14T21:25:58Z [decision] review_gate task=6af0cc45 status=ran author=glm reviewer=opus verdict=FAIL diff=673cb268 review_source=artifact:docs/handoff/dispatch-6af0cc45-review/critic.full.md verdict_source=marker ledger_rc=0
+- 2026-08-14T21:25:58Z [decision] dispatch_terminal task=6af0cc45 terminal=dead cause=review_verdict_fail
+- 2026-08-14T21:25:59Z [decision] dispatch_terminal_dedup task=6af0cc45 attempted=dead reason=terminal_already_recorded

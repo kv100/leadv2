@@ -1,0 +1,5 @@
+e2e-gate-passed: 810129d0
+asserted_at: 2026-08-16T20:02:57Z
+scope: lane_writes
+bypassed: false
+foreign_failures: tests/test-status-surface-fast-names.sh

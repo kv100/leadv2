@@ -1,0 +1,22 @@
+- 2026-08-16T07:02:56Z [decision] dispatch_classified task=3b96b97c class=product reason=conservative_default kind=unknown
+- 2026-08-16T07:03:01Z [decision] phase_precondition_warn task=3b96b97c class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-16T07:08:02Z [decision] architect_prepass task=3b96b97c status=ran artifact=docs/handoff/dispatch-3b96b97c/architect-prepass.md source=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-3b96b97c-architect/architect.full.md
+- 2026-08-16T07:08:03Z [decision] lane_writes task=3b96b97c source=prepass writes=plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/leadv2-review-run.sh,plugins/leadv2/scripts/codex-task.sh,plugins/leadv2/scripts/tests/test-codex-door.sh
+- 2026-08-16T07:08:03Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-16T07:08:03Z [decision] quota_precheck_skip model=codex provider=codex task=3b96b97c reason=provider_quota_locked
+- 2026-08-16T07:08:03Z [decision] kimi_skipped reason=chars_over task=3b96b97c chars=20630 writes=0 prepass=1
+- 2026-08-16T07:08:04Z [decision] quota_precheck_skip model=glm provider=glm task=3b96b97c reason=provider_quota_locked
+- 2026-08-16T07:08:04Z [decision] candidate_chain task=3b96b97c arms=sonnet
+- 2026-08-16T07:08:05Z [decision] worker_spawned by=router model=sonnet task=3b96b97c attempt=3b96b97c-1786863774-28900 handle=PID=72948 LABEL=developer-dispatch-3b96b97c-1786864084 SESSION_ID=6cfadf51-b117-4b3c-9eb7-d97fe46e93e4 STREAM=/Users/kostiantyn.vlasenko/Projects/leadv2/docs/handoff/dispatch-3b96b97c/developer.stream.jsonl
+- 2026-08-16T07:08:05Z [decision] mission-version task=- sig=3b96b97c rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-16T07:08:26Z [decision] product_close task=3b96b97c status=spawned author=sonnet
+- 2026-08-16T07:08:26Z [decision] product_close task=3b96b97c status=waiting_worker author=sonnet handle=72948 waited=0s
+- 2026-08-16T07:08:26Z [decision] route_resolved by=router router=v1 model=sonnet task=3b96b97c rule=none reason=glm_default
+- 2026-08-16T07:08:26Z [decision] lane_worktree_left task=3b96b97c founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/3b96b97c
+- 2026-08-16T07:13:28Z [decision] product_close task=3b96b97c status=waiting_worker author=sonnet handle=72948 waited=302s
+- 2026-08-16T07:18:30Z [decision] product_close task=3b96b97c status=waiting_worker author=sonnet handle=72948 waited=604s
+- 2026-08-16T07:23:32Z [decision] product_close task=3b96b97c status=waiting_worker author=sonnet handle=72948 waited=906s
+- 2026-08-16T07:26:44Z [decision] review_diff task=3b96b97c repo=3b96b97c bytes=5088 base=HEAD
+- 2026-08-16T07:44:30Z [decision] e2e_gate task=3b96b97c status=ran verdict=fail rc=1
+- 2026-08-16T07:44:34Z [decision] dispatch_terminal task=3b96b97c terminal=dead cause=e2e_regression
+- 2026-08-16T07:44:35Z [decision] dispatch_terminal_dedup task=3b96b97c attempted=dead reason=terminal_already_recorded

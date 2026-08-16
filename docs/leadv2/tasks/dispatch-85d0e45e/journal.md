@@ -1,0 +1,60 @@
+- 2026-08-15T03:59:07Z [decision] lane_placement_pinned task=85d0e45e mode=resume-lane path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/c5daf449 key=c5daf449
+- 2026-08-15T03:59:07Z [decision] dispatch_classified task=85d0e45e class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-15T03:59:08Z [decision] phase_precondition_warn task=85d0e45e class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-15T04:06:11Z [decision] architect_prepass task=85d0e45e status=failed reason=timeout rc=124
+- 2026-08-15T04:06:11Z [decision] architect_prepass task=85d0e45e status=retrying attempt=1/2 reason=timeout
+- 2026-08-15T04:13:14Z [decision] architect_prepass task=85d0e45e status=failed reason=timeout rc=124
+- 2026-08-15T04:13:14Z [decision] architect_prepass task=85d0e45e status=retrying attempt=2/2 reason=timeout
+- 2026-08-15T04:13:14Z [decision] architect_prepass task=85d0e45e status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-15T04:13:14Z [decision] prepass_parked task=85d0e45e founder_task_id= reason=no_design_after_2_attempts last_reason=timeout
+- 2026-08-15T04:13:15Z [decision] dispatch_terminal task=85d0e45e terminal=parked cause=no_design_after_2_attempts
+- 2026-08-15T04:54:53Z [decision] lane_placement_pinned task=85d0e45e mode=resume-lane path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/c5daf449 key=c5daf449
+- 2026-08-15T04:54:53Z [decision] dispatch_classified task=85d0e45e class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-15T04:54:55Z [decision] phase_precondition_warn task=85d0e45e class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-15T05:01:58Z [decision] architect_prepass task=85d0e45e status=failed reason=timeout rc=124
+- 2026-08-15T05:01:58Z [decision] architect_prepass task=85d0e45e status=retrying attempt=1/2 reason=timeout
+- 2026-08-15T05:09:01Z [decision] architect_prepass task=85d0e45e status=failed reason=timeout rc=124
+- 2026-08-15T05:09:01Z [decision] architect_prepass task=85d0e45e status=retrying attempt=2/2 reason=timeout
+- 2026-08-15T05:09:01Z [decision] architect_prepass task=85d0e45e status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-15T05:09:01Z [decision] prepass_parked task=85d0e45e founder_task_id= reason=no_design_after_2_attempts last_reason=timeout
+- 2026-08-15T05:09:01Z [decision] dispatch_terminal task=85d0e45e terminal=parked cause=no_design_after_2_attempts
+- 2026-08-15T05:24:37Z [decision] lane_placement_pinned task=85d0e45e mode=resume-lane path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/c5daf449 key=c5daf449
+- 2026-08-15T05:24:37Z [decision] dispatch_classified task=85d0e45e class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-15T05:24:39Z [decision] phase_precondition_warn task=85d0e45e class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-15T05:31:41Z [decision] architect_prepass task=85d0e45e status=failed reason=timeout rc=124
+- 2026-08-15T05:31:41Z [decision] architect_prepass task=85d0e45e status=retrying attempt=1/2 reason=timeout
+- 2026-08-15T05:38:45Z [decision] architect_prepass task=85d0e45e status=failed reason=timeout rc=124
+- 2026-08-15T05:38:45Z [decision] architect_prepass task=85d0e45e status=retrying attempt=2/2 reason=timeout
+- 2026-08-15T05:38:45Z [decision] architect_prepass task=85d0e45e status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-15T05:38:45Z [decision] prepass_parked task=85d0e45e founder_task_id= reason=no_design_after_2_attempts last_reason=timeout
+- 2026-08-15T05:38:45Z [decision] dispatch_terminal task=85d0e45e terminal=parked cause=no_design_after_2_attempts
+- 2026-08-15T05:54:30Z [decision] lane_placement_pinned task=85d0e45e mode=resume-lane path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/c5daf449 key=c5daf449
+- 2026-08-15T05:54:30Z [decision] dispatch_classified task=85d0e45e class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-15T05:54:32Z [decision] phase_precondition_warn task=85d0e45e class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-15T05:54:32Z [decision] architect_prepass task=85d0e45e status=failed reason=no_lane_writes
+- 2026-08-15T05:54:32Z [decision] architect_prepass task=85d0e45e status=retrying attempt=1/2 reason=no_lane_writes
+- 2026-08-15T05:54:32Z [decision] architect_prepass task=85d0e45e status=failed reason=no_lane_writes
+- 2026-08-15T05:54:32Z [decision] architect_prepass task=85d0e45e status=retrying attempt=2/2 reason=no_lane_writes
+- 2026-08-15T05:54:32Z [decision] architect_prepass task=85d0e45e status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-15T05:54:32Z [decision] prepass_parked task=85d0e45e founder_task_id= reason=no_design_after_2_attempts last_reason=no_lane_writes
+- 2026-08-15T05:54:33Z [decision] dispatch_terminal task=85d0e45e terminal=parked cause=no_design_after_2_attempts
+- 2026-08-15T05:55:54Z [decision] lane_placement_pinned task=85d0e45e mode=resume-lane path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/c5daf449 key=c5daf449
+- 2026-08-15T05:55:54Z [decision] dispatch_classified task=85d0e45e class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-15T05:55:55Z [decision] phase_precondition_warn task=85d0e45e class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-15T06:02:58Z [decision] architect_prepass task=85d0e45e status=failed reason=timeout rc=124
+- 2026-08-15T06:02:58Z [decision] architect_prepass task=85d0e45e status=retrying attempt=1/2 reason=timeout
+- 2026-08-15T06:10:01Z [decision] architect_prepass task=85d0e45e status=failed reason=timeout rc=124
+- 2026-08-15T06:10:01Z [decision] architect_prepass task=85d0e45e status=retrying attempt=2/2 reason=timeout
+- 2026-08-15T06:10:02Z [decision] architect_prepass task=85d0e45e status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-15T06:10:02Z [decision] prepass_parked task=85d0e45e founder_task_id= reason=no_design_after_2_attempts last_reason=timeout
+- 2026-08-15T06:10:02Z [decision] dispatch_terminal task=85d0e45e terminal=parked cause=no_design_after_2_attempts
+- 2026-08-15T06:54:33Z [decision] lane_placement_pinned task=85d0e45e mode=resume-lane path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/c5daf449 key=c5daf449
+- 2026-08-15T06:54:33Z [decision] dispatch_classified task=85d0e45e class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-15T06:54:34Z [decision] phase_precondition_warn task=85d0e45e class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-15T07:14:37Z [decision] architect_prepass task=85d0e45e status=failed reason=timeout rc=124
+- 2026-08-15T07:14:37Z [decision] architect_prepass task=85d0e45e status=retrying attempt=1/2 reason=timeout
+- 2026-08-15T07:34:40Z [decision] architect_prepass task=85d0e45e status=failed reason=timeout rc=124
+- 2026-08-15T07:34:40Z [decision] architect_prepass task=85d0e45e status=retrying attempt=2/2 reason=timeout
+- 2026-08-15T07:34:40Z [decision] architect_prepass task=85d0e45e status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-15T07:34:40Z [decision] prepass_parked task=85d0e45e founder_task_id= reason=no_design_after_2_attempts last_reason=timeout
+- 2026-08-15T07:34:41Z [decision] dispatch_terminal task=85d0e45e terminal=parked cause=no_design_after_2_attempts

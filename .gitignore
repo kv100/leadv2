@@ -12,3 +12,4 @@ node_modules/
 .baseline-*.sh
 __pycache__/
 .claude/anatomy.md
+.claude/worktrees/

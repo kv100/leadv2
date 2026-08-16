@@ -1,0 +1,1 @@
+/Users/kostiantyn.vlasenko/.claude/agents-shared/security-auditor.md

@@ -1,0 +1,10 @@
+- 2026-08-15T03:59:12Z [decision] lane_placement_pinned task=cd219000 mode=resume-lane path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/63e9aaff key=63e9aaff
+- 2026-08-15T03:59:12Z [decision] dispatch_classified task=cd219000 class=product reason=conservative_default kind=codex_fitting_dev
+- 2026-08-15T03:59:14Z [decision] phase_precondition_warn task=cd219000 class=Standard reason=unexpected_rc value=127 mode=warn
+- 2026-08-15T04:06:18Z [decision] architect_prepass task=cd219000 status=failed reason=timeout rc=124
+- 2026-08-15T04:06:18Z [decision] architect_prepass task=cd219000 status=retrying attempt=1/2 reason=timeout
+- 2026-08-15T04:13:21Z [decision] architect_prepass task=cd219000 status=failed reason=timeout rc=124
+- 2026-08-15T04:13:21Z [decision] architect_prepass task=cd219000 status=retrying attempt=2/2 reason=timeout
+- 2026-08-15T04:13:21Z [decision] architect_prepass task=cd219000 status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-15T04:13:21Z [decision] prepass_parked task=cd219000 founder_task_id= reason=no_design_after_2_attempts last_reason=timeout
+- 2026-08-15T04:13:21Z [decision] dispatch_terminal task=cd219000 terminal=parked cause=no_design_after_2_attempts

@@ -1,0 +1,1 @@
+codex	High	plugins/leadv2/scripts/leadv2-broad-status.sh	83	correctness	Failure emits READY without replacing founder-status.md, so the mandated verbatim relay can publish a stale healthy status as the degraded beat.
