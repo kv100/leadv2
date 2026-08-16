@@ -184,3 +184,19 @@
 - 2026-08-07T08:43:50Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786092228-92622 handle=glm-test-run
 - 2026-08-07T08:43:50Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
 - 2026-08-07T08:43:54Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-12T18:35:21Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T18:35:22Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T18:35:22Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T18:35:23Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-12T18:35:23Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786559721-49100 handle=glm-test-run
+- 2026-08-12T18:35:23Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T18:35:43Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-12T18:35:43Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-RELIABILITY-01
+- 2026-08-12T19:10:35Z [decision] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-12T19:10:36Z [decision] phase_precondition_warn task=59ae8b51 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-12T19:10:37Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-12T19:10:37Z [decision] candidate_chain task=59ae8b51 arms=glm,codex,sonnet
+- 2026-08-12T19:10:37Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786561835-4979 handle=glm-test-run
+- 2026-08-12T19:10:37Z [decision] mission-version task=- sig=59ae8b51 rev=? head="WORKTREE PIN: all edits go in /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees"
+- 2026-08-12T19:10:58Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-12T19:10:58Z [decision] lane_worktree_left task=59ae8b51 founder_task= path=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PLUGIN-RELIABILITY-01
