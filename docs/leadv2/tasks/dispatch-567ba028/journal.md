@@ -702,3 +702,19 @@
 - 2026-08-13T11:01:39Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786618895-67749 handle=glm-test-run
 - 2026-08-13T11:01:39Z [decision] mission-version task=- sig=567ba028 rev=? head="plugin-only degraded mode test  --- If you hit a decision you cannot safely make yourself "
 - 2026-08-13T11:01:39Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-16T07:28:11Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-16T07:28:12Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-16T07:28:13Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-16T07:28:13Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-16T07:28:13Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-16T07:28:14Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786865290-32932 handle=glm-test-run
+- 2026-08-16T07:28:14Z [decision] mission-version task=- sig=567ba028 rev=? head="plugin-only degraded mode test  --- If you hit a decision you cannot safely make yourself "
+- 2026-08-16T07:28:14Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-16T10:31:03Z [decision] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+- 2026-08-16T10:31:06Z [decision] phase_precondition_warn task=567ba028 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-16T10:31:06Z [decision] arm_resolved job=build arm=glm reason=none
+- 2026-08-16T10:31:06Z [decision] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+- 2026-08-16T10:31:07Z [decision] candidate_chain task=567ba028 arms=glm,codex,sonnet
+- 2026-08-16T10:31:07Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786876262-14075 handle=glm-test-run
+- 2026-08-16T10:31:07Z [decision] mission-version task=- sig=567ba028 rev=? head="plugin-only degraded mode test  --- If you hit a decision you cannot safely make yourself "
+- 2026-08-16T10:31:08Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
