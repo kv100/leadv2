@@ -112,6 +112,8 @@ run_check "lane placement pin (--resume-lane/--worktree)" bash "$TEST_DIR/test-l
 run_check "Codex quota guardrails (effort/circuit/hook)" bash "$TEST_DIR/test-codex-quota-guardrails.sh"
 run_check "e2e gate lane root + suite family" bash "$TEST_DIR/test-e2e-gate-lane-root.sh"
 run_check "review body persist (opus/sonnet materialisation + body_lost guard)" bash "$TEST_DIR/test-review-body-persist.sh"
+run_check "review codex base (committed lane never diffs HEAD↔HEAD)" bash "$TEST_DIR/test-review-codex-base.sh"
+run_check "quota stand-down duration (record-quota-lockout --hours)" bash "$TEST_DIR/test-quota-standdown-duration.sh"
 run_check "core-offline root arithmetic (git-derived REPO_ROOT)" bash "$TEST_DIR/test-core-offline-root-arith.sh"
 run_check "dispatch arm vocabulary (kimi retirement)" bash "$TEST_DIR/test-dispatch-arm-vocabulary.sh"
 run_check "foreground-dispatch guard hook" bash "$TEST_DIR/test-fg-dispatch-guard.sh"

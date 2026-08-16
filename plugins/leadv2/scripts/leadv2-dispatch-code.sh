@@ -2629,6 +2629,61 @@ _wait_arm_early_verdict() {  # <arm> <handle> <sig8>
   done
 }
 
+# CODEX-DOOR-DEAD-01 §2 mitigation: a first-byte deadline for the codex BUILDER arm
+# only. `task ... --background` (spawn_worker's codex branch) returns rc0 the instant
+# codex-companion's enqueueBackgroundTask ACCEPTS the job -- nothing upstream of this
+# proves the job actually STARTED producing output. leading hypothesis H3 (a job
+# accepted and then never run -- worker not draining the queue, or dying before its
+# first write) would present exactly as the four dead lanes did: valid jobId,
+# waiting_worker forever, zero bytes, no stream. The reproduction run for this task
+# (trivial task, --background --cwd <scratch>) did NOT trigger H3 -- the runtime was
+# healthy and the first byte landed in well under 15s -- so this is a bounded,
+# observable SAFETY NET for a fault this pass could not reproduce live, not a
+# confirmed fix. Default 180s (LEADV2_CODEX_FIRST_BYTE_SECS) converts a 20-minute
+# silent hang into a bounded, self-healing spill instead of leaving the close loop to
+# poll waiting_worker indefinitely.
+#
+# _codex_first_byte_probe <handle> -> rc0 iff codex-companion's own `log <handle>`
+# verb (the SAME verb _arm_final_output prefers) returns non-empty text. Deliberately
+# does NOT fall back to the raw `status` text the way _arm_final_output does -- a
+# live job always has SOME status text, so that fallback would make this probe
+# report "first byte" on every enqueued-but-silent job, defeating the whole point.
+_codex_first_byte_probe() {  # <handle>
+  local handle="$1" out
+  out="$(timeout 10 bash "${CODEX_BIN}" log "${handle}" 2>/dev/null)"
+  [[ -n "${out}" ]]
+}
+
+# _codex_first_byte_deadline_check <handle> <sig8> -> 0 = proceed (byte already
+# landed, or the deadline is disabled via LEADV2_CODEX_FIRST_BYTE_SECS=0), 7 =
+# declared dead (no byte within the deadline) -- caller must abort the reservation
+# and spill to the next candidate arm, exactly like the existing postspawn-quota
+# rc=7 branch. On declaring dead, stands codex down for a bounded window via the
+# CODEX-DOOR-DEAD-01 §3 stand-down mode (never the quota-classification mode --
+# there is no launcher output to classify here, only silence).
+_codex_first_byte_deadline_check() {  # <handle> <sig8>
+  local handle="$1" sig8="$2"
+  local deadline="${LEADV2_CODEX_FIRST_BYTE_SECS:-180}"
+  [[ "${deadline}" =~ ^[0-9]+$ ]] || deadline=180
+  [[ "${deadline}" != "0" ]] || return 0
+  local poll_s="${LEADV2_ARM_EARLY_VERDICT_POLL_S:-1}"
+  [[ "${poll_s}" =~ ^[0-9]+([.][0-9]+)?$ ]] || poll_s=1
+  [[ "${poll_s}" != "0" && "${poll_s}" != "0.0" ]] || poll_s=0.1
+  local started="${SECONDS}"
+  while true; do
+    if _codex_first_byte_probe "${handle}"; then
+      return 0
+    fi
+    if (( SECONDS - started >= deadline )); then
+      emit decision "arm_dead_no_first_byte arm=codex task=${sig8} job=${handle}"
+      bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
+        --provider codex --hours 1 --reason arm_dead_no_first_byte >/dev/null 2>&1 || true
+      return 7
+    fi
+    sleep "${poll_s}"
+  done
+}
+
 # ── CORE FIX (fix-pass-4 REDESIGN): reserve (short lock) -> spawn (NO lock) -> confirm/
 # abort (short lock) -- see the FIX PASS 4 doc block at the top of this file for why
 # fix-pass-3's "one held flock across the whole sequence" was itself blocked (FD-inheritance
@@ -2715,6 +2770,23 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
       dispatch_abort "${token}" || early_abort_rc=$?
       [[ ${early_abort_rc} -eq 0 ]] && return 7
       return 5
+    fi
+    # CODEX-DOOR-DEAD-01 §2: codex builder only, and only reached here when the
+    # generic early-verdict window above found neither a terminal failure nor
+    # no-work -- i.e. the job is still "running/unknown" (or already completed,
+    # in which case the probe below finds output instantly and returns at once).
+    if [[ "${arm}" == "codex" ]]; then
+      local _fb_rc=0
+      _codex_first_byte_deadline_check "${handle}" "${sig8}" || _fb_rc=$?
+      if [[ ${_fb_rc} -eq 7 ]]; then
+        LAST_ARM_OUTCOME="codex_dead_no_first_byte"
+        emit decision "arm_refused by=router model=codex task=${sig8} reason=no_first_byte"
+        log "spawn(codex) no first byte within deadline; spilling to next arm"
+        local fb_abort_rc=0
+        dispatch_abort "${token}" || fb_abort_rc=$?
+        [[ ${fb_abort_rc} -eq 0 ]] && return 7
+        return 5
+      fi
     fi
     return 0
   fi
@@ -3837,19 +3909,55 @@ cmd_advance_arm() {
 # long since expired) can still classify a late quota death and record the lockout.
 #   leadv2-dispatch-code.sh record-quota-lockout --arm <arm> --handle <handle>
 #     [--sig8 <sig8>] [--provider <provider>]
+#
+# CODEX-DOOR-DEAD-01 §3: a second, explicitly distinct mode -- STAND-DOWN. Given
+# --hours/--minutes, this asserts a provider is broken (e.g. the runtime is down,
+# not merely out of quota) and stands it down for a fixed duration, bypassing
+# _arm_final_output/_quota_shaped entirely (there is no output to classify --
+# stand-down is asserted, not detected). --handle becomes optional in this mode;
+# --provider (or --arm, resolved via _arm_provider) is required.
+#   leadv2-dispatch-code.sh record-quota-lockout --provider <p> --hours <N>
+#     [--reason <text>]
+# Mode selection is unambiguous: --hours/--minutes present -> stand-down mode.
+# Neither present -> today's quota-classification mode, byte-identical (no
+# existing call site passes a duration flag, so this is strictly additive).
 # Always rc0 (best-effort, non-fatal observability -- the close gate's own poll loop
 # must never fail because this classification step failed).
 cmd_record_quota_lockout() {
-  local arm="" handle="" sig8="" provider=""
+  local arm="" handle="" sig8="" provider="" hours="" minutes="" reason="provider_broken"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --arm)      [[ $# -ge 2 ]] && arm="$2"; shift 2 ;;
       --handle)   [[ $# -ge 2 ]] && handle="$2"; shift 2 ;;
       --sig8)     [[ $# -ge 2 ]] && sig8="$2"; shift 2 ;;
       --provider) [[ $# -ge 2 ]] && provider="$2"; shift 2 ;;
+      --hours)    [[ $# -ge 2 ]] && hours="$2"; shift 2 ;;
+      --minutes)  [[ $# -ge 2 ]] && minutes="$2"; shift 2 ;;
+      --reason)   [[ $# -ge 2 ]] && reason="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
+
+  if [[ -n "${hours}" || -n "${minutes}" ]]; then
+    [[ -n "${provider}" ]] || provider="$(_arm_provider "${arm}")"
+    [[ -n "${provider}" ]] || { log_err "record-quota-lockout: --provider (or --arm) is required for stand-down mode"; exit 0; }
+    local _total_minutes
+    if [[ -n "${minutes}" ]]; then
+      [[ "${minutes}" =~ ^[0-9]+$ && "${minutes}" -ge 1 && "${minutes}" -le 10080 ]] || { log_err "record-quota-lockout: --minutes must be an integer in 1..10080, got '${minutes}'"; exit 0; }
+      _total_minutes="${minutes}"
+    else
+      [[ "${hours}" =~ ^[0-9]+$ && "${hours}" -ge 1 && "${hours}" -le 168 ]] || { log_err "record-quota-lockout: --hours must be an integer in 1..168, got '${hours}'"; exit 0; }
+      _total_minutes=$(( hours * 60 ))
+    fi
+    local _iso
+    _iso="$(date -u -v+"${_total_minutes}"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || date -u -d "+${_total_minutes} minutes" +%Y-%m-%dT%H:%M:%SZ)"
+    [[ -n "${_iso}" ]] || { log_err "record-quota-lockout: failed to compute stand-down timestamp"; exit 0; }
+    _record_quota_lockout "${provider}" "${_iso}" "standdown:${reason}"
+    emit decision "quota_standdown_recorded provider=${provider} hours=${hours:-0} minutes=${_total_minutes} until=${_iso} reason=${reason} task=${sig8:--}"
+    exit 0
+  fi
+
   [[ -n "${arm}" && -n "${handle}" ]] || { log_err "record-quota-lockout: --arm and --handle are required"; exit 0; }
   [[ -n "${provider}" ]] || provider="$(_arm_provider "${arm}")"
 
