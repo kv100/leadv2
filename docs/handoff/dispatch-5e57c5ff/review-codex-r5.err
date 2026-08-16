@@ -1,0 +1,2 @@
+[codex-task] WARNING: background autoreap failed (rc=1) -- a repair marker could not be persisted for one or more jobs; run 'codex-task.sh reap' to see details and retry
+[codex-task] tier=standard -> model=gpt-5.6-terra (sub=adversarial-review; review has no --effort wire)

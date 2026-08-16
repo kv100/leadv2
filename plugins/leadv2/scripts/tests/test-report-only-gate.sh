@@ -29,6 +29,11 @@
 #  11 — report lane that ALSO edits source (r3 finding 2) -> blocked
 #        unscoped_lane_work, kind: report — code changes cannot land unreviewed
 #        under a report verdict.
+#  12 — COMMITTED source change in the report lane (r4 finding 2) -> same block:
+#        clean status must not satisfy the guard, the base diff is checked.
+#  13 — report:.git/config (r4 finding 5) -> refused at parse, diff-lane shape.
+#  14 — rename into the report path (r4 finding 1) -> unscoped_lane_work: the
+#        porcelain " -> " record is impure however the paths are filtered.
 #
 # Red-first: cases 1/2/3/5/6a are also run against an extraction of the last commit
 # that predates the fix (walk HEAD back while lib/leadv2-report-deliverable.sh exists;
@@ -324,7 +329,9 @@ make_dispatch_repo() { # -> repo path with routing.yaml + worker/wt stubs
   ( cd "${root}" && git init -q && git config user.email test@example.com \
     && git config user.name test && : > seed && git add seed && git commit -qm seed ) >/dev/null 2>&1
   printf 'router:\n  glm_policy:\n    sonnet_exceptions: [safety_gate_publish_payments]\n    opus_only_mission_kinds: []\n    codex_fitting_mission_kinds: []\n' > "${root}/.claude/ref/leadv2-routing.yaml"
-  printf '#!/usr/bin/env bash\nnohup sleep 60 >/dev/null 2>&1 &\nprintf "PID=%%s LABEL=test SESSION_ID=test\\n" "$!"\n' > "${root}/worker"
+  # Keep the mock alive long enough for dispatch to record a handle, but not long
+  # enough for its inherited stdout pipe to hold this offline assertion open.
+  printf '#!/usr/bin/env bash\nnohup sleep 1 >/dev/null 2>&1 &\nprintf "PID=%%s LABEL=test SESSION_ID=test\\n" "$!"\n' > "${root}/worker"
   # never provides an isolated worktree (echoes the main checkout): the guard's
   # worktree fallback can never fire, so only writes/deliverable can satisfy it.
   printf '#!/usr/bin/env bash\ncase "$1" in ensure) printf "%%s" "${LEADV2_PROJECT_ROOT}"; exit 0;; path-of) exit 1;; esac\nexit 0\n' > "${root}/wt-stub.sh"
@@ -507,6 +514,90 @@ case_11_report_plus_code() { # <scripts_dir>
   return "${ok}"
 }
 
+# ── Case 12 — COMMITTED source change in the report lane -> unscoped_lane_work ───
+# A worker that commits its changes leaves a clean status; the pre-overwrite diff vs
+# the dispatch base still shows them, so the launder guard must block (r4 finding 2).
+case_12_committed_change() { # <scripts_dir>
+  local sd="$1"
+  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
+  local root tid wt d errf rrc gate
+  root="$(new_repo)"; tid="rog1c12-$$"
+  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  write_good_report "${wt}/analysis/report.md"
+  # Production records the lane start SHA before the worker runs. Preserve that
+  # baseline here so the committed-source guard can distinguish the report from
+  # a source commit (HEAD alone would of course be clean after the commit).
+  export LEADV2_LANE_START_SHA="$(git -C "${wt}" rev-parse HEAD)"
+  ( cd "${wt}" && printf 'committed sabotage\n' >> agent/seed.py && git add agent/seed.py \
+    && git -c user.email=t@e.c -c user.name=t commit -qm dirt ) >/dev/null 2>&1
+  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+  rrc="$(run_gate "${sd}" "${root}" rog1c12sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
+  gate="$(gate_md "${root}" rog1c12sig)"
+  local ok=0
+  [[ "${rrc}" == "rc=5" ]] || ok=1
+  grep -q '^status: blocked' <<<"${gate}" || ok=1
+  grep -q '^reason: unscoped_lane_work' <<<"${gate}" || ok=1
+  grep -q '^kind: report' <<<"${gate}" || ok=1
+  unset LEADV2_LANE_START_SHA
+  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
+  return "${ok}"
+}
+
+# ── Case 13 — .git deliverable path is refused at parse -> diff-lane shape ────────
+# report:.git/config parses as a path but is control metadata; the parser rejects it,
+# so the lane is judged as a diff lane (r4 finding 5).
+case_13_git_path() { # <scripts_dir>
+  local sd="$1"
+  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
+  local root tid wt d errf rrc gate
+  root="$(new_repo)"; tid="rog1c13-$$"
+  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+  rrc="$(run_gate "${sd}" "${root}" rog1c13sig "${wt}" "${d}" "${errf}" "report:.git/config" "-")"
+  gate="$(gate_md "${root}" rog1c13sig)"
+  local ok=0
+  # refused at parse => exactly the dead-worker diff-lane shape, never a report pass
+  [[ "${rrc}" == "rc=5" ]] || ok=1
+  grep -q '^reason: no_work' <<<"${gate}" || ok=1
+  grep -q '^kind: diff' <<<"${gate}" || ok=1
+  if grep -q '^kind: report' <<<"${gate}"; then ok=1; fi
+  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
+  return "${ok}"
+}
+
+# ── Case 14 — RENAME into the report path -> unscoped_lane_work (r4 finding 1) ────
+# `git mv agent/seed.py analysis/report.md` + prose is a tracked-source replacement,
+# not report work: the porcelain record carries " -> " and must block.
+case_14_rename_launder() { # <scripts_dir>
+  local sd="$1"
+  [[ -f "${sd}/leadv2-dispatch-product-close.sh" ]] || return 2
+  local root tid wt d errf rrc gate
+  root="$(new_repo)"; tid="rog1c14-$$"
+  wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  mkdir -p "${wt}/analysis"
+  ( cd "${wt}" && git mv agent/seed.py analysis/report.md ) >/dev/null 2>&1
+  write_good_report "${wt}/analysis/report.md"
+  d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+  rrc="$(run_gate "${sd}" "${root}" rog1c14sig "${wt}" "${d}" "${errf}" "report:analysis/report.md" "-")"
+  gate="$(gate_md "${root}" rog1c14sig)"
+  local ok=0
+  [[ "${rrc}" == "rc=5" ]] || ok=1
+  grep -q '^status: blocked' <<<"${gate}" || ok=1
+  grep -q '^reason: unscoped_lane_work' <<<"${gate}" || ok=1
+  grep -q '^kind: report' <<<"${gate}" || ok=1
+  rm -rf "${root}" "${d}" "${wt}"; rm -f "${errf}"
+  return "${ok}"
+}
+
 # ── harness ───────────────────────────────────────────────────────────────────────
 CASE_NAMES=(); CASE_RCS=()
 run_case() { # <name> <fn> <scripts_dir>
@@ -549,6 +640,9 @@ run_case "C8-dest-collision"    case_8_dest_collision    "${SCRIPTS_LIVE}"
 run_case "C9-hardlink-report"   case_9_hardlink_report   "${SCRIPTS_LIVE}"
 run_case "C10-dest-symlink"     case_10_dest_symlink     "${SCRIPTS_LIVE}"
 run_case "C11-report-plus-code" case_11_report_plus_code "${SCRIPTS_LIVE}"
+run_case "C12-committed-change" case_12_committed_change "${SCRIPTS_LIVE}"
+run_case "C13-git-path"        case_13_git_path        "${SCRIPTS_LIVE}"
+run_case "C14-rename-launder"  case_14_rename_launder  "${SCRIPTS_LIVE}"
 POST_NAMES=("${CASE_NAMES[@]}"); POST_RCS=("${CASE_RCS[@]}")
 
 echo ""
