@@ -157,6 +157,39 @@ must see the whole task history) instead of re-serializing context into a prompt
 - The old 200-subagent session cap is removed (CC 2.1.224) — fan-out sizing is governed only
   by quota + the workflow size guideline, not a platform ceiling.
 
+## Fork-owned session (FORK-RUNS-A-SESSION-01)
+
+A fork (context-inheriting Agent spawn) can carry one task Phase 0→8 end to end — not by
+imitating the lead, but by taking the bash path that already exists for headless lanes — **only
+when `preflight` succeeds**: an isolated lane is a precondition, not an assumption. The lead
+runs `leadv2-fork-session.sh preflight <id>` (creates the lane, registers it, writes
+`fork-lane.env`; REFUSES with exit 1 if isolation is unavailable — kill-switch, ensure
+fallback, unregistered worktree, wrong branch — never degrades to the shared checkout), spawns
+the fork on `prompts/fork-session-mission.md`, and reaps with `postflight <id>` after the fork
+reports `phase8-passed.flag`.
+
+| Phase | Fork owns? | Mechanism |
+|---|---|---|
+| 0 Intake | yes, minus lane creation — **and only if `preflight` succeeded** | lane pre-created by the lead (`leadv2-lane-worktree.sh ensure` + `assert_isolated_lane`); no isolated lane → preflight exits 1, **no fork is spawned**, the lead runs the task itself; fork addresses files by ABSOLUTE path |
+| 1 Classify | yes | pure reasoning over inherited context |
+| 2 Plan | yes | spawns its own role agents; Codex/GLM arms are external processes |
+| 3 Gate 1 | **conditionally** — asks once, cannot self-clear | `leadv2-fork-session.sh ask` = `leadv2-ask.sh --no-block` + bounded poll; the pending question survives retries (control-plane `fork-ask/<id>.yaml`); exit 3 = gate NOT passed — work the gate protects stays blocked until exit 0; question lands in control-plane `questions/`, visible in `/leadv2 questions` |
+| 4 Build / 5 Review | yes | unchanged; NO gate is relaxed for a fork |
+| 6 Deploy | **split** | commit is fork-owned **via the `leadv2-fork-session.sh commit` wrapper only** (every git call carries `-C <lane-root>`); the land step invokes `leadv2-deploy-merge.sh` against the main checkout — fork-invoked, not fork-authored git |
+| 7 Verify | yes | `verify-probe.sh` against the live signal |
+| 8 Close | yes up to `phase8-passed.flag`; reaping + self-spawn no (carve-outs B, C) | locked state writes + `leadv2-phase8-close.sh`; stops at the flag |
+
+Residual, stated not hidden: a bare `git` command from a fork is banned by mission
+text (`fork-session-mission.md` never-call list) but **not mechanically enforced** —
+a PreToolUse hook matching `^git ` without `-C` would fire on every lead session too
+and is a separate task with its own blast radius.
+
+Carve-outs handed back to the lead, always: **A** worktree lifecycle (a fork never calls
+`EnterWorktree`/`ExitWorktree`/`cd` — it shares the session CWD; changing it would move the
+lead), **B** worktree reaping (`postflight`, postflight refuses a dirty lane), **C** daemon
+self-spawn (`postflight --self-spawn`). The `:213` ban below is honoured by disjointness, not by
+exception: the fork never entered a tool worktree, so there is nothing to `ExitWorktree` from.
+
 ## BG-agent liveness protocol (anti-silent-death, 2026-06-12)
 
 Background agents can die silently (org spend limit, crash) OR finish fine while their
@@ -211,6 +244,8 @@ Principle: **context is cache, disk is truth.** Sessions run for days with many 
 - **No chat narration.** Pulse mode (default): absolute silence except pulse lines + gate + close.
 - **No foreground Agent spawns.** Always `run_in_background=true`.
 - **No delegating `ExitWorktree` or `git worktree remove` to subagents.** Lead calls `ExitWorktree(action="keep")` directly in Phase 6 step 2. (CC 2.1.222+ also blocks destructive git commands in worktree-isolated sessions at the platform level — that is a second safety layer, NOT a license to relax this ban or the shared-tree `reset --hard`/`clean`/`stash` prohibition.)
+
+- **No delegating `ExitWorktree` or `git worktree remove` to subagents.** Lead calls `ExitWorktree(action="keep")` directly in Phase 6 step 2. A fork-owned session never enters a tool worktree at all (FORK-RUNS-A-SESSION-01): it works by absolute path in a lead-created lane and lands via `leadv2-deploy-merge.sh`.
 - **No reading subagent deliverable without `limit=30`.** Use `critic-tail.sh` for review-class.
 - **No mission file >100 lines.** `leadv2-mission-lint.sh` enforces.
 - **No spawn prompt >300 words.** `leadv2-prompt-lint.sh` enforces.
