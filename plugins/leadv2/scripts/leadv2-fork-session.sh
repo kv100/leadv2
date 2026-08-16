@@ -280,11 +280,19 @@ PYEOF
 cmd_ask() {
   local task_id="${1:?ask: <task-id> required}"
 
+  # state-path.sh deliberately accepts PROJECT_ROOT (not the historical
+  # LEADV2_PROJECT_ROOT spelling).  Thread it through every control-plane
+  # call, including the delegated ask.sh: test sandboxes set a private state
+  # root and must never let one nested invocation repair links in the caller's
+  # ambient real checkout.
+  local ask_project_root
+  ask_project_root="${LEADV2_PROJECT_ROOT:-$(resolve_project_root 2>/dev/null || pwd)}"
+
   # Operator escape: withdraw this task's fork-ask record without touching the
   # question record (the refused-duplicate path names this command).
   if [[ "${2:-}" == "--cancel-pending" ]]; then
     local cp rec
-    cp="$(bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link root)"
+    cp="$(PROJECT_ROOT="$ask_project_root" bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link root)"
     rec="${cp}/fork-ask/${task_id}.yaml"
     if [[ -f "$rec" ]]; then
       rm -f "$rec"
@@ -311,8 +319,8 @@ cmd_ask() {
   [[ ${#options[@]} -ge 1 ]] || { log_error "ask: at least one --option required"; usage; }
 
   local qdir cp_root fa_dir rec_path lock_dir
-  qdir="$(bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link questions)"
-  cp_root="$(bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link root)"
+  qdir="$(PROJECT_ROOT="$ask_project_root" bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link questions)"
+  cp_root="$(PROJECT_ROOT="$ask_project_root" bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link root)"
   fa_dir="${cp_root}/fork-ask"
   rec_path="${fa_dir}/${task_id}.yaml"
   lock_dir="${fa_dir}/${task_id}.lock"
@@ -393,7 +401,7 @@ PYEOF
     # --no-block: the V2 record is written to the control-plane questions/ dir
     # (founder answers via /leadv2 reply — the existing surface, nothing new)
     # and the qid comes back on stdout.
-    qid="$(bash "${SCRIPT_DIR}/leadv2-ask.sh" "$task_id" "$question" "${ask_args[@]}")" \
+    qid="$(PROJECT_ROOT="$ask_project_root" bash "${SCRIPT_DIR}/leadv2-ask.sh" "$task_id" "$question" "${ask_args[@]}")" \
       || { rmdir "$lock_dir" 2>/dev/null || true; log_error "leadv2-ask.sh --no-block failed"; exit 1; }
 
     # --no-block is contracted to print a QID; leadv2-ask.sh's degrade path

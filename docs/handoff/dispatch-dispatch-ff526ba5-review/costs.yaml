@@ -1,0 +1,22 @@
+# leadv2 cost telemetry — appended by claude-subsession.sh
+- role: critic
+  model: sonnet
+  provider: claude
+  session_id: c06610c8-1a4e-48cf-bdcf-fb2462ddc11f
+  input_tokens: 52
+  output_tokens: 11379
+  cost_usd: 0.170841
+  duration_sec: 212
+  timestamp: 2026-08-16T22:50:14Z
+  cache_hit_rate: 0.9713
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c- role: critic
+  model: opus
+  provider: claude
+  session_id: 6f0efe7c-653d-4e66-a881-40d0556113ba
+  input_tokens: 38
+  output_tokens: 18143
+  cost_usd: 1.361295
+  duration_sec: 505
+  timestamp: 2026-08-16T22:55:07Z
+  cache_hit_rate: 0.9504
+  prompt_prefix_checksum: 9f312fb68999b4518095066b8ac47d5c

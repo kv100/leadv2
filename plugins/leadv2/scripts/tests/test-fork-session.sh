@@ -66,7 +66,7 @@ case_preflight() {
 case_ask() {
   local d root qdir qid out rc
   d="$(setup_sandbox)"; root="${d}/repo"; qdir="${d}/state/questions"
-  export LEADV2_STATE_ROOT="${d}/state" LEADV2_PROJECT_ROOT="${root}"
+  export LEADV2_STATE_ROOT="${d}/state" LEADV2_PROJECT_ROOT="${root}" PROJECT_ROOT="${root}"
   export LEADV2_ASK_POLL_INTERVAL=0 LEADV2_FORK_ASK_POLL_SEC=2
 
   out="$(cd "$root" && bash "$FS" ask tid-fork01 "ship it?" --option "a|yes" --option "b|no" \
@@ -94,7 +94,7 @@ case_ask() {
 case_ask_answered() {
   local d root qdir qid out rc
   d="$(setup_sandbox)"; root="${d}/repo"; qdir="${d}/state/questions"
-  export LEADV2_STATE_ROOT="${d}/state" LEADV2_PROJECT_ROOT="${root}"
+  export LEADV2_STATE_ROOT="${d}/state" LEADV2_PROJECT_ROOT="${root}" PROJECT_ROOT="${root}"
   export LEADV2_ASK_POLL_INTERVAL=0
 
   # Ask in the background, answer it mid-poll, expect exit 0 + label.
@@ -180,7 +180,7 @@ case_preflight_refuses() {
 case_ask_retry_reuses_question() {
   local d root qdir fa_dir qcount out rc
   d="$(setup_sandbox)"; root="${d}/repo"; qdir="${d}/state/questions"; fa_dir="${d}/state/fork-ask"
-  export LEADV2_STATE_ROOT="${d}/state" LEADV2_PROJECT_ROOT="${root}"
+  export LEADV2_STATE_ROOT="${d}/state" LEADV2_PROJECT_ROOT="${root}" PROJECT_ROOT="${root}"
   export LEADV2_ASK_POLL_INTERVAL=0 LEADV2_FORK_ASK_POLL_SEC=1
 
   out="$(cd "$root" && bash "$FS" ask tid-r "ship it?" --option "a|yes" --option "b|no" \
@@ -206,7 +206,7 @@ case_ask_retry_reuses_question() {
 case_ask_retry_returns_answer() {
   local d root qdir fa_dir qid out rc
   d="$(setup_sandbox)"; root="${d}/repo"; qdir="${d}/state/questions"; fa_dir="${d}/state/fork-ask"
-  export LEADV2_STATE_ROOT="${d}/state" LEADV2_PROJECT_ROOT="${root}"
+  export LEADV2_STATE_ROOT="${d}/state" LEADV2_PROJECT_ROOT="${root}" PROJECT_ROOT="${root}"
   export LEADV2_ASK_POLL_INTERVAL=0 LEADV2_FORK_ASK_POLL_SEC=1
 
   ( cd "$root" && bash "$FS" ask tid-ans "gate?" --option "l|launch" --option "d|defer" \
