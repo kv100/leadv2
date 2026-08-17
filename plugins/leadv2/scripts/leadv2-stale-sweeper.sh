@@ -21,6 +21,13 @@ LEADV2_PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT
 # shellcheck source=leadv2-active-registry.sh
 source "$SCRIPT_DIR/leadv2-active-registry.sh"
 
+# lv2_branch_merged / lv2_default_branch — WORKTREE-GC-NEVER-FIRED-01: the
+# sole answer to "is this branch merged into the default branch", never a
+# `git branch --merged | grep` reparse (that regex missed every `+`-prefixed
+# branch, i.e. every branch checked out in its own worktree).
+# shellcheck source=leadv2-branch-merged.sh
+source "$SCRIPT_DIR/leadv2-branch-merged.sh"
+
 log() { printf -- '[sweeper] %s\n' "$*" >&2; }
 
 # ── Determine interactive mode ─────────────────────────────────────────────
@@ -294,10 +301,13 @@ sessions = d.get('sessions') or []
 print('yes' if any(s.get('task_id') == name for s in sessions) else 'no')
 " "$YAML_FILE" "$wt_name" 2>/dev/null) || in_active=yes
     [[ "$in_active" == "yes" ]] && continue
-    # Skip if branch already merged (handled by GC step at end)
+    # Skip if branch already merged (handled by the --sweep-dead GC step at
+    # end). lv2_branch_merged uses merge-base --is-ancestor, never a
+    # `git branch --merged | grep` reparse, so a branch checked out in its
+    # own worktree (the +-prefix case, i.e. every lane branch) is still
+    # correctly recognized as merged here.
     branch="worktree-${wt_name}"
-    if git -C "$LEADV2_PROJECT_ROOT" branch --merged main 2>/dev/null \
-        | grep -qE "^\*?[[:space:]]+${branch}$"; then
+    if lv2_branch_merged "$LEADV2_PROJECT_ROOT" "$branch"; then
       continue
     fi
     # Unmerged commits exist
@@ -369,22 +379,27 @@ if [[ -x "$QUOTA_SCRIPT" ]]; then
   "$QUOTA_SCRIPT" 2>/dev/null || true
 fi
 
-# ── GC: remove merged worktrees (safe at every startup) ───────────────────────
-log "scanning for merged zombie worktrees..."
-WORKTREES_DIR="${LEADV2_PROJECT_ROOT}/.claude/worktrees"
-if [[ -d "$WORKTREES_DIR" ]]; then
-  while IFS= read -r wt_line; do
-    wt_path="${wt_line#worktree }"
-    [[ "$wt_path" == "$LEADV2_PROJECT_ROOT" ]] && continue  # skip main worktree
-    wt_name=$(basename "$wt_path")
-    branch="worktree-${wt_name}"
-    # Only remove if branch is fully merged into main
-    if git -C "$LEADV2_PROJECT_ROOT" branch --merged main 2>/dev/null | grep -qE "^\*?[[:space:]]+${branch}$"; then
-      log "auto-GC merged worktree: $wt_name"
-      bash "${SCRIPT_DIR}/leadv2-worktree-cleanup.sh" --name "$wt_name" --force 2>/dev/null || \
-        log "GC failed for $wt_name (non-blocking)"
-    fi
-  done < <(git -C "$LEADV2_PROJECT_ROOT" worktree list --porcelain 2>/dev/null | grep '^worktree ')
+# ── GC: reap dead-and-empty worktrees (safe at every startup) ─────────────────
+# WORKTREE-GC-NEVER-FIRED-01: this used to be an inline loop that called
+# `leadv2-worktree-cleanup.sh --name <name> --force`, which forces past ALL
+# THREE removal refusals (merge-blocker.flag, unmerged commits, dirty tree —
+# see leadv2-worktree-cleanup.sh's --name mode) on every unattended startup.
+# Combined with the +-prefix regex bug that made the merged-check never
+# match, fixing only the regex would have turned a GC that never fired into
+# a force-remover walking every worktree with every guard disabled. The
+# refusal policy belongs to leadv2-worktree-cleanup.sh alone (--sweep-dead:
+# liveness-gated via leadv2-lane-liveness.sh, merge-blocker.flag-gated,
+# dirty-gated, unmerged-commits-gated) -- this is a caller, not a second
+# policy, and it never passes --force.
+CLEANUP_SCRIPT_S6="${SCRIPT_DIR}/leadv2-worktree-cleanup.sh"
+if [[ -x "$CLEANUP_SCRIPT_S6" ]]; then
+  log "sweeping dead-and-empty worktrees..."
+  while IFS= read -r line; do
+    log "$line"
+  done < <(LEADV2_PROJECT_ROOT="$LEADV2_PROJECT_ROOT" bash "$CLEANUP_SCRIPT_S6" --sweep-dead 2>&1) \
+    || log "sweep-dead returned non-zero (non-blocking)"
+else
+  log "[skip] leadv2-worktree-cleanup.sh not found — skipping dead-worktree sweep"
 fi
 
 # ── Graveyard scan (weekly — detects DORMANT skills with 0 signal-emission) ───

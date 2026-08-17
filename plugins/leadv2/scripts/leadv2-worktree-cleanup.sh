@@ -5,6 +5,10 @@ set -euo pipefail
 
 readonly SCRIPT_NAME="leadv2-worktree-cleanup.sh"
 
+_LV2_WT_CLEANUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=leadv2-branch-merged.sh
+source "${_LV2_WT_CLEANUP_DIR}/leadv2-branch-merged.sh"
+
 log()       { printf -- '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_error() { log "ERROR: $*"; }
 log_info()  { log "INFO: $*"; }
@@ -18,10 +22,12 @@ Usage: $SCRIPT_NAME --name <worktree-name> [--force]
   --name <name>    Name of the worktree under .claude/worktrees/<name>
   --force          Remove even if worktree has uncommitted/untracked changes,
                     unmerged commits, or a merge-blocker.flag is present
-  --sweep-merged   Remove all .claude/worktrees/agent-<hex> worktrees whose
-                   branches are fully merged into the default branch.
-                   Unmerged, dirty (uncommitted changes), and the current CWD
-                   worktree are kept. Dirty worktrees print KEPT (dirty-uncommitted).
+  --sweep-merged   Remove all .claude/worktrees/<name> worktrees whose branches
+                   are fully merged into the default branch AND whose lane is
+                   not live (leadv2-lane-liveness.sh). Unmerged, dirty
+                   (uncommitted changes), still-live, carrying a
+                   docs/handoff/<id>/merge-blocker.flag, and the current CWD
+                   worktree are all kept, each printed with its reason.
   --sweep-dead     Remove all .claude/worktrees/<lane-id> worktrees whose lane is
                    no longer live (leadv2-lane-liveness.sh) AND provably empty
                    (clean tree, 0 commits ahead of the default branch). A lane
@@ -58,13 +64,9 @@ if [[ "$SWEEP_DEAD" -eq 1 ]]; then
     log_error "Not inside a git repository"
     exit 1
   }
-  LIVENESS_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-lane-liveness.sh"
+  LIVENESS_BIN="${_LV2_WT_CLEANUP_DIR}/leadv2-lane-liveness.sh"
 
-  DEFAULT_BRANCH=$(git -C "$REPO_ROOT" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
-    | sed 's|refs/remotes/origin/||') || true
-  if [[ -z "$DEFAULT_BRANCH" ]]; then
-    DEFAULT_BRANCH=$(git -C "$REPO_ROOT" symbolic-ref --short HEAD 2>/dev/null || printf -- 'main')
-  fi
+  DEFAULT_BRANCH="$(lv2_default_branch "$REPO_ROOT")"
   log_info "Default branch: ${DEFAULT_BRANCH}"
 
   CWD_WT=$(git rev-parse --show-toplevel 2>/dev/null || printf -- '')
@@ -150,13 +152,10 @@ if [[ "$SWEEP_MERGED" -eq 1 ]]; then
     exit 1
   }
 
-  # Determine default branch (origin/HEAD → HEAD → fallback main)
-  DEFAULT_BRANCH=$(git -C "$REPO_ROOT" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
-    | sed 's|refs/remotes/origin/||') || true
-  if [[ -z "$DEFAULT_BRANCH" ]]; then
-    DEFAULT_BRANCH=$(git -C "$REPO_ROOT" symbolic-ref --short HEAD 2>/dev/null || printf -- 'main')
-  fi
+  DEFAULT_BRANCH="$(lv2_default_branch "$REPO_ROOT")"
   log_info "Default branch: ${DEFAULT_BRANCH}"
+
+  LIVENESS_BIN_SM="${_LV2_WT_CLEANUP_DIR}/leadv2-lane-liveness.sh"
 
   # Determine CWD worktree top-level — NEVER remove this one
   CWD_WT=$(git rev-parse --show-toplevel 2>/dev/null || printf -- '')
@@ -172,9 +171,13 @@ if [[ "$SWEEP_MERGED" -eq 1 ]]; then
           /^branch /   { if (cur==wt) { sub("refs/heads/",""); print $2 } }
         ')
 
-    # Only handle agent-<hex> pattern under .claude/worktrees/
+    # W-1 lane-worktree-isolation follow-up (WORKTREE-GC-NEVER-FIRED-01 R3):
+    # widened from the original agent-<hex>-only glob to every worktree
+    # under .claude/worktrees/ — gated by the liveness + merge-blocker
+    # checks below, which the agent-<hex>-only version never needed because
+    # subagent worktrees have no lane-liveness or merge-blocker concept.
     case "$wt_path" in
-      */.claude/worktrees/agent-*) ;;
+      */.claude/worktrees/*) ;;
       *) continue ;;
     esac
 
@@ -192,8 +195,41 @@ if [[ "$SWEEP_MERGED" -eq 1 ]]; then
       continue
     fi
 
-    # Check if branch is fully merged into default branch
-    if git -C "$REPO_ROOT" merge-base --is-ancestor "$wt_branch" "$DEFAULT_BRANCH" 2>/dev/null; then
+    # Check if branch is fully merged into default branch. lv2_branch_merged
+    # uses merge-base --is-ancestor, never a `git branch --merged | grep`
+    # reparse — this is the fix for WORKTREE-GC-NEVER-FIRED-01's root cause:
+    # `git branch` prefixes a branch checked out in ANOTHER worktree with
+    # `+`, not `*`, so the old regex never matched a lane branch.
+    if lv2_branch_merged "$REPO_ROOT" "$wt_branch" "$DEFAULT_BRANCH"; then
+      lane_id_sm=$(basename "$wt_path")
+
+      # Liveness gate (R3): a lane worktree whose lane is still live must
+      # never be reaped just because its branch merged mid-session. Only a
+      # verdict prefixed "dead:" permits removal; empty/unparseable/missing
+      # liveness binary all mean KEEP.
+      verdict_sm=""
+      if [[ -x "$LIVENESS_BIN_SM" ]]; then
+        verdict_sm="$(LEADV2_PROJECT_ROOT="$REPO_ROOT" bash "$LIVENESS_BIN_SM" --lane "$lane_id_sm" --json --project-root "$REPO_ROOT" 2>/dev/null \
+          | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("verdict",""))
+except Exception:
+    print("")' 2>/dev/null || printf -- '')"
+      fi
+      if [[ -z "$verdict_sm" || "$verdict_sm" != dead:* ]]; then
+        log_info "KEPT (lane-live verdict=${verdict_sm:-unknown}): $wt_path  branch=${wt_branch}"
+        kept=$(( kept + 1 ))
+        continue
+      fi
+
+      # Merge-blocker gate (R3): a merged branch can still be flagged if the
+      # ff-merge back to default failed after the fact.
+      if [[ -f "$REPO_ROOT/docs/handoff/${lane_id_sm}/merge-blocker.flag" ]]; then
+        log_info "KEPT (merge-blocker.flag): $wt_path  branch=${wt_branch}"
+        kept=$(( kept + 1 ))
+        continue
+      fi
+
       # Dirty-guard: never destroy uncommitted files in a merged worktree.
       # These are exactly the worktrees that pile up — dirty = not cleanly closed.
       _dirty="$(git -C "$wt_path" status --porcelain 2>/dev/null || true)"

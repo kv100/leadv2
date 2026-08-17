@@ -70,6 +70,34 @@ else
   COMMIT="$(git rev-parse --short HEAD 2>/dev/null || printf -- 'no-deploy')"
 fi
 
+# ── CLOSE-GATE-BYPASSABLE-BY-ENV-01 L4: refuse to close a lane whose diff ──
+# touches docs/tasks.yaml. docs/tasks.yaml is a GENERATED mirror of Supabase
+# work_items; a lane hand-writing status=done into it lets the mirror
+# disagree with the source of truth until someone notices and re-syncs
+# (proven: a lane did exactly this while work_items still said `queued`).
+# The status transition belongs to scripts/task-close.sh (Supabase), never to
+# a hand-edited mirror file landing in a close commit.
+# Checks BOTH the committed diff (if a commit happened) and the working tree
+# (uncommitted/staged) so a close attempted before commit is caught too.
+_p8c_mirror_touched="false"
+{
+  [[ "$COMMIT" != "no-deploy" ]] && git diff --name-only HEAD~1 HEAD 2>/dev/null
+  git diff --name-only HEAD 2>/dev/null
+  git diff --name-only --cached 2>/dev/null
+} | grep -qx 'docs/tasks\.yaml' && _p8c_mirror_touched="true"
+if [[ "${_p8c_mirror_touched}" == "true" ]]; then
+  if [[ "${LEADV2_ALLOW_MIRROR_EDIT:-}" == "1" ]]; then
+    if [[ -z "${LEADV2_ALLOW_MIRROR_EDIT_REASON:-}" ]]; then
+      log_error "LEADV2_ALLOW_MIRROR_EDIT=1 requires a non-empty LEADV2_ALLOW_MIRROR_EDIT_REASON -- fail-closed"
+      exit 1
+    fi
+    log_info "docs/tasks.yaml touched in lane diff -- ALLOWED via LEADV2_ALLOW_MIRROR_EDIT=1: ${LEADV2_ALLOW_MIRROR_EDIT_REASON}"
+  else
+    log_error "leadv2-phase8-close: docs/tasks.yaml is a generated mirror of Supabase work_items -- close via scripts/task-close.sh <id>, never by hand-editing the mirror"
+    exit 1
+  fi
+fi
+
 # Build files_touched from git diff against previous commit (best-effort)
 FILES_TOUCHED_JSON="[]"
 if [[ "$COMMIT" != "no-deploy" ]]; then
@@ -582,6 +610,13 @@ if [[ -x "$WT_CLEANUP_SCRIPT" ]]; then
   log_info "Sweeping merged subagent worktrees..."
   bash "$WT_CLEANUP_SCRIPT" --sweep-merged \
     || log_info "[wt-sweep] sweep-merged returned non-zero — continuing (non-blocking)"
+  # WORKTREE-GC-NEVER-FIRED-01: reap this lane's own worktree (and any
+  # other dead-and-empty lane worktree) once this close phase has finished —
+  # the only place after a worker terminates that holds the liveness
+  # authority. Non-blocking, same as sweep-merged.
+  log_info "Sweeping dead lane worktrees..."
+  bash "$WT_CLEANUP_SCRIPT" --sweep-dead \
+    || log_info "[wt-sweep] sweep-dead returned non-zero — continuing (non-blocking)"
 else
   log_info "[wt-sweep] leadv2-worktree-cleanup.sh not found — skipping sweep"
 fi

@@ -5,8 +5,11 @@
 #   1. Merged agent-<hex> worktree is removed; its branch is deleted.
 #   2. Unmerged agent-<hex> worktree is kept.
 #   3. CWD worktree is never removed even if its branch is merged.
-#   4. Non-agent worktrees (e.g. named task worktrees) are ignored.
-#   5. bash -n syntax check on the cleanup script.
+#   4. A merged, dead, clean, non-agent lane worktree IS now removed
+#      (WORKTREE-GC-NEVER-FIRED-01 widened --sweep-merged beyond agent-*,
+#      gated by liveness + merge-blocker.flag — not left unguarded).
+#   5. A merged, dead, clean lane worktree carrying merge-blocker.flag is KEPT.
+#   6. bash -n syntax check on the cleanup script.
 #
 # Run: bash scripts/tests/test-leadv2-worktree-sweep.sh
 # Exit 0 = all pass; non-zero = failures found.
@@ -93,17 +96,41 @@ else
   fail "CWD (main) worktree was removed — critical bug"
 fi
 
-# ── Test 4: non-agent worktree is ignored ─────────────────────────────────────
+# ── Test 4: merged, dead, clean non-agent lane worktree IS removed ───────────
+# leadv2-lane-liveness.sh (real binary, run against the scratch repo) has no
+# active.yaml row and no docs/handoff/<id>/ dir for this lane, so it verdicts
+# dead:no_handoff_dir -- the widened sweep-merged should now reap it.
 TASK_WT="${SCRATCH}/.claude/worktrees/MY-TASK-01"
 mkdir -p "$(dirname "$TASK_WT")"
 git -C "$SCRATCH" worktree add -q -b "worktree-MY-TASK-01" "$TASK_WT"
+printf 'task work\n' > "${TASK_WT}/task-file.txt"
+git -C "$TASK_WT" add .
+git -C "$TASK_WT" commit -q -m "task work"
 git -C "$SCRATCH" merge -q --no-ff "worktree-MY-TASK-01" -m "merge task wt" || true
 
 (cd "$SCRATCH" && bash "$CLEANUP_SH" --sweep-merged) >/dev/null 2>&1
-if [[ -d "$TASK_WT" ]]; then
-  pass "non-agent task worktree not touched by sweep"
+if [[ ! -d "$TASK_WT" ]]; then
+  pass "merged+dead+clean non-agent lane worktree removed (widened sweep-merged)"
 else
-  fail "non-agent task worktree was incorrectly removed"
+  fail "merged+dead+clean non-agent lane worktree was NOT removed"
+fi
+
+# ── Test 5: merged, dead, clean lane worktree with merge-blocker.flag KEPT ───
+TASK_WT2="${SCRATCH}/.claude/worktrees/MY-TASK-02"
+mkdir -p "$(dirname "$TASK_WT2")"
+git -C "$SCRATCH" worktree add -q -b "worktree-MY-TASK-02" "$TASK_WT2"
+printf 'task2 work\n' > "${TASK_WT2}/task2-file.txt"
+git -C "$TASK_WT2" add .
+git -C "$TASK_WT2" commit -q -m "task2 work"
+git -C "$SCRATCH" merge -q --no-ff "worktree-MY-TASK-02" -m "merge task2 wt" || true
+mkdir -p "${SCRATCH}/docs/handoff/MY-TASK-02"
+touch "${SCRATCH}/docs/handoff/MY-TASK-02/merge-blocker.flag"
+
+(cd "$SCRATCH" && bash "$CLEANUP_SH" --sweep-merged) >/dev/null 2>&1
+if [[ -d "$TASK_WT2" ]]; then
+  pass "merged lane worktree with merge-blocker.flag kept"
+else
+  fail "merged lane worktree with merge-blocker.flag was incorrectly removed"
 fi
 
 # ── summary ───────────────────────────────────────────────────────────────────
