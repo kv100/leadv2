@@ -2244,7 +2244,10 @@ _spawn_worker_body() {
       # left open by an outer caller (e.g. this script invoked from inside another
       # script's own fd-9 flock scope) and keep that lock held for the worker's lifetime
       # -- exactly the bug this redesign fixes (see FIX PASS 4 doc block).
-      out="$(bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      # The GLM wrapper owns the terminal JSON envelope and invokes the shared
+      # dev cost shim only after it exists.  Stamp this dispatch identity here
+      # so direct and dispatcher-launched lanes use one attribution contract.
+      out="$(LEADV2_COSTLOG_ARM=glm-coder bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
         local refusal
@@ -3429,6 +3432,15 @@ confirmation-seeking; only for a decision you cannot make yourself."
   [[ "${router_label}" == "v2" ]] && rule="router_v2"
   [[ -n "${arm}" ]] || { log_err "resolver returned no arm: ${resolved}"; exit 1; }
   emit decision "arm_resolved job=build arm=${arm} reason=${rule}${readings:+ readings=${readings}}"
+  # DISPATCH-BALANCE-BY-LIVE-QUOTA-01: the balancer's choice must be re-derivable
+  # from the journal alone -- one decision line whenever the resolver balanced the
+  # no-exception default between the GLM and Anthropic buckets (reason prefix
+  # glm_default:balanced; the balance_unknown / balance_anthropic_locked keeps stay
+  # glm and ride the arm_resolved line above). readings carries the two live
+  # percentages that produced the choice, so a human can read the numbers and see
+  # why that arm won without re-reading a provider endpoint.
+  [[ "${reason}" == glm_default:balanced* ]] \
+    && emit decision "dispatch_balance task=${sig8} arm=${arm} reason=${reason}${readings:+ readings=${readings}}"
   # RESOLVED_CODEX_TIER is read by _spawn_worker_body's codex case (global, not passed as
   # a positional -- spawn_worker's signature is shared across all three spawning arms).
   [[ "${arm}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"

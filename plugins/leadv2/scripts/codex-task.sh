@@ -1038,6 +1038,11 @@ _codex_tier_ledger() {
     _esc="${_esc//$'\r'/ }"
     _esc="${_esc//$'\t'/ }"
     _esc="$(printf '%s' "$_esc" | tr -d '\001-\037')"
+    # Cap before interpolation: a multi-KB reason would make the line long enough
+    # that bash printf may split it across write()s, losing O_APPEND atomicity
+    # under concurrent lanes (round-2 review). 1024 keeps the whole line well
+    # under one pipe-buffer-sized write; greppability survives.
+    _esc="${_esc:0:1024}"
     local _cwd="${PWD:-}"
     _cwd="${_cwd//\\/\\\\}"
     _cwd="${_cwd//\"/\\\"}"

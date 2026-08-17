@@ -145,12 +145,40 @@ def extract_glm_policy_block(routing_yaml_text: str) -> dict:
             artm = re.search(r'(?m)^[ \t]*anthropic_review_threshold_pct:[ \t]*([0-9.]+)', block)
             if artm:
                 gate["anthropic_review_threshold_pct"] = float(artm.group(1))
+    # DISPATCH-BALANCE-BY-LIVE-QUOTA-01: live_balance sub-block (enabled /
+    # tie_prefers / margin_pct), scoped to its own indented sub-block so the bare
+    # key names can never cross-match sibling keys elsewhere in glm_policy. None
+    # (not {}) when `live_balance:` is absent -- same opted-out-vs-opted-in-with-
+    # defaults contract as the codex_quota_gate gate above. buckets is the fixed
+    # [glm, anthropic] pair BY DESIGN and is deliberately not parsed (recorded in
+    # the yaml for humans only).
+    lb = None
+    lbm = re.search(r'(?m)^([ \t]*)live_balance:[ \t]*(?:#[^\n]*)?\n((?:[ \t]+\S[^\n]*\n|[ \t]*\n)+)', block)
+    if lbm:
+        # review round 1 (codex, Medium): scope to CHILD indentation only -- keep
+        # lines strictly more-indented than the live_balance: key itself (plus
+        # blanks), so a same-level glm_policy sibling added BELOW this block can
+        # never be swallowed into the balancer's config.
+        _lb_indent = len(lbm.group(1))
+        lbb = "".join(l for l in lbm.group(2).splitlines(keepends=True)
+                      if not l.strip() or len(l) - len(l.lstrip(" \t")) > _lb_indent)
+        lb = {"enabled": True, "tie_prefers": "sonnet", "margin_pct": 0.0}
+        enm = re.search(r'(?m)^[ \t]*enabled:[ \t]*(true|false)', lbb)
+        if enm:
+            lb["enabled"] = enm.group(1) == "true"
+        tpm = re.search(r'(?m)^[ \t]*tie_prefers:[ \t]*([A-Za-z0-9_-]+)', lbb)
+        if tpm:
+            lb["tie_prefers"] = tpm.group(1)
+        mgm = re.search(r'(?m)^[ \t]*margin_pct:[ \t]*([0-9.]+)', lbb)
+        if mgm:
+            lb["margin_pct"] = float(mgm.group(1))
     return {
         "sonnet_exceptions": [{"id": i} for i in exc_ids],
         "opus_only_mission_kinds": opus_kinds,
         "codex_fitting_mission_kinds": codex_kinds,
         "codex_default_tier": codex_default_tier,
         "codex_quota_gate": gate,
+        "live_balance": lb,
     }
 
 
@@ -706,8 +734,68 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
             arm = "sonnet"
             reason = "sonnet_exception:kimi_probe_unknown"
 
-    tier = codex_default_tier if arm == "codex" else ""
+    # --- DISPATCH-BALANCE-BY-LIVE-QUOTA-01: live-quota load balancer ------------------
+    # Fires ONLY on the untouched default path (base_arm glm AND no precedence row
+    # fired -- rule/arm still glm): every hard exception (the six sonnet_exceptions
+    # ids, opus_only_mission_kinds, codex_fitting_mission_kind) sets rule to its own
+    # id BEFORE this point, so all of them outrank the balancer by construction, and
+    # glm_quota_gate_80 (the separate leadv2-glm-quota-gate.sh applied in
+    # leadv2-dispatch-code.sh) is untouched -- the balancer only ever moves a
+    # dispatch toward sonnet, the same direction that gate moves it, never against
+    # it. rule stays "none" in every branch (it is the yaml-gated exception id
+    # downstream consumers key on); only reason varies -- verified against
+    # leadv2-router.sh's bandit special-case, which keys on EXACT reason==
+    # "glm_default" (bash [[ == ]], not a prefix match), so the glm_default:balanced_*
+    # reasons pass through and the balanced arm survives downstream. Config:
+    # glm_policy.live_balance -- absent block => feature entirely off,
+    # byte-identical output to pre-change (same None-vs-{} opt-in contract as the
+    # codex_quota_gate gate below). Kill switch: LEADV2_BALANCE_DISABLE=1. A tie
+    # sheds load onto sonnet ON PURPOSE: GLM shares one Z.AI account with the
+    # Respiro engine (no provider fallback), so a point of GLM headroom is worth
+    # strictly more than a point of Anthropic headroom. R7 herd risk accepted:
+    # single-lead WIP=1 means at most one dispatch in flight; margin_pct is the
+    # damping knob if stickiness is ever wanted.
+    balance_readings = None
+    # review round 1 (codex, High): normalize job BEFORE the balancer so the
+    # firing condition below can gate on it -- the balancer is a BUILD-dispatch
+    # feature; a review/plan caller that happens to pass base_arm="glm" must not
+    # get its arm balanced (reproduced: job=review + base_arm=glm used to enter
+    # the balancer with reason=glm_default:balance_*).
     job = job if job in ("build", "review") else "build"
+    lb = glm_policy.get("live_balance")
+    if (isinstance(lb, dict) and lb.get("enabled", True)
+            and os.environ.get("LEADV2_BALANCE_DISABLE") != "1"
+            and job == "build"
+            and base_arm == "glm" and rule == "none" and arm == "glm"):
+        glm_used = _live_pct_memo("glm", quota_live_bin) if quota_live_bin else None
+        anthropic_used = _live_pct_memo("anthropic", quota_live_bin) if quota_live_bin else None
+        balance_readings = (glm_used, anthropic_used)
+        try:
+            margin = float(lb.get("margin_pct", 0))
+        except (TypeError, ValueError):
+            margin = 0.0
+        tie_arm = lb.get("tie_prefers") if lb.get("tie_prefers") in ("glm", "sonnet") else "sonnet"
+        if glm_used is None or anthropic_used is None:
+            # R3: an unknown reading is never low usage -- tri-state, same rule
+            # as the codex gate's quota_known check below. Either bucket
+            # unknown => keep glm.
+            reason = "glm_default:balance_unknown"
+        elif _lockout_blocked("anthropic", _now_epoch()):
+            # R4: never shed load onto a quota-locked-out provider -- that is a
+            # stall, not a downgrade.
+            reason = "glm_default:balance_anthropic_locked"
+        elif glm_used - anthropic_used > margin:
+            arm, reason = "sonnet", "glm_default:balanced_to_sonnet"
+        elif anthropic_used - glm_used > margin:
+            reason = "glm_default:balanced_to_glm"
+        else:
+            # within margin: a tie (margin_pct=0 => immediate alternation,
+            # which is what makes the founder's GO condition observable within
+            # two dispatches).
+            arm = tie_arm
+            reason = "glm_default:balanced_tie_to_%s" % tie_arm
+
+    tier = codex_default_tier if arm == "codex" else ""
     codex_blocked = False
     readings = ""
 
@@ -791,6 +879,15 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
             rule = "codex_quota_gate_%dpct" % int(threshold)
             reason = "codex_quota_gate"
             tier = ""
+
+    # DISPATCH-BALANCE-BY-LIVE-QUOTA-01: make the balanced choice re-derivable --
+    # populate readings on the balancer path too (previously only the codex-blocked
+    # path emitted them). codex rides whatever the gate block already read through
+    # the per-process memo (no extra subprocess); None renders honestly as
+    # "unknown", never a fabricated 0. The gate block's own readings (codex blocked)
+    # win -- they carry the same memoized glm/anthropic values.
+    if balance_readings is not None and not readings:
+        readings = _fmt_readings(balance_readings[0], quota_codex_pct, balance_readings[1])
 
     result = {"arm": arm, "rule": rule, "reason": reason, "tier": tier,
               "codex_quota_blocked": codex_blocked, "job": job}
