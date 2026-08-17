@@ -23,8 +23,25 @@ Exactly three columns:
 - **`состояние` is one short honest phrase**: `пишет` · `диффа готова, идёт ревью` · `стартует` ·
   `ревью провалено, правит` · `молчит N мин`.
 
-Below the table: a short ranked queue (only what changed rank or is next), **one** delta line, **one**
-blockers line (or «вопросов нет»).
+## Below the table — the full ranked layout, not a one-liner
+
+Founder correction, 2026-08-17: an earlier pass compressed the queue into a single prose line
+"because a pulse is a delta". He asked twice for the full layout, so **the full layout is the
+format**. Render, in this order, as a numbered list broken into named sections:
+
+- **Очередь — по влиянию на 60/6**
+  - **Первый эшелон (корни)** — the few items that actually move 60 comments / 6 posts a day. Each
+    one sentence, and each says *why it is a root*, not what file it touches.
+  - **Второй эшелон (после корней)** — what becomes possible once the roots land.
+  - **Плагин** — tooling work, marked «(в работе)» when a lane holds it.
+  - **Хозяйство** — housekeeping and debts.
+- **Закрыто сегодня** — one dense paragraph of names separated by `·`, so the day's progress is
+  visible without re-listing rows as table entries.
+- Then **one** delta line and **one** blockers line (or «вопросов нет»).
+
+"Delta, not ledger" still governs the **table** — only live lanes appear there, never finished ones.
+The numbered queue below it is the standing plan and is expected to repeat between beats; that
+repetition is what lets him see an item's rank change.
 
 ## The rules that make it true rather than merely pretty
 
