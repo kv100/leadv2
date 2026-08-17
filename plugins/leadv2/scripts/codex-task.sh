@@ -35,6 +35,12 @@ set -euo pipefail
 #   (adversarial review + Heavy/arch plans); standard is the default, volume for
 #   mechanical/bulk. Without --reason, --tier top exits non-zero.
 #
+# Ledger (CODEX-TIER-ENFORCER-01): every ACCEPTED --tier top run appends one
+# JSON line to ${LEADV2_CODEX_TIER_LOG:-$HOME/.claude/cache/codex-tier-log.jsonl}
+# (ts/tier/sub/reason/model/effort/cwd/pid) so "what did we spend top on" is
+# greppable. Best-effort: a failed write never aborts a dispatch. Refused runs
+# append nothing.
+#
 # Output filter: by default strips codex-companion's noisy [codex] meta lines
 # (Running command / Command completed / Calling ... / Tool ... completed/failed /
 # Assistant message captured — mid-stream previews).
@@ -1199,6 +1205,32 @@ if [[ -n "$_TIER" ]]; then
       echo "[codex-task] WARN: --tier has no effect on subcommand '$SUB' -- ignoring" >&2
       ;;
   esac
+fi
+
+# CODEX-TIER-ENFORCER-01 -- record every ACCEPTED --tier top run (the gate above
+# already refused reasonless ones, so a refused run reaches neither this line nor
+# the ledger). One JSON object per line; ts/tier/sub/reason/model/effort/cwd/pid.
+# Best-effort by design: mkdir+append are stderr-swallowed and || true-guarded so
+# a read-only $HOME or full disk can never abort a Codex dispatch under set -e.
+# Single printf of one <8KB line => one O_APPEND write => atomic under concurrent
+# lanes; do NOT build the line across multiple >> calls. _REASON is founder-typed
+# free text: escape \ then ", collapse newlines/tabs to spaces so the line stays
+# valid JSON. LEADV2_* naming matches LEADV2_ARM_COOLDOWN_DIR above.
+if [[ "${_TIER:-}" == "top" ]]; then
+  {
+    _tier_esc="${_REASON//\\/\\\\}"
+    _tier_esc="${_tier_esc//\"/\\\"}"
+    _tier_esc="${_tier_esc//$'\n'/ }"
+    _tier_esc="${_tier_esc//$'\r'/ }"
+    _tier_esc="${_tier_esc//$'\t'/ }"
+    _tier_log="${LEADV2_CODEX_TIER_LOG:-$HOME/.claude/cache/codex-tier-log.jsonl}"
+    mkdir -p "$(dirname "$_tier_log")" 2>/dev/null || true
+    printf '{"ts":"%s","tier":"%s","sub":"%s","reason":"%s","model":"%s","effort":"%s","cwd":"%s","pid":"%s"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_TIER:-}" "${SUB:-}" "$_tier_esc" \
+      "${TIER_MODEL:-}" "${TIER_EFFORT:-}" "${PWD:-}" "$$" \
+      >> "$_tier_log" 2>/dev/null || true
+  } 2>/dev/null || true
+  unset _tier_esc _tier_log
 fi
 
 # Hard ban: spark is never used in this project (founder directive 2026-04-28).
