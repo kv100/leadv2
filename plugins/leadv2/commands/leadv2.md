@@ -274,12 +274,27 @@ Principle: **context is cache, disk is truth.** Sessions run for days with many 
 
 ---
 
-# Autonomous tooling — `/goal` & `Workflow` (self-judged)
+# Autonomous tooling — `/goal`, `Workflow` & session forks (self-judged)
 
 The orchestrator decides on its own when to fire `/goal` and when to author a `Workflow` — the founder need not request them. Full rubric: `${CLAUDE_PLUGIN_ROOT}/docs/goal-workflow-autonomy.md`.
 
 - **`/goal`** (autonomous completion loop): fire when the task is multi-turn AND has a machine-checkable done-state provable from your own output (flag file exists, tests exit 0, git clean) AND you include a turn cap. Self-set it interactively for Standard+/Heavy tasks at stall-risk. NOT in Phase 7 verify (sleeping bash is cheaper); NOT for Trivial/Light or ≤3-turn tasks.
 - **`Workflow`** (deterministic fan-out): author one when work splits into ≥2 independent tasks in one session (parallel Workflow phases instead of serial Agent spawns — serial multi-task spawns proved ~2× slower), needs independent perspectives (adversarial verify / judge panel), or exceeds one context. The old ≥4-unit bar applied per phase; the session-level bar is ≥2. Invoking `/leadv2` IS the opt-in; self-set `LEADV2_WORKFLOW_ENABLED=1` when Plan/Review meets the fan-out test. Every `agent()` carries an explicit `model:` (haiku reads, sonnet synth, opus rare). NOT for linear single-file work or tasks whose units aren't nameable up front.
+- **Session fork** (`Agent(subagent_type="fork")`): a fork inherits the lead's FULL conversation
+  context; a dispatch lane starts blank and reads files itself. So the fork earns its cost exactly
+  when **restating the context would cost more than the work**. The rule: **"figure out what
+  happened here" → fork; "build something new" → lane.**
+  Fire a fork for: diagnosing a failure whose history lives in this session (why did three lanes
+  fail the same stage, was my own verdict sound, what did we already rule out); auditing a claim
+  the lead made, where the fork must know what it was built on; a live-prod dig running in
+  parallel while the lead keeps the lane queue full. It runs in the background and keeps its tool
+  output out of the lead's context — that is the whole point.
+  Do NOT fork for: writing code (that is `leadv2-dispatch-code.sh` — quota routing, mandatory
+  review, worktree isolation); a from-scratch task that needs three files and none of the history;
+  anything a bounded `Explore(haiku)` already answers.
+  Anti-pattern observed 2026-08-17: the lead spent ~15 in-context tool calls personally hunting a
+  shared gate failure across three lanes while dispatching nothing. That was a fork, and taking it
+  in-context cost both the tokens and the queue.
 
 # Where to look (lazy reads)
 
