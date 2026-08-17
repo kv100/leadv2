@@ -404,6 +404,21 @@ classify_arm_failure() { # <rc> <err-file> <out-file>
     return 0
   fi
 
+  # INFRA-WORKER-DIED (PLUGIN-TOOLING-FIX-01 A): a worker the reaper killed, or one
+  # that died mid-stream without ever writing its .rc, is NOT a review that ran. It
+  # produced no verdict and must never be counted as an author-quality signal.
+  if [[ "${combined}" == *"reaped:"* ]]; then
+    printf 'infra_worker_died'
+    return 0
+  fi
+  # rc empty == _engine_arm_job never reached its `printf > .rc` (SIGTERM from the
+  # arm-timeout watcher, or a hard kill). Partial .md content proves the worker was
+  # mid-stream, not merely never launched.
+  if [[ -z "${rc}" ]] && [[ -s "${out_file}" ]]; then
+    printf 'infra_worker_died'
+    return 0
+  fi
+
   printf 'ran'
   return 0
 }
@@ -583,8 +598,22 @@ for _arm in "${fanout_list[@]}"; do
   _err="${HANDOFF}/review-${_arm}.err"
   _slot_arm="${_arm}"
   _slot_rc="${_rc}"
+  _died_retry=0
   while :; do
     cls="$(classify_arm_failure "${_slot_rc}" "${_err}" "${_out}")"
+    if [[ "${cls}" == "infra_worker_died" ]]; then
+      if [[ "${_died_retry}" -ge 1 ]]; then
+        emit decision "review_gate task=${TASK} status=arm_infra_died arm=${_slot_arm} attempt=2 kind=infra action=give_up"
+        break
+      fi
+      _died_retry=1
+      emit decision "review_gate task=${TASK} status=arm_infra_died arm=${_slot_arm} attempt=1 kind=infra action=retry"
+      rm -f "${HANDOFF}/review-${_slot_arm}.rc"
+      run_reviewer_arm "${_slot_arm}"
+      _slot_rc="${review_rc}"
+      printf '%s' "${_slot_rc}" > "${HANDOFF}/review-${_slot_arm}.rc"
+      continue
+    fi
     if [[ "${cls}" != refused_* ]]; then
       break
     fi

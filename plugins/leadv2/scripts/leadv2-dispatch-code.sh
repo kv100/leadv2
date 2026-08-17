@@ -2372,8 +2372,25 @@ _spawn_worker_body() {
         return 1
       fi
       if ! kill -0 "${pid}" 2>/dev/null; then
-        emit decision "spawn_failed by=router model=sonnet task=${sig8} handle=${handle} reason=not_live"
-        log_err "spawn(sonnet) pid=${pid} is not alive -- treating as launch failure"
+        # PLUGIN-TOOLING-FIX-01 B: "not alive" alone is undiagnosable. The real cause
+        # (e.g. `--output-format=stream-json requires --verbose`, see claude-subsession.sh
+        # ~line 358-360) is the first line of the arm's own stream file. This is the
+        # SAME path convention this file already uses for developer-role liveness at
+        # ~line 1324/3262 (`docs/handoff/dispatch-${sig8}/developer.stream.jsonl`),
+        # built from vars (PROJECT_ROOT, sig8) already in scope here -- not a new path.
+        # Emit 3 lines max, 200 chars each -- never a stream dump.
+        local _stream_file _cause
+        _stream_file="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/developer.stream.jsonl"
+        if [[ ! -e "${_stream_file}" ]]; then
+          _cause="<no stream file at ${_stream_file}>"
+        elif [[ ! -s "${_stream_file}" ]]; then
+          _cause="<stream file empty: ${_stream_file}>"
+        else
+          _cause="$(grep -v '^[[:space:]]*$' "${_stream_file}" 2>/dev/null | head -3 \
+                    | cut -c1-200 | tr '\n' '|' | tr -s ' ')"
+        fi
+        emit decision "spawn_failed by=router model=sonnet task=${sig8} handle=${handle} reason=not_live cause=${_cause}"
+        log_err "spawn(sonnet) pid=${pid} is not alive -- treating as launch failure; first stream lines: ${_cause}"
         return 1
       fi
       ;;

@@ -502,18 +502,89 @@ log "Syncing -> user-global scripts (e): ${USER_SCRIPTS_TARGET} [leadv2-* only, 
 # leadv2-*.sh sitting here that hasn't yet landed in canonical would be
 # silently overwritten on the next sync (the exact incident class this task
 # fixes, for a target context.yaml's "five copies" enumeration didn't name).
+# PLUGIN-TOOLING-FIX-01 C: measured intersection of canonical scripts/ and the
+# user tree's genuinely-consumed non-`leadv2-*` launchers (glm-coder.sh killed
+# three lanes stale). Single source of truth for BOTH the direction-safety
+# generator (below) and the real rsync -- duplicating this list literally
+# between the two call sites is exactly the drift bug this fix exists to avoid.
+USER_SCRIPTS_EXPLICIT_NAMES=(
+  glm-coder.sh
+  ask-lead.sh
+  claude-subsession.sh
+  codex-task.sh
+  lv2
+  lv2-ledger-emit.py
+  lv2-ledger-last-phase.py
+  leadv2_tasks_yaml_common.py
+)
+USER_SCRIPTS_FILTERS=(--include='leadv2-*')
+for _explicit in "${USER_SCRIPTS_EXPLICIT_NAMES[@]}"; do
+  USER_SCRIPTS_FILTERS+=(--include="${_explicit}")
+done
+USER_SCRIPTS_FILTERS+=(--exclude='*')
+
 _unsafe_excludes=()
 while IFS= read -r _u; do
   [[ -z "${_u}" ]] && continue
   _unsafe_excludes+=(--exclude="${_u}")
-done < <(_direction_safety_excludes "exclude" "user-scripts" "scripts" "${PLUGIN_ROOT}/scripts/" "${USER_SCRIPTS_TARGET}" --include='leadv2-*' --exclude='*')
+done < <(_direction_safety_excludes "exclude" "user-scripts" "scripts" "${PLUGIN_ROOT}/scripts/" "${USER_SCRIPTS_TARGET}" "${USER_SCRIPTS_FILTERS[@]}")
 # rsync filter rules are first-match-wins: unsafe excludes MUST precede the
-# generic --include='leadv2-*' --exclude='*' wildcard, or that wildcard would
-# already have claimed (and included) the unsafe leadv2-* filename before its
-# specific --exclude is ever reached.
+# generic USER_SCRIPTS_FILTERS wildcard block, or that wildcard would already
+# have claimed (and included) the unsafe filename before its specific
+# --exclude is ever reached.
 _rsync_or_dry "user-scripts" "${PLUGIN_ROOT}/scripts/" "${USER_SCRIPTS_TARGET}" \
-  "${_unsafe_excludes[@]}" --include='leadv2-*' --exclude='*' -d
+  "${_unsafe_excludes[@]}" "${USER_SCRIPTS_FILTERS[@]}" -d
 changed_summary+=("user-scripts")
+
+# ── (e.1) Skip report (PLUGIN-TOOLING-FIX-01 C.2) ───────────────────────────
+# Report-only: names every canonical top-level entry NOT delivered to the user
+# scripts dir and why, so drift is visible instead of silently converging
+# "81 of 90" with no record of the other 9. Never changes a delivery decision;
+# derived purely from filesystem state + the filter list above, so --dry-run
+# produces the identical report.
+_us_delivered=0
+_us_skipped=0
+for _canon_entry in "${PLUGIN_ROOT}/scripts"/*; do
+  [[ -e "${_canon_entry}" ]] || continue
+  _cname="$(basename "${_canon_entry}")"
+  if [[ ! -f "${_canon_entry}" ]]; then
+    printf '[plugin-sync] user-scripts SKIPPED %s reason=not-a-file\n' "${_cname}"
+    _us_skipped=$((_us_skipped + 1))
+    continue
+  fi
+  _in_scope=0
+  case "${_cname}" in
+    leadv2-*) _in_scope=1 ;;
+  esac
+  if [[ "${_in_scope}" -eq 0 ]]; then
+    for _explicit in "${USER_SCRIPTS_EXPLICIT_NAMES[@]}"; do
+      [[ "${_cname}" == "${_explicit}" ]] && _in_scope=1 && break
+    done
+  fi
+  if [[ "${_in_scope}" -eq 0 ]]; then
+    printf '[plugin-sync] user-scripts SKIPPED %s reason=out-of-include-scope\n' "${_cname}"
+    _us_skipped=$((_us_skipped + 1))
+    continue
+  fi
+  _is_unsafe=0
+  for _u in "${_unsafe_excludes[@]}"; do
+    [[ "${_u}" == "--exclude=${_cname}" ]] && _is_unsafe=1 && break
+  done
+  if [[ "${_is_unsafe}" -eq 1 ]]; then
+    printf '[plugin-sync] user-scripts SKIPPED %s reason=drift-guard-excluded\n' "${_cname}"
+    _us_skipped=$((_us_skipped + 1))
+    continue
+  fi
+  _target_file="${USER_SCRIPTS_TARGET}/${_cname}"
+  if [[ -f "${_target_file}" ]] && ! cmp -s "${_canon_entry}" "${_target_file}"; then
+    printf '[plugin-sync] user-scripts SKIPPED %s reason=target-is-real-file-divergent\n' "${_cname}"
+    _us_skipped=$((_us_skipped + 1))
+    continue
+  fi
+  _us_delivered=$((_us_delivered + 1))
+done
+printf '[plugin-sync] user-scripts: delivered=%s skipped=%s (of %s canonical entries)\n' \
+  "${_us_delivered}" "${_us_skipped}" "$((_us_delivered + _us_skipped))"
 
 # ── (f) leadv2 repo's OWN vendored .claude/scripts (copy #2 of the 5,
 # PLUGIN-CACHE-THIRD-COPY-REVERTS-FIXES-01 context.yaml) ─────────────────────
