@@ -510,7 +510,8 @@ def _is_live_verdict(verdict):
     # a 'dead:*' verdict. Rendering EVERY id the widened set surfaces would
     # put hours/days-old dead lanes back on the line permanently -- the same
     # disease D1 just fixed for the count. Only alive/starting/silent
-    # (silent:* is only ever emitted for age <= abandon_max, see
+    # (silent:* comes from the log ladder below abandon_max OR from the C2
+    # no-artifact pid-alive floor, which is unbounded by design -- see
     # leadv2-lane-liveness.sh resolve()) reach the digest.
     if not isinstance(verdict, str):
         return False

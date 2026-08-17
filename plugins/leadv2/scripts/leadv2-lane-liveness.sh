@@ -491,6 +491,16 @@ def resolve(tid):
                 return row
 
         row["age_s"] = age if age is not None else age_from_started_at(session)
+        # C2 floor (STATUSLINE-SHOWS-LANES-QUESTIONMARK-01): a provably live
+        # PID with no artifact yet is absence-of-evidence, not death -- the
+        # dead:* labels below stay for pid-less lanes only. Deliberately NOT
+        # bounded by abandon_max (the D4 cut lives on the log-artifact ladder
+        # and is not replicated here): the C2 fixture pins started_at 2020-01-01
+        # and still requires silent:.
+        if row["pid"] is not None and row["pid_alive"]:
+            row.update(verdict=f"silent:{row['age_s'] if row['age_s'] is not None else 'unknown'}",
+                       source="handoff", reason="no_artifact_process_alive")
+            return row
         if not os.path.isdir(lane_dir):
             row.update(verdict="dead:no_handoff_dir", source="handoff", reason="no_handoff_dir")
         else:
