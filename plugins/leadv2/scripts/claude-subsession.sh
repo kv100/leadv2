@@ -956,8 +956,50 @@ else
   # substitution (leadv2-dispatch-code.sh) BLOCKS for the worker's entire lifetime
   # instead of getting the PID handle back immediately. claude's own output already
   # goes to STREAM_OUT inside run_subsession. Found 2026-07-25.
-  run_subsession </dev/null >/dev/null 2>&1 &
+  # CLAUDE-SUBSESSION-HAS-NO-COMPLETION-SENTINEL-01: publish a run dir + pointer
+  # so leadv2-lane-liveness.sh's sentinel path can prove completion. RUN_ID has no
+  # "/" and no ".." (satisfies the traversal guard in liveness resolve_run_dir).
+  # Every write here is non-fatal: if the runs dir is unwritable the spawn must
+  # still proceed — a missing sentinel just means the lane keeps its old
+  # (alive-until-silent_max) verdict, which is the fail-safe direction.
+  RUN_ID="${ROLE}-${TASK_ID}-$(date +%s)-$$"
+  RUN_DIR="${LEADV2_CLAUDE_RUNS_DIR:-${LEADV2_LANE_RUNS_ROOT:-$HOME/.claude/cache}/claude-runs}/$RUN_ID"
+  mkdir -p "$RUN_DIR" 2>/dev/null || true
+  printf 'run_id: %s\ntask_id: %s\nrole: %s\nmodel: %s\nsession_id: %s\nstream_file: %s\nstarted_at: %s\n' \
+    "$RUN_ID" "$TASK_ID" "$ROLE" "$MODEL" "$SESSION_ID" "$STREAM_OUT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$RUN_DIR/meta.yaml" 2>/dev/null || true
+  # Pointer publish must be atomic: roles share docs/handoff/<tid>/ and two lanes
+  # can contend on this one file (mktemp + mv, never a bare redirect).
+  _ptr_tmp="$(mktemp "$HANDOFF_DIR/.claude-session-runner.run-id.XXXXXX" 2>/dev/null || true)"
+  if [[ -n "$_ptr_tmp" && -f "$_ptr_tmp" ]]; then
+    printf '%s\n' "$RUN_ID" > "$_ptr_tmp" 2>/dev/null || true
+    mv -f "$_ptr_tmp" "$HANDOFF_DIR/.claude-session-runner.run-id" 2>/dev/null || true
+  fi
+
+  # CLAUDE-SUBSESSION-HAS-NO-COMPLETION-SENTINEL-01: the worker wrapper below is
+  # the ONLY place the sentinel is stamped — the same process that reaps the
+  # child, mirroring glm-coder.sh's wait(child) → … → .finalized ordering.
+  # Neither the setsid block below NOR the inline waiter can serve: `wait $PID`
+  # in a sibling subshell returns 127 immediately ($PID is not that shell's
+  # child — measured e2e, 2026-08-17), so a sentinel there would stamp at spawn
+  # time = guaranteed false dead. If this wrapper subshell is SIGKILLed the
+  # sentinel is simply absent → lane stays alive → fail-safe.
+  _worker_code=0
+  (
+    run_subsession </dev/null >/dev/null 2>&1 || _worker_code=$?
+    # Current-run guard: docs/handoff/<tid>/ is shared by architect/developer/
+    # critic, so a finishing role must not finalize a lane a later role now owns.
+    if [[ "$(cat "$HANDOFF_DIR/.claude-session-runner.run-id" 2>/dev/null)" == "$RUN_ID" ]]; then
+      printf 'outcome=%s\n' "$_worker_code" > "$RUN_DIR/.outcome" 2>/dev/null || true
+      touch "$RUN_DIR/.finalized" 2>/dev/null || true
+    fi
+    exit "$_worker_code"
+  ) </dev/null >/dev/null 2>&1 &
   PID=$!
+  # File name is `pid`, NOT `pgid`: the claude worker runs in the CALLER'S
+  # process group (no setsid), so kill(-pid,0) would falsely read dead on a
+  # live worker. Pid reuse can only produce a false ALIVE — the safe direction.
+  echo "$PID" > "$RUN_DIR/pid" 2>/dev/null || true
 
   # W6-fix: async cost-recorder (was: background subshell may not fire if parent exits first).
   # Strategy: write a marker file so leadv2-cost-flush.sh can compute costs post-hoc even if

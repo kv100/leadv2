@@ -59,12 +59,13 @@ if [[ "$NO_CODEX" -ne 1 && -f "$CODEX_TASK" ]]; then
 fi
 
 # --all resolves every lane in one Python pass.
-python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" "${LEADV2_LANE_SENTINEL_DEAD:-1}" "${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" "${LEADV2_LANE_RUNS_ROOT:-}" <<'PY'
+python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" "${LEADV2_LANE_SENTINEL_DEAD:-1}" "${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" "${LEADV2_LANE_RUNS_ROOT:-}" "${LEADV2_LANE_SENTINEL_CLAUDE:-1}" <<'PY'
 import glob, json, os, re, subprocess, sys, time
 
 (root, active_path, tombstones_path, wanted_lane, wanted_job, all_mode, json_mode,
  codex_raw, silent_max_raw, v2_raw, starting_max_raw, abandon_max_raw,
- child_suffixes_raw, sentinel_dead_raw, sentinel_settle_raw, runs_root_raw) = sys.argv[1:]
+ child_suffixes_raw, sentinel_dead_raw, sentinel_settle_raw, runs_root_raw,
+ sentinel_claude_raw) = sys.argv[1:]
 all_mode = all_mode == "1"
 json_mode = json_mode == "1"
 # LEADV2_LANE_LIVENESS_V2=0 is the one-flag rollback to the exact prior
@@ -91,6 +92,9 @@ abandon_max = _int_env(abandon_max_raw, 3600)
 # os.environ.get in resolve_run_dir().
 sentinel_dead = sentinel_dead_raw != "0"
 sentinel_settle_s = _int_env(sentinel_settle_raw, 60)
+# CLAUDE-SUBSESSION-HAS-NO-COMPLETION-SENTINEL-01: independent kill switch for
+# the claude arm only — strictly subordinate to the sentinel_dead master (AND).
+sentinel_claude = sentinel_claude_raw != "0"
 
 CHILD_SUFFIXES = [s.strip() for s in child_suffixes_raw.split(",") if s.strip()]
 _FOLD_RE = re.compile(r'^(dispatch-[0-9a-f]{8})-(.+)$')
@@ -222,16 +226,22 @@ WORKER_STREAM_NAMES = ("developer.stream.jsonl", "architect.stream.jsonl", "sess
 # --- SENTINEL-COMPLETION-01 helpers -------------------------------------------
 # Run-dir resolution contract (design §3.6):
 #   resolve_run_dir(tid) -> (arm, run_dir) | (None, None)
-#     for arm in ("glm", "kimi"):
+#     for arm in ("glm", "kimi", "claude"):        # newest pointer mtime wins
 #         idfile = <root>/docs/handoff/<tid>/.<arm>-session-runner.run-id
 #         run_id = first non-empty stripped line of idfile        # else continue
 #         reject run_id containing "/" or ".." or empty           # path-traversal guard
-#         base = ${GLM_RUNS_DIR|KIMI_RUNS_DIR} if set
+#         base = ${GLM_RUNS_DIR|KIMI_RUNS_DIR|LEADV2_CLAUDE_RUNS_DIR} if set
 #                else ${LEADV2_LANE_RUNS_ROOT:-$HOME/.claude/cache}/<arm>-runs
-#         if isdir(base/run_id): return (arm, base/run_id)
-#     return (None, None)
+#         if isdir(base/run_id): collect (pointer_mtime, finalized, arm, dir)
+#     return newest-mtime candidate (exact ties prefer non-finalized),
+#     else (None, None)
 def resolve_run_dir(tid):
-    for arm in ("glm", "kimi"):
+    # H3 (CLAUDE-SUBSESSION-HAS-NO-COMPLETION-SENTINEL-01): resolve across ALL
+    # arms and return the pointer with the NEWEST mtime, not the first match.
+    # A task that ran glm earlier and claude now would otherwise resolve the
+    # stale glm run dir and its old .finalized -> false dead.
+    candidates = []
+    for arm in ("glm", "kimi", "claude"):
         idfile = os.path.join(root, "docs", "handoff", tid, f".{arm}-session-runner.run-id")
         run_id = ""
         try:
@@ -246,17 +256,36 @@ def resolve_run_dir(tid):
         # Path-traversal guard (design R9): a crafted run-id must never escape base.
         if not run_id or "/" in run_id or ".." in run_id:
             continue
-        env_var = "GLM_RUNS_DIR" if arm == "glm" else "KIMI_RUNS_DIR"
-        base = os.environ.get(env_var)
+        if arm == "claude":
+            base = os.environ.get("LEADV2_CLAUDE_RUNS_DIR")
+        else:
+            base = os.environ.get("GLM_RUNS_DIR" if arm == "glm" else "KIMI_RUNS_DIR")
         if not base:
             base = os.path.join(
                 runs_root_raw if runs_root_raw else os.path.expanduser("~/.claude/cache"),
                 f"{arm}-runs",
             )
         run_dir = os.path.join(base, run_id)
-        if os.path.isdir(run_dir):
-            return (arm, run_dir)
-    return (None, None)
+        if not os.path.isdir(run_dir):
+            continue
+        # Sub-second mtime (file_mtime truncates to int seconds): a claude
+        # attempt that dies instantly and a glm spawn in the SAME second would
+        # otherwise tie, and a tie resolved toward the finalized arm is a
+        # false-dead window (codex review 2026-08-17, claim 2).
+        try:
+            pointer_mtime = os.stat(idfile).st_mtime
+        except OSError:
+            pointer_mtime = 0
+        finalized = os.path.isfile(os.path.join(run_dir, ".finalized"))
+        candidates.append((pointer_mtime, finalized, arm, run_dir))
+    if not candidates:
+        return (None, None)
+    # Newest pointer wins. Exact-tie break is SAFETY-BIASED: prefer the
+    # non-finalized candidate (sort key 0 < 1, ascending, last wins) so a tie
+    # can never resolve toward an already-finalized arm while its sibling arm
+    # may still be running.
+    candidates.sort(key=lambda c: (c[0], 0 if c[1] else 1))
+    return (candidates[-1][2], candidates[-1][3])
 
 def pgid_group_alive(pgid):
     # Establish process-group death the same way glm-coder.sh does: kill(-pgid, 0).
@@ -278,7 +307,10 @@ def sentinel_check(tid, row):
 
     Conditions (design §3.2, all must hold):
       1. Kill switch on, run dir exists and contains .finalized.
-      2. pgid file parses as positive int AND os.kill(-pgid, 0) raises ProcessLookupError.
+      2. glm/kimi: pgid file parses as positive int AND os.kill(-pgid, 0)
+         raises ProcessLookupError. claude (CLAUDE-SUBSESSION-HAS-NO-COMPLETION-
+         SENTINEL-01): pid file parses AND os.kill(pid, 0) raises
+         ProcessLookupError; every other errno or a missing file → alive.
       3. active.yaml pid, IF explicitly recorded, must be dead.
       4. .finalized mtime must be at least sentinel_settle_s old.
     """
@@ -297,29 +329,57 @@ def sentinel_check(tid, row):
     sentinel_age = max(0, int(time.time()) - sentinel_mtime)
     if sentinel_age < sentinel_settle_s:
         return False
-    # pgid check — positive proof the process group is gone.
-    pgid = None
-    try:
-        with open(os.path.join(run_dir, "pgid"), encoding="utf-8") as fh:
-            pgid = int(fh.read().strip())
-    except (OSError, ValueError):
+    # Process-identity check — positive proof the worker is gone. Branch on arm
+    # (H1, CLAUDE-SUBSESSION-HAS-NO-COMPLETION-SENTINEL-01): glm/kimi launch
+    # through setsid_wrapper (pid == pgid), so kill(-pgid, 0) is meaningful.
+    # The claude arm's worker runs in the CALLER'S process group — kill(-pid, 0)
+    # would raise ProcessLookupError on a LIVE worker — so claude uses a plain
+    # pid file with os.kill(pid, 0), and every ambiguous errno resolves to
+    # alive (never fire). Pid reuse can only produce a false ALIVE: safe.
+    if arm == "claude":
+        if not sentinel_claude:
+            return False  # independent claude kill switch (subordinate to master)
+        cpid = None
+        try:
+            with open(os.path.join(run_dir, "pid"), encoding="utf-8") as fh:
+                cpid = int(fh.read().strip())
+        except (OSError, ValueError):
+            cpid = None
+        if cpid is None or cpid <= 0:
+            return False  # missing/unparsable pid file — cannot establish death
+        try:
+            os.kill(cpid, 0)
+            worker_gone = False
+        except ProcessLookupError:
+            worker_gone = True
+        except OSError:
+            worker_gone = False  # EPERM or any other errno → alive, do not fire
+        if not worker_gone:
+            return False  # worker still alive — do not fire
+    else:
         pgid = None
-    if pgid is None or pgid <= 0:
-        return False  # cannot positively establish death — fall through
-    alive = pgid_group_alive(pgid)
-    if alive:
+        try:
+            with open(os.path.join(run_dir, "pgid"), encoding="utf-8") as fh:
+                pgid = int(fh.read().strip())
+        except (OSError, ValueError):
+            pgid = None
+        if pgid is None or pgid <= 0:
+            return False  # cannot positively establish death — fall through
+        alive = pgid_group_alive(pgid)
+        if alive:
+            row["pgid"] = pgid
+            row["pgid_alive"] = True
+            return False  # group still alive — do not fire
         row["pgid"] = pgid
-        row["pgid_alive"] = True
-        return False  # group still alive — do not fire
+        row["pgid_alive"] = False
     # active.yaml pid (condition 3): only blocks if it was explicitly recorded.
     pid_recorded = row.get("pid") is not None and str(row.get("pid")).strip() != ""
     if pid_recorded and row.get("pid_alive"):
         return False  # recorded-and-alive pid → do not fire
     # Verdict
-    row["pgid"] = pgid
-    row["pgid_alive"] = False
     row["pid_recorded"] = pid_recorded
     row["arm"] = arm
+    row["sentinel_arm"] = arm
     row["run_dir"] = run_dir
     row["sentinel_path"] = sentinel_path
     row["sentinel_age_s"] = sentinel_age
