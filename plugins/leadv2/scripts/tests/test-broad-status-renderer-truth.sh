@@ -1,32 +1,52 @@
 #!/usr/bin/env bash
-# tests/test-broad-status-renderer-truth.sh — BROAD-STATUS-RENDERER-01.
+# tests/test-broad-status-renderer-truth.sh — BROAD-STATUS-RENDERER-01 +
+# STATUS-FORMAT-IN-RENDERER-01.
 #
-# The founder status table said "unknown" for four facts it already holds:
-#   D1 "(dispatch id unknown)" while the row's own task id IS dispatch-<hex>
-#   D2 "Что делает" = "—" while docs/handoff/dispatch-<id>/lane-mission.md exists
-#   D3 "Уже на диске" = "пока ничего" while docs/handoff/dispatch-<id>/ holds artifacts
-#   D4 "pid birth mismatch (reuse)" from an un-normalised stored lstart
-#      (double interior space on single-digit days) — third copy of the rule.
+# BROAD-STATUS-RENDERER-01 fixed four false-unknowns the renderer showed
+# despite already holding the facts (dispatch id, owns, disk, pid-birth).
+# STATUS-FORMAT-IN-RENDERER-01 then found the artifact still wasn't in the
+# founder's committed shape (docs/founder-status-format.md): five columns
+# instead of three, a hex id in column 1, a raw prepass excerpt in column
+# 2, and finished lanes still sitting in the live table. The fix moves
+# "Кто делает"/"Уже на диске" into a detail block below the table, derives
+# column 1/2 from the lane's MISSION TITLE only (never the prepass excerpt,
+# never *.stream.jsonl — lib/leadv2_lane_naming.py), and evicts dead:*
+# rows into a "Закрыто сегодня" paragraph.
 #
 # The renderer (leadv2-broad-status.sh) is a pure join over the collector
-# snapshot; the nulls arrive from leadv2-lane-detail.sh. So this suite runs
+# snapshot; the facts arrive from leadv2-lane-detail.sh. So this suite runs
 # the REAL lane-detail.sh + REAL renderer against a hermetic fixture and
 # only stubs what is out of scope: lane-liveness (verdicts are another
 # script's contract, HARD RULE 2), the collector shell (supervise.sh is a
 # fixed canned "lanes" table — its liveness is NOT under test here), and the
 # composer claude call. Cases:
 #
-#   T1 col-1 of a dispatch-* lane reads "dispatch-<hex>", no unknown marker
-#   T2 col-2 resolves from architect-prepass.md; with the prepass removed,
-#      from lane-mission.md WITH the mission-source annotation (no forgery)
-#   T3 col-5 shows the handoff artifacts (count + a filename)
-#   T4 honesty: a lane with NO dispatch dir and NO binding still renders the
-#      true unknowns (dispatch id unknown / — / пока ничего)
-#   T5 norm_birth collapses the Darwin double-space form; birth_matches
-#      never declares a live pid dead on it (and still catches a real reuse);
-#      status-surface routes its pid_alive comparison through the shared rule
-#   T6 prev-beat compat: a .broad-status-prev.json written by the OLD flat
-#      disk shape does not break the next beat (R1)
+#   T1  detail block carries the dispatch id, no false "unknown" marker
+#   T2  col-2 (Что делает) resolves from the mission title (lane-mission.md
+#       heading), NEVER from architect-prepass.md — even when a prepass
+#       exists, the prepass text must not leak into the founder table
+#   T3  detail block enumerates the handoff artifacts (count + a filename)
+#   T4  honesty: a lane with NO dispatch dir and NO binding renders the
+#       true unknowns — id unknown, name unknown, "—", "пока ничего"
+#   T5  norm_birth collapses the Darwin double-space form; birth_matches
+#       never declares a live pid dead on it (and still catches a real reuse)
+#   T6  prev-beat compat: a .broad-status-prev.json written by the OLD flat
+#       disk shape does not break the next beat, and the lane's name still
+#       resolves fresh from its mission title
+#   T7  tombstone row (no lane_detail row at all): the id it already holds
+#       renders in col-1 with an honest "(имя неизвестно)"; the genuinely
+#       absent detail facts stay honest too
+#   T8  header is exactly the 3-column contract shape
+#   T9  col-1 of a mission-titled lane is a human name, never a hex id
+#   T10 col-2 is one plain sentence: no markdown, no TASK_ID:/ROLE:/Verdict
+#   T11 a dead:* lane is absent from the live table and present in
+#       «Закрыто сегодня» with its cause
+#   T12 the un-nameable lane renders "<id> (имя неизвестно)" / "—" — never
+#       an invented name
+#   T13 name stability: the mission heading is rewritten mid-lane; col-1
+#       stays the name frozen on first resolution
+#   T14 "Кто делает"/"Уже на диске" facts still appear, in the detail block
+#   T15 the degraded path renders the 3-column header too
 #
 # Hermetic: throwaway LEADV2_PROJECT_ROOT/LEADV2_STATE_ROOT, stubbed lane
 # liveness / collector / claude, no network, no crontab, no real supervise.
@@ -62,7 +82,8 @@ FOUNDER_STATUS="$REPO/docs/leadv2/founder-status.md"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
-# ── fixture: one dispatch lane with a full handoff dir, one naked lane ─────
+# ── fixture: one dispatch lane with a full handoff dir, one naked lane,
+#    one tombstoned dispatch lane, one dead:* lane ─────────────────────────
 mkdir -p "$REPO/docs/leadv2/tasks/dispatch-aabbccdd" \
          "$REPO/docs/handoff/dispatch-aabbccdd"
 cat >"$REPO/docs/leadv2/active.yaml" <<'EOF'
@@ -76,17 +97,18 @@ EOF
 cat >"$REPO/docs/leadv2/tasks/dispatch-aabbccdd/journal.md" <<'EOF'
 2026-08-17T10:00:00Z dispatch_classified task=dispatch-aabbccdd kind=codex_fitting_dev
 EOF
-printf '# Fixture prepass heading\nПервая строка summary.\n' \
+printf '# Fixture prepass heading\nVerdict up front: this must never reach the founder table.\n' \
   >"$REPO/docs/handoff/dispatch-aabbccdd/architect-prepass.md"
-# lane-mission.md with YAML front-matter + MISSION: boilerplate — rung 2 must
-# skip both and land on the heading.
+# lane-mission.md with YAML front-matter + MISSION: boilerplate — rung 1 must
+# skip both and land on the heading. This heading is the ONLY source col-1/
+# col-2 may draw from — the prepass above must never leak into them.
 cat >"$REPO/docs/handoff/dispatch-aabbccdd/lane-mission.md" <<'EOF'
 ---
 MISSION: boilerplate that must never reach the table
 handle: dispatch-aabbccdd
 ---
-# Fixture mission heading
-Body line after the heading.
+# Browser door retry queue fix: retries now survive a daemon restart.
+Body line after the heading, this must never reach the table either.
 EOF
 printf 'review gate fixture\n' >"$REPO/docs/handoff/dispatch-aabbccdd/review-gate.md"
 python3 - "$REPO/docs/handoff/dispatch-aabbccdd/x.stream.jsonl" <<'EOF'
@@ -137,16 +159,23 @@ snap = {"sections": {
      "where": "terminal", "protocol_version": 2},
     {"task_id": "dispatch-ffeeddcc", "phase": "intake", "minutes_in_phase": 339,
      "status": "dead", "status_reason": "pid birth mismatch (reuse)",
+     "waiting": False, "where": "terminal record", "protocol_version": 2},
+    {"task_id": "dispatch-eeddccbb", "phase": "build", "minutes_in_phase": 12,
+     "status": "dead:sentinel_finalized", "status_reason": "финализирован сторожем",
      "waiting": False, "where": "terminal record", "protocol_version": 2}],
     "questions": [], "degraded": []}},
   "lane_detail": {"ok": bool(detail.get("ok")), "data": detail}}}
 print(json.dumps(snap))' >"\$out"
 EOF
+cat >"$STUBS/collector-fail.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
 cat >"$STUBS/claude.sh" <<'EOF'
 #!/usr/bin/env bash
-printf '{"result":"тестовый хвост: фикстура, очередь пуста."}'
+printf '{"result":"нет данных за сегодня\nвопросов нет"}'
 EOF
-chmod +x "$STUBS/liveness.sh" "$STUBS/collector.sh" "$STUBS/claude.sh"
+chmod +x "$STUBS/liveness.sh" "$STUBS/collector.sh" "$STUBS/collector-fail.sh" "$STUBS/claude.sh"
 
 beat_env() {  # <beat-at> [cmd...]
   env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" \
@@ -160,77 +189,148 @@ beat_env() {  # <beat-at> [cmd...]
 run_beat() { beat_env "$1" bash "$BROAD_STATUS_SH" >/dev/null 2>&1 || true; }
 lane_row() { grep -m1 "^| $1 " "$FOUNDER_STATUS" 2>/dev/null || true; }
 
-# ── beat 1: the happy fixture (T1 T2a T3) ───────────────────────────────────
+# ── beat 1: the happy fixture ───────────────────────────────────────────────
 run_beat "2026-08-17T15:00:00Z"
 if [[ ! -f "$FOUNDER_STATUS" ]]; then
   fail "fixture: founder-status.md not written — aborting table cases"
   printf -- '%s\n' "${ERRORS[@]:-}" >&2; exit 1
 fi
-ROW="$(lane_row dispatch-aabbccdd)"
+CONTENT="$(cat "$FOUNDER_STATUS")"
+ROW="$(printf '%s' "$CONTENT" | grep -m1 '^| Browser door retry queue fix |')"
 
-# T1 — the id the row already holds is rendered, not declared unknown.
-if printf '%s' "$ROW" | grep -q '^| dispatch-aabbccdd |' \
-   && ! printf '%s' "$ROW" | grep -q 'dispatch id unknown'; then
-  pass "T1: col-1 is dispatch-aabbccdd, no '(dispatch id unknown)'"
+# T1 — detail block carries the dispatch id, no false "unknown" marker.
+if printf '%s' "$CONTENT" | grep -q 'dispatch-aabbccdd —' \
+   && ! printf '%s' "$CONTENT" | grep -q 'dispatch-aabbccdd (dispatch id unknown)'; then
+  pass "T1: detail block carries dispatch-aabbccdd, no false unknown marker"
 else
-  fail "T1: col-1 wrong: ${ROW:-<no row>}"
+  fail "T1: detail block wrong: $(printf '%s' "$CONTENT" | grep 'Детали линий' || echo '<none>')"
 fi
 
-# T2a — "Что делает" resolves from architect-prepass.md.
-if printf '%s' "$ROW" | grep -q 'Fixture prepass heading'; then
-  pass "T2a: col-2 carries the prepass heading"
+# T2 — col-2 resolves from the mission title, NEVER the prepass excerpt.
+if printf '%s' "$ROW" | grep -q 'retries now survive a daemon restart' \
+   && ! printf '%s' "$CONTENT" | grep -q 'Fixture prepass heading' \
+   && ! printf '%s' "$CONTENT" | grep -q 'Verdict up front' \
+   && ! printf '%s' "$CONTENT" | grep -q 'Body line after the heading'; then
+  pass "T2: col-2 from mission title, prepass excerpt never leaked"
 else
-  fail "T2a: col-2 is not the prepass heading: ${ROW:-<no row>}"
+  fail "T2: col-2 wrong or prepass leaked: ${ROW:-<no row>}"
 fi
 
-# T3 — "Уже на диске" enumerates the handoff artifacts (top by size:
-# x.stream.jsonl is the fixture's largest file by construction).
-if printf '%s' "$ROW" | grep -q 'x.stream.jsonl' \
-   && printf '%s' "$ROW" | grep -Eq '[0-9]+ файл' \
-   && ! printf '%s' "$ROW" | grep -q 'пока ничего'; then
-  pass "T3: col-5 shows handoff file count + a filename"
+# T3 — detail block enumerates the handoff artifacts (x.stream.jsonl is the
+# fixture's largest file by construction).
+if printf '%s' "$CONTENT" | grep -q 'x.stream.jsonl' \
+   && printf '%s' "$CONTENT" | grep -Eq '[0-9]+ файл'; then
+  pass "T3: detail block shows handoff file count + a filename"
 else
-  fail "T3: col-5 does not show handoff artifacts: ${ROW:-<no row>}"
-fi
-
-# ── beat 2: prepass removed -> mission rung, visibly labelled (T2b) ────────
-rm "$REPO/docs/handoff/dispatch-aabbccdd/architect-prepass.md"
-run_beat "2026-08-17T15:30:00Z"
-ROW="$(lane_row dispatch-aabbccdd)"
-if printf '%s' "$ROW" | grep -q 'Fixture mission heading' \
-   && printf '%s' "$ROW" | grep -q 'из миссии'; then
-  pass "T2b: prepass gone -> mission heading WITH mission-source annotation"
-else
-  fail "T2b: mission fallback wrong: ${ROW:-<no row>}"
-fi
-if printf '%s' "$ROW" | grep -q 'boilerplate that must never reach'; then
-  fail "T2c: MISSION: boilerplate/front-matter leaked into the table"
-else
-  pass "T2c: front-matter + MISSION: boilerplate skipped"
+  fail "T3: detail block does not show handoff artifacts"
 fi
 
 # ── T7 — tombstone row (no lane_detail row at all): the id it already
-#    holds renders; the genuinely-absent detail columns stay honest. This is
-#    the shape of the 5 real rows that kept "(dispatch id unknown)" after the
-#    lane-detail fix — supervise renders them from persisted tombstones.
-ROW7="$(lane_row dispatch-ffeeddcc)"
-if printf '%s' "$ROW7" | grep -q '^| dispatch-ffeeddcc |' \
-   && ! printf '%s' "$ROW7" | grep -q 'dispatch id unknown' \
-   && printf '%s' "$ROW7" | grep -q '| — |' \
-   && printf '%s' "$ROW7" | grep -q 'пока ничего'; then
-  pass "T7: tombstone dispatch row shows its id; unknown detail stays unknown"
+#    holds renders; the genuinely-absent name/description stay honest. ─────
+ROW7="$(lane_row 'dispatch-ffeeddcc (имя неизвестно)')"
+if printf '%s' "$ROW7" | grep -q '^| dispatch-ffeeddcc (имя неизвестно) |' \
+   && printf '%s' "$ROW7" | grep -q '| — |'; then
+  pass "T7: tombstone dispatch row shows its id honestly unnamed"
 else
   fail "T7: tombstone row wrong: ${ROW7:-<no row>}"
 fi
 
-# ── T4 — honesty: the naked lane keeps its TRUE unknowns ───────────────────
-ROW4="$(lane_row plain-task-01)"
-if printf '%s' "$ROW4" | grep -q 'plain-task-01 (dispatch id unknown)' \
-   && printf '%s' "$ROW4" | grep -q '| — |' \
-   && printf '%s' "$ROW4" | grep -q 'пока ничего'; then
+# ── T4 / T12 — honesty: the naked lane keeps its TRUE unknowns ─────────────
+ROW4="$(lane_row 'plain-task-01 (dispatch id unknown) (имя неизвестно)')"
+if printf '%s' "$ROW4" | grep -q '^| plain-task-01 (dispatch id unknown) (имя неизвестно) |' \
+   && printf '%s' "$ROW4" | grep -q '| — |'; then
   pass "T4: no dispatch dir/binding -> unknowns stay honest"
 else
   fail "T4: honesty invariant broken: ${ROW4:-<no row>}"
+fi
+if printf '%s' "$CONTENT" | grep -q 'plain-task-01 (dispatch id unknown) — .* — пока ничего'; then
+  pass "T12: un-nameable lane never invents a name, disk fact stays honest"
+else
+  fail "T12: un-nameable lane detail wrong"
+fi
+
+# ── T8 — header is exactly the 3-column contract shape ─────────────────────
+if printf '%s' "$CONTENT" | grep -qF '| Линия | Что делает | Состояние |' \
+   && printf '%s' "$CONTENT" | grep -qF '|---|---|---|'; then
+  pass "T8: header is the exact 3-column contract shape"
+else
+  fail "T8: header wrong"
+fi
+# a live row has exactly 3 cells (4 pipes).
+if [[ "$(printf '%s' "$ROW" | grep -o '|' | wc -l | tr -d ' ')" == "4" ]]; then
+  pass "T8: live row has exactly 3 cells"
+else
+  fail "T8: live row cell count wrong: ${ROW:-<no row>}"
+fi
+
+# ── T9 — col-1 is a human name, never a hex id ──────────────────────────────
+if printf '%s' "$ROW" | grep -q '^| Browser door retry queue fix |' \
+   && ! printf '%s' "$ROW" | grep -Eq '[0-9a-f]{6,40}'; then
+  pass "T9: col-1 is a human name, no hex id"
+else
+  fail "T9: col-1 wrong: ${ROW:-<no row>}"
+fi
+
+# ── T10 — col-2 is one plain sentence, no markdown / boilerplate tokens ────
+COL2="$(printf '%s' "$ROW" | awk -F'|' '{print $3}' | sed 's/^ *//; s/ *$//')"
+if [[ -n "$COL2" ]] \
+   && ! printf '%s' "$COL2" | grep -qE '\*\*|`|#|TASK_ID:|ROLE:|Verdict' \
+   && [[ "$(printf '%s' "$COL2" | wc -l | tr -d ' ')" == "0" || "$(printf '%s' "$COL2" | wc -l | tr -d ' ')" == "1" ]] \
+   && [[ "${#COL2}" -le 140 ]]; then
+  pass "T10: col-2 is a plain, markdown-free sentence <=140 chars"
+else
+  fail "T10: col-2 fails the plain-sentence contract: [$COL2]"
+fi
+
+# ── T11 — a dead:* lane is absent from the live table, present in
+#    «Закрыто сегодня» with its cause. ──────────────────────────────────────
+if ! printf '%s' "$CONTENT" | grep -q '^| dispatch-eeddccbb'; then
+  pass "T11a: dead:sentinel_finalized lane absent from the live table"
+else
+  fail "T11a: dead lane still rendered in the live table"
+fi
+CLOSED_LINE="$(printf '%s' "$CONTENT" | grep -m1 '^Закрыто сегодня:')"
+if printf '%s' "$CLOSED_LINE" | grep -q 'dispatch-eeddccbb' \
+   && printf '%s' "$CLOSED_LINE" | grep -q 'финализирован сторожем'; then
+  pass "T11b: dead lane present in «Закрыто сегодня» with its cause"
+else
+  fail "T11b: closed paragraph wrong: ${CLOSED_LINE:-<none>}"
+fi
+
+# ── T14 — "Кто делает"/"Уже на диске" facts still appear, in the detail
+#    block below the table (not lost, only relocated). ─────────────────────
+if printf '%s' "$CONTENT" | grep -q 'Детали линий:' \
+   && printf '%s' "$CONTENT" | grep -q 'codex/gpt-5.6' \
+   && printf '%s' "$CONTENT" | grep -Eq '[0-9]+ файл.*KB'; then
+  pass "T14: worker + disk facts survive in the detail block"
+else
+  fail "T14: detail block missing worker/disk facts"
+fi
+
+# ── T13 — name stability: mission heading rewritten mid-lane, col-1
+#    (the NAME, §2.2) stays frozen on first resolution (beat 1, above) even
+#    though col-2 (the description, deliberately NOT frozen) re-derives. ──
+cat >"$REPO/docs/handoff/dispatch-aabbccdd/lane-mission.md" <<'EOF'
+# Completely different rewritten heading
+This body must never appear either.
+EOF
+run_beat "2026-08-17T15:15:00Z"
+CONTENT2="$(cat "$FOUNDER_STATUS")"
+if printf '%s' "$CONTENT2" | grep -q '^| Browser door retry queue fix |'; then
+  pass "T13: name stays frozen across a mid-lane mission rewrite"
+else
+  fail "T13: name churned after mission rewrite"
+fi
+
+# ── beat 3: prepass removed -> mission title unaffected (rung 1 is always
+#    lane-mission.md; the prepass was never the source, T2c). ──────────────
+rm "$REPO/docs/handoff/dispatch-aabbccdd/architect-prepass.md"
+run_beat "2026-08-17T15:30:00Z"
+CONTENT3="$(cat "$FOUNDER_STATUS")"
+if printf '%s' "$CONTENT3" | grep -q '^| Browser door retry queue fix |'; then
+  pass "T2c: prepass removed -> name unaffected (mission was always the source)"
+else
+  fail "T2c: prepass removal broke the frozen name"
 fi
 
 # ── T5 — one pid-birth rule, one inode ─────────────────────────────────────
@@ -270,18 +370,36 @@ else
   fail "T5: status-surface still has its own edge-only birth comparison"
 fi
 
-# ── T6 — old flat prev-shape survives the next beat (R1) ───────────────────
+# ── T6 — old flat prev-shape survives the next beat (R1); the lane's name
+#    still resolves fresh from its mission title when no frozen name is
+#    carried by the old shape. ──────────────────────────────────────────────
 mkdir -p "$REPO/docs/leadv2"
 cat >"$REPO/docs/leadv2/.broad-status-prev.json" <<'EOF'
 {"beat_at": "2026-08-17T14:00:00Z", "lanes": {"dispatch-aabbccdd":
   {"stream_bytes": 7290, "disk_key": ["4 files changed, 100 insertions(+)", 4, 0]}}}
 EOF
 run_beat "2026-08-17T16:00:00Z"
-if grep -q '^| dispatch-aabbccdd |' "$FOUNDER_STATUS" \
-   && ! grep -q 'СТАТУС НЕ СОБРАН' "$FOUNDER_STATUS"; then
+CONTENT6="$(cat "$FOUNDER_STATUS")"
+if printf '%s' "$CONTENT6" | grep -qF '| Линия | Что делает | Состояние |' \
+   && ! printf '%s' "$CONTENT6" | grep -q 'СТАТУС НЕ СОБРАН'; then
   pass "T6: old flat prev-shape does not break the beat"
 else
-  fail "T6: beat broke on old prev-shape: $(head -3 "$FOUNDER_STATUS" | tr '\n' ' ')"
+  fail "T6: beat broke on old prev-shape: $(printf '%s' "$CONTENT6" | head -3 | tr '\n' ' ')"
+fi
+
+# ── T15 — the degraded path renders the 3-column header too ────────────────
+DEGRADED_ENV_OUT="$(env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" \
+  LEADV2_STATUS_COLLECTOR_BIN="$STUBS/collector-fail.sh" \
+  LEADV2_BROAD_STATUS_CLAUDE_BIN="$STUBS/claude.sh" \
+  LEADV2_BROAD_STATUS_BEAT_AT="2026-08-17T17:00:00Z" \
+  LEADV2_BROAD_STATUS_DISPATCHED="1" \
+  bash "$BROAD_STATUS_SH" 2>&1)"
+DEGRADED_CONTENT="$(cat "$FOUNDER_STATUS")"
+if printf '%s' "$DEGRADED_CONTENT" | grep -qF '| Линия | Что делает | Состояние |' \
+   && printf '%s' "$DEGRADED_CONTENT" | grep -q 'degraded=1'; then
+  pass "T15: degraded path renders the 3-column header"
+else
+  fail "T15: degraded path header wrong: $(printf '%s' "$DEGRADED_CONTENT" | head -3 | tr '\n' ' ')"
 fi
 
 log ""

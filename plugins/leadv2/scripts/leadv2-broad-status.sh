@@ -89,9 +89,9 @@ _write_degraded_status() {  # <reason> -> rc 0 if the artifact was replaced
   local reason="$1" block
   block="$(
     printf '%s [BROAD_STATUS] dispatched=%s degraded=1\n' "$BEAT_AT" "$DISPATCHED"
-    printf '| Линия | Что делает | Кто делает | Состояние | Уже на диске |\n'
-    printf '|---|---|---|---|---|\n'
-    printf '| (статус не собран) | — | — | %s | — |\n\n' "$reason"
+    printf '| Линия | Что делает | Состояние |\n'
+    printf '|---|---|---|\n'
+    printf '| (статус не собран) | — | %s |\n\n' "$reason"
     printf 'СТАТУС НЕ СОБРАН на beat %s: %s.\n' "$BEAT_AT" "$reason"
     printf 'Таблица линий за этот beat недоступна — это НЕ значит, что линий нет.\n'
     printf '[BROAD_STATUS_END]\n'
@@ -141,10 +141,20 @@ trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 
 export _BS_QUEUED_TSV="$QUEUED_TSV"
 export _BS_LANDED_LOG="$LANDED_LOG"
-RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" <<'PY'
+RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" <<'PY'
 import datetime, json, os, re, sys
 
-snapshot_path, prev_path, root, tasks_lib_sh, tmpdir = sys.argv[1:6]
+snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir = sys.argv[1:7]
+
+sys.path.insert(0, os.path.join(script_dir, "lib"))
+try:
+    from leadv2_lane_naming import human_name, product_sentence
+except Exception:
+    def human_name(title):
+        return None
+
+    def product_sentence(title):
+        return None
 queued_tsv = os.environ.get("_BS_QUEUED_TSV", "")
 landed_log = os.environ.get("_BS_LANDED_LOG", "")
 
@@ -271,38 +281,40 @@ def md_escape(s):
 
 
 rows_out = []
+detail_lines = []
+closed_items = []
 current_lane_digest = {}
 for row in table_rows:
     tid = str(row.get("task_id") or "?")
     d = detail_by_task.get(tid)
 
-    # Линия: dispatch id when the dispatch binding is known, else the raw
-    # founder task_id with an explicit marker (never silently pass one off
-    # as the other). BROAD-STATUS-RENDERER-01 D1: a task id that IS
+    # id_display: dispatch id when the dispatch binding is known, else the
+    # raw founder task_id with an explicit marker (never silently pass one
+    # off as the other). BROAD-STATUS-RENDERER-01 D1: a task id that IS
     # "dispatch-<hex>" carries its own dispatch id — same identity rule as
     # leadv2-lane-detail.sh, applied here too because tombstone rows (no
     # lane_detail row at all) were still rendered "(dispatch id unknown)"
-    # while the id sat in their own name.
+    # while the id sat in their own name. This id is a fallback for col-1
+    # ONLY (below) and always the source of the diagnostic detail line.
     dispatch_id = d.get("dispatch_id") if d else None
     if dispatch_id:
-        linia = f"dispatch-{dispatch_id}"
+        id_display = f"dispatch-{dispatch_id}"
     elif re.match(r"^dispatch-[0-9a-f]{6,40}$", tid):
-        linia = tid
+        id_display = tid
     else:
-        linia = f"{tid} (dispatch id unknown)"
+        id_display = f"{tid} (dispatch id unknown)"
 
-    # Что делает
-    owns = d.get("owns") if d else None
-    owns_source = d.get("owns_source") if d else None
-    if owns:
-        chto = owns
-        if owns_source and owns_source != "prepass":
-            chto += " (из миссии, prepass не сработал)" if owns_source == "mission" else " (источник неизвестен)"
-    else:
-        # Change 2b: no independent source for "Что делает" -> honestly
-        # empty, never an echo of status_reason (that IS the "Состояние"
-        # column's string below -- printing it here duplicated columns 2/4).
-        chto = "—"
+    # STATUS-FORMAT-IN-RENDERER-01: Линия / Что делает come ONLY from the
+    # mission title, never from the prepass excerpt (that stays in "owns"
+    # for the detail block). Name is frozen on first resolution in
+    # .broad-status-prev.json so it cannot drift between beats (R2).
+    prev_row_name = (prev_lanes.get(tid) or {}).get("name") if isinstance(prev_lanes.get(tid), dict) else None
+    mission_title = d.get("mission_title") if d else None
+    linia_name = prev_row_name or human_name(mission_title)
+    # Only the NAME is frozen (§2.2) — the one-sentence description is
+    # re-derived fresh from the mission title every beat.
+    chto = product_sentence(mission_title) or "—"
+    linia = linia_name if linia_name else f"{id_display} (имя неизвестно)"
 
     # Кто делает
     _worker = d.get("worker") if d else None
@@ -325,12 +337,17 @@ for row in table_rows:
     delta_note = None
     if d is not None:
         current_lane_digest[tid] = {"stream_bytes": stream_bytes, "disk_key": disk_key(disk)}
-        if prev_row is not None and not is_dead:
+        if isinstance(prev_row, dict) and prev_row is not None and not is_dead:
             same_bytes = prev_row.get("stream_bytes") == stream_bytes
             same_disk = prev_row.get("disk_key") == disk_key(disk)
             if same_bytes and same_disk:
                 mins = int((d.get("stream_mtime_age_s") or 0) / 60)
                 delta_note = f"молчит {mins} мин (без изменений с прошлого статуса)"
+    if linia_name:
+        # freeze-on-first-resolution: only write a name once resolved; an
+        # un-nameable lane keeps retrying fresh resolution every beat.
+        current_lane_digest.setdefault(tid, {"stream_bytes": stream_bytes, "disk_key": disk_key(disk)})
+        current_lane_digest[tid]["name"] = linia_name
 
     if delta_note:
         sostoyanie = delta_note
@@ -349,9 +366,14 @@ for row in table_rows:
 
     na_diske = fmt_disk(disk) if d else "пока ничего"
 
+    if is_dead:
+        closed_items.append({"name": linia, "cause": sostoyanie})
+        continue
+
     rows_out.append(
-        "| " + " | ".join(md_escape(x) for x in (linia, chto, kto, sostoyanie, na_diske)) + " |"
+        "| " + " | ".join(md_escape(x) for x in (linia, chto, sostoyanie)) + " |"
     )
+    detail_lines.append(f"{id_display} — {kto} — {na_diske}")
 
 # Change 2b: a failed lane_detail section must be visible ABOVE the table,
 # not inferred from every row silently reading "неизвестно".
@@ -359,13 +381,17 @@ table_prefix = []
 if not detail_ok:
     table_prefix.append(
         f"детали линий недоступны (lane_detail: {detail_fail_reason}) — "
-        "колонки «Что делает» и «Кто делает» не заполнены\n"
+        "колонки «Линия» и «Что делает» могут остаться неизвестны\n"
     )
 
 table_md = "\n".join(table_prefix + [
-    "| Линия | Что делает | Кто делает | Состояние | Уже на диске |",
-    "|---|---|---|---|---|",
-] + (rows_out if rows_out else ["| (нет активных или terminal линий) | | | | |"]))
+    "| Линия | Что делает | Состояние |",
+    "|---|---|---|",
+] + (rows_out if rows_out else ["| (живых линий нет) | — | — |"]))
+
+detail_md = "Детали линий: " + " · ".join(detail_lines) if detail_lines else "Детали линий: (нет активных линий)"
+
+closed_parts = [f"{c['name']} ({c['cause']})" for c in closed_items]
 
 # ── curated, pre-formatted tail facts — nothing numeric here may be
 #    invented by the composer; it copies these strings verbatim (R4). ──────
@@ -389,7 +415,23 @@ for line in queued_tsv.splitlines():
                     title = (doc[0].get("intent") or "")[:160]
         except Exception:
             pass
-    queued_items.append({"id": iid, "priority": priority, "title_or_intent": title[:160] or "(без описания)"})
+    title_final = title[:160] or "(без описания)"
+    # Deterministic echelon bucket (§3.3) — never LLM judgment, so it cannot
+    # drift between beats. Best-effort against the fields top_n actually
+    # emits (lane, priority): plugin/leadv2-named work -> Плагин; human-
+    # needed lane -> Хозяйство; critical/high priority -> Первый эшелон;
+    # everything else -> Второй эшелон.
+    _lane_lower = (_lane or "").lower()
+    _title_lower = title_final.lower()
+    if "leadv2" in _title_lower or "plugin" in _title_lower or "плагин" in _title_lower:
+        echelon = "Плагин"
+    elif _lane_lower in ("human-needed", "housekeeping", "hygiene", "chore"):
+        echelon = "Хозяйство"
+    elif str(priority).strip().lower() in ("critical", "high"):
+        echelon = "Первый эшелон (корни)"
+    else:
+        echelon = "Второй эшелон (после корней)"
+    queued_items.append({"id": iid, "priority": priority, "title_or_intent": title_final, "echelon": echelon})
 
 landed_items = []
 for line in landed_log.splitlines():
@@ -397,6 +439,23 @@ for line in landed_log.splitlines():
         continue
     h, subj = line.split("\t", 1)
     landed_items.append({"hash": h, "subject": subj})
+
+closed_parts = closed_parts + [f"{li['hash']} {li['subject']}" for li in landed_items]
+closed_paragraph = " · ".join(closed_parts) if closed_parts else "закрытых линий и коммитов сегодня нет"
+
+ECHELON_ORDER = [
+    "Первый эшелон (корни)", "Второй эшелон (после корней)", "Плагин", "Хозяйство",
+]
+queue_sections = []
+for echelon in ECHELON_ORDER:
+    items = [q for q in queued_items if q["echelon"] == echelon]
+    if not items:
+        continue
+    lines = [f"{i}. {q['id']} — {q['title_or_intent']}" for i, q in enumerate(items, start=1)]
+    queue_sections.append(f"**{echelon}**\n" + "\n".join(lines))
+queue_md = "Очередь — по влиянию на 60/6:\n\n" + (
+    "\n\n".join(queue_sections) if queue_sections else "(очередь пуста)"
+)
 
 tail_facts = {
     "queued_top5": queued_items,
@@ -422,7 +481,14 @@ os.replace(tmp_prev, prev_path)
 
 out_path = os.path.join(tmpdir, "render.json")
 with open(out_path, "w", encoding="utf-8") as fh:
-    json.dump({"table_md": table_md, "rows": len(table_rows), "tail_facts": tail_facts}, fh)
+    json.dump({
+        "table_md": table_md,
+        "detail_md": detail_md,
+        "closed_paragraph": closed_paragraph,
+        "queue_md": queue_md,
+        "rows": len(table_rows),
+        "tail_facts": tail_facts,
+    }, fh)
 print(out_path)
 PY
 )"
@@ -440,13 +506,20 @@ if [[ $RC -ne 0 || -z "$RENDER_JSON" || ! -f "$RENDER_JSON" ]]; then
 fi
 
 TABLE_MD="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['table_md'])" "$RENDER_JSON")"
+DETAIL_MD="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['detail_md'])" "$RENDER_JSON")"
+CLOSED_PARAGRAPH="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['closed_paragraph'])" "$RENDER_JSON")"
+QUEUE_MD="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['queue_md'])" "$RENDER_JSON")"
 ROWS_N="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['rows'])" "$RENDER_JSON")"
 TAIL_FACTS_JSON="$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['tail_facts'], ensure_ascii=False))" "$RENDER_JSON")"
 
+# STATUS-FORMAT-IN-RENDERER-01 §3.3: the table, the queue bucketing and the
+# «Закрыто сегодня» paragraph are ALL deterministic python above — Haiku's
+# job narrows to exactly two prose lines that require judgment over numbers
+# it must not invent: the delta line and the blockers line.
 PROMPT="$(python3 - "$TAIL_FACTS_JSON" <<'PY'
 import json, sys
 facts = json.loads(sys.argv[1])
-print('''Ты пишешь ТОЛЬКО хвостовую часть 30-минутного статуса для основателя — таблица линий уже отрендерена отдельно, не повторяй и не пересказывай её. Верни простой русский текст без Markdown-заголовков и JSON.\n\nВключи по порядку: (1) что стоит в очереди и почему (топ из facts.queued_top5, дословно id и описание); (2) что приземлилось сегодня — из facts.landed_today используй ТОЛЬКО указанные хэши и темы коммитов, ничего не придумывай; (3) сегодняшний объём публикаций против цели и позицию в рабочем окне — бери числа ТОЛЬКО из facts.repo_facts; используй ИМЕННО поле hit_rate_today (не hit_rate — это all-time и НЕ про сегодня), и если hit_rate_today равен null или отсутствует — напиши буквально «нет данных за сегодня», НИКОГДА не подставляй вместо него all-time hit_rate; (4) вопросы, требующие решения (facts.questions_pending) — дословный текст вопроса плюс твоя рекомендация; (5) деградированные диспетчеризации (facts.degraded_dispatch) — явно назови, что prepass не сработал; (6) один честный caveat.\n\nНикогда не изобретай числа, хэши или сравнения, которых нет в фактах. Стоимость — только как использование лимитов 5-часового и недельного окна, никогда деньги.\n\nФакты:\n''' + json.dumps(facts, ensure_ascii=False))
+print('''Ты пишешь РОВНО ДВЕ строки простого русского текста, без Markdown, без JSON. Ничего больше не выводи.\n\nСтрока 1 (дельта): сегодняшний объём публикаций против цели и позиция в рабочем окне — бери числа ТОЛЬКО из facts.repo_facts; используй ИМЕННО поле hit_rate_today (не hit_rate — это all-time и НЕ про сегодня); если hit_rate_today равен null или отсутствует — напиши буквально «нет данных за сегодня».\n\nСтрока 2 (блокеры): если facts.questions_pending непустой — дословный текст вопроса(ов) плюс твоя рекомендация; если facts.degraded_dispatch непустой — явно назови, что prepass не сработал; если оба пусты — напиши буквально «вопросов нет».\n\nНикогда не изобретай числа, хэши или сравнения, которых нет в фактах. Стоимость — только как использование лимитов 5-часового и недельного окна, никогда деньги.\n\nФакты:\n''' + json.dumps(facts, ensure_ascii=False))
 PY
 )"
 
@@ -464,12 +537,15 @@ PY
 )"
 
 if [[ -z "$TAIL" ]]; then
-  TAIL="Текстовый обзор недоступен в этом beat (Haiku-читалка не ответила); таблица выше — деривированные факты, не пересказ."
+  TAIL=$'дельта недоступна в этом beat (Haiku-читалка не ответила)\nвопросов нет (не проверено — читалка недоступна)'
 fi
 
 BLOCK="$(
   printf '%s [BROAD_STATUS] dispatched=%s\n' "$BEAT_AT" "$DISPATCHED"
-  printf '%s\n\n%s\n' "$TABLE_MD" "$TAIL"
+  printf '%s\n\n%s\n\n' "$TABLE_MD" "$DETAIL_MD"
+  printf '%s\n\n' "$QUEUE_MD"
+  printf 'Закрыто сегодня: %s\n\n' "$CLOSED_PARAGRAPH"
+  printf '%s\n' "$TAIL"
   printf '[BROAD_STATUS_END]\n'
 )"
 
