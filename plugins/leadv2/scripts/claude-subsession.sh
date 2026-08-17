@@ -976,25 +976,10 @@ else
     mv -f "$_ptr_tmp" "$HANDOFF_DIR/.claude-session-runner.run-id" 2>/dev/null || true
   fi
 
-  # CLAUDE-SUBSESSION-HAS-NO-COMPLETION-SENTINEL-01: the worker wrapper below is
-  # the ONLY place the sentinel is stamped — the same process that reaps the
-  # child, mirroring glm-coder.sh's wait(child) → … → .finalized ordering.
-  # Neither the setsid block below NOR the inline waiter can serve: `wait $PID`
-  # in a sibling subshell returns 127 immediately ($PID is not that shell's
-  # child — measured e2e, 2026-08-17), so a sentinel there would stamp at spawn
-  # time = guaranteed false dead. If this wrapper subshell is SIGKILLed the
-  # sentinel is simply absent → lane stays alive → fail-safe.
-  _worker_code=0
-  (
-    run_subsession </dev/null >/dev/null 2>&1 || _worker_code=$?
-    # Current-run guard: docs/handoff/<tid>/ is shared by architect/developer/
-    # critic, so a finishing role must not finalize a lane a later role now owns.
-    if [[ "$(cat "$HANDOFF_DIR/.claude-session-runner.run-id" 2>/dev/null)" == "$RUN_ID" ]]; then
-      printf 'outcome=%s\n' "$_worker_code" > "$RUN_DIR/.outcome" 2>/dev/null || true
-      touch "$RUN_DIR/.finalized" 2>/dev/null || true
-    fi
-    exit "$_worker_code"
-  ) </dev/null >/dev/null 2>&1 &
+  # The sentinel is stamped only by the inline waiter below, after it reaps the
+  # worker and completes the existing post-run bookkeeping. The sibling setsid
+  # block cannot wait for this child, so it must never stamp a sentinel.
+  run_subsession </dev/null >/dev/null 2>&1 &
   PID=$!
   # File name is `pid`, NOT `pgid`: the claude worker runs in the CALLER'S
   # process group (no setsid), so kill(-pid,0) would falsely read dead on a
@@ -1015,7 +1000,8 @@ else
   " 2>/dev/null || true) &
   # Inline record (fires if parent stays alive long enough)
   (
-    wait "$PID" 2>/dev/null || true
+    _exit_code=0
+    wait "$PID" 2>/dev/null || _exit_code=$?
     parse_and_record_cost "$STREAM_OUT" "$ROLE" "$MODEL" "$SESSION_ID" "$HANDOFF_DIR" "$_start_epoch" "$PREFIX_CHECKSUM"
     _detect_empty_session
     # SUBSESSION-MAXTURNS-TRUNCATION-01: bg path can't change the wrapper exit
@@ -1028,6 +1014,12 @@ else
       fi
     fi
     rm -f "$MARKER_FILE"
+    # Current-run guard: docs/handoff/<tid>/ is shared by architect/developer/
+    # critic, so a finishing role must not finalize a lane a later role now owns.
+    if [[ "$(cat "$HANDOFF_DIR/.claude-session-runner.run-id" 2>/dev/null)" == "$RUN_ID" ]]; then
+      printf '%s\n' "$_exit_code" > "$RUN_DIR/.outcome" 2>/dev/null || true
+      touch "$RUN_DIR/.finalized" 2>/dev/null || true
+    fi
   ) &
   echo "PID=$PID LABEL=$SESSION_LABEL SESSION_ID=$SESSION_ID STREAM=$STREAM_OUT"
   exit 0
