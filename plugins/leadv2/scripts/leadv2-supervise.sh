@@ -631,24 +631,33 @@ def _find_claude_descendant(pane_pid, children_, comms_):
             q.append(c)
     return None
 
-def _pid_birth_of(pid_val):
-    try:
-        r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid_val)], capture_output=True, text=True, timeout=5)
-        b = r.stdout.strip()
-        return " ".join(b.split()) if b else None
-    except Exception:
-        return None
+# BROAD-STATUS-RENDERER-01 D4: ONE pid-birth rule, ONE inode. The local
+# _pid_birth_of/_norm_birth copies are gone; import the shared module from
+# <script_dir>/lib. Import guard (R4): a drifted .claude/scripts/ copy
+# without lib/ falls back to the byte-identical inline forms and records
+# birth_norm_source="inline" so the artifact says which rule fired —
+# degrade, never crash a status probe.
+try:
+    sys.path.insert(0, os.path.join(script_dir, "lib"))
+    from leadv2_pid_birth import pid_birth_of as _pid_birth_of, norm_birth as _norm_birth
+    birth_norm_source = "shared"
+except Exception:
+    def _pid_birth_of(pid_val):
+        try:
+            r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid_val)], capture_output=True, text=True, timeout=5)
+            b = r.stdout.strip()
+            return " ".join(b.split()) if b else None
+        except Exception:
+            return None
 
-def _norm_birth(v):
-    # LANE-LIVENESS-LIES-01 Change 1a: normalise the STORED value at read
-    # time too, not just the live one, so legacy active.yaml rows already
-    # persisted with the pre-fix trailing space (leadv2-active-registry.sh's
-    # old `tr -s ' '`-only writer) compare equal without a migration. Same
-    # trim as _pid_birth_of() above / leadv2-supervise-loop.sh:115 /
-    # leadv2-status-surface.sh lstart() -- keep all three byte-identical.
-    if not v:
-        return v
-    return " ".join(str(v).split())
+    def _norm_birth(v):
+        # LANE-LIVENESS-LIES-01 Change 1a semantics, inline fallback: normalise
+        # the STORED value at read time too, so legacy active.yaml rows
+        # persisted with the pre-fix trailing space compare equal.
+        if not v:
+            return v
+        return " ".join(str(v).split())
+    birth_norm_source = "inline"
 
 tmux_windows = {w.strip() for w in tmux_windows_tsv.splitlines() if w.strip()}
 tmux_panes = {}
@@ -1400,6 +1409,10 @@ if json_mode:
     result = {
         "warnings": warnings,
         "delta_mode": delta_mode,
+        # BROAD-STATUS-RENDERER-01 D4: which pid-birth normaliser fired
+        # ("shared" = lib/leadv2_pid_birth.py, "inline" = drifted-copy
+        # fallback). Auditable, never silently one or the other.
+        "birth_norm_source": birth_norm_source,
         "table": [] if (delta_mode and not new_events) else table,
         "requires_founder": out_waiting,
         # DEFECT-2 (LEAD-ANCHOR-01): explicit top-level aliases so the

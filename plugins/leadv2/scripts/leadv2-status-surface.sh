@@ -1075,13 +1075,34 @@ def lane_outcome(handle, arm):
         return val
     return ""
 
+# BROAD-STATUS-RENDERER-01 D4: ONE pid-birth rule, ONE inode. The comparison
+# used to be `lstart(pid) != str(birth).strip()` — edge-trim only — so a
+# stored birth carrying Darwin's double interior space ("Sun Aug  3 ...",
+# written by the pre-fix registry writer) never equalled the live collapsed
+# form and every lane on the SwiftBar 10-s path rendered recycled. Route
+# through lib/leadv2_pid_birth.py; fall back inline (byte-identical rule)
+# when the lib dir is absent (drifted .claude/scripts/ copy, R4).
+try:
+    _lib_dir = os.environ.get("LEADV2_SS_LIB_DIR", "")
+    if _lib_dir:
+        sys.path.insert(0, _lib_dir)
+    from leadv2_pid_birth import pid_birth_of as _mod_pid_birth_of, birth_matches as _mod_birth_matches
+    _BIRTH_LIB = True
+except Exception:
+    _BIRTH_LIB = False
+
 def lstart(pid):
+    if _BIRTH_LIB:
+        return _mod_pid_birth_of(pid) or ""
     try:
         out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
                              capture_output=True, text=True)
         return " ".join(out.stdout.split())
     except Exception:
         return ""
+
+def _inline_norm(v):
+    return " ".join(str(v).split()) if v else v
 
 def pid_alive(pid, birth):
     if pid in (None, "", 0):
@@ -1092,9 +1113,14 @@ def pid_alive(pid, birth):
         return False
     if pid <= 0:
         return False
-    # R3: pair pid with pid_birth; a recycled pid renders a dead lane as live.
+    # R3: pair pid with pid_birth; a recycled pid renders a dead lane as
+    # live. birth_matches: both-known-and-differ -> mismatch; unknown on
+    # either side -> match (no false death, R3 mitigation).
     if birth:
-        if lstart(pid) != str(birth).strip():
+        if _BIRTH_LIB:
+            if not _mod_birth_matches(birth, lstart(pid)):
+                return False
+        elif _inline_norm(lstart(pid)) != _inline_norm(birth):
             return False
     try:
         os.kill(pid, 0)
@@ -1730,6 +1756,7 @@ _run_lanes_for_project() {
   LEADV2_SS_CLOSE_FRESH_S="$CLOSE_FRESH_S" \
   LEADV2_SS_CLOSE_SCAN_MAX="$CLOSE_SCAN_MAX" \
   LEADV2_SS_PS_SNAPSHOT="$PS_SNAPSHOT" \
+  LEADV2_SS_LIB_DIR="${SCRIPT_DIR}/lib" \
   _ss_lanes_py
 }
 

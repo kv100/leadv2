@@ -142,7 +142,7 @@ trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 export _BS_QUEUED_TSV="$QUEUED_TSV"
 export _BS_LANDED_LOG="$LANDED_LOG"
 RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" <<'PY'
-import datetime, json, os, sys
+import datetime, json, os, re, sys
 
 snapshot_path, prev_path, root, tasks_lib_sh, tmpdir = sys.argv[1:6]
 queued_tsv = os.environ.get("_BS_QUEUED_TSV", "")
@@ -162,6 +162,35 @@ detail_data = detail_section.get("data", {}) if isinstance(detail_section.get("d
 detail_by_task = {
     str(l.get("task_id")): l for l in (detail_data.get("lanes") or []) if isinstance(l, dict)
 }
+# LANE-LIVENESS-LIES-01 Change 2b: a failed/absent lane_detail section must
+# be LOUD, not silently degrade every row into a plausible-looking table.
+detail_ok = bool(detail_section.get("ok"))
+detail_fail_reason = None if detail_ok else (
+    detail_data if isinstance(detail_data, str) else "unavailable"
+)
+
+
+def read_journal_worker(task_id):
+    # Change 2c: when lane_detail has no worker for a task (section down,
+    # or read_worker() itself came back "unknown"), fall back to the
+    # dispatch journal's own classification line before ever printing
+    # "неизвестно" -- a rendering artifact must not be presented as a fact.
+    path = os.path.join(root, "docs", "leadv2", "tasks", str(task_id), "journal.md")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if "dispatch_classified" not in line or "kind=" not in line:
+            continue
+        try:
+            kind = line.split("kind=", 1)[1].split()[0].strip()
+        except IndexError:
+            continue
+        if kind:
+            return f"dispatch (kind={kind})"
+    return None
 
 repo_facts_section = sections.get("repo_facts", {}) or {}
 repo_facts = repo_facts_section.get("data", {}) if isinstance(repo_facts_section.get("data"), dict) else {}
@@ -174,25 +203,66 @@ except Exception:
 prev_lanes = prev.get("lanes", {}) if isinstance(prev.get("lanes"), dict) else {}
 
 
-def fmt_disk(disk):
-    if not disk:
-        return "пока ничего"
+def _fmt_worktree_half(wt):
+    # The old flat-disk rendering, unchanged, as the worktree half.
+    if not wt:
+        return None
     parts = []
-    if disk.get("shortstat"):
-        parts.append(disk["shortstat"])
+    if wt.get("shortstat"):
+        parts.append(wt["shortstat"])
     extra = []
-    if disk.get("files_changed") is not None:
-        extra.append(f"{disk['files_changed']} tracked")
-    if disk.get("untracked_count"):
-        extra.append(f"{disk['untracked_count']} untracked")
+    if wt.get("files_changed") is not None:
+        extra.append(f"{wt['files_changed']} tracked")
+    if wt.get("untracked_count"):
+        extra.append(f"{wt['untracked_count']} untracked")
     if extra:
         parts.append("(" + ", ".join(extra) + ")")
-    return " ".join(parts) if parts else "пока ничего"
+    return " ".join(parts) if parts else None
+
+
+def _fmt_handoff_half(ho):
+    if not ho:
+        return None
+    count = ho.get("file_count")
+    size = ho.get("bytes")
+    size_s = f"{size/1024:.0f} KB" if isinstance(size, (int, float)) else "размер неизвестен"
+    top = ", ".join(str(n) for n in (ho.get("top") or []))
+    out = f"артефакты: {count} файл(ов), {size_s}"
+    if top:
+        out += f" ({top})"
+    return out
+
+
+def fmt_disk(disk):
+    # D3 (BROAD-STATUS-RENDERER-01): disk may now be the nested shape
+    # {"worktree":…, "handoff":…} from leadv2-lane-detail.sh, or the OLD
+    # flat shape (a prev-beat artifact or an older lane-detail copy) — both
+    # are accepted so a deploy never renders a false "пока ничего" (R1).
+    if not disk:
+        return "пока ничего"
+    if ("worktree" in disk) or ("handoff" in disk):
+        halves = [
+            h for h in (_fmt_worktree_half(disk.get("worktree")),
+                        _fmt_handoff_half(disk.get("handoff"))) if h
+        ]
+        return " · ".join(halves) if halves else "пока ничего"
+    flat = _fmt_worktree_half(disk)
+    return flat if flat else "пока ничего"
 
 
 def disk_key(disk):
+    # Change-detection key for the "молчит N мин (без изменений)" delta: must
+    # fold the handoff half in (file_count, bytes) or a lane whose handoff
+    # dir grows reads as unchanged. Old flat shape still accepted (R1).
     if not disk:
         return None
+    if ("worktree" in disk) or ("handoff" in disk):
+        wt = disk.get("worktree") or {}
+        ho = disk.get("handoff") or {}
+        return (
+            (wt.get("shortstat"), wt.get("files_changed"), wt.get("untracked_count")),
+            (ho.get("file_count"), ho.get("bytes")),
+        )
     return (disk.get("shortstat"), disk.get("files_changed"), disk.get("untracked_count"))
 
 
@@ -208,9 +278,18 @@ for row in table_rows:
 
     # Линия: dispatch id when the dispatch binding is known, else the raw
     # founder task_id with an explicit marker (never silently pass one off
-    # as the other).
+    # as the other). BROAD-STATUS-RENDERER-01 D1: a task id that IS
+    # "dispatch-<hex>" carries its own dispatch id — same identity rule as
+    # leadv2-lane-detail.sh, applied here too because tombstone rows (no
+    # lane_detail row at all) were still rendered "(dispatch id unknown)"
+    # while the id sat in their own name.
     dispatch_id = d.get("dispatch_id") if d else None
-    linia = f"dispatch-{dispatch_id}" if dispatch_id else f"{tid} (dispatch id unknown)"
+    if dispatch_id:
+        linia = f"dispatch-{dispatch_id}"
+    elif re.match(r"^dispatch-[0-9a-f]{6,40}$", tid):
+        linia = tid
+    else:
+        linia = f"{tid} (dispatch id unknown)"
 
     # Что делает
     owns = d.get("owns") if d else None
@@ -220,10 +299,21 @@ for row in table_rows:
         if owns_source and owns_source != "prepass":
             chto += " (из миссии, prepass не сработал)" if owns_source == "mission" else " (источник неизвестен)"
     else:
-        chto = row.get("status_reason") or "неизвестно"
+        # Change 2b: no independent source for "Что делает" -> honestly
+        # empty, never an echo of status_reason (that IS the "Состояние"
+        # column's string below -- printing it here duplicated columns 2/4).
+        chto = "—"
 
     # Кто делает
-    kto = (d.get("worker") if d else None) or "неизвестно"
+    _worker = d.get("worker") if d else None
+    if _worker and _worker != "unknown":
+        kto = _worker
+    else:
+        # Change 2c: lane_detail has no usable worker (section down, or
+        # read_worker() itself returned "unknown") -> fall back to the
+        # dispatch journal's own classification before printing
+        # "неизвестно", so that string is a true statement, not an artifact.
+        kto = read_journal_worker(tid) or "неизвестно"
 
     # Состояние — HARD RULE 3: unchanged stream+disk since the previous beat
     # renders as "молчит N мин (без изменений с прошлого статуса)".
@@ -263,7 +353,16 @@ for row in table_rows:
         "| " + " | ".join(md_escape(x) for x in (linia, chto, kto, sostoyanie, na_diske)) + " |"
     )
 
-table_md = "\n".join([
+# Change 2b: a failed lane_detail section must be visible ABOVE the table,
+# not inferred from every row silently reading "неизвестно".
+table_prefix = []
+if not detail_ok:
+    table_prefix.append(
+        f"детали линий недоступны (lane_detail: {detail_fail_reason}) — "
+        "колонки «Что делает» и «Кто делает» не заполнены\n"
+    )
+
+table_md = "\n".join(table_prefix + [
     "| Линия | Что делает | Кто делает | Состояние | Уже на диске |",
     "|---|---|---|---|---|",
 ] + (rows_out if rows_out else ["| (нет активных или terminal линий) | | | | |"]))
@@ -347,7 +446,7 @@ TAIL_FACTS_JSON="$(python3 -c "import json,sys; print(json.dumps(json.load(open(
 PROMPT="$(python3 - "$TAIL_FACTS_JSON" <<'PY'
 import json, sys
 facts = json.loads(sys.argv[1])
-print('''Ты пишешь ТОЛЬКО хвостовую часть 30-минутного статуса для основателя — таблица линий уже отрендерена отдельно, не повторяй и не пересказывай её. Верни простой русский текст без Markdown-заголовков и JSON.\n\nВключи по порядку: (1) что стоит в очереди и почему (топ из facts.queued_top5, дословно id и описание); (2) что приземлилось сегодня — из facts.landed_today используй ТОЛЬКО указанные хэши и темы коммитов, ничего не придумывай; (3) сегодняшний объём публикаций против цели и позицию в рабочем окне — бери числа ТОЛЬКО из facts.repo_facts, если секции нет или ok=false — прямо скажи, что данные недоступны; (4) вопросы, требующие решения (facts.questions_pending) — дословный текст вопроса плюс твоя рекомендация; (5) деградированные диспетчеризации (facts.degraded_dispatch) — явно назови, что prepass не сработал; (6) один честный caveat.\n\nНикогда не изобретай числа, хэши или сравнения, которых нет в фактах. Стоимость — только как использование лимитов 5-часового и недельного окна, никогда деньги.\n\nФакты:\n''' + json.dumps(facts, ensure_ascii=False))
+print('''Ты пишешь ТОЛЬКО хвостовую часть 30-минутного статуса для основателя — таблица линий уже отрендерена отдельно, не повторяй и не пересказывай её. Верни простой русский текст без Markdown-заголовков и JSON.\n\nВключи по порядку: (1) что стоит в очереди и почему (топ из facts.queued_top5, дословно id и описание); (2) что приземлилось сегодня — из facts.landed_today используй ТОЛЬКО указанные хэши и темы коммитов, ничего не придумывай; (3) сегодняшний объём публикаций против цели и позицию в рабочем окне — бери числа ТОЛЬКО из facts.repo_facts; используй ИМЕННО поле hit_rate_today (не hit_rate — это all-time и НЕ про сегодня), и если hit_rate_today равен null или отсутствует — напиши буквально «нет данных за сегодня», НИКОГДА не подставляй вместо него all-time hit_rate; (4) вопросы, требующие решения (facts.questions_pending) — дословный текст вопроса плюс твоя рекомендация; (5) деградированные диспетчеризации (facts.degraded_dispatch) — явно назови, что prepass не сработал; (6) один честный caveat.\n\nНикогда не изобретай числа, хэши или сравнения, которых нет в фактах. Стоимость — только как использование лимитов 5-часового и недельного окна, никогда деньги.\n\nФакты:\n''' + json.dumps(facts, ensure_ascii=False))
 PY
 )"
 
