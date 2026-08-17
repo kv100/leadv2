@@ -1017,11 +1017,51 @@ EOF
   exit 2
 fi
 
+# CODEX-TIER-ENFORCER-01 -- record every ACCEPTED --tier top run (the gate above
+# already refused reasonless ones, so a refused run reaches neither this function
+# nor the ledger). One JSON object per line; ts/tier/sub/reason/model/effort/cwd/pid.
+# Best-effort by design: mkdir+append are stderr-swallowed and || true-guarded so
+# a read-only $HOME or full disk can never abort a Codex dispatch under set -e.
+# Single printf of one <8KB line => one O_APPEND write => atomic under concurrent
+# lanes; do NOT build the line across multiple >> calls. _REASON and $PWD are
+# free-form: escape \ then ", collapse newlines/tabs to spaces, and tr-sweep any
+# remaining C0 control char (formfeed, vtab -- a raw C0 invalidates strict JSON,
+# jq rc=5) so the line stays parseable. LEADV2_* naming matches
+# LEADV2_ARM_COOLDOWN_DIR above. Defined here, called (a) in the reap branch
+# below (early exit, before tier->model resolution -- model/effort record empty)
+# and (b) after tier resolution for the dispatching subcommands.
+_codex_tier_ledger() {
+  {
+    local _esc="${_REASON//\\/\\\\}"
+    _esc="${_esc//\"/\\\"}"
+    _esc="${_esc//$'\n'/ }"
+    _esc="${_esc//$'\r'/ }"
+    _esc="${_esc//$'\t'/ }"
+    _esc="$(printf '%s' "$_esc" | tr -d '\001-\037')"
+    local _cwd="${PWD:-}"
+    _cwd="${_cwd//\\/\\\\}"
+    _cwd="${_cwd//\"/\\\"}"
+    _cwd="$(printf '%s' "$_cwd" | tr -d '\001-\037')"
+    local _log="${LEADV2_CODEX_TIER_LOG:-$HOME/.claude/cache/codex-tier-log.jsonl}"
+    mkdir -p "$(dirname "$_log")" 2>/dev/null || true
+    printf '{"ts":"%s","tier":"%s","sub":"%s","reason":"%s","model":"%s","effort":"%s","cwd":"%s","pid":"%s"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_TIER:-}" "${SUB:-}" "$_esc" \
+      "${TIER_MODEL:-}" "${TIER_EFFORT:-}" "$_cwd" "$$" \
+      >> "$_log" 2>/dev/null || true
+  } 2>/dev/null || true
+}
+
 SUB="${1:-}"
 
 # `codex-task.sh reap` -- explicit manual sweep (not a real codex-companion
 # subcommand, intercepted here before anything is forwarded to node).
 if [[ "$SUB" == "reap" ]]; then
+  # CODEX-TIER-ENFORCER-01: reap early-exits below, before tier resolution --
+  # record the accepted top attestation HERE so it does not silently miss the
+  # ledger (model/effort stay empty; reap pins no model).
+  if [[ "${_TIER:-}" == "top" ]]; then
+    _codex_tier_ledger
+  fi
   # wave2 round3 finding 4: capture the sweep's own exit code explicitly (the `||`
   # keeps this line exempt from `set -e` so a nonzero rc is reported, not silently
   # aborting before the reaped-jobs output below is ever printed) -- a repair-marker
@@ -1207,30 +1247,11 @@ if [[ -n "$_TIER" ]]; then
   esac
 fi
 
-# CODEX-TIER-ENFORCER-01 -- record every ACCEPTED --tier top run (the gate above
-# already refused reasonless ones, so a refused run reaches neither this line nor
-# the ledger). One JSON object per line; ts/tier/sub/reason/model/effort/cwd/pid.
-# Best-effort by design: mkdir+append are stderr-swallowed and || true-guarded so
-# a read-only $HOME or full disk can never abort a Codex dispatch under set -e.
-# Single printf of one <8KB line => one O_APPEND write => atomic under concurrent
-# lanes; do NOT build the line across multiple >> calls. _REASON is founder-typed
-# free text: escape \ then ", collapse newlines/tabs to spaces so the line stays
-# valid JSON. LEADV2_* naming matches LEADV2_ARM_COOLDOWN_DIR above.
+# CODEX-TIER-ENFORCER-01 -- dispatching subcommands record here, AFTER tier->model
+# resolution so model/effort are populated (_codex_tier_ledger defined above the
+# SUB dispatch; reap records inside its own early-exit branch).
 if [[ "${_TIER:-}" == "top" ]]; then
-  {
-    _tier_esc="${_REASON//\\/\\\\}"
-    _tier_esc="${_tier_esc//\"/\\\"}"
-    _tier_esc="${_tier_esc//$'\n'/ }"
-    _tier_esc="${_tier_esc//$'\r'/ }"
-    _tier_esc="${_tier_esc//$'\t'/ }"
-    _tier_log="${LEADV2_CODEX_TIER_LOG:-$HOME/.claude/cache/codex-tier-log.jsonl}"
-    mkdir -p "$(dirname "$_tier_log")" 2>/dev/null || true
-    printf '{"ts":"%s","tier":"%s","sub":"%s","reason":"%s","model":"%s","effort":"%s","cwd":"%s","pid":"%s"}\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_TIER:-}" "${SUB:-}" "$_tier_esc" \
-      "${TIER_MODEL:-}" "${TIER_EFFORT:-}" "${PWD:-}" "$$" \
-      >> "$_tier_log" 2>/dev/null || true
-  } 2>/dev/null || true
-  unset _tier_esc _tier_log
+  _codex_tier_ledger
 fi
 
 # Hard ban: spark is never used in this project (founder directive 2026-04-28).
