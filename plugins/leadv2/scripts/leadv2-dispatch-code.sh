@@ -1040,31 +1040,188 @@ _filter_ladder_to_dispatchable() {  # <sig8>
 # P2: per-provider lockout record directory. Lives alongside the dispatch ledger.
 QUOTA_LOCKOUT_DIR="${LEADV2_QUOTA_LOCKOUT_DIR:-${DISPATCH_LEDGER_DIR}}"
 
-# Check whether a provider is currently locked out.
-# Returns 0 (available) or 1 (locked). A missing/unreadable record ALWAYS
-# means "not locked" — never fail closed.
-_provider_available() {  # <provider> -> 0=available, 1=locked
-  local provider="$1" _lock_file _now_epoch _locked_until
+# PROVIDER-LOCKOUT-FALSE-BLOCK-01: the lockout store's ONE bash-side interpreter.
+# <provider> -> "locked <remaining_s>" | "expired" | "absent" | "malformed".
+# Missing/malformed/expired ALWAYS read as not-locked — never fail closed.
+_lockout_state() {  # <provider>
+  local provider="$1" _lock_file _out
   _lock_file="${QUOTA_LOCKOUT_DIR}/quota-lockout-${provider}.json"
-  [[ -f "${_lock_file}" ]] || return 0
-  _now_epoch="$(date +%s 2>/dev/null || printf '0')"
-  _locked_until="$(python3 -c "
+  [[ -f "${_lock_file}" ]] || { printf 'absent\n'; return 0; }
+  _out="$(python3 - "${_lock_file}" 2>/dev/null <<'PY'
+import json, sys, time
+try:
+    d = json.load(open(sys.argv[1]))
+    until = int(d.get("locked_until_epoch"))
+except Exception:
+    print("malformed"); raise SystemExit(0)
+now = int(time.time())
+print("locked %d" % (until - now) if until > now else "expired")
+PY
+)" || _out=""
+  case "${_out}" in
+    'locked '*|expired|malformed) printf '%s\n' "${_out}" ;;
+    *)                             printf 'malformed\n' ;;
+  esac
+}
+
+# <provider> <field> -> the record's field, fail-open "unknown" on any read error.
+_lockout_record_field() {  # <provider> <field>
+  local provider="$1" field="$2" _out
+  _out="$(python3 - "${QUOTA_LOCKOUT_DIR}/quota-lockout-${provider}.json" "${field}" 2>/dev/null <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
-    print(d.get('locked_until_epoch', 0))
+    v = d.get(sys.argv[2], "")
+    print(v if v not in (None, "") else "unknown")
 except Exception:
-    print(0)
-" "${_lock_file}" 2>/dev/null)" || return 0
-  [[ "${_locked_until}" =~ ^[0-9]+$ ]] || return 0
-  (( _locked_until > _now_epoch )) || return 0
-  return 1
+    print("unknown")
+PY
+)" || _out=""
+  [[ -n "${_out}" ]] || _out="unknown"
+  printf '%s' "${_out}"
+}
+
+# <provider> -> prior record's strikes count, fail-open 0 (none/malformed/absent).
+_lockout_prior_strikes() {  # <provider>
+  local _n
+  _n="$(_lockout_record_field "$1" strikes)"
+  [[ "${_n}" =~ ^[0-9]+$ ]] || _n=0
+  printf '%s' "$(( _n > 0 ? _n : 0 ))"
+}
+
+# Check whether a provider is currently locked out.
+# Returns 0 (available) or 1 (locked). A missing/unreadable record ALWAYS
+# means "not locked" — never fail closed. Reimplemented as a thin wrapper over
+# _lockout_state so expiry has exactly ONE rule bash-side (the python resolver's
+# _lockout_blocked already honoured it — F4/F5 in the design, regression-locked
+# by tests/test-lockout-failure-class.sh T4/T5).
+_provider_available() {  # <provider> -> 0=available, 1=locked
+  local _st
+  _st="$(_lockout_state "$1")"
+  case "${_st}" in
+    'locked '*) return 1 ;;
+    *)          return 0 ;;
+  esac
+}
+
+# PROVIDER-LOCKOUT-FALSE-BLOCK-01 Defect C: losing the PRIMARY code writer for
+# hours must be LOUD. Renders a stderr banner at the head of every dispatch
+# while the routing ladder's FIRST dispatchable arm's provider is locked. The
+# primary is read from _LADDER_IDS[0] after _load_dispatch_ladder — never a
+# hardcoded arm name (R6); a ladder that somehow stays empty skips the banner
+# (fail-quiet). LEADV2_LOCKOUT_LOUD_MINUTES (default 0 = always) suppresses the
+# banner for lockouts shorter than N minutes, so a 10-minute self-healing
+# post-spawn bench does not become noise.
+_lockout_bench_banner() {  # <sig8>
+  local sig8="$1" _st _primary _prov _remaining _mins _cls _until _source _loud
+  (( ${#_LADDER_IDS[@]} > 0 )) || _load_dispatch_ladder
+  (( ${#_LADDER_IDS[@]} > 0 )) || return 0
+  _primary="${_LADDER_IDS[0]}"
+  _prov="$(_arm_provider "${_primary}")"
+  _st="$(_lockout_state "${_prov}")"
+  [[ "${_st}" == 'locked '* ]] || return 0
+  _remaining="${_st#locked }"
+  _mins=$(( _remaining / 60 + ( _remaining % 60 > 0 ? 1 : 0 ) ))
+  _loud="${LEADV2_LOCKOUT_LOUD_MINUTES:-0}"
+  [[ "${_loud}" =~ ^[0-9]+$ ]] || _loud=0
+  (( _mins >= _loud )) || return 0
+  _cls="$(_lockout_record_field "${_prov}" class)"
+  _until="$(_lockout_record_field "${_prov}" locked_until)"
+  _source="$(_lockout_record_field "${_prov}" source)"
+  printf '⚠ PRIMARY ARM BENCHED: %s for %dm (class=%s, until %s) — cause: %s\n' \
+    "${_prov}" "${_mins}" "${_cls}" "${_until}" "${_source}" >&2
+  emit decision "primary_arm_benched provider=${_prov} arm=${_primary} class=${_cls} minutes=${_mins} until=${_until} source=${_source} task=${sig8}"
+}
+
+# <class> <site> -> the class's lockout cap in minutes (design §3 duration table).
+_lockout_class_cap() {  # <class> <site>
+  local cls="$1" site="$2" cap
+  case "${cls}" in
+    launcher_never_started) cap=30 ;;
+    worker_killed)          cap=60 ;;
+    infra_transient)        cap=60 ;;
+    provider_refusal)
+      if [[ "${site}" == "postspawn" ]]; then
+        # THE single change that kills the 24h bench: after-enqueue evidence is
+        # untrusted, so a post-spawn refusal self-heals in minutes-scale.
+        cap="${LEADV2_LOCKOUT_CAP_POSTSPAWN:-60}"
+      else
+        cap="${LEADV2_QUOTA_LOCKOUT_MAX_MINUTES:-4320}"
+      fi
+      ;;
+    *) cap=60 ;;
+  esac
+  [[ "${cap}" =~ ^[0-9]+$ ]] || cap=60
+  printf '%s' "${cap}"
+}
+
+# <minutes> -> now+minutes ISO (UTC). Same portable date idiom as the old
+# _default_quota_lockout_iso (macOS -v first, GNU -d fallback).
+_lockout_iso_from_minutes() {  # <minutes>
+  date -u -v+"$1"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "+$1 minutes" +%Y-%m-%dT%H:%M:%SZ
+}
+
+# <iso> <max_minutes> -> the ISO clamped to now+max (i.e. the min of the two);
+# empty on an unparseable input (caller falls back to the minutes path).
+_lockout_iso_clamped() {  # <iso> <max_minutes>
+  python3 - "$1" "$2" 2>/dev/null <<'PY'
+import sys, time
+from datetime import datetime, timezone
+try:
+    dt = datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+    iso_e = int(dt.timestamp())
+except Exception:
+    raise SystemExit(0)
+try:
+    cap = int(time.time()) + int(sys.argv[2]) * 60
+except Exception:
+    raise SystemExit(0)
+print(datetime.fromtimestamp(min(iso_e, cap), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+}
+
+# <iso> -> whole minutes from now until the ISO (rounded up), fail-open 0.
+_iso_remaining_minutes() {  # <iso>
+  local _m
+  _m="$(python3 - "$1" 2>/dev/null <<'PY'
+import sys, time
+from datetime import datetime
+try:
+    dt = datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+    rem = int(dt.timestamp()) - int(time.time())
+except Exception:
+    print(0); raise SystemExit(0)
+print(max(0, -(-rem // 60)))
+PY
+)" || _m=""
+  [[ "${_m}" =~ ^[0-9]+$ ]] || _m=0
+  printf '%s' "${_m}"
+}
+
+# _classify_arm_failure <site> <arm> <text> [probe_rc] [refusal_reason]
+#   -> "class|minutes|evidence" on stdout. Falls back to unclassified|0|no_classifier
+#   when the lib is absent/unreadable (fail-open = NO lockout, R3).
+_classify_arm_failure() {  # <site> <arm> <text> [probe_rc] [refusal_reason]
+  local site="$1" arm="$2" text="$3" probe_rc="${4:-}" refusal="${5:-}"
+  local lib="${SCRIPT_DIR}/lib/leadv2-lockout-classify.py" out
+  [[ -f "${lib}" ]] || { printf 'unclassified|0|no_classifier\n'; return 0; }
+  out="$(printf '%s' "${text}" | python3 "${lib}" --site "${site}" \
+    ${refusal:+--refusal-reason "${refusal}"} \
+    ${probe_rc:+--probe-rc "${probe_rc}"} 2>/dev/null)" || out=""
+  [[ "${out}" =~ ^[a-z_]+\|[0-9]+\|.+$ ]] || out="unclassified|0|no_classifier"
+  printf '%s\n' "${out}"
 }
 
 # Record a quota lockout for a provider.
-# <provider> <locked_until_iso> <source>
+# <provider> <locked_until_iso> <source> [<class>]
+# Additive keys (PROVIDER-LOCKOUT-FALSE-BLOCK-01): "class" (unknown when the
+# caller passes none) and "strikes" (prior record's strikes + 1, read
+# fail-open). Consumers reading only locked_until_epoch are unaffected.
+# Known race (design R4): two concurrent dispatches can lose one strike —
+# worst case a SHORTER lockout, i.e. the fail-open direction. Documented.
 _record_quota_lockout() {
-  local provider="$1" _iso="$2" _source="$3" _lock_file _epoch
+  local provider="$1" _iso="$2" _source="$3" _class="${4:-}" _lock_file _epoch _strikes
   _lock_file="${QUOTA_LOCKOUT_DIR}/quota-lockout-${provider}.json"
   _epoch="$(python3 -c "
 import sys
@@ -1076,16 +1233,72 @@ except Exception:
     print(0)
 " "${_iso}" 2>/dev/null)" || return 0
   [[ "${_epoch}" =~ ^[0-9]+$ && "${_epoch}" != "0" ]] || return 0
+  _strikes=$(( $(_lockout_prior_strikes "${provider}") + 1 ))
+  [[ -n "${_class}" ]] || _class="unknown"
   mkdir -p "${QUOTA_LOCKOUT_DIR}" 2>/dev/null || true
   local _tmp_file="${_lock_file}.tmp.$$"
   python3 -c "
 import json, sys
 d = {'provider': sys.argv[1], 'locked_until': sys.argv[2],
-     'locked_until_epoch': int(sys.argv[3]), 'source': sys.argv[4]}
-with open(sys.argv[5], 'w') as f:
+     'locked_until_epoch': int(sys.argv[3]), 'source': sys.argv[4],
+     'class': sys.argv[5], 'strikes': int(sys.argv[6])}
+with open(sys.argv[7], 'w') as f:
     json.dump(d, f)
-" "${provider}" "${_iso}" "${_epoch}" "${_source}" "${_tmp_file}" 2>/dev/null || true
+" "${provider}" "${_iso}" "${_epoch}" "${_source}" "${_class}" "${_strikes}" "${_tmp_file}" 2>/dev/null || true
   mv -f "${_tmp_file}" "${_lock_file}" 2>/dev/null || true
+}
+
+# _record_postspawn_lockout <arm> <final_output_text>
+#   -> rc0: record written; stdout "class|minutes|strikes|source|iso|evidence"
+#   -> rc1: unclassified, NO record written (design data-flow step 4);
+#           stdout "unclassified|0|0|<evidence>||<evidence>"
+# Shared by _wait_arm_early_verdict and cmd_record_quota_lockout so both
+# post-spawn sites classify identically.
+_record_postspawn_lockout() {  # <arm> <final_output_text>
+  local arm="$1" text="$2"
+  local _cls_line _cls _cls_min _evidence
+  _cls_line="$(_classify_arm_failure postspawn "${arm}" "${text}")"
+  IFS='|' read -r _cls _cls_min _evidence <<<"${_cls_line}"
+  if [[ "${_cls}" == "unclassified" ]]; then
+    printf 'unclassified|0|0|%s||%s\n' "${_evidence}" "${_evidence}"
+    return 1
+  fi
+  local _prov _cap _strikes _minutes _iso _source _clamped
+  _prov="$(_arm_provider "${arm}")"
+  _cap="$(_lockout_class_cap "${_cls}" postspawn)"
+  _strikes=$(( $(_lockout_prior_strikes "${_prov}") + 1 ))
+  _minutes="${_cls_min}"
+  _iso=""
+  _source="class_${_cls}"
+  if [[ "${_cls}" == "provider_refusal" ]]; then
+    local _iso_src
+    _iso_src="$(_quota_return_time "${text}")"
+    _iso="${_iso_src%%|*}"
+    if [[ -n "${_iso}" ]]; then
+      _source="${_iso_src##*|}"
+      _clamped="$(_lockout_iso_clamped "${_iso}" "${_cap}")"
+      if [[ -n "${_clamped}" ]]; then
+        [[ "${_clamped}" != "${_iso}" ]] && _source="provider_time_clamped_postspawn"
+        _iso="${_clamped}"
+      fi
+    else
+      _source="default"
+    fi
+  fi
+  if [[ -z "${_iso}" ]]; then
+    # Strikes escalation (design §3): double per re-lock, capped at the class
+    # cap — a genuinely dry provider converges to the cap instead of costing a
+    # day on the first mistake, and a false class self-heals in minutes.
+    local _k=$(( _strikes - 1 )); (( _k > 6 )) && _k=6
+    while (( _k > 0 )); do _minutes=$(( _minutes * 2 )); _k=$(( _k - 1 )); done
+    (( _minutes > _cap )) && _minutes="${_cap}"
+    _iso="$(_lockout_iso_from_minutes "${_minutes}")"
+  else
+    _minutes="$(_iso_remaining_minutes "${_iso}")"
+  fi
+  _record_quota_lockout "${_prov}" "${_iso}" "postspawn_failure:${arm}" "${_cls}"
+  printf '%s|%s|%s|%s|%s|%s\n' "${_cls}" "${_minutes}" "${_strikes}" "${_source}" "${_iso}" "${_evidence}"
+  return 0
 }
 
 # _default_quota_lockout_iso: the flat "now + LEADV2_QUOTA_LOCKOUT_MINUTES" fallback,
@@ -1109,7 +1322,17 @@ _maybe_record_quota_lockout() {  # <arm> <refusal_reason> [<raw_text>]
     quota|quota_gate|quota_exhausted|rate_limit*) ;;
     *) return 0 ;;
   esac
-  local _iso_src _iso _source
+  # PROVIDER-LOCKOUT-FALSE-BLOCK-01: classify for the additive class/strikes
+  # keys. A quota-shaped refusal reason forces provider_refusal, so behaviour
+  # (hours-scale, LEADV2_QUOTA_LOCKOUT_* floor/ceiling) is unchanged here --
+  # only the record's observability grows.
+  local _cls_line _cls _cls_min _ev
+  _cls_line="$(_classify_arm_failure launcher_refusal "${1}" "${3:-}" "" "${2}")"
+  IFS='|' read -r _cls _cls_min _ev <<<"${_cls_line}"
+  [[ "${_cls}" == "provider_refusal" ]] || _cls="provider_refusal"
+  local _prov _iso_src _iso _source _strikes
+  _prov="$(_arm_provider "${1}")"
+  _strikes=$(( $(_lockout_prior_strikes "${_prov}") + 1 ))
   _iso_src="$(_quota_return_time "${3:-}")"
   _iso="${_iso_src%%|*}"
   _source="${_iso_src##*|}"
@@ -1117,8 +1340,8 @@ _maybe_record_quota_lockout() {  # <arm> <refusal_reason> [<raw_text>]
     _iso="$(_default_quota_lockout_iso)"
     _source="default"
   fi
-  _record_quota_lockout "$(_arm_provider "${1}")" "${_iso}" "launcher_refusal:${2}"
-  emit decision "quota_lockout_recorded provider=$(_arm_provider "${1}") arm=${1} reason=${2} source=${_source} minutes=${LEADV2_QUOTA_LOCKOUT_MINUTES:-30}"
+  _record_quota_lockout "${_prov}" "${_iso}" "launcher_refusal:${2}" "${_cls}"
+  emit decision "quota_lockout_recorded provider=${_prov} arm=${1} reason=${2} class=${_cls} minutes=$(_iso_remaining_minutes "${_iso}") strikes=${_strikes} source=${_source}"
 }
 
 # ── end ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 ───────────────────────────────────
@@ -2699,22 +2922,23 @@ _wait_arm_early_verdict() {  # <arm> <handle> <sig8>
         return 0
         ;;
       failed)
-        local final_out
+        # PROVIDER-LOCKOUT-FALSE-BLOCK-01: the tail is CLASSIFIED first, and a
+        # quota marker no longer outranks a kill/infra marker (the 05:49Z
+        # incident: a killed worker whose 60-line tail still carried one
+        # earlier, survived 429 retry line benched GLM for 24h). Unclassified
+        # => no record at all (today's non-quota behaviour, preserved).
+        local final_out _plo _plo_rc _pcls _pmin _pstrikes _psrc _piso _pev
         final_out="$(_arm_final_output "${arm}" "${handle}")"
-        if ! _quota_shaped "${final_out}"; then
+        _plo="$(_record_postspawn_lockout "${arm}" "${final_out}")" && _plo_rc=0 || _plo_rc=1
+        IFS='|' read -r _pcls _pmin _pstrikes _psrc _piso _pev <<<"${_plo}"
+        if [[ "${_plo_rc}" != "0" || "${_pcls}" == "unclassified" ]]; then
           emit decision "arm_postspawn_verdict arm=${arm} state=failed quota=no"
+          emit decision "arm_failure_classified arm=${arm} site=postspawn class=unclassified evidence=${_pev} lockout=none"
           return 0
         fi
-        local _iso_src _iso _source
-        _iso_src="$(_quota_return_time "${final_out}")"
-        _iso="${_iso_src%%|*}"
-        _source="${_iso_src##*|}"
-        if [[ -z "${_iso}" ]]; then
-          _iso="$(_default_quota_lockout_iso)"
-          _source="default"
-        fi
-        _record_quota_lockout "$(_arm_provider "${arm}")" "${_iso}" "postspawn_failure:${arm}"
-        emit decision "quota_lockout_recorded provider=$(_arm_provider "${arm}") arm=${arm} reason=postspawn_quota source=${_source} until=${_iso}"
+        local _reason="postspawn_${_pcls}"
+        [[ "${_pcls}" == "provider_refusal" ]] && _reason="postspawn_quota"
+        emit decision "quota_lockout_recorded provider=$(_arm_provider "${arm}") arm=${arm} reason=${_reason} class=${_pcls} minutes=${_pmin} strikes=${_pstrikes} source=${_psrc} until=${_piso}"
         return 7
         ;;
       running|unknown)
@@ -3227,6 +3451,10 @@ cmd_resolve() {
   # from a prior dispatch that reused this cache dir (mitigates R2: a nested/child dispatch
   # never inherits a parent's start sha because it always re-records its own here first).
   record_lane_start_sha "${sig8}"
+  # PROVIDER-LOCKOUT-FALSE-BLOCK-01 Defect C: a live lockout on the ladder's
+  # first dispatchable provider is announced on stderr HERE, before any route
+  # line, so the lead sees the bench without grepping a journal.
+  _lockout_bench_banner "${sig8}"
   [[ -n "${founder_task_id}" ]] && emit decision "dispatch_task_bound task=${sig8} founder_task=${founder_task_id}"
   # SWIFTBAR-LIVE-01 round 2 (§2.4): persist onto the script-scope globals so
   # dispatch_reserve can write them onto the ledger row -- this was the missing
@@ -3482,8 +3710,13 @@ confirmation-seeking; only for a decision you cannot make yourself."
   v2_headroom="$(printf '%s\n' "${resolved}" | sed -n 's/^headroom=//p')"
   v2_vector="$(printf '%s\n' "${resolved}" | sed -n 's/^vector=//p')"
   v2_credits="$(printf '%s\n' "${resolved}" | sed -n 's/^credits=//p')"
-  local codex_quota_blocked
+  local codex_quota_blocked codex_block_reason
   codex_quota_blocked="$(printf '%s\n' "${resolved}" | sed -n 's/^codex_quota_blocked=//p')"
+  # PROVIDER-LOCKOUT-FALSE-BLOCK-01 Defect B: the resolver's fail-closed
+  # decision itself is out of scope, but an UNREADABLE quota read must be
+  # distinguishable in the journal from a genuine >=threshold reading — the
+  # two previously rendered identically as rule=codex_quota_gate_80pct.
+  codex_block_reason="$(printf '%s\n' "${resolved}" | sed -n 's/^codex_block_reason=//p')"
   # GLM-FIRST-RECOVERY-01 (C3): the resolver's gate-path-only live-reading line
   # (glm=2% codex=unknown anthropic=44%) rides the journal emit so a lead can
   # tell a correct peak-hour fallback from a stuck-probe inversion. Absent line
@@ -3598,7 +3831,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
           # loop below ever sees "codex" in candidate_arms -- so that loop's own
           # quota_precheck_skip line never fires for codex. Emit the same-shaped line
           # here so a lockout-caused strip is exactly as loud as a live-quota-caused one.
-          emit decision "quota_precheck_skip model=codex provider=codex task=${sig8} reason=provider_quota_locked"
+          emit decision "quota_precheck_skip model=codex provider=codex task=${sig8} reason=provider_quota_locked class=${codex_block_reason:-unknown}"
         else
           _filtered+=("${_a}")
         fi
@@ -3622,7 +3855,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
       if _provider_available "${_qpc_prov}"; then
         _qpc_kept+=("${_qpc_arm}")
       else
-        emit decision "quota_precheck_skip model=${_qpc_arm} provider=${_qpc_prov} task=${sig8} reason=provider_quota_locked"
+        emit decision "quota_precheck_skip model=${_qpc_arm} provider=${_qpc_prov} task=${sig8} reason=provider_quota_locked class=$(_lockout_record_field "${_qpc_prov}" class)"
       fi
     done
     if [[ ${#_qpc_kept[@]} -eq 0 ]]; then
@@ -4113,7 +4346,7 @@ cmd_record_quota_lockout() {
     _iso="$(date -u -v+"${_total_minutes}"M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
       || date -u -d "+${_total_minutes} minutes" +%Y-%m-%dT%H:%M:%SZ)"
     [[ -n "${_iso}" ]] || { log_err "record-quota-lockout: failed to compute stand-down timestamp"; exit 0; }
-    _record_quota_lockout "${provider}" "${_iso}" "standdown:${reason}"
+    _record_quota_lockout "${provider}" "${_iso}" "standdown:${reason}" "standdown"
     emit decision "quota_standdown_recorded provider=${provider} hours=${hours:-0} minutes=${_total_minutes} until=${_iso} reason=${reason} task=${sig8:--}"
     exit 0
   fi
@@ -4121,22 +4354,21 @@ cmd_record_quota_lockout() {
   [[ -n "${arm}" && -n "${handle}" ]] || { log_err "record-quota-lockout: --arm and --handle are required"; exit 0; }
   [[ -n "${provider}" ]] || provider="$(_arm_provider "${arm}")"
 
-  local final_out
+  # PROVIDER-LOCKOUT-FALSE-BLOCK-01: same classifier as _wait_arm_early_verdict
+  # (via _record_postspawn_lockout) so the close gate's fallback path and the
+  # dispatcher's own poll path can never disagree on a failure's class.
+  local final_out _plo _plo_rc _pcls _pmin _pstrikes _psrc _piso _pev
   final_out="$(_arm_final_output "${arm}" "${handle}")"
-  if ! _quota_shaped "${final_out}"; then
+  _plo="$(_record_postspawn_lockout "${arm}" "${final_out}")" && _plo_rc=0 || _plo_rc=1
+  IFS='|' read -r _pcls _pmin _pstrikes _psrc _piso _pev <<<"${_plo}"
+  if [[ "${_plo_rc}" != "0" || "${_pcls}" == "unclassified" ]]; then
     emit decision "arm_postspawn_verdict arm=${arm} state=failed quota=no task=${sig8:--}"
+    emit decision "arm_failure_classified arm=${arm} site=postspawn class=unclassified evidence=${_pev} lockout=none task=${sig8:--}"
     exit 0
   fi
-  local _iso_src _iso _source
-  _iso_src="$(_quota_return_time "${final_out}")"
-  _iso="${_iso_src%%|*}"
-  _source="${_iso_src##*|}"
-  if [[ -z "${_iso}" ]]; then
-    _iso="$(_default_quota_lockout_iso)"
-    _source="default"
-  fi
-  _record_quota_lockout "${provider}" "${_iso}" "postspawn_failure:${arm}"
-  emit decision "quota_lockout_recorded provider=${provider} arm=${arm} reason=postspawn_quota source=${_source} until=${_iso} task=${sig8:--}"
+  local _reason="postspawn_${_pcls}"
+  [[ "${_pcls}" == "provider_refusal" ]] && _reason="postspawn_quota"
+  emit decision "quota_lockout_recorded provider=${provider} arm=${arm} reason=${_reason} class=${_pcls} minutes=${_pmin} strikes=${_pstrikes} source=${_psrc} until=${_piso} task=${sig8:--}"
   exit 0
 }
 

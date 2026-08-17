@@ -30,6 +30,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A single killed worker benched GLM for 24 hours (PROVIDER-LOCKOUT-FALSE-BLOCK-01).**
+  `_wait_arm_early_verdict`'s post-spawn failure path classified ANY failed arm whose
+  60-line log tail matched a quota pattern as a quota refusal — including a worker
+  killed by SIGKILL/SIGTERM whose tail still carried one earlier, survived `429`
+  retry line — and handed the provider-stated reset time straight to
+  `_record_quota_lockout` uncapped (clamped only by the 72h `--max-minutes`
+  default). Fixed with a new classifier, `lib/leadv2-lockout-classify.py`
+  (`launcher_never_started|worker_killed|infra_transient|provider_refusal|unclassified`,
+  kill/infra markers now outrank quota markers, always exits 0/fail-open), wired via
+  `_classify_arm_failure`/`_record_postspawn_lockout` in `leadv2-dispatch-code.sh`.
+  Duration is class-scoped (10–15m base, 30–60m cap) with a NEW site-specific
+  post-spawn provider-refusal cap (`LEADV2_LOCKOUT_CAP_POSTSPAWN=60`, minutes — was
+  effectively 4320) — the launcher-refusal/standdown sites keep the existing
+  hours-scale `LEADV2_QUOTA_LOCKOUT_MAX_MINUTES` ceiling. Lockout records gained
+  additive `class`/`strikes` keys (strikes double the duration per re-lock, capped)
+  so a genuinely dry provider still converges to a long bench without a false
+  positive costing a full working day. Expiry honouring on both read paths
+  (`_provider_available` bash / `_lockout_blocked` python) was already correct and
+  is now regression-locked by tests. Also (Defect C): a live lockout on the routing
+  ladder's first dispatchable provider now renders a loud
+  `⚠ PRIMARY ARM BENCHED: …` stderr banner at the head of every dispatch instead of
+  only a journal line; and (Defect B, observability only — the fail-closed
+  threshold decision itself is untouched) `codex_quota_blocked` in
+  `lib/leadv2-glm-policy-resolve.py` now carries a `codex_block_cause`
+  (`quota_read_unknown` vs `quota_pct_ge_threshold` vs `provider_lockout`) so an
+  unreadable quota read is no longer indistinguishable in the journal from a
+  genuine ≥80% reading. New suite `tests/test-lockout-failure-class.sh` (12/12
+  green); non-regression pair `tests/test-quota-lockout-postspawn.sh` and
+  `tests/test-codex-lockout-agreement.sh` / `tests/test-codex-quota-gate.sh` still
+  pass (one pre-existing, unrelated flake in `test-quota-lockout-postspawn.sh`'s
+  T6 spill-ordering assertion, caused by live router_v2 headroom scores — out of
+  this design's scope, see the handoff report). Ledger row closed:
+  `SD-PROVIDER-LOCKOUT-DISPROPORTIONATE-01`. Handoff:
+  `docs/handoff/PROVIDER-LOCKOUT-FALSE-BLOCK-01/` (persona-engine).
+
 - **Pulse hook gagged the supervisor (LEAD-ANCHOR-01)** — `leadv2-lead-prose-guard.sh`
   (Stop hook) hard-blocked status reports and child-question forwards with `continue:false`
   because it had no notion of supervisor mode. Fixed: (a) skip entirely when

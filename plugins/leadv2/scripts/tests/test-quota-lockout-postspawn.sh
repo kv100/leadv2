@@ -142,13 +142,15 @@ else
   fail 'T1: codex dated-quota failure' "rc=${t1_rc} lockfile_exists=$([[ -f ${t1_lockfile} ]] && echo yes || echo no) output=${t1_out}"
 fi
 
-# T2: locked_until is within +-90s of the parsed Aug 8 2026 08:49 LOCAL->UTC instant,
-# and clearly not the flat 30-min default (> now+90min).
+# T2 (PROVIDER-LOCKOUT-FALSE-BLOCK-01): the provider-stated time (Aug 8 2026
+# 08:49 LOCAL + 24h past-guard ≈ now+24h) is now CLAMPED to the 60-minute
+# post-spawn cap: locked_until within ±90s of now+60m, and clearly longer than
+# the 30-min flat default (> now+45m) so the clamp, not the default, is what
+# produced the value.
 t2_ok=0
 if [[ -f "${t1_lockfile}" ]]; then
   t2_ok="$(python3 - "${t1_lockfile}" <<'PY'
 import json, sys, time
-from datetime import datetime, timedelta
 try:
     d = json.load(open(sys.argv[1]))
     epoch = int(d.get("locked_until_epoch") or 0)
@@ -156,19 +158,17 @@ except Exception:
     print(0); sys.exit(0)
 if epoch <= 0:
     print(0); sys.exit(0)
-naive = datetime.strptime("Aug 8, 2026 8:49 AM", "%b %d, %Y %I:%M %p")
-local_epoch = time.mktime(naive.timetuple())
 now = time.time()
-within_expected = abs(epoch - local_epoch) <= 90
-clearly_not_default = epoch > now + 90 * 60
-print(1 if (within_expected and clearly_not_default) else 0)
+clamped_to_cap = abs(epoch - (now + 60 * 60)) <= 90
+clearly_not_default = epoch > now + 45 * 60
+print(1 if (clamped_to_cap and clearly_not_default) else 0)
 PY
 )"
 fi
 if [[ "${t2_ok}" == "1" ]]; then
-  pass 'T2: locked_until matches the parsed provider time, not the flat default'
+  pass 'T2: provider time is honoured but clamped to the 60m post-spawn cap (not 24h, not the flat default)'
 else
-  fail 'T2: locked_until time value' "lockfile=$(cat "${t1_lockfile}" 2>/dev/null || echo MISSING)"
+  fail 'T2: post-spawn cap clamp' "lockfile=$(cat "${t1_lockfile}" 2>/dev/null || echo MISSING)"
 fi
 
 # T6: within T1's SAME single dispatch run, the codex quota verdict line appears

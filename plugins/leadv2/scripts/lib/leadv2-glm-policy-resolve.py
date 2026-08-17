@@ -797,6 +797,7 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
 
     tier = codex_default_tier if arm == "codex" else ""
     codex_blocked = False
+    codex_block_cause = ""
     readings = ""
 
     # --- T-q enforcement (SUPERVISOR-AUDIT-01 T-b): codex_quota_gate + review_arm_exclusions ---
@@ -816,6 +817,13 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
         # blocked (codex ineligible) until a valid weekly reading exists.
         quota_known = quota_codex_pct is not None
         codex_blocked = (not quota_known) or _num_ge(quota_codex_pct, threshold)
+        # PROVIDER-LOCKOUT-FALSE-BLOCK-01 (Defect B observability only — the
+        # fail-closed decision itself is untouched): say WHY codex is blocked.
+        # An unreadable quota read (the 2026-08-17 ~16:00Z observable) must be
+        # distinguishable in the journal from a genuine >=threshold reading.
+        if codex_blocked:
+            codex_block_cause = ("quota_read_unknown" if not quota_known
+                                 else "quota_pct_ge_threshold")
 
         # GLM-FIRST-RECOVERY-01 (C3): say what the world looked like -- but only
         # on the already-degraded path (gate evaluated AND codex blocked), so the
@@ -891,6 +899,9 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
 
     result = {"arm": arm, "rule": rule, "reason": reason, "tier": tier,
               "codex_quota_blocked": codex_blocked, "job": job}
+    # Additive (PROVIDER-LOCKOUT-FALSE-BLOCK-01): present only when blocked.
+    if codex_blocked:
+        result["codex_block_cause"] = codex_block_cause
     # GLM-FIRST-RECOVERY-01: additive key -- callers that read only the known
     # keys (router.sh's import mode) are unaffected; the CLI prints it below.
     if readings:
@@ -1050,11 +1061,17 @@ def _main(argv):
         # returned -- the resolver previously had zero awareness of the on-disk store.
         if _lockout_blocked(ladder_providers.get("codex", "codex"), now_epoch, lockout_dir):
             result["codex_quota_blocked"] = True
+            result.setdefault("codex_block_cause", "provider_lockout")
         print("arm=%s" % result["arm"])
         print("rule=%s" % result["rule"])
         print("reason=%s" % result["reason"])
         print("tier=%s" % result["tier"])
         print("codex_quota_blocked=%s" % ("1" if result["codex_quota_blocked"] else "0"))
+        # Additive, blocked-path-only (same posture as readings=): names WHY
+        # codex is blocked — quota_read_unknown | quota_pct_ge_threshold |
+        # provider_lockout. Non-blocked paths stay byte-identical.
+        if result["codex_quota_blocked"]:
+            print("codex_block_reason=%s" % (result.get("codex_block_cause") or "quota_read_unknown"))
         # GLM-FIRST-RECOVERY-01 (C3): gate-path-only additive line -- absent on
         # every non-degraded path, so callers that do not parse `readings=`
         # (and v1-equivalence tests) see byte-identical output.
