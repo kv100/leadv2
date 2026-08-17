@@ -263,7 +263,7 @@ Principle: **context is cache, disk is truth.** Sessions run for days with many 
 
 ---
 
-**PULSE MODE (default ON):** between phases: absolute silence. Gate 1: one line + wait. Async question: one line + options. Phase 8 close: max 3 lines. Every extra sentence = protocol violation.
+**PULSE MODE (default ON):** between phases: absolute silence. Gate 1: one line + wait. Async question: one line + options. Phase 8 close: max 3 lines. A `[BROAD_STATUS]` relay when the plugin emits `BROAD_STATUS_READY` is an allowed output (paste `founder-status.md` verbatim; never compose one). Narration is model-generated prose about its own work; the pulse is a verbatim relay of a plugin-generated artifact — never a `CronCreate` job; the beat is plugin-owned (`leadv2-supervise-loop.sh`, `LEADV2_SUPERVISE_BROAD_STATUS_S`). Every extra sentence = protocol violation.
 
 **Enforcement (plugin-default hooks, active on fresh install):**
 - `leadv2-loop-detect-hook.sh` (PreToolUse `.*`): WARN at 30 tool calls, BLOCK at 50. Disable: `export LEADV2_LOOP_DETECT=0`. Adjust limits: `LEADV2_TOOL_FREQ_WARN=<n>`, `LEADV2_TOOL_HARD_LIMIT=<n>`. The Agent tool is exempt from this per-tool-type cap by default (`LEADV2_UNCAPPED_TOOLS=Agent`) — a supervisor's job is spawning subagents, so it must not share Bash's 50-call ceiling; override the exempt list with `LEADV2_UNCAPPED_TOOLS=<comma,separated,tool,names>`.

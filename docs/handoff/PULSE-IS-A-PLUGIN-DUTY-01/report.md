@@ -1,0 +1,3 @@
+# PULSE-IS-A-PLUGIN-DUTY-01 — fix round 1
+
+**What the relay publishes when a beat fails (fix r1):** on a collector or renderer failure the relay publishes a *replaced* `founder-status.md` — line 1 reads `<beat> [BROAD_STATUS] dispatched=… degraded=1`, the single-row lane table's Состояние cell names the failure, and the prose says `СТАТУС НЕ СОБРАН на beat <beat>: <reason>.` — never the previous beat's healthy table; if the artifact could not be rewritten, no `BROAD_STATUS_READY` is emitted at all and one URGENT `BROAD_STATUS_FAILED … stale_file_kept=1` line (no `path=` token, stale file kept byte-identical) reaches the founder instead.
