@@ -90,6 +90,7 @@ readonly GLM_PERMANENT_FAILURE_SENTINEL="GLM_PERMANENT_FAILURE"
 # Seam for tests to stub the `claude` binary entirely (no real network call).
 readonly GLM_CLAUDE_BIN="${GLM_CLAUDE_BIN:-claude}"
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"
 
 # FINISH GUARD (2026-07-03): appended to every real mission prompt (cmd_bg and
 # cmd_run — never cmd_test) so the model is told, at the prompt level, not to
@@ -241,8 +242,19 @@ run_claude() {
     command "${GLM_CLAUDE_BIN}" -p "${resolved_prompt}" \
       --dangerously-skip-permissions \
       --disallowedTools "Agent" \
-      --model sonnet
+      --model sonnet \
+      --output-format json
   ) >"${out_file}" 2>&1 || exit_code=$?
+
+  # Telemetry is deliberately best-effort and runs after the complete provider
+  # JSON envelope is durable.  Its failure can never alter the lane outcome.
+  if [[ -f "${COSTLOG_DEV_LIB}" ]]; then
+    # shellcheck disable=SC1090
+    source "${COSTLOG_DEV_LIB}"
+    leadv2_costlog_dev_write "${out_file}" "${cwd_dir}" "${LEADV2_COSTLOG_ARM:-glm-coder}" || true
+  else
+    log_info "costlog dev shim absent (${COSTLOG_DEV_LIB}) — skipping telemetry"
+  fi
 
   echo "${out_file}"
   return "${exit_code}"
@@ -820,6 +832,12 @@ out_path = os.path.join(run_dir, "result.md")
 with open(out_path, "w") as out:
     out.write(text if text else "(no result event found)\n")
 
+# Preserve the provider envelope separately from the human-readable result.
+# The dev cost shim consumes this exact object and never estimates tokens.
+if last_result is not None:
+    with open(os.path.join(run_dir, "result-envelope.json"), "w") as out:
+        json.dump(last_result, out)
+
 if is_error:
     with open(os.path.join(run_dir, ".result_is_error"), "w") as f:
         f.write("1\n")
@@ -1391,6 +1409,17 @@ cmd_supervise() {
   fi
 
   extract_result "${run_dir}"
+
+  # Background dispatches finish here, not in leadv2-dispatch-code.sh.  This
+  # is therefore the first point at which their final provider JSON envelope
+  # is on disk.  Keep the write non-fatal just like the engine writer.
+  if [[ -f "${COSTLOG_DEV_LIB}" ]]; then
+    # shellcheck disable=SC1090
+    source "${COSTLOG_DEV_LIB}"
+    leadv2_costlog_dev_write "${run_dir}/result-envelope.json" "${cwd_dir}" "${LEADV2_COSTLOG_ARM:-glm-coder}" || true
+  else
+    log_info "costlog dev shim absent (${COSTLOG_DEV_LIB}) — skipping telemetry"
+  fi
 
   # FINISH GUARD: git-delta audit runs regardless of exit_code — a stash-left
   # or uncommitted-work warning is meaningful even on a failed/timed-out run.
