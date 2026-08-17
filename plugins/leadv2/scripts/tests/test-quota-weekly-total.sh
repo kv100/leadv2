@@ -94,10 +94,24 @@ else
   fail "5 window_basis='${wk_basis:-<empty>}' expected rolling_7d"
 fi
 
-# 6. --report names basis + calibration on the line.
+# 5b. GLM weekly total bucketed separately (rolling 7d, never the Anthropic reset window)
+# and provenance honestly says yaml_override for a non-calibrated cap (review M1/L2).
+wk_capbasis="$(jget "$json" '"window_weekly":{[^}]*"cap_basis":"\([a-z_]*\)"')"
+if [[ "$glm_wk_total" == "10000000" ]]; then
+  pass "5b providers.glm.weekly.total=$glm_wk_total (GLM bucketed separately)"
+else
+  fail "5b providers.glm.weekly.total='${glm_wk_total:-<empty>}' expected 10000000"
+fi
+if [[ "$wk_capbasis" == "yaml_override" ]]; then
+  pass "5b cap_basis=yaml_override for a non-calibrated cap (never a false calibrated label)"
+else
+  fail "5b cap_basis='${wk_capbasis:-<empty>}' expected yaml_override (cap 1000000 != calibrated 4183721494)"
+fi
+
+# 6. --report names basis + the cap provenance on the line (yaml-override spelling here).
 rep="$(bash "$QUOTA_SH" --report)"
-if printf '%s\n' "$rep" | grep -qE 'weekly\(claude, total-token, calibrated [0-9-]+\) 100% \(window=rolling_7d\)'; then
-  pass "6 report line names calibration + window basis"
+if printf '%s\n' "$rep" | grep -qE 'weekly\(claude, total-token, cap yaml-override\) 100% \(window=rolling_7d\)'; then
+  pass "6 report line names cap provenance + window basis"
 else
   fail "6 report line wrong: $(printf '%s\n' "$rep" | head -1)"
 fi
@@ -151,6 +165,19 @@ if [[ "$wk_basis_st" == "rolling_7d" && "$wk_total_st" == "1000999999" ]]; then
   pass "9 stale kv capture → rolling_7d, old row counted again (total 1000999999)"
 else
   fail "9 basis='${wk_basis_st:-?}' total='${wk_total_st:-?}' — expected rolling_7d / 1000999999"
+fi
+
+# 10. malformed-but-fresh kv (fresh epoch, NO status field, review L1): the breaker falls
+# back to the heuristic instead of tripping on an empty string — garbage must not lie RED.
+FRESH_EP2="$(( $(date +%s) - 30 ))"
+sqlite3 "$DB" "UPDATE kv SET value='{\"overageStatus\":\"normal\",\"resetsAt\":\"$RESET_ISO\",\"captured_epoch\":$FRESH_EP2,\"seven_day_reset_iso\":\"$RESET_ISO\",\"binding_window\":\"seven_day\"}' WHERE key='rate_limit_anthropic';"
+set +e
+bash "$QUOTA_SH" --check >/dev/null 2>&1; rc_mal=$?
+set -e
+if [[ $rc_mal -eq 0 ]]; then
+  pass "10 malformed fresh kv (no status) → --check exit 0 (heuristic fallback, no lying-RED)"
+else
+  fail "10 --check exit $rc_mal on a statusless kv capture — empty RL_STATUS tripped the breaker"
 fi
 
 echo

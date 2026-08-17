@@ -87,7 +87,8 @@ MAX_WK_IN=100000000
 # the header comment. The default MUST carry the calibrated value itself: no repo yaml defines
 # max_weekly_total_tokens yet and the plugin's own ref/ has no yaml, so until a repo overrides
 # it this default IS the deployed number.
-MAX_WK_TOTAL=4183721494
+DEFAULT_WK_TOTAL=4183721494
+MAX_WK_TOTAL=$DEFAULT_WK_TOTAL
 WK_CALIBRATED_AT="2026-08-17"
 MIN_CACHE_HIT=0.30
 # A captured rate_limit_info signal is trusted for this many seconds, then we fall back to the
@@ -148,6 +149,10 @@ if [[ -n "$RL_RAW" ]]; then
   if [[ -n "${RL_EPOCH:-}" ]]; then
     now_ep="$(date -u +%s)"
     [[ $(( now_ep - RL_EPOCH )) -lt $RL_FRESH_SECS ]] && RL_FRESH=1
+    # A capture with no parseable status is malformed — fall back to the heuristic cap
+    # rather than trip the breaker on an empty string (review L1: never a lying-RED from
+    # garbage; same doctrine as the GLM axis' "unmeasured, never 0").
+    [[ -z "$RL_STATUS" ]] && RL_FRESH=0
     [[ "$RL_FRESH" == "1" ]] && RL_CAP_BASIS="rate_limit_info"
   fi
 fi
@@ -192,8 +197,11 @@ read -r CW_IN CW_CC CW_CR CW_OUT CW_N <<EOF3
 $(stats "$WK_PRED AND model LIKE 'claude%'")
 EOF3
 
+# GLM weekly stays ROLLING 7d (review M1): WK_PRED under provider_reset is ANTHROPIC's bucket
+# start — Z.AI's weekly bucket resets on its own schedule, so windowing GLM by the Anthropic
+# reset would mislabel the number. GLM's real weekly % comes from glm_live_* below anyway.
 read -r GW_IN GW_CC GW_CR GW_OUT GW_N <<EOF6
-$(stats "$WK_PRED AND model LIKE 'glm%'")
+$(stats "ts > datetime('now','-7 days') AND model LIKE 'glm%'")
 EOF6
 
 # ── Live GLM weekly (real number; PLUGIN-TRIO-01 Fix C) ────────────────────
@@ -241,6 +249,14 @@ PCT_WK_LEGACY=0
 [[ "$MAX_WK_IN" -gt 0 ]] && PCT_WK_LEGACY=$(( CW_IN * 100 / MAX_WK_IN ))
 PCT_WK=0
 [[ "$MAX_WK_TOTAL" -gt 0 ]] && PCT_WK=$(( WK_TOT * 100 / MAX_WK_TOTAL ))
+# Provenance labels (review L2): the calibrated labels are only truthful for the built-in
+# constant — a yaml override is someone's own cap, not the 2026-08-17 calibration.
+WK_CAP_BASIS="calibrated_total_tokens"
+WK_CAL_AT="$WK_CALIBRATED_AT"
+if [[ "$MAX_WK_TOTAL" -ne "$DEFAULT_WK_TOTAL" ]]; then
+  WK_CAP_BASIS="yaml_override"
+  WK_CAL_AT=""
+fi
 
 CACHE_HIT_24=0
 DENOM=$(( C24_IN + C24_CR ))
@@ -296,9 +312,9 @@ case "$MODE" in
     else
       glm_live_pct_json="null"
     fi
-    printf '{"window_5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"pct":%d,"cap":%d,"cap_basis":"%s"},"window_weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"pct":%d,"cap":%d,"cap_basis":"calibrated_total_tokens","calibrated_at":"%s","window_basis":"%s","window_start":"%s","input_pct_legacy":%d,"glm_live_status":"%s","glm_live_pct":%s,"glm_live_reset":"%s"},"cache_hit_24h":%s,"status":"%s","recommendation":"%s","providers":{"anthropic":{"w5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"turns":%d},"weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"turns":%d}},"glm":{"w5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"turns":%d},"weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"turns":%d}},"codex":"unmeasured"},"rate_limit":%s}\n' \
+    printf '{"window_5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"pct":%d,"cap":%d,"cap_basis":"%s"},"window_weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"pct":%d,"cap":%d,"cap_basis":"%s","calibrated_at":"%s","window_basis":"%s","window_start":"%s","input_pct_legacy":%d,"glm_live_status":"%s","glm_live_pct":%s,"glm_live_reset":"%s"},"cache_hit_24h":%s,"status":"%s","recommendation":"%s","providers":{"anthropic":{"w5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"turns":%d},"weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"turns":%d}},"glm":{"w5h":{"input":%d,"cc":%d,"cr":%d,"output":%d,"turns":%d},"weekly":{"input":%d,"cc":%d,"cr":%d,"output":%d,"total":%d,"turns":%d}},"codex":"unmeasured"},"rate_limit":%s}\n' \
       "$C5_IN" "$C5_CC" "$C5_CR" "$C5_OUT" "$PCT_5H" "$MAX_5H_IN" "$RL_CAP_BASIS" \
-      "$CW_IN" "$CW_CC" "$CW_CR" "$CW_OUT" "$WK_TOT" "$PCT_WK" "$MAX_WK_TOTAL" "$WK_CALIBRATED_AT" "$WK_WINDOW_BASIS" "$WK_START_DISP" "$PCT_WK_LEGACY" "$GLM_WK_STATUS" "$glm_live_pct_json" "$GLM_WK_RESET" \
+      "$CW_IN" "$CW_CC" "$CW_CR" "$CW_OUT" "$WK_TOT" "$PCT_WK" "$MAX_WK_TOTAL" "$WK_CAP_BASIS" "$WK_CAL_AT" "$WK_WINDOW_BASIS" "$WK_START_DISP" "$PCT_WK_LEGACY" "$GLM_WK_STATUS" "$glm_live_pct_json" "$GLM_WK_RESET" \
       "$CACHE_HIT_24" "$STATUS" "$REC" \
       "$C5_IN" "$C5_CC" "$C5_CR" "$C5_OUT" "$C5_N" \
       "$CW_IN" "$CW_CC" "$CW_CR" "$CW_OUT" "$WK_TOT" "$CW_N" \
@@ -307,8 +323,13 @@ case "$MODE" in
       "$rl_block"
     ;;
   report)
-    printf "Quota: 5h %d%% (%d / %d in, claude%% only, cap est.) | weekly(claude, total-token, calibrated %s) %d%% (window=%s) | cache-hit %s | %s\n" \
-      "$PCT_5H" "$C5_IN" "$MAX_5H_IN" "$WK_CALIBRATED_AT" "$PCT_WK" "$WK_WINDOW_BASIS" "$CACHE_HIT_24" "$STATUS"
+    if [[ "$WK_CAP_BASIS" == "yaml_override" ]]; then
+      _wk_label="weekly(claude, total-token, cap yaml-override)"
+    else
+      _wk_label="weekly(claude, total-token, calibrated $WK_CALIBRATED_AT)"
+    fi
+    printf "Quota: 5h %d%% (%d / %d in, claude%% only, cap est.) | %s %d%% (window=%s) | cache-hit %s | %s\n" \
+      "$PCT_5H" "$C5_IN" "$MAX_5H_IN" "$_wk_label" "$PCT_WK" "$WK_WINDOW_BASIS" "$CACHE_HIT_24" "$STATUS"
     printf "  anthropic 5h: in %s  cc %s  cr %s  out %s  (%d turns)%s\n" \
       "$(hm "$C5_IN")" "$(hm "$C5_CC")" "$(hm "$C5_CR")" "$(hm "$C5_OUT")" "$C5_N" "$CACHE_NOTE"
     printf "  anthropic wk:  in %s  cc %s  cr %s  out %s  — total %s / %s cap  (input-only legacy %d%%; window=%s%s)\n" \
