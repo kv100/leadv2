@@ -553,7 +553,13 @@ leadv2_active_register() {
   # Tiebreaker: append $$ (gate1 subprocess pid, unique per invocation) after durable_pid.
   # durable_pid is the liveness key; $$ ensures uniqueness when two tasks register same second.
   session_id="s-$(date -u +%Y%m%dT%H%M%SZ)-${durable_pid}-$$"
-  pid_birth="$(ps -o lstart= -p "${durable_pid}" 2>/dev/null | tr -s ' ' || printf -- 'unknown')"
+  # LANE-LIVENESS-LIES-01 Change 1a: byte-identical trim to the canonical
+  # form in leadv2-supervise-loop.sh:115 / leadv2-status-surface.sh lstart().
+  # `tr -s ' '` alone collapses interior runs but Darwin's `ps -o lstart=`
+  # right-pads the field, leaving a trailing space the reader's `.strip()`
+  # removes -- so writer and reader never compared equal and every healthy
+  # lane failed birth corroboration. Do not "simplify" back to `tr -s ' '`.
+  pid_birth="$(ps -o lstart= -p "${durable_pid}" 2>/dev/null | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//' || printf -- 'unknown')"
   pulse_log="docs/leadv2/tasks/${task_id}/pulse.md"
   parent_sid="${LEADV2_PARENT_SESSION_ID:-null}"
 

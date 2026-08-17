@@ -639,6 +639,17 @@ def _pid_birth_of(pid_val):
     except Exception:
         return None
 
+def _norm_birth(v):
+    # LANE-LIVENESS-LIES-01 Change 1a: normalise the STORED value at read
+    # time too, not just the live one, so legacy active.yaml rows already
+    # persisted with the pre-fix trailing space (leadv2-active-registry.sh's
+    # old `tr -s ' '`-only writer) compare equal without a migration. Same
+    # trim as _pid_birth_of() above / leadv2-supervise-loop.sh:115 /
+    # leadv2-status-surface.sh lstart() -- keep all three byte-identical.
+    if not v:
+        return v
+    return " ".join(str(v).split())
+
 tmux_windows = {w.strip() for w in tmux_windows_tsv.splitlines() if w.strip()}
 tmux_panes = {}
 for line in tmux_panes_tsv.splitlines():
@@ -752,7 +763,7 @@ for tid, s in list(current.items()):
         pid_issue = True
         pid_issue_reason = "pid dead"
     else:
-        stored_birth = s.get("pid_birth")
+        stored_birth = _norm_birth(s.get("pid_birth"))
         cur_birth = _pid_birth_of(pid)
         if stored_birth and cur_birth and stored_birth != cur_birth:
             pid_issue = True
@@ -767,6 +778,30 @@ for tid, s in list(current.items()):
         # `continue` below, same as fully-clean evidence.
     elif pid_issue:
         reasons = [pid_issue_reason]
+
+    # LANE-LIVENESS-LIES-01 Change 1b: a fresh stream/log mtime outranks the
+    # pid heuristic before any escalation (memory
+    # feedback_pulse_liveness_by_stream_mtime). Reuse lane_liveness_by_id
+    # (leadv2-lane-liveness.sh --all --json, already computed above) as the
+    # single authoritative freshness oracle instead of opening a second one.
+    # Applies to BOTH legs (pid evidence and tmux-window evidence) -- a live
+    # worker whose tmux window transiently fails to list is the same lie.
+    # Absence of a liveness row must never be evidence of life: the veto
+    # simply does not fire and `reasons` (if any) stands.
+    # Gated by prune_v2_mode: LEADV2_SUPERVISE_PRUNE_V2=0 is the emergency
+    # rollback that must reproduce the EXACT prior (pre-SUPERVISOR-AUDIT-01)
+    # PID-only death authority verbatim (test-supervise-v2.sh Test 12b) --
+    # this veto is a Change-1b safety addition layered on TOP of the normal
+    # (v2) path, same precedent as the "absent PID alone" gate above.
+    if prune_v2_mode and reasons:
+        _lv_row = lane_liveness_by_id.get(tid) or {}
+        _age_s = _lv_row.get("age_s")
+        try:
+            _lane_fresh_s = max(0, int(os.environ.get("LEADV2_LANE_FRESH_S", "120")))
+        except (TypeError, ValueError):
+            _lane_fresh_s = 120
+        if isinstance(_age_s, (int, float)) and _age_s <= _lane_fresh_s:
+            reasons = []
 
     if not reasons:
         continue  # evidence clears any prior candidate marker — not carried forward
