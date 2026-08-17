@@ -6,14 +6,18 @@
 # from the 5h query, GLM volume gets attributed to Anthropic and the breaker trips on GLM —
 # throttling the Claude-Max lead for work pushed onto GLM (punishing GLM-FIRST-01).
 #
-# Fixture: GLM row with 7,000,000 input (would be 87% of the 8M cap → EXHAUSTED if unfiltered),
-# Anthropic row with 1,000 input (0.01%). Assertions:
+# Fixture: GLM row with 7,000,000 input (would be 87% of the 8M cap → EXHAUSTED if unfiltered)
+# + 2,000,000,000 cr; Anthropic row with 1,000 input + 1,000,000,000 cr (weekly total-token
+# axis, QUOTA-GAUGE-WEEKLY-AXIS-STILL-LYING-01). Assertions:
 #   1. bash -n syntax
 #   2. --check exits 0  (GLM does NOT trip the Anthropic breaker)             [acceptance #3]
 #   3. --json window_5h.input == 1000  (Anthropic bucket excludes GLM)        [the filter-drop detector]
 #   4. --json providers.glm.w5h.input == 7000000  (GLM bucketed separately)
 #   5. --json window_5h.pct < 60  (GLM not counted toward the Anthropic %)
 #   6. --report anthropic line shows 1.0K, never 7.0M
+#   7. --json window_weekly.total == 1,000,001,500 (in+cc+cr+out, GLM's 2B cr excluded)
+#   8. --json window_weekly.pct == 23 (total*100/calibrated default cap 4,183,721,494 —
+#      GLM leaking in would give 71%)
 #
 # Portable: only sqlite3 + sh/sed builtins (no jq / GNU date / sed -i). Exit 0 = pass.
 # Run: bash scripts/tests/test-quota-glm-filter.sh
@@ -41,9 +45,9 @@ CREATE TABLE turn_events(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, 
   model TEXT, tools_json TEXT);
 CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX turn_events_ts ON turn_events(ts);
-INSERT INTO turn_events(session_id,ts,input,output,model) VALUES
-  ('glm1',    datetime('now','-30 minutes'), 7000000, 100000, 'glm-5.2'),
-  ('claude1', datetime('now','-1 hour'),     1000,    500,    'claude-opus-4-8');
+INSERT INTO turn_events(session_id,ts,input,cr,output,model) VALUES
+  ('glm1',    datetime('now','-30 minutes'), 7000000, 2000000000, 100000, 'glm-5.2'),
+  ('claude1', datetime('now','-1 hour'),     1000,    1000000000, 500,    'claude-opus-4-8');
 "
 export LEADV2_BURN_DB="$DB" LEADV2_MAIN_MODEL_CFG="$CFG"
 
@@ -79,6 +83,22 @@ if printf '%s\n' "$rep" | grep -qE 'anthropic 5h:.*in 1\.0K' && ! printf '%s\n' 
   pass "6 report anthropic shows 1.0K, not 7.0M"
 else
   fail "6 report anthropic line wrong: $(printf '%s\n' "$rep" | grep 'anthropic 5h')"
+fi
+
+# 7/8. Weekly total-token axis: the filter must hold there too. claude weekly total =
+# 1000 + 0 + 1,000,000,000 + 500 = 1,000,001,500 → pct = 23 against the calibrated default cap
+# (4,183,721,494). GLM's 2B cr leaking in would give total 3,000,001,500 → pct 71.
+wk_total="$(printf '%s' "$json" | sed -n 's/.*"window_weekly":{[^}]*"total":\([0-9]*\).*/\1/p' | head -1)"
+wk_pct="$(printf '%s'   "$json" | sed -n 's/.*"window_weekly":{[^}]*"pct":\([0-9]*\).*/\1/p' | head -1)"
+if [[ "$wk_total" == "1000001500" ]]; then
+  pass "7 window_weekly.total=$wk_total (GLM 2B cr excluded from the claude weekly)"
+else
+  fail "7 window_weekly.total='${wk_total:-<empty>}' expected 1000001500 — GLM leaked into the weekly total?"
+fi
+if [[ "$wk_pct" == "23" ]]; then
+  pass "8 window_weekly.pct=$wk_pct (calibrated default cap; GLM leak would give 71)"
+else
+  fail "8 window_weekly.pct='${wk_pct:-<empty>}' expected 23 — filter or calibrated default cap broken?"
 fi
 
 echo

@@ -13,6 +13,8 @@
 #   4. --report shows "unmeasured" (never a bare 0%) when the fake helper fails
 #   5. --json embeds glm_live_pct:null (never 0) on the same failure path
 #   6. --check is unaffected either way (still claude%-only; exit 0 on empty/low usage)
+#   7. the claude weekly total-token axis is nonzero and independent of the glm live read
+#      (fixture cr = half the calibrated default cap → weekly 50% with or without live GLM)
 #
 # Run: bash scripts/tests/test-quota-weekly-live.sh
 
@@ -38,6 +40,8 @@ CREATE TABLE turn_events(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, 
   model TEXT, tools_json TEXT);
 CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX turn_events_ts ON turn_events(ts);
+INSERT INTO turn_events(session_id,ts,input,cr,output,model) VALUES
+  ('claude1', datetime('now','-1 hour'), 0, 2091860747, 0, 'claude-opus-5');
 "
 export LEADV2_BURN_DB="$DB" LEADV2_MAIN_MODEL_CFG="$CFG"
 
@@ -89,6 +93,17 @@ if printf '%s' "$json_fail" | grep -q '"glm_live_status":"unmeasured","glm_live_
 else
   fail "5 --json did not degrade to null: $(printf '%s' "$json_fail" | sed -n 's/.*\(window_weekly[^}]*}\).*/\1/p')"
 fi
+
+# 7. claude weekly total-token axis: nonzero (50% of the calibrated default cap) and identical
+# whether the GLM live read succeeds or fails — the two numbers are independent axes.
+for j in "$json_ok" "$json_fail"; do
+  wk_pct="$(printf '%s' "$j" | sed -n 's/.*"window_weekly":{[^}]*"pct":\([0-9]*\).*/\1/p' | head -1)"
+  if [[ "$wk_pct" == "50" ]]; then
+    pass "7 window_weekly.pct=50 (cr 2,091,860,747 vs calibrated cap 4,183,721,494; glm live irrelevant)"
+  else
+    fail "7 window_weekly.pct='${wk_pct:-<empty>}' expected 50 — weekly total-token axis broken or cap default changed without re-calibrating"
+  fi
+done
 
 # 6. --check unaffected by the live-read outcome (empty db -> 0% claude usage -> exit 0).
 set +e
