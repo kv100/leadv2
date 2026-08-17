@@ -1,0 +1,7 @@
+ 400001  400001     0:15 /bin/bash /opt/nonexistent/scripts/glm-coder.sh run /opt/nonexistent/repo-a/docs/handoff/dispatch-aaaaaaaa/review-mission-glm.md
+ 400002  400001     0:10 /usr/local/bin/python3 -m telemetry --quiet
+ 400003  400001     0:05 /usr/local/bin/claude -p --dangerously-skip-permissions docs/handoff/dispatch-aaaaaaaa-architect/mission.md
+ 400010  400010  1-02:03:04 /bin/bash /opt/nonexistent/scripts/leadv2-dispatch-code.sh --lane dispatch-bbbbbbbb
+ 400011  400010  1-02:03:00 /usr/local/bin/claude -p refactor-the-ledger-sweep-and-write-tests
+ 400020  400020    12:00 /bin/bash /opt/nonexistent/scripts/leadv2-dispatch-code.sh --lane dispatch-eeeeeeee
+ 400030  400030     0:02 grep dispatch-ffffffff /tmp/some-log.txt
