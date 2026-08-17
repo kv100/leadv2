@@ -153,7 +153,14 @@ _install_beat_cron() {
   [[ "${LEADV2_SUPERVISE_BEAT_CRON:-1}" == "1" ]] || return 0
   [[ -x "$WATCHDOG_SH" ]] || return 0
   local crontab_bin="${CRONTAB_BIN:-crontab}"
-  command -v "$crontab_bin" >/dev/null 2>&1 || return 0
+  command -v "$crontab_bin" >/dev/null 2>&1 || {
+    # Visible gap, not a silent one (PULSE-IS-A-PLUGIN-DUTY-01 §3): with no
+    # cron there is no resurrection after a session death — only a manual
+    # --ensure restarts the loop, and the founder should see that in the log.
+    printf -- '%s [supervise-loop] beat-cron install skipped: %s unavailable — restart after a session death needs a manual --ensure\n' \
+      "$(_now_iso)" "$crontab_bin" >>"$LOG_FILE" 2>/dev/null || true
+    return 0
+  }
   # Repo slug for the marker (basename of the main repo toplevel).
   local repo_slug
   repo_slug="$(basename "${PROJECT_ROOT}")"
@@ -374,8 +381,22 @@ except Exception:
 }
 trap _cleanup_sentinel EXIT
 
-PUMP_SH="${SCRIPT_DIR}/leadv2-backlog-pump.sh"
+PUMP_SH="${LEADV2_BACKLOG_PUMP_BIN:-${SCRIPT_DIR}/leadv2-backlog-pump.sh}"
 BROAD_STATUS_SH="${SCRIPT_DIR}/leadv2-broad-status.sh"
+
+# PULSE-IS-A-PLUGIN-DUTY-01 C1: a beat that cannot compose must still wake the
+# lead — a missing status is visible, never inferred from silence. Fires once
+# per occurrence (value carries the epoch), which at one beat per
+# BROAD_STATUS_S window is the same cadence the beat itself would have.
+_emit_broad_status_degraded() {  # <reason>
+  local reason="${1:-unknown}"
+  if command -v leadv2_alarm_transition >/dev/null 2>&1 \
+      && ! leadv2_alarm_transition broad_status_ready "degraded:${reason}:$(date +%s)" 2>/dev/null; then
+    return 0
+  fi
+  printf -- '%s [SUPERVISE-URGENT] BROAD_STATUS_READY at=%s path=docs/leadv2/founder-status.md rows=- dispatched=unavailable degraded=1 reason=%s\n' \
+    "$(_now_iso)" "$reason" >>"$LOG_FILE"
+}
 
 # BACKLOG-PUMP-01: this loop already owns the sleep/poll cadence (off_limits:
 # "no sleep/poll loop owned by the LLM") — the pump's refill trigger belongs
@@ -811,14 +832,36 @@ while true; do
 
   # The supervisor never reads or composes this status: the helper gathers
   # facts and makes one cheap model call, then writes a finished block here.
+  # PULSE-IS-A-PLUGIN-DUTY-01: (C2) the backlog pump runs BEFORE the composer
+  # and its dispatched count is exported into the beat, so "a pulse dispatches
+  # before it reports" is a code-enforced, after-the-fact auditable order —
+  # not an instruction. (C1) the composer emits one URGENT-tagged
+  # BROAD_STATUS_READY line per beat (the delivery contract); a beat that
+  # cannot compose still wakes via _emit_broad_status_degraded.
   if [[ "$BROAD_STATUS_S" =~ ^[0-9]+$ ]] && (( BROAD_STATUS_S > 0 )) \
       && (( NOW_EPOCH - LAST_BROAD_STATUS_EPOCH >= BROAD_STATUS_S )); then
+    export LEADV2_BROAD_STATUS_DISPATCHED="unavailable"
+    if [[ "${LEADV2_BACKLOG_PUMP:-1}" == "1" && -x "$PUMP_SH" ]]; then
+      _BS_PUMP_OUT="$(bash "$PUMP_SH" check 2>&1)" || true
+      [[ -z "$_BS_PUMP_OUT" ]] || printf '%s\n' "$_BS_PUMP_OUT" >>"$LOG_FILE"
+      # Parse the pump's own "check complete:" summary; absent summary →
+      # "unavailable", never 0 (a fabricated "ran and dispatched nothing").
+      export LEADV2_BROAD_STATUS_DISPATCHED="$(printf '%s\n' "$_BS_PUMP_OUT" \
+        | sed -n 's/.*check complete:.*dispatched=\([0-9][0-9]*\).*/\1/p' | tail -n1)"
+      [[ -n "${LEADV2_BROAD_STATUS_DISPATCHED}" ]] || export LEADV2_BROAD_STATUS_DISPATCHED="unavailable"
+    fi
     if [[ -x "$BROAD_STATUS_SH" ]]; then
-      bash "$BROAD_STATUS_SH" >>"$LOG_FILE" 2>&1 || \
+      if bash "$BROAD_STATUS_SH" >>"$LOG_FILE" 2>&1; then
+        :
+      else
         printf -- '%s [BROAD_STATUS] failure: quality read unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
+        _emit_broad_status_degraded "composer_rc_nonzero"
+      fi
     else
       printf -- '%s [BROAD_STATUS] failure: composer unavailable; quality read unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
+      _emit_broad_status_degraded "composer_missing"
     fi
+    unset LEADV2_BROAD_STATUS_DISPATCHED
     LAST_BROAD_STATUS_EPOCH=$NOW_EPOCH
   fi
 

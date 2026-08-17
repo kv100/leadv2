@@ -219,7 +219,14 @@ def build_thread_anchor(root, leadv2_dir, session_id=""):
         "2. Only an explicit stop/scope-change order pauses a thread. \"Also do X\" = queue X in\n"
         "   docs/leadv2/open-threads.md, do NOT switch to it.\n"
         "3. PULSE MODE: no narration. Chat output is allowed ONLY at: Gate-1, an async question,\n"
-        "   Phase-8 close. Everything else is silent tool work.\n"
+        "   Phase-8 close, a [BROAD_STATUS] relay when the plugin emits BROAD_STATUS_READY\n"
+        "   (paste founder-status.md verbatim; never compose one). Narration is\n"
+        "   model-generated prose about its own work; the pulse is a verbatim relay of a\n"
+        "   plugin-generated artifact — never a CronCreate job; the beat is plugin-owned.\n"
+        "   Before relaying, compare the ready-line's at= stamp with the timestamp\n"
+        "   leading line 1 of founder-status.md — if they differ, the file is from an\n"
+        "   earlier beat: publish that fact, not the file.\n"
+        "   Everything else is silent tool work.\n"
         "4. Anything promised for later goes to docs/leadv2/scheduled-decisions.md the same turn."
     )
 
@@ -695,7 +702,14 @@ def main():
         "2. Only an explicit stop/scope-change order pauses the task. \"Also do X\" = queue X in\n"
         "   docs/leadv2/open-threads.md, do NOT switch to it.\n"
         "3. PULSE MODE: no narration. Chat output is allowed ONLY at: Gate-1, an async question,\n"
-        "   Phase-8 close. Everything else is silent tool work.\n"
+        "   Phase-8 close, a [BROAD_STATUS] relay when the plugin emits BROAD_STATUS_READY\n"
+        "   (paste founder-status.md verbatim; never compose one). Narration is\n"
+        "   model-generated prose about its own work; the pulse is a verbatim relay of a\n"
+        "   plugin-generated artifact — never a CronCreate job; the beat is plugin-owned.\n"
+        "   Before relaying, compare the ready-line's at= stamp with the timestamp\n"
+        "   leading line 1 of founder-status.md — if they differ, the file is from an\n"
+        "   earlier beat: publish that fact, not the file.\n"
+        "   Everything else is silent tool work.\n"
         "4. Anything promised for later goes to docs/leadv2/scheduled-decisions.md the same turn."
     )
 

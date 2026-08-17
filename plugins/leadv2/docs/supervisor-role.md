@@ -92,8 +92,16 @@ in `context.yaml` or `CLAUDE.md` is founder-only too.
 - A lane opens, closes, dies, or stalls: announce it in 1–2 plain lines.
 - A founder-only question: raise it in chat, immediately when it blocks a lane;
   otherwise include it in the next status beat.
-- The 30-minute broad-status beat: paste the generated block. It reports the
-  5-hour and weekly rate-limit windows, never dollar figures.
+- The 30-minute broad-status beat: delivered by the plugin — one
+  `BROAD_STATUS_READY` line per beat reaches you through the URGENT filter;
+  paste `docs/leadv2/founder-status.md` verbatim, never hand-compose one and
+  never `CronCreate` a status job. It reports the 5-hour and weekly
+  rate-limit windows, never dollar figures. Narration is model-generated
+  prose about its own work; the pulse is a verbatim relay of a
+  plugin-generated artifact. Before relaying, compare the `at=` stamp in the
+  `BROAD_STATUS_READY` line with the leading timestamp on line 1 of
+  `founder-status.md`; if they differ, the file is from an earlier beat —
+  publish that fact, not the file.
 
 Everything else is silent. The steady-state budget is at most two supervisor
 turns per 30 minutes plus one per lane event. A close announcement is an
@@ -162,6 +170,20 @@ Three hard rules on the table's content — keep them true when touching
    the silence age as evidence — never a fabricated "нет изменений" claim
    when there is no previous beat to compare against (first beat in a
    session says so explicitly instead).
+
+**Delivery (PULSE-IS-A-PLUGIN-DUTY-01):** the beat is delivered, not
+narrated. `leadv2-broad-status.sh` appends exactly ONE
+`[SUPERVISE-URGENT] BROAD_STATUS_READY at=… path=docs/leadv2/founder-status.md
+rows=… dispatched=…` line to the loop log per beat; it passes the founder's
+`grep --line-buffered URGENT` watcher and is a POINTER to
+`founder-status.md`, never the payload. A beat that fails to render emits a
+`degraded=1` ready-line instead of silence. The backlog pump runs BEFORE the
+composer and its dispatched count is stamped into the beat
+(dispatch-before-report is code-enforced in `leadv2-supervise-loop.sh`, never
+an instruction). Hand-composing a status or spinning up a `CronCreate` job to
+produce one is banned: the cadence is plugin-owned
+(`LEADV2_SUPERVISE_BROAD_STATUS_S`; setting it to `0` disables the beat AND
+its ready-line).
 
 - **Short status**: plain words, no jargon, no UUIDs, no dollar figures
   (report the 5-hour / weekly rate-limit-window usage instead). The broad

@@ -9,7 +9,15 @@
 # A Haiku outage (or --model haiku failing) still yields a real table with
 # no prose tail, never the old "качество недоступно" whole-status failure.
 #
-# Rollback: LEADV2_SUPERVISE_BROAD_STATUS_S=0 disables the loop beat.
+# PULSE-IS-A-PLUGIN-DUTY-01 C1: delivery. The founder's watcher is
+# `tail -F | grep --line-buffered URGENT` on the loop log, and the
+# [BROAD_STATUS] block itself never contains that substring — before this
+# file emitted a ready-line, every beat was composed, timestamped, written to
+# two files, and woke nobody. See _emit_ready_line below.
+#
+# Rollback: LEADV2_SUPERVISE_BROAD_STATUS_S=0 disables the loop beat AND its
+# ready-line (the beat branch in leadv2-supervise-loop.sh is the only caller,
+# so the kill-switch cannot half-work).
 
 set -uo pipefail
 
@@ -30,10 +38,88 @@ COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector
 TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
 CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
 
+# Beat identity (also the alarm-dedupe VALUE — semantic, never the rendered
+# line). LEADV2_BROAD_STATUS_BEAT_AT pins it for tests so a re-run of the
+# same beat is a true no-op, not a second wake.
+BEAT_AT="${LEADV2_BROAD_STATUS_BEAT_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+# PULSE-IS-A-PLUGIN-DUTY-01 C2: stamped by the loop AFTER the backlog pump
+# ran and BEFORE this composer — "dispatch before report" as a code-enforced
+# order. "unavailable" when the pump could not run: never 0, which would
+# fabricate the fact that the pump ran and dispatched nothing.
+DISPATCHED="${LEADV2_BROAD_STATUS_DISPATCHED:-unavailable}"
+
 mkdir -p "$(dirname "$LOG_FILE")"
 
+# ── C1: ONE URGENT-tagged ready-line per beat ──────────────────────────────
+# INVARIANT (R1): exactly ONE line per beat, and it is a POINTER to
+# founder-status.md — never the payload, never per-lane. Do not "enrich" it:
+# every extra line is a model wake paid on every remaining turn of the
+# attached session. Transition-deduped (key broad_status_ready, value = beat
+# identity) so a re-read or a double --ensure cannot fire the same beat
+# twice; lib absent → pass-through emit (R2) — this script runs once per
+# BROAD_STATUS_S window, not per poll, so pass-through is still one line per
+# beat.
+ALARM_LIB="${LEADV2_ALARM_DEDUPE_BIN:-${SCRIPT_DIR}/lib/leadv2-alarm-dedupe.sh}"
+# shellcheck source=lib/leadv2-alarm-dedupe.sh
+[[ -f "$ALARM_LIB" ]] && source "$ALARM_LIB"
+_now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+_emit_ready_line() {  # <rows|-> [degraded]
+  local rows="${1:--}" degraded="${2:-}"
+  local dedupe_value="$BEAT_AT${degraded:+ degraded}"
+  if command -v leadv2_alarm_transition >/dev/null 2>&1 \
+      && ! leadv2_alarm_transition broad_status_ready "$dedupe_value" 2>/dev/null; then
+    return 0  # same beat already delivered — suppressed
+  fi
+  local rel_path="${FOUNDER_STATUS_PATH#"$PROJECT_ROOT"/}"
+  printf '%s [SUPERVISE-URGENT] BROAD_STATUS_READY at=%s path=%s rows=%s dispatched=%s%s\n' \
+    "$(_now_iso)" "$BEAT_AT" "$rel_path" "$rows" "$DISPATCHED" \
+    "${degraded:+ degraded=1}" >>"$LOG_FILE"
+}
+
+# ── failed-beat artifact policy (PULSE-IS-A-PLUGIN-DUTY-01 fix r1) ──────────
+# A failed beat must never leave the PREVIOUS beat's healthy table in place
+# while claiming freshness: the ready-line points at founder-status.md, so
+# the artifact itself has to carry the failure. Replace it with an explicit
+# degraded block (same envelope, same content contract: one lane table + 2
+# prose lines, same atomic tmp+mv write as the happy path) and only then
+# signal READY degraded. If even that write fails, refuse READY entirely:
+# BROAD_STATUS_FAILED carries no path= token, so nothing points the founder
+# at the stale file, while the URGENT substring still wakes them (C1).
+_write_degraded_status() {  # <reason> -> rc 0 if the artifact was replaced
+  local reason="$1" block
+  block="$(
+    printf '%s [BROAD_STATUS] dispatched=%s degraded=1\n' "$BEAT_AT" "$DISPATCHED"
+    printf '| Линия | Что делает | Кто делает | Состояние | Уже на диске |\n'
+    printf '|---|---|---|---|---|\n'
+    printf '| (статус не собран) | — | — | %s | — |\n\n' "$reason"
+    printf 'СТАТУС НЕ СОБРАН на beat %s: %s.\n' "$BEAT_AT" "$reason"
+    printf 'Таблица линий за этот beat недоступна — это НЕ значит, что линий нет.\n'
+    printf '[BROAD_STATUS_END]\n'
+  )"
+  printf '%s\n' "$block" >>"$LOG_FILE"
+  printf '%s\n' "$block" >"$FOUNDER_STATUS_PATH.tmp" 2>/dev/null \
+    && mv "$FOUNDER_STATUS_PATH.tmp" "$FOUNDER_STATUS_PATH" 2>/dev/null
+}
+_emit_fail_line() {  # <reason> — artifact NOT replaced: no READY, no path=
+  local reason="$1"
+  local dedupe_value="$BEAT_AT failed"
+  if command -v leadv2_alarm_transition >/dev/null 2>&1 \
+      && ! leadv2_alarm_transition broad_status_ready "$dedupe_value" 2>/dev/null; then
+    return 0  # same beat already reported failed — suppressed
+  fi
+  printf '%s [SUPERVISE-URGENT] BROAD_STATUS_FAILED at=%s reason=%s stale_file_kept=1\n' \
+    "$(_now_iso)" "$BEAT_AT" "$reason" >>"$LOG_FILE"
+}
+
 if ! bash "$COLLECTOR_SH" --project-root "$PROJECT_ROOT" --out "$SNAPSHOT_PATH" >/dev/null 2>&1; then
-  printf '%s [BROAD_STATUS] collection failure: quality read unavailable\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$LOG_FILE"
+  printf '%s [BROAD_STATUS] collection failure: quality read unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
+  # A beat that fails must still wake the lead (C1) — with the artifact
+  # REPLACED, so the relay can never publish the previous healthy table.
+  if _write_degraded_status "сборщик статуса не ответил (collector failed)"; then
+    _emit_ready_line "-" degraded
+  else
+    _emit_fail_line "collection failure + founder-status.md not writable"
+  fi
   exit 0
 fi
 
@@ -237,17 +323,25 @@ os.replace(tmp_prev, prev_path)
 
 out_path = os.path.join(tmpdir, "render.json")
 with open(out_path, "w", encoding="utf-8") as fh:
-    json.dump({"table_md": table_md, "tail_facts": tail_facts}, fh)
+    json.dump({"table_md": table_md, "rows": len(table_rows), "tail_facts": tail_facts}, fh)
 print(out_path)
 PY
 )"
 RC=$?
 if [[ $RC -ne 0 || -z "$RENDER_JSON" || ! -f "$RENDER_JSON" ]]; then
-  printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$LOG_FILE"
+  printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
+  # Same policy as the collector path: replace the artifact, then (and only
+  # then) wake; refuse READY entirely if the replacement itself failed.
+  if _write_degraded_status "рендер таблицы не выполнен (render failed)"; then
+    _emit_ready_line "-" degraded
+  else
+    _emit_fail_line "render failure + founder-status.md not writable"
+  fi
   exit 0
 fi
 
 TABLE_MD="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['table_md'])" "$RENDER_JSON")"
+ROWS_N="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['rows'])" "$RENDER_JSON")"
 TAIL_FACTS_JSON="$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['tail_facts'], ensure_ascii=False))" "$RENDER_JSON")"
 
 PROMPT="$(python3 - "$TAIL_FACTS_JSON" <<'PY'
@@ -275,10 +369,13 @@ if [[ -z "$TAIL" ]]; then
 fi
 
 BLOCK="$(
-  printf '%s [BROAD_STATUS]\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '%s [BROAD_STATUS] dispatched=%s\n' "$BEAT_AT" "$DISPATCHED"
   printf '%s\n\n%s\n' "$TABLE_MD" "$TAIL"
   printf '[BROAD_STATUS_END]\n'
 )"
 
 printf '%s\n' "$BLOCK" >>"$LOG_FILE"
 printf '%s\n' "$BLOCK" >"$FOUNDER_STATUS_PATH.tmp" && mv "$FOUNDER_STATUS_PATH.tmp" "$FOUNDER_STATUS_PATH"
+
+# C1 delivery: the ONE wake per beat, after both durable writes succeeded.
+_emit_ready_line "$ROWS_N"

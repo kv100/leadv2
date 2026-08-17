@@ -135,8 +135,10 @@ Only things that need the founder reach chat.
    - The 30-minute broad status is a `[BROAD_STATUS] ... [BROAD_STATUS_END]`
      block the loop already writes to `supervise-loop.log` (see
      `docs/supervisor-role.md` §Status reporting standard for the exact
-     table shape). Paste that block VERBATIM as one chat turn when it
-     appears — the lead never hand-composes a status, never re-tables the
+     table shape). The beat announces itself with ONE
+     `BROAD_STATUS_READY` line through the URGENT filter — paste
+     `docs/leadv2/founder-status.md` VERBATIM as one chat turn when that
+     line wakes you. The lead never hand-composes a status, never re-tables the
      lane rows, and never spins up a `CronCreate` job to produce one; the
      cadence is a plugin-owned loop beat (`leadv2-supervise-loop.sh`,
      `LEADV2_SUPERVISE_BROAD_STATUS_S`), not something the lead schedules.
