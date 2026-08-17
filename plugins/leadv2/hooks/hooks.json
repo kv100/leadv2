@@ -129,6 +129,13 @@
             "timeout": 5,
             "continueOnBlock": true,
             "statusMessage": "Supervisor pump-caller (throttled backlog auto-refill)..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-single-lead-beat.sh\"",
+            "timeout": 5,
+            "continueOnBlock": true,
+            "statusMessage": "Single-lead pulse beat (deliver + trigger)..."
           }
         ]
       }
@@ -148,6 +155,12 @@
       {
         "matcher": "Bash",
         "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervise-bash-guard.sh\"",
+            "timeout": 5,
+            "statusMessage": "Supervisor Bash guard..."
+          },
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-guard.sh\"",
@@ -523,6 +536,13 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-loop-detect-hook.sh\"",
             "timeout": 5,
             "statusMessage": "Tool-cap loop guard (record executed call)..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-single-lead-beat.sh\"",
+            "timeout": 5,
+            "continueOnBlock": true,
+            "statusMessage": "Single-lead pulse beat (deliver + trigger)..."
           }
         ]
       },
