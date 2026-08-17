@@ -289,6 +289,15 @@ LEDGER_REPO_ROOT="$(cd "${WORK_ROOT}" 2>/dev/null && cd "$(dirname "$(git rev-pa
 # leaves the worktree on disk for the async worker + close gate (§3.3 emits the loud line).
 _DISPATCH_WORKER_LIVE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-"$0"}")" 2>/dev/null && pwd)"
+# CLOSE-GATE-BYPASSABLE-BY-ENV-01 L3 (defence in depth): the real scrub point
+# is leadv2-session-runner.sh, the single funnel every lane's own process
+# passes through -- this call additionally scrubs THIS dispatcher's own
+# environment before it launches any provider channel, so a bypass var set on
+# the supervising session cannot ride along even through a channel that does
+# not go through the session runner.
+# shellcheck source=leadv2-helpers.sh
+source "${SCRIPT_DIR}/leadv2-helpers.sh" 2>/dev/null || true
+declare -F lv2_scrub_bypass_env >/dev/null 2>&1 && lv2_scrub_bypass_env
 # STATUSLINE-COUNT-TRUTH-01: single source of truth for the architect-prepass
 # dir suffix -- leadv2-lane-liveness.sh folds dispatch-<sig8>-<role> ids back
 # into their parent using this SAME constant, so the registrar and the fold
@@ -951,8 +960,12 @@ _normalize_v2_arm() {  # <v2_arm_id> -> stdout: launcher arm id
 # chains so the retirement of an arm (dispatch:false / commented-out) is
 # enforced identically on both paths -- never a second hand-kept exclusion
 # list. Mutates the caller's candidate_arms array in place.
-_filter_arms_to_dispatchable() {  # <sig8> <router_label:v1|v2>
-  local _sig8="$1" _router="$2" _dispatchable _id _keep _d
+# Optional third arg (ROUTER-V2-BYPASSES-ARM-LADDER-FILTER-01): the v2
+# chain-adoption SITE that called in (initial|quota_filter|quota_gate). Key
+# order is unchanged, site= is only APPENDED, so existing greps for
+# `arm_dropped_not_dispatchable ... router=v2` keep matching.
+_filter_arms_to_dispatchable() {  # <sig8> <router_label:v1|v2> [site]
+  local _sig8="$1" _router="$2" _site="${3:-}" _dispatchable _id _keep _d
   _dispatchable="$(_dispatchable_arms "${_sig8}")"
   local -a _kept=()
   for _id in "${candidate_arms[@]}"; do
@@ -963,10 +976,40 @@ _filter_arms_to_dispatchable() {  # <sig8> <router_label:v1|v2>
     if [[ "${_keep}" == "1" ]]; then
       _kept+=("${_id}")
     else
-      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} router=${_router} reason=not_in_DISPATCHABLE_BUILD_ARMS"
+      emit decision "arm_dropped_not_dispatchable arm=${_id} task=${_sig8} router=${_router} reason=not_in_DISPATCHABLE_BUILD_ARMS${_site:+ site=${_site}}"
     fi
   done
   candidate_arms=("${_kept[@]}")
+}
+
+# ROUTER-V2-BYPASSES-ARM-LADDER-FILTER-01: the single adopter every v2
+# chain-adoption site goes through -- primary resolve (site=initial), the
+# LEADV2_ROUTER_V2_QUOTA_FILTER re-resolve (site=quota_filter) and the
+# glm_refused_quota_gate reroute (site=quota_gate). Split -> _normalize_v2_arm
+# -> _filter_arms_to_dispatchable, so "every chain the launcher consumes has
+# passed DISPATCHABLE_BUILD_ARMS" holds structurally, not positionally at one
+# of three sites. Mutates the CALLER's candidate_arms in place (dynamic
+# scoping, same mechanism _filter_arms_to_dispatchable already relies on).
+# Returns 0 when at least one dispatchable arm survives; on an empty survivor
+# set emits dispatch_rolled_back reason=all_arms_not_dispatchable_v2 (with
+# site=) and returns 4 -- the CALLER decides whether that means exit (initial,
+# quota_filter) or fall back to the pre-reroute chain (quota_gate: an exit
+# inside the candidate loop would turn a recoverable refusal into a dead lane).
+_adopt_v2_chain() {  # <sig8> <site: initial|quota_filter|quota_gate> <csv_chain>
+  local _sig8="$1" _site="$2" _csv="$3" _a
+  IFS=',' read -r -a candidate_arms <<< "${_csv}"
+  local -a _norm=()
+  for _a in "${candidate_arms[@]}"; do
+    [[ -n "${_a}" ]] || continue
+    _norm+=("$(_normalize_v2_arm "${_a}")")
+  done
+  candidate_arms=("${_norm[@]}")
+  _filter_arms_to_dispatchable "${_sig8}" v2 "${_site}"
+  if [[ ${#candidate_arms[@]} -eq 0 || -z "${candidate_arms[0]:-}" ]]; then
+    emit decision "dispatch_rolled_back reason=all_arms_not_dispatchable_v2 task=${_sig8} router=v2 site=${_site}"
+    return 4
+  fi
+  return 0
 }
 
 # C1 tenant-yaml resurrection guard: after _load_dispatch_ladder populates
@@ -3521,18 +3564,17 @@ confirmation-seeking; only for a decision you cannot make yourself."
     fi
     IFS=',' read -r -a candidate_arms <<< "${_v2_chain}"
     [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
-    # ARM-LADDER-KIMI-RESURRECTED-01 follow-up: v2's eligible= comes straight
-    # from the router-v2 resolver, which never consulted DISPATCHABLE_BUILD_ARMS
-    # and speaks a different arm-id vocabulary (claude-sonnet, not sonnet).
-    # Normalize first so a legitimate id survives the filter, then filter so a
-    # retired id (e.g. a stale tenant yaml still listing kimi) cannot.
-    local -a _v2_normalized=() _v2_a
-    for _v2_a in "${candidate_arms[@]}"; do
-      _v2_normalized+=("$(_normalize_v2_arm "${_v2_a}")")
-    done
-    candidate_arms=("${_v2_normalized[@]}")
-    _filter_arms_to_dispatchable "${sig8}" v2
-    [[ ${#candidate_arms[@]} -gt 0 ]] || { emit decision "dispatch_rolled_back reason=all_arms_not_dispatchable_v2 task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_not_dispatchable_v2 "" "${founder_task_id}"; exit 4; }
+    # ARM-LADDER-KIMI-RESURRECTED-01 follow-up + ROUTER-V2-BYPASSES-ARM-LADDER-
+    # FILTER-01: v2's eligible=/ordered= comes straight from the router-v2
+    # resolver, which never consulted DISPATCHABLE_BUILD_ARMS and speaks a
+    # different arm-id vocabulary (claude-sonnet, not sonnet). All three v2
+    # adoption sites now go through _adopt_v2_chain (normalize -> filter ->
+    # empty-guard) so a retired id (e.g. a stale tenant yaml still listing
+    # kimi) cannot survive at ANY of them.
+    if ! _adopt_v2_chain "${sig8}" initial "${_v2_chain}"; then
+      _dl_note "${sig8}" refused all_arms_not_dispatchable_v2 "" "${founder_task_id}"
+      exit 4
+    fi
     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
   else
     _load_dispatch_ladder
@@ -3620,14 +3662,23 @@ confirmation-seeking; only for a decision you cannot make yourself."
         _dl_note "${sig8}" refused all_arms_exhausted_quota "chain=${_rv2_chain}" "${founder_task_id}"
         exit 4
       fi
-      local -a _rv2_kept=()
+      local _rv2_pick="${_rv2_eligible}"
       if [[ "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" && -n "${_rv2_ordered}" ]]; then
-        IFS=',' read -r -a _rv2_kept <<< "${_rv2_ordered}"
+        _rv2_pick="${_rv2_ordered}"
       else
         [[ "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" ]] && emit decision "router_v2_no_ordered_key task=${sig8}"
-        IFS=',' read -r -a _rv2_kept <<< "${_rv2_eligible}"
       fi
-      candidate_arms=("${_rv2_kept[@]}")
+      # ROUTER-V2-BYPASSES-ARM-LADDER-FILTER-01 site A: adopt through the SAME
+      # normalize + DISPATCHABLE_BUILD_ARMS filter as the primary v2 path --
+      # never a raw read -a from the resolver's ordered=/eligible=. (This
+      # branch is currently UNREACHABLE: router_label is "v2" exactly when
+      # LEADV2_ROUTER_V2=1, and this guard needs the opposite combination. The
+      # adopter is wired anyway so a future guard fix cannot re-open the hole.)
+      if ! _adopt_v2_chain "${sig8}" quota_filter "${_rv2_pick}"; then
+        log_err "every re-resolved arm is not dispatchable (chain='${_rv2_pick}'); refusing to dispatch"
+        _dl_note "${sig8}" refused all_arms_not_dispatchable_v2 "chain=${_rv2_pick}" "${founder_task_id}"
+        exit 4
+      fi
     fi
   fi
 
@@ -3795,19 +3846,32 @@ ${mission}"
           _qg_vector="$(printf '%s\n' "${_qg_out}" | sed -n 's/^vector=//p')"
           _qg_credits="$(printf '%s\n' "${_qg_out}" | sed -n 's/^credits=//p')"
           if [[ ${_qg_rc} -eq 0 && -n "${_qg_eligible}" ]]; then
+            local _qg_pick="${_qg_eligible}"
             if [[ "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" && -n "${_qg_ordered}" ]]; then
-              IFS=',' read -r -a candidate_arms <<< "${_qg_ordered}"
+              _qg_pick="${_qg_ordered}"
             else
               [[ "${LEADV2_ROUTER_V2_QUOTA_ORDER:-1}" != "0" ]] && emit decision "router_v2_no_ordered_key task=${sig8}"
-              IFS=',' read -r -a candidate_arms <<< "${_qg_eligible}"
             fi
-            local _qg_scores _qg_unknown
-            _qg_scores="$(python3 -c 'import json,sys; v=json.loads(sys.argv[1] or "[]"); print(json.dumps({r["arm"]:r.get("score") for r in v}, sort_keys=True, separators=(",", ":")))' "${_qg_vector:-[]}" 2>/dev/null || printf '{}')"
-            _qg_unknown="$(python3 -c 'import json,sys; h=json.loads(sys.argv[1]); print(",".join(sorted(k for k,v in h.items() if v is None)) or "none")' "${_qg_headroom}" 2>/dev/null || printf 'none')"
-            emit decision "route_headroom_chosen task=${sig8} arm=${candidate_arms[0]} after=glm_quota_gate ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") headroom=${_qg_headroom} credits=${_qg_credits:-{}} scores=${_qg_scores} source=router_v2 unknown=${_qg_unknown}"
-            _quota_gate_reroute=1
-            _reenter=1
-            break
+            # ROUTER-V2-BYPASSES-ARM-LADDER-FILTER-01 site B: adopt through the
+            # shared normalize + DISPATCHABLE_BUILD_ARMS filter, but NEVER exit
+            # on an empty survivor set -- B runs inside the candidate loop, so
+            # an exit here would turn a recoverable refusal into a dead lane.
+            # Adopt into a scratch copy; keep the pre-reroute chain on failure.
+            local -a _qg_pre=("${candidate_arms[@]}")
+            if _adopt_v2_chain "${sig8}" quota_gate "${_qg_pick}"; then
+              local _qg_scores _qg_unknown
+              _qg_scores="$(python3 -c 'import json,sys; v=json.loads(sys.argv[1] or "[]"); print(json.dumps({r["arm"]:r.get("score") for r in v}, sort_keys=True, separators=(",", ":")))' "${_qg_vector:-[]}" 2>/dev/null || printf '{}')"
+              _qg_unknown="$(python3 -c 'import json,sys; h=json.loads(sys.argv[1]); print(",".join(sorted(k for k,v in h.items() if v is None)) or "none")' "${_qg_headroom}" 2>/dev/null || printf 'none')"
+              emit decision "route_headroom_chosen task=${sig8} arm=${candidate_arms[0]} after=glm_quota_gate ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") headroom=${_qg_headroom} credits=${_qg_credits:-{}} scores=${_qg_scores} source=router_v2 unknown=${_qg_unknown}"
+              _quota_gate_reroute=1
+              _reenter=1
+              break
+            fi
+            # Empty survivor set: the helper already journalled
+            # dispatch_rolled_back ... site=quota_gate. Fall back to the
+            # pre-reroute chain instead of dying here.
+            candidate_arms=("${_qg_pre[@]}")
+            emit decision "router_v2_reorder_failed task=${sig8} rc=0 reason=no_dispatchable_arms"
           fi
           # PLUGIN-RELIABILITY-01 D5: journal reorder failure so refusal chains
           # are debuggable instead of silently falling through.
