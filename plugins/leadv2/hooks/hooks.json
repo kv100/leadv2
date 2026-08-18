@@ -157,81 +157,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervise-bash-guard.sh\"",
-            "timeout": 5,
-            "statusMessage": "Supervisor Bash guard..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-guard.sh\"",
-            "timeout": 5,
-            "statusMessage": "Supervisor self-work guard..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-deny-floor.sh\"",
-            "timeout": 5,
-            "statusMessage": "Deny-floor: checking for irreversible commands..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-block-bash-heredoc.sh\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-block-fg-dispatch.sh\"",
-            "timeout": 5,
-            "statusMessage": "Foreground-dispatch guard..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-codex-round-cap.sh\"",
-            "timeout": 5,
-            "statusMessage": "Checking codex round cap..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-codex-nopoll-guard.sh\"",
-            "timeout": 5,
-            "statusMessage": "Codex no-poll guard (G3)..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-bash-lint-pre-gate.sh\"",
-            "timeout": 10,
-            "statusMessage": "bash -n pre-gate..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-env-audit-pre-gate.sh\"",
-            "timeout": 10,
-            "statusMessage": ".env audit pre-gate..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-schema-audit-pre-gate.sh\"",
-            "timeout": 10,
-            "statusMessage": "Schema audit pre-gate..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-close-ritual-guard.sh\"",
-            "timeout": 5,
-            "statusMessage": "Close-ritual guard (blocks lying-fast closes)..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-context-glossary-close.sh\"",
-            "timeout": 5,
-            "statusMessage": "Context-glossary close reminder (domain-modeling)...",
-            "continueOnBlock": true
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-codex-direct-exec-guard.sh\"",
-            "timeout": 5,
-            "statusMessage": "Codex direct-exec guard..."
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-bash-pre-dispatch.sh\"",
+            "timeout": 30,
+            "statusMessage": "leadv2 Bash pre-dispatch..."
           }
         ]
       },
