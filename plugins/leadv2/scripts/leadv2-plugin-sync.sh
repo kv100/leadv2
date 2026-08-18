@@ -17,10 +17,37 @@
 # Also calls leadv2-workflows-sync.sh to sync JS workflow files to ~/.claude/workflows/.
 #
 # Usage:
-#   bash leadv2-plugin-sync.sh [--dry-run] [--project-root <path>]
+#   bash leadv2-plugin-sync.sh [--write] [--allow-backward] [--dry-run] [--project-root <path>]
 #
-# --dry-run      Print what would change; no writes.
-# --project-root Sync (c)/(d) to this single root only (skips yaml iteration).
+# --write           Actually write. WITHOUT it the run is a DRY RUN (default,
+#                   DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01): prints the plan and
+#                   writes nothing. The old writes-by-default behavior is gone —
+#                   a bare invocation used to be able to clobber a newer
+#                   vendored copy with week-old canonical content.
+# --allow-backward  With --write, permit overwriting a destination that is
+#                   NEWER than canonical (VENDORED_NEWER). Without it such
+#                   files are refused (left untouched) with a promote command.
+# --dry-run         Explicit no-op: re-asserts the default dry-run mode
+#                   (kept for muscle memory + existing tests). Last flag wins
+#                   if both --dry-run and --write are passed; the resolved
+#                   mode is logged at start.
+# --project-root    Sync (c)/(d) to this single root only (skips yaml iteration).
+#
+# Write gates (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01), applied per file a real
+# run would overwrite, in order — a dirty destination is refused regardless of
+# direction tags:
+#   1. Uncommitted destination: if the destination file is TRACKED and MODIFIED
+#      (or staged) in the destination repo's git, hard-refuse that file. No
+#      flag overrides this; the only path forward is commit-or-promote.
+#      Untracked (??) files are NOT "dirty" here — many vendored .claude/scripts
+#      trees are carried untracked by design; refusing them would permanently
+#      block every sync to those repos (the DRIFT-GUARD-UNSATISFIABLE-01 trap).
+#      Untracked files are still protected by gate 2 + direction-safety.
+#   2. Backward move: if the destination file is NEWER than canonical's last
+#      git-commit time for that relpath (same evidence rule as
+#      leadv2-drift-guard.sh decide_direction, 2s buffer), refuse without
+#      --allow-backward — exclude + print the promote command. With
+#      --allow-backward, the pre-existing quarantine-then-reconcile applies.
 #
 # Idempotent: safe to re-run after any plugin edit.
 
@@ -56,11 +83,19 @@ if [[ ! -d "${PLUGIN_ROOT}" ]]; then
 fi
 PLUGIN_GIT_ROOT="$(git -C "${CANONICAL_ROOT}" rev-parse --show-toplevel 2>/dev/null || printf -- '%s' "${CANONICAL_ROOT}")"
 
-DRY_RUN=false
+# DRY-RUN DEFAULT (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01 scope c): a bare run
+# plans, never writes. --write flips to a real run; --dry-run re-asserts the
+# default. Sequential assignment = last-wins for --dry-run/--write; the
+# resolved mode is logged right after parsing so a double-flag invocation can
+# never silently run the wrong mode.
+DRY_RUN=true
+ALLOW_BACKWARD=false
 PROJECT_ROOT_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --write) DRY_RUN=false ;;
+    --allow-backward) ALLOW_BACKWARD=true ;;
     --dry-run) DRY_RUN=true ;;
     --project-root) shift; PROJECT_ROOT_OVERRIDE="$1" ;;
     *) printf -- 'Unknown arg: %s\n' "$1" >&2; exit 2 ;;
@@ -71,6 +106,12 @@ done
 log()      { printf -- '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_ok()   { printf -- '[%s] OK: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_warn() { printf -- '[%s] WARN: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+
+log "Mode: $([[ "${DRY_RUN}" == "true" ]] && printf -- 'DRY_RUN (default; pass --write to write)' || printf -- 'WRITE (--write)')$([[ "${ALLOW_BACKWARD}" == "true" ]] && printf -- ' + --allow-backward (backward overwrites permitted)')"
+
+# Global per-run refusal counter (write gates above). Surfaced in the final
+# summary; REFUSED/BLOCKED lines above name each individual file.
+_REFUSED_COUNT=0
 
 # ── Target directories ────────────────────────────────────────────────────────
 CACHE_TARGET="${HOME}/.claude/plugins/cache/leadv2-local/leadv2/0.1.0"
@@ -196,6 +237,69 @@ _quarantine_copy() {
   printf -- '%s\n' "${qpath}"
 }
 
+# _sync_direction_of <canonical_file> <canonical_git_relpath> <dst_file>
+# Prints VENDORED_NEWER / CANONICAL_NEWER / UNKNOWN. DUPLICATED from
+# leadv2-drift-guard.sh decide_direction() on purpose — shell heredocs cannot
+# import, and the two must stay evidence-identical: canonical evidence = last
+# git-commit time of the relpath (fallback: canonical file mtime when
+# untracked), copy evidence = copy filesystem mtime, 2s buffer. If you change
+# the rule here, change it there in the same commit.
+_sync_direction_of() {
+  python3 - "${PLUGIN_GIT_ROOT}" "$1" "$2" "$3" <<'PYEOF'
+import os, subprocess, sys
+
+git_root, canonical_file, git_relpath, copy_file = sys.argv[1:5]
+
+def canonical_commit_time(git_relpath):
+    try:
+        out = subprocess.run(
+            ["git", "-C", git_root, "log", "-1", "--format=%ct", "--", git_relpath],
+            capture_output=True, text=True, timeout=5,
+        )
+        ts = out.stdout.strip()
+        if ts:
+            return int(ts)
+    except Exception:
+        pass
+    return None
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+canon_evidence = canonical_commit_time(git_relpath)
+if canon_evidence is None:
+    canon_evidence = _mtime(canonical_file)
+copy_evidence = _mtime(copy_file)
+if canon_evidence is None or copy_evidence is None:
+    print("UNKNOWN")
+elif copy_evidence > canon_evidence + 2:
+    print("VENDORED_NEWER")
+elif canon_evidence > copy_evidence + 2:
+    print("CANONICAL_NEWER")
+else:
+    print("UNKNOWN")
+PYEOF
+}
+
+# _dst_file_dirty <dst_dir> <dst_file> — 0 when dst_dir sits inside a git work
+# tree AND dst_file is tracked-and-modified or staged there (any porcelain XY
+# except untracked `??`; ignored files never appear in porcelain at all).
+# Untracked is deliberately NOT dirty: many vendored .claude/scripts trees are
+# carried untracked by design, and refusing them would permanently block every
+# sync to those repos — the DRIFT-GUARD-UNSATISFIABLE-01 trap. Untracked files
+# keep their protection from the backward gate + direction-safety instead.
+_dst_file_dirty() {
+  local dst_dir="$1" dst_file="$2"
+  local status_line
+  status_line="$(git -C "${dst_dir}" --no-optional-locks status --porcelain -- "${dst_file}" 2>/dev/null | head -1)" || return 1
+  [[ -z "${status_line}" ]] && return 1
+  [[ "${status_line}" == "?? "* ]] && return 1
+  return 0
+}
+
 _direction_safety_excludes() {
   local mode="$1" copy_name="$2" subdir="$3" src="$4" dst="$5"
   shift 5
@@ -218,6 +322,40 @@ _direction_safety_excludes() {
     local dst_file="${dst}/${relpath}"
     [[ -f "${dst_file}" ]] || continue  # new file, nothing to clobber — safe
     local canonical_relpath="plugins/leadv2/${subdir}/${relpath}"
+    # Write gate 1 (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01): uncommitted
+    # destination — hard refuse, no flag overrides. Runs FIRST so a dirty
+    # destination is refused regardless of direction tags.
+    if _dst_file_dirty "${dst}" "${dst_file}"; then
+      _REFUSED_COUNT=$((_REFUSED_COUNT + 1))
+      if [[ "${DRY_RUN}" == "true" ]]; then
+        log_warn "DRY_RUN REFUSED (uncommitted destination): would not write ${dst_file} — tracked-and-modified/uncommitted in the destination repo. Commit it, or promote it into canonical; no flag overrides this."
+      else
+        log_warn "REFUSED: ${dst_file} is tracked-and-modified/uncommitted in the destination repo — refusing to overwrite (no flag overrides). Commit it, or promote it into canonical (cp ${dst_file} ${CANONICAL_ROOT}/plugins/leadv2/${subdir}/${relpath}) and re-run."
+      fi
+      printf -- '%s\n' "${relpath}"
+      continue
+    fi
+    # Write gate 2: backward move. Same evidence rule as drift-guard
+    # (_sync_direction_of above): destination mtime newer than canonical's
+    # last commit for this relpath → refuse without --allow-backward.
+    local _direction
+    _direction="$(_sync_direction_of "${src}${relpath}" "${canonical_relpath}" "${dst_file}")" || _direction="UNKNOWN"
+    if [[ "${_direction}" == "VENDORED_NEWER" && "${ALLOW_BACKWARD}" != "true" ]]; then
+      _REFUSED_COUNT=$((_REFUSED_COUNT + 1))
+      if [[ "${DRY_RUN}" == "true" ]]; then
+        log_warn "WOULD MOVE BACKWARDS (refusing without --allow-backward): ${dst_file} is NEWER than canonical for ${canonical_relpath} — a real run will NOT overwrite it. Promote instead: cp ${dst_file} ${CANONICAL_ROOT}/plugins/leadv2/${subdir}/${relpath} + commit in canonical."
+      else
+        # Refuse = exclude + leave untouched, but STILL preserve a quarantine
+        # copy first: e399c95's lesson (protection without preservation loses
+        # the fix) applies to refusals too. _quarantine_copy is
+        # non-destructive and content-hash deduplicated.
+        local qpath
+        qpath="$(_quarantine_copy "${dst_file}" "${copy_name}" "${relpath}")" || qpath=""
+        log_warn "REFUSED (backward): ${dst_file} is NEWER than canonical for ${canonical_relpath} — NOT overwriting. Promote instead: cp ${dst_file} ${CANONICAL_ROOT}/plugins/leadv2/${subdir}/${relpath} then commit in canonical. (Content also preserved at: ${qpath:-<quarantine-unavailable>}; override with --allow-backward.)"
+      fi
+      printf -- '%s\n' "${relpath}"
+      continue
+    fi
     if ! python3 "${_DIRECTION_SAFETY_CHECK}" "${PLUGIN_GIT_ROOT}" "${canonical_relpath}" "${dst_file}"; then
       if [[ "${mode}" == "exclude" ]]; then
         # LANE-TRUTH-BATCH-01 Row 3: quarantine the divergent copy BEFORE
@@ -577,8 +715,14 @@ for _canon_entry in "${PLUGIN_ROOT}/scripts"/*; do
   fi
   _target_file="${USER_SCRIPTS_TARGET}/${_cname}"
   if [[ -f "${_target_file}" ]] && ! cmp -s "${_canon_entry}" "${_target_file}"; then
-    printf '[plugin-sync] user-scripts SKIPPED %s reason=target-is-real-file-divergent\n' "${_cname}"
-    _us_skipped=$((_us_skipped + 1))
+    # LAUNCHER-DIVERGENCE-01: this branch only runs for entries that already
+    # passed out-of-include-scope and drift-guard-excluded above, i.e.
+    # direction-safety judged the target safe to overwrite -- the rsync at
+    # (d) above (real, non---dry-run) DELIVERS this file. It is not a skip;
+    # label it as delivered so the report's own contract ("names every
+    # canonical entry NOT delivered") holds.
+    printf '[plugin-sync] user-scripts DELIVERED %s reason=overwrites-divergent-target\n' "${_cname}"
+    _us_delivered=$((_us_delivered + 1))
     continue
   fi
   _us_delivered=$((_us_delivered + 1))

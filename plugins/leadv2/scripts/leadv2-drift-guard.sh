@@ -324,7 +324,38 @@ for idx in range(len(names)):
                 report.append(f"{name}:{sub}/{rp}:CONTENT_DIFFERS:{direction}")
                 print(f"DRIFT [{name}]: content differs for {sub}/{rp} [{direction}] — {REMEDY[direction]}")
 
+by_copy = {}
 if drift_found:
+    # DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01 scope (b): aggregate per copy so a
+    # 134-entry flat report becomes one group header per drifted copy (with
+    # counts) + the unchanged per-entry DRIFT lines underneath as the
+    # grep-able detail. MISSING entries count into `missing` only (their
+    # direction is implicitly CANONICAL_NEWER — the copy has no file at
+    # all); MISSING_DIR (whole copy dir absent) likewise.
+    by_copy = {}
+    for r in report:
+        parts = r.split(":")
+        name = parts[0]
+        kind = parts[2] if len(parts) >= 4 else parts[1]
+        e = by_copy.setdefault(
+            name, {"total": 0, "vendored_newer": 0, "canonical_newer": 0, "unknown": 0, "missing": 0}
+        )
+        e["total"] += 1
+        if kind in ("MISSING", "MISSING_DIR"):
+            e["missing"] += 1
+        elif parts[3] == "VENDORED_NEWER":
+            e["vendored_newer"] += 1
+        elif parts[3] == "CANONICAL_NEWER":
+            e["canonical_newer"] += 1
+        else:
+            e["unknown"] += 1
+    for name in sorted(by_copy):
+        e = by_copy[name]
+        print(
+            f"SUMMARY-BY-COPY: {name}: {e['total']} entr{'y' if e['total'] == 1 else 'ies'} "
+            f"(VENDORED_NEWER={e['vendored_newer']} CANONICAL_NEWER={e['canonical_newer']} "
+            f"UNKNOWN={e['unknown']} MISSING={e['missing']})"
+        )
     n_vendored = sum(1 for r in report if r.endswith(":VENDORED_NEWER"))
     n_canonical = sum(1 for r in report if r.endswith(":CANONICAL_NEWER"))
     n_unknown = sum(1 for r in report if r.endswith(":UNKNOWN"))
@@ -341,31 +372,56 @@ if drift_found:
 print("---REPORT---")
 for r in report:
     print(r)
+# Machine-readable mirror of the SUMMARY-BY-COPY lines (tab-separated, one
+# line per drifted copy): name\ttotal\tvendored_newer\tcanonical_newer\tunknown\tmissing
+print("---BY-COPY---")
+for name in sorted(by_copy):
+    e = by_copy[name]
+    print(
+        f"{name}\t{e['total']}\t{e['vendored_newer']}\t{e['canonical_newer']}\t{e['unknown']}\t{e['missing']}"
+    )
 print(f"---STATUS---\n{'DRIFT' if drift_found else 'OK'}")
 PYEOF
 )"
 
 drift_found=0
 declare -a drift_report
+declare -a bycopy_lines
 _section=""
 while IFS= read -r _line; do
   case "${_line}" in
     "---REPORT---") _section="report"; continue ;;
+    "---BY-COPY---") _section="bycopy"; continue ;;
     "---STATUS---") _section="status"; continue ;;
   esac
   case "${_section}" in
     report) drift_report+=("${_line}") ;;
+    bycopy) bycopy_lines+=("${_line}") ;;
     status) [[ "${_line}" == "DRIFT" ]] && drift_found=1 ;;
     *) log "${_line}" ;;
   esac
 done <<< "${COMPARE_OUT}"
 if [[ "${JSON}" -eq 1 ]]; then
+  # entries[] string shape is FROZEN (leadv2-drift-only-vendored-check.py
+  # parses it); by_copy is additive per DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01.
   printf -- '{"drift":%s,"entries":[' "$([[ ${drift_found} -eq 1 ]] && echo true || echo false)"
   for i in "${!drift_report[@]}"; do
     [[ $i -gt 0 ]] && printf -- ','
     printf -- '"%s"' "${drift_report[$i]}"
   done
-  printf -- ']}\n'
+  printf -- ']'
+  printf -- ',"by_copy":{'
+  _bc_first=1
+  for _bc in "${bycopy_lines[@]:-}"; do
+    [[ -z "${_bc}" ]] && continue
+    IFS=$'\t' read -r _bc_name _bc_total _bc_v _bc_c _bc_u _bc_m <<< "${_bc}"
+    [[ -z "${_bc_name}" ]] && continue
+    [[ ${_bc_first} -eq 0 ]] && printf -- ','
+    _bc_first=0
+    printf -- '"%s":{"total":%s,"vendored_newer":%s,"canonical_newer":%s,"unknown":%s,"missing":%s}' \
+      "${_bc_name}" "${_bc_total}" "${_bc_v}" "${_bc_c}" "${_bc_u}" "${_bc_m}"
+  done
+  printf -- '}}\n'
 fi
 
 if [[ ${drift_found} -eq 1 ]]; then
