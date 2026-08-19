@@ -13,6 +13,12 @@ allowed-tools:
 
 See [REFERENCE.md](./REFERENCE.md) for diagnosis and trade-off table.
 
+## Compact before idle, not after (TOKEN-ECONOMY-ACTIONS-01)
+
+Compact before idle, not after: cache_read≈0.1×, expired-cache reprocess≈1-2×. If you expect a
+>5-min gap (waiting on founder / long bg job), run /compact BEFORE going idle, while the cache is
+warm.
+
 ## Hard rules
 
 ### 1. Lead is Opus, but ≤10 turns per task
