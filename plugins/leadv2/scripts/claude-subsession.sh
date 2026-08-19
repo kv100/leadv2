@@ -243,14 +243,8 @@ SHARED_PROTOCOL_BOILERPLATE="MANDATORY — /leadv2 subagent protocol:
 - After writing DELIVERABLE_COMPLETE and your final chat report, you are DONE — end the turn now.
   Do not wait for a reply or idle expecting a follow-up; nothing further will arrive in this
   subsession (T-r, SUPERVISOR-AUDIT-01).
-- EVIDENCE CONTRACT: every factual claim you write about an external system or API
-  (endpoint behaviour, rate limit, auth flow, schema, provider quirk, version) must be
-  immediately followed by its probe artifact — a curl/CLI invocation with its output, a
-  log excerpt, or a doc URL plus the live check that confirmed it.
-- If you have no artifact, prefix the claim with the literal token UNVERIFIED: — an
-  untagged evidence-free external-system claim is a protocol violation, and reviewers
-  treat one that drives a decision as BLOCKING.
-- See full protocol: .claude/skills/leadv2-subagent-protocol/SKILL.md
+- EVIDENCE CONTRACT: every factual claim you write about an external system or API (endpoint behaviour, rate limit, auth flow, schema, provider quirk, version) must be immediately followed by its probe artifact — a curl/CLI invocation with its output, a log excerpt, or a doc URL plus the live check that confirmed it. If you have no artifact, prefix the claim with the literal token UNVERIFIED: — an untagged evidence-free external-system claim is a protocol violation, and round-1 reviewers treat one that drives a decision as BLOCKING.
+- See full protocol: the protocol reference appended below (plugins/leadv2/skills/leadv2-subagent-protocol/SKILL.md).
 - Codebase graph project: ${LEADV2_CODEBASE_PROJECT:-}
 - Handoff discipline (context.yaml), question proxy (ask-lead.sh), DELIVERABLE_COMPLETE marker, chat limits, and off_limits hard stop are all in the skill file above."
 
@@ -282,7 +276,25 @@ PER_TASK_BOILERPLATE="Task binding:
 # ---------------------------------------------------------------------------
 build_cached_prefix() {
   local role="$1"
+
+  # skill_file resolution order (H1, CLAIM-EVIDENCE-GATE-01 round 2):
+  #   1. $PROJECT_ROOT/.claude/skills/leadv2-subagent-protocol/SKILL.md
+  #      — repo-local override, tried first so a project can still override.
+  #   2. ${CLAUDE_PLUGIN_ROOT:-<this script's dir>/..}/skills/leadv2-subagent-protocol/SKILL.md
+  #      — plugin canonical. CLAUDE_PLUGIN_ROOT is not a new env var: already
+  #      read in leadv2-helpers.sh, leadv2-dispatch-code.sh,
+  #      leadv2-session-route.sh, leadv2-deploy-merge.sh, leadv2-self-spawn.sh.
+  # Round 1 only tried (1), which is ABSENT under every live project root
+  # (persona-engine, m3-market, respiro-ios) — the "Protocol reference:"
+  # section rendered empty in every claude-arm prefix. This is that fix.
   local skill_file="$PROJECT_ROOT/.claude/skills/leadv2-subagent-protocol/SKILL.md"
+  local skill_file_plugin
+  local _script_dir
+  _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  skill_file_plugin="${CLAUDE_PLUGIN_ROOT:-${_script_dir}/..}/skills/leadv2-subagent-protocol/SKILL.md"
+  if [[ ! -f "$skill_file" ]]; then
+    skill_file="$skill_file_plugin"
+  fi
 
   # Reuse the already-resolved agents/ OR legacy roles/ body. The previous
   # implementation re-opened agents/<role>.md unconditionally here, silently
@@ -293,6 +305,13 @@ build_cached_prefix() {
   # Strip YAML frontmatter from skill file (between first two --- lines)
   local skill_body
   skill_body=$(awk 'BEGIN{c=0} /^---$/{c++; next} c>=2 {print}' "$skill_file" 2>/dev/null || printf '%s' "$(cat "$skill_file" 2>/dev/null || true)")
+
+  # Fail-open, never silent (R5/H1): a worker without the appendix is still
+  # better than no worker, but an empty protocol section must be loud in the
+  # log, not a silent hole in the rendered prompt.
+  if [[ -z "$skill_body" ]]; then
+    echo "[claude-subsession] WARN: subagent-protocol SKILL.md not resolvable (tried ${PROJECT_ROOT}/.claude/skills/leadv2-subagent-protocol/SKILL.md, ${skill_file_plugin}) — prefix will omit the protocol reference" >&2
+  fi
 
   # Build stable prefix content (no task-specific vars)
   local prefix_content
@@ -325,6 +344,15 @@ ${skill_body}"
   else
     echo "[claude-subsession] stable prefix file reused for ${role} (server cache status comes from usage telemetry)" >&2
   fi
+
+  # Unconditional observability (C7, CLAIM-EVIDENCE-GATE-01 round 2): logged
+  # on EVERY call, not just the cache-miss branch, so a test can assert on
+  # the rendered artifact even when the checksum already exists in
+  # /tmp/leadv2-cache. CACHE_DIR is readonly (non-overridable without a new
+  # env var, which is off_limits), so this stderr line is the only stable
+  # hook. Stays on stderr: leadv2-dispatch-code.sh parses the sonnet handle
+  # (PID=... LABEL=... SESSION_ID=...) from stdout only, never stderr.
+  echo "[claude-subsession] prefix path: ${prefix_path}" >&2
 
   printf '%s' "$prefix_path"
 }

@@ -109,6 +109,19 @@ readonly AGENT_BAN_PREAMBLE='NOTE: the Agent/Task/sub-agent tool is disabled for
 
 '
 
+# CLAIM-EVIDENCE-GATE-01 round 2 (H2): own copy of the mission-side evidence
+# contract for the DIRECT invocation path (a lane launched straight from
+# supervise or by hand, never through leadv2-dispatch-code.sh). glm-coder.sh
+# sources no shared lib today; a ~1.4k-line helpers file would be a larger
+# blast radius than the drift it removes, so this is a pinned textual copy
+# (suite case C9 asserts it stays byte-identical to leadv2-helpers.sh /
+# claude-subsession.sh). Prepend is idempotent — skipped below when the
+# resolved prompt already carries the marker (e.g. leadv2-dispatch-code.sh
+# already prepended it before calling this launcher's `bg`).
+readonly EVIDENCE_CONTRACT_PREAMBLE='EVIDENCE CONTRACT: every factual claim you write about an external system or API (endpoint behaviour, rate limit, auth flow, schema, provider quirk, version) must be immediately followed by its probe artifact — a curl/CLI invocation with its output, a log excerpt, or a doc URL plus the live check that confirmed it. If you have no artifact, prefix the claim with the literal token UNVERIFIED: — an untagged evidence-free external-system claim is a protocol violation, and round-1 reviewers treat one that drives a decision as BLOCKING.
+
+'
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2; }
 log_error() { log "ERROR: $*"; }
 log_info() { log "INFO: $*"; }
@@ -224,6 +237,12 @@ run_claude() {
       exit 1
     fi
     resolved_prompt="$(cat "${prompt_file}")"
+  fi
+  # CLAIM-EVIDENCE-GATE-01 round 2 (H2, R1): idempotent — skip when the prompt
+  # already carries the marker (e.g. leadv2-dispatch-code.sh already
+  # prepended it before invoking this launcher's `run`).
+  if [[ "${resolved_prompt}" != *"EVIDENCE CONTRACT:"* ]]; then
+    resolved_prompt="${EVIDENCE_CONTRACT_PREAMBLE}${resolved_prompt}"
   fi
   if [[ "${add_finish_contract}" == "1" ]]; then
     resolved_prompt="${AGENT_BAN_PREAMBLE}${resolved_prompt}${FINISH_CONTRACT_TRAILER}"
@@ -1617,6 +1636,13 @@ cmd_bg() {
       exit 1
     fi
     resolved_prompt="$(cat "${prompt_file}")"
+  fi
+  # CLAIM-EVIDENCE-GATE-01 round 2 (H2, R1): idempotent — skip when the prompt
+  # already carries the marker (e.g. leadv2-dispatch-code.sh already
+  # prepended it before invoking this launcher's `bg`), so a dispatched lane
+  # never gets the block twice.
+  if [[ "${resolved_prompt}" != *"EVIDENCE CONTRACT:"* ]]; then
+    resolved_prompt="${EVIDENCE_CONTRACT_PREAMBLE}${resolved_prompt}"
   fi
   printf '%s%s%s' "${AGENT_BAN_PREAMBLE}" "${resolved_prompt}" "${FINISH_CONTRACT_TRAILER}" > "${run_dir}/prompt.txt"
 
