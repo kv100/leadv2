@@ -87,6 +87,38 @@ chmod +x "${DISPATCH_WRAPPER}"
 # Tests that set CLAUDE_PROJECT_ROOT or PROJECT_ROOT as a command-prefix env
 # var will have LEADV2_PROJECT_ROOT derived from it by the wrapper.
 
+# MEDIUM-1 (round-2 finisher): leadv2-journal.sh resolves its own PROJECT_ROOT
+# independently from CLAUDE_PROJECT_ROOT/CLAUDE_PROJECT_DIR (falling back to
+# `git rev-parse --show-toplevel` on the caller's cwd), NOT from the
+# dispatch-code.sh-only PROJECT_ROOT env var. A call site that pins only
+# PROJECT_ROOT (Tests 5/6 below, which must unset CLAUDE_PROJECT_ROOT/
+# CLAUDE_PROJECT_DIR to exercise self-host/degraded routing resolution) still
+# leaks a real journal.md into this lane's checkout. Suite-wide default: any
+# call site that forgets a CLAUDE_PROJECT_ROOT prefix still lands here.
+export CLAUDE_PROJECT_ROOT="${TMP_ROOT}/default-root"
+export CLAUDE_PROJECT_DIR="${TMP_ROOT}/default-root"
+mkdir -p "${CLAUDE_PROJECT_ROOT}"
+# Journal shim: appends land under TMP_ROOT instead of invoking the real
+# leadv2-journal.sh (which would git-rev-parse to this lane's real checkout
+# once CLAUDE_PROJECT_ROOT/CLAUDE_PROJECT_DIR are explicitly unset). Only
+# `append` is needed by the plain dispatch flow this suite exercises; `tail`
+# is a harmless best-effort passthrough for any caller that checks it.
+LEADV2_JOURNAL_SHIM="${TMP_ROOT}/journal-shim.sh"
+cat > "${LEADV2_JOURNAL_SHIM}" <<'SHEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+mode="${1:-}"; task="${2:-}"; shift 2 || true
+dir="${TMP_ROOT_JOURNAL_SHIM_DIR:-${TMPDIR:-/tmp}}/journal"
+mkdir -p "${dir}" 2>/dev/null || true
+case "$mode" in
+  append) printf -- '%s\n' "$*" >> "${dir}/${task}.md" ;;
+  tail) tail -n "${1:-10}" "${dir}/${task}.md" 2>/dev/null || true ;;
+esac
+exit 0
+SHEOF
+chmod +x "${LEADV2_JOURNAL_SHIM}"
+export TMP_ROOT_JOURNAL_SHIM_DIR="${TMP_ROOT}"
+
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s -- %s\n' "$1" "$2"; FAIL=1; }
 
@@ -172,6 +204,14 @@ SH
   chmod +x "${path}"
 }
 
+
+# make_live_codex: the fake must also answer `log <handle>` with non-empty
+# text -- CODEX-DOOR-DEAD-01's first-byte probe (_codex_first_byte_probe,
+# leadv2-dispatch-code.sh) shells out to `log <handle>` and treats empty
+# stdout as "no byte yet". Before this fix the fake had no `log` case (falls
+# through to the `*) exit 2 ;;` branch, empty stdout), so every scenario using
+# this fixture silently rode the 180s no_first_byte deadline to expiry
+# instead of proving codex alive -- the timeout the previous prepass hit.
 make_live_codex() {
   local path="$1"
   cat > "${path}" <<'SH'
@@ -179,6 +219,26 @@ make_live_codex() {
 case "${1:-}" in
   task) echo 'Dispatch started in the background as task-test-abc123.' ;;
   status) exit 0 ;;
+  log) echo 'codex first byte: live output' ;;
+  *) exit 2 ;;
+esac
+SH
+  chmod +x "${path}"
+}
+
+# make_dead_codex: emits nothing for `log <handle>` (first byte never lands),
+# so _codex_first_byte_deadline_check declares the arm dead once
+# LEADV2_CODEX_FIRST_BYTE_SECS elapses. `task`/`status` still behave like a
+# live launch -- only the first-byte probe is starved, isolating the
+# dead-arm branch from every other failure mode this suite covers.
+make_dead_codex() {
+  local path="$1"
+  cat > "${path}" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  task) echo 'Dispatch started in the background as task-test-deadbeef.' ;;
+  status) exit 0 ;;
+  log) exit 0 ;;
   *) exit 2 ;;
 esac
 SH
@@ -223,6 +283,7 @@ refusal_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/refusal-root" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/refusing-glm.sh" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/refusing-kimi-1.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/live-codex.sh" \
+  LEADV2_CODEX_FIRST_BYTE_SECS=2 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_WRAPPER}" 'plugin-only quota refusal advances chain' 2>&1)"
 refusal_rc=$?
@@ -244,6 +305,7 @@ peak_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/peak-root" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/peak-glm.sh" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/refusing-kimi-2.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/live-codex.sh" \
+  LEADV2_CODEX_FIRST_BYTE_SECS=2 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_WRAPPER}" 'plugin-only peak refusal advances chain' 2>&1)"
 peak_rc=$?
@@ -254,6 +316,35 @@ if [[ ${peak_rc} -eq 0 ]] \
   pass 'peak-hours refusal journals refusal and advances GLM -> Codex'
 else
   fail 'peak-hours refusal advances chain' "rc=${peak_rc} output=${peak_out}"
+fi
+
+# PLUGIN-CORE-OFFLINE-4RED-01: dead-arm path (CODEX-DOOR-DEAD-01 §2/§3) --
+# codex accepts the job but never produces a first byte. Proves
+# _codex_first_byte_deadline_check fires reason=no_first_byte and spills to
+# the next arm, instead of this suite merely riding the (previously
+# unfalsifiable, since live-codex.sh always answered `log`) 180s default to
+# expiry. LEADV2_CODEX_FIRST_BYTE_SECS=1 keeps this bounded to ~1s wall clock.
+make_root "${TMP_ROOT}/deadarm-root"
+make_refusing_glm "${TMP_ROOT}/deadarm-glm.sh"
+make_refusing_kimi "${TMP_ROOT}/deadarm-kimi.sh"
+make_dead_codex "${TMP_ROOT}/deadarm-codex.sh"
+make_failing_launcher "${TMP_ROOT}/deadarm-sonnet.sh"
+deadarm_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/deadarm-root" \
+  LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/deadarm-cache" \
+  LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/deadarm-glm.sh" \
+  LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/deadarm-kimi.sh" \
+  LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/deadarm-codex.sh" \
+  LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/deadarm-sonnet.sh" \
+  LEADV2_CODEX_FIRST_BYTE_SECS=1 \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  bash "${DISPATCH_WRAPPER}" 'plugin-only codex dead-arm no-first-byte spills chain' 2>&1)"
+deadarm_rc=$?
+if grep -q 'arm_dead_no_first_byte arm=codex' <<<"${deadarm_out}" \
+  && grep -q 'arm_refused by=router model=codex.*reason=no_first_byte' <<<"${deadarm_out}" \
+  && grep -q 'spawn_failed by=router model=sonnet' <<<"${deadarm_out}"; then
+  pass 'codex dead-arm (no first byte) declares no_first_byte and spills to sonnet'
+else
+  fail 'codex dead-arm no_first_byte spill' "rc=${deadarm_rc} output=${deadarm_out}"
 fi
 
 make_root "${TMP_ROOT}/crash-root"
@@ -394,6 +485,7 @@ ladder_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/ladder-root" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/ladder-glm.sh" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/ladder-kimi.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/ladder-codex.sh" \
+  LEADV2_CODEX_FIRST_BYTE_SECS=2 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_WRAPPER}" 'plugin-only ladder from yaml' 2>&1)"
 ladder_rc=$?
@@ -424,6 +516,7 @@ lockout_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockout-root" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/lockout-glm.sh" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/lockout-kimi.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockout-codex.sh" \
+  LEADV2_CODEX_FIRST_BYTE_SECS=2 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_WRAPPER}" 'plugin-only lockout skips glm' 2>&1)"
 lockout_rc=$?
@@ -453,6 +546,7 @@ pastlock_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/pastlock-root" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/pastlock-glm.sh" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/pastlock-kimi.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/pastlock-codex.sh" \
+  LEADV2_CODEX_FIRST_BYTE_SECS=2 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_WRAPPER}" 'plugin-only past lockout ignored future codex locked' 2>&1)"
 pastlock_rc=$?
@@ -480,6 +574,7 @@ nolock_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/nolock-root" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/nolock-glm.sh" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/nolock-kimi.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/nolock-codex.sh" \
+  LEADV2_CODEX_FIRST_BYTE_SECS=2 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   bash "${DISPATCH_WRAPPER}" 'plugin-only no glm lockout codex locked' 2>&1)"
 nolock_rc=$?
@@ -512,6 +607,7 @@ selfhost_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/selfhost-glm.sh" \
   LEADV2_DISPATCH_KIMI_BIN="${TMP_ROOT}/selfhost-kimi.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_JOURNAL_BIN="${LEADV2_JOURNAL_SHIM}" \
   bash "${DISPATCH_WRAPPER}" 'plugin-only selfhost routing' 2>&1)"
 selfhost_rc=$?
 if [[ ${selfhost_rc} -eq 0 ]] \
@@ -540,6 +636,7 @@ degraded_out="$(env -u CLAUDE_PROJECT_ROOT -u CLAUDE_PROJECT_DIR \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/degraded-glm.sh" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
+  LEADV2_JOURNAL_BIN="${LEADV2_JOURNAL_SHIM}" \
   bash "${DISPATCH_WRAPPER}" 'plugin-only degraded mode test' 2>&1)"
 degraded_rc=$?
 if [[ ${degraded_rc} -eq 0 ]] \
@@ -571,6 +668,7 @@ prodtest_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/prodtest-root" \
   LEADV2_QUOTA_LOCKOUT_DIR="${TMP_ROOT}/prodtest-cache" \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/prodtest-glm.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/prodtest-codex.sh" \
+  LEADV2_CODEX_FIRST_BYTE_SECS=2 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
   bash "${DISPATCH_WRAPPER}" 'plugin-only production yaml dry run' 2>&1)"
@@ -594,6 +692,7 @@ lockwrite_out1="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockwrite-root" \
   LEADV2_QUOTA_LOCKOUT_MINUTES=30 \
   LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/lockwrite-glm.sh" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockwrite-codex.sh" \
+  LEADV2_CODEX_FIRST_BYTE_SECS=2 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
   bash "${DISPATCH_WRAPPER}" 'plugin-only lockout write read run1' 2>&1)"
@@ -619,6 +718,7 @@ else
     LEADV2_QUOTA_LOCKOUT_MINUTES=30 \
     LEADV2_DISPATCH_GLM_BIN="${TMP_ROOT}/lockwrite-glm.sh" \
     LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockwrite-codex.sh" \
+    LEADV2_CODEX_FIRST_BYTE_SECS=2 \
     LEADV2_DISPATCH_ARCHITECT_GATE=0 \
     LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
     bash "${DISPATCH_WRAPPER}" 'plugin-only lockout write read run2' 2>&1)"

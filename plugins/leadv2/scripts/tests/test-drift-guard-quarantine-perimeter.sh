@@ -66,7 +66,7 @@ env -u LEADV2_PROJECT_ROOT \
   LEADV2_QUARANTINE_ROOT="${Q_QUARANTINE}" \
   PYTHONPATH="$(python3 -c 'import site; print(site.getusersitepackages())')" \
   bash "${CACHE_SYNC_DRIVER}" "${PLUGIN_SYNC}" "${SCRIPTS_ROOT}" \
-  "${Q_CANON}/plugins/leadv2/scripts/" "${Q_CACHE}" \
+  "${Q_CANON}/plugins/leadv2/scripts/" "${Q_CACHE}" --write \
   > /dev/null 2> "${SYNC_STDERR}"
 
 # 1a. copy reconciled to canonical (the guard-satisfiability property).
@@ -102,20 +102,41 @@ fi
 # but neither reconciles it nor creates a quarantine artifact.
 Q_DRY_QUARANTINE="${TMPROOT}/q-dry-quarantine"
 printf -- '%s' "${UNLANDED}" > "${Q_CACHE}/probe.sh"
+# _sync_direction_of's VENDORED_NEWER gate compares this copy's filesystem
+# mtime against canonical's last-commit time with only a 2s buffer. By this
+# point 1a-1d has already run (git log, rsync, quarantine copy — real wall
+# time), so a fresh `printf` mtime can land >2s after the canonical commit
+# and wrongly trip VENDORED_NEWER instead of the git-history DIRECTION-SAFETY
+# path this case means to exercise. Align the mtime to canonical's file so
+# the assertion depends on content/history, not on how long 1a-1d took.
+touch -r "${Q_CANON}/plugins/leadv2/scripts/probe.sh" "${Q_CACHE}/probe.sh"
 DRY_STDERR="${TMPROOT}/dry-sync-stderr.log"
 env -u LEADV2_PROJECT_ROOT \
   HOME="${Q_HOME}" LEADV2_CANONICAL_ROOT="${Q_CANON}" \
-  LEADV2_QUARANTINE_ROOT="${Q_DRY_QUARANTINE}" LEADV2_TEST_DRY_RUN=true \
+  LEADV2_QUARANTINE_ROOT="${Q_DRY_QUARANTINE}" \
   PYTHONPATH="$(python3 -c 'import site; print(site.getusersitepackages())')" \
   bash "${CACHE_SYNC_DRIVER}" "${PLUGIN_SYNC}" "${SCRIPTS_ROOT}" \
-  "${Q_CANON}/plugins/leadv2/scripts/" "${Q_CACHE}" \
+  "${Q_CANON}/plugins/leadv2/scripts/" "${Q_CACHE}" --dry-run \
   >/dev/null 2>"${DRY_STDERR}"
-if diff -q <(printf -- '%s' "${UNLANDED}") "${Q_CACHE}/probe.sh" >/dev/null 2>&1 \
-   && [[ -z "$(find "${Q_DRY_QUARANTINE}" -type f -print -quit 2>/dev/null)" ]] \
-   && grep -q "DRY_RUN DIRECTION-SAFETY" "${DRY_STDERR}"; then
-  pass "quarantine: --dry-run reports divergence with zero target/quarantine writes"
+# Decomposed into three independently-reported checks (round-2 CRITICAL-1):
+# a single tri-part `if A && B && C` hid which invariant broke when this
+# suite went red inside the full runner — the round-1 dev could not tell
+# whether the target got reconciled, quarantine got written, or the
+# DRY_RUN line never appeared.
+if diff -q <(printf -- '%s' "${UNLANDED}") "${Q_CACHE}/probe.sh" >/dev/null 2>&1; then
+  pass "quarantine: --dry-run target left unchanged"
 else
-  fail "quarantine: --dry-run must not reconcile or create quarantine content"
+  fail "quarantine: --dry-run target should be left unchanged (got: $(cat "${Q_CACHE}/probe.sh"))"
+fi
+if [[ -z "$(find "${Q_DRY_QUARANTINE}" -type f -print -quit 2>/dev/null)" ]]; then
+  pass "quarantine: --dry-run created zero quarantine content"
+else
+  fail "quarantine: --dry-run should not create quarantine content under ${Q_DRY_QUARANTINE}"
+fi
+if grep -q "DRY_RUN DIRECTION-SAFETY" "${DRY_STDERR}"; then
+  pass "quarantine: --dry-run emitted the DRY_RUN DIRECTION-SAFETY line"
+else
+  fail "quarantine: --dry-run must emit the DRY_RUN DIRECTION-SAFETY line (stderr: $(tr '\n' ' ' < "${DRY_STDERR}"))"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
