@@ -264,8 +264,12 @@ test_3_adoption_triple_proof() {
   # descending from the pane has "claude" in its command name. `exec -a`
   # changes argv but not macOS's `ps ... comm` value, so use a private copy
   # of sleep named claude; this is the exact signal the subject inspects.
-  cp "$(command -v sleep)" "$repo/claude"
-  chmod 700 "$repo/claude"
+  # symlink, NOT a copy: macOS SIGKILLs a copied Apple-signed binary
+  # (signature/path mismatch, rc=137), so the fake claude died instantly and
+  # 3b failed deterministically. Through a symlink the kernel execs the
+  # original signed file while ps comm reports the symlink path ("…/claude"),
+  # which is the exact substring the subject matches.
+  ln -sf "$(command -v sleep)" "$repo/claude"
   tmux -L "$sock" new-window -t leadv2 -n TASK-KNOWN "$repo/claude 600" 2>/dev/null
   sleep 0.3
 
