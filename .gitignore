@@ -13,3 +13,5 @@ node_modules/
 __pycache__/
 .claude/anatomy.md
 .claude/worktrees/
+docs/leadv2/.pulse-*
+docs/leadv2/.broad-status-prev.json

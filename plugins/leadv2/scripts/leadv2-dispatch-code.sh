@@ -519,13 +519,29 @@ _dispatch_arm_registered_file() {  # <sig8> -> path on stdout
 
 # ARM-PRODUCES-NOTHING-02: append one line per spawn.  Every failure swallowed (|| true) —
 # a failed write degrades to the pre-existing empty_diff path, never a false verdict.
+#
+# BROAD-STATUS-RELAY-SCOPE-01 round 2 (D1): additive LEAD_SESSION=<sanitized
+# CLAUDE_CODE_SESSION_ID> field -- the dispatching session's own id, sanitized
+# the same way the single-lead-beat hook sanitizes SAFE_SID (tr -c
+# 'A-Za-z0-9._-' '_', first 64 chars) so the two can be string-compared
+# directly. This is the ONLY in-write-set way to attribute a live lane back
+# to the Claude session that dispatched it: lanes detach via
+# setsid+disown, so process ancestry cannot do it. Readers that don't know
+# this field (every reader predating this lane) are unaffected -- it is
+# appended after the existing fields, never inserted between them.
+#
+# round 3: CLAUDE_CODE_SESSION_ID is the real Claude Code platform var; a
+# Bash subprocess never sees CLAUDE_SESSION_ID (round-2 read empty always).
+# CLAUDE_SESSION_ID is kept as a legacy fallback only.
 _dispatch_register_arm() {  # <sig8> <arm> [handle] -> always rc0
-  local sig8="$1" arm="$2" handle="${3:-}" f dir
+  local sig8="$1" arm="$2" handle="${3:-}" f dir lead_session
   [[ -n "${arm}" ]] || return 0
   f="$(_dispatch_arm_registered_file "${sig8}")"
   dir="$(dirname "${f}")"
   mkdir -p "${dir}" 2>/dev/null || true
-  printf 'arm=%s handle=%s epoch=%s\n' "${arm}" "${handle}" "$(date +%s 2>/dev/null || printf '0')" \
+  lead_session="$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" | tr -c 'A-Za-z0-9._-' '_')"
+  lead_session="${lead_session:0:64}"
+  printf 'arm=%s handle=%s epoch=%s LEAD_SESSION=%s\n' "${arm}" "${handle}" "$(date +%s 2>/dev/null || printf '0')" "${lead_session}" \
     >> "${f}" 2>/dev/null || true
 }
 

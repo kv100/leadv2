@@ -112,6 +112,32 @@ fi
 printf -- '%s' "$(_now_epoch)" > "${BEAT_LAST_FILE}.tmp.$$" 2>/dev/null \
   && mv -f "${BEAT_LAST_FILE}.tmp.$$" "$BEAT_LAST_FILE" 2>/dev/null || true
 
+# BROAD-STATUS-RELAY-SCOPE-01 (round 2, HIGH-2): the session that armed this
+# beat becomes its recorded owner ONLY if it actually has a live dispatched
+# lane -- otherwise ownership would just be "whoever's --check won the
+# throttle race", which is the original incident (a focused session with no
+# lanes claims the beat and starves everyone else). Written when the hook
+# told us which session armed it AND that session qualifies; any other case
+# (no LEADV2_BEAT_OWNER_SESSION, resolver missing, no live lane) leaves the
+# owner file untouched rather than recording an unqualified or empty owner.
+# The read side (leadv2-beat-owner.sh's ladder) is authoritative regardless
+# -- a bug in this write-side check can only under-grant, never over-grant,
+# ownership, since a stale/absent owner file still resolves to "unresolved"
+# (full relay) there.
+if [[ -n "${LEADV2_BEAT_OWNER_SESSION:-}" ]]; then
+  BEAT_OWNER_SH="${SCRIPT_DIR}/leadv2-beat-owner.sh"
+  if [[ -f "$BEAT_OWNER_SH" ]]; then
+    # shellcheck source=/dev/null
+    source "$BEAT_OWNER_SH"
+    if command -v leadv2_session_has_live_lane >/dev/null 2>&1 \
+      && leadv2_session_has_live_lane "$LEADV2_BEAT_OWNER_SESSION" "$STATE_DIR" "$PROJECT_ROOT" 2>/dev/null; then
+      BEAT_OWNER_FILE="${STATE_DIR}/.pulse-beat-owner"
+      printf -- '%s %s' "$LEADV2_BEAT_OWNER_SESSION" "$(_now_epoch)" > "${BEAT_OWNER_FILE}.tmp.$$" 2>/dev/null \
+        && mv -f "${BEAT_OWNER_FILE}.tmp.$$" "$BEAT_OWNER_FILE" 2>/dev/null || true
+    fi
+  fi
+fi
+
 _run_beat() {
   export LEADV2_BROAD_STATUS_DISPATCHED="unavailable"
   if [[ "${LEADV2_BACKLOG_PUMP:-1}" == "1" && -x "$PUMP_SH" ]]; then

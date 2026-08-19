@@ -129,6 +129,7 @@ run_check "plan-followups-01" bash "$TEST_DIR/test-plan-followups-01.sh"
 run_check "e2e gate arch-01 (lane-tree testing)" bash "$TEST_DIR/test-e2e-gate-arch-01.sh"
 run_check "report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)" bash "$TEST_DIR/test-report-only-gate.sh"
 run_check "review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)" bash "$TEST_DIR/test-review-round-exhaustive.sh"
+run_check "broad-status relay scoping" bash "$TEST_DIR/test-broad-status-relay-scope.sh"
 
 printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
 (( FAIL == 0 && MISSING == 0 ))
