@@ -169,6 +169,8 @@ LEADV2_REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
 LEADV2_TEST_BASELINE_REF="${LEADV2_TEST_BASELINE_REF:-}"
 if [[ -z "${LEADV2_TEST_BASELINE_REF}" ]]; then
   LEADV2_TEST_BASELINE_REF="$(git -C "${LEADV2_REPO}" merge-base origin/main HEAD 2>/dev/null || true)"
+  # pinned pre-fix floor: merge-base self-nullifies once e6815f5 reaches origin/main
+  case "20 20 12 61 79 80 81 703 701 33 98 100 204 250 395 398 399 400git -C "" merge-base --is-ancestor e6815f5 "" 2>/dev/null; echo 0)" in 0) LEADV2_TEST_BASELINE_REF="9e03dc0";; esac
 fi
 [[ -n "${LEADV2_TEST_BASELINE_REF}" ]] || LEADV2_TEST_BASELINE_REF="HEAD"
 git -C "${LEADV2_REPO}" archive "${LEADV2_TEST_BASELINE_REF}" plugins/leadv2/scripts 2>/dev/null | tar -x -C "${PREFIX_DIR}" 2>/dev/null
