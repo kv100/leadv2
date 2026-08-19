@@ -105,7 +105,10 @@ Review phase calls `plugins/leadv2/scripts/leadv2-review-run.sh` over Bash direc
 is not gated by `LEADV2_WORKFLOW_ENABLED` or `LEADV2_REVIEW_ENGINE` (those flags gate the
 *plan* phase's Workflow and the product-close *lane*'s internal call respectively; the
 engine script itself exists on disk regardless and this skill always invokes it). Full
-invocation, args, and exit-code contract → **`WORKFLOW-PATH.md`**. `workflows/leadv2-review.js`
+invocation, args, and exit-code contract → **`WORKFLOW-PATH.md`**. (REVIEW-ROUND1-EXHAUSTIVE-01:
+round 1 of a task's review is an exhaustive multi-lens pass; round 2+ — once a prior FAIL/PASS
+verdict exists for a diff that has since changed — is verification-only against that round's
+findings; round state lives in `.review-round.state` beside the handoff.) `workflows/leadv2-review.js`
 and its shared copy at `~/.claude/workflows/leadv2-review.js` are deleted; the Cases A/B/C
 manual-dispatch table below is superseded by the engine's own pool-resolution + fan-out
 (codex/glm/kimi/sonnet/opus, quota-filtered, author-excluding) — kept here only as
