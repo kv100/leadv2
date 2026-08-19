@@ -453,7 +453,16 @@ for echelon in ECHELON_ORDER:
         continue
     lines = [f"{i}. {q['id']} — {q['title_or_intent']}" for i, q in enumerate(items, start=1)]
     queue_sections.append(f"**{echelon}**\n" + "\n".join(lines))
-queue_md = "Очередь — по влиянию на 60/6:\n\n" + (
+_queue_label_file = os.path.join(".claude", "leadv2-overrides", "queue-impact-label.txt")
+_queue_label = "Очередь — по влиянию:"
+try:
+    with open(_queue_label_file, encoding="utf-8") as fh:
+        _cand = fh.readline().strip()
+    if _cand:
+        _queue_label = _cand
+except OSError:
+    pass
+queue_md = _queue_label + "\n\n" + (
     "\n\n".join(queue_sections) if queue_sections else "(очередь пуста)"
 )
 

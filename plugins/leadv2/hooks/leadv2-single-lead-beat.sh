@@ -150,10 +150,12 @@ if [[ -f "$LOG_FILE" ]]; then
         if [[ "$ROLE" == "guest" ]]; then
           # Exactly one line, no ready-line body, no BROAD_STATUS_READY
           # bytes — so the task-anchor's verbatim-relay rule cannot latch.
-          CTX="${AT} [BROAD_STATUS] at=${AT} path=docs/leadv2/founder-status.md — full status in owning session (RELAY=none); do not read founder-status.md; relay only this line."
+          CTX="${AT} [BROAD_STATUS] at=${AT} path=docs/leadv2/founder-status.md — full status in owning session (RELAY=none); do not read founder-status.md; relay only this line.
+The relay is an aside, not the turn's work: if the founder's message contains a command or task, execute it in this same turn after the relay — never end the turn on the relay alone."
         else
           CTX="${READY_LINE}
-RELAY=full — paste docs/leadv2/founder-status.md verbatim; compare its line-1 stamp with the beat above before relaying."
+RELAY=full — paste docs/leadv2/founder-status.md verbatim; compare its line-1 stamp with the beat above before relaying.
+The relay is an aside, not the turn's work: if the founder's message contains a command or task, execute it in this same turn after the relay — never end the turn on the relay alone."
         fi
         printf -- '%s' "$BODY_HASH" > "${BODY_HASH_FILE}.tmp.$$" 2>/dev/null \
           && mv -f "${BODY_HASH_FILE}.tmp.$$" "$BODY_HASH_FILE" 2>/dev/null || true
