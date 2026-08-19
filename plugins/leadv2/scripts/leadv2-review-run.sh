@@ -660,9 +660,11 @@ for _arm in "${ran_arms[@]}"; do
     _pc_body_bytes="$(wc -c < "${_out}" 2>/dev/null | tr -d '[:space:]')"; _pc_body_bytes="${_pc_body_bytes:-0}"
     if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
       if [[ -s "${_err}" ]] || grep -q 'cost recorded:' "${_err}" 2>/dev/null; then
-        printf 'status: blocked\nreason: review_body_lost\narm: %s\n' "${_arm}" > "${HANDOFF}/review-gate.md.tmp"
+        _pc_body_rel="${_out#"${ROOT}"/}"
+        printf 'status: blocked\nreason: review_body_lost\narm: %s\nbody: %s\nbytes: %s\n' \
+          "${_arm}" "${_pc_body_rel}" "${_pc_body_bytes}" > "${HANDOFF}/review-gate.md.tmp"
         mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-        emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${_arm}"
+        emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${_arm} body=${_pc_body_rel} bytes=${_pc_body_bytes}"
         exit 6
       fi
     fi

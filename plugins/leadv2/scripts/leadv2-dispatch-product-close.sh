@@ -1293,6 +1293,87 @@ _pc_arm_advance() {
   bash "${DISPATCH_BIN}" advance-arm "${adv_args[@]}" >/dev/null 2>&1 || true
 }
 
+# REVIEW-GATE-INFRA-01 D-A(i): a declared write under docs/leadv2/ or docs/handoff/
+# makes an empty scoped diff MECHANICALLY INEVITABLE, independent of anything the
+# worker actually did -- both are hard-excluded by _pc_git_diff / _pc_lane_dirty's
+# exclusion pattern, so the diff is empty BY CONSTRUCTION. Detectable from the
+# write-set alone, before the worker's build is even awaited -- bounce here with an
+# actionable, path-naming reason instead of waiting for the empty-diff classifier
+# below to blame the lane. Capped at 5 named paths + a "+N more" suffix, matching
+# the review-gate.md path list cap (R1 unbounded-list-is-its-own-leak).
+#
+# Deliberately NOT bounced here: a declared path that fails to resolve to a git work
+# tree. Design draft R2 originally treated that as mechanically inevitable too, but
+# it is not -- it is also the exact shape of a LEGITIMATE cross-repo declaration (the
+# work landed in a repo this gate's diff_root-relative resolution cannot see). Bouncing
+# early on it would preempt the downstream cross_repo_elsewhere classification (D-A-ii)
+# with a strictly worse verdict (undiffable_write_set) for the innocent case. Left to
+# pc_scope_diff's classifier, which can tell the two apart using lane-dirty evidence.
+_pc_join_capped() {  # <n...> -> first 5 comma-joined + "+N more" on stdout
+  local items=("$@")
+  local n=${#items[@]} out="" i cap=5
+  for ((i = 0; i < n && i < cap; i++)); do
+    [[ -n "${out}" ]] && out="${out},${items[$i]}"
+    [[ -z "${out}" ]] && out="${items[$i]}"
+  done
+  (( n > cap )) && out="${out},+$((n - cap)) more"
+  printf '%s' "${out}"
+}
+# REVIEW-GATE-INFRA-01 round 2 F3: single normalisation point for a declared write-set
+# entry. Strips whitespace and ONE trailing /** or /* glob suffix, then a trailing /,
+# so a dir/glob declared shape ("tests/", "tests/unit/**") collapses to the same literal
+# prefix a bare path would ("tests", "tests/unit"). Never strips a bare trailing "*"
+# (R4 — vanishingly rare as a real path, and stripping it would silently rewrite a
+# legitimate literal filename ending in *).
+_pc_norm_write() {  # <raw> -> normalised path on stdout
+  local w="$1"
+  w="${w#"${w%%[![:space:]]*}"}"; w="${w%"${w##*[![:space:]]}"}"
+  case "${w}" in
+    */\*\*) w="${w%/\*\*}" ;;
+    */\*) w="${w%/\*}" ;;
+  esac
+  w="${w%/}"
+  printf '%s' "${w}"
+}
+# REVIEW-GATE-INFRA-01 round 2 F1: bounce ONLY when every declared path is mechanically
+# undiffable (docs/leadv2/*, docs/handoff/*) — a mixed write-set proceeds with the voided
+# paths recorded in _PC_UNDIFFABLE_CSV (surfaced later as an additive `undiffable:` key)
+# and only the surviving paths in _PC_SCOPE_WRITES_CSV feed the scope diff.
+pc_precheck_writes() {
+  _PC_UNDIFFABLE_CSV=""
+  _PC_SCOPE_WRITES_CSV=""
+  [[ -n "${WRITES_CSV:-}" ]] || return 0
+  local raw_writes_pf w bad_paths=() good_paths=() bad_n=0 good_n=0
+  IFS=',' read -r -a raw_writes_pf <<< "${WRITES_CSV}"
+  for w in "${raw_writes_pf[@]}"; do
+    w="$(_pc_norm_write "${w}")"
+    [[ -z "${w}" ]] && continue
+    case "${w}" in
+      docs/leadv2|docs/leadv2/*|docs/handoff|docs/handoff/*)
+        bad_paths+=("${w}"); bad_n=$((bad_n + 1))
+        ;;
+      *)
+        good_paths+=("${w}"); good_n=$((good_n + 1))
+        ;;
+    esac
+  done
+  if [[ ${good_n} -eq 0 && ${bad_n} -gt 0 ]]; then
+    local joined
+    joined="$(_pc_join_capped "${bad_paths[@]}")"
+    printf 'status: blocked\nreason: undiffable_write_set\npaths: %s\n' "${joined}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=undiffable_write_set terminal=refused cause=undiffable_write_set paths=${joined}"
+    _dl_note refused undiffable_write_set "paths=${joined}"
+    _stamp_review_terminal blocked
+    # reap any live worker before bouncing — mirrors the worker_timeout path (:1699-1700)
+    # so a fully-voided write-set never orphans a worker process.
+    _pc_reap_worker "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")" "$(_pc_meta_value "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/meta.yaml" pid 2>/dev/null)" 2>/dev/null || true
+    exit 5
+  fi
+  [[ ${bad_n} -gt 0 ]] && _PC_UNDIFFABLE_CSV="$(IFS=,; printf '%s' "${bad_paths[*]}")"
+  _PC_SCOPE_WRITES_CSV="$(IFS=,; printf '%s' "${good_paths[*]}")"
+  return 0
+}
+
 # WARNING: pc_scope_diff() below defines helper functions in its body that are
 # NOT available until it is first invoked (line ~1277 in the original layout).
 # Top-level code that runs before pc_scope_diff() must not call those helpers.
@@ -1409,10 +1490,10 @@ _pc_repo_diff() { # <repo_abs> <path...> -> diff on stdout (tracked + untracked 
   printf '%s' "${chosen}" > "${_PC_LAST_BASE_FILE}" 2>/dev/null || true
 }
 if [[ -n "${WRITES_CSV}" ]]; then
-  IFS=',' read -r -a raw_writes <<< "${WRITES_CSV}"
+  IFS=',' read -r -a raw_writes <<< "${_PC_SCOPE_WRITES_CSV:-${WRITES_CSV}}"
   writes=()
   for w in "${raw_writes[@]}"; do
-    w="${w#"${w%%[![:space:]]*}"}"; w="${w%"${w##*[![:space:]]}"}"
+    w="$(_pc_norm_write "${w}")"
     [[ -n "${w}" ]] && writes+=("${w}")
   done
   if [[ ${#writes[@]} -gt 0 ]]; then
@@ -1425,10 +1506,26 @@ if [[ -n "${WRITES_CSV}" ]]; then
       repo_order=()
       repo_of=()
       rel_of=()
+      _pc_unresolved_writes=()
+      _pc_unresolved_n=0
       for i in "${!writes[@]}"; do
         real_abs="$(_pc_realpath "${diff_root}/${writes[$i]}")"
         r="$(git -C "$(dirname "${real_abs}")" rev-parse --show-toplevel 2>/dev/null || true)"
-        [[ -z "${r}" ]] && r="${diff_root}"
+        if [[ -z "${r}" ]]; then
+          # REVIEW-GATE-INFRA-01 D-A(iv): a declared path that resolves outside any git
+          # work tree used to collapse silently onto diff_root (r="${diff_root}"),
+          # attributing it -- and its inevitable 0 bytes -- to diff_root's own group.
+          # That drags a legitimately cross-repo lane toward a false empty verdict for
+          # a repo the path was never really in scope for. Record it instead of
+          # grouping it; the classifier below treats "resolved repos all had bytes, OR
+          # a write never resolved at all" as cross_repo_elsewhere, not a scope
+          # violation.
+          _pc_unresolved_writes+=("${writes[$i]}")
+          _pc_unresolved_n=$((_pc_unresolved_n + 1))
+          repo_of[$i]=""
+          rel_of[$i]=""
+          continue
+        fi
         repo_of[$i]="${r}"
         rel_of[$i]="${real_abs#"${r}"/}"
         _seen=0
@@ -1551,10 +1648,54 @@ if [[ -n "${blocked_reason}" ]]; then
     # `refused` (not a new terminal word -- see leadv2-dispatch-ledger.sh vocabulary) keeps
     # this retryable, matching landed|dead-only write-once semantics.
     _pc_dirty_evidence=""
+    _pc_offending=""
+    _pc_declared_list="$(_pc_join_capped "${writes[@]:-}")"
     if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && _pc_lane_dirty "${_lane_root}"; then
-      _pc_terminal="refused"; _pc_cause="unscoped_lane_work"; _pc_rg_reason="unscoped_lane_work"
-      _pc_dirty_n="$(git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null | grep -vcE '^.. "?docs/leadv2/|^.. "?docs/handoff/')"
+      # REVIEW-GATE-INFRA-01 D-A(ii): "the lane is dirty" is not itself the violation --
+      # partition the dirty paths against the declared write-set. Only an UNDECLARED
+      # dirty path is a genuine scope violation; unscoped_lane_work must fire ONLY then
+      # (mission non-goal preserved verbatim). Declared-only dirt with zero diff bytes
+      # is one of two innocent causes this reason used to swallow: the work legitimately
+      # landed in a cross-repo sibling, or the declared path produced no bytes for a
+      # reason that is not a scope violation.
+      _pc_dirty_lines="$(git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null | \
+        grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/')"
+      _pc_dirty_n="$(printf '%s\n' "${_pc_dirty_lines}" | grep -vcE '^$' || true)"
+      _pc_undeclared=()
+      _pc_undeclared_n=0
+      while IFS= read -r _pc_line; do
+        [[ -z "${_pc_line}" ]] && continue
+        _pc_p="${_pc_line:3}"
+        # F4: a porcelain rename line reads "R  \"a b\" -> \"c d\"" — the path the work
+        # actually landed at is the RIGHT side of " -> ", not the raw slice.
+        _pc_p="${_pc_p##* -> }"
+        _pc_p="${_pc_p%\"}"; _pc_p="${_pc_p#\"}"
+        _pc_is_declared=0
+        for _pc_w in "${writes[@]:-}"; do
+          [[ -z "${_pc_w}" ]] && continue
+          case "${_pc_p}" in
+            "${_pc_w}"|"${_pc_w}"/*) _pc_is_declared=1; break ;;
+          esac
+        done
+        if [[ ${_pc_is_declared} -eq 0 ]]; then
+          _pc_undeclared+=("${_pc_p}")
+          _pc_undeclared_n=$((_pc_undeclared_n + 1))
+        fi
+      done <<< "${_pc_dirty_lines}"
       _pc_dirty_evidence="lane_root=$(basename "${_lane_root}") dirty=${_pc_dirty_n}"
+      if [[ ${_pc_undeclared_n} -gt 0 ]]; then
+        _pc_terminal="refused"; _pc_cause="unscoped_lane_work"; _pc_rg_reason="unscoped_lane_work"
+        _pc_offending="$(_pc_join_capped "${_pc_undeclared[@]}")"
+      elif [[ "${CROSS_REPO_DIFF:-}" == "1" && ${_pc_unresolved_n:-0} -gt 0 ]]; then
+        # F7: this branch only runs when blocked_reason==unscopable_diff, i.e. diff_file
+        # is totally empty — a repo in _nonzero_repos would have contributed bytes there,
+        # so ${_nonzero_repos:-0} -gt 0 can never be true here; dropped as dead.
+        # F5: a dirty lane never stamps terminal=no_work — the terminal is `refused`
+        # (retryable, same class); the diagnosis lives in `cause`/`reason` only.
+        _pc_terminal="refused"; _pc_cause="cross_repo_elsewhere"; _pc_rg_reason="cross_repo_elsewhere"
+      else
+        _pc_terminal="refused"; _pc_cause="declared_no_bytes"; _pc_rg_reason="declared_no_bytes"
+      fi
     else
       _pc_terminal="no_work"; _pc_cause="empty_diff"; _pc_rg_reason="no_work"
       if [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
@@ -1571,12 +1712,23 @@ if [[ -n "${blocked_reason}" ]]; then
   # artifact: appended right after reason:, existing keys byte-identical, so the
   # dead-worker family (kind: diff) never reads like a report-lane family.
   if [[ -n "${_pc_dirty_evidence:-}" ]]; then
-    printf 'status: blocked\nreason: %s\nkind: %s\nbase: %s\ndirty: %s\n' "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}" > "${HANDOFF}/review-gate.md"
+    {
+      printf 'status: blocked\nreason: %s\nkind: %s\nbase: %s\ndirty: %s\n' \
+        "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}"
+      [[ -n "${_pc_declared_list:-}" ]] && printf 'declared_writes: %s\n' "${_pc_declared_list}"
+      [[ -n "${_pc_offending:-}" ]] && printf 'offending: %s\n' "${_pc_offending}"
+      [[ -n "${_PC_UNDIFFABLE_CSV:-}" ]] && printf 'undiffable: %s\n' "${_PC_UNDIFFABLE_CSV}"
+    } > "${HANDOFF}/review-gate.md"
   else
-    printf 'status: blocked\nreason: %s\nkind: %s\nbase: %s\n' "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
+    {
+      printf 'status: blocked\nreason: %s\nkind: %s\nbase: %s\n' "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}"
+      [[ -n "${_PC_UNDIFFABLE_CSV:-}" ]] && printf 'undiffable: %s\n' "${_PC_UNDIFFABLE_CSV}"
+    } > "${HANDOFF}/review-gate.md"
   fi
-  emit decision "review_gate task=${TASK} status=blocked reason=${_pc_rg_reason} terminal=${_pc_terminal} cause=${_pc_cause}"
-  _dl_note "${_pc_terminal}" "${_pc_cause}" "${_pc_dirty_evidence}"
+  _pc_offending_evt=""
+  [[ -n "${_pc_offending:-}" ]] && _pc_offending_evt=" offending=${_pc_offending}"
+  emit decision "review_gate task=${TASK} status=blocked reason=${_pc_rg_reason} terminal=${_pc_terminal} cause=${_pc_cause}${_pc_offending_evt}"
+  _dl_note "${_pc_terminal}" "${_pc_cause}" "${_pc_dirty_evidence}${_pc_offending_evt}"
   _stamp_review_terminal blocked
   exit 5
 fi
@@ -1589,6 +1741,10 @@ fi
 # here, before pc_scope_diff, so the empty-diff branch (cause asked_into_void) and
 # the non-empty-diff branch (parked) below share one definition.
 _pc_resolve_asked_into_void
+
+# REVIEW-GATE-INFRA-01 D-A(i): bounce on a mechanically-undiffable write set BEFORE
+# waiting on the worker -- see pc_precheck_writes above.
+pc_precheck_writes
 
 if ! pc_await_worker_exit; then
   _pc_reap_worker "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")" "$(_pc_meta_value "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/meta.yaml" pid 2>/dev/null)"
@@ -1972,6 +2128,26 @@ _pc_remaining_ok_after() { # <after-arm>  reads ${pool}  -> prints count on stdo
 
 review_adir="${ROOT}/docs/handoff/dispatch-${TASK}-review"
 mkdir -p "${review_adir}"
+# REVIEW-GATE-INFRA-01 D-B: persist the arm's review body to a STABLE path in
+# review_adir BEFORE any verdict parsing or loss classification runs, so a lost-stream
+# retry and a lost-body event both have a real file to point at instead of the dead
+# stream. review_out is already redirected to ${HANDOFF}/review-<arm>.md by
+# run_reviewer_arm, but that lives under the task's OWN handoff dir, not review_adir --
+# copy it here under a name (`review-<arm>.md`) that cannot collide with the
+# claude-subsession-written `critic.*.md` names resolve_review_artifact consumes.
+# Always writes, including a zero-byte body -- a zero-byte file IS the evidence a
+# lost-body event needs.
+pc_persist_review_body() { # <arm> <src>
+  local arm="$1" src="$2"
+  local dest="${review_adir}/review-${arm}.md"
+  local bytes=0
+  if [[ -f "${src}" ]]; then
+    bytes="$(wc -c < "${src}" 2>/dev/null | tr -d '[:space:]')"; bytes="${bytes:-0}"
+  fi
+  cp -f "${src}" "${dest}" 2>/dev/null || : > "${dest}"
+  PC_PERSISTED_REVIEW_BODY="${dest}"
+  PC_PERSISTED_REVIEW_BYTES="${bytes}"
+}
 REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
 touch "${REVIEW_STAMP}"
 review_contract=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.'
@@ -2011,6 +2187,7 @@ while :; do
   # (opus/sonnet) stale-but-still-fresh-relative-to-the-old-stamp file.
   touch "${REVIEW_STAMP}"
   run_reviewer_arm "${reviewer}"
+  pc_persist_review_body "${reviewer}" "${review_out}"
   cls="$(classify_arm_failure "${review_rc}" "${review_err}" "${review_out}")"
   if [[ "${cls}" == refused_* ]]; then
     emit decision "review_gate task=${TASK} status=arm_refused arm=${reviewer} reason=${cls}"
@@ -2048,9 +2225,11 @@ while :; do
     if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${review_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
       # Evidence-of-real-output: non-empty stderr or a cost-recorded line in it.
       if [[ -s "${review_err}" ]] || grep -q 'cost recorded:' "${review_err}" 2>/dev/null; then
-        printf 'status: blocked\nreason: review_body_lost\narm: %s\n' "${reviewer}" > "${HANDOFF}/review-gate.md"
-        emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${reviewer}"
-        _dl_note dead review_body_lost "arm=${reviewer} bytes=${_pc_body_bytes}"
+        _pc_persisted_rel="${PC_PERSISTED_REVIEW_BODY#"${ROOT}"/}"
+        printf 'status: blocked\nreason: review_body_lost\narm: %s\nbody: %s\nbytes: %s\n' \
+          "${reviewer}" "${_pc_persisted_rel}" "${PC_PERSISTED_REVIEW_BYTES:-0}" > "${HANDOFF}/review-gate.md"
+        emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${reviewer} body=${_pc_persisted_rel} bytes=${PC_PERSISTED_REVIEW_BYTES:-0}"
+        _dl_note dead review_body_lost "arm=${reviewer} bytes=${_pc_body_bytes} body=${_pc_persisted_rel}"
         _stamp_review_terminal blocked
         exit 6
       fi
@@ -2077,7 +2256,18 @@ while :; do
   elif [[ ! -s "${review_file}" ]] || ! review_floor_ok "${review_file}"; then
     _pc_no_verdict_reason="empty_response"
   elif ! parse_review_verdict "${review_file}"; then
-    _pc_no_verdict_reason="no_verdict_marker"
+    # REVIEW-GATE-INFRA-01 D-B(iii): marker-recovery retry -- the first parse can miss
+    # the verdict marker when review_file resolved to a dead stream (REVIEW_ARTIFACT
+    # empty, review_out truncated); the persisted body from pc_persist_review_body is a
+    # stable copy that outlives the stream. Retry once against it before giving up.
+    if [[ -n "${PC_PERSISTED_REVIEW_BODY:-}" && "${review_file}" != "${PC_PERSISTED_REVIEW_BODY}" \
+          && -s "${PC_PERSISTED_REVIEW_BODY}" ]] && parse_review_verdict "${PC_PERSISTED_REVIEW_BODY}"; then
+      VERDICT_SOURCE="recovered_body"
+      review_file="${PC_PERSISTED_REVIEW_BODY}"
+      emit decision "review_gate task=${TASK} status=verdict_recovered arm=${reviewer} from=${PC_PERSISTED_REVIEW_BODY#"${ROOT}"/}"
+    else
+      _pc_no_verdict_reason="no_verdict_marker"
+    fi
   fi
 
   if [[ -n "${_pc_no_verdict_reason}" ]]; then
@@ -2110,9 +2300,11 @@ if [[ "${_pc_unavailable}" == "1" ]]; then
     # exhausted case, only the new per-arm arm_no_verdict lines and the full tried= list
     # attached to the death itself (dispatch-4fb7381a: reviewer never advanced past
     # kimi, so tried= could only ever show one name -- this is the fix's proof).
-    printf 'status: blocked\nreason: no_verdict_marker\n' > "${HANDOFF}/review-gate.md"
-    emit decision "review_gate task=${TASK} status=blocked reason=no_verdict_marker tried=${_pc_tried_csv}"
-    _dl_note dead no_verdict_marker "tried=${_pc_tried_csv}"
+    _pc_persisted_rel="${PC_PERSISTED_REVIEW_BODY#"${ROOT}"/}"
+    printf 'status: blocked\nreason: no_verdict_marker\nbody: %s\nbytes: %s\n' \
+      "${_pc_persisted_rel}" "${PC_PERSISTED_REVIEW_BYTES:-0}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=no_verdict_marker tried=${_pc_tried_csv} body=${_pc_persisted_rel} bytes=${PC_PERSISTED_REVIEW_BYTES:-0}"
+    _dl_note dead no_verdict_marker "tried=${_pc_tried_csv} body=${_pc_persisted_rel} bytes=${PC_PERSISTED_REVIEW_BYTES:-0}"
     _stamp_review_terminal blocked
     exit 6
   fi
