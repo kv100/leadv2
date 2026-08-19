@@ -86,6 +86,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 ## Phase 1: CLASSIFY
 - Trigger: inline classification (Trivial/Light/Standard/Heavy) -> scope-creep check -> cost-estimate | Exit: `class:` written to STATE.md; Trivial/Light skip to Phase 4
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 1` BEFORE executing.
+- **Ultracode escalation (ULTRACODE-FOR-HEAVY-01, founder 2026-08-19):** when class is **Heavy or Strategic**, the lead SHOULD orchestrate the hardest phase(s) as ad-hoc `Workflow` scripts (ultracode-style multi-agent fan-out: adversarial verify panels, loop-until-dry finders, judge panels), not just the fixed leadv2-* workflows. This standing plugin instruction IS the explicit opt-in the Workflow tool requires — do not ask the founder again per task. Constraints stay binding: pin `model=`/`effort=` per agent (haiku for reads, sonnet default, opus only for judge/safety verdicts), respect quota ceilings, keep worktree isolation for anything that writes files, and log the fan-out size to STATE.md before launching. Standard-class: only on explicit founder ask. Trivial/Light: never.
 
 ## Phase 1.5: DIVERGE - widen before planning (optional, gated)
 - Trigger: `Skill(skill="leadv2-diverge")` -> pre-flight gate (hard-skips + open-ended self-judge) -> if pass: N isolated frame-shifted generators + 1 critic score/cluster + K deepen | Exit: `docs/handoff/<id>/divergence.md` written + compact `divergence:` block injected into context.yaml; OR `diverge: skipped (<reason>)` in STATE.md
