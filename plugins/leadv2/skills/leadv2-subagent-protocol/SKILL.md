@@ -28,6 +28,15 @@ Lead-side (informational): on death or that marker, lead auto-resumes ONCE via a
 
 Rules for operating as a subagent inside a /leadv2 run. These apply whether you're spawned via `claude-subsession.sh` (isolated process) or via Agent tool (shared parent session).
 
+> **Fork vs fresh agent vs lane (WHEN-TO-FORK-01, for the LEAD choosing a channel):** fork
+> (`Agent(subagent_type=fork)`) ONLY when the work needs *this session's* reasoning trail
+> (a decision made here, a founder statement not on disk) AND produces no reviewed diff,
+> needs no isolation from the dirty tree, and outlives nothing. Any "yes" to
+> diff/isolation/outlives → dispatch a lane, always. A read-only fact check with no session
+> dependency → fresh `Explore`/haiku, not a fork. Forks always run on the LEAD's model
+> (Opus) — `model=` is a silent no-op — so never fork to save cost and never fork
+> code-writing work. Full table: `docs/work-placement.md`.
+
 ## 1. Handoff discipline — contract, graph context, question proxy
 
 Three things to internalize before your first tool call: the task's immutable handoff contract (1a), the graph context lead already injected for you (1b), and the escape hatch when you need more (1c — `ask-lead.sh`). Read all three once; don't re-derive them mid-task. If the repo root has a `CONTEXT.md`, read it; use its canonical terms and honor the _Avoid_ list.

@@ -86,7 +86,10 @@ Append this block to EVERY developer mission prompt in step 2. If no CRITICAL/HI
 | `security-auditor` | `security-auditor` | _(none extra)_ |
 | `devops-engineer` | `devops-engineer` | `bash-scripting,error-handling` |
 | `developer` | `developer` | _(context-dependent)_ |
+| `fork` | `fork` | _(none — inherits full lead context)_ |
 | _(absent)_ | `developer` | log WARN: `agent_hint missing for step N` |
+
+**`fork` row (WHEN-TO-FORK-01):** use ONLY for a step that needs *this session's* reasoning trail (a decision made here, a founder statement not on disk) AND produces no reviewed diff. A fork inherits the full conversation, runs in the background keeping tool output out of the lead's context, and **always runs on the lead's model (Opus) — `model=` is silently ignored**, so never fork to save cost and never fork a code-write step (those go to `developer` or a dispatch lane). Full decision table: `docs/work-placement.md`.
 
 Append the `skill_hints` value to the developer mission's `Skills:` line, e.g.:
 ```

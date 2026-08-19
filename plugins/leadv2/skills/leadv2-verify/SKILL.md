@@ -56,6 +56,17 @@ Use `ask-lead.sh` with the prompt text. Accept only an explicit `yes/pass/ok` as
 
 **Success mode:** all criteria pass → proceed to probe step below (live_signal/probe path) as normal.
 
+### 1c. Long log reads → fork, not inline and not Explore (WHEN-TO-FORK-01)
+
+A verification step that means reading a LONG log/journal (journalctl walk, multi-file
+probe triage, "what actually happened in this deploy") **and** whose interpretation depends
+on this session's context (what was just deployed, which decision was made here) →
+spawn `Agent(subagent_type=fork)`. The fork inherits the full conversation (no re-briefing),
+runs in the background, and its tool output stays out of the lead's context — only the
+verdict returns. A read that needs NO session context (pure fact from disk) → `Explore`/haiku
+as usual. Note: forks always run on the lead's model (Opus); `model=` is ignored.
+Full fork-vs-lane-vs-agent table: `docs/work-placement.md`.
+
 ### 2. Choose probe mode
 
 **Decision flowchart:**
