@@ -136,12 +136,6 @@
             "timeout": 5,
             "continueOnBlock": true,
             "statusMessage": "Single-lead pulse beat (deliver + trigger)..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-turn-cap-gate.sh\"",
-            "timeout": 10,
-            "statusMessage": "Turn-cap hard gate (80 turns since last compact)..."
           }
         ]
       }
