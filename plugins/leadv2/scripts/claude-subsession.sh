@@ -243,6 +243,13 @@ SHARED_PROTOCOL_BOILERPLATE="MANDATORY — /leadv2 subagent protocol:
 - After writing DELIVERABLE_COMPLETE and your final chat report, you are DONE — end the turn now.
   Do not wait for a reply or idle expecting a follow-up; nothing further will arrive in this
   subsession (T-r, SUPERVISOR-AUDIT-01).
+- EVIDENCE CONTRACT: every factual claim you write about an external system or API
+  (endpoint behaviour, rate limit, auth flow, schema, provider quirk, version) must be
+  immediately followed by its probe artifact — a curl/CLI invocation with its output, a
+  log excerpt, or a doc URL plus the live check that confirmed it.
+- If you have no artifact, prefix the claim with the literal token UNVERIFIED: — an
+  untagged evidence-free external-system claim is a protocol violation, and reviewers
+  treat one that drives a decision as BLOCKING.
 - See full protocol: .claude/skills/leadv2-subagent-protocol/SKILL.md
 - Codebase graph project: ${LEADV2_CODEBASE_PROJECT:-}
 - Handoff discipline (context.yaml), question proxy (ask-lead.sh), DELIVERABLE_COMPLETE marker, chat limits, and off_limits hard stop are all in the skill file above."

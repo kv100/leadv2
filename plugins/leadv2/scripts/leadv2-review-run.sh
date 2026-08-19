@@ -701,9 +701,10 @@ _review_build_contract() {
     printf '\n%s' "${_review_contract_base}"
   else
     printf 'EXHAUSTIVE ROUND %s\n\n' "${REVIEW_ROUND}"
-    printf 'Review this diff through FOUR lenses:\n'
-    printf '1. correctness\n2. tests-can-fail (falsification)\n3. product-invariant/contract\n4. census\n\n'
+    printf 'Review this diff through FIVE lenses:\n'
+    printf '1. correctness\n2. tests-can-fail (falsification)\n3. product-invariant/contract\n4. census\n5. claims-without-evidence\n\n'
     printf 'Census rule: if you find one instance of a defect shape, enumerate ALL same-shape instances in the touched files before returning.\n'
+    printf 'Claims-without-evidence rule: enumerate every factual claim about an external system or API made in the diff, its comments, or the deliverable. Each must carry inline evidence (probe output, log excerpt, doc link plus live check) or the literal tag UNVERIFIED. An untagged evidence-free claim that DRIVES a decision -- a code path, a config value, a limit, a retry policy -- is a BLOCKING finding. A tagged one is MEDIUM at most.\n\n'
     printf 'Report EVERYTHING you find in this one pass. Never stop at the first 1-3 findings.\n\n'
     printf '%s' "${_review_contract_base}"
   fi

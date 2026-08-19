@@ -183,6 +183,19 @@ consuming your deliverable — default to `.summary.md`, bounded `.full.md` read
 read protocol, and handoff-file compression. Full detail: [LEAD-READING.md](./LEAD-READING.md).
 Not subagent-facing, but useful if you need to predict what the lead will do with your output.
 
+## 11. Evidence contract for external-system claims
+
+Every factual claim you write about an external system or API — endpoint behaviour, rate
+limit, auth flow, schema, provider quirk, version — must be immediately followed by its
+probe artifact: a curl/CLI invocation with its output, a log excerpt, or a doc URL plus
+the live check that confirmed it.
+
+If you have no artifact, prefix the claim with the literal token `UNVERIFIED:`. An
+untagged evidence-free external-system claim is a protocol violation. Round-1 review
+checks for this under the `claims-without-evidence` lens: an untagged claim that drives a
+decision (a code path, a config value, a limit, a retry policy) is BLOCKING; a tagged one
+is MEDIUM at most.
+
 ## Writable scope — $WRITE_ROOT
 
 **Rule: write ONLY under the worktree root you were spawned in.** Never touch main-repo paths.
