@@ -84,7 +84,10 @@ fi
 # L2: NEVER fall back to HEAD -- HEAD (post-rebase) already carries round 1's
 # fix, which would self-nullify C1/C2. The pinned floor is the only safe default.
 [[ -n "${LEADV2_TEST_BASELINE_REF}" ]] || LEADV2_TEST_BASELINE_REF="559cf15"
-git -C "${LEADV2_REPO}" archive "${LEADV2_TEST_BASELINE_REF}" plugins/leadv2/scripts 2>/dev/null | tar -x -C "${PREFIX_DIR}" 2>/dev/null
+# N1 (r2 verify): include skills/ — without it C7's red leg ran the FIXED
+# claude-subsession.sh against a missing SKILL.md and was red for the wrong
+# reason (vacuous red-first).
+git -C "${LEADV2_REPO}" archive "${LEADV2_TEST_BASELINE_REF}" plugins/leadv2/scripts plugins/leadv2/skills 2>/dev/null | tar -x -C "${PREFIX_DIR}" 2>/dev/null
 PREFIX_SCRIPTS="${PREFIX_DIR}/plugins/leadv2/scripts"
 if [[ ! -f "${PREFIX_SCRIPTS}/leadv2-review-run.sh" ]]; then
   log "FATAL: git archive ${LEADV2_TEST_BASELINE_REF} extraction failed -- cannot run red-first harness"
