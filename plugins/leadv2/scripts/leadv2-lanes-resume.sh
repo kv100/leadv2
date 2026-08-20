@@ -49,7 +49,7 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      printf -- '[supervise-resume] unknown arg: %s\n' "$1" >&2
+      printf -- '[lanes-resume] unknown arg: %s\n' "$1" >&2
       shift
       ;;
   esac
