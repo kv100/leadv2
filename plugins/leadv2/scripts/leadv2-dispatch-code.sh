@@ -3630,6 +3630,23 @@ journaled and surfaced in open-threads. Without a default, the task is parked
 human-needed and its slot is freed. Do not use this for routine progress or
 confirmation-seeking; only for a decision you cannot make yourself."
 
+  # BUILDER-SELFCHECK-GATE-01 (item 3): one paragraph telling every product lane it
+  # must falsify its own diff before submitting it. Guarded by the SAME kill-switch
+  # the gate itself reads (product-close.sh), so LEADV2_BUILDER_SELFCHECK=0 restores
+  # the mission text byte-for-byte, not just the gate behaviour. Appended AFTER the
+  # dedup sig is computed, same as the async-question block above -- lane dedup
+  # identity stays keyed on the caller's actual task content.
+  if [[ "${LEADV2_BUILDER_SELFCHECK:-1}" != 0 ]]; then
+    mission="${mission}
+
+Before you finish, run your own falsification set and paste its raw output into
+your final report: \`bash -n\` every shell file you changed, \`python3 -m
+py_compile\` every Python file you changed, and the repo's changed-scope test
+runner. Show the red output you got and the green output after your fix. A lane
+whose self-check is missing or red is refused before any reviewer is spent on
+it -- you will have burned the lane for nothing."
+  fi
+
   # LANE-SHAPE-01 gate (docs/specs/lane-shape.md task 2): classify solo vs line
   # BEFORE any ledger reservation or spawn. off (default) = no-op, zero behavior
   # change (spec §9 Stage 0). enforce refuses a diagnostic mission (names a

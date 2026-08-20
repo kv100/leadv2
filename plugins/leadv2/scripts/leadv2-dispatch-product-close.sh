@@ -75,6 +75,15 @@ _REVIEW_FINDINGS_SH="${SCRIPT_DIR}/leadv2-review-findings.sh"
 # shellcheck source=leadv2-review-findings.sh
 [[ -f "${_REVIEW_FINDINGS_SH}" ]] && source "${_REVIEW_FINDINGS_SH}"
 command -v render_gate_findings >/dev/null 2>&1 || render_gate_findings() { :; }
+# BUILDER-SELFCHECK-GATE-01: mechanical falsification set (bash -n / py_compile /
+# changed-scope suites) run on the lane's own diff before any review arm is spent.
+# Guarded source + no-op stub (same idiom as _REVIEW_FINDINGS_SH above): a missing
+# lib is an infrastructure fault, never a lane fault (R1) -- lv2_selfcheck_run
+# absent means the gate step below degrades to a no-op, not a false block.
+_BUILDER_SELFCHECK_SH="${SCRIPT_DIR}/lib/leadv2-builder-selfcheck.sh"
+[[ -f "${_BUILDER_SELFCHECK_SH}" ]] || _BUILDER_SELFCHECK_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-builder-selfcheck.sh"
+# shellcheck source=lib/leadv2-builder-selfcheck.sh
+[[ -f "${_BUILDER_SELFCHECK_SH}" ]] && source "${_BUILDER_SELFCHECK_SH}"
 # LOW-2 (fixround-tails): qualified <sig8>-<epoch>-<pid> attempt token, computed ONCE so the
 # explicit call and the EXIT trap's own retry (same process) reuse the identical value; a
 # bare pid would recycle across days/reboots and could be misread as the same attempt.
@@ -1812,6 +1821,38 @@ if [[ -n "${_PC_ASKED_INTO_VOID}" && -f "${_PC_ASKED_INTO_VOID}" ]]; then
   _dl_note parked asked_into_void
   _stamp_review_terminal blocked
   exit 5
+fi
+
+# BUILDER-SELFCHECK-GATE-01: the builder must prove its own diff before any review
+# arm is spent. Sits after pc_scope_diff (real bytes already confirmed) and before
+# both e2e and review -- LEADV2_BUILDER_SELFCHECK=0 restores today's path byte-for-
+# byte. A missing lib (R1, infra fault, not a lane fault) or a report-only lane
+# (checks=0 by construction) both fall through unchanged -- only a lib that RAN and
+# produced a RED verdict blocks.
+if [[ "${LEADV2_BUILDER_SELFCHECK:-1}" != 0 ]] && command -v lv2_selfcheck_run >/dev/null 2>&1; then
+  _selfcheck_md="${HANDOFF}/selfcheck.md"
+  # R2: must NOT be `_selfcheck_failed="$(lv2_selfcheck_run ...)"` -- a command
+  # substitution runs the function in a SUBSHELL, so the LV2_SELFCHECK_* globals it
+  # sets would die with that subshell and never reach this scope. Redirect stdout to
+  # a file instead so the function runs in THIS shell and its globals persist.
+  _selfcheck_out_f="$(mktemp)"
+  LEADV2_E2E_GATE="${E2E_ON}" lv2_selfcheck_run "${diff_file}" "${diff_root}" "${ROOT}" "${_selfcheck_md}" > "${_selfcheck_out_f}"
+  _selfcheck_rc=$?
+  _selfcheck_failed="$(cat "${_selfcheck_out_f}")"
+  rm -f "${_selfcheck_out_f}"
+  _selfcheck_fields="checks=${LV2_SELFCHECK_CHECKS:-0} skipped=${LV2_SELFCHECK_SKIPPED:-0}"
+  [[ "${LV2_SELFCHECK_DEPTH_SKIP:-0}" == "1" ]] && _selfcheck_fields="${_selfcheck_fields} depth_guard=1"
+  if [[ ${_selfcheck_rc} -eq 1 ]]; then
+    IFS=',' read -r -a _selfcheck_failed_arr <<< "${_selfcheck_failed}"
+    printf 'status: blocked\nreason: selfcheck_failed\nkind: %s\nbase: %s\nfailed: %s\nchecks: %s\nskipped: %s\nselfcheck: docs/handoff/dispatch-%s/selfcheck.md\n' \
+      "${_pc_kind}" "${_pc_base_used:-HEAD}" "$(_pc_join_capped "${_selfcheck_failed_arr[@]}")" \
+      "${LV2_SELFCHECK_CHECKS:-0}" "${LV2_SELFCHECK_SKIPPED:-0}" "${TASK}" > "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=selfcheck_failed terminal=refused cause=selfcheck_failed failed=${_selfcheck_failed} ${_selfcheck_fields}"
+    _dl_note refused selfcheck_failed "failed=${_selfcheck_failed} ${_selfcheck_fields}"
+    _stamp_review_terminal blocked
+    exit 5
+  fi
+  emit decision "selfcheck task=${TASK} status=$([[ ${_selfcheck_rc} -eq 2 ]] && printf degraded || printf green) ${_selfcheck_fields}"
 fi
 
 _stamp_active_phase "${FOUNDER_TASK_ID}" "e2e"
