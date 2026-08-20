@@ -510,24 +510,27 @@ _sync_project_root() {
   # <root>/scripts/ (top-level, NOT .claude/scripts/) — e.g. persona-engine's
   # out-of-worktree control plane (2026-07-14, 6321bf2). This second location was
   # never covered by (c) above, so it silently drifted (SUPERVISE-V2-01 found it
-  # missing leadv2-supervise-loop.sh/leadv2-supervise-pick.sh entirely + a stale
-  # leadv2-supervise.sh). FIXED SET, not a leadv2-* wildcard: a wildcard rsync
+  # missing the supervisor loop's two companion scripts entirely + a stale
+  # snapshot script). FIXED SET, not a leadv2-* wildcard: a wildcard rsync
   # dumps the FULL ~150-file canonical scripts/ dir into what has always been a
   # deliberately curated ~13-file subset (confirmed by scoping this list to the
-  # pre-existing files there + the 3 hard runtime deps leadv2-supervise.sh's
+  # pre-existing files there + the hard runtime deps leadv2-lanes-snapshot.sh's
   # source chain actually requires: active-registry.sh sourced directly by
-  # supervise.sh L136-138; tasks-lib.sh sourced directly by supervise-pick.sh
-  # L50; loop.sh/pick.sh named explicitly missing by SUPERVISE-V2-01). Extend
-  # this list only when a repo's control-plane scripts/ genuinely adopts a new
-  # companion — never switch this back to a wildcard.
+  # lanes-snapshot.sh L136-138). SUPERVISOR-DELETE-01 (2026-08-20): the
+  # supervisor loop/pick companions are gone — the snapshot script was renamed
+  # to leadv2-lanes-snapshot.sh (live founder-status lanes-table dependency,
+  # not supervisor-only) and the loop's two companion scripts were deleted
+  # outright with the rest of the supervisor machinery. Extend this list only
+  # when a repo's control-plane scripts/ genuinely adopts a new companion —
+  # never switch this back to a wildcard.
   local proj_scripts_toplevel="${root}/scripts"
   local -a toplevel_curated_files=(
     leadv2-answer.sh leadv2-ask.sh leadv2-bus.sh leadv2-client-surface-gate.sh
     leadv2-fanout-classify.sh leadv2-fanout.sh leadv2-phase8-assert.sh leadv2-phase8-close.sh leadv2-phase8-e2e-gate.sh
     leadv2-merge-queue.sh leadv2-provider-rollup.sh leadv2-session-route.sh
     leadv2-session-runner.sh leadv2-codex-session-runner.sh leadv2-progress-fingerprint.sh
-    leadv2-state-path.sh leadv2-supervise.sh leadv2-tasks-regen-gate.sh
-    leadv2-active-registry.sh leadv2-supervise-loop.sh leadv2-supervise-pick.sh
+    leadv2-state-path.sh leadv2-lanes-snapshot.sh leadv2-tasks-regen-gate.sh
+    leadv2-active-registry.sh
     leadv2-tasks-lib.sh leadv2-helpers.sh
   )
   if [[ "${vendors_scripts}" != "false" ]] && [[ -d "${proj_scripts_toplevel}" ]] && compgen -G "${proj_scripts_toplevel}/leadv2-*" > /dev/null 2>&1; then
@@ -539,7 +542,7 @@ _sync_project_root() {
           log "DRY_RUN [project/scripts-toplevel]: cp ${cf_src} ${proj_scripts_toplevel}/${cf}"
         else
           mkdir -p "${proj_scripts_toplevel}"
-          # A symlink-managed dst (e.g. persona-engine scripts/leadv2-supervise-loop.sh
+          # A symlink-managed dst (e.g. persona-engine scripts/leadv2-lanes-snapshot.sh
           # -> canonical) makes cp exit 1 ("are identical"), aborting the whole sync
           # under set -e before later repos are reached — skip same-inode targets.
           if [[ "${cf_src}" -ef "${proj_scripts_toplevel}/${cf}" ]]; then

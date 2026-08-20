@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
-# tests/test-supervise-v2.sh — SUPERVISE-V2-01 batch-2 item 6: extends the
-# batch-1 suite (test-supervise-failclosed.sh) with coverage for items 1-4:
+# tests/test-lanes-snapshot.sh — SUPERVISOR-DELETE-01 (2026-08-19): retargeted
+# from tests/test-supervise-v2.sh onto leadv2-lanes-snapshot.sh (the renamed
+# leadv2-supervise.sh, kept as a live founder-status lanes-table dependency)
+# after the supervisor loop/pick/watchdog machinery was deleted outright.
+# Carries forward exactly the coverage that survives the rename — pure
+# reconciliation logic with no loop/pick dependency:
 #
-#   1. loop cadence/ceiling — unchanged poll -> 0 log lines; N lanes -> N
-#      pulse lines, each <=180 bytes.
-#   2. pick-script ranking JSON schema.
 #   3. adoption triple-proof matrix — name-only tmux window -> orphan
 #      (never adopted); full proof (name+task-id+live claude PID) -> adopted.
 #   4. tombstone-before-prune — a corroborated-dead row is tombstoned AND
 #      removed from active.yaml; the observe_only visibility fix (would_prune
 #      always reports a gated-but-eligible prune) is asserted directly.
 #   5. truth-probe timeout -> unavailable (fail-open-to-EMPTY, never -clear).
+#   7. R2-3 AND-condition death matrix (window+PID BOTH required).
+#   8. R2-4 tombstone-write-failure keeps the row (never a silent prune).
+#   9. R2-5 DEAD event dedup through new_events (once, not every poll).
+#  12. SUPERVISOR-AUDIT-01 fix — pid:null funnel row survives prune.
+#
+# Dropped (loop/pick-only, subject deleted with the loop):
+#   test_1 loop cadence/ceiling, test_2 pick-script ranking, test_10 --ensure
+#   atomic attach, test_11 global legacy question scan.
 #
 # Fully isolated: LEADV2_STATE_ROOT points every control-plane read/write at
 # a throwaway tmp dir (never ~/.claude/leadv2-state/<real-repo>), and tmux
 # tests use an isolated `tmux -L` socket (never the real "leadv2" session).
-# No GNU-only utilities. Run: bash scripts/tests/test-supervise-v2.sh
+# No GNU-only utilities. Run: bash scripts/tests/test-lanes-snapshot.sh
 # Exit 0 = all pass; non-zero = failures found.
 
 set -euo pipefail
@@ -23,9 +32,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-SUPERVISE_SH="${PLUGIN_DIR}/scripts/leadv2-supervise.sh"
-LOOP_SH="${PLUGIN_DIR}/scripts/leadv2-supervise-loop.sh"
-PICK_SH="${PLUGIN_DIR}/scripts/leadv2-supervise-pick.sh"
+LANES_SH="${PLUGIN_DIR}/scripts/leadv2-lanes-snapshot.sh"
+LANES_RESUME_SH="${PLUGIN_DIR}/scripts/leadv2-lanes-resume.sh"
+ACTIVE_REGISTRY_SH="${PLUGIN_DIR}/scripts/leadv2-active-registry.sh"
 STATE_PATH_SH="${PLUGIN_DIR}/scripts/leadv2-state-path.sh"
 
 PASS=0; FAIL=0; ERRORS=()
@@ -36,7 +45,7 @@ fail() { FAIL=$((FAIL + 1)); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
 # Keep every suite-lifetime fallback surface private. Individual cases retain
 # their explicit fixture roots and tmux sockets; these exports cover subject
 # paths that use the defaults before a case-specific override is supplied.
-LEADV2_SUPERVISE_TMP_ROOT="$(lv2_mktemp_dir "sv2-root")"
+LEADV2_SUPERVISE_TMP_ROOT="$(lv2_mktemp_dir "lns-root")"
 # This host provides PyYAML from its Python user-site. Capture that immutable
 # dependency before changing HOME, so fixture isolation does not make the
 # subject fail to parse its YAML registry.
@@ -65,8 +74,8 @@ trap cleanup EXIT
 _new_fixture() {
   # Creates one isolated repo+state root pair. Prints "<repo> <state>".
   local repo state
-  repo="$(lv2_mktemp_dir "sv2-repo")"
-  state="$(lv2_mktemp_dir "sv2-state")"
+  repo="$(lv2_mktemp_dir "lns-repo")"
+  state="$(lv2_mktemp_dir "lns-state")"
   CLEANUP_DIRS+=("$repo" "$state")
   (cd "$repo" && git init -q)
   # TEST SAFETY (B1 root cause, fix-round-2): hard-abort unless this is
@@ -95,129 +104,18 @@ print($1)
 "
 }
 
-# ── Test 1: loop cadence/ceiling ────────────────────────────────────────────
+# ── Test 6: bash -n syntax check on the surviving reconciliation scripts ───
 
-test_1_loop_cadence_ceiling() {
-  log "Test 1: loop cadence/ceiling — unchanged poll -> 0 lines; N lanes -> N pulse lines <=180B"
-
-  local repo state active_path now
-  read -r repo state < <(_new_fixture)
-  active_path="$(_active_yaml "$repo" "$state")"
-  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  mkdir -p "$(dirname "$active_path")"
-  cat > "$active_path" <<YAML
-sessions:
-  - task_id: LANE-A
-    session_id: sa
-    started_at: "$now"
-    phase: build
-    pid: $$
-    pid_birth: null
-    protocol_version: 2
-    backend: workflow
-    last_pulse_at: "$now"
-    stale: false
-  - task_id: LANE-B
-    session_id: sb
-    started_at: "$now"
-    phase: review
-    pid: $$
-    pid_birth: null
-    protocol_version: 2
-    backend: workflow
-    last_pulse_at: "$now"
-    stale: false
-YAML
-
-  # The loop renders to LOG_FILE (control-plane supervise-loop.log), never
-  # stdout — resolve it the same way the loop script does.
-  local loop_log
-  loop_log="$(LEADV2_PROJECT_ROOT="$repo" LEADV2_STATE_ROOT="$state" \
-    PROJECT_ROOT="$repo" bash "$STATE_PATH_SH" supervise-loop.log)"
-
-  timeout 20 env LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_LOOP_MAX_CYCLES=1 LEADV2_SUPERVISE_LOOP_PULSE_ON_START=1 \
-    LEADV2_SUPERVISE_EVENT_POLL_S=0 \
-    bash "$LOOP_SH" >/dev/null 2>&1 || true
-
-  local n_lines
-  n_lines="$(grep -c "^LANE-A \|^LANE-B " "$loop_log" 2>/dev/null || true)"
-  if [[ "$n_lines" -ne 2 ]]; then
-    fail "Test 1a: expected 2 pulse lines (one per lane), got $n_lines. log:\n$(cat "$loop_log" 2>/dev/null)"
-  else
-    pass "Test 1a: N=2 lanes -> 2 pulse lines"
-  fi
-
-  local over_budget
-  over_budget="$(grep "^LANE-A \|^LANE-B " "$loop_log" 2>/dev/null | awk 'length($0) > 180' | wc -l | tr -d ' ')"
-  if [[ "$over_budget" -ne 0 ]]; then
-    fail "Test 1b: $over_budget pulse line(s) exceed 180 bytes"
-  else
-    pass "Test 1b: all pulse lines <=180 bytes"
-  fi
-
-  # Unchanged poll (event-only cycle, no pulse-on-start) -> 0 NEW pulse/urgent
-  # lines appended (log only grows by the "started" line at most).
-  local before_size after_size new_bytes
-  before_size="$(wc -c < "$loop_log" 2>/dev/null || echo 0)"
-  timeout 20 env LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_LOOP_MAX_CYCLES=1 LEADV2_SUPERVISE_EVENT_POLL_S=0 \
-    bash "$LOOP_SH" >/dev/null 2>&1 || true
-  after_size="$(wc -c < "$loop_log" 2>/dev/null || echo 0)"
-  new_bytes="$(python3 -c "print(int('$after_size') - int('$before_size'))")"
-  # Only the "started pid=..." line is allowed to grow the log on an
-  # unchanged delta-only cycle — never a pulse/urgent line.
-  local new_content
-  new_content="$(tail -c "$new_bytes" "$loop_log" 2>/dev/null || true)"
-  if printf -- '%s' "$new_content" | grep -qE '^--- pulse|SUPERVISE-URGENT'; then
-    fail "Test 1c: unchanged event-only poll appended a pulse/urgent line: $new_content"
-  else
-    pass "Test 1c: unchanged event-only poll -> no pulse/urgent line appended"
-  fi
-}
-
-# ── Test 2: pick-script ranking JSON schema ─────────────────────────────────
-
-test_2_pick_schema() {
-  log "Test 2: pick-script ranking JSON schema"
-
-  local repo state
-  read -r repo state < <(_new_fixture)
-  cat > "$repo/docs/tasks.yaml" <<'YAML'
-total_open: 2
-tasks:
-  - id: TASK-A
-    title: Fix the thing
-    priority: 1
-  - id: TASK-B
-    title: Ship the other thing
-    priority: 2
-YAML
-
-  local out
-  out="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    bash "$PICK_SH" 10 2>/dev/null)" || { fail "Test 2: pick-script exited nonzero"; return; }
-
-  if ! printf -- '%s' "$out" | python3 -c "import json,sys; json.loads(sys.stdin.read())" 2>/dev/null; then
-    fail "Test 2a: output is not valid JSON: $out"
-  else
-    pass "Test 2a: valid JSON"
-  fi
-
-  local schema_ok
-  schema_ok="$(printf -- '%s' "$out" | python3 -c "
-import json, sys
-d = json.loads(sys.stdin.read())
-cands = d.get('candidates', d if isinstance(d, list) else [])
-required = {'id', 'title', 'priority', 'recommend', 'reason'}
-ok = len(cands) <= 10 and all(required.issubset(set(c.keys())) for c in cands)
-print('ok' if ok else 'fail: ' + json.dumps(d)[:300])
-")"
-  if [[ "$schema_ok" == ok ]]; then
-    pass "Test 2b: schema fields present, <=10 cap respected"
-  else
-    fail "Test 2b: $schema_ok"
-  fi
+test_6_syntax() {
+  log "Test 6: bash -n syntax check"
+  local ok=1
+  for f in "$LANES_SH" "$LANES_RESUME_SH" "$ACTIVE_REGISTRY_SH"; do
+    if ! bash -n "$f" 2>/dev/null; then
+      fail "Test 6: bash -n failed on $f"
+      ok=0
+    fi
+  done
+  [[ "$ok" -eq 1 ]] && pass "Test 6: bash -n OK on all 3 scripts"
 }
 
 # ── Test 3: adoption triple-proof matrix ────────────────────────────────────
@@ -233,7 +131,7 @@ test_3_adoption_triple_proof() {
   printf -- 'total_open: 1\ntasks:\n  - id: TASK-KNOWN\n    title: known\n    priority: 1\n' \
     > "$repo/docs/tasks.yaml"
 
-  sock="sv2-test-$$-$RANDOM"
+  sock="lns-test-$$-$RANDOM"
   TMUX_SOCKETS+=("$sock")
 
   # keepalive window: killing the only window in a tmux session kills the
@@ -246,8 +144,8 @@ test_3_adoption_triple_proof() {
 
   local out3a
   out3a="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_TMUX_SOCKET="$sock" bash "$SUPERVISE_SH" --json 2>/dev/null)" \
-    || { fail "Test 3a: supervise.sh exited nonzero"; return; }
+    LEADV2_SUPERVISE_TMUX_SOCKET="$sock" bash "$LANES_SH" --json 2>/dev/null)" \
+    || { fail "Test 3a: lanes-snapshot.sh exited nonzero"; return; }
 
   local orphaned adopted_a
   orphaned="$(printf -- '%s' "$out3a" | json_get "any(o['window']=='UNKNOWN-WINDOW' for o in d.get('orphans', []))")"
@@ -276,8 +174,8 @@ test_3_adoption_triple_proof() {
   local out3b adopted_b
   out3b="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
     LEADV2_SUPERVISE_TMUX_SOCKET="$sock" LEADV2_SUPERVISE_OBSERVE_ONLY=0 \
-    bash "$SUPERVISE_SH" --json 2>/dev/null)" \
-    || { fail "Test 3b: supervise.sh exited nonzero"; return; }
+    bash "$LANES_SH" --json 2>/dev/null)" \
+    || { fail "Test 3b: lanes-snapshot.sh exited nonzero"; return; }
   adopted_b="$(printf -- '%s' "$out3b" | json_get "'TASK-KNOWN' in d.get('adopted', []) or 'TASK-KNOWN' in d.get('would_adopt', [])")"
   if [[ "$adopted_b" == True ]]; then
     pass "Test 3b: name+task-id+live-claude-PID triple proof -> adopted (or would_adopt if reconcile_cycle gated)"
@@ -322,8 +220,8 @@ JSON
   tombstones="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
     PROJECT_ROOT="$repo" bash "$STATE_PATH_SH" tombstones.yaml)"
   out4a="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_OBSERVE_ONLY=1 bash "$SUPERVISE_SH" --json 2>/dev/null)" \
-    || { fail "Test 4a: supervise.sh exited nonzero"; return; }
+    LEADV2_SUPERVISE_OBSERVE_ONLY=1 bash "$LANES_SH" --json 2>/dev/null)" \
+    || { fail "Test 4a: lanes-snapshot.sh exited nonzero"; return; }
   would_prune_has="$(printf -- '%s' "$out4a" | json_get "'DEAD-1' in d.get('would_prune', [])")"
   still_present="$(python3 -c "
 import yaml
@@ -339,8 +237,8 @@ print(any(s.get('task_id')=='DEAD-1' for s in d.get('sessions', [])))
   # 4b: real prune (no observe_only) -> tombstone written BEFORE/with the prune, row removed.
   local removed tombstone_has
   LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_OBSERVE_ONLY=0 bash "$SUPERVISE_SH" --json >/dev/null 2>&1 \
-    || { fail "Test 4b: supervise.sh exited nonzero"; return; }
+    LEADV2_SUPERVISE_OBSERVE_ONLY=0 bash "$LANES_SH" --json >/dev/null 2>&1 \
+    || { fail "Test 4b: lanes-snapshot.sh exited nonzero"; return; }
   removed="$(python3 -c "
 import yaml
 d = yaml.safe_load(open('$active_path')) or {}
@@ -385,8 +283,8 @@ SH
 
   local out status reason
   out="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    bash "$SUPERVISE_SH" --json 2>/dev/null)" \
-    || { fail "Test 5: supervise.sh exited nonzero"; return; }
+    bash "$LANES_SH" --json 2>/dev/null)" \
+    || { fail "Test 5: lanes-snapshot.sh exited nonzero"; return; }
 
   status="$(printf -- '%s' "$out" | json_get "d.get('truth_probe',{}).get('status') if isinstance(d.get('truth_probe'), dict) else d.get('truth_probe')")"
   reason="$(printf -- '%s' "$out" | json_get "d.get('truth_probe_reason')")"
@@ -416,7 +314,7 @@ test_7_and_condition_death_matrix() {
   # 7a: window MISSING (no tmux session at all) but PID is genuinely alive
   # (this test's own $$, birth stored correctly) -- single-signal evidence,
   # must NOT corroborate as dead across 2 polls.
-  # Compute birth via the EXACT same normalization leadv2-supervise.sh's
+  # Compute birth via the EXACT same normalization leadv2-lanes-snapshot.sh's
   # _pid_birth_of() uses (" ".join(b.split())) -- a raw `tr -s ' '` can leave
   # a leading space that the python side strips, causing a false birth
   # mismatch (window-missing WOULD then pair with a spurious pid-issue and
@@ -446,15 +344,15 @@ YAML
   printf -- '{"rendered_at":"2020-01-01T00:00:00+00:00","tasks":{},"reported_events":[],"dead_candidates":{},"reconcile_cycle_count":5}' > "$snap"
 
   local sock7a
-  sock7a="sv2-t7a-$$-$RANDOM"
+  sock7a="lns-t7a-$$-$RANDOM"
   TMUX_SOCKETS+=("$sock7a")   # never started -- has-session fails -> tmux_windows empty -> window "missing"
 
   local out7a_2
   LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7a" bash "$SUPERVISE_SH" --json >/dev/null 2>&1 \
+    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7a" bash "$LANES_SH" --json >/dev/null 2>&1 \
     || { fail "Test 7a: poll 1 exited nonzero"; return; }
   out7a_2="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7a" bash "$SUPERVISE_SH" --json 2>/dev/null)" \
+    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7a" bash "$LANES_SH" --json 2>/dev/null)" \
     || { fail "Test 7a: poll 2 exited nonzero"; return; }
   local dead7a still7a
   dead7a="$(printf -- '%s' "$out7a_2" | json_get "any(x['task_id']=='LIVE-WINDOW-FLAP' for x in d.get('dead', []))")"
@@ -472,7 +370,7 @@ print(any(s.get('task_id')=='LIVE-WINDOW-FLAP' for s in d.get('sessions', [])))
   # 7b: window PRESENT (real tmux window with matching name) but PID is dead
   # -- single-signal evidence, must NOT corroborate as dead across 2 polls.
   local sock7b
-  sock7b="sv2-t7b-$$-$RANDOM"
+  sock7b="lns-t7b-$$-$RANDOM"
   TMUX_SOCKETS+=("$sock7b")
   tmux -L "$sock7b" new-session -d -s leadv2 -n DEAD-PID-LIVE-WINDOW 'sleep 600' 2>/dev/null
 
@@ -494,10 +392,10 @@ YAML
 
   local out7b_2
   LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7b" bash "$SUPERVISE_SH" --json >/dev/null 2>&1 \
+    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7b" bash "$LANES_SH" --json >/dev/null 2>&1 \
     || { fail "Test 7b: poll 1 exited nonzero"; return; }
   out7b_2="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7b" bash "$SUPERVISE_SH" --json 2>/dev/null)" \
+    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7b" bash "$LANES_SH" --json 2>/dev/null)" \
     || { fail "Test 7b: poll 2 exited nonzero"; return; }
   local dead7b still7b
   dead7b="$(printf -- '%s' "$out7b_2" | json_get "any(x['task_id']=='DEAD-PID-LIVE-WINDOW' for x in d.get('dead', []))")"
@@ -515,7 +413,7 @@ print(any(s.get('task_id')=='DEAD-PID-LIVE-WINDOW' for s in d.get('sessions', []
   # 7c: BOTH signals together (window missing AND pid dead) -- control case,
   # confirms the AND-fix still correctly detects a genuinely dead lane.
   local sock7c
-  sock7c="sv2-t7c-$$-$RANDOM"
+  sock7c="lns-t7c-$$-$RANDOM"
   TMUX_SOCKETS+=("$sock7c")  # never started -- window missing
 
   cat > "$active_path" <<'YAML'
@@ -535,10 +433,10 @@ YAML
   printf -- '{"rendered_at":"2020-01-01T00:00:00+00:00","tasks":{},"reported_events":[],"dead_candidates":{},"reconcile_cycle_count":5}' > "$snap"
 
   LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7c" bash "$SUPERVISE_SH" --json >/dev/null 2>&1 \
+    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7c" bash "$LANES_SH" --json >/dev/null 2>&1 \
     || { fail "Test 7c: poll 1 exited nonzero"; return; }
   LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7c" bash "$SUPERVISE_SH" --json >/dev/null 2>&1 \
+    LEADV2_SUPERVISE_TMUX_SOCKET="$sock7c" bash "$LANES_SH" --json >/dev/null 2>&1 \
     || { fail "Test 7c: poll 2 exited nonzero"; return; }
   local removed7c
   removed7c="$(python3 -c "
@@ -595,8 +493,8 @@ JSON
 
   local out8
   out8="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_OBSERVE_ONLY=0 bash "$SUPERVISE_SH" --json 2>/dev/null)" \
-    || { fail "Test 8: supervise.sh exited nonzero (expected 0 -- tombstone failure is non-fatal)"; return; }
+    LEADV2_SUPERVISE_OBSERVE_ONLY=0 bash "$LANES_SH" --json 2>/dev/null)" \
+    || { fail "Test 8: lanes-snapshot.sh exited nonzero (expected 0 -- tombstone failure is non-fatal)"; return; }
 
   local still_present warn_has
   still_present="$(python3 -c "
@@ -643,7 +541,7 @@ YAML
  "dead_candidates":{"DEAD-DEDUP":"2020-01-01T00:00:00+00:00"},"reconcile_cycle_count":5}
 JSON
 
-  sock="sv2-t9-$$-$RANDOM"
+  sock="lns-t9-$$-$RANDOM"
   TMUX_SOCKETS+=("$sock")  # never started -- window missing (AND'd with pid-dead -> corroborates)
 
   # observe_only=1 keeps the row alive+re-evaluated identically across
@@ -652,11 +550,11 @@ JSON
   local out9_poll1 out9_poll2
   out9_poll1="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
     LEADV2_SUPERVISE_TMUX_SOCKET="$sock" LEADV2_SUPERVISE_OBSERVE_ONLY=1 \
-    bash "$SUPERVISE_SH" --json --since 2020-01-01T00:00:00Z 2>/dev/null)" \
+    bash "$LANES_SH" --json --since 2020-01-01T00:00:00Z 2>/dev/null)" \
     || { fail "Test 9: poll 1 exited nonzero"; return; }
   out9_poll2="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
     LEADV2_SUPERVISE_TMUX_SOCKET="$sock" LEADV2_SUPERVISE_OBSERVE_ONLY=1 \
-    bash "$SUPERVISE_SH" --json --since 2020-01-01T00:00:00Z 2>/dev/null)" \
+    bash "$LANES_SH" --json --since 2020-01-01T00:00:00Z 2>/dev/null)" \
     || { fail "Test 9: poll 2 exited nonzero"; return; }
 
   local dead_poll1 dead_poll2
@@ -667,111 +565,6 @@ JSON
   else
     fail "Test 9: poll1_dead=$dead_poll1 poll2_dead=$dead_poll2 (expected True then False)"
   fi
-}
-
-# ── Test 10: R2-2 --ensure atomic attach (no clobber of a live owner) ──────
-
-test_10_ensure_atomic_attach() {
-  log "Test 10: R2-2 --ensure attaches to a live sentinel without rewriting it"
-
-  local repo state sentinel birth before after out
-  read -r repo state < <(_new_fixture)
-  sentinel="$(LEADV2_PROJECT_ROOT="$repo" LEADV2_STATE_ROOT="$state" PROJECT_ROOT="$repo" \
-    bash "$STATE_PATH_SH" .supervise-loop.json)"
-  mkdir -p "$(dirname "$sentinel")"
-  birth="$(python3 -c "
-import subprocess
-r = subprocess.run(['ps', '-o', 'lstart=', '-p', '$$'], capture_output=True, text=True)
-print(' '.join(r.stdout.split()))
-")"
-  python3 -c "
-import json
-json.dump({'pid': $$, 'pid_birth': '$birth', 'started_at': '2020-01-01T00:00:00Z'}, open('$sentinel', 'w'))
-"
-  before="$(cat "$sentinel")"
-  out="$(LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    timeout 30 bash "$LOOP_SH" --ensure)" || { fail "Test 10: --ensure exited nonzero"; return; }
-  after="$(cat "$sentinel")"
-
-  if [[ "$out" == *"already running"* && "$before" == "$after" ]]; then
-    pass "Test 10: --ensure attaches to the live owner, sentinel untouched (no clobber)"
-  else
-    fail "Test 10: out=$out before=$before after=$after"
-  fi
-}
-
-# ── Test 11: ST-1 legacy questions scan is global ──────────────────────────
-
-test_11_global_legacy_question_scan() {
-  log "Test 11: ST-1 global legacy question scan surfaces registered and unregistered lanes, skips answered"
-
-  local repo state active_path loop_log registered_count unregistered_count answered_count
-  read -r repo state < <(_new_fixture)
-  active_path="$(_active_yaml "$repo" "$state")"
-  mkdir -p "$(dirname "$active_path")"
-  cat > "$active_path" <<YAML
-sessions:
-  - task_id: REGISTERED
-    session_id: st1-registered
-    started_at: "2026-01-01T00:00:00Z"
-    phase: build
-    pid: $$
-    pid_birth: null
-    protocol_version: 2
-    backend: workflow
-    last_pulse_at: "2026-01-01T00:00:00Z"
-    stale: false
-YAML
-  mkdir -p "$repo/docs/handoff/REGISTERED/questions-async" \
-    "$repo/docs/handoff/UNREGISTERED/questions-async" \
-    "$repo/docs/handoff/ANSWERED/questions-async"
-  cat > "$repo/docs/handoff/REGISTERED/questions-async/q-registered-pending.yaml" <<'YAML'
-question: Registered lane question
-summary_for_lead: registered legacy question
-options:
-  - label: continue
-YAML
-  cat > "$repo/docs/handoff/UNREGISTERED/questions-async/q-unregistered-pending.yaml" <<'YAML'
-question: Unregistered lane question
-summary_for_lead: unregistered legacy question
-options:
-  - label: deploy
-YAML
-  cat > "$repo/docs/handoff/ANSWERED/questions-async/q-answered-pending.yaml" <<'YAML'
-question: Answered lane question
-summary_for_lead: answered legacy question
-YAML
-  : > "$repo/docs/handoff/ANSWERED/questions-async/q-answered-answered.yaml"
-
-  loop_log="$(LEADV2_PROJECT_ROOT="$repo" LEADV2_STATE_ROOT="$state" \
-    PROJECT_ROOT="$repo" bash "$STATE_PATH_SH" supervise-loop.log)"
-  timeout 20 env LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_EVENT_POLL_S=0 LEADV2_SUPERVISE_LOOP_MAX_CYCLES=1 \
-    LEADV2_BACKLOG_PUMP=0 bash "$LOOP_SH" >/dev/null 2>&1 \
-    || { fail "Test 11: event poll exited nonzero"; return; }
-
-  registered_count="$(grep -c 'SUPERVISE-URGENT] QUESTION REGISTERED qid=q-registered' "$loop_log" 2>/dev/null || true)"
-  unregistered_count="$(grep -c 'SUPERVISE-URGENT] QUESTION UNREGISTERED qid=q-unregistered' "$loop_log" 2>/dev/null || true)"
-  answered_count="$(grep -c 'SUPERVISE-URGENT] QUESTION ANSWERED qid=q-answered' "$loop_log" 2>/dev/null || true)"
-  if [[ "$registered_count" -eq 1 && "$unregistered_count" -eq 1 && "$answered_count" -eq 0 ]]; then
-    pass "Test 11: one event poll surfaces registered + unregistered legacy questions, skips answered sibling"
-  else
-    fail "Test 11: registered=$registered_count unregistered=$unregistered_count answered=$answered_count log=$(cat "$loop_log" 2>/dev/null)"
-  fi
-}
-
-# ── Test 6: bash -n syntax on all three scripts ─────────────────────────────
-
-test_6_syntax() {
-  log "Test 6: bash -n syntax check"
-  local ok=1
-  for f in "$SUPERVISE_SH" "$LOOP_SH" "$PICK_SH"; do
-    if ! bash -n "$f" 2>/dev/null; then
-      fail "Test 6: bash -n failed on $f"
-      ok=0
-    fi
-  done
-  [[ "$ok" -eq 1 ]] && pass "Test 6: bash -n OK on all 3 scripts"
 }
 
 # ── Test 12: SUPERVISOR-AUDIT-01 fix — pid:null funnel row survives prune ──
@@ -813,8 +606,8 @@ YAML
 JSON
 
   LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_OBSERVE_ONLY=0 bash "$SUPERVISE_SH" --json >/dev/null 2>&1 \
-    || { fail "Test 12a: supervise.sh exited nonzero"; return; }
+    LEADV2_SUPERVISE_OBSERVE_ONLY=0 bash "$LANES_SH" --json >/dev/null 2>&1 \
+    || { fail "Test 12a: lanes-snapshot.sh exited nonzero"; return; }
   still_present="$(python3 -c "
 import yaml
 d = yaml.safe_load(open('$active_path')) or {}
@@ -860,8 +653,8 @@ YAML
  "dead_candidates":{"FUNNEL-1":"2020-01-01T00:00:00+00:00"},"reconcile_cycle_count":5}
 JSON
   LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
-    LEADV2_SUPERVISE_OBSERVE_ONLY=0 LEADV2_SUPERVISE_PRUNE_V2=0 bash "$SUPERVISE_SH" --json >/dev/null 2>&1 \
-    || { fail "Test 12b: supervise.sh exited nonzero"; return; }
+    LEADV2_SUPERVISE_OBSERVE_ONLY=0 LEADV2_SUPERVISE_PRUNE_V2=0 bash "$LANES_SH" --json >/dev/null 2>&1 \
+    || { fail "Test 12b: lanes-snapshot.sh exited nonzero"; return; }
   still_present="$(python3 -c "
 import yaml
 d = yaml.safe_load(open('$active_path')) or {}
@@ -876,32 +669,22 @@ print(any(s.get('task_id')=='FUNNEL-1' for s in d.get('sessions', [])))
 
 # ── Run all ──────────────────────────────────────────────────────────────
 
-log "=== leadv2-supervise V2 unit tests (SUPERVISE-V2-01 batch-2 item 6) ==="
-log "Scripts: $SUPERVISE_SH / $LOOP_SH / $PICK_SH"
+log "=== leadv2-lanes-snapshot unit tests (SUPERVISOR-DELETE-01, retargeted from test-supervise-v2.sh) ==="
+log "Scripts: $LANES_SH / $LANES_RESUME_SH / $ACTIVE_REGISTRY_SH"
 echo
 
 case "${LEADV2_SUPERVISE_TEST_ONLY:-all}" in
   truth-probe)
     test_5_truth_probe_timeout
     ;;
-  ensure)
-    test_10_ensure_atomic_attach
-    ;;
-  st1)
-    test_11_global_legacy_question_scan
-    ;;
   all)
     test_6_syntax
-    test_1_loop_cadence_ceiling
-    test_2_pick_schema
     test_3_adoption_triple_proof
     test_4_tombstone_before_prune
     test_5_truth_probe_timeout
     test_7_and_condition_death_matrix
     test_8_tombstone_failure_keeps_row
     test_9_dead_event_dedup
-    test_11_global_legacy_question_scan
-    test_10_ensure_atomic_attach
     test_12_pidnull_survives_prune
     ;;
   *)

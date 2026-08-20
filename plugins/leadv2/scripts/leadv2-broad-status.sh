@@ -16,7 +16,7 @@
 # two files, and woke nobody. See _emit_ready_line below.
 #
 # Rollback: LEADV2_SUPERVISE_BROAD_STATUS_S=0 disables the loop beat AND its
-# ready-line (the beat branch in leadv2-supervise-loop.sh is the only caller,
+# ready-line (the beat branch in the now-retired supervisor loop was the only caller,
 # so the kill-switch cannot half-work).
 
 set -uo pipefail

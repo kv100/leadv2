@@ -10,7 +10,7 @@
 #       path).
 #   (3) pre-compact-task-freeze.sh, run against a small (already-pruned)
 #       open-threads.md, emits a bounded OPEN THREADS section that points at
-#       supervisor-role.md instead of embedding a stale role/status block.
+#       single-lead-pulse.md instead of embedding a stale role/status block.
 #
 # Usage: bash tests/test-open-threads-prune.sh
 # Exit 0 = all pass; non-zero = failure count.
@@ -138,7 +138,7 @@ fi
 # ---------------------------------------------------------------------------
 # (6) pre-compact-task-freeze.sh dry-run: against the now-small, clean
 #     open-threads.md, stdout carries the OPEN THREADS section pointing at
-#     supervisor-role.md, NOT a giant embedded role/status block.
+#     single-lead-pulse.md, NOT a giant embedded role/status block.
 # ---------------------------------------------------------------------------
 INPUT_JSON=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1]}))" "$PROJ")
 # COMPACT-DEDUP-02: the freeze hook gates STDOUT behind a session-keyed run-once
@@ -149,9 +149,9 @@ INPUT_JSON=$(python3 -c "import json,sys; print(json.dumps({'cwd': sys.argv[1]})
 _FZ_LOCK="$(mktemp -d "${TMPDIR_BASE}/fzlockXXXX")"
 FREEZE_OUT="$(TMPDIR="$_FZ_LOCK" CLAUDE_PLUGIN_ROOT="/fake/plugin/root" bash -c "printf '%s' '$INPUT_JSON' | bash '$FREEZE_HOOK'")"
 if printf '%s\n' "$FREEZE_OUT" | grep -q "OPEN THREADS" \
-  && printf '%s\n' "$FREEZE_OUT" | grep -q "supervisor-role.md" \
+  && printf '%s\n' "$FREEZE_OUT" | grep -q "single-lead-pulse.md" \
   && printf '%s\n' "$FREEZE_OUT" | grep -q "question two"; then
-  pass "(6) pre-compact freeze dry-run points at supervisor-role.md and carries the open item"
+  pass "(6) pre-compact freeze dry-run points at single-lead-pulse.md and carries the open item"
 else
   fail "(6) freeze dry-run missing expected content:"$'\n'"${FREEZE_OUT}"
 fi

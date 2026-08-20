@@ -2,11 +2,11 @@
 # scripts/leadv2-pulse-beat.sh — PULSE-IN-SINGLE-LEAD-01
 #
 # Drives the SAME composer (leadv2-broad-status.sh) that
-# leadv2-supervise-loop.sh's beat branch already calls, for a session that
-# is running single-lead mode instead of the supervisor loop. Never renders
+# the (now-retired) supervisor loop's beat branch used to call, for a session
+# that is running single-lead mode instead of the supervisor loop. Never renders
 # anything itself and never writes founder-status.md directly — this is
 # purely a "dispatch, then compose" driver, same order as the loop
-# (leadv2-supervise-loop.sh:842-852): the backlog pump runs first and its
+# (the now-retired supervisor loop, formerly lines 842-852): the backlog pump runs first and its
 # dispatched-count is exported into the beat before the composer sees it.
 #
 # Kill-switch: LEADV2_SINGLE_LEAD_BEAT=0 makes every invocation a no-op
