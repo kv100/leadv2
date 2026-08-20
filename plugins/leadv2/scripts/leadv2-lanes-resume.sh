@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # leadv2-lanes-resume.sh — SESSION-HANDOFF-01 resume composer.
-# (renamed 2026-08-19, SUPERVISOR-DELETE-01; still contractually write-free,
+# (renamed 2026-08-17, SUPERVISOR-DELETE-01; still contractually write-free,
 # see below)
 #
 # Live-composes the bounded <supervisor-handoff> restore block from canonical

@@ -36,10 +36,6 @@ trap 'rm -f "$STDOUT_FILE" "$STDERR_FILE" "$FIRST_STDOUT_FILE"' EXIT HUP INT TER
 # JSON.  Every matching guard still runs so a later exit 2 takes precedence,
 # while only the first non-empty stdout result is retained.
 #
-# leadv2-supervise-bash-guard.sh: ALWAYS — activation is a live sentinel/PID
-# check, not a command pattern (leadv2-supervise-bash-guard.sh:34-49).
-# leadv2-supervisor-guard.sh: Bash candidates are git commit/push, sed -i on
-# code, or >> code (leadv2-supervisor-guard.sh:103-109).
 # leadv2-deny-floor.sh: ALWAYS — enabled regexes are dynamically loaded from
 # YAML (leadv2-deny-floor.sh:92-105).
 # leadv2-block-bash-heredoc.sh: after length/override exits, a heredoc token
@@ -53,9 +49,7 @@ trap 'rm -f "$STDOUT_FILE" "$STDERR_FILE" "$FIRST_STDOUT_FILE"' EXIT HUP INT TER
 # leadv2-bash-lint-pre-gate.sh: git commit only (leadv2-bash-lint-pre-gate.sh:58-65).
 # leadv2-env-audit-pre-gate.sh: ALWAYS — unconditional placeholder (leadv2-env-audit-pre-gate.sh:1-6).
 # leadv2-schema-audit-pre-gate.sh: git commit only (leadv2-schema-audit-pre-gate.sh:80-86).
-MANIFEST='leadv2-supervise-bash-guard.sh|ALWAYS
-leadv2-supervisor-guard.sh|git[[:space:]]+(commit|push)|sed[[:space:]]+-i|>>[[:space:]]*[^[:space:]]*\.(py|sh|ts|tsx|sql)
-leadv2-deny-floor.sh|ALWAYS
+MANIFEST='leadv2-deny-floor.sh|ALWAYS
 leadv2-block-bash-heredoc.sh|<<-?[[:space:]]*
 leadv2-block-fg-dispatch.sh|leadv2-dispatch-code\.sh|leadv2-codex-session-runner\.sh|leadv2-fanout\.sh|glm-coder\.sh|omp-task\.sh
 leadv2-codex-direct-exec-guard.sh|(^|[^A-Za-z0-9_/.-])codex[[:space:]]+exec([[:space:]]|$)

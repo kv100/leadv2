@@ -3,7 +3,7 @@
 ## What this is
 
 The founder's 30-minute status (`[BROAD_STATUS]`) used to be emitted only from
-the supervisor loop's beat branch (retired 2026-08-19, SUPERVISOR-DELETE-01). Single-lead mode never ran that loop, so the composer
+the supervisor loop's beat branch (retired 2026-08-17, SUPERVISOR-DELETE-01). Single-lead mode never ran that loop, so the composer
 (`scripts/leadv2-broad-status.sh`) was regenerating `docs/leadv2/founder-status.md` correctly but
 nobody ever composed a beat in the first place, and nobody woke the founder to relay it. This is
 the single-lead driver + delivery mechanism. It never touches `leadv2-broad-status.sh` — that
