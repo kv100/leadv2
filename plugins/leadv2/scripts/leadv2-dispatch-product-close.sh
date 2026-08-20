@@ -1383,6 +1383,49 @@ pc_precheck_writes() {
   return 0
 }
 
+# V3-STOP-GATE-01: called right after the worker's exit is confirmed (both the
+# first pc_await_worker_exit and, if it fired, the GLM-DIED-WITH-WORK-RESUME-01
+# second wait) and BEFORE pc_scope_diff/selfcheck/e2e/review touch the tree.
+# Disease this closes (live, 2026-08-19/20): 6+ worker exits left real work
+# UNCOMMITTED in the lane worktree -- invisible to every downstream phase and
+# one parallel session away from being clobbered (SUPDEL 47 files, V3-GLM 24,
+# ENV-GUARDS 6, T2 twice -- the lead had to checkpoint-commit by hand each time).
+# Only the declared write-set (_PC_SCOPE_WRITES_CSV, already normalised by
+# pc_precheck_writes above) is staged -- junk OUTSIDE the write-set is
+# deliberately left alone; that is what pc_scope_diff's unscoped_lane_work
+# classifier already handles, and auto-committing it here would launder a
+# scope violation instead of catching it. LEADV2_STOP_GATE=0 restores today's
+# path byte-for-byte (same idiom as LEADV2_BUILDER_SELFCHECK).
+pc_stop_gate_autocommit() {
+  [[ "${LEADV2_STOP_GATE:-1}" != 0 ]] || return 0
+  [[ -n "${_PC_SCOPE_WRITES_CSV:-}" ]] || return 0
+
+  local _sg_lane_root="${LEADV2_LANE_WORK_ROOT:-}"
+  if [[ -z "${_sg_lane_root}" || ! -d "${_sg_lane_root}" ]]; then
+    _sg_lane_root="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
+  fi
+  [[ -n "${_sg_lane_root}" ]] || return 0
+  [[ -d "${_sg_lane_root}/.git" || -f "${_sg_lane_root}/.git" ]] 2>/dev/null || return 0
+
+  local _sg_paths=()
+  IFS=',' read -r -a _sg_paths <<< "${_PC_SCOPE_WRITES_CSV}"
+  [[ ${#_sg_paths[@]} -gt 0 ]] || return 0
+
+  local _sg_status
+  _sg_status="$(git -C "${_sg_lane_root}" status --porcelain -- "${_sg_paths[@]}" 2>/dev/null || true)"
+  [[ -n "${_sg_status}" ]] || return 0
+
+  local _sg_n
+  _sg_n="$(printf '%s\n' "${_sg_status}" | grep -c .)"
+  git -C "${_sg_lane_root}" add -- "${_sg_paths[@]}" >/dev/null 2>&1 || return 0
+  if git -C "${_sg_lane_root}" diff --cached --quiet 2>/dev/null; then
+    return 0
+  fi
+  if git -C "${_sg_lane_root}" commit -q -m "wip(${TASK}): auto-checkpoint on worker exit (STOP-GATE)" >/dev/null 2>&1; then
+    emit decision "stop_gate_autocommit task=${TASK} files=${_sg_n}"
+  fi
+}
+
 # WARNING: pc_scope_diff() below defines helper functions in its body that are
 # NOT available until it is first invoked (line ~1277 in the original layout).
 # Top-level code that runs before pc_scope_diff() must not call those helpers.
@@ -1786,6 +1829,12 @@ if pc_dwr_resume_once; then
     exit 5
   fi
 fi
+
+# V3-STOP-GATE-01: worker exit is now confirmed (first wait or DWR resume) --
+# checkpoint any uncommitted declared-write-set changes before any downstream
+# phase reads the tree. See pc_stop_gate_autocommit above for the disease this
+# closes and why only the declared write-set is staged.
+pc_stop_gate_autocommit
 
 # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (Fix 1): resolve _lane_root the SAME
 # way pc_scope_diff will below (idempotent -- that function recomputes the identical
