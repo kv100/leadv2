@@ -381,9 +381,14 @@ case "\${1:-}" in
 esac
 SH
 export LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_WT_STUB}"
+# FOREIGN-PROJECT-ROOT-GUARD-01: cwd must agree with CLAUDE_PROJECT_DIR/ROOT for the
+# shared-tree (no-pin) path, same convention test-foreign-project-root-guard.sh uses --
+# without this cd the guard sees cwd's real git root (this worktree checkout) as foreign
+# to TARGET and swaps PROJECT_ROOT away from TARGET, breaking the WORK_ROOT==PROJECT_ROOT
+# equality this assertion depends on.
 dispatch_rc=0
-bash "${DC}" --kind tooling \
-  "P-i shared tree no pin test fix the validator" >/dev/null 2>&1 || dispatch_rc=$?
+( cd "${TARGET}" && bash "${DC}" --kind tooling \
+  "P-i shared tree no pin test fix the validator" >/dev/null 2>&1 ) || dispatch_rc=$?
 
 if [[ ${dispatch_rc} -eq 0 ]]; then
   ok "P-i: dispatch exited 0 (shared-tree fallback)"

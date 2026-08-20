@@ -44,12 +44,18 @@ exit 1
 EOF
 chmod +x "$WORKER" "$ARCH"
 DISPATCH="$(cd "$(dirname "$0")/.." && pwd)/leadv2-dispatch-code.sh"
+# FOREIGN-PROJECT-ROOT-GUARD-01 default-on (dispatch-b4042501-review, blocker 2):
+# cd into $REPO before invoking dispatch, like every other fixture that `git
+# init`s its own throwaway repo -- otherwise cwd's git toplevel is this suite's
+# OWN checkout, the guard sees a genuine env/cwd mismatch, and PROJECT_ROOT gets
+# silently rerooted onto the real checkout instead of the fixture's $REPO.
+( cd "$REPO" && \
 LEADV2_DISPATCH_ARCHITECT_GATE=1 \
 CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" LEADV2_DISPATCH_CACHE_DIR="$ROOT/cache" \
 LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" LEADV2_DISPATCH_ARCHITECT_BIN="$ARCH" \
 LEADV2_DISPATCH_ARCHITECT_TIMEOUT_SEC=10 LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
 LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off \
-  bash "$DISPATCH" 'test D1 artifact lands after launcher rc returns' --kind product --protected --writes "a.txt,b.txt,c.txt" >"$ROOT/out.log" 2>&1
+  bash "$DISPATCH" 'test D1 artifact lands after launcher rc returns' --kind product --protected --writes "a.txt,b.txt,c.txt" >"$ROOT/out.log" 2>&1 )
 rc=$?
 
 grep -q 'architect_prepass task=.* status=ran' "$ROOT/out.log" || {

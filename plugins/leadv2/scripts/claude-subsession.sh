@@ -251,15 +251,34 @@ SHARED_PROTOCOL_BOILERPLATE="MANDATORY — /leadv2 subagent protocol:
 # ---------------------------------------------------------------------------
 # PER_TASK_BOILERPLATE — task-specific vars only. Stays in suffix (uncached).
 # Keep this as small as possible — every byte here is un-cacheable.
-# ---------------------------------------------------------------------------
+#
+# PREPASS-RC1-RACE-01 root cause: this script never `cd`s the exec'd `claude`
+# process to $PROJECT_ROOT (grep confirms -- the only `cd` calls in this file
+# are subshelled path lookups). The relative "docs/handoff/${TASK_ID}/..."
+# paths below used to resolve against WHATEVER cwd the CALLER happened to be
+# in when it invoked this script -- $PROJECT_ROOT for a typical direct run,
+# but $WORK_ROOT (a lane worktree) for the main dispatch path (which does
+# `cd "$WORK_ROOT" && ... claude-subsession.sh`), or the grandparent
+# leadv2-dispatch-code.sh process's own inherited cwd for the architect
+# prepass (a bare `python3 subprocess.Popen`, no cwd= set -- reproduced live
+# by a fixture claude stub receiving no --task-id/--cwd flag at all, writing
+# to <cwd>/docs/handoff/architect.full.md, one directory short of
+# <cwd>/docs/handoff/${TASK_ID}/). Meanwhile the completion check a few
+# hundred lines down (grep for DELIVERABLE_COMPLETE) always reads the
+# ABSOLUTE $HANDOFF_DIR = $PROJECT_ROOT/docs/handoff/$TASK_ID -- so any cwd
+# other than $PROJECT_ROOT at exec time makes the checker declare a complete
+# deliverable missing. The grace-recheck (9a512a2) only widens the race
+# window; it cannot fix a write that landed at the wrong absolute path.
+# Advertise the ABSOLUTE handoff dir so the deliverable lands in the one place
+# the checker actually reads, independent of the exec'd process's cwd.
 PER_TASK_BOILERPLATE="Task binding:
 - TASK_ID: ${TASK_ID}
 - ROLE: ${ROLE}
-- Deliverable summary: docs/handoff/${TASK_ID}/${ROLE}.summary.md (≤50 words)
-- Deliverable full:    docs/handoff/${TASK_ID}/${ROLE}.full.md (full analysis, DELIVERABLE_COMPLETE last line)
-- MCP cache dir:       docs/handoff/${TASK_ID}/mcp-cache/
-- Context file: docs/handoff/${TASK_ID}/context.yaml
-- Question proxy: .claude/scripts/ask-lead.sh ${TASK_ID} \"<question>\"
+- Deliverable summary: ${HANDOFF_DIR}/${ROLE}.summary.md (≤50 words)
+- Deliverable full:    ${HANDOFF_DIR}/${ROLE}.full.md (full analysis, DELIVERABLE_COMPLETE last line)
+- MCP cache dir:       ${HANDOFF_DIR}/mcp-cache/
+- Context file: ${HANDOFF_DIR}/context.yaml
+- Question proxy: ${PROJECT_ROOT}/.claude/scripts/ask-lead.sh ${TASK_ID} \"<question>\"
 - Role-specific skills (from frontmatter): ${AGENT_SKILLS:-none registered}"
 
 # ---------------------------------------------------------------------------
@@ -976,7 +995,21 @@ if [[ "$WAIT" == "1" ]]; then
       if [[ $size -gt 200 ]] && grep -qiE "(fixed|added|changed|implemented|diff|^\#\#)" "$FULL_FILE" 2>/dev/null; then
         echo "[claude-subsession] SOFT_FINISH detected on ${ROLE}.full.md (${size} bytes, no marker) — auto-promoting" >&2
         printf '\n\nDELIVERABLE_COMPLETE\n# auto-marker added by SOFT_FINISH fallback\n' >> "$FULL_FILE"
-        [[ -f "$SUMMARY_FILE" ]] && return 0
+        # SOFT-FINISH-DEAD-RETURN-01: this block runs at TOP LEVEL of the script
+        # (not inside a function) -- a bare `return 0` here is a bash usage error
+        # ("return: can only `return' from a function or sourced script"), so
+        # execution fell through to the truncation/refusal/exit-1 checks below
+        # even after successfully auto-promoting the marker. A worker whose
+        # .full.md content qualified for SOFT_FINISH and had its .summary.md
+        # already on disk was declared failed (exit 1) anyway. Exit directly,
+        # mirroring the primary success branch above.
+        if [[ -f "$SUMMARY_FILE" ]]; then
+          if [[ ! -e "$LEGACY_FILE" ]]; then
+            ln -sf "${ROLE}.full.md" "$LEGACY_FILE" 2>/dev/null || true
+          fi
+          echo "LABEL=$SESSION_LABEL SESSION_ID=$SESSION_ID"
+          exit 0
+        fi
       fi
     fi
     # SUBSESSION-MAXTURNS-TRUNCATION-01: worker hit --max-turns without finishing.
