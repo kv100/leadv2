@@ -383,7 +383,7 @@ fi
 ANCHOR="$PLUGIN_DIR/hooks/leadv2-task-anchor.sh"
 n="$(grep -c 'BROAD_STATUS_READY' "$ANCHOR" || true)"
 if [[ "$n" -eq 2 ]]; then pass "T8a: anchor DIRECTIVE lists the relay in BOTH blocks"; else fail "T8a: anchor has $n BROAD_STATUS_READY mentions (expected 2)"; fi
-for f in "$PLUGIN_DIR/commands/leadv2.md" "$PLUGIN_DIR/hooks/leadv2-supervisor-mode-reinject.sh" "$PLUGIN_DIR/docs/supervisor-role.md"; do
+for f in "$PLUGIN_DIR/commands/leadv2.md" "$PLUGIN_DIR/docs/supervisor-role.md"; do
   if grep -q 'BROAD_STATUS_READY' "$f" && grep -q 'verbatim relay of a' "$f"; then
     pass "T8b: $(basename "$f") carries the relay contract"
   else

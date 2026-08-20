@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/test-lanes-snapshot.sh — SUPERVISOR-DELETE-01 (2026-08-19): retargeted
+# tests/test-lanes-snapshot.sh — SUPERVISOR-DELETE-01 (2026-08-17): retargeted
 # from tests/test-supervise-v2.sh onto leadv2-lanes-snapshot.sh (the renamed
 # leadv2-supervise.sh, kept as a live founder-status lanes-table dependency)
 # after the supervisor loop/pick/watchdog machinery was deleted outright.

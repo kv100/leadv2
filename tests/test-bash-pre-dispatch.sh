@@ -40,10 +40,8 @@ export LEADV2_HOOK_PROFILE=0
 export LEADV2_TASK_ID=""
 
 # Dispatcher manifest order: exit-2 guards, deny-only stdout guards, then
-# allow-emitting gates.  The reference path deliberately invokes all 13.
-GUARDS='leadv2-supervise-bash-guard.sh
-leadv2-supervisor-guard.sh
-leadv2-deny-floor.sh
+# allow-emitting gates.  The reference path deliberately invokes all 11.
+GUARDS='leadv2-deny-floor.sh
 leadv2-block-bash-heredoc.sh
 leadv2-block-fg-dispatch.sh
 leadv2-codex-direct-exec-guard.sh
@@ -221,12 +219,11 @@ fi
 LEADV2_DISPATCH_TRACE=1 run_dispatcher "$TEST_TMP/echo_hi.json" \
   >"$TEST_TMP/echo-trace.out" 2>"$TEST_TMP/echo-trace.err"
 _trace_rc=$?
-_expected_trace='leadv2-supervise-bash-guard.sh
-leadv2-deny-floor.sh
+_expected_trace='leadv2-deny-floor.sh
 leadv2-env-audit-pre-gate.sh'
 _actual_trace="$(cat "$TEST_TMP/echo-trace.err")"
 if [[ "$_trace_rc" -eq 0 && "$_actual_trace" == "$_expected_trace" ]]; then
-  pass 'echo hi trace invokes only the 3 ALWAYS guards'
+  pass 'echo hi trace invokes only the 2 ALWAYS guards'
 else
   fail "echo hi trace mismatch: ${_actual_trace:-<empty>}"
 fi

@@ -217,7 +217,7 @@ fi
 # missing hook, non-zero exit, timeout, malformed JSON — degrades to
 # status:"unavailable" with breaches:[] (fail-open-to-EMPTY). This must NEVER
 # be read as "no breaches confirmed clear" (fail-open-to-clear) — callers
-# (the retired loop's URGENT renderer, gone 2026-08-19 SUPERVISOR-DELETE-01)
+# (the retired loop's URGENT renderer, gone 2026-08-17 SUPERVISOR-DELETE-01)
 # key off `status`,
 # not just an empty breaches list. The persona-engine probe INSTANCE is
 # written elsewhere (GLM-FIRST-01, out of this task's scope) — this is only

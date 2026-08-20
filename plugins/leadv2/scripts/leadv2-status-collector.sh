@@ -101,7 +101,7 @@ _sc_run_section "git" _sc_git_section
 #    leadv2-lanes-snapshot.sh --json (arm-aware liveness: pid/mtime for Sonnet
 #    lanes, codex-task.sh status for Codex lanes — re-deriving that split
 #    here would just re-risk the exact trap it already solves). Renamed from
-#    leadv2-supervise.sh in SUPERVISOR-DELETE-01 (2026-08-20) — this call is
+#    leadv2-supervise.sh in SUPERVISOR-DELETE-01 (2026-08-17) — this call is
 #    a live single-lead dependency, not supervisor-only; only the name
 #    changed. ──────────
 _sc_lanes_section() {
