@@ -516,7 +516,7 @@ _sync_project_root() {
   # deliberately curated ~13-file subset (confirmed by scoping this list to the
   # pre-existing files there + the hard runtime deps leadv2-lanes-snapshot.sh's
   # source chain actually requires: active-registry.sh sourced directly by
-  # lanes-snapshot.sh L136-138). SUPERVISOR-DELETE-01 (2026-08-20): the
+  # lanes-snapshot.sh L136-138). SUPERVISOR-DELETE-01 (2026-08-17): the
   # supervisor loop/pick companions are gone — the snapshot script was renamed
   # to leadv2-lanes-snapshot.sh (live founder-status lanes-table dependency,
   # not supervisor-only) and the loop's two companion scripts were deleted
