@@ -225,6 +225,9 @@ SUITE_DEFS=(
   "claim-evidence gate (CLAIM-EVIDENCE-GATE-01 preamble + round-1 lens)|||bash $TEST_DIR/test-claim-evidence-gate.sh"
   "broad-status relay scoping|||bash $TEST_DIR/test-broad-status-relay-scope.sh"
   "deferred-GLM ladder (V3-GLM-LADDER-01)|||bash $TEST_DIR/test-glm-deferred-ladder.sh"
+  "pump junk stays out of lane worktrees (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-pump-junk-in-lane.sh"
+  "codex instant-complete dead-arm spill (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-codex-instant-complete.sh"
+  "worker env asserts (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-worker-env-asserts.sh"
 )
 
 _core_offline_run_entry() {
