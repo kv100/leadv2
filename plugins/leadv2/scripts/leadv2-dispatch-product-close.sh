@@ -1403,6 +1403,10 @@ pc_stop_gate_autocommit() {
 
   # Cross-repository writes are diffed by pc_scope_diff but are not safe to
   # commit from this lane's repository. Do not silently claim protection.
+  # bash 3.2/set -u: an array that was never assigned is UNBOUND and ${#arr[@]}
+  # aborts the whole script here — exactly the paths (timeout reap) where the
+  # populate step in pc_scope_diff may not have run. Declare-if-unset first.
+  declare -p PC_STOP_GATE_FOREIGN_REPOS >/dev/null 2>&1 || PC_STOP_GATE_FOREIGN_REPOS=()
   if [[ ${#PC_STOP_GATE_FOREIGN_REPOS[@]} -gt 0 ]]; then
     local _sg_foreign="" _sg_repo
     for _sg_repo in "${PC_STOP_GATE_FOREIGN_REPOS[@]}"; do
