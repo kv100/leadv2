@@ -34,7 +34,7 @@
 # SCOPE OF THIS PASS: the write side (heartbeat/mark_finished ops + this
 # reader) is complete and arm-agnostic. Wiring every producer (the Sonnet
 # EYES pulse.json hook, the Codex/GLM job-registry watchdog in
-# leadv2-supervise-loop.sh) to call `beat`/`finish` on their own cadence is
+# the now-retired supervisor loop) to call `beat`/`finish` on their own cadence is
 # the natural next step, deliberately left as follow-up so this diff stays
 # reviewable and one-step-revertible — see ROLLBACK below. `sync-from-pulse`
 # gives any caller a ready-made bridge from the existing pulse.json artifact

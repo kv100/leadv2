@@ -46,7 +46,7 @@ lv2_tripwire() {
 trap 'lv2_tripwire; rm -rf "$tmp"' EXIT
 
 HELPER="${PLUGIN_DIR}/scripts/leadv2-lane-liveness.sh"
-SUPERVISE="${PLUGIN_DIR}/scripts/leadv2-supervise.sh"
+SUPERVISE="${PLUGIN_DIR}/scripts/leadv2-lanes-snapshot.sh"
 STATE_PATH="${PLUGIN_DIR}/scripts/leadv2-state-path.sh"
 repo="$tmp/repo"; state="$tmp/state"; mkdir -p "$repo/docs/leadv2" "$repo/docs/handoff" "$tmp/bin" "$state"
 (cd "$repo" && git init -q)

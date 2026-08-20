@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # hooks/leadv2-supervisor-pump-caller.sh — UserPromptSubmit throttled
 # pump-caller (T-i, SUPERVISOR-AUDIT-01 mission-c, design-map row 7/point 7).
-# leadv2-backlog-pump.sh already runs every tick INSIDE
-# leadv2-supervise-loop.sh; this hook is the fallback caller for an
-# interactive supervise session that isn't running that background loop —
-# same auto-refill effect, triggered off the lead's own turns.
+# leadv2-backlog-pump.sh used to run every tick inside the supervisor loop
+# (retired 2026-08-19, SUPERVISOR-DELETE-01); this hook is now the primary
+# caller for an interactive supervise session — same auto-refill effect,
+# triggered off the lead's own turns.
 #
 # ACTIVE only for the exact session owning a LIVE .supervise-active sentinel
 # (same resolve+pid-scope primitive as leadv2-supervise-fanout-guard.sh /
@@ -13,11 +13,13 @@
 # two near-simultaneous turns can't both fire. Runs leadv2-backlog-pump.sh
 # once per throttle window.
 #
-# LIVE-LOOP NO-OP (fix round 1, review-verdict BLOCKING #4):
-# leadv2-supervise-loop.sh already calls this exact pump (`check`) itself on
-# every close/idle cycle via `_run_pump_on_close` — this hook exists ONLY as
-# the fallback for an interactive session that is NOT running that
-# background loop. Previously it never checked for the loop's own
+# LIVE-LOOP NO-OP (fix round 1, review-verdict BLOCKING #4; loop retired
+# 2026-08-19, SUPERVISOR-DELETE-01):
+# the supervisor loop used to call this exact pump (`check`) itself on
+# every close/idle cycle via `_run_pump_on_close` — this hook was the
+# fallback for an interactive session that was NOT running that background
+# loop, and is now the sole caller since the loop is gone. Previously it
+# never checked for the loop's own
 # `.supervise-loop.json` liveness, so the two callers ran side by side: their
 # mkdir-based locks only serialize a single `check` invocation against
 # itself, they do not make the pump's own capacity read (active.yaml
@@ -74,10 +76,13 @@ else
 fi
 [[ -x "$RESOLVER" && -x "$PUMP_BIN" ]] || exit 0
 
-# Live-loop no-op (fix #4): leadv2-supervise-loop.sh already pumps on its own
-# cadence via the identical .supervise-loop.json sentinel/liveness primitive
-# used everywhere else in this plugin. If that loop is live, it owns the
-# pump — this fallback caller must not also fire.
+# Live-loop no-op (fix #4): the retired supervisor loop (SUPERVISOR-DELETE-01,
+# 2026-08-19) used to pump on its own cadence via the identical
+# .supervise-loop.json sentinel/liveness primitive used everywhere else in
+# this plugin. That sentinel is never written now, so this check is
+# permanently a no-op — kept only because it shares the primitive with the
+# other .supervise-active/.supervise-loop.json readers (see RK-3 in
+# docs/handoff/dispatch-34721538/developer.full.md).
 LOOP_SENTINEL="$(PROJECT_ROOT="$CWD_FROM_INPUT" "$RESOLVER" --no-link .supervise-loop.json 2>/dev/null || true)"
 if [[ -n "$LOOP_SENTINEL" && -f "$LOOP_SENTINEL" ]]; then
   LOOP_LIVE="$(python3 -c "

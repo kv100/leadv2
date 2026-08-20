@@ -42,65 +42,65 @@ if [[ "${STUB_MODE:-complete}" != "no-thread" && "${1:-}" == "exec" && "${2:-}" 
 fi
 printf -- '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\n'
 if [[ "${STUB_MODE:-complete}" == "recursion" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"env LEADV2_TASK_ID=CODEX-SMOKE-RECURSION bash .claude/scripts/leadv2-supervise.sh\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"env LEADV2_TASK_ID=CODEX-SMOKE-RECURSION bash .claude/scripts/leadv2-session-runner.sh\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "recursion-exec" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"exec .claude/scripts/leadv2-supervise.sh\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"exec .claude/scripts/leadv2-session-runner.sh\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "recursion-env" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"env -i LEADV2_TASK_ID=x bash .claude/scripts/leadv2-supervise.sh\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"env -i LEADV2_TASK_ID=x bash .claude/scripts/leadv2-session-runner.sh\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "recursion-if" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"if .claude/scripts/leadv2-supervise.sh; then :; fi\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"if .claude/scripts/leadv2-session-runner.sh; then :; fi\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "recursion-bash" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"bash .claude/scripts/leadv2-supervise.sh\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"bash .claude/scripts/leadv2-session-runner.sh\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "recursion-env-split" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -S '\''bash .claude/scripts/leadv2-supervise.sh'\''"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -S '\''bash .claude/scripts/leadv2-session-runner.sh'\''"}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "recursion-env-split-long" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env --split-string='\''bash .claude/scripts/leadv2-supervise.sh'\''"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env --split-string='\''bash .claude/scripts/leadv2-session-runner.sh'\''"}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "recursion-time" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"time -p .claude/scripts/leadv2-supervise.sh\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"time -p .claude/scripts/leadv2-session-runner.sh\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "recursion-coproc" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc worker { .claude/scripts/leadv2-supervise.sh; }\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc worker { .claude/scripts/leadv2-session-runner.sh; }\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "recursion-coproc-direct" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc .claude/scripts/leadv2-supervise.sh --flag\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc .claude/scripts/leadv2-session-runner.sh --flag\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "recursion-coproc-unnamed-group" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc { .claude/scripts/leadv2-supervise.sh; }\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc { .claude/scripts/leadv2-session-runner.sh; }\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "negative-coproc-direct" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc grep .claude/scripts/leadv2-supervise.sh somefile.txt\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc grep .claude/scripts/leadv2-session-runner.sh somefile.txt\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "negative-coproc-named-group" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc worker { grep .claude/scripts/leadv2-supervise.sh f; }\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"/bin/zsh -lc \\"coproc worker { grep .claude/scripts/leadv2-session-runner.sh f; }\\""}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "negative" ]]; then
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"grep -n leadv2-supervise.sh docs/x.md"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"grep -n leadv2-session-runner.sh docs/x.md"}}\n'
   printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"sed -n 1,5p .claude/scripts/leadv2-codex-session-runner.sh"}}\n'
   printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"echo see .claude/scripts/leadv2-fanout.sh for details"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -i FOO=bar grep leadv2-supervise.sh x.md"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -i FOO=bar grep leadv2-session-runner.sh x.md"}}\n'
   printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"cat .claude/scripts/leadv2-fanout.sh"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -u PATH grep leadv2-supervise.sh f"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"exec -a name grep leadv2-supervise.sh f"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"time cat leadv2-supervise.sh"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"{ echo leadv2-supervise.sh; }"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -S \\"grep leadv2-supervise.sh f\\""}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"if grep -q leadv2-supervise.sh f; then :; fi"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -- grep leadv2-supervise.sh f"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"exec -- grep leadv2-supervise.sh f"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"time -- cat leadv2-supervise.sh"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"timeout -- 1 cat leadv2-supervise.sh"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"xargs -- grep leadv2-supervise.sh f"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -a leadv2-supervise.sh grep pattern f"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env --argv0 leadv2-supervise.sh grep pattern f"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env --argv0=leadv2-supervise.sh grep pattern f"}}\n'
-  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"if true; then :; fi leadv2-supervise.sh"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -u PATH grep leadv2-session-runner.sh f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"exec -a name grep leadv2-session-runner.sh f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"time cat leadv2-session-runner.sh"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"{ echo leadv2-session-runner.sh; }"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -S \\"grep leadv2-session-runner.sh f\\""}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"if grep -q leadv2-session-runner.sh f; then :; fi"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -- grep leadv2-session-runner.sh f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"exec -- grep leadv2-session-runner.sh f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"time -- cat leadv2-session-runner.sh"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"timeout -- 1 cat leadv2-session-runner.sh"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"xargs -- grep leadv2-session-runner.sh f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env -a leadv2-session-runner.sh grep pattern f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env --argv0 leadv2-session-runner.sh grep pattern f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"env --argv0=leadv2-session-runner.sh grep pattern f"}}\n'
+  printf -- '{"type":"item.completed","item":{"type":"command_execution","command":"if true; then :; fi leadv2-session-runner.sh"}}\n'
 fi
 if [[ "${STUB_MODE:-complete}" == "complete" && "${1:-}" == "exec" && "${2:-}" == "resume" ]]; then
   mkdir -p "$STUB_PROJECT_ROOT/docs/handoff/$STUB_TASK_ID"

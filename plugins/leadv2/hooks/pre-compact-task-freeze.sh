@@ -23,7 +23,7 @@
 #   - <leadv2_dir>/scheduled-decisions.md   (DUE/OVERDUE rows only)
 #   - <leadv2_dir>/tasks/*/journal.md       (tail of the most recently
 #                                             touched journal, best-effort)
-#   - plugin docs/supervisor-role.md        (pointed to, never embedded — a
+#   - plugin docs/single-lead-pulse.md      (pointed to, never embedded — a
 #                                             real file survives a compact by
 #                                             existing on disk, not by being
 #                                             re-injected into chat context)
@@ -444,9 +444,9 @@ def main():
         threads_tail_n = int(os.environ.get("LEADV2_FREEZE_THREADS_TAIL", "40"))
         ot_section = [
             "## OPEN THREADS (docs/leadv2/open-threads.md; capped, not verbatim)",
-            "supervisor role definition (stable, not frozen here): "
+            "single-lead role definition (stable, not frozen here): "
             + os.environ.get("CLAUDE_PLUGIN_ROOT", "${CLAUDE_PLUGIN_ROOT}")
-            + "/docs/supervisor-role.md",
+            + "/docs/single-lead-pulse.md",
         ]
         if ot_hidden:
             ot_section.append(

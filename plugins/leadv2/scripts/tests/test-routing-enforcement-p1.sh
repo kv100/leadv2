@@ -33,6 +33,13 @@ FAIL=0
 unset LEADV2_PROJECT_ROOT LEADV2_LANE_WORK_ROOT LEADV2_TASK_ID \
       LEADV2_PARENT_SESSION_ID LEADV2_DISPATCH_LANE_NAME
 
+# V3-GLM-LADDER-01 r3: DISPATCH_LEDGER_DIR is unrelated to the LEADV2_*/CLAUDE_*
+# prefixes above (and to run-core-offline.sh's own compgen -e scrub, which only
+# matches those prefixes) so an ambient export survives untouched into every
+# dispatch invocation below and overrides the per-case LEADV2_DISPATCH_CACHE_DIR
+# sandboxing via dispatch-code.sh's old `${DISPATCH_LEDGER_DIR:-...}` default.
+unset DISPATCH_LEDGER_DIR
+
 # Skip the post-spawn early-verdict poll window — the stub codex/sonnet bins
 # never report "complete", so the poll loop would sleep for the full 20s
 # default per successful spawn, making the suite time out.  (E2E-GATE-RESIDUE-01)
@@ -285,6 +292,7 @@ refusal_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/refusal-root" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/live-codex.sh" \
   LEADV2_CODEX_FIRST_BYTE_SECS=2 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_ROUTER_V2_ON_QUOTA_GATE=0 \
   bash "${DISPATCH_WRAPPER}" 'plugin-only quota refusal advances chain' 2>&1)"
 refusal_rc=$?
 if [[ ${refusal_rc} -eq 0 ]] \
@@ -337,6 +345,7 @@ deadarm_out="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/deadarm-root" \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/deadarm-sonnet.sh" \
   LEADV2_CODEX_FIRST_BYTE_SECS=1 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_ROUTER_V2_ON_QUOTA_GATE=0 \
   bash "${DISPATCH_WRAPPER}" 'plugin-only codex dead-arm no-first-byte spills chain' 2>&1)"
 deadarm_rc=$?
 if grep -q 'arm_dead_no_first_byte arm=codex' <<<"${deadarm_out}" \
@@ -694,6 +703,7 @@ lockwrite_out1="$(CLAUDE_PROJECT_ROOT="${TMP_ROOT}/lockwrite-root" \
   LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockwrite-codex.sh" \
   LEADV2_CODEX_FIRST_BYTE_SECS=2 \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_ROUTER_V2_ON_QUOTA_GATE=0 \
   LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
   bash "${DISPATCH_WRAPPER}" 'plugin-only lockout write read run1' 2>&1)"
 lockwrite_rc1=$?
@@ -720,6 +730,7 @@ else
     LEADV2_DISPATCH_CODEX_BIN="${TMP_ROOT}/lockwrite-codex.sh" \
     LEADV2_CODEX_FIRST_BYTE_SECS=2 \
     LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+    LEADV2_ROUTER_V2_ON_QUOTA_GATE=0 \
     LEADV2_DISPATCH_SUBSESSION_BIN="${TMP_ROOT}/poison-sonnet.sh" \
     bash "${DISPATCH_WRAPPER}" 'plugin-only lockout write read run2' 2>&1)"
   lockwrite_rc2=$?

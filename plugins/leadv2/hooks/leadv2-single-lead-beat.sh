@@ -2,7 +2,8 @@
 # hooks/leadv2-single-lead-beat.sh — PULSE-IN-SINGLE-LEAD-01
 #
 # The founder pulse (BROAD_STATUS_READY) used to be emitted only from
-# leadv2-supervise-loop.sh's beat branch. Single-lead mode never runs that
+# the supervisor loop's beat branch (retired 2026-08-19, SUPERVISOR-DELETE-01;
+# never ran in single-lead mode anyway). Single-lead mode never runs that
 # loop, so no supervisor is running to compose or announce a status. This
 # hook is the single-lead replacement, wired to UserPromptSubmit and
 # PostToolUse(.*) so it runs on the lead's own working cadence instead of a

@@ -554,7 +554,7 @@ leadv2_active_register() {
   # durable_pid is the liveness key; $$ ensures uniqueness when two tasks register same second.
   session_id="s-$(date -u +%Y%m%dT%H%M%SZ)-${durable_pid}-$$"
   # LANE-LIVENESS-LIES-01 Change 1a: byte-identical trim to the canonical
-  # form in leadv2-supervise-loop.sh:115 / leadv2-status-surface.sh lstart().
+  # form the (now-retired) supervisor loop used at line 115 / leadv2-status-surface.sh lstart().
   # `tr -s ' '` alone collapses interior runs but Darwin's `ps -o lstart=`
   # right-pads the field, leaving a trailing space the reader's `.strip()`
   # removes -- so writer and reader never compared equal and every healthy

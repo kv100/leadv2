@@ -90,7 +90,7 @@ _CORE_OFFLINE_OWNED_SUITES=(
   "lane truth batch (log_path + quarantine convergence)"
   "Codex full-cycle runner"
   "product-close waits for worker exit"
-  "supervisor reconciliation"
+  "lanes snapshot reconciliation"
 )
 _core_offline_suite_is_owned() {
   local name="$1" o
@@ -190,9 +190,7 @@ SUITE_DEFS=(
   "active registry fail-closed|||bash $TEST_DIR/test-active-registry-failclosed.sh"
   "active registry phase updates|||bash $TEST_DIR/test-active-registry-update-phase.sh"
   "fanout classifier/runner guard|||bash $TEST_DIR/test-fanout-classify-guard.sh"
-  "supervisor fail-closed|||bash $TEST_DIR/test-supervise-failclosed.sh"
-  "supervisor reconciliation|||bash $TEST_DIR/test-supervise-v2.sh"
-  "supervisor/lead PID isolation|||bash $PLUGIN_ROOT/tests/test-supervise-fanout-guard.sh"
+  "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh"
   "Phase-8 task schema|||bash $TEST_DIR/test-leadv2-phase8-assert-a2-schema.sh"
   "Phase-8 merge/completion proof|||bash $PLUGIN_ROOT/tests/test-deploy-merge-blocker-gate.sh"
   "subsession model downgrade|||bash $TEST_DIR/test-leadv2-model-arg-rebuild.sh"
@@ -227,6 +225,7 @@ SUITE_DEFS=(
   "review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)|||bash $TEST_DIR/test-review-round-exhaustive.sh"
   "claim-evidence gate (CLAIM-EVIDENCE-GATE-01 preamble + round-1 lens)|||bash $TEST_DIR/test-claim-evidence-gate.sh"
   "broad-status relay scoping|||bash $TEST_DIR/test-broad-status-relay-scope.sh"
+  "deferred-GLM ladder (V3-GLM-LADDER-01)|||bash $TEST_DIR/test-glm-deferred-ladder.sh"
 )
 
 _core_offline_run_entry() {

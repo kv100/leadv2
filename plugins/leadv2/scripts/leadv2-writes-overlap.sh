@@ -20,7 +20,7 @@
 # Always printed (whether or not --notify is given) so a caller can consume
 # it directly; --notify additionally appends a journal finding
 # (leadv2-journal.sh) for <tid> and a [SUPERVISE-URGENT] line to the same
-# pulse log leadv2-supervise-loop.sh writes (grep SUPERVISE-URGENT there).
+# pulse log the (now-retired) supervisor loop wrote (grep SUPERVISE-URGENT there).
 #
 # LEADV2_WRITES_CONFLICT_NOTIFY=0 makes this ENTIRE script a no-op (exit 0,
 # no stdout, no side effects) — the one-flag rollback to today's behavior on

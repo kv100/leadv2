@@ -945,6 +945,18 @@ if [[ "$WAIT" == "1" ]]; then
   # Backward compat: also accept legacy single-file delivery for one cycle
   LEGACY_FILE="$HANDOFF_DIR/${ROLE}.md"
 
+  # PREPASS-RC1-RACE-01 (2026-08-20): the worker's .full.md marker and .summary.md are two
+  # separate writes; this check used to run the instant the stream closed and declared
+  # rc=1 while both artifacts landed complete on disk 1-2s later (live case: architect
+  # prepass for 6632fad9/b9b04206 parked twice with a finished design). Grace-recheck up
+  # to 10s before judging — a real missing deliverable still fails, just 10s later.
+  _dc_grace=0
+  until grep -q "DELIVERABLE_COMPLETE" "$FULL_FILE" 2>/dev/null && [[ -f "$SUMMARY_FILE" ]]; do
+    _dc_grace=$((_dc_grace + 1))
+    [[ ${_dc_grace} -ge 5 ]] && break
+    sleep 2
+  done
+
   if grep -q "DELIVERABLE_COMPLETE" "$FULL_FILE" 2>/dev/null && [[ -f "$SUMMARY_FILE" ]]; then
     # Create backward-compat symlink if not already present
     if [[ ! -e "$LEGACY_FILE" ]]; then

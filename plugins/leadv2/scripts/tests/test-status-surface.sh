@@ -117,7 +117,7 @@ sig_seen() { printf '%s\n' "$2" | awk -v s="$1" '$NF==s{f=1} END{exit !f}'; }
 # stable against the live supervisor/hook churn that makes content/path/mtime
 # fingerprints flaky on this machine. (Static proof the suite can't be the
 # writer at all: the only .supervise-active writer in-tree is
-# leadv2-supervise.sh:175, and the suite env-injects every path it reads.)
+# leadv2-lanes-snapshot.sh:175, and the suite env-injects every path it reads.)
 REAL_STATE="${HOME}/.claude/leadv2-state"
 TEST_PID=$$
 
@@ -404,7 +404,7 @@ else
   fail "T-E: legacy -> STALE (got: $(printf '%s' "$out" | sed -n '1p'))"
 fi
 
-# T-F (writer parity): leadv2-supervise.sh and leadv2-status-surface.sh must
+# T-F (writer parity): leadv2-lanes-snapshot.sh and leadv2-status-surface.sh must
 # resolve the SAME sentinel path for a given sandboxed control plane, so the
 # writer/reader split that caused this bug cannot recur. We sandbox both via
 # LEADV2_STATE_ROOT and compare the resolved strings.

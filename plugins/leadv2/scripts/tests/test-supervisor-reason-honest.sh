@@ -5,7 +5,8 @@
 # LEADV2_STATUS_STATE_DIR, is readable in one glance as ON / STALE / OFF, and
 # that an ABSENT sentinel never surfaces a "no sentinel" reason (it is
 # corroborating-only per the design decision -- the heartbeat alone is the
-# reason, since leadv2-supervise-resume.sh is contractually write-free and no
+# reason, since leadv2-lanes-resume.sh (renamed 2026-08-19,
+# SUPERVISOR-DELETE-01) is contractually write-free and no
 # writer maintains the sentinel on the resume path a founder actually takes).
 # A sentinel that DOES exist but whose pid is dead still must be reported --
 # that is a real, actionable inconsistency, not an absence.

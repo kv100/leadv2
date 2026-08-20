@@ -91,7 +91,7 @@ n="$(printf '%s\n' "$R_RED" | leadv2_alarm_filter_seen "$KS" 3 | grep -c '^' || 
 if [[ "$n" == "1" ]]; then pass "case 3: re-breach after sweep-clear fires again"; else fail "case 3: expected 1 re-fire, got $n"; fi
 
 # ── Case 5: lib missing → loop pass-through fallback emits every line ──────
-# Mirrors the exact guard in leadv2-supervise-loop.sh (if _leadv2_alarm_fire is
+# Mirrors the exact guard the (now-retired) supervisor loop used (if _leadv2_alarm_fire is
 # undefined after the source attempt, define `leadv2_alarm_filter(){ cat; }`).
 # Run a FRESH bash that never sources the lib — a subshell would inherit the
 # lib this test already sourced, so the guard would not engage. The fresh bash

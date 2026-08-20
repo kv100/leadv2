@@ -3,7 +3,7 @@
 ## What this is
 
 The founder's 30-minute status (`[BROAD_STATUS]`) used to be emitted only from
-`leadv2-supervise-loop.sh`'s beat branch. Single-lead mode never runs that loop, so the composer
+the supervisor loop's beat branch (retired 2026-08-19, SUPERVISOR-DELETE-01). Single-lead mode never ran that loop, so the composer
 (`scripts/leadv2-broad-status.sh`) was regenerating `docs/leadv2/founder-status.md` correctly but
 nobody ever composed a beat in the first place, and nobody woke the founder to relay it. This is
 the single-lead driver + delivery mechanism. It never touches `leadv2-broad-status.sh` — that
@@ -14,7 +14,7 @@ renderer's content quality is owned by a separate lane (`fded7b89`).
 - `scripts/leadv2-pulse-beat.sh` — the driver. `--check` (background-safe, throttled, no-ops if a
   real supervise loop is live), `--now` (synchronous, throttle bypassed), `--due` (predicate only).
   Runs the backlog pump before the composer, same order as the loop
-  (`leadv2-supervise-loop.sh:842-852`), then execs the unmodified
+  (the now-retired supervisor loop, formerly lines 842-852), then execs the unmodified
   `scripts/leadv2-broad-status.sh`. Never renders anything itself.
 - `hooks/leadv2-single-lead-beat.sh` — wired to `UserPromptSubmit` and `PostToolUse` (matcher
   `.*`). Two steps, always in this order: **deliver** (relay the last beat's ready-line into the

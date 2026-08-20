@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# leadv2-supervise-resume.sh — SESSION-HANDOFF-01 resume composer.
+# leadv2-lanes-resume.sh — SESSION-HANDOFF-01 resume composer.
+# (renamed 2026-08-19, SUPERVISOR-DELETE-01; still contractually write-free,
+# see below)
 #
 # Live-composes the bounded <supervisor-handoff> restore block from canonical
 # on-disk sources — NO new state file, NO freeze/reground reuse, zero writes.
 # Two call sites:
-#   1. leadv2-supervise.sh embeds this script's --json output as the "resume"
-#      key of its own --json output, on every FULL (non-delta) call — the
-#      mandatory first call the leadv2-supervise skill already makes.
-#   2. `leadv2-supervise.sh --print` execs straight into this script (no
+#   1. leadv2-lanes-snapshot.sh embeds this script's --json output as the
+#      "resume" key of its own --json output, on every FULL (non-delta) call
+#      — the mandatory first call the leadv2-supervise skill already makes.
+#   2. `leadv2-lanes-snapshot.sh --print` execs straight into this script (no
 #      tmux reconciliation / sentinel writes / phase-backfill) as a
 #      lightweight fallback entry point, per SESSION-HANDOFF-01.
 #
@@ -17,11 +19,12 @@
 #   docs/leadv2/open-threads.md       — head = role/founder rules (# 1./# 2.
 #     sections, sacrosanct, never truncated), tail = freshest running log
 #   docs/tasks.yaml                   — ranked via the SAME canonical
-#     leadv2-tasks-lib.sh picker logic supervise-pick.sh uses (no 2nd ranker)
+#     leadv2-tasks-lib.sh picker logic the (now-retired) supervise-pick.sh used
+#     (no 2nd ranker)
 #   <control-plane>/questions/*.yaml  — pending control-plane questions,
 #     used only to annotate a lane's `blocker` field
 #
-# Usage: leadv2-supervise-resume.sh [--json] [--project-root <path>]
+# Usage: leadv2-lanes-resume.sh [--json] [--project-root <path>]
 #   --json   emit the structured resume object (default: render the
 #            human-readable <supervisor-handoff> text block to stdout)
 #
@@ -42,7 +45,7 @@ while [[ $# -gt 0 ]]; do
     --json) JSON_MODE=1; shift ;;
     --project-root) PROJECT_ROOT_ARG="${2:-}"; shift 2 ;;
     -h|--help)
-      printf -- 'Usage: leadv2-supervise-resume.sh [--json] [--project-root <path>]\n'
+      printf -- 'Usage: leadv2-lanes-resume.sh [--json] [--project-root <path>]\n'
       exit 0
       ;;
     *)
