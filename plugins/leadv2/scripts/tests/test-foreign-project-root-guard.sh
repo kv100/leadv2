@@ -41,15 +41,9 @@
 # exists once a real dispatch computes a mission sig -- `status` never
 # reaches it). Dispatch an actual mission with a foreign env root and assert
 # the journal file, not just stdout/stderr, carries the line.
-# Case 5 (item 4, medium): the pin-preflight comparison at
-# leadv2-dispatch-code.sh ~333 used to compare `_LV2_ENV_GIT_ROOT` (raw
-# `git rev-parse --show-toplevel`, un-resolved) against `_LV2_PINNED_ROOT`
-# (`pwd -P`, physically resolved) -- an env root reached through a symlink
-# hop resolves to the SAME real directory as the pinned worktree candidate
-# but a DIFFERENT string, so a legitimate --resume-lane pin into the env
-# repo was still rejected as foreign. Both sides are now realpath-normalized
-# before comparison; this leg proves a pin through a symlinked env root is
-# accepted.
+# Case 5 (item 4, medium): a symlinked env root must accept its genuine pin.
+# Case 6 (item 4, medium): a parent spelling of that env root must also accept
+# the pin and canonicalise the dispatcher back to the pin's owning repo.
 
 set -uo pipefail
 # Dev-shell hygiene (same pattern as test-lane-placement-pin.sh /
@@ -201,11 +195,38 @@ case_symlinked_env_root_pin_not_rejected() {
   rm -rf "${d}"
 }
 
+# ---- Case 6 (item 4): env root as a PARENT of the owning repo is contained ----
+case_parent_env_root_pin_not_rejected() {
+  local d repo_a real_env lane out rc
+  d="$(mktemp -d)"
+  repo_a="${d}/repo-a"
+  real_env="${d}/real-env"
+  mkdir -p "${repo_a}" "${real_env}"
+  ( cd "${repo_a}" && git init -q && git commit -q --allow-empty -m init )
+  ( cd "${real_env}" && git init -q && git commit -q --allow-empty -m init )
+  lane="${real_env}/.claude/worktrees/laneref"
+  ( cd "${real_env}" && git worktree add -q "${lane}" -b lane-parent-branch >/dev/null 2>&1 )
+
+  # `${d}` is deliberately the PARENT of the real repo, not a repository
+  # itself.  The preflight must accept a pin physically contained by it and
+  # set PROJECT_ROOT to `${real_env}`, rather than rerooting onto repo-a.
+  out="$(cd "${repo_a}" && CLAUDE_PROJECT_DIR="${d}" LEADV2_DISPATCH_CACHE_DIR="${d}/cache" \
+    bash "${DC}" status --worktree "${lane}" 2>&1)"; rc=$?
+  if [[ ${rc} -eq 0 ]] && ! printf '%s' "${out}" | grep -q 'FOREIGN-PROJECT-ROOT-GUARD-01'; then
+    ok "case6 (item 4): parent env root containing a genuine pin is not rejected"
+  else
+    bad "case6 (item 4): parent env root + genuine pin was rejected (rc=${rc}, out: ${out})"
+  fi
+
+  rm -rf "${d}"
+}
+
 case_foreign_repo_env_default_on
 case_foreign_repo_env_explicit_opt_out
 case_bare_tmpdir_override_untouched
 case_override_journals_to_task_file
 case_symlinked_env_root_pin_not_rejected
+case_parent_env_root_pin_not_rejected
 
 printf '[test-foreign-project-root-guard] pass=%s fail=%s\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]]

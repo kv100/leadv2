@@ -288,6 +288,14 @@ SCRIPT_NAME="leadv2-dispatch-code"
 # intentional (kept for symmetry, not exercised by tests/).
 _LV2_ENV_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-}}}}"
 _LV2_FOREIGN_ROOT_ENV=""; _LV2_FOREIGN_ROOT_CWD=""
+# Physical containment is intentionally symmetric for a pinned worktree: an
+# inherited root may name the repository, a directory below it, or an enclosing
+# workspace directory.  In all three cases a pin proven to share that physical
+# tree is the authoritative dispatch target.
+_lv2_path_contains() {
+  local parent="$1" child="$2"
+  [[ "${child}" == "${parent}" || "${child}" == "${parent}/"* ]]
+}
 # GATE-WRONG-ROOT-FALSE-DEAD-01 (repo-CLAUDE.md): resolve the cwd git root ONCE,
 # unconditionally, so it is defined identically on every branch below -- the
 # prior guard-off else-branch left this unset and silently fell back to
@@ -305,6 +313,7 @@ _LV2_CWD_GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "${_LV2_CWD_GIT_ROOT}" ]] && _LV2_CWD_GIT_ROOT="$(cd "${_LV2_CWD_GIT_ROOT}" 2>/dev/null && pwd -P || printf '%s' "${_LV2_CWD_GIT_ROOT}")"
 if [[ -n "${_LV2_ENV_ROOT}" ]]; then
   PROJECT_ROOT="${_LV2_ENV_ROOT}"
+  _LV2_ENV_PHYSICAL_ROOT="$(cd "${_LV2_ENV_ROOT}" 2>/dev/null && pwd -P || true)"
   if [[ "${LEADV2_FOREIGN_ROOT_GUARD:-1}" == "1" ]]; then
     if [[ -n "${_LV2_CWD_GIT_ROOT}" ]]; then
       _LV2_ENV_GIT_ROOT="$(cd "${_LV2_ENV_ROOT}" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -339,8 +348,14 @@ if [[ -n "${_LV2_ENV_ROOT}" ]]; then
           fi
           _LV2_PINNED_ROOT="$(cd "${_LV2_PIN_CANDIDATE}" 2>/dev/null && cd "$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)")" 2>/dev/null && pwd -P || true)"
         fi
-        if [[ "${_LV2_PINNED_ROOT}" == "${_LV2_ENV_GIT_ROOT}" ]]; then
-          : # An explicit, same-repo placement wins over the caller's unrelated cwd.
+        if [[ -n "${_LV2_PINNED_ROOT}" && -n "${_LV2_ENV_PHYSICAL_ROOT}" ]] && \
+              { _lv2_path_contains "${_LV2_ENV_PHYSICAL_ROOT}" "${_LV2_PINNED_ROOT}" || \
+                _lv2_path_contains "${_LV2_PINNED_ROOT}" "${_LV2_ENV_PHYSICAL_ROOT}"; }; then
+          # An explicit pin proven to be in/around the physical env root wins
+          # over the unrelated cwd.  Canonicalise PROJECT_ROOT to the pin's
+          # owning repository: a parent/child env spelling is not itself a
+          # safe control-plane root for journals and ledgers.
+          PROJECT_ROOT="${_LV2_PINNED_ROOT}"
         else
           echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
           PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
