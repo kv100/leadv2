@@ -466,6 +466,83 @@ queue_md = _queue_label + "\n\n" + (
     "\n\n".join(queue_sections) if queue_sections else "(очередь пуста)"
 )
 
+# V3-GLM-LADDER-01: sonnet-fallback counter, codex credit watchdog, deferred-GLM park --
+# all three rendered DETERMINISTICALLY here (never through the Haiku two-line writer,
+# see architect design D0) so a degraded reader can never hide a degraded provider.
+# Every read is existence-guarded and a malformed file yields the zero/absent case,
+# never an exception (R5) -- a renderer traceback degrades the whole beat.
+sonnet_fallbacks_today = 0
+sonnet_fallback_last_reason = ""
+try:
+    _today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+    _exc_path = os.path.join(root, "docs", "leadv2", f".arm-exceptions-{_today}")
+    if os.path.isfile(_exc_path):
+        with open(_exc_path, encoding="utf-8") as fh:
+            for _line in fh:
+                _line = _line.strip()
+                if _line.startswith("count="):
+                    try:
+                        sonnet_fallbacks_today = int(_line[len("count="):])
+                    except ValueError:
+                        sonnet_fallbacks_today = 0
+                elif _line.startswith("last_reason="):
+                    sonnet_fallback_last_reason = _line[len("last_reason="):]
+except OSError:
+    pass
+
+codex_credits_empty_since = None
+try:
+    _stamp_path = os.path.join(root, "docs", "leadv2", ".codex-credits-empty.stamp")
+    if os.path.isfile(_stamp_path):
+        with open(_stamp_path, encoding="utf-8") as fh:
+            _first = fh.readline().strip()
+        if _first.startswith("since="):
+            codex_credits_empty_since = _first[len("since="):]
+except OSError:
+    pass
+
+glm_deferred_count = 0
+try:
+    _deferred_path = os.path.join(root, "docs", "leadv2", "glm-deferred.jsonl")
+    if os.path.isfile(_deferred_path):
+        _retried = set()
+        _rows = []
+        with open(_deferred_path, encoding="utf-8") as fh:
+            for _line in fh:
+                _line = _line.strip()
+                if not _line:
+                    continue
+                try:
+                    _row = json.loads(_line)
+                except Exception:
+                    continue
+                if "_truncated" in _row:
+                    continue
+                _rows.append(_row)
+        for _row in _rows:
+            if _row.get("retried_at"):
+                _retried.add(_row.get("sig8"))
+        # M4: dedup by sig8 (newest row wins) -- a task parked twice (e.g. once at the
+        # quota-precheck bench, once at a live refusal) counts once, not twice.
+        _pending_sig8s = {r.get("sig8") for r in _rows if r.get("sig8") not in _retried}
+        glm_deferred_count = len(_pending_sig8s)
+except OSError:
+    pass
+
+_provider_health_lines = []
+if sonnet_fallbacks_today > 0:
+    _provider_health_lines.append(
+        f"sonnet-фолбэков сегодня: {sonnet_fallbacks_today} ({sonnet_fallback_last_reason or 'glm quota'})"
+    )
+if codex_credits_empty_since:
+    _provider_health_lines.append(f"codex: кредиты на нуле с {codex_credits_empty_since}")
+if glm_deferred_count > 0:
+    _provider_health_lines.append(
+        f"отложено на GLM: {glm_deferred_count} задач (dispatch glm-deferred --list)"
+    )
+if _provider_health_lines:
+    queue_md = queue_md + "\n\n" + "\n".join(_provider_health_lines)
+
 tail_facts = {
     "queued_top5": queued_items,
     "landed_today": landed_items,
@@ -475,6 +552,12 @@ tail_facts = {
     "lanes_summary": [
         {"task_id": r.get("task_id"), "status": r.get("status")} for r in table_rows
     ],
+    "provider_health": {
+        "sonnet_fallbacks_today": sonnet_fallbacks_today,
+        "sonnet_fallback_last_reason": sonnet_fallback_last_reason,
+        "codex_credits_empty_since": codex_credits_empty_since,
+        "glm_deferred_count": glm_deferred_count,
+    },
 }
 
 # ── previous-beat snapshot: single writer (this script, called only from

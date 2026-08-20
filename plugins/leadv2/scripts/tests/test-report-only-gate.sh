@@ -204,7 +204,10 @@ run_diff_lane_scenario() { # <scripts_dir> <out_gate_file>
   root="$(new_repo)"; tid="rog1c4-$$"
   wt="$(ensure_worktree "${sd}" "${root}" "${tid}")"
   [[ -d "${wt}" ]] || return 2
-  printf 'seed\nedited-in-worktree-for-golden\n' > "${wt}/agent/seed.py"
+  # BUILDER-SELFCHECK-GATE-01: content must be VALID Python — the selfcheck gate now
+  # py_compiles changed .py files, and the old bare-words seed was a syntax error, so
+  # the golden case (expects status: pass) red-ed on a legitimately-broken fixture diff.
+  printf '# seed\n# edited-in-worktree-for-golden\n' > "${wt}/agent/seed.py"
   d="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-d.XXXXXX")"; errf="$(mktemp "${TMPDIR:-/tmp}/leadv1-e.XXXXXX")"
   make_resolver_stub "${d}/resolver.py" codex
   make_review_pass_stub "${d}/codex.sh"

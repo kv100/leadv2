@@ -261,7 +261,7 @@ DISPATCH_MISSION_PATH="${DISPATCH_MISSION_PATH:-}"
 DISPATCH_LANE_NAME="${DISPATCH_LANE_NAME:-}"
 
 SCRIPT_NAME="leadv2-dispatch-code"
-PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}}"
+PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}}}"
 # LANDING-BLOCKER-R2 (C1): WORK_ROOT is the tree the lane's code edits land in -- it is
 # NOT PROJECT_ROOT. PROJECT_ROOT stays the control-plane root (journal, docs/handoff,
 # active.yaml, cache, ledger) everywhere below; only worker --cwd and the review-gate's
@@ -395,7 +395,13 @@ _stamp_active_phase() { # <task_id> <phase>
 }
 
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
-DISPATCH_LEDGER_DIR="${DISPATCH_LEDGER_DIR:-${CACHE_BASE}/dispatch-ledger}"
+# V3-GLM-LADDER-01 r3: derive unconditionally from CACHE_BASE -- an inherited
+# DISPATCH_LEDGER_DIR (this var was never exported anywhere in this codebase,
+# so the only source is an ambient shell/CI export) used to win via `:-` and
+# silently bypass per-run cache sandboxing (LEADV2_DISPATCH_CACHE_DIR), benching
+# arms off a stale/poisoned ledger dir. Fail closed: always derive from the
+# already-sandboxed CACHE_BASE.
+DISPATCH_LEDGER_DIR="${CACHE_BASE}/dispatch-ledger"
 # wave2 round2 finding 3: same STATE_PATH_BIN resolver leadv2-dispatch-ledger.sh's
 # terminal ledger uses (LEAD-CONTROL-PLANE-01) -- close_owner_pidfile() below must land
 # in the SAME cross-worktree location the sweep reads, not a per-worktree repo path.
@@ -693,6 +699,364 @@ except Exception:
 _set_worktree_pin_line() {
   [[ -n "${WORK_ROOT:-}" && "${WORK_ROOT}" != "${PROJECT_ROOT}" ]] || return 0
   WORKTREE_PIN_LINE="WORKTREE PIN: all edits go in ${WORK_ROOT}; do NOT cd to the main checkout even if the mission text names it."
+}
+
+# ── V3-GLM-LADDER-01: deferred-GLM park, codex credit watchdog, loud sonnet exceptions ──
+# Runtime state lives under docs/leadv2/ (plugin-owned, gitignored). All three helpers
+# are additive observability -- none may ever abort cmd_resolve (R8: callers wrap with
+# `|| true`) and none may take fd 9 (the dispatch lock fd; R3 -- fd 9 is closed before a
+# detached worker spawn and any lock taken here must never be inherited by one). Fd 8 is
+# this subsystem's own sidecar lock fd, scoped tightly around each read-modify-write and
+# always closed (`8>&-`) before returning -- never held across a spawn_worker call.
+_leadv2_glm_deferred_path() { printf '%s/docs/leadv2/glm-deferred.jsonl' "${PROJECT_ROOT}"; }
+_leadv2_arm_exceptions_path() { printf '%s/docs/leadv2/.arm-exceptions-%s' "${PROJECT_ROOT}" "${1}"; }
+_leadv2_codex_credits_stamp_path() { printf '%s/docs/leadv2/.codex-credits-empty.stamp' "${PROJECT_ROOT}"; }
+_leadv2_glm_deferred_mission_path() { printf '%s/docs/leadv2/glm-deferred.d/%s.md' "${PROJECT_ROOT}" "${1}"; }
+
+# $1=sig8 $2=reason(LAST_ARM_OUTCOME, quota family only) $3=mission_text — park a
+# quota-refused glm-fitting task. Gate (design §4): caller only invokes this when
+# candidate==glm at refusal time (or the precheck bench, D3), which is already the
+# router's own answer to "is this task glm-fitting" -- do not re-classify.
+# D4: the mission text is copied into glm-deferred.d/<sig8>.md at park time so a later
+# --retry-all can dispatch it as a brand-new task without depending on an artifact
+# (lane-mission.md) that only exists for the product class and only after this point.
+_glm_park_deferred() {
+  local sig8="$1" reason="$2" mission_text="${3:-}"
+  local path; path="$(_leadv2_glm_deferred_path)"
+  mkdir -p "$(dirname "${path}")" 2>/dev/null || return 0
+  local mission_path=""
+  if [[ -n "${mission_text}" ]]; then
+    mission_path="$(_leadv2_glm_deferred_mission_path "${sig8}")"
+    mkdir -p "$(dirname "${mission_path}")" 2>/dev/null || mission_path=""
+    if [[ -n "${mission_path}" ]]; then
+      printf '%s' "${mission_text}" > "${mission_path}" 2>/dev/null || mission_path=""
+    fi
+  fi
+  local refused_at; refused_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local quota_pct="null"
+  if [[ -n "${v2_headroom:-}" ]]; then
+    quota_pct="$(python3 -c '
+import json, sys
+try:
+    h = json.loads(sys.argv[1])
+    v = h.get("glm") if isinstance(h, dict) else None
+    print(json.dumps(v) if isinstance(v, (int, float)) else "null")
+except Exception:
+    print("null")
+' "${v2_headroom}" 2>/dev/null || printf 'null')"
+  fi
+  local row
+  row="$(python3 -c '
+import json, sys
+sig8, mission_path, founder_task_id, refused_at, reason, quota_pct_raw = sys.argv[1:7]
+try:
+    quota_pct = json.loads(quota_pct_raw)
+except Exception:
+    quota_pct = None
+print(json.dumps({
+    "sig8": sig8, "mission_path": mission_path, "founder_task_id": founder_task_id,
+    "refused_at": refused_at, "reason": reason, "quota_pct": quota_pct,
+    "retried_at": None,
+}, separators=(",", ":")))
+' "${sig8}" "${mission_path}" "${founder_task_id:-}" "${refused_at}" "${reason}" "${quota_pct}" 2>/dev/null)"
+  [[ -n "${row}" ]] || return 0
+  (
+    lv2_lock_wait "${path}.lock" 10 || exit 3
+    printf '%s\n' "${row}" >>"${path}"
+    # R1: cap at newest 500 rows, drop rows older than 7 days; state the truncation.
+    python3 -c '
+import datetime, json, sys
+path = sys.argv[1]
+cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
+rows = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            ts = row.get("refused_at", "")
+            try:
+                when = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+            except Exception:
+                when = None
+            if when is not None and when < cutoff:
+                continue
+            rows.append(row)
+except OSError:
+    sys.exit(0)
+truncated = len(rows) > 500
+dropped_sig8s = {r.get("sig8") for r in rows[:-500]} if truncated else set()
+rows = rows[-500:]
+kept_sig8s = {r.get("sig8") for r in rows}
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    for row in rows:
+        fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    if truncated:
+        fh.write(json.dumps({"_truncated": True}, separators=(",", ":")) + "\n")
+import os
+os.replace(tmp, path)
+# D4/risk-mitigation: an orphaned park no longer has ANY row (dropped by truncation
+# and not re-kept under a later row) -- unlink its mission copy so glm-deferred.d/
+# does not grow unbounded alongside the 500-row/7-day cap.
+mission_dir = os.path.join(os.path.dirname(path), "glm-deferred.d")
+for sig8 in dropped_sig8s - kept_sig8s:
+    if not sig8:
+        continue
+    try:
+        os.remove(os.path.join(mission_dir, sig8 + ".md"))
+    except OSError:
+        pass
+' "${path}" 2>/dev/null || true
+  ) 9>"${path}.lock"
+  true
+}
+
+# glm-deferred subcommand: list / retry-all / json.
+cmd_glm_deferred() {
+  local mode="list"
+  case "${1:-}" in
+    ""|--list) mode="list" ;;
+    --json) mode="json" ;;
+    --retry-all) mode="retry-all" ;;
+    *) printf 'usage: %s glm-deferred [--list|--retry-all|--json]\n' "${SCRIPT_NAME}" >&2; exit 2 ;;
+  esac
+  local path; path="$(_leadv2_glm_deferred_path)"
+  if [[ ! -r "${path}" ]]; then
+    if [[ "${mode}" == "json" ]]; then
+      printf '[]\n'
+    else
+      printf 'no deferred glm tasks\n'
+    fi
+    return 0
+  fi
+  case "${mode}" in
+    list|json)
+      python3 -c '
+import json, sys
+path, mode = sys.argv[1], sys.argv[2]
+rows = []
+retried = set()
+raw = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if "_truncated" in row:
+                continue
+            raw.append(row)
+except OSError:
+    raw = []
+for row in raw:
+    if row.get("retried_at"):
+        retried.add(row.get("sig8"))
+pending = [r for r in raw if r.get("sig8") not in retried]
+if mode == "json":
+    print(json.dumps(pending, separators=(",", ":")))
+else:
+    if not pending:
+        print("no deferred glm tasks")
+    for r in pending:
+        print("%s %s quota=%s %s" % (
+            r.get("sig8", "-"), r.get("refused_at", "-"), r.get("quota_pct", "null"),
+            r.get("mission_path", "") or "-",
+        ))
+' "${path}" "${mode}"
+      ;;
+    retry-all)
+      local _rp_json
+      _rp_json="$(python3 -c '
+import json, sys
+path = sys.argv[1]
+raw = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if "_truncated" in row:
+                continue
+            raw.append(row)
+except OSError:
+    raw = []
+retried = {r.get("sig8") for r in raw if r.get("retried_at")}
+pending = [r for r in raw if r.get("sig8") not in retried]
+for r in pending:
+    print("%s\t%s" % (r.get("sig8", ""), r.get("mission_path", "") or ""))
+' "${path}")"
+      if [[ -z "${_rp_json}" ]]; then
+        printf 'no deferred glm tasks\n'
+        return 0
+      fi
+      local _qg_bin="${LEADV2_ROUTER_V2_BIN:-${SCRIPT_DIR}/leadv2-router-v2.sh}"
+      local _sig8 _mpath
+      while IFS=$'\t' read -r _sig8 _mpath; do
+        [[ -n "${_sig8}" ]] || continue
+        # D5 row 1: a landed sonnet fallback already did the work -- reap, never retry.
+        if bash "${LEDGER_BIN}" exists "${_sig8}" >/dev/null 2>&1; then
+          _leadv2_glm_deferred_mark_retried "${path}" "${_sig8}" "reaped_fallback_landed"
+          printf 'reaped %s fallback_landed\n' "${_sig8}"
+          continue
+        fi
+        # D5 row 2: still gated -- leave pending, no state change.
+        local _rp_out _rp_eligible
+        _rp_out="$(bash "${_qg_bin}" resolve --chain glm --task-id "${_sig8}" 2>/dev/null)"
+        _rp_eligible="$(printf '%s\n' "${_rp_out}" | sed -n 's/^eligible=//p')"
+        if [[ "${_rp_eligible}" != "glm" ]]; then
+          printf 'still_gated %s\n' "${_sig8}"
+          continue
+        fi
+        # D5 row 3: no usable parked mission -- leave pending (H3 data-loss case).
+        if [[ -z "${_mpath}" || ! -s "${_mpath}" ]]; then
+          printf 'skipped_no_mission %s\n' "${_sig8}"
+          continue
+        fi
+        # D5 row 4/5: dispatch the parked mission as a brand-new task (new sig8). The
+        # old sig8 is never re-dispatched -- only reaped on success.
+        local _child_errf _child_out _child_rc _new_sig8
+        _child_errf="$(mktemp 2>/dev/null || printf '/tmp/glm-retry-%s.err' "${_sig8}")"
+        _child_out="$(bash "${BASH_SOURCE[0]}" "@${_mpath}" 2>"${_child_errf}")"
+        _child_rc=$?
+        if [[ ${_child_rc} -eq 0 ]]; then
+          _new_sig8="$(printf '%s\n' "${_child_out}" | sed -n 's/.*task=\([^ ]*\).*/\1/p' | head -1)"
+          _leadv2_glm_deferred_mark_retried "${path}" "${_sig8}" "retried_all"
+          printf 'retried %s as=%s\n' "${_sig8}" "${_new_sig8:-unknown}"
+        else
+          local _last_err; _last_err="$(tail -1 "${_child_errf}" 2>/dev/null)"
+          printf 'retry_failed %s rc=%s %s\n' "${_sig8}" "${_child_rc}" "${_last_err}"
+        fi
+        rm -f "${_child_errf}" 2>/dev/null || true
+      done <<<"${_rp_json}"
+      ;;
+  esac
+}
+
+# D6: append a retired-marker row for $2=sig8 under the SAME lock as the read that
+# decided to retire it, so a concurrent --retry-all never double-dispatches. reason=$3
+# is informational only (list/json already filter on retried_at presence, not reason).
+_leadv2_glm_deferred_mark_retried() {
+  local path="$1" sig8="$2" reason="$3"
+  local retried_at; retried_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local new_row
+  new_row="$(python3 -c '
+import json, sys
+sig8, reason, retried_at = sys.argv[1:4]
+print(json.dumps({
+    "sig8": sig8, "mission_path": "", "founder_task_id": "",
+    "refused_at": retried_at, "reason": reason, "quota_pct": None,
+    "retried_at": retried_at,
+}, separators=(",", ":")))
+' "${sig8}" "${reason}" "${retried_at}")"
+  (
+    lv2_lock_wait "${path}.lock" 10 || exit 3
+    printf '%s\n' "${new_row}" >>"${path}"
+  ) 9>"${path}.lock"
+}
+
+# $1=credits-json (from route_headroom_chosen's payload) — emit ONE deduped
+# codex_credits_empty journal line per 24h window. R8: caller wraps with `|| true`.
+_codex_credits_watch() {
+  local credits_json="${1:-}"
+  [[ -n "${credits_json}" && "${credits_json}" != "{}" ]] || return 0
+  local has_credits
+  has_credits="$(python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+    codex = d.get("codex") if isinstance(d, dict) else None
+    if not isinstance(codex, dict):
+        print("unknown"); sys.exit(0)
+    if "has_credits" in codex:
+        print("true" if codex.get("has_credits") else "false")
+    elif "balance" in codex:
+        print("false" if str(codex.get("balance")) == "0" else "true")
+    else:
+        print("unknown")
+except Exception:
+    print("unknown")
+' "${credits_json}" 2>/dev/null || printf 'unknown')"
+  local stamp; stamp="$(_leadv2_codex_credits_stamp_path)"
+  mkdir -p "$(dirname "${stamp}")" 2>/dev/null || return 0
+  if [[ "${has_credits}" == "true" ]]; then
+    rm -f "${stamp}" 2>/dev/null || true
+    return 0
+  fi
+  [[ "${has_credits}" == "false" ]] || return 0
+  (
+    lv2_lock_wait "${stamp}.lock" 10 || exit 3
+    local now since_line since fresh=1
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [[ -r "${stamp}" ]]; then
+      since_line="$(head -1 "${stamp}" 2>/dev/null)"
+      since="${since_line#since=}"
+      if [[ -n "${since}" ]] && python3 -c '
+import datetime, sys
+since_raw, now_raw = sys.argv[1], sys.argv[2]
+try:
+    since = datetime.datetime.strptime(since_raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.strptime(now_raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    sys.exit(0 if (now - since).total_seconds() < 86400 else 1)
+except Exception:
+    sys.exit(1)
+' "${since}" "${now}"; then
+        fresh=0
+      fi
+    fi
+    if [[ ${fresh} -eq 1 ]]; then
+      printf 'since=%s\n' "${now}" >"${stamp}.tmp" && mv "${stamp}.tmp" "${stamp}"
+      emit decision "codex_credits_empty since=${now}"
+    fi
+  ) 9>"${stamp}.lock"
+  true
+}
+
+# $1=reason $2=sig8 — bump today's sonnet-fallback-after-glm-refusal counter.
+# D1: the counter counts distinct sig8 per UTC day -- a repeat bump for a sig8 already
+# recorded is a no-op (does not bump count, does not rewrite last_reason).
+# _LEADV2_EXC_DAY is computed once per cmd_resolve invocation (R6) so one dispatch
+# never straddles two daily files even across a UTC-midnight boundary.
+_arm_exception_bump() {
+  local reason="$1" sig8="$2"
+  local day="${_LEADV2_EXC_DAY:-$(date -u +%Y%m%d)}"
+  local path; path="$(_leadv2_arm_exceptions_path "${day}")"
+  mkdir -p "$(dirname "${path}")" 2>/dev/null || return 0
+  (
+    lv2_lock_wait "${path}.lock" 10 || exit 3
+    if [[ -r "${path}" ]] && grep -qF "sig8=${sig8}" "${path}" 2>/dev/null; then
+      exit 0
+    fi
+    local count=0
+    if [[ -r "${path}" ]]; then
+      count="$(grep -c '^sig8=' "${path}" 2>/dev/null || printf '0')"
+      [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+    fi
+    count=$((count + 1))
+    {
+      printf 'count=%s\n' "${count}"
+      printf 'last_reason=%s\n' "${reason}"
+      if [[ -r "${path}" ]]; then
+        grep '^sig8=' "${path}" 2>/dev/null
+      fi
+      printf 'sig8=%s\n' "${sig8}"
+    } >"${path}.tmp" && mv "${path}.tmp" "${path}"
+  ) 9>"${path}.lock"
+  true
 }
 
 # Journal + stderr-emit one structured line. $1=journal-type, $2..=text (one logical line).
@@ -2382,9 +2746,45 @@ LANE_LIVENESS_BIN="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lan
 # stdout carries the handle, stderr is retained only for the failure message. This is
 # launcher-format-agnostic (no PID-pattern grep needed). The wrapper owns the stderr
 # tempfile so every early `return` in the body still cleans it up.
+# V3-ENV-GUARDS-01 item 3: worker-launcher environment asserts.
+# _worker_env_asserts <arm> <sig8> -> always 0, journals exactly two lines.
+# Runs inside dispatch-code's OWN process, called once at the top of
+# spawn_worker() before any launcher is invoked -- plain unset/export here is
+# inherited by every launcher this process execs next (no env -i rewrite
+# needed; the candidate loop spawns one arm at a time per process, so this
+# process-global mutation cannot race a sibling arm).
+#   A1: CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS must never reach a worker (a
+#       stray shell profile on the host exporting =1 would leak into every
+#       worker and regress routing) -- unset unless already unset/0.
+#   A2: CLAUDE_CODE_ENABLE_TODO_TOOLS -- CC 2.1.233 stopped shipping the
+#       Task-tool family (TaskCreate/Update/List, TodoWrite) by default on
+#       Sonnet 5/Opus 4.8+; leadv2-continuation-guard.sh counts TaskCreate/
+#       TaskUpdate as productive tool calls and hooks.json registers a
+#       TaskCreated event, so a worker without these tools is mis-scored and
+#       the event never fires. Set =1 unless opted out via
+#       LEADV2_WORKER_TODO_TOOLS=0.
+_worker_env_asserts() {  # <arm> <sig8>
+  local arm="$1" sig8="$2"
+  local ateams="${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}"
+  if [[ -n "${ateams}" && "${ateams}" != "0" ]]; then
+    unset CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+    emit decision "worker_env_assert arm=${arm} task=${sig8} var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=unset was=${ateams}"
+  else
+    emit decision "worker_env_assert arm=${arm} task=${sig8} var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok"
+  fi
+  if [[ "${LEADV2_WORKER_TODO_TOOLS:-1}" == "0" ]]; then
+    emit decision "worker_env_assert arm=${arm} task=${sig8} var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=skip reason=opt_out"
+  else
+    export CLAUDE_CODE_ENABLE_TODO_TOOLS=1
+    emit decision "worker_env_assert arm=${arm} task=${sig8} var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1"
+  fi
+  return 0
+}
+
 spawn_worker() {
   local errf rc
   LAST_ARM_OUTCOME="$1_failed_launcher"
+  _worker_env_asserts "$1" "$3"
   errf="$(mktemp "${TMPDIR:-/tmp}/leadv2-dispatch-err.XXXXXX")" || {
     log_err "spawn($1): could not create stderr tempfile"; return 1
   }
@@ -3037,6 +3437,117 @@ _codex_first_byte_deadline_check() {  # <handle> <sig8>
   done
 }
 
+# SD-CODEX-SILENT-INSTANT-COMPLETE-01: a codex rollout can pass the first-byte
+# check above (it wrote real bytes -- observed ~100KB of context in the live
+# incident) and STILL be dead: codex-companion emits a `task_complete` event
+# with `last_agent_message: null` within 1-3s of `task_started` and detaches.
+# No prior guard catches this shape because bytes DID land. Live probe of the
+# exact dead event (this session, 2026-08-20):
+#   {"timestamp":"2026-08-20T02:22:58.199Z","type":"event_msg","payload":
+#    {"type":"task_complete","turn_id":"01a01cfa-8ccd-7101-bdd7-b1c4cec4af81",
+#     "last_agent_message":null,"completed_at":1787192578,"duration_ms":946}}
+#   (from ~/.codex/sessions/2026/08/20/rollout-2026-08-20T05-22-53-...jsonl)
+#
+# _codex_newest_rollout_since <since_epoch> -> prints the newest
+# ~/.codex/sessions/**/rollout-*.jsonl path with mtime >= since_epoch, or
+# empty. Uses python3 (already a hard dependency elsewhere in this script)
+# instead of `find -newermt`, which BSD/bfs `find` on this host does not
+# reliably support the same way GNU find does.
+_codex_newest_rollout_since() {  # <since_epoch>
+  local since="$1" codex_home
+  codex_home="${CODEX_HOME:-$HOME/.codex}"
+  python3 - "$codex_home" "$since" 2>/dev/null <<'PY'
+import os, sys
+root = os.path.join(sys.argv[1], "sessions")
+since = int(sys.argv[2])
+best, best_m = None, -1
+for dirpath, _dirnames, filenames in os.walk(root):
+    for fn in filenames:
+        if not (fn.startswith("rollout-") and fn.endswith(".jsonl")):
+            continue
+        p = os.path.join(dirpath, fn)
+        try:
+            m = os.path.getmtime(p)
+        except OSError:
+            continue
+        if m < since or m <= best_m:
+            continue
+        best, best_m = p, m
+print(best or "")
+PY
+}
+
+# _codex_rollout_dead_shape <rollout_file> -> rc0 = dead shape found (terminal
+# task_complete, last_agent_message is null/absent); rc2 = terminal
+# task_complete with a real message (healthy completion, not dead); rc1 =
+# no terminal task_complete event in the file yet (still running, or file
+# unreadable/missing). Scans from the end -- task_complete is always the
+# last event_msg of a turn.
+_codex_rollout_dead_shape() {  # <rollout_file>
+  local f="$1"
+  [[ -n "${f}" && -f "${f}" ]] || return 1
+  python3 - "$f" 2>/dev/null <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path, "r", errors="replace") as fh:
+        lines = fh.readlines()
+except OSError:
+    sys.exit(1)
+for line in reversed(lines):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    if d.get("type") != "event_msg":
+        continue
+    payload = d.get("payload")
+    if not isinstance(payload, dict) or payload.get("type") != "task_complete":
+        continue
+    sys.exit(0 if payload.get("last_agent_message") is None else 2)
+sys.exit(1)
+PY
+}
+
+# _codex_instant_complete_deadline_check <sig8> <since_epoch> -> 0 = proceed
+# (a real terminal message was found, or the window elapsed with no dead
+# shape -- the existing early-verdict/first-byte machinery covers every other
+# outcome), 7 = declared dead (task_complete + last_agent_message null found
+# within the window) -- caller must abort the reservation and spill, exactly
+# like _codex_first_byte_deadline_check's rc=7 contract. Records a provider
+# strike via the same record-quota-lockout path on the dead verdict.
+_codex_instant_complete_deadline_check() {  # <sig8> <since_epoch>
+  local sig8="$1" since="$2"
+  local deadline="${LEADV2_CODEX_INSTANT_COMPLETE_SECS:-30}"
+  [[ "${deadline}" =~ ^[0-9]+$ ]] || deadline=30
+  [[ "${deadline}" != "0" ]] || return 0
+  local poll_s="${LEADV2_ARM_EARLY_VERDICT_POLL_S:-1}"
+  [[ "${poll_s}" =~ ^[0-9]+([.][0-9]+)?$ ]] || poll_s=1
+  [[ "${poll_s}" != "0" && "${poll_s}" != "0.0" ]] || poll_s=0.1
+  local started="${SECONDS}" f rc
+  while true; do
+    f="$(_codex_newest_rollout_since "${since}")"
+    if [[ -n "${f}" ]]; then
+      _codex_rollout_dead_shape "${f}"; rc=$?
+      if [[ ${rc} -eq 0 ]]; then
+        emit decision "arm_dead_instant_complete arm=codex task=${sig8} rollout=${f}"
+        bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
+          --provider codex --hours 1 --reason arm_dead_instant_complete >/dev/null 2>&1 || true
+        return 7
+      elif [[ ${rc} -eq 2 ]]; then
+        return 0   # terminal, real last_agent_message -- healthy, proceed
+      fi
+    fi
+    if (( SECONDS - started >= deadline )); then
+      return 0   # still running past the window, no dead shape -- proceed
+    fi
+    sleep "${poll_s}"
+  done
+}
+
 # ── CORE FIX (fix-pass-4 REDESIGN): reserve (short lock) -> spawn (NO lock) -> confirm/
 # abort (short lock) -- see the FIX PASS 4 doc block at the top of this file for why
 # fix-pass-3's "one held flock across the whole sequence" was itself blocked (FD-inheritance
@@ -3070,7 +3581,11 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
   esac
   ACTIVE_DISPATCH_TOKEN="${token}"
 
-  local src=1 spawn_out=""
+  local src=1 spawn_out="" _codex_spawn_epoch=0
+  # SD-CODEX-SILENT-INSTANT-COMPLETE-01: captured before spawn so the
+  # instant-complete rollout scan below never mistakes a PRIOR unrelated
+  # codex session's rollout file for this one's.
+  [[ "${arm}" == "codex" ]] && _codex_spawn_epoch="$(date +%s)"
   if [[ "${do_spawn}" == "1" ]]; then
     spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
     printf '%s\n' "${spawn_out}"
@@ -3140,6 +3655,20 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
         [[ ${fb_abort_rc} -eq 0 ]] && return 7
         return 5
       fi
+      # SD-CODEX-SILENT-INSTANT-COMPLETE-01: bytes landed (first-byte check
+      # above passed) but the job may STILL be dead -- codex-companion can
+      # emit task_complete/last_agent_message=null within 1-3s and detach.
+      local _ic_rc=0
+      _codex_instant_complete_deadline_check "${sig8}" "${_codex_spawn_epoch}" || _ic_rc=$?
+      if [[ ${_ic_rc} -eq 7 ]]; then
+        LAST_ARM_OUTCOME="codex_dead_instant_complete"
+        emit decision "arm_refused by=router model=codex task=${sig8} reason=instant_complete"
+        log "spawn(codex) instant-complete with null last_agent_message; spilling to next arm"
+        local ic_abort_rc=0
+        dispatch_abort "${token}" || ic_abort_rc=$?
+        [[ ${ic_abort_rc} -eq 0 ]] && return 7
+        return 5
+      fi
     fi
     return 0
   fi
@@ -3198,6 +3727,10 @@ Usage:
                 [--reviewer <s>] [--run-id <s>]
                 Record a Codex review verdict; refuse a duplicate diff-hash (ATOMIC).
   $SCRIPT_NAME status          Print both ledgers for this repo.
+  $SCRIPT_NAME glm-deferred [--list|--retry-all|--json]
+                List/retry/json-dump glm tasks parked after a quota refusal
+                (docs/leadv2/glm-deferred.jsonl). --retry-all re-dispatches any row whose
+                quota window has reopened; manual-only, no auto-retry daemon.
 Env: LEADV2_DISPATCH_ENFORCE=0 disables dedup (no-op/pass-through). LEADV2_DISPATCH_SPAWN=0
      disables worker launch (resolve-only). LEADV2_DISPATCH_CACHE_DIR relocates the ledgers
      (tests). LEADV2_DISPATCH_FENCE_LOG sets the fence deny-log path. LEADV2_DISPATCH_GLM_BIN
@@ -3318,6 +3851,9 @@ cmd_status() {
 
 # ── resolve (default) path ────────────────────────────────────────────────────────
 cmd_resolve() {
+  # R6: computed once for this invocation so a single dispatch never straddles two
+  # daily counter files even if it runs across a UTC-midnight boundary.
+  local _LEADV2_EXC_DAY; _LEADV2_EXC_DAY="$(date -u +%Y%m%d)"
   local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0 lane_deliverable=""
   local -a phase_waivers=()
@@ -3660,6 +4196,23 @@ journaled and surfaced in open-threads. Without a default, the task is parked
 human-needed and its slot is freed. Do not use this for routine progress or
 confirmation-seeking; only for a decision you cannot make yourself."
 
+  # BUILDER-SELFCHECK-GATE-01 (item 3): one paragraph telling every product lane it
+  # must falsify its own diff before submitting it. Guarded by the SAME kill-switch
+  # the gate itself reads (product-close.sh), so LEADV2_BUILDER_SELFCHECK=0 restores
+  # the mission text byte-for-byte, not just the gate behaviour. Appended AFTER the
+  # dedup sig is computed, same as the async-question block above -- lane dedup
+  # identity stays keyed on the caller's actual task content.
+  if [[ "${LEADV2_BUILDER_SELFCHECK:-1}" != 0 ]]; then
+    mission="${mission}
+
+Before you finish, run your own falsification set and paste its raw output into
+your final report: \`bash -n\` every shell file you changed, \`python3 -m
+py_compile\` every Python file you changed, and the repo's changed-scope test
+runner. Show the red output you got and the green output after your fix. A lane
+whose self-check is missing or red is refused before any reviewer is spent on
+it -- you will have burned the lane for nothing."
+  fi
+
   # LANE-SHAPE-01 gate (docs/specs/lane-shape.md task 2): classify solo vs line
   # BEFORE any ledger reservation or spawn. off (default) = no-op, zero behavior
   # change (spec §9 Stage 0). enforce refuses a diagnostic mission (names a
@@ -3877,6 +4430,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
   # A missing/unreadable record means "not locked" — never fail closed. Each
   # skip is journalled so a lead reading the journal sees WHY an arm was passed
   # over.
+  local _glm_quota_benched=""
   if [[ ${#candidate_arms[@]} -gt 0 ]]; then
     local -a _qpc_kept=()
     local _qpc_arm _qpc_prov
@@ -3886,6 +4440,21 @@ confirmation-seeking; only for a decision you cannot make yourself."
         _qpc_kept+=("${_qpc_arm}")
       else
         emit decision "quota_precheck_skip model=${_qpc_arm} provider=${_qpc_prov} task=${sig8} reason=provider_quota_locked class=$(_lockout_record_field "${_qpc_prov}" class)"
+        # V3-GLM-LADDER-01 C1/D3: a glm bench here is the same founder-visible event as
+        # a live glm_refused_* refusal (candidate never even got attempted) -- park +
+        # count it identically so the ladder-loop can't hide behind the precheck.
+        if [[ "${_qpc_arm}" == "glm" ]]; then
+          _glm_quota_benched="glm_refused_quota_precheck"
+          _glm_park_deferred "${sig8}" "${_glm_quota_benched}" "${mission}" || true
+          # A bench is the same founder-visible event as a live refusal (D3) --
+          # the credit watchdog must fire here too, not only from the live-refusal
+          # reroute path below, or it silently stops updating once glm starts
+          # getting benched instead of attempted-and-refused.
+          local _qpc_credits_out _qpc_credits
+          _qpc_credits_out="$(bash "${LEADV2_ROUTER_V2_BIN:-${SCRIPT_DIR}/leadv2-router-v2.sh}" resolve --chain "${_qpc_arm}" --task-id "${sig8}" 2>/dev/null)"
+          _qpc_credits="$(printf '%s\n' "${_qpc_credits_out}" | sed -n 's/^credits=//p')"
+          _codex_credits_watch "${_qpc_credits:-}" || true
+        fi
       fi
     done
     if [[ ${#_qpc_kept[@]} -eq 0 ]]; then
@@ -3982,6 +4551,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
     _v2_scores="$(python3 -c 'import json,sys; v=json.loads(sys.argv[1] or "[]"); print(json.dumps({r["arm"]:r.get("score") for r in v}, sort_keys=True, separators=(",", ":")))' "${v2_vector:-[]}" 2>/dev/null || printf '{}')"
     _v2_unknown="$(python3 -c 'import json,sys; h=json.loads(sys.argv[1]); print(",".join(sorted(k for k,v in h.items() if v is None)) or "none")' "${v2_headroom}" 2>/dev/null || printf 'none')"
     emit decision "route_headroom_chosen task=${sig8} arm=${candidate_arms[0]} after=initial ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") headroom=${v2_headroom} credits=${v2_credits:-{}} scores=${_v2_scores} source=router_v2 unknown=${_v2_unknown}"
+    # NOT ${v2_credits:-{}} -- bash misparses a {-default containing its own
+    # braces (adds a stray trailing "}"); plain expansion + the helper's own
+    # empty-string no-op does the same job safely.
+    _codex_credits_watch "${v2_credits:-}" || true
   fi
 
   # SUPERVISOR-AUDIT-01 model-stamp extension (founder 2026-07-30): stamp the
@@ -4065,6 +4638,25 @@ ${mission}"
         # pretending close evidence will arrive.  Do not kill the independently-owned worker.
         log_err "product close gate could not be launched for task=${sig8}"
       fi
+      # V3-GLM-LADDER-01 Lever 3: attempted[] (not LAST_ARM_OUTCOME) is the durable
+      # record of what was refused earlier in the loop -- by the time sonnet lands here,
+      # LAST_ARM_OUTCOME has been overwritten by sonnet's own spawn outcome.
+      if [[ "${candidate}" == "sonnet" ]]; then
+        local _attempted_entry _exc_reason=""
+        if [[ -n "${_glm_quota_benched}" ]]; then
+          _exc_reason="${_glm_quota_benched}"
+        else
+          for _attempted_entry in "${attempted[@]}"; do
+            case "${_attempted_entry}" in
+              glm_refused_quota_gate|glm_refused_postspawn_quota)
+                _exc_reason="${_attempted_entry}"
+                break
+                ;;
+            esac
+          done
+        fi
+        [[ -n "${_exc_reason}" ]] && { _arm_exception_bump "${_exc_reason}" "${sig8}" || true; }
+      fi
       emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}"
       printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}"
       # A product dispatch's terminal state is owned by dispatch-product-close.sh (it runs
@@ -4092,6 +4684,19 @@ ${mission}"
       ;;
     7)
       attempted+=("${LAST_ARM_OUTCOME:-${candidate}_refused}")
+      # V3-GLM-LADDER-01 Lever 1: park BEFORE the re-resolve/fallthrough below, so a
+      # crash between refusal and the sonnet respawn still leaves the task recoverable.
+      # Gate: candidate==glm at refusal time is already the router's own "glm-fitting"
+      # answer -- do not re-classify (design §4).
+      # D2: park + count only the quota family -- a transient refusal (e.g.
+      # glm_refused_lock_busy) parks nothing and bumps nothing.
+      if [[ "${candidate}" == "glm" ]]; then
+        case "${LAST_ARM_OUTCOME:-}" in
+          glm_refused_quota_gate|glm_refused_postspawn_quota)
+            _glm_park_deferred "${sig8}" "${LAST_ARM_OUTCOME}" "${_candidate_mission}" || true
+            ;;
+        esac
+      fi
       if [[ "${LAST_ARM_OUTCOME:-}" == "glm_refused_quota_gate" && -z "${_reordered_after_quota_gate}" && "${LEADV2_ROUTER_V2_ON_QUOTA_GATE:-1}" != "0" ]]; then
         _reordered_after_quota_gate=1
         local _qg_bin="${LEADV2_ROUTER_V2_BIN:-${SCRIPT_DIR}/leadv2-router-v2.sh}" _qg_chain _qg_out _qg_rc _qg_eligible _qg_ordered _qg_headroom _qg_vector _qg_credits
@@ -4126,6 +4731,7 @@ ${mission}"
               _qg_scores="$(python3 -c 'import json,sys; v=json.loads(sys.argv[1] or "[]"); print(json.dumps({r["arm"]:r.get("score") for r in v}, sort_keys=True, separators=(",", ":")))' "${_qg_vector:-[]}" 2>/dev/null || printf '{}')"
               _qg_unknown="$(python3 -c 'import json,sys; h=json.loads(sys.argv[1]); print(",".join(sorted(k for k,v in h.items() if v is None)) or "none")' "${_qg_headroom}" 2>/dev/null || printf 'none')"
               emit decision "route_headroom_chosen task=${sig8} arm=${candidate_arms[0]} after=glm_quota_gate ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") headroom=${_qg_headroom} credits=${_qg_credits:-{}} scores=${_qg_scores} source=router_v2 unknown=${_qg_unknown}"
+              _codex_credits_watch "${_qg_credits:-}" || true
               _quota_gate_reroute=1
               _reenter=1
               break
@@ -4407,6 +5013,7 @@ cmd_record_quota_lockout() {
 case "${1:-}" in
   record-review) shift; cmd_record_review "$@" ;;
   status)        cmd_status ;;
+  glm-deferred)  shift; cmd_glm_deferred "$@" ;;
   advance-arm)   shift; cmd_advance_arm "$@" ;;
   record-quota-lockout) shift; cmd_record_quota_lockout "$@" ;;
   sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;

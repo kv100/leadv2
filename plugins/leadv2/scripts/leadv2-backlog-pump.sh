@@ -115,6 +115,29 @@ fi
 export LEADV2_PROJECT_ROOT="$PROJECT_ROOT"
 export PROJECT_ROOT
 
+# PUMP-JUNK-IN-LANE-01: PROJECT_ROOT above is frequently a LANE WORKTREE root
+# (worker sessions run inside .claude/worktrees/<id>, and `git rev-parse
+# --show-toplevel` there returns the worktree, not the main checkout). A
+# linked worktree's `--git-common-dir` always points at the MAIN checkout's
+# .git regardless of which worktree asks, so dirname-of-that is the one true
+# main working tree; a non-worktree repo's common-dir is just "$cand/.git",
+# so dirname is the candidate itself (identity, no behaviour change there).
+# Never fails: bare/non-git candidates fall back to the candidate unchanged.
+# Bash-3.2-safe (macOS stock) -- no declare -A, no ${var@Q}. --path-format=
+# absolute is git >=2.31 only, so resolve relative-or-absolute common-dir via
+# a subshell cd chain instead of trusting the string shape.
+_lv2bp_canonical_root() {   # <candidate> -> main-worktree root on stdout
+  local cand="$1" cd_out
+  cd_out="$(cd "$cand" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && cd .. && pwd)"
+  if [[ -n "$cd_out" ]]; then
+    printf '%s' "$cd_out"
+  else
+    printf '%s' "$cand"
+  fi
+}
+CANONICAL_ROOT="$(_lv2bp_canonical_root "$PROJECT_ROOT")"
+[[ -n "$CANONICAL_ROOT" ]] || CANONICAL_ROOT="$PROJECT_ROOT"
+
 # shellcheck source=leadv2-tasks-lib.sh
 source "${SCRIPT_DIR}/leadv2-tasks-lib.sh"
 
@@ -214,9 +237,17 @@ _resolve_max_concurrent() {
 }
 MAX_CONCURRENT="$(_resolve_max_concurrent)"
 
-# Pump-owned cache + sidecar map. CACHE_DIR mirrors the empty-streak cache's
-# project-scoped ${PROJECT_ROOT}/.claude/cache location.
-CACHE_DIR="${PROJECT_ROOT}/.claude/cache/backlog-pump"
+# Pump-owned cache + sidecar map (liveness.json/.sig/.ts, lane-map dir).
+# PUMP-JUNK-IN-LANE-01: PROJECT_ROOT above is frequently a LANE WORKTREE root,
+# so a PROJECT_ROOT-relative cache dir used to fork one liveness cache PER
+# LANE and write its junk straight into the lane's own git tree --
+# false-tripping product-close's unscoped_lane_work gate (live: task
+# 6cf5d07e, 2026-08-20 07:37, offending files
+# .claude/cache/backlog-pump/liveness.{json,sig,ts}). CANONICAL_ROOT (set
+# above via _lv2bp_canonical_root) is identical from every worktree of the
+# same repo -- pin the cache there instead of PROJECT_ROOT. Env override is a
+# deliberate test seam (LEADV2_BACKLOG_PUMP_CACHE_DIR).
+CACHE_DIR="${LEADV2_BACKLOG_PUMP_CACHE_DIR:-${CANONICAL_ROOT}/.claude/cache/backlog-pump}"
 LANE_MAP_DIR="${CACHE_DIR}/backlog-pump-lane-map"
 LIVENESS_BIN="${LEADV2_BACKLOG_PUMP_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lane-liveness.sh}"
 LIVENESS_CACHE_S="${LEADV2_BACKLOG_PUMP_LIVENESS_CACHE_S:-15}"
@@ -868,7 +899,10 @@ _surface_to_founder() {  # $1=task_id $2=reason -> append to open-threads.md
 }
 
 # ── reap: detect empty-outcome close, bound the retry, never spin forever ──
-EMPTY_STREAK_DIR="${PROJECT_ROOT}/.claude/cache/backlog-pump-empty-streak"
+# PUMP-JUNK-IN-LANE-01: same class of bug as CACHE_DIR above -- pin to
+# CANONICAL_ROOT, not PROJECT_ROOT (a lane worktree).
+EMPTY_STREAK_DIR="${LEADV2_BACKLOG_PUMP_CACHE_DIR:+${LEADV2_BACKLOG_PUMP_CACHE_DIR}-empty-streak}"
+[[ -n "$EMPTY_STREAK_DIR" ]] || EMPTY_STREAK_DIR="${CANONICAL_ROOT}/.claude/cache/backlog-pump-empty-streak"
 
 cmd_reap() {
   local tid="${1:?reap requires <task_id>}"; shift || true
