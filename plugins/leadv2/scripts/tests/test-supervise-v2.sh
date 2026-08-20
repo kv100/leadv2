@@ -33,9 +33,25 @@ log()  { printf -- '[TEST] %s\n' "$*"; }
 pass() { PASS=$((PASS + 1)); log "PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
 
+# Keep every suite-lifetime fallback surface private. Individual cases retain
+# their explicit fixture roots and tmux sockets; these exports cover subject
+# paths that use the defaults before a case-specific override is supplied.
+LEADV2_SUPERVISE_TMP_ROOT="$(lv2_mktemp_dir "sv2-root")"
+# This host provides PyYAML from its Python user-site. Capture that immutable
+# dependency before changing HOME, so fixture isolation does not make the
+# subject fail to parse its YAML registry.
+LEADV2_SUPERVISE_PYTHON_USER_SITE="$(python3 -c 'import site; print(site.getusersitepackages())')"
+export HOME="$LEADV2_SUPERVISE_TMP_ROOT/home"
+export XDG_CACHE_HOME="$LEADV2_SUPERVISE_TMP_ROOT/cache"
+export LEADV2_STATE_ROOT="$LEADV2_SUPERVISE_TMP_ROOT/state"
+export LEADV2_SUPERVISE_TMUX_SOCKET="$LEADV2_SUPERVISE_TMP_ROOT/tmux"
+export PYTHONPATH="$LEADV2_SUPERVISE_PYTHON_USER_SITE${PYTHONPATH:+:$PYTHONPATH}"
+mkdir -p "$HOME/.claude/cache" "$XDG_CACHE_HOME" "$LEADV2_STATE_ROOT"
+
 CLEANUP_DIRS=()
 TMUX_SOCKETS=()
 cleanup() {
+  tmux -L "$LEADV2_SUPERVISE_TMUX_SOCKET" kill-server 2>/dev/null || true
   for s in "${TMUX_SOCKETS[@]:-}"; do
     [[ -n "$s" ]] && tmux -L "$s" kill-server 2>/dev/null || true
   done
@@ -58,7 +74,7 @@ _new_fixture() {
   # leadv2-temp.sh. Every fixture in this suite is created here; this is the
   # single choke point.
   lv2_assert_scratch_repo "$repo"
-  mkdir -p "$repo/docs/leadv2" "$repo/docs/handoff"
+  mkdir -p "$repo/docs/leadv2" "$repo/docs/handoff" "$repo/.claude/cache"
   # Trailing newline is REQUIRED: `read` (in `read -r a b < <(_new_fixture)`)
   # returns 1 on EOF-without-newline even though it populated the vars —
   # under `set -e` that silently kills the whole script via the EXIT trap.
@@ -245,9 +261,16 @@ test_3_adoption_triple_proof() {
   tmux -L "$sock" kill-window -t "leadv2:UNKNOWN-WINDOW" 2>/dev/null || true
 
   # 3b: full triple proof — window name == known task id, AND a live process
-  # descending from the pane has "claude" in its command name.
-  tmux -L "$sock" new-window -t leadv2 -n TASK-KNOWN 'exec -a claude sleep 600' 2>/dev/null \
-    || tmux -L "$sock" new-window -t leadv2 -n TASK-KNOWN 'sleep 600' 2>/dev/null
+  # descending from the pane has "claude" in its command name. `exec -a`
+  # changes argv but not macOS's `ps ... comm` value, so use a private copy
+  # of sleep named claude; this is the exact signal the subject inspects.
+  # symlink, NOT a copy: macOS SIGKILLs a copied Apple-signed binary
+  # (signature/path mismatch, rc=137), so the fake claude died instantly and
+  # 3b failed deterministically. Through a symlink the kernel execs the
+  # original signed file while ps comm reports the symlink path ("…/claude"),
+  # which is the exact substring the subject matches.
+  ln -sf "$(command -v sleep)" "$repo/claude"
+  tmux -L "$sock" new-window -t leadv2 -n TASK-KNOWN "$repo/claude 600" 2>/dev/null
   sleep 0.3
 
   local out3b adopted_b

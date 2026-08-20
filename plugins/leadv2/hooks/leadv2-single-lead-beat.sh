@@ -47,16 +47,36 @@ except Exception:
     print('')
 " 2>/dev/null || true)"
 [[ -z "$HOOK_EVENT" ]] && HOOK_EVENT="UserPromptSubmit"
+SESSION_ID="$(printf -- '%s' "$INPUT" | python3 -c "
+import sys, json
+try:
+    print(json.loads(sys.stdin.read()).get('session_id', '') or '')
+except Exception:
+    print('')
+" 2>/dev/null || true)"
+# SAFE_SID: sanitize to a filename-safe token, truncate 64 chars. Empty when
+# no session_id was on stdin — the fallback shared watermark below then
+# applies, same as before this lane (BROAD-STATUS-RELAY-SCOPE-01).
+SAFE_SID="$(printf -- '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')"
+SAFE_SID="${SAFE_SID:0:64}"
 
 if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -f "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-state-path.sh" ]]; then
   RESOLVER="${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-state-path.sh"
   PULSE_BEAT_SH="${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-pulse-beat.sh"
+  BEAT_OWNER_SH="${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-beat-owner.sh"
 else
   _LV2_D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   RESOLVER="${_LV2_D}/../scripts/leadv2-state-path.sh"
   PULSE_BEAT_SH="${_LV2_D}/../scripts/leadv2-pulse-beat.sh"
+  BEAT_OWNER_SH="${_LV2_D}/../scripts/leadv2-beat-owner.sh"
 fi
 [[ -x "$RESOLVER" ]] || exit 0
+if [[ -f "$BEAT_OWNER_SH" ]]; then
+  # shellcheck source=/dev/null
+  source "$BEAT_OWNER_SH"
+else
+  printf -- '[single-lead-beat] beat-owner resolver missing: %s\n' "$BEAT_OWNER_SH" >&2
+fi
 
 PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$CWD_FROM_INPUT}"
 LOG_FILE="$(PROJECT_ROOT="$PROJECT_ROOT" "$RESOLVER" --no-link supervise-loop.log 2>/dev/null || true)"
@@ -64,8 +84,49 @@ LOG_FILE="$(PROJECT_ROOT="$PROJECT_ROOT" "$RESOLVER" --no-link supervise-loop.lo
 
 STATE_DIR="$(PROJECT_ROOT="$PROJECT_ROOT" "$RESOLVER" --no-link root 2>/dev/null || true)"
 [[ -z "$STATE_DIR" ]] && STATE_DIR="${PROJECT_ROOT}/docs/leadv2"
-DELIVERED_FILE="${STATE_DIR}/.pulse-delivered"
-BODY_HASH_FILE="${STATE_DIR}/.pulse-body-hash"
+# BROAD-STATUS-RELAY-SCOPE-01: per-session watermarks (R1) — the first
+# session to fire a hook must not consume the beat for every other session.
+# When session_id was absent from stdin, fall back to the pre-scope shared
+# names so an old/degraded hook payload keeps today's behaviour.
+if [[ -n "$SAFE_SID" ]]; then
+  DELIVERED_FILE="${STATE_DIR}/.pulse-delivered.${SAFE_SID}"
+  BODY_HASH_FILE="${STATE_DIR}/.pulse-body-hash.${SAFE_SID}"
+else
+  DELIVERED_FILE="${STATE_DIR}/.pulse-delivered"
+  BODY_HASH_FILE="${STATE_DIR}/.pulse-body-hash"
+fi
+# M5: the `find -delete` sweep used to run on every single hook fire
+# (PostToolUse included) -- gate it behind a once-per-day stamp so the
+# 99.99% path is pure-bash with no `find` at all.
+GC_DAY_FILE="${STATE_DIR}/.pulse-gc-day"
+TODAY="$(date +%Y%m%d 2>/dev/null || true)"
+LAST_GC_DAY=""
+[[ -f "$GC_DAY_FILE" ]] && LAST_GC_DAY="$(cat "$GC_DAY_FILE" 2>/dev/null || true)"
+if [[ -n "$TODAY" && "$TODAY" != "$LAST_GC_DAY" ]]; then
+  printf -- '%s' "$TODAY" > "${GC_DAY_FILE}.tmp.$$" 2>/dev/null \
+    && mv -f "${GC_DAY_FILE}.tmp.$$" "$GC_DAY_FILE" 2>/dev/null || true
+  find "$STATE_DIR" -maxdepth 1 \
+    \( -name '.pulse-delivered.*' -o -name '.pulse-body-hash.*' -o -name '.pulse-session.*' \) \
+    -mtime +7 -delete 2>/dev/null || true
+fi
+
+# HIGH-1: stamp this session's own liveness on EVERY fire, before role
+# resolution -- the resolver's owner-freshness check depends on this file
+# existing and being recent for whichever session currently owns the beat.
+if [[ -n "$SAFE_SID" ]]; then
+  SESSION_ALIVE_FILE="${STATE_DIR}/.pulse-session.${SAFE_SID}"
+  printf -- '%s' "$(date +%s 2>/dev/null || echo 0)" > "${SESSION_ALIVE_FILE}.tmp.$$" 2>/dev/null \
+    && mv -f "${SESSION_ALIVE_FILE}.tmp.$$" "$SESSION_ALIVE_FILE" 2>/dev/null || true
+fi
+
+BEAT_S="${LEADV2_SINGLE_LEAD_BEAT_S:-1800}"
+[[ "$BEAT_S" =~ ^[0-9]+$ ]] || BEAT_S=1800
+ROLE="unresolved"
+if command -v leadv2_beat_role >/dev/null 2>&1; then
+  export LEADV2_PROJECT_ROOT="$PROJECT_ROOT"
+  ROLE="$(leadv2_beat_role "$SAFE_SID" "$STATE_DIR" "$BEAT_S" 2>/dev/null || true)"
+  [[ "$ROLE" == "owner" || "$ROLE" == "guest" ]] || ROLE="unresolved"
+fi
 
 FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-${PROJECT_ROOT}/docs/leadv2/founder-status.md}"
 
@@ -86,7 +147,15 @@ if [[ -f "$LOG_FILE" ]]; then
       PREV_BODY_HASH=""
       [[ -f "$BODY_HASH_FILE" ]] && PREV_BODY_HASH="$(cat "$BODY_HASH_FILE" 2>/dev/null || true)"
       if [[ -n "$BODY_HASH" && "$BODY_HASH" != "$PREV_BODY_HASH" ]]; then
-        CTX="$READY_LINE"
+        if [[ "$ROLE" == "guest" ]]; then
+          # Exactly one line, no ready-line body, no BROAD_STATUS_READY
+          # bytes — so the task-anchor's verbatim-relay rule cannot latch.
+          CTX="${AT} [BROAD_STATUS] at=${AT} path=docs/leadv2/founder-status.md — full status in owning session (RELAY=none); do not read founder-status.md; relay only this line. The relay is an aside, not the turn's work: execute any founder command in this same turn after it — never end the turn on the relay alone."
+        else
+          CTX="${READY_LINE}
+RELAY=full — paste docs/leadv2/founder-status.md verbatim; compare its line-1 stamp with the beat above before relaying.
+The relay is an aside, not the turn's work: if the founder's message contains a command or task, execute it in this same turn after the relay — never end the turn on the relay alone."
+        fi
         printf -- '%s' "$BODY_HASH" > "${BODY_HASH_FILE}.tmp.$$" 2>/dev/null \
           && mv -f "${BODY_HASH_FILE}.tmp.$$" "$BODY_HASH_FILE" 2>/dev/null || true
       fi
@@ -100,7 +169,8 @@ fi
 
 # ── 2. TRIGGER ───────────────────────────────────────────────────────────
 if [[ -x "$PULSE_BEAT_SH" ]]; then
-  LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "$PULSE_BEAT_SH" --check >/dev/null 2>&1 &
+  LEADV2_PROJECT_ROOT="$PROJECT_ROOT" LEADV2_BEAT_OWNER_SESSION="$SAFE_SID" \
+    bash "$PULSE_BEAT_SH" --check >/dev/null 2>&1 &
   disown 2>/dev/null || true
 fi
 

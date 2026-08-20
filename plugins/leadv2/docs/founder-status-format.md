@@ -29,7 +29,7 @@ Founder correction, 2026-08-17: an earlier pass compressed the queue into a sing
 "because a pulse is a delta". He asked twice for the full layout, so **the full layout is the
 format**. Render, in this order, as a numbered list broken into named sections:
 
-- **Очередь — по влиянию на 60/6**
+- **Очередь — по влиянию** (header overridable per-repo via `.claude/leadv2-overrides/queue-impact-label.txt`, e.g. persona-engine's «по влиянию на 60/6»)
   - **Первый эшелон (корни)** — the few items that actually move 60 comments / 6 posts a day. Each
     one sentence, and each says *why it is a root*, not what file it touches.
   - **Второй эшелон (после корней)** — what becomes possible once the roots land.

@@ -49,6 +49,21 @@ LEADV2_LOCK="$LEADV2_PROJECT_ROOT/docs/.leadv2.lock"
 LEADV2_LIVE="$LEADV2_PROJECT_ROOT/docs/LEAD_V2_LIVE.md"
 LEADV2_HANDOFF_DIR="$LEADV2_PROJECT_ROOT/docs/handoff"
 
+# ── Evidence-contract mission text (CLAIM-EVIDENCE-GATE-01 round 2, H2) ──
+# Canonical mission-side copy of the EVIDENCE CONTRACT text so every
+# dispatch arm (glm/codex/kimi via leadv2-dispatch-code.sh, and the direct
+# glm-coder.sh path) carries the same reader-facing contract the claude-arm
+# prefix already carries (claude-subsession.sh SHARED_PROTOCOL_BOILERPLATE).
+# Round 1 shipped the review-side rule (leadv2-review-run.sh blocks untagged
+# claims) with no reader on the writing side for non-claude arms — this is
+# the fix. Not an env var, not exported, not a config knob: a plain
+# readonly shell string. No double-quote or backtick in the text — it flows
+# into double-quoted shell strings and into codex argv.
+# shellcheck disable=SC2034  # consumed by leadv2-dispatch-code.sh / glm-coder.sh callers
+if [[ -z "${_LEADV2_EVIDENCE_CONTRACT_MISSION:-}" ]]; then
+readonly _LEADV2_EVIDENCE_CONTRACT_MISSION="EVIDENCE CONTRACT: every factual claim you write about an external system or API (endpoint behaviour, rate limit, auth flow, schema, provider quirk, version) must be immediately followed by its probe artifact — a curl/CLI invocation with its output, a log excerpt, or a doc URL plus the live check that confirmed it. If you have no artifact, prefix the claim with the literal token UNVERIFIED: — an untagged evidence-free external-system claim is a protocol violation, and round-1 reviewers treat one that drives a decision as BLOCKING."
+fi
+
 # ── Script resolver (A2/A3 transition indirection) ───────────────────────
 # lv2_script BASENAME  — echoes the first existing path among:
 #   1. $CLAUDE_PLUGIN_ROOT/scripts/$1   (plugin canonical, preferred)

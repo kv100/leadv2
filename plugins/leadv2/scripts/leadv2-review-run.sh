@@ -319,7 +319,7 @@ run_reviewer_arm() { # <arm>
       return
     fi
     bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base "${codex_base}" --wait --cwd "${ROOT}" \
-      --focus "Review ONLY the diff at ${DIFF_FILE}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract} Authoritative surfaces for this repo: \`.claude/CLAUDE.md\`, \`docs/reference/ENGINE-REFERENCE.md\`, \`docs/systems-map/CONTROL-TRUTH.md\`, \`docs/systems-map/TRUTH-TABLE.md\`, \`docs/BOARD.md\`. Read only the ones the diff touches. Treat any \`docs/specs/*.md\` as possibly stale unless corroborated by code. Before promoting a Codex finding, corroborate it against those surfaces; drop or downgrade any finding whose sole basis is a \`docs/specs/*.md\` claim." \
+      --focus "Review ONLY the diff at ${DIFF_FILE}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract_focus} Authoritative surfaces for this repo: \`.claude/CLAUDE.md\`, \`docs/reference/ENGINE-REFERENCE.md\`, \`docs/systems-map/CONTROL-TRUTH.md\`, \`docs/systems-map/TRUTH-TABLE.md\`, \`docs/BOARD.md\`. Read only the ones the diff touches. Treat any \`docs/specs/*.md\` as possibly stale unless corroborated by code. Before promoting a Codex finding, corroborate it against those surfaces; drop or downgrade any finding whose sole basis is a \`docs/specs/*.md\` claim." \
       > "${review_out}" 2> "${review_err}"; review_rc=$?
   elif [[ "${arm}" == glm ]]; then
     printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
@@ -439,6 +439,286 @@ next_ok_arm_after() { # <after-arm>  reads ${pool}
 }
 
 # ---------------------------------------------------------------------------
+# 5b. REVIEW-ROUND1-EXHAUSTIVE-01: round detection + mission-text assembly.
+#     Round 1 (no prior real verdict, or a stale/unrelated sidecar) is an
+#     exhaustive multi-lens pass. Round 2+ (a prior FAIL/PASS verdict exists
+#     for a diff that has since changed) is verification-only: the reviewer
+#     checks whether each prior finding was fixed and admits a new finding
+#     only if the fixes introduced it. See design §3 truth table — verify_only
+#     requires positive evidence on every axis; anything missing falls back to
+#     exhaustive, which is always safe.
+# ---------------------------------------------------------------------------
+_review_diff_hash() { # -> stdout "ok=0|1\n[hash]"; sets nothing (subshell-safe: caller parses)
+  if [[ ! -f "${DIFF_FILE}" ]]; then
+    printf 'ok=0\n'
+    printf 'leadv2-review-run: diff file missing or unreadable: %s\n' "${DIFF_FILE}" >&2
+    return 0
+  fi
+  local hash
+  hash="$(shasum -a 256 "${DIFF_FILE}" | awk '{print $1}')"
+  if [[ -n "${hash}" ]]; then
+    printf 'ok=1\n%s' "${hash}"
+  else
+    printf 'ok=0\n'
+  fi
+}
+
+# _review_prior_findings_body <round> -> stdout = "count=<N>\n<rendered body>"
+# (body capped at 40 lines / 300 chars each). Line 1 is always the count
+# sentinel — the caller (a command-substitution subshell boundary) parses it
+# back into PRIOR_FINDINGS_COUNT rather than relying on a global set inside
+# this function (H2: that global never survived the subshell). count=0 means
+# "nothing to verify" (design §3 row: real verdict, 0 findings -> exhaustive).
+_review_prior_findings_body() {
+  local round="$1"
+  local json="${HANDOFF}/review-findings.round${round}.json"
+  local gate="${HANDOFF}/review-gate.round${round}.md"
+  local -a lines=()
+
+  if [[ -f "${json}" ]] && command -v python3 >/dev/null 2>&1; then
+    while IFS= read -r _pfline; do
+      [[ -n "${_pfline}" ]] && lines+=("${_pfline}")
+    done < <(python3 - "${json}" 2>/dev/null <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+for f in data.get("findings", []):
+    sev = f.get("severity", "")
+    dim = f.get("dimension", "")
+    file = f.get("file", "")
+    ln = f.get("line", "")
+    desc = f.get("desc", "")
+    print("- [%s/%s] %s:%s %s" % (sev, dim, file, ln, desc))
+PY
+    )
+  fi
+
+  if [[ "${#lines[@]}" -eq 0 && -f "${gate}" ]]; then
+    while IFS= read -r _fline; do
+      lines+=("- ${_fline#FINDING: }")
+    done < <(grep -E '^FINDING:' "${gate}" 2>/dev/null)
+  fi
+
+  local count="${#lines[@]}"
+  if [[ "${count}" -eq 0 ]]; then
+    printf 'count=0\n'
+    return 0
+  fi
+
+  local cap=40 truncated=0
+  if [[ "${count}" -gt "${cap}" ]]; then
+    truncated=1
+    lines=("${lines[@]:0:${cap}}")
+  fi
+
+  local _l _out=""
+  for _l in "${lines[@]}"; do
+    [[ "${#_l}" -gt 300 ]] && _l="${_l:0:300}"
+    _out+="${_l}"$'\n'
+  done
+  if [[ "${truncated}" -eq 1 ]]; then
+    _out+="(… capped, see docs/handoff/dispatch-${TASK}/review-gate.round${round}.md)"$'\n'
+  fi
+  printf 'count=%s\n%s' "${count}" "${_out}"
+}
+
+# _review_highest_snapshot_round -> stdout = max N over existing
+# review-gate.round<N>.md / review-findings.round<N>.json filenames in
+# HANDOFF; 0 when none exist. Non-numeric filename remnants are ignored (M2).
+_review_highest_snapshot_round() {
+  local max=0 f n
+  for f in "${HANDOFF}"/review-gate.round*.md "${HANDOFF}"/review-findings.round*.json; do
+    [[ -f "${f}" ]] || continue
+    n="$(basename "${f}")"
+    n="${n#review-gate.round}"
+    n="${n#review-findings.round}"
+    n="${n%.md}"
+    n="${n%.json}"
+    [[ "${n}" =~ ^[0-9]+$ ]] || continue
+    [[ "${n}" -gt "${max}" ]] && max="${n}"
+  done
+  printf '%s' "${max}"
+}
+
+# _review_parse_findings <round> -> sets globals PRIOR_FINDINGS_COUNT (int)
+# and findings_body (may be empty). Parses the count=<N> sentinel that
+# _review_prior_findings_body emits as its first line (see H2 note above);
+# the sentinel must never leak past this point into PRIOR_FINDINGS_BODY.
+_review_parse_findings() {
+  local round="$1"
+  local _raw _first
+  _raw="$(_review_prior_findings_body "${round}")"
+  _first="${_raw%%$'\n'*}"
+  if [[ "${_first}" == count=* ]]; then
+    PRIOR_FINDINGS_COUNT="${_first#count=}"
+    if [[ "${_raw}" == *$'\n'* ]]; then
+      findings_body="${_raw#*$'\n'}"
+    else
+      findings_body=""
+    fi
+  else
+    PRIOR_FINDINGS_COUNT=0
+    findings_body=""
+  fi
+  [[ "${PRIOR_FINDINGS_COUNT}" =~ ^[0-9]+$ ]] || PRIOR_FINDINGS_COUNT=0
+}
+
+# _review_round_context -> sets REVIEW_ROUND (int>=1), REVIEW_MODE
+# (exhaustive|verify_only), PRIOR_FINDINGS_BODY (may be empty),
+# PRIOR_FINDINGS_COUNT (int). Side effect: refreshes the numbered snapshot
+# (review-gate.round<N>.md / review-findings.round<N>.json) whenever it is
+# missing or differs from the live gate — never removes/renames the live
+# gate. rc always 0 — this must never block a review.
+#
+# H1 fix: the round number is now MONOTONIC — computed once from
+# max(sidecar round, highest existing snapshot round), instead of trusting
+# the sidecar round alone, which regressed to a lower number whenever an
+# intervening run wrote a stale/lower sidecar. The one case that does NOT
+# advance the round is a re-review of the EXACT SAME diff that produced the
+# current prior round (confirmed via the diff hash, not just "a round file
+# exists") — re-running review against unchanged work must not grow the round
+# forever; it degrades to exhaustive at the frozen round instead.
+_review_round_context() {
+  REVIEW_ROUND=1
+  REVIEW_MODE="exhaustive"
+  PRIOR_FINDINGS_BODY=""
+  PRIOR_FINDINGS_COUNT=0
+
+  local state="${HANDOFF}/.review-round.state"
+  local sidecar_round="" sidecar_diff=""
+  if [[ -f "${state}" ]]; then
+    sidecar_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
+    sidecar_diff="$(sed -n 's/^diff=//p' "${state}" | head -n1)"
+  fi
+  # M2: a corrupt/non-numeric sidecar round degrades to "absent", not a crash.
+  [[ "${sidecar_round}" =~ ^[0-9]+$ && "${sidecar_round}" -le 999 ]] || sidecar_round=""
+
+  local gate="${HANDOFF}/review-gate.md"
+  local gate_status=""
+  [[ -f "${gate}" ]] && gate_status="$(sed -n 's/^status:[[:space:]]*//p' "${gate}" | head -n1)"
+  local is_real_verdict=0
+  [[ "${gate_status}" == "fail" || "${gate_status}" == "pass" ]] && is_real_verdict=1
+
+  if [[ "${is_real_verdict}" -eq 1 && -n "${sidecar_round}" ]]; then
+    local snap_gate="${HANDOFF}/review-gate.round${sidecar_round}.md"
+    local snap_findings="${HANDOFF}/review-findings.round${sidecar_round}.json"
+    cmp -s "${gate}" "${snap_gate}" 2>/dev/null || cp -f "${gate}" "${snap_gate}" 2>/dev/null || true
+    if [[ -f "${HANDOFF}/review-findings.json" ]]; then
+      cmp -s "${HANDOFF}/review-findings.json" "${snap_findings}" 2>/dev/null || cp -f "${HANDOFF}/review-findings.json" "${snap_findings}" 2>/dev/null || true
+    fi
+  fi
+
+  local highest_snap
+  highest_snap="$(_review_highest_snapshot_round)"
+  local prior_round=0
+  [[ -n "${sidecar_round}" && "${sidecar_round}" -gt "${prior_round}" ]] && prior_round="${sidecar_round}"
+  [[ "${highest_snap}" -gt "${prior_round}" ]] && prior_round="${highest_snap}"
+
+  local findings_body=""
+
+  # Test seam / operator escape hatch: force a mode regardless of on-disk
+  # state. LEADV2_REVIEW_ROUND=2 no longer forces verify_only unconditionally
+  # (H3): an empty prior-findings body still falls back to exhaustive.
+  if [[ "${LEADV2_REVIEW_ROUND:-}" == "1" ]]; then
+    REVIEW_ROUND=1; REVIEW_MODE="exhaustive"
+    return 0
+  fi
+  if [[ "${LEADV2_REVIEW_ROUND:-}" == "2" ]]; then
+    _review_parse_findings "${prior_round:-1}"
+    REVIEW_ROUND=$(( prior_round > 1 ? prior_round + 1 : 2 ))
+    if [[ -z "${findings_body}" ]]; then
+      REVIEW_MODE="exhaustive"
+      PRIOR_FINDINGS_BODY=""
+    else
+      REVIEW_MODE="verify_only"
+      PRIOR_FINDINGS_BODY="${findings_body}"
+    fi
+    return 0
+  fi
+
+  if [[ "${is_real_verdict}" -eq 0 || "${prior_round}" -eq 0 ]]; then
+    return 0
+  fi
+
+  # Frozen-round case: this exact diff already produced the current prior
+  # round's real verdict — nothing new to look at, so the round does not
+  # advance (T3 / T10's mid-repro "re-review the unchanged diff" step).
+  if [[ "${REVIEW_DIFF_HASH_OK:-0}" -eq 1 && -n "${sidecar_diff}" && "${sidecar_diff}" == "${diff_hash:0:8}" ]]; then
+    REVIEW_ROUND="${prior_round}"
+    REVIEW_MODE="exhaustive"
+    return 0
+  fi
+
+  # Diff has changed (or its hash is unknown/unverifiable) since the prior
+  # round -> this is new content, so the round advances.
+  REVIEW_ROUND=$((prior_round + 1))
+
+  _review_parse_findings "${prior_round}"
+  if [[ -z "${findings_body}" || "${REVIEW_DIFF_HASH_OK:-0}" -ne 1 ]]; then
+    REVIEW_MODE="exhaustive"
+    PRIOR_FINDINGS_COUNT=0
+    return 0
+  fi
+
+  REVIEW_MODE="verify_only"
+  PRIOR_FINDINGS_BODY="${findings_body}"
+  return 0
+}
+
+# _review_state_write -> rc0 always. Writes .review-round.state atomically,
+# clamping the on-disk round so it can never decrease (H1 belt-and-suspenders:
+# even a forced LEADV2_REVIEW_ROUND=1 run cannot regress a higher round already
+# on disk). Skips the write entirely when the diff hash could not be computed
+# (M1) — a round file must never be written from an unknown/empty diff hash.
+_review_state_write() {
+  [[ "${REVIEW_DIFF_HASH_OK:-0}" -eq 1 ]] || return 0
+  local state="${HANDOFF}/.review-round.state"
+  local existing_round=0
+  if [[ -f "${state}" ]]; then
+    existing_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
+    [[ "${existing_round}" =~ ^[0-9]+$ ]] || existing_round=0
+  fi
+  local write_round="${REVIEW_ROUND}"
+  [[ "${existing_round}" -gt "${write_round}" ]] && write_round="${existing_round}"
+  { printf 'round=%s\ndiff=%s\n' "${write_round}" "${diff_hash:0:8}" > "${state}.tmp" \
+    && mv -f "${state}.tmp" "${state}"; } 2>/dev/null || true
+  return 0
+}
+
+# _review_build_contract -> stdout = full mission contract text for the
+# current REVIEW_MODE/REVIEW_ROUND/PRIOR_FINDINGS_BODY. Always ends with the
+# four unchanged verbatim-format contract lines so every downstream parser
+# (parse_review_verdict, leadv2-review-findings.sh) is unaffected.
+_review_build_contract() {
+  if [[ "${REVIEW_MODE}" == "verify_only" ]]; then
+    printf 'VERIFICATION-ONLY ROUND %s\n\n' "${REVIEW_ROUND}"
+    printf 'This diff already went through review. Below are the prior findings from the previous round.\n'
+    printf 'For each one, verify by execution whether each prior finding below is fixed.\n'
+    printf 'Admit a NEW finding ONLY if the fixes introduced it. Do not re-litigate pre-existing issues you were not asked to verify.\n\n'
+    printf 'Prior findings:\n%s\n' "${PRIOR_FINDINGS_BODY}"
+    printf '\n%s' "${_review_contract_base}"
+  else
+    printf 'EXHAUSTIVE ROUND %s\n\n' "${REVIEW_ROUND}"
+    printf 'Review this diff through FIVE lenses:\n'
+    printf '1. correctness\n2. tests-can-fail (falsification)\n3. product-invariant/contract\n4. census\n5. claims-without-evidence\n\n'
+    printf 'Census rule: if you find one instance of a defect shape, enumerate ALL same-shape instances in the touched files before returning.\n'
+    printf 'Claims-without-evidence rule: enumerate every factual claim about an external system or API made in the diff, its comments, or the deliverable. Each must carry inline evidence (probe output, log excerpt, doc link plus live check) or the literal tag UNVERIFIED. An untagged evidence-free claim that DRIVES a decision -- a code path, a config value, a limit, a retry policy -- is a BLOCKING finding. A tagged one is MEDIUM at most.\n\n'
+    printf 'Report EVERYTHING you find in this one pass. Never stop at the first 1-3 findings.\n\n'
+    printf '%s' "${_review_contract_base}"
+  fi
+}
+
+# _review_flatten <text> -> stdout = <text> collapsed to one line (newlines
+# and runs of spaces collapsed). Used ONLY for the codex --focus argument,
+# which is a single shell word (R6) — the new mission text must never contain
+# `"` or a backtick, enforced by the offline test suite.
+_review_flatten() {
+  printf '%s' "$1" | tr '\n' ' ' | tr -s ' '
+}
+
+# ---------------------------------------------------------------------------
 # 6. Fan-out helpers (new — design §2 step 3/4)
 # ---------------------------------------------------------------------------
 
@@ -520,7 +800,28 @@ review_adir="${ROOT}/docs/handoff/dispatch-${TASK}-review"
 mkdir -p "${review_adir}" 2>/dev/null || true
 REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
 touch "${REVIEW_STAMP}" 2>/dev/null || true
-review_contract=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.\nAlso report every Critical/High finding on its own line, exact format:\nFINDING: severity=<Critical|High> file=<path> line=<n> dimension=<correctness|security|design|perf> desc=<one line>'
+_review_contract_base=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.\nAlso report every Critical/High finding on its own line, exact format:\nFINDING: severity=<Critical|High> file=<path> line=<n> dimension=<correctness|security|design|perf> desc=<one line>'
+
+# REVIEW-ROUND1-EXHAUSTIVE-01: diff hash hoisted here (was computed later, at
+# the old line ~546) so round detection — which must run before pool resolve
+# (R1: even the `status: unreviewed` exit below writes a gate) — has it
+# available. The old post-pool-resolve computation is removed; nothing else
+# reads diff_hash before this point.
+# _review_diff_hash_raw carries an "ok=0|1" sentinel on its first line — the
+# raw hash is only trustworthy when ok=1 (M1: an empty/unreadable diff must
+# never silently look like a valid, unchanged hash).
+_review_diff_hash_raw="$(_review_diff_hash)"
+if [[ "${_review_diff_hash_raw%%$'\n'*}" == "ok=1" ]]; then
+  REVIEW_DIFF_HASH_OK=1
+  diff_hash="${_review_diff_hash_raw#*$'\n'}"
+else
+  REVIEW_DIFF_HASH_OK=0
+  diff_hash=""
+fi
+_review_round_context
+review_contract="$(_review_build_contract)"
+review_contract_focus="$(_review_flatten "${review_contract}")"
+emit decision "review_round task=${TASK} round=${REVIEW_ROUND} mode=${REVIEW_MODE} prior_findings=${PRIOR_FINDINGS_COUNT:-0}"
 
 # Step 2: pool resolve.
 resolver_out="$(resolve_review_pool_call)"
@@ -542,8 +843,6 @@ if [[ -z "${reviewer}" ]]; then
   emit decision "review_gate task=${TASK} status=unreviewed reason=all_arms_unavailable author=${AUTHOR} pool=${pool} refusal=${refusal} tried="
   exit 9
 fi
-
-diff_hash="$(shasum -a 256 "${DIFF_FILE}" | awk '{print $1}')"
 
 # Step 3/4: fan-out list — first REVIEW_FANOUT distinct :ok: arms, dedup guard (A4).
 fanout_list=()
@@ -834,6 +1133,7 @@ if [[ "${verdict}" == FAIL ]]; then
       "${reviewer_primary}" "docs/handoff/dispatch-${TASK}/review-${reviewer_primary}.md" || true
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  _review_state_write
   _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
   emit decision "review_gate task=${TASK} status=fail critical=${FINDINGS_CRITICAL_TOTAL} high=${FINDINGS_HIGH_TOTAL}${_rgf_dnm}"
   exit 7
@@ -846,6 +1146,7 @@ fi
     "${reviewer_primary}" "docs/handoff/dispatch-${TASK}/review-${reviewer_primary}.md" || true
 } > "${HANDOFF}/review-gate.md.tmp"
 mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+_review_state_write
 _rgf_dnm=""; [[ "${RGF_DO_NOT_MERGE:-0}" == "1" ]] && _rgf_dnm=" do_not_merge=1"
 emit decision "review_gate task=${TASK} status=pass diff=${diff_hash:0:8} arms=${ARMS_CSV}${_rgf_dnm}"
 exit 0

@@ -206,16 +206,56 @@ else
 fi
 
 # ================================================================
-# 20. hooks.json is valid JSON and hook is registered
+# 20. hooks.json is valid JSON and the guard is reachable from a
+#     registered entry point (post-7ea5816: the 13 discrete
+#     PreToolUse[Bash] hooks were merged into a single trigger-manifest
+#     dispatcher, leadv2-bash-pre-dispatch.sh, which now names
+#     leadv2-block-fg-dispatch.sh internally rather than hooks.json
+#     naming it directly).
+#
+#     Round-2 HIGH-1 fix: a plain `grep -q leadv2-block-fg-dispatch.sh
+#     "$DISPATCHER"` is satisfied by a COMMENT mentioning the guard name
+#     (the dispatcher's own header comments name every guard). That is not
+#     registration. Assert two independent, stronger properties instead:
+#     (a) the guard name is field 1 of a parsed MANIFEST record — a comment
+#     can never satisfy this because comments live outside the extracted
+#     MANIFEST='...' block; (b) the guard is actually SELECTED at runtime
+#     for a command matching its own trigger regex, via
+#     LEADV2_DISPATCH_TRACE=1.
 # ================================================================
+DISPATCHER="$PLUGIN_ROOT/hooks/leadv2-bash-pre-dispatch.sh"
+manifest_registered() {
+  # Extract the MANIFEST='...' block and parse it as script|trigger records;
+  # assert the guard is field 1 of some record (not merely present as text).
+  sed -n "/^MANIFEST='/,/'\$/p" "$DISPATCHER" \
+    | sed "1s/^MANIFEST='//" \
+    | sed '$ s/'"'"'$//' \
+    | awk -F'|' '$1=="leadv2-block-fg-dispatch.sh" { found=1 } END { exit !found }'
+}
 if python3 -m json.tool "$HOOKS_JSON" >/dev/null 2>&1; then
-  if grep -q 'leadv2-block-fg-dispatch.sh' "$HOOKS_JSON"; then
-    pass "hooks.json valid and hook registered"
+  if grep -q 'leadv2-bash-pre-dispatch.sh' "$HOOKS_JSON"; then
+    if [ -f "$DISPATCHER" ] && manifest_registered; then
+      pass "hooks.json valid and hook field-parsed as a MANIFEST record"
+    else
+      fail "hook not found as a parsed MANIFEST record (script|trigger) in the dispatcher"
+    fi
   else
-    fail "hook not found in hooks.json"
+    fail "hook dispatcher not registered in hooks.json"
   fi
 else
   fail "hooks.json is invalid JSON"
+fi
+
+# 20b. Reachability: run the dispatcher with LEADV2_DISPATCH_TRACE=1 against
+# a command matching the guard's own trigger regex; the guard name must
+# appear on stderr, proving it is SELECTED at runtime (not just registered
+# on paper).
+trace_payload="$(make_payload 'bash leadv2-dispatch-code.sh @mission.md')"
+trace_out="$(printf '%s' "$trace_payload" | LEADV2_DISPATCH_TRACE=1 bash "$DISPATCHER" 2>&1 >/dev/null || true)"
+if grep -q 'leadv2-block-fg-dispatch.sh' <<<"$trace_out"; then
+  pass "guard selected at runtime for a trigger-matching command (LEADV2_DISPATCH_TRACE=1)"
+else
+  fail "guard should be selected at runtime (trace output: $trace_out)"
 fi
 
 # ================================================================

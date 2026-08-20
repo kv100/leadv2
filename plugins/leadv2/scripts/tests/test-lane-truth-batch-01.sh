@@ -192,10 +192,12 @@ else
   printf '[TEST] FAIL: Row 3: dry-run must not write quarantine\n' >&2; fail=$((fail+1))
 fi
 
-# Real run: quarantine copy created with the fix
+# Real run: quarantine copy created with the fix. --write is required here
+# since DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01 (07d8c56) flipped the script's
+# default to dry-run — a bare invocation no longer writes anything.
 env -u LEADV2_PROJECT_ROOT -u LEADV2_STATE_ROOT -u PROJECT_ROOT \
   HOME="$home" LEADV2_CANONICAL_ROOT="$canon" LEADV2_QUARANTINE_ROOT="$QUARANTINE_ROOT" \
-  bash "$PLUGIN_SYNC" 2>"$tmp/sync-stderr-real.log" || true
+  bash "$PLUGIN_SYNC" --write 2>"$tmp/sync-stderr-real.log" || true
 
 quarantined="$(find "$QUARANTINE_ROOT" -name 'leadv2-test-target.sh' -type f 2>/dev/null | head -1)"
 if [[ -n "$quarantined" ]]; then
@@ -213,7 +215,7 @@ qcount_before="$(find "$QUARANTINE_ROOT" -name 'leadv2-test-target.sh' -type f 2
 for _ in 1 2 3; do
   env -u LEADV2_PROJECT_ROOT -u LEADV2_STATE_ROOT -u PROJECT_ROOT \
     HOME="$home" LEADV2_CANONICAL_ROOT="$canon" LEADV2_QUARANTINE_ROOT="$QUARANTINE_ROOT" \
-    bash "$PLUGIN_SYNC" 2>/dev/null || true
+    bash "$PLUGIN_SYNC" --write 2>/dev/null || true
 done
 qcount_after="$(find "$QUARANTINE_ROOT" -name 'leadv2-test-target.sh' -type f 2>/dev/null | wc -l | tr -d ' ')"
 if [[ "$qcount_after" -eq "$qcount_before" ]]; then
@@ -226,7 +228,7 @@ fi
 printf '#!/usr/bin/env bash\necho "fixed v3 entirely different"\n' > "$user_scripts/leadv2-test-target.sh"
 env -u LEADV2_PROJECT_ROOT -u LEADV2_STATE_ROOT -u PROJECT_ROOT \
   HOME="$home" LEADV2_CANONICAL_ROOT="$canon" LEADV2_QUARANTINE_ROOT="$QUARANTINE_ROOT" \
-  bash "$PLUGIN_SYNC" 2>/dev/null || true
+  bash "$PLUGIN_SYNC" --write 2>/dev/null || true
 qcount_v3="$(find "$QUARANTINE_ROOT" -name 'leadv2-test-target.sh' -type f 2>/dev/null | wc -l | tr -d ' ')"
 if [[ "$qcount_v3" -gt "$qcount_after" ]]; then
   printf '[TEST] PASS: Row 3 convergence: changed content produces new quarantine (%s → %s)\n' "$qcount_after" "$qcount_v3"; pass=$((pass+1))

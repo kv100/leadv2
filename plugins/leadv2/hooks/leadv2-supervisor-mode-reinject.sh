@@ -136,8 +136,9 @@ contract). You are the SUPERVISOR, not a hand-orchestrator.
 
 Status beat: every ~30 min leadv2-broad-status.sh appends a [BROAD_STATUS]
 block to the supervise loop log and emits one BROAD_STATUS_READY line. Relay
-when your URGENT-filtered watcher wakes you on it: paste
-docs/leadv2/founder-status.md verbatim; never compose one. Narration is
+when your URGENT-filtered watcher wakes you on it — RELAY=full: paste
+docs/leadv2/founder-status.md verbatim, never compose one; RELAY=none: relay
+only that single beat line, verbatim, and do not read the file. Narration is
 model-generated prose about its own work; the pulse is a verbatim relay of a
 plugin-generated artifact — never a CronCreate job; the beat is plugin-owned.
 Your only chat outputs are: the 5-min pulse line, that BROAD_STATUS_READY

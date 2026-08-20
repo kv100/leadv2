@@ -18,6 +18,17 @@ trap 'rm -rf "$ROOT"' EXIT
 pass() { PASS=$((PASS + 1)); printf -- '[TEST] PASS: %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); ERRORS+=("$1"); printf -- '[TEST] FAIL: %s\n' "$1"; }
 
+# MEDIUM-2 §4.4: every case above points LEADV2_ARM_COOLDOWN_DIR at its own
+# sandbox, so the real ~/.claude/cache/arm-cooldown must be untouched by this
+# suite. Snapshot it now, verify at the end.
+_REAL_ARM_COOLDOWN_DIR="${HOME:-}/.claude/cache/arm-cooldown"
+_real_arm_cooldown_snapshot() {
+  [[ -d "$_REAL_ARM_COOLDOWN_DIR" ]] || { printf 'absent'; return; }
+  find "$_REAL_ARM_COOLDOWN_DIR" -type f -exec stat -f '%N %m %z' {} \; 2>/dev/null \
+    || find "$_REAL_ARM_COOLDOWN_DIR" -type f -printf '%p %T@ %s\n' 2>/dev/null
+}
+_ARM_COOLDOWN_BEFORE="$(_real_arm_cooldown_snapshot)"
+
 CODEX_STUB="$ROOT/codex"
 cat > "$CODEX_STUB" <<'STUB'
 #!/usr/bin/env bash
@@ -111,15 +122,30 @@ new_case() {
   printf -- '%s' "$project"
 }
 
+# MEDIUM-2 (round-2 finisher): every codex spawn is gated through
+# codex_spawn_gate, which reads two LIVE state surfaces by default —
+# ~/.claude/cache/arm-cooldown and the state-path-resolved codex-circuit.json.
+# Point both at this case's own sandbox so the suite is deterministic offline
+# and never reads/writes the real ~/.claude/cache. The circuit is fail-closed
+# on an unparseable/absent-vs-corrupt distinction, so seed an explicit CLOSED
+# document (an "until" already in the past) rather than relying on file
+# absence — that is what proves the seed is actually being read (§4.2/§4.3).
 run_case() {
   local project="$1" task_id="$2" mode="$3" max_attempts="$4" trace
   trace="$project/codex.args"
+  mkdir -p "$project/arm-cooldown"
+  local circuit_file="$project/codex-circuit.json"
+  if [[ ! -f "$circuit_file" ]]; then
+    printf '{"until":"2020-01-01T00:00:00Z","opened_at":"2020-01-01T00:00:00Z","source":"seed","reason":"closed"}\n' > "$circuit_file"
+  fi
   STUB_TRACE="$trace" STUB_MODE="$mode" STUB_PROJECT_ROOT="$project" STUB_TASK_ID="$task_id" \
   LEADV2_PROJECT_ROOT="$project" LEADV2_TASK_ID="$task_id" \
   LEADV2_SESSION_PROVIDER=codex LEADV2_CODEX_BIN="$CODEX_STUB" \
   LEADV2_LEAD_MODEL=gpt-5.6-terra LEADV2_LEAD_EFFORT=medium \
   LEADV2_RUNNER_MAX_ATTEMPTS="$max_attempts" LEADV2_RUNNER_RETRY_SLEEP_S=0 \
   LEADV2_CODEX_BYPASS_APPROVALS=0 \
+  LEADV2_ARM_COOLDOWN_DIR="$project/arm-cooldown" \
+  LEADV2_CODEX_CIRCUIT_FILE="$circuit_file" \
     "$RUNNER"
 }
 
@@ -164,6 +190,47 @@ if [[ "$complete_rc" -eq 0 \
   pass "fresh Codex thread resumes to the common Phase-8 sentinel with receipts"
 else
   fail "complete case rc=$complete_rc statuses=$statuses out=$complete_out"
+fi
+
+# MEDIUM-2 §4.3 case 1: a closed circuit + empty cooldown must NOT be
+# confused with the quota gate refusing — proves the seeded-closed state
+# is actually permissive, not merely "the gate wasn't exercised".
+if [[ "$complete_out" != *"refused by quota gate"* ]]; then
+  pass "seeded closed circuit + empty cooldown: quota gate does not refuse"
+else
+  fail "closed circuit should not produce a quota-gate refusal: out=$complete_out"
+fi
+
+# MEDIUM-2 §4.3 case 2: a seeded OPEN circuit must refuse deterministically,
+# proving the seed is read (not simply ignored / defaulting to closed).
+task_id="CODEX-SMOKE-OPEN-CIRCUIT"
+project="$(new_case open-circuit "$task_id")"
+mkdir -p "$project/arm-cooldown"
+open_circuit_file="$project/codex-circuit.json"
+_open_until="$(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"until":"%s","opened_at":"2026-01-01T00:00:00Z","source":"seed","reason":"usage_limit"}\n' "$_open_until" > "$open_circuit_file"
+set +e
+open_circuit_out="$(STUB_TRACE="$project/codex.args" STUB_MODE=complete STUB_PROJECT_ROOT="$project" STUB_TASK_ID="$task_id" \
+  LEADV2_PROJECT_ROOT="$project" LEADV2_TASK_ID="$task_id" \
+  LEADV2_SESSION_PROVIDER=codex LEADV2_CODEX_BIN="$CODEX_STUB" \
+  LEADV2_LEAD_MODEL=gpt-5.6-terra LEADV2_LEAD_EFFORT=medium \
+  LEADV2_RUNNER_MAX_ATTEMPTS=1 LEADV2_RUNNER_RETRY_SLEEP_S=0 \
+  LEADV2_CODEX_BYPASS_APPROVALS=0 \
+  LEADV2_ARM_COOLDOWN_DIR="$project/arm-cooldown" \
+  LEADV2_CODEX_CIRCUIT_FILE="$open_circuit_file" \
+    "$RUNNER" 2>&1)"
+open_circuit_rc=$?
+set -e
+# codex_spawn_gate's own CODEX_REFUSED_QUOTA line is redirected to the
+# runner's LOGF (its path is printed as "log=<path>" on stdout/stderr), not
+# to the runner's own stdout/stderr directly.
+open_circuit_log="$(sed -n 's/.*log=\([^ ]*\).*/\1/p' <<<"$open_circuit_out" | head -1)"
+if [[ "$open_circuit_rc" -ne 0 ]] \
+   && grep -q 'refused by quota gate' <<<"$open_circuit_out" \
+   && [[ -f "$open_circuit_log" ]] && grep -q 'CODEX_REFUSED_QUOTA reason=circuit' "$open_circuit_log"; then
+  pass "seeded open circuit refuses with reason=circuit"
+else
+  fail "open circuit case rc=$open_circuit_rc log=$open_circuit_log out=$open_circuit_out"
 fi
 
 task_id="CODEX-SMOKE-INCOMPLETE"
@@ -308,6 +375,15 @@ if [[ "$falsekill_rc" -eq 4 && "$falsekill_calls" -eq "$runner_stall_max" \
   pass "all launcher-mention, option-operand, closing-word, and sentinel shapes do not trip falsekill"
 else
   fail "falsekill case rc=$falsekill_rc calls=$falsekill_calls out=$falsekill_out"
+fi
+
+# MEDIUM-2 §4.4: the real cache must be exactly as it was before this suite
+# ran — the concrete form of "offline".
+_ARM_COOLDOWN_AFTER="$(_real_arm_cooldown_snapshot)"
+if [[ "$_ARM_COOLDOWN_AFTER" == "$_ARM_COOLDOWN_BEFORE" ]]; then
+  pass "live ~/.claude/cache/arm-cooldown unchanged by this suite"
+else
+  fail "live ~/.claude/cache/arm-cooldown was touched by this suite (before/after differ)"
 fi
 
 printf -- '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
