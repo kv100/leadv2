@@ -116,6 +116,38 @@ case_out_of_scope_junk_not_committed() { # <scripts_dir> -> 0 pass, 1 fail, 2 co
   return "${ok}"
 }
 
+# ── Case B2: an already STAGED out-of-scope file must remain staged after an
+# in-scope checkpoint. A normal `git commit` would silently launder it. ──────────
+case_staged_out_of_scope_not_laundered() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
+  [[ -f "${pc}" ]] || return 2
+  local root tid wt
+  root="$(new_repo)"
+  tid="sgb2-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  printf 'in\n' > "${wt}/agent/inscope.py"
+  printf 'out\n' > "${wt}/agent/outofscope.py"
+  git -C "${wt}" add agent/inscope.py agent/outofscope.py >/dev/null 2>&1
+  git -C "${wt}" commit -qm seed2 >/dev/null 2>&1
+  printf 'in changed\n' > "${wt}/agent/inscope.py"
+  printf 'out changed\n' > "${wt}/agent/outofscope.py"
+  git -C "${wt}" add agent/outofscope.py >/dev/null 2>&1
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_LANE_WRITES="agent/inscope.py" LEADV2_LANE_WORK_ROOT="${wt}" \
+  LEADV2_BUILDER_SELFCHECK=0 LEADV2_REVIEW_ENGINE=0 \
+  bash "${pc}" "${root}" sgb2sig01 sonnet "" 0 0 "${tid}" >/dev/null 2>&1
+  local ok=1 in_status out_staged committed
+  in_status="$(git -C "${wt}" status --porcelain -- agent/inscope.py 2>/dev/null || true)"
+  out_staged="$(git -C "${wt}" diff --cached --name-only -- agent/outofscope.py 2>/dev/null || true)"
+  committed="$(git -C "${wt}" diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null || true)"
+  if [[ -z "${in_status}" && "${out_staged}" == "agent/outofscope.py" && "${committed}" == "agent/inscope.py" ]]; then
+    ok=0
+  fi
+  rm -rf "${root}"
+  return "${ok}"
+}
+
 # ── Case D: a forward-looking write-set commonly includes paths the worker
 # never created. The real modified path must still be committed, the journal
 # must report the checkpoint, and unrelated junk must remain uncommitted. ─────
@@ -163,17 +195,48 @@ case_rename_stages_new_path() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-r
   tid="sge-$$"
   wt="$(ensure_worktree "${root}" "${tid}")"
   [[ -d "${wt}" ]] || return 2
-  printf 'old\n' > "${wt}/agent/old name.py"
-  git -C "${wt}" add 'agent/old name.py' >/dev/null 2>&1
+  local old_name=$'agent/old\tname.py' new_name=$'agent/new\tname.py'
+  printf 'old\n' > "${wt}/${old_name}"
+  git -C "${wt}" add "${old_name}" >/dev/null 2>&1
   git -C "${wt}" commit -qm seed2 >/dev/null 2>&1
-  git -C "${wt}" mv 'agent/old name.py' 'agent/new name.py' >/dev/null 2>&1
+  git -C "${wt}" mv "${old_name}" "${new_name}" >/dev/null 2>&1
   CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_LANE_WRITES="agent" LEADV2_LANE_WORK_ROOT="${wt}" \
   LEADV2_BUILDER_SELFCHECK=0 LEADV2_REVIEW_ENGINE=0 \
   bash "${pc}" "${root}" sgesig001 sonnet "" 0 0 "${tid}" >/dev/null 2>&1
   local ok=1 status msg
   status="$(git -C "${wt}" status --porcelain -- agent 2>/dev/null || true)"
   msg="$(git -C "${wt}" log -1 --format=%s 2>/dev/null || true)"
-  if [[ -z "${status}" && -f "${wt}/agent/new name.py" && ! -e "${wt}/agent/old name.py" && "${msg}" == *"STOP-GATE"* ]]; then
+  if [[ -z "${status}" && -f "${wt}/${new_name}" && ! -e "${wt}/${old_name}" && "${msg}" == *"STOP-GATE"* ]]; then
+    ok=0
+  fi
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# ── Case G: a declared write with a space in its name is exactly the shape
+# `git status --porcelain=v1` (no -z) C-quotes; -z NUL-parsing must stage it
+# without mangling. ──────────────────────────────────────────────────────────
+case_space_in_name_gets_committed() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
+  [[ -f "${pc}" ]] || return 2
+  local root tid wt
+  root="$(new_repo)"
+  tid="sgg-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  local name="agent/in scope.py"
+  printf 'a\n' > "${wt}/${name}"
+  git -C "${wt}" add "${name}" >/dev/null 2>&1
+  git -C "${wt}" commit -qm seed2 >/dev/null 2>&1
+  printf 'a\nb\n' > "${wt}/${name}"
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_LANE_WRITES="agent" LEADV2_LANE_WORK_ROOT="${wt}" \
+  LEADV2_BUILDER_SELFCHECK=0 LEADV2_REVIEW_ENGINE=0 \
+  bash "${pc}" "${root}" sggsig001 sonnet "" 0 0 "${tid}" >/dev/null 2>&1
+  local ok=1 status msg
+  status="$(git -C "${wt}" status --porcelain -- "${name}" 2>/dev/null || true)"
+  msg="$(git -C "${wt}" log -1 --format=%s 2>/dev/null || true)"
+  if [[ -z "${status}" && "${msg}" == *"STOP-GATE"* ]]; then
     ok=0
   fi
   rm -rf "${root}"
@@ -187,7 +250,7 @@ case_timeout_checkpoints_before_exit() { # <scripts_dir> -> 0 pass, 1 fail, 2 co
   local scripts_dir="$1"
   local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
   [[ -f "${pc}" ]] || return 2
-  local root tid wt worker_pid rc ok=1 status msg
+  local root tid wt worker_pid rc ok=1 status msg review_diff
   root="$(new_repo)"
   tid="sgf-$$"
   wt="$(ensure_worktree "${root}" "${tid}")"
@@ -205,10 +268,50 @@ case_timeout_checkpoints_before_exit() { # <scripts_dir> -> 0 pass, 1 fail, 2 co
   wait "${worker_pid}" 2>/dev/null || true
   status="$(git -C "${wt}" status --porcelain -- agent/inscope.py 2>/dev/null || true)"
   msg="$(git -C "${wt}" log -1 --format=%s 2>/dev/null || true)"
-  if [[ ${rc} -eq 5 && -z "${status}" && "${msg}" == *"STOP-GATE"* ]]; then
+  review_diff="$(cat "${root}/docs/handoff/dispatch-sgfsig001/review.diff" 2>/dev/null || true)"
+  if [[ ${rc} -eq 5 && -z "${status}" && "${msg}" == *"STOP-GATE"* && "${review_diff}" == *"+b"* ]]; then
     ok=0
   fi
   rm -rf "${root}"
+  return "${ok}"
+}
+
+# ── Case H: a write-set path resolving into a SIBLING git repository (not the
+# lane repo) must not be silently checkpointed from this repo -- it must be
+# journaled as a loud skip so the missing checkpoint is diagnosable. ────────
+case_foreign_repo_journaled() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
+  [[ -f "${pc}" ]] || return 2
+  local root tid wt other journal_bin journal_log
+  root="$(new_repo)"
+  tid="sgh-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  other="$(new_repo)"
+  printf 'foreign\n' > "${other}/agent/foreign.py"
+  git -C "${other}" add agent/foreign.py >/dev/null 2>&1
+  git -C "${other}" commit -qm foreign >/dev/null 2>&1
+  printf 'a\n' > "${wt}/agent/inscope.py"
+  git -C "${wt}" add agent/inscope.py >/dev/null 2>&1
+  git -C "${wt}" commit -qm seed2 >/dev/null 2>&1
+  printf 'a\nb\n' > "${wt}/agent/inscope.py"
+  printf 'foreign\nchanged\n' > "${other}/agent/foreign.py"
+  journal_bin="${root}/journal.sh"
+  journal_log="${root}/journal.log"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$4" >> "${LEADV2_TEST_JOURNAL}"\n' > "${journal_bin}"
+  chmod +x "${journal_bin}"
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_LANE_WRITES="agent/inscope.py,../../../../$(basename "${other}")/agent/foreign.py" \
+  LEADV2_LANE_WORK_ROOT="${wt}" LEADV2_BUILDER_SELFCHECK=0 LEADV2_REVIEW_ENGINE=0 \
+  LEADV2_JOURNAL_BIN="${journal_bin}" LEADV2_TEST_JOURNAL="${journal_log}" \
+  bash "${pc}" "${root}" sghsig001 sonnet "" 0 0 "${tid}" >/dev/null 2>&1
+  local ok=1 in_status journal
+  in_status="$(git -C "${wt}" status --porcelain -- agent/inscope.py 2>/dev/null || true)"
+  journal="$(cat "${journal_log}" 2>/dev/null || true)"
+  if [[ -z "${in_status}" && "${journal}" == *"stop_gate_skipped_foreign_repo task=sghsig001"* ]]; then
+    ok=0
+  fi
+  rm -rf "${root}" "${other}"
   return "${ok}"
 }
 
@@ -258,9 +361,12 @@ run_case() { # <name> <fn>
 
 run_case "tracked-writeset-gets-committed" case_tracked_writeset_gets_committed
 run_case "out-of-scope-junk-not-committed" case_out_of_scope_junk_not_committed
+run_case "staged-out-of-scope-not-laundered" case_staged_out_of_scope_not_laundered
 run_case "missing-declared-path-still-commits" case_missing_declared_path_still_commits
 run_case "rename-stages-new-path" case_rename_stages_new_path
+run_case "space-in-name-gets-committed" case_space_in_name_gets_committed
 run_case "timeout-checkpoints-before-exit" case_timeout_checkpoints_before_exit
+run_case "foreign-repo-journaled" case_foreign_repo_journaled
 
 rm -rf "${PREFIX_DIR}"
 
