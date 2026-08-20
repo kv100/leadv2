@@ -1,0 +1,11 @@
+- 2026-08-20T15:36:28Z [decision] project_root_guard task=26c4cec3 status=foreign_env_overridden env_root=/private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.lLEDrHqLXj/repo cwd_root=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/b4042501
+- 2026-08-20T15:36:31Z [decision] dispatch_classified task=26c4cec3 class=product reason=conservative_default kind=code
+- 2026-08-20T15:36:33Z [decision] phase_precondition_warn task=26c4cec3 class=Standard missing=plan,gate1,build,test,review,deploy,live_verify,close mode=warn
+- 2026-08-20T15:36:33Z [decision] architect_prepass task=26c4cec3 status=disabled reason=kill_switch
+- 2026-08-20T15:36:33Z [decision] arm_resolved job=build arm=kimi reason=codex_quota_gate_80pct
+- 2026-08-20T15:36:34Z [decision] arm_vocabulary_mismatch by=router arm=kimi fallback=sonnet task=26c4cec3 reason=launcher_unknown_arm
+- 2026-08-20T15:36:34Z [decision] candidate_chain task=26c4cec3 arms=sonnet
+- 2026-08-20T15:36:34Z [decision] worker_env_assert arm=sonnet task=26c4cec3 var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+- 2026-08-20T15:36:34Z [decision] worker_env_assert arm=sonnet task=26c4cec3 var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+- 2026-08-20T15:36:35Z [decision] spawn_failed by=router model=sonnet task=26c4cec3 handle=PID=81174 LABEL=test SESSION_ID=test reason=not_live cause=<no stream file at /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/b4042501/docs/handoff/dispatch-26c4cec3/developer.stream.jsonl>
+- 2026-08-20T15:36:35Z [decision] dispatch_rolled_back reason=all_arms_unavailable task=26c4cec3 attempts=sonnet_failed_launcher

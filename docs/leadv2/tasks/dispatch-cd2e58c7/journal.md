@@ -1,0 +1,11 @@
+- 2026-08-20T15:42:49Z [decision] project_root_guard task=cd2e58c7 status=foreign_env_overridden env_root=/private/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/core-offline-run.Lf0ZXu/suite.TvkvRD/leadv2-rog1-home.OXVufU/tmp/leadv2-rog1-r.2sDBrS cwd_root=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/b4042501
+- 2026-08-20T15:42:50Z [decision] lane_deliverable task=cd2e58c7 status=ignored reason=unknown_kind decl=artifact:docs/x.md
+- 2026-08-20T15:42:50Z [decision] lane_worktree_fallback task=cd2e58c7 founder_task=cd2e58c7 reason=ensure_fell_back_to_shared_tree
+- 2026-08-20T15:42:50Z [decision] dispatch_classified task=cd2e58c7 class=product reason=conservative_default kind=product
+- 2026-08-20T15:42:53Z [decision] phase_precondition_warn task=cd2e58c7 class=Standard missing=plan,gate1,build,test,review,live_verify,close mode=warn
+- 2026-08-20T15:42:53Z [decision] architect_prepass task=cd2e58c7 status=failed reason=no_lane_writes
+- 2026-08-20T15:42:53Z [decision] architect_prepass task=cd2e58c7 status=retrying attempt=1/2 reason=no_lane_writes
+- 2026-08-20T15:42:53Z [decision] architect_prepass task=cd2e58c7 status=failed reason=no_lane_writes
+- 2026-08-20T15:42:54Z [decision] architect_prepass task=cd2e58c7 status=retrying attempt=2/2 reason=no_lane_writes
+- 2026-08-20T15:42:54Z [decision] architect_prepass task=cd2e58c7 status=parked reason=no_design_after_2_attempts action=not_dispatched
+- 2026-08-20T15:42:54Z [decision] prepass_parked task=cd2e58c7 founder_task_id= reason=no_design_after_2_attempts last_reason=no_lane_writes
