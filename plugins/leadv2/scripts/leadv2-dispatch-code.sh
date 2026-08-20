@@ -3701,6 +3701,90 @@ _codex_instant_complete_deadline_check() {  # <sig8> <since_epoch> [expected_cwd
   done
 }
 
+# CODEX-ARM-WORKTREE-SCOPE-01: the codex WORKER arm (long missions, via
+# codex-task.sh's `task --background`) has been observed dying 5x in one day
+# in shapes neither _codex_first_byte_deadline_check nor
+# _codex_instant_complete_deadline_check catch: (a) codex-companion's own job
+# store loses the row entirely (a later `status <jobId>` call that succeeded
+# once at spawn time -- see the not_live guard right after the spawn call --
+# later returns "No job found") and (b) codex emits a `turn_aborted` event
+# (not `task_complete`) and then goes silent -- a different terminal shape
+# than the null-message task_complete instant-complete already handles.
+# Both are "the job was live a moment ago and is now provably gone" -- the
+# same "arm_dead" contract as the instant-complete check, just a later/looser
+# poll window (worker missions take longer to produce first output than the
+# instant-complete window is sized for).
+#
+# _codex_rollout_turn_aborted <rollout_file> -> rc0 = a turn_aborted event_msg
+# found (dead), rc1 = not found / unreadable. Scans from the end, same
+# convention as _codex_rollout_dead_shape.
+_codex_rollout_turn_aborted() {  # <rollout_file>
+  local f="$1"
+  [[ -n "${f}" && -f "${f}" ]] || return 1
+  python3 - "$f" 2>/dev/null <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path, "r", errors="replace") as fh:
+        lines = fh.readlines()
+except OSError:
+    sys.exit(1)
+for line in reversed(lines):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    if d.get("type") != "event_msg":
+        continue
+    payload = d.get("payload")
+    if isinstance(payload, dict) and payload.get("type") == "turn_aborted":
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# _codex_worker_liveness_deadline_check <handle> <sig8> <since_epoch> [expected_cwd]
+# -> 0 = proceed (job store still has the row and no turn_aborted event seen
+# right now -- the generic early-verdict/first-byte/instant-complete
+# machinery already covers every other outcome), 7 = declared dead (job
+# store lost the row, or a turn_aborted event landed) -- caller must abort
+# the reservation and spill, exactly like the sibling deadline checks' rc=7
+# contract. Records a provider strike via the same record-quota-lockout
+# path on the dead verdict, reason=arm_dead_worker_liveness.
+# SINGLE-SHOT, not a poll loop: nit 2-B (this same file) established that
+# any positive liveness evidence available right now is proof enough to
+# stop waiting -- a job-store row present at check time is exactly that
+# evidence. Looping this check to a 60s deadline on the happy path would
+# tax EVERY healthy codex spawn with up to an extra minute of blocking
+# wait, directly undoing 2-B's "return early once alive" fix; the window
+# this check is named for is the interval since spawn already elapsed by
+# the first-byte + instant-complete checks before it, not a new wait here.
+_codex_worker_liveness_deadline_check() {  # <handle> <sig8> <since_epoch> [expected_cwd]
+  local handle="$1" sig8="$2" since="$3" expected_cwd="${4:-}"
+  local deadline="${LEADV2_CODEX_WORKER_LIVENESS_SECS:-60}"
+  [[ "${deadline}" =~ ^[0-9]+$ ]] || deadline=60
+  [[ "${deadline}" != "0" ]] || return 0
+  local scan_out f
+  if ! bash "${CODEX_BIN}" status "${handle}" >/dev/null 2>&1 9>&-; then
+    emit decision "arm_dead_worker_liveness arm=codex task=${sig8} handle=${handle} reason=vanished_job"
+    bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
+      --provider codex --hours 1 --reason arm_dead_worker_liveness >/dev/null 2>&1 || true
+    return 7
+  fi
+  scan_out="$(_codex_newest_rollout_since "${since}" "${expected_cwd}")"
+  f="$(printf '%s\n' "${scan_out}" | sed -n '1p')"
+  if [[ -n "${f}" ]] && _codex_rollout_turn_aborted "${f}"; then
+    emit decision "arm_dead_worker_liveness arm=codex task=${sig8} handle=${handle} reason=turn_aborted rollout=${f}"
+    bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
+      --provider codex --hours 1 --reason arm_dead_worker_liveness >/dev/null 2>&1 || true
+    return 7
+  fi
+  return 0   # job store row present, no turn_aborted seen -- proceed
+}
+
 # ── CORE FIX (fix-pass-4 REDESIGN): reserve (short lock) -> spawn (NO lock) -> confirm/
 # abort (short lock) -- see the FIX PASS 4 doc block at the top of this file for why
 # fix-pass-3's "one held flock across the whole sequence" was itself blocked (FD-inheritance
@@ -3820,6 +3904,22 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
         local ic_abort_rc=0
         dispatch_abort "${token}" || ic_abort_rc=$?
         [[ ${ic_abort_rc} -eq 0 ]] && return 7
+        return 5
+      fi
+      # CODEX-ARM-WORKTREE-SCOPE-01: bytes landed and no instant-complete dead
+      # shape was seen, but a WORKER mission (long-running, task --background)
+      # can still vanish from codex-companion's job store or emit a
+      # turn_aborted event well after the instant-complete window closes --
+      # poll for up to LEADV2_CODEX_WORKER_LIVENESS_SECS (default 60).
+      local _wl_rc=0
+      _codex_worker_liveness_deadline_check "${handle}" "${sig8}" "${_codex_spawn_epoch}" "${WORK_ROOT}" || _wl_rc=$?
+      if [[ ${_wl_rc} -eq 7 ]]; then
+        LAST_ARM_OUTCOME="codex_dead_worker_liveness"
+        emit decision "arm_refused by=router model=codex task=${sig8} reason=worker_liveness"
+        log "spawn(codex) worker liveness probe declared dead; spilling to next arm"
+        local wl_abort_rc=0
+        dispatch_abort "${token}" || wl_abort_rc=$?
+        [[ ${wl_abort_rc} -eq 0 ]] && return 7
         return 5
       fi
     fi
