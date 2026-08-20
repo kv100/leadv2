@@ -116,6 +116,102 @@ case_out_of_scope_junk_not_committed() { # <scripts_dir> -> 0 pass, 1 fail, 2 co
   return "${ok}"
 }
 
+# ── Case D: a forward-looking write-set commonly includes paths the worker
+# never created. The real modified path must still be committed, the journal
+# must report the checkpoint, and unrelated junk must remain uncommitted. ─────
+case_missing_declared_path_still_commits() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
+  [[ -f "${pc}" ]] || return 2
+  local root tid wt journal_bin journal_log
+  root="$(new_repo)"
+  tid="sgd-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  journal_bin="${root}/journal.sh"
+  journal_log="${root}/journal.log"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$4" >> "${LEADV2_TEST_JOURNAL}"\n' > "${journal_bin}"
+  chmod +x "${journal_bin}"
+  printf 'a\n' > "${wt}/agent/inscope.py"
+  git -C "${wt}" add agent/inscope.py >/dev/null 2>&1
+  git -C "${wt}" commit -qm seed2 >/dev/null 2>&1
+  printf 'a\nb\n' > "${wt}/agent/inscope.py"
+  printf 'junk\n' > "${wt}/agent/outofscope.tmp"
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_LANE_WRITES="agent/inscope.py,tests/never-created.py" LEADV2_LANE_WORK_ROOT="${wt}" \
+  LEADV2_BUILDER_SELFCHECK=0 LEADV2_REVIEW_ENGINE=0 LEADV2_JOURNAL_BIN="${journal_bin}" LEADV2_TEST_JOURNAL="${journal_log}" \
+  bash "${pc}" "${root}" sgdsig001 sonnet "" 0 0 "${tid}" >/dev/null 2>&1
+  local ok=1 in_status out_status msg journal
+  in_status="$(git -C "${wt}" status --porcelain -- agent/inscope.py 2>/dev/null || true)"
+  out_status="$(git -C "${wt}" status --porcelain -- agent/outofscope.tmp 2>/dev/null || true)"
+  msg="$(git -C "${wt}" log -1 --format=%s 2>/dev/null || true)"
+  journal="$(cat "${journal_log}" 2>/dev/null || true)"
+  if [[ -z "${in_status}" && "${out_status}" == '??'* && "${msg}" == *"STOP-GATE"* && "${journal}" == *"stop_gate_autocommit task=sgdsig001"* ]]; then
+    ok=0
+  fi
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# ── Case E: porcelain -z represents a rename as the destination followed by
+# a second NUL-delimited source path. The destination is what must be staged. ─
+case_rename_stages_new_path() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
+  [[ -f "${pc}" ]] || return 2
+  local root tid wt
+  root="$(new_repo)"
+  tid="sge-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  printf 'old\n' > "${wt}/agent/old name.py"
+  git -C "${wt}" add 'agent/old name.py' >/dev/null 2>&1
+  git -C "${wt}" commit -qm seed2 >/dev/null 2>&1
+  git -C "${wt}" mv 'agent/old name.py' 'agent/new name.py' >/dev/null 2>&1
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_LANE_WRITES="agent" LEADV2_LANE_WORK_ROOT="${wt}" \
+  LEADV2_BUILDER_SELFCHECK=0 LEADV2_REVIEW_ENGINE=0 \
+  bash "${pc}" "${root}" sgesig001 sonnet "" 0 0 "${tid}" >/dev/null 2>&1
+  local ok=1 status msg
+  status="$(git -C "${wt}" status --porcelain -- agent 2>/dev/null || true)"
+  msg="$(git -C "${wt}" log -1 --format=%s 2>/dev/null || true)"
+  if [[ -z "${status}" && -f "${wt}/agent/new name.py" && ! -e "${wt}/agent/old name.py" && "${msg}" == *"STOP-GATE"* ]]; then
+    ok=0
+  fi
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# ── Case F: a timed-out worker exits through the early `exit 5` path. The
+# STOP-GATE must checkpoint before that terminal exit, not only after a clean
+# worker exit. ───────────────────────────────────────────────────────────────
+case_timeout_checkpoints_before_exit() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
+  [[ -f "${pc}" ]] || return 2
+  local root tid wt worker_pid rc ok=1 status msg
+  root="$(new_repo)"
+  tid="sgf-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  printf 'a\n' > "${wt}/agent/inscope.py"
+  git -C "${wt}" add agent/inscope.py >/dev/null 2>&1
+  git -C "${wt}" commit -qm seed2 >/dev/null 2>&1
+  printf 'a\nb\n' > "${wt}/agent/inscope.py"
+  sleep 30 & worker_pid=$!
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_LANE_WRITES="agent/inscope.py" LEADV2_LANE_WORK_ROOT="${wt}" \
+  LEADV2_BUILDER_SELFCHECK=0 LEADV2_REVIEW_ENGINE=0 LEADV2_PC_WORKER_MAX_WAIT_S=1 LEADV2_PC_WORKER_POLL_S=1 \
+  bash "${pc}" "${root}" sgfsig001 sonnet "${worker_pid}" 0 0 "${tid}" >/dev/null 2>&1
+  rc=$?
+  kill "${worker_pid}" 2>/dev/null || true
+  wait "${worker_pid}" 2>/dev/null || true
+  status="$(git -C "${wt}" status --porcelain -- agent/inscope.py 2>/dev/null || true)"
+  msg="$(git -C "${wt}" log -1 --format=%s 2>/dev/null || true)"
+  if [[ ${rc} -eq 5 && -z "${status}" && "${msg}" == *"STOP-GATE"* ]]; then
+    ok=0
+  fi
+  rm -rf "${root}"
+  return "${ok}"
+}
+
 # ── harness runner (falsifiable red-first baseline, same idiom as
 # test-builder-selfcheck-gate.sh) ───────────────────────────────────────────────────
 PREFIX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-prefix-sg.XXXXXX")"
@@ -162,6 +258,9 @@ run_case() { # <name> <fn>
 
 run_case "tracked-writeset-gets-committed" case_tracked_writeset_gets_committed
 run_case "out-of-scope-junk-not-committed" case_out_of_scope_junk_not_committed
+run_case "missing-declared-path-still-commits" case_missing_declared_path_still_commits
+run_case "rename-stages-new-path" case_rename_stages_new_path
+run_case "timeout-checkpoints-before-exit" case_timeout_checkpoints_before_exit
 
 rm -rf "${PREFIX_DIR}"
 

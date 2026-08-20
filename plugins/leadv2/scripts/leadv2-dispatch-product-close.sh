@@ -1417,12 +1417,44 @@ pc_stop_gate_autocommit() {
 
   local _sg_n
   _sg_n="$(printf '%s\n' "${_sg_status}" | grep -c .)"
-  git -C "${_sg_lane_root}" add -- "${_sg_paths[@]}" >/dev/null 2>&1 || return 0
+
+  # HOLE-1 fix (V3-STOP-GATE-FINISH-01): `git add -- <declared pathspec>` fails
+  # hard (exit 128) the instant ANY declared path was never created -- the
+  # normal shape of a lane whose worker died mid-write-set -- and the old
+  # `|| return 0` swallowed that, staging nothing at all. Stage the CONCRETE
+  # files git status just reported instead of re-using the declared pathspec:
+  # those paths are known to exist, and because `_sg_status` was itself
+  # produced by `git status -- "${_sg_paths[@]}"` the concrete list stays
+  # inside the declared write-set -- no scope widening.
+  local _sg_files=()
+  local _sg_line _sg_path
+  while IFS= read -r _sg_line; do
+    [[ -n "${_sg_line}" ]] || continue
+    _sg_path="${_sg_line:3}"
+    # rename/copy form: "R  old -> new" / "C  old -> new" -- stage the new path.
+    if [[ "${_sg_path}" == *" -> "* ]]; then
+      _sg_path="${_sg_path##* -> }"
+    fi
+    # porcelain quotes paths containing unusual bytes in double quotes.
+    if [[ "${_sg_path}" == \"*\" ]]; then
+      _sg_path="${_sg_path%\"}"
+      _sg_path="${_sg_path#\"}"
+    fi
+    [[ -n "${_sg_path}" ]] && _sg_files+=("${_sg_path}")
+  done <<< "${_sg_status}"
+  [[ ${#_sg_files[@]} -gt 0 ]] || return 0
+
+  if ! git -C "${_sg_lane_root}" add -- "${_sg_files[@]}" >/dev/null 2>&1; then
+    emit decision "stop_gate_autocommit_failed task=${TASK} reason=add_failed"
+    return 0
+  fi
   if git -C "${_sg_lane_root}" diff --cached --quiet 2>/dev/null; then
     return 0
   fi
   if git -C "${_sg_lane_root}" commit -q -m "wip(${TASK}): auto-checkpoint on worker exit (STOP-GATE)" >/dev/null 2>&1; then
     emit decision "stop_gate_autocommit task=${TASK} files=${_sg_n}"
+  else
+    emit decision "stop_gate_autocommit_failed task=${TASK} reason=commit_failed"
   fi
 }
 
@@ -1800,6 +1832,10 @@ pc_precheck_writes
 
 if ! pc_await_worker_exit; then
   _pc_reap_worker "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")" "$(_pc_meta_value "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/meta.yaml" pid 2>/dev/null)"
+  # HOLE-2 fix (V3-STOP-GATE-FINISH-01): a reaped/timed-out worker is the
+  # likeliest producer of uncommitted work -- it never chose to stop -- so the
+  # gate must fire here too, not only after the clean-exit wait below.
+  pc_stop_gate_autocommit
   printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
   emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout"
   _dl_note dead timeout "waited=${_PC_WORKER_WAITED_S}s author=${AUTHOR} handle=${HANDLE}"
@@ -1822,6 +1858,10 @@ if pc_dwr_resume_once; then
   if ! LEADV2_PC_WORKER_MAX_WAIT_S="${LEADV2_PC_RESUME_MAX_WAIT_S:-${LEADV2_PC_WORKER_MAX_WAIT_S:-4200}}" \
       pc_await_worker_exit; then
     _pc_reap_worker "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")" "$(_pc_meta_value "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/meta.yaml" pid 2>/dev/null)"
+    # HOLE-2 fix (V3-STOP-GATE-FINISH-01): same reasoning as the first wait's
+    # timeout branch above -- the resumed worker was also reaped, not exited
+    # cleanly.
+    pc_stop_gate_autocommit
     printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
     emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout resumed=1"
     _dl_note dead timeout "waited=${_PC_WORKER_WAITED_S}s author=${AUTHOR} handle=${HANDLE} resumed=1"
@@ -1829,12 +1869,6 @@ if pc_dwr_resume_once; then
     exit 5
   fi
 fi
-
-# V3-STOP-GATE-01: worker exit is now confirmed (first wait or DWR resume) --
-# checkpoint any uncommitted declared-write-set changes before any downstream
-# phase reads the tree. See pc_stop_gate_autocommit above for the disease this
-# closes and why only the declared write-set is staged.
-pc_stop_gate_autocommit
 
 # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01 (Fix 1): resolve _lane_root the SAME
 # way pc_scope_diff will below (idempotent -- that function recomputes the identical
@@ -1858,6 +1892,12 @@ if pc_silent_arm_probe; then
 fi
 
 pc_scope_diff
+
+# V3-STOP-GATE-01: capture the exit-time scoped diff before checkpointing.  A
+# checkpoint advances HEAD, so doing this first preserves the worker's actual
+# output for review.diff even when no recorded lane-start base is available.
+# The checkpoint still precedes every downstream gate that reads the tree.
+pc_stop_gate_autocommit
 
 # C.3: a NON-empty diff whose worker still asked into the void is parked, never
 # landed -- work exists and a human answering the question unblocks it, which is
