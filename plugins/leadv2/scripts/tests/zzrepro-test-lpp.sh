@@ -28,7 +28,7 @@ SANDBOX="$(mktemp -d /tmp/leadv2-lpp-XXXXXX)"
 cleanup() {
   rm -rf "${SANDBOX}"
 }
-trap cleanup EXIT
+#trap cleanup EXIT
 
 # ── Fixture repos ────────────────────────────────────────────────────────────
 TARGET="${SANDBOX}/target"
@@ -333,14 +333,8 @@ setup_env
 export LEADV2_STUB_CWD_OUT="${SANDBOX}/pg-cwd.txt"
 export LEADV2_STUB_MISSION_OUT="${SANDBOX}/pg-mission.txt"
 dispatch_rc=0
-# FOREIGN-PROJECT-ROOT-GUARD-01: cwd must agree with CLAUDE_PROJECT_DIR/ROOT for the
-# no-pin ensure path, same convention P-i below uses -- without this cd the guard sees
-# cwd's real git root (this worktree checkout) as foreign to TARGET and swaps
-# PROJECT_ROOT away from TARGET, so `ensure` operates on the wrong repo entirely and
-# the WORK_ROOT != PROJECT_ROOT precondition the pin-line assertions depend on never
-# holds for the right reason.
-( cd "${TARGET}" && bash "${DC}" --kind tooling \
-  "P-g regression no flag fresh tree test fix the linter" >/dev/null 2>&1 ) || dispatch_rc=$?
+bash "${DC}" --kind tooling \
+  "P-g regression no flag fresh tree test fix the linter" >/dev/null 2>&1 || dispatch_rc=$?
 
 if [[ ${dispatch_rc} -eq 0 ]]; then
   ok "P-g: dispatch exited 0 (no flag, regression)"

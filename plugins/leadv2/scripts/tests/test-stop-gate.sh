@@ -323,7 +323,20 @@ LEADV2_TEST_BASELINE_REF="${LEADV2_TEST_BASELINE_REF:-}"
 if [[ -z "${LEADV2_TEST_BASELINE_REF}" ]]; then
   LEADV2_TEST_BASELINE_REF="$(git -C "${LEADV2_REPO}" merge-base origin/main HEAD 2>/dev/null || true)"
   if git -C "${LEADV2_REPO}" grep -q pc_stop_gate_autocommit "${LEADV2_TEST_BASELINE_REF}" -- plugins/leadv2/scripts/leadv2-dispatch-product-close.sh 2>/dev/null; then
-    LEADV2_TEST_BASELINE_REF="HEAD~1"
+    # STOP-GATE-BASELINE-DRIFT-01: the feature has been in origin/main since
+    # 747f453 -- a fixed HEAD~1 fallback only walks back one commit and never
+    # reaches a pre-feature tree once the feature is permanently upstream (every
+    # commit in a lane's history, however far back, still has it, so every case
+    # scores GREEN-PRE-FIX and the vacuity gate trips on every run). Find the
+    # commit that actually introduced the marker via -S pickaxe and use its
+    # parent as the true pre-feature baseline, independent of how long ago it
+    # merged or how many commits this lane has stacked on top.
+    _sg_intro_commit="$(git -C "${LEADV2_REPO}" log --reverse --format=%H -S'pc_stop_gate_autocommit' -- plugins/leadv2/scripts/leadv2-dispatch-product-close.sh 2>/dev/null | head -1)"
+    if [[ -n "${_sg_intro_commit}" ]]; then
+      LEADV2_TEST_BASELINE_REF="${_sg_intro_commit}^"
+    else
+      LEADV2_TEST_BASELINE_REF="HEAD~1"
+    fi
   fi
 fi
 [[ -n "${LEADV2_TEST_BASELINE_REF}" ]] || LEADV2_TEST_BASELINE_REF="HEAD"
