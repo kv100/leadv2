@@ -1,5 +1,5 @@
 {
-  "description": "leadv2 autonomous orchestrator hooks — guards, counters, delegations, lifecycle",
+  "description": "leadv2 autonomous orchestrator hooks \u2014 guards, counters, delegations, lifecycle",
   "hooks": {
     "SessionStart": [
       {
@@ -122,13 +122,6 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-idle-notification-filter.sh\"",
             "timeout": 5,
             "statusMessage": "Idle-notification filter (suppress content-free teammate wakes)..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-pump-caller.sh\"",
-            "timeout": 5,
-            "continueOnBlock": true,
-            "statusMessage": "Supervisor pump-caller (throttled backlog auto-refill)..."
           },
           {
             "type": "command",
@@ -262,12 +255,6 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-workflow-bypass-guard.sh\"",
             "timeout": 5,
             "statusMessage": "Workflow-first guard..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervise-fanout-guard.sh\"",
-            "timeout": 5,
-            "statusMessage": "Supervise-mode fanout guard (coordinator-only)..."
           }
         ]
       },
@@ -301,12 +288,6 @@
       {
         "matcher": "Write",
         "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-guard.sh\"",
-            "timeout": 5,
-            "statusMessage": "Supervisor self-work guard..."
-          },
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-memory-guard.sh\"",
@@ -359,12 +340,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-guard.sh\"",
-            "timeout": 5,
-            "statusMessage": "Supervisor self-work guard..."
-          },
-          {
-            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-memory-guard.sh\"",
             "timeout": 5,
             "statusMessage": "Memory guard (MEMORY.md leak prevention)..."
@@ -400,17 +375,6 @@
             "timeout": 5,
             "statusMessage": "Skill-authoring reminder (writing-great-skills)...",
             "continueOnBlock": true
-          }
-        ]
-      },
-      {
-        "matcher": "NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervisor-guard.sh\"",
-            "timeout": 5,
-            "statusMessage": "Supervisor self-work guard..."
           }
         ]
       },
@@ -602,11 +566,6 @@
             "timeout": 5,
             "continueOnBlock": true,
             "statusMessage": "BG-backstop: checking unwatched agents..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-supervise-sentinel-cleanup.sh\"",
-            "timeout": 5
           },
           {
             "type": "command",

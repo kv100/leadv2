@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}/../scripts"
-SUPERVISE="${SCRIPT_DIR}/leadv2-supervise.sh"
+SUPERVISE="${SCRIPT_DIR}/leadv2-lanes-snapshot.sh"
 PASS=0
 FAIL=0
 

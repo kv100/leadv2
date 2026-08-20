@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# leadv2-supervise.sh — one call = one snapshot of all child /leadv2 sessions.
+# leadv2-lanes-snapshot.sh — one call = one snapshot of all child /leadv2 sessions.
 #
 # Task LEAD-SUPERVISE-01. See docs/handoff/LEAD-ANCHOR-01/mission-supervise.md.
 #
@@ -32,7 +32,7 @@
 #     BEFORE the prune under a separate lock.
 #
 # Usage:
-#   leadv2-supervise.sh [--json] [--since <ISO>] [--print]
+#   leadv2-lanes-snapshot.sh [--json] [--since <ISO>] [--print]
 #
 # SESSION-HANDOFF-01: a full (non-delta) --json call also carries a bounded
 # "resume" key — a live-composed <supervisor-handoff> restore block (role +
@@ -66,42 +66,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JSON_MODE=0
 SINCE=""
 PRINT_MODE=0
-ENTER_MODE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --json)  JSON_MODE=1; shift ;;
     --since) SINCE="${2:-}"; shift 2 ;;
     --print) PRINT_MODE=1; shift ;;
-    --enter) ENTER_MODE=1; shift ;;
     -h|--help)
-      printf -- 'Usage: leadv2-supervise.sh [--json] [--since <ISO>] [--print] [--enter]\n'
+      printf -- 'Usage: leadv2-lanes-snapshot.sh [--json] [--since <ISO>] [--print]\n'
       exit 0
       ;;
     *)
-      printf -- '[supervise] unknown arg: %s\n' "$1" >&2
+      printf -- '[lanes-snapshot] unknown arg: %s\n' "$1" >&2
       exit 1
       ;;
   esac
 done
-
-# SENTINEL-ON-PROBE-01: the PYSENTINEL block below writes (and mtime-refreshes)
-# `.supervise-active`. Read-only probes (--json status, --since deltas, --print
-# handoff) must NOT stamp a sentinel — every probe used to overwrite it with the
-# caller's $PPID and go dead moments later, ghosting the guard/statusline/reinject
-# with all-day stale sentinels. Derive a read-only flag from the existing parse:
-# any of JSON_MODE / a SINCE filter / PRINT_MODE means this invocation is a probe.
-# `--enter` (explicit opt-in) and the LEADV2_SUPERVISE_ENTER=1 env override force
-# a write, since a legitimate entry caller may also request JSON. A bare
-# invocation (interactive attach) carries none of these flags and keeps writing —
-# that path is the unchanged supervisor entry point.
-_SUP_READONLY=0
-if [[ "$JSON_MODE" -eq 1 || -n "$SINCE" || "$PRINT_MODE" -eq 1 ]]; then
-  _SUP_READONLY=1
-fi
-if [[ "$ENTER_MODE" -eq 1 || "${LEADV2_SUPERVISE_ENTER:-0}" -eq 1 ]]; then
-  _SUP_READONLY=0
-fi
 
 # ── B1 fail-closed root resolution (SUPERVISE-V2-01 D-b/item-2) ────────────
 # Order: LEADV2_PROJECT_ROOT -> CLAUDE_PROJECT_DIR -> `git -C "$PWD" rev-parse
@@ -152,117 +132,6 @@ fi
 ACTIVE_YAML="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" active.yaml)"
 HANDOFF_DIR="${PROJECT_ROOT}/docs/handoff"
 SNAPSHOT="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" .supervise-last.json)"
-# SUP-OFF-IS-A-LIE-01 D3: resolve the sentinel through --no-link so writer and
-# the status-surface reader use byte-identical path resolution (the reader's
-# STATE_DIR also goes through `--no-link root`). The pre-fix writer omitted
-# --no-link, so a no-git fallback resolved the sentinel into
-# docs/leadv2/.supervise-active while the reader looked in the control plane —
-# the split that produced false-RED `supervisor: OFF`. --no-link also drops the
-# writer's symlink/migration side effect, which it never needed for a file
-# outside leadv2-state-path.sh's STANDARD set.
-SUPERVISE_SENTINEL="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link .supervise-active)"
-# Fail-loud guard: if the resolved path escaped the control-plane base and we
-# are not in a sandbox (LEADV2_STATE_ROOT unset), warn so the degradation stops
-# being silent. Writing is NEVER skipped (losing the sentinel would break the
-# fanout guard); D1 means reader liveness no longer depends on this path alone.
-if [[ -z "${LEADV2_STATE_ROOT:-}" ]]; then
-  _SP_BASE="${LEADV2_STATE_BASE:-${HOME}/.claude/leadv2-state}/"
-  if [[ -n "$SUPERVISE_SENTINEL" && "${SUPERVISE_SENTINEL#"$_SP_BASE"}" == "$SUPERVISE_SENTINEL" ]]; then
-    printf 'leadv2-supervise: WARN control-plane unresolved, sentinel degraded to %s\n' "$SUPERVISE_SENTINEL" >&2
-  fi
-  unset _SP_BASE
-fi
-
-# SUPERVISE-GUARD-01 (restored, SUPERVISE-V2-01 fix-1 C1; mode split fix-2
-# R2-1; DEFAULT FLIPPED fix-3 75051ca2507f gate-2, 2026-07-27 per explicit
-# founder ruling: "запускай любых агентов, на любых моделях/провайдере, в
-# зависимости от роутинга — сам ты не пишешь код, ты супервизор"): (re)write
-# the supervise-mode sentinel -- {"pid","started_at","mode"} -- consumed by
-# hooks/leadv2-supervise-fanout-guard.sh (PreToolUse:Agent). `mode` resolves
-# the D-f=A contradiction found in codex-review-2.md finding 1. Two modes:
-#   - "interactive-lanes" (DEFAULT as of fix-3): the supervisor may spawn any
-#     subagent_type, any model/provider -- ROUTING (this skill's own
-#     documented dispatch procedure: SKILL.md step 3 sends top-level
-#     code-writing task work through scripts/leadv2-fanout.sh for the full
-#     Phase 0..8 cycle + mandatory Codex/GLM-FIRST review; same-session
-#     Agent/Workflow calls remain valid ONLY as child-internal phase
-#     helpers) decides placement, not this hook. The supervisor itself still
-#     never edits code directly -- that discipline is enforced by the
-#     skill's own procedure, not by an Agent-spawn type ban.
-#   - "legacy-relay": opt-in strict coordinator-only mode (set
-#     LEADV2_SUPERVISE_MODE=legacy-relay explicitly); any Agent spawn is
-#     denied and directed to the provider-neutral full-cycle fanout runner.
-#     Retained for a session that wants the stricter gate back.
-# `mode` is recomputed on every (re)write (reflects the CURRENT invocation's
-# intent), while pid/started_at identity is preserved for a live sentinel.
-# Idempotent: a live sentinel keeps its original started_at; a missing/dead
-# one is (re)written with the durable claude-process pid (see
-# leadv2-active-registry.sh:_lv2_durable_pid). Cleared on Stop by
-# hooks/leadv2-supervise-sentinel-cleanup.sh, and self-heals (deleted) by the
-# guard itself the next time it sees a dead pid. Deleted by 799dc99's B1
-# root-resolution refactor and never re-added -- guard was silently inert
-# (lying-green: hook installed, reads a file nobody wrote) until fix-1.
-_SUP_MODE="${LEADV2_SUPERVISE_MODE:-interactive-lanes}"
-if [[ "$_SUP_MODE" != "interactive-lanes" && "$_SUP_MODE" != "legacy-relay" ]]; then
-  _SUP_MODE="interactive-lanes"
-fi
-if [[ "$_SUP_READONLY" -eq 0 && -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
-  # shellcheck source=leadv2-active-registry.sh
-  source "${SCRIPT_DIR}/leadv2-active-registry.sh"
-  _SUP_PID="$(_lv2_durable_pid 2>/dev/null || echo "$PPID")"
-  _SUP_TS="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  python3 - "$SUPERVISE_SENTINEL" "$_SUP_PID" "$_SUP_TS" "$_SUP_MODE" <<'PYSENTINEL' 2>/dev/null || true
-import sys, os, json, tempfile
-
-path, pid_str, ts, mode = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-
-def pid_alive(pid_val):
-    try:
-        os.kill(int(pid_val), 0)
-        return True
-    except (TypeError, ValueError, ProcessLookupError, PermissionError):
-        return False
-
-existing_started_at = None
-existing_pid = None
-existing_mode = None
-if os.path.isfile(path):
-    try:
-        with open(path, encoding="utf-8") as fh:
-            d = json.load(fh) or {}
-        if pid_alive(d.get("pid")):
-            existing_started_at = d.get("started_at")
-            existing_pid = int(d.get("pid"))
-            existing_mode = d.get("mode")
-    except Exception:
-        pass
-
-# A background supervise-loop and a concurrent ordinary lead both call this
-# snapshot script. Neither may steal ownership from the live interactive
-# supervisor: the PreToolUse guard is intentionally scoped to one process
-# tree. Only the current owner may refresh its own mode; a different live PID
-# preserves the existing identity and mode verbatim.
-caller_pid = int(pid_str)
-if existing_pid is not None and existing_pid != caller_pid:
-    owner_pid = existing_pid
-    owner_mode = existing_mode or "interactive-lanes"
-else:
-    owner_pid = caller_pid
-    owner_mode = mode
-
-out = {
-    "pid": owner_pid,
-    "started_at": existing_started_at or ts,
-    "mode": owner_mode,
-}
-dir_ = os.path.dirname(path)
-os.makedirs(dir_, exist_ok=True)
-fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
-with os.fdopen(fd, "w", encoding="utf-8") as fh:
-    json.dump(out, fh, indent=2)
-os.replace(tmp, path)
-PYSENTINEL
-fi
 
 # LEAD-ANCHOR-01: true control-plane questions dir — shared across every
 # worktree of this repo, unlike HANDOFF_DIR above.

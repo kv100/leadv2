@@ -152,7 +152,7 @@ with its OWN critic + Codex review + live-verify.
 BANNED (a PreToolUse guard hard-denies these while the marker is live):
 Agent(developer|postgres-pro|frontend-developer|devops-engineer), and
 Bash glm-coder.sh bg / omp-task.sh.
-Allowed: leadv2-fanout.sh, leadv2-supervise.sh, read-only probes,
+Allowed: leadv2-fanout.sh, leadv2-lanes-snapshot.sh, read-only probes,
 Explore/general-purpose. One-off override: SUPERVISOR_ALLOW_WORKER=<reason>.
 
 ${_OFF}
