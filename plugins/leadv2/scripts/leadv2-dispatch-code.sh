@@ -3561,19 +3561,32 @@ _codex_first_byte_deadline_check() {  # <handle> <sig8>
 #     "last_agent_message":null,"completed_at":1787192578,"duration_ms":946}}
 #   (from ~/.codex/sessions/2026/08/20/rollout-2026-08-20T05-22-53-...jsonl)
 #
-# _codex_newest_rollout_since <since_epoch> -> prints the newest
-# ~/.codex/sessions/**/rollout-*.jsonl path with mtime >= since_epoch, or
-# empty. Uses python3 (already a hard dependency elsewhere in this script)
-# instead of `find -newermt`, which BSD/bfs `find` on this host does not
-# reliably support the same way GNU find does.
-_codex_newest_rollout_since() {  # <since_epoch>
-  local since="$1" codex_home
+# _codex_newest_rollout_since <since_epoch> <expected_cwd> -> prints the
+# best-guess ~/.codex/sessions/**/rollout-*.jsonl path with mtime >=
+# since_epoch on line 1, then the TOTAL count of mtime-window candidates
+# (regardless of cwd match) on line 2, for the caller to journal an
+# ambiguity warning on. Uses python3 (already a hard dependency elsewhere
+# in this script) instead of `find -newermt`, which BSD/bfs `find` on this
+# host does not reliably support the same way GNU find does.
+# nit 2-A (V3-ENV-GUARDS-01 review): a bare mtime scan of the whole
+# $CODEX_HOME/sessions tree can be judged by a SIBLING dispatch's rollout
+# (two codex arms in different lanes, same host, overlapping window).
+# session_meta.cwd (recorded by codex at session start) is a soft
+# preference, not a hard filter: when at least one window candidate's cwd
+# equals expected_cwd, pick the newest of THOSE; otherwise fall back to the
+# newest of the whole window unchanged (today's behaviour) rather than
+# risk silently losing the real rollout to a path-normalisation mismatch
+# (symlinked worktrees, trailing slashes). Either way the total window
+# count is reported so the caller can journal when it is > 1.
+_codex_newest_rollout_since() {  # <since_epoch> <expected_cwd>
+  local since="$1" expected_cwd="$2" codex_home
   codex_home="${CODEX_HOME:-$HOME/.codex}"
-  python3 - "$codex_home" "$since" 2>/dev/null <<'PY'
-import os, sys
+  python3 - "$codex_home" "$since" "$expected_cwd" 2>/dev/null <<'PY'
+import json, os, sys
 root = os.path.join(sys.argv[1], "sessions")
 since = int(sys.argv[2])
-best, best_m = None, -1
+expected_cwd = sys.argv[3]
+candidates = []  # (mtime, path, cwd)
 for dirpath, _dirnames, filenames in os.walk(root):
     for fn in filenames:
         if not (fn.startswith("rollout-") and fn.endswith(".jsonl")):
@@ -3583,10 +3596,22 @@ for dirpath, _dirnames, filenames in os.walk(root):
             m = os.path.getmtime(p)
         except OSError:
             continue
-        if m < since or m <= best_m:
+        if m < since:
             continue
-        best, best_m = p, m
-print(best or "")
+        cwd = None
+        try:
+            with open(p, "r", errors="replace") as fh:
+                first = fh.readline()
+            d = json.loads(first)
+            if d.get("type") == "session_meta":
+                cwd = d.get("payload", {}).get("cwd")
+        except (OSError, ValueError):
+            cwd = None
+        candidates.append((m, p, cwd))
+candidates.sort(key=lambda t: t[0])
+pool = [c for c in candidates if expected_cwd and c[2] == expected_cwd] or candidates
+print(pool[-1][1] if pool else "")
+print(len(candidates))
 PY
 }
 
@@ -3625,24 +3650,33 @@ sys.exit(1)
 PY
 }
 
-# _codex_instant_complete_deadline_check <sig8> <since_epoch> -> 0 = proceed
-# (a real terminal message was found, or the window elapsed with no dead
-# shape -- the existing early-verdict/first-byte machinery covers every other
-# outcome), 7 = declared dead (task_complete + last_agent_message null found
-# within the window) -- caller must abort the reservation and spill, exactly
-# like _codex_first_byte_deadline_check's rc=7 contract. Records a provider
-# strike via the same record-quota-lockout path on the dead verdict.
-_codex_instant_complete_deadline_check() {  # <sig8> <since_epoch>
-  local sig8="$1" since="$2"
+# _codex_instant_complete_deadline_check <sig8> <since_epoch> [expected_cwd]
+# -> 0 = proceed (a real terminal message was found, a non-terminal event
+# newer than spawn was seen -- job demonstrably alive, nit 2-B -- or the
+# window elapsed with no dead shape; the existing early-verdict/first-byte
+# machinery covers every other outcome), 7 = declared dead (task_complete +
+# last_agent_message null found within the window) -- caller must abort the
+# reservation and spill, exactly like _codex_first_byte_deadline_check's
+# rc=7 contract. Records a provider strike via the same record-quota-lockout
+# path on the dead verdict. expected_cwd (nit 2-A) scopes the rollout scan
+# to this dispatch's own --cwd when possible; ambiguity (>1 window
+# candidate) is journaled either way.
+_codex_instant_complete_deadline_check() {  # <sig8> <since_epoch> [expected_cwd]
+  local sig8="$1" since="$2" expected_cwd="${3:-}"
   local deadline="${LEADV2_CODEX_INSTANT_COMPLETE_SECS:-30}"
   [[ "${deadline}" =~ ^[0-9]+$ ]] || deadline=30
   [[ "${deadline}" != "0" ]] || return 0
   local poll_s="${LEADV2_ARM_EARLY_VERDICT_POLL_S:-1}"
   [[ "${poll_s}" =~ ^[0-9]+([.][0-9]+)?$ ]] || poll_s=1
   [[ "${poll_s}" != "0" && "${poll_s}" != "0.0" ]] || poll_s=0.1
-  local started="${SECONDS}" f rc
+  local started="${SECONDS}" scan_out f count rc
   while true; do
-    f="$(_codex_newest_rollout_since "${since}")"
+    scan_out="$(_codex_newest_rollout_since "${since}" "${expected_cwd}")"
+    f="$(printf '%s\n' "${scan_out}" | sed -n '1p')"
+    count="$(printf '%s\n' "${scan_out}" | sed -n '2p')"
+    if [[ "${count}" =~ ^[0-9]+$ && ${count} -gt 1 ]]; then
+      emit decision "arm_dead_instant_complete_ambiguous_rollout arm=codex task=${sig8} candidates=${count} picked=${f}"
+    fi
     if [[ -n "${f}" ]]; then
       _codex_rollout_dead_shape "${f}"; rc=$?
       if [[ ${rc} -eq 0 ]]; then
@@ -3652,6 +3686,12 @@ _codex_instant_complete_deadline_check() {  # <sig8> <since_epoch>
         return 7
       elif [[ ${rc} -eq 2 ]]; then
         return 0   # terminal, real last_agent_message -- healthy, proceed
+      else
+        # rc=1: no terminal event yet, but this rollout only qualified
+        # because its mtime already postdates spawn -- some non-terminal
+        # event has landed. The job is demonstrably alive; no reason to pay
+        # the rest of the window waiting for its terminal event (nit 2-B).
+        return 0
       fi
     fi
     if (( SECONDS - started >= deadline )); then
@@ -3772,7 +3812,7 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
       # above passed) but the job may STILL be dead -- codex-companion can
       # emit task_complete/last_agent_message=null within 1-3s and detach.
       local _ic_rc=0
-      _codex_instant_complete_deadline_check "${sig8}" "${_codex_spawn_epoch}" || _ic_rc=$?
+      _codex_instant_complete_deadline_check "${sig8}" "${_codex_spawn_epoch}" "${WORK_ROOT}" || _ic_rc=$?
       if [[ ${_ic_rc} -eq 7 ]]; then
         LAST_ARM_OUTCOME="codex_dead_instant_complete"
         emit decision "arm_refused by=router model=codex task=${sig8} reason=instant_complete"
