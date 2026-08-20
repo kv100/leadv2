@@ -31,6 +31,11 @@ set -uo pipefail
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_LIVE="$(cd "${TESTS_DIR}/.." && pwd)"
 LEADV2_REPO="$(git -C "${SCRIPTS_LIVE}" rev-parse --show-toplevel 2>/dev/null || true)"
+# case_4_diff_golden's "pre" baseline must predate BUILDER-SELFCHECK-GATE-01
+# (merged 53d4465), not just be "HEAD" — once the gate itself is committed,
+# archiving literal HEAD makes live==pre and the golden comparison tautological
+# (it can never go red again). 1806b4f is the gate's immediate parent commit.
+PRE_GATE_REF="1806b4f43394f4799c244947a405bcd3ea6e1ec3"
 
 ORIG_HOME="${HOME}"
 if [[ -z "${ROG1_SANDBOXED:-}" ]]; then
@@ -227,10 +232,14 @@ case_4_diff_golden() { # <scripts_dir>
     rm -f "${live_gate}" "${pre_gate}"
     return 1
   fi
-  # no git history (no LEADV2_REPO) => no pre-change baseline to compare against
+  # no git history (no LEADV2_REPO), or the fixed pre-gate ref is unreachable
+  # from this checkout (shallow clone / rewritten history) => no pre-change
+  # baseline to compare against; skip rather than silently comparing HEAD to
+  # itself.
   [[ -n "${LEADV2_REPO}" ]] || { rm -f "${live_gate}" "${pre_gate}"; return 2; }
+  git -C "${LEADV2_REPO}" cat-file -e "${PRE_GATE_REF}" 2>/dev/null || { rm -f "${live_gate}" "${pre_gate}"; return 2; }
   prefix_dir="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-rog1-pre.XXXXXX")"
-  git -C "${LEADV2_REPO}" archive HEAD plugins/leadv2/scripts 2>/dev/null | tar -x -C "${prefix_dir}" 2>/dev/null
+  git -C "${LEADV2_REPO}" archive "${PRE_GATE_REF}" plugins/leadv2/scripts 2>/dev/null | tar -x -C "${prefix_dir}" 2>/dev/null
   if [[ ! -f "${prefix_dir}/plugins/leadv2/scripts/leadv2-dispatch-product-close.sh" ]]; then
     rm -rf "${prefix_dir}"; rm -f "${live_gate}" "${pre_gate}"
     return 2
@@ -361,7 +370,14 @@ LANE_DELIVERABLE: report:docs/handoff/R1/report.md')"
 CASE_NAMES=(); CASE_RCS=()
 run_case() { # <name> <fn> <scripts_dir>
   local name="$1" fn="$2" sd="$3" rc
-  "${fn}" "${sd}" >/dev/null 2>&1; rc=$?
+  # Some gate helpers source strict-mode libraries.  Capture an expected red
+  # through an `if` so `errexit` cannot abort the comparison arm before its
+  # result is recorded.
+  if "${fn}" "${sd}" >/dev/null 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
   CASE_NAMES+=("${name}"); CASE_RCS+=("${rc}")
   if [[ ${rc} -eq 2 ]]; then
     log "SKIPPED-CANNOT-RUN: ${name}"
