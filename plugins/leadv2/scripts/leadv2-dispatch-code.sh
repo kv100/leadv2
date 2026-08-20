@@ -695,6 +695,330 @@ _set_worktree_pin_line() {
   WORKTREE_PIN_LINE="WORKTREE PIN: all edits go in ${WORK_ROOT}; do NOT cd to the main checkout even if the mission text names it."
 }
 
+# ── V3-GLM-LADDER-01: deferred-GLM park, codex credit watchdog, loud sonnet exceptions ──
+# Runtime state lives under docs/leadv2/ (plugin-owned, gitignored). All three helpers
+# are additive observability -- none may ever abort cmd_resolve (R8: callers wrap with
+# `|| true`) and none may take fd 9 (the dispatch lock fd; R3 -- fd 9 is closed before a
+# detached worker spawn and any lock taken here must never be inherited by one). Fd 8 is
+# this subsystem's own sidecar lock fd, scoped tightly around each read-modify-write and
+# always closed (`8>&-`) before returning -- never held across a spawn_worker call.
+_leadv2_glm_deferred_path() { printf '%s/docs/leadv2/glm-deferred.jsonl' "${PROJECT_ROOT}"; }
+_leadv2_arm_exceptions_path() { printf '%s/docs/leadv2/.arm-exceptions-%s' "${PROJECT_ROOT}" "${1}"; }
+_leadv2_codex_credits_stamp_path() { printf '%s/docs/leadv2/.codex-credits-empty.stamp' "${PROJECT_ROOT}"; }
+
+# R4: a sig8 counts as un-retried iff no row for it carries a non-empty retried_at.
+_glm_deferred_is_retried() {
+  local sig8="$1" path="$2"
+  [[ -r "${path}" ]] || return 1
+  python3 -c '
+import json, sys
+sig8, path = sys.argv[1], sys.argv[2]
+retried = False
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if row.get("sig8") == sig8 and row.get("retried_at"):
+                retried = True
+except OSError:
+    pass
+sys.exit(0 if retried else 1)
+' "${sig8}" "${path}"
+}
+
+# $1=sig8 $2=reason(LAST_ARM_OUTCOME) — park a quota-refused glm-fitting task.
+# Gate (design §4): caller only invokes this when candidate==glm at refusal time, which
+# is already the router's own answer to "is this task glm-fitting" -- do not re-classify.
+_glm_park_deferred() {
+  local sig8="$1" reason="$2"
+  local path; path="$(_leadv2_glm_deferred_path)"
+  mkdir -p "$(dirname "${path}")" 2>/dev/null || return 0
+  local mission_path="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-mission.md"
+  [[ -f "${mission_path}" ]] || mission_path=""
+  local refused_at; refused_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local quota_pct="null"
+  if [[ -n "${v2_headroom:-}" ]]; then
+    quota_pct="$(python3 -c '
+import json, sys
+try:
+    h = json.loads(sys.argv[1])
+    v = h.get("glm") if isinstance(h, dict) else None
+    print(json.dumps(v) if isinstance(v, (int, float)) else "null")
+except Exception:
+    print("null")
+' "${v2_headroom}" 2>/dev/null || printf 'null')"
+  fi
+  local row
+  row="$(python3 -c '
+import json, sys
+sig8, mission_path, founder_task_id, refused_at, reason, quota_pct_raw = sys.argv[1:7]
+try:
+    quota_pct = json.loads(quota_pct_raw)
+except Exception:
+    quota_pct = None
+print(json.dumps({
+    "sig8": sig8, "mission_path": mission_path, "founder_task_id": founder_task_id,
+    "refused_at": refused_at, "reason": reason, "quota_pct": quota_pct,
+    "retried_at": None,
+}, separators=(",", ":")))
+' "${sig8}" "${mission_path}" "${founder_task_id:-}" "${refused_at}" "${reason}" "${quota_pct}" 2>/dev/null)"
+  [[ -n "${row}" ]] || return 0
+  (
+    flock 8
+    printf '%s\n' "${row}" >>"${path}"
+    # R1: cap at newest 500 rows, drop rows older than 7 days; state the truncation.
+    python3 -c '
+import datetime, json, sys
+path = sys.argv[1]
+cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
+rows = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            ts = row.get("refused_at", "")
+            try:
+                when = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+            except Exception:
+                when = None
+            if when is not None and when < cutoff:
+                continue
+            rows.append(row)
+except OSError:
+    sys.exit(0)
+truncated = len(rows) > 500
+rows = rows[-500:]
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    for row in rows:
+        fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    if truncated:
+        fh.write(json.dumps({"_truncated": True}, separators=(",", ":")) + "\n")
+import os
+os.replace(tmp, path)
+' "${path}" 2>/dev/null || true
+  ) 8>"${path}.lock"
+  true
+}
+
+# glm-deferred subcommand: list / retry-all / json.
+cmd_glm_deferred() {
+  local mode="list"
+  case "${1:-}" in
+    ""|--list) mode="list" ;;
+    --json) mode="json" ;;
+    --retry-all) mode="retry-all" ;;
+    *) printf 'usage: %s glm-deferred [--list|--retry-all|--json]\n' "${SCRIPT_NAME}" >&2; exit 2 ;;
+  esac
+  local path; path="$(_leadv2_glm_deferred_path)"
+  if [[ ! -r "${path}" ]]; then
+    if [[ "${mode}" == "json" ]]; then
+      printf '[]\n'
+    else
+      printf 'no deferred glm tasks\n'
+    fi
+    return 0
+  fi
+  case "${mode}" in
+    list|json)
+      python3 -c '
+import json, sys
+path, mode = sys.argv[1], sys.argv[2]
+rows = []
+retried = set()
+raw = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if "_truncated" in row:
+                continue
+            raw.append(row)
+except OSError:
+    raw = []
+for row in raw:
+    if row.get("retried_at"):
+        retried.add(row.get("sig8"))
+pending = [r for r in raw if r.get("sig8") not in retried]
+if mode == "json":
+    print(json.dumps(pending, separators=(",", ":")))
+else:
+    if not pending:
+        print("no deferred glm tasks")
+    for r in pending:
+        print("%s %s quota=%s %s" % (
+            r.get("sig8", "-"), r.get("refused_at", "-"), r.get("quota_pct", "null"),
+            r.get("mission_path", "") or "-",
+        ))
+' "${path}" "${mode}"
+      ;;
+    retry-all)
+      local -a pending_sig8s pending_missions
+      local _rp_json
+      _rp_json="$(python3 -c '
+import json, sys
+path = sys.argv[1]
+raw = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if "_truncated" in row:
+                continue
+            raw.append(row)
+except OSError:
+    raw = []
+retried = {r.get("sig8") for r in raw if r.get("retried_at")}
+pending = [r for r in raw if r.get("sig8") not in retried]
+for r in pending:
+    print("%s\t%s" % (r.get("sig8", ""), r.get("mission_path", "") or ""))
+' "${path}")"
+      if [[ -z "${_rp_json}" ]]; then
+        printf 'no deferred glm tasks\n'
+        return 0
+      fi
+      local _qg_bin="${LEADV2_ROUTER_V2_BIN:-${SCRIPT_DIR}/leadv2-router-v2.sh}"
+      local _line _sig8 _mpath
+      while IFS=$'\t' read -r _sig8 _mpath; do
+        [[ -n "${_sig8}" ]] || continue
+        # R4a: never re-dispatch a sig8 that already has a terminal row.
+        if bash "${LEDGER_BIN}" exists "${_sig8}" >/dev/null 2>&1; then
+          printf 'already_terminal %s\n' "${_sig8}"
+          continue
+        fi
+        local _rp_out _rp_eligible
+        _rp_out="$(bash "${_qg_bin}" resolve --chain glm --task-id "${_sig8}" 2>/dev/null)"
+        _rp_eligible="$(printf '%s\n' "${_rp_out}" | sed -n 's/^eligible=//p')"
+        if [[ "${_rp_eligible}" != "glm" ]]; then
+          printf 'still_gated %s\n' "${_sig8}"
+          continue
+        fi
+        if [[ -n "${_mpath}" && -f "${_mpath}" ]]; then
+          bash "${BASH_SOURCE[0]}" "@${_mpath}" >/dev/null 2>&1 || true
+        fi
+        local _retried_at; _retried_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        local _new_row
+        _new_row="$(python3 -c '
+import json, sys
+sig8, mission_path, retried_at = sys.argv[1:4]
+print(json.dumps({
+    "sig8": sig8, "mission_path": mission_path, "founder_task_id": "",
+    "refused_at": retried_at, "reason": "retry_all", "quota_pct": None,
+    "retried_at": retried_at,
+}, separators=(",", ":")))
+' "${_sig8}" "${_mpath}" "${_retried_at}")"
+        ( flock 8; printf '%s\n' "${_new_row}" >>"${path}"; ) 8>"${path}.lock"
+        printf 'retried %s\n' "${_sig8}"
+      done <<<"${_rp_json}"
+      ;;
+  esac
+}
+
+# $1=credits-json (from route_headroom_chosen's payload) — emit ONE deduped
+# codex_credits_empty journal line per 24h window. R8: caller wraps with `|| true`.
+_codex_credits_watch() {
+  local credits_json="${1:-}"
+  [[ -n "${credits_json}" && "${credits_json}" != "{}" ]] || return 0
+  local has_credits
+  has_credits="$(python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+    codex = d.get("codex") if isinstance(d, dict) else None
+    if not isinstance(codex, dict):
+        print("unknown"); sys.exit(0)
+    if "has_credits" in codex:
+        print("true" if codex.get("has_credits") else "false")
+    elif "balance" in codex:
+        print("false" if str(codex.get("balance")) == "0" else "true")
+    else:
+        print("unknown")
+except Exception:
+    print("unknown")
+' "${credits_json}" 2>/dev/null || printf 'unknown')"
+  local stamp; stamp="$(_leadv2_codex_credits_stamp_path)"
+  mkdir -p "$(dirname "${stamp}")" 2>/dev/null || return 0
+  if [[ "${has_credits}" == "true" ]]; then
+    rm -f "${stamp}" 2>/dev/null || true
+    return 0
+  fi
+  [[ "${has_credits}" == "false" ]] || return 0
+  (
+    flock 8
+    local now since_line since fresh=1
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [[ -r "${stamp}" ]]; then
+      since_line="$(head -1 "${stamp}" 2>/dev/null)"
+      since="${since_line#since=}"
+      if [[ -n "${since}" ]] && python3 -c '
+import datetime, sys
+since_raw, now_raw = sys.argv[1], sys.argv[2]
+try:
+    since = datetime.datetime.strptime(since_raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.strptime(now_raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    sys.exit(0 if (now - since).total_seconds() < 86400 else 1)
+except Exception:
+    sys.exit(1)
+' "${since}" "${now}"; then
+        fresh=0
+      fi
+    fi
+    if [[ ${fresh} -eq 1 ]]; then
+      printf 'since=%s\n' "${now}" >"${stamp}.tmp" && mv "${stamp}.tmp" "${stamp}"
+      emit decision "codex_credits_empty since=${now}"
+    fi
+  ) 8>"${stamp}.lock"
+  true
+}
+
+# $1=reason — bump today's sonnet-fallback-after-glm-refusal counter.
+# _LEADV2_EXC_DAY is computed once per cmd_resolve invocation (R6) so one dispatch
+# never straddles two daily files even across a UTC-midnight boundary.
+_arm_exception_bump() {
+  local reason="$1"
+  local day="${_LEADV2_EXC_DAY:-$(date -u +%Y%m%d)}"
+  local path; path="$(_leadv2_arm_exceptions_path "${day}")"
+  mkdir -p "$(dirname "${path}")" 2>/dev/null || return 0
+  (
+    flock 8
+    local count=0
+    if [[ -r "${path}" ]]; then
+      count="$(sed -n 's/^count=//p' "${path}" 2>/dev/null | head -1)"
+      [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+    fi
+    count=$((count + 1))
+    {
+      printf 'count=%s\n' "${count}"
+      printf 'last_reason=%s\n' "${reason}"
+    } >"${path}.tmp" && mv "${path}.tmp" "${path}"
+  ) 8>"${path}.lock"
+  true
+}
+
 # Journal + stderr-emit one structured line. $1=journal-type, $2..=text (one logical line).
 # Invoked via `bash <path>` (not direct exec): leadv2-journal.sh ships non-executable, and
 # leadv2-state-atomic-write.sh:260 sets this idiom. LEADV2_JOURNAL_BIN override (e.g.
@@ -3198,6 +3522,10 @@ Usage:
                 [--reviewer <s>] [--run-id <s>]
                 Record a Codex review verdict; refuse a duplicate diff-hash (ATOMIC).
   $SCRIPT_NAME status          Print both ledgers for this repo.
+  $SCRIPT_NAME glm-deferred [--list|--retry-all|--json]
+                List/retry/json-dump glm tasks parked after a quota refusal
+                (docs/leadv2/glm-deferred.jsonl). --retry-all re-dispatches any row whose
+                quota window has reopened; manual-only, no auto-retry daemon.
 Env: LEADV2_DISPATCH_ENFORCE=0 disables dedup (no-op/pass-through). LEADV2_DISPATCH_SPAWN=0
      disables worker launch (resolve-only). LEADV2_DISPATCH_CACHE_DIR relocates the ledgers
      (tests). LEADV2_DISPATCH_FENCE_LOG sets the fence deny-log path. LEADV2_DISPATCH_GLM_BIN
@@ -3318,6 +3646,9 @@ cmd_status() {
 
 # ── resolve (default) path ────────────────────────────────────────────────────────
 cmd_resolve() {
+  # R6: computed once for this invocation so a single dispatch never straddles two
+  # daily counter files even if it runs across a UTC-midnight boundary.
+  local _LEADV2_EXC_DAY; _LEADV2_EXC_DAY="$(date -u +%Y%m%d)"
   local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0 lane_deliverable=""
   local -a phase_waivers=()
@@ -3982,6 +4313,10 @@ confirmation-seeking; only for a decision you cannot make yourself."
     _v2_scores="$(python3 -c 'import json,sys; v=json.loads(sys.argv[1] or "[]"); print(json.dumps({r["arm"]:r.get("score") for r in v}, sort_keys=True, separators=(",", ":")))' "${v2_vector:-[]}" 2>/dev/null || printf '{}')"
     _v2_unknown="$(python3 -c 'import json,sys; h=json.loads(sys.argv[1]); print(",".join(sorted(k for k,v in h.items() if v is None)) or "none")' "${v2_headroom}" 2>/dev/null || printf 'none')"
     emit decision "route_headroom_chosen task=${sig8} arm=${candidate_arms[0]} after=initial ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") headroom=${v2_headroom} credits=${v2_credits:-{}} scores=${_v2_scores} source=router_v2 unknown=${_v2_unknown}"
+    # NOT ${v2_credits:-{}} -- bash misparses a {-default containing its own
+    # braces (adds a stray trailing "}"); plain expansion + the helper's own
+    # empty-string no-op does the same job safely.
+    _codex_credits_watch "${v2_credits:-}" || true
   fi
 
   # SUPERVISOR-AUDIT-01 model-stamp extension (founder 2026-07-30): stamp the
@@ -4065,6 +4400,18 @@ ${mission}"
         # pretending close evidence will arrive.  Do not kill the independently-owned worker.
         log_err "product close gate could not be launched for task=${sig8}"
       fi
+      # V3-GLM-LADDER-01 Lever 3: attempted[] (not LAST_ARM_OUTCOME) is the durable
+      # record of what was refused earlier in the loop -- by the time sonnet lands here,
+      # LAST_ARM_OUTCOME has been overwritten by sonnet's own spawn outcome.
+      if [[ "${candidate}" == "sonnet" ]]; then
+        local _attempted_entry
+        for _attempted_entry in "${attempted[@]}"; do
+          if [[ "${_attempted_entry}" == glm_refused_* ]]; then
+            _arm_exception_bump "glm quota" || true
+            break
+          fi
+        done
+      fi
       emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}"
       printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}"
       # A product dispatch's terminal state is owned by dispatch-product-close.sh (it runs
@@ -4092,6 +4439,13 @@ ${mission}"
       ;;
     7)
       attempted+=("${LAST_ARM_OUTCOME:-${candidate}_refused}")
+      # V3-GLM-LADDER-01 Lever 1: park BEFORE the re-resolve/fallthrough below, so a
+      # crash between refusal and the sonnet respawn still leaves the task recoverable.
+      # Gate: candidate==glm at refusal time is already the router's own "glm-fitting"
+      # answer -- do not re-classify (design §4).
+      if [[ "${candidate}" == "glm" && "${LAST_ARM_OUTCOME:-}" == glm_refused_* ]]; then
+        _glm_park_deferred "${sig8}" "${LAST_ARM_OUTCOME}" || true
+      fi
       if [[ "${LAST_ARM_OUTCOME:-}" == "glm_refused_quota_gate" && -z "${_reordered_after_quota_gate}" && "${LEADV2_ROUTER_V2_ON_QUOTA_GATE:-1}" != "0" ]]; then
         _reordered_after_quota_gate=1
         local _qg_bin="${LEADV2_ROUTER_V2_BIN:-${SCRIPT_DIR}/leadv2-router-v2.sh}" _qg_chain _qg_out _qg_rc _qg_eligible _qg_ordered _qg_headroom _qg_vector _qg_credits
@@ -4126,6 +4480,7 @@ ${mission}"
               _qg_scores="$(python3 -c 'import json,sys; v=json.loads(sys.argv[1] or "[]"); print(json.dumps({r["arm"]:r.get("score") for r in v}, sort_keys=True, separators=(",", ":")))' "${_qg_vector:-[]}" 2>/dev/null || printf '{}')"
               _qg_unknown="$(python3 -c 'import json,sys; h=json.loads(sys.argv[1]); print(",".join(sorted(k for k,v in h.items() if v is None)) or "none")' "${_qg_headroom}" 2>/dev/null || printf 'none')"
               emit decision "route_headroom_chosen task=${sig8} arm=${candidate_arms[0]} after=glm_quota_gate ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") headroom=${_qg_headroom} credits=${_qg_credits:-{}} scores=${_qg_scores} source=router_v2 unknown=${_qg_unknown}"
+              _codex_credits_watch "${_qg_credits:-}" || true
               _quota_gate_reroute=1
               _reenter=1
               break
@@ -4407,6 +4762,7 @@ cmd_record_quota_lockout() {
 case "${1:-}" in
   record-review) shift; cmd_record_review "$@" ;;
   status)        cmd_status ;;
+  glm-deferred)  shift; cmd_glm_deferred "$@" ;;
   advance-arm)   shift; cmd_advance_arm "$@" ;;
   record-quota-lockout) shift; cmd_record_quota_lockout "$@" ;;
   sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;

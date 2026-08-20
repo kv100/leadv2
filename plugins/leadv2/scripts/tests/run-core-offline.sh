@@ -226,6 +226,7 @@ SUITE_DEFS=(
   "review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)|||bash $TEST_DIR/test-review-round-exhaustive.sh"
   "claim-evidence gate (CLAIM-EVIDENCE-GATE-01 preamble + round-1 lens)|||bash $TEST_DIR/test-claim-evidence-gate.sh"
   "broad-status relay scoping|||bash $TEST_DIR/test-broad-status-relay-scope.sh"
+  "deferred-GLM ladder (V3-GLM-LADDER-01)|||bash $TEST_DIR/test-glm-deferred-ladder.sh"
 )
 
 _core_offline_run_entry() {
