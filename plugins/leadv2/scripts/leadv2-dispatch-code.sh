@@ -433,6 +433,19 @@ if [[ ! -f "${ROUTING_YAML}" ]]; then
 fi
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
+# V3-WORKER-MESSAGING-01 slice 1: tier-0 durable event emitter (docs/specs/
+# worker-messaging-v3.md §1-2,§6). Overridable so tests can point at /bin/true
+# and avoid writing to the real ~/.claude/cache/leadv2-events tree.
+EVENT_BIN="${LEADV2_EVENT_BIN:-${SCRIPT_DIR}/leadv2-event.sh}"
+# _emit_event <kind> <task> [<arm>] [<handle>] [<detail>] -- fail-open (`|| true`,
+# stdout/stderr fully redirected): a missing/broken emitter binary must never
+# affect this dispatcher's own control flow. --repo is this dispatch's own
+# repo_slug, matching the per-repo JSONL convention the spec's Tier-0 uses.
+_emit_event() {
+  local kind="$1" task="${2:-}" arm="${3:-}" handle="${4:-}" detail="${5:-}"
+  bash "${EVENT_BIN}" emit --repo "$(repo_slug)" --kind "${kind}" --task "${task}" \
+    --arm "${arm}" --handle "${handle}" --detail "${detail}" >/dev/null 2>&1 || true
+}
 # T-o (SUPERVISOR-AUDIT-01): the terminal-state ledger CLI. ALWAYS invoked as a subprocess
 # (`bash "${LEDGER_BIN}" ...`) -- never `source`d. leadv2-dispatch-ledger.sh's own doc
 # header explains why: sourcing it collided with this script's own fd-9 flock (dispatch_
@@ -1198,6 +1211,10 @@ emit() {
 # <sig8>-<epoch>-<pid> (_dl_attempt_token above), not a bare pid, so a recycled pid across
 # reboots/days can never be misread as the same attempt.
 _dl_note() {
+  # V3-WORKER-MESSAGING-01 slice 1: worker_terminal event, independent of the
+  # TERMINAL_LEDGER flag below -- this is a second, cheaper reader surface
+  # (spec §6/§7.6 "mirror for now"), not gated on the ledger's own on/off switch.
+  _emit_event worker_terminal "$1" "" "" "$2:$3"
   [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || return 0
   # N7F-LANE-NAME: 7th positional is the display name, read from the DISPATCH_LANE_NAME
   # global (never from this fn's own args -- its 5-arg signature stays unchanged so its
@@ -3272,6 +3289,7 @@ _spawn_worker_body() {
   # field appended after handle= would get swallowed into the captured handle string.
   local _spawn_attempt; _spawn_attempt="$(_dl_attempt_token "${sig8}")"
   emit decision "worker_spawned by=router model=${arm} task=${sig8} attempt=${_spawn_attempt} handle=${handle}"
+  _emit_event worker_spawned "${sig8}" "${arm}" "${handle}"
   printf 'worker_spawned model=%s task=%s attempt=%s handle=%s\n' "${arm}" "${sig8}" "${_spawn_attempt}" "${handle}"
   # ARM-PRODUCES-NOTHING-02: record the arm registration so the close gate's silent-arm
   # probe can distinguish "arm was spawned but wrote nothing" from "no arm was ever spawned".
@@ -3916,6 +3934,7 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
       if [[ ${_wl_rc} -eq 7 ]]; then
         LAST_ARM_OUTCOME="codex_dead_worker_liveness"
         emit decision "arm_refused by=router model=codex task=${sig8} reason=worker_liveness"
+        _emit_event arm_refused "${sig8}" codex "${handle}" worker_liveness
         log "spawn(codex) worker liveness probe declared dead; spilling to next arm"
         local wl_abort_rc=0
         dispatch_abort "${token}" || wl_abort_rc=$?
@@ -4389,6 +4408,7 @@ cmd_resolve() {
         bash "${_ask_bin}" "dispatch-${sig8}" "Architect prepass parked after ${ARCHITECT_PREPASS_ATTEMPTS} attempts (last: ${ARCHITECT_PREPASS_REASON:-unknown}). Retry or abort?" \
           --option "retry|Retry prepass" --option "abort|Abort task" \
           --default-option "retry" --no-block >/dev/null 2>&1 || true
+        _emit_event question_asked "${sig8}" "" "" "prepass_parked_retry_or_abort"
       fi
       exit 3
     fi
