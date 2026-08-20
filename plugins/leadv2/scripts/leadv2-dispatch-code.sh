@@ -2746,9 +2746,45 @@ LANE_LIVENESS_BIN="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lan
 # stdout carries the handle, stderr is retained only for the failure message. This is
 # launcher-format-agnostic (no PID-pattern grep needed). The wrapper owns the stderr
 # tempfile so every early `return` in the body still cleans it up.
+# V3-ENV-GUARDS-01 item 3: worker-launcher environment asserts.
+# _worker_env_asserts <arm> <sig8> -> always 0, journals exactly two lines.
+# Runs inside dispatch-code's OWN process, called once at the top of
+# spawn_worker() before any launcher is invoked -- plain unset/export here is
+# inherited by every launcher this process execs next (no env -i rewrite
+# needed; the candidate loop spawns one arm at a time per process, so this
+# process-global mutation cannot race a sibling arm).
+#   A1: CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS must never reach a worker (a
+#       stray shell profile on the host exporting =1 would leak into every
+#       worker and regress routing) -- unset unless already unset/0.
+#   A2: CLAUDE_CODE_ENABLE_TODO_TOOLS -- CC 2.1.233 stopped shipping the
+#       Task-tool family (TaskCreate/Update/List, TodoWrite) by default on
+#       Sonnet 5/Opus 4.8+; leadv2-continuation-guard.sh counts TaskCreate/
+#       TaskUpdate as productive tool calls and hooks.json registers a
+#       TaskCreated event, so a worker without these tools is mis-scored and
+#       the event never fires. Set =1 unless opted out via
+#       LEADV2_WORKER_TODO_TOOLS=0.
+_worker_env_asserts() {  # <arm> <sig8>
+  local arm="$1" sig8="$2"
+  local ateams="${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}"
+  if [[ -n "${ateams}" && "${ateams}" != "0" ]]; then
+    unset CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+    emit decision "worker_env_assert arm=${arm} task=${sig8} var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=unset was=${ateams}"
+  else
+    emit decision "worker_env_assert arm=${arm} task=${sig8} var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok"
+  fi
+  if [[ "${LEADV2_WORKER_TODO_TOOLS:-1}" == "0" ]]; then
+    emit decision "worker_env_assert arm=${arm} task=${sig8} var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=skip reason=opt_out"
+  else
+    export CLAUDE_CODE_ENABLE_TODO_TOOLS=1
+    emit decision "worker_env_assert arm=${arm} task=${sig8} var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1"
+  fi
+  return 0
+}
+
 spawn_worker() {
   local errf rc
   LAST_ARM_OUTCOME="$1_failed_launcher"
+  _worker_env_asserts "$1" "$3"
   errf="$(mktemp "${TMPDIR:-/tmp}/leadv2-dispatch-err.XXXXXX")" || {
     log_err "spawn($1): could not create stderr tempfile"; return 1
   }
@@ -3401,6 +3437,117 @@ _codex_first_byte_deadline_check() {  # <handle> <sig8>
   done
 }
 
+# SD-CODEX-SILENT-INSTANT-COMPLETE-01: a codex rollout can pass the first-byte
+# check above (it wrote real bytes -- observed ~100KB of context in the live
+# incident) and STILL be dead: codex-companion emits a `task_complete` event
+# with `last_agent_message: null` within 1-3s of `task_started` and detaches.
+# No prior guard catches this shape because bytes DID land. Live probe of the
+# exact dead event (this session, 2026-08-20):
+#   {"timestamp":"2026-08-20T02:22:58.199Z","type":"event_msg","payload":
+#    {"type":"task_complete","turn_id":"01a01cfa-8ccd-7101-bdd7-b1c4cec4af81",
+#     "last_agent_message":null,"completed_at":1787192578,"duration_ms":946}}
+#   (from ~/.codex/sessions/2026/08/20/rollout-2026-08-20T05-22-53-...jsonl)
+#
+# _codex_newest_rollout_since <since_epoch> -> prints the newest
+# ~/.codex/sessions/**/rollout-*.jsonl path with mtime >= since_epoch, or
+# empty. Uses python3 (already a hard dependency elsewhere in this script)
+# instead of `find -newermt`, which BSD/bfs `find` on this host does not
+# reliably support the same way GNU find does.
+_codex_newest_rollout_since() {  # <since_epoch>
+  local since="$1" codex_home
+  codex_home="${CODEX_HOME:-$HOME/.codex}"
+  python3 - "$codex_home" "$since" 2>/dev/null <<'PY'
+import os, sys
+root = os.path.join(sys.argv[1], "sessions")
+since = int(sys.argv[2])
+best, best_m = None, -1
+for dirpath, _dirnames, filenames in os.walk(root):
+    for fn in filenames:
+        if not (fn.startswith("rollout-") and fn.endswith(".jsonl")):
+            continue
+        p = os.path.join(dirpath, fn)
+        try:
+            m = os.path.getmtime(p)
+        except OSError:
+            continue
+        if m < since or m <= best_m:
+            continue
+        best, best_m = p, m
+print(best or "")
+PY
+}
+
+# _codex_rollout_dead_shape <rollout_file> -> rc0 = dead shape found (terminal
+# task_complete, last_agent_message is null/absent); rc2 = terminal
+# task_complete with a real message (healthy completion, not dead); rc1 =
+# no terminal task_complete event in the file yet (still running, or file
+# unreadable/missing). Scans from the end -- task_complete is always the
+# last event_msg of a turn.
+_codex_rollout_dead_shape() {  # <rollout_file>
+  local f="$1"
+  [[ -n "${f}" && -f "${f}" ]] || return 1
+  python3 - "$f" 2>/dev/null <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path, "r", errors="replace") as fh:
+        lines = fh.readlines()
+except OSError:
+    sys.exit(1)
+for line in reversed(lines):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except ValueError:
+        continue
+    if d.get("type") != "event_msg":
+        continue
+    payload = d.get("payload")
+    if not isinstance(payload, dict) or payload.get("type") != "task_complete":
+        continue
+    sys.exit(0 if payload.get("last_agent_message") is None else 2)
+sys.exit(1)
+PY
+}
+
+# _codex_instant_complete_deadline_check <sig8> <since_epoch> -> 0 = proceed
+# (a real terminal message was found, or the window elapsed with no dead
+# shape -- the existing early-verdict/first-byte machinery covers every other
+# outcome), 7 = declared dead (task_complete + last_agent_message null found
+# within the window) -- caller must abort the reservation and spill, exactly
+# like _codex_first_byte_deadline_check's rc=7 contract. Records a provider
+# strike via the same record-quota-lockout path on the dead verdict.
+_codex_instant_complete_deadline_check() {  # <sig8> <since_epoch>
+  local sig8="$1" since="$2"
+  local deadline="${LEADV2_CODEX_INSTANT_COMPLETE_SECS:-30}"
+  [[ "${deadline}" =~ ^[0-9]+$ ]] || deadline=30
+  [[ "${deadline}" != "0" ]] || return 0
+  local poll_s="${LEADV2_ARM_EARLY_VERDICT_POLL_S:-1}"
+  [[ "${poll_s}" =~ ^[0-9]+([.][0-9]+)?$ ]] || poll_s=1
+  [[ "${poll_s}" != "0" && "${poll_s}" != "0.0" ]] || poll_s=0.1
+  local started="${SECONDS}" f rc
+  while true; do
+    f="$(_codex_newest_rollout_since "${since}")"
+    if [[ -n "${f}" ]]; then
+      _codex_rollout_dead_shape "${f}"; rc=$?
+      if [[ ${rc} -eq 0 ]]; then
+        emit decision "arm_dead_instant_complete arm=codex task=${sig8} rollout=${f}"
+        bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
+          --provider codex --hours 1 --reason arm_dead_instant_complete >/dev/null 2>&1 || true
+        return 7
+      elif [[ ${rc} -eq 2 ]]; then
+        return 0   # terminal, real last_agent_message -- healthy, proceed
+      fi
+    fi
+    if (( SECONDS - started >= deadline )); then
+      return 0   # still running past the window, no dead shape -- proceed
+    fi
+    sleep "${poll_s}"
+  done
+}
+
 # ── CORE FIX (fix-pass-4 REDESIGN): reserve (short lock) -> spawn (NO lock) -> confirm/
 # abort (short lock) -- see the FIX PASS 4 doc block at the top of this file for why
 # fix-pass-3's "one held flock across the whole sequence" was itself blocked (FD-inheritance
@@ -3434,7 +3581,11 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
   esac
   ACTIVE_DISPATCH_TOKEN="${token}"
 
-  local src=1 spawn_out=""
+  local src=1 spawn_out="" _codex_spawn_epoch=0
+  # SD-CODEX-SILENT-INSTANT-COMPLETE-01: captured before spawn so the
+  # instant-complete rollout scan below never mistakes a PRIOR unrelated
+  # codex session's rollout file for this one's.
+  [[ "${arm}" == "codex" ]] && _codex_spawn_epoch="$(date +%s)"
   if [[ "${do_spawn}" == "1" ]]; then
     spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
     printf '%s\n' "${spawn_out}"
@@ -3502,6 +3653,20 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
         local fb_abort_rc=0
         dispatch_abort "${token}" || fb_abort_rc=$?
         [[ ${fb_abort_rc} -eq 0 ]] && return 7
+        return 5
+      fi
+      # SD-CODEX-SILENT-INSTANT-COMPLETE-01: bytes landed (first-byte check
+      # above passed) but the job may STILL be dead -- codex-companion can
+      # emit task_complete/last_agent_message=null within 1-3s and detach.
+      local _ic_rc=0
+      _codex_instant_complete_deadline_check "${sig8}" "${_codex_spawn_epoch}" || _ic_rc=$?
+      if [[ ${_ic_rc} -eq 7 ]]; then
+        LAST_ARM_OUTCOME="codex_dead_instant_complete"
+        emit decision "arm_refused by=router model=codex task=${sig8} reason=instant_complete"
+        log "spawn(codex) instant-complete with null last_agent_message; spilling to next arm"
+        local ic_abort_rc=0
+        dispatch_abort "${token}" || ic_abort_rc=$?
+        [[ ${ic_abort_rc} -eq 0 ]] && return 7
         return 5
       fi
     fi

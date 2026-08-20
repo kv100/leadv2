@@ -161,7 +161,18 @@ LAST=0
 # minutes. The sentinel's own mtime ages it out if the pump stops touching it.
 THROTTLE_S="${LEADV2_SUPERVISOR_PUMP_CALLER_THROTTLE_S:-180}"
 THROTTLE_BELOW_FLOOR_S="${LEADV2_SUPERVISOR_PUMP_CALLER_THROTTLE_BELOW_FLOOR_S:-45}"
-BELOW_FLOOR_SENTINEL="${CWD_FROM_INPUT}/.claude/cache/backlog-pump/backlog-pump-below-floor"
+# PUMP-JUNK-IN-LANE-01 (second writer, same bug class as the pump's own
+# CACHE_DIR): CWD_FROM_INPUT is the worker session's cwd, frequently a lane
+# worktree — reading the sentinel there instead of the main checkout both
+# leaks a stray file into the lane AND never sees the sentinel the pump
+# actually wrote (leadv2-backlog-pump.sh now pins CACHE_DIR to its own
+# canonical root). Inline 4-line equivalent of the pump's
+# _lv2bp_canonical_root, not leadv2-state-path.sh's $RESOLVER above — that
+# resolver targets an unrelated ~/.claude/leadv2-state/ tree, not this
+# sentinel's actual writer location. Identity fallback on any failure.
+_pump_caller_canonical_root="$(cd "$CWD_FROM_INPUT" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && cd .. && pwd)"
+[[ -n "$_pump_caller_canonical_root" ]] || _pump_caller_canonical_root="$CWD_FROM_INPUT"
+BELOW_FLOOR_SENTINEL="${_pump_caller_canonical_root}/.claude/cache/backlog-pump/backlog-pump-below-floor"
 EFFECTIVE_THROTTLE="$THROTTLE_S"
 if [[ -f "$BELOW_FLOOR_SENTINEL" ]]; then
   # Resolve the sentinel mtime to a validated integer FIRST, then do the
