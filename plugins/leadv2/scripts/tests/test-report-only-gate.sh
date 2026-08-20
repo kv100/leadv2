@@ -304,6 +304,7 @@ run_dispatch() { # <root> <mission> ; prints dispatch stdout
   LEADV2_DISPATCH_SUBSESSION_BIN="$1/worker" \
   LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 \
   LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off \
+  LEADV2_FOREIGN_ROOT_GUARD=0 \
   LEADV2_DISPATCH_LANE_WORKTREE_BIN="$1/wt-stub.sh" \
     bash "${SCRIPTS_LIVE}/leadv2-dispatch-code.sh" "$2" --kind product --protected 2>&1
 }
