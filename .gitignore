@@ -20,3 +20,7 @@ docs/leadv2/glm-deferred.d/
 docs/leadv2/.arm-exceptions-*
 docs/leadv2/.codex-credits-empty.stamp
 docs/leadv2/*.lock
+# PROJECT_ROOT-leak residue from an unisolated dispatch run under tests/ (L5 fix,
+# V3-GLM-LADDER-01 R3) -- must never be tracked, or the leak becomes invisible.
+plugins/leadv2/scripts/tests/docs/
+plugins/leadv2/scripts/tests/.claude/

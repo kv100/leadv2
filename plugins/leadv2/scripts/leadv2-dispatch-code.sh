@@ -261,7 +261,7 @@ DISPATCH_MISSION_PATH="${DISPATCH_MISSION_PATH:-}"
 DISPATCH_LANE_NAME="${DISPATCH_LANE_NAME:-}"
 
 SCRIPT_NAME="leadv2-dispatch-code"
-PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}}"
+PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}}}"
 # LANDING-BLOCKER-R2 (C1): WORK_ROOT is the tree the lane's code edits land in -- it is
 # NOT PROJECT_ROOT. PROJECT_ROOT stays the control-plane root (journal, docs/handoff,
 # active.yaml, cache, ledger) everywhere below; only worker --cwd and the review-gate's

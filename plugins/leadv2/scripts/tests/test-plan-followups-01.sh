@@ -117,6 +117,8 @@ GLM_POLICY_QUOTA_LIVE="${TMP}/stub-quota.sh" \
 LEADV2_DISPATCH_ARCHITECT_BIN="${TMP}/stub-ok.sh" \
 LEADV2_DISPATCH_CODEX_BIN="${TMP}/stub-codex-refuse.sh" \
 LEADV2_PLAN_ARM_TIMEOUT_S=10 \
+LEADV2_DISPATCH_CACHE_DIR="${TMP}/cache-1b" \
+LEADV2_QUOTA_LOCKOUT_DIR="${TMP}/cache-1b/dispatch-ledger" \
 bash "${ENGINE}" --task c1b --root "${ROOT1}" --handoff "${HANDOFF1}" \
   --mode prepass --mission-file "${TMP}/mission1.txt" --no-cache \
   >"${TMP}/1b-stdout.log" 2>"${TMP}/1b-stderr.log"
