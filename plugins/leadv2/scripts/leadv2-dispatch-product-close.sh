@@ -1905,7 +1905,16 @@ if ! pc_await_worker_exit; then
   # contains that exit; review.diff/review-gate.md are still written to disk
   # as pc_scope_diff's normal side effect, and are overwritten by the
   # worker_timeout printf immediately below, same as before this fix.
-  ( pc_scope_diff ) || true
+# Capture-only diff: pc_scope_diff here would run its VERDICT logic whose
+  # journal emits (terminal=no_work cause=empty_diff) and ledger write-terminal
+  # rows misclassify this timeout (test: "timeout never emits no_work") and
+  # violate write-once ledger semantics. Raw uncommitted diff, no side effects.
+  _pc_to_lane="${LEADV2_LANE_WORK_ROOT:-}"
+  [[ -z "${_pc_to_lane}" ]] && _pc_to_lane="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
+  if [[ -n "${_pc_to_lane}" && -d "${_pc_to_lane}" ]]; then
+    mkdir -p "${HANDOFF}" 2>/dev/null || true
+    git -C "${_pc_to_lane}" diff HEAD > "${HANDOFF}/review.diff" 2>/dev/null || true
+  fi
   pc_stop_gate_autocommit
   printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
   emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout"
@@ -1933,7 +1942,16 @@ if pc_dwr_resume_once; then
     # timeout branch above -- the resumed worker was also reaped, not exited
     # cleanly.
     # Capture the handoff artifact before that checkpoint advances HEAD.
-    pc_scope_diff
+  # Capture-only diff: pc_scope_diff here would run its VERDICT logic whose
+    # journal emits (terminal=no_work cause=empty_diff) and ledger write-terminal
+    # rows misclassify this timeout (test: "timeout never emits no_work") and
+    # violate write-once ledger semantics. Raw uncommitted diff, no side effects.
+    _pc_to_lane="${LEADV2_LANE_WORK_ROOT:-}"
+    [[ -z "${_pc_to_lane}" ]] && _pc_to_lane="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
+    if [[ -n "${_pc_to_lane}" && -d "${_pc_to_lane}" ]]; then
+      mkdir -p "${HANDOFF}" 2>/dev/null || true
+      git -C "${_pc_to_lane}" diff HEAD > "${HANDOFF}/review.diff" 2>/dev/null || true
+    fi
     pc_stop_gate_autocommit
     printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
     emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout resumed=1"
