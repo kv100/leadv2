@@ -261,7 +261,48 @@ DISPATCH_MISSION_PATH="${DISPATCH_MISSION_PATH:-}"
 DISPATCH_LANE_NAME="${DISPATCH_LANE_NAME:-}"
 
 SCRIPT_NAME="leadv2-dispatch-code"
-PROJECT_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}}}"
+# FOREIGN-PROJECT-ROOT-GUARD-01: precedence is env-first unconditionally
+# (CLAUDE_PROJECT_ROOT > CLAUDE_PROJECT_DIR > PROJECT_ROOT > LEADV2_PROJECT_ROOT >
+# cwd-derived git toplevel) -- live incident: a bg bash spawned from a
+# persona-engine `claude` session, after the human ran `cd ~/Projects/leadv2`,
+# still had CLAUDE_PROJECT_DIR=~/Projects/persona-engine in its inherited env.
+# That leaked value outranked the cwd, so the lane worktree landed under
+# persona-engine/.claude/worktrees/6632fad9 -- no plugins/ dir at all -- and the
+# worker went on to edit canonical ~/Projects/leadv2 main directly, uncommitted.
+#
+# An env-provided root that is itself a real, DIFFERENT git repo from cwd is
+# indistinguishable, from inside this script, from a DELIBERATE test-fixture
+# override -- 50+ suites in tests/ `git init` a throwaway repo under mktemp and
+# set CLAUDE_PROJECT_ROOT/CLAUDE_PROJECT_DIR to it while running from the real
+# checkout's own cwd; that is the exact same "env real-repo != cwd real-repo"
+# shape as the live incident, by construction (confirmed: enabling the
+# override unconditionally left stray docs/handoff/dispatch-*/ rows under this
+# worktree from test-dispatch-architect-prepass-late-artifact.sh alone). There
+# is no reliable structural signal here to tell the two apart, so the
+# behavior-changing part of this guard is OPT-IN via LEADV2_FOREIGN_ROOT_GUARD=1
+# -- unset (the default, and every existing test's implicit state) is
+# byte-identical to the pre-guard precedence, zero regression risk. The
+# production dispatch entrypoint enabling the flag is a separate, reviewed
+# decision this lane does not make unilaterally.
+_LV2_ENV_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-}}}}"
+_LV2_FOREIGN_ROOT_ENV=""; _LV2_FOREIGN_ROOT_CWD=""
+if [[ -n "${_LV2_ENV_ROOT}" ]]; then
+  PROJECT_ROOT="${_LV2_ENV_ROOT}"
+  if [[ "${LEADV2_FOREIGN_ROOT_GUARD:-0}" == "1" ]]; then
+    _LV2_CWD_GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -n "${_LV2_CWD_GIT_ROOT}" ]]; then
+      _LV2_ENV_GIT_ROOT="$(cd "${_LV2_ENV_ROOT}" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
+      if [[ -n "${_LV2_ENV_GIT_ROOT}" && "${_LV2_ENV_GIT_ROOT}" != "${_LV2_CWD_GIT_ROOT}" ]]; then
+        echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
+        PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
+        _LV2_FOREIGN_ROOT_ENV="${_LV2_ENV_GIT_ROOT}"
+        _LV2_FOREIGN_ROOT_CWD="${_LV2_CWD_GIT_ROOT}"
+      fi
+    fi
+  fi
+else
+  PROJECT_ROOT="${_LV2_CWD_GIT_ROOT:-$(pwd)}"
+fi
 # LANDING-BLOCKER-R2 (C1): WORK_ROOT is the tree the lane's code edits land in -- it is
 # NOT PROJECT_ROOT. PROJECT_ROOT stays the control-plane root (journal, docs/handoff,
 # active.yaml, cache, ledger) everywhere below; only worker --cwd and the review-gate's
@@ -3948,6 +3989,12 @@ cmd_resolve() {
   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
     log_err "signature computation failed"; exit 1
   fi
+  # FOREIGN-PROJECT-ROOT-GUARD-01: journal the override now that JOURNAL_TASK exists
+  # (the detection itself runs before sig8/JOURNAL_TASK are known -- see PROJECT_ROOT
+  # resolution above).
+  if [[ -n "${_LV2_FOREIGN_ROOT_ENV:-}" ]]; then
+    emit decision "project_root_guard task=${sig8} status=foreign_env_overridden env_root=${_LV2_FOREIGN_ROOT_ENV} cwd_root=${_LV2_FOREIGN_ROOT_CWD}"
+  fi
   # REPORT-ONLY-GATE-01: resolve the lane's deliverable declaration ONCE, before the
   # architect prepass inlines its design into ${mission} (the declaration is the
   # founder's statement of intent in the ORIGINAL mission, not a property of a design)
@@ -5008,6 +5055,61 @@ cmd_record_quota_lockout() {
   exit 0
 }
 
+# ── retry-dead: V3-DISPATCHER-ACCEPTANCE-01 Fault 3 sanctioned path ────────────────
+# A worker can die before ever reaching a terminal ledger state (landed/parked/refused/
+# dead) -- its ledger row then sits pending/confirmed-and-fresh, and every redispatch of
+# the SAME mission text (same sig) is refused as duplicate_task_signature. The automatic
+# outcome-ledger reclaim (_dispatch_outcome_blocks, run on the NEXT dispatch attempt for
+# a confirmed row) already frees a row proven dead-with-no-evidence -- but it only fires
+# as a side effect of trying again, and it never touches a still-fresh pending row at
+# all. Live incident: the founder hand-deleted a ledger row by exact sig 4x in one night
+# before this existed. `retry-dead <sig8>` is the same dead+no-evidence proof, invoked on
+# demand instead of waiting for -- or blindly editing around -- the next attempt. It NEVER
+# forces through a row that is alive, unknown, or has terminal-looking evidence on disk;
+# those refuse loudly rather than being cleared.
+cmd_retry_dead() {
+  local sig8="${1:-}"
+  [[ "${sig8}" =~ ^[a-f0-9]{8}$ ]] || { log_err "retry-dead: <sig8> must be 8 lowercase hex chars, got '${sig8}'"; exit 1; }
+  local f lockf
+  f="$(dispatch_ledger_file)"; lockf="$(dispatch_lock_file)"
+  [[ -f "${f}" ]] || { log_err "retry-dead: no ledger file at ${f}"; exit 1; }
+  local now; now="$(_now_epoch)"
+  local -a tokens=()
+  local line fields state created arm handle token
+  while IFS= read -r line; do
+    [[ -n "${line}" && "${line}" == *"\"task_sig\":\"${sig8}"* ]] || continue
+    fields="$(_dispatch_row_fields "${line}")"
+    IFS=$'\t' read -r state created arm handle token <<< "${fields}"
+    [[ "${state}" == "pending" || "${state}" == "confirmed" ]] || continue
+    local liveness
+    liveness="$(_dispatch_worker_liveness "${arm}" "${handle}")"
+    if [[ "${liveness}" != "dead" ]]; then
+      emit decision "dispatch_retry_dead_refused task=${sig8} reason=not_dead liveness=${liveness} token=${token}"
+      log_err "retry-dead: row token=${token} arm=${arm} liveness=${liveness} -- not provably dead, refusing"
+      exit 2
+    fi
+    if _dispatch_evidence_exists "${created}" "${sig8}"; then
+      emit decision "dispatch_retry_dead_refused task=${sig8} reason=evidence_exists token=${token}"
+      log_err "retry-dead: row token=${token} has terminal-looking evidence on disk -- refusing"
+      exit 2
+    fi
+    tokens+=("${token}")
+  done < "${f}"
+  if [[ ${#tokens[@]} -eq 0 ]]; then
+    log_err "retry-dead: no blocking pending/confirmed row found for task=${sig8} (nothing to clear)"
+    exit 1
+  fi
+  ( lv2_lock_wait "${lockf}" 10 || exit 3
+    local t
+    for t in "${tokens[@]}"; do
+      _dispatch_abort_locked "${f}" "${t}" || true
+    done
+  ) 9>"${lockf}"
+  emit decision "dispatch_retry_over_dead_attempt task=${sig8} tokens=${tokens[*]}"
+  printf 'dispatch_retry_over_dead_attempt task=%s tokens=%s\n' "${sig8}" "${tokens[*]}"
+  exit 0
+}
+
 # ── dispatch ──────────────────────────────────────────────────────────────────────
 [[ $# -eq 0 ]] && usage
 case "${1:-}" in
@@ -5016,6 +5118,7 @@ case "${1:-}" in
   glm-deferred)  shift; cmd_glm_deferred "$@" ;;
   advance-arm)   shift; cmd_advance_arm "$@" ;;
   record-quota-lockout) shift; cmd_record_quota_lockout "$@" ;;
+  retry-dead)    shift; cmd_retry_dead "$@" ;;
   sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;
   reconcile)     shift; [[ -f "${LEDGER_BIN}" ]] && exec bash "${LEDGER_BIN}" reconcile "$@"; exit $? ;;
   -h|--help)     usage ;;
