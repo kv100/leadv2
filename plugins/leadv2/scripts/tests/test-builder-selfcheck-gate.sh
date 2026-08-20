@@ -368,7 +368,7 @@ run_selfcheck() { # <lib_sh> <diff_file> <diff_root> <project_root> <out_md> <re
     # must not be `_fn_out="$(lv2_selfcheck_run ...)"` -- that runs the function in a
     # subshell, so the LV2_SELFCHECK_* globals it sets never reach this scope.
     _fn_tmp="$(mktemp)"
-    lv2_selfcheck_run "$2" "$3" "$4" "$5" > "${_fn_tmp}"
+    lv2_selfcheck_run "$2" "$3" "$4" "$5" "${LV2_TEST_WRITE_SET:-}" > "${_fn_tmp}"
     _rc=$?
     _fn_out="$(cat "${_fn_tmp}")"
     rm -f "${_fn_tmp}"
@@ -682,6 +682,152 @@ case_bash_n_failure_no_baseline_arm() {
   return "${ok}"
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════════
+# Part C: SCOPE-DISCIPLINE-01 (C0) + TEST-FALSIFICATION-GATE-01 (C4). Direct-only
+# (same convention as Part B): both checks are brand new in this lib, so there is no
+# prior committed ref that lacks them where a pinned-SHA fallback would still make
+# sense once this lands on main (the Part A/85ae886 self-nullification problem, but
+# with no historical SHA to pin to since the feature never existed before). Asserted
+# only against the current (fixed) LIB_SH. Red-first-ness for these two checks is
+# demonstrated manually in the deliverable (pre-edit lib via `git show HEAD:...`
+# does not have C0/C4 at all -> both scenarios below pass through as DEGRADED/GREEN
+# there, never RED) rather than baked into this always-green-post-fix harness.
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+# -- 16: SCOPE-DISCIPLINE-01 -- a changed path outside the declared write-set blocks
+case_scope_off_write_set_blocks() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  mkdir -p "${root}/agent"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "agent/off.txt"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="agent/allowed.txt"
+  local rc names ok=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"scope:off_write_set"* ]] \
+    && grep -q 'off.txt' "${out_md}" && ok=0
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# -- 17: a changed path INSIDE the declared write-set is not blocked by scope -------
+case_scope_in_write_set_passes() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  mkdir -p "${root}/agent"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "agent/off.txt"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="agent/off.txt,agent/other.txt"
+  local names ok=1
+  names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${names}" != *"scope:"* ]] && grep -q 'write-set honored' "${out_md}" && ok=0
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# -- 18: SCOPE-DISCIPLINE-01 -- more changed files than the max blocks as oversized -
+case_scope_oversized_diff_blocks() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  mkdir -p "${root}/agent"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  local -a many=()
+  local i
+  for ((i = 0; i < 45; i++)); do many+=("agent/file${i}.txt"); done
+  write_diff "${diff_file}" "${many[@]}"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_SCOPE_DISCIPLINE_MAX_FILES=40 LV2_TEST_WRITE_SET="agent"
+  local rc names ok=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"scope:oversized_diff"* ]] && ok=0
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# -- 19: SCOPE-DISCIPLINE-01 -- kill switch LEADV2_SCOPE_DISCIPLINE=0 restores old path
+case_scope_kill_switch_restores_old_path() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  mkdir -p "${root}/agent"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "agent/off.txt"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_SCOPE_DISCIPLINE=0 LV2_TEST_WRITE_SET="agent/allowed.txt"
+  local names ok=1
+  names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${names}" != *"scope:"* ]] && grep -q 'scope_discipline_disabled' "${out_md}" && ok=0
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# -- 20: TEST-FALSIFICATION-GATE-01 -- a lying-green test (passes even pre-fix, i.e.
+# unconditionally exits 0 regardless of the code it's meant to guard) is refused ----
+case_falsification_lying_green_blocks() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  ( cd "${root}" && git init -q -b main && git config user.email t@e.com && git config user.name t \
+    && mkdir -p tests agent && printf 'seed\n' > agent/seed.py \
+    && git add -A && git commit -qm base ) >/dev/null 2>&1
+  ( cd "${root}" && git checkout -qb lane ) >/dev/null 2>&1
+  printf '#!/usr/bin/env bash\nexit 0\n' > "${root}/tests/test-lying.sh"
+  chmod +x "${root}/tests/test-lying.sh"
+  ( cd "${root}" && git add -A && git commit -qm 'add lying-green test' ) >/dev/null 2>&1
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "tests/test-lying.sh"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-lying.sh"
+  local rc names ok=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"falsification:green_pre_fix"* ]] \
+    && grep -q 'GREEN against pre-fix baseline' "${out_md}" && ok=0
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# -- 21: TEST-FALSIFICATION-GATE-01 -- a test that genuinely fails against the
+# pre-fix baseline (real falsification proof) is NOT blocked, and the raw RED
+# evidence is captured in selfcheck.md -------------------------------------------
+case_falsification_real_proof_passes() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  ( cd "${root}" && git init -q -b main && git config user.email t@e.com && git config user.name t \
+    && mkdir -p tests agent && printf 'bug\n' > agent/target.txt \
+    && git add -A && git commit -qm base ) >/dev/null 2>&1
+  ( cd "${root}" && git checkout -qb lane ) >/dev/null 2>&1
+  printf 'fixed\n' > "${root}/agent/target.txt"
+  printf '#!/usr/bin/env bash\ncd "$(dirname "$0")/.."\n[[ "$(cat agent/target.txt)" == "fixed" ]]\n' > "${root}/tests/test-realproof.sh"
+  chmod +x "${root}/tests/test-realproof.sh"
+  ( cd "${root}" && git add -A && git commit -qm 'fix + real test' ) >/dev/null 2>&1
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "agent/target.txt" "tests/test-realproof.sh"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-realproof.sh,agent/target.txt"
+  local rc names ok=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" != "1" ]] && [[ "${names}" != *"falsification:green_pre_fix"* ]] \
+    && grep -q 'RED against pre-fix baseline' "${out_md}" && ok=0
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# -- 22: TEST-FALSIFICATION-GATE-01 -- kill switch restores old path ---------------
+case_falsification_kill_switch_restores_old_path() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  ( cd "${root}" && git init -q -b main && git config user.email t@e.com && git config user.name t \
+    && mkdir -p tests agent && printf 'seed\n' > agent/seed.py \
+    && git add -A && git commit -qm base ) >/dev/null 2>&1
+  ( cd "${root}" && git checkout -qb lane ) >/dev/null 2>&1
+  printf '#!/usr/bin/env bash\nexit 0\n' > "${root}/tests/test-lying2.sh"
+  chmod +x "${root}/tests/test-lying2.sh"
+  ( cd "${root}" && git add -A && git commit -qm 'add lying-green test' ) >/dev/null 2>&1
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "tests/test-lying2.sh"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_TEST_FALSIFICATION_GATE=0 LV2_TEST_WRITE_SET="tests/test-lying2.sh"
+  local rc names ok=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" != "1" ]] && [[ "${names}" != *"falsification:"* ]] \
+    && grep -q 'falsification_gate_disabled' "${out_md}" && ok=0
+  rm -rf "${root}"
+  return "${ok}"
+}
+
 pb_case "stem-resolved-from-lane-tests-dir (M3)"          case_stem_from_lane_tests_dir
 pb_case "stem-priority-plugins-tests-over-tests (M3)"     case_stem_priority_plugin_tests_dir
 pb_case "suite-green-checks-verdict"                      case_suite_green
@@ -697,6 +843,13 @@ pb_case "timeout-wrapper-kills-hung-command (C2)"          case_timeout_wrapper_
 pb_case "timeout-wrapper-fast-command-no-hang (C2)"        case_timeout_wrapper_fast_command_no_hang
 pb_case "checks-zero-yields-degraded (M1)"                 case_checks_zero_degraded
 pb_case "bash-n-failure-ignores-baseline-arm"              case_bash_n_failure_no_baseline_arm
+pb_case "scope-off-write-set-blocks (SCOPE-DISCIPLINE-01)"        case_scope_off_write_set_blocks
+pb_case "scope-in-write-set-passes (SCOPE-DISCIPLINE-01)"         case_scope_in_write_set_passes
+pb_case "scope-oversized-diff-blocks (SCOPE-DISCIPLINE-01)"       case_scope_oversized_diff_blocks
+pb_case "scope-kill-switch-restores-old-path (SCOPE-DISCIPLINE-01)" case_scope_kill_switch_restores_old_path
+pb_case "falsification-lying-green-blocks (TEST-FALSIFICATION-GATE-01)" case_falsification_lying_green_blocks
+pb_case "falsification-real-proof-passes (TEST-FALSIFICATION-GATE-01)" case_falsification_real_proof_passes
+pb_case "falsification-kill-switch-restores-old-path (TEST-FALSIFICATION-GATE-01)" case_falsification_kill_switch_restores_old_path
 
 echo ""
 echo "Results: ${PASS} passed(red->green), ${FAIL} failed, ${GREEN_PRE_FIX} green-pre-fix, ${COULD_NOT_RUN} could-not-run"

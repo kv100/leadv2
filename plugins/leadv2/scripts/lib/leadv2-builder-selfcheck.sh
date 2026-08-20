@@ -32,6 +32,13 @@
 #      LEADV2_BUILDER_SELFCHECK_DEPTH (internal, default 0 -- re-entry depth),
 #      LEADV2_E2E_GATE (default 1) -- caller-set mirror of its own E2E_ON, read only in
 #      `auto` mode to decide whether the suite check delegates to the e2e stage (D2).
+#      LEADV2_SCOPE_DISCIPLINE (default 1, kill-switch for the SCOPE-DISCIPLINE-01
+#      write-set/oversize check, C0), LEADV2_SCOPE_DISCIPLINE_MAX_FILES (default 40),
+#      LEADV2_TEST_FALSIFICATION_GATE (default 1, kill-switch for the
+#      TEST-FALSIFICATION-GATE-01 pre-fix-baseline overlay check, C4).
+#
+# Param 5 (write_set_csv, optional): the caller's already-normalised declared
+# write-set (_PC_SCOPE_WRITES_CSV / LEADV2_DISPATCH_LANE_WRITES) -- feeds C0 only.
 set -uo pipefail
 
 # Portable timeout wrapper (same fallback pattern as codex-task.sh:1383-1419): stock
@@ -77,7 +84,7 @@ _lv2_selfcheck_timeout_run() { # <timeout_s> <logfile> -- <cmd...>
 }
 
 lv2_selfcheck_run() {
-  local diff_file="$1" diff_root="$2" project_root="$3" out_md="$4"
+  local diff_file="$1" diff_root="$2" project_root="$3" out_md="$4" write_set_csv="${5:-}"
   local tests_mode="${LEADV2_BUILDER_SELFCHECK_TESTS:-auto}"
   local timeout_s="${LEADV2_BUILDER_SELFCHECK_TIMEOUT_S:-900}"
   local max_files="${LEADV2_BUILDER_SELFCHECK_MAX_FILES:-200}"
@@ -123,6 +130,7 @@ lv2_selfcheck_run() {
 
   local rows="" raws="" checks=0 failed=0 skipped=0
   local failed_names=""
+  local ws_max="${LEADV2_SCOPE_DISCIPLINE_MAX_FILES:-40}"
   _selfcheck_row() { rows="${rows}| $1 | $2 | $3 |
 "; }
   _selfcheck_fail_name() {
@@ -134,6 +142,60 @@ lv2_selfcheck_run() {
 $(tail -n 40 "$3" 2>/dev/null)
 "
   }
+
+  # ── C0: SCOPE-DISCIPLINE-01 — bounce an oversized/off-write-set diff BEFORE any
+  # review arm is spent (root cause: unscopable_diff x102, a sprawling diff never
+  # caught until a human/review arm had already been spent on it). write_set_csv
+  # (param 5) is the CALLER's already-normalised declared write-set
+  # (_PC_SCOPE_WRITES_CSV / LEADV2_DISPATCH_LANE_WRITES) — empty means the caller
+  # declared nothing to enforce against, so this is a pure SKIP, never a bounce.
+  # LEADV2_SCOPE_DISCIPLINE=0 restores today's path (no scope check at all), same
+  # kill-switch idiom as LEADV2_BUILDER_SELFCHECK.
+  if [[ "${LEADV2_SCOPE_DISCIPLINE:-1}" == "0" ]]; then
+    _selfcheck_row "scope" "-" "SKIP (scope_discipline_disabled)"
+    skipped=$((skipped + 1))
+  elif [[ -z "${write_set_csv}" ]]; then
+    _selfcheck_row "scope" "-" "SKIP (no_write_set_declared)"
+    skipped=$((skipped + 1))
+  else
+    local -a ws_entries=() ws_off=()
+    IFS=',' read -r -a ws_entries <<< "${write_set_csv}"
+    local ws_e ws_p ws_in
+    for ws_p in "${dedup[@]:-}"; do
+      [[ -z "${ws_p}" ]] && continue
+      ws_in=0
+      for ws_e in "${ws_entries[@]:-}"; do
+        ws_e="${ws_e%/}"
+        [[ -z "${ws_e}" ]] && continue
+        if [[ "${ws_p}" == "${ws_e}" || "${ws_p}" == "${ws_e}/"* ]]; then
+          ws_in=1; break
+        fi
+      done
+      (( ws_in )) || ws_off+=("${ws_p}")
+    done
+    checks=$((checks + 1))
+    local ws_n=${#dedup[@]}
+    if (( ${#ws_off[@]} > 0 )); then
+      local ws_list="" ws_i=0
+      for ws_p in "${ws_off[@]}"; do
+        if (( ws_i >= 5 )); then
+          ws_list="${ws_list},+$(( ${#ws_off[@]} - 5 )) more"
+          break
+        fi
+        [[ -n "${ws_list}" ]] && ws_list="${ws_list},${ws_p}" || ws_list="${ws_p}"
+        ws_i=$((ws_i + 1))
+      done
+      _selfcheck_row "scope" "${ws_list}" "FAIL (off_write_set)"
+      failed=$((failed + 1))
+      _selfcheck_fail_name "scope:off_write_set:${ws_list}"
+    elif (( ws_n > ws_max )); then
+      _selfcheck_row "scope" "${ws_n} files > max ${ws_max}" "FAIL (oversized_diff)"
+      failed=$((failed + 1))
+      _selfcheck_fail_name "scope:oversized_diff:${ws_n}_files"
+    else
+      _selfcheck_row "scope" "${ws_n} files, write-set honored" "0"
+    fi
+  fi
 
   # ── resolve each changed path: diff_root -> project_root -> unresolved (SKIP, never RED) ──
   local n=0 resolved
@@ -202,23 +264,32 @@ $(tail -n 40 "$3" 2>/dev/null)
   # builder's fault; an unattributable red fails OPEN (never blocks a lane it cannot
   # explain) unless LEADV2_BUILDER_SELFCHECK_BASELINE=0.
   local _baseline_dir="" _baseline_tried=0 _baseline_ok=0 _baseline_base=""
+  # Shared lazy-init: materialises the merge-base (origin/main, falling back to
+  # main) copy of the lane repo ONCE, cached in _baseline_dir/_baseline_ok for the
+  # rest of this run. Used by both the suite baseline-attribution verdict (C3)
+  # and the TEST-FALSIFICATION-GATE-01 overlay check (C4) below, so a lane pays
+  # for the git-archive extraction at most once regardless of how many callers
+  # need it.
+  _selfcheck_ensure_baseline() {
+    (( _baseline_tried )) && return
+    _baseline_tried=1
+    [[ "${baseline_on}" == "0" ]] && return
+    _baseline_base="$(git -C "${diff_root}" merge-base HEAD origin/main 2>/dev/null || true)"
+    [[ -z "${_baseline_base}" ]] && _baseline_base="$(git -C "${diff_root}" merge-base HEAD main 2>/dev/null || true)"
+    if [[ -n "${_baseline_base}" ]]; then
+      _baseline_dir="$(mktemp -d)"
+      if git -C "${diff_root}" archive "${_baseline_base}" 2>/dev/null | tar -x -C "${_baseline_dir}" 2>/dev/null; then
+        _baseline_ok=1
+      fi
+    fi
+  }
   _selfcheck_baseline_verdict() { # <suite_rel_path> -> prints PASS|FAIL|SKIP_RED|SKIP_UNRESOLVED
     local rel="$1"
     if [[ "${baseline_on}" == "0" ]]; then
       printf 'FAIL'
       return
     fi
-    if (( ! _baseline_tried )); then
-      _baseline_tried=1
-      _baseline_base="$(git -C "${diff_root}" merge-base HEAD origin/main 2>/dev/null || true)"
-      [[ -z "${_baseline_base}" ]] && _baseline_base="$(git -C "${diff_root}" merge-base HEAD main 2>/dev/null || true)"
-      if [[ -n "${_baseline_base}" ]]; then
-        _baseline_dir="$(mktemp -d)"
-        if git -C "${diff_root}" archive "${_baseline_base}" 2>/dev/null | tar -x -C "${_baseline_dir}" 2>/dev/null; then
-          _baseline_ok=1
-        fi
-      fi
-    fi
+    _selfcheck_ensure_baseline
     if (( ! _baseline_ok )); then
       printf 'SKIP_UNRESOLVED'
       return
@@ -324,6 +395,57 @@ $(tail -n 40 "$3" 2>/dev/null)
       skipped=$((skipped + 1))
       ;;
   esac
+
+  # ── C4: TEST-FALSIFICATION-GATE-01 — a new/changed test file must prove it once
+  # failed against a pinned pre-fix baseline (root cause: 3 lying-green tests
+  # caught in 3 lanes within 24h -- a test added already passing proves nothing).
+  # Overlays the lane's new test content onto the merge-base tree and reruns it
+  # there; GREEN there (GREEN_PRE_FIX) means the test cannot have caught the
+  # regression it claims to guard, so the diff is refused with the raw
+  # GREEN-not-RED evidence attached to selfcheck.md. A baseline that cannot be
+  # resolved fails OPEN (SKIP), same convention as the C3 baseline-attribution
+  # arm -- this gate can only demand proof it is able to generate itself.
+  # LEADV2_TEST_FALSIFICATION_GATE=0 restores today's path (no falsification
+  # check at all).
+  if [[ "${LEADV2_TEST_FALSIFICATION_GATE:-1}" == "0" ]]; then
+    _selfcheck_row "falsification" "-" "SKIP (falsification_gate_disabled)"
+    skipped=$((skipped + 1))
+  else
+    local tf_f tf_rel tf_is_test tf_log tf_rc
+    for tf_f in "${resolved_paths[@]:-}"; do
+      tf_rel="${tf_f#"${diff_root}"/}"
+      case "${tf_rel}" in
+        */tests/test-*.sh|tests/test-*.sh) tf_is_test=1 ;;
+        *) tf_is_test=0 ;;
+      esac
+      (( tf_is_test )) || continue
+      _selfcheck_ensure_baseline
+      if (( ! _baseline_ok )); then
+        _selfcheck_row "falsification" "${tf_rel}" "SKIP (baseline_unresolved)"
+        skipped=$((skipped + 1))
+        continue
+      fi
+      mkdir -p "$(dirname "${_baseline_dir}/${tf_rel}")" 2>/dev/null
+      cp "${tf_f}" "${_baseline_dir}/${tf_rel}"
+      chmod +x "${_baseline_dir}/${tf_rel}" 2>/dev/null || true
+      tf_log="$(mktemp)"
+      ( cd "${_baseline_dir}" && LEADV2_BUILDER_SELFCHECK=0 LEADV2_BUILDER_SELFCHECK_DEPTH=$((depth + 1)) \
+        _lv2_selfcheck_timeout_run "${timeout_s}" "${tf_log}" -- bash "${_baseline_dir}/${tf_rel}" )
+      tf_rc=$?
+      checks=$((checks + 1))
+      if (( tf_rc == 0 )); then
+        failed=$((failed + 1))
+        _selfcheck_row "falsification" "${tf_rel}" "FAIL (green_pre_fix)"
+        _selfcheck_fail_name "falsification:green_pre_fix:$(basename "${tf_rel}")"
+        _selfcheck_raw "${tf_rel} (GREEN against pre-fix baseline -- no falsification proof)" "${tf_rc}" "${tf_log}"
+      else
+        _selfcheck_row "falsification" "${tf_rel}" "0 (red_pre_fix proof rc=${tf_rc})"
+        _selfcheck_raw "${tf_rel} (RED against pre-fix baseline -- falsification proof)" "${tf_rc}" "${tf_log}"
+      fi
+      rm -f "${tf_log}"
+    done
+  fi
+
   [[ -n "${_baseline_dir}" ]] && rm -rf "${_baseline_dir}"
 
   LV2_SELFCHECK_CHECKS="${checks}"
@@ -353,7 +475,7 @@ $(tail -n 40 "$3" 2>/dev/null)
     printf '%s' "${reason_line}"
   } > "${out_md}"
 
-  unset -f _selfcheck_row _selfcheck_fail_name _selfcheck_raw _selfcheck_baseline_verdict
+  unset -f _selfcheck_row _selfcheck_fail_name _selfcheck_raw _selfcheck_baseline_verdict _selfcheck_ensure_baseline
 
   printf '%s' "${failed_names}"
   if (( failed > 0 )); then
