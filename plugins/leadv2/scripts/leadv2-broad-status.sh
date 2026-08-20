@@ -522,7 +522,10 @@ try:
         for _row in _rows:
             if _row.get("retried_at"):
                 _retried.add(_row.get("sig8"))
-        glm_deferred_count = len([r for r in _rows if r.get("sig8") not in _retried])
+        # M4: dedup by sig8 (newest row wins) -- a task parked twice (e.g. once at the
+        # quota-precheck bench, once at a live refusal) counts once, not twice.
+        _pending_sig8s = {r.get("sig8") for r in _rows if r.get("sig8") not in _retried}
+        glm_deferred_count = len(_pending_sig8s)
 except OSError:
     pass
 

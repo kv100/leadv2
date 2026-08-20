@@ -395,7 +395,13 @@ _stamp_active_phase() { # <task_id> <phase>
 }
 
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
-DISPATCH_LEDGER_DIR="${DISPATCH_LEDGER_DIR:-${CACHE_BASE}/dispatch-ledger}"
+# V3-GLM-LADDER-01 r3: derive unconditionally from CACHE_BASE -- an inherited
+# DISPATCH_LEDGER_DIR (this var was never exported anywhere in this codebase,
+# so the only source is an ambient shell/CI export) used to win via `:-` and
+# silently bypass per-run cache sandboxing (LEADV2_DISPATCH_CACHE_DIR), benching
+# arms off a stale/poisoned ledger dir. Fail closed: always derive from the
+# already-sandboxed CACHE_BASE.
+DISPATCH_LEDGER_DIR="${CACHE_BASE}/dispatch-ledger"
 # wave2 round2 finding 3: same STATE_PATH_BIN resolver leadv2-dispatch-ledger.sh's
 # terminal ledger uses (LEAD-CONTROL-PLANE-01) -- close_owner_pidfile() below must land
 # in the SAME cross-worktree location the sweep reads, not a per-worktree repo path.
@@ -705,42 +711,27 @@ _set_worktree_pin_line() {
 _leadv2_glm_deferred_path() { printf '%s/docs/leadv2/glm-deferred.jsonl' "${PROJECT_ROOT}"; }
 _leadv2_arm_exceptions_path() { printf '%s/docs/leadv2/.arm-exceptions-%s' "${PROJECT_ROOT}" "${1}"; }
 _leadv2_codex_credits_stamp_path() { printf '%s/docs/leadv2/.codex-credits-empty.stamp' "${PROJECT_ROOT}"; }
+_leadv2_glm_deferred_mission_path() { printf '%s/docs/leadv2/glm-deferred.d/%s.md' "${PROJECT_ROOT}" "${1}"; }
 
-# R4: a sig8 counts as un-retried iff no row for it carries a non-empty retried_at.
-_glm_deferred_is_retried() {
-  local sig8="$1" path="$2"
-  [[ -r "${path}" ]] || return 1
-  python3 -c '
-import json, sys
-sig8, path = sys.argv[1], sys.argv[2]
-retried = False
-try:
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except Exception:
-                continue
-            if row.get("sig8") == sig8 and row.get("retried_at"):
-                retried = True
-except OSError:
-    pass
-sys.exit(0 if retried else 1)
-' "${sig8}" "${path}"
-}
-
-# $1=sig8 $2=reason(LAST_ARM_OUTCOME) — park a quota-refused glm-fitting task.
-# Gate (design §4): caller only invokes this when candidate==glm at refusal time, which
-# is already the router's own answer to "is this task glm-fitting" -- do not re-classify.
+# $1=sig8 $2=reason(LAST_ARM_OUTCOME, quota family only) $3=mission_text — park a
+# quota-refused glm-fitting task. Gate (design §4): caller only invokes this when
+# candidate==glm at refusal time (or the precheck bench, D3), which is already the
+# router's own answer to "is this task glm-fitting" -- do not re-classify.
+# D4: the mission text is copied into glm-deferred.d/<sig8>.md at park time so a later
+# --retry-all can dispatch it as a brand-new task without depending on an artifact
+# (lane-mission.md) that only exists for the product class and only after this point.
 _glm_park_deferred() {
-  local sig8="$1" reason="$2"
+  local sig8="$1" reason="$2" mission_text="${3:-}"
   local path; path="$(_leadv2_glm_deferred_path)"
   mkdir -p "$(dirname "${path}")" 2>/dev/null || return 0
-  local mission_path="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/lane-mission.md"
-  [[ -f "${mission_path}" ]] || mission_path=""
+  local mission_path=""
+  if [[ -n "${mission_text}" ]]; then
+    mission_path="$(_leadv2_glm_deferred_mission_path "${sig8}")"
+    mkdir -p "$(dirname "${mission_path}")" 2>/dev/null || mission_path=""
+    if [[ -n "${mission_path}" ]]; then
+      printf '%s' "${mission_text}" > "${mission_path}" 2>/dev/null || mission_path=""
+    fi
+  fi
   local refused_at; refused_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local quota_pct="null"
   if [[ -n "${v2_headroom:-}" ]]; then
@@ -770,7 +761,7 @@ print(json.dumps({
 ' "${sig8}" "${mission_path}" "${founder_task_id:-}" "${refused_at}" "${reason}" "${quota_pct}" 2>/dev/null)"
   [[ -n "${row}" ]] || return 0
   (
-    flock 8
+    lv2_lock_wait "${path}.lock" 10 || exit 3
     printf '%s\n' "${row}" >>"${path}"
     # R1: cap at newest 500 rows, drop rows older than 7 days; state the truncation.
     python3 -c '
@@ -799,7 +790,9 @@ try:
 except OSError:
     sys.exit(0)
 truncated = len(rows) > 500
+dropped_sig8s = {r.get("sig8") for r in rows[:-500]} if truncated else set()
 rows = rows[-500:]
+kept_sig8s = {r.get("sig8") for r in rows}
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as fh:
     for row in rows:
@@ -808,8 +801,19 @@ with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"_truncated": True}, separators=(",", ":")) + "\n")
 import os
 os.replace(tmp, path)
+# D4/risk-mitigation: an orphaned park no longer has ANY row (dropped by truncation
+# and not re-kept under a later row) -- unlink its mission copy so glm-deferred.d/
+# does not grow unbounded alongside the 500-row/7-day cap.
+mission_dir = os.path.join(os.path.dirname(path), "glm-deferred.d")
+for sig8 in dropped_sig8s - kept_sig8s:
+    if not sig8:
+        continue
+    try:
+        os.remove(os.path.join(mission_dir, sig8 + ".md"))
+    except OSError:
+        pass
 ' "${path}" 2>/dev/null || true
-  ) 8>"${path}.lock"
+  ) 9>"${path}.lock"
   true
 }
 
@@ -871,7 +875,6 @@ else:
 ' "${path}" "${mode}"
       ;;
     retry-all)
-      local -a pending_sig8s pending_missions
       local _rp_json
       _rp_json="$(python3 -c '
 import json, sys
@@ -902,14 +905,16 @@ for r in pending:
         return 0
       fi
       local _qg_bin="${LEADV2_ROUTER_V2_BIN:-${SCRIPT_DIR}/leadv2-router-v2.sh}"
-      local _line _sig8 _mpath
+      local _sig8 _mpath
       while IFS=$'\t' read -r _sig8 _mpath; do
         [[ -n "${_sig8}" ]] || continue
-        # R4a: never re-dispatch a sig8 that already has a terminal row.
+        # D5 row 1: a landed sonnet fallback already did the work -- reap, never retry.
         if bash "${LEDGER_BIN}" exists "${_sig8}" >/dev/null 2>&1; then
-          printf 'already_terminal %s\n' "${_sig8}"
+          _leadv2_glm_deferred_mark_retried "${path}" "${_sig8}" "reaped_fallback_landed"
+          printf 'reaped %s fallback_landed\n' "${_sig8}"
           continue
         fi
+        # D5 row 2: still gated -- leave pending, no state change.
         local _rp_out _rp_eligible
         _rp_out="$(bash "${_qg_bin}" resolve --chain glm --task-id "${_sig8}" 2>/dev/null)"
         _rp_eligible="$(printf '%s\n' "${_rp_out}" | sed -n 's/^eligible=//p')"
@@ -917,25 +922,51 @@ for r in pending:
           printf 'still_gated %s\n' "${_sig8}"
           continue
         fi
-        if [[ -n "${_mpath}" && -f "${_mpath}" ]]; then
-          bash "${BASH_SOURCE[0]}" "@${_mpath}" >/dev/null 2>&1 || true
+        # D5 row 3: no usable parked mission -- leave pending (H3 data-loss case).
+        if [[ -z "${_mpath}" || ! -s "${_mpath}" ]]; then
+          printf 'skipped_no_mission %s\n' "${_sig8}"
+          continue
         fi
-        local _retried_at; _retried_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        local _new_row
-        _new_row="$(python3 -c '
-import json, sys
-sig8, mission_path, retried_at = sys.argv[1:4]
-print(json.dumps({
-    "sig8": sig8, "mission_path": mission_path, "founder_task_id": "",
-    "refused_at": retried_at, "reason": "retry_all", "quota_pct": None,
-    "retried_at": retried_at,
-}, separators=(",", ":")))
-' "${_sig8}" "${_mpath}" "${_retried_at}")"
-        ( flock 8; printf '%s\n' "${_new_row}" >>"${path}"; ) 8>"${path}.lock"
-        printf 'retried %s\n' "${_sig8}"
+        # D5 row 4/5: dispatch the parked mission as a brand-new task (new sig8). The
+        # old sig8 is never re-dispatched -- only reaped on success.
+        local _child_errf _child_out _child_rc _new_sig8
+        _child_errf="$(mktemp 2>/dev/null || printf '/tmp/glm-retry-%s.err' "${_sig8}")"
+        _child_out="$(bash "${BASH_SOURCE[0]}" "@${_mpath}" 2>"${_child_errf}")"
+        _child_rc=$?
+        if [[ ${_child_rc} -eq 0 ]]; then
+          _new_sig8="$(printf '%s\n' "${_child_out}" | sed -n 's/.*task=\([^ ]*\).*/\1/p' | head -1)"
+          _leadv2_glm_deferred_mark_retried "${path}" "${_sig8}" "retried_all"
+          printf 'retried %s as=%s\n' "${_sig8}" "${_new_sig8:-unknown}"
+        else
+          local _last_err; _last_err="$(tail -1 "${_child_errf}" 2>/dev/null)"
+          printf 'retry_failed %s rc=%s %s\n' "${_sig8}" "${_child_rc}" "${_last_err}"
+        fi
+        rm -f "${_child_errf}" 2>/dev/null || true
       done <<<"${_rp_json}"
       ;;
   esac
+}
+
+# D6: append a retired-marker row for $2=sig8 under the SAME lock as the read that
+# decided to retire it, so a concurrent --retry-all never double-dispatches. reason=$3
+# is informational only (list/json already filter on retried_at presence, not reason).
+_leadv2_glm_deferred_mark_retried() {
+  local path="$1" sig8="$2" reason="$3"
+  local retried_at; retried_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local new_row
+  new_row="$(python3 -c '
+import json, sys
+sig8, reason, retried_at = sys.argv[1:4]
+print(json.dumps({
+    "sig8": sig8, "mission_path": "", "founder_task_id": "",
+    "refused_at": retried_at, "reason": reason, "quota_pct": None,
+    "retried_at": retried_at,
+}, separators=(",", ":")))
+' "${sig8}" "${reason}" "${retried_at}")"
+  (
+    lv2_lock_wait "${path}.lock" 10 || exit 3
+    printf '%s\n' "${new_row}" >>"${path}"
+  ) 9>"${path}.lock"
 }
 
 # $1=credits-json (from route_headroom_chosen's payload) — emit ONE deduped
@@ -968,7 +999,7 @@ except Exception:
   fi
   [[ "${has_credits}" == "false" ]] || return 0
   (
-    flock 8
+    lv2_lock_wait "${stamp}.lock" 10 || exit 3
     local now since_line since fresh=1
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     if [[ -r "${stamp}" ]]; then
@@ -991,31 +1022,40 @@ except Exception:
       printf 'since=%s\n' "${now}" >"${stamp}.tmp" && mv "${stamp}.tmp" "${stamp}"
       emit decision "codex_credits_empty since=${now}"
     fi
-  ) 8>"${stamp}.lock"
+  ) 9>"${stamp}.lock"
   true
 }
 
-# $1=reason — bump today's sonnet-fallback-after-glm-refusal counter.
+# $1=reason $2=sig8 — bump today's sonnet-fallback-after-glm-refusal counter.
+# D1: the counter counts distinct sig8 per UTC day -- a repeat bump for a sig8 already
+# recorded is a no-op (does not bump count, does not rewrite last_reason).
 # _LEADV2_EXC_DAY is computed once per cmd_resolve invocation (R6) so one dispatch
 # never straddles two daily files even across a UTC-midnight boundary.
 _arm_exception_bump() {
-  local reason="$1"
+  local reason="$1" sig8="$2"
   local day="${_LEADV2_EXC_DAY:-$(date -u +%Y%m%d)}"
   local path; path="$(_leadv2_arm_exceptions_path "${day}")"
   mkdir -p "$(dirname "${path}")" 2>/dev/null || return 0
   (
-    flock 8
+    lv2_lock_wait "${path}.lock" 10 || exit 3
+    if [[ -r "${path}" ]] && grep -qF "sig8=${sig8}" "${path}" 2>/dev/null; then
+      exit 0
+    fi
     local count=0
     if [[ -r "${path}" ]]; then
-      count="$(sed -n 's/^count=//p' "${path}" 2>/dev/null | head -1)"
+      count="$(grep -c '^sig8=' "${path}" 2>/dev/null || printf '0')"
       [[ "${count}" =~ ^[0-9]+$ ]] || count=0
     fi
     count=$((count + 1))
     {
       printf 'count=%s\n' "${count}"
       printf 'last_reason=%s\n' "${reason}"
+      if [[ -r "${path}" ]]; then
+        grep '^sig8=' "${path}" 2>/dev/null
+      fi
+      printf 'sig8=%s\n' "${sig8}"
     } >"${path}.tmp" && mv "${path}.tmp" "${path}"
-  ) 8>"${path}.lock"
+  ) 9>"${path}.lock"
   true
 }
 
@@ -4208,6 +4248,7 @@ confirmation-seeking; only for a decision you cannot make yourself."
   # A missing/unreadable record means "not locked" — never fail closed. Each
   # skip is journalled so a lead reading the journal sees WHY an arm was passed
   # over.
+  local _glm_quota_benched=""
   if [[ ${#candidate_arms[@]} -gt 0 ]]; then
     local -a _qpc_kept=()
     local _qpc_arm _qpc_prov
@@ -4217,6 +4258,21 @@ confirmation-seeking; only for a decision you cannot make yourself."
         _qpc_kept+=("${_qpc_arm}")
       else
         emit decision "quota_precheck_skip model=${_qpc_arm} provider=${_qpc_prov} task=${sig8} reason=provider_quota_locked class=$(_lockout_record_field "${_qpc_prov}" class)"
+        # V3-GLM-LADDER-01 C1/D3: a glm bench here is the same founder-visible event as
+        # a live glm_refused_* refusal (candidate never even got attempted) -- park +
+        # count it identically so the ladder-loop can't hide behind the precheck.
+        if [[ "${_qpc_arm}" == "glm" ]]; then
+          _glm_quota_benched="glm_refused_quota_precheck"
+          _glm_park_deferred "${sig8}" "${_glm_quota_benched}" "${mission}" || true
+          # A bench is the same founder-visible event as a live refusal (D3) --
+          # the credit watchdog must fire here too, not only from the live-refusal
+          # reroute path below, or it silently stops updating once glm starts
+          # getting benched instead of attempted-and-refused.
+          local _qpc_credits_out _qpc_credits
+          _qpc_credits_out="$(bash "${LEADV2_ROUTER_V2_BIN:-${SCRIPT_DIR}/leadv2-router-v2.sh}" resolve --chain "${_qpc_arm}" --task-id "${sig8}" 2>/dev/null)"
+          _qpc_credits="$(printf '%s\n' "${_qpc_credits_out}" | sed -n 's/^credits=//p')"
+          _codex_credits_watch "${_qpc_credits:-}" || true
+        fi
       fi
     done
     if [[ ${#_qpc_kept[@]} -eq 0 ]]; then
@@ -4404,13 +4460,20 @@ ${mission}"
       # record of what was refused earlier in the loop -- by the time sonnet lands here,
       # LAST_ARM_OUTCOME has been overwritten by sonnet's own spawn outcome.
       if [[ "${candidate}" == "sonnet" ]]; then
-        local _attempted_entry
-        for _attempted_entry in "${attempted[@]}"; do
-          if [[ "${_attempted_entry}" == glm_refused_* ]]; then
-            _arm_exception_bump "glm quota" || true
-            break
-          fi
-        done
+        local _attempted_entry _exc_reason=""
+        if [[ -n "${_glm_quota_benched}" ]]; then
+          _exc_reason="${_glm_quota_benched}"
+        else
+          for _attempted_entry in "${attempted[@]}"; do
+            case "${_attempted_entry}" in
+              glm_refused_quota_gate|glm_refused_postspawn_quota)
+                _exc_reason="${_attempted_entry}"
+                break
+                ;;
+            esac
+          done
+        fi
+        [[ -n "${_exc_reason}" ]] && { _arm_exception_bump "${_exc_reason}" "${sig8}" || true; }
       fi
       emit decision "route_resolved by=router router=${router_label} model=${candidate} task=${sig8} rule=${rule} reason=${reason}"
       printf 'route_resolved by=router router=%s model=%s task=%s rule=%s reason=%s\n' "${router_label}" "${candidate}" "${sig8}" "${rule}" "${reason}"
@@ -4443,8 +4506,14 @@ ${mission}"
       # crash between refusal and the sonnet respawn still leaves the task recoverable.
       # Gate: candidate==glm at refusal time is already the router's own "glm-fitting"
       # answer -- do not re-classify (design §4).
-      if [[ "${candidate}" == "glm" && "${LAST_ARM_OUTCOME:-}" == glm_refused_* ]]; then
-        _glm_park_deferred "${sig8}" "${LAST_ARM_OUTCOME}" || true
+      # D2: park + count only the quota family -- a transient refusal (e.g.
+      # glm_refused_lock_busy) parks nothing and bumps nothing.
+      if [[ "${candidate}" == "glm" ]]; then
+        case "${LAST_ARM_OUTCOME:-}" in
+          glm_refused_quota_gate|glm_refused_postspawn_quota)
+            _glm_park_deferred "${sig8}" "${LAST_ARM_OUTCOME}" "${_candidate_mission}" || true
+            ;;
+        esac
       fi
       if [[ "${LAST_ARM_OUTCOME:-}" == "glm_refused_quota_gate" && -z "${_reordered_after_quota_gate}" && "${LEADV2_ROUTER_V2_ON_QUOTA_GATE:-1}" != "0" ]]; then
         _reordered_after_quota_gate=1

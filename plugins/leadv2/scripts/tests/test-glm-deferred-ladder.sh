@@ -198,15 +198,16 @@ DEFERRED_C="${ROOT_C}/docs/leadv2/glm-deferred.jsonl"
 SNAP_C="${TMP_ROOT}/snap-c.jsonl"
 SONNET_C="${TMP_ROOT}/c-sonnet.sh"; make_ok_sonnet "${SONNET_C}" "${DEFERRED_C}" "${SNAP_C}"
 
-run_c() {  # <mission-text> <cache-suffix>
-  # Each call gets its own LEADV2_DISPATCH_CACHE_DIR: the quota-lockout memory
-  # written by run N (primary_arm_benched) would otherwise exclude glm from
-  # candidate_arms on run N+1, skipping the refusal branch entirely and
-  # making this leg fail for the wrong reason (glm never even attempted,
-  # not "attempted and deduped"). The credit-watchdog stamp under test lives
-  # under ROOT_C/docs/leadv2/, NOT the cache dir, so it is unaffected.
+# C1 harness fix: ALL run_c calls share ONE cache dir. The prior per-run cache dir
+# hid the ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 bug — after the FIRST refusal, the
+# quota-precheck loop benches glm out of candidate_arms entirely on later runs, so
+# leg (c) must keep passing even though glm is no longer attempted on run 2+; it
+# asserts journal lines emitted in _codex_credits_watch, which runs independently
+# of which arm wins.
+CACHE_C="${TMP_ROOT}/c-cache"
+run_c() {  # <mission-text>
   CLAUDE_PROJECT_ROOT="${ROOT_C}" \
-    LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/c-cache-$2" \
+    LEADV2_DISPATCH_CACHE_DIR="${CACHE_C}" \
     LEADV2_DISPATCH_ARCHITECT_GATE=0 \
     LEADV2_ROUTER_V2_BIN="${RV2_C}" \
     LEADV2_DISPATCH_GLM_BIN="${GLM_BIN_C}" \
@@ -217,8 +218,8 @@ run_c() {  # <mission-text> <cache-suffix>
     bash "${DISPATCH_BIN}" "$1" >/dev/null 2>&1 || true
 }
 
-run_c 'plugin-only glm-deferred-ladder credit watchdog probe 1' 1
-run_c 'plugin-only glm-deferred-ladder credit watchdog probe 2' 2
+run_c 'plugin-only glm-deferred-ladder credit watchdog probe 1'
+run_c 'plugin-only glm-deferred-ladder credit watchdog probe 2'
 n_after_2="$(grep -c 'codex_credits_empty since=' "${JOURNAL_C}" 2>/dev/null || true)"
 [[ "${n_after_2}" =~ ^[0-9]+$ ]] || n_after_2=0
 
@@ -237,7 +238,7 @@ else
   fail "(c) setup" "stamp file missing at ${STAMP_C}"
 fi
 
-run_c 'plugin-only glm-deferred-ladder credit watchdog probe 3' 3
+run_c 'plugin-only glm-deferred-ladder credit watchdog probe 3'
 n_after_3="$(grep -c 'codex_credits_empty since=' "${JOURNAL_C}" 2>/dev/null || true)"
 [[ "${n_after_3}" =~ ^[0-9]+$ ]] || n_after_3=0
 
@@ -288,8 +289,8 @@ LEADV2_PROJECT_ROOT="${ROOT}" LEADV2_STATE_ROOT="${TMP_ROOT}/state-d" \
 
 if [[ ! -f "${FOUNDER_STATUS_D}" ]]; then
   fail "(d) founder-status.md not written" "renderer produced no artifact"
-elif grep -q 'sonnet-фолбэков сегодня: 1 (glm quota)' "${FOUNDER_STATUS_D}"; then
-  pass "(d) rendered founder-status.md contains sonnet-фолбэков сегодня: 1 (glm quota)"
+elif grep -q 'sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate)' "${FOUNDER_STATUS_D}"; then
+  pass "(d) rendered founder-status.md contains sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate) -- real reason variant, not hardcoded 'glm quota'"
 else
   fail "(d) expected sonnet-fallback line missing from rendered artifact" \
     "content=$(cat "${FOUNDER_STATUS_D}")"
@@ -311,6 +312,231 @@ if [[ -f "${FOUNDER_STATUS_NEG}" ]] && ! grep -q 'сонн\|sonnet-фолбэк�
 else
   fail "(d) unexpected sonnet-fallback line with zero fallbacks" \
     "content=$(cat "${FOUNDER_STATUS_NEG}" 2>/dev/null || echo '<missing>')"
+fi
+
+# ============================================================================
+# (e) shared-cache double refusal: ONE cache dir, two dispatches, refusing glm.
+# Run 1 attempts glm live (refused -> glm_refused_quota_gate). Run 2, same cache,
+# is benched by the quota-precheck loop (glm never attempted live this time) ->
+# glm_refused_quota_precheck. Proves C1: the counter and park queue both see
+# BOTH refusals, not just the first live one.
+# ============================================================================
+ROOT_E="${TMP_ROOT}/root-e"
+make_tenant_root "${ROOT_E}"
+DEFERRED_E="${ROOT_E}/docs/leadv2/glm-deferred.jsonl"
+GLM_BIN_E="${TMP_ROOT}/refusing-glm-e.sh"; make_refusing_glm "${GLM_BIN_E}"
+RV2_E="${TMP_ROOT}/e-rv2.sh"; make_qg_rv2 "${RV2_E}" "sonnet"
+CACHE_E="${TMP_ROOT}/e-cache"
+
+run_e() {  # <mission-text> -> stdout: dispatch output
+  local snap="${TMP_ROOT}/e-snap-$$-${RANDOM}.jsonl"
+  local sonnet_e="${TMP_ROOT}/e-sonnet-${RANDOM}.sh"
+  make_ok_sonnet "${sonnet_e}" "${DEFERRED_E}" "${snap}"
+  CLAUDE_PROJECT_ROOT="${ROOT_E}" \
+    LEADV2_DISPATCH_CACHE_DIR="${CACHE_E}" \
+    LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+    LEADV2_ROUTER_V2_BIN="${RV2_E}" \
+    LEADV2_DISPATCH_GLM_BIN="${GLM_BIN_E}" \
+    LEADV2_DISPATCH_SUBSESSION_BIN="${sonnet_e}" \
+    LEADV2_DISPATCH_SPAWN=1 \
+    bash "${DISPATCH_BIN}" "$1" 2>&1
+}
+
+out_e1="$(run_e 'plugin-only glm-deferred-ladder shared-cache probe one')"
+sig8_e1="$(extract_sig8 "${out_e1}")"
+out_e2="$(run_e 'plugin-only glm-deferred-ladder shared-cache probe two')"
+sig8_e2="$(extract_sig8 "${out_e2}")"
+
+_today_e="$(date -u +%Y%m%d)"
+EXC_E="${ROOT_E}/docs/leadv2/.arm-exceptions-${_today_e}"
+
+if [[ -z "${sig8_e1}" || -z "${sig8_e2}" || "${sig8_e1}" == "${sig8_e2}" ]]; then
+  fail "(e) setup: expected two distinct sig8s" "sig8_e1=${sig8_e1} sig8_e2=${sig8_e2}"
+elif [[ ! -f "${EXC_E}" ]] || ! grep -q '^count=2$' "${EXC_E}"; then
+  fail "(e) expected count=2 after two distinct-sig8 refusals" "content=$(cat "${EXC_E}" 2>/dev/null || echo '<missing>')"
+elif ! grep -qF "sig8=${sig8_e1}" "${EXC_E}" || ! grep -qF "sig8=${sig8_e2}" "${EXC_E}"; then
+  fail "(e) expected both sig8s recorded" "content=$(cat "${EXC_E}")"
+else
+  pass "(e) shared-cache double refusal: count=2, both distinct sig8s recorded"
+fi
+
+if [[ ! -f "${DEFERRED_E}" ]] || [[ "$(grep -cF "\"sig8\":\"${sig8_e1}\"" "${DEFERRED_E}" 2>/dev/null)" -lt 1 ]] \
+  || [[ "$(grep -cF "\"sig8\":\"${sig8_e2}\"" "${DEFERRED_E}" 2>/dev/null)" -lt 1 ]]; then
+  fail "(e) park queue missing a row for one of the two sig8s" "content=$(cat "${DEFERRED_E}" 2>/dev/null || echo '<missing>')"
+else
+  pass "(e) park queue holds a row for both distinct sig8s"
+fi
+
+if grep -qF "\"sig8\":\"${sig8_e2}\"" "${DEFERRED_E}" 2>/dev/null \
+  && grep -A0 "\"sig8\":\"${sig8_e2}\"" "${DEFERRED_E}" | grep -q '"reason":"glm_refused_quota_precheck"'; then
+  pass "(e) run 2's park row carries reason=glm_refused_quota_precheck (benched, never attempted)"
+else
+  fail "(e) run 2's park row should carry reason=glm_refused_quota_precheck" "content=$(cat "${DEFERRED_E}" 2>/dev/null)"
+fi
+
+# ============================================================================
+# (e2) same-sig8 idempotence: a second bump for a sig8 already present leaves
+# count unchanged. Exercises _arm_exception_bump directly (extracted from the
+# real script, not reimplemented) to avoid the dedup/duplicate-task-signature
+# machinery a second live dispatch of the same mission would hit.
+# ============================================================================
+ROOT_E2="${TMP_ROOT}/root-e2"
+mkdir -p "${ROOT_E2}/docs/leadv2"
+BUMP_SNIPPET="${TMP_ROOT}/bump-snippet.sh"
+{
+  printf '#!/usr/bin/env bash\nset -uo pipefail\n'
+  printf 'source "%s"\n' "${SCRIPT_DIR}/../leadv2-portable-lock.sh"
+  printf 'PROJECT_ROOT="%s"\n' "${ROOT_E2}"
+  printf '_leadv2_arm_exceptions_path() { printf "%%s/docs/leadv2/.arm-exceptions-%%s" "${PROJECT_ROOT}" "${1}"; }\n'
+  sed -n '/^_arm_exception_bump()/,/^}$/p' "${DISPATCH_BIN}"
+  printf '_arm_exception_bump "glm_refused_quota_gate" "aaaaaaaa"\n'
+  printf '_arm_exception_bump "glm_refused_quota_gate" "aaaaaaaa"\n'
+} > "${BUMP_SNIPPET}"
+bash "${BUMP_SNIPPET}" >/dev/null 2>&1
+EXC_E2="${ROOT_E2}/docs/leadv2/.arm-exceptions-$(date -u +%Y%m%d)"
+if [[ -f "${EXC_E2}" ]] && grep -q '^count=1$' "${EXC_E2}"; then
+  pass "(e2) a repeat bump for an already-present sig8 is a no-op (count stays 1)"
+else
+  fail "(e2) expected count=1 after two bumps of the same sig8" "content=$(cat "${EXC_E2}" 2>/dev/null || echo '<missing>')"
+fi
+
+# ============================================================================
+# (f)/(g)/(h)/(i): glm-deferred --retry-all, all four D5 outcomes.
+# ============================================================================
+ROOT_R="${TMP_ROOT}/root-retry"
+make_tenant_root "${ROOT_R}"
+DEFERRED_R="${ROOT_R}/docs/leadv2/glm-deferred.jsonl"
+MDIR_R="${ROOT_R}/docs/leadv2/glm-deferred.d"
+mkdir -p "${MDIR_R}"
+
+park_row() {  # <sig8> <mission_path>
+  python3 -c '
+import json, sys
+sig8, mission_path = sys.argv[1], sys.argv[2]
+print(json.dumps({
+    "sig8": sig8, "mission_path": mission_path, "founder_task_id": "",
+    "refused_at": "2026-08-20T00:00:00Z", "reason": "glm_refused_quota_gate",
+    "quota_pct": None, "retried_at": None,
+}, separators=(",", ":")))
+' "$1" "$2" >> "${DEFERRED_R}"
+}
+
+RV2_R_GLM="${TMP_ROOT}/r-rv2-glm.sh"
+cat > "${RV2_R_GLM}" <<SH
+#!/usr/bin/env bash
+case "\${1:-}" in
+  resolve) printf 'eligible=glm\nordered=glm\nheadroom={}\nvector=[]\ncredits={}\n' ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "${RV2_R_GLM}"
+
+# (g) reap: parked sig8 already has a terminal row in the ledger.
+SIG_G="gggggggg"
+park_row "${SIG_G}" ""
+LEDGER_G="${TMP_ROOT}/ledger-g.sh"
+printf '#!/usr/bin/env bash\n[[ "${1:-}" == "exists" ]] && exit 0\nexit 1\n' > "${LEDGER_G}"
+chmod +x "${LEDGER_G}"
+
+out_g="$(CLAUDE_PROJECT_ROOT="${ROOT_R}" LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache-g" LEADV2_DISPATCH_LEDGER_BIN="${LEDGER_G}" \
+  bash "${DISPATCH_BIN}" glm-deferred --retry-all 2>&1)"
+list_after_g="$(CLAUDE_PROJECT_ROOT="${ROOT_R}" LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache-g" LEADV2_DISPATCH_LEDGER_BIN="${LEDGER_G}" \
+  bash "${DISPATCH_BIN}" glm-deferred --list 2>&1)"
+if grep -q "reaped ${SIG_G} fallback_landed" <<<"${out_g}" && ! grep -q "${SIG_G}" <<<"${list_after_g}"; then
+  pass "(g) a parked row whose sig8 already landed is reaped, not retried"
+else
+  fail "(g) expected 'reaped ${SIG_G} fallback_landed' and the row gone from --list" \
+    "out=${out_g} list=${list_after_g}"
+fi
+
+# (h) no-mission negative: mission_path empty -> skipped, row stays.
+SIG_H="hhhhhhhh"
+park_row "${SIG_H}" ""
+out_h="$(CLAUDE_PROJECT_ROOT="${ROOT_R}" LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache-h" LEADV2_ROUTER_V2_BIN="${RV2_R_GLM}" \
+  bash "${DISPATCH_BIN}" glm-deferred --retry-all 2>&1)"
+list_after_h="$(CLAUDE_PROJECT_ROOT="${ROOT_R}" LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache-h" bash "${DISPATCH_BIN}" glm-deferred --list 2>&1)"
+if grep -q "skipped_no_mission ${SIG_H}" <<<"${out_h}" && grep -q "${SIG_H}" <<<"${list_after_h}"; then
+  pass "(h) a parked row with no usable mission is skipped and stays in the queue (H3)"
+else
+  fail "(h) expected 'skipped_no_mission ${SIG_H}' and the row still in --list" \
+    "out=${out_h} list=${list_after_h}"
+fi
+
+# (i) failed dispatch negative: real mission, launcher fixture fails.
+ROOT_I="${TMP_ROOT}/root-retry-i"
+make_tenant_root "${ROOT_I}"
+DEFERRED_I="${ROOT_I}/docs/leadv2/glm-deferred.jsonl"
+MDIR_I="${ROOT_I}/docs/leadv2/glm-deferred.d"
+mkdir -p "${MDIR_I}"
+SIG_I="iiiiiiii"
+MPATH_I="${MDIR_I}/${SIG_I}.md"
+printf 'plugin-only glm-deferred-ladder retry-all failing-dispatch probe' > "${MPATH_I}"
+python3 -c '
+import json
+row = {"sig8": "'"${SIG_I}"'", "mission_path": "'"${MPATH_I}"'", "founder_task_id": "",
+       "refused_at": "2026-08-20T00:00:00Z", "reason": "glm_refused_quota_gate",
+       "quota_pct": None, "retried_at": None}
+print(json.dumps(row, separators=(",", ":")))
+' >> "${DEFERRED_I}"
+LEDGER_I="${TMP_ROOT}/ledger-i.sh"
+printf '#!/usr/bin/env bash\nexit 1\n' > "${LEDGER_I}"
+chmod +x "${LEDGER_I}"
+GLM_BIN_I="${TMP_ROOT}/refusing-glm-i.sh"; make_refusing_glm "${GLM_BIN_I}"
+
+out_i="$(CLAUDE_PROJECT_ROOT="${ROOT_I}" LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache-i" LEADV2_DISPATCH_LEDGER_BIN="${LEDGER_I}" \
+  LEADV2_ROUTER_V2_BIN="${RV2_R_GLM}" LEADV2_DISPATCH_GLM_BIN="${GLM_BIN_I}" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_DISPATCH_SPAWN=1 \
+  bash "${DISPATCH_BIN}" glm-deferred --retry-all 2>&1)"
+list_after_i="$(CLAUDE_PROJECT_ROOT="${ROOT_I}" LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache-i" bash "${DISPATCH_BIN}" glm-deferred --list 2>&1)"
+if grep -q "retry_failed ${SIG_I} rc=" <<<"${out_i}" && grep -q "${SIG_I}" <<<"${list_after_i}"; then
+  pass "(i) a failed retry dispatch leaves the row pending"
+else
+  fail "(i) expected 'retry_failed ${SIG_I} rc=...' and the row still in --list" \
+    "out=${out_i} list=${list_after_i}"
+fi
+
+# (f) real retry-all: parked mission dispatches as a NEW task on success.
+ROOT_F="${TMP_ROOT}/root-retry-f"
+make_tenant_root "${ROOT_F}"
+DEFERRED_F="${ROOT_F}/docs/leadv2/glm-deferred.jsonl"
+MDIR_F="${ROOT_F}/docs/leadv2/glm-deferred.d"
+mkdir -p "${MDIR_F}"
+SIG_F="ffffffff"
+MPATH_F="${MDIR_F}/${SIG_F}.md"
+printf 'plugin-only glm-deferred-ladder retry-all success probe' > "${MPATH_F}"
+python3 -c '
+import json
+row = {"sig8": "'"${SIG_F}"'", "mission_path": "'"${MPATH_F}"'", "founder_task_id": "",
+       "refused_at": "2026-08-20T00:00:00Z", "reason": "glm_refused_quota_gate",
+       "quota_pct": None, "retried_at": None}
+print(json.dumps(row, separators=(",", ":")))
+' >> "${DEFERRED_F}"
+LEDGER_F="${TMP_ROOT}/ledger-f.sh"
+printf '#!/usr/bin/env bash\nexit 1\n' > "${LEDGER_F}"
+chmod +x "${LEDGER_F}"
+MARKER_F="${TMP_ROOT}/marker-f"
+GLM_OK_F="${TMP_ROOT}/glm-ok-f.sh"
+cat > "${GLM_OK_F}" <<SH
+#!/usr/bin/env bash
+: > "${MARKER_F}"
+printf 'PID=%s LABEL=test SESSION_ID=test\n' "\$\$"
+SH
+chmod +x "${GLM_OK_F}"
+
+out_f="$(CLAUDE_PROJECT_ROOT="${ROOT_F}" LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache-f" LEADV2_DISPATCH_LEDGER_BIN="${LEDGER_F}" \
+  LEADV2_ROUTER_V2_BIN="${RV2_R_GLM}" LEADV2_DISPATCH_GLM_BIN="${GLM_OK_F}" \
+  LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_DISPATCH_SPAWN=1 \
+  bash "${DISPATCH_BIN}" glm-deferred --retry-all 2>&1)"
+list_after_f="$(CLAUDE_PROJECT_ROOT="${ROOT_F}" LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache-f" bash "${DISPATCH_BIN}" glm-deferred --list 2>&1)"
+
+if [[ ! -f "${MARKER_F}" ]]; then
+  fail "(f) retry-all did not spawn a new dispatch for the parked mission" "out=${out_f}"
+elif ! grep -q "retried ${SIG_F} as=" <<<"${out_f}"; then
+  fail "(f) expected 'retried ${SIG_F} as=<new-sig8>'" "out=${out_f}"
+elif grep -q "${SIG_F}" <<<"${list_after_f}"; then
+  fail "(f) old sig8 should no longer appear in --list after a successful retry" "list=${list_after_f}"
+else
+  pass "(f) real retry-all: new dispatch observed (marker file), 'retried as=', old sig8 reaped from --list"
 fi
 
 # ── terminal poison-marker assertion across the whole suite ────────────────
