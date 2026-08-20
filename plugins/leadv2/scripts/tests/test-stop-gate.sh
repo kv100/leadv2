@@ -322,8 +322,17 @@ LEADV2_REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
 LEADV2_TEST_BASELINE_REF="${LEADV2_TEST_BASELINE_REF:-}"
 if [[ -z "${LEADV2_TEST_BASELINE_REF}" ]]; then
   LEADV2_TEST_BASELINE_REF="$(git -C "${LEADV2_REPO}" merge-base origin/main HEAD 2>/dev/null || true)"
+  # A lane forked AFTER the stop-gate landed has the gate in merge-base AND in
+  # every recent ancestor -- a fixed HEAD~1 fallback goes green-pre-fix (vacuous).
+  # Walk first-parent history for the newest commit WITHOUT the gate.
   if git -C "${LEADV2_REPO}" grep -q pc_stop_gate_autocommit "${LEADV2_TEST_BASELINE_REF}" -- plugins/leadv2/scripts/leadv2-dispatch-product-close.sh 2>/dev/null; then
-    LEADV2_TEST_BASELINE_REF="HEAD~1"
+    _sg_ref=""
+    for _sg_cand in $(git -C "${LEADV2_REPO}" rev-list --first-parent --max-count=100 HEAD 2>/dev/null); do
+      if ! git -C "${LEADV2_REPO}" grep -q pc_stop_gate_autocommit "${_sg_cand}" -- plugins/leadv2/scripts/leadv2-dispatch-product-close.sh 2>/dev/null; then
+        _sg_ref="${_sg_cand}"; break
+      fi
+    done
+    LEADV2_TEST_BASELINE_REF="${_sg_ref:-HEAD~1}"
   fi
 fi
 [[ -n "${LEADV2_TEST_BASELINE_REF}" ]] || LEADV2_TEST_BASELINE_REF="HEAD"
