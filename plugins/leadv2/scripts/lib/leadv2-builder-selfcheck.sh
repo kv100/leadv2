@@ -258,7 +258,7 @@ $(tail -n 40 "$3" 2>/dev/null)
         LV2_SELFCHECK_DEPTH_SKIP=1
       else
         if [[ "${tests_mode}" == "auto" && "${LEADV2_E2E_GATE:-1}" == "1" \
-              && -x "${_scripts_dir}/leadv2-e2e-entrypoint.sh" ]]; then
+              && -f "${_scripts_dir}/leadv2-e2e-entrypoint.sh" ]]; then
           if delegate_cmd="$(bash "${_scripts_dir}/leadv2-e2e-entrypoint.sh" "${diff_root}" 2>/dev/null)" \
              && [[ -n "${delegate_cmd}" ]]; then
             delegate=1

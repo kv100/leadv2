@@ -1826,10 +1826,28 @@ fi
 # BUILDER-SELFCHECK-GATE-01: the builder must prove its own diff before any review
 # arm is spent. Sits after pc_scope_diff (real bytes already confirmed) and before
 # both e2e and review -- LEADV2_BUILDER_SELFCHECK=0 restores today's path byte-for-
-# byte. A missing lib (R1, infra fault, not a lane fault) or a report-only lane
-# (checks=0 by construction) both fall through unchanged -- only a lib that RAN and
-# produced a RED verdict blocks.
-if [[ "${LEADV2_BUILDER_SELFCHECK:-1}" != 0 ]] && command -v lv2_selfcheck_run >/dev/null 2>&1; then
+# byte. A missing lib (R1, infra fault, not a lane fault) falls through unchanged --
+# only a lib that RAN and produced a RED verdict blocks.
+#
+# Round-2 finding C3: the gate exists to protect a review arm from being spent on
+# an unproven diff -- but ALSO to backstop a diff that no live worker ever ran its
+# own checks against. Skip only when BOTH: (a) no downstream arm will run (neither
+# e2e nor review is spent on this diff) AND (b) a live worker (HANDLE non-empty)
+# already completed this diff -- decision from ask-lead escalation, option a: an
+# empty HANDLE means there was no live worker at all (a direct/manual dispatch),
+# so selfcheck is the ONLY safety net and must still run even with both arms off;
+# test-builder-selfcheck-gate.sh's HANDLE="" cases assert exactly this. Likewise a
+# report-only lane's deliverable is prose, not code -- bash -n / py_compile is a
+# category error against it, not "checks=0 by construction" as the old comment
+# assumed; nothing previously enforced that assumption.
+if [[ "${LEADV2_BUILDER_SELFCHECK:-1}" != 0 ]] && command -v lv2_selfcheck_run >/dev/null 2>&1 \
+   && [[ "${_pc_kind}" == "report" || ( "${E2E_ON}" == 0 && "${REVIEW_ON}" == 0 && -n "${HANDLE}" ) ]]; then
+  if [[ "${_pc_kind}" == "report" ]]; then
+    emit decision "selfcheck task=${TASK} status=skipped reason=report_lane"
+  else
+    emit decision "selfcheck task=${TASK} status=skipped reason=no_arm"
+  fi
+elif [[ "${LEADV2_BUILDER_SELFCHECK:-1}" != 0 ]] && command -v lv2_selfcheck_run >/dev/null 2>&1; then
   _selfcheck_md="${HANDOFF}/selfcheck.md"
   # R2: must NOT be `_selfcheck_failed="$(lv2_selfcheck_run ...)"` -- a command
   # substitution runs the function in a SUBSHELL, so the LV2_SELFCHECK_* globals it

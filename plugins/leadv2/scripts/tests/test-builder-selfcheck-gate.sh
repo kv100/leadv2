@@ -196,6 +196,63 @@ case_broken_py_blocks() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
   return "${ok}"
 }
 
+# ── Case 6: no downstream arm will run (both kill-switches off) AND a live worker
+# already completed (HANDLE non-empty) -- selfcheck must SKIP (reason=no_arm), not
+# block, even though the appended content is syntactically broken. Round-2 finding
+# C3 / ask-lead escalation option (a): nothing downstream would be protected by
+# running it here. ─────────────────────────────────────────────────────────────────
+case_no_arm_skip_selfcheck() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
+  [[ -f "${pc}" ]] || return 2
+  local root tid wt d handle run_dir errf
+  root="$(new_repo)"
+  tid="nas-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  printf 'def broken(\n    pass\n' > "${wt}/agent/broken.py"
+  git -C "${wt}" add -A >/dev/null 2>&1 || true
+  d="$(mktemp -d)"; handle="nas-handle-$$"; errf="$(mktemp)"
+  run_dir="${d}/glm-runs/${handle}"; mkdir -p "${run_dir}"
+  printf 'status: complete\npid: 999999\n' > "${run_dir}/meta.yaml"
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_LANE_WRITES="agent/broken.py" LEADV2_LANE_WORK_ROOT="${wt}" \
+  GLM_RUNS_DIR="${d}/glm-runs" \
+  bash "${pc}" "${root}" nasig001 glm "${handle}" 0 0 "${tid}" >/dev/null 2>"${errf}"
+  local ok=1
+  grep -q 'selfcheck task=nasig001 status=skipped reason=no_arm' "${errf}" && ok=0
+  rm -rf "${root}" "${d}"; rm -f "${errf}"
+  return "${ok}"
+}
+
+# ── Case 7: a report-declared lane must SKIP selfcheck (reason=report_lane) --
+# bash -n/py_compile is a category error against a prose deliverable, per the
+# REPORT-ONLY-GATE-01 lane-kind convention this gate now honors explicitly. ────────
+case_report_lane_skip_selfcheck() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
+  [[ -f "${pc}" ]] || return 2
+  local root tid wt errf
+  root="$(new_repo)"
+  tid="rls-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  mkdir -p "${wt}/analysis"
+  {
+    printf '# Report\n\n'
+    for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+      printf 'Line %s of a report long enough to clear the report_too_thin floor.\n' "${_i}"
+    done
+  } > "${wt}/analysis/report.md"
+  errf="$(mktemp)"
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_LANE_WRITES="analysis/report.md" \
+  LEADV2_DISPATCH_LANE_DELIVERABLE="report:analysis/report.md" LEADV2_LANE_WORK_ROOT="${wt}" \
+  bash "${pc}" "${root}" rlsig001 sonnet "" 0 0 "${tid}" >/dev/null 2>"${errf}"
+  local ok=1
+  grep -q 'selfcheck task=rlsig001 status=skipped reason=report_lane' "${errf}" && ok=0
+  rm -rf "${root}"; rm -f "${errf}"
+  return "${ok}"
+}
+
 # ── harness runner (falsifiable red-first baseline, same F6 lesson as 85ae886) ─────
 PREFIX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-prefix-bscg.XXXXXX")"
 LEADV2_REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
@@ -246,6 +303,8 @@ run_case "broken-sh-blocks-with-reason"     case_broken_sh_blocks
 run_case "broken-sh-review-arm-never-spent" case_broken_sh_no_review_arm
 run_case "clean-lane-selfcheck-green"       case_clean_lane_green
 run_case "broken-py-blocks-with-reason"     case_broken_py_blocks
+run_case "no-arm-skips-selfcheck"           case_no_arm_skip_selfcheck
+run_case "report-lane-skips-selfcheck"      case_report_lane_skip_selfcheck
 
 rm -rf "${PREFIX_DIR}"
 
