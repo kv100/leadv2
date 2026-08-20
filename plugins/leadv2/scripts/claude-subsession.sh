@@ -278,7 +278,7 @@ PER_TASK_BOILERPLATE="Task binding:
 - Deliverable full:    ${HANDOFF_DIR}/${ROLE}.full.md (full analysis, DELIVERABLE_COMPLETE last line)
 - MCP cache dir:       ${HANDOFF_DIR}/mcp-cache/
 - Context file: ${HANDOFF_DIR}/context.yaml
-- Question proxy: .claude/scripts/ask-lead.sh ${TASK_ID} \"<question>\"
+- Question proxy: ${PROJECT_ROOT}/.claude/scripts/ask-lead.sh ${TASK_ID} \"<question>\"
 - Role-specific skills (from frontmatter): ${AGENT_SKILLS:-none registered}"
 
 # ---------------------------------------------------------------------------

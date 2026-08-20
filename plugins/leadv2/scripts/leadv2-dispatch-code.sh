@@ -261,7 +261,11 @@ DISPATCH_MISSION_PATH="${DISPATCH_MISSION_PATH:-}"
 DISPATCH_LANE_NAME="${DISPATCH_LANE_NAME:-}"
 
 SCRIPT_NAME="leadv2-dispatch-code"
-# FOREIGN-PROJECT-ROOT-GUARD-01: precedence is env-first unconditionally
+# FOREIGN-PROJECT-ROOT-GUARD-01: env roots are normally accepted only when they
+# agree with cwd's repository.  The one deliberate exception is an explicit
+# --resume-lane/--worktree pin that we can prove belongs to the env repository:
+# the pin is an unambiguous dispatch target, whereas an inherited root alone is
+# indistinguishable from a leaked parent-session value.
 # (CLAUDE_PROJECT_ROOT > CLAUDE_PROJECT_DIR > PROJECT_ROOT > LEADV2_PROJECT_ROOT >
 # cwd-derived git toplevel) -- live incident: a bg bash spawned from a
 # persona-engine `claude` session, after the human ran `cd ~/Projects/leadv2`,
@@ -272,31 +276,77 @@ SCRIPT_NAME="leadv2-dispatch-code"
 #
 # An env-provided root that is itself a real, DIFFERENT git repo from cwd is
 # indistinguishable, from inside this script, from a DELIBERATE test-fixture
-# override -- 50+ suites in tests/ `git init` a throwaway repo under mktemp and
-# set CLAUDE_PROJECT_ROOT/CLAUDE_PROJECT_DIR to it while running from the real
-# checkout's own cwd; that is the exact same "env real-repo != cwd real-repo"
-# shape as the live incident, by construction (confirmed: enabling the
-# override unconditionally left stray docs/handoff/dispatch-*/ rows under this
-# worktree from test-dispatch-architect-prepass-late-artifact.sh alone). There
-# is no reliable structural signal here to tell the two apart, so the
-# behavior-changing part of this guard is OPT-IN via LEADV2_FOREIGN_ROOT_GUARD=1
-# -- unset (the default, and every existing test's implicit state) is
-# byte-identical to the pre-guard precedence, zero regression risk. The
-# production dispatch entrypoint enabling the flag is a separate, reviewed
-# decision this lane does not make unilaterally.
+# override -- most suites in tests/ that `git init` a throwaway repo under
+# mktemp ALSO `cd` into it before invoking this script, so cwd's own git
+# toplevel already equals the throwaway repo and no mismatch is ever seen.
+# review-round-2 (dispatch-b4042501-review, blocker 2): the guard now
+# DEFAULTS ON -- fix-forward for the one identified conflicting fixture
+# (test-dispatch-architect-prepass-late-artifact.sh, which never cd's into
+# its throwaway repo) was to cd it like every other suite, not to ship the
+# live guard inert. LEADV2_FOREIGN_ROOT_GUARD=0 remains available as an
+# explicit escape hatch for a caller that KNOWS its env/cwd split is
+# intentional (kept for symmetry, not exercised by tests/).
 _LV2_ENV_ROOT="${CLAUDE_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-}}}}"
 _LV2_FOREIGN_ROOT_ENV=""; _LV2_FOREIGN_ROOT_CWD=""
+# GATE-WRONG-ROOT-FALSE-DEAD-01 (repo-CLAUDE.md): resolve the cwd git root ONCE,
+# unconditionally, so it is defined identically on every branch below -- the
+# prior guard-off else-branch left this unset and silently fell back to
+# _LV2_CWD_GIT_ROOT="" (regression proven live, see FOREIGN-ROOT-ELSE-BRANCH-01
+# test), rooting the whole control plane at $(pwd) for any invocation with no
+# env root set from a subdirectory of a git repo.
+_LV2_CWD_GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+# review-round-2 (dispatch-b4042501-review, item 4): both sides of every root
+# comparison below MUST be the physical (realpath) form, not whatever spelling
+# `git rev-parse --show-toplevel` happened to print. An env root reached through
+# a symlink hop (macOS /tmp -> /private/tmp; a repo's own leadv2 symlink into
+# canonical) resolves to the SAME real directory as cwd's toplevel but a
+# DIFFERENT string, which previously read as foreign and rejected a legitimate
+# explicit pin even though the candidate was, physically, inside the env repo.
+[[ -n "${_LV2_CWD_GIT_ROOT}" ]] && _LV2_CWD_GIT_ROOT="$(cd "${_LV2_CWD_GIT_ROOT}" 2>/dev/null && pwd -P || printf '%s' "${_LV2_CWD_GIT_ROOT}")"
 if [[ -n "${_LV2_ENV_ROOT}" ]]; then
   PROJECT_ROOT="${_LV2_ENV_ROOT}"
-  if [[ "${LEADV2_FOREIGN_ROOT_GUARD:-0}" == "1" ]]; then
-    _LV2_CWD_GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ "${LEADV2_FOREIGN_ROOT_GUARD:-1}" == "1" ]]; then
     if [[ -n "${_LV2_CWD_GIT_ROOT}" ]]; then
       _LV2_ENV_GIT_ROOT="$(cd "${_LV2_ENV_ROOT}" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
+      [[ -n "${_LV2_ENV_GIT_ROOT}" ]] && _LV2_ENV_GIT_ROOT="$(cd "${_LV2_ENV_GIT_ROOT}" 2>/dev/null && pwd -P || printf '%s' "${_LV2_ENV_GIT_ROOT}")"
       if [[ -n "${_LV2_ENV_GIT_ROOT}" && "${_LV2_ENV_GIT_ROOT}" != "${_LV2_CWD_GIT_ROOT}" ]]; then
-        echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
-        PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
-        _LV2_FOREIGN_ROOT_ENV="${_LV2_ENV_GIT_ROOT}"
-        _LV2_FOREIGN_ROOT_CWD="${_LV2_CWD_GIT_ROOT}"
+        # Placement is resolved later, after the mission signature exists, but root
+        # selection happens here.  Preflight the *requested* existing placement so
+        # the guard does not discard the only root from which --resume-lane can be
+        # resolved.  This grants no authority to a bare flag: its candidate must
+        # already be a git worktree of the env repository; the full resolver below
+        # still rejects missing, foreign, and live lanes before any state write.
+        _LV2_PINNED_ROOT=""
+        _LV2_PIN_ARG=""
+        _LV2_PIN_FLAG=""
+        _LV2_PIN_VALUE=""
+        _LV2_PIN_NEEDS_VALUE=0
+        for _LV2_PIN_ARG in "$@"; do
+          if (( _LV2_PIN_NEEDS_VALUE == 1 )); then
+            _LV2_PIN_VALUE="${_LV2_PIN_ARG}"
+            _LV2_PIN_NEEDS_VALUE=0
+            break
+          fi
+          case "${_LV2_PIN_ARG}" in
+            --resume-lane|--worktree) _LV2_PIN_NEEDS_VALUE=1; _LV2_PIN_FLAG="${_LV2_PIN_ARG}" ;;
+          esac
+        done
+        if [[ -n "${_LV2_PIN_VALUE}" ]]; then
+          if [[ "${_LV2_PIN_FLAG}" == "--resume-lane" ]]; then
+            _LV2_PIN_CANDIDATE="${LEADV2_WORKTREE_DIR:-${_LV2_ENV_GIT_ROOT}/.claude/worktrees}/${_LV2_PIN_VALUE}"
+          else
+            _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
+          fi
+          _LV2_PINNED_ROOT="$(cd "${_LV2_PIN_CANDIDATE}" 2>/dev/null && cd "$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)")" 2>/dev/null && pwd -P || true)"
+        fi
+        if [[ "${_LV2_PINNED_ROOT}" == "${_LV2_ENV_GIT_ROOT}" ]]; then
+          : # An explicit, same-repo placement wins over the caller's unrelated cwd.
+        else
+          echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
+          PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
+          _LV2_FOREIGN_ROOT_ENV="${_LV2_ENV_GIT_ROOT}"
+          _LV2_FOREIGN_ROOT_CWD="${_LV2_CWD_GIT_ROOT}"
+        fi
       fi
     fi
   fi
@@ -1108,7 +1158,14 @@ emit() {
   local jtype="$1"; shift
   local line="$*"
   if [[ -n "${JOURNAL_TASK:-}" && -f "${JOURNAL_BIN}" ]]; then
-    bash "${JOURNAL_BIN}" append "${JOURNAL_TASK}" "${jtype}" "${line}" >/dev/null 2>&1 || true
+    # review-round-2 item 1 (dispatch-b4042501-review): leadv2-journal.sh resolves
+    # its OWN PROJECT_ROOT independently (CLAUDE_PROJECT_ROOT > CLAUDE_PROJECT_DIR >
+    # cwd git toplevel) -- without this override it re-reads the same ambient
+    # CLAUDE_PROJECT_DIR the foreign-root guard just rejected, so a
+    # project_root_guard line (or any line, in any foreign-root dispatch) landed in
+    # the LOSING repo's journal, never the winning root's -- indistinguishable from
+    # "not written to the task journal" from the caller's point of view.
+    CLAUDE_PROJECT_ROOT="${PROJECT_ROOT}" bash "${JOURNAL_BIN}" append "${JOURNAL_TASK}" "${jtype}" "${line}" >/dev/null 2>&1 || true
   fi
   log "${line}"
 }
@@ -5070,6 +5127,10 @@ cmd_record_quota_lockout() {
 cmd_retry_dead() {
   local sig8="${1:-}"
   [[ "${sig8}" =~ ^[a-f0-9]{8}$ ]] || { log_err "retry-dead: <sig8> must be 8 lowercase hex chars, got '${sig8}'"; exit 1; }
+  # nit (dispatch-b4042501-review, item 7): emit() at ~1114 no-ops the journal
+  # write whenever JOURNAL_TASK is unset -- without this, dispatch_retry_over_
+  # dead_attempt reached stderr only, never the task journal the mission asked for.
+  JOURNAL_TASK="dispatch-${sig8}"
   local f lockf
   f="$(dispatch_ledger_file)"; lockf="$(dispatch_lock_file)"
   [[ -f "${f}" ]] || { log_err "retry-dead: no ledger file at ${f}"; exit 1; }
@@ -5099,12 +5160,32 @@ cmd_retry_dead() {
     log_err "retry-dead: no blocking pending/confirmed row found for task=${sig8} (nothing to clear)"
     exit 1
   fi
+  local abort_rc=0
   ( lv2_lock_wait "${lockf}" 10 || exit 3
     local t
     for t in "${tokens[@]}"; do
-      _dispatch_abort_locked "${f}" "${t}" || true
+      _dispatch_abort_locked "${f}" "${t}" || exit 1
     done
   ) 9>"${lockf}"
+  abort_rc=$?
+  if [[ ${abort_rc} -ne 0 ]]; then
+    emit decision "dispatch_retry_dead_abort_failed task=${sig8} tokens=${tokens[*]} rc=${abort_rc}"
+    log_err "retry-dead: ledger row removal failed for task=${sig8} tokens=${tokens[*]} (rc=${abort_rc}) -- ledger NOT confirmed cleared, refusing to report success"
+    exit 1
+  fi
+  # review item 2 (dispatch-b4042501-review): _dispatch_abort_locked's rc0 means the
+  # mv/write succeeded, not that every token row is actually gone -- verify directly
+  # against the on-disk ledger before claiming success, same evidence bar as the
+  # not_dead/evidence_exists refusals above.
+  local leftover=0 t
+  for t in "${tokens[@]}"; do
+    grep -qF "\"token\":\"${t}\"" "${f}" 2>/dev/null && leftover=1
+  done
+  if [[ ${leftover} -eq 1 ]]; then
+    emit decision "dispatch_retry_dead_verify_failed task=${sig8} tokens=${tokens[*]}"
+    log_err "retry-dead: ledger row still present after removal attempt for task=${sig8} tokens=${tokens[*]} -- refusing to report success"
+    exit 1
+  fi
   emit decision "dispatch_retry_over_dead_attempt task=${sig8} tokens=${tokens[*]}"
   printf 'dispatch_retry_over_dead_attempt task=%s tokens=%s\n' "${sig8}" "${tokens[*]}"
   exit 0
