@@ -1383,6 +1383,179 @@ pc_precheck_writes() {
   return 0
 }
 
+# V3-STOP-GATE-01: called right after the worker's exit is confirmed (both the
+# first pc_await_worker_exit and, if it fired, the GLM-DIED-WITH-WORK-RESUME-01
+# second wait) and BEFORE pc_scope_diff/selfcheck/e2e/review touch the tree.
+# Disease this closes (live, 2026-08-19/20): 6+ worker exits left real work
+# UNCOMMITTED in the lane worktree -- invisible to every downstream phase and
+# one parallel session away from being clobbered (SUPDEL 47 files, V3-GLM 24,
+# ENV-GUARDS 6, T2 twice -- the lead had to checkpoint-commit by hand each time).
+# Only the declared write-set (_PC_SCOPE_WRITES_CSV, already normalised by
+# pc_precheck_writes above) is staged into an ISOLATED index -- junk OUTSIDE
+# the write-set (including another actor's already-staged changes) is
+# deliberately left alone. That is what pc_scope_diff's unscoped_lane_work
+# classifier already handles, and auto-committing it here would launder a
+# scope violation instead of catching it. LEADV2_STOP_GATE=0 restores today's
+# path byte-for-byte (same idiom as LEADV2_BUILDER_SELFCHECK).
+# Capture-only pre-checkpoint snapshot for the timeout paths (codex r3): scoped to the
+# declared write-set, untracked-inclusive via a throwaway index + add -N (same technique
+# as pc_scope_diff's _pc_git_diff, duplicated here because that helper is only defined
+# inside pc_scope_diff's body and the timeout paths never enter it), and populates
+# PC_STOP_GATE_FOREIGN_REPOS so the gate's stop_gate_skipped_foreign_repo journal fires
+# on timeout too. NO verdict/journal/ledger side effects of its own.
+pc_stop_gate_capture_diff() {
+  local _ct_lane="${LEADV2_LANE_WORK_ROOT:-}"
+  [[ -z "${_ct_lane}" ]] && _ct_lane="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
+  [[ -n "${_ct_lane}" && -d "${_ct_lane}" ]] || return 0
+  declare -p PC_STOP_GATE_FOREIGN_REPOS >/dev/null 2>&1 || PC_STOP_GATE_FOREIGN_REPOS=()
+  local _ct_csv="${_PC_SCOPE_WRITES_CSV:-${LEADV2_DISPATCH_LANE_WRITES:-}}" _ct_p _ct_r
+  local _ct_paths=()
+  local _ct_old_ifs="${IFS}"
+  IFS=','
+  for _ct_p in ${_ct_csv}; do
+    IFS="${_ct_old_ifs}"
+    [[ -z "${_ct_p}" ]] && { IFS=','; continue; }
+    if [[ "${_ct_p}" == /* && "${_ct_p}" != "${_ct_lane}" && "${_ct_p}" != "${_ct_lane}/"* ]]; then
+      _ct_r="$(cd "$(dirname "${_ct_p}")" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
+      [[ -n "${_ct_r}" && "${_ct_r}" != "${_ct_lane}" ]] && PC_STOP_GATE_FOREIGN_REPOS+=("${_ct_r}")
+    else
+      _ct_paths+=("${_ct_p}")
+    fi
+    IFS=','
+  done
+  IFS="${_ct_old_ifs}"
+  mkdir -p "${HANDOFF}" 2>/dev/null || true
+  local _ct_gitdir _ct_idx
+  _ct_gitdir="$(git -C "${_ct_lane}" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  _ct_idx="$(mktemp "${TMPDIR:-/tmp}/leadv2-ct-idx.XXXXXX" 2>/dev/null || true)"
+  if [[ -n "${_ct_gitdir}" && -n "${_ct_idx}" ]] && cp "${_ct_gitdir}/index" "${_ct_idx}" 2>/dev/null; then
+    if [[ ${#_ct_paths[@]} -gt 0 ]]; then
+      GIT_INDEX_FILE="${_ct_idx}" git -C "${_ct_lane}" add -N -- "${_ct_paths[@]+"${_ct_paths[@]}"}" >/dev/null 2>&1 || true
+      GIT_INDEX_FILE="${_ct_idx}" git -C "${_ct_lane}" diff HEAD -- "${_ct_paths[@]+"${_ct_paths[@]}"}" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' > "${HANDOFF}/review.diff" 2>/dev/null || true
+    else
+      GIT_INDEX_FILE="${_ct_idx}" git -C "${_ct_lane}" add -N -A >/dev/null 2>&1 || true
+      GIT_INDEX_FILE="${_ct_idx}" git -C "${_ct_lane}" diff HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' > "${HANDOFF}/review.diff" 2>/dev/null || true
+    fi
+  else
+    git -C "${_ct_lane}" diff HEAD > "${HANDOFF}/review.diff" 2>/dev/null || true
+  fi
+  rm -f "${_ct_idx}" 2>/dev/null || true
+}
+
+pc_stop_gate_autocommit() {
+  [[ "${LEADV2_STOP_GATE:-1}" != 0 ]] || return 0
+  [[ -n "${_PC_SCOPE_WRITES_CSV:-}" ]] || return 0
+
+  # Cross-repository writes are diffed by pc_scope_diff but are not safe to
+  # commit from this lane's repository. Do not silently claim protection.
+  # bash 3.2/set -u: an array that was never assigned is UNBOUND and ${#arr[@]}
+  # aborts the whole script here — exactly the paths (timeout reap) where the
+  # populate step in pc_scope_diff may not have run. Declare-if-unset first.
+  declare -p PC_STOP_GATE_FOREIGN_REPOS >/dev/null 2>&1 || PC_STOP_GATE_FOREIGN_REPOS=()
+  if [[ ${#PC_STOP_GATE_FOREIGN_REPOS[@]} -gt 0 ]]; then
+    local _sg_foreign="" _sg_repo
+    for _sg_repo in "${PC_STOP_GATE_FOREIGN_REPOS[@]}"; do
+      [[ -n "${_sg_foreign}" ]] && _sg_foreign+=","
+      _sg_foreign+="$(basename "${_sg_repo}")"
+    done
+    emit decision "stop_gate_skipped_foreign_repo task=${TASK} repos=${_sg_foreign}"
+  fi
+
+  local _sg_lane_root="${LEADV2_LANE_WORK_ROOT:-}"
+  if [[ -z "${_sg_lane_root}" || ! -d "${_sg_lane_root}" ]]; then
+    _sg_lane_root="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
+  fi
+  [[ -n "${_sg_lane_root}" ]] || return 0
+  [[ -d "${_sg_lane_root}/.git" || -f "${_sg_lane_root}/.git" ]] 2>/dev/null || return 0
+
+  local _sg_paths=()
+  IFS=',' read -r -a _sg_paths <<< "${_PC_SCOPE_WRITES_CSV}"
+  [[ ${#_sg_paths[@]} -gt 0 ]] || return 0
+
+  # A write-set entry resolving OUTSIDE _sg_lane_root (a cross-repo path) makes
+  # `git status -- <pathspec...>` fail its ENTIRE invocation (exit 128, "outside
+  # repository") -- not just skip that one entry -- which silently drops every
+  # in-scope path from the SAME call, defeating the checkpoint for a lane that
+  # is otherwise single-repo-safe. Cheap common case first (one combined probe,
+  # same cost as before this fix); only pay for a per-path git call when that
+  # probe actually fails, which is exactly the rare cross-repo write-set shape
+  # (already journaled by stop_gate_skipped_foreign_repo above) -- this keeps
+  # the normal single-repo path free of added latency in a timing-sensitive
+  # caller (worker-timeout ceilings elsewhere in this script).
+  if ! git -C "${_sg_lane_root}" status --porcelain=v1 -- "${_sg_paths[@]}" >/dev/null 2>&1; then
+    local _sg_in_scope=() _sg_p
+    for _sg_p in "${_sg_paths[@]}"; do
+      git -C "${_sg_lane_root}" status --porcelain=v1 -- "${_sg_p}" >/dev/null 2>&1 \
+        && _sg_in_scope+=("${_sg_p}")
+    done
+    _sg_paths=("${_sg_in_scope[@]}")
+  fi
+  [[ ${#_sg_paths[@]} -gt 0 ]] || return 0
+
+  # HOLE-1 fix (V3-STOP-GATE-FINISH-01): `git add -- <declared pathspec>` fails
+  # hard (exit 128) the instant ANY declared path was never created -- the
+  # normal shape of a lane whose worker died mid-write-set -- and the old
+  # `|| return 0` swallowed that, staging nothing at all. Stage the CONCRETE
+  # files git status just reported instead of re-using the declared pathspec:
+  # those paths are known to exist, and because status was itself
+  # produced by `git status -- "${_sg_paths[@]}"` the concrete list stays
+  # inside the declared write-set -- no scope widening. Use porcelain -z:
+  # display porcelain C-quotes tabs, newlines, quotes, backslashes, and UTF-8.
+  local _sg_files=() _sg_reset_files=()
+  local _sg_line _sg_path _sg_source _sg_xy _sg_n=0
+  while IFS= read -r -d '' _sg_line; do
+    [[ -n "${_sg_line}" ]] || continue
+    _sg_xy="${_sg_line:0:2}"
+    _sg_path="${_sg_line:3}"
+    # With porcelain -z, rename/copy is destination NUL source NUL. The
+    # destination in this first record is the path to stage; consume source.
+    # A rename's source is also passed to `git add` below -- `git add <path>`
+    # on a path that is tracked at HEAD but absent from the worktree (the old
+    # name, after `git mv`) stages its deletion, which is what turns the
+    # add-destination-only temp index into an actual rename instead of
+    # leaving the stale source blob sitting in the checkpoint tree.
+    if [[ "${_sg_xy}" == *R* || "${_sg_xy}" == *C* ]]; then
+      _sg_source=""
+      IFS= read -r -d '' _sg_source || true
+      if [[ -n "${_sg_source}" ]]; then
+        _sg_reset_files+=("${_sg_source}")
+        [[ "${_sg_xy}" == *R* ]] && _sg_files+=("${_sg_source}")
+      fi
+    fi
+    [[ -n "${_sg_path}" ]] && { _sg_files+=("${_sg_path}"); _sg_reset_files+=("${_sg_path}"); _sg_n=$((_sg_n + 1)); }
+  done < <(git -C "${_sg_lane_root}" status --porcelain=v1 -z -- "${_sg_paths[@]}" 2>/dev/null)
+  [[ ${#_sg_files[@]} -gt 0 ]] || return 0
+
+  # Never commit through the inherited index: it may contain another actor's
+  # staged out-of-scope work. Build exactly HEAD plus the concrete in-scope
+  # worktree paths in a throwaway index, leaving the real index byte-for-byte.
+  local _sg_index
+  _sg_index="$(mktemp "${TMPDIR:-/tmp}/leadv2-stop-gate-index.XXXXXX")" || {
+    emit decision "stop_gate_autocommit_failed task=${TASK} reason=index_create_failed"
+    return 0
+  }
+  if ! GIT_INDEX_FILE="${_sg_index}" git -C "${_sg_lane_root}" read-tree HEAD >/dev/null 2>&1 \
+     || ! GIT_INDEX_FILE="${_sg_index}" git -C "${_sg_lane_root}" add -- "${_sg_files[@]}" >/dev/null 2>&1; then
+    rm -f "${_sg_index}"
+    emit decision "stop_gate_autocommit_failed task=${TASK} reason=add_failed"
+    return 0
+  fi
+  if GIT_INDEX_FILE="${_sg_index}" git -C "${_sg_lane_root}" diff --cached --quiet 2>/dev/null; then
+    rm -f "${_sg_index}"
+    return 0
+  fi
+  if GIT_INDEX_FILE="${_sg_index}" git -C "${_sg_lane_root}" commit -q -m "wip(${TASK}): auto-checkpoint on worker exit (STOP-GATE)" >/dev/null 2>&1; then
+    # HEAD moved underneath the real index. Refresh only committed in-scope
+    # entries so they do not look staged against the new checkpoint; foreign
+    # staged entries remain entirely untouched.
+    git -C "${_sg_lane_root}" reset -q HEAD -- "${_sg_reset_files[@]}" >/dev/null 2>&1 || true
+    emit decision "stop_gate_autocommit task=${TASK} files=${_sg_n}"
+  else
+    emit decision "stop_gate_autocommit_failed task=${TASK} reason=commit_failed"
+  fi
+  rm -f "${_sg_index}"
+}
+
 # WARNING: pc_scope_diff() below defines helper functions in its body that are
 # NOT available until it is first invoked (line ~1277 in the original layout).
 # Top-level code that runs before pc_scope_diff() must not call those helpers.
@@ -1394,6 +1567,10 @@ repos_file="${HANDOFF}/review.diff.repos"
 blocked_reason=""
 _pc_base_used="HEAD"
 CROSS_REPO_DIFF="${LEADV2_REVIEW_DIFF_CROSS_REPO:-1}"
+# pc_stop_gate_autocommit handles only the lane repository. pc_scope_diff is
+# the one place that has authoritative per-write repository resolution, so it
+# records foreign repos here for a loud checkpoint-skip journal entry.
+PC_STOP_GATE_FOREIGN_REPOS=()
 # P0-WORK-CANNOT-LAND-UNSCOPABLE-DIFF-01 (M3) / C1+C3 (LANDING-BLOCKER-R2): diff_root
 # resolution to the lane worktree is UNCONDITIONAL (GATE-LANE-DIFF-ONLY-WHEN-CROSS-REPO-01,
 # 2026-08-04) -- prefer LEADV2_LANE_WORK_ROOT -- the SAME value dispatch-code.sh gave every
@@ -1445,6 +1622,7 @@ _pc_git_diff() {  # <repo_abs> <base_rev> <path...> -> diff on stdout (tracked +
   fi
   rm -f "${tmpidx}"
 }
+
 # S-3 round 3 (LANE-START-SHA-01): `git diff HEAD` is empty by definition for a lane that
 # already COMMITTED its own work -- the normal end state of a finished lane -- and can also
 # lose part of an uncommitted lane's changes once another lane's commit moves HEAD forward
@@ -1540,6 +1718,10 @@ if [[ -n "${WRITES_CSV}" ]]; then
         _seen=0
         for q in "${repo_order[@]:-}"; do [[ "${q}" == "${r}" ]] && { _seen=1; break; }; done
         (( _seen )) || repo_order+=("${r}")
+      done
+      _pc_lane_repo="$(git -C "${diff_root}" rev-parse --show-toplevel 2>/dev/null || true)"
+      for repo in "${repo_order[@]}"; do
+        [[ -n "${_pc_lane_repo}" && "${repo}" != "${_pc_lane_repo}" ]] && PC_STOP_GATE_FOREIGN_REPOS+=("${repo}")
       done
       # H5 (LANDING-BLOCKER-R2): a repo that contributes nothing used to be skipped
       # silently and the block check fired only when EVERY repo was empty, so a lane
@@ -1757,6 +1939,22 @@ pc_precheck_writes
 
 if ! pc_await_worker_exit; then
   _pc_reap_worker "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")" "$(_pc_meta_value "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/meta.yaml" pid 2>/dev/null)"
+  # HOLE-2 fix (V3-STOP-GATE-FINISH-01): a reaped/timed-out worker is the
+  # likeliest producer of uncommitted work -- it never chose to stop -- so the
+  # gate must fire here too, not only after the clean-exit wait below.
+  # Capture the handoff artifact before that checkpoint advances HEAD. Run in
+  # a SUBSHELL: pc_scope_diff `exit`s directly on its own no_work/blocked
+  # verdicts (an empty diff is exactly the common shape of a worker reaped
+  # before writing anything), and an unguarded call here would let that exit
+  # terminate the whole script before the worker_timeout gate below ever
+  # runs -- silently relabeling every such timeout as no_work. The subshell
+  # contains that exit; review.diff/review-gate.md are still written to disk
+  # as pc_scope_diff's normal side effect, and are overwritten by the
+  # worker_timeout printf immediately below, same as before this fix.
+# Capture-only snapshot (codex r3): scoped + untracked-inclusive + populates the
+  # foreign-repo list for the gate's skip journal; no verdict/journal/ledger effects.
+  pc_stop_gate_capture_diff
+  pc_stop_gate_autocommit
   printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
   emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout"
   _dl_note dead timeout "waited=${_PC_WORKER_WAITED_S}s author=${AUTHOR} handle=${HANDLE}"
@@ -1779,6 +1977,13 @@ if pc_dwr_resume_once; then
   if ! LEADV2_PC_WORKER_MAX_WAIT_S="${LEADV2_PC_RESUME_MAX_WAIT_S:-${LEADV2_PC_WORKER_MAX_WAIT_S:-4200}}" \
       pc_await_worker_exit; then
     _pc_reap_worker "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")" "$(_pc_meta_value "$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")/meta.yaml" pid 2>/dev/null)"
+    # HOLE-2 fix (V3-STOP-GATE-FINISH-01): same reasoning as the first wait's
+    # timeout branch above -- the resumed worker was also reaped, not exited
+    # cleanly.
+    # Capture the handoff artifact before that checkpoint advances HEAD.
+  # Capture-only snapshot (codex r3): see pc_stop_gate_capture_diff.
+    pc_stop_gate_capture_diff
+    pc_stop_gate_autocommit
     printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
     emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout resumed=1"
     _dl_note dead timeout "waited=${_PC_WORKER_WAITED_S}s author=${AUTHOR} handle=${HANDLE} resumed=1"
@@ -1809,6 +2014,12 @@ if pc_silent_arm_probe; then
 fi
 
 pc_scope_diff
+
+# V3-STOP-GATE-01: capture the exit-time scoped diff before checkpointing.  A
+# checkpoint advances HEAD, so doing this first preserves the worker's actual
+# output for review.diff even when no recorded lane-start base is available.
+# The checkpoint still precedes every downstream gate that reads the tree.
+pc_stop_gate_autocommit
 
 # C.3: a NON-empty diff whose worker still asked into the void is parked, never
 # landed -- work exists and a human answering the question unblocks it, which is

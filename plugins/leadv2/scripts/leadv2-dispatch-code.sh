@@ -4213,6 +4213,18 @@ whose self-check is missing or red is refused before any reviewer is spent on
 it -- you will have burned the lane for nothing."
   fi
 
+  # V3-STOP-GATE-01: one paragraph telling every product lane an uncommitted exit
+  # is an incident, not a clean stop. Guarded by the SAME kill-switch the gate
+  # itself reads (product-close.sh), same idiom as the BUILDER-SELFCHECK-GATE-01
+  # paragraph above -- LEADV2_STOP_GATE=0 restores the mission text byte-for-byte.
+  # Appended after the dedup sig is computed, same reason as above.
+  if [[ "${LEADV2_STOP_GATE:-1}" != 0 ]]; then
+    mission="${mission}
+
+Commit your work on the lane branch before ending your session; an uncommitted
+exit is treated as an incident."
+  fi
+
   # LANE-SHAPE-01 gate (docs/specs/lane-shape.md task 2): classify solo vs line
   # BEFORE any ledger reservation or spawn. off (default) = no-op, zero behavior
   # change (spec §9 Stage 0). enforce refuses a diagnostic mission (names a
