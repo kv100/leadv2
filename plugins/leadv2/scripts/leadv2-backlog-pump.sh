@@ -64,13 +64,13 @@
 #      re-invocation of this script (`_async-dispatch`, setsid when
 #      available) — the lane reservation is already committed by the time
 #      `check` returns either way; only the wait for the dispatch call's own
-#      completion is deferred. Default 0 leaves leadv2-supervise-loop.sh's
-#      own periodic `check` call fully synchronous, unchanged.
+#      completion is deferred. Default 0 leaves the (now-retired) supervisor
+#      loop's own periodic `check` call fully synchronous, unchanged.
 #
 # Usage:
 #   leadv2-backlog-pump.sh check              # refill up to capacity; safe,
 #                                                idempotent, called by
-#                                                leadv2-supervise-loop.sh
+#                                                hooks/leadv2-supervisor-pump-caller.sh
 #   leadv2-backlog-pump.sh dry-run [N]        # print next N candidates +
 #                                                reason, priority order, NO
 #                                                side effects (default 3)
@@ -797,7 +797,7 @@ cmd_check() {
 
   local running_ids; running_ids="$(_active_task_ids)"
   local examined=0 dispatched=0
-  # Bound #7: off by default -- leadv2-supervise-loop.sh's own periodic
+  # Bound #7: off by default -- the (now-retired) supervisor loop's own periodic
   # `check` call stays fully synchronous, unchanged.
   local ASYNC_DISPATCH="${LEADV2_BACKLOG_PUMP_ASYNC_DISPATCH:-0}"
 

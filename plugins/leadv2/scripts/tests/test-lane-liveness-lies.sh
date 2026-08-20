@@ -4,16 +4,16 @@
 # Root 1 (symptom A + B2): leadv2-active-registry.sh:556 wrote pid_birth via
 # `ps -o lstart= | tr -s ' '` (Darwin right-pads the field; `tr -s ' '`
 # collapses the trailing run to ONE space, never strips it). The reader
-# (_pid_birth_of() in leadv2-supervise.sh) `.strip()`s. So stored != live for
+# (_pid_birth_of() in leadv2-lanes-snapshot.sh) `.strip()`s. So stored != live for
 # EVERY healthy lane with a recorded pid_birth -> "pid birth mismatch
 # (reuse)" fired on demonstrably alive processes and, after 2 polls,
 # corroborated-dead escalation. Change 1a normalises both sides (writer +
-# stored-at-read) to the same trim as leadv2-supervise-loop.sh:115. Change 1b
+# stored-at-read) to the same trim the (now-retired) supervisor loop used at line 115. Change 1b
 # adds a freshness veto: a lane whose authoritative liveness verdict
 # (leadv2-lane-liveness.sh, log-mtime-based) is fresh must never escalate,
 # regardless of what the pid heuristic says.
 #
-# All four tests below drive the REAL leadv2-supervise.sh --json binary
+# All four tests below drive the REAL leadv2-lanes-snapshot.sh --json binary
 # against a scratch active.yaml (never the live one) -- no assertion on a
 # helper function in isolation.
 #
@@ -25,7 +25,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-SUPERVISE_SH="${PLUGIN_DIR}/scripts/leadv2-supervise.sh"
+SUPERVISE_SH="${PLUGIN_DIR}/scripts/leadv2-lanes-snapshot.sh"
 STATE_PATH_SH="${PLUGIN_DIR}/scripts/leadv2-state-path.sh"
 
 PASS=0; FAIL=0; ERRORS=()
@@ -68,7 +68,7 @@ print($1)
 
 _bypass_reconcile_grace() {
   # The first 2 FULL reconciliation cycles after rollout are ALWAYS
-  # observe-only for legacy rows (leadv2-supervise.sh "D-e") -- pre-seed
+  # observe-only for legacy rows (leadv2-lanes-snapshot.sh "D-e") -- pre-seed
   # .supervise-last.json with reconcile_cycle_count=5 so this test's two
   # polls are past that grace window and prunes actually apply, exactly
   # like test-supervise-v2.sh's Test 7/2 fixtures do.

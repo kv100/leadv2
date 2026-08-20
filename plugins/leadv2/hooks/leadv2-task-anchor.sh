@@ -235,7 +235,7 @@ def build_thread_anchor(root, leadv2_dir, session_id=""):
     header = [
         "<task-anchor>",
         "NO ACTIVE TASK — thread anchor (docs/leadv2/open-threads.md)",
-        f"supervisor role definition (stable, never a status dump): {plugin_root}/docs/supervisor-role.md",
+        f"single-lead role definition (stable, never a status dump): {plugin_root}/docs/single-lead-pulse.md",
     ]
     content = []
     if has_ot:

@@ -98,18 +98,21 @@ print(json.dumps({
 _sc_run_section "git" _sc_git_section
 
 # ── generic section: lanes — delegate to the already-correct, already-tested
-#    leadv2-supervise.sh --json (arm-aware liveness: pid/mtime for Sonnet
+#    leadv2-lanes-snapshot.sh --json (arm-aware liveness: pid/mtime for Sonnet
 #    lanes, codex-task.sh status for Codex lanes — re-deriving that split
-#    here would just re-risk the exact trap it already solves). ──────────
+#    here would just re-risk the exact trap it already solves). Renamed from
+#    leadv2-supervise.sh in SUPERVISOR-DELETE-01 (2026-08-20) — this call is
+#    a live single-lead dependency, not supervisor-only; only the name
+#    changed. ──────────
 _sc_lanes_section() {
   cd "$PROJECT_ROOT"
-  # supervise.sh resolves LEADV2_PROJECT_ROOT before PROJECT_ROOT.  Pin all
-  # accepted root variables so an ambient supervisor session cannot make this
+  # lanes-snapshot.sh resolves LEADV2_PROJECT_ROOT before PROJECT_ROOT.  Pin
+  # all accepted root variables so an ambient session cannot make this
   # snapshot read a different repository's control plane.
   LEADV2_PROJECT_ROOT="$PROJECT_ROOT" \
     CLAUDE_PROJECT_DIR="$PROJECT_ROOT" \
     PROJECT_ROOT="$PROJECT_ROOT" \
-    bash "$_SC_DIR/leadv2-supervise.sh" --json
+    bash "$_SC_DIR/leadv2-lanes-snapshot.sh" --json
 }
 _sc_run_section "lanes" _sc_lanes_section
 

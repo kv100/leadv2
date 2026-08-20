@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/test-active-registry-failclosed.sh — SUPERVISE-V2-01 fix-1 (critic M1):
 # leadv2-active-registry.sh B1 fail-closed root resolution had zero test
-# coverage (only leadv2-supervise.sh's own copy of this pattern was tested by
+# coverage (only leadv2-lanes-snapshot.sh's own copy of this pattern was tested by
 # test-supervise-failclosed.sh). Same order: LEADV2_PROJECT_ROOT ->
 # CLAUDE_PROJECT_DIR -> `git -C "$PWD" rev-parse --show-toplevel`. NEVER a
 # bare ambient $PROJECT_ROOT/$(pwd) fallback.

@@ -37,7 +37,7 @@
 # SESSION-HANDOFF-01: a full (non-delta) --json call also carries a bounded
 # "resume" key — a live-composed <supervisor-handoff> restore block (role +
 # founder rules, live lanes, focus/next-action, freshest open-threads tail,
-# tasks.yaml P0/P1 top-10). Computed by scripts/leadv2-supervise-resume.sh
+# tasks.yaml P0/P1 top-10). Computed by scripts/leadv2-lanes-resume.sh
 # from the same canonical on-disk sources this script already reads/
 # reconciles — no new state file. `--print` execs straight into that
 # composer (skipping every mutation path below: sentinel write, tmux
@@ -135,7 +135,7 @@ fi
 # write, tmux adoption/prune, phase-backfill, truth-probe). Read-only,
 # fast, safe to call whenever the mandatory --json call is unavailable.
 if [[ "$PRINT_MODE" -eq 1 ]]; then
-  RESUME_SH="${SCRIPT_DIR}/leadv2-supervise-resume.sh"
+  RESUME_SH="${SCRIPT_DIR}/leadv2-lanes-resume.sh"
   if [[ -x "$RESUME_SH" || -f "$RESUME_SH" ]]; then
     if [[ "$JSON_MODE" -eq 1 ]]; then
       exec bash "$RESUME_SH" --json --project-root "$PROJECT_ROOT"
@@ -348,7 +348,8 @@ fi
 # missing hook, non-zero exit, timeout, malformed JSON — degrades to
 # status:"unavailable" with breaches:[] (fail-open-to-EMPTY). This must NEVER
 # be read as "no breaches confirmed clear" (fail-open-to-clear) — callers
-# (leadv2-supervise-pick.sh, the loop's URGENT renderer) key off `status`,
+# (the retired loop's URGENT renderer, gone 2026-08-19 SUPERVISOR-DELETE-01)
+# key off `status`,
 # not just an empty breaches list. The persona-engine probe INSTANCE is
 # written elsewhere (GLM-FIRST-01, out of this task's scope) — this is only
 # the generic contract + cache writer.
@@ -1327,7 +1328,7 @@ for tid in closed_now:
 # key returned the raw dead_now list on EVERY call — including every 5s
 # delta poll while the row remained corroborated-dead-but-not-yet-pruned
 # (e.g. observe_only, or a tombstone failure per R2-4's keep-row path) —
-# so leadv2-supervise-loop.sh's _render_events appended a duplicate DEAD
+# so the (now-retired) supervisor loop's _render_events appended a duplicate DEAD
 # urgent line every single poll instead of once per liveness change,
 # violating the pulse ceiling ("unchanged poll -> zero bytes appended").
 for d in dead_now:
@@ -1391,7 +1392,7 @@ out_degraded = [item for item in degraded_items if event_key_degraded(item) in n
 # script's contract is "exit 0 always" for a status probe).
 resume_obj = {"status": "skipped_delta"} if delta_mode else {"status": "degraded", "degraded": ["resume composer unavailable"]}
 if not delta_mode:
-    resume_script = os.path.join(script_dir, "leadv2-supervise-resume.sh")
+    resume_script = os.path.join(script_dir, "leadv2-lanes-resume.sh")
     if os.path.isfile(resume_script):
         try:
             _rr = subprocess.run(
@@ -1459,7 +1460,7 @@ if json_mode:
         # SESSION-HANDOFF-01: bounded <supervisor-handoff> restore block —
         # "skipped_delta" on a --since call (never recomputed), a typed
         # {"status":"degraded",...} stub if the composer failed/timed out,
-        # never a fabricated block. See leadv2-supervise-resume.sh.
+        # never a fabricated block. See leadv2-lanes-resume.sh.
         "resume": resume_obj,
         # STATUS-SURFACE-SHOWS-STALE-TRUTH-01 C4: never let a capped/reaped
         # table read as "this is the whole store" — null when nothing hidden.
