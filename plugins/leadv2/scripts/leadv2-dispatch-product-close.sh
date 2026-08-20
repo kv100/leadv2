@@ -1397,6 +1397,51 @@ pc_precheck_writes() {
 # classifier already handles, and auto-committing it here would launder a
 # scope violation instead of catching it. LEADV2_STOP_GATE=0 restores today's
 # path byte-for-byte (same idiom as LEADV2_BUILDER_SELFCHECK).
+# Capture-only pre-checkpoint snapshot for the timeout paths (codex r3): scoped to the
+# declared write-set, untracked-inclusive via a throwaway index + add -N (same technique
+# as pc_scope_diff's _pc_git_diff, duplicated here because that helper is only defined
+# inside pc_scope_diff's body and the timeout paths never enter it), and populates
+# PC_STOP_GATE_FOREIGN_REPOS so the gate's stop_gate_skipped_foreign_repo journal fires
+# on timeout too. NO verdict/journal/ledger side effects of its own.
+pc_stop_gate_capture_diff() {
+  local _ct_lane="${LEADV2_LANE_WORK_ROOT:-}"
+  [[ -z "${_ct_lane}" ]] && _ct_lane="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
+  [[ -n "${_ct_lane}" && -d "${_ct_lane}" ]] || return 0
+  declare -p PC_STOP_GATE_FOREIGN_REPOS >/dev/null 2>&1 || PC_STOP_GATE_FOREIGN_REPOS=()
+  local _ct_csv="${_PC_SCOPE_WRITES_CSV:-${LEADV2_DISPATCH_LANE_WRITES:-}}" _ct_p _ct_r
+  local _ct_paths=()
+  local _ct_old_ifs="${IFS}"
+  IFS=','
+  for _ct_p in ${_ct_csv}; do
+    IFS="${_ct_old_ifs}"
+    [[ -z "${_ct_p}" ]] && { IFS=','; continue; }
+    if [[ "${_ct_p}" == /* && "${_ct_p}" != "${_ct_lane}" && "${_ct_p}" != "${_ct_lane}/"* ]]; then
+      _ct_r="$(cd "$(dirname "${_ct_p}")" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
+      [[ -n "${_ct_r}" && "${_ct_r}" != "${_ct_lane}" ]] && PC_STOP_GATE_FOREIGN_REPOS+=("${_ct_r}")
+    else
+      _ct_paths+=("${_ct_p}")
+    fi
+    IFS=','
+  done
+  IFS="${_ct_old_ifs}"
+  mkdir -p "${HANDOFF}" 2>/dev/null || true
+  local _ct_gitdir _ct_idx
+  _ct_gitdir="$(git -C "${_ct_lane}" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  _ct_idx="$(mktemp "${TMPDIR:-/tmp}/leadv2-ct-idx.XXXXXX" 2>/dev/null || true)"
+  if [[ -n "${_ct_gitdir}" && -n "${_ct_idx}" ]] && cp "${_ct_gitdir}/index" "${_ct_idx}" 2>/dev/null; then
+    if [[ ${#_ct_paths[@]} -gt 0 ]]; then
+      GIT_INDEX_FILE="${_ct_idx}" git -C "${_ct_lane}" add -N -- "${_ct_paths[@]+"${_ct_paths[@]}"}" >/dev/null 2>&1 || true
+      GIT_INDEX_FILE="${_ct_idx}" git -C "${_ct_lane}" diff HEAD -- "${_ct_paths[@]+"${_ct_paths[@]}"}" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' > "${HANDOFF}/review.diff" 2>/dev/null || true
+    else
+      GIT_INDEX_FILE="${_ct_idx}" git -C "${_ct_lane}" add -N -A >/dev/null 2>&1 || true
+      GIT_INDEX_FILE="${_ct_idx}" git -C "${_ct_lane}" diff HEAD -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' > "${HANDOFF}/review.diff" 2>/dev/null || true
+    fi
+  else
+    git -C "${_ct_lane}" diff HEAD > "${HANDOFF}/review.diff" 2>/dev/null || true
+  fi
+  rm -f "${_ct_idx}" 2>/dev/null || true
+}
+
 pc_stop_gate_autocommit() {
   [[ "${LEADV2_STOP_GATE:-1}" != 0 ]] || return 0
   [[ -n "${_PC_SCOPE_WRITES_CSV:-}" ]] || return 0
@@ -1577,6 +1622,7 @@ _pc_git_diff() {  # <repo_abs> <base_rev> <path...> -> diff on stdout (tracked +
   fi
   rm -f "${tmpidx}"
 }
+
 # S-3 round 3 (LANE-START-SHA-01): `git diff HEAD` is empty by definition for a lane that
 # already COMMITTED its own work -- the normal end state of a finished lane -- and can also
 # lose part of an uncommitted lane's changes once another lane's commit moves HEAD forward
@@ -1905,16 +1951,9 @@ if ! pc_await_worker_exit; then
   # contains that exit; review.diff/review-gate.md are still written to disk
   # as pc_scope_diff's normal side effect, and are overwritten by the
   # worker_timeout printf immediately below, same as before this fix.
-# Capture-only diff: pc_scope_diff here would run its VERDICT logic whose
-  # journal emits (terminal=no_work cause=empty_diff) and ledger write-terminal
-  # rows misclassify this timeout (test: "timeout never emits no_work") and
-  # violate write-once ledger semantics. Raw uncommitted diff, no side effects.
-  _pc_to_lane="${LEADV2_LANE_WORK_ROOT:-}"
-  [[ -z "${_pc_to_lane}" ]] && _pc_to_lane="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
-  if [[ -n "${_pc_to_lane}" && -d "${_pc_to_lane}" ]]; then
-    mkdir -p "${HANDOFF}" 2>/dev/null || true
-    git -C "${_pc_to_lane}" diff HEAD > "${HANDOFF}/review.diff" 2>/dev/null || true
-  fi
+# Capture-only snapshot (codex r3): scoped + untracked-inclusive + populates the
+  # foreign-repo list for the gate's skip journal; no verdict/journal/ledger effects.
+  pc_stop_gate_capture_diff
   pc_stop_gate_autocommit
   printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
   emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout"
@@ -1942,16 +1981,8 @@ if pc_dwr_resume_once; then
     # timeout branch above -- the resumed worker was also reaped, not exited
     # cleanly.
     # Capture the handoff artifact before that checkpoint advances HEAD.
-  # Capture-only diff: pc_scope_diff here would run its VERDICT logic whose
-    # journal emits (terminal=no_work cause=empty_diff) and ledger write-terminal
-    # rows misclassify this timeout (test: "timeout never emits no_work") and
-    # violate write-once ledger semantics. Raw uncommitted diff, no side effects.
-    _pc_to_lane="${LEADV2_LANE_WORK_ROOT:-}"
-    [[ -z "${_pc_to_lane}" ]] && _pc_to_lane="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"
-    if [[ -n "${_pc_to_lane}" && -d "${_pc_to_lane}" ]]; then
-      mkdir -p "${HANDOFF}" 2>/dev/null || true
-      git -C "${_pc_to_lane}" diff HEAD > "${HANDOFF}/review.diff" 2>/dev/null || true
-    fi
+  # Capture-only snapshot (codex r3): see pc_stop_gate_capture_diff.
+    pc_stop_gate_capture_diff
     pc_stop_gate_autocommit
     printf 'status: blocked\nreason: worker_timeout\nbase: %s\n' "${_pc_base_used:-HEAD}" > "${HANDOFF}/review-gate.md"
     emit decision "review_gate task=${TASK} status=blocked reason=worker_timeout terminal=dead cause=timeout resumed=1"
