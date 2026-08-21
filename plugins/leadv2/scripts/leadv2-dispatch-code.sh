@@ -224,6 +224,18 @@
 #          evidence check and stays blocked, unchanged. No third notion of doneness invented
 #          -- this composes the checkpoint marker (220eeaf) with the existing sentinel
 #          session-runner.sh already treats as authoritative.
+#      STOP-GATE-CHECKPOINT-DEDUP-01 (2026-08-21): the note above is MODEL-written and is
+#      frequently absent (leadv2-turncap-checkpoint-commit.sh:22 documents the model not
+#      complying) even though the MACHINE-written checkpoint commit
+#      (`wip(<sig8>): auto-checkpoint on worker exit (STOP-GATE)`, pc_stop_gate_autocommit
+#      in leadv2-dispatch-product-close.sh) always lands in the lane's own worktree on a
+#      killed worker. _dispatch_checkpointed_cutoff now ALSO accepts that commit as proof
+#      of cutoff (OR, not replacement, of the note path): it resolves the lane worktree via
+#      LANE_WORKTREE_BIN path-of <sig8>, greps that worktree's log for the exact STOP-GATE
+#      commit message for <sig8>, and requires the commit's OWN committer timestamp (`%ct`,
+#      not file mtime) be >= created_epoch -- same freshness contract as the note, so a
+#      checkpoint from an older attempt never frees a newer reservation. Fails closed: a
+#      missing/unreadable worktree or an undateable commit does not free the row.
 #      Never runs on a live or unprovable row (liveness dead-only, same gate as item 8).
 #      ONE-STEP ROLLBACK: LEADV2_DISPATCH_CHECKPOINT_CUTOFF=0 disables this carve-out only --
 #      a checkpointed-and-cut-off row then falls through to item 8's evidence check exactly as
@@ -2073,18 +2085,55 @@ raise SystemExit(0 if terminal or subtype else 1)
 ' 2>/dev/null
 }
 
+# STOP-GATE-CHECKPOINT-DEDUP-01: the machine-written checkpoint COMMIT
+# (pc_stop_gate_autocommit, leadv2-dispatch-product-close.sh) as the OTHER proof of
+# cutoff -- same freshness contract as the note (mtime >= created), but keyed off the
+# commit's own committer timestamp, not a file mtime. Resolves the lane worktree via
+# LANE_WORKTREE_BIN (same seam _resolve_pinned_placement / spawn_product_close already
+# use), so a missing/renamed/unreadable worktree fails closed (rc1) rather than guessing
+# a path. On rc0, leaves the freeing commit's short sha in _DISPATCH_CHECKPOINT_SHA for
+# the caller's journal line; callers MUST reset that var before invoking (this function
+# does so itself, guarding against a stale value leaking from a prior failed row).
+_DISPATCH_CHECKPOINT_SHA=""
+_dispatch_checkpoint_commit_cutoff() {  # <sig8> <created_epoch> -> rc0 cutoff; rc1 not
+  local sig8="$1" created="$2" lane sha ctime
+  _DISPATCH_CHECKPOINT_SHA=""
+  [[ "${created}" =~ ^[0-9]+$ ]] || return 1
+  [[ -n "${LANE_WORKTREE_BIN:-}" && -f "${LANE_WORKTREE_BIN}" ]] || return 1
+  lane="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${sig8}" 2>/dev/null)"
+  [[ -n "${lane}" && -d "${lane}" ]] || return 1
+  [[ -d "${lane}/.git" || -f "${lane}/.git" ]] || return 1
+  # Newest matching commit first (log is reverse-chronological by default); a fixed-
+  # string grep on the exact message pc_stop_gate_autocommit writes -- never a loose
+  # pattern that could match an unrelated wip() commit.
+  sha="$(git -C "${lane}" log -1 --fixed-strings \
+    --grep="wip(${sig8}): auto-checkpoint on worker exit (STOP-GATE)" \
+    --format=%H -- . 2>/dev/null)" || return 1
+  [[ -n "${sha}" ]] || return 1
+  ctime="$(git -C "${lane}" log -1 --format=%ct "${sha}" 2>/dev/null)" || return 1
+  [[ "${ctime}" =~ ^[0-9]+$ ]] || return 1
+  (( ctime >= created )) || return 1
+  _DISPATCH_CHECKPOINT_SHA="${sha:0:8}"
+  return 0
+}
+
 # rc0: this row is checkpointed-and-cut-off and never recovered -- free it. rc1: not (no
-# checkpoint marker, marker predates this reservation, or the mission's own completion
+# checkpoint marker/commit, both predate this reservation, or the mission's own completion
 # sentinel says it finished -- see doc block item 9 for why the sentinel check comes first).
 _dispatch_checkpointed_cutoff() {  # <sig8> <created_epoch> -> rc0 cutoff; rc1 not
   local sig8="$1" created="$2" marker mtime
   [[ -f "$(_dispatch_completion_sentinel "${sig8}")" ]] && return 1
-  marker="$(_dispatch_checkpoint_marker "${sig8}")"
-  [[ -f "${marker}" ]] || return 1
-  mtime="$(stat -f %m "${marker}" 2>/dev/null || stat -c %Y "${marker}" 2>/dev/null)" || return 1
-  [[ "${mtime}" =~ ^[0-9]+$ ]] || return 1
   [[ "${created}" =~ ^[0-9]+$ ]] || created=0
-  (( mtime >= created ))
+  marker="$(_dispatch_checkpoint_marker "${sig8}")"
+  if [[ -f "${marker}" ]]; then
+    mtime="$(stat -f %m "${marker}" 2>/dev/null || stat -c %Y "${marker}" 2>/dev/null)"
+    if [[ "${mtime}" =~ ^[0-9]+$ ]] && (( mtime >= created )); then
+      return 0
+    fi
+  fi
+  # Model-written note absent or stale -- fall back to the machine-written STOP-GATE
+  # checkpoint commit (OR, not a replacement: either proof frees the row).
+  _dispatch_checkpoint_commit_cutoff "${sig8}" "${created}"
 }
 
 # rc0: this row still blocks (worker alive, liveness undetermined, or finished-with-
@@ -2101,7 +2150,11 @@ _dispatch_outcome_blocks() {  # <arm> <handle> <created_epoch> <sig8> -> rc0 blo
         return 1
       fi
       if [[ "${CHECKPOINT_CUTOFF}" == "1" ]] && _dispatch_checkpointed_cutoff "${sig8}" "${created}"; then
-        log "dispatch_reclaimed task=${sig8} arm=${arm} handle=${handle} reason=checkpointed_cutoff"
+        if [[ -n "${_DISPATCH_CHECKPOINT_SHA:-}" ]]; then
+          log "dispatch_reclaimed task=${sig8} arm=${arm} handle=${handle} reason=checkpointed_cutoff commit=${_DISPATCH_CHECKPOINT_SHA}"
+        else
+          log "dispatch_reclaimed task=${sig8} arm=${arm} handle=${handle} reason=checkpointed_cutoff"
+        fi
         return 1
       fi
       if _dispatch_evidence_exists "${created}" "${sig8}"; then
