@@ -415,7 +415,39 @@ $(tail -n 40 "$3" 2>/dev/null)
   # same depth re-entry guard as C3. LEADV2_TEST_FALSIFICATION_GATE=0 restores the
   # pre-gate path byte-for-byte (zero rows/skipped/failed bookkeeping), same idiom
   # as LEADV2_SCOPE_DISCIPLINE.
-  if [[ "${LEADV2_TEST_FALSIFICATION_GATE:-1}" == "0" ]]; then
+  # FALSIFICATION-MARKER-DEMOTE-01 (2026-08-21) — DEFAULT IS NOW 0 (advisory).
+  #
+  # The Codex process audit (docs/handoff/PROCESS-AUDIT-20260821/codex-findings.md)
+  # measured what this gate actually did, and it was the single largest source of
+  # false blocks in the fleet:
+  #   * 0 of 755 matching shell tests in persona-engine emit the marker, so the
+  #     convention is unsatisfiable there and every test-touching lane trips it.
+  #   * 12 of 13 RED selfchecks in the current dispatch corpus are marker-missing,
+  #     i.e. convention mismatch — NOT a failed behavioural check.
+  #   * dispatch-32351f66/selfcheck.md is the clean demonstration: scope 0, bash -n
+  #     0, the test itself reports 21 passed / 0 failed, and the lane is RED solely
+  #     because a sentence was absent from stdout.
+  #
+  # And what it proves when it DOES pass is weaker than it reads. The gate runs the
+  # current test once, requires rc 0, and greps stdout. It never runs the test
+  # against pre-fix code, never applies or verifies a mutant, never binds the marker
+  # to the command that failed. So the marker attests to a counterfactual the gate
+  # does not execute: "a passing shell process printed a sentence". A test that
+  # prints the regex passes; a genuine paired falsification in a repo with a
+  # different output convention is rejected. Both directions are wrong.
+  #
+  # It is demoted, not deleted: the rows still appear and still name the reason, so
+  # a reviewer sees "this test never proved it can fail" without the lane being
+  # refused for a convention it cannot satisfy. Set LEADV2_TEST_FALSIFICATION_GATE=1
+  # to restore blocking in a repo that HAS adopted the harness convention.
+  #
+  # The replacement is executed evidence, not a louder marker: apply a semantic
+  # negative-control patch to PRODUCTION code in a temp tree, require the same test
+  # command to go nonzero against it and zero against the restored tree, and persist
+  # base/lane/mutant hashes with rc and stdout digests. That work is tracked
+  # separately — a marker is not upgraded by adding another marker.
+  local _tf_blocking="${LEADV2_TEST_FALSIFICATION_GATE:-0}"
+  if [[ "${_tf_blocking}" == "off" ]]; then
     : # kill switch: zero C4 bookkeeping/output
   elif (( depth >= 1 )); then
     : # re-entered gate: C3's own depth-guard row already surfaces this: avoid a duplicate
@@ -440,11 +472,16 @@ $(tail -n 40 "$3" 2>/dev/null)
         _selfcheck_raw "${tf_rel} (falsification proof)" "${tf_rc}" "${tf_log}"
       elif grep -qE 'RED-then-GREEN: .*\(pre_rc=1 -> post_rc=0\)' "${tf_log}" 2>/dev/null; then
         _selfcheck_row "falsification" "${tf_rel}" "0"
-      else
+      elif [[ "${_tf_blocking}" == "1" ]]; then
         failed=$((failed + 1))
         _selfcheck_row "falsification" "${tf_rel}" "FAIL (falsification_missing)"
         _selfcheck_fail_name "falsification:${tf_rel}:marker_missing"
         _selfcheck_raw "${tf_rel} (falsification proof)" "${tf_rc}" "${tf_log}"
+      else
+        # Advisory (default): surfaced for the reviewer, never refuses the lane.
+        # The test PASSED — only the harness marker is absent, and in most repos
+        # that means the convention was never adopted, not that the test is weak.
+        _selfcheck_row "falsification" "${tf_rel}" "ADVISORY (no_falsification_marker)"
       fi
       rm -f "${tf_log}"
     done

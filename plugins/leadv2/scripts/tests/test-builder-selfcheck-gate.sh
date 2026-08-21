@@ -960,8 +960,15 @@ run_c4_case() { # <name> <fn>
   log "RED-then-GREEN: ${name} (pre_rc=${pre_rc} -> post_rc=0)"
 }
 
-# -- 22: a changed test file with NO red-first evidence in its own run output must
-# block (falsification_missing) -- the gate does not just trust a clean exit code.
+# -- 22: a changed test file with NO red-first evidence blocks ONLY when the gate is
+# explicitly armed with LEADV2_TEST_FALSIFICATION_GATE=1.
+#
+# FALSIFICATION-MARKER-DEMOTE-01: the default flipped to advisory on 2026-08-21 after
+# the process audit measured what blocking actually cost: 0 of 755 matching tests in
+# persona-engine emit the marker, and 12 of 13 RED selfchecks in the live corpus were
+# convention mismatch rather than a failed check. This case still pins the BLOCKING
+# behaviour, because a repo that has adopted the harness convention must still be able
+# to enforce it — the contract moved from "on everywhere" to "on where it can be met".
 case_falsification_missing_blocks() { # <lib_sh> -> 0 blocked, 1 bypassed, 2 could-not-run
   local lib_sh="$1"
   local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
@@ -971,14 +978,43 @@ case_falsification_missing_blocks() { # <lib_sh> -> 0 blocked, 1 bypassed, 2 cou
   local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
   write_diff "${diff_file}" "tests/test-lying.sh"
   run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
-    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-lying.sh"
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_TEST_FALSIFICATION_GATE=1 \
+    LV2_TEST_WRITE_SET="tests/test-lying.sh"
   local rc names result=1
   rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
   [[ "${rc}" == "1" ]] && [[ "${names}" == *"falsification:tests/test-lying.sh"* ]] && result=0
   rm -rf "${root}"
   return "${result}"
 }
-run_c4_case "falsification-missing-blocks (TEST-FALSIFICATION-GATE-01)" case_falsification_missing_blocks
+run_c4_case "falsification-missing-blocks-when-armed (TEST-FALSIFICATION-GATE-01)" case_falsification_missing_blocks
+
+# -- 22b: the DEFAULT is advisory — the same lying-green test file does NOT refuse the
+# lane, and the row still names the reason so a reviewer can see it. This is the case
+# that would have let today's 12 false REDs through as information instead of refusal.
+case_falsification_default_advisory() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
+  mkdir -p "${root}/tests"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "${root}/tests/test-lying.sh"
+  chmod +x "${root}/tests/test-lying.sh"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "tests/test-lying.sh"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-lying.sh"
+  local rc names result=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  # not refused, and the advisory row is present and legible
+  if [[ "${rc}" == "0" ]] && [[ "${names}" != *"falsification:"* ]] \
+     && grep -q 'no_falsification_marker' "${out_md}"; then
+    result=0
+  fi
+  rm -rf "${root}"
+  return "${result}"
+}
+if case_falsification_default_advisory; then
+  PASS=$((PASS + 1)); log "PASS: falsification default is advisory (no refusal, row still surfaced)"
+else
+  FAIL=$((FAIL + 1)); ERRORS+=("falsification default advisory"); log "FAIL: falsification default advisory"
+fi
 
 # -- 23: a changed test file that DOES print a "RED-then-GREEN:" proof line passes.
 case_falsification_present_passes() { # <lib_sh> -> 0 passes, 1 blocked, 2 could-not-run
@@ -1016,7 +1052,7 @@ case_falsification_kill_switch_byte_restore() {
   local out_new="${root}/out_new.md" out_old="${root}/out_old.md"
   local res_new="${root}/res_new" res_old="${root}/res_old"
   run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_new}" "${res_new}" \
-    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_TEST_FALSIFICATION_GATE=0 LV2_TEST_WRITE_SET="tests/test-lying.sh"
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_TEST_FALSIFICATION_GATE=off LV2_TEST_WRITE_SET="tests/test-lying.sh"
   run_selfcheck "${NO_C4_LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_old}" "${res_old}" \
     LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-lying.sh"
   local rc_new rc_old names_new result=1
@@ -1030,9 +1066,9 @@ case_falsification_kill_switch_byte_restore() {
   return "${result}"
 }
 if case_falsification_kill_switch_byte_restore; then
-  PASS=$((PASS + 1)); log "PASS: kill-switch LEADV2_TEST_FALSIFICATION_GATE=0 restores no-C4 behaviour byte-for-byte"
+  PASS=$((PASS + 1)); log "PASS: kill-switch LEADV2_TEST_FALSIFICATION_GATE=off restores no-C4 behaviour byte-for-byte"
 else
-  FAIL=$((FAIL + 1)); ERRORS+=("falsification kill-switch byte-restore"); log "FAIL: kill-switch LEADV2_TEST_FALSIFICATION_GATE=0"
+  FAIL=$((FAIL + 1)); ERRORS+=("falsification kill-switch byte-restore"); log "FAIL: kill-switch LEADV2_TEST_FALSIFICATION_GATE=off"
 fi
 
 # -- 25 (codex r1 HIGH #1, red-first via run_tfg_case): a test file that FAILS (rc!=0)
@@ -1071,7 +1107,8 @@ case_falsification_widened_classifier_catches_new_dir() { # <lib_sh> -> 0 blocke
   local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
   write_diff "${diff_file}" "spec/checks/checks_test.sh"
   run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
-    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="spec/checks/checks_test.sh"
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_TEST_FALSIFICATION_GATE=1 \
+    LV2_TEST_WRITE_SET="spec/checks/checks_test.sh"
   local rc names result=1
   rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
   [[ "${rc}" == "1" ]] && [[ "${names}" == *"falsification:spec/checks/checks_test.sh"* ]] && result=0
