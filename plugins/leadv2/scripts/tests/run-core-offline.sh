@@ -270,6 +270,7 @@ SUITE_DEFS=(
   "worker env asserts (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-worker-env-asserts.sh"
   "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh"
   "core-offline cross-run exclusive lock (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-lock-01.sh"
+  "core-offline shard partition (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-shards-01.sh"
   "core-offline per-suite TMPDIR isolation (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-tmpdir-01.sh"
 )
 
@@ -296,15 +297,97 @@ _core_offline_run_entry() {
   run_check "$name" $cmd_str
 }
 
-if [[ "${LEADV2_CORE_OFFLINE_REVERSE:-0}" == "1" ]]; then
-  printf -- '[CORE-OFFLINE] LEADV2_CORE_OFFLINE_REVERSE=1: running suite list back-to-front\n'
-  for (( _i = ${#SUITE_DEFS[@]} - 1; _i >= 0; _i-- )); do
-    _core_offline_run_entry "${SUITE_DEFS[_i]}"
+# --- SUITE-SPEED-01 item 3: sharding -----------------------------------------
+# Suite indices are partitioned round-robin (idx % shards == shard_id) so the
+# partition is a pure function of SUITE_DEFS order — deterministic regardless
+# of how many shards run, and trivial to unit-test without executing suites
+# (LEADV2_SUITE_SHARDS_DUMP=1 below).
+#
+# shards<=1 keeps the exact pre-sharding code path (no subshell, no result
+# line, no reordering) so serial output stays byte-for-byte identical to
+# before this change — that is the "shards=1 == today" parity requirement.
+_core_offline_default_shards() {
+  local n
+  n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  if ! [[ "$n" =~ ^[0-9]+$ ]]; then
+    n="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+  fi
+  [[ "$n" =~ ^[0-9]+$ ]] || n=1
+  (( n > 4 )) && n=4
+  (( n < 1 )) && n=1
+  printf '%d' "$n"
+}
+LEADV2_SUITE_SHARDS="${LEADV2_SUITE_SHARDS:-$(_core_offline_default_shards)}"
+if ! [[ "$LEADV2_SUITE_SHARDS" =~ ^[0-9]+$ ]] || [[ "$LEADV2_SUITE_SHARDS" -lt 1 ]]; then
+  LEADV2_SUITE_SHARDS=1
+fi
+
+if [[ -n "${LEADV2_SUITE_SHARDS_DUMP:-}" ]]; then
+  for (( _s = 0; _s < LEADV2_SUITE_SHARDS; _s++ )); do
+    for (( _i = 0; _i < ${#SUITE_DEFS[@]}; _i++ )); do
+      if (( _i % LEADV2_SUITE_SHARDS == _s )); then
+        printf -- 'shard=%d idx=%d name=%s\n' "$_s" "$_i" "${SUITE_DEFS[_i]%%|||*}"
+      fi
+    done
   done
+  exit 0
+fi
+
+_core_offline_run_shard() {
+  local total="$1" idx="$2" n=0
+  local -a order
+  if [[ "${LEADV2_CORE_OFFLINE_REVERSE:-0}" == "1" ]]; then
+    for (( _i = ${#SUITE_DEFS[@]} - 1; _i >= 0; _i-- )); do order+=("$_i"); done
+  else
+    for (( _i = 0; _i < ${#SUITE_DEFS[@]}; _i++ )); do order+=("$_i"); done
+  fi
+  for _i in "${order[@]}"; do
+    if (( _i % total == idx )); then
+      _core_offline_run_entry "${SUITE_DEFS[_i]}"
+    fi
+    n=$((n + 1))
+  done
+}
+
+if [[ "$LEADV2_SUITE_SHARDS" -le 1 ]]; then
+  if [[ "${LEADV2_CORE_OFFLINE_REVERSE:-0}" == "1" ]]; then
+    printf -- '[CORE-OFFLINE] LEADV2_CORE_OFFLINE_REVERSE=1: running suite list back-to-front\n'
+    for (( _i = ${#SUITE_DEFS[@]} - 1; _i >= 0; _i-- )); do
+      _core_offline_run_entry "${SUITE_DEFS[_i]}"
+    done
+  else
+    for _entry in "${SUITE_DEFS[@]}"; do
+      _core_offline_run_entry "$_entry"
+    done
+  fi
 else
-  for _entry in "${SUITE_DEFS[@]}"; do
-    _core_offline_run_entry "$_entry"
+  printf -- '[CORE-OFFLINE] running %d suites across %d shards\n' \
+    "${#SUITE_DEFS[@]}" "$LEADV2_SUITE_SHARDS"
+  SHARD_LOGS=()
+  for (( _s = 0; _s < LEADV2_SUITE_SHARDS; _s++ )); do
+    shard_log="$RUN_TMP/shard-$_s.log"
+    SHARD_LOGS+=("$shard_log")
+    (
+      PASS=0
+      FAIL=0
+      MISSING=0
+      _core_offline_run_shard "$LEADV2_SUITE_SHARDS" "$_s"
+      printf -- '[CORE-OFFLINE] SHARD_RESULT idx=%d pass=%d fail=%d missing=%d\n' \
+        "$_s" "$PASS" "$FAIL" "$MISSING"
+    ) >"$shard_log" 2>&1 &
   done
+  wait
+  for _log in "${SHARD_LOGS[@]}"; do
+    cat "$_log"
+  done
+  while IFS= read -r _line; do
+    _p="$(printf '%s' "$_line" | sed -n 's/.*pass=\([0-9]*\).*/\1/p')"
+    _f="$(printf '%s' "$_line" | sed -n 's/.*fail=\([0-9]*\).*/\1/p')"
+    _m="$(printf '%s' "$_line" | sed -n 's/.*missing=\([0-9]*\).*/\1/p')"
+    PASS=$((PASS + _p))
+    FAIL=$((FAIL + _f))
+    MISSING=$((MISSING + _m))
+  done < <(grep -h 'SHARD_RESULT' "${SHARD_LOGS[@]}")
 fi
 
 printf -- '\n[CORE-OFFLINE] suites passed=%d failed=%d missing=%d repo=%s\n' "$PASS" "$FAIL" "$MISSING" "$REPO_ROOT"
