@@ -427,6 +427,28 @@ run_subsession() {
   claude "${CLAUDE_ARGS[@]}" > "$STREAM_OUT" 2>&1
 }
 
+# SD-SONNET-ARM-DETACH-01 (2026-08-21) -- same gap CODEX-DETACH-01 fixed for the
+# codex --background arm: the backgrounded worker below ran in the CALLING shell's
+# process group (no setsid), so a SIGTERM to that group -- a 2-minute Bash-tool
+# timeout, a finishing tool call in the launching session -- killed the still-running
+# `claude` worker mid-edit even though it had already returned a PID and was believed
+# detached. macOS ships no util-linux setsid; python3 os.setsid()+execvp() is the
+# portable equivalent already used by glm-coder.sh/kimi-coder.sh (setsid_wrapper())
+# and codex-task.sh (setsid_wrapper() + the inlined --background variant). Same house
+# style here. MUST be `exec`'d as this function's last command: without `exec`,
+# backgrounding a call to this function forks a wrapper subshell whose pid ($!) is
+# ONE level removed from the setsid'd process, breaking any liveness check that
+# captures $! and expects it to BE the detached process (exactly the sonnet arm's
+# `kill -0 "$pid"` check in leadv2-dispatch-code.sh:_dispatch_worker_liveness()).
+setsid_wrapper() {
+  exec python3 -c '
+import os, sys
+
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+' "$@"
+}
+
 # ---------------------------------------------------------------------------
 # parse_and_record_cost — parse stream-json for token usage, append to costs.yaml
 # Args: $1=stream_file $2=role $3=model $4=session_id $5=handoff_dir $6=start_epoch
@@ -1059,11 +1081,22 @@ else
   # The sentinel is stamped only by the inline waiter below, after it reaps the
   # worker and completes the existing post-run bookkeeping. The sibling setsid
   # block cannot wait for this child, so it must never stamp a sentinel.
-  run_subsession </dev/null >/dev/null 2>&1 &
+  #
+  # SD-SONNET-ARM-DETACH-01: setsid_wrapper() replaces this backgrounded subshell's
+  # own process image (`exec python3 -c 'os.setsid(); os.execvp(...)'`), so $! below
+  # is the pid of the ALREADY-detached `claude` process, in its own session/process
+  # group — a SIGTERM to the launching shell's process group can no longer reach it.
+  # Stdout/stderr of `claude` still land on STREAM_OUT exactly as before (redirects
+  # apply to the exec'd process too); stdin is explicitly /dev/null so the detached
+  # worker never blocks on a closed terminal.
+  setsid_wrapper claude "${CLAUDE_ARGS[@]}" </dev/null > "$STREAM_OUT" 2>&1 &
   PID=$!
-  # File name is `pid`, NOT `pgid`: the claude worker runs in the CALLER'S
-  # process group (no setsid), so kill(-pid,0) would falsely read dead on a
-  # live worker. Pid reuse can only produce a false ALIVE — the safe direction.
+  # File name is `pid`, NOT `pgid`: this IS the leader pid of its own (setsid'd)
+  # process group, but plain `pid` matches the pre-existing on-disk contract other
+  # readers already parse (RUN_DIR/pid). kill(-pid,0)/`kill -0 pid` both resolve it
+  # correctly now that pid == the live claude process itself (no wrapper layer left
+  # in between — see setsid_wrapper()'s `exec` comment for why). Pid reuse can only
+  # produce a false ALIVE — the safe direction.
   echo "$PID" > "$RUN_DIR/pid" 2>/dev/null || true
 
   # W6-fix: async cost-recorder (was: background subshell may not fire if parent exits first).

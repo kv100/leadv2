@@ -65,14 +65,19 @@ mkdir -p "${LANE}"
   && : > seed && git add seed && git commit -qm seed )
 
 # Fake leadv2-lane-worktree.sh: `path-of <ref>` prints $LV2_TEST_LANE_PATH when ref ==
-# $LV2_TEST_LANE_SIG8, empty otherwise -- mirrors the real script's one-arg contract
-# without depending on its actual lane-naming/registry internals.
+# $LV2_TEST_LANE_SIG8, or $LV2_TEST_LANE_TASKID_PATH when ref == $LV2_TEST_LANE_TASKID
+# (SD-CHECKPOINT-CUTOFF-LANEID-01: a real lane worktree is keyed by founder_task_id/
+# lane-id, NOT task_sig -- both refs need independent stub resolution to prove the
+# task_id-first / sig8-fallback order) -- empty otherwise. Mirrors the real script's
+# one-arg contract without depending on its actual lane-naming/registry internals.
 cat > "${LANE_STUB}" <<'EOS'
 #!/usr/bin/env bash
 case "${1:-}" in
   path-of)
     shift
-    if [[ "${1:-}" == "${LV2_TEST_LANE_SIG8:-}" ]]; then
+    if [[ -n "${LV2_TEST_LANE_TASKID:-}" && "${1:-}" == "${LV2_TEST_LANE_TASKID}" ]]; then
+      printf '%s' "${LV2_TEST_LANE_TASKID_PATH:-}"
+    elif [[ "${1:-}" == "${LV2_TEST_LANE_SIG8:-}" ]]; then
       printf '%s' "${LV2_TEST_LANE_PATH:-}"
     fi
     ;;
@@ -84,16 +89,17 @@ chmod +x "${LANE_STUB}"
 # Runs the real _dispatch_checkpointed_cutoff in a fresh subshell so each case starts
 # clean (no leaked _DISPATCH_CHECKPOINT_SHA / CHECKPOINT_CUTOFF from a prior case).
 # Prints "<rc> <sha>" on stdout.
-_run_cutoff() {  # <sig8> <created_epoch> <lane_sig8_for_stub> <lane_path_for_stub>
-  local sig8="$1" created="$2" stub_sig8="$3" stub_path="$4"
+_run_cutoff() {  # <sig8> <created_epoch> <lane_sig8_for_stub> <lane_path_for_stub> [<lane_task_id>] [<lane_task_id_path_for_stub>]
+  local sig8="$1" created="$2" stub_sig8="$3" stub_path="$4" lane_task_id="${5:-}" stub_taskid_path="${6:-}"
   ( set -uo pipefail
     CLAUDE_PROJECT_ROOT="${ROOT}" LEADV2_PROJECT_ROOT="${ROOT}" \
     LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_STUB}" \
     LV2_TEST_LANE_SIG8="${stub_sig8}" LV2_TEST_LANE_PATH="${stub_path}" \
+    LV2_TEST_LANE_TASKID="${lane_task_id}" LV2_TEST_LANE_TASKID_PATH="${stub_taskid_path}" \
     bash -c '
       cd "'"${ROOT}"'" || exit 9
       source "'"${FUNCS_SH}"'"
-      _dispatch_checkpointed_cutoff "'"${sig8}"'" "'"${created}"'"
+      _dispatch_checkpointed_cutoff "'"${sig8}"'" "'"${created}"'" "'"${lane_task_id}"'"
       rc=$?
       printf "%s %s\n" "${rc}" "${_DISPATCH_CHECKPOINT_SHA:-}"
     '
@@ -175,6 +181,51 @@ if [[ "${rc5}" != "0" ]]; then
   ok "5: missing lane worktree fails closed, no fallback to PROJECT_ROOT's own commit"
 else
   bad "5: expected non-zero rc, got '${out5}'"
+fi
+
+# ── 6. SD-CHECKPOINT-CUTOFF-LANEID-01: lane worktree resolves ONLY by lane-id (founder_
+# task_id), sig8 resolves to nothing -- the exact `14bd0c10` (lane) / `21f644a1` (sig8)
+# shape from the live incident. Row's task_id is threaded through -> must free.
+SIG6="21f64481"
+TASKID6="14bd0c10"
+LANE6="${TMPDIR_ROOT}/lane6"; mkdir -p "${LANE6}"
+( cd "${LANE6}" && git init -q && git config user.email t@e.com && git config user.name t && : > seed && git add seed && git commit -qm seed )
+_write_checkpoint_commit "${LANE6}" "${SIG6}" "$((NOW - 10))"
+# stub_sig8/stub_path deliberately point at a NONEXISTENT path -- path-of "${SIG6}" must
+# resolve to nothing, exactly like the real leadv2-lane-worktree.sh does for a lane
+# worktree that only exists under the lane-id, never under the bare sig8.
+out6="$(_run_cutoff "${SIG6}" "$((NOW - 100))" "${SIG6}" "${TMPDIR_ROOT}/does-not-exist" "${TASKID6}" "${LANE6}")"
+rc6="${out6%% *}"; sha6="${out6#* }"
+if [[ "${rc6}" == "0" && -n "${sha6}" ]]; then
+  ok "6: lane keyed by founder task_id (14bd0c10/21f644a1 shape) resolves via task_id and frees the row"
+else
+  bad "6: expected rc=0 with sha, got '${out6}'"
+fi
+
+# ── 7. fail-closed: task_id given but resolves to nothing, sig8 ALSO resolves to
+# nothing -- must stay blocked (no silent fallback to any other path).
+SIG7="ffffffff"
+TASKID7="does-not-exist-lane-id"
+out7="$(_run_cutoff "${SIG7}" "$((NOW - 100))" "${SIG7}" "${TMPDIR_ROOT}/does-not-exist" "${TASKID7}" "${TMPDIR_ROOT}/also-does-not-exist")"
+rc7="${out7%% *}"
+if [[ "${rc7}" != "0" ]]; then
+  ok "7: task_id AND sig8 both unresolvable stays blocked (fail-closed preserved)"
+else
+  bad "7: expected non-zero rc, got '${out7}'"
+fi
+
+# ── 8. sig8-only backward compat: no task_id supplied (empty, as a plain dispatch-only
+# row's ledger entry has) -- must still resolve via sig8 exactly like before this fix.
+SIG8="88888888"
+LANE8="${TMPDIR_ROOT}/lane8"; mkdir -p "${LANE8}"
+( cd "${LANE8}" && git init -q && git config user.email t@e.com && git config user.name t && : > seed && git add seed && git commit -qm seed )
+_write_checkpoint_commit "${LANE8}" "${SIG8}" "$((NOW - 10))"
+out8="$(_run_cutoff "${SIG8}" "$((NOW - 100))" "${SIG8}" "${LANE8}" "" "")"
+rc8="${out8%% *}"; sha8="${out8#* }"
+if [[ "${rc8}" == "0" && -n "${sha8}" ]]; then
+  ok "8: empty task_id (no founder task) still resolves via sig8, no regression"
+else
+  bad "8: expected rc=0 with sha, got '${out8}'"
 fi
 
 echo "----"

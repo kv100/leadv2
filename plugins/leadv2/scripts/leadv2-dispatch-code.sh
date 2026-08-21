@@ -38,7 +38,8 @@
 #      --no-spawn) this script now actually LAUNCHES the resolved worker and returns
 #      immediately with its handle: arm=glm -> `glm-coder.sh bg` (detaches via its own
 #      setsid+disown, prints a run-id); arm=sonnet -> `claude-subsession.sh` without
-#      --wait (forks `run_subsession &`, prints PID+SESSION_ID, exits immediately). Both
+#      --wait (setsid_wrapper+exec detaches the backgrounded `claude` process itself,
+#      SD-SONNET-ARM-DETACH-01, prints PID+SESSION_ID, exits immediately). Both
 #      launchers already own "detach, never block the caller" -- this script does not
 #      duplicate that logic, only calls it. arm=opus is never spawned (lead judgment,
 #      unchanged). A `worker_spawned by=router model=<arm> task=<sig8> handle=<h>` line is
@@ -86,8 +87,9 @@
 #      arms. Both launchers' LAUNCH step is non-blocking (verified against source: glm-
 #      coder.sh cmd_bg's acquire_lock is a non-blocking mkdir-try that fails fast (exit 75)
 #      rather than waiting, then setsid_wrapper+disown backgrounds the real work and prints
-#      the run-id; claude-subsession.sh without --wait forks `run_subsession &`, echoes
-#      PID+SESSION_ID, exits) -- so the lock is held only for the reservation write plus a
+#      the run-id; claude-subsession.sh without --wait launches the `claude` worker via its
+#      OWN setsid_wrapper (SD-SONNET-ARM-DETACH-01), echoes PID+SESSION_ID, exits) -- so the
+#      lock is held only for the reservation write plus a
 #      sub-second launch, never for the worker's lifetime. A concurrent caller blocking on
 #      `flock -w 10` sees, on entry, the FINAL committed state only: a confirmed row ->
 #      refuse; no row (rolled back) -> proceed. No visibility window, no reservation-id
@@ -114,7 +116,8 @@
 #        (A) the flock FD (9) opened by `) 9>"${lockf}"` is inherited by every descendant
 #            process forked while it's open -- including a DETACHED worker a launcher
 #            backgrounds (glm-coder.sh's setsid_wrapper+disown, claude-subsession.sh's
-#            `run_subsession &`). flock's lock is tied to the OPEN FILE DESCRIPTION, not
+#            own setsid_wrapper around the backgrounded `claude` call). flock's lock is
+#            tied to the OPEN FILE DESCRIPTION, not
 #            the locking process: even after fix-pass-3's own subshell exited, a detached
 #            worker that inherited a copy of fd 9 kept the lock held for the WORKER'S ENTIRE
 #            LIFETIME (minutes-to-hours), so the very next dispatch of ANY task_sig in the
@@ -1914,14 +1917,18 @@ _dispatch_new_token() {
 # call (rows are small, but a sig with an active row is looked up on every dispatch of
 # that mission, so one parse beats five). Missing/unparseable fields come back empty --
 # callers already treat empty arm/handle as "unknown liveness" (blocks, same as today).
-_dispatch_row_fields() {  # <json_line> -> "state<TAB>created_epoch<TAB>arm<TAB>handle<TAB>token"
+_dispatch_row_fields() {  # <json_line> -> "state<TAB>created_epoch<TAB>arm<TAB>handle<TAB>token<TAB>task_id"
+  # SD-CHECKPOINT-CUTOFF-LANEID-01: task_id appended (never inserted -- every existing
+  # caller's positional `read` still lands token in the right var) so a caller that DOES
+  # need the founder task_id / lane-id (the checkpoint-commit-cutoff worktree resolve) can
+  # get it from the SAME row it already parsed, instead of a second lookup.
   python3 -c "
 import json, sys
 try:
     d = json.loads(sys.argv[1])
 except Exception:
     d = {}
-print('\t'.join(str(d.get(k, '') or '') for k in ('state', 'created_epoch', 'arm', 'handle', 'token')))
+print('\t'.join(str(d.get(k, '') or '') for k in ('state', 'created_epoch', 'arm', 'handle', 'token', 'task_id')))
 " "$1" 2>/dev/null
 }
 
@@ -2094,13 +2101,34 @@ raise SystemExit(0 if terminal or subtype else 1)
 # a path. On rc0, leaves the freeing commit's short sha in _DISPATCH_CHECKPOINT_SHA for
 # the caller's journal line; callers MUST reset that var before invoking (this function
 # does so itself, guarding against a stale value leaking from a prior failed row).
+#
+# SD-CHECKPOINT-CUTOFF-LANEID-01 (2026-08-21): the lane worktree is created keyed on
+# ${founder_task_id:-sig8} (leadv2-dispatch-code.sh:4353's `ensure` call, same key
+# leadv2-lane-worktree.sh's `path-of` needs) -- founder_task_id is a fanout/lane id
+# (e.g. `14bd0c10`), NOT the mission's task_sig. A lane dispatched with a founder task id
+# therefore lives at `.claude/worktrees/<founder_task_id>`, never at
+# `.claude/worktrees/<sig8>`. This function used to resolve ONLY by sig8, so it silently
+# `path-of`'d nothing for every founder-task-bound lane (the common fanout/lane shape) and
+# fell straight to `return 1` (fail-closed) -- a live checkpoint commit was on disk but
+# unreachable, and the row never got freed. Verified live: lane worktree
+# `.claude/worktrees/14bd0c10` held the STOP-GATE checkpoint commit; `path-of 21f644a1`
+# (its task_sig) resolved to nothing. Fix: try the row's own task_id (the founder/lane id,
+# now threaded in from the ledger row via _dispatch_row_fields) FIRST, falling back to sig8
+# only when task_id is empty/unresolvable -- byte-identical to today for any row that has
+# no task_id (dispatch_reserve only ever writes DISPATCH_FOUNDER_TASK_ID there, so a plain
+# dispatch-only mission's row still resolves by sig8 exactly as before).
 _DISPATCH_CHECKPOINT_SHA=""
-_dispatch_checkpoint_commit_cutoff() {  # <sig8> <created_epoch> -> rc0 cutoff; rc1 not
-  local sig8="$1" created="$2" lane sha ctime
+_dispatch_checkpoint_commit_cutoff() {  # <sig8> <created_epoch> [<lane_task_id>] -> rc0 cutoff; rc1 not
+  local sig8="$1" created="$2" lane_task_id="${3:-}" lane="" sha ctime
   _DISPATCH_CHECKPOINT_SHA=""
   [[ "${created}" =~ ^[0-9]+$ ]] || return 1
   [[ -n "${LANE_WORKTREE_BIN:-}" && -f "${LANE_WORKTREE_BIN}" ]] || return 1
-  lane="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${sig8}" 2>/dev/null)"
+  if [[ -n "${lane_task_id}" && "${lane_task_id}" != "${sig8}" ]]; then
+    lane="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${lane_task_id}" 2>/dev/null)"
+  fi
+  if [[ -z "${lane}" ]]; then
+    lane="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${sig8}" 2>/dev/null)"
+  fi
   [[ -n "${lane}" && -d "${lane}" ]] || return 1
   [[ -d "${lane}/.git" || -f "${lane}/.git" ]] || return 1
   # Newest matching commit first (log is reverse-chronological by default); a fixed-
@@ -2120,8 +2148,8 @@ _dispatch_checkpoint_commit_cutoff() {  # <sig8> <created_epoch> -> rc0 cutoff; 
 # rc0: this row is checkpointed-and-cut-off and never recovered -- free it. rc1: not (no
 # checkpoint marker/commit, both predate this reservation, or the mission's own completion
 # sentinel says it finished -- see doc block item 9 for why the sentinel check comes first).
-_dispatch_checkpointed_cutoff() {  # <sig8> <created_epoch> -> rc0 cutoff; rc1 not
-  local sig8="$1" created="$2" marker mtime
+_dispatch_checkpointed_cutoff() {  # <sig8> <created_epoch> [<lane_task_id>] -> rc0 cutoff; rc1 not
+  local sig8="$1" created="$2" lane_task_id="${3:-}" marker mtime
   [[ -f "$(_dispatch_completion_sentinel "${sig8}")" ]] && return 1
   [[ "${created}" =~ ^[0-9]+$ ]] || created=0
   marker="$(_dispatch_checkpoint_marker "${sig8}")"
@@ -2133,15 +2161,15 @@ _dispatch_checkpointed_cutoff() {  # <sig8> <created_epoch> -> rc0 cutoff; rc1 n
   fi
   # Model-written note absent or stale -- fall back to the machine-written STOP-GATE
   # checkpoint commit (OR, not a replacement: either proof frees the row).
-  _dispatch_checkpoint_commit_cutoff "${sig8}" "${created}"
+  _dispatch_checkpoint_commit_cutoff "${sig8}" "${created}" "${lane_task_id}"
 }
 
 # rc0: this row still blocks (worker alive, liveness undetermined, or finished-with-
 # evidence). rc1: this row no longer blocks (worker finished AND left no evidence -- the
 # mission's failure mode: "returned status=completed and produced nothing" -- OR was
 # checkpointed-and-cut-off at the turn cap and never recovered).
-_dispatch_outcome_blocks() {  # <arm> <handle> <created_epoch> <sig8> -> rc0 blocks; rc1 free
-  local arm="$1" handle="$2" created="$3" sig8="$4" liveness
+_dispatch_outcome_blocks() {  # <arm> <handle> <created_epoch> <sig8> [<lane_task_id>] -> rc0 blocks; rc1 free
+  local arm="$1" handle="$2" created="$3" sig8="$4" lane_task_id="${5:-}" liveness
   liveness="$(_dispatch_worker_liveness "${arm}" "${handle}")"
   case "${liveness}" in
     dead)
@@ -2149,7 +2177,7 @@ _dispatch_outcome_blocks() {  # <arm> <handle> <created_epoch> <sig8> -> rc0 blo
         emit decision "dispatch_reclaimed task=${sig8} arm=${arm} handle=${handle} reason=maxturns_cutoff"
         return 1
       fi
-      if [[ "${CHECKPOINT_CUTOFF}" == "1" ]] && _dispatch_checkpointed_cutoff "${sig8}" "${created}"; then
+      if [[ "${CHECKPOINT_CUTOFF}" == "1" ]] && _dispatch_checkpointed_cutoff "${sig8}" "${created}" "${lane_task_id}"; then
         if [[ -n "${_DISPATCH_CHECKPOINT_SHA:-}" ]]; then
           log "dispatch_reclaimed task=${sig8} arm=${arm} handle=${handle} reason=checkpointed_cutoff commit=${_DISPATCH_CHECKPOINT_SHA}"
         else
@@ -2177,12 +2205,12 @@ _dispatch_outcome_blocks() {  # <arm> <handle> <created_epoch> <sig8> -> rc0 blo
 _dispatch_sig_blocked() {  # <ledger_file> <sig> <now_epoch> -> rc0 blocked; rc1 free (stdout: reclaimed tokens)
   local f="$1" sig="$2" now="$3"
   [[ -f "${f}" ]] || return 1
-  local needle="\"task_sig\":\"${sig}\"" line fields state created arm handle token age sig8 reclaimed=""
+  local needle="\"task_sig\":\"${sig}\"" line fields state created arm handle token row_task_id age sig8 reclaimed=""
   sig8="${sig:0:8}"
   while IFS= read -r line; do
     [[ -n "${line}" && "${line}" == *"${needle}"* ]] || continue
     fields="$(_dispatch_row_fields "${line}")"
-    IFS=$'\t' read -r state created arm handle token <<< "${fields}"
+    IFS=$'\t' read -r state created arm handle token row_task_id <<< "${fields}"
     [[ "${created}" =~ ^[0-9]+$ ]] || created=0
     age=$(( now - created ))
     if [[ "${state}" == "pending" && ${age} -lt ${PENDING_TTL} ]]; then
@@ -2192,7 +2220,7 @@ _dispatch_sig_blocked() {  # <ledger_file> <sig> <now_epoch> -> rc0 blocked; rc1
       if [[ "${OUTCOME_LEDGER}" != "1" ]]; then
         printf '%s' "${reclaimed}"; return 0
       fi
-      if _dispatch_outcome_blocks "${arm}" "${handle}" "${created}" "${sig8}"; then
+      if _dispatch_outcome_blocks "${arm}" "${handle}" "${created}" "${sig8}" "${row_task_id}"; then
         printf '%s' "${reclaimed}"; return 0
       fi
       reclaimed="${reclaimed}${reclaimed:+ }${token}"
@@ -2919,8 +2947,9 @@ LANE_LIVENESS_BIN="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lan
 
 # <arm> <mission> <sig8> -> prints `worker_spawned ...`, journals it, returns 0/1.
 # Both launchers detach on their own (glm-coder.sh: setsid_wrapper + disown;
-# claude-subsession.sh without --wait: forks `run_subsession &`, prints PID, exits) --
-# this function never blocks on the worker finishing, so it cannot deadlock the caller.
+# claude-subsession.sh without --wait: setsid_wrapper detaches the backgrounded `claude`
+# worker itself, SD-SONNET-ARM-DETACH-01 -- prints PID, exits) -- this function never
+# blocks on the worker finishing, so it cannot deadlock the caller.
 # FIX PASS 5 (2026-07-25, live spawn failure): the launchers print their HANDLE on stdout
 # but diagnostics on stderr (claude-subsession.sh:458 `cost recorded:` -> stderr, :861
 # `PID=... SESSION_ID=...` -> stdout). Capturing `2>&1` merged them, so `tail -1` grabbed
@@ -3203,7 +3232,8 @@ _spawn_worker_body() {
       }
       printf '%s' "${mission}" > "${mfile}"
       # FIX PASS 4: same `9>&-` defense-in-depth as the glm arm above -- claude-subsession.sh
-      # without --wait forks `run_subsession &`, a DETACHED worker that would otherwise
+      # without --wait: setsid_wrapper detaches the backgrounded `claude` worker itself
+      # (SD-SONNET-ARM-DETACH-01), a DETACHED worker that would otherwise
       # inherit any inherited fd 9.
       # LANDING-BLOCKER-R2 (C1): claude-subsession.sh takes no --cwd flag and relies on
       # inherited $PWD; make that explicit (cd "${WORK_ROOT}") instead of relying on this
@@ -5394,11 +5424,11 @@ cmd_retry_dead() {
   [[ -f "${f}" ]] || { log_err "retry-dead: no ledger file at ${f}"; exit 1; }
   local now; now="$(_now_epoch)"
   local -a tokens=()
-  local line fields state created arm handle token
+  local line fields state created arm handle token row_task_id
   while IFS= read -r line; do
     [[ -n "${line}" && "${line}" == *"\"task_sig\":\"${sig8}"* ]] || continue
     fields="$(_dispatch_row_fields "${line}")"
-    IFS=$'\t' read -r state created arm handle token <<< "${fields}"
+    IFS=$'\t' read -r state created arm handle token row_task_id <<< "${fields}"
     [[ "${state}" == "pending" || "${state}" == "confirmed" ]] || continue
     local liveness
     liveness="$(_dispatch_worker_liveness "${arm}" "${handle}")"
