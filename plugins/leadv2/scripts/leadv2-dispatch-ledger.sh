@@ -172,6 +172,19 @@ dispatch_any_terminal_exists() {
   return 0
 }
 
+# DEDUP-REFUSED-RETRY-01: stdout = the LAST recorded terminal-ledger word for <sig8>
+# (landed|parked|refused|dead|no_work), or empty if no row exists. rc always 0 (this is a
+# read, not a gate). Unlike dispatch_terminal_exists()/dispatch_any_terminal_exists() above
+# (which collapse the ledger to a yes/no boolean -- and, per that fn's own doc comment,
+# deliberately treat refused/parked as "not present" for THEIR gate), the dispatch-code.sh
+# dedup gate needs the actual recorded word so it can tell refused (must free a fresh
+# dispatch) apart from dead (must also free) apart from landed (must keep blocking) --
+# see that caller's own doc comment on _dispatch_outcome_blocks for the full contract.
+dispatch_terminal_last_state() {
+  local sig8="$1" f; f="$(dispatch_terminal_ledger_file)"
+  _dispatch_terminal_last_field "${sig8}" "${f}" terminal
+}
+
 # Writes EXACTLY ONE row per <sig8> per real ATTEMPT (write-once-per-attempt), and refuses
 # to override a TRUE terminal (landed|dead) once one is recorded for the sig8 (write-once-
 # per-sig8-once-final). wave2 round3 finding 3: refused/parked are RETRYABLE -- quota
@@ -907,6 +920,7 @@ usage() {
 Usage:
   ${SCRIPT_NAME}.sh write-terminal <sig8> <founder_task_id> <landed|parked|refused|dead|no_work> <cause> [<evidence>] [<attempt>] [<display_name>] [<commit>] [<deliverable>]
   ${SCRIPT_NAME}.sh exists <sig8>
+  ${SCRIPT_NAME}.sh state <sig8>
   ${SCRIPT_NAME}.sh sweep
   ${SCRIPT_NAME}.sh reconcile [--repo <abs>] [--since <epoch|ISO>] [--lane <sig8>]... [--json]
 EOF
@@ -925,6 +939,12 @@ case "${1:-}" in
     [[ $# -ge 1 ]] || usage
     dispatch_terminal_exists "$1"
     exit $?
+    ;;
+  state)
+    shift
+    [[ $# -ge 1 ]] || usage
+    dispatch_terminal_last_state "$1"
+    exit 0
     ;;
   sweep)
     cmd_sweep

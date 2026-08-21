@@ -2164,10 +2164,44 @@ _dispatch_checkpointed_cutoff() {  # <sig8> <created_epoch> [<lane_task_id>] -> 
   _dispatch_checkpoint_commit_cutoff "${sig8}" "${created}" "${lane_task_id}"
 }
 
-# rc0: this row still blocks (worker alive, liveness undetermined, or finished-with-
-# evidence). rc1: this row no longer blocks (worker finished AND left no evidence -- the
-# mission's failure mode: "returned status=completed and produced nothing" -- OR was
-# checkpointed-and-cut-off at the turn cap and never recovered).
+# DEDUP-REFUSED-RETRY-01: reads the terminal-ledger's LAST recorded word for <sig8> (see
+# leadv2-dispatch-ledger.sh's dispatch_terminal_last_state doc comment). ALWAYS a
+# subprocess -- never sourced (LEDGER_BIN's own doc comment above: sourcing collided with
+# this script's fd-9 flock). Fail-open to "" (empty) on TERMINAL_LEDGER=0 or a missing/
+# broken ledger binary -- the caller treats "" as "no terminal row" and falls through to
+# the pre-existing evidence-based check, so a ledger outage can only ever cost the (safe,
+# fail-closed) OLD behaviour back, never a spurious free.
+_dispatch_terminal_ledger_state() {
+  local sig8="$1"
+  [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || { printf ''; return 0; }
+  PROJECT_ROOT="${LEDGER_REPO_ROOT}" LEADV2_PROJECT_ROOT="${LEDGER_REPO_ROOT}" \
+    bash "${LEDGER_BIN}" state "${sig8}" 2>/dev/null 9>&- || printf ''
+}
+
+# rc0: this row still blocks (worker alive, liveness undetermined, terminal-ledger says
+# landed, or finished-with-evidence and no terminal row overrides it). rc1: this row no
+# longer blocks (terminal-ledger says refused or dead, OR worker finished AND left no
+# evidence -- the mission's failure mode: "returned status=completed and produced nothing"
+# -- OR was checkpointed-and-cut-off at the turn cap and never recovered).
+#
+# DEDUP-REFUSED-RETRY-01: a scope-gate (or any pre-verdict) refusal writes terminal=refused
+# to the terminal ledger via dispatch-code.sh's own _dl_note before the worker's process
+# exits -- but by the time a LATER dispatch attempt re-checks this sig8, worker liveness
+# has already resolved to "dead" (the process is long gone), and the refused lane's own
+# worktree/mission/handoff files can still satisfy _dispatch_evidence_exists (it looks for
+# ARTIFACTS, not a verdict) -- so the OLD dead-branch fell through to the evidence check and
+# wrongly kept blocking a row the ledger itself had already recorded as refused. A refused
+# row never reached a verdict, so there is no evidence to protect -- it must free
+# unconditionally. terminal=dead (a SWEEP-recorded outcome, not to be confused with the
+# `liveness` value of the same name a few lines up) is likewise a recorded, no-further-
+# recovery outcome and must free the same way. terminal=landed is the opposite case (real
+# work merged) and must keep blocking even though liveness is independently dead.
+# Deliberately checked ONLY inside the `dead` liveness branch (alive/unknown never reach
+# here -- "Alive or unknown still blocks" is untouched) and ONLY as an ADDITIONAL branch
+# ahead of the pre-existing evidence check -- when there is NO terminal row (state == ""),
+# execution falls through unchanged to _dispatch_evidence_exists, so the dead+evidence
+# protection for a finished-but-unclosed round (no terminal row at all) is byte-identical
+# to before this change.
 _dispatch_outcome_blocks() {  # <arm> <handle> <created_epoch> <sig8> [<lane_task_id>] -> rc0 blocks; rc1 free
   local arm="$1" handle="$2" created="$3" sig8="$4" lane_task_id="${5:-}" liveness
   liveness="$(_dispatch_worker_liveness "${arm}" "${handle}")"
@@ -2185,6 +2219,17 @@ _dispatch_outcome_blocks() {  # <arm> <handle> <created_epoch> <sig8> [<lane_tas
         fi
         return 1
       fi
+      local _term_state
+      _term_state="$(_dispatch_terminal_ledger_state "${sig8}")"
+      case "${_term_state}" in
+        refused|dead)
+          emit decision "dispatch_reclaimed task=${sig8} arm=${arm} handle=${handle} reason=terminal_${_term_state}"
+          return 1
+          ;;
+        landed)
+          return 0
+          ;;
+      esac
       if _dispatch_evidence_exists "${created}" "${sig8}"; then
         return 0
       fi
