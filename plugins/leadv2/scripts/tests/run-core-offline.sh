@@ -270,7 +270,21 @@ SUITE_DEFS=(
   "worker env asserts (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-worker-env-asserts.sh"
   "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh"
   "core-offline cross-run exclusive lock (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-lock-01.sh"
+  "core-offline per-suite TMPDIR isolation (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-tmpdir-01.sh"
 )
+
+# Runner-mechanics test hook (SUITE-SPEED-01): a caller may substitute the
+# whole SUITE_DEFS list with a newline-separated "name|||cmd" list of its own,
+# so tests can exercise run_check's isolation/locking/sharding machinery
+# against tiny fake suites instead of the real (slow) 57. Never used outside
+# tests — production callers never set this.
+if [[ -n "${LEADV2_SUITE_DEFS_OVERRIDE:-}" ]]; then
+  SUITE_DEFS=()
+  while IFS= read -r _override_line; do
+    [[ -n "$_override_line" ]] || continue
+    SUITE_DEFS+=("$_override_line")
+  done <<< "$LEADV2_SUITE_DEFS_OVERRIDE"
+fi
 
 _core_offline_run_entry() {
   local entry="$1" name cmd_str
