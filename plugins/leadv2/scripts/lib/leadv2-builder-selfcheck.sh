@@ -102,16 +102,19 @@ lv2_selfcheck_run() {
     return 2
   fi
 
-  # ── changed-path extraction: "+++ b/<path>" lines, dropping deletions (/dev/null) ──
+  # ── changed-path extraction: both sides of every diff file header ("+++ b/<path>"
+  # and "--- a/<path>"), dropping /dev/null. Collecting only "+++" missed deletions
+  # (whose new side is /dev/null) and rename SOURCES (whose old side never appears as
+  # a "+++" line) -- both bypassed the C0 write-set/oversize scope check silently
+  # (codex r1 HIGH, SCOPE-DISCIPLINE-01 fix-round-2).
   local line path
   local -a changed=()
   while IFS= read -r line; do
     case "${line}" in
-      '+++ '*) ;;
+      '+++ '*) path="${line#+++ }"; path="${path#b/}" ;;
+      '--- '*) path="${line#--- }"; path="${path#a/}" ;;
       *) continue ;;
     esac
-    path="${line#+++ }"
-    path="${path#b/}"
     [[ -z "${path}" || "${path}" == "/dev/null" ]] && continue
     changed+=("${path}")
   done < "${diff_file}"
@@ -150,8 +153,11 @@ $(tail -n 40 "$3" 2>/dev/null)
   # LEADV2_SCOPE_DISCIPLINE=0 restores today's path (no scope check at all), same
   # kill-switch idiom as LEADV2_BUILDER_SELFCHECK.
   if [[ "${LEADV2_SCOPE_DISCIPLINE:-1}" == "0" ]]; then
-    _selfcheck_row "scope" "-" "SKIP (scope_discipline_disabled)"
-    skipped=$((skipped + 1))
+    : # kill switch: zero C0 bookkeeping/output -- restores the pre-C0 path
+      # byte-for-byte (no row, no skipped++, no selfcheck.md/journal footprint
+      # change). Codex r1 MEDIUM: the prior "SKIP (scope_discipline_disabled)"
+      # row still mutated skipped/selfcheck.md/the product-close journal even
+      # with the gate off.
   elif [[ -z "${write_set_csv}" ]]; then
     _selfcheck_row "scope" "-" "SKIP (no_write_set_declared)"
     skipped=$((skipped + 1))
