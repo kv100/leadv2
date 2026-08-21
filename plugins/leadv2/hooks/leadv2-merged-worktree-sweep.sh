@@ -62,7 +62,36 @@ while IFS= read -r wt; do
     continue
   fi
 
-  # No --force, ever: a dirty tree refuses and stays.
+  # ORCHESTRATION DIRT (2026-08-22): every merged lane carries edits to the
+  # orchestration files the plugin itself writes -- docs/leadv2/, docs/handoff/,
+  # LEAD_V2_STATE.md, __pycache__ -- so "any dirt keeps the lane" meant NO lane was
+  # ever swept. Found live: 641321b5 was merged (ahead=0) with a single modified
+  # file, docs/leadv2/open-threads.md, and would have sat there forever. The same
+  # exclusion set already exists in leadv2-dispatch-product-close.sh; it is repeated
+  # here rather than sourced because this hook must run standalone at SessionStart,
+  # and the twin is asserted by test-merged-sweep-orchestration-dirt.sh so the two
+  # cannot drift apart silently the way the scope gate's two copies did.
+  _MW_ORCH_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\.md|^.. "?.*__pycache__/|^.. "?.*\.pyc$'
+  # `|| true`: grep exits 1 when NOTHING survives the exclusion — i.e. exactly the
+  # clean case we want to sweep — and under `set -o pipefail` with an ERR trap that
+  # non-zero killed the whole hook at this line. The failure mode was invisible: the
+  # hook exited 0 (the trap says so) having swept nothing.
+  real_dirt="$(git -C "${wt}" status --porcelain 2>/dev/null | grep -vE "${_MW_ORCH_RE}" | head -1 || true)"
+
+  if [[ -n "${real_dirt}" ]]; then
+    # Genuine uncommitted work always wins. Never --force from here.
+    KEPT_DIRTY=$((KEPT_DIRTY + 1)); KEPT_NAMES+=("$(basename "${wt}") (dirty)")
+    continue
+  fi
+
+  # Merged, and nothing dirty but the plugin's own bookkeeping. `worktree remove`
+  # would still refuse on that bookkeeping, so discard exactly those paths first --
+  # they are regenerated, and the branch (with every commit) is untouched either way.
+  git -C "${wt}" status --porcelain 2>/dev/null | grep -E "${_MW_ORCH_RE}" | \
+    sed -E 's/^...//; s/^"//; s/"$//' | while IFS= read -r f; do
+      [[ -n "${f}" ]] && git -C "${wt}" checkout -- "${f}" 2>/dev/null || rm -f "${wt}/${f}" 2>/dev/null
+    done
+
   if git worktree remove "${wt}" >/dev/null 2>&1; then
     REMOVED=$((REMOVED + 1))
   else

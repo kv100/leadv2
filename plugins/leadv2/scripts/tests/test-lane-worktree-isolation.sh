@@ -177,11 +177,19 @@ fi
 # does at every call site) resolves correctly from the same cwd.
 CLEANUP_SH="${SCRIPT_DIR}/../leadv2-worktree-cleanup.sh"
 
+# SUPERSEDED 2026-08-22 by NESTED-LANE-WORKTREES-01. This case used to assert the
+# BUG still reproduced (unpinned path-of returning empty from a nested cwd). The
+# root-resolution fix in leadv2-lane-worktree.sh cures it at the source: an
+# unpinned call now normalizes to the main checkout via --git-common-dir and finds
+# the lane. Asserting the old empty result would now pin a bug that no longer
+# exists — so the assertion is inverted, and the pin case below still guards the
+# call-site contract independently.
 ( cd "$laneA_dir" && unset LEADV2_PROJECT_ROOT && bash "$LANE_SH" path-of taskA 2>/dev/null > "$SCRATCH/unpinned.out" )
-if [[ ! -s "$SCRATCH/unpinned.out" ]]; then
-  pass "R2 repro: path-of from inside a lane worktree, unpinned, resolves empty (the bug)"
+unpinned_out="$(cat "$SCRATCH/unpinned.out" 2>/dev/null)"
+if [[ "$(cd "$unpinned_out" 2>/dev/null && pwd -P)" == "$(cd "$laneA_dir" 2>/dev/null && pwd -P)" ]]; then
+  pass "R2 cured: path-of from inside a lane worktree resolves the lane even UNPINNED"
 else
-  fail "R2 repro: expected empty path-of from an unpinned nested cwd, got '$(cat "$SCRATCH/unpinned.out")'"
+  fail "R2 cured: unpinned path-of should resolve '$laneA_dir', got '$unpinned_out'"
 fi
 
 pinned_out="$(cd "$laneA_dir" && LEADV2_PROJECT_ROOT="$SCRATCH" bash "$LANE_SH" path-of taskA 2>/dev/null)"

@@ -72,9 +72,51 @@ log_error() { printf '[lane-worktree] ERROR: %s\n' "$*" >&2; }
 ERRF="${LEADV2_LANE_WORKTREE_ERRF:-/tmp/pe-lane-worktree.err}"
 ROOT=""
 
+# NESTED-LANE-WORKTREES-01: map any repo path to the MAIN checkout.
+#
+# `rev-parse --show-toplevel` inside a linked worktree returns THAT WORKTREE, and a
+# worker running inside a lane exports LEADV2_PROJECT_ROOT pointing at its own lane —
+# so both inputs to resolve_root read "the lane" when a child dispatch asks for "the
+# repo". The child lane was then created at .claude/worktrees/<parent>/.claude/
+# worktrees/<child>, where nothing reaps it: `git worktree prune` sees a live
+# directory and the merged-sweep skips it because the parent is dirty. Seven such
+# lanes had accumulated in persona-engine by 2026-08-22.
+#
+# --git-common-dir is the same for a main checkout and every worktree of it (it is
+# the shared .git), so its parent is the main checkout in both cases. Fails open:
+# anything unexpected leaves the input untouched, and dispatch continues as before.
+main_checkout_of() { # <path> -> main checkout, or the input unchanged
+  local p="$1" common
+  [[ -n "$p" ]] || { printf '%s' "$p"; return; }
+  common="$(git -C "$p" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common=""
+  # Older git has no --path-format; resolve the possibly-relative answer by hand.
+  if [[ -z "$common" ]]; then
+    common="$(git -C "$p" rev-parse --git-common-dir 2>/dev/null)" || common=""
+    [[ -n "$common" && "$common" != /* ]] && common="$(cd "$p" && cd "$common" 2>/dev/null && pwd)"
+  fi
+  [[ -n "$common" ]] || { printf '%s' "$p"; return; }
+  local top; top="$(dirname "$common")"
+  # A bare repo has no work tree above .git — keep the caller's path.
+  [[ -d "$top" ]] && git -C "$top" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    printf '%s' "$p"; return
+  }
+  # Already the main checkout: hand BACK THE CALLER'S PATH, never our resolved one.
+  # git answers in physical form (/private/var on macOS) while callers pass the
+  # logical /var, and downstream code compares these strings — rewriting the path
+  # form on the common case would be a silent behaviour change for every dispatch,
+  # not just the nested one. Only an actual relocation may change the string.
+  if [[ "$( (cd "$top" 2>/dev/null && pwd -P) )" == "$( (cd "$p" 2>/dev/null && pwd -P) )" ]]; then
+    printf '%s' "$p"
+  else
+    printf '%s' "$top"
+  fi
+}
+
 resolve_root() {
   [[ -n "$ROOT" ]] && return
   ROOT="${LEADV2_PROJECT_ROOT:-$(git -C "${PWD:-.}" rev-parse --show-toplevel 2>/dev/null || true)}"
+  # Whatever we were handed — env or cwd — lanes belong to the main checkout.
+  [[ -n "$ROOT" ]] && ROOT="$(main_checkout_of "$ROOT")"
   if [[ -z "$ROOT" ]] || ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     log_error "could not resolve a git repo root (set LEADV2_PROJECT_ROOT or run inside a repo)"
     ROOT=""
