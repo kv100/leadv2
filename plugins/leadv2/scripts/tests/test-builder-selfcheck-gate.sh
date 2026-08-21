@@ -819,7 +819,7 @@ case_scope_kill_switch_byte_restore_and_bypasses() {
   local rc_new names_new ok=1
   rc_new="$(resfield "${res_new}" RC)"; names_new="$(resfield "${res_new}" FAILED_NAMES)"
   if [[ "${rc_new}" != "1" ]] && [[ "${names_new}" != *"scope:"* ]] \
-     && diff -q <(sed '/^generated_at: /d' "${out_new}") <(sed '/^generated_at: /d' "${out_old}") >/dev/null 2>&1; then
+     && diff -q <(sed -e '/^generated_at: /d' -e '/^diff_hash: /d' "${out_new}") <(sed -e '/^generated_at: /d' -e '/^diff_hash: /d' "${out_old}") >/dev/null 2>&1; then
     ok=0
   fi
   rm -rf "${root}"
@@ -868,6 +868,217 @@ case_scope_rename_source_outside_write_set_blocks() { # <lib_sh> -> 0 blocked, 1
   return "${result}"
 }
 run_c0_case "scope-rename-source-outside-write-set-blocks (SCOPE-DISCIPLINE-01)" case_scope_rename_source_outside_write_set_blocks
+
+# ═══════════════════════════════════════════════════════════════════════════════════
+# Part D: TEST-FALSIFICATION-GATE-01 (C4) — a diff that adds/changes a test file must
+# carry falsification proof (a "RED-then-GREEN:" line in its own raw run output) or
+# the gate blocks it. C4 has no historic pre-fix ref to diff against (it lands in this
+# same lane), so the red leg is a SYNTHETIC mutant: NO_C4_LIB_SH is the current LIB_SH
+# with the marker-delimited C4 block (BEGIN-TEST-FALSIFICATION-GATE-01 /
+# END-TEST-FALSIFICATION-GATE-01) mechanically stripped by python3 -- byte-identical
+# to the lib as it stood immediately before this round, same "pinned pre-fix mutant"
+# idiom as BUGGY_C0_LIB_SH above, just constructed from markers instead of a SHA.
+# ═══════════════════════════════════════════════════════════════════════════════════
+NO_C4_LIB_SH="${MUTANT_DIR}/no-c4.sh"
+if ! python3 -c "
+import re, sys
+src = open(sys.argv[1]).read()
+pattern = re.compile(r'  # BEGIN-TEST-FALSIFICATION-GATE-01\n.*?\n  # END-TEST-FALSIFICATION-GATE-01\n', re.S)
+new_src, n = pattern.subn('', src, count=1)
+if n != 1:
+    sys.exit('mutation failed: expected 1 match, got %d' % n)
+open(sys.argv[2], 'w').write(new_src)
+" "${LIB_SH}" "${NO_C4_LIB_SH}" 2>/dev/null; then
+  log "FATAL: could not build no-C4 mutant -- cannot run red-first Part D harness"
+  exit 1
+fi
+chmod +x "${NO_C4_LIB_SH}"
+
+# FALS-FIX2 #1/#2 (codex r1 HIGH #1 + MEDIUM #2): pinned pre-fix mutant at the exact
+# commit this round's fix lands on top of -- C4 exists there but (a) ignores the test's
+# own rc, trusting a bare grep for "RED-then-GREEN:" (forgeable by any echo/comment),
+# and (b) only classifies */tests/test-*.sh|tests/test-*.sh, missing a test file whose
+# basename matches the M3 stem convention in a differently-named or nested dir. Pinned
+# by SHA (not by marker-stripping like NO_C4_LIB_SH) since both bugs live INSIDE the C4
+# block, not around it.
+FALS_FIX2_PRE_SHA="${LEADV2_TEST_FALS_FIX2_PRE_SHA:-205e1341d603c695d5565d811344cdb528d6216f}"
+BUGGY_TFG_LIB_SH="${MUTANT_DIR}/buggy-tfg.sh"
+if ! git -C "${LEADV2_REPO}" show "${FALS_FIX2_PRE_SHA}:plugins/leadv2/scripts/lib/leadv2-builder-selfcheck.sh" > "${BUGGY_TFG_LIB_SH}" 2>/dev/null \
+   || [[ ! -s "${BUGGY_TFG_LIB_SH}" ]] || grep -q 'test_failed:rc=' "${BUGGY_TFG_LIB_SH}"; then
+  log "FATAL: could not extract pre-FALS-FIX2 mutant at ${FALS_FIX2_PRE_SHA} -- cannot run red-first Part D2 harness"
+  exit 1
+fi
+chmod +x "${BUGGY_TFG_LIB_SH}"
+
+# run_tfg_case: same red/green idiom as run_c4_case, against BUGGY_TFG_LIB_SH.
+run_tfg_case() { # <name> <fn>
+  local name="$1" fn="$2"
+  local pre_rc post_rc
+  "${fn}" "${BUGGY_TFG_LIB_SH}"; pre_rc=$?
+  "${fn}" "${LIB_SH}"; post_rc=$?
+  if [[ ${pre_rc} -eq 2 || ${post_rc} -eq 2 ]]; then
+    COULD_NOT_RUN=$((COULD_NOT_RUN + 1))
+    log "COULD-NOT-RUN: ${name} (pre_rc=${pre_rc} post_rc=${post_rc})"
+    return
+  fi
+  if [[ ${post_rc} -ne 0 ]]; then
+    FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix did not pass (rc=${post_rc})")
+    log "FAIL: ${name} -- post-fix rc=${post_rc}, expected 0"
+    return
+  fi
+  if [[ ${pre_rc} -eq 0 ]]; then
+    GREEN_PRE_FIX=$((GREEN_PRE_FIX + 1))
+    log "GREEN-PRE-FIX: ${name} -- passed against the pre-FALS-FIX2 mutant too"
+    return
+  fi
+  PASS=$((PASS + 1))
+  log "RED-then-GREEN: ${name} (pre_rc=${pre_rc} -> post_rc=0)"
+}
+
+# run_c4_case: same red/green idiom as run_c0_case, against NO_C4_LIB_SH.
+run_c4_case() { # <name> <fn>
+  local name="$1" fn="$2"
+  local pre_rc post_rc
+  "${fn}" "${NO_C4_LIB_SH}"; pre_rc=$?
+  "${fn}" "${LIB_SH}"; post_rc=$?
+  if [[ ${pre_rc} -eq 2 || ${post_rc} -eq 2 ]]; then
+    COULD_NOT_RUN=$((COULD_NOT_RUN + 1))
+    log "COULD-NOT-RUN: ${name} (pre_rc=${pre_rc} post_rc=${post_rc})"
+    return
+  fi
+  if [[ ${post_rc} -ne 0 ]]; then
+    FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix did not pass (rc=${post_rc})")
+    log "FAIL: ${name} -- post-fix rc=${post_rc}, expected 0"
+    return
+  fi
+  if [[ ${pre_rc} -eq 0 ]]; then
+    GREEN_PRE_FIX=$((GREEN_PRE_FIX + 1))
+    log "GREEN-PRE-FIX: ${name} -- passed against the no-C4 mutant too"
+    return
+  fi
+  PASS=$((PASS + 1))
+  log "RED-then-GREEN: ${name} (pre_rc=${pre_rc} -> post_rc=0)"
+}
+
+# -- 22: a changed test file with NO red-first evidence in its own run output must
+# block (falsification_missing) -- the gate does not just trust a clean exit code.
+case_falsification_missing_blocks() { # <lib_sh> -> 0 blocked, 1 bypassed, 2 could-not-run
+  local lib_sh="$1"
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
+  mkdir -p "${root}/tests"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "${root}/tests/test-lying.sh"
+  chmod +x "${root}/tests/test-lying.sh"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "tests/test-lying.sh"
+  run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-lying.sh"
+  local rc names result=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"falsification:tests/test-lying.sh"* ]] && result=0
+  rm -rf "${root}"
+  return "${result}"
+}
+run_c4_case "falsification-missing-blocks (TEST-FALSIFICATION-GATE-01)" case_falsification_missing_blocks
+
+# -- 23: a changed test file that DOES print a "RED-then-GREEN:" proof line passes.
+case_falsification_present_passes() { # <lib_sh> -> 0 passes, 1 blocked, 2 could-not-run
+  local lib_sh="$1"
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
+  mkdir -p "${root}/tests"
+  printf '#!/usr/bin/env bash\nprintf "[TEST] RED-then-GREEN: probe (pre_rc=1 -> post_rc=0)\\n"\nexit 0\n' \
+    > "${root}/tests/test-honest.sh"
+  chmod +x "${root}/tests/test-honest.sh"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "tests/test-honest.sh"
+  run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-honest.sh"
+  local names result=1
+  names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${names}" != *"falsification:"* ]] && grep -q 'falsification' "${out_md}" && result=0
+  rm -rf "${root}"
+  return "${result}"
+}
+run_c4_case "falsification-present-passes (TEST-FALSIFICATION-GATE-01)" case_falsification_present_passes
+
+# -- 24 (direct-only, byte-restore): kill switch LEADV2_TEST_FALSIFICATION_GATE=0
+# restores the no-C4 mutant's behaviour byte-for-byte -- a lying-green test file is not
+# blocked, no falsification row/bookkeeping at all, AND (FALS-FIX2 #3, codex r1 MEDIUM
+# #3) the resulting selfcheck.md is byte-identical to the true pre-C4 mutant's, modulo
+# generated_at/diff_hash, same idiom as case_scope_kill_switch_byte_restore_and_bypasses
+# (case 19) above.
+case_falsification_kill_switch_byte_restore() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
+  mkdir -p "${root}/tests"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "${root}/tests/test-lying.sh"
+  chmod +x "${root}/tests/test-lying.sh"
+  local diff_file="${root}/diff.patch"
+  write_diff "${diff_file}" "tests/test-lying.sh"
+  local out_new="${root}/out_new.md" out_old="${root}/out_old.md"
+  local res_new="${root}/res_new" res_old="${root}/res_old"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_new}" "${res_new}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_TEST_FALSIFICATION_GATE=0 LV2_TEST_WRITE_SET="tests/test-lying.sh"
+  run_selfcheck "${NO_C4_LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_old}" "${res_old}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-lying.sh"
+  local rc_new rc_old names_new result=1
+  rc_new="$(resfield "${res_new}" RC)"; rc_old="$(resfield "${res_old}" RC)"
+  names_new="$(resfield "${res_new}" FAILED_NAMES)"
+  if [[ "${rc_new}" == "0" ]] && [[ "${rc_old}" == "0" ]] && [[ "${names_new}" != *"falsification:"* ]] \
+     && diff -q <(sed -e '/^generated_at: /d' -e '/^diff_hash: /d' "${out_new}") <(sed -e '/^generated_at: /d' -e '/^diff_hash: /d' "${out_old}") >/dev/null 2>&1; then
+    result=0
+  fi
+  rm -rf "${root}"
+  return "${result}"
+}
+if case_falsification_kill_switch_byte_restore; then
+  PASS=$((PASS + 1)); log "PASS: kill-switch LEADV2_TEST_FALSIFICATION_GATE=0 restores no-C4 behaviour byte-for-byte"
+else
+  FAIL=$((FAIL + 1)); ERRORS+=("falsification kill-switch byte-restore"); log "FAIL: kill-switch LEADV2_TEST_FALSIFICATION_GATE=0"
+fi
+
+# -- 25 (codex r1 HIGH #1, red-first via run_tfg_case): a test file that FAILS (rc!=0)
+# but forges the "RED-then-GREEN:" string via a plain echo/comment (no harness-shaped
+# tail) must still block -- the pre-fix mutant trusted any grep hit and ignored rc.
+case_falsification_forged_marker_failing_rc_blocks() { # <lib_sh> -> 0 blocked, 1 bypassed, 2 could-not-run
+  local lib_sh="$1"
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
+  mkdir -p "${root}/tests"
+  printf '#!/usr/bin/env bash\necho "totally RED-then-GREEN: forged, trust me"\nexit 1\n' \
+    > "${root}/tests/test-forged.sh"
+  chmod +x "${root}/tests/test-forged.sh"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "tests/test-forged.sh"
+  run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-forged.sh"
+  local rc names result=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"falsification:tests/test-forged.sh"* ]] && result=0
+  rm -rf "${root}"
+  return "${result}"
+}
+run_tfg_case "falsification-forged-marker-failing-rc-blocks (codex r1 HIGH #1)" case_falsification_forged_marker_failing_rc_blocks
+
+# -- 26 (codex r1 MEDIUM #2, red-first via run_tfg_case): a new test file living in a
+# renamed/new directory whose basename still matches the M3 stem convention (here
+# "checks_test.sh", no literal "tests/test-" path) must still be classified as a test
+# file and carry falsification proof -- the pre-fix classifier required a literal
+# */tests/test-*.sh|tests/test-*.sh path and silently skipped anything else.
+case_falsification_widened_classifier_catches_new_dir() { # <lib_sh> -> 0 blocked, 1 bypassed, 2 could-not-run
+  local lib_sh="$1"
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
+  mkdir -p "${root}/spec/checks"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "${root}/spec/checks/checks_test.sh"
+  chmod +x "${root}/spec/checks/checks_test.sh"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "spec/checks/checks_test.sh"
+  run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="spec/checks/checks_test.sh"
+  local rc names result=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"falsification:spec/checks/checks_test.sh"* ]] && result=0
+  rm -rf "${root}"
+  return "${result}"
+}
+run_tfg_case "falsification-widened-classifier-catches-new-dir (codex r1 MEDIUM #2)" case_falsification_widened_classifier_catches_new_dir
 
 rm -rf "${MUTANT_DIR}"
 
