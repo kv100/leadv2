@@ -16,8 +16,8 @@
 # Sources (read-only):
 #   <control-plane>/active.yaml       — live session registry (already
 #     reconciled by the time the mandatory first supervise call reads it)
-#   docs/leadv2/open-threads.md       — head = role/founder rules (# 1./# 2.
-#     sections, sacrosanct, never truncated), tail = freshest running log
+#   docs/leadv2/open-threads.md       — head = semantic role/founder session
+#     section (sacrosanct, never truncated), tail = freshest running log
 #   docs/tasks.yaml                   — ranked via the SAME canonical
 #     leadv2-tasks-lib.sh picker logic the (now-retired) supervise-pick.sh used
 #     (no 2nd ranker)
@@ -83,8 +83,8 @@ TASKS_YAML="${PROJECT_ROOT}/docs/tasks.yaml"
 # Canonical task ranking order — reuse leadv2-tasks-lib.sh's picker (same
 # lane/priority/created_at sort supervise-pick.sh presents to the founder),
 # never a second ranking implementation. We only need the ordered id list;
-# status/intent are read straight from tasks.yaml below (top_n's own
-# printed `title` column is frequently empty on this repo's rows).
+# status/intent are read straight from tasks.yaml below; the picker supplies
+# the canonical ranked id list.
 TASKS_LIB="${SCRIPT_DIR}/leadv2-tasks-lib.sh"
 TOP10_IDS=""
 if [[ -f "$TASKS_LIB" ]]; then
@@ -92,7 +92,7 @@ if [[ -f "$TASKS_LIB" ]]; then
 fi
 
 python3 - "$JSON_MODE" "$ACTIVE_YAML" "$OPEN_THREADS" "$TASKS_YAML" "$CP_QUESTIONS_DIR" "$TOP10_IDS" <<'PY'
-import sys, os, json, glob, datetime
+import sys, os, json, glob, datetime, re
 
 json_mode, active_yaml, open_threads, tasks_yaml, cp_dir, top10_ids_raw = sys.argv[1:7]
 json_mode = json_mode == "1"
@@ -146,6 +146,46 @@ recent_entries = []
 next_action = None
 focus = None
 stale_warning = None
+degraded_resume_instruction = None
+
+def extract_role_section(lines):
+    """Return the semantic role section, falling back to the first heading."""
+    heading_re = re.compile(r"^(#{1,6})\s+(.*)$")
+    role_re = re.compile(
+        r"^\W*(?:1\.(?=\s|$)|ROLE\b|SESSION MODE\b|SESSION HANDOFF\b|FOUNDER\b)",
+        re.IGNORECASE,
+    )
+    headings = []
+    for index, line in enumerate(lines):
+        match = heading_re.match(line)
+        if match:
+            headings.append((index, len(match.group(1)), match.group(2).strip()))
+
+    if not headings:
+        return [], "open-threads.md: no heading found while searching for role/session/founder section"
+
+    start_index = None
+    start_depth = None
+    for index, depth, text in headings:
+        if role_re.match(text):
+            start_index, start_depth = index, depth
+            break
+
+    if start_index is None:
+        first_index, first_depth, _ = headings[0]
+        if first_index == 0:
+            start_index, start_depth = first_index, first_depth
+        else:
+            # The contract only degrades when no heading exists. A non-heading
+            # preamble does not authorize selecting a later unrelated section.
+            return [], None
+
+    end_index = min(start_index + 30, len(lines))
+    for index, depth, _ in headings:
+        if index > start_index and depth <= start_depth:
+            end_index = min(end_index, index)
+            break
+    return lines[start_index:end_index], None
 
 if not os.path.isfile(open_threads):
     degraded.append(f"open-threads.md unavailable ({open_threads})")
@@ -153,20 +193,20 @@ else:
     age_h = (datetime.datetime.now().timestamp() - os.path.getmtime(open_threads)) / 3600.0
     if age_h > 48:
         stale_warning = f"STALE open-threads.md (age {age_h:.0f}h) -- tail below omitted, role/rules still shown"
-    with open(open_threads, encoding="utf-8", errors="replace") as fh:
-        lines = fh.read().splitlines()
+    try:
+        with open(open_threads, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError as exc:
+        lines = []
+        degraded.append(f"open-threads.md unreadable ({open_threads}: {exc})")
 
-    start = end = None
-    for i, ln in enumerate(lines):
-        if ln.startswith("# 1."):
-            start = i
-        elif ln.startswith("# 3.") and start is not None:
-            end = i
-            break
-    if start is not None:
-        role_lines = lines[start:end] if end else lines[start:start + 30]
+    if not lines:
+        if not any(item.startswith("open-threads.md unreadable") for item in degraded):
+            degraded.append(f"open-threads.md empty ({open_threads})")
     else:
-        degraded.append("open-threads.md: role section (# 1./# 2. headers) not found")
+        role_lines, role_reason = extract_role_section(lines)
+        if role_reason:
+            degraded.append(role_reason)
 
     if stale_warning is None:
         heading_idxs = [i for i, ln in enumerate(lines) if ln.startswith("## ")]
@@ -183,6 +223,12 @@ else:
         for ln in lines:
             if ln.strip().startswith("ON RESUME FIRST"):
                 next_action = ln.strip()  # last match wins -- freshest
+
+if not role_lines:
+    degraded_resume_instruction = (
+        "ROLE UNAVAILABLE: read docs/leadv2/open-threads.md head verbatim; "
+        "do not hand-rank docs/tasks.yaml"
+    )
 
 # -- tasks.yaml P0/P1 top-10 (id/status/intent) --
 tasks_top = []
@@ -237,6 +283,8 @@ def render(recent_n, tasks_n, lanes_n):
         out.append("HANDOFF DEGRADED:")
         for d in degraded:
             out.append(f"  - {d}")
+        if degraded_resume_instruction:
+            out.append(f"  - {degraded_resume_instruction}")
     out.append("")
     out.append(POINTERS)
     out.append("</supervisor-handoff>")
@@ -268,6 +316,7 @@ if json_mode:
         "recent": [{"heading": h, "body": b} for h, b in recent_entries[:recent_n]],
         "tasks_top10": tasks_top[:tasks_n],
         "degraded": degraded,
+        "degraded_resume_instruction": degraded_resume_instruction,
         "pointers": POINTERS,
         "block": block,
         "block_lines": len(block.splitlines()),

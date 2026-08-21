@@ -244,7 +244,8 @@ if op in ("top_n", "declared_top_n"):
             # marker (same convention leadv2-fanout.sh's PLAN_TSV emission
             # already uses); consumers restore "" after reading.
             _lane_out = lane if lane else "-"
-            print(f"{_lane_out}\t{it.get('priority','medium')}\t{iid}\t{it.get('title','')}")
+            name = (it.get("title") or it.get("intent") or "")[:70]
+            print(f"{_lane_out}\t{it.get('priority','medium')}\t{iid}\t{name}")
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN); fd.close()
 
