@@ -159,6 +159,20 @@ run_case "neg-past-report"         case_neg_past_report
 run_case "neg-plain-prose"         case_neg_prose
 run_case "neg-bare-accusative"     case_neg_bare_noun
 
+# --- the false positive this rule produced on its first live day ------------------
+# Within an hour of shipping the leading-verb rule it fired on the lead's own REPORT
+# of finished work — «Поэтому контракт теперь требует…» — because «поэтому» ends in
+# -у and opens the clause. Same for «потому», «посему», and the dative of any
+# adjective. Pinned because a guard that cries wolf on status prose gets switched off
+# within a day, which costs more than the escape it was built to catch.
+case_neg_poetomu()    { _expect "$1" "Поэтому контракт теперь требует переписи вызывающих" MISS; }
+case_neg_potomu()     { _expect "$1" "Потому что так короче" MISS; }
+case_neg_dative_adj() { _expect "$1" "Новому клиенту это ничего не сломает" MISS; }
+
+run_case "neg-poetomu-adverb"      case_neg_poetomu
+run_case "neg-potomu-adverb"       case_neg_potomu
+run_case "neg-dative-adjective"    case_neg_dative_adj
+
 echo ""
 echo "Results: ${PASS} passed(red->green), ${FAIL} failed, ${GREEN_PRE_FIX} green-pre-fix, ${COULD_NOT_RUN} could-not-run"
 if [[ ${FAIL} -gt 0 ]]; then printf -- 'FAIL: %s\n' "${ERRORS[@]}"; exit 1; fi

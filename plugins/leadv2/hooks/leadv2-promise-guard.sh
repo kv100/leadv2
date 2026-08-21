@@ -100,10 +100,15 @@ COMMIT_EN = r"\bI'?ll\b|\bI will\b|\blet me\b|\bgoing to\b|\bnext I\b|\bnow I'?m
 # what keeps «Ссылку на перебронирование добавлю тем же заходом» a hit while
 # «правлю выборку и вот результат 12/12» is not (the artifact vetoes it downstream).
 RU_1SG_NONPAST = r'\b[а-яё]{3,}[юу]\b'
+# Word-boundary anchored: without \b, «потом» matches inside «потому», so
+# «Потому что так короче» — plain reasoning prose — was read as an intention marker
+# and, paired with any -ю/-у word, became a false commitment. Every marker here is a
+# whole word or phrase, never a stem.
 RU_INTENT_MARKER = (
-    r'тем\s+же\s+заходом|следующим\s+заходом|этим\s+же\s+заходом'
-    r'|сейчас|сразу|дальше|затем|потом|позже|после\s+этого|в\s+конце'
-    r'|отдельно|заодно|попутно|по\s+ходу|ещё\s+раз|напоследок'
+    r'\bтем\s+же\s+заходом\b|\bследующим\s+заходом\b|\bэтим\s+же\s+заходом\b'
+    r'|\bсейчас\b|\bсразу\b|\bдальше\b|\bзатем\b|\bпотом\b|\bпозже\b'
+    r'|\bпосле\s+этого\b|\bв\s+конце\b'
+    r'|\bотдельно\b|\bзаодно\b|\bпопутно\b|\bпо\s+ходу\b|\bещё\s+раз\b|\bнапоследок\b'
 )
 COMMIT_RU_SHAPE = r'(?=.*(?:' + RU_INTENT_MARKER + r'))(?=.*' + RU_1SG_NONPAST + r')'
 
@@ -114,7 +119,17 @@ COMMIT_RE = re.compile(
 # A clause that is a bare first-person non-past verb with no marker at all is still a
 # commitment when it OPENS the clause — «Чиню выборку…», «Довожу list-form…». Checked
 # separately so the marker rule above stays strict.
-COMMIT_RU_LEADING = re.compile(r'^\s*[«"\-—*]*\s*[а-яё]{3,}[юу]\b', re.I | re.UNICODE)
+#
+# The `(?![а-яё]*[ое]му\b)` guard is not decoration: within an hour of shipping this
+# rule it fired on the lead's own REPORT of finished work — «Поэтому контракт теперь
+# требует…» — because «поэтому» ends in -у and opens the clause. «Потому», «посему»
+# and the dative of any adjective («новому», «первому») do the same. Russian
+# first-person singular verbs do not end in -ому/-ему, so excluding that ending kills
+# the whole family without touching a single real verb. A guard that cries wolf on
+# status prose gets switched off within a day, which would cost more than the escape
+# it was built to catch.
+COMMIT_RU_LEADING = re.compile(r'^\s*[«"\-—*]*\s*(?![а-яё]*[ое]му\b)[а-яё]{3,}[юу]\b',
+                               re.I | re.UNICODE)
 
 # --- past-tense / artifact veto --------------------------------------------
 PAST_RU = r'\b\w+(?:л|ла|ло|ли)\b'
