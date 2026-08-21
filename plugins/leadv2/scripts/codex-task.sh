@@ -833,6 +833,36 @@ def _retry_repair_markers(state_root, lib_dir, repair_dir):
     return repaired
 
 
+_APP_SERVER_PROBE = {}
+
+
+def _codex_app_server_alive():
+    """True if a `codex app-server` process exists on this machine.
+
+    Memoized per sweep: one pgrep, not one per job — a sweep can inspect dozens of
+    jobs and they all share the same answer.
+
+    Fail-safe: any probe failure (no pgrep, permission, timeout) returns True, i.e.
+    "cannot prove the transport is gone", so this can only ever REFINE the cause of
+    a death the age logic already decided on. It never causes a reap by itself.
+    """
+    if "alive" in _APP_SERVER_PROBE:
+        return _APP_SERVER_PROBE["alive"]
+    alive = True
+    try:
+        r = subprocess.run(["pgrep", "-f", "codex app-server"],
+                           capture_output=True, text=True, timeout=5)
+        # pgrep: 0 = matches found, 1 = none found, >1 = error (treat as unknown)
+        if r.returncode == 1:
+            alive = False
+        elif r.returncode == 0:
+            alive = bool(r.stdout.strip())
+    except Exception:
+        pass
+    _APP_SERVER_PROBE["alive"] = alive
+    return alive
+
+
 def reap_one(job_path, force=False):
     lock_dir = acquire_lock(job_path)
     if lock_dir is None:
@@ -898,7 +928,28 @@ def reap_one(job_path, force=False):
             ref = parse_iso(data.get("startedAt")) or parse_iso(data.get("createdAt"))
             age_min = ((now - ref) / 60) if ref else None
             if force or (age_min is not None and age_min >= running_kill_min):
+                # CODEX-TRANSPORT-ATTRIBUTION-01: name the death correctly.
+                #
+                # This script's own header records the coupling: "a job dies the
+                # instant its launching client drops the app-server connection."
+                # `codex app-server` is a SINGLE shared process, so when it goes
+                # every in-flight job across every worktree dies together — and
+                # each one used to be stamped `worker_died_stale`, i.e. one shared
+                # cause reported as N independent worker failures.
+                #
+                # On 2026-08-21 that cost a day: three lanes in three different
+                # worktrees stopped logging within 32 seconds of each other, were
+                # filed as two different per-job diagnoses, and three separate
+                # wrong mechanisms were investigated (API credits, concurrent
+                # jobs, unregistered worktrees) before anyone checked whether the
+                # shared server was still alive. It was not.
+                #
+                # A distinct cause makes the shared failure legible and, unlike
+                # `worker_died_stale`, tells the next reader the work was almost
+                # certainly retryable rather than broken.
                 cause = "worker_died_stale"
+                if not _codex_app_server_alive():
+                    cause = "transport_gone_app_server_absent"
 
         if cause is None:
             return None
