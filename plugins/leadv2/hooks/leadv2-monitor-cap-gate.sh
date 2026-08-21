@@ -7,10 +7,21 @@
 # the cost. This hook counts how many Monitor tool_use entries already exist
 # in the live transcript and denies arming a 5th+ one.
 #
-#   <=2   -> allow, silent
-#   3-4   -> allow, stdout advisory
-#   >=5   -> deny (PreToolUse JSON), advising TaskStop or batching greps
+# MONITOR-CAP-UNBLOCK-01 (founder order 2026-08-21): the hard deny is OFF by
+# default. It was blocking real work — a lead that needed a sixth watcher had no
+# way forward, because the count is over the WHOLE transcript, so the deny message's
+# own advice ("TaskStop an old one") could never free a slot. Stopping a Monitor
+# does not decrement this counter and never did.
 #
+# The advisory stays: the cost model behind it is real (every event is appended to
+# the conversation and re-sent on every later turn), so a lead arming many watchers
+# still gets told to batch patterns into one grep -E. Advice, not a wall.
+#
+#   < advisory  -> allow, silent
+#   >= advisory -> allow, stdout advisory (default 3)
+#   >= deny     -> deny (default 1000000 — effectively never)
+#
+# Tunables: LEADV2_MONITOR_DENY_AT, LEADV2_MONITOR_ADVISE_AT.
 # Escape hatch: LEADV2_MONITORCAP_OFF=1 -> exit 0 unconditionally (allow).
 
 set -euo pipefail
@@ -37,22 +48,29 @@ COUNT="$(grep -c '"name":"Monitor"' "$TRANSCRIPT" 2>/dev/null || echo 0)"
 COUNT="${COUNT//[$'\n\r ']/}"
 [[ "$COUNT" =~ ^[0-9]+$ ]] || COUNT=0
 
-if [[ "$COUNT" -ge 5 ]]; then
-    python3 -c "
-import json
+DENY_AT="${LEADV2_MONITOR_DENY_AT:-1000000}"
+ADVISE_AT="${LEADV2_MONITOR_ADVISE_AT:-3}"
+[[ "$DENY_AT" =~ ^[0-9]+$ ]] || DENY_AT=1000000
+[[ "$ADVISE_AT" =~ ^[0-9]+$ ]] || ADVISE_AT=3
+
+if [[ "$COUNT" -ge "$DENY_AT" ]]; then
+    # Note the wording: the count is transcript-wide, so a TaskStop cannot lower it.
+    # Only raising LEADV2_MONITOR_DENY_AT or LEADV2_MONITORCAP_OFF=1 clears this.
+    COUNT="$COUNT" DENY_AT="$DENY_AT" python3 -c "
+import json, os
 print(json.dumps({
     'hookSpecificOutput': {
         'hookEventName': 'PreToolUse',
         'permissionDecision': 'deny',
-        'permissionDecisionReason': 'MONITOR-CAP: 5 Monitors already armed this session — TaskStop an old one or batch patterns into one grep -E'
+        'permissionDecisionReason': 'MONITOR-CAP: %s Monitors armed this session, deny threshold %s. This count is transcript-wide, so TaskStop will NOT lower it — batch patterns into one grep -E, or raise LEADV2_MONITOR_DENY_AT / set LEADV2_MONITORCAP_OFF=1.' % (os.environ['COUNT'], os.environ['DENY_AT'])
     }
 }))
 "
     exit 0
 fi
 
-if [[ "$COUNT" -ge 3 ]]; then
-    echo "MONITOR-CAP advisory: ${COUNT} Monitors already armed this session — prefer batching grep patterns (A|B|C) into one Monitor over arming another."
+if [[ "$COUNT" -ge "$ADVISE_AT" ]]; then
+    echo "MONITOR-CAP advisory: ${COUNT} Monitors armed this session — each event is re-sent on every later turn, so prefer batching patterns (A|B|C) into one Monitor. Not a block."
 fi
 
 exit 0
