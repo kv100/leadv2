@@ -396,28 +396,36 @@ $(tail -n 40 "$3" 2>/dev/null)
 
   # BEGIN-TEST-FALSIFICATION-GATE-01
   # ── C4: TEST-FALSIFICATION-GATE-01 — a diff that adds/changes a test file
-  # (tests/test-*.sh, resolved from either candidate tests dir, same M3 stem
-  # convention as C3) must carry proof it can fail: its own raw run output must
-  # show at least one "RED-then-GREEN:" transition line, the red-first harness
-  # convention already coded in test-review-gate-scope-evidence.sh /
-  # test-stop-gate.sh (GREEN_PRE_FIX>0 in those suites is already a non-zero
-  # exit, so a lying-green suite that never demonstrates a red state is caught
-  # here even when its own exit code is 0). Root cause: 3 lying-green tests
-  # landed in 3 lanes within 24h, each merged green without ever having failed
-  # once. Independent of tests_mode (a diff can bounce here even under
-  # TESTS=never) and gated by the same depth re-entry guard as C3.
-  # LEADV2_TEST_FALSIFICATION_GATE=0 restores the pre-gate path byte-for-byte
-  # (zero rows/skipped/failed bookkeeping), same idiom as LEADV2_SCOPE_DISCIPLINE.
+  # (basename test-*.sh or *_test.sh, resolved from any dir -- widened, codex r1
+  # MEDIUM #2: the prior */tests/test-*.sh|tests/test-*.sh classifier missed a new
+  # test file living in a new/renamed dir whose basename still matched the M3 stem
+  # convention) must carry proof it can fail: BOTH its own exit code is 0 (a
+  # failing/crashing test is never let through no matter what it prints -- codex r1
+  # HIGH #1) AND its raw run output carries the harness's own structured marker,
+  # not just any grep-able string: the literal `run_case`-emitted tail
+  # `RED-then-GREEN: <name> (pre_rc=1 -> post_rc=0)` (see test-*.sh:log() at the
+  # harness's red/green helpers) -- a bare echo/comment containing "RED-then-GREEN:"
+  # with no such tail no longer satisfies this. rc!=0 and marker-missing are
+  # journaled under distinct reasons/fail-names so a review can tell "the test
+  # crashed" from "the test never proved it can fail" without re-reading the raw
+  # log. Root cause: 3 lying-green tests landed in 3 lanes within 24h, each merged
+  # green without ever having failed once, and a rc!=0 test carrying a forged
+  # marker line previously still passed this gate (codex r1 HIGH #1). Independent
+  # of tests_mode (a diff can bounce here even under TESTS=never) and gated by the
+  # same depth re-entry guard as C3. LEADV2_TEST_FALSIFICATION_GATE=0 restores the
+  # pre-gate path byte-for-byte (zero rows/skipped/failed bookkeeping), same idiom
+  # as LEADV2_SCOPE_DISCIPLINE.
   if [[ "${LEADV2_TEST_FALSIFICATION_GATE:-1}" == "0" ]]; then
     : # kill switch: zero C4 bookkeeping/output
   elif (( depth >= 1 )); then
     : # re-entered gate: C3's own depth-guard row already surfaces this: avoid a duplicate
   else
-    local tf_rel tf_log tf_rc
+    local tf_rel tf_log tf_rc tf_base
     for f in "${resolved_paths[@]:-}"; do
       tf_rel="${f#"${diff_root}"/}"
-      case "${tf_rel}" in
-        */tests/test-*.sh|tests/test-*.sh) ;;
+      tf_base="$(basename "${tf_rel}")"
+      case "${tf_base}" in
+        test-*.sh|*_test.sh) ;;
         *) continue ;;
       esac
       checks=$((checks + 1))
@@ -425,12 +433,17 @@ $(tail -n 40 "$3" 2>/dev/null)
       LEADV2_BUILDER_SELFCHECK=0 LEADV2_BUILDER_SELFCHECK_DEPTH=$((depth + 1)) \
         _lv2_selfcheck_timeout_run "${timeout_s}" "${tf_log}" -- bash "${f}"
       tf_rc=$?
-      if grep -q 'RED-then-GREEN:' "${tf_log}" 2>/dev/null; then
+      if (( tf_rc != 0 )); then
+        failed=$((failed + 1))
+        _selfcheck_row "falsification" "${tf_rel}" "FAIL (test_failed:rc=${tf_rc})"
+        _selfcheck_fail_name "falsification:${tf_rel}:test_failed"
+        _selfcheck_raw "${tf_rel} (falsification proof)" "${tf_rc}" "${tf_log}"
+      elif grep -qE 'RED-then-GREEN: .*\(pre_rc=1 -> post_rc=0\)' "${tf_log}" 2>/dev/null; then
         _selfcheck_row "falsification" "${tf_rel}" "0"
       else
         failed=$((failed + 1))
         _selfcheck_row "falsification" "${tf_rel}" "FAIL (falsification_missing)"
-        _selfcheck_fail_name "falsification:${tf_rel}"
+        _selfcheck_fail_name "falsification:${tf_rel}:marker_missing"
         _selfcheck_raw "${tf_rel} (falsification proof)" "${tf_rc}" "${tf_log}"
       fi
       rm -f "${tf_log}"
