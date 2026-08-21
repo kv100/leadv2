@@ -869,6 +869,125 @@ case_scope_rename_source_outside_write_set_blocks() { # <lib_sh> -> 0 blocked, 1
 }
 run_c0_case "scope-rename-source-outside-write-set-blocks (SCOPE-DISCIPLINE-01)" case_scope_rename_source_outside_write_set_blocks
 
+# ═══════════════════════════════════════════════════════════════════════════════════
+# Part D: TEST-FALSIFICATION-GATE-01 (C4) — a diff that adds/changes a test file must
+# carry falsification proof (a "RED-then-GREEN:" line in its own raw run output) or
+# the gate blocks it. C4 has no historic pre-fix ref to diff against (it lands in this
+# same lane), so the red leg is a SYNTHETIC mutant: NO_C4_LIB_SH is the current LIB_SH
+# with the marker-delimited C4 block (BEGIN-TEST-FALSIFICATION-GATE-01 /
+# END-TEST-FALSIFICATION-GATE-01) mechanically stripped by python3 -- byte-identical
+# to the lib as it stood immediately before this round, same "pinned pre-fix mutant"
+# idiom as BUGGY_C0_LIB_SH above, just constructed from markers instead of a SHA.
+# ═══════════════════════════════════════════════════════════════════════════════════
+NO_C4_LIB_SH="${MUTANT_DIR}/no-c4.sh"
+if ! python3 -c "
+import re, sys
+src = open(sys.argv[1]).read()
+pattern = re.compile(r'  # BEGIN-TEST-FALSIFICATION-GATE-01\n.*?\n  # END-TEST-FALSIFICATION-GATE-01\n', re.S)
+new_src, n = pattern.subn('', src, count=1)
+if n != 1:
+    sys.exit('mutation failed: expected 1 match, got %d' % n)
+open(sys.argv[2], 'w').write(new_src)
+" "${LIB_SH}" "${NO_C4_LIB_SH}" 2>/dev/null; then
+  log "FATAL: could not build no-C4 mutant -- cannot run red-first Part D harness"
+  exit 1
+fi
+chmod +x "${NO_C4_LIB_SH}"
+
+# run_c4_case: same red/green idiom as run_c0_case, against NO_C4_LIB_SH.
+run_c4_case() { # <name> <fn>
+  local name="$1" fn="$2"
+  local pre_rc post_rc
+  "${fn}" "${NO_C4_LIB_SH}"; pre_rc=$?
+  "${fn}" "${LIB_SH}"; post_rc=$?
+  if [[ ${pre_rc} -eq 2 || ${post_rc} -eq 2 ]]; then
+    COULD_NOT_RUN=$((COULD_NOT_RUN + 1))
+    log "COULD-NOT-RUN: ${name} (pre_rc=${pre_rc} post_rc=${post_rc})"
+    return
+  fi
+  if [[ ${post_rc} -ne 0 ]]; then
+    FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix did not pass (rc=${post_rc})")
+    log "FAIL: ${name} -- post-fix rc=${post_rc}, expected 0"
+    return
+  fi
+  if [[ ${pre_rc} -eq 0 ]]; then
+    GREEN_PRE_FIX=$((GREEN_PRE_FIX + 1))
+    log "GREEN-PRE-FIX: ${name} -- passed against the no-C4 mutant too"
+    return
+  fi
+  PASS=$((PASS + 1))
+  log "RED-then-GREEN: ${name} (pre_rc=${pre_rc} -> post_rc=0)"
+}
+
+# -- 22: a changed test file with NO red-first evidence in its own run output must
+# block (falsification_missing) -- the gate does not just trust a clean exit code.
+case_falsification_missing_blocks() { # <lib_sh> -> 0 blocked, 1 bypassed, 2 could-not-run
+  local lib_sh="$1"
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
+  mkdir -p "${root}/tests"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "${root}/tests/test-lying.sh"
+  chmod +x "${root}/tests/test-lying.sh"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "tests/test-lying.sh"
+  run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-lying.sh"
+  local rc names result=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"falsification:tests/test-lying.sh"* ]] && result=0
+  rm -rf "${root}"
+  return "${result}"
+}
+run_c4_case "falsification-missing-blocks (TEST-FALSIFICATION-GATE-01)" case_falsification_missing_blocks
+
+# -- 23: a changed test file that DOES print a "RED-then-GREEN:" proof line passes.
+case_falsification_present_passes() { # <lib_sh> -> 0 passes, 1 blocked, 2 could-not-run
+  local lib_sh="$1"
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
+  mkdir -p "${root}/tests"
+  printf '#!/usr/bin/env bash\nprintf "[TEST] RED-then-GREEN: probe (pre_rc=1 -> post_rc=0)\\n"\nexit 0\n' \
+    > "${root}/tests/test-honest.sh"
+  chmod +x "${root}/tests/test-honest.sh"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "tests/test-honest.sh"
+  run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-honest.sh"
+  local names result=1
+  names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${names}" != *"falsification:"* ]] && grep -q 'falsification' "${out_md}" && result=0
+  rm -rf "${root}"
+  return "${result}"
+}
+run_c4_case "falsification-present-passes (TEST-FALSIFICATION-GATE-01)" case_falsification_present_passes
+
+# -- 24 (direct-only, byte-restore): kill switch LEADV2_TEST_FALSIFICATION_GATE=0
+# restores the no-C4 mutant's behaviour byte-for-byte (a lying-green test file is not
+# blocked, no falsification row/bookkeeping at all).
+case_falsification_kill_switch_byte_restore() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-d.XXXXXX")"
+  mkdir -p "${root}/tests"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "${root}/tests/test-lying.sh"
+  chmod +x "${root}/tests/test-lying.sh"
+  local diff_file="${root}/diff.patch"
+  write_diff "${diff_file}" "tests/test-lying.sh"
+  local out_new="${root}/out_new.md" out_old="${root}/out_old.md"
+  local res_new="${root}/res_new" res_old="${root}/res_old"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_new}" "${res_new}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_TEST_FALSIFICATION_GATE=0 LV2_TEST_WRITE_SET="tests/test-lying.sh"
+  run_selfcheck "${NO_C4_LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_old}" "${res_old}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="tests/test-lying.sh"
+  local rc_new rc_old names_new result=1
+  rc_new="$(resfield "${res_new}" RC)"; rc_old="$(resfield "${res_old}" RC)"
+  names_new="$(resfield "${res_new}" FAILED_NAMES)"
+  [[ "${rc_new}" == "0" ]] && [[ "${rc_old}" == "0" ]] && [[ "${names_new}" != *"falsification:"* ]] && result=0
+  rm -rf "${root}"
+  return "${result}"
+}
+if case_falsification_kill_switch_byte_restore; then
+  PASS=$((PASS + 1)); log "PASS: kill-switch LEADV2_TEST_FALSIFICATION_GATE=0 restores no-C4 behaviour"
+else
+  FAIL=$((FAIL + 1)); ERRORS+=("falsification kill-switch byte-restore"); log "FAIL: kill-switch LEADV2_TEST_FALSIFICATION_GATE=0"
+fi
+
 rm -rf "${MUTANT_DIR}"
 
 pb_case "stem-resolved-from-lane-tests-dir (M3)"          case_stem_from_lane_tests_dir
