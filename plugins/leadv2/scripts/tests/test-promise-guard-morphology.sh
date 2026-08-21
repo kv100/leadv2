@@ -90,7 +90,12 @@ leading = None
 m = re.search(r"^COMMIT_RU_LEADING\s*=\s*re\.compile\((.+?)\)\s*$", src, re.S | re.M)
 if m:
     try:
-        leading = eval("re.compile(%s)" % m.group(1), {"re": re})
+        # Evaluate in the SAME namespace the other patterns were exec'd into: the
+        # leading rule is composed from RU_1SG_NONPAST, and a bare {"re": re} scope
+        # silently raised NameError and dropped the rule entirely — the test then
+        # reported failures that were its own, not the hook's.
+        _scope = dict(ns); _scope["re"] = re
+        leading = eval("re.compile(%s)" % m.group(1), _scope)
     except Exception:
         leading = None
 
@@ -172,6 +177,20 @@ case_neg_dative_adj() { _expect "$1" "Новому клиенту это нич�
 run_case "neg-poetomu-adverb"      case_neg_poetomu
 run_case "neg-potomu-adverb"       case_neg_potomu
 run_case "neg-dative-adjective"    case_neg_dative_adj
+
+# The SHAPE rule needs the same guard as the LEADING rule. When the -ому/-ему
+# exclusion was written into COMMIT_RU_LEADING alone, this clause fired within the
+# hour: «твоему» is a dative adjective and «дальше» is an intent marker, so the pair
+# read as a commitment. One definition widened, its twin left behind — the same
+# copy-drift shape fixed in the scope gate the same day.
+case_neg_shape_dative()  { _expect "$1" "дальше по твоему порядку: бриф, чистка, компакт" MISS; }
+case_neg_shape_adverb()  { _expect "$1" "сейчас по этому делу решения нет" MISS; }
+# ...while the shape rule must still catch a real deferred commitment.
+case_pos_shape_real()    { _expect "$1" "Ссылку на перебронирование добавлю тем же заходом" HIT; }
+
+run_case "neg-shape-dative-adj"    case_neg_shape_dative
+run_case "neg-shape-adverb"        case_neg_shape_adverb
+run_case "pos-shape-still-fires"   case_pos_shape_real
 
 echo ""
 echo "Results: ${PASS} passed(red->green), ${FAIL} failed, ${GREEN_PRE_FIX} green-pre-fix, ${COULD_NOT_RUN} could-not-run"

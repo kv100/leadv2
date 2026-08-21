@@ -99,7 +99,25 @@ COMMIT_EN = r"\bI'?ll\b|\bI will\b|\blet me\b|\bgoing to\b|\bnext I\b|\bnow I'?m
 # «тем же заходом», «отдельно») — or be one of the known verbs above. That pairing is
 # what keeps «Ссылку на перебронирование добавлю тем же заходом» a hit while
 # «правлю выборку и вот результат 12/12» is not (the artifact vetoes it downstream).
-RU_1SG_NONPAST = r'\b[а-яё]{3,}[юу]\b'
+# The -ому/-ему exclusion lives HERE, in the morphological unit, so every rule that
+# uses it inherits the guard. It was first written into COMMIT_RU_LEADING alone, and
+# within the hour the SHAPE rule fired on "дальше по твоему порядку" — «твоему» is a
+# dative adjective, «дальше» is an intent marker, and the pair read as a commitment.
+# Exactly the copy-drift shape fixed in the scope gate the same day: one definition
+# widened, its twin left behind. One definition, two consumers, no drift.
+#
+# The exclusion list is nominal endings, not a word list: Russian dative and
+# accusative nouns share the -у/-ю ending with first-person verbs («порядку»,
+# «выборку», «ссылку» look exactly like «чиню» to a bare pattern). Excluding
+# -ому/-ему (dative adjectives, «поэтому»/«потому») and -ку/-гу/-ху/-це/-ре/-ле
+# (the common nominal endings) removes the families that actually bit us.
+#
+# KNOWN LIMIT, stated rather than hidden: -су/-ту/-ду still collide — «по этому
+# вопросу» is nominal, «несу»/«веду» are verbs, and no ending distinguishes them.
+# Those slip through the SHAPE rule when an intent marker is also present. That is
+# accepted: the alternative is a morphological analyser, and the LEADING rule plus
+# the explicit verb list carry most real commitments anyway.
+RU_1SG_NONPAST = r'\b(?![а-яё]*(?:[ое]му|ку|гу|ху|це|ре|ле)\b)[а-яё]{3,}[юу]\b'
 # Word-boundary anchored: without \b, «потом» matches inside «потому», so
 # «Потому что так короче» — plain reasoning prose — was read as an intention marker
 # and, paired with any -ю/-у word, became a false commitment. Every marker here is a
@@ -110,7 +128,17 @@ RU_INTENT_MARKER = (
     r'|\bпосле\s+этого\b|\bв\s+конце\b'
     r'|\bотдельно\b|\bзаодно\b|\bпопутно\b|\bпо\s+ходу\b|\bещё\s+раз\b|\bнапоследок\b'
 )
-COMMIT_RU_SHAPE = r'(?=.*(?:' + RU_INTENT_MARKER + r'))(?=.*' + RU_1SG_NONPAST + r')'
+# ORDER IS THE DISCRIMINATOR. The rule used to be "an intent marker somewhere AND a
+# -ю/-у word somewhere", which fired on ordinary prose because Russian dative and
+# accusative nouns end in -у/-ю too: "дальше по твоему порядку" and "сейчас по этому
+# делу" both matched. Excluding nominal endings turned into whack-a-mole (-ку, then
+# -лу, then -су…) and would never have terminated.
+#
+# In a real deferred commitment the VERB PRECEDES the marker — «добавлю тем же
+# заходом», «допишу потом». In the false positives the marker opens the clause and
+# the -у word after it is a noun. Requiring verb-then-marker within a short window
+# keeps the real shape and drops the prose, without enumerating endings.
+COMMIT_RU_SHAPE = RU_1SG_NONPAST + r'.{0,40}?(?:' + RU_INTENT_MARKER + r')'
 
 COMMIT_RE = re.compile(
     '(?:' + COMMIT_RU_NOW + r'|' + COMMIT_RU + r'|' + COMMIT_EN + r'|' + COMMIT_RU_SHAPE + r')',
@@ -128,8 +156,7 @@ COMMIT_RE = re.compile(
 # the whole family without touching a single real verb. A guard that cries wolf on
 # status prose gets switched off within a day, which would cost more than the escape
 # it was built to catch.
-COMMIT_RU_LEADING = re.compile(r'^\s*[«"\-—*]*\s*(?![а-яё]*[ое]му\b)[а-яё]{3,}[юу]\b',
-                               re.I | re.UNICODE)
+COMMIT_RU_LEADING = re.compile(r'^\s*[«"\-—*]*\s*' + RU_1SG_NONPAST, re.I | re.UNICODE)
 
 # --- past-tense / artifact veto --------------------------------------------
 PAST_RU = r'\b\w+(?:л|ла|ло|ли)\b'
