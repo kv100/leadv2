@@ -345,6 +345,11 @@ $(tail -n 40 "$3" 2>/dev/null)
     printf '# builder selfcheck — %s\n' "$(basename "$(dirname "${out_md}")")"
     printf 'generated_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'diff_root: %s\n' "${diff_root}"
+    # V3-TIERED-REVIEW-01 round-1 HIGH fix: bind this verdict to the exact diff it
+    # was computed from so a stale RED (left by an earlier close attempt) cannot be
+    # consumed by leadv2-review-run.sh's machine round-0 against a since-changed
+    # diff. Minimal stamp only -- leadv2-review-run.sh does the hash-match gating.
+    printf 'diff_hash: %s\n' "$(shasum -a 256 "${diff_file}" 2>/dev/null | awk '{print $1}')"
     printf 'checks: %s   failed: %s   skipped: %s\n\n' "${checks}" "${failed}" "${skipped}"
     printf '| check | target | rc |\n|-------|--------|----|\n'
     printf '%s' "${rows}"

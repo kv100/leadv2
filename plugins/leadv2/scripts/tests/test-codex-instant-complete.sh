@@ -180,6 +180,53 @@ else
   fail=$((fail + 1))
 fi
 
+# Case 4c (round-1 HIGH regression): a concurrent sibling's rollout is the
+# newest in the window and shows a DEAD shape, but THIS dispatch's own
+# rollout is absent/has no session_meta.cwd yet -- zero exact-cwd matches.
+# Must NOT fall back to "newest of anyone": no candidate should be picked,
+# so the caller can make no terminal decision from this scan.
+c4c_home="$(mktemp -d)"
+cleanup_items+=("$c4c_home")
+c4c_dir="$c4c_home/sessions/2026/08/20"
+mkdir -p "$c4c_dir"
+c4c_mine="$c4c_dir/rollout-mine.jsonl"
+c4c_sibling="$c4c_dir/rollout-sibling.jsonl"
+write_rollout "$c4c_mine" \
+  '{"type":"event_msg","payload":{"type":"task_started"}}'
+write_rollout "$c4c_sibling" \
+  '{"type":"session_meta","payload":{"cwd":"/work/sibling"}}' \
+  '{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":null,"duration_ms":900}}'
+python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2])+10, int(sys.argv[2])+10))" "$c4c_mine" "$since_epoch"
+python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2])+50, int(sys.argv[2])+50))" "$c4c_sibling" "$since_epoch"
+
+echo "[CODEX-INSTANT-COMPLETE] case 4c: sibling is newest+dead-shaped but own cwd absent -- no candidate picked"
+c4c_scan="$(CODEX_HOME="$c4c_home" bash "$harness_script" _codex_newest_rollout_since "$since_epoch" "/work/mine" 2>/dev/null)"
+c4c_found="$(printf '%s\n' "$c4c_scan" | sed -n '1p')"
+c4c_count="$(printf '%s\n' "$c4c_scan" | sed -n '2p')"
+if [ -z "$c4c_found" ] && [ "$c4c_count" = "2" ]; then
+  echo "[CODEX-INSTANT-COMPLETE]   correctly returned no candidate (not the sibling), count=2 ✓"
+  pass=$((pass + 1))
+else
+  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected empty path count=2, got path='$c4c_found' count='$c4c_count'" >&2
+  fail=$((fail + 1))
+fi
+
+echo "[CODEX-INSTANT-COMPLETE] case 4d: end-to-end deadline-check must not terminal-decide off the sibling's dead shape"
+c4d_start=$(date +%s)
+rc=0
+CODEX_HOME="$c4c_home" LEADV2_CODEX_INSTANT_COMPLETE_SECS=2 LEADV2_ARM_EARLY_VERDICT_POLL_S=0.1 \
+  DISPATCH_SELF_BIN=/bin/true \
+  bash "$harness_script" _codex_instant_complete_deadline_check "testsig8" "$since_epoch" "/work/mine" \
+  >/dev/null 2>&1 || rc=$?
+c4d_elapsed=$(( $(date +%s) - c4d_start ))
+if [ "$rc" -eq 0 ]; then
+  echo "[CODEX-INSTANT-COMPLETE]   correctly proceeded (rc=0) in ${c4d_elapsed}s, sibling's dead shape ignored ✓"
+  pass=$((pass + 1))
+else
+  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected rc=0 (no terminal decision), got rc=$rc" >&2
+  fail=$((fail + 1))
+fi
+
 # Case 5: end-to-end deadline-check declares the dead shape within the window
 # and returns 7 (the caller's spill signal). Same isolated CODEX_HOME as
 # case 4 — c4_new already carries the dead shape. Real DISPATCH_SELF_BIN

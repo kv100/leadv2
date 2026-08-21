@@ -838,13 +838,21 @@ emit decision "review_round task=${TASK} round=${REVIEW_ROUND} mode=${REVIEW_MOD
 if [[ "${LEADV2_REVIEW_MACHINE_ROUND0:-1}" != 0 ]]; then
   _round0_selfcheck_md="${HANDOFF}/selfcheck.md"
   if [[ -f "${_round0_selfcheck_md}" ]] && grep -q '^verdict: RED$' "${_round0_selfcheck_md}" 2>/dev/null; then
-    {
-      printf 'status: fail\nreason: selfcheck_red_round0\nselfcheck: docs/handoff/dispatch-%s/selfcheck.md\n' "${TASK}"
-    } > "${HANDOFF}/review-gate.md.tmp"
-    mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-    _review_state_write
-    emit decision "review_gate task=${TASK} status=fail round=0 reason=selfcheck_red_round0"
-    exit 7
+    # round-1 HIGH fix: a RED verdict with no proof it was computed from THIS diff
+    # (absent/malformed diff_hash line, or a hash that doesn't match the diff being
+    # reviewed right now) must never fail-closed a since-changed, possibly-healthy
+    # diff -- fall through to the normal LLM round instead, same as no-artifact.
+    _round0_selfcheck_hash="$(sed -n 's/^diff_hash: \([0-9a-f]\{64\}\)$/\1/p' "${_round0_selfcheck_md}" 2>/dev/null | head -n1)"
+    if [[ "${REVIEW_DIFF_HASH_OK:-0}" -eq 1 && -n "${_round0_selfcheck_hash}" && "${_round0_selfcheck_hash}" == "${diff_hash}" ]]; then
+      {
+        printf 'status: fail\nreason: selfcheck_red_round0\nselfcheck: docs/handoff/dispatch-%s/selfcheck.md\n' "${TASK}"
+      } > "${HANDOFF}/review-gate.md.tmp"
+      mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+      _review_state_write
+      emit decision "review_gate task=${TASK} status=fail round=0 reason=selfcheck_red_round0"
+      exit 7
+    fi
+    emit decision "review_gate task=${TASK} status=round0_skip round=0 reason=selfcheck_diff_hash_mismatch selfcheck_hash=${_round0_selfcheck_hash:-none} diff_hash=${diff_hash:0:8}"
   fi
 fi
 

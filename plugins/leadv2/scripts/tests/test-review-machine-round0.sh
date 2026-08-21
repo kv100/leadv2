@@ -67,11 +67,12 @@ exit 0
 SH
 chmod +x "$dispatch_stub"
 
-# --- Case 1 (RED-must-catch): selfcheck.md verdict RED -> engine must FAIL
-# fast at round 0, write review-gate.md status=fail, and never invoke the
-# poison arm.
+# --- Case 1 (RED-must-catch): selfcheck.md verdict RED, diff_hash bound to
+# the CURRENT diff -> engine must FAIL fast at round 0, write review-gate.md
+# status=fail, and never invoke the poison arm.
 setup_fixture "red"
-printf '# builder selfcheck\nchecks: 3   failed: 1   skipped: 0\n\nverdict: RED\n' > "$HANDOFF/selfcheck.md"
+red_hash="$(shasum -a 256 "$DIFF" | awk '{print $1}')"
+printf '# builder selfcheck\nchecks: 3   failed: 1   skipped: 0\ndiff_hash: %s\n\nverdict: RED\n' "$red_hash" > "$HANDOFF/selfcheck.md"
 poison_marker="$TMP/poison-red.marker"
 rm -f "$poison_marker"
 
@@ -135,6 +136,30 @@ if [[ -f "$poison_marker3" ]]; then
   pass "no selfcheck.md -> LLM round still ran (rc=$rc3), no regression for standalone invocation"
 else
   fail "no selfcheck.md wrongly short-circuited the LLM round (rc=$rc3)"
+fi
+
+# --- Case 4 (round-1 HIGH regression, stale-RED/current-diff-mismatch):
+# selfcheck.md carries verdict RED but its diff_hash does not match the diff
+# under review right now (a RED artifact left over from an earlier close
+# attempt on a since-changed, now-healthy diff) -> engine must NOT fail-closed
+# from round 0; it must fall through to the normal LLM round.
+setup_fixture "stale"
+printf '# builder selfcheck\nchecks: 3   failed: 1   skipped: 0\ndiff_hash: 0000000000000000000000000000000000000000000000000000000000000000\n\nverdict: RED\n' > "$HANDOFF/selfcheck.md"
+poison_marker4="$TMP/poison-stale.marker"
+rm -f "$poison_marker4"
+
+LEADV2_ROUTING_YAML="$ROOT/.claude/ref/leadv2-routing.yaml" \
+LEADV2_DISPATCH_ARCHITECT_BIN="$poison_arm" \
+LEADV2_DISPATCH_BIN="$dispatch_stub" \
+LEADV2_REVIEW_FANOUT=2 \
+POISON_MARKER="$poison_marker4" \
+bash "$ENGINE" --task RND0stale --root "$ROOT" --handoff "$HANDOFF" --diff "$DIFF" --author codex >/dev/null 2>&1
+rc4=$?
+
+if [[ -f "$poison_marker4" ]]; then
+  pass "stale-RED (diff_hash mismatch) -> LLM round still ran (rc=$rc4), no fail-closed on unrelated verdict"
+else
+  fail "stale-RED (diff_hash mismatch) wrongly short-circuited the LLM round (rc=$rc4)"
 fi
 
 log ""

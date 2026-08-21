@@ -75,6 +75,17 @@ exit 0
 SH
 chmod +x "$vanished_bin"
 
+# round-1 HIGH fix: a transient/unrelated status failure (companion hiccup,
+# malformed response) must NOT be treated as proof the job row is gone --
+# only a positively-parsed "No job found" message may declare dead.
+transient_bin="$harness/codex-transient.sh"
+cat > "$transient_bin" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = "status" ] && { echo "companion IPC error: connection reset" >&2; exit 1; }
+exit 0
+SH
+chmod +x "$transient_bin"
+
 lockout_dir="$(mktemp -d)"
 cleanup_items+=("$lockout_dir")
 
@@ -188,6 +199,28 @@ if [ "$rc" -eq 0 ] && [ "$c5_elapsed" -lt 5 ]; then
   pass=$((pass + 1))
 else
   echo "[CODEX-WORKER-LIVENESS]   FAIL: expected rc=0 in <5s, got rc=$rc elapsed=${c5_elapsed}s" >&2
+  fail=$((fail + 1))
+fi
+
+# Case 6 (round-1 HIGH regression): status exits nonzero with a transient,
+# non-"No job found" error -- must proceed (rc=0), no strike, no spill; the
+# confirmed reservation must stay untouched.
+codex_home6="$(mktemp -d)"
+cleanup_items+=("$codex_home6")
+lockout_dir6="$(mktemp -d)"
+cleanup_items+=("$lockout_dir6")
+echo "[CODEX-WORKER-LIVENESS] case 6: transient status error (not 'No job found') -> proceed, no strike/spill"
+rc=0
+CODEX_HOME="$codex_home6" CODEX_BIN="$transient_bin" DISPATCH_SELF_BIN="$DISPATCH" \
+  LEADV2_QUOTA_LOCKOUT_DIR="$lockout_dir6" \
+  bash "$harness_script" _codex_worker_liveness_deadline_check "job-abc123" "testsig8" "$since_epoch" "" \
+  >/dev/null 2>&1 || rc=$?
+lockfile6="$lockout_dir6/quota-lockout-codex.json"
+if [ "$rc" -eq 0 ] && [ ! -f "$lockfile6" ]; then
+  echo "[CODEX-WORKER-LIVENESS]   correctly proceeded (rc=0), no strike recorded ✓"
+  pass=$((pass + 1))
+else
+  echo "[CODEX-WORKER-LIVENESS]   FAIL: expected rc=0 + no lockfile, got rc=$rc lockfile_exists=$([ -f "$lockfile6" ] && echo yes || echo no)" >&2
   fail=$((fail + 1))
 fi
 

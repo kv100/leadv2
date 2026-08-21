@@ -3589,13 +3589,16 @@ _codex_first_byte_deadline_check() {  # <handle> <sig8>
 # nit 2-A (V3-ENV-GUARDS-01 review): a bare mtime scan of the whole
 # $CODEX_HOME/sessions tree can be judged by a SIBLING dispatch's rollout
 # (two codex arms in different lanes, same host, overlapping window).
-# session_meta.cwd (recorded by codex at session start) is a soft
-# preference, not a hard filter: when at least one window candidate's cwd
-# equals expected_cwd, pick the newest of THOSE; otherwise fall back to the
-# newest of the whole window unchanged (today's behaviour) rather than
-# risk silently losing the real rollout to a path-normalisation mismatch
-# (symlinked worktrees, trailing slashes). Either way the total window
-# count is reported so the caller can journal when it is > 1.
+# session_meta.cwd (recorded by codex at session start) is a HARD filter when
+# expected_cwd is known (round-1 HIGH fix): a concurrent sibling dispatch's
+# rollout can otherwise be picked as "newest of the whole window" and its
+# turn_aborted/null-message shape then kills THIS dispatch. Falling back to
+# "newest of anyone" is only safe when the caller has no cwd to scope by at
+# all (expected_cwd empty) -- with a known expected_cwd and zero exact
+# matches (own rollout not written yet, or a path-spelling mismatch), the
+# correct behaviour is "no candidate", not "guess a stranger's". The total
+# window count is still reported (from ALL candidates, matched or not) so
+# the caller can journal ambiguity whenever it is > 1.
 _codex_newest_rollout_since() {  # <since_epoch> <expected_cwd>
   local since="$1" expected_cwd="$2" codex_home
   codex_home="${CODEX_HOME:-$HOME/.codex}"
@@ -3627,7 +3630,10 @@ for dirpath, _dirnames, filenames in os.walk(root):
             cwd = None
         candidates.append((m, p, cwd))
 candidates.sort(key=lambda t: t[0])
-pool = [c for c in candidates if expected_cwd and c[2] == expected_cwd] or candidates
+if expected_cwd:
+    pool = [c for c in candidates if c[2] == expected_cwd]
+else:
+    pool = candidates
 print(pool[-1][1] if pool else "")
 print(len(candidates))
 PY
@@ -3785,12 +3791,24 @@ _codex_worker_liveness_deadline_check() {  # <handle> <sig8> <since_epoch> [expe
   local deadline="${LEADV2_CODEX_WORKER_LIVENESS_SECS:-60}"
   [[ "${deadline}" =~ ^[0-9]+$ ]] || deadline=60
   [[ "${deadline}" != "0" ]] || return 0
-  local scan_out f
-  if ! bash "${CODEX_BIN}" status "${handle}" >/dev/null 2>&1 9>&-; then
-    emit decision "arm_dead_worker_liveness arm=codex task=${sig8} handle=${handle} reason=vanished_job"
-    bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
-      --provider codex --hours 1 --reason arm_dead_worker_liveness >/dev/null 2>&1 || true
-    return 7
+  local scan_out f status_out status_rc
+  # codex-status-liveness fix-2: `status` exiting nonzero is NOT by itself proof the
+  # job row is gone -- a transient companion/IPC hiccup or a malformed response also
+  # exits nonzero, and treating either as "dead" spilled a healthy job (round-1 HIGH).
+  # Only a positively-parsed "No job found" response (the exact missing-row message
+  # codex-task.sh's own status adapter documents -- see the not_live guard at spawn
+  # time above) proves the row is gone. Any other nonzero is unknown/fail-open:
+  # journal it and leave the reservation intact, no strike.
+  status_out="$(bash "${CODEX_BIN}" status "${handle}" 2>&1 9>&-)"; status_rc=$?
+  if [[ ${status_rc} -ne 0 ]]; then
+    if printf '%s' "${status_out}" | grep -qi 'no job found'; then
+      emit decision "arm_dead_worker_liveness arm=codex task=${sig8} handle=${handle} reason=vanished_job"
+      bash "${DISPATCH_SELF_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}" record-quota-lockout \
+        --provider codex --hours 1 --reason arm_dead_worker_liveness >/dev/null 2>&1 || true
+      return 7
+    fi
+    emit decision "codex_worker_liveness_status_unknown arm=codex task=${sig8} handle=${handle} rc=${status_rc}"
+    return 0
   fi
   scan_out="$(_codex_newest_rollout_since "${since}" "${expected_cwd}")"
   f="$(printf '%s\n' "${scan_out}" | sed -n '1p')"
