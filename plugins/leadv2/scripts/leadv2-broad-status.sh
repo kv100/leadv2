@@ -45,6 +45,27 @@ FOUNDER_STATUS_FULL_PATH="${LEADV2_FOUNDER_STATUS_FULL_PATH:-$PROJECT_ROOT/docs/
 COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector.sh}"
 TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
 CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
+# PULSE-EMPTY-BOARD-01: empty-since cursor (survives across beats — an
+# empty board's duration is measured from the FIRST beat that found it
+# empty, never re-derived per-render) and the render's own epoch stamp.
+#
+# FRESH-VS-STALE RULE for any reader (lead relay, hook, human): compare
+# `date +%s` against the integer in FOUNDER_STATUS_EPOCH_PATH — NOT
+# founder-status.md's line-1 stamp (that stamp is UTC ISO-8601 text, kept
+# unchanged for the relay contract, and comparing its wall-clock zone
+# against a local `ls -la` mtime is exactly what produced the incident this
+# fix exists for: 14:12 local == 11:12:23Z, same instant, "stale" by eye).
+# `now_epoch - epoch_in_file < BEAT_S` (BEAT_S = LEADV2_SINGLE_LEAD_BEAT_S,
+# default 1800) is FRESH; otherwise STALE. Both numbers are epoch seconds,
+# so the comparison is timezone-proof by construction.
+EMPTY_SINCE_PATH="${LEADV2_BOARD_EMPTY_SINCE_PATH:-$PROJECT_ROOT/docs/leadv2/.board-empty-since}"
+FOUNDER_STATUS_EPOCH_PATH="${LEADV2_FOUNDER_STATUS_EPOCH_PATH:-$PROJECT_ROOT/docs/leadv2/.founder-status-epoch}"
+_stamp_epoch() {
+  local now
+  now="$(date +%s 2>/dev/null || echo 0)"
+  printf -- '%s' "$now" > "${FOUNDER_STATUS_EPOCH_PATH}.tmp.$$" 2>/dev/null \
+    && mv -f "${FOUNDER_STATUS_EPOCH_PATH}.tmp.$$" "$FOUNDER_STATUS_EPOCH_PATH" 2>/dev/null || true
+}
 
 # Beat identity (also the alarm-dedupe VALUE — semantic, never the rendered
 # line). LEADV2_BROAD_STATUS_BEAT_AT pins it for tests so a re-run of the
@@ -106,7 +127,8 @@ _write_degraded_status() {  # <reason> -> rc 0 if the artifact was replaced
   )"
   printf '%s\n' "$block" >>"$LOG_FILE"
   printf '%s\n' "$block" >"$FOUNDER_STATUS_PATH.tmp" 2>/dev/null \
-    && mv "$FOUNDER_STATUS_PATH.tmp" "$FOUNDER_STATUS_PATH" 2>/dev/null
+    && mv "$FOUNDER_STATUS_PATH.tmp" "$FOUNDER_STATUS_PATH" 2>/dev/null \
+    && _stamp_epoch
 }
 _emit_fail_line() {  # <reason> — artifact NOT replaced: no READY, no path=
   local reason="$1"
@@ -149,10 +171,10 @@ trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 
 export _BS_QUEUED_TSV="$QUEUED_TSV"
 export _BS_LANDED_LOG="$LANDED_LOG"
-RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" <<'PY'
+RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" <<'PY'
 import datetime, json, os, re, sys
 
-snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir, full_status_path_override = sys.argv[1:8]
+snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir, full_status_path_override, empty_since_path = sys.argv[1:9]
 
 sys.path.insert(0, os.path.join(script_dir, "lib"))
 try:
@@ -422,6 +444,42 @@ TABLE_ROW_CAP = 6
 rows_out_full = rows_out
 rows_out = rows_out_full[:TABLE_ROW_CAP]
 table_rows_hidden = max(0, len(rows_out_full) - TABLE_ROW_CAP)
+
+# PULSE-EMPTY-BOARD-01 rule 1: zero live lanes is a LOUD event, not a table
+# with no rows. `rows_out_full` is already alive-only (a dead row hits
+# `continue` above and is never appended), so its length IS the live-lane
+# count. empty_since_path persists the first-observed-empty epoch across
+# beats so the duration is real elapsed time, not re-derived per render; a
+# non-empty board clears it, so the NEXT time it goes empty the clock
+# restarts from that moment, not from the earlier outage.
+live_lane_count = len(rows_out_full)
+empty_headline = None
+try:
+    if live_lane_count == 0:
+        now_epoch = int(__import__("time").time())
+        since_epoch = None
+        try:
+            with open(empty_since_path, encoding="utf-8") as fh:
+                _cand = fh.read().strip()
+            if _cand.isdigit():
+                since_epoch = int(_cand)
+        except OSError:
+            since_epoch = None
+        if since_epoch is None:
+            since_epoch = now_epoch
+            _tmp = empty_since_path + ".tmp"
+            with open(_tmp, "w", encoding="utf-8") as fh:
+                fh.write(str(now_epoch))
+            os.replace(_tmp, empty_since_path)
+        empty_minutes = max(0, (now_epoch - since_epoch) // 60)
+        empty_headline = f"⚠ ДОСКА ПУСТА — ничего не выполняется, {empty_minutes} мин"
+    else:
+        try:
+            os.remove(empty_since_path)
+        except OSError:
+            pass
+except Exception:
+    empty_headline = None
 
 # PULSE-READABLE-01: header text kept as "Что делает" — the exact
 # STATUS-FORMAT-IN-RENDERER-01 3-column contract shape (T8/T15 and other
@@ -718,6 +776,7 @@ with open(out_path, "w", encoding="utf-8") as fh:
         "delta_line": delta_line,
         "decisions_line": decisions_line,
         "hidden_note": hidden_note,
+        "empty_headline": empty_headline,
     }, fh)
 print(out_path)
 PY
@@ -741,6 +800,16 @@ PRODUCT_LINE="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[
 DELTA_LINE="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['delta_line'])" "$RENDER_JSON")"
 DECISIONS_LINE="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['decisions_line'])" "$RENDER_JSON")"
 HIDDEN_NOTE="$(python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get('hidden_note'); print(v or '')" "$RENDER_JSON")"
+EMPTY_HEADLINE="$(python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get('empty_headline'); print(v or '')" "$RENDER_JSON")"
+
+# PULSE-EMPTY-BOARD-01 rule 4: a review verdict that landed since the last
+# beat (leadv2-pulse-beat.sh's transition detector, exported by the caller)
+# is folded onto the deterministic delta line — never invented here, and
+# never dropped silently if the composer runs with the var unset (normal
+# clock-driven beats never set it).
+if [[ -n "${LEADV2_BROAD_STATUS_REVIEW_DELTA:-}" ]]; then
+  DELTA_LINE="${DELTA_LINE} ${LEADV2_BROAD_STATUS_REVIEW_DELTA}"
+fi
 
 # PULSE-READABLE-01: the delta and decisions lines are now fully
 # deterministic (rules 4/5 — set-diff against the previous beat's lane
@@ -751,8 +820,15 @@ HIDDEN_NOTE="$(python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get('
 # both correct and un-skippable. Everything it used to narrate at length
 # (full lane detail, full queue, full closed-paragraph) still lands in
 # founder-status-full.md, written above by the python render step.
+# PULSE-EMPTY-BOARD-01 rule 1: an empty board is a headline, not a table
+# with no rows — it must be unmistakable in the first two lines. Line 1
+# stays the machine-parseable dispatched= stamp (the relay contract's
+# format), so the headline is line 2, ahead of everything else, when set.
 BLOCK="$(
   printf '%s [BROAD_STATUS] dispatched=%s\n' "$BEAT_AT" "$DISPATCHED"
+  if [[ -n "$EMPTY_HEADLINE" ]]; then
+    printf '%s\n\n' "$EMPTY_HEADLINE"
+  fi
   printf '%s\n\n' "$PRODUCT_LINE"
   printf '%s\n\n' "$TABLE_MD"
   printf '%s\n' "$DELTA_LINE"
@@ -764,7 +840,7 @@ BLOCK="$(
 )"
 
 printf '%s\n' "$BLOCK" >>"$LOG_FILE"
-printf '%s\n' "$BLOCK" >"$FOUNDER_STATUS_PATH.tmp" && mv "$FOUNDER_STATUS_PATH.tmp" "$FOUNDER_STATUS_PATH"
+printf '%s\n' "$BLOCK" >"$FOUNDER_STATUS_PATH.tmp" && mv "$FOUNDER_STATUS_PATH.tmp" "$FOUNDER_STATUS_PATH" && _stamp_epoch
 
 # C1 delivery: the ONE wake per beat, after both durable writes succeeded.
 _emit_ready_line "$ROWS_N"

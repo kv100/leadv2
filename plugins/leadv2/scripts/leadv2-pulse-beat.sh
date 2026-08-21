@@ -52,6 +52,21 @@ BEAT_LAST_FILE="${STATE_DIR}/.pulse-beat-last"
 BEAT_LOCK_FILE="${STATE_DIR}/.pulse-beat.lock"
 LOOP_SENTINEL="${STATE_DIR}/.supervise-loop.json"
 
+# ── PULSE-EMPTY-BOARD-01: transition state, cheap enough to poll on every
+#    hook fire (this script's --check is already called once per tool call
+#    via hooks/leadv2-single-lead-beat.sh). Three files:
+#    .pulse-live-count-last — last COMMITTED count of "running" lanes, used
+#      to detect a drop (>=1 -> 0 is the loud case, any drop is "a lane
+#      reached terminal state").
+#    .pulse-review-watermark — mtime cursor: `find -newer` against this
+#      file's own mtime finds review-gate.md writes since the last commit.
+#    .pulse-review-pending.jsonl — one JSON line per newly-seen verdict,
+#      appended by the commit step, consumed (read + truncated) exactly once
+#      by the render that actually fires. ──────────────────────────────────
+LIVE_COUNT_LAST_FILE="${STATE_DIR}/.pulse-live-count-last"
+REVIEW_WATERMARK_FILE="${STATE_DIR}/.pulse-review-watermark"
+REVIEW_PENDING_FILE="${STATE_DIR}/.pulse-review-pending.jsonl"
+
 _now_epoch() { date +%s; }
 
 # ── loop-liveness: if the real supervise loop owns this beat, never
@@ -74,10 +89,174 @@ except Exception:
 " "$LOOP_SENTINEL" 2>/dev/null
 }
 
+# _lv2_current_live_count -> prints an integer count of lanes whose
+# leadv2-lane-heartbeat.sh verdict is exactly "running" (the only verdict
+# that means "alive right now" — same rule leadv2-beat-owner.sh uses).
+# Prints nothing on any failure — fail-open: callers must treat empty as
+# "unknown", never as zero (a zero here must be a REAL zero, never a
+# swallowed error masquerading as one).
+_lv2_current_live_count() {
+  local hb_sh="${LEADV2_LANE_HEARTBEAT_BIN:-${SCRIPT_DIR}/leadv2-lane-heartbeat.sh}"
+  [[ -x "$hb_sh" ]] || return 0
+  local json
+  json="$( (LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "$hb_sh" status --all --json 2>/dev/null || true) )"
+  [[ -n "$json" ]] || return 0
+  python3 -c "
+import sys, json
+try:
+    rows = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+if not isinstance(rows, list):
+    sys.exit(0)
+print(sum(1 for r in rows if isinstance(r, dict) and r.get('status') == 'running'))
+" "$json" 2>/dev/null
+}
+
+# _lv2_peek_lane_drop -> rc0 iff the live-lane count has dropped since the
+# last COMMIT (never mutates state — safe to call from --due, which only
+# reports and must never itself consume the transition it is asked about).
+_lv2_peek_lane_drop() {
+  local current last
+  current="$(_lv2_current_live_count)"
+  [[ "$current" =~ ^[0-9]+$ ]] || return 1
+  last=""
+  [[ -f "$LIVE_COUNT_LAST_FILE" ]] && last="$(cat "$LIVE_COUNT_LAST_FILE" 2>/dev/null || true)"
+  [[ "$last" =~ ^[0-9]+$ ]] || return 1
+  (( current < last ))
+}
+
+# _lv2_commit_lane_count -> advances the committed baseline to the current
+# count. Idempotent; a read failure leaves the baseline untouched (fail-open
+# — never lets a bad read reset the baseline to an unknown value).
+_lv2_commit_lane_count() {
+  local current
+  current="$(_lv2_current_live_count)"
+  [[ "$current" =~ ^[0-9]+$ ]] || return 0
+  printf -- '%s' "$current" > "${LIVE_COUNT_LAST_FILE}.tmp.$$" 2>/dev/null \
+    && mv -f "${LIVE_COUNT_LAST_FILE}.tmp.$$" "$LIVE_COUNT_LAST_FILE" 2>/dev/null || true
+}
+
+# _lv2_peek_review_landings -> rc0 iff >=1 docs/handoff/*/review-gate.md was
+# written after the watermark's own mtime. Never mutates. Cold start (no
+# watermark file yet) is "nothing pending" (R1 pattern used everywhere else
+# in this file: first-run never retroactively fires on pre-existing state).
+_lv2_peek_review_landings() {
+  local handoff_dir="${PROJECT_ROOT}/docs/handoff"
+  [[ -d "$handoff_dir" ]] || return 1
+  [[ -f "$REVIEW_WATERMARK_FILE" ]] || return 1
+  local hit
+  hit="$(find "$handoff_dir" -maxdepth 2 -name 'review-gate.md' -newer "$REVIEW_WATERMARK_FILE" 2>/dev/null | head -n1)"
+  [[ -n "$hit" ]]
+}
+
+# _lv2_commit_review_landings -> appends one JSON line per newly-seen
+# review-gate.md to REVIEW_PENDING_FILE and advances the watermark to now.
+# Idempotent (re-running with nothing new is a cheap no-op); bounded to 50
+# files per call since this runs on every real beat.
+_lv2_commit_review_landings() {
+  local handoff_dir="${PROJECT_ROOT}/docs/handoff"
+  [[ -d "$handoff_dir" ]] || return 0
+  if [[ ! -f "$REVIEW_WATERMARK_FILE" ]]; then
+    : > "$REVIEW_WATERMARK_FILE" 2>/dev/null || true
+    return 0
+  fi
+  local f status detail crit high med low task_id
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    status="$(sed -n 's/^status:[[:space:]]*//p' "$f" 2>/dev/null | head -n1)"
+    [[ -n "$status" ]] || status="unknown"
+    detail=""
+    case "$status" in
+      fail)
+        crit="$(sed -n 's/^critical:[[:space:]]*//p' "$f" 2>/dev/null | head -n1)"
+        high="$(sed -n 's/^high:[[:space:]]*//p' "$f" 2>/dev/null | head -n1)"
+        med="$(sed -n 's/^medium:[[:space:]]*//p' "$f" 2>/dev/null | head -n1)"
+        low="$(sed -n 's/^low:[[:space:]]*//p' "$f" 2>/dev/null | head -n1)"
+        detail="$(printf -- '%s\n' \
+          "${crit:+$crit crit}" "${high:+$high high}" "${med:+$med med}" "${low:+$low low}" \
+          | grep -v '^$' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+        ;;
+      blocked|unreviewed)
+        detail="$(sed -n 's/^reason:[[:space:]]*//p' "$f" 2>/dev/null | head -n1)"
+        ;;
+    esac
+    task_id="$(basename "$(dirname "$f")")"
+    python3 -c "
+import json, sys
+print(json.dumps({'task': sys.argv[1], 'status': sys.argv[2], 'detail': sys.argv[3]}))
+" "$task_id" "$status" "$detail" >> "$REVIEW_PENDING_FILE" 2>/dev/null || true
+  done < <(find "$handoff_dir" -maxdepth 2 -name 'review-gate.md' -newer "$REVIEW_WATERMARK_FILE" 2>/dev/null | head -n 50)
+  touch "$REVIEW_WATERMARK_FILE" 2>/dev/null || true
+}
+
+# _lv2_format_review_pending <file> -> "N ревью → FAIL (3 high), BLOCKED
+# (provider_error)" or empty if the file has nothing parseable. Never
+# raises — a malformed line is skipped, not fatal (R5 pattern, same as the
+# composer's provider-health reads).
+_lv2_format_review_pending() {
+  local file="$1"
+  [[ -s "$file" ]] || return 0
+  python3 -c "
+import json, sys
+items = []
+try:
+    with open(sys.argv[1], encoding='utf-8') as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                items.append(json.loads(line))
+            except Exception:
+                continue
+except OSError:
+    pass
+if not items:
+    sys.exit(0)
+parts = []
+for it in items:
+    status = str(it.get('status', 'unknown')).upper()
+    detail = (it.get('detail') or '').strip()
+    parts.append(f'{status} ({detail})' if detail else status)
+print(f'{len(items)} ревью → ' + ', '.join(parts))
+" "$file" 2>/dev/null
+}
+
+# _prepare_transition_env -> commits the lane-count + review-landing state
+# EXACTLY ONCE per beat and exports LEADV2_BROAD_STATUS_REVIEW_DELTA for the
+# composer to fold into its delta line. Idempotent via the
+# LEADV2_BEAT_TRANSITIONS_PREPARED sentinel: the --check path calls this
+# synchronously (under the flock, before spawning) so the commit — which is
+# what makes a second near-simultaneous --check see "nothing new" and stay
+# silent — happens under the SAME mutual-exclusion primitive that already
+# guarantees only one spawn wins; the spawned --now child inherits the
+# sentinel + already-built env var and skips recomputing it. A direct manual
+# --now call (no parent --check) commits it itself.
+_prepare_transition_env() {
+  [[ "${LEADV2_BEAT_TRANSITIONS_PREPARED:-0}" == "1" ]] && return 0
+  _lv2_commit_lane_count
+  _lv2_commit_review_landings
+  local review_delta=""
+  if [[ -f "$REVIEW_PENDING_FILE" ]]; then
+    review_delta="$(_lv2_format_review_pending "$REVIEW_PENDING_FILE")"
+    : > "$REVIEW_PENDING_FILE" 2>/dev/null || true
+  fi
+  export LEADV2_BROAD_STATUS_REVIEW_DELTA="$review_delta"
+  export LEADV2_BEAT_TRANSITIONS_PREPARED=1
+}
+
 _due() {
   # 0 = due, 1 = not due (throttle), 2 = loop owns the beat
   if _loop_is_live; then
     return 2
+  fi
+  # PULSE-EMPTY-BOARD-01: a pending transition (lane drop or a landed
+  # review verdict) is due immediately, bypassing the clock throttle. Peek
+  # only — never consumes here, so a pure `--due` probe cannot swallow a
+  # transition a real caller hasn't acted on yet.
+  if _lv2_peek_lane_drop || _lv2_peek_review_landings; then
+    return 0
   fi
   local now last
   now="$(_now_epoch)"
@@ -161,6 +340,7 @@ _run_beat() {
 }
 
 if [[ "$MODE" == "--now" ]]; then
+  _prepare_transition_env
   _run_beat
   exit $?
 fi
@@ -170,6 +350,14 @@ exec 9>"$BEAT_LOCK_FILE" || exit 0
 if command -v flock >/dev/null 2>&1; then
   flock -n 9 || exit 0
 fi
+
+# PULSE-EMPTY-BOARD-01 coalescing: commit the transition state HERE, still
+# under the flock — this is what makes a second --check that races in a
+# moment later see "nothing new" (peek finds the baseline already
+# advanced) and fall through to the normal throttle, instead of also
+# winning a (by-then-released) flock and spawning a second render. The
+# exported env is inherited by the --now child spawned below.
+_prepare_transition_env
 
 SELF="${BASH_SOURCE[0]}"
 if command -v setsid >/dev/null 2>&1; then
