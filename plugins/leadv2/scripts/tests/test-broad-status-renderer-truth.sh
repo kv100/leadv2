@@ -197,13 +197,20 @@ if [[ ! -f "$FOUNDER_STATUS" ]]; then
 fi
 CONTENT="$(cat "$FOUNDER_STATUS")"
 ROW="$(printf '%s' "$CONTENT" | grep -m1 '^| Browser door retry queue fix |')"
+# PULSE-READABLE-01 rule 6: the per-lane detail block, the full queue and
+# the full «Закрыто сегодня» paragraph are no longer in the compact beat
+# (founder-status.md) — they are written, in full, to
+# founder-status-full.md. Tests that assert their CONTENT now read that
+# file instead.
+FULL_STATUS="$REPO/docs/leadv2/founder-status-full.md"
+FULL_CONTENT="$(cat "$FULL_STATUS" 2>/dev/null || true)"
 
-# T1 — detail block carries the dispatch id, no false "unknown" marker.
-if printf '%s' "$CONTENT" | grep -q 'dispatch-aabbccdd —' \
-   && ! printf '%s' "$CONTENT" | grep -q 'dispatch-aabbccdd (dispatch id unknown)'; then
+# T1 — detail block (full doc) carries the dispatch id, no false "unknown" marker.
+if printf '%s' "$FULL_CONTENT" | grep -q 'dispatch-aabbccdd —' \
+   && ! printf '%s' "$FULL_CONTENT" | grep -q 'dispatch-aabbccdd (dispatch id unknown)'; then
   pass "T1: detail block carries dispatch-aabbccdd, no false unknown marker"
 else
-  fail "T1: detail block wrong: $(printf '%s' "$CONTENT" | grep 'Детали линий' || echo '<none>')"
+  fail "T1: detail block wrong: $(printf '%s' "$FULL_CONTENT" | grep 'Детали линий' || echo '<none>')"
 fi
 
 # T2 — col-2 resolves from the mission title, NEVER the prepass excerpt.
@@ -216,35 +223,43 @@ else
   fail "T2: col-2 wrong or prepass leaked: ${ROW:-<no row>}"
 fi
 
-# T3 — detail block enumerates the handoff artifacts (x.stream.jsonl is the
-# fixture's largest file by construction).
-if printf '%s' "$CONTENT" | grep -q 'x.stream.jsonl' \
-   && printf '%s' "$CONTENT" | grep -Eq '[0-9]+ файл'; then
+# T3 — detail block (full doc) enumerates the handoff artifacts (x.stream.jsonl
+# is the fixture's largest file by construction).
+if printf '%s' "$FULL_CONTENT" | grep -q 'x.stream.jsonl' \
+   && printf '%s' "$FULL_CONTENT" | grep -Eq '[0-9]+ файл'; then
   pass "T3: detail block shows handoff file count + a filename"
 else
   fail "T3: detail block does not show handoff artifacts"
 fi
 
-# ── T7 — tombstone row (no lane_detail row at all): the id it already
-#    holds renders; the genuinely-absent name/description stay honest. ─────
-ROW7="$(lane_row 'dispatch-ffeeddcc (имя неизвестно)')"
-if printf '%s' "$ROW7" | grep -q '^| dispatch-ffeeddcc (имя неизвестно) |' \
-   && printf '%s' "$ROW7" | grep -q '| — |'; then
-  pass "T7: tombstone dispatch row shows its id honestly unnamed"
+# ── T7 (PULSE-READABLE-01 supersedes the old assertion) — a bucket-form
+#    "dead" tombstone row (status="dead", no colon — exactly the
+#    2026-08-21 founder-rejected shape) must be ABSENT from the live table,
+#    not rendered as junk. It is corroborated evidence, not evicted from
+#    the FULL doc, so it must still land in founder-status-full.md's
+#    "Закрыто сегодня" paragraph with its real cause. ────────────────────
+ROW7="$(lane_row 'dispatch-ffeeddcc')"
+FULL_STATUS="$REPO/docs/leadv2/founder-status-full.md"
+if [[ -z "$ROW7" ]] && [[ -f "$FULL_STATUS" ]] \
+   && grep -q 'pid birth mismatch (reuse)' "$FULL_STATUS"; then
+  pass "T7: bucket-form dead tombstone row absent from live table, present in full doc"
 else
-  fail "T7: tombstone row wrong: ${ROW7:-<no row>}"
+  fail "T7: tombstone row wrong: live-table-row=${ROW7:-<none>} full-doc=$(test -f "$FULL_STATUS" && grep -c 'pid birth mismatch' "$FULL_STATUS" || echo '<no file>')"
 fi
 
-# ── T4 / T12 — honesty: the naked lane keeps its TRUE unknowns ─────────────
-ROW4="$(lane_row 'plain-task-01 (dispatch id unknown) (имя неизвестно)')"
-if printf '%s' "$ROW4" | grep -q '^| plain-task-01 (dispatch id unknown) (имя неизвестно) |' \
-   && printf '%s' "$ROW4" | grep -q '| — |'; then
-  pass "T4: no dispatch dir/binding -> unknowns stay honest"
+# ── T4 / T12 — honesty: the naked lane keeps its TRUE unknowns. Rule 3
+#    (PULSE-READABLE-01) drops the "(имя неизвестно)" suffix — the bare
+#    dispatch-id fallback is rendered ONCE, never doubled. ─────────────────
+ROW4="$(lane_row 'plain-task-01 (dispatch id unknown)')"
+if printf '%s' "$ROW4" | grep -q '^| plain-task-01 (dispatch id unknown) |' \
+   && printf '%s' "$ROW4" | grep -q '| — |' \
+   && ! printf '%s' "$ROW4" | grep -q 'имя неизвестно'; then
+  pass "T4: no dispatch dir/binding -> unknowns stay honest, no (имя неизвестно) suffix"
 else
   fail "T4: honesty invariant broken: ${ROW4:-<no row>}"
 fi
-if printf '%s' "$CONTENT" | grep -q 'plain-task-01 (dispatch id unknown) — .* — пока ничего'; then
-  pass "T12: un-nameable lane never invents a name, disk fact stays honest"
+if [[ -f "$FULL_STATUS" ]] && grep -q 'plain-task-01 (dispatch id unknown) — .* — пока ничего' "$FULL_STATUS"; then
+  pass "T12: un-nameable lane never invents a name, disk fact stays honest (full doc)"
 else
   fail "T12: un-nameable lane detail wrong"
 fi
@@ -289,7 +304,7 @@ if ! printf '%s' "$CONTENT" | grep -q '^| dispatch-eeddccbb'; then
 else
   fail "T11a: dead lane still rendered in the live table"
 fi
-CLOSED_LINE="$(printf '%s' "$CONTENT" | grep -m1 '^Закрыто сегодня:')"
+CLOSED_LINE="$(printf '%s' "$FULL_CONTENT" | grep -m1 '^Закрыто сегодня:')"
 if printf '%s' "$CLOSED_LINE" | grep -q 'dispatch-eeddccbb' \
    && printf '%s' "$CLOSED_LINE" | grep -q 'финализирован сторожем'; then
   pass "T11b: dead lane present in «Закрыто сегодня» with its cause"
@@ -299,9 +314,9 @@ fi
 
 # ── T14 — "Кто делает"/"Уже на диске" facts still appear, in the detail
 #    block below the table (not lost, only relocated). ─────────────────────
-if printf '%s' "$CONTENT" | grep -q 'Детали линий:' \
-   && printf '%s' "$CONTENT" | grep -q 'codex/gpt-5.6' \
-   && printf '%s' "$CONTENT" | grep -Eq '[0-9]+ файл.*KB'; then
+if printf '%s' "$FULL_CONTENT" | grep -q 'Детали линий:' \
+   && printf '%s' "$FULL_CONTENT" | grep -q 'codex/gpt-5.6' \
+   && printf '%s' "$FULL_CONTENT" | grep -Eq '[0-9]+ файл.*KB'; then
   pass "T14: worker + disk facts survive in the detail block"
 else
   fail "T14: detail block missing worker/disk facts"

@@ -177,6 +177,61 @@ def read_owns(task_id, dispatch_id):
     return None, "none"
 
 
+def read_mission_title(task_id, dispatch_id):
+    # PULSE-READABLE-01: the founder table's col-1/col-2 need the MISSION
+    # title only -- never architect-prepass.md, even when a prepass exists
+    # (test-broad-status-renderer-truth.sh T2/T2c: "col-2 resolves from the
+    # mission title, NEVER from the prepass excerpt -- even when a prepass
+    # exists"). read_owns() above is a DIFFERENT contract for a DIFFERENT
+    # column (the detail-block "owns" line): it deliberately prefers
+    # architect-prepass.md when both exist, because that block answers
+    # "what is this lane doing right now" and the prepass is fresher/more
+    # specific. This function is independent of that choice -- it is
+    # read_owns()'s rung 2 (lane-mission.md heading) + rung 3 (fanout
+    # mission.txt), copied verbatim, with the prepass rung never consulted
+    # at all -- so a prepass being present can never leak into the
+    # name/description columns no matter what read_owns() resolved.
+    if dispatch_id:
+        mission_md = os.path.join(root, "docs", "handoff", f"dispatch-{dispatch_id}", "lane-mission.md")
+        if os.path.isfile(mission_md):
+            try:
+                first_heading, first_line, in_frontmatter = None, None, False
+                with open(mission_md, encoding="utf-8", errors="replace") as fh:
+                    for i, line in enumerate(fh):
+                        s2 = line.strip()
+                        if i == 0 and s2 == "---":
+                            in_frontmatter = True
+                            continue
+                        if in_frontmatter:
+                            if s2 == "---":
+                                in_frontmatter = False
+                            continue
+                        if not s2 or s2.startswith("MISSION:"):
+                            continue
+                        if s2.startswith("# ") or s2.startswith("## "):
+                            if first_heading is None:
+                                first_heading = s2.lstrip("#").strip()
+                                break
+                        if first_line is None:
+                            first_line = s2
+                text = first_heading or first_line
+                if text:
+                    return text[:220]
+            except OSError:
+                pass
+    mission = os.path.join(root, "docs", "handoff", f"fanout-lane-{task_id}", "mission.txt")
+    if os.path.isfile(mission):
+        try:
+            with open(mission, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        return line[:220]
+        except OSError:
+            pass
+    return None
+
+
 def read_worker(task_id):
     s = session_by_task.get(task_id) or {}
     provider = s.get("provider")
@@ -329,6 +384,7 @@ for task_id, lane in sorted(lane_rows.items()):
         dispatch_id = dispatch_for_task.get(task_id)
         dispatch_id_source = "journal_binding" if dispatch_id else None
     owns, owns_source = read_owns(task_id, dispatch_id)
+    mission_title = read_mission_title(task_id, dispatch_id)
     worker = read_worker(task_id)
     stream_bytes, stream_age_s = stat_stream(lane.get("log_path"))
     writing_now = stream_age_s is not None and stream_age_s <= silent_max
@@ -342,6 +398,7 @@ for task_id, lane in sorted(lane_rows.items()):
         "dispatch_id_source": dispatch_id_source,
         "owns": owns,
         "owns_source": owns_source,
+        "mission_title": mission_title,
         "worker": worker,
         "stream_bytes": stream_bytes,
         "stream_mtime_age_s": stream_age_s,

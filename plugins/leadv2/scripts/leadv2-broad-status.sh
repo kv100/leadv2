@@ -34,6 +34,14 @@ LOG_FILE="$(PROJECT_ROOT="$PROJECT_ROOT" "$STATE_PATH_SH" supervise-loop.log)"
 SNAPSHOT_PATH="${LEADV2_BROAD_STATUS_SNAPSHOT_PATH:-$PROJECT_ROOT/docs/leadv2/status-snapshot.json}"
 PREV_PATH="${LEADV2_BROAD_STATUS_PREV_PATH:-$PROJECT_ROOT/docs/leadv2/.broad-status-prev.json}"
 FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-$PROJECT_ROOT/docs/leadv2/founder-status.md}"
+# PULSE-READABLE-01: overridable the same way FOUNDER_STATUS_PATH is --
+# a scratch/test run that pins the compact beat elsewhere must never be
+# able to leak the full doc into a real checkout's docs/leadv2/ (this bit
+# an ad-hoc real-state sample render during this feature's own
+# development: only FOUNDER_STATUS_PATH was overridden, and the full doc
+# still wrote into the live persona-engine repo because it was hardcoded
+# off PROJECT_ROOT).
+FOUNDER_STATUS_FULL_PATH="${LEADV2_FOUNDER_STATUS_FULL_PATH:-$PROJECT_ROOT/docs/leadv2/founder-status-full.md}"
 COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector.sh}"
 TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
 CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
@@ -141,10 +149,10 @@ trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 
 export _BS_QUEUED_TSV="$QUEUED_TSV"
 export _BS_LANDED_LOG="$LANDED_LOG"
-RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" <<'PY'
+RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" <<'PY'
 import datetime, json, os, re, sys
 
-snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir = sys.argv[1:7]
+snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir, full_status_path_override = sys.argv[1:8]
 
 sys.path.insert(0, os.path.join(script_dir, "lib"))
 try:
@@ -309,12 +317,25 @@ for row in table_rows:
     # for the detail block). Name is frozen on first resolution in
     # .broad-status-prev.json so it cannot drift between beats (R2).
     prev_row_name = (prev_lanes.get(tid) or {}).get("name") if isinstance(prev_lanes.get(tid), dict) else None
+    # PULSE-READABLE-01: leadv2-lane-detail.sh now emits a genuine
+    # "mission_title" field (added alongside this fix) -- rung 2/3 of
+    # read_owns() (lane-mission.md heading, then fanout mission.txt),
+    # NEVER architect-prepass.md, independent of what "owns"/
+    # "owns_source" resolved for the detail block. Before this fix the
+    # field never existed in lane-detail.sh's JSON contract at all (git
+    # show HEAD had zero occurrences of the string "mission_title" in
+    # that file), so every beat rendered every lane's name/description
+    # as unresolved -- id-fallback in col-1, "\u2014" in col-2.
     mission_title = d.get("mission_title") if d else None
     linia_name = prev_row_name or human_name(mission_title)
     # Only the NAME is frozen (§2.2) — the one-sentence description is
     # re-derived fresh from the mission title every beat.
     chto = product_sentence(mission_title) or "—"
-    linia = linia_name if linia_name else f"{id_display} (имя неизвестно)"
+    # PULSE-READABLE-01: the founder cannot act on "(имя неизвестно)" — it
+    # names nothing. Fall back to the bare dispatch id (sig8) instead, per
+    # rule 3 of the pulse-readable spec: a real, greppable handle beats a
+    # sentence that just restates "we don't know".
+    linia = linia_name if linia_name else id_display
 
     # Кто делает
     _worker = d.get("worker") if d else None
@@ -332,7 +353,17 @@ for row in table_rows:
     stream_bytes = d.get("stream_bytes") if d else None
     disk = d.get("disk") if d else None
     verdict = (d.get("verdict") if d else None) or row.get("status")
-    is_dead = bool(verdict) and str(verdict).startswith("dead:")
+    # PULSE-READABLE-01: verdict has TWO valid dead spellings depending on
+    # source. lane_detail's own `d["verdict"]` is the raw lane-liveness
+    # string ("dead:silent_123s_abandoned"), always colon-qualified. But when
+    # `d` is missing (tombstoned/pruned lanes have no lane_detail row at
+    # all — leadv2-lanes-snapshot.sh:1113-1122 appends them straight from
+    # tombstones.yaml) the fallback is `row["status"]`, the COARSE bucket
+    # ("active"/"stale"/"dead", no colon). The old `.startswith("dead:")`
+    # check silently missed every tombstone-sourced dead row — that bucket
+    # spelling flowed into the live table as "(имя неизвестно) | — | pid
+    # birth mismatch (reuse)" junk (founder-rejected beat, 2026-08-21).
+    is_dead = bool(verdict) and (str(verdict) == "dead" or str(verdict).startswith("dead:"))
     prev_row = prev_lanes.get(tid)
     delta_note = None
     if d is not None:
@@ -384,10 +415,24 @@ if not detail_ok:
         "колонки «Линия» и «Что делает» могут остаться неизвестны\n"
     )
 
-table_md = "\n".join(table_prefix + [
-    "| Линия | Что делает | Состояние |",
-    "|---|---|---|",
-] + (rows_out if rows_out else ["| (живых линий нет) | — | — |"]))
+# PULSE-READABLE-01 rule 2: max ~6 rows in the founder-facing table. The
+# full (uncapped) row set still goes into founder-status-full.md below —
+# capping here is a RENDER decision, never a data-loss decision.
+TABLE_ROW_CAP = 6
+rows_out_full = rows_out
+rows_out = rows_out_full[:TABLE_ROW_CAP]
+table_rows_hidden = max(0, len(rows_out_full) - TABLE_ROW_CAP)
+
+# PULSE-READABLE-01: header text kept as "Что делает" — the exact
+# STATUS-FORMAT-IN-RENDERER-01 3-column contract shape (T8/T15 and other
+# suites assert this literal string); the founder's sample used "Что чинит"
+# as prose, not a spec requirement, and renaming it would be a drive-by
+# break of an unrelated decision record for zero readability gain.
+_table_header = ["| Линия | Что делает | Состояние |", "|---|---|---|"]
+table_md = "\n".join(table_prefix + _table_header +
+                      (rows_out if rows_out else ["| (живых линий нет) | — | — |"]))
+full_table_md = "\n".join(table_prefix + _table_header +
+                           (rows_out_full if rows_out_full else ["| (живых линий нет) | — | — |"]))
 
 detail_md = "Детали линий: " + " · ".join(detail_lines) if detail_lines else "Детали линий: (нет активных линий)"
 
@@ -560,6 +605,95 @@ tail_facts = {
     },
 }
 
+# ── PULSE-READABLE-01 rule 4: delta since previous beat, not a ledger. ────
+# current_lane_digest holds every ALIVE lane resolved this beat (a dead row
+# is `continue`d above before it is ever written into the digest);
+# prev_lanes is the identical structure from the last .broad-status-prev.
+# json. Diffing the two id sets is the whole delta: a lane the founder was
+# already told about (raised) never re-appears, and a lane that vanished
+# (closed_items this beat, OR silently pruned/tombstoned since) counts as
+# closed exactly once, never re-listed on every following beat.
+raised_ids = [tid for tid in current_lane_digest if tid not in prev_lanes]
+closed_ids = [tid for tid in prev_lanes if tid not in current_lane_digest]
+delta_line = f"С прошлого удара: +{len(raised_ids)} линии подняты, {len(closed_ids)} закрыто."
+
+# ── rule 1: product-truth line 1. Deliberately generic — this file is the
+# SHARED plugin, never a persona-engine-only copy (CLAUDE.md "features must
+# be tenant-generic"). It reads whatever the caller repo's own
+# collect_repo_facts() hook (.claude/leadv2-overrides/status-collector-
+# facts.sh) chose to publish under a small candidate-key contract, and
+# degrades any missing metric to the literal "н/д" — never 0, which would
+# fabricate a false empty day (memory feedback_flag_on_but_artifact_missing
+# / "a zero is probably a broken query"). A repo wires this line by adding
+# posts_today/posts_floor (same shape for comments_/replies_) and an
+# optional working_window string to its own repo_facts; nothing here
+# hardcodes one tenant's throughput floor.
+def _metric(today_key, floor_key):
+    today = repo_facts.get(today_key)
+    floor = repo_facts.get(floor_key)
+    if not isinstance(today, (int, float)):
+        return "н/д"
+    if isinstance(floor, (int, float)):
+        return f"{int(today)}/{int(floor)}"
+    return str(int(today))
+
+_now_hhmm = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M")
+_window = repo_facts.get("working_window") or repo_facts.get("ny_window")
+_product_bits = [
+    _now_hhmm,
+    f"посты {_metric('posts_today', 'posts_floor')}",
+    f"комменты {_metric('comments_today', 'comments_floor')}",
+    f"реплаи {_metric('replies_today', 'replies_floor')}",
+]
+if _window:
+    _product_bits.append(f"окно {_window}")
+product_line = " · ".join(_product_bits)
+
+# ── rule 5: one decisions line. ────────────────────────────────────────────
+if questions:
+    _q0 = questions[0] if isinstance(questions, list) and questions else None
+    _qtext = None
+    if isinstance(_q0, dict):
+        _qtext = _q0.get("question") or _q0.get("summary_for_lead")
+    elif isinstance(_q0, str):
+        _qtext = _q0
+    decisions_line = (
+        f"Ждёт решения: {_qtext}" if _qtext
+        else f"Ждёт решения: {len(questions)} вопрос(ов) — см. founder-status-full.md"
+    )
+else:
+    decisions_line = "Решений не ждёт."
+
+# ── rule 6: nothing cut is lost — full doc, single writer, atomic write. ──
+full_md = "\n\n".join([
+    full_table_md,
+    detail_md,
+    queue_md,
+    f"Закрыто сегодня: {closed_paragraph}",
+])
+full_status_path = full_status_path_override
+try:
+    _full_tmp = full_status_path + ".tmp"
+    with open(_full_tmp, "w", encoding="utf-8") as fh:
+        fh.write(full_md + "\n")
+    os.replace(_full_tmp, full_status_path)
+    full_doc_ok = True
+except OSError:
+    full_doc_ok = False
+
+hidden_bits = []
+if table_rows_hidden:
+    hidden_bits.append(f"{table_rows_hidden} мусорных/лишних строк таблицы")
+_queue_line_count = len(queue_md.splitlines())
+if _queue_line_count:
+    hidden_bits.append(f"{_queue_line_count} строк очереди")
+hidden_note = (
+    f"(скрыто: {', '.join(hidden_bits)} — docs/leadv2/founder-status-full.md)"
+    if (hidden_bits and full_doc_ok)
+    else "(полная версия недоступна для записи — docs/leadv2/founder-status-full.md)" if hidden_bits
+    else None
+)
+
 # ── previous-beat snapshot: single writer (this script, called only from
 #    the sentinel-owned supervise loop), atomic tmp+os.replace. ────────────
 new_prev = {
@@ -580,6 +714,10 @@ with open(out_path, "w", encoding="utf-8") as fh:
         "queue_md": queue_md,
         "rows": len(table_rows),
         "tail_facts": tail_facts,
+        "product_line": product_line,
+        "delta_line": delta_line,
+        "decisions_line": decisions_line,
+        "hidden_note": hidden_note,
     }, fh)
 print(out_path)
 PY
@@ -598,46 +736,30 @@ if [[ $RC -ne 0 || -z "$RENDER_JSON" || ! -f "$RENDER_JSON" ]]; then
 fi
 
 TABLE_MD="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['table_md'])" "$RENDER_JSON")"
-DETAIL_MD="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['detail_md'])" "$RENDER_JSON")"
-CLOSED_PARAGRAPH="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['closed_paragraph'])" "$RENDER_JSON")"
-QUEUE_MD="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['queue_md'])" "$RENDER_JSON")"
 ROWS_N="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['rows'])" "$RENDER_JSON")"
-TAIL_FACTS_JSON="$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['tail_facts'], ensure_ascii=False))" "$RENDER_JSON")"
+PRODUCT_LINE="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['product_line'])" "$RENDER_JSON")"
+DELTA_LINE="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['delta_line'])" "$RENDER_JSON")"
+DECISIONS_LINE="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['decisions_line'])" "$RENDER_JSON")"
+HIDDEN_NOTE="$(python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get('hidden_note'); print(v or '')" "$RENDER_JSON")"
 
-# STATUS-FORMAT-IN-RENDERER-01 §3.3: the table, the queue bucketing and the
-# «Закрыто сегодня» paragraph are ALL deterministic python above — Haiku's
-# job narrows to exactly two prose lines that require judgment over numbers
-# it must not invent: the delta line and the blockers line.
-PROMPT="$(python3 - "$TAIL_FACTS_JSON" <<'PY'
-import json, sys
-facts = json.loads(sys.argv[1])
-print('''Ты пишешь РОВНО ДВЕ строки простого русского текста, без Markdown, без JSON. Ничего больше не выводи.\n\nСтрока 1 (дельта): сегодняшний объём публикаций против цели и позиция в рабочем окне — бери числа ТОЛЬКО из facts.repo_facts; используй ИМЕННО поле hit_rate_today (не hit_rate — это all-time и НЕ про сегодня); если hit_rate_today равен null или отсутствует — напиши буквально «нет данных за сегодня».\n\nСтрока 2 (блокеры): если facts.questions_pending непустой — дословный текст вопроса(ов) плюс твоя рекомендация; если facts.degraded_dispatch непустой — явно назови, что prepass не сработал; если оба пусты — напиши буквально «вопросов нет».\n\nНикогда не изобретай числа, хэши или сравнения, которых нет в фактах. Стоимость — только как использование лимитов 5-часового и недельного окна, никогда деньги.\n\nФакты:\n''' + json.dumps(facts, ensure_ascii=False))
-PY
-)"
-
-RAW="$("$CLAUDE_BIN" -p "$PROMPT" --model haiku --max-turns 1 --permission-mode bypassPermissions --output-format json 2>/dev/null)" || RAW=""
-TAIL="$(python3 - "$RAW" <<'PY'
-import json, sys
-try:
-    d = json.loads(sys.argv[1])
-    text = d.get('result') if isinstance(d, dict) else None
-    if isinstance(text, str) and text.strip():
-        print(text.strip())
-except Exception:
-    pass
-PY
-)"
-
-if [[ -z "$TAIL" ]]; then
-  TAIL=$'дельта недоступна в этом beat (Haiku-читалка не ответила)\nвопросов нет (не проверено — читалка недоступна)'
-fi
-
+# PULSE-READABLE-01: the delta and decisions lines are now fully
+# deterministic (rules 4/5 — set-diff against the previous beat's lane
+# digest, first pending question verbatim), so the Haiku prose pass that
+# used to write them is gone. That pass was also the beat's single
+# highest-latency, single point of failure (a Haiku outage degraded the
+# whole tail to a canned "недоступна" line) — removing it makes every beat
+# both correct and un-skippable. Everything it used to narrate at length
+# (full lane detail, full queue, full closed-paragraph) still lands in
+# founder-status-full.md, written above by the python render step.
 BLOCK="$(
   printf '%s [BROAD_STATUS] dispatched=%s\n' "$BEAT_AT" "$DISPATCHED"
-  printf '%s\n\n%s\n\n' "$TABLE_MD" "$DETAIL_MD"
-  printf '%s\n\n' "$QUEUE_MD"
-  printf 'Закрыто сегодня: %s\n\n' "$CLOSED_PARAGRAPH"
-  printf '%s\n' "$TAIL"
+  printf '%s\n\n' "$PRODUCT_LINE"
+  printf '%s\n\n' "$TABLE_MD"
+  printf '%s\n' "$DELTA_LINE"
+  printf '%s\n' "$DECISIONS_LINE"
+  if [[ -n "$HIDDEN_NOTE" ]]; then
+    printf '%s\n' "$HIDDEN_NOTE"
+  fi
   printf '[BROAD_STATUS_END]\n'
 )"
 

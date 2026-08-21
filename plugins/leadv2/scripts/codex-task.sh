@@ -593,12 +593,36 @@ def pid_alive(pid):
     if pid is None:
         return False
     try:
-        os.kill(int(pid), 0)
-        return True
-    except (ProcessLookupError, ValueError):
+        pid_int = int(pid)
+    except (TypeError, ValueError):
         return False
+    try:
+        os.kill(pid_int, 0)
+        return True
+    except ProcessLookupError:
+        pass
     except PermissionError:
         return True  # exists, owned elsewhere -- can't prove dead, never reap
+    # CODEX-REAP-PGID-01: the exact recorded pid can be gone while a live
+    # descendant is still doing real work in the SAME process group -- every
+    # detach path feeding this reaper (setsid_wrapper's os.setsid(), Node's
+    # spawn(detached: true), GNU timeout forking the setsid'd child) makes the
+    # group id equal the pid that was recorded, so a live group member still
+    # answers a group-liveness probe even when that one exact pid already
+    # exited. Fail-safe direction only: this WIDENS "alive", it never narrows
+    # it -- a false positive here costs one more sweep before a genuinely dead
+    # job is reaped; a false negative kills a healthy worker mid-flight, which
+    # is the regression this exists to prevent (4 healthy lanes reaped as
+    # worker_died_stale on 2026-08-21, see CODEX-DETACH-01 origin story above).
+    if pid_int <= 0:
+        return False
+    try:
+        os.killpg(pid_int, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # group exists, owned elsewhere -- can't prove dead, never reap
 
 
 def lock_owner(lock_dir):
@@ -1305,15 +1329,58 @@ if [[ "$SUB" == "status" ]]; then
     exit 0
   fi
   # fallback: cross-workspace scan
+  #
+  # DEDUP-RELEASE-01 (2026-08-21) -- this fallback used to ALWAYS render the
+  # plain-text "<id> <status> <phase> workspaceRoot=... log=..." line, even
+  # when the caller passed --json. leadv2-lane-liveness.sh's --job lookup
+  # always passes --json (it queries with --cwd "$PROJECT_ROOT", the main
+  # checkout, while a background dispatch's job runs from a worktree --
+  # e.g. .claude/worktrees/<sig8> -- so the companion's own cwd-scoped
+  # lookup misses and falls into exactly this branch on every worktree job).
+  # leadv2-dispatch-code.sh's _dispatch_worker_liveness feeds that output
+  # through `json.loads(raw)` (leadv2-lane-liveness.sh:provider_jobs); a
+  # plain-text line is not valid JSON, so the parse silently threw, jobs
+  # came back {} regardless of the job's real status, and every codex
+  # --background dispatch made from a worktree resolved to liveness=
+  # "unknown" forever -- which _dispatch_outcome_blocks treats as "never
+  # free a live or unprovable task" (its safe-default `*) return 0` branch).
+  # A confirmed ledger row for a worktree-dispatched codex job could
+  # therefore NEVER be reclaimed by the outcome ledger, no matter how dead
+  # the worker actually was -- root cause of the 2026-08-21 hand-clear
+  # incident (4 lanes, `dispatch_refused reason=duplicate_task_signature`,
+  # only recoverable by manually clearing the dispatch-ledger row).
+  #
+  # Fix: detect --json in the ORIGINAL forwarded args and, when set, emit a
+  # `{"job": {...}}` object shaped like provider_jobs() already expects
+  # (same "job" key the companion's own --json response uses) instead of
+  # the plain-text line. json.dumps() -- not printf -- so a value containing
+  # a quote/backslash (a stray path component) can never produce invalid
+  # JSON. The plain-text line is UNCHANGED for every caller that does not
+  # pass --json (leadv2-dispatch-code.sh:3269,3802 parse prose, e.g. "No job
+  # found", and must keep seeing exactly that).
+  _st_json=0
+  for _a in "$@"; do [[ "$_a" == "--json" ]] && _st_json=1; done
   if [[ -n "$_st_id" ]] && command -v python3 >/dev/null 2>&1; then
     _st_root="$HOME/.claude/plugins/data/codex-openai-codex/state"
     for _f in "$_st_root"/*/jobs/"$_st_id".json; do
       [[ -f "$_f" ]] || continue
-      python3 -c 'import sys,json
+      if [[ "$_st_json" -eq 1 ]]; then
+        python3 -c 'import sys, json
+o = json.load(open(sys.argv[1]))
+print(json.dumps({"job": {
+    "id": o.get("id", ""),
+    "status": o.get("status", ""),
+    "phase": o.get("phase", ""),
+    "workspaceRoot": o.get("workspaceRoot", ""),
+    "logFile": o.get("logFile", ""),
+}}))' "$_f" 2>/dev/null && exit 0
+      else
+        python3 -c 'import sys,json
 o=json.load(open(sys.argv[1]))
 print("%s %s %s workspaceRoot=%s log=%s" % (
     o.get("id",""), o.get("status",""), o.get("phase",""),
     o.get("workspaceRoot",""), o.get("logFile","")))' "$_f" 2>/dev/null && exit 0
+      fi
     done
   fi
   [[ -n "$_st_out" ]] && printf '%s\n' "$_st_out"
@@ -1387,10 +1454,55 @@ elif command -v timeout >/dev/null 2>&1; then
 else
   _TIMEOUT_CMD=""
 fi
+# CODEX-DETACH-01 -- macOS ships no util-linux setsid; python3 os.setsid()+
+# execvp() is the portable equivalent used by glm-coder.sh/kimi-coder.sh
+# (see their setsid_wrapper() comment) to give a background worker its own
+# session/process-group so a SIGTERM to the LAUNCHING shell's process group
+# cannot reach it. codex-task.sh's `task`/`review` --background path never
+# had this: the node companion process (and whatever it forks internally to
+# run the actual Codex CLI job) stayed in the invoking shell's process
+# group. Once ANY later Bash-tool call in the SAME session hit its 2-minute
+# timeout, the harness's SIGTERM to that group killed the still-running
+# background worker too -- even though it had already returned a jobId and
+# was believed detached. Root-caused 2026-08-21: 4/4 lanes reaped
+# worker_process_died / worker_died_stale, each death timestamp lining up
+# with an unrelated Bash tool call ending in the launching session.
+#
+# `exec`'d as this function's last command, same reason as
+# glm-coder.sh:setsid_wrapper -- without `exec`, backgrounding a call to
+# this function forks a wrapper subshell whose pid is one level removed
+# from the setsid'd process, breaking anything that captures $!/pgid.
+# setsid() only changes session/process-group membership; it does not
+# touch file descriptors, so a caller capturing stdout via
+# `out="$(_run_node ...)"` keeps working unchanged after this wraps it.
+setsid_wrapper() {
+  exec python3 -c '
+import os, sys
+
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+' "$@"
+}
+
 _run_node() {
   local _exit_code=0
+  local _bg=0 _rn_a
+  for _rn_a in "$@"; do [[ "$_rn_a" == "--background" ]] && _bg=1; done
   if [[ -n "$_TIMEOUT_CMD" ]]; then
-    "$_TIMEOUT_CMD" "$_CODEX_TIMEOUT" node "$COMPANION" "$@" || _exit_code=$?
+    if [[ "$_bg" -eq 1 ]]; then
+      # `timeout`/`gtimeout` execve() their target directly -- they cannot
+      # invoke a bash function -- so the setsid_wrapper() mechanism is
+      # inlined here as python3 (a real executable) instead of calling the
+      # function. Same os.setsid()+execvp() as setsid_wrapper() above.
+      "$_TIMEOUT_CMD" "$_CODEX_TIMEOUT" python3 -c '
+import os, sys
+
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+' node "$COMPANION" "$@" || _exit_code=$?
+    else
+      "$_TIMEOUT_CMD" "$_CODEX_TIMEOUT" node "$COMPANION" "$@" || _exit_code=$?
+    fi
   else
     # M4/Codex#3 (SUPERVISE-V2-01 fix-1): stock macOS ships neither gtimeout
     # nor timeout(1) -- the wrapper used to silently run node with NO deadline
@@ -1399,7 +1511,14 @@ _run_node() {
     # sleep+kill watcher) that enforces the SAME deadline contract and
     # explicitly reports it as exit 124, same as gtimeout/timeout(1) would.
     printf '[codex-task] WARN: neither gtimeout nor timeout(1) on PATH -- enforcing the %ss deadline via a portable sleep+kill watcher instead. Install coreutils (brew install coreutils) for the standard implementation.\n' "$_CODEX_TIMEOUT" >&2
-    node "$COMPANION" "$@" &
+    if [[ "$_bg" -eq 1 ]]; then
+      # CODEX-DETACH-01: same session-detach as the timeout branch above,
+      # via the setsid_wrapper() function this time (no `timeout` binary in
+      # the way, so the function itself can be backgrounded directly).
+      setsid_wrapper node "$COMPANION" "$@" &
+    else
+      node "$COMPANION" "$@" &
+    fi
     local _node_pid=$!
     local _fired_file
     _fired_file="$(mktemp)"

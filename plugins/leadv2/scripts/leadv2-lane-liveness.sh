@@ -627,6 +627,28 @@ def resolve(tid):
     suffix = f"+provider_{provider_status}" if provider_status else ""
     if is_fresh:
         row.update(verdict="alive", reason=f"log_fresh{suffix}")
+    elif row["age_s"] > abandon_max and provider_status in ("queued", "running"):
+        # PULSE-READABLE-01 (SD-PULSE-LIVENESS-BY-JOB-REGISTRY-01): a stale
+        # stream mtime is not proof of death when the CURRENT attempt's job
+        # registry — `provider_status`, read fresh above from `jobs`, itself
+        # built from a live `codex-task.sh status --all` call keyed by
+        # lane_job_id(tid) i.e. THIS lane's own codex-plan.json job_id, never
+        # a stale mapping — says the job is still queued/running. The stream
+        # file that aged past abandon_max can belong to a PREVIOUS attempt on
+        # this lane (a relaunch writes a NEW stream, but codex-plan.json's
+        # job_id already points at the new job before that stream exists or
+        # catches up). The 2026-08-21T08:09:49Z beat reported
+        # dispatch-21f644a1 as dead:silent_200431s_abandoned while its codex
+        # job had been running since 08:05:43Z -- the 200431s came from a
+        # stream last written by a prior attempt two days earlier. Never
+        # label a lane dead while its own current-attempt registry says
+        # otherwise; downgrade to silent so it stays visible in the pulse,
+        # not evicted as abandoned. (v2_mode's "annotation only" comment
+        # above still holds for the is_fresh/alive path -- this is the ONE
+        # place a provider self-report is allowed to veto a dead verdict,
+        # and only a dead verdict this specific staleness reason would have
+        # produced with no other evidence.)
+        row.update(verdict=f"silent:{row['age_s']}", reason=f"abandoned_but_provider_{provider_status}")
     elif row["age_s"] > abandon_max:
         # D4 fix: staleness has an upper bound. Past ABANDON_MAX a silent lane
         # is DEAD regardless of PID state -- it no longer belongs in the
