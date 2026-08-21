@@ -823,6 +823,39 @@ review_contract="$(_review_build_contract)"
 review_contract_focus="$(_review_flatten "${review_contract}")"
 emit decision "review_round task=${TASK} round=${REVIEW_ROUND} mode=${REVIEW_MODE} prior_findings=${PRIOR_FINDINGS_COUNT:-0}"
 
+# V3-TIERED-REVIEW-01: machine round-0, before any LLM round is spawned.
+# leadv2-dispatch-product-close.sh's builder-selfcheck (BUILDER-SELFCHECK-
+# GATE-01, lib/leadv2-builder-selfcheck.sh) already ran bash -n / py_compile /
+# changed-scope suites over this exact diff at build time and wrote its
+# verdict to HANDOFF/selfcheck.md (first line `verdict: RED|GREEN|DEGRADED`).
+# Paying for an LLM fan-out on a diff builder-selfcheck already proved fails
+# mechanics is pure waste -- consume that verdict instead of re-running the
+# same checks. Additive only: when the artifact is absent (this engine can
+# run standalone, per its own header note, with no prior build-time
+# selfcheck), falls through to the existing LLM-round behavior unchanged.
+# Flag default-on, independently overridable from the LLM-round machinery
+# below (which stays untouched by this gate).
+if [[ "${LEADV2_REVIEW_MACHINE_ROUND0:-1}" != 0 ]]; then
+  _round0_selfcheck_md="${HANDOFF}/selfcheck.md"
+  if [[ -f "${_round0_selfcheck_md}" ]] && grep -q '^verdict: RED$' "${_round0_selfcheck_md}" 2>/dev/null; then
+    # round-1 HIGH fix: a RED verdict with no proof it was computed from THIS diff
+    # (absent/malformed diff_hash line, or a hash that doesn't match the diff being
+    # reviewed right now) must never fail-closed a since-changed, possibly-healthy
+    # diff -- fall through to the normal LLM round instead, same as no-artifact.
+    _round0_selfcheck_hash="$(sed -n 's/^diff_hash: \([0-9a-f]\{64\}\)$/\1/p' "${_round0_selfcheck_md}" 2>/dev/null | head -n1)"
+    if [[ "${REVIEW_DIFF_HASH_OK:-0}" -eq 1 && -n "${_round0_selfcheck_hash}" && "${_round0_selfcheck_hash}" == "${diff_hash}" ]]; then
+      {
+        printf 'status: fail\nreason: selfcheck_red_round0\nselfcheck: docs/handoff/dispatch-%s/selfcheck.md\n' "${TASK}"
+      } > "${HANDOFF}/review-gate.md.tmp"
+      mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+      _review_state_write
+      emit decision "review_gate task=${TASK} status=fail round=0 reason=selfcheck_red_round0"
+      exit 7
+    fi
+    emit decision "review_gate task=${TASK} status=round0_skip round=0 reason=selfcheck_diff_hash_mismatch selfcheck_hash=${_round0_selfcheck_hash:-none} diff_hash=${diff_hash:0:8}"
+  fi
+fi
+
 # Step 2: pool resolve.
 resolver_out="$(resolve_review_pool_call)"
 reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"

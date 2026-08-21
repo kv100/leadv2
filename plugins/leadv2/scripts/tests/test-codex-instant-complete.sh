@@ -122,6 +122,8 @@ fi
 # Isolated CODEX_HOME with explicit, python-set mtimes (touch -t is
 # ambiguous about local-vs-UTC and about "now" relative to fixture dates —
 # os.utime with explicit epoch seconds is deterministic on any host/date).
+# Output is now two lines (path, window-candidate-count — nit 2-A); take
+# line 1 for the path assertion.
 c4_home="$(mktemp -d)"
 cleanup_items+=("$c4_home")
 c4_dir="$c4_home/sessions/2026/08/20"
@@ -137,28 +139,137 @@ python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2])-1000, int(sys
 python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2])+50, int(sys.argv[2])+50))" "$c4_new" "$since_epoch"
 
 echo "[CODEX-INSTANT-COMPLETE] case 4: newest-rollout-since picks the right file, ignores older-than-since"
-found="$(CODEX_HOME="$c4_home" bash "$harness_script" _codex_newest_rollout_since "$since_epoch" 2>/dev/null)"
-if [ "$found" = "$c4_new" ]; then
-  echo "[CODEX-INSTANT-COMPLETE]   picked c4_new, ignored c4_old (mtime < since) ✓"
+c4_scan="$(CODEX_HOME="$c4_home" bash "$harness_script" _codex_newest_rollout_since "$since_epoch" "" 2>/dev/null)"
+found="$(printf '%s\n' "$c4_scan" | sed -n '1p')"
+c4_count="$(printf '%s\n' "$c4_scan" | sed -n '2p')"
+if [ "$found" = "$c4_new" ] && [ "$c4_count" = "1" ]; then
+  echo "[CODEX-INSTANT-COMPLETE]   picked c4_new, ignored c4_old (mtime < since), count=1 ✓"
   pass=$((pass + 1))
 else
-  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected $c4_new, got '$found'" >&2
+  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected path=$c4_new count=1, got path='$found' count='$c4_count'" >&2
+  fail=$((fail + 1))
+fi
+
+# Case 4b (nit 2-A): two candidates in the same window (a sibling dispatch's
+# rollout) — the cwd-matched one must be preferred, and the total window
+# count must be reported as 2 so the caller journals an ambiguity warning.
+c4b_home="$(mktemp -d)"
+cleanup_items+=("$c4b_home")
+c4b_dir="$c4b_home/sessions/2026/08/20"
+mkdir -p "$c4b_dir"
+c4b_mine="$c4b_dir/rollout-mine.jsonl"
+c4b_sibling="$c4b_dir/rollout-sibling.jsonl"
+write_rollout "$c4b_mine" \
+  '{"type":"session_meta","payload":{"cwd":"/work/mine"}}' \
+  '{"type":"event_msg","payload":{"type":"task_started"}}'
+write_rollout "$c4b_sibling" \
+  '{"type":"session_meta","payload":{"cwd":"/work/sibling"}}' \
+  '{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":null,"duration_ms":900}}'
+python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2])+10, int(sys.argv[2])+10))" "$c4b_mine" "$since_epoch"
+python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2])+50, int(sys.argv[2])+50))" "$c4b_sibling" "$since_epoch"
+
+echo "[CODEX-INSTANT-COMPLETE] case 4b: cwd match preferred over a newer sibling rollout, ambiguity count=2"
+c4b_scan="$(CODEX_HOME="$c4b_home" bash "$harness_script" _codex_newest_rollout_since "$since_epoch" "/work/mine" 2>/dev/null)"
+c4b_found="$(printf '%s\n' "$c4b_scan" | sed -n '1p')"
+c4b_count="$(printf '%s\n' "$c4b_scan" | sed -n '2p')"
+if [ "$c4b_found" = "$c4b_mine" ] && [ "$c4b_count" = "2" ]; then
+  echo "[CODEX-INSTANT-COMPLETE]   picked cwd-matched rollout despite sibling being newer, count=2 ✓"
+  pass=$((pass + 1))
+else
+  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected path=$c4b_mine count=2, got path='$c4b_found' count='$c4b_count'" >&2
+  fail=$((fail + 1))
+fi
+
+# Case 4c (round-1 HIGH regression): a concurrent sibling's rollout is the
+# newest in the window and shows a DEAD shape, but THIS dispatch's own
+# rollout is absent/has no session_meta.cwd yet -- zero exact-cwd matches.
+# Must NOT fall back to "newest of anyone": no candidate should be picked,
+# so the caller can make no terminal decision from this scan.
+c4c_home="$(mktemp -d)"
+cleanup_items+=("$c4c_home")
+c4c_dir="$c4c_home/sessions/2026/08/20"
+mkdir -p "$c4c_dir"
+c4c_mine="$c4c_dir/rollout-mine.jsonl"
+c4c_sibling="$c4c_dir/rollout-sibling.jsonl"
+write_rollout "$c4c_mine" \
+  '{"type":"event_msg","payload":{"type":"task_started"}}'
+write_rollout "$c4c_sibling" \
+  '{"type":"session_meta","payload":{"cwd":"/work/sibling"}}' \
+  '{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":null,"duration_ms":900}}'
+python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2])+10, int(sys.argv[2])+10))" "$c4c_mine" "$since_epoch"
+python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2])+50, int(sys.argv[2])+50))" "$c4c_sibling" "$since_epoch"
+
+echo "[CODEX-INSTANT-COMPLETE] case 4c: sibling is newest+dead-shaped but own cwd absent -- no candidate picked"
+c4c_scan="$(CODEX_HOME="$c4c_home" bash "$harness_script" _codex_newest_rollout_since "$since_epoch" "/work/mine" 2>/dev/null)"
+c4c_found="$(printf '%s\n' "$c4c_scan" | sed -n '1p')"
+c4c_count="$(printf '%s\n' "$c4c_scan" | sed -n '2p')"
+if [ -z "$c4c_found" ] && [ "$c4c_count" = "2" ]; then
+  echo "[CODEX-INSTANT-COMPLETE]   correctly returned no candidate (not the sibling), count=2 ✓"
+  pass=$((pass + 1))
+else
+  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected empty path count=2, got path='$c4c_found' count='$c4c_count'" >&2
+  fail=$((fail + 1))
+fi
+
+echo "[CODEX-INSTANT-COMPLETE] case 4d: end-to-end deadline-check must not terminal-decide off the sibling's dead shape"
+c4d_start=$(date +%s)
+rc=0
+CODEX_HOME="$c4c_home" LEADV2_CODEX_INSTANT_COMPLETE_SECS=2 LEADV2_ARM_EARLY_VERDICT_POLL_S=0.1 \
+  DISPATCH_SELF_BIN=/bin/true \
+  bash "$harness_script" _codex_instant_complete_deadline_check "testsig8" "$since_epoch" "/work/mine" \
+  >/dev/null 2>&1 || rc=$?
+c4d_elapsed=$(( $(date +%s) - c4d_start ))
+if [ "$rc" -eq 0 ]; then
+  echo "[CODEX-INSTANT-COMPLETE]   correctly proceeded (rc=0) in ${c4d_elapsed}s, sibling's dead shape ignored ✓"
+  pass=$((pass + 1))
+else
+  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected rc=0 (no terminal decision), got rc=$rc" >&2
   fail=$((fail + 1))
 fi
 
 # Case 5: end-to-end deadline-check declares the dead shape within the window
 # and returns 7 (the caller's spill signal). Same isolated CODEX_HOME as
-# case 4 — c4_new already carries the dead shape.
-echo "[CODEX-INSTANT-COMPLETE] case 5: deadline-check returns 7 on the dead shape"
+# case 4 — c4_new already carries the dead shape. Real DISPATCH_SELF_BIN
+# (nit 2-C) so requirement (c) — the provider strike is actually recorded —
+# is asserted from the real lockout file, not just the rc=7 spill.
+c5_lockout_dir="$(mktemp -d)"
+cleanup_items+=("$c5_lockout_dir")
+echo "[CODEX-INSTANT-COMPLETE] case 5: deadline-check returns 7 on the dead shape AND records the strike"
 rc=0
 CODEX_HOME="$c4_home" LEADV2_CODEX_INSTANT_COMPLETE_SECS=5 LEADV2_ARM_EARLY_VERDICT_POLL_S=0.1 \
-  DISPATCH_SELF_BIN=/bin/true \
+  DISPATCH_SELF_BIN="$DISPATCH" LEADV2_QUOTA_LOCKOUT_DIR="$c5_lockout_dir" \
   bash "$harness_script" _codex_instant_complete_deadline_check "testsig8" "$since_epoch" >/dev/null 2>&1 || rc=$?
-if [ "$rc" -eq 7 ]; then
-  echo "[CODEX-INSTANT-COMPLETE]   deadline-check returned 7 (spill) ✓"
+c5_lockfile="$c5_lockout_dir/quota-lockout-codex.json"
+if [ "$rc" -eq 7 ] && [ -f "$c5_lockfile" ] && grep -q "arm_dead_instant_complete" "$c5_lockfile"; then
+  echo "[CODEX-INSTANT-COMPLETE]   deadline-check returned 7 (spill) AND wrote $c5_lockfile ✓"
   pass=$((pass + 1))
 else
-  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected rc=7, got rc=$rc" >&2
+  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected rc=7 + lockfile with reason, got rc=$rc lockfile_exists=$([ -f "$c5_lockfile" ] && echo yes || echo no)" >&2
+  fail=$((fail + 1))
+fi
+
+# Case 6 (nit 2-B): a non-terminal event newer than spawn (job alive, no
+# task_complete yet) must return 0 promptly — NOT wait out the full window.
+c6_home="$(mktemp -d)"
+cleanup_items+=("$c6_home")
+c6_dir="$c6_home/sessions/2026/08/20"
+mkdir -p "$c6_dir"
+c6_alive="$c6_dir/rollout-alive.jsonl"
+write_rollout "$c6_alive" '{"type":"event_msg","payload":{"type":"task_started"}}'
+python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2])+10, int(sys.argv[2])+10))" "$c6_alive" "$since_epoch"
+
+echo "[CODEX-INSTANT-COMPLETE] case 6: non-terminal activity since spawn returns 0 early, not at the 30s window"
+c6_start=$(date +%s)
+rc=0
+CODEX_HOME="$c6_home" LEADV2_CODEX_INSTANT_COMPLETE_SECS=30 LEADV2_ARM_EARLY_VERDICT_POLL_S=0.1 \
+  DISPATCH_SELF_BIN=/bin/true \
+  bash "$harness_script" _codex_instant_complete_deadline_check "testsig8" "$since_epoch" >/dev/null 2>&1 || rc=$?
+c6_elapsed=$(( $(date +%s) - c6_start ))
+if [ "$rc" -eq 0 ] && [ "$c6_elapsed" -lt 15 ]; then
+  echo "[CODEX-INSTANT-COMPLETE]   returned 0 in ${c6_elapsed}s, well under the 30s window ✓"
+  pass=$((pass + 1))
+else
+  echo "[CODEX-INSTANT-COMPLETE]   FAIL: expected rc=0 in <15s, got rc=$rc elapsed=${c6_elapsed}s" >&2
   fail=$((fail + 1))
 fi
 

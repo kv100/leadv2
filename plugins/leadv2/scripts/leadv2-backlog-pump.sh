@@ -127,8 +127,14 @@ export PROJECT_ROOT
 # absolute is git >=2.31 only, so resolve relative-or-absolute common-dir via
 # a subshell cd chain instead of trusting the string shape.
 _lv2bp_canonical_root() {   # <candidate> -> main-worktree root on stdout
-  local cand="$1" cd_out
-  cd_out="$(cd "$cand" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && cd .. && pwd)"
+  local cand="$1" common_dir cd_out
+  # Explicit non-empty check before the cd chain: bash rejects `cd ""` (rc=1,
+  # chain short-circuits), but zsh treats `cd ""` as a no-op (rc=0) that would
+  # silently resolve the PARENT of the candidate instead of falling back.
+  common_dir="$(cd "$cand" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null)"
+  if [[ -n "$common_dir" ]]; then
+    cd_out="$(cd "$cand" 2>/dev/null && cd "$common_dir" 2>/dev/null && cd .. && pwd)"
+  fi
   if [[ -n "$cd_out" ]]; then
     printf '%s' "$cd_out"
   else
