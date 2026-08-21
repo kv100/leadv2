@@ -49,3 +49,7 @@ docs/leadv2/tasks/*/
 docs/leadv2/bus.jsonl
 docs/leadv2/merge-queue.jsonl
 docs/leadv2/questions/
+
+# Local session config and a stray review artifact at the handoff root.
+.claude/cache/
+docs/handoff/dispatch-*-review-*.md
