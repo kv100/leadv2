@@ -32,6 +32,11 @@
 #      LEADV2_BUILDER_SELFCHECK_DEPTH (internal, default 0 -- re-entry depth),
 #      LEADV2_E2E_GATE (default 1) -- caller-set mirror of its own E2E_ON, read only in
 #      `auto` mode to decide whether the suite check delegates to the e2e stage (D2).
+#      LEADV2_SCOPE_DISCIPLINE (default 1, kill-switch for the SCOPE-DISCIPLINE-01
+#      write-set/oversize check, C0), LEADV2_SCOPE_DISCIPLINE_MAX_FILES (default 40).
+#
+# Param 5 (write_set_csv, optional): the caller's already-normalised declared
+# write-set (_PC_SCOPE_WRITES_CSV / LEADV2_DISPATCH_LANE_WRITES) -- feeds C0 only.
 set -uo pipefail
 
 # Portable timeout wrapper (same fallback pattern as codex-task.sh:1383-1419): stock
@@ -77,7 +82,7 @@ _lv2_selfcheck_timeout_run() { # <timeout_s> <logfile> -- <cmd...>
 }
 
 lv2_selfcheck_run() {
-  local diff_file="$1" diff_root="$2" project_root="$3" out_md="$4"
+  local diff_file="$1" diff_root="$2" project_root="$3" out_md="$4" write_set_csv="${5:-}"
   local tests_mode="${LEADV2_BUILDER_SELFCHECK_TESTS:-auto}"
   local timeout_s="${LEADV2_BUILDER_SELFCHECK_TIMEOUT_S:-900}"
   local max_files="${LEADV2_BUILDER_SELFCHECK_MAX_FILES:-200}"
@@ -97,16 +102,19 @@ lv2_selfcheck_run() {
     return 2
   fi
 
-  # ── changed-path extraction: "+++ b/<path>" lines, dropping deletions (/dev/null) ──
+  # ── changed-path extraction: both sides of every diff file header ("+++ b/<path>"
+  # and "--- a/<path>"), dropping /dev/null. Collecting only "+++" missed deletions
+  # (whose new side is /dev/null) and rename SOURCES (whose old side never appears as
+  # a "+++" line) -- both bypassed the C0 write-set/oversize scope check silently
+  # (codex r1 HIGH, SCOPE-DISCIPLINE-01 fix-round-2).
   local line path
   local -a changed=()
   while IFS= read -r line; do
     case "${line}" in
-      '+++ '*) ;;
+      '+++ '*) path="${line#+++ }"; path="${path#b/}" ;;
+      '--- '*) path="${line#--- }"; path="${path#a/}" ;;
       *) continue ;;
     esac
-    path="${line#+++ }"
-    path="${path#b/}"
     [[ -z "${path}" || "${path}" == "/dev/null" ]] && continue
     changed+=("${path}")
   done < "${diff_file}"
@@ -123,6 +131,7 @@ lv2_selfcheck_run() {
 
   local rows="" raws="" checks=0 failed=0 skipped=0
   local failed_names=""
+  local ws_max="${LEADV2_SCOPE_DISCIPLINE_MAX_FILES:-40}"
   _selfcheck_row() { rows="${rows}| $1 | $2 | $3 |
 "; }
   _selfcheck_fail_name() {
@@ -134,6 +143,63 @@ lv2_selfcheck_run() {
 $(tail -n 40 "$3" 2>/dev/null)
 "
   }
+
+  # ── C0: SCOPE-DISCIPLINE-01 — bounce an oversized/off-write-set diff BEFORE any
+  # review arm is spent (root cause: unscopable_diff x102, a sprawling diff never
+  # caught until a human/review arm had already been spent on it). write_set_csv
+  # (param 5) is the CALLER's already-normalised declared write-set
+  # (_PC_SCOPE_WRITES_CSV / LEADV2_DISPATCH_LANE_WRITES) — empty means the caller
+  # declared nothing to enforce against, so this is a pure SKIP, never a bounce.
+  # LEADV2_SCOPE_DISCIPLINE=0 restores today's path (no scope check at all), same
+  # kill-switch idiom as LEADV2_BUILDER_SELFCHECK.
+  if [[ "${LEADV2_SCOPE_DISCIPLINE:-1}" == "0" ]]; then
+    : # kill switch: zero C0 bookkeeping/output -- restores the pre-C0 path
+      # byte-for-byte (no row, no skipped++, no selfcheck.md/journal footprint
+      # change). Codex r1 MEDIUM: the prior "SKIP (scope_discipline_disabled)"
+      # row still mutated skipped/selfcheck.md/the product-close journal even
+      # with the gate off.
+  elif [[ -z "${write_set_csv}" ]]; then
+    _selfcheck_row "scope" "-" "SKIP (no_write_set_declared)"
+    skipped=$((skipped + 1))
+  else
+    local -a ws_entries=() ws_off=()
+    IFS=',' read -r -a ws_entries <<< "${write_set_csv}"
+    local ws_e ws_p ws_in
+    for ws_p in "${dedup[@]:-}"; do
+      [[ -z "${ws_p}" ]] && continue
+      ws_in=0
+      for ws_e in "${ws_entries[@]:-}"; do
+        ws_e="${ws_e%/}"
+        [[ -z "${ws_e}" ]] && continue
+        if [[ "${ws_p}" == "${ws_e}" || "${ws_p}" == "${ws_e}/"* ]]; then
+          ws_in=1; break
+        fi
+      done
+      (( ws_in )) || ws_off+=("${ws_p}")
+    done
+    checks=$((checks + 1))
+    local ws_n=${#dedup[@]}
+    if (( ${#ws_off[@]} > 0 )); then
+      local ws_list="" ws_i=0
+      for ws_p in "${ws_off[@]}"; do
+        if (( ws_i >= 5 )); then
+          ws_list="${ws_list},+$(( ${#ws_off[@]} - 5 )) more"
+          break
+        fi
+        [[ -n "${ws_list}" ]] && ws_list="${ws_list},${ws_p}" || ws_list="${ws_p}"
+        ws_i=$((ws_i + 1))
+      done
+      _selfcheck_row "scope" "${ws_list}" "FAIL (off_write_set)"
+      failed=$((failed + 1))
+      _selfcheck_fail_name "scope:off_write_set:${ws_list}"
+    elif (( ws_n > ws_max )); then
+      _selfcheck_row "scope" "${ws_n} files > max ${ws_max}" "FAIL (oversized_diff)"
+      failed=$((failed + 1))
+      _selfcheck_fail_name "scope:oversized_diff:${ws_n}_files"
+    else
+      _selfcheck_row "scope" "${ws_n} files, write-set honored" "0"
+    fi
+  fi
 
   # ── resolve each changed path: diff_root -> project_root -> unresolved (SKIP, never RED) ──
   local n=0 resolved
@@ -324,6 +390,7 @@ $(tail -n 40 "$3" 2>/dev/null)
       skipped=$((skipped + 1))
       ;;
   esac
+
   [[ -n "${_baseline_dir}" ]] && rm -rf "${_baseline_dir}"
 
   LV2_SELFCHECK_CHECKS="${checks}"

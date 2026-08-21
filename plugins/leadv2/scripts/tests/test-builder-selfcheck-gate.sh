@@ -368,7 +368,7 @@ run_selfcheck() { # <lib_sh> <diff_file> <diff_root> <project_root> <out_md> <re
     # must not be `_fn_out="$(lv2_selfcheck_run ...)"` -- that runs the function in a
     # subshell, so the LV2_SELFCHECK_* globals it sets never reach this scope.
     _fn_tmp="$(mktemp)"
-    lv2_selfcheck_run "$2" "$3" "$4" "$5" > "${_fn_tmp}"
+    lv2_selfcheck_run "$2" "$3" "$4" "$5" "${LV2_TEST_WRITE_SET:-}" > "${_fn_tmp}"
     _rc=$?
     _fn_out="$(cat "${_fn_tmp}")"
     rm -f "${_fn_tmp}"
@@ -682,6 +682,195 @@ case_bash_n_failure_no_baseline_arm() {
   return "${ok}"
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════════
+# Part C: SCOPE-DISCIPLINE-01 (C0).
+#
+# Cases 16-18 stay direct-only (same convention as Part B): they exercise
+# write-set/oversize behaviour that was already correct before this fix-round (a
+# plain "+++ b/<path>" addition/modification), so there is nothing to falsify --
+# both the fixed lib and the pinned pre-fix mutant below already pass them, and
+# running them through the red/green harness would only trip the GREEN_PRE_FIX
+# vacuity gate for no reason.
+#
+# Cases 19-21 are the three codex-r1 fix-round-2 findings and ARE red-first, each
+# against a REAL pre-change implementation (codex r1 M3: "use a pre-change
+# implementation ... make the new legs fail it"), not a synthetic diff:
+#   - BUGGY_C0_LIB_SH = the lib exactly as it stood at PRE_FIX_C0_SHA (this task's
+#     starting HEAD): C0 exists there but (a) extracts only "+++" lines, so a
+#     deletion or a rename SOURCE outside the write-set is invisible to it, and
+#     (b) the kill switch still adds a "scope" row and increments skipped.
+#   - NO_C0_LIB_SH = the lib at PRE_C0_SHA, the true parent commit before C0 was
+#     introduced at all (`git log -S SCOPE_DISCIPLINE` pins this) -- the only
+#     legitimate byte-for-byte reference for "kill switch restores today's path".
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+PRE_FIX_C0_SHA="${LEADV2_TEST_PRE_FIX_C0_SHA:-14bbaf6f3ce825a2f47ec94196c78abd7972d5d6}"
+PRE_C0_SHA="${LEADV2_TEST_PRE_C0_SHA:-6ae373a}"
+MUTANT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-mutant.XXXXXX")"
+BUGGY_C0_LIB_SH="${MUTANT_DIR}/buggy-c0.sh"
+NO_C0_LIB_SH="${MUTANT_DIR}/no-c0.sh"
+if ! git -C "${LEADV2_REPO}" show "${PRE_FIX_C0_SHA}:plugins/leadv2/scripts/lib/leadv2-builder-selfcheck.sh" > "${BUGGY_C0_LIB_SH}" 2>/dev/null \
+   || [[ ! -s "${BUGGY_C0_LIB_SH}" ]]; then
+  log "FATAL: could not extract buggy-C0 mutant at ${PRE_FIX_C0_SHA} -- cannot run red-first Part C harness"
+  exit 1
+fi
+if ! git -C "${LEADV2_REPO}" show "${PRE_C0_SHA}:plugins/leadv2/scripts/lib/leadv2-builder-selfcheck.sh" > "${NO_C0_LIB_SH}" 2>/dev/null \
+   || [[ ! -s "${NO_C0_LIB_SH}" ]] || grep -q SCOPE_DISCIPLINE "${NO_C0_LIB_SH}"; then
+  log "FATAL: could not extract pre-C0 baseline at ${PRE_C0_SHA} -- cannot run byte-restore Part C case"
+  exit 1
+fi
+
+# run_c0_case: same red/green idiom as run_case (line 277), but against the pinned
+# BUGGY_C0_LIB_SH mutant instead of a full-repo git-archive extraction, since C0
+# lives entirely inside one lib file. <fn> takes <lib_sh> and returns 0 pass / 1
+# fail / 2 could-not-run.
+run_c0_case() { # <name> <fn>
+  local name="$1" fn="$2"
+  local pre_rc post_rc
+  "${fn}" "${BUGGY_C0_LIB_SH}"; pre_rc=$?
+  "${fn}" "${LIB_SH}"; post_rc=$?
+  if [[ ${pre_rc} -eq 2 || ${post_rc} -eq 2 ]]; then
+    COULD_NOT_RUN=$((COULD_NOT_RUN + 1))
+    log "COULD-NOT-RUN: ${name} (pre_rc=${pre_rc} post_rc=${post_rc})"
+    return
+  fi
+  if [[ ${post_rc} -ne 0 ]]; then
+    FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix did not pass (rc=${post_rc})")
+    log "FAIL: ${name} -- post-fix rc=${post_rc}, expected 0"
+    return
+  fi
+  if [[ ${pre_rc} -eq 0 ]]; then
+    GREEN_PRE_FIX=$((GREEN_PRE_FIX + 1))
+    log "GREEN-PRE-FIX: ${name} -- passed against the buggy mutant too"
+    return
+  fi
+  PASS=$((PASS + 1))
+  log "RED-then-GREEN: ${name} (pre_rc=${pre_rc} -> post_rc=0)"
+}
+
+# -- 16: SCOPE-DISCIPLINE-01 -- a changed path outside the declared write-set blocks
+case_scope_off_write_set_blocks() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  mkdir -p "${root}/agent"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "agent/off.txt"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="agent/allowed.txt"
+  local rc names ok=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"scope:off_write_set"* ]] \
+    && grep -q 'off.txt' "${out_md}" && ok=0
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# -- 17: a changed path INSIDE the declared write-set is not blocked by scope -------
+case_scope_in_write_set_passes() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  mkdir -p "${root}/agent"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  write_diff "${diff_file}" "agent/off.txt"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="agent/off.txt,agent/other.txt"
+  local names ok=1
+  names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${names}" != *"scope:"* ]] && grep -q 'write-set honored' "${out_md}" && ok=0
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# -- 18: SCOPE-DISCIPLINE-01 -- more changed files than the max blocks as oversized -
+case_scope_oversized_diff_blocks() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  mkdir -p "${root}/agent"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  local -a many=()
+  local i
+  for ((i = 0; i < 45; i++)); do many+=("agent/file${i}.txt"); done
+  write_diff "${diff_file}" "${many[@]}"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_SCOPE_DISCIPLINE_MAX_FILES=40 LV2_TEST_WRITE_SET="agent"
+  local rc names ok=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"scope:oversized_diff"* ]] && ok=0
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+# -- 19 (codex r1 MEDIUM #2, direct, byte-for-byte): kill switch LEADV2_SCOPE_DISCIPLINE=0
+# produces IDENTICAL selfcheck.md content (generated_at timestamp aside) and the same
+# bypass (off-write-set file NOT blocked) as the true pre-C0 lib (NO_C0_LIB_SH). Not
+# run through run_c0_case: this is a single-tree equivalence claim, not a red/green
+# transition, and BUGGY_C0_LIB_SH is deliberately not the right-hand side of this
+# comparison -- it still has the bug being falsified. Fixture is a plain single-file
+# diff (no rename/delete) so the C0 fix's changed-path extraction (now reading both
+# diff sides) cannot itself perturb the resolve-step row count on either side.
+case_scope_kill_switch_byte_restore_and_bypasses() {
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  mkdir -p "${root}/agent"
+  local diff_file="${root}/diff.patch"
+  write_diff "${diff_file}" "agent/off.txt"
+  local out_new="${root}/out_new.md" out_old="${root}/out_old.md"
+  local res_new="${root}/res_new" res_old="${root}/res_old"
+  run_selfcheck "${LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_new}" "${res_new}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LEADV2_SCOPE_DISCIPLINE=0 LV2_TEST_WRITE_SET="agent/allowed.txt"
+  run_selfcheck "${NO_C0_LIB_SH}" "${diff_file}" "${root}" "${root}" "${out_old}" "${res_old}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="agent/allowed.txt"
+  local rc_new names_new ok=1
+  rc_new="$(resfield "${res_new}" RC)"; names_new="$(resfield "${res_new}" FAILED_NAMES)"
+  if [[ "${rc_new}" != "1" ]] && [[ "${names_new}" != *"scope:"* ]] \
+     && diff -q <(sed '/^generated_at: /d' "${out_new}") <(sed '/^generated_at: /d' "${out_old}") >/dev/null 2>&1; then
+    ok=0
+  fi
+  rm -rf "${root}"
+  return "${ok}"
+}
+if case_scope_kill_switch_byte_restore_and_bypasses; then
+  PASS=$((PASS + 1)); log "PASS: scope-kill-switch-byte-restore-and-bypasses (SCOPE-DISCIPLINE-01)"
+else
+  FAIL=$((FAIL + 1)); ERRORS+=("scope-kill-switch-byte-restore-and-bypasses"); log "FAIL: scope-kill-switch-byte-restore-and-bypasses"
+fi
+
+# -- 20 (codex r1 HIGH, red-first via run_c0_case): a DELETION outside the declared
+# write-set must block -- the buggy mutant only reads "+++" lines, so a deletion
+# (whose new side is /dev/null) never enters the changed-path set and passes GREEN.
+case_scope_deletion_outside_write_set_blocks() { # <lib_sh> -> 0 blocked, 1 bypassed, 2 could-not-run
+  local lib_sh="$1"
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  mkdir -p "${root}/agent"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  { printf -- '--- a/agent/deleted.txt\n'; printf -- '+++ /dev/null\n'; } > "${diff_file}"
+  run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="agent/allowed.txt"
+  local rc names result=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"scope:off_write_set"* ]] && [[ "${names}" == *"deleted.txt"* ]] && result=0
+  rm -rf "${root}"
+  return "${result}"
+}
+run_c0_case "scope-deletion-outside-write-set-blocks (SCOPE-DISCIPLINE-01)" case_scope_deletion_outside_write_set_blocks
+
+# -- 21 (codex r1 HIGH, red-first via run_c0_case): a RENAME whose SOURCE is outside
+# the declared write-set must block even though the destination is inside it -- the
+# buggy mutant only ever sees the "+++" (destination) side of a rename.
+case_scope_rename_source_outside_write_set_blocks() { # <lib_sh> -> 0 blocked, 1 bypassed, 2 could-not-run
+  local lib_sh="$1"
+  local root; root="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-bscg-c.XXXXXX")"
+  mkdir -p "${root}/agent"
+  local diff_file="${root}/diff.patch" out_md="${root}/out.md" res="${root}/res"
+  { printf -- '--- a/agent/off-src.txt\n'; printf -- '+++ b/agent/allowed.txt\n'; } > "${diff_file}"
+  run_selfcheck "${lib_sh}" "${diff_file}" "${root}" "${root}" "${out_md}" "${res}" \
+    LEADV2_BUILDER_SELFCHECK_TESTS=never LV2_TEST_WRITE_SET="agent/allowed.txt"
+  local rc names result=1
+  rc="$(resfield "${res}" RC)"; names="$(resfield "${res}" FAILED_NAMES)"
+  [[ "${rc}" == "1" ]] && [[ "${names}" == *"scope:off_write_set"* ]] && [[ "${names}" == *"off-src.txt"* ]] && result=0
+  rm -rf "${root}"
+  return "${result}"
+}
+run_c0_case "scope-rename-source-outside-write-set-blocks (SCOPE-DISCIPLINE-01)" case_scope_rename_source_outside_write_set_blocks
+
+rm -rf "${MUTANT_DIR}"
+
 pb_case "stem-resolved-from-lane-tests-dir (M3)"          case_stem_from_lane_tests_dir
 pb_case "stem-priority-plugins-tests-over-tests (M3)"     case_stem_priority_plugin_tests_dir
 pb_case "suite-green-checks-verdict"                      case_suite_green
@@ -697,6 +886,9 @@ pb_case "timeout-wrapper-kills-hung-command (C2)"          case_timeout_wrapper_
 pb_case "timeout-wrapper-fast-command-no-hang (C2)"        case_timeout_wrapper_fast_command_no_hang
 pb_case "checks-zero-yields-degraded (M1)"                 case_checks_zero_degraded
 pb_case "bash-n-failure-ignores-baseline-arm"              case_bash_n_failure_no_baseline_arm
+pb_case "scope-off-write-set-blocks (SCOPE-DISCIPLINE-01)"        case_scope_off_write_set_blocks
+pb_case "scope-in-write-set-passes (SCOPE-DISCIPLINE-01)"         case_scope_in_write_set_passes
+pb_case "scope-oversized-diff-blocks (SCOPE-DISCIPLINE-01)"       case_scope_oversized_diff_blocks
 
 echo ""
 echo "Results: ${PASS} passed(red->green), ${FAIL} failed, ${GREEN_PRE_FIX} green-pre-fix, ${COULD_NOT_RUN} could-not-run"

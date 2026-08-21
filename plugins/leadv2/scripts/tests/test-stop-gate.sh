@@ -322,8 +322,17 @@ LEADV2_REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
 LEADV2_TEST_BASELINE_REF="${LEADV2_TEST_BASELINE_REF:-}"
 if [[ -z "${LEADV2_TEST_BASELINE_REF}" ]]; then
   LEADV2_TEST_BASELINE_REF="$(git -C "${LEADV2_REPO}" merge-base origin/main HEAD 2>/dev/null || true)"
+  # A lane forked AFTER the stop-gate landed has the gate in merge-base AND in
+  # every recent ancestor -- a fixed HEAD~1 fallback goes green-pre-fix (vacuous).
+  # Walk first-parent history for the newest commit WITHOUT the gate.
   if git -C "${LEADV2_REPO}" grep -q pc_stop_gate_autocommit "${LEADV2_TEST_BASELINE_REF}" -- plugins/leadv2/scripts/leadv2-dispatch-product-close.sh 2>/dev/null; then
-    LEADV2_TEST_BASELINE_REF="HEAD~1"
+    _sg_ref=""
+    for _sg_cand in $(git -C "${LEADV2_REPO}" rev-list --first-parent --max-count=100 HEAD 2>/dev/null); do
+      if ! git -C "${LEADV2_REPO}" grep -q pc_stop_gate_autocommit "${_sg_cand}" -- plugins/leadv2/scripts/leadv2-dispatch-product-close.sh 2>/dev/null; then
+        _sg_ref="${_sg_cand}"; break
+      fi
+    done
+    LEADV2_TEST_BASELINE_REF="${_sg_ref:-HEAD~1}"
   fi
 fi
 [[ -n "${LEADV2_TEST_BASELINE_REF}" ]] || LEADV2_TEST_BASELINE_REF="HEAD"
@@ -401,6 +410,110 @@ if case_kill_switch_restores_old_path; then
 else
   FAIL=$((FAIL + 1)); ERRORS+=("kill-switch did not restore old path"); log "FAIL: kill-switch LEADV2_STOP_GATE=0"
 fi
+
+# ── Case I (mutant-based, NOT git-history red-first): worker timeout with an
+# UNTRACKED declared file -- review.diff must contain it AND the checkpoint
+# commit must include it. Git-history red/green would false-positive the
+# GREEN_PRE_FIX vacuity gate here: pc_stop_gate_capture_diff's untracked-inclusive
+# scoped capture already exists at the pinned baseline ref (37d2abe landed it
+# there), so there is no historical ref where this scenario is genuinely red.
+# The falsification proof instead comes from a MUTANT: a scratch copy of this
+# tree with pc_stop_gate_capture_diff's body reverted to a plain `git diff HEAD`
+# (today's pre-C3 shape, which never sees untracked files at all) -- run the
+# SAME scenario against the mutant and assert it FAILS to capture the untracked
+# file, then against the real (fixed) tree and assert it succeeds. ────────────
+case_timeout_untracked_file_captured() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
+  [[ -f "${pc}" ]] || return 2
+  local root tid wt worker_pid rc ok=1 status msg review_diff committed
+  root="$(new_repo)"
+  tid="sgi-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  # never `git add`ed -- pure untracked, the shape pc_stop_gate_capture_diff's
+  # throwaway-index `add -N` is meant to still surface in review.diff.
+  printf 'untracked-content\n' > "${wt}/agent/untracked.py"
+  sleep 30 & worker_pid=$!
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_LANE_WRITES="agent/untracked.py" LEADV2_LANE_WORK_ROOT="${wt}" \
+  LEADV2_BUILDER_SELFCHECK=0 LEADV2_REVIEW_ENGINE=0 LEADV2_PC_WORKER_MAX_WAIT_S=1 LEADV2_PC_WORKER_POLL_S=1 \
+  bash "${pc}" "${root}" sgisig001 sonnet "${worker_pid}" 0 0 "${tid}" >/dev/null 2>&1
+  rc=$?
+  kill "${worker_pid}" 2>/dev/null || true
+  wait "${worker_pid}" 2>/dev/null || true
+  status="$(git -C "${wt}" status --porcelain -- agent/untracked.py 2>/dev/null || true)"
+  msg="$(git -C "${wt}" log -1 --format=%s 2>/dev/null || true)"
+  review_diff="$(cat "${root}/docs/handoff/dispatch-sgisig001/review.diff" 2>/dev/null || true)"
+  committed="$(git -C "${wt}" show HEAD:agent/untracked.py 2>/dev/null || true)"
+  if [[ ${rc} -eq 5 && -z "${status}" && "${msg}" == *"STOP-GATE"* \
+        && "${review_diff}" == *"untracked-content"* && "${committed}" == "untracked-content" ]]; then
+    ok=0
+  fi
+  rm -rf "${root}"
+  return "${ok}"
+}
+
+build_mutant_pc() { # <src_pc> <dst_pc> -> 0 on success, 1 if the function region wasn't found
+  python3 - "$1" "$2" <<'PYEOF'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+old_fn_re = re.compile(r'^pc_stop_gate_capture_diff\(\) \{\n.*?\n\}\n', re.M | re.S)
+new_fn = (
+    'pc_stop_gate_capture_diff() { # MUTANT: plain git diff HEAD, no untracked capture, no write-set scoping\n'
+    '  local _ct_lane="${LEADV2_LANE_WORK_ROOT:-}"\n'
+    '  [[ -z "${_ct_lane}" ]] && _ct_lane="$(LEADV2_PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${FOUNDER_TASK_ID:-${TASK}}" 2>/dev/null || true)"\n'
+    '  [[ -n "${_ct_lane}" && -d "${_ct_lane}" ]] || return 0\n'
+    '  mkdir -p "${HANDOFF}" 2>/dev/null || true\n'
+    '  git -C "${_ct_lane}" diff HEAD > "${HANDOFF}/review.diff" 2>/dev/null || true\n'
+    '}\n'
+)
+new_text, n = old_fn_re.subn(new_fn, text, count=1)
+if n != 1:
+    sys.exit(1)
+open(dst, 'w').write(new_text)
+PYEOF
+}
+
+run_mutant_falsification() {
+  local mutant_dir mutant_pc real_rc mutant_rc ok=1
+  mutant_dir="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-sg-mutant.XXXXXX")"
+  cp -R "${SCRIPT_DIR}/." "${mutant_dir}/" 2>/dev/null
+  mutant_pc="${mutant_dir}/leadv2-dispatch-product-close.sh"
+  if ! build_mutant_pc "${SCRIPT_DIR}/leadv2-dispatch-product-close.sh" "${mutant_pc}"; then
+    log "COULD-NOT-RUN: timeout-untracked-file-captured (mutant build failed -- function region not matched)"
+    COULD_NOT_RUN=$((COULD_NOT_RUN + 1))
+    rm -rf "${mutant_dir}"
+    return
+  fi
+  bash -n "${mutant_pc}" 2>/dev/null || {
+    log "COULD-NOT-RUN: timeout-untracked-file-captured (mutant fails bash -n)"
+    COULD_NOT_RUN=$((COULD_NOT_RUN + 1))
+    rm -rf "${mutant_dir}"
+    return
+  }
+  case_timeout_untracked_file_captured "${mutant_dir}" >/dev/null 2>&1; mutant_rc=$?
+  case_timeout_untracked_file_captured "${SCRIPT_DIR}" >/dev/null 2>&1; real_rc=$?
+  rm -rf "${mutant_dir}"
+  if [[ ${real_rc} -eq 2 || ${mutant_rc} -eq 2 ]]; then
+    COULD_NOT_RUN=$((COULD_NOT_RUN + 1))
+    log "COULD-NOT-RUN: timeout-untracked-file-captured (real_rc=${real_rc} mutant_rc=${mutant_rc})"
+    return
+  fi
+  if [[ ${real_rc} -ne 0 ]]; then
+    FAIL=$((FAIL + 1)); ERRORS+=("timeout-untracked-file-captured: real tree did not pass (rc=${real_rc})")
+    log "FAIL: timeout-untracked-file-captured -- real tree rc=${real_rc}, expected 0"
+    return
+  fi
+  if [[ ${mutant_rc} -eq 0 ]]; then
+    GREEN_PRE_FIX=$((GREEN_PRE_FIX + 1))
+    log "GREEN-PRE-FIX: timeout-untracked-file-captured -- mutant (plain git diff HEAD) also passed (mutant_rc=0) -- test cannot falsify"
+    return
+  fi
+  PASS=$((PASS + 1))
+  log "RED-then-GREEN: timeout-untracked-file-captured (mutant_rc=${mutant_rc} -> real_rc=0)"
+}
+run_mutant_falsification
 
 echo "Results: ${PASS} passed(red->green), ${FAIL} failed, ${GREEN_PRE_FIX} green-pre-fix, ${COULD_NOT_RUN} could-not-run"
 if [[ "${FAIL}" -gt 0 || "${GREEN_PRE_FIX}" -gt 0 ]]; then

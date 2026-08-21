@@ -2065,7 +2065,8 @@ elif [[ "${LEADV2_BUILDER_SELFCHECK:-1}" != 0 ]] && command -v lv2_selfcheck_run
   # sets would die with that subshell and never reach this scope. Redirect stdout to
   # a file instead so the function runs in THIS shell and its globals persist.
   _selfcheck_out_f="$(mktemp)"
-  LEADV2_E2E_GATE="${E2E_ON}" lv2_selfcheck_run "${diff_file}" "${diff_root}" "${ROOT}" "${_selfcheck_md}" > "${_selfcheck_out_f}"
+  LEADV2_E2E_GATE="${E2E_ON}" lv2_selfcheck_run "${diff_file}" "${diff_root}" "${ROOT}" "${_selfcheck_md}" \
+    "${_PC_SCOPE_WRITES_CSV:-${LEADV2_DISPATCH_LANE_WRITES:-}}" > "${_selfcheck_out_f}"
   _selfcheck_rc=$?
   _selfcheck_failed="$(cat "${_selfcheck_out_f}")"
   rm -f "${_selfcheck_out_f}"
