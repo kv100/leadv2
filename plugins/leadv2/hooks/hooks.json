@@ -70,6 +70,12 @@
             "timeout": 5,
             "continueOnBlock": true,
             "statusMessage": "Arming idle-lead guard..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-merged-worktree-sweep.sh\"",
+            "timeout": 20,
+            "statusMessage": "Worktree sweep: removing landed lanes..."
           }
         ]
       },
