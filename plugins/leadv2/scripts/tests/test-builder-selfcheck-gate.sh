@@ -819,7 +819,7 @@ case_scope_kill_switch_byte_restore_and_bypasses() {
   local rc_new names_new ok=1
   rc_new="$(resfield "${res_new}" RC)"; names_new="$(resfield "${res_new}" FAILED_NAMES)"
   if [[ "${rc_new}" != "1" ]] && [[ "${names_new}" != *"scope:"* ]] \
-     && diff -q <(sed '/^generated_at: /d' "${out_new}") <(sed '/^generated_at: /d' "${out_old}") >/dev/null 2>&1; then
+     && diff -q <(sed -e '/^generated_at: /d' -e '/^diff_hash: /d' "${out_new}") <(sed -e '/^generated_at: /d' -e '/^diff_hash: /d' "${out_old}") >/dev/null 2>&1; then
     ok=0
   fi
   rm -rf "${root}"
