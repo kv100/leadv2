@@ -5,6 +5,7 @@
 #   - every suite index appears in exactly one shard, for several shard counts
 #   - the resolved default shard count is a sane positive integer <= 4
 #   - LEADV2_SUITE_SHARDS=1 dump still enumerates the full list (no suite lost)
+#   - a deliberately marked SERIAL fixture runs after the parallel phase
 
 set -euo pipefail
 
@@ -71,6 +72,24 @@ if printf '%s\n' "$failure_out" | grep -Fq '[CORE-OFFLINE] FAILED: failure probe
   pass=$((pass + 1))
 else
   echo "[SHARDS-01]   FAILED: missing sharded failure marker"
+  fail=$((fail + 1))
+fi
+
+printf '#!/usr/bin/env bash\nprintf "parallel:start\\n" >> "$ORDER_LOG"\nsleep 1\nprintf "parallel:end\\n" >> "$ORDER_LOG"\n' > "$fixture_root/parallel.sh"
+printf '#!/usr/bin/env bash\nprintf "serial\\n" >> "$ORDER_LOG"\n' > "$fixture_root/serial.sh"
+chmod +x "$fixture_root/parallel.sh" "$fixture_root/serial.sh"
+order_log="$fixture_root/order.log"
+echo "[SHARDS-01] case: SERIAL fixture runs after parallel phase"
+LEADV2_SUITE_LOCK_DISABLE=1 LEADV2_CORE_OFFLINE_HERMETIC_GATE=0 LEADV2_SUITE_SHARDS=2 \
+  ORDER_LOG="$order_log" \
+  LEADV2_SUITE_DEFS_OVERRIDE="parallel fixture|||bash $fixture_root/parallel.sh
+serial fixture|||bash $fixture_root/serial.sh|||SERIAL" \
+  bash "$RUNNER" > "$fixture_root/order.out" 2>&1 || true
+if [[ "$(tr '\n' ' ' < "$order_log")" == "parallel:start parallel:end serial " ]]; then
+  echo "[SHARDS-01]   SERIAL tail order preserved ✓"
+  pass=$((pass + 1))
+else
+  echo "[SHARDS-01]   FAILED: expected parallel:start parallel:end serial; got $(tr '\n' ' ' < "$order_log")"
   fail=$((fail + 1))
 fi
 

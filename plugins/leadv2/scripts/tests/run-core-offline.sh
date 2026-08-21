@@ -248,18 +248,24 @@ validate_plugin() {
 # Suites are a data list (not a flat sequence of calls) so LEADV2_CORE_OFFLINE_REVERSE=1
 # can walk them back-to-front. If 50/0 holds forward, reverse, and forward-again,
 # order-dependence is disproven by construction rather than by two identical runs.
-# Record format: "name|||cmd..." — cmd is space-split (every path in this list is
-# space-free, matching the assumption the rest of this plugin already makes).
+# Record format: "name|||cmd...|||SERIAL".  SERIAL is optional and only changes
+# sharded runs: marked suites run as a serial tail after every parallel shard
+# has completed, while the outer flock is still held.  This protects suites
+# whose dispatch fixtures intentionally write repository state.  In shards=1
+# mode the marker is deliberately inert, preserving the original execution
+# path and output.
+# Commands are space-split (every path in this list is space-free, matching the
+# assumption the rest of this plugin already makes).
 SUITE_DEFS=(
   "all plugin shell syntax|||syntax_all"
   "portable temp helper stress|||bash $TEST_DIR/test-leadv2-temp-stress.sh"
   "Claude plugin manifest/components|||validate_plugin"
   "provider/model router|||bash $TEST_DIR/test-session-route.sh"
-  "dispatch refusal fallback chain|||bash $TEST_DIR/test-routing-enforcement-p1.sh"
-  "product-close waits for worker exit|||bash $TEST_DIR/test-no-work-terminal.sh"
+  "dispatch refusal fallback chain|||bash $TEST_DIR/test-routing-enforcement-p1.sh|||SERIAL"
+  "product-close waits for worker exit|||bash $TEST_DIR/test-no-work-terminal.sh|||SERIAL"
   "product-close resumes a died-with-work lane once|||bash $TEST_DIR/test-dwr-resume.sh"
   "product-close scopes a single-repo lane worktree|||bash $TEST_DIR/test-lane-diff-single-repo.sh"
-  "Codex full-cycle runner|||bash $TEST_DIR/test-codex-session-runner.sh"
+  "Codex full-cycle runner|||bash $TEST_DIR/test-codex-session-runner.sh|||SERIAL"
   "Codex terminal lead intake|||bash $TEST_DIR/test-codex-lead-intake.sh"
   "Codex child-session recursion boundary|||bash $TEST_DIR/test-codex-child-session-boundary.sh"
   "autonomous session spawner|||bash $TEST_DIR/test-session-spawner.sh"
@@ -267,8 +273,8 @@ SUITE_DEFS=(
   "main model/live quota|||bash $TEST_DIR/test-main-model-check.sh"
   "active registry fail-closed|||bash $TEST_DIR/test-active-registry-failclosed.sh"
   "active registry phase updates|||bash $TEST_DIR/test-active-registry-update-phase.sh"
-  "fanout classifier/runner guard|||bash $TEST_DIR/test-fanout-classify-guard.sh"
-  "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh"
+  "fanout classifier/runner guard|||bash $TEST_DIR/test-fanout-classify-guard.sh|||SERIAL"
+  "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh|||SERIAL"
   "Phase-8 task schema|||bash $TEST_DIR/test-leadv2-phase8-assert-a2-schema.sh"
   "Phase-8 merge/completion proof|||bash $PLUGIN_ROOT/tests/test-deploy-merge-blocker-gate.sh"
   "subsession model downgrade|||bash $TEST_DIR/test-leadv2-model-arg-rebuild.sh"
@@ -292,13 +298,13 @@ SUITE_DEFS=(
   "phase record round-trip|||bash $TEST_DIR/test-phase-record.sh"
   "phase precondition guard matrix|||bash $TEST_DIR/test-phase-precondition.sh"
   "lane phase render|||bash $TEST_DIR/test-lane-phase-render.sh"
-  "lane truth batch (log_path + quarantine convergence)|||bash $TEST_DIR/test-lane-truth-batch-01.sh"
+  "lane truth batch (log_path + quarantine convergence)|||bash $TEST_DIR/test-lane-truth-batch-01.sh|||SERIAL"
   "founder lane view|||bash $TEST_DIR/test-leadv2-lanes.sh"
   "plugin reliability (process liveness + role fallback + prepass/reorder signals)|||bash $TEST_DIR/test-plugin-reliability-01.sh"
   "plugin reliability-02 (zombie-reaper: run_dir arg + group signaling + ordering + TASK)|||bash $TEST_DIR/test-plugin-reliability-02.sh"
   "plan-followups-01|||bash $TEST_DIR/test-plan-followups-01.sh"
   "e2e gate arch-01 (lane-tree testing)|||bash $TEST_DIR/test-e2e-gate-arch-01.sh"
-  "report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)|||bash $TEST_DIR/test-report-only-gate.sh"
+  "report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)|||bash $TEST_DIR/test-report-only-gate.sh|||SERIAL"
   "builder selfcheck gate (recursion/depth guard, baseline attribution)|||bash $TEST_DIR/test-builder-selfcheck-gate.sh"
   "review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)|||bash $TEST_DIR/test-review-round-exhaustive.sh"
   "claim-evidence gate (CLAIM-EVIDENCE-GATE-01 preamble + round-1 lens)|||bash $TEST_DIR/test-claim-evidence-gate.sh"
@@ -307,7 +313,7 @@ SUITE_DEFS=(
   "pump junk stays out of lane worktrees (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-pump-junk-in-lane.sh"
   "codex instant-complete dead-arm spill (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-codex-instant-complete.sh"
   "worker env asserts (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-worker-env-asserts.sh"
-  "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh"
+  "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh|||SERIAL"
   "core-offline cross-run exclusive lock (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-lock-01.sh"
   "core-offline shard partition (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-shards-01.sh"
   "core-offline per-suite TMPDIR isolation (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-tmpdir-01.sh"
@@ -327,13 +333,22 @@ if [[ -n "${LEADV2_SUITE_DEFS_OVERRIDE:-}" ]]; then
 fi
 
 _core_offline_run_entry() {
-  local entry="$1" name cmd_str
+  local entry="$1" name rest cmd_str
   name="${entry%%|||*}"
-  cmd_str="${entry#*|||}"
+  rest="${entry#*|||}"
+  cmd_str="${rest%%|||*}"
   # shellcheck disable=SC2086
   # Intentional word-splitting; every path here is space-free (the same
   # assumption the rest of this plugin already makes).
   run_check "$name" $cmd_str
+}
+
+_core_offline_entry_is_serial() {
+  local entry="$1" rest marker
+  [[ "$entry" == *'|||'*'|||'* ]] || return 1
+  rest="${entry#*|||}"
+  marker="${rest#*|||}"
+  [[ "$marker" == "SERIAL" ]]
 }
 
 # --- SUITE-SPEED-01 item 3: sharding -----------------------------------------
@@ -364,11 +379,19 @@ fi
 if [[ -n "${LEADV2_SUITE_SHARDS_DUMP:-}" ]]; then
   for (( _s = 0; _s < LEADV2_SUITE_SHARDS; _s++ )); do
     for (( _i = 0; _i < ${#SUITE_DEFS[@]}; _i++ )); do
-      if (( _i % LEADV2_SUITE_SHARDS == _s )); then
+      if (( _i % LEADV2_SUITE_SHARDS == _s )) \
+        && { [[ "$LEADV2_SUITE_SHARDS" -le 1 ]] || ! _core_offline_entry_is_serial "${SUITE_DEFS[_i]}"; }; then
         printf -- 'shard=%d idx=%d name=%s\n' "$_s" "$_i" "${SUITE_DEFS[_i]%%|||*}"
       fi
     done
   done
+  if [[ "$LEADV2_SUITE_SHARDS" -gt 1 ]]; then
+    for (( _i = 0; _i < ${#SUITE_DEFS[@]}; _i++ )); do
+      if _core_offline_entry_is_serial "${SUITE_DEFS[_i]}"; then
+        printf -- 'serial idx=%d name=%s\n' "$_i" "${SUITE_DEFS[_i]%%|||*}"
+      fi
+    done
+  fi
   exit 0
 fi
 
@@ -381,7 +404,7 @@ _core_offline_run_shard() {
     for (( _i = 0; _i < ${#SUITE_DEFS[@]}; _i++ )); do order+=("$_i"); done
   fi
   for _i in "${order[@]}"; do
-    if (( _i % total == idx )); then
+    if (( _i % total == idx )) && ! _core_offline_entry_is_serial "${SUITE_DEFS[_i]}"; then
       _core_offline_run_entry "${SUITE_DEFS[_i]}"
     fi
     n=$((n + 1))
@@ -419,6 +442,21 @@ else
   for _log in "${SHARD_LOGS[@]}"; do
     cat "$_log"
   done
+  serial_log="$RUN_TMP/serial-tail.log"
+  (
+    PASS=0
+    FAIL=0
+    MISSING=0
+    for (( _i = 0; _i < ${#SUITE_DEFS[@]}; _i++ )); do
+      if _core_offline_entry_is_serial "${SUITE_DEFS[_i]}"; then
+        _core_offline_run_entry "${SUITE_DEFS[_i]}"
+      fi
+    done
+    printf -- '[CORE-OFFLINE] SHARD_RESULT idx=serial pass=%d fail=%d missing=%d\n' \
+      "$PASS" "$FAIL" "$MISSING"
+  ) >"$serial_log" 2>&1
+  cat "$serial_log"
+  SHARD_LOGS+=("$serial_log")
   while IFS= read -r _line; do
     _p="$(printf '%s' "$_line" | sed -n 's/.*pass=\([0-9]*\).*/\1/p')"
     _f="$(printf '%s' "$_line" | sed -n 's/.*fail=\([0-9]*\).*/\1/p')"
