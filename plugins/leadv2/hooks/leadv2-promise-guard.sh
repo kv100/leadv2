@@ -81,7 +81,40 @@ jsonl_path = sys.argv[1]
 COMMIT_RU = r'приземляю|запускаю|поднимаю|диспатчу|начинаю|иду|сделаю|проверю|подниму|запущу|отправлю|дам|пойду|беру'
 COMMIT_RU_NOW = r'сейчас\s+(?:же\s+)?(?:' + COMMIT_RU + r')'
 COMMIT_EN = r"\bI'?ll\b|\bI will\b|\blet me\b|\bgoing to\b|\bnext I\b|\bnow I'?m\b|\bI'?m about to\b|\bwill now\b"
-COMMIT_RE = re.compile('(?:' + COMMIT_RU_NOW + r'|' + COMMIT_RU + r'|' + COMMIT_EN + r')', re.I | re.UNICODE)
+
+# PROMISE-GUARD-MORPHOLOGY-01: match the GRAMMATICAL SHAPE, not a verb dictionary.
+#
+# The hand-kept list above cannot work, and 2026-08-21 proved it on a real escape in
+# ~/Projects/getmany-followup-bot: the lead ended a turn with "Чиню постраничную
+# выборку Calendly" and "Ссылку на перебронирование добавлю тем же заходом", started
+# neither, and the guard stayed silent — «чиню» and «добавлю» are simply not on the
+# list. Russian verb morphology has no finite enumeration; every future escape will
+# use a verb nobody thought to add. The founder reported the same shape in m3-market.
+#
+# The shape that actually carries a commitment is a FIRST-PERSON SINGULAR NON-PAST
+# verb: in Russian that is a -ю/-у ending (present and future are identical in form
+# — «чиню» and «добавлю» are both caught by one rule). Bare -ю/-у over-matches nouns
+# in the accusative («выборку», «ссылку»), so the verb candidate must ALSO sit in a
+# clause carrying a commitment marker — an intention adverbial («сейчас», «дальше»,
+# «тем же заходом», «отдельно») — or be one of the known verbs above. That pairing is
+# what keeps «Ссылку на перебронирование добавлю тем же заходом» a hit while
+# «правлю выборку и вот результат 12/12» is not (the artifact vetoes it downstream).
+RU_1SG_NONPAST = r'\b[а-яё]{3,}[юу]\b'
+RU_INTENT_MARKER = (
+    r'тем\s+же\s+заходом|следующим\s+заходом|этим\s+же\s+заходом'
+    r'|сейчас|сразу|дальше|затем|потом|позже|после\s+этого|в\s+конце'
+    r'|отдельно|заодно|попутно|по\s+ходу|ещё\s+раз|напоследок'
+)
+COMMIT_RU_SHAPE = r'(?=.*(?:' + RU_INTENT_MARKER + r'))(?=.*' + RU_1SG_NONPAST + r')'
+
+COMMIT_RE = re.compile(
+    '(?:' + COMMIT_RU_NOW + r'|' + COMMIT_RU + r'|' + COMMIT_EN + r'|' + COMMIT_RU_SHAPE + r')',
+    re.I | re.UNICODE)
+
+# A clause that is a bare first-person non-past verb with no marker at all is still a
+# commitment when it OPENS the clause — «Чиню выборку…», «Довожу list-form…». Checked
+# separately so the marker rule above stays strict.
+COMMIT_RU_LEADING = re.compile(r'^\s*[«"\-—*]*\s*[а-яё]{3,}[юу]\b', re.I | re.UNICODE)
 
 # --- past-tense / artifact veto --------------------------------------------
 PAST_RU = r'\b\w+(?:л|ла|ло|ли)\b'
@@ -201,7 +234,8 @@ if final_text:
             if clause:
                 raw_clauses.append(clause)
     for clause in raw_clauses:
-        if COMMIT_RE.search(clause) and not VETO_RE.search(clause):
+        if (COMMIT_RE.search(clause) or COMMIT_RU_LEADING.match(clause)) \
+                and not VETO_RE.search(clause):
             commitments.append(clause)
 
 print(json.dumps({
