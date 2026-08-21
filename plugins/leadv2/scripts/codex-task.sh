@@ -854,6 +854,30 @@ def reap_one(job_path, force=False):
             return None  # ALIVE -- untouched, no exceptions
 
         now = time.time()
+
+        # CODEX-REAP-LOG-MTIME-LIVENESS-01: a growing log is proof of life, and it
+        # outranks every pid-shaped guess below.
+        #
+        # 2026-08-21: a worker was reaped `worker_died_stale` 73 seconds after its own
+        # log recorded `Applying 1 file change(s)` / `File changes completed`. The pid
+        # probe is a proxy for liveness; the log is the thing itself. Every liveness
+        # question in this system that was answered from a pid or a status field was
+        # answered wrongly today, and every one answered from an mtime was right.
+        #
+        # Fail-safe direction only: this WIDENS "alive" and can never narrow it. A
+        # false positive costs one more sweep before a genuinely dead job is reaped;
+        # a false negative kills a worker mid-write, which is the whole point of the
+        # guard. Any stat failure falls through to the pid-shaped logic unchanged.
+        log_grace_s = float(os.environ.get("CODEX_REAP_LOG_GRACE_S", "120"))
+        if log_grace_s > 0:
+            log_path = job_path[:-5] + ".log" if job_path.endswith(".json") else None
+            try:
+                if log_path and os.path.exists(log_path):
+                    if (now - os.path.getmtime(log_path)) < log_grace_s:
+                        return None  # log written within the grace window -- working
+            except OSError:
+                pass  # unreadable mtime proves nothing; fall through
+
         cause = None
         if status == "queued":
             created = parse_iso(data.get("createdAt"))
