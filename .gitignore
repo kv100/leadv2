@@ -25,3 +25,27 @@ docs/leadv2/*.lock
 # V3-GLM-LADDER-01 R3) -- must never be tracked, or the leak becomes invisible.
 plugins/leadv2/scripts/tests/docs/
 plugins/leadv2/scripts/tests/.claude/
+
+# HANDOFF-AND-STATE-NOISE-01 (2026-08-21): mirror persona-engine's convention.
+# Lane handoff artifacts and generated orchestration state are per-run outputs —
+# architect prepasses, review diffs, stream jsonl, costs, session maps, review-<hash>
+# stamps. 268 of them were showing as uncommitted changes here while the identical
+# files are ignored in persona-engine, which is why this repo looked permanently
+# dirty. Authored docs at the top of docs/handoff/ and docs/leadv2/ stay tracked.
+docs/handoff/*/*
+docs/leadv2/review-*
+docs/leadv2/status-snapshot.json
+docs/leadv2/founder-status*.md
+docs/leadv2/glm-deferred*
+docs/leadv2/.arm-exceptions-*
+docs/leadv2/.pulse-beat-last
+docs/leadv2/.board-empty-since
+docs/leadv2/.founder-status-epoch
+docs/leadv2/.codex-credits-empty.stamp
+# Per-dispatch task journals. 291 are already tracked from before this rule and are
+# left alone deliberately — untracking them is a separate, reviewable call. New ones
+# stop dirtying the repo on every dispatch.
+docs/leadv2/tasks/*/
+docs/leadv2/bus.jsonl
+docs/leadv2/merge-queue.jsonl
+docs/leadv2/questions/
