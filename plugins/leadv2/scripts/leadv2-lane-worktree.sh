@@ -131,6 +131,9 @@ cmd_ensure() {
   # Idempotent: an existing linked worktree is reused as-is. Compare on the
   # PHYSICAL path — git reports /private/var on macOS, not the /var we passed.
   if [[ -d "$lane_path" ]] && git -C "$ROOT" worktree list --porcelain 2>/dev/null | grep -q "^worktree $(phys "$lane_path")\$"; then
+    # Reused worktrees need this too: every lane that predates
+    # CODEX-WORKTREE-TRUST-01 exists on disk already and was never registered.
+    codex_trust_worktree "$lane_path"
     printf '%s\n' "$lane_path"
     return 0
   fi
@@ -140,16 +143,52 @@ cmd_ensure() {
 
   # Fresh branch from base + linked worktree.
   if git -C "$ROOT" worktree add -b "$branch" "$lane_path" "$base" >>"$ERRF" 2>&1; then
+    codex_trust_worktree "$lane_path"
     printf '%s\n' "$lane_path"
     return 0
   fi
   # Branch may already exist from a prior aborted run — attach the worktree to it.
   if git -C "$ROOT" worktree add "$lane_path" "$branch" >>"$ERRF" 2>&1; then
+    codex_trust_worktree "$lane_path"
     printf '%s\n' "$lane_path"
     return 0
   fi
   log_error "ensure: git worktree add failed for task=$task_id base=$base (see $ERRF) — FALLING BACK to shared tree"
   fallback
+  return 0
+}
+
+# CODEX-WORKTREE-TRUST-01: teach Codex to trust this lane's worktree.
+#
+# Codex reads its per-directory policy from [projects."<exact cwd>"] in
+# ~/.codex/config.toml. A worktree is a directory Codex has never seen, and in
+# an unregistered cwd it opens a task thread, prints its three startup lines,
+# and exits 0 having produced NO body at all -- the review engine then records
+# `review_body_lost` and the round is burned. Nothing logs an error, which is
+# why this cost two review rounds on 2026-08-21 before the cause was read off
+# the config instead of the code. The leadv2 repo's own worktrees were already
+# registered by hand; product repos' were not, so every worktree lane silently
+# lost its Codex arm.
+#
+# Fail-open by construction: any missing file, unwritable config, or absent
+# python3 leaves lane creation untouched. Registration is idempotent on the
+# exact path, and mirrors the 4-key stanza the working entries already use.
+codex_trust_worktree() { # <abs_worktree_path>
+  local lane_path="${1:-}"
+  [[ -n "$lane_path" ]] || return 0
+  [[ "${LEADV2_CODEX_WORKTREE_TRUST:-on}" == "off" ]] && return 0
+  local cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  [[ -f "$cfg" && -w "$cfg" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  # Register BOTH the logical and the physical path: git reports /private/var on
+  # macOS while the caller passes /var, and Codex matches on the exact cwd string.
+  local p
+  for p in "$lane_path" "$(phys "$lane_path")"; do
+    [[ -n "$p" ]] || continue
+    grep -qF "[projects.\"$p\"]" "$cfg" 2>/dev/null && continue
+    printf '\n[projects."%s"]\ntrust_level = "trusted"\napproval_policy = "never"\nsandbox_mode = "danger-full-access"\nnetwork_access = "enabled"\n' \
+      "$p" >>"$cfg" 2>/dev/null || return 0
+  done
   return 0
 }
 
