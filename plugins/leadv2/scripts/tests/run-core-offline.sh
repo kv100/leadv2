@@ -116,6 +116,15 @@ _core_offline_build_scrub_args
 RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/core-offline-run.XXXXXX")"
 trap 'rm -rf "$RUN_TMP"' EXIT
 
+# Changing HOME changes Python's user-site lookup.  Retain the interpreter's
+# already-selected user base while sandboxing ~/.claude, so offline suites can
+# still import the dependencies installed for this interpreter (for example
+# PyYAML) without inheriting live Claude state.
+_CORE_OFFLINE_PYTHONUSERBASE="${PYTHONUSERBASE:-}"
+if [[ -z "$_CORE_OFFLINE_PYTHONUSERBASE" ]] && command -v python3 >/dev/null 2>&1; then
+  _CORE_OFFLINE_PYTHONUSERBASE="$(python3 -c 'import site; print(site.USER_BASE)' 2>/dev/null || true)"
+fi
+
 # --- MEDIUM-1 round-2: hermeticity post-condition -------------------------
 # A lane must not manufacture reds in suites it did not touch: FAIL only for
 # suites this lane owns; WARN + verbatim report for everything else.
@@ -157,20 +166,44 @@ run_check() {
   fi
 
   local -a cmd
+  local suite_failed=0 suite_home=""
+  # Shards execute independent suites concurrently.  TMPDIR alone cannot
+  # isolate suites that use the conventional ~/.claude/cache state surface,
+  # so give every sharded suite an otherwise-empty HOME rooted in its
+  # already-private fixture directory.  Keep serial mode byte-for-byte and
+  # environment-compatible with the pre-sharding runner.
+  if [[ "${LEADV2_SUITE_SHARDS:-1}" -gt 1 ]]; then
+    local suite_tmp
+    suite_tmp="$(mktemp -d "$RUN_TMP/suite.XXXXXX")"
+    suite_home="$suite_tmp/home"
+    mkdir -p "$suite_home/.claude/cache"
+  fi
   if [[ "${LEADV2_CORE_OFFLINE_NO_SCRUB:-0}" == "1" || "$1" != "bash" ]]; then
     # Function-based checks (syntax_all, validate_plugin) run in-process and
     # cannot be wrapped by `env` (a bash function is invisible to a new exec).
     cmd=("$@")
   else
-    local suite_tmp
-    suite_tmp="$(mktemp -d "$RUN_TMP/suite.XXXXXX")"
-    cmd=(env "${_CORE_OFFLINE_SCRUB_ARGS[@]}" "TMPDIR=$suite_tmp" "$@")
+    if [[ -n "$suite_home" ]]; then
+      cmd=(env "${_CORE_OFFLINE_SCRUB_ARGS[@]}" "TMPDIR=$suite_tmp" "HOME=$suite_home" \
+        "PYTHONUSERBASE=$_CORE_OFFLINE_PYTHONUSERBASE" "$@")
+    else
+      local suite_tmp
+      suite_tmp="$(mktemp -d "$RUN_TMP/suite.XXXXXX")"
+      cmd=(env "${_CORE_OFFLINE_SCRUB_ARGS[@]}" "TMPDIR=$suite_tmp" "$@")
+    fi
   fi
 
-  if "${cmd[@]}"; then
+  local cmd_rc=0
+  if [[ -n "$suite_home" ]]; then
+    HOME="$suite_home" PYTHONUSERBASE="$_CORE_OFFLINE_PYTHONUSERBASE" "${cmd[@]}" || cmd_rc=$?
+  else
+    "${cmd[@]}" || cmd_rc=$?
+  fi
+  if [[ "$cmd_rc" -eq 0 ]]; then
     PASS=$((PASS + 1))
   else
     FAIL=$((FAIL + 1))
+    suite_failed=1
     printf -- '[CORE-OFFLINE] FAILED: %s\n' "$name" >&2
   fi
 
@@ -180,6 +213,12 @@ run_check() {
     if [[ "$_docs_after" != "$_docs_before" ]]; then
       if _core_offline_suite_is_owned "$name"; then
         FAIL=$((FAIL + 1))
+        # A hermeticity failure is a suite failure too.  In shard mode logs
+        # are replayed after workers exit, so retain the canonical FAILED
+        # marker even when the command itself passed.
+        if [[ "$suite_failed" -eq 0 ]]; then
+          printf -- '[CORE-OFFLINE] FAILED: %s\n' "$name" >&2
+        fi
         printf -- '[CORE-OFFLINE] HERMETIC-VIOLATION (FAIL, lane-owned): %s dirtied docs/leadv2:\n%s\n' \
           "$name" "$_docs_after" >&2
       else

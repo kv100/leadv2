@@ -6,6 +6,8 @@
 # test-report-only-gate.sh all do) never collide with a sibling suite's roots
 # in the same run, nor with the caller's own TMPDIR.
 #
+# In shard mode those same fixtures also get a private HOME with the minimal
+# ~/.claude/cache skeleton, so a sibling cannot touch live Claude state.
 # Runs the real runner against two tiny probe "suites" wired in via
 # LEADV2_SUITE_DEFS_OVERRIDE so no real (slow) suite has to execute.
 
@@ -42,11 +44,15 @@ PROBE2="$RECORD_DIR/probe2.sh"
 cat > "$PROBE1" <<SH
 #!/usr/bin/env bash
 printf '%s' "\$TMPDIR" > "$RECORD_DIR/seen1"
+printf '%s' "\$HOME" > "$RECORD_DIR/home1"
+test -d "\$HOME/.claude/cache" && printf 'present' > "$RECORD_DIR/cache1"
 exit 0
 SH
 cat > "$PROBE2" <<SH
 #!/usr/bin/env bash
 printf '%s' "\$TMPDIR" > "$RECORD_DIR/seen2"
+printf '%s' "\$HOME" > "$RECORD_DIR/home2"
+test -d "\$HOME/.claude/cache" && printf 'present' > "$RECORD_DIR/cache2"
 exit 0
 SH
 chmod +x "$PROBE1" "$PROBE2"
@@ -71,6 +77,35 @@ if [[ -f "$RECORD_DIR/seen1" && -f "$RECORD_DIR/seen2" ]]; then
   fi
 else
   echo "[TMPDIR-01]   FAILED: probes never ran (override wiring missing?) — seen1/seen2 absent"
+  fail=$((fail + 1))
+fi
+
+echo "[TMPDIR-01] pass=$pass fail=$fail"
+
+echo "[TMPDIR-01] case: sharded suites each see a distinct private HOME skeleton"
+rm -f "$RECORD_DIR/home1" "$RECORD_DIR/home2" "$RECORD_DIR/cache1" "$RECORD_DIR/cache2"
+TMPDIR="$CALLER_TMPDIR" env -u DRY_RUN LEADV2_CORE_OFFLINE_HERMETIC_GATE=0 \
+  LEADV2_SUITE_LOCK_DISABLE=1 LEADV2_SUITE_SHARDS=2 \
+  LEADV2_SUITE_DEFS_OVERRIDE="probe one|||bash $PROBE1
+probe two|||bash $PROBE2" \
+  bash "$RUNNER" >/dev/null 2>&1 || true
+
+if [[ -f "$RECORD_DIR/home1" && -f "$RECORD_DIR/home2" \
+      && -f "$RECORD_DIR/cache1" && -f "$RECORD_DIR/cache2" ]]; then
+  home1="$(cat "$RECORD_DIR/home1")"
+  home2="$(cat "$RECORD_DIR/home2")"
+  if [[ -n "$home1" && -n "$home2" && "$home1" != "$home2" \
+        && "$home1" != "${HOME:-}" && "$home2" != "${HOME:-}" \
+        && "$(cat "$RECORD_DIR/cache1")" == "present" \
+        && "$(cat "$RECORD_DIR/cache2")" == "present" ]]; then
+    echo "[TMPDIR-01]   distinct private HOME skeletons ✓"
+    pass=$((pass + 1))
+  else
+    echo "[TMPDIR-01]   FAILED: HOME not isolated. home1=$home1 home2=$home2"
+    fail=$((fail + 1))
+  fi
+else
+  echo "[TMPDIR-01]   FAILED: sharded probes did not record HOME"
   fail=$((fail + 1))
 fi
 

@@ -58,5 +58,21 @@ else
   fail=$((fail + 1))
 fi
 
+fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/lv2-shards-report.XXXXXX")"
+trap 'rm -rf "$fixture_root"' EXIT
+printf '#!/usr/bin/env bash\nexit 1\n' > "$fixture_root/fails.sh"
+chmod +x "$fixture_root/fails.sh"
+echo "[SHARDS-01] case: every sharded failure prints its FAILED marker"
+failure_out="$(LEADV2_SUITE_LOCK_DISABLE=1 LEADV2_CORE_OFFLINE_HERMETIC_GATE=0 LEADV2_SUITE_SHARDS=2 \
+  LEADV2_SUITE_DEFS_OVERRIDE="failure probe|||bash $fixture_root/fails.sh" \
+  bash "$RUNNER" 2>&1 || true)"
+if printf '%s\n' "$failure_out" | grep -Fq '[CORE-OFFLINE] FAILED: failure probe'; then
+  echo "[SHARDS-01]   sharded failure marker present ✓"
+  pass=$((pass + 1))
+else
+  echo "[SHARDS-01]   FAILED: missing sharded failure marker"
+  fail=$((fail + 1))
+fi
+
 echo "[SHARDS-01] pass=$pass fail=$fail"
 (( fail == 0 ))
