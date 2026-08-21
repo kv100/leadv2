@@ -40,6 +40,45 @@ if [ -n "${LEADV2_CORE_OFFLINE_PROBE:-}" ]; then
     "$LOGICAL_DIR" "$REPO_ROOT" "$PLUGIN_ROOT" "$TEST_DIR"
   exit 0
 fi
+
+# --- SUITE-SPEED-01 item 1: cross-run exclusive lock ------------------------
+# Two concurrent run-core-offline.sh invocations (e.g. two lanes racing on the
+# same machine) share /tmp fixtures and, more importantly, the same real repo
+# working tree — the hermeticity post-condition below diffs `git status --
+# docs/leadv2` around every suite, and a second run mutating that tree mid-diff
+# manufactures a false HERMETIC-VIOLATION/FAIL that has nothing to do with the
+# suite under test. An exclusive flock on a well-known file serializes runs
+# instead. LEADV2_SUITE_LOCK_DISABLE=1 is the kill-switch (debugging, or a
+# caller that has already serialized externally). Default wait is unbounded
+# (matches "the lane should finish, not race") — set LEADV2_SUITE_LOCK_WAIT_S
+# for a bounded wait (used by tests, and by any caller that prefers a fast
+# failure to a long block).
+LEADV2_SUITE_LOCK_DISABLE="${LEADV2_SUITE_LOCK_DISABLE:-0}"
+LEADV2_SUITE_LOCK_FILE="${LEADV2_SUITE_LOCK_FILE:-/tmp/leadv2-core-offline.lock}"
+# Pure introspection (lists the shard partition, runs nothing) never needs to
+# serialize against a concurrent real run — skip the lock entirely for it.
+if [[ "$LEADV2_SUITE_LOCK_DISABLE" != "1" && -z "${LEADV2_SUITE_SHARDS_DUMP:-}" ]]; then
+  exec 9>"$LEADV2_SUITE_LOCK_FILE"
+  if ! flock -n 9; then
+    printf -- '[CORE-OFFLINE] waiting for lock file=%s (held by a concurrent run)\n' \
+      "$LEADV2_SUITE_LOCK_FILE" >&2
+    if [[ -n "${LEADV2_SUITE_LOCK_WAIT_S:-}" ]]; then
+      if ! flock -w "$LEADV2_SUITE_LOCK_WAIT_S" 9; then
+        printf -- '[CORE-OFFLINE] FATAL lock_timeout file=%s wait_s=%s\n' \
+          "$LEADV2_SUITE_LOCK_FILE" "$LEADV2_SUITE_LOCK_WAIT_S" >&2
+        exit 2
+      fi
+    else
+      flock 9
+    fi
+  fi
+fi
+
+if [ -n "${LEADV2_SUITE_LOCK_PROBE:-}" ]; then
+  printf -- '[CORE-OFFLINE] lock-probe acquired file=%s\n' "$LEADV2_SUITE_LOCK_FILE"
+  exit 0
+fi
+
 PASS=0
 FAIL=0
 MISSING=0
@@ -230,6 +269,7 @@ SUITE_DEFS=(
   "codex instant-complete dead-arm spill (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-codex-instant-complete.sh"
   "worker env asserts (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-worker-env-asserts.sh"
   "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh"
+  "core-offline cross-run exclusive lock (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-lock-01.sh"
 )
 
 _core_offline_run_entry() {
