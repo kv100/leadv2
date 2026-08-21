@@ -1130,13 +1130,29 @@ pc_await_worker_exit() {
 # rescue. Read-only: never touches the index or working tree (unlike _pc_git_diff's
 # throwaway-index `add -N`, which is unnecessary here since porcelain already reports
 # untracked paths). Tolerates quoted porcelain paths (paths with spaces/special chars).
-_pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding docs/leadv2, docs/handoff), rc1 otherwise
+# SCOPE-GATE-ORCHESTRATION-DIRT-01: ONE definition of the porcelain exclusion set.
+# It used to be copy-pasted at both porcelain sites, and on 2026-08-21 only one copy
+# got widened -- the gate kept refusing lanes because _pc_lane_dirty still saw the
+# dirt the partition below had learned to ignore. A single constant is the only way
+# the two sites cannot drift apart again.
+#
+# Beyond docs/leadv2/ + docs/handoff/, two paths are written by machinery no worker
+# touches: docs/LEAD_V2_STATE.md (five plugin scripts write it) and __pycache__/*.pyc
+# (Python bytecode; on branches predating the untrack it appears as a MODIFIED
+# tracked file). Both refused finished deliverables on 2026-08-21 -- list-form on the
+# pyc plus LEAD_V2_STATE.md, Door A round 3b on the pyc alone.
+#
+# NOT applied to _pc_git_diff's ':(exclude)' pathspecs: that set governs what a
+# REVIEWER sees, which is a separate decision from what counts as a scope violation.
+_PC_PORCELAIN_EXCLUDE_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\.md|^.. "?.*__pycache__/|^.. "?.*\.pyc$'
+
+_pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding orchestration-owned paths), rc1 otherwise
   local root="$1"
   [[ -n "${root}" && -d "${root}" ]] || return 1
   git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
   local status
   status="$(git -C "${root}" status --porcelain --untracked-files=all 2>/dev/null | \
-    grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/')"
+    grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}")"
   [[ -n "${status}" ]]
 }
 
@@ -1849,8 +1865,12 @@ if [[ -n "${blocked_reason}" ]]; then
       # is one of two innocent causes this reason used to swallow: the work legitimately
       # landed in a cross-repo sibling, or the declared path produced no bytes for a
       # reason that is not a scope violation.
+      # SCOPE-GATE-ORCHESTRATION-DIRT-01: same exclusion set as _pc_lane_dirty above,
+      # by construction — see the constant's comment for why the two must not diverge.
+      # Everything else stays strict: an undeclared path the worker actually wrote is
+      # still a scope violation, and the partition below is what decides that.
       _pc_dirty_lines="$(git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null | \
-        grep -vE '^.. "?docs/leadv2/|^.. "?docs/handoff/')"
+        grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}")"
       _pc_dirty_n="$(printf '%s\n' "${_pc_dirty_lines}" | grep -vcE '^$' || true)"
       _pc_undeclared=()
       _pc_undeclared_n=0
