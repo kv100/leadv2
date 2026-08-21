@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "repowise": {
+      "command": "/Users/kostiantyn.vlasenko/Projects/leadv2/.repowise/repowise-mcp.sh",
+      "args": [],
+      "description": "repowise: codebase intelligence — docs, graph, git signals, dead code, decisions"
+    }
+  }
+}
