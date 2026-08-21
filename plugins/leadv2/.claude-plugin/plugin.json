@@ -1,6 +1,6 @@
 {
   "name": "leadv2",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Autonomous engineering orchestrator with separate single-task lead and Opus-supervisor modes, provider-routed Claude/Codex Phase 0..8 children, shared guards, and quota-aware token controls.",
   "author": {
     "name": "kostiantynvlasenko-stack",

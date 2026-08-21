@@ -1003,11 +1003,25 @@ for _arm in "${ran_arms[@]}"; do
   fi
 done
 
-# Resolve verdicts across all surviving arms; primary verdict comes from the
-# first arm in ran_arms whose file parses (preserves today's single-verdict
-# gate semantics — a fan-out is extra corroboration, not N independent gates).
+# REVIEW-UNION-VERDICT-01 (2026-08-21): the union of arms is authoritative — ANY
+# arm's FAIL fails the gate, not just the first one that happened to parse.
+#
+# The old loop took the first parsable arm and `break`-ed, so with the default
+# three-arm fan-out a Critical found by arm 2 or 3 did not block: its findings were
+# unioned into the JSON while gating still keyed on arm 1's verdict. The Codex
+# process audit named this precisely (codex-findings.md, Q1/proposal 2, against
+# review-run.sh:1006-1027 and :1152-1164): "more arms currently buy more prose, not
+# a stronger gate", and the effective counters computed at :1141-1148 were never
+# used. Paying for three reviewers and gating on one is the worst of both — the cost
+# of breadth with the assurance of a single opinion.
+#
+# `reviewer_primary` still names the FIRST parsable arm, so artifact paths, the
+# dedup ledger key and the rendered findings block are unchanged when nothing
+# escalates. Only the verdict is strengthened, and only in the blocking direction:
+# an arm can turn PASS into FAIL, never FAIL into PASS.
 verdict=""
 reviewer_primary=""
+_union_fail_arm=""
 for _arm in "${ran_arms[@]}"; do
   resolve_review_artifact "${_arm}" || true
   _file="${REVIEW_ARTIFACT:-${HANDOFF}/review-${_arm}.md}"
@@ -1021,10 +1035,28 @@ for _arm in "${ran_arms[@]}"; do
   if ! parse_review_verdict "${_file}"; then
     continue
   fi
-  verdict="${PARSED_VERDICT}"
-  reviewer_primary="${_arm}"
-  break
+  if [[ -z "${reviewer_primary}" ]]; then
+    verdict="${PARSED_VERDICT}"
+    reviewer_primary="${_arm}"
+  fi
+  # Escalate on any arm's FAIL, including one found after the primary.
+  if [[ "${PARSED_VERDICT}" == FAIL && -z "${_union_fail_arm}" ]]; then
+    _union_fail_arm="${_arm}"
+  fi
 done
+
+if [[ -n "${_union_fail_arm}" && "${verdict}" != FAIL ]]; then
+  emit decision "review_union_escalate task=${TASK} primary=${reviewer_primary} primary_verdict=${verdict} failing_arm=${_union_fail_arm}"
+  verdict="FAIL"
+  # Report the arm that actually failed, so the gate's findings block and the
+  # ledger name the reviewer whose verdict is being enforced rather than an arm
+  # that passed. resolve_review_artifact is re-run for that arm so
+  # REVIEW_ARTIFACT/FINDINGS_* below describe the failing review, not the primary.
+  reviewer_primary="${_union_fail_arm}"
+  resolve_review_artifact "${_union_fail_arm}" || true
+  parse_review_verdict "${REVIEW_ARTIFACT:-${HANDOFF}/review-${_union_fail_arm}.md}" || true
+  verdict="FAIL"
+fi
 
 if [[ -z "${verdict}" ]]; then
   # No surviving arm produced a usable verdict — same three-way named-reason
