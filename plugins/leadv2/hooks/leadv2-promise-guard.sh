@@ -151,6 +151,23 @@ def is_action_tool(name, bash_cmd=None):
 # The turn = every assistant record since the last REAL user record.
 turn_tools = []          # list of labels, e.g. "Bash:grep", "Edit", "Read"
 has_action = False
+
+# PROMISE-ACTION-BINDING-01 (2026-08-21): an action is only evidence that a promise
+# was kept if it happened AFTER the promise was made.
+#
+# `has_action` scans the whole turn since the last user message, so a turn that does
+# work A and then promises work B was silently suppressed: the guard saw an action
+# and stayed quiet. That is exactly how a promise escaped today — the turn committed
+# REVIEW-UNION-VERDICT-01 (a real action) and closed with "берусь за третье", which
+# was never started. The founder caught it, not the guard.
+#
+# The binding rule is positional: count only actions that occur after the last
+# non-empty assistant text block. A promise lives in that final text, and in this
+# harness nothing follows it, so an unfulfilled promise has zero actions after it no
+# matter how much work the turn did earlier.
+action_positions = []
+last_text_pos = -1
+block_pos = 0
 final_text_parts = []    # text blocks of the LAST assistant record
 
 records = []
@@ -211,6 +228,11 @@ for rec in turn_records:
                 turn_tools.append(name)
             if is_action_tool(name, cmd if isinstance(cmd, str) else None):
                 has_action = True
+                # PROMISE-ACTION-BINDING-01: remember WHERE the action happened.
+                action_positions.append(block_pos)
+        if btype == 'text' and (block.get('text') or '').strip():
+            last_text_pos = block_pos
+        block_pos += 1
 
 # final_text = text blocks of the LAST assistant record
 if turn_records:
@@ -238,10 +260,19 @@ if final_text:
                 and not VETO_RE.search(clause):
             commitments.append(clause)
 
+# Only actions AFTER the promise count as keeping it. Fail-open: if we could not
+# locate a text block at all (unexpected transcript shape), fall back to the old
+# turn-wide answer rather than firing on everyone.
+if last_text_pos < 0:
+    action_after_promise = has_action
+else:
+    action_after_promise = any(p > last_text_pos for p in action_positions)
+
 print(json.dumps({
     'final_text_found': bool(final_text),
     'commitments': commitments,
-    'has_action': has_action,
+    'has_action': action_after_promise,
+    'has_action_anywhere_in_turn': has_action,
     'tools': turn_tools,
 }, ensure_ascii=False))
 PYEOF
