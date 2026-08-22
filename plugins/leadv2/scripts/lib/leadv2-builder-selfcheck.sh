@@ -110,14 +110,35 @@ lv2_selfcheck_run() {
   # (whose new side is /dev/null) and rename SOURCES (whose old side never appears as
   # a "+++" line) -- both bypassed the C0 write-set/oversize scope check silently
   # (codex r1 HIGH, SCOPE-DISCIPLINE-01 fix-round-2).
-  local line path
+  # SELFCHECK-SQL-COMMENT-HEADER-01: "starts with --- " is NOT sufficient to identify a
+  # file header. A REMOVED SQL comment line `-- text` renders in a unified diff as
+  # `--- text` -- byte-identical in shape to `--- a/path`. Every round that deleted a SQL
+  # comment therefore donated its prose to the changed-path list, and the write-set check
+  # below reported English sentences as off-write-set paths and failed the round. It
+  # blocked lane 14bd0c10 twice in one night (dispatch-4181a3e2, dispatch-2cbfe96d), both
+  # times with a correct LANE_WRITES and a clean diff.
+  #
+  # A real header is identifiable three ways, any one of which a SQL comment fails:
+  # it sits inside a `diff --git` block, or it carries the a/ or b/ prefix, or it is
+  # /dev/null. `raw` is tested BEFORE the prefix is stripped, because stripping is what
+  # erased the distinction in the first place.
+  local line path raw in_git_block=0
   local -a changed=()
   while IFS= read -r line; do
     case "${line}" in
-      '+++ '*) path="${line#+++ }"; path="${path#b/}" ;;
-      '--- '*) path="${line#--- }"; path="${path#a/}" ;;
+      'diff --git '*) in_git_block=1; continue ;;
+      '+++ '*) raw="${line#+++ }" ;;
+      '--- '*) raw="${line#--- }" ;;
       *) continue ;;
     esac
+    if (( in_git_block == 0 )) \
+       && [[ "${raw}" != a/* && "${raw}" != b/* && "${raw}" != "/dev/null" ]]; then
+      continue
+    fi
+    # The +++ line closes the pair, so a later stray `--- ...` in the hunk body is no
+    # longer covered by this block's `diff --git` and must stand on its own prefix.
+    [[ "${line}" == '+++ '* ]] && in_git_block=0
+    path="${raw#a/}"; path="${path#b/}"
     [[ -z "${path}" || "${path}" == "/dev/null" ]] && continue
     changed+=("${path}")
   done < "${diff_file}"
