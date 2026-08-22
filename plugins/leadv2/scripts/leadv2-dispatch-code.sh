@@ -825,6 +825,37 @@ except Exception:
   local _mode="resume-lane"
   [[ -n "${placement_path}" ]] && _mode="worktree"
   emit decision "lane_placement_pinned task=${sig8:-?} mode=${_mode} path=${WORK_ROOT} key=${key}"
+
+  # LANE-BEHIND-MAIN-01: a lane that has drifted behind the default branch produces
+  # verdicts about a tree that is not the one it will merge into -- in BOTH directions,
+  # which is what makes it expensive rather than merely untidy. On 2026-08-22 lane
+  # 70d40b43 (20 behind) failed test-target-topic-gate.sh and read as a brand-safety
+  # regression; it only lacked personas/respiro-brand/topic-policy.md, which main had
+  # gained the day before, and that suite is 120/0 on main. The same night lane
+  # a14c371d (27 behind) reported "24 passed / 0 failed -- deploy gate cleared" and the
+  # lead recorded it as mergeable; the green was measured against a tree missing 27
+  # commits. Nothing anywhere computed this number.
+  #
+  # ADVISE, never block: the drift is usually harmless, the merge may need judgement,
+  # and refusing here would strand finished work behind an automatic gate. Emitting it
+  # is what was missing -- the decision line makes it greppable in the journal and the
+  # stderr line makes it visible to whoever dispatched.
+  if [[ -d "${WORK_ROOT}" ]]; then
+    local _lbm_base _lbm_behind
+    _lbm_base="$(git -C "${WORK_ROOT}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
+    _lbm_base="${_lbm_base#origin/}"
+    [[ -n "${_lbm_base}" ]] || _lbm_base=main
+    if git -C "${WORK_ROOT}" rev-parse --verify --quiet "${_lbm_base}" >/dev/null 2>&1; then
+      _lbm_behind="$(git -C "${WORK_ROOT}" rev-list --count "HEAD..${_lbm_base}" 2>/dev/null || echo 0)"
+      _lbm_behind="${_lbm_behind:-0}"
+      if [[ "${_lbm_behind}" =~ ^[0-9]+$ ]] && (( _lbm_behind > ${LEADV2_LANE_BEHIND_ADVISE_AT:-10} )); then
+        emit decision "lane_behind_base task=${sig8:-?} key=${key} base=${_lbm_base} behind=${_lbm_behind}"
+        printf '[leadv2-dispatch-code] ⚠ LANE %s IS %s COMMITS BEHIND %s — gate results measure a tree that is not %s.\n' \
+          "${key}" "${_lbm_behind}" "${_lbm_base}" "${_lbm_base}" >&2
+        printf '  Merge %s into the lane before trusting a pass or diagnosing a failure.\n' "${_lbm_base}" >&2
+      fi
+    fi
+  fi
 }
 
 # PLACEMENT-PIN-DEFAULT-01: single construction site for the worker-prompt pin prefix.
