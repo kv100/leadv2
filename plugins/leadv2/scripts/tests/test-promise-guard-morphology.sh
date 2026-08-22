@@ -63,6 +63,22 @@ def grab(name, required=True):
     return m.group(1)
 
 ns = {"re": re}
+
+# PROMISE-GUARD-3PL-COLLISION-01: COMMIT_RU is now built as a `'|'.join(...)`
+# comprehension over COMMIT_RU_VERBS instead of a self-contained alternation
+# string, so exec'ing the COMMIT_RU expression needs COMMIT_RU_VERBS already in
+# `ns` — grab it FIRST, but OPTIONALLY: the pre-fix hook has no such name (its
+# COMMIT_RU is a bare literal, self-contained), and that absence is the entire
+# point of a pre/post comparison. Treating it as required would sys.exit(2) on
+# every case run against the pre-fix hook, collapsing the RED/GREEN-PRE-FIX
+# distinction for the WHOLE suite into an undifferentiated "could not run".
+expr = grab("COMMIT_RU_VERBS", required=False)
+if expr is not None:
+    try:
+        exec("COMMIT_RU_VERBS = %s" % expr, ns)
+    except Exception:
+        pass
+
 for name in ("COMMIT_RU", "COMMIT_RU_NOW", "COMMIT_EN", "PAST_RU", "PAST_EN", "ARTIFACT"):
     expr = grab(name)
     try:
@@ -133,6 +149,16 @@ case_neg_prose()      { _expect "$1" "Правило «что раньше» б�
 # An accusative noun in -ку/-ю with no verb and no marker must not fire.
 case_neg_bare_noun()  { _expect "$1" "Проблема в постраничной выборке и ссылке" MISS; }
 
+# PROMISE-GUARD-3PL-COLLISION-01 (2026-08-22): a recap of already-launched parallel
+# work, in the 3rd-person-plural. Live escape — the founder's own words after an
+# Agent call and a Workflow call both preceded this text in the same turn. Bare
+# 1st-conjugation 1sg stems collide with their own 3pl form (1sg + "т" = 3pl for
+# almost every verb in COMMIT_RU: иду/идут, беру/берут, поднимаю/поднимают,
+# запускаю/запускают, начинаю/начинают, приземляю/приземляют, пойду/пойдут,
+# сделаю/сделают). Confirmed by direct extraction against the live (pre-fix) hook:
+# COMMIT_RE.search matched "иду" as a bare substring inside "идут", span (4,7).
+case_neg_idut()       { _expect "$1" "Они идут параллельно и независимо" MISS; }
+
 run_case() { # <name> <fn>
   local name="$1" fn="$2" pre_rc post_rc
   if [[ -n "${PRE_HOOK}" ]]; then "${fn}" "${PRE_HOOK}" >/dev/null 2>&1; pre_rc=$?; else pre_rc=2; fi
@@ -163,6 +189,7 @@ run_case "neg-test-result"         case_neg_test_result
 run_case "neg-past-report"         case_neg_past_report
 run_case "neg-plain-prose"         case_neg_prose
 run_case "neg-bare-accusative"     case_neg_bare_noun
+run_case "neg-3pl-idut-collision"  case_neg_idut
 
 # --- the false positive this rule produced on its first live day ------------------
 # Within an hour of shipping the leading-verb rule it fired on the lead's own REPORT

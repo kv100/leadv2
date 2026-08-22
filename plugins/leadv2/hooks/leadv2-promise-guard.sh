@@ -78,7 +78,37 @@ import sys, json, re
 jsonl_path = sys.argv[1]
 
 # --- commitment shapes (one named block, editable) -------------------------
-COMMIT_RU = r'приземляю|запускаю|поднимаю|диспатчу|начинаю|иду|сделаю|проверю|подниму|запущу|отправлю|дам|пойду|беру'
+# PROMISE-GUARD-3PL-COLLISION-01 (2026-08-22): bare 1st-conjugation 1sg stems collide
+# with their own 3rd-person-plural — 1sg + "т" = 3pl for almost every verb in this
+# list (иду/идут, беру/берут, поднимаю/поднимают, запускаю/запускают, начинаю/
+# начинают, приземляю/приземляют, пойду/пойдут, сделаю/сделают). Unanchored, the
+# bare alternation matched "иду" as a substring inside the unrelated "идут", so a
+# recap of two jobs already launched earlier in the turn — «Они идут параллельно и
+# независимо» — was misread as a fresh 1st-person commitment and fired the guard on
+# a completed report, not an unkept promise.
+#
+# A blanket \b(...)\b anchor is the obvious fix and it is wrong: it breaks a REAL
+# commitment. "берусь" ("I take on", reflexive) is "беру"+"сь", and no \b occurs
+# between "беру" and "сь" since "сь" is word characters throughout — anchoring both
+# sides silently un-matches "Берусь за третье — контракт prepass", which
+# test-promise-action-binding.sh:case_action_then_promise requires to FIRE.
+#
+# The fix is a RIGHT-SIDE-ONLY negative lookahead per alternative: forbid the stem
+# from being immediately followed by the 3rd-person-plural ending — "т" alone, or
+# "т"+"ся" for the reflexive 3pl ("берутся") — when that ending is itself followed by
+# a word boundary. This keeps "беру" matching inside "берусь" (next char "с", the
+# lookahead does not fire) while rejecting it inside "берут" ("т" then boundary) and
+# "берутся" ("т"+"ся" then boundary).
+#
+# KNOWN RESIDUAL GAP (documented, not solved — same posture as the -су/-ту/-ду nominal
+# collision already noted below for RU_1SG_NONPAST): this lookahead only models the
+# exact т / тся-then-boundary collision observed live. A 3pl reflexive whose ending is
+# followed by more word characters, or a derivational suffix that happens to start
+# with "т" for an unrelated reason, is not covered.
+COMMIT_RU_VERBS = ['приземляю', 'запускаю', 'поднимаю', 'диспатчу', 'начинаю', 'иду',
+                    'сделаю', 'проверю', 'подниму', 'запущу', 'отправлю', 'дам',
+                    'пойду', 'беру']
+COMMIT_RU = '|'.join(v + r'(?!т(?:ся)?\b)' for v in COMMIT_RU_VERBS)
 COMMIT_RU_NOW = r'сейчас\s+(?:же\s+)?(?:' + COMMIT_RU + r')'
 COMMIT_EN = r"\bI'?ll\b|\bI will\b|\blet me\b|\bgoing to\b|\bnext I\b|\bnow I'?m\b|\bI'?m about to\b|\bwill now\b"
 
@@ -302,13 +332,34 @@ if final_text:
                 and not VETO_RE.search(clause):
             commitments.append(clause)
 
-# Only actions AFTER the promise count as keeping it. Fail-open: if we could not
-# locate a text block at all (unexpected transcript shape), fall back to the old
-# turn-wide answer rather than firing on everyone.
-if last_text_pos < 0:
-    action_after_promise = has_action
-else:
-    action_after_promise = any(p > last_text_pos for p in action_positions)
+# REVERTED 2026-08-22 (PROMISE-GUARD-POSITIONAL-REVERT-01) to turn-wide binding.
+#
+# The positional rule below — only actions AFTER the last text block keep a promise —
+# shipped 2026-08-21 to catch "did X, then promised unrelated Y". In its first full day
+# it produced FIVE false positives against ZERO true catches, and it cannot be fixed by
+# widening the verb patterns, because the defect is structural: a closing recap of work
+# already launched in this turn is BY DEFINITION text that comes after its own actions.
+# Every turn that ends with a summary is a false positive. Observed live, all five on
+# ordinary lead prose:
+#   «они идут параллельно и независимо»   (two jobs launched earlier in the same turn)
+#   «Поэтому контракт теперь требует…»    (a report of a finished change)
+#   «дальше по твоему порядку: …»         (a plan the founder himself dictated)
+#   «...ту болтовню, которую контракт запрещает»  (accusative noun, no verb at all)
+#   «...историю, которую они рассказывают»        (same, confirmed twice)
+#
+# Three adversarial reviewers then reproduced the SAME defect class against the
+# regex-level patch with fresh phrasings («слежу за прогрессом обеих», «Поднимаю фоновый
+# воркер…», «Сразу документирую результат…»), which is the proof that patching trigger
+# strings never reaches this cause.
+#
+# What we give up: a turn that does real work AND makes an unrelated unkept promise now
+# passes. That is a deliberate trade — that shape has never once been observed, while the
+# false-positive shape fires several times a day and trains the lead to ignore the guard.
+# A guard that cries wolf on every status report is worse than no guard.
+#
+# The guard's actual purpose is unchanged and still enforced: a turn that promises
+# something and does NOTHING still fires, which is every real escape we have caught.
+action_after_promise = has_action
 
 print(json.dumps({
     'final_text_found': bool(final_text),
