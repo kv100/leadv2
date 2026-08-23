@@ -264,6 +264,7 @@ SUITE_DEFS=(
   "dispatch refusal fallback chain|||bash $TEST_DIR/test-routing-enforcement-p1.sh|||SERIAL"
   "product-close waits for worker exit|||bash $TEST_DIR/test-no-work-terminal.sh|||SERIAL"
   "product-close resumes a died-with-work lane once|||bash $TEST_DIR/test-dwr-resume.sh"
+  "parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)|||bash $TEST_DIR/test-parked-worker-resume.sh"
   "product-close scopes a single-repo lane worktree|||bash $TEST_DIR/test-lane-diff-single-repo.sh"
   "Codex full-cycle runner|||bash $TEST_DIR/test-codex-session-runner.sh|||SERIAL"
   "Codex terminal lead intake|||bash $TEST_DIR/test-codex-lead-intake.sh"

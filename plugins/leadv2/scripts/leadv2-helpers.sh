@@ -64,6 +64,15 @@ if [[ -z "${_LEADV2_EVIDENCE_CONTRACT_MISSION:-}" ]]; then
 readonly _LEADV2_EVIDENCE_CONTRACT_MISSION="EVIDENCE CONTRACT: every factual claim you write about an external system or API (endpoint behaviour, rate limit, auth flow, schema, provider quirk, version) must be immediately followed by its probe artifact — a curl/CLI invocation with its output, a log excerpt, or a doc URL plus the live check that confirmed it. If you have no artifact, prefix the claim with the literal token UNVERIFIED: — an untagged evidence-free external-system claim is a protocol violation, and round-1 reviewers treat one that drives a decision as BLOCKING."
 fi
 
+# ── WORKER-PARKED-ON-BG-01 foreground-work mission text ───────────────────
+# A plain readonly shell string, not exported and not a config knob.  Keep the
+# value free of double-quotes and backticks: it flows into double-quoted shell
+# strings and codex argv.
+# shellcheck disable=SC2034  # consumed by leadv2-dispatch-code.sh
+if [[ -z "${_LEADV2_FOREGROUND_CONTRACT_MISSION:-}" ]]; then
+readonly _LEADV2_FOREGROUND_CONTRACT_MISSION="FOREGROUND WORK CONTRACT: never end a turn while a job you started is still running. Run verification — test suites, builds, migrations — in the FOREGROUND with an explicit timeout. If a job must run detached, wait for it and report its result in the SAME turn before finishing. A final message of the form standing by, waiting for, or will report when it completes is a protocol violation, not a completion."
+fi
+
 # ── Script resolver (A2/A3 transition indirection) ───────────────────────
 # lv2_script BASENAME  — echoes the first existing path among:
 #   1. $CLAUDE_PLUGIN_ROOT/scripts/$1   (plugin canonical, preferred)
