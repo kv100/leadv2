@@ -1,6 +1,9 @@
 # APPLY-ONE-COPY-01 — declared shared-tree overrides.
 # Format: <root-key>/<relpath>   one per line, '#' comments, blank lines ignored.
-# root-key: "agents" = ~/.claude/agents-shared ; "scripts" = ~/.claude/leadv2-shared/scripts
+# root-key: "agents" = ~/.claude/agents-shared ; "scripts" = ~/.claude/leadv2-shared/scripts ;
+#   "project/<repo-basename>/<relpath>" = a per-repo .claude/scripts override (relpath under
+#   .claude/scripts/) or top-level curated-scripts override (relpath "toplevel/<name>"),
+#   consumed by leadv2-plugin-sync.sh (D3, PLUGIN-SYNC-CLAUDE-SCRIPTS-01).
 # A path here reports EXPECTED-OVERRIDE and never gates the drift check.
 # Founder decision 2026-07-30: persona-engine keeps its own agent definitions.
 # Neither side is a superset — shared carries the PE framing/project-id/layer names,

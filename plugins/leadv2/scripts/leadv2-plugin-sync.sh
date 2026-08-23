@@ -33,6 +33,12 @@
 #                   mode is logged at start.
 # --project-root    Sync (c)/(d) to this single root only (skips yaml iteration).
 #
+# Exit codes: 0 = clean run (including LINK/CONVERT/BADLINK/DANGLING/ERROR --
+# only DRIFT is fatal); 2 = usage error; 3 = pinned canonical root missing or
+# invoked from the plugin cache; 4 = one or more (c)/(c2) project-scripts
+# files diverged from canonical and were left untouched — promote or discard
+# before the next sync (D1, PLUGIN-SYNC-CLAUDE-SCRIPTS-01).
+#
 # Write gates (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01), applied per file a real
 # run would overwrite, in order — a dirty destination is refused regardless of
 # direction tags:
@@ -125,6 +131,39 @@ CACHE_TARGET="${HOME}/.claude/plugins/cache/leadv2-local/leadv2/0.1.0"
 SHARED_TARGET="${HOME}/.claude/leadv2-shared"
 CROSS_REPO_CONFIG="${HOME}/.claude/leadv2-shared/cross-repo-paths.yaml"
 
+# D3 (PLUGIN-SYNC-CLAUDE-SCRIPTS-01): declared per-repo overrides for (c)/(c2)
+# project-scripts sync. Same file, same env override, same vocabulary as
+# leadv2-one-copy-convert.sh's EXCEPTIONS_FILE — one exception list, not two.
+# New root-key here: "project/<repo-basename>/<relpath>", where <relpath> is
+# under .claude/scripts/ for (c) or "toplevel/<name>" for (c2).
+ONE_COPY_EXCEPTIONS_FILE="${LEADV2_ONE_COPY_EXCEPTIONS_FILE:-${PLUGIN_ROOT}/ref/one-copy-exceptions.txt}"
+declare -a PLUGIN_SYNC_EXCEPTIONS=()
+_load_plugin_sync_exceptions() {
+  PLUGIN_SYNC_EXCEPTIONS=()
+  if [[ ! -f "${ONE_COPY_EXCEPTIONS_FILE}" ]]; then
+    log_warn "exception list not found at ${ONE_COPY_EXCEPTIONS_FILE} — treating as empty"
+    return 0
+  fi
+  local raw line
+  while IFS= read -r raw || [[ -n "${raw}" ]]; do
+    line="${raw%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "${line}" ]] && continue
+    PLUGIN_SYNC_EXCEPTIONS+=("${line}")
+  done < "${ONE_COPY_EXCEPTIONS_FILE}"
+}
+_load_plugin_sync_exceptions
+
+# _is_plugin_sync_exception <root-basename> <relpath-under-.claude/scripts-or-toplevel/>
+_is_plugin_sync_exception() {
+  local key="project/$1/$2" e
+  for e in "${PLUGIN_SYNC_EXCEPTIONS[@]}"; do
+    [[ "${e}" == "${key}" ]] && return 0
+  done
+  return 1
+}
+
 # --checksum only (no -u): mtime skew must never cause silent content divergence.
 _rsync_or_dry() {
   local label="$1" src="$2" dst="$3"
@@ -214,6 +253,20 @@ _link_one_file() {
   fi
 }
 
+# D2 (PLUGIN-SYNC-CLAUDE-SCRIPTS-01): project_drift_repos must count a repo
+# ONCE across both (c) .claude/scripts and (c2) top-level curated scripts, not
+# once per call site. Bash 3.2 has no associative arrays, so track seen repo
+# basenames in a plain array and scan it linearly (small: one entry per repo).
+declare -a _DRIFT_COUNTED_REPOS=()
+_mark_repo_drift_once() {
+  local repo="$1" r
+  for r in "${_DRIFT_COUNTED_REPOS[@]}"; do
+    [[ "${r}" == "${repo}" ]] && return 1
+  done
+  _DRIFT_COUNTED_REPOS+=("${repo}")
+  return 0
+}
+
 _link_diff_detail() {
   local canonical_file="$1" dst_file="$2" detail lines
   if command -v git >/dev/null 2>&1; then
@@ -230,7 +283,8 @@ _link_diff_detail() {
 # is classified first, so divergent local content is never overwritten.
 _link_project_scripts() {
   local root="$1" dst_dir="$2" src="${PLUGIN_ROOT}/scripts" canonical_file rel dst_file token
-  local linked=0 converted=0 ok=0 drift=0 badlink=0 dangling=0 typeclash=0 error=0 skip=0 total=0
+  local root_basename="${root##*/}"
+  local linked=0 converted=0 ok=0 drift=0 badlink=0 dangling=0 typeclash=0 error=0 skip=0 exception=0 total=0
   local -a canonical_files=()
   [[ -d "${src}" ]] || return 0
   while IFS= read -r canonical_file; do
@@ -251,8 +305,13 @@ _link_project_scripts() {
   for canonical_file in "${canonical_files[@]}"; do
     rel="${canonical_file#${src}/}"
     dst_file="${dst_dir}/${rel}"
-    token="$(_link_one_file "${canonical_file}" "${dst_file}")"
     total=$((total + 1))
+    if _is_plugin_sync_exception "${root_basename}" "${rel}"; then
+      exception=$((exception + 1))
+      log "EXCEPTION: ${dst_file} (declared override, left untouched)"
+      continue
+    fi
+    token="$(_link_one_file "${canonical_file}" "${dst_file}")"
     case "${token}" in
       LINK) linked=$((linked + 1)); log "$([[ "${DRY_RUN}" == true ]] && printf 'WOULD LINK' || printf 'LINK'): ${dst_file}" ;;
       CONVERT) converted=$((converted + 1)); log "$([[ "${DRY_RUN}" == true ]] && printf 'WOULD CONVERT' || printf 'CONVERT'): ${dst_file}" ;;
@@ -266,10 +325,10 @@ _link_project_scripts() {
       *) error=$((error + 1)); log_warn "ERROR: unknown link classification ${token} for ${dst_file}" ;;
     esac
   done
-  project_link_tallies+=("(c) ${root##*/}: linked=${linked} converted=${converted} ok=${ok} drift=${drift} badlink=${badlink} dangling=${dangling} typeclash=${typeclash} error=${error} skip=${skip} total=${total}")
+  project_link_tallies+=("(c) ${root_basename}: linked=${linked} converted=${converted} ok=${ok} drift=${drift} badlink=${badlink} dangling=${dangling} typeclash=${typeclash} error=${error} skip=${skip} exception=${exception} total=${total}")
   if (( drift > 0 )); then
     project_drift_files=$((project_drift_files + drift))
-    project_drift_repos=$((project_drift_repos + 1))
+    _mark_repo_drift_once "${root_basename}" && project_drift_repos=$((project_drift_repos + 1))
   fi
 }
 
@@ -660,12 +719,22 @@ _sync_project_root() {
     for cf in "${toplevel_curated_files[@]}"; do
       local cf_src="${src}${cf}"
       if [[ -f "${cf_src}" ]]; then
+        if _is_plugin_sync_exception "${root##*/}" "toplevel/${cf}"; then
+          log "EXCEPTION: ${proj_scripts_toplevel}/${cf} (declared override, left untouched)"
+          continue
+        fi
         local cf_token
         cf_token="$(_link_one_file "${cf_src}" "${proj_scripts_toplevel}/${cf}")"
         case "${cf_token}" in
           LINK|CONVERT) log "$([[ "${DRY_RUN}" == true ]] && printf "WOULD ${cf_token}" || printf "${cf_token}"): ${proj_scripts_toplevel}/${cf}" ;;
-          DRIFT) log_warn "DRIFT: ${proj_scripts_toplevel}/${cf} — $(_link_diff_detail "${cf_src}" "${proj_scripts_toplevel}/${cf}") (left untouched)" ;;
+          OK|SKIP) : ;;
+          DRIFT)
+            log_warn "DRIFT: ${proj_scripts_toplevel}/${cf} — $(_link_diff_detail "${cf_src}" "${proj_scripts_toplevel}/${cf}") (left untouched)"
+            project_drift_files=$((project_drift_files + 1))
+            _mark_repo_drift_once "${root##*/}" && project_drift_repos=$((project_drift_repos + 1))
+            ;;
           BADLINK|DANGLING|TYPECLASH|ERROR) log_warn "${cf_token}: ${proj_scripts_toplevel}/${cf} (left untouched)" ;;
+          *) log_warn "ERROR: unknown link classification ${cf_token} for ${proj_scripts_toplevel}/${cf}" ;;
         esac
       fi
     done
@@ -916,4 +985,5 @@ for tally in "${project_link_tallies[@]}"; do
 done
 if (( project_drift_files > 0 )); then
   log_warn "ACTION REQUIRED: ${project_drift_files} diverging file(s) across ${project_drift_repos} repo(s) — promote or discard; nothing was overwritten"
+  exit 4
 fi
