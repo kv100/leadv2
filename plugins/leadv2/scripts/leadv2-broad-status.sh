@@ -198,9 +198,22 @@ trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 # symlink this resolver now plants at that path, but .arm-exceptions-<day>
 # is GLOB class -- deliberately never symlinked -- so a raw read of it went
 # silently empty the moment _arm_exception_bump started writing to the
-# control plane instead: test-glm-deferred-ladder.sh case (d) is the proof.
+# control plane instead.
+#
+# §3 input-boundary guard: `date` failing (or emitting something malformed)
+# used to leave _TODAY_UTC empty, resolving the name ".arm-exceptions-" --
+# a file no writer ever writes -- and rendering 0 fallbacks with no warning,
+# asymmetric with the writer's own §3.6 8-digit guard in
+# leadv2-dispatch-code.sh. Re-derive on a bad value instead of resolving a
+# truncated name.
 _TODAY_UTC="$(date -u +%Y%m%d 2>/dev/null || true)"
-ARM_EXCEPTIONS_PATH="$(_lv2_state_resolve ".arm-exceptions-${_TODAY_UTC}" "$PROJECT_ROOT/docs/leadv2/.arm-exceptions-${_TODAY_UTC}")"
+[[ "${_TODAY_UTC}" =~ ^[0-9]{8}$ ]] || _TODAY_UTC="$(date -u +%Y%m%d 2>/dev/null || true)"
+if [[ "${_TODAY_UTC}" =~ ^[0-9]{8}$ ]]; then
+  ARM_EXCEPTIONS_PATH="$(_lv2_state_resolve ".arm-exceptions-${_TODAY_UTC}" "$PROJECT_ROOT/docs/leadv2/.arm-exceptions-${_TODAY_UTC}")"
+else
+  printf '[broad-status] WARN: date -u +%%Y%%m%%d unresolved -- skipping arm-exceptions read\n' >&2
+  ARM_EXCEPTIONS_PATH=""
+fi
 CODEX_CREDITS_STAMP_PATH="$(_lv2_state_resolve .codex-credits-empty.stamp "$PROJECT_ROOT/docs/leadv2/.codex-credits-empty.stamp")"
 GLM_DEFERRED_PATH="$(_lv2_state_resolve glm-deferred.jsonl "$PROJECT_ROOT/docs/leadv2/glm-deferred.jsonl")"
 

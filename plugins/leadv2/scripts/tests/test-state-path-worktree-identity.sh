@@ -90,6 +90,40 @@ for name in "founder-status.md" "founder-status-full.md"; do
   fi
 done
 
+# ── falsification: prove this suite's own identity check can actually FAIL ──
+# Mutant: force the git-common-dir lookup empty so the resolver takes its
+# "not inside a git repo" branch unconditionally, which pins STATE_ROOT at
+# "${LINK_ROOT}/docs/leadv2" -- the exact raw, per-worktree path
+# LANE-STATE-LEAK-01 exists to kill. Against a REAL linked worktree (main vs
+# WT_DIR are different directories), that must make main/worktree resolution
+# diverge. A copy of production code, mutated one line, run through the
+# suite's own identity check -- not a printed sentence.
+MUTANT_SH="${TMP_ROOT}/leadv2-state-path.mutant.sh"
+cp "${STATE_PATH_SH}" "${MUTANT_SH}"
+sed -i.bak 's/COMMON_DIR="\$(git -C "\$LINK_ROOT" rev-parse --path-format=absolute --git-common-dir 2>\/dev\/null || true)"/COMMON_DIR=""/' "${MUTANT_SH}"
+rm -f "${MUTANT_SH}.bak"
+chmod +x "${MUTANT_SH}"
+if ! grep -q 'COMMON_DIR=""' "${MUTANT_SH}"; then
+  echo "ERROR: falsification mutant patch did not apply (sed pattern stale vs source)"; exit 1
+fi
+
+identity_holds() {  # <state-path-bin> -> 0 if main/worktree resolve identically, 1 if they diverge
+  local bin="$1"
+  local from_main from_wt
+  from_main="$(PROJECT_ROOT="${MAIN_REPO}" bash "${bin}" "active.yaml" 2>/dev/null)"
+  from_wt="$(PROJECT_ROOT="${WT_DIR}" bash "${bin}" "active.yaml" 2>/dev/null)"
+  [[ -n "${from_main}" && "${from_main}" == "${from_wt}" ]]
+}
+
+identity_holds "${MUTANT_SH}"; pre_rc=$?
+identity_holds "${STATE_PATH_SH}"; post_rc=$?
+if [[ ${pre_rc} -ne 0 && ${post_rc} -eq 0 ]]; then
+  pass "falsification: mutant (raw per-worktree path) diverges, real resolver agrees"
+  echo "RED-then-GREEN: worktree-identity (pre_rc=${pre_rc} -> post_rc=${post_rc})"
+else
+  fail "falsification" "mutant pre_rc=${pre_rc} (want !=0) real post_rc=${post_rc} (want 0)"
+fi
+
 git -C "${MAIN_REPO}" worktree remove --force "${WT_DIR}" >/dev/null 2>&1 || true
 
 if [[ "${FAIL}" -eq 0 ]]; then

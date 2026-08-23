@@ -102,6 +102,89 @@ else
   fail "S6" "is_link=$( [[ -L "${WT_C}/docs/leadv2/founder-status.md" ]] && echo yes || echo no ) backup_exists=$( [[ -f "${WT_C}/docs/leadv2/founder-status.md.pre-controlplane-backup" ]] && echo yes || echo no )"
 fi
 
+# ── falsification: prove S4's line-union assertion can actually FAIL ───────
+# Mutant: replace the MERGE(file) collision branch (target already exists)
+# with an unconditional shutil.move(local, target) -- a clobber instead of a
+# textual line-union. Run the SAME two-worktree merge scenario as S4 through
+# the mutant: wt-a's line lands first, wt-b's collision then overwrites the
+# target outright, so wt-a's line is lost. A copy of production code,
+# mutated one branch, run through the suite's own merge scenario.
+PATCH_PY="${TMP_ROOT}/patch-mutant.py"
+cat > "${PATCH_PY}" <<'PYEOF'
+import sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+src = open(src_path, encoding="utf-8").read()
+anchor = '''        else:
+            try:
+                local_size = os.path.getsize(local)
+            except OSError:
+                local_size = 0
+            if local_size > MERGE_SIZE_CAP:
+                sys.stderr.write(
+                    "[leadv2-state-path] %s exceeds merge size cap (%d bytes) -- "
+                    "left un-migrated this invocation\\n" % (local, local_size)
+                )
+                continue
+            try:
+                with open(target, "r", encoding="utf-8", errors="replace") as fh:
+                    existing_lines = set(line.rstrip("\\n") for line in fh)
+            except OSError:
+                existing_lines = set()
+            try:
+                with open(local, "r", encoding="utf-8", errors="replace") as fh:
+                    local_lines = [line.rstrip("\\n") for line in fh]
+            except OSError:
+                local_lines = []
+            new_lines = [ln for ln in local_lines if ln and ln not in existing_lines]
+            try:
+                if new_lines:
+                    with open(target, "a", encoding="utf-8") as fh:
+                        for ln in new_lines:
+                            fh.write(ln + "\\n")
+                os.remove(local)
+            except OSError:
+                continue'''
+replacement = '''        else:
+            # MUTANT (test-state-path-migration.sh falsification): clobber
+            # instead of union.
+            try:
+                shutil.move(local, target)
+            except OSError:
+                continue'''
+if anchor not in src:
+    sys.stderr.write("ERROR: falsification anchor not found -- source drifted from patcher\n")
+    sys.exit(1)
+open(dst_path, "w", encoding="utf-8").write(src.replace(anchor, replacement, 1))
+PYEOF
+MUTANT_SH="${TMP_ROOT}/leadv2-state-path.mutant.sh"
+if ! python3 "${PATCH_PY}" "${STATE_PATH_SH}" "${MUTANT_SH}"; then
+  echo "ERROR: falsification mutant patch failed to apply"; exit 1
+fi
+chmod +x "${MUTANT_SH}"
+
+merge_union_survives() {  # <state-path-bin> -> 0 if both sig8 lines survive, 1 otherwise
+  local bin="$1"
+  local state="${TMP_ROOT}/falsify-state-$$-${RANDOM}"
+  local a="${TMP_ROOT}/falsify-a-$$-${RANDOM}"
+  local b="${TMP_ROOT}/falsify-b-$$-${RANDOM}"
+  mkdir -p "${state}" "${a}/docs/leadv2" "${b}/docs/leadv2"
+  printf '{"sig8":"aaaaaaaa"}\n' > "${a}/docs/leadv2/glm-deferred.jsonl"
+  printf '{"sig8":"bbbbbbbb"}\n' > "${b}/docs/leadv2/glm-deferred.jsonl"
+  LEADV2_STATE_ROOT="${state}" PROJECT_ROOT="${a}" bash "${bin}" glm-deferred.jsonl >/dev/null 2>&1
+  LEADV2_STATE_ROOT="${state}" PROJECT_ROOT="${b}" bash "${bin}" glm-deferred.jsonl >/dev/null 2>&1
+  local merged; merged="$(cat "${state}/glm-deferred.jsonl" 2>/dev/null)"
+  grep -qF '"sig8":"aaaaaaaa"' <<<"${merged}" && grep -qF '"sig8":"bbbbbbbb"' <<<"${merged}"
+}
+
+merge_union_survives "${MUTANT_SH}"; pre_rc=$?
+merge_union_survives "${STATE_PATH_SH}"; post_rc=$?
+if [[ ${pre_rc} -ne 0 && ${post_rc} -eq 0 ]]; then
+  pass "falsification: clobber mutant loses wt-a's line, real resolver unions both"
+  echo "RED-then-GREEN: state-path-migration (pre_rc=${pre_rc} -> post_rc=${post_rc})"
+else
+  fail "falsification" "mutant pre_rc=${pre_rc} (want !=0) real post_rc=${post_rc} (want 0)"
+fi
+
 if [[ "${FAIL}" -eq 0 ]]; then
   echo "ALL PASS"
   exit 0

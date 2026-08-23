@@ -279,8 +279,35 @@ printf '{"result":"нет данных за сегодня\nвопросов н�
 EOF
 chmod +x "${STUBS_D}/collector.sh" "${STUBS_D}/claude.sh"
 
-FOUNDER_STATUS_D="${ROOT}/docs/leadv2/founder-status.md"
-LEADV2_PROJECT_ROOT="${ROOT}" LEADV2_STATE_ROOT="${TMP_ROOT}/state-d" \
+# PULSE-READABLE-01 (census correction, LANE-STATE-LEAK-01 fix round): the
+# provider-health lines (sonnet-fallback / codex-credits / glm-deferred) are
+# folded into queue_md, and queue_md is UNCONDITIONALLY collapsed out of the
+# compact founder-status.md -- every non-empty queue_md trips the "скрыто:
+# N строк очереди" pointer (leadv2-broad-status.sh:779-784) regardless of
+# what's in it. That collapse is deliberate (PULSE-READABLE-01: "full lane
+# detail, full queue ... still lands in founder-status-full.md"), not a
+# regression from this lane. Verified this leg was already red against
+# founder-status.md at the merge-base (aed1f2b), before any of this round's
+# state-path changes -- the original root-cause narrative (a writer/reader
+# state-root split) does not hold for this leg; the assertion was reading
+# the wrong artifact. founder-status-full.md is where the line actually
+# lands.
+FOUNDER_STATUS_D="${ROOT}/docs/leadv2/founder-status-full.md"
+
+# LANE-STATE-LEAK-01: the (a) writer resolves its arm-exceptions path with no
+# LEADV2_STATE_ROOT override (it inherits the no-git degrade branch, pinned at
+# ${ROOT}/docs/leadv2). The renderer below MUST resolve the same root or it
+# reads an empty directory -- so this leg does not set LEADV2_STATE_ROOT
+# either. Pre-assert the pairing so a future re-sandboxing of only one side
+# fails here with a named cause instead of "line missing" three legs later.
+_ARM_EXC_DAY="$(date -u +%Y%m%d)"
+_ARM_EXC_EXPECT="$(PROJECT_ROOT="${ROOT}" bash "${SCRIPT_DIR}/../leadv2-state-path.sh" ".arm-exceptions-${_ARM_EXC_DAY}")"
+if [[ ! -s "${_ARM_EXC_EXPECT}" ]]; then
+  fail "(d) setup: writer/reader state-root mismatch" \
+    "writer path=${_ARM_EXC_EXPECT} (resolved with PROJECT_ROOT=${ROOT}, no LEADV2_STATE_ROOT) is missing or empty"
+fi
+
+LEADV2_PROJECT_ROOT="${ROOT}" \
   LEADV2_STATUS_COLLECTOR_BIN="${STUBS_D}/collector.sh" \
   LEADV2_BROAD_STATUS_CLAUDE_BIN="${STUBS_D}/claude.sh" \
   LEADV2_BROAD_STATUS_BEAT_AT="2026-08-20T00:00:00Z" \
@@ -288,9 +315,9 @@ LEADV2_PROJECT_ROOT="${ROOT}" LEADV2_STATE_ROOT="${TMP_ROOT}/state-d" \
   bash "${BROAD_STATUS_SH}" >/dev/null 2>&1 || true
 
 if [[ ! -f "${FOUNDER_STATUS_D}" ]]; then
-  fail "(d) founder-status.md not written" "renderer produced no artifact"
+  fail "(d) founder-status-full.md not written" "renderer produced no artifact"
 elif grep -q 'sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate)' "${FOUNDER_STATUS_D}"; then
-  pass "(d) rendered founder-status.md contains sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate) -- real reason variant, not hardcoded 'glm quota'"
+  pass "(d) rendered founder-status-full.md contains sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate) -- real reason variant, not hardcoded 'glm quota'"
 else
   fail "(d) expected sonnet-fallback line missing from rendered artifact" \
     "content=$(cat "${FOUNDER_STATUS_D}")"
@@ -299,8 +326,8 @@ fi
 # ── negative: a day with no fallback renders no such line ──────────────────
 ROOT_NEG="${TMP_ROOT}/root-neg"
 make_tenant_root "${ROOT_NEG}"
-FOUNDER_STATUS_NEG="${ROOT_NEG}/docs/leadv2/founder-status.md"
-LEADV2_PROJECT_ROOT="${ROOT_NEG}" LEADV2_STATE_ROOT="${TMP_ROOT}/state-neg" \
+FOUNDER_STATUS_NEG="${ROOT_NEG}/docs/leadv2/founder-status-full.md"
+LEADV2_PROJECT_ROOT="${ROOT_NEG}" \
   LEADV2_STATUS_COLLECTOR_BIN="${STUBS_D}/collector.sh" \
   LEADV2_BROAD_STATUS_CLAUDE_BIN="${STUBS_D}/claude.sh" \
   LEADV2_BROAD_STATUS_BEAT_AT="2026-08-20T00:00:00Z" \
