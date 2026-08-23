@@ -96,18 +96,29 @@ case_unregistered_silent_not_advanced() { # <scripts-dir>
 
 PREFIX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-prefix-lrnaw.XXXXXX")"
 REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel)"
-BASE="${LEADV2_TEST_BASELINE_REF:-$(git -C "${REPO}" merge-base origin/main HEAD 2>/dev/null || true)}"
-[[ -n "${BASE}" ]] || BASE=HEAD
-git -C "${REPO}" archive "${BASE}" plugins/leadv2/scripts 2>/dev/null | tar -x -C "${PREFIX_DIR}" 2>/dev/null
+SKIP=0
+# RED-FIRST-SELF-INVALIDATES-01: a floating `merge-base origin/main HEAD` is
+# armed, not yet fired -- it detonates the moment REVIEW-GATE-LANEROOT-01's fix
+# reaches origin/main, at which point every merge-base in this branch's future
+# also contains the fix and pre==post forever. Pin to the fix's intro commit.
+source "${SCRIPT_DIR}/lib/leadv2-red-first-baseline.sh"
+LEADV2_REPO="${REPO}"
+BASE="$(lv2_rf_baseline_ref 'REVIEW-GATE-LANEROOT-01' plugins/leadv2/scripts '8f0e0668ba80b856feea6e5efc0971ec400c7c35^')"; rf_rc=$?
 PREFIX_SCRIPTS="${PREFIX_DIR}/plugins/leadv2/scripts"
+if [[ ${rf_rc} -eq 0 ]]; then
+  lv2_rf_extract "${BASE}" "${PREFIX_DIR}" plugins/leadv2/scripts >/dev/null 2>&1 || rf_rc=3
+fi
 
 run_case() {
   local name="$1" fn="$2" pre post
-  "${fn}" "${PREFIX_SCRIPTS}" >/dev/null 2>&1; pre=$?
   "${fn}" "${SCRIPT_DIR}" >/dev/null 2>&1; post=$?
   if [[ ${post} -ne 0 ]]; then
     FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix rc=${post}"); log "FAIL: ${name}"; return
   fi
+  if [[ ${rf_rc} -ne 0 ]]; then
+    SKIP=$((SKIP + 1)); log "SKIP: red-first baseline unresolvable — ${name}"; return
+  fi
+  "${fn}" "${PREFIX_SCRIPTS}" >/dev/null 2>&1; pre=$?
   if [[ ${pre} -eq 0 ]]; then
     GREEN_PRE_FIX=$((GREEN_PRE_FIX + 1)); ERRORS+=("${name}: green pre-fix"); log "GREEN-PRE-FIX: ${name}"; return
   fi
@@ -120,8 +131,16 @@ run_case() {
 # failure would make the regression suite reject the stated non-goal.
 run_control() {
   local name="$1" fn="$2" pre post
-  "${fn}" "${PREFIX_SCRIPTS}" >/dev/null 2>&1; pre=$?
   "${fn}" "${SCRIPT_DIR}" >/dev/null 2>&1; post=$?
+  if [[ ${rf_rc} -ne 0 ]]; then
+    if [[ ${post} -eq 0 ]]; then
+      SKIP=$((SKIP + 1)); log "SKIP: red-first baseline unresolvable — ${name}"
+    else
+      FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix rc=${post}"); log "FAIL: ${name}"
+    fi
+    return
+  fi
+  "${fn}" "${PREFIX_SCRIPTS}" >/dev/null 2>&1; pre=$?
   if [[ ${pre} -eq 0 && ${post} -eq 0 ]]; then
     PASS=$((PASS + 1)); log "CONTROL-PASSES: ${name} (pre_rc=0, post_rc=0)"; return
   fi
@@ -138,7 +157,7 @@ run_control registered-unscoped-positive-control case_registered_unscoped
 run_case unregistered-silent-not-advanced case_unregistered_silent_not_advanced
 rm -rf "${PREFIX_DIR}"
 
-printf '\nResults: %s passed(red->green), %s failed, %s green-pre-fix\n' "${PASS}" "${FAIL}" "${GREEN_PRE_FIX}"
+printf '\nResults: %s passed(red->green), %s failed, %s green-pre-fix, %s skipped\n' "${PASS}" "${FAIL}" "${GREEN_PRE_FIX}" "${SKIP}"
 if [[ ${FAIL} -gt 0 || ${GREEN_PRE_FIX} -gt 0 ]]; then
   printf 'FAIL: %s\n' "${ERRORS[@]}"
   exit 1

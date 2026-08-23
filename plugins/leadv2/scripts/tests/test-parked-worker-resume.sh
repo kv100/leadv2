@@ -9,14 +9,20 @@ bad() { printf '[TEST] FAIL: %s\n' "$1"; FAIL=$((FAIL + 1)); }
 assert_eq() { [[ "$1" == "$2" ]] && ok "$3" || bad "$3 (got=$1 want=$2)"; }
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-parked.XXXXXX")"
 trap 'rm -rf "${TMP}"' EXIT INT TERM
+SKIP=0
 
-# Baseline is an archive, never a worktree mutation.  The fixed marker must be
-# absent there; use the parent if available, otherwise a pinned pre-fix floor.
-BASE="$(git -C "${REPO}" rev-parse HEAD^ 2>/dev/null || true)"
-[[ -n "${BASE}" ]] || BASE="6fa4823"
+# RED-FIRST-SELF-INVALIDATES-01: `HEAD^` is a floating ref -- it was pre-fix
+# only at authoring time, and stops meaning that the moment this fix's own
+# merge commit becomes HEAD^ (which it now is: b680643). Pin the baseline to
+# the parent of the commit that introduced the marker instead.
+source "${SCRIPT_DIR}/lib/leadv2-red-first-baseline.sh"
+LEADV2_REPO="${REPO}"
+BASE="$(lv2_rf_baseline_ref '_LEADV2_FOREGROUND_CONTRACT_MISSION' plugins/leadv2/scripts/leadv2-helpers.sh '6fa4823')"; rf_rc=$?
 mkdir -p "${TMP}/prefix"
-git -C "${REPO}" archive "${BASE}" plugins/leadv2/scripts 2>/dev/null | tar -x -C "${TMP}/prefix" 2>/dev/null || true
 PREFIX="${TMP}/prefix/plugins/leadv2/scripts"
+if [[ ${rf_rc} -eq 0 ]]; then
+  lv2_rf_extract "${BASE}" "${TMP}/prefix" plugins/leadv2/scripts >/dev/null 2>&1 || rf_rc=3
+fi
 
 # 1. All four arms receive the fixed prefix at the one post-signature site;
 # pre-fix archive is deliberately red.
@@ -30,9 +36,16 @@ contract_case() { # <scripts>
     && grep -q 'sonnet)' <<<"${body}" && grep -q 'codex)' <<<"${body}" \
     && [[ "$(grep -n '_LEADV2_FOREGROUND_CONTRACT_MISSION' <<<"${body}" | head -1 | cut -d: -f1)" -lt "$(grep -n '_LEADV2_EVIDENCE_CONTRACT_MISSION' <<<"${body}" | head -1 | cut -d: -f1)" ]]
 }
-contract_case "${PREFIX}" >/dev/null 2>&1; pre=$?
 contract_case "${SCRIPT_DIR}" >/dev/null 2>&1; post=$?
-[[ ${pre} -ne 0 && ${post} -eq 0 ]] && ok "red-first foreground contract reaches glm/kimi/sonnet/codex without changing spawn identity site" || bad "contract red-first (pre=$pre post=$post)"
+if [[ ${post} -ne 0 ]]; then
+  bad "contract red-first (post=${post})"
+elif [[ ${rf_rc} -ne 0 ]]; then
+  printf '[TEST] SKIP: red-first baseline unresolvable — contract red-first\n'
+  SKIP=$((SKIP + 1))
+else
+  contract_case "${PREFIX}" >/dev/null 2>&1; pre=$?
+  [[ ${pre} -ne 0 ]] && ok "red-first foreground contract reaches glm/kimi/sonnet/codex without changing spawn identity site" || bad "contract red-first (pre=$pre post=$post)"
+fi
 
 # 2. Classifier: clean parked result plus declared-unsatisfied deliverable -> parked.
 run="${TMP}/run"; mkdir -p "${run}"
@@ -77,5 +90,5 @@ grep -q 'reason=already_attempted' "${TMP}/journal" && ok "second parked exit jo
 # Existing DWR suite is the positive control for died-with-work semantics.
 if bash "${SCRIPT_DIR}/tests/test-dwr-resume.sh" >/dev/null 2>&1; then ok "positive control died-with-work resume remains green"; else bad "positive control died-with-work resume"; fi
 
-printf '[TEST] RESULT: pass=%s fail=%s\n' "${PASS}" "${FAIL}"
+printf '[TEST] RESULT: pass=%s fail=%s skip=%s\n' "${PASS}" "${FAIL}" "${SKIP}"
 [[ ${FAIL} -eq 0 ]]
