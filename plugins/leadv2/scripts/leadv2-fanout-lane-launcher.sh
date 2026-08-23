@@ -460,6 +460,18 @@ case "$dc_rc" in
     _reap_lane_worktree_if_unused
     exit 3
     ;;
+  6)
+    # BURN-GOVERNOR-01 (architect prepass §1.3 D3): dispatch-code.sh's own burn gate
+    # already refused this lane before any worker/worktree/ledger row existed -- this
+    # is a deliberate park, NOT a failure, so it must NEVER be recorded `dead` (that
+    # feeds the dead-lane alarm and retry-dead machinery for a lane that never ran).
+    log "single-worker funnel: task=${TASK_ID} refused by dispatch-code.sh's burn gate (24h local token burn over hard cap) -- releasing claim, task parked to burn-deferred.jsonl, returns to pending (see leadv2-dispatch-code.sh burn-deferred --list)"
+    leadv2_tasks_unclaim "$TASK_ID" >/dev/null 2>&1 || true
+    leadv2_active_unregister "$TASK_ID" >/dev/null 2>&1 || true
+    _fanout_write_lane_terminal parked "burn_hard_24h" ""
+    _reap_lane_worktree_if_unused
+    exit 3
+    ;;
   *)
     log_error "single-worker funnel: task=${TASK_ID} dispatch-code.sh failed (rc=${dc_rc}) -- releasing claim; NOT falling back to full-cycle from a detached launcher (out of reach) -- recording dead so the founder-picked task returns to pending, not silently dropped"
     leadv2_tasks_unclaim "$TASK_ID" >/dev/null 2>&1 || true

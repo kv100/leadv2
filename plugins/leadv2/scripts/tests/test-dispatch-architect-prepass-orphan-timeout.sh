@@ -9,6 +9,10 @@
 # 63 minutes after prepass entered, with the lane's own dispatch long since done.
 set -uo pipefail
 
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
+
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
 REPO="$ROOT/repo"; mkdir -p "$REPO/.claude/ref" "$REPO/docs/leadv2/.bus-offsets"
 (cd "$REPO" && git init -q && git config user.email test@example.com && git config user.name test && : > seed && git add seed && git commit -qm seed)

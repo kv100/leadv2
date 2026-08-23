@@ -282,6 +282,40 @@ if [[ "${LEADV2_DAEMON:-0}" == "1" \
   exit 0
 fi
 
+# ── BURN-GOVERNOR-01 deliverable 3 (D4): interactive emergency escalation ──
+# WHY: at "emergency" (>=650K estimated tokens) the alternative is the founder paying
+# ~650K input on EVERY subsequent turn until they notice and type /compact themselves --
+# the interactive pending-warn path below only ever gets read on the NEXT UserPromptSubmit,
+# so it can sit unread for many expensive turns. This restricts the forced block to
+# "emergency" ONLY -- "warn"/"hard"/"long_chat" still fall through to the pending-warn
+# path unchanged below.
+#
+# This IS a deliberate, narrow reversal of COMPACT-FORCED-ON-HUMAN-01 (the guard just
+# above, which exists because a forged {"decision":"block","reason":"/compact"} arrives
+# as a real user turn the lead obeys, and LEADV2_DAEMON is set repo-wide so env alone
+# cannot distinguish a human session). It is still a forged user turn at a human, it is
+# still one-shot (same MARKER file, same compare), and it is still short-circuited by
+# STOP_ACTIVE the same way the daemon branch is. Two independent kill-switches:
+# LEADV2_COMPACT_INTERACTIVE_BLOCK=1 opts IN (default OFF per founder order 2026-08-19,
+# commit 7daf57f: "never block a founder prompt on turn count" — same class of
+# intervention, so blocking a human session must never be the default);
+# LEADV2_NO_FORCE_COMPACT=1 remains the shared hard kill-switch.
+#
+# Placed AFTER the daemon branch (a real daemon session's path is unchanged, byte-for-
+# byte) and BEFORE the PREV_LEVEL read below (so a session that blocks here does not
+# ALSO queue a pending-warn for the same level -- same MARKER, same one-shot compare).
+if [[ "$LEVEL" == "emergency" \
+   && "$STOP_ACTIVE" != "true" \
+   && "${LEADV2_COMPACT_INTERACTIVE_BLOCK:-0}" == "1" \
+   && "${LEADV2_NO_FORCE_COMPACT:-0}" != "1" ]]; then
+  INTERACTIVE_PREV_LEVEL="$(cat "$MARKER" 2>/dev/null || echo "")"
+  if [[ "$INTERACTIVE_PREV_LEVEL" != "emergency" ]]; then
+    echo "emergency" > "$MARKER" 2>/dev/null || true
+    printf '%s\n' '{"decision":"block","reason":"/compact"}'
+    exit 0
+  fi
+fi
+
 # Emit at most once per level per session
 PREV_LEVEL="$(cat "$MARKER" 2>/dev/null || echo "")"
 [[ "$LEVEL" == "$PREV_LEVEL" ]] && exit 0
@@ -292,7 +326,7 @@ PENDING_WARN="$HOME/.claude/leadv2-pending-warn-${SESSION_ID}.txt"
 
 case "$LEVEL" in
   emergency)
-    MSG="[COMPACT_NOW] Контекст: ${KB}KB (~${EST_K}K токенов после последнего /compact${TASK_NOTE}). Каждый ход = ${EST_K}K input. Скажи фаундеру одной строкой: 'Нужен /compact — контекст ${EST_K}K токенов.' Потом жди."
+    MSG="[COMPACT_NOW] Сессия ПРЕВЫСИЛА аварийный порог контекста: ~${EST_K}K токенов (порог ${EMERG_T} токенов, файл ${KB}KB${TASK_NOTE}). Каждый следующий ход стоит ${EST_K}K input. Авто-/compact сейчас НЕ включён (по умолчанию OFF): чтобы хук сам блокировал ход и вызывал /compact, экспортируй LEADV2_COMPACT_INTERACTIVE_BLOCK=1. Скажи фаундеру одной строкой: 'Нужен /compact — контекст ${EST_K}K токенов.' Потом жди."
     ;;
   hard)
     MSG="[COMPACT_NEEDED] Контекст: ${KB}KB (~${EST_K}K токенов${TASK_NOTE}). На следующей фазовой границе скажи фаундеру: 'Нужен /compact перед следующей фазой.'"

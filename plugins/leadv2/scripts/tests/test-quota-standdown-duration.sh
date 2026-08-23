@@ -12,6 +12,10 @@
 # Exit 0 = all pass; non-zero = failures found.
 
 set -uo pipefail
+
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPTS_ROOT}/leadv2-temp.sh"

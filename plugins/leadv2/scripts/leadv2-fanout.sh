@@ -1915,6 +1915,17 @@ launch_via_dispatch_code() {
       [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1
       _fanout_launch_full_cycle "$tid" "$cls" "$lead_model" "$lead_effort" "$risk_tags" "$class_reason" "$provider" "$route_reason" "$group_key"
       ;;
+    6)
+      # BURN-GOVERNOR-01 (architect prepass §1.3 D3): the refusal was cheap on purpose
+      # (no worker, no worktree, no ledger row) -- falling back to _fanout_launch_full_cycle
+      # here would upgrade a refused-to-save-tokens lane into the single most expensive
+      # path in the system, which is strictly worse than not dispatching at all. The
+      # fallback is deliberately suppressed for rc=6, unlike every other refusal above.
+      log "single-worker funnel: task=${tid} refused by dispatch-code.sh's burn gate (24h local token burn over hard cap) -- releasing claim, task parked to burn-deferred.jsonl, NOT falling back to full-cycle (that would upgrade a token-saving refusal into the most expensive launch path)"
+      leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+      [[ "$_reserve_rc" -eq 0 ]] && leadv2_active_unregister "$tid" >/dev/null 2>&1
+      _fanout_write_lane_terminal "$tid" parked "burn_hard_24h" ""
+      ;;
     *)
       log_error "single-worker funnel: task=${tid} dispatch-code.sh failed (rc=${dc_rc}) -- releasing claim and falling back to full-cycle launch so the founder-picked task is not silently dropped"
       leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true

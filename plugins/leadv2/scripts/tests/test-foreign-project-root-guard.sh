@@ -46,6 +46,10 @@
 # the pin and canonicalise the dispatcher back to the pin's owning repo.
 
 set -uo pipefail
+
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
 # Dev-shell hygiene (same pattern as test-lane-placement-pin.sh /
 # test-dispatch-retry-dead.sh): every case below relies on CLAUDE_PROJECT_DIR
 # as the fallback env-root signal (CLAUDE_PROJECT_ROOT > CLAUDE_PROJECT_DIR in

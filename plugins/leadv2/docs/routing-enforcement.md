@@ -46,3 +46,33 @@ hook: never fork to save cost, never fork to bypass the Opus quota, and never pa
 on a fork spawn (it is a no-op that only misleads the audit trail). Fork only per the
 criteria in `docs/work-placement.md` — session-context-dependent, no reviewed diff, no
 isolation need.
+
+## Burn governor (BURN-GOVERNOR-01)
+
+`leadv2-dispatch-code.sh` consults `leadv2-burn-governor.sh verdict` FIRST in `cmd_resolve`
+— before placement, worktree creation, ledger reservation, or the architect prepass. It
+reads the local 24h token-burn total from `${LEADV2_CLAUDE_BURN_DIR:-$HOME/.claude/burn}/history.db`
+(table `hourly`) and returns `ok`, `soft`, or `hard`. `hard` refuses the dispatch with exit
+code 6 — no worker, no worktree, no ledger row — and parks the mission to
+`docs/leadv2/burn-deferred.jsonl` (list/retry via `leadv2-dispatch-code.sh burn-deferred
+[--list|--retry-all|--json]`, mirroring the existing `glm-deferred` subcommand). `soft`
+prints an advisory and proceeds. The governor is fail-open: missing sqlite3, missing db,
+missing table, or a locked db all collapse to `verdict=ok reason=no_telemetry` — a fresh
+machine or a moved burn dir never blocks dispatch.
+
+Env knobs:
+- `LEADV2_BURN_GOVERNOR` (default 1) — `0` disables the gate entirely.
+- `LEADV2_BURN_SOFT_24H` / `LEADV2_BURN_HARD_24H` (default 800000000 / 1300000000) — 24h
+  token-sum thresholds. A misconfigured pair (`hard <= soft`, or either non-numeric)
+  silently falls back to the defaults and the verdict's `reason` gains a `+bad_config`
+  suffix — always reported, never suppressed.
+- `LEADV2_BURN_OVERRIDE=1` — bypasses a `hard` refusal (journaled `overridden=1`).
+  **`--force` never bypasses it** — burn follows the same rule dedup already does.
+- `LEADV2_BURN_GOVERNOR_BIN` / `LEADV2_CLAUDE_BURN_DIR` — override the governor script /
+  its telemetry directory (tests).
+
+Every caller of `leadv2-dispatch-code.sh` has its own rc-6 arm: `leadv2-fanout-lane-launcher.sh`
+and `leadv2-backlog-pump.sh` record the lane as `parked`/deferred (never `dead`/`spawn_failed`
+— a burn refusal is a deliberate park, not a failure); `leadv2-fanout.sh` records `parked` and
+deliberately does **not** fall back to `_fanout_launch_full_cycle` — a burn refusal exists to
+save tokens, and the full-cycle fallback is the single most expensive path in the system.

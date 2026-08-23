@@ -22,6 +22,10 @@
 # Run: bash plugins/leadv2/scripts/tests/test-dispatch-resume-sentinel.sh
 
 set -uo pipefail
+
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_SCRIPTS="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DC="${PLUGIN_SCRIPTS}/leadv2-dispatch-code.sh"

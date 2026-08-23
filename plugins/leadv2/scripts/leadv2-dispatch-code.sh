@@ -1114,6 +1114,158 @@ for r in pending:
   esac
 }
 
+# burn-deferred subcommand: list / retry-all / json. Mirrors cmd_glm_deferred above field
+# for field except burn24h in place of quota_pct. §2.3 --retry-all semantics: the governor
+# verdict is checked ONCE before the loop, not per row (200 rows would mean 200 sqlite
+# opens, and a verdict that could flip mid-loop) -- if still hard, nothing is retried and
+# the caller is told so in one line.
+cmd_burn_deferred() {
+  local mode="list"
+  case "${1:-}" in
+    ""|--list) mode="list" ;;
+    --json) mode="json" ;;
+    --retry-all) mode="retry-all" ;;
+    *) printf 'usage: %s burn-deferred [--list|--retry-all|--json]\n' "${SCRIPT_NAME}" >&2; exit 2 ;;
+  esac
+  local path; path="$(_leadv2_burn_deferred_path)"
+  if [[ ! -r "${path}" ]]; then
+    if [[ "${mode}" == "json" ]]; then
+      printf '[]\n'
+    else
+      printf 'no burn-deferred rows\n'
+    fi
+    return 0
+  fi
+  case "${mode}" in
+    list|json)
+      python3 -c '
+import json, sys
+path, mode = sys.argv[1], sys.argv[2]
+raw = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if "_truncated" in row:
+                continue
+            raw.append(row)
+except OSError:
+    raw = []
+retried = {r.get("sig8") for r in raw if r.get("retried_at")}
+pending = [r for r in raw if r.get("sig8") not in retried]
+if mode == "json":
+    print(json.dumps(pending, separators=(",", ":")))
+else:
+    if not pending:
+        print("no burn-deferred rows")
+    for r in pending:
+        print("%s %s burn24h=%s %s" % (
+            r.get("sig8", "-"), r.get("refused_at", "-"), r.get("burn24h", "null"),
+            r.get("mission_path", "") or "-",
+        ))
+' "${path}" "${mode}"
+      ;;
+    retry-all)
+      local _bd_verdict_line _bd_verdict _bd_burn24h _bd_hard
+      _bd_verdict_line="$(bash "${BURN_GOVERNOR_BIN}" verdict 2>/dev/null)"
+      _bd_verdict="$(printf '%s\n' "${_bd_verdict_line}" | sed -n 's/.*verdict=\([a-z]*\).*/\1/p')"
+      if [[ "${_bd_verdict}" == "hard" ]]; then
+        _bd_burn24h="$(printf '%s\n' "${_bd_verdict_line}" | sed -n 's/.*burn24h=\([0-9]*\).*/\1/p')"
+        _bd_hard="$(printf '%s\n' "${_bd_verdict_line}" | sed -n 's/.*hard=\([0-9]*\).*/\1/p')"
+        local _bd_total
+        _bd_total="$(python3 -c '
+import json, sys
+path = sys.argv[1]
+raw = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if "_truncated" in row:
+                continue
+            raw.append(row)
+except OSError:
+    raw = []
+retried = {r.get("sig8") for r in raw if r.get("retried_at")}
+pending = [r for r in raw if r.get("sig8") not in retried]
+print(len(pending))
+' "${path}" 2>/dev/null)"
+        printf 'burn-deferred: still over hard cap (burn24h=%s >= %s) — 0 of %s retried\n' \
+          "${_bd_burn24h}" "${_bd_hard}" "${_bd_total:-0}"
+        return 0
+      fi
+      local _rp_json
+      _rp_json="$(python3 -c '
+import json, sys
+path = sys.argv[1]
+raw = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if "_truncated" in row:
+                continue
+            raw.append(row)
+except OSError:
+    raw = []
+retried = {r.get("sig8") for r in raw if r.get("retried_at")}
+pending = [r for r in raw if r.get("sig8") not in retried]
+for r in pending:
+    print("%s\t%s" % (r.get("sig8", ""), r.get("mission_path", "") or ""))
+' "${path}")"
+      if [[ -z "${_rp_json}" ]]; then
+        printf 'no burn-deferred rows\n'
+        return 0
+      fi
+      local _sig8 _mpath
+      while IFS=$'\t' read -r _sig8 _mpath; do
+        [[ -n "${_sig8}" ]] || continue
+        # same D5 row-1 parity as glm-deferred: a landed fallback is reaped, never retried.
+        if bash "${LEDGER_BIN}" exists "${_sig8}" >/dev/null 2>&1; then
+          _leadv2_burn_deferred_mark_retried "${path}" "${_sig8}" "reaped_fallback_landed"
+          printf 'reaped %s fallback_landed\n' "${_sig8}"
+          continue
+        fi
+        if [[ -z "${_mpath}" || ! -s "${_mpath}" ]]; then
+          printf 'skipped_no_mission %s\n' "${_sig8}"
+          continue
+        fi
+        local _child_errf _child_out _child_rc _new_sig8
+        _child_errf="$(mktemp 2>/dev/null || printf '/tmp/burn-retry-%s.err' "${_sig8}")"
+        _child_out="$(bash "${BASH_SOURCE[0]}" "@${_mpath}" 2>"${_child_errf}")"
+        _child_rc=$?
+        if [[ ${_child_rc} -eq 0 ]]; then
+          _new_sig8="$(printf '%s\n' "${_child_out}" | sed -n 's/.*task=\([^ ]*\).*/\1/p' | head -1)"
+          _leadv2_burn_deferred_mark_retried "${path}" "${_sig8}" "retried_all"
+          printf 'retried %s as=%s\n' "${_sig8}" "${_new_sig8:-unknown}"
+        else
+          local _last_err; _last_err="$(tail -1 "${_child_errf}" 2>/dev/null)"
+          printf 'retry_failed %s rc=%s %s\n' "${_sig8}" "${_child_rc}" "${_last_err}"
+        fi
+        rm -f "${_child_errf}" 2>/dev/null || true
+      done <<<"${_rp_json}"
+      ;;
+  esac
+}
+
 # D6: append a retired-marker row for $2=sig8 under the SAME lock as the read that
 # decided to retire it, so a concurrent --retry-all never double-dispatches. reason=$3
 # is informational only (list/json already filter on retried_at presence, not reason).
@@ -1134,6 +1286,174 @@ print(json.dumps({
     lv2_lock_wait "${path}.lock" 10 || exit 3
     printf '%s\n' "${new_row}" >>"${path}"
   ) 9>"${path}.lock"
+}
+
+# ── BURN-GOVERNOR-01: 24h local token-burn gate, parallel sibling of the V3-GLM-LADDER-01
+# block above -- copies its park/retry pattern verbatim rather than generalizing it into a
+# shared helper (architect prepass §7 non-goals: generalizing would touch the highest-risk
+# code in this file). Provider-agnostic: burn-deferred.jsonl is a SEPARATE file from
+# glm-deferred.jsonl, never merged into it. Same fd discipline as above: fd 9 is the
+# dispatch lock fd (never taken here outside a park's own subshell), fd 8 is the V3-GLM
+# sidecar's -- this subsystem never touches either.
+_leadv2_burn_deferred_path() { printf '%s/docs/leadv2/burn-deferred.jsonl' "${PROJECT_ROOT}"; }
+_leadv2_burn_deferred_mission_path() { printf '%s/docs/leadv2/burn-deferred.d/%s.md' "${PROJECT_ROOT}" "${1}"; }
+
+# $1=sig8 $2=mission_text $3=burn24h -- park a burn-hard-refused task. Modelled on
+# _glm_park_deferred above; D4 (architect prepass §2.4/glm parity): the mission text is
+# copied into burn-deferred.d/<sig8>.md at park time so a later --retry-all can dispatch it
+# as a brand-new task without depending on lane-mission.md (product-class-only, and only
+# after this point). Best-effort: mkdir/lock failures never abort the caller -- but ARE
+# journalled (burn_gate park=failed) so a refused-and-unrecorded task stays visible.
+_burn_park_deferred() {
+  local sig8="$1" mission_text="${2:-}" burn24h="${3:-0}"
+  local path; path="$(_leadv2_burn_deferred_path)"
+  mkdir -p "$(dirname "${path}")" 2>/dev/null || { emit decision "burn_gate task=${sig8} park=failed reason=mkdir_failed"; return 0; }
+  local mission_path=""
+  if [[ -n "${mission_text}" ]]; then
+    mission_path="$(_leadv2_burn_deferred_mission_path "${sig8}")"
+    mkdir -p "$(dirname "${mission_path}")" 2>/dev/null || mission_path=""
+    if [[ -n "${mission_path}" ]]; then
+      printf '%s' "${mission_text}" > "${mission_path}" 2>/dev/null || mission_path=""
+    fi
+  fi
+  local refused_at; refused_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local row
+  row="$(python3 -c '
+import json, sys
+sig8, mission_path, founder_task_id, refused_at, burn24h_raw = sys.argv[1:6]
+try:
+    burn24h = int(burn24h_raw)
+except Exception:
+    burn24h = None
+print(json.dumps({
+    "sig8": sig8, "mission_path": mission_path, "founder_task_id": founder_task_id,
+    "refused_at": refused_at, "reason": "burn_hard_24h", "burn24h": burn24h,
+    "retried_at": None,
+}, separators=(",", ":")))
+' "${sig8}" "${mission_path}" "${founder_task_id:-}" "${refused_at}" "${burn24h}" 2>/dev/null)"
+  if [[ -z "${row}" ]]; then
+    emit decision "burn_gate task=${sig8} park=failed reason=row_build_failed"
+    return 0
+  fi
+  local _bpd_rc=0
+  (
+    lv2_lock_wait "${path}.lock" 10 || exit 3
+    printf '%s\n' "${row}" >>"${path}"
+    # R1 parity: cap at newest 500 rows, drop rows older than 7 days; unlink orphaned
+    # mission copies the same way _glm_park_deferred's truncation does.
+    python3 -c '
+import datetime, json, sys
+path = sys.argv[1]
+cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
+rows = []
+try:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            ts = row.get("refused_at", "")
+            try:
+                when = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+            except Exception:
+                when = None
+            if when is not None and when < cutoff:
+                continue
+            rows.append(row)
+except OSError:
+    sys.exit(0)
+truncated = len(rows) > 500
+dropped_sig8s = {r.get("sig8") for r in rows[:-500]} if truncated else set()
+rows = rows[-500:]
+kept_sig8s = {r.get("sig8") for r in rows}
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    for row in rows:
+        fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    if truncated:
+        fh.write(json.dumps({"_truncated": True}, separators=(",", ":")) + "\n")
+import os
+os.replace(tmp, path)
+mission_dir = os.path.join(os.path.dirname(path), "burn-deferred.d")
+for sig8 in dropped_sig8s - kept_sig8s:
+    if not sig8:
+        continue
+    try:
+        os.remove(os.path.join(mission_dir, sig8 + ".md"))
+    except OSError:
+        pass
+' "${path}" 2>/dev/null || true
+  ) 9>"${path}.lock" || _bpd_rc=$?
+  if [[ "${_bpd_rc}" != "0" ]]; then
+    emit decision "burn_gate task=${sig8} park=failed reason=lock_timeout"
+  fi
+  true
+}
+
+_leadv2_burn_deferred_mark_retried() {
+  local path="$1" sig8="$2" reason="$3"
+  local retried_at; retried_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local new_row
+  new_row="$(python3 -c '
+import json, sys
+sig8, reason, retried_at = sys.argv[1:4]
+print(json.dumps({
+    "sig8": sig8, "mission_path": "", "founder_task_id": "",
+    "refused_at": retried_at, "reason": reason, "burn24h": None,
+    "retried_at": retried_at,
+}, separators=(",", ":")))
+' "${sig8}" "${reason}" "${retried_at}" 2>/dev/null)"
+  [[ -n "${new_row}" ]] || return 0
+  (
+    lv2_lock_wait "${path}.lock" 10 || exit 3
+    printf '%s\n' "${new_row}" >>"${path}"
+  ) 9>"${path}.lock"
+}
+
+# BURN-GOVERNOR-01 D2/D1/D5/D6/D7: pre-arm burn gate. Called from cmd_resolve FIRST --
+# before _resolve_pinned_placement and everything after it (ensure/record_lane_start_sha/
+# dispatch_reserve/architect_prepass; architect prepass §1.2). A refusal here writes no
+# ledger row, creates no worktree, costs zero worker tokens. `--force` never bypasses it
+# (only LEADV2_BURN_OVERRIDE=1 does, and that path is loudly journaled with overridden=1,
+# same convention as the quota override paths elsewhere in this file). Fail-open by
+# construction: an empty/unparseable governor line is treated as verdict=ok (no output).
+_burn_gate() {
+  local governor_line
+  governor_line="$(bash "${BURN_GOVERNOR_BIN}" verdict 2>/dev/null)"
+  [[ -n "${governor_line}" ]] || return 0
+
+  local verdict burn24h soft hard reason
+  verdict="$(printf '%s\n' "${governor_line}" | sed -n 's/.*verdict=\([a-z]*\).*/\1/p')"
+  burn24h="$(printf '%s\n' "${governor_line}" | sed -n 's/.*burn24h=\([0-9]*\).*/\1/p')"
+  soft="$(printf '%s\n' "${governor_line}" | sed -n 's/.*soft=\([0-9]*\).*/\1/p')"
+  hard="$(printf '%s\n' "${governor_line}" | sed -n 's/.*hard=\([0-9]*\).*/\1/p')"
+  reason="$(printf '%s\n' "${governor_line}" | sed -n 's/.*reason=\([^ ]*\).*/\1/p')"
+
+  case "${verdict}" in
+    soft)
+      emit decision "burn_gate task=${sig8} verdict=soft burn24h=${burn24h} soft=${soft} hard=${hard} reason=${reason}"
+      printf '[leadv2-dispatch-code] ⚠ BURN GATE: 24h burn %s >= soft %s — dispatch allowed, consider deferring non-critical lanes\n' \
+        "${burn24h}" "${soft}" >&2
+      ;;
+    hard)
+      if [[ "${LEADV2_BURN_OVERRIDE:-0}" == "1" ]]; then
+        emit decision "burn_gate task=${sig8} verdict=hard burn24h=${burn24h} soft=${soft} hard=${hard} reason=${reason} overridden=1"
+        printf '[leadv2-dispatch-code] ⚠ BURN GATE OVERRIDDEN: 24h burn %s >= hard %s — LEADV2_BURN_OVERRIDE=1, dispatch allowed\n' \
+          "${burn24h}" "${hard}" >&2
+        return 0
+      fi
+      emit decision "burn_gate task=${sig8} verdict=hard burn24h=${burn24h} soft=${soft} hard=${hard} reason=${reason} ref=${placement_lane_ref:-${placement_path:-}}"
+      printf '[leadv2-dispatch-code] ⛔ BURN GATE: 24h burn %s >= hard cap %s — lane refused, task parked\n' \
+        "${burn24h}" "${hard}" >&2
+      _burn_park_deferred "${sig8}" "${mission}" "${burn24h}"
+      exit 6
+      ;;
+    *) return 0 ;;
+  esac
 }
 
 # $1=credits-json (from route_headroom_chosen's payload) — emit ONE deduped
@@ -3030,6 +3350,8 @@ LANE_WORKTREE_BIN="${LEADV2_DISPATCH_LANE_WORKTREE_BIN:-${SCRIPT_DIR}/leadv2-lan
 # LANE-PLACEMENT-01: liveness probe seam — the placement validator uses this to refuse
 # hijacking a still-live lane.  Overridable for tests (stub returns dead/alive on demand).
 LANE_LIVENESS_BIN="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lane-liveness.sh}"
+# BURN-GOVERNOR-01: 24h local token-burn verdict, consulted by _burn_gate below.
+BURN_GOVERNOR_BIN="${LEADV2_BURN_GOVERNOR_BIN:-${SCRIPT_DIR}/leadv2-burn-governor.sh}"
 
 # <arm> <mission> <sig8> -> prints `worker_spawned ...`, journals it, returns 0/1.
 # Both launchers detach on their own (glm-coder.sh: setsid_wrapper + disown;
@@ -4187,7 +4509,10 @@ Usage:
                 Exit codes: 0 spawned/resolved, 2 duplicate task-sig, 3 arm=opus (lead
                 judgment, not auto-dispatched), 4 spawn failed (retryable -- a failed
                 spawn or --no-spawn never leaves a blocking ledger row behind), 5 placement
-                refused (nonexistent/foreign-repo/live lane — no ledger row, no spawn).
+                refused (nonexistent/foreign-repo/live lane — no ledger row, no spawn),
+                6 burn hard cap (BURN-GOVERNOR-01: 24h local token burn >= hard cap --
+                no ledger row, no worktree, no spawn; task parked to burn-deferred.jsonl;
+                LEADV2_BURN_OVERRIDE=1 bypasses, --force never does).
   $SCRIPT_NAME record-review --diff-hash <h> --verdict <PASS|FAIL|PASS_WITH_NITS>
                 [--reviewer <s>] [--run-id <s>]
                 Record a Codex review verdict; refuse a duplicate diff-hash (ATOMIC).
@@ -4196,11 +4521,19 @@ Usage:
                 List/retry/json-dump glm tasks parked after a quota refusal
                 (docs/leadv2/glm-deferred.jsonl). --retry-all re-dispatches any row whose
                 quota window has reopened; manual-only, no auto-retry daemon.
+  $SCRIPT_NAME burn-deferred [--list|--retry-all|--json]
+                List/retry/json-dump tasks parked after a BURN-GOVERNOR-01 hard-cap refusal
+                (docs/leadv2/burn-deferred.jsonl). --retry-all re-dispatches any row only when
+                the governor verdict is no longer hard; manual-only, no auto-retry daemon.
 Env: LEADV2_DISPATCH_ENFORCE=0 disables dedup (no-op/pass-through). LEADV2_DISPATCH_SPAWN=0
      disables worker launch (resolve-only). LEADV2_DISPATCH_CACHE_DIR relocates the ledgers
      (tests). LEADV2_DISPATCH_FENCE_LOG sets the fence deny-log path. LEADV2_DISPATCH_GLM_BIN
      / LEADV2_DISPATCH_SUBSESSION_BIN / LEADV2_DISPATCH_CODEX_BIN override the launchers
-     (tests).
+     (tests). LEADV2_BURN_GOVERNOR=0 disables the burn gate entirely. LEADV2_BURN_SOFT_24H /
+     LEADV2_BURN_HARD_24H set the 24h-burn soft/hard caps (default 800000000 / 1300000000).
+     LEADV2_BURN_OVERRIDE=1 bypasses a hard-cap refusal (journaled, --force never bypasses it).
+     LEADV2_BURN_GOVERNOR_BIN / LEADV2_CLAUDE_BURN_DIR override the governor script / its
+     ~/.claude/burn telemetry dir (tests).
 EOF
   exit 1
 }
@@ -4443,6 +4776,10 @@ cmd_resolve() {
       emit decision "lane_deliverable task=${sig8} status=ignored reason=unknown_kind decl=${_ld_decl}"
     fi
   fi
+  # BURN-GOVERNOR-01: 24h local token-burn gate, runs FIRST -- before the placement pin,
+  # before the ensure block, before any reservation/terminal/spawn (architect prepass
+  # §1.2 D2). Refuses (exit 6) only on verdict=hard and LEADV2_BURN_OVERRIDE!=1.
+  _burn_gate
   # LANE-PLACEMENT-01: resolve an explicit --resume-lane/--worktree pin BEFORE the ensure
   # block, BEFORE record_lane_start_sha, BEFORE any reservation/terminal/spawn.  Refuses
   # (exit 5) on: nonexistent path, not-a-worktree, foreign repo, live-claimed lane.  No
@@ -5583,6 +5920,7 @@ case "${1:-}" in
   record-review) shift; cmd_record_review "$@" ;;
   status)        cmd_status ;;
   glm-deferred)  shift; cmd_glm_deferred "$@" ;;
+  burn-deferred) shift; cmd_burn_deferred "$@" ;;
   advance-arm)   shift; cmd_advance_arm "$@" ;;
   record-quota-lockout) shift; cmd_record_quota_lockout "$@" ;;
   retry-dead)    shift; cmd_retry_dead "$@" ;;
