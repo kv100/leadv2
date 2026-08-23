@@ -871,7 +871,7 @@ def lane_outcome(handle, arm):
         if line.startswith("outcome="):
             val = line[len("outcome="):].strip()
             break
-    if val in ("completed", "died-with-work", "died-clean"):
+    if val in ("completed", "died-with-work", "died-clean", "parked"):
         return val
     return ""
 

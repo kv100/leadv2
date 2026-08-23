@@ -2,8 +2,8 @@
 # leadv2-lane-outcome.sh <run_dir> <exit_code> [work_delta]
 # N-3 (TURN-CAP-OUTCOME-01): pure-ish classifier + artifact writer. Joins the bound
 # (turn_count/no_progress/wall_clock/max_turns/none), the N-2 work-delta signal, and
-# the .no-deliverable gate into exactly one of the three existing outcome tokens --
-# completed | died-with-work | died-clean -- and writes it where the lead reads it
+# the .no-deliverable gate into exactly one outcome token -- completed |
+# died-with-work | died-clean | parked -- and writes it where the lead reads it
 # without opening the run directory. See docs/handoff/dispatch-6ad1f33d/architect-prepass.md
 # for the full design; this is the canonical port of persona-engine's
 # scripts/lane-death-classify.sh, extended with bound detection.
@@ -15,7 +15,7 @@
 # unavailable ("skip") -- degrading to work=no (conservative) if that git probe itself
 # can't be performed.
 #
-# stdout: exactly one token -- completed | died-with-work | died-clean.
+# stdout: exactly one token -- completed | died-with-work | died-clean | parked.
 # Side effect: writes <run_dir>/.outcome, appends one line to <run_dir>/progress.log and
 # three keys to <run_dir>/meta.yaml. Never throws under `set -euo pipefail` -- like
 # deadhand_check (R6), a probe failure degrades the probe, not the whole script; internal
@@ -34,6 +34,11 @@ fi
 RUN_DIR="$1"
 EXIT_CODE="$2"
 WORK_DELTA_ARG="${3:-}"
+PARKED_DETECT_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/leadv2-parked-detect.sh"
+if [[ -f "${PARKED_DETECT_SH}" ]]; then
+  # shellcheck source=lib/leadv2-parked-detect.sh
+  source "${PARKED_DETECT_SH}" || true
+fi
 
 _lane_outcome_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -146,11 +151,19 @@ _resolve_work() {
 BOUND="$(_resolve_bound || echo none)"
 WORK_DELTA="$(_derive_work_delta || echo skip)"
 WORK="$(_resolve_work "${WORK_DELTA}" || echo no)"
+PARKED=0
+if [[ "${EXIT_CODE}" == "0" && "${BOUND}" == "none" ]] \
+   && declare -F lv2_parked_text_file >/dev/null 2>&1 \
+   && lv2_parked_text_file "${RUN_DIR}/result.md"; then
+  PARKED=1
+fi
 
 # ---- 4. outcome decision table, per §2.3 ----
 OUTCOME=""
 if [[ "${BOUND}" != "none" ]]; then
   [[ "${WORK}" == "yes" ]] && OUTCOME="died-with-work" || OUTCOME="died-clean"
+elif [[ "${PARKED}" == "1" && -f "${RUN_DIR}/.deliverable" && -f "${RUN_DIR}/.no-deliverable" ]]; then
+  OUTCOME="parked"
 elif [[ -f "${RUN_DIR}/.no-deliverable" ]]; then
   [[ "${WORK}" == "yes" ]] && OUTCOME="died-with-work" || OUTCOME="died-clean"
 elif [[ "${EXIT_CODE}" == "0" ]]; then
@@ -161,6 +174,7 @@ fi
 
 case "${OUTCOME}" in
   died-with-work) NEXT="continue" ;;
+  parked) NEXT="continue" ;;
   died-clean) NEXT="respawn" ;;
   *) NEXT="none" ;;
 esac

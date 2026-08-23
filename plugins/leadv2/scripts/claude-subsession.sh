@@ -1130,7 +1130,9 @@ else
     # Current-run guard: docs/handoff/<tid>/ is shared by architect/developer/
     # critic, so a finishing role must not finalize a lane a later role now owns.
     if [[ "$(cat "$HANDOFF_DIR/.claude-session-runner.run-id" 2>/dev/null)" == "$RUN_ID" ]]; then
-      printf '%s\n' "$_exit_code" > "$RUN_DIR/.outcome" 2>/dev/null || true
+      printf 'outcome=%s\nexit_code=%s\nat=%s\n' \
+        "$([[ "$_exit_code" -eq 0 ]] && echo completed || echo died-clean)" \
+        "$_exit_code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUN_DIR/.outcome" 2>/dev/null || true
       touch "$RUN_DIR/.finalized" 2>/dev/null || true
     fi
   ) &

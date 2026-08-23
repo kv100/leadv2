@@ -3222,6 +3222,12 @@ _spawn_worker_body() {
   # (leadv2-review-run.sh blocks untagged claims) with no reader on the writing side
   # for glm/kimi/codex -- this closes that gap. leadv2-helpers.sh is sourced with
   # `|| true` above; guard non-empty and never fail open silently (that shape is H1).
+  if [[ -n "${_LEADV2_FOREGROUND_CONTRACT_MISSION:-}" ]]; then
+    mission="${_LEADV2_FOREGROUND_CONTRACT_MISSION}"$'\n\n'"${mission}"
+  else
+    log_err "_LEADV2_FOREGROUND_CONTRACT_MISSION unavailable (leadv2-helpers.sh not sourced?) — falling back to embedded literal"
+    mission="FOREGROUND WORK CONTRACT: never end a turn while a job you started is still running. Run verification in the FOREGROUND with an explicit timeout. If a job must run detached, wait for it and report its result in the SAME turn before finishing. Standing by, waiting for, or will report when it completes is a protocol violation, not a completion."$'\n\n'"${mission}"
+  fi
   if [[ -n "${_LEADV2_EVIDENCE_CONTRACT_MISSION:-}" ]]; then
     mission="${_LEADV2_EVIDENCE_CONTRACT_MISSION}"$'\n\n'"${mission}"
   else

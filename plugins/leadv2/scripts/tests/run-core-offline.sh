@@ -139,6 +139,7 @@ _CORE_OFFLINE_OWNED_SUITES=(
   "Codex full-cycle runner"
   "product-close waits for worker exit"
   "lanes snapshot reconciliation"
+  "plugin sync .claude/scripts link classification"
 )
 _core_offline_suite_is_owned() {
   local name="$1" o
@@ -264,6 +265,8 @@ SUITE_DEFS=(
   "dispatch refusal fallback chain|||bash $TEST_DIR/test-routing-enforcement-p1.sh|||SERIAL"
   "product-close waits for worker exit|||bash $TEST_DIR/test-no-work-terminal.sh|||SERIAL"
   "product-close resumes a died-with-work lane once|||bash $TEST_DIR/test-dwr-resume.sh"
+  "parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)|||bash $TEST_DIR/test-parked-worker-resume.sh"
+  "red-first pinned-baseline resolver (RED-FIRST-SELF-INVALIDATES-01)|||bash $TEST_DIR/test-red-first-baseline.sh"
   "product-close scopes a single-repo lane worktree|||bash $TEST_DIR/test-lane-diff-single-repo.sh"
   "Codex full-cycle runner|||bash $TEST_DIR/test-codex-session-runner.sh|||SERIAL"
   "Codex terminal lead intake|||bash $TEST_DIR/test-codex-lead-intake.sh"
@@ -317,6 +320,8 @@ SUITE_DEFS=(
   "core-offline cross-run exclusive lock (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-lock-01.sh"
   "core-offline shard partition (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-shards-01.sh"
   "core-offline per-suite TMPDIR isolation (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-tmpdir-01.sh"
+  "silent-arm commits-ahead + live-worker guard (GATE-FALSE-SILENT-01)|||bash $TEST_DIR/test-silent-arm-commits-ahead.sh"
+  "plugin sync .claude/scripts link classification|||bash $TEST_DIR/test-plugin-sync-claude-scripts.sh"
   "lane trace instrument (Mission B: writer/concurrency/off-path/reader)|||bash $TEST_DIR/test-leadv2-trace.sh"
 )
 

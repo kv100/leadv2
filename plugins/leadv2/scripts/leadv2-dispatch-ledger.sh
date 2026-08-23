@@ -35,7 +35,9 @@
 #             recording landed/dead.
 #   refused — declined at admission before any real work started (dedup, quota exhausted,
 #             lane-shape violation, opus-requires-lead-judgment, a gate structurally could
-#             not run at all -- missing e2e entrypoint, no reviewer). Note: an EMPTY diff
+#             not run at all -- missing e2e entrypoint, no reviewer, or
+#             lane_root_not_a_worktree (the gate was pointed at a directory that is not a
+#             git work tree root, so it had nothing it was entitled to grade). Note: an EMPTY diff
 #             is NOT refused -- see no_work below; a lane that ran for 40 minutes and
 #             produced nothing is not "declined at admission".
 #             RETRYABLE -- does not block a later attempt at the same sig8 from later
