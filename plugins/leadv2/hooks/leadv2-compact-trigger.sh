@@ -296,15 +296,17 @@ fi
 # cannot distinguish a human session). It is still a forged user turn at a human, it is
 # still one-shot (same MARKER file, same compare), and it is still short-circuited by
 # STOP_ACTIVE the same way the daemon branch is. Two independent kill-switches:
-# LEADV2_COMPACT_INTERACTIVE_BLOCK=0 (feature-specific) and LEADV2_NO_FORCE_COMPACT=1
-# (the existing hard kill-switch, shared with the daemon branch above).
+# LEADV2_COMPACT_INTERACTIVE_BLOCK=1 opts IN (default OFF per founder order 2026-08-19,
+# commit 7daf57f: "never block a founder prompt on turn count" — same class of
+# intervention, so blocking a human session must never be the default);
+# LEADV2_NO_FORCE_COMPACT=1 remains the shared hard kill-switch.
 #
 # Placed AFTER the daemon branch (a real daemon session's path is unchanged, byte-for-
 # byte) and BEFORE the PREV_LEVEL read below (so a session that blocks here does not
 # ALSO queue a pending-warn for the same level -- same MARKER, same one-shot compare).
 if [[ "$LEVEL" == "emergency" \
    && "$STOP_ACTIVE" != "true" \
-   && "${LEADV2_COMPACT_INTERACTIVE_BLOCK:-1}" != "0" \
+   && "${LEADV2_COMPACT_INTERACTIVE_BLOCK:-0}" == "1" \
    && "${LEADV2_NO_FORCE_COMPACT:-0}" != "1" ]]; then
   INTERACTIVE_PREV_LEVEL="$(cat "$MARKER" 2>/dev/null || echo "")"
   if [[ "$INTERACTIVE_PREV_LEVEL" != "emergency" ]]; then
