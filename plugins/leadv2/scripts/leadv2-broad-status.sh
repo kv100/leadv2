@@ -192,10 +192,27 @@ snapshot = json.load(open(snapshot_path, encoding="utf-8"))
 sections = snapshot.get("sections", {})
 
 lanes_section = sections.get("lanes", {}) or {}
-lanes_data = lanes_section.get("data", {}) if isinstance(lanes_section.get("data"), dict) else {}
+lanes_raw_data = lanes_section.get("data")
+lanes_data = lanes_raw_data if isinstance(lanes_raw_data, dict) else {}
 table_rows = lanes_data.get("table") or []
 questions = lanes_data.get("questions") or lanes_data.get("requires_founder") or []
 degraded = lanes_data.get("degraded") or []
+# LANE-DETAIL-BLIND-01: a failed/absent `lanes` COLLECTOR SECTION (the
+# source of table_rows itself, not lane_detail's per-row facts below) must
+# be LOUD too -- mirrors detail_ok. Before this, `_sc_run_section`'s
+# per-section isolation let leadv2-lanes-snapshot.sh fail (missing script,
+# root_error, invalid JSON) or be genuinely absent while the REST of the
+# collector run succeeded; that failure collapsed silently into
+# table_rows=[] and was then indistinguishable downstream from a real,
+# empty board -- the composer confidently printed "ДОСКА ПУСТА" (zero
+# lanes running) when the true fact was "the lanes collector did not
+# answer". lanes_raw_data (captured BEFORE the dict coercion above) is the
+# actual captured stderr/parse-error string _sc_run_section wrote, not a
+# generic "unavailable" placeholder -- the founder gets the real reason.
+lanes_ok = bool(lanes_section.get("ok"))
+lanes_fail_reason = None if lanes_ok else (
+    lanes_raw_data if isinstance(lanes_raw_data, str) else "unavailable"
+)
 
 detail_section = sections.get("lane_detail", {}) or {}
 detail_data = detail_section.get("data", {}) if isinstance(detail_section.get("data"), dict) else {}
@@ -436,6 +453,17 @@ if not detail_ok:
         f"детали линий недоступны (lane_detail: {detail_fail_reason}) — "
         "колонки «Линия» и «Что делает» могут остаться неизвестны\n"
     )
+# LANE-DETAIL-BLIND-01: same treatment for the `lanes` section itself --
+# this is the section table_rows is BUILT FROM, so its failure means the
+# table below is not "empty", it is "unknown". Distinct wording from the
+# detail_ok note above on purpose: this is "I cannot see any lanes",
+# detail_ok's note is "I can see lanes but not their names/owners" -- the
+# founder must be able to tell the two facts apart at a glance.
+if not lanes_ok:
+    table_prefix.append(
+        f"НЕ ВИЖУ ЛИНИИ — сборщик lanes не ответил ({lanes_fail_reason}) — "
+        "таблица ниже НЕ является доказательством пустой доски\n"
+    )
 
 # PULSE-READABLE-01 rule 2: max ~6 rows in the founder-facing table. The
 # full (uncapped) row set still goes into founder-status-full.md below —
@@ -455,7 +483,24 @@ table_rows_hidden = max(0, len(rows_out_full) - TABLE_ROW_CAP)
 live_lane_count = len(rows_out_full)
 empty_headline = None
 try:
-    if live_lane_count == 0:
+    if not lanes_ok:
+        # LANE-DETAIL-BLIND-01: table_rows is forced to [] whenever the
+        # lanes section failed (its `data` becomes a plain error string,
+        # never a dict -- see lanes_data above), so live_lane_count==0 here
+        # is NOT evidence of an empty board, it is evidence the collector
+        # did not answer. "the board is empty" and "I cannot see the
+        # board" are different facts (task requirement) -- printing
+        # PULSE-EMPTY-BOARD-01's headline for both is exactly the false
+        # verdict this fix exists to kill. Deliberately does NOT touch
+        # empty_since_path: whether the board was actually empty during
+        # this outage is unknown, so neither starting nor clearing that
+        # clock from an unknown state would be honest -- it stays frozen
+        # at whatever it already recorded until a beat can actually see.
+        empty_headline = (
+            "⚠ НЕ ВИЖУ ЛИНИИ — сборщик статуса линий не ответил "
+            f"({lanes_fail_reason}); неизвестно, пуста ли доска на самом деле"
+        )
+    elif live_lane_count == 0:
         now_epoch = int(__import__("time").time())
         since_epoch = None
         try:

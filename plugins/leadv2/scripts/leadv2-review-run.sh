@@ -740,6 +740,67 @@ _engine_pool_ok_arms() {
   done
 }
 
+# ---------------------------------------------------------------------------
+# REVIEW-FANOUT-VISIBILITY-01 (R2, 2026-08-22) - name the degradation.
+#
+# Diagnosed cause of the dead fan-out: NOT a code defect in pool selection. The
+# resolver's pool is quota-correct; the environment simply has one live arm. On
+# 2026-08-22 the live reading was codex=98% (>= review_threshold_pct 95),
+# glm=90% (>= glm_review_threshold_pct 90), anthropic=32%, and the lane's AUTHOR
+# was `sonnet` - so of the 4-arm review_arm_order [codex, glm, opus, sonnet],
+# three were excluded and exactly ONE (`opus`) was `:ok:`. REVIEW_FANOUT asked
+# for 3; the pool could offer 1.
+#
+# The DEFECT is that this was invisible: the artifact printed `arms: opus` and
+# the identical `status:` line a genuine 3-arm union prints, so a union verdict
+# computed over a SINGLE opinion wore the strong name of a fan-out. The helpers
+# below exist so review-gate.md states requested-vs-achieved and names why each
+# missing arm was missing.
+# ---------------------------------------------------------------------------
+
+# _engine_pool_excluded <ran-csv> - for every arm in ${pool} that is NOT in the
+# comma-separated <ran-csv>, print `<arm>=<disposition>`, joined by commas
+# (e.g. `codex=blocked:98,glm=blocked:90,sonnet=author`). A trailing empty detail
+# field is stripped, so `glm:author:` renders `glm=author`, never `glm=author:`.
+_engine_pool_excluded() { # <ran-csv>
+  local ran_csv="${1:-}"
+  local entry arm disp out=""
+  local IFS=','
+  for entry in ${pool}; do
+    arm="${entry%%:*}"
+    [[ -n "${arm}" ]] || continue
+    case ",${ran_csv}," in
+      *",${arm},"*) continue ;;
+    esac
+    disp="${entry#"${arm}:"}"
+    disp="${disp%:}"
+    [[ -n "${disp}" ]] || disp="unknown"
+    out="${out:+${out},}${arm}=${disp}"
+  done
+  printf '%s' "${out}"
+}
+
+# _engine_pool_ok_count - how many DISTINCT `:ok:` arms the pool actually offered.
+# This is the ceiling on the fan-out width, independent of REVIEW_FANOUT.
+_engine_pool_ok_count() {
+  local n=0 a
+  while IFS= read -r a; do
+    [[ -n "${a}" ]] && n=$((n + 1))
+  done < <(_engine_pool_ok_arms)
+  printf '%s' "${n}"
+}
+
+# _engine_arm_from_floor <arm> - true when this arm entered the pool through the
+# resolver's emergency rank-table floor (`<arm>:floor:<pct|degraded>`), which
+# bypasses lockout AND quota gating outright. A floor-sourced reviewer must never
+# read as identical to a healthy quota-cleared one.
+_engine_arm_from_floor() { # <arm>
+  case ",${pool}," in
+    *",${1}:floor:"*) return 0 ;;
+  esac
+  return 1
+}
+
 # Per-arm job wrapper: runs run_reviewer_arm in a background-safe subshell,
 # then persists the result (rc/out/err are file-based so the parent can read
 # them back after `wait`, since subshell locals do not propagate).
@@ -1181,6 +1242,42 @@ _effective_high=$((FINDINGS_HIGH_TOTAL))
 
 ARMS_CSV="$(IFS=,; echo "${ran_arms[*]}")"
 
+# REVIEW-FANOUT-VISIBILITY-01: compute the degradation verdict for the artifact.
+# `requested` is what the caller asked for (REVIEW_FANOUT), `ran` is how many arms
+# actually produced a slot. When they differ this gate is a WEAKER check than its
+# name implies, and the artifact must say so instead of printing a union verdict
+# over fewer opinions without comment.
+_FANOUT_REQUESTED="${REVIEW_FANOUT}"
+_FANOUT_LAUNCHED="${#fanout_list[@]}"
+_FANOUT_RAN="${#ran_arms[@]}"
+_FANOUT_POOL_OK="$(_engine_pool_ok_count)"
+_FANOUT_EXCLUDED="$(_engine_pool_excluded "${ARMS_CSV}")"
+_FANOUT_SOURCE="pool"
+for _arm in "${ran_arms[@]}"; do
+  if _engine_arm_from_floor "${_arm}"; then _FANOUT_SOURCE="floor"; break; fi
+done
+if [[ "${_FANOUT_RAN}" -lt "${_FANOUT_REQUESTED}" ]]; then
+  _FANOUT_DEGRADED=1
+  _FANOUT_DEGRADED_WORD="true"
+  if [[ "${_FANOUT_POOL_OK}" -lt "${_FANOUT_REQUESTED}" ]]; then
+    _FANOUT_REASON="pool_offered_${_FANOUT_POOL_OK}_ok_arms"
+  else
+    _FANOUT_REASON="arms_dropped_after_launch"
+  fi
+else
+  _FANOUT_DEGRADED=0
+  _FANOUT_DEGRADED_WORD="false"
+  _FANOUT_REASON="none"
+fi
+FANOUT_LINE="$(printf 'fanout: %s/%s degraded=%s launched=%s pool_ok=%s source=%s reason=%s excluded=%s' \
+  "${_FANOUT_RAN}" "${_FANOUT_REQUESTED}" "${_FANOUT_DEGRADED_WORD}" "${_FANOUT_LAUNCHED}" \
+  "${_FANOUT_POOL_OK}" "${_FANOUT_SOURCE}" "${_FANOUT_REASON}" "${_FANOUT_EXCLUDED:--}")"
+if [[ "${_FANOUT_DEGRADED}" -eq 1 ]]; then
+  FANOUT_LINE="${FANOUT_LINE}
+fanout_degraded: verdict computed over ${_FANOUT_RAN} of ${_FANOUT_REQUESTED} requested arms because ${_FANOUT_EXCLUDED:-no other arm was available} - this gate is WEAKER than a full ${_FANOUT_REQUESTED}-arm review"
+fi
+emit decision "review_fanout task=${TASK} ran=${_FANOUT_RAN} requested=${_FANOUT_REQUESTED} degraded=${_FANOUT_DEGRADED_WORD} launched=${_FANOUT_LAUNCHED} pool_ok=${_FANOUT_POOL_OK} source=${_FANOUT_SOURCE} reason=${_FANOUT_REASON} excluded=${_FANOUT_EXCLUDED:--}"
+
 DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
 record_out="$(bash "${DISPATCH_BIN}" record-review --diff-hash "${diff_hash}" --verdict "${verdict}" --reviewer "${reviewer_primary}" --run-id "dispatch-${TASK}" 2>&1)"; record_rc=$?
 if [[ ${record_rc} -eq 2 ]]; then
@@ -1191,7 +1288,7 @@ fi
 
 if [[ "${verdict}" == FAIL ]]; then
   {
-    printf 'arms: %s\n%s\n' "${ARMS_CSV}" "${VERIFIED_LINE}"
+    printf 'arms: %s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${VERIFIED_LINE}"
     printf 'status: fail\ncritical: %s\nhigh: %s\nmedium: %s\nlow: %s\n' \
       "${FINDINGS_CRITICAL_TOTAL}" "${FINDINGS_HIGH_TOTAL}" "${FINDINGS_MEDIUM_TOTAL}" "${FINDINGS_LOW_TOTAL}"
     render_gate_findings "${REVIEW_ARTIFACT:-${HANDOFF}/review-${reviewer_primary}.md}" "${FINDINGS_JSON}" \
@@ -1205,7 +1302,7 @@ if [[ "${verdict}" == FAIL ]]; then
 fi
 
 {
-  printf 'arms: %s\n%s\n' "${ARMS_CSV}" "${VERIFIED_LINE}"
+  printf 'arms: %s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${VERIFIED_LINE}"
   printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer_primary}" "${diff_hash:0:8}"
   render_gate_findings "${REVIEW_ARTIFACT:-${HANDOFF}/review-${reviewer_primary}.md}" "${FINDINGS_JSON}" \
     "${reviewer_primary}" "docs/handoff/dispatch-${TASK}/review-${reviewer_primary}.md" || true
