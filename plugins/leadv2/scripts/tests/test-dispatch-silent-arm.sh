@@ -15,6 +15,20 @@
 # Exit 0 = all pass; non-zero = failures found.
 
 set -uo pipefail
+
+# GATE-FALSE-SILENT-01 round 2 (§0.3): scrub ambient LEADV2_* env vars before the
+# first fixture runs -- see test-silent-arm-commits-ahead.sh for the full rationale.
+# This suite's Case 2 in particular is contaminated by a leaked
+# LEADV2_DISPATCH_LANE_WRITES from an enclosing dispatch worker: the scope gate then
+# refuses the fixture's undeclared newfile.txt as if it belonged to a different
+# lane's write-set, which has nothing to do with what this case tests.
+while IFS= read -r _v; do
+  [[ -n "$_v" ]] || continue
+  case "$_v" in
+    LEADV2_*) unset "$_v" ;;
+  esac
+done < <(compgen -e 2>/dev/null || true)
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPTS_ROOT}/leadv2-temp.sh"
@@ -112,6 +126,7 @@ out2="$(
   LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$LEDGER2" \
   LEADV2_LANE_WORK_ROOT="$LANE" \
   LEADV2_ARM_ADVANCE=0 \
+  LEADV2_DISPATCH_LANE_WRITES="" \
     bash "$PRODUCT_CLOSE_SH" "$ROOT" "$SIG2" glm "" 0 0 "" 2>&1
 )"
 rc2=$?
@@ -171,6 +186,12 @@ printf 'arm=glm handle=PID=0 epoch=0\n' > "$HANDOFF4/arm-registered"
 printf '{"type":"system"}\n' > "$HANDOFF4/developer.stream.jsonl"
 touch -t 202001010000 "$HANDOFF4/developer.stream.jsonl" 2>/dev/null || \
   touch -d '2020-01-01' "$HANDOFF4/developer.stream.jsonl" 2>/dev/null || true
+# GATE-FALSE-SILENT-01 round 2: _pc_lane_commits_ahead now reports "unknown" (NOT
+# silent) rather than "0" when no base is resolvable. This case means to test the
+# genuine-silence path -- a lane with a resolvable base and 0 commits ahead of it --
+# so it must declare a start-sha cache pointing at LANE's current HEAD; otherwise it
+# tests "unresolvable base", which is a different (and now differently-handled) state.
+printf '%s\n' "$(git -C "$LANE" rev-parse HEAD)" > "${CACHE}/dispatch-${SIG4}.start-sha"
 
 out4="$(
   CLAUDE_PROJECT_ROOT="$ROOT" \

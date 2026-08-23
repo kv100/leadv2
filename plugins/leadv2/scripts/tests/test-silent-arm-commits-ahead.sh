@@ -17,6 +17,22 @@
 # Exit 0 = all pass; non-zero = failures found.
 
 set -uo pipefail
+
+# GATE-FALSE-SILENT-01 round 2 (§0.3): scrub ambient LEADV2_* env vars before the
+# first fixture runs. This suite is driven directly by a builder-selfcheck step that
+# runs inside the dispatch worker's own process environment -- which has
+# LEADV2_LANE_START_SHA / LEADV2_DISPATCH_LANE_WRITES exported for the REAL lane.
+# Without this scrub the suite's greenness depends on which harness invoked it
+# (direct vs. run-core-offline.sh's own denylist) -- a suite that passes only under
+# one caller is the defect. Every case below already passes the vars it needs
+# explicitly on its own command line, so nothing is lost.
+while IFS= read -r _v; do
+  [[ -n "$_v" ]] || continue
+  case "$_v" in
+    LEADV2_*) unset "$_v" ;;
+  esac
+done < <(compgen -e 2>/dev/null || true)
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPTS_ROOT}/leadv2-temp.sh"
@@ -83,7 +99,7 @@ else
   pass "Case A: a committed lane (clean worktree) is NOT classified arm_produced_nothing"
 fi
 
-if printf '%s\n' "$outA" | grep -q 'arm_advance'; then
+if printf '%s\n' "$outA" | grep -q 'arm_advance task='; then
   fail "Case A: arm_advance decision emitted for a lane that produced a commit -- out=${outA}"
 else
   pass "Case A: no arm_advance decision for a committed lane"
@@ -157,6 +173,10 @@ printf '{"type":"system"}\n' > "$HANDOFFD/developer.stream.jsonl"
 touch -t 202001010000 "$HANDOFFD/developer.stream.jsonl" 2>/dev/null || \
   touch -d '2020-01-01' "$HANDOFFD/developer.stream.jsonl" 2>/dev/null || true
 printf '%s\n' "$SEED_SHA" > "${CACHE}/dispatch-${SIGD}.start-sha"
+# _pc_arm_advance short-circuits to arm_advance_skipped/no_mission_file (a "skip",
+# not an "advance") unless a lane-mission.md exists -- give it one so this case
+# actually exercises the arm_advance code path the assertions below check for.
+printf 'mission\n' > "$HANDOFFD/lane-mission.md"
 
 outD="$(
   CLAUDE_PROJECT_ROOT="$ROOT" \
@@ -183,7 +203,7 @@ else
   fail "Case D: ledger row wrong -- $rowD"
 fi
 
-advance_lines_D="$(printf '%s\n' "$outD" | grep -c 'arm_advance' || true)"
+advance_lines_D="$(printf '%s\n' "$outD" | grep -c 'arm_advance task=' || true)"
 if [[ "$advance_lines_D" -eq 1 ]]; then
   pass "Case D: exactly one arm_advance decision line"
 else
@@ -194,6 +214,47 @@ if [[ -f "$HANDOFFD/.arm-advanced-glm" ]]; then
   pass "Case D: .arm-advanced-glm marker present"
 else
   fail "Case D: .arm-advanced-glm marker missing"
+fi
+
+# ── Case E (the regression lock — the exact state the round-2 fix exists for):
+#    registered, stream present with 0 events and a STALE mtime, clean worktree,
+#    NO commit ahead on-disk (lane reset to seed), but LEADV2_LANE_START_SHA is set
+#    to a sha that does NOT exist as an object in this fixture's throwaway repo
+#    (a leaked ambient value, or a multi-repo lane), and no origin/main. The probe
+#    cannot resolve a base at all -- must NOT be classified arm_produced_nothing,
+#    and must emit the named degradation line instead of a silent verdict. ───────
+SIGE="ceeeeeee"
+LEDGERE="$tmp/ledger-e.jsonl"
+HANDOFFE="$ROOT/docs/handoff/dispatch-${SIGE}"
+mkdir -p "$HANDOFFE"
+printf 'arm=glm handle=PID=0 epoch=0\n' > "$HANDOFFE/arm-registered"
+printf '{"type":"system"}\n' > "$HANDOFFE/developer.stream.jsonl"
+touch -t 202001010000 "$HANDOFFE/developer.stream.jsonl" 2>/dev/null || \
+  touch -d '2020-01-01' "$HANDOFFE/developer.stream.jsonl" 2>/dev/null || true
+UNRESOLVABLE_SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+outE="$(
+  CLAUDE_PROJECT_ROOT="$ROOT" \
+  LEADV2_DISPATCH_CACHE_DIR="$CACHE" \
+  LEADV2_DISPATCH_LEDGER_BIN="$REAL_LEDGER_SH" \
+  LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$LEDGERE" \
+  LEADV2_LANE_WORK_ROOT="$LANE" \
+  LEADV2_ARM_ADVANCE=0 \
+  LEADV2_LANE_START_SHA="$UNRESOLVABLE_SHA" \
+    bash "$PRODUCT_CLOSE_SH" "$ROOT" "$SIGE" glm "" 0 0 "" 2>&1
+)"
+rcE=$?
+
+if grep -q 'reason: arm_produced_nothing' "$HANDOFFE/review-gate.md" 2>/dev/null; then
+  fail "Case E: unresolvable-base lane classified arm_produced_nothing -- out=${outE}"
+else
+  pass "Case E: unresolvable-base lane is NOT classified arm_produced_nothing"
+fi
+
+if printf '%s\n' "$outE" | grep -q 'silent_probe_base_unresolved task='; then
+  pass "Case E: degradation line emitted for unresolvable base"
+else
+  fail "Case E: expected silent_probe_base_unresolved decision line -- out=${outE}"
 fi
 
 printf -- '\n[TEST] %d passed, %d failed\n' "$PASS" "$FAIL"

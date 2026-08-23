@@ -1160,34 +1160,40 @@ _pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding orchestration-owned path
 # _pc_lane_dirty alone cannot tell "produced nothing" from "committed cleanly". Count
 # commits ahead of the base pc_scope_diff resolves.
 #
-# CENSUS CORRECTION (this is NOT a call to _pc_diff_base): the original prepass design
-# assumed _pc_diff_base's function name resolves at call time regardless of where in the
-# file it is textually defined, and is therefore safe to call from here. That is false --
-# this file's own warning comment a few hundred lines below (currently just above
-# pc_scope_diff()) says so explicitly: "pc_scope_diff() below defines helper functions in
-# its body that are NOT available until it is first invoked... Top-level code that runs
-# before pc_scope_diff() must not call those helpers." _pc_diff_base is one of those
-# nested functions -- it is defined INSIDE pc_scope_diff()'s body, not at top level, so it
-# does not exist as a callable function until pc_scope_diff() has run at least once. This
-# probe runs BEFORE pc_scope_diff() (call site precedes it), so a call to _pc_diff_base
-# here would silently no-op (command-not-found, swallowed by the `2>/dev/null` a naive
-# implementation would need), and commits_ahead would always read 0 -- confirmed by
-# tracing during implementation. Fix: duplicate _pc_diff_base's exact resolution
-# algorithm (same LEADV2_LANE_START_SHA env var, same
-# ${CACHE_BASE}/dispatch-${TASK}.start-sha cache-file convention, same origin/main
-# fallback) inline, rather than sharing the function -- pc_scope_diff is off-limits, so
-# hoisting _pc_diff_base to top level to enable literal reuse is not an option here.
-# Fails closed to "0 commits" (== today's total blindness to commits) on ANY git error --
-# unresolvable base, non-repo root, detached/unborn HEAD -- never aborts the gate.
-_pc_lane_commits_ahead() {  # <root> -> stdout integer count; always rc0, "0" when unprovable
+# CENSUS CORRECTION round 2 (why this duplicates _pc_diff_base instead of calling it):
+# _pc_diff_base (below, top level, defined at column 0 -- NOT nested inside
+# pc_scope_diff()'s body, contrary to what an earlier version of this comment claimed) is
+# reached only via _pc_repo_diff() -> pc_scope_diff(), and pc_scope_diff() runs AFTER this
+# probe (call site at pc_silent_arm_probe's caller precedes pc_scope_diff's). A call to
+# _pc_diff_base from here would in fact resolve today -- the earlier "it doesn't exist yet"
+# reasoning was wrong. The duplication is kept anyway because pc_scope_diff is off-limits
+# this round and the two copies now have DELIBERATELY DIVERGENT failure semantics: this
+# copy reports "unknown" when it cannot resolve a base (GATE-FALSE-SILENT-01 fix round 2 --
+# see below), while _pc_diff_base still fails to empty/HEAD. Hoisting or merging them is
+# out of scope; a future edit to base resolution must be applied to BOTH this function and
+# _pc_diff_base or they will drift.
+#
+# round-2 fix: "0" is indistinguishable from "could not resolve a base at all" (unresolvable
+# LEADV2_LANE_START_SHA, missing cache file, no origin/main) -- a lossy channel that let a
+# lane which genuinely committed work read as arm_produced_nothing. Widen the channel:
+# print "unknown" whenever no base could be resolved, and an integer ONLY when a base was
+# actually resolved (including the genuine "0 commits ahead" case). rc is always 0 -- this
+# probe must never abort the gate. The caller (pc_silent_arm_probe) treats "unknown" as
+# NOT silent, matching the mandate that a probe which cannot tell must not conclude silence.
+_pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
   local root="$1" base sha count
   if [[ -n "${root}" && -d "${root}" ]] && \
      git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     base=""
     sha="${LEADV2_LANE_START_SHA:-}"
-    [[ -z "${sha}" ]] && sha="$(cat "${CACHE_BASE}/dispatch-${TASK}.start-sha" 2>/dev/null || true)"
     if [[ -n "${sha}" ]] && git -C "${root}" cat-file -e "${sha}^{commit}" 2>/dev/null; then
       base="$(git -C "${root}" merge-base "${sha}" HEAD 2>/dev/null || true)"
+    fi
+    if [[ -z "${base}" ]]; then
+      sha="$(cat "${CACHE_BASE}/dispatch-${TASK}.start-sha" 2>/dev/null || true)"
+      if [[ -n "${sha}" ]] && git -C "${root}" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+        base="$(git -C "${root}" merge-base "${sha}" HEAD 2>/dev/null || true)"
+      fi
     fi
     if [[ -z "${base}" ]] && git -C "${root}" cat-file -e "origin/main^{commit}" 2>/dev/null; then
       base="$(git -C "${root}" merge-base origin/main HEAD 2>/dev/null || true)"
@@ -1197,7 +1203,7 @@ _pc_lane_commits_ahead() {  # <root> -> stdout integer count; always rc0, "0" wh
       [[ "${count}" =~ ^[0-9]+$ ]] && { printf '%s' "${count}"; return 0; }
     fi
   fi
-  printf '0'
+  printf 'unknown'
 }
 
 # GATE-FALSE-SILENT-01: a worker whose process is still alive is never silent, whatever
@@ -1351,8 +1357,16 @@ pc_silent_arm_probe() {
   _pc_lane_dirty "${_lane_root}" && return 1
   # 6) GATE-FALSE-SILENT-01: commits ahead of base are production, whatever the
   # worktree's dirty state says -- a worker that commits cleanly is not silent.
+  # round 2: "unknown" (base unresolvable) is NOT silent either -- a probe that cannot
+  # tell must not conclude silence. A lane in this state falls through to pc_scope_diff,
+  # which owns the empty/unscoped verdicts from here; this branch only refuses to be the
+  # one that mislabels it arm_produced_nothing.
   local commits_ahead
   commits_ahead="$(_pc_lane_commits_ahead "${_lane_root}")"
+  if [[ "${commits_ahead}" == "unknown" ]]; then
+    emit decision "silent_probe_base_unresolved task=${TASK} arm=${AUTHOR} lane=$(basename "${_lane_root}")"
+    return 1
+  fi
   [[ "${commits_ahead}" =~ ^[0-9]+$ ]] || commits_ahead=0
   (( commits_ahead >= 1 )) && return 1
   _PC_SILENT_COMMITS_AHEAD="${commits_ahead}"
