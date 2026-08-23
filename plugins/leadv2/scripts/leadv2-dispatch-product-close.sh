@@ -1156,6 +1156,27 @@ _pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding orchestration-owned path
   [[ -n "${status}" ]]
 }
 
+# REVIEW-GATE-LANEROOT-01: `git -C <dir>` walks UP. A directory that is merely INSIDE
+# the main checkout (an unregistered .claude/worktrees/<tid> left behind by a partial
+# worktree removal) answers `rev-parse --is-inside-work-tree` with `true` and then
+# reports the MAIN repository's status. Identity, not membership, is the question:
+# the toplevel git resolves from <dir> must BE <dir>.
+# Physical-path comparison avoids /var vs /private/var disagreement on macOS.
+# Deliberately NOT folded into _pc_lane_dirty: pc_silent_arm_probe reads a failing
+# dirty check as proof of silence, so both callers check identity explicitly instead.
+_pc_phys() { ( cd -P "$1" 2>/dev/null && pwd -P ) ; }
+
+_PC_LANE_TOPLEVEL=""          # set by the probe below; read by the evidence line
+_pc_lane_root_is_own_worktree() {  # <root> -> rc0 iff <root> IS a git work tree root
+  local root="$1" top
+  _PC_LANE_TOPLEVEL=""
+  [[ -n "${root}" && -d "${root}" ]] || return 1
+  top="$(git -C "${root}" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [[ -n "${top}" ]] || return 1
+  _PC_LANE_TOPLEVEL="${top}"
+  [[ "$(_pc_phys "${top}")" == "$(_pc_phys "${root}")" ]]
+}
+
 # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01: bash-3.2-safe mtime probe (no
 # portable `stat -f/-c` flag exists across darwin/linux) -- try darwin's `-f %m` first,
 # fall back to linux's `-c %Y`. rc1 on ANY stat failure (missing file, permission,
@@ -1270,6 +1291,10 @@ pc_silent_arm_probe() {
   fi
   # 3) worktree dirty-check -- no resolved lane worktree is conservative NOT-silent.
   [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] || return 1
+  # REVIEW-GATE-LANEROOT-01: an unregistered lane dir makes _pc_lane_dirty grade the
+  # parent repo. Unknown tree identity is never proof of silence: otherwise a clean
+  # parent would advance the arm while finished work remains in the lane directory.
+  _pc_lane_root_is_own_worktree "${_lane_root}" || return 1
   _pc_lane_dirty "${_lane_root}" && return 1
   _PC_SILENT_LANE_BASENAME="$(basename "${_lane_root}")"
   return 0
@@ -1343,6 +1368,26 @@ _pc_join_capped() {  # <n...> -> first 5 comma-joined + "+N more" on stdout
   done
   (( n > cap )) && out="${out},+$((n - cap)) more"
   printf '%s' "${out}"
+}
+
+# REVIEW-GATE-LANEROOT-01: .claude/worktrees/ is gitignored, so an unregistered
+# lane's files are invisible to porcelain. This human-only evidence intentionally
+# does not reuse _PC_PORCELAIN_EXCLUDE_RE, which matches porcelain lines rather than
+# bare paths. Newline-containing filenames may render as more than one entry; this
+# value is never used for a decision.
+_pc_lane_produced_files() {  # <root> -> capped, comma-joined, root-relative file list
+  local root="$1" rel out=() f
+  while IFS= read -r f; do
+    [[ -n "${f}" ]] || continue
+    rel="${f#${root}/}"
+    out+=("${rel}")
+  done <<< "$(find "${root}" -type f \
+                -not -path "${root}/.git/*" -not -name '.git' \
+                -not -path "${root}/docs/leadv2/*" -not -path "${root}/docs/handoff/*" \
+                -not -path '*/__pycache__/*' -not -name '*.pyc' \
+                2>/dev/null | head -"${LEADV2_PC_PRODUCED_SCAN_MAX:-500}")"
+  [[ ${#out[@]} -eq 0 ]] && { printf 'none'; return 0; }
+  _pc_join_capped "${out[@]}"
 }
 # REVIEW-GATE-INFRA-01 round 2 F3: single normalisation point for a declared write-set
 # entry. Strips whitespace and ONE trailing /** or /* glob suffix, then a trailing /,
@@ -1857,7 +1902,15 @@ if [[ -n "${blocked_reason}" ]]; then
     _pc_dirty_evidence=""
     _pc_offending=""
     _pc_declared_list="$(_pc_join_capped "${writes[@]:-}")"
-    if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && _pc_lane_dirty "${_lane_root}"; then
+    if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && ! _pc_lane_root_is_own_worktree "${_lane_root}"; then
+      # Never let porcelain from a parent repository become lane evidence.
+      _pc_terminal="refused"; _pc_cause="lane_root_not_a_worktree"; _pc_rg_reason="lane_root_not_a_worktree"
+      _pc_dirty_n=0
+      _pc_offending=""
+      _PC_LANE_RESOLVED_TOP="${_PC_LANE_TOPLEVEL:-<unresolved>}"
+      _PC_LANE_PRODUCED="$(_pc_lane_produced_files "${_lane_root}")"
+      _pc_dirty_evidence="lane_root=$(basename "${_lane_root}") resolved_toplevel=${_PC_LANE_RESOLVED_TOP} expected=${_lane_root} produced=${_PC_LANE_PRODUCED}"
+    elif [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && _pc_lane_dirty "${_lane_root}"; then
       # REVIEW-GATE-INFRA-01 D-A(ii): "the lane is dirty" is not itself the violation --
       # partition the dirty paths against the declared write-set. Only an UNDECLARED
       # dirty path is a genuine scope violation; unscoped_lane_work must fire ONLY then
@@ -1894,6 +1947,7 @@ if [[ -n "${blocked_reason}" ]]; then
         fi
       done <<< "${_pc_dirty_lines}"
       _pc_dirty_evidence="lane_root=$(basename "${_lane_root}") dirty=${_pc_dirty_n}"
+      [[ "$(_pc_phys "${_lane_root}")" == "$(_pc_phys "${ROOT}")" ]] && _pc_dirty_evidence="${_pc_dirty_evidence} lane_root_shared=1"
       if [[ ${_pc_undeclared_n} -gt 0 ]]; then
         _pc_terminal="refused"; _pc_cause="unscoped_lane_work"; _pc_rg_reason="unscoped_lane_work"
         _pc_offending="$(_pc_join_capped "${_pc_undeclared[@]}")"
@@ -1928,6 +1982,8 @@ if [[ -n "${blocked_reason}" ]]; then
         "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}"
       [[ -n "${_pc_declared_list:-}" ]] && printf 'declared_writes: %s\n' "${_pc_declared_list}"
       [[ -n "${_pc_offending:-}" ]] && printf 'offending: %s\n' "${_pc_offending}"
+      [[ -n "${_PC_LANE_RESOLVED_TOP:-}" ]] && printf 'resolved_toplevel: %s\nexpected_lane_root: %s\n' "${_PC_LANE_RESOLVED_TOP}" "${_lane_root}"
+      [[ -n "${_PC_LANE_PRODUCED:-}" ]] && printf 'produced: %s\n' "${_PC_LANE_PRODUCED}"
       [[ -n "${_PC_UNDIFFABLE_CSV:-}" ]] && printf 'undiffable: %s\n' "${_PC_UNDIFFABLE_CSV}"
     } > "${HANDOFF}/review-gate.md"
   else
