@@ -5,6 +5,10 @@
 #         (already-fixed by STATUS-SURFACE-SHOWS-STALE-TRUTH-01 C5 — verified here)
 # Row 3: exclude-mode DIRECTION-SAFETY had no quarantine safety net + convergence
 set -euo pipefail
+
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL_PLUGIN_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"

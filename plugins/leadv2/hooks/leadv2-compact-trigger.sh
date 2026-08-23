@@ -326,7 +326,7 @@ PENDING_WARN="$HOME/.claude/leadv2-pending-warn-${SESSION_ID}.txt"
 
 case "$LEVEL" in
   emergency)
-    MSG="[COMPACT_NOW] Контекст: ${KB}KB (~${EST_K}K токенов после последнего /compact${TASK_NOTE}). Каждый ход = ${EST_K}K input. Скажи фаундеру одной строкой: 'Нужен /compact — контекст ${EST_K}K токенов.' Потом жди."
+    MSG="[COMPACT_NOW] Сессия ПРЕВЫСИЛА аварийный порог контекста: ~${EST_K}K токенов (порог ${EMERG_T} токенов, файл ${KB}KB${TASK_NOTE}). Каждый следующий ход стоит ${EST_K}K input. Авто-/compact сейчас НЕ включён (по умолчанию OFF): чтобы хук сам блокировал ход и вызывал /compact, экспортируй LEADV2_COMPACT_INTERACTIVE_BLOCK=1. Скажи фаундеру одной строкой: 'Нужен /compact — контекст ${EST_K}K токенов.' Потом жди."
     ;;
   hard)
     MSG="[COMPACT_NEEDED] Контекст: ${KB}KB (~${EST_K}K токенов${TASK_NOTE}). На следующей фазовой границе скажи фаундеру: 'Нужен /compact перед следующей фазой.'"

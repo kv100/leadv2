@@ -5,6 +5,10 @@
 # F1 (exemption-in-sibling-segment), F2 (read-only-verb false positive), lexer guards.
 set -euo pipefail
 
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
+
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$TEST_DIR/../.." && pwd)"
 HOOK="$PLUGIN_ROOT/hooks/leadv2-block-fg-dispatch.sh"

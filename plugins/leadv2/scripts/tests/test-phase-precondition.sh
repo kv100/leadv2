@@ -3,6 +3,10 @@
 # PHASES-ARE-THE-ONLY-PATH-01 §11 test suite 2.
 set -uo pipefail
 
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PHASE_RECORD="${SCRIPT_DIR}/../leadv2-phase-record.sh"

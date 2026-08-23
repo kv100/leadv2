@@ -44,6 +44,10 @@
 # path, not just the printf mirror.
 
 set -uo pipefail
+
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
 # Dev-shell hygiene: this suite may itself run inside a leadv2 lane worktree,
 # whose own session env carries LEADV2_LANE_WORK_ROOT / PROJECT_ROOT for THIS
 # lane -- unset before dispatching so the fixture repo's CLAUDE_PROJECT_ROOT

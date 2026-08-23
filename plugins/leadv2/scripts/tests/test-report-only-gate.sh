@@ -28,6 +28,10 @@
 
 set -uo pipefail
 
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
+
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_LIVE="$(cd "${TESTS_DIR}/.." && pwd)"
 LEADV2_REPO="$(git -C "${SCRIPTS_LIVE}" rev-parse --show-toplevel 2>/dev/null || true)"

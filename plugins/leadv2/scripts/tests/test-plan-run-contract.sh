@@ -10,6 +10,10 @@
 # Run: bash plugins/leadv2/scripts/tests/test-plan-run-contract.sh
 set -uo pipefail
 
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPTS_ROOT}/.." && pwd)"

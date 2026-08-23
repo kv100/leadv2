@@ -64,6 +64,51 @@ else:
 ' "$1" "$2" "$3" 2>/dev/null
 }
 
+# Hard wall-clock bound on the telemetry read. `-cmd '.timeout 2000'` bounds
+# SQLITE_BUSY only -- it does NOT bound a slow scan, a WAL/-shm attach against a
+# hung writer, or a db on a stalled volume. Without this, a telemetry problem
+# hangs cmd_verdict, which hangs _burn_gate, which hangs the whole dispatch.
+# Mirrors lib/leadv2-builder-selfcheck.sh:_lv2_selfcheck_timeout_run, including
+# its detached-watcher fix: the watcher must not inherit our command-substitution
+# pipe or the caller blocks for the full bound even after the child dies.
+# rc 124 == timed out (GNU convention). Never configurable: a gate whose own
+# bound can be misconfigured to `0` or `999999` reintroduces the hang it fixes.
+_LBG_SQL_TIMEOUT_S=5
+
+_lbg_bounded_sqlite() {   # $1=db $2=sql ; stdout = query result ; rc 124 on timeout
+  local db="$1" sql="$2" out rc=0
+  out="$(mktemp 2>/dev/null || printf '/tmp/lbg-sql.%s' "$$")" || return 1
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "${_LBG_SQL_TIMEOUT_S}" sqlite3 -cmd '.timeout 2000' "${db}" "${sql}" >"${out}" 2>/dev/null
+    rc=$?
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout "${_LBG_SQL_TIMEOUT_S}" sqlite3 -cmd '.timeout 2000' "${db}" "${sql}" >"${out}" 2>/dev/null
+    rc=$?
+  else
+    local pid watcher
+    set -m
+    { sqlite3 -cmd '.timeout 2000' "${db}" "${sql}" >"${out}" 2>/dev/null & } 2>/dev/null
+    pid=$!
+    set +m
+    ( sleep "${_LBG_SQL_TIMEOUT_S}"
+      kill -0 "${pid}" 2>/dev/null || exit 0
+      kill -TERM -"${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
+      sleep 1
+      kill -KILL -"${pid}" 2>/dev/null || kill -KILL "${pid}" 2>/dev/null || true
+    ) >/dev/null 2>&1 </dev/null &
+    watcher=$!
+    wait "${pid}" 2>/dev/null; rc=$?
+    kill -TERM "${watcher}" 2>/dev/null || true
+    wait "${watcher}" 2>/dev/null || true
+    [ "${rc}" -gt 128 ] && rc=124
+  fi
+  # On timeout the partial file is DISCARDED, not parsed: a half-written row of
+  # digits would satisfy the ^[0-9]+$ guard downstream and become a real verdict.
+  [ "${rc}" -eq 124 ] || cat "${out}" 2>/dev/null
+  rm -f "${out}" 2>/dev/null || true
+  return "${rc}"
+}
+
 cmd_verdict() {
   local governor_on="${LEADV2_BURN_GOVERNOR:-1}"
   if [[ "${governor_on}" == "0" ]]; then
@@ -111,7 +156,7 @@ cmd_verdict() {
   # outright on this db (WAL mode needs to create/attach -shm/-wal, verified
   # live) — and this statement is a SELECT that writes nothing regardless.
   local burn24h
-  burn24h="$(sqlite3 -cmd '.timeout 2000' "${db}" "
+  burn24h="$(_lbg_bounded_sqlite "${db}" "
 SELECT COALESCE(SUM(
   COALESCE(cc_sum,0)+COALESCE(cr_sum,0)+COALESCE(input_sum,0)+COALESCE(output_sum,0)
 ),0)

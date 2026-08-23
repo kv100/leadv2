@@ -8,6 +8,10 @@
 # -- NOT the old "rule=none model=kimi"; (4) re-resolve happens at most once.
 # New file (R5): the six named suites keep their exact counts.
 set -uo pipefail
+
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESOLVER="${SCRIPT_DIR}/lib/leadv2-glm-policy-resolve.py"
 DC="${SCRIPT_DIR}/leadv2-dispatch-code.sh"

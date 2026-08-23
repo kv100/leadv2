@@ -24,6 +24,10 @@
 # exists on disk, just at the wrong path.
 
 set -uo pipefail
+
+# BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
+# ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
+export LEADV2_BURN_GOVERNOR=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUB="${SCRIPT_DIR}/claude-subsession.sh"
 PASS=0; FAIL=0
