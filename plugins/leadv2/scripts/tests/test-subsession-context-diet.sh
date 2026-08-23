@@ -129,7 +129,7 @@ REAL_PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # ── Test 1: role→file mapping — developer picks up mcp-role-developer.json ──
 test_1_role_mapping() {
   log "Test 1: role=developer resolves --strict-mcp-config + --mcp-config"
-  local out; out="$(_it_run_subsession "CD-01" "developer")"
+  local out; out="$(_it_run_subsession "CD-01" "developer" "LEADV2_SUBSESSION_SLIM_MCP=1")"
   if _has_flag "$out" "--strict-mcp-config"; then
     pass "developer role appends --strict-mcp-config"
   else
@@ -140,7 +140,7 @@ test_1_role_mapping() {
 # ── Test 2: unknown role falls back to mcp-role-default.json ──────────────
 test_2_unknown_role_falls_back_to_default() {
   log "Test 2: role=hack-detect (no dedicated file) falls back to default"
-  local out; out="$(_it_run_subsession "CD-02" "hack-detect")"
+  local out; out="$(_it_run_subsession "CD-02" "hack-detect" "LEADV2_SUBSESSION_SLIM_MCP=1")"
   if _has_flag "$out" "--strict-mcp-config"; then
     pass "hack-detect falls back to mcp-role-default.json"
   else
@@ -153,7 +153,7 @@ test_3_missing_config_fails_open_with_warn() {
   log "Test 3: no allowlist anywhere -> fail open, WARN logged, no flags"
   local empty_plugin_root; empty_plugin_root="$(lv2_mktemp_dir "context-diet-empty-plugin")"
   mkdir -p "$empty_plugin_root/config" "$empty_plugin_root/skills/leadv2-subagent-protocol"
-  local out; out="$(_it_run_subsession "CD-03" "developer" "" "$empty_plugin_root")"
+  local out; out="$(_it_run_subsession "CD-03" "developer" "LEADV2_SUBSESSION_SLIM_MCP=1" "$empty_plugin_root")"
   local stderr; stderr="$(_stderr_of "$out")"
   if _has_flag "$out" "--strict-mcp-config"; then
     fail "expected no --strict-mcp-config when no allowlist exists"
@@ -171,7 +171,7 @@ test_4_malformed_json_fails_open() {
   local plugin_root; plugin_root="$(lv2_mktemp_dir "context-diet-malformed-plugin")"
   mkdir -p "$plugin_root/config"
   printf '{not valid json' > "$plugin_root/config/mcp-role-developer.json"
-  local out; out="$(_it_run_subsession "CD-04" "developer" "" "$plugin_root")"
+  local out; out="$(_it_run_subsession "CD-04" "developer" "LEADV2_SUBSESSION_SLIM_MCP=1" "$plugin_root")"
   local stderr; stderr="$(_stderr_of "$out")"
   if _has_flag "$out" "--strict-mcp-config"; then
     fail "expected no --strict-mcp-config on malformed JSON"
@@ -189,7 +189,7 @@ test_5_explicit_empty_servers_still_appends_flags() {
   local plugin_root; plugin_root="$(lv2_mktemp_dir "context-diet-empty-servers-plugin")"
   mkdir -p "$plugin_root/config"
   printf '{"servers": []}' > "$plugin_root/config/mcp-role-developer.json"
-  local out; out="$(_it_run_subsession "CD-05" "developer" "" "$plugin_root")"
+  local out; out="$(_it_run_subsession "CD-05" "developer" "LEADV2_SUBSESSION_SLIM_MCP=1" "$plugin_root")"
   if _has_flag "$out" "--strict-mcp-config"; then
     pass "explicit empty servers list still appends flags"
   else
@@ -204,7 +204,7 @@ test_6_unresolvable_server_fails_open() {
   local plugin_root; plugin_root="$(lv2_mktemp_dir "context-diet-unresolvable-plugin")"
   mkdir -p "$plugin_root/config"
   printf '{"servers": ["nonexistent-server-xyz"]}' > "$plugin_root/config/mcp-role-developer.json"
-  local out; out="$(_it_run_subsession "CD-06" "developer" "" "$plugin_root")"
+  local out; out="$(_it_run_subsession "CD-06" "developer" "LEADV2_SUBSESSION_SLIM_MCP=1" "$plugin_root")"
   local stderr; stderr="$(_stderr_of "$out")"
   if _has_flag "$out" "--strict-mcp-config"; then
     fail "expected no --strict-mcp-config when zero servers resolve"
@@ -241,14 +241,22 @@ test_8_exclude_dynamic_killswitch() {
   fi
 }
 
-# ── Test 9: default (both flags unset) — exclude-dynamic present ──────────
-test_9_exclude_dynamic_default_on() {
-  log "Test 9: default (unset) -> --exclude-dynamic-system-prompt-sections present"
+# ── Test 9: default (both flags unset) — OPT-IN, so exclude-dynamic ABSENT ──
+# Probe verdict 2026-08-23 (leadv2-context-diet-probe.sh, live, both repos):
+# cache_creation delta ~0 -> mission rule "delta <10K -> do NOT ship default-on".
+test_9_exclude_dynamic_default_off_optin_on() {
+  log "Test 9: default (unset) -> flag absent; =1 opts in"
   local out; out="$(_it_run_subsession "CD-09" "developer")"
   if _has_flag "$out" "--exclude-dynamic-system-prompt-sections"; then
-    pass "default appends --exclude-dynamic-system-prompt-sections"
+    fail "default must NOT append --exclude-dynamic-system-prompt-sections (opt-in)"
   else
-    fail "default should append --exclude-dynamic-system-prompt-sections"
+    pass "default omits --exclude-dynamic-system-prompt-sections"
+  fi
+  local out2; out2="$(_it_run_subsession "CD-09b" "developer" "LEADV2_SUBSESSION_EXCLUDE_DYNAMIC=1")"
+  if _has_flag "$out2" "--exclude-dynamic-system-prompt-sections"; then
+    pass "EXCLUDE_DYNAMIC=1 opts in the flag"
+  else
+    fail "EXCLUDE_DYNAMIC=1 should append the flag"
   fi
 }
 
@@ -317,7 +325,7 @@ test_5_explicit_empty_servers_still_appends_flags
 test_6_unresolvable_server_fails_open
 test_7_slim_mcp_killswitch
 test_8_exclude_dynamic_killswitch
-test_9_exclude_dynamic_default_on
+test_9_exclude_dynamic_default_off_optin_on
 test_10_role_sanitised
 
 echo ""

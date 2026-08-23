@@ -401,7 +401,7 @@ resolve_role_mcp_config() {
   local role="$1"
   local handoff_dir="$2"
 
-  if [[ "${LEADV2_SUBSESSION_SLIM_MCP:-1}" != "1" ]]; then
+  if [[ "${LEADV2_SUBSESSION_SLIM_MCP:-0}" != "1" ]]; then
     return 10
   fi
 
@@ -579,7 +579,7 @@ fi
 # WORKER-CONTEXT-DIET-01: move per-machine system-prompt sections (cwd, env,
 # memory paths, git status) into the first user message for cross-spawn
 # prompt-cache reuse. Only the literal "0" disables (LEADV2_SUBSESSION_EXCLUDE_DYNAMIC).
-if [[ "${LEADV2_SUBSESSION_EXCLUDE_DYNAMIC:-1}" != "0" ]]; then
+if [[ "${LEADV2_SUBSESSION_EXCLUDE_DYNAMIC:-0}" != "0" ]]; then
   CLAUDE_ARGS+=(--exclude-dynamic-system-prompt-sections)
 fi
 
