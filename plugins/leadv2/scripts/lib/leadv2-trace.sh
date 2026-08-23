@@ -84,7 +84,13 @@ _lv2_trace_now_ns() {
 # --no-link traces (never a hardcoded path, never the STANDARD/link set),
 # then <sink_dir>/<trace_id>.ndjson.
 _lv2_trace_resolve_sink() {
-  local bin="${LEADV2_STATE_PATH_BIN:-${SCRIPT_DIR:-.}/leadv2-state-path.sh}"
+  local bin="${LEADV2_STATE_PATH_BIN:-}"
+  # Falls back to the sibling of THIS library file, never the host's own
+  # SCRIPT_DIR convention (which several call sites spell differently or
+  # don't define at all — DEFECT-A-TRACE-SEAM-SILENCE-01, dispatch-dfbbd78d
+  # architect prepass §4.1). ${BASH_SOURCE[0]} inside this file is always
+  # the lib path in every sourcing context, so its sibling is always right.
+  [[ -n "$bin" && -x "$bin" ]] || bin="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-state-path.sh"
   [[ -x "$bin" ]] || bin="$(command -v leadv2-state-path.sh 2>/dev/null || true)"
   if [[ -z "$bin" || ! -x "$bin" ]]; then
     echo "[trace] disabled: leadv2-state-path.sh not found/executable" >&2
