@@ -368,26 +368,30 @@ case_t10_h1_repro() { # <scripts_dir> -> rc0=pass
   local state="${h}/.review-round.state"
   local mf="${h}/review-mission-sonnet.md"
 
+  # REVIEW-ROUNDCAP-01: this repro needs 3 REAL rounds to exercise round
+  # monotonicity/freeze, an orthogonal H1 concern predating the round cap.
+  # LEADV2_REVIEW_MAX_ROUNDS=0 is the documented kill-switch (byte-identical
+  # to pre-cap behavior) so the cap doesn't fire mid-repro.
   printf 'diff --git a/x b/x\n+v1 broken\n' > "${diff}"
   run_review_ex "${scripts_dir}" "${h}" "${diff}" T10REPRO 1 "${h}/err1" \
-    ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round1 unique finding marker"
+    LEADV2_REVIEW_MAX_ROUNDS=0 ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round1 unique finding marker"
   [[ -f "${state}" ]] || return 1
   grep -q '^round=1$' "${state}" || return 1
 
   printf 'diff --git a/x b/x\n+v2 partially fixed\n' > "${diff}"
   run_review_ex "${scripts_dir}" "${h}" "${diff}" T10REPRO 1 "${h}/err2" \
-    ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round2 unique finding marker"
+    LEADV2_REVIEW_MAX_ROUNDS=0 ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round2 unique finding marker"
   grep -q '^round=2$' "${state}" || return 1
   grep -q 'VERIFICATION-ONLY ROUND 2' "${mf}" || return 1
 
   # Re-review the exact same (unchanged) diff — round must NOT advance.
   run_review_ex "${scripts_dir}" "${h}" "${diff}" T10REPRO 1 "${h}/err3" \
-    ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round2 unique finding marker"
+    LEADV2_REVIEW_MAX_ROUNDS=0 ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round2 unique finding marker"
   grep -q '^round=2$' "${state}" || return 1
   grep -q 'EXHAUSTIVE ROUND 2' "${mf}" || return 1
 
   printf 'diff --git a/x b/x\n+v3 fully fixed\n' > "${diff}"
-  run_review_ex "${scripts_dir}" "${h}" "${diff}" T10REPRO 1 "${h}/err4" ARCH_CTRL_VERDICT=PASS
+  run_review_ex "${scripts_dir}" "${h}" "${diff}" T10REPRO 1 "${h}/err4" LEADV2_REVIEW_MAX_ROUNDS=0 ARCH_CTRL_VERDICT=PASS
   grep -q '^round=3$' "${state}" || return 1
   grep -qE 'EXHAUSTIVE ROUND 3|VERIFICATION-ONLY ROUND 3' "${mf}" || return 1
   grep -q '^count=' "${mf}" && return 1

@@ -25,6 +25,15 @@
 # stay 0 in production per ONE-PATH-EVERYWHERE-01 rollout). This script itself carries
 # no internal flag — once invoked, it always runs its full pipeline. The lead/interactive
 # skill path calls it unconditionally (design §5), independent of the lane's flag.
+#
+# REVIEW-ROUNDCAP-01: the engine now enforces the declared "max 2 rounds then
+# architect escape" policy itself instead of leaving it to the (LLM) lead's
+# judgement — docs/phases.md's old "Round cap is enforced by LEAD, not the
+# engine" line is superseded. LEADV2_REVIEW_MAX_ROUNDS (default 2, 0=unlimited)
+# refuses a further round with exit 8 once .review-round.state's attempts
+# counter reaches the limit. NOT COVERED: leadv2-dispatch-product-close.sh's
+# inline review body used at LEADV2_REVIEW_ENGINE=0 (the production default)
+# never calls this engine, so it is not capped by this change.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -585,6 +594,9 @@ _review_round_context() {
   REVIEW_MODE="exhaustive"
   PRIOR_FINDINGS_BODY=""
   PRIOR_FINDINGS_COUNT=0
+  # REVIEW-ROUNDCAP-01: reset every call so a frozen round from a prior
+  # invocation in the same process never leaks forward.
+  _REVIEW_ROUND_FROZEN=0
 
   local state="${HANDOFF}/.review-round.state"
   local sidecar_round="" sidecar_diff=""
@@ -648,6 +660,10 @@ _review_round_context() {
   if [[ "${REVIEW_DIFF_HASH_OK:-0}" -eq 1 && -n "${sidecar_diff}" && "${sidecar_diff}" == "${diff_hash:0:8}" ]]; then
     REVIEW_ROUND="${prior_round}"
     REVIEW_MODE="exhaustive"
+    # REVIEW-ROUNDCAP-01: the round genuinely did not advance here (identical
+    # diff, nothing new reviewed), so this re-invocation must not burn a fresh
+    # policy attempt either — see _review_state_write.
+    _REVIEW_ROUND_FROZEN=1
     return 0
   fi
 
@@ -667,22 +683,112 @@ _review_round_context() {
   return 0
 }
 
-# _review_state_write -> rc0 always. Writes .review-round.state atomically,
-# clamping the on-disk round so it can never decrease (H1 belt-and-suspenders:
-# even a forced LEADV2_REVIEW_ROUND=1 run cannot regress a higher round already
-# on disk). Skips the write entirely when the diff hash could not be computed
-# (M1) — a round file must never be written from an unknown/empty diff hash.
+# _review_roundcap_read -> stdout = "<attempts> <spawns>" (two ints, fail-open
+# 0 0). REVIEW-ROUNDCAP-01: attempts counts verdict-producing, non-dedup review
+# runs for this task; spawns counts every fan-out launch regardless of dedup
+# (the actual money-spent number, see §4a in the design). A lane upgraded
+# mid-flight (state file has the legacy round=<n> but no attempts= line yet)
+# falls back to round=<n> as the attempt count so it caps immediately instead
+# of getting a free extra round.
+_review_roundcap_read() {
+  local state="${HANDOFF}/.review-round.state"
+  local attempts="" spawns="" legacy_round=""
+  if [[ -f "${state}" ]]; then
+    attempts="$(sed -n 's/^attempts=//p' "${state}" | head -n1)"
+    spawns="$(sed -n 's/^spawns=//p' "${state}" | head -n1)"
+    legacy_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
+  fi
+  [[ "${attempts}" =~ ^[0-9]+$ && "${attempts}" -le 99999 ]] || attempts=""
+  [[ "${spawns}" =~ ^[0-9]+$ && "${spawns}" -le 99999 ]] || spawns=""
+  if [[ -z "${attempts}" ]]; then
+    if [[ "${legacy_round}" =~ ^[0-9]+$ && "${legacy_round}" -le 999 ]]; then
+      attempts="${legacy_round}"
+    else
+      attempts=0
+    fi
+  fi
+  [[ -z "${spawns}" ]] && spawns=0
+  printf '%s %s' "${attempts}" "${spawns}"
+}
+
+# _review_roundcap_limit -> stdout = resolved LEADV2_REVIEW_MAX_ROUNDS.
+# Absent/empty/malformed all default to 2 (the declared policy); 0 is the
+# kill-switch and is passed through verbatim, uncapped. Never eval'd, never
+# word-split — checked only via integer regex, per the config-boundary table.
+_review_roundcap_limit() {
+  local raw="${LEADV2_REVIEW_MAX_ROUNDS:-}"
+  if [[ -z "${raw}" ]]; then
+    printf '2'
+    return 0
+  fi
+  if [[ "${raw}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${raw}"
+    return 0
+  fi
+  printf 'leadv2-review-run.sh: LEADV2_REVIEW_MAX_ROUNDS=%s is not a non-negative integer, defaulting to 2\n' "${raw}" >&2
+  printf '2'
+}
+
+# _review_spawncap_limit <resolved_max_rounds> -> stdout = resolved
+# LEADV2_REVIEW_MAX_SPAWNS. Default 3x the round cap; kill-switched whenever
+# the round cap itself is 0 (unlimited); malformed/non-positive falls back to
+# the derived default rather than refusing.
+_review_spawncap_limit() {
+  local max_rounds="$1"
+  if [[ "${max_rounds}" -eq 0 ]]; then
+    printf '0'
+    return 0
+  fi
+  local raw="${LEADV2_REVIEW_MAX_SPAWNS:-}"
+  if [[ "${raw}" =~ ^[0-9]+$ && "${raw}" -gt 0 ]]; then
+    printf '%s' "${raw}"
+    return 0
+  fi
+  printf '%s' "$(( max_rounds * 3 ))"
+}
+
+# _review_state_write [mode] -> rc0 always. Writes .review-round.state
+# atomically, clamping the on-disk round so it can never decrease (H1
+# belt-and-suspenders: even a forced LEADV2_REVIEW_ROUND=1 run cannot regress a
+# higher round already on disk). Skips the write entirely when the diff hash
+# could not be computed (M1) — a round file must never be written from an
+# unknown/empty diff hash.
+#
+# REVIEW-ROUNDCAP-01: mode="verdict" (default, called at every verdict-
+# producing exit) increments `attempts` unless REVIEW_DEDUP=1 is set (a
+# diff-hash dedup rc=2 must not grow the policy-legible attempt count — design
+# requirement 4) or the round was frozen by _review_round_context (a
+# re-review of an already-reviewed, unchanged diff must not burn a fresh
+# attempt either — it is not a new round). mode="spawn" (called once,
+# immediately before the fan-out is
+# launched) increments `spawns` instead — this is the backstop counter that
+# actually bounds spend, because dedup runs still pay for a full fan-out (§4a).
+# Single writer, both counters, so no second source of truth is introduced.
 _review_state_write() {
   [[ "${REVIEW_DIFF_HASH_OK:-0}" -eq 1 ]] || return 0
+  local mode="${1:-verdict}"
   local state="${HANDOFF}/.review-round.state"
-  local existing_round=0
+  local existing_round=0 existing_attempts=0 existing_spawns=0
   if [[ -f "${state}" ]]; then
     existing_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
     [[ "${existing_round}" =~ ^[0-9]+$ ]] || existing_round=0
+    existing_attempts="$(sed -n 's/^attempts=//p' "${state}" | head -n1)"
+    [[ "${existing_attempts}" =~ ^[0-9]+$ ]] || existing_attempts=0
+    existing_spawns="$(sed -n 's/^spawns=//p' "${state}" | head -n1)"
+    [[ "${existing_spawns}" =~ ^[0-9]+$ ]] || existing_spawns=0
   fi
   local write_round="${REVIEW_ROUND}"
   [[ "${existing_round}" -gt "${write_round}" ]] && write_round="${existing_round}"
-  { printf 'round=%s\ndiff=%s\n' "${write_round}" "${diff_hash:0:8}" > "${state}.tmp" \
+
+  local write_attempts="${existing_attempts}"
+  local write_spawns="${existing_spawns}"
+  if [[ "${mode}" == "spawn" ]]; then
+    write_spawns=$(( existing_spawns + 1 ))
+  elif [[ "${REVIEW_DEDUP:-0}" -ne 1 && "${_REVIEW_ROUND_FROZEN:-0}" -ne 1 ]]; then
+    write_attempts=$(( existing_attempts + 1 ))
+  fi
+
+  { printf 'round=%s\ndiff=%s\nattempts=%s\nspawns=%s\n' "${write_round}" "${diff_hash:0:8}" "${write_attempts}" "${write_spawns}" > "${state}.tmp" \
     && mv -f "${state}.tmp" "${state}"; } 2>/dev/null || true
   return 0
 }
@@ -884,6 +990,39 @@ review_contract="$(_review_build_contract)"
 review_contract_focus="$(_review_flatten "${review_contract}")"
 emit decision "review_round task=${TASK} round=${REVIEW_ROUND} mode=${REVIEW_MODE} prior_findings=${PRIOR_FINDINGS_COUNT:-0}"
 
+# REVIEW-ROUNDCAP-01: refuse a further review round once the declared policy
+# limit is reached. Placed AFTER _review_round_context (so the prior round's
+# gate/findings are already snapshotted — refusing here never destroys a real
+# verdict) and BEFORE the machine-round-0 check below, so a capped lane never
+# pays for even that cheap selfcheck read. The (LLM) lead cannot bypass this by
+# re-invoking: attempts is unaffected by the LEADV2_REVIEW_ROUND test seam, so
+# a re-invocation after the cap re-enters this same branch and exits 8 again,
+# idempotently, at ~0 cost.
+_review_roundcap_pair="$(_review_roundcap_read)"
+_review_roundcap_attempts="${_review_roundcap_pair% *}"
+_review_roundcap_max="$(_review_roundcap_limit)"
+if [[ "${_review_roundcap_max}" -gt 0 && "${_review_roundcap_attempts}" -ge "${_review_roundcap_max}" ]]; then
+  {
+    printf 'status: blocked\nreason: review_roundcap\nrounds: %s\nmax_rounds: %s\nescalation: docs/handoff/dispatch-%s/review-roundcap-escalation.md\n' \
+      "${_review_roundcap_attempts}" "${_review_roundcap_max}" "${TASK}"
+  } > "${HANDOFF}/review-gate.md.tmp"
+  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  {
+    printf '# Review round cap reached\n\n'
+    printf "Task \`%s\` has been reviewed %s time(s) without converging to a passing verdict " "${TASK}" "${_review_roundcap_attempts}"
+    printf '(configured maximum: %s). The engine is refusing to spend another review round on it.\n\n' "${_review_roundcap_max}"
+    printf 'This lane needs architect escalation or PARK — a human or the lead must decide next steps.\n'
+    printf 'Raise the limit for one more attempt with LEADV2_REVIEW_MAX_ROUNDS, or set it to 0 to disable the cap entirely.\n'
+  } > "${HANDOFF}/review-roundcap-escalation.md.tmp"
+  mv -f "${HANDOFF}/review-roundcap-escalation.md.tmp" "${HANDOFF}/review-roundcap-escalation.md"
+  _review_roundcap_journal_bin="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
+  [[ -f "${_review_roundcap_journal_bin}" ]] && bash "${_review_roundcap_journal_bin}" append "${TASK}" review_roundcap "review_roundcap task=${TASK} rounds=${_review_roundcap_attempts} max=${_review_roundcap_max}" >/dev/null 2>&1 || true
+  emit decision "review_gate task=${TASK} status=blocked reason=review_roundcap rounds=${_review_roundcap_attempts} max=${_review_roundcap_max}"
+  printf '[leadv2-review-run] REVIEW ROUNDCAP: task=%s rounds=%s max=%s — refusing a further review round.\n' "${TASK}" "${_review_roundcap_attempts}" "${_review_roundcap_max}" >&2
+  printf '[leadv2-review-run] This lane needs architect escalation or PARK. See docs/handoff/dispatch-%s/review-roundcap-escalation.md\n' "${TASK}" >&2
+  exit 8
+fi
+
 # V3-TIERED-REVIEW-01: machine round-0, before any LLM round is spawned.
 # leadv2-dispatch-product-close.sh's builder-selfcheck (BUILDER-SELFCHECK-
 # GATE-01, lib/leadv2-builder-selfcheck.sh) already ran bash -n / py_compile /
@@ -969,6 +1108,37 @@ for _arm in "${fanout_list[@]}"; do
   esac
   _dedup_check="${_dedup_check},${_arm}"
 done
+
+# REVIEW-ROUNDCAP-01 spawn backstop (design §4a). record-review's diff-hash
+# dedup (rc=2, below) fires AFTER the fan-out already ran and was paid for, so
+# a lane whose diff/verdict are stable can dedup forever without `attempts`
+# ever advancing. `spawns` counts every launch unconditionally — dedup or not
+# — and is the number that actually bounds spend; `attempts` stays the
+# policy-legible number the escalation file quotes.
+_review_spawncap_pair="$(_review_roundcap_read)"
+_review_spawncap_spawns="${_review_spawncap_pair#* }"
+_review_spawncap_max="$(_review_spawncap_limit "${_review_roundcap_max:-$(_review_roundcap_limit)}")"
+if [[ "${_review_spawncap_max}" -gt 0 && "${_review_spawncap_spawns}" -ge "${_review_spawncap_max}" ]]; then
+  {
+    printf 'status: blocked\nreason: review_spawncap\nspawns: %s\nmax_spawns: %s\nescalation: docs/handoff/dispatch-%s/review-roundcap-escalation.md\n' \
+      "${_review_spawncap_spawns}" "${_review_spawncap_max}" "${TASK}"
+  } > "${HANDOFF}/review-gate.md.tmp"
+  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  {
+    printf '# Review spawn cap reached\n\n'
+    printf "Task \`%s\` has launched %s reviewer fan-out(s) (configured maximum: %s), " "${TASK}" "${_review_spawncap_spawns}" "${_review_spawncap_max}"
+    printf 'including dedup rounds that never advanced the round counter. The engine is refusing to spend another one.\n\n'
+    printf 'This lane needs architect escalation or PARK — a human or the lead must decide next steps.\n'
+  } > "${HANDOFF}/review-roundcap-escalation.md.tmp"
+  mv -f "${HANDOFF}/review-roundcap-escalation.md.tmp" "${HANDOFF}/review-roundcap-escalation.md"
+  _review_spawncap_journal_bin="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
+  [[ -f "${_review_spawncap_journal_bin}" ]] && bash "${_review_spawncap_journal_bin}" append "${TASK}" review_spawncap "review_spawncap task=${TASK} spawns=${_review_spawncap_spawns} max=${_review_spawncap_max}" >/dev/null 2>&1 || true
+  emit decision "review_gate task=${TASK} status=blocked reason=review_spawncap spawns=${_review_spawncap_spawns} max=${_review_spawncap_max}"
+  printf '[leadv2-review-run] REVIEW SPAWNCAP: task=%s spawns=%s max=%s — refusing a further review round.\n' "${TASK}" "${_review_spawncap_spawns}" "${_review_spawncap_max}" >&2
+  printf '[leadv2-review-run] This lane needs architect escalation or PARK. See docs/handoff/dispatch-%s/review-roundcap-escalation.md\n' "${TASK}" >&2
+  exit 8
+fi
+_review_state_write spawn
 
 # Launch fan-out arms in parallel, plus the always-on hack-detect pass (not counted
 # as one of the N arms).
@@ -1281,8 +1451,10 @@ emit decision "review_fanout task=${TASK} ran=${_FANOUT_RAN} requested=${_FANOUT
 DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
 record_out="$(bash "${DISPATCH_BIN}" record-review --diff-hash "${diff_hash}" --verdict "${verdict}" --reviewer "${reviewer_primary}" --run-id "dispatch-${TASK}" 2>&1)"; record_rc=$?
 if [[ ${record_rc} -eq 2 ]]; then
+  REVIEW_DEDUP=1
   emit decision "review_gate task=${TASK} status=dedup diff=${diff_hash:0:8}"
 else
+  REVIEW_DEDUP=0
   emit decision "review_gate task=${TASK} status=ran author=${AUTHOR} reviewer=${reviewer_primary} verdict=${verdict} diff=${diff_hash:0:8} arms=${ARMS_CSV}"
 fi
 
