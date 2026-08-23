@@ -33,6 +33,12 @@
 #                   mode is logged at start.
 # --project-root    Sync (c)/(d) to this single root only (skips yaml iteration).
 #
+# Exit codes: 0 = clean run (including LINK/CONVERT/BADLINK/DANGLING/ERROR --
+# only DRIFT is fatal); 2 = usage error; 3 = pinned canonical root missing or
+# invoked from the plugin cache; 4 = one or more (c)/(c2) project-scripts
+# files diverged from canonical and were left untouched — promote or discard
+# before the next sync (D1, PLUGIN-SYNC-CLAUDE-SCRIPTS-01).
+#
 # Write gates (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01), applied per file a real
 # run would overwrite, in order — a dirty destination is refused regardless of
 # direction tags:
@@ -97,7 +103,14 @@ while [[ $# -gt 0 ]]; do
     --write) DRY_RUN=false ;;
     --allow-backward) ALLOW_BACKWARD=true ;;
     --dry-run) DRY_RUN=true ;;
-    --project-root) shift; PROJECT_ROOT_OVERRIDE="$1" ;;
+    --project-root)
+      shift
+      if [[ $# -eq 0 || -z "$1" ]]; then
+        printf -- 'Unknown/invalid arg: --project-root requires a non-empty path\n' >&2
+        exit 2
+      fi
+      PROJECT_ROOT_OVERRIDE="$1"
+      ;;
     *) printf -- 'Unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
   shift
@@ -118,6 +131,39 @@ CACHE_TARGET="${HOME}/.claude/plugins/cache/leadv2-local/leadv2/0.1.0"
 SHARED_TARGET="${HOME}/.claude/leadv2-shared"
 CROSS_REPO_CONFIG="${HOME}/.claude/leadv2-shared/cross-repo-paths.yaml"
 
+# D3 (PLUGIN-SYNC-CLAUDE-SCRIPTS-01): declared per-repo overrides for (c)/(c2)
+# project-scripts sync. Same file, same env override, same vocabulary as
+# leadv2-one-copy-convert.sh's EXCEPTIONS_FILE — one exception list, not two.
+# New root-key here: "project/<repo-basename>/<relpath>", where <relpath> is
+# under .claude/scripts/ for (c) or "toplevel/<name>" for (c2).
+ONE_COPY_EXCEPTIONS_FILE="${LEADV2_ONE_COPY_EXCEPTIONS_FILE:-${PLUGIN_ROOT}/ref/one-copy-exceptions.txt}"
+declare -a PLUGIN_SYNC_EXCEPTIONS=()
+_load_plugin_sync_exceptions() {
+  PLUGIN_SYNC_EXCEPTIONS=()
+  if [[ ! -f "${ONE_COPY_EXCEPTIONS_FILE}" ]]; then
+    log_warn "exception list not found at ${ONE_COPY_EXCEPTIONS_FILE} — treating as empty"
+    return 0
+  fi
+  local raw line
+  while IFS= read -r raw || [[ -n "${raw}" ]]; do
+    line="${raw%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "${line}" ]] && continue
+    PLUGIN_SYNC_EXCEPTIONS+=("${line}")
+  done < "${ONE_COPY_EXCEPTIONS_FILE}"
+}
+_load_plugin_sync_exceptions
+
+# _is_plugin_sync_exception <root-basename> <relpath-under-.claude/scripts-or-toplevel/>
+_is_plugin_sync_exception() {
+  local key="project/$1/$2" e
+  for e in "${PLUGIN_SYNC_EXCEPTIONS[@]}"; do
+    [[ "${e}" == "${key}" ]] && return 0
+  done
+  return 1
+}
+
 # --checksum only (no -u): mtime skew must never cause silent content divergence.
 _rsync_or_dry() {
   local label="$1" src="$2" dst="$3"
@@ -134,6 +180,155 @@ for l in sys.stdin:
   else
     mkdir -p "${dst}"
     rsync --checksum "${extra_flags[@]}" "${src}" "${dst}" && log_ok "[${label}] synced ${src} -> ${dst}"
+  fi
+}
+
+# PER-FILE-SYMLINK-MANAGED-01: mirrors leadv2-one-copy-convert.sh's vocabulary
+# for a repo-local tree, but deliberately enumerates canonical so missing links
+# are visible and creatable here. Prints exactly one classification token.
+_link_one_file() {
+  local canonical_file="$1" dst_file="$2" parent tmp err resolved canonical_resolved
+  if [[ ! -f "${canonical_file}" ]]; then
+    printf 'SKIP\n'
+    return 0
+  fi
+  if [[ -L "${dst_file}" ]]; then
+    if [[ ! -e "${dst_file}" ]]; then
+      printf 'DANGLING\n'
+      return 0
+    fi
+    canonical_resolved="$(readlink -f "${canonical_file}" 2>/dev/null || true)"
+    resolved="$(readlink -f "${dst_file}" 2>/dev/null || true)"
+    if [[ -n "${canonical_resolved}" && "${resolved}" == "${canonical_resolved}" ]]; then
+      printf 'OK\n'
+    else
+      printf 'BADLINK\n'
+    fi
+    return 0
+  fi
+  if [[ -d "${dst_file}" ]]; then
+    printf 'TYPECLASH\n'
+    return 0
+  fi
+  if [[ ! -e "${dst_file}" ]]; then
+    if [[ "${DRY_RUN}" == "true" ]]; then
+      printf 'LINK\n'
+      return 0
+    fi
+    parent="$(dirname "${dst_file}")"
+    if ! mkdir -p "${parent}" 2>/dev/null; then
+      printf 'ERROR\n'
+      return 0
+    fi
+    if ln -s "${canonical_file}" "${dst_file}" 2>/dev/null; then
+      printf 'LINK\n'
+    else
+      printf 'ERROR\n'
+    fi
+    return 0
+  fi
+  if [[ ! -r "${dst_file}" ]]; then
+    printf 'ERROR\n'
+    return 0
+  fi
+  if cmp -s "${canonical_file}" "${dst_file}"; then
+    if [[ "${DRY_RUN}" == "true" ]]; then
+      printf 'CONVERT\n'
+      return 0
+    fi
+    tmp="${dst_file}.tmp.$$"
+    if ln -s "${canonical_file}" "${tmp}" 2>/dev/null && mv -f "${tmp}" "${dst_file}" 2>/dev/null; then
+      printf 'CONVERT\n'
+    else
+      rm -f "${tmp}" 2>/dev/null || true
+      printf 'ERROR\n'
+    fi
+  else
+    # cmp 1 means different; any other result is an I/O failure, not drift.
+    if [[ $? -eq 1 ]]; then
+      printf 'DRIFT\n'
+    else
+      printf 'ERROR\n'
+    fi
+  fi
+}
+
+# D2 (PLUGIN-SYNC-CLAUDE-SCRIPTS-01): project_drift_repos must count a repo
+# ONCE across both (c) .claude/scripts and (c2) top-level curated scripts, not
+# once per call site. Bash 3.2 has no associative arrays, so track seen repo
+# basenames in a plain array and scan it linearly (small: one entry per repo).
+declare -a _DRIFT_COUNTED_REPOS=()
+_mark_repo_drift_once() {
+  local repo="$1" r
+  for r in "${_DRIFT_COUNTED_REPOS[@]}"; do
+    [[ "${r}" == "${repo}" ]] && return 1
+  done
+  _DRIFT_COUNTED_REPOS+=("${repo}")
+  return 0
+}
+
+_link_diff_detail() {
+  local canonical_file="$1" dst_file="$2" detail lines
+  if command -v git >/dev/null 2>&1; then
+    detail="$(git --no-pager diff --no-index --stat -- "${canonical_file}" "${dst_file}" 2>/dev/null || true)"
+    detail="$(printf '%s' "${detail}" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/[[:space:]]*$//')"
+    [[ -n "${detail}" ]] && { printf '%s\n' "${detail}"; return; }
+  fi
+  lines="$(diff "${canonical_file}" "${dst_file}" 2>/dev/null | grep -cE '^[<>]' || true)"
+  printf '%s lines differ\n' "${lines:-unknown}"
+}
+
+# Enumerate only canonical top-level files and the deliberate lib/tests trees.
+# No rsync writes into a mixed repo .claude/scripts tree: every canonical file
+# is classified first, so divergent local content is never overwritten.
+_link_project_scripts() {
+  local root="$1" dst_dir="$2" src="${PLUGIN_ROOT}/scripts" canonical_file rel dst_file token
+  local root_basename="${root##*/}"
+  local linked=0 converted=0 ok=0 drift=0 badlink=0 dangling=0 typeclash=0 error=0 skip=0 exception=0 total=0
+  local -a canonical_files=()
+  [[ -d "${src}" ]] || return 0
+  while IFS= read -r canonical_file; do
+    [[ -n "${canonical_file}" ]] && canonical_files+=("${canonical_file}")
+  done < <(
+    for canonical_file in "${src}"/*; do
+      [[ -e "${canonical_file}" ]] || continue
+      case "$(basename "${canonical_file}")" in
+        __pycache__|*.pyc|.DS_Store) continue ;;
+      esac
+      if [[ -f "${canonical_file}" ]]; then
+        printf '%s\n' "${canonical_file}"
+      elif [[ -d "${canonical_file}" ]] && [[ "$(basename "${canonical_file}")" == "lib" || "$(basename "${canonical_file}")" == "tests" ]]; then
+        find "${canonical_file}" -type f ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '.DS_Store' -print
+      fi
+    done | LC_ALL=C sort
+  )
+  for canonical_file in "${canonical_files[@]}"; do
+    rel="${canonical_file#${src}/}"
+    dst_file="${dst_dir}/${rel}"
+    total=$((total + 1))
+    if _is_plugin_sync_exception "${root_basename}" "${rel}"; then
+      exception=$((exception + 1))
+      log "EXCEPTION: ${dst_file} (declared override, left untouched)"
+      continue
+    fi
+    token="$(_link_one_file "${canonical_file}" "${dst_file}")"
+    case "${token}" in
+      LINK) linked=$((linked + 1)); log "$([[ "${DRY_RUN}" == true ]] && printf 'WOULD LINK' || printf 'LINK'): ${dst_file}" ;;
+      CONVERT) converted=$((converted + 1)); log "$([[ "${DRY_RUN}" == true ]] && printf 'WOULD CONVERT' || printf 'CONVERT'): ${dst_file}" ;;
+      OK) ok=$((ok + 1)) ;;
+      DRIFT) drift=$((drift + 1)); log_warn "DRIFT: ${dst_file} — $(_link_diff_detail "${canonical_file}" "${dst_file}") (left untouched)" ;;
+      BADLINK) badlink=$((badlink + 1)); log_warn "BADLINK: ${dst_file} -> $(readlink "${dst_file}" 2>/dev/null || printf '?') (canonical: ${canonical_file}; left untouched)" ;;
+      DANGLING) dangling=$((dangling + 1)); log_warn "DANGLING: ${dst_file} -> $(readlink "${dst_file}" 2>/dev/null || printf '?') (left untouched)" ;;
+      TYPECLASH) typeclash=$((typeclash + 1)); log_warn "TYPECLASH: ${dst_file} is a directory (left untouched)" ;;
+      ERROR) error=$((error + 1)); log_warn "ERROR: ${dst_file} could not be synced (left untouched)" ;;
+      SKIP) skip=$((skip + 1)); log_warn "SKIP: canonical file vanished: ${canonical_file}" ;;
+      *) error=$((error + 1)); log_warn "ERROR: unknown link classification ${token} for ${dst_file}" ;;
+    esac
+  done
+  project_link_tallies+=("(c) ${root_basename}: linked=${linked} converted=${converted} ok=${ok} drift=${drift} badlink=${badlink} dangling=${dangling} typeclash=${typeclash} error=${error} skip=${skip} exception=${exception} total=${total}")
+  if (( drift > 0 )); then
+    project_drift_files=$((project_drift_files + drift))
+    _mark_repo_drift_once "${root_basename}" && project_drift_repos=$((project_drift_repos + 1))
   fi
 }
 
@@ -484,24 +679,10 @@ _sync_project_root() {
       log_warn "(c): skipping project scripts vendoring for ${root} — vendors_scripts: false (symlink-only architecture)"
     else
       log "Syncing -> project scripts (c): ${proj_scripts}"
-      if [[ -d "${src}" ]]; then
-        # PER-FILE-SYMLINK-AWARE-SYNC-01 (Stage 3 real mechanism, 2026-07-28):
-        # .claude/scripts/ is a MIXED directory in every repo (repo-native
-        # tooling living alongside vendored plugin files), so Stage 3 links
-        # individual canonical-named files, not the whole directory — the
-        # directory-level `-L` guard above never fires under that layout.
-        # rsync's default write path (write-temp + rename-over-target) does
-        # NOT follow a destination symlink; it replaces the directory entry,
-        # silently turning a per-file symlink back into a real file with
-        # every sync run. Scan the destination for EXISTING symlinks first
-        # and --exclude each one by relative path so rsync skips it entirely
-        # (leaves the symlink exactly as-is) instead of clobbering it.
-        local -a _symlink_excludes=()
-        while IFS= read -r _sl; do
-          [[ -z "${_sl}" ]] && continue
-          _symlink_excludes+=(--exclude="${_sl}")
-        done < <(cd "${proj_scripts}" 2>/dev/null && find . -type l 2>/dev/null | sed 's|^\./||')
-        _rsync_or_dry "project/scripts[${root##*/}]" "${src}" "${proj_scripts}" --recursive "${SYNC_HYGIENE_FILTERS[@]}" "${_symlink_excludes[@]}"
+      if [[ ! -d "${proj_scripts}" ]]; then
+        log "(c): ${proj_scripts} absent — not creating it"
+      elif [[ -d "${src}" ]]; then
+        _link_project_scripts "${root}" "${proj_scripts}"
       fi
     fi
   fi
@@ -538,19 +719,23 @@ _sync_project_root() {
     for cf in "${toplevel_curated_files[@]}"; do
       local cf_src="${src}${cf}"
       if [[ -f "${cf_src}" ]]; then
-        if [[ "${DRY_RUN}" == "true" ]]; then
-          log "DRY_RUN [project/scripts-toplevel]: cp ${cf_src} ${proj_scripts_toplevel}/${cf}"
-        else
-          mkdir -p "${proj_scripts_toplevel}"
-          # A symlink-managed dst (e.g. persona-engine scripts/leadv2-lanes-snapshot.sh
-          # -> canonical) makes cp exit 1 ("are identical"), aborting the whole sync
-          # under set -e before later repos are reached — skip same-inode targets.
-          if [[ "${cf_src}" -ef "${proj_scripts_toplevel}/${cf}" ]]; then
-            log "(c2): ${proj_scripts_toplevel}/${cf} is symlink-managed (same inode as canonical) — skip"
-          else
-            cp -p "${cf_src}" "${proj_scripts_toplevel}/${cf}"
-          fi
+        if _is_plugin_sync_exception "${root##*/}" "toplevel/${cf}"; then
+          log "EXCEPTION: ${proj_scripts_toplevel}/${cf} (declared override, left untouched)"
+          continue
         fi
+        local cf_token
+        cf_token="$(_link_one_file "${cf_src}" "${proj_scripts_toplevel}/${cf}")"
+        case "${cf_token}" in
+          LINK|CONVERT) log "$([[ "${DRY_RUN}" == true ]] && printf "WOULD ${cf_token}" || printf "${cf_token}"): ${proj_scripts_toplevel}/${cf}" ;;
+          OK|SKIP) : ;;
+          DRIFT)
+            log_warn "DRIFT: ${proj_scripts_toplevel}/${cf} — $(_link_diff_detail "${cf_src}" "${proj_scripts_toplevel}/${cf}") (left untouched)"
+            project_drift_files=$((project_drift_files + 1))
+            _mark_repo_drift_once "${root##*/}" && project_drift_repos=$((project_drift_repos + 1))
+            ;;
+          BADLINK|DANGLING|TYPECLASH|ERROR) log_warn "${cf_token}: ${proj_scripts_toplevel}/${cf} (left untouched)" ;;
+          *) log_warn "ERROR: unknown link classification ${cf_token} for ${proj_scripts_toplevel}/${cf}" ;;
+        esac
       fi
     done
     log_ok "[project/scripts-toplevel[${root##*/}]] synced curated set -> ${proj_scripts_toplevel}"
@@ -572,26 +757,12 @@ _sync_project_root() {
     fi
   done
 
-  # Ensure eval-harness is present (also covered by scripts/ rsync above,
-  # explicit for clarity). Guarded by vendors_scripts too — this was the bug
-  # that recreated campaign-platform's .claude/scripts/ (1 file) even after
-  # the (c) skip above, found live while verifying the C2 fix.
-  local harness_src="${PLUGIN_ROOT}/scripts/leadv2-eval-harness.sh"
-  # SYMLINK-AWARE-SYNC-01: same guard as (c) above — this cp is a second,
-  # independent write path into proj_scripts and must not fire once it's a
-  # symlink either (a symlinked scripts/ already has the harness via
-  # canonical; `mkdir -p` on an existing symlink is a harmless no-op but the
-  # `cp` would still write a real file INTO the linked-to directory).
-  # PER-FILE-SYMLINK-AWARE-SYNC-01: also skip if the harness file ITSELF is a
-  # per-file symlink (proj_scripts as a whole is real/mixed under Stage 3;
-  # only the one destination file matters here).
-  if [[ "${vendors_scripts}" != "false" ]] && [[ -f "${harness_src}" ]] && [[ ! "${DRY_RUN}" == "true" ]] && [[ ! -L "${proj_scripts}" ]] && [[ ! -L "${proj_scripts}/leadv2-eval-harness.sh" ]]; then
-    mkdir -p "${proj_scripts}"
-    cp -p "${harness_src}" "${proj_scripts}/leadv2-eval-harness.sh"
-  fi
 }
 
 changed_summary=()
+project_link_tallies=()
+project_drift_files=0
+project_drift_repos=0
 
 # ── (a) Plugin cache ──────────────────────────────────────────────────────────
 log "Syncing -> plugin cache (a): ${CACHE_TARGET}"
@@ -779,11 +950,17 @@ fi
 # Iterate all roots from cross-repo-paths.yaml (or single --project-root
 # override). Each line is "<path>\t<vendors_scripts>" (see _resolve_project_roots);
 # --project-root bypass emits a bare path with no tab -> defaults to "true".
+roots_output=""
+roots_rc=0
+roots_output="$(_resolve_project_roots)" || roots_rc=$?
+if [[ ${roots_rc} -ne 0 || ( -f "${CROSS_REPO_CONFIG}" && -z "${roots_output}" && -z "${PROJECT_ROOT_OVERRIDE}" && -z "${LEADV2_PROJECT_ROOT:-}" ) ]]; then
+  log_warn "(c)/(d): resolved 0 project roots from ${CROSS_REPO_CONFIG} — nothing synced"
+fi
 while IFS=$'\t' read -r proj_root proj_vendors_scripts; do
   [[ -z "${proj_root}" ]] && continue
   _sync_project_root "${proj_root}" "${proj_vendors_scripts:-true}"
   changed_summary+=("project[${proj_root##*/}]")
-done < <(_resolve_project_roots)
+done <<< "${roots_output}"
 
 # ── Subsume: sync workflow JS files ──────────────────────────────────────────
 WORKFLOWS_SYNC="${SCRIPT_DIR}/leadv2-workflows-sync.sh"
@@ -802,4 +979,11 @@ if [[ ${#changed_summary[@]} -gt 0 ]]; then
   log "Sync complete. Targets touched: ${changed_summary[*]}"
 else
   log "Nothing synced (empty target list or all dry-run)."
+fi
+for tally in "${project_link_tallies[@]}"; do
+  log "${tally}"
+done
+if (( project_drift_files > 0 )); then
+  log_warn "ACTION REQUIRED: ${project_drift_files} diverging file(s) across ${project_drift_repos} repo(s) — promote or discard; nothing was overwritten"
+  exit 4
 fi

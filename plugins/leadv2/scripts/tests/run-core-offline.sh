@@ -139,6 +139,7 @@ _CORE_OFFLINE_OWNED_SUITES=(
   "Codex full-cycle runner"
   "product-close waits for worker exit"
   "lanes snapshot reconciliation"
+  "plugin sync .claude/scripts link classification"
 )
 _core_offline_suite_is_owned() {
   local name="$1" o
@@ -319,6 +320,7 @@ SUITE_DEFS=(
   "core-offline shard partition (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-shards-01.sh"
   "core-offline per-suite TMPDIR isolation (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-tmpdir-01.sh"
   "silent-arm commits-ahead + live-worker guard (GATE-FALSE-SILENT-01)|||bash $TEST_DIR/test-silent-arm-commits-ahead.sh"
+  "plugin sync .claude/scripts link classification|||bash $TEST_DIR/test-plugin-sync-claude-scripts.sh"
 )
 
 # Runner-mechanics test hook (SUITE-SPEED-01): a caller may substitute the
