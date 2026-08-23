@@ -23,7 +23,11 @@ bash -n "${SCRIPT_DIR}/test-review-roundcap.sh" 2>/dev/null || { echo "ERROR: se
 bash -n "${SCRIPTS_ROOT}/leadv2-review-run.sh" 2>/dev/null || fail "bash -n leadv2-review-run.sh"
 /bin/bash -n "${SCRIPTS_ROOT}/leadv2-review-run.sh" 2>/dev/null || fail "/bin/bash -n leadv2-review-run.sh (bash 3.2 syntax)"
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -x -e SC1091,SC2034 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
+  # SC2094 excluded: the flock pattern here mirrors atomic_review_check_and_record
+  # (leadv2-dispatch-code.sh:2556) -- passing the same lockfile path as both the fd-9
+  # redirect target and lv2_lock_wait's argument is the documented, safe use of that
+  # primitive (leadv2-portable-lock.sh:11), not an actual read/write race.
+  if shellcheck -x -e SC1091,SC2034,SC2094 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
     pass "shellcheck clean: leadv2-review-run.sh"
   else
     fail "shellcheck: leadv2-review-run.sh"
@@ -268,6 +272,44 @@ case_t10() {
   return 0
 }
 
+# ── T11: state read+increment is lock-guarded, and fails open under contention ──
+case_t11() {
+  local h; h="$(new_handoff T11RRC)"
+  local diff="${h}/review.diff"
+  printf 'diff --git a/x b/x\n+v1\n' > "${diff}"
+  run_rrc "${h}" "${diff}" T11RRC "${h}.err1"
+  # T11a: the lockfile is created only by the guarded read/write path.
+  [[ -f "${h}/.review-round.state.lock" ]] || return 1
+
+  # T11b: hold the lock externally past the 1s test budget; the engine must
+  # still fail open and complete (attempts still advances).
+  local lockf="${h}/.review-round.state.lock"
+  local holder_pid=""
+  local mkdir_dir="${lockf}.d"
+  if command -v flock >/dev/null 2>&1; then
+    ( flock -x 9; sleep 3 ) 9>"${lockf}" &
+    holder_pid=$!
+    sleep 0.3
+  else
+    mkdir -p "${mkdir_dir}"
+    printf '%s' "$$" > "${mkdir_dir}/pid"
+  fi
+
+  printf 'diff --git a/x b/x\n+v2\n' > "${diff}"
+  run_rrc "${h}" "${diff}" T11RRC "${h}.err2" "${STUB_DIR}/dispatch.sh" "${STUB_DIR}/resolver.py" LEADV2_REVIEW_STATE_LOCK_WAIT_S=1
+  local rc=$?
+
+  if [[ -n "${holder_pid}" ]]; then
+    wait "${holder_pid}" 2>/dev/null
+  else
+    rm -rf "${mkdir_dir}"
+  fi
+
+  [[ "${rc}" -eq 0 || "${rc}" -eq 7 ]] || return 1
+  [[ -f "${h}/review-sonnet.md" ]] || return 1
+  return 0
+}
+
 if case_t1; then pass "T1 round1 -> attempts=1"; else fail "T1 round1 -> attempts=1"; fi
 if case_t2; then pass "T2 round2 -> attempts=2"; else fail "T2 round2 -> attempts=2"; fi
 if case_t3; then pass "T3 round3 -> rc8/blocked/review_roundcap, no arm launched"; else fail "T3 round3 -> rc8/blocked/review_roundcap, no arm launched"; fi
@@ -278,6 +320,7 @@ if case_t7; then pass "T7 legacy round=3-only state caps immediately"; else fail
 if case_t8; then pass "T8 exit 9 leaves attempts unchanged"; else fail "T8 exit 9 leaves attempts unchanged"; fi
 if case_t9; then pass "T9 re-invoke after cap is idempotent"; else fail "T9 re-invoke after cap is idempotent"; fi
 if case_t10; then pass "T10 spawn backstop fires when dedup keeps attempts frozen"; else fail "T10 spawn backstop fires when dedup keeps attempts frozen"; fi
+if case_t11; then pass "T11 state lock taken during increment, fails open under contention"; else fail "T11 state lock taken during increment, fails open under contention"; fi
 
 # ── red-first baseline: these behaviors must not exist against the pre-fix
 # engine (no attempts/spawns fields, no exit 8, no roundcap enforcement).

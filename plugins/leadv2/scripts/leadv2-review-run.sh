@@ -47,6 +47,18 @@ _REVIEW_FINDINGS_SH="${SCRIPT_DIR}/leadv2-review-findings.sh"
 [[ -f "${_REVIEW_FINDINGS_SH}" ]] && source "${_REVIEW_FINDINGS_SH}"
 command -v render_gate_findings >/dev/null 2>&1 || render_gate_findings() { :; }
 
+# REVIEW-ROUNDCAP-01 fix-round-1 H1: the attempts/spawns read-modify-write below needs the
+# same cross-process lock the sibling diff-hash ledger uses
+# (leadv2-dispatch-code.sh:2570 atomic_review_check_and_record). Guarded source + no-op
+# stub, mirroring _REVIEW_FINDINGS_SH above: this script stays self-contained, and a
+# missing lib degrades to today's unlocked behaviour rather than killing the engine.
+_REVIEW_LOCK_SH="${SCRIPT_DIR}/leadv2-portable-lock.sh"
+# shellcheck source=leadv2-portable-lock.sh
+[[ -f "${_REVIEW_LOCK_SH}" ]] && source "${_REVIEW_LOCK_SH}"
+if ! declare -F lv2_lock_wait >/dev/null 2>&1; then
+  lv2_lock_wait() { return 0; }   # lib absent -> proceed unlocked (today's behaviour)
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Arg parsing
 # ---------------------------------------------------------------------------
@@ -690,25 +702,41 @@ _review_round_context() {
 # mid-flight (state file has the legacy round=<n> but no attempts= line yet)
 # falls back to round=<n> as the attempt count so it caps immediately instead
 # of getting a free extra round.
+#
+# _review_state_lock_file -> stdout = lock path, beside the state file it guards.
+_review_state_lock_file() { printf '%s/.review-round.state.lock' "${HANDOFF}"; }
+
+# Wait budget for that lock. Default 10s, matching atomic_review_check_and_record
+# (leadv2-dispatch-code.sh:2570). Test seam only -- production never sets it.
+_review_state_lock_wait_s() {
+  local raw="${LEADV2_REVIEW_STATE_LOCK_WAIT_S:-}"
+  [[ "${raw}" =~ ^[0-9]+$ ]] && { printf '%s' "${raw}"; return 0; }
+  printf '10'
+}
+
 _review_roundcap_read() {
-  local state="${HANDOFF}/.review-round.state"
-  local attempts="" spawns="" legacy_round=""
-  if [[ -f "${state}" ]]; then
-    attempts="$(sed -n 's/^attempts=//p' "${state}" | head -n1)"
-    spawns="$(sed -n 's/^spawns=//p' "${state}" | head -n1)"
-    legacy_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
-  fi
-  [[ "${attempts}" =~ ^[0-9]+$ && "${attempts}" -le 99999 ]] || attempts=""
-  [[ "${spawns}" =~ ^[0-9]+$ && "${spawns}" -le 99999 ]] || spawns=""
-  if [[ -z "${attempts}" ]]; then
-    if [[ "${legacy_round}" =~ ^[0-9]+$ && "${legacy_round}" -le 999 ]]; then
-      attempts="${legacy_round}"
-    else
-      attempts=0
+  local _rcr_lockf; _rcr_lockf="$(_review_state_lock_file)"
+  (
+    lv2_lock_wait "${_rcr_lockf}" "$(_review_state_lock_wait_s)" || true
+    local state="${HANDOFF}/.review-round.state"
+    local attempts="" spawns="" legacy_round=""
+    if [[ -f "${state}" ]]; then
+      attempts="$(sed -n 's/^attempts=//p' "${state}" | head -n1)"
+      spawns="$(sed -n 's/^spawns=//p' "${state}" | head -n1)"
+      legacy_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
     fi
-  fi
-  [[ -z "${spawns}" ]] && spawns=0
-  printf '%s %s' "${attempts}" "${spawns}"
+    [[ "${attempts}" =~ ^[0-9]+$ && "${attempts}" -le 99999 ]] || attempts=""
+    [[ "${spawns}" =~ ^[0-9]+$ && "${spawns}" -le 99999 ]] || spawns=""
+    if [[ -z "${attempts}" ]]; then
+      if [[ "${legacy_round}" =~ ^[0-9]+$ && "${legacy_round}" -le 999 ]]; then
+        attempts="${legacy_round}"
+      else
+        attempts=0
+      fi
+    fi
+    [[ -z "${spawns}" ]] && spawns=0
+    printf '%s %s' "${attempts}" "${spawns}"
+  ) 9>"${_rcr_lockf}" 2>/dev/null
 }
 
 # _review_roundcap_limit -> stdout = resolved LEADV2_REVIEW_MAX_ROUNDS.
@@ -767,29 +795,33 @@ _review_spawncap_limit() {
 _review_state_write() {
   [[ "${REVIEW_DIFF_HASH_OK:-0}" -eq 1 ]] || return 0
   local mode="${1:-verdict}"
-  local state="${HANDOFF}/.review-round.state"
-  local existing_round=0 existing_attempts=0 existing_spawns=0
-  if [[ -f "${state}" ]]; then
-    existing_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
-    [[ "${existing_round}" =~ ^[0-9]+$ ]] || existing_round=0
-    existing_attempts="$(sed -n 's/^attempts=//p' "${state}" | head -n1)"
-    [[ "${existing_attempts}" =~ ^[0-9]+$ ]] || existing_attempts=0
-    existing_spawns="$(sed -n 's/^spawns=//p' "${state}" | head -n1)"
-    [[ "${existing_spawns}" =~ ^[0-9]+$ ]] || existing_spawns=0
-  fi
-  local write_round="${REVIEW_ROUND}"
-  [[ "${existing_round}" -gt "${write_round}" ]] && write_round="${existing_round}"
+  local _rsw_lockf; _rsw_lockf="$(_review_state_lock_file)"
+  (
+    lv2_lock_wait "${_rsw_lockf}" "$(_review_state_lock_wait_s)" || true
+    local state="${HANDOFF}/.review-round.state"
+    local existing_round=0 existing_attempts=0 existing_spawns=0
+    if [[ -f "${state}" ]]; then
+      existing_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
+      [[ "${existing_round}" =~ ^[0-9]+$ ]] || existing_round=0
+      existing_attempts="$(sed -n 's/^attempts=//p' "${state}" | head -n1)"
+      [[ "${existing_attempts}" =~ ^[0-9]+$ ]] || existing_attempts=0
+      existing_spawns="$(sed -n 's/^spawns=//p' "${state}" | head -n1)"
+      [[ "${existing_spawns}" =~ ^[0-9]+$ ]] || existing_spawns=0
+    fi
+    local write_round="${REVIEW_ROUND}"
+    [[ "${existing_round}" -gt "${write_round}" ]] && write_round="${existing_round}"
 
-  local write_attempts="${existing_attempts}"
-  local write_spawns="${existing_spawns}"
-  if [[ "${mode}" == "spawn" ]]; then
-    write_spawns=$(( existing_spawns + 1 ))
-  elif [[ "${REVIEW_DEDUP:-0}" -ne 1 && "${_REVIEW_ROUND_FROZEN:-0}" -ne 1 ]]; then
-    write_attempts=$(( existing_attempts + 1 ))
-  fi
+    local write_attempts="${existing_attempts}"
+    local write_spawns="${existing_spawns}"
+    if [[ "${mode}" == "spawn" ]]; then
+      write_spawns=$(( existing_spawns + 1 ))
+    elif [[ "${REVIEW_DEDUP:-0}" -ne 1 && "${_REVIEW_ROUND_FROZEN:-0}" -ne 1 ]]; then
+      write_attempts=$(( existing_attempts + 1 ))
+    fi
 
-  { printf 'round=%s\ndiff=%s\nattempts=%s\nspawns=%s\n' "${write_round}" "${diff_hash:0:8}" "${write_attempts}" "${write_spawns}" > "${state}.tmp" \
-    && mv -f "${state}.tmp" "${state}"; } 2>/dev/null || true
+    { printf 'round=%s\ndiff=%s\nattempts=%s\nspawns=%s\n' "${write_round}" "${diff_hash:0:8}" "${write_attempts}" "${write_spawns}" > "${state}.tmp" \
+      && mv -f "${state}.tmp" "${state}"; } 2>/dev/null || true
+  ) 9>"${_rsw_lockf}" 2>/dev/null || true
   return 0
 }
 
@@ -1003,8 +1035,8 @@ _review_roundcap_attempts="${_review_roundcap_pair% *}"
 _review_roundcap_max="$(_review_roundcap_limit)"
 if [[ "${_review_roundcap_max}" -gt 0 && "${_review_roundcap_attempts}" -ge "${_review_roundcap_max}" ]]; then
   {
-    printf 'status: blocked\nreason: review_roundcap\nrounds: %s\nmax_rounds: %s\nescalation: docs/handoff/dispatch-%s/review-roundcap-escalation.md\n' \
-      "${_review_roundcap_attempts}" "${_review_roundcap_max}" "${TASK}"
+    printf 'status: blocked\nreason: review_roundcap\nrounds: %s\nmax_rounds: %s\nescalation: %s/review-roundcap-escalation.md\n' \
+      "${_review_roundcap_attempts}" "${_review_roundcap_max}" "${HANDOFF}"
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
   {
@@ -1019,7 +1051,7 @@ if [[ "${_review_roundcap_max}" -gt 0 && "${_review_roundcap_attempts}" -ge "${_
   [[ -f "${_review_roundcap_journal_bin}" ]] && bash "${_review_roundcap_journal_bin}" append "${TASK}" review_roundcap "review_roundcap task=${TASK} rounds=${_review_roundcap_attempts} max=${_review_roundcap_max}" >/dev/null 2>&1 || true
   emit decision "review_gate task=${TASK} status=blocked reason=review_roundcap rounds=${_review_roundcap_attempts} max=${_review_roundcap_max}"
   printf '[leadv2-review-run] REVIEW ROUNDCAP: task=%s rounds=%s max=%s — refusing a further review round.\n' "${TASK}" "${_review_roundcap_attempts}" "${_review_roundcap_max}" >&2
-  printf '[leadv2-review-run] This lane needs architect escalation or PARK. See docs/handoff/dispatch-%s/review-roundcap-escalation.md\n' "${TASK}" >&2
+  printf '[leadv2-review-run] This lane needs architect escalation or PARK. See %s/review-roundcap-escalation.md\n' "${HANDOFF}" >&2
   exit 8
 fi
 
@@ -1117,11 +1149,11 @@ done
 # policy-legible number the escalation file quotes.
 _review_spawncap_pair="$(_review_roundcap_read)"
 _review_spawncap_spawns="${_review_spawncap_pair#* }"
-_review_spawncap_max="$(_review_spawncap_limit "${_review_roundcap_max:-$(_review_roundcap_limit)}")"
+_review_spawncap_max="$(_review_spawncap_limit "${_review_roundcap_max}")"
 if [[ "${_review_spawncap_max}" -gt 0 && "${_review_spawncap_spawns}" -ge "${_review_spawncap_max}" ]]; then
   {
-    printf 'status: blocked\nreason: review_spawncap\nspawns: %s\nmax_spawns: %s\nescalation: docs/handoff/dispatch-%s/review-roundcap-escalation.md\n' \
-      "${_review_spawncap_spawns}" "${_review_spawncap_max}" "${TASK}"
+    printf 'status: blocked\nreason: review_spawncap\nspawns: %s\nmax_spawns: %s\nescalation: %s/review-roundcap-escalation.md\n' \
+      "${_review_spawncap_spawns}" "${_review_spawncap_max}" "${HANDOFF}"
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
   {
@@ -1135,7 +1167,7 @@ if [[ "${_review_spawncap_max}" -gt 0 && "${_review_spawncap_spawns}" -ge "${_re
   [[ -f "${_review_spawncap_journal_bin}" ]] && bash "${_review_spawncap_journal_bin}" append "${TASK}" review_spawncap "review_spawncap task=${TASK} spawns=${_review_spawncap_spawns} max=${_review_spawncap_max}" >/dev/null 2>&1 || true
   emit decision "review_gate task=${TASK} status=blocked reason=review_spawncap spawns=${_review_spawncap_spawns} max=${_review_spawncap_max}"
   printf '[leadv2-review-run] REVIEW SPAWNCAP: task=%s spawns=%s max=%s — refusing a further review round.\n' "${TASK}" "${_review_spawncap_spawns}" "${_review_spawncap_max}" >&2
-  printf '[leadv2-review-run] This lane needs architect escalation or PARK. See docs/handoff/dispatch-%s/review-roundcap-escalation.md\n' "${TASK}" >&2
+  printf '[leadv2-review-run] This lane needs architect escalation or PARK. See %s/review-roundcap-escalation.md\n' "${HANDOFF}" >&2
   exit 8
 fi
 _review_state_write spawn

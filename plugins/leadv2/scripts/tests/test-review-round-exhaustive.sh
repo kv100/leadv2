@@ -24,7 +24,12 @@ if command -v shellcheck >/dev/null 2>&1; then
   # SC1091/SC2034 are pre-existing on this file (unrelated source-not-found
   # infos and vars set for callers) and predate this lane's change — excluded
   # so this suite gates only on issues this lane could have introduced.
-  if shellcheck -x -e SC1091,SC2034 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
+  # SC2094 (REVIEW-ROUNDCAP-01 fix-round-1): the state-lock flock pattern mirrors
+  # atomic_review_check_and_record (leadv2-dispatch-code.sh:2556) -- passing the
+  # same lockfile path as both the fd-9 redirect target and lv2_lock_wait's
+  # argument is the documented, safe use of that primitive, not an actual
+  # read/write race.
+  if shellcheck -x -e SC1091,SC2034,SC2094 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
     pass "shellcheck clean: leadv2-review-run.sh"
   else
     fail "shellcheck: leadv2-review-run.sh"
