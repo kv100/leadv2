@@ -14,6 +14,19 @@ INPUT="$(cat 2>/dev/null || true)"
 CWD="$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || echo "")"
 [[ -z "$CWD" ]] && CWD="$PWD"
 
+# HOOK-INJECT-DEDUP-01 §4 R2: /compact keeps the session id but drops the
+# earlier turns, including any full block already delivered. Without this,
+# the very next prompt hits the unchanged-marker (state file survives
+# compaction) and the founder's open threads silently vanish for the rest
+# of the session. Best-effort, never affects this hook's exit code.
+_lv2_sid_raw="$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")"
+_lv2_safe_sid="$(printf '%s' "$_lv2_sid_raw" | tr -cd 'A-Za-z0-9._-' | cut -c1-64)"
+if [[ -n "$_lv2_safe_sid" ]]; then
+  _lv2_inject_state_dir="${LEADV2_TASK_ANCHOR_STATE_DIR:-$HOME/.claude/state/leadv2}"
+  rm -f "${_lv2_inject_state_dir}/.inject-hash.${_lv2_safe_sid}."* 2>/dev/null || true
+  rm -f "/tmp/.leadv2-task-anchor-full-${_lv2_safe_sid}-"* 2>/dev/null || true
+fi
+
 # Resolve leadv2_dir from state-paths.yaml (mirrors user-prompt-context.sh logic)
 _lv2_sp_yaml="${CWD}/.claude/leadv2-overrides/state-paths.yaml"
 _lv2_leadv2_dir=$(grep -E "^[[:space:]]*leadv2_dir[[:space:]]*:" "$_lv2_sp_yaml" 2>/dev/null | head -1 | sed -E "s/^[[:space:]]*leadv2_dir[[:space:]]*:[[:space:]]*//" | sed -E "s/^['\"']//; s/['\"'][[:space:]]*$//" | tr -d '\r' || true)
