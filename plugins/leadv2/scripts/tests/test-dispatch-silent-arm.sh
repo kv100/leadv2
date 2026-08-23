@@ -47,8 +47,13 @@ printf 'seed\n' > "$LANE/seed.txt"
 git -C "$LANE" add seed.txt
 git -C "$LANE" commit -q -m seed
 
-# ── Case 1: no stream file + clean worktree -> arm_produced_nothing, no_work,
-#    and the e2e block must never run (E2E_ON=1). ─────────────────────────────────
+# ── Case 1 (GATE-FALSE-SILENT-01): no stream file + clean worktree, arm
+#    registered -> an absent stream is NEVER evidence of silence (too early to tell,
+#    or a codex arm that structurally never writes one). Must NOT be classified
+#    arm_produced_nothing and must NOT emit an arm_advance decision -- falls through
+#    to the existing empty_diff path instead, which still exits 5/no_work on this
+#    fixture (LANE has no changes), so the exit-code/no_work assertions are unchanged;
+#    only the cause and the arm_advance emission flip. ─────────────────────────────
 SIG1="c1c1c1c1"
 LEDGER1="$tmp/ledger-1.jsonl"
 HANDOFF1="$ROOT/docs/handoff/dispatch-${SIG1}"
@@ -67,29 +72,28 @@ out1="$(
 rc1=$?
 
 if [[ "$rc1" -eq 5 ]]; then
-  pass "Case 1: exits 5 (matches other blocked branches)"
+  pass "Case 1: exits 5 (falls through to the existing empty_diff terminal)"
 else
   fail "Case 1: expected exit 5, got rc=${rc1} -- out=${out1}"
 fi
 
 if grep -q 'reason: arm_produced_nothing' "$HANDOFF1/review-gate.md" 2>/dev/null; then
-  pass "Case 1: review-gate.md carries reason: arm_produced_nothing"
+  fail "Case 1: absent stream wrongly classified as arm_produced_nothing -- out=${out1}"
 else
-  fail "Case 1: review-gate.md missing/wrong -- $(cat "$HANDOFF1/review-gate.md" 2>/dev/null)"
+  pass "Case 1: absent stream is NOT classified as arm_produced_nothing"
 fi
 
 row1="$(grep "\"task_sig\":\"${SIG1}\"" "$LEDGER1" 2>/dev/null)"
-if printf '%s\n' "$row1" | grep -q '"terminal":"no_work"' && printf '%s\n' "$row1" | grep -q '"cause":"arm_produced_nothing"'; then
-  pass "Case 1: ledger row is no_work/arm_produced_nothing"
+if printf '%s\n' "$row1" | grep -q '"terminal":"no_work"' && printf '%s\n' "$row1" | grep -q '"cause":"empty_diff"'; then
+  pass "Case 1: ledger row is no_work/empty_diff (existing path, not the silent-arm path)"
 else
   fail "Case 1: ledger row wrong -- $row1"
 fi
 
-journal1="$ROOT/docs/leadv2/tasks/dispatch-${SIG1}/journal.md"
-if [[ -f "$journal1" ]] && grep -q 'e2e_gate' "$journal1"; then
-  fail "Case 1: e2e_gate line found in journal -- the probe must run BEFORE the e2e block"
+if printf '%s\n' "$out1" | grep -q 'arm_advance'; then
+  fail "Case 1: arm_advance decision emitted for an absent (unproven) stream -- out=${out1}"
 else
-  pass "Case 1: no e2e_gate line in journal (probe short-circuited before e2e)"
+  pass "Case 1: no arm_advance decision for an absent stream"
 fi
 
 # ── Case 2: real stream (>=1 assistant event) + real diff -> byte-identical to
