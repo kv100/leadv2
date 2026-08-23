@@ -1202,6 +1202,23 @@ _pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
       count="$(git -C "${root}" rev-list --count "${base}..HEAD" 2>/dev/null || true)"
       [[ "${count}" =~ ^[0-9]+$ ]] && { printf '%s' "${count}"; return 0; }
     fi
+    # GATE-FALSE-SILENT-01 round 3: a base is not required to prove ZERO. A linked
+    # worktree whose HEAD is the same commit as the repository it hangs off, and whose
+    # HEAD reflog records no commit of its own, provably has no commits of its own --
+    # "0", not "unknown". `${root}/.git` as a FILE is the linked-worktree test: a
+    # standalone repo has a .git DIRECTORY. Deliberately NOT a path comparison of
+    # --git-dir vs --git-common-dir -- on macOS TMPDIR is /var -> /private/var, so the
+    # two strings differ for a standalone repo and prove-zero fires on lanes it must
+    # never fire on (observed: test-dispatch-silent-arm Case 1 flipped to silent).
+    local head_wt head_parent
+    if [[ -f "${root}/.git" ]]; then
+      head_wt="$(git -C "${root}" rev-parse HEAD 2>/dev/null || true)"
+      head_parent="$(cd "${root}" 2>/dev/null && git --git-dir="$(git rev-parse --git-common-dir 2>/dev/null)" rev-parse HEAD 2>/dev/null || true)"
+      if [[ -n "${head_wt}" && "${head_wt}" == "${head_parent}" ]] && \
+         ! git -C "${root}" log -g --format=%gs HEAD 2>/dev/null | grep -q '^commit'; then
+        printf '0'; return 0
+      fi
+    fi
   fi
   printf 'unknown'
 }
@@ -1325,30 +1342,34 @@ pc_silent_arm_probe() {
   fi
   # 1) >=1 assistant event -- NOT silent, done.
   [[ ${assistant_n} -ge 1 ]] && return 1
-  # 2) GATE-FALSE-SILENT-01: stream absent is NEVER evidence of silence -- it means
-  # "too early to tell" (a sonnet stream not yet created) OR "this arm has no stream
-  # convention at all" (codex never writes developer.stream.jsonl -- see the design's
-  # census correction). Only a PRESENT, stale stream can even be considered for silence.
-  [[ -f "${stream}" ]] || return 1
-  # 3) growth guard -- clamp to [1, 3600] so a misconfigured env var cannot make
-  # arm_produced_nothing permanently unreachable (over-cap) or fire on a stream that
-  # was just written (under-cap of 0).
+  # 2/3) GATE-FALSE-SILENT-01 round 3: an absent stream is not evidence OF silence, but
+  # it is also not a VETO -- a glm/codex arm structurally never writes
+  # developer.stream.jsonl, so round 1's blanket "no stream -> not silent" veto made
+  # arm_produced_nothing unreachable for every non-sonnet arm. Only run the freshness
+  # guard when a stream actually exists; an absent stream falls through to steps 4-6
+  # below (worker-alive / dirty / commits-ahead), which own "too early to tell" for a
+  # lane with no stream convention at all.
   local growth_s="${LEADV2_PC_SILENT_GROWTH_S:-60}" mtime now
-  [[ "${growth_s}" =~ ^[0-9]+$ ]] || growth_s=60
-  if (( growth_s < 1 )); then
-    emit decision "silent_probe_growth_clamped task=${TASK} requested=${growth_s} used=1"
-    growth_s=1
-  elif (( growth_s > 3600 )); then
-    emit decision "silent_probe_growth_clamped task=${TASK} requested=${growth_s} used=3600"
-    growth_s=3600
-  fi
-  if mtime="$(_pc_stat_mtime "${stream}")"; then
-    now="$(date +%s 2>/dev/null || printf '0')"
-    if [[ "${now}" =~ ^[0-9]+$ ]] && (( now - mtime < growth_s )); then
-      return 1  # fresh -- still working, NOT silent
+  if [[ -f "${stream}" ]]; then
+    # growth guard -- clamp to [1, 3600] so a misconfigured env var cannot make
+    # arm_produced_nothing permanently unreachable (over-cap) or fire on a stream that
+    # was just written (under-cap of 0).
+    [[ "${growth_s}" =~ ^[0-9]+$ ]] || growth_s=60
+    if (( growth_s < 1 )); then
+      emit decision "silent_probe_growth_clamped task=${TASK} requested=${growth_s} used=1"
+      growth_s=1
+    elif (( growth_s > 3600 )); then
+      emit decision "silent_probe_growth_clamped task=${TASK} requested=${growth_s} used=3600"
+      growth_s=3600
     fi
-  else
-    return 1  # stat failed -- fail OPEN, NOT silent
+    if mtime="$(_pc_stat_mtime "${stream}")"; then
+      now="$(date +%s 2>/dev/null || printf '0')"
+      if [[ "${now}" =~ ^[0-9]+$ ]] && (( now - mtime < growth_s )); then
+        return 1  # fresh -- still working, NOT silent
+      fi
+    else
+      return 1  # stat failed -- fail OPEN, NOT silent
+    fi
   fi
   # 4) GATE-FALSE-SILENT-01: a live worker process is never silent.
   _pc_worker_process_alive && return 1

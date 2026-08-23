@@ -257,6 +257,81 @@ else
   fail "Case E: expected silent_probe_base_unresolved decision line -- out=${outE}"
 fi
 
+# ── Case F (prove-zero positive, GATE-FALSE-SILENT-01 round 3): lane is a REAL
+#    linked worktree (git worktree add), arm registered, no stream, clean, no
+#    start-sha/cache/origin -- HEAD is still the commit the worktree was created
+#    from -> must be classified arm_produced_nothing, and must NOT emit
+#    silent_probe_base_unresolved. ────────────────────────────────────────────────
+SIGF="cfffffff"
+LEDGERF="$tmp/ledger-f.jsonl"
+HANDOFFF="$ROOT/docs/handoff/dispatch-${SIGF}"
+WTF="$tmp/wt-f"
+mkdir -p "$HANDOFFF"
+printf 'arm=glm handle=PID=0 epoch=0\n' > "$HANDOFFF/arm-registered"
+git -C "$LANE" worktree add -q "$WTF" -b "case-f-$$" >/dev/null 2>&1
+
+outF="$(
+  CLAUDE_PROJECT_ROOT="$ROOT" \
+  LEADV2_DISPATCH_CACHE_DIR="$CACHE" \
+  LEADV2_DISPATCH_LEDGER_BIN="$REAL_LEDGER_SH" \
+  LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$LEDGERF" \
+  LEADV2_LANE_WORK_ROOT="$WTF" \
+  LEADV2_ARM_ADVANCE=0 \
+    bash "$PRODUCT_CLOSE_SH" "$ROOT" "$SIGF" glm "" 0 0 "" 2>&1
+)"
+rcF=$?
+
+if grep -q 'reason: arm_produced_nothing' "$HANDOFFF/review-gate.md" 2>/dev/null; then
+  pass "Case F: prove-zero linked worktree with unmoved HEAD IS classified arm_produced_nothing"
+else
+  fail "Case F: prove-zero linked worktree with unmoved HEAD was NOT classified arm_produced_nothing -- out=${outF}"
+fi
+
+if printf '%s\n' "$outF" | grep -q 'silent_probe_base_unresolved task='; then
+  fail "Case F: silent_probe_base_unresolved emitted for a provably-zero lane -- out=${outF}"
+else
+  pass "Case F: no silent_probe_base_unresolved line for a provably-zero lane"
+fi
+
+# ── Case G (prove-zero must not fire, the merge-queue counterexample regression
+#    lock, GATE-FALSE-SILENT-01 round 3 §2.4): SAME linked worktree as Case F but
+#    with one commit made in it -- HEAD reflog now records a commit of its own, so
+#    prove-zero must refuse and fall to "unknown" -> must NOT be classified
+#    arm_produced_nothing, and silent_probe_base_unresolved must be emitted. ──────
+SIGG="cggggggg"
+LEDGERG="$tmp/ledger-g.jsonl"
+HANDOFFG="$ROOT/docs/handoff/dispatch-${SIGG}"
+mkdir -p "$HANDOFFG"
+printf 'arm=glm handle=PID=0 epoch=0\n' > "$HANDOFFG/arm-registered"
+printf 'wt-commit\n' > "$WTF/wt-commit.txt"
+git -C "$WTF" add wt-commit.txt
+git -C "$WTF" commit -q -m "wt commit"
+
+outG="$(
+  CLAUDE_PROJECT_ROOT="$ROOT" \
+  LEADV2_DISPATCH_CACHE_DIR="$CACHE" \
+  LEADV2_DISPATCH_LEDGER_BIN="$REAL_LEDGER_SH" \
+  LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$LEDGERG" \
+  LEADV2_LANE_WORK_ROOT="$WTF" \
+  LEADV2_ARM_ADVANCE=0 \
+    bash "$PRODUCT_CLOSE_SH" "$ROOT" "$SIGG" glm "" 0 0 "" 2>&1
+)"
+rcG=$?
+
+if grep -q 'reason: arm_produced_nothing' "$HANDOFFG/review-gate.md" 2>/dev/null; then
+  fail "Case G: linked worktree that committed was classified arm_produced_nothing -- out=${outG}"
+else
+  pass "Case G: linked worktree that committed is NOT classified arm_produced_nothing"
+fi
+
+if printf '%s\n' "$outG" | grep -q 'silent_probe_base_unresolved task='; then
+  pass "Case G: degradation line emitted once prove-zero refuses (reflog shows a commit)"
+else
+  fail "Case G: expected silent_probe_base_unresolved decision line -- out=${outG}"
+fi
+
+git -C "$LANE" worktree remove --force "$WTF" >/dev/null 2>&1 || true
+
 printf -- '\n[TEST] %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
   printf '%s\n' "${ERRORS[@]}"
