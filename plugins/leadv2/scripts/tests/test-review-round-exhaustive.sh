@@ -24,7 +24,12 @@ if command -v shellcheck >/dev/null 2>&1; then
   # SC1091/SC2034 are pre-existing on this file (unrelated source-not-found
   # infos and vars set for callers) and predate this lane's change — excluded
   # so this suite gates only on issues this lane could have introduced.
-  if shellcheck -x -e SC1091,SC2034 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
+  # SC2094 (REVIEW-ROUNDCAP-01 fix-round-1): the state-lock flock pattern mirrors
+  # atomic_review_check_and_record (leadv2-dispatch-code.sh:2556) -- passing the
+  # same lockfile path as both the fd-9 redirect target and lv2_lock_wait's
+  # argument is the documented, safe use of that primitive, not an actual
+  # read/write race.
+  if shellcheck -x -e SC1091,SC2034,SC2094 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
     pass "shellcheck clean: leadv2-review-run.sh"
   else
     fail "shellcheck: leadv2-review-run.sh"
@@ -368,26 +373,30 @@ case_t10_h1_repro() { # <scripts_dir> -> rc0=pass
   local state="${h}/.review-round.state"
   local mf="${h}/review-mission-sonnet.md"
 
+  # REVIEW-ROUNDCAP-01: this repro needs 3 REAL rounds to exercise round
+  # monotonicity/freeze, an orthogonal H1 concern predating the round cap.
+  # LEADV2_REVIEW_MAX_ROUNDS=0 is the documented kill-switch (byte-identical
+  # to pre-cap behavior) so the cap doesn't fire mid-repro.
   printf 'diff --git a/x b/x\n+v1 broken\n' > "${diff}"
   run_review_ex "${scripts_dir}" "${h}" "${diff}" T10REPRO 1 "${h}/err1" \
-    ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round1 unique finding marker"
+    LEADV2_REVIEW_MAX_ROUNDS=0 ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round1 unique finding marker"
   [[ -f "${state}" ]] || return 1
   grep -q '^round=1$' "${state}" || return 1
 
   printf 'diff --git a/x b/x\n+v2 partially fixed\n' > "${diff}"
   run_review_ex "${scripts_dir}" "${h}" "${diff}" T10REPRO 1 "${h}/err2" \
-    ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round2 unique finding marker"
+    LEADV2_REVIEW_MAX_ROUNDS=0 ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round2 unique finding marker"
   grep -q '^round=2$' "${state}" || return 1
   grep -q 'VERIFICATION-ONLY ROUND 2' "${mf}" || return 1
 
   # Re-review the exact same (unchanged) diff — round must NOT advance.
   run_review_ex "${scripts_dir}" "${h}" "${diff}" T10REPRO 1 "${h}/err3" \
-    ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round2 unique finding marker"
+    LEADV2_REVIEW_MAX_ROUNDS=0 ARCH_CTRL_VERDICT=FAIL ARCH_CTRL_DESC="round2 unique finding marker"
   grep -q '^round=2$' "${state}" || return 1
   grep -q 'EXHAUSTIVE ROUND 2' "${mf}" || return 1
 
   printf 'diff --git a/x b/x\n+v3 fully fixed\n' > "${diff}"
-  run_review_ex "${scripts_dir}" "${h}" "${diff}" T10REPRO 1 "${h}/err4" ARCH_CTRL_VERDICT=PASS
+  run_review_ex "${scripts_dir}" "${h}" "${diff}" T10REPRO 1 "${h}/err4" LEADV2_REVIEW_MAX_ROUNDS=0 ARCH_CTRL_VERDICT=PASS
   grep -q '^round=3$' "${state}" || return 1
   grep -qE 'EXHAUSTIVE ROUND 3|VERIFICATION-ONLY ROUND 3' "${mf}" || return 1
   grep -q '^count=' "${mf}" && return 1

@@ -288,11 +288,27 @@ Critical/High finding on a distinct arm, and writes `docs/handoff/<id>/review-ga
 - `status: pass` → ACCEPT, append findings to followups.md, proceed to Phase 6.
 - `status: fail` → spawn developer fix round on the blocking (Critical/High, non-refuted)
   findings, re-run the engine (round 2, max).
-- Round cap is enforced by LEAD, not the engine. Round 3+ → `Skill(leadv2-judge) mode=review`.
 - `status: blocked` / `status: unreviewed` → see the engine's `reason:` line
   (`provider_error` / `review_body_lost` / `empty_response` / `no_verdict_marker` /
-  `all_arms_unavailable`) — this is a finding about the review process itself, never
-  silently treated as a pass.
+  `all_arms_unavailable` / `review_roundcap` / `review_spawncap`) — this is a finding about
+  the review process itself, never silently treated as a pass.
+
+**Round cap (REVIEW-ROUNDCAP-01): enforced by the engine itself, not by LEAD.** The
+declared "max 2 rounds then architect escape" policy used to be advisory only — the lead
+had to remember to stop itself, and reliably didn't. The engine now refuses round
+`LEADV2_REVIEW_MAX_ROUNDS + 1` (default 2) on its own: it exits `8` with
+`status: blocked` / `reason: review_roundcap` in `review-gate.md` and writes
+`docs/handoff/<id>/review-roundcap-escalation.md` instead of spawning another fan-out.
+A second backstop, `LEADV2_REVIEW_MAX_SPAWNS` (default `3×` the round limit), catches
+lanes whose diff/verdict are stable enough that `record-review`'s diff-hash dedup keeps
+firing and the round counter never advances — every fan-out launch counts against it
+regardless of dedup, and it exits `8` with `reason: review_spawncap` the same way. Neither
+cap auto-PARKs or auto-spawns an architect; a human or the lead reads the escalation file
+and decides between architect escalation and PARK. Set `LEADV2_REVIEW_MAX_ROUNDS=0` to
+disable both caps entirely (byte-identical to pre-cap behavior). **Not covered:**
+`leadv2-dispatch-product-close.sh`'s inline review body, used at the production default
+`LEADV2_REVIEW_ENGINE=0`, never calls this engine and is therefore not capped by this
+mechanism.
 
 The lead/interactive path above is unconditional — it never falls back to
 `workflows/leadv2-review.js`. Codex/critic/security-auditor selection logic that used to

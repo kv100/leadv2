@@ -2442,6 +2442,7 @@ if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" ]]; then
           --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
       ;;
     7) _dl_note dead review_verdict_fail "engine=1"; _stamp_review_terminal fail ;;
+    8) _dl_note dead review_roundcap "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
     6) _dl_note dead review_blocked "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
     9) _dl_note dead all_arms_unavailable "engine=1"; _stamp_review_terminal unreviewed ;;
     *) _dl_note dead review_engine_error "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
