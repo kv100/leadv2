@@ -474,3 +474,5 @@ Read it in order — §Step 0 precondition → §Hard constraints → §The pref
 **Chat budget per spawn:** task-notification (≤100 words) + `Read limit=30` summary + synthesis = ~200 words. Without this rule: ~2000 words.
 
 **Chat budget per spawn:** task-notification (≤100 words) + `Read limit=30` summary + synthesis = ~200 words. Without this rule: ~2000 words.
+
+**Worker context diet (`LEADV2_SUBSESSION_*`, WORKER-CONTEXT-DIET-01):** `LEADV2_SUBSESSION_MAX_TURNS` (default 110) caps subsession turns. `LEADV2_SUBSESSION_SLIM_MCP` (default 0, opt-in `=1`) restricts a spawned worker to its role's MCP allowlist; `LEADV2_SUBSESSION_EXCLUDE_DYNAMIC` (default 0, opt-in `=1`) moves per-machine system-prompt sections into the first user message for cross-spawn cache reuse. Both fail open on any resolution problem — a fat worker, never a dead one. Full detail + measurement probe: `docs/context-diet.md`.
