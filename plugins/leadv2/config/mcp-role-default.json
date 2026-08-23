@@ -1,0 +1,4 @@
+{
+  "servers": ["repowise"],
+  "_comment": "WORKER-CONTEXT-DIET-01: fallback allowlist for any role without its own mcp-role-<role>.json (currently hack-detect, plus templated `--role \"${role...}\"` call sites). Allowlist of server NAMES only, resolved at spawn time -- see resolve_role_mcp_config() in claude-subsession.sh."
+}

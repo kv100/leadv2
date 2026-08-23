@@ -47,7 +47,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}}"
 export LEADV2_PROJECT_ROOT="${PROJECT_ROOT}"
 
-REAL_SUBSESSION="${HOME}/.claude/scripts/claude-subsession.sh"
+# Resolve canonical claude-subsession.sh relative to this script's own dir
+# first (this file lives beside it in plugins/leadv2/scripts/); fall back to
+# the legacy ~/.claude/scripts/ copy only if canonical is absent. That copy is
+# a stale, independently-drifting file (real, not a symlink) that misses this
+# task's changes and multiple prior canonical fixes -- see
+# docs/handoff/dispatch-9341e2eb-architect/architect.full.md §1b. Resolving
+# canonical first stops new dispatch paths from silently landing on the copy;
+# it does not delete or convert the stray copy (separate one-copy cleanup).
+REAL_SUBSESSION="${SCRIPT_DIR}/claude-subsession.sh"
+if [[ ! -x "$REAL_SUBSESSION" ]]; then
+  REAL_SUBSESSION="${HOME}/.claude/scripts/claude-subsession.sh"
+fi
 
 if [[ ! -x "$REAL_SUBSESSION" ]]; then
   printf -- '[leadv2-claude-subsession] real subsession script not found: %s\n' "${REAL_SUBSESSION}" >&2

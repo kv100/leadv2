@@ -1,0 +1,4 @@
+{
+  "servers": ["repowise"],
+  "_comment": "WORKER-CONTEXT-DIET-01: allowlist of server NAMES only, resolved at spawn time (see resolve_role_mcp_config() in claude-subsession.sh) -- definitions are per-repo, never baked here. mcp__codebase-memory-mcp__* is deliberately omitted: disabled in persona-engine and unavailable to any headless `claude -p` subsession regardless (leadv2-subagent-protocol.md §1b)."
+}
