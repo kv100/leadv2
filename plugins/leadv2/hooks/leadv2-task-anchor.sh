@@ -57,7 +57,7 @@ else
 fi
 
 OUT="$(python3 - "$TMPFILE" "$STATE_RESOLVER" <<'PYEOF' 2>/dev/null
-import sys, os, json, subprocess, glob, time, re
+import sys, os, json, subprocess, glob, time, re, hashlib
 
 def git_toplevel(path):
     try:
@@ -265,6 +265,70 @@ def build_thread_anchor(root, leadv2_dir, session_id=""):
         content = content[:budget]
 
     return "\n".join(header + content + footer)
+
+
+# ── HOOK-INJECT-DEDUP-01: content-hash gate on a per-turn injection ────────
+# Suppresses a byte-identical re-inject of the SAME block on consecutive
+# founder prompts within a session, replacing it with a one-line marker.
+# Every failure path (disabled, no session id, unwritable state dir,
+# corrupt state) returns "full" — this gate must never silently swallow an
+# injection it isn't certain is a duplicate of the last one it sent.
+_INJECT_GC_MAX_AGE_S = 7 * 24 * 3600
+
+
+def _inject_dedup_gate(kind, session_id, body):
+    try:
+        if os.environ.get("LEADV2_INJECT_DEDUP", "1") == "0":
+            return "full"  # G0
+
+        key = re.sub(r"[^A-Za-z0-9._-]", "", str(session_id or ""))[:64]
+        if not key or not key.strip("."):
+            return "full"  # G1 — no session id to key state on
+
+        state_dir = os.environ.get("LEADV2_TASK_ANCHOR_STATE_DIR") \
+            or os.path.expanduser("~/.claude/state/leadv2")
+        os.makedirs(state_dir, exist_ok=True)
+
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        digest = hashlib.sha256((body + "\n" + today).encode("utf-8")).hexdigest()
+
+        hash_path = os.path.join(state_dir, f".inject-hash.{key}.{kind}")
+        stored = ""
+        if os.path.isfile(hash_path):
+            with open(hash_path, encoding="utf-8") as fh:
+                stored = fh.read(256).strip()
+
+        # Once-per-day GC, scoped to our own .inject-hash.* files only — the
+        # state dir already holds ~11.5k unrelated .lead-streak files; never
+        # widen this glob to sweep a different feature's names.
+        gc_day_path = os.path.join(state_dir, ".inject-gc-day")
+        last_gc_day = ""
+        if os.path.isfile(gc_day_path):
+            with open(gc_day_path, encoding="utf-8") as fh:
+                last_gc_day = fh.read(32).strip()
+        if today != last_gc_day:
+            tmp_gc = f"{gc_day_path}.tmp.{os.getpid()}"
+            with open(tmp_gc, "w", encoding="utf-8") as fh:
+                fh.write(today)
+            os.replace(tmp_gc, gc_day_path)
+            cutoff = time.time() - _INJECT_GC_MAX_AGE_S
+            for fn in glob.glob(os.path.join(state_dir, ".inject-hash.*")):
+                try:
+                    if os.path.getmtime(fn) < cutoff:
+                        os.remove(fn)
+                except Exception:
+                    pass
+
+        if stored and stored == digest:
+            return "marker"  # G3 — unchanged; hash file left as-is
+
+        tmp_hash = f"{hash_path}.tmp.{os.getpid()}"
+        with open(tmp_hash, "w", encoding="utf-8") as fh:
+            fh.write(digest)
+        os.replace(tmp_hash, hash_path)  # atomic — matches single-lead-beat.sh
+        return "full"  # G2 / G4 / G5
+    except Exception:
+        return "full"  # G6 — fail open, never silence an injection
 
 
 # ── LEAD-ANCHOR-01 round 2: Hole 2 — auto-capture new founder asks ─────────
@@ -558,7 +622,14 @@ def main():
         safe_capture(root, leadv2_dir, payload)
         thread_out = build_thread_anchor(root, leadv2_dir, payload.get("session_id"))
         if thread_out:
-            print(thread_out)
+            gate = _inject_dedup_gate("thread-anchor", payload.get("session_id"), thread_out)
+            if gate == "marker":
+                print(
+                    "<task-anchor>thread anchor unchanged — docs/leadv2/open-threads.md; "
+                    "the block above still governs.</task-anchor>"
+                )
+            else:
+                print(thread_out)
         return  # no active leadv2 task — THREAD anchor (if any) already printed
 
     # TOKEN-EFFICIENCY: the full anchor (goal, plan, journal, other sessions,

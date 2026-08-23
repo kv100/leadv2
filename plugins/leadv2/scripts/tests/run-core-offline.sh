@@ -270,6 +270,7 @@ SUITE_DEFS=(
   "Codex child-session recursion boundary|||bash $TEST_DIR/test-codex-child-session-boundary.sh"
   "autonomous session spawner|||bash $TEST_DIR/test-session-spawner.sh"
   "hook token + mode isolation|||bash $TEST_DIR/test-hook-token-mode-isolation.sh"
+  "per-turn injection dedup (HOOK-INJECT-DEDUP-01)|||bash $TEST_DIR/test-inject-dedup.sh"
   "main model/live quota|||bash $TEST_DIR/test-main-model-check.sh"
   "active registry fail-closed|||bash $TEST_DIR/test-active-registry-failclosed.sh"
   "active registry phase updates|||bash $TEST_DIR/test-active-registry-update-phase.sh"
