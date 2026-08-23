@@ -12,8 +12,10 @@ PRECOMPACT="$PLUGIN_ROOT/hooks/leadv2-pre-compact-checkpoint.sh"
 PASS=0
 FAIL=0
 ROOT="$(lv2_mktemp_dir "leadv2-inject-dedup")"
+SESSION_ID="inject-dedup-$$"
+TMP_MARKER="/tmp/.leadv2-task-anchor-full-${SESSION_ID}-covertask"
 
-cleanup() { rm -rf "$ROOT"; }
+cleanup() { rm -rf "$ROOT"; rm -f "$TMP_MARKER"; }
 trap cleanup EXIT
 
 pass() { PASS=$((PASS + 1)); printf -- '[TEST] PASS: %s\n' "$1"; }
@@ -21,7 +23,6 @@ fail() { FAIL=$((FAIL + 1)); printf -- '[TEST] FAIL: %s\n' "$1"; }
 
 REPO="$ROOT/repo"
 STATE_DIR="$ROOT/state"
-SESSION_ID="inject-dedup-$$"
 mkdir -p "$REPO/docs/leadv2" "$STATE_DIR"
 git -C "$REPO" init -q
 git -C "$REPO" config user.email test@example.com
@@ -92,7 +93,7 @@ if [[ -f "$hash_file" ]]; then
 import hashlib, sys
 body = sys.argv[1]
 day = sys.argv[2]
-print(hashlib.sha256((body + '\n' + day).encode('utf-8')).hexdigest())
+print(hashlib.sha256((body + '\n' + day + '\n').encode('utf-8')).hexdigest())
 " "$changed_out" "$yesterday")"
   printf '%s' "$stale_digest" > "$hash_file"
   date_flip_out="$(run_anchor "$SESSION_ID")"
@@ -166,6 +167,82 @@ if [[ "$post_compact_out" != *"thread anchor unchanged"* ]]; then
   pass "R2: first prompt after /compact is a full re-inject, not a marker"
 else
   fail "R2 failed: first prompt after /compact still collapsed to a marker"
+fi
+
+# G5b (HOOK-INJECT-DEDUP-01): a scheduled-decision classification flip
+# (DUE TODAY -> OVERDUE for the SAME row id) forces a full re-inject even
+# though open-threads.md is byte-identical to the last fire. The sandbox
+# repo has no .claude/hooks/scheduled-decisions-nearest.sh, so
+# nearest_due_line() returns None and the rendered body genuinely does not
+# vary with the Due date -- this isolates G5b from G4 cleanly.
+SD_SESSION_ID="inject-dedup-sd-$$"
+write_sd_ledger() {
+  local due="$1"
+  cat > "$REPO/docs/leadv2/scheduled-decisions.md" <<EOF
+## SD-TEST-01 — Some decision
+
+| **Due** | ${due} |
+EOF
+}
+# NOTE: _nearest_decision_signature() classifies against LOCAL
+# datetime.date.today() (matching the sibling renderer's own grammar), not
+# UTC -- so both fixture dates must be derived from the same local clock via
+# python, or a UTC/local day-boundary mismatch can silently classify both
+# fixtures into the same OVERDUE tier and mask the flip this test exists to
+# catch.
+today_date="$(python3 -c "import datetime; print(datetime.date.today().isoformat())")"
+past_date="$(python3 -c "import datetime; print((datetime.date.today() - datetime.timedelta(days=3)).isoformat())")"
+
+write_sd_ledger "$today_date"
+sd_first_out="$(run_anchor "$SD_SESSION_ID")"
+sd_second_out="$(run_anchor "$SD_SESSION_ID")"
+if [[ "$sd_second_out" == *"thread anchor unchanged"* ]]; then
+  pass "G5b setup: unchanged ledger (DUE TODAY) still collapses to marker"
+else
+  fail "G5b setup failed: expected marker on unchanged fire, got: $sd_second_out"
+fi
+
+# Flip ONLY the Due date across the overdue boundary; id and every other
+# byte stay identical.
+write_sd_ledger "$past_date"
+sd_flip_out="$(run_anchor "$SD_SESSION_ID")"
+if [[ "$sd_flip_out" != *"thread anchor unchanged"* ]]; then
+  pass "G5b: DUE_TODAY -> OVERDUE classification flip forces full re-inject"
+else
+  fail "G5b failed: got marker despite classification flip: $sd_flip_out"
+fi
+rm -f "$REPO/docs/leadv2/scheduled-decisions.md"
+
+# Finding 3: PreCompact must also clear the task-mode full-anchor marker
+# glob (/tmp/.leadv2-task-anchor-full-<sid>-<task>). The sandbox repo never
+# has an active task, so leadv2-task-anchor.sh's task-mode branch (:645)
+# never runs and never creates this file on its own -- create it explicitly
+# so R2's PreCompact coverage of the glob is actually exercised.
+: > "$TMP_MARKER"
+LEADV2_TASK_ANCHOR_STATE_DIR="$STATE_DIR" bash "$PRECOMPACT" <<<"$compact_payload" >/dev/null
+if [[ ! -f "$TMP_MARKER" ]]; then
+  pass "finding-3: PreCompact clears the /tmp task-anchor-full marker glob"
+else
+  fail "finding-3 failed: /tmp task-anchor-full marker survived PreCompact"
+fi
+
+# Finding 5: the fail-open WARN line must actually reach stderr (requires
+# the 2>/dev/null redirect removed from the python3 heredoc invocation).
+# Reuse the existing G6 unwritable-state-dir case -- a real PermissionError,
+# no test-only error-injection backdoor.
+if [[ "$(id -u)" != "0" ]]; then
+  WARN_STATE_DIR="$ROOT/unwritable-warn"
+  mkdir -p "$WARN_STATE_DIR"
+  chmod 000 "$WARN_STATE_DIR"
+  warn_err="$(LEADV2_TASK_ANCHOR_STATE_DIR="$WARN_STATE_DIR/nested" bash "$ANCHOR" <<<"$(payload "${SESSION_ID}-warn")" 2>&1 >/dev/null)" || true
+  chmod 755 "$WARN_STATE_DIR"
+  if [[ "$warn_err" == *"[inject-dedup] fail-open:"* ]]; then
+    pass "finding-5: fail-open path emits a [inject-dedup] fail-open: WARN on stderr"
+  else
+    fail "finding-5 failed: no WARN line found on stderr: $warn_err"
+  fi
+else
+  pass "finding-5: skipped under root (chmod 000 is not enforced)"
 fi
 
 printf -- '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"

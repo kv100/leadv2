@@ -56,8 +56,13 @@ else
     STATE_RESOLVER="${HOOK_DIR}/../scripts/leadv2-state-path.sh"
 fi
 
-OUT="$(python3 - "$TMPFILE" "$STATE_RESOLVER" <<'PYEOF' 2>/dev/null
-import sys, os, json, subprocess, glob, time, re, hashlib
+# HOOK-INJECT-DEDUP-01 §5: stderr no longer discarded — main() is wrapped in
+# try/except Exception: pass (bottom of this heredoc), and every subprocess.run
+# call below uses capture_output=True, so no traceback or child stderr can
+# reach the founder's terminal in normal operation. This lets the fail-open
+# WARN line (_inject_warn) actually surface.
+OUT="$(python3 - "$TMPFILE" "$STATE_RESOLVER" <<'PYEOF'
+import sys, os, json, subprocess, glob, time, re, hashlib, datetime
 
 def git_toplevel(path):
     try:
@@ -276,7 +281,105 @@ def build_thread_anchor(root, leadv2_dir, session_id=""):
 _INJECT_GC_MAX_AGE_S = 7 * 24 * 3600
 
 
-def _inject_dedup_gate(kind, session_id, body):
+def _inject_warn(err):
+    # HOOK-INJECT-DEDUP-01 §5: one bounded line on stderr so a fail-open path
+    # doesn't hide as silent always-full-inject. Never includes body/ledger
+    # content — only the exception type+message, which is small and safe.
+    try:
+        sys.stderr.write("[inject-dedup] fail-open: %s: %s\n" % (type(err).__name__, err))
+    except Exception:
+        pass
+
+
+def _nearest_decision_signature(root, leadv2_dir):
+    # HOOK-INJECT-DEDUP-01 §0.3/§5: (id, status) of the nearest actionable
+    # scheduled decision, as "<id>:<STATUS>". Computed IN-GATE and
+    # independently of .claude/hooks/scheduled-decisions-nearest.sh, because
+    # that renderer's suppression is id-keyed and classification-blind: a
+    # DUE_TODAY -> OVERDUE flip of the same id renders nothing, so a
+    # body-only hash can never see it. Grammar mirrors that renderer
+    # (LEDGER-HOOK-PARSER-01 provenance); if the ledger format changes, both
+    # move together. Never raises.
+    try:
+        path = os.path.join(root, leadv2_dir, "scheduled-decisions.md")
+        if not os.path.exists(path):
+            return ""
+
+        max_bytes = 8388608
+        try:
+            max_bytes = int(os.environ.get("LEADV2_SD_SCAN_MAX_BYTES", "8388608"))
+        except Exception:
+            return ""
+        if os.path.getsize(path) > max_bytes:
+            return "oversize"
+
+        content = open(path, encoding="utf-8", errors="replace").read()
+
+        CLOSED_TITLE_RE = re.compile(r"\b(CLOSED|OBSOLETE|SUPERSEDED)\b", re.IGNORECASE)
+        rows = re.split(r"(?=^#{2,3} )", content, flags=re.MULTILINE)
+        today = datetime.date.today()
+        candidates = []  # (tier, sort_key, position, row_id, status)
+
+        for pos, row in enumerate(rows):
+            hm = re.match(r"^#{2,3} (\S+)\s+—\s+(.+?)\s*$", row, re.MULTILINE)
+            if not hm:
+                continue
+            row_id, title = hm.group(1), hm.group(2)
+            if CLOSED_TITLE_RE.search(title):
+                continue
+
+            fields = {}
+            for fm in re.finditer(r"^\|\s*\*\*(.+?)\*\*\s*\|\s*(.*?)\s*\|\s*$", row, re.MULTILINE):
+                fields[fm.group(1).strip().lower()] = fm.group(2).strip()
+            for fm in re.finditer(r"^-\s*\*\*(.+?)[:.]\*\*\s*(.*?)\s*$", row, re.MULTILINE):
+                key = fm.group(1).strip().lower()
+                fields.setdefault(key, fm.group(2).strip())
+            for fm in re.finditer(r"^\*\*(.+?)[:.]\*\*\s*(.*?)\s*$", row, re.MULTILINE):
+                key = fm.group(1).strip().lower()
+                fields.setdefault(key, fm.group(2).strip())
+
+            due_raw = fields.get("due", "")
+            date_m = re.search(r"\b(\d{4}-\d{2}-\d{2})(?!\d)", due_raw)
+            status = None
+            tier = None
+            sort_key = 0
+            if date_m:
+                try:
+                    due_date = datetime.date.fromisoformat(date_m.group(1))
+                except ValueError:
+                    due_date = None
+                if due_date is not None and due_date <= today:
+                    days = (today - due_date).days
+                    if days > 0:
+                        status = "OVERDUE"
+                        tier = 0
+                        sort_key = -days
+                    else:
+                        status = "DUE_TODAY"
+                        tier = 1
+            elif due_raw:
+                status = "CONDITION_BOUND"
+                tier = 2
+
+            if status is None:
+                continue
+            candidates.append((tier, sort_key, pos, row_id, status))
+
+        if not candidates:
+            return "none"
+
+        present_tiers = {c[0] for c in candidates}
+        active_tier = 0 if 0 in present_tiers else (1 if 1 in present_tiers else 2)
+        pool = [c for c in candidates if c[0] == active_tier]
+        pool.sort(key=lambda c: (c[1], c[2]))
+        winner = pool[0]
+        return f"{winner[3]}:{winner[4]}"
+    except Exception as exc:
+        _inject_warn(exc)
+        return ""
+
+
+def _inject_dedup_gate(kind, session_id, body, root=None, leadv2_dir=None):
     try:
         if os.environ.get("LEADV2_INJECT_DEDUP", "1") == "0":
             return "full"  # G0
@@ -290,7 +393,8 @@ def _inject_dedup_gate(kind, session_id, body):
         os.makedirs(state_dir, exist_ok=True)
 
         today = time.strftime("%Y-%m-%d", time.gmtime())
-        digest = hashlib.sha256((body + "\n" + today).encode("utf-8")).hexdigest()
+        sd_sig = _nearest_decision_signature(root, leadv2_dir) if root is not None and leadv2_dir is not None else ""
+        digest = hashlib.sha256((body + "\n" + today + "\n" + sd_sig).encode("utf-8")).hexdigest()
 
         hash_path = os.path.join(state_dir, f".inject-hash.{key}.{kind}")
         stored = ""
@@ -316,8 +420,8 @@ def _inject_dedup_gate(kind, session_id, body):
                 try:
                     if os.path.getmtime(fn) < cutoff:
                         os.remove(fn)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _inject_warn(exc)
 
         if stored and stored == digest:
             return "marker"  # G3 — unchanged; hash file left as-is
@@ -326,8 +430,9 @@ def _inject_dedup_gate(kind, session_id, body):
         with open(tmp_hash, "w", encoding="utf-8") as fh:
             fh.write(digest)
         os.replace(tmp_hash, hash_path)  # atomic — matches single-lead-beat.sh
-        return "full"  # G2 / G4 / G5
-    except Exception:
+        return "full"  # G2 / G4 / G5 / G5b
+    except Exception as exc:
+        _inject_warn(exc)
         return "full"  # G6 — fail open, never silence an injection
 
 
@@ -622,7 +727,7 @@ def main():
         safe_capture(root, leadv2_dir, payload)
         thread_out = build_thread_anchor(root, leadv2_dir, payload.get("session_id"))
         if thread_out:
-            gate = _inject_dedup_gate("thread-anchor", payload.get("session_id"), thread_out)
+            gate = _inject_dedup_gate("thread-anchor", payload.get("session_id"), thread_out, root, leadv2_dir)
             if gate == "marker":
                 print(
                     "<task-anchor>thread anchor unchanged — docs/leadv2/open-threads.md; "
