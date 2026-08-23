@@ -842,10 +842,87 @@ _set_worktree_pin_line() {
 # detached worker spawn and any lock taken here must never be inherited by one). Fd 8 is
 # this subsystem's own sidecar lock fd, scoped tightly around each read-modify-write and
 # always closed (`8>&-`) before returning -- never held across a spawn_worker call.
-_leadv2_glm_deferred_path() { printf '%s/docs/leadv2/glm-deferred.jsonl' "${PROJECT_ROOT}"; }
-_leadv2_arm_exceptions_path() { printf '%s/docs/leadv2/.arm-exceptions-%s' "${PROJECT_ROOT}" "${1}"; }
-_leadv2_codex_credits_stamp_path() { printf '%s/docs/leadv2/.codex-credits-empty.stamp' "${PROJECT_ROOT}"; }
-_leadv2_glm_deferred_mission_path() { printf '%s/docs/leadv2/glm-deferred.d/%s.md' "${PROJECT_ROOT}" "${1}"; }
+# LANE-STATE-LEAK-01: all four now resolve through leadv2-state-path.sh (the
+# control-plane resolver) instead of a raw ${PROJECT_ROOT}/docs/leadv2/...
+# string -- PROJECT_ROOT is the CALLING WORKTREE, so a raw string made each of
+# these per-lane state instead of per-repo/per-session. Each result is
+# memoized in its own scalar (bash 3.2: no associative arrays) so a dispatch
+# invocation forks the resolver at most once per helper. Non-empty guard +
+# fallback to the pre-fix path: R8 (these helpers may never abort cmd_resolve)
+# means a resolver failure must degrade loudly to the old behaviour, never to
+# an empty path (which would make e.g. `mkdir -p "$(dirname "")"` write into
+# the process's cwd).
+_LEADV2_GLM_DEFERRED_PATH=""
+_leadv2_glm_deferred_path() {
+  if [[ -z "${_LEADV2_GLM_DEFERRED_PATH}" ]]; then
+    local p=""
+    if [[ -f "${STATE_PATH_BIN}" ]]; then
+      p="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${STATE_PATH_BIN}" "glm-deferred.jsonl" 2>/dev/null || true)"
+    fi
+    if [[ -z "${p}" ]]; then
+      p="${PROJECT_ROOT}/docs/leadv2/glm-deferred.jsonl"
+      log_err "leadv2-state-path unresolved for glm-deferred.jsonl -- falling back to ${p}"
+    fi
+    _LEADV2_GLM_DEFERRED_PATH="${p}"
+  fi
+  printf '%s' "${_LEADV2_GLM_DEFERRED_PATH}"
+}
+
+_LEADV2_ARM_EXC_DAY=""
+_LEADV2_ARM_EXCEPTIONS_PATH=""
+_leadv2_arm_exceptions_path() {
+  local day="${1:-}"
+  # §3.6: reject anything not an 8-digit UTC date -- an empty/malformed $day
+  # would otherwise collapse every caller onto one shared file, or (with a
+  # path-shaped value) let a caller-supplied string escape the state root.
+  [[ "${day}" =~ ^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]$ ]] || day="$(date -u +%Y%m%d)"
+  if [[ "${day}" != "${_LEADV2_ARM_EXC_DAY}" ]]; then
+    local p=""
+    if [[ -f "${STATE_PATH_BIN}" ]]; then
+      p="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${STATE_PATH_BIN}" ".arm-exceptions-${day}" 2>/dev/null || true)"
+    fi
+    if [[ -z "${p}" ]]; then
+      p="${PROJECT_ROOT}/docs/leadv2/.arm-exceptions-${day}"
+      log_err "leadv2-state-path unresolved for .arm-exceptions-${day} -- falling back to ${p}"
+    fi
+    _LEADV2_ARM_EXC_DAY="${day}"
+    _LEADV2_ARM_EXCEPTIONS_PATH="${p}"
+  fi
+  printf '%s' "${_LEADV2_ARM_EXCEPTIONS_PATH}"
+}
+
+_LEADV2_CODEX_CREDITS_STAMP_PATH=""
+_leadv2_codex_credits_stamp_path() {
+  if [[ -z "${_LEADV2_CODEX_CREDITS_STAMP_PATH}" ]]; then
+    local p=""
+    if [[ -f "${STATE_PATH_BIN}" ]]; then
+      p="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${STATE_PATH_BIN}" ".codex-credits-empty.stamp" 2>/dev/null || true)"
+    fi
+    if [[ -z "${p}" ]]; then
+      p="${PROJECT_ROOT}/docs/leadv2/.codex-credits-empty.stamp"
+      log_err "leadv2-state-path unresolved for .codex-credits-empty.stamp -- falling back to ${p}"
+    fi
+    _LEADV2_CODEX_CREDITS_STAMP_PATH="${p}"
+  fi
+  printf '%s' "${_LEADV2_CODEX_CREDITS_STAMP_PATH}"
+}
+
+_LEADV2_GLM_DEFERRED_MISSION_ROOT=""
+_leadv2_glm_deferred_mission_path() {
+  local sig8="${1}"
+  if [[ -z "${_LEADV2_GLM_DEFERRED_MISSION_ROOT}" ]]; then
+    local p=""
+    if [[ -f "${STATE_PATH_BIN}" ]]; then
+      p="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${STATE_PATH_BIN}" "glm-deferred.d" 2>/dev/null || true)"
+    fi
+    if [[ -z "${p}" ]]; then
+      p="${PROJECT_ROOT}/docs/leadv2/glm-deferred.d"
+      log_err "leadv2-state-path unresolved for glm-deferred.d -- falling back to ${p}"
+    fi
+    _LEADV2_GLM_DEFERRED_MISSION_ROOT="${p}"
+  fi
+  printf '%s/%s.md' "${_LEADV2_GLM_DEFERRED_MISSION_ROOT}" "${sig8}"
+}
 
 # $1=sig8 $2=reason(LAST_ARM_OUTCOME, quota family only) $3=mission_text — park a
 # quota-refused glm-fitting task. Gate (design §4): caller only invokes this when

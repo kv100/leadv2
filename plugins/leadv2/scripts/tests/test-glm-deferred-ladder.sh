@@ -387,7 +387,21 @@ BUMP_SNIPPET="${TMP_ROOT}/bump-snippet.sh"
   printf '#!/usr/bin/env bash\nset -uo pipefail\n'
   printf 'source "%s"\n' "${SCRIPT_DIR}/../leadv2-portable-lock.sh"
   printf 'PROJECT_ROOT="%s"\n' "${ROOT_E2}"
-  printf '_leadv2_arm_exceptions_path() { printf "%%s/docs/leadv2/.arm-exceptions-%%s" "${PROJECT_ROOT}" "${1}"; }\n'
+  # LANE-STATE-LEAK-01: extract the REAL _leadv2_arm_exceptions_path (and its
+  # STATE_PATH_BIN/log_err dependencies) from the real script instead of
+  # hand-rolling a stub in the old raw-path shape -- a hand-rolled stub here
+  # used to keep passing after the helper was routed through the
+  # control-plane resolver while asserting nothing about the new resolution
+  # (a lying-green: green regardless of which shape the real helper has).
+  printf 'STATE_PATH_BIN="%s/../leadv2-state-path.sh"\n' "${SCRIPT_DIR}"
+  printf 'SCRIPT_NAME="test-e2"\n'
+  sed -n '/^log_err()/p' "${DISPATCH_BIN}"
+  # Line-anchored, not pattern-anchored to the next function's opening brace
+  # (a BSD-sed-safe range): the comment block + _leadv2_glm_deferred_path +
+  # _leadv2_arm_exceptions_path, ending exactly at the latter's closing brace.
+  # If this range ever drifts off those two functions, the syntax check two
+  # lines below (bash -n "${BUMP_SNIPPET}") catches it immediately.
+  awk '/^# LANE-STATE-LEAK-01: all four now resolve/{p=1} p; /^_leadv2_arm_exceptions_path\(\) \{/{infn=1} infn && /^}$/{exit}' "${DISPATCH_BIN}"
   sed -n '/^_arm_exception_bump()/,/^}$/p' "${DISPATCH_BIN}"
   printf '_arm_exception_bump "glm_refused_quota_gate" "aaaaaaaa"\n'
   printf '_arm_exception_bump "glm_refused_quota_gate" "aaaaaaaa"\n'

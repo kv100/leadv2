@@ -42,6 +42,11 @@ docs/leadv2/.pulse-beat-last
 docs/leadv2/.board-empty-since
 docs/leadv2/.founder-status-epoch
 docs/leadv2/.codex-credits-empty.stamp
+# LANE-STATE-LEAK-01: RENDER-class collisions delete the local copy outright
+# (no backup); this pattern only guards new STANDARD-class backups going
+# forward. The two pre-existing ones (active.yaml, open-threads.md) are
+# already tracked and are deliberately left alone.
+docs/leadv2/*.pre-controlplane-backup
 # Per-dispatch task journals. 291 are already tracked from before this rule and are
 # left alone deliberately — untracking them is a separate, reviewable call. New ones
 # stop dirtying the repo on every dispatch.

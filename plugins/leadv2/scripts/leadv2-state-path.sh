@@ -18,9 +18,33 @@
 # where <repo-slug> = basename of the MAIN repo's toplevel dir (derived from
 # git-common-dir, never from the calling worktree's own path).
 #
-# ALL scripts/hooks that touch active.yaml / bus.jsonl / merge-queue.jsonl /
-# .merge.lock / open-threads.md MUST resolve the path through this script —
-# no hardcoded `docs/leadv2/...` string for these five files anywhere else.
+# ALL scripts/hooks that touch any of the names below MUST resolve the path
+# through this script — no hardcoded `docs/leadv2/...` string for a managed
+# name anywhere else. LANE-STATE-LEAK-01 extended the original five to the
+# full managed set, grouped by migration class:
+#   STANDARD — opaque single-writer state: active.yaml, active.yaml.lock,
+#     bus.jsonl, .bus.lock, .bus-offsets/, merge-queue.jsonl, .merge.lock,
+#     open-threads.md, questions/, .codex-credits-empty.stamp. On a
+#     first-worktree-wins collision the local copy is preserved as
+#     <name>.pre-controlplane-backup (S7).
+#   RENDER — regenerable, no history worth keeping: founder-status.md,
+#     founder-status-full.md, .board-empty-since, .founder-status-epoch. On
+#     collision the local copy is DELETED, no backup (S6) — the next beat
+#     rewrites it, and a backup file here would just be new untracked noise.
+#     The docs/leadv2/<name> symlink is a CONTRACT for this class, not a
+#     convenience: leadv2-single-lead-beat.sh and two test suites open these
+#     paths directly rather than through this resolver.
+#   MERGE (file) — glm-deferred.jsonl: on collision the local file's lines
+#     are unioned into the target textually (never JSON-parsed, so one
+#     malformed line can't abort migration), deduped by exact line equality,
+#     then the local file is removed.
+#   MERGE (dir) — glm-deferred.d/: on collision each local entry is moved
+#     into the target only if absent there (content-derived sig8 filenames
+#     make a same-name collision the same task); the target's own entry
+#     always wins.
+#   GLOB — .arm-exceptions-<day> and its .lock siblings: move-if-absent into
+#     the control plane, no symlink (the caller always re-resolves the exact
+#     dated name through this script).
 #
 # Usage:
 #   leadv2-state-path.sh                  # -> control-plane root, ensures it
@@ -56,6 +80,10 @@
 #                         defaults to `git rev-parse --show-toplevel` of cwd)
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=leadv2-portable-lock.sh
+source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
 
 NO_LINK=0
 if [[ "${1:-}" == "--no-link" ]]; then
@@ -232,15 +260,51 @@ PYEOF
 fi
 
 # ── Migration + symlink repair (idempotent, best-effort, never fatal) ──────
+# LANE-STATE-LEAK-01 §2.3: the MERGE classes below are read-modify-write across
+# processes -- two worktrees migrating concurrently could both read the target,
+# both append, and one loses its lines. Guard the whole block with a
+# non-blocking, short-timeout advisory lock. fd 7 is used deliberately:
+# dispatch-code.sh already reserves fd 9 (dispatch lock, closed before a
+# detached spawn) and fd 8 (GLM-ladder sidecar lock) in the process tree this
+# resolver is called from (`grep -n '7[<>]' plugins/leadv2/scripts/*.sh` is
+# empty). On lock timeout: skip migration for this invocation and still print
+# the resolved path -- this resolver must never become a place a dispatch can
+# hang.
 if [[ "$NO_LINK" -eq 0 ]]; then
-  python3 - "$STATE_ROOT" "$LINK_ROOT" <<'PYEOF' 2>/dev/null || true
-import os, shutil, sys
+  MIGRATE_LOCK="${STATE_ROOT}/.state-path-migrate.lock"
+  _migrate_locked=0
+  if command -v flock >/dev/null 2>&1; then
+    if exec 7>"${MIGRATE_LOCK}" 2>/dev/null && flock -w 5 -x 7 2>/dev/null; then
+      _migrate_locked=1
+    fi
+  else
+    _mdir="${MIGRATE_LOCK}.d"
+    _mstart="$(date +%s 2>/dev/null || printf 0)"
+    _mdeadline=$(( _mstart + 5 ))
+    while true; do
+      if mkdir "${_mdir}" 2>/dev/null; then
+        printf '%s' "$$" > "${_mdir}/pid" 2>/dev/null || true
+        _migrate_locked=1
+        break
+      fi
+      _mnow="$(date +%s 2>/dev/null || printf 0)"
+      [[ ${_mnow} -ge ${_mdeadline} ]] && break
+      sleep 0.2 2>/dev/null || sleep 1
+    done
+  fi
+
+  if [[ "${_migrate_locked}" -eq 1 ]]; then
+    python3 - "$STATE_ROOT" "$LINK_ROOT" <<'PYEOF' 2>/dev/null || true
+import os, re, shutil, sys
 
 state_root, link_root = sys.argv[1], sys.argv[2]
 leadv2_dir = os.path.join(link_root, "docs", "leadv2")
 os.makedirs(leadv2_dir, exist_ok=True)
 
-# name -> is_dir
+MERGE_SIZE_CAP = 8 * 1024 * 1024  # §3.4: never load an unbounded ladder into memory
+
+# name -> is_dir. Opaque single-writer state: first-worktree-wins, collision
+# preserved as <name>.pre-controlplane-backup.
 STANDARD = {
     "active.yaml": False,
     "active.yaml.lock": False,
@@ -251,23 +315,47 @@ STANDARD = {
     ".merge.lock": False,
     "open-threads.md": False,
     "questions": True,
+    ".codex-credits-empty.stamp": False,
 }
+
+# Regenerable renders: on collision the local copy is deleted outright (no
+# backup) -- a stale 30-minute-old render is not worth a permanently-untracked
+# .pre-controlplane-backup file, and the next beat rewrites it anyway.
+RENDER = {
+    "founder-status.md": False,
+    "founder-status-full.md": False,
+    ".board-empty-since": False,
+    ".founder-status-epoch": False,
+}
+
+# Text-line-union merge on collision (never JSON-parsed -- one malformed line
+# must not abort the whole migration loop).
+MERGE_FILE = {"glm-deferred.jsonl"}
+
+# Per-entry move-if-absent merge on collision (sig8 filenames are
+# content-derived, so a same-name collision is the same task; target wins).
+MERGE_DIR = {"glm-deferred.d"}
+
+
+def relink_if_needed(local, target):
+    try:
+        cur = os.readlink(local)
+    except OSError:
+        cur = None
+    if cur != target:
+        try:
+            os.unlink(local)
+            os.symlink(target, local)
+        except OSError:
+            pass
+
 
 for name, is_dir in STANDARD.items():
     target = os.path.join(state_root, name)
     local = os.path.join(leadv2_dir, name)
 
     if os.path.islink(local):
-        try:
-            cur = os.readlink(local)
-        except OSError:
-            cur = None
-        if cur != target:
-            try:
-                os.unlink(local)
-                os.symlink(target, local)
-            except OSError:
-                pass
+        relink_if_needed(local, target)
         continue
 
     if os.path.exists(local):
@@ -299,7 +387,169 @@ for name, is_dir in STANDARD.items():
             pass
         except OSError:
             pass
+
+for name in RENDER:
+    target = os.path.join(state_root, name)
+    local = os.path.join(leadv2_dir, name)
+
+    if os.path.islink(local):
+        relink_if_needed(local, target)
+        continue
+
+    if os.path.exists(local):
+        if not os.path.exists(target):
+            try:
+                shutil.move(local, target)
+            except OSError:
+                continue
+        else:
+            # S6: regenerable -- delete local outright, no backup.
+            try:
+                if os.path.isdir(local):
+                    shutil.rmtree(local, ignore_errors=True)
+                else:
+                    os.remove(local)
+            except OSError:
+                continue
+
+    if not os.path.exists(local):
+        try:
+            os.symlink(target, local)
+        except FileExistsError:
+            pass
+        except OSError:
+            pass
+
+for name in MERGE_FILE:
+    target = os.path.join(state_root, name)
+    local = os.path.join(leadv2_dir, name)
+
+    if os.path.islink(local):
+        relink_if_needed(local, target)
+        continue
+
+    if os.path.exists(local):
+        if not os.path.exists(target):
+            try:
+                shutil.move(local, target)
+            except OSError:
+                continue
+        else:
+            try:
+                local_size = os.path.getsize(local)
+            except OSError:
+                local_size = 0
+            if local_size > MERGE_SIZE_CAP:
+                sys.stderr.write(
+                    "[leadv2-state-path] %s exceeds merge size cap (%d bytes) -- "
+                    "left un-migrated this invocation\n" % (local, local_size)
+                )
+                continue
+            try:
+                with open(target, "r", encoding="utf-8", errors="replace") as fh:
+                    existing_lines = set(line.rstrip("\n") for line in fh)
+            except OSError:
+                existing_lines = set()
+            try:
+                with open(local, "r", encoding="utf-8", errors="replace") as fh:
+                    local_lines = [line.rstrip("\n") for line in fh]
+            except OSError:
+                local_lines = []
+            new_lines = [ln for ln in local_lines if ln and ln not in existing_lines]
+            try:
+                if new_lines:
+                    with open(target, "a", encoding="utf-8") as fh:
+                        for ln in new_lines:
+                            fh.write(ln + "\n")
+                os.remove(local)
+            except OSError:
+                continue
+
+    if not os.path.exists(local):
+        try:
+            os.symlink(target, local)
+        except FileExistsError:
+            pass
+        except OSError:
+            pass
+
+for name in MERGE_DIR:
+    target = os.path.join(state_root, name)
+    local = os.path.join(leadv2_dir, name)
+
+    if os.path.islink(local):
+        relink_if_needed(local, target)
+        continue
+
+    if os.path.isdir(local):
+        os.makedirs(target, exist_ok=True)
+        for entry in os.listdir(local):
+            src = os.path.join(local, entry)
+            dst = os.path.join(target, entry)
+            if os.path.exists(dst):
+                # Content-derived name already present in the target -- same
+                # task, target wins; drop the local duplicate.
+                try:
+                    if os.path.isdir(src) and not os.path.islink(src):
+                        shutil.rmtree(src, ignore_errors=True)
+                    else:
+                        os.remove(src)
+                except OSError:
+                    pass
+                continue
+            try:
+                shutil.move(src, dst)
+            except OSError:
+                continue
+        try:
+            if not os.listdir(local):
+                os.rmdir(local)
+        except OSError:
+            pass
+
+    if not os.path.exists(local):
+        if not os.path.exists(target):
+            os.makedirs(target, exist_ok=True)
+        try:
+            os.symlink(target, local)
+        except FileExistsError:
+            pass
+        except OSError:
+            pass
+
+# GLOB class: .arm-exceptions-<day> and its .lock siblings. No symlink -- the
+# caller always re-resolves the exact dated name through this script, so
+# nothing needs to point at a stable local path. Collision (target already
+# exists) is left alone: these files are gitignored regardless, so an
+# un-migrated leftover is not visible worktree noise (S9).
+glob_re = re.compile(r"^\.arm-exceptions-\d{8}(\.lock)?$")
+try:
+    entries = os.listdir(leadv2_dir)
+except OSError:
+    entries = []
+for entry in entries:
+    if not glob_re.match(entry):
+        continue
+    local = os.path.join(leadv2_dir, entry)
+    if os.path.islink(local):
+        continue
+    target = os.path.join(state_root, entry)
+    if os.path.exists(target):
+        continue
+    try:
+        shutil.move(local, target)
+    except OSError:
+        continue
 PYEOF
+    if command -v flock >/dev/null 2>&1; then
+      exec 7>&- 2>/dev/null || true
+    else
+      rm -rf "${_mdir}" 2>/dev/null || true
+    fi
+  else
+    printf -- '[leadv2-state-path] WARN: migration lock busy after 5s -- skipping migration this invocation (path still resolved).\n' >&2
+  fi
+  unset _migrate_locked _mdir _mstart _mdeadline _mnow
 fi
 
 if [[ "$NAME" == "root" || -z "$NAME" ]]; then

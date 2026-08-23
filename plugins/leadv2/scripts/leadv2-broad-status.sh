@@ -33,7 +33,27 @@ STATE_PATH_SH="$SCRIPT_DIR/leadv2-state-path.sh"
 LOG_FILE="$(PROJECT_ROOT="$PROJECT_ROOT" "$STATE_PATH_SH" supervise-loop.log)"
 SNAPSHOT_PATH="${LEADV2_BROAD_STATUS_SNAPSHOT_PATH:-$PROJECT_ROOT/docs/leadv2/status-snapshot.json}"
 PREV_PATH="${LEADV2_BROAD_STATUS_PREV_PATH:-$PROJECT_ROOT/docs/leadv2/.broad-status-prev.json}"
-FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-$PROJECT_ROOT/docs/leadv2/founder-status.md}"
+
+# LANE-STATE-LEAK-01 §2.1: this script runs under `set -uo pipefail` -- no
+# `-e`. A failed `VAR="$(state-path.sh name)"` used to assign the EMPTY
+# STRING silently, and every later `printf ... > "$VAR"` would then fail
+# writing to "" while the beat "succeeded" -- the founder's 30-minute status
+# would just stop appearing, forever, with nothing anywhere saying why.
+# Guard every resolution: on empty, log one stderr line and degrade LOUDLY to
+# the pre-fix repo-relative path -- never to an empty path.
+_lv2_state_resolve() {  # <name> <fallback-path> -> resolved path on stdout
+  local name="$1" fallback="$2" p=""
+  if [[ -f "$STATE_PATH_SH" ]]; then
+    p="$(PROJECT_ROOT="$PROJECT_ROOT" "$STATE_PATH_SH" "$name" 2>/dev/null || true)"
+  fi
+  if [[ -z "$p" ]]; then
+    printf '[broad-status] WARN: leadv2-state-path unresolved for %s -- falling back to %s\n' "$name" "$fallback" >&2
+    p="$fallback"
+  fi
+  printf '%s' "$p"
+}
+
+FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-$(_lv2_state_resolve founder-status.md "$PROJECT_ROOT/docs/leadv2/founder-status.md")}"
 # PULSE-READABLE-01: overridable the same way FOUNDER_STATUS_PATH is --
 # a scratch/test run that pins the compact beat elsewhere must never be
 # able to leak the full doc into a real checkout's docs/leadv2/ (this bit
@@ -41,7 +61,7 @@ FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-$PROJECT_ROOT/docs/leadv2/fou
 # development: only FOUNDER_STATUS_PATH was overridden, and the full doc
 # still wrote into the live persona-engine repo because it was hardcoded
 # off PROJECT_ROOT).
-FOUNDER_STATUS_FULL_PATH="${LEADV2_FOUNDER_STATUS_FULL_PATH:-$PROJECT_ROOT/docs/leadv2/founder-status-full.md}"
+FOUNDER_STATUS_FULL_PATH="${LEADV2_FOUNDER_STATUS_FULL_PATH:-$(_lv2_state_resolve founder-status-full.md "$PROJECT_ROOT/docs/leadv2/founder-status-full.md")}"
 COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector.sh}"
 TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
 CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
@@ -58,8 +78,8 @@ CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
 # `now_epoch - epoch_in_file < BEAT_S` (BEAT_S = LEADV2_SINGLE_LEAD_BEAT_S,
 # default 1800) is FRESH; otherwise STALE. Both numbers are epoch seconds,
 # so the comparison is timezone-proof by construction.
-EMPTY_SINCE_PATH="${LEADV2_BOARD_EMPTY_SINCE_PATH:-$PROJECT_ROOT/docs/leadv2/.board-empty-since}"
-FOUNDER_STATUS_EPOCH_PATH="${LEADV2_FOUNDER_STATUS_EPOCH_PATH:-$PROJECT_ROOT/docs/leadv2/.founder-status-epoch}"
+EMPTY_SINCE_PATH="${LEADV2_BOARD_EMPTY_SINCE_PATH:-$(_lv2_state_resolve .board-empty-since "$PROJECT_ROOT/docs/leadv2/.board-empty-since")}"
+FOUNDER_STATUS_EPOCH_PATH="${LEADV2_FOUNDER_STATUS_EPOCH_PATH:-$(_lv2_state_resolve .founder-status-epoch "$PROJECT_ROOT/docs/leadv2/.founder-status-epoch")}"
 _stamp_epoch() {
   local now
   now="$(date +%s 2>/dev/null || echo 0)"
@@ -169,12 +189,27 @@ LANDED_LOG="$(cd "$PROJECT_ROOT" && git log --since=midnight --pretty=format:'%h
 RENDER_TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 
+# LANE-STATE-LEAK-01 (census correction -- these three were not in the
+# architect prepass's list): the renderer below used to read
+# .arm-exceptions-<day>, .codex-credits-empty.stamp and glm-deferred.jsonl
+# via a raw os.path.join(root, "docs", "leadv2", name), same per-worktree
+# bug as the four vars this task already routed. .codex-credits-empty.stamp
+# and glm-deferred.jsonl happened to still work through the RENDER/MERGE
+# symlink this resolver now plants at that path, but .arm-exceptions-<day>
+# is GLOB class -- deliberately never symlinked -- so a raw read of it went
+# silently empty the moment _arm_exception_bump started writing to the
+# control plane instead: test-glm-deferred-ladder.sh case (d) is the proof.
+_TODAY_UTC="$(date -u +%Y%m%d 2>/dev/null || true)"
+ARM_EXCEPTIONS_PATH="$(_lv2_state_resolve ".arm-exceptions-${_TODAY_UTC}" "$PROJECT_ROOT/docs/leadv2/.arm-exceptions-${_TODAY_UTC}")"
+CODEX_CREDITS_STAMP_PATH="$(_lv2_state_resolve .codex-credits-empty.stamp "$PROJECT_ROOT/docs/leadv2/.codex-credits-empty.stamp")"
+GLM_DEFERRED_PATH="$(_lv2_state_resolve glm-deferred.jsonl "$PROJECT_ROOT/docs/leadv2/glm-deferred.jsonl")"
+
 export _BS_QUEUED_TSV="$QUEUED_TSV"
 export _BS_LANDED_LOG="$LANDED_LOG"
-RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" <<'PY'
+RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" "$ARM_EXCEPTIONS_PATH" "$CODEX_CREDITS_STAMP_PATH" "$GLM_DEFERRED_PATH" <<'PY'
 import datetime, json, os, re, sys
 
-snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir, full_status_path_override, empty_since_path = sys.argv[1:9]
+snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir, full_status_path_override, empty_since_path, arm_exceptions_path, codex_credits_stamp_path, glm_deferred_path = sys.argv[1:12]
 
 sys.path.insert(0, os.path.join(script_dir, "lib"))
 try:
@@ -577,9 +612,8 @@ queue_md = _queue_label + "\n\n" + (
 sonnet_fallbacks_today = 0
 sonnet_fallback_last_reason = ""
 try:
-    _today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
-    _exc_path = os.path.join(root, "docs", "leadv2", f".arm-exceptions-{_today}")
-    if os.path.isfile(_exc_path):
+    _exc_path = arm_exceptions_path
+    if _exc_path and os.path.isfile(_exc_path):
         with open(_exc_path, encoding="utf-8") as fh:
             for _line in fh:
                 _line = _line.strip()
@@ -595,8 +629,8 @@ except OSError:
 
 codex_credits_empty_since = None
 try:
-    _stamp_path = os.path.join(root, "docs", "leadv2", ".codex-credits-empty.stamp")
-    if os.path.isfile(_stamp_path):
+    _stamp_path = codex_credits_stamp_path
+    if _stamp_path and os.path.isfile(_stamp_path):
         with open(_stamp_path, encoding="utf-8") as fh:
             _first = fh.readline().strip()
         if _first.startswith("since="):
@@ -606,8 +640,8 @@ except OSError:
 
 glm_deferred_count = 0
 try:
-    _deferred_path = os.path.join(root, "docs", "leadv2", "glm-deferred.jsonl")
-    if os.path.isfile(_deferred_path):
+    _deferred_path = glm_deferred_path
+    if _deferred_path and os.path.isfile(_deferred_path):
         _retried = set()
         _rows = []
         with open(_deferred_path, encoding="utf-8") as fh:
