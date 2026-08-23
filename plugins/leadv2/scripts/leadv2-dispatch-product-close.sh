@@ -1183,6 +1183,92 @@ _pc_lane_root_is_own_worktree() {  # <root> -> rc0 iff <root> IS a git work tree
   [[ "$(_pc_phys "${top}")" == "$(_pc_phys "${root}")" ]]
 }
 
+# GATE-FALSE-SILENT-01: a worker that COMMITS its work leaves the worktree clean --
+# _pc_lane_dirty alone cannot tell "produced nothing" from "committed cleanly". Count
+# commits ahead of the base pc_scope_diff resolves.
+#
+# CENSUS CORRECTION round 2 (why this duplicates _pc_diff_base instead of calling it):
+# _pc_diff_base (below, top level, defined at column 0 -- NOT nested inside
+# pc_scope_diff()'s body, contrary to what an earlier version of this comment claimed) is
+# reached only via _pc_repo_diff() -> pc_scope_diff(), and pc_scope_diff() runs AFTER this
+# probe (call site at pc_silent_arm_probe's caller precedes pc_scope_diff's). A call to
+# _pc_diff_base from here would in fact resolve today -- the earlier "it doesn't exist yet"
+# reasoning was wrong. The duplication is kept anyway because pc_scope_diff is off-limits
+# this round and the two copies now have DELIBERATELY DIVERGENT failure semantics: this
+# copy reports "unknown" when it cannot resolve a base (GATE-FALSE-SILENT-01 fix round 2 --
+# see below), while _pc_diff_base still fails to empty/HEAD. Hoisting or merging them is
+# out of scope; a future edit to base resolution must be applied to BOTH this function and
+# _pc_diff_base or they will drift.
+#
+# round-2 fix: "0" is indistinguishable from "could not resolve a base at all" (unresolvable
+# LEADV2_LANE_START_SHA, missing cache file, no origin/main) -- a lossy channel that let a
+# lane which genuinely committed work read as arm_produced_nothing. Widen the channel:
+# print "unknown" whenever no base could be resolved, and an integer ONLY when a base was
+# actually resolved (including the genuine "0 commits ahead" case). rc is always 0 -- this
+# probe must never abort the gate. The caller (pc_silent_arm_probe) treats "unknown" as
+# NOT silent, matching the mandate that a probe which cannot tell must not conclude silence.
+_pc_lane_commits_ahead() {  # <root> -> stdout "N" | "unknown"; always rc0
+  local root="$1" base sha count
+  if [[ -n "${root}" && -d "${root}" ]] && \
+     git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    base=""
+    sha="${LEADV2_LANE_START_SHA:-}"
+    if [[ -n "${sha}" ]] && git -C "${root}" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+      base="$(git -C "${root}" merge-base "${sha}" HEAD 2>/dev/null || true)"
+    fi
+    if [[ -z "${base}" ]]; then
+      sha="$(cat "${CACHE_BASE}/dispatch-${TASK}.start-sha" 2>/dev/null || true)"
+      if [[ -n "${sha}" ]] && git -C "${root}" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+        base="$(git -C "${root}" merge-base "${sha}" HEAD 2>/dev/null || true)"
+      fi
+    fi
+    if [[ -z "${base}" ]] && git -C "${root}" cat-file -e "origin/main^{commit}" 2>/dev/null; then
+      base="$(git -C "${root}" merge-base origin/main HEAD 2>/dev/null || true)"
+    fi
+    if [[ -n "${base}" ]]; then
+      count="$(git -C "${root}" rev-list --count "${base}..HEAD" 2>/dev/null || true)"
+      [[ "${count}" =~ ^[0-9]+$ ]] && { printf '%s' "${count}"; return 0; }
+    fi
+    # GATE-FALSE-SILENT-01 round 3: a base is not required to prove ZERO. A linked
+    # worktree whose HEAD is the same commit as the repository it hangs off, and whose
+    # HEAD reflog records no commit of its own, provably has no commits of its own --
+    # "0", not "unknown". `${root}/.git` as a FILE is the linked-worktree test: a
+    # standalone repo has a .git DIRECTORY. Deliberately NOT a path comparison of
+    # --git-dir vs --git-common-dir -- on macOS TMPDIR is /var -> /private/var, so the
+    # two strings differ for a standalone repo and prove-zero fires on lanes it must
+    # never fire on (observed: test-dispatch-silent-arm Case 1 flipped to silent).
+    local head_wt head_parent
+    if [[ -f "${root}/.git" ]]; then
+      head_wt="$(git -C "${root}" rev-parse HEAD 2>/dev/null || true)"
+      head_parent="$(cd "${root}" 2>/dev/null && git --git-dir="$(git rev-parse --git-common-dir 2>/dev/null)" rev-parse HEAD 2>/dev/null || true)"
+      if [[ -n "${head_wt}" && "${head_wt}" == "${head_parent}" ]] && \
+         ! git -C "${root}" log -g --format=%gs HEAD 2>/dev/null | grep -q '^commit'; then
+        printf '0'; return 0
+      fi
+    fi
+  fi
+  printf 'unknown'
+}
+
+# GATE-FALSE-SILENT-01: a worker whose process is still alive is never silent, whatever
+# the stream/commit/dirty state says -- it just hasn't produced a terminal signal yet.
+# Deliberately calls _pc_process_alive (pid-file-only liveness), NEVER pc_worker_alive --
+# that function has side effects (quota-advance, reap, journal emissions) and treats
+# unknown states as alive, which would invert this predicate's meaning. rc1 (not provably
+# alive) on any missing/unresolvable input -- never manufactures a false "alive".
+_pc_worker_process_alive() {  # -> rc0 iff a worker process for AUTHOR/HANDLE is provably alive
+  [[ -n "${HANDLE:-}" ]] || return 1
+  if [[ "${AUTHOR}" == "sonnet" && "${HANDLE}" =~ ^[0-9]+$ ]]; then
+    kill -0 "${HANDLE}" 2>/dev/null && return 0
+    return 1
+  fi
+  local run_dir meta_pid
+  run_dir="$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")"
+  [[ -n "${run_dir}" ]] || return 1
+  meta_pid="$(_pc_meta_value "${run_dir}/meta.yaml" pid 2>/dev/null || true)"
+  _pc_process_alive "${run_dir}" "${meta_pid}"
+}
+
 # ARM-PRODUCES-NOTHING-AND-CHAIN-NEVER-ADVANCES-01: bash-3.2-safe mtime probe (no
 # portable `stat -f/-c` flag exists across darwin/linux) -- try darwin's `-f %m` first,
 # fall back to linux's `-c %Y`. rc1 on ANY stat failure (missing file, permission,
@@ -1267,6 +1353,7 @@ _pc_arm_registered() {  # <author> -> rc0 registered, rc1 not
 # file exists and names AUTHOR.
 _PC_SILENT_STREAM_STATE=""
 _PC_SILENT_LANE_BASENAME=""
+_PC_SILENT_COMMITS_AHEAD=""
 pc_silent_arm_probe() {
   # 0) ARM-PRODUCES-NOTHING-02: if no arm was ever registered for this lane, this is
   # NOT a silent arm — it is an empty lane that belongs to the existing empty_diff path.
@@ -1282,10 +1369,26 @@ pc_silent_arm_probe() {
   fi
   # 1) >=1 assistant event -- NOT silent, done.
   [[ ${assistant_n} -ge 1 ]] && return 1
-  # 2) growth guard -- only applies when a stream file exists at all.
+  # 2/3) GATE-FALSE-SILENT-01 round 3: an absent stream is not evidence OF silence, but
+  # it is also not a VETO -- a glm/codex arm structurally never writes
+  # developer.stream.jsonl, so round 1's blanket "no stream -> not silent" veto made
+  # arm_produced_nothing unreachable for every non-sonnet arm. Only run the freshness
+  # guard when a stream actually exists; an absent stream falls through to steps 4-6
+  # below (worker-alive / dirty / commits-ahead), which own "too early to tell" for a
+  # lane with no stream convention at all.
+  local growth_s="${LEADV2_PC_SILENT_GROWTH_S:-60}" mtime now
   if [[ -f "${stream}" ]]; then
-    local growth_s="${LEADV2_PC_SILENT_GROWTH_S:-60}" mtime now
+    # growth guard -- clamp to [1, 3600] so a misconfigured env var cannot make
+    # arm_produced_nothing permanently unreachable (over-cap) or fire on a stream that
+    # was just written (under-cap of 0).
     [[ "${growth_s}" =~ ^[0-9]+$ ]] || growth_s=60
+    if (( growth_s < 1 )); then
+      emit decision "silent_probe_growth_clamped task=${TASK} requested=${growth_s} used=1"
+      growth_s=1
+    elif (( growth_s > 3600 )); then
+      emit decision "silent_probe_growth_clamped task=${TASK} requested=${growth_s} used=3600"
+      growth_s=3600
+    fi
     if mtime="$(_pc_stat_mtime "${stream}")"; then
       now="$(date +%s 2>/dev/null || printf '0')"
       if [[ "${now}" =~ ^[0-9]+$ ]] && (( now - mtime < growth_s )); then
@@ -1295,13 +1398,30 @@ pc_silent_arm_probe() {
       return 1  # stat failed -- fail OPEN, NOT silent
     fi
   fi
-  # 3) worktree dirty-check -- no resolved lane worktree is conservative NOT-silent.
+  # 4) GATE-FALSE-SILENT-01: a live worker process is never silent.
+  _pc_worker_process_alive && return 1
+  # 5) worktree dirty-check -- no resolved lane worktree is conservative NOT-silent.
   [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] || return 1
   # REVIEW-GATE-LANEROOT-01: an unregistered lane dir makes _pc_lane_dirty grade the
   # parent repo. Unknown tree identity is never proof of silence: otherwise a clean
   # parent would advance the arm while finished work remains in the lane directory.
   _pc_lane_root_is_own_worktree "${_lane_root}" || return 1
   _pc_lane_dirty "${_lane_root}" && return 1
+  # 6) GATE-FALSE-SILENT-01: commits ahead of base are production, whatever the
+  # worktree's dirty state says -- a worker that commits cleanly is not silent.
+  # round 2: "unknown" (base unresolvable) is NOT silent either -- a probe that cannot
+  # tell must not conclude silence. A lane in this state falls through to pc_scope_diff,
+  # which owns the empty/unscoped verdicts from here; this branch only refuses to be the
+  # one that mislabels it arm_produced_nothing.
+  local commits_ahead
+  commits_ahead="$(_pc_lane_commits_ahead "${_lane_root}")"
+  if [[ "${commits_ahead}" == "unknown" ]]; then
+    emit decision "silent_probe_base_unresolved task=${TASK} arm=${AUTHOR} lane=$(basename "${_lane_root}")"
+    return 1
+  fi
+  [[ "${commits_ahead}" =~ ^[0-9]+$ ]] || commits_ahead=0
+  (( commits_ahead >= 1 )) && return 1
+  _PC_SILENT_COMMITS_AHEAD="${commits_ahead}"
   _PC_SILENT_LANE_BASENAME="$(basename "${_lane_root}")"
   return 0
 }
@@ -2101,7 +2221,7 @@ if [[ -z "${_lane_root}" || ! -d "${_lane_root}" ]]; then
 fi
 
 if pc_silent_arm_probe; then
-  _pc_silent_evidence="arm=${AUTHOR} stream=${_PC_SILENT_STREAM_STATE} lane=${_PC_SILENT_LANE_BASENAME}"
+  _pc_silent_evidence="arm=${AUTHOR} stream=${_PC_SILENT_STREAM_STATE} lane=${_PC_SILENT_LANE_BASENAME} commits_ahead=${_PC_SILENT_COMMITS_AHEAD:-0}"
   printf 'status: blocked\nreason: arm_produced_nothing\narm: %s\n' "${AUTHOR}" > "${HANDOFF}/review-gate.md"
   emit decision "review_gate task=${TASK} status=blocked reason=arm_produced_nothing terminal=no_work cause=arm_produced_nothing arm=${AUTHOR}"
   _dl_note no_work arm_produced_nothing "${_pc_silent_evidence}"
