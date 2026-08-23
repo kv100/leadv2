@@ -1111,6 +1111,23 @@ else
     wait $PID 2>/dev/null || true
     rm -f '$MARKER_FILE'
   " 2>/dev/null || true) &
+  # CLAUDE-SUBSESSION-HAS-NO-COMPLETION-SENTINEL-01 (residual gap): the inline
+  # waiter below stamps .finalized from a subshell in THIS wrapper's own process
+  # group — if the wrapper is killed after spawn, that subshell dies with it and
+  # .finalized is never written, so the lane keeps a false-alive verdict for the
+  # full silent_max window. This detached fallback polls kill -0 instead of
+  # `wait $PID` (setsid breaks the parent-child relation `wait` needs) and always
+  # defers to the inline waiter: it checks .finalized immediately before writing,
+  # so if the wrapper survives, this loop is a silent no-op. died-detached (not
+  # died-clean) marks that this path could not observe the real exit code.
+  (setsid bash -c "
+    while kill -0 $PID 2>/dev/null; do sleep 5; done
+    sleep 2
+    if [[ ! -e '$RUN_DIR/.finalized' ]] && [[ \"\$(cat '$HANDOFF_DIR/.claude-session-runner.run-id' 2>/dev/null)\" == '$RUN_ID' ]]; then
+      printf 'outcome=died-detached\nexit_code=unknown\nat=%s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > '$RUN_DIR/.outcome' 2>/dev/null || true
+      touch '$RUN_DIR/.finalized' 2>/dev/null || true
+    fi
+  " 2>/dev/null || true) &
   # Inline record (fires if parent stays alive long enough)
   (
     _exit_code=0
