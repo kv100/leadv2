@@ -75,6 +75,10 @@
 set -euo pipefail
 umask 077
 
+_KIMI_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${_KIMI_SCRIPT_DIR}/lib/leadv2-trace.sh"
+else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
+
 readonly SECRETS_FILE="${KIMI_SECRETS_FILE:-${HOME}/.claude/secrets/tokenrouter.env}"
 # In-script default only — the real value is sourced from the secrets file's
 # TOKENROUTER_BASE_URL (see load_secret). Never overridden by a readonly here,
@@ -1764,10 +1768,24 @@ main() {
   shift
   case "${subcmd}" in
     run)
-      cmd_run "$@"
+      lv2_trace_begin "provider.kimi" "$@"
+      if cmd_run "$@"; then
+        lv2_trace_end 0
+      else
+        _lv2_kimi_rc=$?
+        lv2_trace_end "${_lv2_kimi_rc}"
+        exit "${_lv2_kimi_rc}"
+      fi
       ;;
     bg)
-      cmd_bg "$@"
+      lv2_trace_begin "provider.kimi" "$@"
+      if cmd_bg "$@"; then
+        lv2_trace_end 0
+      else
+        _lv2_kimi_rc=$?
+        lv2_trace_end "${_lv2_kimi_rc}"
+        exit "${_lv2_kimi_rc}"
+      fi
       ;;
     status)
       cmd_status "$@"

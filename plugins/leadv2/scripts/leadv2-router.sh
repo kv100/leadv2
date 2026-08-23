@@ -26,6 +26,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-temp.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
+if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${SCRIPT_DIR}/lib/leadv2-trace.sh"
+else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 readonly PROJECT_ROOT
 readonly ROUTING_YAML="$PROJECT_ROOT/.claude/ref/leadv2-routing.yaml"
@@ -93,6 +95,7 @@ PY_HELPER_BASE=$(lv2_mktemp_file "leadv2-router" "tmp") || {
 }
 PY_HELPER="${PY_HELPER_BASE}"
 trap 'rm -f "$PY_HELPER"' EXIT
+lv2_trace_arm_exit "route" --task-id "${TASK_ID}"
 
 python3 -c "import sys; print(open(sys.argv[1]).read())" /dev/stdin > "$PY_HELPER" 2>/dev/null <<'PYEOF'
 import sys

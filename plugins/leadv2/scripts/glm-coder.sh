@@ -56,6 +56,10 @@
 set -euo pipefail
 umask 077
 
+_GLM_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${_GLM_SCRIPT_DIR}/lib/leadv2-trace.sh"
+else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
+
 readonly SECRETS_FILE="${GLM_SECRETS_FILE:-${HOME}/.claude/secrets/zai.env}"
 readonly ZAI_BASE_URL="https://api.z.ai/api/anthropic"
 readonly RUNS_DIR="${GLM_RUNS_DIR:-${HOME}/.claude/cache/glm-runs}"
@@ -1736,10 +1740,24 @@ main() {
   shift
   case "${subcmd}" in
     run)
-      cmd_run "$@"
+      lv2_trace_begin "provider.glm" "$@"
+      if cmd_run "$@"; then
+        lv2_trace_end 0
+      else
+        _lv2_glm_rc=$?
+        lv2_trace_end "${_lv2_glm_rc}"
+        exit "${_lv2_glm_rc}"
+      fi
       ;;
     bg)
-      cmd_bg "$@"
+      lv2_trace_begin "provider.glm" "$@"
+      if cmd_bg "$@"; then
+        lv2_trace_end 0
+      else
+        _lv2_glm_rc=$?
+        lv2_trace_end "${_lv2_glm_rc}"
+        exit "${_lv2_glm_rc}"
+      fi
       ;;
     status)
       cmd_status "$@"

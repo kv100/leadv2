@@ -43,8 +43,11 @@ PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 : "${OUT_PATH:=$PROJECT_ROOT/docs/leadv2/status-snapshot.json}"
 
 _SC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${_SC_DIR}/lib/leadv2-trace.sh"
+else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 _SC_TMPDIR="$(mktemp -d)"
 trap '_ec=$?; rm -rf "$_SC_TMPDIR"; exit $_ec' EXIT
+lv2_trace_arm_exit "status.collect"
 
 # ── section runner: name -> JSON. Never lets one section's failure kill the
 #    others; captures stderr into the "error" field instead of the terminal.

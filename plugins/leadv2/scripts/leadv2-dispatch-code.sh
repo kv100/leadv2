@@ -410,6 +410,8 @@ LEDGER_REPO_ROOT="$(cd "${WORK_ROOT}" 2>/dev/null && cd "$(dirname "$(git rev-pa
 # leaves the worktree on disk for the async worker + close gate (§3.3 emits the loud line).
 _DISPATCH_WORKER_LIVE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-"$0"}")" 2>/dev/null && pwd)"
+if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${SCRIPT_DIR}/lib/leadv2-trace.sh"
+else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 # CLOSE-GATE-BYPASSABLE-BY-ENV-01 L3 (defence in depth): the real scrub point
 # is leadv2-session-runner.sh, the single funnel every lane's own process
 # passes through -- this call additionally scrubs THIS dispatcher's own
@@ -2493,6 +2495,7 @@ cleanup_pending_dispatch() {
 }
 trap cleanup_pending_dispatch EXIT
 trap 'exit 130' INT TERM
+lv2_trace_arm_exit "lane" "$@"
 
 # ── review-ledger dedup ───────────────────────────────────────────────────────────
 diff_seen() {  # <hash> -> 0 if already reviewed
@@ -4307,6 +4310,10 @@ cmd_status() {
 
 # ── resolve (default) path ────────────────────────────────────────────────────────
 cmd_resolve() {
+  # cmd_resolve exits the process via `exit N` on every path (never `return`,
+  # confirmed by census) -- this span is closed by the outer `lane` arm_exit
+  # trap's stack-drain, never by an explicit end call in this function.
+  lv2_trace_begin "lane.resolve"
   # R6: computed once for this invocation so a single dispatch never straddles two
   # daily counter files even if it runs across a UTC-midnight boundary.
   local _LEADV2_EXC_DAY; _LEADV2_EXC_DAY="$(date -u +%Y%m%d)"

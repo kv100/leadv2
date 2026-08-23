@@ -90,6 +90,8 @@
 set -uo pipefail   # no -e: refusals must journal and continue, never abort
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${SCRIPT_DIR}/lib/leadv2-trace.sh"
+else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 SCRIPT_NAME="leadv2-backlog-pump"
 # Absolute self-path (not a trusted ${BASH_SOURCE[0]}, which may be relative
 # depending on how the caller invoked us) — used for the detached
@@ -963,6 +965,7 @@ cmd_reap() {
 
 # ── dispatch ─────────────────────────────────────────────────────────────────
 MODE="${1:-check}"
+lv2_trace_begin "pump"
 shift || true
 case "$MODE" in
   check)    cmd_check "$@" ;;
@@ -979,6 +982,10 @@ case "$MODE" in
     ;;
   *)
     log_err "unknown mode: $MODE"
+    lv2_trace_end 1
     exit 1
     ;;
 esac
+_lv2_pump_rc=$?
+lv2_trace_end "$_lv2_pump_rc"
+exit "$_lv2_pump_rc"
