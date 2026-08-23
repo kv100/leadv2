@@ -130,6 +130,8 @@ def classify(f):
             cause, cls = "dead(work-left)", "dead"
         elif outcome == "died-clean":
             cause, cls = "dead(died-clean)", "dead"
+        elif outcome == "parked":
+            cause, cls = "parked(bg-job)", "dead"
         elif "?" not in cause:
             cause = cause + "?"
 

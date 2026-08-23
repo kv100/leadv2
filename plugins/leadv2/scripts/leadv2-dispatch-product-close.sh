@@ -6,7 +6,7 @@
 # explicitly by dispatch.
 #
 # GLM-DIED-WITH-WORK-RESUME-01: after the first worker exits with outcome:
-# died-with-work, this gate relaunches the provider's `bg` on the SAME worktree
+# died-with-work or parked, this gate relaunches the provider's `bg` on the SAME worktree
 # exactly once (marker-guarded), then waits for the second run before gating.
 # Worst-case wall clock therefore doubles (4200s → 8400s) for a died-with-work
 # lane.  Kill switch: LEADV2_PC_DWR_RESUME=0 restores single-wait behaviour.
@@ -30,6 +30,12 @@ LANE_NAME="${8:-}"
 [[ -z "${LANE_NAME}" ]] && LANE_NAME="${FOUNDER_TASK_ID}"
 WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_PARKED_DETECT_SH="${SCRIPT_DIR}/lib/leadv2-parked-detect.sh"
+[[ -f "${_PARKED_DETECT_SH}" ]] || _PARKED_DETECT_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-parked-detect.sh"
+if [[ -f "${_PARKED_DETECT_SH}" ]]; then
+  # shellcheck source=lib/leadv2-parked-detect.sh
+  source "${_PARKED_DETECT_SH}" || true
+fi
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 # REPORT-ONLY-GATE-01: optional lane deliverable declaration threaded from
 # leadv2-dispatch-code.sh (row/CLI --lane-deliverable wins; else the mission's own
@@ -574,7 +580,7 @@ _pc_resolve_asked_into_void() {
 
 # Read the classifier outcome from a run dir's meta.yaml, falling back to the
 # .outcome sentinel (outcome= form) for legacy runs that predate the meta append.
-_pc_lane_outcome() { # <run_dir> -> completed|died-with-work|died-clean|""
+_pc_lane_outcome() { # <run_dir> -> completed|died-with-work|died-clean|parked|""
   local run_dir="$1" meta outcome
   meta="${run_dir}/meta.yaml"
   if [[ -f "${meta}" ]]; then
@@ -598,7 +604,7 @@ _pc_resume_launcher_for() { # <author> -> absolute path or empty
   printf ''
 }
 
-# Attempt one died-with-work resume.  Returns 0 if a resume was launched and
+# Attempt one died-with-work or parked resume.  Returns 0 if a resume was launched and
 # HANDLE was reassigned to the new run; 1 if no resume happened (every other
 # case including kill-switch, not-eligible, marker present, gate refusal, or
 # launch failure).  In all cases the decision is journaled via emit.
@@ -618,7 +624,7 @@ pc_dwr_resume_once() {
   old_run_dir="$(_pc_run_dir_for "${AUTHOR}" "${HANDLE}")"
   [[ -n "${old_run_dir}" && -f "${old_run_dir}/meta.yaml" ]] || return 1
   old_outcome="$(_pc_lane_outcome "${old_run_dir}")"
-  [[ "${old_outcome}" == "died-with-work" ]] || return 1
+  case "${old_outcome}" in died-with-work|parked) ;; *) return 1 ;; esac
 
   # Marker short-circuit: exactly once per lane.
   if [[ -f "${marker}" ]]; then
@@ -1458,6 +1464,21 @@ pc_stop_gate_capture_diff() {
   rm -f "${_ct_idx}" 2>/dev/null || true
 }
 
+_PC_STOP_GATE_REASON="auto-checkpoint on worker exit"
+_pc_stop_gate_resolve_reason() {
+  _PC_STOP_GATE_REASON="auto-checkpoint on worker exit"
+  local run_dir stream
+  run_dir="$(_pc_run_dir_for "${AUTHOR:-}" "${HANDLE:-}")"
+  if [[ -n "${run_dir}" && "$(_pc_lane_outcome "${run_dir}")" == "parked" ]]; then
+    _PC_STOP_GATE_REASON="parked-on-background-job"
+    return 0
+  fi
+  stream="${HANDOFF}/${AUTHOR:-developer}.stream.jsonl"
+  if declare -F lv2_parked_text_file >/dev/null 2>&1 && lv2_parked_text_file "${stream}"; then
+    _PC_STOP_GATE_REASON="parked-on-background-job"
+  fi
+}
+
 pc_stop_gate_autocommit() {
   [[ "${LEADV2_STOP_GATE:-1}" != 0 ]] || return 0
   [[ -n "${_PC_SCOPE_WRITES_CSV:-}" ]] || return 0
@@ -1560,7 +1581,7 @@ pc_stop_gate_autocommit() {
     rm -f "${_sg_index}"
     return 0
   fi
-  if GIT_INDEX_FILE="${_sg_index}" git -C "${_sg_lane_root}" commit -q -m "wip(${TASK}): auto-checkpoint on worker exit (STOP-GATE)" >/dev/null 2>&1; then
+  if GIT_INDEX_FILE="${_sg_index}" git -C "${_sg_lane_root}" commit -q -m "wip(${TASK}): ${_PC_STOP_GATE_REASON} (STOP-GATE)" >/dev/null 2>&1; then
     # HEAD moved underneath the real index. Refresh only committed in-scope
     # entries so they do not look staged against the new checkpoint; foreign
     # staged entries remain entirely untouched.
@@ -2039,6 +2060,7 @@ pc_scope_diff
 # checkpoint advances HEAD, so doing this first preserves the worker's actual
 # output for review.diff even when no recorded lane-start base is available.
 # The checkpoint still precedes every downstream gate that reads the tree.
+_pc_stop_gate_resolve_reason
 pc_stop_gate_autocommit
 
 # C.3: a NON-empty diff whose worker still asked into the void is parked, never
