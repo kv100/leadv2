@@ -28,6 +28,9 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2329 # begin/end stubs kept for load-stanza parity with the other 8 trace call sites; this file only calls arm_exit
+if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${SCRIPT_DIR}/lib/leadv2-trace.sh"
+else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 
 # REVIEW-GATE-SHOWS-FINDINGS-01: shared findings renderer, appended to review-gate.md
 # at the fail/pass exits below. Guarded source + no-op stub so a missing/broken
@@ -59,6 +62,12 @@ if [[ -z "${TASK}" || -z "${ROOT}" || -z "${HANDOFF}" || -z "${DIFF_FILE}" || -z
   printf 'leadv2-review-run.sh: --task, --root, --handoff, --diff and --author are all required\n' >&2
   exit 2
 fi
+
+if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then
+  LEADV2_TRACE_ID="${LEADV2_TRACE_ID:-${TASK}}"
+  export LEADV2_TRACE_ID
+fi
+lv2_trace_arm_exit "review"
 
 REVIEW_FANOUT="${FANOUT_ARG:-${LEADV2_REVIEW_FANOUT:-3}}"
 [[ "${REVIEW_FANOUT}" =~ ^[1-9][0-9]*$ ]] || REVIEW_FANOUT=3

@@ -60,6 +60,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${SCRIPT_DIR}/lib/leadv2-trace.sh"
+else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 
 # ── B1 fail-closed arg parse (BEFORE root resolution — a root error must
 # know whether to render as JSON or plain stderr) ──────────────────────────
@@ -90,6 +92,7 @@ done
 # empty registry) and NEVER a bare ambient `$PROJECT_ROOT`/`$(pwd)` fallback
 # (an unrelated/garbage PROJECT_ROOT env var must not be trusted silently).
 PROJECT_ROOT=""
+lv2_trace_arm_exit "lanes.snapshot" || true
 if [[ -n "${LEADV2_PROJECT_ROOT:-}" ]]; then
   PROJECT_ROOT="$LEADV2_PROJECT_ROOT"
 elif [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then

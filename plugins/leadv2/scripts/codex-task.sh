@@ -116,6 +116,8 @@ CODEX_REPAIR_DIR="${CODEX_REPAIR_DIR:-$HOME/.claude/cache/codex-repair}"
 # The cooldown is deliberately bounded and self-correcting; the legacy
 # codex-lockout.state is neither read nor written.
 _CODEX_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${_CODEX_SCRIPT_DIR}/lib/leadv2-trace.sh"
+else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 # shellcheck source=lib/leadv2-arm-cooldown.sh
 source "${_CODEX_SCRIPT_DIR}/lib/leadv2-arm-cooldown.sh"
 # CODEX-QUOTA-GUARDRAILS-01 — circuit breaker for usage-limit refusals.
@@ -1698,6 +1700,7 @@ _tier_model_effort() {
 }
 
 _run_with_fallback() {
+  lv2_trace_begin "provider.codex" "$@"
   local rc=0 out
   out="$(_run_node "$@" 2>&1)" && rc=0 || rc=$?
 
@@ -1743,6 +1746,7 @@ _run_with_fallback() {
     out="$(_run_node "${fb_args[@]}" 2>&1)" && rc=0 || rc=$?
   fi
   printf '%s\n' "$out"
+  lv2_trace_end "$rc"
   return "$rc"
 }
 
