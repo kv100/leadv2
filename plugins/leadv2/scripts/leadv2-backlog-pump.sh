@@ -707,6 +707,18 @@ cmd_async_dispatch() {  # $1=task_id $2=mission $3=lane $4=priority $5=rank (las
       _surface_to_founder "$tid" "requires judgment (opus arm) — pump will not auto-start this"
       return 3
       ;;
+    6)
+      # BURN-GOVERNOR-01 (architect prepass §1.3 D3): distinct from reason=spawn_failed
+      # below -- that reason makes the pump re-offer the same task next tick, gets
+      # refused again, and writes another pump_skip every interval (a cheap but
+      # ledger-polluting refuse-loop). return 3 is the pump's existing "deferred, do
+      # not retry this tick" code (see the opus-arm case above), which this reuses so
+      # the task is not re-offered until the burn window clears.
+      jemit decision "pump_parked_burn task=${tid} reason=burn_hard_24h"
+      leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true
+      _pump_release_lane "$tid"
+      return 3
+      ;;
     *)
       jemit decision "pump_skip task=${tid} reason=spawn_failed rc=${rc}"
       leadv2_tasks_unclaim "$tid" >/dev/null 2>&1 || true

@@ -282,6 +282,38 @@ if [[ "${LEADV2_DAEMON:-0}" == "1" \
   exit 0
 fi
 
+# ── BURN-GOVERNOR-01 deliverable 3 (D4): interactive emergency escalation ──
+# WHY: at "emergency" (>=650K estimated tokens) the alternative is the founder paying
+# ~650K input on EVERY subsequent turn until they notice and type /compact themselves --
+# the interactive pending-warn path below only ever gets read on the NEXT UserPromptSubmit,
+# so it can sit unread for many expensive turns. This restricts the forced block to
+# "emergency" ONLY -- "warn"/"hard"/"long_chat" still fall through to the pending-warn
+# path unchanged below.
+#
+# This IS a deliberate, narrow reversal of COMPACT-FORCED-ON-HUMAN-01 (the guard just
+# above, which exists because a forged {"decision":"block","reason":"/compact"} arrives
+# as a real user turn the lead obeys, and LEADV2_DAEMON is set repo-wide so env alone
+# cannot distinguish a human session). It is still a forged user turn at a human, it is
+# still one-shot (same MARKER file, same compare), and it is still short-circuited by
+# STOP_ACTIVE the same way the daemon branch is. Two independent kill-switches:
+# LEADV2_COMPACT_INTERACTIVE_BLOCK=0 (feature-specific) and LEADV2_NO_FORCE_COMPACT=1
+# (the existing hard kill-switch, shared with the daemon branch above).
+#
+# Placed AFTER the daemon branch (a real daemon session's path is unchanged, byte-for-
+# byte) and BEFORE the PREV_LEVEL read below (so a session that blocks here does not
+# ALSO queue a pending-warn for the same level -- same MARKER, same one-shot compare).
+if [[ "$LEVEL" == "emergency" \
+   && "$STOP_ACTIVE" != "true" \
+   && "${LEADV2_COMPACT_INTERACTIVE_BLOCK:-1}" != "0" \
+   && "${LEADV2_NO_FORCE_COMPACT:-0}" != "1" ]]; then
+  INTERACTIVE_PREV_LEVEL="$(cat "$MARKER" 2>/dev/null || echo "")"
+  if [[ "$INTERACTIVE_PREV_LEVEL" != "emergency" ]]; then
+    echo "emergency" > "$MARKER" 2>/dev/null || true
+    printf '%s\n' '{"decision":"block","reason":"/compact"}'
+    exit 0
+  fi
+fi
+
 # Emit at most once per level per session
 PREV_LEVEL="$(cat "$MARKER" 2>/dev/null || echo "")"
 [[ "$LEVEL" == "$PREV_LEVEL" ]] && exit 0
