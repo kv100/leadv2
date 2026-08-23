@@ -89,6 +89,7 @@ _it_run_subsession() {
 
   (
     set +e
+    unset LEADV2_SUBSESSION_SLIM_MCP LEADV2_SUBSESSION_EXCLUDE_DYNAMIC 2>/dev/null || true
     if [[ -n "$extra_env" ]]; then
       # shellcheck disable=SC2086,SC2163
       export $extra_env
@@ -239,6 +240,14 @@ test_8_exclude_dynamic_killswitch() {
   else
     pass "EXCLUDE_DYNAMIC=0 suppresses --exclude-dynamic-system-prompt-sections"
   fi
+
+  log "Test CD-08b: LEADV2_SUBSESSION_EXCLUDE_DYNAMIC=2 -> flag absent (strict opt-in, only literal 1 enables)"
+  local out2; out2="$(_it_run_subsession "CD-08b" "developer" "LEADV2_SUBSESSION_EXCLUDE_DYNAMIC=2")"
+  if _has_flag "$out2" "--exclude-dynamic-system-prompt-sections"; then
+    fail "EXCLUDE_DYNAMIC=2 should NOT enable the flag (strict opt-in requires literal 1)"
+  else
+    pass "EXCLUDE_DYNAMIC=2 suppresses --exclude-dynamic-system-prompt-sections"
+  fi
 }
 
 # ── Test 9: default (both flags unset) — OPT-IN, so exclude-dynamic ABSENT ──
@@ -317,6 +326,24 @@ test_10_role_sanitised() {
   rm -rf "$plugin_root" "$handoff_dir" "$funcs_file" "$stderr_out"
 }
 
+# ── Test 11: both gates fully unset — no flags at all, no context-diet WARN ─
+test_11_defaults_fully_off() {
+  log "Test 11: both SLIM_MCP and EXCLUDE_DYNAMIC unset -> no diet flags, no context-diet WARN"
+  local out; out="$(_it_run_subsession "CD-11" "developer")"
+  local stderr; stderr="$(_stderr_of "$out")"
+  if _has_flag "$out" "--strict-mcp-config"; then
+    fail "defaults-off: --strict-mcp-config should be absent"
+  elif _has_flag "$out" "--mcp-config"; then
+    fail "defaults-off: --mcp-config should be absent"
+  elif _has_flag "$out" "--exclude-dynamic-system-prompt-sections"; then
+    fail "defaults-off: --exclude-dynamic-system-prompt-sections should be absent"
+  elif printf '%s' "$stderr" | grep -q "context-diet"; then
+    fail "defaults-off: no context-diet WARN expected: $stderr"
+  else
+    pass "defaults-off: no diet flags, no context-diet WARN"
+  fi
+}
+
 test_1_role_mapping
 test_2_unknown_role_falls_back_to_default
 test_3_missing_config_fails_open_with_warn
@@ -327,6 +354,7 @@ test_7_slim_mcp_killswitch
 test_8_exclude_dynamic_killswitch
 test_9_exclude_dynamic_default_off_optin_on
 test_10_role_sanitised
+test_11_defaults_fully_off
 
 echo ""
 echo "=== Results: ${PASS} passed, ${FAIL} failed ==="

@@ -7,7 +7,7 @@ memory paths, git status) that break cross-spawn prompt-cache reuse. This doc co
 mechanisms that trim that, the measurement probe that proves the trim is real, and the lead
 compaction change — plus what is deliberately **not** touched.
 
-## 1. Per-role MCP allowlist (`LEADV2_SUBSESSION_SLIM_MCP`, default `1`)
+## 1. Per-role MCP allowlist (`LEADV2_SUBSESSION_SLIM_MCP`, default `0` (opt-in))
 
 When enabled, `claude-subsession.sh` appends `--strict-mcp-config --mcp-config <resolved.json>`
 to the spawned worker's CLI args, restricting it to the MCP servers its role actually uses —
@@ -48,8 +48,9 @@ MCP flags" — a worker with the full MCP set beats a worker that never spawns:
 | 10 | `LEADV2_SUBSESSION_SLIM_MCP=0` (kill-switch) | nothing appended, no WARN (deliberate operator choice) |
 | 11 | No allowlist file for the role and no `mcp-role-default.json` | nothing appended, one WARN |
 | 12 | Allowlist parsed but zero named servers resolved in any source | nothing appended, one WARN naming the unresolved server(s) |
-| 13 | Malformed JSON, unwritable handoff dir, or failed round-trip validation | nothing appended, one WARN |
+| 13 | Malformed JSON or failed round-trip validation | nothing appended, one WARN |
 | 14 | `python3` not on `PATH` | nothing appended, one WARN |
+| 15 | Handoff dir/resolved-config write failure (missing/unwritable dir) | nothing appended, one WARN |
 
 A malformed `--mcp-config` reaching `claude` would kill the process outright — on the
 backgrounded sonnet arm that means `setsid_wrapper` still returns a PID, but the lane opens and
@@ -60,7 +61,7 @@ than a partial or best-effort config.
 deliberate "no MCP at all" for that role, and still appends the flags with an empty
 `mcpServers`.
 
-## 2. Dynamic system-prompt section exclusion (`LEADV2_SUBSESSION_EXCLUDE_DYNAMIC`, default `1`)
+## 2. Dynamic system-prompt section exclusion (`LEADV2_SUBSESSION_EXCLUDE_DYNAMIC`, default `0` (opt-in))
 
 When enabled, `claude-subsession.sh` appends `--exclude-dynamic-system-prompt-sections`
 unconditionally (it takes no argument and cannot fail to resolve). This moves per-machine
@@ -76,9 +77,12 @@ situational awareness without losing cache-prefix reuse:
 - Worktree: <PROJECT_ROOT> @ base <short SHA>
 ```
 
-Only the literal `0` disables either kill-switch; any other value (unset, empty, a typo) is
-treated as "on" — the failure direction is always toward fail-open-to-fat (§1), so there is no
-unsafe direction to guard against.
+Both gates are strict opt-in: enabled iff the value is exactly the literal `1`; every other
+value — unset, empty, `0`, or a typo like `2`/`true` — leaves the gate off. Default is off for
+both, per a live probe run 2026-08-23 (`leadv2-context-diet-probe.sh`) that measured
+`cache_creation` delta ≈ 0 against the mission gate "delta <10K → no default-on". The failure
+direction is still always toward fail-open-to-fat (§1); strict opt-in only changes which values
+count as "on", not the fail-open guarantee.
 
 ## 3. Measurement probe
 

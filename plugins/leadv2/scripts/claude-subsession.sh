@@ -383,6 +383,7 @@ ${skill_body}"
 #   Output: path to a resolved --mcp-config JSON file (stdout) on rc=0
 #   Return: 0 success | 10 kill-switch | 11 no allowlist | 12 nothing
 #           resolved | 13 parse/validation failure | 14 python3 missing
+#           | 15 handoff dir/resolved-config write failure
 #
 # Every non-zero rc is FAIL-OPEN: caller must treat empty stdout as "append
 # no MCP flags", never as an error to propagate. A malformed --mcp-config on
@@ -425,7 +426,6 @@ resolve_role_mcp_config() {
     return 14
   fi
 
-  mkdir -p "$handoff_dir" 2>/dev/null || true
   local resolved_path="${handoff_dir}/mcp-role-${safe_role}.resolved.json"
 
   local py_out py_rc
@@ -512,7 +512,10 @@ PYEOF
     return 13
   fi
 
-  printf '%s' "$py_out" > "$resolved_path"
+  if ! mkdir -p "$handoff_dir" 2>/dev/null || ! printf '%s' "$py_out" > "$resolved_path" 2>/dev/null; then
+    echo "[claude-subsession] WARN context-diet: role=${role} cannot write ${resolved_path} — spawning with full MCP set" >&2
+    return 15
+  fi
   if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$resolved_path" >/dev/null 2>&1; then
     echo "[claude-subsession] WARN context-diet: role=${role} resolved config failed round-trip validation — spawning with full MCP set" >&2
     rm -f "$resolved_path" 2>/dev/null || true
@@ -578,8 +581,10 @@ fi
 
 # WORKER-CONTEXT-DIET-01: move per-machine system-prompt sections (cwd, env,
 # memory paths, git status) into the first user message for cross-spawn
-# prompt-cache reuse. Only the literal "0" disables (LEADV2_SUBSESSION_EXCLUDE_DYNAMIC).
-if [[ "${LEADV2_SUBSESSION_EXCLUDE_DYNAMIC:-0}" != "0" ]]; then
+# prompt-cache reuse. Strict opt-in — enabled iff the literal "1"; default OFF
+# per the 2026-08-23 live probe (cache_creation delta ~= 0 vs the mission gate
+# "delta <10K => no default-on"). Symmetric with SLIM_MCP's gate above.
+if [[ "${LEADV2_SUBSESSION_EXCLUDE_DYNAMIC:-0}" == "1" ]]; then
   CLAUDE_ARGS+=(--exclude-dynamic-system-prompt-sections)
 fi
 
