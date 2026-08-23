@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # Offline regression for ROUTER-DOOR-ENFORCE-01 Part 0.
 #
-# dispatch-a24b1588 round-1b item 2 verification (2026-08-06): swept every
-# `env -u CLAUDE_PROJECT_ROOT`/`CLAUDE_PROJECT_DIR` invocation in this file --
-# only Test 5 (selfhost) and Test 6 (degraded) use it, and both already pin
-# `PROJECT_ROOT` to a sandbox root (5e69c0b), so no further code change was
-# needed here. Cross-cwd demonstration (fresh a1afed9 worktree + this file,
-# `PROJECT_ROOT`/`LEADV2_PROJECT_ROOT` ambient-env isolated): this file run
-# from /private/tmp, this lane worktree, and persona-engine (which carries its
-# own .claude/ref/leadv2-routing.yaml) all print "18 passed, 0 failed"-shaped
-# results. The UNPINNED a1afed9 source of this same file diverges exactly as
-# predicted: 18/18 from /private/tmp, but Test 6 (degraded mode) FAILS from
-# persona-engine because unpinned `PROJECT_ROOT` resolves via
-# `git rev-parse --show-toplevel` on the caller's cwd and finds persona-
-# engine's own routing config instead of hitting the degraded/no-config path.
+# Invariant: Tests 5 (selfhost) and 6 (degraded) unset
+# `CLAUDE_PROJECT_ROOT`/`CLAUDE_PROJECT_DIR`, so they MUST pin `PROJECT_ROOT`
+# to a sandbox root -- otherwise `dispatch-code.sh` falls back to
+# `git rev-parse --show-toplevel` on the caller's cwd, and the suite's verdict
+# would depend on which directory invoked it. Both are pinned (5e69c0b): this
+# file's verdict is cwd-independent, and it prints "18 passed, 0 failed"-shaped
+# results run from /private/tmp, this lane worktree, or persona-engine alike.
+#
+# Historical note (dispatch-a24b1588, 2026-08-06): the pre-fix a1afed9 source
+# of this file did diverge by cwd -- Test 6 failed when run from persona-engine
+# because unpinned `PROJECT_ROOT` picked up that repo's own routing config.
+# That divergence no longer exists on this branch.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
