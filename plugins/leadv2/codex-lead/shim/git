@@ -1,0 +1,9 @@
+#!/bin/bash
+# shim/git — M-1 (CODEX-LEAD-FULL-01 §4). Off by default; see shim/rm.
+set -u
+SHIM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD="$SHIM_DIR/../lv2guard.sh"
+CLEAN_PATH="${PATH//$SHIM_DIR:/}"
+CLEAN_PATH="${CLEAN_PATH//:$SHIM_DIR/}"
+REAL_GIT="$(PATH="$CLEAN_PATH" command -v git)"
+exec bash "$GUARD" "$REAL_GIT" "$@"

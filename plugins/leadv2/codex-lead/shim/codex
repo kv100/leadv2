@@ -1,0 +1,12 @@
+#!/bin/bash
+# shim/codex — M-1 (CODEX-LEAD-FULL-01 §4). Off by default; see shim/rm.
+# Closes bypass (a) for direct `codex exec`, e.g. from inside the Codex CLI's
+# own shell tool — still does not close (b)/(c)/(d): a nested `sh -c`, a
+# compound `&&`, or a dispatched worker lane never sees this shim.
+set -u
+SHIM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD="$SHIM_DIR/../lv2guard.sh"
+CLEAN_PATH="${PATH//$SHIM_DIR:/}"
+CLEAN_PATH="${CLEAN_PATH//:$SHIM_DIR/}"
+REAL_CODEX="$(PATH="$CLEAN_PATH" command -v codex)"
+exec bash "$GUARD" "$REAL_CODEX" "$@"

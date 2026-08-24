@@ -1,0 +1,14 @@
+#!/bin/bash
+# shim/rm — M-1 (CODEX-LEAD-FULL-01 §4). Off by default: this directory is
+# NOT on PATH unless the founder explicitly prepends it. Re-execs through
+# lv2guard so a plain `rm ...` (no explicit lv2guard call) still gets
+# checked — closes bypass (a) from the design's counterexample for this one
+# binary. Does NOT close bypass (b)/(c)/(d) (nested shells, compound
+# commands, worker lanes) — see the AGENTS brief.
+set -u
+SHIM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD="$SHIM_DIR/../lv2guard.sh"
+CLEAN_PATH="${PATH//$SHIM_DIR:/}"
+CLEAN_PATH="${CLEAN_PATH//:$SHIM_DIR/}"
+REAL_RM="$(PATH="$CLEAN_PATH" command -v rm)"
+exec bash "$GUARD" "$REAL_RM" "$@"

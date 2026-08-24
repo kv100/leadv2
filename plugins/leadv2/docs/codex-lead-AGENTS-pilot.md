@@ -48,6 +48,56 @@ All five non-fanout flags are required.
 Read `review-gate.md`'s `status:` line; its existence proves nothing. `do_not_merge=1`
 is absolute.
 
+## lv2guard — the deny floor for this lead
+
+Codex has no PreToolUse/blocking hooks, so nothing forces a command through
+lv2guard — this is a **prose mandate**, not an enforced mechanism. Every shell
+command with side effects goes through it:
+
+```bash
+bash plugins/leadv2/codex-lead/lv2guard.sh -c '<command>'
+```
+
+`-c` form is required to use the inline override token below; argv form
+(`lv2guard.sh <command...>`) works for anything that needs no override.
+
+| rc | Meaning | Action |
+| --- | --- | --- |
+| *(command's own rc)* | not matched | Guard is invisible; the command ran. |
+| 97 | refused | Reserved: 97 from a guarded call always means "refused by lv2guard." Change premise, or raise via founder — never retry verbatim. |
+| 2 | usage error | Fix the invocation. |
+
+lv2guard enforces the canonical deny-floor tiering (6 CATASTROPHIC rules never
+overridable; 3 SOFT rules — `git reset --hard`, `git clean -fd`, `git stash`
+bare — overridable with a trailing `# deny-floor: allow` comment, `-c` form
+only) plus three codex-lead-only rules with no Claude-side equivalent:
+`git worktree prune` while a lane is registered active in `active.yaml`,
+direct `codex exec` (route through `codex-task.sh` instead), and an oversize
+heredoc (advisory only, never refuses). Unlike the Claude-side hook, lv2guard
+fails **closed** on a missing/unreadable rule file or missing `python3`, and
+does **not** honor `LEADV2_DENY_FLOOR=0` — it is the only floor on this side,
+so it cannot be its own kill-switch.
+
+lv2guard is advisory by construction: it does not catch a nested `sh -c`, a
+compound `cmd1 && cmd2`, a command typed without it, or anything a dispatched
+worker lane does. Its value is catching the honest mistake and leaving a
+transcript-auditable record — not closing every path to a destructive
+command. An optional `codex-lead/shim/{rm,git,codex}` PATH prefix closes the
+"forgot to type lv2guard" case for those three binaries; it ships off by
+default.
+
+## Prompt pack
+
+Installed by `plugins/leadv2/codex-lead/install.sh` to `~/.codex/prompts/`:
+
+| Prompt | Use |
+| --- | --- |
+| `leadv2.md` | Session bootstrap — read this brief, tails, quota. |
+| `leadv2-status.md` | Founder status: quota + lanes as one compact Russian table. |
+| `leadv2-dispatch.md` | Premise-check, then dispatch via lv2guard; full rc table. |
+| `leadv2-review.md` | Run review-run.sh, interpret the verdict, fix-round protocol. |
+| `leadv2-close.md` | Evidence-based close: ledger row, deferred items, worktree kept. |
+
 ## Hard rules
 
 1. Never use `git reset`, `git clean`, or `rm -rf` in a shared tree.
