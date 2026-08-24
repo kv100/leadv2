@@ -90,8 +90,10 @@ if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then
 fi
 lv2_trace_arm_exit "review"
 
-REVIEW_FANOUT="${FANOUT_ARG:-${LEADV2_REVIEW_FANOUT:-3}}"
-[[ "${REVIEW_FANOUT}" =~ ^[1-9][0-9]*$ ]] || REVIEW_FANOUT=3
+# V3 core: one independent review is the ordinary path. Wider fan-out remains
+# an explicit override for callers that need it.
+REVIEW_FANOUT="${FANOUT_ARG:-${LEADV2_REVIEW_FANOUT:-1}}"
+[[ "${REVIEW_FANOUT}" =~ ^[1-9][0-9]*$ ]] || REVIEW_FANOUT=1
 
 mkdir -p "${HANDOFF}" 2>/dev/null || true
 
@@ -516,6 +518,8 @@ except Exception:
     sys.exit(0)
 for f in data.get("findings", []):
     sev = f.get("severity", "")
+    if sev not in ("Critical", "High"):
+        continue
     dim = f.get("dimension", "")
     file = f.get("file", "")
     ln = f.get("line", "")
@@ -528,7 +532,7 @@ PY
   if [[ "${#lines[@]}" -eq 0 && -f "${gate}" ]]; then
     while IFS= read -r _fline; do
       lines+=("- ${_fline#FINDING: }")
-    done < <(grep -E '^FINDING:' "${gate}" 2>/dev/null)
+    done < <(grep -E '^FINDING: severity=(Critical|High) ' "${gate}" 2>/dev/null)
   fi
 
   local count="${#lines[@]}"
@@ -618,12 +622,14 @@ _review_round_context() {
   # REVIEW-ROUNDCAP-01: reset every call so a frozen round from a prior
   # invocation in the same process never leaks forward.
   _REVIEW_ROUND_FROZEN=0
+  _REVIEW_REPEAT_FAIL_BLOCK=0
 
   local state="${HANDOFF}/.review-round.state"
-  local sidecar_round="" sidecar_diff=""
+  local sidecar_round="" sidecar_diff="" sidecar_attempts=""
   if [[ -f "${state}" ]]; then
     sidecar_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
     sidecar_diff="$(sed -n 's/^diff=//p' "${state}" | head -n1)"
+    sidecar_attempts="$(sed -n 's/^attempts=//p' "${state}" | head -n1)"
   fi
   # M2: a corrupt/non-numeric sidecar round degrades to "absent", not a crash.
   [[ "${sidecar_round}" =~ ^[0-9]+$ && "${sidecar_round}" -le 999 ]] || sidecar_round=""
@@ -661,12 +667,12 @@ _review_round_context() {
   if [[ "${LEADV2_REVIEW_ROUND:-}" == "2" ]]; then
     _review_parse_findings "${prior_round:-1}"
     REVIEW_ROUND=$(( prior_round > 1 ? prior_round + 1 : 2 ))
-    if [[ -z "${findings_body}" ]]; then
+    if [[ -z "${findings_body}" && -z "${PRIOR_FINDINGS_BODY}" ]]; then
       REVIEW_MODE="exhaustive"
       PRIOR_FINDINGS_BODY=""
     else
       REVIEW_MODE="verify_only"
-      PRIOR_FINDINGS_BODY="${findings_body}"
+      PRIOR_FINDINGS_BODY="${findings_body:-${PRIOR_FINDINGS_BODY}}"
     fi
     return 0
   fi
@@ -685,6 +691,14 @@ _review_round_context() {
     # diff, nothing new reviewed), so this re-invocation must not burn a fresh
     # policy attempt either — see _review_state_write.
     _REVIEW_ROUND_FROZEN=1
+    # A failed implementation may receive one review of a changed diff. Do
+    # not turn an unchanged failed result into another full census.
+    # Legacy sidecars did not record attempts and are evidence snapshots, not
+    # a consumed V3 recheck budget. LEADV2_REVIEW_MAX_ROUNDS=0 remains the
+    # documented explicit unlimited override.
+    if [[ "${gate_status}" == "fail" && "${sidecar_attempts}" =~ ^[0-9]+$ && "${LEADV2_REVIEW_MAX_ROUNDS:-2}" != 0 ]]; then
+      _REVIEW_REPEAT_FAIL_BLOCK=1
+    fi
     return 0
   fi
 
@@ -693,14 +707,14 @@ _review_round_context() {
   REVIEW_ROUND=$((prior_round + 1))
 
   _review_parse_findings "${prior_round}"
-  if [[ -z "${findings_body}" || "${REVIEW_DIFF_HASH_OK:-0}" -ne 1 ]]; then
+  if [[ -z "${findings_body}" && -z "${PRIOR_FINDINGS_BODY}" ]] || [[ "${REVIEW_DIFF_HASH_OK:-0}" -ne 1 ]]; then
     REVIEW_MODE="exhaustive"
     PRIOR_FINDINGS_COUNT=0
     return 0
   fi
 
   REVIEW_MODE="verify_only"
-  PRIOR_FINDINGS_BODY="${findings_body}"
+  PRIOR_FINDINGS_BODY="${findings_body:-${PRIOR_FINDINGS_BODY}}"
   return 0
 }
 
@@ -728,11 +742,18 @@ _review_roundcap_read() {
   (
     lv2_lock_wait "${_rcr_lockf}" "$(_review_state_lock_wait_s)" || true
     local state="${HANDOFF}/.review-round.state"
-    local attempts="" spawns="" legacy_round=""
+    local attempts="" spawns="" legacy_round="" state_diff=""
     if [[ -f "${state}" ]]; then
       attempts="$(sed -n 's/^attempts=//p' "${state}" | head -n1)"
       spawns="$(sed -n 's/^spawns=//p' "${state}" | head -n1)"
       legacy_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
+      state_diff="$(sed -n 's/^diff=//p' "${state}" | head -n1)"
+    fi
+    # Counters belong to one task/diff pair. A changed implementation gets a
+    # fresh budget; prior findings are retained separately by the snapshots.
+    if [[ "${REVIEW_DIFF_HASH_OK:-0}" -eq 1 && "${state_diff}" != "${diff_hash:0:8}" ]]; then
+      printf '0 0'
+      return 0
     fi
     [[ "${attempts}" =~ ^[0-9]+$ && "${attempts}" -le 99999 ]] || attempts=""
     [[ "${spawns}" =~ ^[0-9]+$ && "${spawns}" -le 99999 ]] || spawns=""
@@ -808,7 +829,7 @@ _review_state_write() {
   (
     lv2_lock_wait "${_rsw_lockf}" "$(_review_state_lock_wait_s)" || true
     local state="${HANDOFF}/.review-round.state"
-    local existing_round=0 existing_attempts=0 existing_spawns=0
+    local existing_round=0 existing_attempts=0 existing_spawns=0 existing_diff=""
     if [[ -f "${state}" ]]; then
       existing_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
       [[ "${existing_round}" =~ ^[0-9]+$ ]] || existing_round=0
@@ -816,6 +837,12 @@ _review_state_write() {
       [[ "${existing_attempts}" =~ ^[0-9]+$ ]] || existing_attempts=0
       existing_spawns="$(sed -n 's/^spawns=//p' "${state}" | head -n1)"
       [[ "${existing_spawns}" =~ ^[0-9]+$ ]] || existing_spawns=0
+      existing_diff="$(sed -n 's/^diff=//p' "${state}" | head -n1)"
+    fi
+    if [[ "${existing_diff}" != "${diff_hash:0:8}" ]]; then
+      existing_round=0
+      existing_attempts=0
+      existing_spawns=0
     fi
     local write_round="${REVIEW_ROUND}"
     [[ "${existing_round}" -gt "${write_round}" ]] && write_round="${existing_round}"
@@ -973,12 +1000,22 @@ _engine_run_arm_with_timeout() { # <arm>
   true
 }
 
-# Hack-detect: always-on, cheap, haiku, ported from workflows/leadv2-review.js:136-137.
-# Never counted as one of the N fan-out arms. Findings use the same additive
-# `FINDING:` line contract (see step 7) so they merge into review-findings.json
-# with dimension="hack", but they do NOT gate REVIEW_VERDICT/REVIEW_FINDINGS.
+# Security/hack detection is an escalation, not an ordinary reviewer. It is
+# enabled by an explicit operator flag or by protected/high-risk write signals.
+# The pass is never counted as one of the independent review arms.
 HACKDETECT_OUT="${HANDOFF}/review-hackdetect.md"
 HACKDETECT_ERR="${HANDOFF}/review-hackdetect.err"
+_engine_security_pass_enabled() {
+  case "${LEADV2_REVIEW_SECURITY_PASS:-0}" in 1|true|TRUE|yes|YES) return 0 ;; esac
+  if ! declare -F leadv2_review_signals >/dev/null 2>&1; then
+    return 1
+  fi
+  local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
+  local signals
+  signals="$(leadv2_review_signals "${routing_yaml}" "${WRITES_CSV}" 2>/dev/null || true)"
+  [[ "${signals}" == *'"protected_path":true'* || "${signals}" == *'"safety_touched":true'* ]]
+}
+
 _engine_hack_detect_job() {
   local mission="${HANDOFF}/review-mission-hackdetect.md"
   {
@@ -988,6 +1025,14 @@ _engine_hack_detect_job() {
   } > "${mission}"
   PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role hack-detect --model haiku --task-id "dispatch-${TASK}-review" --mission-file "${mission}" --wait \
     > "${HACKDETECT_OUT}" 2> "${HACKDETECT_ERR}" || true
+}
+
+# A verifier is useful only when independent reviewers disagree over a
+# blocking finding. Keep it off on the ordinary single-review path; operators
+# may enable it explicitly, and security escalation enables it for a dispute.
+_engine_verifier_policy_enabled() {
+  case "${LEADV2_REVIEW_VERIFY_FINDINGS:-0}" in 1|true|TRUE|yes|YES) return 0 ;; esac
+  [[ "${SECURITY_REVIEW_ENABLED:-0}" -eq 1 ]]
 }
 
 # Verify/refute: for every Critical/High FINDING: line, spawn one refutation job on
@@ -1030,6 +1075,13 @@ _review_round_context
 review_contract="$(_review_build_contract)"
 review_contract_focus="$(_review_flatten "${review_contract}")"
 emit decision "review_round task=${TASK} round=${REVIEW_ROUND} mode=${REVIEW_MODE} prior_findings=${PRIOR_FINDINGS_COUNT:-0}"
+
+if [[ "${_REVIEW_REPEAT_FAIL_BLOCK:-0}" -eq 1 ]]; then
+  printf 'status: blocked\nreason: review_recheck_cap\nrounds: 2\n' > "${HANDOFF}/review-gate.md.tmp"
+  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=review_recheck_cap"
+  exit 8
+fi
 
 # REVIEW-ROUNDCAP-01: refuse a further review round once the declared policy
 # limit is reached. Placed AFTER _review_round_context (so the prior round's
@@ -1102,6 +1154,11 @@ resolver_out="$(resolve_review_pool_call)"
 reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"
 pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
 refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
+SECURITY_REVIEW_ENABLED=0
+if _engine_security_pass_enabled; then
+  SECURITY_REVIEW_ENABLED=1
+fi
+emit decision "review_security task=${TASK} enabled=${SECURITY_REVIEW_ENABLED}"
 source "${SCRIPT_DIR}/lib/leadv2-review-reroute-note.sh"
 _reroute_note="$(leadv2_review_reroute_note "${TASK}" "${pool}" "${reviewer}")"
 [[ -n "${_reroute_note}" ]] && emit decision "${_reroute_note}"
@@ -1184,12 +1241,14 @@ if [[ "${_review_spawncap_max}" -gt 0 && "${_review_spawncap_spawns}" -ge "${_re
 fi
 _review_state_write spawn
 
-# Launch fan-out arms in parallel, plus the always-on hack-detect pass (not counted
-# as one of the N arms).
+# Launch independent review arms. The security/hack escalation runs only on
+# protected/high-risk paths or when explicitly requested.
 for _arm in "${fanout_list[@]}"; do
   _engine_run_arm_with_timeout "${_arm}" &
 done
-( _engine_hack_detect_job ) &
+if [[ "${SECURITY_REVIEW_ENABLED}" -eq 1 ]]; then
+  ( _engine_hack_detect_job ) &
+fi
 wait
 
 # Step 5: per-arm refusal reselection. Walk fan-out results; any refused_* arm is
@@ -1281,8 +1340,8 @@ done
 # REVIEW-UNION-VERDICT-01 (2026-08-21): the union of arms is authoritative — ANY
 # arm's FAIL fails the gate, not just the first one that happened to parse.
 #
-# The old loop took the first parsable arm and `break`-ed, so with the default
-# three-arm fan-out a Critical found by arm 2 or 3 did not block: its findings were
+# The old loop took the first parsable arm and `break`-ed, so with an explicit
+# multi-arm fan-out a Critical found by arm 2 or 3 did not block: its findings were
 # unioned into the JSON while gating still keyed on arm 1's verdict. The Codex
 # process audit named this precisely (codex-findings.md, Q1/proposal 2, against
 # review-run.sh:1006-1027 and :1152-1164): "more arms currently buy more prose, not
@@ -1297,6 +1356,8 @@ done
 verdict=""
 reviewer_primary=""
 _union_fail_arm=""
+_review_has_fail=0
+_review_has_nonfail=0
 for _arm in "${ran_arms[@]}"; do
   resolve_review_artifact "${_arm}" || true
   _file="${REVIEW_ARTIFACT:-${HANDOFF}/review-${_arm}.md}"
@@ -1314,11 +1375,21 @@ for _arm in "${ran_arms[@]}"; do
     verdict="${PARSED_VERDICT}"
     reviewer_primary="${_arm}"
   fi
+  if [[ "${PARSED_VERDICT}" == FAIL ]]; then
+    _review_has_fail=1
+  else
+    _review_has_nonfail=1
+  fi
   # Escalate on any arm's FAIL, including one found after the primary.
   if [[ "${PARSED_VERDICT}" == FAIL && -z "${_union_fail_arm}" ]]; then
     _union_fail_arm="${_arm}"
   fi
 done
+
+REVIEW_FINDINGS_DISPUTED=0
+if [[ "${_review_has_fail}" -eq 1 && "${_review_has_nonfail}" -eq 1 ]]; then
+  REVIEW_FINDINGS_DISPUTED=1
+fi
 
 if [[ -n "${_union_fail_arm}" && "${verdict}" != FAIL ]]; then
   emit decision "review_union_escalate task=${TASK} primary=${reviewer_primary} primary_verdict=${verdict} failing_arm=${_union_fail_arm}"
@@ -1407,19 +1478,21 @@ FINDINGS_JSON="${HANDOFF}/review-findings.json"
     _verifier_verdict="unverified"
     if [[ "${_sev}" == "Critical" || "${_sev}" == "High" ]]; then
       _needs_verify=$((_needs_verify + 1))
-      # Pick a verifier arm != raiser from ran_arms (>1 live arm required — A6/design §2 step 6).
-      for _cand in "${ran_arms[@]}"; do
-        [[ "${_cand}" != "${_arm}" ]] && { _verifier_arm="${_cand}"; break; }
-      done
-      if [[ -n "${_verifier_arm}" ]]; then
-        _vout="${HANDOFF}/review-verify-$(printf '%s' "${_f}_${_ln}_${_sev}" | tr -c 'A-Za-z0-9' '_').${_verifier_arm}.md"
-        _engine_verify_job "${_verifier_arm}" "${_vout}" "${_sev}" "${_dim}" "${_desc}" || true
-        if grep -qE '^VERIFY_VERDICT:[[:space:]]*upheld' "${_vout}" 2>/dev/null; then
-          _verifier_verdict="upheld"
-          _verified_count=$((_verified_count + 1))
-        elif grep -qE '^VERIFY_VERDICT:[[:space:]]*refuted' "${_vout}" 2>/dev/null; then
-          _verifier_verdict="refuted"
-          _verified_count=$((_verified_count + 1))
+      if [[ "${REVIEW_FINDINGS_DISPUTED}" -eq 1 ]] && _engine_verifier_policy_enabled; then
+        # Pick a verifier arm != raiser from ran_arms.
+        for _cand in "${ran_arms[@]}"; do
+          [[ "${_cand}" != "${_arm}" ]] && { _verifier_arm="${_cand}"; break; }
+        done
+        if [[ -n "${_verifier_arm}" ]]; then
+          _vout="${HANDOFF}/review-verify-$(printf '%s' "${_f}_${_ln}_${_sev}" | tr -c 'A-Za-z0-9' '_').${_verifier_arm}.md"
+          _engine_verify_job "${_verifier_arm}" "${_vout}" "${_sev}" "${_dim}" "${_desc}" || true
+          if grep -qE '^VERIFY_VERDICT:[[:space:]]*upheld' "${_vout}" 2>/dev/null; then
+            _verifier_verdict="upheld"
+            _verified_count=$((_verified_count + 1))
+          elif grep -qE '^VERIFY_VERDICT:[[:space:]]*refuted' "${_vout}" 2>/dev/null; then
+            _verifier_verdict="refuted"
+            _verified_count=$((_verified_count + 1))
+          fi
         fi
       fi
     fi
