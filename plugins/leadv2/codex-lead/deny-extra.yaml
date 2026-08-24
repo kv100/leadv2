@@ -1,0 +1,38 @@
+# deny-extra.yaml — codex-lead-only deny rules, layered on top of the
+# canonical plugins/leadv2/config/leadv2-deny-patterns.yaml floor.
+#
+# These three rules have no Claude-side equivalent (see CODEX-LEAD-FULL-01
+# prepass §0.2): they are new, not a port, and never edit the canonical file.
+# Same field shape as the canonical yaml, plus:
+#   kind:      "regex" (default if omitted) | "predicate"
+#   predicate: function name in lv2guard.sh, only meaningful when kind is
+#              "predicate" — the regex field still gates whether the
+#              predicate runs at all.
+#
+# Missing/unreadable/zero-rule-parse of this file fails the WHOLE guard
+# closed (rc 97) — see lv2guard.sh CB-2. An unknown `kind:` value skips only
+# that one rule with a stderr warning.
+
+rules:
+  - name: worktree_prune_active_lanes
+    kind: predicate
+    predicate: worktree_prune_active_lanes
+    regex: 'git\s+worktree\s+prune\b'
+    enabled: true
+    message: "git worktree prune while a lane is registered active is blocked — a live lane's worktree could be destroyed mid-flight. Close/unregister the lane in active.yaml first."
+    allow_inline_override: false
+
+  - name: codex_exec_direct
+    kind: regex
+    regex: '(^|[;&|]\s*)codex\s+exec\b'
+    enabled: true
+    message: "Direct 'codex exec' is blocked — route through codex-task.sh so tiering/--reason/journalling still apply."
+    allow_inline_override: false
+
+  - name: heredoc_oversize
+    kind: predicate
+    predicate: heredoc_oversize
+    regex: '<<[-~]?\s*\S'
+    enabled: true
+    message: "Heredoc body exceeds the advisory size threshold — consider a file instead. Advisory only; the command still runs."
+    allow_inline_override: true

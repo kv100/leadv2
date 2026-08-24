@@ -11,14 +11,25 @@ Do not judge the experiment from a drop in Claude burn alone.
 ## Install and launch
 
 Do not overwrite `~/Projects/persona-engine/AGENTS.md`: it contains the existing
-product guardrails. Install this additive pilot brief instead:
+product guardrails. Run the idempotent installer instead — it copies the pilot
+brief, installs the prompt pack to `~/.codex/prompts/`, and ensures the
+repowise MCP block in `~/.codex/config.toml` (never touching a hand-written
+one it doesn't own):
 
 ```bash
-cp plugins/leadv2/docs/codex-lead-AGENTS-pilot.md \
-  ~/Projects/persona-engine/.claude/ref/90-codex-lead-pilot.md
-# Append exactly this one line to ~/Projects/persona-engine/AGENTS.md:
+bash plugins/leadv2/codex-lead/install.sh ~/Projects/persona-engine
+```
+
+It never writes `AGENTS.md` itself — if the `@import` line is missing it
+prints a loud `ACTION REQUIRED` line naming exactly what to append:
+
+```
 @import .claude/ref/90-codex-lead-pilot.md
 ```
+
+Re-run it any time; unchanged files are reported `unchanged`, changed ones are
+backed up to `*.bak` first. See `plugins/leadv2/codex-lead/lv2guard.sh` for the
+deny-floor mandate this brief now requires.
 
 `UNVERIFIED:` import resolution has not been demonstrated in persona-engine; the
 existing import is written as `@import ref/01-orchestrator.md` although its file is
@@ -129,7 +140,7 @@ The lead has no Claude hooks. The reviewer checks the transcript for each observ
 | memory/state discipline | State is in the documented ledger/journal locations, with append-only journals. |
 | task-output discipline | No hidden task-output shortcut replaces evidence. |
 | monitor cap | No uncontrolled polling or concurrent WIP. |
-| deny floor | No destructive `git reset`, `git clean`, or `rm -rf` in a shared tree. |
+| deny floor | Every side-effecting command went through `lv2guard.sh` (M-2: this is observable in a transcript; "no destructive command ran" is not — lv2guard is advisory, not enforced by the runtime). |
 | foreground dispatch | Each started verification/dispatch result is waited for and recorded. |
 
 `block-codex`, `codex-direct-exec-guard`, and `codex-first-nudge` do not transfer:
