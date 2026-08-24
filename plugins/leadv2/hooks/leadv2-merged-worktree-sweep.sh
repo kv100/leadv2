@@ -82,8 +82,17 @@ JOURNAL_BIN="${SCRIPT_DIR}/../scripts/leadv2-journal.sh"
 COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || printf '%s' "${ROOT}/.git")"
 JOURNAL_ROOT="$(dirname "${COMMON_DIR}")"
 _PROTECT_ERR_SHOWN=0
+# L2 (MERGED-BATCH-FIXROUND-01): uid-scoped log under TMPDIR, and never
+# written through a symlink — a symlinked log path is a write-wherever
+# primitive for whoever planted the link.
+_SWEEP_LOG="${TMPDIR:-/tmp}/leadv2-sweep.$(id -u).log"
 
 lv2_wt_protect_prime "${ROOT}"
+
+# L1b: the age floor is a pass-level setting — hoisted out of the loop so the
+# summary reports the RESOLVED floor, not a loop-local left over from whatever
+# iteration happened to run last.
+min_age="${LEADV2_SWEEP_MIN_AGE_S:-1800}"
 
 # Only lane worktrees, and only ones that still exist on disk.
 while IFS= read -r wt; do
@@ -103,9 +112,14 @@ while IFS= read -r wt; do
     :
   else
     prc=$?
-    printf '%s|merged-worktree-sweep|protected id=%s rc=%d reason=%s\n' \
+    [[ -L "${_SWEEP_LOG}" ]] || printf '%s|merged-worktree-sweep|protected id=%s rc=%d reason=%s\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${wt}")" "${prc}" \
-      "${LV2_WT_PROTECT_REASON:-?}" >> /tmp/leadv2-sweep.log 2>/dev/null || true
+      "${LV2_WT_PROTECT_REASON:-?}" >> "${_SWEEP_LOG}" 2>/dev/null || true
+    if [[ "${prc}" == "4" ]]; then
+      # L1a: a lib-young keep is still a keep the operator should hear about —
+      # without this counter, a pass that protects every lane prints nothing.
+      KEPT_YOUNG=$((KEPT_YOUNG + 1)); KEPT_NAMES+=("$(basename "${wt}") (lib-young)")
+    fi
     if [[ "${prc}" == "5" && "${_PROTECT_ERR_SHOWN}" == "0" ]]; then
       printf '[leadv2-merged-worktree-sweep] protected(read-error) %s — sweeping nothing this pass (%s)\n' \
         "$(basename "${wt}")" "${LV2_WT_PROTECT_REASON:-unreadable}" >&2
@@ -139,7 +153,6 @@ while IFS= read -r wt; do
   # is creation-stamped, not access-stamped -- exactly what an age guard
   # needs. `git rev-parse --git-dir` run FROM the worktree resolves straight
   # to that metadata dir for a linked worktree (not the common .git).
-  min_age="${LEADV2_SWEEP_MIN_AGE_S:-1800}"
   meta_dir="$(git -C "${wt}" rev-parse --git-dir 2>/dev/null)"
   gitdir_file="${meta_dir:-}/gitdir"
   if [[ -n "${meta_dir}" && -f "${gitdir_file}" ]]; then
@@ -170,6 +183,16 @@ while IFS= read -r wt; do
   # hook exited 0 (the trap says so) having swept nothing.
   real_dirt="$(git -C "${wt}" status --porcelain 2>/dev/null | grep -vE "${_MW_ORCH_RE}" | head -1 || true)"
 
+  # H2 (MERGED-BATCH-FIXROUND-01): an UNTRACKED docs/handoff/ entry is a
+  # deliverable a worker wrote and never handed to git — the exclusion regex
+  # keys on the path, not the porcelain status, so without this check such a
+  # lane is classified "bookkeeping-only" and deleted with the deliverable
+  # still inside it. Untracked handoff content always counts as real dirt.
+  if [[ -z "${real_dirt}" ]] && \
+     git -C "${wt}" status --porcelain -uall 2>/dev/null | grep -qE '^\?\? "?docs/handoff/'; then
+    real_dirt="?? docs/handoff/ (untracked deliverable)"
+  fi
+
   if [[ -n "${real_dirt}" ]]; then
     # Genuine uncommitted work always wins. Never --force from here.
     KEPT_DIRTY=$((KEPT_DIRTY + 1)); KEPT_NAMES+=("$(basename "${wt}") (dirty)")
@@ -177,16 +200,52 @@ while IFS= read -r wt; do
   fi
 
   # Merged, protected-none, and nothing dirty but the plugin's own regenerated
-  # bookkeeping. `worktree remove --force` discards exactly that bookkeeping
-  # and removes the tree in ONE atomic git operation. The old two-step
-  # (checkout --/rm -f the orchestration paths, THEN attempt removal) mutated
-  # the tree BEFORE the removal decision was made, and any removal refusal
-  # left a gutted husk behind — incident b413968c, a lane reduced to a single
-  # docs/ dir. A refused removal now leaves the tree byte-identical. --force
-  # here is safe for the same reason the explicit discard was: every gate
-  # above (protection, ahead, real-dirt) has already said "removable", so the
-  # only thing being forced past is the regenerated bookkeeping itself.
-  if git worktree remove --force "${wt}" >/dev/null 2>&1; then
+  # bookkeeping. H2: decide first, then discard ONLY what the decision proved
+  # discardable, then plain `worktree remove` — never --force. --force would
+  # also discard whatever appeared between the decision and the removal (a
+  # race); a plain remove that refuses there leaves the lane KEPT, which is
+  # exactly the case that must be kept.
+  #
+  # The one REFUSAL cause knowable in advance is a worktree LOCK — and a
+  # locked lane must be kept BYTE-IDENTICAL (P9, incident b413968c: mutating
+  # before the removal decision is what produced the gutted husk). So probe
+  # the lock BEFORE discarding anything; a locked lane is kept untouched.
+  if git worktree list --porcelain 2>/dev/null | awk -v wt="${wt}" '
+    /^worktree / { in_wt = (index($0, "worktree " wt) == 1); next }
+    in_wt && /^locked/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  '; then
+    KEPT_DIRTY=$((KEPT_DIRTY + 1)); KEPT_NAMES+=("$(basename "${wt}") (locked)")
+    continue
+  fi
+  # The discard list is bookkeeping-only:
+  #   * tracked orchestration paths are restored from HEAD (index + worktree);
+  #   * untracked orchestration files (regenerated reports, __pycache__, .pyc,
+  #     LEAD_V2_STATE.md) are removed — EXCEPT untracked docs/handoff/ content,
+  #     which already forced real_dirt above; the skip below restates it.
+  while IFS= read -r _mw_line; do
+    [[ -n "${_mw_line}" ]] || continue
+    _mw_status="${_mw_line:0:2}"
+    _mw_path="${_mw_line:3}"
+    if [[ "${_mw_path}" == \"*\" ]]; then
+      _mw_path="${_mw_path#\"}"; _mw_path="${_mw_path%\"}"
+    fi
+    # Defensive: a porcelain path that is absolute, empty, or contains ".."
+    # is never touched — it could resolve outside the worktree.
+    case "${_mw_path}" in
+      ""|/*|*".."*) continue ;;
+    esac
+    if [[ "${_mw_status}" == "??" ]]; then
+      case "${_mw_path}" in
+        docs/handoff/*) continue ;;
+      esac
+      rm -rf "${wt}/${_mw_path}" 2>/dev/null || true
+    else
+      git -C "${wt}" checkout HEAD -- "${_mw_path}" 2>/dev/null || true
+    fi
+  done < <(git -C "${wt}" status --porcelain -uall 2>/dev/null | grep -E "${_MW_ORCH_RE}" || true)
+
+  if git worktree remove "${wt}" >/dev/null 2>&1; then
     REMOVED=$((REMOVED + 1))
     # Every actual sweep journals why (design deliverable 2: both prior
     # incidents had to be diagnosed forensically). Journal failure never

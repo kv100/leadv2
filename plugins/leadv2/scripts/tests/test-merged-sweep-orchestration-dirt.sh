@@ -47,11 +47,23 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/mw-sweep.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 
 REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
-PRE_HOOK="${WORK}/pre-hook.sh"
+PRE_HOOK="${WORK}/hooks/pre-hook.sh"
+mkdir -p "${WORK}/hooks" "${WORK}/scripts/lib"
 if [[ -n "${REPO}" ]]; then
   git -C "${REPO}" show "HEAD:plugins/leadv2/hooks/leadv2-merged-worktree-sweep.sh" > "${PRE_HOOK}" 2>/dev/null || : > "${PRE_HOOK}"
 fi
-if [[ -s "${PRE_HOOK}" ]]; then chmod +x "${PRE_HOOK}"; else PRE_HOOK=""; fi
+if [[ -s "${PRE_HOOK}" ]]; then
+  chmod +x "${PRE_HOOK}"
+  # Stage the protection lib + state-path resolver where the pre-fix hook
+  # COPY resolves them (${SCRIPT_DIR}/../scripts/...), so PRE_HOOK runs with
+  # the same runtime surface as the live hook. Without this the copy fell to
+  # its lib-missing stub (rc 5 on every lane) and every pre-fix run was a
+  # read-error artifact, not a measurement of the historical hook.
+  cp "${SCRIPT_DIR}/../lib/leadv2-worktree-protected.sh" "${WORK}/scripts/lib/" 2>/dev/null || :
+  cp "${SCRIPT_DIR}/../leadv2-state-path.sh" "${WORK}/scripts/" 2>/dev/null || :
+else
+  PRE_HOOK=""
+fi
 
 # Back-date a lane worktree's CREATION-stamped git metadata so it reads as an hour
 # old, matching the guard in leadv2-merged-worktree-sweep.sh: `git worktree add`
@@ -92,6 +104,12 @@ _mk() { # <dir> <merged:yes|no> <dirt:orch|real|none> <age:old|new (default old)
   case "$dirt" in
     orch) echo touched >> "$d/.claude/worktrees/lane/docs/leadv2/open-threads.md" ;;
     real) echo "uncommitted deliverable" > "$d/.claude/worktrees/lane/SAMPLES.md" ;;
+    handoff)
+      # H2: an UNTRACKED handoff deliverable — matches the orch-exclusion
+      # regex by path, so pre-fix the lane was classified bookkeeping-only.
+      mkdir -p "$d/.claude/worktrees/lane/docs/handoff/lane"
+      echo "SENTINEL-DELIVERABLE-9ea4cd03" > "$d/.claude/worktrees/lane/docs/handoff/lane/deliverable.md"
+      ;;
   esac
   [[ "$age" == "old" ]] && _backdate_lane_meta "$d"
   mkdir -p "$d/state" && printf 'sessions: []\n' > "$d/state/active.yaml"
@@ -136,11 +154,39 @@ case_unmerged_kept() { # <hook>
 case_newborn_kept() { # <hook>
   local repo="${WORK}/n$RANDOM$RANDOM" out
   _mk "$repo" yes orch new || return 2
-  out="$( ( cd "$repo" && CLAUDE_PROJECT_DIR="$repo" bash "$1" ) 2>&1 )"
+  # H3 (MERGED-BATCH-FIXROUND-01): reach the hook-local newborn guard for
+  # real. LEADV2_STATE_ROOT makes the protection prime succeed — a missing
+  # control plane fails closed at rc 5 and kept the lane without exercising
+  # anything, which is the tautology this rewrite removes. _H=0 disables the
+  # lib's own 48h young probe so the lane falls through to the hook-local
+  # guard, where age 0 < 1800s (unset _S default) keeps it.
+  out="$( ( cd "$repo" && CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$repo/state" \
+      LEADV2_SWEEP_MIN_AGE_H=0 bash "$1" ) 2>&1 )"
   [[ -d "$repo/.claude/worktrees/lane" ]] || return 1
-  # Post-SWEEPER-LANE-SAFETY-01 the keep can be reported either by the newborn
-  # age message ("young") or by the lane-protection gate ("protected").
-  echo "$out" | grep -qiE "young|protect" || return 1
+  printf '%s' "$out" | grep -q "young" || return 1
+  # Negative control: a regression that reintroduces the fail-closed path
+  # (rc 5 on every lane) must be RED, not silently green under "protected".
+  if printf '%s' "$out" | grep -q "read-error"; then return 1; fi
+  return 0
+}
+
+# --- safety (H2, MERGED-BATCH-FIXROUND-01): an untracked docs/handoff/
+# deliverable is NEVER destroyed with the tree. The exclusion regex keys on
+# the path, not the porcelain status, so pre-fix (`worktree remove --force`)
+# the lane was classified bookkeeping-only and deleted with the deliverable
+# inside, the only trace one journal line. Post-fix the lane is kept-dirty
+# and the file survives at its original path.
+case_untracked_handoff_deliverable_survives() { # <hook>
+  local repo lane out
+  repo="${WORK}/hh$RANDOM$RANDOM"
+  _mk "$repo" yes handoff || return 2
+  lane="$repo/.claude/worktrees/lane"
+  out="$( ( cd "$repo" && CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$repo/state" \
+      LEADV2_SWEEP_MIN_AGE_H=0 bash "$1" ) 2>&1 )"
+  [[ -d "$lane" ]] || return 1
+  [[ -f "$lane/docs/handoff/lane/deliverable.md" ]] || return 1
+  grep -q "SENTINEL-DELIVERABLE-9ea4cd03" "$lane/docs/handoff/lane/deliverable.md" || return 1
+  printf '%s' "$out" | grep -q "dirty" || return 1
   return 0
 }
 
@@ -176,6 +222,7 @@ run_case "merged-lane-with-orchestration-dirt-is-swept" case_orch_swept
 run_case "real-uncommitted-work-is-never-swept"         case_real_work_kept
 run_case "unmerged-lane-is-never-swept"                 case_unmerged_kept
 run_case "newborn-lane-age-0-is-never-swept"            case_newborn_kept
+run_case "untracked-handoff-deliverable-survives-sweep" case_untracked_handoff_deliverable_survives
 run_case "exclusion-regex-matches-its-twin"             case_no_regex_drift
 
 echo ""
