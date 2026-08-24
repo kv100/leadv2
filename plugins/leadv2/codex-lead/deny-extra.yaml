@@ -12,12 +12,23 @@
 # Missing/unreadable/zero-rule-parse of this file fails the WHOLE guard
 # closed (rc 97) — see lv2guard.sh CB-2. An unknown `kind:` value skips only
 # that one rule with a stderr warning.
+#
+# GITGLOBAL fragment (GUARD-RESET-FLAG-GAP-01, 2026-08-24): git global flags
+# between `git` and the subcommand (-C <path>, -c k=v, --git-dir, --no-pager,
+# ...) must not defeat a rule. Every rule that starts with `git` inlines this
+# fragment verbatim right after the `git` token (single physical line; the
+# lv2guard parser has no include/anchor mechanism):
+#
+#   (?:\s+(?:-[cC]\s*\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|attr-source|config-env)(?:=\S*|\s+\S+)|-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S*)?))*
+#
+# Any NEW rule beginning with `git` MUST include this fragment — the
+# fragment-drift check in tests/test-deny-floor.sh fails the suite otherwise.
 
 rules:
   - name: worktree_prune_active_lanes
     kind: predicate
     predicate: worktree_prune_active_lanes
-    regex: 'git\s+worktree\s+prune\b'
+    regex: 'git(?:\s+(?:-[cC]\s*\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|attr-source|config-env)(?:=\S*|\s+\S+)|-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S*)?))*\s+worktree\s+prune\b'
     enabled: true
     message: "git worktree prune while a lane is registered active is blocked — a live lane's worktree could be destroyed mid-flight. Close/unregister the lane in active.yaml first."
     allow_inline_override: false
