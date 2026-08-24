@@ -32,13 +32,14 @@
 #             (main repo or the worktree itself) and NO true terminal
 #             (landed|dead) row for the id in the dispatch ledger
 #       rc 3  live_pid — a registered pid for the id is alive
-#       rc 4  young — worktree dir mtime younger than LEADV2_SWEEP_MIN_AGE_H
-#             (default 48h; 0 disables ONLY this probe). The probe reads the
-#             directory mtime, never HEAD's commit date — a lane at base has
-#             no commit timestamp of its own and would otherwise inherit
-#             main's age, defeating the grace window entirely. This probe is
-#             the ONLY protection during the window between `git worktree add`
-#             and the active.yaml/arm-registered registration writes.
+#       rc 4  young — worktree gitdir mtime younger than the age threshold
+#             (default 48h; 0 disables ONLY this probe). The threshold accepts
+#             LEADV2_SWEEP_MIN_AGE_S (seconds, preferred when numeric) or
+#             LEADV2_SWEEP_MIN_AGE_H (hours, otherwise); both default to 48h.
+#             The gitdir is creation-stamped by `git worktree add`; the mutable
+#             worktree-directory mtime is a fallback only. This probe is the
+#             ONLY protection during the window between `git worktree add` and
+#             the active.yaml/arm-registered registration writes.
 #       rc 5  read-error — fail closed: any probe that could not read its
 #             input protects. On a broken control plane nothing is ever
 #             removed.
@@ -53,7 +54,7 @@ LV2_WT_PROTECT_REASON=""
 LV2_WT_PROTECT_ERR=""
 LV2_WT_PROTECT_SESSIONS=""   # TSV lines: task_id \t worktree \t pid \t pid_alive(0|1)
 LV2_WT_PROTECT_TERMINALS=""  # newline-separated ids with a TRUE terminal row
-LV2_WT_PROTECT_MIN_AGE_H=48
+LV2_WT_PROTECT_MIN_AGE_S=$((48 * 3600))
 
 # One pass over both control-plane files. Prints:
 #   S \t task_id \t worktree \t pid \t pid_alive(0|1)   per active.yaml session
@@ -120,15 +121,30 @@ lv2_wt_protect_prime() {
   LV2_WT_PROTECT_SESSIONS=""
   LV2_WT_PROTECT_TERMINALS=""
 
-  # LEADV2_SWEEP_MIN_AGE_H: unset/empty -> 48; non-numeric or >= 2^31 -> 48
-  # plus ONE stderr line. A malformed env var must not take down the whole
-  # pass for every other worktree — it degrades, it never aborts.
-  v="${LEADV2_SWEEP_MIN_AGE_H:-48}"
-  if [[ "$v" =~ ^[0-9]+$ ]] && (( v < 2147483648 )); then
-    LV2_WT_PROTECT_MIN_AGE_H="$v"
+  # LEADV2_SWEEP_MIN_AGE_S wins when it is numeric; otherwise accept the
+  # established LEADV2_SWEEP_MIN_AGE_H value. Both empty/unset values default
+  # to 48 hours. A malformed value emits ONE warning and never aborts a pass.
+  if [[ -n "${LEADV2_SWEEP_MIN_AGE_S:-}" ]]; then
+    v="$LEADV2_SWEEP_MIN_AGE_S"
+    if [[ "$v" =~ ^[0-9]+$ ]] && (( v < 2147483648 )); then
+      LV2_WT_PROTECT_MIN_AGE_S="$v"
+    else
+      printf '[leadv2-worktree-protected] LEADV2_SWEEP_MIN_AGE_S="%s" malformed — using LEADV2_SWEEP_MIN_AGE_H/default\n' "$v" >&2
+      v="${LEADV2_SWEEP_MIN_AGE_H:-48}"
+      if [[ "$v" =~ ^[0-9]+$ ]] && (( v < 2147483648 )); then
+        LV2_WT_PROTECT_MIN_AGE_S=$((v * 3600))
+      else
+        LV2_WT_PROTECT_MIN_AGE_S=$((48 * 3600))
+      fi
+    fi
   else
-    LV2_WT_PROTECT_MIN_AGE_H=48
-    printf '[leadv2-worktree-protected] LEADV2_SWEEP_MIN_AGE_H="%s" malformed — using default 48\n' "$v" >&2
+    v="${LEADV2_SWEEP_MIN_AGE_H:-48}"
+    if [[ "$v" =~ ^[0-9]+$ ]] && (( v < 2147483648 )); then
+      LV2_WT_PROTECT_MIN_AGE_S=$((v * 3600))
+    else
+      LV2_WT_PROTECT_MIN_AGE_S=$((48 * 3600))
+      printf '[leadv2-worktree-protected] LEADV2_SWEEP_MIN_AGE_H="%s" malformed — using default 48\n' "$v" >&2
+    fi
   fi
 
   if ! command -v python3 >/dev/null 2>&1; then
@@ -231,7 +247,7 @@ _lv2_wt_arm_open() { # <repo-root> <wt-path> <id>
 }
 
 lv2_worktree_protected() { # <repo-root> <wt-path> -> rc 0-5
-  local repo_root="$1" wt="$2" id mtime now arm_rc
+  local repo_root="$1" wt="$2" id mtime now arm_rc git_dir age_source
   LV2_WT_PROTECT_REASON=""
   if [[ -n "$LV2_WT_PROTECT_ERR" ]]; then
     LV2_WT_PROTECT_REASON="read-error:${LV2_WT_PROTECT_ERR}"
@@ -260,14 +276,24 @@ lv2_worktree_protected() { # <repo-root> <wt-path> -> rc 0-5
     return 3
   fi
 
-  if (( LV2_WT_PROTECT_MIN_AGE_H > 0 )); then
-    mtime="$(stat -f %m "$wt" 2>/dev/null || stat -c %Y "$wt" 2>/dev/null || printf '%s' '')"
+  if (( LV2_WT_PROTECT_MIN_AGE_S > 0 )); then
+    git_dir="$(git -C "$wt" rev-parse --git-dir 2>/dev/null || printf '%s' '')"
+    age_source="${git_dir:+$git_dir/gitdir}"
+    if [[ -n "$age_source" && ! -f "$age_source" ]]; then age_source=""; fi
+    if [[ -n "$age_source" ]]; then
+      mtime="$(stat -f %m "$age_source" 2>/dev/null || stat -c %Y "$age_source" 2>/dev/null || printf '%s' '')"
+    else
+      mtime=""
+    fi
+    if [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
+      mtime="$(stat -f %m "$wt" 2>/dev/null || stat -c %Y "$wt" 2>/dev/null || printf '%s' '')"
+    fi
     if [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
       LV2_WT_PROTECT_REASON="read-error:worktree-stat-failed"
       return 5
     fi
     now="$(date +%s)"
-    if (( now - mtime < LV2_WT_PROTECT_MIN_AGE_H * 3600 )); then
+    if (( now - mtime < LV2_WT_PROTECT_MIN_AGE_S )); then
       LV2_WT_PROTECT_REASON="young"
       return 4
     fi

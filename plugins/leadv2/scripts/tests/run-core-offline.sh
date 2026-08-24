@@ -276,6 +276,7 @@ SUITE_DEFS=(
   "per-turn injection dedup (HOOK-INJECT-DEDUP-01)|||bash $TEST_DIR/test-inject-dedup.sh"
   "main model/live quota|||bash $TEST_DIR/test-main-model-check.sh"
   "active registry fail-closed|||bash $TEST_DIR/test-active-registry-failclosed.sh"
+  "lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)|||bash $TEST_DIR/test-worktree-lane-safety.sh|||SERIAL"
   "active registry phase updates|||bash $TEST_DIR/test-active-registry-update-phase.sh"
   "fanout classifier/runner guard|||bash $TEST_DIR/test-fanout-classify-guard.sh|||SERIAL"
   "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh|||SERIAL"

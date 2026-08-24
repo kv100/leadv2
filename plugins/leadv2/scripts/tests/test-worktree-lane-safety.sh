@@ -69,8 +69,9 @@ fi
 # ── fixture ──────────────────────────────────────────────────────────────────
 # A repo with ONE merged, clean lane worktree and a fixture control plane
 # (state/active.yaml with sessions: [] — the live steady state). age controls
-# the worktree dir mtime for the young/old probe: `old` backdates past any
-# plausible grace window so only the probe under test can protect the lane.
+# the creation-stamped gitdir and fallback directory mtimes: `old` backdates
+# both past any plausible grace window so only the probe under test can protect
+# the lane.
 _mk() { # <dir> [age:young|old]
   local d="$1" age="${2:-old}"
   mkdir -p "$d/docs/leadv2"
@@ -84,6 +85,7 @@ _mk() { # <dir> [age:young|old]
   printf 'sessions: []\n' > "$d/state/active.yaml"
   if [[ "$age" == "old" ]]; then
     touch -t 202001010000 "$d/.claude/worktrees/lane"
+    touch -t 202001010000 "$(git -C "$d/.claude/worktrees/lane" rev-parse --git-dir)/gitdir"
   fi
 }
 
@@ -107,6 +109,10 @@ _run() { # <kind:hook|dead> <bin> <repo>  (env: caller-exported)
 
 _gone() { [[ ! -d "$1/.claude/worktrees/lane" ]]; }
 _lane() { printf '%s/.claude/worktrees/lane' "$1"; }
+_gitdir_stamp() { git -C "$1" rev-parse --git-dir 2>/dev/null; }
+_set_mtime() { # <path> <epoch>; portable across BSD/GNU touch variants
+  python3 -c 'import os, sys; os.utime(sys.argv[1], (int(sys.argv[2]), int(sys.argv[2])))' "$1" "$2"
+}
 
 # ── cases ────────────────────────────────────────────────────────────────────
 
@@ -222,10 +228,44 @@ case_p10_twin() {
   [[ -n "$a" && -n "$b" && "$a" == "$b" ]]
 }
 
+# P11: the immutable linked-worktree gitdir timestamp, not the mutable
+# worktree-directory timestamp, owns probe D. A top-level touch must not keep
+# an otherwise abandoned lane alive indefinitely.
+case_p11_age_from_gitdir() { # <kind> <bin>
+  local repo="${WORK}/p11-$RANDOM$RANDOM" lane gitdir old_epoch
+  _mk "$repo" || return 2
+  lane="$(_lane "$repo")"
+  gitdir="$(_gitdir_stamp "$lane")/gitdir"
+  old_epoch=$(( $(date +%s) - 86400 ))
+  _set_mtime "$gitdir" "$old_epoch" || return 2
+  touch "$lane"
+  unset LEADV2_SWEEP_MIN_AGE_S
+  export LEADV2_STATE_ROOT="$repo/state" LEADV2_SWEEP_MIN_AGE_H=0
+  _run "$1" "$2" "$repo"
+  _gone "$repo"
+}
+
+# P12: the seconds setting has precedence over the legacy hours setting. A
+# five-minute-old orphan stays within the explicit one-hour grace window.
+case_p12_min_age_s_precedence() { # <kind> <bin>
+  local repo="${WORK}/p12-$RANDOM$RANDOM" lane gitdir recent_epoch
+  _mk "$repo" || return 2
+  lane="$(_lane "$repo")"
+  gitdir="$(_gitdir_stamp "$lane")/gitdir"
+  recent_epoch=$(( $(date +%s) - 300 ))
+  _set_mtime "$gitdir" "$recent_epoch" || return 2
+  export LEADV2_STATE_ROOT="$repo/state" LEADV2_SWEEP_MIN_AGE_H=0 LEADV2_SWEEP_MIN_AGE_S=3600
+  _run "$1" "$2" "$repo"
+  ! _gone "$repo"
+}
+
 # ── runner ───────────────────────────────────────────────────────────────────
 
 run_case() { # <name> <fn> <kind>
   local name="$1" fn="$2" kind="$3" pre post pre_rc post_rc
+  # P12 is the sole seconds-precedence case. Keep its explicit setting from
+  # becoming ambient configuration for the next independently-run case.
+  [[ "$name" == P12-* ]] || unset LEADV2_SWEEP_MIN_AGE_S
   case "$kind" in
     hook) pre="${PRE_HOOK}"; post="${HOOK}" ;;
     dead) pre="${PRE_CLEANUP}"; post="${CLEANUP}" ;;
@@ -258,6 +298,8 @@ for kind in hook dead; do
   run_case "P6-orphan-swept-and-journaled(${kind})"  case_p6_orphan_swept_and_journaled "$kind"
   run_case "P7-unreadable-registry-sweeps-nothing(${kind})" case_p7_unreadable_registry "$kind"
   run_case "P8-malformed-env-degrades(${kind})"      case_p8_malformed_env "$kind"
+  run_case "P11-age-from-gitdir-not-dirmtime(${kind})" case_p11_age_from_gitdir "$kind"
+  run_case "P12-min-age-s-precedence(${kind})"      case_p12_min_age_s_precedence "$kind"
 done
 run_case "P9-failed-removal-never-guts(hook)"        case_p9_no_gutting hook
 

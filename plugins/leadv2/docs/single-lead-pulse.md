@@ -78,6 +78,9 @@ lane's task journal. The one removal that ignores all of this is the owner's own
 b413968c (lane gutted to a lone docs/ dir), 43ae4318 (lane deleted before its first commit),
 both 2026-08-24.
 
+See [Lane worktree sweepers](worktree-sweepers.md) for the complete sweeper
+entry-point, return-code, failure-mode, and age-setting contract.
+
 ## On demand
 
 `bash scripts/leadv2-pulse-beat.sh --now` forces a beat synchronously, ignoring the throttle. It
