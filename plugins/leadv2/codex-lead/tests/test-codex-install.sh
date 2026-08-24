@@ -61,8 +61,11 @@ N_PROMPTS="$(ls -1 "$CODEX_LEAD_DIR/prompts"/*.md 2>/dev/null | wc -l | tr -d ' 
 
 # --- NATIVE-CODEX-OPS-PROFILE-01 contract -----------------------------------
 RUNBOOK="$CODEX_LEAD_DIR/../docs/codex-lead-pilot-runbook.md"
+PILOT_BRIEF="$CODEX_LEAD_DIR/../docs/codex-lead-AGENTS-pilot.md"
 STATUS_SKILL="$CODEX_LEAD_DIR/marketplace/plugins/leadv2/skills/leadv2-status/SKILL.md"
+STATUS_PROMPT="$CODEX_LEAD_DIR/prompts/leadv2-status.md"
 SOURCE_SKILL="$CODEX_LEAD_DIR/../codex-skills/source-command-leadv2/SKILL.md"
+BOUNDARY_TEST="$CODEX_LEAD_DIR/../scripts/tests/test-codex-child-session-boundary.sh"
 contains() { grep -Fq -- "$2" "$1"; }
 rejects() { ! grep -Eiq -- "$2" "$1"; }
 
@@ -70,10 +73,16 @@ contains "$RUNBOOK" 'gpt-5.6-terra' && pass "native profile: runbook launches Te
 contains "$RUNBOOK" 'model_reasoning_effort=high' && pass "native profile: runbook launches high" || fail "native profile: runbook must launch high"
 rejects "$RUNBOOK" 'gpt-5\.6-sol|model_reasoning_effort=xhigh|WIP at one|WIP=1' && pass "native profile: runbook rejects Sol/xhigh and fixed WIP=1" || fail "native profile: forbidden Sol/xhigh or fixed WIP=1 remains"
 contains "$RUNBOOK" 'native agent controls' && contains "$RUNBOOK" 'codex fork' && pass "native profile: runbook distinguishes native controls from forks" || fail "native profile: missing native control/fork contract"
+contains "$PILOT_BRIEF" 'native agent slots' && contains "$PILOT_BRIEF" 'provider health' && contains "$PILOT_BRIEF" 'write-set collisions' && contains "$PILOT_BRIEF" 'Independent read-only work may overlap' && pass "native profile: installed brief admits dynamic non-conflicting work" || fail "native profile: installed brief lacks dynamic capacity contract"
+rejects "$PILOT_BRIEF" 'WIP=1|WIP at one' && pass "native profile: installed brief rejects fixed WIP=1" || fail "native profile: installed brief retains fixed WIP=1"
+contains "$PILOT_BRIEF" 'Lifecycle hooks record start/stop evidence' && contains "$PILOT_BRIEF" 'list_agents` supplies live state' && contains "$PILOT_BRIEF" 'not a claim that a 60-second machine timer is shipped' && pass "native profile: installed brief has truthful pulse contract" || fail "native profile: installed brief pulse contract is incomplete"
 contains "$STATUS_SKILL" 'list_agents' && contains "$STATUS_SKILL" 'native plan' && pass "native profile: status merges native agents and plan" || fail "native profile: status lacks native state"
 contains "$STATUS_SKILL" 'IN PROGRESS' && contains "$STATUS_SKILL" 'NEXT' && pass "native profile: status has compact founder terms" || fail "native profile: status lacks compact founder terms"
+contains "$STATUS_PROMPT" 'list_agents' && contains "$STATUS_PROMPT" 'native plan' && contains "$STATUS_PROMPT" 'IN PROGRESS' && contains "$STATUS_PROMPT" 'NEXT' && pass "native profile: installed fallback status prompt is compact and native" || fail "native profile: installed fallback status prompt lacks compact native status"
+contains "$STATUS_PROMPT" 'Lifecycle hooks record start/stop evidence' && contains "$STATUS_PROMPT" 'Do not claim a 60-second machine timer' && pass "native profile: installed fallback pulse is truthful" || fail "native profile: installed fallback pulse is incomplete"
 [[ -f "$SOURCE_SKILL" ]] && contains "$SOURCE_SKILL" 'single-task' && contains "$SOURCE_SKILL" 'native Codex agent controls' && pass "native profile: source command owns native lead role" || fail "native profile: source command lacks native lead role"
-[[ -f "$SOURCE_SKILL" ]] && rejects "$SOURCE_SKILL" 'Claude/Opus|parent Claude|Claude.*parent|child[- ]session' && pass "native profile: source command rejects Claude-child wording" || fail "native profile: Claude-child wording remains"
+[[ -f "$SOURCE_SKILL" ]] && rejects "$SOURCE_SKILL" 'Claude/Opus|parent Claude|Claude.*parent' && pass "native profile: source command rejects Claude-parent wording" || fail "native profile: Claude-parent wording remains"
+timeout 60 bash "$BOUNDARY_TEST" && pass "native profile: core child-session boundary suite" || fail "native profile: core child-session boundary suite"
 
 # --- plugin path, run 1 ----------------------------------------------------
 rm -f "$CALLS"
@@ -99,6 +108,8 @@ GOT_PROMPTS="$(ls -1 "$FIX_HOME/.codex/prompts"/*.md 2>/dev/null | wc -l | tr -d
 [[ "$GOT_PROMPTS" == "$N_PROMPTS" ]] && pass "plugin run 1: all $N_PROMPTS prompts installed" || fail "plugin run 1: prompt count ($GOT_PROMPTS != $N_PROMPTS)"
 
 [[ -f "$FIX_REPO/.claude/ref/90-codex-lead-pilot.md" ]] && pass "plugin run 1: AGENTS-pilot ref file copied" || fail "plugin run 1: AGENTS-pilot ref file missing"
+contains "$FIX_REPO/.claude/ref/90-codex-lead-pilot.md" 'native agent slots' && rejects "$FIX_REPO/.claude/ref/90-codex-lead-pilot.md" 'WIP=1|WIP at one' && pass "plugin run 1: copied brief retains dynamic WIP contract" || fail "plugin run 1: copied brief misses dynamic WIP contract"
+contains "$FIX_HOME/.codex/prompts/leadv2-status.md" 'list_agents' && contains "$FIX_HOME/.codex/prompts/leadv2-status.md" 'IN PROGRESS' && contains "$FIX_HOME/.codex/prompts/leadv2-status.md" 'NEXT' && pass "plugin run 1: installed fallback status prompt is native and compact" || fail "plugin run 1: installed fallback status prompt misses native compact contract"
 
 # --- plugin path, run 2 (idempotency) ---------------------------------------
 CALLS_AFTER_RUN1="$(wc -l < "$CALLS" | tr -d ' ')"

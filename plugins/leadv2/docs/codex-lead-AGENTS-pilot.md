@@ -5,10 +5,16 @@ This is a pilot-scoped, additive brief. It supplements persona-engine's existing
 
 ## Single-lead rules
 
-- WIP=1 across dispatch, review, and fix rounds. Keep 2–4 named tasks total and one ACTIVE.
+- Admit work dynamically from available native agent slots, live provider health,
+  dependencies, and write-set collisions. Independent read-only work may overlap.
+  Do not use a fixed WIP limit; a review or fix round keeps its task's capacity
+  until its evidence is closed.
 - Put new asks in `docs/leadv2/open-threads.md`; do not absorb them into this session.
 - Lead delegates application-code edits. It owns routing, state, evidence, and decisions.
 - Speak Russian with the founder; write documents in English.
+- While work is active, chat emits only a compact `IN PROGRESS` / `NEXT` update
+  on a state change or at most 60 seconds after the previous update. Lifecycle hooks record start/stop evidence; `list_agents` supplies live state. This is
+  a chat update rule, not a claim that a 60-second machine timer is shipped.
 
 ## Dispatch door
 

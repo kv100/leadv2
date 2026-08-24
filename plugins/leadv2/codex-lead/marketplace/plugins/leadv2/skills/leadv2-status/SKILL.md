@@ -7,21 +7,18 @@ description: Build the compact founder status from native Codex agent and plan s
 
 The user's request text that follows the skill invocation is the task brief.
 
-Собери founder-статус одной компактной таблицей на русском. Показывай только
-`IN PROGRESS` и `NEXT`; не добавляй объяснения, технические решения, числа или
-квоты, которых нет в источниках.
+Build one compact founder table. Render only `IN PROGRESS` and `NEXT`; do not
+add explanation, technical decisions, counts, or quotas absent from the sources.
 
-Сначала возьми native-состояние Codex: вызови `list_agents` и прочитай текущий
-native plan. Затем сведи его с внешними leadv2 источниками:
+First merge native Codex state from `list_agents` and the current native plan.
+Then reconcile it with external leadv2 sources:
 
-1. Квоты и внешний registry: `bash ~/Projects/leadv2/plugins/leadv2/codex-lead/leadv2-codex-status.sh`.
-   `?` для провайдера значит «не удалось прочитать» — никогда не показывай как 0%.
-2. `docs/leadv2/founder-status.md` — если файл свежий (сравни `at=` метку
-   с сегодняшним временем), используй его состояние без переинтерпретации.
-3. Внешние активные lanes: `bash ~/Projects/leadv2/plugins/leadv2/scripts/leadv2-status-surface.sh --oneline`.
+1. Registry and quotas: `bash ~/Projects/leadv2/plugins/leadv2/codex-lead/leadv2-codex-status.sh`.
+   A provider value of `?` means unavailable, never zero.
+2. `docs/leadv2/founder-status.md` — use current recorded state without reinterpretation.
+3. Active external lanes: `bash ~/Projects/leadv2/plugins/leadv2/scripts/leadv2-status-surface.sh --oneline`.
 
-Формат таблицы — две колонки: `IN PROGRESS` | `NEXT`. Объедини native agent
-state, native plan и внешние источники по lane/task, не дублируя строки и не
-изобретая отсутствующее состояние. Пока работа активна, отправляй компактный
-chat-пульс при смене состояния и не реже раза в 60 секунд. Lifecycle hooks
-дают машинное pulse-evidence; chat показывает только эту таблицу.
+Use two columns: `IN PROGRESS` | `NEXT`. Reconcile native agent state, the
+native plan, and external lane/task facts without duplicate rows or invented
+state. While work is active, chat emits this compact table on a state change or
+at most 60 seconds after the prior update. Lifecycle hooks record start/stop evidence; `list_agents` supplies live state. Do not claim a 60-second machine timer.
