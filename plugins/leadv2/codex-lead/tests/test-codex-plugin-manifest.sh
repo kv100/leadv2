@@ -98,6 +98,12 @@ SKILL_COUNT="$(ls -1d "$PLUGIN"/skills/*/ 2>/dev/null | wc -l | tr -d ' ')"
 PROMPT_COUNT="$(ls -1 "$CODEX_LEAD_DIR"/prompts/*.md 2>/dev/null | wc -l | tr -d ' ')"
 [[ "$SKILL_COUNT" == "$PROMPT_COUNT" ]] && pass "skills: exactly one per prompt ($SKILL_COUNT)" || fail "skills: $SKILL_COUNT skills vs $PROMPT_COUNT prompts"
 
+# Native controls supplement, never replace, the lead's root gates.
+ROOT_SKILL="$PLUGIN/skills/leadv2/SKILL.md"
+for gate in '90-codex-lead-pilot.md' 'lv2guard.sh' 'leadv2-dispatch-code.sh' 'leadv2-review-run.sh' '/leadv2-status' '/leadv2-close'; do
+  grep -Fq "$gate" "$ROOT_SKILL" && pass "root gate: $gate" || fail "root gate missing: $gate"
+done
+
 # --- shell files pass bash -n -------------------------------------------------
 for f in "$PLUGIN"/hooks/*.sh "$PLUGIN"/scripts/*.sh; do
   [[ -f "$f" ]] || continue
