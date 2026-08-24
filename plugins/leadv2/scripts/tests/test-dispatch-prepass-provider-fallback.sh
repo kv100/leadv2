@@ -197,6 +197,30 @@ case_signal_cleanup() {
   fi
 }
 
+case_registration_barrier_signal_cleanup() {
+  local d="${ROOT}/registration-barrier" repo pid rc=0 i elapsed runner_pid
+  repo="$(make_fixture "${d}")"
+  make_runner "${d}" "${repo}" fallback codex success >/dev/null 2>&1
+  SECONDS=0
+  FIXTURE_DIR="${d}" FIXTURE_REPO="${repo}" FIXTURE_MODE=fallback FIXTURE_PROVIDER=codex \
+    FIXTURE_TIMEOUT=30 STUB_MODE=sleep STUB_ARGS_FILE="${d}/provider.args" STUB_PROVIDER_PID_FILE="${d}/provider.pid" \
+    LEADV2_FALLBACK_REGISTRATION_BARRIER_FILE="${d}/registration.ready" TMPDIR="${d}/tmp" \
+    bash "${d}/runner.sh" >"${d}/runner.log" 2>&1 &
+  pid=$!
+  for i in $(seq 1 40); do [[ -s "${d}/registration.ready" ]] && break; sleep 0.05; done
+  runner_pid="$(sed -n 's/^runner_pid=//p' "${d}/registration.ready" 2>/dev/null)"
+  kill -TERM "${pid}" 2>/dev/null || true
+  wait "${pid}" || rc=$?
+  elapsed=${SECONDS}
+  if [[ -n "${runner_pid}" && ${rc} -ne 0 && ${elapsed} -lt 3 ]] \
+      && provider_not_running "${runner_pid}" && [[ ! -e "${d}/provider.pid" ]] \
+      && workspace_absent "${d}"; then
+    ok 'SIGTERM at fallback runner registration reaps the runner before any provider starts'
+  else
+    bad 'registration barrier signal fixture'
+  fi
+}
+
 case_signal_window_registry_survives() {
   local arm="$1" d="${ROOT}/signal-window-${1}" repo
   repo="$(make_fixture "${d}")"
@@ -234,6 +258,7 @@ case_success_glm
 case_nonzero_cleanup
 case_timeout_cleanup
 case_signal_cleanup
+case_registration_barrier_signal_cleanup
 case_signal_window_registry_survives codex
 case_signal_window_registry_survives glm
 case_foreign_owner_refusal
