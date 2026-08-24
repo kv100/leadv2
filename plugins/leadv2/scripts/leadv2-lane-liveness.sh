@@ -59,13 +59,13 @@ if [[ "$NO_CODEX" -ne 1 && -f "$CODEX_TASK" ]]; then
 fi
 
 # --all resolves every lane in one Python pass.
-python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" "${LEADV2_LANE_SENTINEL_DEAD:-1}" "${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" "${LEADV2_LANE_RUNS_ROOT:-}" "${LEADV2_LANE_SENTINEL_CLAUDE:-1}" <<'PY'
+python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" "${LEADV2_LANE_SENTINEL_DEAD:-1}" "${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" "${LEADV2_LANE_RUNS_ROOT:-}" "${LEADV2_LANE_SENTINEL_CLAUDE:-1}" "${LEADV2_LANE_PID_IDENTITY:-1}" "${LEADV2_LANE_PREPASS_LIVE:-0}" <<'PY'
 import glob, json, os, re, subprocess, sys, time
 
 (root, active_path, tombstones_path, wanted_lane, wanted_job, all_mode, json_mode,
  codex_raw, silent_max_raw, v2_raw, starting_max_raw, abandon_max_raw,
  child_suffixes_raw, sentinel_dead_raw, sentinel_settle_raw, runs_root_raw,
- sentinel_claude_raw) = sys.argv[1:]
+ sentinel_claude_raw, pid_identity_raw, prepass_live_raw) = sys.argv[1:]
 all_mode = all_mode == "1"
 json_mode = json_mode == "1"
 # LEADV2_LANE_LIVENESS_V2=0 is the one-flag rollback to the exact prior
@@ -95,6 +95,19 @@ sentinel_settle_s = _int_env(sentinel_settle_raw, 60)
 # CLAUDE-SUBSESSION-HAS-NO-COMPLETION-SENTINEL-01: independent kill switch for
 # the claude arm only — strictly subordinate to the sentinel_dead master (AND).
 sentinel_claude = sentinel_claude_raw != "0"
+# LANE-REGISTRY-SELF-DEADLOCK-01: two new tunables, same argv-threaded shape
+# as every other one above (never os.environ inside the heredoc).
+#   LEADV2_LANE_PID_IDENTITY=0 — one-flag rollback to bare kill -0 (no
+#     lstart birth corroboration).
+#   LEADV2_LANE_PREPASS_LIVE=1 — restore the pre-R-6 behaviour where a fresh
+#     architect-prepass child stream counts as a live signal. Default OFF:
+#     the prepass runs SYNCHRONOUSLY inside the dispatcher itself (before any
+#     spawn), so by the time any other process probes that stream, a fresh
+#     mtime there is residue of a dispatch attempt, never proof of a running
+#     worker — the exact self-refreshing-probe deadlock of EGRESS-STATUS-
+#     COLLECTOR-01 (task e5be9e72).
+pid_identity_on = pid_identity_raw != "0"
+prepass_live = prepass_live_raw == "1"
 
 CHILD_SUFFIXES = [s.strip() for s in child_suffixes_raw.split(",") if s.strip()]
 _FOLD_RE = re.compile(r'^(dispatch-[0-9a-f]{8})-(.+)$')
@@ -126,6 +139,63 @@ def pid_alive(value):
         return True
     except (TypeError, ValueError, ProcessLookupError, PermissionError):
         return False
+
+# --- LANE-REGISTRY-SELF-DEADLOCK-01 pid identity -------------------------------
+_LSTART_RE = re.compile(
+    r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
+    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+"
+    r"\d{1,2}\s+\d{1,2}:\d{2}:\d{2}\s+\d{4}$"
+)
+
+def _norm_birth(s):
+    # Same whitespace contract as the registry writer's `tr -s ' '` + trim
+    # (_lv2_pid_birth): collapse interior runs and strip both ends.
+    return " ".join(str(s or "").split())
+
+def ps_lstart(value):
+    # Same shape/timeout as ps_stat() — a missing or wedged `ps` degrades to
+    # "", never to a fabricated birth string.
+    try:
+        return subprocess.run(["ps", "-o", "lstart=", "-p", str(value)],
+                              capture_output=True, text=True, timeout=2).stdout.strip()
+    except Exception:
+        return ""
+
+def pid_state(value, birth, identity_on):
+    """(state, identity) — state in ("dead", "alive_verified", "alive_unverified"),
+    identity in ("verified", "unverified", "mismatch").
+
+    Degrade-to-unverified rules (design §3.1/§3.3): an absent, malformed, or
+    unobservable birth string NEVER kills a lane — only a well-formed recorded
+    birth that a live `ps` observation contradicts is a mismatch (recycled pid,
+    failure direction false-alive-safe everywhere else)."""
+    try:
+        pid = int(value)
+    except (TypeError, ValueError):
+        return ("dead", "unverified")
+    if pid <= 0:
+        # never os.kill(0, 0) — that signals the whole process group
+        return ("dead", "unverified")
+    try:
+        os.kill(pid, 0)
+    except (TypeError, ValueError, ProcessLookupError, PermissionError):
+        # PermissionError stays "dead" to match pid_alive()'s exact prior
+        # semantics (a pid we cannot signal is not OUR worker).
+        return ("dead", "unverified")
+    if not identity_on:
+        return ("alive_unverified", "unverified")
+    recorded = _norm_birth(birth)
+    if not recorded or not _LSTART_RE.match(recorded):
+        return ("alive_unverified", "unverified")
+    observed = _norm_birth(ps_lstart(pid))
+    if not observed:
+        # pid gone is already caught by kill(0); an empty `ps` here means
+        # unobservable — unverified, never mismatch (no double-count).
+        return ("alive_unverified", "unverified")
+    if observed == recorded:
+        return ("alive_verified", "verified")
+    return ("dead", "mismatch")
+# --- end LANE-REGISTRY-SELF-DEADLOCK-01 pid identity ---------------------------
 
 def ps_stat(value):
     try:
@@ -373,8 +443,11 @@ def sentinel_check(tid, row):
         row["pgid"] = pgid
         row["pgid_alive"] = False
     # active.yaml pid (condition 3): only blocks if it was explicitly recorded.
+    # LANE-REGISTRY-SELF-DEADLOCK-01: a lead_durable pid is the dispatching
+    # session's OWN pid — alive by definition, never worker evidence — so it
+    # must not block the sentinel from firing on a lead-registered row.
     pid_recorded = row.get("pid") is not None and str(row.get("pid")).strip() != ""
-    if pid_recorded and row.get("pid_alive"):
+    if pid_recorded and row.get("pid_alive") and row.get("pid_source") != "lead_durable":
         return False  # recorded-and-alive pid → do not fire
     # Verdict
     row["pid_recorded"] = pid_recorded
@@ -401,7 +474,8 @@ def resolve(tid):
     lane_dir = os.path.join(root, "docs", "handoff", tid)
     row = {"lane": tid, "verdict": None, "age_s": None, "source": None,
            "log_path": None, "raw_log_path": None, "pid": None, "pid_alive": None, "reason": None,
-           "attempt": None, "child_of": None}
+           "attempt": None, "child_of": None,
+           "pid_source": None, "pid_identity": None}
 
     # S0 (STATUSLINE-COUNT-TRUTH-02): a dispatch-<sig8>-<suffix> id, where
     # <suffix> is a registered child role, is a sub-agent prepass running
@@ -415,8 +489,35 @@ def resolve(tid):
 
     session = sessions.get(tid)
     if session is not None:
-        row["pid"] = session.get("pid")
-        row["pid_alive"] = pid_alive(row["pid"])
+        # LANE-REGISTRY-SELF-DEADLOCK-01: choose the pid the liveness ladder
+        # trusts. worker_pid (stamped post-spawn by set_worker_pid, with its
+        # own birth) wins; otherwise the row's `pid`, labelled by pid_role —
+        # "lead_durable" rows carry the DISPATCHING session's own pid, which
+        # is alive by definition while the lead lives and must never be read
+        # as worker-liveness evidence. A row with no pid_role at all (legacy
+        # / fanout-written) keeps today's exact bare kill -0 behaviour.
+        # All reads are .get() with try/int guards — one malformed field must
+        # never abort the --all pass for every other lane (design §3.1).
+        _role = session.get("pid_role")
+        if _role not in ("lead_durable", "worker"):
+            _role = None
+        _wpid = None
+        try:
+            _w = int(session.get("worker_pid"))
+            if _w > 0:
+                _wpid = _w
+        except (TypeError, ValueError):
+            _wpid = None
+        if _wpid is not None:
+            row["pid"] = _wpid
+            row["pid_source"] = "worker"
+            _state, _identity = pid_state(_wpid, session.get("worker_pid_birth"), pid_identity_on)
+        else:
+            row["pid"] = session.get("pid")
+            row["pid_source"] = "lead_durable" if _role == "lead_durable" else "legacy"
+            _state, _identity = pid_state(row["pid"], session.get("pid_birth"), pid_identity_on)
+        row["pid_alive"] = _state != "dead"
+        row["pid_identity"] = _identity
         # SD-LEDGER-SWEEP-HARDEN-01: leadv2_active_set_attempt() stamps this once
         # dispatch-code.sh's own $$ (the ledger's own attempt token) is known -- see
         # leadv2-fanout.sh's single-worker funnel finalization call site. Absent on
@@ -503,13 +604,23 @@ def resolve(tid):
         #  2) active.yaml session or a lane-local dispatch.json with NO stream
         #     of any kind yet -- a pure registration-only grace window,
         #     bounded by STARTING_MAX off age_from_started_at (D1).
+        # LANE-REGISTRY-SELF-DEADLOCK-01 (Defect 2): signal 1 is OFF by
+        # default now. The architect prepass runs SYNCHRONOUSLY inside
+        # leadv2-dispatch-code.sh itself (before any spawn), so a fresh
+        # prepass-stream mtime is residue of a dispatch ATTEMPT, never proof
+        # of a running worker — and every refused re-dispatch re-runs the
+        # prepass, refreshing the very mtime that caused the refusal
+        # (EGRESS-STATUS-COLLECTOR-01, task e5be9e72). The whole block is
+        # kept behind LEADV2_LANE_PREPASS_LIVE=1 (not deleted) so the R-6
+        # rationale and its fixture stay testable.
         child_stream = None
-        for suffix in CHILD_SUFFIXES:
-            candidate = os.path.join(f"{lane_dir}-{suffix}", f"{suffix}.stream.jsonl")
-            if os.path.isfile(candidate) and (
-                child_stream is None or os.path.getmtime(candidate) > os.path.getmtime(child_stream)
-            ):
-                child_stream = candidate
+        if prepass_live:
+            for suffix in CHILD_SUFFIXES:
+                candidate = os.path.join(f"{lane_dir}-{suffix}", f"{suffix}.stream.jsonl")
+                if os.path.isfile(candidate) and (
+                    child_stream is None or os.path.getmtime(candidate) > os.path.getmtime(child_stream)
+                ):
+                    child_stream = candidate
         if child_stream is not None:
             mtime = file_mtime(child_stream)
             if mtime is None:
@@ -557,7 +668,11 @@ def resolve(tid):
         # bounded by abandon_max (the D4 cut lives on the log-artifact ladder
         # and is not replicated here): the C2 fixture pins started_at 2020-01-01
         # and still requires silent:.
-        if row["pid"] is not None and row["pid_alive"]:
+        # LANE-REGISTRY-SELF-DEADLOCK-01 exception: a lead_durable pid is the
+        # lead session's own pid -- ignoring it here is the deadlock-breaker
+        # for a lead-registered lane whose worker died before ever writing a
+        # stream (design §2.1 state 7). Legacy rows keep the exact old floor.
+        if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") != "lead_durable":
             row.update(verdict=f"silent:{row['age_s'] if row['age_s'] is not None else 'unknown'}",
                        source="handoff", reason="no_artifact_process_alive")
             return row
@@ -619,7 +734,9 @@ def resolve(tid):
     # Provider queued/running (v2_mode) is now ANNOTATION ONLY — it never
     # short-circuits the verdict; log mtime + process evidence below decide.
     # Preserve stopped-process detection in the same verdict source.
-    if row["pid"] is not None and row["pid_alive"]:
+    # LANE-REGISTRY-SELF-DEADLOCK-01: gated on a non-lead pid — a wedged LEAD
+    # session must never mark a lane dead (design §2.1 state 12).
+    if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") != "lead_durable":
         stat = ps_stat(row["pid"])
         if "T" in stat:
             row.update(verdict=f"dead:wedged_STAT={stat}", reason=f"wedged_STAT={stat}")
@@ -660,9 +777,15 @@ def resolve(tid):
         row.update(verdict=f"dead:silent_{row['age_s']}s_abandoned", reason=f"abandoned{suffix}")
     elif row["pid"] is None:
         row.update(verdict=f"silent:{row['age_s']}", reason=f"no_pid_recorded{suffix}")
-    elif row["pid_alive"]:
+    elif row["pid_alive"] and row.get("pid_source") != "lead_durable":
         row.update(verdict=f"silent:{row['age_s']}", reason=f"log_silent_process_alive{suffix}")
     else:
+        # LANE-REGISTRY-SELF-DEADLOCK-01: this arm is reached three ways —
+        # (a) pid dead (pre-existing), (b) pid alive but pid_identity=mismatch
+        # (pid_state folds a recycled pid into pid_alive=False; design §2.1
+        # state 4), (c) pid alive but pid_source=lead_durable, i.e. the lead
+        # session's own pid, which is not worker evidence (state 5 — the
+        # deadlock-breaker).
         row.update(verdict=f"dead:silent_{row['age_s']}s_no_process", reason=f"log_silent_no_process{suffix}")
     return row
 

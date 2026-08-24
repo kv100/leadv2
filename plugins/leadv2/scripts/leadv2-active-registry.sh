@@ -11,6 +11,7 @@
 #   leadv2_active_mark_finished <task_id> <outcome> [<evidence_json>]  (PULSE-01)
 #   leadv2_active_set_writes <task_id> <writes_csv>              (SUPERVISOR-AUDIT-01 T-E)
 #   leadv2_active_set_attempt <task_id> <attempt_id>              (SD-LEDGER-SWEEP-HARDEN-01)
+#   leadv2_active_set_worker_pid <task_id> <pid> <pid_birth>      (LANE-REGISTRY-SELF-DEADLOCK-01)
 #   leadv2_active_render_index
 #   leadv2_active_list
 #   leadv2_active_check_limits <class>
@@ -204,6 +205,15 @@ try:
                 "pulse_log": pulse_log,
                 "pid": pid_int,
                 "pid_birth": pid_birth,
+                # LANE-REGISTRY-SELF-DEADLOCK-01: label WHO the row's `pid`
+                # belongs to at register time (always the durable lead session
+                # here). The post-spawn set_worker_pid op later flips this to
+                # "worker" atomically with worker_pid/worker_pid_birth, so
+                # leadv2-lane-liveness.sh can stop trusting a lead pid as
+                # lane-liveness evidence. refresh_existing deliberately does
+                # NOT set this -- refreshing must never relabel a row a fanout
+                # runner owns (design §5.1/R3).
+                "pid_role": "lead_durable",
                 "parent_session_id": None if parent_session_id in ("null", "", "None") else parent_session_id,
                 "daemon_mode": daemon_bool,
                 "last_pulse_at": last_pulse_at,
@@ -439,6 +449,26 @@ try:
         target["attempt"] = attempt_id
         target["updated_at"] = _now_iso()
 
+    # LANE-REGISTRY-SELF-DEADLOCK-01: stamp the SPAWNED WORKER's pid + birth
+    # onto the lane's row after a successful spawn. Mirrors set_worktree's
+    # ordering-race contract (stated at the register op): an unknown task_id is
+    # a SILENT no-op, rc 0 -- never an error, never a created row. A malformed
+    # pid string degrades to worker_pid=None without relabelling pid_role.
+    elif op == "set_worker_pid":
+        task_id, pid_str, birth = args
+        target = next((s for s in sessions if s.get("task_id") == task_id), None)
+        if target is None:
+            sys.exit(0)
+        try:
+            wpid = int(pid_str) if pid_str not in ("", "null", "None") else None
+        except (TypeError, ValueError):
+            wpid = None
+        target["worker_pid"] = wpid
+        target["worker_pid_birth"] = birth if birth not in ("", "null", "None") else None
+        if wpid is not None and wpid > 0:
+            target["pid_role"] = "worker"
+        target["updated_at"] = _now_iso()
+
     else:
         print(f"[registry] unknown op: {op}", file=sys.stderr)
         sys.exit(1)
@@ -527,6 +557,17 @@ print(f'[lv2_durable_pid] WARNING: no claude process found in PPID chain; using 
 PYEOF
 }
 
+# _lv2_pid_birth <pid> — canonical `ps -o lstart=` reader/writer trim.
+# LANE-LIVENESS-LIES-01 Change 1a: `tr -s ' '` alone collapses interior runs but
+# Darwin's `ps -o lstart=` right-pads the field, leaving a trailing space the
+# reader's `.strip()` removes -- so writer and reader never compared equal and
+# every healthy lane failed birth corroboration. Do not "simplify" back to
+# `tr -s ' '`. LANE-REGISTRY-SELF-DEADLOCK-01: extracted here so the register
+# writer and the post-spawn set_worker_pid stamp can never drift apart.
+_lv2_pid_birth() {
+  ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//' || printf -- 'unknown'
+}
+
 # leadv2_active_register <task_id> <class> <worktree> <branch> <daemon_mode>
 # Writes a new session row to active.yaml.
 # Returns (stdout): session_id in format s-YYYYMMDDTHHMMSSZ-PID
@@ -553,13 +594,7 @@ leadv2_active_register() {
   # Tiebreaker: append $$ (gate1 subprocess pid, unique per invocation) after durable_pid.
   # durable_pid is the liveness key; $$ ensures uniqueness when two tasks register same second.
   session_id="s-$(date -u +%Y%m%dT%H%M%SZ)-${durable_pid}-$$"
-  # LANE-LIVENESS-LIES-01 Change 1a: byte-identical trim to the canonical
-  # form the (now-retired) supervisor loop used at line 115 / leadv2-status-surface.sh lstart().
-  # `tr -s ' '` alone collapses interior runs but Darwin's `ps -o lstart=`
-  # right-pads the field, leaving a trailing space the reader's `.strip()`
-  # removes -- so writer and reader never compared equal and every healthy
-  # lane failed birth corroboration. Do not "simplify" back to `tr -s ' '`.
-  pid_birth="$(ps -o lstart= -p "${durable_pid}" 2>/dev/null | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//' || printf -- 'unknown')"
+  pid_birth="$(_lv2_pid_birth "${durable_pid}")"
   pulse_log="docs/leadv2/tasks/${task_id}/pulse.md"
   parent_sid="${LEADV2_PARENT_SESSION_ID:-null}"
 
@@ -727,6 +762,20 @@ leadv2_active_set_attempt() {
   lockfile="$(_leadv2_yaml_lockfile)"
   [[ -f "$yaml_file" ]] || return 4
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_attempt "$task_id" "$attempt_id"
+}
+
+# leadv2_active_set_worker_pid <task_id> <pid> <pid_birth>
+# LANE-REGISTRY-SELF-DEADLOCK-01: post-spawn stamp of the WORKER process
+# identity onto the lane's active.yaml row. Unknown task_id is a silent no-op
+# in the python op (register/spawn ordering races must never kill a lane), so
+# callers run this with `|| true` -- a stamp failure must never fail a dispatch.
+leadv2_active_set_worker_pid() {
+  local task_id="${1:?task_id required}" pid="${2:?pid required}" pid_birth="${3:-}"
+  local yaml_file lockfile
+  yaml_file="$(_leadv2_yaml_file)"
+  lockfile="$(_leadv2_yaml_lockfile)"
+  [[ -f "$yaml_file" ]] || return 0
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_worker_pid "$task_id" "$pid" "$pid_birth"
 }
 
 # leadv2_active_render_index

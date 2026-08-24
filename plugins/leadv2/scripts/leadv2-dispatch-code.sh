@@ -706,6 +706,21 @@ record_lane_start_sha() {  # <sig8> -> writes LANE_START_SHA best-effort, never 
   fi
 }
 
+# LANE-REGISTRY-SELF-DEADLOCK-01: pull one field out of a lane-liveness --json
+# row. Empty output (not an error) on any parse failure -- the placement probe
+# is advisory and fail-open by contract.
+_placement_probe_field() {  # <json-row> <field>
+  printf '%s' "${1:-}" | python3 -c '
+import sys, json
+try:
+    r = json.loads(sys.stdin.read())
+    v = r.get(sys.argv[1])
+    if v is not None: print(v)
+except Exception:
+    pass
+' "${2:-}" 2>/dev/null || true
+}
+
 # LANE-PLACEMENT-NOT-ADDRESSABLE-01: resolve an EXISTING lane worktree by lane key or by
 # explicit absolute path, validate it, and pin WORK_ROOT to it instead of ensure-creating
 # a new one.  Called from cmd_resolve after sig8/JOURNAL_TASK exist (so refusals are
@@ -786,9 +801,24 @@ _resolve_pinned_placement() {
 
   # Step 5: Not live-claimed.  Probe both id spellings the handoff tree uses.
   # Fail-open: probe failure/empty → treated as not live (advisory, never blocks a resume).
-  local _v _live=0 _probe_id
+  # LANE-REGISTRY-SELF-DEADLOCK-01: ONE --json probe per candidate id (was a
+  # plain probe plus a --json re-probe on the live branch); verdict+reason+age
+  # all come from the same row now, and a `lane_liveness verdict=<live|dead>`
+  # decision line is journaled on BOTH branches so the next forensic session
+  # sees WHY a lane was reclaimed (deliverable #2). signal derives from the
+  # row's reason: pid evidence vs stream freshness vs none.
+  local _row _v _reason _signal _age _live=0 _probe_id
   for _probe_id in "dispatch-${key}" "${key}"; do
-    _v="$(bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --lane "${_probe_id}" --no-codex 2>/dev/null || true)"
+    _row="$(bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --lane "${_probe_id}" --no-codex --json 2>/dev/null || true)"
+    _v="$(_placement_probe_field "${_row}" verdict)"
+    _reason="$(_placement_probe_field "${_row}" reason)"
+    _age="$(_placement_probe_field "${_row}" age_s)"
+    [[ -z "${_age}" ]] && _age="?"
+    _signal="none"
+    case "${_reason}" in
+      *process_alive*|*no_process*) _signal="pid_identity" ;;
+      *log_fresh*|*stream_fresh*)   _signal="stream_fresh" ;;
+    esac
     if [[ "${_v}" == "alive" || "${_v}" == starting:* ]]; then
       _live=1
       break
@@ -796,19 +826,7 @@ _resolve_pinned_placement() {
   done
   if (( _live == 1 )); then
     reason="lane_is_live"
-    # Re-probe with --json to get age_s (only reachable via --json).
-    local _row _age="?"
-    _row="$(bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --lane "${_probe_id}" --no-codex --json 2>/dev/null || true)"
-    _age="$(printf '%s' "${_row}" | python3 -c '
-import sys, json
-try:
-    r = json.loads(sys.stdin.read())
-    a = r.get("age_s")
-    if a is not None: print(a)
-except Exception:
-    pass
-' 2>/dev/null || true)"
-    [[ -z "${_age}" ]] && _age="?"
+    emit decision "lane_liveness verdict=live task=${sig8:-?} signal=${_signal} probe_id=${_probe_id} raw=${_v} age=${_age}"
     emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} path=${candidate} probe_id=${_probe_id} verdict=${_v} age=${_age}"
     printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
       "${reason}" "${ref}" "${candidate}" >&2
@@ -818,6 +836,9 @@ except Exception:
       "${LEADV2_DISPATCH_ARGV_REPLAY}" >&2
     exit 5
   fi
+  # Dead branch: the pin will proceed (Step 6) -- journal WHY the lane was
+  # judged not live, with the same signal vocabulary as the refusal branch.
+  [[ -n "${_probe_id:-}" ]] && emit decision "lane_liveness verdict=dead task=${sig8:-?} signal=${_signal} probe_id=${_probe_id:-none} raw=${_v:-none} reason=${_reason:-none}"
 
   # Step 6: Commit the pin.
   WORK_ROOT="${candidate}"
@@ -3716,6 +3737,24 @@ _spawn_worker_body() {
         log_err "spawn(sonnet) pid=${pid} is not alive -- treating as launch failure; first stream lines: ${_cause}"
         return 1
       fi
+      # LANE-REGISTRY-SELF-DEADLOCK-01 Defect 1: stamp the WORKER's pid + birth
+      # onto this lane's active.yaml row, AFTER the spawn is proven live. The
+      # row itself was registered pre-spawn with the LEAD session's durable pid
+      # (pid_role=lead_durable); without this stamp liveness trusts the lead's
+      # pid forever and a dead worker's lane can never be reclaimed. A file
+      # write escapes this command-substitution subshell (same as
+      # _dispatch_register_arm below). Guarded on DISPATCH_REG_ID: the
+      # cmd_advance_arm path never sets it -- prefer skip over guessing the row
+      # (design R5). `|| true` + explicit `set +e`: the sourced registry re-
+      # asserts -e and a stamp failure must never kill the dispatch (E2E-GATE-
+      # RESIDUE-01 round 4 root cause).
+      if [[ -n "${DISPATCH_REG_ID:-}" ]] && declare -F leadv2_active_set_worker_pid >/dev/null 2>&1; then
+        set +e
+        local _wpid_birth
+        _wpid_birth="$(_lv2_pid_birth "${pid}" 2>/dev/null || printf '')"
+        LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_set_worker_pid \
+          "${DISPATCH_REG_ID}" "${pid}" "${_wpid_birth}" >/dev/null 2>&1 || true
+      fi
       ;;
     codex)
       # CODEX arm (ROUTING-ENFORCEMENT-01): launch through the sanctioned codex-task.sh
@@ -4872,6 +4911,11 @@ cmd_resolve() {
   # identity when founder_task_id is absent -- byte-identical to today for
   # fanout (which always sets founder_task_id).
   local reg_id="${founder_task_id:-dispatch-${sig8}}"
+  # LANE-REGISTRY-SELF-DEADLOCK-01: script-scope mirror of reg_id so
+  # _spawn_worker_body (which runs in a command substitution and cannot read
+  # this local) can stamp the post-spawn worker pid onto the row. A file write
+  # escapes the subshell — same pattern as _dispatch_register_arm at :3795.
+  DISPATCH_REG_ID="${reg_id}"
   if [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
     if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null \
        || ! leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null; then
