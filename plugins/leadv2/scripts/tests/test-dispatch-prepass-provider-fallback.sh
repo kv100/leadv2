@@ -45,7 +45,7 @@ case "${STUB_MODE}" in
     printf 'acceptance:\n  surface: file_artifact\nLANE_WRITES: seed.txt\n' > "${out}"
     ;;
   fail) exit 23 ;;
-  sleep) sleep 30 ;;
+  sleep) printf '%s' "$$" > "${STUB_PROVIDER_PID_FILE}"; sleep 30 ;;
   *) exit 64 ;;
 esac
 EOF
@@ -59,7 +59,7 @@ make_runner() { # <fixture-dir> <repo> <mode> <provider> <stub-mode>
 set -euo pipefail
 source "${FIXTURE_DIR}/scripts/dispatch-lib.sh"
 PROJECT_ROOT="${FIXTURE_REPO}"
-ARCHITECT_PREPASS_TIMEOUT_SEC=1
+ARCHITECT_PREPASS_TIMEOUT_SEC="${FIXTURE_TIMEOUT:-1}"
 emit() { printf '%s\n' "$*" >> "${FIXTURE_DIR}/events.log"; }
 _provider_available() { return 0; }
 _load_dispatch_ladder() {
@@ -72,10 +72,11 @@ _load_dispatch_ladder() {
 CODEX_BIN="${FIXTURE_DIR}/provider.sh"
 GLM_BIN="${FIXTURE_DIR}/provider.sh"
 printf 'architect prompt\n' > "${FIXTURE_DIR}/mission.md"
-if [[ "${FIXTURE_MODE}" == registry-foreign || "${FIXTURE_MODE}" == registry-worker || "${FIXTURE_MODE}" == registry-owned ]]; then
+if [[ "${FIXTURE_MODE}" == registry-foreign || "${FIXTURE_MODE}" == registry-worker || "${FIXTURE_MODE}" == registry-owned || "${FIXTURE_MODE}" == registry-signal-window ]]; then
   session=foreign-session; pid=999999; role=lead_durable
   [[ "${FIXTURE_MODE}" == registry-worker ]] && { session=ours-session; pid=12345; role=worker; }
   [[ "${FIXTURE_MODE}" == registry-owned ]] && { session=ours-session; pid=12345; }
+  [[ "${FIXTURE_MODE}" == registry-signal-window ]] && { session=ours-session; pid=12345; }
   cat > "${FIXTURE_DIR}/registry.yaml" <<YAML
 sessions:
   - task_id: fixture-lane
@@ -88,7 +89,16 @@ YAML
   DISPATCH_SLOT_REG_ID=fixture-lane
   DISPATCH_SLOT_SESSION=ours-session
   DISPATCH_SLOT_PID=12345
+  if [[ "${FIXTURE_MODE}" == registry-signal-window ]]; then
+    # The runner itself is the live-worker stand-in.  Exercise the exact
+    # release entry point while the pre-spawn disarm is active; its row must
+    # survive even though the process is still live.
+    kill -0 "$$"
+    _dispatch_disarm_slot_before_spawn
+    _release_registered_lane fixture-lane fixture-sig signal-window
+  else
   _release_registered_lane fixture-lane fixture-sig fixture-test
+  fi
   python3 - "${FIXTURE_DIR}/registry.yaml" "${FIXTURE_MODE}" <<'PY'
 import sys, yaml
 data, mode = yaml.safe_load(open(sys.argv[1])), sys.argv[2]
@@ -106,7 +116,7 @@ EOF
   make_provider_stub "${d}/provider.sh"
   FIXTURE_DIR="${d}" FIXTURE_REPO="${repo}" FIXTURE_MODE="${mode}" \
     FIXTURE_PROVIDER="${provider}" STUB_MODE="${stub_mode}" \
-    STUB_ARGS_FILE="${d}/provider.args" TMPDIR="${d}/tmp" bash "${d}/runner.sh"
+    STUB_ARGS_FILE="${d}/provider.args" STUB_PROVIDER_PID_FILE="${d}/provider.pid" TMPDIR="${d}/tmp" bash "${d}/runner.sh"
 }
 
 case_success_codex() {
@@ -129,6 +139,12 @@ workspace_absent() { # <fixture-dir>
 import os, sys
 assert not any(name.startswith('leadv2-afb.') for name in os.listdir(os.path.join(sys.argv[1], 'tmp')))
 PY
+}
+
+provider_not_running() { # <pid> -- a zombie has been killed and awaits reap
+  local state
+  state="$(ps -o stat= -p "$1" 2>/dev/null | tr -d '[:space:]')"
+  [[ -z "${state}" || "${state}" == Z* ]]
 }
 
 case_success_glm() {
@@ -157,17 +173,36 @@ case_timeout_cleanup() {
 }
 
 case_signal_cleanup() {
-  local d="${ROOT}/signal" repo pid rc=0 i
+  local d="${ROOT}/signal" repo pid rc=0 i elapsed
   repo="$(make_fixture "${d}")"
+  # Build the same isolated runner/provider seam used by the other subprocess
+  # cases, then start a fresh long-running fallback through that seam.
+  make_runner "${d}" "${repo}" fallback codex success >/dev/null 2>&1
+  SECONDS=0
   FIXTURE_DIR="${d}" FIXTURE_REPO="${repo}" FIXTURE_MODE=fallback FIXTURE_PROVIDER=codex \
-    STUB_MODE=sleep STUB_ARGS_FILE="${d}/provider.args" TMPDIR="${d}/tmp" bash "${d}/runner.sh" >/dev/null 2>&1 &
+    FIXTURE_TIMEOUT=30 STUB_MODE=sleep STUB_ARGS_FILE="${d}/provider.args" STUB_PROVIDER_PID_FILE="${d}/provider.pid" TMPDIR="${d}/tmp" bash "${d}/runner.sh" >"${d}/runner.log" 2>&1 &
   pid=$!
-  for i in $(seq 1 40); do [[ -s "${d}/provider.args" ]] && break; sleep 0.05; done
+  for i in $(seq 1 40); do
+    [[ -s "${d}/provider.args" && -s "${d}/provider.pid" ]] && break
+    sleep 0.05
+  done
   kill -TERM "${pid}" 2>/dev/null || true
   wait "${pid}" || rc=$?
-  if [[ ${rc} -ne 0 ]] && workspace_absent "${d}"; then
-    ok 'EXIT cleanup removes a workspace when the fallback subprocess is signalled'
-  else bad 'signal cleanup fixture'; fi
+  elapsed=${SECONDS}
+  if [[ -s "${d}/provider.pid" && ${rc} -ne 0 && ${elapsed} -lt 3 ]] && workspace_absent "${d}" \
+      && provider_not_running "$(cat "${d}/provider.pid")"; then
+    ok 'SIGTERM interrupts a 30-second fallback promptly and removes its workspace'
+  else
+    bad 'signal cleanup fixture'
+  fi
+}
+
+case_signal_window_registry_survives() {
+  local arm="$1" d="${ROOT}/signal-window-${1}" repo
+  repo="$(make_fixture "${d}")"
+  if make_runner "${d}" "${repo}" registry-signal-window "${arm}" success >/dev/null 2>&1; then
+    ok "${arm} live-row signal window is disarmed before EXIT cleanup"
+  else bad "${arm} signal-window fixture"; fi
 }
 
 case_foreign_owner_refusal() {
@@ -199,6 +234,8 @@ case_success_glm
 case_nonzero_cleanup
 case_timeout_cleanup
 case_signal_cleanup
+case_signal_window_registry_survives codex
+case_signal_window_registry_survives glm
 case_foreign_owner_refusal
 case_worker_owner_refusal
 case_owned_compare_delete

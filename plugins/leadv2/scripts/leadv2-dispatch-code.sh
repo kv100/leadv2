@@ -593,6 +593,11 @@ ARCHITECT_FALLBACK_ARM_USED=""
 # Armed only while a fallback's disposable workspace exists.  The process-wide
 # EXIT cleanup owns it so signals cannot strand a fallback worktree.
 ARCHITECT_FALLBACK_WORKSPACE_BASE=""
+# The foreground Python supervisor for an active fallback provider.  The
+# signal trap interrupts and reaps this PID before EXIT cleanup removes its
+# workspace.
+ARCHITECT_FALLBACK_RUNNER_PID=""
+ARCHITECT_FALLBACK_RUNNER_PID_FILE=""
 # T-c (SUPERVISOR-AUDIT-01): sig-keyed prepass cache + reduced prompt for short missions.
 # =0 restores today's behavior byte-for-byte (always re-run the architect, full prompt).
 PREPASS_CACHE="${LEADV2_PREPASS_CACHE:-1}"
@@ -2897,7 +2902,31 @@ cleanup_pending_dispatch() {
   dispatch_abort "${token}" >/dev/null 2>&1 || true
 }
 trap cleanup_pending_dispatch EXIT
-trap 'exit 130' INT TERM
+_dispatch_signal_exit() { # <signal-number> -- interrupt a foreground fallback runner first
+  local signal_number="$1" runner_pid="${ARCHITECT_FALLBACK_RUNNER_PID:-}" i
+  if [[ -z "${runner_pid}" && -n "${ARCHITECT_FALLBACK_RUNNER_PID_FILE:-}" && -r "${ARCHITECT_FALLBACK_RUNNER_PID_FILE}" ]]; then
+    runner_pid="$(cat "${ARCHITECT_FALLBACK_RUNNER_PID_FILE}" 2>/dev/null || true)"
+  fi
+  if [[ -n "${runner_pid}" ]]; then
+    kill -TERM "${runner_pid}" 2>/dev/null || true
+    # `wait` is interruptible, unlike a foreground command substitution.  Reap
+    # the bounded Python supervisor before running EXIT cleanup so it can kill
+    # its provider process group and no fallback child outlives this dispatcher.
+    wait "${runner_pid}" 2>/dev/null || true
+    # When _architect_timed_run is inside a command substitution its Python
+    # supervisor is a child of that subshell, not this trap's shell.  It cannot
+    # be waited here, so verify its TERM handler has exited before workspace
+    # cleanup can remove its pid file.
+    for i in $(seq 1 40); do
+      kill -0 "${runner_pid}" 2>/dev/null || break
+      sleep 0.05
+    done
+    ARCHITECT_FALLBACK_RUNNER_PID=""
+  fi
+  exit "$((128 + signal_number))"
+}
+trap '_dispatch_signal_exit 2' INT
+trap '_dispatch_signal_exit 15' TERM
 lv2_trace_arm_exit "lane" "$@"
 
 # ── review-ledger dedup ───────────────────────────────────────────────────────────
@@ -3307,10 +3336,22 @@ $(tail -c 262144 "${s}" 2>/dev/null)"
 # (same bash heredoc quirk as the primary invocation below).
 _architect_timed_run() {  # <timeout_sec> <cmd...> -> stdout=output, rc=launcher rc
   local tmo="$1"; shift
-  python3 - "${tmo}" "$@" <<'PY' 2>&1
+  python3 - "${tmo}" "$@" <<'PY' 2>&1 &
 import os, signal, subprocess, sys
 timeout = sys.argv[1]
 proc = None
+def stop_process_group():
+    if proc is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+def interrupted(signum, _frame):
+    stop_process_group()
+    sys.exit(128 + signum)
+signal.signal(signal.SIGTERM, interrupted)
+signal.signal(signal.SIGINT, interrupted)
 try:
     proc = subprocess.Popen(
         sys.argv[2:], env=os.environ.copy(), text=True,
@@ -3333,13 +3374,21 @@ except subprocess.TimeoutExpired:
         for pid in _descendants(proc.pid) + [proc.pid]:
             try: os.kill(pid, signal.SIGKILL)
             except ProcessLookupError: pass
-        try: os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError: pass
+        stop_process_group()
         stdout, _ = proc.communicate()
         sys.stdout.write(stdout or "")
     print("architect_prepass_timeout", file=sys.stderr)
     sys.exit(124)
 PY
+  ARCHITECT_FALLBACK_RUNNER_PID=$!
+  if [[ -n "${ARCHITECT_FALLBACK_RUNNER_PID_FILE:-}" ]]; then
+    printf '%s' "${ARCHITECT_FALLBACK_RUNNER_PID}" > "${ARCHITECT_FALLBACK_RUNNER_PID_FILE}" 2>/dev/null || true
+  fi
+  local runner_rc=0
+  wait "${ARCHITECT_FALLBACK_RUNNER_PID}" || runner_rc=$?
+  [[ -z "${ARCHITECT_FALLBACK_RUNNER_PID_FILE:-}" ]] || rm -f "${ARCHITECT_FALLBACK_RUNNER_PID_FILE}" 2>/dev/null || true
+  ARCHITECT_FALLBACK_RUNNER_PID=""
+  return "${runner_rc}"
 }
 
 # PREPASS-PROVIDER-FALLBACK-01 §2: when the selected architect provider failed
@@ -3400,16 +3449,18 @@ _afb_discard_workspace() {  # <ws_base> -- best-effort disposal on EVERY termina
 
 _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> <failed_provider>
   local mfile="$1" sig8="$2" failcls="$3" out_file="$4" failed_prov="$5"
-  local i arm prov out rc glm_out ws_base ws _afb_ok=0
+  local i arm prov out rc glm_out run_out ws_base ws _afb_ok=0
   # R5 H1: disposable isolated workspace -- never ${PROJECT_ROOT} as cwd.
   ws_base="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-afb.XXXXXX")" || return 1
   # Arm process-global EXIT/signal cleanup immediately: a signal between this
   # point and normal disposal must not strand a disposable worktree.
   ARCHITECT_FALLBACK_WORKSPACE_BASE="${ws_base}"
+  ARCHITECT_FALLBACK_RUNNER_PID_FILE="${ws_base}/.fallback-runner.pid"
   ws="${ws_base}/wt"
   if ! git -C "${PROJECT_ROOT}" worktree add --detach "${ws}" HEAD >/dev/null 2>&1; then
     _afb_discard_workspace "${ws_base}"
     ARCHITECT_FALLBACK_WORKSPACE_BASE=""
+    ARCHITECT_FALLBACK_RUNNER_PID_FILE=""
     emit decision "architect_prepass_fallback task=${sig8} outcome=aborted reason=workspace_unavailable"
     return 1
   fi
@@ -3432,8 +3483,18 @@ _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> 
     fi
     case "${arm}" in
       codex)
-        out="$(PROJECT_ROOT="${ws}" _architect_timed_run "${ARCHITECT_PREPASS_TIMEOUT_SEC}" \
-                 bash "${CODEX_BIN}" task "$(cat "${mfile}")" --wait --tier standard --cwd "${ws}")"; rc=$?
+        run_out="$(mktemp "${TMPDIR:-/tmp}/leadv2-architect-codex.XXXXXX")" || break
+        # Do not command-substitute the supervisor: Bash defers the parent's
+        # TERM trap while waiting on that form.  Redirecting its output lets
+        # the trap-owning shell wait directly and interrupt its process group.
+        if PROJECT_ROOT="${ws}" _architect_timed_run "${ARCHITECT_PREPASS_TIMEOUT_SEC}" \
+                 bash "${CODEX_BIN}" task "$(cat "${mfile}")" --wait --tier standard --cwd "${ws}" > "${run_out}"; then
+          rc=0
+        else
+          rc=$?
+        fi
+        out="$(cat "${run_out}" 2>/dev/null || true)"
+        rm -f "${run_out}"
         if [[ ${rc} -eq 0 && -n "${out}" ]] && printf '%s\n' "${out}" > "${out_file}" 2>/dev/null; then
           _afb_ok=1
           ARCHITECT_FALLBACK_ARM_USED="${arm}"
@@ -3444,9 +3505,13 @@ _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> 
         ;;
       glm)
         glm_out="$(mktemp "${TMPDIR:-/tmp}/leadv2-architect-glm.XXXXXX")" || break
-        out="$(PROJECT_ROOT="${ws}" GLM_TIMEOUT="${ARCHITECT_PREPASS_TIMEOUT_SEC}" \
+        if PROJECT_ROOT="${ws}" GLM_TIMEOUT="${ARCHITECT_PREPASS_TIMEOUT_SEC}" \
                  _architect_timed_run "${ARCHITECT_PREPASS_TIMEOUT_SEC}" \
-                 bash "${GLM_BIN}" run "@${mfile}" --out "${glm_out}" --cwd "${ws}")"; rc=$?
+                 bash "${GLM_BIN}" run "@${mfile}" --out "${glm_out}" --cwd "${ws}" >/dev/null; then
+          rc=0
+        else
+          rc=$?
+        fi
         if [[ ${rc} -eq 0 && -s "${glm_out}" ]] && cat "${glm_out}" > "${out_file}" 2>/dev/null; then
           rm -f "${glm_out}"
           _afb_ok=1
@@ -3463,6 +3528,7 @@ _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> 
   # success (break above), per-arm failure, ladder exhaustion, write failure.
   _afb_discard_workspace "${ws_base}"
   ARCHITECT_FALLBACK_WORKSPACE_BASE=""
+  ARCHITECT_FALLBACK_RUNNER_PID_FILE=""
   (( ${_afb_ok} == 1 )) || return 1
   return 0
 }
@@ -3498,6 +3564,21 @@ DISPATCH_SLOT_REG_ID=""
 DISPATCH_SLOT_SESSION=""
 DISPATCH_SLOT_PID=""
 DISPATCH_SLOT_SIG8=""
+DISPATCH_SLOT_PRESPAWN_DISARMED=""
+_dispatch_disarm_slot_before_spawn() {
+  # R10 H1: the launcher may expose a live GLM/Codex worker before control
+  # returns to this shell.  Disarm the parent EXIT cleanup *before* invoking
+  # it; a signal in that interval therefore preserves the registry row.  A
+  # known no-worker result re-arms the same captured ownership below.
+  [[ -n "${DISPATCH_SLOT_REG_ID:-}" ]] || return 0
+  DISPATCH_SLOT_PRESPAWN_DISARMED="${DISPATCH_SLOT_REG_ID}"
+  DISPATCH_SLOT_REG_ID=""
+}
+_dispatch_rearm_slot_after_no_spawn() {
+  [[ -n "${DISPATCH_SLOT_PRESPAWN_DISARMED:-}" ]] || return 0
+  DISPATCH_SLOT_REG_ID="${DISPATCH_SLOT_PRESPAWN_DISARMED}"
+  DISPATCH_SLOT_PRESPAWN_DISARMED=""
+}
 _release_registered_lane() {  # <reg_id> <sig8> <where> -- owner-verified, idempotent
   local rid="$1" s8="$2" where="$3"
   [[ -n "${rid}" && -n "${DISPATCH_SLOT_REG_ID}" ]] || return 0
@@ -5942,8 +6023,18 @@ exit is treated as an incident."
 
 ${mission}"
     fi
+    # R10 H1: do this in the parent shell, before atomic_dispatch... can call
+    # a launcher.  Its worker becomes independently live before that function
+    # returns; leaving the EXIT slot armed until the later arc==0 branch made a
+    # TERM in that window delete GLM/Codex's still-live registry row.
+    [[ "${spawn}" == "1" ]] && _dispatch_disarm_slot_before_spawn
     atomic_dispatch_reserve_spawn_confirm "${sig}" "${candidate}" "${rule}" "${_candidate_mission}" "${sig8}" "${spawn}"
     arc=$?
+    # Re-arm only outcomes that prove no launcher ran (duplicate/lock/reserve)
+    # or that spawn_worker rejected before reporting liveness.  Ambiguous and
+    # post-spawn outcomes remain disarmed: preserving a possible live worker is
+    # safer than deleting its row from an EXIT trap.
+    case "${arc}" in 2|3|4|6) _dispatch_rearm_slot_after_no_spawn ;; esac
     case "${arc}" in
     2)
       if [[ "${force}" == "1" ]]; then
@@ -6034,6 +6125,7 @@ ${mission}"
       # worker (_spawn_worker_body's set_worker_pid flipped pid_role to
       # "worker"), so the EXIT-trap slot release is disarmed from here on.
       DISPATCH_SLOT_REG_ID=""
+      DISPATCH_SLOT_PRESPAWN_DISARMED=""
       if [[ -n "${WORK_ROOT}" && "${WORK_ROOT}" != "${PROJECT_ROOT}" ]]; then
         emit decision "lane_worktree_left task=${sig8} founder_task=${founder_task_id:-} path=${WORK_ROOT}"
         log "lane worktree left on disk for task=${sig8}: ${WORK_ROOT}"
