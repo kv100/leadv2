@@ -79,15 +79,25 @@ fi
 export PROJECT_ROOT="$PROJECT_ROOT"
 export LEADV2_PROJECT_ROOT="$PROJECT_ROOT"
 
-# CORE-OFFLINE-WORKTREE-GAP-01: sibling-first resolution — same idiom as
-# leadv2-fanout.sh, so a lane launched from a worktree (no vendored
-# .claude/scripts/) or under a fixture $HOME (no shared tree) still resolves.
+# LEAD-CONTROL-PLANE-01 + CORE-OFFLINE-WORKTREE-GAP-01 (H5,
+# MERGED-BATCH-FIXROUND-01): the resolution INVARIANT is that the chosen
+# copy routes active.yaml through scripts/leadv2-state-path.sh (control-plane
+# state root) — a copy that predates that still hardcodes
+# docs/leadv2/active.yaml and must be SKIPPED, wherever it sits in the chain.
+# Sibling-first is an AVAILABILITY ordering, not the invariant: SCRIPT_DIR is
+# the only root always correct for the script actually executing (a lane
+# worktree has no vendored .claude/scripts/, a fixture $HOME has no shared
+# tree), but sibling-first only wins when the sibling also carries the
+# property.
+_lv2_registry_ok() {
+  [[ -s "$1" ]] && grep -q 'leadv2-state-path.sh' "$1"
+}
 _REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
-[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh"
-[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
-[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"
-if [[ ! -s "$_REGISTRY_SH" ]]; then
-  log_error "leadv2-active-registry.sh not found (sibling/vendored/canonical/shared) — refusing to launch"
+_lv2_registry_ok "$_REGISTRY_SH" || _REGISTRY_SH="${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh"
+_lv2_registry_ok "$_REGISTRY_SH" || _REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
+_lv2_registry_ok "$_REGISTRY_SH" || _REGISTRY_SH="${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"
+if ! _lv2_registry_ok "$_REGISTRY_SH"; then
+  log_error "leadv2-active-registry.sh not found, or every copy found (sibling/vendored/canonical/shared) predates the control-plane state-path resolution — refusing to launch"
   exit 1
 fi
 # shellcheck source=/dev/null
