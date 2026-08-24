@@ -17,7 +17,7 @@
 # Tests:
 #   1. --tier top      -> 1800s
 #   2. --tier standard  -> 900s
-#   3. no --tier (default) -> 600s
+#   3. no --tier (default standard) -> 900s
 #   4. CODEX_TIMEOUT explicit env wins over --tier top
 #   5. bash -n syntax check
 #
@@ -57,7 +57,10 @@ _resolved_seconds() {
   local extra_env=() tier_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --tier) tier_args=(--tier "$2"); shift 2 ;;
+      --tier)
+        tier_args=(--tier "$2")
+        [[ "$2" == "top" ]] && tier_args+=(--reason "timeout-tier fixture")
+        shift 2 ;;
       *) extra_env+=("$1"); shift ;;
     esac
   done
@@ -69,7 +72,7 @@ _resolved_seconds() {
   local out
   out="$(PATH="${FAKE_BIN_DIR}:${PATH}" env "${extra_env[@]}" \
     bash "$CODEX_TASK_SH" task "portable test — no real Codex call" "${tier_args[@]}" 2>&1)" || true
-  printf -- '%s\n' "$out" | grep -oE 'MOCK_TIMEOUT_SECONDS=[0-9]+' | tail -1 | cut -d= -f2
+  printf -- '%s\n' "$out" | grep -oE 'MOCK_TIMEOUT_SECONDS=[0-9]+' | tail -1 | cut -d= -f2 || true
 }
 
 test_1_tier_top() {
@@ -87,10 +90,10 @@ test_2_tier_standard() {
 }
 
 test_3_no_tier_default() {
-  log "Test 3: no --tier -> 600s (default)"
+  log "Test 3: no --tier -> 900s (default standard)"
   local secs
   secs="$(_resolved_seconds)"
-  [[ "$secs" == "600" ]] && pass "Test 3: 600s" || fail "Test 3: got '$secs' (expected 600)"
+  [[ "$secs" == "900" ]] && pass "Test 3: 900s" || fail "Test 3: got '$secs' (expected 900)"
 }
 
 test_4_explicit_env_wins() {
