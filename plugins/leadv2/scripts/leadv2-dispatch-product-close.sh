@@ -2471,6 +2471,9 @@ pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
 refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
 resolver_rc="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_rc=//p' | head -n1)"
 resolver_stderr="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_stderr=//p' | head -n1)"
+source "${SCRIPT_DIR}/lib/leadv2-review-reroute-note.sh"
+_reroute_note="$(leadv2_review_reroute_note "${TASK}" "${pool}" "${reviewer}")"
+[[ -n "${_reroute_note}" ]] && emit decision "${_reroute_note}"
 # Defense-in-depth (R9): the resolver already filters the author out of its pool, but
 # a reviewer==author slip (stale cache, a launcher default) must never reach a live
 # self-review -- assert it here too rather than trusting a single enforcement point.

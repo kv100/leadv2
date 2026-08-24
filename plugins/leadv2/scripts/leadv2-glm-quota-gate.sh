@@ -35,10 +35,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/leadv2-arm-cooldown.sh
 source "${SCRIPT_DIR}/lib/leadv2-arm-cooldown.sh"
 LIVE="${LEADV2_QUOTA_LIVE:-"${SCRIPT_DIR}/leadv2-quota-live.sh"}"
-THRESHOLD="${GLM_QUOTA_THRESHOLD:-80}"
+CEILINGS="${SCRIPT_DIR}/../config/leadv2-quota-ceilings.sh"
+if source "${CEILINGS}" 2>/dev/null && declare -F leadv2_quota_ceiling >/dev/null 2>&1; then
+  _glm_default_threshold="$(leadv2_quota_ceiling glm build 2>/dev/null || printf '80')"
+else
+  _glm_default_threshold=80
+fi
+THRESHOLD="${GLM_QUOTA_THRESHOLD:-${_glm_default_threshold}}"
 
 warn() { printf -- '[glm-quota-gate] %s\n' "$*" >&2; }
 info() { printf -- '[glm-quota-gate] %s\n' "$*"; }
+
+# QUOTA-GATE-PARITY-01 F3: THRESHOLD is operator input (GLM_QUOTA_THRESHOLD or
+# LEADV2_CEIL_GLM_WORK). Unvalidated it reaches `(( five_pct >= THRESHOLD ))`
+# under set -u, aborting the script with bash's rc 1/2 -- and rc 2 is the
+# PEAK-HOURS refusal code, so a config typo reads as "wait until 10:00 UTC"
+# and every GLM lane silently stops starting. Validate: non-numeric -> warn,
+# fall back to 80 (fail-open contract, §3); >100 -> warn inert, keep going.
+if ! [[ "$THRESHOLD" =~ ^[0-9]+$ ]]; then
+  warn "WARN: non-numeric quota threshold '${THRESHOLD}' (GLM_QUOTA_THRESHOLD / LEADV2_CEIL_GLM_WORK); falling back to 80"
+  THRESHOLD=80
+elif (( THRESHOLD > 100 )); then
+  warn "WARN: threshold ${THRESHOLD} > 100 -- gate is inert (never trips)"
+fi
 
 # Bypass (emergencies). Logged — never silent.
 if [[ "${GLM_SKIP_QUOTA_GATE:-0}" == "1" ]]; then
@@ -109,6 +128,19 @@ wk_pct="$(printf '%s' "$parsed" | python3 -c 'import sys,json;print(json.load(sy
 five_reset="$(printf '%s' "$parsed" | python3 -c 'import sys,json;print(json.load(sys.stdin)["five_reset"])' 2>/dev/null)"
 wk_reset="$(printf '%s' "$parsed" | python3 -c 'import sys,json;print(json.load(sys.stdin)["wk_reset"])' 2>/dev/null)"
 five_pct="${five_pct:-0}"; wk_pct="${wk_pct:-0}"
+# QUOTA-GATE-PARITY-01 (F3 twin): a present-but-non-numeric reading (python
+# prints the literal `None` when five_hour.pct is absent from an otherwise
+# status:ok payload, or a `12.5` float) reaches the §1 arithmetic under set -u
+# and aborts the script -- again impersonating the rc 2 peak-hours refusal.
+# A non-numeric reading is UNKNOWN, so fail open per §3, never default to 0.
+if ! [[ "$five_pct" =~ ^[0-9]+$ ]]; then
+  warn "FAIL-OPEN: GLM quota read is non-numeric (five_hour.pct='${five_pct}'). Cannot gate on a number we do not have -- lane may start."
+  exit 0
+fi
+if ! [[ "$wk_pct" =~ ^[0-9]+$ ]]; then
+  warn "FAIL-OPEN: GLM quota read is non-numeric (weekly.pct='${wk_pct}'). Cannot gate on a number we do not have -- lane may start."
+  exit 0
+fi
 
 # ── §1 quota reroute check ───────────────────────────────────────────────────
 if (( five_pct >= THRESHOLD || wk_pct >= THRESHOLD )); then

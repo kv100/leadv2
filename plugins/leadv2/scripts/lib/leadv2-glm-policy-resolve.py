@@ -75,6 +75,18 @@ DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "kimi", "opus", "sonnet"]
 DEFAULT_GLM_REVIEW_THRESHOLD_PCT = 90.0
 DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT = 95.0
 
+# QUOTA-GATE-PARITY-01: limit_reached is fetched verbatim from the provider
+# rate_limit.limit_reached field and is NOT derived from used_percent (captured
+# 2026-08-24T13:54Z from ~/.claude/state/leadv2/quota-cache/codex.json, written
+# by leadv2-quota-read.py:273-291: status=ok, limit_reached=false,
+# binding_window=primary, windows[0].used_percent=4 -- a low pct with the flag
+# false, proving the two are independent fields).
+# UNVERIFIED: a true limit_reached has never been observed alongside its
+# used_percent (no limit-reached sample is on disk and the endpoint is
+# undocumented), so 100.0 is a saturating block sentinel, not a measured
+# percentage. Safe in the refusal direction only.
+CODEX_LIMIT_REACHED_PCT = 100.0
+
 
 def _num_ge(val, n):
     try:
@@ -328,10 +340,17 @@ def live_codex_weekly_pct(quota_live_bin):
         d = json.loads(out.stdout)
         if d.get("status") != "ok":
             return None
+        # Top-level flag is evaluated BEFORE the binding-window loop so a
+        # binding window with a numeric used_percent can no longer return
+        # early past it: the two flags are a true OR (QUOTA-GATE-PARITY-01 F1).
+        if d.get("limit_reached") is True:
+            return CODEX_LIMIT_REACHED_PCT
         windows = d.get("windows") or []
         binding = d.get("binding_window")
         for w in windows:
             if w.get("kind") == binding:
+                if w.get("limit_reached") is True:
+                    return CODEX_LIMIT_REACHED_PCT
                 return w.get("used_percent")
         return windows[0].get("used_percent") if windows else None
     except Exception:

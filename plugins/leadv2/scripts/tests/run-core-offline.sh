@@ -329,6 +329,8 @@ SUITE_DEFS=(
   "plugin sync contracts write gate|||bash $TEST_DIR/test-plugin-sync-contracts-gate.sh"
   "lane trace instrument (Mission B: writer/concurrency/off-path/reader)|||bash $TEST_DIR/test-leadv2-trace.sh"
   "burn governor (BURN-GOVERNOR-01: 24h burn gate)|||bash $TEST_DIR/test-burn-governor.sh|||SERIAL"
+  "provider quota gate (QUOTA-GATE-PARITY-01)|||bash $TEST_DIR/test-provider-quota-gate.sh"
+  "codex-dead review reroute (QUOTA-GATE-PARITY-01)|||bash $TEST_DIR/test-codex-dead-reroute.sh"
 )
 
 # Runner-mechanics test hook (SUITE-SPEED-01): a caller may substitute the

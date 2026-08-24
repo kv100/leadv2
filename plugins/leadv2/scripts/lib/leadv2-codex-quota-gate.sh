@@ -11,10 +11,8 @@
 #   - codex-task.sh (transitively — the circuit lib is sourced separately and
 #     the circuit check is integrated into _codex_quota_gate additively).
 #
-# The threshold check (routing-yaml + live quota reader) is NOT in this lib;
-# it lives in codex-task.sh's _codex_quota_gate where the reader functions are
-# defined. This gate covers the two checks that must run on EVERY spawn path,
-# including the session-runner which bypasses codex-task.sh entirely.
+# The generic threshold check here is shared by both spawn paths.  codex-task's
+# legacy yaml check remains stricter where configured.
 
 # Source dependencies (idempotent — safe to re-source).
 _CODEX_QG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +25,7 @@ command -v codex_circuit_state >/dev/null 2>&1 \
 #   Returns 0 (pass) or 2 (refuse). Prints refusal markers to stderr.
 #   Honors CODEX_SKIP_QUOTA_GATE=1 (skips all checks).
 codex_spawn_gate() {
+  local _sub="${1:-exec}" _purpose _gate_rc
   shift || true
 
   [[ "${CODEX_SKIP_QUOTA_GATE:-0}" == "1" ]] && return 0
@@ -64,6 +63,25 @@ codex_spawn_gate() {
       return 2
       ;;
   esac
+
+  case "$_sub" in review|adversarial-review|review-bg) _purpose=review ;; *) _purpose=build ;; esac
+  # check 3 — the generic gate runs as a CHILD PROCESS, not a sourced function,
+  # so it inherits the environment. Hermetic contract (QUOTA-GATE-PARITY-01 F2):
+  # LEADV2_QUOTA_LIVE (fixture emitter), LEADV2_QUOTA_CACHE_DIR (scratch dir)
+  # and LEADV2_QUOTA_CEILINGS (fixture ceilings file) are all read by the child
+  # from the inherited env -- exporting them makes this check hermetic with no
+  # dedicated bypass flag. Tests MUST set them; unset, check 3 reads the host's
+  # real ~/.claude/state/leadv2/quota-cache/ and flakes on host quota state.
+  # NOTE: the child is exec'd DIRECTLY (not `bash $gate`), so its executable
+  # bit is load-bearing — mode 644 gives rc 126, which the caller below treats
+  # as pass, silently disabling this check (tests/a4c guards it).
+  "${_CODEX_QG_DIR}/../leadv2-provider-quota-gate.sh" codex "$_purpose"
+  _gate_rc=$?
+  if [[ "$_gate_rc" -eq 1 ]]; then
+    printf '[codex-task] CODEX_REFUSED_QUOTA reason=threshold used=live threshold=ceiling until=na\n' >&2
+    printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+    return 2
+  fi
 
   return 0
 }
