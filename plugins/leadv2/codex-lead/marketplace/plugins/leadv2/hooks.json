@@ -10,6 +10,8 @@
           }
         ]
       }
-    ]
+    ],
+    "SubagentStart": [{"matcher":".*","hooks":[{"type":"command","command":"bash \"$CLAUDE_PLUGIN_ROOT/hooks/leadv2-subagent-lifecycle.sh\" start"}]}],
+    "SubagentStop": [{"matcher":".*","hooks":[{"type":"command","command":"bash \"$CLAUDE_PLUGIN_ROOT/hooks/leadv2-subagent-lifecycle.sh\" stop"}]}]
   }
 }
