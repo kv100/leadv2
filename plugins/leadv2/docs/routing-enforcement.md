@@ -76,3 +76,82 @@ and `leadv2-backlog-pump.sh` record the lane as `parked`/deferred (never `dead`/
 — a burn refusal is a deliberate park, not a failure); `leadv2-fanout.sh` records `parked` and
 deliberately does **not** fall back to `_fanout_launch_full_cycle` — a burn refusal exists to
 save tokens, and the full-cycle fallback is the single most expensive path in the system.
+
+## Provider quota ceilings (QUOTA-GATE-PARITY-01)
+
+Before this lane, the declared per-provider/per-purpose quota ceilings
+(`router_v2.quota_ceilings` in `config/leadv2-routing.yaml`: glm 80/90, codex 90/95, claude
+95/95 — work/review) were enforced end-to-end only for GLM. Codex ran to 100% weekly with days
+left in its window and nothing rerouted its mandatory review duty. Two gaps let that happen,
+both in the codex **build** path specifically (codex review, glm review/build, and claude
+review were already enforced by `leadv2-glm-quota-gate.sh` and
+`lib/leadv2-glm-policy-resolve.py`'s resolver thresholds):
+
+1. `codex-task.sh`'s legacy yaml-threshold check reads `codex_quota_gate.build_threshold_pct`
+   from `.claude/ref/leadv2-routing.yaml`. A repo with no `codex_quota_gate:` block there (this
+   one, until now) makes that check a silent no-op.
+2. `leadv2-codex-session-runner.sh`'s `codex exec` spawn path calls `codex_spawn_gate` directly
+   and never went through `codex-task.sh` at all — no threshold check on that path, ever,
+   regardless of config.
+
+**Fix:** a threshold check now lives in `lib/leadv2-codex-quota-gate.sh::codex_spawn_gate` (the
+function BOTH spawn paths call), so it can no longer be config-conditional or path-dependent.
+
+- `plugins/leadv2/config/leadv2-quota-ceilings.sh` — the one editable place for the six
+  declared ceilings, sourced (not executed) by the two bash gates below. `leadv2_quota_ceiling
+  <glm|codex|claude> <build|review>` echoes the integer ceiling, rc 1 on unknown input.
+  **Known divergence, deliberately not fixed here:** `lib/leadv2-glm-policy-resolve.py`'s
+  `DEFAULT_BUILD_THRESHOLD_PCT` enforces codex **build** at 80.0, not the 90 declared in the
+  routing yaml and mirrored here — stricter than declared, so not a safety hole.
+  `tests/test-provider-quota-gate.sh` asserts this exact exception by name so it cannot
+  silently widen.
+- `leadv2-provider-quota-gate.sh <glm|codex|claude> <build|review>` — the generic gate. Reads
+  the live per-provider quota-cache (`leadv2-quota-live.sh`), fails OPEN on every telemetry or
+  configuration fault (missing/malformed JSON, non-ok status, stale cache — older than 2× the
+  provider's TTL, non-numeric or missing ceiling): only a *known* percentage at or above a
+  *known* ceiling refuses (rc 1, `LEADV2_DISPATCH_REFUSED: quota_gate`). A `limit_reached: true`
+  codex reading with no numeric `used_percent` is treated as a hard 100%, never as "unknown".
+  Kill switch: `LEADV2_PROVIDER_QUOTA_GATE=0`.
+- `lib/leadv2-codex-quota-gate.sh::codex_spawn_gate` now calls the generic gate as a third check
+  (after cooldown memory and the circuit breaker), purpose derived from the sub-command
+  (`review|adversarial-review|review-bg` → review, else build). This single function is shared
+  by both `codex-task.sh` and `leadv2-codex-session-runner.sh`, closing both gaps above at once.
+- `leadv2-glm-quota-gate.sh`'s build threshold now sources its default from the ceilings file
+  instead of a bare literal `80` — no behaviour change, one fewer place the number could drift.
+- `lib/leadv2-glm-policy-resolve.py::live_codex_weekly_pct` now treats `limit_reached: true`
+  (top-level or on the binding window) as a hard 100.0 even when `used_percent` is missing —
+  previously that combination read as `unknown`, which is only ever *admitted* for the pool's
+  terminal arm (harmless with the default review-arm order, live for any repo that reorders it).
+- `lib/leadv2-review-reroute-note.sh::leadv2_review_reroute_note` — when the review pool
+  resolver reroutes away from a `blocked`/`unknown` codex, this emits one
+  `codex_dead_reroute task=<id> from=codex to=<reviewer> codex=<disposition> pool=<pool>`
+  journal line. Silent when codex is healthy or is the reviewer. Called identically from BOTH
+  independent copies of the pool-resolve call site (`leadv2-review-run.sh` and
+  `leadv2-dispatch-product-close.sh`) so the observability fix can't land on only one of them.
+
+**Explicitly out of scope / non-goals** (see the architect prepass for the full reasoning):
+Claude **build** remains ungated — nothing calls `leadv2-provider-quota-gate.sh claude build`
+today. Wiring a refusal into `claude-subsession.sh` would also refuse the lead's own
+architect/critic subagent spawns, converting a soft cost problem into `status: unreviewed`; that
+is a founder decision, not one this lane makes. Every gate here is a pre-launch check on a
+cached number — a single long lane can still cross its ceiling mid-flight; that needs pacing,
+which is blocked on the Pro-5x tier decision. `CODEX_SKIP_QUOTA_GATE=1` /
+`GLM_SKIP_QUOTA_GATE=1` remain unconditional, logged bypasses — not removed here.
+
+Env knobs:
+- `LEADV2_PROVIDER_QUOTA_GATE` (default 1) — `0` disables the generic gate.
+- `LEADV2_CEIL_GLM_WORK` / `_GLM_REVIEW` / `_CODEX_WORK` / `_CODEX_REVIEW` / `_CLAUDE_WORK` /
+  `_CLAUDE_REVIEW` — override an individual ceiling (tests; production reads the file defaults).
+- `LEADV2_QUOTA_CEILINGS` / `LEADV2_QUOTA_LIVE` / `LEADV2_QUOTA_CACHE_DIR` — override the
+  ceilings file / quota-live binary / cache directory (tests).
+- `LEADV2_QUOTA_READ_TIMEOUT` (default 8s) — bounds the gate's own quota-live subprocess so a
+  hung provider endpoint fails open instead of stalling every codex spawn.
+- `leadv2-burn-governor.sh --provider <glm|codex|claude>` — an additive mode: verdict from
+  quota-cache percentage vs. the declared work ceiling (`soft = ceiling-10`, `hard = ceiling`)
+  instead of the 24h token-burn DB. Ignores `LEADV2_BURN_SOFT_24H`/`LEADV2_BURN_HARD_24H`. The
+  default (no-flag) invocation is byte-identical to pre-existing behaviour.
+
+Tests: `tests/test-provider-quota-gate.sh` (gate states S1–S10, boundary ceilings, the
+yaml/py/ceilings-file drift assertion), `tests/test-codex-dead-reroute.sh` (resolver + reroute
+note + both call sites), `tests/test-burn-governor.sh` (`--provider` cases appended, default
+path untouched).

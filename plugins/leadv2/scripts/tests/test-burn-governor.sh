@@ -298,6 +298,82 @@ else
   fail "20: leadv2-fanout-lane-launcher.sh missing rc=6 handling"
 fi
 
+# ============================================================================
+# 21-26: QUOTA-GATE-PARITY-01 -- `--provider <glm|codex|claude>` mode. The
+# default (no-flag) cases above are the backward-compat oracle and are left
+# untouched; --provider is additive and never reads LEADV2_BURN_SOFT_24H/
+# LEADV2_BURN_HARD_24H (asserted at 26).
+# ============================================================================
+CEILINGS_BIN="${SCRIPTS_ROOT}/../config/leadv2-quota-ceilings.sh"
+FAKE_LIVE_PROV="${tmp}/fake-live-provider.sh"
+cat > "${FAKE_LIVE_PROV}" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  glm) printf '{"status":"ok","five_hour":{"pct":'"${FAKE_GLM_PCT:-10}"'},"weekly":{"pct":5}}' ;;
+  codex) printf '{"status":"ok","binding_window":"weekly","windows":[{"kind":"weekly","used_percent":'"${FAKE_CODEX_PCT:-10}"'}]}' ;;
+  anthropic) printf '{"status":"ok","accounts":[{"active":true,"seven_day_pct":'"${FAKE_CLAUDE_PCT:-10}"',"five_hour_pct":5}]}' ;;
+  *) printf '{"status":"unknown"}' ;;
+esac
+EOF
+chmod +x "${FAKE_LIVE_PROV}"
+
+# 21: glm under soft -> verdict=ok, ceiling-derived soft/hard (80 -> soft=70 hard=80)
+out21="$(FAKE_GLM_PCT=10 LEADV2_QUOTA_LIVE="${FAKE_LIVE_PROV}" bash "${GOVERNOR_BIN}" --provider glm 2>&1)"
+if grep -q '^verdict=ok ' <<<"${out21}" && grep -q 'soft=70' <<<"${out21}" && grep -q 'hard=80' <<<"${out21}" && grep -q 'unit=pct' <<<"${out21}"; then
+  pass "21: --provider glm under soft -> ok, soft/hard from ceiling"
+else
+  fail "21: --provider glm under soft" "${out21}"
+fi
+
+# 22: codex over hard (ceiling 90) -> verdict=hard reason=over_hard
+out22="$(FAKE_CODEX_PCT=95 LEADV2_QUOTA_LIVE="${FAKE_LIVE_PROV}" bash "${GOVERNOR_BIN}" --provider codex 2>&1)"
+if grep -q '^verdict=hard ' <<<"${out22}" && grep -q 'reason=over_hard' <<<"${out22}" && grep -q 'hard=90' <<<"${out22}"; then
+  pass "22: --provider codex over hard -> verdict=hard"
+else
+  fail "22: --provider codex over hard" "${out22}"
+fi
+
+# 23: claude over soft, under hard (ceiling 95, soft 85) -> verdict=soft
+out23="$(FAKE_CLAUDE_PCT=90 LEADV2_QUOTA_LIVE="${FAKE_LIVE_PROV}" bash "${GOVERNOR_BIN}" --provider claude 2>&1)"
+if grep -q '^verdict=soft ' <<<"${out23}" && grep -q 'reason=over_soft' <<<"${out23}"; then
+  pass "23: --provider claude over soft, under hard -> verdict=soft"
+else
+  fail "23: --provider claude over soft" "${out23}"
+fi
+
+# 24: unknown provider -> verdict=ok reason=bad_provider (fail-open, never a crash)
+out24="$(bash "${GOVERNOR_BIN}" --provider bogus 2>&1)"
+if grep -q 'reason=bad_provider' <<<"${out24}" && grep -q '^verdict=ok ' <<<"${out24}"; then
+  pass "24: --provider bogus -> fail-open bad_provider"
+else
+  fail "24: --provider bogus" "${out24}"
+fi
+
+# 25: quota-live telemetry unavailable -> verdict=ok reason=no_telemetry (fail-open)
+out25="$(LEADV2_QUOTA_LIVE="${tmp}/does-not-exist.sh" bash "${GOVERNOR_BIN}" --provider glm 2>&1)"
+if grep -q 'reason=no_telemetry' <<<"${out25}" && grep -q '^verdict=ok ' <<<"${out25}"; then
+  pass "25: --provider glm with no telemetry -> fail-open no_telemetry"
+else
+  fail "25: --provider glm no telemetry" "${out25}"
+fi
+
+# 26: --provider ignores LEADV2_BURN_SOFT_24H/HARD_24H (ceiling-derived only)
+out26="$(FAKE_GLM_PCT=10 LEADV2_QUOTA_LIVE="${FAKE_LIVE_PROV}" LEADV2_BURN_SOFT_24H=1 LEADV2_BURN_HARD_24H=2 \
+  bash "${GOVERNOR_BIN}" --provider glm 2>&1)"
+if grep -q 'soft=70' <<<"${out26}" && grep -q 'hard=80' <<<"${out26}"; then
+  pass "26: --provider ignores LEADV2_BURN_SOFT_24H/HARD_24H env"
+else
+  fail "26: --provider env-ignore" "${out26}"
+fi
+
+# default (no-flag) path is untouched by --provider's addition
+out_default="$(bash "${GOVERNOR_BIN}" 2>&1)"
+if grep -q '^verdict=' <<<"${out_default}"; then
+  pass "backward-compat: default (no-flag) invocation still emits a verdict line"
+else
+  fail "backward-compat default invocation" "${out_default}"
+fi
+
 echo
 echo "=== ${PASS} passed, ${FAIL} failed ==="
 if [[ ${FAIL} -gt 0 ]]; then
