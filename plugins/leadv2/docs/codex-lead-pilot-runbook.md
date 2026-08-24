@@ -79,11 +79,11 @@ version must be re-probed (the manifest test pins the observed CLI version).
 
 ## Launch
 
-Open exactly one session from persona-engine:
+Launch the root lead from persona-engine as Terra/high:
 
 ```bash
 cd ~/Projects/persona-engine
-command codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -s workspace-write
+command codex -m gpt-5.6-terra -c model_reasoning_effort=high -s workspace-write
 ```
 
 `command` bypasses a shell alias. Verify the effective binary/options locally before
@@ -92,7 +92,9 @@ session rather than compacting it.
 
 ## Task menu
 
-Select two to four Standard-class tasks from `docs/tasks.yaml` by criteria, not ID:
+Select Standard-class tasks from `docs/tasks.yaml` by criteria, not ID. Admit work
+dynamically: native agent slots, live provider health, task dependencies, and
+overlapping write sets determine capacity at that moment.
 
 - one subsystem and at most two write paths;
 - acceptance demonstrable by a file artifact or a live probe the founder can repeat;
@@ -100,8 +102,19 @@ Select two to four Standard-class tasks from `docs/tasks.yaml` by criteria, not 
 - premise re-provable at dispatch time; and
 - not parked in `docs/leadv2/burn-deferred.*`.
 
-Exclude every item on the Codex-FULL not-for list. Keep WIP at one: a review or fix
-round is still the active task.
+Exclude every item on the Codex-FULL not-for list. Do not use a fixed WIP limit.
+Only admit work whose write set does not conflict with work already in progress;
+a review or fix round continues to occupy its task's capacity until its evidence
+is closed.
+
+`codex fork` branches the founder chat. Worker concurrency uses Codex native agent controls:
+inspect `list_agents`, maintain the native plan, and continue an existing
+agent for the same lane rather than treating a chat fork as a worker.
+
+While work is active, emit a compact milestone pulse when state changes and at
+least once per 60 seconds. A pulse reports `IN PROGRESS` and `NEXT`; it neither
+sets WIP nor asks for technical decisions. Lifecycle hooks retain the machine
+pulse evidence; chat carries only the compact milestone.
 
 ## Dispatch door
 
@@ -181,7 +194,7 @@ The reviewer checks the transcript for each observable:
 | close ritual | Ledger, evidence, review verdict, and close state are all recorded. |
 | memory/state discipline | State is in the documented ledger/journal locations, with append-only journals. |
 | task-output discipline | No hidden task-output shortcut replaces evidence. |
-| monitor cap | No uncontrolled polling or concurrent WIP. |
+| monitor cap | No uncontrolled polling; admitted concurrency follows live capacity and non-overlapping write sets. |
 | deny floor | `~/.codex/lv2guard-unrecognized.log` is EMPTY after the session, and any refused command shows the lv2guard rule message in the transcript (enforced by the plugin since CODEX-LEAD-PLUGIN-01). |
 | foreground dispatch | Each started verification/dispatch result is waited for and recorded. |
 

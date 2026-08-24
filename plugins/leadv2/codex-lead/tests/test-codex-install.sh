@@ -59,6 +59,22 @@ chmod +x "$STUB_NOPLUG"
 
 N_PROMPTS="$(ls -1 "$CODEX_LEAD_DIR/prompts"/*.md 2>/dev/null | wc -l | tr -d ' ')"
 
+# --- NATIVE-CODEX-OPS-PROFILE-01 contract -----------------------------------
+RUNBOOK="$CODEX_LEAD_DIR/../docs/codex-lead-pilot-runbook.md"
+STATUS_SKILL="$CODEX_LEAD_DIR/marketplace/plugins/leadv2/skills/leadv2-status/SKILL.md"
+SOURCE_SKILL="$CODEX_LEAD_DIR/../codex-skills/source-command-leadv2/SKILL.md"
+contains() { grep -Fq -- "$2" "$1"; }
+rejects() { ! grep -Eiq -- "$2" "$1"; }
+
+contains "$RUNBOOK" 'gpt-5.6-terra' && pass "native profile: runbook launches Terra" || fail "native profile: runbook must launch Terra"
+contains "$RUNBOOK" 'model_reasoning_effort=high' && pass "native profile: runbook launches high" || fail "native profile: runbook must launch high"
+rejects "$RUNBOOK" 'gpt-5\.6-sol|model_reasoning_effort=xhigh|WIP at one|WIP=1' && pass "native profile: runbook rejects Sol/xhigh and fixed WIP=1" || fail "native profile: forbidden Sol/xhigh or fixed WIP=1 remains"
+contains "$RUNBOOK" 'native agent controls' && contains "$RUNBOOK" 'codex fork' && pass "native profile: runbook distinguishes native controls from forks" || fail "native profile: missing native control/fork contract"
+contains "$STATUS_SKILL" 'list_agents' && contains "$STATUS_SKILL" 'native plan' && pass "native profile: status merges native agents and plan" || fail "native profile: status lacks native state"
+contains "$STATUS_SKILL" 'IN PROGRESS' && contains "$STATUS_SKILL" 'NEXT' && pass "native profile: status has compact founder terms" || fail "native profile: status lacks compact founder terms"
+[[ -f "$SOURCE_SKILL" ]] && contains "$SOURCE_SKILL" 'single-task' && contains "$SOURCE_SKILL" 'native Codex agent controls' && pass "native profile: source command owns native lead role" || fail "native profile: source command lacks native lead role"
+[[ -f "$SOURCE_SKILL" ]] && rejects "$SOURCE_SKILL" 'Claude/Opus|parent Claude|Claude.*parent|child[- ]session' && pass "native profile: source command rejects Claude-child wording" || fail "native profile: Claude-child wording remains"
+
 # --- plugin path, run 1 ----------------------------------------------------
 rm -f "$CALLS"
 OUT1="$(HOME="$FIX_HOME" LEADV2_CODEX_BIN="$STUB" bash "$INSTALL_SH" "$FIX_REPO" 2>&1)"; RC1=$?
