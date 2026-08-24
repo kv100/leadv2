@@ -52,9 +52,28 @@ rules:
     message: "Heredoc body exceeds the advisory size threshold — consider a file instead. Advisory only; the command still runs."
     allow_inline_override: true
 
+  # MERGED-BATCH-FIXROUND-01 H1: three explicit rules, not one lookahead —
+  # the parser silently skips a rule whose regex fails to compile, so one
+  # clever regex covering all shapes would be one point of silent failure
+  # for all of them. re.IGNORECASE is applied by the matcher, so case
+  # variants are covered for free.
   - name: plugin_uninstall_floor
     kind: regex
     regex: 'codex\s+plugin\s+(remove|uninstall)\b.*\bleadv2\b'
     enabled: true
     message: "Removing the leadv2 plugin disables the enforced deny floor — a floor the guarded agent can remove with one command is no floor. If removal is truly needed, the founder runs it by hand."
+    allow_inline_override: false
+
+  - name: plugin_marketplace_remove_floor
+    kind: regex
+    regex: 'codex\s+plugin\s+marketplace\s+(remove|rm)\b.*\bleadv2\b'
+    enabled: true
+    message: "Removing the leadv2-local marketplace disables the enforced deny floor by starving the plugin of updates — a floor the guarded agent can remove with one command is no floor. If removal is truly needed, the founder runs it by hand."
+    allow_inline_override: false
+
+  - name: plugin_disable_floor
+    kind: regex
+    regex: 'codex\s+plugin\s+disable\b.*\bleadv2\b'
+    enabled: true
+    message: "Disabling the leadv2 plugin disables the enforced deny floor — a floor the guarded agent can disable with one command is no floor. If disabling is truly needed, the founder runs it by hand."
     allow_inline_override: false

@@ -165,6 +165,45 @@ else
   fail "check: deny reason on stderr (rc=$rc, out=$out)"
 fi
 
+# --- plugin-removal floor (MERGED-BATCH-FIXROUND-01 H1) --------------------
+# Every command shape that uninstalls/disables the plugin or its marketplace
+# must refuse; shapes naming no leadv2 target must stay allowed.
+assert_rc 97 "plugin: remove leadv2@leadv2-local"           -- --check -c "codex plugin remove leadv2@leadv2-local"
+assert_rc 97 "plugin: uninstall leadv2"                     -- --check -c "codex plugin uninstall leadv2"
+assert_rc 97 "plugin: marketplace remove leadv2-local"      -- --check -c "codex plugin marketplace remove leadv2-local"
+assert_rc 97 "plugin: marketplace rm leadv2-local"          -- --check -c "codex plugin marketplace rm leadv2-local"
+assert_rc 97 "plugin: disable leadv2"                       -- --check -c "codex plugin disable leadv2"
+assert_rc 0  "plugin: remove non-leadv2 plugin stays allowed" -- --check -c "codex plugin remove someother@other-market"
+assert_rc 0  "plugin: list stays allowed"                   -- --check -c "codex plugin list"
+
+# compile guard: the matcher SILENTLY SKIPS a rule whose regex fails to
+# compile (re.error -> continue in lv2guard.sh), so one bad edit would reopen
+# the whole floor with zero signal. Every regex in both yamls must compile.
+if python3 - "$CODEX_LEAD_DIR/deny-extra.yaml" "$SCRIPT_DIR/../../config/leadv2-deny-patterns.yaml" <<'PYEOF'
+import re, sys
+bad = []
+for path in sys.argv[1:]:
+    cur = None
+    for raw in open(path):
+        s = raw.strip()
+        if s.startswith('- name:'):
+            cur = s.split(':', 1)[1].strip().strip('"\'')
+        elif s.startswith('regex:') and cur:
+            v = s.split(':', 1)[1].strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+                v = v[1:-1]
+            try:
+                re.compile(v)
+            except re.error as e:
+                bad.append('%s: %s (%s)' % (cur, v, e))
+if bad:
+    print('BAD REGEX: ' + '; '.join(bad))
+    sys.exit(1)
+PYEOF
+then pass "compile guard: every regex in deny-extra.yaml + canonical patterns compiles"
+else fail "compile guard: a rule regex does not compile (would be silently skipped by the matcher)"
+fi
+
 # --- bash -n over every shipped shell file --------------------------------
 for f in "$CODEX_LEAD_DIR"/*.sh "$CODEX_LEAD_DIR"/shim/rm "$CODEX_LEAD_DIR"/shim/git "$CODEX_LEAD_DIR"/shim/codex "$CODEX_LEAD_DIR"/tests/*.sh "$CODEX_LEAD_DIR"/marketplace/plugins/leadv2/hooks/*.sh "$CODEX_LEAD_DIR"/marketplace/plugins/leadv2/scripts/*.sh; do
   [[ -f "$f" ]] || continue
