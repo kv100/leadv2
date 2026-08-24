@@ -20,6 +20,17 @@
 #            bypass them. SOFT rules (local-worktree-recoverable ops an
 #            operator may intentionally want on a throwaway tree) are true.
 #            Field is optional; missing = false (fail-safe).
+#
+# GITGLOBAL fragment (GUARD-RESET-FLAG-GAP-01, 2026-08-24): git global flags
+# between `git` and the subcommand (-C <path>, -c k=v, --git-dir, --no-pager,
+# ...) must not defeat a rule. Every rule that starts with `git` inlines this
+# fragment verbatim right after the `git` token (both parsers are line-based,
+# so it must stay on ONE physical line; there is no include/anchor mechanism):
+#
+#   (?:\s+(?:-[cC]\s*\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|attr-source|config-env)(?:=\S*|\s+\S+)|-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S*)?))*
+#
+# Any NEW rule beginning with `git` MUST include this fragment — the
+# fragment-drift check in tests/test-deny-floor.sh fails the suite otherwise.
 
 rules:
   - name: rm_rf_root
@@ -35,25 +46,25 @@ rules:
     allow_inline_override: false
 
   - name: git_reset_hard
-    regex: 'git\s+reset\s+.*--hard'
+    regex: 'git(?:\s+(?:-[cC]\s*\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|attr-source|config-env)(?:=\S*|\s+\S+)|-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S*)?))*\s+reset\s+.*--hard'
     enabled: true
     message: "git reset --hard is blocked — discards uncommitted work irreversibly. Use ask-lead.sh if this is intentional, or append '# deny-floor: allow' to override on a throwaway tree."
     allow_inline_override: true
 
   - name: git_clean_fdx
-    regex: 'git\s+clean\b(?!(?:(?!;|&&|\||\n).)*\s(?:-n\b|--dry-run\b))(?=(?:(?!;|&&|\||\n).)*\s(?:-[a-zA-Z]*f[a-zA-Z]*\b|--force\b))(?=(?:(?!;|&&|\||\n).)*\s-[a-zA-Z]*d[a-zA-Z]*\b)'
+    regex: 'git(?:\s+(?:-[cC]\s*\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|attr-source|config-env)(?:=\S*|\s+\S+)|-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S*)?))*\s+clean\b(?!(?:(?!;|&&|\||\n).)*\s(?:-n\b|--dry-run\b))(?=(?:(?!;|&&|\||\n).)*\s(?:-[a-zA-Z]*f[a-zA-Z]*\b|--force\b))(?=(?:(?!;|&&|\||\n).)*\s-[a-zA-Z]*d[a-zA-Z]*\b)'
     enabled: true
     message: "git clean with both force (-f/--force) and dirs (-d) flags, in any order/grouping, is blocked — irreversibly deletes untracked (+ ignored, with -x) files and directories. 'git clean -n' (dry-run) and force-less invocations are still allowed."
     allow_inline_override: true
 
   - name: git_stash
-    regex: 'git\s+stash(?!\s+(list|show|pop|apply|branch)\b)(\s|$)'
+    regex: 'git(?:\s+(?:-[cC]\s*\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|attr-source|config-env)(?:=\S*|\s+\S+)|-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S*)?))*\s+stash(?!\s+(list|show|pop|apply|branch)\b)(\s|$)'
     enabled: true
     message: "git stash (bare, push, save, clear, or drop) is blocked — see feedback_no_hard_reset_in_shared_tree; can silently hide/lose work in shared trees. Read-only forms (list/show/pop/apply/branch) are allowed."
     allow_inline_override: true
 
   - name: git_push_force_main
-    regex: 'git\s+push\s+.*(--force|-f)\b.*(origin\s+)?(main|master)\b|git\s+push\s+.*(main|master)\b.*(--force|-f)\b'
+    regex: 'git(?:\s+(?:-[cC]\s*\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|attr-source|config-env)(?:=\S*|\s+\S+)|-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S*)?))*\s+push\s+.*(--force|-f)\b.*(origin\s+)?(main|master)\b|git(?:\s+(?:-[cC]\s*\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|attr-source|config-env)(?:=\S*|\s+\S+)|-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S*)?))*\s+push\s+.*(main|master)\b.*(--force|-f)\b'
     enabled: true
     message: "git push --force to main/master is blocked — irreversible history rewrite on a shared branch. Not inline-overridable; use ask-lead.sh if this is genuinely intentional."
     allow_inline_override: false

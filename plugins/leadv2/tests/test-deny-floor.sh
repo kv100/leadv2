@@ -226,5 +226,162 @@ else
   fail "dd of=/dev/sda # deny-floor: allow -> expected STILL BLOCKED exit 2"
 fi
 
+# --- flag-interspersed git forms (GUARD-RESET-FLAG-GAP-01) ------------------
+# Live incident 2026-08-24: "git -C ~/Projects/leadv2 reset --hard HEAD" passed
+# this floor because the rules matched the subcommand adjacently. These cases
+# pin that git global flags between `git` and the subcommand no longer defeat
+# a rule, and that ordinary flagged work still passes.
+
+if run 2 "git -C /tmp/x reset --hard HEAD"; then
+  pass "git -C <path> reset --hard -> BLOCKED (exit 2) — the live incident shape"
+else
+  fail "git -C /tmp/x reset --hard -> expected BLOCKED exit 2"
+fi
+
+if run 2 "git -c core.pager=cat reset --hard"; then
+  pass "git -c k=v reset --hard -> BLOCKED (exit 2)"
+else
+  fail "git -c core.pager=cat reset --hard -> expected BLOCKED exit 2"
+fi
+
+if run 2 "git --git-dir=/tmp/x/.git reset --hard"; then
+  pass "git --git-dir=<path> reset --hard -> BLOCKED (exit 2)"
+else
+  fail "git --git-dir=/tmp/x/.git reset --hard -> expected BLOCKED exit 2"
+fi
+
+if run 2 "git -C /tmp/x --no-pager reset --hard"; then
+  pass "git -C <path> --no-pager reset --hard (multiple globals) -> BLOCKED (exit 2)"
+else
+  fail "git -C /tmp/x --no-pager reset --hard -> expected BLOCKED exit 2"
+fi
+
+if run 2 "git --git-dir=/tmp/x/.git clean -fd"; then
+  pass "git --git-dir=<path> clean -fd -> BLOCKED (exit 2)"
+else
+  fail "git --git-dir=/tmp/x/.git clean -fd -> expected BLOCKED exit 2"
+fi
+
+if run 2 "git -C /tmp/x clean -x -f -d"; then
+  pass "git -C <path> clean -x -f -d -> BLOCKED (exit 2)"
+else
+  fail "git -C /tmp/x clean -x -f -d -> expected BLOCKED exit 2"
+fi
+
+if run 2 "git -c a=b stash drop"; then
+  pass "git -c k=v stash drop -> BLOCKED (exit 2)"
+else
+  fail "git -c a=b stash drop -> expected BLOCKED exit 2"
+fi
+
+if run 2 "git -C /tmp/x stash clear"; then
+  pass "git -C <path> stash clear -> BLOCKED (exit 2)"
+else
+  fail "git -C /tmp/x stash clear -> expected BLOCKED exit 2"
+fi
+
+if run 2 "git -c a=b push --force origin main"; then
+  pass "git -c k=v push --force origin main -> BLOCKED (exit 2)"
+else
+  fail "git -c a=b push --force origin main -> expected BLOCKED exit 2"
+fi
+
+if run 0 "git -C /tmp/x reset --hard HEAD # deny-floor: allow"; then
+  pass "git -C <path> reset --hard # deny-floor: allow (SOFT) -> ALLOWED (exit 0)"
+else
+  fail "git -C /tmp/x reset --hard # deny-floor: allow -> expected ALLOWED exit 0"
+fi
+
+if run 0 "git -C /tmp/x reset HEAD~1"; then
+  pass "git -C <path> reset HEAD~1 (no --hard) -> ALLOWED (exit 0)"
+else
+  fail "git -C /tmp/x reset HEAD~1 -> expected ALLOWED exit 0"
+fi
+
+if run 0 "git -C /tmp/x clean -n"; then
+  pass "git -C <path> clean -n (dry-run) -> ALLOWED (exit 0)"
+else
+  fail "git -C /tmp/x clean -n -> expected ALLOWED exit 0"
+fi
+
+if run 0 "git -C /tmp/x stash pop"; then
+  pass "git -C <path> stash pop -> ALLOWED (exit 0)"
+else
+  fail "git -C /tmp/x stash pop -> expected ALLOWED exit 0"
+fi
+
+if run 0 "git -C /tmp/x push origin feature-branch"; then
+  pass "git -C <path> push feature-branch (no --force) -> ALLOWED (exit 0)"
+else
+  fail "git -C /tmp/x push origin feature-branch -> expected ALLOWED exit 0"
+fi
+
+if run 0 "git -C /tmp/x log --oneline"; then
+  pass "git -C <path> log --oneline (unrelated subcommand) -> ALLOWED (exit 0)"
+else
+  fail "git -C /tmp/x log --oneline -> expected ALLOWED exit 0"
+fi
+
+if run 0 "git -C /tmp/x commit -m \"clean -fd is scary\""; then
+  pass "git -C <path> commit -m '...clean -fd...' (prose in args) -> ALLOWED (exit 0)"
+else
+  fail "git -C /tmp/x commit -m prose -> expected ALLOWED exit 0"
+fi
+
+# Deliberate over-block, pinned. This shape is refused today and stays refused:
+# the floor cannot distinguish quoting, and '# deny-floor: allow' is the escape
+# hatch for a genuine one-off. Do NOT "fix" this into a 0 — that reopens
+# GUARD-RESET-FLAG-GAP-01's sibling hole (see design §5 R3).
+if run 2 "echo \"git reset --hard\""; then
+  pass "echo 'git reset --hard' (prose echo) -> BLOCKED (exit 2) — deliberate over-block, do not flip"
+else
+  fail "echo \"git reset --hard\" -> expected BLOCKED exit 2 (deliberate over-block)"
+fi
+
+# --- fragment-drift check (GUARD-RESET-FLAG-GAP-01 §4.3-B) ------------------
+# Mechanical substitute for a shared regex helper: parse both yaml files with
+# the same line format the hook/lv2guard parsers use, and assert that every
+# rule whose regex mentions `git` carries the GITGLOBAL fragment immediately
+# after every `git` token — a sixth git rule authored without the fragment
+# fails here instead of shipping a hole.
+
+DRIFT_GG='(?:\s+(?:-[cC]\s*\S+|--(?:git-dir|work-tree|namespace|exec-path|super-prefix|attr-source|config-env)(?:=\S*|\s+\S+)|-{1,2}[A-Za-z][A-Za-z0-9-]*(?:=\S*)?))*'
+DRIFT_RESULT=0
+for drift_yaml in "${BASH_SOURCE[0]%/*}/../config/leadv2-deny-patterns.yaml" "${BASH_SOURCE[0]%/*}/../codex-lead/deny-extra.yaml"; do
+  drift_out="$(python3 - "$drift_yaml" "$DRIFT_GG" <<'PYEOF'
+import sys
+path, gg = sys.argv[1], sys.argv[2]
+name, bad = None, []
+for line in open(path):
+    s = line.strip()
+    if s.startswith("- name:"):
+        name = s.split(":", 1)[1].strip()
+    elif s.startswith("regex:") and name:
+        rx = s.split(":", 1)[1].strip().strip("'")
+        # `--git-dir` belongs inside GITGLOBAL; it is not a rule prefix.
+        rx = rx.replace("--git-dir", "")
+        i = 0
+        while i < len(rx):
+            if rx.startswith("git", i):
+                if rx.startswith("git" + gg, i):
+                    i += len("git" + gg)
+                else:
+                    bad.append(name)
+                    break
+            else:
+                i += 1
+for n in sorted(set(bad)):
+    print(n)
+PYEOF
+)" || DRIFT_RESULT=1
+  if [[ -n "$drift_out" ]]; then
+    fail "fragment-drift: rule(s) missing GITGLOBAL after 'git' in $(basename "$drift_yaml"): $drift_out"
+    DRIFT_RESULT=1
+  else
+    pass "fragment-drift: every git rule in $(basename "$drift_yaml") carries GITGLOBAL"
+  fi
+done
+[[ "$DRIFT_RESULT" -eq 0 ]]
+
 printf -- '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

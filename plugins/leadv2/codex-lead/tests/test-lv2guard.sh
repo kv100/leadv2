@@ -70,10 +70,26 @@ assert_rc 0  "allow: git clean -fd # deny-floor: allow"             -- -c "git c
 assert_rc 97 "refuse: git stash"                                    -- -c "git stash"
 assert_rc 0  "allow: git stash # deny-floor: allow"                 -- -c "git stash # deny-floor: allow"
 
+# --- flag-interspersed git forms (GUARD-RESET-FLAG-GAP-01) ---------------
+# Global flags between `git` and the subcommand must not defeat a rule.
+# argv form (-- git ...) cannot carry the inline token (CB-6): unoverridable.
+assert_rc 97 "refuse: git -C /p reset --hard"                      -- -c "git -C /p reset --hard"
+assert_rc 0  "allow: git -C /p reset --hard # deny-floor: allow"   -- -c "git -C /p reset --hard # deny-floor: allow"
+assert_rc 97 "refuse: git -C /p reset --hard (argv, no override)"  -- git -C /p reset --hard
+assert_rc 97 "refuse: /usr/bin/git -C /p reset --hard (shim shape)" -- /usr/bin/git -C /p reset --hard
+assert_rc 97 "refuse: git --git-dir=/p/.git clean -fd"             -- -c "git --git-dir=/p/.git clean -fd"
+assert_rc 97 "refuse: git -c a=b stash drop"                       -- -c "git -c a=b stash drop"
+assert_rc 97 "refuse: git -c a=b push --force origin main"         -- -c "git -c a=b push --force origin main"
+assert_rc 0  "allow: git -C /p log --oneline"                      -- -c "git -C /p log --oneline"
+assert_rc 0  "allow: git -C /p clean -n"                           -- -c "git -C /p clean -n"
+assert_rc 0  "allow: git -C /p stash list"                         -- -c "git -C /p stash list"
+
 # --- worktree-prune predicate --------------------------------------------
 echo "sessions: []" > "$FIX/state/active.yaml"
 out="$(LEADV2_CODEX_GUARD_EXEC=echo bash "$FG" -c "git worktree prune" 2>&1)"; rc=$?
 [[ $rc -eq 0 ]] && pass "predicate: worktree prune, empty sessions -> allow" || fail "predicate: worktree prune, empty sessions -> allow (rc=$rc, $out)"
+out="$(LEADV2_CODEX_GUARD_EXEC=echo bash "$FG" -c "git -C /p worktree prune" 2>&1)"; rc=$?
+[[ $rc -eq 0 ]] && pass "predicate: git -C /p worktree prune, empty sessions -> allow (fragment reaches predicate)" || fail "predicate: git -C /p worktree prune, empty sessions -> allow (rc=$rc, $out)"
 
 cat > "$FIX/state/active.yaml" <<'EOF'
 sessions:
@@ -82,6 +98,8 @@ sessions:
 EOF
 out="$(LEADV2_CODEX_GUARD_EXEC=echo bash "$FG" -c "git worktree prune" 2>&1)"; rc=$?
 [[ $rc -eq 97 ]] && pass "predicate: worktree prune, one active session -> refuse" || fail "predicate: worktree prune, one active session -> refuse (rc=$rc, $out)"
+out="$(LEADV2_CODEX_GUARD_EXEC=echo bash "$FG" -c "git -C /p worktree prune" 2>&1)"; rc=$?
+[[ $rc -eq 97 ]] && pass "predicate: git -C /p worktree prune, one active session -> refuse (through fragment)" || fail "predicate: git -C /p worktree prune, one active session -> refuse (rc=$rc, $out)"
 
 echo ": not: [valid yaml" > "$FIX/state/active.yaml"
 out="$(LEADV2_CODEX_GUARD_EXEC=echo bash "$FG" -c "git worktree prune" 2>&1)"; rc=$?
