@@ -4,12 +4,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; HOOK="$ROOT/marketplace
 pass(){ PASS=$((PASS+1)); printf '[PASS] %s\n' "$1"; }; fail(){ FAIL=$((FAIL+1)); printf '[FAIL] %s\n' "$1"; }
 allow(){ local o r; o="$(printf '%s' "$2" | LEADV2_CODEX_LV2GUARD="$ROOT/lv2guard.sh" bash "$HOOK")"; r=$?; [[ $r -eq 0 && -z "$o" ]] && pass "$1" || fail "$1 rc=$r out=$o"; }
 deny(){ local o r; o="$(printf '%s' "$2" | LEADV2_CODEX_LV2GUARD="$ROOT/lv2guard.sh" bash "$HOOK")"; r=$?; [[ $r -eq 0 && "$o" == *'"permissionDecision":"deny"'* ]] && pass "$1" || fail "$1 rc=$r out=$o"; }
-ISOLATED="$FIX/.claude/worktrees/lane-1"; mkdir -p "$ISOLATED"
+MAIN="$FIX/repo"; LANE="$FIX/lane"; FAKE="$FIX/.claude/worktrees/fake"; mkdir -p "$FAKE"
+git init -q "$MAIN" && git -C "$MAIN" config user.email fixture@example.invalid && git -C "$MAIN" config user.name fixture && touch "$MAIN/seed" && git -C "$MAIN" add seed && git -C "$MAIN" commit -qm seed && git -C "$MAIN" worktree add -q "$LANE" -b fixture-lane
+ln -s "$FAKE" "$FIX/.claude/worktrees/symlinked-fake"
 allow 'shell allow' '{"tool_name":"exec_command","tool_input":{"command":"git status"}}'
-deny 'patch denies main cwd' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$FIX\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
-allow 'patch allows isolated relative target' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$ISOLATED\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
-deny 'patch denies absolute escape' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$ISOLATED\",\"tool_input\":{\"command\":\"*** Update File: /tmp/x\"}}"
-deny 'patch denies dotdot escape' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$ISOLATED\",\"tool_input\":{\"command\":\"*** Update File: ../x\"}}"
+deny 'patch denies main worktree' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$MAIN\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
+deny 'patch denies ordinary fake worktree' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$FAKE\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
+deny 'patch denies symlinked fake worktree' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$FIX/.claude/worktrees/symlinked-fake\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
+allow 'patch allows genuine linked worktree' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$LANE\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
+deny 'patch denies absolute escape' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$LANE\",\"tool_input\":{\"command\":\"*** Update File: /tmp/x\"}}"
+deny 'patch denies dotdot escape' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$LANE\",\"tool_input\":{\"command\":\"*** Update File: ../x\"}}"
 allow 'exact MCP read allowlist' '{"tool_name":"mcp__codebase_memory_mcp__search_graph","tool_input":{"query":"find r m"}}'
 deny 'MCP search and delete fails closed' '{"tool_name":"mcp__x__search_and_delete","tool_input":{}}'
 export LEADV2_CODEX_READONLY_MCP_ALLOWLIST=mcp__private__read_thing; allow 'MCP environment extension' '{"tool_name":"mcp__private__read_thing","tool_input":{}}'; unset LEADV2_CODEX_READONLY_MCP_ALLOWLIST

@@ -5,7 +5,7 @@ json_escape() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n
 deny() { printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"lv2guard: %s"}}\n' "$(json_escape "$1")"; exit 0; }
 INPUT="$(cat 2>/dev/null || true)"
 CLASSIFIED="$(printf '%s' "$INPUT" | python3 -c '
-import base64,json,os,re,sys
+import base64,json,os,re,subprocess,sys
 try: event=json.load(sys.stdin)
 except Exception: print("DENY\tunreadable PreToolUse payload"); raise SystemExit
 if not isinstance(event,dict) or not isinstance(event.get("tool_name"),str) or not isinstance(event.get("tool_input"),dict): print("DENY\ttool_name and tool_input object are required"); raise SystemExit
@@ -17,11 +17,16 @@ if name in shell:
 elif name in {"apply_patch","functions.apply_patch"}:
  c,cwd=inp.get("command"),event.get("cwd")
  if not isinstance(c,str) or not isinstance(cwd,str): print("DENY\tapply_patch requires typed cwd and tool_input.command")
- elif not re.search(r"(?:^|/)\.claude/worktrees/[^/]+(?:/|$)",cwd): print("DENY\tapply_patch is allowed only in an isolated .claude/worktrees lane")
  else:
   targets=[m.group(1).strip() for m in re.finditer(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$",c,re.M)]
+  try:
+   lane=os.path.realpath(cwd); lines=subprocess.check_output(["git","-C",lane,"rev-parse","--show-toplevel","--git-dir","--git-common-dir"],stderr=subprocess.DEVNULL,text=True).splitlines()
+   top=os.path.realpath(lines[0]); gitdir=os.path.realpath(os.path.join(lane,lines[1])); common=os.path.realpath(os.path.join(lane,lines[2])); registry=os.path.join(common,"worktrees")
+   genuine=top == lane and gitdir != common and os.path.commonpath([registry,gitdir]) == registry
+  except Exception: genuine=False; top=""
   if not targets: print("DENY\tapply_patch command has no patch targets")
-  elif any(os.path.isabs(t) or ".." in t.split("/") or os.path.commonpath([os.path.abspath(cwd),os.path.abspath(os.path.join(cwd,t))]) != os.path.abspath(cwd) for t in targets): print("DENY\tapply_patch target escapes its isolated worktree")
+  elif not genuine: print("DENY\tapply_patch cwd is not a genuine linked Git worktree lane")
+  elif any(os.path.isabs(t) or ".." in t.split("/") or os.path.commonpath([top,os.path.realpath(os.path.join(top,t))]) != top for t in targets): print("DENY\tapply_patch target escapes its isolated worktree")
   else: print("ALLOW")
 elif name.removeprefix("functions.") in native:
  key=name.removeprefix("functions."); required=native[key]
