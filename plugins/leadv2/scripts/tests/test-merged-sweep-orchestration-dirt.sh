@@ -110,6 +110,27 @@ _mk() { # <dir> <merged:yes|no> <dirt:orch|real|none> <age:old|new (default old)
       mkdir -p "$d/.claude/worktrees/lane/docs/handoff/lane"
       echo "SENTINEL-DELIVERABLE-9ea4cd03" > "$d/.claude/worktrees/lane/docs/handoff/lane/deliverable.md"
       ;;
+    handoff_staged)
+      # Cross-review R1: a STAGED (git add, not committed) handoff file is
+      # tracked-but-modified dirt — pre-fix the discard step reverted it with
+      # `checkout HEAD --` before deleting the tree.
+      mkdir -p "$d/docs/handoff/lane"
+      echo "SENTINEL-TRACKED-9ea4cd03" > "$d/docs/handoff/lane/tracked.md"
+      git -C "$d" add docs/handoff && git -C "$d" commit -qm "handoff seed on main"
+      git -C "$d/.claude/worktrees/lane" checkout main -- docs/handoff/lane/tracked.md
+      echo " worker edit" >> "$d/.claude/worktrees/lane/docs/handoff/lane/tracked.md"
+      ;;
+    handoff_ignored)
+      # Cross-review R3: a GITIGNORED handoff dir (the persona-engine shape)
+      # is invisible to plain porcelain, and plain `worktree remove`
+      # succeeds through ignored files (probed: rc=0, file gone) — without
+      # --ignored in the guard the deliverable dies silently. The ignore
+      # rule goes in .git/info/exclude (shared across worktrees, and itself
+      # invisible to status, so it cannot pollute real_dirt).
+      echo "docs/handoff/" >> "$d/.git/info/exclude"
+      mkdir -p "$d/.claude/worktrees/lane/docs/handoff/lane"
+      echo "SENTINEL-IGNORED-9ea4cd03" > "$d/.claude/worktrees/lane/docs/handoff/lane/deliverable.md"
+      ;;
   esac
   [[ "$age" == "old" ]] && _backdate_lane_meta "$d"
   mkdir -p "$d/state" && printf 'sessions: []\n' > "$d/state/active.yaml"
@@ -190,6 +211,30 @@ case_untracked_handoff_deliverable_survives() { # <hook>
   return 0
 }
 
+# --- cross-review R1/R3 (MERGED-BATCH-FIXROUND-01 round 2): handoff content
+# in the NON-untracked porcelain states is work, not bookkeeping. R1: a
+# staged-then-edited tracked handoff file must not be reverted-and-deleted.
+# R3: an ignored handoff dir must not be removed-through (plain
+# `worktree remove` succeeds through ignored files — probed).
+case_handoff_nonuntracked_survives() { # <hook> <dirt-kind>
+  local repo lane out kind="${2:-}"
+  [[ -n "$kind" ]] || return 2
+  repo="${WORK}/ht$RANDOM$RANDOM"
+  _mk "$repo" yes "$kind" || return 2
+  lane="$repo/.claude/worktrees/lane"
+  out="$( ( cd "$repo" && CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$repo/state" \
+      LEADV2_SWEEP_MIN_AGE_H=0 bash "$1" ) 2>&1 )"
+  [[ -d "$lane" ]] || return 1
+  [[ -f "$lane/docs/handoff/lane/tracked.md" || -f "$lane/docs/handoff/lane/deliverable.md" ]] || return 1
+  if [[ "$kind" == "handoff_staged" ]]; then
+    grep -q "worker edit" "$lane/docs/handoff/lane/tracked.md" || return 1
+  else
+    grep -q "SENTINEL-IGNORED-9ea4cd03" "$lane/docs/handoff/lane/deliverable.md" || return 1
+  fi
+  printf '%s' "$out" | grep -q "dirty" || return 1
+  return 0
+}
+
 # --- no drift: the hook's regex and the close script's must stay identical -------
 case_no_regex_drift() { # <hook>
   local a b
@@ -223,6 +268,10 @@ run_case "real-uncommitted-work-is-never-swept"         case_real_work_kept
 run_case "unmerged-lane-is-never-swept"                 case_unmerged_kept
 run_case "newborn-lane-age-0-is-never-swept"            case_newborn_kept
 run_case "untracked-handoff-deliverable-survives-sweep" case_untracked_handoff_deliverable_survives
+case_staged_handoff_survives()  { case_handoff_nonuntracked_survives "$1" handoff_staged; }
+case_ignored_handoff_survives() { case_handoff_nonuntracked_survives "$1" handoff_ignored; }
+run_case "staged-handoff-not-reverted-by-sweep"         case_staged_handoff_survives
+run_case "ignored-handoff-not-removed-through"          case_ignored_handoff_survives
 run_case "exclusion-regex-matches-its-twin"             case_no_regex_drift
 
 echo ""

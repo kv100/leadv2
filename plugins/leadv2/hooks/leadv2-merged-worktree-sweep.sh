@@ -183,14 +183,19 @@ while IFS= read -r wt; do
   # hook exited 0 (the trap says so) having swept nothing.
   real_dirt="$(git -C "${wt}" status --porcelain 2>/dev/null | grep -vE "${_MW_ORCH_RE}" | head -1 || true)"
 
-  # H2 (MERGED-BATCH-FIXROUND-01): an UNTRACKED docs/handoff/ entry is a
-  # deliverable a worker wrote and never handed to git — the exclusion regex
-  # keys on the path, not the porcelain status, so without this check such a
-  # lane is classified "bookkeeping-only" and deleted with the deliverable
-  # still inside it. Untracked handoff content always counts as real dirt.
+  # H2 (MERGED-BATCH-FIXROUND-01) + cross-review R1/R3: a docs/handoff/
+  # entry in ANY porcelain state is a deliverable a worker produced and has
+  # not handed off — the exclusion regex keys on the path, not the status,
+  # so without this check such a lane is classified "bookkeeping-only" and
+  # deleted with the content still inside it. Untracked (??) AND ignored
+  # (!!) both vanish from plain porcelain, and plain `worktree remove`
+  # succeeds through ignored files (probed 2026-08-24: rc=0, file gone), so
+  # --ignored is load-bearing here; tracked-modified/staged handoff content
+  # is likewise work, not bookkeeping, and must never be reverted away by
+  # the discard step below.
   if [[ -z "${real_dirt}" ]] && \
-     git -C "${wt}" status --porcelain -uall 2>/dev/null | grep -qE '^\?\? "?docs/handoff/'; then
-    real_dirt="?? docs/handoff/ (untracked deliverable)"
+     git -C "${wt}" status --porcelain -uall --ignored 2>/dev/null | grep -qE '^.?.? "?docs/handoff/'; then
+    real_dirt="docs/handoff/ (unhanded-off deliverable content)"
   fi
 
   if [[ -n "${real_dirt}" ]]; then
