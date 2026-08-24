@@ -82,7 +82,14 @@ if [[ "${LEADV2_SKIP_DRIFT_GUARD:-0}" != "1" ]] && [[ -f "${_DRIFT_GUARD}" ]]; t
     if [[ "${_only_vendored_drift}" == "1" ]]; then
       log "WARN: drift detected but confined to the leadv2-repo-vendored copy (known SUPERVISE-V2-01 WIP, off-limits-protected, lowest blast radius — fanout does not read scripts from this copy) — proceeding with dispatch. Run 'bash ${_DRIFT_GUARD}' for details."
     else
-      log_error "drift detected across the 5 leadv2 script copies — refusing to fan out on possibly-stale scripts. Run 'bash ${_DRIFT_GUARD}' for details, then 'bash ~/Projects/leadv2/plugins/leadv2/scripts/leadv2-plugin-sync.sh' from canonical to reconcile. Override: LEADV2_SKIP_DRIFT_GUARD=1."
+      # Direction-aware remedy (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01 residual
+      # gap 1): the old text said unconditionally "sync from canonical", which
+      # on a day canonical is the STALE side would overwrite today's work with
+      # week-old code. The remedy is now: read the per-entry direction tags
+      # first, promote VENDORED_NEWER copies INTO canonical before any sync,
+      # and only then reconcile (plugin-sync is dry-run by default; --write
+      # applies, --allow-backward is a last-resort override, not the remedy).
+      log_error "drift detected across the 5 leadv2 script copies — refusing to fan out on possibly-stale scripts. Run 'bash ${_DRIFT_GUARD}' and read each entry's direction tag (CANONICAL_NEWER / VENDORED_NEWER / UNKNOWN): for every VENDORED_NEWER entry, promote that copy INTO canonical FIRST (cp <copy> ~/Projects/leadv2/plugins/leadv2/scripts/<name> + commit in ~/Projects/leadv2), then reconcile with 'bash ~/Projects/leadv2/plugins/leadv2/scripts/leadv2-plugin-sync.sh' (dry-run by default; add --write to apply; --allow-backward exists but is NOT the remedy). Last-resort bypass only: LEADV2_SKIP_DRIFT_GUARD=1."
       exit 1
     fi
   fi

@@ -495,6 +495,60 @@ _dst_file_dirty() {
   return 0
 }
 
+# _contract_write_gate <root> <schema_file> — write gates for the (d)
+# contracts copies (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01 residual gap 2):
+# this was the ONLY overwrite path in the script with no dirty-check and no
+# backward-refusal — _sync_project_root cp -p'd schema files into
+# <repo>/.claude/contracts/ unconditionally. Reuses (does not duplicate) the
+# same gate-1/gate-2 pair _direction_safety_excludes applies to scripts, so
+# contracts get identical protection:
+#   gate 1 — uncommitted destination (tracked-and-modified/staged): hard
+#            refuse, no flag overrides;
+#   gate 2 — destination NEWER than canonical's last commit for
+#            plugins/leadv2/contracts/<file> (same evidence rule as
+#            _sync_direction_of): refuse without --allow-backward,
+#            quarantine first + print the promote command.
+# Dry-run never writes (callers print the plan only when the gate passes).
+# Returns 0 = proceed with the copy, 1 = refuse (skip it).
+_contract_write_gate() {
+  local root="$1" schema_file="$2"
+  local dst_file="${root}/.claude/contracts/${schema_file}"
+  local canonical_relpath="plugins/leadv2/contracts/${schema_file}"
+  local schema_src="${PLUGIN_ROOT}/contracts/${schema_file}"
+  # Nothing on disk yet — nothing to clobber, safe.
+  [[ -f "${dst_file}" ]] || return 0
+  # Write gate 1: uncommitted destination — runs FIRST so a dirty destination
+  # is refused regardless of direction tags or --allow-backward.
+  if _dst_file_dirty "${root}" "${dst_file}"; then
+    _REFUSED_COUNT=$((_REFUSED_COUNT + 1))
+    if [[ "${DRY_RUN}" == "true" ]]; then
+      log_warn "DRY_RUN REFUSED (uncommitted destination): would not write ${dst_file} — tracked-and-modified/uncommitted in the destination repo. Commit it, or promote it into canonical; no flag overrides this."
+    else
+      log_warn "REFUSED: ${dst_file} is tracked-and-modified/uncommitted in the destination repo — refusing to overwrite (no flag overrides). Commit it, or promote it into canonical (cp ${dst_file} ${CANONICAL_ROOT}/${canonical_relpath}) and re-run."
+    fi
+    return 1
+  fi
+  # Write gate 2: backward move — refuse without --allow-backward.
+  local _direction
+  _direction="$(_sync_direction_of "${schema_src}" "${canonical_relpath}" "${dst_file}")" || _direction="UNKNOWN"
+  if [[ "${_direction}" == "VENDORED_NEWER" && "${ALLOW_BACKWARD}" != "true" ]]; then
+    _REFUSED_COUNT=$((_REFUSED_COUNT + 1))
+    if [[ "${DRY_RUN}" == "true" ]]; then
+      log_warn "WOULD MOVE BACKWARDS (refusing without --allow-backward): ${dst_file} is NEWER than canonical for ${canonical_relpath} — a real run will NOT overwrite it. Promote instead: cp ${dst_file} ${CANONICAL_ROOT}/${canonical_relpath} + commit in canonical."
+    else
+      # Refuse = leave untouched, but STILL preserve a quarantine copy first
+      # (protection without preservation loses the fix — same as gate 2 in
+      # _direction_safety_excludes). _quarantine_copy is non-destructive and
+      # content-hash deduplicated.
+      local qpath
+      qpath="$(_quarantine_copy "${dst_file}" "project/${root##*/}/contracts" "${schema_file}")" || qpath=""
+      log_warn "REFUSED (backward): ${dst_file} is NEWER than canonical for ${canonical_relpath} — NOT overwriting. Promote instead: cp ${dst_file} ${CANONICAL_ROOT}/${canonical_relpath} then commit in canonical. (Content also preserved at: ${qpath:-<quarantine-unavailable>}; override with --allow-backward.)"
+    fi
+    return 1
+  fi
+  return 0
+}
+
 _direction_safety_excludes() {
   local mode="$1" copy_name="$2" subdir="$3" src="$4" dst="$5"
   shift 5
@@ -745,6 +799,13 @@ _sync_project_root() {
   for schema_file in leadv2-scorecard.schema.json leadv2-shadow-proposal.schema.json; do
     local schema_src="${PLUGIN_ROOT}/contracts/${schema_file}"
     if [[ -f "${schema_src}" ]]; then
+      # Gated copy (DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01 residual gap 2):
+      # _contract_write_gate refuses an uncommitted destination (hard) and a
+      # VENDORED_NEWER one (without --allow-backward) BEFORE the cp — the plan
+      # line / copy only happens when the gate passes.
+      if ! _contract_write_gate "${root}" "${schema_file}"; then
+        continue
+      fi
       if [[ "${DRY_RUN}" == "true" ]]; then
         log "DRY_RUN [project/contracts]: cp ${schema_src} ${proj_contracts}/${schema_file}"
       else
