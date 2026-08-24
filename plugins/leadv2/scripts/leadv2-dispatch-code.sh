@@ -586,10 +586,13 @@ ARCHITECT_PREPASS_REASON=""
 # by _architect_failure_class), the same prepass prompt is retried through another
 # configured arm's OWN launcher (codex-task.sh --wait / glm-coder.sh run) before
 # the attempt is declared failed; the fallback design is validated by the same
-# guards as a Claude design. =0 restores byte-for-byte the single-arm behaviour
-# (one-flip rollback, same shape as LEADV2_DISPATCH_ARCHITECT_GATE).
+# guards as a Claude design. =0 independently disables only this fallback
+# attempt; it does not promise to revert unrelated dispatcher behaviour.
 ARCHITECT_FALLBACK="${LEADV2_DISPATCH_ARCHITECT_FALLBACK:-1}"
 ARCHITECT_FALLBACK_ARM_USED=""
+# Armed only while a fallback's disposable workspace exists.  The process-wide
+# EXIT cleanup owns it so signals cannot strand a fallback worktree.
+ARCHITECT_FALLBACK_WORKSPACE_BASE=""
 # T-c (SUPERVISOR-AUDIT-01): sig-keyed prepass cache + reduced prompt for short missions.
 # =0 restores today's behavior byte-for-byte (always re-run the architect, full prompt).
 PREPASS_CACHE="${LEADV2_PREPASS_CACHE:-1}"
@@ -2879,6 +2882,14 @@ cleanup_pending_dispatch() {
   if [[ -n "${DISPATCH_SLOT_REG_ID:-}" ]]; then
     _release_registered_lane "${DISPATCH_SLOT_REG_ID}" "${DISPATCH_SLOT_SIG8:-}" "exit_trap"
   fi
+  # PREPASS-PROVIDER-FALLBACK-01-R9 H3: fallback creation arms this global
+  # before `git worktree add`; therefore EXIT and signals after either creation
+  # step dispose the temporary workspace.  The normal path disarms it only
+  # after _afb_discard_workspace returns.
+  if [[ -n "${ARCHITECT_FALLBACK_WORKSPACE_BASE:-}" ]]; then
+    _afb_discard_workspace "${ARCHITECT_FALLBACK_WORKSPACE_BASE}"
+    ARCHITECT_FALLBACK_WORKSPACE_BASE=""
+  fi
   _reap_lane_worktree_if_unused
   local token="${ACTIVE_DISPATCH_TOKEN:-}"
   [[ -n "${token}" ]] || return 0
@@ -3392,9 +3403,13 @@ _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> 
   local i arm prov out rc glm_out ws_base ws _afb_ok=0
   # R5 H1: disposable isolated workspace -- never ${PROJECT_ROOT} as cwd.
   ws_base="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-afb.XXXXXX")" || return 1
+  # Arm process-global EXIT/signal cleanup immediately: a signal between this
+  # point and normal disposal must not strand a disposable worktree.
+  ARCHITECT_FALLBACK_WORKSPACE_BASE="${ws_base}"
   ws="${ws_base}/wt"
   if ! git -C "${PROJECT_ROOT}" worktree add --detach "${ws}" HEAD >/dev/null 2>&1; then
-    rm -rf "${ws_base}"
+    _afb_discard_workspace "${ws_base}"
+    ARCHITECT_FALLBACK_WORKSPACE_BASE=""
     emit decision "architect_prepass_fallback task=${sig8} outcome=aborted reason=workspace_unavailable"
     return 1
   fi
@@ -3447,6 +3462,7 @@ _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> 
   # R5 H1: the disposable workspace is removed on EVERY terminal path -- arm
   # success (break above), per-arm failure, ladder exhaustion, write failure.
   _afb_discard_workspace "${ws_base}"
+  ARCHITECT_FALLBACK_WORKSPACE_BASE=""
   (( ${_afb_ok} == 1 )) || return 1
   return 0
 }
@@ -3482,53 +3498,75 @@ DISPATCH_SLOT_REG_ID=""
 DISPATCH_SLOT_SESSION=""
 DISPATCH_SLOT_PID=""
 DISPATCH_SLOT_SIG8=""
-_dispatch_slot_owned() {  # <reg_id> -> rc0 ours-or-absent, rc2 foreign/worker row
-  local rid="$1" yf
-  # Registry not loaded / no yaml: nothing has been verified either way -- the
-  # caller's own leadv2_active_unregister guard makes release a no-op then.
-  declare -F _leadv2_yaml_file >/dev/null 2>&1 || return 0
-  # PROJECT_ROOT (this script's own global) -- never an ambient export -- names
-  # the registry: a `VAR=x source` prefix does not persist past the source, and
-  # the EXIT trap can fire long after registration.
-  yf="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" _leadv2_yaml_file 2>/dev/null)"
-  [[ -n "${yf}" && -f "${yf}" ]] || return 0
-  python3 - "${yf}" "${rid}" "${DISPATCH_SLOT_SESSION}" "${DISPATCH_SLOT_PID}" <<'PY' 2>/dev/null
-import sys, yaml
-path, task_id, session, pid = sys.argv[1:5]
-try:
-    data = yaml.safe_load(open(path)) or {}
-except Exception:
-    sys.exit(0)   # unreadable registry: fail-open (unregister is idempotent)
-rows = [s for s in (data.get("sessions") or []) if s.get("task_id") == task_id]
-if not rows:
-    sys.exit(0)   # absent row: nothing to release
-row = rows[0]
-if row.get("pid_role") == "worker":
-    sys.exit(2)   # a spawned worker owns this row now -- never release it here
-if session and row.get("session_id") != session:
-    sys.exit(2)   # row belongs to a different registration attempt
-if pid and row.get("pid") is not None and str(row.get("pid")) != pid:
-    sys.exit(2)   # register-refreshed row still carries another dispatcher's PID
-sys.exit(0)
-PY
-}
 _release_registered_lane() {  # <reg_id> <sig8> <where> -- owner-verified, idempotent
   local rid="$1" s8="$2" where="$3"
   [[ -n "${rid}" && -n "${DISPATCH_SLOT_REG_ID}" ]] || return 0
   DISPATCH_SLOT_REG_ID=""    # idempotent: only the FIRST release attempt acts
-  if ! declare -F leadv2_active_unregister >/dev/null 2>&1; then
+  if ! declare -F _leadv2_yaml_file >/dev/null 2>&1 || ! declare -F _leadv2_yaml_lockfile >/dev/null 2>&1; then
     emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=no_registry"
     return 0
   fi
-  if ! _dispatch_slot_owned "${rid}"; then
-    emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=not_owner_row_intact"
+  # R9 H1: compare AND delete under the registry's own flock.  A prior read
+  # followed by leadv2_active_unregister could delete a row refreshed by a
+  # different dispatcher in between.  Missing, unreadable, malformed, worker,
+  # or ownership-mismatched rows all fail closed and are never removed.
+  local yf lf release_rc
+  yf="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" _leadv2_yaml_file 2>/dev/null)"
+  lf="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" _leadv2_yaml_lockfile 2>/dev/null)"
+  if [[ -z "${yf}" || -z "${lf}" || ! -f "${yf}" ]]; then
+    emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=registry_unreadable"
     return 0
   fi
-  if LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_unregister "${rid}" 2>/dev/null; then
-    emit decision "active_lane_released task=${s8:-} id=${rid} where=${where}"
-  else
-    emit decision "active_lane_release_failed task=${s8:-} id=${rid} where=${where}"
-  fi
+  python3 - "${lf}" "${yf}" "${rid}" "${DISPATCH_SLOT_SESSION}" "${DISPATCH_SLOT_PID}" <<'PY' 2>/dev/null
+import fcntl, os, sys, tempfile
+try:
+    import yaml
+except Exception:
+    sys.exit(3)
+lock_path, path, task_id, session, pid = sys.argv[1:6]
+try:
+    lock = open(lock_path, "a+")
+except OSError:
+    sys.exit(3)
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
+        sys.exit(3)
+    rows = [row for row in data["sessions"] if isinstance(row, dict) and row.get("task_id") == task_id]
+    if len(rows) != 1:
+        sys.exit(2)
+    row = rows[0]
+    if (row.get("pid_role") == "worker" or not session or row.get("session_id") != session
+            or not pid or str(row.get("pid")) != pid):
+        sys.exit(2)
+    data["sessions"].remove(row)
+    fd, tmp = tempfile.mkstemp(prefix=".active-release-", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            yaml.safe_dump(data, out, default_flow_style=False, sort_keys=False)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+except Exception:
+    sys.exit(3)
+finally:
+    try: fcntl.flock(lock, fcntl.LOCK_UN)
+    except Exception: pass
+    lock.close()
+sys.exit(0)
+PY
+  release_rc=$?
+  case "${release_rc}" in
+    0) emit decision "active_lane_released task=${s8:-} id=${rid} where=${where}" ;;
+    2) emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=not_owner_row_intact" ;;
+    *) emit decision "active_lane_release_failed task=${s8:-} id=${rid} where=${where} reason=registry_compare_delete_error" ;;
+  esac
   return 0
 }
 
@@ -5325,13 +5363,22 @@ cmd_resolve() {
       # line to STDOUT too (observed live 2026-08-24), so a bare tail -1 would
       # capture chatter, not the id. LEADV2_PROJECT_ROOT is passed explicitly:
       # a `VAR=x source` prefix does not persist past the source command.
-      DISPATCH_SLOT_SESSION="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null | grep -E '^s-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$' | tail -1)"
+      # The registry is sourced code and can inherit `errexit`; registration
+      # output is advisory, so collect and parse it with errexit explicitly
+      # disabled.  A registrar error or chatter-only output is handled below
+      # as active_register_miss, never as an unjournalled dispatcher exit.
+      local _register_out _register_rc
+      set +e
+      _register_out="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null)"
+      _register_rc=$?
+      DISPATCH_SLOT_SESSION="$(printf '%s\n' "${_register_out}" | sed -nE '/^s-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/p' | tail -n 1)"
+      set +e
       if [[ -n "${DISPATCH_SLOT_SESSION}" ]]; then
         DISPATCH_SLOT_REG_ID="${reg_id}"
         DISPATCH_SLOT_PID="$(_lv2_durable_pid 2>/dev/null || printf '%s' "$$")"
         DISPATCH_SLOT_SIG8="${sig8}"
       else
-        emit decision "active_register_miss task=${sig8}"
+        emit decision "active_register_miss task=${sig8} rc=${_register_rc}"
       fi
     fi
     # LANE-TRUTH-BATCH-01 Row 1: stamp the real stream path so liveness resolves
