@@ -1,40 +1,83 @@
-# Codex lead pilot runbook
+# Codex lead runbook
 
 ## Premise
 
-This is a one-working-block experiment in which a Codex CLI lead uses the existing
-leadv2 dispatcher to launch Claude/GLM workers. The legal composition question is
-already settled by the cited research: the clients remain separate; the open question
-is whether hook-free orchestration improves outcomes per unit of measured cost.
-Do not judge the experiment from a drop in Claude burn alone.
+A Codex CLI lead uses the existing leadv2 dispatcher to launch Claude/GLM workers.
+Since CODEX-LEAD-PLUGIN-01 the lead ships as a real Codex plugin (`leadv2@leadv2-local`):
+skills, the lv2guard PreToolUse deny floor, and the repowise MCP launcher all install
+through the plugin system — the deny floor is enforced by the Codex runtime, not by prose.
+This is no longer a pilot: the founder ordered the full implementation (полноценно, не пилот).
 
-## Install and launch
+Everything below was probed empirically against codex-cli 0.145.0-alpha.1
+(probe artifacts in the CODEX-LEAD-PLUGIN-01 lane report):
 
-Do not overwrite `~/Projects/persona-engine/AGENTS.md`: it contains the existing
-product guardrails. Run the idempotent installer instead — it copies the pilot
-brief, installs the prompt pack to `~/.codex/prompts/`, and ensures the
-repowise MCP block in `~/.codex/config.toml` (never touching a hand-written
-one it doesn't own):
+- PreToolUse hooks are real and blocking: a hook emitting
+  `permissionDecision:"deny"` + non-empty reason makes Codex refuse the tool call
+  and show the reason in the transcript. Allow = empty stdout, exit 0 — emitting
+  `permissionDecision:"allow"` or `"ask"` is a runtime rejection.
+- Hook payloads are Claude-shaped: `tool_name:"Bash"`, `tool_input.command` string.
+- A hook that crashes (exit ≠ 0/2) is treated as Failed and the tool PROCEEDS —
+  the adapter therefore never crashes on the deny path.
+- Hooks run only after they are TRUSTED (below). `--dangerously-bypass-approvals-and-sandbox`
+  does NOT skip hooks; missing trust does.
+
+## Install (two commands)
+
+From the leadv2 repo:
+
+```bash
+codex plugin marketplace add ~/Projects/leadv2/plugins/leadv2/codex-lead/marketplace
+codex plugin add leadv2@leadv2-local
+```
+
+Then the one-time trust step: launch `codex` interactively once and accept
+**"Trust all and continue"** for the leadv2 hooks (hooks "need review before they
+can run"; until trusted they do not run — silently — and the floor is absent).
+Automation lanes without a TUI pass `--dangerously-bypass-hook-trust` instead.
+
+The alternative one-command installer covers the target-repo brief and the prompt-pack
+fallback for CLIs without plugin support:
 
 ```bash
 bash plugins/leadv2/codex-lead/install.sh ~/Projects/persona-engine
 ```
 
-It never writes `AGENTS.md` itself — if the `@import` line is missing it
-prints a loud `ACTION REQUIRED` line naming exactly what to append:
+It never writes `AGENTS.md` itself — if the `@import` line is missing it prints a loud
+`ACTION REQUIRED` naming exactly what to append:
 
 ```
 @import .claude/ref/90-codex-lead-pilot.md
 ```
 
-Re-run it any time; unchanged files are reported `unchanged`, changed ones are
-backed up to `*.bak` first. See `plugins/leadv2/codex-lead/lv2guard.sh` for the
-deny-floor mandate this brief now requires.
+Re-run any time; unchanged files are reported `unchanged`, changed ones backed up to
+`*.bak` first. On the plugin path the installer skips the config.toml repowise block
+(the plugin's `.mcp.json` owns that declaration; two servers would race for one name).
 
-`UNVERIFIED:` import resolution has not been demonstrated in persona-engine; the
-existing import is written as `@import ref/01-orchestrator.md` although its file is
-at `.claude/ref/01-orchestrator.md`. In minute one, ask the new session to quote a
-line from this brief before it can dispatch.
+## Gate status: enforced-by-the-plugin vs still-prose-only
+
+| Gate | Status | Mechanism |
+| --- | --- | --- |
+| CATASTROPHIC deny floor (rm -rf /, force-push main, mkfs, dd to device, chmod -R 777 /) | **ENFORCED by the plugin** | PreToolUse hook → lv2guard `--check` → `permissionDecision:deny` |
+| SOFT deny rules (git reset --hard, git clean -fd, git stash) | **ENFORCED by the plugin** (inline `# deny-floor: allow` still honored) | same |
+| worktree-prune active-lane predicate | **ENFORCED by the plugin** | same (predicate inside lv2guard) |
+| direct `codex exec` routing | **ENFORCED by the plugin** | same (deny-extra rule `codex_exec_direct`) |
+| plugin self-removal (`codex plugin remove leadv2`) | **ENFORCED by the plugin** | deny-extra rule `plugin_uninstall_floor` |
+| heredoc-oversize advisory | enforced-but-advisory | warns, never refuses (by design) |
+| missing/unreadable deny yamls, missing python3 | **ENFORCED fail-closed** | every shell tool call refused until restored. The deny emitter itself is pure bash (no python3 dependency — a deny that fails to emit would read as allow at runtime; fixed in the round-1 cross-provider review) |
+| dispatch door (one lane, rc contract) | still prose-only | the hook sees commands, not lane semantics |
+| review door (rc=0 + status:pass before merge) | still prose-only | same |
+| worktree isolation / write-path scoping | still prose-only | hook denies destructive commands, does not scope writes |
+| close ritual, ledger, memory discipline | still prose-only | process gates |
+| prompt discipline (AGENTS brief, read-first) | still prose-only | skills make it model-invoked, not enforced |
+
+**Measurement caveat (probed):** the enforced floor depends on hooks actually running.
+An upgrade that renames payload fields degrades the floor to allow+log (deliberate:
+denying unrecognized shapes would brick every session after every upgrade). The
+observable for that hole is `~/.codex/lv2guard-unrecognized.log` — after a session this
+file must be empty; a non-empty file means tool calls went unguardable and the CLI
+version must be re-probed (the manifest test pins the observed CLI version).
+
+## Launch
 
 Open exactly one session from persona-engine:
 
@@ -44,9 +87,8 @@ command codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -s workspace-write
 ```
 
 `command` bypasses a shell alias. Verify the effective binary/options locally before
-launch; do not use an alias that adds a sandbox-bypass flag. The model and effort
-flags are belt-and-braces for the configured pilot defaults. Work for one block only:
-two to four named tasks, no marathon; reset the session rather than compacting it.
+launch. Work for one block only: two to four named tasks, no marathon; reset the
+session rather than compacting it.
 
 ## Task menu
 
@@ -113,8 +155,8 @@ bash plugins/leadv2/scripts/leadv2-quota-status.sh
 ```
 
 Pre-flight passes only when the digest reports a non-zero `burn24h`; `no_telemetry`
-or zero disables the burn gate and makes the pilot inconclusive. Preserve the raw
-before/after output in the pilot log, together with the Codex TUI rate-limit reading.
+or zero disables the burn gate and makes the block inconclusive. Preserve the raw
+before/after output in the block log, together with the Codex TUI rate-limit reading.
 
 | Measure | Before / after source | Interpretation |
 | --- | --- | --- |
@@ -128,7 +170,7 @@ read as Codex zero usage. See [quota-status source](../scripts/leadv2-quota-stat
 
 ## Transcript checklist
 
-The lead has no Claude hooks. The reviewer checks the transcript for each observable:
+The reviewer checks the transcript for each observable:
 
 | Would-have-been gate | Observable |
 | --- | --- |
@@ -140,11 +182,12 @@ The lead has no Claude hooks. The reviewer checks the transcript for each observ
 | memory/state discipline | State is in the documented ledger/journal locations, with append-only journals. |
 | task-output discipline | No hidden task-output shortcut replaces evidence. |
 | monitor cap | No uncontrolled polling or concurrent WIP. |
-| deny floor | Every side-effecting command went through `lv2guard.sh` (M-2: this is observable in a transcript; "no destructive command ran" is not — lv2guard is advisory, not enforced by the runtime). |
+| deny floor | `~/.codex/lv2guard-unrecognized.log` is EMPTY after the session, and any refused command shows the lv2guard rule message in the transcript (enforced by the plugin since CODEX-LEAD-PLUGIN-01). |
 | foreground dispatch | Each started verification/dispatch result is waited for and recorded. |
 
-`block-codex`, `codex-direct-exec-guard`, and `codex-first-nudge` do not transfer:
-they stop a Claude lead from invoking Codex, while this pilot's lead is Codex.
+`block-codex`, `codex-direct-exec-guard`, and `codex-first-nudge` are Claude-side
+guards; they do not transfer, but the plugin's deny floor now covers their Codex-side
+equivalent (`codex_exec_direct` rule).
 
 ## Pre-registered decision
 
@@ -156,12 +199,12 @@ Confirm these thresholds before launch; do not revise them from the outcome.
 
 ## Rollback
 
-Delete the one `@import .claude/ref/90-codex-lead-pilot.md` line and close the Codex
-session. Lane commits remain ordinary commits, kept or reverted on their own merit.
+```bash
+codex plugin remove leadv2@leadv2-local
+codex plugin marketplace remove leadv2-local
+```
 
-## Deliberately excluded from the brief
-
-The ≤150-line brief omits the full 33-guard list, supervisor/fanout mode,
-Codex-FULL/session-runner recursion, Kimi and ladder-spill behavior, detailed retry clauses,
-MCP tooling, model-pinning workflow, and measurement instructions. Those are not active
-mechanisms for this single-lead pilot.
+(The lead itself is blocked from running the first command — `plugin_uninstall_floor` —
+by design; removal is a founder action.) The `@import .claude/ref/90-codex-lead-pilot.md`
+line can then be deleted and the Codex session closed. Lane commits remain ordinary
+commits, kept or reverted on their own merit.

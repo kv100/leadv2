@@ -1,9 +1,12 @@
 #!/bin/bash
 # lv2guard.sh — Codex-lead bash reimplementation of the CATASTROPHIC-tier
 # deny-floor (see plugins/leadv2/hooks/leadv2-deny-floor.sh, the Claude-side
-# PreToolUse hook this mirrors). Codex has no PreToolUse/blocking hooks, so
-# this script is the ONLY floor on the Codex side and is opt-in by prose
-# mandate, not enforced by the runtime — see the AGENTS brief §lv2guard.
+# PreToolUse hook this mirrors). Codex HAS PreToolUse/blocking hooks since
+# codex-cli 0.145.0-alpha.1 (verified empirically CODEX-LEAD-PLUGIN-01:
+# permissionDecision:deny blocks the tool call; allow = empty output rc 0),
+# so this script runs BOTH as a prose-mandated wrapper and, via --check,
+# as the decision core of the enforced plugin hook
+# marketplace/plugins/leadv2/hooks/lv2guard-pretooluse.sh.
 #
 # Deliberate divergences from the canonical hook (CODEX-LEAD-FULL-01 prepass
 # §0.3, §2a, CB-1, CB-8):
@@ -18,19 +21,22 @@
 #     heredoc advisory) that do not exist in the canonical file.
 #
 # Usage:
-#   lv2guard.sh <command...>            # argv form; exec replaces this process
-#   lv2guard.sh -c '<command string>'   # -c form; required for the
-#                                          "# deny-floor: allow" inline token
+#   lv2guard.sh <command...>                  # argv form; exec replaces this process
+#   lv2guard.sh -c '<command string>'         # -c form; required for the
+#                                                "# deny-floor: allow" inline token
+#   lv2guard.sh --check -c '<command string>' # adjudicate only: NEVER exec; used
+#                                                by the Codex PreToolUse adapter
 #
 # Exit codes:
 #   97   refused — reserved; a guarded invocation exiting 97 always means
 #        "lv2guard refused", never the wrapped command's own code.
 #   2    usage error (no args, or empty -c string)
 #   127  command not found (ordinary shell behavior)
-#   *    otherwise the wrapped command's own exit code
+#   *    otherwise the wrapped command's own exit code (--check: only 0)
 #
 # Test seam: LEADV2_CODEX_GUARD_EXEC=<prog> replaces the final exec target
 # (e.g. `echo`) so tests can observe what WOULD have run without running it.
+# Ignored (never honoured) in --check mode — that mode must not exec anything.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -41,7 +47,7 @@ HEREDOC_WARN_BYTES="${LEADV2_CODEX_HEREDOC_WARN_BYTES:-2048}"
 MATCH_CAP_BYTES=65536
 
 usage() {
-  printf 'usage: lv2guard.sh <command...>\n       lv2guard.sh -c "<command string>"\n' >&2
+  printf 'usage: lv2guard.sh <command...>\n       lv2guard.sh -c "<command string>"\n       lv2guard.sh --check -c "<command string>"\n' >&2
 }
 
 refuse() {
@@ -57,13 +63,27 @@ fi
 
 FORM="argv"
 CMDSTR=""
+if [[ "$1" == "--check" ]]; then
+  FORM="check"
+  shift
+  if [[ "${1:-}" != "-c" ]]; then
+    usage
+    exit 2
+  fi
+fi
 if [[ "$1" == "-c" ]]; then
-  FORM="c"
+  if [[ "$FORM" != "check" ]]; then
+    FORM="c"
+  fi
   if [[ $# -lt 2 || -z "${2:-}" ]]; then
     usage
     exit 2
   fi
   CMDSTR="$2"
+elif [[ "$FORM" == "check" ]]; then
+  # --check was consumed above; anything but -c here is a usage error.
+  usage
+  exit 2
 fi
 
 if [[ "$FORM" == "argv" ]]; then
@@ -87,10 +107,11 @@ if [[ ${#MATCH_FOR_REGEX} -gt $MATCH_CAP_BYTES ]]; then
   printf '[lv2guard] warning: command exceeds %d bytes; matching only the first %d.\n' "$MATCH_CAP_BYTES" "$MATCH_CAP_BYTES" >&2
 fi
 
-# CB-6: the inline override token is only honored in -c form. In argv form
-# the token would just be a literal argument to the wrapped command.
+# CB-6: the inline override token is only honored in string forms (-c and
+# --check -c, which share the same string). In argv form the token would
+# just be a literal argument to the wrapped command.
 HAS_INLINE_ALLOW=0
-if [[ "$FORM" == "c" ]] && printf '%s' "$MATCH_STRING" | grep -q '# deny-floor: allow'; then
+if [[ "$FORM" != "argv" ]] && printf '%s' "$MATCH_STRING" | grep -q '# deny-floor: allow'; then
   HAS_INLINE_ALLOW=1
 fi
 
@@ -264,7 +285,10 @@ if [[ -n "$HIT" ]]; then
   fi
 fi
 
-# --- no refusal: execute -----------------------------------------------------
+# --- no refusal: execute (or, in --check mode, just allow) -------------------
+if [[ "$FORM" == "check" ]]; then
+  exit 0
+fi
 if [[ "$FORM" == "argv" ]]; then
   if [[ -n "${LEADV2_CODEX_GUARD_EXEC:-}" ]]; then
     exec "$LEADV2_CODEX_GUARD_EXEC" "$@"

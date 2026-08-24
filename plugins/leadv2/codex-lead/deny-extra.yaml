@@ -23,6 +23,10 @@
 #
 # Any NEW rule beginning with `git` MUST include this fragment — the
 # fragment-drift check in tests/test-deny-floor.sh fails the suite otherwise.
+#
+# CODEX-LEAD-PLUGIN-01: plugin_uninstall_floor added — a floor the guarded
+# agent can remove with one command is a floor with one bypass (prepass §5.3).
+
 
 rules:
   - name: worktree_prune_active_lanes
@@ -47,3 +51,10 @@ rules:
     enabled: true
     message: "Heredoc body exceeds the advisory size threshold — consider a file instead. Advisory only; the command still runs."
     allow_inline_override: true
+
+  - name: plugin_uninstall_floor
+    kind: regex
+    regex: 'codex\s+plugin\s+(remove|uninstall)\b.*\bleadv2\b'
+    enabled: true
+    message: "Removing the leadv2 plugin disables the enforced deny floor — a floor the guarded agent can remove with one command is no floor. If removal is truly needed, the founder runs it by hand."
+    allow_inline_override: false

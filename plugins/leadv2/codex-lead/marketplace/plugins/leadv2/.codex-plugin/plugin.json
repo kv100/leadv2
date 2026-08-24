@@ -1,0 +1,20 @@
+{
+  "name": "leadv2",
+  "version": "1.0.0",
+  "description": "leadv2 Codex-lead floor and workflow pack: lv2guard PreToolUse deny floor (enforced), leadv2 skills (dispatch/review/status/close), and the repowise MCP launcher.",
+  "author": {
+    "name": "leadv2"
+  },
+  "repository": "https://github.com/kvlasenko/leadv2",
+  "license": "MIT",
+  "keywords": [
+    "leadv2",
+    "deny-floor",
+    "guard",
+    "orchestration"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks.json",
+  "mcpServers": "./.mcp.json",
+  "interface": {}
+}

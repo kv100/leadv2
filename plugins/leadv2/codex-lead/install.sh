@@ -1,8 +1,14 @@
 #!/bin/bash
-# install.sh — idempotent installer for the Codex-lead pilot tooling.
+# install.sh — idempotent installer for the Codex-lead tooling.
 #
 # Runs OUTSIDE this repo (writes to $HOME/.codex/ and a target project repo)
 # but ships INSIDE it — this script writes nothing under ~/Projects/leadv2.
+#
+# Plugin path (preferred, codex-cli >= 0.145): register the local marketplace
+# leadv2-local and install plugin leadv2 — skills, the lv2guard PreToolUse
+# hook, and the repowise MCP launcher all ship through the plugin. Fallback
+# path (CLI without plugin support): prompt pack + a repowise block in
+# config.toml, exactly as before.
 #
 # Usage:
 #   install.sh [<target-repo-path>]     # default: $HOME/Projects/persona-engine
@@ -11,6 +17,10 @@
 #   0   ran to completion (individual steps may print ACTION REQUIRED)
 #   3   target repo path does not exist
 #   4   ~/.codex/config.toml unwritable, or fails a TOML parse-check
+#
+# Test seam: LEADV2_CODEX_BIN=<prog> replaces the codex CLI (never a bare
+# `codex` — a test with a redirected $HOME must not mutate the real
+# ~/.codex/config.toml).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +29,10 @@ TARGET_REPO="${1:-$HOME/Projects/persona-engine}"
 CODEX_DIR="$HOME/.codex"
 PROMPTS_SRC="$SCRIPT_DIR/prompts"
 AGENTS_BRIEF_SRC="$REPO_ROOT/plugins/leadv2/docs/codex-lead-AGENTS-pilot.md"
+CODEX_BIN="${LEADV2_CODEX_BIN:-codex}"
+MARKETPLACE_DIR="$SCRIPT_DIR/marketplace"
+MARKETPLACE_NAME="leadv2-local"
+PLUGIN_ID="leadv2@$MARKETPLACE_NAME"
 
 SENTINEL_BEGIN="# BEGIN leadv2-codex-lead repowise (managed by plugins/leadv2/codex-lead/install.sh)"
 SENTINEL_END="# END leadv2-codex-lead repowise"
@@ -81,10 +95,83 @@ else
   printf 'ACTION REQUIRED: append this line to %s:\n  @import .claude/ref/90-codex-lead-pilot.md\n' "$TARGET_AGENTS"
 fi
 
-# --- 4. ~/.codex/config.toml repowise MCP block -----------------------------
+# --- 4. plugin path (preferred) ---------------------------------------------
 CONFIG_TOML="$CODEX_DIR/config.toml"
-mkdir -p "$CODEX_DIR"
+# rc 4 contract covers an UNUSABLE ~/.codex, not just an unparseable
+# config.toml: if the dir cannot be created, or exists but is unwritable
+# (and config.toml is absent, so nothing could ever be written), fail now —
+# a later silent write failure would report success with nothing installed
+# (round-1 cross-provider review, major).
+if ! mkdir -p "$CODEX_DIR" 2>/dev/null; then
+  printf 'install.sh: cannot create %s
+' "$CODEX_DIR" >&2
+  exit 4
+fi
+if [[ -d "$CODEX_DIR" && ! -w "$CODEX_DIR" && ! -f "$CONFIG_TOML" ]]; then
+  printf 'install.sh: %s is not writable and %s does not exist
+' "$CODEX_DIR" "$CONFIG_TOML" >&2
+  exit 4
+fi
 
+USE_PLUGIN=0
+if [[ -d "$MARKETPLACE_DIR" ]] && "$CODEX_BIN" plugin --help >/dev/null 2>&1; then
+  if [[ -f "$CONFIG_TOML" ]] && ! toml_parses "$CONFIG_TOML"; then
+    printf 'install.sh: %s does not parse as TOML — refusing to touch it\n' "$CONFIG_TOML" >&2
+    exit 4
+  fi
+
+  # 4a. marketplace registration (different-root conflict is never re-pointed)
+  MARKETPLACE_OK=0
+  EXISTING_ROOT=""
+  if [[ -f "$CONFIG_TOML" ]]; then
+    EXISTING_ROOT="$(awk -v m="$MARKETPLACE_NAME" '
+      $0 == "[marketplaces." m "]" { in_mkt = 1; next }
+      in_mkt && /^source = / { sub(/^source = "/, ""); sub(/"$/, ""); print; exit }
+      /^\[/ { in_mkt = 0 }
+    ' "$CONFIG_TOML")"
+  fi
+  MARKETPLACE_ABS="$(cd "$MARKETPLACE_DIR" && pwd -P)"
+  if [[ -n "$EXISTING_ROOT" && "$EXISTING_ROOT" != "$MARKETPLACE_ABS" ]]; then
+    printf 'ACTION REQUIRED: marketplace %s already registered at a different root:\n  registered: %s\n  this tree:  %s\n  resolve by hand (codex plugin marketplace remove %s) — not re-pointed silently\n' \
+      "$MARKETPLACE_NAME" "$EXISTING_ROOT" "$MARKETPLACE_ABS" "$MARKETPLACE_NAME"
+  elif [[ -n "$EXISTING_ROOT" ]]; then
+    printf 'marketplace %s: unchanged (%s)\n' "$MARKETPLACE_NAME" "$EXISTING_ROOT"
+    MARKETPLACE_OK=1
+  else
+    if "$CODEX_BIN" plugin marketplace add "$MARKETPLACE_DIR" >/dev/null 2>&1; then
+      printf 'marketplace %s: added (%s)\n' "$MARKETPLACE_NAME" "$MARKETPLACE_ABS"
+      MARKETPLACE_OK=1
+    else
+      printf 'ACTION REQUIRED: `codex plugin marketplace add %s` failed — install the plugin by hand, or re-run for the prompt-pack fallback (installed below)\n' "$MARKETPLACE_DIR"
+    fi
+  fi
+
+  # 4b. plugin install (skipped when already registered in config.toml)
+  if [[ "$MARKETPLACE_OK" == "1" ]]; then
+    if [[ -f "$CONFIG_TOML" ]] && grep -qF "[plugins.\"$PLUGIN_ID\"]" "$CONFIG_TOML"; then
+      printf 'plugin: unchanged %s\n' "$PLUGIN_ID"
+      USE_PLUGIN=1
+    elif "$CODEX_BIN" plugin add "$PLUGIN_ID" >/dev/null 2>&1 && \
+         grep -qF "[plugins.\"$PLUGIN_ID\"]" "$CONFIG_TOML" 2>/dev/null; then
+      printf 'plugin: installed %s\n' "$PLUGIN_ID"
+      USE_PLUGIN=1
+    else
+      printf 'ACTION REQUIRED: `codex plugin add %s` did not register — install by hand or use the prompt-pack fallback (installed below)\n' "$PLUGIN_ID"
+    fi
+  fi
+fi
+
+if [[ "$USE_PLUGIN" == "1" ]]; then
+  printf 'plugin: skills + lv2guard PreToolUse hook + repowise MCP launcher installed as %s\n' "$PLUGIN_ID"
+  printf 'plugin: one-time trust required — launch codex, accept "Trust all and continue" for the leadv2 hooks (or pass --dangerously-bypass-hook-trust)\n'
+else
+  printf 'plugin: CLI has no plugin support — installed prompt pack instead\n'
+fi
+
+# --- 5. ~/.codex/config.toml repowise MCP block (fallback path only) --------
+# On the plugin path the plugin's .mcp.json owns the repowise declaration;
+# writing the block too would leave two repowise servers racing for one name.
+if [[ "$USE_PLUGIN" != "1" ]]; then
 REPOWISE_BLOCK="$SENTINEL_BEGIN
 [mcp_servers.repowise]
 command = \"$TARGET_REPO/.repowise/repowise-mcp.sh\"
@@ -157,5 +244,6 @@ PYEOF
     printf 'config.toml: repowise block added (backup: %s.bak)\n' "$CONFIG_TOML"
   fi
 fi
+fi  # end fallback-only config.toml block
 
 exit 0

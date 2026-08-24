@@ -1,0 +1,34 @@
+---
+name: leadv2-dispatch
+description: Dispatch exactly one leadv2 code lane through lv2guard and leadv2-dispatch-code.sh, and act on its return code. Use when a task must be delegated to a worker lane in a leadv2 Codex-lead session.
+---
+
+## Usage
+
+The user's request text that follows the skill invocation is the task brief.
+
+Перед диспатчем перепроверь premise задачи (что она ещё актуальна, не
+выполнена и не дублирует активный lane). Затем запусти ровно один lane через:
+
+```
+bash ~/Projects/leadv2/plugins/leadv2/codex-lead/lv2guard.sh -c \
+  "bash ~/Projects/leadv2/plugins/leadv2/scripts/leadv2-dispatch-code.sh <args>"
+```
+
+Никогда не вызывай `leadv2-dispatch-code.sh` в обход lv2guard, и никогда не
+пиши свой собственный `claude -p` — только этот диспетчер.
+
+Коды возврата и обязательное действие — единственный источник истины:
+
+| rc | Значение | Действие |
+| --- | --- | --- |
+| 0 | launched / resolve-only | Записать handle, ждать evidence. |
+| 1 | usage/internal | Исправить вызов; НИКОГДА не повторять дословно. |
+| 2 | дубликат сигнатуры | НИКОГДА не перезапускать — двойной запуск теряет diff. |
+| 3 | lock / architect prepass parked | Показать решение; терминально до ответа. |
+| 4 | все арки отказали | Терминально на сегодня; не поллить. |
+| 5 | placement отказан | Создать нужный worktree или указать валидный ref, повторить. |
+| 6 | burn cap parked | Корректный стоп — записать park, НИКОГДА не поднимать cap. |
+
+rc=3, rc=4 и rc=6 — все терминальны для этой задачи сегодня: одна фраза
+founder'у и переход к следующей named-задаче, без ретрая по кругу.

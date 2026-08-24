@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "repowise": {
+      "command": "./scripts/repowise-launch.sh",
+      "args": [],
+      "cwd": "."
+    }
+  }
+}
