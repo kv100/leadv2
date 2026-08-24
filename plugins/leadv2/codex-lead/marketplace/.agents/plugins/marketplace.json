@@ -1,0 +1,20 @@
+{
+  "name": "leadv2-local",
+  "interface": {
+    "displayName": "leadv2 (local)"
+  },
+  "plugins": [
+    {
+      "name": "leadv2",
+      "source": {
+        "source": "local",
+        "path": "./plugins/leadv2"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

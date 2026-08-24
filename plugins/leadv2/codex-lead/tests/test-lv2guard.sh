@@ -118,8 +118,37 @@ out="$(LEADV2_CODEX_GUARD_EXEC=echo LEADV2_DENY_FLOOR=0 bash "$FG" -c "rm -rf /"
 out="$(LEADV2_CODEX_GUARD_EXEC=echo bash "$GUARD" 2>&1)"; rc=$?
 [[ $rc -eq 2 ]] && pass "usage: no args at all -> rc 2" || fail "usage: no args (rc=$rc)"
 
+# --- --check mode (CODEX-LEAD-PLUGIN-01): adjudicate-only, never exec --------
+assert_rc 0 "check: allow git status"                -- --check -c "git status"
+assert_rc 97 "check: refuse rm -rf /"                 -- --check -c "rm -rf /"
+assert_rc 97 "check: refuse git push --force"         -- --check -c "git push --force origin main"
+assert_rc 97 "check: refuse soft without token"       -- --check -c "git stash"
+assert_rc 0  "check: soft + inline token -> allow"    -- --check -c "git stash # deny-floor: allow"
+out="$(LEADV2_CODEX_GUARD_EXEC=echo LEADV2_DENY_PATTERNS_FILE="$FIX/nonexistent.yaml" bash "$FG" --check -c "ls" 2>&1)"; rc=$?
+[[ $rc -eq 97 ]] && pass "check: fail-closed missing patterns file" || fail "check: fail-closed missing patterns file (rc=$rc, $out)"
+
+out="$(LEADV2_CODEX_GUARD_EXEC=echo bash "$FG" --check -c "ls" 2>&1)"; rc=$?
+if [[ $rc -eq 0 && -z "$out" ]]; then
+  pass "check: exec seam ignored (rc=0, no stdout)"
+else
+  fail "check: exec seam ignored (rc=$rc, out=$out)"
+fi
+
+out="$(LEADV2_CODEX_GUARD_EXEC=echo bash "$FG" --check 2>&1)"; rc=$?
+[[ $rc -eq 2 ]] && pass "check: --check without -c -> rc 2" || fail "check: --check without -c (rc=$rc)"
+out="$(LEADV2_CODEX_GUARD_EXEC=echo bash "$FG" --check -c "" 2>&1)"; rc=$?
+[[ $rc -eq 2 ]] && pass "check: --check with empty -c -> rc 2" || fail "check: empty -c (rc=$rc)"
+
+# check: deny reason lands on stderr (the adapter consumes it)
+out="$(bash "$FG" --check -c "rm -rf /" 2>&1 >/dev/null)"; rc=$?
+if [[ $rc -eq 97 ]] && printf '%s' "$out" | grep -q "REFUSED.*rm_rf_root"; then
+  pass "check: deny reason on stderr names the rule"
+else
+  fail "check: deny reason on stderr (rc=$rc, out=$out)"
+fi
+
 # --- bash -n over every shipped shell file --------------------------------
-for f in "$CODEX_LEAD_DIR"/*.sh "$CODEX_LEAD_DIR"/shim/rm "$CODEX_LEAD_DIR"/shim/git "$CODEX_LEAD_DIR"/shim/codex "$CODEX_LEAD_DIR"/tests/*.sh; do
+for f in "$CODEX_LEAD_DIR"/*.sh "$CODEX_LEAD_DIR"/shim/rm "$CODEX_LEAD_DIR"/shim/git "$CODEX_LEAD_DIR"/shim/codex "$CODEX_LEAD_DIR"/tests/*.sh "$CODEX_LEAD_DIR"/marketplace/plugins/leadv2/hooks/*.sh "$CODEX_LEAD_DIR"/marketplace/plugins/leadv2/scripts/*.sh; do
   [[ -f "$f" ]] || continue
   if bash -n "$f" 2>/dev/null; then
     pass "bash -n $f"
