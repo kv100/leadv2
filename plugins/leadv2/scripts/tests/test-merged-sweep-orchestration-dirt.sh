@@ -8,10 +8,26 @@
 # it swept nothing. Found live on 2026-08-22: lane 641321b5 was merged (ahead=0) and
 # its ONLY diff was docs/leadv2/open-threads.md.
 #
-# The three assertions that matter are: orchestration-only dirt is swept, REAL
-# uncommitted work is never swept, and an unmerged lane is never swept whatever its
-# dirt. The second and third are the safety direction — a sweep that eats a
-# deliverable costs far more than one that keeps a stale directory.
+# The assertions that matter: orchestration-only dirt is swept, REAL uncommitted
+# work is never swept, an unmerged lane is never swept whatever its dirt, and (added
+# 2026-08-24, NEWBORN-GUARD-01) a lane that was JUST created is never swept even
+# though it is byte-for-byte identical git state to an already-merged clean lane --
+# `ahead=0` + no dirt describes both. Reproduced live 2/2 the same day: dispatch
+# creates the lane worktree, spawns the child session, and the child's own
+# SessionStart hooks (this one included) ran before it wrote a single byte, deleting
+# the directory it was about to work in ~7s after creation.
+#
+# Because a real merged-and-ready-to-reap lane is, by definition, not 0 seconds old,
+# the sweep-positive cases below back-date each lane's creation-stamped git metadata
+# (`<common-git-dir>/worktrees/<name>/gitdir`, written once by `git worktree add` and
+# never rewritten by later commits/status calls in that worktree -- verified) before
+# invoking the hook, so they exercise the newborn guard's "old enough" branch rather
+# than accidentally depending on `LEADV2_SWEEP_MIN_AGE_S` being overridden to 0. The
+# newborn case does the opposite: it deliberately leaves the metadata untouched (age
+# 0) and asserts the lane survives and the advisory names it as too young.
+#
+# The second and third are the safety direction — a sweep that eats a deliverable
+# costs far more than one that keeps a stale directory.
 #
 # The exclusion regex is READ OUT OF THE HOOK, and separately compared with its twin
 # in leadv2-dispatch-product-close.sh, because two hand-kept copies of one pattern is
@@ -37,9 +53,25 @@ if [[ -n "${REPO}" ]]; then
 fi
 if [[ -s "${PRE_HOOK}" ]]; then chmod +x "${PRE_HOOK}"; else PRE_HOOK=""; fi
 
+# Back-date a lane worktree's CREATION-stamped git metadata so it reads as an hour
+# old, matching the guard in leadv2-merged-worktree-sweep.sh: `git worktree add`
+# writes `<common-git-dir>/worktrees/<name>/gitdir` exactly once and never rewrites
+# it (unlike HEAD/index/logs in that same dir, which change on every commit/status
+# call inside the worktree) -- verified empirically when the guard was built. Any
+# case exercising the "should be swept" path must age the lane this way, or it is
+# really testing `LEADV2_SWEEP_MIN_AGE_S` being large enough to cover a 0-second-old
+# fixture by luck, not the sweep logic.
+_backdate_lane_meta() { # <dir>
+  local d="$1" meta_dir old_ts
+  meta_dir="$(git -C "$d/.claude/worktrees/lane" rev-parse --git-dir 2>/dev/null)"
+  [[ -n "$meta_dir" && -f "$meta_dir/gitdir" ]] || return 1
+  old_ts="$(date -v-1H +%Y%m%d%H%M.%S 2>/dev/null || date -d '-1 hour' +%Y%m%d%H%M.%S)"
+  touch -t "${old_ts%.*}" "$meta_dir/gitdir"
+}
+
 # A repo with one lane worktree, merged or not, dirty however the case wants.
-_mk() { # <dir> <merged:yes|no> <dirt:orch|real|none>
-  local d="$1" merged="$2" dirt="$3"
+_mk() { # <dir> <merged:yes|no> <dirt:orch|real|none> <age:old|new (default old)>
+  local d="$1" merged="$2" dirt="$3" age="${4:-old}"
   mkdir -p "$d/docs/leadv2" && git -C "$d" init -q -b main
   git -C "$d" config user.email t@t && git -C "$d" config user.name t
   echo seed > "$d/seed.txt"; echo notes > "$d/docs/leadv2/open-threads.md"
@@ -55,6 +87,8 @@ _mk() { # <dir> <merged:yes|no> <dirt:orch|real|none>
     orch) echo touched >> "$d/.claude/worktrees/lane/docs/leadv2/open-threads.md" ;;
     real) echo "uncommitted deliverable" > "$d/.claude/worktrees/lane/SAMPLES.md" ;;
   esac
+  [[ "$age" == "old" ]] && _backdate_lane_meta "$d"
+  return 0
 }
 
 _swept() { # <hook> <repo> -> 0 if the lane is gone
@@ -82,6 +116,22 @@ case_unmerged_kept() { # <hook>
   local repo="${WORK}/u$RANDOM$RANDOM"; _mk "$repo" no orch || return 2
   _swept "$1" "$repo" && return 1
   git -C "$repo/.claude/worktrees/lane" log --oneline -1 2>/dev/null | grep -q 'unmerged work'
+}
+
+# --- the regression this whole change exists to prevent: a lane that was JUST
+# created (age 0, gitdir metadata NOT back-dated) is byte-for-byte the same git
+# state as an already-merged clean lane -- ahead=0, no dirt but the plugin's own
+# bookkeeping. Without the newborn guard this is exactly the sweep-positive path,
+# and it is exactly what killed tasks e5be9e72 / 77ea471a on 2026-08-24: the hook
+# ran as the child's own SessionStart hook and deleted the worktree the child was
+# about to use, seconds after `leadv2-dispatch-code.sh` created it.
+case_newborn_kept() { # <hook>
+  local repo="${WORK}/n$RANDOM$RANDOM" out
+  _mk "$repo" yes orch new || return 2
+  out="$( ( cd "$repo" && CLAUDE_PROJECT_DIR="$repo" bash "$1" ) 2>&1 )"
+  [[ -d "$repo/.claude/worktrees/lane" ]] || return 1
+  echo "$out" | grep -qi "young" || return 1
+  return 0
 }
 
 # --- no drift: the hook's regex and the close script's must stay identical -------
@@ -115,6 +165,7 @@ bash -n "${HOOK}" || { log "FAIL: bash -n"; exit 1; }
 run_case "merged-lane-with-orchestration-dirt-is-swept" case_orch_swept
 run_case "real-uncommitted-work-is-never-swept"         case_real_work_kept
 run_case "unmerged-lane-is-never-swept"                 case_unmerged_kept
+run_case "newborn-lane-age-0-is-never-swept"            case_newborn_kept
 run_case "exclusion-regex-matches-its-twin"             case_no_regex_drift
 
 echo ""

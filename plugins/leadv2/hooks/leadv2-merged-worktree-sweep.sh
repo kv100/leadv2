@@ -44,6 +44,7 @@ git rev-parse --verify --quiet "${BASE}" >/dev/null 2>&1 || \
 REMOVED=0
 KEPT_DIRTY=0
 KEPT_AHEAD=0
+KEPT_YOUNG=0
 declare -a KEPT_NAMES=()
 
 # Only lane worktrees, and only ones that still exist on disk.
@@ -60,6 +61,39 @@ while IFS= read -r wt; do
   if [[ "${ahead}" != "0" ]]; then
     KEPT_AHEAD=$((KEPT_AHEAD + 1)); KEPT_NAMES+=("$(basename "${wt}") (+${ahead})")
     continue
+  fi
+
+  # NEWBORN GUARD (2026-08-24): a worktree `git worktree add` just created is
+  # ALSO ahead=0 -- leadv2-dispatch-code.sh creates the lane worktree, then
+  # spawns the child session, whose own SessionStart hooks (this one
+  # included) run before the child has written a single byte. `ahead=0`
+  # cannot tell "already merged, safe to reap" apart from "about to be
+  # used" -- the two are byte-for-byte identical git state. Reproduced 2/2
+  # on 2026-08-24 (tasks e5be9e72, 77ea471a): the hook deleted the directory
+  # the child was about to work in, ~7s after creation.
+  #
+  # Age is derived from `<common-git-dir>/worktrees/<name>/gitdir`, a file
+  # `git worktree add` writes exactly ONCE at creation and never rewrites
+  # afterward -- unlike HEAD/index/logs living in that same per-worktree
+  # metadata dir, which change on every commit or even a `git status` run
+  # inside the worktree. Verified empirically: running `status` then
+  # `commit` inside a fresh worktree left `gitdir`'s mtime untouched, so it
+  # is creation-stamped, not access-stamped -- exactly what an age guard
+  # needs. `git rev-parse --git-dir` run FROM the worktree resolves straight
+  # to that metadata dir for a linked worktree (not the common .git).
+  min_age="${LEADV2_SWEEP_MIN_AGE_S:-1800}"
+  meta_dir="$(git -C "${wt}" rev-parse --git-dir 2>/dev/null)"
+  gitdir_file="${meta_dir:-}/gitdir"
+  if [[ -n "${meta_dir}" && -f "${gitdir_file}" ]]; then
+    created_epoch="$(stat -f '%m' "${gitdir_file}" 2>/dev/null || stat -c '%Y' "${gitdir_file}" 2>/dev/null || echo 0)"
+    now_epoch="$(date +%s)"
+    if [[ "${created_epoch}" =~ ^[0-9]+$ ]] && (( created_epoch > 0 )); then
+      age=$(( now_epoch - created_epoch ))
+      if (( age < min_age )); then
+        KEPT_YOUNG=$((KEPT_YOUNG + 1)); KEPT_NAMES+=("$(basename "${wt}") (young ${age}s)")
+        continue
+      fi
+    fi
   fi
 
   # ORCHESTRATION DIRT (2026-08-22): every merged lane carries edits to the
@@ -101,11 +135,11 @@ done < <(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
 
 git worktree prune >/dev/null 2>&1 || true
 
-if (( REMOVED > 0 || KEPT_AHEAD > 0 || KEPT_DIRTY > 0 )); then
+if (( REMOVED > 0 || KEPT_AHEAD > 0 || KEPT_DIRTY > 0 || KEPT_YOUNG > 0 )); then
   printf '[leadv2-merged-worktree-sweep] removed %d merged lane worktree(s)' "${REMOVED}" >&2
-  if (( KEPT_AHEAD > 0 || KEPT_DIRTY > 0 )); then
-    printf '; kept %d with unmerged commits, %d dirty: %s' \
-      "${KEPT_AHEAD}" "${KEPT_DIRTY}" "${KEPT_NAMES[*]}" >&2
+  if (( KEPT_AHEAD > 0 || KEPT_DIRTY > 0 || KEPT_YOUNG > 0 )); then
+    printf '; kept %d with unmerged commits, %d dirty, %d too young (<%ss): %s' \
+      "${KEPT_AHEAD}" "${KEPT_DIRTY}" "${KEPT_YOUNG}" "${min_age:-1800}" "${KEPT_NAMES[*]}" >&2
   fi
   printf '\n' >&2
 fi
