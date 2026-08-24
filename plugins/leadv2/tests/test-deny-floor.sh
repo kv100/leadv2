@@ -358,6 +358,8 @@ for line in open(path):
         name = s.split(":", 1)[1].strip()
     elif s.startswith("regex:") and name:
         rx = s.split(":", 1)[1].strip().strip("'")
+        # `--git-dir` belongs inside GITGLOBAL; it is not a rule prefix.
+        rx = rx.replace("--git-dir", "")
         i = 0
         while i < len(rx):
             if rx.startswith("git", i):
