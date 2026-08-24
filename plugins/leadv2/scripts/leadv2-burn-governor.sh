@@ -183,7 +183,56 @@ WHERE hour_key >= strftime('%Y-%m-%d-%H','now','-24 hours');
   return 0
 }
 
+# Provider mode intentionally does not consult token-burn env settings: it is a
+# prospective dispatch classifier based on the declared work ceiling.
+cmd_verdict_provider() {
+  local provider="${1:-}" script_dir ceilings live ceiling soft raw parsed used verdict reason
+  case "$provider" in glm|codex|claude) ;; *)
+    printf 'verdict=ok burn24h=0 soft=0 hard=0 reason=bad_provider provider=%s unit=pct\n' "$provider"; return 0;;
+  esac
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  ceilings="${script_dir}/../config/leadv2-quota-ceilings.sh"
+  if ! source "$ceilings" 2>/dev/null || ! declare -F leadv2_quota_ceiling >/dev/null 2>&1; then
+    printf 'verdict=ok burn24h=0 soft=0 hard=0 reason=no_telemetry provider=%s unit=pct\n' "$provider"; return 0
+  fi
+  ceiling="$(leadv2_quota_ceiling "$provider" build 2>/dev/null || true)"
+  if ! [[ "$ceiling" =~ ^[0-9]+$ ]]; then
+    printf 'verdict=ok burn24h=0 soft=0 hard=0 reason=no_telemetry provider=%s unit=pct\n' "$provider"; return 0
+  fi
+  soft=$((ceiling - 10)); (( soft < 0 )) && soft=0
+  live="${LEADV2_QUOTA_LIVE:-${script_dir}/leadv2-quota-live.sh}"
+  raw="$(bash "$live" "$([[ "$provider" == claude ]] && printf anthropic || printf '%s' "$provider")" 2>/dev/null)" || raw=""
+  parsed="$(printf '%s' "$raw" | python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except: raise SystemExit
+if d.get("status")!="ok": raise SystemExit
+p=sys.argv[1]
+def n(v):
+ try:return int(round(float(v)))
+ except:return None
+if p=="glm": vals=[n((d.get(x) or {}).get("pct")) for x in ("five_hour","weekly")]
+elif p=="codex":
+ ws=d.get("windows") or []; w=next((x for x in ws if x.get("kind")==d.get("binding_window")), None)
+ if d.get("limit_reached") is True or (w or {}).get("limit_reached") is True: print(100); raise SystemExit
+ vals=[n((w or {}).get("used_percent"))] if w else [n(x.get("used_percent")) for x in ws]
+else:
+ a=next((x for x in d.get("accounts",[]) if x.get("active")), None); vals=[n((a or {}).get(x)) for x in ("seven_day_pct","five_hour_pct")]
+vals=[x for x in vals if x is not None]
+if vals: print(max(vals))
+' "$provider" 2>/dev/null)"
+  if ! [[ "$parsed" =~ ^[0-9]+$ ]]; then
+    printf 'verdict=ok burn24h=0 soft=%s hard=%s reason=no_telemetry provider=%s unit=pct\n' "$soft" "$ceiling" "$provider"; return 0
+  fi
+  used="$parsed"; verdict=ok; reason=under_soft
+  if (( used >= ceiling )); then verdict=hard; reason=over_hard
+  elif (( used >= soft )); then verdict=soft; reason=over_soft; fi
+  printf 'verdict=%s burn24h=0 soft=%s hard=%s reason=%s provider=%s used_pct=%s unit=pct\n' "$verdict" "$soft" "$ceiling" "$reason" "$provider" "$used"
+}
+
 case "${1:-verdict}" in
+  --provider) cmd_verdict_provider "${2:-}" ;;
+  --help) printf 'usage: %s [verdict|--provider glm|codex|claude]\n--provider ignores LEADV2_BURN_SOFT_24H and LEADV2_BURN_HARD_24H.\n' "$0" ;;
   verdict) cmd_verdict ;;
   *)       cmd_verdict ;;
 esac

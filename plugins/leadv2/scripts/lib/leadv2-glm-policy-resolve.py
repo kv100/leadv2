@@ -332,7 +332,11 @@ def live_codex_weekly_pct(quota_live_bin):
         binding = d.get("binding_window")
         for w in windows:
             if w.get("kind") == binding:
+                if w.get("limit_reached") is True:
+                    return 100.0
                 return w.get("used_percent")
+        if d.get("limit_reached") is True:
+            return 100.0
         return windows[0].get("used_percent") if windows else None
     except Exception:
         return None

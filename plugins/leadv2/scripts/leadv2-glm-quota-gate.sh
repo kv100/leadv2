@@ -35,7 +35,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/leadv2-arm-cooldown.sh
 source "${SCRIPT_DIR}/lib/leadv2-arm-cooldown.sh"
 LIVE="${LEADV2_QUOTA_LIVE:-"${SCRIPT_DIR}/leadv2-quota-live.sh"}"
-THRESHOLD="${GLM_QUOTA_THRESHOLD:-80}"
+CEILINGS="${SCRIPT_DIR}/../config/leadv2-quota-ceilings.sh"
+if source "${CEILINGS}" 2>/dev/null && declare -F leadv2_quota_ceiling >/dev/null 2>&1; then
+  _glm_default_threshold="$(leadv2_quota_ceiling glm build 2>/dev/null || printf '80')"
+else
+  _glm_default_threshold=80
+fi
+THRESHOLD="${GLM_QUOTA_THRESHOLD:-${_glm_default_threshold}}"
 
 warn() { printf -- '[glm-quota-gate] %s\n' "$*" >&2; }
 info() { printf -- '[glm-quota-gate] %s\n' "$*"; }

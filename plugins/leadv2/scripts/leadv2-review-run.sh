@@ -1102,6 +1102,9 @@ resolver_out="$(resolve_review_pool_call)"
 reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"
 pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
 refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
+source "${SCRIPT_DIR}/lib/leadv2-review-reroute-note.sh"
+_reroute_note="$(leadv2_review_reroute_note "${TASK}" "${pool}" "${reviewer}")"
+[[ -n "${_reroute_note}" ]] && emit decision "${_reroute_note}"
 
 if [[ -n "${reviewer}" && "${reviewer}" == "${AUTHOR}" ]]; then
   refusal="reviewer_equals_author"
