@@ -41,13 +41,31 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}}}"
 
-# LEAD-CONTROL-PLANE-01: source the repo-vendored copy (kept current by
-# leadv2-plugin-sync.sh, patched locally for this task) rather than the
-# shared-tree original — the vendored copy resolves active.yaml through
-# scripts/leadv2-state-path.sh (control-plane root), the shared original
-# still hardcodes docs/leadv2/active.yaml.
-_REGISTRY_SH="${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh"
-[[ -f "$_REGISTRY_SH" ]] || _REGISTRY_SH="${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"
+# LANE-REGISTRY-SELF-DEADLOCK-01: resolve the registry helper next to THIS
+# script first (canonical plugin tree / repo / worktree), then the sanctioned
+# override surface, then the legacy vendored copy, then the canonical root,
+# and only then the $HOME shared tree as a floor. The old LEAD-CONTROL-PLANE-01
+# ordering (vendored copy preferred, shared last) is stale: both copies now
+# resolve active.yaml through scripts/leadv2-state-path.sh, and the shared
+# copy can lag canonical (on 2026-08-24 it lacked
+# leadv2_active_set_worker_pid entirely). SCRIPT_DIR-first also guarantees
+# fanout and dispatch-code.sh load the same registry build.
+_REGISTRY_SH=""
+_REGISTRY_TRIED=""
+for _cand in \
+  "${SCRIPT_DIR}/leadv2-active-registry.sh" \
+  "${PROJECT_ROOT}/.claude/leadv2-overrides/scripts/leadv2-active-registry.sh" \
+  "${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh" \
+  "${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh" \
+  "${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"; do
+  _REGISTRY_TRIED="${_REGISTRY_TRIED:+${_REGISTRY_TRIED}, }${_cand}"
+  if [[ -f "${_cand}" ]]; then _REGISTRY_SH="${_cand}"; break; fi
+done
+if [[ -z "${_REGISTRY_SH}" ]]; then
+  # raw printf: log_error is not defined until line ~54
+  printf -- '[fanout] ERROR: leadv2-active-registry.sh not found; tried: %s\n' "${_REGISTRY_TRIED}" >&2
+  exit 1
+fi
 # shellcheck source=/dev/null
 source "$_REGISTRY_SH"
 

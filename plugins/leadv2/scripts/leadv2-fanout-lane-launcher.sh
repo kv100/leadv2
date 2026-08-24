@@ -79,8 +79,26 @@ fi
 export PROJECT_ROOT="$PROJECT_ROOT"
 export LEADV2_PROJECT_ROOT="$PROJECT_ROOT"
 
-_REGISTRY_SH="${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh"
-[[ -f "$_REGISTRY_SH" ]] || _REGISTRY_SH="${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"
+# LANE-REGISTRY-SELF-DEADLOCK-01: SCRIPT_DIR-first registry resolution,
+# mirroring leadv2-fanout.sh and the leadv2-tasks-lib.sh source below — the
+# launcher must load the same registry build as the dispatcher it serves.
+# Order: script dir > project override > legacy vendored > canonical root >
+# $HOME shared tree (floor). Fail closed, listing every path tried.
+_REGISTRY_SH=""
+_REGISTRY_TRIED=""
+for _cand in \
+  "${SCRIPT_DIR}/leadv2-active-registry.sh" \
+  "${PROJECT_ROOT}/.claude/leadv2-overrides/scripts/leadv2-active-registry.sh" \
+  "${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh" \
+  "${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh" \
+  "${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"; do
+  _REGISTRY_TRIED="${_REGISTRY_TRIED:+${_REGISTRY_TRIED}, }${_cand}"
+  if [[ -f "${_cand}" ]]; then _REGISTRY_SH="${_cand}"; break; fi
+done
+if [[ -z "${_REGISTRY_SH}" ]]; then
+  log_error "leadv2-active-registry.sh not found; tried: ${_REGISTRY_TRIED}"
+  exit 1
+fi
 # shellcheck source=/dev/null
 source "$_REGISTRY_SH"
 # shellcheck source=leadv2-tasks-lib.sh

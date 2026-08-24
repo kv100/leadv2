@@ -18,6 +18,9 @@
 #      Standard/existing (NOT Heavy) -- calls the REAL fanout.sh --dry-run,
 #      not a reimplementation
 #   4. session-runner hidden -> real --headless launch is refused loudly
+#   5. empty HOME + sandbox project root -> leadv2-active-registry.sh still
+#      resolves (SCRIPT_DIR-first chain) with no shared-tree miss and no
+#      fail-closed exit (LANE-REGISTRY-SELF-DEADLOCK-01 hermeticity pin)
 #
 # Portable: no GNU-only date/sed -i/timeout/flock. Sandboxed via
 # LEADV2_PROJECT_ROOT / LEADV2_STATE_ROOT / LEADV2_FANOUT_CLAUDE_BIN /
@@ -143,6 +146,26 @@ STUB
   fi
 }
 
+test_5_registry_resolves_hermetically() {
+  log "Test 5: empty HOME + sandbox project root -> registry resolves from SCRIPT_DIR"
+  local sandbox empty_home out
+  sandbox="$(_new_sandbox)"
+  empty_home="$(lv2_mktemp_dir "fanoutcg-home")"
+  out="$(
+    HOME="$empty_home" \
+      LEADV2_PROJECT_ROOT="${sandbox}/proj" LEADV2_STATE_ROOT="${sandbox}/state" \
+      LEADV2_SKIP_DRIFT_GUARD=1 \
+      bash "$FANOUT_SH" --provider claude --dry-run --tasks FCG-T1 2>&1
+  )" || true
+  rm -rf "$sandbox" "$empty_home"
+  if [[ "$out" != *"leadv2-active-registry.sh: No such file"* && \
+        "$out" != *"[fanout] ERROR: leadv2-active-registry.sh not found"* ]]; then
+    pass "Test 5: registry helper resolved hermetically (no $HOME-shared miss, no fail-closed exit)"
+  else
+    fail "Test 5: out=$out"
+  fi
+}
+
 main() {
   log "=== leadv2-fanout.sh classify/runner existence-guard tests ==="
   log "fanout: $FANOUT_SH"
@@ -151,6 +174,7 @@ main() {
   test_2_classify_present_standard
   test_3_classify_missing_safe_fallback
   test_4_runner_missing_fails_closed
+  test_5_registry_resolves_hermetically
   echo ""
   log "=== Results: PASS=$PASS FAIL=$FAIL ==="
   if [[ "${#ERRORS[@]}" -gt 0 ]]; then
