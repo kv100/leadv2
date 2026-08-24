@@ -242,6 +242,11 @@ case "${1:-verdict}" in
   --provider) cmd_verdict_provider "${2:-}" ;;
   --help) printf 'usage: %s [verdict|--provider glm|codex|claude]\n--provider ignores LEADV2_BURN_SOFT_24H and LEADV2_BURN_HARD_24H.\n' "$0" ;;
   verdict) cmd_verdict ;;
-  *)       cmd_verdict ;;
+  # M5b (MERGED-BATCH-FIXROUND-01): a typo'd flag (--providr) used to fall
+  # into the catch-all and print a 24h token-burn verdict — a caller asking
+  # about provider quota got an unrelated gate's answer as if it were the
+  # one it asked for. Unknown flags now fail loudly instead.
+  -*)        printf 'unknown flag: %s\n' "$1" >&2; exit 2 ;;
+  *)         cmd_verdict ;;
 esac
 exit 0

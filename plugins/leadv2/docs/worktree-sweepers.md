@@ -38,6 +38,10 @@ transaction.
 ## Deliberate boundaries
 
 An explicit owner reap, `leadv2-worktree-cleanup.sh --name <id>`, is ungated by
-design. Also, the merged-sweep hook may force-discard uncommitted
-`docs/handoff/**` bookkeeping after all protections lapse; that residual
-deliverable-loss risk is tracked separately and is not changed by this gate.
+design. The merged-sweep hook force-discards nothing (H2,
+MERGED-BATCH-FIXROUND-01): it restores tracked orchestration paths from HEAD,
+removes only untracked regenerated bookkeeping, then runs a plain
+`worktree remove` — a removal refusal keeps the lane, and untracked
+`docs/handoff/**` content always counts as real dirt and is never discarded.
+A locked worktree is probed BEFORE any discard and kept byte-identical
+(P9 / incident b413968c: never mutate ahead of the removal decision).

@@ -366,6 +366,49 @@ else
   fail "26: --provider env-ignore" "${out26}"
 fi
 
+# 27-28: MERGED-BATCH-FIXROUND-01 H6 — the codex limit_reached saturation
+# sentinel had never been exercised by any test (and has no product caller —
+# M5). Both rows drive it through a LEADV2_QUOTA_LIVE stub: the parser must
+# answer 100 regardless of the (low) used_percent in the payload.
+FAKE_LIVE_LIMIT="${tmp}/fake-live-limit.sh"
+cat > "${FAKE_LIVE_LIMIT}" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "codex-toplevel" ]]; then
+  printf '{"status":"ok","limit_reached":true,"binding_window":"weekly","windows":[{"kind":"weekly","used_percent":4}]}'
+elif [[ "${1:-}" == "codex-window" ]]; then
+  printf '{"status":"ok","limit_reached":false,"binding_window":"weekly","windows":[{"kind":"weekly","used_percent":4,"limit_reached":true}]}'
+fi
+EOF
+chmod +x "${FAKE_LIVE_LIMIT}"
+# The stub keys on argv[1], so re-point the provider name through a tiny shim.
+LIMIT_SHIM_GLM="${tmp}/limit-shim-toplevel.sh"
+printf '#!/usr/bin/env bash\nexec bash "%s" codex-toplevel\n' "${FAKE_LIVE_LIMIT}" > "${LIMIT_SHIM_GLM}"; chmod +x "${LIMIT_SHIM_GLM}"
+LIMIT_SHIM_WIN="${tmp}/limit-shim-window.sh"
+printf '#!/usr/bin/env bash\nexec bash "%s" codex-window\n' "${FAKE_LIVE_LIMIT}" > "${LIMIT_SHIM_WIN}"; chmod +x "${LIMIT_SHIM_WIN}"
+
+out27="$(LEADV2_QUOTA_LIVE="${LIMIT_SHIM_GLM}" bash "${GOVERNOR_BIN}" --provider codex 2>&1)"
+if grep -q '^verdict=hard ' <<<"${out27}" && grep -q 'reason=over_hard' <<<"${out27}" && grep -q 'used_pct=100' <<<"${out27}"; then
+  pass "27: codex top-level limit_reached=true -> hard, used_pct=100 (sentinel beats low used_percent)"
+else
+  fail "27: codex top-level limit_reached" "${out27}"
+fi
+
+out28="$(LEADV2_QUOTA_LIVE="${LIMIT_SHIM_WIN}" bash "${GOVERNOR_BIN}" --provider codex 2>&1)"
+if grep -q '^verdict=hard ' <<<"${out28}" && grep -q 'reason=over_hard' <<<"${out28}" && grep -q 'used_pct=100' <<<"${out28}"; then
+  pass "28: codex binding-window limit_reached=true -> hard (parser's or-branch)"
+else
+  fail "28: codex window limit_reached" "${out28}"
+fi
+
+# 29: M5b — a typo'd flag must not answer as a different gate (was: silent
+# 24h token-burn verdict via the catch-all).
+out29="$(bash "${GOVERNOR_BIN}" --providr glm 2>&1)"; rc29=$?
+if [[ "${rc29}" == "2" ]] && grep -q 'unknown flag: --providr' <<<"${out29}" && ! grep -q '^verdict=' <<<"${out29}"; then
+  pass "29: unknown flag -> rc 2 + stderr name, no verdict line"
+else
+  fail "29: unknown flag handling" "rc=${rc29} out=${out29}"
+fi
+
 # default (no-flag) path is untouched by --provider's addition
 out_default="$(bash "${GOVERNOR_BIN}" 2>&1)"
 if grep -q '^verdict=' <<<"${out_default}"; then

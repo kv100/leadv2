@@ -158,6 +158,62 @@ grep -q '/hand/written/path.sh' "$FIX2B_HOME/.codex/config.toml" && pass "hand-w
 printf '%s' "$OUT3C" | grep -q "already configured by hand" && pass "hand-written block: reported left-untouched message" || fail "hand-written block: missing left-untouched message (out=$OUT3C)"
 rm -rf "$FIX2B"
 
+# --- H6 (MERGED-BATCH-FIXROUND-01): marketplace add FAILS -> loud fallback ----
+# A stub whose `plugin --help` succeeds (plugin path is entered) but whose
+# `plugin marketplace add` exits non-zero. This branch had zero coverage:
+# every prior stub succeeded at everything.
+STUB_MKTFAIL="$FIX/codex-mktfail.sh"
+cat > "$STUB_MKTFAIL" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "plugin" && "$2" == "marketplace" && "$3" == "add" ]]; then
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$STUB_MKTFAIL"
+
+FIX5="$(mktemp -d)"
+FIX5_HOME="$FIX5/home"
+FIX5_REPO="$FIX5_HOME/Projects/persona-engine"
+mkdir -p "$FIX5_HOME" "$FIX5_REPO"
+printf '@import .claude/ref/90-codex-lead-pilot.md\n' > "$FIX5_REPO/AGENTS.md"
+OUT6="$(HOME="$FIX5_HOME" LEADV2_CODEX_BIN="$STUB_MKTFAIL" bash "$INSTALL_SH" "$FIX5_REPO" 2>&1)"; RC6=$?
+[[ $RC6 -eq 0 ]] && pass "marketplace-add-failure: exit 0" || fail "marketplace-add-failure: exit 0 (rc=$RC6, out=$OUT6)"
+printf '%s' "$OUT6" | grep -q "ACTION REQUIRED: .codex plugin marketplace add.*failed" && pass "marketplace-add-failure: ACTION REQUIRED printed" || fail "marketplace-add-failure: no ACTION REQUIRED (out=$OUT6)"
+printf '%s' "$OUT6" | grep -q "plugin: CLI has no plugin support — installed prompt pack instead" && pass "marketplace-add-failure: prompt-pack fallback installed" || fail "marketplace-add-failure: no fallback line (out=$OUT6)"
+GOT_PROMPTS5="$(ls -1 "$FIX5_HOME/.codex/prompts"/*.md 2>/dev/null | wc -l | tr -d ' ')"
+[[ "$GOT_PROMPTS5" == "$N_PROMPTS" ]] && pass "marketplace-add-failure: all prompts installed by fallback" || fail "marketplace-add-failure: prompt count ($GOT_PROMPTS5 != $N_PROMPTS)"
+grep -qF '[plugins."leadv2@leadv2-local"]' "$FIX5_HOME/.codex/config.toml" 2>/dev/null && fail "marketplace-add-failure: plugin registered despite failed marketplace" || pass "marketplace-add-failure: plugin not registered"
+rm -rf "$FIX5"
+
+# --- H6 (MERGED-BATCH-FIXROUND-01): fallback -> plugin upgrade path -----------
+# lean: characterises M2, not a fix. A host that ran the pre-plugin installer
+# carries the managed [mcp_servers.repowise] sentinel block; upgrading to the
+# plugin path skips the TOML block (the plugin .mcp.json owns repowise) but
+# does NOT strip the old one — leaving two servers named repowise. M2 is a
+# deliberate non-goal of MERGED-BATCH-FIXROUND-01 (config-mutating change on
+# already-installed hosts needs founder sign-off); this case pins today's
+# behaviour so the defect is visible the moment someone looks for it.
+FIX6="$(mktemp -d)"
+FIX6_HOME="$FIX6/home"
+FIX6_REPO="$FIX6_HOME/Projects/persona-engine"
+mkdir -p "$FIX6_HOME" "$FIX6_REPO"
+printf '@import .claude/ref/90-codex-lead-pilot.md\n' > "$FIX6_REPO/AGENTS.md"
+OUT7A="$(HOME="$FIX6_HOME" LEADV2_CODEX_BIN="$STUB_NOPLUG" bash "$INSTALL_SH" "$FIX6_REPO" 2>&1)"; RC7A=$?
+[[ $RC7A -eq 0 ]] && pass "upgrade run A (fallback): exit 0" || fail "upgrade run A: exit 0 (rc=$RC7A)"
+grep -q 'BEGIN leadv2-codex-lead repowise' "$FIX6_HOME/.codex/config.toml" && pass "upgrade run A: sentinel block written" || fail "upgrade run A: no sentinel block"
+OUT7B="$(HOME="$FIX6_HOME" LEADV2_CODEX_BIN="$STUB" bash "$INSTALL_SH" "$FIX6_REPO" 2>&1)"; RC7B=$?
+[[ $RC7B -eq 0 ]] && pass "upgrade run B (plugin): exit 0" || fail "upgrade run B: exit 0 (rc=$RC7B, out=$OUT7B)"
+printf '%s' "$OUT7B" | grep -q "plugin: installed leadv2@leadv2-local" && pass "upgrade run B: plugin installed" || fail "upgrade run B: plugin not installed (out=$OUT7B)"
+SENTINEL_STILL="$(grep -c 'BEGIN leadv2-codex-lead repowise' "$FIX6_HOME/.codex/config.toml" 2>/dev/null || echo 0)"
+MCPJSON_DECL="$(grep -c '"repowise"' "$CODEX_LEAD_DIR/marketplace/plugins/leadv2/.mcp.json" 2>/dev/null || echo 0)"
+if [[ "$SENTINEL_STILL" == "1" && "$MCPJSON_DECL" -ge 1 ]]; then
+  pass "upgrade run B: M2 characterised — old TOML repowise block survives next to plugin .mcp.json (two servers named repowise; strip is founder-gated)"
+else
+  fail "upgrade run B: M2 shape changed (sentinel=$SENTINEL_STILL mcpjson=$MCPJSON_DECL) — update this characterisation"
+fi
+rm -rf "$FIX6"
+
 # --- target repo missing -> rc 3 ---------------------------------------------
 FIX3_HOME="$(mktemp -d)"
 OUT4="$(HOME="$FIX3_HOME" LEADV2_CODEX_BIN="$STUB" bash "$INSTALL_SH" "$FIX3_HOME/no-such-repo" 2>&1)"; RC4=$?

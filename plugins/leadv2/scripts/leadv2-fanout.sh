@@ -41,21 +41,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}}}"
 
-# LEAD-CONTROL-PLANE-01: prefer the repo-vendored copy (kept current by
-# leadv2-plugin-sync.sh, patched locally for this task) over the shared-tree
-# original — the vendored copy resolves active.yaml through
-# scripts/leadv2-state-path.sh (control-plane root), the shared original
-# still hardcodes docs/leadv2/active.yaml. CORE-OFFLINE-WORKTREE-GAP-01:
-# resolve sibling-first so this works from a lane worktree (no vendored
-# .claude/scripts/) and under a fixture $HOME (no shared tree) without
-# depending on either — SCRIPT_DIR is the only root always correct for the
-# script actually executing.
+# LEAD-CONTROL-PLANE-01 + CORE-OFFLINE-WORKTREE-GAP-01 (H5,
+# MERGED-BATCH-FIXROUND-01): the resolution INVARIANT is that the chosen
+# copy routes active.yaml through scripts/leadv2-state-path.sh (control-plane
+# state root) — a copy that predates that still hardcodes
+# docs/leadv2/active.yaml and must be SKIPPED, wherever it sits in the chain.
+# Sibling-first is an AVAILABILITY ordering, not the invariant: SCRIPT_DIR is
+# the only root always correct for the script actually executing (a lane
+# worktree has no vendored .claude/scripts/, a fixture $HOME has no shared
+# tree), but sibling-first only wins when the sibling also carries the
+# property.
+_lv2_registry_ok() {
+  [[ -s "$1" ]] && grep -q 'leadv2-state-path.sh' "$1"
+}
 _REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
-[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh"
-[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
-[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"
-if [[ ! -s "$_REGISTRY_SH" ]]; then
-  printf -- '[fanout] ERROR: leadv2-active-registry.sh not found (sibling/vendored/canonical/shared) — refusing to launch\n' >&2
+_lv2_registry_ok "$_REGISTRY_SH" || _REGISTRY_SH="${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh"
+_lv2_registry_ok "$_REGISTRY_SH" || _REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
+_lv2_registry_ok "$_REGISTRY_SH" || _REGISTRY_SH="${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"
+if ! _lv2_registry_ok "$_REGISTRY_SH"; then
+  printf -- '[fanout] ERROR: leadv2-active-registry.sh not found, or every copy found (sibling/vendored/canonical/shared) predates the control-plane state-path resolution — refusing to launch\n' >&2
   exit 1
 fi
 # shellcheck source=/dev/null
