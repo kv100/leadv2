@@ -284,6 +284,15 @@ EOF
 chmod +x "${STUBS_D}/collector.sh" "${STUBS_D}/claude.sh"
 
 FOUNDER_STATUS_D="${ROOT}/docs/leadv2/founder-status.md"
+# CORE-OFFLINE-WORKTREE-GAP-01 diagnostic finding: the queue section (which
+# carries the provider-health/sonnet-fallback line) is ALWAYS compacted out
+# of the short founder-status.md into founder-status-full.md whenever the
+# queue has any content (leadv2-broad-status.sh "rule 6: nothing cut is
+# lost" -- see hidden_bits/hidden_note, broad-status.sh:786-796). The
+# compact file only ever gets a "(скрыто: N строк очереди — see
+# founder-status-full.md)" pointer, never the line itself -- so this is the
+# artifact the assertion must read, not a product bug.
+FOUNDER_STATUS_FULL_D="${ROOT}/docs/leadv2/founder-status-full.md"
 LEADV2_PROJECT_ROOT="${ROOT}" LEADV2_STATE_ROOT="${TMP_ROOT}/state-d" \
   LEADV2_STATUS_COLLECTOR_BIN="${STUBS_D}/collector.sh" \
   LEADV2_BROAD_STATUS_CLAUDE_BIN="${STUBS_D}/claude.sh" \
@@ -291,19 +300,19 @@ LEADV2_PROJECT_ROOT="${ROOT}" LEADV2_STATE_ROOT="${TMP_ROOT}/state-d" \
   LEADV2_BROAD_STATUS_DISPATCHED="1" \
   bash "${BROAD_STATUS_SH}" >/dev/null 2>&1 || true
 
-if [[ ! -f "${FOUNDER_STATUS_D}" ]]; then
-  fail "(d) founder-status.md not written" "renderer produced no artifact"
-elif grep -q 'sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate)' "${FOUNDER_STATUS_D}"; then
-  pass "(d) rendered founder-status.md contains sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate) -- real reason variant, not hardcoded 'glm quota'"
+if [[ ! -f "${FOUNDER_STATUS_FULL_D}" ]]; then
+  fail "(d) founder-status-full.md not written" "renderer produced no artifact"
+elif grep -q 'sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate)' "${FOUNDER_STATUS_FULL_D}"; then
+  pass "(d) rendered founder-status-full.md contains sonnet-фолбэков сегодня: 1 (glm_refused_quota_gate) -- real reason variant, not hardcoded 'glm quota'"
 else
   fail "(d) expected sonnet-fallback line missing from rendered artifact" \
-    "content=$(cat "${FOUNDER_STATUS_D}")"
+    "content=$(cat "${FOUNDER_STATUS_FULL_D}")"
 fi
 
 # ── negative: a day with no fallback renders no such line ──────────────────
 ROOT_NEG="${TMP_ROOT}/root-neg"
 make_tenant_root "${ROOT_NEG}"
-FOUNDER_STATUS_NEG="${ROOT_NEG}/docs/leadv2/founder-status.md"
+FOUNDER_STATUS_FULL_NEG="${ROOT_NEG}/docs/leadv2/founder-status-full.md"
 LEADV2_PROJECT_ROOT="${ROOT_NEG}" LEADV2_STATE_ROOT="${TMP_ROOT}/state-neg" \
   LEADV2_STATUS_COLLECTOR_BIN="${STUBS_D}/collector.sh" \
   LEADV2_BROAD_STATUS_CLAUDE_BIN="${STUBS_D}/claude.sh" \
@@ -311,11 +320,11 @@ LEADV2_PROJECT_ROOT="${ROOT_NEG}" LEADV2_STATE_ROOT="${TMP_ROOT}/state-neg" \
   LEADV2_BROAD_STATUS_DISPATCHED="1" \
   bash "${BROAD_STATUS_SH}" >/dev/null 2>&1 || true
 
-if [[ -f "${FOUNDER_STATUS_NEG}" ]] && ! grep -q 'сонн\|sonnet-фолбэков' "${FOUNDER_STATUS_NEG}"; then
+if [[ -f "${FOUNDER_STATUS_FULL_NEG}" ]] && ! grep -q 'сонн\|sonnet-фолбэков' "${FOUNDER_STATUS_FULL_NEG}"; then
   pass "(d) a day with no fallback renders no sonnet-fallback line"
 else
   fail "(d) unexpected sonnet-fallback line with zero fallbacks" \
-    "content=$(cat "${FOUNDER_STATUS_NEG}" 2>/dev/null || echo '<missing>')"
+    "content=$(cat "${FOUNDER_STATUS_FULL_NEG}" 2>/dev/null || echo '<missing>')"
 fi
 
 # ============================================================================

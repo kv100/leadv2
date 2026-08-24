@@ -41,13 +41,23 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}}}"
 
-# LEAD-CONTROL-PLANE-01: source the repo-vendored copy (kept current by
-# leadv2-plugin-sync.sh, patched locally for this task) rather than the
-# shared-tree original — the vendored copy resolves active.yaml through
+# LEAD-CONTROL-PLANE-01: prefer the repo-vendored copy (kept current by
+# leadv2-plugin-sync.sh, patched locally for this task) over the shared-tree
+# original — the vendored copy resolves active.yaml through
 # scripts/leadv2-state-path.sh (control-plane root), the shared original
-# still hardcodes docs/leadv2/active.yaml.
-_REGISTRY_SH="${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh"
-[[ -f "$_REGISTRY_SH" ]] || _REGISTRY_SH="${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"
+# still hardcodes docs/leadv2/active.yaml. CORE-OFFLINE-WORKTREE-GAP-01:
+# resolve sibling-first so this works from a lane worktree (no vendored
+# .claude/scripts/) and under a fixture $HOME (no shared tree) without
+# depending on either — SCRIPT_DIR is the only root always correct for the
+# script actually executing.
+_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh"
+[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
+[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"
+if [[ ! -s "$_REGISTRY_SH" ]]; then
+  printf -- '[fanout] ERROR: leadv2-active-registry.sh not found (sibling/vendored/canonical/shared) — refusing to launch\n' >&2
+  exit 1
+fi
 # shellcheck source=/dev/null
 source "$_REGISTRY_SH"
 

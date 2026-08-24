@@ -79,8 +79,17 @@ fi
 export PROJECT_ROOT="$PROJECT_ROOT"
 export LEADV2_PROJECT_ROOT="$PROJECT_ROOT"
 
-_REGISTRY_SH="${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh"
-[[ -f "$_REGISTRY_SH" ]] || _REGISTRY_SH="${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"
+# CORE-OFFLINE-WORKTREE-GAP-01: sibling-first resolution — same idiom as
+# leadv2-fanout.sh, so a lane launched from a worktree (no vendored
+# .claude/scripts/) or under a fixture $HOME (no shared tree) still resolves.
+_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${PROJECT_ROOT}/.claude/scripts/leadv2-active-registry.sh"
+[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
+[[ -s "$_REGISTRY_SH" ]] || _REGISTRY_SH="${HOME}/.claude/leadv2-shared/scripts/leadv2-active-registry.sh"
+if [[ ! -s "$_REGISTRY_SH" ]]; then
+  log_error "leadv2-active-registry.sh not found (sibling/vendored/canonical/shared) — refusing to launch"
+  exit 1
+fi
 # shellcheck source=/dev/null
 source "$_REGISTRY_SH"
 # shellcheck source=leadv2-tasks-lib.sh

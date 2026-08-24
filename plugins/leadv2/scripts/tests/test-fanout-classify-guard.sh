@@ -43,7 +43,11 @@ fail() { FAIL=$((FAIL + 1)); ERRORS+=("FAIL: $1"); log "FAIL: $1"; }
 _new_sandbox() {
   local d
   d="$(lv2_mktemp_dir "fanoutcg-test")"
-  mkdir -p "${d}/proj/docs/leadv2" "${d}/state"
+  mkdir -p "${d}/proj/docs/leadv2" "${d}/proj/.claude/scripts" "${d}/state"
+  # CORE-OFFLINE-WORKTREE-GAP-01: stage the registry helper into the
+  # sandbox's vendored path so the guard is hermetic -- never depends on
+  # the host's untracked .claude/scripts/ symlink farm or $HOME.
+  cp "${SCRIPTS_ROOT}/leadv2-active-registry.sh" "${d}/proj/.claude/scripts/leadv2-active-registry.sh"
   cat > "${d}/proj/docs/leadv2/active.yaml" <<'YAML'
 meta:
   schema_version: 2
@@ -143,6 +147,27 @@ STUB
   fi
 }
 
+test_5_registry_resolution_no_host_deps() {
+  log "Test 5: registry resolves via SCRIPT_DIR sibling alone -- no host \$HOME, no vendored .claude/scripts"
+  local sandbox out emptyhome
+  sandbox="$(_new_sandbox)"
+  rm -rf "${sandbox}/proj/.claude/scripts"
+  emptyhome="${sandbox}/emptyhome"
+  mkdir -p "$emptyhome"
+  out="$(
+    HOME="$emptyhome" \
+      LEADV2_PROJECT_ROOT="${sandbox}/proj" LEADV2_STATE_ROOT="${sandbox}/state" \
+      LEADV2_SKIP_DRIFT_GUARD=1 \
+      bash "$FANOUT_SH" --provider claude --dry-run --tasks FCG-T1 2>&1
+  )" || true
+  rm -rf "$sandbox"
+  if [[ "$out" == *"class=Standard"* ]]; then
+    pass "Test 5: sibling-only resolution sufficient, no host \$HOME/.claude/scripts dependency"
+  else
+    fail "Test 5: out=$out"
+  fi
+}
+
 main() {
   log "=== leadv2-fanout.sh classify/runner existence-guard tests ==="
   log "fanout: $FANOUT_SH"
@@ -151,6 +176,7 @@ main() {
   test_2_classify_present_standard
   test_3_classify_missing_safe_fallback
   test_4_runner_missing_fails_closed
+  test_5_registry_resolution_no_host_deps
   echo ""
   log "=== Results: PASS=$PASS FAIL=$FAIL ==="
   if [[ "${#ERRORS[@]}" -gt 0 ]]; then
