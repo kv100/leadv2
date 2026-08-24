@@ -61,6 +61,23 @@ this is accepted rather than built out as session-scoped state.
 | `LEADV2_SINGLE_LEAD_BEAT` | `1` | **The one-step rollback.** `0` disables both the driver and the hook completely — no pump call, no composer call, no state touched. |
 | `LEADV2_SINGLE_LEAD_BEAT_S` | `1800` | Cadence floor, seconds. |
 
+## Lane worktrees and the sweepers
+
+A lane worktree is UNTOUCHABLE by the unattended sweepers (`hooks/leadv2-merged-worktree-sweep.sh`
+at SessionStart, and `scripts/leadv2-worktree-cleanup.sh --sweep-dead`/`--sweep-merged`) while ANY
+of these holds: its lane id is registered in the active session registry (`active.yaml`, any
+state); a handoff `docs/handoff/dispatch-<id>/arm-registered` marker exists with no TRUE terminal
+(`landed`|`dead`) row in the dispatch ledger; a registered pid for the lane is alive; or the
+worktree directory is younger than `LEADV2_SWEEP_MIN_AGE_H` hours (default 48 — this grace window
+is the only protection during the gap between `git worktree add` and the registration writes, so
+it must never be defaulted to 0). The gate lives in
+`scripts/lib/leadv2-worktree-protected.sh`, is fail-closed (a control plane that cannot be read
+protects everything), and every actual sweep journals `worktree_swept id=<id> reason=<…>` in the
+lane's task journal. The one removal that ignores all of this is the owner's own targeted reap,
+`leadv2-worktree-cleanup.sh --name <id>` — by design. Incidents that produced this contract:
+b413968c (lane gutted to a lone docs/ dir), 43ae4318 (lane deleted before its first commit),
+both 2026-08-24.
+
 ## On demand
 
 `bash scripts/leadv2-pulse-beat.sh --now` forces a beat synchronously, ignoring the throttle. It

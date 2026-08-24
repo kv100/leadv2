@@ -9,6 +9,37 @@ _LV2_WT_CLEANUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=leadv2-branch-merged.sh
 source "${_LV2_WT_CLEANUP_DIR}/leadv2-branch-merged.sh"
 
+# SWEEPER-LANE-SAFETY-01: shared lane-protection gate for the SWEEP modes
+# (one inode, both unattended sweepers — also sourced by the merged-sweep
+# SessionStart hook). --name is deliberately NOT gated: a targeted reap by
+# the lane's owner is the one removal that must always work. Missing lib =>
+# stub returns rc 5 (protect everything): an install that lost the lib sweeps
+# nothing rather than sweeping blind.
+_LV2_WT_PROTECT_LIB="${_LV2_WT_CLEANUP_DIR}/lib/leadv2-worktree-protected.sh"
+if [[ -f "${_LV2_WT_PROTECT_LIB}" ]]; then
+  # shellcheck source=lib/leadv2-worktree-protected.sh
+  source "${_LV2_WT_PROTECT_LIB}"
+else
+  lv2_wt_protect_prime() { :; }
+  lv2_worktree_protected() { LV2_WT_PROTECT_REASON="lib-missing"; return 5; }
+fi
+_LV2_WT_JOURNAL_BIN="${_LV2_WT_CLEANUP_DIR}/leadv2-journal.sh"
+
+# The durable task journals live in the MAIN checkout — this script can be
+# invoked from inside a lane worktree, and a journal written there dies with
+# the tree being swept.
+_lv2_wt_journal_root() { # <repo-root>
+  local common
+  common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || printf '%s' "$1/.git")"
+  dirname "$common"
+}
+
+_lv2_wt_journal_swept() { # <repo-root> <lane-id> <reason>  (never fails)
+  [[ -f "${_LV2_WT_JOURNAL_BIN}" ]] || return 0
+  CLAUDE_PROJECT_ROOT="$(_lv2_wt_journal_root "$1")" bash "${_LV2_WT_JOURNAL_BIN}" \
+    append "$2" note "worktree_swept id=$2 reason=$3" >/dev/null 2>&1 || true
+}
+
 log()       { printf -- '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_error() { log "ERROR: $*"; }
 log_info()  { log "INFO: $*"; }
@@ -35,6 +66,14 @@ Usage: $SCRIPT_NAME --name <worktree-name> [--force]
                    unmerged commits, or one carrying docs/handoff/<id>/
                    merge-blocker.flag is KEPT and printed with its reason --
                    never forced.
+
+  SWEEP-MODE PROTECTION (SWEEPER-LANE-SAFETY-01): both sweep modes first
+  consult lib/leadv2-worktree-protected.sh — a worktree registered in
+  active.yaml, arm-open (arm-registered with no landed|dead ledger row),
+  carrying a live registered pid, or younger than LEADV2_SWEEP_MIN_AGE_H
+  (default 48h) is KEPT whatever the other gates say; any control-plane read
+  error fails closed (nothing swept). --name is deliberately NOT gated: a
+  targeted reap by the lane's owner is the one removal that must always work.
 EOF
   exit 1
 }
@@ -71,6 +110,13 @@ if [[ "$SWEEP_DEAD" -eq 1 ]]; then
 
   CWD_WT=$(git rev-parse --show-toplevel 2>/dev/null || printf -- '')
 
+  # SWEEPER-LANE-SAFETY-01: prime the protection gate once per pass —
+  # incident 43ae4318 was a lane deleted by this very mode before its worker
+  # had committed (ahead=0, clean, liveness dead:no_log_artifact), so the
+  # gate runs BEFORE the liveness probe, not after it.
+  lv2_wt_protect_prime "$REPO_ROOT"
+  _protect_err_shown=0
+
   removed=0; kept=0
 
   while IFS= read -r wt_path; do
@@ -80,6 +126,23 @@ if [[ "$SWEEP_DEAD" -eq 1 ]]; then
     if [[ -n "$CWD_WT" && "$wt_path" == "$CWD_WT" ]]; then
       log_info "KEPT (cwd): $wt_path"
       kept=$(( kept + 1 ))
+      continue
+    fi
+
+    # SWEEPER-LANE-SAFETY-01: registered / arm-open / live-pid / young lanes
+    # are untouchable no matter what liveness says. rc 5 = fail-closed: one
+    # line per pass, sweep nothing this pass.
+    if lv2_worktree_protected "$REPO_ROOT" "$wt_path"; then
+      :
+    else
+      prc=$?
+      log_info "KEPT (protected rc=${prc} ${LV2_WT_PROTECT_REASON:-?}): $wt_path"
+      kept=$(( kept + 1 ))
+      if [[ "$prc" == "5" && "$_protect_err_shown" == "0" ]]; then
+        printf -- '[sweep-dead] protected(read-error) %s — sweeping nothing this pass (%s)\n' \
+          "$lane_id" "${LV2_WT_PROTECT_REASON:-unreadable}" >&2
+        _protect_err_shown=1
+      fi
       continue
     fi
 
@@ -135,6 +198,7 @@ except Exception:
     log_info "REMOVED (dead+empty): $wt_path  branch=${wt_branch:-none}"
     git -C "$REPO_ROOT" worktree remove --force "$wt_path" 2>/dev/null || true
     [[ -n "$wt_branch" ]] && git -C "$REPO_ROOT" branch -D "$wt_branch" 2>/dev/null || true
+    _lv2_wt_journal_swept "$REPO_ROOT" "$lane_id" "dead-empty"
     removed=$(( removed + 1 ))
   done < <(git -C "$REPO_ROOT" worktree list --porcelain | awk '/^worktree / {print $2}' | grep -F '/.claude/worktrees/')
 
@@ -159,6 +223,11 @@ if [[ "$SWEEP_MERGED" -eq 1 ]]; then
 
   # Determine CWD worktree top-level — NEVER remove this one
   CWD_WT=$(git rev-parse --show-toplevel 2>/dev/null || printf -- '')
+
+  # SWEEPER-LANE-SAFETY-01: same protection gate as --sweep-dead (no live
+  # caller today, but one `bash … --sweep-merged` away from live).
+  lv2_wt_protect_prime "$REPO_ROOT"
+  _protect_err_shown=0
 
   removed=0; kept=0
 
@@ -185,6 +254,21 @@ if [[ "$SWEEP_MERGED" -eq 1 ]]; then
     if [[ -n "$CWD_WT" && "$wt_path" == "$CWD_WT" ]]; then
       log_info "KEPT (cwd): $wt_path"
       kept=$(( kept + 1 ))
+      continue
+    fi
+
+    # SWEEPER-LANE-SAFETY-01 protection gate — same contract as --sweep-dead.
+    if lv2_worktree_protected "$REPO_ROOT" "$wt_path"; then
+      :
+    else
+      prc=$?
+      log_info "KEPT (protected rc=${prc} ${LV2_WT_PROTECT_REASON:-?}): $wt_path  branch=${wt_branch}"
+      kept=$(( kept + 1 ))
+      if [[ "$prc" == "5" && "$_protect_err_shown" == "0" ]]; then
+        printf -- '[sweep-merged] protected(read-error) %s — sweeping nothing this pass (%s)\n' \
+          "$(basename "$wt_path")" "${LV2_WT_PROTECT_REASON:-unreadable}" >&2
+        _protect_err_shown=1
+      fi
       continue
     fi
 
@@ -241,6 +325,7 @@ except Exception:
       log_info "REMOVED (merged): $wt_path  branch=${wt_branch}"
       git -C "$REPO_ROOT" worktree remove --force "$wt_path" 2>/dev/null || true
       git -C "$REPO_ROOT" branch -D "$wt_branch" 2>/dev/null || true
+      _lv2_wt_journal_swept "$REPO_ROOT" "$lane_id_sm" "merged-dead"
       removed=$(( removed + 1 ))
     else
       log_info "KEPT (unmerged): $wt_path  branch=${wt_branch}"

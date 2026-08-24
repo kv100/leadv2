@@ -46,6 +46,15 @@ printf 'init\n' > "${SCRATCH}/README"
 git -C "$SCRATCH" add README
 git -C "$SCRATCH" commit -q -m "init"
 
+# SWEEPER-LANE-SAFETY-01: the sweep modes now consult the lane-protection
+# gate, so the fixture carries its own control plane (empty active.yaml — a
+# MISSING one fails closed and protects everything) and disables the 48h age
+# probe (a freshly created fixture worktree is young by definition).
+mkdir -p "${SCRATCH}/state"
+printf 'sessions: []\n' > "${SCRATCH}/state/active.yaml"
+export LEADV2_STATE_ROOT="${SCRATCH}/state"
+export LEADV2_SWEEP_MIN_AGE_H=0
+
 # Helper: create a worktree under .claude/worktrees/<name> on a new branch
 make_agent_wt() {
   local name="$1"

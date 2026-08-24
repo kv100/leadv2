@@ -38,6 +38,13 @@ fi
 if [[ -s "${PRE_HOOK}" ]]; then chmod +x "${PRE_HOOK}"; else PRE_HOOK=""; fi
 
 # A repo with one lane worktree, merged or not, dirty however the case wants.
+# SWEEPER-LANE-SAFETY-01: the hook now consults the lane-protection gate, so
+# every fixture carries a control plane (empty active.yaml — a MISSING one
+# fails closed and protects everything) and every run disables the age probe:
+# a freshly created fixture worktree is younger than the 48h grace window by
+# definition, and this test isolates the dirt-classification behaviour the
+# grace window would otherwise mask. Protection itself has its own test:
+# test-worktree-lane-safety.sh.
 _mk() { # <dir> <merged:yes|no> <dirt:orch|real|none>
   local d="$1" merged="$2" dirt="$3"
   mkdir -p "$d/docs/leadv2" && git -C "$d" init -q -b main
@@ -55,11 +62,13 @@ _mk() { # <dir> <merged:yes|no> <dirt:orch|real|none>
     orch) echo touched >> "$d/.claude/worktrees/lane/docs/leadv2/open-threads.md" ;;
     real) echo "uncommitted deliverable" > "$d/.claude/worktrees/lane/SAMPLES.md" ;;
   esac
+  mkdir -p "$d/state" && printf 'sessions: []\n' > "$d/state/active.yaml"
 }
 
 _swept() { # <hook> <repo> -> 0 if the lane is gone
   local hook="$1" repo="$2"
-  ( cd "$repo" && CLAUDE_PROJECT_DIR="$repo" bash "$hook" >/dev/null 2>&1 )
+  ( cd "$repo" && CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$repo/state" \
+      LEADV2_SWEEP_MIN_AGE_H=0 bash "$hook" >/dev/null 2>&1 )
   [[ ! -d "$repo/.claude/worktrees/lane" ]]
 }
 
