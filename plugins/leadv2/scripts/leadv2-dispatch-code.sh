@@ -580,6 +580,16 @@ ARCHITECT_PREPASS_TIMEOUT_SEC="${LEADV2_DISPATCH_ARCHITECT_TIMEOUT_SEC:-420}"
 ARCHITECT_PREPASS_ATTEMPTS="${LEADV2_DISPATCH_ARCHITECT_ATTEMPTS:-2}"
 [[ "${ARCHITECT_PREPASS_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]] || ARCHITECT_PREPASS_ATTEMPTS=2
 ARCHITECT_PREPASS_REASON=""
+# PREPASS-PROVIDER-FALLBACK-01 §2/§6: provider-aware architect fallback. When the
+# selected architect provider fails with a PROVIDER-class failure (authentication,
+# rate limit, quota -- classified from the launcher's own stream/handoff evidence
+# by _architect_failure_class), the same prepass prompt is retried through another
+# configured arm's OWN launcher (codex-task.sh --wait / glm-coder.sh run) before
+# the attempt is declared failed; the fallback design is validated by the same
+# guards as a Claude design. =0 restores byte-for-byte the single-arm behaviour
+# (one-flip rollback, same shape as LEADV2_DISPATCH_ARCHITECT_GATE).
+ARCHITECT_FALLBACK="${LEADV2_DISPATCH_ARCHITECT_FALLBACK:-1}"
+ARCHITECT_FALLBACK_ARM_USED=""
 # T-c (SUPERVISOR-AUDIT-01): sig-keyed prepass cache + reduced prompt for short missions.
 # =0 restores today's behavior byte-for-byte (always re-run the architect, full prompt).
 PREPASS_CACHE="${LEADV2_PREPASS_CACHE:-1}"
@@ -2245,24 +2255,53 @@ _maybe_record_quota_lockout() {  # <arm> <refusal_reason> [<raw_text>]
 
 # ── end ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 ───────────────────────────────────
 # router-v2's filter, not in this funnel.
+# PREPASS-PROVIDER-FALLBACK-01-R2: resolver stderr is no longer discarded. This
+# function runs inside a command substitution, so globals do not propagate --
+# stage/detail for a FAILED resolution are written to $V2_FAIL_FILE (created by
+# the caller, read back after the rc check) as two lines: stage=<name> and
+# detail=<bounded first stderr lines>. The caller's refusal journal line and
+# log_err then name the failing stage and the config it complains about, so a
+# `router_v2_unavailable` is actionable instead of a bare rc.
+_v2_fail() {  # <stage> <stderr_file | detail-text>  (text mode: 3rd arg "-detail")
+  [[ -n "${V2_FAIL_FILE:-}" ]] || return 0
+  local _detail
+  if [[ "${3:-}" == "-detail" ]]; then
+    _detail="$2"
+  else
+    _detail="$(head -3 "$2" 2>/dev/null | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-200)"
+  fi
+  printf 'stage=%s\ndetail=%s\n' "$1" "${_detail}" > "${V2_FAIL_FILE}" 2>/dev/null || true
+}
 resolve_v2_dispatch() {
-  local mission="$1" sig8="$2" class="$3" kind="$4" protected="$5" tmp out estimate allowed task_class rc
+  local mission="$1" sig8="$2" class="$3" kind="$4" protected="$5" tmp out estimate allowed task_class rc errf miss
   local rv2="${LEADV2_ROUTER_V2_BIN:-${SCRIPT_DIR}/leadv2-router-v2.sh}" judge="${LEADV2_TASK_JUDGE_BIN:-${SCRIPT_DIR}/leadv2-task-judge.sh}" bandit="${LEADV2_ROUTE_BANDIT_BIN:-${SCRIPT_DIR}/leadv2-route-bandit.sh}"
-  [[ -f "$rv2" && -f "$judge" && -f "$bandit" ]] || return 1
+  miss=""
+  local _c
+  for _c in "$rv2" "$judge" "$bandit"; do [[ -f "$_c" ]] || miss="${miss}${miss:+ }${_c}"; done
+  if [[ -n "$miss" ]]; then
+    _v2_fail "component_missing" "missing: ${miss}" -detail
+    return 1
+  fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-dispatch-v2.XXXXXX")" || return 1
+  errf="${tmp}/stage.err"
   printf '%s' "$mission" > "$tmp/mission"
-  out="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTING_YAML="$ROUTING_YAML" bash "$rv2" filter --task-id "$sig8" --mission-kind "$kind" $([[ "$protected" == 1 ]] && printf -- '--protected-path') 2>/dev/null)" || { rm -rf "$tmp"; return 1; }
-  python3 -c 'import json,sys; r=sys.stdin.read().splitlines(); e=next((x[9:] for x in r if x.startswith("eligible=")),""); f=next((x[9:] for x in r if x.startswith("filtered=")),"[]"); json.dump({"eligible":[x for x in e.split(",") if x],"filtered":json.loads(f)},sys.stdout)' <<<"$out" > "$tmp/l1.json" || { rm -rf "$tmp"; return 1; }
-  estimate="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTER_V2=1 bash "$judge" --mission-file "$tmp/mission" --task-id "$sig8" --class "$class" 2>/dev/null)" || { rm -rf "$tmp"; return 1; }
+  out="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTING_YAML="$ROUTING_YAML" bash "$rv2" filter --task-id "$sig8" --mission-kind "$kind" $([[ "$protected" == 1 ]] && printf -- '--protected-path') 2>"$errf")" \
+    || { _v2_fail "filter" "$errf"; rm -rf "$tmp"; return 1; }
+  python3 -c 'import json,sys; r=sys.stdin.read().splitlines(); e=next((x[9:] for x in r if x.startswith("eligible=")),""); f=next((x[9:] for x in r if x.startswith("filtered=")),"[]"); json.dump({"eligible":[x for x in e.split(",") if x],"filtered":json.loads(f)},sys.stdout)' <<<"$out" > "$tmp/l1.json" 2>"$errf" \
+    || { _v2_fail "l1_parse" "$errf"; rm -rf "$tmp"; return 1; }
+  estimate="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTER_V2=1 bash "$judge" --mission-file "$tmp/mission" --task-id "$sig8" --class "$class" 2>"$errf")" \
+    || { _v2_fail "judge" "$errf"; rm -rf "$tmp"; return 1; }
   printf '%s' "$estimate" > "$tmp/estimate.json"
   allowed="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["eligible"]))' "$tmp/l1.json")"
   task_class="$(python3 -c 'import json,sys; e=json.load(open(sys.argv[1])); print(e["work_kind"]+":"+("short" if e["duration_class"]=="short" and e["complexity"] in ("trivial","simple") else "long"))' "$tmp/estimate.json")"
-  out="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTER_V2=1 bash "$bandit" sample --context-key "$task_class" --allowed "$allowed" --heuristic glm 2>/dev/null)" || true
+  out="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTER_V2=1 bash "$bandit" sample --context-key "$task_class" --allowed "$allowed" --heuristic glm 2>"$errf")" || true
   printf '%s\n' "$out" | sed -n 's/^samples=//p' | head -1 > "$tmp/samples.json"
   python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$tmp/samples.json" >/dev/null 2>&1 || python3 -c 'import json,sys; print(json.dumps({x:.75 for x in json.load(open(sys.argv[1]))["eligible"]}))' "$tmp/l1.json" > "$tmp/samples.json"
-  python3 -c 'import json,sys,yaml; json.dump(((yaml.safe_load(open(sys.argv[1])) or {}).get("router_v2") or {}).get("headroom_weights",[]),open(sys.argv[2],"w"))' "$ROUTING_YAML" "$tmp/weights.json" || { rm -rf "$tmp"; return 1; }
-  out="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTING_YAML="$ROUTING_YAML" bash "$rv2" resolve --task-id "$sig8" --routing-yaml "$ROUTING_YAML" --l1-json "$tmp/l1.json" --estimate-json "$tmp/estimate.json" --samples-json "$tmp/samples.json" --headroom-weights-json "$tmp/weights.json" --account "${LEADV2_ROUTER_V2_ACCOUNT:-unknown}" 2>/dev/null)"; rc=$?
-  rm -rf "$tmp"; [[ $rc -eq 0 ]] || return "$rc"; printf '%s\ntier=%s\n' "$out" "${LEADV2_ROUTER_V2_CODEX_TIER:-standard}"
+  python3 -c 'import json,sys,yaml; json.dump(((yaml.safe_load(open(sys.argv[1])) or {}).get("router_v2") or {}).get("headroom_weights",[]),open(sys.argv[2],"w"))' "$ROUTING_YAML" "$tmp/weights.json" 2>"$errf" \
+    || { _v2_fail "weights_parse" "$errf"; rm -rf "$tmp"; return 1; }
+  out="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTING_YAML="$ROUTING_YAML" bash "$rv2" resolve --task-id "$sig8" --routing-yaml "$ROUTING_YAML" --l1-json "$tmp/l1.json" --estimate-json "$tmp/estimate.json" --samples-json "$tmp/samples.json" --headroom-weights-json "$tmp/weights.json" --account "${LEADV2_ROUTER_V2_ACCOUNT:-unknown}" 2>"$errf")"; rc=$?
+  [[ $rc -eq 0 ]] || { _v2_fail "resolve" "$errf"; rm -rf "$tmp"; return "$rc"; }
+  rm -rf "$tmp"; printf '%s\ntier=%s\n' "$out" "${LEADV2_ROUTER_V2_CODEX_TIER:-standard}"
 }
 
 # ── dispatch-ledger dedup (FIX PASS 4: pending/confirmed + TTL, see doc block above) ──
@@ -2828,6 +2867,18 @@ _reap_lane_worktree_if_unused() {
   bash "${SCRIPT_DIR}/leadv2-worktree-cleanup.sh" --name "${_key}" >/dev/null 2>&1 || true
 }
 cleanup_pending_dispatch() {
+  # PREPASS-PROVIDER-FALLBACK-01-R5 H3: ONE disarmable EXIT trap owns the
+  # pre-registered lane-row release for every terminal exit of this process.
+  # cmd_resolve arms it at registration (DISPATCH_SLOT_REG_ID); a confirmed
+  # worker spawn hands the row over and a post-spawn ambiguity disarms it (the
+  # DISPATCH_SLOT_REG_ID="" sites in cmd_resolve). Every proven no-worker exit
+  # -- phase-precondition refusal, prepass park, lane-shape refusal, router-v2
+  # refusal, duplicate signature, ledger failure, all-arms exhaustion/refusal,
+  # dry-run, signal death -- therefore releases the row without a per-exit
+  # call site. Owner-verified inside _release_registered_lane (H2).
+  if [[ -n "${DISPATCH_SLOT_REG_ID:-}" ]]; then
+    _release_registered_lane "${DISPATCH_SLOT_REG_ID}" "${DISPATCH_SLOT_SIG8:-}" "exit_trap"
+  fi
   _reap_lane_worktree_if_unused
   local token="${ACTIVE_DISPATCH_TOKEN:-}"
   [[ -n "${token}" ]] || return 0
@@ -3179,9 +3230,312 @@ _phase_precondition_guard() {
   esac
 }
 
+# ── PREPASS-PROVIDER-FALLBACK-01 §1: truthful architect failure classes ─────────
+# Live evidence, dispatches 17309830 and 321ade3a: both architect runs wrote
+# stream-json ending in "error":"authentication_failed" (text: "OAuth session
+# expired and could not be refreshed") into their handoff dir, yet the dispatcher
+# surfaced only opaque failed_rc_1 and parked. Classify from the launcher's
+# captured output AND the handoff dir's own stream files -- the artifact, not
+# stdout, is where the provider's real error lands (same lesson as
+# PREPASS-READS-ARTIFACT-01 above). stdout: "<class>" or "<class>TAB<bounded
+# detail>"; never empty. rc 124 is handled by the caller (timeout), not here.
+# PREPASS-PROVIDER-FALLBACK-01-R5 (Codex review H4): each decision-driving
+# pattern set carries its evidence inline.
+#   AUTH — live artifact verified on disk 2026-08-24:
+#     docs/handoff/dispatch-17309830-architect/architect.stream.jsonl (final
+#     line) = {"...","text":"Failed to authenticate: OAuth session expired and
+#     could not be refreshed","error":"authentication_failed",
+#     "is_api_error_message":true}; dispatch-321ade3a-architect identical
+#     shape. UNVERIFIED beyond the Anthropic prepass path: no captured artifact
+#     exists for OTHER providers' auth errors -- the HTTP 401 / api-key
+#     alternatives mirror the in-repo precedent pattern sets below, nothing
+#     here is enabled on them alone (a mis-classified foreign error simply
+#     stays failed_rc_N and does not trigger fallback).
+#   RATE / QUOTA — UNVERIFIED as prepass-path evidence (no captured prepass
+#     artifact exists); the patterns are the live-proven in-repo quota
+#     classifier's: `_quota_shaped` in this file and lib/leadv2-lockout-
+#     classify.py `_QUOTA_REFUSAL_RE` (:43-45), whose provenance is the
+#     2026-08-17 05:49Z `429 rate limit` incident (test-lockout-failure-class.sh
+#     header). The mapping itself is pinned by fixtures in
+#     tests/test-dispatch-prepass-provider-fallback.sh (auth/rate/quota/opaque
+#     matrix + precedence).
+_ARCH_FAIL_AUTH_RE='authentication_failed|OAuth session expired|could not be refreshed|api[ _-]?key (expired|invalid|not valid)|HTTP 401|unauthorized'
+_ARCH_FAIL_RATE_RE='rate[ _-]?limit|HTTP 429|too many requests|overloaded_error'
+_ARCH_FAIL_QUOTA_RE='usage limit|quota exceeded|exceeded your current|plan limit'
+_architect_failure_class() {  # <adir> <captured_out> <rc> -> "<class>[\t<detail>]"
+  local adir="$1" cap="$2" rc="$3" ev="" s cls detail
+  ev="${cap}"
+  for s in "${adir}"/architect.stream.jsonl "${adir}"/*.stream.jsonl; do
+    [[ -f "${s}" ]] || continue
+    ev="${ev}
+$(tail -c 262144 "${s}" 2>/dev/null)"
+  done
+  case "$(printf '%s' "${ev}" | grep -iE "${_ARCH_FAIL_AUTH_RE}" | head -1)" in
+    ?*) cls="authentication_failed" ;;
+    *)
+      case "$(printf '%s' "${ev}" | grep -iE "${_ARCH_FAIL_RATE_RE}" | head -1)" in
+        ?*) cls="rate_limited" ;;
+        *)
+          case "$(printf '%s' "${ev}" | grep -iE "${_ARCH_FAIL_QUOTA_RE}" | head -1)" in
+            ?*) cls="quota_exceeded" ;;
+            *)  cls="failed_rc_${rc}"; printf '%s' "${cls}"; return ;;
+          esac ;;
+      esac ;;
+  esac
+  detail="$(printf '%s' "${ev}" | grep -iE "${_ARCH_FAIL_AUTH_RE}|${_ARCH_FAIL_RATE_RE}|${_ARCH_FAIL_QUOTA_RE}" \
+    | head -2 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-220)"
+  printf '%s\t%s' "${cls}" "${detail}"
+}
+
+# PREPASS-PROVIDER-FALLBACK-01 §2: bounded runner for a fallback-arm launcher.
+# Same contract as the primary architect invocation below (timeout; kill the
+# WHOLE descendant tree on expiry, not just the process group --
+# ARCHITECT-PREPASS-ORPHAN-01; stdout+stderr captured; launcher rc preserved,
+# 124 on timeout). Runs the arm's OWN launcher script via bash -- the dispatcher
+# never calls a raw provider CLI. NOTE: no apostrophes in the heredoc body
+# (same bash heredoc quirk as the primary invocation below).
+_architect_timed_run() {  # <timeout_sec> <cmd...> -> stdout=output, rc=launcher rc
+  local tmo="$1"; shift
+  python3 - "${tmo}" "$@" <<'PY' 2>&1
+import os, signal, subprocess, sys
+timeout = sys.argv[1]
+proc = None
+try:
+    proc = subprocess.Popen(
+        sys.argv[2:], env=os.environ.copy(), text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    stdout, _ = proc.communicate(timeout=int(timeout))
+    sys.stdout.write(stdout or "")
+    sys.exit(proc.returncode)
+except subprocess.TimeoutExpired:
+    if proc is not None:
+        def _descendants(pid):
+            try:
+                out = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True, timeout=5)
+                kids = [int(x) for x in out.stdout.split()]
+            except Exception:
+                kids = []
+            found = list(kids)
+            for k in kids:
+                found.extend(_descendants(k))
+            return found
+        for pid in _descendants(proc.pid) + [proc.pid]:
+            try: os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+        try: os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        stdout, _ = proc.communicate()
+        sys.stdout.write(stdout or "")
+    print("architect_prepass_timeout", file=sys.stderr)
+    sys.exit(124)
+PY
+}
+
+# PREPASS-PROVIDER-FALLBACK-01 §2: when the selected architect provider failed
+# with a PROVIDER-class failure, walk the CONFIGURED dispatch ladder (canonical
+# routing YAML via _load_dispatch_ladder), skip arms on the failed provider and
+# arms under an active quota lockout (_provider_available), and run the SAME
+# prepass prompt through the fallback arm's own launcher:
+#   codex -> codex-task.sh task <prompt> --wait --tier standard --cwd <ws>
+#   glm   -> glm-coder.sh run @<mission-file> --out <tmp> --cwd <ws>
+# The design text is written to <out_file> and validated by the SAME guards as a
+# Claude design (§3). Per-arm outcomes are journaled (§5). rc 0 = an arm produced
+# a design; rc 1 = none did. Never retried inside itself -- the outer
+# ARCHITECT_PREPASS_ATTEMPTS loop keeps that contract.
+#
+# R5 H1 (Codex review finding 1): both fallback launchers are CODE-CAPABLE, so
+# they must never run with --cwd ${PROJECT_ROOT} -- a model deviation could
+# modify the shared main checkout before worker admission or close-gate
+# tracking. Every arm now runs inside a DISPOSABLE ISOLATED git worktree (a
+# `git worktree add --detach` snapshot of ${PROJECT_ROOT}@HEAD under /tmp): the
+# shared checkout is never the launcher's cwd, the agent may write only inside
+# the disposable copy, ONLY the validated design artifact is extracted out of
+# it, and _afb_discard_workspace removes the workspace on every terminal path
+# of this function (arm success, per-arm failure, ladder exhaustion, workspace
+# creation failure). If the worktree cannot be created the fallback aborts
+# WITHOUT ever falling back to ${PROJECT_ROOT}.
+#
+# R5 H4 -- launcher result contracts and their evidence:
+#   codex: `task <prompt> --wait` blocks foreground (codex-task.sh:1272-1281,
+#     "P0 (CODEX-WAIT-AND-TIER-01) -- --wait forces foreground blocking") and
+#     returns the full result inline on stdout with the launcher rc preserved
+#     (codex-task.sh:1773-1775 "--wait/foreground runs already return the full
+#     result inline"; final pipe at codex-task.sh:1883-1888 keeps stdout and
+#     exits PIPESTATUS[0]). --cwd is forwarded to codex-companion's own
+#     resolveCommandCwd (codex-task.sh:1772-1776). UNVERIFIED: that the inline
+#     result for a task prompt is CLEAN design text with no metadata preamble
+#     -- no captured probe of a real codex task run sits in this repo. Behavior
+#     does not rest on that assumption alone: the captured stdout is accepted
+#     as a design only after the SAME _lane_writes_guard + _acceptance_guard
+#     that gate a Claude design (architect_prepass below), so preamble-laden or
+#     non-conforming output is refused and the attempt parks, never dispatches.
+#   glm: usage `glm-coder.sh run "<prompt|@file>" [--out <file>] [--cwd <dir>]`
+#     (glm-coder.sh:160 usage line, --out consumed at :301); the design is read
+#     from the --out FILE, never stdout (same artifact-not-stdout lesson as
+#     PREPASS-READS-ARTIFACT-01). UNVERIFIED: that --out content is the raw
+#     design with no wrapper -- same compensating control via the guards.
+#   Both launchers are stubbed at their own seams in
+#   tests/test-dispatch-prepass-provider-fallback.sh, which pins the
+#   dispatcher-side parsing (codex: rc0 + non-empty stdout; glm: rc0 +
+#   non-empty --out file) and the workspace isolation/cleanup.
+_afb_discard_workspace() {  # <ws_base> -- best-effort disposal on EVERY terminal path
+  local base="$1"
+  [[ -n "${base}" && -d "${base}" ]] || return 0
+  git -C "${PROJECT_ROOT:-.}" worktree remove --force "${base}/wt" >/dev/null 2>&1 || rm -rf "${base}/wt"
+  rm -rf "${base}" 2>/dev/null || true
+  git -C "${PROJECT_ROOT:-.}" worktree prune >/dev/null 2>&1 || true
+  return 0
+}
+
+_architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> <failed_provider>
+  local mfile="$1" sig8="$2" failcls="$3" out_file="$4" failed_prov="$5"
+  local i arm prov out rc glm_out ws_base ws _afb_ok=0
+  # R5 H1: disposable isolated workspace -- never ${PROJECT_ROOT} as cwd.
+  ws_base="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-afb.XXXXXX")" || return 1
+  ws="${ws_base}/wt"
+  if ! git -C "${PROJECT_ROOT}" worktree add --detach "${ws}" HEAD >/dev/null 2>&1; then
+    rm -rf "${ws_base}"
+    emit decision "architect_prepass_fallback task=${sig8} outcome=aborted reason=workspace_unavailable"
+    return 1
+  fi
+  (( ${#_LADDER_IDS[@]} )) || _load_dispatch_ladder
+  for i in "${!_LADDER_IDS[@]}"; do
+    arm="${_LADDER_IDS[${i}]}"; prov="${_LADDER_PROVIDERS[${i}]}"
+    if [[ "${prov}" == "${failed_prov}" ]]; then
+      emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=skipped reason=same_provider"
+      continue
+    fi
+    case "${arm}" in
+      codex|glm) : ;;
+      *)
+        emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=skipped reason=no_architect_launcher"
+        continue ;;
+    esac
+    if ! _provider_available "${prov}"; then
+      emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=skipped reason=provider_locked_out"
+      continue
+    fi
+    case "${arm}" in
+      codex)
+        out="$(PROJECT_ROOT="${ws}" _architect_timed_run "${ARCHITECT_PREPASS_TIMEOUT_SEC}" \
+                 bash "${CODEX_BIN}" task "$(cat "${mfile}")" --wait --tier standard --cwd "${ws}")"; rc=$?
+        if [[ ${rc} -eq 0 && -n "${out}" ]] && printf '%s\n' "${out}" > "${out_file}" 2>/dev/null; then
+          _afb_ok=1
+          ARCHITECT_FALLBACK_ARM_USED="${arm}"
+          emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=used reason=${failcls} isolation=disposable_worktree"
+          break
+        fi
+        emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=failed rc=${rc} reason=${failcls}"
+        ;;
+      glm)
+        glm_out="$(mktemp "${TMPDIR:-/tmp}/leadv2-architect-glm.XXXXXX")" || break
+        out="$(PROJECT_ROOT="${ws}" GLM_TIMEOUT="${ARCHITECT_PREPASS_TIMEOUT_SEC}" \
+                 _architect_timed_run "${ARCHITECT_PREPASS_TIMEOUT_SEC}" \
+                 bash "${GLM_BIN}" run "@${mfile}" --out "${glm_out}" --cwd "${ws}")"; rc=$?
+        if [[ ${rc} -eq 0 && -s "${glm_out}" ]] && cat "${glm_out}" > "${out_file}" 2>/dev/null; then
+          rm -f "${glm_out}"
+          _afb_ok=1
+          ARCHITECT_FALLBACK_ARM_USED="${arm}"
+          emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=used reason=${failcls} isolation=disposable_worktree"
+          break
+        fi
+        rm -f "${glm_out}"
+        emit decision "architect_prepass_fallback task=${sig8} arm=${arm} outcome=failed rc=${rc} reason=${failcls}"
+        ;;
+    esac
+  done
+  # R5 H1: the disposable workspace is removed on EVERY terminal path -- arm
+  # success (break above), per-arm failure, ladder exhaustion, write failure.
+  _afb_discard_workspace "${ws_base}"
+  (( ${_afb_ok} == 1 )) || return 1
+  return 0
+}
+
+# PREPASS-PROVIDER-FALLBACK-01 §4: a parked/not-dispatched lane must not leave the
+# dispatcher's own root PID consuming an active worker slot. Registration happens
+# BEFORE the phase guard, architect prepass and router resolution (so supervise
+# can watch the lane work); every exit between registration and an actual worker
+# spawn must therefore release the row. Live evidence: dispatches 17309830 /
+# 321ade3a parked at prepass and left root-Codex PID 99921 registered as two
+# active Standard lanes with no worker launched. Best-effort by design: a registry
+# failure is journaled but never converts a park into a crash.
+#
+# R5 (Codex review H2+H3, review-codex.md findings 2+3): the R4 release
+# (a) unregistered by bare task_id -- a concurrent retry whose register merely
+# REFRESHED another live dispatcher's row (register-op semantics,
+# leadv2-active-registry.sh:174-186: a live-PID existing row is refreshed in
+# place and the EXISTING session_id is returned) would delete that dispatcher's
+# row and bypass supervision/capacity accounting; and (b) was scattered across
+# a handful of exits while the other thirteen proven no-worker terminal exits
+# left the row behind. Both fixed here:
+#   - release is OWNER-VERIFIED: the session_id leadv2_active_register PRINTED
+#     at registration, the registering durable PID, and pid_role must still
+#     name THIS attempt's row (a refreshed foreign row keeps the other
+#     dispatcher's pid; a post-spawn row carries pid_role=worker). A foreign or
+#     worker-owned row is never unregistered by this dispatcher.
+#   - release is driven by ONE disarmable EXIT trap (cleanup_pending_dispatch,
+#     below) instead of per-exit call sites: every `exit N` after registration
+#     releases the row unless a confirmed worker spawn -- or an ambiguous
+#     post-spawn failure -- disarmed it first (see the DISPATCH_SLOT_REG_ID=""
+#     handoff/disarm sites in cmd_resolve).
+DISPATCH_SLOT_REG_ID=""
+DISPATCH_SLOT_SESSION=""
+DISPATCH_SLOT_PID=""
+DISPATCH_SLOT_SIG8=""
+_dispatch_slot_owned() {  # <reg_id> -> rc0 ours-or-absent, rc2 foreign/worker row
+  local rid="$1" yf
+  # Registry not loaded / no yaml: nothing has been verified either way -- the
+  # caller's own leadv2_active_unregister guard makes release a no-op then.
+  declare -F _leadv2_yaml_file >/dev/null 2>&1 || return 0
+  # PROJECT_ROOT (this script's own global) -- never an ambient export -- names
+  # the registry: a `VAR=x source` prefix does not persist past the source, and
+  # the EXIT trap can fire long after registration.
+  yf="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" _leadv2_yaml_file 2>/dev/null)"
+  [[ -n "${yf}" && -f "${yf}" ]] || return 0
+  python3 - "${yf}" "${rid}" "${DISPATCH_SLOT_SESSION}" "${DISPATCH_SLOT_PID}" <<'PY' 2>/dev/null
+import sys, yaml
+path, task_id, session, pid = sys.argv[1:5]
+try:
+    data = yaml.safe_load(open(path)) or {}
+except Exception:
+    sys.exit(0)   # unreadable registry: fail-open (unregister is idempotent)
+rows = [s for s in (data.get("sessions") or []) if s.get("task_id") == task_id]
+if not rows:
+    sys.exit(0)   # absent row: nothing to release
+row = rows[0]
+if row.get("pid_role") == "worker":
+    sys.exit(2)   # a spawned worker owns this row now -- never release it here
+if session and row.get("session_id") != session:
+    sys.exit(2)   # row belongs to a different registration attempt
+if pid and row.get("pid") is not None and str(row.get("pid")) != pid:
+    sys.exit(2)   # register-refreshed row still carries another dispatcher's PID
+sys.exit(0)
+PY
+}
+_release_registered_lane() {  # <reg_id> <sig8> <where> -- owner-verified, idempotent
+  local rid="$1" s8="$2" where="$3"
+  [[ -n "${rid}" && -n "${DISPATCH_SLOT_REG_ID}" ]] || return 0
+  DISPATCH_SLOT_REG_ID=""    # idempotent: only the FIRST release attempt acts
+  if ! declare -F leadv2_active_unregister >/dev/null 2>&1; then
+    emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=no_registry"
+    return 0
+  fi
+  if ! _dispatch_slot_owned "${rid}"; then
+    emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=not_owner_row_intact"
+    return 0
+  fi
+  if LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_unregister "${rid}" 2>/dev/null; then
+    emit decision "active_lane_released task=${s8:-} id=${rid} where=${where}"
+  else
+    emit decision "active_lane_release_failed task=${s8:-} id=${rid} where=${where}"
+  fi
+  return 0
+}
+
 architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled, 1 failed
   local raw="$1" sig8="$2" writes="$3" f mfile out rc count
   ARCHITECT_PREPASS_REASON=""
+  ARCHITECT_FALLBACK_ARM_USED=""
   if [[ "${ARCHITECT_GATE}" != "1" ]]; then
     # H6 (LANDING-BLOCKER-R2): the kill-switch used to return before any writes check ran,
     # so ARCHITECT_GATE=0 could dispatch an undeclared, unisolated lane silently. Row-
@@ -3192,7 +3546,13 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
     return 0
   fi
   # A comma-separated declaration is proof only when it has exactly one non-empty entry.
-  count="$(printf '%s' "${writes}" | tr ',' '\n' | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+  # PREPASS-PROVIDER-FALLBACK-01-R1: printf '%s' left the stream without a final
+  # newline, so wc -l counted ONE declared path as zero and TWO as one -- the
+  # two-path case then took the provably_one_file skip below and dodged prepass
+  # entirely (an admission shortcut). printf '%s\n' counts truthfully across
+  # 0/1/2/duplicate/blank/malformed CSVs: blank entries are dropped by the sed,
+  # duplicates count as declared entries, 2+ always runs the prepass.
+  count="$(printf '%s\n' "${writes}" | tr ',' '\n' | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
   if [[ "${count}" == "1" ]]; then
     # H6: trivially satisfied (count==1 implies non-empty writes) -- called anyway so
     # there is exactly one guard call site per exit path.
@@ -3293,7 +3653,9 @@ except subprocess.TimeoutExpired as exc:
     sys.exit(124)
 PY
 )"; rc=$?
-  rm -f "${mfile}"
+  # PREPASS-PROVIDER-FALLBACK-01 §2: mfile is NOT removed here any more -- a
+  # provider-class failure below re-feeds this exact prompt to a fallback arm's
+  # own launcher. It is removed on every path that leaves this block.
   # PREPASS-READS-ARTIFACT-01 (2026-07-29): the design is NOT on the launcher's stdout.
   # claude-subsession.sh writes the agent's actual text to its handoff dir and prints only
   # a handle on stdout / cost+session diagnostics on stderr -- exactly the trap FIX PASS 5
@@ -3318,12 +3680,41 @@ PY
     sleep 0.2
   done
   if [[ ${rc} -ne 0 && -z "${design}" ]]; then
-    ARCHITECT_PREPASS_REASON=$([[ ${rc} -eq 124 ]] && printf 'timeout' || printf 'failed_rc_%s' "${rc}")
-    emit decision "architect_prepass task=${sig8} status=failed reason=${ARCHITECT_PREPASS_REASON} rc=${rc}"
-    log_err "architect prepass failed: ${out}"
-    return 1
+    # PREPASS-PROVIDER-FALLBACK-01 §1: surface the REAL failure class from the
+    # launcher's stream/handoff evidence (live 17309830/321ade3a: authentication_
+    # failed was on disk, the journal said failed_rc_1). rc 124 stays `timeout`.
+    local _pp_cls _pp_detail="" _pp_failed_prov
+    _pp_cls="$(_architect_failure_class "${adir}" "${out}" "${rc}")"
+    [[ ${rc} -eq 124 ]] && _pp_cls="timeout"
+    if [[ "${_pp_cls}" == *$'\t'* ]]; then
+      _pp_detail="${_pp_cls#*$'\t'}"
+      _pp_detail="$(printf '%s' "${_pp_detail}" | tr -c '[:print:]' ' ' | tr -s ' ')"
+    fi
+    _pp_cls="${_pp_cls%%$'\t'*}"
+    ARCHITECT_PREPASS_REASON="${_pp_cls}"
+    emit decision "architect_prepass task=${sig8} status=failed reason=${_pp_cls} rc=${rc} arm=claude${_pp_detail:+ detail=${_pp_detail}}"
+    log_err "architect prepass failed (arm=claude, class=${_pp_cls}): ${out}"
+    # §2: a PROVIDER-class failure (never a design-quality failure, never a
+    # timeout) retries the same prompt through another configured arm's own
+    # launcher before this attempt is declared failed. The fallback design is
+    # validated exactly like a Claude design by the shared guards below (§3).
+    case "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" in
+      opus|sonnet|haiku|claude*) _pp_failed_prov="anthropic" ;;
+      *) _pp_failed_prov="$(_arm_provider "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}")" ;;
+    esac
+    if [[ "${ARCHITECT_FALLBACK}" == "1" ]] \
+       && [[ "${_pp_cls}" == "authentication_failed" || "${_pp_cls}" == "rate_limited" || "${_pp_cls}" == "quota_exceeded" ]] \
+       && _architect_fallback_design "${mfile}" "${sig8}" "${_pp_cls}" "${f}" "${_pp_failed_prov}"; then
+      design="fallback"
+    else
+      rm -f "${mfile}"
+      return 1
+    fi
   fi
-  if [[ -n "${design}" ]]; then
+  rm -f "${mfile}"
+  if [[ "${design}" == "fallback" ]]; then
+    :  # already written to ${f} by _architect_fallback_design
+  elif [[ -n "${design}" ]]; then
     cat "${design}" > "${f}" || return 1
   else
     printf '%s\n' "${out}" > "${f}" || return 1
@@ -3350,7 +3741,12 @@ PY
   if [[ "${PREPASS_CACHE}" == "1" ]]; then
     printf '%s' "$(printf '%s' "${raw}" | compute_sig)" > "${f}.sig" 2>/dev/null || true
   fi
-  emit decision "architect_prepass task=${sig8} status=ran artifact=docs/handoff/dispatch-${sig8}/architect-prepass.md source=${design:-stdout}"
+  # PREPASS-PROVIDER-FALLBACK-01 §5: journal which arm actually produced the
+  # design (claude = the primary launcher; codex/glm = a fallback arm selected
+  # by _architect_fallback_design). Whether a worker was actually launched is
+  # journaled downstream: worker_spawned on success, action=not_dispatched +
+  # worker_launched=0 on the park path.
+  emit decision "architect_prepass task=${sig8} status=ran arm=${ARCHITECT_FALLBACK_ARM_USED:-claude} artifact=docs/handoff/dispatch-${sig8}/architect-prepass.md source=${design:-stdout}"
 }
 
 # ── spawn: actually launch the resolved worker (Finding 2) ────────────────────────
@@ -4917,9 +5313,26 @@ cmd_resolve() {
   # escapes the subshell — same pattern as _dispatch_register_arm at :3795.
   DISPATCH_REG_ID="${reg_id}"
   if [[ -f "${SCRIPT_DIR}/leadv2-active-registry.sh" ]]; then
-    if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null \
-       || ! leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null; then
+    if ! LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${SCRIPT_DIR}/leadv2-active-registry.sh" 2>/dev/null; then
       emit decision "active_register_miss task=${sig8}"
+    else
+      # R5 H2: capture the ownership identity -- the session_id register PRINTS
+      # (a refresh returns the EXISTING row's id; the pid check discriminates)
+      # and the durable PID it stamps -- so any later release can prove the row
+      # is still THIS attempt's before unregistering it (see
+      # _dispatch_slot_owned). The grep keeps ONLY the s-<ts>-<pid>-<pid>
+      # session_id line: render_index prints its own "[registry] rendered ..."
+      # line to STDOUT too (observed live 2026-08-24), so a bare tail -1 would
+      # capture chatter, not the id. LEADV2_PROJECT_ROOT is passed explicitly:
+      # a `VAR=x source` prefix does not persist past the source command.
+      DISPATCH_SLOT_SESSION="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null | grep -E '^s-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$' | tail -1)"
+      if [[ -n "${DISPATCH_SLOT_SESSION}" ]]; then
+        DISPATCH_SLOT_REG_ID="${reg_id}"
+        DISPATCH_SLOT_PID="$(_lv2_durable_pid 2>/dev/null || printf '%s' "$$")"
+        DISPATCH_SLOT_SIG8="${sig8}"
+      else
+        emit decision "active_register_miss task=${sig8}"
+      fi
     fi
     # LANE-TRUTH-BATCH-01 Row 1: stamp the real stream path so liveness resolves
     # this lane, not pulse.md.  leadv2_active_register defaults log_path to
@@ -4948,7 +5361,11 @@ cmd_resolve() {
   for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
     _phase_waiver_args+=(--waiver "$_pw")
   done
-  _phase_precondition_guard "${sig8}" "${task_class}" "${lane_writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
+  _phase_precondition_guard "${sig8}" "${task_class}" "${lane_writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || {
+    # PREPASS-PROVIDER-FALLBACK-01-R5 §4: refused before any spawn -- the EXIT
+    # trap (cleanup_pending_dispatch) releases the registered row on this exit.
+    exit 3
+  }
 
   if [[ "${product_class}" == "product" ]]; then
     # PREPASS-DEGRADES-01 (2026-07-29): a prepass failure must NEVER stop the work. On
@@ -4972,7 +5389,7 @@ cmd_resolve() {
     if (( _pp_ok == 0 )); then
       emit decision "architect_prepass task=${sig8} status=parked reason=no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts action=not_dispatched"
       # PLUGIN-RELIABILITY-01 D3: loud prepass_parked signal so supervise surfaces it.
-      emit decision "prepass_parked task=${sig8} founder_task_id=${founder_task_id} reason=no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts last_reason=${ARCHITECT_PREPASS_REASON:-unknown}"
+      emit decision "prepass_parked task=${sig8} founder_task_id=${founder_task_id} reason=no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts last_reason=${ARCHITECT_PREPASS_REASON:-unknown} worker_launched=0"
       log_err "architect prepass produced no design for product task=${sig8} after ${ARCHITECT_PREPASS_ATTEMPTS} attempts -- task PARKED, not dispatched."
       _dl_note "${sig8}" parked "no_design_after_${ARCHITECT_PREPASS_ATTEMPTS}_attempts" "" "${founder_task_id}"
       # PLUGIN-RELIABILITY-01 D3 (round 2): write a questions/ pending entry
@@ -4988,6 +5405,8 @@ cmd_resolve() {
           --default-option "retry" --no-block >/dev/null 2>&1 || true
         _emit_event question_asked "${sig8}" "" "" "prepass_parked_retry_or_abort"
       fi
+      # PREPASS-PROVIDER-FALLBACK-01-R5 §4: no worker was launched -- the EXIT
+      # trap releases the registered row, so a parked lane holds no active slot.
       exit 3
     fi
     # PHASES-ARE-THE-ONLY-PATH-01: record plan phase done (prepass produced a design).
@@ -5107,13 +5526,16 @@ exit is treated as an incident."
       3) emit decision "dispatch_refused reason=not_shape_eligible task=${sig8}"
          _dl_note "${sig8}" refused not_shape_eligible "" "${founder_task_id}"
          printf 'dispatch_refused reason=not_shape_eligible task=%s\n' "${sig8}"
+         # R5 §4: EXIT trap releases the registered row (no worker spawned).
          exit 2 ;;
       2) emit decision "dispatch_refused reason=diagnostic_mission_missing_evidence task=${sig8}"
          _dl_note "${sig8}" refused diagnostic_mission_missing_evidence "" "${founder_task_id}"
          printf 'dispatch_refused reason=diagnostic_mission_missing_evidence task=%s\n' "${sig8}"
+         # R5 §4: EXIT trap releases the registered row (no worker spawned).
          exit 2 ;;
       *) log_err "leadv2-lane-shape.sh classify failed unexpectedly (rc=${_ls_rc}) for task=${sig8}"
          _dl_note "${sig8}" dead lane_shape_classify_failed "rc=${_ls_rc}" "${founder_task_id}"
+         # R5 §4: EXIT trap releases the registered row (no worker spawned).
          exit 1 ;;
     esac
   fi
@@ -5144,13 +5566,27 @@ exit is treated as an incident."
   router_label="v1"
   if [[ "${LEADV2_ROUTER_V2:-0}" == "1" ]]; then
     router_label="v2"
-    resolved="$(resolve_v2_dispatch "${mission}" "${sig8}" "${task_class}" "${kind}" "${protected}")" || {
+    # PREPASS-PROVIDER-FALLBACK-01-R2: resolve_v2_dispatch runs inside a command
+    # substitution, so its stage/detail for a failure cross the subshell boundary
+    # via this file (see _v2_fail). Live 2026-08-24 evidence: filter exits rc=2
+    # with "router_v2.arms is empty or missing" on stderr, the dispatcher logged
+    # a bare `router_v2_unavailable rc=1` and the operator had nothing to act on.
+    local _v2err _v2stage="unknown" _v2detail=""
+    _v2err="$(mktemp "${TMPDIR:-/tmp}/leadv2-v2err.XXXXXX")" || _v2err=""
+    resolved="$(V2_FAIL_FILE="${_v2err}" resolve_v2_dispatch "${mission}" "${sig8}" "${task_class}" "${kind}" "${protected}")" || {
       local v2rc=$?
-      emit decision "dispatch_refused reason=router_v2_unavailable task=${sig8} router=v2 rc=${v2rc}"
-      log_err "router v2 resolver failed (rc=${v2rc}); set LEADV2_ROUTER_V2=0 for rollback"
+      if [[ -n "${_v2err}" && -s "${_v2err}" ]]; then
+        _v2stage="$(sed -n 's/^stage=//p' "${_v2err}" | head -1)"
+        _v2detail="$(sed -n 's/^detail=//p' "${_v2err}" | head -1)"
+      fi
+      rm -f "${_v2err}"
+      emit decision "dispatch_refused reason=router_v2_unavailable task=${sig8} router=v2 rc=${v2rc} stage=${_v2stage} detail=${_v2detail:-no_stderr_captured}"
+      log_err "router v2 resolver failed at stage=${_v2stage} rc=${v2rc}: ${_v2detail:-no stderr captured}. Fix the router_v2 config it names (typically router_v2.arms in ${ROUTING_YAML}); LEADV2_ROUTER_V2=0 is the documented per-dispatch rollback, not a standing default."
       _dl_note "${sig8}" dead "router_v2_unavailable_rc_${v2rc}" "" "${founder_task_id}"
+      # R5 §4: EXIT trap releases the registered row (no worker spawned).
       exit 1
     }
+    rm -f "${_v2err}"
   else
     resolved="$(resolve_arm)"
   fi
@@ -5547,6 +5983,10 @@ ${mission}"
       # naming the absolute path where the finished lane's worktree is left on disk --
       # the stated interim behaviour (a finished lane leaves its worktree with a loud line).
       _DISPATCH_WORKER_LIVE=1
+      # R5 §4 worker-spawn HANDOFF: the active row now belongs to the spawned
+      # worker (_spawn_worker_body's set_worker_pid flipped pid_role to
+      # "worker"), so the EXIT-trap slot release is disarmed from here on.
+      DISPATCH_SLOT_REG_ID=""
       if [[ -n "${WORK_ROOT}" && "${WORK_ROOT}" != "${PROJECT_ROOT}" ]]; then
         emit decision "lane_worktree_left task=${sig8} founder_task=${founder_task_id:-} path=${WORK_ROOT}"
         log "lane worktree left on disk for task=${sig8}: ${WORK_ROOT}"
@@ -5675,6 +6115,10 @@ ${mission}"
       log_err "dispatch reservation could not be finalized for task=${sig8} model=${candidate} -- ledger write (confirm or abort) FAILED; a spawned worker may be live but NOT recorded -- check manually"
       emit decision "dispatch_rollback_failed task=${sig8} model=${candidate} rule=${rule} reason=$([[ "${spawn}" == "1" ]] && printf spawn_failed_or_confirm_write_failed || printf no_spawn_dry_run)"
       _dl_note "${sig8}" dead rollback_failed "model=${candidate}" "${founder_task_id}"
+      # R5 §4: rc=5 means the spawn state is AMBIGUOUS (a worker may be live but
+      # unrecorded) -- disarm the slot release; a genuinely dead row is the
+      # sweep's to reap, never released on a guess.
+      DISPATCH_SLOT_REG_ID=""
       exit 1
       ;;
     6)
@@ -5694,6 +6138,8 @@ ${mission}"
     *)
       log_err "atomic_dispatch_reserve_spawn_confirm: unexpected rc=${arc} for task=${sig8}"
       _dl_note "${sig8}" dead "unexpected_rc_${arc}" "" "${founder_task_id}"
+      # R5 §4: unknown spawn state -- disarm rather than release on a guess.
+      DISPATCH_SLOT_REG_ID=""
       exit 1
       ;;
     esac
