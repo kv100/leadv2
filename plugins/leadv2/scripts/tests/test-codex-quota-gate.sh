@@ -182,12 +182,17 @@ LEADV2_ROUTING_YAML="$BASE/routing.yaml" \
 LEADV2_QUOTA_READ="$BASE/reader99.py" \
   bash "$CODEX_TASK_SH" task "q4-probe" --cwd "$BASE" >"$BASE/q4.out" 2>"$BASE/q4.err" || RUN_RC=$?
 RUN_ERR="$BASE/q4.err"
-if grep -q 'CODEX_REFUSED_QUOTA reason=threshold used=99' "$RUN_ERR" \
+# QUOTA-GATE-PARITY-01 round 2: with provider-quota-gate.sh executable again,
+# codex_spawn_gate check 3 consults the same LEADV2_QUOTA_READ stub (via
+# quota-live) and may refuse FIRST with reason=threshold used=live; the legacy
+# reader path (used=99) fires only if check 3 fails open. Either leg is a
+# correct over-threshold refusal; both must carry the marker + rc 2 + no job.
+if grep -qE 'CODEX_REFUSED_QUOTA reason=threshold (used=99|used=live)' "$RUN_ERR" \
    && grep -q 'LEADV2_DISPATCH_REFUSED: quota_gate' "$RUN_ERR" \
    && [[ "${RUN_RC:-0}" -eq 2 ]] && [[ "$(count_jobs)" -eq 0 ]]; then
-  pass "q4 over-threshold refused (reason=threshold used=99 + rc 2) before any job launch"
+  pass "q4 over-threshold refused (reason=threshold used=99|live + rc 2) before any job launch"
 else
-  fail "q4 over-threshold refused (reason=threshold used=99 + rc 2) before any job launch (rc=${RUN_RC:-0}, jobs=$(count_jobs))"
+  fail "q4 over-threshold refused (reason=threshold used=99|live + rc 2) before any job launch (rc=${RUN_RC:-0}, jobs=$(count_jobs))"
 fi
 
 # ── q5: watcher idempotent across two reruns -> exactly ONE lockout line ───

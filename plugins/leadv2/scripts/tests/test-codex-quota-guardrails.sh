@@ -54,6 +54,27 @@ exit 0
 EOF
 chmod +x "$STUBBIN/node"
 
+# ── hermetic quota-live fixture (QUOTA-GATE-PARITY-01 F2) ──────────────────
+# codex_spawn_gate check 3 execs leadv2-provider-quota-gate.sh as a CHILD
+# process that inherits the environment. Exporting LEADV2_QUOTA_LIVE (fixture
+# emitter), LEADV2_QUOTA_CACHE_DIR (scratch) and LEADV2_QUOTA_CEILINGS (repo
+# config) makes every row that reaches check 3 (a4/c4, the runner rows)
+# hermetic: no row can read the host's real
+# ~/.claude/state/leadv2/quota-cache/codex.json anymore.
+QG_FIX="$BASE/qg-fixtures"; mkdir -p "$QG_FIX" "$QG_FIX/cache"
+printf '%s\n' '{"status":"ok","binding_window":"primary","windows":[{"kind":"primary","used_percent":0,"limit_reached":false}]}' > "$QG_FIX/codex.json"
+QG_LIVE="$BASE/qg-live.sh"
+cat > "$QG_LIVE" <<'EOF'
+#!/usr/bin/env bash
+f="${QG_FIXDIR}/${1:-}.json"
+if [[ -f "$f" ]]; then cat "$f"; else printf '{"status":"unknown"}'; fi
+exit 0
+EOF
+chmod +x "$QG_LIVE"
+export QG_FIXDIR="$QG_FIX" LEADV2_QUOTA_LIVE="$QG_LIVE"
+export LEADV2_QUOTA_CACHE_DIR="$QG_FIX/cache"
+export LEADV2_QUOTA_CEILINGS="${SCRIPTS_DIR}/../config/leadv2-quota-ceilings.sh"
+
 # ── iso_now helper ─────────────────────────────────────────────────────────
 iso_now() {
   python3 -c 'import datetime; print(datetime.datetime.now(datetime.UTC).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ"))'
@@ -110,6 +131,36 @@ if [[ $A4_RC -eq 0 ]]; then
   pass "a4 spawn gate passes when circuit closed"
 else
   fail "a4 spawn gate passes when circuit closed (rc=$A4_RC)"
+fi
+
+# a4b: the isolation itself. With HOME pointed at an empty scratch dir and the
+# fixture emitter supplying a 0% codex reading, the gate must pass regardless
+# of the host's real quota state (QUOTA-GATE-PARITY-01 F2 regression row).
+A4B_HOME="$BASE/a4b-home"; mkdir -p "$A4B_HOME"
+A4B_COOLDOWN="$BASE/a4b-cooldown"; mkdir -p "$A4B_COOLDOWN"
+A4B_RC=0
+HOME="$A4B_HOME" LEADV2_CODEX_CIRCUIT_FILE="$BASE/a4b-circuit.json" \
+  LEADV2_ARM_COOLDOWN_DIR="$A4B_COOLDOWN" \
+  bash -c "source '$QUOTA_GATE_LIB'; codex_spawn_gate exec" >/dev/null 2>&1 || A4B_RC=$?
+if [[ $A4B_RC -eq 0 ]]; then
+  pass "a4b spawn gate hermetic — passes on fixture 0% reading regardless of host quota state"
+else
+  fail "a4b spawn gate hermetic (rc=$A4B_RC)"
+fi
+
+# a4c: check 3 must actually EXECUTE (child gate over threshold -> rc 2,
+# reason=threshold). Guards the exec bit: provider-quota-gate.sh is invoked
+# directly, so a 644 mode yields rc 126 and the check silently dies fail-open
+# (that was the live state before QUOTA-GATE-PARITY-01 round 2).
+QG_HOT="$BASE/qg-hot"; mkdir -p "$QG_HOT"
+printf '%s\n' '{"status":"ok","binding_window":"primary","windows":[{"kind":"primary","used_percent":95,"limit_reached":false}]}' > "$QG_HOT/codex.json"
+A4C_RC=0
+LEADV2_CODEX_CIRCUIT_FILE="$BASE/a4c-circuit.json" LEADV2_ARM_COOLDOWN_DIR="$A4B_COOLDOWN" \
+  QG_FIXDIR="$QG_HOT" bash -c "source '$QUOTA_GATE_LIB'; codex_spawn_gate exec" 2>/tmp/a4c.err || A4C_RC=$?
+if [[ $A4C_RC -eq 2 ]] && grep -q 'reason=threshold' /tmp/a4c.err; then
+  pass "a4c check 3 executes end-to-end (fixture 95% -> rc 2 reason=threshold)"
+else
+  fail "a4c check 3 executes end-to-end (rc=$A4C_RC, err=$(head -3 /tmp/a4c.err 2>/dev/null))"
 fi
 
 # a5: planner --print-model (no tier) → effort=medium

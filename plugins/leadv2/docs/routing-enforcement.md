@@ -111,6 +111,16 @@ function BOTH spawn paths call), so it can no longer be config-conditional or pa
   provider's TTL, non-numeric or missing ceiling): only a *known* percentage at or above a
   *known* ceiling refuses (rc 1, `LEADV2_DISPATCH_REFUSED: quota_gate`). A `limit_reached: true`
   codex reading with no numeric `used_percent` is treated as a hard 100%, never as "unknown".
+  A true `limit_reached` **short-circuits the ceiling comparison** (QUOTA-GATE-PARITY-01 §4a):
+  it is a standalone block signal, so it must refuse even when a >100 ceiling would make the
+  numeric comparison inert. Evidence for the `100` mapping: `limit_reached` is copied verbatim
+  from the provider's `rate_limit.limit_reached` and is independent of `used_percent` (captured
+  2026-08-24T13:54Z from `~/.claude/state/leadv2/quota-cache/codex.json`, fetcher
+  `leadv2-quota-read.py:273-291`: `status=ok, limit_reached=false, used_percent=4`).
+  UNVERIFIED: a true `limit_reached` has never been observed alongside its `used_percent`, so
+  `100` is a saturating block sentinel, not a measured percentage — safe in the refusal
+  direction only. Same note and constant (`CODEX_LIMIT_REACHED_PCT`) live in
+  `lib/leadv2-glm-policy-resolve.py` and `leadv2-burn-governor.sh`.
   Kill switch: `LEADV2_PROVIDER_QUOTA_GATE=0`.
 - `lib/leadv2-codex-quota-gate.sh::codex_spawn_gate` now calls the generic gate as a third check
   (after cooldown memory and the circuit breaker), purpose derived from the sub-command
@@ -145,7 +155,11 @@ Env knobs:
 - `LEADV2_QUOTA_CEILINGS` / `LEADV2_QUOTA_LIVE` / `LEADV2_QUOTA_CACHE_DIR` — override the
   ceilings file / quota-live binary / cache directory (tests).
 - `LEADV2_QUOTA_READ_TIMEOUT` (default 8s) — bounds the gate's own quota-live subprocess so a
-  hung provider endpoint fails open instead of stalling every codex spawn.
+  hung provider endpoint fails open instead of stalling every codex spawn. Validated at BOTH
+  consumer sites (`leadv2-provider-quota-gate.sh`, 0.1s poll ticks, and `codex-task.sh`'s
+  legacy reader loop, 0.5s ticks): a positive integer only — non-numeric/empty falls back to
+  8s with a warn, `<1` clamps to 1s, `>60` clamps to 60s with a warn. A configured typo can
+  neither disable the poll loop nor stall every spawn behind it.
 - `leadv2-burn-governor.sh --provider <glm|codex|claude>` — an additive mode: verdict from
   quota-cache percentage vs. the declared work ceiling (`soft = ceiling-10`, `hard = ceiling`)
   instead of the 24h token-burn DB. Ignores `LEADV2_BURN_SOFT_24H`/`LEADV2_BURN_HARD_24H`. The

@@ -221,6 +221,18 @@ _codex_quota_read() {
     return 0
   }
   local _deadline_s="${LEADV2_QUOTA_READ_TIMEOUT:-8}"
+  # QUOTA-GATE-PARITY-01 F4 (second consumer, 0.5s ticks): same clamp as
+  # leadv2-provider-quota-gate.sh -- positive integer only, 1..60s, so a
+  # configured typo can neither zero the poll loop nor stall the dispatcher.
+  if ! [[ "$_deadline_s" =~ ^[0-9]+$ ]]; then
+    printf '[codex-task] WARN: LEADV2_QUOTA_READ_TIMEOUT non-numeric; using default 8s\n' >&2
+    _deadline_s=8
+  fi
+  if (( _deadline_s < 1 )); then _deadline_s=1; fi
+  if (( _deadline_s > 60 )); then
+    printf '[codex-task] WARN: LEADV2_QUOTA_READ_TIMEOUT=%ss clamped to 60s\n' "$_deadline_s" >&2
+    _deadline_s=60
+  fi
   local _ticks=$(( _deadline_s * 2 ))
   local _tmp_out _pid _t=0
   _tmp_out="$(mktemp)"

@@ -149,6 +149,85 @@ OUT="$(LEADV2_QUOTA_CEILINGS="${tmp}/nope.sh" FAKE_LIVE_FIXDIR="$FIX" LEADV2_QUO
   LEADV2_QUOTA_CACHE_DIR="$CACHE" bash "$GATE_BIN" glm build 2>&1)"; RC=$?
 [[ "$RC" == 0 ]] && grep -q 'FAIL-OPEN: ceilings file missing' <<<"$OUT" && pass "boundary: ceilings file missing -> fail-open" || fail "boundary ceilings missing" "rc=$RC out=$OUT"
 
+# ── QUOTA-GATE-PARITY-01 fix round 2 ─────────────────────────────────────────
+
+# F4a: timeout=abc -> fallback 8s with a named warn, gate completes.
+write_fixture glm '{"status":"ok","five_hour":{"pct":10},"weekly":{"pct":10}}'
+OUT="$(LEADV2_QUOTA_READ_TIMEOUT=abc FAKE_LIVE_FIXDIR="$FIX" LEADV2_QUOTA_LIVE="$FAKE_LIVE" \
+  LEADV2_QUOTA_CACHE_DIR="$CACHE" bash "$GATE_BIN" glm build 2>&1)"; RC=$?
+[[ "$RC" == 0 ]] && grep -q "LEADV2_QUOTA_READ_TIMEOUT='abc'" <<<"$OUT" && grep -q 'default 8s' <<<"$OUT" \
+  && pass "F4a: timeout=abc -> rc 0, warn names the 8s fallback" || fail "F4a" "rc=$RC out=$OUT"
+
+# F4b: timeout=99999 -> clamped to 60s with a named warn; completes promptly.
+_F4B_T0="$(date +%s)"
+OUT="$(LEADV2_QUOTA_READ_TIMEOUT=99999 FAKE_LIVE_FIXDIR="$FIX" LEADV2_QUOTA_LIVE="$FAKE_LIVE" \
+  LEADV2_QUOTA_CACHE_DIR="$CACHE" bash "$GATE_BIN" glm build 2>&1)"; RC=$?
+_F4B_DT=$(( $(date +%s) - _F4B_T0 ))
+[[ "$RC" == 0 ]] && grep -q 'clamped to 60s' <<<"$OUT" && (( _F4B_DT < 10 )) \
+  && pass "F4b: timeout=99999 -> clamped to 60s, completed in ${_F4B_DT}s" \
+  || fail "F4b" "rc=$RC dt=${_F4B_DT}s out=$OUT"
+
+# F4c: timeout=0 -> clamped to 1s and the gate still evaluates (OK line).
+OUT="$(LEADV2_QUOTA_READ_TIMEOUT=0 FAKE_LIVE_FIXDIR="$FIX" LEADV2_QUOTA_LIVE="$FAKE_LIVE" \
+  LEADV2_QUOTA_CACHE_DIR="$CACHE" bash "$GATE_BIN" glm build 2>&1)"; RC=$?
+[[ "$RC" == 0 ]] && grep -q 'clamped to 1s' <<<"$OUT" && grep -q 'OK — glm' <<<"$OUT" \
+  && pass "F4c: timeout=0 -> clamped to 1s, gate still evaluates" || fail "F4c" "rc=$RC out=$OUT"
+
+# §4a: limit_reached must refuse EVEN under an inert (>100) ceiling — the
+# block signal short-circuits the pct>=ceil comparison instead of losing it.
+write_fixture codex '{"status":"ok","limit_reached":true,"binding_window":"primary","windows":[{"kind":"primary","used_percent":4}]}'
+OUT="$(LEADV2_CEIL_CODEX_WORK=150 FAKE_LIVE_FIXDIR="$FIX" LEADV2_QUOTA_LIVE="$FAKE_LIVE" \
+  LEADV2_QUOTA_CACHE_DIR="$CACHE" bash "$GATE_BIN" codex build 2>&1)"; RC=$?
+[[ "$RC" == 1 ]] && grep -q 'limit_reached' <<<"$OUT" \
+  && pass "§4a: limit_reached refuses even with inert ceiling 150 (rc 1)" \
+  || fail "§4a inert-ceiling limit_reached" "rc=$RC out=$OUT"
+
+# F3a: GLM_QUOTA_THRESHOLD=abc against the GLM gate — fallback 80 named, rc 0
+# (never rc 2: rc 2 is the peak-hours refusal and must not be reachable by a
+# config typo). Clock forced out of peak.
+GLM_COOLDOWN="$tmp/glm-cooldown"; mkdir -p "$GLM_COOLDOWN"
+write_fixture glm '{"status":"ok","five_hour":{"pct":10},"weekly":{"pct":10}}'
+OUT="$(GLM_SIMULATE_UTC_HOUR=12 GLM_QUOTA_THRESHOLD=abc FAKE_LIVE_FIXDIR="$FIX" \
+  LEADV2_QUOTA_LIVE="$FAKE_LIVE" LEADV2_ARM_COOLDOWN_DIR="$GLM_COOLDOWN" \
+  bash "$GLM_GATE_BIN" 2>&1)"; RC=$?
+[[ "$RC" != 2 ]] && grep -q 'falling back to 80' <<<"$OUT" \
+  && pass "F3a: GLM_QUOTA_THRESHOLD=abc -> warn + fallback 80, never rc 2 (rc=$RC)" \
+  || fail "F3a" "rc=$RC out=$OUT"
+
+# F3b: same defect via LEADV2_CEIL_GLM_WORK=abc; a genuinely high reading then
+# reroutes by the 80 fallback (rc 1), still never rc 2.
+write_fixture glm '{"status":"ok","five_hour":{"pct":85},"weekly":{"pct":10}}'
+OUT="$(GLM_SIMULATE_UTC_HOUR=12 LEADV2_CEIL_GLM_WORK=abc FAKE_LIVE_FIXDIR="$FIX" \
+  LEADV2_QUOTA_LIVE="$FAKE_LIVE" LEADV2_ARM_COOLDOWN_DIR="$GLM_COOLDOWN" \
+  bash "$GLM_GATE_BIN" 2>&1)"; RC=$?
+[[ "$RC" == 1 ]] && grep -q 'falling back to 80' <<<"$OUT" && grep -q 'LEADV2_DISPATCH_REFUSED: quota_gate' <<<"$OUT" \
+  && pass "F3b: LEADV2_CEIL_GLM_WORK=abc + 85% read -> reroute by fallback 80 (rc 1)" \
+  || fail "F3b" "rc=$RC out=$OUT"
+
+# F3 twin: five_hour.pct absent from an otherwise ok payload -> python prints
+# the literal None -> non-numeric fail-open (rc 0), never a bash abort.
+write_fixture glm '{"status":"ok","five_hour":{},"weekly":{"pct":10}}'
+OUT="$(GLM_SIMULATE_UTC_HOUR=12 FAKE_LIVE_FIXDIR="$FIX" \
+  LEADV2_QUOTA_LIVE="$FAKE_LIVE" LEADV2_ARM_COOLDOWN_DIR="$GLM_COOLDOWN" \
+  bash "$GLM_GATE_BIN" 2>&1)"; RC=$?
+[[ "$RC" == 0 ]] && grep -q 'FAIL-OPEN: GLM quota read is non-numeric' <<<"$OUT" \
+  && pass "F3c: five_hour.pct absent -> non-numeric fail-open, no abort" \
+  || fail "F3c" "rc=$RC out=$OUT"
+
+# F1: top-level limit_reached must OR ahead of the binding window's pct —
+# today the window's used_percent=4 returns early past the top-level true.
+write_fixture codex '{"status":"ok","limit_reached":true,"binding_window":"primary","windows":[{"kind":"primary","used_percent":4}]}'
+F1_PY="$(FAKE_LIVE_FIXDIR="$FIX" LEADV2_QUOTA_LIVE="$FAKE_LIVE" python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("resolve", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(m.live_codex_weekly_pct(sys.argv[2]))
+' "$RESOLVE_PY" "$FAKE_LIVE" 2>&1)"
+[[ "$F1_PY" == "100.0" ]] \
+  && pass "F1: top-level limit_reached ORs ahead of binding-window pct (100.0)" \
+  || fail "F1 top-level limit_reached" "got='$F1_PY'"
+
 # ── claude review passes under ceiling ──────────────────────────────────────
 run_gate claude review
 [[ "$RC" == 0 ]] && pass "claude review under ceiling -> allow" || fail "claude review" "rc=$RC out=$OUT"

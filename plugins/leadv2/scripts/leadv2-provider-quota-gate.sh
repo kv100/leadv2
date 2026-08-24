@@ -26,6 +26,15 @@ if [[ ! -x "$LIVE" && ! -f "$LIVE" ]]; then warn 'FAIL-OPEN: quota-live helper m
 # Portable bounded subprocess: quota-live can touch a remote provider on cache miss.
 out="$(mktemp "${TMPDIR:-/tmp}/provider-quota.XXXXXX")" || { warn 'FAIL-OPEN: temp unavailable'; exit 0; }
 err="${out}.err"; timeout_s="${LEADV2_QUOTA_READ_TIMEOUT:-8}"
+# QUOTA-GATE-PARITY-01 F4: the configured timeout is untrusted operator input.
+# Accept a positive integer only; clamp to 1..60 so a typo can neither disable
+# the poll loop (0/-5/"") nor stall every spawn behind the gate (86400).
+if ! [[ "$timeout_s" =~ ^[0-9]+$ ]]; then
+  warn "WARN: LEADV2_QUOTA_READ_TIMEOUT='${timeout_s}' is not a positive integer; using default 8s"
+  timeout_s=8
+fi
+if (( timeout_s < 1 )); then warn "WARN: LEADV2_QUOTA_READ_TIMEOUT=${timeout_s} clamped to 1s"; timeout_s=1; fi
+if (( timeout_s > 60 )); then warn "WARN: LEADV2_QUOTA_READ_TIMEOUT=${timeout_s} clamped to 60s"; timeout_s=60; fi
 bash "$LIVE" "$([[ "$provider" == claude ]] && printf anthropic || printf '%s' "$provider")" >"$out" 2>"$err" &
 pid=$!; elapsed=0
 while kill -0 "$pid" 2>/dev/null && (( elapsed < timeout_s * 10 )); do sleep 0.1; elapsed=$((elapsed + 1)); done
@@ -57,6 +66,15 @@ def num(x):
 if p == "glm":
  vals=[num((d.get(k) or {}).get("pct")) for k in ("five_hour","weekly")]; vals=[x for x in vals if x is not None]
 elif p == "codex":
+ # Evidence (QUOTA-GATE-PARITY-01 §5): limit_reached is fetched verbatim from
+ # the provider rate_limit.limit_reached field and is NOT derived from
+ # used_percent (captured 2026-08-24T13:54Z from
+ # ~/.claude/state/leadv2/quota-cache/codex.json, fetcher leadv2-quota-read.py:273-291:
+ # status=ok, limit_reached=false, binding_window=primary, used_percent=4).
+ # UNVERIFIED: a true limit_reached has never been observed alongside its
+ # used_percent, so 100 below is a saturating block sentinel, not a measured
+ # percentage. Safe in the refusal direction only, which is why the shell
+ # short-circuits on source=limit_reached before the ceiling comparison.
  ws=d.get("windows") or []; bind=d.get("binding_window"); w=next((x for x in ws if x.get("kind")==bind), None)
  if isinstance(w,dict) and w.get("limit_reached") is True: print("100 limit_reached"); raise SystemExit
  if d.get("limit_reached") is True: print("100 limit_reached"); raise SystemExit
@@ -70,6 +88,14 @@ else: print("%s pct" % max(vals))
 ' "$provider" 2>/dev/null)"
 case "$parsed" in MALFORMED) warn "FAIL-OPEN: malformed ${provider} JSON"; exit 0;; UNKNOWN|"") warn "FAIL-OPEN: ${provider} quota read is unknown"; exit 0;; esac
 pct="${parsed%% *}"; source="${parsed#* }"
+# QUOTA-GATE-PARITY-01 §4a: a standalone block signal must not be routed
+# through a numeric comparison it can lose -- with a >100 (inert) ceiling the
+# synthesized pct=100 would be admitted. Refuse before comparing to the ceiling.
+if [[ "$source" == "limit_reached" ]]; then
+  warn 'LEADV2_DISPATCH_REFUSED: quota_gate'
+  warn "REROUTE — ${provider} limit_reached=true (block sentinel pct=${pct}, supersedes ceiling=${ceil}) (${purpose}) source=${source}"
+  exit 1
+fi
 if (( pct >= ceil )); then
   warn 'LEADV2_DISPATCH_REFUSED: quota_gate'
   warn "REROUTE — ${provider} ${pct}% >= ${ceil}% (${purpose}) source=${source}"

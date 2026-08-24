@@ -65,6 +65,16 @@ codex_spawn_gate() {
   esac
 
   case "$_sub" in review|adversarial-review|review-bg) _purpose=review ;; *) _purpose=build ;; esac
+  # check 3 — the generic gate runs as a CHILD PROCESS, not a sourced function,
+  # so it inherits the environment. Hermetic contract (QUOTA-GATE-PARITY-01 F2):
+  # LEADV2_QUOTA_LIVE (fixture emitter), LEADV2_QUOTA_CACHE_DIR (scratch dir)
+  # and LEADV2_QUOTA_CEILINGS (fixture ceilings file) are all read by the child
+  # from the inherited env -- exporting them makes this check hermetic with no
+  # dedicated bypass flag. Tests MUST set them; unset, check 3 reads the host's
+  # real ~/.claude/state/leadv2/quota-cache/ and flakes on host quota state.
+  # NOTE: the child is exec'd DIRECTLY (not `bash $gate`), so its executable
+  # bit is load-bearing — mode 644 gives rc 126, which the caller below treats
+  # as pass, silently disabling this check (tests/a4c guards it).
   "${_CODEX_QG_DIR}/../leadv2-provider-quota-gate.sh" codex "$_purpose"
   _gate_rc=$?
   if [[ "$_gate_rc" -eq 1 ]]; then

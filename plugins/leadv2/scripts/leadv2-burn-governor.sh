@@ -213,6 +213,14 @@ def n(v):
  except:return None
 if p=="glm": vals=[n((d.get(x) or {}).get("pct")) for x in ("five_hour","weekly")]
 elif p=="codex":
+ # Evidence (QUOTA-GATE-PARITY-01 §5): limit_reached is fetched verbatim from
+ # the provider rate_limit.limit_reached field and is NOT derived from
+ # used_percent (captured 2026-08-24T13:54Z from
+ # ~/.claude/state/leadv2/quota-cache/codex.json, fetcher leadv2-quota-read.py:273-291:
+ # status=ok, limit_reached=false, binding_window=primary, used_percent=4).
+ # UNVERIFIED: a true limit_reached has never been observed alongside its
+ # used_percent, so 100 below is a saturating block sentinel, not a measured
+ # percentage -- safe in the refusal direction only.
  ws=d.get("windows") or []; w=next((x for x in ws if x.get("kind")==d.get("binding_window")), None)
  if d.get("limit_reached") is True or (w or {}).get("limit_reached") is True: print(100); raise SystemExit
  vals=[n((w or {}).get("used_percent"))] if w else [n(x.get("used_percent")) for x in ws]
