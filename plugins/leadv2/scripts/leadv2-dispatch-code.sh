@@ -598,6 +598,7 @@ ARCHITECT_FALLBACK_WORKSPACE_BASE=""
 # workspace.
 ARCHITECT_FALLBACK_RUNNER_PID=""
 ARCHITECT_FALLBACK_RUNNER_PID_FILE=""
+ARCHITECT_FALLBACK_RUNNER_GO_FILE=""
 # T-c (SUPERVISOR-AUDIT-01): sig-keyed prepass cache + reduced prompt for short missions.
 # =0 restores today's behavior byte-for-byte (always re-run the architect, full prompt).
 PREPASS_CACHE="${LEADV2_PREPASS_CACHE:-1}"
@@ -3336,9 +3337,9 @@ $(tail -c 262144 "${s}" 2>/dev/null)"
 # (same bash heredoc quirk as the primary invocation below).
 _architect_timed_run() {  # <timeout_sec> <cmd...> -> stdout=output, rc=launcher rc
   local tmo="$1"; shift
-  python3 - "${tmo}" "$@" <<'PY' 2>&1 &
-import os, signal, subprocess, sys
-timeout = sys.argv[1]
+  python3 - "${tmo}" "${ARCHITECT_FALLBACK_RUNNER_GO_FILE:-}" "$@" <<'PY' 2>&1 &
+import os, signal, subprocess, sys, time
+timeout, go_file = sys.argv[1:3]
 proc = None
 def stop_process_group():
     if proc is None:
@@ -3353,8 +3354,13 @@ def interrupted(signum, _frame):
 signal.signal(signal.SIGTERM, interrupted)
 signal.signal(signal.SIGINT, interrupted)
 try:
+    # Parent writes its runner PID before creating this gate.  No provider
+    # process group can exist while the gate is closed, so a TERM in the
+    # fork/register interval can always terminate this known supervisor first.
+    while go_file and not os.path.exists(go_file):
+        time.sleep(0.01)
     proc = subprocess.Popen(
-        sys.argv[2:], env=os.environ.copy(), text=True,
+        sys.argv[3:], env=os.environ.copy(), text=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     stdout, _ = proc.communicate(timeout=int(timeout))
     sys.stdout.write(stdout or "")
@@ -3381,12 +3387,26 @@ except subprocess.TimeoutExpired:
     sys.exit(124)
 PY
   ARCHITECT_FALLBACK_RUNNER_PID=$!
-  if [[ -n "${ARCHITECT_FALLBACK_RUNNER_PID_FILE:-}" ]]; then
-    printf '%s' "${ARCHITECT_FALLBACK_RUNNER_PID}" > "${ARCHITECT_FALLBACK_RUNNER_PID_FILE}" 2>/dev/null || true
+  # Test seam for the fork->registration boundary.  It is deliberately before
+  # PID-file publication and before opening the child gate; TERM here must
+  # still reap ARCHITECT_FALLBACK_RUNNER_PID and must find no provider.
+  if [[ -n "${LEADV2_FALLBACK_REGISTRATION_BARRIER_FILE:-}" ]]; then
+    printf 'runner_pid=%s\n' "${ARCHITECT_FALLBACK_RUNNER_PID}" > "${LEADV2_FALLBACK_REGISTRATION_BARRIER_FILE}"
+    while [[ ! -e "${LEADV2_FALLBACK_REGISTRATION_BARRIER_FILE}.release" ]]; do sleep 0.02; done
   fi
+  if [[ -n "${ARCHITECT_FALLBACK_RUNNER_PID_FILE:-}" ]]; then
+    local pid_tmp="${ARCHITECT_FALLBACK_RUNNER_PID_FILE}.tmp.$$"
+    if printf '%s' "${ARCHITECT_FALLBACK_RUNNER_PID}" > "${pid_tmp}" 2>/dev/null; then
+      mv -f "${pid_tmp}" "${ARCHITECT_FALLBACK_RUNNER_PID_FILE}" 2>/dev/null || rm -f "${pid_tmp}"
+    fi
+  fi
+  # The runner cannot start its provider until this parent has published the
+  # PID above.  File creation is the one-way registration handshake.
+  [[ -z "${ARCHITECT_FALLBACK_RUNNER_GO_FILE:-}" ]] || : > "${ARCHITECT_FALLBACK_RUNNER_GO_FILE}"
   local runner_rc=0
   wait "${ARCHITECT_FALLBACK_RUNNER_PID}" || runner_rc=$?
   [[ -z "${ARCHITECT_FALLBACK_RUNNER_PID_FILE:-}" ]] || rm -f "${ARCHITECT_FALLBACK_RUNNER_PID_FILE}" 2>/dev/null || true
+  [[ -z "${ARCHITECT_FALLBACK_RUNNER_GO_FILE:-}" ]] || rm -f "${ARCHITECT_FALLBACK_RUNNER_GO_FILE}" 2>/dev/null || true
   ARCHITECT_FALLBACK_RUNNER_PID=""
   return "${runner_rc}"
 }
@@ -3456,11 +3476,13 @@ _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> 
   # point and normal disposal must not strand a disposable worktree.
   ARCHITECT_FALLBACK_WORKSPACE_BASE="${ws_base}"
   ARCHITECT_FALLBACK_RUNNER_PID_FILE="${ws_base}/.fallback-runner.pid"
+  ARCHITECT_FALLBACK_RUNNER_GO_FILE="${ws_base}/.fallback-runner.go"
   ws="${ws_base}/wt"
   if ! git -C "${PROJECT_ROOT}" worktree add --detach "${ws}" HEAD >/dev/null 2>&1; then
     _afb_discard_workspace "${ws_base}"
     ARCHITECT_FALLBACK_WORKSPACE_BASE=""
     ARCHITECT_FALLBACK_RUNNER_PID_FILE=""
+    ARCHITECT_FALLBACK_RUNNER_GO_FILE=""
     emit decision "architect_prepass_fallback task=${sig8} outcome=aborted reason=workspace_unavailable"
     return 1
   fi
@@ -3529,6 +3551,7 @@ _architect_fallback_design() {  # <mission_file> <sig8> <fail_class> <out_file> 
   _afb_discard_workspace "${ws_base}"
   ARCHITECT_FALLBACK_WORKSPACE_BASE=""
   ARCHITECT_FALLBACK_RUNNER_PID_FILE=""
+  ARCHITECT_FALLBACK_RUNNER_GO_FILE=""
   (( ${_afb_ok} == 1 )) || return 1
   return 0
 }
