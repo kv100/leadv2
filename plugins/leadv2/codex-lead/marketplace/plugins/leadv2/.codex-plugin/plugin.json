@@ -1,6 +1,6 @@
 {
   "name": "leadv2",
-  "version": "1.0.0",
+  "version": "1.0.0+codex.20260824225325",
   "description": "leadv2 Codex-lead floor and workflow pack: lv2guard PreToolUse deny floor (enforced), leadv2 skills (dispatch/review/status/close), and the repowise MCP launcher.",
   "author": {
     "name": "leadv2"
@@ -14,7 +14,21 @@
     "orchestration"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks.json",
   "mcpServers": "./.mcp.json",
-  "interface": {}
+  "interface": {
+    "displayName": "leadv2",
+    "shortDescription": "Codex lead orchestration with guarded worker dispatch.",
+    "longDescription": "Runs Codex as the lead while native agents and external Claude, GLM, and Codex workers handle bounded lanes through guarded dispatch and review gates.",
+    "developerName": "leadv2",
+    "category": "Productivity",
+    "capabilities": [
+      "Orchestration",
+      "Developer Tools"
+    ],
+    "defaultPrompt": [
+      "Start a leadv2 session for this project.",
+      "Show compact leadv2 lane and quota status.",
+      "Dispatch and review this task with leadv2."
+    ]
+  }
 }

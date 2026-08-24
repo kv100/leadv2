@@ -43,11 +43,16 @@ EOF
 python3 - "$PLUGIN/.codex-plugin/plugin.json" <<'EOF' && pass "plugin.json: capabilities declared" || fail "plugin.json: capability declarations wrong"
 import json, sys
 d = json.load(open(sys.argv[1]))
-for k in ("name", "version", "description", "skills", "hooks", "mcpServers"):
+for k in ("name", "version", "description", "skills", "mcpServers", "interface"):
     assert d.get(k), k
 assert d["skills"] == "./skills/"
-assert d["hooks"] == "./hooks.json"
 assert d["mcpServers"] == "./.mcp.json"
+assert "hooks" not in d  # hooks.json is auto-discovered; the ingestion schema rejects this field
+ui = d["interface"]
+for k in ("displayName", "shortDescription", "longDescription", "developerName", "category"):
+    assert isinstance(ui.get(k), str) and ui[k].strip(), f"interface.{k}"
+assert isinstance(ui.get("capabilities"), list) and ui["capabilities"]
+assert isinstance(ui.get("defaultPrompt"), list) and ui["defaultPrompt"]
 EOF
 
 # --- hooks.json: PreToolUse adapter wired ------------------------------------
