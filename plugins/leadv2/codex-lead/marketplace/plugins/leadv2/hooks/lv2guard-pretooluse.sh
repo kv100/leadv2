@@ -22,7 +22,10 @@ elif name in {"apply_patch","functions.apply_patch"}:
   try:
    lane=os.path.realpath(cwd); lines=subprocess.check_output(["git","-C",lane,"rev-parse","--show-toplevel","--git-dir","--git-common-dir"],stderr=subprocess.DEVNULL,text=True).splitlines()
    top=os.path.realpath(lines[0]); gitdir=os.path.realpath(os.path.join(lane,lines[1])); common=os.path.realpath(os.path.join(lane,lines[2])); registry=os.path.join(common,"worktrees")
-   genuine=top == lane and gitdir != common and os.path.commonpath([registry,gitdir]) == registry
+   backlink_raw=open(os.path.join(gitdir,"gitdir"),encoding="utf-8").read().strip()
+   backlink=os.path.realpath(backlink_raw if os.path.isabs(backlink_raw) else os.path.join(gitdir,backlink_raw))
+   lane_dotgit=os.path.realpath(os.path.join(lane,".git"))
+   genuine=top == lane and gitdir != common and os.path.commonpath([registry,gitdir]) == registry and backlink == lane_dotgit
   except Exception: genuine=False; top=""
   if not targets: print("DENY\tapply_patch command has no patch targets")
   elif not genuine: print("DENY\tapply_patch cwd is not a genuine linked Git worktree lane")

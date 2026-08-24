@@ -10,6 +10,8 @@ ln -s "$FAKE" "$FIX/.claude/worktrees/symlinked-fake"
 allow 'shell allow' '{"tool_name":"exec_command","tool_input":{"command":"git status"}}'
 deny 'patch denies main worktree' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$MAIN\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
 deny 'patch denies ordinary fake worktree' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$FAKE\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
+cp "$LANE/.git" "$FAKE/.git"
+deny 'patch denies copied worktree pointer' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$FAKE\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
 deny 'patch denies symlinked fake worktree' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$FIX/.claude/worktrees/symlinked-fake\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
 allow 'patch allows genuine linked worktree' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$LANE\",\"tool_input\":{\"command\":\"*** Update File: a.txt\"}}"
 deny 'patch denies absolute escape' "{\"tool_name\":\"apply_patch\",\"cwd\":\"$LANE\",\"tool_input\":{\"command\":\"*** Update File: /tmp/x\"}}"
