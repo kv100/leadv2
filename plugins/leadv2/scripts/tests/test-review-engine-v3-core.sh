@@ -13,6 +13,13 @@ bash -n "${SCRIPT_DIR}/test-review-engine-v3-core.sh" || exit 1
 TMP="$(mktemp -d)"; trap 'rm -rf "${TMP}"' EXIT
 ROOT="${TMP}/repo"; mkdir -p "${ROOT}/.claude/ref"
 LOG="${TMP}/calls.log"
+ROUTING="${ROOT}/.claude/ref/leadv2-routing.yaml"
+cat > "${ROUTING}" <<'YAML'
+router:
+  glm_policy:
+    protected_path_patterns:
+      - "secure/*"
+YAML
 
 cat > "${TMP}/resolver.py" <<'PY'
 #!/usr/bin/env python3
@@ -26,7 +33,10 @@ cat > "${TMP}/architect.sh" <<'SH'
 role=""; mission=""
 while [[ $# -gt 0 ]]; do case "$1" in --role) role="$2"; shift 2 ;; --mission-file) mission="$2"; shift 2 ;; *) shift ;; esac; done
 printf '%s\n' "$role" >> "${CALL_LOG}"
-[[ "$role" == hack-detect ]] && exit 0
+if [[ "$role" == hack-detect ]]; then
+  [[ "${FIXTURE_SECURITY_HIGH:-0}" == 1 ]] && printf 'FINDING: severity=High file=secure/policy.sh line=7 dimension=hack desc=unsafe bypass\n'
+  exit 0
+fi
 cp "$mission" "${MISSION_CAPTURE}"
 if [[ "${FIXTURE_FAIL:-0}" == 1 ]]; then
   printf 'REVIEW_VERDICT: FAIL\nREVIEW_FINDINGS: critical=0 high=1 medium=0 low=0\nFINDING: severity=High file=x.sh line=9 dimension=correctness desc=prior blocker\n'
@@ -50,40 +60,43 @@ run_review() { # handoff diff task [environment assignments]
 H1="${ROOT}/docs/handoff/dispatch-ordinary"; mkdir -p "${H1}"
 D1="${H1}/review.diff"; printf 'diff --git a/a b/a\n+x\n' > "${D1}"
 : > "${LOG}"
-run_review "${H1}" "${D1}" ordinary
+run_review "${H1}" "${D1}" ordinary LEADV2_ROUTING_YAML="${ROUTING}" LEADV2_DISPATCH_LANE_WRITES=app/ordinary.sh
 [[ "$(grep -cx critic "${LOG}" || true)" == 1 && "$(grep -cx hack-detect "${LOG}" || true)" == 0 ]] \
   && pass "ordinary diff calls one reviewer and no security pass" \
   || fail "ordinary call count: $(tr '\n' ' ' < "${LOG}")"
 
-# Explicit risk escalation retains one independent reviewer and adds security.
+# Protected writes automatically add security; its High finding blocks a PASS critic.
 H2="${ROOT}/docs/handoff/dispatch-risk"; mkdir -p "${H2}"
 D2="${H2}/review.diff"; printf 'diff --git a/b b/b\n+y\n' > "${D2}"
 : > "${LOG}"
-run_review "${H2}" "${D2}" risk LEADV2_REVIEW_SECURITY_PASS=1
-[[ "$(grep -cx critic "${LOG}" || true)" == 1 && "$(grep -cx hack-detect "${LOG}" || true)" == 1 ]] \
-  && pass "explicit risk adds exactly one security pass" \
-  || fail "risk call count: $(tr '\n' ' ' < "${LOG}")"
+run_review "${H2}" "${D2}" risk LEADV2_ROUTING_YAML="${ROUTING}" LEADV2_DISPATCH_LANE_WRITES=secure/policy.sh FIXTURE_SECURITY_HIGH=1; rc=$?
+if [[ "${rc}" == 7 && "$(grep -cx critic "${LOG}" || true)" == 1 && "$(grep -cx hack-detect "${LOG}" || true)" == 1 ]] && grep -q '^status: fail$' "${H2}/review-gate.md" && grep -q '^high: 1$' "${H2}/review-gate.md"; then
+  pass "protected write adds security and its High finding blocks the gate"
+else
+  fail "protected security result: rc=${rc} calls=$(tr '\n' ' ' < "${LOG}")"
+fi
 
 # Failed first review + changed diff gets a single blocker-only verification pass;
-# its state counters restart for the new diff and an unchanged failed re-run caps.
+# its task-total counters reach the cap; another changed diff cannot buy a third pass.
 H3="${ROOT}/docs/handoff/dispatch-recheck"; mkdir -p "${H3}"
 D3="${H3}/review.diff"; printf 'diff --git a/c b/c\n+broken\n' > "${D3}"
 : > "${LOG}"
-run_review "${H3}" "${D3}" recheck FIXTURE_FAIL=1; rc=$?
+run_review "${H3}" "${D3}" recheck LEADV2_ROUTING_YAML="${ROUTING}" LEADV2_DISPATCH_LANE_WRITES=app/recheck.sh FIXTURE_FAIL=1; rc=$?
 [[ "${rc}" == 7 ]] || fail "first blocker review exited ${rc}"
 printf 'diff --git a/c b/c\n+fixed\n' > "${D3}"
-run_review "${H3}" "${D3}" recheck FIXTURE_FAIL=1; rc=$?
+run_review "${H3}" "${D3}" recheck LEADV2_ROUTING_YAML="${ROUTING}" LEADV2_DISPATCH_LANE_WRITES=app/recheck.sh FIXTURE_FAIL=1; rc=$?
 MISSION="${TMP}/mission-recheck.md"
 if [[ "${rc}" == 7 ]] && grep -q 'VERIFICATION-ONLY ROUND 2' "${MISSION}" && grep -q 'prior blocker' "${MISSION}" && ! grep -q 'Review this diff through FIVE lenses' "${MISSION}"; then
   pass "changed failed diff uses targeted blocker recheck"
 else
   fail "changed diff was not targeted (rc=${rc})"
 fi
-[[ "$(sed -n 's/^attempts=//p' "${H3}/.review-round.state")" == 1 ]] \
-  && pass "changed diff starts fresh review state" \
-  || fail "changed diff inherited attempts"
-run_review "${H3}" "${D3}" recheck FIXTURE_FAIL=1; rc=$?
-[[ "${rc}" == 8 ]] && pass "unchanged failed recheck is capped" || fail "recheck cap exited ${rc}"
+[[ "$(sed -n 's/^attempts=//p' "${H3}/.review-round.state")" == 2 ]] \
+  && pass "changed diff preserves task-total attempts" \
+  || fail "changed diff reset task-total attempts"
+printf 'diff --git a/c b/c\n+another fix\n' > "${D3}"
+run_review "${H3}" "${D3}" recheck LEADV2_ROUTING_YAML="${ROUTING}" LEADV2_DISPATCH_LANE_WRITES=app/recheck.sh FIXTURE_FAIL=1; rc=$?
+[[ "${rc}" == 8 ]] && pass "changed third diff is capped" || fail "changed-diff cap exited ${rc}"
 
 printf 'review-engine-v3-core: PASS=%s FAIL=%s\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]]

@@ -103,6 +103,19 @@ emit() { printf '[leadv2-review-run] %s %s\n' "${1:-}" "${2:-}" >&2; }
 
 WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 
+# Risk selection happens in this shell. resolve_review_pool_call runs in a
+# command substitution below, so sourcing there would not make its functions
+# available to the security-pass decision. Missing or unloadable signals are a
+# fail-closed condition: run the security pass rather than silently skip it.
+REVIEW_SIGNALS_STATUS="missing"
+_REVIEW_SIGNALS_LIB="${SCRIPT_DIR}/lib/leadv2-review-signals.sh"
+[[ -f "${_REVIEW_SIGNALS_LIB}" ]] || _REVIEW_SIGNALS_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-review-signals.sh"
+# shellcheck source=lib/leadv2-review-signals.sh
+# shellcheck disable=SC1090 # canonical fallback is intentionally runtime-selected
+if [[ -f "${_REVIEW_SIGNALS_LIB}" ]] && source "${_REVIEW_SIGNALS_LIB}" && declare -F leadv2_review_signals >/dev/null 2>&1; then
+  REVIEW_SIGNALS_STATUS="ready"
+fi
+
 # ---------------------------------------------------------------------------
 # 2. Pool resolution — lifted verbatim from leadv2-dispatch-product-close.sh
 #    (dispatch-00629379 / CODEX-GATE-01 item 6 / N-5 D5). See that file's own
@@ -696,7 +709,7 @@ _review_round_context() {
     # Legacy sidecars did not record attempts and are evidence snapshots, not
     # a consumed V3 recheck budget. LEADV2_REVIEW_MAX_ROUNDS=0 remains the
     # documented explicit unlimited override.
-    if [[ "${gate_status}" == "fail" && "${sidecar_attempts}" =~ ^[0-9]+$ && "${LEADV2_REVIEW_MAX_ROUNDS:-2}" != 0 ]]; then
+    if [[ "${gate_status}" == "fail" && "${sidecar_attempts}" =~ ^[1-9][0-9]*$ && "${LEADV2_REVIEW_MAX_ROUNDS:-2}" != 0 ]]; then
       _REVIEW_REPEAT_FAIL_BLOCK=1
     fi
     return 0
@@ -742,18 +755,11 @@ _review_roundcap_read() {
   (
     lv2_lock_wait "${_rcr_lockf}" "$(_review_state_lock_wait_s)" || true
     local state="${HANDOFF}/.review-round.state"
-    local attempts="" spawns="" legacy_round="" state_diff=""
+    local attempts="" spawns="" legacy_round=""
     if [[ -f "${state}" ]]; then
       attempts="$(sed -n 's/^attempts=//p' "${state}" | head -n1)"
       spawns="$(sed -n 's/^spawns=//p' "${state}" | head -n1)"
       legacy_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
-      state_diff="$(sed -n 's/^diff=//p' "${state}" | head -n1)"
-    fi
-    # Counters belong to one task/diff pair. A changed implementation gets a
-    # fresh budget; prior findings are retained separately by the snapshots.
-    if [[ "${REVIEW_DIFF_HASH_OK:-0}" -eq 1 && "${state_diff}" != "${diff_hash:0:8}" ]]; then
-      printf '0 0'
-      return 0
     fi
     [[ "${attempts}" =~ ^[0-9]+$ && "${attempts}" -le 99999 ]] || attempts=""
     [[ "${spawns}" =~ ^[0-9]+$ && "${spawns}" -le 99999 ]] || spawns=""
@@ -829,7 +835,7 @@ _review_state_write() {
   (
     lv2_lock_wait "${_rsw_lockf}" "$(_review_state_lock_wait_s)" || true
     local state="${HANDOFF}/.review-round.state"
-    local existing_round=0 existing_attempts=0 existing_spawns=0 existing_diff=""
+    local existing_round=0 existing_attempts=0 existing_spawns=0
     if [[ -f "${state}" ]]; then
       existing_round="$(sed -n 's/^round=//p' "${state}" | head -n1)"
       [[ "${existing_round}" =~ ^[0-9]+$ ]] || existing_round=0
@@ -837,12 +843,6 @@ _review_state_write() {
       [[ "${existing_attempts}" =~ ^[0-9]+$ ]] || existing_attempts=0
       existing_spawns="$(sed -n 's/^spawns=//p' "${state}" | head -n1)"
       [[ "${existing_spawns}" =~ ^[0-9]+$ ]] || existing_spawns=0
-      existing_diff="$(sed -n 's/^diff=//p' "${state}" | head -n1)"
-    fi
-    if [[ "${existing_diff}" != "${diff_hash:0:8}" ]]; then
-      existing_round=0
-      existing_attempts=0
-      existing_spawns=0
     fi
     local write_round="${REVIEW_ROUND}"
     [[ "${existing_round}" -gt "${write_round}" ]] && write_round="${existing_round}"
@@ -1007,12 +1007,17 @@ HACKDETECT_OUT="${HANDOFF}/review-hackdetect.md"
 HACKDETECT_ERR="${HANDOFF}/review-hackdetect.err"
 _engine_security_pass_enabled() {
   case "${LEADV2_REVIEW_SECURITY_PASS:-0}" in 1|true|TRUE|yes|YES) return 0 ;; esac
-  if ! declare -F leadv2_review_signals >/dev/null 2>&1; then
-    return 1
+  if [[ "${REVIEW_SIGNALS_STATUS:-missing}" != "ready" ]] || ! declare -F leadv2_review_signals >/dev/null 2>&1; then
+    return 0
   fi
   local routing_yaml="${LEADV2_ROUTING_YAML:-${ROOT}/.claude/ref/leadv2-routing.yaml}"
   local signals
-  signals="$(leadv2_review_signals "${routing_yaml}" "${WRITES_CSV}" 2>/dev/null || true)"
+  if ! signals="$(leadv2_review_signals "${routing_yaml}" "${WRITES_CSV}" 2>/dev/null)"; then
+    return 0
+  fi
+  if [[ "${signals}" != *'"protected_path":'* || "${signals}" != *'"safety_touched":'* ]]; then
+    return 0
+  fi
   [[ "${signals}" == *'"protected_path":true'* || "${signals}" == *'"safety_touched":true'* ]]
 }
 
@@ -1452,6 +1457,17 @@ grep -E '^FINDING:' "${HACKDETECT_OUT}" 2>/dev/null | while IFS= read -r _line; 
   [[ -n "${_sev}" ]] || continue
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "hackdetect" "${_sev}" "${_f}" "${_ln}" "${_dim}" "${_desc}" >> "${FINDINGS_RAW}"
 done
+
+# Security is an independent blocking review when escalated. Its Critical/High
+# findings must fail the terminal gate even if the ordinary critic passed.
+SECURITY_CRITICAL="$(awk -F'\t' '$1 == "hackdetect" && $2 == "Critical" { n++ } END { print n + 0 }' "${FINDINGS_RAW}" 2>/dev/null)"
+SECURITY_HIGH="$(awk -F'\t' '$1 == "hackdetect" && $2 == "High" { n++ } END { print n + 0 }' "${FINDINGS_RAW}" 2>/dev/null)"
+if [[ "${SECURITY_CRITICAL}" -gt 0 || "${SECURITY_HIGH}" -gt 0 ]]; then
+  FINDINGS_CRITICAL_TOTAL=$(( FINDINGS_CRITICAL_TOTAL + SECURITY_CRITICAL ))
+  FINDINGS_HIGH_TOTAL=$(( FINDINGS_HIGH_TOTAL + SECURITY_HIGH ))
+  verdict="FAIL"
+  emit decision "review_security_block task=${TASK} critical=${SECURITY_CRITICAL} high=${SECURITY_HIGH}"
+fi
 
 # Dedup by (file,line,severity,dimension) — keep the first arm to report it.
 FINDINGS_DEDUP="${HANDOFF}/.review-findings-dedup.tsv"
