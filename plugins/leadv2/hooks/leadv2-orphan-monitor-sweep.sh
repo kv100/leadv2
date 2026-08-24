@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# SWEEPER-LANE-SAFETY-01 audit (2026-08-24): this hook selects monitor process
+# groups only; it touches no worktree, branch, or file, so the lane-protection
+# gate is not applicable. Residual hazard: its age-only (>15m) process-group
+# SIGKILL can stop a legitimate long-running lane watcher (and pgroup siblings).
+# Track that monitor-liveness concern separately; do not change behaviour here.
 # SessionStart hook: kill orphaned zsh-monitor loops from dead claude sessions.
 # These come from `Monitor` calls running `until bash codex-task.sh status ... ; do sleep 30; done`
 # that don't get SIGTERM'd cleanly when the parent claude REPL exits.

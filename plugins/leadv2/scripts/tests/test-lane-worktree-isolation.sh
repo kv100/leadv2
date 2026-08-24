@@ -215,6 +215,15 @@ git -C "$SCRATCH3" commit -q -m seed
 export LEADV2_PROJECT_ROOT="$SCRATCH3"
 export LEADV2_LANE_WORKTREE_ERRF="$SCRATCH3/.lane-worktree.err"
 
+# SWEEPER-LANE-SAFETY-01: --sweep-dead consults the lane-protection gate, so
+# the fixture carries its own control plane (empty active.yaml — a MISSING one
+# fails closed and protects everything) and disables the 48h age probe (these
+# fixture worktrees are young by definition). --name ignores the gate.
+mkdir -p "${SCRATCH3}/state"
+printf 'sessions: []\n' > "${SCRATCH3}/state/active.yaml"
+export LEADV2_STATE_ROOT="${SCRATCH3}/state"
+export LEADV2_SWEEP_MIN_AGE_H=0
+
 # dead + empty -> must be swept
 dead_empty_dir="$(bash "$LANE_SH" ensure deadEmpty standard)"
 # dead + dirty -> must be kept

@@ -13,11 +13,27 @@
 # commits (i.e. every lane that did work) survived forever, even after its branch
 # merged. Dead code guarding against a problem it was written to solve.
 #
-# SAFETY — a worktree is removed only when ALL of these hold:
-#   * `git worktree remove` accepts it without --force, i.e. the tree is CLEAN.
-#     Uncommitted work always wins; we never pass --force from here.
+# SAFETY (SWEEPER-LANE-SAFETY-01) — a worktree is UNTOUCHABLE while ANY of
+#   * registered: its lane id appears in the active session registry
+#     (docs/leadv2/active.yaml via the control-plane resolver), any state;
+#   * arm-open: docs/handoff/dispatch-<id>/arm-registered exists with no TRUE
+#     terminal (landed|dead) row in the dispatch ledger;
+#   * live: a registered pid for the lane is alive;
+#   * young: the worktree dir is younger than LEADV2_SWEEP_MIN_AGE_H (48h);
+# holds — enforced by scripts/lib/leadv2-worktree-protected.sh BEFORE any
+# other criterion, fail-closed on any read error (nothing is swept when the
+# control plane cannot be read). "Merged and clean" is not sufficient: a lane
+# legitimately sits at base before its first commit and between fix rounds —
+# incidents b413968c (lane gutted to a lone docs/ dir by the discard that ran
+# before the removal decision) and 43ae4318 (lane deleted entirely by
+# --sweep-dead before its worker committed).
+#
+# Only when NONE of the four holds is the tree a sweep candidate, and then
+# additionally:
 #   * its branch is fully merged into the default branch, so the commits live on.
 #   * it is a lane worktree under .claude/worktrees/, never a hand-made checkout.
+#   * its only dirt is the plugin's own regenerated bookkeeping (see the
+#     orchestration-dirt exclusion below) — genuine uncommitted work always wins.
 # The branch itself is NOT deleted: `worktree remove` drops the checkout only, so
 # even a misjudgement costs a `git worktree add`, never a commit.
 #
@@ -47,6 +63,28 @@ KEPT_AHEAD=0
 KEPT_YOUNG=0
 declare -a KEPT_NAMES=()
 
+# SWEEPER-LANE-SAFETY-01: the shared lane-protection gate (one inode, both
+# unattended sweepers). Missing lib => stub returns rc 5 for every worktree:
+# an install that lost the lib sweeps NOTHING rather than sweeping blind.
+# "Standalone at SessionStart" means no dependency on REPO state, not on
+# plugin files — the lib lives in this plugin tree, next to the hook.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/../scripts/lib/leadv2-worktree-protected.sh" ]]; then
+  # shellcheck source=leadv2-worktree-protected.sh
+  source "${SCRIPT_DIR}/../scripts/lib/leadv2-worktree-protected.sh"
+else
+  lv2_wt_protect_prime() { :; }
+  lv2_worktree_protected() { LV2_WT_PROTECT_REASON="lib-missing"; return 5; }
+fi
+JOURNAL_BIN="${SCRIPT_DIR}/../scripts/leadv2-journal.sh"
+# The durable task journals live in the MAIN checkout — a SessionStart can
+# fire inside a lane worktree, and a journal written there dies with the tree.
+COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || printf '%s' "${ROOT}/.git")"
+JOURNAL_ROOT="$(dirname "${COMMON_DIR}")"
+_PROTECT_ERR_SHOWN=0
+
+lv2_wt_protect_prime "${ROOT}"
+
 # Only lane worktrees, and only ones that still exist on disk.
 while IFS= read -r wt; do
   [[ -n "${wt}" ]] || continue
@@ -55,6 +93,26 @@ while IFS= read -r wt; do
     *) continue ;;
   esac
   [[ -d "${wt}" ]] || continue
+
+  # SWEEPER-LANE-SAFETY-01: protection BEFORE any other criterion. rc 1-4
+  # (registered / arm-open / live pid / young) skip SILENTLY apart from one
+  # /tmp/leadv2-sweep.log line — a protected lane is the steady state, not a
+  # per-turn event. rc 5 is fail-closed: one stderr line per pass, and this
+  # worktree survives to be re-probed next session.
+  if lv2_worktree_protected "${ROOT}" "${wt}"; then
+    :
+  else
+    prc=$?
+    printf '%s|merged-worktree-sweep|protected id=%s rc=%d reason=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "${wt}")" "${prc}" \
+      "${LV2_WT_PROTECT_REASON:-?}" >> /tmp/leadv2-sweep.log 2>/dev/null || true
+    if [[ "${prc}" == "5" && "${_PROTECT_ERR_SHOWN}" == "0" ]]; then
+      printf '[leadv2-merged-worktree-sweep] protected(read-error) %s — sweeping nothing this pass (%s)\n' \
+        "$(basename "${wt}")" "${LV2_WT_PROTECT_REASON:-unreadable}" >&2
+      _PROTECT_ERR_SHOWN=1
+    fi
+    continue
+  fi
 
   # Unmerged work stays, and is named so a human can decide.
   ahead="$(git -C "${wt}" rev-list --count "${BASE}..HEAD" 2>/dev/null || echo 0)"
@@ -118,16 +176,26 @@ while IFS= read -r wt; do
     continue
   fi
 
-  # Merged, and nothing dirty but the plugin's own bookkeeping. `worktree remove`
-  # would still refuse on that bookkeeping, so discard exactly those paths first --
-  # they are regenerated, and the branch (with every commit) is untouched either way.
-  git -C "${wt}" status --porcelain 2>/dev/null | grep -E "${_MW_ORCH_RE}" | \
-    sed -E 's/^...//; s/^"//; s/"$//' | while IFS= read -r f; do
-      [[ -n "${f}" ]] && git -C "${wt}" checkout -- "${f}" 2>/dev/null || rm -f "${wt}/${f}" 2>/dev/null
-    done
-
-  if git worktree remove "${wt}" >/dev/null 2>&1; then
+  # Merged, protected-none, and nothing dirty but the plugin's own regenerated
+  # bookkeeping. `worktree remove --force` discards exactly that bookkeeping
+  # and removes the tree in ONE atomic git operation. The old two-step
+  # (checkout --/rm -f the orchestration paths, THEN attempt removal) mutated
+  # the tree BEFORE the removal decision was made, and any removal refusal
+  # left a gutted husk behind — incident b413968c, a lane reduced to a single
+  # docs/ dir. A refused removal now leaves the tree byte-identical. --force
+  # here is safe for the same reason the explicit discard was: every gate
+  # above (protection, ahead, real-dirt) has already said "removable", so the
+  # only thing being forced past is the regenerated bookkeeping itself.
+  if git worktree remove --force "${wt}" >/dev/null 2>&1; then
     REMOVED=$((REMOVED + 1))
+    # Every actual sweep journals why (design deliverable 2: both prior
+    # incidents had to be diagnosed forensically). Journal failure never
+    # aborts the sweep, and never undoes a removal git already performed.
+    _id="$(basename "${wt}")"
+    if [[ -f "${JOURNAL_BIN}" ]]; then
+      CLAUDE_PROJECT_ROOT="${JOURNAL_ROOT}" bash "${JOURNAL_BIN}" append "${_id}" note \
+        "worktree_swept id=${_id} reason=merged-clean" >/dev/null 2>&1 || true
+    fi
   else
     KEPT_DIRTY=$((KEPT_DIRTY + 1)); KEPT_NAMES+=("$(basename "${wt}") (dirty)")
   fi

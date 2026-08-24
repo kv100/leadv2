@@ -70,6 +70,12 @@ _backdate_lane_meta() { # <dir>
 }
 
 # A repo with one lane worktree, merged or not, dirty however the case wants.
+# SWEEPER-LANE-SAFETY-01: the hook now consults the lane-protection gate, so
+# every fixture carries a control plane (empty active.yaml — a MISSING one
+# fails closed and protects everything). The age param (SWEEP-KILLS-NEWBORN-
+# LANE-01) backdates lane meta so the newborn grace window does not mask the
+# dirt-classification behaviour under test. Protection itself has its own
+# test: test-worktree-lane-safety.sh.
 _mk() { # <dir> <merged:yes|no> <dirt:orch|real|none> <age:old|new (default old)>
   local d="$1" merged="$2" dirt="$3" age="${4:-old}"
   mkdir -p "$d/docs/leadv2" && git -C "$d" init -q -b main
@@ -88,12 +94,14 @@ _mk() { # <dir> <merged:yes|no> <dirt:orch|real|none> <age:old|new (default old)
     real) echo "uncommitted deliverable" > "$d/.claude/worktrees/lane/SAMPLES.md" ;;
   esac
   [[ "$age" == "old" ]] && _backdate_lane_meta "$d"
+  mkdir -p "$d/state" && printf 'sessions: []\n' > "$d/state/active.yaml"
   return 0
 }
 
 _swept() { # <hook> <repo> -> 0 if the lane is gone
   local hook="$1" repo="$2"
-  ( cd "$repo" && CLAUDE_PROJECT_DIR="$repo" bash "$hook" >/dev/null 2>&1 )
+  ( cd "$repo" && CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$repo/state" \
+      LEADV2_SWEEP_MIN_AGE_H=0 bash "$hook" >/dev/null 2>&1 )
   [[ ! -d "$repo/.claude/worktrees/lane" ]]
 }
 
@@ -130,7 +138,9 @@ case_newborn_kept() { # <hook>
   _mk "$repo" yes orch new || return 2
   out="$( ( cd "$repo" && CLAUDE_PROJECT_DIR="$repo" bash "$1" ) 2>&1 )"
   [[ -d "$repo/.claude/worktrees/lane" ]] || return 1
-  echo "$out" | grep -qi "young" || return 1
+  # Post-SWEEPER-LANE-SAFETY-01 the keep can be reported either by the newborn
+  # age message ("young") or by the lane-protection gate ("protected").
+  echo "$out" | grep -qiE "young|protect" || return 1
   return 0
 }
 
