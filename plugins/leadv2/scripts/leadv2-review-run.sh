@@ -237,6 +237,37 @@ PY
   return 0
 }
 
+# The Claude CLI's --output-format json writes an envelope whose human answer is
+# in `result`.  glm-coder deliberately preserves that envelope for its generic
+# callers, but a review artifact must expose the review contract at top level so
+# the gate can parse REVIEW_VERDICT/REVIEW_FINDINGS.  Materialize only a valid
+# successful envelope; leave malformed or non-JSON output untouched for the
+# existing body-lost guard to fail closed.
+materialize_glm_review_body() { # <review_out>
+  local rfile="$1" body
+  command -v python3 >/dev/null 2>&1 || return 1
+  body="$(python3 - "$rfile" 2>/dev/null <<'PY'
+import json, sys
+try:
+    raw = open(sys.argv[1], encoding="utf-8").read().splitlines()
+except OSError:
+    raise SystemExit(1)
+for line in reversed(raw):
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    result = obj.get("result")
+    if obj.get("is_error") is False and isinstance(result, str) and result.strip():
+        print(result)
+        break
+PY
+  )"
+  [[ -n "${body}" ]] || return 1
+  printf '%s\n' "${body}" > "${rfile}.tmp"
+  mv "${rfile}.tmp" "${rfile}"
+}
+
 parse_review_verdict() { # review-file
   local review_file="$1"
   PARSED_VERDICT=""
@@ -375,6 +406,9 @@ run_reviewer_arm() { # <arm>
     if [[ -x "${glm_bin}" ]]; then
       bash "${glm_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
       review_rc=$?
+      if [[ ${review_rc} -eq 0 ]]; then
+        materialize_glm_review_body "${review_out}" || true
+      fi
     fi
     if [[ ${review_rc} -eq 75 && -x "${omp_bin}" ]]; then
       omp_run_id="$(bash "${omp_bin}" task "$(cat "${mission_file}")" --dir "${ROOT}" 2>> "${review_err}")"
@@ -1028,7 +1062,9 @@ _engine_hack_detect_job() {
     printf 'Report each as one line, exact format:\nFINDING: severity=<Critical|High|Medium|Low> file=<path> line=<n> dimension=hack desc=<one line>\n'
     printf 'Emit nothing else.\n'
   } > "${mission}"
-  PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role hack-detect --model haiku --task-id "dispatch-${TASK}-review" --mission-file "${mission}" --wait \
+  # The hack pass shares the critic role implementation but never its artifact
+  # namespace: claude-subsession keys stream/cost files by task id plus role.
+  PROJECT_ROOT="${ROOT}" bash "${LEADV2_DISPATCH_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}" --role critic --model haiku --task-id "dispatch-${TASK}-review-hackdetect" --mission-file "${mission}" --wait \
     > "${HACKDETECT_OUT}" 2> "${HACKDETECT_ERR}" || true
 }
 

@@ -30,10 +30,10 @@ PY
 chmod +x "${TMP}/resolver.py"
 cat > "${TMP}/architect.sh" <<'SH'
 #!/usr/bin/env bash
-role=""; mission=""
-while [[ $# -gt 0 ]]; do case "$1" in --role) role="$2"; shift 2 ;; --mission-file) mission="$2"; shift 2 ;; *) shift ;; esac; done
-printf '%s\n' "$role" >> "${CALL_LOG}"
-if [[ "$role" == hack-detect ]]; then
+role=""; mission=""; task_id=""
+while [[ $# -gt 0 ]]; do case "$1" in --role) role="$2"; shift 2 ;; --mission-file) mission="$2"; shift 2 ;; --task-id) task_id="$2"; shift 2 ;; *) shift ;; esac; done
+printf '%s:%s\n' "$role" "$task_id" >> "${CALL_LOG}"
+if [[ "$role" == hack-detect || ( "$role" == critic && -n "$mission" && "$(head -n 1 "$mission")" == 'Run hack-detection on the diff at '* ) ]]; then
   [[ "${FIXTURE_SECURITY_HIGH:-0}" == 1 ]] && printf 'FINDING: severity=High file=secure/policy.sh line=7 dimension=hack desc=unsafe bypass\n'
   exit 0
 fi
@@ -61,7 +61,7 @@ H1="${ROOT}/docs/handoff/dispatch-ordinary"; mkdir -p "${H1}"
 D1="${H1}/review.diff"; printf 'diff --git a/a b/a\n+x\n' > "${D1}"
 : > "${LOG}"
 run_review "${H1}" "${D1}" ordinary LEADV2_ROUTING_YAML="${ROUTING}" LEADV2_DISPATCH_LANE_WRITES=app/ordinary.sh
-[[ "$(grep -cx critic "${LOG}" || true)" == 1 && "$(grep -cx hack-detect "${LOG}" || true)" == 0 ]] \
+[[ "$(grep -cx 'critic:dispatch-ordinary-review' "${LOG}" || true)" == 1 ]] \
   && pass "ordinary diff calls one reviewer and no security pass" \
   || fail "ordinary call count: $(tr '\n' ' ' < "${LOG}")"
 
@@ -70,7 +70,7 @@ H2="${ROOT}/docs/handoff/dispatch-risk"; mkdir -p "${H2}"
 D2="${H2}/review.diff"; printf 'diff --git a/b b/b\n+y\n' > "${D2}"
 : > "${LOG}"
 run_review "${H2}" "${D2}" risk LEADV2_ROUTING_YAML="${ROUTING}" LEADV2_DISPATCH_LANE_WRITES=secure/policy.sh FIXTURE_SECURITY_HIGH=1; rc=$?
-if [[ "${rc}" == 7 && "$(grep -cx critic "${LOG}" || true)" == 1 && "$(grep -cx hack-detect "${LOG}" || true)" == 1 ]] && grep -q '^status: fail$' "${H2}/review-gate.md" && grep -q '^high: 1$' "${H2}/review-gate.md"; then
+if [[ "${rc}" == 7 && "$(grep -cx 'critic:dispatch-risk-review' "${LOG}" || true)" == 1 && "$(grep -cx 'critic:dispatch-risk-review-hackdetect' "${LOG}" || true)" == 1 ]] && grep -q '^status: fail$' "${H2}/review-gate.md" && grep -q '^high: 1$' "${H2}/review-gate.md"; then
   pass "protected write adds security and its High finding blocks the gate"
 else
   fail "protected security result: rc=${rc} calls=$(tr '\n' ' ' < "${LOG}")"

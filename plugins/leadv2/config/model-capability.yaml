@@ -154,28 +154,21 @@ codex-top:
   asof: "2026-07-31"
 
 glm:
-  underlying_model: glm-5.2
-  coding_score: 62.1
-  score_basis: swebench-pro
+  underlying_model: glm-5.3
+  coding_score: null
+  score_basis: null
   agentic_score: null
   agentic_basis: null
   speed_class: medium
-  context_k: 1000
+  context_k: null
   cost_class: cheap
   confidence: low
   notes: >
-    coding_score (SWE-bench Pro 62.1%, beating GPT-5.5's Pro score) is vendor (Zhipu) +
-    aggregator only — no independent-leaderboard confirmation found on vals.ai or
-    Artificial Analysis. No Terminal-Bench number found; agentic_score left null. context_k
-    =1000 (1M) IS high confidence: confirmed independently across OpenRouter, Requesty, and
-    multiple aggregators, and matches this project's pre-existing memory
-    (reference_glm_5_2_1m_context). cost_class=cheap reflects our GLM-FIRST-01 subscription
-    arrangement (primary code writer, ~1% of quota used per prior memory), not Zhipu's
-    list price ($1.40/$4.40 per 1M direct, cheaper still via OpenRouter at $0.60/$1.25).
-  sources:
-    - https://groundy.com/articles/glm-5-2-benchmarks-what-62-1-swe-bench-pro-and-99-2-aime-actually-mean/
-    - https://www.requesty.ai/models/zai/glm-5.2
-  asof: "2026-07-31"
+    UNVERIFIED: benchmark, context, and price figures were collected for glm-5.2
+    and must not be reused for glm-5.3. The only current capability evidence is
+    the live endpoint acceptance probe in docs/evidence/glm-5.3-probe.md.
+  sources: []
+  asof: "2026-08-25"
 
 kimi:
   underlying_model: kimi-k3

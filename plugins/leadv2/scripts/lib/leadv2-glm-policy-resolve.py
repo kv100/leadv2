@@ -102,6 +102,10 @@ def extract_glm_policy_block(routing_yaml_text: str) -> dict:
     policy shape regardless of which extractor produced it."""
     exc_ids, opus_kinds, codex_kinds = [], [], []
     codex_default_tier = "standard"
+    # Tenant routing is allowed to omit the global glm_policy block.  The
+    # optional live_balance parser below must then see an empty scope, rather
+    # than raising before the review-pool fallback can select a reviewer.
+    block = ""
     # MAJOR fix (resolver:55-60): gate stays None unless `codex_quota_gate:`
     # is actually present in the yaml -- repos/configs that never opted into
     # T-q get exact old v1 behaviour (no thresholds/spill/review-exclusion

@@ -85,11 +85,11 @@ fi
 TEST_QUOTA_JSON='{"codex":{"windows":[{"used_percent":20}]},"anthropic":{"accounts":[{"five_hour_pct":50,"seven_day_pct":40}]}}'
 out="$(route --class Standard --provider auto)"
 assert_fields "routine Standard -> GLM (GLM-FIRST-01)" "$out" \
-  'provider=glm' 'model=glm-5.2' 'effort=medium'
+  'provider=glm' 'model=glm-5.3' 'effort=medium'
 
 out="$(route --class Light --provider auto)"
 assert_fields "Light -> GLM (GLM-FIRST-01)" "$out" \
-  'provider=glm' 'model=glm-5.2' 'effort=low'
+  'provider=glm' 'model=glm-5.3' 'effort=low'
 
 out="$(route --class Heavy --provider auto)"
 assert_fields "Heavy -> Claude Opus" "$out" \

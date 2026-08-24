@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# glm-coder.sh v2 — headless GLM-5.2 code-worker wrapper + background workbench
+# glm-coder.sh v2 — headless GLM-5.3 code-worker wrapper + background workbench
+# Live acceptance evidence: plugins/leadv2/docs/evidence/glm-5.3-probe.md.
 # (Z.AI Coding Plan, Anthropic-compatible endpoint).
 #
 # v1 surface (unchanged): `run` blocks until GLM finishes (v1 exit code, out-file
@@ -257,8 +258,8 @@ run_claude() {
     cd "${cwd_dir}"
     export ANTHROPIC_BASE_URL="${ZAI_BASE_URL}"
     export ANTHROPIC_AUTH_TOKEN="${ZAI_AUTH_TOKEN}"
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.2"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.2"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.3"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.3"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
     export DISABLE_MODEL_AVAILABILITY_CHECK=1
     export API_TIMEOUT_MS=3000000
@@ -432,7 +433,7 @@ repo: ${repo}
 cwd: ${cwd_dir}
 prompt_file: ${run_dir}/prompt.txt
 endpoint: ${ZAI_BASE_URL}
-model: glm-5.2
+model: glm-5.3
 max_turns: ${max_turns}
 timeout: ${timeout_s}
 turn_limit: ${GLM_TURN_LIMIT}
@@ -1011,8 +1012,8 @@ cmd_run_child() {
   # so redact_stream()'s os.environ.get("ZAI_AUTH_TOKEN") below actually sees it —
   # otherwise stderr redaction is dead code (R5 finding, GLM-ROUTING-V2-01 review).
   export ZAI_AUTH_TOKEN
-  export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.2"
-  export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.2"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.3"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.3"
   export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
   export DISABLE_MODEL_AVAILABILITY_CHECK=1
   export API_TIMEOUT_MS=3000000

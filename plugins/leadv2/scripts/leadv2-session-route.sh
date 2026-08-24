@@ -61,9 +61,10 @@ CLAUDE_STANDARD_EFFORT="medium"
 CLAUDE_HEAVY_MODEL="opus"
 CLAUDE_HEAVY_EFFORT="high"
 GLM_ENABLED="true"
-GLM_LIGHT_MODEL="glm-5.2"
+# Live acceptance evidence: plugins/leadv2/docs/evidence/glm-5.3-probe.md.
+GLM_LIGHT_MODEL="glm-5.3"
 GLM_LIGHT_EFFORT="low"
-GLM_STANDARD_MODEL="glm-5.2"
+GLM_STANDARD_MODEL="glm-5.3"
 GLM_STANDARD_EFFORT="medium"
 # KIMI-CHANNEL-01: middle rung between glm and codex. Never wider than glm's
 # own eligibility (Light/Standard only, HIGH_RISK_TAGS-blind is intentional --

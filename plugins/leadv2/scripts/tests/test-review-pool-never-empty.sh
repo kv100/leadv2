@@ -200,6 +200,24 @@ else
   fail "T4: routing-yaml self-heal" "reviewer=${reviewer4} pool=${pool4} out=${out4}"
 fi
 
+# ── T4b: existing tenant YAML without glm_policy still has a review pool ───────
+tenant_no_policy="${SUITE_TMP}/t4b/tenant-routing.yaml"
+mkdir -p "${SUITE_TMP}/t4b"
+cat > "${tenant_no_policy}" <<'YAML'
+phases:
+  review:
+    standard:
+      default: codex
+YAML
+out4b="$(call_resolver "${SUITE_TMP}/t4b/lockout" unknown sonnet "${tenant_no_policy}")"
+reviewer4b="$(extract reviewer "${out4b}")"
+pool4b="$(extract pool "${out4b}")"
+if [[ -n "${pool4b}" ]] && [[ "${out4b}" != *"Traceback"* ]]; then
+  pass "T4b: tenant without glm_policy emits a pool without a resolver crash"
+else
+  fail "T4b: tenant without glm_policy" "reviewer=${reviewer4b} pool=${pool4b} out=${out4b}"
+fi
+
 # ── T5: author not in the rank table => pool non-empty, reviewer != author ─────────
 lockout5="${SUITE_TMP}/t5/lockout"
 write_lockout "${lockout5}" codex 3600

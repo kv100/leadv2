@@ -29,7 +29,8 @@ if [[ -z "$TASK_ID" ]]; then
 fi
 
 GLM_CODER_BIN="${LEADV2_GLM_CODER_BIN:-$SCRIPT_DIR/glm-coder.sh}"
-MODEL="${LEADV2_LEAD_MODEL:-glm-5.2}"
+# Live acceptance evidence: plugins/leadv2/docs/evidence/glm-5.3-probe.md.
+MODEL="${LEADV2_LEAD_MODEL:-glm-5.3}"
 EFFORT="${LEADV2_LEAD_EFFORT:-medium}"
 MAX_ATTEMPTS="${LEADV2_RUNNER_MAX_ATTEMPTS:-6}"
 RETRY_SLEEP_S="${LEADV2_RUNNER_RETRY_SLEEP_S:-5}"

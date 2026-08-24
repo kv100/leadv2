@@ -49,8 +49,9 @@ router_v2:
   # from dispatch_ladder, not from this list.
   arms:
     - id: glm
+      # Live acceptance evidence: plugins/leadv2/docs/evidence/glm-5.3-probe.md.
       channel: glm-coder.sh
-      model: glm-5.2
+      model: glm-5.3
       bucket: glm
       reserve_threshold: 2
       reserve_allow: [review]
@@ -125,7 +126,7 @@ router:
   dispatch_ladder:
     - id: glm
       provider: glm
-      model: glm-5.2
+      model: glm-5.3
       when: [all]
       effort: standard
     # RETIRED as a build arm (founder order 2026-08-04 «Кими убрать», executed as

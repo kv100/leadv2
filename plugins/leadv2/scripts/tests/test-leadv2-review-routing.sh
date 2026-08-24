@@ -71,7 +71,10 @@ cat > "$TMP/glm.sh" <<'SH'
 #!/usr/bin/env bash
 out=""
 while [[ $# -gt 0 ]]; do case "$1" in --out) out="$2"; shift 2 ;; *) shift ;; esac; done
-printf 'REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\n' > "$out"
+# Match the real glm-coder transport: its generic run path persists Claude's
+# JSON envelope, while the review engine must materialize `result` before
+# parsing its verdict contract.
+printf '%s\n' '{"is_error":false,"result":"REVIEW_VERDICT: PASS\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\nClean."}' > "$out"
 SH
 chmod +x "$TMP/glm.sh"
 
