@@ -7,11 +7,15 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/lv2guard-pretooluse.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/leadv2-native-pulse.sh\""
           }
         ]
       }
     ],
-    "SubagentStart": [{"matcher":".*","hooks":[{"type":"command","command":"bash \"$CLAUDE_PLUGIN_ROOT/hooks/leadv2-subagent-lifecycle.sh\" start"}]}],
-    "SubagentStop": [{"matcher":".*","hooks":[{"type":"command","command":"bash \"$CLAUDE_PLUGIN_ROOT/hooks/leadv2-subagent-lifecycle.sh\" stop"}]}]
+    "SubagentStart": [{"matcher":".*","hooks":[{"type":"command","command":"bash \"$CLAUDE_PLUGIN_ROOT/hooks/leadv2-subagent-lifecycle.sh\" start"},{"type":"command","command":"bash \"$CLAUDE_PLUGIN_ROOT/hooks/leadv2-native-pulse.sh\" --force"}]}],
+    "SubagentStop": [{"matcher":".*","hooks":[{"type":"command","command":"bash \"$CLAUDE_PLUGIN_ROOT/hooks/leadv2-subagent-lifecycle.sh\" stop"},{"type":"command","command":"bash \"$CLAUDE_PLUGIN_ROOT/hooks/leadv2-native-pulse.sh\" --force"}]}]
   }
 }

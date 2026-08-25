@@ -53,6 +53,11 @@ Re-run any time; unchanged files are reported `unchanged`, changed ones backed u
 `*.bak` first. On the plugin path the installer skips the config.toml repowise block
 (the plugin's `.mcp.json` owns that declaration; two servers would race for one name).
 
+After any plugin-content change (hooks, skills, manifest), the plugin version in
+`.codex-plugin/plugin.json` is bumped as a cache-bust — an unchanged version is a
+known no-op on directory-source marketplaces — and the two install commands above
+are re-run, then Codex is restarted: a running session never reloads hooks.
+
 ## Gate status: enforced-by-the-plugin vs still-prose-only
 
 | Gate | Status | Mechanism |
@@ -113,8 +118,19 @@ agent for the same lane rather than treating a chat fork as a worker.
 
 While work is active, emit a compact milestone pulse when state changes and at
 least once per 60 seconds. A pulse reports `IN PROGRESS` and `NEXT`; it neither
-sets WIP nor asks for technical decisions. Lifecycle hooks retain the machine
-pulse evidence; chat carries only the compact milestone.
+sets WIP nor asks for technical decisions. The native pulse hook
+(`leadv2-native-pulse.sh`, registered in the plugin's `hooks.json` as the
+second PreToolUse and SubagentStart/Stop entry) appends one dated line per
+state change — and at most one per 60 seconds of lead activity — to
+`.native-pulse/pulse.log`; that log is the machine pulse audit trail. Codex
+exposes no idle/tick hook, so while the lead is idle (no tool call, no
+subagent transition) no pulse is emitted: the cadence bounds lead activity,
+not wall clock, and a gap in `pulse.log` is a gap in lead activity, not a
+lost pulse. Chat injection of the pulse line ships off by default
+(`LEADV2_CODEX_PULSE_INJECT=0`): the step-0 probe could not confirm Codex
+renders hook-injected additionalContext — see
+`docs/evidence/codex-native-pulse-probe.md`. Chat carries only the compact
+milestone.
 
 ## Dispatch door
 

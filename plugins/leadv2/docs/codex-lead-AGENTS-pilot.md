@@ -13,8 +13,13 @@ This is a pilot-scoped, additive brief. It supplements persona-engine's existing
 - Lead delegates application-code edits. It owns routing, state, evidence, and decisions.
 - Speak Russian with the founder; write documents in English.
 - While work is active, chat emits only a compact `IN PROGRESS` / `NEXT` update
-  on a state change or at most 60 seconds after the previous update. Lifecycle hooks record start/stop evidence; `list_agents` supplies live state. This is
-  a chat update rule, not a claim that a 60-second machine timer is shipped.
+  on a state change or at most 60 seconds after the previous update. Lifecycle hooks record start/stop evidence; `list_agents` supplies live state;
+  the native pulse hook (`leadv2-native-pulse.sh`) appends one dated pulse
+  line per state change to `.native-pulse/pulse.log` — the pulse audit trail.
+  Codex exposes no idle/tick hook, so while the lead is idle (no tool call, no
+  subagent transition) no pulse is emitted: the cadence is at most one pulse
+  per 60 seconds of lead activity, never a wall-clock timer, and a gap in
+  `pulse.log` is a gap in lead activity, not a lost pulse.
 
 ## Dispatch door
 

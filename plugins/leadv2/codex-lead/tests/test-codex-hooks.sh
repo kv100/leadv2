@@ -42,4 +42,13 @@ import json,pathlib,sys
 ids={json.loads(p.read_text())['agent_id'] for p in pathlib.Path(sys.argv[1]).glob('*.json')}; assert ids=={'a-'+str(i) for i in range(33,65)}
 PY
 [[ $? -eq 0 ]] && pass 'concurrent stops remove only own entries' || fail 'concurrent stops'
+# CODEX-PULSE-HOOK-02: the pulse hook must never emit a permission decision
+# for any payload (including malformed), shipped default INJECT and INJECT=1.
+PULSE="$ROOT/marketplace/plugins/leadv2/hooks/leadv2-native-pulse.sh"; PST="$(mktemp -d)"
+for p in '{"tool_name":"shell","tool_input":{"command":"ls"}}' '{"tool_name":"spawn_agent","tool_input":{"task_name":"triage"}}' '{broken' ''; do
+  o="$(printf '%s' "$p" | LEADV2_CODEX_PULSE_STATE="$PST" LEADV2_CODEX_PULSE_MIN_SECONDS=0 bash "$PULSE")"; r=$?
+  [[ $r -eq 0 && "$o" != *permissionDecision* ]] && pass "pulse emits no permission decision ($p)" || fail "pulse decision leak rc=$r out=$o"
+  o="$(printf '%s' "$p" | LEADV2_CODEX_PULSE_STATE="$PST" LEADV2_CODEX_PULSE_MIN_SECONDS=0 LEADV2_CODEX_PULSE_INJECT=1 bash "$PULSE" --force)"; r=$?
+  [[ $r -eq 0 && "$o" != *permissionDecision* ]] && pass "pulse emits no permission decision with INJECT=1 ($p)" || fail "pulse INJECT=1 decision leak rc=$r out=$o"
+done
 printf '[SUMMARY] pass=%d fail=%d\n' "$PASS" "$FAIL"; [[ $FAIL -eq 0 ]]

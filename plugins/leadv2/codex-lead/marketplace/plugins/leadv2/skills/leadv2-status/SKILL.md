@@ -21,4 +21,10 @@ Then reconcile it with external leadv2 sources:
 Use two columns: `IN PROGRESS` | `NEXT`. Reconcile native agent state, the
 native plan, and external lane/task facts without duplicate rows or invented
 state. While work is active, chat emits this compact table on a state change or
-at most 60 seconds after the prior update. Lifecycle hooks record start/stop evidence; `list_agents` supplies live state. Do not claim a 60-second machine timer.
+at most 60 seconds after the prior update. Lifecycle hooks record start/stop evidence; `list_agents` supplies live state. The native pulse hook
+(`leadv2-native-pulse.sh`) appends one dated pulse line per state change to
+`.native-pulse/pulse.log` — read that log as the pulse audit trail. Codex
+exposes no idle/tick hook, so while the lead is idle (no tool call, no
+subagent transition) no pulse is emitted: the cadence is at most one pulse per
+60 seconds of lead activity, never a wall-clock timer; a gap in `pulse.log`
+is a gap in lead activity, not a lost pulse.

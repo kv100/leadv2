@@ -1,6 +1,6 @@
 {
   "name": "leadv2",
-  "version": "1.0.0+codex.20260824225325",
+  "version": "1.0.0+codex.20260825013000",
   "description": "leadv2 Codex-lead floor and workflow pack: lv2guard PreToolUse deny floor (enforced), leadv2 skills (dispatch/review/status/close), and the repowise MCP launcher.",
   "author": {
     "name": "leadv2"
