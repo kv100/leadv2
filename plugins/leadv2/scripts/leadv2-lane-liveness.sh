@@ -161,14 +161,23 @@ def ps_lstart(value):
     except Exception:
         return ""
 
-def pid_state(value, birth, identity_on):
+def pid_state(value, birth, identity_on, lane_dead_at=None):
     """(state, identity) — state in ("dead", "alive_verified", "alive_unverified"),
     identity in ("verified", "unverified", "mismatch").
 
     Degrade-to-unverified rules (design §3.1/§3.3): an absent, malformed, or
     unobservable birth string NEVER kills a lane — only a well-formed recorded
     birth that a live `ps` observation contradicts is a mismatch (recycled pid,
-    failure direction false-alive-safe everywhere else)."""
+    failure direction false-alive-safe everywhere else).
+
+    T8b: lane_dead_at is the SAME row's active.yaml `dead_at` field, stamped
+    only by lib/leadv2-lane-state.sh's lane_reconcile/lane_deregister (the
+    authoritative lane-state module, run from the dispatcher's hot loop and
+    the sweeper) -- never derived here. When set it is a definitive, already-
+    corroborated dead verdict, so it short-circuits the bare os.kill probe
+    below rather than duplicating the module's own birth-time check."""
+    if lane_dead_at:
+        return ("dead", "verified")
     try:
         pid = int(value)
     except (TypeError, ValueError):
@@ -511,11 +520,11 @@ def resolve(tid):
         if _wpid is not None:
             row["pid"] = _wpid
             row["pid_source"] = "worker"
-            _state, _identity = pid_state(_wpid, session.get("worker_pid_birth"), pid_identity_on)
+            _state, _identity = pid_state(_wpid, session.get("worker_pid_birth"), pid_identity_on, session.get("dead_at"))
         else:
             row["pid"] = session.get("pid")
             row["pid_source"] = "lead_durable" if _role == "lead_durable" else "legacy"
-            _state, _identity = pid_state(row["pid"], session.get("pid_birth"), pid_identity_on)
+            _state, _identity = pid_state(row["pid"], session.get("pid_birth"), pid_identity_on, session.get("dead_at"))
         row["pid_alive"] = _state != "dead"
         row["pid_identity"] = _identity
         # SD-LEDGER-SWEEP-HARDEN-01: leadv2_active_set_attempt() stamps this once

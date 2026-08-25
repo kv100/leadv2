@@ -182,6 +182,18 @@ fi
 # (process death or normal return) automatically by the OS.
 printf -- '%s\n' "$$" > "$PID_FILE"
 
+# ── Lane-state authority (T8b) — this bash process holds the flock for the
+# task's whole retry lifetime, so it IS the lane; adopt this pid so liveness
+# no longer depends on the dispatcher's (possibly already-exited) pid, and
+# deregister on any exit path so a dead runner never leaves a live-looking row.
+_LANE_STATE_SH="${SCRIPT_DIR}/lib/leadv2-lane-state.sh"
+[[ -f "${_LANE_STATE_SH}" ]] && source "${_LANE_STATE_SH}"
+_LANE_LEAD_SESSION_ID="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-${CLAUDE_SESSION_ID:-direct}}}"
+if declare -F lane_adopt_pid >/dev/null 2>&1; then
+  lane_adopt_pid "${TASK_ID}" "${_LANE_LEAD_SESSION_ID}" "${PROJECT_ROOT}" "spawning" "$$" >/dev/null 2>&1 || true
+  trap 'declare -F lane_deregister >/dev/null 2>&1 && lane_deregister "${TASK_ID}" "session_runner_exit" >/dev/null 2>&1 || true' EXIT
+fi
+
 # ── Stable session id across resumes ────────────────────────────────────────
 if [[ -f "$SESSION_ID_FILE" ]]; then
   SESSION_ID="$(cat "$SESSION_ID_FILE")"
