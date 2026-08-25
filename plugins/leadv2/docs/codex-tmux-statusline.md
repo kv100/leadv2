@@ -57,7 +57,7 @@ sentinel-delimited block:
 
 ```
 # BEGIN leadv2 tmux statusline (managed by plugins/leadv2/codex-lead/statusline/install-tmux-statusline.sh)
-source-file '/home/you/.config/leadv2/tmux-statusline.conf'
+source-file "/home/you/.config/leadv2/tmux-statusline.conf"
 # END leadv2 tmux statusline
 ```
 
@@ -65,7 +65,8 @@ Everything outside the block is preserved byte-identically; re-running the
 installer replaces only the block. Paths with spaces are safe: the generated
 conf quotes the `#()` payload (`'#("/path with spaces/leadv2-tmux-status.sh")'`
 — tmux hands the content to `sh`, the double quotes keep it one word), and the
-`source-file` path is single-quoted. No eval anywhere.
+`source-file` path is tmux-double-quoted and escaped, so spaces and
+apostrophes in local paths work. No eval anywhere.
 
 ### Note on status-right
 

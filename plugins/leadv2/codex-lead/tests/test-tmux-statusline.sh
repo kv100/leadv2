@@ -141,7 +141,7 @@ grep -qF '# user header' "$C_CONF" && grep -qF 'set -g prefix C-a' "$C_CONF" \
 COUNT="$(grep -cF 'BEGIN leadv2 tmux statusline' "$C_CONF")"
 [[ "$COUNT" == "1" ]] && pass "C3 managed block present exactly once" \
   || fail "C3 managed block present exactly once (count=$COUNT)"
-grep -qF "source-file '$C_HOME/.config/leadv2/tmux-statusline.conf'" "$C_CONF" \
+grep -qF "source-file \"$C_HOME/.config/leadv2/tmux-statusline.conf\"" "$C_CONF" \
   && pass "C4 block source-files the generated conf" || fail "C4 block source-files the generated conf"
 
 SUM_AFTER_FIRST="$(cksum "$C_CONF")"
@@ -152,7 +152,7 @@ OUT="$(HOME="$C_HOME" XDG_CONFIG_HOME="$C_HOME/.config" bash "$INSTALL_SH" --tmu
 # quoting end-to-end: extract the #() payload and run it exactly as popen/sh
 # would — proves a wrapper path containing spaces stays one word, no eval
 GEN_C="$C_HOME/.config/leadv2/tmux-statusline.conf"
-PAYLOAD="$(sed -n "s/^set -g status-right '#(\(.*\))'\$/\1/p" "$GEN_C")"
+PAYLOAD="$(sed -n 's/^set -g status-right "#(\\"\(.*\)\\")"$/\1/p' "$GEN_C")"
 [[ -n "$PAYLOAD" ]] && pass "C6 conf exposes a quoted #() payload" || fail "C6 conf exposes a quoted #() payload"
 POUT="$(HOME="$C_HOME" LEADV2_STATUSLINE_CACHE="$CACHE" sh -c "$PAYLOAD" 2>/dev/null)"; RC=$?
 [[ "$RC" == "0" && -n "$POUT" ]] && pass "C7 #() payload runs via sh with spaces in path" \
@@ -190,7 +190,40 @@ HOME="$C_HOME" XDG_CONFIG_HOME="$C_HOME/.config" bash "$UNINSTALL_SH" --tmux-con
   || fail "D6 install→uninstall round-trips byte-identical"
 
 # =====================================================================
-# E. argument contract
+# E. public-path safety: apostrophes must survive tmux's config parser;
+#    pre-existing generated-conf target must be restored, never deleted.
+# =====================================================================
+Q_DIR="$FIX/O'Brien statusline"
+cp -R "$STATUSLINE_DIR" "$Q_DIR"
+Q_INSTALL="$Q_DIR/install-tmux-statusline.sh"
+Q_UNINSTALL="$Q_DIR/uninstall-tmux-statusline.sh"
+Q_HOME="$FIX/home O'Brien"
+Q_CONF="$Q_HOME/tmux.conf"
+mkdir -p "$Q_HOME/.config/leadv2"
+printf 'user-owned generated-conf\nset -g status-right "ORIGINAL"\n' > "$Q_HOME/.config/leadv2/tmux-statusline.conf"
+Q_ORIGINAL_SUM="$(cksum "$Q_HOME/.config/leadv2/tmux-statusline.conf")"
+printf '# user tmux config\n' > "$Q_CONF"
+HOME="$Q_HOME" XDG_CONFIG_HOME="$Q_HOME/.config" bash "$Q_INSTALL" --tmux-conf "$Q_CONF" >/dev/null; RC=$?
+[[ "$RC" == "0" && -f "$Q_HOME/.config/leadv2/tmux-statusline.conf.leadv2-original" ]] \
+  && pass "E1 install preserves pre-existing generated-conf" || fail "E1 install preserves pre-existing generated-conf"
+Q_SOCKET="lv2quote$$"
+Q_TMUX_DIR="$(mktemp -d)"
+TMUX_TMPDIR="$Q_TMUX_DIR" tmux -L "$Q_SOCKET" -f /dev/null new-session -d -s quote >/dev/null 2>&1
+TMUX_TMPDIR="$Q_TMUX_DIR" tmux -L "$Q_SOCKET" source-file "$Q_CONF" >/dev/null 2>&1
+Q_RIGHT="$(TMUX_TMPDIR="$Q_TMUX_DIR" tmux -L "$Q_SOCKET" show-option -gv status-right 2>/dev/null)"
+TMUX_TMPDIR="$Q_TMUX_DIR" tmux -L "$Q_SOCKET" kill-server >/dev/null 2>&1 || :
+rm -rf "$Q_TMUX_DIR"
+[[ "$Q_RIGHT" == *"O'Brien statusline"* ]] && pass "E2 tmux parses apostrophe path into status-right" \
+  || fail "E2 tmux apostrophe path broken (status-right=$Q_RIGHT)"
+HOME="$Q_HOME" XDG_CONFIG_HOME="$Q_HOME/.config" bash "$Q_UNINSTALL" --tmux-conf "$Q_CONF" >/dev/null; RC=$?
+[[ "$RC" == "0" && "$Q_ORIGINAL_SUM" == "$(cksum "$Q_HOME/.config/leadv2/tmux-statusline.conf")" ]] \
+  && pass "E3 uninstall restores pre-existing generated-conf byte-identically" \
+  || fail "E3 uninstall does not restore pre-existing generated-conf"
+[[ ! -e "$Q_HOME/.config/leadv2/tmux-statusline.conf.leadv2-original" ]] \
+  && pass "E4 ownership marker removed after restore" || fail "E4 ownership marker remains"
+
+# =====================================================================
+# F. argument contract
 # =====================================================================
 bash "$INSTALL_SH" --bogus >/dev/null 2>&1; [[ $? == "2" ]] && pass "E1 unknown arg rc=2" || fail "E1 unknown arg rc=2"
 bash "$UNINSTALL_SH" --bogus >/dev/null 2>&1; [[ $? == "2" ]] && pass "E2 uninstall unknown arg rc=2" || fail "E2 uninstall unknown arg rc=2"

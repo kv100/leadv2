@@ -20,6 +20,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/leadv2"
 CONF_OUT="$CONF_DIR/tmux-statusline.conf"
+ORIGINAL_CONF="$CONF_OUT.leadv2-original"
 CACHE_DIR="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/leadv2/tmux-statusline"
 
 SENTINEL_BEGIN="# BEGIN leadv2 tmux statusline (managed by plugins/leadv2/codex-lead/statusline/install-tmux-statusline.sh)"
@@ -107,8 +108,10 @@ PYEOF
 fi
 
 # --- 2. remove our own assets ----------------------------------------------
-if [[ -f "$CONF_OUT" ]]; then
-  rm -f "$CONF_OUT" "$CONF_OUT.bak" && printf 'conf: removed %s\n' "$CONF_OUT"
+if [[ -f "$ORIGINAL_CONF" ]]; then
+  mv "$ORIGINAL_CONF" "$CONF_OUT" && printf 'conf: restored pre-existing %s\n' "$CONF_OUT"
+elif [[ -f "$CONF_OUT" ]]; then
+  rm -f "$CONF_OUT" && printf 'conf: removed %s\n' "$CONF_OUT"
 else
   printf 'conf: %s not present\n' "$CONF_OUT"
 fi
