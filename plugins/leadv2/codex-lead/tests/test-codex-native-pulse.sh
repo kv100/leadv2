@@ -150,5 +150,34 @@ lines = open(sys.argv[1] + '/pulse.log').read().splitlines()
 assert lines and all(len(l) < 4096 and pat.match(l) for l in lines), lines[:3]
 PY
 
+# 14. CODEX-PULSE-HOOK-03 default-path integration: NO REPO_ROOT override,
+# CLAUDE_PLUGIN_ROOT pinned inside the marketplace tree (the production
+# layout: the old ../../ walk from it never reached the project and the
+# surface always rendered ?). The hook must resolve the project root from
+# the payload cwd — even a deep subdir, proving the walk-up — and call the
+# REAL plugins/leadv2/scripts/leadv2-status-surface.sh of this checkout.
+# lanes=<digit> (not ?) is only reachable from the real producer succeeding.
+PROJECT_ROOT="$(cd "$ROOT/../../.." && pwd)"
+ISTATE="$FIX/pulse-integ"; mkdir -p "$ISTATE"
+OUT="$( cd "$FIX" && printf '{"cwd":"%s/tests","tool_name":"shell"}' "$PROJECT_ROOT/plugins/leadv2/codex-lead" \
+  | LEADV2_CODEX_PULSE_STATE="$ISTATE" LEADV2_CODEX_PULSE_MIN_SECONDS=0 \
+    LEADV2_CODEX_PULSE_INJECT=1 CLAUDE_PLUGIN_ROOT="$ROOT/marketplace/plugins/leadv2" \
+    bash "$HOOK" --force )"; RC=$?
+LINE="$(tail -n 1 "$ISTATE/pulse.log" 2>/dev/null)"
+if [[ $RC -eq 0 && "$OUT" == *'pulse agents='* && "$LINE" == *'pulse agents='* ]] \
+  && [[ "$LINE" =~ lanes=[0-9] ]] && [[ "$LINE" != *'lanes=?'* ]]; then
+  pass 'default path: payload-cwd subdir resolves project, real surface answers'
+else
+  fail "default-path integration rc=$RC out=$OUT line=$LINE"
+fi
+# negative control, same default path: payload cwd outside any project ->
+# walk-up finds no surface -> renders ?, exit 0 (no hallucinated root)
+OUT="$( cd "$FIX" && printf '{"cwd":"%s","tool_name":"shell"}' "$FIX" \
+  | LEADV2_CODEX_PULSE_STATE="$ISTATE" LEADV2_CODEX_PULSE_MIN_SECONDS=0 \
+    LEADV2_CODEX_PULSE_INJECT=1 CLAUDE_PLUGIN_ROOT="$ROOT/marketplace/plugins/leadv2" \
+    bash "$HOOK" --force )"; RC=$?
+[[ $RC -eq 0 && "$OUT" == *'lanes=? task=- '* ]] \
+  && pass 'default path: non-project cwd renders ? and exits 0' || fail "non-project cwd rc=$RC out=$OUT"
+
 printf '[SUMMARY] pass=%d fail=%d\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

@@ -15,26 +15,66 @@
 #                                  hook-injected additionalContext from a second
 #                                  PreToolUse entry — docs/evidence/codex-native-pulse-probe.md)
 #   LEADV2_NATIVE_AGENT_REGISTRY   reused verbatim from the lifecycle hook
-#   LEADV2_CODEX_PULSE_REPO_ROOT   repo root for the status producers (test seam)
+#   LEADV2_CODEX_PULSE_REPO_ROOT   repo root override — TESTS ONLY. The
+#                                  production root is never derived from
+#                                  CLAUDE_PLUGIN_ROOT (CODEX-PULSE-HOOK-03:
+#                                  it points inside the plugin cache/source,
+#                                  so the old ../../ walk never reached the
+#                                  project and the surface always rendered ?);
+#                                  it comes from the cwd of the hook input
+#                                  payload, else the process working
+#                                  directory, walked up to the tree that owns
+#                                  plugins/leadv2/scripts/.
 set -u
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 STATE="${LEADV2_CODEX_PULSE_STATE:-$ROOT/.native-pulse}"
 REGISTRY="${LEADV2_NATIVE_AGENT_REGISTRY:-$ROOT/.native-agent-registry}"
+# Capture the hook payload before the heredoc takes over stdin; a tty stdin
+# (manual run) means no payload and cat would block, so skip it there.
+HOOK_INPUT=""
+[[ ! -t 0 ]] && HOOK_INPUT="$(cat 2>/dev/null)"
 REPO_ROOT="${LEADV2_CODEX_PULSE_REPO_ROOT:-}"
-if [[ -z "$REPO_ROOT" ]]; then
-  REPO_ROOT="$(cd "$ROOT/../../../../../" 2>/dev/null && pwd)" || REPO_ROOT=""
-fi
 MIN_SECONDS="${LEADV2_CODEX_PULSE_MIN_SECONDS:-60}"
 INJECT="${LEADV2_CODEX_PULSE_INJECT:-0}"
 
-STATE="$STATE" REGISTRY="$REGISTRY" REPO_ROOT="$REPO_ROOT" \
+STATE="$STATE" REGISTRY="$REGISTRY" REPO_ROOT="$REPO_ROOT" HOOK_INPUT="$HOOK_INPUT" \
 MIN_SECONDS="$MIN_SECONDS" INJECT="$INJECT" FORCE="$FORCE" python3 - <<'PY'
 import hashlib, json, os, re, subprocess, tempfile, time
 
 state = os.environ['STATE']; registry = os.environ['REGISTRY']
-repo_root = os.environ['REPO_ROOT']
+
+def resolve_repo_root():
+    # Production root: cwd from the hook input payload, else the process
+    # working directory, walked up to the tree that owns the status-surface
+    # script (so lane worktrees/subdirs resolve too). Never CLAUDE_PLUGIN_ROOT.
+    cands = []
+    try:
+        d = json.loads(os.environ.get('HOOK_INPUT', '') or '')
+        if isinstance(d, dict) and isinstance(d.get('cwd'), str) and d['cwd']:
+            cands.append(d['cwd'])
+    except Exception:
+        pass
+    cands.append(os.getcwd())
+    marker = os.path.join('plugins', 'leadv2', 'scripts', 'leadv2-status-surface.sh')
+    fallback = ''
+    for cand in cands:
+        if not os.path.isdir(cand):
+            continue
+        if not fallback:
+            fallback = os.path.abspath(cand)
+        cur = os.path.abspath(cand)
+        while True:
+            if os.path.isfile(os.path.join(cur, marker)):
+                return cur
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+    return fallback
+
+repo_root = os.environ['REPO_ROOT'] or resolve_repo_root()
 try: min_seconds = float(os.environ['MIN_SECONDS'] or 0)
 except Exception: min_seconds = 60.0
 inject = os.environ['INJECT'] == '1'; force = os.environ['FORCE'] == '1'
