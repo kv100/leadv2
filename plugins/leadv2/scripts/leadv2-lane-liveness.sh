@@ -797,7 +797,7 @@ def compatible_jobs():
                    "cancelled": "cancelled", "failed": "failed"}.get(status, "unknown")
         out.append({"id": job.get("id", "?"), "status": status, "phase": str(job.get("phase") or status),
                     "verdict": verdict, "started_at": job.get("startedAt") or job.get("createdAt"),
-                    "updated_at": job.get("updatedAt"), "reason": job.get("reason") or job.get("error") or job.get("message"),
+                    "updated_at": job.get("updatedAt"), "reason": job.get("reason") or job.get("errorMessage") or job.get("error") or job.get("message"),
                     "source": "codex-task.sh status"})
     return out
 
