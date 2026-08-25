@@ -39,7 +39,7 @@ rules:
 
   - name: codex_exec_direct
     kind: regex
-    regex: '(^|[;&|]\s*)codex\s+exec\b'
+    regex: '\bcodex\s+exec\b'
     enabled: true
     message: "Direct 'codex exec' is blocked — route through codex-task.sh so tiering/--reason/journalling still apply."
     allow_inline_override: false
