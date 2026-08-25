@@ -137,6 +137,35 @@ else
   row ".claude/agents" "linked ${missing_agents}"; changed=$((changed+1))
 fi
 
+# ---- 2b. the bare /leadv2 command ------------------------------------------
+# THE actual reason a fresh repo has no /leadv2 (founder screenshot, 2026-08-25):
+# the plugin's own command is namespaced (it offers /leadv2-audit, /leadv2-learn
+# and friends), while the bare `/leadv2` every repo actually uses comes from a
+# PROJECT command file. persona-engine and respiro-ios each carry a real copy —
+# and persona-engine's had silently rotted into a months-old fork ("Fable main",
+# gpt-5.5, a retired fanout async-question mode, no GLM/Kimi row). platform had
+# none at all, so /leadv2 simply did not exist there.
+#
+# Fix per one-copy rule: link, never copy. An EXISTING real file is left alone
+# and reported — respiro-ios's copy is a legitimate iOS-specific fork (Swift
+# agents, bot mode) and must not be clobbered; a stale fork is a reconcile
+# decision for the founder, never a silent overwrite by this script.
+CMD_SRC="${CANON%/scripts}/commands/leadv2.md"
+CMD_DST="${REPO}/.claude/commands/leadv2.md"
+if [ ! -f "$CMD_SRC" ]; then
+  row ".claude/commands/leadv2" "SKIPPED — no canonical command file"
+elif [ -L "$CMD_DST" ]; then
+  row ".claude/commands/leadv2" "ok  (linked to canonical)"
+elif [ -f "$CMD_DST" ]; then
+  row ".claude/commands/leadv2" "LOCAL FORK — real file, left untouched (reconcile by hand if stale)"
+elif [ "$CHECK" -eq 1 ]; then
+  row ".claude/commands/leadv2" "MISSING — no bare /leadv2 in this repo"; gaps=$((gaps+1))
+else
+  mkdir -p "${REPO}/.claude/commands"
+  ln -s "$CMD_SRC" "$CMD_DST" 2>/dev/null || true
+  row ".claude/commands/leadv2" "linked to canonical"; changed=$((changed+1))
+fi
+
 # ---- 3. docs/leadv2 ---------------------------------------------------------
 if [ -d "${REPO}/docs/leadv2/tasks" ]; then
   row "docs/leadv2/tasks" "ok"
