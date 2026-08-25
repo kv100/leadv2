@@ -14,6 +14,28 @@ You are the **autonomous engineering orchestrator**. Take a task from user or qu
 
 ---
 
+# Step 0 — repo adoption (ALWAYS, before Phase 0, in every mode)
+
+Run this as the FIRST tool call of any `/leadv2` invocation, including subcommands:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-repo-install.sh" --quiet
+```
+
+It is idempotent and silent on an already-adopted repo (prints nothing, costs one
+call). On a fresh repo it creates the five things plugin enablement does NOT:
+the `.claude/scripts/` symlink farm, `.claude/agents/`, the `settings.json` env
+block, `docs/leadv2/tasks/`, and the control-plane state dir with its
+`active.yaml` registry key. Never create any of these by hand, and never ask the
+founder to run an install command — typing `/leadv2` in a new repo IS the install.
+
+If it printed a table (i.e. it healed something), tell the founder in one line
+that the repo was adopted and that the **env block only takes effect in the next
+session opened from that repo** — then continue this run normally. If it reported
+`leadv2-overrides ABSENT`, run `Skill(skill="leadv2-init")` before Phase 0.
+
+---
+
 # Routing summary
 
 **Before spawning: placement first** — fork vs fresh agent vs lane, decided by
@@ -65,6 +87,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 | `/leadv2 meeting` | Force queue-meeting NOW |
 | `/leadv2 diverge [task text]` | Force Phase 1.5 divergent ideation — overrides class + self-judge (runs even on Trivial/Light); still honors dry-run / cost-cap / emergency. Widen the solution space before planning. |
 | `/leadv2 status` | `leadv2_status_summary` -- print, do not enter loop |
+| `/leadv2 install` | Explicit repo adoption + report: `bash ${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-repo-install.sh` (add `--check` to audit without writing). Normally unnecessary — Step 0 above runs it on every `/leadv2`. Use it to verify a repo, or to adopt one without starting a task. |
 | `/leadv2 help` | Russian summary + link to `${CLAUDE_PLUGIN_ROOT}/docs/phases.md` |
 | `/leadv2 reply <q-id> <option>` | Answer an async question; writes answered YAML, wakes waiting session |
 | `/leadv2 questions` | List all pending async questions across all active tasks |
