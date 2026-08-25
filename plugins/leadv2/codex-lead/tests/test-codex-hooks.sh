@@ -42,6 +42,24 @@ import json,pathlib,sys
 ids={json.loads(p.read_text())['agent_id'] for p in pathlib.Path(sys.argv[1]).glob('*.json')}; assert ids=={'a-'+str(i) for i in range(33,65)}
 PY
 [[ $? -eq 0 ]] && pass 'concurrent stops remove only own entries' || fail 'concurrent stops'
+# CODEX-BATCH-REVIEW-FIXROUND-01 M3: registry write failure must not fail the hook —
+# a SubagentStart/Stop hook returning non-zero can block subagent spawn.
+UNWRITABLE="$FIX/unwritable-registry"; mkdir -p "$UNWRITABLE"; chmod 0500 "$UNWRITABLE"
+trap 'chmod u+w "$UNWRITABLE" 2>/dev/null; rm -rf "$FIX"' EXIT
+o="$(printf '{"agent_id":"u-1"}' | LEADV2_NATIVE_AGENT_REGISTRY="$UNWRITABLE/sub" bash "$LIFE" start)"; r=$?
+[[ $r -eq 0 ]] && pass 'start on unwritable registry dir still exits 0' || fail "start on unwritable registry dir rc=$r out=$o"
+o="$(printf '{"agent_id":"u-1"}' | LEADV2_NATIVE_AGENT_REGISTRY="$UNWRITABLE/sub" bash "$LIFE" stop)"; r=$?
+[[ $r -eq 0 ]] && pass 'stop on unwritable registry dir still exits 0' || fail "stop on unwritable registry dir rc=$r out=$o"
+chmod u+w "$UNWRITABLE"
+WRITABLE="$FIX/writable-registry"
+printf '{"agent_id":"w-1"}' | LEADV2_NATIVE_AGENT_REGISTRY="$WRITABLE" bash "$LIFE" start >/dev/null; r=$?
+if [[ $r -eq 0 ]] && python3 - "$WRITABLE" <<'PY'
+import json,pathlib,sys
+files=list(pathlib.Path(sys.argv[1]).glob('*.json')); assert len(files)==1; assert json.loads(files[0].read_text())['agent_id']=='w-1'
+PY
+then pass 'normal writable-dir start still writes the registry json'
+else fail 'normal writable-dir start regressed'
+fi
 # CODEX-PULSE-HOOK-02: the pulse hook must never emit a permission decision
 # for any payload (including malformed), shipped default INJECT and INJECT=1.
 PULSE="$ROOT/marketplace/plugins/leadv2/hooks/leadv2-native-pulse.sh"; PST="$(mktemp -d)"
