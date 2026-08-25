@@ -2105,6 +2105,49 @@ if [[ "${_pc_kind}" == "report" ]]; then
   blocked_reason=""
   emit decision "report_gate task=${TASK} status=located bytes=${_pc_report_bytes} declared=${_pc_report_rel} deliverable=${_pc_report_deliverable}"
 fi
+# T8C-FOREIGN-REPO-LANDING-01: an empty-diff/dirty-but-undeclared verdict here would be
+# a false no_work/unscoped_lane_work for a lane whose mission legitimately targets a
+# repo OTHER than its own PE worktree (the shared leadv2 plugin repo is the live case --
+# CLAUDE.md "fix once in canonical" policy) -- the lane's local diff is genuinely empty
+# because its real work landed as a commit in that other repo, not because the lane did
+# nothing. Declared via LANE_TARGET_REPO=<abs path> (lane env, checked first) or a
+# ${HANDOFF}/lane-target-repo marker file (line 1 = path, optional line 2 = the
+# commit-message grep token to use instead of TASK -- the founder-facing task label
+# ("T8c") a lane tags its own commits with is often NOT the same string as the
+# machine TASK sig, so this must be overridable per lane, never inferred).
+# Checked BEFORE the blocked_reason classification below so a landed-foreign lane never
+# falls into no_work/refused; runs only when a verdict is ALREADY headed there (an empty
+# or undeclared-dirty diff) -- a lane with real local bytes never needs this and is
+# unaffected. Evidence is a commit-message grep, deliberately NOT an unscoped
+# "--since only" git log: leadv2-dispatch-ledger.sh's _dl_derive_lane_state documents the
+# 2026-08-04 incident where an unscoped window attributed the target repo's newest
+# unrelated commit to 137 lanes at once -- the same trap applies here, so a match
+# requires the grep token to actually appear in the commit message.
+if [[ -n "${blocked_reason}" && "${blocked_reason}" != "partial_diff" ]]; then
+  _pc_foreign_repo="${LANE_TARGET_REPO:-${LEADV2_LANE_TARGET_REPO:-}}"
+  _pc_foreign_grep="${LEADV2_LANE_TARGET_REPO_GREP:-}"
+  if [[ -z "${_pc_foreign_repo}" && -f "${HANDOFF}/lane-target-repo" ]]; then
+    _pc_foreign_repo="$(sed -n '1p' "${HANDOFF}/lane-target-repo" 2>/dev/null | tr -d '[:space:]')"
+    [[ -z "${_pc_foreign_grep}" ]] && _pc_foreign_grep="$(sed -n '2p' "${HANDOFF}/lane-target-repo" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  fi
+  [[ -z "${_pc_foreign_grep}" ]] && _pc_foreign_grep="${TASK}"
+  if [[ -n "${_pc_foreign_repo}" && -d "${_pc_foreign_repo}/.git" && -n "${_pc_foreign_grep}" ]]; then
+    _pc_foreign_hits="$(git -C "${_pc_foreign_repo}" log --all --format='%H %s' --fixed-strings --grep="${_pc_foreign_grep}" 2>/dev/null | head -n5)"
+    if [[ -n "${_pc_foreign_hits}" ]]; then
+      # Reuses the landed|parked|refused|dead|no_work ledger enum unchanged (no new
+      # terminal word -- leadv2-dispatch-ledger.sh write_terminal hard-errors on any
+      # other string); landed_foreign is a cause under the existing `landed` terminal,
+      # the same relationship unscoped_lane_work has to `refused` above.
+      blocked_reason=""
+      printf 'status: passed\nreason: landed_foreign\nforeign_repo: %s\ngrep: %s\ncommits:\n%s\n' \
+        "${_pc_foreign_repo}" "${_pc_foreign_grep}" "${_pc_foreign_hits}" > "${HANDOFF}/review-gate.md"
+      emit decision "review_gate task=${TASK} status=passed reason=landed_foreign terminal=landed cause=landed_foreign foreign_repo=$(basename "${_pc_foreign_repo}")"
+      _dl_note landed landed_foreign "foreign_repo=${_pc_foreign_repo} grep=${_pc_foreign_grep}"
+      _stamp_review_terminal pass
+      exit 0
+    fi
+  fi
+fi
 if [[ -n "${blocked_reason}" ]]; then
   # N1-EMPTY-LANE-IS-NOT-A-PASS: a lane that produced NOTHING is its own outcome --
   # never passed, never a silently-blocked unscopable_diff. partial_diff stays
