@@ -56,6 +56,19 @@
 # lean: minutes-in-phase uses last_pulse_at (freshness) falling back to
 # started_at (session age) — active.yaml has no per-phase-entry timestamp.
 # upgrade when leadv2-active-registry.sh adds phase_started_at.
+#
+# LANE-OBSERVABILITY-02 change 3: --all-repos (default ON via
+# LEADV2_LANES_ALL_REPOS=1) extends a FULL --json call's table with the OTHER
+# repos' lanes, read strictly READ-ONLY (foreign active.yaml from the
+# control-plane state dir + pid/log-mtime liveness — never lane-liveness.sh's
+# state-path resolution, which links/mkdirs into the foreign repo's control
+# plane, and never this script's own adopt/tombstone/prune writes, which stay
+# own-repo-only). Every foreign row carries `repo: <slug>`; a failed foreign
+# read yields one {"repo":..,"error":"repo_read_error",..} row instead of
+# zeroing the table (LANE-DETAIL-BLIND-01: a sub-read failure is loud).
+# Single-repo safety: when the projects TSV yields no FOREIGN repo (one repo
+# total, enumeration unavailable, or the flag off), output is byte-identical
+# to today. --no-all-repos restores today unconditionally.
 
 set -euo pipefail
 
@@ -68,14 +81,17 @@ else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :;
 JSON_MODE=0
 SINCE=""
 PRINT_MODE=0
+ALL_REPOS="${LEADV2_LANES_ALL_REPOS:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --json)  JSON_MODE=1; shift ;;
     --since) SINCE="${2:-}"; shift 2 ;;
     --print) PRINT_MODE=1; shift ;;
+    --all-repos)    ALL_REPOS=1; shift ;;
+    --no-all-repos) ALL_REPOS=0; shift ;;
     -h|--help)
-      printf -- 'Usage: leadv2-lanes-snapshot.sh [--json] [--since <ISO>] [--print]\n'
+      printf -- 'Usage: leadv2-lanes-snapshot.sh [--json] [--since <ISO>] [--print] [--all-repos|--no-all-repos]\n'
       exit 0
       ;;
     *)
@@ -316,6 +332,160 @@ fi
 # subprocess.  Codex provider jobs remain included for backward compatibility.
 LANE_LIVENESS_JSON="$(LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "${SCRIPT_DIR}/leadv2-lane-liveness.sh" --project-root "$PROJECT_ROOT" --all --json 2>/dev/null || printf '%s' '{"lanes":[],"jobs":[],"availability":"unavailable"}')"
 
+# ── LANE-OBSERVABILITY-02 change 3: foreign-repo lane gather ────────────────
+# Runs only on a FULL --json call with the flag on. Foreign repos come from
+# leadv2-status-projects.sh's TSV (slug \t state_dir \t repo_root); own repo is
+# whatever root -ef PROJECT_ROOT. Each foreign repo is read PURE-READ: its
+# active.yaml straight from the TSV state_dir (NO leadv2-state-path.sh call —
+# the resolver mkdirs/symlinks into the foreign repo's control plane by
+# design, which a status probe must never trigger) plus pid/log-mtime liveness
+# computed in-process. A failed/timeout read appends one repo_read_error row;
+# the loop below ALWAYS continues to the next repo. When no foreign repo
+# yields a row, both temp files are dropped and the main snapshot runs
+# UNMODIFIED (byte-identical single-repo output).
+_LV2_FOREIGN_ROWS_FILE=""
+_LV2_MAIN_JSON_TMP=""
+if [[ "$ALL_REPOS" == "1" && "$JSON_MODE" == "1" && -z "$SINCE" ]]; then
+  _LV2_PROJECTS_SH="${SCRIPT_DIR}/leadv2-status-projects.sh"
+  if [[ -f "${_LV2_PROJECTS_SH}" ]]; then
+    _LV2_OWN_PHYS="$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P || true)"
+    _LV2_FOREIGN_ROWS_FILE="$(mktemp "${TMPDIR:-/tmp}/lv2-foreign-rows.XXXXXX")"
+    : > "${_LV2_FOREIGN_ROWS_FILE}"
+    while IFS=$'\t' read -r _lv2_slug _lv2_state_dir _lv2_repo_root; do
+      [[ -n "${_lv2_slug}" && -n "${_lv2_repo_root}" && -d "${_lv2_repo_root}" ]] || continue
+      _lv2_rroot_phys="$(cd "${_lv2_repo_root}" 2>/dev/null && pwd -P || true)"
+      [[ -n "${_lv2_rroot_phys}" && "${_lv2_rroot_phys}" == "${_LV2_OWN_PHYS}" ]] && continue
+      LEADV2_FOREIGN_STATE_DIR="${_lv2_state_dir}" \
+      python3 - "${_lv2_slug}" "${_lv2_repo_root}" "${_lv2_state_dir}" "${_LV2_FOREIGN_ROWS_FILE}" <<'PYF' 2>/dev/null || true
+import datetime, glob, json, os, sys, time
+
+slug, repo_root, state_dir, out_path = sys.argv[1:5]
+
+def now_utc():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+def parse_iso(s):
+    if not s:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(str(s).rstrip("Z"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+def emit(row):
+    with open(out_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row) + "\n")
+
+# hard per-repo timeout: a foreign repo read that wedges (NFS hang, huge
+# registry) yields ONE error row after 15s, never a wedged beat.
+# LEADV2_FOREIGN_SCAN_DEADLINE_S is a test knob for that error path (0 with
+# at least one session row -> immediate deadline exceeded).
+try:
+    _deadline_s = max(0, int(os.environ.get("LEADV2_FOREIGN_SCAN_DEADLINE_S", "15")))
+except ValueError:
+    _deadline_s = 15
+_DEADLINE = time.monotonic() + _deadline_s
+
+try:
+    active_yaml = os.path.join(state_dir, "active.yaml")
+    session_by_task = {}
+    try:
+        import yaml
+        with open(active_yaml, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+        for s in (doc.get("sessions") or []):
+            if isinstance(s, dict) and s.get("task_id"):
+                session_by_task[str(s["task_id"])] = s
+    except Exception:
+        pass  # no registry is an empty lane set, not a repo_read_error
+
+    lane_fresh_s = 120
+    try:
+        lane_fresh_s = max(0, int(os.environ.get("LEADV2_LANE_FRESH_S", "120")))
+    except ValueError:
+        pass
+
+    now = now_utc()
+    for tid, s in sorted(session_by_task.items()):
+        if time.monotonic() > _DEADLINE:
+            emit({"repo": slug, "error": "repo_read_error", "data": "foreign scan deadline exceeded"})
+            break
+        pid = s.get("pid")
+        pid_alive = False
+        if isinstance(pid, int):
+            try:
+                os.kill(pid, 0)
+                pid_alive = True
+            except (ProcessLookupError, PermissionError):
+                pid_alive = False
+        # stream freshness: newest mtime under the lane's log_path / worktree
+        # docs/leadv2 stream surfaces — pure stat, pure read.
+        age_s = None
+        stream_bytes = None
+        log_path = s.get("log_path")
+        cands = []
+        if log_path:
+            p = log_path if os.path.isabs(log_path) else os.path.join(repo_root, log_path)
+            cands.append(p)
+        hdir = os.path.join(repo_root, "docs", "handoff", str(tid))
+        if os.path.isdir(hdir):
+            cands.extend(glob.glob(os.path.join(hdir, "*.stream.jsonl")))
+            cands.extend(glob.glob(os.path.join(hdir, "*.out")))
+        newest = None
+        for p in cands:
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            if newest is None or st.st_mtime > newest:
+                newest = st.st_mtime
+                stream_bytes = st.st_size
+        if newest is not None:
+            age_s = max(0, int(time.time() - newest))
+        if pid_alive or (isinstance(age_s, (int, float)) and age_s <= lane_fresh_s):
+            status = "active"
+        elif isinstance(age_s, (int, float)) and age_s <= 86400:
+            status = "stale"
+        else:
+            status = "dead"
+        started = parse_iso(s.get("last_pulse_at")) or parse_iso(s.get("started_at"))
+        minutes = max(0, int((now - started).total_seconds() // 60)) if started else "?"
+        where = s.get("where") or ("headless" if s.get("daemon_mode") else "terminal")
+        status_reason = (
+            f"foreign repo {slug}; pid={'alive' if pid_alive else 'dead'}"
+            + (f"; stream_age={age_s}s" if age_s is not None else "; no stream")
+        )
+        emit({
+            "task_id": tid,
+            "phase": s.get("phase") or "?",
+            "minutes_in_phase": minutes,
+            "status": status,
+            "status_reason": status_reason,
+            "waiting": False,
+            "where": where,
+            "protocol_version": s.get("protocol_version", 1),
+            "repo": slug,
+            "age_s": age_s,
+            "stream_bytes": stream_bytes,
+        })
+except Exception as e:  # never zero the table on one bad repo
+    emit({"repo": slug, "error": "repo_read_error",
+          "data": f"{e.__class__.__name__}: {str(e)[:180]}"})
+PYF
+    done < <(bash "${_LV2_PROJECTS_SH}" 2>/dev/null || true)
+    if [[ ! -s "${_LV2_FOREIGN_ROWS_FILE}" ]]; then
+      rm -f "${_LV2_FOREIGN_ROWS_FILE}"
+      _LV2_FOREIGN_ROWS_FILE=""
+    else
+      _LV2_MAIN_JSON_TMP="$(mktemp "${TMPDIR:-/tmp}/lv2-snapshot-main.XXXXXX")"
+    fi
+  fi
+fi
+
+_lv2_main_snapshot() {
 python3 - "$ACTIVE_YAML" "$HANDOFF_DIR" "$SNAPSHOT" "$JSON_MODE" "$SINCE" "$CP_QUESTIONS_DIR" "${BUS_JSONL:-}" "${BUS_OFFSET_FILE:-}" "$TRUTH_BREACHES_JSON" "$TMUX_WINDOWS_TSV" "$TMUX_PANES_TSV" "$TASKS_YAML_PATH" "$ACTIVE_LOCKFILE" "$TOMBSTONES_FILE" "$OBSERVE_ONLY" "$SCRIPT_DIR" "$PROJECT_ROOT" "$LANE_LIVENESS_JSON" "$QUESTION_ESCALATE_S" "$SUPERVISE_PRUNE_V2" <<'PY'
 import sys, os, json, glob, datetime, subprocess
 from collections import deque
@@ -1390,3 +1560,38 @@ if closed_now:
     for tid in closed_now:
         print(f"  {tid}")
 PY
+}
+
+# LANE-OBSERVABILITY-02 change 3: with foreign rows in hand, capture the main
+# snapshot to a temp file and splice the foreign rows onto its table (append —
+# own-repo ranking/cap untouched); otherwise run it exactly as before. A main-
+# snapshot failure propagates unchanged (fail-closed contract above is the
+# MAIN snapshot's own; the merge step never swallows it).
+if [[ -n "${_LV2_MAIN_JSON_TMP}" ]]; then
+  _lv2_main_snapshot > "${_LV2_MAIN_JSON_TMP}"
+  python3 - "${_LV2_MAIN_JSON_TMP}" "${_LV2_FOREIGN_ROWS_FILE}" <<'PYM' || { rm -f "${_LV2_MAIN_JSON_TMP}"; exit 1; }
+import json, sys
+
+main_path, foreign_path = sys.argv[1], sys.argv[2]
+with open(main_path, encoding="utf-8") as fh:
+    doc = json.load(fh)
+if not isinstance(doc, dict) or not isinstance(doc.get("table"), list):
+    # a typed {"error": ...} doc — re-emit verbatim, never bury a fail-closed
+    # verdict under a merge crash
+    with open(main_path, encoding="utf-8") as fh:
+        sys.stdout.write(fh.read())
+    sys.exit(0)
+with open(foreign_path, encoding="utf-8") as fh:
+    for line in fh:
+        line = line.strip()
+        if line:
+            try:
+                doc["table"].append(json.loads(line))
+            except ValueError:
+                continue
+print(json.dumps(doc, indent=2))
+PYM
+  rm -f "${_LV2_MAIN_JSON_TMP}"
+else
+  _lv2_main_snapshot
+fi
