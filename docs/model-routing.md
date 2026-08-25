@@ -38,11 +38,12 @@ verify) — build spawns run `medium`, reads `low`. If a sonnet spawn seems to n
 Canonical two-axis matrix (model × effort, per class × phase):
 `plugins/leadv2/docs/model-effort-matrix.md`.
 
-**GLM lane (second zero-Claude-quota pool):** GLM-5.2 ≈ Sonnet 5 on coding benchmarks
-(SWE-bench Pro 62.1 vs 63.2) at zero Claude quota. Route background latency-class work
-(bulk/mechanical transforms, mass audits, standard code nobody waits on) to GLM where
-the repo has a GLM lane configured. Banned for architecture/design/safety. Priority per
-spawn: Codex → GLM → Claude ladder.
+**GLM lane (second zero-Claude-quota pool):** GLM-5.3 has live transport acceptance
+evidence in `plugins/leadv2/docs/evidence/glm-5.3-probe.md`. Benchmark, context, and
+price claims from GLM-5.2 are UNVERIFIED for GLM-5.3 and are deliberately not used for
+routing. Route background latency-class work (bulk/mechanical transforms, mass audits,
+standard code nobody waits on) to GLM where the repo has a GLM lane configured. Banned
+for architecture/design/safety. Priority per spawn: Codex → GLM → Claude ladder.
 
 ## Per-agent defaults (template — tune per repo)
 
