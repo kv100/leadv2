@@ -646,6 +646,17 @@ CLAUDE_ARGS=(
 )
 [[ -n "$EFFORT" ]] && CLAUDE_ARGS+=(--effort "$EFFORT")
 
+# F3-WORKERS-01 (founder delegated the value, 2026-08-25): runaway-worker backstop.
+# Deliberately NOT the ~150K that would suit an interactive lead — a worker compacted
+# mid-mission loses its handoff detail and returns a silently degraded deliverable,
+# which is the worst failure shape we have. 250K fires only on a worker that has
+# already ballooned well past any healthy mission, where a compact is strictly better
+# than riding to the hard context wall. Expected to fire near-never; that is the point.
+# The lead's own interactive session is explicitly out of scope (founder order, same day).
+# Valid range is 100000-1000000; anything outside it is SILENTLY ignored by the CLI's
+# zod schema (.catch(void 0)) — so a typo here looks applied and does nothing.
+CLAUDE_ARGS+=(--autocompact "${LEADV2_SUBSESSION_AUTOCOMPACT:-250000}")
+
 # WORKER-CONTEXT-DIET-01: fail-open per-role MCP allowlist. Empty MCP_CFG
 # (any non-zero rc from resolve_role_mcp_config) means "append nothing" --
 # never let a resolution failure abort this script under set -e.
