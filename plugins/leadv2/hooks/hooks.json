@@ -26,6 +26,12 @@
           },
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-command-bootstrap.sh\"",
+            "timeout": 5,
+            "statusMessage": "Ensuring /leadv2 command..."
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-stale-pid-sweep.sh\"",
             "timeout": 5,
             "statusMessage": "Sweeping stale leadv2 sessions..."

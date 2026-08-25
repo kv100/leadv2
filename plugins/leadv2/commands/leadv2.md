@@ -36,6 +36,34 @@ session opened from that repo** — then continue this run normally. If it repor
 
 ---
 
+# Step 0.5 — load this repo's overrides (MANDATORY, before Phase 0)
+
+**This command file is the single source and is identical in every repo — it is a
+symlink to canonical.** Everything repo-specific lives in the override tree and
+is read at runtime, never forked into a local copy of this file:
+
+```bash
+cat .claude/leadv2-overrides/extensions.md 2>/dev/null   # repo-specific rules, gates, stack facts
+cat .claude/leadv2-overrides/stack.yaml                  # lang / db / hosting / ci / deploy_method
+```
+
+Read `extensions.md` (when present) **before Phase 0** and treat its rules as
+binding for this run — they extend and, where they say so explicitly, override
+the generic behaviour below. `stack.yaml` decides how Deploy and Verify run.
+Other override files (`codex-policy.yaml`, `state-paths.yaml`, `verify.sh`,
+`deploy.sh`, ...) are consumed by their own phases; the full contract is
+`${CLAUDE_PLUGIN_ROOT}/docs/OVERRIDES.md`.
+
+**Never edit this command file to add repo behaviour.** It is one inode shared by
+every repo — a local edit either hits all repos at once or, if someone replaces
+the symlink with a real file, silently forks that repo off canonical and rots
+there. persona-engine spent months on such a fork (2026-08-25: it still said
+"Fable main" and drove a retired supervisor). Repo behaviour goes in
+`.claude/leadv2-overrides/extensions.md`; generic behaviour goes upstream into
+the plugin repo. Nothing goes here.
+
+---
+
 # Routing summary
 
 **Before spawning: placement first** — fork vs fresh agent vs lane, decided by
