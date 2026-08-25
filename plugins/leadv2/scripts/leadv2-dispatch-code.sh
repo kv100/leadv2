@@ -1490,7 +1490,7 @@ _burn_gate() {
       printf '[leadv2-dispatch-code] ⛔ BURN GATE: 24h burn %s >= hard cap %s — lane refused, task parked\n' \
         "${burn24h}" "${hard}" >&2
       _burn_park_deferred "${sig8}" "${mission}" "${burn24h}"
-      exit 6
+      return 1
       ;;
     *) return 0 ;;
   esac
@@ -4037,6 +4037,14 @@ _worker_env_asserts() {  # <arm> <sig8>
 spawn_worker() {
   local errf rc
   LAST_ARM_OUTCOME="$1_failed_launcher"
+  # Last common admission door: cmd_resolve, advance-arm, and future callers
+  # cannot start a model process after a hard burn verdict.
+  if ! _burn_gate; then
+    LAST_ARM_OUTCOME="$1_refused_budget_gate"
+    emit decision "arm_refused by=router model=$1 task=$3 reason=budget_gate_pre_spawn"
+    printf '%s' "${LAST_ARM_OUTCOME}" > "${TMPDIR:-/tmp}/leadv2-spawn-outcome.$$" 2>/dev/null || true
+    return 2
+  fi
   _worker_env_asserts "$1" "$3"
   errf="$(mktemp "${TMPDIR:-/tmp}/leadv2-dispatch-err.XXXXXX")" || {
     log_err "spawn($1): could not create stderr tempfile"; return 1
@@ -5430,7 +5438,7 @@ cmd_resolve() {
   # BURN-GOVERNOR-01: 24h local token-burn gate, runs FIRST -- before the placement pin,
   # before the ensure block, before any reservation/terminal/spawn (architect prepass
   # §1.2 D2). Refuses (exit 6) only on verdict=hard and LEADV2_BURN_OVERRIDE!=1.
-  _burn_gate
+  _burn_gate || exit 6
   # LANE-PLACEMENT-01: resolve an explicit --resume-lane/--worktree pin BEFORE the ensure
   # block, BEFORE record_lane_start_sha, BEFORE any reservation/terminal/spawn.  Refuses
   # (exit 5) on: nonexistent path, not-a-worktree, foreign repo, live-claimed lane.  No
