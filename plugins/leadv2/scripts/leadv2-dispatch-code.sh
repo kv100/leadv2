@@ -499,6 +499,8 @@ _dl_attempt_token() { printf '%s-%s-%s' "${1:-nosig}" "${ATTEMPT_EPOCH}" "$$"; }
 # "${1:?...}" would otherwise abort this whole script under `set -u` on an empty arg.
 _ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
 [[ -f "${_ACTIVE_REGISTRY_SH}" ]] && source "${_ACTIVE_REGISTRY_SH}"
+_LANE_STATE_SH="${SCRIPT_DIR}/lib/leadv2-lane-state.sh"
+[[ -f "${_LANE_STATE_SH}" ]] && source "${_LANE_STATE_SH}"
 # SILENT-DEATH-01 (SUPERVISOR-AUDIT-01, 2026-07-30): leadv2-active-registry.sh sets its own
 # `set -euo pipefail` (line 26) for standalone use; `source` runs it in THIS shell, so its -e
 # silently overrides line 242's deliberate "NO -e (refusals must journal)" for the rest of
@@ -2898,6 +2900,7 @@ cleanup_pending_dispatch() {
   # dry-run, signal death -- therefore releases the row without a per-exit
   # call site. Owner-verified inside _release_registered_lane (H2).
   if [[ -n "${DISPATCH_SLOT_REG_ID:-}" ]]; then
+    declare -F lane_deregister >/dev/null 2>&1 && lane_deregister "${DISPATCH_SLOT_REG_ID}" "dispatcher_exit" >/dev/null 2>&1 || true
     _release_registered_lane "${DISPATCH_SLOT_REG_ID}" "${DISPATCH_SLOT_SIG8:-}" "exit_trap"
   fi
   # PREPASS-PROVIDER-FALLBACK-01-R9 H3: fallback creation arms this global
@@ -4374,6 +4377,8 @@ _spawn_worker_body() {
         _wpid_birth="$(_lv2_pid_birth "${pid}" 2>/dev/null || printf '')"
         LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_set_worker_pid \
           "${DISPATCH_REG_ID}" "${pid}" "${_wpid_birth}" >/dev/null 2>&1 || true
+        declare -F lane_adopt_pid >/dev/null 2>&1 && \
+          lane_adopt_pid "${DISPATCH_REG_ID}" "${DISPATCH_LEAD_SESSION_ID:-direct}" "${WORK_ROOT:-${PROJECT_ROOT}}" "build" "${pid}" >/dev/null 2>&1 || true
       fi
       ;;
     codex)
@@ -5312,6 +5317,9 @@ cmd_resolve() {
   # confirmed by census) -- this span is closed by the outer `lane` arm_exit
   # trap's stack-drain, never by an explicit end call in this function.
   lv2_trace_begin "lane.resolve"
+  # Reconcile before admission: stale rows never consume a slot and a live
+  # orphan is made visible before this dispatch can duplicate it.
+  declare -F lane_reconcile >/dev/null 2>&1 && lane_reconcile >/dev/null 2>&1 || true
   # R6: computed once for this invocation so a single dispatch never straddles two
   # daily counter files even if it runs across a UTC-midnight boundary.
   local _LEADV2_EXC_DAY; _LEADV2_EXC_DAY="$(date -u +%Y%m%d)"
@@ -5565,6 +5573,19 @@ cmd_resolve() {
         DISPATCH_SLOT_SIG8="${sig8}"
       else
         emit decision "active_register_miss task=${sig8} rc=${_register_rc}"
+      fi
+      # The lane-state module is the cap authority.  Existing registry rows
+      # remain readable for legacy consumers; this adds identity/history.
+      local _lead_session_id="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-${CLAUDE_SESSION_ID:-direct}}}"
+      DISPATCH_LEAD_SESSION_ID="${_lead_session_id}"
+      lane_register "${reg_id}" "${_lead_session_id}" "${WORK_ROOT:-${PROJECT_ROOT}}" "spawning" "${DISPATCH_SLOT_PID:-$$}"
+      _lane_register_rc=$?
+      if [[ "${_lane_register_rc}" != "0" ]]; then
+        if [[ "${_lane_register_rc}" == "3" ]]; then
+          emit decision "dispatch_refused reason=lead_session_lane_cap task=${sig8} lead_session=${_lead_session_id}"
+          exit 3
+        fi
+        emit decision "lane_state_register_failed task=${sig8} rc=${_lane_register_rc}"
       fi
     fi
     # LANE-TRUTH-BATCH-01 Row 1: stamp the real stream path so liveness resolves
