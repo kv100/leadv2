@@ -1012,10 +1012,19 @@ _engine_arm_from_floor() { # <arm>
 # Per-arm job wrapper: runs run_reviewer_arm in a background-safe subshell,
 # then persists the result (rc/out/err are file-based so the parent can read
 # them back after `wait`, since subshell locals do not propagate).
+# REVIEW-ARM-FAILCLOSED-02: the .rc write must survive every exit path of
+# run_reviewer_arm. A bare call aborts mid-function under a `set -e` caller
+# (the `bash <stub>; review_rc=$?` inside never reaches its capture), and a
+# path that never assigns review_rc kills the subshell on the printf itself
+# under `set -u` — either way review-<arm>.rc is absent and the parent cannot
+# classify the arm. `|| review_rc=$?` neutralises -e for the whole call AND
+# captures a nonzero return; ${review_rc:-1} turns "completed but never set an
+# rc" into rc=1 instead of an unbound-variable crash.
 _engine_arm_job() { # <arm>
   local arm="$1"
-  run_reviewer_arm "${arm}"
-  printf '%s' "${review_rc}" > "${HANDOFF}/review-${arm}.rc"
+  review_rc=""
+  run_reviewer_arm "${arm}" || review_rc=$?
+  printf '%s' "${review_rc:-1}" > "${HANDOFF}/review-${arm}.rc"
 }
 
 # Bounded-wait wrapper: bash 3.2 has no built-in per-background-job timeout, so
@@ -1316,8 +1325,11 @@ for _arm in "${fanout_list[@]}"; do
       _died_retry=1
       emit decision "review_gate task=${TASK} status=arm_infra_died arm=${_slot_arm} attempt=1 kind=infra action=retry"
       rm -f "${HANDOFF}/review-${_slot_arm}.rc"
-      run_reviewer_arm "${_slot_arm}"
-      _slot_rc="${review_rc}"
+      # REVIEW-ARM-FAILCLOSED-02: bare run_reviewer_arm here let a `set -e`
+      # caller abort the whole engine mid-retry with NO terminal gate written;
+      # same || capture + rc default as _engine_arm_job.
+      run_reviewer_arm "${_slot_arm}" || review_rc=$?
+      _slot_rc="${review_rc:-1}"
       printf '%s' "${_slot_rc}" > "${HANDOFF}/review-${_slot_arm}.rc"
       continue
     fi
@@ -1338,8 +1350,9 @@ for _arm in "${fanout_list[@]}"; do
     _slot_arm="${next_arm}"
     _out="${HANDOFF}/review-${_slot_arm}.md"
     _err="${HANDOFF}/review-${_slot_arm}.err"
-    run_reviewer_arm "${_slot_arm}"
-    _slot_rc="${review_rc}"
+    # REVIEW-ARM-FAILCLOSED-02: see the retry site above — same || capture.
+    run_reviewer_arm "${_slot_arm}" || review_rc=$?
+    _slot_rc="${review_rc:-1}"
     printf '%s' "${_slot_rc}" > "${HANDOFF}/review-${_slot_arm}.rc"
   done
   [[ -n "${_slot_arm}" ]] && ran_arms+=("${_slot_arm}")
@@ -1448,14 +1461,23 @@ fi
 if [[ -z "${verdict}" ]]; then
   # No surviving arm produced a usable verdict — same three-way named-reason
   # vocabulary the lane already uses (N-5 D4), scoped to the whole fan-out.
+  # REVIEW-ARM-FAILCLOSED-02: classify EVERY surviving arm with its rc, not
+  # just the first, so the terminal status names which arms produced no
+  # verdict and why (additive `arm_rc:` line; the parser tolerates unknown
+  # lines, and `arms:` keeps its plain-csv meaning).
   _first_arm="${ran_arms[0]}"
   _first_rc="$(cat "${HANDOFF}/review-${_first_arm}.rc" 2>/dev/null || printf '1')"
+  _fc_arms_rc=""
+  for _arm in "${ran_arms[@]}"; do
+    _fc_rc="$(cat "${HANDOFF}/review-${_arm}.rc" 2>/dev/null || printf 'missing')"
+    _fc_arms_rc="${_fc_arms_rc:+${_fc_arms_rc},}${_arm}=${_fc_rc}"
+  done
   if [[ "${_first_rc}" -ne 0 ]]; then
-    printf 'status: blocked\nreason: provider_error\nrc: %s\n' "${_first_rc}" > "${HANDOFF}/review-gate.md.tmp"
-    emit decision "review_gate task=${TASK} status=blocked reason=provider_error rc=${_first_rc}"
+    printf 'status: blocked\nreason: provider_error\nrc: %s\narm_rc: %s\n' "${_first_rc}" "${_fc_arms_rc}" > "${HANDOFF}/review-gate.md.tmp"
+    emit decision "review_gate task=${TASK} status=blocked reason=provider_error rc=${_first_rc} arm_rc=${_fc_arms_rc}"
   else
-    printf 'status: blocked\nreason: empty_response\n' > "${HANDOFF}/review-gate.md.tmp"
-    emit decision "review_gate task=${TASK} status=blocked reason=empty_response"
+    printf 'status: blocked\nreason: empty_response\narm_rc: %s\n' "${_fc_arms_rc}" > "${HANDOFF}/review-gate.md.tmp"
+    emit decision "review_gate task=${TASK} status=blocked reason=empty_response arm_rc=${_fc_arms_rc}"
   fi
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
   exit 6
