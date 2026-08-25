@@ -172,7 +172,7 @@ trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 export _BS_QUEUED_TSV="$QUEUED_TSV"
 export _BS_LANDED_LOG="$LANDED_LOG"
 RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" <<'PY'
-import datetime, json, os, re, sys
+import datetime, json, os, re, subprocess, sys
 
 snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir, full_status_path_override, empty_since_path = sys.argv[1:9]
 
@@ -195,6 +195,13 @@ lanes_section = sections.get("lanes", {}) or {}
 lanes_raw_data = lanes_section.get("data")
 lanes_data = lanes_raw_data if isinstance(lanes_raw_data, dict) else {}
 table_rows = lanes_data.get("table") or []
+# LANE-OBSERVABILITY-02 change 3: a foreign-repo row whose READ failed
+# ({"repo":..,"error":"repo_read_error",..}) is NOT a lane — pull it out of
+# the table before any lane accounting below and render it as a named degraded
+# prefix line instead, so one unreadable repo can neither zero the board nor
+# masquerade as a lane row.
+foreign_error_rows = [r for r in table_rows if isinstance(r, dict) and r.get("error")]
+table_rows = [r for r in table_rows if not (isinstance(r, dict) and r.get("error"))]
 questions = lanes_data.get("questions") or lanes_data.get("requires_founder") or []
 degraded = lanes_data.get("degraded") or []
 # LANE-DETAIL-BLIND-01: a failed/absent `lanes` COLLECTOR SECTION (the
@@ -247,6 +254,34 @@ def read_journal_worker(task_id):
             continue
         if kind:
             return f"dispatch (kind={kind})"
+    return None
+
+
+def read_worker_reason(task_id):
+    # LANE-OBSERVABILITY-02 change 3/1: a TERMINAL lane's row carries the
+    # worker's own last words next to the verdict, read through the same
+    # shared lib the terminal ledger path uses (arm="" -> auto-detect the
+    # stream/rollout source). Read-only, timeout-bounded, empty on any miss —
+    # a renderer must degrade to no worker_reason, never crash the beat.
+    lib = os.path.join(script_dir, "lib", "leadv2-worker-reason.sh")
+    if not os.path.isfile(lib):
+        return None
+    m = re.match(r"^dispatch-([0-9a-f]{6,40})$", str(task_id))
+    if not m:
+        return None
+    sig = m.group(1)
+    handoff = os.path.join(root, "docs", "handoff", f"dispatch-{sig}")
+    if not os.path.isdir(handoff):
+        return None
+    try:
+        r = subprocess.run(
+            ["bash", lib, handoff, "", sig],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()[:120]
+    except Exception:
+        return None
     return None
 
 repo_facts_section = sections.get("repo_facts", {}) or {}
@@ -375,6 +410,14 @@ for row in table_rows:
     # rule 3 of the pulse-readable spec: a real, greppable handle beats a
     # sentence that just restates "we don't know".
     linia = linia_name if linia_name else id_display
+    # LANE-OBSERVABILITY-02 change 3: a lane from ANOTHER repo (the lanes
+    # snapshot's foreign rows carry repo=<slug>; own-repo rows never do) is
+    # prefixed with its slug so the founder can tell which repo a row belongs
+    # to at a glance — single-repo output carries no repo field and is
+    # byte-identical to before.
+    _repo_slug = row.get("repo")
+    if _repo_slug:
+        linia = f"{_repo_slug}/{linia}"
 
     # Кто делает
     _worker = d.get("worker") if d else None
@@ -430,6 +473,12 @@ for row in table_rows:
     elif d:
         age_min = int((d.get("stream_mtime_age_s") or 0) / 60)
         sostoyanie = f"тихо {age_min} мин"
+    elif isinstance(row.get("age_s"), (int, float)):
+        # LANE-OBSERVABILITY-02 change 3: foreign-repo rows have no
+        # lane_detail join (lane_detail reads the own repo only), but the
+        # foreign row itself carries the stream mtime age — show it rather
+        # than a bare status_reason.
+        sostoyanie = f"тихо {int(row['age_s'] // 60)} мин"
     else:
         # tombstoned / pruned from active.yaml — no lane_detail row.
         sostoyanie = row.get("status_reason") or str(row.get("status") or "неизвестно")
@@ -437,7 +486,15 @@ for row in table_rows:
     na_diske = fmt_disk(disk) if d else "пока ничего"
 
     if is_dead:
-        closed_items.append({"name": linia, "cause": sostoyanie})
+        # LANE-OBSERVABILITY-02: a terminal lane's closed line carries the
+        # worker's own last words when they can be recovered — the verdict
+        # alone ("dead:silent") is exactly the silence this fix exists to
+        # break. Empty extraction degrades to the verdict-only line.
+        _wr = (d.get("worker_reason") if d else None) or read_worker_reason(tid)
+        closed_items.append({
+            "name": linia,
+            "cause": sostoyanie + (f" — worker: {_wr}" if _wr else ""),
+        })
         continue
 
     rows_out.append(
@@ -463,6 +520,16 @@ if not lanes_ok:
     table_prefix.append(
         f"НЕ ВИЖУ ЛИНИИ — сборщик lanes не ответил ({lanes_fail_reason}) — "
         "таблица ниже НЕ является доказательством пустой доски\n"
+    )
+# LANE-OBSERVABILITY-02 change 3: a foreign repo whose read failed gets the
+# SAME "не вижу" treatment as a failed own-repo section — a named, per-repo
+# degraded line. It must never zero the table (the own-repo rows below stay)
+# and never read as "that repo has no lanes".
+for _fer in foreign_error_rows:
+    table_prefix.append(
+        f"НЕ ВИЖУ ЛИНИИ — репозиторий {_fer.get('repo', '?')} не прочитан "
+        f"({_fer.get('data') or _fer.get('error')}) — его линии неизвестны, "
+        "таблица ниже не про него\n"
     )
 
 # PULSE-READABLE-01 rule 2: max ~6 rows in the founder-facing table. The

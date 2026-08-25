@@ -2600,6 +2600,18 @@ _dispatch_terminal_ledger_state() {
     bash "${LEDGER_BIN}" state "${sig8}" 2>/dev/null 9>&- || printf ''
 }
 
+# LANE-OBSERVABILITY-02 change 2: same read-only subprocess shape as
+# _dispatch_terminal_ledger_state above, but for the LAST row's `cause` — the
+# prepass invalidation gate needs it to recognise a census/prepass refusal.
+# Fail-open to "" on every error (a ledger outage must never invalidate a
+# valid cached prepass, only ever cost the safe old behaviour).
+_dispatch_terminal_ledger_cause() {
+  local sig8="$1"
+  [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] || { printf ''; return 0; }
+  PROJECT_ROOT="${LEDGER_REPO_ROOT}" LEADV2_PROJECT_ROOT="${LEDGER_REPO_ROOT}" \
+    bash "${LEDGER_BIN}" cause "${sig8}" 2>/dev/null 9>&- || printf ''
+}
+
 # rc0: this row still blocks (worker alive, liveness undetermined, terminal-ledger says
 # landed, or finished-with-evidence and no terminal row overrides it). rc1: this row no
 # longer blocks (terminal-ledger says refused or dead, OR worker finished AND left no
@@ -3704,6 +3716,49 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
   fi
   f="$(_prepass_file "${sig8}")"; mkdir -p "$(dirname "${f}")" || return 1
 
+  # LANE-OBSERVABILITY-02 change 2: a RESUMED lane (--resume-lane/--worktree pin
+  # resolved by _resolve_pinned_placement -> PLACEMENT_PINNED=1) must not be
+  # re-fed a prepass the previous round already refuted or that predates the
+  # lane base moving (merge/ff in the worktree) — the exact poison that killed
+  # rounds 2-3 of dispatch-16fbe872. Evaluated BEFORE the PREPASS_CACHE
+  # sig-match check below so an invalidated artifact can never be served from
+  # cache. Non-resume runs are untouched. LEADV2_PREPASS_INVALIDATE=0 restores
+  # today (never invalidate on resume). The machine read is the ${f}.head
+  # SIDECAR (a worker that rewrites the prepass body cannot corrupt the check);
+  # the HTML comment stamped into the artifact's first line is for humans.
+  if [[ "${PLACEMENT_PINNED:-0}" == "1" && "${LEADV2_PREPASS_INVALIDATE:-1}" == "1" && -s "${f}" ]]; then
+    local _pp_inv_reason="" _pp_old_head="" _pp_new_head _pp_last_cause
+    _pp_new_head="$(git -C "${WORK_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -n "${_pp_new_head}" ]]; then
+      if [[ -f "${f}.head" ]]; then
+        _pp_old_head="$(cat "${f}.head" 2>/dev/null || true)"
+        [[ "${_pp_old_head}" != "${_pp_new_head}" ]] && _pp_inv_reason="head_moved"
+      else
+        # every pre-existing artifact (pre-dating this change) has no .head —
+        # treat as stale and invalidate exactly ONCE; the regeneration stamps
+        # it, so the next resume at the same HEAD hits the cache.
+        _pp_inv_reason="head_moved"; _pp_old_head="unstamped"
+      fi
+    fi
+    if [[ -z "${_pp_inv_reason}" ]]; then
+      # (a) the previous terminal for this sig8 refuted the census/prepass:
+      # last row cause matching census|prepass|falsif|refus (case-insensitive).
+      _pp_last_cause="$(_dispatch_terminal_ledger_cause "${sig8}")"
+      if printf '%s' "${_pp_last_cause}" | grep -qiE 'census|prepass|falsif|refus'; then
+        _pp_inv_reason="prepass_refuted"
+      fi
+    fi
+    if [[ -n "${_pp_inv_reason}" ]]; then
+      local _pp_epoch _pp_arch
+      _pp_epoch="$(date +%s 2>/dev/null || printf '0')"
+      _pp_arch="$(dirname "${f}")/architect-prepass.${_pp_epoch}.md"
+      mv -f "${f}" "${_pp_arch}" 2>/dev/null || true
+      mv -f "${f}.sig" "${_pp_arch}.sig" 2>/dev/null || true
+      mv -f "${f}.head" "${_pp_arch}.head" 2>/dev/null || true
+      emit decision "architect_prepass task=${sig8} status=invalidated reason=${_pp_inv_reason} old_head=${_pp_old_head:-unknown} new_head=${_pp_new_head:-unknown} archived=architect-prepass.${_pp_epoch}.md"
+    fi
+  fi
+
   # T-c (SUPERVISOR-AUDIT-01): sig-keyed cache. A stamp file next to the prepass artifact
   # holds the full mission-text hash (compute_sig, not just sig8) that produced it; a
   # byte-for-byte-identical retry of the SAME mission reuses the design instead of paying
@@ -3880,8 +3935,27 @@ PY
   # T-c: stamp the mission-text hash that produced this design so a later byte-identical
   # retry (same sig8) can be served from cache. Fail-open: a stamp write failure never
   # fails the prepass itself, it only means the NEXT call re-runs (safe, just slower).
+  # LANE-OBSERVABILITY-02 change 2: the same block now also stamps the generation
+  # HEAD — a human-readable HTML comment on the artifact's first line (inert to
+  # every existing line-scanner reader: they key on headings / LANE_WRITES: /
+  # acceptance: lines, never line 1) and the machine-read ${f}.head SIDECAR the
+  # resume invalidation gate above compares against. Both fail-open the same
+  # way as .sig: a stamp failure only costs the next resume one regeneration.
   if [[ "${PREPASS_CACHE}" == "1" ]]; then
     printf '%s' "$(printf '%s' "${raw}" | compute_sig)" > "${f}.sig" 2>/dev/null || true
+    local _pp_head_sha _pp_hdr_tmp
+    _pp_head_sha="$(git -C "${WORK_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -n "${_pp_head_sha}" ]]; then
+      printf '%s\n' "${_pp_head_sha}" > "${f}.head" 2>/dev/null || true
+      _pp_hdr_tmp="${f}.hdr.$$"
+      if printf '<!-- leadv2-prepass base_head=%s generated_at=%s -->\n' \
+           "${_pp_head_sha}" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$(date +%s)")" \
+           > "${_pp_hdr_tmp}" 2>/dev/null && cat "${f}" >> "${_pp_hdr_tmp}" 2>/dev/null; then
+        mv -f "${_pp_hdr_tmp}" "${f}" 2>/dev/null || rm -f "${_pp_hdr_tmp}" 2>/dev/null || true
+      else
+        rm -f "${_pp_hdr_tmp}" 2>/dev/null || true
+      fi
+    fi
   fi
   # PREPASS-PROVIDER-FALLBACK-01 §5: journal which arm actually produced the
   # design (claude = the primary launcher; codex/glm = a fallback arm selected

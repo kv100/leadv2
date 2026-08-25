@@ -90,6 +90,15 @@ _BUILDER_SELFCHECK_SH="${SCRIPT_DIR}/lib/leadv2-builder-selfcheck.sh"
 [[ -f "${_BUILDER_SELFCHECK_SH}" ]] || _BUILDER_SELFCHECK_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-builder-selfcheck.sh"
 # shellcheck source=lib/leadv2-builder-selfcheck.sh
 [[ -f "${_BUILDER_SELFCHECK_SH}" ]] && source "${_BUILDER_SELFCHECK_SH}"
+# LANE-OBSERVABILITY-02 change 1: worker's-own-reason extractor (pure read,
+# rc always 0, empty on miss). Guarded source + absence-safe call sites below
+# (same idiom as the two libs above): a missing lib degrades every worker_reason
+# to empty, never to a failed close. LEADV2_WORKER_REASON=0 is the kill switch.
+_WORKER_REASON_SH="${SCRIPT_DIR}/lib/leadv2-worker-reason.sh"
+[[ -f "${_WORKER_REASON_SH}" ]] || _WORKER_REASON_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-worker-reason.sh"
+# shellcheck source=lib/leadv2-worker-reason.sh
+[[ -f "${_WORKER_REASON_SH}" ]] && source "${_WORKER_REASON_SH}"
+command -v lv2_worker_reason >/dev/null 2>&1 || lv2_worker_reason() { :; }
 # LOW-2 (fixround-tails): qualified <sig8>-<epoch>-<pid> attempt token, computed ONCE so the
 # explicit call and the EXIT trap's own retry (same process) reuse the identical value; a
 # bare pid would recycle across days/reboots and could be misread as the same attempt.
@@ -105,10 +114,40 @@ _PC_ATTEMPT="${TASK}-${_PC_ATTEMPT_EPOCH}-$$"
 _PC_TERMINAL_STATE=""
 _PC_TERMINAL_CAUSE=""
 _PC_TERMINAL_EVIDENCE=""
+# LANE-OBSERVABILITY-02 change 1: the worker's own last words for a no_work/dead
+# stop, computed ONCE per run (memoised — the review-gate writers below and the
+# EXIT trap's idempotent _dl_note retry all reuse the identical value; the
+# extraction scans stream/rollout files, so per-callsite recompute would be
+# pure waste). Fail-open to empty on every path: a missing lib, an unreadable
+# handoff, a kill switch — never a failed close. LEADV2_WORKER_REASON=0 off.
+_PC_WORKER_REASON=""
+_PC_WORKER_REASON_SET=0
+_pc_worker_reason() {
+  if [[ "${_PC_WORKER_REASON_SET}" == "1" ]]; then printf '%s' "${_PC_WORKER_REASON}"; return 0; fi
+  _PC_WORKER_REASON_SET=1
+  _PC_WORKER_REASON=""
+  [[ "${LEADV2_WORKER_REASON:-1}" == "1" ]] || return 0
+  _PC_WORKER_REASON="$(lv2_worker_reason "${HANDOFF:-}" "${AUTHOR:-}" "${TASK:-}" 2>/dev/null || true)"
+  printf '%s' "${_PC_WORKER_REASON}"
+}
 _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
   _PC_TERMINAL_STATE="$1"
   _PC_TERMINAL_CAUSE="$2"
   _PC_TERMINAL_EVIDENCE="${3:-}"
+  # LANE-OBSERVABILITY-02: only a no_work/dead stop carries worker_reason —
+  # landed/parked/refused have nothing to explain away. Appended to the
+  # forwarded evidence (and threaded as write-terminal's optional arg 10) so
+  # the ledger row, the journal line, and review-gate.md all say why in the
+  # worker's own voice instead of only cause=arm_produced_nothing.
+  local _wr=""
+  case "$1" in
+    no_work|dead) _wr="$(_pc_worker_reason)" ;;
+  esac
+  if [[ -n "${_wr}" && "${_PC_TERMINAL_EVIDENCE}" != *' worker_reason="'* ]]; then
+    # the second guard keeps the EXIT trap's idempotent retry (which replays
+    # _PC_TERMINAL_EVIDENCE verbatim) from appending the key a second time.
+    _PC_TERMINAL_EVIDENCE="${_PC_TERMINAL_EVIDENCE}${_PC_TERMINAL_EVIDENCE:+ }worker_reason=\"${_wr}\""
+  fi
   # REPORT-ONLY-GATE-01: optional write-terminal args 8/9. Recorded in _PC_TERMINAL_*
   # globals too so the EXIT trap's idempotent retry replays the SAME commit/deliverable,
   # never a downgraded "none"/"unknown". Existing 3-arg callers keep write-terminal's own
@@ -126,7 +165,7 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
   # to FOUNDER_TASK_ID above when no name was threaded, so write-terminal's own
   # display_name-or-founder fallback is redundant here but harmless (never empty when
   # founder isn't either).
-  bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${3:-}" "${_PC_ATTEMPT}" "${LANE_NAME}" "${_PC_TERMINAL_COMMIT:-none}" "${_PC_TERMINAL_DELIVERABLE:-unknown}" >/dev/null 2>&1 9>&- || true
+  bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${_PC_TERMINAL_EVIDENCE}" "${_PC_ATTEMPT}" "${LANE_NAME}" "${_PC_TERMINAL_COMMIT:-none}" "${_PC_TERMINAL_DELIVERABLE:-unknown}" "${_wr}" >/dev/null 2>&1 9>&- || true
 }
 HANDOFF="${ROOT}/docs/handoff/dispatch-${TASK}"
 mkdir -p "${HANDOFF}"
@@ -2117,10 +2156,21 @@ if [[ -n "${blocked_reason}" ]]; then
   # kind: (REPORT-ONLY-GATE-01) is the ONLY additive key on a blocked diff-lane
   # artifact: appended right after reason:, existing keys byte-identical, so the
   # dead-worker family (kind: diff) never reads like a report-lane family.
+  # LANE-OBSERVABILITY-02: worker_reason: (the worker's own last words) joins
+  # the same after-reason slot, ONLY on a no_work/dead terminal with a
+  # non-empty extraction — every other shape of this artifact is byte-identical,
+  # and every existing review-gate.md parser is a per-key grep (an unknown-key
+  # line changes none of them).
+  _pc_wr=""
+  case "${_pc_terminal}" in
+    no_work|dead) _pc_wr="$(_pc_worker_reason)" ;;
+  esac
   if [[ -n "${_pc_dirty_evidence:-}" ]]; then
     {
-      printf 'status: blocked\nreason: %s\nkind: %s\nbase: %s\ndirty: %s\n' \
-        "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}"
+      printf 'status: blocked\nreason: %s\n' "${_pc_rg_reason}"
+      [[ -n "${_pc_wr}" ]] && printf 'worker_reason: %s\n' "${_pc_wr}"
+      printf 'kind: %s\nbase: %s\ndirty: %s\n' \
+        "${_pc_kind}" "${_pc_base_used:-HEAD}" "${_pc_dirty_n}"
       [[ -n "${_pc_declared_list:-}" ]] && printf 'declared_writes: %s\n' "${_pc_declared_list}"
       [[ -n "${_pc_offending:-}" ]] && printf 'offending: %s\n' "${_pc_offending}"
       [[ -n "${_PC_LANE_RESOLVED_TOP:-}" ]] && printf 'resolved_toplevel: %s\nexpected_lane_root: %s\n' "${_PC_LANE_RESOLVED_TOP}" "${_lane_root}"
@@ -2129,7 +2179,9 @@ if [[ -n "${blocked_reason}" ]]; then
     } > "${HANDOFF}/review-gate.md"
   else
     {
-      printf 'status: blocked\nreason: %s\nkind: %s\nbase: %s\n' "${_pc_rg_reason}" "${_pc_kind}" "${_pc_base_used:-HEAD}"
+      printf 'status: blocked\nreason: %s\n' "${_pc_rg_reason}"
+      [[ -n "${_pc_wr}" ]] && printf 'worker_reason: %s\n' "${_pc_wr}"
+      printf 'kind: %s\nbase: %s\n' "${_pc_kind}" "${_pc_base_used:-HEAD}"
       [[ -n "${_PC_UNDIFFABLE_CSV:-}" ]] && printf 'undiffable: %s\n' "${_PC_UNDIFFABLE_CSV}"
     } > "${HANDOFF}/review-gate.md"
   fi
@@ -2222,7 +2274,16 @@ fi
 
 if pc_silent_arm_probe; then
   _pc_silent_evidence="arm=${AUTHOR} stream=${_PC_SILENT_STREAM_STATE} lane=${_PC_SILENT_LANE_BASENAME} commits_ahead=${_PC_SILENT_COMMITS_AHEAD:-0}"
-  printf 'status: blocked\nreason: arm_produced_nothing\narm: %s\n' "${AUTHOR}" > "${HANDOFF}/review-gate.md"
+  # LANE-OBSERVABILITY-02: this is exactly the stop whose journal used to say
+  # only cause=arm_produced_nothing while the worker's rollout said why —
+  # surface the worker's own words on the artifact too (omitted when empty,
+  # same rule as the empty-diff writer above).
+  _pc_wr="$(_pc_worker_reason)"
+  {
+    printf 'status: blocked\nreason: arm_produced_nothing\n'
+    [[ -n "${_pc_wr}" ]] && printf 'worker_reason: %s\n' "${_pc_wr}"
+    printf 'arm: %s\n' "${AUTHOR}"
+  } > "${HANDOFF}/review-gate.md"
   emit decision "review_gate task=${TASK} status=blocked reason=arm_produced_nothing terminal=no_work cause=arm_produced_nothing arm=${AUTHOR}"
   _dl_note no_work arm_produced_nothing "${_pc_silent_evidence}"
   _pc_arm_advance

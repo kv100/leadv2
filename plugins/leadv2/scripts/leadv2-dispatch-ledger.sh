@@ -187,6 +187,16 @@ dispatch_terminal_last_state() {
   _dispatch_terminal_last_field "${sig8}" "${f}" terminal
 }
 
+# LANE-OBSERVABILITY-02 change 2: stdout = the LAST recorded `cause` for
+# <sig8>, or empty if no row / no such field. rc always 0 (read, not gate) —
+# same contract as dispatch_terminal_last_state above; the prepass
+# invalidation gate in leadv2-dispatch-code.sh consumes it via the `cause`
+# CLI subcommand.
+dispatch_terminal_last_cause() {
+  local sig8="$1" f; f="$(dispatch_terminal_ledger_file)"
+  _dispatch_terminal_last_field "${sig8}" "${f}" cause
+}
+
 # Writes EXACTLY ONE row per <sig8> per real ATTEMPT (write-once-per-attempt), and refuses
 # to override a TRUE terminal (landed|dead) once one is recorded for the sig8 (write-once-
 # per-sig8-once-final). wave2 round3 finding 3: refused/parked are RETRYABLE -- quota
@@ -208,9 +218,15 @@ dispatch_terminal_last_state() {
 # breaks a future jq -r .commit). All current readers are grep -F + per-field sed
 # (_dispatch_terminal_last_field, :135) -- key order and unknown keys are irrelevant to
 # them, so inserting the two keys between "evidence" and "attempt" changes no reader.
+# LANE-OBSERVABILITY-02 change 1: optional arg 10 (worker_reason) follows the exact
+# commit/deliverable precedent -- additive after arg 9 so every existing 7/9-arg
+# callsite keeps byte-identical output. The JSON row ALWAYS carries the key (empty
+# string when unknown); the journal line only gains ` worker_reason="..."` when
+# non-empty (an empty value would be noise on every healthy terminal row).
+# <sig8> <founder_task_id> <terminal:landed|parked|refused|dead|no_work> <cause> [<evidence>] [<attempt>] [<display_name>] [<commit>] [<deliverable>] [<worker_reason>]
 dispatch_ledger_write_terminal() {
   local sig8="$1" founder="${2:-}" terminal="$3" cause="${4:-}" evidence="${5:-}" attempt="${6:-}" display_name="${7:-}"
-  local commit="${8:-none}" deliverable="${9:-unknown}"
+  local commit="${8:-none}" deliverable="${9:-unknown}" worker_reason="${10:-}"
   [[ -n "${sig8}" ]] || { log_err "write_terminal: empty task_sig, refusing to write"; return 1; }
   case "${terminal}" in
     landed|parked|refused|dead|no_work) : ;;
@@ -227,6 +243,12 @@ dispatch_ledger_write_terminal() {
   [[ -n "${commit}" ]] || commit="none"
   deliverable="$(json_safe "${deliverable}")"
   [[ -n "${deliverable}" ]] || deliverable="unknown"
+  # LANE-OBSERVABILITY-02: worker_reason is free-form worker text — same
+  # json_safe character class as every other free-form field, plus the 120-byte
+  # clamp lv2_worker_reason already applies (a caller bypassing the lib gets
+  # clamped here too, so the row can never carry an unbounded quote).
+  worker_reason="$(json_safe "${worker_reason}")"
+  worker_reason="${worker_reason:0:120}"
   # SWIFTBAR-LIVE-01 round 4 (§Fix 3): emit task_id alongside founder_task_id so a
   # terminal row is self-describing -- the status-surface reader keyed the lane
   # name off task_id, and this row REPLACES the reserve row that carried it, so
@@ -263,16 +285,26 @@ dispatch_ledger_write_terminal() {
       [[ -n "${_same_attempt_row}" ]] && exit 2
     fi
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
-    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","task_id":"%s","terminal":"%s","cause":"%s","evidence":"%s","commit":"%s","deliverable":"%s","attempt":"%s"}\n' \
-      "${ts}" "${sig8}" "${founder}" "${_tid}" "${terminal}" "${cause}" "${evidence}" "${commit}" "${deliverable}" "${attempt}" >> "${f}" || exit 1
+    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","task_id":"%s","terminal":"%s","cause":"%s","evidence":"%s","commit":"%s","deliverable":"%s","attempt":"%s","worker_reason":"%s"}\n' \
+      "${ts}" "${sig8}" "${founder}" "${_tid}" "${terminal}" "${cause}" "${evidence}" "${commit}" "${deliverable}" "${attempt}" "${worker_reason}" >> "${f}" || exit 1
     exit 0
   ) 9>"${lockf}"
   rc=$?
   case "${rc}" in
     0)
       if [[ -f "${JOURNAL_BIN}" ]]; then
-        bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision \
-          "dispatch_terminal task=${sig8} terminal=${terminal} cause=${cause}" >/dev/null 2>&1 || true
+        # LANE-OBSERVABILITY-02: append the worker's own words to the journal
+        # line ONLY when non-empty — every existing journal parser greps
+        # `dispatch_terminal task=` and reads cause= positionally, so a
+        # trailing key changes no reader, but an empty `worker_reason=""` on
+        # every healthy row would be pure noise.
+        if [[ -n "${worker_reason}" ]]; then
+          bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision \
+            "dispatch_terminal task=${sig8} terminal=${terminal} cause=${cause} worker_reason=\"${worker_reason}\"" >/dev/null 2>&1 || true
+        else
+          bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision \
+            "dispatch_terminal task=${sig8} terminal=${terminal} cause=${cause}" >/dev/null 2>&1 || true
+        fi
       fi
       return 0 ;;
     2)
@@ -933,7 +965,7 @@ case "${1:-}" in
   write-terminal)
     shift
     [[ $# -ge 3 ]] || usage
-    dispatch_ledger_write_terminal "$1" "${2:-}" "$3" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" "${9:-}"
+    dispatch_ledger_write_terminal "$1" "${2:-}" "$3" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" "${9:-}" "${10:-}"
     exit $?
     ;;
   exists)
@@ -946,6 +978,15 @@ case "${1:-}" in
     shift
     [[ $# -ge 1 ]] || usage
     dispatch_terminal_last_state "$1"
+    exit 0
+    ;;
+  # LANE-OBSERVABILITY-02 change 2: the prepass invalidation gate needs the
+  # last row's CAUSE (to see a census/prepass refusal), not just the terminal
+  # word — same read-only shape as `state`: last row's field or empty.
+  cause)
+    shift
+    [[ $# -ge 1 ]] || usage
+    dispatch_terminal_last_cause "$1"
     exit 0
     ;;
   sweep)
