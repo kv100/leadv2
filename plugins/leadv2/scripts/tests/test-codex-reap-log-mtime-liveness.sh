@@ -34,9 +34,20 @@ trap 'rm -rf "${WORK}"' EXIT
 
 REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
 PRE_SH="${WORK}/pre-codex-task.sh"
-if [[ -n "${REPO}" ]]; then
-  git -C "${REPO}" show "HEAD:plugins/leadv2/scripts/codex-task.sh" > "${PRE_SH}" 2>/dev/null || : > "${PRE_SH}"
-fi
+# Build the precise old decision shape from the file under test: log mtime was
+# ignored, so a stale pid plus elapsed timeout reaped the job.  Using HEAD here
+# would silently turn this into a vacuous control as soon as the fix is merged.
+python3 - "${TARGET}" "${PRE_SH}" <<'PY' 2>/dev/null || : > "${PRE_SH}"
+import re, sys
+src = open(sys.argv[1]).read()
+old = re.sub(
+    r'\n        # CODEX-REAP-LOG-MTIME-LIVENESS-01:.*?\n        cause = None',
+    '\n        cause = None', src, flags=re.S,
+)
+if old == src:
+    raise SystemExit(2)
+open(sys.argv[2], 'w').write(old)
+PY
 [[ -s "${PRE_SH}" ]] || PRE_SH=""
 
 # Extract the reaper's embedded python heredoc from a codex-task.sh.
