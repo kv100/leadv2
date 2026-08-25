@@ -30,7 +30,7 @@ check_nogrep() { # <haystack> <pattern> <label>
 
 unset LEADV2_CLAUDE_MULTIPROFILE LEADV2_CLAUDE_PROFILES_FILE \
       LEADV2_CLAUDE_PROFILE_PROBE LEADV2_CLAUDE_PROFILE_TIMEOUT \
-      LEADV2_QUOTA_CACHE_DIR CLAUDE_CONFIG_DIR
+      LEADV2_QUOTA_CACHE_DIR LEADV2_ANTHROPIC_ACTIVE_SERVICE CLAUDE_CONFIG_DIR
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/claude-profile-select.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -102,7 +102,7 @@ echo "=== T4: 20% vs 80% -> picks the 20% label ==="
 printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=alpha config_dir=.*/dir-alpha score=20 source=live reason=worst_window candidates=2$' 'T4: picks alpha score=20 live'
+check_grep "$OUT" '^profile=alpha config_dir=.*/dir-alpha score=20 source=live reason=worst_window candidates=2 cred=file:[^ ]+$' 'T4: picks alpha score=20 live'
 [[ "$RC" -eq 0 ]] && pass "T4: exit 0" || fail "T4 exit" "rc=$RC"
 
 # ============================================================================
@@ -110,7 +110,7 @@ echo "=== T5: one unknown, one ok -> picks ok, source=live ==="
 printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=beta .*score=80 source=live reason=worst_window candidates=2$' 'T5: picks the ok profile'
+check_grep "$OUT" '^profile=beta .*score=80 source=live reason=worst_window candidates=2 cred=file:[^ ]+$' 'T5: picks the ok profile'
 
 # ============================================================================
 echo "=== T6: both unknown -> first registry entry, all_unknown ==="
@@ -118,7 +118,7 @@ printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG
 printf 'dead2\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 cp "$FIX/dead.json" "$FIX/dead2.json"
 run_select $(base_env)
-check_grep "$OUT" '^profile=dead .*score=101 source=unknown reason=all_unknown candidates=2$' 'T6: first entry, all_unknown'
+check_grep "$OUT" '^profile=dead .*score=101 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+$' 'T6: first entry, all_unknown'
 
 # ============================================================================
 echo "=== T7: malformed line + email-shaped label -> skipped, one warning each ==="
@@ -129,7 +129,7 @@ echo "=== T7: malformed line + email-shaped label -> skipped, one warning each =
   printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta"
 } > "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=alpha .*candidates=2$' 'T7: bad lines skipped, both good ones used'
+check_grep "$OUT" '^profile=alpha .*candidates=2 cred=file:[^ ]+$' 'T7: bad lines skipped, both good ones used'
 w_count="$(grep -c 'WARN: registry line .* skipped' <<<"$ERR")"
 [[ "$w_count" -eq 2 ]] && pass "T7: exactly two skip warnings" || fail "T7 warnings" "count=$w_count err=$ERR"
 
@@ -177,6 +177,7 @@ printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 cat > "$repo/bin/claude" <<SH
 #!/usr/bin/env bash
 printf 'CLAUDE_CONFIG_DIR=%s\n' "\${CLAUDE_CONFIG_DIR:-<unset>}" > "\$I9_CAPTURE"
+printf 'LEADV2_ANTHROPIC_ACTIVE_SERVICE=%s\n' "\${LEADV2_ANTHROPIC_ACTIVE_SERVICE:-<unset>}" >> "\$I9_CAPTURE"
 printf '{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5}}}\n'
 exit 0
 SH
@@ -193,11 +194,11 @@ cap_val="$(cat "$cap" 2>/dev/null)"
 check_grep "$cap_val" "^CLAUDE_CONFIG_DIR=$tmp/dir-alpha$" 'I1: child sees only the selected config_dir'
 n_prof_lines="$(grep -c '^\[claude-profile\]' "$int_err")"
 if [[ "$n_prof_lines" -eq 1 ]]; then pass "I2: exactly one [claude-profile] stderr line"; else fail "I2" "count=$n_prof_lines"; fi
-check_grep "$(cat "$int_err")" '^\[claude-profile\] selected=alpha score=20 source=live candidates=2$' 'I2b: label-only stderr line shape'
+check_grep "$(cat "$int_err")" '^\[claude-profile\] selected=alpha score=20 source=live candidates=2 cred_kind=file$' 'I2b: label-only stderr line shape'
 hlog="$repo/docs/handoff/PROFILE-CL/claude-profile.log"
 [[ -f "$hlog" ]] && pass "I3: handoff claude-profile.log exists" || fail "I3" "missing $hlog"
 if [[ -f "$hlog" ]]; then
-  check_grep "$(cat "$hlog")" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[claude-profile\] selected=alpha score=20 source=live candidates=2$' 'I4: ISO-prefixed label-only handoff line'
+  check_grep "$(cat "$hlog")" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[claude-profile\] selected=alpha score=20 source=live candidates=2 cred_kind=file$' 'I4: ISO-prefixed label-only handoff line'
   check_nogrep "$(cat "$hlog")" 'sk-ant|@|/' 'I5: handoff log has no token, email, or path'
 fi
 check_nogrep "$(grep '^\[claude-profile\]' "$int_err")" 'sk-ant|@|/' 'I6: profile stderr line has no token, email, or path'

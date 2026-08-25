@@ -112,9 +112,11 @@ fails (login down OR quota exhausted — `codex-task.sh` exits non-zero / rate-l
 ## Claude multi-profile selection (CLAUDE-MULTIPROFILE-QUOTA-02, opt-in)
 
 A Claude lane can pick the healthiest of several Anthropic profiles before spawning
-`claude`. **Off by default**; set `LEADV2_CLAUDE_MULTIPROFILE=1` to enable.
+`claude`. This is an **internal / advanced** feature for plugin consumers: it is
+off by default, and does nothing unless `LEADV2_CLAUDE_MULTIPROFILE=1` is set
+and a user-level registry has at least two valid entries.
 
-**Registry** — user-level, NEVER committed to a repo
+**Registry** — user-level, outside every repo, and NEVER committed to a repo
 (`${LEADV2_CLAUDE_PROFILES_FILE:-$HOME/.claude/state/leadv2/claude-profiles.tsv}`, TSV):
 
 ```
@@ -143,10 +145,15 @@ hung, crash) fails open to single-profile: the inherited `CLAUDE_CONFIG_DIR` is 
 untouched and the lane runs exactly as before.
 
 **Observable**: one stderr line per lane, label-only —
-`[claude-profile] selected=<label> score=<n> source=live candidates=<n>` (or
+`[claude-profile] selected=<label> score=<n> source=live candidates=<n> cred_kind=<keychain|file|unknown>` (or
 `[claude-profile] single-profile fallback`) — mirrored, ISO-8601-prefixed, into
 `docs/handoff/<task-id>/claude-profile.log`. No path, service name, email, or token
 ever appears on either surface.
+
+**Limitation / deferral**: the registry's `config_dir` to `credential_source`
+pairing is operator-trusted. No cross-account identity check confirms they name
+the same account, so a mismatched row can spend the wrong account's quota without
+a warning.
 
 Tests: `plugins/leadv2/scripts/tests/test-claude-profile-select.sh` (hermetic; stubbed
 probe, fake `claude`, T1–T10 + integration legs).

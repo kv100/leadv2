@@ -568,7 +568,7 @@ MAX_TURNS="${LEADV2_SUBSESSION_MAX_TURNS:-110}"
 # ---------------------------------------------------------------------------
 _CLAUDE_PROFILE_SELECT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-claude-profile-select.sh"
 leadv2_select_claude_profile() {
-  local sel label dir score src cands iso out rc pid elapsed tmo
+  local sel label dir score src cands cred cred_kind iso out rc pid elapsed tmo
   # Opt-in gate mirrors the selector's own: flag unset => fully inert — no
   # stderr line, no handoff log, no subprocess. The lane runs exactly as
   # before multi-profile existed.
@@ -607,7 +607,16 @@ leadv2_select_claude_profile() {
     label="${BASH_REMATCH[1]}"; dir="${BASH_REMATCH[2]}"
     score="${BASH_REMATCH[3]}"; src="${BASH_REMATCH[4]}"
     cands="$(printf '%s' "$sel" | sed -n 's/.*candidates=\([0-9][0-9]*\).*/\1/p')"
-    line_log="[claude-profile] selected=${label} score=${score} source=${src} candidates=${cands:-?}"
+    cred="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]cred=\([^[:space:]]*\).*/\1/p')"
+    cred_kind=unknown
+    case "$cred" in
+      keychain:?*)
+        export LEADV2_ANTHROPIC_ACTIVE_SERVICE="${cred#keychain:}"
+        cred_kind=keychain
+        ;;
+      file:/*) cred_kind=file ;;
+    esac
+    line_log="[claude-profile] selected=${label} score=${score} source=${src} candidates=${cands:-?} cred_kind=${cred_kind}"
     export CLAUDE_CONFIG_DIR="$dir"
     printf '%s\n' "$line_log" >&2
     printf '%s %s\n' "$iso" "$line_log" >> "$HANDOFF_DIR/claude-profile.log" 2>/dev/null || true
