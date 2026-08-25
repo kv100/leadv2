@@ -7,6 +7,7 @@ non-secret result (percentages, reset times, plan type).
 
 Usage:
     leadv2-quota-read.py glm|codex|anthropic [--no-cache] [--cache-dir DIR]
+    leadv2-quota-read.py anthropic --no-cache --credential-file <path>
 
 Each provider is INDEPENDENT — one failing never blanks another. Any read error
 fails OPEN: the bucket reports {"status":"unknown", ...} and exit code 0, so a
@@ -328,6 +329,21 @@ def _read_keychain(service):
         return None
 
 
+def _read_credential_file(path):
+    """CLAUDE-MULTIPROFILE-QUOTA-02: read a keychain-format blob from a file.
+
+    A profile whose credential source is `file:` carries the same JSON blob a
+    keychain entry holds (claudeAiOauth et al), just on disk.  Read-only; the
+    blob is held in process memory exactly like a keychain secret — never
+    printed, logged, or written to any cache file.
+    """
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
 def _anthropic_kv():
     """Last captured rate_limit_info from history.db kv (secondary signal)."""
     db = os.environ.get("LEADV2_BURN_DB", os.path.expanduser("~/.claude/burn/history.db"))
@@ -418,12 +434,19 @@ def resolve_active_account(accounts, active_pin):
     return "pinned_unresolved"
 
 
-def read_anthropic():
+def read_anthropic(credential_file=None):
     now_ms = int(time.time() * 1000)
     accounts = []
     active_pin = configured_active_account()
-    for sv in sorted(_keychain_services()):
-        blob = _read_keychain(sv)
+    # CLAUDE-MULTIPROFILE-QUOTA-02: --credential-file swaps the keychain
+    # enumeration for one on-disk blob (single-entry accounts list).  The
+    # default path (no flag) is unchanged.
+    if credential_file:
+        blob = _read_credential_file(credential_file)
+        sources = [("file:%s" % credential_file, blob)] if isinstance(blob, dict) else []
+    else:
+        sources = [(sv, _read_keychain(sv)) for sv in sorted(_keychain_services())]
+    for sv, blob in sources:
         if not isinstance(blob, dict):
             continue
         o = blob.get("claudeAiOauth") or {}
@@ -445,7 +468,12 @@ def read_anthropic():
         except Exception as e:
             err = str(e)
 
-        suffix = "default" if sv == "Claude Code-credentials" else sv.rsplit("-", 1)[-1]
+        if credential_file:
+            suffix = "file"
+        elif sv == "Claude Code-credentials":
+            suffix = "default"
+        else:
+            suffix = sv.rsplit("-", 1)[-1]
         acct = {"entry_suffix": suffix, "service": sv,
                 "subscription_type": o.get("subscriptionType"),
                 "tier": o.get("rateLimitTier"), "http": code,
@@ -557,9 +585,22 @@ def normalize_payload(obj):
 def main():
     args = sys.argv[1:]
     if not args or args[0] not in READERS:
-        sys.stderr.write("usage: leadv2-quota-read.py glm|codex|anthropic [--no-cache]\n")
+        sys.stderr.write("usage: leadv2-quota-read.py glm|codex|anthropic [--no-cache] "
+                         "[--credential-file <path> (anthropic only)]\n")
         sys.exit(2)
     provider = args[0]
+    # CLAUDE-MULTIPROFILE-QUOTA-02: additive flag; absent = byte-identical to
+    # the previous behaviour, so no existing caller changes.
+    credential_file = None
+    if "--credential-file" in args:
+        if provider != "anthropic":
+            sys.stderr.write("--credential-file applies to anthropic only\n")
+            sys.exit(2)
+        i = args.index("--credential-file")
+        if i + 1 >= len(args):
+            sys.stderr.write("--credential-file requires a path\n")
+            sys.exit(2)
+        credential_file = args[i + 1]
     if "--no-cache" not in args:
         cached = cache_get(provider)
         if cached is not None:
@@ -567,7 +608,8 @@ def main():
             cache_put(provider, cached)
             print(json.dumps(cached))
             return
-    obj = normalize_payload(READERS[provider]())
+    obj = normalize_payload(READERS[provider](credential_file)
+                            if provider == "anthropic" else READERS[provider]())
     obj.setdefault("provider", provider)
     obj.setdefault("fetched_at", iso_now())
     cache_put(provider, obj)

@@ -555,6 +555,73 @@ STREAM_OUT="$HANDOFF_DIR/${ROLE}.stream.jsonl"
 # cap (caller saw rc=0 on a half-written file). Override: LEADV2_SUBSESSION_MAX_TURNS.
 MAX_TURNS="${LEADV2_SUBSESSION_MAX_TURNS:-110}"
 
+# ---------------------------------------------------------------------------
+# CLAUDE-MULTIPROFILE-QUOTA-02: opt-in Anthropic multi-profile selection.
+# Runs ONCE, before the CLAUDE_ARGS build, so BOTH launch sites (the --wait
+# `claude` call in run_subsession() and the setsid background arm) inherit
+# the selected CLAUDE_CONFIG_DIR.  Fail-open on every fault: an absent or
+# unparseable selector line means single-profile, and the inherited
+# CLAUDE_CONFIG_DIR is left untouched — the lane runs exactly as before.
+# Privacy: only the profile LABEL ever reaches stderr or the handoff log;
+# config_dir lives on the selector's stdout, is consumed right here, and is
+# never journalled, logged, or sent to handoff.
+# ---------------------------------------------------------------------------
+_CLAUDE_PROFILE_SELECT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-claude-profile-select.sh"
+leadv2_select_claude_profile() {
+  local sel label dir score src cands iso out rc pid elapsed tmo
+  # Opt-in gate mirrors the selector's own: flag unset => fully inert — no
+  # stderr line, no handoff log, no subprocess. The lane runs exactly as
+  # before multi-profile existed.
+  [[ "${LEADV2_CLAUDE_MULTIPROFILE:-}" == "1" ]] || return 0
+  # Bound the wrapper above the selector's own total probe budget (clamped
+  # the same way) + 5s of parse/startup slop, so a wedged selector can never
+  # stall the spawn.
+  tmo="${LEADV2_CLAUDE_PROFILE_TIMEOUT:-12}"
+  if ! [[ "$tmo" =~ ^[0-9]+$ ]]; then tmo=12; fi
+  if (( tmo < 1 )); then tmo=1; fi
+  if (( tmo > 60 )); then tmo=60; fi
+  tmo=$((tmo + 5))
+  sel=""
+  if [[ -f "$_CLAUDE_PROFILE_SELECT" ]]; then
+    out="$(mktemp "${TMPDIR:-/tmp}/claude-profile-sel.XXXXXX" 2>/dev/null)" || out=""
+    if [[ -n "$out" ]]; then
+      # Selector stderr is dropped here on purpose: the subsession's own
+      # contract is exactly ONE [claude-profile] stderr line, so the
+      # selector's per-line warnings must not double it in production.
+      bash "$_CLAUDE_PROFILE_SELECT" >"$out" 2>/dev/null &
+      pid=$!; elapsed=0
+      while kill -0 "$pid" 2>/dev/null && (( elapsed < tmo * 10 )); do sleep 0.1; elapsed=$((elapsed + 1)); done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+      else
+        wait "$pid" 2>/dev/null || true
+      fi
+      sel="$(head -1 "$out" 2>/dev/null)"
+      rm -f "$out"
+    fi
+  fi
+  iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local re_sel line_log
+  re_sel='^profile=([a-z0-9][a-z0-9_-]{0,31})[[:space:]]config_dir=([^[:space:]]+)[[:space:]]score=([0-9]+)[[:space:]]source=(live|unknown)'
+  if [[ "$sel" =~ $re_sel ]] && [[ -d "${BASH_REMATCH[2]}" && -r "${BASH_REMATCH[2]}" ]]; then
+    label="${BASH_REMATCH[1]}"; dir="${BASH_REMATCH[2]}"
+    score="${BASH_REMATCH[3]}"; src="${BASH_REMATCH[4]}"
+    cands="$(printf '%s' "$sel" | sed -n 's/.*candidates=\([0-9][0-9]*\).*/\1/p')"
+    line_log="[claude-profile] selected=${label} score=${score} source=${src} candidates=${cands:-?}"
+    export CLAUDE_CONFIG_DIR="$dir"
+    printf '%s\n' "$line_log" >&2
+    printf '%s %s\n' "$iso" "$line_log" >> "$HANDOFF_DIR/claude-profile.log" 2>/dev/null || true
+    return 0
+  fi
+  # Absent, unparseable, or the selected dir is unreadable: single-profile.
+  printf '[claude-profile] single-profile fallback\n' >&2
+  printf '%s [claude-profile] single-profile fallback\n' "$iso" \
+    >> "$HANDOFF_DIR/claude-profile.log" 2>/dev/null || true
+  return 0
+}
+leadv2_select_claude_profile
+
+
 CLAUDE_ARGS=(
   -p "$FINAL_PROMPT"
   --model "$MODEL"

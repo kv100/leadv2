@@ -331,6 +331,7 @@ SUITE_DEFS=(
   "lane trace instrument (Mission B: writer/concurrency/off-path/reader)|||bash $TEST_DIR/test-leadv2-trace.sh"
   "burn governor (BURN-GOVERNOR-01: 24h burn gate)|||bash $TEST_DIR/test-burn-governor.sh|||SERIAL"
   "provider quota gate (QUOTA-GATE-PARITY-01)|||bash $TEST_DIR/test-provider-quota-gate.sh"
+  "Claude multi-profile selector (CLAUDE-MULTIPROFILE-QUOTA-02)|||bash $TEST_DIR/test-claude-profile-select.sh"
   "codex-dead review reroute (QUOTA-GATE-PARITY-01)|||bash $TEST_DIR/test-codex-dead-reroute.sh"
 )
 

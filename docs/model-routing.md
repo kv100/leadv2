@@ -108,6 +108,48 @@ fails (login down OR quota exhausted — `codex-task.sh` exits non-zero / rate-l
 - Other repos (respiro-ios, ...) — Codex OFF by default until the founder explicitly
   opts in via that repo's own `codex-policy.yaml`. Do not flip it from here.
 
+## Claude multi-profile selection (CLAUDE-MULTIPROFILE-QUOTA-02, opt-in)
+
+A Claude lane can pick the healthiest of several Anthropic profiles before spawning
+`claude`. **Off by default**; set `LEADV2_CLAUDE_MULTIPROFILE=1` to enable.
+
+**Registry** — user-level, NEVER committed to a repo
+(`${LEADV2_CLAUDE_PROFILES_FILE:-$HOME/.claude/state/leadv2/claude-profiles.tsv}`, TSV):
+
+```
+# label<TAB>config_dir<TAB>credential_source(optional)
+alpha	/abs/path/to/config/dir	keychain:Claude Code-credentials
+beta	/abs/path/to/other/dir	file:/abs/path/to/other/dir/.credentials.json
+```
+
+- `label`: `^[a-z0-9][a-z0-9_-]{0,31}$` (rejects `@`/`.` — emails are a hard reject).
+  The label is the ONLY field ever journalled or logged.
+- `config_dir`: absolute, existing directory. It is passed to the child as
+  `CLAUDE_CONFIG_DIR` only; it is never journalled. The operator owns registry
+  content — a non-default config dir must carry the settings/hooks the lane needs.
+- `credential_source`: `keychain:<service>` or `file:<abs path>`; absent defaults to
+  `file:<config_dir>/.credentials.json`. The registry states it explicitly because
+  how Claude Code derives a keychain service from a config dir is UNVERIFIED and is
+  deliberately never derived in code.
+
+**Selection** (`plugins/leadv2/scripts/leadv2-claude-profile-select.sh`): each entry is
+probed independently (`leadv2-quota-read.py anthropic --no-cache`, `--credential-file`
+for `file:` sources, per-profile cache dir + service pin), bounded by one total budget
+(`LEADV2_CLAUDE_PROFILE_TIMEOUT`, default 12s, clamped 1..60). Score =
+max(five_hour_pct, seven_day_pct) (worst window); lowest score wins; ties break by
+registry order. Every fault path (missing registry, <2 valid entries, all probes
+hung, crash) fails open to single-profile: the inherited `CLAUDE_CONFIG_DIR` is left
+untouched and the lane runs exactly as before.
+
+**Observable**: one stderr line per lane, label-only —
+`[claude-profile] selected=<label> score=<n> source=live candidates=<n>` (or
+`[claude-profile] single-profile fallback`) — mirrored, ISO-8601-prefixed, into
+`docs/handoff/<task-id>/claude-profile.log`. No path, service name, email, or token
+ever appears on either surface.
+
+Tests: `plugins/leadv2/scripts/tests/test-claude-profile-select.sh` (hermetic; stubbed
+probe, fake `claude`, T1–T10 + integration legs).
+
 ---
 Template source: adapted from `persona-engine/docs/model-routing.md` (2026-07-01) for
 plugin-wide reuse. Each repo may extend with its own measured burn data; the mechanism
