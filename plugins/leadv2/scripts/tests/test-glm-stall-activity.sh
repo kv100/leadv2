@@ -40,7 +40,29 @@ run_open_tool_case() { # <source> <expect alive|reaped>
 }
 
 PRE="${WORK}/glm-pre.sh"
-git -C "$(cd "${HERE}/../../.." && pwd)" show HEAD:plugins/leadv2/scripts/glm-coder.sh > "$PRE"
+# Make the old stdout-idle decision from the source under test.  This keeps the
+# RED control valid after the fix is committed (HEAD itself is then green).
+python3 - "$TARGET" "$PRE" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+old_block = '''    if [[ "${idle_s}" -ge "${stall_s}" ]]; then
+      touch "${run_dir}/.stalled"
+      printf '[%s] STALL_KILL after=%ss -- no progress; killing process group %s\\n' \\
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${stall_s}" "${child_pid}" >> "${run_dir}/progress.log"
+      kill -TERM "-${child_pid}" 2>/dev/null || true
+      sleep 5
+      kill -KILL "-${child_pid}" 2>/dev/null || true
+      return 0
+    fi
+'''
+new = re.sub(
+    r'    open_tool_calls="\$\(stream_state_get.*?\n    fi\n(?=\n    sleep "\$\{interval\}")',
+    old_block.rstrip(), src, count=1, flags=re.S,
+)
+if new == src:
+    raise SystemExit(2)
+open(sys.argv[2], 'w').write(new)
+PY
 if run_open_tool_case "$PRE" reaped && run_open_tool_case "$TARGET" alive; then
   ok "open tool stdout-idle is RED pre-fix -> GREEN post-fix"
 else
