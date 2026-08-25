@@ -82,6 +82,124 @@ _both_sites_use_constant() { # <script>
   return 1
 }
 
+# CTX-COST-GUARDS-01: same drift guard for the SECOND filter stage
+# (_pc_drop_bootstrap_dirt), which handles the plugin-bootstrap-symlink exclusion that
+# a text-only regex cannot express (needs a filesystem [-L] check). Count of
+# `| _pc_drop_bootstrap_dirt ` pipeline appends must equal the count of porcelain sites,
+# same shape as _both_sites_use_constant above -- so the two-stage filter cannot drift
+# the way the single-stage one did on 2026-08-21.
+_both_sites_use_bootstrap_filter() { # <script>
+  local s="$1" n_sites n_filter
+  [[ -f "$s" ]] || return 2
+  n_sites="$(grep -c "status --porcelain --untracked-files=all" "$s" 2>/dev/null || printf 0)"
+  n_filter="$(grep -c '| _pc_drop_bootstrap_dirt "\$' "$s" 2>/dev/null || printf 0)"
+  [[ "${n_sites}" -ge 2 && "${n_filter}" -eq "${n_sites}" ]] && return 0
+  return 1
+}
+
+# Extracts _PC_PORCELAIN_EXCLUDE_RE, _PC_BOOTSTRAP_PREFIX_RE, _pc_drop_bootstrap_dirt
+# and _pc_lane_dirty verbatim out of the live script and sources them into the caller's
+# shell -- NOT the whole script, which is a top-level executor with no
+# source-safe/functions-only guard. rc2 if the expected function boundaries are gone
+# (reported honestly, same convention as _extract_filter above).
+_pc_source_lane_dirty_funcs() { # <script>
+  local s="$1" snippet start end
+  # Functions/vars defined via eval below are GLOBAL and persist across calls in this
+  # process -- without this unset, a pre-fix run right after a post-fix run would keep
+  # seeing the post-fix _pc_drop_bootstrap_dirt (run_case always runs PRE then LIVE, so
+  # case N+1's PRE_SCRIPT pass silently inherits case N's LIVE_SCRIPT functions).
+  unset -f _pc_drop_bootstrap_dirt _pc_lane_dirty 2>/dev/null
+  unset _PC_BOOTSTRAP_PREFIX_RE 2>/dev/null
+  [[ -f "$s" ]] || return 2
+  start="$(grep -n '^_PC_PORCELAIN_EXCLUDE_RE=' "$s" | head -1 | cut -d: -f1)"
+  end="$(grep -n '^_pc_lane_dirty() {' "$s" | head -1 | cut -d: -f1)"
+  [[ -n "${start}" && -n "${end}" ]] || return 2
+  end="$(tail -n "+${end}" "$s" | grep -n '^}' | head -1 | cut -d: -f1)"
+  [[ -n "${end}" ]] || return 2
+  local abs_end
+  abs_end=$(( $(grep -n '^_pc_lane_dirty() {' "$s" | head -1 | cut -d: -f1) + end - 1 ))
+  snippet="$(sed -n "${start},${abs_end}p" "$s")"
+  [[ -n "${snippet}" ]] || return 2
+  eval "${snippet}" 2>/dev/null || return 2
+  declare -F _pc_lane_dirty >/dev/null 2>&1 || return 2
+  return 0
+}
+
+# Real-filesystem cases (8-11): the string harness above (_survives) cannot express
+# `[ -L ]`, so these build an actual scratch git worktree.
+_scratch_lane_setup() { # -> prints scratch dir path on stdout
+  local dir target
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/scope-dirt-lane.XXXXXX")" || return 1
+  ( cd "${dir}" && git init -q && git config user.email t@t.test && \
+    git config user.name t && git commit -q --allow-empty -m init ) >/dev/null 2>&1 || return 1
+  mkdir -p "${dir}/.claude/commands" || return 1
+  target="$(mktemp "${TMPDIR:-/tmp}/scope-dirt-target.XXXXXX")" || return 1
+  printf '' > "${target}"
+  ln -s "${target}" "${dir}/.claude/commands/leadv2.md" || return 1
+  printf '%s' "${dir}"
+}
+
+# 8: symlink-only bootstrap dirt -> lane must NOT be graded dirty (rc1).
+case_bootstrap_symlink_only() { # <script>
+  local s="$1" lane
+  lane="$(_scratch_lane_setup)" || return 2
+  _pc_source_lane_dirty_funcs "$s" || { rm -rf "${lane}"; return 2; }
+  if _pc_lane_dirty "${lane}"; then rm -rf "${lane}"; return 1; fi
+  rm -rf "${lane}"
+  return 0
+}
+
+# 9: symlink bootstrap dirt PLUS a real undeclared file -> lane must still be graded
+# dirty (rc0), and the survivor set must name the real file, not the symlink.
+case_bootstrap_symlink_plus_real_file() { # <script>
+  local s="$1" lane
+  lane="$(_scratch_lane_setup)" || return 2
+  _pc_source_lane_dirty_funcs "$s" || { rm -rf "${lane}"; return 2; }
+  printf 'x' > "${lane}/undeclared.txt"
+  if ! _pc_lane_dirty "${lane}"; then rm -rf "${lane}"; return 1; fi
+  local survivors
+  survivors="$(git -C "${lane}" status --porcelain --untracked-files=all 2>/dev/null | \
+    grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}" | _pc_drop_bootstrap_dirt "${lane}")"
+  rm -rf "${lane}"
+  printf '%s\n' "${survivors}" | grep -q 'undeclared.txt' || return 1
+  printf '%s\n' "${survivors}" | grep -q 'commands/leadv2.md' && return 1
+  return 0
+}
+
+# 10: a REAL regular file (not a symlink) at the bootstrap prefix -> the -L predicate
+# must not be bypassed by prefix match alone; lane still graded dirty.
+case_real_file_at_bootstrap_prefix() { # <script>
+  local s="$1" lane
+  lane="$(mktemp -d "${TMPDIR:-/tmp}/scope-dirt-lane.XXXXXX")" || return 2
+  ( cd "${lane}" && git init -q && git config user.email t@t.test && \
+    git config user.name t && git commit -q --allow-empty -m init ) >/dev/null 2>&1 || { rm -rf "${lane}"; return 2; }
+  mkdir -p "${lane}/.claude/commands"
+  printf 'real file, not a symlink' > "${lane}/.claude/commands/leadv2.md"
+  _pc_source_lane_dirty_funcs "$s" || { rm -rf "${lane}"; return 2; }
+  local rc=1
+  _pc_lane_dirty "${lane}" && rc=0
+  rm -rf "${lane}"
+  [[ ${rc} -eq 0 ]] && return 0
+  return 1
+}
+
+# 11: a TRACKED-modified path under a bootstrap prefix (the `??` predicate) -> must
+# still count as dirty even though the prefix matches.
+case_tracked_modified_at_bootstrap_prefix() { # <script>
+  local s="$1" lane
+  lane="$(mktemp -d "${TMPDIR:-/tmp}/scope-dirt-lane.XXXXXX")" || return 2
+  ( cd "${lane}" && git init -q && git config user.email t@t.test && git config user.name t && \
+    mkdir -p .claude/agents && printf 'orig' > .claude/agents/critic.md && \
+    git add .claude/agents/critic.md && git commit -q -m init && \
+    printf 'edited' > .claude/agents/critic.md ) >/dev/null 2>&1 || { rm -rf "${lane}"; return 2; }
+  _pc_source_lane_dirty_funcs "$s" || { rm -rf "${lane}"; return 2; }
+  local rc=1
+  _pc_lane_dirty "${lane}" && rc=0
+  rm -rf "${lane}"
+  [[ ${rc} -eq 0 ]] && return 0
+  return 1
+}
+
 # survives <script> <porcelain-line> -> 0 if the line PASSES the filter (i.e. it is
 # still treated as candidate dirt), 1 if the filter drops it, 2 if unusable.
 _survives() { # <script> <line>
@@ -142,6 +260,11 @@ run_case "real-work-still-refusable" case_real_work_survives
 run_case "declared-file-survives"    case_declared_survives
 run_case "no-loose-pycache-match"    case_no_loose_match
 run_case "both-sites-use-constant"   _both_sites_use_constant
+run_case "bootstrap-symlink-only-not-dirty"        case_bootstrap_symlink_only
+run_case "bootstrap-symlink-plus-real-file-dirty"  case_bootstrap_symlink_plus_real_file
+run_case "real-file-at-bootstrap-prefix-dirty"     case_real_file_at_bootstrap_prefix
+run_case "tracked-modified-at-bootstrap-prefix-dirty" case_tracked_modified_at_bootstrap_prefix
+run_case "both-sites-use-bootstrap-filter"         _both_sites_use_bootstrap_filter
 
 echo ""
 echo "Results: ${PASS} passed(red->green), ${FAIL} failed, ${GREEN_PRE_FIX} green-pre-fix, ${COULD_NOT_RUN} could-not-run"
