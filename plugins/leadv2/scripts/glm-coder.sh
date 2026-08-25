@@ -89,6 +89,7 @@ readonly GLM_NO_PROGRESS_S="${GLM_NO_PROGRESS_S:-1800}"
 # distinct from 75 (lock busy, pre-existing) and from ordinary shell exit 1.
 readonly GLM_FALLBACK_EXIT_CODE="${GLM_FALLBACK_EXIT_CODE:-76}"
 readonly GLM_FALLBACK_SENTINEL="GLM_FALLBACK_TO_SONNET"
+readonly GLM_CONTINUATION_MAX_LINES="${GLM_CONTINUATION_MAX_LINES:-200}"
 # Emitted (real child exit code PRESERVED in meta.yaml) when the run produced
 # a coherent, non-error result but genuinely failed with no timeout marker —
 # sonnet would hit the same task-level failure.
@@ -1065,6 +1066,44 @@ run_dir_has_fresh_activity() {
   return 1
 }
 
+# Build a bounded, provider-neutral handoff from a dead attempt.  A revive is
+# a new API conversation, not a literal resume, so the prompt must carry the
+# useful local state explicitly.  Keep this deliberately diagnostic: it never
+# claims that a file is safe or complete, it only tells the next worker what
+# was observed before the previous process died.
+append_continuation_block() { # <dead-run-dir> <next-prompt-file>
+  local dead_dir="$1" prompt_file="$2" cwd_dir max_lines remaining stream f capture used
+  cwd_dir="$(meta_get "${dead_dir}" cwd || true)"
+  max_lines="${GLM_CONTINUATION_MAX_LINES}"
+  [[ "${max_lines}" =~ ^[1-9][0-9]*$ ]] || max_lines=200
+  remaining="${max_lines}"
+  {
+    printf '\n\n===== CONTINUATION FROM DEAD GLM RUN =====\n'
+    printf 'Continue the existing work. Do not re-derive completed investigation; verify the artifacts below and proceed from them.\n'
+    printf 'source_run_id=%s\n' "$(meta_get "${dead_dir}" run_id || true)"
+    for stream in progress.log result.md; do
+      f="${dead_dir}/${stream}"
+      [[ -s "${f}" && ${remaining} -gt 0 ]] || continue
+      printf '\n--- last lines: %s ---\n' "${stream}"
+      capture="$(mktemp "${TMPDIR:-/tmp}/glm-continuation.XXXXXX")" || continue
+      tail -n "${remaining}" "${f}" 2>/dev/null > "${capture}"
+      cat "${capture}" 2>/dev/null
+      used="$(wc -l < "${capture}" 2>/dev/null | tr -d ' ')"
+      rm -f "${capture}" 2>/dev/null || true
+      [[ "${used}" =~ ^[0-9]+$ ]] && remaining=$(( remaining - used ))
+    done
+    if [[ -n "${cwd_dir}" ]] && git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      printf '\n--- files modified in worktree ---\n'
+      git -C "${cwd_dir}" status --short 2>/dev/null || true
+      printf '\n--- last committed checkpoint ---\n'
+      git -C "${cwd_dir}" log -1 --format='%h %s' 2>/dev/null || true
+    else
+      printf '\n--- worktree state ---\nunavailable\n'
+    fi
+    printf '===== END CONTINUATION =====\n'
+  } >> "${prompt_file}"
+}
+
 terminate_through_timeout_path() {
   local child_pid="$1" run_dir="$2" bound="$3" value="$4" limit="$5"
   printf '%s\n' "${bound}" > "${run_dir}/.bound_reason"
@@ -1399,6 +1438,7 @@ cmd_supervise() {
       mkdir -p "${new_run_dir}"
       chmod 700 "${new_run_dir}"
       cp "${run_dir}/prompt.txt" "${new_run_dir}/prompt.txt"
+      append_continuation_block "${run_dir}" "${new_run_dir}/prompt.txt"
       # DISPATCH-DEADHAND-01 (R2): carry the deliverable contract into the
       # revived run_dir, else a revived run silently loses it and can never flag.
       [[ -f "${run_dir}/.deliverable" ]] && cp "${run_dir}/.deliverable" "${new_run_dir}/.deliverable" 2>/dev/null || true
