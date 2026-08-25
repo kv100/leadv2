@@ -5579,7 +5579,7 @@ cmd_resolve() {
       local _lead_session_id="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-${CLAUDE_SESSION_ID:-direct}}}"
       DISPATCH_LEAD_SESSION_ID="${_lead_session_id}"
       lane_register "${reg_id}" "${_lead_session_id}" "${WORK_ROOT:-${PROJECT_ROOT}}" "spawning" "${DISPATCH_SLOT_PID:-$$}"
-      _lane_register_rc=$?
+      local _lane_register_rc=$?
       if [[ "${_lane_register_rc}" != "0" ]]; then
         if [[ "${_lane_register_rc}" == "3" ]]; then
           emit decision "dispatch_refused reason=lead_session_lane_cap task=${sig8} lead_session=${_lead_session_id}"

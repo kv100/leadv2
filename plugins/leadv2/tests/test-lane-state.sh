@@ -4,7 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 LIB="${ROOT}/plugins/leadv2/scripts/lib/leadv2-lane-state.sh"
 FIX="$(mktemp -d "${TMPDIR:-/tmp}/lv2-lane-state.XXXXXX")"
-cleanup() { [[ -n "${P1:-}" ]] && kill -9 "$P1" 2>/dev/null || true; [[ -n "${P2:-}" ]] && kill -9 "$P2" 2>/dev/null || true; rm -rf "$FIX"; }
+# ALL_PIDS tracks every background process ever spawned by this suite, not
+# just the P1/P2/P3 vars at exit time -- P1/P2/P3 get reassigned mid-script
+# (e.g. line 42's sleep is overwritten by line 54 before it is killed), and an
+# untracked survivor holds this script's stdout pipe open forever when piped
+# (`bash test-lane-state.sh | tail -1` never sees EOF). Kill the whole set.
+ALL_PIDS=()
+cleanup() { local p; for p in "${ALL_PIDS[@]:-}"; do [[ -n "$p" ]] && kill -9 "$p" 2>/dev/null || true; done; rm -rf "$FIX"; }
 trap cleanup EXIT
 pass() { printf 'PASS %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
@@ -20,7 +26,7 @@ export LEADV2_LANE_STATE_TEST_BIRTH_FILE="$FIX/births.tsv" LEADV2_LANE_STATE_TES
 birth() { printf '%s\t%s\n' "$1" "$2" >> "$LEADV2_LANE_STATE_TEST_BIRTH_FILE"; }
 source "$LIB"
 
-sleep 60 & P1=$!
+sleep 60 & P1=$!; ALL_PIDS+=("$P1")
 birth "$P1" 'Mon Jan  1 00:00:00 2024'
 lane_register lane-a lead-1 "$FIX/.claude/worktrees/lane-a" build "$P1"
 lane_alive lane-a || fail 'new row is live'
@@ -35,11 +41,11 @@ assert r['dead_at'] and r['lane_events'][-1]['event']=='reconciled_dead'
 PY
 pass 'kill -9 then reconcile marks the row dead (negative control)'
 
-sleep 60 & P1=$!
+sleep 60 & P1=$!; ALL_PIDS+=("$P1")
 birth "$P1" 'Tue Jan  2 00:00:00 2024'
 lane_register lane-reuse lead-1 "$FIX/.claude/worktrees/lane-reuse" build "$P1"
 kill -9 "$P1"; wait "$P1" 2>/dev/null || true
-sleep 60 & P2=$!
+sleep 60 & P2=$!; ALL_PIDS+=("$P2")
 birth "$P2" 'Wed Jan  3 00:00:00 2024'
 python3 - "$FIX/docs/leadv2/active.yaml" "$P2" <<'PY'
 import sys,yaml
@@ -48,19 +54,19 @@ PY
 if lane_alive lane-reuse; then fail 'pid reuse must not be alive'; fi
 pass 'PID-reuse simulation rejects mismatched start time (negative control)'
 
-sleep 60 & P1=$!
+sleep 60 & P1=$!; ALL_PIDS+=("$P1")
 birth "$P1" 'Thu Jan  4 00:00:00 2024'
 lane_register lane-1 cap-session "$FIX/.claude/worktrees/lane-1" build "$P1"
-sleep 60 & P2=$!
+sleep 60 & P2=$!; ALL_PIDS+=("$P2")
 birth "$P2" 'Fri Jan  5 00:00:00 2024'
 lane_register lane-2 cap-session "$FIX/.claude/worktrees/lane-2" build "$P2"
-sleep 60 & P3=$!
+sleep 60 & P3=$!; ALL_PIDS+=("$P3")
 if lane_register lane-3 cap-session "$FIX/.claude/worktrees/lane-3" build "$P3"; then fail 'third lane was admitted'; else rc=$?; [[ $rc -eq 3 ]] || fail "third lane rc=$rc"; fi
 kill -9 "$P3" 2>/dev/null || true; wait "$P3" 2>/dev/null || true; unset P3
 pass 'third live lane for one lead session is refused with rc=3 (negative control)'
 
 git -C "$FIX" worktree add -q "$FIX/.claude/worktrees/orphan-live" -b orphan-live
-bash -c 'while :; do sleep 1; done' -- "$FIX/.claude/worktrees/orphan-live" & P3=$!
+bash -c 'while :; do sleep 1; done' -- "$FIX/.claude/worktrees/orphan-live" & P3=$!; ALL_PIDS+=("$P3")
 birth "$P3" 'Sat Jan  6 00:00:00 2024'
 printf '%s Sat Jan  6 00:00:00 2024 bash -- %s\n' "$P3" "$FIX/.claude/worktrees/orphan-live" > "$LEADV2_LANE_STATE_TEST_PS_FILE"
 printf 'worktree %s\nworktree %s\n' "$FIX" "$FIX/.claude/worktrees/orphan-live" > "$LEADV2_LANE_STATE_TEST_WORKTREES_FILE"

@@ -147,6 +147,6 @@ lane_alive() { _lv2_lane_state_mutate alive "$1"; }
 lane_reconcile() { _lv2_lane_state_mutate reconcile "$(_lv2_lane_state_root)"; }
 lane_count_live() { _lv2_lane_state_mutate count "$1"; }
 lane_adopt_pid() { # <task-id> <lead-session-id> <worktree> <phase> <worker-pid>
-  lane_register "$1" "$2" "$3" "$4" "$5"
+  lane_register "$1" "$2" "$3" "$4" "$5" || return $?
   lane_transition "$1" "$4" "worker_pid_adopted"
 }
