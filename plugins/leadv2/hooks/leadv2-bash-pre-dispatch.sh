@@ -49,6 +49,9 @@ trap 'rm -f "$STDOUT_FILE" "$STDERR_FILE" "$FIRST_STDOUT_FILE"' EXIT HUP INT TER
 # leadv2-bash-lint-pre-gate.sh: git commit only (leadv2-bash-lint-pre-gate.sh:58-65).
 # leadv2-env-audit-pre-gate.sh: ALWAYS — unconditional placeholder (leadv2-env-audit-pre-gate.sh:1-6).
 # leadv2-schema-audit-pre-gate.sh: git commit only (leadv2-schema-audit-pre-gate.sh:80-86).
+# leadv2-warn-bash-diff-read.sh: diff/patch path or unsummarized git diff/show (advisory
+# stdout JSON by default; LEADV2_DIFF_READ_DENY=1 upgrades to exit-2 block). Last in the
+# manifest so it can never pre-empt another guard's stdout JSON (only the first is kept).
 MANIFEST='leadv2-deny-floor.sh|ALWAYS
 leadv2-block-bash-heredoc.sh|<<-?[[:space:]]*
 leadv2-block-fg-dispatch.sh|leadv2-dispatch-code\.sh|leadv2-codex-session-runner\.sh|leadv2-fanout\.sh|glm-coder\.sh|omp-task\.sh
@@ -59,7 +62,8 @@ leadv2-close-ritual-guard.sh|^git[[:space:]]+commit
 leadv2-context-glossary-close.sh|^git[[:space:]]+commit
 leadv2-bash-lint-pre-gate.sh|git[[:space:]]+commit
 leadv2-env-audit-pre-gate.sh|ALWAYS
-leadv2-schema-audit-pre-gate.sh|git[[:space:]]+commit'
+leadv2-schema-audit-pre-gate.sh|git[[:space:]]+commit
+leadv2-warn-bash-diff-read.sh|\.(diff|patch)([[:space:]]|"|'"'"'|$)|(^|[^A-Za-z0-9_-])git[[:space:]]+(diff|show)([[:space:]]|$)'
 
 HAVE_STDOUT=0
 
