@@ -246,4 +246,12 @@ PYEOF
 fi
 fi  # end fallback-only config.toml block
 
+# --- 6. tmux statusline (opt-in; never auto-installed) ----------------------
+# CODEX-TMUX-STATUSLINE-01: this installer must not mutate any tmux config —
+# only point at the dedicated opt-in installer.
+STATUSLINE_INSTALL="$SCRIPT_DIR/statusline/install-tmux-statusline.sh"
+if [[ -f "$STATUSLINE_INSTALL" ]]; then
+  printf 'tmux statusline: opt-in — to add the leadv2 bottom bar: %s\n' "$STATUSLINE_INSTALL"
+fi
+
 exit 0

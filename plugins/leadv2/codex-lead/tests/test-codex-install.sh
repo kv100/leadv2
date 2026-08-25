@@ -247,6 +247,25 @@ OUT4="$(HOME="$FIX3_HOME" LEADV2_CODEX_BIN="$STUB" bash "$INSTALL_SH" "$FIX3_HOM
 [[ $RC4 -eq 3 ]] && pass "missing target repo -> rc 3" || fail "missing target repo -> rc 3 (got rc=$RC4, out=$OUT4)"
 rm -rf "$FIX3_HOME"
 
+# --- CODEX-TMUX-STATUSLINE-01: opt-in hint, no tmux mutation -----------------
+# install.sh must point at the statusline installer but never run it, and
+# never write anything tmux-related into the fixture HOME.
+FIX7="$(mktemp -d)"
+FIX7_REPO="$FIX7/repo"
+mkdir -p "$FIX7_REPO"
+printf '@import .claude/ref/90-codex-lead-pilot.md\n' > "$FIX7_REPO/AGENTS.md"
+OUT8="$(HOME="$FIX7" LEADV2_CODEX_BIN="$STUB" bash "$INSTALL_SH" "$FIX7_REPO" 2>&1)"; RC8=$?
+[[ $RC8 -eq 0 ]] && pass "statusline-hint run: exit 0" || fail "statusline-hint run: exit 0 (rc=$RC8)"
+printf '%s' "$OUT8" | grep -qF 'statusline/install-tmux-statusline.sh' \
+  && pass "install.sh points at opt-in statusline installer" \
+  || fail "install.sh does not mention statusline installer (out=$OUT8)"
+if [[ -e "$FIX7/.tmux.conf" || -d "$FIX7/.config/leadv2" || -e "$FIX7/.config/tmux-statusline.conf" ]]; then
+  fail "install.sh mutated tmux-related paths (opt-in violation)"
+else
+  pass "install.sh mutates no tmux config (fully opt-in)"
+fi
+rm -rf "$FIX7"
+
 # --- bash -n --------------------------------------------------------------
 bash -n "$INSTALL_SH" && pass "bash -n install.sh" || fail "bash -n install.sh"
 
