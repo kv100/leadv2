@@ -34,11 +34,20 @@ dst="${repo}/.claude/commands/leadv2.md"
 [ -f "$src" ] || exit 0
 [ -d "$repo" ] || exit 0
 
-# Already a symlink: heal it only if it dangles or points somewhere else.
+# Already a symlink: heal it only if it actually dangles. Compare RESOLVED paths,
+# never the link string — the plugin is reachable by two equivalent names
+# (~/.claude/plugins/local/leadv2/... is itself a symlink to ~/Projects/leadv2/...),
+# so a string compare makes this hook and leadv2-repo-install.sh rewrite each
+# other's link forever, and every session shows a spurious one-line diff on a
+# tracked file (observed in persona-engine, 2026-08-25).
 if [ -L "$dst" ]; then
-  cur="$(readlink "$dst" 2>/dev/null || true)"
-  if [ "$cur" = "$src" ] && [ -e "$dst" ]; then exit 0; fi
-  if [ ! -e "$dst" ]; then rm -f "$dst" 2>/dev/null || exit 0; fi
+  if [ -e "$dst" ]; then
+    cur="$(cd "$(dirname "$dst")" && readlink -f "$(basename "$dst")" 2>/dev/null || true)"
+    tgt="$(readlink -f "$src" 2>/dev/null || printf '%s' "$src")"
+    [ -n "$cur" ] && [ "$cur" = "$tgt" ] && exit 0
+  else
+    rm -f "$dst" 2>/dev/null || exit 0
+  fi
 fi
 
 # A real file is a local fork — never touch it.
