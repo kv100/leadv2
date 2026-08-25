@@ -1299,7 +1299,10 @@ done
 if [[ "${SECURITY_REVIEW_ENABLED}" -eq 1 ]]; then
   ( _engine_hack_detect_job ) &
 fi
-wait
+# A reviewer/hack child is expected to return its own nonzero transport rc.
+# Do not let `set -e` turn that into a parent-process abort before Step 5 can
+# persist and classify every arm into a terminal review-gate verdict.
+wait || true
 
 # Step 5: per-arm refusal reselection. Walk fan-out results; any refused_* arm is
 # re-selected forward through ${pool} (bounded, tried[] cap) so one refusing arm
