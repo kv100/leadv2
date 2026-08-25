@@ -166,7 +166,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 4` BEFORE executing.
 
 ## Phase 5: REVIEW - adversarial loop
-- Trigger: `leadv2-router.sh --phase review` -> parallel: `codex-task.sh adversarial-review` (primary) + `Agent(critic, sonnet for Standard; opus for safety-touched/Heavy)` + `Agent(security-auditor,sonnet)` | Exit: blocking == 0 -> Phase 6; blocking >= 1 -> developer fix -> round 2 (max); round 3 -> `Skill(leadv2-judge) mode=review`
+- Trigger (ONE-PATH-EVERYWHERE-01): `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-review-run.sh" --task "$LEADV2_TASK_ID" --root "$(pwd)" --handoff "docs/handoff/${LEADV2_TASK_ID}" --diff "docs/handoff/${LEADV2_TASK_ID}/build-attempt-1.diff" --author "<arm>"` — sole-owner engine: it resolves the reviewer pool itself (codex/glm/kimi/sonnet/opus arms, quota-filtered, author-excluding) + hack-detect + verify-on-a-distinct-arm, and writes `review-gate.md` + `review-findings.json`. NEVER `Workflow('leadv2-review')` — deleted. Do NOT hand-assemble the pool with `leadv2-router.sh --phase review`; the engine owns arm selection so a quota-exhausted or author-identical arm cannot silently become the reviewer. | Exit: `status: pass` -> Phase 6; `status: fail` -> developer fix -> round 2 (max); round 3 -> `Skill(leadv2-judge) mode=review`; `blocked`/`unreviewed` -> read `reason:`, never treat as pass
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 5` BEFORE executing.
 
 ## Phase 6: DEPLOY (automated)
