@@ -1191,13 +1191,59 @@ pc_await_worker_exit() {
 # REVIEWER sees, which is a separate decision from what counts as a scope violation.
 _PC_PORCELAIN_EXCLUDE_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\.md|^.. "?.*__pycache__/|^.. "?.*\.pyc$'
 
+# CTX-COST-GUARDS-01: the plugin's own worktree bootstrap
+# (hooks/leadv2-command-bootstrap.sh, scripts/leadv2-repo-install.sh) symlinks
+# .claude/commands|scripts|agents/ into every fresh lane worktree. That dirt is not a
+# worker's doing, but a regex alone cannot say "only if it is a symlink" -- grep sees
+# porcelain TEXT, not the filesystem -- so widening _PC_PORCELAIN_EXCLUDE_RE would also
+# swallow a REAL file a worker writes under the same prefix. Two stages instead: the
+# regex above narrows to orchestration-owned literal paths; _pc_drop_bootstrap_dirt
+# below narrows further to bootstrap dirt specifically, via a filesystem predicate the
+# regex stage cannot express.
+_PC_BOOTSTRAP_PREFIX_RE='^\.claude/(commands|scripts|agents)/'
+
+# _pc_drop_bootstrap_dirt <lane-root> ; stdin=porcelain (post _PC_PORCELAIN_EXCLUDE_RE),
+# stdout=survivors. Drops a line only when ALL THREE hold -- dropping any one reintroduces
+# overreach:
+#   1. status field is exactly `??` (untracked) -- a tracked-modified line under the same
+#      prefix is a worker who edited a real plugin file, never dropped.
+#   2. path matches _PC_BOOTSTRAP_PREFIX_RE.
+#   3. the path IS a symlink on disk ([ -L ], true even for a dangling link -- a lane
+#      whose canonical checkout moved is still plugin dirt, not worker dirt). A real
+#      regular file a worker wrote under the same prefix fails this and survives.
+# Fails open: an unreadable/missing root passes every line through unfiltered, and the
+# function itself always returns 0 -- a non-zero tail in a `$( ... | _pc_drop_bootstrap_dirt )`
+# pipeline under `set -o pipefail` would otherwise blank the whole status and grade every
+# lane clean.
+_pc_drop_bootstrap_dirt() {  # <lane-root> ; filters stdin porcelain -> stdout
+  local root="$1" line field rest path
+  if [[ -z "${root}" || ! -d "${root}" ]]; then
+    cat
+    return 0
+  fi
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    field="${line:0:2}"
+    rest="${line:3}"
+    if [[ "${field}" == "??" && "${rest}" =~ ${_PC_BOOTSTRAP_PREFIX_RE} ]]; then
+      path="${rest##* -> }"
+      path="${path%\"}"; path="${path#\"}"
+      if [[ -L "${root}/${path}" ]]; then
+        continue
+      fi
+    fi
+    printf '%s\n' "${line}"
+  done
+  return 0
+}
+
 _pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding orchestration-owned paths), rc1 otherwise
   local root="$1"
   [[ -n "${root}" && -d "${root}" ]] || return 1
   git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
   local status
   status="$(git -C "${root}" status --porcelain --untracked-files=all 2>/dev/null | \
-    grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}")"
+    grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}" | _pc_drop_bootstrap_dirt "${root}")"
   [[ -n "${status}" ]]
 }
 
@@ -2100,10 +2146,12 @@ if [[ -n "${blocked_reason}" ]]; then
       # reason that is not a scope violation.
       # SCOPE-GATE-ORCHESTRATION-DIRT-01: same exclusion set as _pc_lane_dirty above,
       # by construction — see the constant's comment for why the two must not diverge.
+      # CTX-COST-GUARDS-01: same _pc_drop_bootstrap_dirt second stage as _pc_lane_dirty
+      # above, by construction -- see its comment for why the two stages must not diverge.
       # Everything else stays strict: an undeclared path the worker actually wrote is
       # still a scope violation, and the partition below is what decides that.
       _pc_dirty_lines="$(git -C "${_lane_root}" status --porcelain --untracked-files=all 2>/dev/null | \
-        grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}")"
+        grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}" | _pc_drop_bootstrap_dirt "${_lane_root}")"
       _pc_dirty_n="$(printf '%s\n' "${_pc_dirty_lines}" | grep -vcE '^$' || true)"
       _pc_undeclared=()
       _pc_undeclared_n=0
