@@ -75,7 +75,13 @@ codex_spawn_gate() {
   # NOTE: the child is exec'd DIRECTLY (not `bash $gate`), so its executable
   # bit is load-bearing — mode 644 gives rc 126, which the caller below treats
   # as pass, silently disabling this check (tests/a4c guards it).
-  "${_CODEX_QG_DIR}/../leadv2-provider-quota-gate.sh" codex "$_purpose"
+  local _provider_gate="$(cd "${_CODEX_QG_DIR}/.." && pwd)/leadv2-provider-quota-gate.sh"
+  if [[ ! -x "$_provider_gate" ]]; then
+    printf '[codex-task] CODEX_REFUSED_QUOTA reason=gate_broken dependency=%s\n' "$_provider_gate" >&2
+    printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+    return 2
+  fi
+  "$_provider_gate" codex "$_purpose"
   _gate_rc=$?
   if [[ "$_gate_rc" -eq 1 ]]; then
     printf '[codex-task] CODEX_REFUSED_QUOTA reason=threshold used=live threshold=ceiling until=na\n' >&2
@@ -83,7 +89,9 @@ codex_spawn_gate() {
     return 2
   fi
   if [[ "$_gate_rc" -ne 0 && "$_gate_rc" -ne 1 ]]; then
-    printf '[codex-task] WARN quota gate check skipped (rc=%s)\n' "$_gate_rc" >&2
+    printf '[codex-task] CODEX_REFUSED_QUOTA reason=gate_broken dependency=%s rc=%s\n' "$_provider_gate" "$_gate_rc" >&2
+    printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
+    return 2
   fi
 
   return 0
