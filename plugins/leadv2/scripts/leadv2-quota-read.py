@@ -441,9 +441,14 @@ def read_anthropic(credential_file=None):
     # CLAUDE-MULTIPROFILE-QUOTA-02: --credential-file swaps the keychain
     # enumeration for one on-disk blob (single-entry accounts list).  The
     # default path (no flag) is unchanged.
+    active_service = os.environ.get("LEADV2_ANTHROPIC_ACTIVE_SERVICE", "").strip()
     if credential_file:
         blob = _read_credential_file(credential_file)
         sources = [("file:%s" % credential_file, blob)] if isinstance(blob, dict) else []
+    elif active_service:
+        # A multi-profile registry explicitly selects this keychain service.
+        # Do not enumerate by the default service-name prefix in that mode.
+        sources = [(active_service, _read_keychain(active_service))]
     else:
         sources = [(sv, _read_keychain(sv)) for sv in sorted(_keychain_services())]
     for sv, blob in sources:
