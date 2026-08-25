@@ -185,10 +185,7 @@ fi
 
 # ===========================================================================
 # CASE 3 — happy-path guard (normal invocation, no -e): the || capture must
-# not weaken a healthy arm. Run in the production invocation mode; under -e a
-# SEPARATE pre-existing hazard kills the engine later (grep-no-match piped
-# into the findings `while` loop under pipefail), which is outside this
-# task's scope — the arm path cases above pin the scoped defect.
+# not weaken a healthy arm. Run in the production invocation mode.
 # ===========================================================================
 C3="$(mk_case FCHEALTHY 1 healthy plain)"; C3_RC="$(rc_of "$C3")"; C3_H="$(dir_of "$C3")"
 
@@ -205,6 +202,31 @@ fi
 [[ "$C3_RC" == "0" ]] \
   && pass "case3: engine exit 0" \
   || fail "case3: engine exit ${C3_RC}, expected 0"
+
+# ===========================================================================
+# CASE 4 — REVIEW-TERMINAL-PASS-01: a HEALTHY no-findings review under the
+# `bash -e` invocation. The engine sets its own `set -uo pipefail`, so under
+# a caller's -e a no-match `grep '^FINDING:' | while` and a no-match
+# `$(grep -oE ... | wc -l | tr ...)` assignment both return 1 (pipefail)
+# and errexit-abort the engine BEFORE the terminal pass review-gate.md is
+# written. Pre-fix: engine exit 1, no gate. Pinned contract: exit 0 and
+# status: pass, same as the plain invocation in case 3.
+# ===========================================================================
+C4="$(mk_case FCPASSE 1 healthy e)"; C4_RC="$(rc_of "$C4")"; C4_H="$(dir_of "$C4")"
+
+if [[ -s "$C4_H/review-gate.md" ]] && grep -q '^status: pass$' "$C4_H/review-gate.md"; then
+  pass "case4: healthy no-findings review under bash -e writes status: pass review-gate.md"
+else
+  fail "case4: no pass gate under bash -e: $(sed -n 's/^status: //p' "$C4_H/review-gate.md" 2>/dev/null | head -n1) (rc=${C4_RC}) — no-match grep pipeline aborted the engine before the terminal write"
+fi
+
+[[ -f "$C4_H/review-opus.rc" && "$(cat "$C4_H/review-opus.rc")" == "0" ]] \
+  && pass "case4: review-opus.rc = 0 under bash -e" \
+  || fail "case4: review-opus.rc missing/nonzero under bash -e: '$(cat "$C4_H/review-opus.rc" 2>/dev/null)'"
+
+[[ "$C4_RC" == "0" ]] \
+  && pass "case4: engine exit 0 under bash -e" \
+  || fail "case4: engine exit ${C4_RC} under bash -e, expected 0"
 
 log "PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

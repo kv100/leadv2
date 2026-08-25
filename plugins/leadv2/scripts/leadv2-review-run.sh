@@ -1496,10 +1496,15 @@ FINDINGS_LOW_TOTAL="${FINDINGS_LOW}"
 # arm != its raiser. -------------------------------------------------------
 FINDINGS_RAW="${HANDOFF}/.review-findings-raw.tsv"
 : > "${FINDINGS_RAW}"
+# REVIEW-TERMINAL-PASS-01: the no-findings greps below are the first element of
+# their pipelines; under a caller's `bash -e` our own pipefail turns a no-match
+# grep (rc 1) into a pipeline failure and errexit aborts the engine BEFORE the
+# terminal pass review-gate.md is written. `|| :` keeps the pipeline green when
+# there is simply nothing to union.
 for _arm in "${ran_arms[@]}"; do
   _file="${HANDOFF}/review-${_arm}.md"
   [[ -f "${REVIEW_ARTIFACT:-}" && "${_arm}" == "${reviewer_primary}" ]] && _file="${REVIEW_ARTIFACT}"
-  grep -E '^FINDING:' "${_file}" 2>/dev/null | while IFS= read -r _line; do
+  { grep -E '^FINDING:' "${_file}" 2>/dev/null || :; } | while IFS= read -r _line; do
     _sev="$(printf '%s\n' "${_line}" | sed -nE 's/.*severity=([A-Za-z]+).*/\1/p')"
     _f="$(printf '%s\n' "${_line}" | sed -nE 's/.*file=([^ ]+).*/\1/p')"
     _ln="$(printf '%s\n' "${_line}" | sed -nE 's/.*line=([0-9]+).*/\1/p')"
@@ -1509,7 +1514,7 @@ for _arm in "${ran_arms[@]}"; do
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${_arm}" "${_sev}" "${_f}" "${_ln}" "${_dim}" "${_desc}" >> "${FINDINGS_RAW}"
   done
 done
-grep -E '^FINDING:' "${HACKDETECT_OUT}" 2>/dev/null | while IFS= read -r _line; do
+{ grep -E '^FINDING:' "${HACKDETECT_OUT}" 2>/dev/null || :; } | while IFS= read -r _line; do
   _sev="$(printf '%s\n' "${_line}" | sed -nE 's/.*severity=([A-Za-z]+).*/\1/p')"
   _f="$(printf '%s\n' "${_line}" | sed -nE 's/.*file=([^ ]+).*/\1/p')"
   _ln="$(printf '%s\n' "${_line}" | sed -nE 's/.*line=([0-9]+).*/\1/p')"
@@ -1586,8 +1591,11 @@ mv -f "${FINDINGS_JSON}.tmp" "${FINDINGS_JSON}"
 # Recompute _needs_verify/_verified_count outside the subshell the while-loop
 # ran in (pipes/process substitution create subshells; re-derive from the JSON
 # so the counts are accurate in THIS shell).
-_needs_verify="$(grep -oE '"severity":"(Critical|High)"' "${FINDINGS_JSON}" 2>/dev/null | wc -l | tr -d '[:space:]')"; _needs_verify="${_needs_verify:-0}"
-_verified_count="$(grep -oE '"verifier_verdict":"(upheld|refuted)"' "${FINDINGS_JSON}" 2>/dev/null | wc -l | tr -d '[:space:]')"; _verified_count="${_verified_count:-0}"
+# REVIEW-TERMINAL-PASS-01: `{ grep ... || :; }` — on a no-findings review these
+# greps match nothing; pipefail would carry grep's rc 1 out of the substitution
+# and a `bash -e` caller would abort the assignment before the terminal gate.
+_needs_verify="$({ grep -oE '"severity":"(Critical|High)"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; _needs_verify="${_needs_verify:-0}"
+_verified_count="$({ grep -oE '"verifier_verdict":"(upheld|refuted)"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; _verified_count="${_verified_count:-0}"
 
 if [[ "${#ran_arms[@]}" -le 1 && "${_needs_verify}" -gt 0 && "${_verified_count}" -eq 0 ]]; then
   VERIFIED_LINE="verified: 0/${_needs_verify} reason=single_arm_pool"
@@ -1597,7 +1605,7 @@ fi
 
 # A refuted Critical/High drops from the blocking count but stays in JSON
 # (verifier_verdict: refuted) — recompute blocking severity from JSON minus refuted.
-_blocking_refuted="$(grep -oE '"severity":"(Critical|High)"[^}]*"verifier_verdict":"refuted"' "${FINDINGS_JSON}" 2>/dev/null | wc -l | tr -d '[:space:]')"; _blocking_refuted="${_blocking_refuted:-0}"
+_blocking_refuted="$({ grep -oE '"severity":"(Critical|High)"[^}]*"verifier_verdict":"refuted"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; _blocking_refuted="${_blocking_refuted:-0}"
 _effective_critical=$((FINDINGS_CRITICAL_TOTAL))
 _effective_high=$((FINDINGS_HIGH_TOTAL))
 # Best-effort: only decrement if we can attribute the refuted counts to a severity
