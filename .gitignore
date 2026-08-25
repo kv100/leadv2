@@ -49,6 +49,9 @@ docs/leadv2/tasks/*/
 docs/leadv2/bus.jsonl
 docs/leadv2/merge-queue.jsonl
 docs/leadv2/questions/
+# Burn-governor runtime ledger — not source.
+docs/leadv2/burn-deferred.jsonl
+docs/leadv2/burn-deferred.d/
 
 # Local session config and a stray review artifact at the handoff root.
 .claude/cache/

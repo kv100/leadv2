@@ -113,6 +113,13 @@ rm -f "$FIX/state/active.yaml"
 assert_rc 97 "predicate: codex exec 'x' -> refuse naming codex-task.sh" -- -c "codex exec 'x'"
 assert_rc 0  "predicate: codex-task.sh task 'x' -> allow"               -- -c "codex-task.sh task 'x'"
 
+# --- codex_exec_direct bypass shapes (CODEX-BATCH-REVIEW-FIXROUND-01) -----
+# Prefix tokens ahead of `codex exec` defeated the old start/separator-anchored
+# regex; these three shapes were live-probed bypasses before the fix.
+assert_rc 97 "refuse: env codex exec 'x' -> bypass shape (env prefix)"          -- -c "env codex exec 'x'"
+assert_rc 97 "refuse: /usr/local/bin/codex exec 'x' -> bypass shape (abs path)" -- -c "/usr/local/bin/codex exec 'x'"
+assert_rc 97 "refuse: xargs -I{} codex exec {} -> bypass shape (xargs prefix)"  -- -c "xargs -I{} codex exec {}"
+
 # --- heredoc advisory: warns, never refuses -------------------------------
 BIGSTR="$(python3 -c "print('x' * 3000)")"
 out="$(LEADV2_CODEX_GUARD_EXEC=echo bash "$FG" -c "cat <<EOF

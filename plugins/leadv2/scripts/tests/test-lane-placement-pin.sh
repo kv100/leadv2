@@ -110,13 +110,19 @@ cat > "${JOURNAL_STUB}" <<'SH'
 exit 0
 SH
 
-# Stub liveness probe — dead by default, alive when force-live sentinel exists
+# Stub liveness probe — dead by default, alive when force-live sentinel
+# exists. LANE-PLACEMENT-01 P-e: leadv2-dispatch-code.sh probes with --json
+# and parses via _placement_probe_field (json.loads with a swallowed
+# exception on failure), so the stub must emit the real row shape
+# (verdict/reason/age_s, as leadv2-lane-liveness.sh --json emits at its
+# resolve() call site) — plain text here left json.loads() raising, the
+# exception silently swallowed, and P-e never took the refusal path.
 cat > "${LIVENESS_STUB}" <<'SH'
 #!/usr/bin/env bash
 if [[ -f "${LEADV2_STUB_FORCE_LIVE:-}" ]]; then
-  printf 'alive\n'
+  printf '{"lane":"%s","verdict":"alive","reason":"process_alive","age_s":5,"pid_alive":true}\n' "${LEADV2_STUB_LANE:-lane}"
 else
-  printf 'dead:exited\n'
+  printf '{"lane":"%s","verdict":"dead:silent_9999s_no_process","reason":"log_silent_no_process","age_s":9999,"pid_alive":false}\n' "${LEADV2_STUB_LANE:-lane}"
 fi
 exit 0
 SH
@@ -410,6 +416,28 @@ if ! grep -q '^WORKTREE PIN:' "${SANDBOX}/pi-mission.txt" 2>/dev/null; then
   ok "P-i: no pin line on shared-tree dispatch"
 else
   bad "P-i: pin line PRESENT on shared-tree dispatch (regression)"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# Contract: leadv2-lane-liveness.sh --json actually carries the keys
+# dispatch-code's _placement_probe_field reads (verdict/reason/age_s). Uses
+# the REAL script, not the stub -- if the real --json shape drifts, this
+# case fails loudly instead of the placement cases silently passing for the
+# wrong reason (the exact hole P-e reopened).
+# ════════════════════════════════════════════════════════════════════════════
+LANE_LIVENESS_BIN="${PLUGIN_SCRIPTS}/leadv2-lane-liveness.sh"
+real_row="$(bash "${LANE_LIVENESS_BIN}" --project-root "${TARGET}" --lane "nonexistent-lane-xyz" --no-codex --json 2>/dev/null || true)"
+if python3 -c '
+import json, sys
+try:
+    r = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(r, dict) and "verdict" in r and "reason" in r and "age_s" in r else 1)
+' "${real_row}" 2>/dev/null; then
+  ok "contract: leadv2-lane-liveness.sh --json emits a JSON object with verdict/reason/age_s"
+else
+  bad "contract: leadv2-lane-liveness.sh --json shape drifted (got: ${real_row})"
 fi
 
 printf '\n[LANE-PLACEMENT-01] passed=%d failed=%d\n' "${PASS}" "${FAIL}"
