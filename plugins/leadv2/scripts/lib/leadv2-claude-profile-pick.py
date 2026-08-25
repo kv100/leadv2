@@ -16,7 +16,7 @@ Picks the LOWEST score; ties are broken by input (= registry) order, so the
 selection is fully deterministic.  Prints exactly one line:
 
     profile=<label> config_dir=<path> score=<n> source=live|unknown \
-    reason=<reason> candidates=<n>
+    reason=<reason> candidates=<n> cred=<credential_source>
 
 Privacy: config_dir is printed here because it exists ONLY on this stdout and
 is consumed by the caller (claude-subsession.sh); the caller journals the label
@@ -75,8 +75,8 @@ def main():
     (score, source), _order, record = min(scored, key=lambda t: (t[0][0], t[1]))
     # The minimum can only be a 101 when EVERY record is unknown.
     reason = "all_unknown" if score >= UNKNOWN else "worst_window"
-    print("profile=%s config_dir=%s score=%d source=%s reason=%s candidates=%d"
-          % (record[0], record[1], score, source, reason, len(records)))
+    print("profile=%s config_dir=%s score=%d source=%s reason=%s candidates=%d cred=%s"
+          % (record[0], record[1], score, source, reason, len(records), record[2]))
 
 
 if __name__ == "__main__":

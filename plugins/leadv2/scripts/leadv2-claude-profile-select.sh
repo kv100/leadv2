@@ -88,6 +88,9 @@ while IFS=$'\t' read -r label config_dir cred || [[ -n "${label:-}" ]]; do
     continue
   fi
   if [[ -z "$cred" ]]; then cred="file:${config_dir}/.credentials.json"; fi
+  # lean: both registry columns are validated here, but cross-account identity
+  # verification is deferred: the probe payload has no identity comparable to
+  # what config_dir resolves to, so the operator owns that pairing.
   case "$cred" in
     keychain:?*)
       ;;

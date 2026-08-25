@@ -82,6 +82,9 @@ codex_spawn_gate() {
     printf 'LEADV2_DISPATCH_REFUSED: quota_gate\n' >&2
     return 2
   fi
+  if [[ "$_gate_rc" -ne 0 && "$_gate_rc" -ne 1 ]]; then
+    printf '[codex-task] WARN quota gate check skipped (rc=%s)\n' "$_gate_rc" >&2
+  fi
 
   return 0
 }
