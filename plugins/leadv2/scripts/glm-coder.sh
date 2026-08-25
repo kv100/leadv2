@@ -74,16 +74,17 @@ readonly RUNS_DIR="${GLM_RUNS_DIR:-${HOME}/.claude/cache/glm-runs}"
 # was structurally unreachable (900s wall-clock killed first). F2: both
 # turn knobs had to rise, else the watchdog still killed at turn 40.
 readonly GLM_TIMEOUT="${GLM_TIMEOUT:-3600}"
-# GLM-REVIVE-01 legacy compatibility: when configured lower than the explicit
-# no-progress guard below, GLM_STALL_S still kills and revives once. At the
-# defaults, GLM_NO_PROGRESS_S reaches the timeout/fallback path first.
+# GLM_STALL_S is retained as the stdout-idle observation threshold.  It is NOT
+# a kill switch: a long tool call can legitimately leave stdout quiet.
 readonly GLM_STALL_S="${GLM_STALL_S:-1200}"
 readonly GLM_MAX_TURNS="${GLM_MAX_TURNS:-120}"
 # Hard watchdog limits. GLM_MAX_TURNS remains the Claude CLI request limit and
 # --max-turns remains backward compatible; GLM_TURN_LIMIT is independently
 # enforced from observed stream turns through the timeout/fallback path.
 readonly GLM_TURN_LIMIT="${GLM_TURN_LIMIT:-120}"
-readonly GLM_NO_PROGRESS_S="${GLM_NO_PROGRESS_S:-${GLM_STALL_S}}"
+# A kill needs this independent, stricter proof: no semantic progress, no open
+# tool invocation, and no fresh stream/progress file activity.
+readonly GLM_NO_PROGRESS_S="${GLM_NO_PROGRESS_S:-1800}"
 # Dedicated non-zero exit code for "GLM gave up, fall back to sonnet" —
 # distinct from 75 (lock busy, pre-existing) and from ordinary shell exit 1.
 readonly GLM_FALLBACK_EXIT_CODE="${GLM_FALLBACK_EXIT_CODE:-76}"
@@ -179,7 +180,8 @@ Usage:
   test    Self-test: sends a short prompt and prints the tail of the response.
 
 Env knobs: GLM_TIMEOUT (default 3600s), GLM_MAX_TURNS (default 120),
-  GLM_TURN_LIMIT (default 120), GLM_NO_PROGRESS_S (default 1200s),
+  GLM_TURN_LIMIT (default 120), GLM_STALL_S (default 1200s, diagnostic only),
+  GLM_NO_PROGRESS_S (default 1800s),
   GLM_FALLBACK_EXIT_CODE (default 76).
 
 Terminal sentinels (GLM-RELIABILITY-529-01) — mutually exclusive, appended to
@@ -584,6 +586,7 @@ last_progress_ts = int(started_ts)
 stream_bytes = 0
 estimated_output_tokens = 0
 observed_turns = 0
+open_tool_calls = 0
 reported_turns = 0
 seen_message_ids = set()
 message_usage = {}
@@ -677,6 +680,7 @@ def _persist(force=False):
     state = (
         "turns=" + str(observed_turns) + "\n"
         + "last_progress_ts=" + str(last_progress_ts) + "\n"
+        + "open_tool_calls=" + str(open_tool_calls) + "\n"
         + "bytes_streamed=" + str(stream_bytes) + "\n"
     )
     _atomic_write(state_path, state)
@@ -764,6 +768,7 @@ for raw in sys.stdin:
                 made_progress = True
             for block in blocks:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
+                    open_tool_calls += 1
                     name = block.get("name", "?")
                     inp = block.get("input") or {}
                     detail = inp.get("file_path") or inp.get("command") or inp.get("path") or ""
@@ -785,6 +790,7 @@ for raw in sys.stdin:
             msg = ev.get("message") or {}
             for block in (msg.get("content") or []):
                 if isinstance(block, dict) and block.get("type") == "tool_result":
+                    open_tool_calls = max(0, open_tool_calls - 1)
                     made_progress = True
                     break
     except Exception:
@@ -1043,6 +1049,22 @@ stream_state_get() {
   { grep "^${key}=" "${run_dir}/.stream_state" 2>/dev/null | head -1 | cut -d= -f2-; } || true
 }
 
+# True when one of the files written by the stream pipeline changed recently.
+# This is deliberately a widening liveness signal: stat failures mean "unknown"
+# and must not become a reason to kill a worker.
+run_dir_has_fresh_activity() {
+  local run_dir="$1" now="$2" grace_s="$3" path mtime
+  for path in "${run_dir}/journal.jsonl" "${run_dir}/progress.log" "${run_dir}/.stream_state"; do
+    [[ -e "${path}" ]] || continue
+    mtime="$(stat -f '%m' "${path}" 2>/dev/null || stat -c '%Y' "${path}" 2>/dev/null || true)"
+    [[ "${mtime}" =~ ^[0-9]+$ ]] || continue
+    if (( now - mtime < grace_s )); then
+      return 0
+    fi
+  done
+  return 1
+}
+
 terminate_through_timeout_path() {
   local child_pid="$1" run_dir="$2" bound="$3" value="$4" limit="$5"
   printf '%s\n' "${bound}" > "${run_dir}/.bound_reason"
@@ -1072,10 +1094,9 @@ watchdog_loop() {
   local child_pid="$1" timeout_s="$2" run_dir="$3" stall_s="${4:-${GLM_STALL_S}}"
   local turn_limit="${5:-${GLM_TURN_LIMIT}}" no_progress_s="${6:-${GLM_NO_PROGRESS_S}}"
   local waited=0 interval=2
-  # GLM-REVIVE-01 legacy stall bound shares parse_stream activity state with
-  # the stricter no-progress guard. The explicit guard is checked first and
-  # routes through .timed_out; a lower legacy GLM_STALL_S may still revive.
-  local started_ts last_progress_ts
+  # GLM_STALL_S only reports stdout-idle.  GLM_NO_PROGRESS_S is the independent
+  # kill threshold and requires the corroborating checks below.
+  local started_ts last_progress_ts stdout_idle_logged=0
   started_ts="$(date +%s)"
   last_progress_ts="${started_ts}"
   while [[ ! -f "${run_dir}/.done" ]]; do
@@ -1093,7 +1114,7 @@ watchdog_loop() {
       return 0
     fi
 
-    local observed now state_progress idle_s
+    local observed now state_progress idle_s open_tool_calls=0
     now="$(date +%s)"
     observed="$(stream_state_get "${run_dir}" turns)"
     [[ "${observed}" =~ ^[0-9]+$ ]] || observed=0
@@ -1107,14 +1128,23 @@ watchdog_loop() {
       last_progress_ts="${state_progress}"
     fi
     idle_s=$(( now - last_progress_ts ))
-    if [[ "${idle_s}" -ge "${no_progress_s}" ]]; then
-      terminate_through_timeout_path "${child_pid}" "${run_dir}" "no_progress" "${idle_s}" "${no_progress_s}"
-      return 0
-    elif [[ "${idle_s}" -ge "${stall_s}" ]]; then
+    open_tool_calls="$(stream_state_get "${run_dir}" open_tool_calls)"
+    [[ "${open_tool_calls}" =~ ^[0-9]+$ ]] || open_tool_calls=0
+    if [[ "${idle_s}" -ge "${stall_s}" ]] && [[ "${stdout_idle_logged}" -eq 0 ]]; then
+      # Do not write this observation into progress.log: that file's mtime is
+      # itself a liveness signal, so doing so would manufacture activity.
+      printf '[%s] STDOUT_IDLE idle_s=%s threshold_s=%s open_tool_calls=%s -- observation only\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${idle_s}" "${stall_s}" "${open_tool_calls}" >> "${run_dir}/stderr.log"
+      stdout_idle_logged=1
+    fi
+    if [[ "${idle_s}" -ge "${no_progress_s}" ]] \
+       && [[ "${open_tool_calls}" -eq 0 ]] \
+       && ! run_dir_has_fresh_activity "${run_dir}" "${now}" "${no_progress_s}"; then
       # Same touch-before-kill ordering rationale as the timeout branch above.
+      printf '%s\n' "idle_no_activity" > "${run_dir}/.bound_reason"
       touch "${run_dir}/.stalled"
-      printf '[%s] STALL_KILL after=%ss -- no progress; killing process group %s\n' \
-        "$(date '+%Y-%m-%d %H:%M:%S')" "${stall_s}" "${child_pid}" >> "${run_dir}/progress.log"
+      printf '[%s] STALL_KILL stall_kill=idle_no_activity idle_s=%s limit_s=%s -- killing process group %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${idle_s}" "${no_progress_s}" "${child_pid}" >> "${run_dir}/progress.log"
       kill -TERM "-${child_pid}" 2>/dev/null || true
       sleep 5
       kill -KILL "-${child_pid}" 2>/dev/null || true
