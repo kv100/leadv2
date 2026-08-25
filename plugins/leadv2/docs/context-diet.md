@@ -30,10 +30,12 @@ The merged, resolved definition is written to
 disposed of with the task) and validated by a JSON round-trip before it is ever passed to
 `claude`.
 
-`mcp__codebase-memory-mcp__*` (the graph MCP) is deliberately **omitted** from every role
-config: it is disabled in persona-engine, and a headless `claude -p` subsession has no MCP-graph
-access regardless (`leadv2-subagent-protocol.md` §1b) — the omission is a decision, not an
-oversight, and is noted in each config file's `_comment`.
+`mcp__codebase-memory-mcp__*` (the graph MCP) is **listed in every role config** since
+CODE-INTEL-BOTH-01 (founder, 2026-08-25). It was previously omitted on the premise that the graph
+was "disabled in persona-engine" — that premise is retired: both MCPs run there side by side, and
+the graph is the only one that answers who-calls / trace / impact deterministically. Because a role
+config carries server NAMES only, a repo that registers no such server simply does not resolve it,
+so listing it costs nothing in repos that lack it.
 
 **Roles covered:** `developer`, `critic`, `architect` each get a dedicated file; every other
 role (`hack-detect`, templated `--role "${role...}"` call sites) falls back to
