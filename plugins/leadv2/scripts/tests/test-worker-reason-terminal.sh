@@ -13,8 +13,12 @@
 #   A5  codex rollout: newest cwd-filtered rollout's last task_complete
 #       .last_agent_message; a sibling rollout with a DIFFERENT cwd must
 #       never win.
-#   A6  glm .out last non-blank line; A7 empty sources -> empty + rc 0;
-#   A8  LEADV2_WORKER_REASON=0 kill switch.
+#   A6  glm .out last non-blank line; A7 empty sources -> empty + rc 0
+#       (sessions root pinned to an empty scratch dir via
+#       LEADV2_CODEX_SESSIONS_ROOT, so a machine with a real ~/.codex
+#       cannot bleed in);
+#   A8  LEADV2_WORKER_REASON=0 kill switch; A9 a rollout whose body names a
+#       DIFFERENT dispatch sig8 must never win (mis-attribution regression).
 # B  LEDGER UNIT (real leadv2-dispatch-ledger.sh):
 #   B1  10th positional worker_reason -> JSON row carries the key, journal
 #       decision line gains ` worker_reason="..."`;
@@ -31,7 +35,8 @@
 #       `worker_reason=""`).
 #
 # Hermetic: scratch repos, stubbed codex/journal/ledger bins, fixture
-# CODEX_HOME, no network, no real dispatch.
+# sessions roots (LEADV2_CODEX_SESSIONS_ROOT pinned per-case), no network,
+# no real dispatch.
 # Run: bash scripts/tests/test-worker-reason-terminal.sh
 
 set -uo pipefail
@@ -92,18 +97,20 @@ elif printf '%s' "$r" | grep -q '\\'; then bad "A4: backslash survived sanitisat
 elif [[ "$r" == *$'\n'* ]]; then bad "A4: newline survived sanitisation: $r"
 else ok "A4: quote/backslash/newline sanitised (got: $r)"; fi
 
-# A5 codex: two rollouts — the sibling (newer mtime, WRONG cwd) must lose.
+# A5 codex: two rollouts — the sibling (newer mtime, WRONG cwd AND a
+# different sig8 in its body) must lose. Rollout bodies embed the mission's
+# dispatch sig, mirroring prod where the prompt names dispatch-<sig8>.
 rootA="$TMP/repo-a"; mkdir -p "$rootA"
 codexhome="$TMP/codex-home"
-mk_rollout() {  # <path> <cwd> <message>
+mk_rollout() {  # <path> <cwd> <sig8> <message>
   mkdir -p "$(dirname "$1")"
-  printf '{"type":"session_meta","payload":{"cwd":"%s"}}\n' "$2" > "$1"
-  printf '{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"%s"}}\n' "$3" >> "$1"
+  printf '{"type":"session_meta","payload":{"cwd":"%s","instructions":"mission dispatch-%s authoritative"}}\n' "$2" "$3" > "$1"
+  printf '{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"%s"}}\n' "$4" >> "$1"
   sleep 0.05  # guarantee distinct mtimes, sibling written LAST (newest)
 }
-mk_rollout "$codexhome/sessions/2026/08/25/rollout-own.jsonl" "$rootA" "CODEX STOP: refusal enum exhausted"
-mk_rollout "$codexhome/sessions/2026/08/25/rollout-sibling.jsonl" "$TMP/repo-sibling" "SIBLING MUST NOT WIN"
-r="$(LEADV2_WORKER_REASON_CODEX_HOME="$codexhome" LEADV2_LANE_WORK_ROOT="$rootA" \
+mk_rollout "$codexhome/sessions/2026/08/25/rollout-own.jsonl" "$rootA" abcd0005 "CODEX STOP: refusal enum exhausted"
+mk_rollout "$codexhome/sessions/2026/08/25/rollout-sibling.jsonl" "$TMP/repo-sibling" ffff9999 "SIBLING MUST NOT WIN"
+r="$(LEADV2_CODEX_SESSIONS_ROOT="$codexhome/sessions" LEADV2_LANE_WORK_ROOT="$rootA" \
       wr "$TMP/h-empty-handoff" codex abcd0005)"
 assert_eq "$r" "CODEX STOP: refusal enum exhausted" "A5: codex rollout cwd filter — sibling rollout never wins"
 
@@ -112,9 +119,19 @@ r="$(wr "$h6" glm abcd0006)"
 assert_eq "$r" "last glm line" "A6: glm .out last non-blank line"
 
 h7="$TMP/h-nothing"; mkdir -p "$h7"
-r="$(wr "$h7" sonnet abcd0007)"; rc=$?
+codexempty="$TMP/codex-empty"; mkdir -p "$codexempty"
+r="$(LEADV2_CODEX_SESSIONS_ROOT="$codexempty" wr "$h7" sonnet abcd0007)"; rc=$?
 assert_eq "$r" "" "A7: empty sources -> empty string"
 assert_eq "$rc" "0" "A7: empty sources -> rc 0"
+
+# A9 mis-attribution regression: a rollout naming a DIFFERENT dispatch's sig8,
+# no cwd filter set — the exact shape that used to borrow a sibling lane's
+# last words. Must be "" (miss), never the foreign message.
+codexhome9="$TMP/codex-home9"
+mk_rollout "$codexhome9/sessions/2026/08/25/rollout-foreign.jsonl" "$TMP/repo-foreign" deadbeef "FOREIGN LANE LAST WORDS MUST NOT WIN"
+r="$(LEADV2_CODEX_SESSIONS_ROOT="$codexhome9/sessions" \
+      wr "$TMP/h-empty-handoff-9" codex abcd0009)"
+assert_eq "$r" "" "A9: rollout naming a DIFFERENT dispatch sig8 never wins (no mis-attribution)"
 
 r="$(LEADV2_WORKER_REASON=0 wr "$h1" sonnet abcd0008)"
 assert_eq "$r" "" "A8: LEADV2_WORKER_REASON=0 kill switch"

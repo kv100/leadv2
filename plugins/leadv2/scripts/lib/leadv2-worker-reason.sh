@@ -15,19 +15,29 @@
 # Resolution order (first non-empty wins), every source guarded:
 #   sonnet/claude  <handoff>/developer.stream.jsonl — last {"type":"result"}
 #                  -> .result; else last type:assistant text block.
-#   codex          newest ${CODEX_HOME:-~/.codex}/sessions/**/rollout-*.jsonl
-#                  (cwd-scoped to LEADV2_LANE_WORK_ROOT when set — the same
-#                  hard filter dispatch-code.sh's _codex_newest_rollout_since
-#                  uses, so a sibling dispatch's rollout can't win) — last
-#                  task_complete.last_agent_message. <since_epoch> (optional,
-#                  default 0) bounds the mtime window like that helper does.
+#   codex          newest rollout under the sessions ROOT (resolution below)
+#                  whose body literally carries the task sig8, inside the
+#                  mtime window >= since, AND (when LEADV2_LANE_WORK_ROOT is
+#                  set) whose session_meta cwd matches — last
+#                  task_complete.last_agent_message.
+#                  Attribution rule (D2): a rollout is used only when
+#                  something ties it to THIS lane. Empty/short sig8, missing/
+#                  unreadable root, or zero survivors is a MISS -> empty.
+#                  This is deliberate: the alternative is attributing a
+#                  sibling lane's last words to this lane. Do NOT "fix" the
+#                  empty case back to newest-global.
 #   glm/kimi       <handoff>/developer.glm.out — last non-blank line; else
 #                  <handoff>/<arm>.stream.jsonl when present.
 #   unknown arm    tries the claude source, then codex, then glm.out.
 #
 # Env: LEADV2_WORKER_REASON=0 is the kill switch (callers check it, and the
 # function also honours it directly for direct-sourced callers).
-# LEADV2_WORKER_REASON_CODEX_HOME overrides the codex sessions root for tests.
+# Sessions ROOT resolution (first non-empty wins):
+#   1. LEADV2_CODEX_SESSIONS_ROOT    (canonical)
+#   2. LV2_CODEX_SESSIONS_ROOT       (brief-compat alias, see D1)
+#   3. ${LEADV2_WORKER_REASON_CODEX_HOME}/sessions  (legacy knob, kept)
+#   4. ${CODEX_HOME}/sessions
+#   5. $HOME/.codex/sessions         (default)
 
 lv2_worker_reason() {  # <handoff_dir> <arm> <task_sig8> [<since_epoch>]
   local handoff="${1:-}" arm="${2:-}" sig8="${3:-}" since="${4:-0}"
@@ -35,12 +45,16 @@ lv2_worker_reason() {  # <handoff_dir> <arm> <task_sig8> [<since_epoch>]
   # NOTE: no -d handoff guard here — the CODEX source is global (rollout files
   # under ~/.codex), so a codex arm with a missing/empty handoff dir must still
   # resolve; the handoff-backed sources guard themselves on isdir/open-fail.
+  local sessions_root="${LEADV2_CODEX_SESSIONS_ROOT:-${LV2_CODEX_SESSIONS_ROOT:-}}"
+  [[ -n "$sessions_root" ]] || sessions_root="${LEADV2_WORKER_REASON_CODEX_HOME:+${LEADV2_WORKER_REASON_CODEX_HOME}/sessions}"
+  [[ -n "$sessions_root" ]] || sessions_root="${CODEX_HOME:+${CODEX_HOME}/sessions}"
+  [[ -n "$sessions_root" ]] || sessions_root="$HOME/.codex/sessions"
   python3 - "${handoff}" "${arm}" "${sig8}" "${since}" \
-    "${LEADV2_WORKER_REASON_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}" \
+    "${sessions_root}" \
     "${LEADV2_LANE_WORK_ROOT:-}" <<'PY' 2>/dev/null || true
 import glob, json, os, re, sys
 
-handoff, arm_raw, sig8, since_raw, codex_home, expected_cwd = sys.argv[1:7]
+handoff, arm_raw, sig8, since_raw, sessions_root, expected_cwd = sys.argv[1:7]
 try:
     since = int(since_raw)
 except ValueError:
@@ -97,9 +111,12 @@ def from_claude_stream():
     return ""
 
 def from_codex_rollout():
-    root = os.path.join(codex_home, "sessions")
+    # D2: a rollout is used only when something ties it to THIS lane. No
+    # attributing key -> miss; never fall through to "newest global".
+    if not sig8 or len(sig8) < 8:
+        return ""
     candidates = []
-    for p in glob.glob(os.path.join(root, "**", "rollout-*.jsonl"), recursive=True):
+    for p in glob.glob(os.path.join(sessions_root, "**", "rollout-*.jsonl"), recursive=True):
         try:
             m = os.path.getmtime(p)
         except OSError:
@@ -117,16 +134,30 @@ def from_codex_rollout():
             cwd = None
         candidates.append((m, p, cwd))
     candidates.sort(key=lambda t: t[0])
-    # cwd hard filter (same rule as dispatch-code.sh's rollout discovery): with
-    # a known expected cwd and zero matches, "no candidate" -- never guess a
-    # sibling dispatch's rollout.
+    pool = candidates
+    # cwd hard filter stays as an AND-guard (same rule as dispatch-code.sh's
+    # rollout discovery): with a known expected cwd and zero matches, "no
+    # candidate" -- never guess a sibling dispatch's rollout.
     if expected_cwd:
         pool = [c for c in candidates if c[2] == expected_cwd]
-    else:
-        pool = candidates
     if not pool:
         return ""
-    p = pool[-1][1]
+    # task attribution: the rollout's own bytes must carry this dispatch's
+    # sig8 (the codex mission text always names dispatch-<sig8>). Bounded
+    # read: first 512 KB, case-sensitive raw substring. Newest survivor wins.
+    needle = sig8.encode("utf-8")
+    p = None
+    for _m, cand, _cwd in reversed(pool):
+        try:
+            with open(cand, "rb") as fh:
+                head = fh.read(512 * 1024)
+        except OSError:
+            continue
+        if needle in head:
+            p = cand
+            break
+    if p is None:
+        return ""
     try:
         with open(p, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()
