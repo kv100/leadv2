@@ -43,8 +43,11 @@ STUB="${tmp}/stub-probe.py"
 cat > "$STUB" <<'PY'
 #!/usr/bin/env python3
 import json, os, sys, time
-cache_dir = os.environ.get("LEADV2_QUOTA_CACHE_DIR", "")
-label = cache_dir.rsplit("/profile-", 1)[-1] if "/profile-" in cache_dir else ""
+# T12: the selector now keys LEADV2_QUOTA_CACHE_DIR by derived identity, not
+# by registry label (that's the fix under test), so the fixture stub keys off
+# LEADV2_CLAUDE_PROFILE_LABEL directly instead of parsing it out of the cache
+# dir path.
+label = os.environ.get("LEADV2_CLAUDE_PROFILE_LABEL", "")
 if label.startswith("hang"):
     time.sleep(300)
 path = os.path.join(os.environ["STUB_FIXDIR"], label + ".json")
@@ -102,7 +105,7 @@ echo "=== T4: 20% vs 80% -> picks the 20% label ==="
 printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=alpha config_dir=.*/dir-alpha score=20 source=live reason=worst_window candidates=2 cred=file:[^ ]+$' 'T4: picks alpha score=20 live'
+check_grep "$OUT" '^profile=alpha config_dir=.*/dir-alpha score=20 source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na$' 'T4: picks alpha score=20 live'
 [[ "$RC" -eq 0 ]] && pass "T4: exit 0" || fail "T4 exit" "rc=$RC"
 
 # ============================================================================
@@ -110,7 +113,7 @@ echo "=== T5: one unknown, one ok -> picks ok, source=live ==="
 printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=beta .*score=80 source=live reason=worst_window candidates=2 cred=file:[^ ]+$' 'T5: picks the ok profile'
+check_grep "$OUT" '^profile=beta .*score=80 source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na$' 'T5: picks the ok profile'
 
 # ============================================================================
 echo "=== T6: both unknown -> first registry entry, all_unknown ==="
@@ -118,7 +121,7 @@ printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG
 printf 'dead2\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 cp "$FIX/dead.json" "$FIX/dead2.json"
 run_select $(base_env)
-check_grep "$OUT" '^profile=dead .*score=101 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+$' 'T6: first entry, all_unknown'
+check_grep "$OUT" '^profile=dead .*score=101 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=unknown/na$' 'T6: first entry, all_unknown'
 
 # ============================================================================
 echo "=== T7: malformed line + email-shaped label -> skipped, one warning each ==="
@@ -129,7 +132,7 @@ echo "=== T7: malformed line + email-shaped label -> skipped, one warning each =
   printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta"
 } > "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=alpha .*candidates=2 cred=file:[^ ]+$' 'T7: bad lines skipped, both good ones used'
+check_grep "$OUT" '^profile=alpha .*candidates=2 cred=file:[^ ]+ identity=unknown/na$' 'T7: bad lines skipped, both good ones used'
 w_count="$(grep -c 'WARN: registry line .* skipped' <<<"$ERR")"
 [[ "$w_count" -eq 2 ]] && pass "T7: exactly two skip warnings" || fail "T7 warnings" "count=$w_count err=$ERR"
 
@@ -153,7 +156,9 @@ run_select $(base_env)
 # stdout legitimately carries config_dir (consumed by the caller, never journalled)
 check_grep "$OUT" 'config_dir=.*/dir-' 'T9a: config_dir present on selector stdout'
 check_nogrep "$ERR" 'sk-ant|@' 'T9b: selector stderr has no token or email'
-check_nogrep "$ERR" '/' 'T9c: selector stderr has no path'
+# identity=<subscriptionType>/<email-or-na> legitimately carries ONE slash (T12);
+# a real leaked path (config_dir, cred file) has at least two segments/slashes.
+check_nogrep "$ERR" '/[^[:space:]]+/' 'T9c: selector stderr has no path'
 
 # ============================================================================
 echo "=== T10: determinism — identical scores, same pick over 5 runs ==="
@@ -194,14 +199,16 @@ cap_val="$(cat "$cap" 2>/dev/null)"
 check_grep "$cap_val" "^CLAUDE_CONFIG_DIR=$tmp/dir-alpha$" 'I1: child sees only the selected config_dir'
 n_prof_lines="$(grep -c '^\[claude-profile\]' "$int_err")"
 if [[ "$n_prof_lines" -eq 1 ]]; then pass "I2: exactly one [claude-profile] stderr line"; else fail "I2" "count=$n_prof_lines"; fi
-check_grep "$(cat "$int_err")" '^\[claude-profile\] selected=alpha score=20 source=live candidates=2 cred_kind=file$' 'I2b: label-only stderr line shape'
+check_grep "$(cat "$int_err")" '^\[claude-profile\] selected=alpha score=20 source=live candidates=2 cred_kind=file identity=unknown/na$' 'I2b: label-only stderr line shape'
 hlog="$repo/docs/handoff/PROFILE-CL/claude-profile.log"
 [[ -f "$hlog" ]] && pass "I3: handoff claude-profile.log exists" || fail "I3" "missing $hlog"
 if [[ -f "$hlog" ]]; then
-  check_grep "$(cat "$hlog")" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[claude-profile\] selected=alpha score=20 source=live candidates=2 cred_kind=file$' 'I4: ISO-prefixed label-only handoff line'
-  check_nogrep "$(cat "$hlog")" 'sk-ant|@|/' 'I5: handoff log has no token, email, or path'
+  check_grep "$(cat "$hlog")" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[claude-profile\] selected=alpha score=20 source=live candidates=2 cred_kind=file identity=unknown/na$' 'I4: ISO-prefixed label-only handoff line'
+  check_nogrep "$(cat "$hlog")" 'sk-ant' 'I5a: handoff log has no token'
+  check_nogrep "$(cat "$hlog")" '/[^[:space:]]+/' 'I5b: handoff log has no path'
 fi
-check_nogrep "$(grep '^\[claude-profile\]' "$int_err")" 'sk-ant|@|/' 'I6: profile stderr line has no token, email, or path'
+check_nogrep "$(grep '^\[claude-profile\]' "$int_err")" 'sk-ant' 'I6a: profile stderr line has no token'
+check_nogrep "$(grep '^\[claude-profile\]' "$int_err")" '/[^[:space:]]+/' 'I6b: profile stderr line has no path'
 
 # ============================================================================
 echo "=== Integration: flag unset -> no profile line, lane unchanged ==="
@@ -223,6 +230,81 @@ fi
 [[ ! -f "$repo/docs/handoff/PROFILE-CL2/claude-profile.log" ]] \
   && pass "I9: no handoff claude-profile.log when flag unset" \
   || fail "I9" "unexpected log"
+
+# ============================================================================
+# T12 (CLAUDE-PROFILE-SELECT-FINISH-01 follow-up): identity derived from the
+# credential itself, expired-token exclusion, all-expired refusal. Fixture
+# keychain-shaped JSONs are plain temp files (never the real keychain); the
+# hard-coded `security` binary is swapped for a stub via
+# LEADV2_CLAUDE_PROFILE_SECURITY_BIN so the keychain: path is exercised too.
+now_ms=$(( $(date +%s) * 1000 ))
+future_ms=$(( now_ms + 3600000 ))
+past_ms=$(( now_ms - 3600000 ))
+cred_json() { # <subscription_type> <expires_at_ms>
+  printf '{"claudeAiOauth":{"accessToken":"sk-ant-should-never-be-read","refreshToken":"sk-ant-r","subscriptionType":"%s","expiresAt":%s}}' "$1" "$2"
+}
+mkdir -p "$tmp/dir-team" "$tmp/dir-stale" "$tmp/dir-allexp-a" "$tmp/dir-allexp-b"
+cred_json team "$future_ms" > "$tmp/dir-team/cred.json"
+cred_json max  "$past_ms"   > "$tmp/dir-stale/cred.json"
+cred_json max  "$past_ms"   > "$tmp/dir-allexp-a/cred.json"
+cred_json pro  "$past_ms"   > "$tmp/dir-allexp-b/cred.json"
+acct_json 30 25 > "$FIX/personal.json"
+
+# --- keychain-path fixture: a "security" stub that maps -s <service> to a
+# fixture file under KEYFIX, keyed by service name -- never touches the real
+# Keychain, and never prints the fixture's accessToken/refreshToken to
+# anything the selector itself echoes.
+KEYFIX="$tmp/keyfix"; mkdir -p "$KEYFIX"
+cred_json team "$future_ms" > "$KEYFIX/svc-team.json"
+SECURITY_STUB="$tmp/security-stub.sh"
+cat > "$SECURITY_STUB" <<SH
+#!/usr/bin/env bash
+# args: find-generic-password -s <service> -w
+svc=""
+prev=""
+for a in "\$@"; do
+  if [[ "\$prev" == "-s" ]]; then svc="\$a"; fi
+  prev="\$a"
+done
+f="$KEYFIX/\${svc}.json"
+[[ -f "\$f" ]] && cat "\$f" || exit 44
+SH
+chmod +x "$SECURITY_STUB"
+
+echo "=== T11 (NC-a): label='personal' but credential subscriptionType=team -> identity=team/na ==="
+printf 'personal\t%s\tfile:%s/cred.json\n' "$tmp/dir-team" "$tmp/dir-team" > "$REG"
+printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env)
+check_grep "$OUT" '^profile=personal .*identity=team/na$' 'T11a: identity derived from credential (team), not label (personal)'
+check_grep "$OUT" 'score=30 source=live' 'T11b: personal/team profile scored and picked'
+[[ "$RC" -eq 0 ]] && pass "T11: exit 0" || fail "T11 exit" "rc=$RC"
+
+echo "=== T11k (NC-a, keychain path): same mismatch via keychain: credential_source ==="
+printf 'personal\t%s\tkeychain:svc-team\n' "$tmp/dir-team" > "$REG"
+printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env) LEADV2_CLAUDE_PROFILE_SECURITY_BIN="$SECURITY_STUB"
+check_grep "$OUT" '^profile=personal .*identity=team/na$' 'T11k: identity derived via keychain: credential_source too'
+check_nogrep "$OUT" 'sk-ant' 'T11k-leak: selected-profile stdout carries no access/refresh token'
+check_nogrep "$ERR" 'sk-ant' 'T11k-leak2: selector stderr carries no access/refresh token'
+
+echo "=== T12 (NC-b): expired credential -> WARN token_expired + excluded from scoring ==="
+printf 'stale\t%s\tfile:%s/cred.json\n' "$tmp/dir-stale" "$tmp/dir-stale" > "$REG"
+printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" >> "$REG"
+printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env)
+check_grep "$ERR" 'WARN: registry line 1 skipped: token_expired label=stale identity=max/na' 'T12a: WARN token_expired names label+identity'
+check_grep "$OUT" '^profile=alpha .*candidates=2 ' 'T12b: expired entry excluded -- candidates=2, not 3'
+check_nogrep "$OUT" '^profile=stale ' 'T12c: expired profile never wins'
+[[ "$RC" -eq 0 ]] && pass "T12: exit 0" || fail "T12 exit" "rc=$RC"
+
+echo "=== T13 (NC-c): all candidates expired -> named refusal, not a silent pick ==="
+printf 'exp-a\t%s\tfile:%s/cred.json\n' "$tmp/dir-allexp-a" "$tmp/dir-allexp-a" > "$REG"
+printf 'exp-b\t%s\tfile:%s/cred.json\n' "$tmp/dir-allexp-b" "$tmp/dir-allexp-b" >> "$REG"
+run_select $(base_env)
+check_grep "$OUT" '^profile=- reason=all_expired$' 'T13a: named refusal, not single_profile or a stale pick'
+w_count="$(grep -c 'WARN: registry line .* skipped: token_expired' <<<"$ERR")"
+[[ "$w_count" -eq 2 ]] && pass "T13b: both expired entries warned" || fail "T13b" "count=$w_count err=$ERR"
+[[ "$RC" -eq 0 ]] && pass "T13: exit 0" || fail "T13 exit" "rc=$RC"
 
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

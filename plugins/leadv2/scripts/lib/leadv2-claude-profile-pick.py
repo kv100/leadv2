@@ -4,7 +4,12 @@
 Reads one record per line on stdin (emitted by leadv2-claude-profile-select.sh
 after it has probed each registry entry independently):
 
-    <label>\t<config_dir>\t<credential_source>\t<base64 probe JSON | ->
+    <label>\t<config_dir>\t<credential_source>\t<base64 probe JSON | ->\t<identity>
+
+`identity` (T12) is `<subscriptionType>/<email-or-na>` derived by the selector
+from the credential itself, never from the label -- it is what actually gets
+reported, since a registry label can drift from the account the credential
+now serves (a relabeled/re-logged-in slot).
 
 Scores each record independently: score = max(five_hour_pct, seven_day_pct)
 (worst-window utilisation) of the account the probe marked active; anything
@@ -16,11 +21,12 @@ Picks the LOWEST score; ties are broken by input (= registry) order, so the
 selection is fully deterministic.  Prints exactly one line:
 
     profile=<label> config_dir=<path> score=<n> source=live|unknown \
-    reason=<reason> candidates=<n> cred=<credential_source>
+    reason=<reason> candidates=<n> cred=<credential_source> identity=<identity>
 
 Privacy: config_dir is printed here because it exists ONLY on this stdout and
 is consumed by the caller (claude-subsession.sh); the caller journals the label
-alone.  Pure module: no env, no filesystem, no network — every input arrives
+alone. `identity` carries subscriptionType/email only -- never a token.
+Pure module: no env, no filesystem, no network — every input arrives
 on stdin, which is what makes T10 (determinism) testable in isolation.
 """
 import base64
@@ -32,7 +38,7 @@ UNKNOWN = 101
 
 def score_record(record):
     """Return (score:int, source:"live"|"unknown") for one probe record."""
-    label, config_dir, cred, payload_b64 = record
+    label, config_dir, cred, payload_b64 = record[:4]
     payload = None
     try:
         payload = json.loads(base64.b64decode(payload_b64).decode())
@@ -65,7 +71,9 @@ def main():
     records = []
     for raw in sys.stdin:
         parts = raw.rstrip("\n").split("\t")
-        if len(parts) != 4:
+        if len(parts) == 4:
+            parts = parts + ["unknown/na"]  # pre-T12 caller (no identity column)
+        if len(parts) != 5:
             continue
         records.append(parts)
     if not records:
@@ -75,8 +83,8 @@ def main():
     (score, source), _order, record = min(scored, key=lambda t: (t[0][0], t[1]))
     # The minimum can only be a 101 when EVERY record is unknown.
     reason = "all_unknown" if score >= UNKNOWN else "worst_window"
-    print("profile=%s config_dir=%s score=%d source=%s reason=%s candidates=%d cred=%s"
-          % (record[0], record[1], score, source, reason, len(records), record[2]))
+    print("profile=%s config_dir=%s score=%d source=%s reason=%s candidates=%d cred=%s identity=%s"
+          % (record[0], record[1], score, source, reason, len(records), record[2], record[4]))
 
 
 if __name__ == "__main__":

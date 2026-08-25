@@ -608,6 +608,7 @@ leadv2_select_claude_profile() {
     score="${BASH_REMATCH[3]}"; src="${BASH_REMATCH[4]}"
     cands="$(printf '%s' "$sel" | sed -n 's/.*candidates=\([0-9][0-9]*\).*/\1/p')"
     cred="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]cred=\([^[:space:]]*\).*/\1/p')"
+    identity="$(printf '%s' "$sel" | sed -n 's/.*[[:space:]]identity=\([^[:space:]]*\).*/\1/p')"
     cred_kind=unknown
     case "$cred" in
       keychain:?*)
@@ -616,7 +617,7 @@ leadv2_select_claude_profile() {
         ;;
       file:/*) cred_kind=file ;;
     esac
-    line_log="[claude-profile] selected=${label} score=${score} source=${src} candidates=${cands:-?} cred_kind=${cred_kind}"
+    line_log="[claude-profile] selected=${label} score=${score} source=${src} candidates=${cands:-?} cred_kind=${cred_kind} identity=${identity:-unknown/na}"
     export CLAUDE_CONFIG_DIR="$dir"
     printf '%s\n' "$line_log" >&2
     printf '%s %s\n' "$iso" "$line_log" >> "$HANDOFF_DIR/claude-profile.log" 2>/dev/null || true
