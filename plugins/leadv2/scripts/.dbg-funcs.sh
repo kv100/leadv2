@@ -3487,10 +3487,7 @@ _dispatch_slot_owned() {  # <reg_id> -> rc0 ours-or-absent, rc2 foreign/worker r
   # Registry not loaded / no yaml: nothing has been verified either way -- the
   # caller's own leadv2_active_unregister guard makes release a no-op then.
   declare -F _leadv2_yaml_file >/dev/null 2>&1 || return 0
-  # PROJECT_ROOT (this script's own global) -- never an ambient export -- names
-  # the registry: a `VAR=x source` prefix does not persist past the source, and
-  # the EXIT trap can fire long after registration.
-  yf="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" _leadv2_yaml_file 2>/dev/null)"
+  yf="$(_leadv2_yaml_file 2>/dev/null)"
   [[ -n "${yf}" && -f "${yf}" ]] || return 0
   python3 - "${yf}" "${rid}" "${DISPATCH_SLOT_SESSION}" "${DISPATCH_SLOT_PID}" <<'PY' 2>/dev/null
 import sys, yaml
@@ -3524,7 +3521,7 @@ _release_registered_lane() {  # <reg_id> <sig8> <where> -- owner-verified, idemp
     emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=not_owner_row_intact"
     return 0
   fi
-  if LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_unregister "${rid}" 2>/dev/null; then
+  if leadv2_active_unregister "${rid}" 2>/dev/null; then
     emit decision "active_lane_released task=${s8:-} id=${rid} where=${where}"
   else
     emit decision "active_lane_release_failed task=${s8:-} id=${rid} where=${where}"
@@ -5320,12 +5317,9 @@ cmd_resolve() {
       # (a refresh returns the EXISTING row's id; the pid check discriminates)
       # and the durable PID it stamps -- so any later release can prove the row
       # is still THIS attempt's before unregistering it (see
-      # _dispatch_slot_owned). The grep keeps ONLY the s-<ts>-<pid>-<pid>
-      # session_id line: render_index prints its own "[registry] rendered ..."
-      # line to STDOUT too (observed live 2026-08-24), so a bare tail -1 would
-      # capture chatter, not the id. LEADV2_PROJECT_ROOT is passed explicitly:
-      # a `VAR=x source` prefix does not persist past the source command.
-      DISPATCH_SLOT_SESSION="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null | grep -E '^s-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$' | tail -1)"
+      # _dispatch_slot_owned). tail -1: render-index warnings ride stderr, but
+      # only the session_id line is trusted.
+      DISPATCH_SLOT_SESSION="$(leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null | tail -1)"
       if [[ -n "${DISPATCH_SLOT_SESSION}" ]]; then
         DISPATCH_SLOT_REG_ID="${reg_id}"
         DISPATCH_SLOT_PID="$(_lv2_durable_pid 2>/dev/null || printf '%s' "$$")"
@@ -6404,18 +6398,3 @@ cmd_retry_dead() {
   exit 0
 }
 
-# ── dispatch ──────────────────────────────────────────────────────────────────────
-[[ $# -eq 0 ]] && usage
-case "${1:-}" in
-  record-review) shift; cmd_record_review "$@" ;;
-  status)        cmd_status ;;
-  glm-deferred)  shift; cmd_glm_deferred "$@" ;;
-  burn-deferred) shift; cmd_burn_deferred "$@" ;;
-  advance-arm)   shift; cmd_advance_arm "$@" ;;
-  record-quota-lockout) shift; cmd_record_quota_lockout "$@" ;;
-  retry-dead)    shift; cmd_retry_dead "$@" ;;
-  sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;
-  reconcile)     shift; [[ -f "${LEDGER_BIN}" ]] && exec bash "${LEDGER_BIN}" reconcile "$@"; exit $? ;;
-  -h|--help)     usage ;;
-  *)             cmd_resolve "$@" ;;
-esac
