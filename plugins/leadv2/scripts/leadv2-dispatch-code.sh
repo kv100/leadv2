@@ -1771,13 +1771,26 @@ print(json.dumps({
 # Global arrays populated by _load_dispatch_ladder().
 _LADDER_IDS=()
 _LADDER_PROVIDERS=()
+_LADDER_UNTRUSTED=()
+_LADDER_WHEN=()
 
 # Read the dispatch_ladder from router: in the routing YAML.
-# Populates _LADDER_IDS and _LADDER_PROVIDERS. Falls back to the legacy
-# hardcoded order (glm,kimi,codex,sonnet) if the YAML or key is absent.
+# Populates _LADDER_IDS, _LADDER_PROVIDERS, _LADDER_UNTRUSTED and _LADDER_WHEN
+# (parallel arrays). Falls back to the legacy hardcoded order
+# (glm,kimi,codex,sonnet) if the YAML or key is absent.
+# T19 fix-round C1: _LADDER_UNTRUSTED carries each entry's `untrusted: true`
+# flag (third-party arms like freepool) so _build_candidate_chain can strip
+# them from a protected/safety chain by FACT, not by a hand-kept exclusion
+# list -- mirrors the `untrusted` reader added to leadv2-routing.yaml.
+# T19 fix-round C2: _LADDER_WHEN carries each entry's `when:` list
+# (comma-joined, e.g. "standard,bulk" or "all") so _build_candidate_chain can
+# enforce it against the dispatch's --task-class instead of it being a yaml
+# key nobody parses.
 _load_dispatch_ladder() {
   _LADDER_IDS=()
   _LADDER_PROVIDERS=()
+  _LADDER_UNTRUSTED=()
+  _LADDER_WHEN=()
   local _parsed
   _parsed="$(python3 -c '
 import sys, yaml
@@ -1792,12 +1805,59 @@ for e in ladder:
         continue
     if e.get("dispatch", True) is False:
         continue
-    print(eid + "\t" + e.get("provider", eid))
+    untrusted = "1" if e.get("untrusted") else "0"
+    when = e.get("when") or ["all"]
+    if isinstance(when, str):
+        when = [when]
+    when_field = ",".join(str(w) for w in when) or "all"
+    print(eid + "\t" + e.get("provider", eid) + "\t" + untrusted + "\t" + when_field)
 ' "${ROUTING_YAML}" 2>/dev/null)" || _parsed=""
+  # T19 fix-round (H2b / critic H3): ROUTING_YAML resolution above only falls
+  # back to the plugin's canonical yaml when the TENANT FILE ITSELF is absent.
+  # All 3 live tenant repos HAVE a .claude/ref/leadv2-routing.yaml, so that
+  # fallback never fires -- but none of those tenant files carry a
+  # router.dispatch_ladder key at all, so `_parsed` above comes back empty and
+  # this function fell straight to the legacy hardcoded order (glm codex
+  # sonnet), which has no freepool entry. Result: freepool was dead in every
+  # tenant repo regardless of the plugin yaml change, verified by grepping
+  # persona-engine's own routing yaml for `dispatch_ladder` (zero hits).
+  # Fix: when the resolved ROUTING_YAML has no dispatch_ladder key, retry
+  # against the plugin's own canonical yaml specifically for that key, before
+  # falling back to the hardcoded legacy order. A tenant yaml that DOES define
+  # its own dispatch_ladder (even a short one) is respected as-is -- this only
+  # covers the "key entirely absent" case, same semantics as the file-level
+  # fallback above.
+  if [[ -z "${_parsed}" ]]; then
+    _plugin_ladder_yaml="${LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE:-${SCRIPT_DIR}/../config/leadv2-routing.yaml}"
+    if [[ -f "${_plugin_ladder_yaml}" && "${_plugin_ladder_yaml}" != "${ROUTING_YAML}" ]]; then
+      _parsed="$(python3 -c '
+import sys, yaml
+try:
+    d = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    sys.exit(1)
+ladder = (d.get("router") or {}).get("dispatch_ladder") or []
+for e in ladder:
+    eid = e.get("id", "")
+    if not eid:
+        continue
+    if e.get("dispatch", True) is False:
+        continue
+    untrusted = "1" if e.get("untrusted") else "0"
+    when = e.get("when") or ["all"]
+    if isinstance(when, str):
+        when = [when]
+    when_field = ",".join(str(w) for w in when) or "all"
+    print(eid + "\t" + e.get("provider", eid) + "\t" + untrusted + "\t" + when_field)
+' "${_plugin_ladder_yaml}" 2>/dev/null)" || _parsed=""
+    fi
+  fi
   if [[ -n "${_parsed}" ]]; then
-    while IFS=$'\t' read -r _id _prov; do
+    while IFS=$'\t' read -r _id _prov _untrusted _when; do
       _LADDER_IDS+=("${_id}")
       _LADDER_PROVIDERS+=("${_prov}")
+      _LADDER_UNTRUSTED+=("${_untrusted:-0}")
+      _LADDER_WHEN+=("${_when:-all}")
     done <<< "${_parsed}"
   fi
   # Fallback: legacy hardcoded order.
@@ -1809,11 +1869,20 @@ for e in ladder:
     # DISPATCH-KIMI-ARM-MISMATCH-01 / 3398d11).
     _LADDER_IDS=(glm codex sonnet)
     _LADDER_PROVIDERS=(glm codex anthropic)
+    _LADDER_UNTRUSTED=(0 0 0)
+    _LADDER_WHEN=(all all all)
   fi
 }
 
 # Build candidate_arms from the ladder: the resolved arm and every arm after
 # it in ladder order. If the arm is not in the ladder, return the full ladder.
+# T19 fix-round C1: once the positional chain is built, strip every arm
+# flagged `untrusted: true` in the ladder (e.g. freepool) whenever the task is
+# protected/safety-touched (DC_PROTECTED / DC_SAFETY env, same signals
+# resolve_arm() already reads) -- class-aware, applied at every chain
+# position, not just the primary-arm resolution. A named journal line makes
+# the skip a fact, not a silent drop; if the filter would empty the chain,
+# sonnet is kept as the fail-closed terminal arm.
 _build_candidate_chain() {  # <arm> <sig8> ; mutates candidate_arms
   local _arm="$1" _sig8="$2" _i _found=0
   candidate_arms=()
@@ -1830,6 +1899,59 @@ _build_candidate_chain() {  # <arm> <sig8> ; mutates candidate_arms
     emit decision "arm_vocabulary_mismatch by=router arm=${_arm} fallback=sonnet task=${_sig8} reason=launcher_unknown_arm"
     log_err "arm_vocabulary_mismatch: unknown arm=${_arm} for task=${_sig8}, falling back to sonnet"
   fi
+  if [[ "${DC_PROTECTED:-0}" == "1" || "${DC_SAFETY:-0}" == "1" ]]; then
+    local -a _trusted=()
+    local _cand _cand_i _cand_untrusted
+    for _cand in "${candidate_arms[@]}"; do
+      _cand_untrusted=0
+      for _cand_i in "${!_LADDER_IDS[@]}"; do
+        if [[ "${_LADDER_IDS[$_cand_i]}" == "${_cand}" ]]; then
+          _cand_untrusted="${_LADDER_UNTRUSTED[$_cand_i]:-0}"
+          break
+        fi
+      done
+      if [[ "${_cand_untrusted}" == "1" ]]; then
+        emit decision "arm_excluded by=router arm=${_cand} task=${_sig8} reason=protected_path"
+        continue
+      fi
+      _trusted+=("${_cand}")
+    done
+    [[ ${#_trusted[@]} -eq 0 ]] && _trusted=(sonnet)
+    candidate_arms=("${_trusted[@]}")
+  fi
+  # T19 fix-round C2: `when:` on a ladder entry (e.g. freepool's
+  # `when: [standard, bulk]`) previously had no reader -- every task class,
+  # Heavy included, could spill to it. Enforce it against --task-class
+  # (DC_TASK_CLASS env, lowercased; defaults to "standard" -- see cmd_resolve).
+  # An entry's when list of "all" is always eligible; an unset/empty when list
+  # is treated as "all" too (matches the loader's own default), so this can
+  # never regress an arm that never declared a when constraint.
+  local _size_class="${DC_TASK_CLASS:-standard}"
+  _size_class="${_size_class,,}"
+  local -a _sized=()
+  local _s_cand _s_i _s_when _s_ok
+  for _s_cand in "${candidate_arms[@]}"; do
+    _s_when="all"
+    for _s_i in "${!_LADDER_IDS[@]}"; do
+      if [[ "${_LADDER_IDS[$_s_i]}" == "${_s_cand}" ]]; then
+        _s_when="${_LADDER_WHEN[$_s_i]:-all}"
+        break
+      fi
+    done
+    _s_ok=0
+    if [[ -z "${_s_when}" || ",${_s_when}," == *",all,"* ]]; then
+      _s_ok=1
+    elif [[ ",${_s_when}," == *",${_size_class},"* ]]; then
+      _s_ok=1
+    fi
+    if [[ "${_s_ok}" != "1" ]]; then
+      emit decision "arm_excluded by=router arm=${_s_cand} task=${_sig8} reason=arm_not_capable_for_size task_class=${_size_class} when=${_s_when}"
+      continue
+    fi
+    _sized+=("${_s_cand}")
+  done
+  [[ ${#_sized[@]} -eq 0 ]] && _sized=(sonnet)
+  candidate_arms=("${_sized[@]}")
 }
 
 # Return the provider for a given arm id from the loaded ladder.
@@ -5413,6 +5535,12 @@ cmd_resolve() {
       --interactive)  interactive=1; shift ;;
       --kind)         [[ $# -ge 2 ]] || { log_err "--kind requires a value"; usage; }
                       kind="$2"; shift 2 ;;
+      # T19 fix-round C2: named task-size class (trivial/light/standard/heavy/
+      # strategic/bulk), consulted by _build_candidate_chain against a ladder
+      # entry's `when:` list (e.g. freepool's `when: [standard, bulk]`).
+      # Defaults to "standard" -- callers that never pass this see no change.
+      --task-class)   [[ $# -ge 2 ]] || { log_err "--task-class requires a value"; usage; }
+                      task_class="$2"; shift 2 ;;
       --glm-failures) [[ $# -ge 2 ]] || { log_err "--glm-failures requires a value"; usage; }
                       glmfails="$2"; shift 2 ;;
       --glm-lock-busy) lockbusy=1;   shift ;;
@@ -5877,7 +6005,8 @@ exit is treated as an incident."
   # losing side of a race — only the ledger read+write needs to be atomic.
   export DC_PROTECTED="${protected}" DC_SAFETY="${safety}" DC_SUBSYSTEM_COUNT="${subsystems}" \
          DC_INTERACTIVE="${interactive}" DC_UI_JUDGMENT="${ui}" DC_KIND="${kind}" \
-         DC_GLM_FAILURES="${glmfails}" DC_GLM_LOCK_BUSY="${lockbusy}"
+         DC_GLM_FAILURES="${glmfails}" DC_GLM_LOCK_BUSY="${lockbusy}" \
+         DC_TASK_CLASS="${task_class}"
   local resolved arm rule reason tier readings router_label v2_eligible v2_ordered v2_headroom v2_vector v2_credits
   router_label="v1"
   if [[ "${LEADV2_ROUTER_V2:-0}" == "1" ]]; then
