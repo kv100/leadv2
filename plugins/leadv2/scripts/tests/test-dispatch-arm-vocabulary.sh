@@ -262,13 +262,62 @@ print(" ".join(ids))
 }
 
 # --- run all cases -------------------------------------------------------------
+# T19 fix-round (review FAIL on 009d0b6, C3): `harness | while read ...` ran the
+# while loop as the pipeline's last stage, which bash forks into a subshell --
+# every pass()/fail() call inside it incremented a COPY of PASS/FAIL that was
+# discarded when the subshell exited. Forced proof (case2/3/4 red against a
+# ladder lacking freepool) still printed "PASS=3 FAIL=0 EXIT=0": the counters
+# and the suite's own exit code were blind to every assertion this harness
+# runs. Process substitution keeps the while loop in THIS shell so pass()/
+# fail() mutate the real counters.
 case1
-harness | while IFS= read -r line; do
+while IFS= read -r line; do
   case "$line" in
     PASS:*) pass "${line#PASS: }" ;;
     FAIL:*) fail "${line#FAIL: }" ;;
   esac
-done
+done < <(harness)
+
+# Case 7 (T19 fix-round C1 negative control): a protected/safety task's chain
+# must NEVER contain an untrusted arm (freepool). Declared here per repo
+# doctrine so `scripts/mutation-kill-rate.sh`-style review can apply the
+# mutation (delete the DC_PROTECTED/DC_SAFETY filter block in
+# _build_candidate_chain, or drop `untrusted: true` from the freepool ladder
+# entry) inside the guard's body and see this case go red.
+case7_protected_excludes_freepool() {
+  local harness_script="$ROOT/harness-protected.sh"
+  cat > "$harness_script" <<'HEAD'
+#!/usr/bin/env bash
+set -uo pipefail
+DC_PROTECTED=1
+DC_SAFETY=1
+emit() { :; }
+log_err() { :; }
+log() { :; }
+HEAD
+  sed -n '/^_load_dispatch_ladder()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_dispatchable_arms()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_build_candidate_chain()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_arm_provider()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_filter_ladder_to_dispatchable()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  cat >> "$harness_script" <<'BODY'
+ROUTING_YAML="$1"
+SCRIPT_DIR="$2"
+_load_dispatch_ladder
+_filter_ladder_to_dispatchable "TEST0000"
+candidate_arms=()
+_build_candidate_chain "sonnet" "TEST0000"
+printf '%s\n' "${candidate_arms[*]}"
+BODY
+  local result
+  result="$(bash "$harness_script" "$ROUTING_YAML_FILE" "$SCRIPTS_ROOT")"
+  if [[ "$result" == "sonnet" ]]; then
+    pass "case7: protected chain excludes freepool (got: $result)"
+  else
+    fail "case7: protected chain still reaches an untrusted arm (expected: 'sonnet', got: '$result')"
+  fi
+}
+case7_protected_excludes_freepool
 case5
 case6
 

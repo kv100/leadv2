@@ -13,6 +13,10 @@ set -euo pipefail
 readonly FREEPOOL_REPO_URL="${FREEPOOL_REPO_URL:-https://github.com/Alishahryar1/free-claude-code.git}"
 readonly FREEPOOL_INSTALL_DIR="${FREEPOOL_INSTALL_DIR:-${HOME}/tools/free-claude-code}"
 readonly PIN_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/freepool-arm.yaml"
+# T19 fix-round (H2a): the commit actually reviewed/tested. Unset (empty)
+# means "not pinned yet" -- the script clones/keeps HEAD and warns instead of
+# silently trusting whatever the upstream default branch has drifted to.
+readonly PINNED_COMMIT="${PINNED_COMMIT:-}"
 
 log() { echo "[freepool-install] $*" >&2; }
 
@@ -21,6 +25,15 @@ if [[ ! -d "${FREEPOOL_INSTALL_DIR}/.git" ]]; then
   git clone "${FREEPOOL_REPO_URL}" "${FREEPOOL_INSTALL_DIR}"
 else
   log "checkout already present at ${FREEPOOL_INSTALL_DIR} — not re-cloning (this script does not force-reset)"
+fi
+
+if [[ -n "${PINNED_COMMIT}" ]]; then
+  log "checking out pinned commit ${PINNED_COMMIT}"
+  git -C "${FREEPOOL_INSTALL_DIR}" fetch --quiet origin "${PINNED_COMMIT}" 2>/dev/null || true
+  git -C "${FREEPOOL_INSTALL_DIR}" checkout --quiet "${PINNED_COMMIT}"
+else
+  log "PINNED_COMMIT not set -- installing whatever commit is currently checked out" \
+      "(untested provenance; set PINNED_COMMIT=<sha> to pin to a reviewed commit before pip install)"
 fi
 
 if [[ ! -d "${FREEPOOL_INSTALL_DIR}/.venv" ]]; then
