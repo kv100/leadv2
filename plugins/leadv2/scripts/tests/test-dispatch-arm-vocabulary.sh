@@ -177,16 +177,18 @@ run_test() {
   fi
 }
 
-# Load the production ladder: glm, codex, sonnet, freepool (kimi dispatch:false,
-# fable dispatch:false). T19 (2026-08-26): freepool joins the tail of the bulk
-# ladder, replacing kimi's old bulk position (glm -> codex -> sonnet -> freepool).
+# Load the production ladder: glm, glm-flash, codex, sonnet, freepool (kimi
+# dispatch:false, fable dispatch:false). T19 (2026-08-26): freepool joins the
+# tail of the bulk ladder, replacing kimi's old bulk position. GLM-53-FLASH-ARM-01
+# (2026-08-27): glm-flash slots in directly after glm (cheap mechanical tier).
 ROUTING_YAML="$1"
 SCRIPT_DIR="$2"
 _load_dispatch_ladder
 _filter_ladder_to_dispatchable "TEST0000"
 
-# Case 2: glm chain = glm onward in the ladder (now includes freepool, T19)
-run_test "glm" "glm codex sonnet freepool" "case2: glm chain from ladder (excludes kimi, includes freepool)"
+# Case 2: glm chain = glm onward in the ladder (now includes freepool, T19, and
+# glm-flash, GLM-53-FLASH-ARM-01)
+run_test "glm" "glm glm-flash codex sonnet freepool" "case2: glm chain from ladder (excludes kimi, includes glm-flash + freepool)"
 
 # Case 3: codex chain -- T19: freepool now trails every arm's chain (it's the
 # ladder's new terminal entry), so codex's chain gains it too.

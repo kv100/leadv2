@@ -345,7 +345,10 @@ test_08_no_scratch_dir_leak() {
 # ── (review-run's critic is T14-06 above) ────────────────────────────────────
 test_09_callers_pin_role() {
   log "T14-09: dispatch-code/product-close/session-runner pin LEADV2_WORKER_ROLE"
-  if grep -q 'LEADV2_WORKER_ROLE=developer bash "${GLM_BIN}" bg' "${PLUGIN_SCRIPTS}/leadv2-dispatch-code.sh"; then
+  # GLM-53-FLASH-ARM-01: the spawn prefix gained GLM_MODEL between the role
+  # pin and the launcher — match the contract (role pinned on the bg spawn),
+  # not the old byte-exact line.
+  if grep -q 'LEADV2_WORKER_ROLE=developer.*bash "${GLM_BIN}" bg' "${PLUGIN_SCRIPTS}/leadv2-dispatch-code.sh"; then
     pass "dispatch-code glm arm pins LEADV2_WORKER_ROLE=developer"
   else
     fail "dispatch-code glm arm does not pin LEADV2_WORKER_ROLE=developer"

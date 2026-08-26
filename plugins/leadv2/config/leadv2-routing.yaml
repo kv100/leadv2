@@ -58,6 +58,18 @@ router_v2:
   # journal shows the real kind, not a silent rewrite.
   capability_matrix:
     - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [bulk, background], review: false, protected: false }
+    # GLM-53-FLASH-ARM-01 (founder order 2026-08-26): glm-5.3-flash, the CHEAP
+    # glm-family arm. On the legacy coding plan its prompts weigh 0.4x (vs 1x
+    # for glm-5.3) and max-context calls 1.2x (vs 3x) => ~2.5x quota efficiency.
+    # `cost: 0.4` is that prompt-weight ratio expressed in the arbiter's only
+    # economic unit (relative cost among capable, uncapped arms) — a STATIC
+    # preference note, not a quota model: the arbiter scores provider-level
+    # utilization, not per-model consumption, so no per-arm quota math was
+    # added in this round. Good for mechanical edits, small fixes, doc rounds,
+    # test authoring. NOT for protected/safety/publish (protected: false here
+    # plus `untrusted: true` on the ladder entry below), NOT review/audit/plan,
+    # and sizes stop at standard — heavy/bulk stay on glm-5.3/codex/sonnet.
+    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.4, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [cheap, mechanical], review: false, protected: false }
     - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false }
     - { arm: codex, provider: codex, model: gpt-5.6, tier: spark, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true }
     - { arm: codex, provider: codex, model: gpt-5.6, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true }
@@ -81,6 +93,14 @@ router_v2:
       bucket: glm
       reserve_threshold: 2
       reserve_allow: [review]
+    # GLM-53-FLASH-ARM-01: same channel (glm-coder.sh, model selected via its
+    # GLM_MODEL env), same glm quota bucket and lockout scope. Never a
+    # reviewer — glm family is in DEFAULT_REVIEW_EXCLUSIONS, glm-flash included.
+    - id: glm-flash
+      channel: glm-coder.sh
+      model: glm-5.3-flash
+      bucket: glm
+      reserve_threshold: 2
     # RETIRED 2026-08-05 (DISPATCH-KIMI-ARM-MISMATCH-01, founder order 2026-08-04
     # «Кими убрать»): kimi is not a dispatchable build arm. Uncomment this block to
     # restore it — the launcher implementation (kimi) spawn case, _apply_kimi_admission,
@@ -173,6 +193,21 @@ router:
       model: glm-5.3
       when: [all]
       effort: standard
+    # GLM-53-FLASH-ARM-01: the CHEAP glm-family arm, first fallback after
+    # glm-5.3 (the route arbiter ranks it ahead on cost 0.4 whenever a
+    # standard-size mechanical cell matches). `untrusted: true` reuses the
+    # T19 protected/safety chain-strip mechanism — for freepool it encodes
+    # third-party trust, for glm-flash it encodes the model-class rule that a
+    # flash model never touches a protected/safety/publish chain, even as a
+    # fallback position. `when:` stops at standard: heavy/bulk/strategic
+    # fallback legs skip flash (mechanical tier only). Same glm provider =>
+    # one lockout record covers both glm arms.
+    - id: glm-flash
+      provider: glm
+      model: glm-5.3-flash
+      when: [trivial, light, standard]
+      effort: standard
+      untrusted: true
     # RETIRED as a build arm (founder order 2026-08-04 «Кими убрать», executed as
     # 3398d11 / DISPATCH-KIMI-ARM-MISMATCH-01). The entry stays so _arm_provider
     # can name the provider if a stale tenant yaml ever hands back arm=kimi, but

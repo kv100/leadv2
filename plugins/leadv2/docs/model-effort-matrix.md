@@ -66,6 +66,21 @@ cap for the few spawns that truly need it.
 |---|---|---|---|
 | Codex (gpt-5.5) | plan review, adversarial review, bug-hunt/root-cause, fitting dev tasks | `--effort medium\|high\|xhigh` on codex-task.sh | `codex-policy.yaml codex_enabled: true` |
 | GLM-5.2 | background latency-class, bulk/mechanical transforms, standard code nobody waits on | prompt-level (no knob) | repo override (e.g. PE `extensions.md §Model routing v2`) |
+| GLM-5.3-flash (`glm-flash` arm) | mechanical edits, small fixes, doc rounds, test authoring — trivial/light/standard only | prompt-level (no knob); model via `GLM_MODEL` env on glm-coder.sh | route arbiter capability matrix (cost 0.4) |
+
+**GLM-53-FLASH-ARM-01 (2026-08-27): when flash is chosen.** The dispatch route
+arbiter picks `glm-flash` whenever the task cell is code/docs (incl.
+fanout-class-funnel / backlog-pump), size ≤ standard, unprotected, and the glm
+bucket is under its ceiling — flash's `cost: 0.4` encodes its 0.4x prompt
+weight on the legacy Z.AI coding plan (~2.5x quota efficiency vs glm-5.3
+prompts at 1x / max-context at 1.2x vs 3x), so among capable uncapped arms it
+sorts first. It shares the one glm quota bucket and lockout record with
+glm-5.3. Flash is NEVER chosen for: protected/safety/publish/payments paths
+(matrix `protected: false` + ladder `untrusted: true` strip it from those
+chains), review/audit/plan (not in its `kinds`, and glm-family is in
+DEFAULT_REVIEW_EXCLUSIONS), or heavy/bulk sizes (stays on glm-5.3/codex/
+sonnet). Static preference only — the arbiter models provider-level
+utilization, not per-model quota consumption.
 
 Fallback ladders on lane failure: see `docs/model-routing.md §Codex quota EXHAUSTION`.
 Surface every fallback to the founder — never degrade silently.

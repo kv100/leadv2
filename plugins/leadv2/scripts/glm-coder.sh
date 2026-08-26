@@ -96,6 +96,12 @@ readonly GLM_CONTINUATION_MAX_LINES="${GLM_CONTINUATION_MAX_LINES:-200}"
 readonly GLM_PERMANENT_FAILURE_SENTINEL="GLM_PERMANENT_FAILURE"
 # Seam for tests to stub the `claude` binary entirely (no real network call).
 readonly GLM_CLAUDE_BIN="${GLM_CLAUDE_BIN:-claude}"
+# GLM-53-FLASH-ARM-01 (founder order 2026-08-26): per-dispatch model override.
+# One mechanism, env-first — no second profile layer. Default stays glm-5.3;
+# the dispatcher sets GLM_MODEL=glm-5.3-flash when the route arbiter picks the
+# glm-flash arm (cheap/mechanical tier). Every spawn site and meta.yaml read
+# this single value, so a run record always names the model that actually ran.
+readonly GLM_MODEL="${GLM_MODEL:-glm-5.3}"
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"
 
@@ -343,8 +349,8 @@ run_claude() {
     cd "${cwd_dir}"
     export ANTHROPIC_BASE_URL="${ZAI_BASE_URL}"
     export ANTHROPIC_AUTH_TOKEN="${ZAI_AUTH_TOKEN}"
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.3"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.3"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="${GLM_MODEL}"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="${GLM_MODEL}"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
     export DISABLE_MODEL_AVAILABILITY_CHECK=1
     export API_TIMEOUT_MS=3000000
@@ -527,7 +533,7 @@ repo: ${repo}
 cwd: ${cwd_dir}
 prompt_file: ${run_dir}/prompt.txt
 endpoint: ${ZAI_BASE_URL}
-model: glm-5.3
+model: ${GLM_MODEL}
 max_turns: ${max_turns}
 timeout: ${timeout_s}
 turn_limit: ${GLM_TURN_LIMIT}
@@ -1110,8 +1116,8 @@ cmd_run_child() {
   # so redact_stream()'s os.environ.get("ZAI_AUTH_TOKEN") below actually sees it —
   # otherwise stderr redaction is dead code (R5 finding, GLM-ROUTING-V2-01 review).
   export ZAI_AUTH_TOKEN
-  export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.3"
-  export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.3"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="${GLM_MODEL}"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="${GLM_MODEL}"
   export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
   export DISABLE_MODEL_AVAILABILITY_CHECK=1
   export API_TIMEOUT_MS=3000000
