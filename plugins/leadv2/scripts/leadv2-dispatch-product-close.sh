@@ -1215,15 +1215,20 @@ pc_await_worker_exit() {
 # dirt the partition below had learned to ignore. A single constant is the only way
 # the two sites cannot drift apart again.
 #
-# Beyond docs/leadv2/ + docs/handoff/, two paths are written by machinery no worker
-# touches: docs/LEAD_V2_STATE.md (five plugin scripts write it) and __pycache__/*.pyc
-# (Python bytecode; on branches predating the untrack it appears as a MODIFIED
-# tracked file). Both refused finished deliverables on 2026-08-21 -- list-form on the
-# pyc plus LEAD_V2_STATE.md, Door A round 3b on the pyc alone.
+# Beyond docs/leadv2/ + docs/handoff/, three paths are written by machinery no worker
+# touches: docs/LEAD_V2_STATE.md (five plugin scripts write it), docs/tasks.yaml (the
+# per-turn injector hooks dirty it inside every lane worktree regardless of what the
+# lane's mission targets -- T13-SLICE1 W1: two cross-repo lanes, 5774f464 and c4c26759,
+# were refused unscoped_lane_work with offending=docs/tasks.yaml even though their real
+# work landed as commits in a foreign repo; docs/tasks.yaml was dirty ONLY because the
+# hook touches it on every turn, never because either lane wrote to it), and
+# __pycache__/*.pyc (Python bytecode; on branches predating the untrack it appears as a
+# MODIFIED tracked file). All three refused finished deliverables -- list-form on the
+# pyc plus LEAD_V2_STATE.md on 2026-08-21, docs/tasks.yaml on 2026-08-26.
 #
 # NOT applied to _pc_git_diff's ':(exclude)' pathspecs: that set governs what a
 # REVIEWER sees, which is a separate decision from what counts as a scope violation.
-_PC_PORCELAIN_EXCLUDE_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\.md|^.. "?.*__pycache__/|^.. "?.*\.pyc$'
+_PC_PORCELAIN_EXCLUDE_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\.md|^.. "?docs/tasks\.yaml|^.. "?.*__pycache__/|^.. "?.*\.pyc$'
 
 # CTX-COST-GUARDS-01: the plugin's own worktree bootstrap
 # (hooks/leadv2-command-bootstrap.sh, scripts/leadv2-repo-install.sh) symlinks
