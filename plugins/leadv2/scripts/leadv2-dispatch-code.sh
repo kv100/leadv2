@@ -5283,12 +5283,22 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
       # loop, then cleared).
       LAST_ARM_OUTCOME="exit76_receipt"
       LAST_ARM_CONTINUATION="$(_arm_final_output "${arm}" "${handle}")"
-      if printf '%s\n%s\n' "${spawn_out}" "${LAST_ARM_CONTINUATION}" | grep -q 'GLM_PERMANENT_FAILURE_SENTINEL\|GLM_PERMANENT_FAILURE'; then
+      # T13-SLICE1 R3/R4: match the EXACT sentinel token (word-bounded fixed
+      # string), never a substring -- "GLM_PERMANENT_FAILURE_RETRY" or any
+      # other longer identifier containing the bare prefix must NOT trip this
+      # branch. Suppress only the RESPAWN (never re-enter the candidate loop
+      # for this permanently-failed worker), but still surface a failure rc --
+      # returning 0 here previously told the caller's rc=0 branch this was a
+      # confirmed, live spawn and let the close flow run against a dead
+      # worker. rc=5 reuses the existing "hard failure, ambiguous/dead state,
+      # no respawn" contract (case 5 in atomic_dispatch_reserve_spawn_confirm's
+      # caller): it marks the lane dead and exits non-zero instead of exiting 0.
+      if printf '%s\n%s\n' "${spawn_out}" "${LAST_ARM_CONTINUATION}" | grep -qw 'GLM_PERMANENT_FAILURE_SENTINEL'; then
         LAST_ARM_OUTCOME="exit76_permanent_sentinel"
         LAST_ARM_CONTINUATION=""
         emit decision "route_fallback_suppressed from=${arm} task=${sig8} reason=permanent_sentinel"
-        log "spawn(${arm}) completed: permanent sentinel; fallback suppressed"
-        return 0
+        log "spawn(${arm}) completed: permanent sentinel; fallback suppressed; reporting failure (no respawn)"
+        return 5
       fi
       emit decision "arm_refused by=router model=${arm} task=${sig8} reason=exit76_receipt"
       log "spawn(${arm}) completed: exit76_receipt; spilling to next arm"

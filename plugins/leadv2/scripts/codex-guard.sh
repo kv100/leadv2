@@ -232,9 +232,18 @@ path, reason, recheck_max_age, grace_sec, expected_id = (
     sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 )
 try:
-    with open(path) as f:
-        data = json.load(f)
-    original_stat = os.stat(path)
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        original_stat = os.fstat(fd)
+        raw = b""
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            raw += chunk
+    finally:
+        os.close(fd)
+    data = json.loads(raw)
 except Exception:
     sys.exit(0)
 
@@ -295,22 +304,33 @@ data["completedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 tmp = f"{path}.tmp.{os.getpid()}"
 with open(tmp, "w") as f:
     json.dump(data, f, indent=2)
-# F1: the worker does not participate in our mkdir lock. Re-read the path
-# immediately before publishing and require the same record identity and file
-# generation. A recycled filename must never receive this job's failure.
-hook = os.environ.get("CODEX_GUARD_TEST_BEFORE_REPLACE_HOOK")
-if hook:
-    os.system(hook)
+# F1/T13-SLICE1-R3: the worker does not participate in our mkdir lock. Re-read
+# the path immediately before publishing and require the same record identity
+# and file generation. A recycled filename must never receive this job's
+# failure. The re-check reads via a fresh fd and fstats that SAME descriptor
+# (never a separate os.stat(path) call) so the identity and the bytes it is
+# compared against always come from one generation -- a replacement between a
+# buffered open() and a later os.stat() can no longer pair stale data with a
+# fresh stat.
 try:
-    with open(path) as f:
-        current = json.load(f)
-    current_stat = os.stat(path)
+    fd2 = os.open(path, os.O_RDONLY)
+    try:
+        current_stat = os.fstat(fd2)
+        craw = b""
+        while True:
+            cchunk = os.read(fd2, 65536)
+            if not cchunk:
+                break
+            craw += cchunk
+    finally:
+        os.close(fd2)
+    current = json.loads(craw)
 except Exception:
     os.unlink(tmp)
     sys.exit(0)
 if (current.get("id") != data.get("id") or
-        (current_stat.st_dev, current_stat.st_ino, current_stat.st_mtime_ns) !=
-        (original_stat.st_dev, original_stat.st_ino, original_stat.st_mtime_ns)):
+        (current_stat.st_ino, current_stat.st_mtime_ns) !=
+        (original_stat.st_ino, original_stat.st_mtime_ns)):
     print("WARN: mark_job_failed CAS mismatch; preserving replacement job", file=sys.stderr)
     os.unlink(tmp)
     sys.exit(0)
