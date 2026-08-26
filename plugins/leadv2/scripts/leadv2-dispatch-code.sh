@@ -3,6 +3,19 @@
 # ROUTING-ENFORCEMENT-01 / R1 (founder P1, 2026-07-25). Authoritative spec:
 #   docs/handoff/ROUTING-ENFORCEMENT-01/design.md
 #
+# ONE PATH (T13-SLICE2-01, 2026-08-26): this script IS the canonical dispatch door -- every
+# out-of-pipeline spawn (atomic_dispatch_reserve_spawn_confirm, atomic_dispatch_reserve_
+# confirm_opus, cmd_advance_arm) resolves its model and records its build-phase gate here, in
+# one of these three call sites, and nowhere else. leadv2-fanout.sh / leadv2-fanout-lane-
+# launcher.sh are NOT a second dispatch path or supervisor-only leftovers -- they are the
+# daemon self-spawn backend (leadv2-self-spawn.sh via leadv2-session-spawner.sh,
+# LEADV2_DAEMON=1) and the fork-session backend, and both DELEGATE into this funnel for the
+# actual model resolution + spawn rather than resolving a model themselves. The architect
+# prepass (ARCHITECT_PREPASS_* below) is likewise not a separate pre-path -- it has always
+# lived inside this file's own Phase-2 step, awaited before Build, with Trivial-class waivers;
+# there was never a standalone prepass script to fold in. (Founder scope decision, answer b to
+# q-d0d2fc6a: fanout stays on disk; C1 was re-scoped to documenting this, not deleting it.)
+#
 # PROBLEM THIS SOLVES
 #   Out-of-pipeline dev has no router: the lead calls Agent(...) or glm-coder.sh directly
 #   and is itself the router, so it picks a model on every dispatch and forgets. The in-

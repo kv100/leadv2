@@ -282,6 +282,7 @@ SUITE_DEFS=(
   "active registry phase updates|||bash $TEST_DIR/test-active-registry-update-phase.sh"
   "fanout classifier/runner guard|||bash $TEST_DIR/test-fanout-classify-guard.sh|||SERIAL"
   "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh|||SERIAL"
+  "T13 slice2 (arbiter bench-fallback + abandon dedup)|||bash $TEST_DIR/test-t13-slice2.sh"
   "Phase-8 task schema|||bash $TEST_DIR/test-leadv2-phase8-assert-a2-schema.sh"
   "Phase-8 merge/completion proof|||bash $PLUGIN_ROOT/tests/test-deploy-merge-blocker-gate.sh"
   "subsession model downgrade|||bash $TEST_DIR/test-leadv2-model-arg-rebuild.sh"
