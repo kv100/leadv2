@@ -1228,7 +1228,7 @@ pc_await_worker_exit() {
 #
 # NOT applied to _pc_git_diff's ':(exclude)' pathspecs: that set governs what a
 # REVIEWER sees, which is a separate decision from what counts as a scope violation.
-_PC_PORCELAIN_EXCLUDE_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\.md|^.. "?docs/tasks\.yaml|^.. "?.*__pycache__/|^.. "?.*\.pyc$'
+_PC_PORCELAIN_EXCLUDE_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\.md|^.. "?.*__pycache__/|^.. "?.*\.pyc$'
 
 # CTX-COST-GUARDS-01: the plugin's own worktree bootstrap
 # (hooks/leadv2-command-bootstrap.sh, scripts/leadv2-repo-install.sh) symlinks
@@ -1255,22 +1255,42 @@ _PC_BOOTSTRAP_PREFIX_RE='^\.claude/(commands|scripts|agents)/'
 # pipeline under `set -o pipefail` would otherwise blank the whole status and grade every
 # lane clean.
 _pc_drop_bootstrap_dirt() {  # <lane-root> ; filters stdin porcelain -> stdout
-  local root="$1" line field rest path
+  local root="$1" line field rest path task_lines=() kept_lines=() task_declared=0 has_other_work=0 w
   if [[ -z "${root}" || ! -d "${root}" ]]; then
     cat
     return 0
   fi
+  # docs/tasks.yaml is hook churn only when it is undeclared AND this lane has
+  # another surviving change. Keeping a sole (or declared) tasks.yaml edit
+  # makes a real worker change reach the scope gate. Exact path comparison is
+  # deliberate: docs/tasks.yaml.bak is worker data, never injector dirt.
+  IFS=',' read -r -a _pc_task_writes <<< "${WRITES_CSV:-}"
+  for w in "${_pc_task_writes[@]:-}"; do
+    w="$(_pc_norm_write "${w}")"
+    [[ "${w}" == "docs/tasks.yaml" ]] && task_declared=1
+  done
   while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
     field="${line:0:2}"
     rest="${line:3}"
+    path="${rest##* -> }"
+    path="${path%\"}"; path="${path#\"}"
+    if [[ "${path}" == "docs/tasks.yaml" ]]; then
+      task_lines+=("${line}")
+      continue
+    fi
     if [[ "${field}" == "??" && "${rest}" =~ ${_PC_BOOTSTRAP_PREFIX_RE} ]]; then
-      path="${rest##* -> }"
-      path="${path%\"}"; path="${path#\"}"
       if [[ -L "${root}/${path}" ]]; then
         continue
       fi
     fi
+    kept_lines+=("${line}")
+    has_other_work=1
+  done
+  if (( task_declared == 1 || has_other_work == 0 )); then
+    kept_lines+=("${task_lines[@]}")
+  fi
+  for line in "${kept_lines[@]}"; do
     printf '%s\n' "${line}"
   done
   return 0

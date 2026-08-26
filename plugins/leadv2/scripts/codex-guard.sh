@@ -146,13 +146,12 @@ PY
 }
 
 # T13-SLICE1 W1: job age in whole seconds, from the job's OWN startedAt (falls
-# back to createdAt) -- never from this script's wall-clock. Prints a huge
-# number (never gates on grace) if the record has no parseable timestamp at
-# all, so a malformed/legacy record fails open to the pre-existing behavior
-# rather than being permanently grace-protected.
+# back to createdAt) -- never from this script's wall-clock. An unknown age
+# is zero: an unreadable, malformed, or legacy record remains inside grace and
+# is never killed merely because the guard cannot prove its age.
 read_job_age_sec() {
   local json_path="$1"
-  python3 - "$json_path" <<'PY' 2>/dev/null || echo 999999999
+  python3 - "$json_path" <<'PY' || { log "WARN: job age unreadable for $(basename "$json_path"); treating as age=0"; echo 0; }
 import json
 import sys
 import time
@@ -163,7 +162,8 @@ try:
         data = json.load(f)
     ts = data.get("startedAt") or data.get("createdAt")
     if not ts:
-        print(999999999)
+        print("WARN: job age missing timestamp; treating as age=0", file=sys.stderr)
+        print(0)
         sys.exit(0)
     ts_norm = ts.replace("Z", "+00:00")
     started = datetime.fromisoformat(ts_norm)
@@ -173,7 +173,8 @@ try:
     age = int((now - started).total_seconds())
     print(max(age, 0))
 except Exception:
-    print(999999999)
+    print("WARN: job age malformed; treating as age=0", file=sys.stderr)
+    print(0)
 PY
 }
 
@@ -208,8 +209,9 @@ release_job_lock() {
 # between our earlier read and this write with no lock of its own, so on top
 # of the mkdir lock above (which only serializes OTHER codex-guard.sh
 # instances) this re-derives status/pid/log-freshness from a FRESH read
-# immediately before the atomic os.replace -- the smallest window a
-# read-only, non-cooperating writer allows us to shrink the race to.
+# immediately before the atomic os.replace. The final compare-and-swap below
+# additionally rejects a filename that was replaced by a different job in the
+# residual write window.
 # T13-SLICE1 W1: two new args -- expected_id (refuse to touch a record whose
 # own `id` field doesn't match, e.g. a stale/reused file under the same
 # filename from a different workspaceRoot) and grace_sec (refuse to declare
@@ -232,6 +234,7 @@ path, reason, recheck_max_age, grace_sec, expected_id = (
 try:
     with open(path) as f:
         data = json.load(f)
+    original_stat = os.stat(path)
 except Exception:
     sys.exit(0)
 
@@ -247,11 +250,14 @@ if expected_id and data.get("id") != expected_id:
 
 # T13-SLICE1 W1 fix 1: grace window, measured from the record's own
 # startedAt/createdAt -- never from the caller's wall-clock. A record with no
-# parseable timestamp fails open (no grace protection) rather than blocking
+# parseable timestamp fails open to LIFE (inside grace) rather than blocking
 # forever.
 if grace_sec > 0:
     ts = data.get("startedAt") or data.get("createdAt")
-    if ts:
+    if not ts:
+        print("WARN: mark_job_failed age missing timestamp; preserving job", file=sys.stderr)
+        sys.exit(0)
+    else:
         try:
             ts_norm = ts.replace("Z", "+00:00")
             started = datetime.fromisoformat(ts_norm)
@@ -261,7 +267,8 @@ if grace_sec > 0:
             if age < grace_sec:
                 sys.exit(0)  # too young -- never declare failed inside the grace window
         except Exception:
-            pass
+            print("WARN: mark_job_failed age malformed; preserving job", file=sys.stderr)
+            sys.exit(0)
 
 pid = data.get("pid")
 if pid is not None:
@@ -288,6 +295,25 @@ data["completedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 tmp = f"{path}.tmp.{os.getpid()}"
 with open(tmp, "w") as f:
     json.dump(data, f, indent=2)
+# F1: the worker does not participate in our mkdir lock. Re-read the path
+# immediately before publishing and require the same record identity and file
+# generation. A recycled filename must never receive this job's failure.
+hook = os.environ.get("CODEX_GUARD_TEST_BEFORE_REPLACE_HOOK")
+if hook:
+    os.system(hook)
+try:
+    with open(path) as f:
+        current = json.load(f)
+    current_stat = os.stat(path)
+except Exception:
+    os.unlink(tmp)
+    sys.exit(0)
+if (current.get("id") != data.get("id") or
+        (current_stat.st_dev, current_stat.st_ino, current_stat.st_mtime_ns) !=
+        (original_stat.st_dev, original_stat.st_ino, original_stat.st_mtime_ns)):
+    print("WARN: mark_job_failed CAS mismatch; preserving replacement job", file=sys.stderr)
+    os.unlink(tmp)
+    sys.exit(0)
 os.replace(tmp, path)
 PY
   release_job_lock "$json_path"

@@ -5283,6 +5283,13 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
       # loop, then cleared).
       LAST_ARM_OUTCOME="exit76_receipt"
       LAST_ARM_CONTINUATION="$(_arm_final_output "${arm}" "${handle}")"
+      if printf '%s\n%s\n' "${spawn_out}" "${LAST_ARM_CONTINUATION}" | grep -q 'GLM_PERMANENT_FAILURE_SENTINEL\|GLM_PERMANENT_FAILURE'; then
+        LAST_ARM_OUTCOME="exit76_permanent_sentinel"
+        LAST_ARM_CONTINUATION=""
+        emit decision "route_fallback_suppressed from=${arm} task=${sig8} reason=permanent_sentinel"
+        log "spawn(${arm}) completed: permanent sentinel; fallback suppressed"
+        return 0
+      fi
       emit decision "arm_refused by=router model=${arm} task=${sig8} reason=exit76_receipt"
       log "spawn(${arm}) completed: exit76_receipt; spilling to next arm"
       local exit76_abort_rc=0
