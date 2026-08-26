@@ -1215,11 +1215,16 @@ pc_await_worker_exit() {
 # dirt the partition below had learned to ignore. A single constant is the only way
 # the two sites cannot drift apart again.
 #
-# Beyond docs/leadv2/ + docs/handoff/, two paths are written by machinery no worker
-# touches: docs/LEAD_V2_STATE.md (five plugin scripts write it) and __pycache__/*.pyc
-# (Python bytecode; on branches predating the untrack it appears as a MODIFIED
-# tracked file). Both refused finished deliverables on 2026-08-21 -- list-form on the
-# pyc plus LEAD_V2_STATE.md, Door A round 3b on the pyc alone.
+# Beyond docs/leadv2/ + docs/handoff/, three paths are written by machinery no worker
+# touches: docs/LEAD_V2_STATE.md (five plugin scripts write it), docs/tasks.yaml (the
+# per-turn injector hooks dirty it inside every lane worktree regardless of what the
+# lane's mission targets -- T13-SLICE1 W1: two cross-repo lanes, 5774f464 and c4c26759,
+# were refused unscoped_lane_work with offending=docs/tasks.yaml even though their real
+# work landed as commits in a foreign repo; docs/tasks.yaml was dirty ONLY because the
+# hook touches it on every turn, never because either lane wrote to it), and
+# __pycache__/*.pyc (Python bytecode; on branches predating the untrack it appears as a
+# MODIFIED tracked file). All three refused finished deliverables -- list-form on the
+# pyc plus LEAD_V2_STATE.md on 2026-08-21, docs/tasks.yaml on 2026-08-26.
 #
 # NOT applied to _pc_git_diff's ':(exclude)' pathspecs: that set governs what a
 # REVIEWER sees, which is a separate decision from what counts as a scope violation.
@@ -1250,22 +1255,42 @@ _PC_BOOTSTRAP_PREFIX_RE='^\.claude/(commands|scripts|agents)/'
 # pipeline under `set -o pipefail` would otherwise blank the whole status and grade every
 # lane clean.
 _pc_drop_bootstrap_dirt() {  # <lane-root> ; filters stdin porcelain -> stdout
-  local root="$1" line field rest path
+  local root="$1" line field rest path task_lines=() kept_lines=() task_declared=0 has_other_work=0 w
   if [[ -z "${root}" || ! -d "${root}" ]]; then
     cat
     return 0
   fi
+  # docs/tasks.yaml is hook churn only when it is undeclared AND this lane has
+  # another surviving change. Keeping a sole (or declared) tasks.yaml edit
+  # makes a real worker change reach the scope gate. Exact path comparison is
+  # deliberate: docs/tasks.yaml.bak is worker data, never injector dirt.
+  IFS=',' read -r -a _pc_task_writes <<< "${WRITES_CSV:-}"
+  for w in "${_pc_task_writes[@]:-}"; do
+    w="$(_pc_norm_write "${w}")"
+    [[ "${w}" == "docs/tasks.yaml" ]] && task_declared=1
+  done
   while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
     field="${line:0:2}"
     rest="${line:3}"
+    path="${rest##* -> }"
+    path="${path%\"}"; path="${path#\"}"
+    if [[ "${path}" == "docs/tasks.yaml" ]]; then
+      task_lines+=("${line}")
+      continue
+    fi
     if [[ "${field}" == "??" && "${rest}" =~ ${_PC_BOOTSTRAP_PREFIX_RE} ]]; then
-      path="${rest##* -> }"
-      path="${path%\"}"; path="${path#\"}"
       if [[ -L "${root}/${path}" ]]; then
         continue
       fi
     fi
+    kept_lines+=("${line}")
+    has_other_work=1
+  done
+  if (( task_declared == 1 || has_other_work == 0 )); then
+    kept_lines+=("${task_lines[@]}")
+  fi
+  for line in "${kept_lines[@]}"; do
     printf '%s\n' "${line}"
   done
   return 0
