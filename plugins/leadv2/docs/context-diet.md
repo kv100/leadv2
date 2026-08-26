@@ -9,6 +9,13 @@ compaction change — plus what is deliberately **not** touched.
 
 ## 1. Per-role MCP allowlist (`LEADV2_SUBSESSION_SLIM_MCP`, default `0` (opt-in))
 
+> **T14 (2026-08-26):** `resolve_role_mcp_config()` moved from `claude-subsession.sh` to
+> `scripts/lib/leadv2-worker-mcp.sh` and is now shared with the **glm-coder.sh** worker spawn
+> path (both `run` and `bg`), gated there by `LEADV2_WORKER_MCP` (default `1`, =0 restores the
+> pre-T14 spawn line; role via `LEADV2_WORKER_ROLE`, default `developer`, `critic` for review
+> missions). One resolver, two path-scoped gates — not a second implementation. Suite:
+> `tests/test-t14-worker-mcp.sh`.
+
 When enabled, `claude-subsession.sh` appends `--strict-mcp-config --mcp-config <resolved.json>`
 to the spawned worker's CLI args, restricting it to the MCP servers its role actually uses —
 in practice `repowise` only (`plugins/leadv2/config/mcp-role-<role>.json`).
@@ -18,7 +25,8 @@ registered per-repo with a *different* command in each project's `.mcp.json`, an
 user-level `~/.claude/settings.json` definition is hard-pinned to a single repo path. A baked
 definition would silently point a worker at the wrong repo's index — confidently wrong, not
 merely fat. So `plugins/leadv2/config/mcp-role-<role>.json` holds only
-`{"servers": ["repowise"]}`; `resolve_role_mcp_config()` in `claude-subsession.sh` resolves each
+`{"servers": ["repowise"]}`; `resolve_role_mcp_config()` in `scripts/lib/leadv2-worker-mcp.sh`
+(sourced by both `claude-subsession.sh` and `glm-coder.sh`) resolves each
 name against the live chain at spawn time, in order:
 
 1. `$PROJECT_ROOT/.mcp.json` → `.mcpServers.<name>`

@@ -2739,7 +2739,7 @@ run_reviewer_arm() { # <arm>
     omp_bin="${LEADV2_DISPATCH_OMP_BIN:-${ROOT}/.claude/leadv2-overrides/omp-task.sh}"
     review_rc=75
     if [[ -x "${glm_bin}" ]]; then
-      bash "${glm_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
+      LEADV2_WORKER_ROLE=critic bash "${glm_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
       review_rc=$?
     fi
     if [[ ${review_rc} -eq 75 && -x "${omp_bin}" ]]; then

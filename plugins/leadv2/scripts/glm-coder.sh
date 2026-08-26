@@ -99,6 +99,34 @@ readonly GLM_CLAUDE_BIN="${GLM_CLAUDE_BIN:-claude}"
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"
 
+# T14 (2026-08-26): role-scoped MCP for dispatched workers. The resolver is
+# the SAME one the claude-subsession escalation path uses (extracted to
+# lib/leadv2-worker-mcp.sh) — never a second implementation. Gate:
+# LEADV2_WORKER_MCP (default 1; =0 restores the pre-T14 spawn line with no
+# --mcp-config). Role: LEADV2_WORKER_ROLE (default developer; set critic for
+# review missions). Fail-open on every failure — see worker_mcp_resolve().
+# F1 (T14 fix-round): $SELF is derived from the INVOKING path, so when this
+# script is a per-file symlink into a foreign tree (persona-engine layout:
+# real .claude/scripts/ dir, lib/ only partially symlinked), the lib looks
+# missing and every worker silently degrades to worker_mcp_skipped
+# reason=lib_missing. Fall back to the canonical repo by resolving the
+# symlink chain of BASH_SOURCE itself.
+_WORKER_MCP_LIB="${SELF%/*}/lib/leadv2-worker-mcp.sh"
+if [[ ! -f "${_WORKER_MCP_LIB}" ]]; then
+  _glm_canonical_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+  if [[ -f "${_glm_canonical_self%/*}/lib/leadv2-worker-mcp.sh" ]]; then
+    _WORKER_MCP_LIB="${_glm_canonical_self%/*}/lib/leadv2-worker-mcp.sh"
+  fi
+fi
+readonly WORKER_MCP_LIB="${_WORKER_MCP_LIB}"
+if [[ -f "${WORKER_MCP_LIB}" ]]; then
+  # shellcheck disable=SC1090
+  source "${WORKER_MCP_LIB}"
+  readonly _WORKER_MCP_LIB_PRESENT=1
+else
+  readonly _WORKER_MCP_LIB_PRESENT=0
+fi
+
 # FINISH GUARD (2026-07-03): appended to every real mission prompt (cmd_bg and
 # cmd_run — never cmd_test) so the model is told, at the prompt level, not to
 # end a run with work parked only in a stash or with no final report. The
@@ -183,6 +211,9 @@ Usage:
 Env knobs: GLM_TIMEOUT (default 3600s), GLM_MAX_TURNS (default 120),
   GLM_TURN_LIMIT (default 120), GLM_STALL_S (default 1200s, diagnostic only),
   GLM_NO_PROGRESS_S (default 1800s),
+  LEADV2_WORKER_MCP (default 1; =0 spawns without --mcp-config, pre-T14),
+  LEADV2_WORKER_ROLE (default developer; critic for review missions — selects
+  plugins/leadv2/config/mcp-role-<role>.json, resolved at spawn time),
   GLM_FALLBACK_EXIT_CODE (default 76).
 
 Terminal sentinels (GLM-RELIABILITY-529-01) — mutually exclusive, appended to
@@ -229,6 +260,51 @@ load_secret() {
 # v1 blocking path (`run`, `test`) — unchanged behavior, kept intact (R2).
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# T14: role-scoped MCP attach for every worker spawn (run + bg paths).
+# ---------------------------------------------------------------------------
+
+# One journal line per spawn decision. $1 = journal file (bg path: the run's
+# progress.log) or empty (v1 run path: stderr via log, same [ts] shape).
+worker_mcp_journal() { # $1=journal-file-or-empty $2=message
+  local line
+  line="[$(date '+%Y-%m-%d %H:%M:%S')] $2"
+  if [[ -n "$1" ]]; then
+    printf '%s\n' "$line" >> "$1" 2>/dev/null || echo "$line" >&2
+  else
+    echo "$line" >&2
+  fi
+}
+
+# Resolve the role-scoped --mcp-config for THIS spawn. Echoes the resolved
+# config path (rc 0) or nothing (rc 1, fail-open — spawn proceeds WITHOUT the
+# flag, exactly as pre-T14). The resolver's own WARN lines go to stderr; the
+# worker_mcp_skipped/attached journal line is the machine-greppable record.
+worker_mcp_resolve() { # $1=project root (worker cwd) $2=journal file $3=out dir for resolved json
+  local project_root="$1" journal_file="$2" out_dir="$3"
+  local role="${LEADV2_WORKER_ROLE:-developer}"
+  [[ "${role}" =~ ^[a-z0-9-]+$ ]] || role="developer"
+
+  if [[ "${LEADV2_WORKER_MCP:-1}" != "1" ]]; then
+    worker_mcp_journal "${journal_file}" "worker_mcp_skipped reason=disabled"
+    return 1
+  fi
+  if [[ "${_WORKER_MCP_LIB_PRESENT}" != "1" ]]; then
+    worker_mcp_journal "${journal_file}" "worker_mcp_skipped reason=lib_missing"
+    return 1
+  fi
+
+  local mcp_cfg="" rc=0
+  mcp_cfg="$(resolve_role_mcp_config "${role}" "${out_dir}" "${project_root}")" || rc=$?
+  if [[ $rc -ne 0 || -z "${mcp_cfg}" ]]; then
+    worker_mcp_journal "${journal_file}" "worker_mcp_skipped reason=resolve_rc_${rc}"
+    return 1
+  fi
+  worker_mcp_journal "${journal_file}" "worker_mcp_attached config=$(basename "${mcp_cfg}") role=${role}"
+  printf '%s' "${mcp_cfg}"
+  return 0
+}
+
 run_claude() {
   local prompt="$1"
   local out_file="$2"
@@ -256,6 +332,12 @@ run_claude() {
     resolved_prompt="${AGENT_BAN_PREAMBLE}${resolved_prompt}${FINISH_CONTRACT_TRAILER}"
   fi
 
+  # T14: resolve BEFORE the subshell cd — the journal line goes to stderr
+  # (v1 path has no run dir). Empty mcp_cfg = fail-open, no flag appended.
+  local mcp_cfg="" mcp_out_dir
+  mcp_out_dir="$(mktemp -d "${TMPDIR:-/tmp}/glm-worker-mcp.XXXXXX")"
+  mcp_cfg="$(worker_mcp_resolve "${cwd_dir}" "" "${mcp_out_dir}")" || true
+
   local exit_code=0
   (
     cd "${cwd_dir}"
@@ -266,12 +348,21 @@ run_claude() {
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
     export DISABLE_MODEL_AVAILABILITY_CHECK=1
     export API_TIMEOUT_MS=3000000
-    command "${GLM_CLAUDE_BIN}" -p "${resolved_prompt}" \
+    local -a spawn_args=(-p "${resolved_prompt}" \
       --dangerously-skip-permissions \
       --disallowedTools "Agent" \
       --model sonnet \
-      --output-format json
+      --output-format json)
+    if [[ -n "${mcp_cfg}" ]]; then
+      spawn_args+=(--strict-mcp-config --mcp-config "${mcp_cfg}")
+    fi
+    command "${GLM_CLAUDE_BIN}" "${spawn_args[@]}"
   ) >"${out_file}" 2>&1 || exit_code=$?
+
+  # F2 (T14 fix-round): the resolve scratch dir holds only the resolved
+  # --mcp-config copy (already consumed by the spawn above) — remove it so
+  # each synchronous `run` does not leak one /tmp/glm-worker-mcp.XXXXXX dir.
+  rm -rf "${mcp_out_dir}" 2>/dev/null || true
 
   # Telemetry is deliberately best-effort and runs after the complete provider
   # JSON envelope is durable.  Its failure can never alter the lane outcome.
@@ -1025,20 +1116,31 @@ cmd_run_child() {
   export DISABLE_MODEL_AVAILABILITY_CHECK=1
   export API_TIMEOUT_MS=3000000
 
+  # T14: resolve the role-scoped MCP config before cd — the journal line
+  # (worker_mcp_attached / worker_mcp_skipped) lands in this run's
+  # progress.log. Empty mcp_cfg = fail-open, no flag on the spawn line.
+  local mcp_cfg=""
+  mcp_cfg="$(worker_mcp_resolve "${cwd_dir}" "${run_dir}/progress.log" "${run_dir}")" || true
+
   cd "${cwd_dir}"
   local prompt
   prompt="$(cat "${run_dir}/prompt.txt")"
   # lean: prompt passed via argv, matching design/v1 — upgrade to stdin/tempfile
   # passing if a prompt near bash ARG_MAX is observed in practice.
 
-  set +e
-  ( command "${GLM_CLAUDE_BIN}" -p "${prompt}" \
+  local -a spawn_args=(-p "${prompt}" \
       --model sonnet \
       --output-format stream-json \
       --verbose \
       --max-turns "${max_turns}" \
       --permission-mode bypassPermissions \
-      --disallowedTools "Agent" \
+      --disallowedTools "Agent")
+  if [[ -n "${mcp_cfg}" ]]; then
+    spawn_args+=(--strict-mcp-config --mcp-config "${mcp_cfg}")
+  fi
+
+  set +e
+  ( command "${GLM_CLAUDE_BIN}" "${spawn_args[@]}" \
       2> >(redact_stream >> "${run_dir}/stderr.log")
   ) | tee "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
   echo "${PIPESTATUS[0]}" > "${run_dir}/exit_code"
