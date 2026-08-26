@@ -99,6 +99,12 @@ for f in "$CWD/.claude/leadv2-tasks/active.yaml" "$CWD/${_lv2_leadv2_dir}/active
   [[ -f "$f" ]] && ACTIVE="$f" && break
 done
 if [[ -n "$ACTIVE" ]]; then
+  # Resolve the task-anchor's own selected task_id FIRST (moved up from 2.b)
+  # so the ANCHOR_OWNS_CONTEXT branch below can exclude it — task-anchor.sh
+  # already renders this one task's header/goal/plan; we must never drop the
+  # *other* sessions' notes/blocked_by just because that one overlaps.
+  TID_ACTIVE="$(leadv2_hook_resolve_task_id "$INPUT" "$ACTIVE" 2>/dev/null || true)"
+
   if [[ "$ANCHOR_OWNS_CONTEXT" != "1" ]]; then
   ACTIVE_SUM="$(python3 -c "
 import yaml
@@ -122,13 +128,44 @@ except Exception: print('')
 $ACTIVE_SUM
 (Lead: read STATE.md only when needed for phase action. active.yaml summary above is current.)")
   fi
-  fi # ANCHOR_OWNS_CONTEXT: task-anchor's own header dupes [LEADV2_ACTIVE] only
+  else
+  # ANCHOR_OWNS_CONTEXT=1: task-anchor.sh already renders TID_ACTIVE's own
+  # header/goal/plan (and, from bus.jsonl, other live sessions' phase/files).
+  # It does NOT carry active.yaml's per-session note/blocked_by field, so
+  # still emit those here for every OTHER session — never the one task-anchor
+  # already covers (that part IS the genuine duplicate) — so no session's
+  # summary/note is lost.
+  OTHER_SUM="$(python3 -c "
+import yaml
+try:
+    d = yaml.safe_load(open('$ACTIVE')) or {}
+    s = d.get('sessions') or []
+    mine = '$TID_ACTIVE'
+    others = [sess for sess in s if sess.get('task_id') != mine][:3]
+    if not others: print('')
+    else:
+        lines = []
+        for sess in others:
+            tid = sess.get('task_id','?')
+            phase = sess.get('phase','?')
+            note = sess.get('note','') or sess.get('blocked_by','')
+            extra = f' ({note})' if note else ''
+            lines.append(f'  {tid}: phase={phase}{extra}')
+        print('\n'.join(lines))
+except Exception: print('')
+" 2>/dev/null || echo "")"
+  if [[ -n "$OTHER_SUM" ]]; then
+    CTX_PARTS+=("[LEADV2_ACTIVE_OTHER_SESSIONS]
+$OTHER_SUM
+(Your own active task's header/goal/plan is rendered by task-anchor above; these are OTHER live sessions.)")
+  fi
+  fi # ANCHOR_OWNS_CONTEXT: task-anchor's own header dupes only the TID_ACTIVE row of [LEADV2_ACTIVE]
 
   # === 2.b. Auto-detect real phase from handoff/ artifacts (active.yaml often stale) ===
   # T15 R2: unconditional — task-anchor.sh's DIRECTIVE has no equivalent of
   # the severity-gate / round-cap phase hint, so this is unique information
   # regardless of ANCHOR_OWNS_CONTEXT.
-  TID_ACTIVE="$(leadv2_hook_resolve_task_id "$INPUT" "$ACTIVE" 2>/dev/null || true)"
+  # TID_ACTIVE already resolved above (moved up for the OTHER_SUM exclusion).
   if [[ -n "$TID_ACTIVE" ]]; then
     HANDOFF_DIR="$CWD/${_lv2_handoff_dir}/$TID_ACTIVE"
     if [[ -d "$HANDOFF_DIR" ]]; then

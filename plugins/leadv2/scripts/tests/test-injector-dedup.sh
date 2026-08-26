@@ -40,6 +40,36 @@ SESSION_ID="injector-dedup-$$"
 cleanup() { rm -rf "$ROOT"; rm -f "/tmp/leadv2-orch-role-${SESSION_ID}"; }
 trap cleanup EXIT
 
+# T15 R3 (V2): leadv2-task-anchor.sh's full-anchor path shells out to
+# leadv2-journal.sh via os.path.expanduser("~/.claude/.../leadv2-journal.sh")
+# (task-anchor.sh:956-958) whenever it builds the journal-tail lines. Without
+# isolating HOME, this suite would probe (and possibly execute) whatever
+# real ~/.claude tree the CI/dev machine happens to have — not hermetic, and
+# a source of flakiness across machines. Point HOME at an empty fixture dir
+# for the rest of this suite so neither candidate path exists and the
+# journal-tail lookup deterministically no-ops.
+#
+# Caveat discovered while wiring this up: leadv2-task-anchor.sh's load_yaml()
+# soft-imports PyYAML and silently degrades to {} without it (by design, for
+# machines that lack it) — and on this machine PyYAML only resolves via the
+# REAL HOME's user site-packages (`python3 -c "import site;
+# print(site.getusersitepackages())"`), not a system/venv install. A bare
+# HOME swap therefore made every active.yaml read return {} and the whole
+# suite silently fall through to the no-active-task thread-anchor path — a
+# false pass waiting to happen, not a hermetic run. Compute the real site dir
+# BEFORE overriding HOME and keep it importable via PYTHONPATH so the fixture
+# HOME isolates the journal-script lookup ONLY, without also gutting YAML.
+REAL_USER_SITE="$(python3 -c 'import site; print(site.getusersitepackages())' 2>/dev/null || true)"
+FIXTURE_HOME="$ROOT/home"
+mkdir -p "$FIXTURE_HOME"
+export HOME="$FIXTURE_HOME"
+if [[ -n "$REAL_USER_SITE" ]]; then
+  export PYTHONPATH="${REAL_USER_SITE}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+if ! python3 -c "import yaml" 2>/dev/null; then
+  fail "harness precondition: PyYAML not importable under fixture HOME + PYTHONPATH shim — active.yaml reads would silently degrade to {}"
+fi
+
 pass() { PASS=$((PASS + 1)); printf -- '[TEST] PASS: %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf -- '[TEST] FAIL: %s\n' "$1"; }
 
@@ -211,22 +241,50 @@ fi
 
 # (e, control) LEADV2_ANCHOR_OWNS_CONTEXT=0 must re-enable the FULL legacy
 # path — proves (e)'s dedup above is the flag working, not a coincidental
-# no-op. T15 R4: byte-compare, not a single grep. Two independent
-# first-time sessions (never touched, so neither hits the per-session
-# ORCH_SENTINEL short-circuit) against identical fixture state must
-# produce byte-identical output — this is a far stronger check than
-# "does substring X appear once": it catches any accidental
-# nondeterminism or partial-emission drift across the whole legacy body,
-# not just the one tag a plain grep would look at.
-e_upc_legacy_a="$(run_upc "${e_sid}-legacy-a" "0" 2>/dev/null || true)"
-e_upc_legacy_b="$(run_upc "${e_sid}-legacy-b" "0" 2>/dev/null || true)"
-if [[ "$e_upc_legacy_a" == *"[LEADV2_ACTIVE]"* ]] \
-   && [[ "$e_upc_legacy_a" == *"[ORCHESTRATOR_ROLE]"* ]] \
-   && [[ "$e_upc_legacy_a" == *"SILENCE PROTOCOL"* ]] \
-   && [[ "$e_upc_legacy_a" == "$e_upc_legacy_b" ]]; then
-  pass "(e control) LEADV2_ANCHOR_OWNS_CONTEXT=0 re-enables the full legacy path, byte-identical across two independent runs"
+# no-op.
+#
+# T15 R3 (V3): comparing two LIVE executions of the CURRENT script against
+# each other (the previous form of this control) only proves determinism —
+# it cannot catch a regression that changed the legacy path's OUTPUT itself,
+# because both sides run the same (possibly-broken) code. The true golden
+# is the pre-T15 hook body at base 9e9677b (the commit this fix-round
+# branched from, before ANCHOR_OWNS_CONTEXT=0 handling was touched): pull
+# that exact file out of git history into a temp copy and execute THAT as
+# the reference implementation, then byte-compare its output against the
+# CURRENT script's output for LEADV2_ANCHOR_OWNS_CONTEXT=0. A genuine
+# regression in the legacy path now shows up as a diff against real
+# pre-change behavior, not just non-determinism.
+#
+# To refresh the golden after an intentional legacy-path change: bump
+# GOLDEN_BASE_REV below to the new base commit and re-run this suite —
+# no separate regeneration step, the golden is derived live from git.
+GOLDEN_BASE_REV="9e9677b"
+# leadv2-user-prompt-context.sh sources leadv2-mode-isolation.sh via a path
+# relative to its OWN dirname — so the golden copy needs its sibling from
+# the same rev alongside it, not just the one file, or the source line fails.
+GOLDEN_DIR="$ROOT/upc-golden-${GOLDEN_BASE_REV}"
+mkdir -p "$GOLDEN_DIR"
+GOLDEN_UPC="$GOLDEN_DIR/leadv2-user-prompt-context.sh"
+if ! git -C "$PLUGIN_ROOT" show "${GOLDEN_BASE_REV}:plugins/leadv2/hooks/leadv2-user-prompt-context.sh" > "$GOLDEN_UPC" 2>/dev/null \
+   || ! git -C "$PLUGIN_ROOT" show "${GOLDEN_BASE_REV}:plugins/leadv2/hooks/leadv2-mode-isolation.sh" > "$GOLDEN_DIR/leadv2-mode-isolation.sh" 2>/dev/null; then
+  fail "(e control) could not extract golden $GOLDEN_BASE_REV hook pair from git history"
 else
-  fail "(e control) legacy path missing content or non-reproducible: a=[$e_upc_legacy_a] b=[$e_upc_legacy_b]"
+  chmod +x "$GOLDEN_UPC"
+  run_golden_upc() {
+    local sid="$1"
+    LEADV2_TASK_ID="t15-fixture" LEADV2_ANCHOR_OWNS_CONTEXT="0" \
+      bash "$GOLDEN_UPC" <<<"$(payload "$sid")"
+  }
+  e_upc_legacy_current="$(run_upc "${e_sid}-legacy-current" "0" 2>/dev/null || true)"
+  e_upc_legacy_golden="$(run_golden_upc "${e_sid}-legacy-golden" 2>/dev/null || true)"
+  if [[ "$e_upc_legacy_current" == *"[LEADV2_ACTIVE]"* ]] \
+     && [[ "$e_upc_legacy_current" == *"[ORCHESTRATOR_ROLE]"* ]] \
+     && [[ "$e_upc_legacy_current" == *"SILENCE PROTOCOL"* ]] \
+     && [[ "$e_upc_legacy_current" == "$e_upc_legacy_golden" ]]; then
+    pass "(e control) LEADV2_ANCHOR_OWNS_CONTEXT=0 legacy path byte-identical to the checked-in ${GOLDEN_BASE_REV} golden"
+  else
+    fail "(e control) legacy path diverges from ${GOLDEN_BASE_REV} golden: current=[$e_upc_legacy_current] golden=[$e_upc_legacy_golden]"
+  fi
 fi
 
 printf -- '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
