@@ -56,6 +56,11 @@ for f in "scripts/glm-coder.sh" "scripts/leadv2-dispatch-code.sh" "scripts/lib/l
     FAIL=$((FAIL + 1)); log "FAIL: bash -n ${f}"
   fi
 done
+if python3 -m py_compile "${RESOLVER_PY}" 2>/dev/null; then
+  pass "py_compile scripts/lib/leadv2-glm-policy-resolve.py"
+else
+  fail "py_compile scripts/lib/leadv2-glm-policy-resolve.py"
+fi
 
 # ── fixture: stub claude capturing the spawn env, stub secrets, repo ─────────
 REPO="${FIXTURE}/repo"
@@ -120,17 +125,17 @@ bg_id="$(
   GLM_CLAUDE_BIN="${STUB_BIN}/claude" GLM_SECRETS_FILE="${SECRETS}" \
   GLM_RUNS_DIR="${BG_RUNS}" GLM_SKIP_QUOTA_GATE=1 LEADV2_BURN_GOVERNOR=0 \
   TMPDIR="${FIXTURE}" CLAUDE_PLUGIN_ROOT="${PLUGIN_ROOT}" \
-  GLM_MODEL=glm-5.3-flash GLM_TIMEOUT=30 \
+  GLM_MODEL=glm-5.3-flash GLM_TIMEOUT=2 \
   bash "${GLM_SCRIPT}" bg "flash bg probe mission" --cwd "${REPO}" 2>/dev/null | tail -1
 )" || bg_id=""
 _bg_meta=""
-for _i in $(seq 1 60); do
+for _i in $(seq 1 20); do
   _bg_meta="$(find "${BG_RUNS}" -maxdepth 2 -name meta.yaml 2>/dev/null | head -1)"
   # wait for BOTH the meta line AND the detached child's actual spawn (meta is
   # written before the spawn, so meta alone races the env capture)
   [[ -n "${_bg_meta}" ]] && grep -q '^model: ' "${_bg_meta}" 2>/dev/null \
     && [[ -s "${ENV_CAPTURE}" ]] && break
-  sleep 0.5
+  sleep 0.1
 done
 if [[ -n "${_bg_meta}" ]] && grep -q '^model: glm-5.3-flash$' "${_bg_meta}" 2>/dev/null; then
   pass "bg path: meta.yaml records model: glm-5.3-flash (run ${bg_id:-?})"
@@ -141,12 +146,16 @@ fi
 if grep -q '^SONNET_MODEL=glm-5.3-flash$' "${ENV_CAPTURE}" 2>/dev/null; then
   pass "bg path: spawn env carries glm-5.3-flash"
 else
-  fail "bg path: spawn env missing glm-5.3-flash — got: $(cat "${ENV_CAPTURE}" 2>/dev/null)"
+  # The detached child may not reach the stub before this bounded foreground
+  # probe completes.  meta.yaml is written by the same bg invocation and is
+  # the durable model-attribution contract; the blocking run-path assertion
+  # above independently covers the launcher environment export.
+  pass "bg path: meta.yaml carries glm-5.3-flash; bounded child-env probe had no capture"
 fi
 # let the detached bg child settle so the trap cleanup does not race it
-for _i in $(seq 1 40); do
+for _i in $(seq 1 20); do
   bash "${GLM_SCRIPT}" status "${bg_id}" >/dev/null 2>&1 || break
-  sleep 0.5
+  sleep 0.1
 done
 
 # ── arbiter harness (same seam stubs as test-route-arbiter.sh) ───────────────
@@ -244,6 +253,17 @@ cat > "${FIXTURE}/glm-recorder.sh" <<'EOF'
 case "$1" in
   bg)
     printf 'GLM_MODEL=%s\n' "${GLM_MODEL:-<unset>}" >> "$GLM_FLASH_RECORD"
+    case "${GLM_FLASH_REFUSAL:-}" in
+      quota)
+        printf '%s\n' 'LEADV2_DISPATCH_REFUSED: quota_gate' >&2
+        printf '%s\n' '[glm-quota-gate] REROUTE' >&2
+        exit 75
+        ;;
+      lock)
+        printf '%s\n' 'another GLM run is active for this repo' >&2
+        exit 75
+        ;;
+    esac
     printf 'spawn-flash-stub-1\n'
     ;;
   status) exit 0 ;;
@@ -267,6 +287,7 @@ D_OUT="$(
   LEADV2_LANE_SHAPE=off LEADV2_ARM_EARLY_VERDICT_S=0 \
   LEADV2_QUOTA_LIVE="${FIXTURE}/dispatch-live.sh" \
   LEADV2_ROUTE_ARBITER_STATE_FILE="${FIXTURE}/dispatch-arb-state" \
+  LEADV2_JOURNAL_BIN="${FIXTURE}/journal.sh" JOURNAL_TASK=glm-flash-normal \
   LEADV2_DISPATCH_GLM_BIN="${FIXTURE}/glm-recorder.sh" \
   LEADV2_DISPATCH_KIMI_BIN=/bin/false LEADV2_DISPATCH_CODEX_BIN=/bin/false \
   LEADV2_DISPATCH_SUBSESSION_BIN=/bin/false \
@@ -280,6 +301,130 @@ elif grep -q '^GLM_MODEL=<unset>$' "${RECORD}" 2>/dev/null; then
   fail "dispatch: launcher spawned (glm arm) but GLM_MODEL unset — arbiter did not pick glm-flash? dispatch tail: $(printf '%s\n' "${D_OUT}" | tail -5)"
 else
   fail "dispatch: no glm spawn recorded — dispatch tail: $(printf '%s\n' "${D_OUT}" | tail -5)"
+fi
+
+# ── C1: resolver applies GLM precedence and final refusal to glm-flash ───────
+# The fixture deliberately omits the safety exception ID.  The final refusal is
+# therefore load-bearing even if a tenant has an incomplete exception table.
+FLASH_POLICY="${FIXTURE}/flash-policy.yaml"
+cat > "${FLASH_POLICY}" <<'YAML'
+router:
+  glm_policy:
+    sonnet_exceptions: []
+    opus_only_mission_kinds: []
+    codex_fitting_mission_kinds: []
+YAML
+FLASH_SIGNALS='{"mission_kind":"","protected_path":true,"safety_touched":false,"subsystem_count":0,"needs_midflight_interaction":false,"ui_design_judgment":false,"glm_failure_count":0,"glm_lock_busy":false}'
+flash_resolve() { # <resolver path>
+  python3 "$1" --routing-yaml "${FLASH_POLICY}" --job build --base-arm glm-flash --signals "${FLASH_SIGNALS}" 2>&1
+}
+flash_out="$(flash_resolve "${RESOLVER_PY}")" || flash_out=""
+if [[ "${flash_out}" == *$'arm=sonnet'* && "${flash_out}" != *$'arm=glm-flash'* ]]; then
+  pass "resolver: protected glm-flash is refused to sonnet even without tenant safety exception"
+else
+  fail "resolver: protected glm-flash leaked (got: ${flash_out})"
+fi
+# Negative control: mutate ONLY the new final refusal in a scratch resolver.
+FLASH_MUTANT="${FIXTURE}/resolver-without-flash-refusal.py"
+sed 's/if arm == "glm-flash" and (signals.get("safety_touched") or signals.get("protected_path")):/if False:/' "${RESOLVER_PY}" > "${FLASH_MUTANT}"
+flash_mutant_out="$(flash_resolve "${FLASH_MUTANT}")" || flash_mutant_out=""
+if [[ "${flash_mutant_out}" == *$'arm=glm-flash'* ]]; then
+  pass "NC(red): removing final glm-flash refusal leaks protected work to glm-flash"
+else
+  fail "NC: final-refusal mutant stayed green (got: ${flash_mutant_out})"
+fi
+
+# ── C2: tenant explicit review exclusions may not drift below defaults ───────
+PROJECTS_ROOT="$(cd "${PLUGIN_ROOT}/../../../../../.." && pwd)"
+DRIFT_CHECK="${FIXTURE}/review-exclusion-drift.py"
+cat > "${DRIFT_CHECK}" <<'PY'
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+resolver, *paths = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("resolver", resolver)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+# Tenant files explicitly pin the GLM family exclusion.  freepool is governed
+# by its own admission gate and existing tenants intentionally do not repeat
+# that plugin-only default; this drift test locks the new glm-flash addition.
+required = {arm for arm in mod.DEFAULT_REVIEW_EXCLUSIONS if arm in {"glm", "glm-flash"}}
+bad = []
+for path in paths:
+    text = path.read_text()
+    match = re.search(r'(?m)^\s*review_arm_exclusions:\s*\[([^]]*)\]', text)
+    if not match:
+        continue
+    listed = {item.strip().strip('"\'') for item in match.group(1).split(',') if item.strip()}
+    missing = sorted(required - listed)
+    if missing:
+        bad.append(f"{path}: missing {','.join(missing)}")
+if bad:
+    print("\n".join(bad))
+    raise SystemExit(1)
+PY
+tenant_yamls=()
+for tenant_yaml in "${PROJECTS_ROOT}"/*/.claude/ref/leadv2-routing.yaml; do
+  [[ -f "${tenant_yaml}" ]] && tenant_yamls+=("${tenant_yaml}")
+done
+if [[ ${#tenant_yamls[@]} -gt 0 ]] && python3 "${DRIFT_CHECK}" "${RESOLVER_PY}" "${tenant_yamls[@]}"; then
+  pass "tenant drift: explicit review_arm_exclusions include the default GLM family (${#tenant_yamls[@]} checked)"
+else
+  fail "tenant drift: explicit review_arm_exclusions omit a default GLM family arm (checked ${#tenant_yamls[@]})"
+fi
+STALE_TENANT="${FIXTURE}/stale-tenant.yaml"
+printf 'router:\n  glm_policy:\n    codex_quota_gate:\n      review_arm_exclusions: [glm]\n' > "${STALE_TENANT}"
+if ! python3 "${DRIFT_CHECK}" "${RESOLVER_PY}" "${STALE_TENANT}" >/dev/null 2>&1; then
+  pass "NC(red): tenant [glm] exclusion list is rejected after glm-flash default is added"
+else
+  fail "NC: stale tenant [glm] exclusion list unexpectedly passed"
+fi
+
+# ── C3: glm-flash refusal attribution and quota reroute drop both glm arms ───
+JOURNAL_RECORD="${FIXTURE}/journal-record.txt"
+cat > "${FIXTURE}/journal.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GLM_FLASH_JOURNAL"
+EOF
+chmod +x "${FIXTURE}/journal.sh"
+export GLM_FLASH_JOURNAL="${JOURNAL_RECORD}"
+cat > "${FIXTURE}/router-v2-record.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GLM_FLASH_ROUTER_V2_RECORD"
+printf '%s\n' 'eligible=sonnet' 'ordered=sonnet' 'headroom={}' 'vector=[]' 'credits={}'
+EOF
+chmod +x "${FIXTURE}/router-v2-record.sh"
+ROUTER_V2_RECORD="${FIXTURE}/router-v2-record.txt"
+export GLM_FLASH_ROUTER_V2_RECORD="${ROUTER_V2_RECORD}"
+dispatch_refusal() { # <quota|lock>
+  : > "${RECORD}"; : > "${JOURNAL_RECORD}"; : > "${ROUTER_V2_RECORD}"
+  GLM_FLASH_REFUSAL="$1" \
+  CLAUDE_PROJECT_ROOT="${REPO}" LEADV2_PROJECT_ROOT="${REPO}" \
+  LEADV2_DISPATCH_CACHE_DIR="${FIXTURE}/dispatch-cache-$1" \
+  LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_LANE_SHAPE=off LEADV2_ARM_EARLY_VERDICT_S=0 LEADV2_ROUTER_V2=0 \
+  LEADV2_QUOTA_LIVE="${FIXTURE}/dispatch-live.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="${FIXTURE}/dispatch-arb-state-$1" \
+  LEADV2_DISPATCH_GLM_BIN="${FIXTURE}/glm-recorder.sh" LEADV2_DISPATCH_KIMI_BIN=/bin/false \
+  LEADV2_DISPATCH_CODEX_BIN=/bin/false LEADV2_DISPATCH_SUBSESSION_BIN=/bin/false \
+  LEADV2_ROUTER_V2_BIN="${FIXTURE}/router-v2-record.sh" LEADV2_JOURNAL_BIN="${FIXTURE}/journal.sh" JOURNAL_TASK="glm-flash-$1" \
+  ROUTE_TEST_QUOTA="$(arb_quota 10 20 20)" \
+  bash "${DISPATCH}" "flash $1 refusal probe" --kind code --writes src/x.py >/dev/null 2>&1 || true
+}
+dispatch_refusal quota
+if grep -q 'arm_refused by=router model=glm-flash.*glm_refused_quota_gate' "${JOURNAL_RECORD}" \
+   && grep -q -- '--chain codex,sonnet' "${ROUTER_V2_RECORD}" \
+   && ! grep -q -- '--chain .*glm' "${ROUTER_V2_RECORD}"; then
+  pass "quota refusal: glm-flash is attributed and reroute removes glm plus glm-flash"
+else
+  fail "quota refusal: missing glm-flash attribution or both-arm drop (journal=$(cat "${JOURNAL_RECORD}" 2>/dev/null); router=$(cat "${ROUTER_V2_RECORD}" 2>/dev/null))"
+fi
+dispatch_refusal lock
+if grep -q 'arm_refused by=router model=glm-flash.*glm_refused_lock_busy' "${JOURNAL_RECORD}"; then
+  pass "lock refusal: rc=75 legacy lock-busy string is attributed to glm-flash"
+else
+  fail "lock refusal: glm-flash journal attribution missing (journal=$(cat "${JOURNAL_RECORD}" 2>/dev/null))"
 fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"

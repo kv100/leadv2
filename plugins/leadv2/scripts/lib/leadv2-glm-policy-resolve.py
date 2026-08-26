@@ -707,7 +707,7 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
     # list beside it; carried in glm_excluded so the spill walk can resurrect
     # base_arm ONLY for the preference row.
     glm_excluded = False
-    if base_arm == "glm":
+    if base_arm in ("glm", "glm-flash"):
         # STRICT precedence, first match wins — identical order/semantics to
         # the two deleted duplicates (dispatch-code.sh:337-418,
         # router.sh:190-259 pre-T-b).
@@ -957,6 +957,14 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
     if arm == "freepool" and (signals.get("safety_touched") or signals.get("protected_path")):
         arm = "sonnet"
         rule, reason = "freepool_untrusted", "freepool_protected_refusal"
+        tier = ""
+
+    # glm-flash shares GLM's cheap build channel, but must never be returned for
+    # protected/safety work.  This is deliberately unconditional: callers can
+    # pass glm-flash directly and a tenant may omit the named safety exception.
+    if arm == "glm-flash" and (signals.get("safety_touched") or signals.get("protected_path")):
+        arm = "sonnet"
+        rule, reason = "glm_flash_untrusted", "glm_flash_protected_refusal"
         tier = ""
 
     result = {"arm": arm, "rule": rule, "reason": reason, "tier": tier,
