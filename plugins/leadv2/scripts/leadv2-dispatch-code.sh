@@ -4312,13 +4312,15 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
   # launcher failure.
   if [[ -n "${marker}" && ( "${rc}" == "1" || "${rc}" == "2" \
         || ( "${arm}" == "kimi" && "${rc}" == "77" ) \
-        || ( "${arm}" == "glm" && "${rc}" == "75" ) \
+        || ( ( "${arm}" == "glm" || "${arm}" == "glm-flash" ) && "${rc}" == "75" ) \
         || ( "${arm}" == "freepool" && "${rc}" == "75" ) ) ]]; then
     printf '%s' "${marker}"
     return 0
   fi
   # Compatibility only for older GLM quota gates.  Source gates now emit the marker.
-  if [[ "${arm}" == "glm" && "${rc}" == "1" && "${combined}" == *"[glm-quota-gate] REROUTE"* ]]; then
+  # GLM-53-FLASH-ARM-01: glm-flash shares the glm launcher, so it shares these
+  # glm admission contracts (quota gate, per-repo portable lock) verbatim.
+  if [[ ( "${arm}" == "glm" || "${arm}" == "glm-flash" ) && "${rc}" == "1" && "${combined}" == *"[glm-quota-gate] REROUTE"* ]]; then
     printf '%s' quota_gate
     return 0
   fi
@@ -4329,7 +4331,7 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
   # launcher_nonzero_exit) and blind-spilled to kimi. The marker is the contract;
   # this narrow string match is the back-compat belt -- comment-tagged like the
   # REROUTE shim above.
-  if [[ "${arm}" == "glm" && "${rc}" == "75" \
+  if [[ ( "${arm}" == "glm" || "${arm}" == "glm-flash" ) && "${rc}" == "75" \
         && "${combined}" == *"another GLM run is active for this repo"* ]]; then
     printf '%s' lock_busy
     return 0
@@ -4366,7 +4368,17 @@ _spawn_worker_body() {
   fi
   [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
   case "${arm}" in
-    glm)
+    glm|glm-flash)
+      # GLM-53-FLASH-ARM-01: glm-flash is the same launcher (glm-coder.sh) on
+      # the glm-5.3-flash model -- one case row, model selected through the
+      # wrapper's GLM_MODEL env seam so the spawn argv never forks per model.
+      # Default arm=glm leaves GLM_MODEL unset so the wrapper's own
+      # glm-5.3 default holds (single source of model truth stays in the
+      # wrapper + the routing yaml's ladder/matrix, never here).
+      local _glm_model=""
+      if [[ "${arm}" == "glm-flash" ]]; then
+        _glm_model="glm-5.3-flash"
+      fi
       # FIX PASS 4: `9>&-` closes the lock fd for this call as defense-in-depth -- the
       # redesign already never holds the dispatch lock across spawn (spawn_worker runs
       # outside any lock this script itself opens), but a launcher spawns a DETACHED
@@ -4377,20 +4389,20 @@ _spawn_worker_body() {
       # The GLM wrapper owns the terminal JSON envelope and invokes the shared
       # dev cost shim only after it exists.  Stamp this dispatch identity here
       # so direct and dispatcher-launched lanes use one attribution contract.
-      out="$(LEADV2_COSTLOG_ARM=glm-coder LEADV2_WORKER_ROLE=developer bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      out="$(LEADV2_COSTLOG_ARM=glm-coder LEADV2_WORKER_ROLE=developer GLM_MODEL="${_glm_model}" bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
         local refusal
         refusal="$(refusal_reason "${arm}" "${rc}" "${out}" "${err}" || true)"
         if [[ -n "${refusal}" ]]; then
           LAST_ARM_OUTCOME="glm_refused_${refusal}"
-          emit decision "arm_refused by=router model=glm task=${sig8} reason=glm_refused_${refusal}"
+          emit decision "arm_refused by=router model=${arm} task=${sig8} reason=glm_refused_${refusal}"
           _maybe_record_quota_lockout "glm" "${refusal}" "${out}"$'\n'"${err}"
-          log "spawn(glm) refused: ${refusal}"
+          log "spawn(${arm}) refused: ${refusal}"
           return 2
         fi
-        emit decision "spawn_failed by=router model=glm task=${sig8} rc=${rc} reason=launcher_nonzero_exit"
-        log_err "spawn(glm) failed rc=${rc}: ${out} ${err}"
+        emit decision "spawn_failed by=router model=${arm} task=${sig8} rc=${rc} reason=launcher_nonzero_exit"
+        log_err "spawn(${arm}) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
       handle="$(printf '%s\n' "${out}" | tail -1)"
@@ -4398,8 +4410,8 @@ _spawn_worker_body() {
       # 0 without spawning anything (e.g. LEADV2_DISPATCH_GLM_BIN=/bin/true) must not be
       # treated as a live worker.
       if [[ -z "${handle}" ]]; then
-        emit decision "spawn_failed by=router model=glm task=${sig8} reason=empty_handle"
-        log_err "spawn(glm) returned an empty handle -- treating as launch failure (no-op launcher?)"
+        emit decision "spawn_failed by=router model=${arm} task=${sig8} reason=empty_handle"
+        log_err "spawn(${arm}) returned an empty handle -- treating as launch failure (no-op launcher?)"
         return 1
       fi
       # Liveness: glm-coder.sh's own `status` subcommand resolves the SAME run-dir this
@@ -4407,8 +4419,8 @@ _spawn_worker_body() {
       # the handle means no live worker -- the run-id itself isn't a PID, so this is the
       # glm-arm equivalent of the kill -0 check below.
       if ! bash "${GLM_BIN}" status "${handle}" >/dev/null 2>&1 9>&-; then
-        emit decision "spawn_failed by=router model=glm task=${sig8} handle=${handle} reason=not_live"
-        log_err "spawn(glm) handle=${handle} has no live run record -- treating as launch failure"
+        emit decision "spawn_failed by=router model=${arm} task=${sig8} handle=${handle} reason=not_live"
+        log_err "spawn(${arm}) handle=${handle} has no live run record -- treating as launch failure"
         return 1
       fi
       ;;
@@ -6351,7 +6363,9 @@ exit is treated as an incident."
         # V3-GLM-LADDER-01 C1/D3: a glm bench here is the same founder-visible event as
         # a live glm_refused_* refusal (candidate never even got attempted) -- park +
         # count it identically so the ladder-loop can't hide behind the precheck.
-        if [[ "${_qpc_arm}" == "glm" ]]; then
+        # GLM-53-FLASH-ARM-01: glm-flash benches on the same glm provider lockout
+        # record, so it is the same founder-visible event too.
+        if [[ "${_qpc_arm}" == "glm" || "${_qpc_arm}" == "glm-flash" ]]; then
           _glm_quota_benched="glm_refused_quota_precheck"
           _glm_park_deferred "${sig8}" "${_glm_quota_benched}" "${mission}" || true
           # A bench is the same founder-visible event as a live refusal (D3) --
@@ -6684,7 +6698,9 @@ ${mission}"
       # answer -- do not re-classify (design §4).
       # D2: park + count only the quota family -- a transient refusal (e.g.
       # glm_refused_lock_busy) parks nothing and bumps nothing.
-      if [[ "${candidate}" == "glm" ]]; then
+      # GLM-53-FLASH-ARM-01: glm-flash parks identically -- same quota family,
+      # same launcher refusal vocabulary (glm_refused_*).
+      if [[ "${candidate}" == "glm" || "${candidate}" == "glm-flash" ]]; then
         case "${LAST_ARM_OUTCOME:-}" in
           glm_refused_quota_gate|glm_refused_postspawn_quota)
             _glm_park_deferred "${sig8}" "${LAST_ARM_OUTCOME}" "${_candidate_mission}" || true
@@ -6697,7 +6713,9 @@ ${mission}"
         local _qg_remaining
         local -a _qg_next=()
         for _qg_remaining in "${candidate_arms[@]}"; do
-          [[ "${_qg_remaining}" == "glm" ]] || _qg_next+=("${_qg_remaining}")
+          # GLM-53-FLASH-ARM-01: drop BOTH glm arms from the post-quota-gate
+          # reorder -- they share the one glm quota bucket that just refused.
+          [[ "${_qg_remaining}" == "glm" || "${_qg_remaining}" == "glm-flash" ]] || _qg_next+=("${_qg_remaining}")
         done
         _qg_chain="$(IFS=,; printf '%s' "${_qg_next[*]}")"
         if [[ -n "${_qg_chain}" && -f "${_qg_bin}" ]]; then

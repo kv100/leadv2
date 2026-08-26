@@ -27,8 +27,10 @@ PY
 run(){ LEADV2_ROUTE_ARBITER_ROUTING_YAML="$ROUTING" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state" ROUTE_TEST_QUOTA="$1" ROUTE_TEST_FREE_RC="${2:-0}" bash -c 'source "$0"; route_arbiter worker "$1"' "$ARBITER" "$3"; }
 
 # (a) Codex capped: a capable non-Codex worker is selected, never parked.
+# GLM-53-FLASH-ARM-01: glm-flash (cost 0.4) is the expected winner among the
+# healthy glm-family arms now — glm/glm-flash/sonnet all satisfy the invariant.
 out="$(run "$(quota 10 99 20)" 1 '{"kind":"code","size":"standard"}')"
-if [[ "$out" == *'arm=glm '* || "$out" == *'arm=sonnet '* ]]; then pass 'codex 99% routes to a capable non-codex arm'; else fail "codex 99% output=$out"; fi
+if [[ "$out" == *'arm=glm '* || "$out" == *'arm=glm-flash '* || "$out" == *'arm=sonnet '* ]]; then pass 'codex 99% routes to a capable non-codex arm'; else fail "codex 99% output=$out"; fi
 
 # (b) all windows capped (and freepool health down) gives the honest refusal.
 out="$(run "$(quota 99 99 99)" 1 '{"kind":"code","size":"standard"}' || true)"
@@ -39,13 +41,25 @@ out="$(run "$(quota 1 1 1)" 0 '{"kind":"code","size":"standard","protected":true
 chain="$(printf '%s\n' "$out" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
 if [[ "$out" != *'arm=glm '* && "$out" != *'arm=freepool '* && ",${chain}," != *',glm,'* && ",${chain}," != *',freepool,'* ]]; then pass 'protected chain excludes glm and freepool'; else fail "protected output=$out"; fi
 
-# (d) Anti-stickiness: fixed live readings still rotate equal-cost GLM/freepool.
+# (d) Anti-stickiness: fixed live readings still rotate equal-cost arms.
+# GLM-53-FLASH-ARM-01: size=standard now has a uniquely-cheapest arm
+# (glm-flash, cost 0.4) with no equal-price alternative, so rotation there is
+# structurally gone — by design, cost policy wins over rotation. The rotation
+# invariant itself is unchanged and still tested on the size=bulk cell, where
+# glm (cost 1) and freepool (cost 1) remain equal-priced competitors and
+# glm-flash is not capable (sizes stop at standard).
 rm -f "$TMP/state"
-one="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"standard"}')"
-two="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"standard"}')"
-three="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"standard"}')"
+one="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"bulk"}')"
+two="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"bulk"}')"
+three="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"bulk"}')"
 arms="$(printf '%s\n%s\n%s\n' "$one" "$two" "$three" | sed -n 's/.*arm=\([^ ]*\).*/\1/p' | sort -u | wc -l | tr -d ' ')"
 if [[ "$arms" -gt 1 ]]; then pass 'anti-sticky identical tasks rotate arms'; else fail "anti-sticky outputs=$one | $two | $three"; fi
+# (d2) And the standard cell is deterministic-cheap, not sticky: glm-flash
+# wins every time BECAUSE it is cheapest, never because it ran last.
+rm -f "$TMP/state"
+s1="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"standard"}')"
+s2="$(run "$(quota 70 20 20)" 0 '{"kind":"code","size":"standard"}')"
+if [[ "$s1" == *'arm=glm-flash '* && "$s2" == *'arm=glm-flash '* ]]; then pass 'standard cell deterministically picks glm-flash (cost, not stickiness)'; else fail "standard-cell outputs=$s1 | $s2"; fi
 
 # (e) The dispatcher must retain the ladder when its arbiter file is absent.
 REPO="$TMP/repo"; mkdir -p "$REPO/.claude/ref" "$REPO/docs/leadv2"
@@ -86,7 +100,9 @@ print(json.dumps({'glm':{'status':'error'},'codex':{'status':'ok','binding_windo
 PY
 }
 out="$(run "$(quota_broken_glm 20 20)" 1 '{"kind":"code","size":"standard"}')"
-if [[ "$out" != *'arm=glm '* && "$out" == *'util_glm=unknown_capped'* ]]; then pass 'broken glm probe (status!=ok) is fail-closed, never selected'; else fail "broken-glm-probe output=$out"; fi
+# GLM-53-FLASH-ARM-01: glm-flash shares the glm provider, so a broken glm probe
+# must bench BOTH glm arms — assert neither is picked.
+if [[ "$out" != *'arm=glm '* && "$out" != *'arm=glm-flash '* && "$out" == *'util_glm=unknown_capped'* ]]; then pass 'broken glm probe (status!=ok) is fail-closed, never selected'; else fail "broken-glm-probe output=$out"; fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
