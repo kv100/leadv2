@@ -3011,7 +3011,38 @@ else
     render_gate_findings "${review_file}" "" "${reviewer}" "${_rgf_rel}" || true
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-  _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm}"
+  # T11-D1: PASS alone is not `landed` -- a lane branch must actually merge to the default
+  # branch and verify there (merge-base --is-ancestor) before terminal=landed is written.
+  # lane 299f2bae got terminal=landed cause=review_verdict_pass with NO merge in main
+  # (live incident, 2026-08-26). Anything short of a verified merge is `pass_unlanded`:
+  # review passed, code did not land, lead must merge by hand.
+  source "${SCRIPT_DIR}/leadv2-branch-merged.sh"
+  _t11_branch="$(git -C "${diff_root}" symbolic-ref --short HEAD 2>/dev/null || true)"
+  _t11_default="$(lv2_default_branch "${ROOT}")"
+  if [[ -z "${_t11_branch}" || "${_t11_branch}" == "${_t11_default}" || "${diff_root}" == "${ROOT}" ]]; then
+    # No isolated lane branch to merge (shared-tree fallback lane, or work already landed on
+    # the default branch directly) -- nothing to merge, so `landed` is accurate as-is.
+    _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm}"
+  elif [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then
+    # Shared tree has foreign uncommitted work right now -- merging here risks another
+    # session's in-flight edits. Never force past this: fail toward pass_unlanded.
+    _dl_note pass_unlanded root_dirty "branch=${_t11_branch} diff=${diff_hash:0:8}"
+  else
+    _t11_landed=0
+    [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" acquire "${TASK}" >/dev/null 2>&1
+    if git -C "${ROOT}" merge --no-edit --no-ff "${_t11_branch}" >/tmp/t11-merge-"${TASK}".log 2>&1 \
+        && lv2_branch_merged "${ROOT}" "${_t11_branch}" "${_t11_default}"; then
+      _t11_landed=1
+    else
+      git -C "${ROOT}" merge --abort >/dev/null 2>&1 || true
+    fi
+    [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" release "${TASK}" >/dev/null 2>&1
+    if [[ "${_t11_landed}" == 1 ]]; then
+      _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm} branch=${_t11_branch}"
+    else
+      _dl_note pass_unlanded merge_conflict "branch=${_t11_branch} diff=${diff_hash:0:8}"
+    fi
+  fi
 fi
 _stamp_review_terminal pass
 # PHASES-ARE-THE-ONLY-PATH-01: record review phase as done (verdict PASS).

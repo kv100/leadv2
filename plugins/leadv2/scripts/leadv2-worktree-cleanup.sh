@@ -40,6 +40,28 @@ _lv2_wt_journal_swept() { # <repo-root> <lane-id> <reason>  (never fails)
     append "$2" note "worktree_swept id=$2 reason=$3" >/dev/null 2>&1 || true
 }
 
+# T11-D3: terminal lanes were piling up because per-turn injectors dirty three
+# well-known noise paths inside every lane worktree (open-threads.md,
+# LEAD_V2_STATE.md, tasks.yaml), and `git worktree remove` (no --force banned by
+# the shared-tree hook) refuses on ANY dirt. Restore just those three paths when
+# they are the ONLY dirt present, then re-check; leave anything else alone.
+_LV2_WT_NOISE_PATHS=(docs/leadv2/open-threads.md docs/LEAD_V2_STATE.md docs/tasks.yaml)
+_lv2_wt_restore_noise() { # <wt_path> -> prints remaining `git status --porcelain` on stdout
+  local wt_path="$1" dirty
+  dirty="$(git -C "$wt_path" status --porcelain -- "${_LV2_WT_NOISE_PATHS[@]}" 2>/dev/null || true)"
+  if [[ -n "$dirty" ]]; then
+    git -C "$wt_path" checkout -- "${_LV2_WT_NOISE_PATHS[@]}" 2>/dev/null || true
+  fi
+  git -C "$wt_path" status --porcelain 2>/dev/null || true
+}
+
+_lv2_wt_journal_kept_dirty() { # <repo-root> <lane-id> <dirty-porcelain>
+  [[ -f "${_LV2_WT_JOURNAL_BIN}" ]] || return 0
+  local paths; paths="$(printf '%s' "$3" | awk '{print $2}' | paste -sd, -)"
+  CLAUDE_PROJECT_ROOT="$(_lv2_wt_journal_root "$1")" bash "${_LV2_WT_JOURNAL_BIN}" \
+    append "$2" note "terminal detail=worktree_kept_dirty paths=${paths}" >/dev/null 2>&1 || true
+}
+
 log()       { printf -- '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_error() { log "ERROR: $*"; }
 log_info()  { log "INFO: $*"; }
@@ -173,9 +195,10 @@ except Exception:
       continue
     fi
 
-    _dirty="$(git -C "$wt_path" status --porcelain 2>/dev/null || true)"
+    _dirty="$(_lv2_wt_restore_noise "$wt_path")"
     if [[ -n "$_dirty" ]]; then
       log_info "KEPT (dirty-uncommitted): $wt_path"
+      _lv2_wt_journal_kept_dirty "$REPO_ROOT" "$lane_id" "$_dirty"
       kept=$(( kept + 1 ))
       continue
     fi
@@ -316,9 +339,10 @@ except Exception:
 
       # Dirty-guard: never destroy uncommitted files in a merged worktree.
       # These are exactly the worktrees that pile up — dirty = not cleanly closed.
-      _dirty="$(git -C "$wt_path" status --porcelain 2>/dev/null || true)"
+      _dirty="$(_lv2_wt_restore_noise "$wt_path")"
       if [[ -n "$_dirty" ]]; then
         log_info "KEPT (dirty-uncommitted): $wt_path  branch=${wt_branch}"
+        _lv2_wt_journal_kept_dirty "$REPO_ROOT" "$lane_id_sm" "$_dirty"
         kept=$(( kept + 1 ))
         continue
       fi
@@ -416,7 +440,7 @@ fi
 # Check for uncommitted/untracked changes unless --force.
 if [[ "$FORCE" -eq 0 ]]; then
   # git status inside the worktree — use -C to target it from the main repo.
-  DIRTY=$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null || true)
+  DIRTY=$(_lv2_wt_restore_noise "$WORKTREE_PATH")
   if [[ -n "$DIRTY" ]]; then
     log_error "Worktree has uncommitted or untracked changes:"
     printf -- '%s\n' "$DIRTY" >&2

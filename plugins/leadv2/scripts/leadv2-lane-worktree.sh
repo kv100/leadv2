@@ -170,6 +170,15 @@ cmd_ensure() {
   local lane_path="$wt_dir/$task_id"
   local branch; branch="$(lane_branch "$task_id")"
 
+  # T11-D2: prune BEFORE the idempotent reuse check below -- a stale git admin entry
+  # (.git/worktrees/<id>) whose directory was deleted by a crashed prior attempt would
+  # otherwise still satisfy the reuse check's `worktree list --porcelain` grep, handing
+  # back a lane_path with no real worktree at all (live-verified 2026-08-26 on lane
+  # 92484d63: active.yaml recorded branch=main, no .claude/worktrees/92484d63/.git
+  # existed). A live worktree's admin entry always has an intact directory, so prune
+  # never touches it.
+  git -C "$ROOT" worktree prune 2>/dev/null || true
+
   # Idempotent: an existing linked worktree is reused as-is. Compare on the
   # PHYSICAL path — git reports /private/var on macOS, not the /var we passed.
   if [[ -d "$lane_path" ]] && git -C "$ROOT" worktree list --porcelain 2>/dev/null | grep -q "^worktree $(phys "$lane_path")\$"; then
@@ -183,6 +192,24 @@ cmd_ensure() {
   local base; base="${LEADV2_LANE_BASE:-$(pick_base)}"
   mkdir -p "$wt_dir"
 
+  # T11-D2 cont'd: the prune above cleared any stale git admin entry; what's left here
+  # is a non-git leftover directory (state dirs, no .git) that isn't registered with git
+  # at all. `worktree add` refuses a non-empty target, so clear it -- prune already ruled
+  # out that git still considers this path a live worktree.
+  if [[ -e "$lane_path" ]] && ! git -C "$ROOT" worktree list --porcelain 2>/dev/null | grep -q "^worktree $(phys "$lane_path")\$"; then
+    rm -rf -- "$lane_path"
+  fi
+
+  # T11-D2: an empty anchor commit at lane creation was considered (mission's literal
+  # ask) but DROPPED after live-testing: it broke the pre-existing, deliberately-tested
+  # "dead + truly-empty lane -> swept" fast path (test-lane-worktree-isolation.sh),
+  # because every lane would then permanently show 1 commit ahead of default and never
+  # look empty again. The SWEEPER-LANE-SAFETY-01 gate (lv2_worktree_protected:
+  # active.yaml/arm-open/live-pid/young) already protects a genuinely LIVE lane before
+  # emptiness is ever checked, so the anchor commit bought no real safety and only
+  # regressed GC. D2's actual fix is the prune-before-reuse-check + stale-leftover
+  # cleanup above.
+  #
   # Fresh branch from base + linked worktree.
   if git -C "$ROOT" worktree add -b "$branch" "$lane_path" "$base" >>"$ERRF" 2>&1; then
     codex_trust_worktree "$lane_path"

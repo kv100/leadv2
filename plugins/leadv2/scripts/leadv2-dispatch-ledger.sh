@@ -16,7 +16,7 @@
 #   LATER, separate attempt at the same sig8 will end, so recording one never blocks a
 #   later write from the SAME sig8 -- landed/dead still wins write-once against it. Row
 #   shape:
-#     {"ts","task_sig","founder_task_id","terminal":"landed|parked|refused|dead|no_work","cause","evidence"}
+#     {"ts","task_sig","founder_task_id","terminal":"landed|pass_unlanded|parked|refused|dead|no_work","cause","evidence"}
 #   task_sig is the dispatch-<sig8> identifier BOTH writer scripts already share (dispatch-
 #   code.sh computes the full mission-text sig but only ever hands sig8 to dispatch-product-
 #   close.sh -- keying on the 8-char form here is what lets a single ledger row be extended
@@ -150,7 +150,7 @@ dispatch_terminal_exists() {
   [[ -f "${f}" ]] || return 1
   last="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
   case "${last}" in
-    landed|dead) return 0 ;;
+    landed|pass_unlanded|dead) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -229,7 +229,7 @@ dispatch_ledger_write_terminal() {
   local commit="${8:-none}" deliverable="${9:-unknown}" worker_reason="${10:-}"
   [[ -n "${sig8}" ]] || { log_err "write_terminal: empty task_sig, refusing to write"; return 1; }
   case "${terminal}" in
-    landed|parked|refused|dead|no_work) : ;;
+    landed|pass_unlanded|parked|refused|dead|no_work) : ;;
     *) log_err "write_terminal: invalid terminal='${terminal}' for sig=${sig8}"; return 1 ;;
   esac
   founder="$(json_safe "${founder}")"
@@ -274,7 +274,7 @@ dispatch_ledger_write_terminal() {
     local _last_terminal _same_attempt_row
     _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
     case "${_last_terminal}" in
-      landed|dead) exit 2 ;;  # a TRUE terminal already won write-once for this sig8
+      landed|pass_unlanded|dead) exit 2 ;;  # a TRUE terminal already won write-once for this sig8
     esac
     # LOW-3: aligned on the ANY-row form (matching dispatch_ledger_sweep_write_dead's own
     # _same_attempt_row check below) -- comparing only the LAST row missed an exit-trap
@@ -371,7 +371,7 @@ dispatch_ledger_sweep_write_dead() {
     local _last_terminal _same_attempt_row
     _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
     case "${_last_terminal}" in
-      landed|dead) exit 2 ;;  # sig8-wide TRUE terminal already recorded -- write-once-final, attempt-agnostic by design
+      landed|pass_unlanded|dead) exit 2 ;;  # sig8-wide TRUE terminal already recorded -- write-once-final, attempt-agnostic by design
     esac
     if [[ -f "${f}" ]]; then
       _same_attempt_row="$(grep -F "\"task_sig\":\"${sig8}\"" "${f}" 2>/dev/null | grep -F "\"attempt\":\"${attempt_s}\"" | head -n 1)"
