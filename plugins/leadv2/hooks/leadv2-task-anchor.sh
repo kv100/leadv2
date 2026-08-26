@@ -737,26 +737,21 @@ def main():
                 print(thread_out)
         return  # no active leadv2 task — THREAD anchor (if any) already printed
 
-    # TOKEN-EFFICIENCY: the full anchor (goal, plan, journal, other sessions,
-    # 10-line directive) used to be re-injected on every founder message and
-    # then remain in the conversation forever. Emit it once per session+task;
-    # subsequent prompts get only the live task/phase and the scope rule.
-    # /compact starts a new prompt context but keeps the same session id, so
-    # post-compact regrounding remains owned by the dedicated compact hooks.
+    # TOKEN-EFFICIENCY / T15 (LEAD-FINAL-FIXES-01 §T15): the full anchor
+    # (goal, plan, journal, other sessions, directive) used to be re-injected
+    # on every founder message and then remain in the conversation forever.
+    # It also used to collapse to a stub the moment a same-session/same-task
+    # marker file existed, with NO way back to full even when the goal/plan/
+    # journal genuinely changed (a phase advance, a new plan step, a fresh
+    # journal line) — case (c) below could never fire once (b) had. This now
+    # reuses the same content-hash gate as the no-active-task thread anchor
+    # (_inject_dedup_gate): unchanged content collapses to a short stub,
+    # changed content (or a session with no digest yet) re-emits the full
+    # block. /compact clears both the thread-anchor and task-anchor digests
+    # (leadv2-pre-compact-checkpoint.sh), so post-compact regrounding is
+    # unaffected. LEADV2_TASK_ANCHOR_COMPACT_REPEAT=0 is kept as a hard
+    # override (always full) for anyone already depending on that name.
     session_id = re.sub(r"[^A-Za-z0-9._-]", "", str(payload.get("session_id") or ""))
-    anchor_marker = ""
-    if session_id and os.environ.get("LEADV2_TASK_ANCHOR_COMPACT_REPEAT", "1") != "0":
-        safe_task = re.sub(r"[^A-Za-z0-9._-]", "", str(task_id))
-        anchor_marker = f"/tmp/.leadv2-task-anchor-full-{session_id}-{safe_task}"
-        if os.path.isfile(anchor_marker):
-            safe_capture(root, leadv2_dir, payload)
-            print("\n".join([
-                "<task-anchor>",
-                f"ACTIVE TASK: {task_id} | phase: {phase} | class: {cls}",
-                "This message does not replace it: answer a question in <=3 lines, then continue. Only explicit stop/scope-change pauses it.",
-                "</task-anchor>",
-            ]))
-            return
 
     # ── gather details ───────────────────────────────────────────────────────
     context_path = os.path.join(root, handoff_dir, task_id, "context.yaml")
@@ -914,15 +909,21 @@ def main():
     elif len(content) > budget:
         content = content[:budget]
 
-    print("\n".join(header + content + footer))
-    if anchor_marker:
-        try:
-            with open(anchor_marker, "x", encoding="utf-8") as fh:
-                fh.write(f"{task_id}\n")
-        except FileExistsError:
-            pass
-        except Exception:
-            pass
+    full_body = "\n".join(header + content + footer)
+
+    if session_id and os.environ.get("LEADV2_TASK_ANCHOR_COMPACT_REPEAT", "1") != "0":
+        gate = _inject_dedup_gate("task-anchor", session_id, full_body, root, leadv2_dir)
+        if gate == "marker":
+            safe_capture(root, leadv2_dir, payload)
+            print("\n".join([
+                "<task-anchor>",
+                f"ACTIVE TASK: {task_id} | phase: {phase} | class: {cls}",
+                "This message does not replace it: answer a question in <=3 lines, then continue. Only explicit stop/scope-change pauses it.",
+                "</task-anchor>",
+            ]))
+            return
+
+    print(full_body)
     safe_capture(root, leadv2_dir, payload)
 
 
