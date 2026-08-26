@@ -56,8 +56,8 @@ DISPATCHABLE_BUILD_ARMS = {"glm", "codex", "sonnet", "freepool"}
 # T19: freepool is build-only too -- never a planning arm, same reasoning as glm.
 DISPATCHABLE_PLAN_ARMS = {"codex", "sonnet", "opus", "fable"}
 # T19: freepool is excluded from ever being the review arm, same as glm --
-# review-гейт обязателен на каждый diff (Codex/Opus), never the arm reviewing
-# its own diff.
+# a review gate is mandatory on every diff (Codex/Opus), never the arm
+# reviewing its own diff.
 DEFAULT_REVIEW_EXCLUSIONS = ["glm", "freepool"]
 DEFAULT_BUILD_THRESHOLD_PCT = 80.0
 DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
@@ -909,6 +909,19 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
                 if a in skip or a not in _dispatchable:
                     continue
                 if job == "review" and a in exclusions:
+                    continue
+                # T19 fix-round (review FAIL on 009d0b6, C1 required-fix #2):
+                # freepool is a third-party arm -- exclude it from this spill
+                # walk on a protected/safety task, mirroring the
+                # kimi:excluded:safety precedent above. The bash-side
+                # _build_candidate_chain filter (leadv2-dispatch-code.sh) is
+                # the authoritative guard for the full candidate chain; this
+                # is a second, independent guard in the resolver's own spill
+                # so a caller that only reads resolve_glm_policy()'s single
+                # `arm` (e.g. router.sh import mode, which does not go through
+                # the bash chain builder at all) cannot hand back freepool
+                # either.
+                if a == "freepool" and (signals.get("safety_touched") or signals.get("protected_path")):
                     continue
                 if a != "sonnet" and quota_live_bin:
                     a_pct = _live_pct_for_arm(a, quota_live_bin)

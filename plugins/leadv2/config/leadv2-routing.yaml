@@ -77,7 +77,10 @@ router_v2:
       model: freepool-default
       bucket: freepool
       reserve_threshold: 2
-      reserve_allow: [review]
+      # T19 fix-round (L3): no reserve_allow: [review] here -- it contradicted
+      # DEFAULT_REVIEW_EXCLUSIONS = ["glm", "freepool"] in
+      # lib/leadv2-glm-policy-resolve.py, added by this same T19 change. freepool
+      # never reviews its own or anyone else's diff.
       health_gated: true
     - id: codex
       channel: codex-task.sh
@@ -168,17 +171,29 @@ router:
       review_rank: 2
     # T19 (founder decision 2026-08-26): Standard/bulk from day one, parallel-
     # eligible. Positioned LAST -- glm -> codex -> sonnet -> freepool, matching
-    # the ladder comment above (the kimi replacement in the bulk ladder). Never
-    # resolved for protected/safety/publish/payments paths — glm_policy.
-    # protected_path_patterns below already excludes those for every arm on
-    # this ladder, so no separate freepool-specific exclusion list is needed.
-    # Heavy/integration eligibility is data-gated (T17), not here.
+    # the ladder comment above (the kimi replacement in the bulk ladder).
+    # T19 fix-round (review FAIL on 009d0b6, C1): the prior comment here claimed
+    # glm_policy.protected_path_patterns already excluded protected/safety/
+    # publish/payments tasks "for every arm on this ladder" -- false on both
+    # counts (protected_path_patterns only sets the DC_PROTECTED signal for the
+    # resolver's PRIMARY-arm pick; it never touches the fallback chain, and the
+    # plugin yaml had no sonnet_exceptions row for the safety rule to fire on
+    # in the first place, see glm_policy.sonnet_exceptions below). `untrusted:
+    # true` is the real guard: _build_candidate_chain (leadv2-dispatch-code.sh)
+    # strips every untrusted arm from the chain whenever DC_PROTECTED=1 or
+    # DC_SAFETY=1, at every chain position, and journals arm_excluded
+    # reason=protected_path so the skip is a fact, not a comment.
+    # Heavy/integration eligibility is data-gated (T17): `when: [standard,
+    # bulk]` is enforced by _build_candidate_chain against --task-class
+    # (default "standard"; unset for a caller that never resolved a size class,
+    # which keeps today's behaviour).
     - id: freepool
       provider: freepool
       model: freepool-default
       when: [standard, bulk]
       effort: standard
       health_gated: true
+      untrusted: true
     # dispatch-8e2a32be (D3): review-only entries, never build-dispatched (dispatch:
     # false, same posture as fable below) -- they exist here solely so the review-pool
     # floor has a provider mapping + rank for every Anthropic-account arm the review
@@ -216,3 +231,25 @@ router:
       - "*publish*"
       - "*payments*"
       - "*payment*"
+    # T19 fix-round (review FAIL on 009d0b6, C1b): this canonical plugin yaml
+    # had NO sonnet_exceptions key at all, so the resolve_glm_policy()
+    # precedence rows below (leadv2-glm-policy-resolve.py:707-722) could never
+    # fire in a repo that inherits this config directly (ROUTING_YAML falls
+    # back here when a tenant's .claude/ref/leadv2-routing.yaml is absent) --
+    # a protected/safety/publish/payments task resolved arm=glm instead of
+    # sonnet, verified live: `--signals '{"protected_path":true,
+    # "safety_touched":true}'` returned `arm=glm reason=glm_default` before
+    # this fix. Mirrors the tenant-repo shape (persona-engine's
+    # .claude/ref/leadv2-routing.yaml:77-87) so the plugin config is no longer
+    # a silent exception to its own safety rule.
+    sonnet_exceptions:
+      - id: safety_gate_publish_payments
+        when: protected_path
+      - id: integration_critical_4subsystems
+        when: subsystem_count>=4 or needs_midflight_interaction
+      - id: ui_design_judgment
+        when: ui_design_judgment
+      - id: glm_failed_twice
+        when: glm_failure_count>=2
+      - id: glm_lock_busy_no_second_channel
+        when: glm_lock_busy
