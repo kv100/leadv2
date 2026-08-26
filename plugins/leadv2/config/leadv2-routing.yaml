@@ -64,6 +64,21 @@ router_v2:
     #   bucket: kimi
     #   reserve_threshold: 2
     #   reserve_allow: [review]
+    - id: freepool
+      # T19 (founder decision 2026-08-26): local proxy in front of free-tier
+      # providers (Alishahryar1/free-claude-code). health_gated: true means
+      # this arm's own gate (leadv2-freepool-gate.sh) can refuse independently
+      # of quota — a proxy with no keys configured yet, or one breaching its
+      # rolling error-rate/latency window, is arm_down/gate_broken by FACT,
+      # not by a hand-kept exclusion list. Standard/bulk only until a week of
+      # first-pass review-rate data (T17) clears it for Heavy/integration —
+      # never protected/safety/publish/UI-judgment regardless of data.
+      channel: freepool-coder.sh
+      model: freepool-default
+      bucket: freepool
+      reserve_threshold: 2
+      reserve_allow: [review]
+      health_gated: true
     - id: codex
       channel: codex-task.sh
       model: gpt-5.6-terra
@@ -132,7 +147,8 @@ router:
     # RETIRED as a build arm (founder order 2026-08-04 «Кими убрать», executed as
     # 3398d11 / DISPATCH-KIMI-ARM-MISMATCH-01). The entry stays so _arm_provider
     # can name the provider if a stale tenant yaml ever hands back arm=kimi, but
-    # dispatch: false makes the ladder loader skip it.
+    # dispatch: false makes the ladder loader skip it. T19: freepool below is the
+    # kimi replacement in the bulk ladder (glm -> codex -> sonnet -> freepool).
     - id: kimi
       provider: kimi
       model: moonshotai/kimi-k3-free
@@ -150,6 +166,19 @@ router:
       when: [all]
       effort: standard
       review_rank: 2
+    # T19 (founder decision 2026-08-26): Standard/bulk from day one, parallel-
+    # eligible. Positioned LAST -- glm -> codex -> sonnet -> freepool, matching
+    # the ladder comment above (the kimi replacement in the bulk ladder). Never
+    # resolved for protected/safety/publish/payments paths — glm_policy.
+    # protected_path_patterns below already excludes those for every arm on
+    # this ladder, so no separate freepool-specific exclusion list is needed.
+    # Heavy/integration eligibility is data-gated (T17), not here.
+    - id: freepool
+      provider: freepool
+      model: freepool-default
+      when: [standard, bulk]
+      effort: standard
+      health_gated: true
     # dispatch-8e2a32be (D3): review-only entries, never build-dispatched (dispatch:
     # false, same posture as fable below) -- they exist here solely so the review-pool
     # floor has a provider mapping + rank for every Anthropic-account arm the review

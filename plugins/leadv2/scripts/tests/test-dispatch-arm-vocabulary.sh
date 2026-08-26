@@ -177,20 +177,24 @@ run_test() {
   fi
 }
 
-# Load the production ladder: glm, codex, sonnet (kimi dispatch:false, fable dispatch:false).
+# Load the production ladder: glm, codex, sonnet, freepool (kimi dispatch:false,
+# fable dispatch:false). T19 (2026-08-26): freepool joins the tail of the bulk
+# ladder, replacing kimi's old bulk position (glm -> codex -> sonnet -> freepool).
 ROUTING_YAML="$1"
 SCRIPT_DIR="$2"
 _load_dispatch_ladder
 _filter_ladder_to_dispatchable "TEST0000"
 
-# Case 2: glm chain = glm onward in the ladder
-run_test "glm" "glm codex sonnet" "case2: glm chain from ladder (excludes kimi)"
+# Case 2: glm chain = glm onward in the ladder (now includes freepool, T19)
+run_test "glm" "glm codex sonnet freepool" "case2: glm chain from ladder (excludes kimi, includes freepool)"
 
-# Case 3: codex chain (regression guard)
-run_test "codex" "codex sonnet" "case3: codex chain unchanged"
+# Case 3: codex chain -- T19: freepool now trails every arm's chain (it's the
+# ladder's new terminal entry), so codex's chain gains it too.
+run_test "codex" "codex sonnet freepool" "case3: codex chain includes trailing freepool (T19)"
 
-# Case 4: sonnet chain (regression guard)
-run_test "sonnet" "sonnet" "case4: sonnet chain unchanged"
+# Case 4: sonnet chain -- T19: freepool is now the ladder's terminal entry, so
+# sonnet (no longer terminal) spills to it.
+run_test "sonnet" "sonnet freepool" "case4: sonnet chain includes trailing freepool (T19)"
 
 # Case 4b: kimi (not in ladder) -> sonnet + mismatch line
 run_test "kimi" "sonnet" "case4b: kimi unknown arm -> sonnet + mismatch" 1

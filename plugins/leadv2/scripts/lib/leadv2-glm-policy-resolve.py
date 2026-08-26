@@ -38,18 +38,27 @@ from pathlib import Path
 # review arm (see kimi_review_available below) — only build dispatch retired.
 # The launcher-side vocabulary mirror is _candidate_chain_for_arm in
 # leadv2-dispatch-code.sh; both lists must agree.
-DEFAULT_BUILD_SPILL = ["glm", "codex", "sonnet"]
+# T19 (founder decision 2026-08-26): freepool joins the tail of the bulk spill
+# chain, replacing kimi's old bulk position (glm -> codex -> sonnet -> freepool).
+# Its own admission gate (leadv2-freepool-gate.sh) refuses independently of
+# quota, so the spill walk below never needs a freepool-specific quota read --
+# an arm_down/gate_broken freepool is simply skipped like a filtered-out arm.
+DEFAULT_BUILD_SPILL = ["glm", "codex", "sonnet", "freepool"]
 
 # Launcher vocabulary: the set of arms the dispatcher can actually run as
 # primary build arms. Applied to the spill walk so a stale tenant yaml that
 # still lists a retired arm (e.g. kimi) cannot resurrect it. Must match the
 # case-rows in _candidate_chain_for_arm (leadv2-dispatch-code.sh).
-DISPATCHABLE_BUILD_ARMS = {"glm", "codex", "sonnet"}
+DISPATCHABLE_BUILD_ARMS = {"glm", "codex", "sonnet", "freepool"}
 
 # PLANNER-MODELS-DECISION-01: glm and kimi are build-only and are never admitted
 # to a planning role. Role decides the SET; the ladder still decides the ORDER.
+# T19: freepool is build-only too -- never a planning arm, same reasoning as glm.
 DISPATCHABLE_PLAN_ARMS = {"codex", "sonnet", "opus", "fable"}
-DEFAULT_REVIEW_EXCLUSIONS = ["glm"]
+# T19: freepool is excluded from ever being the review arm, same as glm --
+# review-гейт обязателен на каждый diff (Codex/Opus), never the arm reviewing
+# its own diff.
+DEFAULT_REVIEW_EXCLUSIONS = ["glm", "freepool"]
 DEFAULT_BUILD_THRESHOLD_PCT = 80.0
 DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
 
