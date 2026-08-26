@@ -33,7 +33,16 @@
 # drift; a file present in a copy but absent from canonical is NOT drift.
 #
 # Usage:
-#   leadv2-drift-guard.sh [--quiet] [--json]
+#   leadv2-drift-guard.sh [--quiet] [--json] [--verbose]
+#
+# DRIFT-GUARD-ADVISES-BACKWARD-SYNC-01 scope (b), round 2: default (non
+# --verbose) human output is the per-copy SUMMARY-BY-COPY rollup + the
+# aggregate SUMMARY line + every VENDORED_NEWER (and UNKNOWN-direction)
+# per-entry line in full — those are the dangerous ones, never elided.
+# CANONICAL_NEWER and MISSING per-entry lines (the safe, "just re-sync"
+# majority — 977 of 984 entries in a live run) move behind --verbose. The
+# --json entries[] array is ALWAYS complete regardless of --verbose — it is
+# a frozen consumer contract (leadv2-drift-only-vendored-check.py parses it).
 #
 # Exit 0 = all 5 copies match canonical on the canonical path set.
 # Exit 1 = drift detected in at least one copy.
@@ -45,10 +54,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 QUIET=0
 JSON=0
+VERBOSE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --quiet) QUIET=1; shift ;;
-    --json)  JSON=1; shift ;;
+    --quiet)   QUIET=1; shift ;;
+    --json)    JSON=1; shift ;;
+    --verbose) VERBOSE=1; shift ;;
     *) echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -178,7 +189,7 @@ COMPARE_OUT="$(NAMES="${_names_csv}" PATHS="${_paths_csv}" RELPATHS="${_relpaths
   EXTRAS="${_extras_csv}" CANONICAL_SCRIPTS="${CANONICAL_SCRIPTS}" \
   CANONICAL_PLUGIN_ROOT="${CANONICAL_ROOT}/plugins/leadv2" \
   CANONICAL_ROOT="${CANONICAL_ROOT}" \
-  RUNTIME_EXCLUDE="docs/leadv2" python3 <<'PYEOF'
+  RUNTIME_EXCLUDE="docs/leadv2" VERBOSE="${VERBOSE}" python3 <<'PYEOF'
 import hashlib, os, subprocess
 
 canonical_root = os.environ["CANONICAL_ROOT"]
@@ -242,6 +253,15 @@ def sha256_file(path):
 canonical_scripts = os.environ["CANONICAL_SCRIPTS"]
 canonical_plugin = os.environ["CANONICAL_PLUGIN_ROOT"]
 runtime_exclude = [e for e in os.environ.get("RUNTIME_EXCLUDE", "").split() if e]
+verbose = os.environ.get("VERBOSE", "0") == "1"
+
+# scope (b) round 2: CANONICAL_NEWER/MISSING entries are the safe majority
+# (canonical already has the fix; just re-sync) — elide their per-entry
+# line by default, behind --verbose. VENDORED_NEWER and UNKNOWN are the
+# entries a blanket sync would destroy or that need a manual look — never
+# elide those, verbose or not.
+def _show_entry(direction):
+    return verbose or direction != "CANONICAL_NEWER"
 names = os.environ["NAMES"].split("\x1f")
 paths = os.environ["PATHS"].split("\x1f")
 relpaths = os.environ["RELPATHS"].split("\x1f")
@@ -298,13 +318,15 @@ for idx in range(len(names)):
             # unambiguous regardless of timestamps.
             drift_found = True
             report.append(f"{name}:{rp}:MISSING:CANONICAL_NEWER")
-            print(f"DRIFT [{name}]: missing file {rp} ({REMEDY['CANONICAL_NEWER']})")
+            if _show_entry("CANONICAL_NEWER"):
+                print(f"DRIFT [{name}]: missing file {rp} ({REMEDY['CANONICAL_NEWER']})")
             continue
         if sha256_file(copy_file) != canon_hashes[rp]:
             drift_found = True
             direction = decide_direction(canonical_file, canonical_git_relpath, copy_file)
             report.append(f"{name}:{rp}:CONTENT_DIFFERS:{direction}")
-            print(f"DRIFT [{name}]: content differs for {rp} [{direction}] — {REMEDY[direction]}")
+            if _show_entry(direction):
+                print(f"DRIFT [{name}]: content differs for {rp} [{direction}] — {REMEDY[direction]}")
     # PASS 2: extra warn-mode subdirs. The copy's plugin-root is the parent
     # of its scripts/ dir (plugin-cache -> .../0.1.0, shared -> .../leadv2-shared).
     copy_plugin_root = os.path.dirname(path)
@@ -316,13 +338,15 @@ for idx in range(len(names)):
             if not os.path.isfile(copy_file):
                 drift_found = True
                 report.append(f"{name}:{sub}/{rp}:MISSING:CANONICAL_NEWER")
-                print(f"DRIFT [{name}]: missing file {sub}/{rp} ({REMEDY['CANONICAL_NEWER']})")
+                if _show_entry("CANONICAL_NEWER"):
+                    print(f"DRIFT [{name}]: missing file {sub}/{rp} ({REMEDY['CANONICAL_NEWER']})")
                 continue
             if sha256_file(copy_file) != chash:
                 drift_found = True
                 direction = decide_direction(canonical_file, canonical_git_relpath, copy_file)
                 report.append(f"{name}:{sub}/{rp}:CONTENT_DIFFERS:{direction}")
-                print(f"DRIFT [{name}]: content differs for {sub}/{rp} [{direction}] — {REMEDY[direction]}")
+                if _show_entry(direction):
+                    print(f"DRIFT [{name}]: content differs for {sub}/{rp} [{direction}] — {REMEDY[direction]}")
 
 by_copy = {}
 if drift_found:

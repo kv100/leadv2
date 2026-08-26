@@ -3011,7 +3011,62 @@ else
     render_gate_findings "${review_file}" "" "${reviewer}" "${_rgf_rel}" || true
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-  _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm}"
+  # T11-D1: PASS alone is not `landed` -- a lane branch must actually merge to the default
+  # branch and verify there (merge-base --is-ancestor) before terminal=landed is written.
+  # lane 299f2bae got terminal=landed cause=review_verdict_pass with NO merge in main
+  # (live incident, 2026-08-26). Anything short of a verified merge is `pass_unlanded`:
+  # review passed, code did not land, lead must merge by hand.
+  source "${SCRIPT_DIR}/leadv2-branch-merged.sh"
+  _t11_branch="$(git -C "${diff_root}" symbolic-ref --short HEAD 2>/dev/null || true)"
+  _t11_default="$(lv2_default_branch "${ROOT}")"
+  if [[ -z "${_t11_branch}" || "${_t11_branch}" == "${_t11_default}" || "${diff_root}" == "${ROOT}" ]]; then
+    # No isolated lane branch to merge (shared-tree fallback lane, or work already landed on
+    # the default branch directly) -- nothing to merge, so `landed` is accurate as-is.
+    _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm}"
+  elif [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then
+    # Shared tree has foreign uncommitted work right now -- merging here risks another
+    # session's in-flight edits. Never force past this: fail toward pass_unlanded.
+    _dl_note pass_unlanded root_dirty "branch=${_t11_branch} diff=${diff_hash:0:8}"
+  else
+    _t11_landed=0
+    [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" acquire "${TASK}" >/dev/null 2>&1
+    if git -C "${ROOT}" merge --no-edit --no-ff "${_t11_branch}" >/tmp/t11-merge-"${TASK}".log 2>&1 \
+        && lv2_branch_merged "${ROOT}" "${_t11_branch}" "${_t11_default}"; then
+      _t11_landed=1
+    else
+      git -C "${ROOT}" merge --abort >/dev/null 2>&1 || true
+    fi
+    [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" release "${TASK}" >/dev/null 2>&1
+    if [[ "${_t11_landed}" == 1 ]]; then
+      _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm} branch=${_t11_branch}"
+      # T11-F1: merge + is-ancestor verified above -- complete the close chain
+      # instead of stopping at the terminal stamp. Deregister the lane from
+      # the live registry so a subsequent sweep no longer sees it as running,
+      # then reap its worktree via the existing --name path (already honors
+      # the noise-restore-first rule and the merged/unmerged safety checks).
+      # Both steps are best-effort and journaled either way: a landed task
+      # must never be blocked on cleanup succeeding.
+      _t11_lane_state_sh="${SCRIPT_DIR}/lib/leadv2-lane-state.sh"
+      if [[ -f "${_t11_lane_state_sh}" ]]; then
+        # shellcheck source=lib/leadv2-lane-state.sh
+        source "${_t11_lane_state_sh}"
+        declare -F lane_deregister >/dev/null 2>&1 && lane_deregister "${TASK}" "close_landed" >/dev/null 2>&1
+        emit note "close_deregistered id=${TASK}"
+      else
+        emit note "close_deregister_skipped id=${TASK} reason=lib_missing"
+      fi
+      if [[ "${diff_root}" != "${ROOT}" && -x "${SCRIPT_DIR}/leadv2-worktree-cleanup.sh" ]]; then
+        if bash "${SCRIPT_DIR}/leadv2-worktree-cleanup.sh" --name "${TASK}" \
+            >"/tmp/t11-wtcleanup-${TASK}.log" 2>&1; then
+          emit note "close_worktree_removed id=${TASK}"
+        else
+          emit note "close_worktree_kept detail=$(tail -c 300 "/tmp/t11-wtcleanup-${TASK}.log" | tr '\n' ' ')"
+        fi
+      fi
+    else
+      _dl_note pass_unlanded merge_conflict "branch=${_t11_branch} diff=${diff_hash:0:8}"
+    fi
+  fi
 fi
 _stamp_review_terminal pass
 # PHASES-ARE-THE-ONLY-PATH-01: record review phase as done (verdict PASS).
