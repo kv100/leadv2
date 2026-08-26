@@ -4727,6 +4727,26 @@ _arm_no_work_signal() {  # <arm> <raw_text>
   return 0
 }
 
+# _arm_exit76_signal <arm> <raw_text> -> rc0 when this raw text is GLM's own
+# GLM_FALLBACK_TO_SONNET terminal marker (T13-SLICE1 W3: glm-coder.sh writes
+# `status: failed` + `exit_code: 76` in meta.yaml -- see finalize_meta / the
+# two-sentinel contract -- when it produced no coherent result and wants the
+# lane retried on a different arm; this is NEVER a quota-shaped failure and
+# was previously falling through to the generic `failed` classifier, which
+# has no quota marker to find and lets the lane die with no spill at all).
+# Every other arm has no such receipt, so rc1 unconditionally.
+_arm_exit76_signal() {  # <arm> <raw_text>
+  local arm="$1" raw="$2" status exit_code
+  case "${arm}" in
+    glm) ;;
+    *) return 1 ;;
+  esac
+  status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
+  exit_code="$(printf '%s\n' "${raw}" | sed -n 's/^exit_code:[[:space:]]*//p' | head -1)"
+  [[ "${status}" == "failed" && "${exit_code}" == "${GLM_FALLBACK_EXIT_CODE:-76}" ]] || return 1
+  return 0
+}
+
 # _arm_final_output <arm> <handle> -> last LEADV2_ARM_TAIL_LINES (default 60) lines of
 # the job's own log/output on stdout. Never fatal: empty output on any failure. Prefers
 # a dedicated log/output verb (glm/kimi's `tail`, or a `log=<path>` field codex's status
@@ -4808,6 +4828,9 @@ _arm_early_verdict_window() {  # <arm>
 #      next candidate arm exactly like the existing rc=7 branch already does
 #   78 arm-specific no-work terminal (currently only kimi's channel_outcome) --
 #      UNCHANGED from the pre-existing kimi-only contract
+#   76 GLM_FALLBACK_TO_SONNET receipt (T13-SLICE1 W3): glm-coder.sh's own
+#      exit_code=76 two-sentinel contract -- ran, produced no coherent result,
+#      wants THIS SAME lane retried on the next arm, never a quota lockout.
 # Replaces the old hardcoded `if [[ "${arm}" == "kimi" ]]` call-site gate: this is now
 # called unconditionally for every arm, and it no-ops safely (returns 0 promptly) for
 # arms with no status adapter, since _arm_status_probe rc1 is treated as unknown.
@@ -4826,6 +4849,9 @@ _wait_arm_early_verdict() {  # <arm> <handle> <sig8>
     raw="$(_arm_status_probe "${arm}" "${handle}")" || raw=""
     if _arm_no_work_signal "${arm}" "${raw}"; then
       return 78
+    fi
+    if _arm_exit76_signal "${arm}" "${raw}"; then
+      return 76
     fi
     state="$(_arm_status_state "${arm}" "${raw}")"
     case "${state}" in
@@ -5245,7 +5271,25 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
     # hand rc=7 to the existing candidate-loop spill branch.
     local _early_rc=0
     _wait_arm_early_verdict "${arm}" "${handle}" "${sig8}" || _early_rc=$?
-    if [[ ${_early_rc} -eq 78 ]]; then
+    if [[ ${_early_rc} -eq 76 ]]; then
+      # T13-SLICE1 W3: GLM's own GLM_FALLBACK_TO_SONNET receipt (exit_code=76)
+      # -- never a quota lockout, so no _record_postspawn_lockout call. Reuses
+      # the existing rc=7 spill contract verbatim (same abort + candidate-loop
+      # advance) so this arm gets exactly the same "retry the SAME lane on the
+      # next arm" treatment kimi's channel_no_work already gets; the outer
+      # loop's case 7 branch turns LAST_ARM_OUTCOME into the route_fallback
+      # reason= field for free. LAST_ARM_CONTINUATION carries GLM's own tail
+      # output into the next arm's mission (consumed once by the candidate
+      # loop, then cleared).
+      LAST_ARM_OUTCOME="exit76_receipt"
+      LAST_ARM_CONTINUATION="$(_arm_final_output "${arm}" "${handle}")"
+      emit decision "arm_refused by=router model=${arm} task=${sig8} reason=exit76_receipt"
+      log "spawn(${arm}) completed: exit76_receipt; spilling to next arm"
+      local exit76_abort_rc=0
+      dispatch_abort "${token}" || exit76_abort_rc=$?
+      [[ ${exit76_abort_rc} -eq 0 ]] && return 7
+      return 5
+    elif [[ ${_early_rc} -eq 78 ]]; then
       LAST_ARM_OUTCOME="${arm}_channel_no_work"
       emit decision "arm_refused by=router model=${arm} task=${sig8} reason=channel_no_work"
       log "spawn(${arm}) completed: channel_no_work; spilling to next arm"
@@ -6423,6 +6467,17 @@ exit is treated as an incident."
       fi
     fi
     local _candidate_mission="${mission}"
+    if [[ -n "${LAST_ARM_CONTINUATION:-}" ]]; then
+      # T13-SLICE1 W3: carry GLM's exit76-receipt tail output into the next
+      # arm's mission exactly once, then clear it so a later, unrelated
+      # candidate never inherits a stale continuation block.
+      _candidate_mission="${_candidate_mission}
+
+===== CONTINUATION FROM GLM (exit76_receipt) =====
+${LAST_ARM_CONTINUATION}
+===== END CONTINUATION ====="
+      LAST_ARM_CONTINUATION=""
+    fi
     if [[ "${candidate}" == "sonnet" && "${_quota_gate_reroute}" == "1" ]]; then
       _candidate_mission="GLM_FIRST_EXCEPTION=glm_quota_gate_80
 (router-issued: GLM quota gate refused this lane at >=80%; arm chosen from live headroom.)
