@@ -8,12 +8,26 @@
 #       merge-base --is-ancestor before writing `landed`; anything short of that
 #       writes the new `pass_unlanded` terminal instead.
 #   D2: the sweeper deleted live lanes with no commits yet. leadv2-lane-worktree.sh
-#       now (i) clears stale non-git leftover dirs that were silently causing
-#       `worktree add` to fall back to the shared tree, and (ii) stamps an empty
-#       anchor commit at lane creation so a lane is never commit-less.
+#       now clears stale non-git leftover dirs that were silently causing
+#       `worktree add` to fall back to the shared tree.
 #   D3: terminal lanes piled up because per-turn injectors dirty three well-known
 #       noise paths and `git worktree remove` (no --force) refuses on ANY dirt.
 #       leadv2-worktree-cleanup.sh now restores just those three paths first.
+#
+# T11 fix-round (2026-08-26), review FAIL on 15c2c41:
+#   F1: the PASS/merged branch of leadv2-dispatch-product-close.sh stamped the
+#       review phase and stopped -- no lane_deregister, no worktree removal.
+#       It now calls lib/leadv2-lane-state.sh's lane_deregister and
+#       leadv2-worktree-cleanup.sh --name after a verified merge, journaling
+#       close_deregistered / close_worktree_removed|kept either way.
+#   F2: the requested anchor commit was DROPPED entirely (leadv2-lane-worktree.sh
+#       said so explicitly) and the D2 test only asserted `git log -1` is
+#       non-empty -- true even with zero anchor, since a fresh branch always
+#       has its base commit. `ensure` now stamps a real
+#       `git commit --allow-empty -m "lane <id> anchor"`, and both
+#       --sweep-dead and --name in leadv2-worktree-cleanup.sh recognize a sole
+#       ahead=1 anchor-subject commit as still-empty, so the dead/untouched-lane
+#       GC path this was dropped for is not regressed.
 #
 # Scope note: this suite exercises each defect's actual fixed code directly
 # (the ledger schema, the branch-merge/is-ancestor primitives D1 relies on, the
@@ -31,6 +45,7 @@ SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LEDGER_SH="${SCRIPTS_DIR}/leadv2-dispatch-ledger.sh"
 LANE_SH="${SCRIPTS_DIR}/leadv2-lane-worktree.sh"
 CLEANUP_SH="${SCRIPTS_DIR}/leadv2-worktree-cleanup.sh"
+STATE_PATH_SH="${SCRIPTS_DIR}/leadv2-state-path.sh"
 BRANCH_MERGED_SH="${SCRIPTS_DIR}/leadv2-branch-merged.sh"
 
 PASS=0
@@ -114,16 +129,28 @@ else
 fi
 rm -rf "$S3"
 
-# ── D2: ensure() stamps an anchor commit + clears stale non-git leftovers ──
+# ── F2: ensure() stamps a REAL anchor commit (ahead-by-exactly-1, subject
+# "lane <id> anchor"), and that anchor merges to main cleanly ───────────────
 S4="$(new_scratch)"
 export LEADV2_PROJECT_ROOT="$S4"
-export LEADV2_LANE_WORKTREE_ERRF="$S4/.lane.err"
+# Kept OUTSIDE the repo -- an errf inside $S4 is untracked and would show up
+# in the `git status --porcelain` clean-merge check below.
+export LEADV2_LANE_WORKTREE_ERRF="$(mktemp -t lane-err)"
 lane_dir="$(bash "$LANE_SH" ensure taskAnchor heavy)"
-if [[ -n "$(git -C "$lane_dir" log --oneline -1 2>/dev/null)" ]]; then
-  pass "(D2) fresh lane worktree has an anchor commit at creation"
+anchor_ahead="$(git -C "$S4" rev-list --count "main..worktree-taskAnchor" 2>/dev/null || echo -1)"
+anchor_subj="$(git -C "$S4" log -1 --format='%s' "main..worktree-taskAnchor" 2>/dev/null || true)"
+if [[ "$anchor_ahead" == "1" && "$anchor_subj" == "lane taskAnchor anchor" ]]; then
+  pass "(F2) fresh lane worktree is ahead-by-exactly-1 with subject 'lane taskAnchor anchor'"
 else
-  fail "(D2) fresh lane worktree has no commits"
+  fail "(F2) anchor not real: ahead=${anchor_ahead} subj='${anchor_subj}' (expected ahead=1, subj='lane taskAnchor anchor')"
 fi
+if git -C "$S4" merge --no-edit --no-ff worktree-taskAnchor >/dev/null 2>&1 \
+   && [[ -z "$(git -C "$S4" status --porcelain -- . ':!.claude')" ]]; then
+  pass "(F2) anchor-only branch merges to main cleanly (no conflict, no leftover)"
+else
+  fail "(F2) anchor-only branch failed to merge cleanly into main"
+fi
+git -C "$S4" reset -q --hard HEAD~1 2>/dev/null || true
 # Simulate a crashed prior attempt: state dir with no .git left behind.
 rm -rf "$lane_dir"
 mkdir -p "$lane_dir/docs"; echo leftover > "$lane_dir/docs/stale.txt"
@@ -167,12 +194,28 @@ fi
 rm -rf "$S5"
 
 # ── D2/D3 sweeper gate: registered live lane survives, unregistered dead one is swept ──
+# F2 regression check folded in: the dead lane now carries a genuine anchor
+# commit (git worktree add alone leaves it commit-less, unlike a real
+# LANE_SH-created lane) -- --sweep-dead must still remove it despite ahead=1,
+# proving the anchor-tolerance fix in leadv2-worktree-cleanup.sh works, not
+# just that an untouched lane happens to be ahead=0.
 S6="$(new_scratch)"
 export LEADV2_PROJECT_ROOT="$S6"
 mkdir -p "$S6/.claude/worktrees"
 git -C "$S6" worktree add -q -b worktree-live "$S6/.claude/worktrees/live-lane" main >/dev/null 2>&1
 git -C "$S6" worktree add -q -b worktree-dead "$S6/.claude/worktrees/dead-lane" main >/dev/null 2>&1
-cat > "$S6/docs/leadv2/active.yaml" <<YAML
+git -C "$S6/.claude/worktrees/dead-lane" commit -q --allow-empty -m "lane dead-lane anchor"
+# The protection gate (lv2_wt_protect_prime) reads active.yaml via the SAME
+# canonical resolver the real code uses (leadv2-state-path.sh --no-link),
+# which for a git-initialized scratch repo resolves OUTSIDE the repo tree
+# (an .ephemeral control-plane dir keyed by the scratch dir's basename), not
+# docs/leadv2/active.yaml inside it. Writing only the repo-relative path made
+# the resolver come back active-yaml-missing -> fail-closed -> both lanes
+# "protected", so a prior version of this assertion silently proved nothing
+# about registration recognition. Resolve the real path and write there too.
+_s6_active_path="$(PROJECT_ROOT="$S6" bash "$STATE_PATH_SH" --no-link active.yaml)"
+mkdir -p "$(dirname "$_s6_active_path")"
+cat > "$_s6_active_path" <<YAML
 meta: {}
 sessions:
   - task_id: live-lane
@@ -183,7 +226,11 @@ sessions:
     dead_at: null
 YAML
 if [[ -x "$CLEANUP_SH" ]]; then
-  bash "$CLEANUP_SH" --sweep-dead >/dev/null 2>&1 || true
+  # REPO_ROOT inside leadv2-worktree-cleanup.sh is `git rev-parse --show-toplevel`
+  # of the CALLER's cwd, not LEADV2_PROJECT_ROOT -- cd into the scratch repo so
+  # the sweep actually targets $S6 instead of silently operating on the real
+  # checkout this test happens to run from.
+  (cd "$S6" && LEADV2_SWEEP_MIN_AGE_S=0 bash "$CLEANUP_SH" --sweep-dead >/dev/null 2>&1) || true
 else
   bash "$CLEANUP_SH" 2>&1 | true
 fi
@@ -192,7 +239,41 @@ if [[ -d "$S6/.claude/worktrees/live-lane" ]]; then
 else
   fail "(c) registered live lane was swept"
 fi
-rm -rf "$S6"
+if [[ ! -d "$S6/.claude/worktrees/dead-lane" ]]; then
+  pass "(F2) dead lane with ONLY the anchor commit (ahead=1) is still swept, not falsely kept"
+else
+  fail "(F2) dead+anchor-only lane survived --sweep-dead (ahead-tolerance fix not working)"
+fi
+rm -rf "$S6" "$(dirname "$_s6_active_path")"
+
+# ── F1: close-chain completes merge -> deregister -> remove for a landed lane ──
+S7="$(new_scratch)"
+export LEADV2_PROJECT_ROOT="$S7"
+export LEADV2_LANE_WORKTREE_ERRF="$(mktemp -t lane-err)"
+lane7_dir="$(bash "$LANE_SH" ensure taskF1 heavy)"
+echo "real work" > "$lane7_dir/work.txt"
+git -C "$lane7_dir" add work.txt && git -C "$lane7_dir" commit -q -m "taskF1 real commit"
+if git -C "$S7" merge --no-edit --no-ff worktree-taskF1 >/dev/null 2>&1; then
+  pass "(F1) landed lane's branch merges cleanly into main"
+else
+  fail "(F1) landed lane's branch failed to merge into main"
+fi
+# shellcheck source=lib/leadv2-lane-state.sh
+source "${SCRIPTS_DIR}/lib/leadv2-lane-state.sh"
+lane_register taskF1 lead-s1 "$lane7_dir" build "$$" >/dev/null 2>&1 || true
+if lane_deregister taskF1 close_landed >/dev/null 2>&1 && ! lane_alive taskF1 >/dev/null 2>&1; then
+  pass "(F1) lane_deregister marks the lane dead in the registry"
+else
+  fail "(F1) lane_deregister did not mark the lane dead"
+fi
+# cd into the scratch repo -- REPO_ROOT in leadv2-worktree-cleanup.sh is
+# `git rev-parse --show-toplevel` of the caller's cwd, not LEADV2_PROJECT_ROOT.
+if (cd "$S7" && bash "$CLEANUP_SH" --name taskF1 >/dev/null 2>&1) && [[ ! -d "$lane7_dir" ]]; then
+  pass "(F1) worktree-cleanup --name removes the now-merged, deregistered lane worktree"
+else
+  fail "(F1) worktree-cleanup --name did not remove the merged lane worktree"
+fi
+rm -rf "$S7"
 
 log ""
 log "=== T11 close-chain results: ${PASS} passed, ${FAIL} failed ==="

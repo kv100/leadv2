@@ -62,6 +62,20 @@ _lv2_wt_journal_kept_dirty() { # <repo-root> <lane-id> <dirty-porcelain>
     append "$2" note "terminal detail=worktree_kept_dirty paths=${paths}" >/dev/null 2>&1 || true
 }
 
+# T11-F2: true only when a branch's entire "ahead of default" span is exactly
+# the one empty anchor commit leadv2-lane-worktree.sh stamps at birth -- lets
+# the dead/untouched-lane sweep paths keep firing without --force even though
+# every lane now starts 1 commit ahead.
+_lv2_wt_only_anchor_ahead() { # <repo_root> <branch> <default_branch> <ahead_count>
+  local repo="$1" branch="$2" default="$3" ahead="${4:-0}" subj
+  [[ "$ahead" -eq 1 ]] || return 1
+  subj="$(git -C "$repo" log -1 --format='%s' "${default}..${branch}" 2>/dev/null || true)"
+  case "$subj" in
+    "lane "*" anchor") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 log()       { printf -- '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_error() { log "ERROR: $*"; }
 log_info()  { log "INFO: $*"; }
@@ -212,7 +226,11 @@ except Exception:
     if [[ -n "$wt_branch" ]]; then
       ahead="$(git -C "$REPO_ROOT" rev-list --count "${DEFAULT_BRANCH}..${wt_branch}" 2>/dev/null || printf -- '0')"
     fi
-    if [[ "${ahead:-0}" -gt 0 ]]; then
+    # T11-F2: a fresh lane is born 1 commit ahead (the anchor) -- ahead=1 alone
+    # no longer proves real work happened. Only the anchor's own subject line
+    # excuses it; ahead>1, or ahead=1 with a different subject, still counts
+    # as real unmerged work.
+    if [[ "${ahead:-0}" -gt 0 ]] && ! _lv2_wt_only_anchor_ahead "$REPO_ROOT" "$wt_branch" "$DEFAULT_BRANCH" "$ahead"; then
       log_info "KEPT (unmerged commits ahead=${ahead}): $wt_path  branch=${wt_branch}"
       kept=$(( kept + 1 ))
       continue
@@ -429,7 +447,7 @@ if [[ "$FORCE" -eq 0 ]]; then
   fi
   if git -C "$REPO_ROOT" rev-parse --verify -q "$BRANCH_NAME" >/dev/null 2>&1; then
     AHEAD=$(git -C "$REPO_ROOT" rev-list --count "${DEFAULT_BRANCH}..${BRANCH_NAME}" 2>/dev/null || printf -- '0')
-    if [[ "${AHEAD:-0}" -gt 0 ]]; then
+    if [[ "${AHEAD:-0}" -gt 0 ]] && ! _lv2_wt_only_anchor_ahead "$REPO_ROOT" "$BRANCH_NAME" "$DEFAULT_BRANCH" "$AHEAD"; then
       log_error "Worktree branch has ${AHEAD} commit(s) not reachable from ${DEFAULT_BRANCH} (unmerged)."
       log_error "Use --force to remove anyway, or land the branch first."
       exit 1

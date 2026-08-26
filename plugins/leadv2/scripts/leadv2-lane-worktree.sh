@@ -200,18 +200,18 @@ cmd_ensure() {
     rm -rf -- "$lane_path"
   fi
 
-  # T11-D2: an empty anchor commit at lane creation was considered (mission's literal
-  # ask) but DROPPED after live-testing: it broke the pre-existing, deliberately-tested
-  # "dead + truly-empty lane -> swept" fast path (test-lane-worktree-isolation.sh),
-  # because every lane would then permanently show 1 commit ahead of default and never
-  # look empty again. The SWEEPER-LANE-SAFETY-01 gate (lv2_worktree_protected:
-  # active.yaml/arm-open/live-pid/young) already protects a genuinely LIVE lane before
-  # emptiness is ever checked, so the anchor commit bought no real safety and only
-  # regressed GC. D2's actual fix is the prune-before-reuse-check + stale-leftover
-  # cleanup above.
+  # T11-F2: the branch is born with one empty anchor commit ("lane <id> anchor"),
+  # so the lane is provably 1 commit ahead of default from birth (it merges
+  # cleanly later -- an empty commit never conflicts). The "dead + truly-empty
+  # lane -> swept" fast path this was previously dropped for
+  # (test-lane-worktree-isolation.sh, leadv2-worktree-cleanup.sh --sweep-dead /
+  # --name) is NOT regressed: both now recognize a sole ahead=1 commit whose
+  # subject matches the anchor pattern as still-empty for GC purposes, so a
+  # genuinely dead/untouched lane stays sweepable without --force.
   #
   # Fresh branch from base + linked worktree.
   if git -C "$ROOT" worktree add -b "$branch" "$lane_path" "$base" >>"$ERRF" 2>&1; then
+    git -C "$lane_path" commit --allow-empty -m "lane ${task_id} anchor" >>"$ERRF" 2>&1 || true
     codex_trust_worktree "$lane_path"
     printf '%s\n' "$lane_path"
     return 0

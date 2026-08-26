@@ -3039,6 +3039,30 @@ else
     [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" release "${TASK}" >/dev/null 2>&1
     if [[ "${_t11_landed}" == 1 ]]; then
       _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm} branch=${_t11_branch}"
+      # T11-F1: merge + is-ancestor verified above -- complete the close chain
+      # instead of stopping at the terminal stamp. Deregister the lane from
+      # the live registry so a subsequent sweep no longer sees it as running,
+      # then reap its worktree via the existing --name path (already honors
+      # the noise-restore-first rule and the merged/unmerged safety checks).
+      # Both steps are best-effort and journaled either way: a landed task
+      # must never be blocked on cleanup succeeding.
+      _t11_lane_state_sh="${SCRIPT_DIR}/lib/leadv2-lane-state.sh"
+      if [[ -f "${_t11_lane_state_sh}" ]]; then
+        # shellcheck source=lib/leadv2-lane-state.sh
+        source "${_t11_lane_state_sh}"
+        declare -F lane_deregister >/dev/null 2>&1 && lane_deregister "${TASK}" "close_landed" >/dev/null 2>&1
+        emit note "close_deregistered id=${TASK}"
+      else
+        emit note "close_deregister_skipped id=${TASK} reason=lib_missing"
+      fi
+      if [[ "${diff_root}" != "${ROOT}" && -x "${SCRIPT_DIR}/leadv2-worktree-cleanup.sh" ]]; then
+        if bash "${SCRIPT_DIR}/leadv2-worktree-cleanup.sh" --name "${TASK}" \
+            >"/tmp/t11-wtcleanup-${TASK}.log" 2>&1; then
+          emit note "close_worktree_removed id=${TASK}"
+        else
+          emit note "close_worktree_kept detail=$(tail -c 300 "/tmp/t11-wtcleanup-${TASK}.log" | tr '\n' ' ')"
+        fi
+      fi
     else
       _dl_note pass_unlanded merge_conflict "branch=${_t11_branch} diff=${diff_hash:0:8}"
     fi
