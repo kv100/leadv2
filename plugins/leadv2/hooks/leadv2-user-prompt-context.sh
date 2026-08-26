@@ -141,7 +141,8 @@ try:
     d = yaml.safe_load(open('$ACTIVE')) or {}
     s = d.get('sessions') or []
     mine = '$TID_ACTIVE'
-    others = [sess for sess in s if sess.get('task_id') != mine][:3]
+    # No cap: a dropped session's note/blocked_by is information loss (T15 V1).
+    others = [sess for sess in s if sess.get('task_id') != mine]
     if not others: print('')
     else:
         lines = []

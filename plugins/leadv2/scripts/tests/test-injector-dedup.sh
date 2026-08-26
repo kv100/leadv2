@@ -119,6 +119,16 @@ sessions:
   - task_id: t15-fixture
     phase: build
     worktree: "$REPO"
+  - task_id: other-a
+    phase: review
+    note: "note-a"
+  - task_id: other-b
+    phase: build
+  - task_id: other-c
+    phase: e2e
+  - task_id: other-d
+    phase: build
+    blocked_by: "blk-d"
 EOF
 
 payload() {
@@ -286,6 +296,21 @@ else
     fail "(e control) legacy path diverges from ${GOLDEN_BASE_REV} golden: current=[$e_upc_legacy_current] golden=[$e_upc_legacy_golden]"
   fi
 fi
+
+# T15 V1 residual: the 4th+ other-session must reach the model (no [:3] cap).
+# other-d is the 4th foreign row and carries blocked_by=blk-d; its loss was the
+# exact FAIL in verify round 3. Negative control: reintroduce the cap => red.
+upc_multisession() { # <upc-script>
+  local out
+  out="$(LEADV2_ANCHOR_OWNS_CONTEXT=1 LEADV2_TASK_ANCHOR_STATE_DIR="$STATE_DIR" bash "$1" <<<"$(payload s-multi)")" || return 2
+  grep -q "other-d" <<<"$out" && grep -q "blk-d" <<<"$out"
+}
+if upc_multisession "$UPC"; then pass "multisession: 4th session (note+blocked_by) reaches output"; else fail "multisession: 4th session dropped"; fi
+# Mutant lives in a full copy of hooks/ so relative `source` neighbors resolve.
+cp -R "$(dirname "$UPC")" "$ROOT/hooks-mut"
+UPC_MUT="$ROOT/hooks-mut/$(basename "$UPC")"
+perl -0pi -e "s/others = \[sess for sess in s if sess\.get\('task_id'\) != mine\]/others = [sess for sess in s if sess.get('task_id') != mine][:3]/" "$UPC_MUT"
+if upc_multisession "$UPC_MUT"; then fail "multisession negative control stayed green"; else pass "multisession negative-control red (cap reintroduced => 4th session lost)"; fi
 
 printf -- '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
