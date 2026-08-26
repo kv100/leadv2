@@ -157,6 +157,42 @@ freepool_launch_gate() {
   return 0
 }
 
+# FREEPOOL-MODEL-SELECTOR-01: pick a live route id per spawn instead of
+# pinning "sonnet" statically across the whole arm. Delegates to
+# lib/leadv2-freepool-model-select.sh (rank order + live /v1/models
+# intersection + liveness probe); echoes the chosen route id on stdout.
+# Fail-open to the static "sonnet" alias on ANY selector failure (absent
+# script, non-zero exit, empty stdout, FREEPOOL_SKIP_MODEL_SELECT=1) — a
+# selector bug or a fully-dead proxy must never itself block a spawn that
+# the health gate above already cleared.
+freepool_select_model() {
+  if [[ "${FREEPOOL_SKIP_MODEL_SELECT:-0}" == "1" ]]; then
+    log_info "freepool_model_fallback reason=skip_flag"
+    echo "sonnet"
+    return 0
+  fi
+  local selector="${SELF%/*}/lib/leadv2-freepool-model-select.sh"
+  if [[ ! -f "${selector}" ]]; then
+    log_info "freepool_model_fallback reason=selector_absent"
+    echo "sonnet"
+    return 0
+  fi
+  local stderr_tmp chosen rc detail
+  stderr_tmp="$(mktemp 2>/dev/null || echo /tmp/freepool-model-select.$$.stderr)"
+  chosen="$("${selector}" 2>"${stderr_tmp}")"; rc=$?
+  if [[ "${rc}" -eq 0 && -n "${chosen}" ]]; then
+    detail="$(grep -o 'chosen=.*' "${stderr_tmp}" | tail -1 | sed 's/^chosen=/model=/')"
+    log_info "freepool_model_chosen ${detail:-model=${chosen}}"
+    rm -f "${stderr_tmp}"
+    echo "${chosen}"
+  else
+    log_info "freepool_model_fallback reason=rc${rc}"
+    rm -f "${stderr_tmp}"
+    echo "sonnet"
+  fi
+  return 0
+}
+
 usage() {
   cat >&2 <<'EOF'
 Usage:
@@ -256,6 +292,9 @@ run_claude() {
     resolved_prompt="${AGENT_BAN_PREAMBLE}${resolved_prompt}${FINISH_CONTRACT_TRAILER}"
   fi
 
+  local _model
+  _model="$(freepool_select_model)"
+
   local exit_code=0
   (
     cd "${cwd_dir}"
@@ -269,7 +308,7 @@ run_claude() {
     command "${FREEPOOL_CLAUDE_BIN}" -p "${resolved_prompt}" \
       --dangerously-skip-permissions \
       --disallowedTools "Agent" \
-      --model sonnet \
+      --model "${_model}" \
       --output-format json
   ) >"${out_file}" 2>&1 || exit_code=$?
 
@@ -1031,9 +1070,12 @@ cmd_run_child() {
   # lean: prompt passed via argv, matching design/v1 — upgrade to stdin/tempfile
   # passing if a prompt near bash ARG_MAX is observed in practice.
 
+  local _model
+  _model="$(freepool_select_model)"
+
   set +e
   ( command "${FREEPOOL_CLAUDE_BIN}" -p "${prompt}" \
-      --model sonnet \
+      --model "${_model}" \
       --output-format stream-json \
       --verbose \
       --max-turns "${max_turns}" \
