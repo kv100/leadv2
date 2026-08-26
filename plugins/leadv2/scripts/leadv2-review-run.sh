@@ -404,7 +404,9 @@ run_reviewer_arm() { # <arm>
     omp_bin="${LEADV2_DISPATCH_OMP_BIN:-${ROOT}/.claude/leadv2-overrides/omp-task.sh}"
     review_rc=75
     if [[ -x "${glm_bin}" ]]; then
-      bash "${glm_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
+      # T14: review missions get the CRITIC role-scoped MCP allowlist
+      # (config/mcp-role-critic.json), not the developer default.
+      LEADV2_WORKER_ROLE=critic bash "${glm_bin}" run "@${mission_file}" --out "${review_out}" --cwd "${ROOT}" >/dev/null 2> "${review_err}"
       review_rc=$?
       if [[ ${review_rc} -eq 0 ]]; then
         materialize_glm_review_body "${review_out}" || true

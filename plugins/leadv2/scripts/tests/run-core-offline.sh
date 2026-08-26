@@ -287,6 +287,7 @@ SUITE_DEFS=(
   "Phase-8 merge/completion proof|||bash $PLUGIN_ROOT/tests/test-deploy-merge-blocker-gate.sh"
   "subsession model downgrade|||bash $TEST_DIR/test-leadv2-model-arg-rebuild.sh"
   "subsession context diet (WORKER-CONTEXT-DIET-01)|||bash $TEST_DIR/test-subsession-context-diet.sh"
+  "T14 worker MCP (glm spawn role config)|||bash $TEST_DIR/test-t14-worker-mcp.sh"
   "plugin sync quarantine/dry-run safety|||bash $TEST_DIR/test-drift-guard-quarantine-perimeter.sh"
   "skill lint|||bash $TEST_DIR/test-leadv2-skill-lint.sh"
   "skill proof gate unit tests|||bash $TEST_DIR/test-skill-proof-gate.sh"
