@@ -379,6 +379,75 @@ def _nearest_decision_signature(root, leadv2_dir):
         return ""
 
 
+def _cheap_task_signature(paths):
+    # T15 R1: stat()-only signature (mtime_ns+size) of the sources the full
+    # active-task block reads. No file parsing, no subprocess. A rewrite
+    # that preserves mtime+size with different bytes would false-negative
+    # here (accepted tradeoff: the authoritative _inject_dedup_gate below
+    # still runs once we fall through, so correctness is never lost — only
+    # the early-skip is missed for that one turn).
+    parts = []
+    for p in paths:
+        try:
+            st = os.stat(p)
+            parts.append(f"{p}:{st.st_mtime_ns}:{st.st_size}")
+        except OSError:
+            parts.append(f"{p}:-")
+    return "|".join(parts)
+
+
+def _cheap_dedup_check(sig, session_id, root):
+    try:
+        if os.environ.get("LEADV2_INJECT_DEDUP", "1") == "0":
+            return "full"  # G0
+
+        key = re.sub(r"[^A-Za-z0-9._-]", "", str(session_id or ""))[:64]
+        if not key or not key.strip("."):
+            return "full"  # G1 — no session id to key state on
+
+        state_dir = os.environ.get("LEADV2_TASK_ANCHOR_STATE_DIR") \
+            or os.path.expanduser("~/.claude/state/leadv2")
+        os.makedirs(state_dir, exist_ok=True)
+
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        digest = hashlib.sha256((sig + "\n" + today).encode("utf-8")).hexdigest()
+        hash_path = os.path.join(state_dir, f".inject-cheap.{key}.task-anchor")
+        stored = ""
+        if os.path.isfile(hash_path):
+            with open(hash_path, encoding="utf-8") as fh:
+                stored = fh.read(256).strip()
+        if stored and stored == digest:
+            return "marker"
+        return "full"
+    except Exception as exc:
+        _inject_warn(exc)
+        return "full"  # fail-open — never silence an injection
+
+
+def _cheap_dedup_store(sig, session_id):
+    # Called only from the expensive path, after the real gate decided the
+    # turn's outcome (full or marker) — records the state we just handled so
+    # the NEXT unchanged turn can skip straight to the cheap-check stub.
+    try:
+        if os.environ.get("LEADV2_INJECT_DEDUP", "1") == "0":
+            return
+        key = re.sub(r"[^A-Za-z0-9._-]", "", str(session_id or ""))[:64]
+        if not key or not key.strip("."):
+            return
+        state_dir = os.environ.get("LEADV2_TASK_ANCHOR_STATE_DIR") \
+            or os.path.expanduser("~/.claude/state/leadv2")
+        os.makedirs(state_dir, exist_ok=True)
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        digest = hashlib.sha256((sig + "\n" + today).encode("utf-8")).hexdigest()
+        hash_path = os.path.join(state_dir, f".inject-cheap.{key}.task-anchor")
+        tmp = f"{hash_path}.tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(digest)
+        os.replace(tmp, hash_path)
+    except Exception as exc:
+        _inject_warn(exc)
+
+
 def _inject_dedup_gate(kind, session_id, body, root=None, leadv2_dir=None):
     try:
         if os.environ.get("LEADV2_INJECT_DEDUP", "1") == "0":
@@ -416,7 +485,8 @@ def _inject_dedup_gate(kind, session_id, body, root=None, leadv2_dir=None):
                 fh.write(today)
             os.replace(tmp_gc, gc_day_path)
             cutoff = time.time() - _INJECT_GC_MAX_AGE_S
-            for fn in glob.glob(os.path.join(state_dir, ".inject-hash.*")):
+            for fn in glob.glob(os.path.join(state_dir, ".inject-hash.*")) + \
+                      glob.glob(os.path.join(state_dir, ".inject-cheap.*")):
                 try:
                     if os.path.getmtime(fn) < cutoff:
                         os.remove(fn)
@@ -753,8 +823,40 @@ def main():
     # override (always full) for anyone already depending on that name.
     session_id = re.sub(r"[^A-Za-z0-9._-]", "", str(payload.get("session_id") or ""))
 
-    # ── gather details ───────────────────────────────────────────────────────
+    # ── T15 R1: cheap early-return BEFORE any expensive work ────────────────
+    # _inject_dedup_gate below only knows "unchanged" once the full body
+    # (goal/plan/journal-subprocess/bus-parse) is already built — so an
+    # unchanged turn still paid for a subprocess spawn (leadv2-journal.sh)
+    # and a bus.jsonl parse every single time. This stat()-only signature
+    # (mtime+size of the exact sources the full block reads, no subprocess,
+    # no file *parsing*) answers "did anything change" first; only on a
+    # miss (or no cache yet) do we fall through to the expensive build.
+    # Fail-open: any error here just skips straight to the expensive path.
     context_path = os.path.join(root, handoff_dir, task_id, "context.yaml")
+    _state_candidates_probe = (
+        os.path.join(root, leadv2_dir, "tasks", task_id, "STATE.md"),
+        os.path.join(root, handoff_dir, task_id, "STATE.md"),
+    )
+    _cheap_paths = (
+        context_path,
+        *_state_candidates_probe,
+        os.path.join(root, leadv2_dir, "bus.jsonl"),
+        os.path.join(root, leadv2_dir, "tasks", task_id, "journal.md"),
+        os.path.join(root, leadv2_dir, "scheduled-decisions.md"),
+    )
+    cheap_sig = _cheap_task_signature(_cheap_paths)
+    if session_id and os.environ.get("LEADV2_TASK_ANCHOR_COMPACT_REPEAT", "1") != "0":
+        if _cheap_dedup_check(cheap_sig, session_id, root) == "marker":
+            safe_capture(root, leadv2_dir, payload)
+            print("\n".join([
+                "<task-anchor>",
+                f"ACTIVE TASK: {task_id} | phase: {phase} | class: {cls}",
+                "This message does not replace it: answer a question in <=3 lines, then continue. Only explicit stop/scope-change pauses it.",
+                "</task-anchor>",
+            ]))
+            return
+
+    # ── gather details ───────────────────────────────────────────────────────
     ctx = load_yaml(context_path)
 
     goal = str(ctx.get("goal") or ctx.get("mission") or "").strip()
@@ -913,6 +1015,7 @@ def main():
 
     if session_id and os.environ.get("LEADV2_TASK_ANCHOR_COMPACT_REPEAT", "1") != "0":
         gate = _inject_dedup_gate("task-anchor", session_id, full_body, root, leadv2_dir)
+        _cheap_dedup_store(cheap_sig, session_id)
         if gate == "marker":
             safe_capture(root, leadv2_dir, payload)
             print("\n".join([

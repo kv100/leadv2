@@ -58,13 +58,37 @@ Body line one.
 Body line two.
 EOF
 
-# active.yaml so leadv2-user-prompt-context.sh's [LEADV2_ACTIVE]/
-# [ORCHESTRATOR_ROLE] path has something to fire on when its gate is open.
+# T15 R3: the active.yaml session used to key ownership on `pid: $$` alone,
+# relying on leadv2-task-anchor.sh's process_ancestors() walking the REAL
+# OS process tree (via `ps -o ppid=`) up to this test's own PID. That walk
+# is environment-dependent — its depth/success varies with how many layers
+# of shell/subshell/container wrap the test runner (measured: 7/0 in one
+# checkout, 5/2 in another) — so cases (b)/(c) could silently fall through
+# to the NO-active-task thread-anchor path instead of genuinely exercising
+# the active-task path, and still "pass" on a coincidentally-similar output
+# shape. Fix: key ownership on the WORKTREE-match fallback instead (a plain
+# os.path.realpath() string compare, no `ps`, no process-tree walk) by
+# giving the session a `pid` guaranteed dead (works.max pid_max is far below
+# 999999999 on Linux and macOS, so os.kill() reliably raises
+# ProcessLookupError) and a `worktree` that matches $REPO exactly. This is
+# fully hermetic — no dependency on this test process's real ancestry or on
+# ~/.claude state (LEADV2_TASK_ANCHOR_STATE_DIR already isolates the latter).
+#
+# NOTE: a *numeric* pid — even a deliberately-dead one like 999999999 — does
+# NOT fall through to the worktree match: leadv2-task-anchor.sh's own logic
+# treats any int-parseable pid outside this process's ancestry as "a
+# different session, possibly stale" and unconditionally `continue`s past
+# the worktree check for both the os.kill()-succeeds and
+# ProcessLookupError branches (main(), the active.yaml matching loop —
+# "Never select it by worktree fallback"). The worktree fallback is reached
+# ONLY when the pid field fails int(...) entirely (TypeError/ValueError ->
+# session_pid = None). Omitting `pid` is therefore the correct hermetic
+# fixture, not an oversight.
 cat > "$REPO/docs/leadv2/active.yaml" <<EOF
 sessions:
   - task_id: t15-fixture
     phase: build
-    pid: $$
+    worktree: "$REPO"
 EOF
 
 payload() {
@@ -97,26 +121,28 @@ else
   fail "hook scripts parse"
 fi
 
-# (a) first turn -> full injection.
+# (a) first turn -> full injection. R3 sentinel: assert the ACTIVE-TASK
+# path was genuinely entered (task_id echoed back), not a coincidentally
+# similar no-task thread-anchor shape.
 a_out="$(run_anchor "$SESSION_ID")"
-if [[ -n "$a_out" && "$a_out" != *"thread anchor unchanged"* ]]; then
-  pass "(a) first turn: task-anchor emits a full injection"
+if [[ -n "$a_out" && "$a_out" == *"ACTIVE TASK: t15-fixture"* ]]; then
+  pass "(a) first turn: task-anchor emits a full injection (active-task path confirmed)"
 else
-  fail "(a) first turn produced no full injection: [$a_out]"
+  fail "(a) first turn produced no full active-task injection: [$a_out]"
 fi
 
-# (b) second turn, unchanged state -> stub, <=5 lines. (a_out is the
-# ACTIVE TASK full block since $REPO/docs/leadv2/active.yaml selects
-# t15-fixture; the active-task stub text differs from the no-task
-# thread-anchor's "thread anchor unchanged" marker.)
+# (b) second turn, unchanged state -> stub, <=5 lines, and still the
+# active-task stub (not the no-task thread-anchor's "thread anchor
+# unchanged" marker — that would mean ownership silently fell through).
 b_out="$(run_anchor "$SESSION_ID")"
 b_lines=$(printf -- '%s' "$b_out" | grep -c . || true)
-if [[ "$b_out" == *"This message does not replace it"* ]] \
+if [[ "$b_out" == *"ACTIVE TASK: t15-fixture"* ]] \
+   && [[ "$b_out" == *"This message does not replace it"* ]] \
    && [[ "$b_out" != "$a_out" ]] \
    && [[ "$b_lines" -le 5 ]]; then
-  pass "(b) second turn unchanged: stub, ${b_lines} line(s) <=5"
+  pass "(b) second turn unchanged: stub, ${b_lines} line(s) <=5, active-task path confirmed"
 else
-  fail "(b) unchanged turn did not collapse to a <=5-line stub: lines=${b_lines} out=[$b_out]"
+  fail "(b) unchanged turn did not collapse to a <=5-line active-task stub: lines=${b_lines} out=[$b_out]"
 fi
 
 # (c) state changed (goal line in context.yaml) -> full again. open-threads.md
@@ -127,11 +153,26 @@ cat > "$REPO/docs/handoff/t15-fixture/context.yaml" <<'EOF'
 goal: a freshly changed goal line
 EOF
 c_out="$(run_anchor "$SESSION_ID")"
-if [[ "$c_out" != *"This message does not replace it"* ]] \
+if [[ "$c_out" == *"ACTIVE TASK: t15-fixture"* ]] \
+   && [[ "$c_out" != *"This message does not replace it"* ]] \
    && [[ "$c_out" == *"a freshly changed goal line"* ]]; then
-  pass "(c) changed state: full re-inject reflects the new goal"
+  pass "(c) changed state: full re-inject reflects the new goal, active-task path confirmed"
 else
   fail "(c) changed state failed to force a full re-inject: [$c_out]"
+fi
+
+# (c.delta) T15 R1: the cheap stat()-based pre-check must not itself go
+# stale — a second unchanged turn after (c)'s full re-inject must still
+# collapse back to the stub (proves the cheap-hash store after a "full"
+# outcome actually persisted, not just the original body-hash gate).
+c_delta_out="$(run_anchor "$SESSION_ID")"
+c_delta_lines=$(printf -- '%s' "$c_delta_out" | grep -c . || true)
+if [[ "$c_delta_out" == *"ACTIVE TASK: t15-fixture"* ]] \
+   && [[ "$c_delta_out" == *"This message does not replace it"* ]] \
+   && [[ "$c_delta_lines" -le 5 ]]; then
+  pass "(c.delta) turn after a full re-inject collapses back to the stub"
+else
+  fail "(c.delta) did not collapse back to stub after a full re-inject: lines=${c_delta_lines} out=[$c_delta_out]"
 fi
 
 # (d) state sidecar unwritable -> fail-open, full injection (never silently
@@ -148,23 +189,44 @@ else
 fi
 
 # (e) both hooks fire the same turn. Default LEADV2_ANCHOR_OWNS_CONTEXT=1:
-# user-prompt-context.sh must NOT also emit the overlapping blocks
-# task-anchor.sh already owns — no double-injection.
+# user-prompt-context.sh must dedup ONLY the true duplicate — the
+# [LEADV2_ACTIVE] header and the "SILENCE PROTOCOL" paragraph, both of
+# which task-anchor.sh's own DIRECTIVE already covers. It must NOT drop
+# unique information: [ORCHESTRATOR_ROLE] itself (trimmed, not suppressed)
+# still carries the no-direct-code delegate rule and the post-compact
+# resume-read instruction, and [LEADV2_PHASE_HINT] (severity/round-cap
+# gate) has no equivalent in task-anchor.sh at all. R2 explicitly forbids
+# information loss — a stale "tag absent" assertion here would just
+# re-introduce the bug this fix removes.
 e_sid="injector-dedup-e-$$"
 e_upc_default="$(run_upc "$e_sid" "1" 2>/dev/null || true)"
-if [[ "$e_upc_default" != *"[LEADV2_ACTIVE]"* ]] && [[ "$e_upc_default" != *"[ORCHESTRATOR_ROLE]"* ]]; then
-  pass "(e) default handoff: user-prompt-context.sh does not duplicate task-anchor's content"
+if [[ "$e_upc_default" != *"[LEADV2_ACTIVE]"* ]] \
+   && [[ "$e_upc_default" != *"SILENCE PROTOCOL"* ]] \
+   && [[ "$e_upc_default" == *"[ORCHESTRATOR_ROLE]"* ]] \
+   && [[ "$e_upc_default" == *"NEVER write .py/.sh"* ]]; then
+  pass "(e) default handoff: true duplicate suppressed, unique content preserved"
 else
-  fail "(e) user-prompt-context.sh duplicated overlapping content under the default handoff: [$e_upc_default]"
+  fail "(e) default handoff lost unique content or kept the duplicate: [$e_upc_default]"
 fi
 
-# (e, control) LEADV2_ANCHOR_OWNS_CONTEXT=0 must re-enable the old path —
-# proves (e)'s pass above is the flag working, not a coincidental no-op.
-e_upc_legacy="$(run_upc "${e_sid}-legacy" "0" 2>/dev/null || true)"
-if [[ "$e_upc_legacy" == *"[LEADV2_ACTIVE]"* ]] || [[ "$e_upc_legacy" == *"[ORCHESTRATOR_ROLE]"* ]]; then
-  pass "(e control) LEADV2_ANCHOR_OWNS_CONTEXT=0 re-enables the old path"
+# (e, control) LEADV2_ANCHOR_OWNS_CONTEXT=0 must re-enable the FULL legacy
+# path — proves (e)'s dedup above is the flag working, not a coincidental
+# no-op. T15 R4: byte-compare, not a single grep. Two independent
+# first-time sessions (never touched, so neither hits the per-session
+# ORCH_SENTINEL short-circuit) against identical fixture state must
+# produce byte-identical output — this is a far stronger check than
+# "does substring X appear once": it catches any accidental
+# nondeterminism or partial-emission drift across the whole legacy body,
+# not just the one tag a plain grep would look at.
+e_upc_legacy_a="$(run_upc "${e_sid}-legacy-a" "0" 2>/dev/null || true)"
+e_upc_legacy_b="$(run_upc "${e_sid}-legacy-b" "0" 2>/dev/null || true)"
+if [[ "$e_upc_legacy_a" == *"[LEADV2_ACTIVE]"* ]] \
+   && [[ "$e_upc_legacy_a" == *"[ORCHESTRATOR_ROLE]"* ]] \
+   && [[ "$e_upc_legacy_a" == *"SILENCE PROTOCOL"* ]] \
+   && [[ "$e_upc_legacy_a" == "$e_upc_legacy_b" ]]; then
+  pass "(e control) LEADV2_ANCHOR_OWNS_CONTEXT=0 re-enables the full legacy path, byte-identical across two independent runs"
 else
-  fail "(e control) LEADV2_ANCHOR_OWNS_CONTEXT=0 did not re-enable the old path: [$e_upc_legacy]"
+  fail "(e control) legacy path missing content or non-reproducible: a=[$e_upc_legacy_a] b=[$e_upc_legacy_b]"
 fi
 
 printf -- '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"

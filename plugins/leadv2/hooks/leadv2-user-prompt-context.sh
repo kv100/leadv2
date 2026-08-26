@@ -84,13 +84,22 @@ print(json.dumps(d, indent=2))
 fi
 
 # === 2. Active leadv2 task summary ===
+# T15 R2: LEADV2_ANCHOR_OWNS_CONTEXT=1 (default) hands the [LEADV2_ACTIVE]
+# task_id/phase header to task-anchor.sh — that block IS a true duplicate
+# (task-anchor's own header already carries task_id/phase/class) and stays
+# suppressed. Everything below that is NOT covered by task-anchor.sh's
+# fixed DIRECTIVE (phase-hint severity/round-cap gate, post-compact-resume
+# snippet, knowledge-archive hint, the no-direct-code delegate rule) keeps
+# firing regardless of the flag — dedup only the genuine duplicate, never
+# drop unique information.
+ANCHOR_OWNS_CONTEXT="${LEADV2_ANCHOR_OWNS_CONTEXT:-1}"
 TID_ACTIVE=""
-if [[ "${LEADV2_ANCHOR_OWNS_CONTEXT:-1}" != "1" ]]; then
 ACTIVE=""
 for f in "$CWD/.claude/leadv2-tasks/active.yaml" "$CWD/${_lv2_leadv2_dir}/active.yaml"; do
   [[ -f "$f" ]] && ACTIVE="$f" && break
 done
 if [[ -n "$ACTIVE" ]]; then
+  if [[ "$ANCHOR_OWNS_CONTEXT" != "1" ]]; then
   ACTIVE_SUM="$(python3 -c "
 import yaml
 try:
@@ -113,8 +122,12 @@ except Exception: print('')
 $ACTIVE_SUM
 (Lead: read STATE.md only when needed for phase action. active.yaml summary above is current.)")
   fi
+  fi # ANCHOR_OWNS_CONTEXT: task-anchor's own header dupes [LEADV2_ACTIVE] only
 
   # === 2.b. Auto-detect real phase from handoff/ artifacts (active.yaml often stale) ===
+  # T15 R2: unconditional — task-anchor.sh's DIRECTIVE has no equivalent of
+  # the severity-gate / round-cap phase hint, so this is unique information
+  # regardless of ANCHOR_OWNS_CONTEXT.
   TID_ACTIVE="$(leadv2_hook_resolve_task_id "$INPUT" "$ACTIVE" 2>/dev/null || true)"
   if [[ -n "$TID_ACTIVE" ]]; then
     HANDOFF_DIR="$CWD/${_lv2_handoff_dir}/$TID_ACTIVE"
@@ -181,19 +194,31 @@ $RESUME_SNIPPET"
       CTX_PARTS+=("[KNOWLEDGE_ARCHIVE] ${KNOWLEDGE_COUNT} entries in docs/leadv2/knowledge/. Before re-deciding anything (architecture choice, schema approach, error strategy), run: grep -r '<keyword>' docs/leadv2/knowledge/ to surface prior decisions and gotchas.")
     fi
 
-    CTX_PARTS+=("[ORCHESTRATOR_ROLE] You are the LEADV2 ORCHESTRATOR for task $TID_ACTIVE.
+    if [[ "$ANCHOR_OWNS_CONTEXT" == "1" ]]; then
+      # T15 R2: task-anchor.sh's DIRECTIVE already carries the silence-
+      # protocol / no-narration rule verbatim — only the two things it does
+      # NOT cover (the no-direct-code delegate rule and the post-compact
+      # resume-read instruction) are unique here.
+      CTX_PARTS+=("[ORCHESTRATOR_ROLE] You are the LEADV2 ORCHESTRATOR for task $TID_ACTIVE.
+Rules that persist across /compact (silence protocol is covered by the active <task-anchor> DIRECTIVE above; not repeated here):
+- NEVER write .py/.sh/.ts/.tsx/.sql directly — delegate ALL code to developer/devops subagents.
+- If you just resumed from /compact: read ${_lv2_leadv2_dir}/tasks/$TID_ACTIVE/STATE.md limit=20 and ${_lv2_handoff_dir}/$TID_ACTIVE/context.yaml limit=30 to restore plan context.")
+    else
+      CTX_PARTS+=("[ORCHESTRATOR_ROLE] You are the LEADV2 ORCHESTRATOR for task $TID_ACTIVE.
 Rules that persist across /compact:
 - NEVER write .py/.sh/.ts/.tsx/.sql directly — delegate ALL code to developer/devops subagents.
 - SILENCE PROTOCOL: No preamble. No 'Let me…'. No reasoning narration. Output ONLY: pulse line | gate prompt | async question | ≤3-line close. All detail → deliverable files.
 - Every text-only turn costs 150K+ tokens. No 'I am now doing X'. No multi-paragraph reasoning.
 - If you just resumed from /compact: read ${_lv2_leadv2_dir}/tasks/$TID_ACTIVE/STATE.md limit=20 and ${_lv2_handoff_dir}/$TID_ACTIVE/context.yaml limit=30 to restore plan context.")
+    fi
     touch "$ORCH_SENTINEL" 2>/dev/null || true
   else
     CTX_PARTS+=("[ORCHESTRATOR_ROLE] full rules already injected this session — see above.")
   fi
 fi
-
-fi # LEADV2_ANCHOR_OWNS_CONTEXT: task-anchor owns active/phase/role context by default
+# (T15 R2: the -n "$ACTIVE" wrapper closed above at the matching fi on the
+# "=== 2. Active leadv2 task summary ===" block; only [LEADV2_ACTIVE] and the
+# ORCHESTRATOR_ROLE silence-protocol text are conditioned on the flag now.)
 
 # === 2.5. Pending Stop-hook warnings (lead-prose-guard, etc.) ===
 if [[ -n "$SESSION_ID" ]]; then
