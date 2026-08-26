@@ -2404,6 +2404,18 @@ _dispatch_worker_liveness() {  # <arm> <handle> -> alive|dead|unknown (stdout)
         *)               printf 'unknown' ;;
       esac
       ;;
+    freepool)
+      # T19: identical shape to the glm case above -- freepool-coder.sh's
+      # `status` subcommand resolves the same run-dir its own `bg` call created.
+      local raw status
+      raw="$(bash "${FREEPOOL_BIN}" status "${handle}" 2>/dev/null)" || { printf 'unknown'; return; }
+      status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
+      case "${status}" in
+        running)         printf 'alive' ;;
+        complete|failed) printf 'dead' ;;
+        *)               printf 'unknown' ;;
+      esac
+      ;;
     sonnet)
       if [[ "${handle}" =~ ^[0-9]+$ ]] && kill -0 "${handle}" 2>/dev/null; then
         printf 'alive'
@@ -3976,6 +3988,10 @@ PY
 GLM_BIN="${LEADV2_DISPATCH_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
 # KIMI-CHANNEL-01: sibling launcher, same bg/status contract as glm-coder.sh.
 KIMI_BIN="${LEADV2_DISPATCH_KIMI_BIN:-${SCRIPT_DIR}/kimi-coder.sh}"
+# T19: sibling launcher, same bg/status contract as glm-coder.sh (clone,
+# pointed at the local freepool-proxy.sh instead of Z.AI). Own admission gate
+# (leadv2-freepool-gate.sh) refuses independently of quota -- arm_down/gate_broken.
+FREEPOOL_BIN="${LEADV2_DISPATCH_FREEPOOL_BIN:-${SCRIPT_DIR}/freepool-coder.sh}"
 SUBSESSION_BIN="${LEADV2_DISPATCH_SUBSESSION_BIN:-${SCRIPT_DIR}/claude-subsession.sh}"
 ARCHITECT_BIN="${LEADV2_DISPATCH_ARCHITECT_BIN:-${SUBSESSION_BIN}}"
 # codex-task.sh is the sanctioned Codex channel -- it already owns tier resolution
@@ -4149,7 +4165,8 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
   # launcher failure.
   if [[ -n "${marker}" && ( "${rc}" == "1" || "${rc}" == "2" \
         || ( "${arm}" == "kimi" && "${rc}" == "77" ) \
-        || ( "${arm}" == "glm" && "${rc}" == "75" ) ) ]]; then
+        || ( "${arm}" == "glm" && "${rc}" == "75" ) \
+        || ( "${arm}" == "freepool" && "${rc}" == "75" ) ) ]]; then
     printf '%s' "${marker}"
     return 0
   fi
@@ -4282,6 +4299,49 @@ _spawn_worker_body() {
         log_err "spawn(kimi) handle=${handle} has no live run record -- treating as launch failure"
         return 1
       fi
+      ;;
+    freepool)
+      # T19: sibling of the glm case above, same bg/status contract
+      # (freepool-coder.sh is a clone of glm-coder.sh, pointed at the local
+      # freepool-proxy.sh). Launch-probe refusal comes from its own
+      # leadv2-freepool-gate.sh (marker + rc 1 for gate_broken/arm_down, or rc
+      # 75 for the inherited lock_busy path) -- refusal_reason() already knows
+      # about both.
+      local _fp_spawn_start _fp_spawn_ok=0
+      _fp_spawn_start="$(date +%s)"
+      out="$(bash "${FREEPOOL_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      err="$(tail -20 "${errf}" 2>/dev/null)"
+      if [[ ${rc} -ne 0 ]]; then
+        local refusal
+        refusal="$(refusal_reason "${arm}" "${rc}" "${out}" "${err}" || true)"
+        if [[ -n "${refusal}" ]]; then
+          LAST_ARM_OUTCOME="freepool_refused_${refusal}"
+          emit decision "arm_refused by=router model=freepool task=${sig8} reason=freepool_refused_${refusal}"
+          _maybe_record_quota_lockout "freepool" "${refusal}" "${out}"$'\n'"${err}"
+          log "spawn(freepool) refused: ${refusal}"
+          return 2
+        fi
+        emit decision "spawn_failed by=router model=freepool task=${sig8} rc=${rc} reason=launcher_nonzero_exit"
+        log_err "spawn(freepool) failed rc=${rc}: ${out} ${err}"
+        bash "${SCRIPT_DIR}/lib/leadv2-freepool-gate.sh" record 0 "$(( $(date +%s) - _fp_spawn_start ))" 2>/dev/null || true
+        return 1
+      fi
+      handle="$(printf '%s\n' "${out}" | tail -1)"
+      if [[ -z "${handle}" ]]; then
+        emit decision "spawn_failed by=router model=freepool task=${sig8} reason=empty_handle"
+        log_err "spawn(freepool) returned an empty handle -- treating as launch failure (no-op launcher?)"
+        return 1
+      fi
+      # Liveness: same shape as the glm arm's check above -- freepool-coder.sh's
+      # own `status` subcommand resolves the same run-dir this `bg` call used.
+      if ! bash "${FREEPOOL_BIN}" status "${handle}" >/dev/null 2>&1 9>&-; then
+        emit decision "spawn_failed by=router model=freepool task=${sig8} handle=${handle} reason=not_live"
+        log_err "spawn(freepool) handle=${handle} has no live run record -- treating as launch failure"
+        bash "${SCRIPT_DIR}/lib/leadv2-freepool-gate.sh" record 0 "$(( $(date +%s) - _fp_spawn_start ))" 2>/dev/null || true
+        return 1
+      fi
+      _fp_spawn_ok=1
+      bash "${SCRIPT_DIR}/lib/leadv2-freepool-gate.sh" record "${_fp_spawn_ok}" "$(( $(date +%s) - _fp_spawn_start ))" 2>/dev/null || true
       ;;
     sonnet)
       local mfile
@@ -4485,9 +4545,10 @@ _spawn_worker_body() {
 _arm_status_probe() {  # <arm> <handle>
   local arm="$1" handle="$2" bin=""
   case "${arm}" in
-    codex) bin="${CODEX_BIN}" ;;
-    kimi)  bin="${KIMI_BIN}" ;;
-    glm)   bin="${GLM_BIN}" ;;
+    codex)    bin="${CODEX_BIN}" ;;
+    kimi)     bin="${KIMI_BIN}" ;;
+    glm)      bin="${GLM_BIN}" ;;
+    freepool) bin="${FREEPOOL_BIN}" ;;
     *)     return 1 ;;
   esac
   [[ -n "${bin}" && -f "${bin}" ]] || return 1
@@ -4547,9 +4608,10 @@ _arm_no_work_signal() {  # <arm> <raw_text>
 _arm_final_output() {  # <arm> <handle>
   local arm="$1" handle="$2" bin="" tail_n="${LEADV2_ARM_TAIL_LINES:-60}" raw logpath out
   case "${arm}" in
-    codex) bin="${CODEX_BIN}" ;;
-    kimi)  bin="${KIMI_BIN}" ;;
-    glm)   bin="${GLM_BIN}" ;;
+    codex)    bin="${CODEX_BIN}" ;;
+    kimi)     bin="${KIMI_BIN}" ;;
+    glm)      bin="${GLM_BIN}" ;;
+    freepool) bin="${FREEPOOL_BIN}" ;;
     *)     return 0 ;;
   esac
   [[ -n "${bin}" && -f "${bin}" ]] || return 0
