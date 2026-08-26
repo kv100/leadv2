@@ -335,7 +335,10 @@ else
 fi
 
 # ── C2: tenant explicit review exclusions may not drift below defaults ───────
-PROJECTS_ROOT="$(cd "${PLUGIN_ROOT}/../../../../../.." && pwd)"
+# Resolve the projects root via the MAIN repo dir (git-common-dir), not a fixed
+# ../.. depth — the fixed depth only held from a lane worktree two levels deeper
+# and made this case scan zero tenants from the main checkout (found 2026-08-27).
+PROJECTS_ROOT="$(dirname "$(dirname "$(cd "${PLUGIN_ROOT}" && git rev-parse --path-format=absolute --git-common-dir)")")"
 DRIFT_CHECK="${FIXTURE}/review-exclusion-drift.py"
 cat > "${DRIFT_CHECK}" <<'PY'
 import importlib.util
