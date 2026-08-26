@@ -6404,18 +6404,3 @@ cmd_retry_dead() {
   exit 0
 }
 
-# ── dispatch ──────────────────────────────────────────────────────────────────────
-[[ $# -eq 0 ]] && usage
-case "${1:-}" in
-  record-review) shift; cmd_record_review "$@" ;;
-  status)        cmd_status ;;
-  glm-deferred)  shift; cmd_glm_deferred "$@" ;;
-  burn-deferred) shift; cmd_burn_deferred "$@" ;;
-  advance-arm)   shift; cmd_advance_arm "$@" ;;
-  record-quota-lockout) shift; cmd_record_quota_lockout "$@" ;;
-  retry-dead)    shift; cmd_retry_dead "$@" ;;
-  sweep)         [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep; exit $? ;;
-  reconcile)     shift; [[ -f "${LEDGER_BIN}" ]] && exec bash "${LEDGER_BIN}" reconcile "$@"; exit $? ;;
-  -h|--help)     usage ;;
-  *)             cmd_resolve "$@" ;;
-esac
