@@ -20,7 +20,9 @@
 #   3. leadv2-lanes-snapshot.sh's abandon-answer branch (ABANDON-NO-OP-01)
 #      deregisters the active.yaml row on an answered `abandon` decision,
 #      and a second reconcile does NOT re-ask (fixture-level, same pattern
-#      as tests/test-lanes-snapshot.sh Test 4).
+#      as tests/test-lanes-snapshot.sh Test 4). Fix-round F2: the row delete
+#      must go through the tombstone path -- an ABANDON entry lands in
+#      tombstones.yaml BEFORE the row is pruned (R2-4 contract).
 #
 # Each case has a paired mutation control: revert the fix in a scratch copy
 # of the subject file and show the same assertion goes red.
@@ -109,19 +111,43 @@ case2() { # <dispatch-script> -> 0 pass
   _glm_park_deferred() { return 0; }
   _codex_credits_watch() { return 0; }
   route_arbiter() { printf 'arm=glm model=glm-5.2 tier=standard reason=cheapest_capable chain=glm util_glm=10\n'; return 0; }
-  _adopt_v2_chain() { return 0; }
+  # T13 slice2 fix-round (F3): the old `return 0` stub was a no-op, so the
+  # block's `arm="${candidate_arms[0]}"` read the PRE-SEEDED array element and
+  # the assertion passed without the arbiter pick mattering. This stub is
+  # faithful to the real _adopt_v2_chain (dispatch-code.sh): it REBUILDS
+  # candidate_arms from the adopted chain= CSV (claude- prefix normalize,
+  # empties dropped), so arm= can only come from the ARBITER's chain.
+  _adopt_v2_chain() {  # <sig8> <site> <csv-chain> -> 0 when candidate_arms rebuilt
+    local _csv="$3" _a
+    local -a _tmp=() _norm=()
+    IFS=',' read -r -a _tmp <<< "${_csv}"
+    for _a in "${_tmp[@]}"; do
+      [[ -n "${_a}" ]] || continue
+      _norm+=("${_a#claude-}")
+    done
+    candidate_arms=("${_norm[@]}")
+    [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]:-}" ]]
+  }
+  # Post-bench ladder head is SONNET (codex benched); the arbiter's chain is
+  # glm -- arm=glm is reachable ONLY through the arbiter adoption. A no-op
+  # adopt stub leaves arm=sonnet and the assertions below go red.
   local sig8="case2sig" mission="m" founder_task_id="ft" kind="code" task_class="standard"
-  local -a candidate_arms=(codex glm)
+  local -a candidate_arms=(codex sonnet glm)
   emitted=""
   extract_bench_fallback "$s" || return 2
   [[ "${arm:-}" == "glm" && "${router_label:-}" == "arbiter" ]] || return 1
-  printf '%s\n' "$emitted" | grep -q 'route_headroom_chosen task=case2sig arm=glm after=primary_arm_benched'
+  printf '%s\n' "$emitted" | grep -q 'route_headroom_chosen task=case2sig arm=glm after=primary_arm_benched ordered=glm source=arbiter'
 }
 if case2 "$DISPATCH"; then pass "bench-fallback re-arbitrates and emits route_headroom_chosen when primary arm benched"; else fail "bench-fallback wiring did not re-arbitrate on primary bench"; fi
 
 # Negative control: a scratch dispatch copy with the ARBITER-BENCH-FALLBACK-GAP-01
 # if-block stripped (its 3 declaration/assignment lines removed, so
 # _primary_arm_benched is set but never acted on) must fail case2.
+# T13 slice2 fix-round (F5): both excision ends are anchored on stable marker
+# COMMENTS, not indentation shapes -- the old end-anchor matched the first
+# 2-space "  fi" after the start marker, which couples the excision to the
+# block's nesting depth and silently excises the wrong lines on any
+# re-indent of the block.
 MUT2="${TMP}/dispatch.mutated.sh"
 python3 - "$DISPATCH" "$MUT2" <<'PY'
 import sys
@@ -131,13 +157,11 @@ start = end = None
 for i, l in enumerate(lines):
     if 'ARBITER-BENCH-FALLBACK-GAP-01: a provider lockout can remove' in l:
         start = i
-    # outer-if close is 2-space indented ("  fi"); the inner if/else/fi
-    # (the _bf_rc check) is 4-space indented and must NOT match first.
-    if start is not None and l == '  fi\n' and i > start + 5:
+    if start is not None and 'ROUTER-QUOTA-DRIVEN-01 (T6): filter candidate_arms' in l:
         end = i
         break
-assert start is not None and end is not None, "could not locate bench-fallback block to mutate"
-mutated = lines[:start] + lines[end + 1:]
+assert start is not None and end is not None and end > start, "could not locate bench-fallback block to mutate"
+mutated = lines[:start] + lines[end:]
 open(dst, 'w').writelines(mutated)
 PY
 if case2 "$MUT2"; then fail "NEGATIVE CONTROL 2: mutated dispatch (bench-fallback block removed) unexpectedly still passed"; else pass "NEGATIVE CONTROL 2: mutated dispatch (bench-fallback block removed) correctly fails case2"; fi
@@ -163,15 +187,32 @@ done" || return 1
 case2b() { # <dispatch-script> -> 0 pass
   local s="$1" emitted
   emit() { emitted="${emitted:-}"$'\n'"$*"; }
-  _adopt_v2_chain() { return 0; }
+  # T13 slice2 fix-round (F3): same faithful stub as case2 -- rebuild
+  # candidate_arms from the arbiter chain= CSV instead of the old no-op, so
+  # the assertion pins the ARBITER's pick (sonnet), not the pre-seeded
+  # candidate_arms[0] (glm).
+  _adopt_v2_chain() {  # <sig8> <site> <csv-chain> -> 0 when candidate_arms rebuilt
+    local _csv="$3" _a
+    local -a _tmp=() _norm=()
+    IFS=',' read -r -a _tmp <<< "${_csv}"
+    for _a in "${_tmp[@]}"; do
+      [[ -n "${_a}" ]] || continue
+      _norm+=("${_a#claude-}")
+    done
+    candidate_arms=("${_norm[@]}")
+    [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]:-}" ]]
+  }
   route_arbiter() { printf 'arm=sonnet model=sonnet tier=standard reason=cheapest_capable chain=sonnet util_glm=10\n'; return 0; }
   local sig8="case2bsig" kind="code" task_class="standard" candidate="glm"
   local -a candidate_arms=(glm codex sonnet) attempted=()
   local LAST_ARM_OUTCOME="exit76_receipt" _fallback_from="" _fallback_reason="" arm="" router_label="" _reenter=""
   emitted=""
   extract_exit76_continuation "$s" || return 2
-  [[ "${_reenter:-}" == "1" && "${arm:-}" == "glm" ]] || return 1
-  printf '%s\n' "$emitted" | grep -q 'route_headroom_chosen task=case2bsig arm=glm after=exit76_continuation'
+  # arm MUST be the arbiter's pick (sonnet): the block sets
+  # arm="${candidate_arms[0]}" AFTER adopting chain=sonnet, so a no-op adopt
+  # stub leaves arm=glm (the pre-seeded head) and this goes red.
+  [[ "${_reenter:-}" == "1" && "${arm:-}" == "sonnet" ]] || return 1
+  printf '%s\n' "$emitted" | grep -q 'route_headroom_chosen task=case2bsig arm=sonnet after=exit76_continuation ordered=sonnet'
 }
 if case2b "$DISPATCH"; then pass "exit76_receipt continuation re-arbitrates over remaining candidates and sets _reenter"; else fail "exit76 continuation wiring did not re-arbitrate on exit76_receipt"; fi
 
@@ -233,7 +274,7 @@ YAML
 }
 
 case3() { # <lanes-snapshot-path> -> 0 pass
-  local lanes="$1" repo state active_path q_dir still_present
+  local lanes="$1" repo state active_path q_dir still_present tomb_path tombs
   read -r repo state active_path q_dir < <(setup_abandon_fixture)
   LEADV2_PROJECT_ROOT="$repo" CLAUDE_PROJECT_DIR="$repo" LEADV2_STATE_ROOT="$state" \
     LEADV2_SUPERVISE_OBSERVE_ONLY=0 bash "$lanes" --json >/dev/null 2>&1 || { rm -rf "$repo" "$state"; return 2; }
@@ -244,6 +285,19 @@ print(any(s.get('task_id')=='ABANDON-1' for s in d.get('sessions', [])))
 ")"
   local rc=0
   [[ "$still_present" == "False" ]] || rc=1
+  # T13 slice2 fix-round (F2): the deregistration must leave an ABANDON
+  # tombstone behind (the file's own R2-4 contract: tombstone FIRST, prune
+  # SECOND) -- a bare row delete with no tombstone is exactly the reviewed bug.
+  tomb_path="$(LEADV2_PROJECT_ROOT="$repo" LEADV2_STATE_ROOT="$state" PROJECT_ROOT="$repo" bash "$STATE_PATH_SH" tombstones.yaml)"
+  tombs="$(python3 -c "
+import yaml
+try:
+    d = yaml.safe_load(open('${tomb_path}')) or []
+except Exception:
+    d = []
+print(any(isinstance(t, dict) and t.get('task_id')=='ABANDON-1' and t.get('abandon') for t in d))
+")"
+  [[ "$tombs" == "True" ]] || rc=1
   rm -rf "$repo" "$state"
   return "$rc"
 }
@@ -289,6 +343,29 @@ open(dst, 'w').writelines(mutated)
 PY
 if case3 "$MUT3"; then fail "NEGATIVE CONTROL 3: mutated lanes-snapshot (abandon consume removed) unexpectedly still passed"; else pass "NEGATIVE CONTROL 3: mutated lanes-snapshot (abandon consume removed) correctly fails case3"; fi
 
+# Negative control (F2): a scratch lanes-snapshot copy with the abandon
+# TOMBSTONE writer excised -- pruning directly off _ab_ids, the exact pre-F2
+# shape (row deleted, no ABANDON entry in tombstones.yaml) -- must fail
+# case3's tombstone assertion.
+MUT3B="${TMP}/lanes-snapshot.mutated3b.sh"
+python3 - "$LANES_SH" "$MUT3B" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+lines = open(src).read().splitlines(keepends=True)
+start = end = None
+for i, l in enumerate(lines):
+    if '# Tombstone FIRST (R2-4 order' in l:
+        start = i
+    if start is not None and '_ab_tombstoned = []' in l and i > start:
+        end = i
+        break
+assert start is not None and end is not None and end > start, "could not locate abandon tombstone writer to mutate"
+# Pre-F2 shape: no tombstone write at all; every abandon id is pruned directly.
+mutated = lines[:start] + ['            _ab_tombstoned = sorted(_ab_ids)\n'] + lines[end + 1:]
+open(dst, 'w').writelines(mutated)
+PY
+if case3 "$MUT3B"; then fail "NEGATIVE CONTROL 3b: mutated lanes-snapshot (abandon tombstone writer removed) unexpectedly still passed"; else pass "NEGATIVE CONTROL 3b: mutated lanes-snapshot (abandon tombstone writer removed) correctly fails case3"; fi
+
 # ── Case 4: phased-path-only invariant (PHASES-ARE-THE-ONLY-PATH-01) ───────
 # Trace finding (T13 slice2 C1): leadv2-dispatch-code.sh's CLI already exposes
 # exactly one code-writing entrypoint, and PHASES-ARE-THE-ONLY-PATH-01 already
@@ -300,7 +377,9 @@ if case3 "$MUT3"; then fail "NEGATIVE CONTROL 3: mutated lanes-snapshot (abandon
 #       subcommands (no legacy/bypass subcommand reaching a worker directly).
 #   4b. every spawn_worker call site is preceded, in the same function body,
 #       by a PHASE_RECORD_BIN build-phase record -- no path launches a worker
-#       without first recording it in the phase pipeline.
+#       without first recording it in the phase pipeline. Fix-round F4: the
+#       same window must also contain a `route_arbiter worker` call -- no
+#       spawn path may select its arm arbiter-free (pre-F1 advance-arm shape).
 case4a_cli_surface() { # <script> -> 0 pass
   local s="$1" cases
   # Plain-string match (not a regex) on the case-open line -- BSD/mawk both choke on the
@@ -327,10 +406,14 @@ MUT4A="${TMP}/dispatch.mutated4a.sh"
 sed 's/^  sweep)/  legacy-quick-dispatch) shift; cmd_resolve "$@" ;;\n  sweep)/' "$DISPATCH" > "$MUT4A"
 if case4a_cli_surface "$MUT4A"; then fail "NEGATIVE CONTROL 4a: mutated dispatch (bogus bypass subcommand injected) unexpectedly still passed"; else pass "NEGATIVE CONTROL 4a: mutated dispatch (bogus bypass subcommand injected) correctly fails the CLI-surface scan"; fi
 
-case4b_spawn_gated() { # <script> -> 0 pass: every spawn_worker call is preceded by build-phase
-  # gating -- either an explicit PHASE_RECORD_BIN build record, or a
+case4b_spawn_gated() { # <script> -> 0 pass: every spawn_worker call is preceded by BOTH
+  # build-phase gating -- an explicit PHASE_RECORD_BIN build record, or a
   # _phase_precondition_guard call (which itself shells to `PHASE_RECORD_BIN assert` and can
-  # refuse before the spawn is ever reached -- PHASES-ARE-THE-ONLY-PATH-01's actual gate).
+  # refuse before the spawn is ever reached -- PHASES-ARE-THE-ONLY-PATH-01's actual gate) --
+  # AND a `route_arbiter worker` call in the same window (T13 slice2 fix-round F4: an
+  # arbiter-free arm selection -- the pre-F1 advance-arm shape, spawning a static
+  # CSV-position pick with no arbiter call -- is a bypass of the ONE PATH routing
+  # contract exactly like a missing phase record, and the scan must flag it).
   # When the spawn lives inside a single-call-site helper (e.g.
   # atomic_dispatch_reserve_spawn_confirm), the window is extended backward through that one
   # caller into ITS enclosing function too, since the gating evidence lives at the call site,
@@ -354,7 +437,9 @@ def enclosing_func_start(idx):
     return best
 
 def gated(window):
-    return any(('PHASE_RECORD_BIN' in l and 'build' in l) or '_phase_precondition_guard' in l for l in window)
+    phase_gated = any(('PHASE_RECORD_BIN' in l and 'build' in l) or '_phase_precondition_guard' in l for l in window)
+    arbitered = any('route_arbiter worker' in l for l in window)
+    return phase_gated and arbitered
 
 spawn_calls = [i for i, l in enumerate(lines) if 'spawn_worker "' in l and l.strip().startswith(('spawn_out=', 'local spawn_out'))]
 if not spawn_calls:
@@ -383,7 +468,7 @@ for idx in spawn_calls:
 sys.exit(0 if ok else 1)
 PY
 }
-if case4b_spawn_gated "$DISPATCH"; then pass "every spawn_worker call site is preceded by a build-phase PHASE_RECORD_BIN record"; else fail "a spawn_worker call site launches a worker without a build-phase record (bypass path)"; fi
+if case4b_spawn_gated "$DISPATCH"; then pass "every spawn_worker call site is preceded by a build-phase record AND a route_arbiter worker call"; else fail "a spawn_worker call site launches a worker without a build-phase record or an arbiter-gated arm selection (bypass path)"; fi
 
 # Negative control: strip the _phase_precondition_guard call that gates
 # cmd_advance_arm's spawn_worker call (the actual pre-spawn gate on this path -- the
@@ -392,6 +477,17 @@ if case4b_spawn_gated "$DISPATCH"; then pass "every spawn_worker call site is pr
 MUT4B="${TMP}/dispatch.mutated4b.sh"
 sed '/^  _phase_precondition_guard "\${sig8}" "\${_adv_class}"/d' "$DISPATCH" > "$MUT4B"
 if case4b_spawn_gated "$MUT4B"; then fail "NEGATIVE CONTROL 4b: mutated dispatch (cmd_advance_arm precondition guard stripped) unexpectedly still passed"; else pass "NEGATIVE CONTROL 4b: mutated dispatch (cmd_advance_arm precondition guard stripped) correctly fails the spawn-gating scan"; fi
+
+# Negative control (F4): REVERT F1 in a scratch copy -- replace advance-arm's
+# route_arbiter call with a broken no-op, restoring the pre-fix arbiter-free
+# static-pick spawn -- and the same scan must catch it.
+MUT4C="${TMP}/dispatch.mutated4c.sh"
+sed 's|_adv_out="$(route_arbiter worker "${_adv_desc}")"; _adv_rc=$?|_adv_out=""; _adv_rc=1|' "$DISPATCH" > "$MUT4C"
+if grep -q '_adv_out=""; _adv_rc=1' "$MUT4C"; then
+  if case4b_spawn_gated "$MUT4C"; then fail "NEGATIVE CONTROL 4c: mutated dispatch (F1 reverted: advance-arm arbiter call broken) unexpectedly still passed"; else pass "NEGATIVE CONTROL 4c: mutated dispatch (F1 reverted: advance-arm arbiter call broken) correctly fails the spawn-gating scan"; fi
+else
+  fail "NEGATIVE CONTROL 4c: could not build the F1-reverted scratch copy (mutation pattern not found)"
+fi
 
 printf '\n[SUMMARY] PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

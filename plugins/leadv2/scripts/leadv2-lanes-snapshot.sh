@@ -1161,6 +1161,13 @@ if cp_questions_dir and os.path.isdir(cp_questions_dir):
 # retained as the durable answer receipt; only the in-flight registration is
 # removed.  The identical active-registry lock makes this race-safe with a
 # live lane refresh, and a failed write leaves both row and answer visible.
+# T13 slice2 fix-round (F2, review): this block used to delete the active.yaml
+# row DIRECTLY, bypassing the file's own R2-4 contract (tombstone FIRST, prune
+# SECOND -- see the dead-row prune above): an abandoned lane left no historical
+# record at all. The deletion now goes through the same tombstone path -- an
+# ABANDON entry is durably written to tombstones.yaml under its lock BEFORE the
+# row is pruned, and only ids whose tombstone write succeeded are removed from
+# active.yaml (a tombstone failure keeps the row live and surfaces a warning).
 abandoned_ids = []
 if abandon_answers and not observe_only:
     try:
@@ -1172,12 +1179,54 @@ if abandon_answers and not observe_only:
                 _ab_data = yaml.safe_load(_ab_fh) or {}
             _ab_sessions = _ab_data.get("sessions") or []
             _ab_ids = {tid for tid, _qf in abandon_answers}
-            _ab_data["sessions"] = [s for s in _ab_sessions if s.get("task_id") not in _ab_ids]
+            # Tombstone FIRST (R2-4 order, mirrored from the dead-row prune
+            # writer above -- same lock file, same tmp+replace durability).
+            _ab_tombstoned = []
+            try:
+                _ab_tlock = tombstones_file + ".lock"
+                os.makedirs(os.path.dirname(tombstones_file), exist_ok=True)
+                with open(_ab_tlock, "a+") as _ab_tlf:
+                    _ab_fcntl.flock(_ab_tlf, _ab_fcntl.LOCK_EX)
+                    _ab_existing = []
+                    if os.path.isfile(tombstones_file):
+                        try:
+                            with open(tombstones_file, encoding="utf-8") as _ab_tf:
+                                _ab_existing = yaml.safe_load(_ab_tf) or []
+                            if not isinstance(_ab_existing, list):
+                                _ab_existing = []
+                        except Exception:
+                            _ab_existing = []
+                    for _ab_tid in sorted(_ab_ids):
+                        _ab_last = next((s for s in _ab_sessions if s.get("task_id") == _ab_tid), {})
+                        _ab_existing.append({
+                            "task_id": _ab_tid, "tombstoned_at": now_iso(),
+                            "reasons": ["abandon: answered dead-lane escalation"],
+                            "last_state": dict(_ab_last),
+                            "log_path": _ab_last.get("log_path"),
+                            "abandon": True,
+                        })
+                    _ab_ttmp = tombstones_file + f".tmp.{os.getpid()}"
+                    with open(_ab_ttmp, "w", encoding="utf-8") as _ab_tout:
+                        yaml.dump(_ab_existing, _ab_tout, default_flow_style=False, sort_keys=False)
+                    os.replace(_ab_ttmp, tombstones_file)
+                    _ab_tombstoned = sorted(_ab_ids)
+            except OSError as e:
+                # Tombstone write failed — do NOT prune. Rows stay in
+                # active.yaml this cycle; loud warning, never a silent
+                # permanent delete with no tombstone (R2-4 contract).
+                warnings.append(
+                    f"abandon tombstone write failed for {sorted(_ab_ids)} "
+                    f"({e.__class__.__name__}: {e}) — row(s) KEPT, abandon prune skipped"
+                )
+                _ab_tombstoned = []
+            # Prune SECOND — only tombstone-confirmed ids.
+            _ab_prune = set(_ab_tombstoned)
+            _ab_data["sessions"] = [s for s in _ab_sessions if s.get("task_id") not in _ab_prune]
             _ab_tmp = active_yaml + f".abandon.{os.getpid()}"
             with open(_ab_tmp, "w", encoding="utf-8") as _ab_out:
                 yaml.safe_dump(_ab_data, _ab_out, default_flow_style=False, sort_keys=False)
             os.replace(_ab_tmp, active_yaml)
-            abandoned_ids = sorted(_ab_ids)
+            abandoned_ids = sorted(_ab_prune)
     except Exception as e:
         warnings.append(f"abandon deregistration failed: {e.__class__.__name__}: {e}")
 

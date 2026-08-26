@@ -6,7 +6,14 @@
 # ONE PATH (T13-SLICE2-01, 2026-08-26): this script IS the canonical dispatch door -- every
 # out-of-pipeline spawn (atomic_dispatch_reserve_spawn_confirm, atomic_dispatch_reserve_
 # confirm_opus, cmd_advance_arm) resolves its model and records its build-phase gate here, in
-# one of these three call sites, and nowhere else. leadv2-fanout.sh / leadv2-fanout-lane-
+# one of these three call sites, and nowhere else. Arm SELECTION at those spawn sites is
+# route_arbiter-gated at exactly FOUR sites, all in this file: cmd_resolve's initial
+# candidate-chain resolve (T17 primary), its bench-fallback re-entry (ARBITER-BENCH-FALLBACK-
+# GAP-01), its exit76_receipt continuation (T13-SLICE1 W3), and cmd_advance_arm's arm_advance
+# re-arbitration (T13 slice2 fix-round F1) -- no spawn path may pick an arm by static chain
+# position alone; the arbiter re-runs over the remaining arms and journals
+# route_headroom_chosen before the spawn, failing open to the static pick only on an arbiter
+# fault. leadv2-fanout.sh / leadv2-fanout-lane-
 # launcher.sh are NOT a second dispatch path or supervisor-only leftovers -- they are the
 # daemon self-spawn backend (leadv2-self-spawn.sh via leadv2-session-spawner.sh,
 # LEADV2_DAEMON=1) and the fork-session backend, and both DELEGATE into this funnel for the
@@ -6848,6 +6855,32 @@ ${mission}"
 # this sig8 in the dispatch_reserve/confirm ledger (dispatch_ledger_file, NOT the terminal
 # ledger) -- that row is this function's proof the sig8 legitimately belongs to a lane
 # that already went through admission once.
+#
+# T13 slice2 fix-round (F1): bash-3.2-safe CSV suffix walk, mirroring
+# _pc_next_arm_in_chain in leadv2-dispatch-product-close.sh. Returns the
+# comma-joined suffix of <chain_csv> starting AT <arm> (inclusive) -- the arms
+# not yet tried when the close gate advances a chain -- or rc1 when <arm> is
+# absent from the chain or the chain is empty. Runs positionally clobbering
+# (`set --`); call it in a command substitution like the product-close twin.
+_advance_remaining_chain() {  # <chain_csv> <arm> -> stdout csv suffix; rc1 if arm not in chain
+  local chain="$1" want="$2" tok out="" found=0
+  [[ -n "${chain}" && -n "${want}" ]] || return 1
+  local _oldifs="${IFS}"
+  IFS=','
+  set -- ${chain}
+  IFS="${_oldifs}"
+  for tok in "$@"; do
+    tok="${tok#"${tok%%[![:space:]]*}"}"; tok="${tok%"${tok##*[![:space:]]}"}"
+    [[ -z "${tok}" ]] && continue
+    [[ ${found} -eq 0 && "${tok}" == "${want}" ]] && found=1
+    if [[ ${found} -eq 1 ]]; then
+      [[ -n "${out}" ]] && out="${out},${tok}" || out="${tok}"
+    fi
+  done
+  [[ ${found} -eq 1 && -n "${out}" ]] || return 1
+  printf '%s' "${out}"
+}
+
 cmd_advance_arm() {
   local sig8="" arm="" mission_file="" task_id="" worktree="" writes=""
   local -a phase_waivers=()
@@ -6902,6 +6935,43 @@ cmd_advance_arm() {
   local mission
   mission="$(cat "${mission_file}" 2>/dev/null)"
   [[ -n "${worktree}" && -d "${worktree}" ]] && WORK_ROOT="${worktree}"
+
+  # T13 slice2 fix-round (F1, review): the --arm the close gate passes here is
+  # a static CSV-position walk (_pc_next_arm_in_chain in product-close) -- this
+  # spawn used to consume it directly, making advance-arm a 4th arm-SELECTION
+  # point with no route_arbiter call. Gate it exactly like the other spawn
+  # sites (initial resolve / bench-fallback / exit76 continuation): re-
+  # arbitrate (worker role) over the REMAINING chain arms -- the suffix from
+  # the proposed arm onward -- adopt the arbiter chain through _adopt_v2_chain
+  # (same DISPATCHABLE_BUILD_ARMS filter as every adoption site), journal
+  # route_headroom_chosen, and spawn candidate_arms[0]. An arbiter fault
+  # (missing/broken/capped/chain-not-dispatchable) fails OPEN to the caller's
+  # static pick -- the same fail-open-to-ladder contract as every other site.
+  local -a candidate_arms=()
+  local _adv_chain="${LEADV2_DISPATCH_CANDIDATE_ARMS:-}"
+  if [[ -z "${_adv_chain}" ]]; then
+    _adv_chain="$(bash "${JOURNAL_BIN}" tail "${sig8}" 100000 2>/dev/null | \
+      grep -F "candidate_chain task=${sig8} arms=" | tail -1 | sed -n 's/.*arms=//p')"
+  fi
+  local _adv_remaining
+  if _adv_remaining="$(_advance_remaining_chain "${_adv_chain}" "${arm}")" && [[ -n "${_adv_remaining}" ]] \
+     && declare -F route_arbiter >/dev/null 2>&1; then
+    local _adv_desc _adv_out _adv_rc _adv_arm _adv_chainout _adv_util
+    _adv_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":"code","size":sys.argv[1],"allowed_arms":[x for x in sys.argv[2].split(",") if x]}))' \
+      "$(printf '%s' "${_adv_class:-standard}" | tr '[:upper:]' '[:lower:]')" "${_adv_remaining}")"
+    _adv_out="$(route_arbiter worker "${_adv_desc}")"; _adv_rc=$?
+    _adv_arm="$(printf '%s\n' "${_adv_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
+    _adv_chainout="$(printf '%s\n' "${_adv_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
+    _adv_util="$(printf '%s\n' "${_adv_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
+    if [[ ${_adv_rc} -eq 0 && -n "${_adv_arm}" && "${_adv_arm}" != refuse ]] \
+       && _adopt_v2_chain "${sig8}" arm_advance "${_adv_chainout:-${_adv_arm}}"; then
+      arm="${candidate_arms[0]}"
+      emit decision "route_headroom_chosen task=${sig8} arm=${arm} after=arm_advance ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") source=arbiter arbiter_pick=${_adv_arm} ${_adv_util}"
+    else
+      emit decision "arbiter_broken task=${sig8} rc=${_adv_rc} reason=arm_advance_fail_open_to_static_pick fallback=${arm}"
+      candidate_arms=()
+    fi
+  fi
 
   local spawn_out src
   spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
