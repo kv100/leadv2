@@ -30,6 +30,18 @@ readonly FREEPOOL_WINDOW_N="${FREEPOOL_GATE_WINDOW_N:-20}"
 readonly FREEPOOL_ERROR_RATE_MAX="${FREEPOOL_GATE_ERROR_RATE_MAX:-0.30}"
 readonly FREEPOOL_LATENCY_P95_MAX_S="${FREEPOOL_GATE_LATENCY_P95_MAX_S:-60}"
 readonly FREEPOOL_HEALTH_TIMEOUT_S="${FREEPOOL_GATE_HEALTH_TIMEOUT_S:-5}"
+# FREEPOOL-GATE-STALE-WINDOW-01: without a TTL, a burst of old failures sits
+# in the rolling window forever once traffic goes idle (nothing ever pushes
+# them out of the last-N slice), pinning error_rate=1.00 permanently even
+# after the arm recovers. Entries older than this are dropped from the
+# window AT READ TIME (record_result still appends raw, unfiltered — the TTL
+# is a read-side view, not a write-side prune, so no state is lost if the
+# window widens later).
+readonly FREEPOOL_WINDOW_TTL_S="${FREEPOOL_GATE_WINDOW_TTL_S:-1800}"
+# When TTL-filtering leaves the window empty, a stale-only window must not
+# silently pass (that's exactly the bug: no fresh evidence either way). One
+# live health probe substitutes for evidence instead of a blind pass.
+readonly FREEPOOL_STALE_PROBE_TIMEOUT_S="${FREEPOOL_GATE_STALE_PROBE_TIMEOUT_S:-3}"
 
 log_err() { echo "[freepool-gate] $*" >&2; }
 
@@ -70,39 +82,71 @@ check_liveness() {
   [[ "${code}" =~ ^2[0-9][0-9]$ ]]
 }
 
-# check_rolling_window -> 0 within thresholds, 1 breached. Fail-open (prints
-# nothing, returns 0) on any parse error — a broken reader must never itself
-# become a reason to refuse.
+# check_liveness_now -> like check_liveness but with the shorter stale-window
+# probe timeout, used only from the empty-after-TTL path below (kept
+# separate from check_liveness so the two call sites can be tuned/logged
+# independently without one silently changing the other's behavior).
+check_liveness_now() {
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${FREEPOOL_STALE_PROBE_TIMEOUT_S}" \
+    "${FREEPOOL_HEALTH_URL}" 2>/dev/null || echo "000")"
+  [[ "${code}" =~ ^2[0-9][0-9]$ ]]
+}
+
+# check_rolling_window -> 0 within thresholds, 1 breached, 4 window empty
+# after TTL filtering (caller must live-probe). Fail-open (prints nothing,
+# returns 0) on any parse error — a broken reader must never itself become a
+# reason to refuse.
 check_rolling_window() {
   _ensure_state_file
   python3 - "${FREEPOOL_STATE_FILE}" "${FREEPOOL_WINDOW_N}" \
-    "${FREEPOOL_ERROR_RATE_MAX}" "${FREEPOOL_LATENCY_P95_MAX_S}" <<'PYEOF' 2>/dev/null || exit 0
-import json, sys
+    "${FREEPOOL_ERROR_RATE_MAX}" "${FREEPOOL_LATENCY_P95_MAX_S}" "${FREEPOOL_WINDOW_TTL_S}" <<'PYEOF' 2>/dev/null
+import json, sys, time
 
-path, window_n, err_max, lat_max = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
+path, window_n, err_max, lat_max, ttl_s = (
+    sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
+)
 try:
     with open(path) as f:
         data = json.load(f)
-    results = data.get("results", [])[-window_n:]
+    all_results = data.get("results", [])
 except Exception:
     sys.exit(0)  # fail-open: no/garbled state == no evidence of breach
 
-if not results:
+try:
+    now = time.time()
+    # Entries with no ts (older schema, pre-TTL) are treated as fresh rather
+    # than dropped — an unknown age must not itself manufacture a breach or
+    # a probe.
+    fresh = [r for r in all_results if (now - r.get("ts", now)) <= ttl_s]
+    results = fresh[-window_n:]
+
+    if not results:
+        # Distinguish "never had any data" (still nothing to act on,
+        # fail-open) from "had data but all of it aged out" (exactly the
+        # stale-window bug — signal the caller to live-probe instead of
+        # passing blind).
+        sys.exit(4 if all_results else 0)
+
+    errors = sum(1 for r in results if not r.get("ok", True))
+    error_rate = errors / len(results)
+    latencies = sorted(r.get("latency_s", 0) for r in results)
+    p95_idx = max(0, int(len(latencies) * 0.95) - 1)
+    p95 = latencies[p95_idx] if latencies else 0
+
+    if error_rate > err_max:
+        print(f"error_rate={error_rate:.2f} > max={err_max}")
+        sys.exit(2)
+    if p95 > lat_max:
+        print(f"latency_p95={p95:.1f}s > max={lat_max}s")
+        sys.exit(3)
     sys.exit(0)
-
-errors = sum(1 for r in results if not r.get("ok", True))
-error_rate = errors / len(results)
-latencies = sorted(r.get("latency_s", 0) for r in results)
-p95_idx = max(0, int(len(latencies) * 0.95) - 1)
-p95 = latencies[p95_idx] if latencies else 0
-
-if error_rate > err_max:
-    print(f"error_rate={error_rate:.2f} > max={err_max}")
-    sys.exit(2)
-if p95 > lat_max:
-    print(f"latency_p95={p95:.1f}s > max={lat_max}s")
-    sys.exit(3)
-sys.exit(0)
+except SystemExit:
+    raise
+except Exception:
+    # A crash in the computation itself is not evidence of a breach —
+    # fail-open, same contract as the outer json-load try/except.
+    sys.exit(0)
 PYEOF
 }
 
@@ -148,9 +192,15 @@ main() {
       if ! check_pin_drift; then
         refuse "pin_drift"
       fi
-      local breach
-      breach="$(check_rolling_window)" || true
-      if [[ -n "${breach}" ]]; then
+      local breach rc
+      rc=0
+      breach="$(check_rolling_window)" || rc=$?
+      if (( rc == 4 )); then
+        log_err "rolling window empty after ${FREEPOOL_WINDOW_TTL_S}s TTL filtering — live-probing instead of passing blind"
+        if ! check_liveness_now; then
+          refuse "arm_down"
+        fi
+      elif (( rc != 0 )); then
         log_err "rolling window breach: ${breach}"
         refuse "gate_broken"
       fi
