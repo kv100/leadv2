@@ -38,18 +38,27 @@ from pathlib import Path
 # review arm (see kimi_review_available below) — only build dispatch retired.
 # The launcher-side vocabulary mirror is _candidate_chain_for_arm in
 # leadv2-dispatch-code.sh; both lists must agree.
-DEFAULT_BUILD_SPILL = ["glm", "codex", "sonnet"]
+# T19 (founder decision 2026-08-26): freepool joins the tail of the bulk spill
+# chain, replacing kimi's old bulk position (glm -> codex -> sonnet -> freepool).
+# Its own admission gate (leadv2-freepool-gate.sh) refuses independently of
+# quota, so the spill walk below never needs a freepool-specific quota read --
+# an arm_down/gate_broken freepool is simply skipped like a filtered-out arm.
+DEFAULT_BUILD_SPILL = ["glm", "codex", "sonnet", "freepool"]
 
 # Launcher vocabulary: the set of arms the dispatcher can actually run as
 # primary build arms. Applied to the spill walk so a stale tenant yaml that
 # still lists a retired arm (e.g. kimi) cannot resurrect it. Must match the
 # case-rows in _candidate_chain_for_arm (leadv2-dispatch-code.sh).
-DISPATCHABLE_BUILD_ARMS = {"glm", "codex", "sonnet"}
+DISPATCHABLE_BUILD_ARMS = {"glm", "codex", "sonnet", "freepool"}
 
 # PLANNER-MODELS-DECISION-01: glm and kimi are build-only and are never admitted
 # to a planning role. Role decides the SET; the ladder still decides the ORDER.
+# T19: freepool is build-only too -- never a planning arm, same reasoning as glm.
 DISPATCHABLE_PLAN_ARMS = {"codex", "sonnet", "opus", "fable"}
-DEFAULT_REVIEW_EXCLUSIONS = ["glm"]
+# T19: freepool is excluded from ever being the review arm, same as glm --
+# a review gate is mandatory on every diff (Codex/Opus), never the arm
+# reviewing its own diff.
+DEFAULT_REVIEW_EXCLUSIONS = ["glm", "freepool"]
 DEFAULT_BUILD_THRESHOLD_PCT = 80.0
 DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
 
@@ -901,6 +910,19 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
                     continue
                 if job == "review" and a in exclusions:
                     continue
+                # T19 fix-round (review FAIL on 009d0b6, C1 required-fix #2):
+                # freepool is a third-party arm -- exclude it from this spill
+                # walk on a protected/safety task, mirroring the
+                # kimi:excluded:safety precedent above. The bash-side
+                # _build_candidate_chain filter (leadv2-dispatch-code.sh) is
+                # the authoritative guard for the full candidate chain; this
+                # is a second, independent guard in the resolver's own spill
+                # so a caller that only reads resolve_glm_policy()'s single
+                # `arm` (e.g. router.sh import mode, which does not go through
+                # the bash chain builder at all) cannot hand back freepool
+                # either.
+                if a == "freepool" and (signals.get("safety_touched") or signals.get("protected_path")):
+                    continue
                 if a != "sonnet" and quota_live_bin:
                     a_pct = _live_pct_for_arm(a, quota_live_bin)
                     if a_pct is not None and _num_ge(a_pct, threshold):
@@ -919,6 +941,19 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
     # win -- they carry the same memoized glm/anthropic values.
     if balance_readings is not None and not readings:
         readings = _fmt_readings(balance_readings[0], quota_codex_pct, balance_readings[1])
+
+    # T19 fix-round-2 (B-M3): the codex-quota-gate spill walk above already skips
+    # freepool on a protected/safety task, but that is reachable only through the
+    # gate's own blocked-arm branch -- a caller that hands `arm` back to us already
+    # equal to "freepool" (e.g. --base-arm freepool from router.sh's import mode,
+    # which never goes through the bash chain builder's own untrusted-arm filter)
+    # skipped every branch above (sonnet_exceptions is gated on base_arm=="glm")
+    # and would return freepool unfiltered. Make the refusal unconditional instead
+    # of only living inside the spill walk.
+    if arm == "freepool" and (signals.get("safety_touched") or signals.get("protected_path")):
+        arm = "sonnet"
+        rule, reason = "freepool_untrusted", "freepool_protected_refusal"
+        tier = ""
 
     result = {"arm": arm, "rule": rule, "reason": reason, "tier": tier,
               "codex_quota_blocked": codex_blocked, "job": job}

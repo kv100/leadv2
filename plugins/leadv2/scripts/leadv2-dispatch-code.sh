@@ -1771,13 +1771,26 @@ print(json.dumps({
 # Global arrays populated by _load_dispatch_ladder().
 _LADDER_IDS=()
 _LADDER_PROVIDERS=()
+_LADDER_UNTRUSTED=()
+_LADDER_WHEN=()
 
 # Read the dispatch_ladder from router: in the routing YAML.
-# Populates _LADDER_IDS and _LADDER_PROVIDERS. Falls back to the legacy
-# hardcoded order (glm,kimi,codex,sonnet) if the YAML or key is absent.
+# Populates _LADDER_IDS, _LADDER_PROVIDERS, _LADDER_UNTRUSTED and _LADDER_WHEN
+# (parallel arrays). Falls back to the legacy hardcoded order
+# (glm,kimi,codex,sonnet) if the YAML or key is absent.
+# T19 fix-round C1: _LADDER_UNTRUSTED carries each entry's `untrusted: true`
+# flag (third-party arms like freepool) so _build_candidate_chain can strip
+# them from a protected/safety chain by FACT, not by a hand-kept exclusion
+# list -- mirrors the `untrusted` reader added to leadv2-routing.yaml.
+# T19 fix-round C2: _LADDER_WHEN carries each entry's `when:` list
+# (comma-joined, e.g. "standard,bulk" or "all") so _build_candidate_chain can
+# enforce it against the dispatch's --task-class instead of it being a yaml
+# key nobody parses.
 _load_dispatch_ladder() {
   _LADDER_IDS=()
   _LADDER_PROVIDERS=()
+  _LADDER_UNTRUSTED=()
+  _LADDER_WHEN=()
   local _parsed
   _parsed="$(python3 -c '
 import sys, yaml
@@ -1792,12 +1805,59 @@ for e in ladder:
         continue
     if e.get("dispatch", True) is False:
         continue
-    print(eid + "\t" + e.get("provider", eid))
+    untrusted = "1" if e.get("untrusted") else "0"
+    when = e.get("when") or ["all"]
+    if isinstance(when, str):
+        when = [when]
+    when_field = ",".join(str(w) for w in when) or "all"
+    print(eid + "\t" + e.get("provider", eid) + "\t" + untrusted + "\t" + when_field)
 ' "${ROUTING_YAML}" 2>/dev/null)" || _parsed=""
+  # T19 fix-round (H2b / critic H3): ROUTING_YAML resolution above only falls
+  # back to the plugin's canonical yaml when the TENANT FILE ITSELF is absent.
+  # All 3 live tenant repos HAVE a .claude/ref/leadv2-routing.yaml, so that
+  # fallback never fires -- but none of those tenant files carry a
+  # router.dispatch_ladder key at all, so `_parsed` above comes back empty and
+  # this function fell straight to the legacy hardcoded order (glm codex
+  # sonnet), which has no freepool entry. Result: freepool was dead in every
+  # tenant repo regardless of the plugin yaml change, verified by grepping
+  # persona-engine's own routing yaml for `dispatch_ladder` (zero hits).
+  # Fix: when the resolved ROUTING_YAML has no dispatch_ladder key, retry
+  # against the plugin's own canonical yaml specifically for that key, before
+  # falling back to the hardcoded legacy order. A tenant yaml that DOES define
+  # its own dispatch_ladder (even a short one) is respected as-is -- this only
+  # covers the "key entirely absent" case, same semantics as the file-level
+  # fallback above.
+  if [[ -z "${_parsed}" ]]; then
+    _plugin_ladder_yaml="${LEADV2_ROUTING_YAML_PLUGIN_OVERRIDE:-${SCRIPT_DIR}/../config/leadv2-routing.yaml}"
+    if [[ -f "${_plugin_ladder_yaml}" && "${_plugin_ladder_yaml}" != "${ROUTING_YAML}" ]]; then
+      _parsed="$(python3 -c '
+import sys, yaml
+try:
+    d = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    sys.exit(1)
+ladder = (d.get("router") or {}).get("dispatch_ladder") or []
+for e in ladder:
+    eid = e.get("id", "")
+    if not eid:
+        continue
+    if e.get("dispatch", True) is False:
+        continue
+    untrusted = "1" if e.get("untrusted") else "0"
+    when = e.get("when") or ["all"]
+    if isinstance(when, str):
+        when = [when]
+    when_field = ",".join(str(w) for w in when) or "all"
+    print(eid + "\t" + e.get("provider", eid) + "\t" + untrusted + "\t" + when_field)
+' "${_plugin_ladder_yaml}" 2>/dev/null)" || _parsed=""
+    fi
+  fi
   if [[ -n "${_parsed}" ]]; then
-    while IFS=$'\t' read -r _id _prov; do
+    while IFS=$'\t' read -r _id _prov _untrusted _when; do
       _LADDER_IDS+=("${_id}")
       _LADDER_PROVIDERS+=("${_prov}")
+      _LADDER_UNTRUSTED+=("${_untrusted:-0}")
+      _LADDER_WHEN+=("${_when:-all}")
     done <<< "${_parsed}"
   fi
   # Fallback: legacy hardcoded order.
@@ -1809,11 +1869,20 @@ for e in ladder:
     # DISPATCH-KIMI-ARM-MISMATCH-01 / 3398d11).
     _LADDER_IDS=(glm codex sonnet)
     _LADDER_PROVIDERS=(glm codex anthropic)
+    _LADDER_UNTRUSTED=(0 0 0)
+    _LADDER_WHEN=(all all all)
   fi
 }
 
 # Build candidate_arms from the ladder: the resolved arm and every arm after
 # it in ladder order. If the arm is not in the ladder, return the full ladder.
+# T19 fix-round C1: once the positional chain is built, strip every arm
+# flagged `untrusted: true` in the ladder (e.g. freepool) whenever the task is
+# protected/safety-touched (DC_PROTECTED / DC_SAFETY env, same signals
+# resolve_arm() already reads) -- class-aware, applied at every chain
+# position, not just the primary-arm resolution. A named journal line makes
+# the skip a fact, not a silent drop; if the filter would empty the chain,
+# sonnet is kept as the fail-closed terminal arm.
 _build_candidate_chain() {  # <arm> <sig8> ; mutates candidate_arms
   local _arm="$1" _sig8="$2" _i _found=0
   candidate_arms=()
@@ -1830,6 +1899,59 @@ _build_candidate_chain() {  # <arm> <sig8> ; mutates candidate_arms
     emit decision "arm_vocabulary_mismatch by=router arm=${_arm} fallback=sonnet task=${_sig8} reason=launcher_unknown_arm"
     log_err "arm_vocabulary_mismatch: unknown arm=${_arm} for task=${_sig8}, falling back to sonnet"
   fi
+  if [[ "${DC_PROTECTED:-0}" == "1" || "${DC_SAFETY:-0}" == "1" ]]; then
+    local -a _trusted=()
+    local _cand _cand_i _cand_untrusted
+    for _cand in "${candidate_arms[@]}"; do
+      _cand_untrusted=0
+      for _cand_i in "${!_LADDER_IDS[@]}"; do
+        if [[ "${_LADDER_IDS[$_cand_i]}" == "${_cand}" ]]; then
+          _cand_untrusted="${_LADDER_UNTRUSTED[$_cand_i]:-0}"
+          break
+        fi
+      done
+      if [[ "${_cand_untrusted}" == "1" ]]; then
+        emit decision "arm_excluded by=router arm=${_cand} task=${_sig8} reason=protected_path"
+        continue
+      fi
+      _trusted+=("${_cand}")
+    done
+    [[ ${#_trusted[@]} -eq 0 ]] && _trusted=(sonnet)
+    candidate_arms=("${_trusted[@]}")
+  fi
+  # T19 fix-round C2: `when:` on a ladder entry (e.g. freepool's
+  # `when: [standard, bulk]`) previously had no reader -- every task class,
+  # Heavy included, could spill to it. Enforce it against --task-class
+  # (DC_TASK_CLASS env, lowercased; defaults to "standard" -- see cmd_resolve).
+  # An entry's when list of "all" is always eligible; an unset/empty when list
+  # is treated as "all" too (matches the loader's own default), so this can
+  # never regress an arm that never declared a when constraint.
+  local _size_class="${DC_TASK_CLASS:-standard}"
+  _size_class="${_size_class,,}"
+  local -a _sized=()
+  local _s_cand _s_i _s_when _s_ok
+  for _s_cand in "${candidate_arms[@]}"; do
+    _s_when="all"
+    for _s_i in "${!_LADDER_IDS[@]}"; do
+      if [[ "${_LADDER_IDS[$_s_i]}" == "${_s_cand}" ]]; then
+        _s_when="${_LADDER_WHEN[$_s_i]:-all}"
+        break
+      fi
+    done
+    _s_ok=0
+    if [[ -z "${_s_when}" || ",${_s_when}," == *",all,"* ]]; then
+      _s_ok=1
+    elif [[ ",${_s_when}," == *",${_size_class},"* ]]; then
+      _s_ok=1
+    fi
+    if [[ "${_s_ok}" != "1" ]]; then
+      emit decision "arm_excluded by=router arm=${_s_cand} task=${_sig8} reason=arm_not_capable_for_size task_class=${_size_class} when=${_s_when}"
+      continue
+    fi
+    _sized+=("${_s_cand}")
+  done
+  [[ ${#_sized[@]} -eq 0 ]] && _sized=(sonnet)
+  candidate_arms=("${_sized[@]}")
 }
 
 # Return the provider for a given arm id from the loaded ladder.
@@ -2397,6 +2519,18 @@ _dispatch_worker_liveness() {  # <arm> <handle> -> alive|dead|unknown (stdout)
       # `status` subcommand resolves the same run-dir its own `bg` call created.
       local raw status
       raw="$(bash "${KIMI_BIN}" status "${handle}" 2>/dev/null)" || { printf 'unknown'; return; }
+      status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
+      case "${status}" in
+        running)         printf 'alive' ;;
+        complete|failed) printf 'dead' ;;
+        *)               printf 'unknown' ;;
+      esac
+      ;;
+    freepool)
+      # T19: identical shape to the glm case above -- freepool-coder.sh's
+      # `status` subcommand resolves the same run-dir its own `bg` call created.
+      local raw status
+      raw="$(bash "${FREEPOOL_BIN}" status "${handle}" 2>/dev/null)" || { printf 'unknown'; return; }
       status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
       case "${status}" in
         running)         printf 'alive' ;;
@@ -3976,6 +4110,10 @@ PY
 GLM_BIN="${LEADV2_DISPATCH_GLM_BIN:-${SCRIPT_DIR}/glm-coder.sh}"
 # KIMI-CHANNEL-01: sibling launcher, same bg/status contract as glm-coder.sh.
 KIMI_BIN="${LEADV2_DISPATCH_KIMI_BIN:-${SCRIPT_DIR}/kimi-coder.sh}"
+# T19: sibling launcher, same bg/status contract as glm-coder.sh (clone,
+# pointed at the local freepool-proxy.sh instead of Z.AI). Own admission gate
+# (leadv2-freepool-gate.sh) refuses independently of quota -- arm_down/gate_broken.
+FREEPOOL_BIN="${LEADV2_DISPATCH_FREEPOOL_BIN:-${SCRIPT_DIR}/freepool-coder.sh}"
 SUBSESSION_BIN="${LEADV2_DISPATCH_SUBSESSION_BIN:-${SCRIPT_DIR}/claude-subsession.sh}"
 ARCHITECT_BIN="${LEADV2_DISPATCH_ARCHITECT_BIN:-${SUBSESSION_BIN}}"
 # codex-task.sh is the sanctioned Codex channel -- it already owns tier resolution
@@ -4149,7 +4287,8 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
   # launcher failure.
   if [[ -n "${marker}" && ( "${rc}" == "1" || "${rc}" == "2" \
         || ( "${arm}" == "kimi" && "${rc}" == "77" ) \
-        || ( "${arm}" == "glm" && "${rc}" == "75" ) ) ]]; then
+        || ( "${arm}" == "glm" && "${rc}" == "75" ) \
+        || ( "${arm}" == "freepool" && "${rc}" == "75" ) ) ]]; then
     printf '%s' "${marker}"
     return 0
   fi
@@ -4282,6 +4421,49 @@ _spawn_worker_body() {
         log_err "spawn(kimi) handle=${handle} has no live run record -- treating as launch failure"
         return 1
       fi
+      ;;
+    freepool)
+      # T19: sibling of the glm case above, same bg/status contract
+      # (freepool-coder.sh is a clone of glm-coder.sh, pointed at the local
+      # freepool-proxy.sh). Launch-probe refusal comes from its own
+      # leadv2-freepool-gate.sh (marker + rc 1 for gate_broken/arm_down, or rc
+      # 75 for the inherited lock_busy path) -- refusal_reason() already knows
+      # about both.
+      local _fp_spawn_start _fp_spawn_ok=0
+      _fp_spawn_start="$(date +%s)"
+      out="$(bash "${FREEPOOL_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      err="$(tail -20 "${errf}" 2>/dev/null)"
+      if [[ ${rc} -ne 0 ]]; then
+        local refusal
+        refusal="$(refusal_reason "${arm}" "${rc}" "${out}" "${err}" || true)"
+        if [[ -n "${refusal}" ]]; then
+          LAST_ARM_OUTCOME="freepool_refused_${refusal}"
+          emit decision "arm_refused by=router model=freepool task=${sig8} reason=freepool_refused_${refusal}"
+          _maybe_record_quota_lockout "freepool" "${refusal}" "${out}"$'\n'"${err}"
+          log "spawn(freepool) refused: ${refusal}"
+          return 2
+        fi
+        emit decision "spawn_failed by=router model=freepool task=${sig8} rc=${rc} reason=launcher_nonzero_exit"
+        log_err "spawn(freepool) failed rc=${rc}: ${out} ${err}"
+        bash "${SCRIPT_DIR}/lib/leadv2-freepool-gate.sh" record 0 "$(( $(date +%s) - _fp_spawn_start ))" 2>/dev/null || true
+        return 1
+      fi
+      handle="$(printf '%s\n' "${out}" | tail -1)"
+      if [[ -z "${handle}" ]]; then
+        emit decision "spawn_failed by=router model=freepool task=${sig8} reason=empty_handle"
+        log_err "spawn(freepool) returned an empty handle -- treating as launch failure (no-op launcher?)"
+        return 1
+      fi
+      # Liveness: same shape as the glm arm's check above -- freepool-coder.sh's
+      # own `status` subcommand resolves the same run-dir this `bg` call used.
+      if ! bash "${FREEPOOL_BIN}" status "${handle}" >/dev/null 2>&1 9>&-; then
+        emit decision "spawn_failed by=router model=freepool task=${sig8} handle=${handle} reason=not_live"
+        log_err "spawn(freepool) handle=${handle} has no live run record -- treating as launch failure"
+        bash "${SCRIPT_DIR}/lib/leadv2-freepool-gate.sh" record 0 "$(( $(date +%s) - _fp_spawn_start ))" 2>/dev/null || true
+        return 1
+      fi
+      _fp_spawn_ok=1
+      bash "${SCRIPT_DIR}/lib/leadv2-freepool-gate.sh" record "${_fp_spawn_ok}" "$(( $(date +%s) - _fp_spawn_start ))" 2>/dev/null || true
       ;;
     sonnet)
       local mfile
@@ -4485,9 +4667,10 @@ _spawn_worker_body() {
 _arm_status_probe() {  # <arm> <handle>
   local arm="$1" handle="$2" bin=""
   case "${arm}" in
-    codex) bin="${CODEX_BIN}" ;;
-    kimi)  bin="${KIMI_BIN}" ;;
-    glm)   bin="${GLM_BIN}" ;;
+    codex)    bin="${CODEX_BIN}" ;;
+    kimi)     bin="${KIMI_BIN}" ;;
+    glm)      bin="${GLM_BIN}" ;;
+    freepool) bin="${FREEPOOL_BIN}" ;;
     *)     return 1 ;;
   esac
   [[ -n "${bin}" && -f "${bin}" ]] || return 1
@@ -4547,9 +4730,10 @@ _arm_no_work_signal() {  # <arm> <raw_text>
 _arm_final_output() {  # <arm> <handle>
   local arm="$1" handle="$2" bin="" tail_n="${LEADV2_ARM_TAIL_LINES:-60}" raw logpath out
   case "${arm}" in
-    codex) bin="${CODEX_BIN}" ;;
-    kimi)  bin="${KIMI_BIN}" ;;
-    glm)   bin="${GLM_BIN}" ;;
+    codex)    bin="${CODEX_BIN}" ;;
+    kimi)     bin="${KIMI_BIN}" ;;
+    glm)      bin="${GLM_BIN}" ;;
+    freepool) bin="${FREEPOOL_BIN}" ;;
     *)     return 0 ;;
   esac
   [[ -n "${bin}" && -f "${bin}" ]] || return 0
@@ -5161,8 +5345,13 @@ usage() {
 Usage:
   $SCRIPT_NAME <mission|@file|-> [--protected] [--safety] [--subsystems N]
                 [--ui-judgment] [--interactive] [--kind <k>] [--glm-failures N]
-                [--glm-lock-busy] [--force] [--no-spawn]
+                [--glm-lock-busy] [--force] [--no-spawn] [--task-class <class>]
                 [--resume-lane <task-sig8|founder-id>] [--worktree <abs-path>]
+                --task-class <trivial|light|standard|heavy|strategic|bulk>: named task-size
+                class, consulted by the dispatch ladder's `when:` gate (e.g. freepool's
+                `when: [standard, bulk]`) so an untrusted third-party arm only ever sees the
+                task sizes it was actually approved for. Defaults to "Standard" for a caller
+                that never resolved a size class (today's behaviour, unchanged).
                 Resolve the code-writing model (glm|sonnet|codex) via routing.yaml glm_policy,
                 journal route_resolved, refuse a duplicate task-signature (ATOMIC; --force
                 never bypasses it), then LAUNCH the resolved worker and print its handle
@@ -5351,6 +5540,12 @@ cmd_resolve() {
       --interactive)  interactive=1; shift ;;
       --kind)         [[ $# -ge 2 ]] || { log_err "--kind requires a value"; usage; }
                       kind="$2"; shift 2 ;;
+      # T19 fix-round C2: named task-size class (trivial/light/standard/heavy/
+      # strategic/bulk), consulted by _build_candidate_chain against a ladder
+      # entry's `when:` list (e.g. freepool's `when: [standard, bulk]`).
+      # Defaults to "standard" -- callers that never pass this see no change.
+      --task-class)   [[ $# -ge 2 ]] || { log_err "--task-class requires a value"; usage; }
+                      task_class="$2"; shift 2 ;;
       --glm-failures) [[ $# -ge 2 ]] || { log_err "--glm-failures requires a value"; usage; }
                       glmfails="$2"; shift 2 ;;
       --glm-lock-busy) lockbusy=1;   shift ;;
@@ -5815,7 +6010,8 @@ exit is treated as an incident."
   # losing side of a race — only the ledger read+write needs to be atomic.
   export DC_PROTECTED="${protected}" DC_SAFETY="${safety}" DC_SUBSYSTEM_COUNT="${subsystems}" \
          DC_INTERACTIVE="${interactive}" DC_UI_JUDGMENT="${ui}" DC_KIND="${kind}" \
-         DC_GLM_FAILURES="${glmfails}" DC_GLM_LOCK_BUSY="${lockbusy}"
+         DC_GLM_FAILURES="${glmfails}" DC_GLM_LOCK_BUSY="${lockbusy}" \
+         DC_TASK_CLASS="${task_class}"
   local resolved arm rule reason tier readings router_label v2_eligible v2_ordered v2_headroom v2_vector v2_credits
   router_label="v1"
   if [[ "${LEADV2_ROUTER_V2:-0}" == "1" ]]; then
