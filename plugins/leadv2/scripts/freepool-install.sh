@@ -13,12 +13,29 @@ set -euo pipefail
 readonly FREEPOOL_REPO_URL="${FREEPOOL_REPO_URL:-https://github.com/Alishahryar1/free-claude-code.git}"
 readonly FREEPOOL_INSTALL_DIR="${FREEPOOL_INSTALL_DIR:-${HOME}/tools/free-claude-code}"
 readonly PIN_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/freepool-arm.yaml"
-# T19 fix-round (H2a): the commit actually reviewed/tested. Unset (empty)
-# means "not pinned yet" -- the script clones/keeps HEAD and warns instead of
-# silently trusting whatever the upstream default branch has drifted to.
-readonly PINNED_COMMIT="${PINNED_COMMIT:-}"
+# T19 fix-round-2 (B-H1): the commit actually reviewed/tested, resolved once via
+# `git ls-remote https://github.com/Alishahryar1/free-claude-code.git HEAD` on
+# 2026-08-26 and hardcoded here as the default -- the prior default (empty) meant
+# "install whatever the upstream default branch has drifted to and merely warn",
+# which is the opposite of what the pin file's own generated comment claimed
+# ("what was actually reviewed/tested"). A caller can still override PINNED_COMMIT
+# to move to a newly reviewed commit; FREEPOOL_ALLOW_UNPINNED=1 restores the old
+# "install unpinned HEAD" behaviour explicitly, for anyone who really wants it.
+# NOTE: `-` not `:-` -- a caller that explicitly sets PINNED_COMMIT="" (to ask
+# for an unpinned install) must stay empty and hit the refusal guard below;
+# `:-` would silently paper over that explicit empty back to the hardcoded
+# default, making the guard unreachable.
+readonly PINNED_COMMIT="${PINNED_COMMIT-6b3f16f41d4b06ab1320c0d0e71007392a676348}"
+readonly FREEPOOL_ALLOW_UNPINNED="${FREEPOOL_ALLOW_UNPINNED:-0}"
 
 log() { echo "[freepool-install] $*" >&2; }
+
+if [[ -z "${PINNED_COMMIT}" && "${FREEPOOL_ALLOW_UNPINNED}" != "1" ]]; then
+  log "refusing to install: PINNED_COMMIT is empty and FREEPOOL_ALLOW_UNPINNED != 1 --" \
+      "set PINNED_COMMIT=<sha> to a reviewed commit, or FREEPOOL_ALLOW_UNPINNED=1 to" \
+      "explicitly accept an unpinned install"
+  exit 1
+fi
 
 if [[ ! -d "${FREEPOOL_INSTALL_DIR}/.git" ]]; then
   log "cloning ${FREEPOOL_REPO_URL} -> ${FREEPOOL_INSTALL_DIR}"
@@ -32,8 +49,8 @@ if [[ -n "${PINNED_COMMIT}" ]]; then
   git -C "${FREEPOOL_INSTALL_DIR}" fetch --quiet origin "${PINNED_COMMIT}" 2>/dev/null || true
   git -C "${FREEPOOL_INSTALL_DIR}" checkout --quiet "${PINNED_COMMIT}"
 else
-  log "PINNED_COMMIT not set -- installing whatever commit is currently checked out" \
-      "(untested provenance; set PINNED_COMMIT=<sha> to pin to a reviewed commit before pip install)"
+  log "PINNED_COMMIT not set (FREEPOOL_ALLOW_UNPINNED=1) -- installing whatever commit is" \
+      "currently checked out (untested provenance)"
 fi
 
 if [[ ! -d "${FREEPOOL_INSTALL_DIR}/.venv" ]]; then

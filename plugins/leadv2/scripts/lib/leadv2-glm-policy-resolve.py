@@ -942,6 +942,19 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
     if balance_readings is not None and not readings:
         readings = _fmt_readings(balance_readings[0], quota_codex_pct, balance_readings[1])
 
+    # T19 fix-round-2 (B-M3): the codex-quota-gate spill walk above already skips
+    # freepool on a protected/safety task, but that is reachable only through the
+    # gate's own blocked-arm branch -- a caller that hands `arm` back to us already
+    # equal to "freepool" (e.g. --base-arm freepool from router.sh's import mode,
+    # which never goes through the bash chain builder's own untrusted-arm filter)
+    # skipped every branch above (sonnet_exceptions is gated on base_arm=="glm")
+    # and would return freepool unfiltered. Make the refusal unconditional instead
+    # of only living inside the spill walk.
+    if arm == "freepool" and (signals.get("safety_touched") or signals.get("protected_path")):
+        arm = "sonnet"
+        rule, reason = "freepool_untrusted", "freepool_protected_refusal"
+        tier = ""
+
     result = {"arm": arm, "rule": rule, "reason": reason, "tier": tier,
               "codex_quota_blocked": codex_blocked, "job": job}
     # Additive (PROVIDER-LOCKOUT-FALSE-BLOCK-01): present only when blocked.

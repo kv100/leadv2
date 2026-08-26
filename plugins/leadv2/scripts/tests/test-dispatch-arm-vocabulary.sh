@@ -317,7 +317,94 @@ BODY
     fail "case7: protected chain still reaches an untrusted arm (expected: 'sonnet', got: '$result')"
   fi
 }
-case7_protected_excludes_freepool
+# Case 8 (T19 fix-round-2 B-C1 negative control): a Heavy-classified task's
+# chain must NEVER contain freepool (ladder entry `when: [standard, bulk]`).
+# Declared here per repo doctrine so review can apply the mutation (delete the
+# DC_TASK_CLASS filter in _build_candidate_chain, or widen the freepool
+# ladder's `when:` to include heavy) inside the guard's body and see this
+# case go red. This proves the READER side; case9 proves a WRITER now feeds it.
+case8_heavy_excludes_freepool() {
+  local harness_script="$ROOT/harness-heavy.sh"
+  cat > "$harness_script" <<'HEAD'
+#!/usr/bin/env bash
+set -uo pipefail
+DC_TASK_CLASS="heavy"
+emit() { :; }
+log_err() { :; }
+log() { :; }
+HEAD
+  sed -n '/^_load_dispatch_ladder()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_dispatchable_arms()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_build_candidate_chain()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_arm_provider()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  sed -n '/^_filter_ladder_to_dispatchable()/,/^}$/p' "$DISPATCH" >> "$harness_script"
+  cat >> "$harness_script" <<'BODY'
+ROUTING_YAML="$1"
+SCRIPT_DIR="$2"
+_load_dispatch_ladder
+_filter_ladder_to_dispatchable "TEST0000"
+candidate_arms=()
+_build_candidate_chain "sonnet" "TEST0000"
+printf '%s\n' "${candidate_arms[*]}"
+BODY
+  local result
+  result="$(bash "$harness_script" "$ROUTING_YAML_FILE" "$SCRIPTS_ROOT")"
+  if [[ "$result" == "sonnet" ]]; then
+    pass "case8: heavy-classified chain excludes freepool (got: $result)"
+  else
+    fail "case8: heavy-classified chain still reaches freepool (expected: 'sonnet', got: '$result')"
+  fi
+}
+case8_heavy_excludes_freepool
+
+# Case 9 (T19 fix-round-2 B-C1 writer proof): --task-class is a real, parsed
+# CLI flag on cmd_resolve and it lands in DC_TASK_CLASS -- proving the WRITER
+# half (fanout now passes --task-class "$cls" at both call sites) has
+# somewhere real to land, not just a reader with no caller.
+case9_task_class_flag_sets_env() {
+  local out
+  out="$(
+    CLAUDE_PROJECT_ROOT="$REPO" \
+    LEADV2_PROJECT_ROOT="$REPO" \
+    LEADV2_DISPATCH_CACHE_DIR="$ROOT/cache-case9" \
+    LEADV2_DISPATCH_E2E_GATE=0 \
+    LEADV2_DISPATCH_REVIEW_GATE=0 \
+    LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+    LEADV2_ROUTER_V2=0 \
+    LEADV2_EXCLUDED_ARMS=__none__ \
+    LEADV2_LANE_SHAPE=off \
+    LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$ROOT/ledger-case9.tsv" \
+    LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
+    bash -x "$DISPATCH" 'test mission for task-class flag' --kind code --writes src/main.py --task-class Heavy 2>&1
+  )"
+  # NOTE: `printf ... | grep -q` under this file's `set -o pipefail` fails the
+  # pipeline on grep's early-exit SIGPIPE even when the match succeeds -- use
+  # a here-string (no pipe) instead.
+  if grep -q "DC_TASK_CLASS=Heavy" <<<"$out" \
+     && grep -q "arm_excluded.*arm=freepool.*reason=arm_not_capable_for_size" <<<"$out"; then
+    pass "case9: --task-class Heavy flows into DC_TASK_CLASS and excludes freepool"
+  else
+    fail "case9: --task-class Heavy did not surface in DC_TASK_CLASS / arm_excluded (dispatch trace had no match)"
+  fi
+}
+case9_task_class_flag_sets_env
+
+# Case 10 (T19 fix-round-2 B-C1 writer-existence proof): critic finding B-C1
+# was "the reader exists but there are ZERO callers anywhere that pass
+# --task-class". A live end-to-end fanout run is out of scope for this
+# hermetic suite (fanout spawns detached lane processes), so this is a
+# static assertion that both call sites now forward the resolved size class
+# -- if either regresses back to dropping it, this goes red.
+case10_fanout_forwards_task_class() {
+  local launcher="$SCRIPTS_ROOT/leadv2-fanout-lane-launcher.sh"
+  local fanout="$SCRIPTS_ROOT/leadv2-fanout.sh"
+  local ok=1
+  grep -q -- 'dc_args+=(--task-class' "$launcher" || { ok=0; fail "case10: leadv2-fanout-lane-launcher.sh no longer forwards --task-class"; }
+  grep -q -- 'dc_args+=(--task-class' "$fanout" || { ok=0; fail "case10: leadv2-fanout.sh (legacy dc_args path) no longer forwards --task-class"; }
+  [[ "$ok" == "1" ]] && pass "case10: both fanout call sites forward --task-class to dispatch-code.sh"
+}
+case10_fanout_forwards_task_class
+
 case5
 case6
 

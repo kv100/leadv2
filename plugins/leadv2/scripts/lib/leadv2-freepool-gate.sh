@@ -17,6 +17,13 @@
 set -euo pipefail
 
 readonly FREEPOOL_HEALTH_URL="${FREEPOOL_PROXY_URL:-http://127.0.0.1:8317}/health"
+# T19 fix-round-2 (B-H1): the pin file freepool-install.sh writes
+# (config/freepool-arm.yaml) previously had no reader anywhere -- a checkout that
+# drifted from the reviewed/pinned commit (upstream force-push, a manual `git pull`
+# in FREEPOOL_INSTALL_DIR, anything) was never detected. Compared against a live
+# `git -C $FREEPOOL_INSTALL_DIR rev-parse HEAD` on every gate check now.
+readonly FREEPOOL_PIN_FILE="${LEADV2_FREEPOOL_PIN_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/config/freepool-arm.yaml}"
+readonly FREEPOOL_INSTALL_DIR="${FREEPOOL_INSTALL_DIR:-${HOME}/tools/free-claude-code}"
 readonly FREEPOOL_STATE_DIR="${LEADV2_FREEPOOL_STATE_DIR:-${HOME}/.claude/leadv2-state}"
 readonly FREEPOOL_STATE_FILE="${FREEPOOL_STATE_DIR}/freepool-arm-state.json"
 readonly FREEPOOL_WINDOW_N="${FREEPOOL_GATE_WINDOW_N:-20}"
@@ -36,6 +43,23 @@ refuse() {
 _ensure_state_file() {
   mkdir -p "${FREEPOOL_STATE_DIR}"
   [[ -f "${FREEPOOL_STATE_FILE}" ]] || printf '{"results": []}\n' > "${FREEPOOL_STATE_FILE}"
+}
+
+# check_pin_drift -> 0 no drift (or nothing to compare yet), 1 drift detected.
+# Fail-open when the pin file or the install checkout doesn't exist yet --
+# an uninstalled arm has nothing to drift from, and check_liveness already
+# refuses it as arm_down on its own. Only a REAL mismatch between a present
+# pin file and a present checkout is drift.
+check_pin_drift() {
+  [[ -f "${FREEPOOL_PIN_FILE}" ]] || return 0
+  [[ -d "${FREEPOOL_INSTALL_DIR}/.git" ]] || return 0
+  local pinned live
+  pinned="$(sed -n 's/^pinned_commit: *//p' "${FREEPOOL_PIN_FILE}" | head -n1)"
+  [[ -n "${pinned}" ]] || return 0
+  live="$(git -C "${FREEPOOL_INSTALL_DIR}" rev-parse HEAD 2>/dev/null || echo "")"
+  [[ -n "${live}" ]] || return 0
+  [[ "${pinned}" == "${live}" ]] || return 1
+  return 0
 }
 
 # check_liveness -> 0 healthy, 1 unreachable/non-2xx.
@@ -120,6 +144,9 @@ main() {
       [[ "${FREEPOOL_SKIP_GATE:-0}" == "1" ]] && exit 0
       if ! check_liveness; then
         refuse "arm_down"
+      fi
+      if ! check_pin_drift; then
+        refuse "pin_drift"
       fi
       local breach
       breach="$(check_rolling_window)" || true
