@@ -42,14 +42,28 @@ router_v2:
 
   # T17 route arbiter capability matrix. This is data, not a second ladder.
   # `cost` is a relative unit used only among capable, uncapped arms.
+  #
+  # T17 fix-round (C1): `kinds:` must carry the vocabulary real callers
+  # actually pass, not just the abstract code|docs|review|plan|audit|safety
+  # set. `grep -rhoE '--kind "[^"]+"' scripts/*.sh scripts/lib/*.sh` on
+  # d6179df showed the only two literal values ANY caller sends are
+  # fanout-class-funnel (leadv2-fanout.sh, leadv2-fanout-lane-launcher.sh) and
+  # backlog-pump (leadv2-backlog-pump.sh) -- neither was in this matrix, so
+  # every fanout lane and every backlog-pump dispatch hard-refused
+  # (all_arms_capped, dispatch exit 4) with every arm under ceiling. Both are
+  # ordinary build-kind work (not review/plan/audit/safety), so they are
+  # listed on the same cells as `code`. The arbiter (leadv2-route-arbiter.sh)
+  # also normalizes any OTHER out-of-vocabulary --kind value to `code` as a
+  # second, defensive layer -- this matrix entry is the first-class one so the
+  # journal shows the real kind, not a silent rewrite.
   capability_matrix:
-    - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, audit], sizes: [standard, heavy, bulk], tags: [bulk, background], review: false, protected: false }
-    - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false }
-    - { arm: codex, provider: codex, model: gpt-5.6, tier: spark, cost: 3, kinds: [code, docs, review, plan, audit], sizes: [standard], tags: [review, adversarial], review: true, protected: true }
-    - { arm: codex, provider: codex, model: gpt-5.6, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true }
-    - { arm: codex, provider: codex, model: gpt-5.6, tier: top, cost: 7, kinds: [code, review, plan, audit], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true }
+    - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [bulk, background], review: false, protected: false }
+    - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false }
+    - { arm: codex, provider: codex, model: gpt-5.6, tier: spark, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true }
+    - { arm: codex, provider: codex, model: gpt-5.6, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true }
+    - { arm: codex, provider: codex, model: gpt-5.6, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true }
     - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan], sizes: [standard], tags: [classify, audit], review: true, protected: true }
-    - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true }
+    - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true }
     - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true }
 
   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
