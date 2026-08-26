@@ -448,6 +448,11 @@ if [[ ! -f "${ROUTING_YAML}" ]]; then
     ROUTING_CONFIG_ABSENT=1
   fi
 fi
+# T17: the arbiter is intentionally optional at load time. A missing/corrupt
+# copy falls through to the established ladder and is made observable at the
+# call site, rather than making dispatch unavailable.
+ROUTE_ARBITER_LIB="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
+[[ -f "${ROUTE_ARBITER_LIB}" ]] && source "${ROUTE_ARBITER_LIB}" || true
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 # V3-WORKER-MESSAGING-01 slice 1: tier-0 durable event emitter (docs/specs/
@@ -6181,6 +6186,32 @@ exit is treated as an incident."
     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
   fi
 
+  # T17: arbiter is the first candidate-chain source. The legacy resolver and
+  # ladder above remain a deliberately fail-open fallback for an arbiter fault.
+  if declare -F route_arbiter >/dev/null 2>&1; then
+    local _arb_desc _arb_out _arb_rc _arb_arm _arb_chain _arb_reason _arb_util
+    _arb_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1"}))' "${kind:-code}" "${task_class:-standard}" "${protected}" "${safety}" "${ui}")"
+    _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
+    _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
+    _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
+    _arb_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*reason=\([^ ]*\).*/\1/p')"
+    _arb_util="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
+    if [[ ${_arb_rc} -eq 0 && -n "${_arb_arm}" && "${_arb_arm}" != refuse && -n "${_arb_chain}" ]]; then
+      IFS=',' read -r -a candidate_arms <<< "${_arb_chain}"
+      arm="${_arb_arm}"; reason="${_arb_reason:-cheapest_capable}"; router_label="arbiter"
+      [[ "${arm}" == codex ]] && export RESOLVED_CODEX_TIER="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*tier=\([^ ]*\).*/\1/p')"
+      emit decision "route_resolved by=arbiter role=worker arm=${arm} model=${arm} tier=${RESOLVED_CODEX_TIER:-standard} task=${sig8} reason=${reason} ${_arb_util}"
+    elif [[ ${_arb_rc} -eq 3 && "${_arb_reason}" == all_arms_capped ]]; then
+      emit decision "route_resolved by=arbiter role=worker arm=refuse task=${sig8} reason=all_arms_capped ${_arb_util}"
+      _dl_note "${sig8}" refused all_arms_capped "${_arb_util}" "${founder_task_id}"
+      exit 4
+    else
+      emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder"
+    fi
+  else
+    emit decision "arbiter_broken task=${sig8} rc=127 reason=missing_fail_open_to_ladder"
+  fi
+
   # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P2: skip arms whose provider is locked
   # out before attempting to spawn. A per-provider lockout record
   # (quota-lockout-<provider>.json in the ledger dir) carries locked_until_epoch.
@@ -6333,10 +6364,14 @@ exit is treated as an incident."
   # reassigning the array would NOT change the remaining iterations -- the break+reenter
   # handshake (_reenter=1 -> break for -> outer while continues) is what makes a
   # mid-loop chain swap effective. One-shot via _reresolved_lock_busy (no unbounded retry).
-  local candidate arc _reresolved_lock_busy="" _reordered_after_quota_gate="" _quota_gate_reroute=0 _reenter
+  local candidate arc _reresolved_lock_busy="" _reordered_after_quota_gate="" _quota_gate_reroute=0 _reenter _fallback_from="" _fallback_reason=""
   while true; do
   _reenter=0
   for candidate in "${candidate_arms[@]}"; do
+    if [[ -n "${_fallback_from}" ]]; then
+      emit decision "route_fallback from=${_fallback_from} to=${candidate} task=${sig8} reason=${_fallback_reason:-arm_refused}"
+      _fallback_from=""; _fallback_reason=""
+    fi
     [[ "${candidate}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
     local _candidate_mission="${mission}"
     if [[ "${candidate}" == "sonnet" && "${_quota_gate_reroute}" == "1" ]]; then
@@ -6456,6 +6491,7 @@ ${mission}"
       ;;
     7)
       attempted+=("${LAST_ARM_OUTCOME:-${candidate}_refused}")
+      _fallback_from="${candidate}"; _fallback_reason="${LAST_ARM_OUTCOME:-arm_refused}"
       # V3-GLM-LADDER-01 Lever 1: park BEFORE the re-resolve/fallthrough below, so a
       # crash between refusal and the sonnet respawn still leaves the task recoverable.
       # Gate: candidate==glm at refusal time is already the router's own "glm-fitting"
@@ -6565,6 +6601,7 @@ ${mission}"
         exit 0
       fi
       attempted+=("${LAST_ARM_OUTCOME:-${candidate}_failed_launcher}")
+      _fallback_from="${candidate}"; _fallback_reason="${LAST_ARM_OUTCOME:-launcher_failed}"
       continue
       ;;
     5)

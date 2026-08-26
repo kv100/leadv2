@@ -40,6 +40,18 @@ router_v2:
     codex:  { work_pct: 90, review_pct: 95 }
     claude: { work_pct: 95, review_pct: 95 }
 
+  # T17 route arbiter capability matrix. This is data, not a second ladder.
+  # `cost` is a relative unit used only among capable, uncapped arms.
+  capability_matrix:
+    - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, audit], sizes: [standard, heavy, bulk], tags: [bulk, background], review: false, protected: false }
+    - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false }
+    - { arm: codex, provider: codex, model: gpt-5.6, tier: spark, cost: 3, kinds: [code, docs, review, plan, audit], sizes: [standard], tags: [review, adversarial], review: true, protected: true }
+    - { arm: codex, provider: codex, model: gpt-5.6, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true }
+    - { arm: codex, provider: codex, model: gpt-5.6, tier: top, cost: 7, kinds: [code, review, plan, audit], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true }
+    - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan], sizes: [standard], tags: [classify, audit], review: true, protected: true }
+    - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true }
+    - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true }
+
   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
   # Anthropic arms deliberately share the active Max x20 account bucket.
   #

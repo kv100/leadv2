@@ -30,6 +30,8 @@ LANE_NAME="${8:-}"
 [[ -z "${LANE_NAME}" ]] && LANE_NAME="${FOUNDER_TASK_ID}"
 WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_ROUTE_ARBITER_SH="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
+[[ -f "${_ROUTE_ARBITER_SH}" ]] && source "${_ROUTE_ARBITER_SH}" || true
 _PARKED_DETECT_SH="${SCRIPT_DIR}/lib/leadv2-parked-detect.sh"
 [[ -f "${_PARKED_DETECT_SH}" ]] || _PARKED_DETECT_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-parked-detect.sh"
 if [[ -f "${_PARKED_DETECT_SH}" ]]; then
@@ -427,6 +429,38 @@ resolve_review_pool_call() {
   _resolver_rc=$?
   if [[ -z "${_resolver_out}" ]]; then
     _resolver_out=$'reviewer=\npool=\nrefusal=resolver_error_failclosed'
+  fi
+  # T17: use the same live-window arbiter for review selection. The existing
+  # pool resolver remains the availability authority; an arbiter choice is only
+  # adopted when that arm is present as an available, non-self reviewer.
+  if declare -F route_arbiter >/dev/null 2>&1; then
+    local _ra_desc _ra_out _ra_rc _ra_arm _ra_chain _ra_util _ra_author _ra_pick=""
+    _ra_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":"review","size":"standard","protected":sys.argv[1]=="1","safety":sys.argv[1]=="1"}))' "${_sig_protected}")"
+    _ra_out="$(route_arbiter reviewer "${_ra_desc}")"; _ra_rc=$?
+    _ra_arm="$(printf '%s\n' "${_ra_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
+    _ra_chain="$(printf '%s\n' "${_ra_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
+    _ra_util="$(printf '%s\n' "${_ra_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
+    _ra_author="${AUTHOR%%:*}"
+    if [[ ${_ra_rc} -eq 0 ]]; then
+      local _ra_candidate
+      IFS=',' read -r -a _ra_candidates <<< "${_ra_chain}"
+      for _ra_candidate in "${_ra_candidates[@]}"; do
+        [[ "${_ra_candidate}" == "${_ra_author}" ]] && continue
+        if printf '%s\n' "${_resolver_out}" | sed -n 's/^pool=//p' | tr ',' '\n' | grep -q "^${_ra_candidate}:ok:"; then
+          _ra_pick="${_ra_candidate}"; break
+        fi
+      done
+      if [[ -n "${_ra_pick}" ]]; then
+        _resolver_out="$(printf '%s\n' "${_resolver_out}" | sed "s/^reviewer=.*/reviewer=${_ra_pick}/")"
+        emit decision "route_resolved by=arbiter role=reviewer arm=${_ra_pick} task=${TASK} reason=cheapest_capable ${_ra_util}" || true
+      else
+        emit decision "arbiter_broken task=${TASK} role=reviewer rc=0 reason=arbiter_arm_not_available ${_ra_util}" || true
+      fi
+    else
+      emit decision "arbiter_broken task=${TASK} role=reviewer rc=${_ra_rc} reason=fail_open_to_review_pool" || true
+    fi
+  else
+    emit decision "arbiter_broken task=${TASK} role=reviewer rc=127 reason=missing_fail_open_to_review_pool" || true
   fi
   emit decision "review_pool_resolve task=${TASK} rc=${_resolver_rc} reviewer=$(printf '%s\n' "${_resolver_out}" | sed -n 's/^reviewer=//p' | head -n1) pool_n=$(printf '%s\n' "${_resolver_out}" | sed -n 's/^pool=//p' | head -n1 | awk -F',' '{n=0; for(i=1;i<=NF;i++) if ($i!="") n++; print n}')" || true
   printf '%s\n' "${_resolver_out}"

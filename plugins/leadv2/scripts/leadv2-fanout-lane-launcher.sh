@@ -391,6 +391,7 @@ _lane_dir="$("${SCRIPT_DIR}/leadv2-lane-worktree.sh" ensure "$TASK_ID" "$CLS")"
 export LEADV2_LANE_WORK_ROOT="$_lane_dir"
 
 declare -a dc_args=("$MISSION" --kind "fanout-class-funnel" --task-id "$TASK_ID")
+dc_args+=(--task-class "$CLS")
 [[ -n "$LANE_WRITES" ]] && dc_args+=(--writes "$LANE_WRITES")
 [[ -n "$LANE_ACCEPTANCE" ]] && dc_args+=(--acceptance-cmd "$LANE_ACCEPTANCE")
 [[ "$LANE_ROLLBACK" == "1" ]] && dc_args+=(--rollback-onestep)
