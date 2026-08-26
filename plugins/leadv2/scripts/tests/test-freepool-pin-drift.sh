@@ -26,6 +26,14 @@ bash -n "$INSTALL" 2>/dev/null || { echo "ERROR: install syntax check failed"; e
 
 ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
 
+# Snapshot the checked-in real config's checksum BEFORE any real invocation of
+# $INSTALL below, so the hermetic-regression check at the end of this suite
+# measures "did THIS run mutate it", independent of any unrelated uncommitted
+# working-tree state.
+REAL_CONFIG="$(cd "$SCRIPTS_ROOT/.." && pwd)/config/freepool-arm.yaml"
+REAL_CONFIG_BEFORE_SHA=""
+[[ -f "$REAL_CONFIG" ]] && REAL_CONFIG_BEFORE_SHA="$(shasum -a 256 "$REAL_CONFIG" 2>/dev/null | cut -d' ' -f1)"
+
 # ── check_pin_drift() unit tests (extracted, same pattern as
 #    test-dispatch-arm-vocabulary.sh's harness()) ──────────────────────────
 HARNESS="$ROOT/pin-drift-harness.sh"
@@ -78,7 +86,12 @@ else
 fi
 
 # ── freepool-install.sh: refuses empty PINNED_COMMIT by default ───────────
-out="$(PINNED_COMMIT="" FREEPOOL_ALLOW_UNPINNED=0 FREEPOOL_INSTALL_DIR="$ROOT/never-installed" bash "$INSTALL" 2>&1)"; rc=$?
+# LEADV2_FREEPOOL_PIN_FILE points every real invocation of $INSTALL below at a
+# scratch path -- FREEPOOL-MODEL-SELECTOR-01 R2 incident: case7 previously ran
+# this script for real with NO override, which clobbered the checked-in
+# plugins/leadv2/config/freepool-arm.yaml (and deleted its model_rank block).
+out="$(PINNED_COMMIT="" FREEPOOL_ALLOW_UNPINNED=0 FREEPOOL_INSTALL_DIR="$ROOT/never-installed" \
+  LEADV2_FREEPOOL_PIN_FILE="$ROOT/pin-file-case6.yaml" bash "$INSTALL" 2>&1)"; rc=$?
 if [[ "$rc" -ne 0 ]] && grep -q 'refusing to install' <<<"$out"; then
   pass "case6: freepool-install.sh refuses empty PINNED_COMMIT by default (rc=$rc)"
 else
@@ -90,11 +103,21 @@ fi
 # real here -- FREEPOOL_REPO_URL points nowhere reachable -- only proves
 # the refusal gate itself is bypassed, not that clone succeeds).
 out="$(PINNED_COMMIT="" FREEPOOL_ALLOW_UNPINNED=1 FREEPOOL_INSTALL_DIR="$ROOT/unpinned-ok" \
-  FREEPOOL_REPO_URL="file://$ROOT/install" bash "$INSTALL" 2>&1)"; rc=$?
+  FREEPOOL_REPO_URL="file://$ROOT/install" LEADV2_FREEPOOL_PIN_FILE="$ROOT/pin-file-case7.yaml" \
+  bash "$INSTALL" 2>&1)"; rc=$?
 if grep -q 'refusing to install' <<<"$out"; then
   fail "case7: FREEPOOL_ALLOW_UNPINNED=1 still refused (opt-out is broken)"
 else
   pass "case7: FREEPOOL_ALLOW_UNPINNED=1 bypasses the refusal gate as intended"
+fi
+
+# Case 7b: the write went to the scratch PIN file, not the real one -- proves
+# the LEADV2_FREEPOOL_PIN_FILE override on case7's real invocation actually
+# took effect rather than silently falling back to the default path.
+if [[ -f "$ROOT/pin-file-case7.yaml" ]] && grep -q 'unpinned-ok' "$ROOT/pin-file-case7.yaml"; then
+  pass "case7b: LEADV2_FREEPOOL_PIN_FILE override took effect (scratch pin file written)"
+else
+  fail "case7b: scratch pin file was not written -- override did not take effect"
 fi
 
 # ── freepool-install.sh: default PINNED_COMMIT is a real, non-empty sha ───
@@ -103,6 +126,44 @@ if [[ "$default_pin" =~ ^[0-9a-f]{40}$ ]]; then
   pass "case8: PINNED_COMMIT default is a real 40-char sha ($default_pin)"
 else
   fail "case8: PINNED_COMMIT default is not a real sha (got: '$default_pin')"
+fi
+
+# Negative control: prove that OMITTING LEADV2_FREEPOOL_PIN_FILE reproduces
+# the R2 incident mechanism -- freepool-install.sh writes to its own
+# co-located config/freepool-arm.yaml by default. Run a SCRATCH COPY of the
+# install script (never the real one) from a decoy plugins/leadv2/{scripts,
+# config} tree, with no override set, and confirm the decoy config gets
+# clobbered -- exactly what case7 used to do to the real file before this fix.
+DECOY_ROOT="$ROOT/decoy-plugin"
+mkdir -p "$DECOY_ROOT/scripts" "$DECOY_ROOT/config"
+cp "$INSTALL" "$DECOY_ROOT/scripts/freepool-install.sh"
+printf 'model_rank:\n  - prefix: "decoy"\n' > "$DECOY_ROOT/config/freepool-arm.yaml"
+decoy_before_sha="$(shasum -a 256 "$DECOY_ROOT/config/freepool-arm.yaml" | cut -d' ' -f1)"
+PINNED_COMMIT="" FREEPOOL_ALLOW_UNPINNED=1 FREEPOOL_INSTALL_DIR="$ROOT/decoy-unpinned" \
+  FREEPOOL_REPO_URL="file://$ROOT/install" \
+  bash "$DECOY_ROOT/scripts/freepool-install.sh" >/dev/null 2>&1
+decoy_after_sha="$(shasum -a 256 "$DECOY_ROOT/config/freepool-arm.yaml" 2>/dev/null | cut -d' ' -f1)"
+if [[ "$decoy_before_sha" != "$decoy_after_sha" ]]; then
+  pass "MUTATION KILLED: without LEADV2_FREEPOOL_PIN_FILE, freepool-install.sh clobbers its co-located config (reproduces the R2 incident mechanism on a decoy copy) -- proves the env override case6/7 rely on is load-bearing"
+else
+  fail "MUTATION SURVIVED: decoy config unchanged without override -- expected a clobber to reproduce the incident mechanism"
+fi
+
+# ── Hermetic-test regression (FREEPOOL-MODEL-SELECTOR-01 R2 incident) ─────
+# This suite runs freepool-install.sh for real (case6, case7). Case6/7 above
+# now pass LEADV2_FREEPOOL_PIN_FILE so the writes land under $ROOT instead of
+# the checked-in plugins/leadv2/config/freepool-arm.yaml. Compare the real
+# config's checksum to the snapshot taken at the top of this file -- this is
+# the regression check for the exact incident (a scratch fixture silently
+# overwrote the real config, deleting its model_rank block). Checksum, not
+# `git diff`, so this is correct even when the working tree already carries
+# unrelated uncommitted changes to the file.
+REAL_CONFIG_AFTER_SHA=""
+[[ -f "$REAL_CONFIG" ]] && REAL_CONFIG_AFTER_SHA="$(shasum -a 256 "$REAL_CONFIG" 2>/dev/null | cut -d' ' -f1)"
+if [[ -n "$REAL_CONFIG_BEFORE_SHA" && "$REAL_CONFIG_BEFORE_SHA" == "$REAL_CONFIG_AFTER_SHA" ]]; then
+  pass "hermetic: real freepool-arm.yaml untouched by this suite (checksum unchanged)"
+else
+  fail "hermetic: real freepool-arm.yaml was modified by this suite -- test-pollution regression (before=$REAL_CONFIG_BEFORE_SHA after=$REAL_CONFIG_AFTER_SHA)"
 fi
 
 printf '\n================================================\n'
