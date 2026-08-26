@@ -39,9 +39,12 @@ readonly FREEPOOL_HEALTH_TIMEOUT_S="${FREEPOOL_GATE_HEALTH_TIMEOUT_S:-5}"
 # window widens later).
 readonly FREEPOOL_WINDOW_TTL_S="${FREEPOOL_GATE_WINDOW_TTL_S:-1800}"
 # When TTL-filtering leaves the window empty, a stale-only window must not
-# silently pass (that's exactly the bug: no fresh evidence either way). One
-# live health probe substitutes for evidence instead of a blind pass.
-readonly FREEPOOL_STALE_PROBE_TIMEOUT_S="${FREEPOOL_GATE_STALE_PROBE_TIMEOUT_S:-3}"
+# silently pass (that's exactly the bug: no fresh evidence either way). The
+# check_liveness probe already run earlier in the same "check" invocation
+# substitutes for evidence instead of a blind pass — see main()'s rc==4
+# branch (P1b, FREEPOOL-MODEL-SELECTOR-01 fix-round: this used to be a
+# SECOND, separately-timed live probe, doubling worst-case latency on a
+# dead proxy for no new evidence).
 
 log_err() { echo "[freepool-gate] $*" >&2; }
 
@@ -78,17 +81,6 @@ check_pin_drift() {
 check_liveness() {
   local code
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${FREEPOOL_HEALTH_TIMEOUT_S}" \
-    "${FREEPOOL_HEALTH_URL}" 2>/dev/null || echo "000")"
-  [[ "${code}" =~ ^2[0-9][0-9]$ ]]
-}
-
-# check_liveness_now -> like check_liveness but with the shorter stale-window
-# probe timeout, used only from the empty-after-TTL path below (kept
-# separate from check_liveness so the two call sites can be tuned/logged
-# independently without one silently changing the other's behavior).
-check_liveness_now() {
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${FREEPOOL_STALE_PROBE_TIMEOUT_S}" \
     "${FREEPOOL_HEALTH_URL}" 2>/dev/null || echo "000")"
   [[ "${code}" =~ ^2[0-9][0-9]$ ]]
 }
@@ -196,10 +188,14 @@ main() {
       rc=0
       breach="$(check_rolling_window)" || rc=$?
       if (( rc == 4 )); then
-        log_err "rolling window empty after ${FREEPOOL_WINDOW_TTL_S}s TTL filtering — live-probing instead of passing blind"
-        if ! check_liveness_now; then
-          refuse "arm_down"
-        fi
+        # FREEPOOL-MODEL-SELECTOR-01 fix-round (P1b): check_liveness above
+        # already proved the arm reachable in THIS SAME invocation --
+        # main() refuses via "arm_down" before reaching here otherwise -- so
+        # a second live probe of the identical /health endpoint added zero
+        # new evidence while doubling worst-case latency (5s + 3s = up to
+        # 8s) on a slow-but-alive proxy. Reuse that result: one probe path,
+        # one timeout (FREEPOOL_HEALTH_TIMEOUT_S).
+        log_err "rolling window empty after ${FREEPOOL_WINDOW_TTL_S}s TTL filtering — liveness already confirmed earlier in this check, proceeding"
       elif (( rc != 0 )); then
         log_err "rolling window breach: ${breach}"
         refuse "gate_broken"

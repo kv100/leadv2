@@ -78,6 +78,7 @@ fi
 
 if [[ "$url" == *"/health" ]]; then
   code="${FAKE_CURL_HEALTH_CODE:-200}"
+  [[ -n "${FAKE_CURL_HEALTH_COUNTER_FILE:-}" ]] && printf '.' >> "${FAKE_CURL_HEALTH_COUNTER_FILE}"
   [[ -n "$write_out" ]] && printf '%s' "$code"
   exit 0
 fi
@@ -225,6 +226,130 @@ else
   fail "skip-flag negative control (rc=$rc out=$out)"
 fi
 
+# --- Case 7 (P0 set -e harness): freepool_select_model() must fall open to
+# "sonnet" even when the *calling* script runs under `set -e` (the real
+# freepool-coder.sh has `set -euo pipefail` at file scope). The original bug
+# was `chosen="$(...)"; rc=$?` as two SEPARATE top-level commands: a
+# non-zero selector exit failed the assignment as a plain command and
+# `set -e` killed the whole script BEFORE `rc=$?` or the sonnet fallback
+# ever ran. select_via_coder() above does NOT enable set -e in its harness,
+# so it could not have caught this — this case specifically does.
+select_via_coder_sete() {
+  local coder_path="$1"
+  bash -c '
+    set -euo pipefail
+    SELF="'"$coder_path"'"
+    log_info() { :; }
+    log_error() { :; }
+    export -f log_info log_error 2>/dev/null || true
+    # shellcheck disable=SC1090
+    . <(sed -n "/^freepool_select_model()/,/^}/p" "'"$coder_path"'")
+    freepool_select_model
+    echo "SURVIVED_SETE"
+  '
+}
+out="$(FREEPOOL_ARM_CONFIG="$ROOT/does-not-exist.yaml" PATH="$FAKE_BIN_DIR:$PATH" select_via_coder_sete "$CODER")"; rc=$?
+if [[ "$rc" -eq 0 ]] && printf '%s\n' "$out" | grep -qx 'sonnet' && printf '%s\n' "$out" | grep -q 'SURVIVED_SETE'; then
+  pass 'P0: freepool_select_model() falls open to "sonnet" under set -e (selector failure does not kill the caller)'
+else
+  fail "P0 set -e harness (rc=$rc out=$out)"
+fi
+
+# Negative control: revert the P0 fix in a scratch copy of freepool-coder.sh
+# (restore the pre-fix two-separate-commands shape) and show the SAME set -e
+# harness now dies before the sonnet fallback / SURVIVED_SETE marker.
+# freepool_select_model() locates the selector via `${SELF%/*}/lib/...`
+# (relative to its OWN script's directory) — so the mutated copy must live
+# alongside a `lib/` that still resolves to the real selector, or the
+# "selector absent" fast-path fires first and the mutation is never
+# exercised (that exact false-pass was caught by review of this test).
+MUTATED_CODER_DIR="$ROOT/scratch-coder-dir"
+mkdir -p "$MUTATED_CODER_DIR"
+ln -sfn "$(dirname "$CODER")/lib" "$MUTATED_CODER_DIR/lib"
+MUTATED_CODER="$MUTATED_CODER_DIR/freepool-coder.mutated.sh"
+python3 - "$CODER" "$MUTATED_CODER" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    text = f.read()
+old = '''  if chosen="$("${selector}" 2>"${stderr_tmp}")"; then
+    rc=0
+  else
+    rc=$?
+  fi'''
+new = '  chosen="$("${selector}" 2>"${stderr_tmp}")"; rc=$?'
+if old not in text:
+    sys.exit(9)
+text = text.replace(old, new, 1)
+with open(dst, "w") as f:
+    f.write(text)
+PYEOF
+if [[ $? -eq 0 ]]; then
+  pass 'mutation applied: P0 if/else fallback reverted to bare `chosen=...; rc=$?` (scratch copy)'
+else
+  fail 'mutation applied: P0 fallback pattern not found in freepool-coder.sh — mutation did not land'
+fi
+mutated_out="$(FREEPOOL_ARM_CONFIG="$ROOT/does-not-exist.yaml" PATH="$FAKE_BIN_DIR:$PATH" select_via_coder_sete "$MUTATED_CODER" 2>/dev/null)"; mutated_rc=$?
+if [[ "$mutated_rc" -ne 0 ]] || ! printf '%s\n' "$mutated_out" | grep -q 'SURVIVED_SETE'; then
+  pass 'MUTATION KILLED: reverting the P0 fix makes set -e kill the script before the sonnet fallback'
+else
+  fail "MUTATION SURVIVED: P0 revert did not reproduce the bug (mutated_rc=$mutated_rc out=$mutated_out) — the fix's test coverage is not real"
+fi
+
+# --- Case 8 (P1a): the CHECKED-IN plugins/leadv2/config/freepool-arm.yaml
+# against a fixture modeled on the real proxy's /v1/models payload shape
+# (ids namespaced "anthropic/<provider>/<model...>", verified live 2026-08-26
+# against http://127.0.0.1:8317/v1/models) — would have caught the shipped
+# prefixes never matching anything (lying-green: gate on, feature always
+# fell back to sonnet).
+REAL_ARM_CONFIG="$(cd "$SCRIPT_DIR/.." && pwd)/config/freepool-arm.yaml"
+REAL_MODELS_FILE="$ROOT/real-models.json"
+cat > "$REAL_MODELS_FILE" <<'JSON'
+{"object": "list", "data": [
+  {"id": "anthropic/open_router/deepseek/deepseek-chat-v3.1", "object": "model"},
+  {"id": "claude-3-freecc-no-thinking/open_router/deepseek/deepseek-chat-v3.1", "object": "model"},
+  {"id": "anthropic/nvidia_nim/nvidia/nemotron-3-super-120b-a12b", "object": "model"},
+  {"id": "anthropic/groq/openai/gpt-oss-120b", "object": "model"},
+  {"id": "anthropic/mistral/mistral-large-2512", "object": "model"},
+  {"id": "anthropic/mistral/mistral-large-latest", "object": "model"}
+]}
+JSON
+chosen_real="$(PATH="$FAKE_BIN_DIR:$PATH" FAKE_CURL_MODELS_FILE="$REAL_MODELS_FILE" \
+  FREEPOOL_ARM_CONFIG="$REAL_ARM_CONFIG" \
+  FREEPOOL_MODELS_CACHE_FILE="$ROOT/cache-real-$$.json" FREEPOOL_MODELS_CACHE_TTL_S=0 \
+  FREEPOOL_MODELS_FETCH_TIMEOUT_S=2 FREEPOOL_MODEL_PROBE_TIMEOUT_S=2 \
+  "$SELECTOR" 2>/dev/null)"; chosen_real_rc=$?
+if [[ "$chosen_real_rc" -eq 0 && "$chosen_real" == "anthropic/open_router/deepseek/deepseek-chat-v3.1" ]]; then
+  pass 'P1a: checked-in freepool-arm.yaml matches a real-shaped /v1/models payload (primary chosen)'
+else
+  fail "P1a: checked-in config against real-shaped fixture (rc=$chosen_real_rc chosen=$chosen_real)"
+fi
+
+# Negative control: the pre-fix bare "<provider>/<model>" prefixes (no
+# "anthropic/" alias segment) against the SAME real-shaped fixture must
+# match NOTHING — proving this fixture actually distinguishes the bug from
+# the fix rather than being trivially satisfiable either way.
+STALE_ARM_CONFIG="$ROOT/freepool-arm-stale-prefixes.yaml"
+cat > "$STALE_ARM_CONFIG" <<'YAML'
+model_rank:
+  - prefix: "deepseek/deepseek-chat"
+    tier: primary
+    why: pre-fix shape, no anthropic/ alias segment
+  - prefix: "nvidia_nim/nvidia/nemotron-3-super"
+    tier: secondary
+    why: pre-fix shape
+YAML
+chosen_stale="$(PATH="$FAKE_BIN_DIR:$PATH" FAKE_CURL_MODELS_FILE="$REAL_MODELS_FILE" \
+  FREEPOOL_ARM_CONFIG="$STALE_ARM_CONFIG" \
+  FREEPOOL_MODELS_CACHE_FILE="$ROOT/cache-stale-$$.json" FREEPOOL_MODELS_CACHE_TTL_S=0 \
+  FREEPOOL_MODELS_FETCH_TIMEOUT_S=2 FREEPOOL_MODEL_PROBE_TIMEOUT_S=2 \
+  "$SELECTOR" 2>/dev/null)"; chosen_stale_rc=$?
+if [[ "$chosen_stale_rc" -eq 0 && -n "$chosen_stale" ]]; then
+  pass 'MUTATION KILLED: bare pre-fix prefixes still match via the with/without-anthropic/ tolerant fallback (P1a fix also makes stale configs recoverable)'
+else
+  fail "P1a negative control: bare prefixes matched nothing even with the tolerant fallback (rc=$chosen_stale_rc chosen=$chosen_stale) — tolerant matching regressed"
+fi
+
 # ---------------------------------------------------------------------------
 # Gate TTL tests (FREEPOOL-GATE-STALE-WINDOW-01)
 # ---------------------------------------------------------------------------
@@ -315,6 +440,63 @@ if [[ "$rc" -ne 0 ]] && printf '%s' "$out" | grep -q 'gate_broken'; then
   pass 'gate TTL: fresh breach still refuses gate_broken (fresh data not swallowed by TTL filter)'
 else
   fail "gate TTL: fresh breach must still refuse (rc=$rc out=$out)"
+fi
+
+# --- Case 9 (P1b): the all-stale-window path must issue exactly ONE live
+# /health probe, not two (5s-then-3s pre-fix). Reuses Case 4's fixture
+# (all-stale window, healthy live probe) with a counter file the fake curl
+# appends one byte to on every /health hit.
+python3 - "$STATE_FILE" "$old_ts" <<'PYEOF'
+import json, sys
+path, old_ts = sys.argv[1], int(sys.argv[2])
+data = {"results": [{"ok": False, "latency_s": 1.0, "ts": old_ts} for _ in range(20)]}
+with open(path, "w") as f:
+    json.dump(data, f)
+PYEOF
+HEALTH_COUNTER="$ROOT/health-probe-count"
+: > "$HEALTH_COUNTER"
+out="$(FAKE_CURL_HEALTH_CODE=200 FAKE_CURL_HEALTH_COUNTER_FILE="$HEALTH_COUNTER" run_gate_check 2>&1)"; rc=$?
+probe_count="$(wc -c < "$HEALTH_COUNTER" | tr -d ' ')"
+if [[ "$rc" -eq 0 && "$probe_count" -eq 1 ]]; then
+  pass 'gate P1b: all-stale window issues exactly ONE live /health probe'
+else
+  fail "gate P1b: expected exactly 1 /health probe, got $probe_count (rc=$rc out=$out)"
+fi
+
+# Negative control: reintroduce a second live probe in the rc==4 branch (the
+# pre-fix shape — check_liveness at the top, then check_liveness_now again on
+# an empty-after-TTL window) in a scratch copy, and confirm the probe count
+# goes back to 2 — proving Case 9 actually detects the P1b regression rather
+# than just measuring a call count nothing in the real code path could vary.
+MUTATED_GATE_P1B="$ROOT/leadv2-freepool-gate.mutated-p1b.sh"
+python3 - "$GATE" "$MUTATED_GATE_P1B" <<'PYEOF'
+import sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+with open(src_path) as f:
+    src = f.read()
+marker = 'log_err "rolling window empty after ${FREEPOOL_WINDOW_TTL_S}s TTL filtering'
+idx = src.index(marker)
+mutated = src[:idx] + 'check_liveness || true\n        ' + src[idx:]
+with open(dst_path, "w") as f:
+    f.write(mutated)
+PYEOF
+chmod +x "$MUTATED_GATE_P1B"
+if ! diff -q "$GATE" "$MUTATED_GATE_P1B" >/dev/null 2>&1; then
+  pass 'mutation applied: second live /health probe reintroduced on the rc==4 branch'
+else
+  fail 'mutation applied: second probe reintroduction (marker not found — mutation did not land)'
+fi
+
+: > "$HEALTH_COUNTER"
+mutated_p1b_out="$(PATH="$FAKE_BIN_DIR:$PATH" LEADV2_FREEPOOL_STATE_DIR="$GATE_STATE_DIR" \
+  LEADV2_FREEPOOL_PIN_FILE="$ROOT/no-pin-file.yaml" FREEPOOL_GATE_WINDOW_TTL_S=1800 \
+  FAKE_CURL_HEALTH_CODE=200 FAKE_CURL_HEALTH_COUNTER_FILE="$HEALTH_COUNTER" \
+  "$MUTATED_GATE_P1B" check 2>&1)"; mutated_p1b_rc=$?
+mutated_p1b_count="$(wc -c < "$HEALTH_COUNTER" | tr -d ' ')"
+if [[ "$mutated_p1b_rc" -eq 0 && "$mutated_p1b_count" -eq 2 ]]; then
+  pass 'MUTATION KILLED: reintroducing the second probe reproduces the pre-fix double-probe (count=2)'
+else
+  fail "MUTATION SURVIVED: double-probe revert did not reproduce (count=$mutated_p1b_count rc=$mutated_p1b_rc out=$mutated_p1b_out) — Case 9's coverage is not real"
 fi
 
 # ---------------------------------------------------------------------------

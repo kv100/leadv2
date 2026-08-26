@@ -179,10 +179,37 @@ freepool_select_model() {
   fi
   local stderr_tmp chosen rc detail
   stderr_tmp="$(mktemp 2>/dev/null || echo /tmp/freepool-model-select.$$.stderr)"
-  chosen="$("${selector}" 2>"${stderr_tmp}")"; rc=$?
+  # P0 (FREEPOOL-MODEL-SELECTOR-01 fix-round): under this script's global
+  # `set -e`, `chosen="$(...)"; rc=$?` was two SEPARATE commands — if the
+  # selector exited non-zero, the assignment itself failed as a plain
+  # command and `set -e` killed the whole script BEFORE `rc=$?` or the
+  # sonnet fallback below ever ran (a selector bug/dead proxy would take
+  # down the caller instead of falling open). An `if`/`else` puts the
+  # command substitution in a tested context, which `set -e` never treats
+  # as fatal, so rc is always captured and the fallback always runs.
+  if chosen="$("${selector}" 2>"${stderr_tmp}")"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  # P2a: a compromised/malformed /v1/models response could smuggle a route
+  # id containing newlines or control chars into `chosen` — refuse to use
+  # or log such a value rather than let it forge extra
+  # progress.log/journal.jsonl lines once interpolated below, and fall open
+  # to sonnet the same as any other selector failure.
+  if [[ "${rc}" -eq 0 && -n "${chosen}" ]] && ! python3 -c '
+import sys
+s = sys.argv[1]
+sys.exit(0 if s == s.strip() and all(32 <= ord(c) < 127 for c in s) else 1)
+' "${chosen}" 2>/dev/null; then
+    log_info "freepool_model_fallback reason=unsafe_route_id"
+    rc=1
+    chosen=""
+  fi
   if [[ "${rc}" -eq 0 && -n "${chosen}" ]]; then
     detail="$(grep -o 'chosen=.*' "${stderr_tmp}" | tail -1 | sed 's/^chosen=/model=/')"
-    log_info "freepool_model_chosen ${detail:-model=${chosen}}"
+    detail="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1])[1:-1])' "${detail:-model=${chosen}}" 2>/dev/null || printf '%s' "${detail:-model=${chosen}}")"
+    log_info "freepool_model_chosen ${detail}"
     rm -f "${stderr_tmp}"
     echo "${chosen}"
   else

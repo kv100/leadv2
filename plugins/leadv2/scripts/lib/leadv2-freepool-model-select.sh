@@ -109,12 +109,51 @@ for e in entries:
     elif isinstance(e, dict) and isinstance(e.get("id"), str):
         ids.append(e["id"])
 
+# FREEPOOL-MODEL-SELECTOR-01 fix-round (P1a): freepool-arm.yaml's prefixes
+# have drifted between the bare "<provider>/<model>" shape and the proxy's
+# actual "anthropic/<provider>/<model>" route-id namespace before (a mismatch
+# means every rank silently never matches -- lying-green). Try each prefix
+# both as given and with the "anthropic/" alias segment added/stripped, so a
+# config edit that gets the alias wrong in either direction still matches.
+ANTHROPIC_ALIAS = "anthropic/"
+
+def _prefix_variants(prefix):
+    variants = [prefix]
+    if prefix.startswith(ANTHROPIC_ALIAS):
+        variants.append(prefix[len(ANTHROPIC_ALIAS):])
+    else:
+        variants.append(ANTHROPIC_ALIAS + prefix)
+    return variants
+
 for prefix in prefixes:
+    variants = _prefix_variants(prefix)
     for route_id in ids:
-        if route_id.startswith(prefix):
+        if any(route_id.startswith(v) for v in variants):
             print(route_id)
             break
 PYEOF
+}
+
+# _route_id_is_safe <route_id> -> 0 if the id is printable ASCII with no
+# leading/trailing whitespace, 1 otherwise. A live-fetched /v1/models
+# response is data from an external proxy: a route id smuggling a newline
+# or other control char could forge extra journal.jsonl/progress.log lines
+# once interpolated into log_err below or freepool-coder.sh's log_info
+# (P2a, FREEPOOL-MODEL-SELECTOR-01 fix-round). python3 is already a hard
+# dependency of this script (see _rank_candidates).
+_route_id_is_safe() {
+  python3 -c '
+import sys
+s = sys.argv[1]
+sys.exit(0 if s and s == s.strip() and all(32 <= ord(c) < 127 for c in s) else 1)
+' "$1" 2>/dev/null
+}
+
+# _json_str <value> -> the value as a JSON-quoted string, for safely
+# embedding untrusted text (a route id) inside a log line without it being
+# able to inject literal newlines/quotes into the surrounding log format.
+_json_str() {
+  python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1" 2>/dev/null || printf '"%s"' "$1"
 }
 
 # _probe <route_id> -> 0 if the 1-token liveness POST succeeds, 1 otherwise.
@@ -153,14 +192,18 @@ main() {
   local route_id start_ms probe_ms
   while IFS= read -r route_id; do
     [[ -n "${route_id}" ]] || continue
+    if ! _route_id_is_safe "${route_id}"; then
+      log_err "rejected candidate route id (non-printable/newline/control chars), advancing rank"
+      continue
+    fi
     start_ms="$(( $(date +%s%N) / 1000000 ))"
     if _probe "${route_id}"; then
       probe_ms="$(( $(date +%s%N) / 1000000 - start_ms ))"
-      log_err "chosen=${route_id} alternatives=${alt_count} probe_ms=${probe_ms}"
+      log_err "chosen=$(_json_str "${route_id}") alternatives=${alt_count} probe_ms=${probe_ms}"
       printf '%s\n' "${route_id}"
       exit 0
     fi
-    log_err "probe failed for ${route_id}, advancing rank"
+    log_err "probe failed for $(_json_str "${route_id}"), advancing rank"
   done <<< "${candidates}"
 
   log_err "all ranked candidates failed their liveness probe"
