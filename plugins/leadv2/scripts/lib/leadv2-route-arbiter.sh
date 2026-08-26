@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# One live-window, config-driven arbiter shared by dispatch and review.
+# Output is a single machine-readable line; non-zero means caller must fail open.
+
+route_arbiter() { # <worker|reviewer> <task-descriptor-json>
+  local role="${1:-}" descriptor="${2:-}" here routing live free_gate free_rc quota_json
+  [[ "$role" == worker || "$role" == reviewer ]] || return 64
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  routing="${LEADV2_ROUTE_ARBITER_ROUTING_YAML:-${here}/../config/leadv2-routing.yaml}"
+  [[ -r "$routing" ]] || return 65
+  # T17 fix-round (H4): honour the repo's established quota-live seam name
+  # (LEADV2_QUOTA_LIVE -- leadv2-burn-governor.sh, leadv2-glm-quota-gate.sh,
+  # leadv2-main-model-check.sh) before falling to the arbiter-only spelling,
+  # so a caller/test that stubs the common seam also stubs the arbiter.
+  live="${LEADV2_ROUTE_ARBITER_QUOTA_LIVE:-${LEADV2_QUOTA_LIVE:-${here}/leadv2-quota-live.sh}}"
+  [[ -x "$live" || -f "$live" ]] || return 66
+  # A single quota-live json invocation obtains GLM, Codex and Claude windows.
+  quota_json="$(bash "$live" json 2>/dev/null)" || return 67
+  free_gate="${LEADV2_ROUTE_ARBITER_FREEPOOL_GATE:-${here}/lib/leadv2-freepool-gate.sh}"
+  free_rc=1
+  if [[ -x "$free_gate" || -f "$free_gate" ]]; then
+    bash "$free_gate" check >/dev/null 2>&1; free_rc=$?
+  fi
+  ROUTE_ARBITER_ROLE="$role" ROUTE_ARBITER_DESCRIPTOR="$descriptor" \
+  ROUTE_ARBITER_QUOTA="$quota_json" ROUTE_ARBITER_FREEPOOL_RC="$free_rc" \
+  ROUTE_ARBITER_STATE_FILE="${LEADV2_ROUTE_ARBITER_STATE_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-last-arm}" \
+  python3 - "$routing" <<'PY'
+import json, os, sys
+try:
+    import yaml
+    data=yaml.safe_load(open(sys.argv[1])) or {}
+    d=json.loads(os.environ['ROUTE_ARBITER_DESCRIPTOR'])
+    q=json.loads(os.environ['ROUTE_ARBITER_QUOTA'])
+except Exception:
+    raise SystemExit(2)
+role=os.environ['ROUTE_ARBITER_ROLE']; free_ok=os.environ.get('ROUTE_ARBITER_FREEPOOL_RC')=='0'
+# T17 fix-round (C1): normalize kind to the matrix vocabulary. Real callers
+# pass fanout-class-funnel / backlog-pump (now first-class matrix entries,
+# see config/leadv2-routing.yaml) plus the abstract code|docs|review|plan|
+# audit|safety set. Any OTHER value (a future caller, a typo) falls open to
+# `code` rather than refusing -- this is a second, defensive layer under the
+# matrix rows, never the caller's only path to a capable cell.
+KNOWN_KINDS={'code','docs','review','plan','audit','safety','fanout-class-funnel','backlog-pump'}
+kind=str(d.get('kind','code')).lower()
+if kind not in KNOWN_KINDS: kind='code'
+# T17 fix-round (M1): the full --task-class vocabulary is six values
+# (trivial|light|standard|heavy|strategic|bulk, dispatch-code.sh usage line
+# 5350); the matrix only expresses three buckets. Map every real value
+# instead of silently coercing an unrecognized one to 'standard' -- a
+# 'strategic' task was landing on the freepool bucket (the cheapest 'bulk'
+# cell) before this fix, the opposite of intent.
+SIZE_MAP={'standard':'standard','heavy':'heavy','bulk':'bulk','trivial':'standard','light':'standard','strategic':'heavy'}
+size_raw=str(d.get('size',d.get('task_class','standard'))).lower()
+size_unmapped = None if size_raw in SIZE_MAP else size_raw
+size=SIZE_MAP.get(size_raw,'standard')
+protected=any(bool(d.get(k)) for k in ('protected','safety','publish','ui_judgment'))
+def num(x):
+    try:return float(x)
+    except:return None
+def util(provider):
+    # T17 fix-round (C3): a provider whose probe is broken/unknown must be
+    # PESSIMISTIC (maximally capped), never the cheapest-looking arm. The old
+    # `return 0.0` on status!='ok' made a dead probe sort to the front of
+    # every cost/util comparison and win selection forever -- reproduced 3/3
+    # in the round-1 review with every real arm healthy. freepool is
+    # unaffected: its own gate (free_ok) already encodes this correctly.
+    if provider=='freepool': return (0.0 if free_ok else 100.0, False)
+    x=q.get('anthropic' if provider=='claude' else provider,{})
+    if x.get('status')!='ok': return (100.0, True)
+    if provider=='glm': vals=[num((x.get(k) or {}).get('pct')) for k in ('five_hour','weekly')]
+    elif provider=='codex':
+        if x.get('limit_reached'): return (100.0, False)
+        ws=x.get('windows') or []; bind=x.get('binding_window'); w=next((z for z in ws if z.get('kind')==bind),None)
+        vals=[num((w or {}).get('used_percent'))] if w else [num(z.get('used_percent')) for z in ws]
+    else:
+        a=next((z for z in x.get('accounts',[]) if z.get('active')), (x.get('accounts') or [{}])[0])
+        vals=[num(a.get(k)) for k in ('five_hour_pct','seven_day_pct')]
+    vals=[z for z in vals if z is not None]; return (max(vals) if vals else 0.0, False)
+_uraw={p:util(p) for p in ('glm','codex','claude','freepool')}
+u={p:_uraw[p][0] for p in _uraw}; unk={p:_uraw[p][1] for p in _uraw}
+def ufmt():
+    return ' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else '%d'%u[p]) for p in ('glm','codex','claude','freepool'))
+ceil=((data.get('router_v2') or {}).get('quota_ceilings') or {})
+def capped(provider):
+    if provider=='freepool': return not free_ok
+    key='claude' if provider=='claude' else provider
+    c=(ceil.get(key) or {}).get('review_pct' if role=='reviewer' else 'work_pct',100)
+    return u[provider] >= float(c)
+cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
+# T17 fix-round (C1): split the config-vocabulary gap ("no cell matches kind/
+# size/protected" -- a routing.yaml drift, never a real refusal) from the
+# capacity gap ("every matching cell is over its quota ceiling" -- a true
+# refusal). The old code raised the same SystemExit(3)/all_arms_capped for
+# both, so a config typo like the fanout-class-funnel/backlog-pump miss
+# above produced an honest-looking `reason=all_arms_capped util_glm=10` line
+# while glm sat at 10% -- a false statement about the world. The caller
+# (leadv2-dispatch-code.sh) only special-cases rc=3 all_arms_capped as a
+# hard refusal (exit 4); any other non-zero rc already falls open to the
+# ladder, so no caller-side change is needed for the split itself.
+capable=[c for c in cells if kind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not protected or c.get('protected',False))]
+if not capable:
+    print('arm=refuse model=none tier=none reason=no_capable_cell chain= %s' % ufmt())
+    raise SystemExit(68)
+ok=[c for c in capable if not capped(c.get('provider'))]
+if not ok:
+    print('arm=refuse model=none tier=none reason=all_arms_capped chain= %s' % ufmt())
+    raise SystemExit(3)
+ok.sort(key=lambda c:(float(c.get('cost',999)),u[c['provider']],c['arm'],c.get('tier','')))
+seen=set(); chain=[]
+for c in ok:
+    if c['arm'] not in seen: chain.append(c['arm']); seen.add(c['arm'])
+state=os.environ['ROUTE_ARBITER_STATE_FILE']
+try: last=open(state).read().strip()
+except Exception: last=''
+# Anti-stickiness is stronger than a static lowest-utilization preference:
+# when an equally-priced alternative exists, do not spend the same arm twice.
+price=float(ok[0].get('cost',999)); alternatives=[c for c in ok if float(c.get('cost',999))==price and c['arm']!=last]
+w=alternatives[0] if alternatives else ok[0]
+try:
+    os.makedirs(os.path.dirname(state) or '.',exist_ok=True)
+    open(state,'w').write(w['arm']+'\n')
+except Exception: pass
+# T17 fix-round (H1): emit the chain with the anti-sticky PICK first, then
+# the remaining cost-ordered arms. The spawn loop (leadv2-dispatch-code.sh)
+# iterates candidate_arms in order starting at index 0 -- before this fix
+# `chain=` was a pure cost sort that never varied, so `arm=` (the rotation
+# pick) was a value no spawn ever corresponded to and anti-stickiness never
+# affected which arm actually ran.
+rotated=[w['arm']]+[a for a in chain if a != w['arm']]
+_extra = (' size_unmapped=%s' % size_unmapped) if size_unmapped else ''
+print('arm=%s model=%s tier=%s reason=cheapest_capable chain=%s %s%s' % (w['arm'],w['model'],w.get('tier','standard'),','.join(rotated),ufmt(),_extra))
+PY
+}

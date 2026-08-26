@@ -448,6 +448,11 @@ if [[ ! -f "${ROUTING_YAML}" ]]; then
     ROUTING_CONFIG_ABSENT=1
   fi
 fi
+# T17: the arbiter is intentionally optional at load time. A missing/corrupt
+# copy falls through to the established ladder and is made observable at the
+# call site, rather than making dispatch unavailable.
+ROUTE_ARBITER_LIB="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
+[[ -f "${ROUTE_ARBITER_LIB}" ]] && source "${ROUTE_ARBITER_LIB}" || true
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 # V3-WORKER-MESSAGING-01 slice 1: tier-0 durable event emitter (docs/specs/
@@ -6181,6 +6186,69 @@ exit is treated as an incident."
     _apply_kimi_admission "${kimi_admission_mission}" "${sig8}" "${lane_writes}" "${kimi_fit}"
   fi
 
+  # T17: arbiter is the first candidate-chain source. The legacy resolver and
+  # ladder above remain a deliberately fail-open fallback for an arbiter fault.
+  local -a _pre_arb_candidate_arms=("${candidate_arms[@]}")
+  if declare -F route_arbiter >/dev/null 2>&1; then
+    local _arb_desc _arb_out _arb_rc _arb_arm _arb_chain _arb_reason _arb_util _arb_tier _arb_model
+    # T17 fix-round (H2): protected/safety/ui_judgment reach the arbiter ONLY
+    # through --protected/--safety/--ui-judgment CLI flags, which no real
+    # caller passes (same no-writers shape as T19) -- so every arbiter-routed
+    # mission looked unprotected regardless of content. Derive the same
+    # signal the pre-existing sonnet_exceptions mission-scan already computes
+    # (safety_gate_publish_payments / ui_design_judgment keyword classes) and
+    # OR it into the CLI-flag value rather than overriding it -- an explicit
+    # --protected/--safety/--ui-judgment flag always still wins.
+    local _arb_protected="${protected}" _arb_safety="${safety}" _arb_ui="${ui}"
+    if [[ "${_arb_safety}" != "1" ]] && printf '%s' "${mission}" | grep -qiE 'safety[_-]?gate|\bpublish\b|\bpayments?\b'; then
+      _arb_safety=1
+    fi
+    if [[ "${_arb_ui}" != "1" ]] && printf '%s' "${mission}" | grep -qiE '\bui[_ -]?design\b|\bui[_ -]?judgment\b|\bpixel[_ -]?perfect\b'; then
+      _arb_ui=1
+    fi
+    [[ "${_arb_safety}" == "1" || "${_arb_ui}" == "1" ]] && _arb_protected=1
+    _arb_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1"}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}")"
+    _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
+    _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
+    _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
+    _arb_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*reason=\([^ ]*\).*/\1/p')"
+    _arb_util="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
+    _arb_tier="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*tier=\([^ ]*\).*/\1/p')"
+    _arb_model="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
+    if [[ ${_arb_rc} -eq 0 && -n "${_arb_arm}" && "${_arb_arm}" != refuse && -n "${_arb_chain}" ]]; then
+      # T17 fix-round (C2): the arbiter chain must pass the SAME
+      # DISPATCHABLE_BUILD_ARMS filter every other chain-adoption site uses
+      # (ROUTER-V2-BYPASSES-ARM-LADDER-FILTER-01) -- the arbiter's own matrix
+      # can list haiku/opus as capable-and-uncapped, but neither is safe to
+      # auto-spawn, and the pre-fix wiring set candidate_arms directly from
+      # _arb_chain with no filter at all.
+      if _adopt_v2_chain "${sig8}" arbiter "${_arb_chain}"; then
+        # T17 fix-round (H1): journal the arm that will ACTUALLY spawn first
+        # (candidate_arms[0], post-filter/post-rotation), not the raw
+        # arbiter pick -- the spawn loop below iterates candidate_arms from
+        # index 0, so pre-fix the journal's arm= value and the first
+        # worker_spawned model could legitimately differ.
+        arm="${candidate_arms[0]}"; reason="${_arb_reason:-cheapest_capable}"; router_label="arbiter"
+        [[ "${arm}" == codex ]] && export RESOLVED_CODEX_TIER="${_arb_tier:-standard}"
+        emit decision "route_resolved by=arbiter role=worker arm=${arm} model=${_arb_model:-${arm}} tier=${RESOLVED_CODEX_TIER:-${_arb_tier:-standard}} task=${sig8} reason=${reason} arbiter_pick=${_arb_arm} ${_arb_util}"
+      else
+        candidate_arms=("${_pre_arb_candidate_arms[@]}")
+        emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder note=chain_not_dispatchable arbiter_pick=${_arb_arm}"
+      fi
+    elif [[ ${_arb_rc} -eq 3 && "${_arb_reason}" == all_arms_capped ]]; then
+      emit decision "route_resolved by=arbiter role=worker arm=refuse task=${sig8} reason=all_arms_capped ${_arb_util}"
+      _dl_note "${sig8}" refused all_arms_capped "${_arb_util}" "${founder_task_id}"
+      exit 4
+    else
+      # rc=68 (no_capable_cell, a config-vocabulary gap -- T17 C1) falls
+      # through here too: a config drift is never a hard refusal, only a
+      # fail-open to the ladder, same as any other arbiter fault.
+      emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder"
+    fi
+  else
+    emit decision "arbiter_broken task=${sig8} rc=127 reason=missing_fail_open_to_ladder"
+  fi
+
   # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P2: skip arms whose provider is locked
   # out before attempting to spawn. A per-provider lockout record
   # (quota-lockout-<provider>.json in the ledger dir) carries locked_until_epoch.
@@ -6333,11 +6401,27 @@ exit is treated as an incident."
   # reassigning the array would NOT change the remaining iterations -- the break+reenter
   # handshake (_reenter=1 -> break for -> outer while continues) is what makes a
   # mid-loop chain swap effective. One-shot via _reresolved_lock_busy (no unbounded retry).
-  local candidate arc _reresolved_lock_busy="" _reordered_after_quota_gate="" _quota_gate_reroute=0 _reenter
+  local candidate arc _reresolved_lock_busy="" _reordered_after_quota_gate="" _quota_gate_reroute=0 _reenter _fallback_from="" _fallback_reason=""
   while true; do
   _reenter=0
   for candidate in "${candidate_arms[@]}"; do
-    [[ "${candidate}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
+    if [[ -n "${_fallback_from}" ]]; then
+      emit decision "route_fallback from=${_fallback_from} to=${candidate} task=${sig8} reason=${_fallback_reason:-arm_refused}"
+      _fallback_from=""; _fallback_reason=""
+    fi
+    # T17 fix-round (H3): when the arbiter routed this lane, its tier= is the
+    # authority for the arbiter's own pick (candidate_arms[0]) -- ${tier}
+    # here is the pre-arbiter ladder/resolver tier and does not apply to an
+    # arbiter-chosen codex cell. Later loop iterations (fallback candidates
+    # past index 0) are not arbiter picks even on an arbiter-routed lane, so
+    # this only substitutes on the exact first-iteration match.
+    if [[ "${candidate}" == "codex" ]]; then
+      if [[ "${router_label:-}" == "arbiter" && "${candidate}" == "${candidate_arms[0]:-}" && -n "${_arb_tier:-}" ]]; then
+        export RESOLVED_CODEX_TIER="${_arb_tier}"
+      else
+        export RESOLVED_CODEX_TIER="${tier:-standard}"
+      fi
+    fi
     local _candidate_mission="${mission}"
     if [[ "${candidate}" == "sonnet" && "${_quota_gate_reroute}" == "1" ]]; then
       _candidate_mission="GLM_FIRST_EXCEPTION=glm_quota_gate_80
@@ -6456,6 +6540,7 @@ ${mission}"
       ;;
     7)
       attempted+=("${LAST_ARM_OUTCOME:-${candidate}_refused}")
+      _fallback_from="${candidate}"; _fallback_reason="${LAST_ARM_OUTCOME:-arm_refused}"
       # V3-GLM-LADDER-01 Lever 1: park BEFORE the re-resolve/fallthrough below, so a
       # crash between refusal and the sonnet respawn still leaves the task recoverable.
       # Gate: candidate==glm at refusal time is already the router's own "glm-fitting"
@@ -6565,6 +6650,7 @@ ${mission}"
         exit 0
       fi
       attempted+=("${LAST_ARM_OUTCOME:-${candidate}_failed_launcher}")
+      _fallback_from="${candidate}"; _fallback_reason="${LAST_ARM_OUTCOME:-launcher_failed}"
       continue
       ;;
     5)
