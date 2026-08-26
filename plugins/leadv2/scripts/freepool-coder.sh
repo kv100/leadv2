@@ -157,6 +157,69 @@ freepool_launch_gate() {
   return 0
 }
 
+# FREEPOOL-MODEL-SELECTOR-01: pick a live route id per spawn instead of
+# pinning "sonnet" statically across the whole arm. Delegates to
+# lib/leadv2-freepool-model-select.sh (rank order + live /v1/models
+# intersection + liveness probe); echoes the chosen route id on stdout.
+# Fail-open to the static "sonnet" alias on ANY selector failure (absent
+# script, non-zero exit, empty stdout, FREEPOOL_SKIP_MODEL_SELECT=1) — a
+# selector bug or a fully-dead proxy must never itself block a spawn that
+# the health gate above already cleared.
+freepool_select_model() {
+  if [[ "${FREEPOOL_SKIP_MODEL_SELECT:-0}" == "1" ]]; then
+    log_info "freepool_model_fallback reason=skip_flag"
+    echo "sonnet"
+    return 0
+  fi
+  local selector="${SELF%/*}/lib/leadv2-freepool-model-select.sh"
+  if [[ ! -f "${selector}" ]]; then
+    log_info "freepool_model_fallback reason=selector_absent"
+    echo "sonnet"
+    return 0
+  fi
+  local stderr_tmp chosen rc detail
+  stderr_tmp="$(mktemp 2>/dev/null || echo /tmp/freepool-model-select.$$.stderr)"
+  # P0 (FREEPOOL-MODEL-SELECTOR-01 fix-round): under this script's global
+  # `set -e`, `chosen="$(...)"; rc=$?` was two SEPARATE commands — if the
+  # selector exited non-zero, the assignment itself failed as a plain
+  # command and `set -e` killed the whole script BEFORE `rc=$?` or the
+  # sonnet fallback below ever ran (a selector bug/dead proxy would take
+  # down the caller instead of falling open). An `if`/`else` puts the
+  # command substitution in a tested context, which `set -e` never treats
+  # as fatal, so rc is always captured and the fallback always runs.
+  if chosen="$("${selector}" 2>"${stderr_tmp}")"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  # P2a: a compromised/malformed /v1/models response could smuggle a route
+  # id containing newlines or control chars into `chosen` — refuse to use
+  # or log such a value rather than let it forge extra
+  # progress.log/journal.jsonl lines once interpolated below, and fall open
+  # to sonnet the same as any other selector failure.
+  if [[ "${rc}" -eq 0 && -n "${chosen}" ]] && ! python3 -c '
+import sys
+s = sys.argv[1]
+sys.exit(0 if s == s.strip() and all(32 <= ord(c) < 127 for c in s) else 1)
+' "${chosen}" 2>/dev/null; then
+    log_info "freepool_model_fallback reason=unsafe_route_id"
+    rc=1
+    chosen=""
+  fi
+  if [[ "${rc}" -eq 0 && -n "${chosen}" ]]; then
+    detail="$(grep -o 'chosen=.*' "${stderr_tmp}" | tail -1 | sed 's/^chosen=/model=/')"
+    detail="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1])[1:-1])' "${detail:-model=${chosen}}" 2>/dev/null || printf '%s' "${detail:-model=${chosen}}")"
+    log_info "freepool_model_chosen ${detail}"
+    rm -f "${stderr_tmp}"
+    echo "${chosen}"
+  else
+    log_info "freepool_model_fallback reason=rc${rc}"
+    rm -f "${stderr_tmp}"
+    echo "sonnet"
+  fi
+  return 0
+}
+
 usage() {
   cat >&2 <<'EOF'
 Usage:
@@ -256,6 +319,9 @@ run_claude() {
     resolved_prompt="${AGENT_BAN_PREAMBLE}${resolved_prompt}${FINISH_CONTRACT_TRAILER}"
   fi
 
+  local _model
+  _model="$(freepool_select_model)"
+
   local exit_code=0
   (
     cd "${cwd_dir}"
@@ -269,7 +335,7 @@ run_claude() {
     command "${FREEPOOL_CLAUDE_BIN}" -p "${resolved_prompt}" \
       --dangerously-skip-permissions \
       --disallowedTools "Agent" \
-      --model sonnet \
+      --model "${_model}" \
       --output-format json
   ) >"${out_file}" 2>&1 || exit_code=$?
 
@@ -1031,9 +1097,12 @@ cmd_run_child() {
   # lean: prompt passed via argv, matching design/v1 — upgrade to stdin/tempfile
   # passing if a prompt near bash ARG_MAX is observed in practice.
 
+  local _model
+  _model="$(freepool_select_model)"
+
   set +e
   ( command "${FREEPOOL_CLAUDE_BIN}" -p "${prompt}" \
-      --model sonnet \
+      --model "${_model}" \
       --output-format stream-json \
       --verbose \
       --max-turns "${max_turns}" \

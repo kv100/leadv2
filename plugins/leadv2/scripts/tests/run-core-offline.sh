@@ -338,6 +338,7 @@ SUITE_DEFS=(
   "prepass resume invalidation (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-prepass-resume-invalidate.sh|||SERIAL"
   "poll-based lane watcher (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-lane-watch-poll.sh"
   "broad-status foreign-repo lanes (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-broad-status-foreign-lanes.sh"
+  "freepool model selector + gate stale-window TTL (FREEPOOL-MODEL-SELECTOR-01)|||bash $TEST_DIR/test-freepool-model-selector.sh"
 )
 
 # Runner-mechanics test hook (SUITE-SPEED-01): a caller may substitute the
