@@ -105,7 +105,20 @@ readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"
 # LEADV2_WORKER_MCP (default 1; =0 restores the pre-T14 spawn line with no
 # --mcp-config). Role: LEADV2_WORKER_ROLE (default developer; set critic for
 # review missions). Fail-open on every failure — see worker_mcp_resolve().
-readonly WORKER_MCP_LIB="${SELF%/*}/lib/leadv2-worker-mcp.sh"
+# F1 (T14 fix-round): $SELF is derived from the INVOKING path, so when this
+# script is a per-file symlink into a foreign tree (persona-engine layout:
+# real .claude/scripts/ dir, lib/ only partially symlinked), the lib looks
+# missing and every worker silently degrades to worker_mcp_skipped
+# reason=lib_missing. Fall back to the canonical repo by resolving the
+# symlink chain of BASH_SOURCE itself.
+_WORKER_MCP_LIB="${SELF%/*}/lib/leadv2-worker-mcp.sh"
+if [[ ! -f "${_WORKER_MCP_LIB}" ]]; then
+  _glm_canonical_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+  if [[ -f "${_glm_canonical_self%/*}/lib/leadv2-worker-mcp.sh" ]]; then
+    _WORKER_MCP_LIB="${_glm_canonical_self%/*}/lib/leadv2-worker-mcp.sh"
+  fi
+fi
+readonly WORKER_MCP_LIB="${_WORKER_MCP_LIB}"
 if [[ -f "${WORKER_MCP_LIB}" ]]; then
   # shellcheck disable=SC1090
   source "${WORKER_MCP_LIB}"
@@ -345,6 +358,11 @@ run_claude() {
     fi
     command "${GLM_CLAUDE_BIN}" "${spawn_args[@]}"
   ) >"${out_file}" 2>&1 || exit_code=$?
+
+  # F2 (T14 fix-round): the resolve scratch dir holds only the resolved
+  # --mcp-config copy (already consumed by the spawn above) — remove it so
+  # each synchronous `run` does not leak one /tmp/glm-worker-mcp.XXXXXX dir.
+  rm -rf "${mcp_out_dir}" 2>/dev/null || true
 
   # Telemetry is deliberately best-effort and runs after the complete provider
   # JSON envelope is durable.  Its failure can never alter the lane outcome.

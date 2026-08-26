@@ -4377,7 +4377,7 @@ _spawn_worker_body() {
       # The GLM wrapper owns the terminal JSON envelope and invokes the shared
       # dev cost shim only after it exists.  Stamp this dispatch identity here
       # so direct and dispatcher-launched lanes use one attribution contract.
-      out="$(LEADV2_COSTLOG_ARM=glm-coder bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      out="$(LEADV2_COSTLOG_ARM=glm-coder LEADV2_WORKER_ROLE=developer bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
         local refusal

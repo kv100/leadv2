@@ -10,6 +10,8 @@
 #   - glm-coder.sh gates on LEADV2_WORKER_MCP (default 1: dispatched workers
 #     get the role-scoped code-intel MCP servers by default; =0 restores the
 #     pre-T14 behaviour of no --mcp-config on the spawn line)
+# The two switches are intentionally SEPARATE (disjoint spawn paths, one
+# shared resolver here) — neither implies the other.
 #
 # resolve_role_mcp_config()
 #   Input : $1 = role name, $2 = handoff dir (for the resolved-config output),

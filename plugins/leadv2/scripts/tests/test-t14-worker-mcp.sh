@@ -66,14 +66,24 @@ printf '%s\n' '{"mcpServers": {"repowise": {"command": "stub-repowise", "args": 
 git -C "${REPO}" init -q 2>/dev/null || true
 git -C "${REPO}" -c user.email=t14@test -c user.name=t14 commit -q --allow-empty -m init 2>/dev/null || true
 
-# Stub claude: captures argv (one arg per line), emits a minimal coherent
-# envelope for both --output-format json (run) and stream-json (bg).
+# Stub claude: captures argv (one arg per line), copies the --mcp-config file
+# aside AT SPAWN TIME (F2 cleanup removes the scratch dir before the test can
+# read it post-run), emits a minimal coherent envelope for both
+# --output-format json (run) and stream-json (bg).
 STUB_BIN="${FIXTURE}/bin"
 mkdir -p "${STUB_BIN}"
 ARGV_FILE="${FIXTURE}/argv.txt"
+RESOLVED_CAPTURE="${FIXTURE}/resolved-capture.txt"
 cat > "${STUB_BIN}/claude" <<STUBEOF
 #!/usr/bin/env bash
-printf '%s\n' "\$@" >> "${ARGV_FILE}"
+_prev=""
+for _a in "\$@"; do
+  printf '%s\n' "\$_a" >> "${ARGV_FILE}"
+  if [[ "\$_prev" == "--mcp-config" && -f "\$_a" ]]; then
+    cp "\$_a" "${RESOLVED_CAPTURE}" 2>/dev/null || true
+  fi
+  _prev="\$_a"
+done
 printf '%s\n' '{"type":"system","subtype":"init","model":"stub"}'
 exit 0
 STUBEOF
@@ -91,6 +101,7 @@ mkdir -p "${RUNS_DIR}"
 _glm_run() {
   local script="$1"; shift
   : > "${ARGV_FILE}"
+  rm -f "${RESOLVED_CAPTURE}" 2>/dev/null || true
   G_OUT="${FIXTURE}/out-$$.txt"
   G_STDERR="${FIXTURE}/stderr-$$.txt"
   local env_name
@@ -135,10 +146,10 @@ test_01_default_developer() {
   else
     fail "worker_mcp_attached journal line missing: $(cat "${G_STDERR}" 2>/dev/null | grep worker_mcp | head -3)"
   fi
-  if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); s=d['mcpServers']; sys.exit(0 if 'repowise' in s and 'codebase-memory-mcp' in s else 1)" "${v}" 2>/dev/null; then
+  if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); s=d['mcpServers']; sys.exit(0 if 'repowise' in s and 'codebase-memory-mcp' in s else 1)" "${RESOLVED_CAPTURE}" 2>/dev/null; then
     pass "resolved config is valid JSON carrying both allowlisted servers"
   else
-    fail "resolved config invalid or missing servers: ${v}"
+    fail "resolved config invalid or missing servers: ${RESOLVED_CAPTURE}"
   fi
 }
 
@@ -156,13 +167,39 @@ test_02_role_critic() {
 }
 
 # ── T14-03: LEADV2_WORKER_MCP=0 — no flags, spawn still succeeds ─────────────
+# F4 (T14 fix-round): assert the FULL argv equals the pre-T14 baseline (the
+# v1 spawn line), not just absence of --strict-mcp-config — a stray added or
+# dropped flag would previously pass unnoticed. The -p payload is masked
+# (it carries the preambles/trailer, not part of the baseline contract).
 test_03_killswitch_off() {
-  log "T14-03: LEADV2_WORKER_MCP=0 -> no --mcp-config, rc=0, skip journaled"
+  log "T14-03: LEADV2_WORKER_MCP=0 -> full pre-T14 baseline argv, rc=0, skip journaled"
   _glm_run "${GLM_SCRIPT}" "LEADV2_WORKER_MCP=0"
   if [[ $(_argc) -eq 0 && "${G_RC}" -eq 0 ]] && ! grep -q '^--strict-mcp-config$' "${ARGV_FILE}"; then
     pass "kill-switch=0 restores the pre-T14 spawn line (no MCP flags, rc=0)"
   else
     fail "kill-switch=0 still emits MCP flags (rc=${G_RC})"
+  fi
+  local argv_masked baseline_file
+  baseline_file="${FIXTURE}/t14-03-baseline-$$.txt"
+  cat > "${baseline_file}" <<'BASEEOF'
+-p
+<PROMPT>
+--dangerously-skip-permissions
+--disallowedTools
+Agent
+--model
+sonnet
+--output-format
+json
+BASEEOF
+  CLEANUP_PATHS+=("${baseline_file}")
+  # Mask from `-p` until the first REAL spawn flag (the FINISH CONTRACT trailer
+  # contains a `---` line, so a bare /^--/ stop would unmask it early).
+  argv_masked="$(awk '$0=="-p"{print; inp=1; next} inp && $0=="--dangerously-skip-permissions"{inp=0} inp{if(!ph){print "<PROMPT>"; ph=1}; next} {print}' "${ARGV_FILE}")"
+  if [[ "${argv_masked}" == "$(cat "${baseline_file}")" ]]; then
+    pass "kill-switch=0 argv matches the full pre-T14 baseline exactly"
+  else
+    fail "kill-switch=0 argv drifted from the pre-T14 baseline: $(printf '%s | ' ${argv_masked})"
   fi
   if grep -q 'worker_mcp_skipped reason=disabled' "${G_STDERR}"; then
     pass "kill-switch=0 journals worker_mcp_skipped reason=disabled"
@@ -263,12 +300,77 @@ test_06_review_run_uses_critic() {
   fi
 }
 
+# ── T14-07 (F1): lib resolution when glm-coder.sh is invoked VIA A SYMLINK
+# from a foreign dir — simulates the persona-engine layout (real .claude/scripts/
+# dir with per-file symlinks, no lib/ next to the symlink). The resolver must
+# fall back to the canonical repo, NOT journal worker_mcp_skipped
+# reason=lib_missing.
+test_07_symlinked_invocation_finds_lib() {
+  log "T14-07: symlinked glm-coder.sh from a foreign dir (no local lib/) still attaches MCP"
+  local foreign="${FIXTURE}/persona-sim"
+  mkdir -p "${foreign}/scripts"
+  ln -s "${GLM_SCRIPT}" "${foreign}/scripts/glm-coder.sh"
+  _glm_run "${foreign}/scripts/glm-coder.sh"
+  local v
+  v="$(_flag_value --mcp-config)"
+  if [[ $(_argc) -eq 1 && -n "${v}" ]]; then
+    pass "symlinked invocation resolves the lib via the canonical repo (flag attached)"
+  else
+    fail "symlinked invocation lost the MCP flag: $(grep worker_mcp "${G_STDERR}" | head -3)"
+    return
+  fi
+  if grep -q 'worker_mcp_skipped reason=lib_missing' "${G_STDERR}"; then
+    fail "symlinked invocation still journals lib_missing"
+  else
+    pass "no worker_mcp_skipped reason=lib_missing on the symlinked path"
+  fi
+}
+
+# ── T14-08 (F2): run_claude() must not leak its mktemp -d scratch dir ────────
+# The suite pins TMPDIR to the fixture, so any glm-worker-mcp.* left behind is
+# observable directly.
+test_08_no_scratch_dir_leak() {
+  log "T14-08: no glm-worker-mcp.* scratch dir left in TMPDIR after a run"
+  _glm_run "${GLM_SCRIPT}"
+  local leaked
+  leaked="$(ls -d "${FIXTURE}"/glm-worker-mcp.* 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "${leaked}" -eq 0 && "${G_RC}" -eq 0 ]]; then
+    pass "zero glm-worker-mcp.* scratch dirs after run (rc=0)"
+  else
+    fail "scratch dir leak: ${leaked} left behind (rc=${G_RC})"
+  fi
+}
+
+# ── T14-09 (F3): every identified glm-coder.sh caller pins LEADV2_WORKER_ROLE
+# ── (review-run's critic is T14-06 above) ────────────────────────────────────
+test_09_callers_pin_role() {
+  log "T14-09: dispatch-code/product-close/session-runner pin LEADV2_WORKER_ROLE"
+  if grep -q 'LEADV2_WORKER_ROLE=developer bash "${GLM_BIN}" bg' "${PLUGIN_SCRIPTS}/leadv2-dispatch-code.sh"; then
+    pass "dispatch-code glm arm pins LEADV2_WORKER_ROLE=developer"
+  else
+    fail "dispatch-code glm arm does not pin LEADV2_WORKER_ROLE=developer"
+  fi
+  if grep -q 'LEADV2_WORKER_ROLE=critic bash "${glm_bin}" run' "${PLUGIN_SCRIPTS}/leadv2-dispatch-product-close.sh"; then
+    pass "dispatch-product-close glm reviewer arm pins LEADV2_WORKER_ROLE=critic"
+  else
+    fail "dispatch-product-close glm reviewer arm does not pin LEADV2_WORKER_ROLE=critic"
+  fi
+  if grep -q 'LEADV2_WORKER_ROLE=architect "$GLM_CODER_BIN" bg' "${PLUGIN_SCRIPTS}/leadv2-glm-session-runner.sh"; then
+    pass "glm-session-runner pins LEADV2_WORKER_ROLE=architect"
+  else
+    fail "glm-session-runner does not pin LEADV2_WORKER_ROLE=architect"
+  fi
+}
+
 test_01_default_developer
 test_02_role_critic
 test_03_killswitch_off
 test_04_missing_config_fails_open
 test_05_bg_path
 test_06_review_run_uses_critic
+test_07_symlinked_invocation_finds_lib
+test_08_no_scratch_dir_leak
+test_09_callers_pin_role
 test_nc_mutation_kills_suite
 
 printf -- '\n=== Results: %d passed, %d failed ===\n' "$PASS" "$FAIL"
