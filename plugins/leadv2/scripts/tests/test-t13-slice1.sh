@@ -179,5 +179,29 @@ dispatch_case_exit76_sentinel() { # <script> -- rc0 iff no respawn AND rc is fai
 }
 run_pair "exit76-permanent-sentinel-no-respawn-and-rc-failure" dispatch_case_exit76_sentinel 's/no respawn\)"\n        return 5/no respawn)"\n        return 0/' "$DISPATCH"
 
+# R4 final-verify finding: a suffixed identifier (SENTINEL-retry) must NOT be
+# treated as the sentinel. Green iff the suppress path (rc=5) is NOT taken for
+# the suffixed spelling; the negative control reverts the token-exact match to
+# the old word-bounded grep -qw, which wrongly matches the suffix and goes rc=5.
+dispatch_case_exit76_sentinel_suffix() { # <script> -- rc0 iff suffixed sentinel does NOT suppress
+  local s="$1"
+  dispatch_reserve() { printf 'tok\n'; return 0; }
+  spawn_worker() { printf 'worker_spawned handle=h1\n'; return 0; }
+  dispatch_confirm() { return 0; }
+  dispatch_abort() { return 0; }
+  _dispatch_normalize_handle() { printf '%s' "$2"; }
+  _wait_arm_early_verdict() { return 76; }
+  _arm_final_output() { printf 'GLM_PERMANENT_FAILURE_SENTINEL-retry\n'; }
+  emit() { :; }
+  log() { :; }
+  ACTIVE_DISPATCH_TOKEN=""
+  extract_atomic_confirm "$s" || return 2
+  local rc
+  atomic_dispatch_reserve_spawn_confirm sig glm rule mission sig8 1 >/dev/null
+  rc=$?
+  [[ ${rc} -ne 5 ]]
+}
+run_pair "exit76-sentinel-suffix-not-suppressed" dispatch_case_exit76_sentinel_suffix 's/grep -Eq \x27[^\x27]*GLM_PERMANENT_FAILURE_SENTINEL[^\x27]*\x27/grep -qw \x27GLM_PERMANENT_FAILURE_SENTINEL\x27/' "$DISPATCH"
+
 printf '[TEST] RESULTS PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

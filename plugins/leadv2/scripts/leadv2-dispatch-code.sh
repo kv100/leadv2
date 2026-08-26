@@ -5293,7 +5293,7 @@ atomic_dispatch_reserve_spawn_confirm() {  # <sig> <arm> <rule> <mission> <sig8>
       # worker. rc=5 reuses the existing "hard failure, ambiguous/dead state,
       # no respawn" contract (case 5 in atomic_dispatch_reserve_spawn_confirm's
       # caller): it marks the lane dead and exits non-zero instead of exiting 0.
-      if printf '%s\n%s\n' "${spawn_out}" "${LAST_ARM_CONTINUATION}" | grep -qw 'GLM_PERMANENT_FAILURE_SENTINEL'; then
+      if printf '%s\n%s\n' "${spawn_out}" "${LAST_ARM_CONTINUATION}" | grep -Eq '(^|[^A-Za-z0-9_.-])GLM_PERMANENT_FAILURE_SENTINEL($|[^A-Za-z0-9_.-])'; then
         LAST_ARM_OUTCOME="exit76_permanent_sentinel"
         LAST_ARM_CONTINUATION=""
         emit decision "route_fallback_suppressed from=${arm} task=${sig8} reason=permanent_sentinel"
