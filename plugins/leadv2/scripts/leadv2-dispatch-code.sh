@@ -6317,6 +6317,7 @@ exit is treated as an incident."
   # skip is journalled so a lead reading the journal sees WHY an arm was passed
   # over.
   local _glm_quota_benched=""
+  local _primary_arm_benched=0
   if [[ ${#candidate_arms[@]} -gt 0 ]]; then
     local -a _qpc_kept=()
     local _qpc_arm _qpc_prov
@@ -6325,6 +6326,7 @@ exit is treated as an incident."
       if _provider_available "${_qpc_prov}"; then
         _qpc_kept+=("${_qpc_arm}")
       else
+        [[ "${_qpc_arm}" == "${candidate_arms[0]:-}" ]] && _primary_arm_benched=1
         emit decision "quota_precheck_skip model=${_qpc_arm} provider=${_qpc_prov} task=${sig8} reason=provider_quota_locked class=$(_lockout_record_field "${_qpc_prov}" class)"
         # V3-GLM-LADDER-01 C1/D3: a glm bench here is the same founder-visible event as
         # a live glm_refused_* refusal (candidate never even got attempted) -- park +
@@ -6350,6 +6352,27 @@ exit is treated as an incident."
       exit 4
     fi
     candidate_arms=("${_qpc_kept[@]}")
+  fi
+
+  # ARBITER-BENCH-FALLBACK-GAP-01: a provider lockout can remove the arm the
+  # initial arbiter chose after that initial decision.  Re-enter the arbiter
+  # with precisely the still-spawnable arms, rather than letting the legacy
+  # candidate order decide the fallback leg.  The allowed set prevents the
+  # arbiter from resurrecting the benched arm from its capability matrix.
+  if [[ "${_primary_arm_benched}" == "1" && ${#candidate_arms[@]} -gt 0 ]] && declare -F route_arbiter >/dev/null 2>&1; then
+    local _bf_desc _bf_out _bf_rc _bf_chain _bf_arm _bf_util _bf_allowed
+    _bf_allowed="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
+    _bf_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"allowed_arms":[x for x in sys.argv[3].split(",") if x]}))' "${kind:-code}" "${task_class:-standard}" "${_bf_allowed}")"
+    _bf_out="$(route_arbiter worker "${_bf_desc}")"; _bf_rc=$?
+    _bf_arm="$(printf '%s\n' "${_bf_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
+    _bf_chain="$(printf '%s\n' "${_bf_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
+    _bf_util="$(printf '%s\n' "${_bf_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
+    if [[ ${_bf_rc} -eq 0 && -n "${_bf_arm}" && "${_bf_arm}" != refuse ]] && _adopt_v2_chain "${sig8}" bench_fallback "${_bf_chain}"; then
+      arm="${candidate_arms[0]}"; router_label="arbiter"
+      emit decision "route_headroom_chosen task=${sig8} arm=${arm} after=primary_arm_benched ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") source=arbiter ${_bf_util}"
+    else
+      emit decision "arbiter_broken task=${sig8} rc=${_bf_rc} reason=bench_fallback_fail_open_to_ladder"
+    fi
   fi
 
   # ROUTER-QUOTA-DRIVEN-01 (T6): filter candidate_arms by LIVE quota truth
@@ -6613,6 +6636,28 @@ ${mission}"
     7)
       attempted+=("${LAST_ARM_OUTCOME:-${candidate}_refused}")
       _fallback_from="${candidate}"; _fallback_reason="${LAST_ARM_OUTCOME:-arm_refused}"
+      # An exit-76 receipt is a new spawn leg, not permission to continue in
+      # the stale ladder order.  Re-arbitrate over the remaining candidates.
+      if [[ "${LAST_ARM_OUTCOME:-}" == "exit76_receipt" ]] && declare -F route_arbiter >/dev/null 2>&1; then
+        local -a _e76_remaining=()
+        local _e76_a
+        for _e76_a in "${candidate_arms[@]}"; do [[ "${_e76_a}" == "${candidate}" ]] || _e76_remaining+=("${_e76_a}"); done
+        if [[ ${#_e76_remaining[@]} -gt 0 ]]; then
+          local _e76_allowed _e76_desc _e76_out _e76_rc _e76_arm _e76_chain _e76_util
+          _e76_allowed="$(IFS=,; printf '%s' "${_e76_remaining[*]}")"
+          _e76_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"allowed_arms":[x for x in sys.argv[3].split(",") if x]}))' "${kind:-code}" "${task_class:-standard}" "${_e76_allowed}")"
+          _e76_out="$(route_arbiter worker "${_e76_desc}")"; _e76_rc=$?
+          _e76_arm="$(printf '%s\n' "${_e76_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
+          _e76_chain="$(printf '%s\n' "${_e76_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
+          _e76_util="$(printf '%s\n' "${_e76_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
+          if [[ ${_e76_rc} -eq 0 && -n "${_e76_arm}" && "${_e76_arm}" != refuse ]] && _adopt_v2_chain "${sig8}" exit76_continuation "${_e76_chain}"; then
+            arm="${candidate_arms[0]}"; router_label="arbiter"; _reenter=1
+            emit decision "route_headroom_chosen task=${sig8} arm=${arm} after=exit76_continuation ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") source=arbiter ${_e76_util}"
+            break
+          fi
+          emit decision "arbiter_broken task=${sig8} rc=${_e76_rc} reason=exit76_fail_open_to_ladder"
+        fi
+      fi
       # V3-GLM-LADDER-01 Lever 1: park BEFORE the re-resolve/fallthrough below, so a
       # crash between refusal and the sonnet respawn still leaves the task recoverable.
       # Gate: candidate==glm at refusal time is already the router's own "glm-fitting"

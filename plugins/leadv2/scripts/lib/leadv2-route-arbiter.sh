@@ -54,6 +54,8 @@ size_raw=str(d.get('size',d.get('task_class','standard'))).lower()
 size_unmapped = None if size_raw in SIZE_MAP else size_raw
 size=SIZE_MAP.get(size_raw,'standard')
 protected=any(bool(d.get(k)) for k in ('protected','safety','publish','ui_judgment'))
+allowed_raw=d.get('allowed_arms')
+allowed={str(a) for a in allowed_raw} if isinstance(allowed_raw, list) else None
 def num(x):
     try:return float(x)
     except:return None
@@ -97,7 +99,7 @@ cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
 # (leadv2-dispatch-code.sh) only special-cases rc=3 all_arms_capped as a
 # hard refusal (exit 4); any other non-zero rc already falls open to the
 # ladder, so no caller-side change is needed for the split itself.
-capable=[c for c in cells if kind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not protected or c.get('protected',False))]
+capable=[c for c in cells if kind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not protected or c.get('protected',False)) and (allowed is None or c.get('arm') in allowed)]
 if not capable:
     print('arm=refuse model=none tier=none reason=no_capable_cell chain= %s' % ufmt())
     raise SystemExit(68)
