@@ -72,21 +72,21 @@ FAILFLAG="${ROOT}/.drift-guard-should-fail"
 rm -f "$PROBE" "$FAILFLAG"   # drift-guard FAILS (divergence persists)
 run_hook '{"tool_name":"Bash","tool_input":{"command":"bash ~/x/leadv2-plugin-sync.sh --apply"}}'
 if [[ "$RC" -eq 0 ]] \
-   && [[ -z "$STDOUT" ]] \
-   && grep -q 'one-copy drift' <<<"$STDERR" \
-   && grep -q '\[one-copy\] REGRESSION' <<<"$STDERR" \
+   && grep -q 'one-copy drift' <<<"$STDOUT" \
+   && grep -q '\[one-copy\] REGRESSION' <<<"$STDOUT" \
+   && ! grep -q 'drift-guard\] WARNING' <<<"$STDOUT" \
    && grep -q '\[drift-guard\] WARNING: leadv2-plugin-sync.sh just ran' <<<"$STDERR" \
-   && [[ "$(grep -c 'one-copy drift' <<<"$STDERR")" -eq 1 ]]; then
-  pass "T1 post-sync: single stderr report block, both legs, rc 0"
+   && ! grep -q 'one-copy drift' <<<"$STDERR"; then
+  pass "T1 post-sync: base report stdout, WARNING stderr, rc 0"
 else
-  fail "T1 post-sync: single stderr report block, both legs, rc 0 (rc=$RC stdout=$STDOUT stderr=$STDERR)"
+  fail "T1 post-sync: base report stdout, WARNING stderr, rc 0 (rc=$RC stdout=$STDOUT stderr=$STDERR)"
 fi
 [[ -f "$PROBE" ]] && pass "T1 drift-guard was actually invoked" || fail "T1 drift-guard was actually invoked"
 
 # Same invocation, drift now clean -> one-copy lines only, no WARNING
 rm -f "$PROBE"; : > "$FAILFLAG"
 run_hook '{"tool_name":"Bash","tool_input":{"command":"bash leadv2-plugin-sync.sh"}}'
-if [[ "$RC" -eq 0 && -z "$STDOUT" ]] && grep -q '\[one-copy\] REGRESSION' <<<"$STDERR" && ! grep -q 'drift-guard\] WARNING' <<<"$STDERR"; then
+if [[ "$RC" -eq 0 ]] && grep -q '\[one-copy\] REGRESSION' <<<"$STDOUT" && [[ -z "$STDERR" ]]; then
   pass "T1b post-sync, drift-guard clean: no WARNING leg"
 else
   fail "T1b post-sync, drift-guard clean: no WARNING leg (rc=$RC stdout=$STDOUT stderr=$STDERR)"
@@ -104,8 +104,8 @@ fi
 # ── T3: SessionStart payload -> one-copy only, drift-guard not run ──────
 rm -f "$PROBE"
 run_hook '{"source":"startup","cwd":"/tmp"}'
-if [[ "$RC" -eq 0 && -z "$STDOUT" ]] && grep -q '\[one-copy\] REGRESSION' <<<"$STDERR" && [[ ! -f "$PROBE" ]] \
-   && ! grep -q 'drift-guard\] WARNING' <<<"$STDERR"; then
+if [[ "$RC" -eq 0 ]] && grep -q 'one-copy drift' <<<"$STDOUT" && grep -q '\[one-copy\] REGRESSION' <<<"$STDOUT" \
+   && [[ -z "$STDERR" ]] && [[ ! -f "$PROBE" ]]; then
   pass "T3 SessionStart payload: one-copy leg only"
 else
   fail "T3 SessionStart payload: one-copy leg only (rc=$RC stdout=$STDOUT stderr=$STDERR)"

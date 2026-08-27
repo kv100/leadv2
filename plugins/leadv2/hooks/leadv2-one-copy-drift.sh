@@ -98,15 +98,14 @@ if [[ "$POST_SYNC" == "1" ]]; then
   if [[ -f "$DRIFT_GUARD" ]]; then
     if ! bash "$DRIFT_GUARD" --quiet 2>/tmp/leadv2-drift-warn-detail.log; then
       warn="[drift-guard] WARNING: leadv2-plugin-sync.sh just ran but the 5 script copies still diverge. Details: /tmp/leadv2-drift-warn-detail.log (re-run: bash ${DRIFT_GUARD})"
-      if [[ -n "$report" ]]; then
-        report="$report"$'\n'"$warn"
-      else
-        report="$warn"
-      fi
+      # The base report is SessionStart context, so it must remain on stdout.
+      # This additional post-sync advisory belongs to the Bash hook diagnostic
+      # channel and must not swallow that context.
+      printf '%s\n' "$warn" >&2
     fi
   fi
 fi
 
-[[ -n "$report" ]] && printf '%b\n' "$report" >&2
+[[ -n "$report" ]] && printf '%b\n' "$report"
 
 exit 0
