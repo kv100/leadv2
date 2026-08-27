@@ -63,11 +63,13 @@ LV2_WT_PROTECT_MIN_AGE_S=$((48 * 3600))
 # counts as open — the correct direction); an unopenable active.yaml, a
 # malformed YAML, or a missing yaml module exits 3 => caller fails closed.
 _LV2_WT_PROTECT_PY='
-import json, os, subprocess, sys
+import json, os, sys
 
-active_path, ledger_path = sys.argv[1], sys.argv[2]
+active_path, ledger_path, lib_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, lib_dir)
 try:
     import yaml
+    from leadv2_pid_birth import birth_matches, pid_birth_of
 except ImportError:
     sys.exit(3)
 
@@ -83,7 +85,7 @@ for s in data.get("sessions") or []:
     if not isinstance(s, dict) or not s.get("task_id"):
         continue
     pid = s.get("pid")
-    birth = " ".join(str(s.get("pid_birth") or s.get("worker_pid_birth") or "").split())
+    birth = s.get("pid_birth") or s.get("worker_pid_birth") or ""
     alive = 0
     if pid not in (None, "", "null", "None"):
         try:
@@ -93,8 +95,7 @@ for s in data.get("sessions") or []:
             alive = 0
     if alive and birth:
         try:
-            observed = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], text=True, capture_output=True, timeout=2).stdout.split())
-            alive = int(bool(observed) and observed == birth)
+            alive = int(birth_matches(birth, pid_birth_of(pid)))
         except Exception:
             alive = 0
     print("S\t%s\t%s\t%s\t%s\t%d" % (s.get("task_id"), s.get("worktree") or "", pid or "", birth, alive))
@@ -123,7 +124,7 @@ if ledger_path and os.path.isfile(ledger_path):
 '
 
 lv2_wt_protect_prime() {
-  local repo_root="$1" state_bin active_path ledger_path out v
+  local repo_root="$1" state_bin lib_dir active_path ledger_path out v
   LV2_WT_PROTECT_ERR=""
   LV2_WT_PROTECT_SESSIONS=""
   LV2_WT_PROTECT_TERMINALS=""
@@ -160,6 +161,7 @@ lv2_wt_protect_prime() {
   fi
 
   state_bin="${BASH_SOURCE[0]:-$0}"; state_bin="${state_bin%/*}/../leadv2-state-path.sh"
+  lib_dir="${BASH_SOURCE[0]:-$0}"; lib_dir="${lib_dir%/*}"
   if [[ ! -f "$state_bin" ]]; then
     LV2_WT_PROTECT_ERR="state-path-resolver-absent"
     return 0
@@ -174,7 +176,7 @@ lv2_wt_protect_prime() {
   ledger_path="$(PROJECT_ROOT="$repo_root" bash "$state_bin" --no-link dispatch-ledger.jsonl 2>/dev/null)" \
     || ledger_path=""
 
-  out="$(python3 -c "$_LV2_WT_PROTECT_PY" "$active_path" "$ledger_path" 2>/dev/null)" \
+  out="$(python3 -c "$_LV2_WT_PROTECT_PY" "$active_path" "$ledger_path" "$lib_dir" 2>/dev/null)" \
     || { LV2_WT_PROTECT_ERR="control-plane-unreadable"; return 0; }
 
   local line
