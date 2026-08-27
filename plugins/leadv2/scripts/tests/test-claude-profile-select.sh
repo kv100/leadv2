@@ -404,5 +404,30 @@ run_select $(base_env) "LEADV2_CLAUDE_PROFILE_JOURNAL=$jr" "LEADV2_CLAUDE_PROFIL
 check_grep "$(cat "$jr")" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[claude-profile-select\] WARN: same_account label=same1' 'T19a: journal carries ISO-prefixed same_account WARN'
 check_nogrep "$(cat "$jr")" 'sk-ant' 'T19b: journal has no token'
 
+# ============================================================================
+# Fix-round C2 (2026-08-27): the incident class the dir-fallback exists for.
+# Two slots, both with a VALID credential and resolvable subscriptionType but
+# NO readable .claude.json -> both derive "<sub>/na".  They must still land in
+# DISTINCT quota buckets (config-dir-keyed), and the same_account warn must
+# NOT fire (the email half is unresolved, so "same account" is unprovable).
+echo "=== T20 (C2): two no-.claude.json slots, same sub -> distinct buckets, no same_account ==="
+mkdir -p "$tmp/dir-nojson-a" "$tmp/dir-nojson-b"
+mk_slot "$tmp/dir-nojson-a" pro "-" "$future_ms"
+mk_slot "$tmp/dir-nojson-b" pro "-" "$future_ms"
+acct_json 15 10 > "$FIX/nojson-a.json"
+acct_json 60 50 > "$FIX/nojson-b.json"
+printf 'nojson-a\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-nojson-a" "$tmp/dir-nojson-a" > "$REG"
+printf 'nojson-b\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-nojson-b" "$tmp/dir-nojson-b" >> "$REG"
+: > "$tmp/seen"
+run_select $(base_env) "STUB_SEEN=$tmp/seen" "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+buckets="$(sort -u "$tmp/seen" | wc -l | tr -d ' ')"
+[[ "$buckets" -eq 2 ]] && pass "T20a: distinct quota buckets for two pro/na slots (config-dir key)" \
+                      || fail "T20a" "buckets=$buckets seen=$(cat "$tmp/seen")"
+check_nogrep "$ERR" 'same_account' 'T20b: no same_account warn when the email half is unresolved'
+w_count="$(grep -c 'identity_email_unresolved' <<<"$ERR")"
+[[ "$w_count" -eq 2 ]] && pass "T20c: both slots warned identity_email_unresolved" || fail "T20c" "count=$w_count err=$ERR"
+check_grep "$OUT" '^profile=nojson-a .*score=15 source=live.*identity=pro/na' 'T20d: selection still works (fail-open, lowest window wins)'
+[[ "$RC" -eq 0 ]] && pass "T20: exit 0" || fail "T20 exit" "rc=$RC"
+
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
