@@ -302,9 +302,14 @@ while (( i < n )); do
   # two labels resolving to the same real account must share one quota
   # bucket, and a relabeled slot must never inherit a stale bucket's cache.
   # An UNRESOLVED identity must not collapse every distinct slot into one
-  # shared "unknown/na" bucket either: fall back to the physical config_dir
-  # so each slot keeps its own bucket until identity is restorable.
-  if [[ "$identity" == "unknown/na" ]]; then
+  # shared bucket either: fall back to the physical config_dir so each slot
+  # keeps its own bucket until identity is restorable.  Fix-round C1
+  # (2026-08-27): the fallback keys on ANY unresolved email half (`<sub>/na`),
+  # not just the literal `unknown/na` -- two slots with a resolvable
+  # subscriptionType but an unreadable .claude.json both derive e.g. `pro/na`
+  # and would otherwise merge into ONE `pro_na` bucket, the exact incident
+  # class this task exists to kill.
+  if [[ "${identity#*/}" == "na" ]]; then
     id_key="$(printf '%s' "$dir" | tr -c 'A-Za-z0-9_-' '_')"
   else
     id_key="$(printf '%s' "$identity" | tr -c 'A-Za-z0-9_-' '_')"
