@@ -107,6 +107,6 @@ if [[ "$POST_SYNC" == "1" ]]; then
   fi
 fi
 
-[[ -n "$report" ]] && printf '%b\n' "$report"
+[[ -n "$report" ]] && printf '%b\n' "$report" >&2
 
 exit 0
