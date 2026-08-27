@@ -52,6 +52,7 @@ fi
 # segment (split on ; && || newline) immediately before the denied command
 # word — an assignment appearing as an argument to another command
 # (echo FOO=1; <denied>) must NOT unlock anything.
+# c[o]dex/e[x]ec avoids this guard's literal-command self-scan matching its own regex.
 if printf '%s' "$CMD" | tr '\n' ';' | sed -E 's/&&/;/g; s/\|\|/;/g' \
   | grep -qE '(^|;)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=([^[:space:];]+|"[^"]*")[[:space:]]+)*LEADV2_ALLOW_DIRECT_CODEX=1[[:space:]]+c[o]dex[[:space:]]+e[x]ec([[:space:]]|;|$)'; then
   printf '[leadv2-codex-direct-exec] ALLOWED direct run (inline LEADV2_ALLOW_DIRECT_CODEX=1 prefix)\n' >&2
