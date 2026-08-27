@@ -331,9 +331,9 @@ ACTIVE_YAML_CLOSED='sessions:
 
 # ════════════════════════════════════════════════════════════════════════════
 # Case 14 (T16 §6): tail-window fast path — a transcript padded with >256KB
-# of pre-turn records must yield the SAME verdict as the unpadded one. The
-# last user turn + silent stop sit at the very end of the file, inside the
-# window: still BLOCK.
+# between the user turn and its final assistant record must yield the SAME
+# verdict as the unpadded one. The tail misses the user turn, so the full-file
+# fallback is required: still BLOCK.
 # ════════════════════════════════════════════════════════════════════════════
 {
   setup_fixture "$ACTIVE_YAML_OPEN" "open"
@@ -345,11 +345,12 @@ import sys
 path = sys.argv[1]
 pad = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"old chatter %08d"}]}}\n'
 with open(path, encoding="utf-8") as f:
-    body = f.read()
+    lines = f.readlines()
 with open(path, "w", encoding="utf-8") as f:
+    f.write(lines[0])
     for i in range(3200):  # ~95 bytes/line -> ~300KB
         f.write(pad % i)
-    f.write(body)
+    f.writelines(lines[1:])
 PYEOF
   run_hook "" "false"
 
@@ -361,9 +362,8 @@ PYEOF
 }
 
 # ════════════════════════════════════════════════════════════════════════════
-# Case 15 (T16 §6): fast path with an action inside the window — padded
-# transcript + an Edit tool_use in the final turn → ALLOW (window sees the
-# action; no full parse needed).
+# Case 15 (T16 §6): same fallback shape, but an Edit in the final turn →
+# ALLOW. The window sees the action but not the turn boundary.
 # ════════════════════════════════════════════════════════════════════════════
 {
   setup_fixture "$ACTIVE_YAML_OPEN" "open"
@@ -373,11 +373,12 @@ import sys
 path = sys.argv[1]
 pad = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"old chatter %08d"}]}}\n'
 with open(path, encoding="utf-8") as f:
-    body = f.read()
+    lines = f.readlines()
 with open(path, "w", encoding="utf-8") as f:
+    f.write(lines[0])
     for i in range(3200):
         f.write(pad % i)
-    f.write(body)
+    f.writelines(lines[1:])
 PYEOF
   run_hook "" "false"
 
