@@ -494,10 +494,10 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-plugin-sync-drift-warn.sh\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-one-copy-drift.sh\"",
             "timeout": 15,
             "continueOnBlock": true,
-            "statusMessage": "Checking 5-way script drift after plugin-sync..."
+            "statusMessage": "One-copy + 5-way script drift check after plugin-sync..."
           }
         ]
       },
