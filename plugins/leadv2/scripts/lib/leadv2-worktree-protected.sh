@@ -63,7 +63,7 @@ LV2_WT_PROTECT_MIN_AGE_S=$((48 * 3600))
 # counts as open — the correct direction); an unopenable active.yaml, a
 # malformed YAML, or a missing yaml module exits 3 => caller fails closed.
 _LV2_WT_PROTECT_PY='
-import json, os, sys
+import json, os, subprocess, sys
 
 active_path, ledger_path = sys.argv[1], sys.argv[2]
 try:
@@ -83,6 +83,7 @@ for s in data.get("sessions") or []:
     if not isinstance(s, dict) or not s.get("task_id"):
         continue
     pid = s.get("pid")
+    birth = " ".join(str(s.get("pid_birth") or s.get("worker_pid_birth") or "").split())
     alive = 0
     if pid not in (None, "", "null", "None"):
         try:
@@ -90,7 +91,13 @@ for s in data.get("sessions") or []:
             alive = 1
         except (TypeError, ValueError, OSError):
             alive = 0
-    print("S\t%s\t%s\t%s\t%d" % (s.get("task_id"), s.get("worktree") or "", pid or "", alive))
+    if alive and birth:
+        try:
+            observed = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], text=True, capture_output=True, timeout=2).stdout.split())
+            alive = int(bool(observed) and observed == birth)
+        except Exception:
+            alive = 0
+    print("S\t%s\t%s\t%s\t%s\t%d" % (s.get("task_id"), s.get("worktree") or "", pid or "", birth, alive))
 
 if ledger_path and os.path.isfile(ledger_path):
     try:
@@ -183,8 +190,8 @@ lv2_wt_protect_prime() {
 
 # 0 iff a session row is registered for this lane id / path. Probe A's key set.
 _lv2_wt_session_row() { # <id> <wt-path>
-  local id="$1" wt="$2" tid wpath pid alive wreal treal
-  while IFS=$'\t' read -r tid wpath pid alive; do
+  local id="$1" wt="$2" tid wpath pid birth alive wreal treal
+  while IFS=$'\t' read -r tid wpath pid birth alive; do
     [[ -n "$tid" ]] || continue
     if [[ "$tid" == "$id" || "$tid" == "dispatch-$id" ]]; then
       return 0
@@ -204,8 +211,8 @@ _lv2_wt_session_row() { # <id> <wt-path>
 # A's — a pid row implies a session row, so in practice rc 3 only refines rc 1;
 # both are kept because the rc contract is the sweeper-facing interface).
 _lv2_wt_pid_alive() { # <id>
-  local id="$1" tid wpath pid alive
-  while IFS=$'\t' read -r tid wpath pid alive; do
+  local id="$1" tid wpath pid birth alive
+  while IFS=$'\t' read -r tid wpath pid birth alive; do
     [[ -n "$tid" ]] || continue
     if [[ "$tid" == "$id" || "$tid" == "dispatch-$id" ]] && [[ "$alive" == "1" ]]; then
       return 0

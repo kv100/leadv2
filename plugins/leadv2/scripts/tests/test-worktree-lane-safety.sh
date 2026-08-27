@@ -99,6 +99,25 @@ _active_with_session() { # <repo> [pid]
   } > "$d/state/active.yaml"
 }
 
+# P13 uses the helper directly: the active-row probe deliberately protects any
+# registration, so only the pid-specific helper can prove PID reuse handling.
+case_p13_pid_reuse_not_live() {
+  local repo="${WORK}/p13-$RANDOM$RANDOM" live_birth
+  _mk "$repo" || return 2
+  live_birth="$(ps -o lstart= -p $$ | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//')"
+  cat > "$repo/state/active.yaml" <<YAML
+sessions:
+  - task_id: lane
+    worktree: $repo/.claude/worktrees/lane
+    pid: $$
+    pid_birth: "Wed Jan  1 00:00:00 2020"
+YAML
+  export LEADV2_STATE_ROOT="$repo/state"
+  source "${SCRIPT_DIR}/../lib/leadv2-worktree-protected.sh"
+  lv2_wt_protect_prime "$repo"
+  ! _lv2_wt_pid_alive lane
+}
+
 _run() { # <kind:hook|dead> <bin> <repo>  (env: caller-exported)
   if [[ "$1" == "hook" ]]; then
     ( cd "$3" && CLAUDE_PROJECT_DIR="$3" bash "$2" >/dev/null 2>&1 )
@@ -302,6 +321,13 @@ for kind in hook dead; do
   run_case "P12-min-age-s-precedence(${kind})"      case_p12_min_age_s_precedence "$kind"
 done
 run_case "P9-failed-removal-never-guts(hook)"        case_p9_no_gutting hook
+
+if case_p13_pid_reuse_not_live; then
+  PASS=$((PASS + 1)); log "RED-then-GREEN: P13-pid-reuse-is-not-live"
+else
+  FAIL=$((FAIL + 1)); ERRORS+=("P13-pid-reuse-is-not-live")
+  log "FAIL: P13-pid-reuse-is-not-live"
+fi
 
 if case_p10_twin; then
   PASS=$((PASS + 1)); log "RED-then-GREEN: P10-twin-regex-unchanged"
