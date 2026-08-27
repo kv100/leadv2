@@ -197,6 +197,29 @@ dispatch_terminal_last_cause() {
   _dispatch_terminal_last_field "${sig8}" "${f}" cause
 }
 
+# A late terminal from an earlier attempt must not poison a retry that has
+# already registered a different attempt token in active.yaml.
+_lv2_terminal_attempt_superseded() { # <founder_task_id> <attempt>
+  local founder="$1" attempt="$2" yaml_file lock_file
+  [[ -n "$founder" && -n "$attempt" ]] || return 1
+  yaml_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml 2>/dev/null)" || return 1
+  lock_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml.lock 2>/dev/null)" || return 1
+  [[ -f "$yaml_file" && -n "$lock_file" ]] || return 1
+  python3 - "$lock_file" "$yaml_file" "$founder" "$attempt" <<'PYEOF' 2>/dev/null
+import fcntl, sys
+try: import yaml
+except ImportError: sys.exit(1)
+lock_path, path, founder, attempt = sys.argv[1:5]
+try:
+    with open(lock_path, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with open(path, encoding="utf-8") as fh:
+            sessions = (yaml.safe_load(fh) or {}).get("sessions") or []
+except Exception: sys.exit(1)
+sys.exit(0 if any(isinstance(s, dict) and s.get("task_id") == founder and str(s.get("attempt") or "") not in ("", attempt) for s in sessions) else 1)
+PYEOF
+}
+
 # Writes EXACTLY ONE row per <sig8> per real ATTEMPT (write-once-per-attempt), and refuses
 # to override a TRUE terminal (landed|dead) once one is recorded for the sig8 (write-once-
 # per-sig8-once-final). wave2 round3 finding 3: refused/parked are RETRYABLE -- quota
@@ -271,6 +294,7 @@ dispatch_ledger_write_terminal() {
   local rc
   (
     lv2_lock_wait "${lockf}" 10 || exit 3
+    case "${terminal}" in landed|pass_unlanded|dead) _lv2_terminal_attempt_superseded "${founder}" "${attempt}" && exit 4 ;; esac
     local _last_terminal _same_attempt_row
     _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
     case "${_last_terminal}" in
@@ -310,7 +334,7 @@ dispatch_ledger_write_terminal() {
       # row now (dedup exits above keep the row: a later attempt may have re-registered).
       case "${terminal}" in
         landed|dead|pass_unlanded)
-          _lv2_terminal_unregister_lanes "${sig8}" "${founder}" ;;
+          _lv2_terminal_unregister_lanes "${sig8}" "${founder}" "${attempt}" ;;
       esac
       return 0 ;;
     2)
@@ -320,6 +344,9 @@ dispatch_ledger_write_terminal() {
       fi
       return 0 ;;  # dedup is a SUCCESSFUL no-op, not a caller error
     3) log_err "write_terminal: lock-wait timeout for sig=${sig8}"; return 1 ;;
+    4)
+      [[ -f "${JOURNAL_BIN}" ]] && bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision "dispatch_terminal_stale_attempt task=${sig8} terminal=${terminal} attempt=${attempt}" >/dev/null 2>&1 || true
+      return 0 ;;
     *) log_err "write_terminal: ledger write failed (rc=${rc}) for sig=${sig8}"; return 1 ;;
   esac
 }
@@ -334,21 +361,24 @@ dispatch_ledger_write_terminal() {
 # under this script's own set -u is the same trap with a different hat. Fail-open by
 # contract: a missing resolver/yaml/pyyaml or a failed removal NEVER fails the terminal
 # write itself -- the row then simply ages out via the sweep's next pass.
-_lv2_terminal_unregister_lanes() {  # <sig8> <founder_task_id> -- remove lane rows from active.yaml
-  local sig8="$1" founder="$2" yaml_file lock_file tid
+_lv2_terminal_unregister_lanes() {  # <sig8> <founder_task_id> <attempt> -- remove only this attempt's lane rows
+  local sig8="$1" founder="$2" attempt="${3:-}" yaml_file lock_file tid
+  # A terminal record without an attempt cannot prove ownership of a possibly
+  # re-registered row. Preserve it; the ordinary age sweep can later clean it.
+  [[ -n "${attempt}" ]] || return 0
   yaml_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml 2>/dev/null)" || return 0
   [[ -n "${yaml_file}" && -f "${yaml_file}" ]] || return 0
   lock_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml.lock 2>/dev/null)" || return 0
   [[ -n "${lock_file}" ]] || return 0
   for tid in "${founder}" "dispatch-${sig8}"; do
     [[ -n "${tid}" ]] || continue
-    python3 - "${lock_file}" "${yaml_file}" "${tid}" <<'PYEOF' 2>/dev/null || true
+    python3 - "${lock_file}" "${yaml_file}" "${tid}" "${attempt}" <<'PYEOF' 2>/dev/null || true
 import fcntl, os, sys, tempfile
 try:
     import yaml
 except ImportError:
     sys.exit(0)
-lock_path, path, task_id = sys.argv[1:4]
+lock_path, path, task_id, attempt = sys.argv[1:5]
 try:
     lock = open(lock_path, "a+")
 except OSError:
@@ -364,7 +394,8 @@ with lock:
         sys.exit(0)
     before = len(data["sessions"])
     data["sessions"] = [s for s in data["sessions"]
-                        if not (isinstance(s, dict) and s.get("task_id") == task_id)]
+                        if not (isinstance(s, dict) and s.get("task_id") == task_id
+                                and str(s.get("attempt") or "") == attempt)]
     if len(data["sessions"]) == before:
         sys.exit(0)
     fd, tmp = tempfile.mkstemp(prefix=".active-unreg-", dir=os.path.dirname(path) or ".")
@@ -457,7 +488,7 @@ dispatch_ledger_sweep_write_dead() {
       # T16 §10: swept dead IS a true terminal -- the lane row must leave active.yaml
       # here too, or swept lanes accumulate exactly like closed ones did. `lane` is the
       # active.yaml task_id this sweep iteration is acting on (founder_task_id form).
-      _lv2_terminal_unregister_lanes "${sig8}" "${lane}"
+      _lv2_terminal_unregister_lanes "${sig8}" "${lane}" "${attempt_s}"
       return 0 ;;
     2)
       if [[ -f "${JOURNAL_BIN}" ]]; then
