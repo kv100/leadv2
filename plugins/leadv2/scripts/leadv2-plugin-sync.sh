@@ -165,13 +165,47 @@ _is_plugin_sync_exception() {
 }
 
 # --checksum only (no -u): mtime skew must never cause silent content divergence.
+#
+# _syntax_gate_excludes — HOOK-EDIT-SPAWN-POISON-01 (T16 §9). A live sync used
+# to copy hook files MID-EDIT: a session spawning at that moment received a
+# syntax-broken plugin-cache snapshot and died at its first prompt (killed lane
+# 75a42e3a, 2026-08-26). Every .sh in the source tree is gated through `bash -n`
+# BEFORE the transfer; a failing file becomes an --exclude rule, and rsync
+# --delete never touches excluded paths — so the PREVIOUS copy survives at the
+# destination until canonical holds a syntactically valid file again. Each hold
+# is logged. Fail-open: no bash on PATH, or a failed scan, syncs ungated (the
+# pre-gate behavior) rather than blocking every sync.
+_syntax_gate_excludes() { # $1 = src dir WITH trailing slash; prints --exclude=<relpath> lines
+  local src="$1"
+  command -v bash >/dev/null 2>&1 || return 0
+  local f rel
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    rel="${f#"${src}"}"
+    if ! bash -n "${f}" 2>/dev/null; then
+      log_warn "[syntax-gate] holding ${rel}: bash -n failed — previous copy kept (mid-edit source not synced)"
+      printf -- '--exclude=%s\n' "${rel}"
+    fi
+  done < <(find "${src}" -type f -name '*.sh' 2>/dev/null)
+  return 0
+}
+
 _rsync_or_dry() {
   local label="$1" src="$2" dst="$3"
   shift 3
   local extra_flags=("$@")
+  local gate_excludes=()
+  while IFS= read -r _g; do
+    [[ -z "${_g}" ]] && continue
+    gate_excludes+=("${_g}")
+  done < <(_syntax_gate_excludes "${src}")
+  # Gate excludes go FIRST: rsync filter rules are first-match-wins, and the
+  # user-scripts leg passes wildcard include rules that would otherwise claim a
+  # broken file before a trailing exclude could hold it.
+  local flags=(${gate_excludes[@]+"${gate_excludes[@]}"} ${extra_flags[@]+"${extra_flags[@]}"})
   if [[ "${DRY_RUN}" == "true" ]]; then
-    log "DRY_RUN [${label}]: rsync --checksum ${extra_flags[*]} ${src} ${dst}"
-    rsync --checksum --dry-run "${extra_flags[@]}" "${src}" "${dst}" 2>&1 | python3 -c "
+    log "DRY_RUN [${label}]: rsync --checksum ${flags[*]} ${src} ${dst}"
+    rsync --checksum --dry-run ${flags[@]+"${flags[@]}"} "${src}" "${dst}" 2>&1 | python3 -c "
 import sys
 for l in sys.stdin:
     if l.startswith('>') or l.startswith('<') or l.startswith('*'):
@@ -179,7 +213,7 @@ for l in sys.stdin:
 " | head -20 || true
   else
     mkdir -p "${dst}"
-    rsync --checksum "${extra_flags[@]}" "${src}" "${dst}" && log_ok "[${label}] synced ${src} -> ${dst}"
+    rsync --checksum ${flags[@]+"${flags[@]}"} "${src}" "${dst}" && log_ok "[${label}] synced ${src} -> ${dst}"
   fi
 }
 
