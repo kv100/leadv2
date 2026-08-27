@@ -110,10 +110,19 @@ sessions:
   - task_id: lane
     worktree: $repo/.claude/worktrees/lane
     pid: $$
-    pid_birth: "Wed Jan  1 00:00:00 2020"
+    pid_birth: "$live_birth"
 YAML
   export LEADV2_STATE_ROOT="$repo/state"
   source "${SCRIPT_DIR}/../lib/leadv2-worktree-protected.sh"
+  lv2_wt_protect_prime "$repo"
+  _lv2_wt_pid_alive lane || return 1
+  cat > "$repo/state/active.yaml" <<YAML
+sessions:
+  - task_id: lane
+    worktree: $repo/.claude/worktrees/lane
+    pid: $$
+    pid_birth: "Wed Jan  1 00:00:00 2020"
+YAML
   lv2_wt_protect_prime "$repo"
   ! _lv2_wt_pid_alive lane
 }
