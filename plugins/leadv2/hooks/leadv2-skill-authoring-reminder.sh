@@ -5,7 +5,7 @@
 # stderr reminder to consult the `writing-great-skills` skill before
 # shipping a new/changed skill file. Advisory only — NEVER blocks.
 #
-# Modeled on leadv2-plugin-sync-drift-warn.sh (diagnostic PostToolUse hook)
+# Modeled on leadv2-one-copy-drift.sh's diagnostic PostToolUse leg
 # and the file_path-extraction pattern from leadv2-verdict-format-guard.sh.
 #
 # Silent exit 0 when:

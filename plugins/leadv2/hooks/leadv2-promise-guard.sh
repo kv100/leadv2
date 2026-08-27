@@ -73,7 +73,7 @@ fi
 # so the past+artifact clause and the forward-promise clause are judged
 # independently. The test assertion (case 10 fires) is ground truth.
 VERDICT="$(python3 - "$TRANSCRIPT" <<'PYEOF' 2>/dev/null || true
-import sys, json, re
+import sys, os, json, re   # os: T16 §6 tail-window fast path
 
 jsonl_path = sys.argv[1]
 
@@ -243,22 +243,13 @@ block_pos = 0
 final_text_parts = []    # text blocks of the LAST assistant record
 
 records = []
-try:
-    with open(jsonl_path, encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except Exception:
-                continue
-except Exception:
-    # fail-open: cannot read transcript -> never block
-    print(json.dumps({'final_text_found': False, 'commitments': [],
-                      'has_action': False, 'tools': []}))
-    sys.exit(0)
 
+# T16 §6 (LEAD-FINAL-FIXES-01) fast path: the verdict only evaluates records
+# after the last real user turn, but this loader used to parse the ENTIRE
+# transcript on every Stop of every session in a repo with an active task.
+# Load a bounded TAIL window first; only when the file was truncated AND the
+# window contains no real user turn (one turn larger than the window) fall
+# back to the full parse. The evaluated records are identical either way.
 def is_real_user_turn(rec):
     if rec.get('type') != 'user':
         return False
@@ -271,6 +262,53 @@ def is_real_user_turn(rec):
         return any((not isinstance(b, dict)) or b.get('type') != 'tool_result'
                    for b in content)
     return False
+
+TAIL_WINDOW_BYTES = 262144
+
+def _load_tail(path):
+    """Tail-bounded JSONL load; returns (records, truncated) or (None, False)."""
+    out = []
+    truncated = False
+    try:
+        size = os.path.getsize(path)
+        truncated = size > TAIL_WINDOW_BYTES
+        with open(path, encoding='utf-8') as f:
+            if truncated:
+                f.seek(size - TAIL_WINDOW_BYTES)
+                f.readline()  # drop the partial line the seek landed in
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return None, False
+    return out, truncated
+
+records, _truncated = _load_tail(jsonl_path)
+if records is None:
+    # fail-open: cannot read transcript -> never block
+    print(json.dumps({'final_text_found': False, 'commitments': [],
+                      'has_action': False, 'tools': []}))
+    sys.exit(0)
+if _truncated and not any(is_real_user_turn(r) for r in records):
+    # the whole current turn sits above the window — re-read the full file
+    records = []
+    try:
+        with open(jsonl_path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        records = []
 
 # find index of last real user turn
 boundary = -1

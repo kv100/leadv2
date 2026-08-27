@@ -9,7 +9,7 @@
 # skill to update it. ADVISORY ONLY — never blocks the commit.
 #
 # Modeled on leadv2-close-ritual-guard.sh (close-commit detection) and
-# leadv2-plugin-sync-drift-warn.sh (warn-only, always exit 0).
+# leadv2-one-copy-drift.sh's post-sync warning leg (warn-only, always exit 0).
 #
 # lean: vocab-detection is a coarse grep heuristic (new class/def/
 # interface/CREATE TABLE lines in the staged diff), not a real NLP/glossary
