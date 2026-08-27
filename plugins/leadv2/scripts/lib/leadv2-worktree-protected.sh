@@ -62,16 +62,25 @@ LV2_WT_PROTECT_MIN_AGE_S=$((48 * 3600))
 # A missing ledger is not an error (no terminal row => an arm-registered lane
 # counts as open — the correct direction); an unopenable active.yaml, a
 # malformed YAML, or a missing yaml module exits 3 => caller fails closed.
+# The pid-birth lib is the exception (R4 import contract): a drifted copy of
+# THIS file may sit in a dir without lib/leadv2_pid_birth.py, and that must
+# degrade to the inline rule, never exit 3 — an exit here turns EVERY probe
+# into control-plane-unreadable.
 _LV2_WT_PROTECT_PY='
-import json, os, sys
+import json, os, subprocess, sys
 
 active_path, ledger_path, lib_dir = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, lib_dir)
 try:
     import yaml
-    from leadv2_pid_birth import birth_matches, pid_birth_of
 except ImportError:
     sys.exit(3)
+
+try:
+    from leadv2_pid_birth import birth_matches, pid_birth_of
+    _BIRTH_LIB = True
+except Exception:
+    _BIRTH_LIB = False
 
 try:
     with open(active_path, encoding="utf-8") as fh:
@@ -95,7 +104,16 @@ for s in data.get("sessions") or []:
             alive = 0
     if alive and birth:
         try:
-            alive = int(birth_matches(birth, pid_birth_of(pid)))
+            if _BIRTH_LIB:
+                alive = int(birth_matches(birth, pid_birth_of(pid)))
+            else:
+                # Inline fallback, byte-equivalent to birth_matches: collapse
+                # all whitespace runs, unknown on either side => match (R3).
+                live = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                                      capture_output=True, text=True, timeout=5)
+                live = " ".join(live.stdout.split())
+                stored = " ".join(str(birth).split())
+                alive = int(not (stored and live) or stored == live)
         except Exception:
             alive = 0
     print("S\t%s\t%s\t%s\t%s\t%d" % (s.get("task_id"), s.get("worktree") or "", pid or "", birth, alive))
