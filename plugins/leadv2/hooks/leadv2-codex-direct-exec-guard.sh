@@ -42,6 +42,22 @@ if [[ "${LEADV2_ALLOW_DIRECT_CODEX:-}" == "1" ]]; then
   exit 0
 fi
 
+# Escape hatch, inline env-prefix form (T16 §1, LEAD-FINAL-FIXES-01): the
+# Bash tool runs each command in a fresh shell, so the documented override
+# can only reach the command itself as a prefix assignment on the denied
+# command. The hook's own process environment never sees that variable, so
+# the check above missed it and the deny rule below blocked the one
+# sanctioned override shape. A prefix assignment only takes effect for the
+# command word it directly precedes, so it must sit in the SAME command
+# segment (split on ; && || newline) immediately before the denied command
+# word — an assignment appearing as an argument to another command
+# (echo FOO=1; <denied>) must NOT unlock anything.
+if printf '%s' "$CMD" | tr '\n' ';' | sed -E 's/&&/;/g; s/\|\|/;/g' \
+  | grep -qE '(^|;)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=([^[:space:];]+|"[^"]*")[[:space:]]+)*LEADV2_ALLOW_DIRECT_CODEX=1[[:space:]]+c[o]dex[[:space:]]+e[x]ec([[:space:]]|;|$)'; then
+  printf '[leadv2-codex-direct-exec] ALLOWED direct run (inline LEADV2_ALLOW_DIRECT_CODEX=1 prefix)\n' >&2
+  exit 0
+fi
+
 # Deny: `codex exec` as a standalone command word (not a subshell arg to a
 # sanctioned launcher — those were already allowlisted above).
 if printf '%s' "$CMD" | grep -qE '(^|[^A-Za-z0-9_/.-])codex[[:space:]]+exec([[:space:]]|$)'; then
