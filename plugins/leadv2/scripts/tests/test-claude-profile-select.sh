@@ -13,7 +13,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-SELECT_BIN="${SCRIPTS_ROOT}/leadv2-claude-profile-select.sh"
+# Overridable for the negative control: point LEADV2_TEST_SELECT_BIN at a
+# mutated copy of the selector and the whole suite must go red.
+SELECT_BIN="${LEADV2_TEST_SELECT_BIN:-${SCRIPTS_ROOT}/leadv2-claude-profile-select.sh}"
 PICK_BIN="${SCRIPTS_ROOT}/lib/leadv2-claude-profile-pick.py"
 SUBSESSION_SH="${SCRIPTS_ROOT}/claude-subsession.sh"
 
@@ -37,8 +39,19 @@ trap 'rm -rf "$tmp"' EXIT
 FIX="${tmp}/fixtures"; CACHE="${tmp}/cache"; REG="${tmp}/registry.tsv"
 mkdir -p "$FIX" "$CACHE" "$tmp/dir-alpha" "$tmp/dir-beta"
 
+# T12/LEAD-FINAL-FIXES-01: the selector health-checks the inherited default
+# slot too; pin it to a healthy fixture so the suite never touches the real
+# ~/.claude or Keychain (T9b caught exactly that leak before this pin).
+mkdir -p "$tmp/dir-default"
+printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture","subscriptionType":"max","expiresAt":%s}}' \
+  "$(( $(date +%s) * 1000 + 3600000 ))" > "$tmp/dir-default/.credentials.json"
+printf '{"oauthAccount":{"emailAddress":"default@fixture.test"}}' > "$tmp/dir-default/.claude.json"
+export LEADV2_CLAUDE_PROFILE_DEFAULT_DIR="$tmp/dir-default"
+
 # Probe stub: canned JSON keyed by the per-profile cache dir the selector
 # exports (…/profile-<label>).  A label starting with "hang" sleeps forever.
+# STUB_SEEN (optional): appends each probe's LEADV2_QUOTA_CACHE_DIR so tests
+# can assert how usage buckets were keyed (T14: same identity -> one bucket).
 STUB="${tmp}/stub-probe.py"
 cat > "$STUB" <<'PY'
 #!/usr/bin/env python3
@@ -50,6 +63,10 @@ import json, os, sys, time
 label = os.environ.get("LEADV2_CLAUDE_PROFILE_LABEL", "")
 if label.startswith("hang"):
     time.sleep(300)
+seen = os.environ.get("STUB_SEEN")
+if seen:
+    with open(seen, "a") as f:
+        f.write(os.environ.get("LEADV2_QUOTA_CACHE_DIR", "") + "\n")
 path = os.path.join(os.environ["STUB_FIXDIR"], label + ".json")
 if os.path.exists(path):
     print(open(path).read())
@@ -305,6 +322,112 @@ check_grep "$OUT" '^profile=- reason=all_expired$' 'T13a: named refusal, not sin
 w_count="$(grep -c 'WARN: registry line .* skipped: token_expired' <<<"$ERR")"
 [[ "$w_count" -eq 2 ]] && pass "T13b: both expired entries warned" || fail "T13b" "count=$w_count err=$ERR"
 [[ "$RC" -eq 0 ]] && pass "T13: exit 0" || fail "T13 exit" "rc=$RC"
+
+# ============================================================================
+# T12 final fixes (LEAD-FINAL-FIXES-01): honest profile registry -- the label
+# is display-only; identity comes from the slot's own JSON (.claude.json for
+# the email, credential for sub/expiry), bucketing keys on that identity, and
+# every lie the registry can tell is warned loudly, fail-open.
+mk_slot() { # <dir> <sub> <email|-> <expiry_ms>
+  mkdir -p "$1"
+  printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture","refreshToken":"sk-ant-r","subscriptionType":"%s","expiresAt":%s}}' \
+    "$2" "$4" > "$1/.credentials.json"
+  if [[ "$3" == "-" ]]; then
+    rm -f "$1/.claude.json"
+  else
+    printf '{"oauthAccount":{"emailAddress":"%s"}}' "$3" > "$1/.claude.json"
+  fi
+}
+
+echo "=== T14: both slots = SAME account -> WARN same_account + ONE bucket ==="
+mkdir -p "$tmp/dir-same1" "$tmp/dir-same2"
+mk_slot "$tmp/dir-same1" team  "shared@fixture.test" "$future_ms"
+mk_slot "$tmp/dir-same2" team  "shared@fixture.test" "$future_ms"
+acct_json 40 30 > "$FIX/same1.json"; acct_json 40 30 > "$FIX/same2.json"
+printf 'same1\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-same1" "$tmp/dir-same1" > "$REG"
+printf 'same2\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-same2" "$tmp/dir-same2" >> "$REG"
+: > "$tmp/seen"
+run_select $(base_env) "STUB_SEEN=$tmp/seen" "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+check_grep "$ERR" 'WARN: same_account label=same1 label=same2 identity=team/shared@fixture\.test' 'T14a: same_account warn names both labels + the shared identity'
+buckets="$(sort -u "$tmp/seen" | wc -l | tr -d ' ')"
+[[ "$buckets" -eq 1 ]] && pass "T14b: usage bucketed ONCE (one cache dir for both slots)" \
+                      || fail "T14b" "buckets=$buckets seen=$(cat "$tmp/seen")"
+check_grep "$OUT" '^profile=same1 .*candidates=2 ' 'T14c: fail-open -- both slots stay candidates'
+[[ "$RC" -eq 0 ]] && pass "T14: exit 0" || fail "T14 exit" "rc=$RC"
+
+echo "=== T15: label/expect vs derived identity -> WARN label_mismatch, bucket by identity ==="
+mkdir -p "$tmp/dir-mism"
+mk_slot "$tmp/dir-mism" max_20x "vkk@fixture.test" "$future_ms"
+acct_json 25 20 > "$FIX/mism-team.json"
+printf 'mism-team\t%s\tfile:%s/.credentials.json\tteam\n' "$tmp/dir-mism" "$tmp/dir-mism" > "$REG"
+printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env) "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+check_grep "$ERR" 'WARN: label_mismatch label=mism-team expected=team identity=max_20x/vkk@fixture\.test' 'T15a: label_mismatch warn carries expected + derived'
+check_grep "$OUT" '^profile=mism-team .*identity=max_20x/vkk@fixture\.test' 'T15b: reported/bucketed identity is the DERIVED one, not the label claim'
+[[ "$RC" -eq 0 ]] && pass "T15: exit 0 (fail-open)" || fail "T15 exit" "rc=$RC"
+
+echo "=== T16: missing .claude.json -> WARN identity_email_unresolved, fail-open ==="
+mkdir -p "$tmp/dir-nojson"
+mk_slot "$tmp/dir-nojson" pro "-" "$future_ms"
+acct_json 10 5 > "$FIX/nojson.json"
+printf 'nojson\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-nojson" "$tmp/dir-nojson" > "$REG"
+printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env) "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+check_grep "$ERR" 'WARN: registry line 1: identity_email_unresolved \(no readable \.claude\.json\) label=nojson identity=pro/na -- fail-open' 'T16a: identity_email_unresolved warn'
+check_grep "$OUT" '^profile=nojson .*identity=pro/na$' 'T16b: entry still selectable (fail-open)'
+[[ "$RC" -eq 0 ]] && pass "T16: exit 0" || fail "T16 exit" "rc=$RC"
+
+echo "=== T17: default token expired -> WARN default_token_expired, selection unchanged ==="
+mkdir -p "$tmp/dir-def-exp"
+mk_slot "$tmp/dir-def-exp" max "defexp@fixture.test" "$past_ms"
+printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
+printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env) "LEADV2_CLAUDE_PROFILE_DEFAULT_DIR=$tmp/dir-def-exp" \
+  "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+check_grep "$ERR" 'WARN: default_token_expired identity=max/defexp@fixture\.test -- fail-open' 'T17a: default_token_expired warn'
+check_grep "$OUT" '^profile=alpha .*score=20 source=live' 'T17b: selection itself unchanged'
+[[ "$RC" -eq 0 ]] && pass "T17: exit 0" || fail "T17 exit" "rc=$RC"
+
+echo "=== T18: default credential absent -> WARN default_token_absent, fail-open ==="
+mkdir -p "$tmp/dir-def-empty"
+run_select $(base_env) "LEADV2_CLAUDE_PROFILE_DEFAULT_DIR=$tmp/dir-def-empty" \
+  "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+check_grep "$ERR" 'WARN: default_token_absent \(inherited slot has no readable credential\) -- fail-open' 'T18a: default_token_absent warn'
+check_grep "$OUT" '^profile=alpha ' 'T18b: selection proceeds'
+[[ "$RC" -eq 0 ]] && pass "T18: exit 0" || fail "T18 exit" "rc=$RC"
+
+echo "=== T19: WARN lines reach the journal (ISO-prefixed) ==="
+jr="$tmp/journal.log"; : > "$jr"
+printf 'same1\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-same1" "$tmp/dir-same1" > "$REG"
+printf 'same2\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-same2" "$tmp/dir-same2" >> "$REG"
+run_select $(base_env) "LEADV2_CLAUDE_PROFILE_JOURNAL=$jr" "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+check_grep "$(cat "$jr")" '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z \[claude-profile-select\] WARN: same_account label=same1' 'T19a: journal carries ISO-prefixed same_account WARN'
+check_nogrep "$(cat "$jr")" 'sk-ant' 'T19b: journal has no token'
+
+# ============================================================================
+# Fix-round C2 (2026-08-27): the incident class the dir-fallback exists for.
+# Two slots, both with a VALID credential and resolvable subscriptionType but
+# NO readable .claude.json -> both derive "<sub>/na".  They must still land in
+# DISTINCT quota buckets (config-dir-keyed), and the same_account warn must
+# NOT fire (the email half is unresolved, so "same account" is unprovable).
+echo "=== T20 (C2): two no-.claude.json slots, same sub -> distinct buckets, no same_account ==="
+mkdir -p "$tmp/dir-nojson-a" "$tmp/dir-nojson-b"
+mk_slot "$tmp/dir-nojson-a" pro "-" "$future_ms"
+mk_slot "$tmp/dir-nojson-b" pro "-" "$future_ms"
+acct_json 15 10 > "$FIX/nojson-a.json"
+acct_json 60 50 > "$FIX/nojson-b.json"
+printf 'nojson-a\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-nojson-a" "$tmp/dir-nojson-a" > "$REG"
+printf 'nojson-b\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-nojson-b" "$tmp/dir-nojson-b" >> "$REG"
+: > "$tmp/seen"
+run_select $(base_env) "STUB_SEEN=$tmp/seen" "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+buckets="$(sort -u "$tmp/seen" | wc -l | tr -d ' ')"
+[[ "$buckets" -eq 2 ]] && pass "T20a: distinct quota buckets for two pro/na slots (config-dir key)" \
+                      || fail "T20a" "buckets=$buckets seen=$(cat "$tmp/seen")"
+check_nogrep "$ERR" 'same_account' 'T20b: no same_account warn when the email half is unresolved'
+w_count="$(grep -c 'identity_email_unresolved' <<<"$ERR")"
+[[ "$w_count" -eq 2 ]] && pass "T20c: both slots warned identity_email_unresolved" || fail "T20c" "count=$w_count err=$ERR"
+check_grep "$OUT" '^profile=nojson-a .*score=15 source=live.*identity=pro/na' 'T20d: selection still works (fail-open, lowest window wins)'
+[[ "$RC" -eq 0 ]] && pass "T20: exit 0" || fail "T20 exit" "rc=$RC"
 
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
