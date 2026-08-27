@@ -77,6 +77,10 @@
 # (subscriptionType/email/expiresAt) ever leaves this function -- the raw
 # credential JSON (which carries accessToken/refreshToken) is never printed,
 # logged, or journalled.
+# M1 (fix-round 2026-08-27) bucket-key migration: a slot whose email half is
+# unresolved (`<sub>/na`) now keys its quota cache on the config_dir instead
+# of the shared `<sub>_na` identity -- old shared bucket dirs are abandoned
+# (each slot's new dir-cache repopulates with one cold read; no migration).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
