@@ -448,7 +448,11 @@ leadv2_select_claude_profile() {
       # Selector stderr is dropped here on purpose: the subsession's own
       # contract is exactly ONE [claude-profile] stderr line, so the
       # selector's per-line warnings must not double it in production.
-      bash "$_CLAUDE_PROFILE_SELECT" >"$out" 2>/dev/null &
+      # They are not lost, though (T12/LEAD-FINAL-FIXES-01): the selector
+      # appends its WARN lines to the handoff claude-profile.log itself
+      # via LEADV2_CLAUDE_PROFILE_JOURNAL.
+      env "LEADV2_CLAUDE_PROFILE_JOURNAL=${HANDOFF_DIR}/claude-profile.log" \
+        bash "$_CLAUDE_PROFILE_SELECT" >"$out" 2>/dev/null &
       pid=$!; elapsed=0
       while kill -0 "$pid" 2>/dev/null && (( elapsed < tmo * 10 )); do sleep 0.1; elapsed=$((elapsed + 1)); done
       if kill -0 "$pid" 2>/dev/null; then

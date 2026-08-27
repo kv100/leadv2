@@ -31,20 +31,45 @@
 #                                        inject a fixture reader here; the
 #                                        stub must accept `find-generic-password
 #                                        -s <service> -w` and print JSON)
+#   LEADV2_CLAUDE_PROFILE_JOURNAL   optional journal file: every WARN line is
+#                                   appended there ISO-prefixed, best-effort
+#                                   (the caller points it at the handoff
+#                                   claude-profile.log, since it drops the
+#                                   selector's stderr by contract)
+#   LEADV2_CLAUDE_PROFILE_DEFAULT_DIR  override for the inherited/default
+#                                   config dir whose token health is warned
+#                                   about (hermetic tests; default
+#                                   ${CLAUDE_CONFIG_DIR:-$HOME/.claude})
 #
 # Registry format (TSV, blank lines and #-comments ignored):
-#   label<TAB>config_dir<TAB>credential_source(optional)
+#   label<TAB>config_dir<TAB>credential_source(optional)<TAB>expect(optional)
 #   credential_source: keychain:<service> | file:<abs path>
 #   absent -> file:<config_dir>/.credentials.json
+#   expect: the identity the operator believes the slot serves -- "<sub>" or
+#           "<sub>/<email>".  When the credential-derived identity differs,
+#           WARN label_mismatch fires (fail-open: bucketing still keys on the
+#           DERIVED identity, never on the label or the expectation).
 #   label: ^[a-z0-9][a-z0-9_-]{0,31}$ ('@'/'.', i.e. emails, are a hard reject)
 #
-# T12 (CLAUDE-PROFILE-SELECT-FINISH-01 follow-up): the registry LABEL is
-# display-only and operator-chosen -- it can drift from what the credential
-# actually is (a relabeled/re-logged-in slot can silently start serving a
-# different account/subscriptionType).  So at selection time this script
-# reads each credential's OWN JSON (never the label) and derives an
-# `identity=<subscriptionType>/<email-or-na>` that is what actually gets
-# scored, cached, and reported -- the label never drives quota bucketing.
+# T12 (CLAUDE-PROFILE-SELECT-FINISH-01 + LEAD-FINAL-FIXES-01): the registry
+# LABEL is display-only and operator-chosen -- it can drift from what the
+# credential actually is (2026-08-26: label said team/max_5x, both slots
+# were actually one personal max_20x account, so team usage landed in the
+# personal bucket).  So at selection time this script reads each slot's OWN
+# JSON (never the label) and derives an `identity=<subscriptionType>/<email>`
+# that is what actually gets scored, cached, and reported -- the label never
+# drives quota bucketing.  Identity sources (verified live 2026-08-27):
+# email comes from <config_dir>/.claude.json oauthAccount.emailAddress (the
+# account the slot is logged into; it carries NO subscriptionType), while
+# subscriptionType/expiresAt come from the credential's claudeAiOauth
+# (which carries NO email) -- the two are merged.
+# Loud fail-open warns (journal + stderr; selection never blocked):
+#   same_account      two slots resolve to ONE real account (the incident)
+#   label_mismatch    derived identity differs from the `expect` column
+#   identity_email_unresolved  no readable .claude.json -> email unverifiable
+#   default_token_expired / default_token_absent  the inherited slot's
+#                      credential is dead/missing (the lane runs on it
+#                      whenever the selector fails open)
 # A credential whose `claudeAiOauth.expiresAt` is in the past is flagged
 # `WARN token_expired` and excluded from candidate scoring; if that leaves
 # zero live candidates, the selector refuses outright (reason=all_expired)
@@ -61,7 +86,13 @@ PICK="$SCRIPT_DIR/lib/leadv2-claude-profile-pick.py"
 CACHE_BASE="${LEADV2_QUOTA_CACHE_DIR:-$HOME/.claude/state/leadv2/quota-cache}"
 SECURITY_BIN="${LEADV2_CLAUDE_PROFILE_SECURITY_BIN:-security}"
 
-warn() { printf '[claude-profile-select] %s\n' "$*" >&2; }
+warn() {
+  printf '[claude-profile-select] %s\n' "$*" >&2
+  if [[ -n "${LEADV2_CLAUDE_PROFILE_JOURNAL:-}" ]]; then
+    printf '%s [claude-profile-select] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+      >> "$LEADV2_CLAUDE_PROFILE_JOURNAL" 2>/dev/null || true
+  fi
+}
 single_profile() { printf 'profile=- reason=single_profile\n'; exit 0; }
 refuse_all_expired() { printf 'profile=- reason=all_expired\n'; exit 0; }
 
@@ -76,22 +107,34 @@ read_cred_json() {
   esac
 }
 
-# derive_identity <credential_source> -> "<subscription_type>\t<email>\t<expires_at_ms|>"
-# Parses ONLY claudeAiOauth.{subscriptionType,email/emailAddress,expiresAt};
-# never emits accessToken/refreshToken. Any parse failure -> "unknown\tna\t".
+# derive_identity <config_dir> <credential_source>
+#   -> "<sub>\t<email>\t<expiresAt_ms|->\t<cj_ok>\t<cred_ok>"
+# Email from <config_dir>/.claude.json oauthAccount.emailAddress, sub/expiry
+# from the credential's claudeAiOauth (see header: the sources are
+# complementary live shapes). Tab is IFS-whitespace, so the empty expiry
+# field uses the '-' sentinel to survive `IFS=$'\t' read` collapsing.
+# Never emits accessToken/refreshToken.
 derive_identity() {
-  read_cred_json "$1" | python3 -c '
-import json, sys
+  read_cred_json "$2" | CJ_PATH="${1}/.claude.json" python3 -c '
+import json, os, sys
+def _load(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+cj = _load(os.environ.get("CJ_PATH", ""))
 try:
-    d = json.load(sys.stdin)
-    o = d.get("claudeAiOauth") or {}
-    st = o.get("subscriptionType") or "unknown"
-    email = o.get("email") or o.get("emailAddress") or "na"
-    ea = o.get("expiresAt")
-    ea = ea if isinstance(ea, (int, float)) else ""
-    print("%s\t%s\t%s" % (st, email, ea))
+    cred = json.load(sys.stdin)
 except Exception:
-    print("unknown\tna\t")
+    cred = None
+oa = (cj or {}).get("oauthAccount") or {}
+co = (cred or {}).get("claudeAiOauth") or {}
+sub = co.get("subscriptionType") or "unknown"
+email = oa.get("emailAddress") or co.get("email") or co.get("emailAddress") or "na"
+ea = co.get("expiresAt")
+ea = ea if isinstance(ea, (int, float)) else "-"
+print("%s\t%s\t%s\t%d\t%d" % (sub, email, ea, 1 if cj else 0, 1 if cred else 0))
 ' 2>/dev/null
 }
 
@@ -109,6 +152,27 @@ fi
 if (( timeout_s < 1 )); then warn "WARN: LEADV2_CLAUDE_PROFILE_TIMEOUT clamped to 1s"; timeout_s=1; fi
 if (( timeout_s > 60 )); then warn "WARN: LEADV2_CLAUDE_PROFILE_TIMEOUT clamped to 60s"; timeout_s=60; fi
 
+# --- default (inherited) slot health ----------------------------------------
+# Whenever this selector fails open, the lane runs on the inherited config
+# dir, so a dead default credential is worth shouting about even though it
+# changes nothing here (availability > purity).  On-disk credential first,
+# then the canonical keychain service (the production default keeps its
+# credential there -- verified live 2026-08-27).
+default_dir="${LEADV2_CLAUDE_PROFILE_DEFAULT_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+def_line="$(derive_identity "$default_dir" "file:${default_dir}/.credentials.json")"
+IFS=$'\t' read -r d_sub d_email d_exp d_cj d_cred <<<"$def_line"
+if [[ "$d_cred" != "1" ]]; then
+  def_line="$(derive_identity "$default_dir" "keychain:Claude Code-credentials")"
+  IFS=$'\t' read -r d_sub d_email d_exp d_cj d_cred <<<"$def_line"
+fi
+if [[ "$d_cred" != "1" ]]; then
+  warn "WARN: default_token_absent (inherited slot has no readable credential) -- fail-open"
+elif [[ "$d_exp" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  if (( ${d_exp%%.*} <= $(date +%s) * 1000 )); then
+    warn "WARN: default_token_expired identity=${d_sub}/${d_email} -- fail-open"
+  fi
+fi
+
 # --- registry parse ---------------------------------------------------------
 # bash-3.2 safe: no associative arrays; duplicate labels are resolved by
 # first-wins so the selection stays a pure function of file order.
@@ -120,7 +184,7 @@ expired_count=0
 re_label='^[a-z0-9][a-z0-9_-]{0,31}$'
 [[ -r "$REGISTRY" ]] || single_profile
 lineno=0
-while IFS=$'\t' read -r label config_dir cred || [[ -n "${label:-}" ]]; do
+while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; do
   lineno=$((lineno + 1))
   [[ -z "${label//[$' \t\r']/}" ]] && continue
   case "$label" in '#'*) continue ;; esac
@@ -141,9 +205,6 @@ while IFS=$'\t' read -r label config_dir cred || [[ -n "${label:-}" ]]; do
     continue
   fi
   if [[ -z "$cred" ]]; then cred="file:${config_dir}/.credentials.json"; fi
-  # lean: both registry columns are validated here, but cross-account identity
-  # verification is deferred: the probe payload has no identity comparable to
-  # what config_dir resolves to, so the operator owns that pairing.
   case "$cred" in
     keychain:?*)
       ;;
@@ -162,13 +223,22 @@ while IFS=$'\t' read -r label config_dir cred || [[ -n "${label:-}" ]]; do
     warn "WARN: registry line ${lineno} skipped: duplicate label (first wins)"
     continue
   fi
-  # Identity is derived from the credential's OWN JSON, never the label --
-  # a re-logged-in slot can silently start serving a different account.
-  id_line="$(derive_identity "$cred")"
-  IFS=$'\t' read -r id_sub id_email id_exp <<<"$id_line"
+  # Identity is derived from the slot's OWN JSON (.claude.json for the email,
+  # the credential for sub/expiry), never from the label -- a re-logged-in
+  # slot can silently start serving a different account.
+  id_line="$(derive_identity "$config_dir" "$cred")"
+  IFS=$'\t' read -r id_sub id_email id_exp id_cj id_cred <<<"$id_line"
   id_sub="${id_sub:-unknown}"; id_email="${id_email:-na}"
   identity="${id_sub}/${id_email}"
-  if [[ -n "$id_exp" ]] && [[ "$id_exp" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  if [[ "$id_cj" != "1" ]]; then
+    # Missing/unreadable .claude.json: the email half of the identity cannot
+    # be verified.  Warn and carry on -- the sub half still buckets correctly.
+    warn "WARN: registry line ${lineno}: identity_email_unresolved (no readable .claude.json) label=${label} identity=${identity} -- fail-open"
+  fi
+  if [[ -n "${expect:-}" && "$expect" != "$identity" ]]; then
+    warn "WARN: label_mismatch label=${label} expected=${expect} identity=${identity} -- bucketing by identity (fail-open)"
+  fi
+  if [[ "$id_exp" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
     now_ms=$(( $(date +%s) * 1000 ))
     id_exp_i="${id_exp%%.*}"
     if (( id_exp_i <= now_ms )); then
@@ -179,6 +249,25 @@ while IFS=$'\t' read -r label config_dir cred || [[ -n "${label:-}" ]]; do
   fi
   LABELS+=("$label"); DIRS+=("$config_dir"); SOURCES+=("$cred"); IDENTITIES+=("$identity")
 done < "$REGISTRY"
+
+# --- same-account detection (the 2026-08-26 incident shape) ------------------
+# Two labels resolving to ONE real account means the registry lies about
+# having two slots.  Warn loudly; both stay candidates and already share one
+# identity-keyed quota bucket, so usage is counted once either way.
+n=${#LABELS[@]}
+_sa_i=0
+while (( _sa_i < n )); do
+  _sa_j=$(( _sa_i + 1 ))
+  while (( _sa_j < n )); do
+    if [[ "${IDENTITIES[$_sa_i]}" == "${IDENTITIES[$_sa_j]}" \
+          && "${IDENTITIES[$_sa_i]}" != "unknown/na" \
+          && "${IDENTITIES[$_sa_i]#*/}" != "na" ]]; then
+      warn "WARN: same_account label=${LABELS[$_sa_i]} label=${LABELS[$_sa_j]} identity=${IDENTITIES[$_sa_i]} -- one real account behind two slots"
+    fi
+    _sa_j=$(( _sa_j + 1 ))
+  done
+  _sa_i=$(( _sa_i + 1 ))
+done
 
 # <2 valid entries => multi-profile is inert; caller keeps its inherited
 # CLAUDE_CONFIG_DIR (single-profile fallback preserved). But if every entry
@@ -212,7 +301,14 @@ while (( i < n )); do
   # Quota bucket keying is by IDENTITY, not by the operator-chosen label --
   # two labels resolving to the same real account must share one quota
   # bucket, and a relabeled slot must never inherit a stale bucket's cache.
-  id_key="$(printf '%s' "$identity" | tr -c 'A-Za-z0-9_-' '_')"
+  # An UNRESOLVED identity must not collapse every distinct slot into one
+  # shared "unknown/na" bucket either: fall back to the physical config_dir
+  # so each slot keeps its own bucket until identity is restorable.
+  if [[ "$identity" == "unknown/na" ]]; then
+    id_key="$(printf '%s' "$dir" | tr -c 'A-Za-z0-9_-' '_')"
+  else
+    id_key="$(printf '%s' "$identity" | tr -c 'A-Za-z0-9_-' '_')"
+  fi
   remaining=$(( deadline - $(date +%s) ))
   if (( remaining < 1 )); then
     warn "WARN: profile probe budget exhausted; unprobed entries score unknown"
