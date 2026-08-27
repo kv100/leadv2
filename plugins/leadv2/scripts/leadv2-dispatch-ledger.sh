@@ -361,11 +361,10 @@ dispatch_ledger_write_terminal() {
 # under this script's own set -u is the same trap with a different hat. Fail-open by
 # contract: a missing resolver/yaml/pyyaml or a failed removal NEVER fails the terminal
 # write itself -- the row then simply ages out via the sweep's next pass.
-_lv2_terminal_unregister_lanes() {  # <sig8> <founder_task_id> <attempt> -- remove only this attempt's lane rows
+_lv2_terminal_unregister_lanes() {  # <sig8> <founder_task_id> <attempt> -- remove only matching-attempt lane rows
   local sig8="$1" founder="$2" attempt="${3:-}" yaml_file lock_file tid
-  # A terminal record without an attempt cannot prove ownership of a possibly
-  # re-registered row. Preserve it; the ordinary age sweep can later clean it.
-  [[ -n "${attempt}" ]] || return 0
+  # An attempt-less terminal can own only an attempt-less row.  In particular,
+  # do not let it deregister a retry that subsequently registered an attempt.
   yaml_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml 2>/dev/null)" || return 0
   [[ -n "${yaml_file}" && -f "${yaml_file}" ]] || return 0
   lock_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml.lock 2>/dev/null)" || return 0

@@ -455,6 +455,28 @@ bash "$BIN" write-terminal "20202020" "task-20-retry" "landed" "confirmed" "hand
 grep -q '"task_sig":"20202020".*"terminal":"landed".*"attempt":"pid-20000"' "$LEDGER_FILE" \
   || { echo "FAIL 20: attempt-2 landed outcome was not recorded after late attempt-1 dead"; FAIL=1; }
 
+# --- 21 (T16 M1): an attempt-less terminal must remove its own stale
+# attempt-less active row, while preserving a same-task retry that has an
+# explicit attempt token.
+cat > "$ROOT/state/active.yaml" <<'YAML'
+sessions:
+  - task_id: task-21-attemptless
+    pid: 21000
+    phase: build
+  - task_id: task-21-attemptless
+    attempt: pid-21001
+    pid: 21001
+    phase: build
+YAML
+bash "$BIN" write-terminal "21212121" "task-21-attemptless" "dead" "attemptless_terminal" "" "" \
+  || { echo "FAIL 21: attempt-less terminal write failed"; FAIL=1; }
+python3 - "$ROOT/state/active.yaml" <<'PY' || { echo "FAIL 21: attempt-less terminal did not remove only its attempt-less active row"; FAIL=1; }
+import sys, yaml
+sessions = (yaml.safe_load(open(sys.argv[1])) or {}).get("sessions") or []
+assert not any(s.get("task_id") == "task-21-attemptless" and not s.get("attempt") for s in sessions), sessions
+assert any(s.get("task_id") == "task-21-attemptless" and s.get("attempt") == "pid-21001" for s in sessions), sessions
+PY
+
 if [[ $FAIL -eq 0 ]]; then
   echo 'PASS: write-once terminal ledger (write/dedup/exists/invalid/sanitize/sweep/close-owner/retryable-refused-parked/sweep-never-poisons-refused/real-liveness-vanished-stream-sig8/attempt-scoped-sweep/wrong-attempt/concurrent-lock-race/live-pid-not-swept/dead-pid-swept/wedged-live-pid-swept/late-attempt-does-not-unregister-retry)'
   exit 0
