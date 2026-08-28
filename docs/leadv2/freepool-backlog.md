@@ -67,3 +67,9 @@ copies diverged BOTH ways vs canonical: copies carry CLOSE-GATE-BYPASSABLE-BY-EN
 (2026-08-17 hardening, 21+37 unique lines) canonical never got; canonical has 07-31/08-04
 work the copies lack. Needs a real merge-up into canonical, tests, then symlink. Until
 then these two stay real copies deliberately (do NOT blind-symlink — loses the hardening).
+
+## FP-08 — freepool arm produces instant empty diffs on real code missions (P1, 2026-08-28)
+Two Standard/Light code missions (27434c7a, e9e1ad51): arbiter picks freepool as cheapest_capable,
+worker exits in ~23s with zero diff, dispatcher records no_work. Either the freepool claude-p glue
+dies silently or capability floor is wrong (freepool should be bulk-only until FP-04 quality gate).
+Investigate worker glue logs + add capability floor: freepool ineligible for class>=Standard.
