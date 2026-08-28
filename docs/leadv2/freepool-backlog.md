@@ -92,3 +92,9 @@ Evidence 2026-08-28: two lead Monitors armed with tail -n 0 missed dispatch_term
 Sub-item (same lane, review-engine defects seen live 2026-08-28): gate mislabels a delivered verdict as
 `empty_response` (review-glm.md had REVIEW_VERDICT: FAIL at 9953 bytes); FP-07 layer-1 codex rg-exit-1
 choke still unfixed live.
+
+## MERGE-UP-PHASE8-GATES-01 — CLOSED AS MOOT (2026-08-28)
+Premise-check evidence: leadv2-phase8-assert.sh / leadv2-phase8-e2e-gate.sh are SYMLINKS in every farm
+(leadv2-shared, persona-engine, respiro-ios, getmany; absent in m3-market) — no real copies remain to merge up.
+Canonical carries the newer post-08-17 gate fixes (GATE-WRONG-ROOT-FALSE-DEAD-01 813e564, GATE-FOREIGN-FAILURE-01 3783c57)
+and the CLOSE-GATE hardening marker lives in canonical leadv2-phase8-close.sh. Nothing left to merge.
