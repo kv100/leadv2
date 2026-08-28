@@ -98,3 +98,35 @@ Retraction: the 2026-08-28 "closed as moot" note checked leadv2-shared/persona-e
 farms (all symlinks) but MISSED the leadv2 repo's OWN .claude/scripts farm — the row's stated location.
 The real copies are alive there: leadv2-phase8-assert.sh (mtime 08-17, 22 diff lines vs canonical) and
 leadv2-phase8-e2e-gate.sh (mtime 08-17, 48 diff lines). Merge-up lane dispatched 2026-08-28.
+
+## FP-07c — retry starvation is SILENT (P1, 2026-08-28)
+When the body-lost retry's `_review_next_distinct_ok_arm` returns empty (pool genuinely
+starved), leadv2-review-run.sh:1410-1445 falls straight through to `status: blocked` with
+NO journal line naming WHY no retry fired. Live case (FP-06 fix-round, lane ca82d73f):
+resolver said `codex:ok:46,glm:author:,kimi:ok:,opus:blocked:95,sonnet:blocked:95` — kimi
+safety-excluded for review, glm=author, opus/sonnet quota-blocked → empty pool, zero trace.
+Fix: journal `review_retry_starved task= pool=<resolver line>` before falling to blocked.
+
+## FP-09 — review gate mislabels a DELIVERED verdict as empty_response (P2, 2026-08-28)
+FP-08 round 1: gate wrote `empty_response arm_rc glm=0` while review-glm.md held a full
+REVIEW_VERDICT: FAIL at 9953 bytes. Gate must re-stat the body file before labeling.
+
+## FP-10 — codex review arm rg-exit-1 choke STILL LIVE (P1, 2026-08-28)
+FP-07 added the retry (layer 2) but the choke itself (layer 1) is unfixed: codex reviewer
+aborts when rg/grep exits 1 (no matches), body lost at ~271 bytes. Twice on FP-06 fix-round.
+Fix: review mission template for the codex arm must state "rg exit 1 = no matches, append
+|| true"; or wrap searches in the harness.
+
+## MON-PULSE-01 — judge followups (P3, 2026-08-28)
+Judge verdict bounded merge to H-1/H-2; still owed: H-3 arming-seam tests, M-1..M-5,
+L-1..L-6 (see docs/handoff/dispatch-60ec85a4/judge-verdict.md).
+
+## FP-06 — followups M1/L* (P3, 2026-08-28)
+Review round 1 (dispatch-5aeaa8bb/review-opus.md) M1 + L-class findings deferred by
+fix-round scope; land with FP-04 telemetry-consumer work.
+
+## REG-CLEANUP-01 — stale active.yaml rows as a CLASS (P2, 2026-08-28)
+5 stale rows in persona-engine active.yaml caused continuation-guard stop-hook spam (10
+hooks per stop, founder screenshot). Purged by hand via leadv2_active_unregister. Class
+fix: phase8-close / product_close must unregister ALL rows for its task sig, and a sweeper
+should age out rows whose worktree no longer exists.
