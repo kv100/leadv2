@@ -2,10 +2,23 @@
 # One live-window, config-driven arbiter shared by dispatch and review.
 # Output is a single machine-readable line; non-zero means caller must fail open.
 
+leadv2_route_arbiter_script_dir() {
+  # Per-file installs symlink this library, while BASH_SOURCE preserves the
+  # symlink spelling. Follow the chain portably before locating sibling files.
+  local source="${BASH_SOURCE[0]}" link dir
+  while [[ -h "$source" ]]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    link="$(readlink "$source")"
+    [[ "$link" == /* ]] || link="$dir/$link"
+    source="$link"
+  done
+  cd -P "$(dirname "$source")" && pwd
+}
+
 route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   local role="${1:-}" descriptor="${2:-}" here routing live free_gate free_rc quota_json
   [[ "$role" == worker || "$role" == reviewer ]] || return 64
-  here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  here="$(cd "$(leadv2_route_arbiter_script_dir)/.." && pwd)"
   routing="${LEADV2_ROUTE_ARBITER_ROUTING_YAML:-${here}/../config/leadv2-routing.yaml}"
   [[ -r "$routing" ]] || return 65
   # T17 fix-round (H4): honour the repo's established quota-live seam name
@@ -25,7 +38,7 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   ROUTE_ARBITER_QUOTA="$quota_json" ROUTE_ARBITER_FREEPOOL_RC="$free_rc" \
   ROUTE_ARBITER_STATE_FILE="${LEADV2_ROUTE_ARBITER_STATE_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-last-arm}" \
   python3 - "$routing" <<'PY'
-import json, os, sys
+import json, os, sys, tempfile
 try:
     import yaml
     data=yaml.safe_load(open(sys.argv[1])) or {}
@@ -66,6 +79,13 @@ def util(provider):
     # every cost/util comparison and win selection forever -- reproduced 3/3
     # in the round-1 review with every real arm healthy. freepool is
     # unaffected: its own gate (free_ok) already encodes this correctly.
+    # FP-08 fix-round (H1): the capability floor does NOT live here. util() is
+    # a quota number; the selector ranks by EFFECTIVE COST first (the sort's
+    # dominant key below). The previous attempt raised util_freepool by +50
+    # here, which only tie-breaks against glm (same cost tier) and does
+    # nothing against codex (cost 3..7) or sonnet (cost 5) -- falsified by the
+    # round-1 live probe (freepool still selected with util_freepool=50).
+    # The demotion now happens on the effective cost, right before the sort.
     if provider=='freepool': return (0.0 if free_ok else 100.0, False)
     x=q.get('anthropic' if provider=='claude' else provider,{})
     if x.get('status')!='ok': return (100.0, True)
@@ -80,6 +100,11 @@ def util(provider):
     vals=[z for z in vals if z is not None]; return (max(vals) if vals else 0.0, False)
 _uraw={p:util(p) for p in ('glm','codex','claude','freepool')}
 u={p:_uraw[p][0] for p in _uraw}; unk={p:_uraw[p][1] for p in _uraw}
+# FP-08 fix-round (M1): the floor keys on the RAW --task-class, not the
+# SIZE_MAP-folded bucket. trivial|light ("simple") fold into the 'standard'
+# matrix cell for CAPABILITY lookups but must stay freepool-eligible, and
+# bulk is exempt by design; strategic folds into 'heavy' and IS floored.
+floor_applies = size_raw in ('standard','heavy','strategic') and kind == 'code'
 def ufmt():
     return ' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else '%d'%u[p]) for p in ('glm','codex','claude','freepool'))
 ceil=((data.get('router_v2') or {}).get('quota_ceilings') or {})
@@ -107,20 +132,54 @@ ok=[c for c in capable if not capped(c.get('provider'))]
 if not ok:
     print('arm=refuse model=none tier=none reason=all_arms_capped chain= %s' % ufmt())
     raise SystemExit(3)
-ok.sort(key=lambda c:(float(c.get('cost',999)),u[c['provider']],c['arm'],c.get('tier','')))
+# FP-08 fix-round (H1): demote freepool in the dimension the selector ACTUALLY
+# ranks by -- effective cost, the sort's dominant key. +100 clears the whole
+# real cost range (max real cost: opus 9), so a floored freepool sorts after
+# codex (3..7) and sonnet (5) yet stays in the chain as the last-resort
+# fallback if every capable arm later benches. Demoted rank is only APPLIED
+# when freepool is actually in the candidate set; otherwise the task never
+# contended for it and no floor token is emitted.
+floor_reason = '%s/%s' % (size_raw, kind) if (floor_applies and any(c.get('arm')=='freepool' for c in ok)) else ''
+def ecost(c):
+    return float(c.get('cost',999)) + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0)
+ok.sort(key=lambda c:(ecost(c),u[c['provider']],c['arm'],c.get('tier','')))
 seen=set(); chain=[]
 for c in ok:
     if c['arm'] not in seen: chain.append(c['arm']); seen.add(c['arm'])
 state=os.environ['ROUTE_ARBITER_STATE_FILE']
-try: last=open(state).read().strip()
+# FP-08 fix-round (H2): the state file is a JSON object (arm + task stamp +
+# floor bookkeeping) since 3ffef47, but this anti-sticky reader still did a
+# bare .strip() and compared it against arm names -- `last` never matched any
+# arm, alternatives[0]==ok[0] always, and T17 arm rotation was silently off
+# (caught red by test-route-arbiter.sh case (d) on the merged tree). Parse the
+# object; any unparseable/legacy-bare file rotates (last='').
+last=''
+try: last=(json.load(open(state)) or {}).get('arm','') or ''
 except Exception: last=''
 # Anti-stickiness is stronger than a static lowest-utilization preference:
 # when an equally-priced alternative exists, do not spend the same arm twice.
-price=float(ok[0].get('cost',999)); alternatives=[c for c in ok if float(c.get('cost',999))==price and c['arm']!=last]
+# Price comparison is on EFFECTIVE cost so a floored freepool never counts as
+# the same price tier as an unfloored cost-1 arm.
+price=ecost(ok[0]); alternatives=[c for c in ok if ecost(c)==price and c['arm']!=last]
 w=alternatives[0] if alternatives else ok[0]
+# FP-08 fix-round (M3/L1/L2): atomic write (same-dir tempfile + os.replace),
+# task-stamped, fd closed -- the old `json.dump(..., open(state,'w'))` inside
+# `try/except: pass` leaked the fd and, on a failed write, silently left the
+# PREVIOUS run's state on disk to be attributed to this task by any reader.
+# `task` lets a reader validate provenance; json is already imported at the
+# top of this heredoc (the inner `import json` is gone).
 try:
-    os.makedirs(os.path.dirname(state) or '.',exist_ok=True)
-    open(state,'w').write(w['arm']+'\n')
+    _sdir=os.path.dirname(state) or '.'
+    os.makedirs(_sdir,exist_ok=True)
+    _fd,_tmp=tempfile.mkstemp(dir=_sdir,prefix='.route-arbiter-',suffix='.tmp')
+    try:
+        with os.fdopen(_fd,'w') as _sf:
+            json.dump({'arm':w['arm'],'task':str(d.get('task','')),'floor_applied':bool(floor_reason),'floor_reason':floor_reason}, _sf)
+        os.replace(_tmp,state)
+    except BaseException:
+        try: os.unlink(_tmp)
+        except OSError: pass
+        raise
 except Exception: pass
 # T17 fix-round (H1): emit the chain with the anti-sticky PICK first, then
 # the remaining cost-ordered arms. The spawn loop (leadv2-dispatch-code.sh)
@@ -130,6 +189,12 @@ except Exception: pass
 # affected which arm actually ran.
 rotated=[w['arm']]+[a for a in chain if a != w['arm']]
 _extra = (' size_unmapped=%s' % size_unmapped) if size_unmapped else ''
-print('arm=%s model=%s tier=%s reason=cheapest_capable chain=%s %s%s' % (w['arm'],w['model'],w.get('tier','standard'),','.join(rotated),ufmt(),_extra))
+# FP-08 fix-round (H1/H3): the floor journal rides on the arbiter's OWN output
+# line for THIS invocation (never a cross-run state file a stale read could
+# misattribute), as explicit tokens -- not a Python bool printed raw, which
+# rendered `True` and never matched dispatch-code's `== "true"` comparison
+# (round-1 H3, the journal line was unreachable dead code).
+_floor = (' floor_applied=1 floor_reason=%s' % floor_reason) if floor_reason else ''
+print('arm=%s model=%s tier=%s reason=cheapest_capable chain=%s %s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),','.join(rotated),ufmt(),_extra,_floor))
 PY
 }
