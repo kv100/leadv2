@@ -542,6 +542,28 @@ if [[ "${h_ncols:-0}" -eq 11 ]]; then
 else
   fail "(h) M2: CSV column count wrong (${h_ncols:-missing}; row: $(tail -1 "$h_csv" 2>/dev/null))"
 fi
+mk_judge "$TMP/judge-comma.sh" 'build,urgent'
+REPO12_COMMA="$TMP/repo12-comma"; mk_repo "$REPO12_COMMA"
+h_comma_out="$(FP06_JUDGE_BIN="$TMP/judge-comma.sh" run_dispatch "$REPO12_COMMA" "$TMP/freepool-fail-stub.sh" hcomma)"
+printf '%s\n' "$h_comma_out" > "$TMP/h-comma-out.log"
+h_comma_csv="$REPO12_COMMA/docs/leadv2/model-select-telemetry.csv"
+h_comma_ncols="$(tail -1 "$h_comma_csv" 2>/dev/null | awk -F',' '{print NF}')"
+if [[ "${h_comma_ncols:-0}" -eq 11 ]]; then
+  pass "(h) M2: comma value still yields exactly 11 CSV columns"
+else
+  fail "(h) M2: comma value split the CSV row (${h_comma_ncols:-missing}; row: $(tail -1 "$h_comma_csv" 2>/dev/null))"
+fi
+mk_judge "$TMP/judge-formula.sh" '=formula'
+REPO12_FORMULA="$TMP/repo12-formula"; mk_repo "$REPO12_FORMULA"
+h_formula_out="$(FP06_JUDGE_BIN="$TMP/judge-formula.sh" run_dispatch "$REPO12_FORMULA" "$TMP/freepool-fail-stub.sh" hformula)"
+printf '%s\n' "$h_formula_out" > "$TMP/h-formula-out.log"
+h_formula_csv="$REPO12_FORMULA/docs/leadv2/model-select-telemetry.csv"
+h_formula_cell="$(tail -1 "$h_formula_csv" 2>/dev/null | awk -F',' '{print $4}')"
+if [[ "${h_formula_cell}" != =* ]]; then
+  pass "(h) M2: formula-leading CSV cell is neutralized"
+else
+  fail "(h) M2: formula-leading CSV cell remains unsafe (${h_formula_cell})"
+fi
 
 # ── (i) H4: over-cap CSV is rotated, header + newest rows kept ──────────────
 REPO13="$TMP/repo13"; mk_repo "$REPO13"

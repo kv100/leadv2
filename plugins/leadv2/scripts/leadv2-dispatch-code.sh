@@ -1669,17 +1669,26 @@ _model_select_telemetry() {  # <terminal:win|fail> <cause> [arm]
     _s=$(( $(_now_epoch) - _MS_T0 )); [[ "${_s}" -lt 0 ]] && _s=0
   fi
   # fix-round M2: class/work_kind derive from the task-judge's JSON (LLM
-  # output) and model/cause/arm carry provider vocab -- ONE space, '=' or ','
+  # output) and model/cause/arm carry provider vocab -- ONE space, '=', or ','
   # inside a value would corrupt the space-delimited k=v row and/or the CSV
   # column count with no field-count check to catch it. One sanitize pass over
-  # every emitted value: fold all field-breaking bytes (incl. newlines) to '_'.
-  local _class _wk _model
-  _class="$(printf '%s' "${ADMISSION_CLASS:-${task_class:-standard}}" | tr '[:upper:]' '[:lower:]' | tr ' \t=\r\n' '_')"
-  _wk="$(printf '%s' "${ADMISSION_WORK_KIND:-${kind:-code}}" | tr ' \t=\r\n' '_')"
-  _a="$(printf '%s' "${_a}" | tr ' \t=\r\n' '_')"
-  _c="$(printf '%s' "${_c}" | tr ' \t=\r\n' '_')"
-  _model="$(printf '%s' "${_MS_MODEL:-${_a}}" | tr ' \t=\r\n' '_')"
-  emit decision "model_select_telemetry task=${sig8:-} role=worker class=${_class} work_kind=${_wk} arm=${_a} model=${_model} fallback_depth=${_MS_FALLBACKS:-0} floor=${_MS_FLOOR:-none} spawn_to_terminal_s=${_s} terminal=${_t} cause=${_c}"
+  # every emitted CSV cell: fold all field-breaking bytes (incl. newlines) to
+  # '_', then prefix formula-leading (+, -, @, =) cells with '_' to neutralize
+  # spreadsheet formula interpretation.
+  local _task="${sig8:-}" _role=worker _class _wk _model _fallback _floor _terminal="${_t}"
+  _class="$(printf '%s' "${ADMISSION_CLASS:-${task_class:-standard}}" | tr '[:upper:]' '[:lower:]')"
+  _wk="${ADMISSION_WORK_KIND:-${kind:-code}}"
+  _model="${_MS_MODEL:-${_a}}"
+  _fallback="${_MS_FALLBACKS:-0}"
+  _floor="${_MS_FLOOR:-none}"
+  local _cell
+  for _cell in _task _role _class _wk _a _model _fallback _floor _s _terminal _c; do
+    printf -v "${_cell}" '%s' "$(printf '%s' "${!_cell}" | tr ' \t=,\r\n' '_')"
+    case "${!_cell}" in
+      [-+@=]*) printf -v "${_cell}" '_%s' "${!_cell}" ;;
+    esac
+  done
+  emit decision "model_select_telemetry task=${_task} role=${_role} class=${_class} work_kind=${_wk} arm=${_a} model=${_model} fallback_depth=${_fallback} floor=${_floor} spawn_to_terminal_s=${_s} terminal=${_terminal} cause=${_c}"
   # fix-round M3+H4: header creation and row append land under ONE
   # lv2_lock_wait critical section -- two dispatches from the same checkout
   # (the normal parallel-lane pattern) raced the -f header test and could
@@ -1692,7 +1701,7 @@ _model_select_telemetry() {  # <terminal:win|fail> <cause> [arm]
   [[ -n "${PROJECT_ROOT:-}" ]] || return 0
   _dir="$(dirname "${_csv}")"
   mkdir -p "${_dir}" 2>/dev/null || return 0
-  local _row="task=${sig8:-} role=worker class=${_class} work_kind=${_wk} arm=${_a} model=${_model} fallback_depth=${_MS_FALLBACKS:-0} floor=${_MS_FLOOR:-none} spawn_to_terminal_s=${_s} terminal=${_t} cause=${_c}"
+  local _row="task=${_task} role=${_role} class=${_class} work_kind=${_wk} arm=${_a} model=${_model} fallback_depth=${_fallback} floor=${_floor} spawn_to_terminal_s=${_s} terminal=${_terminal} cause=${_c}"
   (
     lv2_lock_wait "${_csv}.lock" 5 || exit 3
     [[ -f "${_csv}" ]] || printf 'task,role,class,work_kind,arm,model,fallback_depth,floor,spawn_to_terminal_s,terminal,cause\n' > "${_csv}" 2>/dev/null || exit 0
