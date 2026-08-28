@@ -54,3 +54,9 @@ from OUR selector; tier envs are exported as `freepool-default`. Therefore:
   our selector cannot catch a provider dying before first token). Recommend 2-3 entries.
 - Reasoning: From client. Web Tools: on.
 FP-03 installer must print this table so no future operator re-derives it.
+
+## FP-07 — review engine codex arm chokes (P1, found 2026-08-28)
+leadv2-review-run.sh's codex reviewer dies on its first rg exit-1 (no matches treated
+as fatal) -> review_body_lost, twice deterministically on PHASE-DISCIPLINE-01. Judge
+escalation covered it, but the primary review arm is broken. Fix the arm's command
+error handling (rg exit 1 is not an error) + add a body-lost retry on a DIFFERENT arm.
