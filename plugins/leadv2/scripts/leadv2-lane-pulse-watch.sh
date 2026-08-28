@@ -9,9 +9,14 @@
 #
 # Replay-safe: the line offset starts at 0, so the FIRST pass reads the journal
 # from line 1 (tail -n +1) — terminal lines written between spawn and watcher
-# start are still reported. All terminal states are matched:
-#   dispatch_terminal | dispatch_refused | worker_died | review_gate
+# start are still reported. Exit-triggering states are ONLY
+#   dispatch_terminal | dispatch_refused | worker_died
 # and only for THIS watcher's own task sig (a foreign sig's line never pulses).
+# review_gate is a BEAT, never a terminal (fix-round C1): leadv2-review-run.sh
+# emits it repeatedly mid-flight (status=ran, round0_skip, dedup,
+# arm_infra_died action=retry), so it is pulsed but the watch keeps running
+# until a true terminal. A per-sig seen ledger (fix-round H2) survives watcher
+# exit, so a re-arm never re-pulses lines a previous watcher already pulsed.
 # Each matched line appends exactly one pulse line via the EXISTING
 # leadv2-pulse.sh (task_id, phase, <=80 bytes — reused, not reimplemented;
 # LEADV2_PULSE_MODE=0 is honored inside leadv2-pulse.sh itself).
@@ -79,6 +84,7 @@ fi
 PID_DIR="${STATE_DIR}/lane-pulse-watch"
 mkdir -p "$PID_DIR" 2>/dev/null || true
 PID_FILE="${PID_DIR}/${SIG}.pid"
+SEEN_FILE="${PID_DIR}/${SIG}.seen"   # fix-round H2: pulsed-line ledger, survives exit
 if [[ -f "$PID_FILE" ]]; then
   _old_pid="$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')"
   if [[ "${_old_pid}" =~ ^[0-9]+$ ]] && kill -0 "${_old_pid}" 2>/dev/null; then
@@ -94,9 +100,17 @@ trap _cleanup_pid EXIT INT TERM
 PULSE_BIN="${LEADV2_LANE_PULSE_BIN:-${SCRIPT_DIR}/leadv2-pulse.sh}"
 export LEADV2_PROJECT_ROOT="$ROOT"
 
-# terminal-state pattern: exactly the four states MON-PULSE-01 names. The sig
-# guard is a separate grep so the pattern stays the greppable spec constant.
-TERMINAL_PAT='dispatch_terminal|dispatch_refused|worker_died|review_gate'
+# BEATS pulse but never end the watch (fix-round C1): review_gate is emitted
+# repeatedly mid-flight by leadv2-review-run.sh, long before the lane ends.
+PULSE_PAT='review_gate'
+# Exit-triggering states ONLY, for this watcher's sig. `dispatch_terminal` is
+# boundary-guarded so dispatch_terminal_dedup noise rows (a duplicate-suppression
+# receipt, reason=terminal_already_recorded — not a state transition) never
+# terminate the watch (fix-round H1; same guard leadv2-lane-watch.sh:135
+# documents with its trailing-space EMIT_PAT). worker_died_stale is excluded
+# the same way.
+EXIT_PAT='dispatch_terminal([^_]|$)|dispatch_refused([^_]|$)|worker_died([^_]|$)'
+KIND_PAT='dispatch_terminal|dispatch_refused|worker_died'
 
 _pulse() {  # <kind> <text> — one line via the existing pulse writer, soft-fail
   [[ -f "$PULSE_BIN" ]] || return 0
@@ -115,14 +129,28 @@ _seen_init() {  # <journal> -> initial line offset
   printf '0'
 }
 
+# fix-round H2: the ledger records how many lines a previous watcher for this
+# sig already pulsed; it wins over the replay-from-line-1 default so a re-arm
+# (fix round, arm advance, retry — all re-enter _spawn_worker_body) cannot
+# duplicate stale pulses. Journal rotation is detected in the loop (n < SEEN)
+# and resets both SEEN and the ledger.
+_ledger_save() {  # <n> — atomic write, soft-fail
+  printf '%s\n' "$1" > "${SEEN_FILE}.tmp.$$" 2>/dev/null \
+    && mv -f "${SEEN_FILE}.tmp.$$" "$SEEN_FILE" 2>/dev/null || true
+}
 SEEN="$(_seen_init "$JOURNAL")"
+_ledger="$(cat "$SEEN_FILE" 2>/dev/null | tr -d ' ' || true)"
+if [[ "$_ledger" =~ ^[0-9]+$ ]] && (( _ledger > SEEN )); then
+  SEEN="$_ledger"
+fi
 _started="$(date +%s)"
 # Liveness: the journal ALWAYS exists at arm time (worker_spawned was just
 # journaled), so a journal that stays missing means the lane tree was wiped
 # (test fixture cleanup, worktree sweep). Never linger for the full timeout on
 # a dead root: exit when the root is gone or the journal has been missing for
-# GRACE_S consecutive seconds (observed live: 75 orphaned watchers after one
-# e2e suite run, each sleeping toward a 3900s timeout on a deleted fixture).
+# GRACE_S consecutive seconds. Defensive bound, not an observation (fix-round
+# H4): no live orphan count was ever taken — tune via
+# LEADV2_LANE_PULSE_WATCH_GRACE_S if real telemetry ever demands it.
 GRACE_S="${LEADV2_LANE_PULSE_WATCH_GRACE_S:-300}"
 [[ "$GRACE_S" =~ ^[0-9]+$ ]] || GRACE_S=300
 _missing_since=0
@@ -138,23 +166,36 @@ while :; do
     [[ "$n" =~ ^[0-9]+$ ]] || n=0
     if (( n > SEEN )); then
       # atomic-replace-safe: line-count offsets, never inode following
-      matched="$(tail -n +"$((SEEN + 1))" "$JOURNAL" \
-        | grep -E "$TERMINAL_PAT" | grep -E "task=${SIG}([^0-9A-Za-z]|$)" || true)"
-      if [[ -n "$matched" ]]; then
+      own="$(tail -n +"$((SEEN + 1))" "$JOURNAL" \
+        | grep -E "task=${SIG}([^0-9A-Za-z]|$)" || true)"
+      # beats first (fix-round C1): review_gate transitions pulse but NEVER
+      # end the watch — they are mid-flight signal, not lane termination.
+      beats="$(printf '%s' "$own" | grep -E "$PULSE_PAT" || true)"
+      if [[ -n "$beats" ]]; then
         while IFS= read -r l; do
-          kind="$(printf '%s' "$l" | grep -oE "$TERMINAL_PAT" | head -n1)"
           detail="$(printf '%s' "$l" | sed -E 's/^.*\[[a-z]+\] //' | cut -c1-60)"
-          _pulse "${kind:-terminal}" "$detail"
-        done <<< "$matched"
-        SEEN="$n"
+          _pulse "review_gate" "$detail"
+        done <<< "$beats"
+      fi
+      SEEN="$n"
+      _ledger_save "$SEEN"
+      # exit ONLY on a true terminal for this sig (fix-round C1/H1): dedup
+      # rows and review_gate lines are already excluded by EXIT_PAT.
+      term="$(printf '%s' "$own" | grep -E "$EXIT_PAT" || true)"
+      if [[ -n "$term" ]]; then
+        while IFS= read -r l; do
+          kind="$(printf '%s' "$l" | grep -oE "$KIND_PAT" | head -n1)"
+          detail="$(printf '%s' "$l" | sed -E 's/^.*\[[a-z]+\] //' | cut -c1-60)"
+          _pulse "${kind:-dispatch_terminal}" "$detail"
+        done <<< "$term"
         printf '[lane-pulse-watch] %s terminal, exiting\n' "$SIG" >&2
         exit 0
       fi
-      SEEN="$n"
     elif (( n < SEEN )); then
       # rotation/truncate — restart from line 1 (replay-safe again)
       printf '[lane-pulse-watch] %s rotated (lines %s < seen %s), re-reading\n' "$SIG" "$n" "$SEEN" >&2
       SEEN=0
+      _ledger_save 0
     fi
   else
     _now="$(date +%s)"

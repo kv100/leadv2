@@ -4134,7 +4134,9 @@ PY
 # post-spawn). At worker_spawned the dispatcher itself arms, detached (nohup):
 #   1. leadv2-lane-pulse-watch.sh — replay-safe per-lane journal watch that
 #      pulses every terminal state (dispatch_terminal|dispatch_refused|
-#      worker_died|review_gate) for ITS sig via the existing leadv2-pulse.sh;
+#      worker_died) for ITS sig via the existing leadv2-pulse.sh, pulses
+#      review_gate as a mid-flight beat but keeps watching, and never re-
+#      pulses lines a previous watcher already pulsed (per-sig seen ledger);
 #   2. leadv2-single-lead-beat-loop.sh — the BROAD_STATUS beat, default-on in
 #      single-lead mode while >=1 lane is live (armed once; pidfile guard).
 # Both are fail-open by construction: a missing binary, a full /tmp, or a dead

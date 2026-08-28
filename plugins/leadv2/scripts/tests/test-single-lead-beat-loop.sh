@@ -11,8 +11,15 @@
 #       active-lane status the beat bin is invoked; the loop keeps running.
 #   B3  not armed twice: a second invocation while the first loop holds the
 #       pidfile is an immediate no-op (beat count does not grow).
-#   B4  stops when no lanes remain: live count drops to a REAL zero -> the
-#       loop exits and removes its pidfile (re-arm is possible afterwards).
+#   B4  stops when no lanes remain: the live count drops to a REAL zero and
+#       stays there -> after ZERO_MAX consecutive zero passes the loop exits
+#       and removes its pidfile (re-arm is possible afterwards).
+#   B5  a TRANSIENT zero does not stop the loop (fix-round H3): the board
+#       reads empty for a couple of passes, then a lane is live again — the
+#       loop must still be alive and beating (the pre-fix code exited on the
+#       first zero pass).
+#   B6  running_stale counts as live (fix-round H3): a lane whose heartbeat
+#       verdict is `running_stale` keeps the beat running.
 #
 # Hermetic: fake lane-heartbeat bin (LEADV2_LANE_HEARTBEAT_BIN), fake beat bin
 # (LEADV2_PULSE_BEAT_BIN) recording invocations to a log, scratch pidfile,
@@ -144,10 +151,10 @@ else
   kill "$SECOND" 2>/dev/null || true
 fi
 
-# ── B4: stops when no lanes remain ───────────────────────────────────────────
-printf '[]' > "$HB_STATE"   # REAL zero: no live lanes
+# ── B4: stops when no lanes remain (ZERO_MAX consecutive real zeros) ─────────
+printf '[]' > "$HB_STATE"   # REAL zero: no live lanes, and it stays zero
 if wait_gone 10 && [[ ! -f "$PID_FILE" ]]; then
-  ok "B4 stops on empty board: loop exited and pidfile removed"
+  ok "B4 stops on empty board: loop exited after consecutive zeros, pidfile removed"
 else
   bad "B4 stops on empty board: loop still alive or pidfile left behind"
 fi
@@ -163,6 +170,41 @@ if pidfile_alive_loop; then
   ok "B4b re-arm after stop works (pidfile clean, loop re-armed)"
 else
   bad "B4b re-arm after stop failed"
+fi
+kill "$LOOP_PID" 2>/dev/null || true
+# TERM lands while the loop is inside `sleep 1`; bash defers the trap (and the
+# pidfile cleanup) until the sleep exits — wait for it or the next arm no-ops
+# against the dying pid and every later assertion races a dead pidfile.
+wait_gone 5 || true
+LOOP_PID=""
+
+# ── B5: a transient zero does not stop the loop (fix-round H3) ───────────────
+# Dedicated loop with ZERO_MAX pinned high (5): the board reads empty for ~2-3
+# passes, then a lane is live again. The pre-fix code exited on the FIRST zero
+# pass; the fix requires ZERO_MAX consecutive ones.
+printf '[{"task":"dispatch-y2","status":"running"}]' > "$HB_STATE"
+LEADV2_SINGLE_LEAD_BEAT_LOOP_ZERO_MAX=5 run_loop &
+LOOP_PID=$!
+sleep 1.5
+b_before="$(beats_n)"
+printf '[]' > "$HB_STATE"   # transient zero
+sleep 2.5                    # >=2 zero passes — the pre-fix loop is dead here
+printf '[{"task":"dispatch-z1","status":"running"}]' > "$HB_STATE"
+sleep 1.5
+if pidfile_alive_loop && [[ "$(beats_n)" -gt "$b_before" ]]; then
+  ok "B5 transient zero: board-empty blip did not stop the beat (H3)"
+else
+  bad "B5 transient zero: loop died on a non-consecutive zero (H3)"
+fi
+
+# ── B6: running_stale counts as live (fix-round H3) ─────────────────────────
+printf '[{"task":"dispatch-z2","status":"running_stale"}]' > "$HB_STATE"
+b_before="$(beats_n)"
+sleep 2.5
+if pidfile_alive_loop && [[ "$(beats_n)" -gt "$b_before" ]]; then
+  ok "B6 running_stale live: stale lane keeps the beat running (H3)"
+else
+  bad "B6 running_stale live: stale lane silenced the beat (H3)"
 fi
 kill "$LOOP_PID" 2>/dev/null || true
 LOOP_PID=""

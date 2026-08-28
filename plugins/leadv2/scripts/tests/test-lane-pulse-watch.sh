@@ -7,14 +7,22 @@
 #   W1  REPLAY-SAFETY (today's incident): a terminal line already in the
 #       journal BEFORE the watcher starts is still reported — the watcher
 #       reads from line 1 (tail -n +1), never tail -n 0.
-#   W2  transitions pulse via the existing leadv2-pulse.sh (line shape
-#       `[<iso>] <phase> | <text>`), a FOREIGN sig's terminal line never
-#       pulses, and the watcher exits at the terminal line.
+#   W2  beats vs terminals (fix-round C1/H1): an own-sig review_gate line
+#       PULSES but the watch keeps running; a dispatch_terminal_dedup row
+#       neither pulses nor exits; the later dispatch_terminal pulses and only
+#       THEN does the watcher exit. A FOREIGN sig's line never pulses.
 #   W3  pidfile guard: a second arm attempt for the same sig while a live
 #       watcher holds the pidfile is an immediate no-op (no pulse written).
 #   W4  NEGATIVE CONTROL (declared here, RUN RED below): reverting the
 #       replay-safe offset init to tail -n 0 semantics must FAIL W1 — proving
 #       W1 locks the actual mechanism, not an incidental pass.
+#   W5  re-arm dedup (fix-round H2): after a watcher exited at the terminal,
+#       a second arm of the same sig replays the journal WITHOUT duplicating
+#       any pulse (per-sig seen ledger survives watcher exit).
+#   W6  NEGATIVE CONTROL (RUN RED): putting review_gate back into the exit
+#       set (the round-1 defect) must make the watcher die at the review_gate
+#       beat and MISS the later dispatch_terminal — proving W2 locks the
+#       actual mechanism, not an incidental pass.
 #
 # Hermetic: scratch repo tree, scratch --state-dir, no network, no real lanes,
 # no real control-plane state. Run: bash scripts/tests/test-lane-pulse-watch.sh
@@ -78,32 +86,62 @@ else
   bad "W1 replay-safety: rc=$rc pulse=$(cat "$PULSE" 2>/dev/null | tr '\n' ';')"
 fi
 
-# ── W2: transitions pulse, foreign sig never does, exits at terminal ────────
+# ── W2: beats pulse but never end the watch; only a true terminal exits ──────
 SIG2="cafe0213"
 new_lane "$SIG2"
 append_lines "$J" \
   "- 2026-08-28T11:00:00Z [decision] worker_spawned by=router model=freepool task=${SIG2} handle=h2"
-bash "$WATCH" --sig "$SIG2" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 15 >/dev/null 2>&1 &
+bash "$WATCH" --sig "$SIG2" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 20 >/dev/null 2>&1 &
 WATCH_PID=$!
 sleep 1.5
 append_lines "$J" \
   "- 2026-08-28T11:01:00Z [decision] review_gate task=${FSIG} status=pass diff=aa11" \
-  "- 2026-08-28T11:01:05Z [decision] review_gate task=${SIG2} status=fail critical=1 high=2"
+  "- 2026-08-28T11:01:05Z [decision] review_gate task=${SIG2} status=ran round=1"
+sleep 1.5
+if kill -0 "$WATCH_PID" 2>/dev/null && [[ -f "$PULSE" ]] \
+   && grep -q "review_gate task=${SIG2}" "$PULSE" \
+   && ! grep -q "task=${FSIG}" "$PULSE" \
+   && [[ "$(wc -l < "$PULSE" | tr -d ' ')" -eq 1 ]]; then
+  ok "W2 beat: own-sig review_gate pulsed, foreign sig excluded, watch still running"
+else
+  bad "W2 beat: alive=$(kill -0 "$WATCH_PID" 2>/dev/null && echo yes || echo no) pulse=$(cat "$PULSE" 2>/dev/null | tr '\n' ';')"
+fi
+# H1: a dispatch_terminal_dedup row is duplicate-suppression noise — no pulse, no exit
+append_lines "$J" \
+  "- 2026-08-28T11:02:00Z [decision] dispatch_terminal_dedup task=${SIG2} attempted=dead reason=terminal_already_recorded"
+sleep 1.5
+if kill -0 "$WATCH_PID" 2>/dev/null && [[ "$(cat "$PULSE" 2>/dev/null | wc -l | tr -d ' ')" -eq 1 ]]; then
+  ok "W2 dedup noise: dispatch_terminal_dedup neither pulsed nor exited (H1)"
+else
+  bad "W2 dedup noise: watcher exited at, or pulsed, the dedup row (H1)"
+fi
+# C1: the true terminal ends the watch — after the beat, never before
+append_lines "$J" \
+  "- 2026-08-28T11:03:00Z [decision] dispatch_terminal task=${SIG2} state=landed"
 if wait_for_exit "$WATCH_PID" 15; then
-  if [[ -f "$PULSE" ]] \
-     && grep -q "review_gate" "$PULSE" \
-     && grep -q "task=${SIG2}" "$PULSE" \
-     && ! grep -q "task=${FSIG}" "$PULSE" \
-     && [[ "$(wc -l < "$PULSE" | tr -d ' ')" -eq 1 ]]; then
-    ok "W2 transitions: own-sig review_gate pulsed, foreign sig excluded, exited at terminal"
+  if grep -q "dispatch_terminal task=${SIG2}" "$PULSE" \
+     && ! grep -q "dispatch_terminal_dedup" "$PULSE" \
+     && [[ "$(wc -l < "$PULSE" | tr -d ' ')" -eq 2 ]]; then
+    ok "W2 terminal: dispatch_terminal pulsed after the beat, exit only there (C1)"
   else
-    bad "W2 transitions: pulse=$(cat "$PULSE" 2>/dev/null | tr '\n' ';')"
+    bad "W2 terminal: pulse=$(cat "$PULSE" 2>/dev/null | tr '\n' ';')"
   fi
 else
-  bad "W2 transitions: watcher did not exit after its terminal line"
+  bad "W2 terminal: watcher did not exit at dispatch_terminal"
   kill "$WATCH_PID" 2>/dev/null || true
 fi
 WATCH_PID=""
+
+# ── W5: re-arm never duplicates (fix-round H2) ───────────────────────────────
+# The ledger recorded the pulsed offset at exit; a fresh watcher for the same
+# sig replays the journal without re-pulsing review_gate or dispatch_terminal.
+bash "$WATCH" --sig "$SIG2" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 2 >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 && "$(wc -l < "$PULSE" | tr -d ' ')" -eq 2 ]]; then
+  ok "W5 re-arm dedup: replayed journal produced no duplicate pulses (ledger held)"
+else
+  bad "W5 re-arm dedup: rc=$rc pulse_lines=$(wc -l < "$PULSE" 2>/dev/null | tr -d ' ')"
+fi
 
 # ── W3: pidfile guard — second arm attempt for the same sig is a no-op ──────
 SIG3="beef4242"
@@ -161,6 +199,54 @@ if [[ $patch_rc -eq 0 ]] && ! grep -q "dispatch_terminal" "$PULSE" 2>/dev/null; 
 else
   bad "W4 negative control: patched copy unexpectedly passed (patch_rc=$patch_rc) — W1 locks nothing"
 fi
+
+# ── W6: NEGATIVE CONTROL (RUN RED) — review_gate back in the exit set (C1) ──
+# Patch a scratch copy so review_gate terminates the watch again (the round-1
+# defect), run the mid-flight scenario, and REQUIRE the later dispatch_terminal
+# pulse to be MISSING — the reverted watcher died at the review_gate beat. If
+# the patched copy still delivers the terminal pulse, W2 locks nothing.
+BAD_WATCH_RG="$TMP/watch-rg-terminal.sh"
+python3 - "$WATCH" "$BAD_WATCH_RG" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, encoding='utf-8') as fh:
+    text = fh.read()
+needle = "EXIT_PAT='dispatch_terminal([^_]|$)|dispatch_refused([^_]|$)|worker_died([^_]|$)'"
+repl = "EXIT_PAT='review_gate|dispatch_terminal([^_]|$)|dispatch_refused([^_]|$)|worker_died([^_]|$)'"
+if needle not in text:
+    print('NEGATIVE-CONTROL-PATCH-FAILED: needle not found', file=sys.stderr)
+    sys.exit(1)
+with open(dst, 'w', encoding='utf-8') as fh:
+    fh.write(text.replace(needle, repl, 1))
+PY
+patch_rc=$?
+SIG5="f00ba4a4"
+new_lane "$SIG5"
+append_lines "$J" \
+  "- 2026-08-28T14:00:00Z [decision] worker_spawned by=router model=glm task=${SIG5} handle=h5"
+# the scratch copy lives outside scripts/, so point its pulse seam at the
+# REAL writer (its own SCRIPT_DIR-relative default would not exist in $TMP)
+LEADV2_LANE_PULSE_BIN="${SCRIPT_DIR}/leadv2-pulse.sh" \
+bash "$BAD_WATCH_RG" --sig "$SIG5" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 10 >/dev/null 2>&1 &
+WATCH_PID=$!
+sleep 1.5
+append_lines "$J" \
+  "- 2026-08-28T14:01:00Z [decision] review_gate task=${SIG5} status=ran round=0"
+if wait_for_exit "$WATCH_PID" 5; then
+  append_lines "$J" \
+    "- 2026-08-28T14:02:00Z [decision] dispatch_terminal task=${SIG5} state=landed"
+  sleep 1.5   # the reverted watcher is dead — nothing can deliver this pulse
+  if [[ $patch_rc -eq 0 ]] && grep -q "review_gate task=${SIG5}" "$PULSE" 2>/dev/null \
+     && ! grep -q "dispatch_terminal task=${SIG5}" "$PULSE" 2>/dev/null; then
+    ok "W6 negative control RED: review_gate-as-terminal revert dies before dispatch_terminal (as it must)"
+  else
+    bad "W6 negative control: patched copy still delivered the terminal pulse (patch_rc=$patch_rc) — W2 locks nothing"
+  fi
+else
+  bad "W6 negative control: patched watcher did not exit at review_gate (patch_rc=$patch_rc)"
+  kill "$WATCH_PID" 2>/dev/null || true
+fi
+WATCH_PID=""
 
 printf 'test-lane-pulse-watch: %d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

@@ -12,11 +12,14 @@
 # This loop is started detached (nohup) once per repo by
 # leadv2-dispatch-code.sh (pidfile guard: never armed twice). Every
 # LEADV2_SINGLE_LEAD_BEAT_LOOP_S (default 300s = 5 min) it counts live lanes
-# (leadv2-lane-heartbeat.sh verdict `running`, the only verdict that means
-# "alive right now" — same rule leadv2-pulse-beat.sh uses) and, while >=1 lane
-# is live, drives the beat via leadv2-pulse-beat.sh --check (which keeps its
-# own flock/coalescing/transition machinery). When NO lanes remain it removes
-# its pidfile and exits — the beat stops with the board.
+# (leadv2-lane-heartbeat.sh verdicts `running` AND `running_stale` — a stale
+# heartbeat is a lane we still have something to report about, never a zero;
+# fix-round H3) and, while >=1 lane is live, drives the beat via
+# leadv2-pulse-beat.sh --check (which keeps its own flock/coalescing/transition
+# machinery). Only ZERO_MAX (default 3) CONSECUTIVE real zeros stop the loop —
+# a single transient zero (heartbeat blip, briefly unparsable started_at) must
+# not silence the pulse; then it removes its pidfile and exits — the beat stops
+# with the board.
 #
 # Kill-switches: LEADV2_PULSE_MODE=0 or LEADV2_SINGLE_LEAD_BEAT=0 make every
 # invocation a no-op (rc=0, nothing armed). Hard lifetime cap
@@ -63,9 +66,13 @@ trap _cleanup_pid EXIT INT TERM
 HB_BIN="${LEADV2_LANE_HEARTBEAT_BIN:-${SCRIPT_DIR}/leadv2-lane-heartbeat.sh}"
 BEAT_BIN="${LEADV2_PULSE_BEAT_BIN:-${SCRIPT_DIR}/leadv2-pulse-beat.sh}"
 
-# _live_lane_count -> integer count of `running` verdicts, or empty on any
-# failure. Fail-open semantics (same as leadv2-pulse-beat.sh): callers treat
-# empty as UNKNOWN, never as zero — a zero here must be a REAL zero.
+# _live_lane_count -> integer count of live verdicts (`running` plus
+# `running_stale` — fix-round H3: a lane whose heartbeat aged past the stale
+# threshold, or whose row briefly lacks a parseable last_pulse_at/started_at,
+# is alive-but-slow, precisely when the founder most needs the pulse), or
+# empty on any failure. Fail-open semantics (same as leadv2-pulse-beat.sh):
+# callers treat empty as UNKNOWN, never as zero — a zero here must be a REAL
+# zero (and even then it takes ZERO_MAX consecutive ones to stop, see below).
 _live_lane_count() {
   [[ -x "$HB_BIN" || -f "$HB_BIN" ]] || return 0
   local json
@@ -79,7 +86,7 @@ except Exception:
     sys.exit(0)
 if not isinstance(rows, list):
     sys.exit(0)
-print(sum(1 for r in rows if isinstance(r, dict) and r.get('status') == 'running'))
+print(sum(1 for r in rows if isinstance(r, dict) and r.get('status') in ('running', 'running_stale')))
 " "$json" 2>/dev/null
 }
 
@@ -87,11 +94,16 @@ _started="$(date +%s)"
 # Liveness: fail-open must not mean run-forever. An UNKNOWN count (heartbeat
 # missing/unparseable) is not a zero, but N consecutive unknowns (default 3)
 # means the board is unreadable — exit instead of beating into the void for
-# the full lifetime cap (observed live: orphaned loops against deleted test
-# fixture roots, unknown every pass, sleeping toward MAX_S=86400).
+# the full lifetime cap. Defensive bound, not an observation (fix-round H4):
+# no live orphan count was ever taken — tune via
+# LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX. Zeros get the same asymmetry fix
+# (H3): one zero is a blip, ZERO_MAX consecutive zeros are a stopped board.
 UNKNOWN_MAX="${LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX:-3}"
 [[ "$UNKNOWN_MAX" =~ ^[0-9]+$ ]] || UNKNOWN_MAX=3
+ZERO_MAX="${LEADV2_SINGLE_LEAD_BEAT_LOOP_ZERO_MAX:-3}"
+[[ "$ZERO_MAX" =~ ^[0-9]+$ ]] || ZERO_MAX=3
 _unknown_streak=0
+_zero_streak=0
 while :; do
   if [[ ! -d "$PROJECT_ROOT" ]]; then
     printf '[beat-loop] project root gone (%s), stopping\n' "$PROJECT_ROOT" >&2
@@ -101,11 +113,19 @@ while :; do
   if [[ "$n" =~ ^[0-9]+$ ]]; then
     _unknown_streak=0
     if (( n == 0 )); then
-      # no lanes remain — stop the beat and exit (pidfile removed by trap)
-      printf '[beat-loop] no live lanes, stopping\n' >&2
-      exit 0
+      # fix-round H3: a single zero can be a heartbeat blip (a running_stale
+      # row, a briefly unparsable started_at) — only ZERO_MAX consecutive
+      # real zeros stop the beat (pidfile removed by trap on exit).
+      _zero_streak=$(( _zero_streak + 1 ))
+      if (( _zero_streak >= ZERO_MAX )); then
+        printf '[beat-loop] no live lanes for %d passes in a row, stopping\n' "$_zero_streak" >&2
+        exit 0
+      fi
+    else
+      _zero_streak=0
     fi
   else
+    _zero_streak=0   # an unknown pass is not a zero
     _unknown_streak=$(( _unknown_streak + 1 ))
     if (( _unknown_streak >= UNKNOWN_MAX )); then
       printf '[beat-loop] lane count unknown %d passes in a row, stopping\n' "$_unknown_streak" >&2
