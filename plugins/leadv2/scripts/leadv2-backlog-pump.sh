@@ -129,7 +129,7 @@ export PROJECT_ROOT
 # absolute is git >=2.31 only, so resolve relative-or-absolute common-dir via
 # a subshell cd chain instead of trusting the string shape.
 _lv2bp_canonical_root() {   # <candidate> -> main-worktree root on stdout
-  local cand="$1" common_dir cd_out
+  local cand="$1" common_dir="" cd_out=""
   # Explicit non-empty check before the cd chain: bash rejects `cd ""` (rc=1,
   # chain short-circuits), but zsh treats `cd ""` as a no-op (rc=0) that would
   # silently resolve the PARENT of the candidate instead of falling back.
@@ -550,14 +550,18 @@ _acquire_pump_lock() {
 }
 
 # Fail closed when Git reports an unfinished merge/rebase/cherry-pick or
-# unmerged index entries. Refusing a refill is safer than an ambiguous tree.
+# unmerged index entries. Returns 0 for a confirmed conflict, 1 for a clean
+# tree, and 2 when Git itself could not determine the state. The caller keeps
+# the latter fail-closed but journals it honestly as a probe failure.
 _tree_mid_conflict() {
-  git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 2
   local ref
   for ref in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
     git -C "$PROJECT_ROOT" rev-parse -q --verify "$ref" >/dev/null 2>&1 && return 0
   done
-  git -C "$PROJECT_ROOT" ls-files -u 2>/dev/null | grep -q . && return 0
+  local unmerged
+  unmerged="$(git -C "$PROJECT_ROOT" ls-files -u 2>/dev/null)" || return 2
+  [[ -n "$unmerged" ]] && return 0
   return 1
 }
 
@@ -786,8 +790,15 @@ cmd_check() {
     return 0
   fi
 
+  local tree_state_rc=0
   if _tree_mid_conflict; then
     jemit decision "pump_refused reason=tree_mid_conflict"
+    return 0
+  else
+    tree_state_rc=$?
+  fi
+  if [[ "$tree_state_rc" -ne 1 ]]; then
+    jemit decision "pump_refused reason=tree_state_probe_failed rc=${tree_state_rc}"
     return 0
   fi
 
