@@ -23,7 +23,9 @@
 # machinery). Only ZERO_MAX (default 3) CONSECUTIVE real zeros stop the loop —
 # a single transient zero (heartbeat blip, briefly unparsable started_at) must
 # not silence the pulse; then it removes its pidfile and exits — the beat stops
-# with the board.
+# with the board. Reader errors NEVER stop the loop (fix-round 3 H-2): a
+# heartbeat that fails or emits an error object means the monitor is blind,
+# precisely when the founder still needs the beat.
 #
 # Kill-switches: LEADV2_PULSE_MODE=0 or LEADV2_SINGLE_LEAD_BEAT=0 make every
 # invocation a no-op (rc=0, nothing armed). Hard lifetime cap
@@ -107,15 +109,16 @@ print(sum(1 for r in rows if isinstance(r, dict) and r.get('status') in ('runnin
 }
 
 _started="$(date +%s)"
-# Liveness: fail-open must not mean run-forever. An UNKNOWN count (heartbeat
-# missing/unparseable) is not a zero, but N consecutive unknowns (default 3)
-# means the board is unreadable — exit instead of beating into the void for
-# the full lifetime cap. Defensive bound, not an observation (fix-round H4):
-# no live orphan count was ever taken — tune via
-# LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX. Zeros get the same asymmetry fix
-# (H3): one zero is a blip, ZERO_MAX consecutive zeros are a stopped board.
-UNKNOWN_MAX="${LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX:-3}"
-[[ "$UNKNOWN_MAX" =~ ^[0-9]+$ ]] || UNKNOWN_MAX=3
+# Liveness: fail-open must not mean run-forever, but a reader error is NOT a
+# stop signal (fix-round 3 H-2): a heartbeat that is missing, prints garbage,
+# or emits an error OBJECT (registry unreadable) is the monitor being BLIND,
+# not the board being empty — stopping the beat there is the exact
+# founder-blindness failure this loop exists to kill. Reader-error passes keep
+# beating and never count toward any stop condition; the retired
+# LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX stop (fix-round H4) is GONE. Only a
+# registry that is genuinely readable and reports zero live lanes may stop the
+# loop — and even then only after ZERO_MAX consecutive real zeros (fix-round
+# H3: one zero is a blip). The hard lifetime cap below bounds the blind case.
 ZERO_MAX="${LEADV2_SINGLE_LEAD_BEAT_LOOP_ZERO_MAX:-3}"
 [[ "$ZERO_MAX" =~ ^[0-9]+$ ]] || ZERO_MAX=3
 _unknown_streak=0
@@ -141,11 +144,15 @@ while :; do
       _zero_streak=0
     fi
   else
-    _zero_streak=0   # an unknown pass is not a zero
+    # fix-round 3 H-2: an UNKNOWN pass is a READER error (heartbeat bin
+    # missing, output unparseable, or an error OBJECT from the heartbeat
+    # bin). Keep beating — the beat is fail-open exactly when the founder
+    # cannot see the board themselves — and do NOT count it toward any stop
+    # condition (the old UNKNOWN_MAX stop died here). Throttled log only.
+    _zero_streak=0
     _unknown_streak=$(( _unknown_streak + 1 ))
-    if (( _unknown_streak >= UNKNOWN_MAX )); then
-      printf '[beat-loop] lane count unknown %d passes in a row, stopping\n' "$_unknown_streak" >&2
-      exit 0
+    if (( _unknown_streak == 1 || _unknown_streak % 10 == 0 )); then
+      printf '[beat-loop] lane count unknown (reader error, pass %d): keeping the beat\n' "$_unknown_streak" >&2
     fi
   fi
   # >=1 live lane (or unknown — fail-open): drive the beat. --check keeps the

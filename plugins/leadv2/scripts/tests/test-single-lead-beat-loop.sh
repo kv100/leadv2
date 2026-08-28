@@ -25,6 +25,11 @@
 #       main checkout and every worktree) each arm their OWN loop; the
 #       pre-fix repo-global pidfile name made root B's arming a no-op against
 #       root A's live pid, so B never got a beat.
+#   B8  reader errors never stop the beat (fix-round 3 H-2): a heartbeat
+#       error OBJECT (registry unreadable) parses as UNKNOWN — 5+
+#       consecutive reader-error passes leave the loop alive and beating;
+#       the pre-fix code counted them toward UNKNOWN_MAX=3 and stopped the
+#       beat with no re-arm.
 #
 # Hermetic: fake lane-heartbeat bin (LEADV2_LANE_HEARTBEAT_BIN), fake beat bin
 # (LEADV2_PULSE_BEAT_BIN) recording invocations to a log, scratch pidfile,
@@ -43,9 +48,16 @@ bad() { printf '[TEST] FAIL: %s\n' "$1" >&2; FAIL=$((FAIL+1)); }
 
 TMP="$(mktemp -d /tmp/leadv2-beat-loop-XXXXXX)"
 cleanup() {
-  local p
+  local p q
   for p in "${LOOP_PID:-}" "${LOOP_A:-}" "${LOOP_B:-}"; do
     [[ -n "$p" ]] && kill "$p" 2>/dev/null || true
+  done
+  # fix-round 3 H-1: kill the pidfile-owning loops too — $! alone can be a
+  # dead wrapper while the real loop (owner of the pid) runs on as an orphan.
+  for p in "$PID_FILE" "${PID_DIR2:-}"/.single-lead-beat-loop-*.pid; do
+    [[ -f "$p" ]] || continue
+    q="$(cat "$p" 2>/dev/null | tr -d ' ')"
+    [[ "$q" =~ ^[0-9]+$ ]] && kill "$q" 2>/dev/null || true
   done
   rm -rf "$TMP"
 }
@@ -74,6 +86,9 @@ EOF
 chmod +x "$TMP/fake-beat.sh"
 
 run_loop() {  # extra env via caller
+  # fix-round 3 H-1: exec so `run_loop &` makes $! the LOOP's own pid — the
+  # pre-fix wrapper subshell meant kill $LOOP_PID killed the wrapper while
+  # the pidfile-owning grandchild loop ran on as an orphan (flaky B5/B6).
   LEADV2_PROJECT_ROOT="$REPO" \
   LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="$PID_FILE" \
   LEADV2_SINGLE_LEAD_BEAT_LOOP_S=1 \
@@ -81,7 +96,7 @@ run_loop() {  # extra env via caller
   LEADV2_LANE_HEARTBEAT_BIN="$TMP/fake-hb.sh" \
   LEADV2_PULSE_BEAT_BIN="$TMP/fake-beat.sh" \
   FAKE_HB_STATE="$HB_STATE" FAKE_BEATS_LOG="$BEATS" \
-    bash "$LOOP" "$@" >/dev/null 2>&1
+    exec bash "$LOOP" "$@" >/dev/null 2>&1
 }
 
 beats_n() {
@@ -183,7 +198,9 @@ kill "$LOOP_PID" 2>/dev/null || true
 # TERM lands while the loop is inside `sleep 1`; bash defers the trap (and the
 # pidfile cleanup) until the sleep exits — wait for it or the next arm no-ops
 # against the dying pid and every later assertion races a dead pidfile.
-wait_gone 5 || true
+# fix-round 3 H-1: FATAL — with exec, $LOOP_PID IS the loop, so a hang here is
+# an orphaned beat loop on the host, never something to || true away.
+wait_gone 5 || bad "B4b teardown: TERM'd loop pid did not exit within 5s (orphaned beat loop)"
 LOOP_PID=""
 
 # ── B5: a transient zero does not stop the loop (fix-round H3) ───────────────
@@ -223,6 +240,7 @@ mkdir -p "$PID_DIR2"
 REPO_A="$TMP/repo-a"; REPO_B="$TMP/repo-b"
 mkdir -p "$REPO_A" "$REPO_B"
 arm_root() {  # <root> — arm the loop for that root against the shared pid dir
+  # fix-round 3 H-1: exec — see run_loop
   LEADV2_PROJECT_ROOT="$1" \
   LEADV2_SINGLE_LEAD_BEAT_LOOP_PID_DIR="$PID_DIR2" \
   LEADV2_SINGLE_LEAD_BEAT_LOOP_S=1 \
@@ -230,7 +248,7 @@ arm_root() {  # <root> — arm the loop for that root against the shared pid dir
   LEADV2_LANE_HEARTBEAT_BIN="$TMP/fake-hb.sh" \
   LEADV2_PULSE_BEAT_BIN="$TMP/fake-beat.sh" \
   FAKE_HB_STATE="$HB_STATE" FAKE_BEATS_LOG="$BEATS" \
-    bash "$LOOP" >/dev/null 2>&1
+    exec bash "$LOOP" >/dev/null 2>&1
 }
 printf '[{"task":"dispatch-a1","status":"running"}]' > "$HB_STATE"
 arm_root "$REPO_A" &
@@ -251,6 +269,28 @@ kill "$LOOP_A" 2>/dev/null || true
 kill "$LOOP_B" 2>/dev/null || true
 sleep 1.5   # let the traps clean the pidfiles
 LOOP_A=""; LOOP_B=""
+
+# ── B8: reader errors never stop the beat (fix-round 3 H-2) ─────────────────
+# leadv2-lane-heartbeat.sh can emit an ERROR OBJECT (registry unreadable),
+# which the loop parses as UNKNOWN. 5+ consecutive reader-error passes must
+# leave the loop alive AND still beating; the pre-fix code counted them toward
+# UNKNOWN_MAX=3 and permanently stopped the beat with no re-arm — silent
+# founder blindness, the exact failure MON-PULSE-01 exists to kill.
+printf '[{"task":"dispatch-r1","status":"running"}]' > "$HB_STATE"
+run_loop &
+LOOP_PID=$!
+sleep 1.5
+b_before="$(beats_n)"
+printf '{"error":"registry unreadable","status":"error"}' > "$HB_STATE"   # reader-error object
+sleep 7   # >=5 consecutive UNKNOWN passes at 1s interval — pre-fix dead at pass 3
+if pidfile_alive_loop && kill -0 "$LOOP_PID" 2>/dev/null && [[ "$(beats_n)" -gt "$b_before" ]]; then
+  ok "B8 reader errors: 5+ unknown passes, loop still alive and beating (H-2)"
+else
+  bad "B8 reader errors: loop stopped or went silent on reader errors (H-2): alive=$(pidfile_alive_loop && echo yes || echo no) beats=$(beats_n) before=$b_before"
+fi
+kill "$LOOP_PID" 2>/dev/null || true
+wait_gone 5 || bad "B8 teardown: TERM'd loop pid did not exit within 5s (orphaned beat loop)"
+LOOP_PID=""
 
 printf 'test-single-lead-beat-loop: %d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
