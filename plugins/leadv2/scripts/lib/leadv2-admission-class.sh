@@ -134,6 +134,36 @@ print("\t".join(d[k] for k in keys))
 ' "$f" 2>/dev/null || printf ''
 }
 
+# Find the unique receipt for a founder task. A full-cycle build re-entry does
+# not reuse the intake mission text, so this is the canonical task->intake
+# digest join used by both Gate 1 and dispatch-code's phase guard.
+leadv2_admission_find_receipt_for_task() {  # <root> <task_id>
+  local root="$1" task_id="$2"
+  python3 - "$root" "$task_id" <<'PY' 2>/dev/null
+import glob, os, re, sys
+root, task_id = sys.argv[1:]
+rows = []
+for path in glob.glob(os.path.join(root, "docs", "handoff", "dispatch-*", "admission-receipt.yaml")):
+    d = {}
+    try:
+        for line in open(path, encoding="utf-8"):
+            if ":" in line and not line.startswith((" ", "#")):
+                k, v = line.rstrip("\n").split(":", 1)
+                d[k.strip()] = v.strip()
+    except OSError:
+        continue
+    digest = d.get("mission_digest", "")
+    sig8 = os.path.basename(os.path.dirname(path)).replace("dispatch-", "", 1)
+    if (d.get("task_id") == task_id and re.fullmatch(r"[0-9a-f]{64}", digest)
+            and sig8 == digest[:8]
+            and all(d.get(k) for k in ("task_class", "route", "source", "work_kind"))):
+        rows.append((sig8, d["task_class"], d["route"], d["source"], d["work_kind"], digest, d["task_id"]))
+if len(rows) != 1:
+    sys.exit(1)
+print("\t".join(rows[0]))
+PY
+}
+
 # Writes the receipt atomically (tmp+mv). Existing receipt is NEVER
 # overwritten (once per intake: a re-dispatch reads, not re-mints).
 # rc 0 written or already present; rc 1 write failed.

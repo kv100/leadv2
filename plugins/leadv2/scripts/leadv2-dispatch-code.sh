@@ -3502,9 +3502,16 @@ _phase_precondition_guard() {
   # pre-build phases satisfied, not the whole cycle it is IN THE MIDDLE of).
   [[ "${PHASE_GUARD_SCOPE:-full}" == "pre-build" ]] && scope="pre-build"
 
+  # `assert` defaults to full completion and deliberately has no --full flag.
+  # Passing only --pre-build preserves warn-mode's historic journal-and-proceed
+  # behaviour and leaves Light dispatches unaffected.
   local assert_out assert_rc
-  assert_out="$(bash "${PHASE_RECORD_BIN}" assert "${sig8}" --class "${cls}" \
-    ${scope:+--${scope}} ${writes:+--writes "${writes}"} "${waiver_args[@]+"${waiver_args[@]}"}" 2>&1)" || assert_rc=$?
+  local -a assert_args
+  assert_args=(assert "${sig8}" --class "${cls}")
+  [[ "${scope}" == "pre-build" ]] && assert_args+=(--pre-build)
+  [[ -n "${writes}" ]] && assert_args+=(--writes "${writes}")
+  assert_args+=("${waiver_args[@]}")
+  assert_out="$(bash "${PHASE_RECORD_BIN}" "${assert_args[@]}" 2>&1)" || assert_rc=$?
   assert_rc="${assert_rc:-0}"
 
   # Same-task Phase-4 re-entry bridge: leadv2-gate1-prompt.sh, on accept,
@@ -5833,6 +5840,18 @@ cmd_resolve() {
   local sig sig8
   sig="$(printf '%s' "${mission}" | compute_sig)"
   sig8="${sig:0:8}"
+  # A Phase-4 re-entry has a richer build mission than the original intake.
+  # When its founder task receipt exists, retain the receipt's intake digest so
+  # Gate-1 records and this guard address the same phases.d directory.
+  if [[ -n "${founder_task_id:-}" ]] && declare -F leadv2_admission_find_receipt_for_task >/dev/null 2>&1; then
+    local intake_receipt intake_sig8 intake_cls intake_route intake_src intake_wk intake_sig intake_tid
+    intake_receipt="$(leadv2_admission_find_receipt_for_task "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
+    if [[ -n "${intake_receipt}" ]]; then
+      IFS=$'\t' read -r intake_sig8 intake_cls intake_route intake_src intake_wk intake_sig intake_tid <<<"${intake_receipt}"
+      sig="${intake_sig}"
+      sig8="${intake_sig8}"
+    fi
+  fi
   JOURNAL_TASK="dispatch-${sig8}"
   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
     log_err "signature computation failed"; exit 1

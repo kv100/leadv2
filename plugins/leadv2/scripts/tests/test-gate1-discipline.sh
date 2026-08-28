@@ -20,9 +20,10 @@ fail(){ printf 'FAIL: %s\n' "$1" >&2; FAIL=$((FAIL+1)); }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # Isolated plugin dir: gate1-prompt + a stub leadv1-ask sibling (resolved via
 # dirname BASH_SOURCE) + the REAL phase-record sibling (the bridge target).
-mkdir -p "$TMP/scripts" "$TMP/root/docs/handoff" "$TMP/root/.claude/scripts"
+mkdir -p "$TMP/scripts/lib" "$TMP/root/docs/handoff" "$TMP/root/.claude/scripts"
 cp "$GATE1_SRC" "$TMP/scripts/leadv2-gate1-prompt.sh"
 cp "$PHASE_RECORD" "$TMP/scripts/leadv2-phase-record.sh"
+cp "${PLUGIN_DIR}/scripts/lib/leadv2-admission-class.sh" "$TMP/scripts/lib/leadv2-admission-class.sh"
 chmod +x "$TMP/scripts/"*.sh
 # Stub ledger emitter at <root>/.claude/scripts/lv2-ledger-emit.py (where the
 # gate looks first): records the payload json to $GATE1_LEDGER_OUT.
@@ -40,18 +41,22 @@ EOF
   chmod +x "$TMP/scripts/leadv2-ask.sh"
 }
 
-seed_receipt() { # $1=task_id $2=sig8 -> admission receipt on disk
-  mkdir -p "$TMP/root/docs/handoff/dispatch-$2"
-  cat >"$TMP/root/docs/handoff/dispatch-$2/admission-receipt.yaml" <<EOF
+seed_receipt() { # $1=task_id $2=intake mission -> stdout sig8
+  local tid="$1" intake="$2" digest sig8
+  digest="$(printf '%s' "$intake" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print $1}')"
+  sig8="${digest:0:8}"
+  mkdir -p "$TMP/root/docs/handoff/dispatch-$sig8"
+  cat >"$TMP/root/docs/handoff/dispatch-$sig8/admission-receipt.yaml" <<EOF
 receipt_v: 1
-task_id: $1
-mission_digest: 0000000000000000000000000000000000000000000000000000000000000000
+task_id: $tid
+mission_digest: $digest
 task_class: Standard
 route: phases
 source: judge
 work_kind: build
 recorded_at: 2026-08-28T00:00:00Z
 EOF
+  printf '%s\n' "$sig8"
 }
 
 # ── 1. Standard daemon timeout: rc=2, ledger outcome gate1_auto_accepted ────
@@ -94,8 +99,11 @@ rc=$?
 [[ $rc -eq 1 ]] && pass "heavy async: default/decline -> rc=1 (timeout can never accept)" \
   || fail "heavy async decline rc=$rc"
 
-# ── 5. Accept records same-task phases under the receipt's sig8 ──────────────
-seed_receipt T6 cafef00d
+# ── 5. A real intake-to-build join uses the receipt's digest, not a fixture sig8.
+# The Gate-1 build mission is deliberately different from the intake mission.
+T6_INTAKE='intake: refactor the billing worker safely'
+T6_BUILD='build: implement the approved billing-worker refactor with tests'
+T6_SIG8="$(seed_receipt T6 "$T6_INTAKE")"
 mkdir -p "$TMP/root/docs/handoff/T6"
 printf 'decisions:\n  - d1\noff_limits: []\nplan:\n  steps:\n    - s1\n' \
   >"$TMP/root/docs/handoff/T6/context.yaml"
@@ -104,13 +112,14 @@ make_ask_stub "go"
     bash "$TMP/scripts/leadv2-gate1-prompt.sh" T6 Heavy "big thing" ) </dev/null >/dev/null 2>&1
 rc=$?
 [[ $rc -eq 0 ]] && pass "gate T6 accepted via async go" || fail "gate T6 rc=$rc"
-[[ -s "$TMP/root/docs/handoff/dispatch-cafef00d/.gate1-passed" ]] \
+[[ -s "$TMP/root/docs/handoff/dispatch-${T6_SIG8}/.gate1-passed" ]] \
   && pass "non-empty gate1 sentinel mirrored under dispatch-<sig8>" || fail "sentinel not mirrored"
-[[ -f "$TMP/root/docs/handoff/dispatch-cafef00d/phases.d/gate1.yaml" ]] \
+[[ -f "$TMP/root/docs/handoff/dispatch-${T6_SIG8}/phases.d/gate1.yaml" ]] \
   && pass "gate1 phase recorded under receipt sig8" || fail "gate1.yaml missing"
-# THE re-entry proof: phase-record assert --pre-build passes for this sig8...
-out="$(cd "$TMP/root" && LEADV2_PROJECT_ROOT="$TMP/root" bash "$PHASE_RECORD" assert cafef00d --class Standard --pre-build 2>/dev/null)"; prc=$?
-[[ $prc -eq 0 ]] && pass "assert --pre-build passes after gate1 accept (Phase-4 re-entry admitted)" \
+# THE re-entry proof: records are keyed by the real receipt digest, even though
+# the build mission has a different digest.
+out="$(cd "$TMP/root" && LEADV2_PROJECT_ROOT="$TMP/root" bash "$PHASE_RECORD" assert "$T6_SIG8" --class Standard --pre-build 2>/dev/null)"; prc=$?
+[[ $prc -eq 0 ]] && pass "real intake receipt sig8 passes after Gate-1 accept" \
   || fail "pre-build assert rc=$prc out=$out"
 # ...while a task with NO gate1 record is still refused (the enforcement core).
 out="$(cd "$TMP/root" && LEADV2_PROJECT_ROOT="$TMP/root" bash "$PHASE_RECORD" assert deadbeef --class Standard --pre-build 2>/dev/null)"; prc=$?

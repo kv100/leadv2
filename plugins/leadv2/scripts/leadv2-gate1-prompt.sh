@@ -153,13 +153,19 @@ _gate1_accept() {
   # the re-entry. All writes pinned to LEADV2_PROJECT_ROOT (control plane):
   # this script frequently runs with cwd = a lane worktree, and dispatch-code
   # asserts against the shared root.
-  local _g_root _g_receipt _g_sig8 _g_pr
+  local _g_root _g_receipt _g_sig8 _g_pr _g_cls _g_route _g_src _g_wk _g_digest _g_tid _g_admission_lib
   _g_root="${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-  _g_receipt="$(grep -l -E "^task_id:[[:space:]]*${task_id}\$" "${_g_root}"/docs/handoff/dispatch-*/admission-receipt.yaml 2>/dev/null | head -1 || true)"
+  _g_admission_lib="$(dirname "${BASH_SOURCE[0]}")/lib/leadv2-admission-class.sh"
+  _g_receipt=""
+  if [[ -f "${_g_admission_lib}" ]]; then
+    # shellcheck disable=SC1090
+    source "${_g_admission_lib}" || true
+    declare -F leadv2_admission_find_receipt_for_task >/dev/null 2>&1 \
+      && _g_receipt="$(leadv2_admission_find_receipt_for_task "${_g_root}" "${task_id}" 2>/dev/null || true)"
+  fi
   _g_pr="$(dirname "${BASH_SOURCE[0]}")/leadv2-phase-record.sh"
   if [[ -n "$_g_receipt" && -x "$_g_pr" ]]; then
-    _g_sig8="$(basename "$(dirname "$_g_receipt")")"   # dispatch-<sig8> -> <sig8>
-    _g_sig8="${_g_sig8#dispatch-}"
+    IFS=$'\t' read -r _g_sig8 _g_cls _g_route _g_src _g_wk _g_digest _g_tid <<<"${_g_receipt}"
     mkdir -p "${_g_root}/docs/handoff/dispatch-${_g_sig8}" 2>/dev/null || true
     # phase-record's gate1 verify requires a NON-empty sentinel; the legacy
     # touch above stays for the artifact guard, the mirrored one carries body.
