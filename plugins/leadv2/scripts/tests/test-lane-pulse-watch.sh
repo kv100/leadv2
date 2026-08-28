@@ -15,7 +15,17 @@
 #       watcher holds the pidfile is an immediate no-op (no pulse written).
 #   W4  NEGATIVE CONTROL (declared here, RUN RED below): reverting the
 #       replay-safe offset init to tail -n 0 semantics must FAIL W1 — proving
-#       W1 locks the actual mechanism, not an incidental pass.
+#       W1 locks the actual mechanism, not an incidental pass. Fix-round 2
+#       (H2): both halves run with the pulse seam pointed at the REAL writer,
+#       and W4a proves the baseline (unpatched copy DELIVERS) so the W4b
+#       miss is a genuine flip, not a vacuous pass.
+#   W7  timeout never dies silently (fix-round 2 H1): a lane whose journal
+#       never reaches a terminal gets a FINAL watch_timeout pulse.
+#   W8  timeout derivation (fix-round 2 H1): the default cap comes from the
+#       dispatcher's worker-timeout envs (4x max + 300s), never a constant.
+#   W9  worker death (fix-round 2 M3): `dispatch_terminal ... terminal=dead
+#       cause=worker_died` — the only worker_died string the journal ever
+#       carries — pulses under kind worker_died.
 #   W5  re-arm dedup (fix-round H2): after a watcher exited at the terminal,
 #       a second arm of the same sig replays the journal WITHOUT duplicating
 #       any pulse (per-sig seen ledger survives watcher exit).
@@ -135,12 +145,16 @@ WATCH_PID=""
 # ── W5: re-arm never duplicates (fix-round H2) ───────────────────────────────
 # The ledger recorded the pulsed offset at exit; a fresh watcher for the same
 # sig replays the journal without re-pulsing review_gate or dispatch_terminal.
+# (fix-round 2 H1: the re-armed watcher now dies at --timeout with a final
+# watch_timeout pulse — counted out below; the dedup lock is that NO journal
+# event line is duplicated.)
 bash "$WATCH" --sig "$SIG2" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 2 >/dev/null 2>&1
 rc=$?
-if [[ $rc -eq 0 && "$(wc -l < "$PULSE" | tr -d ' ')" -eq 2 ]]; then
+event_lines="$(grep -vc "watch_timeout" "$PULSE" 2>/dev/null || printf '0')"
+if [[ $rc -eq 0 && "$event_lines" -eq 2 ]]; then
   ok "W5 re-arm dedup: replayed journal produced no duplicate pulses (ledger held)"
 else
-  bad "W5 re-arm dedup: rc=$rc pulse_lines=$(wc -l < "$PULSE" 2>/dev/null | tr -d ' ')"
+  bad "W5 re-arm dedup: rc=$rc event_lines=$event_lines"
 fi
 
 # ── W3: pidfile guard — second arm attempt for the same sig is a no-op ──────
@@ -171,8 +185,14 @@ kill "$HolderPid" 2>/dev/null || true
 
 # ── W4: NEGATIVE CONTROL (RUN RED) — revert replay-safety to tail -n 0 ───────
 # Patch the offset init (`printf '0'` -> pre-existing line count) in a scratch
-# copy, rerun the exact W1 scenario, and REQUIRE the pulse to be missing. If
-# the patched copy still passes, W1 is not locking the mechanism.
+# copy, rerun the W1 scenario, and REQUIRE the pulse to be missing. Fix-round 2
+# (H2): the scratch copy lives outside scripts/, so its SCRIPT_DIR-relative
+# PULSE_BIN default resolves into $TMP and does not exist — with the seam
+# unset, even the UNPATCHED watcher wrote no pulse, so the old assertion passed
+# for any copy (probe-confirmed in review). Both halves below point the seam
+# at the REAL writer; the control now proves the FLIP: identical scenario,
+# unpatched copy delivers the pre-existing terminal pulse, patched copy misses
+# it — the only variable is the mutation.
 BAD_WATCH="$TMP/watch-tailn0.sh"
 python3 - "$WATCH" "$BAD_WATCH" <<'PY'
 import sys
@@ -188,16 +208,33 @@ with open(dst, 'w', encoding='utf-8') as fh:
     fh.write(text.replace(needle, repl, 1))
 PY
 patch_rc=$?
+# W4a — the flip's baseline: the UNPATCHED copy, same scratch-copy situation,
+# same pulse seam, delivers the pulse. Without this half, `! grep` below can
+# never distinguish "mutation broke it" from "nothing can ever write".
 SIG4="d00d5150"
 new_lane "$SIG4"
 append_lines "$J" \
   "- 2026-08-28T13:00:00Z [decision] worker_spawned by=router model=glm task=${SIG4} handle=h4" \
   "- 2026-08-28T13:00:25Z [decision] dispatch_terminal task=${SIG4} state=landed"
-bash "$BAD_WATCH" --sig "$SIG4" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 5 >/dev/null 2>&1
-if [[ $patch_rc -eq 0 ]] && ! grep -q "dispatch_terminal" "$PULSE" 2>/dev/null; then
-  ok "W4 negative control RED: tail -n 0 revert misses the pre-existing terminal (as it must)"
+LEADV2_LANE_PULSE_BIN="${SCRIPT_DIR}/leadv2-pulse.sh" \
+bash "$WATCH" --sig "$SIG4" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 5 >/dev/null 2>&1
+if [[ $? -eq 0 ]] && grep -q "dispatch_terminal" "$PULSE" 2>/dev/null; then
+  ok "W4a baseline: unpatched scratch copy (pulse seam set) delivers the pre-existing terminal"
 else
-  bad "W4 negative control: patched copy unexpectedly passed (patch_rc=$patch_rc) — W1 locks nothing"
+  bad "W4a baseline: unpatched scratch copy wrote no pulse — the W4 flip below would be vacuous (H2)"
+fi
+# W4b — the mutation itself: same scenario, patched copy, same seam.
+SIG4B="d00d5151"
+new_lane "$SIG4B"
+append_lines "$J" \
+  "- 2026-08-28T13:10:00Z [decision] worker_spawned by=router model=glm task=${SIG4B} handle=h4b" \
+  "- 2026-08-28T13:10:25Z [decision] dispatch_terminal task=${SIG4B} state=landed"
+LEADV2_LANE_PULSE_BIN="${SCRIPT_DIR}/leadv2-pulse.sh" \
+bash "$BAD_WATCH" --sig "$SIG4B" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 3 >/dev/null 2>&1
+if [[ $patch_rc -eq 0 ]] && ! grep -q "dispatch_terminal task=${SIG4B}" "$PULSE" 2>/dev/null; then
+  ok "W4b negative control RED: tail -n 0 revert misses the pre-existing terminal (as it must)"
+else
+  bad "W4b negative control: patched copy unexpectedly passed (patch_rc=$patch_rc) — W1 locks nothing"
 fi
 
 # ── W6: NEGATIVE CONTROL (RUN RED) — review_gate back in the exit set (C1) ──
@@ -211,8 +248,8 @@ import sys
 src, dst = sys.argv[1], sys.argv[2]
 with open(src, encoding='utf-8') as fh:
     text = fh.read()
-needle = "EXIT_PAT='dispatch_terminal([^_]|$)|dispatch_refused([^_]|$)|worker_died([^_]|$)'"
-repl = "EXIT_PAT='review_gate|dispatch_terminal([^_]|$)|dispatch_refused([^_]|$)|worker_died([^_]|$)'"
+needle = "EXIT_PAT='dispatch_terminal([^_]|$)|dispatch_refused([^_]|$)'"
+repl = "EXIT_PAT='review_gate|dispatch_terminal([^_]|$)|dispatch_refused([^_]|$)'"
 if needle not in text:
     print('NEGATIVE-CONTROL-PATCH-FAILED: needle not found', file=sys.stderr)
     sys.exit(1)
@@ -247,6 +284,51 @@ else
   kill "$WATCH_PID" 2>/dev/null || true
 fi
 WATCH_PID=""
+
+# ── W7: timeout writes a final watch_timeout pulse, never silent (H1) ────────
+SIG6="a11ce575"
+new_lane "$SIG6"
+append_lines "$J" \
+  "- 2026-08-28T15:00:00Z [decision] worker_spawned by=router model=glm task=${SIG6} handle=h6"
+# no terminal ever arrives — the watcher must still leave a founder-visible trace
+bash "$WATCH" --sig "$SIG6" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 2 >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 && -f "$PULSE" ]] && grep -q "watch_timeout" "$PULSE" \
+   && grep -q "no_terminal in 2s" "$PULSE"; then
+  ok "W7 watch_timeout: abandoned lane leaves a final pulse, not silence (H1)"
+else
+  bad "W7 watch_timeout: rc=$rc pulse=$(cat "$PULSE" 2>/dev/null | tr '\n' ';')"
+fi
+
+# ── W8: the default cap is derived from worker-timeout envs, not a constant ──
+# (no helper function: an env prefix on a FUNCTION call does not reliably
+# export to the grandchild bash — inline each invocation instead)
+t_default="$(bash "$WATCH" --print-timeout)"
+t_glm="$(GLM_TIMEOUT=5000 bash "$WATCH" --print-timeout)"
+t_max="$(FREEPOOL_TIMEOUT=900 KIMI_TIMEOUT=7200 bash "$WATCH" --print-timeout)"
+t_pinned="$(LEADV2_LANE_PULSE_WATCH_TIMEOUT=777 bash "$WATCH" --print-timeout)"
+# default 4*3600+300; the env max wins over the 3600 floor; an explicit pin wins outright
+if [[ "$t_default" == "14700" && "$t_glm" == "20300" && "$t_max" == "29100" && "$t_pinned" == "777" ]]; then
+  ok "W8 derived timeout: default=${t_default} glm5000->${t_glm} max7200->${t_max} pinned->${t_pinned} (H1)"
+else
+  bad "W8 derived timeout: default=$t_default glm=$t_glm max=$t_max pinned=$t_pinned (expected 14700/20300/29100/777)"
+fi
+
+# ── W9: worker death pulses under kind worker_died (M3) ──────────────────────
+# The journal's ONLY worker_died spelling is a cause= value inside a
+# dispatch_terminal row (dispatch-ledger.sh:1009); the pulse must say death.
+SIG7="b0b0c0de"
+new_lane "$SIG7"
+append_lines "$J" \
+  "- 2026-08-28T16:00:00Z [decision] worker_spawned by=router model=codex task=${SIG7} handle=h7" \
+  "- 2026-08-28T16:40:00Z [decision] dispatch_terminal task=${SIG7} terminal=dead cause=worker_died"
+bash "$WATCH" --sig "$SIG7" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 5 >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]] && grep -qE '\] worker_died \|' "$PULSE" 2>/dev/null; then
+  ok "W9 worker death: cause=worker_died terminal row pulses as worker_died (M3)"
+else
+  bad "W9 worker death: rc=$rc pulse=$(cat "$PULSE" 2>/dev/null | tr '\n' ';')"
+fi
 
 printf 'test-lane-pulse-watch: %d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

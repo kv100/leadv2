@@ -9,8 +9,12 @@
 # live — armed by DISPATCH itself at the first worker_spawned, not by any
 # session-improvised Monitor.
 #
-# This loop is started detached (nohup) once per repo by
-# leadv2-dispatch-code.sh (pidfile guard: never armed twice). Every
+# This loop is started detached (nohup) once per PROJECT ROOT by
+# leadv2-dispatch-code.sh (pidfile guard: never armed twice — the pidfile is
+# KEYED BY ROOT, fix-round H3: the state root is shared by the main checkout
+# and every worktree, but founder-status.md is per-worktree, so a repo-global
+# pidfile let the first worktree starve every other concurrent lane tree of
+# its beat). Every
 # LEADV2_SINGLE_LEAD_BEAT_LOOP_S (default 300s = 5 min) it counts live lanes
 # (leadv2-lane-heartbeat.sh verdicts `running` AND `running_stale` — a stale
 # heartbeat is a lane we still have something to report about, never a zero;
@@ -27,7 +31,8 @@
 # lane-heartbeat can never make the loop immortal.
 #
 # Hermetic seams (tests): LEADV2_LANE_HEARTBEAT_BIN, LEADV2_PULSE_BEAT_BIN,
-# LEADV2_SINGLE_LEAD_BEAT_LOOP_PID, LEADV2_SINGLE_LEAD_BEAT_LOOP_S.
+# LEADV2_SINGLE_LEAD_BEAT_LOOP_PID, LEADV2_SINGLE_LEAD_BEAT_LOOP_PID_DIR,
+# LEADV2_SINGLE_LEAD_BEAT_LOOP_S.
 
 set -uo pipefail
 
@@ -47,7 +52,18 @@ PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-$(git -C "$PWD" rev-parse --show-toplevel 2
 
 STATE_DIR="$(PROJECT_ROOT="$PROJECT_ROOT" bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link root 2>/dev/null || true)"
 [[ -n "$STATE_DIR" ]] || STATE_DIR="${PROJECT_ROOT}/docs/leadv2"
-PID_FILE="${LEADV2_SINGLE_LEAD_BEAT_LOOP_PID:-${STATE_DIR}/.single-lead-beat-loop.pid}"
+# H3: the state root is shared by the main checkout AND every worktree
+# (leadv2-state-path.sh resolves it from git-common-dir), while the beat's
+# output (founder-status.md) is per-project-root. A repo-global pidfile let
+# the first worktree to dispatch starve every other concurrent lane tree —
+# so the pidfile is KEYED BY ROOT (cksum of the absolute path): each root
+# gets its own loop and its own beat. The lane scan is already per-root
+# (LEADV2_PROJECT_ROOT is passed to the heartbeat bin below).
+_root_key="$(printf '%s' "$PROJECT_ROOT" | cksum 2>/dev/null || true)"
+_root_key="${_root_key%% *}"
+[[ "$_root_key" =~ ^[0-9]+$ ]] || _root_key="$(printf '%s' "$PROJECT_ROOT" | tr -cd '0-9A-Za-z' | cut -c1-40)"
+PID_DIR="${LEADV2_SINGLE_LEAD_BEAT_LOOP_PID_DIR:-$STATE_DIR}"
+PID_FILE="${LEADV2_SINGLE_LEAD_BEAT_LOOP_PID:-${PID_DIR}/.single-lead-beat-loop-${_root_key}.pid}"
 
 # pidfile guard: a live previous arming wins, this invocation is a no-op
 if [[ -f "$PID_FILE" ]]; then

@@ -20,6 +20,11 @@
 #       first zero pass).
 #   B6  running_stale counts as live (fix-round H3): a lane whose heartbeat
 #       verdict is `running_stale` keeps the beat running.
+#   B7  per-root pidfile (fix-round 2 H3): two project roots sharing ONE
+#       pidfile dir (the production shape — the state root is shared by the
+#       main checkout and every worktree) each arm their OWN loop; the
+#       pre-fix repo-global pidfile name made root B's arming a no-op against
+#       root A's live pid, so B never got a beat.
 #
 # Hermetic: fake lane-heartbeat bin (LEADV2_LANE_HEARTBEAT_BIN), fake beat bin
 # (LEADV2_PULSE_BEAT_BIN) recording invocations to a log, scratch pidfile,
@@ -38,7 +43,10 @@ bad() { printf '[TEST] FAIL: %s\n' "$1" >&2; FAIL=$((FAIL+1)); }
 
 TMP="$(mktemp -d /tmp/leadv2-beat-loop-XXXXXX)"
 cleanup() {
-  [[ -n "${LOOP_PID:-}" ]] && kill "${LOOP_PID}" 2>/dev/null || true
+  local p
+  for p in "${LOOP_PID:-}" "${LOOP_A:-}" "${LOOP_B:-}"; do
+    [[ -n "$p" ]] && kill "$p" 2>/dev/null || true
+  done
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -208,6 +216,41 @@ else
 fi
 kill "$LOOP_PID" 2>/dev/null || true
 LOOP_PID=""
+
+# ── B7: per-root pidfile — parallel roots each get their own beat (H3) ──────
+PID_DIR2="$TMP/shared-pid-dir"   # the production shape: ONE shared state root
+mkdir -p "$PID_DIR2"
+REPO_A="$TMP/repo-a"; REPO_B="$TMP/repo-b"
+mkdir -p "$REPO_A" "$REPO_B"
+arm_root() {  # <root> — arm the loop for that root against the shared pid dir
+  LEADV2_PROJECT_ROOT="$1" \
+  LEADV2_SINGLE_LEAD_BEAT_LOOP_PID_DIR="$PID_DIR2" \
+  LEADV2_SINGLE_LEAD_BEAT_LOOP_S=1 \
+  LEADV2_SINGLE_LEAD_BEAT_LOOP_MAX_S=30 \
+  LEADV2_LANE_HEARTBEAT_BIN="$TMP/fake-hb.sh" \
+  LEADV2_PULSE_BEAT_BIN="$TMP/fake-beat.sh" \
+  FAKE_HB_STATE="$HB_STATE" FAKE_BEATS_LOG="$BEATS" \
+    bash "$LOOP" >/dev/null 2>&1
+}
+printf '[{"task":"dispatch-a1","status":"running"}]' > "$HB_STATE"
+arm_root "$REPO_A" &
+LOOP_A=$!
+sleep 1.5
+printf '[{"task":"dispatch-b1","status":"running"}]' > "$HB_STATE"
+arm_root "$REPO_B" &
+LOOP_B=$!
+sleep 2
+_n_pidfiles="$(find "$PID_DIR2" -name '.single-lead-beat-loop-*.pid' | wc -l | tr -d ' ')"
+if kill -0 "$LOOP_A" 2>/dev/null && kill -0 "$LOOP_B" 2>/dev/null \
+   && [[ "$_n_pidfiles" -eq 2 ]]; then
+  ok "B7 per-root pidfile: both roots armed their own loop ($_n_pidfiles pidfiles, shared dir)"
+else
+  bad "B7 per-root pidfile: a=$(kill -0 "$LOOP_A" 2>/dev/null && echo alive || echo dead) b=$(kill -0 "$LOOP_B" 2>/dev/null && echo alive || echo dead) pidfiles=$_n_pidfiles"
+fi
+kill "$LOOP_A" 2>/dev/null || true
+kill "$LOOP_B" 2>/dev/null || true
+sleep 1.5   # let the traps clean the pidfiles
+LOOP_A=""; LOOP_B=""
 
 printf 'test-single-lead-beat-loop: %d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

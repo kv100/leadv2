@@ -10,8 +10,14 @@
 # Replay-safe: the line offset starts at 0, so the FIRST pass reads the journal
 # from line 1 (tail -n +1) — terminal lines written between spawn and watcher
 # start are still reported. Exit-triggering states are ONLY
-#   dispatch_terminal | dispatch_refused | worker_died
+#   dispatch_terminal | dispatch_refused
 # and only for THIS watcher's own task sig (a foreign sig's line never pulses).
+# Worker death is NOT a separate journal token: grep of the emitters (fix-round
+# M3) shows the only worker_died string ever journaled is the cause= value of a
+# dispatch_terminal row (dispatch-ledger.sh:1009 writes
+# `dispatch_terminal task=X terminal=dead cause=worker_died`); a bare
+# `worker_died` event is emitted nowhere. Such rows pulse under kind
+# `worker_died` so the founder sees a death, not a landing.
 # review_gate is a BEAT, never a terminal (fix-round C1): leadv2-review-run.sh
 # emits it repeatedly mid-flight (status=ran, round0_skip, dedup,
 # arm_infra_died action=retry), so it is pulsed but the watch keeps running
@@ -21,17 +27,26 @@
 # leadv2-pulse.sh (task_id, phase, <=80 bytes — reused, not reimplemented;
 # LEADV2_PULSE_MODE=0 is honored inside leadv2-pulse.sh itself).
 #
-# Exits after the first pass that matched a terminal line, or after --timeout
-# (default 3900s = the FREEPOOL/GLM wall-clock backstop 3600s + 300s grace —
-# there is nothing left to watch past the worker's own timeout).
+# Exits after the first pass that matched a terminal line, or after --timeout.
+# The DEFAULT timeout is DERIVED from the dispatcher's own worker-timeout envs
+# (GLM/FREEPOOL/KIMI/CODEX_TIMEOUT — the values the coder launchers
+# themselves honor): 4x the largest + 300s grace, never a constant (fix-round
+# H1). The lane outlives its worker — spawn->dispatch_terminal spans review
+# rounds, e2e and merge, and the old 3900s constant silently abandoned 12/107
+# (11%) of this repo's own historical lanes, observed max 13415s (~3.7x the
+# 3600s worker backstop); 4*3600+300=14700 outlives the real distribution. On
+# timeout the watcher writes a FINAL `watch_timeout` pulse instead of dying
+# silently (H1), so the founder sees the abandonment instead of a void.
 # Never two watchers per lane: pidfile guard keyed by sig.
 #
 # Usage:
 #   leadv2-lane-pulse-watch.sh --sig <sig8> [--root DIR] [--journal FILE]
-#     [--interval S=15] [--timeout S=3900] [--state-dir DIR]
+#     [--interval S=15] [--timeout S=<derived>] [--state-dir DIR]
+#   leadv2-lane-pulse-watch.sh --print-timeout   # print the derived cap, exit
 #
 # Hermetic seams (tests): --root/--journal/--state-dir args,
-# LEADV2_LANE_PULSE_BIN (pulse writer), LEADV2_PROJECT_ROOT (root fallback).
+# LEADV2_LANE_PULSE_BIN (pulse writer), LEADV2_PROJECT_ROOT (root fallback),
+# --print-timeout (locks the derivation itself).
 # Read-only w.r.t. the journal; writes only its pidfile + the pulse file.
 
 set -uo pipefail
@@ -42,26 +57,49 @@ SIG=""
 ROOT=""
 JOURNAL=""
 INTERVAL="${LEADV2_LANE_PULSE_WATCH_INTERVAL:-15}"
-TIMEOUT="${LEADV2_LANE_PULSE_WATCH_TIMEOUT:-3900}"
+TIMEOUT="${LEADV2_LANE_PULSE_WATCH_TIMEOUT:-}"
 STATE_DIR=""
+PRINT_TIMEOUT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --sig)       SIG="${2:-}"; shift 2 ;;
-    --root)      ROOT="${2:-}"; shift 2 ;;
-    --journal)   JOURNAL="${2:-}"; shift 2 ;;
-    --interval)  INTERVAL="${2:-}"; shift 2 ;;
-    --timeout)   TIMEOUT="${2:-}"; shift 2 ;;
-    --state-dir) STATE_DIR="${2:-}"; shift 2 ;;
+    --sig)          SIG="${2:-}"; shift 2 ;;
+    --root)         ROOT="${2:-}"; shift 2 ;;
+    --journal)      JOURNAL="${2:-}"; shift 2 ;;
+    --interval)     INTERVAL="${2:-}"; shift 2 ;;
+    --timeout)      TIMEOUT="${2:-}"; shift 2 ;;
+    --state-dir)    STATE_DIR="${2:-}"; shift 2 ;;
+    --print-timeout) PRINT_TIMEOUT=1; shift ;;
     -h|--help)
       sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1}//'
       exit 0 ;;
     *) printf '[lane-pulse-watch] unknown arg: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
-[[ -n "$SIG" ]] || { printf '[lane-pulse-watch] --sig required\n' >&2; exit 1; }
+[[ -n "$SIG" || "$PRINT_TIMEOUT" == "1" ]] || { printf '[lane-pulse-watch] --sig required\n' >&2; exit 1; }
 [[ "$INTERVAL" =~ ^[0-9]+$ ]] || { printf '[lane-pulse-watch] bad --interval: %s\n' "$INTERVAL" >&2; exit 1; }
+
+# H1: derive the default cap from the dispatcher's own worker-timeout envs,
+# never a constant. The lane's journal keeps moving (review rounds, e2e,
+# merge) long after the worker process exits, so the worker backstop alone
+# under-watches: 12/107 (11%) historical lanes ran spawn->terminal past the
+# old 3900s constant, max 13415s. 4x the largest honored backstop + 300s
+# grace covers that distribution with margin (4*3600+300=14700).
+_derive_timeout() {
+  local v best=3600
+  for v in "${GLM_TIMEOUT:-}" "${FREEPOOL_TIMEOUT:-}" "${KIMI_TIMEOUT:-}" "${CODEX_TIMEOUT:-}"; do
+    [[ "$v" =~ ^[0-9]+$ ]] && (( v > best )) && best="$v"
+  done
+  printf '%s' "$(( best * 4 + 300 ))"
+}
+if [[ -z "$TIMEOUT" ]]; then
+  TIMEOUT="$(_derive_timeout)"
+fi
 [[ "$TIMEOUT"  =~ ^[0-9]+$ ]] || { printf '[lane-pulse-watch] bad --timeout: %s\n'  "$TIMEOUT"  >&2; exit 1; }
+if [[ "$PRINT_TIMEOUT" == "1" ]]; then
+  printf '%s\n' "$TIMEOUT"
+  exit 0
+fi
 
 # ── root + journal path (same resolution order leadv2-journal.sh uses) ──────
 if [[ -z "$ROOT" ]]; then
@@ -107,10 +145,13 @@ PULSE_PAT='review_gate'
 # boundary-guarded so dispatch_terminal_dedup noise rows (a duplicate-suppression
 # receipt, reason=terminal_already_recorded — not a state transition) never
 # terminate the watch (fix-round H1; same guard leadv2-lane-watch.sh:135
-# documents with its trailing-space EMIT_PAT). worker_died_stale is excluded
-# the same way.
-EXIT_PAT='dispatch_terminal([^_]|$)|dispatch_refused([^_]|$)|worker_died([^_]|$)'
-KIND_PAT='dispatch_terminal|dispatch_refused|worker_died'
+# documents with its trailing-space EMIT_PAT). M3: a bare `worker_died` token
+# is emitted nowhere (codex-task.sh writes worker_died_stale, codex-guard.sh
+# worker_died_silent — neither is a journal event); worker death reaches the
+# journal only as cause=worker_died INSIDE a dispatch_terminal row, which the
+# pattern below already matches (and the pulse loop re-kinds below).
+EXIT_PAT='dispatch_terminal([^_]|$)|dispatch_refused([^_]|$)'
+KIND_PAT='dispatch_terminal|dispatch_refused'
 
 _pulse() {  # <kind> <text> — one line via the existing pulse writer, soft-fail
   [[ -f "$PULSE_BIN" ]] || return 0
@@ -185,6 +226,10 @@ while :; do
       if [[ -n "$term" ]]; then
         while IFS= read -r l; do
           kind="$(printf '%s' "$l" | grep -oE "$KIND_PAT" | head -n1)"
+          # M3: terminal=dead cause=worker_died rows are deaths, not landings
+          if printf '%s' "$l" | grep -q 'cause=worker_died'; then
+            kind="worker_died"
+          fi
           detail="$(printf '%s' "$l" | sed -E 's/^.*\[[a-z]+\] //' | cut -c1-60)"
           _pulse "${kind:-dispatch_terminal}" "$detail"
         done <<< "$term"
@@ -209,6 +254,10 @@ while :; do
   _now="$(date +%s)"
   if (( _now - _started >= TIMEOUT )); then
     printf '[lane-pulse-watch] %s timeout after %ss, exiting\n' "$SIG" "$TIMEOUT" >&2
+    # H1: never die silently — a final watch_timeout pulse tells the founder
+    # the lane was abandoned UNTERMINATED (a re-arm at the next spawn will
+    # pick the journal up again; the seen ledger prevents re-pulsing).
+    _pulse "watch_timeout" "no_terminal in ${TIMEOUT}s journal_lines=${SEEN}"
     exit 0
   fi
   sleep "$INTERVAL"
