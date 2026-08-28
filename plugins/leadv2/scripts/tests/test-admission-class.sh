@@ -2,6 +2,15 @@
 # test-admission-class.sh — PHASE-DISCIPLINE-01 D1/D2 unit coverage for
 # lib/leadv2-admission-class.sh (the shared TaskEstimate->class map,
 # escalate-only explicit flag, and the admission receipt).
+#
+# Negative control (C3b): named mutation this suite must kill — in
+# leadv2_admission_class's escalate-only guard, the non-escalating branch
+# (`printf '%s\t%s\n' "$explicit" "flag"`) flipped to instead print
+# "$mapped"/"$src". That silently DE-ESCALATES a flagged Heavy/Standard task
+# to whatever a re-estimate maps to (e.g. Heavy -> Light on a trivial
+# estimate) — the exact regression the "never de-escalated" assertions above
+# exist to catch. The suite applies this mutation to a temp copy of the lib
+# and asserts it goes red.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -78,6 +87,33 @@ printf '%s' "$row2" | grep -q "T-1" && ! printf '%s' "$row2" | grep -q "T-2" \
   && pass "receipt: never overwritten on second write" || fail "receipt: overwrite happened ($row2)"
 [[ -z "$(leadv2_admission_read_receipt "$TMP" "deadbeef")" ]] \
   && pass "receipt: absent sig8 reads empty" || fail "receipt: phantom read"
+
+# ── C3b negative control: apply the named mutation to a temp copy, assert red ─
+MUT_LIB="$TMP/leadv2-admission-class.mut.sh"
+python3 - "$LIB" "$MUT_LIB" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+old = '      printf \'%s\\t%s\\n\' "$explicit" "flag"\n'
+new = '      printf \'%s\\t%s\\n\' "$mapped" "$src"\n'
+if old not in text:
+    sys.exit(2)
+open(dst, "w", encoding="utf-8").write(text.replace(old, new, 1))
+PYEOF
+mut_status=$?
+if [[ $mut_status -ne 0 ]]; then
+  fail "control: mutation source pattern not found (lib drifted, update mutation)"
+else
+  (
+    # shellcheck disable=SC1090
+    source "$MUT_LIB"
+    IFS=$'\t' read -r mc ms <<<"$(leadv2_admission_class Heavy 1 "$(est trivial 1 none)")"
+    [[ "$mc" == "Heavy" ]] && exit 0 || exit 1
+  )
+  mut_rc=$?
+  [[ $mut_rc -ne 0 ]] && pass "control: mutated lib de-escalates flagged Heavy -> caught (would be red)" \
+    || fail "control: mutation NOT caught — de-escalate guard is not actually tested"
+fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
