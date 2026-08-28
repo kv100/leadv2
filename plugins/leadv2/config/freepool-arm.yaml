@@ -36,18 +36,129 @@ install_dir: /Users/kostiantyn.vlasenko/tools/free-claude-code
 # open_router, groq, gemini, deepseek, mistral) — each prefix below matched
 # at least one live route id at verification time.
 model_rank:
-  - prefix: "open_router/deepseek/deepseek-chat-v3.1"
+  # Rewritten 2026-08-27. The previous list is preserved in git history; every one of
+  # its five entries was unusable: `open_router/deepseek/deepseek-chat-v3.1` and
+  # `nvidia_nim/...nemotron-3-super...` were fine on paper but the OpenRouter primary
+  # BILLS US (key reports is_free_tier:false, no spend cap), `gemini-3.1-pro-preview`
+  # returns HTTP 429, and `mistral/mistral-code-latest` sat behind two dead ranks.
+  # This flat list is the no-role default — a general-purpose blend, ordered by
+  # measured correctness first and latency second. Rationale and exclusions: see the
+  # role_rank commentary below.
+  - prefix: "nvidia_nim/deepseek-ai/deepseek-v4-pro-0813"
     tier: primary
-    why: "Best free-tier coding benchmark among the pooled providers — strongest default pick for a code-writing worker."
-  - prefix: "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
+    why: "Frontier-class and free via NIM; answered correctly in 7.5s. Best general default."
+  - prefix: "nvidia_nim/moonshotai/kimi-k3"
     tier: secondary
-    why: "Large parameter count with competitive coding/reasoning scores; second choice when deepseek's route is unhealthy."
-  - prefix: "gemini/models/gemini-3.1-pro-preview"
+    why: "Best independently-benchmarked agentic coder in reach; 12.3s."
+  - prefix: "gemini/models/gemini-3.7-flash"
     tier: tertiary
-    why: "Strong general-purpose reasoning/coding model from a third distinct provider, ahead of the two below on quality."
-  - prefix: "mistral/mistral-code-latest"
-    tier: quaternary
-    why: "Mistral's dedicated code-tuned model — solid coding ability from a fourth provider."
+    why: "Second provider, 7.0s — survives a NIM outage."
   - prefix: "groq/openai/gpt-oss-120b"
+    tier: quaternary
+    why: "Third provider and the fastest correct route measured (0.5s)."
+  - prefix: "mistral/mistral-code-latest"
     tier: quinary
-    why: "Groq's inference speed keeps turnaround low, even though raw coding quality trails the picks above; broadest fallback before dropping to static sonnet."
+    why: "Fourth provider, 2.0s; broadest fallback before the caller drops to paid Claude."
+
+# role_rank — per-role ranking, populated 2026-08-27 from a live measured probe of
+# every candidate route plus independent-benchmark research. Callers set FREEPOOL_ROLE
+# (implement/bulk/review/read); a missing role defaults to implement, while a missing
+# block or empty list falls back silently to the flat model_rank above.
+#
+# HOW THIS SET WAS CHOSEN — two hard exclusions first, because they define the shape:
+#
+#   1. NO `open_router/*` ROUTES AT ALL. The OpenRouter key reports
+#      `is_free_tier: false` with real (if tiny) spend and NO spend limit, so every
+#      unmarked open_router route BILLS US. And the `:free` variants are not a way out:
+#      13 of the 14 probed — including `z-ai/glm-5.2:free`,
+#      `nvidia/nemotron-3-ultra-550b-a55b:free` and `minimax/minimax-m3:free` —
+#      returned `rate_limit_error` at 0.0s, i.e. an instant refusal rather than a slow
+#      answer. OpenRouter is therefore neither free nor available; it is excluded as a
+#      provider, not merely deprioritised. Only `cohere/north-mini-code:free` answered
+#      (2.2s), and one working route does not justify readmitting the provider.
+#
+#   2. NO ROUTE THAT ANSWERED WRONG OR DID NOT ANSWER. The probe asked what `${x:-y}`
+#      evaluates to when x is the empty string (correct: `y` — the colon makes an empty
+#      value count as unset). Excluded on that basis: `mistral/devstral-medium-latest`
+#      and `mistral/devstral-2512` (both answered `""`, the answer for `${x-y}` without
+#      the colon — the same error twice, so a trait and not a fluke);
+#      `open_router/qwen/qwen3-max` (same wrong answer); `minimax-m2.1` and
+#      `dots-3-note-preview` (burned the entire 256-token budget on thinking and never
+#      answered — independently corroborated for MiniMax M2.x by upstream issues #52 and
+#      #77); `gemini-3.1-pro-preview` (HTTP 429).
+#
+# WHAT SURVIVES: the native-provider free quotas. The important discovery is that
+# NVIDIA NIM serves free exactly the top-tier models OpenRouter charges for —
+# kimi-k3, deepseek-v4-pro, nemotron-3-ultra, minimax-m3.
+#
+# Latencies below are measured, single-sample, from this machine on 2026-08-27. They
+# rank ties; they are not a benchmark. Slow is acceptable here by founder decision
+# (2026-08-27) — hence the 30s probe timeout, without which most of these are invisible.
+role_rank:
+  # Multi-file code writing. Instruction adherence and correctness dominate; a minute
+  # of latency is cheaper than a wrong diff.
+  implement:
+    - prefix: "nvidia_nim/moonshotai/kimi-k3"
+      tier: primary
+      why: "Leads Terminal-Bench 2.1 and Frontend Code Arena in independent testing (see docs/handoff/AUDIT-THIRDPARTY/free-model-research.md); free via NIM, answered correctly in 12.3s."
+    - prefix: "nvidia_nim/deepseek-ai/deepseek-v4-pro-0813"
+      tier: secondary
+      why: "Same generation as the v4-pro OpenRouter bills for, free here; correct in 7.5s."
+    - prefix: "gemini/models/gemini-3.7-flash"
+      tier: tertiary
+      why: "Third distinct provider, so a NIM-wide outage does not take implementation down; correct in 7.0s."
+    - prefix: "mistral/mistral-code-latest"
+      tier: quaternary
+      why: "Code-tuned and fast (2.0s), fourth provider. Note its devstral siblings failed the correctness check — this specific route did not."
+
+  # Many near-identical edits. Throughput and consistency matter; reasoning depth does not.
+  bulk:
+    - prefix: "groq/openai/gpt-oss-120b"
+      tier: primary
+      why: "Fastest correct route measured (0.5s); Groq's inference speed is the whole point for high-volume mechanical work."
+    - prefix: "groq/qwen/qwen3.8-27b"
+      tier: secondary
+      why: "Same provider's smaller model, 1.6s, correct and token-frugal (2 output tokens)."
+    - prefix: "mistral/mistral-code-latest"
+      tier: tertiary
+      why: "2.0s from a second provider, so a Groq quota wall does not stall the batch."
+    - prefix: "nvidia_nim/minimaxai/minimax-m3"
+      tier: quaternary
+      why: "2.3s and correct via NIM — unlike minimax-m2.1, which never reached an answer."
+
+  # Adversarial review and bug hunting. Reasoning depth matters, latency does not.
+  review:
+    - prefix: "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b"
+      tier: primary
+      why: "Largest model reachable free and the one with a genuine third-party coding-index result rather than only vendor claims; 60.9s is acceptable for review."
+    - prefix: "nvidia_nim/moonshotai/kimi-k3"
+      tier: secondary
+      why: "Strongest measured agentic-coding model; a second opinion from a different lineage than nemotron."
+    - prefix: "gemini/models/gemini-3.7-flash"
+      tier: tertiary
+      why: "Different provider and different training lineage — the point of a review arm is disagreement, not agreement."
+
+  # Reads, summarisation, classification. Speed and frugality only.
+  read:
+    - prefix: "groq/openai/gpt-oss-120b"
+      tier: primary
+      why: "0.5s — nothing else measured comes close."
+    - prefix: "groq/qwen/qwen3.8-27b"
+      tier: secondary
+      why: "1.6s, same provider, smaller footprint."
+    - prefix: "gemini/models/gemini-3.5-flash"
+      tier: tertiary
+      why: "7.4s from a second provider; the fallback that survives a Groq quota wall."
+
+# --- FP-05: runtime tuning knobs (env, read by lib/leadv2-freepool-model-select.sh) ---
+# These are ENV VARS, not yaml keys — documented here because this file is the
+# freepool operator surface. Defaults verified against the selector 2026-08-28:
+#   FREEPOOL_ARM_CONFIG              path to THIS file (default: sibling ../../config/freepool-arm.yaml
+#                                    resolved from the selector script location; per-file symlink installs
+#                                    resolve to canonical thanks to physical-path resolution, fix 341b80a)
+#   FREEPOOL_MODELS_CACHE_TTL_S      GET /v1/models cache TTL, default 60s — the 5s stale-fetch margin
+#                                    inside the selector covers a cache written mid-probe
+#   FREEPOOL_MODEL_PROBE_TIMEOUT_S   1-token liveness probe timeout, default 30s — raised from 8s
+#                                    2026-08-27 because cold free-tier models (NIM) need warmup
+#   FREEPOOL_ROLE                    implement|review|bulk — set by the dispatcher from TaskEstimate
+#                                    work_kind (FP-01); unset falls back to implement

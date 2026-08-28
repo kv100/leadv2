@@ -645,11 +645,24 @@ REQUIRE_LANE_WRITES="${LEADV2_REQUIRE_LANE_WRITES:-1}"
 REQUIRE_ACCEPTANCE="${LEADV2_REQUIRE_ACCEPTANCE:-0}"
 # PHASES-ARE-THE-ONLY-PATH-01: three-valued phase precondition gate.
 # 0 = disabled (byte-identical to today's behaviour, one-flip rollback);
-# warn (default) = journal phase_precondition_warn + proceed;
+# warn = journal phase_precondition_warn + proceed;
 # 1 = refuse dispatch on missing mandatory phases.
-# The flip to 1 is ledgered separately as SD-PHASE-ENFORCE-01.
+# PHASE-DISCIPLINE-01 D3: with the env UNSET, the effective default is now
+# enforce (1, pre-build scope) for admission class >= Standard and warn for
+# Light — "nothing reaches a bare worker unclassified". An explicitly set
+# value (0/warn/1) keeps its exact pre-flip semantics; LEADV2_REQUIRE_PHASES=0
+# remains the byte-identical kill switch.
 REQUIRE_PHASES="${LEADV2_REQUIRE_PHASES:-warn}"
+REQUIRE_PHASES_ENV_SET=0
+[[ -n "${LEADV2_REQUIRE_PHASES:-}" ]] && REQUIRE_PHASES_ENV_SET=1
 PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.sh}"
+# PHASE-DISCIPLINE-01 D1/D2: shared admission map + receipt writer (also
+# sourced by leadv2-backlog-pump.sh — one inode of class-mapping truth).
+TASK_JUDGE_BIN="${LEADV2_TASK_JUDGE_BIN:-${SCRIPT_DIR}/leadv2-task-judge.sh}"
+if [[ -f "${SCRIPT_DIR}/lib/leadv2-admission-class.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/lib/leadv2-admission-class.sh" || true
+fi
 # B1 R2: record-review refuses a build worker minting a review of ITS OWN diff from
 # inside a lane worktree (self-attestation). Set to 0 to disable the check (emergency escape).
 REVIEW_RECORDER_GUARD="${LEADV2_REVIEW_RECORDER_GUARD:-1}"
@@ -3369,12 +3382,88 @@ _acceptance_guard() {
   return 1
 }
 
+# _admission_classify <mission> <sig> <sig8> <explicit-class> <flagged 0|1>
+# PHASE-DISCIPLINE-01 D1/D2 (steps 1-2). Deterministic TaskEstimate->class map
+# over the ALREADY-AVAILABLE judge (leadv2-task-judge.sh, haiku + code-only
+# fallback + sig8 cache — never a new classifier subsystem). Sets globals:
+#   ADMISSION_CLASS  Light|Standard|Heavy
+#   ADMISSION_ROUTE  dispatch (Light) | phases (Standard/Heavy)
+#   ADMISSION_SOURCE judge|fallback|flag|classifier_error
+#   ADMISSION_WORK_KIND  build|review|diagnose|docs ("" on classifier_error)
+#   DISPATCH_FREEPOOL_ROLE  D6 projection of work_kind ("" = don't export)
+# Persists the admission receipt (task id + mission digest bound) and journals
+# `task_class=<c> route=<r> source=<s>` EXACTLY ONCE per intake (a receipt
+# already on disk means this mission was admitted before — no second line).
+# Classifier failure NEVER falls open to bare dispatch: Standard/phases,
+# source=classifier_error.
+_admission_classify() {
+  local mission="$1" sig="$2" sig8="$3" explicit="$4" flagged="$5"
+  ADMISSION_CLASS="Standard"; ADMISSION_ROUTE="phases"
+  ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
+  DISPATCH_FREEPOOL_ROLE=""
+  local receipt_task_id="${founder_task_id:-dispatch-${sig8}}"
+  local existing
+  existing="$(leadv2_admission_read_receipt "${PROJECT_ROOT}" "${sig8}" 2>/dev/null || true)"
+  if [[ -n "${existing}" ]]; then
+    local r_cls r_route r_src r_wk r_digest
+    IFS=$'\t' read -r r_cls r_route r_src r_wk r_digest _ <<<"${existing}"
+    if [[ "${r_digest}" == "${sig}" ]]; then
+      # Same mission digest: this is a re-entry (e.g. Phase-4 spawn from the
+      # full cycle), not a new intake — reuse the receipt, no second journal
+      # line, and the guard below decides admission from the phase records.
+      ADMISSION_CLASS="${r_cls}"; ADMISSION_ROUTE="${r_route}"
+      ADMISSION_SOURCE="${r_src}"; ADMISSION_WORK_KIND="${r_wk}"
+      DISPATCH_FREEPOOL_ROLE="$(leadv2_admission_freepool_role "${r_wk}")"
+      return 0
+    fi
+    # sig8 collision with a different digest: refuse to trust it, journal loud.
+    emit decision "admission_receipt_mismatch task=${sig8} receipt_digest=${r_digest}"
+  fi
+  local mfile estimate pair
+  mfile="$(mktemp "${TMPDIR:-/tmp}/leadv2-admission.XXXXXX")" || return 0
+  printf '%s' "${mission}" > "${mfile}"
+  estimate="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${TASK_JUDGE_BIN}" \
+    --mission-file "${mfile}" --task-id "dispatch-${sig8}" 2>/dev/null)"
+  local jrc=$?
+  rm -f "${mfile}" 2>/dev/null || true
+  pair=""
+  if [[ ${jrc} -eq 0 && -n "${estimate}" ]]; then
+    pair="$(leadv2_admission_class "${explicit}" "${flagged}" "${estimate}")"
+  fi
+  if [[ -n "${pair}" ]]; then
+    IFS=$'\t' read -r ADMISSION_CLASS ADMISSION_SOURCE <<<"${pair}"
+    ADMISSION_WORK_KIND="$(printf '%s' "${estimate}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("work_kind",""))' 2>/dev/null || true)"
+  else
+    # task-judge failed outright (missing binary, rc!=0, unparseable): the
+    # conservative class is Standard -> phases, never bare dispatch.
+    ADMISSION_CLASS="Standard"; ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
+  fi
+  case "${ADMISSION_CLASS}" in
+    Standard|Heavy|Strategic) ADMISSION_ROUTE="phases" ;;
+    *)                        ADMISSION_CLASS="Light"; ADMISSION_ROUTE="dispatch" ;;
+  esac
+  DISPATCH_FREEPOOL_ROLE="$(leadv2_admission_freepool_role "${ADMISSION_WORK_KIND}")"
+  leadv2_admission_write_receipt "${PROJECT_ROOT}" "${sig8}" "${receipt_task_id}" \
+    "${sig}" "${ADMISSION_CLASS}" "${ADMISSION_ROUTE}" "${ADMISSION_SOURCE}" \
+    "${ADMISSION_WORK_KIND:-unknown}" 2>/dev/null \
+    || emit decision "admission_receipt_write_failed task=${sig8}"
+  emit decision "task_class=${ADMISSION_CLASS} route=${ADMISSION_ROUTE} source=${ADMISSION_SOURCE} task=${sig8}"
+  return 0
+}
+
 # _phase_precondition_guard <sig8> <class> <writes> [waiver-args...] -> 0 proceed, 1 refuse
 # PHASES-ARE-THE-ONLY-PATH-01: sits at the same structural slot as _lane_writes_guard/
 # _acceptance_guard, after arg validation, before any spawn side effect and before
 # _stamp_active_phase prepass. Exit code 4 from phase-record.sh (config error / refused
 # waiver) ALWAYS refuses in every mode including 0 — a malformed override is a
 # configuration error, not a phase gap.
+# PHASE-DISCIPLINE-01 D3: with LEADV2_REQUIRE_PHASES unset, the effective mode is
+# enforce (pre-build scope: classify/plan/gate1 only) for class >= Standard and
+# warn for Light. Explicit env values keep their exact prior semantics; =0 stays
+# the byte-identical kill switch (first return below).
+# Same-task Phase-4 re-entry: leadv2-gate1-prompt.sh records classify/plan/gate1
+# under the admission receipt's sig8 (task_id join key), so the assert below
+# admits a Phase-4 spawn from an approved full cycle — never a foreign task's.
 _phase_precondition_guard() {
   # B2: mode 0 is the documented rollback and the emergency kill switch. It must be
   # byte-identical to pre-C4 behaviour: no subprocess, no journal event, no refusal for
@@ -3389,15 +3478,48 @@ _phase_precondition_guard() {
   done
 
   local mode="${REQUIRE_PHASES}"
+  # PHASE-DISCIPLINE-01 D3: env unset -> enforce (pre-build scope) for
+  # class >= Standard; Light keeps the historical warn default. Explicit env
+  # values (0/warn/1) keep their exact pre-flip semantics + full scope.
+  local scope="full"
+  if [[ "${REQUIRE_PHASES_ENV_SET:-0}" != "1" ]]; then
+    case "$cls" in
+      Standard|Heavy|Strategic)
+        mode="1"
+        scope="pre-build"
+        ;;
+      *)
+        mode="warn"
+        ;;
+    esac
+  fi
   if [[ "$mode" != "warn" && "$mode" != "1" && "$mode" != "0" ]]; then
     emit decision "phase_precondition_badmode value=${mode}"
     mode="warn"
   fi
+  # PHASE-DISCIPLINE-01: cmd_resolve sets PHASE_GUARD_SCOPE=pre-build when the
+  # admission receipt says route=phases (a Phase-4 re-entry needs only the
+  # pre-build phases satisfied, not the whole cycle it is IN THE MIDDLE of).
+  [[ "${PHASE_GUARD_SCOPE:-full}" == "pre-build" ]] && scope="pre-build"
 
+  # `assert` defaults to full completion and deliberately has no --full flag.
+  # Passing only --pre-build preserves warn-mode's historic journal-and-proceed
+  # behaviour and leaves Light dispatches unaffected.
   local assert_out assert_rc
-  assert_out="$(bash "${PHASE_RECORD_BIN}" assert "${sig8}" --class "${cls}" \
-    ${writes:+--writes "${writes}"} "${waiver_args[@]+"${waiver_args[@]}"}" 2>&1)" || assert_rc=$?
+  local -a assert_args
+  assert_args=(assert "${sig8}" --class "${cls}")
+  [[ "${scope}" == "pre-build" ]] && assert_args+=(--pre-build)
+  [[ -n "${writes}" ]] && assert_args+=(--writes "${writes}")
+  assert_args+=("${waiver_args[@]}")
+  assert_out="$(bash "${PHASE_RECORD_BIN}" "${assert_args[@]}" 2>&1)" || assert_rc=$?
   assert_rc="${assert_rc:-0}"
+
+  # Same-task Phase-4 re-entry bridge: leadv2-gate1-prompt.sh, on accept,
+  # records classify/plan/gate1 under the admission receipt's sig8 (the
+  # receipt's task_id field is the join key — a foreign task's records can
+  # never satisfy this). Those records are exactly what the assert above
+  # reads, so a Phase-4 re-entry from an approved full cycle passes while a
+  # cold Standard dispatch without them is refused.
 
   case "$assert_rc" in
     0)
@@ -4468,7 +4590,19 @@ _spawn_worker_body() {
       # about both.
       local _fp_spawn_start _fp_spawn_ok=0
       _fp_spawn_start="$(date +%s)"
-      out="$(bash "${FREEPOOL_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      # PHASE-DISCIPLINE-01 D6 (a38a5bd fix): export FREEPOOL_ROLE HERE, at
+      # the real dispatch call site, from the admission TaskEstimate's
+      # work_kind (review->review, build/diagnose->implement, docs->bulk).
+      # The mission-text regex inside freepool-coder.sh is demoted to a narrow
+      # DIRECT-invocation fallback and must not be the live path for dispatched
+      # missions. DISPATCH_FREEPOOL_ROLE is empty on the advance-arm path (no
+      # estimate) and on classifier_error -- export nothing there.
+      if [[ -n "${DISPATCH_FREEPOOL_ROLE:-}" ]]; then
+        emit decision "freepool_select role=${DISPATCH_FREEPOOL_ROLE} task=${sig8} source=work_kind"
+        out="$(FREEPOOL_ROLE="${DISPATCH_FREEPOOL_ROLE}" bash "${FREEPOOL_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      else
+        out="$(bash "${FREEPOOL_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      fi
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
         local refusal
@@ -5610,7 +5744,7 @@ cmd_resolve() {
   # R6: computed once for this invocation so a single dispatch never straddles two
   # daily counter files even if it runs across a UTC-midnight boundary.
   local _LEADV2_EXC_DAY; _LEADV2_EXC_DAY="$(date -u +%Y%m%d)"
-  local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard"
+  local mission="" protected=0 safety=0 subsystems=0 ui=0 interactive=0 kind="" glmfails=0 lockbusy=0 force=0 kimi_fit=0 task_class="Standard" task_class_flagged=0
   local lane_writes="" lane_acceptance_cmd="" lane_rollback=0 lane_deliverable=""
   local -a phase_waivers=()
   # BLOCKING fix (review-verdict.md fanout.sh:1410-1426): optional founder task id
@@ -5643,7 +5777,7 @@ cmd_resolve() {
       # entry's `when:` list (e.g. freepool's `when: [standard, bulk]`).
       # Defaults to "standard" -- callers that never pass this see no change.
       --task-class)   [[ $# -ge 2 ]] || { log_err "--task-class requires a value"; usage; }
-                      task_class="$2"; shift 2 ;;
+                      task_class="$2"; task_class_flagged=1; shift 2 ;;
       --glm-failures) [[ $# -ge 2 ]] || { log_err "--glm-failures requires a value"; usage; }
                       glmfails="$2"; shift 2 ;;
       --glm-lock-busy) lockbusy=1;   shift ;;
@@ -5706,6 +5840,18 @@ cmd_resolve() {
   local sig sig8
   sig="$(printf '%s' "${mission}" | compute_sig)"
   sig8="${sig:0:8}"
+  # A Phase-4 re-entry has a richer build mission than the original intake.
+  # When its founder task receipt exists, retain the receipt's intake digest so
+  # Gate-1 records and this guard address the same phases.d directory.
+  if [[ -n "${founder_task_id:-}" ]] && declare -F leadv2_admission_find_receipt_for_task >/dev/null 2>&1; then
+    local intake_receipt intake_sig8 intake_cls intake_route intake_src intake_wk intake_sig intake_tid
+    intake_receipt="$(leadv2_admission_find_receipt_for_task "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
+    if [[ -n "${intake_receipt}" ]]; then
+      IFS=$'\t' read -r intake_sig8 intake_cls intake_route intake_src intake_wk intake_sig intake_tid <<<"${intake_receipt}"
+      sig="${intake_sig}"
+      sig8="${intake_sig8}"
+    fi
+  fi
   JOURNAL_TASK="dispatch-${sig8}"
   if [[ -z "${sig}" ]] || ! sig_is_hex "${sig}"; then
     log_err "signature computation failed"; exit 1
@@ -5799,6 +5945,17 @@ cmd_resolve() {
   # link; founder_task_id was already bound above but never reached the row.
   DISPATCH_FOUNDER_TASK_ID="${founder_task_id}"
   DISPATCH_MISSION_PATH="${mission_file}"
+  # PHASE-DISCIPLINE-01 steps 1-2: admission classification BEFORE any routing,
+  # lane registration, or spawn side effect. task_class becomes the estimate-
+  # mapped class (explicit --task-class escalate-only per D1); the guard below
+  # refuses class>=Standard without same-task pre-build phase records.
+  _admission_classify "${mission}" "${sig}" "${sig8}" "${task_class}" "${task_class_flagged:-0}"
+  task_class="${ADMISSION_CLASS}"
+  # Admission says this mission lives in the full phase cycle: its Phase-4
+  # re-entries need only the pre-build phases satisfied (the cycle is mid-
+  # flight), not the whole-cycle completion contract. Explicit
+  # LEADV2_REQUIRE_PHASES keeps its MODE semantics; this only narrows scope.
+  [[ "${ADMISSION_ROUTE}" == "phases" ]] && export PHASE_GUARD_SCOPE=pre-build
   # N7F-LANE-NAME: resolve the display name ONCE, here, before any spawn side effect.
   # Rule 1 (--task-id) wins outright over rule 2 (mission H1) -- a caller that already
   # bound an identity gets that as its name too, and this also guards the fanout path
@@ -6308,6 +6465,18 @@ exit is treated as an incident."
     _arb_util="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
     _arb_tier="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*tier=\([^ ]*\).*/\1/p')"
     _arb_model="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
+    # Read the arbiter state file to get applier information for freepool
+    _arb_state_file="${LEADV2_ROUTE_ARBITER_STATE_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-last-arm}"
+    if [[ -f "${_arb_state_file}" ]]; then
+        _arb_state_json="$(cat "${_arb_state_file}" 2>/dev/null)" || _arb_state_json=""
+        if [[ -n "${_arb_state_json}" ]]; then
+            _arb_applier_applied="$(printf '%s\n' "${_arb_state_json}" | python3 -c 'import json,sys; obj=json.load(sys.stdin); print(obj.get("applier",{}).get("applied",False))' 2>/dev/null)" || _arb_applier_applied="false"
+            _arb_applier_reason="$(printf '%s\n' "${_arb_state_json}" | python3 -c 'import json,sys; obj=json.load(sys.stdin); print(obj.get("applier",{}).get("reason",""))' 2>/dev/null)" || _arb_applier_reason=""
+            if [[ "${_arb_applier_applied}" == "true" && "${_arb_arm}" == "freepool" ]]; then
+                emit decision "arm_floor_applied arm=freepool task=${sig8} reason=${_arb_applier_reason}"
+            fi
+        fi
+    fi
     if [[ ${_arb_rc} -eq 0 && -n "${_arb_arm}" && "${_arb_arm}" != refuse && -n "${_arb_chain}" ]]; then
       # T17 fix-round (C2): the arbiter chain must pass the SAME
       # DISPATCHABLE_BUILD_ARMS filter every other chain-adoption site uses

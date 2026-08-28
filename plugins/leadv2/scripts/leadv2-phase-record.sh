@@ -307,7 +307,7 @@ PYEOF
 # Prints one phase per line, each prefixed MANDATORY or DERIVED.
 # Union: base table ∪ class_overrides.<Class>.mandatory
 _resolve_mandatory() {
-  local cls="$1" writes="${2:-}"
+  local cls="$1" writes="${2:-}" scope="${3:-full}"
   local overrides_json waivers
   overrides_json="$(_read_phases_yaml)"
 
@@ -315,8 +315,19 @@ _resolve_mandatory() {
   local deploy_done=""
   # deploy_done is passed as env, not computable here in isolation
 
+  # PHASE-DISCIPLINE-01 step 2: scope=pre-build restricts the table to the
+  # phases that must ALREADY exist when work ENTERS build (classify/diverge/
+  # plan/gate1 per class). Used by dispatch-code's admission guard for the
+  # Phase-4 re-entry check — the full scope stays the completion contract.
+  local -a phase_list
+  if [[ "$scope" == "pre-build" ]]; then
+    phase_list=(classify diverge plan gate1)
+  else
+    phase_list=(classify diverge plan gate1 build test review deploy live_verify e2e close)
+  fi
+
   local phase
-  for phase in classify diverge plan gate1 build test review deploy live_verify e2e close; do
+  for phase in "${phase_list[@]}"; do
     local level derived
     level="$(_phase_class_level "$cls" "$phase")"
     derived="$(_phase_derived "$cls" "$phase" "$writes" "${LEADV2_DEPLOY_DONE:-}")"
@@ -696,7 +707,7 @@ cmd_record() {
 
 # ── assert subcommand ─────────────────────────────────────────────────────────
 cmd_assert() {
-  local sig8="" cls="" writes=""
+  local sig8="" cls="" writes="" scope="full"
   local -a waivers=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -706,6 +717,8 @@ cmd_assert() {
         waivers+=("$2"); shift 2 ;;
       --writes)
         writes="$2"; shift 2 ;;
+      --pre-build)
+        scope="pre-build"; shift ;;
       --*)
         _log_err "assert: unknown flag: $1"; exit 4 ;;
       *)
@@ -819,7 +832,7 @@ for w in (d.get('waivers_allowed') or []):
       esac
     fi
     missing+=("$pname")
-  done < <(_resolve_mandatory "$cls" "$writes")
+  done < <(_resolve_mandatory "$cls" "$writes" "$scope")
 
   if [[ ${#missing[@]} -gt 0 ]]; then
     local csv
