@@ -138,18 +138,27 @@ log_info() { log "INFO: $*"; }
 # context and wins; otherwise derive conservatively from the mission text.
 # Unknown/ambiguous missions default to implement so they retain the existing
 # code-worker behaviour instead of accidentally receiving a review/bulk model.
+# PHASE-DISCIPLINE-01 D6 (a38a5bd fix): on the DISPATCHED path the role is
+# exported by leadv2-dispatch-code.sh from TaskEstimate.work_kind -- this
+# regex is the NARROW direct-invocation fallback only. It matches a role
+# VERB opening the mission's first non-empty line (an imperative directive),
+# never a noun phrase buried in an implementation mission ("implement the
+# code-review dashboard" -> implement, not review).
 freepool_role_for_mission() {
-  local mission="${1:-}" explicit="${FREEPOOL_ROLE:-}" normalized
+  local mission="${1:-}" explicit="${FREEPOOL_ROLE:-}" first normalized
   case "${explicit}" in
     implement|review|bulk)
       printf '%s\n' "${explicit}"
       return 0
       ;;
   esac
-  normalized="$(printf '%s' "${mission}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${normalized}" =~ (^|[^[:alnum:]_])(review|reviewer|audit|auditor|arbiter)([^[:alnum:]_]|$) ]]; then
+  first="$(printf '%s' "${mission}" | sed '/^[[:space:]]*$/d' | head -n 1)"
+  normalized="$(printf '%s' "${first}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${normalized}" =~ ^(please[[:space:]]+)?(review|audit|critique|critic[[:space:]]+pass)([[:space:][:punct:]]|$) ]] \
+     || [[ "${normalized}" =~ ^(adversarial|cross-provider)[[:space:]]+(review|critique) ]] \
+     || [[ "${normalized}" =~ ^(you[[:space:]]+are[[:space:]]+the[[:space:]]+critic) ]]; then
     printf '%s\n' review
-  elif [[ "${normalized}" =~ (^|[^[:alnum:]_])(bulk|batch|mechanical|sweep)([^[:alnum:]_]|$) ]]; then
+  elif [[ "${normalized}" =~ ^(please[[:space:]]+)?(bulk|batch|sweep)([[:space:][:punct:]]|$) ]]; then
     printf '%s\n' bulk
   else
     printf '%s\n' implement

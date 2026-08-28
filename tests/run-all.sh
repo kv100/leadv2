@@ -50,6 +50,16 @@ PASS=0
 FAIL=0
 declare -a SUITES=()
 declare -a FAILED_REL=()
+# Non-stem suite mappings for PHASE-DISCIPLINE-01's six changed scripts.
+declare -a EXTRA_SUITE_MAP=(
+  "freepool-coder|plugins/leadv2/scripts/tests/test-freepool-model-selector.sh"
+  "leadv2-backlog-pump|plugins/leadv2/scripts/tests/test-backlog-pump.sh"
+  "leadv2-dispatch-code|plugins/leadv2/scripts/tests/test-phase-precondition.sh"
+  "leadv2-gate1-prompt|plugins/leadv2/scripts/tests/test-gate1-discipline.sh"
+  "leadv2-phase-record|plugins/leadv2/scripts/tests/test-phase-record.sh,plugins/leadv2/scripts/tests/test-phase-precondition.sh"
+  "leadv2-admission-class|plugins/leadv2/scripts/tests/test-admission-class.sh"
+  "leadv2-route-arbiter|plugins/leadv2/scripts/tests/test-route-arbiter-symlink-install.sh"
+)
 
 add_suite() { # <path>
   local p="$1" real
@@ -113,6 +123,14 @@ else
                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \
                   "${ROOT}/tests/test-${stem}.sh"; do
         add_suite "${cand}"
+      done
+      for map_row in "${EXTRA_SUITE_MAP[@]}"; do
+        map_stem="${map_row%%|*}"
+        [[ "${map_stem}" == "${stem}" ]] || continue
+        map_suites="${map_row#*|}"
+        old_ifs="$IFS"; IFS=','
+        for map_suite in ${map_suites}; do add_suite "${ROOT}/${map_suite}"; done
+        IFS="$old_ifs"
       done
     done <<< "${changed}"
   fi
