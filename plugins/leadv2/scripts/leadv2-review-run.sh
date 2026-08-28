@@ -160,7 +160,27 @@ resolve_review_pool_call() {
   local -a resolver_args=(--routing-yaml "${routing_yaml}" --job review --base-arm codex \
     --review-pool --author "${AUTHOR}" --signals "${_signals_json}")
   [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
-  python3 "${resolver}" "${resolver_args[@]}" 2>/dev/null || printf 'reviewer=\npool=\nrefusal=resolver_error_failclosed\n'
+  # FP-07B-POOL-PARSE-01: A2 parity with the close-gate copy (the lane's
+  # resolve_review_pool_call since dispatch-8e2a32be). The old tail here --
+  # `2>/dev/null || printf fallback` -- threw the resolver's stderr away and, on
+  # any hard-fail path (argparse exit 2, python missing), left `pool=` EMPTY
+  # while the run continued, so the FP-07 body-lost retry silently had zero
+  # candidates (live 2026-08-28, FP-03 review: resolver stdout was gate-shape
+  # arm=/rule= lines only). stderr now lands in a per-lane artifact, the rc is
+  # journaled, and a stdout carrying NO pool= line at all can never parse as a
+  # successful empty pool -- it fails closed with a named refusal.
+  local _resolver_err_file="${HANDOFF}/review-pool-resolver.err"
+  local _resolver_out _resolver_rc
+  mkdir -p "${HANDOFF}" 2>/dev/null || true
+  _resolver_out="$(python3 "${resolver}" "${resolver_args[@]}" 2>"${_resolver_err_file}")"
+  _resolver_rc=$?
+  if ! printf '%s\n' "${_resolver_out}" | grep -q '^pool='; then
+    _resolver_out=$'reviewer=\npool=\nrefusal=resolver_error_failclosed'
+  fi
+  emit decision "review_pool_resolver task=${TASK} rc=${_resolver_rc} stderr=${_resolver_err_file#"${ROOT}"/}"
+  # The caller captures THIS function's stdout as resolver_out -- the original
+  # tail passed python's stdout straight through; the buffer must be re-printed.
+  printf '%s\n' "${_resolver_out}"
 }
 
 # ---------------------------------------------------------------------------
