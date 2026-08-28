@@ -149,3 +149,16 @@ role_rank:
     - prefix: "gemini/models/gemini-3.5-flash"
       tier: tertiary
       why: "7.4s from a second provider; the fallback that survives a Groq quota wall."
+
+# --- FP-05: runtime tuning knobs (env, read by lib/leadv2-freepool-model-select.sh) ---
+# These are ENV VARS, not yaml keys — documented here because this file is the
+# freepool operator surface. Defaults verified against the selector 2026-08-28:
+#   FREEPOOL_ARM_CONFIG              path to THIS file (default: sibling ../../config/freepool-arm.yaml
+#                                    resolved from the selector script location; per-file symlink installs
+#                                    resolve to canonical thanks to physical-path resolution, fix 341b80a)
+#   FREEPOOL_MODELS_CACHE_TTL_S      GET /v1/models cache TTL, default 60s — the 5s stale-fetch margin
+#                                    inside the selector covers a cache written mid-probe
+#   FREEPOOL_MODEL_PROBE_TIMEOUT_S   1-token liveness probe timeout, default 30s — raised from 8s
+#                                    2026-08-27 because cold free-tier models (NIM) need warmup
+#   FREEPOOL_ROLE                    implement|review|bulk — set by the dispatcher from TaskEstimate
+#                                    work_kind (FP-01); unset falls back to implement
