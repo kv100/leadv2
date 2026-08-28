@@ -532,6 +532,31 @@ for _fer in foreign_error_rows:
         "таблица ниже не про него\n"
     )
 
+# MON-PULSE-01 fix-round 2 (H4): route the per-lane pulse to the founder.
+# The lane watcher (leadv2-lane-pulse-watch.sh) appends one line per journal
+# event to docs/leadv2/tasks/<tid>/pulse.md via leadv2-pulse.sh; before this
+# block the watcher's stdout was discarded by the dispatcher (>/dev/null) and
+# NO reader consumed the file — both founder-facing channels were bypassed
+# and a terminal could be "pulsed" yet invisible. The beat composer is that
+# reader now: the LAST pulse line of every board lane (alive or dead this
+# beat) lands VERBATIM in founder-status.md — never re-worded, so the
+# founder greps the exact event. Capped at 6 like the table (rule 2).
+pulse_lines = []
+for row in table_rows:
+    _ptid = str(row.get("task_id") or "?")
+    try:
+        with open(os.path.join(root, "docs", "leadv2", "tasks", _ptid, "pulse.md"),
+                  encoding="utf-8", errors="replace") as fh:
+            _pl = [l for l in fh.read().splitlines() if l.strip()]
+    except OSError:
+        continue
+    if _pl:
+        pulse_lines.append(f"{_ptid}: {_pl[-1]}")
+pulse_md = (
+    "Пульс линий (последние события):\n"
+    + "\n".join(f"- {l}" for l in pulse_lines[:6])
+) if pulse_lines else None
+
 # PULSE-READABLE-01 rule 2: max ~6 rows in the founder-facing table. The
 # full (uncapped) row set still goes into founder-status-full.md below —
 # capping here is a RENDER decision, never a data-loss decision.
@@ -887,6 +912,7 @@ with open(out_path, "w", encoding="utf-8") as fh:
         "product_line": product_line,
         "delta_line": delta_line,
         "decisions_line": decisions_line,
+        "pulse_md": pulse_md,
         "hidden_note": hidden_note,
         "empty_headline": empty_headline,
     }, fh)
@@ -913,6 +939,7 @@ DELTA_LINE="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['d
 DECISIONS_LINE="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['decisions_line'])" "$RENDER_JSON")"
 HIDDEN_NOTE="$(python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get('hidden_note'); print(v or '')" "$RENDER_JSON")"
 EMPTY_HEADLINE="$(python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get('empty_headline'); print(v or '')" "$RENDER_JSON")"
+PULSE_MD="$(python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get('pulse_md'); print(v or '')" "$RENDER_JSON")"
 
 # PULSE-EMPTY-BOARD-01 rule 4: a review verdict that landed since the last
 # beat (leadv2-pulse-beat.sh's transition detector, exported by the caller)
@@ -944,6 +971,11 @@ BLOCK="$(
   printf '%s\n\n' "$PRODUCT_LINE"
   printf '%s\n\n' "$TABLE_MD"
   printf '%s\n' "$DELTA_LINE"
+  # MON-PULSE-01 H4: the lane pulse section — the founder-facing route for
+  # watcher events. Printed only when a board lane has a pulse.md.
+  if [[ -n "$PULSE_MD" ]]; then
+    printf '\n%s\n' "$PULSE_MD"
+  fi
   printf '%s\n' "$DECISIONS_LINE"
   if [[ -n "$HIDDEN_NOTE" ]]; then
     printf '%s\n' "$HIDDEN_NOTE"

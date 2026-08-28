@@ -149,7 +149,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 2` BEFORE executing.
 
 ## Phase 3: GATE 1 - the only gate
-- Trigger: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-gate1-prompt.sh" "$LEADV2_TASK_ID" "$CLASS" "$PLAN_SUMMARY"` -- auto-accepts after timeout (except Heavy + DAEMON=0) | Exit: Exit 0 = accepted -> Phase 4; Exit 1 = declined -> iterate once; Exit 2 = auto-accepted
+- Trigger: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-gate1-prompt.sh" "$LEADV2_TASK_ID" "$CLASS" "$PLAN_SUMMARY" "$RISK"` — Heavy/Strategic/high-risk NEVER auto-accept in any mode (async blocking question under LEADV2_ASYNC_QUESTIONS=1, blocking read otherwise); Standard non-high-risk auto-accepts after timeout (journaled gate1_auto_accepted vs answered) | Exit: Exit 0 = accepted -> Phase 4; Exit 1 = declined -> iterate once; Exit 2 = auto-accepted
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 3` BEFORE executing.
 
 ## Phase 4: BUILD

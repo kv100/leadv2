@@ -58,18 +58,46 @@ cmd_start() {
     log "venv absent at ${FREEPOOL_VENV} — run freepool-install.sh first"
     exit 1
   fi
-  # ENTRYPOINT-UNVERIFIED: the cloned repo's actual run command (module path /
-  # script name) is only known once cloned — see freepool-install.sh's pinned
-  # commit. FREEPOOL_ENTRYPOINT lets an operator override without editing this
-  # file; default assumes a `python -m` package entrypoint named `server`,
-  # matching the most common shape for this class of proxy. Verify and correct
-  # after first real clone (see freepool-install.sh TODO marker).
-  local entrypoint="${FREEPOOL_ENTRYPOINT:-python3 -m server --port ${FREEPOOL_PROXY_PORT}}"
+  # ENTRYPOINT resolution — detected in this order, logged at start:
+  #   1. FREEPOOL_ENTRYPOINT override (operator-set) — always wins.
+  #   2. ${FREEPOOL_INSTALL_DIR}/.venv/bin/fcc-server, if present and
+  #      executable — current upstream (free-claude-code, pinned commit
+  #      6b3f16f) console script, package `free_claude_code`, port read from
+  #      env var PORT (not a CLI flag).
+  #   3. legacy `python3 -m server --port ${FREEPOOL_PROXY_PORT}`, if the
+  #      `server` module is still importable in that venv — keeps anyone
+  #      pinned to an older upstream checkout working unchanged.
+  #   4. neither candidate found — fail fast rather than start a process
+  #      known to die instantly (was: silent ModuleNotFoundError, health
+  #      never comes up, status just says "stopped" with no cause surfaced).
+  local entrypoint="" entrypoint_needs_port_env=0 branch=""
+  if [[ -n "${FREEPOOL_ENTRYPOINT:-}" ]]; then
+    entrypoint="${FREEPOOL_ENTRYPOINT}"
+    branch="override (FREEPOOL_ENTRYPOINT)"
+  elif [[ -x "${FREEPOOL_VENV}/bin/fcc-server" ]]; then
+    entrypoint="${FREEPOOL_VENV}/bin/fcc-server"
+    entrypoint_needs_port_env=1
+    branch="fcc-server (current upstream)"
+  elif "${FREEPOOL_VENV}/bin/python3" -c 'import server' >/dev/null 2>&1; then
+    entrypoint="python3 -m server --port ${FREEPOOL_PROXY_PORT}"
+    branch="legacy python -m server (older upstream checkout)"
+  else
+    log "no usable entrypoint found — tried ${FREEPOOL_VENV}/bin/fcc-server (absent/not executable) and 'python -m server' (not importable) in ${FREEPOOL_INSTALL_DIR}"
+    log "set FREEPOOL_ENTRYPOINT to override, or re-run freepool-install.sh against a supported upstream commit"
+    exit 1
+  fi
+  log "entrypoint resolved via: ${branch}"
   log "starting: ${entrypoint} (cwd=${FREEPOOL_INSTALL_DIR})"
   (
     cd "${FREEPOOL_INSTALL_DIR}"
     # shellcheck disable=SC1091
     source "${FREEPOOL_VENV}/bin/activate"
+    # PORT is exported only inside this backgrounded subshell, so it never
+    # leaks into the caller's shell — consuming repos' own apps (e.g. this
+    # repo's Hono server) read PORT themselves and must not see it changed.
+    if [[ "${entrypoint_needs_port_env}" == "1" ]]; then
+      export PORT="${FREEPOOL_PROXY_PORT}"
+    fi
     exec ${entrypoint} >>"${FREEPOOL_LOGFILE}" 2>&1
   ) &
   local pid=$!
@@ -84,7 +112,12 @@ cmd_start() {
     fi
     sleep 1
   done
-  log "did not become healthy within 15s — leaving process running, gate will report arm_down until it recovers"
+  if kill -0 "${pid}" 2>/dev/null; then
+    log "did not become healthy within 15s — leaving process running, gate will report arm_down until it recovers"
+  else
+    log "process exited during startup (pid ${pid} is gone) — last 15 lines of ${FREEPOOL_LOGFILE}:"
+    tail -n 15 "${FREEPOOL_LOGFILE}" >&2 2>/dev/null || log "logfile unavailable: ${FREEPOOL_LOGFILE}"
+  fi
   exit 0
 }
 

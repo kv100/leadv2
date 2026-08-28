@@ -50,6 +50,19 @@ PASS=0
 FAIL=0
 declare -a SUITES=()
 declare -a FAILED_REL=()
+# Non-stem suite mappings for PHASE-DISCIPLINE-01's six changed scripts.
+declare -a EXTRA_SUITE_MAP=(
+  "freepool-coder|plugins/leadv2/scripts/tests/test-freepool-model-selector.sh"
+  "leadv2-backlog-pump|plugins/leadv2/scripts/tests/test-backlog-pump.sh"
+  "leadv2-dispatch-code|plugins/leadv2/scripts/tests/test-phase-precondition.sh,plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh,plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh,plugins/leadv2/scripts/tests/test-model-select-telemetry.sh"
+  "leadv2-gate1-prompt|plugins/leadv2/scripts/tests/test-gate1-discipline.sh"
+  "leadv2-phase-record|plugins/leadv2/scripts/tests/test-phase-record.sh,plugins/leadv2/scripts/tests/test-phase-precondition.sh"
+  "leadv2-admission-class|plugins/leadv2/scripts/tests/test-admission-class.sh"
+  "leadv2-route-arbiter|plugins/leadv2/scripts/tests/test-route-arbiter-symlink-install.sh,plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh"
+  "leadv2-lane-pulse-watch|plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh,plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh"
+  "leadv2-single-lead-beat-loop|plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh"
+  "leadv2-broad-status|plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh"
+)
 
 add_suite() { # <path>
   local p="$1" real
@@ -94,6 +107,7 @@ add_suite "${ROOT}/tests/test-status-surface-bash32.sh"
 add_suite "${ROOT}/tests/test-status-surface-single-lead.sh"
 add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 
+
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
     find "${ROOT}/plugins/leadv2/scripts/tests" "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \
@@ -113,6 +127,14 @@ else
                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \
                   "${ROOT}/tests/test-${stem}.sh"; do
         add_suite "${cand}"
+      done
+      for map_row in "${EXTRA_SUITE_MAP[@]}"; do
+        map_stem="${map_row%%|*}"
+        [[ "${map_stem}" == "${stem}" ]] || continue
+        map_suites="${map_row#*|}"
+        old_ifs="$IFS"; IFS=','
+        for map_suite in ${map_suites}; do add_suite "${ROOT}/${map_suite}"; done
+        IFS="$old_ifs"
       done
     done <<< "${changed}"
   fi

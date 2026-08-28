@@ -16,12 +16,24 @@
 # stub out the real dispatch, liveness, quota reader and journal so this never
 # touches a real ledger, scans real lanes, or spawns a real worker. Run:
 #   bash scripts/tests/test-backlog-pump.sh
+#
+# Negative control (C3b): named mutation this suite must kill — in
+# leadv2-backlog-pump.sh's ceiling check, `cap=$(( MAX_CONCURRENT - active ))`
+# off-by-one'd to `cap=$(( MAX_CONCURRENT - active + 1 ))`. At the ceiling
+# (active==MAX_CONCURRENT==6) this silently lets a 7th lane dispatch instead
+# of refusing at_ceiling — the exact regression test_ceiling_refuses_7th
+# exists to catch. The suite applies this mutation to a temp copy of the pump
+# script and asserts the 7th candidate dispatches (red).
 
 set -uo pipefail
 
 # BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
 # ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
 export LEADV2_BURN_GOVERNOR=0
+# This suite supplies its own pump setting in _run_pump_x.  Do not inherit the
+# host kill switch: that would make ordinary fixture cases no-ops, while the
+# dedicated kill_switch_off case still passes LEADV2_BACKLOG_PUMP=0 explicitly.
+unset LEADV2_BACKLOG_PUMP
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -326,6 +338,65 @@ sessions:
   fi
 }
 
+# ── C3b negative control: named mutation must be caught by ceiling_refuses_7th
+test_control_ceiling_mutation_caught() {
+  local mut_pump repo state lj bin stub rcfile logfile jlog jbin mut_status
+  # NB: the mutated copy MUST live alongside the real pump script (not in an
+  # arbitrary tmp dir) — leadv2-backlog-pump.sh resolves ALL sibling deps
+  # (leadv2-tasks-lib.sh, leadv2-active-registry.sh, lib/leadv2-quota-shape.py,
+  # leadv2-state-path.sh) via SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"; a
+  # copy dropped into /tmp breaks every one of those sources and the pump
+  # dies before it ever reaches the ceiling check, giving a false "caught".
+  mut_pump="${PLUGIN_DIR}/scripts/.ctrl-mut-backlog-pump-$$.sh"
+  trap 'rm -f "$mut_pump"' RETURN
+  python3 - "$PUMP_SH" "$mut_pump" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+old = '  active="$LANE_COUNT"\n  cap=$(( MAX_CONCURRENT - active ))\n'
+new = '  active="$LANE_COUNT"\n  cap=$(( MAX_CONCURRENT - active + 1 ))\n'
+if old not in text:
+    sys.exit(2)
+open(dst, "w", encoding="utf-8").write(text.replace(old, new, 1))
+PYEOF
+  mut_status=$?
+  if [[ $mut_status -ne 0 ]]; then
+    fail "control: mutation source pattern not found (pump script drifted, update mutation)"
+    return 0
+  fi
+  chmod +x "$mut_pump"
+  read -r repo state < <(_new_fixture)
+  _write_tasks "$repo" '- id: T7
+  lane: action
+  status: pending
+  priority: high
+  title: seventh candidate (control)
+  created_at: "2026-01-01T00:00:00Z"
+'
+  lj="$(_mktmp)/lanes.json"
+  _gen_lanes_json 6 "$lj"
+  bin="$(_make_liveness_bin "$lj")"
+  read -r stub rcfile logfile < <(_make_dispatch_stub "$state")
+  jlog="$(_mktmp)/journal.log"; jbin="$(_make_journal_stub "$jlog")"
+  local qbin lbin
+  qbin="$(_make_quota_bin "$REAL_QUOTA_FIXTURE")"
+  lbin="$bin"
+  LEADV2_PROJECT_ROOT="$repo" PROJECT_ROOT="$repo" LEADV2_STATE_ROOT="${state}/docs/leadv2" \
+  CLAUDE_PROJECT_DIR="$repo" \
+  LEADV2_BACKLOG_PUMP=1 LEADV2_BACKLOG_PUMP_MAX=6 LEADV2_BACKLOG_PUMP_LIVENESS_CACHE_S=0 \
+  LEADV2_BACKLOG_PUMP_DISPATCH_BIN="$stub" LEADV2_BACKLOG_PUMP_QUOTA_BIN="$qbin" \
+  LEADV2_BACKLOG_PUMP_LIVENESS_BIN="$lbin" LEADV2_JOURNAL_BIN="$jbin" LEADV2_JUDGE_DISABLE=1 \
+  bash "$mut_pump" check >/dev/null 2>&1
+  # Mutation makes cap=1 at the ceiling (active=6): the 7th candidate wrongly
+  # dispatches instead of being refused at_ceiling. That is the RED this
+  # control proves the real (unmutated) suite would catch.
+  if [[ -s "$logfile" ]] && ! grep -q "at_ceiling" "$jlog"; then
+    pass "control: off-by-one ceiling mutation lets a 7th lane dispatch -> caught (real suite would go red)"
+  else
+    fail "control: mutation NOT caught — mutated pump still refused at_ceiling (dispatched=$(cat "$logfile" 2>/dev/null) log=$(cat "$jlog" 2>/dev/null))"
+  fi
+}
+
 # ── C-1 cases 10–13: floor / ceiling / dedupe / starved ─────────────────────
 
 test_ceiling_refuses_7th() {  # case 10
@@ -517,6 +588,21 @@ test_tree_mid_conflict() {
   fi
 }
 
+test_tree_state_probe_failure() {
+  # A non-Git fixture makes the state probe fail before any queue access. This
+  # must remain fail-closed, but must never masquerade as a real conflict.
+  local repo state output
+  repo="$(_mktmp)"; state="$(_mktmp)"
+  mkdir -p "${repo}/docs" "${state}/docs/leadv2"
+  printf 'meta: {hard_limit: 6}\nsessions: []\n' >"${state}/docs/leadv2/active.yaml"
+  output="$(LEADV2_BACKLOG_PUMP=1 _run_pump_x "$repo" "$state" check 2>&1)"
+  if [[ "$output" == *"reason=tree_state_probe_failed rc=2"* && "$output" != *"reason=tree_mid_conflict"* ]]; then
+    pass "tree_state_probe_failure: failed Git probe is fail-closed and truthfully labelled"
+  else
+    fail "tree_state_probe_failure: expected truthful probe failure, got: $output"
+  fi
+}
+
 test_duplicate_signature_refused() {
   local repo state stub rcfile logfile
   read -r repo state < <(_new_fixture)
@@ -647,6 +733,7 @@ _run_pump_x() {
   LEADV2_BACKLOG_PUMP_QUOTA_BIN="$qbin" \
   LEADV2_BACKLOG_PUMP_LIVENESS_BIN="$lbin" \
   LEADV2_JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-/bin/true}" \
+  LEADV2_JUDGE_DISABLE="${LEADV2_JUDGE_DISABLE:-1}" \
   bash "$PUMP_SH" "$@"
 }
 
@@ -661,11 +748,13 @@ test_count_no_double_after_join
 test_count_ignores_child_lanes
 test_count_sweeps_stale_reservation
 test_ceiling_refuses_7th
+test_control_ceiling_mutation_caught
 test_floor_dispatches_then_refuses
 test_refusal_dedupe_collapses
 test_starved_not_refused_below_floor
 test_kill_switch_off
 test_tree_mid_conflict
+test_tree_state_probe_failure
 test_duplicate_signature_refused
 test_judgment_class_excluded
 test_empty_outcome_bounded
