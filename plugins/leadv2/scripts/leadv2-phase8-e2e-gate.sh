@@ -14,10 +14,24 @@
 #   1  tests/run-all.sh --scope changed exited non-zero -> sentinel NOT written
 #   2  bad usage (missing task_id)
 #
-# Bypass (emergency only, same convention as PE_SKIP_TESTS elsewhere):
-#   PE_SKIP_TESTS=1 leadv2-phase8-e2e-gate.sh <task_id>
-#   -> sentinel IS written but with bypassed: true (visible, not silent —
-#      "every decision is explainable" per CLAUDE.md non-negotiables).
+# PE_SKIP_TESTS (CLOSE-GATE-BYPASSABLE-BY-ENV-01, 2026-08-17): this variable
+# means "skip the *push*-time test gate" (.githooks/pre-push,
+# agent/deploy/deploy-latest.sh) — it is NOT honoured here. A supervising
+# session's PE_SKIP_TESTS=1 leaks by inheritance into every child lane
+# (nothing scrubs bash children), so honouring it at close time let one
+# emergency push-time flag silently disable close-time integrity for every
+# lane spawned afterwards (proven on 3e87a16f0f8a: closed 7/7 with zero
+# Edit/Write, zero commits). If present, this gate logs that it is ignoring
+# it and runs the tests anyway.
+#
+# Bypass (emergency only, this gate's own reason-mandatory variable —
+# same convention as LEADV2_SKIP_DEPLOY_VERIFY below):
+#   LEADV2_E2E_GATE_BYPASS=1 LEADV2_E2E_GATE_BYPASS_REASON="..." \
+#     leadv2-phase8-e2e-gate.sh <task_id>
+#   -> sentinel IS written with bypassed: true and bypass_reason: <reason>
+#      (visible, not silent — "every decision is explainable" per CLAUDE.md
+#      non-negotiables). Empty/absent reason fails closed (exit 1, no
+#      sentinel written).
 #
 # DEPLOY-CLASS-VERIFY-GATE-01 (D6): when the task classifies as `deploy`,
 # a deploy-verify check MUST pass BEFORE this reaches PE_SKIP_TESTS or the
@@ -139,10 +153,24 @@ if [[ "$CLASSIFICATION" == "deploy" ]]; then
   fi
 fi
 
+# PE_SKIP_TESTS is a push-gate variable, not a close-gate variable -- detect
+# and ignore it (CLOSE-GATE-BYPASSABLE-BY-ENV-01 L1), then fall through to
+# the normal test run below.
 if [[ "${PE_SKIP_TESTS:-}" == "1" ]]; then
-  printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: changed\nbypassed: true\ndeploy_verified: %s\ndeploy_verify_bypassed: %s\ndeploy_verify_bypass_reason: %s\n' \
-    "$TASK_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$DEPLOY_VERIFIED" "$DEPLOY_VERIFY_BYPASSED" "$DEPLOY_VERIFY_BYPASS_REASON" > "$SENTINEL"
-  echo "leadv2-phase8-e2e-gate: BYPASSED via PE_SKIP_TESTS=1 (sentinel marked bypassed:true)" | tee "$LOG" >&2
+  echo "leadv2-phase8-e2e-gate: PE_SKIP_TESTS=1 present in env -- IGNORED by the close gate (push-gate variable, not a close-gate variable); running tests" | tee "$LOG" >&2
+fi
+
+# The close gate's own bypass, mandatory reason, fail-closed on empty --
+# same convention as LEADV2_SKIP_DEPLOY_VERIFY above.
+if [[ "${LEADV2_E2E_GATE_BYPASS:-}" == "1" ]]; then
+  if [[ -z "${LEADV2_E2E_GATE_BYPASS_REASON:-}" ]]; then
+    echo "leadv2-phase8-e2e-gate: LEADV2_E2E_GATE_BYPASS=1 requires a non-empty LEADV2_E2E_GATE_BYPASS_REASON -- fail-closed" >&2
+    rm -f "$SENTINEL"
+    exit 1
+  fi
+  printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: changed\nbypassed: true\nbypass_reason: %s\ndeploy_verified: %s\ndeploy_verify_bypassed: %s\ndeploy_verify_bypass_reason: %s\n' \
+    "$TASK_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${LEADV2_E2E_GATE_BYPASS_REASON}" "$DEPLOY_VERIFIED" "$DEPLOY_VERIFY_BYPASSED" "$DEPLOY_VERIFY_BYPASS_REASON" > "$SENTINEL"
+  echo "leadv2-phase8-e2e-gate: BYPASSED via LEADV2_E2E_GATE_BYPASS=1 -- ${LEADV2_E2E_GATE_BYPASS_REASON}" | tee -a "$LOG" >&2
   exit 0
 fi
 
