@@ -22,6 +22,10 @@ set -uo pipefail
 # BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
 # ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
 export LEADV2_BURN_GOVERNOR=0
+# This suite supplies its own pump setting in _run_pump_x.  Do not inherit the
+# host kill switch: that would make ordinary fixture cases no-ops, while the
+# dedicated kill_switch_off case still passes LEADV2_BACKLOG_PUMP=0 explicitly.
+unset LEADV2_BACKLOG_PUMP
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"

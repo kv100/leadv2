@@ -46,7 +46,7 @@ _gate1_emit_ledger() {
   [[ -f "$_emit" ]] || _emit="$HOME/.claude/scripts/lv2-ledger-emit.py"
   [[ -f "$_emit" ]] || return 0
   local _payload
-  _payload=$(python3 -c 'import json,sys; print(json.dumps({"event":"gate1_decision","task_id":sys.argv[1],"rc":int(sys.argv[2]),"outcome":sys.argv[3]}))' "$task_id" "$_rc" "$_outcome" 2>/dev/null) || return 0
+  _payload=$(python3 -c 'import json,sys; print(json.dumps({"event":"gate1_decision","task_id":sys.argv[1],"rc":int(sys.argv[2]),"outcome":sys.argv[3]}, separators=(",", ":")))' "$task_id" "$_rc" "$_outcome" 2>/dev/null) || return 0
   [[ -n "$_payload" ]] && { LEADV2_PROJECT_ROOT="$_root" python3 "$_emit" "$_payload" 2>/dev/null || true; }
   return 0
 }
@@ -284,7 +284,10 @@ printf -- '\nплан: %s. авто-принятие через %ss. давай?
 
 # ── Read with timeout ──────────────────────────────────────────────────────
 answer=""
-if read -r -t "$timeout_sec" answer 2>/dev/null; then
+# A zero-second daemon timeout is an explicit immediate auto-accept.  On
+# macOS Bash, `read -t 0` can report success with an empty answer at EOF;
+# treating that as founder input would incorrectly decline instead.
+if [[ "$timeout_sec" != "0" ]] && read -r -t "$timeout_sec" answer 2>/dev/null; then
   # Got a response within timeout
   case "${answer,,}" in
     да|go|y|yes|d)
