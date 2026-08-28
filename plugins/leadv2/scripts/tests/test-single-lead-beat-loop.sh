@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# tests/test-single-lead-beat-loop.sh — MON-PULSE-01 part 2: single-lead pulse
+# beat default-on.
+#
+# Locks leadv2-single-lead-beat-loop.sh (armed by leadv2-dispatch-code.sh at
+# the first worker_spawned):
+#
+#   B1  kill-switch: LEADV2_PULSE_MODE=0 (and LEADV2_SINGLE_LEAD_BEAT=0) is a
+#       no-op — nothing armed, no beat driven.
+#   B2  beat drives while >=1 lane is live: with a live lane in the (fake)
+#       active-lane status the beat bin is invoked; the loop keeps running.
+#   B3  not armed twice: a second invocation while the first loop holds the
+#       pidfile is an immediate no-op (beat count does not grow).
+#   B4  stops when no lanes remain: live count drops to a REAL zero -> the
+#       loop exits and removes its pidfile (re-arm is possible afterwards).
+#
+# Hermetic: fake lane-heartbeat bin (LEADV2_LANE_HEARTBEAT_BIN), fake beat bin
+# (LEADV2_PULSE_BEAT_BIN) recording invocations to a log, scratch pidfile,
+# interval 1s. No network, no real control-plane state.
+# Run: bash scripts/tests/test-single-lead-beat-loop.sh
+
+set -uo pipefail
+
+TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$TESTS_DIR/.." && pwd)"
+LOOP="$SCRIPT_DIR/leadv2-single-lead-beat-loop.sh"
+
+PASS=0; FAIL=0
+ok()  { printf '[TEST] PASS: %s\n' "$1"; PASS=$((PASS+1)); }
+bad() { printf '[TEST] FAIL: %s\n' "$1" >&2; FAIL=$((FAIL+1)); }
+
+TMP="$(mktemp -d /tmp/leadv2-beat-loop-XXXXXX)"
+cleanup() {
+  [[ -n "${LOOP_PID:-}" ]] && kill "${LOOP_PID}" 2>/dev/null || true
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
+
+REPO="$TMP/repo"
+mkdir -p "$REPO"
+PID_FILE="$TMP/beat-loop.pid"
+BEATS="$TMP/beats.log"
+HB_STATE="$TMP/hb-state.json"   # what the fake heartbeat answers with
+
+# fake lane-heartbeat: `status --all --json` -> the JSON in $HB_STATE
+cat > "$TMP/fake-hb.sh" <<'EOF'
+#!/usr/bin/env bash
+# fake leadv2-lane-heartbeat.sh — prints the JSON staged by the test
+cat "${FAKE_HB_STATE:?}" 2>/dev/null || echo '[]'
+EOF
+chmod +x "$TMP/fake-hb.sh"
+
+# fake pulse-beat: records one line per invocation
+cat > "$TMP/fake-beat.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$(date +%s)" >> "${FAKE_BEATS_LOG:?}"
+exit 0
+EOF
+chmod +x "$TMP/fake-beat.sh"
+
+run_loop() {  # extra env via caller
+  LEADV2_PROJECT_ROOT="$REPO" \
+  LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="$PID_FILE" \
+  LEADV2_SINGLE_LEAD_BEAT_LOOP_S=1 \
+  LEADV2_SINGLE_LEAD_BEAT_LOOP_MAX_S=30 \
+  LEADV2_LANE_HEARTBEAT_BIN="$TMP/fake-hb.sh" \
+  LEADV2_PULSE_BEAT_BIN="$TMP/fake-beat.sh" \
+  FAKE_HB_STATE="$HB_STATE" FAKE_BEATS_LOG="$BEATS" \
+    bash "$LOOP" "$@" >/dev/null 2>&1
+}
+
+beats_n() {
+  if [[ -f "$BEATS" ]]; then wc -l < "$BEATS" | tr -d ' '; else printf '0'; fi
+}
+pidfile_alive_loop() {  # rc0 iff the pid in the pidfile is a live process
+  [[ -f "$PID_FILE" ]] || return 1
+  local p; p="$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')"
+  [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null
+}
+wait_exit() {  # <pid> <max_s> -> rc0 if the process exited in time
+  local pid="$1" max="$2" i
+  for ((i = 0; i < max * 10; i++)); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  kill -0 "$pid" 2>/dev/null && return 1
+  return 0
+}
+wait_gone() {  # <max_s> — wait until the pidfile's process exits
+  local max="$1" i p
+  for ((i = 0; i < max * 10; i++)); do
+    pidfile_alive_loop || { [[ -f "$PID_FILE" ]] || return 0; }
+    sleep 0.1
+  done
+  return 1
+}
+
+# ── B1: kill-switch is a no-op ───────────────────────────────────────────────
+printf '[{"task":"dispatch-x","status":"running"}]' > "$HB_STATE"
+LEADV2_PROJECT_ROOT="$REPO" \
+LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="$PID_FILE" \
+LEADV2_PULSE_MODE=0 \
+LEADV2_LANE_HEARTBEAT_BIN="$TMP/fake-hb.sh" \
+LEADV2_PULSE_BEAT_BIN="$TMP/fake-beat.sh" \
+FAKE_HB_STATE="$HB_STATE" FAKE_BEATS_LOG="$BEATS" \
+  bash "$LOOP" >/dev/null 2>&1
+rc=$?
+LEADV2_PROJECT_ROOT="$REPO" \
+LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="$PID_FILE" \
+LEADV2_SINGLE_LEAD_BEAT=0 \
+LEADV2_LANE_HEARTBEAT_BIN="$TMP/fake-hb.sh" \
+LEADV2_PULSE_BEAT_BIN="$TMP/fake-beat.sh" \
+FAKE_HB_STATE="$HB_STATE" FAKE_BEATS_LOG="$BEATS" \
+  bash "$LOOP" >/dev/null 2>&1
+rc2=$?
+if [[ $rc -eq 0 && $rc2 -eq 0 && ! -f "$PID_FILE" && "$(beats_n)" == "0" ]]; then
+  ok "B1 kill-switch: LEADV2_PULSE_MODE=0 / LEADV2_SINGLE_LEAD_BEAT=0 -> no-op, nothing armed"
+else
+  bad "B1 kill-switch: rc=$rc/$rc2 pidfile=$([[ -f $PID_FILE ]] && echo yes || echo no) beats=$(beats_n)"
+fi
+
+# ── B2 + B3: beat drives while a lane is live; second arm is a no-op ─────────
+printf '[{"task":"dispatch-x","status":"running"}]' > "$HB_STATE"
+run_loop &
+LOOP_PID=$!
+sleep 2.5
+b_after_first="$(beats_n)"
+if [[ "$b_after_first" -ge 1 ]] && pidfile_alive_loop; then
+  ok "B2 beat driven: ${b_after_first} beat(s) while 1 lane live, loop still running"
+else
+  bad "B2 beat driven: beats=$(beats_n) loop_alive=$(pidfile_alive_loop && echo yes || echo no)"
+fi
+# second arm attempt while the first holds the pidfile: must exit fast,
+# leave the FIRST loop's pid in place (it keeps beating at its own rate —
+# the count is not the signal, pid ownership is)
+first_pid="$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')"
+run_loop &
+SECOND=$!
+if wait_exit "$SECOND" 3 && [[ "$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')" == "$first_pid" ]] \
+   && kill -0 "$first_pid" 2>/dev/null; then
+  ok "B3 not armed twice: second invocation exited immediately, pidfile still owns pid ${first_pid}"
+else
+  bad "B3 not armed twice: second invocation hung or stole the pidfile"
+  kill "$SECOND" 2>/dev/null || true
+fi
+
+# ── B4: stops when no lanes remain ───────────────────────────────────────────
+printf '[]' > "$HB_STATE"   # REAL zero: no live lanes
+if wait_gone 10 && [[ ! -f "$PID_FILE" ]]; then
+  ok "B4 stops on empty board: loop exited and pidfile removed"
+else
+  bad "B4 stops on empty board: loop still alive or pidfile left behind"
+fi
+kill "$LOOP_PID" 2>/dev/null || true
+LOOP_PID=""
+
+# re-arm is possible after the stop (pidfile was cleaned, not leaked)
+printf '[{"task":"dispatch-y","status":"running"}]' > "$HB_STATE"
+run_loop &
+LOOP_PID=$!
+sleep 1.5
+if pidfile_alive_loop; then
+  ok "B4b re-arm after stop works (pidfile clean, loop re-armed)"
+else
+  bad "B4b re-arm after stop failed"
+fi
+kill "$LOOP_PID" 2>/dev/null || true
+LOOP_PID=""
+
+printf 'test-single-lead-beat-loop: %d passed, %d failed\n' "$PASS" "$FAIL"
+(( FAIL == 0 ))
