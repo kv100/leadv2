@@ -75,7 +75,27 @@ if [[ -f "$E2E_SENTINEL" ]]; then
     log_fail "A7 E2E gate sentinel stale (${age}s > 1h): ${E2E_SENTINEL}"
     failures+=("A7: ${E2E_SENTINEL} is ${age}s old (>1h) -- re-run: bash ${SCRIPT_DIR}/leadv2-phase8-e2e-gate.sh ${TASK_ID}")
   else
-    log_pass "A7 E2E gate: sentinel fresh (${age}s old)"
+    # CLOSE-GATE-BYPASSABLE-BY-ENV-01 L2: existence+freshness alone can't tell
+    # a real pass from a bypassed one. A bypassed sentinel with no reason --
+    # including every sentinel written by the OLD PE_SKIP_TESTS code path,
+    # which never wrote a bypass_reason: field at all -- fails closed here.
+    # `|| true` on each: under `set -eo pipefail` a no-match grep (exit 1)
+    # would otherwise abort the whole script silently mid-statement -- a
+    # sentinel legitimately has no bypass_reason: line in the common
+    # (non-bypassed) case.
+    _a7_bypassed="$(grep -m1 -E '^bypassed:' "$E2E_SENTINEL" 2>/dev/null | sed -E 's/^bypassed:[[:space:]]*//' || true)"
+    _a7_bypass_reason="$(grep -m1 -E '^bypass_reason:' "$E2E_SENTINEL" 2>/dev/null | sed -E 's/^bypass_reason:[[:space:]]*//' || true)"
+    if [[ "${_a7_bypassed}" == "true" ]]; then
+      if [[ -n "${_a7_bypass_reason}" ]]; then
+        log_warning "A7 E2E gate: sentinel is a bypass -- ${_a7_bypass_reason}"
+        log_pass "A7 E2E gate: sentinel fresh (${age}s old, bypassed with reason)"
+      else
+        log_fail "A7 e2e sentinel is a bypass with no reason: ${E2E_SENTINEL}"
+        failures+=("A7: e2e sentinel is a bypass with no reason -- re-run: bash ${SCRIPT_DIR}/leadv2-phase8-e2e-gate.sh ${TASK_ID}")
+      fi
+    else
+      log_pass "A7 E2E gate: sentinel fresh (${age}s old)"
+    fi
   fi
 else
   log_fail "A7 E2E gate sentinel missing: ${E2E_SENTINEL}"
