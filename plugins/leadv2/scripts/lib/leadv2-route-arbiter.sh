@@ -2,10 +2,23 @@
 # One live-window, config-driven arbiter shared by dispatch and review.
 # Output is a single machine-readable line; non-zero means caller must fail open.
 
+leadv2_route_arbiter_script_dir() {
+  # Per-file installs symlink this library, while BASH_SOURCE preserves the
+  # symlink spelling. Follow the chain portably before locating sibling files.
+  local source="${BASH_SOURCE[0]}" link dir
+  while [[ -h "$source" ]]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    link="$(readlink "$source")"
+    [[ "$link" == /* ]] || link="$dir/$link"
+    source="$link"
+  done
+  cd -P "$(dirname "$source")" && pwd
+}
+
 route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   local role="${1:-}" descriptor="${2:-}" here routing live free_gate free_rc quota_json
   [[ "$role" == worker || "$role" == reviewer ]] || return 64
-  here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  here="$(cd "$(leadv2_route_arbiter_script_dir)/.." && pwd)"
   routing="${LEADV2_ROUTE_ARBITER_ROUTING_YAML:-${here}/../config/leadv2-routing.yaml}"
   [[ -r "$routing" ]] || return 65
   # T17 fix-round (H4): honour the repo's established quota-live seam name
