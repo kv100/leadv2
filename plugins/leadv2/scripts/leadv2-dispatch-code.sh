@@ -6440,7 +6440,7 @@ exit is treated as an incident."
   # ladder above remain a deliberately fail-open fallback for an arbiter fault.
   local -a _pre_arb_candidate_arms=("${candidate_arms[@]}")
   if declare -F route_arbiter >/dev/null 2>&1; then
-    local _arb_desc _arb_out _arb_rc _arb_arm _arb_chain _arb_reason _arb_util _arb_tier _arb_model
+    local _arb_desc _arb_out _arb_rc _arb_arm _arb_chain _arb_reason _arb_util _arb_tier _arb_model _arb_floor_applied _arb_floor_reason
     # T17 fix-round (H2): protected/safety/ui_judgment reach the arbiter ONLY
     # through --protected/--safety/--ui-judgment CLI flags, which no real
     # caller passes (same no-writers shape as T19) -- so every arbiter-routed
@@ -6457,7 +6457,7 @@ exit is treated as an incident."
       _arb_ui=1
     fi
     [[ "${_arb_safety}" == "1" || "${_arb_ui}" == "1" ]] && _arb_protected=1
-    _arb_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1"}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}")"
+    _arb_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[6]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${sig8}")"
     _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
     _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
@@ -6465,6 +6465,19 @@ exit is treated as an incident."
     _arb_util="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
     _arb_tier="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*tier=\([^ ]*\).*/\1/p')"
     _arb_model="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
+    # FP-08 fix-round (H1/H3): the capability-floor journal comes from the
+    # arbiter's OWN output line for THIS invocation (`floor_applied=1
+    # floor_reason=<raw-class>/<kind>`), emitted when the demotion is APPLIED
+    # in the effective ranking -- never from a cross-run state file, which a
+    # failed arbiter write could leave carrying the PREVIOUS task's floor
+    # attribution (round-1 M3), and never from a raw Python bool whose `True`
+    # never matched this shell's `== "true"` probe (round-1 H3: the journal
+    # line was unreachable dead code).
+    _arb_floor_applied="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*[[:space:]]floor_applied=\([01]\).*/\1/p')"
+    _arb_floor_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*[[:space:]]floor_reason=\([^[:space:]]*\).*/\1/p')"
+    if [[ "${_arb_floor_applied}" == "1" && -n "${_arb_floor_reason}" ]]; then
+      emit decision "arm_floor_applied arm=freepool task=${sig8} reason=${_arb_floor_reason}"
+    fi
     if [[ ${_arb_rc} -eq 0 && -n "${_arb_arm}" && "${_arb_arm}" != refuse && -n "${_arb_chain}" ]]; then
       # T17 fix-round (C2): the arbiter chain must pass the SAME
       # DISPATCHABLE_BUILD_ARMS filter every other chain-adoption site uses
