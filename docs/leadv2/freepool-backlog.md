@@ -73,3 +73,8 @@ Two Standard/Light code missions (27434c7a, e9e1ad51): arbiter picks freepool as
 worker exits in ~23s with zero diff, dispatcher records no_work. Either the freepool claude-p glue
 dies silently or capability floor is wrong (freepool should be bulk-only until FP-04 quality gate).
 Investigate worker glue logs + add capability floor: freepool ineligible for class>=Standard.
+
+## FP-07b — body-lost retry found no candidate live (P2, 2026-08-28)
+First live body_lost after FP-07 merge: retry preconditions met (rc=0, 158B, err set) but
+_review_next_distinct_ok_arm returned empty — pool variable empty/shape mismatch for author=freepool
+(resolver printed arm=/rule= shape, engine expects reviewer=/pool=). Add live-pool regression + fix pool parse.
