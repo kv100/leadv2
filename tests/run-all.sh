@@ -54,11 +54,11 @@ declare -a FAILED_REL=()
 declare -a EXTRA_SUITE_MAP=(
   "freepool-coder|plugins/leadv2/scripts/tests/test-freepool-model-selector.sh"
   "leadv2-backlog-pump|plugins/leadv2/scripts/tests/test-backlog-pump.sh"
-  "leadv2-dispatch-code|plugins/leadv2/scripts/tests/test-phase-precondition.sh,plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh,plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh"
+  "leadv2-dispatch-code|plugins/leadv2/scripts/tests/test-phase-precondition.sh,plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh,plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh,plugins/leadv2/scripts/tests/test-model-select-telemetry.sh"
   "leadv2-gate1-prompt|plugins/leadv2/scripts/tests/test-gate1-discipline.sh"
   "leadv2-phase-record|plugins/leadv2/scripts/tests/test-phase-record.sh,plugins/leadv2/scripts/tests/test-phase-precondition.sh"
   "leadv2-admission-class|plugins/leadv2/scripts/tests/test-admission-class.sh"
-  "leadv2-route-arbiter|plugins/leadv2/scripts/tests/test-route-arbiter-symlink-install.sh"
+  "leadv2-route-arbiter|plugins/leadv2/scripts/tests/test-route-arbiter-symlink-install.sh,plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh"
   "leadv2-lane-pulse-watch|plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh,plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh"
   "leadv2-single-lead-beat-loop|plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh"
   "leadv2-broad-status|plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh"

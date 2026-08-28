@@ -104,7 +104,26 @@ u={p:_uraw[p][0] for p in _uraw}; unk={p:_uraw[p][1] for p in _uraw}
 # SIZE_MAP-folded bucket. trivial|light ("simple") fold into the 'standard'
 # matrix cell for CAPABILITY lookups but must stay freepool-eligible, and
 # bulk is exempt by design; strategic folds into 'heavy' and IS floored.
-floor_applies = size_raw in ('standard','heavy','strategic') and kind == 'code'
+# FP-06 (founder ask 2026-08-28): capability_floor knob -- bulk_only (the
+# default) preserves the FP-08 rule verbatim; full removes the floor so
+# freepool is rank-eligible for Standard/Heavy build work. Precedence:
+# env FREEPOOL_CAPABILITY_FLOOR > freepool-arm.yaml capability_floor >
+# default. An unrecognized value at either layer falls through to the next
+# layer -- fail toward today's floored behavior, never silently unfloored.
+floor_mode='bulk_only'; floor_mode_src='default'
+_env_mode=str(os.environ.get('FREEPOOL_CAPABILITY_FLOOR','') or '').strip().lower()
+if _env_mode in ('bulk_only','full'):
+    floor_mode=_env_mode; floor_mode_src='env'
+else:
+    try:
+        _arm_cfg_path=os.environ.get('FREEPOOL_ARM_CONFIG') or os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])),'freepool-arm.yaml')
+        _arm_cfg=yaml.safe_load(open(_arm_cfg_path)) or {}
+        _yaml_mode=str((_arm_cfg.get('capability_floor') if isinstance(_arm_cfg,dict) else None) or '').strip().lower()
+        if _yaml_mode in ('bulk_only','full'):
+            floor_mode=_yaml_mode; floor_mode_src='yaml'
+    except Exception:
+        pass
+floor_applies = (size_raw in ('standard','heavy','strategic') and kind == 'code') if floor_mode=='bulk_only' else False
 def ufmt():
     return ' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else '%d'%u[p]) for p in ('glm','codex','claude','freepool'))
 ceil=((data.get('router_v2') or {}).get('quota_ceilings') or {})
@@ -195,6 +214,7 @@ _extra = (' size_unmapped=%s' % size_unmapped) if size_unmapped else ''
 # rendered `True` and never matched dispatch-code's `== "true"` comparison
 # (round-1 H3, the journal line was unreachable dead code).
 _floor = (' floor_applied=1 floor_reason=%s' % floor_reason) if floor_reason else ''
-print('arm=%s model=%s tier=%s reason=cheapest_capable chain=%s %s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),','.join(rotated),ufmt(),_extra,_floor))
+_fmode = ' floor_mode=%s floor_mode_source=%s' % (floor_mode, floor_mode_src)
+print('arm=%s model=%s tier=%s reason=cheapest_capable chain=%s %s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),','.join(rotated),ufmt(),_extra,_floor,_fmode))
 PY
 }
