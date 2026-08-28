@@ -78,3 +78,9 @@ Investigate worker glue logs + add capability floor: freepool ineligible for cla
 First live body_lost after FP-07 merge: retry preconditions met (rc=0, 158B, err set) but
 _review_next_distinct_ok_arm returned empty — pool variable empty/shape mismatch for author=freepool
 (resolver printed arm=/rule= shape, engine expects reviewer=/pool=). Add live-pool regression + fix pool parse.
+
+## MON-PULSE-01 — pulse beat default-on in single-lead + dispatcher-owned lane watch (P1, 2026-08-28)
+Founder complaint (3rd time, = PULSE-IN-SINGLE-LEAD-01): lead does not truly track lanes and founder gets no updates. Two fixes:
+1. leadv2-dispatch-code.sh arms the lane watch ITSELF at spawn (tail -n +1 replay-safe, terminal-state matched) and writes beats to the pulse file — no session-improvised Monitors racing the journal.
+2. BROAD_STATUS/pulse beat fires in single-lead mode by default (every 5 min while any lane live), not only in the retired supervise loop.
+Evidence 2026-08-28: two lead Monitors armed with tail -n 0 missed dispatch_terminal written 25s post-spawn; founder saw nothing until he asked.
