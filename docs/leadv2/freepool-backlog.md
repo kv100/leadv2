@@ -60,3 +60,10 @@ leadv2-review-run.sh's codex reviewer dies on its first rg exit-1 (no matches tr
 as fatal) -> review_body_lost, twice deterministically on PHASE-DISCIPLINE-01. Judge
 escalation covered it, but the primary review arm is broken. Fix the arm's command
 error handling (rg exit 1 is not an error) + add a body-lost retry on a DIFFERENT arm.
+
+## MERGE-UP-PHASE8-GATES-01 (found 2026-08-28, P1)
+leadv2 repo .claude/scripts/leadv2-phase8-assert.sh + leadv2-phase8-e2e-gate.sh are REAL
+copies diverged BOTH ways vs canonical: copies carry CLOSE-GATE-BYPASSABLE-BY-ENV-01
+(2026-08-17 hardening, 21+37 unique lines) canonical never got; canonical has 07-31/08-04
+work the copies lack. Needs a real merge-up into canonical, tests, then symlink. Until
+then these two stay real copies deliberately (do NOT blind-symlink — loses the hardening).
