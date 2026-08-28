@@ -19,8 +19,13 @@
 #   FREEPOOL_ARM_CONFIG              path to freepool-arm.yaml (default sibling ../../config/freepool-arm.yaml)
 #   FREEPOOL_MODELS_CACHE_FILE       cache file for /v1/models (default ~/.claude/leadv2-state/freepool-models.json)
 #   FREEPOOL_MODELS_CACHE_TTL_S      cache TTL seconds (default 60)
-#   FREEPOOL_MODELS_FETCH_TIMEOUT_S  timeout for GET /v1/models (default 2)
-#   FREEPOOL_MODEL_PROBE_TIMEOUT_S   timeout for the 1-token liveness probe (default 8)
+#   FREEPOOL_MODELS_FETCH_TIMEOUT_S  timeout for GET /v1/models (default 5; a cold proxy
+#                                    process can be slow to answer its first request)
+#   FREEPOOL_MODEL_PROBE_TIMEOUT_S   timeout for the 1-token liveness probe (default 30;
+#                                    measured 2026-08-27 -- gemini routes answered in
+#                                    18-26s and some NIM/mistral routes in 50-117s, so
+#                                    the old 8s default silently excluded working models.
+#                                    Latency-sensitive callers can still lower it.)
 #   FREEPOOL_AUTH_TOKEN              bearer token for the probe (required for a real probe;
 #                                    if unset, the probe call is still attempted with no
 #                                    auth header — a proxy that requires auth will simply
@@ -41,8 +46,8 @@ readonly ARM_CONFIG="${FREEPOOL_ARM_CONFIG:-$(cd "${_SELF_DIR}/../.." && pwd)/co
 readonly CACHE_DIR_DEFAULT="${HOME}/.claude/leadv2-state"
 readonly MODELS_CACHE_FILE="${FREEPOOL_MODELS_CACHE_FILE:-${CACHE_DIR_DEFAULT}/freepool-models.json}"
 readonly MODELS_CACHE_TTL_S="${FREEPOOL_MODELS_CACHE_TTL_S:-60}"
-readonly FETCH_TIMEOUT_S="${FREEPOOL_MODELS_FETCH_TIMEOUT_S:-2}"
-readonly PROBE_TIMEOUT_S="${FREEPOOL_MODEL_PROBE_TIMEOUT_S:-8}"
+readonly FETCH_TIMEOUT_S="${FREEPOOL_MODELS_FETCH_TIMEOUT_S:-5}"
+readonly PROBE_TIMEOUT_S="${FREEPOOL_MODEL_PROBE_TIMEOUT_S:-30}"
 
 log_err() { echo "[freepool-model-select] $*" >&2; }
 

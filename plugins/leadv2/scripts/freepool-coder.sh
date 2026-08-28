@@ -157,26 +157,75 @@ freepool_role_for_mission() {
 }
 
 # QUOTA-GATE-01 (2026-07-17): gate a GLM lane launch on live z.ai quota.
-# Calls leadv2-freepool-gate.sh (sibling). On non-zero, that gate has already
+# Calls leadv2-freepool-gate.sh (sibling lib). On non-zero, that gate has already
 # printed a REROUTE (>=80% on 5h or weekly) or PEAK-override message to stderr;
 # we propagate the code so the caller (router/supervise) can reroute the work to
 # another bucket instead of stopping it. Fail-open: a missing gate or
 # FREEPOOL_SKIP_GATE=1 lets the launch proceed (the gate itself fail-opens on
 # network/parse errors). cmd_test is NOT gated (health check, not real work).
+#
+# AUTOSTART-01 (2026-08-27): the gate refuses with "arm_down" specifically when
+# the proxy's own /health endpoint is unreachable -- the one refusal reason a
+# `freepool-proxy.sh start` can actually fix (gate_broken/pin_drift can't).
+# On that refusal, attempt exactly ONE start + a bounded (~40s) wait, then
+# re-run the gate once. FREEPOOL_AUTOSTART=0 disables this and restores the
+# prior straight-refuse behavior. A failed/timed-out autostart falls through
+# to the SAME refusal path as before -- never a hang, never a second attempt.
 freepool_launch_gate() {
   [[ "${FREEPOOL_SKIP_GATE:-0}" == "1" ]] && return 0
-  local gate="${SELF%/*}/leadv2-freepool-gate.sh"
+  local gate="${SELF%/*}/lib/leadv2-freepool-gate.sh"
   if [[ ! -f "$gate" ]]; then
     log_info "quota gate absent ($gate) - proceeding (fail-open)."
     return 0
   fi
+  local gate_stderr rc
+  gate_stderr="$(mktemp 2>/dev/null || echo "/tmp/freepool-gate.$$.stderr")"
   # NOTE: do NOT use `if ! "$gate"` — `!` resets $? to 0 and the real gate code
   # (1=reroute, 2=peak) is lost, making a refused gate non-blocking (QUOTA-GATE-01).
-  "$gate"; local rc=$?
+  # Also do NOT run "$gate" as a bare statement under `set -e` — a non-zero exit
+  # from a bare command (not inside if/&&/||) kills the whole script before
+  # `rc=$?` ever runs (same class of bug as freepool_select_model's P0 note).
+  if "$gate" 2>"${gate_stderr}"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  cat "${gate_stderr}" >&2 2>/dev/null || true
   if (( rc != 0 )); then
+    if [[ "${FREEPOOL_AUTOSTART:-1}" != "0" ]] && grep -q 'LEADV2_DISPATCH_REFUSED: arm_down' "${gate_stderr}" 2>/dev/null; then
+      rm -f "${gate_stderr}"
+      log_info "freepool_autostart_attempted reason=arm_down"
+      local proxy_script="${SELF%/*}/freepool-proxy.sh"
+      local autostart_ok=1
+      if [[ -f "${proxy_script}" ]]; then
+        local deadline
+        deadline=$(( $(date +%s) + 40 ))
+        if "${proxy_script}" start >&2; then
+          while (( $(date +%s) < deadline )); do
+            if "${gate}" >/dev/null 2>&1; then
+              autostart_ok=0
+              break
+            fi
+            sleep 2
+          done
+        else
+          log_error "freepool_autostart_failed reason=start_command_failed"
+        fi
+      else
+        log_error "freepool_autostart_failed reason=proxy_script_absent ($proxy_script)"
+      fi
+      if (( autostart_ok == 0 )); then
+        log_info "freepool_autostart_ok"
+        return 0
+      fi
+      [[ -f "${proxy_script}" ]] && log_error "freepool_autostart_failed reason=still_unhealthy_after_wait"
+    else
+      rm -f "${gate_stderr}"
+    fi
     log_error "freepool health gate refused this launch (code $rc) - reroute per the message above (leadv2-quota-live.sh for live numbers)."
     return "$rc"
   fi
+  rm -f "${gate_stderr}"
   return 0
 }
 
