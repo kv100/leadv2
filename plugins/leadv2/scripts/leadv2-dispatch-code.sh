@@ -4249,6 +4249,42 @@ PY
   emit decision "architect_prepass task=${sig8} status=ran arm=${ARCHITECT_FALLBACK_ARM_USED:-claude} artifact=docs/handoff/dispatch-${sig8}/architect-prepass.md source=${design:-stdout}"
 }
 
+# ── MON-PULSE-01: dispatcher-owned lane watch + single-lead beat default-on ───────
+# Founder order 2026-08-28 (3rd PULSE-IN-SINGLE-LEAD-01): lane tracking and the
+# founder pulse must work IN THE PLUGIN, never as session-improvised lead
+# Monitors (two `tail -n 0` Monitors missed a dispatch_terminal written 25s
+# post-spawn). At worker_spawned the dispatcher itself arms, detached (nohup):
+#   1. leadv2-lane-pulse-watch.sh — replay-safe per-lane journal watch that
+#      pulses every terminal state (dispatch_terminal|dispatch_refused|
+#      worker_died) for ITS sig via the existing leadv2-pulse.sh, pulses
+#      review_gate as a mid-flight beat but keeps watching, and never re-
+#      pulses lines a previous watcher already pulsed (per-sig seen ledger);
+#   2. leadv2-single-lead-beat-loop.sh — the BROAD_STATUS beat, default-on in
+#      single-lead mode while >=1 lane is live (armed once; pidfile guard).
+# Both are fail-open by construction: a missing binary, a full /tmp, or a dead
+# spawn can never affect this dispatcher's own control flow. LEADV2_PULSE_MODE=0
+# (and for the beat LEADV2_SINGLE_LEAD_BEAT=0) is the kill-switch. The bins are
+# env-overridable so tests stub them without touching the real watchers. Runs
+# inside a command-substitution subshell (spawn_worker's stdout is captured),
+# so every fd is explicitly redirected -- a background child holding the
+# capture pipe open would hang the caller. 9>&- matches the file-wide flock-fd
+# idiom used at every launcher call site.
+LANE_PULSE_WATCH_BIN="${LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN:-${SCRIPT_DIR}/leadv2-lane-pulse-watch.sh}"
+SINGLE_LEAD_BEAT_LOOP_BIN="${LEADV2_DISPATCH_BEAT_LOOP_BIN:-${SCRIPT_DIR}/leadv2-single-lead-beat-loop.sh}"
+_arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
+  [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
+  [[ -f "${LANE_PULSE_WATCH_BIN}" ]] || return 0
+  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
+    nohup bash "${LANE_PULSE_WATCH_BIN}" --sig "${1}" >/dev/null 2>&1 </dev/null 9>&- &
+}
+_arm_single_lead_beat() {  # fail-open, armed once (loop's own pidfile guards re-arm)
+  [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
+  [[ "${LEADV2_SINGLE_LEAD_BEAT:-1}" == "0" ]] && return 0
+  [[ -f "${SINGLE_LEAD_BEAT_LOOP_BIN}" ]] || return 0
+  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
+    nohup bash "${SINGLE_LEAD_BEAT_LOOP_BIN}" >/dev/null 2>&1 </dev/null 9>&- &
+}
+
 # ── spawn: actually launch the resolved worker (Finding 2) ────────────────────────
 # GLM_BIN/SUBSESSION_BIN are sibling scripts, overridable so tests stub the underlying
 # `claude` call via EACH launcher's OWN seam (glm-coder.sh: GLM_CLAUDE_BIN/GLM_RUNS_DIR/
@@ -4810,6 +4846,11 @@ _spawn_worker_body() {
   # This one site covers BOTH the router path and cmd_advance_arm (both call spawn_worker ->
   # _spawn_worker_body).  A file write escapes this command-substitution subshell.
   _dispatch_register_arm "${sig8}" "${arm}" "${handle}"
+  # MON-PULSE-01: this one choke point (router + arm_advance) arms the
+  # dispatcher-owned lane watch for THIS sig and the single-lead beat loop.
+  # Fail-open; the watchers own their own pidfile/replay-safety semantics.
+  _arm_lane_pulse_watch "${sig8}"
+  _arm_single_lead_beat
   # S7-RETARGET-PERSIST-01: names which mission version this dispatch launched, so
   # "it relaunched the old premise" is a grep of this log, not archaeology. Fail-open
   # by construction: sig/head are already-in-hand local values (no failure mode), rev
