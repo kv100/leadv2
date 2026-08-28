@@ -230,7 +230,7 @@ PASS_SCOPE="changed"
 [[ "${E2E_OWNERSHIP}" == "1" && -n "${WRITES_CSV}" ]] && PASS_SCOPE="lane_writes"
 
 if [[ $rc -eq 0 ]]; then
-  printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: %s\nbypassed: false\ndeploy_verified: %s\ndeploy_verify_bypassed: %s\ndeploy_verify_bypass_reason: %s\n' \
+  printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: %s\nbypassed: false\nbypass_reason: \ndeploy_verified: %s\ndeploy_verify_bypassed: %s\ndeploy_verify_bypass_reason: %s\n' \
     "$TASK_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PASS_SCOPE}" "$DEPLOY_VERIFIED" "$DEPLOY_VERIFY_BYPASSED" "$DEPLOY_VERIFY_BYPASS_REASON" > "$SENTINEL"
   echo "leadv2-phase8-e2e-gate: PASS — sentinel written: ${SENTINEL}" >&2
   exit 0
@@ -265,7 +265,7 @@ if [[ -n "${FOREIGN_CSV}" && -z "${OWN_CSV}" && -z "${UNDECIDABLE_CSV}" ]]; then
     (( _is_write )) || _foreign_files+=("${_f}")
   done
   FOREIGN_FILES_CSV="$(IFS=,; echo "${_foreign_files[*]:-}")"
-  printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: lane_writes\nbypassed: false\nforeign_failures: %s\ndeploy_verified: %s\ndeploy_verify_bypassed: %s\ndeploy_verify_bypass_reason: %s\n' \
+  printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: lane_writes\nbypassed: false\nbypass_reason: \nforeign_failures: %s\ndeploy_verified: %s\ndeploy_verify_bypassed: %s\ndeploy_verify_bypass_reason: %s\n' \
     "$TASK_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${FOREIGN_CSV}" "$DEPLOY_VERIFIED" "$DEPLOY_VERIFY_BYPASSED" "$DEPLOY_VERIFY_BYPASS_REASON" > "$SENTINEL"
   _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=foreign_failure scope=lane_writes foreign_suites=${FOREIGN_CSV} foreign_files=${FOREIGN_FILES_CSV} owner_lane=${OWNER_LANE} own_failures=0"
   IFS=',' read -r -a _foreign_suite_arr <<< "${FOREIGN_CSV}"
