@@ -33,18 +33,44 @@ Implemented FP-03: Enhanced `freepool-install.sh` to create `~/.fcc/.env` skelet
    - No writes when in check mode
    - Returns 0 if all keys present, non-zero if any missing
 
-## Test Results
-All tests pass:
-- ✅ Skeleton created when absent
-- ✅ Existing .env untouched byte-for-byte (preserved + missing key comments appended)
-- ✅ --check output shape correct (machine-parsable KEY=present|missing)
-- ✅ --check returns 0 when all keys present
-- ✅ Negative control verified (mutated installer would overwrite, real installer preserves)
-- ✅ REAL installer preserves existing .env and appends only missing key comments
+## Fix-round test results
+
+The test suite is hermetic. It places a fake `curl` before `PATH`, records
+every health probe, and supplies an explicit up/down response sequence. Every
+installer invocation also uses `env -u FREEPOOL_PROXY_URL`; it cannot depend
+on a listener at `127.0.0.1:8317` (or on any proxy environment variable).
+The fixture supplies an existing fake checkout and `git`, so it makes neither
+network nor GitHub calls.
+
+- Skeleton creation and partial `.env` preservation use one fake health-up probe.
+- The health-down / `FREEPOOL_AUTOSTART=0` case proves the installer exits non-zero.
+- The negative control copies `freepool-install.sh` to a temporary path and
+  mutates the real `create_fcc_env_skeleton` existing-file guard from
+  `[[ ! -f "${FCC_ENV_FILE}" ]]` to `true`; the untouched-existing-`.env` run
+  is killed (overwrites its custom value).
+- The autostart branch receives `down,up`, and asserts exactly one start-script
+  invocation and exactly two health probes (initial check plus one re-check).
+
+Raw suite output (`env -u FREEPOOL_PROXY_URL bash plugins/leadv2/scripts/tests/test-freepool-install.sh`):
+
+```text
+PASS: case1: hermetic health-up install creates all skeleton comments
+PASS: case2: existing .env bytes preserved; missing key appended as comment
+PASS: case3: --check reports missing keys without installation
+PASS: case4: --check returns 0 when all keys are present
+PASS: case5: NEGATIVE CONTROL KILLED by mutation in real installer function
+PASS: case6: real installer preserves untouched existing .env
+PASS: case7: health-down with autostart disabled exits non-zero
+PASS: case8: autostart attempts once and health re-checks once
+
+================================================
+  freepool install test: PASS=8 FAIL=0
+================================================
+```
 
 ## Verification
 - bash -n passes on modified script
-- Test suite runs successfully (6 PASS, 0 FAIL)
+- Test suite runs successfully without a live proxy (8 PASS, 0 FAIL)
 - Manual verification shows proper behavior in various scenarios:
   - Clean environment: creates .env with commented placeholders
   - Existing partial .env: preserves values, adds missing key comments

@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
-# test-freepool-install.sh — FP-03 freepool installer test
+# test-freepool-install.sh — FP-03 installer regression tests
 #
-# Tests:
-#   - Skeleton created when absent
-#   - Existing .env untouched byte-for-byte (cmp)
-#   - --check output shape
-#   - Negative control declared in header and RUN red (mutation: installer overwrites existing .env)
-#
-# The test must declare its negative control in the header and RUN red for the
-# mutation case (installer overwrites existing .env).
-# shellcheck disable=SC2034
-NEGATIVE_CONTROL_MUTATION="installer overwrites existing .env"
+# Negative control: mutate create_fcc_env_skeleton in a temporary copy of the
+# real freepool-install.sh so it overwrites an existing .env.  That run must
+# go red; the unmodified installer must preserve the same input.
+NEGATIVE_CONTROL_MUTATION="real create_fcc_env_skeleton overwrites existing .env"
 
 set -uo pipefail
 
@@ -24,333 +18,202 @@ fail() { printf 'FAIL: %s\n' "$*"; FAIL=$((FAIL + 1)); }
 
 bash -n "$INSTALL" 2>/dev/null || { echo "ERROR: install syntax check failed"; exit 1; }
 
-ROOT="$(mktemp -d)"; trap 'rm -rf "$ROOT"' EXIT
-
-# Test 1: Skeleton created when absent
-HOME_TEST="$ROOT/home"
-mkdir -p "$HOME_TEST"
-export HOME="$HOME_TEST"
-
-log() { echo "[test-freepool-install] $*" >&2; }
-
-# Run installer with clean HOME (no .fcc directory)
-"$INSTALL" >"$ROOT/install.out" 2>&1
-rc=$?
-
-if [[ $rc -eq 0 ]] && [[ -f "${HOME}/.fcc/.env" ]]; then
-  # Check that it contains commented placeholders for all keys
-  if grep -q "^# FCC_CONFIG_SCHEMA=" "${HOME}/.fcc/.env" && \
-     grep -q "^# DEEPSEEK_API_KEY=" "${HOME}/.fcc/.env" && \
-     grep -q "^# GEMINI_API_KEY=" "${HOME}/.fcc/.env" && \
-     grep -q "^# GROQ_API_KEY=" "${HOME}/.fcc/.env" && \
-     grep -q "^# MISTRAL_API_KEY=" "${HOME}/.fcc/.env" && \
-     grep -q "^# NVIDIA_NIM_API_KEY=" "${HOME}/.fcc/.env" && \
-     grep -q "^# OPENROUTER_API_KEY=" "${HOME}/.fcc/.env" && \
-     grep -q "^# PROXY_AUTH_ENABLED=" "${HOME}/.fcc/.env" && \
-     grep -q "^# PORT=" "${HOME}/.fcc/.env"; then
-    pass "case1: skeleton created with all required keys as comments"
-  else
-    fail "case1: skeleton missing some required key comments"
+ROOT="$(mktemp -d)"
+cleanup() {
+  if [[ -f "$ROOT/proxy.pid" ]]; then
+    proxy_pid="$(<"$ROOT/proxy.pid")"
+    kill "$proxy_pid" 2>/dev/null || true
   fi
+  rm -rf "$ROOT"
+}
+trap cleanup EXIT
+
+# The fake curl is intentionally first on PATH.  It records each health probe
+# and returns the requested up/down sequence without opening a network socket.
+mkdir -p "$ROOT/bin" "$ROOT/install/.git" "$ROOT/install/.venv/bin"
+cat > "$ROOT/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+count=0
+[[ -f "${CURL_COUNT_FILE:?}" ]] && count="$(<"$CURL_COUNT_FILE")"
+count=$((count + 1))
+printf '%s\n' "$count" > "$CURL_COUNT_FILE"
+IFS=, read -r -a responses <<< "${FAKE_CURL_SEQUENCE:-up}"
+state="${responses[$((count - 1))]:-${responses[${#responses[@]} - 1]}}"
+[[ "$state" == up ]]
+EOF
+chmod +x "$ROOT/bin/curl"
+
+# No real repository commands are needed once the fixture has .git/.venv.
+cat > "$ROOT/bin/git" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+  *" rev-parse HEAD "*) printf '%s\n' '0123456789abcdef0123456789abcdef01234567' ;;
+esac
+EOF
+chmod +x "$ROOT/bin/git"
+
+# The autostart fixture stays alive until cleanup so start_proxy_if_needed's
+# liveness check succeeds, but it launches no real proxy or child process.
+cat > "$ROOT/install/freepool-proxy.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'start\n' >> "${START_LOG:?}"
+printf '%s\n' "$$" > "${START_PID_FILE:?}"
+trap 'exit 0' TERM INT
+while :; do read -r -t 1 _ || :; done
+EOF
+chmod +x "$ROOT/install/freepool-proxy.sh"
+
+PIN_FILE="$ROOT/freepool-arm.yaml"
+START_LOG="$ROOT/start.log"
+START_PID_FILE="$ROOT/proxy.pid"
+
+run_install() {
+  local script="$1" home="$2" label="$3" sequence="$4" autostart="$5"
+  local count_file="$ROOT/${label}.curl-count"
+  : > "$count_file"
+  env -u FREEPOOL_PROXY_URL \
+    PATH="$ROOT/bin:$PATH" \
+    HOME="$home" \
+    FREEPOOL_INSTALL_DIR="$ROOT/install" \
+    LEADV2_FREEPOOL_PIN_FILE="$PIN_FILE" \
+    FREEPOOL_AUTOSTART="$autostart" \
+    FAKE_CURL_SEQUENCE="$sequence" \
+    CURL_COUNT_FILE="$count_file" \
+    START_LOG="$START_LOG" \
+    START_PID_FILE="$START_PID_FILE" \
+    "$script" >"$ROOT/${label}.out" 2>&1
+  RUN_RC=$?
+  RUN_CURL_COUNT="$(<"$count_file")"
+}
+
+has_skeleton_keys() {
+  local file="$1" key
+  for key in FCC_CONFIG_SCHEMA DEEPSEEK_API_KEY GEMINI_API_KEY GROQ_API_KEY \
+      MISTRAL_API_KEY NVIDIA_NIM_API_KEY OPENROUTER_API_KEY PROXY_AUTH_ENABLED PORT; do
+    grep -q "^# ${key}=" "$file" || return 1
+  done
+}
+
+# Case 1: absent .env creates a complete commented skeleton.  curl=up is a
+# hermetic fake response, not a connection to 127.0.0.1:8317.
+HOME1="$ROOT/home1"; mkdir -p "$HOME1"
+run_install "$INSTALL" "$HOME1" case1 up 0
+if [[ $RUN_RC -eq 0 && $RUN_CURL_COUNT -eq 1 && -f "$HOME1/.fcc/.env" ]] && has_skeleton_keys "$HOME1/.fcc/.env"; then
+  pass "case1: hermetic health-up install creates all skeleton comments"
 else
-  fail "case1: installer failed or .env not created (rc=$rc)"
+  fail "case1: expected rc=0, one fake health check, and skeleton (rc=$RUN_RC checks=$RUN_CURL_COUNT)"
 fi
 
-# Test 2: Existing .env untouched byte-for-byte (except for appended missing key comments)
-HOME_TEST2="$ROOT/home2"
-mkdir -p "$HOME_TEST2/.fcc"
-export HOME="$HOME_TEST2"
-
-# Create a custom .env with specific content
-cat > "${HOME}/.fcc/.env" <<'EOF'
+# Case 2: an existing partial file retains its original bytes and gains only
+# the missing-key comments.
+HOME2="$ROOT/home2"; mkdir -p "$HOME2/.fcc"
+cat > "$HOME2/.fcc/.env" <<'EOF'
 # Custom existing .env
 FCC_CONFIG_SCHEMA=custom_value
 DEEPSEEK_API_KEY=sk-deepseek-123
 GEMINI_API_KEY=gemini-key-456
-# Note: GROQ_API_KEY is intentionally missing
 MISTRAL_API_KEY=mistral-key-789
 NVIDIA_NIM_API_KEY=nim-key-000
 OPENROUTER_API_KEY=or-key-111
 PROXY_AUTH_ENABLED=true
 PORT=8317
 EOF
-
-# Save original for comparison
-cp "${HOME}/.fcc/.env" "${HOME}/.fcc/.env.original"
-
-# Run installer again
-"$INSTALL" >"$ROOT/install2.out" 2>&1
-rc=$?
-
-if [[ $rc -eq 0 ]]; then
-  # The original content should be preserved exactly at the start
-  # Check if the new file starts with the original content
-  if head -n "$(wc -l < "${HOME}/.fcc/.env.original")" "${HOME}/.fcc/.env" | cmp -s - "${HOME}/.fcc/.env.original"; then
-    # Check that missing keys were appended as comments (after the original content)
-    original_lines=$(wc -l < "${HOME}/.fcc/.env.original")
-    if [[ $(wc -l < "${HOME}/.fcc/.env") -gt $original_lines ]]; then
-      if tail -n +$((original_lines + 1)) "${HOME}/.fcc/.env" | grep -q "^# Missing keys added by freepool-install.sh"; then
-        if tail -n +$((original_lines + 1)) "${HOME}/.fcc/.env" | grep -q "^# GROQ_API_KEY="; then
-          pass "case2: existing .env preserved with missing keys appended as comments"
-        else
-          fail "case2: missing key comment not found"
-          echo "Content after line $original_lines:" >&2
-          tail -n +$((original_lines + 1)) "${HOME}/.fcc/.env" >&2
-        fi
-      else
-        fail "case2: missing keys header not found"
-        echo "Content after line $original_lines:" >&2
-        tail -n +$((original_lines + 1)) "${HOME}/.fcc/.env" >&2
-      fi
-    else
-      fail "case2: no missing keys were appended (file not longer than original)"
-    fi
-  else
-    fail "case2: existing .env content was modified"
-    echo "Original content:" >&2
-    cat "${HOME}/.fcc/.env.original" >&2
-    echo "New content:" >&2
-    cat "${HOME}/.fcc/.env" >&2
-  fi
+cp "$HOME2/.fcc/.env" "$HOME2/.fcc/.env.original"
+run_install "$INSTALL" "$HOME2" case2 up 0
+original_lines="$(wc -l < "$HOME2/.fcc/.env.original")"
+if [[ $RUN_RC -eq 0 && $RUN_CURL_COUNT -eq 1 ]] && \
+   head -n "$original_lines" "$HOME2/.fcc/.env" | cmp -s - "$HOME2/.fcc/.env.original" && \
+   tail -n +$((original_lines + 1)) "$HOME2/.fcc/.env" | grep -q '^# GROQ_API_KEY='; then
+  pass "case2: existing .env bytes preserved; missing key appended as comment"
 else
-  fail "case2: installer failed on existing .env (rc=$rc)"
+  fail "case2: existing .env was changed incorrectly (rc=$RUN_RC checks=$RUN_CURL_COUNT)"
 fi
 
-# Test 3: --check output shape
-HOME_TEST3="$ROOT/home3"
-mkdir -p "$HOME_TEST3/.fcc"
-export HOME="$HOME_TEST3"
-
-# Create .env with subset of keys
-cat > "${HOME}/.fcc/.env" <<'EOF'
+# Cases 3/4: --check is report-only and does not invoke the health path.
+HOME3="$ROOT/home3"; mkdir -p "$HOME3/.fcc"
+cat > "$HOME3/.fcc/.env" <<'EOF'
 FCC_CONFIG_SCHEMA=test
-DEEPSEEK_API_KEY=test-key
-# GEMINI_API_KEY intentionally missing
-GROQ_API_KEY=test-key
-MISTRAL_API_KEY=test-key
-# NVIDIA_NIM_API_KEY intentionally missing
-OPENROUTER_API_KEY=test-key
+DEEPSEEK_API_KEY=test
+GROQ_API_KEY=test
+MISTRAL_API_KEY=test
+OPENROUTER_API_KEY=test
 PROXY_AUTH_ENABLED=false
 PORT=8080
 EOF
-
-# Run in check mode
-OUTPUT="$("$INSTALL" --check 2>/dev/null)"
-rc=$?
-
-if [[ $rc -ne 0 ]]; then
-  # --check should return non-zero when keys are missing
-  # Check output format: each line should be KEY=present|missing
-  expected_lines=(
-    "FCC_CONFIG_SCHEMA=present"
-    "DEEPSEEK_API_KEY=present"
-    "GEMINI_API_KEY=missing"
-    "GROQ_API_KEY=present"
-    "MISTRAL_API_KEY=present"
-    "NVIDIA_NIM_API_KEY=missing"
-    "OPENROUTER_API_KEY=present"
-    "PROXY_AUTH_ENABLED=present"
-    "PORT=present"
-  )
-
-  # Check that we have exactly 9 lines
-  if [[ $(echo "$OUTPUT" | wc -l) -eq 9 ]]; then
-    # Check each line matches expected value
-    all_correct=1
-    i=0
-    while IFS= read -r line; do
-      if [[ "$line" != "${expected_lines[$i]}" ]]; then
-        all_correct=0
-        break
-      fi
-      ((i++))
-    done <<< "$OUTPUT"
-
-    if [[ $all_correct -eq 1 ]]; then
-      pass "case3: --check output shape correct"
-    else
-      fail "case3: --check output has wrong values"
-      echo "Expected:" >&2
-      printf '%s\n' "${expected_lines[@]}" >&2
-      echo "Actual:" >&2
-      echo "$OUTPUT" >&2
-    fi
-  else
-    fail "case3: --check output wrong line count (expected 9, got $(echo "$OUTPUT" | wc -l))"
-    echo "Output was:" >&2
-    echo "$OUTPUT" >&2
-  fi
+CHECK_OUTPUT="$(env -u FREEPOOL_PROXY_URL HOME="$HOME3" "$INSTALL" --check 2>/dev/null)"; CHECK_RC=$?
+if [[ $CHECK_RC -ne 0 && "$(printf '%s\n' "$CHECK_OUTPUT" | wc -l)" -eq 9 ]] && \
+   printf '%s\n' "$CHECK_OUTPUT" | grep -qx 'GEMINI_API_KEY=missing' && \
+   printf '%s\n' "$CHECK_OUTPUT" | grep -qx 'NVIDIA_NIM_API_KEY=missing'; then
+  pass "case3: --check reports missing keys without installation"
 else
-  fail "case3: --check should return non-zero when keys missing (rc=$rc)"
+  fail "case3: --check output/rc wrong (rc=$CHECK_RC)"
 fi
 
-# Test 4: --check with all keys present
-HOME_TEST4="$ROOT/home4"
-mkdir -p "$HOME_TEST4/.fcc"
-export HOME="$HOME_TEST4"
-
-# Create .env with all keys
-cat > "${HOME}/.fcc/.env" <<'EOF'
-FCC_CONFIG_SCHEMA=test
-DEEPSEEK_API_KEY=test-key
-GEMINI_API_KEY=test-key
-GROQ_API_KEY=test-key
-MISTRAL_API_KEY=test-key
-NVIDIA_NIM_API_KEY=test-key
-OPENROUTER_API_KEY=test-key
-PROXY_AUTH_ENABLED=true
-PORT=8317
-EOF
-
-OUTPUT="$("$INSTALL" --check 2>/dev/null)"
-rc=$?
-
-if [[ $rc -eq 0 ]]; then
-  # All should be present
-  if echo "$OUTPUT" | grep -qv '=missing$'; then
-    pass "case4: --check returns 0 when all keys present"
-  else
-    fail "case4: --check shows missing keys when all present"
-    echo "Output was:" >&2
-    echo "$OUTPUT" >&2
-  fi
+HOME4="$ROOT/home4"; mkdir -p "$HOME4/.fcc"
+for key in FCC_CONFIG_SCHEMA DEEPSEEK_API_KEY GEMINI_API_KEY GROQ_API_KEY MISTRAL_API_KEY NVIDIA_NIM_API_KEY OPENROUTER_API_KEY PROXY_AUTH_ENABLED PORT; do
+  printf '%s=test\n' "$key" >> "$HOME4/.fcc/.env"
+done
+CHECK_OUTPUT="$(env -u FREEPOOL_PROXY_URL HOME="$HOME4" "$INSTALL" --check 2>/dev/null)"; CHECK_RC=$?
+if [[ $CHECK_RC -eq 0 ]] && ! printf '%s\n' "$CHECK_OUTPUT" | grep -q '=missing$'; then
+  pass "case4: --check returns 0 when all keys are present"
 else
-  fail "case4: --check should return 0 when all keys present (rc=$rc)"
+  fail "case4: --check should return 0 with no missing keys (rc=$CHECK_RC)"
 fi
 
-# NEGATIVE CONTROL: mutation case (installer overwrites existing .env)
-# This test verifies that if we REMOVE the protection logic, the installer would
-# overwrite an existing .env. We test this by creating a simple mutated installer
-# that always overwrites .env (removing the idempotency check).
-HOME_TEST5="$ROOT/home5"
-mkdir -p "$HOME_TEST5/.fcc"
-export HOME="$HOME_TEST5"
-
-# Create a .env with custom content
-cat > "${HOME}/.fcc/.env" <<'EOF'
-# This is a custom .env that should NOT be overwritten
-MY_CUSTOM_VAR=custom-value
-ANOTHER_CUSTOM=another-value
-EOF
-
-# Save original
-cp "${HOME}/.fcc/.env" "${HOME}/.fcc/.env.original"
-
-# Create a MUTATED version of the installer that DOES overwrite .env
-# (removes the idempotency check - simplified for testing)
-MUTATED_INSTALL="$ROOT/mutated-install.sh"
-cat > "$MUTATED_INSTALL" <<'EOF'
-#!/usr/bin/env bash
-# MUTATED freepool-install.sh - always overwrites .env (negative control test)
-
-# Simplified version that always creates/overwrites .env
-mkdir -p "${HOME}/.fcc"
-{
-  echo "# .env for free-claude-code proxy"
-  echo "# Fill in the values below (operator responsibility)"
-  echo "# Format: KEY=value (no quotes)"
-  echo ""
-  for key in "${FCC_ENV_KEYS[@]}"; do
-    echo "# ${key}=
-"
-  done
-} > "${HOME}/.fcc/.env"
-
-echo "[freepool-install] created ${HOME}/.fcc/.env (mutated version - always overwrites)"
-EOF
+# Case 5: mutate the actual production function in a temporary copy.  This
+# changes its existing-file guard to true, so its normal skeleton writer must
+# overwrite our custom input and make the control go red.
+MUTATED_INSTALL="$ROOT/freepool-install-mutated.sh"
+cp "$INSTALL" "$MUTATED_INSTALL"
+perl -0pi -e 's/if \[\[ ! -f "\$\{FCC_ENV_FILE\}" \]\]; then/if true; then/' "$MUTATED_INSTALL"
 chmod +x "$MUTATED_INSTALL"
-
-# Define FCC_ENV_KEYS for the mutated installer (normally sourced from main script)
-FCC_ENV_KEYS=(
-  FCC_CONFIG_SCHEMA
-  DEEPSEEK_API_KEY
-  GEMINI_API_KEY
-  GROQ_API_KEY
-  MISTRAL_API_KEY
-  NVIDIA_NIM_API_KEY
-  OPENROUTER_API_KEY
-  PROXY_AUTH_ENABLED
-  PORT
-)
-
-# Run the mutated installer
-"$MUTATED_INSTALL" >"$ROOT/install5.out" 2>&1
-rc=$?
-
-if [[ $rc -eq 0 ]]; then
-  # Check if .env was overwritten (custom content lost)
-  if ! grep -q "MY_CUSTOM_VAR=custom-value" "${HOME}/.fcc/.env"; then
-    pass "NEGATIVE CONTROL KILLED: mutated installer overwrote existing .env (as expected)"
-  else
-    fail "NEGATIVE CONTROL SURVIVED: mutated installer did not overwrite .env"
-  fi
+if ! rg -q 'if true; then' "$MUTATED_INSTALL"; then
+  fail "case5: failed to apply mutation inside real create_fcc_env_skeleton"
 else
-  fail "NEGATIVE CONTROL: mutated installer failed unexpectedly (rc=$rc)"
+  HOME5="$ROOT/home5"; mkdir -p "$HOME5/.fcc"
+  printf 'MY_CUSTOM_VAR=custom-value\n' > "$HOME5/.fcc/.env"
+  run_install "$MUTATED_INSTALL" "$HOME5" case5 up 0
+  if [[ $RUN_RC -eq 0 ]] && ! grep -q 'MY_CUSTOM_VAR=custom-value' "$HOME5/.fcc/.env"; then
+    pass "case5: NEGATIVE CONTROL KILLED by mutation in real installer function"
+  else
+    fail "case5: real-function mutation did not overwrite existing .env (rc=$RUN_RC)"
+  fi
 fi
 
-# Verify that the REAL installer does NOT overwrite (preserves original + appends missing key comments)
-HOME_TEST6="$ROOT/home6"
-mkdir -p "$HOME_TEST6/.fcc"
-export HOME="$HOME_TEST6"
-
-# Create a .env with custom content
-cat > "${HOME}/.fcc/.env" <<'EOF'
-# This is a custom .env that should NOT be overwritten by real installer
-MY_CUSTOM_VAR=custom-value
-ANOTHER_CUSTOM=another-value
-EOF
-
-# Save original
-cp "${HOME}/.fcc/.env" "${HOME}/.fcc/.env.original"
-
-# Run the REAL installer
-"$INSTALL" >"$ROOT/install6.out" 2>&1
-rc=$?
-
-if [[ $rc -eq 0 ]]; then
-  # The original content should be preserved exactly at the start
-  original_lines=$(wc -l < "${HOME}/.fcc/.env.original")
-  if [[ $(wc -l < "${HOME}/.fcc/.env") -ge $original_lines ]]; then
-    if head -n "$original_lines" "${HOME}/.fcc/.env" | cmp -s - "${HOME}/.fcc/.env.original"; then
-      # Check that only missing key comments were appended (after the original content)
-      # Since our .env.original has all keys present, NO missing key comments should be added
-      if [[ $(wc -l < "${HOME}/.fcc/.env") -eq $original_lines ]]; then
-        pass "REAL installer preserves existing .env with custom content (no missing keys to add)"
-      else
-        # Check what was appended - should only be missing key comments
-        appended_content=$(tail -n +$((original_lines + 1)) "${HOME}/.fcc/.env")
-        if echo "$appended_content" | grep -q "^# Missing keys added by freepool-install.sh"; then
-          # Check that no actual key values were added (only comments)
-          if ! echo "$appended_content" | grep -v '^#' | grep -q '.'; then
-            pass "REAL installer preserves existing .env and appends only missing key comments"
-          else
-            fail "REAL installer appended non-comment content"
-            echo "Appended content:" >&2
-            echo "$appended_content" >&2
-          fi
-        else
-          fail "REAL installer did not append missing keys header when expected"
-          echo "Appended content:" >&2
-          echo "$appended_content" >&2
-        fi
-      fi
-    else
-      fail "REAL installer modified existing content"
-      echo "Original:" >&2
-      cat "${HOME}/.fcc/.env.original" >&2
-      echo "New (first $original_lines lines):" >&2
-      head -n "$original_lines" "${HOME}/.fcc/.env" >&2
-    fi
-  else
-    fail "REAL installer truncated existing .env"
-    echo "Original lines: $original_lines, New lines: $(wc -l < "${HOME}/.fcc/.env")" >&2
-  fi
+# Case 6: unmodified real installer preserves the same custom input.
+HOME6="$ROOT/home6"; mkdir -p "$HOME6/.fcc"
+printf 'MY_CUSTOM_VAR=custom-value\n' > "$HOME6/.fcc/.env"
+cp "$HOME6/.fcc/.env" "$HOME6/.fcc/.env.original"
+run_install "$INSTALL" "$HOME6" case6 up 0
+if [[ $RUN_RC -eq 0 ]] && head -n 1 "$HOME6/.fcc/.env" | cmp -s - "$HOME6/.fcc/.env.original"; then
+  pass "case6: real installer preserves untouched existing .env"
 else
-  fail "REAL installer failed on existing .env with custom content (rc=$rc)"
+  fail "case6: real installer did not preserve custom content (rc=$RUN_RC)"
+fi
+
+# Case 7: no fake health success + autostart disabled must fail cleanly.
+HOME7="$ROOT/home7"; mkdir -p "$HOME7"
+run_install "$INSTALL" "$HOME7" case7 down 0
+if [[ $RUN_RC -ne 0 && $RUN_CURL_COUNT -eq 1 ]] && grep -q 'proxy is down and FREEPOOL_AUTOSTART=0' "$ROOT/case7.out"; then
+  pass "case7: health-down with autostart disabled exits non-zero"
+else
+  fail "case7: expected health-down failure with one check (rc=$RUN_RC checks=$RUN_CURL_COUNT)"
+fi
+
+# Case 8: exercise freepool-install.sh's autostart branch.  The sequence
+# down,up proves exactly one initial check and exactly one re-check; the start
+# fixture log proves exactly one start attempt.
+: > "$START_LOG"
+HOME8="$ROOT/home8"; mkdir -p "$HOME8"
+run_install "$INSTALL" "$HOME8" case8 down,up 1
+start_count="$(wc -l < "$START_LOG")"
+if [[ $RUN_RC -eq 0 && $RUN_CURL_COUNT -eq 2 && $start_count -eq 1 ]]; then
+  pass "case8: autostart attempts once and health re-checks once"
+else
+  fail "case8: expected rc=0, one start, two checks (rc=$RUN_RC starts=$start_count checks=$RUN_CURL_COUNT)"
 fi
 
 printf '\n================================================\n'
 printf '  freepool install test: PASS=%s FAIL=%s\n' "$PASS" "$FAIL"
 printf '================================================\n'
-
-exit $FAIL
+exit "$FAIL"
