@@ -1647,34 +1647,65 @@ emit() {
 }
 
 # FP-06: model-selection telemetry -- one machine-parseable row per dispatch
-# attempt, emitted at the attempt's terminal. Win = a confirmed LIVE spawn
-# (the lane's later landed/parked/dead verdict belongs to the close gate, not
-# to model selection); fail = the candidate chain is exhausted (or the arbiter
-# hard-refused). Fields read the caller cmd_resolve's locals (bash dynamic
-# scoping) plus the _MS_* globals initialized at candidate-loop entry.
+# attempt, emitted at EVERY model-selection terminal (fix-round H2 census):
+# win = a confirmed LIVE spawn (the lane's later landed/parked/dead verdict
+# belongs to the close gate, not to model selection); fail = the attempt died
+# before any spawn -- chain exhausted/quota-locked/excluded/not-dispatchable,
+# or the arbiter hard-refused. Fields read the caller cmd_resolve's locals
+# (bash dynamic scoping) plus the _MS_* globals initialized at
+# candidate-loop entry.
 # fallback_depth counts route_fallback transitions before the terminal arm
 # (how many arms were tried and lost before this one); floor mirrors the
-# arm_floor_applied journal decision. Also appended as a CSV row under
-# docs/leadv2/ (header auto-created) so FP-04's 20-diff quality gate has a
-# dataset. Fail-open everywhere: telemetry must never change a dispatch
-# outcome, so every CSV step is best-effort.
+# arm_floor_applied journal decision; model names the arm/model that ACTUALLY
+# executed (fix-round H1: the FINAL candidate, never the arbiter's original
+# pick after a fallback). Also appended as a CSV row under
+# docs/leadv2/ (header auto-created, lock-protected) so FP-04's later
+# 20-diff quality analysis has a dataset. Fail-open everywhere: telemetry
+# must never change a dispatch outcome, so every CSV step is best-effort.
 _model_select_telemetry() {  # <terminal:win|fail> <cause> [arm]
   local _t="$1" _c="$2" _a="${3:-${arm:-unknown}}"
   local _s=0
   if [[ -n "${_MS_T0:-}" && "${_MS_T0}" =~ ^[0-9]+$ ]]; then
     _s=$(( $(_now_epoch) - _MS_T0 )); [[ "${_s}" -lt 0 ]] && _s=0
   fi
-  local _class
-  _class="$(printf '%s' "${ADMISSION_CLASS:-${task_class:-standard}}" | tr '[:upper:]' '[:lower:]')"
-  local _wk="${ADMISSION_WORK_KIND:-${kind:-code}}"
-  emit decision "model_select_telemetry task=${sig8:-} role=worker class=${_class} work_kind=${_wk} arm=${_a} model=${_MS_MODEL:-${_a}} fallback_depth=${_MS_FALLBACKS:-0} floor=${_MS_FLOOR:-none} spawn_to_terminal_s=${_s} terminal=${_t} cause=${_c}"
+  # fix-round M2: class/work_kind derive from the task-judge's JSON (LLM
+  # output) and model/cause/arm carry provider vocab -- ONE space, '=' or ','
+  # inside a value would corrupt the space-delimited k=v row and/or the CSV
+  # column count with no field-count check to catch it. One sanitize pass over
+  # every emitted value: fold all field-breaking bytes (incl. newlines) to '_'.
+  local _class _wk _model
+  _class="$(printf '%s' "${ADMISSION_CLASS:-${task_class:-standard}}" | tr '[:upper:]' '[:lower:]' | tr ' \t=\r\n' '_')"
+  _wk="$(printf '%s' "${ADMISSION_WORK_KIND:-${kind:-code}}" | tr ' \t=\r\n' '_')"
+  _a="$(printf '%s' "${_a}" | tr ' \t=\r\n' '_')"
+  _c="$(printf '%s' "${_c}" | tr ' \t=\r\n' '_')"
+  _model="$(printf '%s' "${_MS_MODEL:-${_a}}" | tr ' \t=\r\n' '_')"
+  emit decision "model_select_telemetry task=${sig8:-} role=worker class=${_class} work_kind=${_wk} arm=${_a} model=${_model} fallback_depth=${_MS_FALLBACKS:-0} floor=${_MS_FLOOR:-none} spawn_to_terminal_s=${_s} terminal=${_t} cause=${_c}"
+  # fix-round M3+H4: header creation and row append land under ONE
+  # lv2_lock_wait critical section -- two dispatches from the same checkout
+  # (the normal parallel-lane pattern) raced the -f header test and could
+  # double the header or lose a row. H4: the file is unbounded no more --
+  # capped at LEADV2_MS_TELEMETRY_CSV_MAX_ROWS (default 5000), keeping the
+  # newest rows under the header. Deliberately per-PROJECT_ROOT (each
+  # worktree keeps its own fragment; aggregation for FP-04 is a later,
+  # explicit step, not a silent shared-state write).
   local _csv="${PROJECT_ROOT:-}/docs/leadv2/model-select-telemetry.csv" _dir
   [[ -n "${PROJECT_ROOT:-}" ]] || return 0
   _dir="$(dirname "${_csv}")"
   mkdir -p "${_dir}" 2>/dev/null || return 0
-  [[ -f "${_csv}" ]] || printf 'task,role,class,work_kind,arm,model,fallback_depth,floor,spawn_to_terminal_s,terminal,cause\n' > "${_csv}" 2>/dev/null || return 0
-  printf '%s\n' "task=${sig8:-} role=worker class=${_class} work_kind=${_wk} arm=${_a} model=${_MS_MODEL:-${_a}} fallback_depth=${_MS_FALLBACKS:-0} floor=${_MS_FLOOR:-none} spawn_to_terminal_s=${_s} terminal=${_t} cause=${_c}" \
-    | awk '{n=split($0,kv," "); for(i=1;i<=n;i++){split(kv[i],p,"="); printf "%s%s", p[2], (i<n?",":"\n")}}' >> "${_csv}" 2>/dev/null || true
+  local _row="task=${sig8:-} role=worker class=${_class} work_kind=${_wk} arm=${_a} model=${_model} fallback_depth=${_MS_FALLBACKS:-0} floor=${_MS_FLOOR:-none} spawn_to_terminal_s=${_s} terminal=${_t} cause=${_c}"
+  (
+    lv2_lock_wait "${_csv}.lock" 5 || exit 3
+    [[ -f "${_csv}" ]] || printf 'task,role,class,work_kind,arm,model,fallback_depth,floor,spawn_to_terminal_s,terminal,cause\n' > "${_csv}" 2>/dev/null || exit 0
+    printf '%s\n' "${_row}" \
+      | awk '{n=split($0,kv," "); for(i=1;i<=n;i++){split(kv[i],p,"="); printf "%s%s", p[2], (i<n?",":"\n")}}' >> "${_csv}" 2>/dev/null || true
+    local _cap="${LEADV2_MS_TELEMETRY_CSV_MAX_ROWS:-5000}" _lines
+    _lines="$(wc -l < "${_csv}" 2>/dev/null | tr -d ' ')" || _lines=0
+    [[ "${_lines}" =~ ^[0-9]+$ ]] || _lines=0
+    if [[ "${_lines}" -gt "${_cap}" ]]; then
+      { head -1 "${_csv}"; tail -n "$(( _cap - 1 ))" "${_csv}"; } > "${_csv}.tmp" 2>/dev/null \
+        && mv -f "${_csv}.tmp" "${_csv}" 2>/dev/null || rm -f "${_csv}.tmp" 2>/dev/null
+    fi
+  ) 9>"${_csv}.lock" 2>/dev/null || true
 }
 
 # T-o: write-once terminal-state row for <sig8> via leadv2-dispatch-ledger.sh's CLI.
@@ -6454,7 +6485,8 @@ exit is treated as an incident."
   # exception resolving directly to sonnet therefore cannot escape back to GLM.
   local -a candidate_arms attempted
   # FP-06 telemetry bookkeeping (see _model_select_telemetry): attempt clock,
-  # fallback counter, floor mirror and the arbiter's model for the live chain.
+  # fallback counter, floor mirror. _MS_MODEL itself is (re)stamped at the
+  # TOP of the candidate loop (fix-round H1) -- never here.
   # Deliberately NOT `local` -- the file-scope helper reads them via bash
   # dynamic scoping, same pattern as DISPATCH_FREEPOOL_ROLE.
   _MS_T0="$(_now_epoch)"; _MS_FALLBACKS=0; _MS_FLOOR="none"; _MS_MODEL=""
@@ -6468,7 +6500,7 @@ exit is treated as an incident."
       emit decision "router_v2_no_ordered_key task=${sig8}"
     fi
     IFS=',' read -r -a candidate_arms <<< "${_v2_chain}"
-    [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
+    [[ ${#candidate_arms[@]} -gt 0 && -n "${candidate_arms[0]}" ]] || { emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} router=v2"; _model_select_telemetry fail all_arms_exhausted; _dl_note "${sig8}" refused all_arms_exhausted_v2 "" "${founder_task_id}"; exit 4; }
     # ARM-LADDER-KIMI-RESURRECTED-01 follow-up + ROUTER-V2-BYPASSES-ARM-LADDER-
     # FILTER-01: v2's eligible=/ordered= comes straight from the router-v2
     # resolver, which never consulted DISPATCHABLE_BUILD_ARMS and speaks a
@@ -6477,6 +6509,7 @@ exit is treated as an incident."
     # empty-guard) so a retired id (e.g. a stale tenant yaml still listing
     # kimi) cannot survive at ANY of them.
     if ! _adopt_v2_chain "${sig8}" initial "${_v2_chain}"; then
+      _model_select_telemetry fail all_arms_not_dispatchable_v2
       _dl_note "${sig8}" refused all_arms_not_dispatchable_v2 "" "${founder_task_id}"
       exit 4
     fi
@@ -6579,7 +6612,6 @@ exit is treated as an incident."
         # index 0, so pre-fix the journal's arm= value and the first
         # worker_spawned model could legitimately differ.
         arm="${candidate_arms[0]}"; reason="${_arb_reason:-cheapest_capable}"; router_label="arbiter"
-        _MS_MODEL="${_arb_model:-${arm}}"
         [[ "${arm}" == codex ]] && export RESOLVED_CODEX_TIER="${_arb_tier:-standard}"
         emit decision "route_resolved by=arbiter role=worker arm=${arm} model=${_arb_model:-${arm}} tier=${RESOLVED_CODEX_TIER:-${_arb_tier:-standard}} task=${sig8} reason=${reason} arbiter_pick=${_arb_arm} ${_arb_util}"
       else
@@ -6641,6 +6673,7 @@ exit is treated as an incident."
     if [[ ${#_qpc_kept[@]} -eq 0 ]]; then
       emit decision "dispatch_rolled_back reason=all_arms_quota_locked task=${sig8}"
       log_err "every candidate arm is quota-locked; refusing to dispatch"
+      _model_select_telemetry fail all_arms_quota_locked
       _dl_note "${sig8}" refused all_arms_quota_locked "" "${founder_task_id}"
       exit 4
     fi
@@ -6662,6 +6695,10 @@ exit is treated as an incident."
     _bf_util="$(printf '%s\n' "${_bf_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
     if [[ ${_bf_rc} -eq 0 && -n "${_bf_arm}" && "${_bf_arm}" != refuse ]] && _adopt_v2_chain "${sig8}" bench_fallback "${_bf_chain}"; then
       arm="${candidate_arms[0]}"; router_label="arbiter"
+      # FP-06 fix-round (H1): the re-arbitrated pick's model= is the authority
+      # for the NEW candidate_arms[0] -- the initial arbiter call's model
+      # described the (now benched) arm it picked, not this one.
+      _arb_model="$(printf '%s\n' "${_bf_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
       emit decision "route_headroom_chosen task=${sig8} arm=${arm} after=primary_arm_benched ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") source=arbiter ${_bf_util}"
     else
       emit decision "arbiter_broken task=${sig8} rc=${_bf_rc} reason=bench_fallback_fail_open_to_ladder"
@@ -6693,6 +6730,7 @@ exit is treated as an incident."
       if [[ ${_rv2_rc} -eq 3 || -z "${_rv2_eligible}" ]]; then
         emit decision "dispatch_rolled_back reason=all_arms_exhausted task=${sig8} by=router_v2 chain=${_rv2_chain}"
         log_err "every candidate arm is quota-exhausted (chain='${_rv2_chain}'); refusing to dispatch"
+        _model_select_telemetry fail all_arms_exhausted_quota
         _dl_note "${sig8}" refused all_arms_exhausted_quota "chain=${_rv2_chain}" "${founder_task_id}"
         exit 4
       fi
@@ -6710,6 +6748,7 @@ exit is treated as an incident."
       # adopter is wired anyway so a future guard fix cannot re-open the hole.)
       if ! _adopt_v2_chain "${sig8}" quota_filter "${_rv2_pick}"; then
         log_err "every re-resolved arm is not dispatchable (chain='${_rv2_pick}'); refusing to dispatch"
+        _model_select_telemetry fail all_arms_not_dispatchable_v2
         _dl_note "${sig8}" refused all_arms_not_dispatchable_v2 "chain=${_rv2_pick}" "${founder_task_id}"
         exit 4
       fi
@@ -6738,6 +6777,7 @@ exit is treated as an incident."
     done
     if [[ ${#_kept[@]} -eq 0 ]]; then
       log_err "every candidate arm is excluded (excluded='${_ex_src}'); refusing to dispatch"
+      _model_select_telemetry fail all_arms_excluded
       _dl_note "${sig8}" refused all_arms_excluded "excluded=${_ex_src}" "${founder_task_id}"
       exit 4
     fi
@@ -6782,6 +6822,18 @@ exit is treated as an incident."
   while true; do
   _reenter=0
   for candidate in "${candidate_arms[@]}"; do
+    # FP-06 fix-round (H1): the telemetry row must name the arm/model that
+    # ACTUALLY executes -- the same identity the confirmed spawn journals.
+    # The arbiter's model= string is authoritative only for its own pick
+    # (candidate_arms[0] of the CURRENT chain -- every re-arbitration site
+    # refreshes _arb_model); any later iteration is a fallback candidate
+    # whose model IS the candidate id, so re-stamp per iteration instead of
+    # keeping one assignment made at arbiter-adoption time.
+    if [[ "${candidate}" == "${candidate_arms[0]:-}" && "${router_label:-}" == "arbiter" && -n "${_arb_model:-}" ]]; then
+      _MS_MODEL="${_arb_model}"
+    else
+      _MS_MODEL="${candidate}"
+    fi
     if [[ -n "${_fallback_from}" ]]; then
       emit decision "route_fallback from=${_fallback_from} to=${candidate} task=${sig8} reason=${_fallback_reason:-arm_refused}"
       _MS_FALLBACKS=$(( ${_MS_FALLBACKS:-0} + 1 ))
@@ -6950,6 +7002,9 @@ ${mission}"
           _e76_util="$(printf '%s\n' "${_e76_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
           if [[ ${_e76_rc} -eq 0 && -n "${_e76_arm}" && "${_e76_arm}" != refuse ]] && _adopt_v2_chain "${sig8}" exit76_continuation "${_e76_chain}"; then
             arm="${candidate_arms[0]}"; router_label="arbiter"; _reenter=1
+            # FP-06 fix-round (H1): same rule as the bench-fallback site -- the
+            # continuation arbiter's model= belongs to the NEW first candidate.
+            _arb_model="$(printf '%s\n' "${_e76_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
             emit decision "route_headroom_chosen task=${sig8} arm=${arm} after=exit76_continuation ordered=$(IFS=,; printf '%s' "${candidate_arms[*]}") source=arbiter ${_e76_util}"
             break
           fi
