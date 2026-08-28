@@ -395,7 +395,7 @@ run_reviewer_arm() { # <arm>
       return
     fi
     bash "${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}" adversarial-review --base "${codex_base}" --wait --cwd "${ROOT}" \
-      --focus "Review ONLY the diff at ${DIFF_FILE}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract_focus} Authoritative surfaces for this repo: \`.claude/CLAUDE.md\`, \`docs/reference/ENGINE-REFERENCE.md\`, \`docs/systems-map/CONTROL-TRUTH.md\`, \`docs/systems-map/TRUTH-TABLE.md\`, \`docs/BOARD.md\`. Read only the ones the diff touches. Treat any \`docs/specs/*.md\` as possibly stale unless corroborated by code. Before promoting a Codex finding, corroborate it against those surfaces; drop or downgrade any finding whose sole basis is a \`docs/specs/*.md\` claim." \
+      --focus "Review ONLY the diff at ${DIFF_FILE}. You are independent of the author (${AUTHOR}). Report correctness findings by severity (Critical / High / Medium / Low). ${review_contract_focus} When using rg to inspect the diff or repository, treat exit 1 as a normal no-match result: write every potentially empty search as rg ... || true, then continue the review. A no-match is never a command failure or a reason to stop. Authoritative surfaces for this repo: \`.claude/CLAUDE.md\`, \`docs/reference/ENGINE-REFERENCE.md\`, \`docs/systems-map/CONTROL-TRUTH.md\`, \`docs/systems-map/TRUTH-TABLE.md\`, \`docs/BOARD.md\`. Read only the ones the diff touches. Treat any \`docs/specs/*.md\` as possibly stale unless corroborated by code. Before promoting a Codex finding, corroborate it against those surfaces; drop or downgrade any finding whose sole basis is a \`docs/specs/*.md\` claim." \
       > "${review_out}" 2> "${review_err}"; review_rc=$?
   elif [[ "${arm}" == glm ]]; then
     printf 'Review ONLY the diff at %s. You are independent of the author (%s).\nReport correctness findings by severity (Critical / High / Medium / Low).\n%s\n' \
@@ -515,6 +515,23 @@ next_ok_arm_after() { # <after-arm>  reads ${pool}
       return 0
     fi
     [[ "${arm}" == "${after}" ]] && found=1
+  done
+  return 1
+}
+
+# _review_next_distinct_ok_arm <failed-arm> <author> <used-csv>
+# Body-loss recovery must use an untried, distinct pool arm: rerunning the
+# failed reviewer would only reproduce the lost body behind a fake retry.
+_review_next_distinct_ok_arm() {
+  local failed="$1" author="$2" used_csv="${3:-}" entry arm
+  local IFS=','
+  for entry in ${pool}; do
+    arm="${entry%%:*}"
+    [[ "${entry}" == "${arm}:ok:"* ]] || continue
+    [[ "${arm}" != "${failed}" && "${arm}" != "${author}" ]] || continue
+    [[ ",${used_csv}," != *",${arm},"* ]] || continue
+    printf '%s' "${arm}"
+    return 0
   done
   return 1
 }
@@ -1105,7 +1122,7 @@ review_adir="${ROOT}/docs/handoff/dispatch-${TASK}-review"
 mkdir -p "${review_adir}" 2>/dev/null || true
 REVIEW_STAMP="${HANDOFF}/.review-start.stamp"
 touch "${REVIEW_STAMP}" 2>/dev/null || true
-_review_contract_base=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.\nAlso report every Critical/High finding on its own line, exact format:\nFINDING: severity=<Critical|High> file=<path> line=<n> dimension=<correctness|security|design|perf> desc=<one line>'
+_review_contract_base=$'Your review MUST contain these two lines, verbatim format, before any prose:\nREVIEW_VERDICT: <FAIL|PASS|PASS_WITH_NITS>\nREVIEW_FINDINGS: critical=<n> high=<n> medium=<n> low=<n>\nFAIL if any Critical or High finding. PASS if the diff is clean. PASS_WITH_NITS otherwise.\nAlso report every Critical/High finding on its own line, exact format:\nFINDING: severity=<Critical|High> file=<path> line=<n> dimension=<correctness|security|design|perf> desc=<one line>\n\nIf no findings are found, please output a brief explanation (at least one sentence) after the required lines to ensure the review body is sufficient for processing.'
 
 # REVIEW-ROUND1-EXHAUSTIVE-01: diff hash hoisted here (was computed later, at
 # the old line ~546) so round detection — which must run before pool resolve
@@ -1374,26 +1391,52 @@ if [[ "${#ran_arms[@]}" -eq 0 ]]; then
   exit 9
 fi
 
-# REVIEW-BODY-PERSIST-01 guard: applied per surviving arm — a paid review whose
-# body was lost must surface as blocked, never silently pass through.
-for _arm in "${ran_arms[@]}"; do
-  _out="${HANDOFF}/review-${_arm}.md"
-  _err="${HANDOFF}/review-${_arm}.err"
-  _rc="$(cat "${HANDOFF}/review-${_arm}.rc" 2>/dev/null || printf '1')"
-  if [[ "${_rc}" -eq 0 ]]; then
-    _pc_body_min="${LEADV2_REVIEW_BODY_MIN_BYTES:-300}"
-    _pc_body_bytes="$(wc -c < "${_out}" 2>/dev/null | tr -d '[:space:]')"; _pc_body_bytes="${_pc_body_bytes:-0}"
-    if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
-      if [[ -s "${_err}" ]] || grep -q 'cost recorded:' "${_err}" 2>/dev/null; then
-        _pc_body_rel="${_out#"${ROOT}"/}"
-        printf 'status: blocked\nreason: review_body_lost\narm: %s\nbody: %s\nbytes: %s\n' \
-          "${_arm}" "${_pc_body_rel}" "${_pc_body_bytes}" > "${HANDOFF}/review-gate.md.tmp"
-        mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-        emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${_arm} body=${_pc_body_rel} bytes=${_pc_body_bytes}"
-        exit 6
+# REVIEW-BODY-PERSIST-01 guard: a paid review whose body was lost must surface
+# as blocked, except for one recovery attempt on an untried, distinct pool arm.
+# This protects the Codex no-match choke without allowing an arm to retry itself.
+_review_body_retry_used=0
+for _ran_index in "${!ran_arms[@]}"; do
+  _arm="${ran_arms[${_ran_index}]}"
+  while :; do
+    _out="${HANDOFF}/review-${_arm}.md"
+    _err="${HANDOFF}/review-${_arm}.err"
+    _rc="$(cat "${HANDOFF}/review-${_arm}.rc" 2>/dev/null || printf '1')"
+    if [[ "${_rc}" -eq 0 ]]; then
+      _pc_body_min="${LEADV2_REVIEW_BODY_MIN_BYTES:-300}"
+      _pc_body_bytes="$(wc -c < "${_out}" 2>/dev/null | tr -d '[:space:]')"; _pc_body_bytes="${_pc_body_bytes:-0}"
+      if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
+        if [[ -s "${_err}" ]] || grep -q 'cost recorded:' "${_err}" 2>/dev/null; then
+          _pc_body_rel="${_out#"${ROOT}"/}"
+          _pc_used_csv="$(IFS=,; echo "${ran_arms[*]}")"
+          _pc_retry_arm=""
+          if [[ "${_review_body_retry_used}" -eq 0 ]]; then
+            _pc_retry_arm="$(_review_next_distinct_ok_arm "${_arm}" "${AUTHOR}" "${_pc_used_csv}" || true)"
+          fi
+          if [[ -n "${_pc_retry_arm}" ]]; then
+            _review_body_retry_used=1
+            emit decision "review_arm_retry from=${_arm} to=${_pc_retry_arm} task=${TASK} reason=review_body_lost"
+            _pc_retry_journal="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
+            if [[ -f "${_pc_retry_journal}" ]]; then
+              bash "${_pc_retry_journal}" append "${TASK}" review_arm_retry \
+                "review_arm_retry from=${_arm} to=${_pc_retry_arm}" >/dev/null 2>&1 || true
+            fi
+            _arm="${_pc_retry_arm}"
+            ran_arms[${_ran_index}]="${_arm}"
+            run_reviewer_arm "${_arm}" || review_rc=$?
+            _rc="${review_rc:-1}"
+            printf '%s' "${_rc}" > "${HANDOFF}/review-${_arm}.rc"
+            continue
+          fi
+          printf 'status: blocked\nreason: review_body_lost\narm: %s\nbody: %s\nbytes: %s\n' \
+            "${_arm}" "${_pc_body_rel}" "${_pc_body_bytes}" > "${HANDOFF}/review-gate.md.tmp"
+          mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+          emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${_arm} body=${_pc_body_rel} bytes=${_pc_body_bytes}"
+          exit 6
+        fi
       fi
     fi
-  fi
+    break
+  done
 done
 
 # REVIEW-UNION-VERDICT-01 (2026-08-21): the union of arms is authoritative — ANY

@@ -16,13 +16,25 @@
 # FREEPOOL_SKIP_GATE in freepool-coder.sh / GLM_SKIP_QUOTA_GATE).
 set -euo pipefail
 
+leadv2_freepool_gate_script_dir() {
+  # Resolve the canonical location when this library is installed per-file.
+  local source="${BASH_SOURCE[0]}" link dir
+  while [[ -h "$source" ]]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    link="$(readlink "$source")"
+    [[ "$link" == /* ]] || link="$dir/$link"
+    source="$link"
+  done
+  cd -P "$(dirname "$source")" && pwd
+}
+
 readonly FREEPOOL_HEALTH_URL="${FREEPOOL_PROXY_URL:-http://127.0.0.1:8317}/health"
 # T19 fix-round-2 (B-H1): the pin file freepool-install.sh writes
 # (config/freepool-arm.yaml) previously had no reader anywhere -- a checkout that
 # drifted from the reviewed/pinned commit (upstream force-push, a manual `git pull`
 # in FREEPOOL_INSTALL_DIR, anything) was never detected. Compared against a live
 # `git -C $FREEPOOL_INSTALL_DIR rev-parse HEAD` on every gate check now.
-readonly FREEPOOL_PIN_FILE="${LEADV2_FREEPOOL_PIN_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/config/freepool-arm.yaml}"
+readonly FREEPOOL_PIN_FILE="${LEADV2_FREEPOOL_PIN_FILE:-$(cd "$(leadv2_freepool_gate_script_dir)/../.." && pwd)/config/freepool-arm.yaml}"
 readonly FREEPOOL_INSTALL_DIR="${FREEPOOL_INSTALL_DIR:-${HOME}/tools/free-claude-code}"
 readonly FREEPOOL_STATE_DIR="${LEADV2_FREEPOOL_STATE_DIR:-${HOME}/.claude/leadv2-state}"
 readonly FREEPOOL_STATE_FILE="${FREEPOOL_STATE_DIR}/freepool-arm-state.json"

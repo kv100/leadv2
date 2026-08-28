@@ -47,8 +47,8 @@ Each phase entry calls `leadv2_pulse_log "<phase>" "<one-line summary>"` — emi
 **Env:**
 - `LEADV2_DRY_RUN=1` — phases run, spawns/deploys are echoed not executed
 - `LEADV2_DAEMON=1` — daemon mode: Gate 1 auto-accepts, self-spawn after Phase 8 close
-- `LEADV2_GATE1_AUTO_ACCEPT_SEC=N` — Gate 1 timeout in daemon mode (default 5s; Heavy always blocks)
-- `LEADV2_GATE1_HEAVY_TIMEOUT_SEC=N` — Gate 1 timeout for Heavy tasks in daemon mode (default 60s; 0 = immediate auto-accept). Only applies when LEADV2_DAEMON=1.
+- `LEADV2_GATE1_AUTO_ACCEPT_SEC=N` — Gate 1 timeout in daemon mode (default 5s). Only reaches Standard/Light/Trivial non-high-risk gates; Heavy/high-risk never auto-accepts.
+- `LEADV2_GATE1_RISK=none|data|safety_publish_payments` — risk signal passed to the gate (also accepted as a 4th CLI arg). `safety_publish_payments` (or high/critical) routes through the Heavy blocking path regardless of class. `LEADV2_GATE1_HEAVY_TIMEOUT_SEC` never existed in the script and is removed from this doc (2026-08-28, PHASE-DISCIPLINE-01 D4).
 - `LEADV2_MAX_SELF_SPAWNS_PER_DAY=N` — daily self-spawn cap (default 4)
 - `FORCE_OPUS_LEAD=1` — force orchestrator to Opus model
 - `LEADV2_GOAL_INTERACTIVE=1` — when set, lead self-fires `/goal` at Phase 4 start for Standard+/Heavy in interactive (non-daemon) sessions; 60-turn cap (vs 140 for daemon). Default: 0 (off).
@@ -202,13 +202,12 @@ All plan artifacts are on disk (architect.md, context.yaml, codex-plan-result.md
 
 **Verify plan completeness inline** (no separate skill in v0.1): `context.yaml` must have `decisions[]` non-empty, `off_limits[]` populated (even if empty list is intentional), `plan.steps[]` with ≥1 step, and a risk summary. Block Gate 1 if any are missing.
 
-**Gate 1 mechanism** (uses `leadv2-gate1-prompt.sh`):
-- Non-Heavy: auto-accept after LEADV2_GATE1_AUTO_ACCEPT_SEC (default 5s)
-- Heavy: auto-accept after LEADV2_GATE1_HEAVY_TIMEOUT_SEC (default 60s) when LEADV2_DAEMON=1; blocks indefinitely when DAEMON=0
-- Standard interactive: one terse line + 60s timeout → auto-accept.
-- `LEADV2_DRY_RUN=1`: immediate auto-accept, print plan only.
+**Gate 1 mechanism** (uses `leadv2-gate1-prompt.sh`, PHASE-DISCIPLINE-01 D4):
+- Heavy/Strategic/high-risk (`risk=safety_publish_payments`): NEVER auto-accepts, in ANY mode — `LEADV2_DRY_RUN`/`LEADV2_BOT_MODE` are ignored on this path. With `LEADV2_ASYNC_QUESTIONS=1` the gate is a BLOCKING async question (`leadv2-ask.sh`; declared default option = decline, so an ask timeout parks the task, it never accepts). Otherwise a blocking stdin read, no timeout.
+- Standard non-high-risk: daemon/non-interactive stdin → auto-accept after `LEADV2_GATE1_AUTO_ACCEPT_SEC` (default 5s); interactive → one terse line + 60s timeout → auto-accept. Ledger outcome `gate1_auto_accepted` vs `answered`.
+- `LEADV2_DRY_RUN=1`: immediate auto-accept, print plan only (non-heavy only).
 
-`bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-gate1-prompt.sh" "$LEADV2_TASK_ID" "$CLASS" "$PLAN_SUMMARY"`
+`bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-gate1-prompt.sh" "$LEADV2_TASK_ID" "$CLASS" "$PLAN_SUMMARY" ["$RISK"]`
 Exit 0 = accepted, 1 = declined → iterate plan once or pivot, 2 = auto-accepted.
 
 Update `docs/leadv2/tasks/<id>/STATE.md` gate_1.status=confirmed. `leadv2_active_update_phase <id> build`.
