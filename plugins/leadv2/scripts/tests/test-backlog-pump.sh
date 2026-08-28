@@ -517,6 +517,21 @@ test_tree_mid_conflict() {
   fi
 }
 
+test_tree_state_probe_failure() {
+  # A non-Git fixture makes the state probe fail before any queue access. This
+  # must remain fail-closed, but must never masquerade as a real conflict.
+  local repo state output
+  repo="$(_mktmp)"; state="$(_mktmp)"
+  mkdir -p "${repo}/docs" "${state}/docs/leadv2"
+  printf 'meta: {hard_limit: 6}\nsessions: []\n' >"${state}/docs/leadv2/active.yaml"
+  output="$(LEADV2_BACKLOG_PUMP=1 _run_pump_x "$repo" "$state" check 2>&1)"
+  if [[ "$output" == *"reason=tree_state_probe_failed rc=2"* && "$output" != *"reason=tree_mid_conflict"* ]]; then
+    pass "tree_state_probe_failure: failed Git probe is fail-closed and truthfully labelled"
+  else
+    fail "tree_state_probe_failure: expected truthful probe failure, got: $output"
+  fi
+}
+
 test_duplicate_signature_refused() {
   local repo state stub rcfile logfile
   read -r repo state < <(_new_fixture)
@@ -666,6 +681,7 @@ test_refusal_dedupe_collapses
 test_starved_not_refused_below_floor
 test_kill_switch_off
 test_tree_mid_conflict
+test_tree_state_probe_failure
 test_duplicate_signature_refused
 test_judgment_class_excluded
 test_empty_outcome_bounded

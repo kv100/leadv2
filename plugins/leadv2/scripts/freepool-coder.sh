@@ -133,6 +133,29 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2; }
 log_error() { log "ERROR: $*"; }
 log_info() { log "INFO: $*"; }
 
+# FP-01: Selection is role-aware only when the launcher exports a role before
+# invoking the selector.  An explicit valid FREEPOOL_ROLE is invocation
+# context and wins; otherwise derive conservatively from the mission text.
+# Unknown/ambiguous missions default to implement so they retain the existing
+# code-worker behaviour instead of accidentally receiving a review/bulk model.
+freepool_role_for_mission() {
+  local mission="${1:-}" explicit="${FREEPOOL_ROLE:-}" normalized
+  case "${explicit}" in
+    implement|review|bulk)
+      printf '%s\n' "${explicit}"
+      return 0
+      ;;
+  esac
+  normalized="$(printf '%s' "${mission}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${normalized}" =~ (^|[^[:alnum:]_])(review|reviewer|audit|auditor|arbiter)([^[:alnum:]_]|$) ]]; then
+    printf '%s\n' review
+  elif [[ "${normalized}" =~ (^|[^[:alnum:]_])(bulk|batch|mechanical|sweep)([^[:alnum:]_]|$) ]]; then
+    printf '%s\n' bulk
+  else
+    printf '%s\n' implement
+  fi
+}
+
 # QUOTA-GATE-01 (2026-07-17): gate a GLM lane launch on live z.ai quota.
 # Calls leadv2-freepool-gate.sh (sibling). On non-zero, that gate has already
 # printed a REROUTE (>=80% on 5h or weekly) or PEAK-override message to stderr;
@@ -319,7 +342,9 @@ run_claude() {
     resolved_prompt="${AGENT_BAN_PREAMBLE}${resolved_prompt}${FINISH_CONTRACT_TRAILER}"
   fi
 
-  local _model
+  local _model _freepool_role
+  _freepool_role="$(freepool_role_for_mission "${resolved_prompt}")"
+  export FREEPOOL_ROLE="${_freepool_role}"
   _model="$(freepool_select_model)"
 
   local exit_code=0
@@ -1097,8 +1122,15 @@ cmd_run_child() {
   # lean: prompt passed via argv, matching design/v1 — upgrade to stdin/tempfile
   # passing if a prompt near bash ARG_MAX is observed in practice.
 
-  local _model
+  local _model _freepool_role
+  _freepool_role="$(freepool_role_for_mission "${prompt}")"
+  export FREEPOOL_ROLE="${_freepool_role}"
   _model="$(freepool_select_model)"
+
+  # The stream is JSONL, but this intentional launcher record is a compact
+  # grep-friendly selection journal line. Write it before appending provider
+  # events so every attempted spawn has exactly one role/model record.
+  printf 'freepool_select role=%s model=%s\n' "${_freepool_role}" "${_model}" >> "${run_dir}/journal.jsonl"
 
   set +e
   ( command "${FREEPOOL_CLAUDE_BIN}" -p "${prompt}" \
@@ -1109,7 +1141,7 @@ cmd_run_child() {
       --permission-mode bypassPermissions \
       --disallowedTools "Agent" \
       2> >(redact_stream >> "${run_dir}/stderr.log")
-  ) | tee "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
+  ) | tee -a "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
   echo "${PIPESTATUS[0]}" > "${run_dir}/exit_code"
   set -e
 }
