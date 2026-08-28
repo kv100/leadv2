@@ -94,6 +94,18 @@ add_suite "${ROOT}/tests/test-status-surface-bash32.sh"
 add_suite "${ROOT}/tests/test-status-surface-single-lead.sh"
 add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 
+# MON-PULSE-01: EXTRA_SUITE_MAP — "<changed-stem>:<suite>" rows, one per line.
+# A changed plugin script whose behavioural lock lives in a DIFFERENTLY-NAMED
+# suite (the dispatch-code arming seam is proven by the pulse-watch suites,
+# not by any test-dispatch-code.sh) is mapped here so --scope changed still
+# runs its suite instead of silently dropping it.
+EXTRA_SUITE_MAP="leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
+leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
+leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
+leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh"
+
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
     find "${ROOT}/plugins/leadv2/scripts/tests" "${ROOT}/.claude/scripts/tests" "${ROOT}/plugins/leadv2/tests" "${ROOT}/tests" \
@@ -114,6 +126,14 @@ else
                   "${ROOT}/tests/test-${stem}.sh"; do
         add_suite "${cand}"
       done
+      # MON-PULSE-01: extra suites mapped to this changed stem (key may be the
+      # bare stem or the full filename — both accepted)
+      while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        key="${row%%:*}"
+        [[ "$key" == "${stem}" || "$key" == "${stem}.sh" ]] || continue
+        add_suite "${ROOT}/${row#*:}"
+      done <<< "${EXTRA_SUITE_MAP}"
     done <<< "${changed}"
   fi
 fi
