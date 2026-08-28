@@ -43,3 +43,14 @@ into arm.yaml comments with rationale.
 ## FP-06 — Model-selection telemetry (P2)
 Per-dispatch journal row: role, model chosen, fallback depth, latency, outcome
 (review pass/fail). Without this FP-04's quality gate has no data.
+
+## Appendix — FCC admin UI (127.0.0.1:8317/admin) field ownership (2026-08-28)
+Established from freepool-coder.sh:402-412: workers send per-request `--model <provider/slug>`
+from OUR selector; tier envs are exported as `freepool-default`. Therefore:
+- Providers/API keys: operator, once (already done via ~/.fcc/.env).
+- Default Model: safety net ONLY (used when selector fails → `freepool-default`). Any cheap model fine.
+- Fable/Opus/Sonnet/Haiku Overrides: keep None — our workers never send tier names.
+- Fallback Models: the one field worth filling (mid-flight provider failover FCC does itself;
+  our selector cannot catch a provider dying before first token). Recommend 2-3 entries.
+- Reasoning: From client. Web Tools: on.
+FP-03 installer must print this table so no future operator re-derives it.
