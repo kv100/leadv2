@@ -162,3 +162,18 @@ role_rank:
 #                                    2026-08-27 because cold free-tier models (NIM) need warmup
 #   FREEPOOL_ROLE                    implement|review|bulk — set by the dispatcher from TaskEstimate
 #                                    work_kind (FP-01); unset falls back to implement
+#   FREEPOOL_CAPABILITY_FLOOR        bulk_only|full — env override of the capability_floor KEY below
+#                                    (FP-06); wins over the yaml key, unrecognized values ignored
+
+# --- FP-06: capability floor knob (read by lib/leadv2-route-arbiter.sh) -------
+# capability_floor controls the FP-08 freepool capability floor:
+#   bulk_only (default) — freepool is rank-eligible only for bulk/simple code
+#                         work; standard/heavy/strategic code demotes it to the
+#                         last-resort chain position (FP-08 empty-diff incident).
+#   full                — the floor never applies; freepool competes on cost
+#                         for Standard/Heavy builds too (founder ask 2026-08-28).
+# Env override FREEPOOL_CAPABILITY_FLOOR=bulk_only|full wins over this key; an
+# unrecognized value at either layer falls back toward bulk_only, never
+# silently unfloors. The dispatcher journals the resolved mode once per
+# dispatch as `freepool_floor_mode mode=<m> source=<yaml|env|default>`.
+capability_floor: bulk_only

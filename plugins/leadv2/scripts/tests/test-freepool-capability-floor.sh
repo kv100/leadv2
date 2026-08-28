@@ -324,5 +324,121 @@ else
   fail "(negative-control) mutated arbiter did not flip the winner — (b) is not load-bearing ($mut_out)"
 fi
 
+
+# ── FP-06 (e) capability_floor knob: full -> freepool WINS a Standard build ──
+# (inverse of (b)); bulk_only keeps (b)'s behavior. Precedence env > yaml >
+# default, resolved inside the arbiter and surfaced as floor_mode/floor_mode_
+# source tokens on its output line. A throwaway arm.yaml copy carries the
+# yaml source (never the canonical file); a key-less copy proves default.
+ARM_YAML_FULL="$TMP/freepool-arm-full.yaml"; ARM_YAML_NONE="$TMP/freepool-arm-none.yaml"; ARM_YAML_BULK="$TMP/freepool-arm-bulk.yaml"
+printf 'capability_floor: full\n' > "$ARM_YAML_FULL"
+printf 'capability_floor: bulk_only\n' > "$ARM_YAML_BULK"
+printf '# no capability_floor key here\nmodel_rank: []\n' > "$ARM_YAML_NONE"
+
+# (e1) env full: freepool wins the standard build, no floor token, mode tokens
+out="$(FREEPOOL_CAPABILITY_FLOOR=full run_arbiter "$STD_BUILD_QUOTA" '{"kind":"code","size":"standard"}')"
+if [[ "$out" == *'arm=freepool '* ]]; then
+  pass "(e1) env full: freepool WINS the standard build (inverse of (b))"
+else
+  fail "(e1) env full: freepool still demoted ($out)"
+fi
+if [[ "$out" == *'floor_applied=1'* ]]; then
+  fail "(e1) env full: floor token must vanish in full mode ($out)"
+else
+  pass "(e1) env full: no floor token in full mode"
+fi
+if [[ "$out" == *'floor_mode=full floor_mode_source=env'* ]]; then
+  pass "(e1) env full: floor_mode=full floor_mode_source=env tokens present"
+else
+  fail "(e1) env full: floor_mode tokens missing ($out)"
+fi
+
+# (e2) yaml full (env unset): same win, source=yaml
+out="$(FREEPOOL_ARM_CONFIG="$ARM_YAML_FULL" run_arbiter "$STD_BUILD_QUOTA" '{"kind":"code","size":"standard"}')"
+if [[ "$out" == *'arm=freepool '* ]]; then
+  pass "(e2) yaml full: freepool WINS the standard build"
+else
+  fail "(e2) yaml full: freepool still demoted ($out)"
+fi
+if [[ "$out" == *'floor_mode=full floor_mode_source=yaml'* ]]; then
+  pass "(e2) yaml full: floor_mode=full floor_mode_source=yaml tokens present"
+else
+  fail "(e2) yaml full: floor_mode tokens missing ($out)"
+fi
+
+# (e3) garbage env falls through to the yaml key (bulk_only wins, source=yaml);
+# garbage env + key-less yaml falls all the way to default.
+out="$(FREEPOOL_CAPABILITY_FLOOR=nonsense FREEPOOL_ARM_CONFIG="$ARM_YAML_BULK" run_arbiter "$STD_BUILD_QUOTA" '{"kind":"code","size":"standard"}')"
+if [[ "$out" != *'arm=freepool '* && "$out" == *'floor_mode=bulk_only floor_mode_source=yaml'* ]]; then
+  pass "(e3) garbage env falls through to the yaml key (bulk_only, source=yaml)"
+else
+  fail "(e3) garbage env did not fall through to yaml ($out)"
+fi
+out="$(FREEPOOL_CAPABILITY_FLOOR=also-wrong FREEPOOL_ARM_CONFIG="$ARM_YAML_NONE" run_arbiter "$STD_BUILD_QUOTA" '{"kind":"code","size":"standard"}')"
+if [[ "$out" != *'arm=freepool '* && "$out" == *'floor_mode=bulk_only floor_mode_source=default'* ]]; then
+  pass "(e3) no env + no yaml key: default bulk_only, source=default"
+else
+  fail "(e3) default resolution wrong ($out)"
+fi
+
+# (e4) dispatcher level: env full on the (dispatch) probe shape -> the
+# freepool_floor_mode journal line fires AND route_resolved picks freepool for
+# a STANDARD build (the inverse of the dispatch assertion above).
+REPO3="$TMP/repo3"
+mkdir -p "$REPO3/.claude/ref" "$REPO3/docs/leadv2" "$REPO3/docs/leadv2/tasks"
+git -C "$REPO3" init -q -b main
+git -C "$REPO3" config user.email t@e.com; git -C "$REPO3" config user.name t
+: > "$REPO3/seed"; git -C "$REPO3" add seed; git -C "$REPO3" commit -qm seed
+cp "$ROUTING" "$REPO3/.claude/ref/leadv2-routing.yaml"
+e4_out="$(cd "$REPO3" && LEADV2_STATE_ROOT="$TMP/state-root3" \
+  LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" \
+  LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" \
+  LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-dispatch3" \
+  ROUTE_TEST_QUOTA="$STD_BUILD_QUOTA" \
+  FREEPOOL_CAPABILITY_FLOOR=full \
+  CLAUDE_PROJECT_ROOT="$REPO3" LEADV2_PROJECT_ROOT="$REPO3" \
+  LEADV2_DISPATCH_CACHE_DIR="$TMP/cache3" \
+  LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_REQUIRE_PHASES=0 \
+  LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off \
+  LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+  LEADV2_TASK_JUDGE_BIN=/bin/false \
+  LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
+  bash "$DISPATCH_BIN" "FP-06 floor-mode-full dispatch probe ${TMP}" \
+    --kind code --task-class standard --no-spawn --writes src/x.py 2>&1 || true)"
+printf '%s\n' "$e4_out" > "$TMP/e4-out.log"
+if printf '%s\n' "$e4_out" | grep -q 'freepool_floor_mode mode=full source=env task=[0-9a-f]\{8\}'; then
+  pass "(e4) freepool_floor_mode mode=full source=env journaled by the dispatcher"
+else
+  fail "(e4) freepool_floor_mode journal line missing (log: $TMP/e4-out.log)"
+fi
+if printf '%s\n' "$e4_out" | grep -q 'route_resolved by=arbiter role=worker arm=freepool'; then
+  pass "(e4) floor mode full: route_resolved PICKS freepool for a standard build"
+else
+  fail "(e4) floor mode full: freepool still not picked (log: $TMP/e4-out.log)"
+fi
+# ...and with no override the canonical config (capability_floor: bulk_only)
+# resolves via yaml and the dispatcher journals it.
+e4b_out="$(cd "$REPO3" && LEADV2_STATE_ROOT="$TMP/state-root3" \
+  LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" \
+  LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" \
+  LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-dispatch3b" \
+  ROUTE_TEST_QUOTA="$STD_BUILD_QUOTA" \
+  CLAUDE_PROJECT_ROOT="$REPO3" LEADV2_PROJECT_ROOT="$REPO3" \
+  LEADV2_DISPATCH_CACHE_DIR="$TMP/cache3" \
+  LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_REQUIRE_PHASES=0 \
+  LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off \
+  LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+  LEADV2_TASK_JUDGE_BIN=/bin/false \
+  LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
+  bash "$DISPATCH_BIN" "FP-06 floor-mode-default dispatch probe ${TMP}" \
+    --kind code --task-class standard --no-spawn --writes src/x.py 2>&1 || true)"
+if printf '%s\n' "$e4b_out" | grep -q 'freepool_floor_mode mode=bulk_only source=yaml task=[0-9a-f]\{8\}'; then
+  pass "(e4b) no override: mode=bulk_only source=yaml journaled (canonical arm.yaml key)"
+else
+  fail "(e4b) default-mode journal line missing ($(printf '%s\n' "$e4b_out" | grep -m1 freepool_floor_mode || echo none))"
+fi
+
 printf '\n=== %d passed, %d failed ===\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" == 0 ]]
