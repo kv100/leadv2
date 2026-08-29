@@ -381,6 +381,62 @@ def pgid_group_alive(pgid):
     except OSError:
         return True
 
+def detached_arm_liveness(tid, row):
+    """Return True only when the latest confirmed detached arm proves life.
+
+    `arm-registered` is written immediately after a confirmed spawn.  It is
+    not itself liveness evidence: GLM/Kimi/freepool require their recorded
+    run directory's process group to be alive, and Codex requires the exact
+    recorded job handle to be queued/running in the current status response.
+    A missing, malformed, terminal, or dead record deliberately falls through
+    to the normal artifact/dead ladder below.
+    """
+    registered = os.path.join(root, "docs", "handoff", tid, "arm-registered")
+    arm = handle = None
+    try:
+        with open(registered, encoding="utf-8") as fh:
+            for line in fh:
+                fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+                candidate_arm, candidate_handle = fields.get("arm"), fields.get("handle")
+                if candidate_arm and candidate_handle:
+                    arm, handle = candidate_arm, candidate_handle
+    except OSError:
+        return False
+    # Handles are opaque but must stay a single safe path component before a
+    # local run directory is derived from them.
+    if not arm or not handle or "/" in handle or ".." in handle:
+        return False
+    if arm == "codex":
+        status = str((jobs.get(handle) or {}).get("status") or "").lower()
+        if status in ("queued", "running"):
+            row.update(arm=arm, arm_handle=handle, provider_status=status,
+                       source="arm-registered:codex-task.sh", reason=f"detached_codex_{status}")
+            return True
+        return False
+    run_base_env = {
+        "glm": "GLM_RUNS_DIR",
+        "glm-flash": "GLM_RUNS_DIR",
+        "kimi": "KIMI_RUNS_DIR",
+        "freepool": "FREEPOOL_RUNS_DIR",
+    }
+    base_env = run_base_env.get(arm)
+    if base_env is None:
+        return False
+    base = os.environ.get(base_env)
+    if not base:
+        base = os.path.join(os.path.expanduser("~/.claude/cache"), f"{arm}-runs")
+    run_dir = os.path.join(base, handle)
+    try:
+        with open(os.path.join(run_dir, "pgid"), encoding="utf-8") as fh:
+            pgid = int(fh.read().strip())
+    except (OSError, ValueError):
+        return False
+    if pgid <= 0 or not pgid_group_alive(pgid):
+        return False
+    row.update(arm=arm, arm_handle=handle, run_dir=run_dir, pgid=pgid,
+               pgid_alive=True, source="arm-registered:run_dir", reason="detached_run_pgid_alive")
+    return True
+
 def sentinel_check(tid, row):
     """Return True if the sentinel-completion dead verdict was set on row.
 
@@ -600,6 +656,15 @@ def resolve(tid):
             log_path, source = max(existing, key=lambda pair: os.path.getmtime(pair[0]))
 
     if log_path is None:
+        # BOARD-BLIND-TO-DETACHED-WORKERS-01: a successful detached spawn has
+        # no worker PID in active.yaml and may write only in its arm-owned run
+        # directory. Consult that handle before an artifactless lead_durable
+        # row can be misclassified as dead. This is positive evidence only;
+        # a finished process group or terminal Codex job falls through so the
+        # existing prune path can still reclaim the row.
+        if detached_arm_liveness(tid, row):
+            row.update(verdict="alive")
+            return row
         # S2: no worker stream of the lane's OWN. Two registration signals,
         # checked in order -- neither hardcodes a suffix beyond CHILD_SUFFIXES:
         #  1) a folded child's OWN stream (e.g. dispatch-<sig8>-architect/
