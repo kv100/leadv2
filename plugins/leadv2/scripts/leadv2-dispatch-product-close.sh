@@ -2103,6 +2103,41 @@ if [[ -n "${WRITES_CSV}" ]]; then
       repo_diff="$(_pc_repo_diff "${diff_root}" "${writes[@]}")"
       printf '%s' "${repo_diff}" > "${diff_file}"
       _pc_base_used="$(_pc_last_diff_base)"
+      # LANE-WRITESET-REGISTRY-01 D5/D6: commit-time drift check, single-repo
+      # path only (CROSS_REPO_DIFF is a known gap, see developer.full.md).
+      # Undeclared writes are non-fatal by default (WARN+WIDEN, D5) -- the
+      # widened diff makes an undeclared file VISIBLE to review instead of
+      # silently unreviewed. The one escalation to BLOCK+PARK (D6) is a
+      # drifted path that intersects an ALIVE PEER lane's own declared
+      # writes -- checked read-only, never persisted.
+      _ws_actual_files="$(git -C "${diff_root}" diff --name-only "${_pc_base_used}" 2>/dev/null || true)"
+      _ws_drift_paths=()
+      if [[ -n "${_ws_actual_files}" ]]; then
+        while IFS= read -r _ws_f; do
+          [[ -n "${_ws_f}" ]] || continue
+          _ws_declared=0
+          for _ws_w in "${writes[@]}"; do
+            case "${_ws_f}" in
+              "${_ws_w}"|"${_ws_w}"/*) _ws_declared=1; break ;;
+            esac
+          done
+          [[ "${_ws_declared}" == "0" ]] && _ws_drift_paths+=("${_ws_f}")
+        done <<< "${_ws_actual_files}"
+      fi
+      if [[ ${#_ws_drift_paths[@]} -gt 0 ]]; then
+        _ws_drift_csv="$(IFS=,; printf '%s' "${_ws_drift_paths[*]}")"
+        emit decision "writeset_drift task=${TASK} undeclared=${_ws_drift_csv}"
+        _ws_widen_diff="$(_pc_git_diff "${diff_root}" "${_pc_base_used}" "${_ws_drift_paths[@]}")"
+        [[ -n "${_ws_widen_diff}" ]] && printf '%s\n' "${_ws_widen_diff}" >> "${diff_file}"
+        if declare -F leadv2_active_check_writes_conflict >/dev/null 2>&1; then
+          _ws_drift_rc=0
+          LEADV2_PROJECT_ROOT="${ROOT}" leadv2_active_check_writes_conflict "${TASK}" "${_ws_drift_csv}" >/dev/null 2>&1 || _ws_drift_rc=$?
+          if [[ "${_ws_drift_rc}" == "5" ]]; then
+            emit decision "writeset_drift_blocked task=${TASK} undeclared=${_ws_drift_csv}"
+            blocked_reason="writeset_drift_conflict"
+          fi
+        fi
+      fi
     fi
   fi
   [[ -s "${diff_file}" ]] || blocked_reason="${blocked_reason:-unscopable_diff}"

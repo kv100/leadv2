@@ -4,6 +4,7 @@
 #
 # Functions:
 #   leadv2_active_register <task_id> <class> <worktree> <branch> <daemon_mode>
+#                           [<group_key>] [<risk_tags>] [<writes>]  (LANE-WRITESET-REGISTRY-01)
 #   leadv2_active_unregister <task_id>
 #   leadv2_active_update_phase <task_id> <phase> [<resolved_model>]
 #   leadv2_active_update_pulse <task_id>
@@ -24,6 +25,15 @@
 #   1 — hard_limit_reached
 #   2 — heavy_conflict
 #   3 — budget_refused
+#
+# Exit codes for leadv2_active_register's `writes` admission check
+# (LANE-WRITESET-REGISTRY-01, D3/D7 -- fires only when a non-empty `writes`
+# is passed; folded into the SAME flock as the append, so admission is
+# atomic):
+#   5 — writeset_conflict (real intersection with an alive lane's writes)
+#   6 — writeset_unknown (an alive incumbent has no `writes`/`write_set` at
+#       all, and LEADV2_WRITESET_ENFORCE=block; under the default `warn` this
+#       admits and prints LEADV2_WRITESET_UNKNOWN instead)
 
 set -euo pipefail
 
@@ -135,6 +145,23 @@ def _pid_alive(pid_val) -> bool:
     except (TypeError, ValueError, ProcessLookupError, PermissionError):
         return False
 
+# LANE-WRITESET-REGISTRY-01: shared prefix-overlap predicate, copied from
+# leadv2-writes-overlap.sh:86-89 (that script is frozen/off-limits, D4) --
+# used by both the `register` op's admission intersect and the read-only
+# `check_writes` op the commit-time drift check (D5/D6) calls.
+def _lv2_ws_norm(csv):
+    out = []
+    for p in csv.split(","):
+        p = p.strip()
+        if p:
+            out.append(os.path.normpath(p))
+    return out
+
+def _lv2_ws_overlaps(a, b):
+    if a == b:
+        return True
+    return (b + os.sep).startswith(a + os.sep) or (a + os.sep).startswith(b + os.sep)
+
 os.makedirs(os.path.dirname(lockfile_path), exist_ok=True)
 lock_fd = open(lockfile_path, "a+")
 try:
@@ -163,12 +190,54 @@ try:
     elif op == "register":
         (session_id, task_id, worktree, branch, started_at,
          phase, cls, pid, pid_birth, parent_session_id,
-         daemon_mode, last_pulse_at, pulse_log, group_key, risk_tags) = args
+         daemon_mode, last_pulse_at, pulse_log, group_key, risk_tags,
+         writes) = args
         group_key = None if group_key in ("", "null", "None", "-") else group_key
         risk_tags = None if risk_tags in ("", "null", "None", "-") else risk_tags
+        writes = None if writes in ("", "null", "None", "-") else writes
 
         pid_int = int(pid) if pid not in ("null", "", "None") else None
         daemon_bool = daemon_mode.lower() in ("1", "true", "yes")
+
+        # LANE-WRITESET-REGISTRY-01 D3: intersect the candidate's declared
+        # `writes` against every non-stale OTHER row's writes, BEFORE the
+        # append/refresh below, inside this SAME flock. A shell-level
+        # check-then-register is a TOCTOU race under CONCURRENCY-2-LANES-01
+        # (two leads, two sessions, both read no-conflict, both register).
+        # D2: an empty candidate writes gets no judgement here -- dispatch's
+        # REQUIRE_LANE_WRITES already fail-closes that case upstream.
+        if writes:
+            enforce = os.environ.get("LEADV2_WRITESET_ENFORCE", "warn")
+            cand_paths = _lv2_ws_norm(writes)
+            for other in sessions:
+                if other.get("task_id") == task_id or other.get("stale"):
+                    continue
+                # D1: writer only ever writes `writes`; reader unions the
+                # `write_set` alias for forward tolerance with any writer
+                # that still uses that name.
+                other_raw = other.get("writes")
+                if other_raw is None:
+                    other_raw = other.get("write_set")
+                if other_raw is None:
+                    # D7: an incumbent with neither key is the third state,
+                    # `unknown` -- never silently "conflicts with everything"
+                    # nor "conflicts with nothing".
+                    if enforce == "block":
+                        print(f"[registry] writeset unknown: other={other.get('task_id')}", file=sys.stderr)
+                        sys.exit(6)
+                    print(f"LEADV2_WRITESET_UNKNOWN other={other.get('task_id')}")
+                    continue
+                if isinstance(other_raw, (list, tuple)):
+                    other_csv = ",".join(str(w) for w in other_raw)
+                else:
+                    other_csv = str(other_raw)
+                other_paths = _lv2_ws_norm(other_csv)
+                if not other_paths:
+                    continue
+                hit = sorted({a for a in cand_paths for b in other_paths if _lv2_ws_overlaps(a, b)})
+                if hit:
+                    print(f"[registry] writeset conflict: other={other.get('task_id')} paths={','.join(hit)}", file=sys.stderr)
+                    sys.exit(5)
 
         # Replace stale row for same task_id if PID is dead. A fanout launch
         # pre-registers the runner against the main checkout; when Gate 1 later
@@ -188,6 +257,8 @@ try:
                 existing["last_pulse_at"] = last_pulse_at
                 existing["updated_at"] = _now_iso()
                 existing["stale"] = False
+                if writes is not None:
+                    existing["writes"] = writes
                 print(existing.get("session_id") or session_id)
             else:
                 sessions.remove(existing)
@@ -227,6 +298,7 @@ try:
                 # to sessions registered through this path (Gate1 self-reg).
                 "group_key": group_key,
                 "risk_tags": risk_tags,
+                "writes": writes,
                 # D-d registry-honesty fields (SUPERVISE-V2-01 item 3) — additive,
                 # every new row registers V2 explicitly; legacy rows written by
                 # an older registry simply lack these keys (reader-side infers
@@ -242,6 +314,38 @@ try:
             })
             # Return session_id on stdout
             print(session_id)
+
+    elif op == "check_writes":
+        # LANE-WRITESET-REGISTRY-01 D5/D6: read-only re-check of a candidate
+        # writes CSV against every non-stale OTHER row -- used by the
+        # commit-time drift check to decide WARN vs BLOCK on undeclared
+        # paths, WITHOUT persisting anything (never touches `data`/`sessions`).
+        check_task_id, check_writes_csv = args
+        enforce = os.environ.get("LEADV2_WRITESET_ENFORCE", "warn")
+        if check_writes_csv:
+            cand_paths = _lv2_ws_norm(check_writes_csv)
+            for other in sessions:
+                if other.get("task_id") == check_task_id or other.get("stale"):
+                    continue
+                other_raw = other.get("writes")
+                if other_raw is None:
+                    other_raw = other.get("write_set")
+                if other_raw is None:
+                    if enforce == "block":
+                        sys.exit(6)
+                    continue
+                if isinstance(other_raw, (list, tuple)):
+                    other_csv = ",".join(str(w) for w in other_raw)
+                else:
+                    other_csv = str(other_raw)
+                other_paths = _lv2_ws_norm(other_csv)
+                if not other_paths:
+                    continue
+                hit = sorted({a for a in cand_paths for b in other_paths if _lv2_ws_overlaps(a, b)})
+                if hit:
+                    print(f"[registry] writeset conflict: other={other.get('task_id')} paths={','.join(hit)}", file=sys.stderr)
+                    sys.exit(5)
+        sys.exit(0)
 
     elif op == "unregister":
         task_id = args[0]
@@ -569,8 +673,13 @@ _lv2_pid_birth() {
 }
 
 # leadv2_active_register <task_id> <class> <worktree> <branch> <daemon_mode>
+#                         [<group_key>] [<risk_tags>] [<writes>]
 # Writes a new session row to active.yaml.
 # Returns (stdout): session_id in format s-YYYYMMDDTHHMMSSZ-PID
+# Returns (exit code): 0 ok; 5/6 on a LANE-WRITESET-REGISTRY-01 admission
+# refusal when <writes> is non-empty (see exit-code header block above) --
+# additive 8th positional arg, defaults to "-" so every existing caller
+# (including leadv2-fanout.sh, untouched by this change) keeps working.
 leadv2_active_register() {
   local task_id="${1:?task_id required}"
   local cls="${2:-Standard}"
@@ -579,6 +688,7 @@ leadv2_active_register() {
   local daemon_mode="${5:-false}"
   local group_key="${6:-}"
   local risk_tags="${7:-}"
+  local writes="${8:--}"
 
   if [[ -z "$branch" ]]; then
     branch="$(git -C "$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null || printf -- 'unknown')"
@@ -602,11 +712,19 @@ leadv2_active_register() {
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
 
+  local _register_rc=0
   _leadv2_yaml_py_lock \
     "$lockfile" "$yaml_file" register \
     "$session_id" "$task_id" "$worktree" "$branch" "$ts" \
     "intake" "$cls" "${durable_pid}" "$pid_birth" "$parent_sid" \
-    "$daemon_mode" "$ts" "$pulse_log" "$group_key" "$risk_tags"
+    "$daemon_mode" "$ts" "$pulse_log" "$group_key" "$risk_tags" "$writes" || _register_rc=$?
+
+  # LANE-WRITESET-REGISTRY-01 step 3: propagate the python op's exit code
+  # instead of swallowing it -- a writeset admission refusal (rc 5/6) must
+  # reach the caller so cmd_resolve can refuse the dispatch before spawn.
+  if [[ "${_register_rc}" -ne 0 ]]; then
+    return "${_register_rc}"
+  fi
 
   # Auto-refresh LEAD_V2_STATE.md on every register — non-fatal to register itself
   _render_log="/tmp/lv2-render-$(date +%s).log"
@@ -614,6 +732,20 @@ leadv2_active_register() {
     printf -- '[registry] WARN: render_index failed after register:\n' >&2
     cat "$_render_log" >&2
   }
+}
+
+# leadv2_active_check_writes_conflict <task_id> <writes_csv>
+# LANE-WRITESET-REGISTRY-01 D5/D6: read-only re-check for the commit-time
+# drift check -- never persists, never appends/refreshes a row. Returns
+# 0/5/6 exactly like leadv2_active_register's admission check.
+leadv2_active_check_writes_conflict() {
+  local task_id="${1:?task_id required}" writes_csv="${2:-}"
+  local yaml_file lockfile rc=0
+  yaml_file="$(_leadv2_yaml_file)"
+  lockfile="$(_leadv2_yaml_lockfile)"
+  [[ -f "$yaml_file" ]] || return 0
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" check_writes "$task_id" "$writes_csv" || rc=$?
+  return "$rc"
 }
 
 # leadv2_active_set_worktree <task_id> <worktree>
@@ -865,10 +997,21 @@ PYEOF
   fi
 }
 
-# leadv2_active_list
+# leadv2_active_list [--peers-json <file>]
 # Prints active.yaml sessions as a human-readable table to stdout.
+# LANE-WRITESET-REGISTRY-01 D8: the `peer` column is populated from an
+# OPTIONAL --peers-json file the LEAD writes from its own ListAgents call --
+# this shell function cannot call ListAgents itself (harness tool, not a
+# command). Absent/unparseable peers-json is never silent: every row renders
+# peer="?" and the footer states the registry-only view explicitly.
 leadv2_active_list() {
-  local yaml_file
+  local yaml_file peers_json=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --peers-json) peers_json="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
   yaml_file="$(_leadv2_yaml_file)"
 
   if [[ ! -f "$yaml_file" ]]; then
@@ -876,7 +1019,7 @@ leadv2_active_list() {
     return 0
   fi
 
-  python3 - "$yaml_file" <<'PYEOF'
+  python3 - "$yaml_file" "$peers_json" <<'PYEOF'
 import sys
 try:
     import yaml
@@ -884,13 +1027,33 @@ except ImportError:
     print("[registry] PyYAML not found", file=sys.stderr)
     sys.exit(1)
 
-with open(sys.argv[1], encoding="utf-8") as fh:
+yaml_file, peers_path = sys.argv[1], sys.argv[2]
+
+with open(yaml_file, encoding="utf-8") as fh:
     data = yaml.safe_load(fh) or {}
 sessions = data.get("sessions") or []
 meta = data.get("meta") or {}
+
+peers_by_key = {}
+peers_available = False
+if peers_path:
+    try:
+        import json
+        with open(peers_path, encoding="utf-8") as pfh:
+            peers_raw = json.load(pfh)
+        for row in (peers_raw or []):
+            if not isinstance(row, dict):
+                continue
+            key = row.get("session_id") or row.get("task_id")
+            if key:
+                peers_by_key[str(key)] = row.get("peer") or row.get("name") or "?"
+        peers_available = True
+    except Exception:
+        peers_available = False
+
 print(f"Active sessions ({len(sessions)} / {meta.get('hard_limit', 2)} max):")
-print(f"{'session_id':<30} {'task_id':<20} {'phase':<12} {'class':<10} {'pid':<8} {'daemon':<7} {'stale'}")
-print("-" * 100)
+print(f"{'session_id':<30} {'task_id':<20} {'phase':<12} {'class':<10} {'pid':<8} {'daemon':<7} {'writes':<20} {'peer':<12} {'stale'}")
+print("-" * 130)
 for s in sessions:
     sid    = (s.get("session_id") or "?")[:28]
     tid    = (s.get("task_id") or "?")[:18]
@@ -899,7 +1062,28 @@ for s in sessions:
     pid    = str(s.get("pid") or "null")[:6]
     daemon = "yes" if s.get("daemon_mode") else "no"
     stale  = "STALE" if s.get("stale") else "-"
-    print(f"{sid:<30} {tid:<20} {phase:<12} {cls:<10} {pid:<8} {daemon:<7} {stale}")
+    # LANE-WRITESET-REGISTRY-01: "?" (never silently absent) when the row
+    # carries neither `writes` nor the `write_set` alias -- the D7 unknown
+    # state must be visible in the table, not blank.
+    writes_raw = s.get("writes")
+    if writes_raw is None:
+        writes_raw = s.get("write_set")
+    if writes_raw is None:
+        writes_col = "?"
+    elif writes_raw in ("", "-"):
+        writes_col = "-"
+    else:
+        writes_col = str(writes_raw)
+    writes_col = writes_col[:18]
+    if peers_available:
+        peer = peers_by_key.get(str(s.get("session_id")), peers_by_key.get(str(tid), "?"))
+    else:
+        peer = "?"
+    peer = str(peer)[:10]
+    print(f"{sid:<30} {tid:<20} {phase:<12} {cls:<10} {pid:<8} {daemon:<7} {writes_col:<20} {peer:<12} {stale}")
+
+if not peers_available:
+    print("peers: unavailable — registry-only view")
 PYEOF
 }
 

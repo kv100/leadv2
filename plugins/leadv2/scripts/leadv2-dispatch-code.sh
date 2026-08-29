@@ -5992,6 +5992,37 @@ ${mission}"
     fi
   fi
 
+  # LANE-WRITESET-REGISTRY-01 step 4: lane_writes is now fully resolved (row/
+  # CLI --writes, or the architect prepass's own LANE_WRITES: line filled in
+  # above) -- persist it onto the already-registered row via the SAME
+  # register op, whose flocked intersect (leadv2-active-registry.sh) refuses
+  # admission ATOMICALLY, before any worker is spawned. This is a refresh of
+  # ${reg_id}'s own row (registered self earlier in this function), not a new
+  # append, so it is safe to call again once the write set is known. Never
+  # block on an empty lane_writes here -- REQUIRE_LANE_WRITES/_lane_writes_guard
+  # already fail-close that case upstream, and D2 gives an empty candidate no
+  # judgement.
+  if [[ -n "${lane_writes}" ]] && declare -F leadv2_active_register >/dev/null 2>&1; then
+    local _ws_rc=0
+    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register \
+      "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" \
+      "" "" "" "${lane_writes}" >/dev/null 2>&1 || _ws_rc=$?
+    case "${_ws_rc}" in
+      0) : ;;
+      5) emit decision "dispatch_refused reason=writeset_conflict task=${sig8} writes=${lane_writes}"
+         _dl_note "${sig8}" refused writeset_conflict "" "${founder_task_id}"
+         printf 'LEADV2_DISPATCH_REFUSED: writeset_conflict\n'
+         # R5 §4: EXIT trap releases the registered row (no worker spawned).
+         exit 2 ;;
+      6) emit decision "dispatch_refused reason=writeset_unknown task=${sig8} writes=${lane_writes}"
+         _dl_note "${sig8}" refused writeset_unknown "" "${founder_task_id}"
+         printf 'LEADV2_DISPATCH_REFUSED: writeset_unknown\n'
+         # R5 §4: EXIT trap releases the registered row (no worker spawned).
+         exit 2 ;;
+      *) : ;;  # non-fatal registry error (e.g. missing PyYAML) -- never block dispatch on it
+    esac
+  fi
+
   # KIMI-CHANNEL-REHAB-01 M4: admission measures the actual scoped mission,
   # before the fixed async-question boilerplate below. The 2500-char cap is a
   # mission-scope bound, not a budget for dispatcher-owned instructions.
