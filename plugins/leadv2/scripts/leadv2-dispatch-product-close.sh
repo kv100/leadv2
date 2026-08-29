@@ -116,6 +116,10 @@ _PC_ATTEMPT="${TASK}-${_PC_ATTEMPT_EPOCH}-$$"
 _PC_TERMINAL_STATE=""
 _PC_TERMINAL_CAUSE=""
 _PC_TERMINAL_EVIDENCE=""
+# Set only after advance-arm has confirmed a new live worker and launched its
+# successor close owner. The old close process must then exit without writing a
+# terminal or unclaiming the lane the successor now owns.
+_PC_CONTINUATION_HANDED_OFF=0
 # LANE-OBSERVABILITY-02 change 1: the worker's own last words for a no_work/dead
 # stop, computed ONCE per run (memoised — the review-gate writers below and the
 # EXIT trap's idempotent _dl_note retry all reuse the identical value; the
@@ -222,6 +226,9 @@ _pc_exit_handler() {
   # Capture the triggering exit code FIRST -- every statement below (including the
   # `[[` tests) would otherwise overwrite $? before the review_crashed row could log it.
   local _pc_exit_rc=$?
+  if [[ "${_PC_CONTINUATION_HANDED_OFF:-0}" == "1" ]]; then
+    return 0
+  fi
   # wave2 round2 finding 4: retry the explicitly-recorded terminal state (if any
   # branch below ever reached one) instead of unconditionally writing crashed_
   # unfinished. write-once dedup (leadv2-dispatch-ledger.sh) makes this call a no-op
@@ -635,7 +642,7 @@ _pc_run_dir_for() { # <author> <handle> -> path on stdout
   local author="$1" handle="$2" run_dir=""
   [[ -n "${author}" && -n "${handle}" ]] || { printf ''; return 0; }
   case "${author}" in
-    glm)  run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${handle}" ;;
+    glm|glm-flash) run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${handle}" ;;
     kimi) run_dir="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${handle}" ;;
     *)    run_dir="${_PC_RUNS_ROOT}/${author}-runs/${handle}" ;;
   esac
@@ -672,7 +679,10 @@ _pc_resume_launcher_for() { # <author> -> absolute path or empty
   local author="$1" launcher
   [[ -n "${LEADV2_PC_RESUME_LAUNCHER_BIN:-}" ]] && { printf '%s' "${LEADV2_PC_RESUME_LAUNCHER_BIN}"; return 0; }
   [[ -n "${author}" ]] || { printf ''; return 0; }
-  launcher="${SCRIPT_DIR}/${author}-coder.sh"
+  case "${author}" in
+    glm-flash) launcher="${SCRIPT_DIR}/glm-coder.sh" ;;
+    *)         launcher="${SCRIPT_DIR}/${author}-coder.sh" ;;
+  esac
   [[ -f "${launcher}" ]] && { printf '%s' "${launcher}"; return 0; }
   printf ''
 }
@@ -848,7 +858,11 @@ _pc_maybe_quota_advance() {  # <arm> <handle>
   after="$(ls -1 "${lockout_dir}"/quota-lockout-*.json 2>/dev/null | while IFS= read -r _f; do _pc_stat_mtime "${_f}" 2>/dev/null; printf ' %s\n' "${_f}"; done)"
   [[ "${before}" != "${after}" ]] || return 0
   emit decision "arm_quota_failed task=${TASK} arm=${arm} handle=${handle}"
-  _pc_arm_advance
+  if _pc_arm_advance; then
+    _PC_CONTINUATION_HANDED_OFF=1
+    emit decision "review_gate task=${TASK} status=blocked reason=arm_quota_failed action=arm_advanced arm=${arm}"
+    exit 5
+  fi
 }
 
 # PLUGIN-RELIABILITY-01 D1 (round 2): pid-file-only process liveness.
@@ -982,8 +996,8 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
       # Unknown provider state is conservative: the hard ceiling owns recovery.
       return 0
       ;;
-    glm|kimi)
-      if [[ "${AUTHOR}" == glm ]]; then
+    glm|glm-flash|kimi)
+      if [[ "${AUTHOR}" == glm || "${AUTHOR}" == glm-flash ]]; then
         run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${HANDLE}"
       else
         run_dir="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${HANDLE}"
@@ -1641,13 +1655,17 @@ pc_silent_arm_probe() {
 _pc_arm_advance() {
   local marker="${HANDOFF}/.arm-advanced-${AUTHOR}"
   if [[ -f "${marker}" ]]; then
-    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=already_advanced"
-    return 0
+    if grep -q '^status=advanced$' "${marker}" 2>/dev/null; then
+      emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=already_advanced_success"
+      return 0
+    fi
+    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=already_attempted"
+    return 1
   fi
-  : > "${marker}" 2>/dev/null || true
+  printf 'status=attempting\n' > "${marker}" 2>/dev/null || true
   if [[ "${LEADV2_ARM_ADVANCE:-1}" == "0" ]]; then
     emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=kill_switch"
-    return 0
+    return 1
   fi
   local chain_csv="${LEADV2_DISPATCH_CANDIDATE_ARMS:-}"
   if [[ -z "${chain_csv}" ]]; then
@@ -1660,7 +1678,7 @@ _pc_arm_advance() {
   local next_arm
   if ! next_arm="$(_pc_next_arm_in_chain "${chain_csv}" "${AUTHOR}")" || [[ -z "${next_arm}" ]]; then
     emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=chain_exhausted"
-    return 0
+    return 1
   fi
   local mission_file="${LEADV2_DISPATCH_LANE_MISSION:-}"
   if [[ -z "${mission_file}" || ! -f "${mission_file}" ]]; then
@@ -1668,13 +1686,18 @@ _pc_arm_advance() {
   fi
   if [[ ! -f "${mission_file}" ]]; then
     emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=no_mission_file"
-    return 0
+    return 1
   fi
   emit decision "arm_advance task=${TASK} from=${AUTHOR} to=${next_arm} reason=arm_produced_nothing"
   local adv_args=(--sig8 "${TASK}" --arm "${next_arm}" --mission-file "${mission_file}" --task-id "${FOUNDER_TASK_ID}")
   [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && adv_args+=(--worktree "${_lane_root}")
   [[ -n "${WRITES_CSV:-}" ]] && adv_args+=(--writes "${WRITES_CSV}")
-  bash "${DISPATCH_BIN}" advance-arm "${adv_args[@]}" >/dev/null 2>&1 || true
+  if bash "${DISPATCH_BIN}" advance-arm "${adv_args[@]}" >/dev/null 2>&1; then
+    printf 'status=advanced\n' > "${marker}" 2>/dev/null || true
+    return 0
+  fi
+  emit decision "arm_advance_failed task=${TASK} from=${AUTHOR} reason=remaining_chain_exhausted"
+  return 1
 }
 
 # REVIEW-GATE-INFRA-01 D-A(i): a declared write under docs/leadv2/ or docs/handoff/
@@ -2498,9 +2521,16 @@ if pc_silent_arm_probe; then
     [[ -n "${_pc_wr}" ]] && printf 'worker_reason: %s\n' "${_pc_wr}"
     printf 'arm: %s\n' "${AUTHOR}"
   } > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=blocked reason=arm_produced_nothing terminal=no_work cause=arm_produced_nothing arm=${AUTHOR}"
+  # A successful continuation is non-terminal. The terminal ledger is
+  # write-once, so writing no_work before this call makes the second spawn
+  # decorative even when it succeeds.
+  if _pc_arm_advance; then
+    _PC_CONTINUATION_HANDED_OFF=1
+    emit decision "review_gate task=${TASK} status=blocked reason=arm_produced_nothing action=arm_advanced arm=${AUTHOR}"
+    exit 5
+  fi
+  emit decision "review_gate task=${TASK} status=blocked reason=arm_produced_nothing terminal=no_work cause=arm_produced_nothing arm=${AUTHOR} chain=exhausted"
   _dl_note no_work arm_produced_nothing "${_pc_silent_evidence}"
-  _pc_arm_advance
   _stamp_review_terminal blocked
   exit 5
 fi

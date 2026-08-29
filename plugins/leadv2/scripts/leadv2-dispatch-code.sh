@@ -1506,29 +1506,47 @@ _burn_gate() {
   governor_line="$(bash "${BURN_GOVERNOR_BIN}" verdict 2>/dev/null)"
   [[ -n "${governor_line}" ]] || return 0
 
-  local verdict burn24h soft hard reason
+  local verdict burn24h soft hard reason glm_daily_pct glm_soft_pct glm_hard_pct
   verdict="$(printf '%s\n' "${governor_line}" | sed -n 's/.*verdict=\([a-z]*\).*/\1/p')"
   burn24h="$(printf '%s\n' "${governor_line}" | sed -n 's/.*burn24h=\([0-9]*\).*/\1/p')"
   soft="$(printf '%s\n' "${governor_line}" | sed -n 's/.*soft=\([0-9]*\).*/\1/p')"
   hard="$(printf '%s\n' "${governor_line}" | sed -n 's/.*hard=\([0-9]*\).*/\1/p')"
   reason="$(printf '%s\n' "${governor_line}" | sed -n 's/.*reason=\([^ ]*\).*/\1/p')"
+  glm_daily_pct="$(printf '%s\n' "${governor_line}" | sed -n 's/.*glm_daily_pct=\([0-9.]*\).*/\1/p')"
+  glm_soft_pct="$(printf '%s\n' "${governor_line}" | sed -n 's/.*glm_soft_pct=\([0-9]*\).*/\1/p')"
+  glm_hard_pct="$(printf '%s\n' "${governor_line}" | sed -n 's/.*glm_hard_pct=\([0-9]*\).*/\1/p')"
 
   case "${verdict}" in
     soft)
-      emit decision "burn_gate task=${sig8} verdict=soft burn24h=${burn24h} soft=${soft} hard=${hard} reason=${reason}"
-      printf '[leadv2-dispatch-code] ⚠ BURN GATE: 24h burn %s >= soft %s — dispatch allowed, consider deferring non-critical lanes\n' \
-        "${burn24h}" "${soft}" >&2
+      emit decision "burn_gate task=${sig8} verdict=soft burn24h=${burn24h} soft=${soft} hard=${hard} glm_daily_pct=${glm_daily_pct} reason=${reason}"
+      if [[ "${reason}" == glm_* ]]; then
+        printf '[leadv2-dispatch-code] ⚠ BURN GATE: GLM weekly-quota rate %s%%/day > soft %s%%/day — dispatch allowed, consider deferring non-critical lanes\n' \
+          "${glm_daily_pct}" "${glm_soft_pct}" >&2
+      else
+        printf '[leadv2-dispatch-code] ⚠ BURN GATE: 24h burn %s >= soft %s — dispatch allowed, consider deferring non-critical lanes\n' \
+          "${burn24h}" "${soft}" >&2
+      fi
       ;;
     hard)
       if [[ "${LEADV2_BURN_OVERRIDE:-0}" == "1" ]]; then
-        emit decision "burn_gate task=${sig8} verdict=hard burn24h=${burn24h} soft=${soft} hard=${hard} reason=${reason} overridden=1"
-        printf '[leadv2-dispatch-code] ⚠ BURN GATE OVERRIDDEN: 24h burn %s >= hard %s — LEADV2_BURN_OVERRIDE=1, dispatch allowed\n' \
-          "${burn24h}" "${hard}" >&2
+        emit decision "burn_gate task=${sig8} verdict=hard burn24h=${burn24h} soft=${soft} hard=${hard} glm_daily_pct=${glm_daily_pct} reason=${reason} overridden=1"
+        if [[ "${reason}" == glm_* ]]; then
+          printf '[leadv2-dispatch-code] ⚠ BURN GATE OVERRIDDEN: GLM weekly-quota rate %s%%/day > hard %s%%/day — LEADV2_BURN_OVERRIDE=1, dispatch allowed\n' \
+            "${glm_daily_pct}" "${glm_hard_pct}" >&2
+        else
+          printf '[leadv2-dispatch-code] ⚠ BURN GATE OVERRIDDEN: 24h burn %s >= hard %s — LEADV2_BURN_OVERRIDE=1, dispatch allowed\n' \
+            "${burn24h}" "${hard}" >&2
+        fi
         return 0
       fi
-      emit decision "burn_gate task=${sig8} verdict=hard burn24h=${burn24h} soft=${soft} hard=${hard} reason=${reason} ref=${placement_lane_ref:-${placement_path:-}}"
-      printf '[leadv2-dispatch-code] ⛔ BURN GATE: 24h burn %s >= hard cap %s — lane refused, task parked\n' \
-        "${burn24h}" "${hard}" >&2
+      emit decision "burn_gate task=${sig8} verdict=hard burn24h=${burn24h} soft=${soft} hard=${hard} glm_daily_pct=${glm_daily_pct} reason=${reason} ref=${placement_lane_ref:-${placement_path:-}}"
+      if [[ "${reason}" == glm_* ]]; then
+        printf '[leadv2-dispatch-code] ⛔ BURN GATE: GLM weekly-quota rate %s%%/day > hard %s%%/day — lane refused, task parked\n' \
+          "${glm_daily_pct}" "${glm_hard_pct}" >&2
+      else
+        printf '[leadv2-dispatch-code] ⛔ BURN GATE: 24h burn %s >= hard cap %s — lane refused, task parked\n' \
+          "${burn24h}" "${hard}" >&2
+      fi
       _burn_park_deferred "${sig8}" "${mission}" "${burn24h}"
       return 1
       ;;
@@ -2613,7 +2631,7 @@ _dispatch_worker_liveness() {  # <arm> <handle> -> alive|dead|unknown (stdout)
   local arm="$1" handle="$2"
   [[ -n "${handle}" ]] || { printf 'unknown'; return; }
   case "${arm}" in
-    glm)
+    glm|glm-flash)
       local raw status
       raw="$(bash "${GLM_BIN}" status "${handle}" 2>/dev/null)" || { printf 'unknown'; return; }
       status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
@@ -4952,7 +4970,7 @@ _arm_status_probe() {  # <arm> <handle>
   case "${arm}" in
     codex)    bin="${CODEX_BIN}" ;;
     kimi)     bin="${KIMI_BIN}" ;;
-    glm)      bin="${GLM_BIN}" ;;
+    glm|glm-flash) bin="${GLM_BIN}" ;;
     freepool) bin="${FREEPOOL_BIN}" ;;
     *)     return 1 ;;
   esac
@@ -5016,7 +5034,7 @@ _arm_no_work_signal() {  # <arm> <raw_text>
 _arm_exit76_signal() {  # <arm> <raw_text>
   local arm="$1" raw="$2" status exit_code
   case "${arm}" in
-    glm) ;;
+    glm|glm-flash) ;;
     *) return 1 ;;
   esac
   status="$(printf '%s\n' "${raw}" | sed -n 's/^status:[[:space:]]*//p' | head -1)"
@@ -5035,7 +5053,7 @@ _arm_final_output() {  # <arm> <handle>
   case "${arm}" in
     codex)    bin="${CODEX_BIN}" ;;
     kimi)     bin="${KIMI_BIN}" ;;
-    glm)      bin="${GLM_BIN}" ;;
+    glm|glm-flash) bin="${GLM_BIN}" ;;
     freepool) bin="${FREEPOOL_BIN}" ;;
     *)     return 0 ;;
   esac
@@ -7320,23 +7338,47 @@ cmd_advance_arm() {
     fi
   fi
 
-  local spawn_out src
-  spawn_out="$(spawn_worker "${arm}" "${mission}" "${sig8}")"; src=$?
-  if [[ ${src} -ne 0 ]]; then
-    emit decision "arm_advance_failed task=${sig8} arm=${arm} reason=spawn_failed"
-    exit 1
+  # A continuation is itself a candidate-chain walk, not a one-shot static
+  # pick. If the first remaining launcher refuses or fails before producing a
+  # live handle, keep walking; only return failure after every remaining arm
+  # has actually been attempted. This lets the close owner defer the write-once
+  # terminal until the chain is genuinely exhausted.
+  if [[ ${#candidate_arms[@]} -eq 0 ]]; then
+    if [[ -n "${_adv_remaining:-}" ]]; then
+      IFS=',' read -r -a candidate_arms <<< "${_adv_remaining}"
+    else
+      candidate_arms=("${arm}")
+    fi
   fi
-  local handle
-  handle="$(printf '%s\n' "${spawn_out}" | sed -n 's/.*handle=\(.*\)$/\1/p' | tail -1)"
+
+  local spawn_out src candidate candidate_handle handle="" attempted_csv=""
+  for candidate in "${candidate_arms[@]}"; do
+    [[ -n "${candidate}" ]] || continue
+    spawn_out="$(spawn_worker "${candidate}" "${mission}" "${sig8}")"; src=$?
+    if [[ ${src} -eq 0 ]]; then
+      candidate_handle="$(printf '%s\n' "${spawn_out}" | sed -n 's/.*handle=\(.*\)$/\1/p' | tail -1)"
+      if [[ -n "${candidate_handle}" ]]; then
+        arm="${candidate}"
+        handle="${candidate_handle}"
+        break
+      fi
+      emit decision "arm_advance_failed task=${sig8} arm=${candidate} reason=missing_handle rc=0"
+    else
+      emit decision "arm_advance_failed task=${sig8} arm=${candidate} reason=spawn_failed rc=${src}"
+    fi
+    [[ -n "${attempted_csv}" ]] && attempted_csv="${attempted_csv},${candidate}" || attempted_csv="${candidate}"
+  done
+  if [[ -z "${handle}" ]]; then
+    emit decision "arm_advance_exhausted task=${sig8} attempts=${attempted_csv:-none}"
+    exit 4
+  fi
   _stamp_active_phase "${task_id}" "build" "${arm}"
   # PHASES-ARE-THE-ONLY-PATH-01: record build phase as running with the resolved arm handle.
   bash "${PHASE_RECORD_BIN}" record "${sig8}" build --status running \
     --handle "dispatch-${sig8}-build" \
     --task-id "${task_id}" --owner "$(basename "$0"):cmd_advance_arm" 2>/dev/null || true
-  emit decision "worker_spawned by=arm_advance model=${arm} handle=${handle}"
-
   if [[ "${E2E_GATE}" == "1" || "${REVIEW_GATE}" == "1" ]]; then
-    spawn_product_close "${sig8}" "${arm}" "${handle}" "" "${writes}" "${task_id}" "${mission_file}"
+    spawn_product_close "${sig8}" "${arm}" "${handle}" "$(IFS=,; printf '%s' "${candidate_arms[*]}")" "${writes}" "${task_id}" "${mission_file}"
   fi
   printf 'arm_advance model=%s task=%s handle=%s\n' "${arm}" "${sig8}" "${handle}"
   exit 0
