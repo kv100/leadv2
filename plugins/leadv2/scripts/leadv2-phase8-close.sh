@@ -556,9 +556,49 @@ fi
 _REGISTRY="${SCRIPTS_DIR}/leadv2-active-registry.sh"
 if [[ -f "$_REGISTRY" ]]; then
   if LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "$_REGISTRY"; then
-    leadv2_active_unregister "${TASK_ID}" \
-      && log_info "[active-registry] unregistered ${TASK_ID} from active.yaml" \
-      || log_info "[active-registry] unregister call failed for ${TASK_ID} (non-blocking)"
+    # LANE-WRITESET-REGISTRY-01 D8: read + compare while this row still
+    # exists; unregistering first destroys the closing lane's declared writes.
+    # Notification is deliberately best-effort: a broken detector, journal, or
+    # log sink must never turn an otherwise valid Phase-8 close into a failure.
+    {
+      _writeset_registry_yaml="$(_leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" read 2>/dev/null || true)"
+      _writeset_close_writes="$(printf '%s\n' "${_writeset_registry_yaml}" | python3 -c '
+import sys
+try:
+    import yaml
+    data = yaml.safe_load(sys.stdin) or {}
+    row = next((s for s in (data.get("sessions") or []) if s.get("task_id") == sys.argv[1]), {})
+    value = row.get("writes")
+    if isinstance(value, (list, tuple)):
+        value = ",".join(str(v) for v in value)
+    print(value or "")
+except Exception:
+    pass
+' "${TASK_ID}")"
+      _writeset_peer_lines=""
+      if [[ -n "${_writeset_close_writes}" && -x "${SCRIPTS_DIR}/leadv2-writes-overlap.sh" ]]; then
+        _writeset_peer_lines="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPTS_DIR}/leadv2-writes-overlap.sh" \
+          --task-id "${TASK_ID}" --writes "${_writeset_close_writes}" --project-root "${PROJECT_ROOT}" --notify 2>/dev/null || true)"
+      fi
+
+      leadv2_active_unregister "${TASK_ID}" \
+        && log_info "[active-registry] unregistered ${TASK_ID} from active.yaml" \
+        || log_info "[active-registry] unregister call failed for ${TASK_ID} (non-blocking)"
+
+      while IFS= read -r _writeset_peer_line; do
+        [[ "${_writeset_peer_line}" == task=*' other='*' paths='* ]] || continue
+        _writeset_peer_task="$(printf '%s\n' "${_writeset_peer_line}" | sed -n 's/^task=[^ ]* other=\([^ ]*\) paths=.*/\1/p')"
+        [[ -n "${_writeset_peer_task}" ]] || continue
+        if [[ -f "${SCRIPTS_DIR}/leadv2-journal.sh" ]]; then
+          CLAUDE_PROJECT_DIR="${PROJECT_ROOT}" bash "${SCRIPTS_DIR}/leadv2-journal.sh" append \
+            "${_writeset_peer_task}" finding "writeset_close_peer ${_writeset_peer_line}" >/dev/null 2>&1 || true
+        fi
+        mkdir -p "${PROJECT_ROOT}/docs/leadv2" 2>/dev/null || true
+        printf -- '%s close_task=%s peer_task=%s %s\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${TASK_ID}" "${_writeset_peer_task}" "${_writeset_peer_line}" \
+          >> "${PROJECT_ROOT}/docs/leadv2/writeset-notify.log" 2>/dev/null || true
+      done <<< "${_writeset_peer_lines}"
+    } || true
   else
     log_info "[active-registry] source of registry failed — active.yaml unregister skipped for ${TASK_ID}"
   fi

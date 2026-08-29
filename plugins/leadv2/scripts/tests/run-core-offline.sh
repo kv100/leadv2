@@ -278,6 +278,7 @@ SUITE_DEFS=(
   "cross-injector dedup, active-task path (T15)|||bash $TEST_DIR/test-injector-dedup.sh"
   "main model/live quota|||bash $TEST_DIR/test-main-model-check.sh"
   "active registry fail-closed|||bash $TEST_DIR/test-active-registry-failclosed.sh"
+  "lane write-set admission block (LANE-WRITESET-REGISTRY-01)|||bash $TEST_DIR/test-writeset-admission-block.sh"
   "lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)|||bash $TEST_DIR/test-worktree-lane-safety.sh|||SERIAL"
   "active registry phase updates|||bash $TEST_DIR/test-active-registry-update-phase.sh"
   "fanout classifier/runner guard|||bash $TEST_DIR/test-fanout-classify-guard.sh|||SERIAL"

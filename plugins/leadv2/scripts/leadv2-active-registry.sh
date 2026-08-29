@@ -681,6 +681,15 @@ _lv2_pid_birth() {
 # additive 8th positional arg, defaults to "-" so every existing caller
 # (including leadv2-fanout.sh, untouched by this change) keeps working.
 leadv2_active_register() {
+  # The registry's original low-level register contract is retained for the
+  # documented atomicity probe and any caller that already has the complete
+  # row tuple.  The normal public wrapper below remains the additive 5..8-arg
+  # API; both forms execute the same flocked python register operation.
+  if [[ "$#" -eq 16 ]]; then
+    _leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" register "$@"
+    return $?
+  fi
+
   local task_id="${1:?task_id required}"
   local cls="${2:-Standard}"
   local worktree="${3:-$(pwd)}"
