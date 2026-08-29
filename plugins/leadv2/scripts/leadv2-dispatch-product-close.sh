@@ -78,6 +78,7 @@ DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
 # product spawn (see that file's cmd_resolve arc==0 comment). Always a subprocess call
 # (never sourced) -- see leadv2-dispatch-ledger.sh's own doc header.
 LEDGER_BIN="${LEADV2_DISPATCH_LEDGER_BIN:-${SCRIPT_DIR}/leadv2-dispatch-ledger.sh}"
+source "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
 TERMINAL_LEDGER="${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}"
 # N-5: refusal classification (classify_arm_failure) for the arm-agnostic review
 # fallback loop below. Private synced copy, not a shared source of dispatch-code.sh --
@@ -1391,7 +1392,7 @@ _pc_drop_bootstrap_dirt() {  # <lane-root> ; filters stdin porcelain -> stdout
   return 0
 }
 
-_pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding orchestration-owned paths), rc1 otherwise
+_pc_lane_dirty_legacy_removed() {  # retained only as an inert marker for old diagnostics
   local root="$1"
   [[ -n "${root}" && -d "${root}" ]] || return 1
   git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
@@ -1412,7 +1413,7 @@ _pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding orchestration-owned path
 _pc_phys() { ( cd -P "$1" 2>/dev/null && pwd -P ) ; }
 
 _PC_LANE_TOPLEVEL=""          # set by the probe below; read by the evidence line
-_pc_lane_root_is_own_worktree() {  # <root> -> rc0 iff <root> IS a git work tree root
+_pc_lane_root_is_own_worktree_legacy_removed() {  # retained only as an inert marker for old diagnostics
   local root="$1" top
   _PC_LANE_TOPLEVEL=""
   [[ -n "${root}" && -d "${root}" ]] || return 1
@@ -1644,8 +1645,8 @@ pc_silent_arm_probe() {
   # REVIEW-GATE-LANEROOT-01: an unregistered lane dir makes _pc_lane_dirty grade the
   # parent repo. Unknown tree identity is never proof of silence: otherwise a clean
   # parent would advance the arm while finished work remains in the lane directory.
-  _pc_lane_root_is_own_worktree "${_lane_root}" || return 1
-  _pc_lane_dirty "${_lane_root}" && return 1
+  lv2_lane_root_is_own_worktree "${_lane_root}" || return 1
+  lv2_lane_dirty "${_lane_root}" && return 1
   # 6) GATE-FALSE-SILENT-01: commits ahead of base are production, whatever the
   # worktree's dirty state says -- a worker that commits cleanly is not silent.
   # round 2: "unknown" (base unresolvable) is NOT silent either -- a probe that cannot
@@ -2423,7 +2424,7 @@ if [[ -n "${blocked_reason}" ]]; then
     _pc_dirty_evidence=""
     _pc_offending=""
     _pc_declared_list="$(_pc_join_capped "${writes[@]:-}")"
-    if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && ! _pc_lane_root_is_own_worktree "${_lane_root}"; then
+    if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && ! lv2_lane_root_is_own_worktree "${_lane_root}"; then
       # Never let porcelain from a parent repository become lane evidence.
       _pc_terminal="refused"; _pc_cause="lane_root_not_a_worktree"; _pc_rg_reason="lane_root_not_a_worktree"
       _pc_dirty_n=0
@@ -2431,7 +2432,7 @@ if [[ -n "${blocked_reason}" ]]; then
       _PC_LANE_RESOLVED_TOP="${_PC_LANE_TOPLEVEL:-<unresolved>}"
       _PC_LANE_PRODUCED="$(_pc_lane_produced_files "${_lane_root}")"
       _pc_dirty_evidence="lane_root=$(basename "${_lane_root}") resolved_toplevel=${_PC_LANE_RESOLVED_TOP} expected=${_lane_root} produced=${_PC_LANE_PRODUCED}"
-    elif [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && _pc_lane_dirty "${_lane_root}"; then
+    elif [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && lv2_lane_dirty "${_lane_root}"; then
       # REVIEW-GATE-INFRA-01 D-A(ii): "the lane is dirty" is not itself the violation --
       # partition the dirty paths against the declared write-set. Only an UNDECLARED
       # dirty path is a genuine scope violation; unscoped_lane_work must fire ONLY then
@@ -2470,7 +2471,7 @@ if [[ -n "${blocked_reason}" ]]; then
         fi
       done <<< "${_pc_dirty_lines}"
       _pc_dirty_evidence="lane_root=$(basename "${_lane_root}") dirty=${_pc_dirty_n}"
-      [[ "$(_pc_phys "${_lane_root}")" == "$(_pc_phys "${ROOT}")" ]] && _pc_dirty_evidence="${_pc_dirty_evidence} lane_root_shared=1"
+      [[ "$(_lv2_phys "${_lane_root}")" == "$(_lv2_phys "${ROOT}")" ]] && _pc_dirty_evidence="${_pc_dirty_evidence} lane_root_shared=1"
       if [[ ${_pc_undeclared_n} -gt 0 ]]; then
         _pc_terminal="refused"; _pc_cause="unscoped_lane_work"; _pc_rg_reason="unscoped_lane_work"
         _pc_offending="$(_pc_join_capped "${_pc_undeclared[@]}")"

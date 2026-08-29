@@ -90,6 +90,7 @@ LANE_LIVENESS_BIN="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lan
 # util-linux on macOS). Same rc0/rc3 acquire contract as flock -w -x.
 # shellcheck source=leadv2-portable-lock.sh
 source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
+source "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
 
 log()     { printf '[%s] %s\n' "${SCRIPT_NAME}" "$*" >&2; }
@@ -251,6 +252,28 @@ dispatch_ledger_write_terminal() {
   local sig8="$1" founder="${2:-}" terminal="$3" cause="${4:-}" evidence="${5:-}" attempt="${6:-}" display_name="${7:-}"
   local commit="${8:-none}" deliverable="${9:-unknown}" worker_reason="${10:-}"
   [[ -n "${sig8}" ]] || { log_err "write_terminal: empty task_sig, refusing to write"; return 1; }
+  # One terminal funnel: a linked lane may not claim landed while it retains
+  # worker-owned dirt, and a new non-control-plane main path is containment failure.
+  # Count prior downgrades by signature; the next one becomes final refused so
+  # pass_unlanded cannot burn every arm during the confirmed TTL.
+  if [[ "${terminal}" == "landed" ]]; then
+    local _lane_root="" _dirty_count _dirty_max
+    if [[ -x "${SCRIPT_DIR}/leadv2-lane-worktree.sh" ]]; then
+      _lane_root="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${founder:-${sig8}}" 2>/dev/null || true)"
+    fi
+    if [[ -n "${_lane_root}" ]] && lv2_lane_containment_violation "${sig8}" "${_lane_root}" "${PROJECT_ROOT}"; then
+      terminal="refused"; cause="wrote_outside_lane"
+    elif [[ -n "${_lane_root}" ]] && lv2_lane_dirty "${_lane_root}"; then
+      _dirty_max="${LEADV2_DIRTY_LANE_MAX_ATTEMPTS:-2}"
+      [[ "${_dirty_max}" =~ ^[1-9][0-9]*$ ]] || _dirty_max=2
+      _dirty_count="$(grep -F "\"task_sig\":\"${sig8}\"" "$(dispatch_terminal_ledger_file)" 2>/dev/null | grep -F '"cause":"dirty_lane:' | wc -l | tr -d ' ')"
+      if (( ${_dirty_count:-0} >= _dirty_max )); then
+        terminal="refused"; cause="dirty_lane_retry_exhausted:${cause}"
+      else
+        terminal="pass_unlanded"; cause="dirty_lane:${cause}"
+      fi
+    fi
+  fi
   case "${terminal}" in
     landed|pass_unlanded|parked|refused|dead|no_work) : ;;
     *) log_err "write_terminal: invalid terminal='${terminal}' for sig=${sig8}"; return 1 ;;

@@ -20,6 +20,8 @@
 # Standard/phases, source=classifier_error — this map never fails open.
 #
 # Bash 3.2 safe: no mapfile, no ${var^^}, no declare -A, no associative traps.
+_admission_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+source "${_admission_lib_dir}/leadv2-lane-guard.sh"
 
 # Same normalization pipeline as leadv2-dispatch-code.sh's compute_sig — one
 # source of truth for the mission digest so a receipt minted by the pump is
@@ -65,20 +67,8 @@ leadv2_admission_class() {
     # Escalate-only: the flag wins unless the estimate's risk/complexity
     # signals rank ABOVE it (Light<Standard<Heavy<Strategic).
     local rank_explicit rank_mapped
-    case "$explicit" in
-      Trivial)   rank_explicit=0 ;;
-      Light)     rank_explicit=1 ;;
-      Standard)  rank_explicit=2 ;;
-      Heavy)     rank_explicit=3 ;;
-      Strategic) rank_explicit=4 ;;
-      *)         rank_explicit=2 ;;
-    esac
-    case "$mapped" in
-      Light)     rank_mapped=1 ;;
-      Standard)  rank_mapped=2 ;;
-      Heavy)     rank_mapped=3 ;;
-      *)         rank_mapped=2 ;;
-    esac
+    rank_explicit="$(_lv2_class_rank "$explicit")"
+    rank_mapped="$(_lv2_class_rank "$mapped")"
     if (( rank_mapped > rank_explicit )); then
       printf '%s\t%s\n' "$mapped" "$src"
     else
@@ -108,6 +98,13 @@ leadv2_admission_freepool_role() {  # <work_kind> -> stdout: review|implement|bu
 # records. Path: <root>/docs/handoff/dispatch-<sig8>/admission-receipt.yaml.
 leadv2_admission_receipt_path() {  # <root> <sig8>
   printf '%s/docs/handoff/dispatch-%s/admission-receipt.yaml' "$1" "$2"
+}
+
+leadv2_admission_task_receipt_path() { printf '%s/docs/handoff/%s/task-class.yaml' "$1" "$2"; }
+leadv2_admission_read_task_receipt() { # <root> <task-id> -> class
+  local f; f="$(leadv2_admission_task_receipt_path "$1" "$2")"
+  [[ -f "$f" ]] || return 1
+  sed -n 's/^task_class:[[:space:]]*//p' "$f" | head -1
 }
 
 # -> stdout: "class<TAB>route<TAB>source<TAB>work_kind<TAB>digest<TAB>task_id", empty if absent/corrupt
@@ -186,5 +183,12 @@ leadv2_admission_write_receipt() {  # <root> <sig8> <task_id> <digest> <class> <
     printf 'recorded_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
   mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  if [[ -n "${task_id}" ]]; then
+    local tf tdir ttmp
+    tf="$(leadv2_admission_task_receipt_path "$root" "$task_id")"; tdir="$(dirname "$tf")"
+    mkdir -p "$tdir" 2>/dev/null || return 1
+    ttmp="${tdir}/.task-class.$$.tmp"
+    { printf 'task_id: %s\n' "$task_id"; printf 'task_class: %s\n' "$cls"; printf 'source: %s\n' "$src"; } > "$ttmp" && mv -f "$ttmp" "$tf" || { rm -f "$ttmp"; return 1; }
+  fi
   return 0
 }

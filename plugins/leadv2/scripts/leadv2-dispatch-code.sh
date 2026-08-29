@@ -471,6 +471,9 @@ _MISSION_WRITESET_SH="${SCRIPT_DIR}/lib/leadv2-mission-writeset.sh"
 _RED_PROOF_SH="${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
 [[ -f "${_RED_PROOF_SH}" ]] || _RED_PROOF_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-red-proof.sh"
 [[ -f "${_RED_PROOF_SH}" ]] && source "${_RED_PROOF_SH}"
+_LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] && source "${_LANE_GUARD_SH}"
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
 ROUTING_CONFIG_ABSENT=0
 # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
@@ -973,6 +976,26 @@ _resolve_pinned_placement() {
 _set_worktree_pin_line() {
   [[ -n "${WORK_ROOT:-}" && "${WORK_ROOT}" != "${PROJECT_ROOT}" ]] || return 0
   WORKTREE_PIN_LINE="WORKTREE PIN: all edits go in ${WORK_ROOT}; do NOT cd to the main checkout even if the mission text names it."
+}
+
+_deliver_plan_into_lane() { # <sig8> <founder-task-id>
+  local sig8="$1" task_id="$2" src dst f
+  LANE_LOCAL_PLAN_LINE=""
+  [[ "${WORK_ROOT}" != "${PROJECT_ROOT}" && -n "${task_id}" ]] || return 0
+  src="${PROJECT_ROOT}/docs/handoff/${task_id}"
+  dst="${WORK_ROOT}/docs/handoff/${task_id}"
+  [[ -f "${src}/context.yaml" ]] || return 0
+  mkdir -p "${dst}" 2>/dev/null || true
+  for f in context.yaml brief.md plan-*.md; do
+    [[ -f "${src}/${f}" ]] || continue
+    cp -f "${src}/${f}" "${dst}/${f}" 2>/dev/null || true
+  done
+  if [[ ! -f "${dst}/context.yaml" ]]; then
+    emit decision "lane_plan_missing task=${sig8} source=${src}/context.yaml lane=${dst}/context.yaml"
+    _dl_note "${sig8}" refused plan_not_in_lane
+    exit 5
+  fi
+  LANE_LOCAL_PLAN_LINE="LANE PLAN: read ${dst}/context.yaml and the sibling brief.md and plan-*.md before editing."
 }
 
 # ── V3-GLM-LADDER-01: deferred-GLM park, codex credit watchdog, loud sonnet exceptions ──
@@ -3558,6 +3581,12 @@ _admission_classify() {
     # sig8 collision with a different digest: refuse to trust it, journal loud.
     emit decision "admission_receipt_mismatch task=${sig8} receipt_digest=${r_digest}"
   fi
+  # A resume has a new mission signature.  Its task record is therefore a
+  # floor, not an optional cache: the fresh estimate may escalate it only.
+  local task_floor=""
+  if [[ -n "${founder_task_id:-}" ]]; then
+    task_floor="$(leadv2_admission_read_task_receipt "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
+  fi
   local mfile estimate pair
   mfile="$(mktemp "${TMPDIR:-/tmp}/leadv2-admission.XXXXXX")" || return 0
   printf '%s' "${mission}" > "${mfile}"
@@ -3576,6 +3605,9 @@ _admission_classify() {
     # task-judge failed outright (missing binary, rc!=0, unparseable): the
     # conservative class is Standard -> phases, never bare dispatch.
     ADMISSION_CLASS="Standard"; ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
+  fi
+  if [[ -n "${task_floor}" ]] && (( $(_lv2_class_rank "${task_floor}") > $(_lv2_class_rank "${ADMISSION_CLASS}") )); then
+    ADMISSION_CLASS="${task_floor}"; ADMISSION_SOURCE="task_record"
   fi
   case "${ADMISSION_CLASS}" in
     Standard|Heavy|Strategic) ADMISSION_ROUTE="phases" ;;
@@ -4565,7 +4597,7 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     LEADV2_DISPATCH_LANE_MISSION="${lane_mission_path}" \
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
     LEADV2_DISPATCH_LANE_DELIVERABLE="${lane_deliverable_decl}" \
-    LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" \
+    LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" LEADV2_WRITE_ROOT="${WORK_ROOT}" \
     LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
     "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" "${DISPATCH_LANE_NAME:-}" \
       >/dev/null 2>&1 &
@@ -4641,6 +4673,11 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
 _spawn_worker_body() {
   local arm="$1" mission="$2" sig8="$3" errf="$4"
   local out rc handle err
+  if [[ "${WORK_ROOT}" != "${PROJECT_ROOT}" ]]; then
+    mkdir -p "${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}" 2>/dev/null || true
+    git -C "${PROJECT_ROOT}" status --porcelain --untracked-files=all 2>/dev/null | \
+      sed -E 's/^.. //; s/^"//; s/"$//' > "${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/main-dirt.base" || true
+  fi
   # LANE-PLACEMENT-01: prepend the worktree pin line ONCE here — covers all four arms
   # (glm/kimi/sonnet/codex) with a single insertion, no per-arm drift.  Prepended AFTER
   # compute_sig/classify/router so sig8, dedup ledger, and routing are byte-identical with
@@ -6122,6 +6159,7 @@ cmd_resolve() {
   # (exit 5) on: nonexistent path, not-a-worktree, foreign repo, live-claimed lane.  No
   # flag set → no-op (returns 0 immediately; ensure path runs byte-identical to today).
   _resolve_pinned_placement
+  _deliver_plan_into_lane "${sig8}" "${founder_task_id}"
   # LANE-WORKTREE-ISOLATION-01 lane-entry fix (W-1 architect prepass §0.1/§1.1 step 3):
   # this is the ONE call site every lane passes through regardless of who invoked it --
   # fanout's three lead-session launch paths, the detached per-lane launcher, AND a
@@ -6162,6 +6200,7 @@ cmd_resolve() {
   # worktree — the ensure-created path (2272) and the launcher-pre-exported path (267)
   # both land here, and both were unpinned.  Idempotent w.r.t. the flagged path above.
   _set_worktree_pin_line
+  [[ -z "${LANE_LOCAL_PLAN_LINE:-}" ]] || mission="${LANE_LOCAL_PLAN_LINE}"$'\n\n'"${mission}"
   # LANE-START-SHA-01: unconditional, before any arm spawn -- overwrites any stale value
   # from a prior dispatch that reused this cache dir (mitigates R2: a nested/child dispatch
   # never inherits a parent's start sha because it always re-records its own here first).
@@ -7456,6 +7495,15 @@ cmd_advance_arm() {
   # from the confirmed dispatch-ledger row, default to Standard if absent.
   local _adv_class
   _adv_class="$(printf '%s' "${confirmed}" | sed -n 's/.*"task_class":"\([^"]*\)".*/\1/p')"
+  local _adv_task_floor=""
+  [[ -n "${task_id}" ]] || task_id="$(printf '%s' "${confirmed}" | sed -n 's/.*"founder_task_id":"\([^"]*\)".*/\1/p')"
+  if [[ -n "${task_id}" ]]; then
+    _adv_task_floor="$(leadv2_admission_read_task_receipt "${PROJECT_ROOT}" "${task_id}" 2>/dev/null || true)"
+    if [[ -n "${_adv_task_floor}" ]] && { [[ -z "${_adv_class}" ]] || (( $(_lv2_class_rank "${_adv_task_floor}") > $(_lv2_class_rank "${_adv_class}") )); }; then
+      _adv_class="${_adv_task_floor}"
+      emit decision "phase_class_floor task=${sig8} source=task_record class=${_adv_class}"
+    fi
+  fi
   if [[ -z "${_adv_class}" ]]; then
     _adv_class="Standard"
     emit decision "phase_class_defaulted task=${sig8}"
