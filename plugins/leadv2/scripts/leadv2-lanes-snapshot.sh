@@ -854,6 +854,17 @@ for tid, s in list(current.items()):
             _lane_fresh_s = 120
         if isinstance(_age_s, (int, float)) and _age_s <= _lane_fresh_s:
             reasons = []
+        # BOARD-BLIND-TO-DETACHED-WORKERS-01: an authoritative `alive` verdict
+        # is POSITIVE evidence of life (fresh stream, or a detached worker's
+        # own channel answering -- glm/kimi/freepool run-dir pgid, codex job
+        # registry). A detached arm's registry row carries the DISPATCHER's pid
+        # (pid_role=lead_durable), dead the instant dispatch-code.sh exits, so
+        # "pid dead" must never prune a lane the oracle says is running. The
+        # converse already holds above: only evidence that survives the
+        # freshness veto reaches here, and a finished worker's verdict is
+        # dead:*/silent:*, never alive -- so dead rows stay prunable.
+        if str(_lv_row.get("verdict") or "") == "alive":
+            reasons = []
 
     if not reasons:
         continue  # evidence clears any prior candidate marker — not carried forward

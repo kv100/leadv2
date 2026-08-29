@@ -381,6 +381,89 @@ def pgid_group_alive(pgid):
     except OSError:
         return True
 
+# --- BOARD-BLIND-TO-DETACHED-WORKERS-01 --------------------------------------
+# dispatch-code.sh's glm/glm-flash/kimi/freepool/codex arms spawn DETACHED
+# workers: no local PID this ladder could kill -0, only a handle, recorded at
+# spawn time in docs/handoff/<tid>/arm-registered (`arm=<arm> handle=<handle>`,
+# one appended line per CONFIRMED spawn -- the last line is the current
+# attempt). The registry row for such a lane keeps pid_role=lead_durable (the
+# dispatcher's own pid), which the ladder deliberately refuses to read as
+# worker evidence (LANE-REGISTRY-SELF-DEADLOCK-01) -- correct for the lead,
+# but nothing replaced the missing worker leg, so a running detached worker
+# resolved dead:no_log_artifact / dead:silent_no_process and the board printed
+# ДОСКА ПУСТА while the lane later PASSed its review (observed 2026-08-29
+# 00:19Z/00:33Z/00:49Z, dispatch-ef95d34a codex + dispatch-ab0ec014 glm; the
+# glm run dir's journal.jsonl was still being written at probe time).
+# This probe is that leg: ask the WORKER's own liveness channel.
+#   glm*/kimi/freepool: <runs>/<arm>-runs/<handle>/pgid, group-alive via
+#       kill(-pgid, 0) -- the same primitive the sentinel check above and the
+#       coders' own single-flight locks use.
+#   codex: the jobs registry already loaded (codex-task.sh status --all), keyed
+#       by job id == the arm-registered handle -- queued/running means live.
+# Positive-only: an absent arm-registered, a missing run dir, an unparsable
+# pgid, or an unknown/terminal job are all NOT live -- this can never turn a
+# genuinely finished lane alive, so dead rows stay releasable (the opposite
+# direction of the fix).
+def detached_worker_live(tid, row):
+    arm = handle = ""
+    try:
+        with open(os.path.join(root, "docs", "handoff", tid, "arm-registered"),
+                  encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line.startswith("arm="):
+                    continue
+                arm = handle = ""
+                for field in line.split():
+                    if field.startswith("arm="):
+                        arm = field[4:]
+                    elif field.startswith("handle="):
+                        handle = field[7:]
+    except OSError:
+        return None
+    if not arm or not handle or "/" in handle or ".." in handle:
+        return None  # same path-traversal guard resolve_run_dir applies
+    if arm in ("glm", "glm-flash", "kimi", "freepool"):
+        base = os.environ.get(
+            {"glm": "GLM_RUNS_DIR", "kimi": "KIMI_RUNS_DIR",
+             "freepool": "FREEPOOL_RUNS_DIR"}.get(arm, ""))
+        if not base:
+            runs_arm = "glm" if arm.startswith("glm") else arm
+            base = os.path.join(
+                runs_root_raw if runs_root_raw else os.path.expanduser("~/.claude/cache"),
+                f"{runs_arm}-runs",
+            )
+        run_dir = os.path.join(base, handle)
+        pgid = None
+        try:
+            with open(os.path.join(run_dir, "pgid"), encoding="utf-8") as fh:
+                pgid = int(fh.read().strip())
+        except (OSError, ValueError):
+            return None
+        if pgid <= 0:
+            return None
+        row["detached_arm"], row["detached_handle"], row["detached_pgid"] = arm, handle, pgid
+        if not pgid_group_alive(pgid):
+            return None
+        newest = None
+        for name in ("journal.jsonl", "progress.log"):
+            m = file_mtime(os.path.join(run_dir, name))
+            if m is not None and (newest is None or m > newest):
+                newest = m
+        if newest is not None:
+            row["detached_age_s"] = max(0, int(time.time()) - newest)
+        return f"detached_{arm}_pgid_live"
+    if arm == "codex":
+        job = jobs.get(handle)
+        if job is None:
+            return None
+        row["detached_arm"], row["detached_handle"] = arm, handle
+        status = str(job.get("status") or "").lower()
+        if status in ("queued", "running"):
+            return f"detached_codex_job_{status}"
+        return None
+    return None
+
 def sentinel_check(tid, row):
     """Return True if the sentinel-completion dead verdict was set on row.
 
@@ -685,6 +768,17 @@ def resolve(tid):
             row.update(verdict=f"silent:{row['age_s'] if row['age_s'] is not None else 'unknown'}",
                        source="handoff", reason="no_artifact_process_alive")
             return row
+        # BOARD-BLIND-TO-DETACHED-WORKERS-01: a registered lane with no stream
+        # of its own would take the dead labels below -- but a DETACHED worker
+        # writes into its run dir / worktree, not into this handoff dir, and
+        # its lead_durable pid is (correctly) not worker evidence. Ask the
+        # worker's own channel before declaring death; a finished worker
+        # probes negative and keeps the exact verdict it had before this fix.
+        det = detached_worker_live(tid, row)
+        if det is not None:
+            row["age_s"] = row.get("detached_age_s", row["age_s"])
+            row.update(verdict="alive", reason=det, source="arm-registered")
+            return row
         if not os.path.isdir(lane_dir):
             row.update(verdict="dead:no_handoff_dir", source="handoff", reason="no_handoff_dir")
         else:
@@ -740,6 +834,21 @@ def resolve(tid):
     # Fires regardless of is_fresh — that is the whole point.
     if sentinel_check(tid, row):
         return row
+    # BOARD-BLIND-TO-DETACHED-WORKERS-01: the ladder below reads a lead_durable
+    # pid (the dispatcher's own -- dead the moment dispatch-code.sh exits) as
+    # "no process", and a quiet stream as silence; together they issued a dead
+    # verdict for detached workers that were demonstrably running. A POSITIVE
+    # detached-worker probe outranks both: the worker's own channel is the
+    # evidence these stream/pid legs cannot see. Gated on not is_fresh -- a
+    # fresh stream already resolves alive below; and negative probes fall
+    # through untouched, so a genuinely finished worker keeps its dead verdict.
+    if not is_fresh:
+        det = detached_worker_live(tid, row)
+        if det is not None:
+            row.update(verdict="alive",
+                       reason=f"log_silent_{row['age_s']}s+{det}",
+                       source="arm-registered")
+            return row
     # Provider queued/running (v2_mode) is now ANNOTATION ONLY — it never
     # short-circuits the verdict; log mtime + process evidence below decide.
     # Preserve stopped-process detection in the same verdict source.
