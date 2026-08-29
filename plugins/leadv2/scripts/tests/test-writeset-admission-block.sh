@@ -189,18 +189,69 @@ run_product_close_landed_foreign_wire() {
   fi
 }
 
+run_product_close_reclassify_wire() {
+  local root="$1" block_file out1 rc1 out2 rc2
+  # Create a temporary script that includes the necessary helper functions and the block
+  local script_file
+  script_file="$(lv2_mktemp_dir "pc-reclass-script")/script.sh"
+  {
+    # Define the helper functions
+    echo '_pc_join_capped() { echo "joined"; }'
+    echo '_pc_lane_root_is_own_worktree() { return 1; }'
+    echo '_pc_lane_dirty() { return 0; }'
+    echo '_pc_drop_bootstrap_dirt() { cat; }'
+    echo '_pc_phys() { echo "same"; }'
+    echo '_pc_worker_reason() { echo ""; }'
+    # Now include the block (including the initial setup lines)
+    sed -n '2305,2387p' "$PRODUCT_CLOSE_SH"
+  } > "$script_file"
+  [[ -s "$script_file" ]] || { fail "M1 wire: could not extract reclassification block from live source"; return; }
+  set +e
+  # Test 1: writeset_drift_conflict should NOT trigger reclassification (condition false)
+  out1="$(TASK=T-WIRE HANDOFF="$root/handoff" blocked_reason="writeset_drift_conflict" \
+    bash -c '
+      emit() { :; }; _dl_note() { :; }; _stamp_review_terminal() { :; }
+      source "$1"
+      echo "READY_AFTER_SNIPPET blocked_reason=${blocked_reason}"
+      echo "_pc_cause=${_pc_cause:-unset}"
+    ' _ "$script_file")"; rc1=$?
+  # Test 2: some_other_reason (e.g., "foreign_commit") should trigger reclassification (condition true)
+  out2="$(TASK=T-WIRE HANDOFF="$root/handoff" blocked_reason="foreign_commit" \
+    bash -c '
+      emit() { :; }; _dl_note() { :; }; _stamp_review_terminal() { :; }
+      source "$1"
+      echo "READY_AFTER_SNIPPET blocked_reason=${blocked_reason}"
+      echo "_pc_cause=${_pc_cause:-unset}"
+    ' _ "$script_file")"; rc2=$?
+  set -e
+  # Verify Test 1: writeset_drift_conflict -> condition FALSE -> _pc_cause should remain "writeset_drift_conflict"
+  if grep -q 'READY_AFTER_SNIPPET blocked_reason=writeset_drift_conflict' <<<"$out1" \
+      && grep -q '_pc_cause=writeset_drift_conflict' <<<"$out1"; then
+    # Verify Test 2: foreign_commit -> condition TRUE -> _pc_cause should be changed (to empty or other value)
+    if grep -q 'READY_AFTER_SNIPPET blocked_reason=foreign_commit' <<<"$out2" \
+        && ! grep -q '_pc_cause=foreign_commit' <<<"$out2"; then
+      pass "M1: writeset_drift_conflict blocks reclassification; other non-partial_diff reasons still trigger it"
+    else
+      fail "M1 reclassify wire: Test 2 failed - reclassification did not fire for foreign_commit. out2=[${out2}]"
+    fi
+  else
+    fail "M1 reclassify wire: Test 1 failed - writeset_drift_conflict incorrectly triggered reclassification. out1=[${out1}]"
+  fi
+}
+
 main() {
-  local a b c d e f
+  local a b c d e f g
   log "=== lane write-set admission block (LANE-WRITESET-REGISTRY-01) ==="
   a="$(new_sandbox)"; b="$(new_sandbox)"; c="$(new_sandbox)"
-  d="$(new_sandbox)"; e="$(new_sandbox)"; f="$(new_sandbox)"
-  trap 'rm -rf "${a:-}" "${b:-}" "${c:-}" "${d:-}" "${e:-}" "${f:-}"' EXIT
+  d="$(new_sandbox)"; e="$(new_sandbox)"; f="$(new_sandbox)"; g="$(new_sandbox)"
+  trap 'rm -rf "${a:-}" "${b:-}" "${c:-}" "${d:-}" "${e:-}" "${f:-}" "${g:-}"' EXIT
   run_live_signal "$a"
   run_race "$b"
   run_legacy_and_drift "$c"
   run_pending_window_race "$d"
   run_product_close_drift_wire "$e"
   run_product_close_landed_foreign_wire "$f"
+  run_product_close_reclassify_wire "$g"
   log "=== Results: PASS=${PASS} FAIL=${FAIL} ==="
   [[ "$FAIL" == 0 ]]
 }
