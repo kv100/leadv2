@@ -190,7 +190,7 @@ run_product_close_landed_foreign_wire() {
 }
 
 run_product_close_reclassify_wire() {
-  local root="$1" block_file out1 rc1 out2 rc2 hdir
+  local root="$1" block_file hdir lane_root
   # Create a temporary script that includes just the block (pattern anchored)
   local block_file
   block_file="$(lv2_mktemp_dir "pc-reclass-block")/block.sh"
@@ -199,11 +199,14 @@ run_product_close_reclassify_wire() {
 
   hdir="$(lv2_mktemp_dir "pc-reclass-handoff")"
   mkdir -p "$hdir"
-  set +e
+  local emitted_file="${hdir}/emitted.txt"
+
   # Test 1: writeset_drift_conflict should NOT trigger reclassification (condition false)
+  local out1 rc1
+  set +e
   out1="$(TASK=T-WIRE HANDOFF="$hdir" blocked_reason="writeset_drift_conflict" \
     bash -c '
-      emit() { :; }; _dl_note() { :; }; _stamp_review_terminal() { :; }
+      emit() { printf '"'"'%s\n'"'"' "$*" >> '"$emitted_file"'; }; _dl_note() { :; }; _stamp_review_terminal() { :; }
       _pc_join_capped() { echo "joined"; }
       _pc_lane_root_is_own_worktree() { return 1; }
       _pc_lane_dirty() { return 0; }
@@ -211,36 +214,48 @@ run_product_close_reclassify_wire() {
       _pc_phys() { echo "same"; }
       _pc_worker_reason() { echo ""; }
       source "$1"
-      echo "READY_AFTER_SNIPPET blocked_reason=${blocked_reason}"
-      echo "_pc_cause=${_pc_cause:-unset}"
     ' _ "$block_file")"; rc1=$?
+  set -e
+
   # Test 2: some_other_reason (e.g., "foreign_commit") should trigger reclassification (condition true)
-  out2="$(TASK=T-WIRE HANDOFF="$hdir" blocked_reason="foreign_commit" \
+  lane_root="$(lv2_mktemp_dir "pc-reclass-lane-root")"
+  local out2 rc2
+  set +e
+  out2="$(TASK=T-WIRE HANDOFF="$hdir" blocked_reason="foreign_commit" _lane_root="$lane_root" \
     bash -c '
-      emit() { :; }; _dl_note() { :; }; _stamp_review_terminal() { :; }
+      emit() { printf '"'"'%s\n'"'"' "$*" >> '"$emitted_file"'; }; _dl_note() { :; }; _stamp_review_terminal() { :; }
       _pc_join_capped() { echo "joined"; }
       _pc_lane_root_is_own_worktree() { return 1; }
       _pc_lane_dirty() { return 0; }
+      _pc_lane_produced_files() { echo ""; }
       _pc_drop_bootstrap_dirt() { cat; }
       _pc_phys() { echo "same"; }
       _pc_worker_reason() { echo ""; }
       source "$1"
-      echo "READY_AFTER_SNIPPET blocked_reason=${blocked_reason}"
-      echo "_pc_cause=${_pc_cause:-unset}"
     ' _ "$block_file")"; rc2=$?
   set -e
-  # Verify Test 1: writeset_drift_conflict -> condition FALSE -> _pc_cause should remain "writeset_drift_conflict"
-  if grep -q 'READY_AFTER_SNIPPET blocked_reason=writeset_drift_conflict' <<<"$out1" \
-      && grep -q '_pc_cause=writeset_drift_conflict' <<<"$out1"; then
-    # Verify Test 2: foreign_commit -> condition TRUE -> _pc_cause should be changed (to empty or other value)
-    if grep -q 'READY_AFTER_SNIPPET blocked_reason=foreign_commit' <<<"$out2" \
-        && ! grep -q '_pc_cause=foreign_commit' <<<"$out2"; then
+
+  # Verify both tests exited with 5 (as exit 5 runs unconditionally)
+  if [[ $rc1 -ne 5 ]]; then
+    fail "M1 reclassify wire: Test 1 expected exit 5, got $rc1. out1=[${out1}]"
+    return
+  fi
+
+  if [[ $rc2 -ne 5 ]]; then
+    fail "M1 reclassify wire: Test 2 expected exit 5, got $rc2. out2=[${out2}]"
+    return
+  fi
+
+  # Verify Test 1: writeset_drift_conflict -> condition FALSE -> cause should remain "writeset_drift_conflict"
+  if grep -q "reason=writeset_drift_conflict.*cause=writeset_drift_conflict" "$emitted_file"; then
+    # Verify Test 2: foreign_commit -> condition TRUE -> first inner branch recomputes the cause.
+    if grep -q "reason=lane_root_not_a_worktree.*cause=lane_root_not_a_worktree" "$emitted_file"; then
       pass "M1: writeset_drift_conflict blocks reclassification; other non-partial_diff reasons still trigger it"
     else
-      fail "M1 reclassify wire: Test 2 failed - reclassification did not fire for foreign_commit. out2=[${out2}]"
+      fail "M1 reclassify wire: Test 2 failed - reclassification did not fire for foreign_commit. Expected cause=lane_root_not_a_worktree in emitted output"
     fi
   else
-    fail "M1 reclassify wire: Test 1 failed - writeset_drift_conflict incorrectly triggered reclassification. out1=[${out1}]"
+    fail "M1 reclassify wire: Test 1 failed - writeset_drift_conflict incorrectly triggered reclassification. Checked emitted file for reason=writeset_drift_conflict cause=writeset_drift_conflict"
   fi
 }
 
