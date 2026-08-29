@@ -129,7 +129,7 @@ export PROJECT_ROOT
 # absolute is git >=2.31 only, so resolve relative-or-absolute common-dir via
 # a subshell cd chain instead of trusting the string shape.
 _lv2bp_canonical_root() {   # <candidate> -> main-worktree root on stdout
-  local cand="$1" common_dir cd_out
+  local cand="$1" common_dir="" cd_out=""
   # Explicit non-empty check before the cd chain: bash rejects `cd ""` (rc=1,
   # chain short-circuits), but zsh treats `cd ""` as a no-op (rc=0) that would
   # silently resolve the PARENT of the candidate instead of falling back.
@@ -159,6 +159,15 @@ set +e
 
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 DISPATCH_BIN="${LEADV2_BACKLOG_PUMP_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
+# PHASE-DISCIPLINE-01 step 3: classify immediately after a successful claim,
+# BEFORE launch — the pump itself never bare-dispatches an unclassified task.
+TASK_JUDGE_BIN="${LEADV2_TASK_JUDGE_BIN:-${SCRIPT_DIR}/leadv2-task-judge.sh}"
+SESSION_RUNNER_BIN="${LEADV2_BACKLOG_PUMP_SESSION_RUNNER_BIN:-${SCRIPT_DIR}/leadv2-session-runner.sh}"
+LANE_WORKTREE_BIN="${LEADV2_BACKLOG_PUMP_LANE_WORKTREE_BIN:-${SCRIPT_DIR}/leadv2-lane-worktree.sh}"
+if [[ -f "${SCRIPT_DIR}/lib/leadv2-admission-class.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/lib/leadv2-admission-class.sh" || true
+fi
 JOURNAL_TASK="backlog-pump"
 
 jemit() {  # $1=type $2..=text — never fails the caller
@@ -550,14 +559,18 @@ _acquire_pump_lock() {
 }
 
 # Fail closed when Git reports an unfinished merge/rebase/cherry-pick or
-# unmerged index entries. Refusing a refill is safer than an ambiguous tree.
+# unmerged index entries. Returns 0 for a confirmed conflict, 1 for a clean
+# tree, and 2 when Git itself could not determine the state. The caller keeps
+# the latter fail-closed but journals it honestly as a probe failure.
 _tree_mid_conflict() {
-  git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 2
   local ref
   for ref in MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
     git -C "$PROJECT_ROOT" rev-parse -q --verify "$ref" >/dev/null 2>&1 && return 0
   done
-  git -C "$PROJECT_ROOT" ls-files -u 2>/dev/null | grep -q . && return 0
+  local unmerged
+  unmerged="$(git -C "$PROJECT_ROOT" ls-files -u 2>/dev/null)" || return 2
+  [[ -n "$unmerged" ]] && return 0
   return 1
 }
 
@@ -654,6 +667,113 @@ _pump_update_lane_pid() {  # $1=task_id $2=pid_or_null -- best-effort, never fai
 
 _pump_release_lane() {  # $1=task_id -- never fails the caller
   leadv2_active_unregister "$1" >/dev/null 2>&1 || true
+}
+
+# ── PHASE-DISCIPLINE-01 step 3: admission classification at the pump ─────────
+# _pump_classify <task_id> <mission> -> stdout "class<TAB>route<TAB>source"
+# Same D1 map, same receipt, same journal line as dispatch-code's
+# _admission_classify — the pump mints the receipt first (classify-after-claim,
+# before launch), so the Light path's later dispatch-code call READS it instead
+# of re-minting and the `task_class=...` journal line appears exactly once per
+# intake. Receipt is pinned to CANONICAL_ROOT (control plane, same pinning as
+# EMPTY_STREAK_DIR above). Classifier failure -> Standard/phases
+# (source=classifier_error): NEVER a bare dispatch.
+_pump_classify() {
+  local tid="$1" mission="$2"
+  local sig sig8 existing r_cls r_route r_src r_wk r_digest r_tid
+  local mfile estimate pair cls src route wk
+  if ! declare -F leadv2_admission_sig >/dev/null 2>&1; then
+    # lib missing (broken install): classifier_error shape, never fail open.
+    printf 'Standard\tphases\tclassifier_error\t\n'
+    return 0
+  fi
+  sig="$(printf '%s' "$mission" | leadv2_admission_sig)"
+  sig8="${sig:0:8}"
+  existing="$(leadv2_admission_read_receipt "${CANONICAL_ROOT}" "${sig8}" 2>/dev/null || true)"
+  if [[ -n "${existing}" ]]; then
+    IFS=$'\t' read -r r_cls r_route r_src r_wk r_digest r_tid <<<"${existing}"
+    if [[ "${r_digest}" == "${sig}" ]]; then
+      printf '%s\t%s\t%s\t%s\n' "${r_cls}" "${r_route}" "${r_src}" "${r_wk}"
+      return 0
+    fi
+    jemit decision "admission_receipt_mismatch task=${tid} sig8=${sig8}"
+  fi
+  mfile="$(mktemp "${TMPDIR:-/tmp}/leadv2-pump-admission.XXXXXX")" || { printf 'Standard\tphases\tclassifier_error\t\n'; return 0; }
+  printf '%s' "$mission" >"${mfile}"
+  estimate="$(PROJECT_ROOT="${CANONICAL_ROOT}" bash "${TASK_JUDGE_BIN}" \
+    --mission-file "${mfile}" --task-id "${tid}" 2>/dev/null)"
+  local jrc=$?
+  rm -f "${mfile}" 2>/dev/null || true
+  pair=""
+  if [[ ${jrc} -eq 0 && -n "${estimate}" ]]; then
+    pair="$(leadv2_admission_class "" 0 "${estimate}")"
+  fi
+  if [[ -n "${pair}" ]]; then
+    IFS=$'\t' read -r cls src <<<"${pair}"
+    wk="$(printf '%s' "$estimate" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("work_kind",""))' 2>/dev/null || true)"
+  else
+    cls="Standard" src="classifier_error" wk=""
+  fi
+  case "${cls}" in
+    Standard|Heavy|Strategic) route="phases" ;;
+    *)                       cls="Light" route="dispatch" ;;
+  esac
+  leadv2_admission_write_receipt "${CANONICAL_ROOT}" "${sig8}" "${tid}" "${sig}" \
+    "${cls}" "${route}" "${src}" "${wk:-unknown}" 2>/dev/null \
+    || jemit decision "admission_receipt_write_failed task=${tid} sig8=${sig8}"
+  jemit decision "task_class=${cls} route=${route} source=${src} task=${tid} sig8=${sig8}"
+  printf '%s\t%s\t%s\t%s\n' "${cls}" "${route}" "${src}" "${wk}"
+  return 0
+}
+
+# _pump_adopt_full_cycle <task_id> <class> — PHASE-DISCIPLINE-01 D5 Slice B.
+# The pump already holds the claim and the pid=null lane reservation; this
+# ADOPTS both: ensures the lane worktree, starts ONE full-cycle runner
+# (leadv2-session-runner.sh — the same Phase 0..8 machinery fanout's
+# launch_headless uses; never a raw one-shot CLI), and atomically replaces the
+# placeholder pid via the same active-registry update_pid the pid-fill path
+# uses. rc 0 = adopted (lane pid filled, journal written); rc nonzero = a
+# PRE-SPAWN failure — the caller must unclaim + release the lane (Slice A
+# fallback), never leave a reserved lane with no worker.
+_pump_adopt_full_cycle() {
+  local tid="$1" cls="$2"
+  # Adopt availability is runtime-checked, not install-time: a missing runner
+  # binary or LEADV2_BACKLOG_PUMP_ADOPT=0 falls back to the rc=3 refusal.
+  [[ "${LEADV2_BACKLOG_PUMP_ADOPT:-1}" == "1" ]] || return 1
+  [[ -x "${SESSION_RUNNER_BIN}" ]] || return 1
+  local task_dir logf lane_dir pid
+  task_dir="${CANONICAL_ROOT}/docs/handoff/${tid}"
+  mkdir -p "$task_dir" 2>/dev/null || return 1
+  logf="${task_dir}/fanout.log"
+  lane_dir="$(bash "${LANE_WORKTREE_BIN}" ensure "${tid}" "${cls}" 2>>"${logf}")"
+  [[ -n "${lane_dir}" ]] || return 1
+  # Same spawn shape as launch_headless: own OS session (setsid when present,
+  # nohup fallback on macOS), cwd = lane worktree, control plane pinned to
+  # CANONICAL_ROOT so active.yaml/docs/handoff resolve to the shared root.
+  if command -v setsid >/dev/null 2>&1; then
+    ( cd "$lane_dir" && \
+      exec env LEADV2_DAEMON=1 LEADV2_ASYNC_QUESTIONS=1 LEADV2_FANOUT=1 \
+        LEADV2_TASK_ID="${tid}" LEADV2_PROJECT_ROOT="${CANONICAL_ROOT}" \
+        setsid nohup "${SESSION_RUNNER_BIN}" </dev/null >>"${logf}" 2>&1 ) &
+  else
+    ( cd "$lane_dir" && \
+      exec env LEADV2_DAEMON=1 LEADV2_ASYNC_QUESTIONS=1 LEADV2_FANOUT=1 \
+        LEADV2_TASK_ID="${tid}" LEADV2_PROJECT_ROOT="${CANONICAL_ROOT}" \
+        nohup "${SESSION_RUNNER_BIN}" </dev/null >>"${logf}" 2>&1 ) &
+  fi
+  pid=$!
+  # Pre-spawn liveness: an exec-level failure (bad interpreter, missing lib)
+  # shows up within the settle window; after that the runner owns its own
+  # pulse/TTL semantics exactly like a fanout-launched lane.
+  sleep 2
+  if ! kill -0 "$pid" 2>/dev/null; then
+    jemit decision "pump_adopt_failed task=${tid} reason=runner_died_at_spawn pid=${pid}"
+    return 1
+  fi
+  # Atomic placeholder replacement — update_pid takes the registry lock.
+  _pump_update_lane_pid "${tid}" "${pid}"
+  jemit decision "pump_adopted task=${tid} class=${cls} pid=${pid} route=phases runner=${SESSION_RUNNER_BIN##*/}"
+  return 0
 }
 
 # cmd_async_dispatch — runs the actual dispatch call + its outcome handling
@@ -786,8 +906,15 @@ cmd_check() {
     return 0
   fi
 
+  local tree_state_rc=0
   if _tree_mid_conflict; then
     jemit decision "pump_refused reason=tree_mid_conflict"
+    return 0
+  else
+    tree_state_rc=$?
+  fi
+  if [[ "$tree_state_rc" -ne 1 ]]; then
+    jemit decision "pump_refused reason=tree_state_probe_failed rc=${tree_state_rc}"
     return 0
   fi
 
@@ -882,6 +1009,28 @@ cmd_check() {
     local mission; mission="$(_mission_for_task "$iid")"
     if [[ -z "$mission" ]]; then
       mission="$title"
+    fi
+
+    # PHASE-DISCIPLINE-01 step 3: classify AFTER the successful claim, BEFORE
+    # any launch (sync or async). Light -> dispatch door as today (class
+    # >=Standard through dispatch-code is now refused by its own guard, so the
+    # pump must never send one there). Standard/Heavy -> Slice B adopt path
+    # (full-cycle runner under the pump's held claim); if the adopt path is
+    # unavailable at runtime, the Slice A fallback refuses via the same
+    # shape as dispatch-code's rc=3 escalation path — never a bare dispatch.
+    local adm_cls adm_route adm_src adm_wk
+    IFS=$'\t' read -r adm_cls adm_route adm_src adm_wk <<<"$(_pump_classify "$iid" "$mission")"
+    if [[ "${adm_route:-phases}" == "phases" ]]; then
+      if _pump_adopt_full_cycle "$iid" "${adm_cls:-Standard}"; then
+        dispatched=$((dispatched + 1))
+        cap=$((cap - 1))
+        continue
+      fi
+      jemit decision "pump_deferred_to_founder task=${iid} reason=phases_required class=${adm_cls:-Standard}"
+      leadv2_tasks_unclaim "$iid" >/dev/null 2>&1 || true
+      _pump_release_lane "$iid"
+      _surface_to_founder "$iid" "requires the full phase cycle (class ${adm_cls:-Standard}, route=phases) and the adopt path is unavailable — pump will not auto-start this as a bare worker"
+      continue
     fi
 
     if [[ "$ASYNC_DISPATCH" == "1" ]]; then

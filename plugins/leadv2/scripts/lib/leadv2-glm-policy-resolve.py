@@ -143,6 +143,7 @@ def extract_glm_policy_block(routing_yaml_text: str) -> dict:
                 "build_threshold_pct": DEFAULT_BUILD_THRESHOLD_PCT,
                 "review_threshold_pct": DEFAULT_REVIEW_THRESHOLD_PCT,
                 "build_spill_order": list(DEFAULT_BUILD_SPILL),
+                "build_arm_exclusions": [],
                 "review_arm_exclusions": list(DEFAULT_REVIEW_EXCLUSIONS),
             }
             btm = re.search(r'(?m)^[ \t]*build_threshold_pct:[ \t]*([0-9.]+)', block)
@@ -154,6 +155,9 @@ def extract_glm_policy_block(routing_yaml_text: str) -> dict:
             bso = re.search(r'(?m)^[ \t]*build_spill_order:[ \t]*\[([^\]]*)\]', block)
             if bso:
                 gate["build_spill_order"] = [s.strip() for s in bso.group(1).split(',') if s.strip()]
+            bex = re.search(r'(?m)^[ \t]*build_arm_exclusions:[ \t]*\[([^\]]*)\]', block)
+            if bex:
+                gate["build_arm_exclusions"] = [s.strip() for s in bex.group(1).split(',') if s.strip()]
             rex = re.search(r'(?m)^[ \t]*review_arm_exclusions:[ \t]*\[([^\]]*)\]', block)
             if rex:
                 gate["review_arm_exclusions"] = [s.strip() for s in rex.group(1).split(',') if s.strip()]
@@ -669,8 +673,8 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
       parameter, not hardcoded, so a future non-glm-default step can still
       get quota-gate-only enforcement without touching this function.
     job: "build" | "review" (anything else falls back to "build" semantics —
-      review_arm_exclusions and the review threshold only ever apply when the
-      caller explicitly asks for job="review").
+      build_arm_exclusions apply only to build; review_arm_exclusions and the
+      review threshold apply only when the caller explicitly asks for job="review").
     enable_codex_fitting_rule: the two pre-T-b duplicates had ALREADY drifted —
       dispatch-code.sh:resolve_arm() carried the ROUTING-ENFORCEMENT-01
       codex_fitting_mission_kind rule, leadv2-router.sh's copy never got it
@@ -836,15 +840,32 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
     codex_block_cause = ""
     readings = ""
 
-    # --- T-q enforcement (SUPERVISOR-AUDIT-01 T-b): codex_quota_gate + review_arm_exclusions ---
+    # --- T-q enforcement (SUPERVISOR-AUDIT-01 T-b): codex_quota_gate + arm exclusions ---
     # MAJOR fix (resolver:55-60): only enforce when the yaml explicitly
     # declares codex_quota_gate -- absent block => exact old v1 output
     # (arm/rule/reason/tier from the precedence rules above, untouched).
     if isinstance(gate, dict):
-        exclusions = gate.get("review_arm_exclusions", DEFAULT_REVIEW_EXCLUSIONS) if job == "review" else []
+        exclusions = (gate.get("review_arm_exclusions", DEFAULT_REVIEW_EXCLUSIONS) if job == "review"
+                      else gate.get("build_arm_exclusions", []))
         spill = gate.get("build_spill_order", DEFAULT_BUILD_SPILL)
         threshold = (gate.get("review_threshold_pct", DEFAULT_REVIEW_THRESHOLD_PCT) if job == "review"
                      else gate.get("build_threshold_pct", DEFAULT_BUILD_THRESHOLD_PCT))
+
+        # Repo opt-in: a build base arm that is explicitly banned must not
+        # escape merely because no quota spill was needed. Preserve the file's
+        # fail-open dispatch contract for a malformed policy that excludes its
+        # entire dispatchable spill order: retain the existing arm and expose
+        # the refusal instead of returning no arm or raising.
+        if job == "build" and arm in exclusions:
+            allowed = [a for a in spill
+                       if a not in exclusions and a in DISPATCHABLE_BUILD_ARMS]
+            if allowed:
+                arm = allowed[0]
+                rule, reason = "build_arm_exclusions", "build_arm_exclusion"
+                tier = codex_default_tier if arm == "codex" else ""
+            else:
+                rule, reason = "build_arm_exclusions", "build_arm_exclusions_all_excluded_fail_open"
+                tier = codex_default_tier if arm == "codex" else ""
 
         if quota_codex_pct is None and quota_live_bin:
             quota_codex_pct = _live_pct_memo("codex", quota_live_bin)
@@ -912,7 +933,7 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
             for a in spill:
                 if a in skip or a not in _dispatchable:
                     continue
-                if job == "review" and a in exclusions:
+                if a in exclusions:
                     continue
                 # T19 fix-round (review FAIL on 009d0b6, C1 required-fix #2):
                 # freepool is a third-party arm -- exclude it from this spill

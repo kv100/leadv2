@@ -19,13 +19,24 @@
 #   FREEPOOL_ARM_CONFIG              path to freepool-arm.yaml (default sibling ../../config/freepool-arm.yaml)
 #   FREEPOOL_MODELS_CACHE_FILE       cache file for /v1/models (default ~/.claude/leadv2-state/freepool-models.json)
 #   FREEPOOL_MODELS_CACHE_TTL_S      cache TTL seconds (default 60)
-#   FREEPOOL_MODELS_FETCH_TIMEOUT_S  timeout for GET /v1/models (default 2)
-#   FREEPOOL_MODEL_PROBE_TIMEOUT_S   timeout for the 1-token liveness probe (default 8)
+#   FREEPOOL_MODELS_FETCH_TIMEOUT_S  timeout for GET /v1/models (default 5; a cold proxy
+#                                    process can be slow to answer its first request)
+#   FREEPOOL_MODEL_PROBE_TIMEOUT_S   timeout for the 1-token liveness probe (default 30;
+#                                    measured 2026-08-27 -- gemini routes answered in
+#                                    18-26s and some NIM/mistral routes in 50-117s, so
+#                                    the old 8s default silently excluded working models.
+#                                    Latency-sensitive callers can still lower it.)
 #   FREEPOOL_AUTH_TOKEN              bearer token for the probe (required for a real probe;
 #                                    if unset, the probe call is still attempted with no
 #                                    auth header — a proxy that requires auth will simply
 #                                    fail the probe and the rank advances, same as any
 #                                    other probe failure)
+#   FREEPOOL_ROLE                    optional role id (e.g. implement/bulk/review/read).
+#                                    When set and config/freepool-arm.yaml has a matching
+#                                    non-empty `role_rank.<role>` list, that list is used
+#                                    instead of the flat `model_rank`. Unset defaults to
+#                                    `implement`; a role with no matching/empty list falls
+#                                    back silently to `model_rank` -- never an error.
 set -euo pipefail
 
 _SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,8 +46,8 @@ readonly ARM_CONFIG="${FREEPOOL_ARM_CONFIG:-$(cd "${_SELF_DIR}/../.." && pwd)/co
 readonly CACHE_DIR_DEFAULT="${HOME}/.claude/leadv2-state"
 readonly MODELS_CACHE_FILE="${FREEPOOL_MODELS_CACHE_FILE:-${CACHE_DIR_DEFAULT}/freepool-models.json}"
 readonly MODELS_CACHE_TTL_S="${FREEPOOL_MODELS_CACHE_TTL_S:-60}"
-readonly FETCH_TIMEOUT_S="${FREEPOOL_MODELS_FETCH_TIMEOUT_S:-2}"
-readonly PROBE_TIMEOUT_S="${FREEPOOL_MODEL_PROBE_TIMEOUT_S:-8}"
+readonly FETCH_TIMEOUT_S="${FREEPOOL_MODELS_FETCH_TIMEOUT_S:-5}"
+readonly PROBE_TIMEOUT_S="${FREEPOOL_MODEL_PROBE_TIMEOUT_S:-30}"
 
 log_err() { echo "[freepool-model-select] $*" >&2; }
 
@@ -64,18 +75,25 @@ _fetch_models() {
   fi
 }
 
-# _rank_candidates -> one route id per line, in model_rank order, for every
-# rank whose prefix matches at least one live route id. Empty output (not an
+# _rank_candidates -> one route id per line, in rank order, for every rank
+# whose prefix matches at least one live route id. Empty output (not an
 # error) when the config or the models cache is missing/unparseable.
+#
+# Role-aware (FREEPOOL_ROLE): the unset role defaults to `implement`. If the
+# resulting `role_rank.<role>` exists in the yaml and is a non-empty list,
+# that list is used instead of the flat `model_rank`. An unknown role or empty
+# role list falls back silently to `model_rank` -- resolution never errors on
+# a role miss.
 _rank_candidates() {
-  python3 - "${ARM_CONFIG}" "${MODELS_CACHE_FILE}" <<'PYEOF' 2>/dev/null || true
+  python3 - "${ARM_CONFIG}" "${MODELS_CACHE_FILE}" "${FREEPOOL_ROLE:-}" <<'PYEOF' 2>/dev/null || true
 import json, sys
 try:
     import yaml
 except ImportError:
     sys.exit(0)
 
-config_path, models_path = sys.argv[1], sys.argv[2]
+config_path, models_path, role = sys.argv[1], sys.argv[2], sys.argv[3]
+role = role or "implement"
 
 try:
     with open(config_path) as f:
@@ -83,7 +101,14 @@ try:
 except Exception:
     sys.exit(0)
 
-ranks = cfg.get("model_rank") or []
+ranks = None
+role_ranks = cfg.get("role_rank") or {}
+if isinstance(role_ranks, dict):
+    candidate = role_ranks.get(role)
+    if isinstance(candidate, list) and candidate:
+        ranks = candidate
+if ranks is None:
+    ranks = cfg.get("model_rank") or []
 prefixes = [r.get("prefix", "") for r in ranks if isinstance(r, dict) and r.get("prefix")]
 if not prefixes:
     sys.exit(0)

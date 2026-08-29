@@ -149,7 +149,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 2` BEFORE executing.
 
 ## Phase 3: GATE 1 - the only gate
-- Trigger: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-gate1-prompt.sh" "$LEADV2_TASK_ID" "$CLASS" "$PLAN_SUMMARY"` -- auto-accepts after timeout (except Heavy + DAEMON=0) | Exit: Exit 0 = accepted -> Phase 4; Exit 1 = declined -> iterate once; Exit 2 = auto-accepted
+- Trigger: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-gate1-prompt.sh" "$LEADV2_TASK_ID" "$CLASS" "$PLAN_SUMMARY" "$RISK"` — Heavy/Strategic/high-risk NEVER auto-accept in any mode (async blocking question under LEADV2_ASYNC_QUESTIONS=1, blocking read otherwise); Standard non-high-risk auto-accepts after timeout (journaled gate1_auto_accepted vs answered) | Exit: Exit 0 = accepted -> Phase 4; Exit 1 = declined -> iterate once; Exit 2 = auto-accepted
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 3` BEFORE executing.
 
 ## Phase 4: BUILD
@@ -293,7 +293,14 @@ Principle: **context is cache, disk is truth.** Sessions run for days with many 
 - **No code** on `.py`/`.sh`/`.ts`/`.tsx`/`.sql`/migrations. Ever.
 - **No ending turn after `leadv2-codex-planner.sh` launch without a Monitor.** Always pair with Monitor(codex-task.sh status polling). Read cx-tail and proceed in SAME turn.
 - **No skipping Phase 2 Plan triad** for Standard+ tasks.
-- **No concurrent /leadv2.** Lockfile check in Phase 0.
+- **Concurrency: 2 execution lanes per lead session, unlimited sessions** (founder order
+  2026-08-29, CONCURRENCY-2-LANES-01 — supersedes the old "No concurrent /leadv2" ban and the
+  single-lead `WIP=1` rule). A second `/leadv2` session in the same repo is NORMAL and needs no
+  founder approval; so is a second lane inside one session. Phase 0 still takes the lockfile —
+  it serialises the *registry write*, never the session. Constraints that remain real: each lane
+  gets its OWN worktree (never two lanes in one tree), and two lanes may not share a write set.
+  **Never ask the founder "can I start a second lane / another session?" — the answer is yes.**
+  Ask only when two lanes would write the same files.
 - **No skipping yaml validation** on subagent deliverables.
 - **No chat narration.** Pulse mode (default): absolute silence except pulse lines + gate + close.
 - **No foreground Agent spawns.** Always `run_in_background=true`.

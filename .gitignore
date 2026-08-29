@@ -18,6 +18,11 @@ docs/leadv2/.broad-status-prev.json
 .repowise/
 docs/leadv2/glm-deferred.jsonl
 docs/leadv2/glm-deferred.d/
+# FP-06 fix-round (H4): runtime telemetry appended once per dispatch terminal —
+# a generated artifact, not an authored doc; capped in dispatch-code, ignored here.
+# .lock* also covers the mkdir-fallback lock dir (*.lock.d, flock-less hosts).
+docs/leadv2/model-select-telemetry.csv
+docs/leadv2/model-select-telemetry.csv.lock*
 docs/leadv2/.arm-exceptions-*
 docs/leadv2/.codex-credits-empty.stamp
 docs/leadv2/*.lock
