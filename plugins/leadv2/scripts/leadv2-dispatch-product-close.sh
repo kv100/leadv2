@@ -2303,7 +2303,7 @@ if [[ -n "${blocked_reason}" ]]; then
   # (_PC_ASKED_INTO_VOID, set by the asked-into-void probe below the e2e block).
   # Exit code stays 5 -- no caller-contract change.
   _pc_terminal="refused"; _pc_cause="${blocked_reason}"; _pc_rg_reason="${blocked_reason}"
-  if [[ "${blocked_reason}" != "partial_diff" ]]; then
+  if [[ "${blocked_reason}" != "partial_diff" && "${blocked_reason}" != "writeset_drift_conflict" ]]; then
     # GATE-LANE-DIFF-ONLY-WHEN-CROSS-REPO-01: an empty diff whose resolved lane worktree is
     # DIRTY is a diff-scoping failure, not an absent-work outcome -- the worker demonstrably
     # produced something the gate could not scope. Gate on _lane_root (whether a lane
