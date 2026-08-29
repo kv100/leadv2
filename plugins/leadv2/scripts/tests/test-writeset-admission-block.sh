@@ -7,6 +7,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REGISTRY_SH="${SCRIPT_DIR}/../leadv2-active-registry.sh"
+PRODUCT_CLOSE_SH="${SCRIPT_DIR}/../leadv2-dispatch-product-close.sh"
 
 PASS=0; FAIL=0
 log()  { printf '[TEST] %s\n' "$*"; }
@@ -98,14 +99,108 @@ YAML
   fi
 }
 
+### ---- fix-round-1: live-wire cases (round-1 review H1/H2/H3/H4/H5) ----
+
+# H1 regression guard: reproduces dispatch-code.sh's own two-phase pattern
+# (register self BEFORE writes are known, patch writes in LATER once the
+# architect prepass resolves them -- dispatch-code.sh:~5859 and :~6005) and
+# proves a concurrent lane intersecting the still-unresolved incumbent is
+# REFUSED (rc=5, reason=pending_resolution), not silently admitted under the
+# default `warn` enforce mode. Before the fix this test fails: the "unknown"
+# branch alone admits under warn regardless of how young the row is.
+run_pending_window_race() {
+  local root="$1" out rc
+  set +e
+  LEADV2_PROJECT_ROOT="$root" LEADV2_STATE_ROOT="$root" CLAUDE_PROJECT_DIR="$root" LEADV2_WRITESET_ENFORCE=warn \
+    bash -c 'source "$1"; leadv2_active_register PENDING-A Standard "$2" a false >/dev/null' _ "$REGISTRY_SH" "$root"
+  out="$(LEADV2_PROJECT_ROOT="$root" LEADV2_STATE_ROOT="$root" CLAUDE_PROJECT_DIR="$root" LEADV2_WRITESET_ENFORCE=warn \
+    bash -c 'source "$1"; leadv2_active_register PENDING-B Standard "$2" b false "" "" plugins/leadv2/scripts/leadv2-dispatch-code.sh 2>&1' _ "$REGISTRY_SH" "$root")"; rc=$?
+  set -e
+  if [[ "$rc" == 5 ]] && grep -q 'reason=pending_resolution' <<<"$out" && grep -q 'other=PENDING-A' <<<"$out"; then
+    pass "H1: a lane mid-resolution (writes not yet persisted) refuses an intersecting concurrent register, even under warn"
+  else
+    fail "H1 pending window: rc=${rc} out=${out}"
+  fi
+}
+
+# H2/H3 live wire: sources the EXACT _pc_git_diff_names function body out of
+# the shipped leadv2-dispatch-product-close.sh (not a reimplementation) and
+# runs it against a real git repo -- proves (H2) a brand-new UNTRACKED file
+# outside any declared write set is visible, and (H3) a tracked
+# docs/leadv2/ write is excluded so routine lane-state churn never counts as
+# drift.
+run_product_close_drift_wire() {
+  local root="$1" fn_file names
+  fn_file="$(lv2_mktemp_dir "pc-drift-fn")/fn.sh"
+  sed -n '/^_pc_git_diff_names() {/,/^}/p' "$PRODUCT_CLOSE_SH" > "$fn_file"
+  git -C "$root" init -q
+  git -C "$root" config user.email t@t.example; git -C "$root" config user.name t
+  mkdir -p "$root/docs/leadv2"
+  printf 'a\n' > "$root/tracked.txt"
+  git -C "$root" add tracked.txt >/dev/null
+  git -C "$root" commit -qm base
+  base="$(git -C "$root" rev-parse HEAD)"
+  printf 'new\n' > "$root/undeclared-new-file.txt"      # H2: untracked, never staged
+  printf 'x\n' >> "$root/docs/leadv2/bus.jsonl"
+  git -C "$root" add docs/leadv2/bus.jsonl >/dev/null    # H3: tracked, excluded path
+  names="$(bash -c 'source "$1"; _pc_git_diff_names "$2" "$3"' _ "$fn_file" "$root" "$base")"
+  if grep -qx 'undeclared-new-file.txt' <<<"$names" && ! grep -q '^docs/leadv2/' <<<"$names"; then
+    pass "H2/H3: _pc_git_diff_names sees an untracked new file and excludes docs/leadv2/"
+  else
+    fail "H2/H3 drift wire: names=[${names}]"
+  fi
+}
+
+# H4 live wire: sources the EXACT narrowed landed-foreign escape block (lines
+# guarded by `blocked_reason == unscopable_diff`) and proves a
+# writeset_drift_conflict verdict (D6's one BLOCK) is NEVER reclassified
+# landed_foreign even when a matching foreign commit exists -- while the
+# escape still fires for the case it was written for (unscopable_diff).
+run_product_close_landed_foreign_wire() {
+  local root="$1" block_file foreign_repo hdir out1 rc1 out2 rc2
+  block_file="$(lv2_mktemp_dir "pc-lf-block")/block.sh"
+  sed -n '/^if \[\[ "\${blocked_reason}" == "unscopable_diff" \]\]; then$/,/^fi$/p' "$PRODUCT_CLOSE_SH" > "$block_file"
+  [[ -s "$block_file" ]] || { fail "H4 wire: could not extract landed-foreign block from live source"; return; }
+  foreign_repo="$(lv2_mktemp_dir "pc-lf-foreign")"
+  git -C "$foreign_repo" init -q
+  git -C "$foreign_repo" config user.email t@t.example; git -C "$foreign_repo" config user.name t
+  printf 'x\n' > "$foreign_repo/f.txt"; git -C "$foreign_repo" add f.txt >/dev/null
+  git -C "$foreign_repo" commit -qm "T-WIRE landed elsewhere" >/dev/null
+  hdir="$(lv2_mktemp_dir "pc-lf-handoff")"
+  set +e
+  out1="$(TASK=T-WIRE HANDOFF="$hdir" LANE_TARGET_REPO="$foreign_repo" blocked_reason="writeset_drift_conflict" \
+    bash -c '
+      emit() { :; }; _dl_note() { :; }; _stamp_review_terminal() { :; }
+      source "$1"
+      echo "READY_AFTER_SNIPPET blocked_reason=${blocked_reason}"
+    ' _ "$block_file")"; rc1=$?
+  out2="$(TASK=T-WIRE HANDOFF="$hdir" LANE_TARGET_REPO="$foreign_repo" blocked_reason="unscopable_diff" \
+    bash -c '
+      emit() { :; }; _dl_note() { :; }; _stamp_review_terminal() { :; }
+      source "$1"
+      echo "READY_AFTER_SNIPPET blocked_reason=${blocked_reason}"
+    ' _ "$block_file")"; rc2=$?
+  set -e
+  if grep -q 'READY_AFTER_SNIPPET blocked_reason=writeset_drift_conflict' <<<"$out1" \
+      && ! grep -q 'READY_AFTER_SNIPPET' <<<"$out2" && grep -q 'reason: landed_foreign' "${hdir}/review-gate.md" 2>/dev/null; then
+    pass "H4: writeset_drift_conflict is never reclassified landed_foreign; unscopable_diff escape still fires"
+  else
+    fail "H4 landed-foreign wire: out1=[${out1}] out2=[${out2}] rc1=${rc1} rc2=${rc2}"
+  fi
+}
+
 main() {
-  local a b c
+  local a b c d e f
   log "=== lane write-set admission block (LANE-WRITESET-REGISTRY-01) ==="
   a="$(new_sandbox)"; b="$(new_sandbox)"; c="$(new_sandbox)"
-  trap 'rm -rf "${a:-}" "${b:-}" "${c:-}"' EXIT
+  d="$(new_sandbox)"; e="$(new_sandbox)"; f="$(new_sandbox)"
+  trap 'rm -rf "${a:-}" "${b:-}" "${c:-}" "${d:-}" "${e:-}" "${f:-}"' EXIT
   run_live_signal "$a"
   run_race "$b"
   run_legacy_and_drift "$c"
+  run_pending_window_race "$d"
+  run_product_close_drift_wire "$e"
+  run_product_close_landed_foreign_wire "$f"
   log "=== Results: PASS=${PASS} FAIL=${FAIL} ==="
   [[ "$FAIL" == 0 ]]
 }

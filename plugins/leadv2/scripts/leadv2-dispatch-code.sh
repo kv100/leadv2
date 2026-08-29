@@ -5856,10 +5856,35 @@ cmd_resolve() {
       # as active_register_miss, never as an unjournalled dispatcher exit.
       local _register_out _register_rc
       set +e
-      _register_out="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" 2>/dev/null)"
+      # LANE-WRITESET-REGISTRY-01 fix-round-1 H1: pass whatever `lane_writes`
+      # is ALREADY resolved at this point (row-declared or CLI --writes,
+      # both set during arg parsing above, well before this call) so a lane
+      # that already knows its write set is never registered `unknown` in
+      # the first place. When lane_writes is still empty here (it will only
+      # be filled by the architect prepass below), the row genuinely cannot
+      # declare writes yet; leadv2-active-registry.sh's pending-window check
+      # (_lv2_ws_pending, keyed on this row's own `started_at`) refuses any
+      # concurrent lane that intersects it during that window instead of
+      # silently admitting under the D7 unknown/warn path -- closing the
+      # TOCTOU the second register call at ~:6015 alone could not.
+      _register_out="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_register "${reg_id}" "${task_class}" "${PROJECT_ROOT}" "${DISPATCH_LANE_NAME:-}" "" "" "" "${lane_writes}" 2>/dev/null)"
       _register_rc=$?
       DISPATCH_SLOT_SESSION="$(printf '%s\n' "${_register_out}" | sed -nE '/^s-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$/p' | tail -n 1)"
       set +e
+      # H1 fix-round-1: when lane_writes is already known at this first call,
+      # a real refusal (rc 5/6) must be honoured HERE, at the earliest point
+      # -- not fall through to active_register_miss and re-discover the same
+      # conflict after a full (minutes-long) architect prepass at ~:6015.
+      case "${_register_rc}" in
+        5) emit decision "dispatch_refused reason=writeset_conflict task=${sig8} writes=${lane_writes}"
+           _dl_note "${sig8}" refused writeset_conflict "" "${founder_task_id}"
+           printf 'LEADV2_DISPATCH_REFUSED: writeset_conflict\n'
+           exit 2 ;;
+        6) emit decision "dispatch_refused reason=writeset_unknown task=${sig8} writes=${lane_writes}"
+           _dl_note "${sig8}" refused writeset_unknown "" "${founder_task_id}"
+           printf 'LEADV2_DISPATCH_REFUSED: writeset_unknown\n'
+           exit 2 ;;
+      esac
       if [[ -n "${DISPATCH_SLOT_SESSION}" ]]; then
         DISPATCH_SLOT_REG_ID="${reg_id}"
         DISPATCH_SLOT_PID="$(_lv2_durable_pid 2>/dev/null || printf '%s' "$$")"

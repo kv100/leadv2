@@ -1969,6 +1969,30 @@ _pc_git_diff() {  # <repo_abs> <base_rev> <path...> -> diff on stdout (tracked +
   rm -f "${tmpidx}"
 }
 
+# LANE-WRITESET-REGISTRY-01 fix-round-1 H2/H3: whole-repo name-only sibling
+# of _pc_git_diff for the commit-time drift detector (D5/D6), which needs
+# the FULL set of changed paths (not scoped to the declared writes -- that
+# is the whole point of drift detection) to diff against the declared set.
+# Reuses the same `add -N` temp-index trick, widened to `-A` so EVERY
+# untracked file in the repo is intent-added, not just declared paths (a
+# brand-new file outside the write set is invisible otherwise -- H2), and
+# the same `:(exclude)docs/leadv2` / `:(exclude)docs/handoff` pathspecs
+# every other diff call in this file carries (so routine lane-state writes
+# never register as drift -- H3).
+_pc_git_diff_names() {  # <repo_abs> <base_rev> -> name-only list on stdout, whole repo
+  local repo="$1" base="$2"
+  local gitdir tmpidx
+  gitdir="$(git -C "${repo}" rev-parse --absolute-git-dir 2>/dev/null)" || { git -C "${repo}" diff --name-only "${base}" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; return 0; }
+  tmpidx="$(mktemp "${TMPDIR:-/tmp}/leadv2-pc-idx.XXXXXX")" || { git -C "${repo}" diff --name-only "${base}" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; return 0; }
+  if cp "${gitdir}/index" "${tmpidx}" 2>/dev/null; then
+    GIT_INDEX_FILE="${tmpidx}" git -C "${repo}" add -N -A -- . >/dev/null 2>&1 || true
+    GIT_INDEX_FILE="${tmpidx}" git -C "${repo}" diff --name-only "${base}" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+  else
+    git -C "${repo}" diff --name-only "${base}" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+  fi
+  rm -f "${tmpidx}"
+}
+
 # S-3 round 3 (LANE-START-SHA-01): `git diff HEAD` is empty by definition for a lane that
 # already COMMITTED its own work -- the normal end state of a finished lane -- and can also
 # lose part of an uncommitted lane's changes once another lane's commit moves HEAD forward
@@ -2101,7 +2125,18 @@ if [[ -n "${WRITES_CSV}" ]]; then
       fi
     else
       repo_diff="$(_pc_repo_diff "${diff_root}" "${writes[@]}")"
-      printf '%s' "${repo_diff}" > "${diff_file}"
+      # M7: trailing newline when non-empty, like the multi-repo branch above
+      # -- the widened drift diff below is APPENDED to this file, and without
+      # a separator its "diff --git a/... b/..." header fuses onto this
+      # diff's last line into one malformed hunk. An empty repo_diff must
+      # still leave the file genuinely empty (not a bare newline), or the
+      # `[[ -s "${diff_file}" ]]` unscopable_diff check a few lines below
+      # would read "no work" as "some work".
+      if [[ -n "${repo_diff}" ]]; then
+        printf '%s\n' "${repo_diff}" > "${diff_file}"
+      else
+        : > "${diff_file}"
+      fi
       _pc_base_used="$(_pc_last_diff_base)"
       # LANE-WRITESET-REGISTRY-01 D5/D6: commit-time drift check, single-repo
       # path only (CROSS_REPO_DIFF is a known gap, see developer.full.md).
@@ -2110,15 +2145,26 @@ if [[ -n "${WRITES_CSV}" ]]; then
       # silently unreviewed. The one escalation to BLOCK+PARK (D6) is a
       # drifted path that intersects an ALIVE PEER lane's own declared
       # writes -- checked read-only, never persisted.
-      _ws_actual_files="$(git -C "${diff_root}" diff --name-only "${_pc_base_used}" 2>/dev/null || true)"
+      # fix-round-1 H2/H3: _pc_git_diff_names (not bare `git diff --name-only`)
+      # so an untracked NEW file is visible (H2) and tracked docs/leadv2 or
+      # docs/handoff writes never register as drift (H3).
+      _ws_actual_files="$(_pc_git_diff_names "${diff_root}" "${_pc_base_used}" || true)"
       _ws_drift_paths=()
       if [[ -n "${_ws_actual_files}" ]]; then
         while IFS= read -r _ws_f; do
           [[ -n "${_ws_f}" ]] || continue
           _ws_declared=0
+          # M3: normalize both sides (strip a leading "./" and trailing "/")
+          # before comparing -- the registry side (leadv2-active-registry.sh
+          # _lv2_ws_norm) runs os.path.normpath on every path, so a declared
+          # "./plugins/leadv2/scripts" or "plugins/leadv2/scripts/" must match
+          # an actual "plugins/leadv2/scripts/foo.sh" here exactly as it would
+          # there, or the same CSV answers differently on the two sides.
+          _ws_fn="${_ws_f#./}"; _ws_fn="${_ws_fn%/}"
           for _ws_w in "${writes[@]}"; do
-            case "${_ws_f}" in
-              "${_ws_w}"|"${_ws_w}"/*) _ws_declared=1; break ;;
+            _ws_wn="${_ws_w#./}"; _ws_wn="${_ws_wn%/}"
+            case "${_ws_fn}" in
+              "${_ws_wn}"|"${_ws_wn}"/*) _ws_declared=1; break ;;
             esac
           done
           [[ "${_ws_declared}" == "0" ]] && _ws_drift_paths+=("${_ws_f}")
@@ -2217,7 +2263,13 @@ fi
 # 2026-08-04 incident where an unscoped window attributed the target repo's newest
 # unrelated commit to 137 lanes at once -- the same trap applies here, so a match
 # requires the grep token to actually appear in the commit message.
-if [[ -n "${blocked_reason}" && "${blocked_reason}" != "partial_diff" ]]; then
+# fix-round-1 H4: the precondition this escape documents above ("runs only when a
+# verdict is ALREADY headed there -- an empty or undeclared-dirty diff") is
+# `unscopable_diff` specifically, not "anything but partial_diff". D6's
+# writeset_drift_conflict is a lane with a FULL diff and a real cross-lane write
+# collision -- the opposite of "no local bytes" -- and must never be reclassified
+# landed_foreign. Narrowed to the one reason the escape was written for.
+if [[ "${blocked_reason}" == "unscopable_diff" ]]; then
   _pc_foreign_repo="${LANE_TARGET_REPO:-${LEADV2_LANE_TARGET_REPO:-}}"
   _pc_foreign_grep="${LEADV2_LANE_TARGET_REPO_GREP:-}"
   if [[ -z "${_pc_foreign_repo}" && -f "${HANDOFF}/lane-target-repo" ]]; then
