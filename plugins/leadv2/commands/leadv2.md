@@ -119,7 +119,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 | `/leadv2 help` | Russian summary + link to `${CLAUDE_PLUGIN_ROOT}/docs/phases.md` |
 | `/leadv2 reply <q-id> <option>` | Answer an async question; writes answered YAML, wakes waiting session |
 | `/leadv2 questions` | List all pending async questions across all active tasks |
-| `/leadv2 sessions` | Show docs/leadv2/active.yaml sessions table |
+| `/leadv2 sessions` | Lead calls ListAgents, writes peer list to temp json, then runs `leadv2_active_list --peers-json <file>`. If ListAgents errors/unavailable, lead runs bare list and reports "peers: unavailable — registry-only view" footer. Empty peer column never read as "no peers". |
 | `/leadv2 supervise` | **Retired 2026-08-17 (founder order, SUPERVISOR-DELETE-01)** — the standalone supervisor session mode (loop/pick/watchdog daemon) is gone. Reconciliation lives in `scripts/leadv2-lanes-snapshot.sh`; see `.claude/skills/leadv2-supervise/SKILL.md`. |
 | `/leadv2 fanout` | **Retired 2026-08-17 (founder order, SUPERVISOR-DELETE-01)** — fanout was the supervisor's multi-child dispatch arm; it is retired with the supervisor it served. Dispatch child /leadv2 sessions directly instead (`scripts/leadv2-fanout.sh` remains on disk but is founder-order-only per this repo's CLAUDE.md, never self-invoked). |
 | `/leadv2 health` | Run leadv2-briefing-freshness-monitor. Exit immediately (not 9-phase). |
