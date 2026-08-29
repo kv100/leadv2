@@ -190,39 +190,44 @@ run_product_close_landed_foreign_wire() {
 }
 
 run_product_close_reclassify_wire() {
-  local root="$1" block_file out1 rc1 out2 rc2
-  # Create a temporary script that includes the necessary helper functions and the block
-  local script_file
-  script_file="$(lv2_mktemp_dir "pc-reclass-script")/script.sh"
-  {
-    # Define the helper functions
-    echo '_pc_join_capped() { echo "joined"; }'
-    echo '_pc_lane_root_is_own_worktree() { return 1; }'
-    echo '_pc_lane_dirty() { return 0; }'
-    echo '_pc_drop_bootstrap_dirt() { cat; }'
-    echo '_pc_phys() { echo "same"; }'
-    echo '_pc_worker_reason() { echo ""; }'
-    # Now include the block (including the initial setup lines)
-    sed -n '2305,2387p' "$PRODUCT_CLOSE_SH"
-  } > "$script_file"
-  [[ -s "$script_file" ]] || { fail "M1 wire: could not extract reclassification block from live source"; return; }
+  local root="$1" block_file out1 rc1 out2 rc2 hdir
+  # Create a temporary script that includes just the block (pattern anchored)
+  local block_file
+  block_file="$(lv2_mktemp_dir "pc-reclass-block")/block.sh"
+  sed -n '/^  _pc_terminal="refused"; _pc_cause="\${blocked_reason}"; _pc_rg_reason="\${blocked_reason}"$/,/^fi$/p' "$PRODUCT_CLOSE_SH" > "$block_file"
+  [[ -s "$block_file" ]] || { fail "M1 wire: could not extract reclassification block from live source - pattern not found"; return; }
+
+  hdir="$(lv2_mktemp_dir "pc-reclass-handoff")"
+  mkdir -p "$hdir"
   set +e
   # Test 1: writeset_drift_conflict should NOT trigger reclassification (condition false)
-  out1="$(TASK=T-WIRE HANDOFF="$root/handoff" blocked_reason="writeset_drift_conflict" \
+  out1="$(TASK=T-WIRE HANDOFF="$hdir" blocked_reason="writeset_drift_conflict" \
     bash -c '
       emit() { :; }; _dl_note() { :; }; _stamp_review_terminal() { :; }
+      _pc_join_capped() { echo "joined"; }
+      _pc_lane_root_is_own_worktree() { return 1; }
+      _pc_lane_dirty() { return 0; }
+      _pc_drop_bootstrap_dirt() { cat; }
+      _pc_phys() { echo "same"; }
+      _pc_worker_reason() { echo ""; }
       source "$1"
       echo "READY_AFTER_SNIPPET blocked_reason=${blocked_reason}"
       echo "_pc_cause=${_pc_cause:-unset}"
-    ' _ "$script_file")"; rc1=$?
+    ' _ "$block_file")"; rc1=$?
   # Test 2: some_other_reason (e.g., "foreign_commit") should trigger reclassification (condition true)
-  out2="$(TASK=T-WIRE HANDOFF="$root/handoff" blocked_reason="foreign_commit" \
+  out2="$(TASK=T-WIRE HANDOFF="$hdir" blocked_reason="foreign_commit" \
     bash -c '
       emit() { :; }; _dl_note() { :; }; _stamp_review_terminal() { :; }
+      _pc_join_capped() { echo "joined"; }
+      _pc_lane_root_is_own_worktree() { return 1; }
+      _pc_lane_dirty() { return 0; }
+      _pc_drop_bootstrap_dirt() { cat; }
+      _pc_phys() { echo "same"; }
+      _pc_worker_reason() { echo ""; }
       source "$1"
       echo "READY_AFTER_SNIPPET blocked_reason=${blocked_reason}"
       echo "_pc_cause=${_pc_cause:-unset}"
-    ' _ "$script_file")"; rc2=$?
+    ' _ "$block_file")"; rc2=$?
   set -e
   # Verify Test 1: writeset_drift_conflict -> condition FALSE -> _pc_cause should remain "writeset_drift_conflict"
   if grep -q 'READY_AFTER_SNIPPET blocked_reason=writeset_drift_conflict' <<<"$out1" \
