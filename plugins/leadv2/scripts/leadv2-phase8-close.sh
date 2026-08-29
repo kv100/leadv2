@@ -561,7 +561,13 @@ if [[ -f "$_REGISTRY" ]]; then
     # Notification is deliberately best-effort: a broken detector, journal, or
     # log sink must never turn an otherwise valid Phase-8 close into a failure.
     {
-      _writeset_registry_yaml="$(_leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" read 2>/dev/null || true)"
+      # M8: explicit prefix, matching the `source` line above -- a bare
+      # `VAR=x command` assignment on a non-special builtin is temporary in
+      # default (non-POSIX) bash, so LEADV2_PROJECT_ROOT could be unset by
+      # the time _leadv2_yaml_file dereferences it, an unbound-variable
+      # failure under this script's `set -euo pipefail` silently absorbed by
+      # the `2>/dev/null || true` two lines down.
+      _writeset_registry_yaml="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" _leadv2_yaml_py_lock "$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" _leadv2_yaml_lockfile)" "$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" _leadv2_yaml_file)" read 2>/dev/null || true)"
       _writeset_close_writes="$(printf '%s\n' "${_writeset_registry_yaml}" | python3 -c '
 import sys
 try:

@@ -34,6 +34,13 @@
 #   6 — writeset_unknown (an alive incumbent has no `writes`/`write_set` at
 #       all, and LEADV2_WRITESET_ENFORCE=block; under the default `warn` this
 #       admits and prints LEADV2_WRITESET_UNKNOWN instead)
+#
+# fix-round-1 H1: an incumbent with no writes yet but still inside its own
+# LEADV2_WRITESET_PENDING_WINDOW_SEC (default 900s) since `started_at` is
+# treated as rc=5 unconditionally, not rc=6/warn -- see _lv2_ws_pending().
+# This closes the TOCTOU where dispatch-code.sh registers a row before the
+# architect prepass has resolved its writes, then patches the same row once
+# known (dispatch-code.sh:~5859 and :~6005).
 
 set -euo pipefail
 
@@ -162,6 +169,40 @@ def _lv2_ws_overlaps(a, b):
         return True
     return (b + os.sep).startswith(a + os.sep) or (a + os.sep).startswith(b + os.sep)
 
+# LANE-WRITESET-REGISTRY-01 fix-round-1 H1: a row that is alive but has not
+# yet had its writes persisted is `unknown` under D7 -- but a LEGACY row
+# (registered before this feature existed, or one whose lane genuinely
+# declares no writes) and a row mid-resolution (dispatch-code.sh registers
+# self BEFORE the architect prepass fills lane_writes, then patches the same
+# row once it's known -- see dispatch-code.sh:5859/:6005) are not the same
+# risk. A legacy row is stable forever; a mid-resolution row is a live TOCTOU
+# window that closes itself within one prepass cycle. Treat only the latter
+# as blocking, regardless of LEADV2_WRITESET_ENFORCE, so the common
+# concurrent-dispatch race (two lanes registering while one is still in
+# prepass) is refused even under the default `warn` soak.
+# M5: a dead-PID incumbent that has not yet been swept `stale` must not
+# block admission indefinitely -- _pid_alive is already used one section
+# below (the refresh_existing branch) for exactly this liveness question.
+# Only skip on an actually-recorded, actually-dead pid; a row with no pid
+# recorded is not assumed dead.
+def _lv2_ws_dead(other):
+    pid = other.get("pid")
+    return pid is not None and not _pid_alive(pid)
+
+def _lv2_ws_pending(other):
+    started = other.get("started_at")
+    if not started:
+        return False
+    try:
+        ts = datetime.datetime.strptime(started, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc
+        )
+    except ValueError:
+        return False
+    window = int(os.environ.get("LEADV2_WRITESET_PENDING_WINDOW_SEC", "900") or "900")
+    age = (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds()
+    return 0 <= age <= window
+
 os.makedirs(os.path.dirname(lockfile_path), exist_ok=True)
 lock_fd = open(lockfile_path, "a+")
 try:
@@ -210,7 +251,7 @@ try:
             enforce = os.environ.get("LEADV2_WRITESET_ENFORCE", "warn")
             cand_paths = _lv2_ws_norm(writes)
             for other in sessions:
-                if other.get("task_id") == task_id or other.get("stale"):
+                if other.get("task_id") == task_id or other.get("stale") or _lv2_ws_dead(other):
                     continue
                 # D1: writer only ever writes `writes`; reader unions the
                 # `write_set` alias for forward tolerance with any writer
@@ -219,13 +260,26 @@ try:
                 if other_raw is None:
                     other_raw = other.get("write_set")
                 if other_raw is None:
+                    # H1 fix-round-1: a row still inside its own registration
+                    # window (mid architect-prepass, writes not yet patched
+                    # in) is refused unconditionally -- this is the TOCTOU
+                    # the two-phase dispatch-code.sh registration reopens
+                    # otherwise. Checked BEFORE the D7 unknown/enforce split
+                    # below, which remains the policy for genuinely legacy
+                    # rows outside the pending window.
+                    if _lv2_ws_pending(other):
+                        print(f"[registry] writeset conflict: other={other.get('task_id')} reason=pending_resolution", file=sys.stderr)
+                        sys.exit(5)
                     # D7: an incumbent with neither key is the third state,
                     # `unknown` -- never silently "conflicts with everything"
                     # nor "conflicts with nothing".
                     if enforce == "block":
                         print(f"[registry] writeset unknown: other={other.get('task_id')}", file=sys.stderr)
                         sys.exit(6)
-                    print(f"LEADV2_WRITESET_UNKNOWN other={other.get('task_id')}")
+                    # M6: stderr, like the conflict/pending-conflict messages
+                    # above -- the documented stdout contract of `register`
+                    # is "session_id" only (registry.sh:~690).
+                    print(f"LEADV2_WRITESET_UNKNOWN other={other.get('task_id')}", file=sys.stderr)
                     continue
                 if isinstance(other_raw, (list, tuple)):
                     other_csv = ",".join(str(w) for w in other_raw)
@@ -325,7 +379,7 @@ try:
         if check_writes_csv:
             cand_paths = _lv2_ws_norm(check_writes_csv)
             for other in sessions:
-                if other.get("task_id") == check_task_id or other.get("stale"):
+                if other.get("task_id") == check_task_id or other.get("stale") or _lv2_ws_dead(other):
                     continue
                 other_raw = other.get("writes")
                 if other_raw is None:
@@ -681,15 +735,6 @@ _lv2_pid_birth() {
 # additive 8th positional arg, defaults to "-" so every existing caller
 # (including leadv2-fanout.sh, untouched by this change) keeps working.
 leadv2_active_register() {
-  # The registry's original low-level register contract is retained for the
-  # documented atomicity probe and any caller that already has the complete
-  # row tuple.  The normal public wrapper below remains the additive 5..8-arg
-  # API; both forms execute the same flocked python register operation.
-  if [[ "$#" -eq 16 ]]; then
-    _leadv2_yaml_py_lock "$(_leadv2_yaml_lockfile)" "$(_leadv2_yaml_file)" register "$@"
-    return $?
-  fi
-
   local task_id="${1:?task_id required}"
   local cls="${2:-Standard}"
   local worktree="${3:-$(pwd)}"
@@ -1065,7 +1110,8 @@ print(f"{'session_id':<30} {'task_id':<20} {'phase':<12} {'class':<10} {'pid':<8
 print("-" * 130)
 for s in sessions:
     sid    = (s.get("session_id") or "?")[:28]
-    tid    = (s.get("task_id") or "?")[:18]
+    tid_full = s.get("task_id") or "?"
+    tid    = tid_full[:18]
     phase  = (s.get("phase") or "?")[:10]
     cls    = (s.get("class") or "?")[:8]
     pid    = str(s.get("pid") or "null")[:6]
@@ -1083,9 +1129,14 @@ for s in sessions:
         writes_col = "-"
     else:
         writes_col = str(writes_raw)
-    writes_col = writes_col[:18]
+    # L3: mark truncation visibly -- a silently shortened CSV reads as a
+    # different, still-plausible write set otherwise.
+    writes_col = (writes_col[:17] + "…") if len(writes_col) > 18 else writes_col
     if peers_available:
-        peer = peers_by_key.get(str(s.get("session_id")), peers_by_key.get(str(tid), "?"))
+        # M4: lookup keyed on the FULL task_id, not the 18-char display
+        # truncation -- reg_id is routinely "dispatch-<sig8>" plus longer
+        # founder ids, so a truncated key can never match a peers-json entry.
+        peer = peers_by_key.get(str(s.get("session_id")), peers_by_key.get(str(tid_full), "?"))
     else:
         peer = "?"
     peer = str(peer)[:10]
