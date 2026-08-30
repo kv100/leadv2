@@ -552,6 +552,14 @@ fi
 # tail before this suite starts; SCRATCH_SCRIPTS is then a fresh copy of that
 # production code.  These assertions must go red on that copy, never on a
 # second self-mutated renderer.
+#
+# The lane cache key is CWD-only (no width component -- see
+# leadv2-lane-status-line-tail.sh CACHE_KEY), so back-to-back run_tail calls
+# against the same $REPO at different widths within the 5s TTL used above
+# would replay a narrower call's stale digest into a wider one instead of
+# recomputing.  Each of these four calls asserts on a specific width, so the
+# cache is cleared immediately before each one to force a live recompute.
+rm -rf "$tmp/cache"
 MUT_Z_OUT="$(run_tail 60 "$SCRATCH_SCRIPTS")"; MUT_Z_PLAIN="$(printf '%s' "$MUT_Z_OUT" | strip_ansi)"
 MUT_Z_ROWS="$(printf '%s' "$MUT_Z_PLAIN" | grep -oE '·[a-z?]{1,2}·[0-9]+[smh]?' | wc -l | tr -d ' ')"
 MUT_Z_PLUS="$(printf '%s' "$MUT_Z_PLAIN" | grep -oE '\+[0-9]+' | tail -1 | tr -d '+' || true)"; [[ -z "$MUT_Z_PLUS" ]] && MUT_Z_PLUS=0
@@ -559,9 +567,11 @@ if (( MUT_Z_ROWS + MUT_Z_PLUS == 4 )); then ok "MUT-Z: production tail count rec
 
 if (( MUT_Z_ROWS + MUT_Z_PLUS == 4 )); then ok "MUT-V: production dropped count reconciles ($MUT_Z_PLAIN)"; else bad "MUT-V" "production dropped count is off by one: $MUT_Z_PLAIN"; fi
 
+rm -rf "$tmp/cache"
 MUT_U_OUT="$(run_tail 20 "$SCRATCH_SCRIPTS")"; MUT_U_BASE="${MUT_U_OUT#* | }"
 if [[ "$MUT_U_BASE" != *$'\033['* ]] && (( $(visible_len "$MUT_U_OUT") <= 20 )); then ok "MUT-U: clipped production base is ANSI-safe and width-safe"; else bad "MUT-U" "clipped production base leaked ANSI or exceeded width: $MUT_U_OUT"; fi
 
+rm -rf "$tmp/cache"
 MUT_W_OUT="$(run_tail 1000 "$SCRATCH_SCRIPTS")"
 if [[ "$MUT_W_OUT" == *'LANDING-PAGE-REDESIGN-01'* ]]; then ok "MUT-W: wide production render retains complete identity"; else bad "MUT-W" "wide production render truncated identity: $MUT_W_OUT"; fi
 

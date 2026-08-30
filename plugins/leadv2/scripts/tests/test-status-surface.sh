@@ -1681,13 +1681,77 @@ _outcome o3x-h glm died-clean
 out="$(run_render)"
 _oc_done="$(printf '%s' "$out" | grep oc3donee | tail -1)"
 _oc_dead="$(printf '%s' "$out" | grep oc3deade | tail -1)"
-# MUT-R/F4: the dead lane sorts LAST alphabetically, so a collapsed rank would
-# admit AAA-done first.  Exercise several widths; this is output-only and
-# therefore fails when the production rank expression is reverted.
+
+# MUT-R/F4: dead and queued both collapse to the same rank under the
+# reverted mutation (rank=(cls=="live")?1:0), so a tie between them is
+# resolved by name once the mutation drops the secondary sort key. Naming
+# the dead lane alphabetically LAST (ZZZ) and the queued lane alphabetically
+# FIRST (AAA) means a stable/whole-line tie-break would seat AAA first --
+# exactly what the fixed rank (dead=0 strictly less than queued/other=1)
+# must prevent regardless of name. AAA carries no dispatch-ledger entry
+# (queued, per leadv2-status-surface.sh's in_census check); ZZZ has pid
+# 999999 and no ledger entry either, the same construction the passing
+# "silence:" control above uses to get a reliable dead classification.
+# A dedicated sandbox, not the shared NEW_SB/$STATE_DIR -- OUTCOME-3's own
+# fixture and $STATE_DIR are still read by the A1 check further below, and
+# reassigning the global sandbox here would silently swap what that later
+# check renders against.
+#
+# done and dead both collapse to the SAME rank under the reverted mutation
+# (rank=(cls=="live")?1:0; dead/done/other all become 0), so a tie between
+# them is resolved by whatever order the mutation's dropped secondary sort
+# key would otherwise have broken -- proven empirically stable-sort/list-
+# order here, never alphabetical. Listing the done lane (AAAdone...) FIRST
+# in active.yaml and the dead lane (ZZZdead...) SECOND means a naive/tied
+# sort keeps AAAdone first; the fixed rank (dead=0 strictly less than
+# done=3) must still seat ZZZdead first despite that list order.
+F4_SB="$(lv2_mktemp_dir ss-f4)"
+F4_STATE="${F4_SB}/state"; F4_LEDGER_DIR="${F4_SB}/dispatch-ledger"; F4_RUNS="${F4_SB}/cache"
+mkdir -p "$F4_STATE" "$F4_LEDGER_DIR" "$F4_RUNS"
+F4_LEDGER="${F4_LEDGER_DIR}/testrepo.jsonl"
+: > "$F4_LEDGER"
+printf 'pid %s\n' "$$" > "${F4_STATE}/.supervise-active"
+: > "${F4_STATE}/.supervise-loop.heartbeat"
+cat > "${F4_STATE}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: AAAdoneAeeeee
+    phase: build
+    class: Standard
+    log_path: ''
+  - task_id: ZZZdeadZeeeee
+    phase: build
+    class: Standard
+    log_path: ''
+EOF
+_f4_ledger() {
+  printf '{"task_sig":"%sffffffffffffffffffffffffffffffffffffffffffffff","arm":"%s","state":"%s","handle":"%s","created_epoch":%s}\n' \
+    "$1" "$2" "$4" "$3" "$5" >> "$F4_LEDGER"
+}
+_f4_run() {
+  local h="$1" arm="$2" st="$3" ec="$4" off="${5:-0}" d="${F4_RUNS}/${2}-runs/${1}"
+  mkdir -p "$d"
+  printf 'status=%s\nexit_code=%s\njournal_offset=%s\n' "$st" "$ec" "$off" > "${d}/state"
+}
+_f4_outcome() {
+  local d="${F4_RUNS}/$2-runs/$1" tk="$3" nx="none"
+  case "$tk" in died-with-work) nx="continue" ;; died-clean) nx="respawn" ;; esac
+  { printf 'outcome=%s\nbound=none\nwork=-\nnext=%s\nat=2026-07-31T18:00:00Z\n' "$tk" "$nx"; } > "${d}/.outcome"
+}
+_f4_ledger AAAdoneA glm aaa-h confirmed $((NOW-300)); _f4_run aaa-h glm complete 0 300; _f4_outcome aaa-h glm completed
+_f4_ledger ZZZdeadZ glm zzz-h confirmed $((NOW-300)); _f4_run zzz-h glm failed 1 300; _f4_outcome zzz-h glm died-clean
 F4_BAD=""
 for F4_W in 20 22 26 34 60; do
-  F4_ONELINE="$(LEADV2_STATUSLINE_WIDTH="$F4_W" run_render --oneline)"
-  if [[ "$F4_ONELINE" != *'·dead·'* ]] || [[ "$F4_ONELINE" == *'·done·'* ]]; then F4_BAD="$F4_W:$F4_ONELINE"; break; fi
+  F4_ONELINE="$(LEADV2_STATUS_STATE_DIR="$F4_STATE" \
+    LEADV2_STATUS_LEDGER_DIR="$F4_LEDGER_DIR" \
+    LEADV2_STATUS_RUNS_ROOT="$F4_RUNS" \
+    LEADV2_STATUS_REPO="testrepo" \
+    LEADV2_STATUS_REPO_ROOT="${F4_SB}" \
+    LEADV2_STATUS_NOW="$NOW" \
+    LEADV2_STATUS_TASKS_YAML="${F4_SB}/tasks.yaml" \
+    LEADV2_STATUSLINE_WIDTH="$F4_W" bash "$RENDER" --oneline)"
+  F4_FIRST_TOK="$(printf '%s' "$F4_ONELINE" | sed -E 's/^lanes [0-9]+: //' | awk '{print $1}')"
+  if [[ "$F4_FIRST_TOK" != *'·dead·'* ]]; then F4_BAD="$F4_W:$F4_ONELINE"; break; fi
 done
 if [ -z "$F4_BAD" ]; then
   pass "MUT-R/F4: name-adversarial dead lane owns the first slot at widths 20,22,26,34,60"
