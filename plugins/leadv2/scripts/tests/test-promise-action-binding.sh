@@ -70,6 +70,18 @@ for tok in spec:
         # this same turn, not a new commitment. "идут" (3rd-person-plural) collides
         # with the bare 1sg stem "иду" in an unanchored COMMIT_RU.
         blocks.append({"type": "text", "text": "Они идут параллельно и независимо"})
+    elif tok == "dispatch_promise":
+        # PROMISE-GUARD-BIND-01: a promise whose kind IS classifiable
+        # (dispatch) via classify_promise_kind — "диспатчу" is already a
+        # COMMIT_RU_VERBS entry, so this triggers a commitment on its own.
+        blocks.append({"type": "text", "text": "Диспатчу воркера на задачу"})
+    elif tok == "commit_promise":
+        blocks.append({"type": "text", "text": "I'll commit the fix now"})
+    elif tok == "write_act":
+        # write-kind action: unrelated to a dispatch or commit promise.
+        blocks.append({"type": "tool_use", "name": "Edit", "input": {}})
+    elif tok == "dispatch_act":
+        blocks.append({"type": "tool_use", "name": "Agent", "input": {}})
 recs.append({"type": "assistant", "message": {"role": "assistant", "content": blocks}})
 with open(out, "w") as f:
     for r in recs:
@@ -100,7 +112,8 @@ _verdict() { # <hook> <block-script>
   _transcript "${t}" "${spec}" || return 2
   local sid="test-$$-${RANDOM}-${RANDOM}"
   local out
-  out="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" | bash "${hook}" 2>/dev/null)"
+  out="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" \
+    | env LEADV2_PROMISE_GUARD_BLOCK=1 bash "${hook}" 2>/dev/null)"
   rm -f "${t}" "${HOME}/.claude/leadv2-promise-retry-${sid}.txt"
   [[ -n "${out}" ]] && printf 'FIRED' || printf 'SILENT'
 }
@@ -152,6 +165,25 @@ case_action_then_report()  { _expect "$1" "act plain" SILENT; }
 # positional revert, case_action_then_promise no longer pins that direction.)
 case_action_then_recap()   { _expect "$1" "act act recap" SILENT; }
 
+# PROMISE-GUARD-BIND-01 pair — the whole point of this task. The guard used to
+# suppress on ANY action tool call; these two cases are the direct falsifier
+# for that: a promise of a classifiable kind (dispatch) must be bound to an
+# action of the SAME kind, not just any action.
+#
+# Matching kind: promise = dispatch, action = Agent (dispatch-kind) -> kept, SILENT.
+# This is already correct pre-fix too (pre-fix suppresses on ANY action), so
+# expect GREEN-PRE-FIX here — it locks the "must still pass" half of the pair.
+case_dispatch_promise_matching_action()   { _expect "$1" "dispatch_promise dispatch_act" SILENT; }
+
+# Mismatched kind: promise = dispatch, action = Edit (write-kind, unrelated) ->
+# NOT kept, must FIRE. Pre-fix this reads SILENT (any action suppresses), so
+# this is the RED-then-GREEN control that proves the binding fix actually
+# rejects an unrelated tool call rather than accepting it.
+case_dispatch_promise_unrelated_action()  { _expect "$1" "dispatch_promise write_act" FIRED; }
+
+# Sanity companion: a classifiable commit-kind promise kept by its own kind.
+case_commit_promise_matching_action()     { _expect "$1" "commit_promise act" SILENT; }
+
 run_case() { # <name> <fn>
   local name="$1" fn="$2" pre_rc post_rc
   if [[ -n "${PRE_HOOK}" ]]; then "${fn}" "${PRE_HOOK}" >/dev/null 2>&1; pre_rc=$?; else pre_rc=2; fi
@@ -178,6 +210,9 @@ run_case "promise-then-action-silent" case_promise_then_action
 run_case "promise-only-fires"         case_promise_only
 run_case "action-then-report-silent"  case_action_then_report
 run_case "action-then-recap-silent"   case_action_then_recap
+run_case "dispatch-promise-matching-action-silent"  case_dispatch_promise_matching_action
+run_case "dispatch-promise-unrelated-action-fires"  case_dispatch_promise_unrelated_action
+run_case "commit-promise-matching-action-silent"    case_commit_promise_matching_action
 
 echo ""
 echo "Results: ${PASS} passed(red->green), ${FAIL} failed, ${GREEN_PRE_FIX} green-pre-fix, ${COULD_NOT_RUN} could-not-run"
