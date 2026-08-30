@@ -1,0 +1,19 @@
+PASS: named_fixes: Critical heading extracted
+PASS: named_fixes: High heading extracted
+PASS: has_red: backed Critical fix satisfied
+PASS: has_red: unbacked High fix correctly unproven
+PASS: unproven: exactly one unproven line
+PASS: unproven: names the correct fix
+PASS: unproven: backed fix not flagged
+PASS: C2: separate worker claim root is checked against founder RED evidence
+PASS: has_red: a '0 failed' artifact correctly does not satisfy its fix
+PASS: has_red: backing artifact under round2-red/ (not just red/) satisfies the fix
+PASS: named_fixes: a lane-mission.md heading is not read as a worker claim
+PASS: named_fixes: a file without the completion marker is not read as a worker claim
+PASS: CLI: close-gate reports unproven finding (never blocks -- rc=0)
+PASS: L1: leading-/ task_id rejected
+PASS: L1: .. task_id rejected
+PASS: C5: rendered terminal evidence carries the unproven suffix
+SUMMARY: pass=16 fail=0
+
+ASSERTED_EXIT_STATUS=0

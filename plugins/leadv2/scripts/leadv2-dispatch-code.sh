@@ -455,10 +455,16 @@ ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
 source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
 # DISPATCH-CLOSE-GATE-01: Mechanism 1 (refuse a dispatch whose mission demands a path
 # outside LANE_WRITES) and Mechanism 2 (unproven-fix reporting at close).
-# shellcheck source=lib/leadv2-mission-writeset.sh
-source "${SCRIPT_DIR}/lib/leadv2-mission-writeset.sh"
-# shellcheck source=lib/leadv2-red-proof.sh
-source "${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
+# The consumer repos install this dispatcher as a per-file symlink, so its sibling
+# lib/ directory is absent there.  Prefer a local lib for a full plugin install, then
+# fall back to the canonical plugin tree.  A missing optional close-proof feature must
+# never prevent dispatch from starting.
+_MISSION_WRITESET_SH="${SCRIPT_DIR}/lib/leadv2-mission-writeset.sh"
+[[ -f "${_MISSION_WRITESET_SH}" ]] || _MISSION_WRITESET_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-mission-writeset.sh"
+[[ -f "${_MISSION_WRITESET_SH}" ]] && source "${_MISSION_WRITESET_SH}"
+_RED_PROOF_SH="${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
+[[ -f "${_RED_PROOF_SH}" ]] || _RED_PROOF_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-red-proof.sh"
+[[ -f "${_RED_PROOF_SH}" ]] && source "${_RED_PROOF_SH}"
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
 ROUTING_CONFIG_ABSENT=0
 # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
@@ -646,7 +652,7 @@ REQUIRE_LANE_WRITES="${LEADV2_REQUIRE_LANE_WRITES:-1}"
 # DISPATCH-CLOSE-GATE-01 Mechanism 1: refuse (not warn) a dispatch whose mission demands
 # a path that LANE_WRITES does not cover -- BEFORE any worker spawns. =0 restores today
 # byte-for-byte (no writeset check, no park).
-REQUIRE_MISSION_WRITESET="${LEADV2_REQUIRE_MISSION_WRITESET:-1}"
+REQUIRE_MISSION_WRITESET="${LEADV2_REQUIRE_MISSION_WRITESET:-0}"
 # RED-FIRST-GATE-01 R2: the prepass mission prompt now asks for a surface-observable
 # `acceptance:` block (see architect_prepass's printf text). =1 parks a design that
 # lacks it, same PARK-and-surface mechanism as REQUIRE_LANE_WRITES. Default 0 -- this

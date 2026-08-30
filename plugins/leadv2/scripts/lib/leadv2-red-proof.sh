@@ -9,12 +9,10 @@
 # dispatch rounds on 2026-08-30 was "this assertion survives its own
 # mutation" — a claim of fixed that no RED run ever backed.
 #
-# Scope note: only `## [Critical]` / `## [High]` headings are detected as
-# named fixes. A "mutation table" is also in the mission's stated scope, but
-# no concrete table format exists anywhere in this repo's worker reports to
-# key off of; inventing one risks silently not catching what a report
-# actually uses. Left undetected — see docs/handoff/DISPATCH-CLOSE-GATE-01/
-# report.md.
+# Scope note: severity headings are individual claimed fixes. Completed worker reports
+# from real dispatches instead commonly carry only a dispatch-titled H1; that title is a
+# task-level claim and is deliberately retained as a fallback so the close gate does not
+# silently scan an empty founder directory.
 #
 # Bash 3.2 safe: no associative arrays, no ${x^^}, no mapfile.
 
@@ -45,6 +43,12 @@ leadv2_red_proof_named_fixes() {
     grep -qF 'DELIVERABLE_COMPLETE' "${f}" 2>/dev/null || continue
     grep -oE '^##[[:space:]]*\[(Critical|High)\][[:space:]].+' "${f}" 2>/dev/null \
       | sed -E 's/^##[[:space:]]*\[(Critical|High)\][[:space:]]*//' \
+      | sed -E 's/[[:space:]]+$//'
+    # Real worker reports generally claim the completed task in their H1 rather than
+    # repeat the reviewer severity syntax. Capture that stable title only for a dispatch
+    # report; generic markdown titles remain outside the protocol.
+    grep -oE '^#[[:space:]]+dispatch-[^[:space:]]+[[:space:]]+—[[:space:]].+' "${f}" 2>/dev/null \
+      | sed -E 's/^#[[:space:]]+dispatch-[^[:space:]]+[[:space:]]+—[[:space:]]*//' \
       | sed -E 's/[[:space:]]+$//'
   done
 }
@@ -80,10 +84,17 @@ leadv2_red_proof_has_red() {
 # every distinct named fix without a backing RED artifact. Always rc 0
 # (report, don't fail — D3).
 leadv2_red_proof_unproven() {
-  local dir="$1" name
-  leadv2_red_proof_named_fixes "${dir}" | awk '!seen[$0]++' | while IFS= read -r name; do
+  local proof_dir="$1" claim_dir="${2:-$1}" name
+  leadv2_red_proof_named_fixes "${claim_dir}" | awk '!seen[$0]++' | while IFS= read -r name; do
     [[ -n "${name}" ]] || continue
-    leadv2_red_proof_has_red "${dir}" "${name}" || printf 'unproven: %s\n' "${name}"
+    leadv2_red_proof_has_red "${proof_dir}" "${name}" || printf 'unproven: %s\n' "${name}"
   done
   return 0
+}
+
+# leadv2_red_proof_render_evidence <evidence> <unproven_suffix> -> stdout.
+# Terminal close notes call this directly; keeping rendering here gives the close path a
+# runnable behavioural seam rather than a source-text assertion.
+leadv2_red_proof_render_evidence() {
+  printf '%s%s' "$1" "$2"
 }

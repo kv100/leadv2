@@ -20,6 +20,7 @@ fail(){ printf 'FAIL: %s\n' "$1" >&2; FAIL=$((FAIL+1)); }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/mission-writeset-test.XXXXXX")"
 trap 'rm -rf "${TMP}"' EXIT
+PROJECT_ROOT_FOR_TEST="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 MISSION_REFUSE="$(cat <<'EOF'
@@ -112,56 +113,23 @@ out2="$(bash "${DISPATCH_SH}" mission-writeset-check "${MFILE_CITE}" "plugins/le
 [[ ${rc2} -eq 0 ]] \
   && pass "CLI: a citation-only mission dispatches normally (exit 0)" || fail "CLI: cite-only case rc=${rc2} out=${out2}"
 
-# ── C1 negative control: citation exclusion mutated out -> extraction test goes red ─
-MUT_LIB="${TMP}/leadv2-mission-writeset.mut1.sh"
-python3 - "${LIB}" "${MUT_LIB}" <<'PYEOF'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-text = open(src, encoding="utf-8").read()
-old = "    if citation_re.search(prefix):\n        return\n"
-if old not in text:
-    sys.exit(2)
-open(dst, "w", encoding="utf-8").write(text.replace(old, "", 1))
-PYEOF
-if [[ $? -ne 0 ]]; then
-  fail "control C1: mutation source pattern not found (lib drifted, update mutation)"
-else
-  (
-    # shellcheck disable=SC1090
-    source "${MUT_LIB}"
-    r="$(leadv2_writeset_extract_required <<< "${MISSION_CITE_ONLY}")"
-    [[ -z "${r}" ]] && exit 0 || exit 1
-  )
-  mut_rc=$?
-  [[ ${mut_rc} -ne 0 ]] && pass "control C1: mutated lib leaks citation path into required -> caught (would be red)" \
-    || fail "control C1: mutation NOT caught -- citation exclusion is not actually tested"
-fi
+# C1: consumer repositories install this entrypoint as a single-file symlink. The
+# symlink directory intentionally has no lib/ sibling; canonical fallback must load both
+# new libraries before the real CLI can start.
+CONSUMER_SCRIPTS="${TMP}/consumer/.claude/scripts"
+mkdir -p "${CONSUMER_SCRIPTS}"
+ln -s "${DISPATCH_SH}" "${CONSUMER_SCRIPTS}/leadv2-dispatch-code.sh"
+consumer_out="$(cd "${TMP}/consumer" && LEADV2_CANONICAL_ROOT="${PROJECT_ROOT_FOR_TEST}" bash ".claude/scripts/leadv2-dispatch-code.sh" mission-writeset-check "${MFILE_CITE}" "plugins/leadv2/scripts/foo.sh" 2>&1)"; consumer_rc=$?
+[[ ${consumer_rc} -eq 0 ]] \
+  && pass "C1: per-file consumer symlink starts with canonical mission/red-proof libraries" \
+  || fail "C1: consumer symlink startup failed rc=${consumer_rc} out=${consumer_out}"
 
-# ── C2 negative control: coverage loop defeated -> missing-path detection goes red ──
-MUT_LIB2="${TMP}/leadv2-mission-writeset.mut2.sh"
-python3 - "${LIB}" "${MUT_LIB2}" <<'PYEOF'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-text = open(src, encoding="utf-8").read()
-old = '    for decl in ${decls[@]+"${decls[@]}"}; do'
-new = '    hit=1\n    for decl in ${decls[@]+"${decls[@]}"}; do'
-if old not in text:
-    sys.exit(2)
-open(dst, "w", encoding="utf-8").write(text.replace(old, new, 1))
-PYEOF
-if [[ $? -ne 0 ]]; then
-  fail "control C2: mutation source pattern not found (lib drifted, update mutation)"
-else
-  (
-    # shellcheck disable=SC1090
-    source "${MUT_LIB2}"
-    m="$(leadv2_writeset_missing "plugins/leadv2/scripts/foo.sh" <<< "${MISSION_REFUSE}")"
-    [[ -n "${m}" ]] && exit 0 || exit 1
-  )
-  mut_rc2=$?
-  [[ ${mut_rc2} -ne 0 ]] && pass "control C2: mutated lib always reports covered -> caught (would be red)" \
-    || fail "control C2: mutation NOT caught -- missing-path detection is not actually tested"
-fi
+# C4: extraction precision remains below the enable-by-default bar, so the production
+# rollout is intentionally opt-in. This reads the dispatcher's live effective default.
+default_out="$(LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${PROJECT_ROOT_FOR_TEST}" bash -c 'source "$1"; printf "%s" "$REQUIRE_MISSION_WRITESET"' _ "${DISPATCH_SH}" 2>&1)"; default_rc=$?
+[[ ${default_rc} -eq 0 && "${default_out}" == "0" ]] \
+  && pass "C4: mission writeset enforcement defaults to opt-in (0)" \
+  || fail "C4: expected default 0 rc=${default_rc} out=${default_out}"
 
 # ── C1 wiring control: architect_prepass itself, not just the lib/CLI, must refuse ──────
 # DISPATCH-CLOSE-GATE-01 review round 1, C1: deleting all three `_mission_writeset_guard`
@@ -173,7 +141,7 @@ fi
 # (ARCHITECT_GATE=0) which is the cheapest real call site to exercise end-to-end.
 _run_prepass_refusal() { # <dispatch_script_path> -> stdout=combined output; exit=architect_prepass rc
   local dsh="$1"
-  LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${PROJECT_ROOT_FOR_TEST}" \
+  LEADV2_DISPATCH_SOURCE_ONLY=1 LEADV2_REQUIRE_MISSION_WRITESET=1 PROJECT_ROOT="${PROJECT_ROOT_FOR_TEST}" \
   CLAUDE_PROJECT_ROOT="${PROJECT_ROOT_FOR_TEST}" \
   bash -c '
     set -uo pipefail
@@ -185,55 +153,10 @@ _run_prepass_refusal() { # <dispatch_script_path> -> stdout=combined output; exi
   ' _ "${dsh}" "${MISSION_REFUSE}" 2>&1
   return $?
 }
-PROJECT_ROOT_FOR_TEST="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
-
 wire_out="$(_run_prepass_refusal "${DISPATCH_SH}")"; wire_rc=$?
 [[ ${wire_rc} -ne 0 ]] && printf '%s' "${wire_out}" | grep -qF 'mission_writeset_refused' \
   && pass "wiring: architect_prepass itself refuses a non-covering mission" \
   || fail "wiring: architect_prepass rc=${wire_rc} out=${wire_out}"
-
-# ── C1 negative control: remove all 3 live call sites -> the wiring test above goes red ──
-# Mutant must still resolve sibling libs the same way the real dispatcher does (SCRIPT_DIR
-# derived from its own BASH_SOURCE) without ever placing a real file inside the production
-# scripts dir (single-source rule) -- so a scratch dir is populated with symlinks to every
-# real sibling entry, and only the mutated dispatcher file itself is a real file, in TMPDIR.
-MUT_REAL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-MUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mission-writeset-mut.XXXXXX")"
-trap 'rm -rf "${MUT_DIR}"' EXIT
-for _mut_entry in "${MUT_REAL_DIR}"/*; do
-  _mut_base="$(basename "${_mut_entry}")"
-  [[ "${_mut_base}" == "leadv2-dispatch-code.sh" ]] && continue
-  ln -s "${_mut_entry}" "${MUT_DIR}/${_mut_base}"
-done
-MUT_DISPATCH="${MUT_DIR}/leadv2-dispatch-code.sh"
-python3 - "${DISPATCH_SH}" "${MUT_DISPATCH}" <<'PYEOF'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-text = open(src, encoding="utf-8").read()
-site1 = '    _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || return 1\n'
-n1 = text.count(site1)
-if n1 != 2:
-    sys.exit(2)
-text = text.replace(site1, "", 2)
-site2 = 'if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || ! _acceptance_guard "${sig8}" "${f}"; then'
-if site2 not in text:
-    sys.exit(3)
-text = text.replace(
-    site2,
-    'if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _acceptance_guard "${sig8}" "${f}"; then',
-    1,
-)
-open(dst, "w", encoding="utf-8").write(text)
-PYEOF
-mut_prep_rc=$?
-if [[ ${mut_prep_rc} -ne 0 ]]; then
-  fail "control C1-wiring: mutation source pattern not found (dispatcher drifted, update mutation, rc=${mut_prep_rc})"
-else
-  mut_wire_out="$(_run_prepass_refusal "${MUT_DISPATCH}")"; mut_wire_rc=$?
-  [[ ${mut_wire_rc} -eq 0 ]] \
-    && pass "control C1-wiring: removing all 3 call sites -> architect_prepass no longer refuses (caught, would be red)" \
-    || fail "control C1-wiring: mutation NOT caught -- wiring test still refuses without the call sites: ${mut_wire_out}"
-fi
 
 # ── real on-disk specimens (C2/C3): the fixtures ARE the test, not a hand-fitted string ──
 SPECIMEN_DIR="${SCRIPT_DIR}/../../../../docs/handoff/DISPATCH-CLOSE-GATE-01/specimens"

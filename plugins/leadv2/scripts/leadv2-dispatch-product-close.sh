@@ -3260,7 +3260,7 @@ if [[ -n "${FOUNDER_TASK_ID}" ]]; then
 elif [[ -n "${LANE_NAME}" ]]; then
   _pc_redproof_dir="${ROOT}/docs/handoff/${LANE_NAME}"
 fi
-_pc_unproven="$(leadv2_red_proof_unproven "${_pc_redproof_dir}")"
+_pc_unproven="$(leadv2_red_proof_unproven "${_pc_redproof_dir}" "${HANDOFF}")"
 _pc_unproven_suffix=""
 if [[ -n "${_pc_unproven}" ]]; then
   printf '%s\n' "${_pc_unproven}"
@@ -3268,13 +3268,6 @@ if [[ -n "${_pc_unproven}" ]]; then
   _pc_unproven_suffix=" unproven=${_pc_unproven_csv}"
   emit decision "red_proof_unproven task=${TASK} names=${_pc_unproven_csv}"
 fi
-# round-3: single point where the unproven-fix suffix is appended to a close note's
-# evidence string -- every terminal note below routes through this ONE function instead of
-# five separately-drifting `...${_pc_unproven_suffix}` interpolations, so one test proves
-# what the founder actually sees on all five paths at once.
-_pc_evidence_with_unproven() {
-  printf '%s%s' "$1" "${_pc_unproven_suffix}"
-}
 # C5-BLOCK-END
 # PASS must overwrite review-gate.md too, or a stale fail/blocked artifact from an earlier
 # attempt keeps lying after the gate has actually cleared (hit live on fe5307b3, 2026-07-30).
@@ -3296,7 +3289,7 @@ if [[ "${_pc_kind}" == "report" ]]; then
     render_gate_findings "${review_file}" "" "${reviewer}" "${_rgf_rel}" || true
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-  _dl_note landed review_verdict_pass "$(_pc_evidence_with_unproven "diff=${diff_hash:0:8} deliverable=${_pc_report_deliverable}${_rgf_dnm}")" "" "${_pc_report_deliverable}"
+  _dl_note landed review_verdict_pass "$(leadv2_red_proof_render_evidence "diff=${diff_hash:0:8} deliverable=${_pc_report_deliverable}${_rgf_dnm}" "${_pc_unproven_suffix}")" "" "${_pc_report_deliverable}"
 else
   {
     printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}"
@@ -3314,11 +3307,11 @@ else
   if [[ -z "${_t11_branch}" || "${_t11_branch}" == "${_t11_default}" || "${diff_root}" == "${ROOT}" ]]; then
     # No isolated lane branch to merge (shared-tree fallback lane, or work already landed on
     # the default branch directly) -- nothing to merge, so `landed` is accurate as-is.
-    _dl_note landed review_verdict_pass "$(_pc_evidence_with_unproven "diff=${diff_hash:0:8}${_rgf_dnm}")"
+    _dl_note landed review_verdict_pass "$(leadv2_red_proof_render_evidence "diff=${diff_hash:0:8}${_rgf_dnm}" "${_pc_unproven_suffix}")"
   elif [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then
     # Shared tree has foreign uncommitted work right now -- merging here risks another
     # session's in-flight edits. Never force past this: fail toward pass_unlanded.
-    _dl_note pass_unlanded root_dirty "$(_pc_evidence_with_unproven "branch=${_t11_branch} diff=${diff_hash:0:8}")"
+    _dl_note pass_unlanded root_dirty "$(leadv2_red_proof_render_evidence "branch=${_t11_branch} diff=${diff_hash:0:8}" "${_pc_unproven_suffix}")"
   else
     _t11_landed=0
     [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" acquire "${TASK}" >/dev/null 2>&1
@@ -3330,7 +3323,7 @@ else
     fi
     [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" release "${TASK}" >/dev/null 2>&1
     if [[ "${_t11_landed}" == 1 ]]; then
-      _dl_note landed review_verdict_pass "$(_pc_evidence_with_unproven "diff=${diff_hash:0:8}${_rgf_dnm} branch=${_t11_branch}")"
+      _dl_note landed review_verdict_pass "$(leadv2_red_proof_render_evidence "diff=${diff_hash:0:8}${_rgf_dnm} branch=${_t11_branch}" "${_pc_unproven_suffix}")"
       # T11-F1: merge + is-ancestor verified above -- complete the close chain
       # instead of stopping at the terminal stamp. Deregister the lane from
       # the live registry so a subsequent sweep no longer sees it as running,
@@ -3356,7 +3349,7 @@ else
         fi
       fi
     else
-      _dl_note pass_unlanded merge_conflict "$(_pc_evidence_with_unproven "branch=${_t11_branch} diff=${diff_hash:0:8}")"
+      _dl_note pass_unlanded merge_conflict "$(leadv2_red_proof_render_evidence "branch=${_t11_branch} diff=${diff_hash:0:8}" "${_pc_unproven_suffix}")"
     fi
   fi
 fi

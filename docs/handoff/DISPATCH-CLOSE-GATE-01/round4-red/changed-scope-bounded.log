@@ -1,0 +1,121 @@
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/plugins/leadv2/scripts/tests/run-core-offline.sh
+[CORE-OFFLINE] waiting for lock file=/tmp/leadv2-core-offline.lock (held by a concurrent run)
+[CORE-OFFLINE] FATAL lock_timeout file=/tmp/leadv2-core-offline.lock wait_s=30
+[FAIL] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/plugins/leadv2/scripts/tests/run-core-offline.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/tests/test-status-surface-bash32.sh
+== T1: /bin/bash -n on the renderer ==
+  ok   - renderer parses clean under bash 3.2
+== T2: /bin/bash -n on the wrapper ==
+  ok   - wrapper parses clean under bash 3.2
+== T3: env -i minimal PATH (the actual SwiftBar launch shape) renders lanes ==
+  ok   - wrapper renders 2 lane row(s) under minimal PATH + bash 3.2
+== T4: a dead renderer produces the failure title, never a confident 0/0 ==
+  ok   - wrapper reports renderer failure, not a confident 0/0
+== T5: STATUS-SURFACE-R5-01 — name resolution, unnamed, age-out, limits ==
+  ok   - R5-C1: legacy stays unnamed; single-lead may resolve handoff title
+  ok   - R5-C2: no-name lane renders exactly 'unnamed' (no dispatch-<sig8> in NAME)
+  ok   - R5-C3: age-out boundary — live@100000 + done@899 present, done@901 absent, header counts drop
+  ok   - R5-C4: heuristic cap -> 'не измеряется', no fabricated 'claude: N%'
+
+== T6: STATUS-SURFACE-R5-01 round 2 — minimal-env parity (PyYAML-optional reader) ==
+  ok   - _t6a: minimal-env render has no broken substring
+  ok   - _t6b: lane row-count parity (min=2 full=2)
+  ok   - _t6c: urgent parity (min=57 full=57)
+
+== T7: env -i minimal PATH single-lead render (MENUBAR-SHOWS-DEAD-LANES-AND-HASH-NAMES-01) ==
+  ok   - T7: single-lead source-list loop parses/runs under stripped env (rc=0, no ⚠)
+== T8: bash 3.2 param-expansion split on the multibyte '·' delimiter ==
+  ok   - T8a: multi-field line splits into first field + untouched remainder
+  ok   - T8b: line with no ' · ' delimiter leaves remainder equal to the input (no-suffix case)
+  ok   - T8c: same split verified under /bin/bash 3.2 runtime
+
+test-status-surface-bash32: 15 passed, 0 failed, 0 skipped
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/tests/test-status-surface-bash32.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/tests/test-status-surface-single-lead.sh
+== single-lead fixture titles ==
+  ok   - status-render consumes snapshot single_lead section
+  ok   - no-dispatch idle -> ⚪ idle
+  ok   - active dispatch -> 🛠 abcdef12 codex 2m
+  ok   - bogus state filtered -> 🛠 abcdef12 codex 2m
+  ok   - pending question -> ❓1
+  ok   - malformed ledger -> ⚠
+  ok   - python3 unavailable -> ⚠ (no legacy fallthrough)
+
+== process census (SWIFTBAR-ACTIVE-SOURCE-02) ==
+  ok   - (a) live claude-subsession → active with sig8
+  ok   - (a2) human task_id from reservation preferred over sig8
+  ok   - (b) worker gone + terminal → idle
+  ok   - (c) exactly 3 entries (2 live + 1 reservation-only)
+  ok   - (d) glm worker + terminal → idle (no terminal lanes in body)
+  ok   - (e) empty everything → idle
+
+== founder-named lanes (human task_id in run-id segment) ==
+  ok   - (f) founder-named glm lane → ACTIVE once with human name
+  ok   - (g) founder-named codex pid-file → ACTIVE once with human name
+
+== T-term: fresh vs stale terminal rows (Rule R retention) ==
+  ok   - (T-term-1) stale terminal (10m) drops the lane entirely
+  ok   - (T-term-2) fresh terminal (60s) drops the lane entirely
+
+== T-lead: the lead's own session is never a lane (C3) ==
+  ok   - (T-lead-1) lead's own session excluded from lanes
+  ok   - (T-lead-2) real codex session-runner still visible (exclusion is targeted)
+
+== T-multi: aggregation across repos (repo label on foreign lanes) ==
+  ok   - (T-multi) foreign-repo lane visible with its repo label
+
+== T-unverifiable: repo lacking a terminal ledger contributes zero rows ==
+  ok   - (T-unverifiable) repo with unreadable terminals contributes no rows
+
+== T-name: lane_label fallback + architect phase (C4) ==
+  ok   - (T-name-1) lane_label resolves the human name + legacy architect phase
+  ok   - (T-name-2) no name fields at all -> sig8 fallback (legacy ~ phase)
+
+test-status-surface-single-lead: 23 passed, 0 failed
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/tests/test-status-surface-single-lead.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/tests/test-status-surface-fast-names.sh
+== T1: resolve_lane_label fallback chain ==
+  ok   - ledger lane_label hit
+  ok   - active.yaml worktree fallback
+  ok   - mission heading fallback (MISSION-HEADING-TASK — implementation de)
+  ok   - miss -> sig8 unchanged
+  ok   - lane_label pipe stripped (got 'AB')
+== T2: cold cache ==
+  ok   - cold cache shows «нет кэша», no spinner
+  ok   - cold render <1s (wall 0s)
+  ok   - cold render kicked a refresh (lock held)
+== T3: warm cache ==
+  ok   - warm cache: label in title+row, no sig8 sub-row
+  ok   - warm render <1s (wall 0s)
+== T4: stale cache ==
+  ok   - stale cache -> «⚠️ кэш устарел»
+== T5: rename hygiene (SELF_PATH) ==
+  ok   - copy-reply bash= path is the .5s.sh and exists (/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/plugins/leadv2/scripts/leadv2-status-surface.5s.sh)
+
+test-status-surface-fast-names: 12 passed, 0 failed
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/tests/test-status-surface-fast-names.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
+[TEST] PASS: W1 replay-safety: pre-existing terminal line still pulsed (exactly once), rc=0
+[TEST] PASS: W2 beat: own-sig review_gate pulsed, foreign sig excluded, watch still running
+[TEST] PASS: W2 dedup noise: dispatch_terminal_dedup neither pulsed nor exited (H1)
+[TEST] PASS: W2 terminal: dispatch_terminal pulsed after the beat, exit only there (C1)
+[TEST] PASS: W5 re-arm dedup: replayed journal produced no duplicate pulses (ledger held)
+[TEST] PASS: W3 pidfile: second arm attempt no-op (rc=0, no pulse written)
+[TEST] PASS: W4a baseline: unpatched scratch copy (pulse seam set) delivers the pre-existing terminal
+[TEST] PASS: W4b negative control RED: tail -n 0 revert misses the pre-existing terminal (as it must)
+[TEST] PASS: W6 negative control RED: review_gate-as-terminal revert dies before dispatch_terminal (as it must)
+[TEST] PASS: W7 watch_timeout: abandoned lane leaves a final pulse, not silence (H1)
+[TEST] PASS: W8 derived timeout: default=14700 glm5000->20300 max7200->29100 pinned->777 (H1)
+[TEST] PASS: W9 worker death: cause=worker_died terminal row pulses as worker_died (M3)
+test-lane-pulse-watch: 12 passed, 0 failed
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
+[TEST] PASS: B1 kill-switch: LEADV2_PULSE_MODE=0 / LEADV2_SINGLE_LEAD_BEAT=0 -> no-op, nothing armed
+[TEST] PASS: B2 beat driven: 3 beat(s) while 1 lane live, loop still running
+[TEST] PASS: B3 not armed twice: second invocation exited immediately, pidfile still owns pid 36939
+[TEST] PASS: B4 stops on empty board: loop exited after consecutive zeros, pidfile removed
+[TEST] PASS: B4b re-arm after stop works (pidfile clean, loop re-armed)
+[TEST] PASS: B5 transient zero: board-empty blip did not stop the beat (H3)
+[TEST] PASS: B6 running_stale live: stale lane keeps the beat running (H3)
+
+ASSERTED_EXIT_STATUS=124
