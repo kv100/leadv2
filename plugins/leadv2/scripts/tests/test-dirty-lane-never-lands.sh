@@ -4,7 +4,10 @@
 set -euo pipefail
 ROOT="${LEADV2_TEST_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 LEDGER="${ROOT}/scripts/leadv2-dispatch-ledger.sh"
-T="$(mktemp -d)"; trap 'git -C "$T/main" worktree remove --force "$T/lane" >/dev/null 2>&1 || true; rm -rf "$T"' EXIT
+LANE_GUARD="${ROOT}/scripts/lib/leadv2-lane-guard.sh"
+T="$(mktemp -d)"
+cleanup() { local rc=$?; git -C "$T/main" worktree remove --force "$T/lane" >/dev/null 2>&1 || true; rm -rf "$T"; exit "$rc"; }
+trap cleanup EXIT
 
 git init -q "$T/main"
 git -C "$T/main" config user.email t@e
@@ -25,6 +28,11 @@ SCRIPT_DIR="$T/bin"
 PROJECT_ROOT="$T/main"
 LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="$T/ledger.jsonl"
 JOURNAL_BIN=/nonexistent
+
+# The live macOS interpreter is bash 3.2. Under set -u an empty input must
+# leave the guard clean, not abort its command-substitution caller and turn all
+# worker dirt into an empty status value.
+/bin/bash -c 'set -uo pipefail; source "$1"; printf "" | _pc_drop_bootstrap_dirt "$2"' _ "$LANE_GUARD" "$T/lane" >/dev/null
 
 last_row() { tail -n 1 "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE"; }
 assert_last() { local terminal="$1" cause="$2" row; row="$(last_row)"; [[ "$row" == *"\"terminal\":\"${terminal}\""* && "$row" == *"\"cause\":\"${cause}"* ]]; }
@@ -64,6 +72,21 @@ assert_last landed completed
 # Bootstrap-only symlinks are injected lane setup residue, not worker dirt.
 mkdir -p "$T/lane/.claude"
 ln -s "$T/main/seed" "$T/lane/.claude/commands"
+# Exercise the actual CLOSE gate before the helper assertion below, so the
+# negative control proves the executable's live symbol lookup is not shadowed.
+mkdir -p "$T/close-cache"
+printf '#!/usr/bin/env python3\nprint("reviewer=codex")\nprint("pool=codex")\nprint("refusal=")\n' > "$T/close-cache/resolver.py"
+printf '#!/usr/bin/env bash\nprintf "REVIEW_VERDICT: PASS\\nREVIEW_FINDINGS: critical=0 high=0 medium=0 low=0\\n"\n' > "$T/close-cache/codex.sh"
+chmod +x "$T/close-cache/resolver.py" "$T/close-cache/codex.sh"
+set +e
+CLAUDE_PROJECT_ROOT="$T/main" LEADV2_DISPATCH_CACHE_DIR="$T/close-cache/cache" \
+LEADV2_DISPATCH_LANE_WRITES="worker.txt" LEADV2_LANE_WORK_ROOT="$T/lane" \
+LEADV2_GLM_POLICY_RESOLVER="$T/close-cache/resolver.py" LEADV2_DISPATCH_CODEX_BIN="$T/close-cache/codex.sh" \
+bash "$ROOT/scripts/leadv2-dispatch-product-close.sh" "$T/main" closeboot sonnet '' 0 1 TASK >"$T/close.out" 2>&1
+close_rc=$?
+set -e
+[[ $close_rc -eq 5 ]] # no product diff is expected; the gate still wrote its verdict
+! grep -Fq 'reason: unscoped_lane_work' "$T/main/docs/handoff/dispatch-closeboot/review-gate.md"
 if lv2_lane_dirty "$T/lane"; then
   git -C "$T/lane" status --porcelain --untracked-files=all >&2
   echo 'bootstrap-symlink-only lane was classified dirty' >&2
@@ -79,4 +102,4 @@ printf '{"task_sig":"bound000","terminal":"pass_unlanded","cause":"dirty_lane:pr
 printf 'dirty\n' >> "$T/lane/worker.txt"
 LEADV2_DIRTY_LANE_MAX_ATTEMPTS=2 write_terminal bound000 TASK landed completed
 assert_last refused dirty_lane_retry_exhausted:completed
-echo 'PASS: terminal funnel downgrades worker dirt, permits control-plane/bootstrap-only lanes, and bounds retries'
+echo 'PASS: terminal funnel and CLOSE gate downgrade worker dirt, permit bootstrap-only lanes, and bound retries'

@@ -991,20 +991,29 @@ _deliver_plan_into_lane() { # <sig8> <founder-task-id>
     _dl_note "${sig8}" refused plan_work_root_unset
     exit 5
   }
-  if [[ "${WORK_ROOT}" == "${PROJECT_ROOT}" || -z "${task_id}" ]]; then
+  if [[ "${WORK_ROOT}" == "${PROJECT_ROOT}" ]]; then
     LANE_PLAN_DELIVERY_STATUS="not_required"
+    emit decision "lane_plan_skipped task=${sig8} reason=shared_tree"
     return 0
+  fi
+  if [[ -z "${task_id}" ]]; then
+    LANE_PLAN_DELIVERY_STATUS="refused"
+    emit decision "lane_plan_missing task=${sig8} reason=task_id_unset"
+    _dl_note "${sig8}" refused plan_task_id_unset
+    exit 5
   fi
   src="${PROJECT_ROOT}/docs/handoff/${task_id}"
   dst="${WORK_ROOT}/docs/handoff/${task_id}"
   if [[ ! -f "${src}/context.yaml" ]]; then
     LANE_PLAN_DELIVERY_STATUS="source_absent"
+    emit decision "lane_plan_missing task=${sig8} reason=source_absent source=${src}/context.yaml"
+    _dl_note "${sig8}" skipped plan_source_absent
     return 0
   fi
   mkdir -p "${dst}" 2>/dev/null || true
-  for f in context.yaml brief.md plan-*.md; do
-    [[ -f "${src}/${f}" ]] || continue
-    cp -f "${src}/${f}" "${dst}/${f}" 2>/dev/null || true
+  for f in "${src}"/context.yaml "${src}"/brief.md "${src}"/plan-*.md; do
+    [[ -f "${f}" ]] || continue
+    cp -f "${f}" "${dst}/$(basename "${f}")" 2>/dev/null || true
   done
   if [[ ! -f "${dst}/context.yaml" ]]; then
     emit decision "lane_plan_missing task=${sig8} source=${src}/context.yaml lane=${dst}/context.yaml"
@@ -3583,6 +3592,12 @@ _admission_classify() {
   ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
   DISPATCH_FREEPOOL_ROLE=""
   local receipt_task_id="${founder_task_id:-dispatch-${sig8}}"
+  # The task record is a floor on every entry path, including a same-digest
+  # resume that reuses its per-signature receipt below.
+  local task_floor=""
+  if [[ -n "${founder_task_id:-}" ]]; then
+    task_floor="$(leadv2_admission_read_task_receipt "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
+  fi
   local existing
   existing="$(leadv2_admission_read_receipt "${PROJECT_ROOT}" "${sig8}" 2>/dev/null || true)"
   if [[ -n "${existing}" ]]; then
@@ -3594,6 +3609,13 @@ _admission_classify() {
       # line, and the guard below decides admission from the phase records.
       ADMISSION_CLASS="${r_cls}"; ADMISSION_ROUTE="${r_route}"
       ADMISSION_SOURCE="${r_src}"; ADMISSION_WORK_KIND="${r_wk}"
+      if [[ -n "${task_floor}" ]] && (( $(_lv2_class_rank "${task_floor}") > $(_lv2_class_rank "${ADMISSION_CLASS}") )); then
+        ADMISSION_CLASS="${task_floor}"; ADMISSION_SOURCE="task_record"
+        case "${ADMISSION_CLASS}" in
+          Standard|Heavy|Strategic) ADMISSION_ROUTE="phases" ;;
+          *)                        ADMISSION_CLASS="Light"; ADMISSION_ROUTE="dispatch" ;;
+        esac
+      fi
       DISPATCH_FREEPOOL_ROLE="$(leadv2_admission_freepool_role "${r_wk}")"
       return 0
     fi
@@ -3602,10 +3624,6 @@ _admission_classify() {
   fi
   # A resume has a new mission signature.  Its task record is therefore a
   # floor, not an optional cache: the fresh estimate may escalate it only.
-  local task_floor=""
-  if [[ -n "${founder_task_id:-}" ]]; then
-    task_floor="$(leadv2_admission_read_task_receipt "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
-  fi
   local mfile estimate pair
   mfile="$(mktemp "${TMPDIR:-/tmp}/leadv2-admission.XXXXXX")" || return 0
   printf '%s' "${mission}" > "${mfile}"
@@ -6220,7 +6238,7 @@ cmd_resolve() {
   fi  # LANE-PLACEMENT-01: close PLACEMENT_PINNED guard
   # D3: delivery is after ensure/pin resolution; ensure-created lanes have no
   # usable WORK_ROOT before this point.
-  _deliver_plan_into_lane "${sig8}" "${founder_task_id}"
+  _deliver_plan_into_lane "${sig8}" "${founder_task_id:-${sig8}}"
   # PLACEMENT-PIN-DEFAULT-01: pin the prompt on EVERY dispatch whose work root is a lane
   # worktree — the ensure-created path (2272) and the launcher-pre-exported path (267)
   # both land here, and both were unpinned.  Idempotent w.r.t. the flagged path above.

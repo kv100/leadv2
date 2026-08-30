@@ -42,8 +42,8 @@ _pc_drop_bootstrap_dirt() { # <lane-root>; filters stdin porcelain -> stdout
     if [[ "${field}" == "??" && "${rest}" =~ ${_PC_BOOTSTRAP_PREFIX_RE} && -L "${root}/${path}" ]]; then continue; fi
     kept_lines+=("${line}"); has_other_work=1
   done
-  if (( task_declared == 1 || has_other_work == 0 )); then kept_lines+=("${task_lines[@]}"); fi
-  for line in "${kept_lines[@]}"; do printf '%s\n' "${line}"; done
+  if (( task_declared == 1 || has_other_work == 0 )); then kept_lines+=(${task_lines[@]+"${task_lines[@]}"}); fi
+  for line in ${kept_lines[@]+"${kept_lines[@]}"}; do printf '%s\n' "${line}"; done
   return 0
 }
 
