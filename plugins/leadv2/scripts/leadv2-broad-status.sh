@@ -42,12 +42,10 @@ FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-$PROJECT_ROOT/docs/leadv2/fou
 # still wrote into the live persona-engine repo because it was hardcoded
 # off PROJECT_ROOT).
 FOUNDER_STATUS_FULL_PATH="${LEADV2_FOUNDER_STATUS_FULL_PATH:-$PROJECT_ROOT/docs/leadv2/founder-status-full.md}"
-# PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01: the collector below is what fills
-# the "lanes" section this board renders; if it silently scoped to one repo,
-# a lane registered elsewhere would never reach a row here and the board
-# would render ДОСКА ПУСТА while that lane was writing. See
-# leadv2-status-collector.sh's LEADV2_LANES_ALL_REPOS pin and
-# test-pulse-empty-board.sh for the mutation-proven control.
+# The collector below supplies the "lanes" section rendered by this board.
+# It pins the all-repos policy itself; that is defensive hardening, not the
+# demonstrated cause of this lane's empty-board incident.  The incident's
+# evidenced cause is the bash-3.2 parse failure guarded by the syntax test.
 COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector.sh}"
 TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
 CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
@@ -941,7 +939,7 @@ with open(out_path, "w", encoding="utf-8") as fh:
     }, fh)
 print(out_path)
 PY
-RENDER_JSON="$(python3 "$RENDER_TMPDIR/render.py" "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH")"
+RENDER_JSON="$(python3 "$RENDER_TMPDIR/render.py" "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" </dev/null)"
 RC=$?
 if [[ $RC -ne 0 || -z "$RENDER_JSON" || ! -f "$RENDER_JSON" ]]; then
   printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
