@@ -19,6 +19,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
 RENDERER="${ROOT}/plugins/leadv2/scripts/leadv2-status-surface.sh"
 WRAPPER="${ROOT}/plugins/leadv2/scripts/leadv2-status-surface.5s.sh"
+BROAD_STATUS="${ROOT}/plugins/leadv2/scripts/leadv2-broad-status.sh"
 # SWIFTBAR-FAST-NAMES-01: the widget now reads an async cache by default and
 # only calls the renderer from a detached refresher. The cache path can't
 # produce a synchronous title from a one-shot invocation, so this suite
@@ -65,6 +66,13 @@ if _out="$(/bin/bash -n "$WRAPPER" 2>&1)" && [[ -z "$_out" ]]; then
   ok "wrapper parses clean under bash 3.2"
 else
   bad "wrapper syntax error under bash 3.2: ${_out}"
+fi
+
+echo "== T2b: /bin/bash -n on the broad-status composer =="
+if _out="$(/bin/bash -n "$BROAD_STATUS" 2>&1)" && [[ -z "$_out" ]]; then
+  ok "broad-status composer parses clean under bash 3.2"
+else
+  bad "broad-status composer syntax error under bash 3.2: ${_out}"
 fi
 
 echo "== T3: env -i minimal PATH (the actual SwiftBar launch shape) renders lanes =="

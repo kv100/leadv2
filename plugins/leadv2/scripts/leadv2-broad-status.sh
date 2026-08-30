@@ -42,6 +42,22 @@ FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-$PROJECT_ROOT/docs/leadv2/fou
 # still wrote into the live persona-engine repo because it was hardcoded
 # off PROJECT_ROOT).
 FOUNDER_STATUS_FULL_PATH="${LEADV2_FOUNDER_STATUS_FULL_PATH:-$PROJECT_ROOT/docs/leadv2/founder-status-full.md}"
+# The collector below supplies the "lanes" section rendered by this board.
+# It pins the all-repos policy itself (LEADV2_LANES_ALL_REPOS=1 at
+# leadv2-status-collector.sh's snapshot call). That pin is NOT defensive
+# hardening against a hypothetical -- it is a demonstrated, live root cause:
+# ~/.claude/settings.json's global `env` block ships LEADV2_LANES_ALL_REPOS=0
+# for every Claude Code session on this machine (verified 2026-08-30: `env |
+# grep LANES_ALL_REPOS` inside a fresh worktree shell -> "=0", and running
+# leadv2-lanes-snapshot.sh --json against a fixture with a live foreign-repo
+# lane and an empty own repo under that ambient env returns table=[] --
+# without the collector's inline override, a lane running in another repo
+# is invisible on the board even when the render itself succeeds).
+# A SECOND, independent incident shares this bug's title: the bash-3.2
+# heredoc parse failure fixed in 67f8b8d, which empties/aborts the render
+# outright ("render failed") rather than merely omitting foreign rows --
+# guarded by the syntax test below. Both are real; they were observed at
+# different beats of the same live incident (2026-08-30T16:53-17:00Z).
 COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector.sh}"
 TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
 CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
@@ -171,7 +187,24 @@ trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 
 export _BS_QUEUED_TSV="$QUEUED_TSV"
 export _BS_LANDED_LOG="$LANDED_LOG"
-RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" <<'PY'
+# BASH-3.2-HEREDOC-QUOTE-PARITY-01: this heredoc used to be written directly
+# inside the `RENDER_JSON="$( ... <<'PY' ... )"` command substitution. macOS's
+# system /bin/bash (3.2.57, the mandatory compatibility target — see
+# CLAUDE.md) has a heredoc-in-command-substitution lexer bug: even with a
+# QUOTED delimiter (<<'PY'), it still scans the heredoc body for stray
+# single/double quotes and unmatched parens to decide where the enclosing
+# $( ... ) closes. A ~750-line python heredoc full of English prose comments
+# (apostrophes: "lane_detail's", "worker's own", contractions) desyncs that
+# scan and the WHOLE SCRIPT fails to parse — `bash -n` (and real execution)
+# aborts with "unexpected EOF while looking for matching `)'" and the script
+# never runs at all, silently, under any minimal-PATH launcher that resolves
+# `env bash` to /bin/bash (SwiftBar is exactly this case per CLAUDE.md). Fix:
+# write the heredoc to a file as a TOP-LEVEL statement (not nested inside a
+# command substitution), then invoke python3 on that file inside the
+# substitution — a plain command has nothing for the buggy scanner to
+# misparse. Verified: `/bin/bash -n` on this file failed before this change
+# and passes after, both on macOS system bash 3.2.57 and homebrew bash 5.3.9.
+cat >"$RENDER_TMPDIR/render.py" <<'PY'
 import datetime, json, os, re, subprocess, sys
 
 snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir, full_status_path_override, empty_since_path = sys.argv[1:9]
@@ -1184,7 +1217,7 @@ with open(out_path, "w", encoding="utf-8") as fh:
     }, fh)
 print(out_path)
 PY
-)"
+RENDER_JSON="$(python3 "$RENDER_TMPDIR/render.py" "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" </dev/null)"
 RC=$?
 if [[ $RC -ne 0 || -z "$RENDER_JSON" || ! -f "$RENDER_JSON" ]]; then
   printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$(_now_iso)" >>"$LOG_FILE"

@@ -1,0 +1,26 @@
+# Mutation RED/GREEN controls — regenerated 2026-08-30 (round 3, full runs)
+
+## Control 1: bash-3.2 heredoc-in-$(...) parse failure (67f8b8d)
+Mutation: re-nest render.py heredoc back inside RENDER_JSON="$(...)".
+
+=== RED (mutated) ===
+plugins/leadv2/scripts/leadv2-broad-status.sh: line 207: unexpected EOF while looking for matching `)'
+plugins/leadv2/scripts/leadv2-broad-status.sh: line 1024: syntax error: unexpected end of file
+bash-n-exit=2
+== T2b: /bin/bash -n on the broad-status composer ==
+  FAIL - broad-status composer syntax error under bash 3.2: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01/plugins/leadv2/scripts/leadv2-broad-status.sh: line 207: unexpected EOF while looking for matching `)'
+=== revert + GREEN ===
+bash-n-exit=0
+== T2b: /bin/bash -n on the broad-status composer ==
+  ok   - broad-status composer parses clean under bash 3.2
+(no diff above = clean revert confirmed)
+
+## Control 2: collector's LEADV2_LANES_ALL_REPOS=1 pin (leadv2-status-collector.sh _sc_lanes_section)
+Suite: test-collector-sees-registered-lane.sh — includes its own board-level RED/GREEN mutation control.
+wrote /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//collector-sees-registered-lane.4C8e5a/snapshot.json (collected_at=2026-08-30T18:38:09Z)
+[TEST] PASS: registered persona-engine lane survives collector despite ambient all-repos=0
+[TEST] PASS: board-level: real collector + real renderer show the foreign lane on founder-status.md
+[TEST] PASS: mutation control: removing the collector's all-repos pin reproduces the empty-of-foreign-lanes board (RED)
+[TEST] PASS: mutation control: reverted collector.sh restores the foreign lane on the board (GREEN)
+[collector-sees-registered-lane] PASS=4 FAIL=0
+(no diff above = clean revert confirmed)

@@ -135,7 +135,9 @@ leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-output-gate.s
 freepool-coder:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
 leadv2-freepool-model-select:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
-freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh"
+freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-foreign-lanes.sh
+leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-registered-lane.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(

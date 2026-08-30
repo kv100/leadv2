@@ -112,9 +112,17 @@ _sc_lanes_section() {
   # lanes-snapshot.sh resolves LEADV2_PROJECT_ROOT before PROJECT_ROOT.  Pin
   # all accepted root variables so an ambient session cannot make this
   # snapshot read a different repository's control plane.
+  # PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01: without this, a lane registered
+  # in a repo other than PROJECT_ROOT (e.g. persona-engine while the founder
+  # board runs against leadv2) is invisible to the snapshot even though it
+  # is writing live — the board then renders ДОСКА ПУСТА. Pinned here, not
+  # left to ambient env, because the founder board must never depend on the
+  # caller's session having opted in. Mutation-proven RED in
+  # test-collector-sees-registered-lane.sh.
   LEADV2_PROJECT_ROOT="$PROJECT_ROOT" \
     CLAUDE_PROJECT_DIR="$PROJECT_ROOT" \
     PROJECT_ROOT="$PROJECT_ROOT" \
+    LEADV2_LANES_ALL_REPOS=1 \
     bash "$_SC_DIR/leadv2-lanes-snapshot.sh" --json
 }
 _sc_run_section "lanes" _sc_lanes_section
