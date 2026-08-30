@@ -209,6 +209,7 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
   # THIS repaint's COLUMNS. Every emitted token is single-word (no embedded
   # spaces), so a boundary cut is always safe.
   _surf_budget="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
+  _surf_visible_len() { local _sv; _sv="$(printf '%s' "$1" | sed -E $'s/\x1b\\[[0-9;]*m//g')"; printf '%s' "${#_sv}"; }
   _surf_tail=""
   if [[ -n "$_surf_oneline" ]]; then
     # A memo may have been written at a wider terminal width.  Refit its
@@ -225,17 +226,17 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
         _surf_remaining=$(( _surf_total - _surf_shown - 1 ))
         _surf_marker=""; (( _surf_remaining > 0 )) && _surf_marker=" +${_surf_remaining}"
         _surf_sep=" "; [[ "$_surf_trimmed" == *: ]] && _surf_sep=" "
-        if (( ${#_surf_trimmed} + ${#_surf_sep} + ${#_surf_tok} + ${#_surf_marker} > _surf_budget )); then
+        if (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}") > _surf_budget )); then
           # Keep the first (surface-sorted) lane visible even if this memo
           # was produced for a much wider terminal.  The token grammar is
           # label·class·age, so only its label may be shortened.
           if (( _surf_shown == 0 )) && [[ "$_surf_tok" == *·*·* ]]; then
             _surf_suffix="·${_surf_tok#*·}"
             _surf_tok="…${_surf_suffix}"
-            while (( ${#_surf_trimmed} + ${#_surf_sep} + ${#_surf_tok} + ${#_surf_marker} > _surf_budget && ${#_surf_tok} > ${#_surf_suffix} )); do
+            while (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}") > _surf_budget && ${#_surf_tok} > ${#_surf_suffix} )); do
               _surf_tok="${_surf_tok:0:${#_surf_tok}-1}"
             done
-            if (( ${#_surf_trimmed} + ${#_surf_sep} + ${#_surf_tok} + ${#_surf_marker} <= _surf_budget )); then
+            if (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}") <= _surf_budget )); then
               _surf_trimmed="${_surf_trimmed}${_surf_sep}${_surf_tok}"
               _surf_shown=1
             fi
@@ -251,7 +252,8 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
       _surf_trimmed="${_surf_oneline:0:$_surf_budget}"
       [[ "$_surf_trimmed" == *" "* ]] && _surf_trimmed="${_surf_trimmed% *}"
     fi
-    _surf_tail="$_surf_trimmed "
+    _surf_tail="$_surf_trimmed"
+    (( $(_surf_visible_len "$_surf_tail") < _surf_budget )) && _surf_tail="${_surf_tail} "
   fi
   USER_CMD="$(jq -r '(.statusLine.command // "")' "$SETTINGS_JSON" 2>/dev/null || true)"
   if [[ -n "$USER_CMD" ]]; then
@@ -262,7 +264,7 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     # -- cut on the visible-character budget remaining after the lane
     # segment, never before it.
     if [[ -n "$_surf_tail" ]]; then
-      _base_visible_budget=$(( _surf_budget - ${#_surf_tail} ))
+      _base_visible_budget=$(( _surf_budget - $(_surf_visible_len "$_surf_tail") ))
       (( _base_visible_budget < 0 )) && _base_visible_budget=0
       # Strip ANSI FIRST, then slice by visible chars -- slicing the raw
       # (color-coded) string at a visible-length offset can land mid escape
@@ -281,7 +283,7 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     [[ "$INPUT" =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && _BM="${BASH_REMATCH[1]}"
     _fallback_base="$(_leadv2_render_colored_base "$_BM" "$_BC" "" "")"
     if [[ -n "$_surf_tail" ]]; then
-      _fallback_budget=$(( _surf_budget - ${#_surf_tail} ))
+      _fallback_budget=$(( _surf_budget - $(_surf_visible_len "$_surf_tail") ))
       (( _fallback_budget < 0 )) && _fallback_budget=0
       _fallback_base="$(printf '%s' "$_fallback_base" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
       _fallback_base="${_fallback_base:0:$_fallback_budget}"

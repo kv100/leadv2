@@ -166,6 +166,15 @@ compress_base() {
   printf '%s' "$out"
 }
 
+# Terminal width is character width for this statusline contract, not UTF-8
+# byte length.  Keep this in bash because the final clamp is bash-owned; ANSI
+# escapes are stripped before counting and are never sliced.
+visible_len() {
+  local plain
+  plain="$(printf '%s' "$1" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
+  printf '%s' "${#plain}"
+}
+
 # An explicit LEADV2_STATUSLINE_LANE_BUDGET override pins the digest budget
 # directly -- BASE-first compression would be meaningless against a pinned
 # budget, so when it's set we skip compression entirely and keep the old
@@ -179,7 +188,7 @@ if [[ -z "$_EXPLICIT_LANE_BUDGET" ]]; then
 fi
 BASE_LEN=()
 for _k in 0 1 2 3 4; do
-  BASE_LEN[_k]="$(printf '%s' "${BASE_STEP[$_k]}" | sed -E $'s/\x1b\\[[0-9;]*m//g' | awk '{print length}')"
+  BASE_LEN[_k]="$(visible_len "${BASE_STEP[$_k]}")"
   [[ -z "${BASE_LEN[$_k]}" ]] && BASE_LEN[_k]=0
 done
 BASE_VISIBLE_LEN="${BASE_LEN[0]}"
@@ -899,11 +908,15 @@ def try_no_drop(budget):
     # ladder / old sub-floor fallback further down, never here.
     if not lane_meta:
         return []
+    # Start at the complete label, then shrink only as pressure requires.
+    # A fixed 24-character seed discarded useful name text even when the
+    # available budget had room for it.
+    full_label_cap = max([len(row[0]) for row in lane_meta] or [LABEL_CAP])
     for with_meta in (True, False):
-        cand = render_step12(LABEL_CAP, with_meta)
+        cand = render_step12(full_label_cap, with_meta)
         if digest_len(cand) <= budget:
             return cand
-    for label_cap in (16, 12, 9, 6):
+    for label_cap in (LABEL_CAP, 16, 12, 9, 6):
         if label_cap < lane_floor:
             continue
         cand = render_step12(label_cap, False)
@@ -1086,20 +1099,42 @@ FINAL_LINE="$(printf '\033[34m%s\033[0m | %s' "$LANES" "$FINAL_BASE")"
 # render_step12/cap_lbl_marked above), so LANES is always whitespace-
 # delimited at token boundaries; back the cut off to the last whitespace
 # boundary at or before KEEP and name how many trailing tokens were lost.
-FINAL_VISIBLE_LEN="$(printf '%s' "$FINAL_LINE" | sed -E $'s/\x1b\\[[0-9;]*m//g' | awk '{print length}')"
+FINAL_VISIBLE_LEN="$(visible_len "$FINAL_LINE")"
 [[ -z "$FINAL_VISIBLE_LEN" ]] && FINAL_VISIBLE_LEN=0
 if (( FINAL_VISIBLE_LEN > STATUSLINE_WIDTH )); then
   OVERFLOW=$(( FINAL_VISIBLE_LEN - STATUSLINE_WIDTH ))
-  LANES_LEN=${#LANES}
-  KEEP=$(( LANES_LEN - OVERFLOW ))
-  (( KEEP < 0 )) && KEEP=0
-  TRIMMED="${LANES:0:KEEP}"
-  if [[ "$TRIMMED" != "$LANES" ]]; then
-    [[ "$TRIMMED" == *" "* ]] && TRIMMED="${TRIMMED% *}"
-    DROPPED_REST="${LANES:${#TRIMMED}}"
-    DROPPED_N="$(printf '%s' "$DROPPED_REST" | tr -s ' ' '\n' | grep -c . || true)"
-    LANES="${TRIMMED% }"
-    (( DROPPED_N > 0 )) && LANES="${LANES} +${DROPPED_N}"
+  # Refit by complete fields and reserve the exact +N marker before each
+  # admission.  Character accounting matches visible_len above, including
+  # UTF-8 labels; no raw slice can land in a word or ANSI escape.
+  _base_len="$(visible_len "$FINAL_BASE")"
+  _lane_budget=$(( STATUSLINE_WIDTH - _base_len - 3 ))
+  (( _lane_budget < 0 )) && _lane_budget=0
+  _lane_first="${LANES%% *}"
+  _lane_after_first="${LANES#* }"
+  _lane_second="${_lane_after_first%% *}"
+  _lane_head="${_lane_first} ${_lane_second}"
+  _lane_rest="${_lane_after_first#"$_lane_second"}"
+  _lane_rest="${_lane_rest# }"
+  _lane_total=0; for _lane_tok in $_lane_rest; do [[ "$_lane_tok" == +[0-9]* ]] || _lane_total=$(( _lane_total + 1 )); done
+  _lane_shown=0; _lane_out="$_lane_head"
+  for _lane_tok in $_lane_rest; do
+    [[ "$_lane_tok" == +[0-9]* ]] && continue
+    _lane_remaining=$(( _lane_total - _lane_shown - 1 ))
+    _lane_marker=""; (( _lane_remaining > 0 )) && _lane_marker=" +${_lane_remaining}"
+    if (( $(visible_len "${_lane_out} ${_lane_tok}${_lane_marker}") > _lane_budget )); then break; fi
+    _lane_out="${_lane_out} ${_lane_tok}"; _lane_shown=$(( _lane_shown + 1 ))
+  done
+  _lane_dropped=$(( _lane_total - _lane_shown ))
+  (( _lane_dropped > 0 )) && _lane_out="${_lane_out} +${_lane_dropped}"
+  LANES="$_lane_out"
+  # At degenerate widths even the maximally-compressed BASE can be wider
+  # than the cells left after the honest lane digest. Strip its ANSI first,
+  # then clip characters; never raw-slice a colour escape.
+  _base_budget=$(( STATUSLINE_WIDTH - $(visible_len "$LANES") - 3 ))
+  (( _base_budget < 0 )) && _base_budget=0
+  if (( $(visible_len "$FINAL_BASE") > _base_budget )); then
+    FINAL_BASE="$(printf '%s' "$FINAL_BASE" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
+    FINAL_BASE="${FINAL_BASE:0:_base_budget}"
   fi
   FINAL_LINE="$(printf '\033[34m%s\033[0m | %s' "$LANES" "$FINAL_BASE")"
 fi

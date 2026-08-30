@@ -497,5 +497,76 @@ else
   bad "R13" "memo clamp lost silent lane, lied about +N, or exceeded 30 (len=$MEMO_30_LEN): $MEMO_30_PLAIN"
 fi
 
+# F2: the composer must fit exact narrow terminal budgets, including the
+# former negative-slack/trailing-space case at 22 columns.
+for _narrow_w in 20 22 26 30 34 60 80 120 200; do
+  _narrow_out="$(HOME="$tmp/composer-home" run_composer "$_narrow_w" "$WIDE_MEMO")"
+  _narrow_len="$(visible_len "$_narrow_out")"
+  if (( _narrow_len <= _narrow_w )); then
+    ok "F2: composer width $_narrow_w is exact/smaller ($_narrow_len)"
+  else
+    bad "F2" "composer width $_narrow_w overflowed ($_narrow_len): $_narrow_out"
+  fi
+done
+
+# MUT-C: deleting the composer's reserved +N marker must make the same
+# narrow fixture overflow. This is a red control, not a textual source check.
+MUT_C_DIR="$tmp/composer-mut-c"
+cp -a "$SCRATCH_SCRIPTS" "$MUT_C_DIR"
+sed -i.bak 's/_surf_marker=""; (( _surf_remaining > 0 )) && _surf_marker=" +${_surf_remaining}"/_surf_marker=""/' "$MUT_C_DIR/leadv2-lane-status-line.sh"
+rm -f "$MUT_C_DIR/leadv2-lane-status-line.sh.bak"
+COMPOSER_SAVED="$COMPOSER"; COMPOSER="$MUT_C_DIR/leadv2-lane-status-line.sh"
+MUT_C_RED=""
+for _mut_w in 20 22 26 30 34 60; do
+  MUT_C_OUT="$(HOME="$tmp/composer-home" run_composer "$_mut_w" "$WIDE_MEMO")"
+  if (( $(visible_len "$MUT_C_OUT") > _mut_w )); then MUT_C_RED="$_mut_w:$MUT_C_OUT"; break; fi
+done
+COMPOSER="$COMPOSER_SAVED"
+if [ -n "$MUT_C_RED" ]; then
+  ok "MUT-C RED: zero composer marker overflows (${MUT_C_RED%%:*})"
+else
+  bad "MUT-C" "zero composer marker unexpectedly stayed within every narrow budget"
+fi
+
+# F3: UTF-8 labels must use character, not byte, width accounting in the tail
+# clamp; the visible row count and +N must exactly reconcile.
+UTF8_DIR="$tmp/scripts-utf8"
+mkdir -p "$UTF8_DIR"; cp -a "$SCRATCH_SCRIPTS/." "$UTF8_DIR/"
+cat > "$UTF8_DIR/leadv2-lane-liveness.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<JSON
+{"count_live": 8, "lanes": [
+ {"lane":"кириллица-один","verdict":"alive","age_s":1},
+ {"lane":"кириллица-два","verdict":"alive","age_s":2},
+ {"lane":"кириллица-три","verdict":"alive","age_s":3},
+ {"lane":"кириллица-четыре","verdict":"alive","age_s":4},
+ {"lane":"кириллица-пять","verdict":"alive","age_s":5},
+ {"lane":"кириллица-шесть","verdict":"alive","age_s":6},
+ {"lane":"кириллица-семь","verdict":"alive","age_s":7},
+ {"lane":"кириллица-восемь","verdict":"alive","age_s":8}
+]}
+JSON
+EOF
+chmod +x "$UTF8_DIR/leadv2-lane-liveness.sh"
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+UTF8_OUT="$(run_tail 60 "$UTF8_DIR")"; UTF8_PLAIN="$(printf '%s' "$UTF8_OUT" | strip_ansi)"
+if (( $(visible_len "$UTF8_OUT") <= 60 )) && [[ "$UTF8_PLAIN" == *'+5'* ]]; then
+  ok "F3: UTF-8 tail clamp fits 60 with exact +5"
+else
+  bad "F3" "UTF-8 tail clamp width/count mismatch: $UTF8_PLAIN"
+fi
+
+# F2/F5: the production tail has the same exact-width contract, and its BASE
+# fallback must become plain text before a degenerate-width clip.
+for _tail_w in 20 22 26 30 34 60 80 120 200; do
+  rm -f "$tmp"/cache/leadv2-statusline-lane-*
+  _tail_out="$(run_tail "$_tail_w" "$SCRATCH_SCRIPTS")"
+  if (( $(visible_len "$_tail_out") <= _tail_w )); then
+    ok "F2/F5: tail width $_tail_w is exact/smaller"
+  else
+    bad "F2/F5" "tail width $_tail_w overflowed: $_tail_out"
+  fi
+done
+
 printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"
 [[ "$FAIL" -eq 0 ]]

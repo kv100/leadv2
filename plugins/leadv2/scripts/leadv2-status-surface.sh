@@ -1678,14 +1678,14 @@ emit_oneline() {
   fi
   if [ "$MULTI_PROJECT" -eq 1 ]; then
     sorted_rows="$(printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{
-      cls=$8; rank=(cls=="live")?1:0
+      cls=$8; rank=(cls=="dead")?0:(cls=="live")?2:(cls=="done")?3:1
       printf "%s\t%s/%s\t%s\t%s\n", rank, $1, $2, cls, $6
-    }' | sort -t "$(printf '\t')" -k1,1n)"
+    }' | sort -t "$(printf '\t')" -k1,1n -k2,2)"
   else
     sorted_rows="$(printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{
-      cls=$7; rank=(cls=="live")?1:0
+      cls=$7; rank=(cls=="dead")?0:(cls=="live")?2:(cls=="done")?3:1
       printf "%s\t%s\t%s\t%s\n", rank, $1, cls, $5
-    }' | sort -t "$(printf '\t')" -k1,1n)"
+    }' | sort -t "$(printf '\t')" -k1,1n -k2,2)"
   fi
   # The marker is part of the budget, not an afterthought.  Reserving it
   # before admitting a row keeps the final line within COLUMNS and makes its

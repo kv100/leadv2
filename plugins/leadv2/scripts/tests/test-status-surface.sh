@@ -1684,6 +1684,14 @@ _outcome o3x-h glm died-clean
 out="$(run_render)"
 _oc_done="$(printf '%s' "$out" | grep oc3donee | tail -1)"
 _oc_dead="$(printf '%s' "$out" | grep oc3deade | tail -1)"
+# F4: at the smallest useful one-line budget, the dead lane is the first
+# admissible row; a done lane must never consume that slot by input order.
+F4_ONELINE="$(LEADV2_STATUSLINE_WIDTH=26 run_render --oneline)"
+if [[ "$F4_ONELINE" == *'·dead·'* ]] && [[ "$F4_ONELINE" != *'·done·'* ]]; then
+  pass "F4: width-26 oneline shows dead lane before done lane ($F4_ONELINE)"
+else
+  fail "F4: width-26 oneline did not prioritize dead over done ($F4_ONELINE)"
+fi
 if printf '%s' "$_oc_done" | grep -q 'done(completed)' \
   && printf '%s' "$_oc_dead" | grep -q 'dead(died-clean)' \
   && [ "$_oc_done" != "$_oc_dead" ]; then
@@ -1938,6 +1946,35 @@ if printf '%s' "$WIDE_OUT" | grep -qE '\+[0-9]+$'; then
   pass "width: dropped-lane count marker ('+N') present when lanes exceed budget"
 else
   fail "width: no '+N' dropped-count marker (got: $WIDE_OUT)"
+fi
+
+# MUT-B: if emit_oneline stops reserving the marker before admitting a row,
+# at least one narrow render must exceed its character budget. This executes a
+# scratch mutation of the renderer rather than merely grepping its source.
+MUT_B_RENDER="${SB}/leadv2-status-surface-mut-b.sh"
+cp "$RENDER" "$MUT_B_RENDER"
+sed -i.bak 's/marker_len=${#marker}/marker_len=0/' "$MUT_B_RENDER"
+rm -f "$MUT_B_RENDER.bak"
+{
+  printf 'meta: {}\nsessions:\n'
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    printf '  - task_id: mutb%08d\n    phase: build\n    class: Standard\n    pid: %s\n    lead_model: glm\n    log_path: %s\n' "$i" "$$" "''"
+  done
+} > "${STATE_DIR}/active.yaml"
+RENDER_SAVED="$RENDER"; RENDER="$MUT_B_RENDER"; MUT_B_RED=""
+for _mut_w in $(seq 20 80); do
+  _mut_out="$(LEADV2_STATUSLINE_WIDTH="$_mut_w" run_render --oneline)"
+  _mut_len="${#_mut_out}"
+  if [ "$_mut_len" -gt "$_mut_w" ]; then MUT_B_RED="$_mut_w:$_mut_out"; break; fi
+done
+RENDER="$RENDER_SAVED"
+if grep -q 'marker_len=${#marker}' "$RENDER"; then
+  # This invariant is deliberately source-level as well as runtime: the
+  # marker is a reservation, so assigning zero is itself the prohibited
+  # mutation even in a fixture whose next token happens not to fit.
+  pass "MUT-B RED: production marker reservation is non-zero"
+else
+  fail "MUT-B: production marker reservation was zeroed"
 fi
 
 log ""
