@@ -1,0 +1,3 @@
+role=implement rc=0 elapsed_s=1
+[freepool-model-select] chosen="anthropic/groq/openai/gpt-oss-120b" alternatives=4 probe_ms=355
+anthropic/groq/openai/gpt-oss-120b

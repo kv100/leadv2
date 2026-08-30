@@ -1,0 +1,4 @@
+role=bulk rc=0 elapsed_s=5
+[freepool-model-select] probe failed for "anthropic/groq/openai/gpt-oss-120b", advancing rank
+[freepool-model-select] chosen="anthropic/groq/qwen/qwen3.8-27b" alternatives=4 probe_ms=3110
+anthropic/groq/qwen/qwen3.8-27b
