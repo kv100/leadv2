@@ -559,13 +559,70 @@ fi
 # would replay a narrower call's stale digest into a wider one instead of
 # recomputing.  Each of these four calls asserts on a specific width, so the
 # cache is cleared immediately before each one to force a live recompute.
+# MUT-Z targets the bash hard-clamp loop's reservation math
+# (leadv2-lane-status-line-tail.sh:1127, `_lane_remaining=$(( _lane_total -
+# _lane_shown - 1 ))`, the per-candidate marker-width preview used ONLY to
+# decide whether the token being considered still fits). Empirically this
+# term only changes the admission decision at the exact point where the
+# marker's own digit count would cross a boundary (e.g. "+9" vs "+10") --
+# everywhere else the wrong marker is the same length as the right one and
+# the mutation is invisible. 10 real lanes plus an explicit
+# LEADV2_STATUSLINE_LANE_BUDGET (forces the Python ladder to hand back the
+# full candidate so this bash clamp is the only thing trimming it) at width
+# 31 sits exactly on that boundary: with the reservation term, the first
+# lane fits (label + " +9"); without it, the marker is computed one digit
+# too wide ("+10"), the fit check now fails, and the lane that should have
+# rendered is silently swallowed into the drop count instead -- the
+# founding incident in miniature.
+MUTZ_DIR="$tmp/scripts-mutz"
+mkdir -p "$MUTZ_DIR"; cp -a "$SCRATCH_SCRIPTS/." "$MUTZ_DIR/"
+cat > "$MUTZ_DIR/leadv2-lane-liveness.sh" <<'EOF'
+#!/usr/bin/env bash
+python3 -c '
+import json
+rows = [{"lane": "n%d" % i, "verdict": "alive", "age_s": i + 1} for i in range(10)]
+print(json.dumps({"count_live": len(rows), "lanes": rows}))
+'
+EOF
+chmod +x "$MUTZ_DIR/leadv2-lane-liveness.sh"
+MUTZ_REPO="$tmp/repo-mutz"
+mkdir -p "$MUTZ_REPO/.claude/leadv2-overrides" "$MUTZ_REPO/.leadv2-state" "$MUTZ_REPO/docs/handoff"
+printf 'hard_limit: 25\n' > "$MUTZ_REPO/.claude/leadv2-overrides/active-limits.yaml"
+printf 'meta:\n  hard_limit: 25\nsessions: []\n' > "$MUTZ_REPO/.leadv2-state/active.yaml"
+cat > "$MUTZ_DIR/leadv2-state-path.sh" <<EOF
+#!/usr/bin/env bash
+echo "$MUTZ_REPO/.leadv2-state/active.yaml"
+EOF
+chmod +x "$MUTZ_DIR/leadv2-state-path.sh"
+MUTZ_INPUT_JSON=$(jq -n --arg dir "$MUTZ_REPO" '{workspace:{current_dir:$dir},model:{display_name:"Opus 5"},output_style:{name:"default"},context_window:{remaining_percentage:79},transcript_path:""}')
+MUTZ_SETTINGS_JSON="$tmp/settings-mutz.json"
+printf '{"statusLine":{"command":"printf hi"}}' > "$MUTZ_SETTINGS_JSON"
 rm -rf "$tmp/cache"
-MUT_Z_OUT="$(run_tail 60 "$SCRATCH_SCRIPTS")"; MUT_Z_PLAIN="$(printf '%s' "$MUT_Z_OUT" | strip_ansi)"
-MUT_Z_ROWS="$(printf '%s' "$MUT_Z_PLAIN" | grep -oE '·[a-z?]{1,2}·[0-9]+[smh]?' | wc -l | tr -d ' ')"
-MUT_Z_PLUS="$(printf '%s' "$MUT_Z_PLAIN" | grep -oE '\+[0-9]+' | tail -1 | tr -d '+' || true)"; [[ -z "$MUT_Z_PLUS" ]] && MUT_Z_PLUS=0
-if (( MUT_Z_ROWS + MUT_Z_PLUS == 4 )); then ok "MUT-Z: production tail count reconciles ($MUT_Z_PLAIN)"; else bad "MUT-Z" "production tail count does not reconcile: $MUT_Z_PLAIN"; fi
+MUT_Z_OUT="$(TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH=31 LEADV2_STATUSLINE_LANE_BUDGET=200 \
+  bash "$MUTZ_DIR/leadv2-lane-status-line-tail.sh" "$MUTZ_INPUT_JSON" "$MUTZ_SETTINGS_JSON" "$MUTZ_DIR" 5 </dev/null)"
+MUT_Z_PLAIN="$(printf '%s' "$MUT_Z_OUT" | strip_ansi)"
+if [[ "$MUT_Z_PLAIN" == 'lanes 10/25 0'*'+9'* ]]; then
+  ok "MUT-Z: production tail reservation admits the lane that fits ($MUT_Z_PLAIN)"
+else
+  bad "MUT-Z" "production tail reservation swallowed a lane that should have fit: $MUT_Z_PLAIN"
+fi
 
-if (( MUT_Z_ROWS + MUT_Z_PLUS == 4 )); then ok "MUT-V: production dropped count reconciles ($MUT_Z_PLAIN)"; else bad "MUT-V" "production dropped count is off by one: $MUT_Z_PLAIN"; fi
+# MUT-V targets the final drop-count assignment two lines later
+# (leadv2-lane-status-line-tail.sh:1132, `_lane_dropped=$(( _lane_total -
+# _lane_shown ))`) -- a distinct line from MUT-Z's reservation term, and
+# exercised via a distinct fixture: the founder's 4-lane repro with
+# LEADV2_STATUSLINE_LANE_BUDGET forcing the Python ladder to hand back the
+# full uncompressed candidate, so the bash clamp is the only thing standing
+# between that candidate and the 30-column terminal -- an off-by-one here
+# silently under-reports how many lanes disappeared.
+rm -rf "$tmp/cache"
+MUT_V_OUT="$(LEADV2_STATUSLINE_LANE_BUDGET=200 run_tail 30 "$SCRATCH_SCRIPTS")"
+MUT_V_PLAIN="$(printf '%s' "$MUT_V_OUT" | strip_ansi)"
+if [[ "$MUT_V_PLAIN" == 'lanes 4/5 +4'* ]]; then
+  ok "MUT-V: production tail drop count matches all 4 lanes ($MUT_V_PLAIN)"
+else
+  bad "MUT-V" "production tail drop count is off by one: $MUT_V_PLAIN"
+fi
 
 rm -rf "$tmp/cache"
 MUT_U_OUT="$(run_tail 20 "$SCRATCH_SCRIPTS")"; MUT_U_BASE="${MUT_U_OUT#* | }"

@@ -1505,6 +1505,12 @@ _header_counts() {
   printf '%s %s\n' "${l:-X}" "${d:-X}"
 }
 _run_bar() {
+  # BADGE-* fixtures write an empty active.yaml (sessions: []) and no
+  # .supervise-active marker, so _status_single_lead_mode() in the renderer
+  # would auto-select single-lead mode -- whose title is "🛠 <label> <arm>
+  # <age>" / "⚪ idle", never the 🟢/🔴 glyphs these tests parse. Force legacy
+  # mode explicitly so the fixture exercises the 🟢/🔴 title path it names.
+  LEADV2_STATUS_SINGLE_LEAD=0 \
   LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
   LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
   LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
