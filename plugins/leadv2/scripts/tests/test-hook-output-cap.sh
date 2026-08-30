@@ -95,6 +95,39 @@ else
   fail "T2 one-copy-drift: clean tree stays silent (rc=$RC stdout=$STDOUT)"
 fi
 
+# T5 fixture: checker crashes (exit 2) with no REGRESSION/BADLINK/tally line
+# at all -- must NOT be reported as "0 regression(s)" (silent swallow of a
+# real failure, HOOK-OUTPUT-CAP-PLUGIN-01 round 2).
+mk_one_copy_fixture_crash() {
+  local tmp root
+  tmp="$(lv2_mktemp_dir one-copy-cap-fixture-crash)"
+  root="${tmp}/canon"
+  mkdir -p "${root}/.git" "${root}/plugins/leadv2/scripts"
+  cat > "${root}/plugins/leadv2/scripts/leadv2-one-copy-convert.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "Traceback (most recent call last):" >&2
+echo "  File fixture-crash.py, line 1, in <module>" >&2
+echo "RuntimeError: fixture-induced crash, not a drift line" >&2
+exit 2
+EOF
+  chmod +x "${root}/plugins/leadv2/scripts/leadv2-one-copy-convert.sh"
+  printf '%s' "$root"
+}
+
+FAKE_HOME5="$(lv2_mktemp_dir one-copy-cap-home5)"
+ROOT5="$(mk_one_copy_fixture_crash)"
+run_one_copy_hook "$ROOT5" '{"source":"startup","cwd":"/tmp"}' "$FAKE_HOME5"
+DETAIL_LOG5="${FAKE_HOME5}/leadv2-one-copy-drift-detail.log"
+if [[ "$RC" -eq 0 ]] \
+   && grep -qi 'FAILED' <<<"$STDOUT" \
+   && grep -q 'exited 2' <<<"$STDOUT" \
+   && [[ -s "$DETAIL_LOG5" ]] \
+   && grep -q 'RuntimeError: fixture-induced crash' "$DETAIL_LOG5"; then
+  pass "T5 one-copy-drift: crash-shaped failure reported, not silenced as 0 regressions"
+else
+  fail "T5 one-copy-drift: crash-shaped failure reported (rc=$RC detail=$( [[ -f "$DETAIL_LOG5" ]] && wc -c <"$DETAIL_LOG5" || echo missing) stdout=$STDOUT)"
+fi
+
 # ── T3/T4 fixture: fake CWD with .env + state-paths.yaml + stubbed curl ────
 mk_truth_card_fixture() { # <big|small|fail>
   local mode="$1" tmp cwd binroot

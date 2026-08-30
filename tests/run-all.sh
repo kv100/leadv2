@@ -128,9 +128,15 @@ if [[ "${SCOPE}" == "all" ]]; then
       -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
   )
 else
+  # Union uncommitted diff with the last commit's diff (not either/or): once a
+  # lane's changes are committed, `diff --name-only HEAD` no longer sees them,
+  # and this repo routinely has unrelated dirty coordination files
+  # (docs/leadv2/*) from concurrent lanes, so an empty-check fallback never
+  # fires and the lane's own suite silently drops out of --scope changed.
   changed="$(git -C "${ROOT}" diff --name-only HEAD 2>/dev/null)"
-  if [[ -z "${changed}" ]] && git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
-    changed="$(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
+  if git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
+    changed="${changed}
+$(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
   fi
   if [[ -n "${changed}" ]]; then
     while IFS= read -r cf; do
