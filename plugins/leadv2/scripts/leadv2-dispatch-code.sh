@@ -471,6 +471,12 @@ _MISSION_WRITESET_SH="${SCRIPT_DIR}/lib/leadv2-mission-writeset.sh"
 _RED_PROOF_SH="${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
 [[ -f "${_RED_PROOF_SH}" ]] || _RED_PROOF_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-red-proof.sh"
 [[ -f "${_RED_PROOF_SH}" ]] && source "${_RED_PROOF_SH}"
+# C-1 (DISPATCH-PIN-CLUSTER-01 round 7): SCRIPT_DIR resolves through the
+# per-file symlink in consumer repos (persona-engine, m3-market, respiro-ios),
+# so it points at the CONSUMER's .claude/scripts, which has no lib/ copy of a
+# file this new to the symlink farm. Same degrade-to-canonical idiom as
+# _REPORT_DELIVERABLE_SH below -- fall back to the canonical checkout so the
+# dirty-lane pin and containment check stay live everywhere, not just here.
 _LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
 [[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
 [[ -f "${_LANE_GUARD_SH}" ]] && source "${_LANE_GUARD_SH}"

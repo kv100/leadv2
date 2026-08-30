@@ -21,7 +21,12 @@
 #
 # Bash 3.2 safe: no mapfile, no ${var^^}, no declare -A, no associative traps.
 _admission_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-source "${_admission_lib_dir}/leadv2-lane-guard.sh"
+# C-1 (DISPATCH-PIN-CLUSTER-01 round 7): guarded + canonical-fallback source --
+# see leadv2-dispatch-code.sh for the full rationale (consumer-repo symlink farm
+# has no lib/ copy of this new file).
+_LANE_GUARD_SH="${_admission_lib_dir}/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] && source "${_LANE_GUARD_SH}"
 
 # Same normalization pipeline as leadv2-dispatch-code.sh's compute_sig — one
 # source of truth for the mission digest so a receipt minted by the pump is

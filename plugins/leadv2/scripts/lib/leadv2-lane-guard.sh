@@ -90,6 +90,6 @@ lv2_lane_containment_violation() { # <sig8> <work-root> <project-root> <declared
     grep -Fqx -- "${path}" "${base}" 2>/dev/null && continue
     _lv2_containment_excluded "${path}" && continue
     _lv2_path_in_write_set "${path}" "${writes_csv}" && return 0
-  done < <(git -C "${project_root}" status --porcelain --untracked-files=all 2>/dev/null | sed -E 's/^.. //; s/^"//; s/"$//')
+  done < <(git -C "${project_root}" status --porcelain --untracked-files=all 2>/dev/null | grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}" | sed -E 's/^.. //; s/^"//; s/"$//')
   return 1
 }

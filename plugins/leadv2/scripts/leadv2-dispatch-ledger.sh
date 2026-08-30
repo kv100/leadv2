@@ -95,7 +95,12 @@ LANE_LIVENESS_BIN="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lan
 # util-linux on macOS). Same rc0/rc3 acquire contract as flock -w -x.
 # shellcheck source=leadv2-portable-lock.sh
 source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
-source "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
+# C-1 (DISPATCH-PIN-CLUSTER-01 round 7): guarded + canonical-fallback source --
+# see leadv2-dispatch-code.sh for the full rationale (consumer-repo symlink farm
+# has no lib/ copy of this new file).
+_LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] && source "${_LANE_GUARD_SH}"
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
 
 log()     { printf '[%s] %s\n' "${SCRIPT_NAME}" "$*" >&2; }
@@ -147,16 +152,24 @@ _dispatch_terminal_last_field() {
     sed -n "s/.*\"${field}\":\"\([^\"]*\)\".*/\\1/p"
 }
 
-# rc0: a TRUE terminal (landed|dead|dead_with_unlanded_work) row already exists for <sig8>. rc1: none found (ledger
-# missing, sig8 unseen, or its only history is a retryable pass_unlanded/refused/parked row -- wave2
-# round3 finding 3: refused/parked never count as "exists" here, since a later attempt at
-# the same sig8 must still be able to record its real landed/dead outcome).
+# rc0: a TRUE terminal (landed|dead|dead_with_unlanded_work|pass_unlanded) row already
+# exists for <sig8>. rc1: none found (ledger missing, sig8 unseen, or its only history is
+# a retryable refused/parked row -- wave2 round3 finding 3: refused/parked never count as
+# "exists" here, since a later attempt at the same sig8 must still be able to record its
+# real landed/dead outcome).
+# H-1 (DISPATCH-PIN-CLUSTER-01 round 7): pass_unlanded moved from "retryable" to a TRUE,
+# write-once-final terminal in dispatch_ledger_write_terminal's blocklist (:334, "a
+# pass_unlanded row is a durable human-action state ... a new attempt needs a new sig8").
+# This function's answer to "has this sig8 finished?" must agree, or a pass_unlanded sig8
+# is never reaped by the deferred-retry readers (leadv2-dispatch-code.sh's two callers),
+# falls through to retry, and every terminal that retry could produce is exit-2'd by the
+# write gate -- the sig8 can be re-dispatched and can never terminate in the ledger.
 dispatch_terminal_exists() {
   local sig8="$1" f last; f="$(dispatch_terminal_ledger_file)"
   [[ -f "${f}" ]] || return 1
   last="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
   case "${last}" in
-    landed|dead|dead_with_unlanded_work) return 0 ;;
+    landed|dead|dead_with_unlanded_work|pass_unlanded) return 0 ;;
     *) return 1 ;;
   esac
 }

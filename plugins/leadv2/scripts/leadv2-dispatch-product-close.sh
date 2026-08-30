@@ -78,7 +78,12 @@ DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
 # product spawn (see that file's cmd_resolve arc==0 comment). Always a subprocess call
 # (never sourced) -- see leadv2-dispatch-ledger.sh's own doc header.
 LEDGER_BIN="${LEADV2_DISPATCH_LEDGER_BIN:-${SCRIPT_DIR}/leadv2-dispatch-ledger.sh}"
-source "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
+# C-1 (DISPATCH-PIN-CLUSTER-01 round 7): guarded + canonical-fallback source --
+# see leadv2-dispatch-code.sh for the full rationale (consumer-repo symlink farm
+# has no lib/ copy of this new file).
+_LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] && source "${_LANE_GUARD_SH}"
 TERMINAL_LEDGER="${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}"
 # N-5: refusal classification (classify_arm_failure) for the arm-agnostic review
 # fallback loop below. Private synced copy, not a shared source of dispatch-code.sh --
