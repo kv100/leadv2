@@ -397,6 +397,193 @@ else
   fail "T8b: malformed rows dropped silently, not surfaced: $T8_CONTENT"
 fi
 
+# ── T8c: THE REMEDY IS THE TABLE ITSELF, NOT JUST THE PROSE ABOVE IT
+#     (fix-round-5 R3-3) ─────────────────────────────────────────────────
+# round-4 counted and named the malformed rows in a prefix line, but the
+# table BODY still printed only "(живых линий нет)" beneath it -- a reader
+# counting rows inside the table saw zero, not three-unreadable. Each
+# malformed row must now render as its own NAMED row inside the table.
+T8C_TABLE_ROWS="$(printf '%s' "$T8_CONTENT" | grep -cE '^\| \(строка [0-9]+ повреждена\) \|')"
+if [[ "$T8C_TABLE_ROWS" -eq 3 ]]; then
+  pass "T8c: all 3 malformed rows render as named rows INSIDE the table, not just counted in a prefix line"
+else
+  fail "T8c: expected 3 named malformed rows inside the table, got $T8C_TABLE_ROWS: $T8_CONTENT"
+fi
+if ! printf '%s' "$T8_CONTENT" | grep -qF '(живых линий нет)'; then
+  pass "T8d: table no longer prints the positive-looking '(живых линий нет)' placeholder when rows are merely unreadable"
+else
+  fail "T8d: table still prints the false-empty placeholder alongside unreadable rows: $T8_CONTENT"
+fi
+
+# ── T9: MU3 CONTROL — the table_prefix degraded line specifically
+#     (fix-round-5, reviewer mutation MU3: `if malformed_row_count:` ->
+#     `if False:` at the table_prefix append site) ───────────────────────
+# T8b/T8c both also pass off the in-table named rows added by R3-3's remedy,
+# so neither kills MU3 on its own -- this fixture asserts the table_prefix
+# line's own, distinct wording ("НЕ ЧИТАЮТСЯ N строк(и) таблицы
+# (повреждённый формат...)"), which exists ONLY at that one call site and
+# disappears completely if MU3 guts it, independent of the in-table rows.
+cat >"$STUBS/collector-malformed-mix.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": [
+      {"task_id": "GOOD-MX-01", "status": "active"}, "bad-row", None
+  ], "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": [
+      {"task_id": "GOOD-MX-01", "dispatch_id": "aa11bb22", "worker": "sonnet",
+       "writing_now": True, "stream_bytes": 5, "mission_title": "GOOD-MX-01 -- a real lane"}
+  ]}}
+}}))' >"$out"
+EOF
+chmod +x "$STUBS/collector-malformed-mix.sh"
+
+beat_env "$STUBS/collector-malformed-mix.sh" "2026-08-30T06:15:00Z"
+T9_CONTENT="$(cat "$FOUNDER_STATUS")"
+if printf '%s' "$T9_CONTENT" | grep -qF 'НЕ ЧИТАЮТСЯ 2 строк(и) таблицы'; then
+  pass "T9: MU3 control — table_prefix's own degraded-line wording is present (survives with the fix intact)"
+else
+  fail "T9: table_prefix degraded line missing or reworded: $T9_CONTENT"
+fi
+
+# ── T10: OWN=1..3 x FOREIGN=1..5 MATRIX (fix-round-5 N4-1/N4-2) ─────────
+# N4-1: round-4's floor/reserve special-cased only `own==0`, so the ordinary
+# board (WIP is 1-3 own lanes/session) fell into the reserve branch even
+# when everything fit under TABLE_ROW_CAP=6 -- "2 own + 4 foreign" (6 lanes,
+# 6 slots) rendered only 4 rows and reported 2 lanes as "not fitting" when
+# they plainly did. Every own/foreign pair below where own+foreign<=6 must
+# render ALL rows and print NO hidden-count sentence; every pair where the
+# total exceeds 6 must still hit the reserve/floor split and print one.
+cat >"$STUBS/collector-own-foreign-matrix.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json, os
+own_n = int(os.environ["MATRIX_OWN_N"])
+foreign_n = int(os.environ["MATRIX_FOREIGN_N"])
+tag = f"{own_n}-{foreign_n}"
+own = [{"task_id": f"OWN-MX-{tag}-{i:02d}", "status": "active"} for i in range(1, own_n + 1)]
+foreign = [{"task_id": f"FOREIGN-MX-{tag}-{i:02d}", "status": "active",
+            "repo": "persona-engine", "age_s": 30} for i in range(1, foreign_n + 1)]
+own_detail = [
+    {"task_id": f"OWN-MX-{tag}-{i:02d}", "dispatch_id": f"{i:08x}", "worker": "sonnet",
+     "writing_now": True, "stream_bytes": i, "mission_title": f"OWN-MX-{tag}-{i:02d} -- filler lane {i}"}
+    for i in range(1, own_n + 1)
+]
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": own + foreign, "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": own_detail}}
+}}))' >"$out"
+EOF
+chmod +x "$STUBS/collector-own-foreign-matrix.sh"
+
+for OWN_N in 1 2 3; do
+  for FOREIGN_N in 1 2 3 4 5; do
+    TOTAL=$(( OWN_N + FOREIGN_N ))
+    if [[ "$TOTAL" -le 6 ]]; then
+      EXP_OWN="$OWN_N"; EXP_FOREIGN="$FOREIGN_N"; EXP_HIDDEN=0
+    else
+      FSLOTS=2
+      [[ "$FOREIGN_N" -lt 2 ]] && FSLOTS="$FOREIGN_N"
+      OWN_BUDGET=$(( 6 - FSLOTS ))
+      EXP_OWN="$OWN_N"
+      [[ "$OWN_N" -gt "$OWN_BUDGET" ]] && EXP_OWN="$OWN_BUDGET"
+      EXP_FOREIGN="$FSLOTS"
+      EXP_HIDDEN=1
+    fi
+    export MATRIX_OWN_N="$OWN_N" MATRIX_FOREIGN_N="$FOREIGN_N"
+    beat_env "$STUBS/collector-own-foreign-matrix.sh" "2026-08-30T07:00:00Z"
+    unset MATRIX_OWN_N MATRIX_FOREIGN_N
+    MX_CONTENT="$(cat "$FOUNDER_STATUS")"
+    GOT_OWN="$(printf '%s' "$MX_CONTENT" | grep -cE "^\| OWN-MX-${OWN_N}-${FOREIGN_N}-[0-9]+ ")"
+    GOT_FOREIGN="$(printf '%s' "$MX_CONTENT" | grep -cE "^\| persona-engine/FOREIGN-MX-${OWN_N}-${FOREIGN_N}-[0-9]+ ")"
+    if [[ "$GOT_OWN" -eq "$EXP_OWN" && "$GOT_FOREIGN" -eq "$EXP_FOREIGN" ]]; then
+      pass "T10 own=$OWN_N foreign=$FOREIGN_N: rendered $GOT_OWN own + $GOT_FOREIGN foreign rows (expected $EXP_OWN/$EXP_FOREIGN)"
+    else
+      fail "T10 own=$OWN_N foreign=$FOREIGN_N: rendered $GOT_OWN own + $GOT_FOREIGN foreign, expected $EXP_OWN/$EXP_FOREIGN: $MX_CONTENT"
+    fi
+    if [[ "$EXP_HIDDEN" -eq 0 ]]; then
+      if ! printf '%s' "$MX_CONTENT" | grep -q 'не поместилось'; then
+        pass "T10 own=$OWN_N foreign=$FOREIGN_N: no hidden-count sentence — everything fit under the cap"
+      else
+        fail "T10 own=$OWN_N foreign=$FOREIGN_N: false hidden-count sentence when total ($TOTAL) <= cap (6): $MX_CONTENT"
+      fi
+    else
+      if printf '%s' "$MX_CONTENT" | grep -q 'не поместилось'; then
+        pass "T10 own=$OWN_N foreign=$FOREIGN_N: hidden-count sentence present — total ($TOTAL) exceeds the cap"
+      else
+        fail "T10 own=$OWN_N foreign=$FOREIGN_N: missing hidden-count sentence when total ($TOTAL) > cap (6): $MX_CONTENT"
+      fi
+    fi
+  done
+done
+
+# ── T11: MU6 CONTROL — round-robin spreads foreign slots across repos
+#     (fix-round-5, reviewer mutation MU6: replace the round-robin
+#     `while`/`_repo_buckets` block with a flat first-N encounter-order
+#     slice) ────────────────────────────────────────────────────────────
+# 3 foreign repos x 4 lanes each + 7 own lanes, FOREIGN_ROW_RESERVE=2. A
+# flat first-N slice takes the first 2 rows in table order, which (per the
+# collector's own grouping) are both from the FIRST repo -- repo 2 and 3
+# get zero, every beat, forever. Round-robin BY REPO must give repo 1 and
+# repo 2 one slot each and never both slots to a single repo.
+cat >"$STUBS/collector-roundrobin-repos.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+own = [{"task_id": f"OWN-RR-{i:02d}", "status": "active"} for i in range(1, 8)]
+foreign = []
+for repo in ("m3-market", "persona-engine", "respiro-ios"):
+    for i in range(1, 5):
+        foreign.append({"task_id": f"{repo}-RR-{i:02d}", "status": "active",
+                         "repo": repo, "age_s": 30})
+own_detail = [
+    {"task_id": f"OWN-RR-{i:02d}", "dispatch_id": f"{i:08x}", "worker": "sonnet",
+     "writing_now": True, "stream_bytes": i, "mission_title": f"OWN-RR-{i:02d} -- filler lane {i}"}
+    for i in range(1, 8)
+]
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": own + foreign, "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": own_detail}}
+}}))' >"$out"
+EOF
+chmod +x "$STUBS/collector-roundrobin-repos.sh"
+
+beat_env "$STUBS/collector-roundrobin-repos.sh" "2026-08-30T07:30:00Z"
+T11_CONTENT="$(cat "$FOUNDER_STATUS")"
+T11_M3="$(printf '%s' "$T11_CONTENT" | grep -cE '^\| m3-market/m3-market-RR-[0-9]+ ')"
+T11_PE="$(printf '%s' "$T11_CONTENT" | grep -cE '^\| persona-engine/persona-engine-RR-[0-9]+ ')"
+T11_RI="$(printf '%s' "$T11_CONTENT" | grep -cE '^\| respiro-ios/respiro-ios-RR-[0-9]+ ')"
+if [[ "$T11_M3" -eq 1 && "$T11_PE" -eq 1 && "$T11_RI" -eq 0 ]]; then
+  pass "T11: round-robin gives repo 1 (m3-market) and repo 2 (persona-engine) one foreign slot each, not both to one repo"
+else
+  fail "T11: foreign slots not spread across repos — m3-market=$T11_M3 persona-engine=$T11_PE respiro-ios=$T11_RI: $T11_CONTENT"
+fi
+
 log ""
 log "=== ${PASS} passed, ${FAIL} failed ==="
 if [[ "$FAIL" -gt 0 ]]; then

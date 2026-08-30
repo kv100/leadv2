@@ -613,6 +613,22 @@ for row in table_rows:
     ))
     detail_lines.append(f"{id_display} — {kto} — {na_diske}")
 
+# fix-round-5 (R3-3, remedy half): round-4 counted a malformed (non-dict)
+# table row and named it in the table_prefix line above the table, but the
+# table BODY still printed only the positive-looking placeholder
+# "(живых линий нет)" beneath it -- a reader who counts rows in the table
+# itself, not the prose above it, still sees zero rows and nothing telling
+# them one is unreadable. Each malformed row now also gets its own NAMED
+# row inside the table (wording deliberately distinct from the table_prefix
+# line above so the two are independently verifiable), so the table's own
+# row count reflects reality: N unreadable rows are N rows, not an absence.
+for _mi in range(malformed_row_count):
+    rows_out.append((
+        f"| (строка {_mi + 1} повреждена) | формат не читается | НЕ ЧИТАЕТСЯ |",
+        False,
+        "",
+    ))
+
 # Change 2b: a failed lane_detail section must be visible ABOVE the table,
 # not inferred from every row silently reading "неизвестно".
 table_prefix = []
@@ -715,7 +731,20 @@ FOREIGN_ROW_RESERVE = max(1, TABLE_ROW_CAP // 3)
 rows_out_full = rows_out
 _foreign_row_count = sum(1 for _, _f, _r in rows_out_full if _f)
 _own_row_count = len(rows_out_full) - _foreign_row_count
-if _own_row_count == 0:
+# fix-round-5 (N4-1): the floor/reserve split above only has anything to
+# defend when the two sides are actually COMPETING for the cap. round-4's
+# version special-cased only `_own_row_count == 0`, so the ordinary board
+# (WIP is 1-3 own lanes per session -- see leadv2 task-lane cap policy) fell
+# straight into the `else` branch and got capped to FOREIGN_ROW_RESERVE
+# regardless of whether the total even exceeded TABLE_ROW_CAP: "2 own + 4
+# foreign" (6 lanes, 6 slots) rendered only 4 rows and reported "2 чужих
+# строк не поместилось" -- lanes that fit were told they didn't. Nothing
+# competes for a slot that would otherwise sit empty, so when everyone fits
+# under the cap, everyone renders; the reserve/floor split below only
+# engages once the two sides are actually fighting for a scarce slot.
+if _own_row_count + _foreign_row_count <= TABLE_ROW_CAP:
+    _foreign_slots = _foreign_row_count
+elif _own_row_count == 0:
     _foreign_slots = min(_foreign_row_count, TABLE_ROW_CAP)
 elif _foreign_row_count == 0:
     _foreign_slots = 0
@@ -728,10 +757,22 @@ _own_row_budget = TABLE_ROW_CAP - _foreign_slots
 # repos, which is effectively alphabetical -- so when foreign supply
 # exceeds _foreign_slots, a repo late in that order was silently NEVER
 # shown, beat after beat, while an earlier repo always filled every slot.
-# Round-robin across repos BY INDEX (first-seen order per repo, which is
-# the liveness order the upstream rows already arrive in -- a dead row
-# never reaches rows_out_full, see the `continue` above) so a bounded slot
-# budget is shared, not monopolized by whichever repo sorts first.
+# Round-robin across repos BY INDEX (first-seen order per repo) so a
+# bounded slot budget is shared across repos, not monopolized by whichever
+# repo sorts first.
+#
+# fix-round-5 (R3-5, comment correction): this round-robin fixes the
+# CROSS-REPO starvation above, but WITHIN a repo it still keeps whatever
+# order rows_out_full received the rows in, and that order is NOT a
+# liveness/recency ordering -- leadv2-lanes-snapshot.sh sorts a repo's own
+# foreign rows via `sorted(session_by_task.items())` (task-id/session-key
+# order), so a lane silent for hours can sort ahead of one actively writing
+# right now within the same repo, and this block has no way to tell the
+# two apart (foreign rows carry only `age_s`, not a writing_now flag -- see
+# the `d` is None branch above `sostoyanie` is built from `age_s` alone).
+# leadv2-lanes-snapshot.sh is out of this task's LANE_WRITES scope, so this
+# comment records the limitation rather than silently claiming a liveness
+# guarantee this block does not provide.
 _repo_buckets = {}
 _repo_order = []
 for _idx, (_l, _f, _r) in enumerate(rows_out_full):
@@ -795,18 +836,13 @@ try:
             "⚠ НЕ ВИЖУ ЛИНИИ — сборщик статуса линий не ответил "
             f"({lanes_fail_reason}); неизвестно, пуста ли доска на самом деле"
         )
-    elif live_lane_count == 0 and malformed_row_count:
-        # fix-round-4 (R3-3): the same "empty vs unreadable" distinction as
-        # the lanes_ok branch above, one level down -- lanes_ok is True
-        # (the collector answered) but every row it returned was malformed,
-        # so live_lane_count==0 here is NOT evidence of an empty board
-        # either. Deliberately does not touch empty_since_path for the same
-        # reason: whether the board is actually empty is unknown.
-        empty_headline = (
-            "⚠ СТРОКИ ТАБЛИЦЫ НЕ ЧИТАЮТСЯ — "
-            f"{malformed_row_count} строк(и) повреждены; неизвестно, пуста ли доска на самом деле"
-        )
     elif live_lane_count == 0:
+        # fix-round-5 (R3-3): a malformed row can no longer make
+        # live_lane_count==0 while malformed_row_count>0 -- each malformed
+        # row is now appended into rows_out_full as its own named "НЕ
+        # ЧИТАЕТСЯ" row (see the loop right after the main row-building
+        # loop above), so live_lane_count already reflects it and this
+        # branch is the genuinely-empty case only.
         now_epoch = int(__import__("time").time())
         since_epoch = None
         try:
