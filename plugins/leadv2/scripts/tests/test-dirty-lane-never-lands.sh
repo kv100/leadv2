@@ -3,7 +3,7 @@
 # dispatch_ledger_write_terminal with `terminal="landed"`.
 set -euo pipefail
 ROOT="${LEADV2_TEST_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
-LEDGER="${ROOT}/scripts/leadv2-dispatch-ledger.sh"
+LEDGER="${LEADV2_DIRTY_LANE_LEDGER:-${ROOT}/scripts/leadv2-dispatch-ledger.sh}"
 LANE_GUARD="${ROOT}/scripts/lib/leadv2-lane-guard.sh"
 T="$(mktemp -d)"
 cleanup() { local rc=$?; git -C "$T/main" worktree remove --force "$T/lane" >/dev/null 2>&1 || true; rm -rf "$T"; exit "$rc"; }
@@ -98,13 +98,12 @@ fi
 write_terminal bootstrap00 TASK landed completed
 assert_last landed completed
 
-# The function consumes actual prior downgrade rows for the same signature and
-# must turn the next dirty completion into a final refusal rather than another retry.
+# A pass_unlanded is a human-action state, not a transitive retry path.  A later
+# refused or landed write for the same signature is a successful no-op.
 printf '{"task_sig":"bound000","terminal":"pass_unlanded","cause":"dirty_lane:prior-1"}\n' > "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE"
-printf '{"task_sig":"bound000","terminal":"pass_unlanded","cause":"dirty_lane:prior-2"}\n' >> "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE"
 printf 'dirty\n' >> "$T/lane/worker.txt"
 LEADV2_DIRTY_LANE_MAX_ATTEMPTS=2 write_terminal bound000 TASK landed completed
-assert_last refused dirty_lane_retry_exhausted:completed
+assert_last pass_unlanded dirty_lane:prior-1
 
 # A killed worker is not plain `dead` when its pinned lane still carries
 # uncommitted worker-owned bytes. Exercise the sweep writer itself (not a
@@ -117,4 +116,12 @@ if grep -F '"task_sig":"sweep000"' "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE" | gre
   echo 'sweep recorded plain dead for dirty worker lane' >&2
   exit 1
 fi
-echo 'PASS: terminal funnel and CLOSE gate downgrade worker dirt, permit bootstrap-only lanes, bound retries, and name a dead dirty lane'
+# N2: a later landed write cannot erase the dirty-death pin.
+write_terminal sweep000 TASK landed completed
+assert_last dead_with_unlanded_work swept
+
+# N5: the documented terminal-ledger rollback switch also disables the sweep writer.
+: > "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE"
+LEADV2_DISPATCH_TERMINAL_LEDGER=0 dispatch_ledger_sweep_write_dead disabled0 TASK swept disabled attempt-disabled
+[[ ! -s "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE" ]]
+echo 'PASS: terminal funnel and CLOSE gate downgrade worker dirt, preserve the dirty-death pin, keep pass_unlanded non-transitive, honor the rollback switch, and permit bootstrap-only lanes'

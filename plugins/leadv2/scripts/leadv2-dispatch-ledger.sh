@@ -16,7 +16,7 @@
 #   LATER, separate attempt at the same sig8 will end, so recording one never blocks a
 #   later write from the SAME sig8 -- landed/dead still wins write-once against it. Row
 #   shape:
-#     {"ts","task_sig","founder_task_id","terminal":"landed|pass_unlanded|parked|refused|dead|no_work","cause","evidence"}
+#     {"ts","task_sig","founder_task_id","terminal":"landed|pass_unlanded|parked|refused|dead|dead_with_unlanded_work|no_work","cause","evidence"}
 #   task_sig is the dispatch-<sig8> identifier BOTH writer scripts already share (dispatch-
 #   code.sh computes the full mission-text sig but only ever hands sig8 to dispatch-product-
 #   close.sh -- keying on the 8-char form here is what lets a single ledger row be extended
@@ -142,7 +142,7 @@ _dispatch_terminal_last_field() {
     sed -n "s/.*\"${field}\":\"\([^\"]*\)\".*/\\1/p"
 }
 
-# rc0: a TRUE terminal (landed|dead) row already exists for <sig8>. rc1: none found (ledger
+# rc0: a TRUE terminal (landed|dead|dead_with_unlanded_work) row already exists for <sig8>. rc1: none found (ledger
 # missing, sig8 unseen, or its only history is a retryable pass_unlanded/refused/parked row -- wave2
 # round3 finding 3: refused/parked never count as "exists" here, since a later attempt at
 # the same sig8 must still be able to record its real landed/dead outcome).
@@ -151,7 +151,7 @@ dispatch_terminal_exists() {
   [[ -f "${f}" ]] || return 1
   last="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
   case "${last}" in
-    landed|dead) return 0 ;;
+    landed|dead|dead_with_unlanded_work) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -176,7 +176,7 @@ dispatch_any_terminal_exists() {
 }
 
 # DEDUP-REFUSED-RETRY-01: stdout = the LAST recorded terminal-ledger word for <sig8>
-# (landed|parked|refused|dead|no_work), or empty if no row exists. rc always 0 (this is a
+# (landed|parked|refused|dead|dead_with_unlanded_work|no_work), or empty if no row exists. rc always 0 (this is a
 # read, not a gate). Unlike dispatch_terminal_exists()/dispatch_any_terminal_exists() above
 # (which collapse the ledger to a yes/no boolean -- and, per that fn's own doc comment,
 # deliberately treat refused/parked as "not present" for THEIR gate), the dispatch-code.sh
@@ -275,7 +275,7 @@ dispatch_ledger_write_terminal() {
     fi
   fi
   case "${terminal}" in
-    landed|pass_unlanded|parked|refused|dead|no_work) : ;;
+    landed|pass_unlanded|parked|refused|dead|dead_with_unlanded_work|no_work) : ;;
     *) log_err "write_terminal: invalid terminal='${terminal}' for sig=${sig8}"; return 1 ;;
   esac
   founder="$(json_safe "${founder}")"
@@ -317,16 +317,13 @@ dispatch_ledger_write_terminal() {
   local rc
   (
     lv2_lock_wait "${lockf}" 10 || exit 3
-    case "${terminal}" in landed|dead) _lv2_terminal_attempt_superseded "${founder}" "${attempt}" && exit 4 ;; esac
+    case "${terminal}" in landed|dead|dead_with_unlanded_work) _lv2_terminal_attempt_superseded "${founder}" "${attempt}" && exit 4 ;; esac
     local _last_terminal _same_attempt_row
     _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal || true)"
     case "${_last_terminal}" in
-      landed|dead) exit 2 ;;  # a TRUE terminal already won write-once for this sig8
-      pass_unlanded)
-        # The bounded dirty-lane funnel escalates repeated retryable downgrades
-        # to refused. That one stronger safety disposition is permitted; a later
-        # landed (or another pass) may never overwrite the first pass row.
-        [[ "${terminal}" == "refused" ]] || exit 2 ;;
+      landed|dead|dead_with_unlanded_work|pass_unlanded) exit 2 ;;
+        # A pass_unlanded row is a durable human-action state.  It may not be
+        # transited through refused into landed; a new attempt needs a new sig8.
     esac
     # LOW-3: aligned on the ANY-row form (matching dispatch_ledger_sweep_write_dead's own
     # _same_attempt_row check below) -- comparing only the LAST row missed an exit-trap
@@ -361,7 +358,7 @@ dispatch_ledger_write_terminal() {
       # T16 §10: a freshly-written TRUE terminal ends the lane -- drop its active.yaml
       # row now (dedup exits above keep the row: a later attempt may have re-registered).
       case "${terminal}" in
-        landed|dead|pass_unlanded)
+        landed|dead|dead_with_unlanded_work|pass_unlanded)
           _lv2_terminal_unregister_lanes "${sig8}" "${founder}" "${attempt}" ;;
       esac
       return 0 ;;
@@ -379,7 +376,7 @@ dispatch_ledger_write_terminal() {
   esac
 }
 
-# T16 §10 (LANE-DEREGISTRATION): a TRUE terminal (landed|dead|pass_unlanded) ends the
+# T16 §10 (LANE-DEREGISTRATION): a TRUE terminal (landed|dead|dead_with_unlanded_work|pass_unlanded) ends the
 # lane for good, but its active.yaml registration row used to survive forever -- closed
 # lanes accumulated until lead_session_lane_cap refused every new dispatch and a human
 # had to prune by hand (3x on 2026-08-26/27). Removal is tombstone-consistent with the
@@ -466,6 +463,7 @@ PYEOF
 # <sig8> <lane_id> <cause> <evidence> <attempt>
 dispatch_ledger_sweep_write_dead() {
   local sig8="$1" lane="${2:-}" cause="${3:-}" evidence="${4:-}" attempt="${5:-}"
+  [[ "${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}" == "0" ]] && return 0
   [[ -n "${sig8}" ]] || { log_err "sweep_write_dead: empty task_sig, refusing to write"; return 1; }
   if [[ -z "${attempt}" ]]; then
     log_err "sweep_write_dead: no attempt recorded on lane=${lane} sig=${sig8} -- refusing to sweep (attempt-less row predates hardening or was never stamped)"

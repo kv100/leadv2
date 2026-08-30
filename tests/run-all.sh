@@ -157,6 +157,10 @@ leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-plan-in-lane.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-placement-pin.sh
 leadv2-lane-guard:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
 leadv2-lane-guard:plugins/leadv2/scripts/tests/test-lane-containment.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-t13-slice1.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-class-floor-survives-resume.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then

@@ -48,6 +48,7 @@ _pc_drop_bootstrap_dirt() { # <lane-root>; filters stdin porcelain -> stdout
 }
 
 lv2_lane_dirty() { # <root> -> rc0 when worker-owned dirt remains
+  # The two-stage filter is runtime-tested by test-scope-gate-orchestration-dirt.sh.
   local root="$1" status
   [[ -n "${root}" && -d "${root}" ]] || return 1
   git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
