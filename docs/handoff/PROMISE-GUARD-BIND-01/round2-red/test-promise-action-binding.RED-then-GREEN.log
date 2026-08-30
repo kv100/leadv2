@@ -1,0 +1,14 @@
+[TEST] PASS: bash -n leadv2-promise-guard.sh
+[TEST] GREEN-PRE-FIX: action-then-promise-now-silent -- passed against the pre-fix hook too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: promise-then-action-silent -- passed against the pre-fix hook too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: promise-only-fires -- passed against the pre-fix hook too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: action-then-report-silent -- passed against the pre-fix hook too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: action-then-recap-silent -- passed against the pre-fix hook too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: dispatch-promise-matching-action-silent -- passed against the pre-fix hook too (pre_rc=0)
+[TEST] RED-then-GREEN: dispatch-promise-unrelated-action-fires (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: commit-promise-matching-action-silent -- passed against the pre-fix hook too (pre_rc=0)
+[TEST] RED-then-GREEN: write-promise-devnull-unrelated-fires (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: write-promise-real-write-matches-silent -- passed against the pre-fix hook too (pre_rc=0)
+[TEST] PASS: sandbox-control -- real journal /Users/kostiantyn.vlasenko/.claude/leadv2-promise-guard.jsonl unchanged (1738 lines)
+
+Results: 2 passed(red->green), 0 failed, 8 green-pre-fix, 0 could-not-run

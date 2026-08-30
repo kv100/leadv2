@@ -3,27 +3,10 @@
 #
 # Reads the turn's final assistant text; if it ends on a forward-tense
 # commitment («сейчас поднимаю наблюдателя», "I'll dispatch…") AND that same
-# turn made ZERO tool calls of the PROMISED KIND, blocks once with a correction
-# that quotes the unkept sentence, and appends a durable JSONL row so the rate
-# is measurable. Past-tense reports carrying artifacts (sha / path / probe) are
+# turn made ZERO state-changing tool calls, blocks once with a correction that
+# quotes the unkept sentence, and appends a durable JSONL row so the rate is
+# measurable. Past-tense reports carrying artifacts (sha / path / probe) are
 # the DESIRED output and are never fired on.
-#
-# PROMISE-GUARD-BIND-01 (2026-08-30): before this fix, ANY action-tool call in
-# the turn suppressed the guard, regardless of what was promised — a turn that
-# promised a dispatch and then only read a file looked identical, to the
-# guard, to a turn that actually dispatched. `classify_promise_kind` /
-# `classify_action_kind` below bind the two: a promise of a KNOWN kind
-# (dispatch / commit / write / test-run) is only "kept" by an action of that
-# same kind. A promise whose kind cannot be classified falls back to the
-# legacy behaviour (any action suppresses) — we don't yet have enough journal
-# evidence to bind kinds we haven't modeled, and a guard that fires on
-# unmodeled shapes trains itself off on day one.
-#
-# LOG-ONLY ROLLOUT: LEADV2_PROMISE_GUARD_BLOCK (default "0") gates the actual
-# `decision:block` emission. The journal row (verdict=fired/suppressed_action)
-# is written unconditionally, so "fired" in log-only mode means "would have
-# blocked" — that is the evidence the flip decision needs. See
-# docs/leadv2/scheduled-decisions.md for the GO-condition.
 #
 # Unlike lead-prose-guard, this fires regardless of LEADV2_LEAD_GUARD,
 # LEADV2_SUPERVISOR_MODE, or live-session count — the defect happens in plain
@@ -122,16 +105,9 @@ jsonl_path = sys.argv[1]
 # exact т / тся-then-boundary collision observed live. A 3pl reflexive whose ending is
 # followed by more word characters, or a derivational suffix that happens to start
 # with "т" for an unrelated reason, is not covered.
-# PROMISE-GUARD-BIND-01 round2: 'поправлю'/'прогоню'/'закоммичу' added -- the
-# extractor never matched these real lead phrasings at all (zero commitments
-# detected, not a binding/kind problem), so the guard could never fire on
-# «Сейчас поправлю…», «Сейчас прогоню тесты», «Сейчас закоммичу фикс». None of the
-# three collide with their own 3rd-person-plural the way the PROMISE-GUARD-3PL-
-# COLLISION-01 verbs do (поправят/прогонят/закоммитят are not stem+"т"), so the
-# right-side lookahead guard is inert for them but harmless to share.
 COMMIT_RU_VERBS = ['приземляю', 'запускаю', 'поднимаю', 'диспатчу', 'начинаю', 'иду',
                     'сделаю', 'проверю', 'подниму', 'запущу', 'отправлю', 'дам',
-                    'пойду', 'беру', 'поправлю', 'прогоню', 'закоммичу']
+                    'пойду', 'беру']
 COMMIT_RU = '|'.join(v + r'(?!т(?:ся)?\b)' for v in COMMIT_RU_VERBS)
 COMMIT_RU_NOW = r'сейчас\s+(?:же\s+)?(?:' + COMMIT_RU + r')'
 COMMIT_EN = r"\bI'?ll\b|\bI will\b|\blet me\b|\bgoing to\b|\bnext I\b|\bnow I'?m\b|\bI'?m about to\b|\bwill now\b"
@@ -192,60 +168,7 @@ RU_INTENT_MARKER = (
 # заходом», «допишу потом». In the false positives the marker opens the clause and
 # the -у word after it is a noun. Requiring verb-then-marker within a short window
 # keeps the real shape and drops the prose, without enumerating endings.
-# PROMISE-GUARD-BIND-01 round3: the first alternative below is the original rule
-# (verb, then a marker within 40 chars -- "TRAILING"). The second is new: marker-
-# BEFORE-verb, the order a lead actually opens a turn with -- «Сейчас напишу отчёт»,
-# «Сейчас исправлю биндинг». TRAILING only ever matched verb-then-marker, so any
-# sentence that opens with «сейчас» fell through to the COMMIT_RU_VERBS whitelist and
-# was silent for every verb not on that hand-kept list (review-r1.md:88-98, «Сейчас
-# напишу отчёт» / «Сейчас исправлю биндинг» measured SILENT no-journal-row on the
-# shipped hook).
-#
-# The new alternative is NOT symmetric with TRAILING's `.{0,40}?` gap: TRAILING scans
-# forward from a verb looking for a marker anywhere nearby, but doing the same thing
-# backward from a marker (marker, then ANY 40 chars, then a verb-shaped word) reopens
-# the exact bug ORDER IS THE DISCRIMINATOR fixed -- «сейчас по этому делу» has a
-# marker, then a preposition and an adjective, then the nominal «делу» (dative, -у
-# ending, not excluded by RU_1SG_NONPAST's suffix list) chars later, which would read
-# as a commitment. Pinned as case_neg_shape_adverb below.
-#
-# The fix is adjacency, not scope: require the verb-shaped word to be the marker's
-# very next word (optionally through a bare "же", as in «сейчас же исправлю»). A
-# preposition or adjective between marker and candidate is real prose, not a deferred
-# commitment, and blocks the match because the immediately-following word fails
-# RU_1SG_NONPAST (too short, or a nominal ending already excluded there).
-#
-# PROMISE-GUARD-BIND-01 round4: adjacency alone is not enough. Russian accusative
-# singular nouns end in -у/-ю too, and the exclusion list on RU_1SG_NONPAST only
-# covers a handful of nominal endings, so the marker's next word being an accusative
-# object reads as a commitment: «Сейчас работу делают два воркера», «Сейчас задачу
-# держит лейн A» both matched (review-r3.md, ten hand-written status clauses, six
-# false positives). Enumerating every nominal -у/-ю ending is the whack-a-mole the
-# KNOWN LIMIT comment on RU_1SG_NONPAST already warns never terminates.
-#
-# The actual discriminator is not the candidate's shape, it's the REST OF THE
-# CLAUSE: a real promise clause has exactly one finite verb (the candidate itself)
-# — «Сейчас поправлю регэксп в хуке» ends there. Every measured false positive has
-# a SECOND, genuinely finite verb later in the clause carrying the real subject —
-# «делают», «держит», «использует», «покажет», «трогаем», «посмотрим» — because the
-# marker-adjacent word was never the verb; it was the fronted object of that later
-# verb. RU_OTHER_FINITE_VERB names that later-verb shape (3rd-person / 1st-2nd
-# plural present-tense endings, which never coincide with the 1sg -у/-ю candidate
-# shape) and the marker-before-verb arm now requires its absence for the rest of
-# the clause. This does not touch the TRAILING arm (verb-then-marker) at all, and a
-# genuine promise clause that happens to name a second finite verb after the
-# candidate is not attested in any fixture — if one shows up, it is a new case to
-# pin, not a reason to revert this guard.
-# "ет" (not "ёт") deliberately: "ёт" collides with report nouns like «отчёт»,
-# «полёт» that end the very promise clauses this guard must keep firing on, while
-# genuine 3sg -ет verbs («покажет», «использует») never carry ё. "ует" folds into
-# bare "ет" (its own last two letters), so it is not listed separately.
-RU_OTHER_FINITE_VERB = r'\b[а-яё]{2,}(?:ет|ают|ят|ат|им|ешь|ишь|ем|ит|ют)\b'
-COMMIT_RU_SHAPE = (
-    RU_1SG_NONPAST + r'.{0,40}?(?:' + RU_INTENT_MARKER + r')'
-    + r'|(?:' + RU_INTENT_MARKER + r')\s+(?:же\s+)?' + RU_1SG_NONPAST
-    + r'(?!.*' + RU_OTHER_FINITE_VERB + r')'
-)
+COMMIT_RU_SHAPE = RU_1SG_NONPAST + r'.{0,40}?(?:' + RU_INTENT_MARKER + r')'
 
 COMMIT_RE = re.compile(
     '(?:' + COMMIT_RU_NOW + r'|' + COMMIT_RU + r'|' + COMMIT_EN + r'|' + COMMIT_RU_SHAPE + r')',
@@ -271,84 +194,30 @@ PAST_EN = r'\b(?:committed|shipped|pushed|landed|ran|wrote|fixed|added|done|merg
 ARTIFACT = r'\b[0-9a-f]{7,40}\b|\b\d+/\d+\s+pass\b|^\s*(?:PASS|FAIL):|https?://|DELIVERABLE_COMPLETE|\S+\.(?:sh|py|ts|tsx|json|md|yaml):\d+'
 VETO_RE = re.compile('(?:' + PAST_RU + r'|' + PAST_EN + r'|' + ARTIFACT + r')', re.I | re.UNICODE)
 
-# --- action detection --------------------------------------------------------
-# PROMISE-GUARD-BIND-01: every action is tagged with a KIND, not just a bare
-# yes/no. The old ACTION_BASH_RE had one catch-all alternative — `leadv2-.*\.sh`
-# — that matched almost every script in this repo, including read-only status
-# and audit scripts, which is most of why "any tool call" suppressed the guard
-# in practice: nearly any Bash call in this codebase invokes a `leadv2-*.sh`
-# script of SOME kind. That blanket alternative is removed; each kind below is
-# named by the specific commands that actually perform it.
-ACTION_KIND_BASH = [
-    ('test', re.compile(
-        r'run-all\.sh|test-[\w.-]*\.sh|\bpytest\b|npm\s+(?:run\s+)?test|\bctest\b',
-        re.UNICODE)),
-    ('commit', re.compile(r'git\s+(?:commit|push|add|tag)', re.UNICODE)),
-    ('dispatch', re.compile(
-        r'leadv2-dispatch-code|leadv2-fanout|[A-Za-z0-9_-]*-task\.sh|glm-coder\.sh',
-        re.UNICODE)),
-    # PROMISE-GUARD-BIND-01 round2: the bare `>>?\s*\S` alternative matched shell
-    # redirection that writes NOTHING a promise could point to -- `2>/dev/null` (the
-    # near-universal noise-suppression idiom in this repo's own test suites) and
-    # `2>&1` (fd duplication) both satisfied a "write" promise just by appearing in
-    # an unrelated command. Excluding a `/dev/null` target and an `&`-fd target
-    # removes both without touching a real file write (`> out.txt`, `>> log`).
-    ('write', re.compile(
-        r'sed\s+-i|\b(?:mv|cp|tee|touch|mkdir|install)\b'
-        r'|>>?\s*(?!/dev/null\b)(?!&)\S'
-        r'|systemctl\s+(?:restart|start|enable)',
-        re.UNICODE)),
-]
-# Back-compat single pattern (telemetry / callers that only need "was this
-# Bash call an action at all", not its kind).
+# --- action detection ------------------------------------------------------
+ACTION_TOOL_NAMES = {'Edit', 'MultiEdit', 'Write', 'NotebookEdit',
+                     'Agent', 'Workflow', 'SendMessage'}
 ACTION_BASH_RE = re.compile(
-    '(?:' + '|'.join(p.pattern for _, p in ACTION_KIND_BASH) + ')', re.UNICODE)
-
-ACTION_TOOL_KIND = {
-    'Edit': 'write', 'MultiEdit': 'write', 'Write': 'write', 'NotebookEdit': 'write',
-    'Agent': 'dispatch', 'Workflow': 'dispatch', 'SendMessage': 'dispatch',
-}
-
-def classify_action_kind(name, bash_cmd=None):
-    """Returns the action kind ('test'|'commit'|'dispatch'|'write') or None."""
-    if name.startswith('Task'):
-        return 'dispatch'
-    if name in ACTION_TOOL_KIND:
-        return ACTION_TOOL_KIND[name]
-    if name == 'Bash' and bash_cmd:
-        for kind, pat in ACTION_KIND_BASH:
-            if pat.search(bash_cmd):
-                return kind
-    return None
+    r'git\s+(?:commit|push|add|tag)'
+    r'|leadv2-dispatch-code'
+    r'|leadv2-fanout'
+    r'|[A-Za-z0-9_-]*-task\.sh'
+    r'|glm-coder\.sh'
+    r'|leadv2-.*\.sh'
+    r'|systemctl\s+(?:restart|start|enable)'
+    r'|sed\s+-i'
+    r'|\b(?:mv|cp|tee|touch|mkdir|install)\b'
+    r'|>>?\s*\S',
+    re.UNICODE)
 
 def is_action_tool(name, bash_cmd=None):
-    return classify_action_kind(name, bash_cmd) is not None
-
-# PROMISE-GUARD-BIND-01: the promise EXTRACTOR previously captured only the
-# raw clause text — it never derived WHAT was promised, so binding an action
-# to it was impossible; "has_action" could only ever mean "any action
-# happened anywhere". classify_promise_kind names the same small kind space
-# as the action side, read off the commitment clause itself.
-PROMISE_KIND_PATTERNS = [
-    ('test', re.compile(
-        r'тест\w*|suite\b|прогон\w*|pytest|test[-_]all', re.I | re.UNICODE)),
-    ('commit', re.compile(
-        r'коммич\w*|закоммич\w*|\bcommit\b', re.I | re.UNICODE)),
-    ('dispatch', re.compile(
-        r'диспатч\w*|диспетч\w*|\bdispatch\b|\bлейн\w*|\bворкер\w*|\bworker\b'
-        r'|\bspawn\b|субагент\w*|\bsubagent\b', re.I | re.UNICODE)),
-    ('write', re.compile(
-        r'напиш\w*|запиш\w*|патч\w*|\bpatch\b|исправ\w*|\bfix\b|поправ\w*'
-        r'|допиш\w*|добавлю\b', re.I | re.UNICODE)),
-]
-
-def classify_promise_kind(clause):
-    """Returns the promised action kind, or None if the clause's kind cannot
-    be classified (falls back to legacy any-action binding downstream)."""
-    for kind, pat in PROMISE_KIND_PATTERNS:
-        if pat.search(clause):
-            return kind
-    return None
+    if name.startswith('Task'):
+        return True
+    if name in ACTION_TOOL_NAMES:
+        return True
+    if name == 'Bash' and bash_cmd:
+        return bool(ACTION_BASH_RE.search(bash_cmd))
+    return False
 
 # --- turn reconstruction ---------------------------------------------------
 # The turn = every assistant record since the last REAL user record.
@@ -369,7 +238,6 @@ has_action = False
 # harness nothing follows it, so an unfulfilled promise has zero actions after it no
 # matter how much work the turn did earlier.
 action_positions = []
-action_kinds_seen = set()   # PROMISE-GUARD-BIND-01: kinds of action, turn-wide
 last_text_pos = -1
 block_pos = 0
 final_text_parts = []    # text blocks of the LAST assistant record
@@ -468,13 +336,10 @@ for rec in turn_records:
                 turn_tools.append('Bash:' + first)
             else:
                 turn_tools.append(name)
-            action_kind = classify_action_kind(name, cmd if isinstance(cmd, str) else None)
-            if action_kind is not None:
+            if is_action_tool(name, cmd if isinstance(cmd, str) else None):
                 has_action = True
                 # PROMISE-ACTION-BINDING-01: remember WHERE the action happened.
                 action_positions.append(block_pos)
-                # PROMISE-GUARD-BIND-01: remember WHAT KIND it was.
-                action_kinds_seen.add(action_kind)
         if btype == 'text' and (block.get('text') or '').strip():
             last_text_pos = block_pos
         block_pos += 1
@@ -489,18 +354,10 @@ if turn_records:
 final_text = '\n'.join(final_text_parts).strip()
 
 commitments = []
-commitment_kinds = []
 if final_text:
     # sentence split, then comma-clause split (see reconciliation note above)
     raw_clauses = []
-    # PROMISE-GUARD-BIND-01 round4: a bare `.` alternative split a version number
-    # in half -- "Сейчас версию 5.2 использует прод" became sentences "Сейчас
-    # версию 5" and "2 использует прод", and the first of those has no second
-    # finite verb to trip RU_OTHER_FINITE_VERB, so it read as a fresh commitment
-    # (review-r3.md's ten status clauses, measured through the real hook). A `.`
-    # between two digits is a decimal point, not a sentence boundary; `!?\n;`
-    # still split unconditionally.
-    for sent in re.split(r'(?<!\d)\.(?!\d)|[!?\n;]', final_text):
+    for sent in re.split(r'[.!?\n;]', final_text):
         sent = sent.strip()
         if not sent:
             continue
@@ -512,12 +369,6 @@ if final_text:
         if (COMMIT_RE.search(clause) or COMMIT_RU_LEADING.match(clause)) \
                 and not VETO_RE.search(clause):
             commitments.append(clause)
-            commitment_kinds.append(classify_promise_kind(clause))
-
-# The QUOTE reported downstream is always commitments[0] (see bash driver
-# below), so the PRIMARY promise — the one this verdict is actually about —
-# is bound by its kind, not by the turn's kind set as a whole.
-primary_kind = commitment_kinds[0] if commitment_kinds else None
 
 # REVERTED 2026-08-22 (PROMISE-GUARD-POSITIONAL-REVERT-01) to turn-wide binding.
 #
@@ -546,25 +397,13 @@ primary_kind = commitment_kinds[0] if commitment_kinds else None
 #
 # The guard's actual purpose is unchanged and still enforced: a turn that promises
 # something and does NOTHING still fires, which is every real escape we have caught.
-#
-# PROMISE-GUARD-BIND-01: turn-wide "any action" is still the fallback for a
-# promise whose kind we cannot classify (see classify_promise_kind docstring)
-# — but when the primary promise's kind IS known, only an action of that same
-# kind keeps it. This is the fix for PROMISE-GUARD-SUPPRESSED-BY-ANY-TOOL-CALL-01:
-# a turn that promises a dispatch and then only Edits a file no longer reads as
-# "kept" just because Edit is *an* action.
-if primary_kind is None:
-    action_after_promise = has_action
-else:
-    action_after_promise = primary_kind in action_kinds_seen
+action_after_promise = has_action
 
 print(json.dumps({
     'final_text_found': bool(final_text),
     'commitments': commitments,
     'has_action': action_after_promise,
     'has_action_anywhere_in_turn': has_action,
-    'primary_promise_kind': primary_kind,
-    'action_kinds_seen': sorted(action_kinds_seen),
     'tools': turn_tools,
 }, ensure_ascii=False))
 PYEOF
@@ -584,16 +423,12 @@ print("yes" if d.get("has_action") else "no")
 print("|".join(d.get("tools", []) or []))
 import json as _j
 print(_j.dumps(d.get("commitments", []) or [], ensure_ascii=False))
-print(d.get("primary_promise_kind") or "")
-print(",".join(d.get("action_kinds_seen", []) or []))
 ' 2>/dev/null || true)"
 
 FINAL_FOUND="$(printf '%s' "$VF" | sed -n '1p')"
 HAS_ACTION="$(printf '%s' "$VF" | sed -n '2p')"
 TOOLSJoined="$(printf '%s' "$VF" | sed -n '3p')"
 COMMITMENTS_JSON="$(printf '%s' "$VF" | sed -n '4p')"
-PRIMARY_KIND="$(printf '%s' "$VF" | sed -n '5p')"
-ACTION_KINDS_SEEN="$(printf '%s' "$VF" | sed -n '6p')"
 
 [[ "$FINAL_FOUND" == "yes" ]] || exit 0
 
@@ -628,9 +463,9 @@ except Exception:
 PATTERN="$(printf '%s' "$QUOTE" | python3 -c '
 import sys, re
 q = sys.stdin.read()
-if re.search(r"сейчас\s+(?:же\s+)?(?:приземляю|запускаю|поднимаю|диспатчу|начинаю|иду|сделаю|проверю|подниму|запущу|отправлю|дам|пойду|беру|поправлю|прогоню|закоммичу)", q, re.I):
+if re.search(r"сейчас\s+(?:же\s+)?(?:приземляю|запускаю|поднимаю|диспатчу|начинаю|иду|сделаю|проверю|подниму|запущу|отправлю|дам|пойду|беру)", q, re.I):
     print("COMMIT_RU_NOW")
-elif re.search(r"(приземляю|запускаю|поднимаю|диспатчу|начинаю|иду|сделаю|проверю|подниму|запущу|отправлю|дам|пойду|беру|поправлю|прогоню|закоммичу)", q, re.I):
+elif re.search(r"(приземляю|запускаю|поднимаю|диспатчу|начинаю|иду|сделаю|проверю|подниму|запущу|отправлю|дам|пойду|беру)", q, re.I):
     print("COMMIT_RU")
 else:
     print("COMMIT_EN")
@@ -651,27 +486,14 @@ row = {
     "pattern": sys.argv[6],
     "tools": (sys.argv[7].split("|") if sys.argv[7] else []),
     "n_commitments": int(sys.argv[8] or 0),
-    "primary_promise_kind": (sys.argv[9] or None),
-    "action_kinds_seen": (sys.argv[10].split(",") if sys.argv[10] else []),
-    "block_mode": sys.argv[11],
 }
 path = os.path.expanduser("~/.claude/leadv2-promise-guard.jsonl")
 with open(path, "a", encoding="utf-8") as f:
     f.write(json.dumps(row, ensure_ascii=False) + "\n")
-' "$TS" "$SESSION_ID" "$CWD" "$VERDICT_KIND" "$QUOTE" "$PATTERN" "$TOOLS_LIST" "${N_COMMIT:-0}" \
-  "$PRIMARY_KIND" "$ACTION_KINDS_SEEN" "${LEADV2_PROMISE_GUARD_BLOCK:-0}" 2>/dev/null || true
+' "$TS" "$SESSION_ID" "$CWD" "$VERDICT_KIND" "$QUOTE" "$PATTERN" "$TOOLS_LIST" "${N_COMMIT:-0}" 2>/dev/null || true
 
 # suppressed by an action tool -> silent
 [[ "$VERDICT_KIND" == "suppressed_action" ]] && exit 0
-
-# --- log-only rollout (PROMISE-GUARD-BIND-01) -------------------------------
-# LEADV2_PROMISE_GUARD_BLOCK defaults to "0": the journal row above is already
-# written with verdict=fired, which IS "would have blocked" — that's the
-# evidence trail the flip decision in scheduled-decisions.md reads. Only when
-# explicitly set to "1" does this hook actually emit decision:block.
-if [[ "${LEADV2_PROMISE_GUARD_BLOCK:-0}" != "1" ]]; then
-  exit 0
-fi
 
 # --- block AT MOST ONCE per turn (sentinel, identical to prose-guard) -------
 SENTINEL="$HOME/.claude/leadv2-promise-retry-${SESSION_ID}.txt"

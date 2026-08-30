@@ -125,7 +125,10 @@ leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-renderer-t
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-duty.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-readable-rendering.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-empty-board.sh
-leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-single-lead-beat.sh"
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-single-lead-beat.sh
+leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
+leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
+leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -139,7 +142,14 @@ else
   fi
   if [[ -n "${changed}" ]]; then
     while IFS= read -r cf; do
-      [[ "${cf}" == plugins/leadv2/scripts/*.sh ]] || continue
+      # PROMISE-GUARD-BIND-01: hooks/*.sh changes (e.g. leadv2-promise-guard.sh)
+      # never matched this filter, so a hook fix ran zero suites under
+      # --scope changed -- the EXTRA_SUITE_MAP below only fires once a
+      # changed file reaches the stem-comparison loop.
+      case "${cf}" in
+        plugins/leadv2/scripts/*.sh|plugins/leadv2/hooks/*.sh) ;;
+        *) continue ;;
+      esac
       stem="$(basename "${cf}" .sh)"
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
