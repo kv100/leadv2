@@ -195,25 +195,48 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
       IFS= read -r _surf_oneline < "$MEMO" 2>/dev/null || true
     fi
   fi
+  # ANTI-SILENCE-STATUSLINE-01 round 2, item 1/2: this segment used to
+  # append the lane summary AFTER the founder's own base line and cut it at
+  # a flat ${v:0:120} character count -- both a mid-word cut (no dropped-
+  # field indication) and, worse, the one field that says a lane went
+  # silent sat at the tail, exactly where a long base line (his own
+  # model/context/burn fields) or a terminal-width wrap was most likely to
+  # push it out of view. Lanes now lead; the width budget reserves space
+  # for them by shrinking what's kept of the surface oneline, cut at the
+  # last whitespace boundary (surface tokens are single-word, see
+  # leadv2-status-surface.sh emit_oneline) with a "+N" dropped-field count
+  # instead of a silent character chop.
   _surf_tail=""
   if [[ -n "$_surf_oneline" ]]; then
     # Append only when a LIVE lane is reported; a quiet/errored surface adds
     # nothing so the base line is byte-identical to before.
     case "$_surf_oneline" in
-      *live*) _surf_tail=" ${_surf_oneline:0:120}" ;;
+      *live*)
+        _surf_budget="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
+        _surf_trimmed="${_surf_oneline:0:$_surf_budget}"
+        if [[ "$_surf_trimmed" != "$_surf_oneline" ]]; then
+          [[ "$_surf_trimmed" == *" "* ]] && _surf_trimmed="${_surf_trimmed% *}"
+          _surf_dropped_rest="${_surf_oneline:${#_surf_trimmed}}"
+          _surf_dropped_n="$(printf '%s' "$_surf_dropped_rest" | tr -s ' ' '\n' | grep -c . || true)"
+          _surf_trimmed="${_surf_trimmed% }"
+          (( _surf_dropped_n > 0 )) && _surf_trimmed="${_surf_trimmed} +${_surf_dropped_n}"
+        fi
+        _surf_tail="$_surf_trimmed "
+        ;;
     esac
   fi
   USER_CMD="$(jq -r '(.statusLine.command // "")' "$SETTINGS_JSON" 2>/dev/null || true)"
   if [[ -n "$USER_CMD" ]]; then
     _base_out="$(printf '%s' "$INPUT" | timeout 2 bash -c "$USER_CMD" 2>/dev/null || true)"
-    printf '%s%s\n' "$_base_out" "$_surf_tail"
+    printf '%s%s\n' "$_surf_tail" "$_base_out"
   else
     # No user command configured: emit a minimal base line (no lanes segment)
     # so the status line is never blank for a non-supervisor session.
     _BM="?" _BC="$PAINT_CWD"
     [[ "$INPUT" =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && _BM="${BASH_REMATCH[1]}"
+    printf '%s' "$_surf_tail"
     _leadv2_render_colored_base "$_BM" "$_BC" "" ""
-    printf '%s\n' "$_surf_tail"
+    printf '\n'
   fi
   # Detached refresh of the memo (fire-and-forget). A missing renderer is a
   # silent no-op -- never a broken statusline.

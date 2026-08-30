@@ -364,7 +364,12 @@ else
   fail "non-terminal row aged 30m present as stale (got: $(printf '%s' "$out" | tail -1))"
 fi
 
-# ── 8. --oneline shape: 1 line, ^sup:(ON|OFF), contains "lanes " ───────────
+# ── 8. --oneline shape: 1 line, starts with "lanes ", no dead sup: head ────
+# ANTI-SILENCE-STATUSLINE-01 round 2, item 5: the sup:ON/OFF/STALE head was
+# dead weight on every render (supervisor retired 2026-08-17,
+# SUPERVISOR-DELETE-01) and pushed the lane digest out of the leading
+# position. Amended, not deleted: now asserts lanes lead the line and the
+# retired head is gone, instead of pinning the head's presence.
 NEW_SB
 cat > "${STATE_DIR}/active.yaml" <<EOF
 meta: {}
@@ -379,9 +384,9 @@ EOF
 out="$(run_render --oneline)"
 nlines="$(printf '%s\n' "$out" | grep -c .)"
 if [ "$nlines" -eq 1 ] \
-   && printf '%s' "$out" | grep -q '^sup:\(ON\|OFF\|STALE\)' \
-   && printf '%s' "$out" | grep -q 'lanes '; then
-  pass "--oneline shape (1 line, sup:, lanes)"
+   && printf '%s' "$out" | grep -q '^lanes ' \
+   && ! printf '%s' "$out" | grep -q '^sup:'; then
+  pass "--oneline shape (1 line, lanes-first, no sup: head)"
 else
   fail "--oneline shape (got ${nlines} lines: ${out})"
 fi

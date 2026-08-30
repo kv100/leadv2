@@ -527,13 +527,20 @@ for lane_id, lrow in liveness_by_tid.items():
 # Pulse digest (founder ask, fix5 attempt 2): only the top-2 MOST
 # recently-active lanes, not the first 8 in file order — smallest age_s
 # first; unknown-age lanes (no discoverable log) sort last, never first.
-# STATUSLINE-COUNT-TRUTH-01 (3.4): stale (silent:*) rows stay visible but
-# sort AFTER every counted (alive/starting) row, so the digest reads as
-# what is actually working followed by what is stale, never interleaved --
-# separated, not deleted. Verdict is still on each token as a '·silent'
-# suffix (unchanged, below), so which group a row is in stays legible.
+# ANTI-SILENCE-STATUSLINE-01 round 2 REVERSES STATUSLINE-COUNT-TRUTH-01
+# (3.4), which sorted stale (silent:*) rows AFTER every alive/starting row
+# on the theory that what is working should lead and what is stale
+# should trail. That ordering is exactly what let a silent lane go
+# unnoticed on 2026-08-30: three lanes were live, one had gone silent, and
+# the silent one sorted last -- past both the drop-from-tail budget cut in
+# try_drop_to_k() below AND the founder's own eyeline. The founder needs to
+# know a lane went silent MORE than he needs the top-2-by-recency framing,
+# so silent:* rows now sort FIRST. try_drop_to_k() drops from the tail
+# unchanged, which as a direct consequence now protects silent lanes from
+# truncation instead of alive ones -- correct, since a silent lane is the
+# one thing on this line that must never be the one that gets cut.
 rows.sort(key=lambda r: (
-    isinstance(r[2], str) and r[2].startswith('silent:'),
+    not (isinstance(r[2], str) and r[2].startswith('silent:')),
     r[0] is None,
     r[0] if r[0] is not None else 0,
 ))
@@ -1038,18 +1045,26 @@ fi
 # explicit LEADV2_STATUSLINE_LANE_BUDGET always keeps BASESTEP at its 0
 # default (mandatory constraint checklist #5) -- BASE stays uncompressed.
 FINAL_BASE="${BASE_STEP[$BASESTEP]:-$BASE}"
-FINAL_LINE="$(printf '%s \033[34m| %s\033[0m' "$FINAL_BASE" "$LANES")"
+# ANTI-SILENCE-STATUSLINE-01 round 2, item 1 (Lanes FIRST): lanes used to
+# render AFTER the base/quota segment, so on a long BASE (founder's own
+# statusLine.command prepends model/context/burn fields) the lane digest --
+# the one thing that says a lane went silent -- was the part most likely to
+# be scrolled off-screen or eaten by a downstream truncator. Lane state now
+# leads the line; base/quota follows.
+FINAL_LINE="$(printf '\033[34m%s\033[0m | %s' "$LANES" "$FINAL_BASE")"
 
 # STATUSLINE-READABLE-01 B/7 hard clamp: the degradation ladder above only
 # GUARANTEES a fit down to lane_floor plus a drop-lanes '+M' token; the old
 # sub-floor fallback it falls through to when even K=1+'+M' doesn't fit can
 # still, in principle, overflow. LANES is always plain ASCII (no ANSI codes
-# ever enter it), so truncating it by character count here is safe and
-# makes 'never exceeds the budget, at 1 lane and at 12 lanes' provable
-# rather than merely hoped for -- this replaces the old cwd-first-letter
-# squeeze, which is now dead: BASE compression (step A) already owns
-# shrinking the path, so keeping both would be two path compressors racing
-# each other.
+# ever enter it), so measuring/cutting it by character count here is safe.
+# ANTI-SILENCE-STATUSLINE-01 round 2, item 2: a raw `${LANES:0:KEEP}`
+# character slice used to cut mid-word (the founder's own observed
+# "| leadv" artifact) with no indication anything was dropped. Every lane
+# token in LANES is single-word (label·arm·age, no embedded spaces -- see
+# render_step12/cap_lbl_marked above), so LANES is always whitespace-
+# delimited at token boundaries; back the cut off to the last whitespace
+# boundary at or before KEEP and name how many trailing tokens were lost.
 FINAL_VISIBLE_LEN="$(printf '%s' "$FINAL_LINE" | sed -E $'s/\x1b\\[[0-9;]*m//g' | awk '{print length}')"
 [[ -z "$FINAL_VISIBLE_LEN" ]] && FINAL_VISIBLE_LEN=0
 if (( FINAL_VISIBLE_LEN > STATUSLINE_WIDTH )); then
@@ -1057,8 +1072,15 @@ if (( FINAL_VISIBLE_LEN > STATUSLINE_WIDTH )); then
   LANES_LEN=${#LANES}
   KEEP=$(( LANES_LEN - OVERFLOW ))
   (( KEEP < 0 )) && KEEP=0
-  LANES="${LANES:0:KEEP}"
-  FINAL_LINE="$(printf '%s \033[34m| %s\033[0m' "$FINAL_BASE" "$LANES")"
+  TRIMMED="${LANES:0:KEEP}"
+  if [[ "$TRIMMED" != "$LANES" ]]; then
+    [[ "$TRIMMED" == *" "* ]] && TRIMMED="${TRIMMED% *}"
+    DROPPED_REST="${LANES:${#TRIMMED}}"
+    DROPPED_N="$(printf '%s' "$DROPPED_REST" | tr -s ' ' '\n' | grep -c . || true)"
+    LANES="${TRIMMED% }"
+    (( DROPPED_N > 0 )) && LANES="${LANES} +${DROPPED_N}"
+  fi
+  FINAL_LINE="$(printf '\033[34m%s\033[0m | %s' "$LANES" "$FINAL_BASE")"
 fi
 
 printf '%s\n' "$FINAL_LINE"

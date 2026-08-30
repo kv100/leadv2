@@ -177,7 +177,12 @@ fi
 # renders a label -- checked by scanning the widest realistic width (112);
 # at 80 with 4 lanes we expect the drop-to-K ladder, not sub-floor labels,
 # UNLESS K collapses to the old sub-floor fallback (still width-safe).
-LABELS_80="$(printf '%s' "$POST_80" | strip_ansi | sed -n 's/.*| //p')"
+# ANTI-SILENCE-STATUSLINE-01 round 2 reordered the line to LANES | BASE
+# (lanes first, per mission item 1) -- the lane section is now everything
+# before the LAST " | " (the lane digest itself can contain its own "|",
+# e.g. "lanes 4/5 | dispatch-... +2", so BASE -- which never contains "|" --
+# is what anchors the split).
+LABELS_80="$(printf '%s' "$POST_80" | strip_ansi | sed -E 's/ \| [^|]*$//')"
 if [[ -n "$LABELS_80" ]]; then
   ok "R9: digest at width 80 rendered a non-empty lane section: $LABELS_80"
 else
@@ -195,10 +200,29 @@ else
   bad "R5" "no rows and no +M token -- lanes vanished entirely: $LABELS_80"
 fi
 
+# R12: the trailing word-boundary cut never leaves a truncated mid-word
+# fragment -- every whitespace-delimited token in the lane section must be
+# either the "+N" dropped-count marker, a complete "lanes n/m" head token,
+# or a complete arm-marked lane token (label·arm·age). A raw mid-word slice
+# (e.g. "GATE-FO") matches none of these.
+R12_BAD_TOKEN=""
+for tok in $LABELS_80; do
+  case "$tok" in
+    lanes|+[0-9]*|[0-9]*/[0-9]*|*·[a-z?]·[0-9]*|*·[a-z?][a-z?]·[0-9]*) ;;
+    *) R12_BAD_TOKEN="$tok" ;;
+  esac
+done
+if [[ -z "$R12_BAD_TOKEN" ]]; then
+  ok "R12: no mid-word-truncated token in lane section at width 80"
+else
+  bad "R12" "mid-word-truncated token found: '$R12_BAD_TOKEN' in: $LABELS_80"
+fi
+
 # R6: BASE compression happens BEFORE label capping -- a narrow width (80)
 # must produce a SHORTER base than a wide one (112), proving the ordering.
-BASE_80_VIS="$(visible_len "$(printf '%s' "$POST_80" | sed 's/ \x1b\[34m|.*//')" )"
-BASE_112_VIS="$(visible_len "$(printf '%s' "$POST_112" | sed 's/ \x1b\[34m|.*//')" )"
+# Lanes-first format: LANES | BASE -- BASE is now everything after " | ".
+BASE_80_VIS="$(visible_len "$(printf '%s' "$POST_80" | strip_ansi | sed -n 's/.*| //p')" )"
+BASE_112_VIS="$(visible_len "$(printf '%s' "$POST_112" | strip_ansi | sed -n 's/.*| //p')" )"
 if [[ "$BASE_80_VIS" -le "$BASE_112_VIS" ]]; then
   ok "R6: narrower width (80) yields a BASE no longer than the wide one (112) -- base@80=$BASE_80_VIS base@112=$BASE_112_VIS"
 else

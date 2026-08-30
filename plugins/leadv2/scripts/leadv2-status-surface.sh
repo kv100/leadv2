@@ -1646,13 +1646,14 @@ fi
 # emit_oneline / emit_lanes_table are factored out so --all can compose the
 # lanes table with the round-4 sections. Their output is byte-identical to the
 # pre-round-4 renderer (the regression contract: bare invocation must not drift).
+# ANTI-SILENCE-STATUSLINE-01 round 2, item 5: the supervisor-state head
+# (sup:ON/STALE/OFF) used to render on every single line even though the
+# supervisor loop was retired 2026-08-17 (SUPERVISOR-DELETE-01) -- SUP_STATE
+# is permanently OFF/retired now, so the head was dead weight on every
+# render, spending width the lane digest needed instead. Dropped; lanes
+# lead the line unconditionally (see leadv2-lane-status-line.sh item 1).
 emit_oneline() {
-  local head lane_str
-  case "$SUP_STATE" in
-    on)     head="sup:ON(${SUP_SHORT})" ;;
-    stale)  head="sup:STALE(${SUP_SHORT})" ;;
-    *)      head="sup:OFF(${SUP_SHORT})" ;;
-  esac
+  local lane_str
   lane_str=""
   if [ "$LANE_COUNT" -gt 0 ] && [ "$MULTI_PROJECT" -eq 1 ]; then
     lane_str="$(printf '%s\n' "$LANE_ROWS" | awk -F '\t' '
@@ -1666,9 +1667,9 @@ emit_oneline() {
     lane_str="$(printf '%s' "$lane_str" | tr -d '\n')"
   fi
   if [ -n "$lane_str" ]; then
-    printf '%s | lanes %d: %s\n' "$head" "$LANE_COUNT" "$lane_str"
+    printf 'lanes %d: %s\n' "$LANE_COUNT" "$lane_str"
   else
-    printf '%s | lanes %d\n' "$head" "$LANE_COUNT"
+    printf 'lanes %d\n' "$LANE_COUNT"
   fi
 }
 
