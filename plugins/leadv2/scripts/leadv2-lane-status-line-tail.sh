@@ -149,22 +149,25 @@ STATUSLINE_WIDTH="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
 # it. Step 0 = as-is. 1 = drop "(NNN context)" parenthetical. 2 = drop the
 # " [style]" segment (colorized or plain). 3 = shrink the cwd path to its
 # repo basename. 4 = drop the trailing "NN% ctx" (colorized or plain).
-compress_base() {
-  local input="$1" step="${2:-0}"
-  local out="$input"
-  if (( step >= 1 )); then
-    out="$(printf '%s' "$out" | sed -E 's/ \([^)]*context\)//')"
-  fi
-  if (( step >= 2 )); then
-    out="$(printf '%s' "$out" | sed -E $'s/ \\[\x1b\\[[0-9;]*m[^]]*\x1b\\[0m\\]//; s/ \\[[^]]*\\]//')"
-  fi
-  if (( step >= 3 )); then
-    out="$(printf '%s' "$out" | sed -E $'s#(\x1b\\[32m)[^\x1b]*/([^/\x1b]+)(\x1b\\[0m)#\\1\\2\\3#')"
-  fi
-  if (( step >= 4 )); then
-    out="$(printf '%s' "$out" | sed -E $'s/ \x1b\\[35m[0-9]+% ctx\x1b\\[0m//; s/ [0-9]+% ctx//')"
-  fi
-  printf '%s' "$out"
+# F9 (ANTI-SILENCE-STATUSLINE-01 round 7): the caller below used to call
+# compress_base(BASE, k) for k=1..4, and each call recomputed EVERY step from
+# 1 up to k from scratch against the ORIGINAL BASE -- 1+2+3+4 = 10 sed
+# invocations (each its own printf|sed pipe, so 2-3 forked processes apiece)
+# to build 4 candidates that are strict prefixes of each other's
+# transformations. compress_base is applied incrementally per step instead:
+# each step-N transform runs exactly once, against step-(N-1)'s already
+# -computed output, so building all 4 candidates costs 4 sed forks total, not
+# 10. A here-string (`<<<`) replaces the `printf '%s' ... | sed ...` pipe --
+# same bytes into sed's stdin, one process instead of a pipe's two.
+_compress_base_step() {
+  local input="$1" step="$2"
+  case "$step" in
+    1) sed -E 's/ \([^)]*context\)//' <<< "$input" ;;
+    2) sed -E $'s/ \\[\x1b\\[[0-9;]*m[^]]*\x1b\\[0m\\]//; s/ \\[[^]]*\\]//' <<< "$input" ;;
+    3) sed -E $'s#(\x1b\\[32m)[^\x1b]*/([^/\x1b]+)(\x1b\\[0m)#\\1\\2\\3#' <<< "$input" ;;
+    4) sed -E $'s/ \x1b\\[35m[0-9]+% ctx\x1b\\[0m//; s/ [0-9]+% ctx//' <<< "$input" ;;
+    *) printf '%s' "$input" ;;
+  esac
 }
 
 # Terminal width is character width for this statusline contract, not UTF-8
@@ -188,8 +191,10 @@ visible_len() {
 _EXPLICIT_LANE_BUDGET="${LEADV2_STATUSLINE_LANE_BUDGET:-}"
 BASE_STEP=("$BASE" "$BASE" "$BASE" "$BASE" "$BASE")
 if [[ -z "$_EXPLICIT_LANE_BUDGET" ]]; then
+  _cb_acc="$BASE"
   for _k in 1 2 3 4; do
-    BASE_STEP[_k]="$(compress_base "$BASE" "$_k")"
+    _cb_acc="$(_compress_base_step "$_cb_acc" "$_k")"
+    BASE_STEP[_k]="$_cb_acc"
   done
 fi
 BASE_LEN=()
