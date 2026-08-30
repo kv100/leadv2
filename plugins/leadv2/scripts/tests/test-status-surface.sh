@@ -710,6 +710,7 @@ run_bar_r4() {
   LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
   LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
   LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
+  LEADV2_STATUS_AGGREGATE="${R4_AGGREGATE:-1}" \
   LEADV2_LIMITS_CACHE_DIR="${R4_LIMITS_CACHE:-${SB}/limits.d}" \
   LEADV2_LIMITS_REFRESH_SH="${R4_LIMITS_REFRESH_SH:-${SB}/stub-refresh.sh}" \
   bash "$BAR" "$@"
@@ -1674,23 +1675,24 @@ R4_QDIR=""; R4_HANDOFF=""; R4_CODEX="/nonexistent"; R4_SDHOOK="/nonexistent"
 R4_URGENT="/nonexistent"; R4_AGGREGATE=0; R4_LIMITS_CACHE=""; R4_LIMITS_REFRESH_SH=""
 printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
 : > "${STATE_DIR}/.supervise-loop.heartbeat"
+# No active.yaml sessions here: the MUT-R/F4 rank test below has its own
+# dedicated F4_SB fixture for that (AAAdoneAeeeee/ZZZdeadZeeeee). A stray
+# session pair here (once named AAA-done-lane/ZZZ-dead-lane) does not match
+# either ledger sig8 below, so it renders as two EXTRA dead(no-signal) rows
+# and inflates this fixture's red count from 1 to 3.
 cat > "${STATE_DIR}/active.yaml" <<EOF
 meta: {}
-sessions:
-  - task_id: AAA-done-lane
-    phase: build
-    class: Standard
-    log_path: ''
-  - task_id: ZZZ-dead-lane
-    phase: build
-    class: Standard
-    log_path: ''
+sessions: []
 EOF
 _ledger oc3donee glm o3d-h confirmed $((NOW-300)); _run o3d-h glm complete 0 300
 _outcome o3d-h glm completed
 _ledger oc3deade glm o3x-h confirmed $((NOW-300)); _run o3x-h glm failed 1 300
 _outcome o3x-h glm died-clean
-out="$(run_render)"
+# sessions: [] would otherwise flip the renderer into single-lead mode
+# (empty active.yaml sessions is one half of that predicate); OUTCOME-3 and
+# A1 below assert the legacy 🔴/🟢 badge format, so pin legacy mode
+# explicitly rather than relying on a non-empty session list to do it.
+out="$(LEADV2_STATUS_SINGLE_LEAD=0 run_render)"
 _oc_done="$(printf '%s' "$out" | grep oc3donee | tail -1)"
 _oc_dead="$(printf '%s' "$out" | grep oc3deade | tail -1)"
 
@@ -1780,7 +1782,7 @@ fi
 # This fixture asserts its own two-row fleet, not the host's unrelated ledger
 # rows.  The production default aggregates repositories; pin it off only for
 # this isolated control so the title and table are measured from the same data.
-_oc_bar="$(run_bar_r4 2>/dev/null)"
+_oc_bar="$(LEADV2_STATUS_SINGLE_LEAD=0 run_bar_r4 2>/dev/null)"
 _oc_red="$(printf '%s' "$_oc_bar" | sed -n '1p' | sed -n 's/.*🔴 \([0-9][0-9]*\).*/\1/p')"
 case "$_oc_red" in ''|*[!0-9]*) _oc_red=X ;; esac
 if [ "$_oc_causes_ok" -eq 1 ] && [ "$_oc_red" = "1" ]; then
