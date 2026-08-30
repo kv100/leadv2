@@ -144,31 +144,39 @@ case_known_verb()     { _expect "$1" "сейчас поднимаю наблюд
 # --- new shape, no marker: a leading first-person verb ---------------------------
 case_leading_verb()   { _expect "$1" "Довожу list-form до мерджа" HIT; }
 
-# --- PROMISE-GUARD-BIND-01 round2: the extractor itself, not just the binder ------
+# --- PROMISE-GUARD-BIND-01 round3: the ORIGINAL review-r1.md:88-98 twelve ---------
 # Round-1 fixed binding (a promise is only "kept" by an action of its own kind) but
-# never touched the extractor -- the round-2 review ran twelve realistic promise
-# sentences (the shapes actually used by this lead, RU + EN, across all four
-# classify_promise_kind kinds) through the shipped hook and found five produced NO
-# journal row at all: COMMIT_RE never matched, so there was nothing for the binder to
-# bind. The exact repo-history set of twelve was not committed anywhere this task
-# could find (see report.md); this is a reconstructed twelve covering the same
-# grammar shapes and all four kinds, anchored by the three sentences the review
-# quoted verbatim. All twelve must HIT; the three quoted ones are RED against the
-# pinned pre-round2 fixture (the verbs are not in ANY committed version of
-# COMMIT_RU_VERBS before this task) and GREEN against the shipped hook -- a genuine
-# RED-then-GREEN, not a restatement.
-case_r2_01_popravlyu()   { _expect "$1" "Сейчас поправлю…" HIT; }              # write  (quoted verbatim by review)
-case_r2_02_progonyu()    { _expect "$1" "Сейчас прогоню тесты" HIT; }          # test   (quoted verbatim by review)
-case_r2_03_zakommichu()  { _expect "$1" "Сейчас закоммичу фикс" HIT; }         # commit (quoted verbatim by review)
-case_r2_04_dispatchu()   { _expect "$1" "Сейчас диспатчу воркера на задачу" HIT; }   # dispatch
-case_r2_05_podnimu()     { _expect "$1" "Сейчас подниму лейн заново" HIT; }          # dispatch/write
-case_r2_06_ill_commit()  { _expect "$1" "I'll commit the fix now" HIT; }             # commit, EN
-case_r2_07_ill_run()     { _expect "$1" "I'll run the test suite next" HIT; }        # test, EN
-case_r2_08_zapushu()     { _expect "$1" "Сейчас запущу линт" HIT; }                  # test/write
-case_r2_09_otpravlyu()   { _expect "$1" "Сейчас отправлю фикс на ревью" HIT; }       # dispatch/write
-case_r2_10_sdelayu()     { _expect "$1" "Сейчас сделаю патч" HIT; }                  # write
-case_r2_11_shape_marker(){ _expect "$1" "Допишу тесты этим же заходом" HIT; }        # COMMIT_RU_SHAPE
-case_r2_12_bare_verb()   { _expect "$1" "Ещё раз проверю логи" HIT; }                # bare COMMIT_RU, no сейчас
+# never touched the extractor. The round-2 review (review-r1.md:88-98) ran these
+# eleven realistic promise sentences (the shapes actually used by this lead, RU + EN)
+# through the shipped hook and reported "5 of 12 textbook lead promises produce no
+# journal row at all" -- COMMIT_RE never matched, so there was nothing for the binder
+# to bind. Round 2 self-selected a DIFFERENT, easier twelve (9 of which already
+# passed pre-fix) instead of fixing the actual failures reported here; round 3
+# restores the reviewer's own set verbatim, from this lane's own handoff directory.
+# The two hardest ones -- "Сейчас напишу отчёт" and "Сейчас исправлю биндинг" -- use
+# 1sg verbs that are not in COMMIT_RU_VERBS and open with the marker "сейчас" BEFORE
+# the verb, which COMMIT_RU_SHAPE (verb-then-marker only) could not match at all.
+case_r1_01_popravlyu()  { _expect "$1" "Сейчас поправлю регэксп в хуке" HIT; }
+case_r1_02_progonyu()   { _expect "$1" "Сейчас прогоню тесты" HIT; }
+case_r1_03_zakommichu() { _expect "$1" "Сейчас закоммичу фикс" HIT; }
+case_r1_04_napishu()    { _expect "$1" "Сейчас напишу отчёт" HIT; }             # marker-before-verb, no listed verb
+case_r1_05_ispravlyu()  { _expect "$1" "Сейчас исправлю биндинг" HIT; }         # marker-before-verb, no listed verb
+case_r1_06_dispatchu()  { _expect "$1" "Сейчас диспатчу воркера" HIT; }
+case_r1_07_podnimu()    { _expect "$1" "Сейчас подниму лейн" HIT; }
+case_r1_08_beru()       { _expect "$1" "Дальше беру третий таск" HIT; }
+case_r1_09_ill_dispatch(){ _expect "$1" "I'll dispatch the lane now" HIT; }
+case_r1_10_going_to_run(){ _expect "$1" "Now I'm going to run the suite" HIT; }
+case_r1_11_podnimayu()  { _expect "$1" "Сейчас поднимаю наблюдателя" HIT; }
+
+# --- marker-before-verb order, whole допишу/перепишу/обновлю/смерджу/добавлю family --
+# The review named this exact family as dead the same way: a leading «сейчас» disables
+# COMMIT_RU_SHAPE's verb-then-marker order and the sentence falls through to the
+# COMMIT_RU_VERBS whitelist, which none of these five are on.
+case_r3_dopishu()   { _expect "$1" "Сейчас допишу тесты" HIT; }
+case_r3_perepishu() { _expect "$1" "Сейчас перепишу регэксп" HIT; }
+case_r3_obnovlyu()  { _expect "$1" "Сейчас обновлю фикстуры" HIT; }
+case_r3_smerdzhu()  { _expect "$1" "Сейчас смерджу ветку" HIT; }
+case_r3_dobavlyu()  { _expect "$1" "Сейчас добавлю кейс" HIT; }
 
 # --- the negative direction: reports of DONE work must stay silent ---------------
 # A guard that fires on status prose gets switched off within a day, so these matter
@@ -222,18 +230,23 @@ run_case "escape-dobavlyu-pinned"  case_escape_dobavlyu
 run_case "known-verb-no-regress"   case_known_verb
 run_case "leading-first-person"    case_leading_verb
 
-run_case "r2-01-popravlyu-write"     case_r2_01_popravlyu
-run_case "r2-02-progonyu-test"       case_r2_02_progonyu
-run_case "r2-03-zakommichu-commit"   case_r2_03_zakommichu
-run_case "r2-04-dispatchu-dispatch"  case_r2_04_dispatchu
-run_case "r2-05-podnimu-dispatch"    case_r2_05_podnimu
-run_case "r2-06-ill-commit-en"       case_r2_06_ill_commit
-run_case "r2-07-ill-run-en"          case_r2_07_ill_run
-run_case "r2-08-zapushu"             case_r2_08_zapushu
-run_case "r2-09-otpravlyu"           case_r2_09_otpravlyu
-run_case "r2-10-sdelayu"             case_r2_10_sdelayu
-run_case "r2-11-shape-marker"        case_r2_11_shape_marker
-run_case "r2-12-bare-verb"           case_r2_12_bare_verb
+run_case "r1-01-popravlyu"    case_r1_01_popravlyu
+run_case "r1-02-progonyu"     case_r1_02_progonyu
+run_case "r1-03-zakommichu"   case_r1_03_zakommichu
+run_case "r1-04-napishu"      case_r1_04_napishu
+run_case "r1-05-ispravlyu"    case_r1_05_ispravlyu
+run_case "r1-06-dispatchu"    case_r1_06_dispatchu
+run_case "r1-07-podnimu"      case_r1_07_podnimu
+run_case "r1-08-beru"         case_r1_08_beru
+run_case "r1-09-ill-dispatch" case_r1_09_ill_dispatch
+run_case "r1-10-going-to-run" case_r1_10_going_to_run
+run_case "r1-11-podnimayu"    case_r1_11_podnimayu
+
+run_case "r3-dopishu"    case_r3_dopishu
+run_case "r3-perepishu"  case_r3_perepishu
+run_case "r3-obnovlyu"   case_r3_obnovlyu
+run_case "r3-smerdzhu"   case_r3_smerdzhu
+run_case "r3-dobavlyu"   case_r3_dobavlyu
 run_case "neg-commit-sha"          case_neg_commit_sha
 run_case "neg-test-result"         case_neg_test_result
 run_case "neg-past-report"         case_neg_past_report

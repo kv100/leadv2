@@ -192,7 +192,32 @@ RU_INTENT_MARKER = (
 # заходом», «допишу потом». In the false positives the marker opens the clause and
 # the -у word after it is a noun. Requiring verb-then-marker within a short window
 # keeps the real shape and drops the prose, without enumerating endings.
-COMMIT_RU_SHAPE = RU_1SG_NONPAST + r'.{0,40}?(?:' + RU_INTENT_MARKER + r')'
+# PROMISE-GUARD-BIND-01 round3: the first alternative below is the original rule
+# (verb, then a marker within 40 chars -- "TRAILING"). The second is new: marker-
+# BEFORE-verb, the order a lead actually opens a turn with -- «Сейчас напишу отчёт»,
+# «Сейчас исправлю биндинг». TRAILING only ever matched verb-then-marker, so any
+# sentence that opens with «сейчас» fell through to the COMMIT_RU_VERBS whitelist and
+# was silent for every verb not on that hand-kept list (review-r1.md:88-98, «Сейчас
+# напишу отчёт» / «Сейчас исправлю биндинг» measured SILENT no-journal-row on the
+# shipped hook).
+#
+# The new alternative is NOT symmetric with TRAILING's `.{0,40}?` gap: TRAILING scans
+# forward from a verb looking for a marker anywhere nearby, but doing the same thing
+# backward from a marker (marker, then ANY 40 chars, then a verb-shaped word) reopens
+# the exact bug ORDER IS THE DISCRIMINATOR fixed -- «сейчас по этому делу» has a
+# marker, then a preposition and an adjective, then the nominal «делу» (dative, -у
+# ending, not excluded by RU_1SG_NONPAST's suffix list) chars later, which would read
+# as a commitment. Pinned as case_neg_shape_adverb below.
+#
+# The fix is adjacency, not scope: require the verb-shaped word to be the marker's
+# very next word (optionally through a bare "же", as in «сейчас же исправлю»). A
+# preposition or adjective between marker and candidate is real prose, not a deferred
+# commitment, and blocks the match because the immediately-following word fails
+# RU_1SG_NONPAST (too short, or a nominal ending already excluded there).
+COMMIT_RU_SHAPE = (
+    RU_1SG_NONPAST + r'.{0,40}?(?:' + RU_INTENT_MARKER + r')'
+    + r'|(?:' + RU_INTENT_MARKER + r')\s+(?:же\s+)?' + RU_1SG_NONPAST
+)
 
 COMMIT_RE = re.compile(
     '(?:' + COMMIT_RU_NOW + r'|' + COMMIT_RU + r'|' + COMMIT_EN + r'|' + COMMIT_RU_SHAPE + r')',
