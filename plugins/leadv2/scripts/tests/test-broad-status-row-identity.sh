@@ -350,6 +350,72 @@ else
   fail "T6: closed line lost identity or human name: ${T6_CLOSED_LINE:-<none>}"
 fi
 
+# ── T7: DIGEST KEY IS (repo, task_id) — fix-round-4 R3-4 negative control
+#    for fix-round-3 NEW-5, which had zero suite failures on revert. Beat A:
+#    only an own-repo lane DIGEST-KEY-01. Beat B: the SAME own lane plus a
+#    NEW foreign lane sharing the bare task_id DIGEST-KEY-01. If the delta
+#    digest is keyed on bare task_id (the round-2 shape), the foreign
+#    lane's key collides with the already-known own lane's key and the
+#    delta line reports 0 raised -- a genuinely new lane appearing on the
+#    board with no announcement. Keyed on (repo, task_id), it must report
+#    exactly 1 raised. ──────────────────────────────────────────────────
+cat >"$STUBS/collector-digest-key-a.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": [
+    {"task_id": "DIGEST-KEY-01", "status": "active"}
+  ], "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": [
+    {"task_id": "DIGEST-KEY-01", "dispatch_id": "cccccccc", "worker": "sonnet",
+     "writing_now": True, "stream_bytes": 10, "mission_title": "DIGEST-KEY-01 -- own lane"}
+  ]}}
+}}))' >"$out"
+EOF
+cat >"$STUBS/collector-digest-key-b.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": [
+    {"task_id": "DIGEST-KEY-01", "status": "active"},
+    {"task_id": "DIGEST-KEY-01", "status": "active", "repo": "persona-engine", "age_s": 30}
+  ], "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": [
+    {"task_id": "DIGEST-KEY-01", "dispatch_id": "cccccccc", "worker": "sonnet",
+     "writing_now": True, "stream_bytes": 10, "mission_title": "DIGEST-KEY-01 -- own lane"}
+  ]}}
+}}))' >"$out"
+EOF
+chmod +x "$STUBS/collector-digest-key-a.sh" "$STUBS/collector-digest-key-b.sh"
+
+beat_env "$STUBS/collector-digest-key-a.sh" "2026-08-30T07:00:00Z"
+beat_env "$STUBS/collector-digest-key-b.sh" "2026-08-30T07:30:00Z"
+T7_CONTENT="$(cat "$FOUNDER_STATUS")"
+T7_DELTA="$(printf '%s' "$T7_CONTENT" | grep -m1 '^С прошлого удара:')"
+if printf '%s' "$T7_DELTA" | grep -q '+1 линии подняты'; then
+  pass "T7: digest key is (repo, task_id) — a new foreign lane sharing a bare id with a known own lane is counted as raised"
+else
+  fail "T7: digest key collapsed the foreign lane into the own lane's key, delta wrong: ${T7_DELTA:-<none>}"
+fi
+
 log ""
 log "=== ${PASS} passed, ${FAIL} failed ==="
 if [[ "$FAIL" -gt 0 ]]; then
