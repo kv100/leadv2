@@ -170,8 +170,13 @@ compress_base() {
 # byte length.  Keep this in bash because the final clamp is bash-owned; ANSI
 # escapes are stripped before counting and are never sliced.
 visible_len() {
-  local plain
-  plain="$(printf '%s' "$1" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
+  # The final refit invokes this in a tight admission loop.  Bash can remove
+  # SGR sequences directly; spawning sed here made a statusline repaint slow.
+  local plain="$1" esc
+  while [[ "$plain" =~ $'\033'\[[0-9\;]*m ]]; do
+    esc="${BASH_REMATCH[0]}"
+    plain="${plain/"$esc"/}"
+  done
   printf '%s' "${#plain}"
 }
 

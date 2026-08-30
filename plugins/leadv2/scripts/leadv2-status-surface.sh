@@ -1666,7 +1666,7 @@ fi
 # order, not luck.
 emit_oneline() {
   local width prefix budget sorted_rows _rank name cls age name_cap tok tlen \
-        toks n_shown n_dropped cur_len total remaining marker marker_len suffix_len
+        toks n_shown n_dropped cur_len total remaining marker marker_len suffix_len marker_fits
   width="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
   case "$width" in ''|*[!0-9]*) width=80 ;; esac
   prefix="lanes ${LANE_COUNT}"
@@ -1716,16 +1716,35 @@ emit_oneline() {
       # existence plus the honest dropped marker fits, then stop greedily.
       if [ "$n_shown" -eq 0 ]; then
         suffix_len=$(( ${#cls} + ${#age} + 2 ))
-        name_cap="…"
+        # Start complete and spend every usable cell on identity.  The former
+        # ellipsis seed left a third of a 34-column line blank.
+        name_cap="$name"
         while [ $(( ${#name_cap} + suffix_len + marker_len )) -gt "$budget" ] && [ ${#name_cap} -gt 0 ]; do
           name_cap="${name_cap:0:${#name_cap}-1}"
         done
+        if [ "${#name_cap}" -lt "${#name}" ] && [ "${#name_cap}" -gt 1 ]; then
+          name_cap="${name_cap:0:${#name_cap}-1}…"
+        fi
+        # At the minimum width the dropped marker is less valuable than the
+        # urgency class.  Retry without it rather than emitting only '+N'.
+        marker_fits=1
+        if [ -z "$name_cap" ]; then
+          marker_fits=0
+          marker=""; marker_len=0; name_cap="$name"
+          while [ $(( ${#name_cap} + suffix_len )) -gt "$budget" ] && [ ${#name_cap} -gt 0 ]; do
+            name_cap="${name_cap:0:${#name_cap}-1}"
+          done
+          if [ "${#name_cap}" -lt "${#name}" ] && [ "${#name_cap}" -gt 1 ]; then
+            name_cap="${name_cap:0:${#name_cap}-1}…"
+          fi
+        fi
         if [ -n "$name_cap" ]; then
           toks="${name_cap}·${cls}·${age}"
           n_shown=1
         fi
       fi
       n_dropped=$(( total - n_shown ))
+      [ "${marker_fits:-1}" -eq 0 ] && n_dropped=0
       break
     fi
     [ "$n_shown" -gt 0 ] && toks="${toks} "

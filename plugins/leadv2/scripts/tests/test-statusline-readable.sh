@@ -477,7 +477,7 @@ if [[ "$WIDE_LINE" != "$NARROW_LINE" ]]; then
 else
   bad "width" "output identical across COLUMNS=40 and COLUMNS=200: $NARROW_LINE"
 fi
-if (( ${#NARROW_LINE} <= 40 + ${#DEAD_ONLY_LINE} )); then
+if (( $(visible_len "$NARROW_LINE") <= 40 )); then
   ok "width: narrow-COLUMNS render did not balloon past the requested budget"
 else
   bad "width" "narrow-COLUMNS render ($( printf '%s' "$NARROW_LINE" | wc -c )) far exceeds budget: $NARROW_LINE"
@@ -495,6 +495,26 @@ if (( MEMO_30_LEN <= 30 )) && [[ "$MEMO_30_PLAIN" == *'·dead·9m'* ]] && [[ "$M
   ok "R13: stale wide memo at width 30 keeps silent lane, exact +4, and exact budget"
 else
   bad "R13" "memo clamp lost silent lane, lied about +N, or exceeded 30 (len=$MEMO_30_LEN): $MEMO_30_PLAIN"
+fi
+
+# H2/H3: at the minimum width the incident remains visible and its age unit
+# remains intact.  A counter-only line or dead·9 is an information loss.
+MEMO_20="$(HOME="$tmp/composer-home" run_composer 20 "$WIDE_MEMO")"
+MEMO_20_PLAIN="$(printf '%s' "$MEMO_20" | strip_ansi)"
+if (( $(visible_len "$MEMO_20") <= 20 )) && [[ "$MEMO_20_PLAIN" == *'·dead·9m'* ]]; then
+  ok "H2/H3: width 20 retains the dead class and complete 9m age ($MEMO_20_PLAIN)"
+else
+  bad "H2/H3" "width 20 lost the incident or corrupted its age: $MEMO_20_PLAIN"
+fi
+
+# F5: a fitting fallback base keeps its SGR signal.  ANSI is stripped only
+# when clipping is actually necessary.
+printf '{}' > "$tmp/composer-home/.claude/settings.json"
+WIDE_COLORED="$(HOME="$tmp/composer-home" run_composer 200 "$DEAD_ONLY_LINE")"
+if [[ "$WIDE_COLORED" == *$'\033['* ]]; then
+  ok "F5: wide fallback base preserves ANSI when it fits"
+else
+  bad "F5" "wide fallback base lost ANSI despite headroom: $WIDE_COLORED"
 fi
 
 # F2: the composer must fit exact narrow terminal budgets, including the

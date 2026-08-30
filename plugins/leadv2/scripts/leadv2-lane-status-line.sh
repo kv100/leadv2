@@ -209,7 +209,16 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
   # THIS repaint's COLUMNS. Every emitted token is single-word (no embedded
   # spaces), so a boundary cut is always safe.
   _surf_budget="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
-  _surf_visible_len() { local _sv; _sv="$(printf '%s' "$1" | sed -E $'s/\x1b\\[[0-9;]*m//g')"; printf '%s' "${#_sv}"; }
+  # This is on the paint path.  Do not use sed here: the refit loop can call
+  # it repeatedly, turning one repaint into a process-per-character storm.
+  _surf_visible_len() {
+    local _sv="$1" _esc
+    while [[ "$_sv" =~ $'\033'\[[0-9\;]*m ]]; do
+      _esc="${BASH_REMATCH[0]}"
+      _sv="${_sv/"$_esc"/}"
+    done
+    printf '%s' "${#_sv}"
+  }
   _surf_tail=""
   if [[ -n "$_surf_oneline" ]]; then
     # A memo may have been written at a wider terminal width.  Refit its
@@ -220,7 +229,7 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     if [[ "$_surf_oneline" =~ ^lanes[[:space:]]+([0-9]+):?[[:space:]]*(.*)$ ]]; then
       _surf_total="${BASH_REMATCH[1]}"; _surf_rest="${BASH_REMATCH[2]}"
       _surf_head="lanes ${_surf_total}:"
-      _surf_trimmed="$_surf_head"; _surf_shown=0
+      _surf_trimmed="$_surf_head"; _surf_shown=0; _surf_hide_marker=0
       for _surf_tok in $_surf_rest; do
         [[ "$_surf_tok" == +[0-9]* ]] && continue
         _surf_remaining=$(( _surf_total - _surf_shown - 1 ))
@@ -233,9 +242,16 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
           if (( _surf_shown == 0 )) && [[ "$_surf_tok" == *·*·* ]]; then
             _surf_suffix="·${_surf_tok#*·}"
             _surf_tok="…${_surf_suffix}"
-            while (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}") > _surf_budget && ${#_surf_tok} > ${#_surf_suffix} )); do
-              _surf_tok="${_surf_tok:0:${#_surf_tok}-1}"
-            done
+            # Never shave the class/age suffix: a clipped age unit corrupts
+            # the incident value (9m used to render as bare 9).
+            if (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}") > _surf_budget )); then
+              # The row is the incident payload; at degenerate widths drop
+              # the annotation (+N) before dropping its class and age.
+              _surf_marker=""; _surf_hide_marker=1
+              if (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}") > _surf_budget )); then
+                _surf_tok=""
+              fi
+            fi
             if (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}") <= _surf_budget )); then
               _surf_trimmed="${_surf_trimmed}${_surf_sep}${_surf_tok}"
               _surf_shown=1
@@ -247,7 +263,7 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
         _surf_shown=$(( _surf_shown + 1 ))
       done
       _surf_dropped_n=$(( _surf_total - _surf_shown ))
-      (( _surf_dropped_n > 0 )) && _surf_trimmed="${_surf_trimmed} +${_surf_dropped_n}"
+      (( _surf_dropped_n > 0 && _surf_hide_marker == 0 )) && _surf_trimmed="${_surf_trimmed} +${_surf_dropped_n}"
     else
       _surf_trimmed="${_surf_oneline:0:$_surf_budget}"
       [[ "$_surf_trimmed" == *" "* ]] && _surf_trimmed="${_surf_trimmed% *}"
@@ -285,8 +301,10 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     if [[ -n "$_surf_tail" ]]; then
       _fallback_budget=$(( _surf_budget - $(_surf_visible_len "$_surf_tail") ))
       (( _fallback_budget < 0 )) && _fallback_budget=0
-      _fallback_base="$(printf '%s' "$_fallback_base" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
-      _fallback_base="${_fallback_base:0:$_fallback_budget}"
+      _fallback_plain="$(printf '%s' "$_fallback_base" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
+      if (( ${#_fallback_plain} > _fallback_budget )); then
+        _fallback_base="${_fallback_plain:0:$_fallback_budget}"
+      fi
     fi
     printf '%s%s' "$_surf_tail" "$_fallback_base"
     printf '\n'
