@@ -6050,7 +6050,13 @@ cmd_resolve() {
   # Sweep before this invocation can reserve a new lane.  This is deliberately
   # best-effort observability: an unavailable liveness probe must not turn an
   # otherwise dispatchable task into a false admission failure.
-  [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep >/dev/null 2>&1 9>&- || true
+  # N5 fix (review-r5.md): match the other three LEDGER_BIN call sites (:1802,
+  # :2908, :2920) -- LEADV2_DISPATCH_TERMINAL_LEDGER=0 is documented at :499 as
+  # disabling ALL ledger writes, but this sweep invoker skipped the gate and ran
+  # regardless. A sweep that deregisters active.yaml rows and writes TRUE terminals
+  # under the kill switch defeats the switch's whole purpose (a wrongly-swept live
+  # lane leaves no trace, per HIGH-1's live repro).
+  [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep >/dev/null 2>&1 9>&- || true
   # Reconcile before admission: stale rows never consume a slot and a live
   # orphan is made visible before this dispatch can duplicate it.
   declare -F lane_reconcile >/dev/null 2>&1 && lane_reconcile >/dev/null 2>&1 || true

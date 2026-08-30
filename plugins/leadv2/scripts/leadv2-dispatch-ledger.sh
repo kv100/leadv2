@@ -330,6 +330,20 @@ dispatch_ledger_write_terminal() {
         # A pass_unlanded row is a durable human-action state.  It may not be
         # transited through refused into landed; a new attempt needs a new sig8.
     esac
+    # N3 (review-r5.md): the reviewer's probe on an earlier commit in this lane
+    # showed pass_unlanded -> refused -> landed slipping through, because the
+    # case above only inspects the LAST row and (at that commit) `pass_unlanded`
+    # was transiently absent from its blocklist. On THIS HEAD the case above
+    # already includes `pass_unlanded` unconditionally -- once it is the last
+    # row, ANY subsequent write (refused, parked, or landed) hits that same
+    # `exit 2` and is dedup'd away, so the last row can never advance past
+    # pass_unlanded and the two/three-hop chain cannot form. Verified by direct
+    # probe (round6-red/n3-chain-probe-pre-existing-head.log): pass_unlanded ->
+    # refused -> landed AND pass_unlanded -> parked -> landed both stay pinned
+    # at state=pass_unlanded on this HEAD. No code change needed here; the
+    # regression is locked in by the two-hop-chain case added to
+    # test-dirty-lane-never-lands.sh below so a future edit to this blocklist
+    # (e.g. narrowing it back to `landed|dead`) fails loudly.
     # LOW-3: aligned on the ANY-row form (matching dispatch_ledger_sweep_write_dead's own
     # _same_attempt_row check below) -- comparing only the LAST row missed an exit-trap
     # retry whose attempt is no longer the last row (e.g. a refused/parked row from a

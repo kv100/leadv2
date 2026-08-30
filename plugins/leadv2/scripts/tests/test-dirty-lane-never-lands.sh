@@ -105,6 +105,20 @@ printf 'dirty\n' >> "$T/lane/worker.txt"
 LEADV2_DIRTY_LANE_MAX_ATTEMPTS=2 write_terminal bound000 TASK landed completed
 assert_last pass_unlanded dirty_lane:prior-1
 
+# N3 (review-r5.md): the pass_unlanded exception must be non-transitive across
+# THE WHOLE sig8 history, not just the immediately-preceding row. A prior
+# probe on an earlier commit found pass_unlanded -> refused -> landed slipping
+# a landed row in, because a naive fix only re-checks the LAST row and refused
+# is retryable. Drive the exact three-attempt chain the reviewer probed and
+# assert the row never advances past pass_unlanded at any hop.
+: > "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE"
+write_terminal chain0001 TASK pass_unlanded prior-chain '' chain-attempt-1
+assert_last pass_unlanded prior-chain
+write_terminal chain0001 TASK refused retry-chain '' chain-attempt-2
+assert_last pass_unlanded prior-chain
+write_terminal chain0001 TASK landed completed '' chain-attempt-3
+assert_last pass_unlanded prior-chain
+
 # A killed worker is not plain `dead` when its pinned lane still carries
 # uncommitted worker-owned bytes. Exercise the sweep writer itself (not a
 # synthetic ledger append) through the same lane-worktree lookup used by cmd_sweep.

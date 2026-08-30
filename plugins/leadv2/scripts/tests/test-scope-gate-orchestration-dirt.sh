@@ -35,10 +35,19 @@ REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
 PRE_SCRIPT="${PREFIX_DIR}/pre-${TARGET_REL}"
 mkdir -p "$(dirname "${PRE_SCRIPT}")"
 if [[ -n "${REPO}" ]]; then
-  # HEAD is the live checkout's committed image and therefore makes a HEAD-vs-live
-  # comparison vacuous after a committed fix.  Use its parent as the pre-image; an
-  # explicit override keeps this harness usable when bisecting a one-commit repo.
-  PRE_REF="${LEADV2_SCOPE_GATE_PRE_REF:-HEAD^}"
+  # N7 fix (review-r5.md): a bare "HEAD^" pre-image is only correct on the exact
+  # commit that landed the guard fix -- the very next unrelated commit on this
+  # lane makes HEAD^ == HEAD:TARGET_REL again (both post-fix), and the whole
+  # GREEN-PRE-FIX/RED-PRE-FIX labelling below silently goes vacuous with no
+  # signal that it did. Anchor instead to the parent of the LAST commit that
+  # actually touched TARGET_REL -- that pre-image differs from live by
+  # definition (unless the file's history is a single commit, handled by the
+  # empty-PRE_SCRIPT fallback below) and stays correct no matter how many
+  # unrelated commits land on top. An explicit override still wins, for
+  # bisecting a one-commit repo or reproducing a specific historical pairing.
+  _last_touch="$(git -C "${REPO}" log -1 --format=%H -- "plugins/leadv2/scripts/${TARGET_REL}" 2>/dev/null)"
+  PRE_REF="${LEADV2_SCOPE_GATE_PRE_REF:-${_last_touch:+${_last_touch}^}}"
+  PRE_REF="${PRE_REF:-HEAD^}"
   git -C "${REPO}" show "${PRE_REF}:plugins/leadv2/scripts/${TARGET_REL}" > "${PRE_SCRIPT}" 2>/dev/null || : > "${PRE_SCRIPT}"
 fi
 [[ -s "${PRE_SCRIPT}" ]] || PRE_SCRIPT=""
