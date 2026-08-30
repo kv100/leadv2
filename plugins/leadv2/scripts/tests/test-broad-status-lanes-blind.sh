@@ -33,6 +33,17 @@
 #     task brief as a LIKELY PRE-EXISTING PASS (the B1 contract predates
 #     this fix) -- reported as a locking regression test, not manufactured
 #     evidence of this fix.
+# T5  CROSS-REPO CAP SURVIVAL: 7 own + 1 foreign — the foreign lane must
+#     survive TABLE_ROW_CAP, and the own budget left for own-repo rows is
+#     asserted to the exact count (fix-round-3 NEW-9).
+# T6  FOREIGN CAP IS BOUNDED (fix-round-3 NEW-2): 10 foreign + 0 own — a
+#     foreign surge must be capped by FOREIGN_ROW_RESERVE, not rendered
+#     without bound (leadv2-lanes-snapshot.sh applies no cap/status filter
+#     to foreign rows at the source).
+# T7  OWN-REPO FLOOR SURVIVES A FOREIGN SURGE (fix-round-3 NEW-3): 6
+#     foreign + 7 own — own-repo rows must keep a floor of TABLE_ROW_CAP -
+#     FOREIGN_ROW_RESERVE, never be evicted to zero and folded into
+#     "мусорных/лишних строк" the founder is told about his own board.
 #
 # Hermetic: throwaway LEADV2_PROJECT_ROOT/LEADV2_STATE_ROOT, stubbed
 # collector / claude, no network, no crontab, no real dispatch.
@@ -247,10 +258,89 @@ else
   fail "T5a: foreign-repo lane was cut by the row cap: $T5_CONTENT"
 fi
 T5_OWN_ROWS="$(printf '%s' "$T5_CONTENT" | grep -cE '^\| OWN-CAP-[0-9]+ ')"
-if [[ "$T5_OWN_ROWS" -ge 1 ]]; then
-  pass "T5b: own-repo rows still render alongside the reserved foreign slot"
+# fix-round-3 (NEW-9): assert the EXACT expected count, not `-ge 1` -- the
+# loose bound passed even with 6 of 7 own lanes evicted (NEW-3) and could
+# not see that regression. TABLE_ROW_CAP=6, FOREIGN_ROW_RESERVE=2,
+# foreign_slots=min(1,2)=1 -> own budget = 6-1 = 5.
+if [[ "$T5_OWN_ROWS" -eq 5 ]]; then
+  pass "T5b: exactly 5 own-repo rows render (own budget = TABLE_ROW_CAP - foreign_slots)"
 else
-  fail "T5b: no own-repo rows rendered at all: $T5_CONTENT"
+  fail "T5b: expected exactly 5 own-repo rows, got $T5_OWN_ROWS: $T5_CONTENT"
+fi
+
+# ── T6: FOREIGN CAP IS BOUNDED — 10 foreign, 0 own (fix-round-3 NEW-2) ───
+# leadv2-lanes-snapshot.sh applies no cap and no status filter to foreign
+# rows, so round-2's unconditional "foreign rows are never truncated"
+# defeated TABLE_ROW_CAP without bound. Foreign must be capped too.
+cat >"$STUBS/collector-foreign-only.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+foreign = [{"task_id": f"FOREIGN-ONLY-{i:02d}", "status": "active",
+            "repo": "persona-engine", "age_s": 30} for i in range(1, 11)]
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": foreign, "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": []}}
+}}))' >"$out"
+EOF
+chmod +x "$STUBS/collector-foreign-only.sh"
+
+beat_env "$STUBS/collector-foreign-only.sh" "2026-08-30T04:30:00Z"
+T6_CONTENT="$(cat "$FOUNDER_STATUS")"
+T6_FOREIGN_ROWS="$(printf '%s' "$T6_CONTENT" | grep -cE '^\| persona-engine/FOREIGN-ONLY-[0-9]+ ')"
+if [[ "$T6_FOREIGN_ROWS" -eq 2 ]]; then
+  pass "T6: 10 foreign lanes, 0 own — table shows exactly 2 (FOREIGN_ROW_RESERVE), not all 10"
+else
+  fail "T6: foreign rows not bounded by the cap, got $T6_FOREIGN_ROWS rows: $T6_CONTENT"
+fi
+
+# ── T7: OWN-REPO FLOOR SURVIVES A FOREIGN SURGE — 6 foreign, 7 own ──────
+# fix-round-3 (NEW-3): round-2's `max(0, TABLE_ROW_CAP - foreign_count)`
+# let enough foreign lanes evict EVERY own-repo row, so the founder's own
+# live lanes were folded into "мусорных/лишних строк" -- the exact lie
+# this task exists to delete, pointed at the founder's own board.
+cat >"$STUBS/collector-foreign-surge.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+own = [{"task_id": f"OWN-SURGE-{i:02d}", "status": "active"} for i in range(1, 8)]
+foreign = [{"task_id": f"FOREIGN-SURGE-{i:02d}", "status": "active",
+            "repo": "persona-engine", "age_s": 30} for i in range(1, 7)]
+own_detail = [
+    {"task_id": f"OWN-SURGE-{i:02d}", "dispatch_id": f"{i:08x}", "worker": "sonnet",
+     "writing_now": True, "stream_bytes": i, "mission_title": f"OWN-SURGE-{i:02d} -- filler lane {i}"}
+    for i in range(1, 8)
+]
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": own + foreign, "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": own_detail}}
+}}))' >"$out"
+EOF
+chmod +x "$STUBS/collector-foreign-surge.sh"
+
+beat_env "$STUBS/collector-foreign-surge.sh" "2026-08-30T05:00:00Z"
+T7_CONTENT="$(cat "$FOUNDER_STATUS")"
+T7_OWN_ROWS="$(printf '%s' "$T7_CONTENT" | grep -cE '^\| OWN-SURGE-[0-9]+ ')"
+if [[ "$T7_OWN_ROWS" -eq 4 ]]; then
+  pass "T7: 6 foreign + 7 own — own-repo floor holds at 4 rows (TABLE_ROW_CAP - FOREIGN_ROW_RESERVE), never zero"
+else
+  fail "T7: own-repo lanes starved by a foreign surge, got $T7_OWN_ROWS own rows: $T7_CONTENT"
 fi
 
 log ""

@@ -202,6 +202,13 @@ table_rows = lanes_data.get("table") or []
 # masquerade as a lane row.
 foreign_error_rows = [r for r in table_rows if isinstance(r, dict) and r.get("error")]
 table_rows = [r for r in table_rows if not (isinstance(r, dict) and r.get("error"))]
+# fix-round-3 (L1): a non-dict element in the collector's "table" array
+# (malformed collector output) survived the filter above -- isinstance(r,
+# dict) is False for it, so `not (False and ...)` is True -- and reached
+# `_row.get(...)` in the dedup loop below with no isinstance guard, an
+# AttributeError that killed the whole beat. Degrade it out of the table
+# instead of crashing; "not a lane" is exactly what a non-dict row is.
+table_rows = [r for r in table_rows if isinstance(r, dict)]
 questions = lanes_data.get("questions") or lanes_data.get("requires_founder") or []
 degraded = lanes_data.get("degraded") or []
 # LANE-DETAIL-BLIND-01: a failed/absent `lanes` COLLECTOR SECTION (the
@@ -383,6 +390,7 @@ def md_escape(s):
 #     to prevent. Each occurrence gets its own never-colliding key instead.
 _seen_keys = set()
 _deduped_table_rows = []
+_dedup_dropped_count = 0
 for _idx, _row in enumerate(table_rows):
     _tid_raw = _row.get("task_id")
     if _tid_raw:
@@ -390,19 +398,40 @@ for _idx, _row in enumerate(table_rows):
     else:
         _key = ("__missing_task_id__", _idx)
     if _key in _seen_keys:
+        # fix-round-3 (L2): a dedup drop used to be invisible in the
+        # founder-facing accounting -- count it so it can be surfaced
+        # alongside table_rows_hidden instead of silently vanishing.
+        _dedup_dropped_count += 1
         continue
     _seen_keys.add(_key)
     _deduped_table_rows.append(_row)
 table_rows = _deduped_table_rows
 
+# fix-round-3 (NEW-7): a single list of (line, is_foreign) pairs instead of
+# two parallel lists -- there is exactly one append site, but a future
+# second one that forgot the sibling list would truncate the table via
+# zip() with no error and no hidden-count, which is exactly the silent-loss
+# class this file exists to prevent.
 rows_out = []
-rows_out_is_foreign = []
 detail_lines = []
 closed_items = []
 current_lane_digest = {}
 for row in table_rows:
     tid = str(row.get("task_id") or "?")
-    d = detail_by_task.get(tid)
+    # fix-round-3 (NEW-1): detail_by_task is built from lane_detail, which is
+    # OWN-REPO-ONLY (see comment above its construction). A foreign row that
+    # happens to share a bare task_id with an own-repo lane must NOT join it
+    # -- the foreign row would otherwise render the own lane's mission
+    # title, worker and stream_bytes, i.e. report a dead foreign lane as
+    # "writing now". repo is the discriminator the dedup key already uses.
+    _repo_slug = row.get("repo")
+    d = detail_by_task.get(tid) if not _repo_slug else None
+    # fix-round-3 (NEW-5): the delta digest must be keyed the same way the
+    # row identity is rendered/deduped -- (repo, task_id) -- or (a) a
+    # foreign row never enters the digest at all (delta line contradicts
+    # the table above it) and (b) an own+foreign pair sharing a bare
+    # task_id collapse into one digest entry.
+    _digest_key = f"{_repo_slug}::{tid}" if _repo_slug else tid
 
     # id_display: BROAD-STATUS-ROWS-02 task.context.yaml decision IDENTITY
     # -- task_id first, sig8/dispatch id only as the FALLBACK when task_id
@@ -420,9 +449,15 @@ for row in table_rows:
     # it says "we don't know the binding", which is orthogonal to WHICH
     # identity wins as primary. A row with a resolved dispatch_id, or whose
     # task_id already IS the dispatch id shape, needs no such disclaimer.
+    #
+    # fix-round-3 (NEW-8): a foreign row NEVER joins lane_detail (own-repo
+    # only, see `d` above), so "(dispatch id unknown)" was 100% predictable
+    # on every foreign row and carried no information -- it just doubled
+    # column width. Suppressed for foreign rows only; own-repo rows keep the
+    # disclaimer exactly as before.
     dispatch_id = d.get("dispatch_id") if d else None
     if tid and tid != "?":
-        if dispatch_id or re.match(r"^dispatch-[0-9a-f]{6,40}$", tid):
+        if dispatch_id or re.match(r"^dispatch-[0-9a-f]{6,40}$", tid) or _repo_slug:
             id_display = tid
         else:
             id_display = f"{tid} (dispatch id unknown)"
@@ -435,7 +470,7 @@ for row in table_rows:
     # mission title, never from the prepass excerpt (that stays in "owns"
     # for the detail block). Name is frozen on first resolution in
     # .broad-status-prev.json so it cannot drift between beats (R2).
-    prev_row_name = (prev_lanes.get(tid) or {}).get("name") if isinstance(prev_lanes.get(tid), dict) else None
+    prev_row_name = (prev_lanes.get(_digest_key) or {}).get("name") if isinstance(prev_lanes.get(_digest_key), dict) else None
     # PULSE-READABLE-01: leadv2-lane-detail.sh now emits a genuine
     # "mission_title" field (added alongside this fix) -- rung 2/3 of
     # read_owns() (lane-mission.md heading, then fanout mission.txt),
@@ -462,8 +497,7 @@ for row in table_rows:
     # snapshot's foreign rows carry repo=<slug>; own-repo rows never do) is
     # prefixed with its slug so the founder can tell which repo a row belongs
     # to at a glance — single-repo output carries no repo field and is
-    # byte-identical to before.
-    _repo_slug = row.get("repo")
+    # byte-identical to before. (_repo_slug computed once, above.)
     if _repo_slug:
         linia = f"{_repo_slug}/{linia}"
     # The human-readable title (formerly rendered as "Линия") now lives
@@ -498,11 +532,16 @@ for row in table_rows:
     # spelling flowed into the live table as "(имя неизвестно) | — | pid
     # birth mismatch (reuse)" junk (founder-rejected beat, 2026-08-21).
     is_dead = bool(verdict) and (str(verdict) == "dead" or str(verdict).startswith("dead:"))
-    prev_row = prev_lanes.get(tid)
+    prev_row = prev_lanes.get(_digest_key)
     delta_note = None
-    if d is not None:
-        current_lane_digest[tid] = {"stream_bytes": stream_bytes, "disk_key": disk_key(disk)}
-        if isinstance(prev_row, dict) and prev_row is not None and not is_dead:
+    # fix-round-3 (NEW-5): a foreign row (d is None by construction) must
+    # still enter the digest -- keyed on _digest_key -- so raised/closed
+    # accounting sees it; only the "молчит N мин (без изменений)" delta
+    # note stays own-repo-only (it needs `d` for stream_mtime_age_s, which
+    # foreign rows never carry).
+    if d is not None or _repo_slug:
+        current_lane_digest[_digest_key] = {"stream_bytes": stream_bytes, "disk_key": disk_key(disk)}
+        if d is not None and isinstance(prev_row, dict) and not is_dead:
             same_bytes = prev_row.get("stream_bytes") == stream_bytes
             same_disk = prev_row.get("disk_key") == disk_key(disk)
             if same_bytes and same_disk:
@@ -511,8 +550,8 @@ for row in table_rows:
     if linia_name:
         # freeze-on-first-resolution: only write a name once resolved; an
         # un-nameable lane keeps retrying fresh resolution every beat.
-        current_lane_digest.setdefault(tid, {"stream_bytes": stream_bytes, "disk_key": disk_key(disk)})
-        current_lane_digest[tid]["name"] = linia_name
+        current_lane_digest.setdefault(_digest_key, {"stream_bytes": stream_bytes, "disk_key": disk_key(disk)})
+        current_lane_digest[_digest_key]["name"] = linia_name
 
     if delta_note:
         sostoyanie = delta_note
@@ -556,10 +595,10 @@ for row in table_rows:
         })
         continue
 
-    rows_out.append(
-        "| " + " | ".join(md_escape(x) for x in (linia, chto, sostoyanie)) + " |"
-    )
-    rows_out_is_foreign.append(bool(_repo_slug))
+    rows_out.append((
+        "| " + " | ".join(md_escape(x) for x in (linia, chto, sostoyanie)) + " |",
+        bool(_repo_slug),
+    ))
     detail_lines.append(f"{id_display} — {kto} — {na_diske}")
 
 # Change 2b: a failed lane_detail section must be visible ABOVE the table,
@@ -627,22 +666,41 @@ pulse_md = (
 # `[:TABLE_ROW_CAP]` slice systematically cuts every foreign lane once
 # own-repo lanes alone fill the cap -- the cross-repo lane is then counted
 # as "мусорных/лишних строк" below, which is a lie: it was never junk.
-# Foreign rows get a RESERVED slot (never truncated); only own-repo rows
-# compete for what remains of TABLE_ROW_CAP.
+#
+# fix-round-3 (NEW-2/NEW-3): round-2 exempted foreign rows from the cap
+# entirely (no counter), which is not a reservation -- it is unbounded, and
+# leadv2-lanes-snapshot.sh puts NO cap and NO status filter on foreign rows
+# (active+stale both reach the table). At the other extreme, own-repo rows
+# had NO floor -- `_own_row_budget = max(0, TABLE_ROW_CAP - foreign_count)`
+# meant enough foreign lanes evicted every own-repo row and the founder was
+# told his own live lanes were "мусорных/лишних строк", the exact lie this
+# task exists to delete, now pointed at his own board.
+#
+# A reservation must be BOUNDED on both sides: foreign gets a capped slice
+# of TABLE_ROW_CAP (never the whole board), own-repo keeps the remainder as
+# a floor (never zero while own rows exist). Neither side may starve the
+# other.
 TABLE_ROW_CAP = 6
+FOREIGN_ROW_RESERVE = max(1, TABLE_ROW_CAP // 3)
 rows_out_full = rows_out
-rows_out_full_is_foreign = rows_out_is_foreign
-_foreign_row_count = sum(1 for _f in rows_out_full_is_foreign if _f)
-_own_row_budget = max(0, TABLE_ROW_CAP - _foreign_row_count)
+_foreign_row_count = sum(1 for _, _f in rows_out_full if _f)
+_own_row_count = len(rows_out_full) - _foreign_row_count
+_foreign_slots = min(_foreign_row_count, FOREIGN_ROW_RESERVE)
+_own_row_budget = TABLE_ROW_CAP - _foreign_slots
 rows_out = []
 _own_rows_kept = 0
-for _line, _is_foreign in zip(rows_out_full, rows_out_full_is_foreign):
+_foreign_rows_kept = 0
+for _line, _is_foreign in rows_out_full:
     if _is_foreign:
-        rows_out.append(_line)
+        if _foreign_rows_kept < _foreign_slots:
+            rows_out.append((_line, _is_foreign))
+            _foreign_rows_kept += 1
     elif _own_rows_kept < _own_row_budget:
-        rows_out.append(_line)
+        rows_out.append((_line, _is_foreign))
         _own_rows_kept += 1
-table_rows_hidden = max(0, len(rows_out_full) - len(rows_out))
+_own_rows_hidden = max(0, _own_row_count - _own_rows_kept)
+_foreign_rows_hidden = max(0, _foreign_row_count - _foreign_rows_kept)
+table_rows_hidden = _own_rows_hidden + _foreign_rows_hidden
 
 # PULSE-EMPTY-BOARD-01 rule 1: zero live lanes is a LOUD event, not a table
 # with no rows. `rows_out_full` is already alive-only (a dead row hits
@@ -703,10 +761,12 @@ except Exception:
 # as prose, not a spec requirement, and renaming it would be a drive-by
 # break of an unrelated decision record for zero readability gain.
 _table_header = ["| Линия | Что делает | Состояние |", "|---|---|---|"]
+_rows_out_lines = [l for l, _ in rows_out]
+_rows_out_full_lines = [l for l, _ in rows_out_full]
 table_md = "\n".join(table_prefix + _table_header +
-                      (rows_out if rows_out else ["| (живых линий нет) | — | — |"]))
+                      (_rows_out_lines if _rows_out_lines else ["| (живых линий нет) | — | — |"]))
 full_table_md = "\n".join(table_prefix + _table_header +
-                           (rows_out_full if rows_out_full else ["| (живых линий нет) | — | — |"]))
+                           (_rows_out_full_lines if _rows_out_full_lines else ["| (живых линий нет) | — | — |"]))
 
 detail_md = "Детали линий: " + " · ".join(detail_lines) if detail_lines else "Детали линий: (нет активных линий)"
 
@@ -955,9 +1015,17 @@ try:
 except OSError:
     full_doc_ok = False
 
+# fix-round-3 (NEW-6): a row hidden by the cap (own or foreign) was never
+# junk -- it's a live lane that didn't fit -- but the old wording
+# ("мусорных/лишних строк") labeled it garbage regardless. Split the two:
+# an actual duplicate the dedup pass dropped (a real redundant row) keeps
+# the junk wording; a row that simply didn't fit under TABLE_ROW_CAP gets
+# honest "не поместилось" phrasing instead.
 hidden_bits = []
 if table_rows_hidden:
-    hidden_bits.append(f"{table_rows_hidden} мусорных/лишних строк таблицы")
+    hidden_bits.append(f"{table_rows_hidden} строк таблицы не поместилось")
+if _dedup_dropped_count:
+    hidden_bits.append(f"{_dedup_dropped_count} дублирующих строк")
 _queue_line_count = len(queue_md.splitlines())
 if _queue_line_count:
     hidden_bits.append(f"{_queue_line_count} строк очереди")

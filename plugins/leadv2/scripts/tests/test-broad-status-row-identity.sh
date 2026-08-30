@@ -10,19 +10,30 @@
 # stripped, so the founder saw one lane rendered twice (same byte count,
 # same everything) and the other lane nowhere.
 #
-# T1  IDENTITY: two lanes with mission titles sharing a long common prefix
-#     must render as two rows with DISTINCT "Линия" values (the lane
-#     identity — dispatch id / task_id — not the human title).
+# T1  IDENTITY (T1a/T1b/T1c): two lanes with mission titles sharing a long
+#     common prefix must render as two rows with DISTINCT "Линия" values
+#     (the lane identity — task_id, dispatch id only as fallback — not the
+#     human title); T1c additionally falsifies that the dispatch id must
+#     NOT outrank a resolved task_id.
 # T2  DEDUPE: a collector that reports the same task_id twice (own-repo
 #     duplicate, or the same lane surfacing via two collector paths) must
 #     still render exactly ONE row for that lane.
-# T3  CROSS-REPO PRESENCE: lanes from two different repo roots (one
-#     own-repo, one foreign — `repo` field set) must BOTH render.
+# T3  CROSS-REPO PRESENCE (T3a/T3b): lanes from two different repo roots
+#     (one own-repo, one foreign — `repo` field set) must BOTH render, the
+#     foreign one prefixed with its repo slug.
+# T4  REPO-AWARE DEDUP: a bare task_id shared by an own-repo and a
+#     foreign-repo lane must render as TWO rows (T4a), and the foreign row
+#     must NOT carry the own-repo lane's lane_detail facts — stream_bytes,
+#     "пишет сейчас" — fabricated liveness from a join it never made (T4b,
+#     fix-round-3 NEW-1).
+# T5  MISSING TASK_ID: two lanes that both lack a task_id must not collapse
+#     into a single degraded row.
+# T6  CLOSED-LANE HUMAN NAME: a terminal lane's "Закрыто сегодня" line
+#     carries both the row identity and the human mission name.
 #
-# Each T below is proven with a RED/GREEN mutation pair: the assertion is
-# shown failing against a real code mutation inside leadv2-broad-status.sh's
-# function body (not a grep-for-a-string stand-in), then passing again once
-# the mutation is reverted.
+# Each T is proven with a RED/GREEN mutation pair (mutation inside
+# leadv2-broad-status.sh's function body, reverted after); RED artifacts
+# for this round live in docs/handoff/BROAD-STATUS-ROWS-02/round3-red/.
 #
 # Hermetic: throwaway LEADV2_PROJECT_ROOT/LEADV2_STATE_ROOT, stubbed
 # collector / claude, no network, no crontab, no real dispatch.
@@ -303,9 +314,19 @@ T4_CONTENT="$(cat "$FOUNDER_STATUS")"
 T4_OWN="$(printf '%s' "$T4_CONTENT" | grep -cE '^\| SHARED-ID-01 ')"
 T4_FOREIGN="$(printf '%s' "$T4_CONTENT" | grep -cE '^\| persona-engine/SHARED-ID-01 ')"
 if [[ "$T4_OWN" -eq 1 ]] && [[ "$T4_FOREIGN" -eq 1 ]]; then
-  pass "T4: a bare task_id shared by an own-repo and a foreign-repo lane renders as TWO rows"
+  pass "T4a: a bare task_id shared by an own-repo and a foreign-repo lane renders as TWO rows"
 else
-  fail "T4: repo-blind dedup key ate one of the two lanes (own=$T4_OWN foreign=$T4_FOREIGN): $T4_CONTENT"
+  fail "T4a: repo-blind dedup key ate one of the two lanes (own=$T4_OWN foreign=$T4_FOREIGN): $T4_CONTENT"
+fi
+# fix-round-3 (NEW-1): the foreign row must NOT join the own-repo lane's
+# lane_detail facts via the bare task_id -- a foreign lane silent for a
+# minute (age_s=60) must never render the own lane's "пишет сейчас (55
+# байт в потоке)" liveness, which would be a fabricated claim.
+T4_FOREIGN_LINE="$(printf '%s' "$T4_CONTENT" | grep -E '^\| persona-engine/SHARED-ID-01 ')"
+if printf '%s' "$T4_FOREIGN_LINE" | grep -qE '55 байт|пишет сейчас'; then
+  fail "T4b: foreign row fabricated the own-repo lane's liveness: $T4_FOREIGN_LINE"
+else
+  pass "T4b: foreign row does not carry the own-repo lane's stream_bytes/writing_now"
 fi
 
 # ── T5: MISSING TASK_ID — two lanes, neither carries a task_id ──────────
