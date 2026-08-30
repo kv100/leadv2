@@ -571,9 +571,20 @@ rm -rf "$tmp/cache"
 MUT_U_OUT="$(run_tail 20 "$SCRATCH_SCRIPTS")"; MUT_U_BASE="${MUT_U_OUT#* | }"
 if [[ "$MUT_U_BASE" != *$'\033['* ]] && (( $(visible_len "$MUT_U_OUT") <= 20 )); then ok "MUT-U: clipped production base is ANSI-safe and width-safe"; else bad "MUT-U" "clipped production base leaked ANSI or exceeded width: $MUT_U_OUT"; fi
 
+MUTW_DIR="$tmp/scripts-mutw"
+mkdir -p "$MUTW_DIR"; cp -a "$SCRATCH_SCRIPTS/." "$MUTW_DIR/"
+cat > "$MUTW_DIR/leadv2-lane-liveness.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<JSON
+{"count_live": 1, "lanes": [
+ {"lane":"LANDING-PAGE-REDESIGN-EXTENDED-01","verdict":"alive","age_s":8}
+]}
+JSON
+EOF
+chmod +x "$MUTW_DIR/leadv2-lane-liveness.sh"
 rm -rf "$tmp/cache"
-MUT_W_OUT="$(run_tail 1000 "$SCRATCH_SCRIPTS")"
-if [[ "$MUT_W_OUT" == *'LANDING-PAGE-REDESIGN-01'* ]]; then ok "MUT-W: wide production render retains complete identity"; else bad "MUT-W" "wide production render truncated identity: $MUT_W_OUT"; fi
+MUT_W_OUT="$(run_tail 1000 "$MUTW_DIR")"
+if [[ "$MUT_W_OUT" == *'LANDING-PAGE-REDESIGN-EXTENDED-01'* ]]; then ok "MUT-W: wide production render retains complete identity"; else bad "MUT-W" "wide production render truncated identity: $MUT_W_OUT"; fi
 
 # F3: UTF-8 labels must use character, not byte, width accounting in the tail
 # clamp; the visible row count and +N must exactly reconcile.
