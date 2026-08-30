@@ -101,10 +101,14 @@ mkdir -p "$(dirname "$LOG_FILE")"
 # every extra line is a model wake paid on every remaining turn of the
 # attached session. Transition-deduped (key broad_status_ready, value = beat
 # identity) so a re-read or a double --ensure cannot fire the same beat
-# twice; lib absent → pass-through emit (R2) — this script runs once per
+# twice; lib absent from BOTH the local scripts/lib and the canonical root
+# (DISPATCH-CLOSE-GATE-01 round 7: a consumer symlink farm missing this lib
+# must fail over to canonical before pass-through, never pass through on a
+# bare [[ -f ]] miss) → pass-through emit (R2) — this script runs once per
 # BROAD_STATUS_S window, not per poll, so pass-through is still one line per
 # beat.
 ALARM_LIB="${LEADV2_ALARM_DEDUPE_BIN:-${SCRIPT_DIR}/lib/leadv2-alarm-dedupe.sh}"
+[[ -f "${ALARM_LIB}" ]] || ALARM_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-alarm-dedupe.sh"
 # shellcheck source=lib/leadv2-alarm-dedupe.sh
 [[ -f "$ALARM_LIB" ]] && source "$ALARM_LIB"
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }

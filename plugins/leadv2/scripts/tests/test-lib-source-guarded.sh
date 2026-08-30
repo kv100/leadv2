@@ -96,23 +96,23 @@ fi
 # site. A scratch dir mirrors the real scripts/hooks trees via symlinks (single-source
 # rule preserved) with only the mutated dispatcher itself a real file, matching the
 # WIRING-control pattern in test-mission-writeset.sh.
-DISPATCH_SH="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
-mut_site() { # <label> <fallback-line-substring> <expected-rel:line>
-  local label="$1" needle="$2" expect="$3"
-  local mut_real_dir mut_dir mut_dispatch
+mut_site() { # <label> <fallback-line-substring> <expected-rel:line> [target-basename=leadv2-dispatch-code.sh]
+  local label="$1" needle="$2" expect="$3" target="${4:-leadv2-dispatch-code.sh}"
+  local mut_real_dir mut_dir mut_dispatch mut_src
   mut_real_dir="$(cd "${SCRIPT_DIR}/.." && pwd)"
+  mut_src="${mut_real_dir}/${target}"
   mut_dir="$(mktemp -d "${TMPDIR:-/tmp}/lib-source-guarded-mut.XXXXXX")"
   mkdir -p "${mut_dir}/plugins/leadv2/scripts"
   ln -s "${ROOT}/plugins/leadv2/hooks" "${mut_dir}/plugins/leadv2/hooks"
   local entry base
   for entry in "${mut_real_dir}"/*; do
     base="$(basename "${entry}")"
-    [[ "${base}" == "leadv2-dispatch-code.sh" ]] && continue
+    [[ "${base}" == "${target}" ]] && continue
     ln -s "${entry}" "${mut_dir}/plugins/leadv2/scripts/${base}"
   done
-  mut_dispatch="${mut_dir}/plugins/leadv2/scripts/leadv2-dispatch-code.sh"
+  mut_dispatch="${mut_dir}/plugins/leadv2/scripts/${target}"
   local mut_rc
-  python3 - "${DISPATCH_SH}" "${mut_dispatch}" "${needle}" <<'PYEOF'
+  python3 - "${mut_src}" "${mut_dispatch}" "${needle}" <<'PYEOF'
 import sys
 src, dst, needle = sys.argv[1], sys.argv[2], sys.argv[3]
 lines = open(src, encoding="utf-8").read().splitlines(keepends=True)
@@ -144,6 +144,11 @@ mut_site "LANE_CHILD_SUFFIXES" \
 mut_site "PORTABLE_LOCK" \
   '_PORTABLE_LOCK_SH="${LEADV2_CANONICAL_ROOT' \
   "plugins/leadv2/scripts/leadv2-dispatch-code.sh:460"
+
+mut_site "BROAD_STATUS_ALARM_LIB" \
+  'ALARM_LIB="${LEADV2_CANONICAL_ROOT' \
+  "plugins/leadv2/scripts/leadv2-broad-status.sh:112" \
+  "leadv2-broad-status.sh"
 
 printf 'SUMMARY: pass=%s fail=%s\n' "${PASS}" "${FAIL}"
 (( FAIL == 0 ))
