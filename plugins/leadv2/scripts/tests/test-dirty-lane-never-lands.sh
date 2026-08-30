@@ -119,6 +119,21 @@ assert_last pass_unlanded prior-chain
 write_terminal chain0001 TASK landed completed '' chain-attempt-3
 assert_last pass_unlanded prior-chain
 
+# H-1/H-2 (DISPATCH-PIN-CLUSTER-01 round 7): dispatch_terminal_exists() must agree
+# that a pass_unlanded-only sig8 has finished, or the deferred-retry readers in
+# leadv2-dispatch-code.sh never see it as done, fall through to retry, and every
+# terminal that retry could produce is exit-2'd by the write gate above -- the
+# sig8 can be re-dispatched forever and can never actually terminate in the
+# ledger. No suite asserted this rc before this round.
+if ! dispatch_terminal_exists chain0001; then
+  echo 'dispatch_terminal_exists rc1 for a pass_unlanded-only sig8 -- H-1 regression' >&2
+  exit 1
+fi
+if dispatch_terminal_exists never-seen-sig8; then
+  echo 'dispatch_terminal_exists rc0 for a sig8 with no ledger row at all' >&2
+  exit 1
+fi
+
 # A killed worker is not plain `dead` when its pinned lane still carries
 # uncommitted worker-owned bytes. Exercise the sweep writer itself (not a
 # synthetic ledger append) through the same lane-worktree lookup used by cmd_sweep.
