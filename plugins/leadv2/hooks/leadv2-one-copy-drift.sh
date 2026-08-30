@@ -83,10 +83,21 @@ fi
 output="$(bash "$CONVERT_SCRIPT" --check 2>&1)"
 status=$?
 
+# Output cap (HOOK-OUTPUT-CAP-PLUGIN-01): a drifted tree can emit hundreds of
+# REGRESSION/BADLINK lines (measured 46257 B at 2026-08-30 baseline) which is
+# re-sent on every later turn once injected at SessionStart. A session needs
+# the FACT (drifted, how many) and a path to the full list, not the list
+# itself. The full detail is always written to disk regardless of size.
 report=""
 if [[ "$status" -ne 0 ]]; then
+  DETAIL_LOG="${TMPDIR:-/tmp}/leadv2-one-copy-drift-detail.log"
+  printf '%s' "$output" | grep -E '^\[one-copy\] (REGRESSION|BADLINK|tally)' > "$DETAIL_LOG" 2>/dev/null || true
+  ITEM_COUNT="$(grep -cE '^\[one-copy\] (REGRESSION|BADLINK)' "$DETAIL_LOG" 2>/dev/null || true)"
+  [[ -z "$ITEM_COUNT" ]] && ITEM_COUNT=0
+  TALLY_LINE="$(grep -E '^\[one-copy\] tally' "$DETAIL_LOG" 2>/dev/null | head -1)"
   report='\342\232\240 one-copy drift'
-  report="$report"$'\n'"$(printf '%s' "$output" | grep -E '^\[one-copy\] (REGRESSION|BADLINK|tally)')"
+  report="$report"$'\n'"${ITEM_COUNT} regression(s)/badlink(s). ${TALLY_LINE}"
+  report="$report"$'\n'"Full list: ${DETAIL_LOG}"
 fi
 
 # Post-sync leg of the T16 §7 merge (was leadv2-plugin-sync-drift-warn.sh):
