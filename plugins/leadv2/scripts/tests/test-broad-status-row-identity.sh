@@ -76,14 +76,14 @@ python3 -c '
 import json
 print(json.dumps({"sections": {
   "lanes": {"ok": True, "data": {"table": [
-    {"task_id": "dispatch-aaaaaaaa", "status": "active"},
-    {"task_id": "dispatch-bbbbbbbb", "status": "active"}
+    {"task_id": "BROAD-STATUS-ROWS-01", "status": "active"},
+    {"task_id": "BROAD-STATUS-ROWS-02", "status": "active"}
   ], "questions": [], "degraded": []}},
   "lane_detail": {"ok": True, "data": {"lanes": [
-    {"task_id": "dispatch-aaaaaaaa", "dispatch_id": "aaaaaaaa", "worker": "sonnet",
+    {"task_id": "BROAD-STATUS-ROWS-01", "dispatch_id": "aaaaaaaa", "worker": "sonnet",
      "writing_now": True, "stream_bytes": 111, "mission_title":
      "BROAD-STATUS-ROWS-01 -- the status pulse duplicates one lane and drops another (Light)"},
-    {"task_id": "dispatch-bbbbbbbb", "dispatch_id": "bbbbbbbb", "worker": "sonnet",
+    {"task_id": "BROAD-STATUS-ROWS-02", "dispatch_id": "bbbbbbbb", "worker": "sonnet",
      "writing_now": True, "stream_bytes": 222, "mission_title":
      "BROAD-STATUS-ROWS-02 -- the status pulse duplicates one lane and drops another (Light)"}
   ]}}
@@ -107,11 +107,11 @@ python3 -c '
 import json
 print(json.dumps({"sections": {
   "lanes": {"ok": True, "data": {"table": [
-    {"task_id": "dispatch-cccccccc", "status": "active"},
-    {"task_id": "dispatch-cccccccc", "status": "active"}
+    {"task_id": "DUP-LANE-01", "status": "active"},
+    {"task_id": "DUP-LANE-01", "status": "active"}
   ], "questions": [], "degraded": []}},
   "lane_detail": {"ok": True, "data": {"lanes": [
-    {"task_id": "dispatch-cccccccc", "dispatch_id": "cccccccc", "worker": "sonnet",
+    {"task_id": "DUP-LANE-01", "dispatch_id": "cccccccc", "worker": "sonnet",
      "writing_now": True, "stream_bytes": 333, "mission_title":
      "DUP-LANE-01 -- one lane must never render twice"}
   ]}}
@@ -136,13 +136,96 @@ python3 -c '
 import json
 print(json.dumps({"sections": {
   "lanes": {"ok": True, "data": {"table": [
-    {"task_id": "dispatch-eeeeeeee", "status": "active"},
-    {"task_id": "dispatch-ffffffff", "status": "active", "repo": "persona-engine", "age_s": 120}
+    {"task_id": "OWN-REPO-LANE-01", "status": "active"},
+    {"task_id": "FOREIGN-LANE-01", "status": "active", "repo": "persona-engine", "age_s": 120}
   ], "questions": [], "degraded": []}},
   "lane_detail": {"ok": True, "data": {"lanes": [
-    {"task_id": "dispatch-eeeeeeee", "dispatch_id": "eeeeeeee", "worker": "sonnet",
+    {"task_id": "OWN-REPO-LANE-01", "dispatch_id": "eeeeeeee", "worker": "sonnet",
      "writing_now": True, "stream_bytes": 444, "mission_title":
      "OWN-REPO-LANE-01 -- lives in the own repo"}
+  ]}}
+}}))' >"$out"
+EOF
+
+# ── stub collector: T4 repo-aware dedup fixture ─────────────────────────
+# fix-round-2 (High #1): same bare task_id from an own-repo row and a
+# foreign-repo row must render as TWO rows -- their rendered identity
+# differs ("SHARED-ID-01" vs "persona-engine/SHARED-ID-01") even though
+# the dedup key's task_id fragment is identical.
+cat >"$STUBS/collector-repo-aware-dedup.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": [
+    {"task_id": "SHARED-ID-01", "status": "active"},
+    {"task_id": "SHARED-ID-01", "status": "active", "repo": "persona-engine", "age_s": 60}
+  ], "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": [
+    {"task_id": "SHARED-ID-01", "dispatch_id": "12121212", "worker": "sonnet",
+     "writing_now": True, "stream_bytes": 55, "mission_title":
+     "SHARED-ID-01 -- own-repo half of the shared id"}
+  ]}}
+}}))' >"$out"
+EOF
+
+# ── stub collector: T5 missing-task_id fixture ──────────────────────────
+# fix-round-2 (High #2): two DIFFERENT lanes that both lack a task_id must
+# not collapse into a single row -- the second must still render as a
+# degraded row, never silently vanish.
+cat >"$STUBS/collector-missing-task-id.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": [
+    {"status": "active", "age_s": 30},
+    {"status": "active", "age_s": 90}
+  ], "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": []}}
+}}))' >"$out"
+EOF
+
+# ── stub collector: T6 closed-lane human-name fixture ───────────────────
+# fix-round-2 (Medium): the "Закрыто сегодня" line must carry the row
+# IDENTITY (task_id) for keying AND the human-readable mission name in
+# prose -- losing the name when :519 was reworked to identity-only left
+# the founder reading a bare id with no idea what the lane was.
+cat >"$STUBS/collector-closed-name.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": [
+    {"task_id": "CLOSED-NAME-01", "status": "dead", "status_reason": "worker exited"}
+  ], "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": [
+    {"task_id": "CLOSED-NAME-01", "dispatch_id": "beadbeef", "worker": "sonnet",
+     "mission_title": "CLOSED-NAME-01 -- retire the stale queue worker"}
   ]}}
 }}))' >"$out"
 EOF
@@ -169,23 +252,31 @@ if [[ ! -f "$FOUNDER_STATUS" ]]; then
   printf -- '%s\n' "${ERRORS[@]:-}" >&2; exit 1
 fi
 T1_CONTENT="$(cat "$FOUNDER_STATUS")"
-T1_ROW_COUNT="$(printf '%s' "$T1_CONTENT" | grep -cE '^\| dispatch-')"
+T1_ROW_COUNT="$(printf '%s' "$T1_CONTENT" | grep -cE '^\| BROAD-STATUS-ROWS-0[12] ')"
 if [[ "$T1_ROW_COUNT" -eq 2 ]]; then
   pass "T1a: two lanes with a shared mission-title prefix render as TWO distinct-identity rows"
 else
   fail "T1a: expected 2 identity rows, got $T1_ROW_COUNT: $T1_CONTENT"
 fi
-if printf '%s' "$T1_CONTENT" | grep -q '^| dispatch-aaaaaaaa ' \
-    && printf '%s' "$T1_CONTENT" | grep -q '^| dispatch-bbbbbbbb '; then
-  pass "T1b: both lane identities present verbatim in the Линия column"
+# High #3 falsifier: identity must be the raw task_id (BROAD-STATUS-ROWS-0N),
+# NEVER the bound dispatch id (dispatch-aaaaaaaa / dispatch-bbbbbbbb) -- a
+# real task_id must always outrank the dispatch id per decision IDENTITY.
+if printf '%s' "$T1_CONTENT" | grep -q '^| BROAD-STATUS-ROWS-01 ' \
+    && printf '%s' "$T1_CONTENT" | grep -q '^| BROAD-STATUS-ROWS-02 '; then
+  pass "T1b: both lane identities present verbatim (as task_id) in the Линия column"
 else
   fail "T1b: lane identities missing/collapsed: $T1_CONTENT"
+fi
+if printf '%s' "$T1_CONTENT" | grep -qE '^\| dispatch-(aaaaaaaa|bbbbbbbb) '; then
+  fail "T1c: identity rendered the dispatch id instead of the task_id: $T1_CONTENT"
+else
+  pass "T1c: task_id outranks the bound dispatch id in the Линия column"
 fi
 
 # ── T2: DEDUPE — same task_id twice in the collector's table ────────────
 beat_env "$STUBS/collector-dup-tid.sh" "2026-08-30T01:30:00Z"
 T2_CONTENT="$(cat "$FOUNDER_STATUS")"
-T2_ROW_COUNT="$(printf '%s' "$T2_CONTENT" | grep -cE '^\| dispatch-cccccccc ')"
+T2_ROW_COUNT="$(printf '%s' "$T2_CONTENT" | grep -cE '^\| DUP-LANE-01 ')"
 if [[ "$T2_ROW_COUNT" -eq 1 ]]; then
   pass "T2: a task_id reported twice by the collector still renders exactly ONE row"
 else
@@ -195,15 +286,47 @@ fi
 # ── T3: CROSS-REPO PRESENCE — own-repo + foreign-repo lanes both render ─
 beat_env "$STUBS/collector-cross-repo.sh" "2026-08-30T02:00:00Z"
 T3_CONTENT="$(cat "$FOUNDER_STATUS")"
-if printf '%s' "$T3_CONTENT" | grep -q '^| dispatch-eeeeeeee '; then
+if printf '%s' "$T3_CONTENT" | grep -q '^| OWN-REPO-LANE-01 '; then
   pass "T3a: own-repo lane renders"
 else
   fail "T3a: own-repo lane missing: $T3_CONTENT"
 fi
-if printf '%s' "$T3_CONTENT" | grep -q '^| persona-engine/dispatch-ffffffff '; then
+if printf '%s' "$T3_CONTENT" | grep -q '^| persona-engine/FOREIGN-LANE-01 '; then
   pass "T3b: foreign-repo lane renders, prefixed with its repo slug"
 else
   fail "T3b: foreign-repo lane missing from the table: $T3_CONTENT"
+fi
+
+# ── T4: REPO-AWARE DEDUP — same bare task_id, own-repo + foreign-repo ───
+beat_env "$STUBS/collector-repo-aware-dedup.sh" "2026-08-30T02:30:00Z"
+T4_CONTENT="$(cat "$FOUNDER_STATUS")"
+T4_OWN="$(printf '%s' "$T4_CONTENT" | grep -cE '^\| SHARED-ID-01 ')"
+T4_FOREIGN="$(printf '%s' "$T4_CONTENT" | grep -cE '^\| persona-engine/SHARED-ID-01 ')"
+if [[ "$T4_OWN" -eq 1 ]] && [[ "$T4_FOREIGN" -eq 1 ]]; then
+  pass "T4: a bare task_id shared by an own-repo and a foreign-repo lane renders as TWO rows"
+else
+  fail "T4: repo-blind dedup key ate one of the two lanes (own=$T4_OWN foreign=$T4_FOREIGN): $T4_CONTENT"
+fi
+
+# ── T5: MISSING TASK_ID — two lanes, neither carries a task_id ──────────
+beat_env "$STUBS/collector-missing-task-id.sh" "2026-08-30T03:00:00Z"
+T5_CONTENT="$(cat "$FOUNDER_STATUS")"
+T5_ROW_COUNT="$(printf '%s' "$T5_CONTENT" | grep -cE '^\| \? \(dispatch id unknown\) ')"
+if [[ "$T5_ROW_COUNT" -eq 2 ]]; then
+  pass "T5: two task_id-less lanes both render as distinct degraded rows, neither vanishes"
+else
+  fail "T5: expected 2 degraded rows for task_id-less lanes, got $T5_ROW_COUNT: $T5_CONTENT"
+fi
+
+# ── T6: CLOSED-LANE HUMAN NAME — identity AND the name, not either/or ───
+beat_env "$STUBS/collector-closed-name.sh" "2026-08-30T03:30:00Z"
+FULL_STATUS_T6="$REPO/docs/leadv2/founder-status-full.md"
+T6_CLOSED_LINE="$(grep -m1 '^Закрыто сегодня:' "$FULL_STATUS_T6" 2>/dev/null || true)"
+if printf '%s' "$T6_CLOSED_LINE" | grep -q 'CLOSED-NAME-01' \
+    && printf '%s' "$T6_CLOSED_LINE" | grep -qi 'retire the stale queue'; then
+  pass "T6: closed line carries both the identity and the human mission name"
+else
+  fail "T6: closed line lost identity or human name: ${T6_CLOSED_LINE:-<none>}"
 fi
 
 log ""

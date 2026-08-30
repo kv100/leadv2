@@ -369,17 +369,34 @@ def md_escape(s):
 # second, independent guard against an upstream collector duplicate
 # (e.g. the same lane appearing once from an own-repo read and once from
 # a foreign-repo read) ever reaching the renderer as two rows.
-_seen_tids = set()
+#
+# BROAD-STATUS-ROWS-02 fix-round-2 (High #1/#2): the key MUST be the
+# identity actually rendered, not a fragment of it.
+#   - (repo, task_id): a foreign lane sharing a bare task_id with an
+#     own-repo lane renders as "<repo>/<id>" vs "<id>" -- two DIFFERENT
+#     rows -- so repo must be part of the key or the foreign one is
+#     silently deleted despite never colliding on screen.
+#   - a row with no task_id at all previously fell back to the literal
+#     string "?" for every such row, so a SECOND task_id-less row from a
+#     different lane collapsed into the first with no degraded row left
+#     behind -- the exact failure `:203-213` (empty vs unreadable) exists
+#     to prevent. Each occurrence gets its own never-colliding key instead.
+_seen_keys = set()
 _deduped_table_rows = []
-for _row in table_rows:
-    _tid_key = str(_row.get("task_id") or "?")
-    if _tid_key in _seen_tids:
+for _idx, _row in enumerate(table_rows):
+    _tid_raw = _row.get("task_id")
+    if _tid_raw:
+        _key = (_row.get("repo"), str(_tid_raw))
+    else:
+        _key = ("__missing_task_id__", _idx)
+    if _key in _seen_keys:
         continue
-    _seen_tids.add(_tid_key)
+    _seen_keys.add(_key)
     _deduped_table_rows.append(_row)
 table_rows = _deduped_table_rows
 
 rows_out = []
+rows_out_is_foreign = []
 detail_lines = []
 closed_items = []
 current_lane_digest = {}
@@ -387,19 +404,30 @@ for row in table_rows:
     tid = str(row.get("task_id") or "?")
     d = detail_by_task.get(tid)
 
-    # id_display: dispatch id when the dispatch binding is known, else the
-    # raw founder task_id with an explicit marker (never silently pass one
-    # off as the other). BROAD-STATUS-RENDERER-01 D1: a task id that IS
-    # "dispatch-<hex>" carries its own dispatch id — same identity rule as
-    # leadv2-lane-detail.sh, applied here too because tombstone rows (no
-    # lane_detail row at all) were still rendered "(dispatch id unknown)"
-    # while the id sat in their own name. This id is a fallback for col-1
-    # ONLY (below) and always the source of the diagnostic detail line.
+    # id_display: BROAD-STATUS-ROWS-02 task.context.yaml decision IDENTITY
+    # -- task_id first, sig8/dispatch id only as the FALLBACK when task_id
+    # is absent. fix-round-2 (High #3): the previous ordering preferred
+    # dispatch_id whenever a lane_detail join existed, so a lane dispatched
+    # as task_id=BROAD-STATUS-ROWS-02 rendered as "dispatch-9f3a1c22" and
+    # the founder's own task id appeared in no column at all -- backwards
+    # from the decision record. dispatch_id remains the fallback for a row
+    # whose task_id could not be resolved at all (tid == "?").
+    #
+    # PULSE-READABLE-01 honesty invariant (kept, not reverted by the above):
+    # a task_id whose own dispatch binding is genuinely unresolved (no
+    # lane_detail dispatch_id, and the task_id itself is not already
+    # "dispatch-<hex>") still carries the "(dispatch id unknown)" marker --
+    # it says "we don't know the binding", which is orthogonal to WHICH
+    # identity wins as primary. A row with a resolved dispatch_id, or whose
+    # task_id already IS the dispatch id shape, needs no such disclaimer.
     dispatch_id = d.get("dispatch_id") if d else None
-    if dispatch_id:
+    if tid and tid != "?":
+        if dispatch_id or re.match(r"^dispatch-[0-9a-f]{6,40}$", tid):
+            id_display = tid
+        else:
+            id_display = f"{tid} (dispatch id unknown)"
+    elif dispatch_id:
         id_display = f"dispatch-{dispatch_id}"
-    elif re.match(r"^dispatch-[0-9a-f]{6,40}$", tid):
-        id_display = tid
     else:
         id_display = f"{tid} (dispatch id unknown)"
 
@@ -515,15 +543,23 @@ for row in table_rows:
         # alone ("dead:silent") is exactly the silence this fix exists to
         # break. Empty extraction degrades to the verdict-only line.
         _wr = (d.get("worker_reason") if d else None) or read_worker_reason(tid)
+        # fix-round-2 (Medium): "name" carries the row IDENTITY (linia,
+        # unchanged) so the closed line stays keyed the same way as a live
+        # row, but the human-readable mission name -- lost when :519 was
+        # reworked to print identity-only -- goes back into the prose so
+        # the founder is not left reading a bare id.
         closed_items.append({
             "name": linia,
-            "cause": sostoyanie + (f" — worker: {_wr}" if _wr else ""),
+            "cause": (f"{linia_name} — " if linia_name else "")
+            + sostoyanie
+            + (f" — worker: {_wr}" if _wr else ""),
         })
         continue
 
     rows_out.append(
         "| " + " | ".join(md_escape(x) for x in (linia, chto, sostoyanie)) + " |"
     )
+    rows_out_is_foreign.append(bool(_repo_slug))
     detail_lines.append(f"{id_display} — {kto} — {na_diske}")
 
 # Change 2b: a failed lane_detail section must be visible ABOVE the table,
@@ -584,10 +620,29 @@ pulse_md = (
 # PULSE-READABLE-01 rule 2: max ~6 rows in the founder-facing table. The
 # full (uncapped) row set still goes into founder-status-full.md below —
 # capping here is a RENDER decision, never a data-loss decision.
+#
+# BROAD-STATUS-ROWS-02 fix-round-2 (Critical): a foreign-repo row must
+# survive the cap. leadv2-lanes-snapshot.sh APPENDS foreign rows onto the
+# END of an already own-repo-ranked-and-capped table, so a plain
+# `[:TABLE_ROW_CAP]` slice systematically cuts every foreign lane once
+# own-repo lanes alone fill the cap -- the cross-repo lane is then counted
+# as "мусорных/лишних строк" below, which is a lie: it was never junk.
+# Foreign rows get a RESERVED slot (never truncated); only own-repo rows
+# compete for what remains of TABLE_ROW_CAP.
 TABLE_ROW_CAP = 6
 rows_out_full = rows_out
-rows_out = rows_out_full[:TABLE_ROW_CAP]
-table_rows_hidden = max(0, len(rows_out_full) - TABLE_ROW_CAP)
+rows_out_full_is_foreign = rows_out_is_foreign
+_foreign_row_count = sum(1 for _f in rows_out_full_is_foreign if _f)
+_own_row_budget = max(0, TABLE_ROW_CAP - _foreign_row_count)
+rows_out = []
+_own_rows_kept = 0
+for _line, _is_foreign in zip(rows_out_full, rows_out_full_is_foreign):
+    if _is_foreign:
+        rows_out.append(_line)
+    elif _own_rows_kept < _own_row_budget:
+        rows_out.append(_line)
+        _own_rows_kept += 1
+table_rows_hidden = max(0, len(rows_out_full) - len(rows_out))
 
 # PULSE-EMPTY-BOARD-01 rule 1: zero live lanes is a LOUD event, not a table
 # with no rows. `rows_out_full` is already alive-only (a dead row hits

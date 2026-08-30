@@ -112,6 +112,37 @@ print(json.dumps({"sections": {
 }}))' >"$out"
 EOF
 
+# T5 fixture: 7 own-repo active lanes (TABLE_ROW_CAP=6 alone would drop one)
+# PLUS 1 foreign-repo lane appended after them, byte-identical in shape to
+# how leadv2-lanes-snapshot.sh actually merges foreign rows (own-repo ranked
+# and capped first, foreign rows APPENDED to the end) -- BROAD-STATUS-ROWS-02
+# fix-round-2 Critical: a plain `[:TABLE_ROW_CAP]` slice cuts the trailing
+# foreign row every time own-repo lanes alone fill the cap.
+cat >"$STUBS/collector-cap-cross-repo.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+own = [{"task_id": f"OWN-CAP-{i:02d}", "status": "active"} for i in range(1, 8)]
+foreign = [{"task_id": "FOREIGN-CAP-01", "status": "active", "repo": "persona-engine", "age_s": 30}]
+own_detail = [
+    {"task_id": f"OWN-CAP-{i:02d}", "dispatch_id": f"{i:08x}", "worker": "sonnet",
+     "writing_now": True, "stream_bytes": i, "mission_title": f"OWN-CAP-{i:02d} -- filler lane {i}"}
+    for i in range(1, 8)
+]
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": own + foreign, "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": own_detail}}
+}}))' >"$out"
+EOF
+
 cat >"$STUBS/claude.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '{"result":"нет данных за сегодня\nвопросов нет"}'
@@ -202,6 +233,24 @@ if [[ "$T4_RC" -ne 0 ]] && [[ "$T4_HAS_TYPED_ERROR" == "registry_error" ]]; then
   pass "T4: malformed active.yaml -> leadv2-lanes-snapshot.sh exits non-zero with a typed registry_error (pre-existing PASS, locked as a regression guard)"
 else
   fail "T4: B1 contract broken — rc=$T4_RC typed_error=$T4_HAS_TYPED_ERROR out=$T4_OUT"
+fi
+
+# ── T5: CROSS-REPO CAP SURVIVAL (folded in from BROAD-STATUS-ROWS-02) ───
+# 7 own-repo lanes + 1 foreign lane, TABLE_ROW_CAP=6: the foreign lane must
+# survive the cap and must never be counted among the "мусорных/лишних
+# строк" the founder is told were hidden as junk.
+beat_env "$STUBS/collector-cap-cross-repo.sh" "2026-08-30T04:00:00Z"
+T5_CONTENT="$(cat "$FOUNDER_STATUS")"
+if printf '%s' "$T5_CONTENT" | grep -q '^| persona-engine/FOREIGN-CAP-01 '; then
+  pass "T5a: a foreign-repo lane survives the TABLE_ROW_CAP even with 7 own-repo lanes ahead of it"
+else
+  fail "T5a: foreign-repo lane was cut by the row cap: $T5_CONTENT"
+fi
+T5_OWN_ROWS="$(printf '%s' "$T5_CONTENT" | grep -cE '^\| OWN-CAP-[0-9]+ ')"
+if [[ "$T5_OWN_ROWS" -ge 1 ]]; then
+  pass "T5b: own-repo rows still render alongside the reserved foreign slot"
+else
+  fail "T5b: no own-repo rows rendered at all: $T5_CONTENT"
 fi
 
 log ""
