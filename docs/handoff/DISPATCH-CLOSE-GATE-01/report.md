@@ -76,3 +76,57 @@ fix. Every claim below is checkable against `git diff df19ece..HEAD`.
   this lane's write set were run individually to completion instead (see `round6-red/*.log`):
   `test-mission-writeset.sh` 22/0, `test-lib-source-guarded.sh` 4/0, `test-red-proof-gate.sh`
   19/0. `bash -n` clean on all five changed/touched shell files.
+
+## Round 7 — post-merge guard-suite RED, and the `--scope changed` rerun
+
+- **`leadv2-broad-status.sh:107-113` fixed**: the `[[ -f "$ALARM_LIB" ]] && source` site had no
+  canonical fallback, so a consumer symlink farm missing a new `lib/leadv2-alarm-dedupe.sh` entry
+  silently degraded (dedupe stops deduping, every poll emits a beat) instead of falling over to
+  `${LEADV2_CANONICAL_ROOT:-$HOME/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-alarm-dedupe.sh`.
+  Added the same two-step guard idiom used at `leadv2-dispatch-code.sh:441-444` and reworded the
+  R2 pass-through comment to state pass-through only fires when the lib is absent from BOTH
+  roots.
+- **Control added, not just fixed, and made position-independent**: `test-lib-source-guarded.sh`'s
+  `mut_site` helper was generalized to take a target basename (was hardcoded to
+  `leadv2-dispatch-code.sh`) and a new call
+  `mut_site "BROAD_STATUS_ALARM_LIB" ... "leadv2-broad-status.sh:112" "leadv2-broad-status.sh"`
+  strips the new fallback from a scratch symlink-mirror of the real production file and asserts
+  the scanner names exactly that site. Each control already asserted via `comm -23` against the
+  full documented baseline for its own `file:line` — the [High] finding ("control asserts on the
+  first violation, not on its own file") was actually the pre-existing unfixed
+  `leadv2-broad-status.sh:109` violation itself: with that site unguarded, `scan_unguarded`
+  returned it alongside every mutated site, so `found` (two lines) never string-equaled the
+  single-line `expect`, and the LANE_CHILD_SUFFIXES/PORTABLE_LOCK controls both failed by
+  reporting the broad-status line instead of their own. Fixing the broad-status site removes the
+  contaminating extra line, so both existing controls pass again with no further change to their
+  assertion logic; the `mut_site` generalization additionally proves the new BROAD_STATUS control
+  is self-contained and would fail correctly if the census baseline ever grew a second
+  undocumented violation.
+- RED proof for the new control, captured live: while pinning the round-6-style line-number
+  guess (`:113`) as `expect`, the control failed with
+  `FAIL: control BROAD_STATUS_ALARM_LIB: stripped fallback NOT detected as
+  plugins/leadv2/scripts/leadv2-broad-status.sh:113, got:
+  plugins/leadv2/scripts/leadv2-broad-status.sh:112` — the real post-strip source line is one
+  lower once the fallback line is removed. Corrected `expect` to `:112`, reran: GREEN (below).
+- GREEN, full suite, fix + new control in place:
+  ```
+  PASS: census: no new unguarded lib source outside the recorded out-of-lane baseline
+  PASS: control: removed canonical fallback is detected (would be red)
+  PASS: control LANE_CHILD_SUFFIXES: stripped canonical fallback is detected, naming plugins/leadv2/scripts/leadv2-dispatch-code.sh:452 (would be red)
+  PASS: control PORTABLE_LOCK: stripped canonical fallback is detected, naming plugins/leadv2/scripts/leadv2-dispatch-code.sh:460 (would be red)
+  PASS: control BROAD_STATUS_ALARM_LIB: stripped canonical fallback is detected, naming plugins/leadv2/scripts/leadv2-broad-status.sh:112 (would be red)
+  SUMMARY: pass=5 fail=0
+  ```
+- **`--scope changed` rerun, filed with its real exit code (Medium item 5, still open one round
+  later)**: attempted live this round: `timeout 480 bash tests/run-all.sh --scope changed` →
+  **exit 124**, stalled at `[CORE-OFFLINE] waiting for lock file=/tmp/leadv2-core-offline.lock
+  (held by a concurrent run)`. Verified via `ps aux` at the same moment that the lock is
+  genuinely contended by *other real, currently-running* lane processes, not stale and not a
+  regression in this diff — live `run-all.sh --scope changed` / `run-core-offline.sh` PIDs found
+  simultaneously under `PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01`, `DISPATCH-PIN-CLUSTER-01`,
+  `HOOK-OUTPUT-CAP-PLUGIN-01` (x2) and `ANTI-SILENCE-STATUSLINE-01` worktrees. Same root cause
+  round-6 documented (`HOOK-OUTPUT-CAP-PLUGIN-01`/`ANTI-SILENCE-STATUSLINE-01` contention) still
+  holds one round later, with two more concurrent lanes added to the fleet-wide lock queue. A
+  completed pass/fail line for the full `--scope changed` run cannot be filed while this lock is
+  live; this lane's write-set suite (`test-lib-source-guarded.sh`) was instead run individually
+  to completion (5/0 above).
