@@ -43,9 +43,21 @@ FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-$PROJECT_ROOT/docs/leadv2/fou
 # off PROJECT_ROOT).
 FOUNDER_STATUS_FULL_PATH="${LEADV2_FOUNDER_STATUS_FULL_PATH:-$PROJECT_ROOT/docs/leadv2/founder-status-full.md}"
 # The collector below supplies the "lanes" section rendered by this board.
-# It pins the all-repos policy itself; that is defensive hardening, not the
-# demonstrated cause of this lane's empty-board incident.  The incident's
-# evidenced cause is the bash-3.2 parse failure guarded by the syntax test.
+# It pins the all-repos policy itself (LEADV2_LANES_ALL_REPOS=1 at
+# leadv2-status-collector.sh's snapshot call). That pin is NOT defensive
+# hardening against a hypothetical -- it is a demonstrated, live root cause:
+# ~/.claude/settings.json's global `env` block ships LEADV2_LANES_ALL_REPOS=0
+# for every Claude Code session on this machine (verified 2026-08-30: `env |
+# grep LANES_ALL_REPOS` inside a fresh worktree shell -> "=0", and running
+# leadv2-lanes-snapshot.sh --json against a fixture with a live foreign-repo
+# lane and an empty own repo under that ambient env returns table=[] --
+# without the collector's inline override, a lane running in another repo
+# is invisible on the board even when the render itself succeeds).
+# A SECOND, independent incident shares this bug's title: the bash-3.2
+# heredoc parse failure fixed in 67f8b8d, which empties/aborts the render
+# outright ("render failed") rather than merely omitting foreign rows --
+# guarded by the syntax test below. Both are real; they were observed at
+# different beats of the same live incident (2026-08-30T16:53-17:00Z).
 COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector.sh}"
 TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
 CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"

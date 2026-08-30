@@ -91,8 +91,16 @@ EOF
 chmod +x "$STUBS/liveness.sh"
 
 snap() {  # [extra args...]
+  # LEADV2_LANES_ALL_REPOS=1 pins the script's documented default explicitly:
+  # ~/.claude/settings.json ships LEADV2_LANES_ALL_REPOS=0 globally on this
+  # machine (verified 2026-08-30, see root-cause-evidence.log), so relying on
+  # the script's own "${LEADV2_LANES_ALL_REPOS:-1}" default here would let
+  # this suite silently test the ambient override instead of the documented
+  # behaviour. An explicit "$@" flag (e.g. --no-all-repos in S2) still wins,
+  # since CLI parsing runs after this env default inside the script.
   env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_BASE="$STATE" \
     LEADV2_LANE_LIVENESS_BIN="$STUBS/liveness.sh" \
+    LEADV2_LANES_ALL_REPOS=1 \
     bash "$LANES_SNAPSHOT_SH" --json "$@" 2>/dev/null
 }
 
