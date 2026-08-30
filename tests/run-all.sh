@@ -126,6 +126,7 @@ leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-duty.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-readable-rendering.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-empty-board.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-single-lead-beat.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lib-source-guarded.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
 leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh

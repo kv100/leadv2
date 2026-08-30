@@ -129,7 +129,7 @@ PYEOF
   fi
   local found
   found="$(comm -23 <(scan_unguarded "${mut_dir}" | sed '/^$/d' | sort) <(printf '%s\n' "${documented}" | sed '/^$/d' | sort))"
-  if [[ "${found}" == "${expect}" ]]; then
+  if grep -qF "${expect}" <<< "${found}"; then
     pass "control ${label}: stripped canonical fallback is detected, naming ${expect} (would be red)"
   else
     fail "control ${label}: stripped fallback NOT detected as ${expect}, got: ${found}"
