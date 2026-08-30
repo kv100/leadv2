@@ -7,7 +7,7 @@
 # so it happily chose a route that answers nothing. This suite proves the
 # content-based probe rejects that shape and advances rank, with a
 # mutation-proven negative control: revert the content check to a bare
-# status-code check in a scratch copy of the PRODUCTION file and prove the
+# status-code check in the PRODUCTION file, restore it, and prove the
 # exact bug (blank-body route chosen) reproduces.
 set -u
 
@@ -19,7 +19,15 @@ pass() { PASS=$((PASS + 1)); printf '[TEST] PASS: %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '[TEST] FAIL: %s\n' "$1"; }
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/freepool-model-liveness.XXXXXX")"
-trap 'rm -rf "$ROOT"' EXIT
+SELECTOR_BACKUP=""
+restore_selector() {
+  [[ -z "${SELECTOR_BACKUP}" || ! -f "${SELECTOR_BACKUP}" ]] || cp "${SELECTOR_BACKUP}" "${SELECTOR}"
+}
+cleanup() {
+  restore_selector
+  rm -rf "$ROOT"
+}
+trap cleanup EXIT
 
 if bash -n "$SELECTOR"; then
   pass 'bash syntax: selector'
@@ -154,16 +162,16 @@ grep -q 'probe failed for.*deepseek-v4-pro-0813' "$ROOT/selector.stderr" \
   && pass 'content probe: blank route logged as probe failure, not silently skipped' \
   || fail 'content probe: blank route logged as probe failure, not silently skipped'
 
-# --- Case 2 (RED, mutated scratch copy): revert the content check to a bare
+# --- Case 2 (RED, mutated production file): revert the content check to a bare
 # status-code check -- the same fixture must now WRONGLY pick the blank
 # primary, reproducing the exact 2026-08-30 live incident shape.
-MUTATED="$ROOT/leadv2-freepool-model-select.mutated.sh"
-cp "$SELECTOR" "$MUTATED"
+SELECTOR_BACKUP="$ROOT/leadv2-freepool-model-select.original.sh"
+cp "$SELECTOR" "$SELECTOR_BACKUP"
 
 # Anchor on the exact status-only probe body this fix replaced. A zero-match
 # anchor is a hard failure, not a skip -- it means the fix drifted and this
 # control no longer proves anything.
-python3 - "$MUTATED" <<'PYEOF'
+python3 - "$SELECTOR" <<'PYEOF'
 import re, sys
 path = sys.argv[1]
 with open(path) as f:
@@ -199,16 +207,25 @@ mutate_rc=$?
 if [[ "$mutate_rc" -ne 0 ]]; then
   fail 'mutation anchor: _probe status-only reversion (anchor not found -- production shape drifted, control is void)'
 else
-  pass 'mutation applied: _probe reverted to status-code-only check (scratch copy)'
+  pass 'mutation applied: production _probe reverted to status-code-only check'
 fi
 
-bash -n "$MUTATED" || fail 'mutated selector fails bash -n (control setup broken)'
+bash -n "$SELECTOR" || fail 'mutated selector fails bash -n (control setup broken)'
 
-mutated_chosen="$(run_selector "$MUTATED")"; mutated_rc=$?
+mutated_chosen="$(run_selector "$SELECTOR")"; mutated_rc=$?
 if [[ "$mutated_rc" -eq 0 && "$mutated_chosen" == "anthropic/nvidia_nim/deepseek-ai/deepseek-v4-pro-0813" ]]; then
   pass 'MUTATION KILLED: status-only probe wrongly picks the blank-body route (reproduces the 2026-08-30 incident)'
 else
   fail "MUTATION KILLED: status-only probe wrongly picks the blank-body route (rc=$mutated_rc chosen=$mutated_chosen)"
+fi
+restore_selector
+SELECTOR_BACKUP=""
+
+restored_chosen="$(run_selector "$SELECTOR")"; restored_rc=$?
+if [[ "$restored_rc" -eq 0 && "$restored_chosen" == "anthropic/mistral/mistral-code-latest" ]]; then
+  pass '(green) restored production selector rejects blank primary and chooses secondary'
+else
+  fail "(green) restored production selector did not recover content check (rc=$restored_rc chosen=$restored_chosen)"
 fi
 
 echo "=== ${PASS} passed, ${FAIL} failed ==="

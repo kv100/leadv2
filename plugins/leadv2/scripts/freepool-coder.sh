@@ -1540,9 +1540,10 @@ deadhand_check() {
           local gate_lib gate_out gate_rc
           gate_lib="${SELF%/*}/lib/leadv2-worker-output-gate.sh"
           if [[ -x "${gate_lib}" || -f "${gate_lib}" ]] && git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            # The gate's --from-git-diff mode checks both this run's working
-            # tree (`HEAD`) and origin/main...HEAD, so a worker that commits
-            # its broken output cannot escape validation on a clean tree.
+            # The gate checks this run's working tree (`HEAD`) and its
+            # committed range. If that range cannot be resolved (for example,
+            # a lane without origin/main), it fails closed rather than treating
+            # missing validation evidence as a clean worker result.
             # The rejected-gate exit is expected evidence, so capture it in a
             # tested conditional; a bare failing assignment is fatal under the
             # wrapper's global set -e and would skip finalization entirely.

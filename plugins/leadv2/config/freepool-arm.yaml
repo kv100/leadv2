@@ -113,23 +113,23 @@ model_rank:
 role_rank:
   # Multi-file code writing. Instruction adherence and correctness dominate; a minute
   # of latency is cheaper than a wrong diff.
-  # Re-ranked 2026-08-30 round 3: the order is explicitly the measured
-  # discriminating-task latency order among candidates that produced a
-  # bash-3.2-clean, behaviourally correct patch. It is not a quality claim
-  # when more than one candidate passes the same correctness oracle.
+  # Re-ranked 2026-08-30 round 3 by the latency-only selector timings in
+  # docs/handoff/FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01/round3-selector/. No
+  # discriminating bash-3.2 editing bakeoff was run or recorded that round;
+  # this ordering is not a correctness or model-quality claim.
   implement:
     - prefix: "groq/openai/gpt-oss-120b"
       tier: primary
-      why: "Fastest correct result in the round-3 bash-3.2 editing bakeoff; selected first by explicit latency tie-break after correctness."
+      why: "Lowest recorded round-3 selector latency for this role; latency-only ordering, not a correctness ranking."
     - prefix: "mistral/mistral-code-latest"
       tier: secondary
-      why: "Second fast correct result and a provider fallback; ordered by latency only after the same correctness oracle passed."
+      why: "Second recorded latency and a provider fallback; no round-3 correctness bakeoff was recorded."
     - prefix: "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
       tier: tertiary
-      why: "Correct on the discriminating task but slower; retained as a distinct-provider fallback."
+      why: "Slower recorded latency; retained as a distinct-provider fallback without a round-3 correctness claim."
     - prefix: "nvidia_nim/moonshotai/kimi-k3"
       tier: quaternary
-      why: "Correct on the discriminating task but slower; retained for a different model lineage."
+      why: "Slower recorded latency; retained for a different model lineage without a round-3 correctness claim."
 
   # Many near-identical edits. Throughput and consistency matter; reasoning depth does not.
   bulk:
@@ -138,13 +138,13 @@ role_rank:
       why: "Fastest correct route measured (0.5s); Groq's inference speed is the whole point for high-volume mechanical work."
     - prefix: "groq/qwen/qwen3.8-27b"
       tier: secondary
-      why: "Same provider's smaller model, 1.6s, correct and token-frugal (2 output tokens)."
+      why: "Same provider's smaller model, 1.6s in the recorded selector timing; latency-only ordering."
     - prefix: "mistral/mistral-code-latest"
       tier: tertiary
-      why: "2.0s from a second provider, so a Groq quota wall does not stall the batch."
+      why: "2.0s in the recorded selector timing from a second provider; a latency fallback."
     - prefix: "nvidia_nim/minimaxai/minimax-m3"
       tier: quaternary
-      why: "2.3s and correct via NIM — unlike minimax-m2.1, which never reached an answer."
+      why: "2.3s in the recorded selector timing via NIM; no round-3 correctness claim."
 
   # Adversarial review and bug hunting. Reasoning depth matters, latency does not.
   review:
@@ -153,7 +153,7 @@ role_rank:
       why: "First review fallback chosen for a route the role selector can resolve promptly; review quality still requires the normal adversarial gate."
     - prefix: "mistral/mistral-code-latest"
       tier: secondary
-      why: "Second provider fallback that passed the same syntax-and-behaviour oracle."
+      why: "Second-provider fallback, ordered by recorded latency rather than a round-3 correctness oracle."
     - prefix: "gemini/models/gemini-3.7-flash"
       tier: tertiary
       why: "Third provider fallback for an independent review path."

@@ -76,8 +76,19 @@ main() {
     # caller supplies HEAD).  Also inspect commits made by the worker: a clean
     # working tree after `git commit` must not hide a broken shell file.
     git -C "$repo_root" diff --name-only --diff-filter=ACMR "$@" 2>/dev/null >> "$files_file" || true
-    if git -C "$repo_root" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
-      git -C "$repo_root" diff --name-only --diff-filter=ACMR origin/main...HEAD 2>/dev/null >> "$files_file" || true
+    # A clean worker tree is only safe to pass when we can also resolve the
+    # committed range.  Lane repositories commonly have no origin/main; do
+    # not turn that missing evidence into a silent success.
+    local committed_base
+    if ! committed_base="$(git -C "$repo_root" merge-base origin/main HEAD 2>/dev/null)"; then
+      printf 'worker_output_gate_error reason=committed_range_unresolved base=origin/main head=HEAD\n' >&2
+      rm -f "$files_file"
+      return 2
+    fi
+    if ! git -C "$repo_root" diff --name-only --diff-filter=ACMR "${committed_base}...HEAD" 2>/dev/null >> "$files_file"; then
+      printf 'worker_output_gate_error reason=committed_range_diff_failed base=%s head=HEAD\n' "$committed_base" >&2
+      rm -f "$files_file"
+      return 2
     fi
     while IFS= read -r line; do
       [[ -n "$line" ]] || continue

@@ -17,7 +17,17 @@ pass() { printf 'PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
 fail() { printf 'FAIL: %s -- %s\n' "$1" "${2:-}"; FAIL=$((FAIL + 1)); }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/wog-test.XXXXXX")"
-trap '[[ "${WOG_KEEP:-0}" == "1" ]] || rm -rf "$TMP"' EXIT
+GATE_BACKUP=""
+CODER_BACKUP=""
+restore_production_files() {
+  [[ -z "${GATE_BACKUP}" || ! -f "${GATE_BACKUP}" ]] || cp "${GATE_BACKUP}" "${GATE}"
+  [[ -z "${CODER_BACKUP}" || ! -f "${CODER_BACKUP}" ]] || cp "${CODER_BACKUP}" "${CODER}"
+}
+cleanup() {
+  restore_production_files
+  [[ "${WOG_KEEP:-0}" == "1" ]] || rm -rf "$TMP"
+}
+trap cleanup EXIT
 
 bash -n "$GATE" || { fail "bash syntax: gate"; exit 1; }
 pass "bash syntax: gate"
@@ -96,58 +106,61 @@ else
   fail "committed range: expected reject from origin/main...HEAD, got rc=$rc out=$out"
 fi
 
-# ── mutation control: disable the *.sh branch in a scratch gate copy ───────
-# Never mutate a plugin file in place: an interrupted test must leave
-# production bytes untouched.
-MUT_MARK='*.sh)'
-if ! grep -qF "$MUT_MARK" "$GATE"; then
-  fail "mutation anchor not found in production gate -- cannot prove the control" "zero-match"
+# ── committed-broken file without origin/main must fail closed ──────────────
+NO_ORIGIN_REPO="$TMP/no-origin-repo"
+mkdir -p "$NO_ORIGIN_REPO"
+git -C "$NO_ORIGIN_REPO" init -q -b main
+git -C "$NO_ORIGIN_REPO" config user.email t@e.com; git -C "$NO_ORIGIN_REPO" config user.name t
+printf '#!/usr/bin/env bash\necho baseline\n' > "$NO_ORIGIN_REPO/worker.sh"
+git -C "$NO_ORIGIN_REPO" add worker.sh; git -C "$NO_ORIGIN_REPO" commit -qm baseline
+printf '#!/usr/bin/env bash\necho "unclosed\n' > "$NO_ORIGIN_REPO/worker.sh"
+git -C "$NO_ORIGIN_REPO" add worker.sh; git -C "$NO_ORIGIN_REPO" commit -qm 'broken worker output'
+out="$(bash "$GATE" "$NO_ORIGIN_REPO" --from-git-diff HEAD 2>&1)"; rc=$?
+if [[ $rc -ne 0 ]] && printf '%s' "$out" | grep -q 'worker_output_gate_error reason=committed_range_unresolved'; then
+  pass "missing origin/main: committed broken shell fails closed with explicit range error"
 else
-  MUTATED_GATE="$TMP/leadv2-worker-output-gate.mutated.sh"
-  cp "$GATE" "$MUTATED_GATE"
-  # Replace the *.sh case arm with a no-op arm so a broken .sh is never
-  # checked -- the exact regression this gate exists to prevent.
-python3 - "$MUTATED_GATE" <<'PY'
+  fail "missing origin/main: expected explicit nonzero range error, got rc=$rc out=$out"
+fi
+
+# ── mutation control: remove the production missing-range guard, RED, restore ─
+GATE_BACKUP="$TMP/leadv2-worker-output-gate.original.sh"
+cp "$GATE" "$GATE_BACKUP"
+python3 - "$GATE" <<'PY'
 import sys
 path = sys.argv[1]
 src = open(path).read()
-anchor = '''      *.sh)
-        if ! err="$(bash -n "$abspath" 2>&1 1>/dev/null)"; then
-          printf 'worker_output_gate_reject file=%s tool=bash-n\\n' "$f"
-          printf '%s\\n' "$err"
-          rc=1
-        fi
-        ;;'''
-replacement = '''      *.sh)
-        :  # MUTATED: sh check disabled
-        ;;'''
-if anchor not in src:
-    sys.exit("mutation anchor not found -- zero-match, hard failure")
-open(path, 'w').write(src.replace(anchor, replacement, 1))
+anchor = '''if ! committed_base="$(git -C "$repo_root" merge-base origin/main HEAD 2>/dev/null)"; then
+      printf 'worker_output_gate_error reason=committed_range_unresolved base=origin/main head=HEAD\\n' >&2
+      rm -f "$files_file"
+      return 2
+    fi'''
+if src.count(anchor) != 1:
+    sys.exit("mutation anchor must match exactly once -- zero-match or ambiguous")
+open(path, "w").write(src.replace(anchor, 'committed_base=""  # MUTATED: unresolved committed range silently ignored', 1))
 PY
-  if [[ $? -ne 0 ]]; then
-    fail "mutation replace failed -- anchor text drifted" "zero-match"
+if [[ $? -ne 0 ]]; then
+  fail "missing-range mutation: production anchor missing" "zero-match"
+else
+  out_red="$(bash "$GATE" "$NO_ORIGIN_REPO" --from-git-diff HEAD 2>&1)"; rc_red=$?
+  if [[ $rc_red -eq 0 ]]; then
+    pass "(red) MUTATION KILLED: production gate silently accepts no-origin committed broken shell"
   else
-    bash -n "$MUTATED_GATE" || fail "mutated gate fails its own bash -n"
-    out_red="$(bash "$MUTATED_GATE" "$REPO" broken.sh 2>&1)"; rc_red=$?
-    if [[ $rc_red -eq 0 ]]; then
-      pass "(red) mutated gate silently accepts the broken .sh -- control is falsifiable"
-    else
-      fail "(red) mutation did not flip the outcome" "rc=$rc_red out=$out_red"
-    fi
-    out_green="$(bash "$GATE" "$REPO" broken.sh 2>&1)"; rc_green=$?
-    if [[ $rc_green -ne 0 ]] && printf '%s' "$out_green" | grep -q 'worker_output_gate_reject file=broken.sh tool=bash-n'; then
-      pass "(green) restored gate rejects the broken .sh again"
-    else
-      fail "(green) restore did not bring back the reject" "rc=$rc_green out=$out_green"
-    fi
+    fail "(red) missing-range mutation did not reproduce silent pass" "rc=$rc_red out=$out_red"
   fi
+fi
+restore_production_files
+GATE_BACKUP=""
+out_green="$(bash "$GATE" "$NO_ORIGIN_REPO" --from-git-diff HEAD 2>&1)"; rc_green=$?
+if [[ $rc_green -ne 0 ]] && printf '%s' "$out_green" | grep -q 'worker_output_gate_error reason=committed_range_unresolved'; then
+  pass "(green) restored production gate fails closed without origin/main"
+else
+  fail "(green) restored production gate did not restore range rejection" "rc=$rc_green out=$out_green"
 fi
 
 # ── production call path: freepool-coder invokes the gate after finalizing ─
 # A fake worker commits a bash-n-broken file and returns a coherent result.
-# The real coder must mark the run parse_error; a throwaway copy with the
-# call site removed must reproduce the false pass. The supervisor is polled
+# The real coder must mark the run parse_error; a production-file mutation
+# with the call site removed must reproduce the false pass. The supervisor is polled
 # to .finalized before this test ends.
 CALL_REPO="$TMP/call-repo"
 mkdir -p "$CALL_REPO"
@@ -192,10 +205,9 @@ else
   fail "production call path: expected parse_error from real coder call (rc=$call_rc run=${CALL_GREEN:-none})"
 fi
 
-MUT_ROOT="$TMP/mutated-scripts"
-cp -R "$SCRIPTS_ROOT" "$MUT_ROOT"
-MUT_CODER="$MUT_ROOT/freepool-coder.sh"
-python3 - "$MUT_CODER" <<'PY'
+CODER_BACKUP="$TMP/freepool-coder.original.sh"
+cp "$CODER" "$CODER_BACKUP"
+python3 - "$CODER" <<'PY'
 import sys
 path = sys.argv[1]
 src = open(path).read()
@@ -213,12 +225,22 @@ if [[ $? -ne 0 ]]; then
 else
   git -C "$CALL_REPO" reset --hard -q origin/main
   RUNS_RED="$TMP/runs-red"; mkdir -p "$RUNS_RED"
-  CALL_RED="$(run_coder_path "$MUT_CODER" "$RUNS_RED")"; call_red_rc=$?
+  CALL_RED="$(run_coder_path "$CODER" "$RUNS_RED")"; call_red_rc=$?
   if [[ $call_red_rc -eq 0 && ! -f "$CALL_RED/.no-deliverable" ]]; then
-    pass "MUTATION KILLED: removing freepool-coder gate call falsely accepts committed broken output"
+    pass "MUTATION KILLED: production freepool-coder without gate call falsely accepts committed broken output"
   else
     fail "MUTATION KILLED: call-site mutation did not reproduce false pass (rc=$call_red_rc run=${CALL_RED:-none})"
   fi
+fi
+restore_production_files
+CODER_BACKUP=""
+git -C "$CALL_REPO" reset --hard -q origin/main
+RUNS_RESTORED="$TMP/runs-restored"; mkdir -p "$RUNS_RESTORED"
+CALL_RESTORED="$(run_coder_path "$CODER" "$RUNS_RESTORED")"; call_restored_rc=$?
+if [[ $call_restored_rc -eq 0 && -f "$CALL_RESTORED/.no-deliverable" ]] && grep -q 'reason=parse_error' "$CALL_RESTORED/.no-deliverable"; then
+  pass "(green) restored production freepool-coder rejects committed bash-n failure"
+else
+  fail "(green) restored production call did not reject (rc=$call_restored_rc run=${CALL_RESTORED:-none})"
 fi
 
 echo "---"
