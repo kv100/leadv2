@@ -342,5 +342,83 @@ else
   bad "R11" "unrecognised BASE was mutated: $GARBAGE_OUT"
 fi
 
+
+# ---- ANTI-SILENCE-STATUSLINE-01 round 3: the ACTUAL live path -------------
+# Everything above exercises leadv2-lane-status-line-tail.sh's rich digest,
+# which is only reachable when a supervising session is detected. A normal
+# /leadv2 session (LEADV2_STATUSLINE_SUPERVISOR_ONLY=1, the default, no
+# .supervise-active sentinel) takes a DIFFERENT path entirely: the
+# non-supervisor branch of leadv2-lane-status-line.sh itself, which reads a
+# memoised `leadv2-status-surface.sh --oneline` line. That branch used to
+# gate the whole lane segment on the literal substring "live" appearing
+# anywhere in the oneline text (including inside human-readable cause text
+# like "0s live(pid 123)") -- so a repaint where every lane had gone
+# dead/silent rendered NO lane segment at all: the founder's exact repro
+# ("three lanes running, saw none"). These tests drive that real path
+# directly, with a hand-seeded memo file (bypassing the background
+# refresher/status-surface.sh entirely) so the composer's own logic is what
+# is under test.
+COMPOSER="${SCRATCH_SCRIPTS}/leadv2-lane-status-line.sh"
+COMPOSER_TMPDIR="$tmp/composer-tmp"
+mkdir -p "$COMPOSER_TMPDIR"
+COMPOSER_INPUT='{"model":{"display_name":"Sonnet 5"},"workspace":{"current_dir":"/tmp/composer-cwd"}}'
+_composer_cache_key() {
+  # mirrors leadv2-lane-status-line.sh's BASE_KEY/_sup0 derivation
+  printf '%s' "/tmp/composer-cwd" | tr '/' '_'
+}
+run_composer() {
+  local width="$1" memo_line="$2"
+  local key memo
+  key="$(_composer_cache_key)_sup0"
+  rm -rf "$COMPOSER_TMPDIR"; mkdir -p "$COMPOSER_TMPDIR"
+  memo="${COMPOSER_TMPDIR}/leadv2-status-oneline-${key}"
+  printf '%s' "$memo_line" > "$memo"
+  printf '%s' "$COMPOSER_INPUT" | \
+    TMPDIR="$COMPOSER_TMPDIR" HOME="${HOME}" COLUMNS="$width" \
+    LEADV2_STATUSLINE_SUPERVISOR_ONLY=1 bash "$COMPOSER"
+}
+# a settings.json with no statusLine.command -> exercises the pure-builtin
+# fallback base render, isolating the composer's own lane-prefix logic from
+# any external command.
+mkdir -p "$tmp/composer-home/.claude"
+printf '{}' > "$tmp/composer-home/.claude/settings.json"
+
+# MUTATION CONTROL 'silence': a lane digest with ZERO "live" lanes (all
+# dead/silent) must still lead the line, ahead of the base render.
+DEAD_ONLY_LINE='lanes 1: mylane·dead·9m'
+SILENCE_OUT="$(HOME="$tmp/composer-home" run_composer 120 "$DEAD_ONLY_LINE")"
+if [[ "$SILENCE_OUT" == "$DEAD_ONLY_LINE "* ]]; then
+  ok "silence: dead-only lane digest still leads the composed line"
+else
+  bad "silence" "dead-only lane digest missing/not leading: $SILENCE_OUT"
+fi
+
+# MUTATION CONTROL 'order': lane field start index is < 40 even with a
+# realistic base line present.
+printf '{"statusLine":{"command":"printf %s"}}' "'Opus 5 in ~/proj [style] 50%% ctx'" > "$tmp/composer-home/.claude/settings.json"
+ORDER_OUT="$(HOME="$tmp/composer-home" run_composer 120 "$DEAD_ONLY_LINE")"
+ORDER_IDX="$(printf '%s' "$ORDER_OUT" | grep -bo 'mylane' | head -1 | cut -d: -f1)"
+if [[ -n "$ORDER_IDX" && "$ORDER_IDX" -lt 40 ]]; then
+  ok "order: lane field start index ($ORDER_IDX) < 40 (leads the base/quota text)"
+else
+  bad "order" "lane field not found before index 40 (idx='$ORDER_IDX'): $ORDER_OUT"
+fi
+
+# MUTATION CONTROL 'width': COLUMNS actually changes the rendered line, and
+# a narrow width still yields the full lane digest (short enough to fit)
+# with the base line visibly shorter than at a wide COLUMNS.
+WIDE_LINE="$(HOME="$tmp/composer-home" run_composer 200 "$DEAD_ONLY_LINE")"
+NARROW_LINE="$(HOME="$tmp/composer-home" run_composer 40 "$DEAD_ONLY_LINE")"
+if [[ "$WIDE_LINE" != "$NARROW_LINE" ]]; then
+  ok "width: COLUMNS=40 vs COLUMNS=200 render differently (was previously width-invariant)"
+else
+  bad "width" "output identical across COLUMNS=40 and COLUMNS=200: $NARROW_LINE"
+fi
+if (( ${#NARROW_LINE} <= 40 + ${#DEAD_ONLY_LINE} )); then
+  ok "width: narrow-COLUMNS render did not balloon past the requested budget"
+else
+  bad "width" "narrow-COLUMNS render ($( printf '%s' "$NARROW_LINE" | wc -c )) far exceeds budget: $NARROW_LINE"
+fi
+
 printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"
 [[ "$FAIL" -eq 0 ]]

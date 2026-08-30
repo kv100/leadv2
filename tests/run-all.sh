@@ -144,7 +144,11 @@ leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-one-copy-drift.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
-leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh"
+leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
+leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
+leadv2-status-surface.sh:plugins/leadv2/scripts/tests/test-status-surface.sh
+leadv2-lane-status-line.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
+leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(

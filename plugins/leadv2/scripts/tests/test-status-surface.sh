@@ -1863,6 +1863,51 @@ else
 fi
 
 log ""
+log "== ANTI-SILENCE-STATUSLINE-01 round 3: emit_oneline width budget =="
+# MUTATION CONTROL 'width': the old emit_oneline joined raw multi-word
+# fields with no budget at all -- a downstream character slice then cut
+# MID-TOKEN. This suite exercises the fix directly: many lanes at a narrow
+# width must produce single-word tokens only, plus a clean "+N" dropped-
+# count, and the printed line must never exceed the requested width.
+NEW_SB
+{
+  printf 'meta: {}\nsessions:\n'
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    printf '  - task_id: wide%08d\n    phase: build\n    class: Standard\n    pid: %s\n    lead_model: glm\n    log_path: %s\n' \
+      "$i" "$$" "''"
+  done
+} > "${STATE_DIR}/active.yaml"
+WIDE_OUT="$(LEADV2_STATUSLINE_WIDTH=40 run_render --oneline)"
+if printf '%s' "$WIDE_OUT" | grep -qE '^lanes '; then
+  pass "width: --oneline still starts with 'lanes ' at a narrow budget"
+else
+  fail "width: --oneline did not start with 'lanes ' (got: $WIDE_OUT)"
+fi
+WIDE_LEN="$(printf '%s' "$WIDE_OUT" | awk '{print length}')"
+if [ "$WIDE_LEN" -le 60 ]; then
+  pass "width: 12-lane oneline at WIDTH=40 stayed short (len=$WIDE_LEN, budget+prefix slack)"
+else
+  fail "width: 12-lane oneline at WIDTH=40 overran (len=$WIDE_LEN): $WIDE_OUT"
+fi
+WIDE_BAD_TOKEN=""
+for tok in $WIDE_OUT; do
+  case "$tok" in
+    lanes|[0-9]*:|+[0-9]*|*·*·*) ;;
+    *) WIDE_BAD_TOKEN="$tok" ;;
+  esac
+done
+if [ -z "$WIDE_BAD_TOKEN" ]; then
+  pass "width: no mid-token fragment in narrow-width oneline"
+else
+  fail "width: mid-token fragment found: '$WIDE_BAD_TOKEN' in: $WIDE_OUT"
+fi
+if printf '%s' "$WIDE_OUT" | grep -qE '\+[0-9]+$'; then
+  pass "width: dropped-lane count marker ('+N') present when lanes exceed budget"
+else
+  fail "width: no '+N' dropped-count marker (got: $WIDE_OUT)"
+fi
+
+log ""
 log "== SWIFTBAR-R4 RC-2: every touched script parses under bash 3.2 =="
 # macOS ships /bin/bash 3.2.57; a dev shell's `bash` resolves to homebrew's 5.x
 # and would never catch a bash-4-only construct (${var,,} etc) the way the
