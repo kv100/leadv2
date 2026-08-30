@@ -438,8 +438,10 @@ else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :;
 # environment before it launches any provider channel, so a bypass var set on
 # the supervising session cannot ride along even through a channel that does
 # not go through the session runner.
+_LEADV2_HELPERS_SH="${SCRIPT_DIR}/leadv2-helpers.sh"
+[[ -f "${_LEADV2_HELPERS_SH}" ]] || _LEADV2_HELPERS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-helpers.sh"
 # shellcheck source=leadv2-helpers.sh
-source "${SCRIPT_DIR}/leadv2-helpers.sh" 2>/dev/null || true
+[[ -f "${_LEADV2_HELPERS_SH}" ]] && source "${_LEADV2_HELPERS_SH}" 2>/dev/null
 declare -F lv2_scrub_bypass_env >/dev/null 2>&1 && lv2_scrub_bypass_env
 # STATUSLINE-COUNT-TRUTH-01: single source of truth for the architect-prepass
 # dir suffix -- leadv2-lane-liveness.sh folds dispatch-<sig8>-<role> ids back
@@ -488,6 +490,7 @@ fi
 # copy falls through to the established ladder and is made observable at the
 # call site, rather than making dispatch unavailable.
 ROUTE_ARBITER_LIB="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
+[[ -f "${ROUTE_ARBITER_LIB}" ]] || ROUTE_ARBITER_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh"
 [[ -f "${ROUTE_ARBITER_LIB}" ]] && source "${ROUTE_ARBITER_LIB}" || true
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
@@ -539,8 +542,10 @@ _dl_attempt_token() { printf '%s-%s-%s' "${1:-nosig}" "${ATTEMPT_EPOCH}" "$$"; }
 # task_id (no --task-id caller) is guarded explicitly: leadv2_active_update_phase's own
 # "${1:?...}" would otherwise abort this whole script under `set -u` on an empty arg.
 _ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+[[ -f "${_ACTIVE_REGISTRY_SH}" ]] || _ACTIVE_REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
 [[ -f "${_ACTIVE_REGISTRY_SH}" ]] && source "${_ACTIVE_REGISTRY_SH}"
 _LANE_STATE_SH="${SCRIPT_DIR}/lib/leadv2-lane-state.sh"
+[[ -f "${_LANE_STATE_SH}" ]] || _LANE_STATE_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-state.sh"
 [[ -f "${_LANE_STATE_SH}" ]] && source "${_LANE_STATE_SH}"
 # SILENT-DEATH-01 (SUPERVISOR-AUDIT-01, 2026-07-30): leadv2-active-registry.sh sets its own
 # `set -euo pipefail` (line 26) for standalone use; `source` runs it in THIS shell, so its -e

@@ -17,7 +17,7 @@ scan_unguarded() { # <root> -> file:line; a source without a canonical fallback 
   python3 - "$1" <<'PY'
 import os, re, sys
 root = sys.argv[1]
-source = re.compile(r'^\s*(?:source|\.)\s+(.*)')
+source = re.compile(r'(?:^|&&|\|\|)\s*(?:source|\.)\s+(.+)$')
 for base in ('plugins/leadv2/scripts', 'plugins/leadv2/hooks'):
     directory = os.path.join(root, base)
     for walk, _, files in os.walk(directory):
@@ -25,7 +25,20 @@ for base in ('plugins/leadv2/scripts', 'plugins/leadv2/hooks'):
             if not name.endswith('.sh'):
                 continue
             path = os.path.join(walk, name)
-            lines = open(path, encoding='utf-8').read().splitlines()
+            rel = os.path.relpath(path, root)
+            text = open(path, encoding='utf-8').read()
+            lines = text.splitlines()
+            # A test file always runs from a full checkout (never symlinked standalone
+            # into a consumer repo), so its own sourcing of the module under test is not
+            # a single-file-symlink concern -- only the old lib/-literal heuristic applies
+            # there. A PRODUCTION/hook file that already speaks LEADV2_CANONICAL_ROOT
+            # somewhere has opted into the symlink-safe idiom, so every sibling-script
+            # source in it must follow the same discipline, not just the ones whose
+            # argument happens to contain "lib/". DISPATCH-CLOSE-GATE-01 round 6: the
+            # prior `/lib/`-literal heuristic missed leadv2-lane-child-suffixes.sh and
+            # leadv2-portable-lock.sh, which sit directly under scripts/, not lib/.
+            is_test_file = '/tests/' in ('/' + rel)
+            file_is_canonical_aware = (not is_test_file) and 'LEADV2_CANONICAL_ROOT' in text
             for index, line in enumerate(lines):
                 match = source.search(line)
                 if not match:
@@ -36,10 +49,15 @@ for base in ('plugins/leadv2/scripts', 'plugins/leadv2/hooks'):
                 variable = re.search(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)', argument)
                 if variable and re.search(r'^\s*%s=.*(?:/|\.)lib/' % re.escape(variable.group(1)), context, re.M):
                     is_lib = True
-                if not is_lib:
+                is_script = is_lib
+                if file_is_canonical_aware and not is_script:
+                    is_script = bool(re.search(r'\.sh\b', argument))
+                    if variable and re.search(r'^\s*%s=.*\.sh"?\s*$' % re.escape(variable.group(1)), context, re.M):
+                        is_script = True
+                if not is_script:
                     continue
                 if 'LEADV2_CANONICAL_ROOT' not in context:
-                    print('%s:%d' % (os.path.relpath(path, root), index + 1))
+                    print('%s:%d' % (rel, index + 1))
 PY
 }
 

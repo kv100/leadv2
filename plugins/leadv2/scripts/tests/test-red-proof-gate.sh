@@ -3,9 +3,13 @@
 # lib/leadv2-red-proof.sh (named-fix extraction, RED-artifact backing) and the
 # leadv2-dispatch-code.sh `close-gate` CLI entry point.
 #
-# Negative control (mutation-proven, see bottom): the nonzero-failure-count requirement in
-# leadv2_red_proof_has_red is mutated on a temp copy of the lib so it accepts a "0 failed"
-# artifact, and the suite asserts the relevant test goes red.
+# Negative control (mutation-proven, "control C1" below): the nonzero-failure-count
+# requirement in leadv2_red_proof_has_red is mutated on a temp copy of the lib so it
+# accepts a "0 failed" artifact, and the suite asserts the relevant test goes red.
+# The C3 control near the bottom extracts and runs the five real production
+# `_dl_note ... leadv2_red_proof_render_evidence(...)` call sites in
+# leadv2-dispatch-product-close.sh directly (nulling the suffix at all five sites is the
+# equivalent negative control: pass=16 fail=1 naming the lost downgrade).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -180,6 +184,33 @@ out="$(cd "${LANE_ROOT}" && LEADV2_CLOSE_GATE_DIR_OVERRIDE="${FIXTURE_DIR}" bash
 [[ ${rc} -eq 0 ]] && printf '%s' "${out}" | grep -qF 'unproven: negated grep never fails' \
   && pass "CLI: close-gate reports unproven finding (never blocks -- rc=0)" \
   || fail "CLI: close-gate rc=${rc} out=${out}"
+
+# ── C1 negative control: nonzero-failure requirement mutated out -> '0 failed' passes ──
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/red-proof-test.XXXXXX")"
+trap 'rm -rf "${FIXTURE_DIR}" "${ZERO_DIR:-}" "${TMP}"' EXIT
+MUT_LIB="${TMP}/leadv2-red-proof.mut1.sh"
+python3 - "${LIB}" "${MUT_LIB}" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+old = 'grep -qiE \'\\b[1-9][0-9]*[[:space:]]+(test[s]?[[:space:]]+)?(failed|failing)\\b\' "${f}" 2>/dev/null && return 0'
+new = 'grep -qiE \'[0-9]+[[:space:]]+(test[s]?[[:space:]]+)?(failed|failing)\\b\' "${f}" 2>/dev/null && return 0'
+if old not in text:
+    sys.exit(2)
+open(dst, "w", encoding="utf-8").write(text.replace(old, new, 1))
+PYEOF
+if [[ $? -ne 0 ]]; then
+  fail "control C1: mutation source pattern not found (lib drifted, update mutation)"
+else
+  (
+    # shellcheck disable=SC1090
+    source "${MUT_LIB}"
+    leadv2_red_proof_has_red "${ZERO_DIR}" "empty control"
+  )
+  mut_rc=$?
+  [[ ${mut_rc} -eq 0 ]] && pass "control C1: mutated lib accepts '0 failed' as backing -> caught (would be red)" \
+    || fail "control C1: mutation NOT caught -- nonzero-failure requirement is not actually tested"
+fi
 
 # ── L1: task_id path traversal / absolute-path injection is rejected ───────────────
 out_l1a="$(cd "${LANE_ROOT}" && bash "${DISPATCH_SH}" close-gate "/etc/passwd" 2>&1)"; rc_l1a=$?

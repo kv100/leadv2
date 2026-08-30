@@ -3,9 +3,11 @@
 # lib/leadv2-mission-writeset.sh (required-path extraction, LANE_WRITES coverage) and the
 # leadv2-dispatch-code.sh `mission-writeset-check` CLI entry point.
 #
-# Negative controls (mutation-proven, see bottom): the citation-exclusion in
-# leadv2_writeset_extract_required, and the coverage loop in leadv2_writeset_missing, are
-# each mutated on a temp copy of the lib and the suite asserts the relevant test goes red.
+# Negative controls (mutation-proven): the citation-exclusion in
+# leadv2_writeset_extract_required, the coverage loop in leadv2_writeset_missing, and all
+# three live `_mission_writeset_guard` call sites in leadv2-dispatch-code.sh are each
+# mutated (lib on a temp copy; the dispatcher via a symlink-populated scratch dir, single-
+# source rule preserved) and the suite asserts the relevant test goes red.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -113,6 +115,57 @@ out2="$(bash "${DISPATCH_SH}" mission-writeset-check "${MFILE_CITE}" "plugins/le
 [[ ${rc2} -eq 0 ]] \
   && pass "CLI: a citation-only mission dispatches normally (exit 0)" || fail "CLI: cite-only case rc=${rc2} out=${out2}"
 
+# control CITE: citation-exclusion mutated out of leadv2_writeset_extract_required -> caught
+MUT_LIB="${TMP}/leadv2-mission-writeset.mut1.sh"
+python3 - "${LIB}" "${MUT_LIB}" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+old = "    if citation_re.search(prefix):\n        return\n"
+if old not in text:
+    sys.exit(2)
+open(dst, "w", encoding="utf-8").write(text.replace(old, "", 1))
+PYEOF
+if [[ $? -ne 0 ]]; then
+  fail "control CITE: mutation source pattern not found (lib drifted, update mutation)"
+else
+  (
+    # shellcheck disable=SC1090
+    source "${MUT_LIB}"
+    r="$(leadv2_writeset_extract_required <<< "${MISSION_CITE_ONLY}")"
+    [[ -z "${r}" ]] && exit 0 || exit 1
+  )
+  mut_rc=$?
+  [[ ${mut_rc} -ne 0 ]] && pass "control CITE: mutated lib leaks citation path into required -> caught (would be red)" \
+    || fail "control CITE: mutation NOT caught -- citation exclusion is not actually tested"
+fi
+
+# control COVERAGE: coverage loop in leadv2_writeset_missing defeated -> caught
+MUT_LIB2="${TMP}/leadv2-mission-writeset.mut2.sh"
+python3 - "${LIB}" "${MUT_LIB2}" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+old = '    for decl in ${decls[@]+"${decls[@]}"}; do'
+new = '    hit=1\n    for decl in ${decls[@]+"${decls[@]}"}; do'
+if old not in text:
+    sys.exit(2)
+open(dst, "w", encoding="utf-8").write(text.replace(old, new, 1))
+PYEOF
+if [[ $? -ne 0 ]]; then
+  fail "control COVERAGE: mutation source pattern not found (lib drifted, update mutation)"
+else
+  (
+    # shellcheck disable=SC1090
+    source "${MUT_LIB2}"
+    m="$(leadv2_writeset_missing "plugins/leadv2/scripts/foo.sh" <<< "${MISSION_REFUSE}")"
+    [[ -n "${m}" ]] && exit 0 || exit 1
+  )
+  mut_rc2=$?
+  [[ ${mut_rc2} -ne 0 ]] && pass "control COVERAGE: mutated lib always reports covered -> caught (would be red)" \
+    || fail "control COVERAGE: mutation NOT caught -- missing-path detection is not actually tested"
+fi
+
 # C1: consumer repositories install this entrypoint as a single-file symlink. The
 # symlink directory intentionally has no lib/ sibling; canonical fallback must load both
 # new libraries before the real CLI can start.
@@ -157,6 +210,49 @@ wire_out="$(_run_prepass_refusal "${DISPATCH_SH}")"; wire_rc=$?
 [[ ${wire_rc} -ne 0 ]] && printf '%s' "${wire_out}" | grep -qF 'mission_writeset_refused' \
   && pass "wiring: architect_prepass itself refuses a non-covering mission" \
   || fail "wiring: architect_prepass rc=${wire_rc} out=${wire_out}"
+
+# control WIRING: remove all 3 live call sites -> the wiring test above goes red ──
+# Mutant must still resolve sibling libs the same way the real dispatcher does (SCRIPT_DIR
+# derived from its own BASH_SOURCE) without ever placing a real file inside the production
+# scripts dir (single-source rule) -- so a scratch dir is populated with symlinks to every
+# real sibling entry, and only the mutated dispatcher file itself is a real file, under TMP.
+MUT_REAL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MUT_DIR="${TMP}/mission-writeset-mut"
+mkdir -p "${MUT_DIR}"
+for _mut_entry in "${MUT_REAL_DIR}"/*; do
+  _mut_base="$(basename "${_mut_entry}")"
+  [[ "${_mut_base}" == "leadv2-dispatch-code.sh" ]] && continue
+  ln -s "${_mut_entry}" "${MUT_DIR}/${_mut_base}"
+done
+MUT_DISPATCH="${MUT_DIR}/leadv2-dispatch-code.sh"
+python3 - "${DISPATCH_SH}" "${MUT_DISPATCH}" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+site1 = '    _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || return 1\n'
+n1 = text.count(site1)
+if n1 != 2:
+    sys.exit(2)
+text = text.replace(site1, "", 2)
+site2 = 'if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || ! _acceptance_guard "${sig8}" "${f}"; then'
+if site2 not in text:
+    sys.exit(3)
+text = text.replace(
+    site2,
+    'if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _acceptance_guard "${sig8}" "${f}"; then',
+    1,
+)
+open(dst, "w", encoding="utf-8").write(text)
+PYEOF
+mut_prep_rc=$?
+if [[ ${mut_prep_rc} -ne 0 ]]; then
+  fail "control WIRING: mutation source pattern not found (dispatcher drifted, update mutation, rc=${mut_prep_rc})"
+else
+  mut_wire_out="$(_run_prepass_refusal "${MUT_DISPATCH}")"; mut_wire_rc=$?
+  [[ ${mut_wire_rc} -eq 0 ]] \
+    && pass "control WIRING: removing all 3 call sites -> architect_prepass no longer refuses (caught, would be red)" \
+    || fail "control WIRING: mutation NOT caught -- wiring test still refuses without the call sites: ${mut_wire_out}"
+fi
 
 # ── real on-disk specimens (C2/C3): the fixtures ARE the test, not a hand-fitted string ──
 SPECIMEN_DIR="${SCRIPT_DIR}/../../../../docs/handoff/DISPATCH-CLOSE-GATE-01/specimens"

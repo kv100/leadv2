@@ -31,6 +31,7 @@ LANE_NAME="${8:-}"
 WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ROUTE_ARBITER_SH="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
+[[ -f "${_ROUTE_ARBITER_SH}" ]] || _ROUTE_ARBITER_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh"
 [[ -f "${_ROUTE_ARBITER_SH}" ]] && source "${_ROUTE_ARBITER_SH}" || true
 # DISPATCH-CLOSE-GATE-01 Mechanism 2 (C5): the only live close gate, wired here so a real
 # close cross-checks claimed fixes against RED artifacts instead of a standalone CLI verb
@@ -279,6 +280,7 @@ trap 'exit 129' HUP
 
 if [[ -n "${FOUNDER_TASK_ID}" ]]; then
   _TASKS_LIB="${SCRIPT_DIR}/leadv2-tasks-lib.sh"
+  [[ -f "${_TASKS_LIB}" ]] || _TASKS_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-tasks-lib.sh"
   if [[ -f "${_TASKS_LIB}" ]]; then
     PROJECT_ROOT="${ROOT}"
     # shellcheck source=leadv2-tasks-lib.sh
@@ -300,6 +302,7 @@ emit() { # type text
 # guarded against empty/unset so leadv2_active_update_phase's "${1:?...}" can never abort
 # this script under `set -u` when no founder id was threaded through (e.g. a bare re-run).
 _ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+[[ -f "${_ACTIVE_REGISTRY_SH}" ]] || _ACTIVE_REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
 [[ -f "${_ACTIVE_REGISTRY_SH}" ]] && source "${_ACTIVE_REGISTRY_SH}"
 # SILENT-DEATH-01 (SUPERVISOR-AUDIT-01, 2026-07-30): leadv2-active-registry.sh's own
 # `set -euo pipefail` (line 26) leaks into this shell via `source` and silently overrides
@@ -3305,7 +3308,9 @@ else
   # lane 299f2bae got terminal=landed cause=review_verdict_pass with NO merge in main
   # (live incident, 2026-08-26). Anything short of a verified merge is `pass_unlanded`:
   # review passed, code did not land, lead must merge by hand.
-  source "${SCRIPT_DIR}/leadv2-branch-merged.sh"
+  _BRANCH_MERGED_SH="${SCRIPT_DIR}/leadv2-branch-merged.sh"
+  [[ -f "${_BRANCH_MERGED_SH}" ]] || _BRANCH_MERGED_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-branch-merged.sh"
+  source "${_BRANCH_MERGED_SH}"
   _t11_branch="$(git -C "${diff_root}" symbolic-ref --short HEAD 2>/dev/null || true)"
   _t11_default="$(lv2_default_branch "${ROOT}")"
   if [[ -z "${_t11_branch}" || "${_t11_branch}" == "${_t11_default}" || "${diff_root}" == "${ROOT}" ]]; then
@@ -3336,6 +3341,7 @@ else
       # Both steps are best-effort and journaled either way: a landed task
       # must never be blocked on cleanup succeeding.
       _t11_lane_state_sh="${SCRIPT_DIR}/lib/leadv2-lane-state.sh"
+      [[ -f "${_t11_lane_state_sh}" ]] || _t11_lane_state_sh="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-state.sh"
       if [[ -f "${_t11_lane_state_sh}" ]]; then
         # shellcheck source=lib/leadv2-lane-state.sh
         source "${_t11_lane_state_sh}"
