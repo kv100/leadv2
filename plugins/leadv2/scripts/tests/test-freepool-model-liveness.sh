@@ -27,6 +27,26 @@ else
   fail 'bash syntax: selector'
 fi
 
+# The data-only freepool roster is itself dispatch behaviour. Keep the
+# changed-scope mapping honest by proving every role exists and the round-3
+# implementation/review primaries are the route this lane is meant to run.
+if python3 - "${SCRIPT_DIR}/../config/freepool-arm.yaml" <<'PYEOF'
+import sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1])) or {}
+roles = cfg.get("role_rank") or {}
+want = {
+    "implement": "groq/openai/gpt-oss-120b",
+    "review": "groq/openai/gpt-oss-120b",
+}
+assert all(isinstance(roles.get(role), list) and roles[role] for role in ("implement", "bulk", "review", "read"))
+assert all(roles[role][0].get("prefix") == prefix for role, prefix in want.items())
+PYEOF
+then
+  pass 'yaml roster: all roles exist; implement and review primary are gpt-oss-120b'
+else
+  fail 'yaml roster: role blocks or round-3 primaries drifted'
+fi
+
 # ---------------------------------------------------------------------------
 # Fixture proxy: fake curl. /v1/models returns a fixed catalog. /v1/messages
 # answers per-route: FAKE_CURL_BLANK_ROUTES get 200 + whitespace-only text
@@ -160,16 +180,11 @@ if anchor not in old_block:
 
 new_block = '''_probe() {
   local route_id="$1"
-  local auth_header=()
-  if [[ -n "${FREEPOOL_AUTH_TOKEN:-}" ]]; then
-    auth_header=(-H "Authorization: Bearer ${FREEPOOL_AUTH_TOKEN}")
-  fi
   local probe_max_tokens="${FREEPOOL_MODEL_PROBE_MAX_TOKENS:-64}"
   local code
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${PROBE_TIMEOUT_S}" \\
     -X POST "${FREEPOOL_BASE_URL}/v1/messages" \\
     -H "Content-Type: application/json" \\
-    "${auth_header[@]}" \\
     -d "$(printf '{"model":"%s","max_tokens":%s,"messages":[{"role":"user","content":"hi"}]}' "${route_id}" "${probe_max_tokens}")" \\
     2>/dev/null || echo "000")"
   [[ "${code}" =~ ^2[0-9][0-9]$ ]]

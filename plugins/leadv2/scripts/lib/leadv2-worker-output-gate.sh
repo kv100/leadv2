@@ -67,13 +67,24 @@ main() {
   shift
   if [[ "${1:-}" == "--from-git-diff" ]]; then
     shift
-    local -a files=()
-    local line
+    # Bash 3.2 + `set -u` treats an empty array expansion as an unbound
+    # variable.  Keep the collected file list on disk instead: an empty
+    # working tree is a normal, passing input, not a parser failure.
+    local files_file line rc=0
+    files_file="$(mktemp "${TMPDIR:-/tmp}/leadv2-worker-output-gate.XXXXXX")" || return 1
+    # Caller-supplied diff args cover uncommitted/staged work (the production
+    # caller supplies HEAD).  Also inspect commits made by the worker: a clean
+    # working tree after `git commit` must not hide a broken shell file.
+    git -C "$repo_root" diff --name-only --diff-filter=ACMR "$@" 2>/dev/null >> "$files_file" || true
+    if git -C "$repo_root" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+      git -C "$repo_root" diff --name-only --diff-filter=ACMR origin/main...HEAD 2>/dev/null >> "$files_file" || true
+    fi
     while IFS= read -r line; do
-      [[ -n "$line" ]] && files+=("$line")
-    done < <(git -C "$repo_root" diff --name-only --diff-filter=ACMR "$@" 2>/dev/null)
-    worker_output_gate_check "$repo_root" "${files[@]}"
-    return $?
+      [[ -n "$line" ]] || continue
+      worker_output_gate_check "$repo_root" "$line" || rc=1
+    done < <(LC_ALL=C sort -u "$files_file")
+    rm -f "$files_file"
+    return "$rc"
   fi
   worker_output_gate_check "$repo_root" "$@"
 }

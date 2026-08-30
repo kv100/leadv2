@@ -202,20 +202,15 @@ _json_str() {
 # times out or returns blank at 64 either way, so it still gets rejected.
 _probe() {
   local route_id="$1"
-  local auth_header=()
-  if [[ -n "${FREEPOOL_AUTH_TOKEN:-}" ]]; then
-    auth_header=(-H "Authorization: Bearer ${FREEPOOL_AUTH_TOKEN}")
-  fi
   local probe_max_tokens="${FREEPOOL_MODEL_PROBE_MAX_TOKENS:-64}"
   local tmp_body
   tmp_body="$(mktemp 2>/dev/null || echo "/tmp/freepool-probe-body.$$")"
   local code
-  code="$(curl -s -o "${tmp_body}" -w '%{http_code}' --max-time "${PROBE_TIMEOUT_S}" \
-    -X POST "${FREEPOOL_BASE_URL}/v1/messages" \
-    -H "Content-Type: application/json" \
-    "${auth_header[@]}" \
-    -d "$(printf '{"model":"%s","max_tokens":%s,"messages":[{"role":"user","content":"Reply with exactly the word OK and nothing else."}]}' "${route_id}" "${probe_max_tokens}")" \
-    2>/dev/null || echo "000")"
+  if [[ -n "${FREEPOOL_AUTH_TOKEN:-}" ]]; then
+    code="$(curl -s -o "${tmp_body}" -w '%{http_code}' --max-time "${PROBE_TIMEOUT_S}" -X POST "${FREEPOOL_BASE_URL}/v1/messages" -H "Content-Type: application/json" -H "Authorization: Bearer ${FREEPOOL_AUTH_TOKEN}" -d "$(printf '{"model":"%s","max_tokens":%s,"messages":[{"role":"user","content":"Reply with exactly the word OK and nothing else."}]}' "${route_id}" "${probe_max_tokens}")" 2>/dev/null || echo "000")"
+  else
+    code="$(curl -s -o "${tmp_body}" -w '%{http_code}' --max-time "${PROBE_TIMEOUT_S}" -X POST "${FREEPOOL_BASE_URL}/v1/messages" -H "Content-Type: application/json" -d "$(printf '{"model":"%s","max_tokens":%s,"messages":[{"role":"user","content":"Reply with exactly the word OK and nothing else."}]}' "${route_id}" "${probe_max_tokens}")" 2>/dev/null || echo "000")"
+  fi
 
   if [[ ! "${code}" =~ ^2[0-9][0-9]$ ]]; then
     rm -f "${tmp_body}" 2>/dev/null || true

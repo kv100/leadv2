@@ -130,14 +130,13 @@ else
 fi
 
 # ── RED: throwaway mutated copy with the allowed_arms wiring stripped ─────
-# Must live NEXT TO the real script (not under $TMP): dispatch-code.sh
-# resolves sibling helper scripts (lock/lane-suffix libs) relative to its own
-# path, so a copy elsewhere breaks unrelated machinery and cannot isolate
-# this one behaviour.
-MUT_BIN="${SCRIPTS_ROOT}/leadv2-dispatch-code.ARMCAP-MUTATED.$$.sh"
-cleanup_mut() { rm -f "$MUT_BIN"; }
-trap 'cleanup_mut; [[ "${ARMCAP_KEEP_LOGS:-0}" == "1" ]] || rm -rf "$TMP"' EXIT
-cp "$DISPATCH_BIN" "$MUT_BIN"
+# Copy the complete scripts tree into TMP so sibling-library resolution stays
+# real while production directories remain immutable even on interruption.
+MUT_PLUGIN_ROOT="$TMP/mutated-plugin"
+mkdir -p "$MUT_PLUGIN_ROOT"
+cp -R "$SCRIPTS_ROOT" "$MUT_PLUGIN_ROOT/scripts"
+cp -R "${SCRIPTS_ROOT}/../config" "$MUT_PLUGIN_ROOT/config"
+MUT_BIN="${MUT_PLUGIN_ROOT}/scripts/leadv2-dispatch-code.sh"
 # Strip the allowed_arms python-side field and the csv arg, reverting the
 # descriptor build to its pre-fix shape (no allowed_arms key at all).
 python3 - "$MUT_BIN" <<'PY'

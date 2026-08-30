@@ -131,6 +131,7 @@ leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-capability-honoured.s
 leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
 leadv2-freepool-model-select:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
+freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
@@ -145,8 +146,13 @@ else
   fi
   if [[ -n "${changed}" ]]; then
     while IFS= read -r cf; do
-      [[ "${cf}" == plugins/leadv2/scripts/*.sh ]] || continue
-      stem="$(basename "${cf}" .sh)"
+      if [[ "${cf}" == plugins/leadv2/scripts/*.sh ]]; then
+        stem="$(basename "${cf}" .sh)"
+      elif [[ "${cf}" == "plugins/leadv2/config/freepool-arm.yaml" ]]; then
+        stem="freepool-arm.yaml"
+      else
+        continue
+      fi
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \
@@ -166,7 +172,7 @@ else
   fi
 fi
 
-for suite in "${SUITES[@]}"; do
+for suite in "${SUITES[@]:-}"; do
   printf '[RUN] %s\n' "${suite}"
   if bash "${suite}"; then
     printf '[PASS] %s\n' "${suite}"
@@ -188,7 +194,7 @@ done
 # existing [FAIL] lines and the run-all: summary are untouched.
 if [[ ${FAIL} -gt 0 ]]; then
   printf '  Failures (blocking):\n'
-  for rel in "${FAILED_REL[@]}"; do
+  for rel in "${FAILED_REL[@]:-}"; do
     printf '    - %s\n' "${rel}"
   done
 fi

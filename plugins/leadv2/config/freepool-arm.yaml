@@ -113,25 +113,23 @@ model_rank:
 role_rank:
   # Multi-file code writing. Instruction adherence and correctness dominate; a minute
   # of latency is cheaper than a wrong diff.
-  # Re-ranked 2026-08-30 round 2: `deepseek-v4-pro` is dropped from this role
-  # too -- it failed the round-2 real-work bakeoff outright (no response at
-  # 500 max_tokens after 90s, then 125s on retry). Kimi-k3 keeps primary
-  # (still the best-benchmarked agentic coder AND it passed the round-2
-  # bakeoff, 67s); nemotron-3-super is added as a reliable, correct
-  # third-provider option the previous list never carried in this role.
+  # Re-ranked 2026-08-30 round 3: the order is explicitly the measured
+  # discriminating-task latency order among candidates that produced a
+  # bash-3.2-clean, behaviourally correct patch. It is not a quality claim
+  # when more than one candidate passes the same correctness oracle.
   implement:
-    - prefix: "nvidia_nim/moonshotai/kimi-k3"
+    - prefix: "groq/openai/gpt-oss-120b"
       tier: primary
-      why: "Leads Terminal-Bench 2.1 and Frontend Code Arena in independent testing (see docs/handoff/AUDIT-THIRDPARTY/free-model-research.md); passed the round-2 real-work bakeoff (67s, correct bash generated and ran)."
-    - prefix: "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
-      tier: secondary
-      why: "Passed the round-2 bakeoff cleanly (35s, correct) -- reliable second provider, replaces deepseek-v4-pro which failed the same bakeoff twice."
-    - prefix: "gemini/models/gemini-3.7-flash"
-      tier: tertiary
-      why: "Third distinct provider, so a NIM-wide outage does not take implementation down; passed the round-2 bakeoff (33s) but was flaky under repeated probing in the same session -- kept as a fallback, not primary."
+      why: "Fastest correct result in the round-3 bash-3.2 editing bakeoff; selected first by explicit latency tie-break after correctness."
     - prefix: "mistral/mistral-code-latest"
+      tier: secondary
+      why: "Second fast correct result and a provider fallback; ordered by latency only after the same correctness oracle passed."
+    - prefix: "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
+      tier: tertiary
+      why: "Correct on the discriminating task but slower; retained as a distinct-provider fallback."
+    - prefix: "nvidia_nim/moonshotai/kimi-k3"
       tier: quaternary
-      why: "Code-tuned and fast (1s in round-2 bakeoff), fourth provider. Note its devstral siblings failed the correctness check — this specific route did not."
+      why: "Correct on the discriminating task but slower; retained for a different model lineage."
 
   # Many near-identical edits. Throughput and consistency matter; reasoning depth does not.
   bulk:
@@ -150,15 +148,15 @@ role_rank:
 
   # Adversarial review and bug hunting. Reasoning depth matters, latency does not.
   review:
-    - prefix: "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b"
+    - prefix: "groq/openai/gpt-oss-120b"
       tier: primary
-      why: "Largest model reachable free and the one with a genuine third-party coding-index result rather than only vendor claims; 60.9s is acceptable for review."
-    - prefix: "nvidia_nim/moonshotai/kimi-k3"
+      why: "First review fallback chosen for a route the role selector can resolve promptly; review quality still requires the normal adversarial gate."
+    - prefix: "mistral/mistral-code-latest"
       tier: secondary
-      why: "Strongest measured agentic-coding model; a second opinion from a different lineage than nemotron."
+      why: "Second provider fallback that passed the same syntax-and-behaviour oracle."
     - prefix: "gemini/models/gemini-3.7-flash"
       tier: tertiary
-      why: "Different provider and different training lineage — the point of a review arm is disagreement, not agreement."
+      why: "Third provider fallback for an independent review path."
 
   # Reads, summarisation, classification. Speed and frugality only.
   read:
