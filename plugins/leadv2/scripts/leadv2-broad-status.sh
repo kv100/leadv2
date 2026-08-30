@@ -362,6 +362,23 @@ def md_escape(s):
     return str(s).replace("|", "\\|").replace("\n", " ").strip() if s else s
 
 
+# BROAD-STATUS-ROWS-01 fix A: a lane can occupy exactly one row. Two rows
+# with the same task_id previously happened whenever the row-identity
+# column (below) collapsed two DIFFERENT lanes to the same displayed
+# string; identity is now the task_id itself, but this dedup stays as a
+# second, independent guard against an upstream collector duplicate
+# (e.g. the same lane appearing once from an own-repo read and once from
+# a foreign-repo read) ever reaching the renderer as two rows.
+_seen_tids = set()
+_deduped_table_rows = []
+for _row in table_rows:
+    _tid_key = str(_row.get("task_id") or "?")
+    if _tid_key in _seen_tids:
+        continue
+    _seen_tids.add(_tid_key)
+    _deduped_table_rows.append(_row)
+table_rows = _deduped_table_rows
+
 rows_out = []
 detail_lines = []
 closed_items = []
@@ -402,14 +419,17 @@ for row in table_rows:
     # as unresolved -- id-fallback in col-1, "\u2014" in col-2.
     mission_title = d.get("mission_title") if d else None
     linia_name = prev_row_name or human_name(mission_title)
-    # Only the NAME is frozen (§2.2) — the one-sentence description is
-    # re-derived fresh from the mission title every beat.
-    chto = product_sentence(mission_title) or "—"
-    # PULSE-READABLE-01: the founder cannot act on "(имя неизвестно)" — it
-    # names nothing. Fall back to the bare dispatch id (sig8) instead, per
-    # rule 3 of the pulse-readable spec: a real, greppable handle beats a
-    # sentence that just restates "we don't know".
-    linia = linia_name if linia_name else id_display
+    # BROAD-STATUS-ROWS-01 fix A: "Линия" carries the lane IDENTITY
+    # (id_display: dispatch id, or the raw task_id/sig8 when no dispatch
+    # binding is known) — never a human-derived name. human_name() truncates
+    # to <=5 words, so two lanes whose mission titles share a long common
+    # prefix ("BROAD-STATUS-ROWS-01 — the status pulse..." /
+    # "BROAD-STATUS-ROWS-02 — the status pulse...") previously collapsed to
+    # the identical short name and rendered as indistinguishable duplicate
+    # rows — one lane visually "ate" the other. task_id (via id_display) is
+    # unique per lane by construction, so this alone makes two lanes
+    # unable to render as one row ever again.
+    linia = id_display
     # LANE-OBSERVABILITY-02 change 3: a lane from ANOTHER repo (the lanes
     # snapshot's foreign rows carry repo=<slug>; own-repo rows never do) is
     # prefixed with its slug so the founder can tell which repo a row belongs
@@ -418,6 +438,10 @@ for row in table_rows:
     _repo_slug = row.get("repo")
     if _repo_slug:
         linia = f"{_repo_slug}/{linia}"
+    # The human-readable title (formerly rendered as "Линия") now lives
+    # ONLY in "Что делает", alongside the fuller product-sentence
+    # description — never duplicated into the identity column.
+    chto = product_sentence(mission_title) or linia_name or "—"
 
     # Кто делает
     _worker = d.get("worker") if d else None
