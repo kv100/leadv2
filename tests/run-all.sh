@@ -137,7 +137,11 @@ leadv2-freepool-model-select:plugins/leadv2/scripts/tests/test-freepool-model-li
 freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-foreign-lanes.sh
-leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-registered-lane.sh"
+leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-registered-lane.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-mission-writeset.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
+leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
+leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -145,7 +149,25 @@ if [[ "${SCOPE}" == "all" ]]; then
       -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
   )
 else
-  changed="$(git -C "${ROOT}" diff --name-only HEAD 2>/dev/null)"
+  # DISPATCH-CLOSE-GATE-01 round-3: a real dirty lane usually has docs-only working-tree
+  # dirt (journals, bus offsets, active.yaml) SITTING ON TOP OF already-committed source
+  # changes for this round. `git diff --name-only HEAD` alone only sees the former --
+  # a non-empty docs-only diff short-circuited the old code before it ever looked at what
+  # was actually committed on this branch, so the widened lib/*.sh glob and the new
+  # EXTRA_SUITE_MAP rows were unreachable on the exact lane they exist for. Union both
+  # signals: uncommitted dirt AND everything committed since this branch's merge-base with
+  # the default branch, so neither shadows the other.
+  changed_dirty="$(git -C "${ROOT}" diff --name-only HEAD 2>/dev/null)"
+  changed_committed=""
+  _rall_default="$(git -C "${ROOT}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
+  _rall_default="${_rall_default#origin/}"
+  [[ -z "${_rall_default}" ]] && _rall_default="main"
+  _rall_base="$(git -C "${ROOT}" merge-base HEAD "${_rall_default}" 2>/dev/null || true)"
+  _rall_head="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -n "${_rall_base}" && "${_rall_base}" != "${_rall_head}" ]]; then
+    changed_committed="$(git -C "${ROOT}" diff --name-only "${_rall_base}" HEAD 2>/dev/null)"
+  fi
+  changed="$(printf '%s\n%s\n' "${changed_dirty}" "${changed_committed}" | sed '/^$/d' | sort -u)"
   if [[ -z "${changed}" ]] && git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
     changed="$(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
   fi
@@ -158,11 +180,13 @@ else
       # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01: a data-only change to the arm
       # ranking must select the suites that grade it, so freepool-arm.yaml
       # maps to its own stem.
+      # DISPATCH-CLOSE-GATE-01: scripts/lib/*.sh added -- a bare scripts/*.sh glob
+      # never matches a subdirectory, so a lib-only change never reached this loop.
       if [[ "${cf}" == "plugins/leadv2/config/freepool-arm.yaml" ]]; then
         stem="freepool-arm.yaml"
       else
         case "${cf}" in
-          plugins/leadv2/scripts/*.sh|plugins/leadv2/hooks/*.sh) ;;
+          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
           *) continue ;;
         esac
         stem="$(basename "${cf}" .sh)"

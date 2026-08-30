@@ -1,0 +1,24 @@
+# DISPATCH-CLOSE-GATE-01 round 6: header added (review-r4 flagged this file for having none).
+# Captured PRE-fix, single-file symlink install probe (persona-engine-shaped: only
+# leadv2-dispatch-code.sh present, siblings absent). Two of the three errors below are
+# now FIXED by this round's guards (leadv2-lane-child-suffixes.sh :452,
+# leadv2-portable-lock.sh :460 -- both now resolve via LEADV2_CANONICAL_ROOT fallback;
+# reverified live 2026-08-30: an equivalent symlink-only scratch dir with
+# LEADV2_CANONICAL_ROOT set produces zero 'No such file' errors for these two).
+# The THIRD error -- leadv2-phase-record.sh:683 PHASE_RECORD_BIN, executed via 'bash
+# $VAR', not 'source' -- is a separate, still-open gap outside this lane's LANE_WRITES
+# and outside the source-guard mechanism scan_unguarded checks; left untouched, not
+# silently fixed.
+#
+[leadv2-dispatch-code] WARN: foreign project root detected (env=/Users/kostiantyn.vlasenko/Projects/leadv2 cwd=/Users/kostiantyn.vlasenko/Projects/persona-engine) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)
+/tmp/dispatch-close-gate-persona.wJg5Jr/leadv2-dispatch-code.sh: line 449: /tmp/dispatch-close-gate-persona.wJg5Jr/leadv2-lane-child-suffixes.sh: No such file or directory
+/tmp/dispatch-close-gate-persona.wJg5Jr/leadv2-dispatch-code.sh: line 455: /tmp/dispatch-close-gate-persona.wJg5Jr/leadv2-portable-lock.sh: No such file or directory
+[leadv2-dispatch-code] project_root_guard task=b323550c status=foreign_env_overridden env_root=/Users/kostiantyn.vlasenko/Projects/leadv2 cwd_root=/Users/kostiantyn.vlasenko/Projects/persona-engine
+/tmp/dispatch-close-gate-persona.wJg5Jr/leadv2-dispatch-code.sh: line 3573: leadv2_admission_freepool_role: command not found
+[leadv2-dispatch-code] admission_receipt_write_failed task=b323550c
+[leadv2-dispatch-code] task_class=Standard route=phases source=classifier_error task=b323550c
+[leadv2-dispatch-code] dispatch_classified task=b323550c class=product reason=conservative_default kind=unknown
+[leadv2-dispatch-code] phase_precondition_refused task=b323550c class=Standard reason=unexpected_rc value=127
+[leadv2-dispatch-code] ERROR: phase precondition: unexpected exit 127: bash: /tmp/dispatch-close-gate-persona.wJg5Jr/leadv2-phase-record.sh: No such file or directory
+
+ASSERTED_EXIT_STATUS=3

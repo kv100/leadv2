@@ -438,21 +438,39 @@ else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :;
 # environment before it launches any provider channel, so a bypass var set on
 # the supervising session cannot ride along even through a channel that does
 # not go through the session runner.
+_LEADV2_HELPERS_SH="${SCRIPT_DIR}/leadv2-helpers.sh"
+[[ -f "${_LEADV2_HELPERS_SH}" ]] || _LEADV2_HELPERS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-helpers.sh"
 # shellcheck source=leadv2-helpers.sh
-source "${SCRIPT_DIR}/leadv2-helpers.sh" 2>/dev/null || true
+[[ -f "${_LEADV2_HELPERS_SH}" ]] && source "${_LEADV2_HELPERS_SH}" 2>/dev/null
 declare -F lv2_scrub_bypass_env >/dev/null 2>&1 && lv2_scrub_bypass_env
 # STATUSLINE-COUNT-TRUTH-01: single source of truth for the architect-prepass
 # dir suffix -- leadv2-lane-liveness.sh folds dispatch-<sig8>-<role> ids back
 # into their parent using this SAME constant, so the registrar and the fold
 # rule can never drift apart. Export-only, no flock, safe to source directly.
 # shellcheck source=leadv2-lane-child-suffixes.sh
-source "${SCRIPT_DIR}/leadv2-lane-child-suffixes.sh"
+_LANE_CHILD_SUFFIXES_SH="${SCRIPT_DIR}/leadv2-lane-child-suffixes.sh"
+[[ -f "${_LANE_CHILD_SUFFIXES_SH}" ]] || _LANE_CHILD_SUFFIXES_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-lane-child-suffixes.sh"
+[[ -f "${_LANE_CHILD_SUFFIXES_SH}" ]] && source "${_LANE_CHILD_SUFFIXES_SH}"
 ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
 # SWIFTBAR-R4 RC-1: flock(1) doesn't exist on the widget's acceptance PATH (no
 # util-linux on macOS) -- lv2_lock_wait delegates to real flock when present,
 # else an mkdir-based fallback with the same rc0/rc3 contract.
 # shellcheck source=leadv2-portable-lock.sh
-source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
+_PORTABLE_LOCK_SH="${SCRIPT_DIR}/leadv2-portable-lock.sh"
+[[ -f "${_PORTABLE_LOCK_SH}" ]] || _PORTABLE_LOCK_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-portable-lock.sh"
+[[ -f "${_PORTABLE_LOCK_SH}" ]] && source "${_PORTABLE_LOCK_SH}"
+# DISPATCH-CLOSE-GATE-01: Mechanism 1 (refuse a dispatch whose mission demands a path
+# outside LANE_WRITES) and Mechanism 2 (unproven-fix reporting at close).
+# The consumer repos install this dispatcher as a per-file symlink, so its sibling
+# lib/ directory is absent there.  Prefer a local lib for a full plugin install, then
+# fall back to the canonical plugin tree.  A missing optional close-proof feature must
+# never prevent dispatch from starting.
+_MISSION_WRITESET_SH="${SCRIPT_DIR}/lib/leadv2-mission-writeset.sh"
+[[ -f "${_MISSION_WRITESET_SH}" ]] || _MISSION_WRITESET_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-mission-writeset.sh"
+[[ -f "${_MISSION_WRITESET_SH}" ]] && source "${_MISSION_WRITESET_SH}"
+_RED_PROOF_SH="${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
+[[ -f "${_RED_PROOF_SH}" ]] || _RED_PROOF_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-red-proof.sh"
+[[ -f "${_RED_PROOF_SH}" ]] && source "${_RED_PROOF_SH}"
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
 ROUTING_CONFIG_ABSENT=0
 # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
@@ -472,6 +490,7 @@ fi
 # copy falls through to the established ladder and is made observable at the
 # call site, rather than making dispatch unavailable.
 ROUTE_ARBITER_LIB="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
+[[ -f "${ROUTE_ARBITER_LIB}" ]] || ROUTE_ARBITER_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh"
 [[ -f "${ROUTE_ARBITER_LIB}" ]] && source "${ROUTE_ARBITER_LIB}" || true
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
@@ -523,8 +542,10 @@ _dl_attempt_token() { printf '%s-%s-%s' "${1:-nosig}" "${ATTEMPT_EPOCH}" "$$"; }
 # task_id (no --task-id caller) is guarded explicitly: leadv2_active_update_phase's own
 # "${1:?...}" would otherwise abort this whole script under `set -u` on an empty arg.
 _ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+[[ -f "${_ACTIVE_REGISTRY_SH}" ]] || _ACTIVE_REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
 [[ -f "${_ACTIVE_REGISTRY_SH}" ]] && source "${_ACTIVE_REGISTRY_SH}"
 _LANE_STATE_SH="${SCRIPT_DIR}/lib/leadv2-lane-state.sh"
+[[ -f "${_LANE_STATE_SH}" ]] || _LANE_STATE_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-state.sh"
 [[ -f "${_LANE_STATE_SH}" ]] && source "${_LANE_STATE_SH}"
 # SILENT-DEATH-01 (SUPERVISOR-AUDIT-01, 2026-07-30): leadv2-active-registry.sh sets its own
 # `set -euo pipefail` (line 26) for standalone use; `source` runs it in THIS shell, so its -e
@@ -637,6 +658,10 @@ REVIEW_GATE="${LEADV2_DISPATCH_REVIEW_GATE:-1}"
 # time (leadv2-dispatch-product-close.sh unscopable_diff). =0 restores today byte-for-byte
 # (no writes declaration required, no park).
 REQUIRE_LANE_WRITES="${LEADV2_REQUIRE_LANE_WRITES:-1}"
+# DISPATCH-CLOSE-GATE-01 Mechanism 1: refuse (not warn) a dispatch whose mission demands
+# a path that LANE_WRITES does not cover -- BEFORE any worker spawns. =0 restores today
+# byte-for-byte (no writeset check, no park).
+REQUIRE_MISSION_WRITESET="${LEADV2_REQUIRE_MISSION_WRITESET:-0}"
 # RED-FIRST-GATE-01 R2: the prepass mission prompt now asks for a surface-observable
 # `acceptance:` block (see architect_prepass's printf text). =1 parks a design that
 # lacks it, same PARK-and-surface mechanism as REQUIRE_LANE_WRITES. Default 0 -- this
@@ -659,9 +684,11 @@ PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.s
 # PHASE-DISCIPLINE-01 D1/D2: shared admission map + receipt writer (also
 # sourced by leadv2-backlog-pump.sh — one inode of class-mapping truth).
 TASK_JUDGE_BIN="${LEADV2_TASK_JUDGE_BIN:-${SCRIPT_DIR}/leadv2-task-judge.sh}"
-if [[ -f "${SCRIPT_DIR}/lib/leadv2-admission-class.sh" ]]; then
+_ADMISSION_CLASS_SH="${SCRIPT_DIR}/lib/leadv2-admission-class.sh"
+[[ -f "${_ADMISSION_CLASS_SH}" ]] || _ADMISSION_CLASS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-admission-class.sh"
+if [[ -f "${_ADMISSION_CLASS_SH}" ]]; then
   # shellcheck disable=SC1091
-  source "${SCRIPT_DIR}/lib/leadv2-admission-class.sh" || true
+  source "${_ADMISSION_CLASS_SH}" || true
 fi
 # B1 R2: record-review refuses a build worker minting a review of ITS OWN diff from
 # inside a lane worktree (self-attestation). Set to 0 to disable the check (emergency escape).
@@ -3447,6 +3474,29 @@ _lane_writes_guard() {
   return 1
 }
 
+# _mission_writeset_guard <sig8> <writes_csv> <raw_mission> -> 0 ok, 1 park
+# DISPATCH-CLOSE-GATE-01 Mechanism 1: a mission whose Done-means (or a "write ... to " /
+# "leave the logs in " instruction) names a path outside the lane's declared LANE_WRITES
+# cannot land -- the worker either writes out of scope (violation) or correctly stops and
+# the round is wasted (measured cost: two full re-dispatch rounds, 2026-08-30). Refuse
+# BEFORE spawn instead, naming the missing paths and a ready-to-paste corrected line.
+# See lib/leadv2-mission-writeset.sh for the extraction/coverage rules.
+_mission_writeset_guard() {
+  local sig8="$1" writes="$2" raw="$3"
+  [[ "${REQUIRE_MISSION_WRITESET}" == "1" ]] || return 0
+  local missing
+  missing="$(leadv2_writeset_missing "${writes}" <<< "${raw}")"
+  [[ -z "${missing}" ]] && return 0
+  local suggested
+  suggested="$(printf '%s\n' "${missing}" | leadv2_writeset_suggest_line "${writes}")"
+  ARCHITECT_PREPASS_REASON="mission_writeset_missing"
+  emit decision "mission_writeset_refused task=${sig8} missing=$(printf '%s' "${missing}" | tr '\n' ',' | sed 's/,$//')"
+  log_err "mission-writeset: mission requires path(s) outside LANE_WRITES for task=${sig8}:"
+  log_err "${missing}"
+  log_err "corrected: ${suggested}"
+  return 1
+}
+
 # _acceptance_guard <sig8> <design_file> -> 0 ok, 1 park
 # RED-FIRST-GATE-01 R2: refuses a design whose acceptance is missing, not one
 # of the five surface types, or reads as an internal contract (the exact
@@ -4069,6 +4119,7 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
     # declared writes or an existing lane worktree still satisfy the guard, so the
     # kill-switch remains usable -- it just can no longer bypass isolation.
     _lane_writes_guard "${sig8}" "${writes}" 0 || return 1
+    _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || return 1
     emit decision "architect_prepass task=${sig8} status=disabled reason=kill_switch"
     return 0
   fi
@@ -4084,6 +4135,7 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
     # H6: trivially satisfied (count==1 implies non-empty writes) -- called anyway so
     # there is exactly one guard call site per exit path.
     _lane_writes_guard "${sig8}" "${writes}" 0 || return 1
+    _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || return 1
     emit decision "architect_prepass task=${sig8} status=skipped reason=provably_one_file writes=${writes}"
     return 0
   fi
@@ -4296,7 +4348,7 @@ PY
   # (leadv2-dispatch-product-close.sh unscopable_diff). A lane worktree already isolates the
   # lane on its own branch, so it substitutes for a declaration. LEADV2_REQUIRE_LANE_WRITES=0
   # restores today (never guard).
-  if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _acceptance_guard "${sig8}" "${f}"; then
+  if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || ! _acceptance_guard "${sig8}" "${f}"; then
     # M7 (LANDING-BLOCKER-R2): stamp the .sig cache BEFORE returning so a byte-identical
     # retry of this same non-compliant mission hits the cache path (H4 re-runs once, then
     # parks) instead of paying a second full architect run before parking.
@@ -5710,8 +5762,8 @@ Usage:
                 [--glm-lock-busy] [--force] [--no-spawn] [--task-class <class>]
                 [--resume-lane <task-sig8|founder-id>] [--worktree <abs-path>]
                 --task-class <trivial|light|standard|heavy|strategic|bulk>: named task-size
-                class, consulted by the dispatch ladder's `when:` gate (e.g. freepool's
-                `when: [standard, bulk]`) so an untrusted third-party arm only ever sees the
+                class, consulted by the dispatch ladder's \`when:\` gate (e.g. freepool's
+                \`when: [standard, bulk]\`) so an untrusted third-party arm only ever sees the
                 task sizes it was actually approved for. Defaults to "Standard" for a caller
                 that never resolved a size class (today's behaviour, unchanged).
                 Resolve the code-writing model (glm|sonnet|codex) via routing.yaml glm_policy,
@@ -5849,6 +5901,55 @@ cmd_record_review() {
   fi
   emit decision "review_recorded verdict=${verdict} diff=${diff_hash:0:8} reviewer=${reviewer}"
   printf 'review_recorded verdict=%s diff=%s\n' "${verdict}" "${diff_hash:0:8}"
+  exit 0
+}
+
+# cmd_mission_writeset_check <mission_file> [<lane_writes_csv>]
+# DISPATCH-CLOSE-GATE-01 Mechanism 1, standalone entry point (also enforced automatically
+# inside architect_prepass via _mission_writeset_guard). Prints missing paths + a corrected
+# LANE_WRITES: line and exits 1 when the mission demands a path outside the write set;
+# exits 0 (silent) when covered.
+cmd_mission_writeset_check() {
+  local mission_file="$1" writes_csv="${2:-}"
+  [[ -n "${mission_file}" && -f "${mission_file}" ]] || { log_err "mission-writeset-check: mission file required"; exit 2; }
+  local missing
+  missing="$(leadv2_writeset_missing "${writes_csv}" < "${mission_file}")"
+  if [[ -z "${missing}" ]]; then
+    printf 'mission_writeset_ok\n'
+    exit 0
+  fi
+  printf 'mission_writeset_refused missing=%s\n' "$(printf '%s' "${missing}" | tr '\n' ',' | sed 's/,$//')"
+  printf '%s\n' "${missing}"
+  printf '%s\n' "${missing}" | leadv2_writeset_suggest_line "${writes_csv}"
+  exit 1
+}
+
+# cmd_close_gate <task_id>
+# DISPATCH-CLOSE-GATE-01 Mechanism 2, standalone entry point. Cross-checks named fixes in
+# docs/handoff/<task_id>/*.md against RED artifacts in docs/handoff/<task_id>/red/ and
+# prints one "unproven: <name>" line per unbacked claim. Never exits non-zero for an
+# unproven finding (D3: report, don't trap the lane) -- only a usage error exits non-zero.
+cmd_close_gate() {
+  local task_id="$1" dir
+  [[ -n "${task_id}" ]] || { log_err "close-gate: task_id required"; exit 2; }
+  # L1 (DISPATCH-CLOSE-GATE-01 round 2): task_id is concatenated onto PROJECT_ROOT/docs/
+  # handoff/ unvalidated -- reject a leading `/` (would replace the prefix under some
+  # concatenation forms) and any `..` segment (path traversal) at minimum.
+  case "${task_id}" in
+    /*|*..*) log_err "close-gate: invalid task_id '${task_id}'"; exit 2 ;;
+  esac
+  # M2: a hermetic test needs a scratch fixture dir outside the real repo tree --
+  # LEADV2_CLOSE_GATE_DIR_OVERRIDE substitutes for the PROJECT_ROOT-relative path
+  # entirely rather than letting task_id reach the filesystem unvalidated (L1 above).
+  dir="${LEADV2_CLOSE_GATE_DIR_OVERRIDE:-${PROJECT_ROOT}/docs/handoff/${task_id}}"
+  [[ -d "${dir}" ]] || { log_err "close-gate: no handoff dir at ${dir}"; exit 2; }
+  local unproven
+  unproven="$(leadv2_red_proof_unproven "${dir}")"
+  if [[ -z "${unproven}" ]]; then
+    printf 'red_proof_ok task=%s\n' "${task_id}"
+    exit 0
+  fi
+  printf '%s\n' "${unproven}"
   exit 0
 }
 
@@ -7609,10 +7710,17 @@ cmd_retry_dead() {
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────────
+# DISPATCH-CLOSE-GATE-01 round 2 (C1): LEADV2_DISPATCH_SOURCE_ONLY=1 lets a test `source`
+# this file to call architect_prepass / _mission_writeset_guard directly, without the CLI
+# case block consuming "$@" or exiting -- the wiring itself becomes testable, not just the
+# libs it calls.
+if [[ "${LEADV2_DISPATCH_SOURCE_ONLY:-0}" != "1" ]]; then
 [[ $# -eq 0 ]] && usage
 case "${1:-}" in
   record-review) shift; cmd_record_review "$@" ;;
   status)        cmd_status ;;
+  mission-writeset-check) shift; cmd_mission_writeset_check "$@" ;;
+  close-gate)    shift; cmd_close_gate "$@" ;;
   glm-deferred)  shift; cmd_glm_deferred "$@" ;;
   burn-deferred) shift; cmd_burn_deferred "$@" ;;
   advance-arm)   shift; cmd_advance_arm "$@" ;;
@@ -7623,3 +7731,4 @@ case "${1:-}" in
   -h|--help)     usage ;;
   *)             cmd_resolve "$@" ;;
 esac
+fi
