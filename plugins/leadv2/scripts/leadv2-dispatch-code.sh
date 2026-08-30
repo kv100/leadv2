@@ -5915,7 +5915,16 @@ cmd_mission_writeset_check() {
 cmd_close_gate() {
   local task_id="$1" dir
   [[ -n "${task_id}" ]] || { log_err "close-gate: task_id required"; exit 2; }
-  dir="${PROJECT_ROOT}/docs/handoff/${task_id}"
+  # L1 (DISPATCH-CLOSE-GATE-01 round 2): task_id is concatenated onto PROJECT_ROOT/docs/
+  # handoff/ unvalidated -- reject a leading `/` (would replace the prefix under some
+  # concatenation forms) and any `..` segment (path traversal) at minimum.
+  case "${task_id}" in
+    /*|*..*) log_err "close-gate: invalid task_id '${task_id}'"; exit 2 ;;
+  esac
+  # M2: a hermetic test needs a scratch fixture dir outside the real repo tree --
+  # LEADV2_CLOSE_GATE_DIR_OVERRIDE substitutes for the PROJECT_ROOT-relative path
+  # entirely rather than letting task_id reach the filesystem unvalidated (L1 above).
+  dir="${LEADV2_CLOSE_GATE_DIR_OVERRIDE:-${PROJECT_ROOT}/docs/handoff/${task_id}}"
   [[ -d "${dir}" ]] || { log_err "close-gate: no handoff dir at ${dir}"; exit 2; }
   local unproven
   unproven="$(leadv2_red_proof_unproven "${dir}")"
@@ -7672,6 +7681,11 @@ cmd_retry_dead() {
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────────
+# DISPATCH-CLOSE-GATE-01 round 2 (C1): LEADV2_DISPATCH_SOURCE_ONLY=1 lets a test `source`
+# this file to call architect_prepass / _mission_writeset_guard directly, without the CLI
+# case block consuming "$@" or exiting -- the wiring itself becomes testable, not just the
+# libs it calls.
+if [[ "${LEADV2_DISPATCH_SOURCE_ONLY:-0}" != "1" ]]; then
 [[ $# -eq 0 ]] && usage
 case "${1:-}" in
   record-review) shift; cmd_record_review "$@" ;;
@@ -7688,3 +7702,4 @@ case "${1:-}" in
   -h|--help)     usage ;;
   *)             cmd_resolve "$@" ;;
 esac
+fi

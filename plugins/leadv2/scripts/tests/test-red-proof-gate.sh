@@ -11,6 +11,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="${SCRIPT_DIR}/../lib/leadv2-red-proof.sh"
 DISPATCH_SH="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
+PRODUCT_CLOSE_SH="${SCRIPT_DIR}/../leadv2-dispatch-product-close.sh"
 LANE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 # shellcheck disable=SC1090
 source "${LIB}"
@@ -19,7 +20,10 @@ PASS=0; FAIL=0
 pass(){ printf 'PASS: %s\n' "$1"; PASS=$((PASS+1)); }
 fail(){ printf 'FAIL: %s\n' "$1" >&2; FAIL=$((FAIL+1)); }
 
-FIXTURE_DIR="${LANE_ROOT}/docs/handoff/DISPATCH-CLOSE-GATE-01/redproof-fixture-$$"
+# M2: a killed run used to leave redproof-fixture-<pid>/ behind in the real repo tree,
+# where cmd_close_gate would then report it back. mktemp -d + LEADV2_CLOSE_GATE_DIR_OVERRIDE
+# keeps the whole fixture outside any real checkout.
+FIXTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/redproof-fixture.XXXXXX")"
 mkdir -p "${FIXTURE_DIR}/red"
 trap 'rm -rf "${FIXTURE_DIR}"' EXIT
 
@@ -94,8 +98,7 @@ else
 fi
 
 # ── CLI: close-gate reports the unproven fix by name ────────────────────────────
-task_rel="DISPATCH-CLOSE-GATE-01/redproof-fixture-$$"
-out="$(cd "${LANE_ROOT}" && bash "${DISPATCH_SH}" close-gate "${task_rel}" 2>&1)"; rc=$?
+out="$(cd "${LANE_ROOT}" && LEADV2_CLOSE_GATE_DIR_OVERRIDE="${FIXTURE_DIR}" bash "${DISPATCH_SH}" close-gate "redproof-fixture-hermetic" 2>&1)"; rc=$?
 [[ ${rc} -eq 0 ]] && printf '%s' "${out}" | grep -qF 'unproven: negated grep never fails' \
   && pass "CLI: close-gate reports unproven finding (never blocks -- rc=0)" \
   || fail "CLI: close-gate rc=${rc} out=${out}"
@@ -125,6 +128,77 @@ else
   mut_rc=$?
   [[ ${mut_rc} -eq 0 ]] && pass "control C1: mutated lib accepts '0 failed' as backing -> caught (would be red)" \
     || fail "control C1: mutation NOT caught -- nonzero-failure requirement is not actually tested"
+fi
+
+# ── L1: task_id path traversal / absolute-path injection is rejected ───────────────
+out_l1a="$(cd "${LANE_ROOT}" && bash "${DISPATCH_SH}" close-gate "/etc/passwd" 2>&1)"; rc_l1a=$?
+[[ ${rc_l1a} -ne 0 ]] && pass "L1: leading-/ task_id rejected" || fail "L1: leading-/ task_id NOT rejected: rc=${rc_l1a} out=${out_l1a}"
+out_l1b="$(cd "${LANE_ROOT}" && bash "${DISPATCH_SH}" close-gate "../../etc/passwd" 2>&1)"; rc_l1b=$?
+[[ ${rc_l1b} -ne 0 ]] && pass "L1: .. task_id rejected" || fail "L1: .. task_id NOT rejected: rc=${rc_l1b} out=${out_l1b}"
+
+# ── C5 wiring: leadv2-dispatch-product-close.sh's PASS-branch block, extracted and RUN ──
+# DISPATCH-CLOSE-GATE-01 review round 1, C5: this mechanism had zero callers on the live
+# close path. leadv2-dispatch-product-close.sh is the only live close gate and is a
+# multi-thousand-line procedural script that assumes a live review-gate/handoff/reviewer-
+# arm environment far beyond a unit test's reach end-to-end (documented precedent:
+# test-close-chain.sh's own scope note, same file). This instead slices out the exact
+# production block between its two anchor comments and RUNS it against a fixture HANDOFF
+# dir with a stubbed emit() -- the real lines execute, not a reimplementation.
+_extract_c5_block() { # <src_file> -> stdout: the block, or empty + rc2 if anchors missing
+  awk '
+    /Mechanism 2 \(C5\): cross-check fixes the worker claimed/ { grab=1 }
+    grab { print }
+    grab && /^fi$/ { exit }
+  ' "$1"
+}
+c5_block="$(_extract_c5_block "${PRODUCT_CLOSE_SH}")"
+if [[ -z "${c5_block}" ]] || ! printf '%s' "${c5_block}" | grep -qF 'leadv2_red_proof_unproven "${HANDOFF}"'; then
+  fail "C5 wiring: block anchors not found in leadv2-dispatch-product-close.sh (drifted, update extractor)"
+else
+  c5_out="$(
+    # shellcheck disable=SC1090
+    source "${LIB}"
+    emit() { :; }
+    HANDOFF="${FIXTURE_DIR}"
+    TASK="wiretest"
+    eval "${c5_block}"
+    printf 'SUFFIX:%s\n' "${_pc_unproven_suffix}"
+  )"
+  printf '%s' "${c5_out}" | grep -qF 'unproven: negated grep never fails' \
+    && printf '%s' "${c5_out}" | grep -qF 'SUFFIX: unproven=negated grep never fails' \
+    && pass "C5 wiring: product-close's real PASS-branch block prints + suffixes the unproven finding" \
+    || fail "C5 wiring: block ran but did not surface the unproven finding: ${c5_out}"
+
+  # negative control: delete the one call site from a scratch copy -> block goes inert
+  MUT_PC="${TMP}/leadv2-dispatch-product-close.mut1.sh"
+  python3 - "${PRODUCT_CLOSE_SH}" "${MUT_PC}" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+old = '_pc_unproven="$(leadv2_red_proof_unproven "${HANDOFF}")"\n'
+if text.count(old) != 1:
+    sys.exit(2)
+open(dst, "w", encoding="utf-8").write(text.replace(old, '_pc_unproven=""\n', 1))
+PYEOF
+  mut_pc_rc=$?
+  if [[ ${mut_pc_rc} -ne 0 ]]; then
+    fail "control C5-wiring: mutation source pattern not found (product-close drifted, update mutation)"
+  else
+    mut_c5_block="$(_extract_c5_block "${MUT_PC}")"
+    mut_c5_out="$(
+      # shellcheck disable=SC1090
+      source "${LIB}"
+      emit() { :; }
+      HANDOFF="${FIXTURE_DIR}"
+      TASK="wiretest"
+      eval "${mut_c5_block}"
+      printf 'SUFFIX:%s\n' "${_pc_unproven_suffix}"
+    )"
+    printf '%s' "${mut_c5_out}" | grep -qF 'SUFFIX:' && ! printf '%s' "${mut_c5_out}" | grep -qF 'unproven=' \
+      && pass "control C5-wiring: call site removed -> block no longer surfaces the finding (caught, would be red)" \
+      || fail "control C5-wiring: mutation NOT caught: ${mut_c5_out}"
+    rm -f "${MUT_PC}"
+  fi
 fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "${PASS}" "${FAIL}"

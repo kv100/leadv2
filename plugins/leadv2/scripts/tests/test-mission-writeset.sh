@@ -51,7 +51,7 @@ MISSION_INSTR="$(cat <<'EOF'
 # TASK
 
 Write the RED artifact to `docs/handoff/Z/red/run1.log` before closing.
-Also leave the logs in docs/handoff/Z/other/
+Leave the RED logs in `docs/handoff/Z/other/`.
 EOF
 )"
 
@@ -118,7 +118,7 @@ python3 - "${LIB}" "${MUT_LIB}" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src, encoding="utf-8").read()
-old = "            if citation_re.search(prefix):\n                continue\n"
+old = "    if citation_re.search(prefix):\n        return\n"
 if old not in text:
     sys.exit(2)
 open(dst, "w", encoding="utf-8").write(text.replace(old, "", 1))
@@ -143,8 +143,8 @@ python3 - "${LIB}" "${MUT_LIB2}" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src, encoding="utf-8").read()
-old = '    hit=0\n    for decl in "${decls[@]}"; do'
-new = '    hit=0; hit=1\n    for decl in "${decls[@]}"; do'
+old = '    for decl in ${decls[@]+"${decls[@]}"}; do'
+new = '    hit=1\n    for decl in ${decls[@]+"${decls[@]}"}; do'
 if old not in text:
     sys.exit(2)
 open(dst, "w", encoding="utf-8").write(text.replace(old, new, 1))
@@ -161,6 +161,97 @@ else
   mut_rc2=$?
   [[ ${mut_rc2} -ne 0 ]] && pass "control C2: mutated lib always reports covered -> caught (would be red)" \
     || fail "control C2: mutation NOT caught -- missing-path detection is not actually tested"
+fi
+
+# ── C1 wiring control: architect_prepass itself, not just the lib/CLI, must refuse ──────
+# DISPATCH-CLOSE-GATE-01 review round 1, C1: deleting all three `_mission_writeset_guard`
+# call sites in architect_prepass left this suite green (pass=14 fail=0) because every
+# assertion above only exercises the lib functions and the standalone CLI subcommand,
+# neither of which is on the live dispatch path. This drives architect_prepass itself
+# (LEADV2_DISPATCH_SOURCE_ONLY=1 lets the dispatcher be sourced instead of run as a CLI)
+# with a mission that names a path outside LANE_WRITES, on the kill-switch branch
+# (ARCHITECT_GATE=0) which is the cheapest real call site to exercise end-to-end.
+_run_prepass_refusal() { # <dispatch_script_path> -> stdout=combined output; exit=architect_prepass rc
+  local dsh="$1"
+  LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${PROJECT_ROOT_FOR_TEST}" \
+  CLAUDE_PROJECT_ROOT="${PROJECT_ROOT_FOR_TEST}" \
+  bash -c '
+    set -uo pipefail
+    # shellcheck disable=SC1090
+    source "$1"
+    export ARCHITECT_GATE=0
+    architect_prepass "$2" "wiretest8" "plugins/leadv2/scripts/foo.sh"
+    exit $?
+  ' _ "${dsh}" "${MISSION_REFUSE}" 2>&1
+  return $?
+}
+PROJECT_ROOT_FOR_TEST="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+
+wire_out="$(_run_prepass_refusal "${DISPATCH_SH}")"; wire_rc=$?
+[[ ${wire_rc} -ne 0 ]] && printf '%s' "${wire_out}" | grep -qF 'mission_writeset_refused' \
+  && pass "wiring: architect_prepass itself refuses a non-covering mission" \
+  || fail "wiring: architect_prepass rc=${wire_rc} out=${wire_out}"
+
+# ── C1 negative control: remove all 3 live call sites -> the wiring test above goes red ──
+# Mutant lives next to the REAL dispatcher (not in tests/) -- the dispatcher derives its own
+# SCRIPT_DIR from BASH_SOURCE to find sibling libs, so a copy elsewhere fails to source them.
+MUT_DISPATCH="${SCRIPT_DIR}/../.mut-dispatch-code.$$.sh"
+python3 - "${DISPATCH_SH}" "${MUT_DISPATCH}" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+site1 = '    _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || return 1\n'
+n1 = text.count(site1)
+if n1 != 2:
+    sys.exit(2)
+text = text.replace(site1, "", 2)
+site2 = 'if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || ! _acceptance_guard "${sig8}" "${f}"; then'
+if site2 not in text:
+    sys.exit(3)
+text = text.replace(
+    site2,
+    'if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _acceptance_guard "${sig8}" "${f}"; then',
+    1,
+)
+open(dst, "w", encoding="utf-8").write(text)
+PYEOF
+mut_prep_rc=$?
+if [[ ${mut_prep_rc} -ne 0 ]]; then
+  fail "control C1-wiring: mutation source pattern not found (dispatcher drifted, update mutation, rc=${mut_prep_rc})"
+else
+  mut_wire_out="$(_run_prepass_refusal "${MUT_DISPATCH}")"; mut_wire_rc=$?
+  [[ ${mut_wire_rc} -eq 0 ]] \
+    && pass "control C1-wiring: removing all 3 call sites -> architect_prepass no longer refuses (caught, would be red)" \
+    || fail "control C1-wiring: mutation NOT caught -- wiring test still refuses without the call sites: ${mut_wire_out}"
+  rm -f "${MUT_DISPATCH}"
+fi
+
+# ── real on-disk specimens (C2/C3): the fixtures ARE the test, not a hand-fitted string ──
+SPECIMEN_DIR="${SCRIPT_DIR}/../../../../docs/handoff/DISPATCH-CLOSE-GATE-01/specimens"
+R4="${SPECIMEN_DIR}/fix-round-4.md"
+R5="${SPECIMEN_DIR}/fix-round-5.md"
+
+if [[ -f "${R4}" ]]; then
+  out_r4="$(bash "${DISPATCH_SH}" mission-writeset-check "${R4}" 2>&1)"; rc_r4=$?
+  [[ ${rc_r4} -eq 0 ]] \
+    && pass "specimen: fix-round-4.md (real corrected mission) dispatches normally" \
+    || fail "specimen: fix-round-4.md wrongly refused rc=${rc_r4} out=${out_r4}"
+else
+  fail "specimen: docs/handoff/DISPATCH-CLOSE-GATE-01/specimens/fix-round-4.md not found"
+fi
+
+if [[ -f "${R5}" ]]; then
+  # Reconstructed pre-correction write set: the real round-5 LANE_WRITES minus
+  # `lib/leadv2-lane-guard.sh`, which the "Write set note (corrected)" paragraph in the
+  # SAME on-disk file says was omitted from the first dispatch. The mission body is
+  # untouched -- only the declared csv is rolled back, exactly what the first dispatch saw.
+  PRECORRECTION_CSV="plugins/leadv2/scripts/leadv2-dispatch-code.sh,plugins/leadv2/scripts/leadv2-dispatch-ledger.sh,plugins/leadv2/scripts/leadv2-dispatch-product-close.sh,plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh,plugins/leadv2/scripts/tests/test-close-chain.sh,plugins/leadv2/scripts/tests/test-t13-slice1.sh,plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh,plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh,plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh,tests/run-all.sh,.gitignore"
+  out_r5="$(bash "${DISPATCH_SH}" mission-writeset-check "${R5}" "${PRECORRECTION_CSV}" 2>&1)"; rc_r5=$?
+  [[ ${rc_r5} -ne 0 ]] && printf '%s' "${out_r5}" | grep -qF 'lib/leadv2-lane-guard.sh' \
+    && pass "specimen: pre-correction fix-round-5.md refused, names lib/leadv2-lane-guard.sh" \
+    || fail "specimen: pre-correction fix-round-5.md rc=${rc_r5} out=${out_r5}"
+else
+  fail "specimen: docs/handoff/DISPATCH-CLOSE-GATE-01/specimens/fix-round-5.md not found"
 fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "${PASS}" "${FAIL}"

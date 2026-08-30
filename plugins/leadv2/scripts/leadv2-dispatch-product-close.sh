@@ -32,6 +32,10 @@ WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ROUTE_ARBITER_SH="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
 [[ -f "${_ROUTE_ARBITER_SH}" ]] && source "${_ROUTE_ARBITER_SH}" || true
+# DISPATCH-CLOSE-GATE-01 Mechanism 2 (C5): the only live close gate, wired here so a real
+# close cross-checks claimed fixes against RED artifacts instead of a standalone CLI verb
+# nothing calls.
+source "${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
 _PARKED_DETECT_SH="${SCRIPT_DIR}/lib/leadv2-parked-detect.sh"
 [[ -f "${_PARKED_DETECT_SH}" ]] || _PARKED_DETECT_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-parked-detect.sh"
 if [[ -f "${_PARKED_DETECT_SH}" ]]; then
@@ -3224,6 +3228,20 @@ if [[ "${verdict}" == FAIL ]]; then
   _stamp_review_terminal fail
   exit 7
 fi
+# DISPATCH-CLOSE-GATE-01 Mechanism 2 (C5): cross-check fixes the worker claimed (any
+# `## [Critical]`/`## [High]` heading in a handoff *.md) against RED artifacts on disk
+# BEFORE the close verdict below is written. D3: report, never trap the lane -- an
+# unproven claim is printed and named in the decision line, and folded into the
+# terminal's evidence string so `landed` here is visibly distinguishable from a fully
+# proven landed close, but no exit code or terminal value changes because of it.
+_pc_unproven="$(leadv2_red_proof_unproven "${HANDOFF}")"
+_pc_unproven_suffix=""
+if [[ -n "${_pc_unproven}" ]]; then
+  printf '%s\n' "${_pc_unproven}"
+  _pc_unproven_csv="$(printf '%s\n' "${_pc_unproven}" | sed -E 's/^unproven: //' | tr '\n' '|' | sed 's/|$//')"
+  _pc_unproven_suffix=" unproven=${_pc_unproven_csv}"
+  emit decision "red_proof_unproven task=${TASK} names=${_pc_unproven_csv}"
+fi
 # PASS must overwrite review-gate.md too, or a stale fail/blocked artifact from an earlier
 # attempt keeps lying after the gate has actually cleared (hit live on fe5307b3, 2026-07-30).
 # REVIEW-GATE-SHOWS-FINDINGS-01: same append + tmp/mv discipline on the pass exit —
@@ -3244,7 +3262,7 @@ if [[ "${_pc_kind}" == "report" ]]; then
     render_gate_findings "${review_file}" "" "${reviewer}" "${_rgf_rel}" || true
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-  _dl_note landed review_verdict_pass "diff=${diff_hash:0:8} deliverable=${_pc_report_deliverable}${_rgf_dnm}" "" "${_pc_report_deliverable}"
+  _dl_note landed review_verdict_pass "diff=${diff_hash:0:8} deliverable=${_pc_report_deliverable}${_rgf_dnm}${_pc_unproven_suffix}" "" "${_pc_report_deliverable}"
 else
   {
     printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}"
@@ -3262,11 +3280,11 @@ else
   if [[ -z "${_t11_branch}" || "${_t11_branch}" == "${_t11_default}" || "${diff_root}" == "${ROOT}" ]]; then
     # No isolated lane branch to merge (shared-tree fallback lane, or work already landed on
     # the default branch directly) -- nothing to merge, so `landed` is accurate as-is.
-    _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm}"
+    _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm}${_pc_unproven_suffix}"
   elif [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then
     # Shared tree has foreign uncommitted work right now -- merging here risks another
     # session's in-flight edits. Never force past this: fail toward pass_unlanded.
-    _dl_note pass_unlanded root_dirty "branch=${_t11_branch} diff=${diff_hash:0:8}"
+    _dl_note pass_unlanded root_dirty "branch=${_t11_branch} diff=${diff_hash:0:8}${_pc_unproven_suffix}"
   else
     _t11_landed=0
     [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" acquire "${TASK}" >/dev/null 2>&1
@@ -3278,7 +3296,7 @@ else
     fi
     [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" release "${TASK}" >/dev/null 2>&1
     if [[ "${_t11_landed}" == 1 ]]; then
-      _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm} branch=${_t11_branch}"
+      _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm} branch=${_t11_branch}${_pc_unproven_suffix}"
       # T11-F1: merge + is-ancestor verified above -- complete the close chain
       # instead of stopping at the terminal stamp. Deregister the lane from
       # the live registry so a subsequent sweep no longer sees it as running,
@@ -3304,7 +3322,7 @@ else
         fi
       fi
     else
-      _dl_note pass_unlanded merge_conflict "branch=${_t11_branch} diff=${diff_hash:0:8}"
+      _dl_note pass_unlanded merge_conflict "branch=${_t11_branch} diff=${diff_hash:0:8}${_pc_unproven_suffix}"
     fi
   fi
 fi
