@@ -1014,7 +1014,8 @@ def is_terminal(status, ledger_state):
     # dispatching for this attempt -- it is terminal for display/TTL purposes.
     return status in ("complete", "failed", "cancelled") or \
            ledger_state in ("closed", "failed", "cancelled",
-                            "landed", "parked", "refused", "dead", "no_work")
+                            "landed", "parked", "refused", "dead",
+                            "dead_with_unlanded_work", "no_work")
 
 # ---- R1 (fix round 3): tasks.yaml title map -- ONE parse ----------------
 # Source for rule 1 of name resolution. tasks.yaml is mapping-shaped

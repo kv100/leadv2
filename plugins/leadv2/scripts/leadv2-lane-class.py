@@ -37,7 +37,8 @@ def _is_terminal(status, ledger_state):
     """Mirror of is_terminal() from the lanes heredoc."""
     return status in ("complete", "failed", "cancelled") or \
         ledger_state in ("closed", "failed", "cancelled",
-                         "landed", "parked", "refused", "dead", "no_work")
+                         "landed", "parked", "refused", "dead",
+                         "dead_with_unlanded_work", "no_work")
 
 
 def classify(f):
@@ -140,11 +141,19 @@ def classify(f):
         _nw = (tcause or "empty-diff").replace("_", "-")
         cause, cls = "no-work(%s)" % _nw, "dead"
 
+    # ---- N6 (round 6): dead_with_unlanded_work override ----
+    # The terminal ledger pins this state so a human recovers unlanded work
+    # before the lane is pruned (leadv2-dispatch-ledger.sh N2). Without this
+    # override the stale-reinterpretation below relabels the row "done",
+    # erasing exactly the signal the pin exists to carry.
+    if ledger_state == "dead_with_unlanded_work":
+        cause, cls = "dead(work-left)", "dead"
+
     terminal = _is_terminal(status, ledger_state) or (terminal_token != "")
 
     # ---- terminal last-resort-stale reinterpretation ----
     if terminal and cls == "dead" and cause.startswith("stale(") \
-            and ledger_state != "no_work":
+            and ledger_state not in ("no_work", "dead_with_unlanded_work"):
         cause = "done(%s)" % (ledger_state or status or "terminal")
         cls = "done"
 

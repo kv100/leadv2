@@ -30,6 +30,11 @@
 #   dead    — started and ended badly: crash, ledger write failure, lock timeout, e2e
 #             regression, or a review verdict of FAIL. TRUE terminal -- write-once, no
 #             later attempt can override it.
+#   dead_with_unlanded_work — same as dead, but the pinned lane worktree still carries
+#             worker-owned uncommitted bytes (lv2_lane_dirty) at the moment of death.
+#             TRUE terminal -- write-once, no later attempt can override it, and it may
+#             not be silently downgraded back to plain `dead` (N2): the pin exists so a
+#             human recovers the unlanded work before the lane is pruned.
 #   parked  — explicitly deferred for a human/architect decision (no design after retries).
 #             RETRYABLE -- does not block a later attempt at the same sig8 from later
 #             recording landed/dead.
