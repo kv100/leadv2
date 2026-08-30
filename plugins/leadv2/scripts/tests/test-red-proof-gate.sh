@@ -8,8 +8,10 @@
 # accepts a "0 failed" artifact, and the suite asserts the relevant test goes red.
 # The C3 control near the bottom extracts and runs the five real production
 # `_dl_note ... leadv2_red_proof_render_evidence(...)` call sites in
-# leadv2-dispatch-product-close.sh directly (nulling the suffix at all five sites is the
-# equivalent negative control: pass=16 fail=1 naming the lost downgrade).
+# leadv2-dispatch-product-close.sh directly. Its own negative control runs the SAME five
+# extracted expressions with the suffix nulled and asserts the downgrade text disappears --
+# proving the C3 assertion above is actually sensitive to production losing it, not just
+# checking a fixture the test wrote itself.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -222,8 +224,8 @@ out_l1b="$(cd "${LANE_ROOT}" && bash "${DISPATCH_SH}" close-gate "../../etc/pass
 # The five `_dl_note` calls are the close notes a founder sees.  Extract their command
 # substitutions and execute them with the production renderer loaded; this is deliberately
 # behavioural (the values rendered), not a grep assertion about the source text.
-_rendered_terminal_notes() { # <product-close.sh> -> one rendered note per production call site
-  local product_close="$1" expression count=0
+_rendered_terminal_notes() { # <product-close.sh> [suffix] -> one rendered note per production call site
+  local product_close="$1" suffix="${2- unproven=negated grep never fails}" expression count=0
   while IFS= read -r expression; do
     [[ -n "${expression}" ]] || continue
     count=$((count + 1))
@@ -232,7 +234,7 @@ _rendered_terminal_notes() { # <product-close.sh> -> one rendered note per produ
       _pc_report_deliverable="docs/handoff/render-proof.md"
       _rgf_dnm=""
       _t11_branch="render-probe"
-      _pc_unproven_suffix=" unproven=negated grep never fails"
+      _pc_unproven_suffix="${suffix}"
       # shellcheck disable=SC2086
       eval "${expression}"
       printf '\n'
@@ -257,6 +259,16 @@ elif [[ "$(printf '%s\n' "${rendered_notes}" | grep -cF 'unproven=negated grep n
   pass "C3: all five production rendered close notes carry the unproven downgrade"
 else
   fail "C3: rendered production close note lost downgrade: ${rendered_notes}"
+fi
+
+# C3 negative control: null the suffix at all five real call sites (same expressions, empty
+# input instead of a mutated lib) and confirm the assertion above would have gone red.
+nulled_notes="$(_rendered_terminal_notes "${PRODUCT_CLOSE_SH}" "")"; nulled_notes_rc=$?
+nulled_hits="$(printf '%s\n' "${nulled_notes}" | grep -cF 'unproven=' || true)"
+if [[ ${nulled_notes_rc} -eq 0 && "${nulled_hits}" -eq 0 ]]; then
+  pass "C3 control: nulling the suffix at all five call sites drops the downgrade -> C3 would be red"
+else
+  fail "C3 control: nulled suffix still produced ${nulled_hits} downgrade mention(s), rc=${nulled_notes_rc} -- C3 is not actually sensitive to the suffix"
 fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "${PASS}" "${FAIL}"

@@ -1,4 +1,0 @@
-[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/plugins/leadv2/scripts/tests/run-core-offline.sh
-[CORE-OFFLINE] waiting for lock file=/tmp/leadv2-core-offline.lock (held by a concurrent run)
-
-ASSERTED_EXIT_STATUS=124

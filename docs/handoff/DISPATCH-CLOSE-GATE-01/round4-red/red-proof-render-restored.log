@@ -1,3 +1,11 @@
+# DISPATCH-CLOSE-GATE-01 round 6: SUPERSEDED. This pair (review-r4 S3) proved a narrower
+# mutation (the test's own 'C5' fixture/literal) than the integration control it was
+# named for. The suite no longer has a 'C5' -- it now has C3 (extracts and runs the 5
+# real production _dl_note ... leadv2_red_proof_render_evidence(...) call sites
+# directly) plus a genuine C3 negative control (same 5 expressions with the suffix
+# nulled, asserting the downgrade text disappears). Kept for history; current
+# authoritative transcript: round6-red/test-red-proof-gate-full-run.log.
+#
 PASS: named_fixes: Critical heading extracted
 PASS: named_fixes: High heading extracted
 PASS: has_red: backed Critical fix satisfied

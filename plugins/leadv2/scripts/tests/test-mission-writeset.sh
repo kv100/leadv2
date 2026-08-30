@@ -282,5 +282,41 @@ else
   fail "specimen: docs/handoff/DISPATCH-CLOSE-GATE-01/specimens/fix-round-5.md not found"
 fi
 
+# ── usage heredoc: no unescaped backticks leaking a spurious "command not found" ──
+# DISPATCH-CLOSE-GATE-01 round 6: the unquoted `cat >&2 <<EOF` in usage() ran the literal
+# text `when:` as a command substitution (backticks are NOT literal inside an unquoted
+# heredoc), printing "when:: command not found" on stderr for every invocation that shows
+# usage -- including from consumer repos that only ever see this file. This control asserts
+# the specific failure signature is gone. --help intentionally exits 1 (usage error, `S8`
+# convention) and its whole body goes to stderr by design, so the control checks for the
+# error signature (mutation-proven: reverting the escaping locally reproduces it), not for
+# empty stderr.
+usage_out="$(bash "${DISPATCH_SH}" --help 2>&1 1>/dev/null)"
+if printf '%s' "${usage_out}" | grep -qF 'command not found'; then
+  fail "usage: --help stderr contains a spurious command-not-found: ${usage_out}"
+else
+  pass "usage: --help stderr has no unescaped-backtick command-not-found artifact"
+fi
+# control: reproduce the bug locally against a copy with the escaping reverted
+MUT_DISPATCH_USAGE="${TMP}/leadv2-dispatch-code.usage-mut.sh"
+python3 - "${DISPATCH_SH}" "${MUT_DISPATCH_USAGE}" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8").read()
+old = "\\`when:\\` gate (e.g. freepool's\n                \\`when: [standard, bulk]\\`)"
+new = "`when:` gate (e.g. freepool's\n                `when: [standard, bulk]`)"
+if old not in text:
+    sys.exit(2)
+open(dst, "w", encoding="utf-8").write(text.replace(old, new, 1))
+PYEOF
+if [[ $? -ne 0 ]]; then
+  fail "control USAGE: mutation source pattern not found (usage heredoc drifted, update mutation)"
+else
+  mut_usage_out="$(bash "${MUT_DISPATCH_USAGE}" --help 2>&1 1>/dev/null)"
+  printf '%s' "${mut_usage_out}" | grep -qF 'command not found' \
+    && pass "control USAGE: reverting the backtick escaping reproduces the error -> caught (would be red)" \
+    || fail "control USAGE: mutation NOT caught -- unescaped backticks no longer reproduce the failure"
+fi
+
 printf 'SUMMARY: pass=%s fail=%s\n' "${PASS}" "${FAIL}"
 (( FAIL == 0 ))

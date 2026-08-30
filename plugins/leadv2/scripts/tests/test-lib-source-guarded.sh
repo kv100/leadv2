@@ -90,5 +90,60 @@ else
     || fail "control: removed fallback was not detected: ${fixture_red}"
 fi
 
+# Structural proof against the REAL production file: strip the canonical-fallback line
+# from each of the two non-`lib/` sites this round guarded (leadv2-lane-child-suffixes.sh
+# at :452, leadv2-portable-lock.sh at :460) and confirm the scanner names that exact
+# site. A scratch dir mirrors the real scripts/hooks trees via symlinks (single-source
+# rule preserved) with only the mutated dispatcher itself a real file, matching the
+# WIRING-control pattern in test-mission-writeset.sh.
+DISPATCH_SH="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
+mut_site() { # <label> <fallback-line-substring> <expected-rel:line>
+  local label="$1" needle="$2" expect="$3"
+  local mut_real_dir mut_dir mut_dispatch
+  mut_real_dir="$(cd "${SCRIPT_DIR}/.." && pwd)"
+  mut_dir="$(mktemp -d "${TMPDIR:-/tmp}/lib-source-guarded-mut.XXXXXX")"
+  mkdir -p "${mut_dir}/plugins/leadv2/scripts"
+  ln -s "${ROOT}/plugins/leadv2/hooks" "${mut_dir}/plugins/leadv2/hooks"
+  local entry base
+  for entry in "${mut_real_dir}"/*; do
+    base="$(basename "${entry}")"
+    [[ "${base}" == "leadv2-dispatch-code.sh" ]] && continue
+    ln -s "${entry}" "${mut_dir}/plugins/leadv2/scripts/${base}"
+  done
+  mut_dispatch="${mut_dir}/plugins/leadv2/scripts/leadv2-dispatch-code.sh"
+  local mut_rc
+  python3 - "${DISPATCH_SH}" "${mut_dispatch}" "${needle}" <<'PYEOF'
+import sys
+src, dst, needle = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = open(src, encoding="utf-8").read().splitlines(keepends=True)
+out = [ln for ln in lines if needle not in ln]
+if len(out) == len(lines):
+    sys.exit(2)
+open(dst, "w", encoding="utf-8").writelines(out)
+PYEOF
+  mut_rc=$?
+  if [[ ${mut_rc} -ne 0 ]]; then
+    fail "control ${label}: mutation source pattern not found (dispatcher drifted, update mutation, rc=${mut_rc})"
+    rm -rf "${mut_dir}"
+    return
+  fi
+  local found
+  found="$(comm -23 <(scan_unguarded "${mut_dir}" | sed '/^$/d' | sort) <(printf '%s\n' "${documented}" | sed '/^$/d' | sort))"
+  if [[ "${found}" == "${expect}" ]]; then
+    pass "control ${label}: stripped canonical fallback is detected, naming ${expect} (would be red)"
+  else
+    fail "control ${label}: stripped fallback NOT detected as ${expect}, got: ${found}"
+  fi
+  rm -rf "${mut_dir}"
+}
+
+mut_site "LANE_CHILD_SUFFIXES" \
+  '_LANE_CHILD_SUFFIXES_SH="${LEADV2_CANONICAL_ROOT' \
+  "plugins/leadv2/scripts/leadv2-dispatch-code.sh:452"
+
+mut_site "PORTABLE_LOCK" \
+  '_PORTABLE_LOCK_SH="${LEADV2_CANONICAL_ROOT' \
+  "plugins/leadv2/scripts/leadv2-dispatch-code.sh:460"
+
 printf 'SUMMARY: pass=%s fail=%s\n' "${PASS}" "${FAIL}"
 (( FAIL == 0 ))

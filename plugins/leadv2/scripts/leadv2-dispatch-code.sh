@@ -5762,8 +5762,8 @@ Usage:
                 [--glm-lock-busy] [--force] [--no-spawn] [--task-class <class>]
                 [--resume-lane <task-sig8|founder-id>] [--worktree <abs-path>]
                 --task-class <trivial|light|standard|heavy|strategic|bulk>: named task-size
-                class, consulted by the dispatch ladder's `when:` gate (e.g. freepool's
-                `when: [standard, bulk]`) so an untrusted third-party arm only ever sees the
+                class, consulted by the dispatch ladder's \`when:\` gate (e.g. freepool's
+                \`when: [standard, bulk]\`) so an untrusted third-party arm only ever sees the
                 task sizes it was actually approved for. Defaults to "Standard" for a caller
                 that never resolved a size class (today's behaviour, unchanged).
                 Resolve the code-writing model (glm|sonnet|codex) via routing.yaml glm_policy,
