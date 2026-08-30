@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export LC_ALL="${LEADV2_STATUSLINE_LOCALE:-en_US.UTF-8}"
 # leadv2-lane-status-line-tail.sh — the ENTIRE budget-relevant half of the
 # status line render (both jq reads + wrapped user command + git branch
 # fallback + lane segment), factored out of leadv2-lane-status-line.sh so

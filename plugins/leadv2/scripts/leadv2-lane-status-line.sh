@@ -85,6 +85,7 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
 fi
 
 set -uo pipefail
+export LC_ALL="${LEADV2_STATUSLINE_LOCALE:-en_US.UTF-8}"
 
 INPUT="$(cat 2>/dev/null || true)"
 

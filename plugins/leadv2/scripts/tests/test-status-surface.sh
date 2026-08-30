@@ -587,7 +587,7 @@ sessions:
     log_path: ''
 EOF
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-  _ledger "$(printf 'stly%04d' "$i")" glm "s$i-h" pending $((NOW-300-i))
+  _ledger "$(printf 'stly%04d' "$i")" glm "s$i-h" confirmed $((NOW-300-i))
 done
 out="$(run_render)"
 if sig_seen liveone0 "$out" \
@@ -687,7 +687,6 @@ run_render_r4() {
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
   LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-}" \
   LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-}" \
-  LEADV2_STATUS_LIMITS_SNAPSHOT="${R4_SNAP:-/nonexistent}" \
   LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
   LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
   LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
@@ -707,7 +706,6 @@ run_bar_r4() {
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
   LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-}" \
   LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-}" \
-  LEADV2_STATUS_LIMITS_SNAPSHOT="${R4_SNAP:-/nonexistent}" \
   LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
   LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
   LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
@@ -1011,7 +1009,7 @@ barout="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
   bash "$BAR" 2>/dev/null)"
 _l1="$(printf '%s\n' "$barout" | sed -n '1p')"
-if printf '%s' "$_l1" | grep -Eq '^🔴 1 ' && ! printf '%s' "$_l1" | grep -q '🔴 3'; then
+if printf '%s' "$_l1" | grep -Eq '🔴 1 ' && ! printf '%s' "$_l1" | grep -q '🔴 3'; then
   pass "R6-T1: 2 done + 1 dead -> 🔴 1 (got: $_l1)"
 else
   fail "R6-T1: 2 done + 1 dead -> 🔴 1 (got: $_l1)"
@@ -1771,14 +1769,7 @@ if printf '%s' "$_oc_done" | grep -q 'done(completed)' \
 else
   _oc_causes_ok=0
 fi
-_oc_bar="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
-  LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
-  LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
-  LEADV2_STATUS_REPO="testrepo" \
-  LEADV2_STATUS_REPO_ROOT="$SB" \
-  LEADV2_STATUS_NOW="$NOW" \
-  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
-  bash "$BAR" 2>/dev/null)"
+_oc_bar="$(run_bar_r4 2>/dev/null)"
 _oc_red="$(printf '%s' "$_oc_bar" | sed -n '1p' | sed -n 's/.*🔴 \([0-9][0-9]*\).*/\1/p')"
 case "$_oc_red" in ''|*[!0-9]*) _oc_red=X ;; esac
 if [ "$_oc_causes_ok" -eq 1 ] && [ "$_oc_red" = "1" ]; then

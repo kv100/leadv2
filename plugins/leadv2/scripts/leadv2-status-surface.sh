@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export LC_ALL="${LEADV2_STATUSLINE_LOCALE:-en_US.UTF-8}"
 # leadv2-status-surface.sh — SUPERVISOR-STATUS-SURFACE-02
 #
 # A cheap, always-fresh, terminal-INDEPENDENT status surface for the leadv2

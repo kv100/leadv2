@@ -517,6 +517,21 @@ else
   bad "F5" "wide fallback base lost ANSI despite headroom: $WIDE_COLORED"
 fi
 
+# F5 has its own behavioral negative control: forcing the fallback formatter
+# to plain text must remove SGR bytes while all width logic remains intact.
+F5_MUT_DIR="$tmp/composer-mut-f5"
+cp -a "$SCRATCH_SCRIPTS" "$F5_MUT_DIR"
+sed -i.bak '75s@.*@  printf '\''%s in %s'\'' "\$model" "\$cwd"@' "$F5_MUT_DIR/leadv2-lane-status-line.sh"
+rm -f "$F5_MUT_DIR/leadv2-lane-status-line.sh.bak"
+COMPOSER_SAVED="$COMPOSER"; COMPOSER="$F5_MUT_DIR/leadv2-lane-status-line.sh"
+F5_MUT_OUT="$(HOME="$tmp/composer-home" run_composer 200 "$DEAD_ONLY_LINE")"
+COMPOSER="$COMPOSER_SAVED"
+if [[ "$F5_MUT_OUT" != *$'\033['* ]]; then
+  ok "F5 RED control: ANSI-stripped fitting fallback is rejected"
+else
+  bad "F5 control" "ANSI-stripping mutation unexpectedly retained SGR: $F5_MUT_OUT"
+fi
+
 # F2: the composer must fit exact narrow terminal budgets, including the
 # former negative-slack/trailing-space case at 22 columns.
 for _narrow_w in 20 22 26 30 34 60 80 120 200; do
@@ -669,6 +684,13 @@ if (( $(visible_len "$UTF8_OUT") <= 60 )) && [[ "$UTF8_PLAIN" == *'+5'* ]]; then
   ok "F3: UTF-8 tail clamp fits 60 with exact +5"
 else
   bad "F3" "UTF-8 tail clamp width/count mismatch: $UTF8_PLAIN"
+fi
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+UTF8_C_OUT="$(LC_ALL=C run_tail 60 "$UTF8_DIR")"; UTF8_C_PLAIN="$(printf '%s' "$UTF8_C_OUT" | strip_ansi)"
+if [[ "$UTF8_C_PLAIN" == *'ки'* ]] && (( $(visible_len "$UTF8_C_OUT") <= 60 )); then
+  ok "locale: LC_ALL=C still preserves a UTF-8 lane token within width"
+else
+  bad "locale" "LC_ALL=C lost/overflowed UTF-8 lane token: $UTF8_C_PLAIN"
 fi
 
 # F2/F5: the production tail has the same exact-width contract, and its BASE
