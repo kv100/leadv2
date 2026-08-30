@@ -375,3 +375,113 @@ exercise the changed code.
   started, per the session's initial `git status`) — not staged or touched, out of this
   task's scope (shared registry state owned by other concurrent lanes/lead).
 
+## Round 4 (PROMISE-GUARD-BIND-01 review-r3.md, two High findings)
+
+### Fix 1 — marker-before-verb arm fired on ordinary status prose
+
+`COMMIT_RU_SHAPE`'s marker-before-verb alternative (`hooks/leadv2-promise-guard.sh:246-247`,
+formerly `:219`) treated the marker's immediately-following word as the verb candidate with no
+check beyond RU_1SG_NONPAST's nominal-ending exclusion list. Russian accusative singular nouns
+share the -у/-ю ending with 1sg verbs and are not on that list (`работу`, `задачу`, `команду`,
+`картину`, `версию`, `ситуацию`), so a marker fronting an object read as a commitment.
+
+Fix: `RU_OTHER_FINITE_VERB` (`:243`) — a marker-before-verb match is now vetoed if the REST of
+the clause contains a second, genuinely finite verb (3rd-person / 1st-2nd-plural present-tense
+endings, which never coincide with the 1sg candidate shape). Every measured false positive has
+exactly this second verb carrying the real subject; every genuine promise clause in the fixture
+set has exactly one verb, the candidate itself.
+
+A companion bug surfaced by the same fixture set: the clause splitter (`re.split(r'[.!?\n;]', …)`,
+`:496`) split "5.2" as two sentences on the decimal point, so "Сейчас версию 5.2 использует прод"
+became "Сейчас версию 5" (no second verb left to veto it) + "2 использует прод". Fixed by making
+the `.` alternative refuse to split when immediately flanked by digits on both sides
+(`(?<!\d)\.(?!\d)|[!?\n;]`, `:502`); `!?\n;` still split unconditionally.
+
+Verified directly against `COMMIT_RE`/`VETO_RE` in isolation (Python, both regexes extracted
+verbatim from the hook) and, as the "done means" bar requires, through the real hook end-to-end.
+
+All ten review-r3.md status clauses now SILENT; all eleven review-r1.md:88-98 promises still
+FIRED. Full real-hook run: `plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh` —
+`10 passed(red->green), 0 failed, 31 green-pre-fix` (41 cases total, ten of them the new
+round4 negatives, the rest unchanged from round3 plus the eleven r1 promises).
+
+### Fix 2 — morphology suite tested a Python paraphrase, not the hook
+
+`test-promise-guard-morphology.sh` used to `grab()` regex source text out of the hook with a
+source-level regex parser and re-`exec` it in a bare Python namespace. It broke silently the
+moment `COMMIT_RU_SHAPE` grew a third referenced name (`RU_OTHER_FINITE_VERB`) the parser didn't
+know to lift — the suite would have measured a stale copy forever while the real hook diverged.
+
+Rewritten to drive the real hook exactly the way `test-promise-action-binding.sh` already does:
+a synthetic Stop-hook transcript (one assistant text block, no tool calls), a sandboxed `HOME`
+so the suite never writes the production journal, a unique `session_id` per case (avoids
+sentinel cross-contamination between cases), and `FIRED`/`SILENT` read off the hook's own
+stdout. The weak pinned negative this suite used to carry for the shape rule
+(`case_neg_shape_adverb`, "сейчас по этому делу решения нет" — blocked by the preposition
+sub-case of adjacency, which never needed the round4 fix) is removed; the ten status clauses
+from review-r3.md replace it as `case_r4_neg_*`.
+
+### RED/GREEN mutation control (round4)
+
+Mutated out the `RU_OTHER_FINITE_VERB` veto (deleted the `(?!.*RU_OTHER_FINITE_VERB)`
+lookahead from `COMMIT_RU_SHAPE`'s marker-before-verb arm), ran the rewritten morphology suite:
+
+```
+Results: 10 passed(red->green), 6 failed, 25 green-pre-fix, 0 could-not-run
+FAIL: r4-neg-rabotu-delayut / r4-neg-zadachu-derzhit / r4-neg-komandu-trogaem /
+      r4-neg-kartinu-pokazhet / r4-neg-versiyu-ispolzuet / r4-neg-situaciyu-posmotrim
+```
+
+— exactly the six clauses review-r3.md measured as false positives, RED without the guard.
+Reverted the mutation (`diff --stat` back to zero against the committed hook); suite green
+again (`10 passed(red->green), 0 failed, 31 green-pre-fix`). Logs:
+`round4-red/marker-shape-mutation-RED.log`, `round4-red/marker-shape-mutation-GREEN.log`
+(gitignored under `docs/handoff/*/*`, same as round2-red/round3-red).
+
+### Journal-row impact on the BLOCK-flip GO-condition
+
+`docs/leadv2/scheduled-decisions.md`'s GO-condition counts `fired` rows in the real (unsandboxed)
+journal. Checked `$HOME/.claude/leadv2-promise-guard.jsonl` for rows timestamped at or after the
+round-3 commit (`57bf893`, 2026-08-30T14:56:49+03:00): **zero** `fired` rows — round 3 had not
+yet produced live traffic before this fix landed, so there is nothing in the real stream to
+retroactively correct. The number that matters is prospective: on the ten-clause diagnostic
+fixture set, round 3 produced **6 false `fired` rows / 10**; round 4 produces **0 false `fired`
+rows / 10** on the same set, while still firing on all eleven real promises. Every `fired` row
+the flip GO-condition accumulates from this point on is measured against the tightened rule, not
+the one review-r3.md showed seeding the stream with a false-positive class.
+
+One incidental note: a manual debug probe during this task briefly wrote one row
+(`session_id="debug1"`) to the real (unsandboxed) production journal outside the test harness.
+Removed immediately (`1763 -> 1762` lines) before any suite ran again; the sandbox-control
+assertion in both real-hook suites confirms the journal was unchanged across every subsequent
+test run in this task.
+
+### Full test evidence (round4)
+
+- `bash -n plugins/leadv2/hooks/leadv2-promise-guard.sh` — clean.
+- `bash -n plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh` — clean.
+- `plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh` — 10 passed(red->green), 0
+  failed, 31 green-pre-fix, 0 could-not-run.
+- `plugins/leadv2/scripts/tests/test-promise-action-binding.sh` — 2 passed(red->green), 0
+  failed, 8 green-pre-fix, 0 could-not-run (unchanged from round3, re-run to prove no
+  regression).
+- `plugins/leadv2/tests/test-promise-guard.sh` — 17/17 pass (unchanged from round3).
+- `tests/run-all.sh` (`--scope changed`, default): 6 of 7 selected suites passed on the first
+  attempt (both promise-guard suites above, the base suite, and the always-on status-surface
+  suites); the 7th, `run-core-offline.sh`, could not complete under the shared
+  `/tmp/leadv2-core-offline.lock` (held by a concurrent lane on this machine) within a 60s and
+  then a 300s wait. Re-run standalone with `LEADV2_SUITE_LOCK_DISABLE=1` to get a real answer
+  despite the lock: **71 passed, 12 failed** — all twelve failures are pre-existing baseline
+  reds unrelated to this task (dispatch-arm vocabulary, lane-placement pin, review-round
+  exhaustive/cap, GLM ladder, product-close scoping, claim-evidence gate, report-only gate,
+  etc. — none touch `leadv2-promise-guard.sh` or either test file this task changed);
+  consistent with this repo's known shared-worktree baseline-red pattern (memory:
+  run-all-changed-preexisting-reds).
+
+## Deliberately left alone (round4)
+
+- `test-promise-guard-morphology.sh`'s pinned dative-adjective negative
+  (`"дальше по твоему порядку…"`) — still valid, not the weak case, kept as-is.
+- The other 12 pre-existing `run-core-offline.sh` baseline failures — out of this task's
+  `LANE_WRITES`, unrelated to promise-guard.
+

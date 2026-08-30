@@ -214,9 +214,37 @@ RU_INTENT_MARKER = (
 # preposition or adjective between marker and candidate is real prose, not a deferred
 # commitment, and blocks the match because the immediately-following word fails
 # RU_1SG_NONPAST (too short, or a nominal ending already excluded there).
+#
+# PROMISE-GUARD-BIND-01 round4: adjacency alone is not enough. Russian accusative
+# singular nouns end in -у/-ю too, and the exclusion list on RU_1SG_NONPAST only
+# covers a handful of nominal endings, so the marker's next word being an accusative
+# object reads as a commitment: «Сейчас работу делают два воркера», «Сейчас задачу
+# держит лейн A» both matched (review-r3.md, ten hand-written status clauses, six
+# false positives). Enumerating every nominal -у/-ю ending is the whack-a-mole the
+# KNOWN LIMIT comment on RU_1SG_NONPAST already warns never terminates.
+#
+# The actual discriminator is not the candidate's shape, it's the REST OF THE
+# CLAUSE: a real promise clause has exactly one finite verb (the candidate itself)
+# — «Сейчас поправлю регэксп в хуке» ends there. Every measured false positive has
+# a SECOND, genuinely finite verb later in the clause carrying the real subject —
+# «делают», «держит», «использует», «покажет», «трогаем», «посмотрим» — because the
+# marker-adjacent word was never the verb; it was the fronted object of that later
+# verb. RU_OTHER_FINITE_VERB names that later-verb shape (3rd-person / 1st-2nd
+# plural present-tense endings, which never coincide with the 1sg -у/-ю candidate
+# shape) and the marker-before-verb arm now requires its absence for the rest of
+# the clause. This does not touch the TRAILING arm (verb-then-marker) at all, and a
+# genuine promise clause that happens to name a second finite verb after the
+# candidate is not attested in any fixture — if one shows up, it is a new case to
+# pin, not a reason to revert this guard.
+# "ет" (not "ёт") deliberately: "ёт" collides with report nouns like «отчёт»,
+# «полёт» that end the very promise clauses this guard must keep firing on, while
+# genuine 3sg -ет verbs («покажет», «использует») never carry ё. "ует" folds into
+# bare "ет" (its own last two letters), so it is not listed separately.
+RU_OTHER_FINITE_VERB = r'\b[а-яё]{2,}(?:ет|ают|ят|ат|им|ешь|ишь|ем|ит|ют)\b'
 COMMIT_RU_SHAPE = (
     RU_1SG_NONPAST + r'.{0,40}?(?:' + RU_INTENT_MARKER + r')'
     + r'|(?:' + RU_INTENT_MARKER + r')\s+(?:же\s+)?' + RU_1SG_NONPAST
+    + r'(?!.*' + RU_OTHER_FINITE_VERB + r')'
 )
 
 COMMIT_RE = re.compile(
@@ -465,7 +493,14 @@ commitment_kinds = []
 if final_text:
     # sentence split, then comma-clause split (see reconciliation note above)
     raw_clauses = []
-    for sent in re.split(r'[.!?\n;]', final_text):
+    # PROMISE-GUARD-BIND-01 round4: a bare `.` alternative split a version number
+    # in half -- "Сейчас версию 5.2 использует прод" became sentences "Сейчас
+    # версию 5" and "2 использует прод", and the first of those has no second
+    # finite verb to trip RU_OTHER_FINITE_VERB, so it read as a fresh commitment
+    # (review-r3.md's ten status clauses, measured through the real hook). A `.`
+    # between two digits is a decimal point, not a sentence boundary; `!?\n;`
+    # still split unconditionally.
+    for sent in re.split(r'(?<!\d)\.(?!\d)|[!?\n;]', final_text):
         sent = sent.strip()
         if not sent:
             continue

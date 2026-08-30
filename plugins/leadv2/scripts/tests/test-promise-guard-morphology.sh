@@ -18,8 +18,16 @@
 # verbatim escape sentences are pinned as cases 1 and 2, so this exact escape can
 # never regress silently.
 #
-# The patterns are READ OUT OF THE LIVE HOOK, never restated here — a copy would let
-# the hook drift while the test stayed green.
+# PROMISE-GUARD-BIND-01 round4: this suite used to lift the hook's regex
+# assignments out with a source-level `grab()` and re-exec them in a bare Python
+# namespace — a PARAPHRASE of the decision, not the decision itself. The parser
+# broke silently the moment COMMIT_RU_SHAPE grew a third name (RU_OTHER_FINITE_VERB)
+# it didn't know to lift, and the suite would have stayed green forever measuring a
+# stale copy while the real hook did something else entirely (review-r3.md, second
+# High finding). It now drives the REAL hook end-to-end exactly the way
+# test-promise-action-binding.sh does: a synthetic Stop-hook transcript, a sandboxed
+# HOME so this suite never touches the production journal, and FIRED/SILENT read
+# off the hook's own stdout — never a restated regex.
 
 set -uo pipefail
 
@@ -33,6 +41,20 @@ log() { printf '[TEST] %s\n' "$*"; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/promise-morph.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 
+# PROMISE-GUARD-BIND-01 round2: _verdict below runs the REAL hook, which appends one
+# journal row per evaluated case to $HOME/.claude/leadv2-promise-guard.jsonl -- with
+# no override, that is the real production journal, the same file the flip
+# GO-condition in docs/leadv2/scheduled-decisions.md reads. Sandbox HOME for the
+# whole suite; the control at the bottom fails the suite if the real journal
+# changes size during this run despite the sandbox.
+REAL_HOME="${HOME}"
+REAL_JOURNAL="${REAL_HOME}/.claude/leadv2-promise-guard.jsonl"
+REAL_JOURNAL_LINES_BEFORE=0
+[[ -f "${REAL_JOURNAL}" ]] && REAL_JOURNAL_LINES_BEFORE="$(wc -l < "${REAL_JOURNAL}" 2>/dev/null | tr -d ' ')"
+SANDBOX_HOME="${WORK}/home"
+mkdir -p "${SANDBOX_HOME}/.claude"
+export HOME="${SANDBOX_HOME}"
+
 # PROMISE-GUARD-BIND-01 round2: pinned to the same checked-in fixture as
 # test-promise-action-binding.sh, not `git show HEAD:...` -- see that file's comment
 # for why HEAD self-destructs the pre-fix arm once this task's own commit lands. An
@@ -45,89 +67,42 @@ if [[ -z "${REPO}" || ! -s "${PRE_HOOK}" ]]; then
   exit 1
 fi
 
-# Extract the hook's own regex definitions and evaluate one clause through them.
-# Prints HIT or MISS. rc 2 if the definitions could not be lifted (shape changed).
-_verdict() { # <hook> <clause>
-  local hook="$1" clause="$2"
-  [[ -f "$hook" ]] || return 2
-  HOOK_FILE="$hook" CLAUSE="$clause" python3 - <<'PY' 2>/dev/null
-import os, re, sys
-
-src = open(os.environ["HOOK_FILE"]).read()
-clause = os.environ["CLAUSE"]
-
-# Lift the assignments verbatim from the hook's embedded python. Only the names the
-# decision actually uses; a missing required name is "cannot run", not a pass.
-def grab(name, required=True):
-    m = re.search(r'^%s\s*=\s*(.+?)(?=\n[A-Z_]+\s*=|\n\n|\nCOMMIT_RE|\nVETO_RE)' % name,
-                  src, re.S | re.M)
-    if not m:
-        if required:
-            sys.exit(2)
-        return None
-    return m.group(1)
-
-ns = {"re": re}
-
-# PROMISE-GUARD-3PL-COLLISION-01: COMMIT_RU is now built as a `'|'.join(...)`
-# comprehension over COMMIT_RU_VERBS instead of a self-contained alternation
-# string, so exec'ing the COMMIT_RU expression needs COMMIT_RU_VERBS already in
-# `ns` — grab it FIRST, but OPTIONALLY: the pre-fix hook has no such name (its
-# COMMIT_RU is a bare literal, self-contained), and that absence is the entire
-# point of a pre/post comparison. Treating it as required would sys.exit(2) on
-# every case run against the pre-fix hook, collapsing the RED/GREEN-PRE-FIX
-# distinction for the WHOLE suite into an undifferentiated "could not run".
-expr = grab("COMMIT_RU_VERBS", required=False)
-if expr is not None:
-    try:
-        exec("COMMIT_RU_VERBS = %s" % expr, ns)
-    except Exception:
-        pass
-
-for name in ("COMMIT_RU", "COMMIT_RU_NOW", "COMMIT_EN", "PAST_RU", "PAST_EN", "ARTIFACT"):
-    expr = grab(name)
-    try:
-        exec("%s = %s" % (name, expr), ns)
-    except Exception:
-        sys.exit(2)
-
-# Optional (post-fix only) names: absent on the pre-fix hook, which is the point.
-for name in ("RU_1SG_NONPAST", "RU_INTENT_MARKER", "COMMIT_RU_SHAPE"):
-    expr = grab(name, required=False)
-    if expr is not None:
-        try:
-            exec("%s = %s" % (name, expr), ns)
-        except Exception:
-            pass
-
-parts = [ns["COMMIT_RU_NOW"], ns["COMMIT_RU"], ns["COMMIT_EN"]]
-if "COMMIT_RU_SHAPE" in ns:
-    parts.append(ns["COMMIT_RU_SHAPE"])
-commit = re.compile("(?:" + "|".join(parts) + ")", re.I | re.UNICODE)
-veto = re.compile("(?:" + ns["PAST_RU"] + "|" + ns["PAST_EN"] + "|" + ns["ARTIFACT"] + ")",
-                  re.I | re.UNICODE)
-
-leading = None
-m = re.search(r"^COMMIT_RU_LEADING\s*=\s*re\.compile\((.+?)\)\s*$", src, re.S | re.M)
-if m:
-    try:
-        # Evaluate in the SAME namespace the other patterns were exec'd into: the
-        # leading rule is composed from RU_1SG_NONPAST, and a bare {"re": re} scope
-        # silently raised NameError and dropped the rule entirely — the test then
-        # reported failures that were its own, not the hook's.
-        _scope = dict(ns); _scope["re"] = re
-        leading = eval("re.compile(%s)" % m.group(1), _scope)
-    except Exception:
-        leading = None
-
-hit = bool(commit.search(clause) or (leading and leading.match(clause)))
-if hit and veto.search(clause):
-    hit = False
-print("HIT" if hit else "MISS")
+# Build a transcript carrying exactly one assistant turn: a single text block with
+# the clause under test and NO tool calls at all, so the verdict is the extractor's
+# alone, never contaminated by the action-binding suppression this file doesn't test.
+_transcript() { # <path> <clause>
+  local path="$1" clause="$2"
+  PATH_OUT="${path}" CLAUSE="${clause}" python3 - <<'PY'
+import json, os
+out, clause = os.environ["PATH_OUT"], os.environ["CLAUSE"]
+recs = [
+    {"type": "user", "message": {"role": "user", "content": "давай дальше"}},
+    {"type": "assistant", "message": {"role": "assistant",
+        "content": [{"type": "text", "text": clause}]}},
+]
+with open(out, "w") as f:
+    for r in recs:
+        f.write(json.dumps(r, ensure_ascii=False) + "\n")
 PY
 }
 
-_expect() { # <hook> <clause> <HIT|MISS>
+# PROMISE-GUARD-BIND-01 round2 (SENTINEL-ISOLATION-01): a unique session_id per call
+# gives every call its own once-per-turn sentinel path, so no call's verdict is
+# contaminated by a sentinel a PRIOR call in this same run left behind.
+_verdict() { # <hook> <clause>
+  local hook="$1" clause="$2"
+  [[ -f "$hook" ]] || return 2
+  local t="${WORK}/t.$$.jsonl"
+  _transcript "${t}" "${clause}" || return 2
+  local sid="test-$$-${RANDOM}-${RANDOM}"
+  local out
+  out="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" \
+    | env LEADV2_PROMISE_GUARD_BLOCK=1 bash "${hook}" 2>/dev/null)"
+  rm -f "${t}" "${HOME}/.claude/leadv2-promise-retry-${sid}.txt"
+  [[ -n "${out}" ]] && printf 'FIRED' || printf 'SILENT'
+}
+
+_expect() { # <hook> <clause> <FIRED|SILENT>
   local out; out="$(_verdict "$1" "$2")" || return 2
   [[ -z "$out" ]] && return 2
   [[ "$out" == "$3" ]] && return 0
@@ -135,58 +110,57 @@ _expect() { # <hook> <clause> <HIT|MISS>
 }
 
 # --- the verbatim escape from 2026-08-21 (pinned) --------------------------------
-case_escape_chinyu()  { _expect "$1" "Чиню постраничную выборку Calendly — без неё рассылка бессмысленна" HIT; }
-case_escape_dobavlyu(){ _expect "$1" "Ссылку на перебронирование добавлю тем же заходом" HIT; }
+case_escape_chinyu()  { _expect "$1" "Чиню постраничную выборку Calendly — без неё рассылка бессмысленна" FIRED; }
+case_escape_dobavlyu(){ _expect "$1" "Ссылку на перебронирование добавлю тем же заходом" FIRED; }
 
 # --- shapes the old list already caught (must not regress) -----------------------
-case_known_verb()     { _expect "$1" "сейчас поднимаю наблюдателя" HIT; }
+case_known_verb()     { _expect "$1" "сейчас поднимаю наблюдателя" FIRED; }
 
 # --- new shape, no marker: a leading first-person verb ---------------------------
-case_leading_verb()   { _expect "$1" "Довожу list-form до мерджа" HIT; }
+case_leading_verb()   { _expect "$1" "Довожу list-form до мерджа" FIRED; }
 
-# --- PROMISE-GUARD-BIND-01 round3: the ORIGINAL review-r1.md:88-98 twelve ---------
+# --- PROMISE-GUARD-BIND-01 round3: the ORIGINAL review-r1.md:88-98 eleven --------
 # Round-1 fixed binding (a promise is only "kept" by an action of its own kind) but
 # never touched the extractor. The round-2 review (review-r1.md:88-98) ran these
 # eleven realistic promise sentences (the shapes actually used by this lead, RU + EN)
 # through the shipped hook and reported "5 of 12 textbook lead promises produce no
 # journal row at all" -- COMMIT_RE never matched, so there was nothing for the binder
-# to bind. Round 2 self-selected a DIFFERENT, easier twelve (9 of which already
-# passed pre-fix) instead of fixing the actual failures reported here; round 3
-# restores the reviewer's own set verbatim, from this lane's own handoff directory.
-# The two hardest ones -- "Сейчас напишу отчёт" and "Сейчас исправлю биндинг" -- use
-# 1sg verbs that are not in COMMIT_RU_VERBS and open with the marker "сейчас" BEFORE
-# the verb, which COMMIT_RU_SHAPE (verb-then-marker only) could not match at all.
-case_r1_01_popravlyu()  { _expect "$1" "Сейчас поправлю регэксп в хуке" HIT; }
-case_r1_02_progonyu()   { _expect "$1" "Сейчас прогоню тесты" HIT; }
-case_r1_03_zakommichu() { _expect "$1" "Сейчас закоммичу фикс" HIT; }
-case_r1_04_napishu()    { _expect "$1" "Сейчас напишу отчёт" HIT; }             # marker-before-verb, no listed verb
-case_r1_05_ispravlyu()  { _expect "$1" "Сейчас исправлю биндинг" HIT; }         # marker-before-verb, no listed verb
-case_r1_06_dispatchu()  { _expect "$1" "Сейчас диспатчу воркера" HIT; }
-case_r1_07_podnimu()    { _expect "$1" "Сейчас подниму лейн" HIT; }
-case_r1_08_beru()       { _expect "$1" "Дальше беру третий таск" HIT; }
-case_r1_09_ill_dispatch(){ _expect "$1" "I'll dispatch the lane now" HIT; }
-case_r1_10_going_to_run(){ _expect "$1" "Now I'm going to run the suite" HIT; }
-case_r1_11_podnimayu()  { _expect "$1" "Сейчас поднимаю наблюдателя" HIT; }
+# to bind. Round 3 restores the reviewer's own set verbatim, from this lane's own
+# handoff directory. The two hardest ones -- "Сейчас напишу отчёт" and "Сейчас
+# исправлю биндинг" -- use 1sg verbs that are not in COMMIT_RU_VERBS and open with
+# the marker "сейчас" BEFORE the verb, which COMMIT_RU_SHAPE (verb-then-marker only)
+# could not match at all pre-round-3.
+case_r1_01_popravlyu()  { _expect "$1" "Сейчас поправлю регэксп в хуке" FIRED; }
+case_r1_02_progonyu()   { _expect "$1" "Сейчас прогоню тесты" FIRED; }
+case_r1_03_zakommichu() { _expect "$1" "Сейчас закоммичу фикс" FIRED; }
+case_r1_04_napishu()    { _expect "$1" "Сейчас напишу отчёт" FIRED; }             # marker-before-verb, no listed verb
+case_r1_05_ispravlyu()  { _expect "$1" "Сейчас исправлю биндинг" FIRED; }         # marker-before-verb, no listed verb
+case_r1_06_dispatchu()  { _expect "$1" "Сейчас диспатчу воркера" FIRED; }
+case_r1_07_podnimu()    { _expect "$1" "Сейчас подниму лейн" FIRED; }
+case_r1_08_beru()       { _expect "$1" "Дальше беру третий таск" FIRED; }
+case_r1_09_ill_dispatch(){ _expect "$1" "I'll dispatch the lane now" FIRED; }
+case_r1_10_going_to_run(){ _expect "$1" "Now I'm going to run the suite" FIRED; }
+case_r1_11_podnimayu()  { _expect "$1" "Сейчас поднимаю наблюдателя" FIRED; }
 
 # --- marker-before-verb order, whole допишу/перепишу/обновлю/смерджу/добавлю family --
 # The review named this exact family as dead the same way: a leading «сейчас» disables
 # COMMIT_RU_SHAPE's verb-then-marker order and the sentence falls through to the
 # COMMIT_RU_VERBS whitelist, which none of these five are on.
-case_r3_dopishu()   { _expect "$1" "Сейчас допишу тесты" HIT; }
-case_r3_perepishu() { _expect "$1" "Сейчас перепишу регэксп" HIT; }
-case_r3_obnovlyu()  { _expect "$1" "Сейчас обновлю фикстуры" HIT; }
-case_r3_smerdzhu()  { _expect "$1" "Сейчас смерджу ветку" HIT; }
-case_r3_dobavlyu()  { _expect "$1" "Сейчас добавлю кейс" HIT; }
+case_r3_dopishu()   { _expect "$1" "Сейчас допишу тесты" FIRED; }
+case_r3_perepishu() { _expect "$1" "Сейчас перепишу регэксп" FIRED; }
+case_r3_obnovlyu()  { _expect "$1" "Сейчас обновлю фикстуры" FIRED; }
+case_r3_smerdzhu()  { _expect "$1" "Сейчас смерджу ветку" FIRED; }
+case_r3_dobavlyu()  { _expect "$1" "Сейчас добавлю кейс" FIRED; }
 
 # --- the negative direction: reports of DONE work must stay silent ---------------
 # A guard that fires on status prose gets switched off within a day, so these matter
 # as much as the hits.
-case_neg_commit_sha() { _expect "$1" "Выкатка прошла — 8cf3636 на VPS" MISS; }
-case_neg_test_result(){ _expect "$1" "Тест дал 12/12 pass" MISS; }
-case_neg_past_report(){ _expect "$1" "К отправке подготовилось только 11 человек" MISS; }
-case_neg_prose()      { _expect "$1" "Правило «что раньше» берёт три дня после письма" MISS; }
+case_neg_commit_sha() { _expect "$1" "Выкатка прошла — 8cf3636 на VPS" SILENT; }
+case_neg_test_result(){ _expect "$1" "Тест дал 12/12 pass" SILENT; }
+case_neg_past_report(){ _expect "$1" "К отправке подготовилось только 11 человек" SILENT; }
+case_neg_prose()      { _expect "$1" "Правило «что раньше» берёт три дня после письма" SILENT; }
 # An accusative noun in -ку/-ю with no verb and no marker must not fire.
-case_neg_bare_noun()  { _expect "$1" "Проблема в постраничной выборке и ссылке" MISS; }
+case_neg_bare_noun()  { _expect "$1" "Проблема в постраничной выборке и ссылке" SILENT; }
 
 # PROMISE-GUARD-3PL-COLLISION-01 (2026-08-22): a recap of already-launched parallel
 # work, in the 3rd-person-plural. Live escape — the founder's own words after an
@@ -194,9 +168,8 @@ case_neg_bare_noun()  { _expect "$1" "Проблема в постранично
 # 1st-conjugation 1sg stems collide with their own 3pl form (1sg + "т" = 3pl for
 # almost every verb in COMMIT_RU: иду/идут, беру/берут, поднимаю/поднимают,
 # запускаю/запускают, начинаю/начинают, приземляю/приземляют, пойду/пойдут,
-# сделаю/сделают). Confirmed by direct extraction against the live (pre-fix) hook:
-# COMMIT_RE.search matched "иду" as a bare substring inside "идут", span (4,7).
-case_neg_idut()       { _expect "$1" "Они идут параллельно и независимо" MISS; }
+# сделаю/сделают).
+case_neg_idut()       { _expect "$1" "Они идут параллельно и независимо" SILENT; }
 
 run_case() { # <name> <fn>
   local name="$1" fn="$2" pre_rc post_rc
@@ -247,6 +220,7 @@ run_case "r3-perepishu"  case_r3_perepishu
 run_case "r3-obnovlyu"   case_r3_obnovlyu
 run_case "r3-smerdzhu"   case_r3_smerdzhu
 run_case "r3-dobavlyu"   case_r3_dobavlyu
+
 run_case "neg-commit-sha"          case_neg_commit_sha
 run_case "neg-test-result"         case_neg_test_result
 run_case "neg-past-report"         case_neg_past_report
@@ -260,9 +234,9 @@ run_case "neg-3pl-idut-collision"  case_neg_idut
 # -у and opens the clause. Same for «потому», «посему», and the dative of any
 # adjective. Pinned because a guard that cries wolf on status prose gets switched off
 # within a day, which costs more than the escape it was built to catch.
-case_neg_poetomu()    { _expect "$1" "Поэтому контракт теперь требует переписи вызывающих" MISS; }
-case_neg_potomu()     { _expect "$1" "Потому что так короче" MISS; }
-case_neg_dative_adj() { _expect "$1" "Новому клиенту это ничего не сломает" MISS; }
+case_neg_poetomu()    { _expect "$1" "Поэтому контракт теперь требует переписи вызывающих" SILENT; }
+case_neg_potomu()     { _expect "$1" "Потому что так короче" SILENT; }
+case_neg_dative_adj() { _expect "$1" "Новому клиенту это ничего не сломает" SILENT; }
 
 run_case "neg-poetomu-adverb"      case_neg_poetomu
 run_case "neg-potomu-adverb"       case_neg_potomu
@@ -273,14 +247,55 @@ run_case "neg-dative-adjective"    case_neg_dative_adj
 # hour: «твоему» is a dative adjective and «дальше» is an intent marker, so the pair
 # read as a commitment. One definition widened, its twin left behind — the same
 # copy-drift shape fixed in the scope gate the same day.
-case_neg_shape_dative()  { _expect "$1" "дальше по твоему порядку: бриф, чистка, компакт" MISS; }
-case_neg_shape_adverb()  { _expect "$1" "сейчас по этому делу решения нет" MISS; }
+case_neg_shape_dative()  { _expect "$1" "дальше по твоему порядку: бриф, чистка, компакт" SILENT; }
 # ...while the shape rule must still catch a real deferred commitment.
-case_pos_shape_real()    { _expect "$1" "Ссылку на перебронирование добавлю тем же заходом" HIT; }
+case_pos_shape_real()    { _expect "$1" "Ссылку на перебронирование добавлю тем же заходом" FIRED; }
 
 run_case "neg-shape-dative-adj"    case_neg_shape_dative
-run_case "neg-shape-adverb"        case_neg_shape_adverb
 run_case "pos-shape-still-fires"   case_pos_shape_real
+
+# PROMISE-GUARD-BIND-01 round4: review-r3.md's second High finding — the pinned
+# negative that used to stand here, «сейчас по этому делу решения нет», is blocked
+# by the PREPOSITION sub-case of adjacency (the marker's next word is "по", too
+# short and not verb-shaped) and proves nothing about the sub-case that actually
+# broke round 3: a marker followed DIRECTLY by an accusative-case noun that happens
+# to share the -у/-ю ending with a first-person verb. Ten hand-written status
+# clauses, measured through the real (round-3) hook before this fix, six of them
+# false-positive `fired` (review-r3.md:105-118). All ten pinned here as SILENT;
+# round4-red/marker-shape-mutation.log proves they go RED against a revert of the
+# RU_OTHER_FINITE_VERB guard.
+case_r4_neg_rabotu()     { _expect "$1" "Сейчас работу делают два воркера" SILENT; }
+case_r4_neg_zadachu()    { _expect "$1" "Сейчас задачу держит лейн A" SILENT; }
+case_r4_neg_komandu()    { _expect "$1" "Сейчас команду не трогаем" SILENT; }
+case_r4_neg_kartinu()    { _expect "$1" "Дальше картину покажет соак" SILENT; }
+case_r4_neg_versiyu()    { _expect "$1" "Сейчас версию 5.2 использует прод" SILENT; }
+case_r4_neg_situaciyu()  { _expect "$1" "Потом ситуацию посмотрим вместе" SILENT; }
+case_r4_neg_bazu()       { _expect "$1" "Сейчас базу мигрировали вручную" SILENT; }
+case_r4_neg_tablicu()    { _expect "$1" "Затем таблицу привёл к виду выше" SILENT; }
+case_r4_neg_ochered()    { _expect "$1" "Сейчас очередь пустая" SILENT; }
+case_r4_neg_statistiku() { _expect "$1" "Сейчас статистику собирает джоба" SILENT; }
+
+run_case "r4-neg-rabotu-delayut"      case_r4_neg_rabotu
+run_case "r4-neg-zadachu-derzhit"     case_r4_neg_zadachu
+run_case "r4-neg-komandu-trogaem"     case_r4_neg_komandu
+run_case "r4-neg-kartinu-pokazhet"    case_r4_neg_kartinu
+run_case "r4-neg-versiyu-ispolzuet"   case_r4_neg_versiyu
+run_case "r4-neg-situaciyu-posmotrim" case_r4_neg_situaciyu
+run_case "r4-neg-bazu-past-veto"      case_r4_neg_bazu
+run_case "r4-neg-tablicu-past-veto"   case_r4_neg_tablicu
+run_case "r4-neg-ochered-no-candidate" case_r4_neg_ochered
+run_case "r4-neg-statistiku-excluded-ending" case_r4_neg_statistiku
+
+# --- sandbox control: this suite must never write the real journal ---------------
+REAL_JOURNAL_LINES_AFTER=0
+[[ -f "${REAL_JOURNAL}" ]] && REAL_JOURNAL_LINES_AFTER="$(wc -l < "${REAL_JOURNAL}" 2>/dev/null | tr -d ' ')"
+if [[ "${REAL_JOURNAL_LINES_AFTER}" != "${REAL_JOURNAL_LINES_BEFORE}" ]]; then
+  FAIL=$((FAIL + 1))
+  ERRORS+=("sandbox-escape: ${REAL_JOURNAL} grew from ${REAL_JOURNAL_LINES_BEFORE} to ${REAL_JOURNAL_LINES_AFTER} lines during this run despite HOME sandbox")
+  log "FAIL: sandbox-escape -- real journal changed during test run"
+else
+  log "PASS: sandbox-control -- real journal ${REAL_JOURNAL} unchanged (${REAL_JOURNAL_LINES_BEFORE} lines)"
+fi
 
 echo ""
 echo "Results: ${PASS} passed(red->green), ${FAIL} failed, ${GREEN_PRE_FIX} green-pre-fix, ${COULD_NOT_RUN} could-not-run"
