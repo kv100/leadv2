@@ -269,7 +269,6 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
       [[ "$_surf_trimmed" == *" "* ]] && _surf_trimmed="${_surf_trimmed% *}"
     fi
     _surf_tail="$_surf_trimmed"
-    (( $(_surf_visible_len "$_surf_tail") < _surf_budget )) && _surf_tail="${_surf_tail} "
   fi
   USER_CMD="$(jq -r '(.statusLine.command // "")' "$SETTINGS_JSON" 2>/dev/null || true)"
   if [[ -n "$USER_CMD" ]]; then
@@ -280,18 +279,27 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     # -- cut on the visible-character budget remaining after the lane
     # segment, never before it.
     if [[ -n "$_surf_tail" ]]; then
-      _base_visible_budget=$(( _surf_budget - $(_surf_visible_len "$_surf_tail") ))
+      _base_visible_budget=$(( _surf_budget - $(_surf_visible_len "$_surf_tail") - 1 ))
       (( _base_visible_budget < 0 )) && _base_visible_budget=0
       # Strip ANSI FIRST, then slice by visible chars -- slicing the raw
       # (color-coded) string at a visible-length offset can land mid escape
       # sequence and leave a dangling color code bleeding into the rest of
       # the terminal line.
       _base_out_plain="$(printf '%s' "$_base_out" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
-      if (( ${#_base_out_plain} > _base_visible_budget )); then
+      if (( _base_visible_budget == 0 )); then
+        _base_out=""
+      elif (( ${#_base_out_plain} > _base_visible_budget )); then
         _base_out="${_base_out_plain:0:$_base_visible_budget}"
       fi
     fi
-    printf '%s%s\n' "$_surf_tail" "$_base_out"
+    # The separator belongs to the BASE, not the lane payload.  Appending it
+    # unconditionally consumed the final cell at W=20 and let one base byte
+    # leak after an otherwise complete incident token.
+    if [[ -n "$_base_out" && $(_surf_visible_len "$_surf_tail") -lt _surf_budget ]]; then
+      printf '%s %s\n' "$_surf_tail" "$_base_out"
+    else
+      printf '%s\n' "$_surf_tail"
+    fi
   else
     # No user command configured: emit a minimal base line (no lanes segment)
     # so the status line is never blank for a non-supervisor session.
@@ -299,14 +307,20 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     [[ "$INPUT" =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && _BM="${BASH_REMATCH[1]}"
     _fallback_base="$(_leadv2_render_colored_base "$_BM" "$_BC" "" "")"
     if [[ -n "$_surf_tail" ]]; then
-      _fallback_budget=$(( _surf_budget - $(_surf_visible_len "$_surf_tail") ))
+      _fallback_budget=$(( _surf_budget - $(_surf_visible_len "$_surf_tail") - 1 ))
       (( _fallback_budget < 0 )) && _fallback_budget=0
       _fallback_plain="$(printf '%s' "$_fallback_base" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
-      if (( ${#_fallback_plain} > _fallback_budget )); then
+      if (( _fallback_budget == 0 )); then
+        _fallback_base=""
+      elif (( ${#_fallback_plain} > _fallback_budget )); then
         _fallback_base="${_fallback_plain:0:$_fallback_budget}"
       fi
     fi
-    printf '%s%s' "$_surf_tail" "$_fallback_base"
+    if [[ -n "$_fallback_base" && $(_surf_visible_len "$_surf_tail") -lt _surf_budget ]]; then
+      printf '%s %s' "$_surf_tail" "$_fallback_base"
+    else
+      printf '%s' "$_surf_tail"
+    fi
     printf '\n'
   fi
   # Detached refresh of the memo (fire-and-forget). A missing renderer is a
