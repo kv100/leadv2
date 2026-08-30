@@ -37,7 +37,13 @@ lines = text.splitlines()
 
 required = []
 citation_re = re.compile(
-    r'\b(see|read|reading|refer|reference|referenced|per|cited|citing|described|shown|documented)\b',
+    r'\b(see|read|reading|refer|reference|referenced|per|cited|citing|described|shown|'
+    # round-3 (fix-round-2.md false positive): a Done-means line can name a path as the
+    # EXPECTED OUTPUT of a checker/test the worker runs, not a file the worker must
+    # itself produce ("asserting X quotes `lib/leadv2-lane-guard.sh` as expected checker
+    # output"). "quote(s|d)", "expected", "checker output" and "names it/names <path>" are
+    # the repo's actual phrasing for that distinction.
+    r'documented|quote[sd]?|expected|checker output|names? it|as an? example)\b',
     re.I,
 )
 path_re = re.compile(r'`([A-Za-z0-9_.\-]*/[A-Za-z0-9_./\-\*]*)`')
@@ -46,7 +52,11 @@ path_re = re.compile(r'`([A-Za-z0-9_.\-]*/[A-Za-z0-9_./\-\*]*)`')
 # `round4-red/` has one path segment and is never a real LANE_WRITES entry -- it false-
 # positived on a real, already-corrected mission (fix-round-4.md). Require >=2 non-empty
 # path segments before treating a backticked token as a required path.
+# round-3: an absolute path (`/bin/bash`, `/etc/passwd`) also splits into >=2 segments but
+# is never a repo-relative LANE_WRITES entry -- every real entry in this repo is relative.
 def repo_rooted(path):
+    if path.startswith('/'):
+        return False
     return len([s for s in path.split('/') if s]) >= 2
 
 def add_path(bucket, line, m):

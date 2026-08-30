@@ -193,9 +193,19 @@ wire_out="$(_run_prepass_refusal "${DISPATCH_SH}")"; wire_rc=$?
   || fail "wiring: architect_prepass rc=${wire_rc} out=${wire_out}"
 
 # ── C1 negative control: remove all 3 live call sites -> the wiring test above goes red ──
-# Mutant lives next to the REAL dispatcher (not in tests/) -- the dispatcher derives its own
-# SCRIPT_DIR from BASH_SOURCE to find sibling libs, so a copy elsewhere fails to source them.
-MUT_DISPATCH="${SCRIPT_DIR}/../.mut-dispatch-code.$$.sh"
+# Mutant must still resolve sibling libs the same way the real dispatcher does (SCRIPT_DIR
+# derived from its own BASH_SOURCE) without ever placing a real file inside the production
+# scripts dir (single-source rule) -- so a scratch dir is populated with symlinks to every
+# real sibling entry, and only the mutated dispatcher file itself is a real file, in TMPDIR.
+MUT_REAL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mission-writeset-mut.XXXXXX")"
+trap 'rm -rf "${MUT_DIR}"' EXIT
+for _mut_entry in "${MUT_REAL_DIR}"/*; do
+  _mut_base="$(basename "${_mut_entry}")"
+  [[ "${_mut_base}" == "leadv2-dispatch-code.sh" ]] && continue
+  ln -s "${_mut_entry}" "${MUT_DIR}/${_mut_base}"
+done
+MUT_DISPATCH="${MUT_DIR}/leadv2-dispatch-code.sh"
 python3 - "${DISPATCH_SH}" "${MUT_DISPATCH}" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
@@ -223,7 +233,6 @@ else
   [[ ${mut_wire_rc} -eq 0 ]] \
     && pass "control C1-wiring: removing all 3 call sites -> architect_prepass no longer refuses (caught, would be red)" \
     || fail "control C1-wiring: mutation NOT caught -- wiring test still refuses without the call sites: ${mut_wire_out}"
-  rm -f "${MUT_DISPATCH}"
 fi
 
 # ── real on-disk specimens (C2/C3): the fixtures ARE the test, not a hand-fitted string ──

@@ -38,6 +38,12 @@ plugins/leadv2/scripts/tests/.claude/
 # files are ignored in persona-engine, which is why this repo looked permanently
 # dirty. Authored docs at the top of docs/handoff/ and docs/leadv2/ stay tracked.
 docs/handoff/*/*
+# DISPATCH-CLOSE-GATE-01 round-3: these are load-bearing test fixtures (real, corrected
+# vs. pre-correction dispatch missions), not run output -- test-mission-writeset.sh's
+# specimen assertions hard-`fail` without them, and a fixture that only exists on the
+# machine that generated it is not a control at all. Un-ignore the whole subtree.
+!docs/handoff/DISPATCH-CLOSE-GATE-01/specimens/
+!docs/handoff/DISPATCH-CLOSE-GATE-01/specimens/**
 docs/leadv2/review-*
 docs/leadv2/status-snapshot.json
 docs/leadv2/founder-status*.md
