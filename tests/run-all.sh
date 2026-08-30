@@ -144,11 +144,11 @@ leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-one-copy-drift.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
-leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh"
-leadv2-dispatch-ledger:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
 leadv2-dispatch-ledger:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-containment.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-plan-in-lane.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-placement-pin.sh
 leadv2-lane-guard:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
 leadv2-lane-guard:plugins/leadv2/scripts/tests/test-lane-containment.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-class-floor-survives-resume.sh"
