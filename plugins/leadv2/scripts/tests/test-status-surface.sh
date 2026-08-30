@@ -1884,10 +1884,43 @@ else
   fail "width: --oneline did not start with 'lanes ' (got: $WIDE_OUT)"
 fi
 WIDE_LEN="$(printf '%s' "$WIDE_OUT" | awk '{print length}')"
-if [ "$WIDE_LEN" -le 60 ]; then
-  pass "width: 12-lane oneline at WIDTH=40 stayed short (len=$WIDE_LEN, budget+prefix slack)"
+if [ "$WIDE_LEN" -le 40 ]; then
+  pass "width: 12-lane oneline at WIDTH=40 stayed within the exact budget (len=$WIDE_LEN)"
 else
-  fail "width: 12-lane oneline at WIDTH=40 overran (len=$WIDE_LEN): $WIDE_OUT"
+  fail "width: 12-lane oneline at WIDTH=40 overran exact budget (len=$WIDE_LEN): $WIDE_OUT"
+fi
+
+# A dead/silent row sorts ahead of live rows.  At a width where its ordinary
+# label does not fit, it must be shortened and admitted; continuing past it
+# and showing a later healthy row recreates the founding silent-lane incident.
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: VERY-LONG-SILENT-LANE-NAME-THAT-MUST-NOT-VANISH
+    phase: build
+    class: Standard
+    pid: 999999
+    lead_model: glm
+    log_path: ''
+  - task_id: live
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    log_path: ''
+EOF
+SILENT_30="$(LEADV2_STATUSLINE_WIDTH=30 run_render --oneline)"
+SILENT_30_LEN="$(printf '%s' "$SILENT_30" | awk '{print length}')"
+if [ "$SILENT_30_LEN" -le 30 ] && printf '%s' "$SILENT_30" | grep -q '·dead·'; then
+  pass "silence: width-30 oneline keeps the first dead lane within budget ($SILENT_30)"
+else
+  fail "silence: width-30 dropped dead lane or exceeded budget ($SILENT_30)"
+fi
+if printf '%s' "$SILENT_30" | grep -q 'live·live·'; then
+  fail "silence: width-30 admitted healthy lane after unfittable dead lane ($SILENT_30)"
+else
+  pass "silence: width-30 stops before later healthy lane"
 fi
 WIDE_BAD_TOKEN=""
 for tok in $WIDE_OUT; do

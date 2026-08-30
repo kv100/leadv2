@@ -211,13 +211,45 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
   _surf_budget="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
   _surf_tail=""
   if [[ -n "$_surf_oneline" ]]; then
-    _surf_trimmed="${_surf_oneline:0:$_surf_budget}"
-    if [[ "$_surf_trimmed" != "$_surf_oneline" ]]; then
-      [[ "$_surf_trimmed" == *" "* ]] && _surf_trimmed="${_surf_trimmed% *}"
-      _surf_dropped_rest="${_surf_oneline:${#_surf_trimmed}}"
-      _surf_dropped_n="$(printf '%s' "$_surf_dropped_rest" | tr -s ' ' '\n' | grep -c . || true)"
-      _surf_trimmed="${_surf_trimmed% }"
+    # A memo may have been written at a wider terminal width.  Refit its
+    # field tokens here, reserving space for +N before each admission.  This
+    # is deliberately not a character slice: it keeps a complete lane token
+    # (or the surface's already-capped first token) and never lets +N itself
+    # push the composed line over this paint's budget.
+    if [[ "$_surf_oneline" =~ ^lanes[[:space:]]+([0-9]+):?[[:space:]]*(.*)$ ]]; then
+      _surf_total="${BASH_REMATCH[1]}"; _surf_rest="${BASH_REMATCH[2]}"
+      _surf_head="lanes ${_surf_total}:"
+      _surf_trimmed="$_surf_head"; _surf_shown=0
+      for _surf_tok in $_surf_rest; do
+        [[ "$_surf_tok" == +[0-9]* ]] && continue
+        _surf_remaining=$(( _surf_total - _surf_shown - 1 ))
+        _surf_marker=""; (( _surf_remaining > 0 )) && _surf_marker=" +${_surf_remaining}"
+        _surf_sep=" "; [[ "$_surf_trimmed" == *: ]] && _surf_sep=" "
+        if (( ${#_surf_trimmed} + ${#_surf_sep} + ${#_surf_tok} + ${#_surf_marker} > _surf_budget )); then
+          # Keep the first (surface-sorted) lane visible even if this memo
+          # was produced for a much wider terminal.  The token grammar is
+          # label·class·age, so only its label may be shortened.
+          if (( _surf_shown == 0 )) && [[ "$_surf_tok" == *·*·* ]]; then
+            _surf_suffix="·${_surf_tok#*·}"
+            _surf_tok="…${_surf_suffix}"
+            while (( ${#_surf_trimmed} + ${#_surf_sep} + ${#_surf_tok} + ${#_surf_marker} > _surf_budget && ${#_surf_tok} > ${#_surf_suffix} )); do
+              _surf_tok="${_surf_tok:0:${#_surf_tok}-1}"
+            done
+            if (( ${#_surf_trimmed} + ${#_surf_sep} + ${#_surf_tok} + ${#_surf_marker} <= _surf_budget )); then
+              _surf_trimmed="${_surf_trimmed}${_surf_sep}${_surf_tok}"
+              _surf_shown=1
+            fi
+          fi
+          break
+        fi
+        _surf_trimmed="${_surf_trimmed}${_surf_sep}${_surf_tok}"
+        _surf_shown=$(( _surf_shown + 1 ))
+      done
+      _surf_dropped_n=$(( _surf_total - _surf_shown ))
       (( _surf_dropped_n > 0 )) && _surf_trimmed="${_surf_trimmed} +${_surf_dropped_n}"
+    else
+      _surf_trimmed="${_surf_oneline:0:$_surf_budget}"
+      [[ "$_surf_trimmed" == *" "* ]] && _surf_trimmed="${_surf_trimmed% *}"
     fi
     _surf_tail="$_surf_trimmed "
   fi
@@ -247,8 +279,14 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     # so the status line is never blank for a non-supervisor session.
     _BM="?" _BC="$PAINT_CWD"
     [[ "$INPUT" =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && _BM="${BASH_REMATCH[1]}"
-    printf '%s' "$_surf_tail"
-    _leadv2_render_colored_base "$_BM" "$_BC" "" ""
+    _fallback_base="$(_leadv2_render_colored_base "$_BM" "$_BC" "" "")"
+    if [[ -n "$_surf_tail" ]]; then
+      _fallback_budget=$(( _surf_budget - ${#_surf_tail} ))
+      (( _fallback_budget < 0 )) && _fallback_budget=0
+      _fallback_base="$(printf '%s' "$_fallback_base" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
+      _fallback_base="${_fallback_base:0:$_fallback_budget}"
+    fi
+    printf '%s%s' "$_surf_tail" "$_fallback_base"
     printf '\n'
   fi
   # Detached refresh of the memo (fire-and-forget). A missing renderer is a

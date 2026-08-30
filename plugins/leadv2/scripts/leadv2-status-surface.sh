@@ -1666,7 +1666,7 @@ fi
 # order, not luck.
 emit_oneline() {
   local width prefix budget sorted_rows _rank name cls age name_cap tok tlen \
-        toks n_shown n_dropped cur_len
+        toks n_shown n_dropped cur_len total remaining marker marker_len suffix_len
   width="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
   case "$width" in ''|*[!0-9]*) width=80 ;; esac
   prefix="lanes ${LANE_COUNT}"
@@ -1687,24 +1687,46 @@ emit_oneline() {
       printf "%s\t%s\t%s\t%s\n", rank, $1, cls, $5
     }' | sort -t "$(printf '\t')" -k1,1n)"
   fi
+  # The marker is part of the budget, not an afterthought.  Reserving it
+  # before admitting a row keeps the final line within COLUMNS and makes its
+  # number equal the rows we really did not render.
   budget=$(( width - ${#prefix} - 2 ))
   [ "$budget" -lt 0 ] && budget=0
   toks=""
   n_shown=0
   n_dropped=0
   cur_len=0
+  total="$(printf '%s\n' "$sorted_rows" | grep -c . || true)"
   while IFS="$(printf '\t')" read -r _rank name cls age; do
     [ -z "$name" ] && continue
+    remaining=$(( total - n_shown - 1 ))
     name_cap="$name"
     if [ "${#name_cap}" -gt 16 ]; then
       name_cap="${name_cap:0:15}…"
     fi
     tok="${name_cap}·${cls}·${age}"
-    tlen=${#tok}
-    [ "$n_shown" -gt 0 ] && tlen=$(( tlen + 1 ))
-    if [ $(( cur_len + tlen )) -gt "$budget" ]; then
-      n_dropped=$(( n_dropped + 1 ))
-      continue
+    tlen=${#tok}; [ "$n_shown" -gt 0 ] && tlen=$(( tlen + 1 ))
+    marker=""; marker_len=0
+    if [ "$remaining" -gt 0 ]; then
+      marker=" +${remaining}"; marker_len=${#marker}
+    fi
+    if [ $(( cur_len + tlen + marker_len )) -gt "$budget" ]; then
+      # The first row is the highest-priority non-live row.  It may not be
+      # skipped in favour of a later healthy lane: cap its label until its
+      # existence plus the honest dropped marker fits, then stop greedily.
+      if [ "$n_shown" -eq 0 ]; then
+        suffix_len=$(( ${#cls} + ${#age} + 2 ))
+        name_cap="…"
+        while [ $(( ${#name_cap} + suffix_len + marker_len )) -gt "$budget" ] && [ ${#name_cap} -gt 0 ]; do
+          name_cap="${name_cap:0:${#name_cap}-1}"
+        done
+        if [ -n "$name_cap" ]; then
+          toks="${name_cap}·${cls}·${age}"
+          n_shown=1
+        fi
+      fi
+      n_dropped=$(( total - n_shown ))
+      break
     fi
     [ "$n_shown" -gt 0 ] && toks="${toks} "
     toks="${toks}${tok}"

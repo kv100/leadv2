@@ -101,7 +101,9 @@ run_tail() {
     bash "$scripts_dir/leadv2-lane-status-line-tail.sh" "$INPUT_JSON" "$SETTINGS_JSON" "$scripts_dir" 5 </dev/null
 }
 strip_ansi() { sed -E $'s/\x1b\\[[0-9;]*m//g'; }
-visible_len() { printf '%s' "$1" | strip_ansi | awk '{print length}'; }
+# Bash's character length follows the terminal locale; awk's length can count
+# UTF-8 bytes, turning each visible `·` into two columns on this host.
+visible_len() { local plain; plain="$(printf '%s' "$1" | strip_ansi)"; printf '%s' "${#plain}"; }
 
 # ---- pre-fix baseline via git archive -------------------------------------
 # Resolve a ref that predates this lane's own STATUSLINE-READABLE-01 fix
@@ -228,15 +230,17 @@ else
   bad "R9" "digest at width 80 rendered NO lane section at all"
 fi
 
-# R5: rendered rows + '+M' == true lane count (4), OR all 4 rendered without a '+M'
+# R5: rendered rows + '+M' == true lane count (4).  This is exact: a marker
+# that undercounts hidden lanes is worse than no marker because it lies about
+# the incident surface.
 ROW_COUNT="$(printf '%s' "$LABELS_80" | grep -oE '·[a-z?]{1,2}·[0-9]' | wc -l | tr -d ' ')"
 PLUS_M="$(printf '%s' "$LABELS_80" | grep -oE '\+[0-9]+' | grep -oE '[0-9]+' || true)"
 [[ -z "$PLUS_M" ]] && PLUS_M=0
 TOTAL_ACCOUNTED=$(( ROW_COUNT + PLUS_M ))
-if [[ "$TOTAL_ACCOUNTED" -ge 1 ]]; then
-  ok "R5: rendered rows ($ROW_COUNT) + dropped (+$PLUS_M) accounted for at least 1 lane"
+if [[ "$TOTAL_ACCOUNTED" -eq 4 ]]; then
+  ok "R5: rendered rows ($ROW_COUNT) + dropped (+$PLUS_M) exactly account for 4 lanes"
 else
-  bad "R5" "no rows and no +M token -- lanes vanished entirely: $LABELS_80"
+  bad "R5" "rendered rows ($ROW_COUNT) + dropped (+$PLUS_M) != 4: $LABELS_80"
 fi
 
 # R12: the trailing word-boundary cut never leaves a truncated mid-word
@@ -244,17 +248,37 @@ fi
 # either the "+N" dropped-count marker, a complete "lanes n/m" head token,
 # or a complete arm-marked lane token (label·arm·age). A raw mid-word slice
 # (e.g. "GATE-FO") matches none of these.
-R12_BAD_TOKEN=""
-for tok in $LABELS_80; do
+R12_BAD_TOKEN() {
+  local section="$1" tok R12_LABEL R12_REST R12_SOURCE R12_CANDIDATE
+  for tok in $section; do
   case "$tok" in
-    lanes|+[0-9]*|[0-9]*/[0-9]*|*·[a-z?]·[0-9]*|*·[a-z?][a-z?]·[0-9]*) ;;
-    *) R12_BAD_TOKEN="$tok" ;;
+    lanes|+[0-9]*|[0-9]*/[0-9]*) continue ;;
+    *·*)
+      R12_LABEL="${tok%%·*}"
+      R12_REST="${tok#*·}"
+      if [[ ! "$R12_REST" =~ ^(alive|dead|done|queued|\?)·[0-9]+[smh]?$ ]]; then
+        printf '%s' "$tok"; return
+      fi
+      R12_SOURCE=""
+      for R12_CANDIDATE in dispatch-c98a1414-architect dispatch-5bfce73e GATE-FOREIGN-FAILURE-01 LANDING-PAGE-REDESIGN-01; do
+        if [[ "$R12_LABEL" == "$R12_CANDIDATE" || "$R12_LABEL" == *… && "$R12_CANDIDATE" == "${R12_LABEL%…}"* ]]; then
+          R12_SOURCE="$R12_CANDIDATE"
+          break
+        fi
+      done
+      [[ -n "$R12_SOURCE" ]] || { printf '%s' "$tok"; return; }
+      ;;
+    *) printf '%s' "$tok"; return ;;
   esac
-done
-if [[ -z "$R12_BAD_TOKEN" ]]; then
-  ok "R12: no mid-word-truncated token in lane section at width 80"
+  done
+}
+R12_BAD_80="$(R12_BAD_TOKEN "$LABELS_80")"
+LABELS_112="$(printf '%s' "$POST_112" | strip_ansi | sed -E 's/ \| [^|]*$//')"
+R12_BAD_112="$(R12_BAD_TOKEN "$LABELS_112")"
+if [[ -z "$R12_BAD_80" && -z "$R12_BAD_112" ]]; then
+  ok "R12: no mid-word-truncated token in lane sections at widths 80 and 112"
 else
-  bad "R12" "mid-word-truncated token found: '$R12_BAD_TOKEN' in: $LABELS_80"
+  bad "R12" "mid-word-truncated token found (80='$R12_BAD_80', 112='$R12_BAD_112')"
 fi
 
 # R6: BASE compression happens BEFORE label capping -- a narrow width (80)
@@ -457,6 +481,20 @@ if (( ${#NARROW_LINE} <= 40 + ${#DEAD_ONLY_LINE} )); then
   ok "width: narrow-COLUMNS render did not balloon past the requested budget"
 else
   bad "width" "narrow-COLUMNS render ($( printf '%s' "$NARROW_LINE" | wc -c )) far exceeds budget: $NARROW_LINE"
+fi
+
+# A stale wider-width memo is the caller-side clamp's real negative case.
+# It contains five lane tokens but is painted at 30 columns: the composer
+# must retain the first (silent) token, budget the marker itself, and report
+# all four hidden rows.  Removing the composer refit/backoff makes this RED.
+WIDE_MEMO='lanes 5: SILENT-LANE-THAT-MUST-REMAIN·dead·9m live-one·live·1s live-two·live·2s live-three·live·3s live-four·live·4s'
+MEMO_30="$(HOME="$tmp/composer-home" run_composer 30 "$WIDE_MEMO")"
+MEMO_30_PLAIN="$(printf '%s' "$MEMO_30" | strip_ansi)"
+MEMO_30_LEN="$(visible_len "$MEMO_30")"
+if (( MEMO_30_LEN <= 30 )) && [[ "$MEMO_30_PLAIN" == *'·dead·9m'* ]] && [[ "$MEMO_30_PLAIN" == *'+4'* ]]; then
+  ok "R13: stale wide memo at width 30 keeps silent lane, exact +4, and exact budget"
+else
+  bad "R13" "memo clamp lost silent lane, lied about +N, or exceeded 30 (len=$MEMO_30_LEN): $MEMO_30_PLAIN"
 fi
 
 printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"
