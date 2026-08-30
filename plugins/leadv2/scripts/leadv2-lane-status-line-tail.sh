@@ -36,16 +36,32 @@ INPUT="$1"; SETTINGS_JSON="$2"; SCRIPT_DIR="$3"; LANE_CACHE_TTL_S="$4"; OUT_FILE
 USER_CMD="$(jq -r '(.statusLine.command // "")' "$SETTINGS_JSON" 2>/dev/null || true)"
 
 # F9 (ANTI-SILENCE-STATUSLINE-01 round 7 cont.): one jq spawn now emits all
-# four fields (transcript_path folded in below), and the split that used to
-# be 3 `printf | sed -n Np` forks is a single bash `read` against PARSED's
-# newlines instead -- same fields, zero extra process spawns.
+# four fields (transcript_path folded in below).
+#
+# ANTI-SILENCE-STATUSLINE-01 round 8: the split used to be a single
+# `IFS=$'\n' read -r a b c d <<< "$PARSED"` -- but bash's `read` terminates
+# each field read on a LITERAL newline regardless of IFS (IFS only controls
+# intra-line word-splitting), so a multi-line here-string like this one only
+# ever fills the FIRST variable; every field after CWD_FROM_INPUT was always
+# empty. That corrupted every fallback render (model always "?", remaining
+# always dropped, TRANSCRIPT_PATH always empty -> OWN_SESSION_ID always empty
+# -> foreign-lane accounting silently wrong). `mapfile` would split this
+# without a fork, but it does not exist on bash 3.2 (this repo's floor), so
+# the split is done with bash builtin parameter expansion instead -- still
+# zero extra process spawns, still bash-3.2-safe.
 PARSED="$(printf '%s' "$INPUT" | jq -r '
   (.workspace.current_dir // .cwd // ""),
   (.model.display_name // "?"),
   ((.context_window.remaining_percentage // "") | tostring),
   (.transcript_path // "")
 ' 2>/dev/null || true)"
-IFS=$'\n' read -r CWD_FROM_INPUT MODEL REMAINING TRANSCRIPT_PATH <<< "$PARSED"
+CWD_FROM_INPUT="${PARSED%%$'\n'*}"
+_PARSED_REST="${PARSED#*$'\n'}"
+MODEL="${_PARSED_REST%%$'\n'*}"
+_PARSED_REST="${_PARSED_REST#*$'\n'}"
+REMAINING="${_PARSED_REST%%$'\n'*}"
+_PARSED_REST="${_PARSED_REST#*$'\n'}"
+TRANSCRIPT_PATH="${_PARSED_REST%%$'\n'*}"
 [[ -z "$CWD_FROM_INPUT" ]] && CWD_FROM_INPUT="$PWD"
 
 # FIX5c: fallback is ALWAYS computed (a CONFIGURED-but-failing/timed-out

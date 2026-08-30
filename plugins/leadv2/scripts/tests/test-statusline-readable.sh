@@ -405,6 +405,93 @@ else
   bad "R11" "unrecognised BASE was mutated: $GARBAGE_OUT"
 fi
 
+# ---- ANTI-SILENCE-STATUSLINE-01 round 8: fallback-path field integrity ---
+# Every fixture above wraps a `printf '<literal>'` statusLine.command that
+# always succeeds, so FALLBACK_BASE / MODEL / REMAINING / TRANSCRIPT_PATH are
+# NEVER exercised by any of R1-R11 -- the exact hole that let round 7's
+# `IFS=$'\n' read -r a b c d <<< "$PARSED"` regression (read's line
+# terminator is a literal newline, not IFS -- only the FIRST var ever filled)
+# stay invisible through 45/0. FIX5c requires a configured-but-failing or
+# timed-out user command to land on this path too, not just an absent one --
+# all three are exercised here, reusing FOREIGN_DIR/REPO from the R7 fixture
+# above (pulse.json with a differing owner_session_id already seeded) so the
+# own-session-id-from-transcript_path accounting is covered in the same pass.
+FB_SETTINGS_NONE="$tmp/settings-fb-none.json"
+printf '{}' > "$FB_SETTINGS_NONE"
+FB_SETTINGS_FAIL="$tmp/settings-fb-fail.json"
+printf '{"statusLine":{"command":"exit 1"}}' > "$FB_SETTINGS_FAIL"
+FB_SETTINGS_TIMEOUT="$tmp/settings-fb-timeout.json"
+printf '{"statusLine":{"command":"sleep 5"}}' > "$FB_SETTINGS_TIMEOUT"
+# Own JSON (not INPUT_JSON_WITH_SESSION, which carries no context_window) --
+# needs model + remaining_percentage + transcript_path all populated so all
+# three fields the broken split zeroed out are actually exercisable here.
+FB_INPUT_JSON=$(jq -n --arg dir "$REPO" '{workspace:{current_dir:$dir},model:{display_name:"Opus 5"},context_window:{remaining_percentage:79},transcript_path:"/tmp/22222222-2222-2222-2222-222222222222.jsonl"}')
+
+run_fallback() {
+  local settings="$1"
+  rm -f "$tmp"/cache/leadv2-statusline-lane-*
+  TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH=112 \
+    bash "$FOREIGN_DIR/leadv2-lane-status-line-tail.sh" "$FB_INPUT_JSON" "$settings" "$FOREIGN_DIR" 5 </dev/null
+}
+
+for _fb_case in "no-command $FB_SETTINGS_NONE" "failing-command $FB_SETTINGS_FAIL" "timed-out-command $FB_SETTINGS_TIMEOUT"; do
+  _fb_label="${_fb_case%% *}"
+  _fb_settings="${_fb_case#* }"
+  _fb_out="$(run_fallback "$_fb_settings")"
+  _fb_plain="$(printf '%s' "$_fb_out" | strip_ansi)"
+  if [[ "$_fb_plain" == *'Opus 5'* ]]; then
+    ok "FB-model ($_fb_label): fallback render carries the real model, not '?'"
+  else
+    bad "FB-model ($_fb_label)" "fallback render lost the model name (MODEL var empty): $_fb_plain"
+  fi
+  if [[ "$_fb_plain" == *'ctx'* ]]; then
+    ok "FB-remaining ($_fb_label): fallback render carries the remaining-pct segment"
+  else
+    bad "FB-remaining ($_fb_label)" "fallback render lost the remaining-pct (REMAINING var empty): $_fb_plain"
+  fi
+  if [[ "$_fb_plain" == *'~dispatch-5b'* ]]; then
+    ok "FB-foreign ($_fb_label): own-session-id parsed from TRANSCRIPT_PATH marks the foreign lane"
+  else
+    bad "FB-foreign ($_fb_label)" "foreign-lane marker missing (TRANSCRIPT_PATH var empty -> OWN_SESSION_ID empty): $_fb_plain"
+  fi
+done
+
+# Mutation control: restore round 7's broken multi-line `read` split and
+# confirm the three FB-* assertions above go RED by name -- proves the
+# fixture actually exercises the regressed code path, not a no-op.
+FBMUT_DIR="$tmp/scripts-fbmut"
+mkdir -p "$FBMUT_DIR"; cp -a "$SCRATCH_SCRIPTS/." "$FBMUT_DIR/"
+cat > "$FBMUT_DIR/leadv2-state-path.sh" <<EOF
+#!/usr/bin/env bash
+echo "$REPO/.leadv2-state/active.yaml"
+EOF
+chmod +x "$FBMUT_DIR/leadv2-state-path.sh"
+python3 - "$FBMUT_DIR/leadv2-lane-status-line-tail.sh" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+text = open(path, encoding='utf-8').read()
+broken = (
+    "CWD_FROM_INPUT=\"${PARSED%%$'\\n'*}\"\n"
+    "_PARSED_REST=\"${PARSED#*$'\\n'}\"\n"
+    "MODEL=\"${_PARSED_REST%%$'\\n'*}\"\n"
+    "_PARSED_REST=\"${_PARSED_REST#*$'\\n'}\"\n"
+    "REMAINING=\"${_PARSED_REST%%$'\\n'*}\"\n"
+    "_PARSED_REST=\"${_PARSED_REST#*$'\\n'}\"\n"
+    "TRANSCRIPT_PATH=\"${_PARSED_REST%%$'\\n'*}\"\n"
+)
+replacement = "IFS=$'\\n' read -r CWD_FROM_INPUT MODEL REMAINING TRANSCRIPT_PATH <<< \"$PARSED\"\n"
+assert broken in text, "round-8 split not found verbatim -- mutation target text drifted"
+open(path, 'w', encoding='utf-8').write(text.replace(broken, replacement, 1))
+PYEOF
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+FBMUT_OUT="$(TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH=112 \
+  bash "$FBMUT_DIR/leadv2-lane-status-line-tail.sh" "$FB_INPUT_JSON" "$FB_SETTINGS_NONE" "$FBMUT_DIR" 5 </dev/null)"
+FBMUT_PLAIN="$(printf '%s' "$FBMUT_OUT" | strip_ansi)"
+if [[ "$FBMUT_PLAIN" != *'Opus 5'* && "$FBMUT_PLAIN" == *'?'* ]]; then
+  ok "FB-mutation: reverting to the broken multi-line read reproduces the MODEL='?' regression (RED)"
+else
+  bad "FB-mutation" "reverting to the broken read did NOT reproduce the regression -- fixture is not load-bearing: $FBMUT_PLAIN"
+fi
 
 # ---- ANTI-SILENCE-STATUSLINE-01 round 3: the ACTUAL live path -------------
 # Everything above exercises leadv2-lane-status-line-tail.sh's rich digest,
