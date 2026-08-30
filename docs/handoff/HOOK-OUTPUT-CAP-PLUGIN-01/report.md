@@ -200,3 +200,100 @@ environment and a cache-file update alone does not reload it mid-session.
 - `run-core-offline.sh` (the always-on suite) was not run to completion in this session due to
   observed system-wide multi-lane contention (see above) — `bash -n` and the individually-run
   changed-scope suites are the falsification evidence provided.
+
+## Round 4 — bounded `--scope changed`, and the offline-lock question
+
+### [High] fixed: merge-base range no longer grows without bound
+
+Round 3's merge-base anchor unioned in the WHOLE `<merge-base>..HEAD` range on **every**
+invocation, forever — every already-committed, already-tested commit on the lane re-selected its
+suite on every future unrelated commit. `tests/run-all.sh` now persists the last-checked HEAD sha
+to `<git-dir>/leadv2-run-all-last-checked-sha` (`git rev-parse --git-dir`, so the file is
+worktree-scoped — concurrent lanes never share it) and diffs from that instead of the merge-base
+once it exists; first run on a lane (no state file yet) still falls back to the merge-base, so
+round 3's win is preserved. Write is best-effort (tmp+`mv -f`), never fails the run.
+
+Both properties proven in one sequence, scratch clone at `/private/tmp/hookcap-r4-scratch` (cloned
+from this lane's own remote, `git clone /Users/kostiantyn.vlasenko/Projects/leadv2`), branch
+`worktree-HOOK-OUTPUT-CAP-PLUGIN-01`:
+
+**Property 1** — HEAD `b885e0d` (docs-only), `docs/LEAD_V2_STATE.md` dirtied (unrelated), no prior
+state file:
+```
+$ git log --oneline -1
+b885e0d docs: record round-2 findings in HOOK-OUTPUT-CAP-PLUGIN-01 report.md
+$ git status --short
+ M docs/LEAD_V2_STATE.md
+ M tests/run-all.sh
+$ LEADV2_SUITE_LOCK_WAIT_S=5 timeout 300 bash tests/run-all.sh --scope changed
+[RUN] .../run-core-offline.sh
+[CORE-OFFLINE] FATAL lock_timeout ... wait_s=5      # concurrent lane elsewhere holds /tmp/leadv2-core-offline.lock — unrelated
+[FAIL] .../run-core-offline.sh
+[RUN] .../tests/test-status-surface-bash32.sh
+...
+FAIL - _t6c: urgent divergence (min=-1 full=46) — file as follow-up   # pre-existing baseline red, unrelated
+test-status-surface-bash32: 14 passed, 1 failed, 0 skipped
+[RUN] .../plugins/leadv2/scripts/tests/test-hook-output-cap.sh
+7 passed, 0 failed
+[PASS] .../plugins/leadv2/scripts/tests/test-hook-output-cap.sh
+run-all: 3 passed, 2 failed, scope=changed
+$ cat "$(git rev-parse --git-dir)/leadv2-run-all-last-checked-sha"
+b885e0df563f41d62a31dc009dfa3f9038d237bd
+```
+`test-hook-output-cap.sh` selected and passes 7/7 — round 3's win survives.
+
+**Property 2** — same HEAD (`b885e0d`, unchanged, state file now present from property 1's run),
+`docs/LEAD_V2_STATE.md` reverted clean, exactly ONE new unrelated dirty file
+(`plugins/leadv2/scripts/leadv2-lane-shape.sh`, has its own `test-leadv2-lane-shape.sh`):
+```
+$ git status --short
+ M plugins/leadv2/scripts/leadv2-lane-shape.sh
+$ LEADV2_SUITE_LOCK_WAIT_S=5 timeout 300 bash tests/run-all.sh --scope changed
+[RUN] .../run-core-offline.sh          [FAIL]   # same lock contention, unrelated
+[RUN] .../tests/test-status-surface-bash32.sh    [FAIL]   # same pre-existing red, unrelated
+[RUN] .../tests/test-status-surface-single-lead.sh   [PASS]   # always-on, not scope-governed
+[RUN] .../tests/test-status-surface-fast-names.sh    [PASS]   # always-on, not scope-governed
+[RUN] .../plugins/leadv2/scripts/tests/test-leadv2-lane-shape.sh
+[PASS] .../plugins/leadv2/scripts/tests/test-leadv2-lane-shape.sh
+run-all: 3 passed, 2 failed, scope=changed
+```
+`test-hook-output-cap.sh` is **not** re-selected — only `leadv2-lane-shape.sh`'s own suite runs.
+(The always-on status-surface suites appear every run regardless of scope — see
+`tests/run-all.sh` "Always-on" block — they are not part of what this property tests.)
+
+**Control** — mutated the bounding logic (`if [[ -z "${_range_start}" ]]; then` → `if true; then`,
+forcing `_range_start` to always be `_merge_base`, ignoring the persisted state file), re-ran the
+exact property-2 scenario above with no other change:
+```
+$ LEADV2_SUITE_LOCK_WAIT_S=5 timeout 300 bash tests/run-all.sh --scope changed
+...
+[RUN] .../plugins/leadv2/scripts/tests/test-leadv2-lane-shape.sh   [PASS]
+[RUN] .../plugins/leadv2/scripts/tests/test-hook-output-cap.sh     [PASS]   # RED: re-selected again
+run-all: 4 passed, 2 failed, scope=changed
+```
+Property 2 breaks under the mutation — `test-hook-output-cap.sh` reappears despite being
+already-tested and unrelated to the one dirty file. Reverted; re-ran property 2 — GREEN again
+(`test-hook-output-cap.sh` absent, only 3 passed as in the property-2 log above).
+
+Real run in this lane's own worktree (first run there, no prior state file — same as property 1):
+`bash tests/run-all.sh --scope changed` selects and passes `test-hook-output-cap.sh` 7/7; the one
+`run-all` failure is `run-core-offline.sh` blocked on `/tmp/leadv2-core-offline.lock` held by a
+concurrent lane in this shared machine (see below) — outside `LANE_WRITES`.
+
+`bash -n tests/run-all.sh` — clean, no output.
+
+### [Low] does `/tmp/leadv2-core-offline.lock` expire?
+
+It is a kernel `flock` on an open fd (`plugins/leadv2/scripts/tests/run-core-offline.sh:61-62`,
+`exec 9>"$LEADV2_SUITE_LOCK_FILE"; flock -n 9`), not a stale-PID-file scheme — the OS releases the
+lock automatically the moment the holding process's fd closes (normal exit OR crash), so it cannot
+be "orphaned" in the sense of surviving its holder. It is not self-expiring on a timer, though:
+`run-core-offline.sh:52-56` documents the wait as **unbounded by default**
+(`LEADV2_SUITE_LOCK_WAIT_S` unset → `flock 9` with no `-w`, blocks indefinitely) — "matches 'the
+lane should finish, not race'" per that comment. The two-minute-plus hangs observed live in this
+session (both scratch-clone and in-worktree runs above hit `[CORE-OFFLINE] waiting for lock ...
+held by a concurrent run]`) are this **by-design unbounded wait** meeting real concurrent-lane
+contention on this shared machine, not an orphaned lock — every hang resolved deterministically
+once bounded with `LEADV2_SUITE_LOCK_WAIT_S=5` or `=60`. If CI truly needs a hang-forever
+guarantee against this, the fix is a default `LEADV2_SUITE_LOCK_WAIT_S`, not a lock-staleness fix
+— out of `LANE_WRITES` (`run-core-offline.sh` is not in this lane's write set), not touched here.

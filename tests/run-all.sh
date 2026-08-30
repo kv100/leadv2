@@ -128,15 +128,16 @@ if [[ "${SCOPE}" == "all" ]]; then
       -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
   )
 else
-  # Union uncommitted diff with the WHOLE lane range (not just the last hop):
-  # once a lane's changes are committed, `diff --name-only HEAD` no longer
-  # sees them, and this repo routinely has unrelated dirty coordination files
-  # (docs/leadv2/*) from concurrent lanes, so an empty-check fallback never
-  # fires and the lane's own suite silently drops out of --scope changed. A
-  # single `HEAD~1..HEAD` hop only covers the LAST commit — a lane that ends
-  # with a docs-only commit (the common case) loses every functional commit
-  # made earlier in the same lane. Anchor on the merge-base against the
-  # lane's base branch instead, so the whole `<base>..HEAD` range is seen.
+  # Union uncommitted diff with the lane range NOT YET SEEN by a prior run of
+  # this script (round-4, HOOK-OUTPUT-CAP-PLUGIN-01): a plain merge-base
+  # anchor (round-3) unions in the WHOLE `<merge-base>..HEAD` range on every
+  # invocation forever — every already-committed, already-tested commit on
+  # the lane re-selects its suite on every future unrelated commit, growing
+  # monotonically with lane length. Persist the last-checked SHA per git-dir
+  # (worktree-scoped, so concurrent lanes never share the file) and diff from
+  # THAT instead of the merge-base once it exists. First run on a lane (no
+  # state file yet) still falls back to the merge-base, so a docs-only HEAD
+  # with unrelated dirt still selects the lane's own suite (round-3's win).
   changed="$(git -C "${ROOT}" diff --name-only HEAD 2>/dev/null)"
   _base_ref=""
   for _cand in main origin/main; do
@@ -149,12 +150,42 @@ else
   if [[ -n "${_base_ref}" ]]; then
     _merge_base="$(git -C "${ROOT}" merge-base HEAD "${_base_ref}" 2>/dev/null || true)"
   fi
-  if [[ -n "${_merge_base}" ]]; then
+  _git_dir="$(git -C "${ROOT}" rev-parse --git-dir 2>/dev/null || true)"
+  _state_file=""
+  if [[ -n "${_git_dir}" ]]; then
+    case "${_git_dir}" in
+      /*) : ;;
+      *) _git_dir="${ROOT}/${_git_dir}" ;;
+    esac
+    _state_file="${_git_dir}/leadv2-run-all-last-checked-sha"
+  fi
+  _range_start=""
+  if [[ -n "${_state_file}" && -f "${_state_file}" ]]; then
+    _range_start="$(cat "${_state_file}" 2>/dev/null || true)"
+    if [[ -n "${_range_start}" ]] && ! git -C "${ROOT}" rev-parse --verify "${_range_start}^{commit}" >/dev/null 2>&1; then
+      _range_start=""
+    fi
+  fi
+  if [[ -z "${_range_start}" ]]; then
+    _range_start="${_merge_base}"
+  fi
+  if [[ -n "${_range_start}" ]]; then
     changed="${changed}
-$(git -C "${ROOT}" diff --name-only "${_merge_base}..HEAD" 2>/dev/null)"
+$(git -C "${ROOT}" diff --name-only "${_range_start}..HEAD" 2>/dev/null)"
   elif git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
     changed="${changed}
 $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
+  fi
+  # Record this run's HEAD as "checked" so a future clean-HEAD run only sees
+  # what's newly dirty, not the whole lane range again. Best-effort (a
+  # write failure must never fail the test run) — tmp+mv keeps concurrent
+  # invocations in the same worktree from reading a half-written file.
+  if [[ -n "${_state_file}" ]]; then
+    _head_sha="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -n "${_head_sha}" ]]; then
+      printf '%s\n' "${_head_sha}" > "${_state_file}.tmp.$$" 2>/dev/null \
+        && mv -f "${_state_file}.tmp.$$" "${_state_file}" 2>/dev/null
+    fi
   fi
   if [[ -n "${changed}" ]]; then
     while IFS= read -r cf; do
