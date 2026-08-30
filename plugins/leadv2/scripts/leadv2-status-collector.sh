@@ -115,6 +115,7 @@ _sc_lanes_section() {
   LEADV2_PROJECT_ROOT="$PROJECT_ROOT" \
     CLAUDE_PROJECT_DIR="$PROJECT_ROOT" \
     PROJECT_ROOT="$PROJECT_ROOT" \
+    LEADV2_LANES_ALL_REPOS=1 \
     bash "$_SC_DIR/leadv2-lanes-snapshot.sh" --json
 }
 _sc_run_section "lanes" _sc_lanes_section
