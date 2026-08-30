@@ -35,15 +35,18 @@ INPUT="$1"; SETTINGS_JSON="$2"; SCRIPT_DIR="$3"; LANE_CACHE_TTL_S="$4"; OUT_FILE
 
 USER_CMD="$(jq -r '(.statusLine.command // "")' "$SETTINGS_JSON" 2>/dev/null || true)"
 
+# F9 (ANTI-SILENCE-STATUSLINE-01 round 7 cont.): one jq spawn now emits all
+# four fields (transcript_path folded in below), and the split that used to
+# be 3 `printf | sed -n Np` forks is a single bash `read` against PARSED's
+# newlines instead -- same fields, zero extra process spawns.
 PARSED="$(printf '%s' "$INPUT" | jq -r '
   (.workspace.current_dir // .cwd // ""),
   (.model.display_name // "?"),
-  ((.context_window.remaining_percentage // "") | tostring)
+  ((.context_window.remaining_percentage // "") | tostring),
+  (.transcript_path // "")
 ' 2>/dev/null || true)"
-CWD_FROM_INPUT="$(printf -- '%s' "$PARSED" | sed -n '1p')"
+IFS=$'\n' read -r CWD_FROM_INPUT MODEL REMAINING TRANSCRIPT_PATH <<< "$PARSED"
 [[ -z "$CWD_FROM_INPUT" ]] && CWD_FROM_INPUT="$PWD"
-MODEL="$(printf -- '%s' "$PARSED" | sed -n '2p')"
-REMAINING="$(printf -- '%s' "$PARSED" | sed -n '3p')"
 
 # FIX5c: fallback is ALWAYS computed (a CONFIGURED-but-failing/timed-out
 # user command must fall back here too, not regress to a bare "?") — and it
@@ -212,7 +215,13 @@ LANE_FLOOR="${LEADV2_STATUSLINE_LANE_FLOOR:-10}"
 # named "<session-uuid>.jsonl". No ownership writer exists yet (see the
 # python calc's foreign-lane comment below) so this is frequently empty;
 # that is a known, documented gap, not a bug in this script.
-OWN_SESSION_ID="$(printf '%s' "$INPUT" | jq -r '(.transcript_path // "") | if . == "" then "" else (split("/") | last | rtrimstr(".jsonl")) end' 2>/dev/null || true)"
+# F9: TRANSCRIPT_PATH is already parsed above (folded into the single PARSED
+# jq call) -- basename/suffix-strip in bash instead of a second jq spawn.
+OWN_SESSION_ID=""
+if [[ -n "${TRANSCRIPT_PATH:-}" ]]; then
+  OWN_SESSION_ID="${TRANSCRIPT_PATH##*/}"
+  OWN_SESSION_ID="${OWN_SESSION_ID%.jsonl}"
+fi
 
 LANES="lanes ?"
 # STATUSLINE-READABLE-01 A: which BASE-compression candidate to render.
