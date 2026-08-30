@@ -128,13 +128,31 @@ if [[ "${SCOPE}" == "all" ]]; then
       -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
   )
 else
-  # Union uncommitted diff with the last commit's diff (not either/or): once a
-  # lane's changes are committed, `diff --name-only HEAD` no longer sees them,
-  # and this repo routinely has unrelated dirty coordination files
+  # Union uncommitted diff with the WHOLE lane range (not just the last hop):
+  # once a lane's changes are committed, `diff --name-only HEAD` no longer
+  # sees them, and this repo routinely has unrelated dirty coordination files
   # (docs/leadv2/*) from concurrent lanes, so an empty-check fallback never
-  # fires and the lane's own suite silently drops out of --scope changed.
+  # fires and the lane's own suite silently drops out of --scope changed. A
+  # single `HEAD~1..HEAD` hop only covers the LAST commit — a lane that ends
+  # with a docs-only commit (the common case) loses every functional commit
+  # made earlier in the same lane. Anchor on the merge-base against the
+  # lane's base branch instead, so the whole `<base>..HEAD` range is seen.
   changed="$(git -C "${ROOT}" diff --name-only HEAD 2>/dev/null)"
-  if git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
+  _base_ref=""
+  for _cand in main origin/main; do
+    if git -C "${ROOT}" rev-parse --verify "${_cand}" >/dev/null 2>&1; then
+      _base_ref="${_cand}"
+      break
+    fi
+  done
+  _merge_base=""
+  if [[ -n "${_base_ref}" ]]; then
+    _merge_base="$(git -C "${ROOT}" merge-base HEAD "${_base_ref}" 2>/dev/null || true)"
+  fi
+  if [[ -n "${_merge_base}" ]]; then
+    changed="${changed}
+$(git -C "${ROOT}" diff --name-only "${_merge_base}..HEAD" 2>/dev/null)"
+  elif git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
     changed="${changed}
 $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
   fi
