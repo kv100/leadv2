@@ -178,7 +178,7 @@ visible_len() {
     esc="${BASH_REMATCH[0]}"
     plain="${plain/"$esc"/}"
   done
-  printf '%s' "${#plain}"
+  VISIBLE_LEN="${#plain}"
 }
 
 # An explicit LEADV2_STATUSLINE_LANE_BUDGET override pins the digest budget
@@ -194,7 +194,8 @@ if [[ -z "$_EXPLICIT_LANE_BUDGET" ]]; then
 fi
 BASE_LEN=()
 for _k in 0 1 2 3 4; do
-  BASE_LEN[_k]="$(visible_len "${BASE_STEP[$_k]}")"
+  visible_len "${BASE_STEP[$_k]}"
+  BASE_LEN[_k]="${VISIBLE_LEN:-0}"
   [[ -z "${BASE_LEN[$_k]}" ]] && BASE_LEN[_k]=0
 done
 BASE_VISIBLE_LEN="${BASE_LEN[0]}"
@@ -1105,14 +1106,15 @@ FINAL_LINE="$(printf '\033[34m%s\033[0m | %s' "$LANES" "$FINAL_BASE")"
 # render_step12/cap_lbl_marked above), so LANES is always whitespace-
 # delimited at token boundaries; back the cut off to the last whitespace
 # boundary at or before KEEP and name how many trailing tokens were lost.
-FINAL_VISIBLE_LEN="$(visible_len "$FINAL_LINE")"
-[[ -z "$FINAL_VISIBLE_LEN" ]] && FINAL_VISIBLE_LEN=0
+visible_len "$FINAL_LINE"
+FINAL_VISIBLE_LEN="${VISIBLE_LEN:-0}"
 if (( FINAL_VISIBLE_LEN > STATUSLINE_WIDTH )); then
   OVERFLOW=$(( FINAL_VISIBLE_LEN - STATUSLINE_WIDTH ))
   # Refit by complete fields and reserve the exact +N marker before each
   # admission.  Character accounting matches visible_len above, including
   # UTF-8 labels; no raw slice can land in a word or ANSI escape.
-  _base_len="$(visible_len "$FINAL_BASE")"
+  visible_len "$FINAL_BASE"
+  _base_len="${VISIBLE_LEN:-0}"
   _lane_budget=$(( STATUSLINE_WIDTH - _base_len - 3 ))
   (( _lane_budget < 0 )) && _lane_budget=0
   _lane_first="${LANES%% *}"
@@ -1127,7 +1129,8 @@ if (( FINAL_VISIBLE_LEN > STATUSLINE_WIDTH )); then
     [[ "$_lane_tok" == +[0-9]* ]] && continue
     _lane_remaining=$(( _lane_total - _lane_shown - 1 ))
     _lane_marker=""; (( _lane_remaining > 0 )) && _lane_marker=" +${_lane_remaining}"
-    if (( $(visible_len "${_lane_out} ${_lane_tok}${_lane_marker}") > _lane_budget )); then break; fi
+    visible_len "${_lane_out} ${_lane_tok}${_lane_marker}"
+    if (( ${VISIBLE_LEN:-0} > _lane_budget )); then break; fi
     _lane_out="${_lane_out} ${_lane_tok}"; _lane_shown=$(( _lane_shown + 1 ))
   done
   _lane_dropped=$(( _lane_total - _lane_shown ))
@@ -1136,9 +1139,11 @@ if (( FINAL_VISIBLE_LEN > STATUSLINE_WIDTH )); then
   # At degenerate widths even the maximally-compressed BASE can be wider
   # than the cells left after the honest lane digest. Strip its ANSI first,
   # then clip characters; never raw-slice a colour escape.
-  _base_budget=$(( STATUSLINE_WIDTH - $(visible_len "$LANES") - 3 ))
+  visible_len "$LANES"
+  _base_budget=$(( STATUSLINE_WIDTH - ${VISIBLE_LEN:-0} - 3 ))
   (( _base_budget < 0 )) && _base_budget=0
-  if (( $(visible_len "$FINAL_BASE") > _base_budget )); then
+  visible_len "$FINAL_BASE"
+  if (( ${VISIBLE_LEN:-0} > _base_budget )); then
     FINAL_BASE="$(printf '%s' "$FINAL_BASE" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
     FINAL_BASE="${FINAL_BASE:0:_base_budget}"
   fi

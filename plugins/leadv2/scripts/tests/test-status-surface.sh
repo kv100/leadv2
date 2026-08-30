@@ -690,6 +690,7 @@ run_render_r4() {
   LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
   LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
   LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
+  LEADV2_STATUS_AGGREGATE="${R4_AGGREGATE:-1}" \
   LEADV2_LIMITS_CACHE_DIR="${R4_LIMITS_CACHE:-${SB}/limits.d}" \
   LEADV2_LIMITS_REFRESH_SH="${R4_LIMITS_REFRESH_SH:-${SB}/stub-refresh.sh}" \
   bash "$RENDER" "$@"
@@ -1664,6 +1665,13 @@ fi
 # OUTCOME-3: BOTH in one fleet -> different cause strings AND different counts
 # (completed NOT in the red badge, died-clean IS). One comparison, not two greps.
 NEW_SB
+# OUTCOME-3 owns its status-surface universe.  The earlier R4 widget fixtures
+# intentionally leave question/quota paths populated; inheriting those paths
+# here turns this two-lane case into a mixed fleet and makes the badge assert a
+# stale fixture's red rows.  Reset every optional R4 override before invoking
+# either renderer or widget for this control.
+R4_QDIR=""; R4_HANDOFF=""; R4_CODEX="/nonexistent"; R4_SDHOOK="/nonexistent"
+R4_URGENT="/nonexistent"; R4_AGGREGATE=0; R4_LIMITS_CACHE=""; R4_LIMITS_REFRESH_SH=""
 printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
 : > "${STATE_DIR}/.supervise-loop.heartbeat"
 cat > "${STATE_DIR}/active.yaml" <<EOF
@@ -1769,6 +1777,9 @@ if printf '%s' "$_oc_done" | grep -q 'done(completed)' \
 else
   _oc_causes_ok=0
 fi
+# This fixture asserts its own two-row fleet, not the host's unrelated ledger
+# rows.  The production default aggregates repositories; pin it off only for
+# this isolated control so the title and table are measured from the same data.
 _oc_bar="$(run_bar_r4 2>/dev/null)"
 _oc_red="$(printf '%s' "$_oc_bar" | sed -n '1p' | sed -n 's/.*🔴 \([0-9][0-9]*\).*/\1/p')"
 case "$_oc_red" in ''|*[!0-9]*) _oc_red=X ;; esac

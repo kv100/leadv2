@@ -218,7 +218,7 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
       _esc="${BASH_REMATCH[0]}"
       _sv="${_sv/"$_esc"/}"
     done
-    printf '%s' "${#_sv}"
+    _SURF_VISIBLE_LEN="${#_sv}"
   }
   # Clip plain BASE text only at field boundaries.  A raw character slice
   # turns "Opus" into "O" under pressure, which reads as corruption rather
@@ -259,7 +259,8 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
         _surf_remaining=$(( _surf_total - _surf_shown - 1 ))
         _surf_marker=""; (( _surf_remaining > 0 )) && _surf_marker=" +${_surf_remaining}"
         _surf_sep=" "; [[ "$_surf_trimmed" == *: ]] && _surf_sep=" "
-        if (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}") > _surf_budget )); then
+        _surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}"
+        if (( ${_SURF_VISIBLE_LEN:-0} > _surf_budget )); then
           # Keep the first (surface-sorted) lane visible even if this memo
           # was produced for a much wider terminal.  The token grammar is
           # label·class·age, so only its label may be shortened.
@@ -268,15 +269,18 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
             _surf_tok="…${_surf_suffix}"
             # Never shave the class/age suffix: a clipped age unit corrupts
             # the incident value (9m used to render as bare 9).
-            if (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}") > _surf_budget )); then
+            _surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}"
+            if (( ${_SURF_VISIBLE_LEN:-0} > _surf_budget )); then
               # The row is the incident payload; at degenerate widths drop
               # the annotation (+N) before dropping its class and age.
               _surf_marker=""; _surf_hide_marker=1
-              if (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}") > _surf_budget )); then
+              _surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}"
+              if (( ${_SURF_VISIBLE_LEN:-0} > _surf_budget )); then
                 _surf_tok=""
               fi
             fi
-            if (( $(_surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}") <= _surf_budget )); then
+            _surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}"
+            if (( ${_SURF_VISIBLE_LEN:-0} <= _surf_budget )); then
               _surf_trimmed="${_surf_trimmed}${_surf_sep}${_surf_tok}"
               _surf_shown=1
             fi
@@ -303,7 +307,8 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     # -- cut on the visible-character budget remaining after the lane
     # segment, never before it.
     if [[ -n "$_surf_tail" ]]; then
-      _base_visible_budget=$(( _surf_budget - $(_surf_visible_len "$_surf_tail") - 1 ))
+      _surf_visible_len "$_surf_tail"
+      _base_visible_budget=$(( _surf_budget - ${_SURF_VISIBLE_LEN:-0} - 1 ))
       (( _base_visible_budget < 0 )) && _base_visible_budget=0
       # Strip ANSI FIRST, then slice by visible chars -- slicing the raw
       # (color-coded) string at a visible-length offset can land mid escape
@@ -318,7 +323,8 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     # The separator belongs to the BASE, not the lane payload.  Appending it
     # unconditionally consumed the final cell at W=20 and let one base byte
     # leak after an otherwise complete incident token.
-    if [[ -n "$_base_out" && $(_surf_visible_len "$_surf_tail") -lt _surf_budget ]]; then
+    _surf_visible_len "$_surf_tail"
+    if [[ -n "$_base_out" && ${_SURF_VISIBLE_LEN:-0} -lt _surf_budget ]]; then
       printf '%s %s\n' "$_surf_tail" "$_base_out"
     else
       printf '%s\n' "$_surf_tail"
@@ -330,7 +336,8 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     [[ "$INPUT" =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && _BM="${BASH_REMATCH[1]}"
     _fallback_base="$(_leadv2_render_colored_base "$_BM" "$_BC" "" "")"
     if [[ -n "$_surf_tail" ]]; then
-      _fallback_budget=$(( _surf_budget - $(_surf_visible_len "$_surf_tail") - 1 ))
+      _surf_visible_len "$_surf_tail"
+      _fallback_budget=$(( _surf_budget - ${_SURF_VISIBLE_LEN:-0} - 1 ))
       (( _fallback_budget < 0 )) && _fallback_budget=0
       _fallback_plain="$(printf '%s' "$_fallback_base" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
       if (( ${#_fallback_plain} > _fallback_budget )); then
@@ -338,7 +345,8 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
         _fallback_base="$_SURF_CLIPPED"
       fi
     fi
-    if [[ -n "$_fallback_base" && $(_surf_visible_len "$_surf_tail") -lt _surf_budget ]]; then
+    _surf_visible_len "$_surf_tail"
+    if [[ -n "$_fallback_base" && ${_SURF_VISIBLE_LEN:-0} -lt _surf_budget ]]; then
       printf '%s %s' "$_surf_tail" "$_fallback_base"
     else
       printf '%s' "$_surf_tail"
