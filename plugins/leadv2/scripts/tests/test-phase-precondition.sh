@@ -263,6 +263,13 @@ e2e_setup() {
   export LEADV2_DISPATCH_REVIEW_GATE=0
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
+  # GLM_STUB's `status` never reports complete (F3 harness template only fakes
+  # `bg`), so _wait_arm_early_verdict polled the full LEADV2_ARM_EARLY_VERDICT_S
+  # window (default 20s) on every dispatch call that actually spawns -- 11 calls
+  # in this suite, up to ~220s, presenting as a hung/timed-out test run. The kill
+  # switch documented at leadv2-dispatch-code.sh's _wait_arm_early_verdict already
+  # exists for exactly this: skip the poll entirely.
+  export LEADV2_ARM_EARLY_VERDICT_S=0
   unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA 2>/dev/null || true
   mkdir -p "${E2E_STUB_RUNS}"
 }
