@@ -208,6 +208,17 @@ table_rows = [r for r in table_rows if not (isinstance(r, dict) and r.get("error
 # `_row.get(...)` in the dedup loop below with no isinstance guard, an
 # AttributeError that killed the whole beat. Degrade it out of the table
 # instead of crashing; "not a lane" is exactly what a non-dict row is.
+#
+# fix-round-4 (R3-3): round-3's filter dropped the non-dict rows UNCOUNTED,
+# so a malformed collector table (e.g. a JSON-encoding bug that emits a
+# bare string or null in place of a row object) rendered as a plain empty
+# table -- byte-identical to a genuinely empty board, which is exactly the
+# LANE-DETAIL-BLIND-01 failure mode ("no lanes" vs "could not read the
+# lanes" collapsing into one output) this task exists to prevent, one level
+# down: a malformed ROW is unreadable, not absent. Count it and surface it
+# the same way an unreadable foreign repo already is (table_prefix line +
+# suppression of the false empty-board headline below).
+malformed_row_count = sum(1 for r in table_rows if not isinstance(r, dict))
 table_rows = [r for r in table_rows if isinstance(r, dict)]
 questions = lanes_data.get("questions") or lanes_data.get("requires_founder") or []
 degraded = lanes_data.get("degraded") or []
@@ -631,6 +642,14 @@ for _fer in foreign_error_rows:
         f"({_fer.get('data') or _fer.get('error')}) — его линии неизвестны, "
         "таблица ниже не про него\n"
     )
+# fix-round-4 (R3-3): a malformed (non-dict) table row is unreadable, not
+# absent -- see the L1 comment above. Named, counted degraded line, same
+# treatment as an unreadable foreign repo.
+if malformed_row_count:
+    table_prefix.append(
+        f"НЕ ЧИТАЮТСЯ {malformed_row_count} строк(и) таблицы (повреждённый формат "
+        "от сборщика) — это НЕ означает, что этих линий нет, они unreadable\n"
+    )
 
 # MON-PULSE-01 fix-round 2 (H4): route the per-lane pulse to the founder.
 # The lane watcher (leadv2-lane-pulse-watch.sh) appends one line per journal
@@ -775,6 +794,17 @@ try:
         empty_headline = (
             "⚠ НЕ ВИЖУ ЛИНИИ — сборщик статуса линий не ответил "
             f"({lanes_fail_reason}); неизвестно, пуста ли доска на самом деле"
+        )
+    elif live_lane_count == 0 and malformed_row_count:
+        # fix-round-4 (R3-3): the same "empty vs unreadable" distinction as
+        # the lanes_ok branch above, one level down -- lanes_ok is True
+        # (the collector answered) but every row it returned was malformed,
+        # so live_lane_count==0 here is NOT evidence of an empty board
+        # either. Deliberately does not touch empty_since_path for the same
+        # reason: whether the board is actually empty is unknown.
+        empty_headline = (
+            "⚠ СТРОКИ ТАБЛИЦЫ НЕ ЧИТАЮТСЯ — "
+            f"{malformed_row_count} строк(и) повреждены; неизвестно, пуста ли доска на самом деле"
         )
     elif live_lane_count == 0:
         now_epoch = int(__import__("time").time())

@@ -359,6 +359,44 @@ else
   fail "T7: own-repo lanes starved by a foreign surge, got $T7_OWN_ROWS own rows: $T7_CONTENT"
 fi
 
+# ── T8: MALFORMED ROW IS UNREADABLE, NOT ABSENT (fix-round-4 R3-3) ──────
+# The L1 fix (fix-round-3) stopped a non-dict table row from crashing the
+# whole beat, but dropped it UNCOUNTED -- so a collector table containing
+# only malformed elements rendered as a plain empty table, indistinguishable
+# from a genuinely empty board (LANE-DETAIL-BLIND-01's failure mode, one
+# level down: a malformed ROW is unreadable, not absent).
+cat >"$STUBS/collector-malformed-rows.sh" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "$out" ]] && exit 1
+python3 -c '
+import json
+print(json.dumps({"sections": {
+  "lanes": {"ok": True, "data": {"table": ["not-a-row", None, 42], "questions": [], "degraded": []}},
+  "lane_detail": {"ok": True, "data": {"lanes": []}}
+}}))' >"$out"
+EOF
+chmod +x "$STUBS/collector-malformed-rows.sh"
+
+beat_env "$STUBS/collector-malformed-rows.sh" "2026-08-30T06:00:00Z"
+T8_CONTENT="$(cat "$FOUNDER_STATUS")"
+if ! printf '%s' "$T8_CONTENT" | grep -q 'ДОСКА ПУСТА'; then
+  pass "T8a: 3 malformed rows, lanes.ok=true — no false 'ДОСКА ПУСТА' claim"
+else
+  fail "T8a: malformed rows rendered as a false empty board: $T8_CONTENT"
+fi
+if printf '%s' "$T8_CONTENT" | grep -q '3 строк' && printf '%s' "$T8_CONTENT" | grep -qi 'не читаются'; then
+  pass "T8b: malformed row count (3) surfaced, named as unreadable"
+else
+  fail "T8b: malformed rows dropped silently, not surfaced: $T8_CONTENT"
+fi
+
 log ""
 log "=== ${PASS} passed, ${FAIL} failed ==="
 if [[ "$FAIL" -gt 0 ]]; then
