@@ -177,7 +177,24 @@ trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 
 export _BS_QUEUED_TSV="$QUEUED_TSV"
 export _BS_LANDED_LOG="$LANDED_LOG"
-RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" <<'PY'
+# BASH-3.2-HEREDOC-QUOTE-PARITY-01: this heredoc used to be written directly
+# inside the `RENDER_JSON="$( ... <<'PY' ... )"` command substitution. macOS's
+# system /bin/bash (3.2.57, the mandatory compatibility target — see
+# CLAUDE.md) has a heredoc-in-command-substitution lexer bug: even with a
+# QUOTED delimiter (<<'PY'), it still scans the heredoc body for stray
+# single/double quotes and unmatched parens to decide where the enclosing
+# $( ... ) closes. A ~750-line python heredoc full of English prose comments
+# (apostrophes: "lane_detail's", "worker's own", contractions) desyncs that
+# scan and the WHOLE SCRIPT fails to parse — `bash -n` (and real execution)
+# aborts with "unexpected EOF while looking for matching `)'" and the script
+# never runs at all, silently, under any minimal-PATH launcher that resolves
+# `env bash` to /bin/bash (SwiftBar is exactly this case per CLAUDE.md). Fix:
+# write the heredoc to a file as a TOP-LEVEL statement (not nested inside a
+# command substitution), then invoke python3 on that file inside the
+# substitution — a plain command has nothing for the buggy scanner to
+# misparse. Verified: `/bin/bash -n` on this file failed before this change
+# and passes after, both on macOS system bash 3.2.57 and homebrew bash 5.3.9.
+cat >"$RENDER_TMPDIR/render.py" <<'PY'
 import datetime, json, os, re, subprocess, sys
 
 snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir, full_status_path_override, empty_since_path = sys.argv[1:9]
@@ -924,7 +941,7 @@ with open(out_path, "w", encoding="utf-8") as fh:
     }, fh)
 print(out_path)
 PY
-)"
+RENDER_JSON="$(python3 "$RENDER_TMPDIR/render.py" "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH")"
 RC=$?
 if [[ $RC -ne 0 || -z "$RENDER_JSON" || ! -f "$RENDER_JSON" ]]; then
   printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
