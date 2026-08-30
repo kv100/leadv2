@@ -33,12 +33,17 @@ log() { printf '[TEST] %s\n' "$*"; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/promise-morph.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 
+# PROMISE-GUARD-BIND-01 round2: pinned to the same checked-in fixture as
+# test-promise-action-binding.sh, not `git show HEAD:...` -- see that file's comment
+# for why HEAD self-destructs the pre-fix arm once this task's own commit lands. An
+# unresolvable pre-image is a HARD FAILURE, never a silent fall-through reported as a
+# pass.
 REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
-PRE_HOOK="${WORK}/pre-hook.sh"
-if [[ -n "${REPO}" ]]; then
-  git -C "${REPO}" show "HEAD:plugins/leadv2/hooks/leadv2-promise-guard.sh" > "${PRE_HOOK}" 2>/dev/null || : > "${PRE_HOOK}"
+PRE_HOOK="${REPO}/docs/handoff/PROMISE-GUARD-BIND-01/fixtures/leadv2-promise-guard.pre-bind01.sh"
+if [[ -z "${REPO}" || ! -s "${PRE_HOOK}" ]]; then
+  log "FATAL: pre-fix fixture unresolvable (repo='${REPO}' fixture='${PRE_HOOK}') -- refusing to report a fake RED-then-GREEN proof"
+  exit 1
 fi
-[[ -s "${PRE_HOOK}" ]] || PRE_HOOK=""
 
 # Extract the hook's own regex definitions and evaluate one clause through them.
 # Prints HIT or MISS. rc 2 if the definitions could not be lifted (shape changed).
@@ -139,6 +144,32 @@ case_known_verb()     { _expect "$1" "сейчас поднимаю наблюд
 # --- new shape, no marker: a leading first-person verb ---------------------------
 case_leading_verb()   { _expect "$1" "Довожу list-form до мерджа" HIT; }
 
+# --- PROMISE-GUARD-BIND-01 round2: the extractor itself, not just the binder ------
+# Round-1 fixed binding (a promise is only "kept" by an action of its own kind) but
+# never touched the extractor -- the round-2 review ran twelve realistic promise
+# sentences (the shapes actually used by this lead, RU + EN, across all four
+# classify_promise_kind kinds) through the shipped hook and found five produced NO
+# journal row at all: COMMIT_RE never matched, so there was nothing for the binder to
+# bind. The exact repo-history set of twelve was not committed anywhere this task
+# could find (see report.md); this is a reconstructed twelve covering the same
+# grammar shapes and all four kinds, anchored by the three sentences the review
+# quoted verbatim. All twelve must HIT; the three quoted ones are RED against the
+# pinned pre-round2 fixture (the verbs are not in ANY committed version of
+# COMMIT_RU_VERBS before this task) and GREEN against the shipped hook -- a genuine
+# RED-then-GREEN, not a restatement.
+case_r2_01_popravlyu()   { _expect "$1" "Сейчас поправлю…" HIT; }              # write  (quoted verbatim by review)
+case_r2_02_progonyu()    { _expect "$1" "Сейчас прогоню тесты" HIT; }          # test   (quoted verbatim by review)
+case_r2_03_zakommichu()  { _expect "$1" "Сейчас закоммичу фикс" HIT; }         # commit (quoted verbatim by review)
+case_r2_04_dispatchu()   { _expect "$1" "Сейчас диспатчу воркера на задачу" HIT; }   # dispatch
+case_r2_05_podnimu()     { _expect "$1" "Сейчас подниму лейн заново" HIT; }          # dispatch/write
+case_r2_06_ill_commit()  { _expect "$1" "I'll commit the fix now" HIT; }             # commit, EN
+case_r2_07_ill_run()     { _expect "$1" "I'll run the test suite next" HIT; }        # test, EN
+case_r2_08_zapushu()     { _expect "$1" "Сейчас запущу линт" HIT; }                  # test/write
+case_r2_09_otpravlyu()   { _expect "$1" "Сейчас отправлю фикс на ревью" HIT; }       # dispatch/write
+case_r2_10_sdelayu()     { _expect "$1" "Сейчас сделаю патч" HIT; }                  # write
+case_r2_11_shape_marker(){ _expect "$1" "Допишу тесты этим же заходом" HIT; }        # COMMIT_RU_SHAPE
+case_r2_12_bare_verb()   { _expect "$1" "Ещё раз проверю логи" HIT; }                # bare COMMIT_RU, no сейчас
+
 # --- the negative direction: reports of DONE work must stay silent ---------------
 # A guard that fires on status prose gets switched off within a day, so these matter
 # as much as the hits.
@@ -161,14 +192,20 @@ case_neg_idut()       { _expect "$1" "Они идут параллельно и 
 
 run_case() { # <name> <fn>
   local name="$1" fn="$2" pre_rc post_rc
-  if [[ -n "${PRE_HOOK}" ]]; then "${fn}" "${PRE_HOOK}" >/dev/null 2>&1; pre_rc=$?; else pre_rc=2; fi
+  "${fn}" "${PRE_HOOK}" >/dev/null 2>&1; pre_rc=$?
   "${fn}" "${HOOK}" >/dev/null 2>&1; post_rc=$?
   if [[ ${post_rc} -eq 2 ]]; then
-    COULD_NOT_RUN=$((COULD_NOT_RUN + 1)); log "COULD-NOT-RUN: ${name}"; return
+    COULD_NOT_RUN=$((COULD_NOT_RUN + 1))
+    FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix could-not-run (rc=2)")
+    log "FAIL: ${name} -- post-fix could-not-run (rc=2)"; return
   fi
   if [[ ${post_rc} -ne 0 ]]; then
     FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix rc=${post_rc}")
     log "FAIL: ${name} -- post-fix rc=${post_rc}, expected 0"; return
+  fi
+  if [[ ${pre_rc} -eq 2 ]]; then
+    FAIL=$((FAIL + 1)); ERRORS+=("${name}: pre-fix could-not-run (rc=2) -- RED-then-GREEN proof invalid")
+    log "FAIL: ${name} -- pre-fix arm could not run; proof is invalid, not a pass"; return
   fi
   if [[ ${pre_rc} -eq 0 ]]; then
     GREEN_PRE_FIX=$((GREEN_PRE_FIX + 1))
@@ -184,6 +221,19 @@ run_case "escape-chinyu-pinned"    case_escape_chinyu
 run_case "escape-dobavlyu-pinned"  case_escape_dobavlyu
 run_case "known-verb-no-regress"   case_known_verb
 run_case "leading-first-person"    case_leading_verb
+
+run_case "r2-01-popravlyu-write"     case_r2_01_popravlyu
+run_case "r2-02-progonyu-test"       case_r2_02_progonyu
+run_case "r2-03-zakommichu-commit"   case_r2_03_zakommichu
+run_case "r2-04-dispatchu-dispatch"  case_r2_04_dispatchu
+run_case "r2-05-podnimu-dispatch"    case_r2_05_podnimu
+run_case "r2-06-ill-commit-en"       case_r2_06_ill_commit
+run_case "r2-07-ill-run-en"          case_r2_07_ill_run
+run_case "r2-08-zapushu"             case_r2_08_zapushu
+run_case "r2-09-otpravlyu"           case_r2_09_otpravlyu
+run_case "r2-10-sdelayu"             case_r2_10_sdelayu
+run_case "r2-11-shape-marker"        case_r2_11_shape_marker
+run_case "r2-12-bare-verb"           case_r2_12_bare_verb
 run_case "neg-commit-sha"          case_neg_commit_sha
 run_case "neg-test-result"         case_neg_test_result
 run_case "neg-past-report"         case_neg_past_report

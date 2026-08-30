@@ -6,9 +6,10 @@ same turn it is promised (task-anchor DIRECTIVE #4).
 
 ---
 
-## PROMISE-GUARD-BLOCK-FLIP-01
+## PROMISE-GUARD-BLOCK-FLIP-01 — flip promise-guard from log-only to blocking
 
-STATUS: CONDITION_BOUND (no fixed date — gated on journal evidence, not the calendar)
+- **status:** CONDITION_BOUND
+- **due:** condition-bound — no fixed date, gated on journal evidence (see GO-CONDITION below)
 
 CONTEXT: PROMISE-GUARD-BIND-01 (2026-08-30) fixed the promise extractor and
 `ACTION_BASH_RE`/action-kind binding in `plugins/leadv2/hooks/leadv2-promise-guard.sh` so
