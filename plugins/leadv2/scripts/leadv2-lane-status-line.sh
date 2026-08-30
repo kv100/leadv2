@@ -219,6 +219,29 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
     done
     printf '%s' "${#_sv}"
   }
+  # Clip plain BASE text only at field boundaries.  A raw character slice
+  # turns "Opus" into "O" under pressure, which reads as corruption rather
+  # than intentional omission.  The ellipsis consumes one reserved cell and
+  # is emitted only when a complete field has been retained.
+  _surf_clip_plain() {
+    local _scp_text="$1" _scp_budget="$2" _scp_word _scp_next _scp_out=""
+    _SURF_CLIPPED=""
+    (( _scp_budget > 0 )) || return 0
+    if (( ${#_scp_text} <= _scp_budget )); then
+      _SURF_CLIPPED="$_scp_text"
+      return 0
+    fi
+    for _scp_word in $_scp_text; do
+      _scp_next="$_scp_word"
+      [[ -n "$_scp_out" ]] && _scp_next="${_scp_out} ${_scp_word}"
+      if (( ${#_scp_next} + 1 <= _scp_budget )); then
+        _scp_out="$_scp_next"
+      else
+        break
+      fi
+    done
+    [[ -n "$_scp_out" ]] && _SURF_CLIPPED="${_scp_out}…"
+  }
   _surf_tail=""
   if [[ -n "$_surf_oneline" ]]; then
     # A memo may have been written at a wider terminal width.  Refit its
@@ -286,10 +309,9 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
       # sequence and leave a dangling color code bleeding into the rest of
       # the terminal line.
       _base_out_plain="$(printf '%s' "$_base_out" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
-      if (( _base_visible_budget == 0 )); then
-        _base_out=""
-      elif (( ${#_base_out_plain} > _base_visible_budget )); then
-        _base_out="${_base_out_plain:0:$_base_visible_budget}"
+      if (( ${#_base_out_plain} > _base_visible_budget )); then
+        _surf_clip_plain "$_base_out_plain" "$_base_visible_budget"
+        _base_out="$_SURF_CLIPPED"
       fi
     fi
     # The separator belongs to the BASE, not the lane payload.  Appending it
@@ -310,10 +332,9 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
       _fallback_budget=$(( _surf_budget - $(_surf_visible_len "$_surf_tail") - 1 ))
       (( _fallback_budget < 0 )) && _fallback_budget=0
       _fallback_plain="$(printf '%s' "$_fallback_base" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
-      if (( _fallback_budget == 0 )); then
-        _fallback_base=""
-      elif (( ${#_fallback_plain} > _fallback_budget )); then
-        _fallback_base="${_fallback_plain:0:$_fallback_budget}"
+      if (( ${#_fallback_plain} > _fallback_budget )); then
+        _surf_clip_plain "$_fallback_plain" "$_fallback_budget"
+        _fallback_base="$_SURF_CLIPPED"
       fi
     fi
     if [[ -n "$_fallback_base" && $(_surf_visible_len "$_surf_tail") -lt _surf_budget ]]; then

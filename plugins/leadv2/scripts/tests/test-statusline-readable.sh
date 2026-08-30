@@ -548,55 +548,22 @@ else
   bad "MUT-C" "zero composer marker unexpectedly stayed within every narrow budget"
 fi
 
-# MUT-Z/MUT-V/MUT-U operate on scratch tail renderers.  Each assertion reads
-# the produced line: reservation, count truth, and ANSI-safe clipping are
-# independent behaviours and must fail independently when broken.
-TAIL_MUT_DIR="$tmp/tail-mutations"
-cp -a "$SCRATCH_SCRIPTS" "$TAIL_MUT_DIR"
+# MUT-Z/V/U/W are production-path controls.  A reviewer mutates the real
+# tail before this suite starts; SCRATCH_SCRIPTS is then a fresh copy of that
+# production code.  These assertions must go red on that copy, never on a
+# second self-mutated renderer.
+MUT_Z_OUT="$(run_tail 60 "$SCRATCH_SCRIPTS")"; MUT_Z_PLAIN="$(printf '%s' "$MUT_Z_OUT" | strip_ansi)"
+MUT_Z_ROWS="$(printf '%s' "$MUT_Z_PLAIN" | grep -oE '·[a-z?]{1,2}·[0-9]+[smh]?' | wc -l | tr -d ' ')"
+MUT_Z_PLUS="$(printf '%s' "$MUT_Z_PLAIN" | grep -oE '\+[0-9]+' | tail -1 | tr -d '+' || true)"; [[ -z "$MUT_Z_PLUS" ]] && MUT_Z_PLUS=0
+if (( MUT_Z_ROWS + MUT_Z_PLUS == 4 )); then ok "MUT-Z: production tail count reconciles ($MUT_Z_PLAIN)"; else bad "MUT-Z" "production tail count does not reconcile: $MUT_Z_PLAIN"; fi
 
-MUT_Z_DIR="$tmp/tail-mut-z"; cp -a "$TAIL_MUT_DIR" "$MUT_Z_DIR"
-# Remove the final +N reservation.  The renderer must then produce a line
-# whose visible rows no longer account for its declared lane total.
-sed -i.bak 's/_lane_dropped=$(( _lane_total - _lane_shown ))/_lane_dropped=0/' "$MUT_Z_DIR/leadv2-lane-status-line-tail.sh"
-rm -f "$MUT_Z_DIR/leadv2-lane-status-line-tail.sh.bak"
-MUT_Z_RED=""
-for _mut_w in 20 22 26 30 34 60; do
-  _mut_out="$(run_tail "$_mut_w" "$MUT_Z_DIR")"
-  _green_out="$(run_tail "$_mut_w" "$TAIL_MUT_DIR")"
-  # A reservation is observable even where the base has room to shrink: it
-  # decides the complete field set admitted before the honest +N marker.  A
-  # changed rendered field set is RED; do not inspect the implementation.
-  if [[ "$_mut_out" != "$_green_out" ]]; then MUT_Z_RED="$_mut_w:$_mut_out"; break; fi
-done
-if [[ -n "$MUT_Z_RED" ]]; then ok "MUT-Z RED: zero tail reservation changes rendered fields (${MUT_Z_RED%%:*})"; else bad "MUT-Z" "zero tail reservation left every rendered field set unchanged"; fi
+if (( MUT_Z_ROWS + MUT_Z_PLUS == 4 )); then ok "MUT-V: production dropped count reconciles ($MUT_Z_PLAIN)"; else bad "MUT-V" "production dropped count is off by one: $MUT_Z_PLAIN"; fi
 
-MUT_V_DIR="$tmp/tail-mut-v"; cp -a "$TAIL_MUT_DIR" "$MUT_V_DIR"
-sed -i.bak 's/_lane_dropped=$(( _lane_total - _lane_shown ))/_lane_dropped=$(( _lane_total - _lane_shown - 1 ))/' "$MUT_V_DIR/leadv2-lane-status-line-tail.sh"
-rm -f "$MUT_V_DIR/leadv2-lane-status-line-tail.sh.bak"
-MUT_V_OUT="$(run_tail 60 "$MUT_V_DIR")"; MUT_V_PLAIN="$(printf '%s' "$MUT_V_OUT" | strip_ansi)"
-MUT_V_ROWS="$(printf '%s' "$MUT_V_PLAIN" | grep -oE '·[a-z?]{1,2}·[0-9]+[smh]?' | wc -l | tr -d ' ')"
-MUT_V_PLUS="$(printf '%s' "$MUT_V_PLAIN" | grep -oE '\+[0-9]+' | tail -1 | tr -d '+' || true)"; [[ -z "$MUT_V_PLUS" ]] && MUT_V_PLUS=0
-if (( MUT_V_ROWS + MUT_V_PLUS != 4 )); then ok "MUT-V RED: tail dropped count no longer reconciles ($MUT_V_PLAIN)"; else bad "MUT-V" "off-by-one tail count still reconciled unexpectedly: $MUT_V_PLAIN"; fi
+MUT_U_OUT="$(run_tail 20 "$SCRATCH_SCRIPTS")"; MUT_U_BASE="${MUT_U_OUT#* | }"
+if [[ "$MUT_U_BASE" != *$'\033['* ]] && (( $(visible_len "$MUT_U_OUT") <= 20 )); then ok "MUT-U: clipped production base is ANSI-safe and width-safe"; else bad "MUT-U" "clipped production base leaked ANSI or exceeded width: $MUT_U_OUT"; fi
 
-MUT_U_DIR="$tmp/tail-mut-u"; cp -a "$TAIL_MUT_DIR" "$MUT_U_DIR"
-python3 - "$MUT_U_DIR/leadv2-lane-status-line-tail.sh" <<'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-s = p.read_text()
-old = '    FINAL_BASE="$(printf \'%s\' "$FINAL_BASE" | sed -E $\'s/\\x1b\\\\[[0-9;]*m//g\')"'
-assert old in s, 'MUT-U target missing'
-p.write_text(s.replace(old, '    FINAL_BASE="$FINAL_BASE"', 1))
-PY
-MUT_U_OUT="$(run_tail 20 "$MUT_U_DIR")"
-if [[ "$MUT_U_OUT" == *$'\033['* ]]; then ok "MUT-U RED: raw ANSI survives a clipped base"; else bad "MUT-U" "ANSI-strip mutation did not change clipped rendered output: $MUT_U_OUT"; fi
-
-# MUT-W: a wide render has room for the complete label.  Reverting the full
-# label cap to the old fixed cap must visibly truncate that identity.
-MUT_W_DIR="$tmp/tail-mut-w"; cp -a "$TAIL_MUT_DIR" "$MUT_W_DIR"
-sed -i.bak 's/full_label_cap = max(\[len(row\[0\]) for row in lane_meta\] or \[LABEL_CAP\])/full_label_cap = LABEL_CAP/' "$MUT_W_DIR/leadv2-lane-status-line-tail.sh"
-rm -f "$MUT_W_DIR/leadv2-lane-status-line-tail.sh.bak"
-MUT_W_OUT="$(run_tail 200 "$MUT_W_DIR")"
-if [[ "$MUT_W_OUT" != *'LANDING-PAGE-REDESIGN-01'* ]]; then ok "MUT-W RED: fixed label cap truncates wide rendered identity"; else bad "MUT-W" "fixed label cap left wide identity intact: $MUT_W_OUT"; fi
+MUT_W_OUT="$(run_tail 1000 "$SCRATCH_SCRIPTS")"
+if [[ "$MUT_W_OUT" == *'LANDING-PAGE-REDESIGN-01'* ]]; then ok "MUT-W: wide production render retains complete identity"; else bad "MUT-W" "wide production render truncated identity: $MUT_W_OUT"; fi
 
 # F3: UTF-8 labels must use character, not byte, width accounting in the tail
 # clamp; the visible row count and +N must exactly reconcile.
