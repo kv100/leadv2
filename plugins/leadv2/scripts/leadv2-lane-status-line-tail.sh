@@ -880,10 +880,18 @@ _explicit_lane_budget = os.environ.get('LEADV2_STATUSLINE_LANE_BUDGET', '')
 base_prefix = f'lanes {n}/{cap}'
 
 def digest_len(tokens, prefix=None):
+    # R12 fix (ANTI-SILENCE-STATUSLINE-01 finisher round): the inner
+    # separator between base_prefix and the lane token list is a single
+    # space, not ' | ' -- a literal '|' glyph here becomes its own
+    # whitespace-delimited token with no field content of its own, so any
+    # trim/degradation ladder that ever lands its cut adjacent to it leaves
+    # a bare '|' behind. There is nothing for that glyph to convey once
+    # id_parts is non-empty (the outer ' | ' added by the bash tail already
+    # separates LANES from BASE), so it is dropped rather than guarded.
     bp = prefix if prefix is not None else base_prefix
     if not tokens:
         return len(bp)
-    return len(bp) + len(' | ') + sum(len(t) for t in tokens) + (len(tokens) - 1)
+    return len(bp) + len(' ') + sum(len(t) for t in tokens) + (len(tokens) - 1)
 
 def try_no_drop(budget):
     # STATUSLINE-READABLE-01 B: no lane below LEADV2_STATUSLINE_LANE_FLOOR
@@ -913,13 +921,26 @@ def try_drop_to_k(budget):
     # append one '+M' token. Choose the largest K >= 1 that fits at
     # label_cap == lane_floor including the '+M' token. lanes n/cap already
     # carries the true total, so a dropped row loses no fact.
+    #
+    # ANTI-SILENCE-STATUSLINE-01 finisher round: fitting the budget is not
+    # enough -- two lanes that share a capped stem (e.g. "dispatch-c98a..."
+    # and "dispatch-5bfce..." both collapsing to "dispatch-…" at
+    # label_cap==lane_floor) render as indistinguishable stubs, the same
+    # defect BROAD-STATUS-ROWS-02 fixes on the other status surface. A K
+    # whose shown labels collide is worse than a smaller K with an honest,
+    # larger '+N' -- skip it and drop further. A lone lane (k==1) can never
+    # collide with itself, so it is always accepted once reached.
     if not lane_meta:
         return None, 0
     total = len(lane_meta)
     for k in range(total, 0, -1):
         subset = lane_meta[:k]
-        toks = [f'{cap_lbl_marked(lbl, fo, lane_floor)}·{arm}·{ag}{vs}'
-                for lbl, _kd, _mo, ag, vs, _lid, arm, fo, _ags in subset]
+        labels = [cap_lbl_marked(lbl, fo, lane_floor)
+                  for lbl, _kd, _mo, _ag, _vs, _lid, _arm, fo, _ags in subset]
+        if k > 1 and len(set(labels)) < len(labels):
+            continue
+        toks = [f'{lbl}·{arm}·{ag}{vs}'
+                for lbl, (_l, _kd, _mo, ag, vs, _lid, arm, _fo, _ags) in zip(labels, subset)]
         dropped = total - k
         if dropped:
             toks = toks + [f'+{dropped}']
@@ -972,7 +993,7 @@ else:
 
 out = base_prefix
 if id_parts:
-    out += ' | ' + ' '.join(id_parts)
+    out += ' ' + ' '.join(id_parts)
 print(out)
 # STATUSLINE-READABLE-01 A: second stdout line, read by the bash tail to
 # pick which BASE-compression candidate to render. A caller on an older

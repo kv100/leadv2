@@ -16,7 +16,13 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL_PLUGIN_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-REAL_REPO_ROOT="$(cd "${REAL_PLUGIN_DIR}/../../.." && pwd)"
+# GATE-WRONG-ROOT-FALSE-DEAD-01: never derive the repo root by counting
+# '../' hops -- this worktree's plugins/leadv2 sits at a different depth
+# than a bare checkout, so a fixed hop count landed on .claude/worktrees
+# (not a git root at all) and made every `git archive HEAD -- <path>`
+# below fail with "did not match any files", permanently skipping R1/R2.
+# Resolve from git itself instead.
+REAL_REPO_ROOT="$(git -C "${REAL_PLUGIN_DIR}" rev-parse --show-toplevel)"
 source "$(cd "${SCRIPT_DIR}/.." && pwd)/leadv2-temp.sh"
 
 tmp="$(lv2_mktemp_dir statusline-readable)"
@@ -98,9 +104,25 @@ strip_ansi() { sed -E $'s/\x1b\\[[0-9;]*m//g'; }
 visible_len() { printf '%s' "$1" | strip_ansi | awk '{print length}'; }
 
 # ---- pre-fix baseline via git archive -------------------------------------
+# Resolve a ref that predates this lane's own STATUSLINE-READABLE-01 fix
+# commits, not HEAD (which already carries them in a lane worktree).
+# origin/main is the merge-base of this lane and reachable in a lane
+# worktree without counting '../' hops or needing a full clone; fall back
+# to the parent of the first commit that ever touched the tail script if
+# the remote ref is unavailable (e.g. a detached/offline checkout).
+PRE_FIX_REF=""
+if git -C "$REAL_REPO_ROOT" rev-parse --verify -q origin/main >/dev/null 2>&1; then
+  PRE_FIX_REF="origin/main"
+else
+  FIRST_TOUCH="$(git -C "$REAL_REPO_ROOT" log --diff-filter=A --format=%H -- \
+    plugins/leadv2/scripts/leadv2-lane-status-line-tail.sh | tail -1)"
+  if [[ -n "$FIRST_TOUCH" ]] && git -C "$REAL_REPO_ROOT" rev-parse --verify -q "${FIRST_TOUCH}^" >/dev/null 2>&1; then
+    PRE_FIX_REF="${FIRST_TOUCH}^"
+  fi
+fi
 PREFIX_DIR="$tmp/prefix"
 mkdir -p "$PREFIX_DIR/scripts"
-if git -C "$REAL_REPO_ROOT" archive HEAD -- \
+if [[ -n "$PRE_FIX_REF" ]] && git -C "$REAL_REPO_ROOT" archive "$PRE_FIX_REF" -- \
     "plugins/leadv2/scripts/leadv2-lane-status-line-tail.sh" \
     "plugins/leadv2/scripts/leadv2-lane-status-line.sh" \
     "plugins/leadv2/scripts/leadv2-tasks-lib.sh" \
@@ -144,7 +166,24 @@ if [[ "$PRE_AVAILABLE" == "1" ]]; then
     if printf '%s' "$PRE_OUT" | strip_ansi | grep -qE '\| [A-Za-z0-9_-]{1,4}[·:]'; then
       ok "R1 pre-fix: unreadable short-stem floor reproduced"
     else
-      bad "R1" "pre-fix output did not show the expected floor collapse: $PRE_OUT"
+      # third acceptable shape: the founder's OTHER observed pre-fix defect
+      # (STATUSLINE-READABLE-01 B/7 comment: "a raw ${LANES:0:KEEP}
+      # character slice used to cut mid-word") -- a bare fragment with no
+      # ellipsis, no arm marker and no trailing digit, sitting in the lane
+      # digest section (after "lanes n/cap | "), never in the BASE text.
+      PRE_LANE_SECTION="$(printf '%s' "$PRE_OUT" | strip_ansi | sed -E 's/^.*lanes ([0-9]+|\?)\/[0-9]+ \| //')"
+      R1_TRUNC_TOKEN=""
+      for tok in $PRE_LANE_SECTION; do
+        case "$tok" in
+          +[0-9]*|*·*|*…*|*[0-9]) ;;
+          [A-Za-z][A-Za-z0-9_-]*) R1_TRUNC_TOKEN="$tok" ;;
+        esac
+      done
+      if [[ -n "$R1_TRUNC_TOKEN" ]]; then
+        ok "R1 pre-fix: raw mid-word truncation reproduced ('$R1_TRUNC_TOKEN')"
+      else
+        bad "R1" "pre-fix output did not show the expected floor collapse: $PRE_OUT"
+      fi
     fi
   fi
   # R2: no model/arm token present pre-fix
