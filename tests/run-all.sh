@@ -141,7 +141,9 @@ leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-regi
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
-leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh"
+leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
+leadv2-one-copy-drift.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
+leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -149,27 +151,64 @@ if [[ "${SCOPE}" == "all" ]]; then
       -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
   )
 else
-  # DISPATCH-CLOSE-GATE-01 round-3: a real dirty lane usually has docs-only working-tree
-  # dirt (journals, bus offsets, active.yaml) SITTING ON TOP OF already-committed source
-  # changes for this round. `git diff --name-only HEAD` alone only sees the former --
-  # a non-empty docs-only diff short-circuited the old code before it ever looked at what
-  # was actually committed on this branch, so the widened lib/*.sh glob and the new
-  # EXTRA_SUITE_MAP rows were unreachable on the exact lane they exist for. Union both
-  # signals: uncommitted dirt AND everything committed since this branch's merge-base with
-  # the default branch, so neither shadows the other.
-  changed_dirty="$(git -C "${ROOT}" diff --name-only HEAD 2>/dev/null)"
-  changed_committed=""
-  _rall_default="$(git -C "${ROOT}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
-  _rall_default="${_rall_default#origin/}"
-  [[ -z "${_rall_default}" ]] && _rall_default="main"
-  _rall_base="$(git -C "${ROOT}" merge-base HEAD "${_rall_default}" 2>/dev/null || true)"
-  _rall_head="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
-  if [[ -n "${_rall_base}" && "${_rall_base}" != "${_rall_head}" ]]; then
-    changed_committed="$(git -C "${ROOT}" diff --name-only "${_rall_base}" HEAD 2>/dev/null)"
+  # Union uncommitted diff with the lane range NOT YET SEEN by a prior run of
+  # this script (round-4, HOOK-OUTPUT-CAP-PLUGIN-01): a plain merge-base
+  # anchor (round-3) unions in the WHOLE `<merge-base>..HEAD` range on every
+  # invocation forever — every already-committed, already-tested commit on
+  # the lane re-selects its suite on every future unrelated commit, growing
+  # monotonically with lane length. Persist the last-checked SHA per git-dir
+  # (worktree-scoped, so concurrent lanes never share the file) and diff from
+  # THAT instead of the merge-base once it exists. First run on a lane (no
+  # state file yet) still falls back to the merge-base, so a docs-only HEAD
+  # with unrelated dirt still selects the lane's own suite (round-3's win).
+  changed="$(git -C "${ROOT}" diff --name-only HEAD 2>/dev/null)"
+  _base_ref=""
+  for _cand in main origin/main; do
+    if git -C "${ROOT}" rev-parse --verify "${_cand}" >/dev/null 2>&1; then
+      _base_ref="${_cand}"
+      break
+    fi
+  done
+  _merge_base=""
+  if [[ -n "${_base_ref}" ]]; then
+    _merge_base="$(git -C "${ROOT}" merge-base HEAD "${_base_ref}" 2>/dev/null || true)"
   fi
-  changed="$(printf '%s\n%s\n' "${changed_dirty}" "${changed_committed}" | sed '/^$/d' | sort -u)"
-  if [[ -z "${changed}" ]] && git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
-    changed="$(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
+  _git_dir="$(git -C "${ROOT}" rev-parse --git-dir 2>/dev/null || true)"
+  _state_file=""
+  if [[ -n "${_git_dir}" ]]; then
+    case "${_git_dir}" in
+      /*) : ;;
+      *) _git_dir="${ROOT}/${_git_dir}" ;;
+    esac
+    _state_file="${_git_dir}/leadv2-run-all-last-checked-sha"
+  fi
+  _range_start=""
+  if [[ -n "${_state_file}" && -f "${_state_file}" ]]; then
+    _range_start="$(cat "${_state_file}" 2>/dev/null || true)"
+    if [[ -n "${_range_start}" ]] && ! git -C "${ROOT}" rev-parse --verify "${_range_start}^{commit}" >/dev/null 2>&1; then
+      _range_start=""
+    fi
+  fi
+  if [[ -z "${_range_start}" ]]; then
+    _range_start="${_merge_base}"
+  fi
+  if [[ -n "${_range_start}" ]]; then
+    changed="${changed}
+$(git -C "${ROOT}" diff --name-only "${_range_start}..HEAD" 2>/dev/null)"
+  elif git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
+    changed="${changed}
+$(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
+  fi
+  # Record this run's HEAD as "checked" so a future clean-HEAD run only sees
+  # what's newly dirty, not the whole lane range again. Best-effort (a
+  # write failure must never fail the test run) — tmp+mv keeps concurrent
+  # invocations in the same worktree from reading a half-written file.
+  if [[ -n "${_state_file}" ]]; then
+    _head_sha="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -n "${_head_sha}" ]]; then
+      printf '%s\n' "${_head_sha}" > "${_state_file}.tmp.$$" 2>/dev/null \
+        && mv -f "${_state_file}.tmp.$$" "${_state_file}" 2>/dev/null
+    fi
   fi
   if [[ -n "${changed}" ]]; then
     while IFS= read -r cf; do
