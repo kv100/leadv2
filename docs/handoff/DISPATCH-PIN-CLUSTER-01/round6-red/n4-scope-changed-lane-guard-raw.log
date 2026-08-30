@@ -1,0 +1,2403 @@
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/run-core-offline.sh
+[CORE-OFFLINE] running 83 suites across 4 shards
+
+[CORE-OFFLINE] all plugin shell syntax
+
+[CORE-OFFLINE] red-first pinned-baseline resolver (RED-FIRST-SELF-INVALIDATES-01)
+[TEST] PASS: pickaxe resolves intro commit's parent
+[TEST] PASS: env override honoured when marker absent
+[TEST] PASS: override containing marker returns rc 4 with a reason
+[TEST] PASS: marker never in history returns rc 3
+[TEST] PASS: nonexistent override ref returns rc 3
+[TEST] PASS: marker introduced at repo root with no pin returns rc 3
+[TEST] PASS: shallow clone returns rc 3
+[TEST] PASS: lv2_rf_extract materialises the pinned ref
+[TEST] RESULT: pass=8 fail=0
+
+[CORE-OFFLINE] Codex child-session recursion boundary
+[TEST] PASS: skill forbids launcher self-invocation
+[TEST] PASS: fresh and resume prompts forbids launcher self-invocation
+[TEST] Results: PASS=2 FAIL=0
+
+[CORE-OFFLINE] cross-injector dedup, active-task path (T15)
+[TEST] PASS: hook scripts parse
+[TEST] PASS: (a) first turn: task-anchor emits a full injection (active-task path confirmed)
+[TEST] PASS: (b) second turn unchanged: stub, 4 line(s) <=5, active-task path confirmed
+[TEST] PASS: (c) changed state: full re-inject reflects the new goal, active-task path confirmed
+[TEST] PASS: (c.delta) turn after a full re-inject collapses back to the stub
+[TEST] PASS: (d) unwritable state sidecar: fail-open to full injection
+[TEST] PASS: (e) default handoff: true duplicate suppressed, unique content preserved
+[TEST] PASS: (e control) LEADV2_ANCHOR_OWNS_CONTEXT=0 legacy path byte-identical to the checked-in 9e9677b golden
+[TEST] PASS: multisession: 4th session (note+blocked_by) reaches output
+[TEST] PASS: multisession negative-control red (cap reintroduced => 4th session lost)
+[TEST] Results: PASS=10 FAIL=0
+
+[CORE-OFFLINE] T13 slice2 (arbiter bench-fallback + abandon dedup)
+[TEST] PASS: allowed_arms excludes glm/freepool from pick and chain
+[TEST] PASS: NEGATIVE CONTROL 1: mutated arbiter (no allowed_arms filter) correctly fails case1
+[TEST] PASS: bench-fallback re-arbitrates and emits route_headroom_chosen when primary arm benched
+[TEST] PASS: NEGATIVE CONTROL 2: mutated dispatch (bench-fallback block removed) correctly fails case2
+[TEST] PASS: exit76_receipt continuation re-arbitrates over remaining candidates and sets _reenter
+[TEST] PASS: NEGATIVE CONTROL 2b: mutated dispatch (exit76 route_arbiter call broken) correctly fails case2b
+[TEST] PASS: answered abandon decision deregisters the active.yaml row
+[TEST] PASS: second reconcile does not re-ask the abandoned task
+[TEST] PASS: NEGATIVE CONTROL 3: mutated lanes-snapshot (abandon consume removed) correctly fails case3
+[TEST] PASS: NEGATIVE CONTROL 3b: mutated lanes-snapshot (abandon tombstone writer removed) correctly fails case3
+[TEST] PASS: CLI dispatch table has no bypass subcommand beyond the documented phased-path set
+[TEST] PASS: NEGATIVE CONTROL 4a: mutated dispatch (bogus bypass subcommand injected) correctly fails the CLI-surface scan
+[TEST] PASS: every spawn_worker call site is preceded by a build-phase record AND a route_arbiter worker call
+UNGATED_SPAWN line=7519
+[TEST] PASS: NEGATIVE CONTROL 4b: mutated dispatch (cmd_advance_arm precondition guard stripped) correctly fails the spawn-gating scan
+UNGATED_SPAWN line=7520
+[TEST] PASS: NEGATIVE CONTROL 4c: mutated dispatch (F1 reverted: advance-arm arbiter call broken) correctly fails the spawn-gating scan
+
+[SUMMARY] PASS=15 FAIL=0
+
+[CORE-OFFLINE] subsession context diet (WORKER-CONTEXT-DIET-01)
+[TEST] Test 1: role=developer resolves --strict-mcp-config + --mcp-config
+[TEST] PASS: developer role appends --strict-mcp-config
+[TEST] Test 2: role=hack-detect (no dedicated file) falls back to default
+[TEST] PASS: hack-detect falls back to mcp-role-default.json
+[TEST] Test 3: no allowlist anywhere -> fail open, WARN logged, no flags
+[TEST] PASS: missing allowlist fails open with expected WARN, no flags appended
+[TEST] Test 4: malformed allowlist JSON -> fail open, WARN logged
+[TEST] PASS: malformed allowlist fails open with expected WARN
+[TEST] Test 5: explicit {"servers":[]} still appends flags (deliberate no-MCP)
+[TEST] PASS: explicit empty servers list still appends flags
+[TEST] Test 6: allowlist names a server absent from every config source -> fail open
+[TEST] PASS: unresolvable server fails open with expected WARN
+[TEST] Test 7: LEADV2_SUBSESSION_SLIM_MCP=0 -> no flags, no WARN (deliberate operator choice)
+[TEST] PASS: kill-switch=0 suppresses flags with no WARN
+[TEST] Test 8: LEADV2_SUBSESSION_EXCLUDE_DYNAMIC=0 -> --exclude-dynamic-system-prompt-sections absent
+[TEST] PASS: EXCLUDE_DYNAMIC=0 suppresses --exclude-dynamic-system-prompt-sections
+[TEST] Test CD-08b: LEADV2_SUBSESSION_EXCLUDE_DYNAMIC=2 -> flag absent (strict opt-in, only literal 1 enables)
+[TEST] PASS: EXCLUDE_DYNAMIC=2 suppresses --exclude-dynamic-system-prompt-sections
+[TEST] Test 9: default (unset) -> flag absent; =1 opts in
+[TEST] PASS: default omits --exclude-dynamic-system-prompt-sections
+[TEST] PASS: EXCLUDE_DYNAMIC=1 opts in the flag
+[TEST] Test 10: resolve_role_mcp_config('../../evil', ...) coerces to default, no traversal
+[TEST] PASS: unsafe role coerced to 'default', resolved config written under expected safe path
+[TEST] Test 11: both SLIM_MCP and EXCLUDE_DYNAMIC unset -> no diet flags, no context-diet WARN
+[TEST] PASS: defaults-off: no diet flags, no context-diet WARN
+
+=== Results: 13 passed, 0 failed ===
+
+[CORE-OFFLINE] skill proof gate unit tests
+[TEST] PASS: bash -n: leadv2-skill-proof.sh
+[TEST] PASS: bash -n: leadv2-proof-lib.sh
+[TEST] PASS: shellcheck: leadv2-skill-proof.sh
+[TEST] PASS: shellcheck: leadv2-proof-lib.sh
+[TEST] PASS: (a) valid+passing → GREEN, exit 0
+[TEST] PASS: (b) valid+failing → RED-FAILED, exit 1
+[TEST] PASS: (c) validate → exit 3 (refused)
+[TEST] PASS: (c) full run → RED-INVALID
+[TEST] PASS: (c) validate prints refusal message
+[TEST] PASS: (d) no-proof → RED-NO-PROOF, exit 1
+[TEST] PASS: (e) mixed tree → exit 1
+[TEST] PASS: (e) mixed tree → green=1
+[TEST] PASS: (e) mixed tree → red=2
+[TEST] PASS: (f) step 1: GREEN recorded in state
+[TEST] PASS: (f) step 3: hash mismatch → RED-NEVER-RUN
+[TEST] PASS: list subcommand → correct matrix
+[TEST] ----
+[TEST] PASS=16 FAIL=0
+
+[CORE-OFFLINE] landed-at-spawn (no terminal=landed at spawn; target repo keying)
+[TEST] FAIL: T-a: dispatch exited 4 (expected 0)
+[TEST] FAIL: T-a: TARGET terminal ledger has 0
+0 landed row(s)
+[TEST] PASS: T-a: no terminal=landed in DECOY terminal ledger
+[TEST] PASS: T-a: reservation ledger has a row for this sig
+[TEST] FAIL: T-a: reservation row is NOT confirmed (or missing)
+[TEST] PASS: T-b: dispatch exited 4 (pre-spawn refusal)
+[TEST] PASS: T-b: terminal row landed in TARGET state dir for sig b195e743
+[TEST] PASS: T-d: NO terminal row in DECOY state dir for sig b195e743
+[TEST] PASS: T-c: terminal ledger is non-empty (pre-spawn refusal still writes)
+[TEST] PASS: T-c: terminal row has terminal=refused
+[TEST] FAIL: T-c: terminal row missing cause=all_arms_excluded
+[TEST] PASS: T-static: no _dl_note landed/spawned_ call in dispatch-code.sh
+
+[LANDED-AT-SPAWN-01] passed=8 failed=4
+[CORE-OFFLINE] FAILED: landed-at-spawn (no terminal=landed at spawn; target repo keying)
+[CORE-OFFLINE] HERMETIC-VIOLATION (WARN, follow-up): landed-at-spawn (no terminal=landed at spawn; target repo keying) dirtied docs/leadv2:
+ M docs/leadv2/.bus-offsets
+ M docs/leadv2/.bus.lock
+ M docs/leadv2/.merge.lock
+ T docs/leadv2/active.yaml
+ M docs/leadv2/active.yaml.lock
+ M docs/leadv2/bus.jsonl
+ M docs/leadv2/merge-queue.jsonl
+ M docs/leadv2/open-threads.md
+ M docs/leadv2/questions
+ M docs/leadv2/tasks/dispatch-567ba028/journal.md
+ M docs/leadv2/tasks/dispatch-59ae8b51/journal.md
+ M docs/leadv2/tasks/dispatch-tid01001/journal.md
+ M docs/leadv2/tasks/dispatch-tid02001/journal.md
+ M docs/leadv2/tasks/dispatch-tid03001/journal.md
+?? docs/leadv2/.compact-freeze.md
+
+[CORE-OFFLINE] review body persist (opus/sonnet materialisation + body_lost guard)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: /bin/bash 3.2 -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: Test (a) deliverable: exit 0
+[TEST] PASS: Test (a): review-sonnet.md has both contract lines
+[TEST] PASS: Test (a): review-sonnet.md is 688 bytes (full body materialised, not 97)
+[TEST] PASS: Test (a): review-sonnet.md contains the numbered findings prose
+[TEST] PASS: Test (a2) stream-fallback: exit 0
+[TEST] PASS: Test (a2): review-sonnet.md has REVIEW_VERDICT from stream transcript
+[TEST] PASS: Test (a2): review-sonnet.md is 413 bytes (stream body recovered)
+[TEST] PASS: Test (b) body_lost: exit 6
+[TEST] PASS: Test (b): review-gate.md status=blocked reason=review_body_lost
+[TEST] PASS: Test (c) glm-regression: exit 0
+[TEST] PASS: Test (c): review-gate.md status=pass — guard did not trip on healthy glm arm
+
+[TEST] 13 passed, 0 failed
+
+[CORE-OFFLINE] dispatch arm vocabulary (kimi retirement)
+PASS: case1: resolver returns kimi → dispatch survives on sonnet with mismatch line
+FAIL: case2: glm chain from ladder (excludes kimi, includes glm-flash + freepool) (expected: 'glm glm-flash codex sonnet freepool', got: 'glm codex sonnet', mismatch_emitted=0)
+FAIL: case3: codex chain includes trailing freepool (T19) (expected: 'codex sonnet freepool', got: 'codex sonnet', mismatch_emitted=0)
+FAIL: case4: sonnet chain includes trailing freepool (T19) (expected: 'sonnet freepool', got: 'sonnet', mismatch_emitted=0)
+PASS: case4b: kimi unknown arm -> sonnet + mismatch (got: sonnet)
+PASS: case8: heavy-classified chain excludes freepool (got: sonnet)
+FAIL: case9: --task-class Heavy did not surface in DC_TASK_CLASS / arm_excluded (dispatch trace had no match)
+PASS: case10: both fanout call sites forward --task-class to dispatch-code.sh
+PASS: case5: resolver spill with kimi in tenant yaml → arm=glm (not kimi)
+PASS: case6: router_v2.arms has 7 entries, kimi absent (glm glm-flash freepool codex claude-haiku claude-sonnet claude-opus)
+
+================================================
+  arm-vocabulary suite: PASS=6 FAIL=4
+================================================
+[CORE-OFFLINE] FAILED: dispatch arm vocabulary (kimi retirement)
+
+[CORE-OFFLINE] phase precondition guard matrix
+test: Standard missing plan/gate1
+test: waiver review refused
+test: waiver close refused
+test: waiver empty reason
+test: phases.yaml version 2 rejected
+test: phases.yaml removal key rejected
+test: phases.yaml union adds e2e to Light
+test: waiver plan accepted
+missing=classify,gate1,build,test,review,live_verify,close
+test: waiver plan not allowed
+test: no phases.yaml → base table
+
+test: G1 REQUIRE_PHASES unset warns and spawns
+  FAIL: G1: journal should contain phase_precondition_warn
+  FAIL: G1: spawn sentinel should exist (worker was spawned)
+test: G2 REQUIRE_PHASES=1 refuses and does not spawn
+  FAIL: G2: dispatch should exit 3 (got 4)
+  FAIL: G2: journal should contain phase_precondition_refused
+test: G3 REQUIRE_PHASES=0 no warn and spawns
+  FAIL: G3: spawn sentinel should exist
+test: G4 phase-waiver review refused in modes unset/1 (0 proceeds, see G8)
+test: G5 forged review diff_hash rejected
+test: G6 artifact integrity rejected
+test: G7 review provenance — de-self-attestation
+test: G8 REQUIRE_PHASES=0 proceeds despite broken phases.yaml + refused waiver
+  FAIL: G8: spawn sentinel should exist (worker was spawned despite broken config)
+test: G9 deploy descendant-of-lane-base
+test: G10 PROOF column — self-attested vs verified vs unverified
+test: G11 unexpected assert exit code (B4)
+  FAIL: G11a: warn mode should spawn despite unexpected assert rc
+test: F1 record stamps unverified when proof fails
+test: F2 plan-for --writes makes deploy mandatory
+test: F3 plan-for rejects invalid class
+MANDATORY classify
+MANDATORY build
+NA test docs_only
+MANDATORY review
+NA deploy no_runtime_surface
+MANDATORY close
+MANDATORY classify
+OPTIONAL plan
+MANDATORY build
+MANDATORY test
+MANDATORY review
+NA deploy no_runtime_surface
+NA live_verify no_deploy
+MANDATORY close
+MANDATORY classify
+OPTIONAL diverge
+MANDATORY plan
+MANDATORY gate1
+MANDATORY build
+MANDATORY test
+MANDATORY review
+NA deploy no_runtime_surface
+MANDATORY live_verify
+NA e2e no_deploy
+MANDATORY close
+MANDATORY classify
+MANDATORY diverge
+MANDATORY plan
+MANDATORY gate1
+MANDATORY build
+MANDATORY test
+MANDATORY review
+NA deploy no_runtime_surface
+MANDATORY live_verify
+MANDATORY e2e
+MANDATORY close
+
+[PHASE-PRECONDITION] pass=72 fail=7
+[CORE-OFFLINE] FAILED: phase precondition guard matrix
+
+[CORE-OFFLINE] plugin reliability (process liveness + role fallback + prepass/reorder signals)
+
+[D1] _pc_process_alive — pid-file liveness (behavioral)
+  ok: live meta pid detected as alive
+  ok: dead meta pid detected as dead
+  ok: live child pid in pgid file detected as alive
+  ok: live supervisor pid in lock_dir/pid detected as alive
+  ok: self pid (2428) excluded — no self-match
+  ok: parent pid (98030) excluded
+  ok: no live processes detected as dead
+
+[D1] _pc_reap_worker — kills exact pids (behavioral)
+  ok: victim process group from pgid file was reaped (killed)
+  ok: reap did not kill self (2428) or parent (98030)
+  ok: victim process from lock_dir/pid was reaped
+  ok: reap with no live processes is a no-op (rc=0)
+
+[D2] claude-subsession agents_worktree_fallback frontmatter strip
+  ok: agents source: frontmatter stripped, body preserved
+  ok: source accepts agents_worktree_fallback in frontmatter-strip branch
+  ok: worktree fallback derives ROLE_SOURCE=agents_worktree_fallback
+  ok: agents_worktree_fallback: frontmatter stripped correctly
+
+[D3] prepass-park uses --no-block (fire-and-forget)
+  ok: prepass-park uses --no-block, not blocking --timeout
+  ok: prepass_parked journal line present
+
+[D4] empty-status→dead grace guard (behavioral)
+  ok: source has meta-existence grace guard before empty-status dead
+  ok: old meta (>30s) + empty status → dead-eligible
+  ok: fresh meta (<30s) → grace (not dead)
+
+[D5] router_v2 reorder failure journal
+  ok: router_v2_reorder_failed journal line present
+
+[PLUGIN-RELIABILITY-01] passed=21 failed=0
+
+[CORE-OFFLINE] claim-evidence gate (CLAIM-EVIDENCE-GATE-01 preamble + round-1 lens)
+[TEST] PASS: bash -n claude-subsession.sh
+[TEST] PASS: /bin/bash -n claude-subsession.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n leadv2-review-run.sh
+[TEST] PASS: /bin/bash -n leadv2-review-run.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n leadv2-helpers.sh
+[TEST] PASS: /bin/bash -n leadv2-helpers.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n leadv2-dispatch-code.sh
+[TEST] PASS: /bin/bash -n leadv2-dispatch-code.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n glm-coder.sh
+[TEST] PASS: /bin/bash -n glm-coder.sh (bash 3.2 syntax)
+[TEST] RED-then-GREEN: preamble-evidence-contract (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: exhaustive-five-lenses (pre_rc=1 -> post_rc=0)
+[TEST] PASS: verify_only branch does not contain claims-without-evidence
+[TEST] PASS: exhaustive branch new text has no quote/backtick
+[TEST] PASS: preamble evidence bullets have no quote/backtick
+[TEST] PASS: leadv2-helpers.sh mission contract has no backtick
+[TEST] PASS: glm-coder.sh evidence preamble has no quote/backtick
+[TEST] PASS: leadv2-dispatch-code.sh injection lines have no backtick
+[TEST] PASS: C9 canonical marker sentence identical (count=1) in all three sites
+[TEST] PASS: C9 marker absent from baseline (red-first confirmed)
+[TEST] PASS: rendered round-1 mission contains claims-without-evidence lens
+[TEST] RED-then-GREEN: rendered-prefix-h1 (pre_rc=1 -> post_rc=0)
+[TEST] PASS: C7 companion -- DRY_RUN marker present, no real claude CLI launched
+[TEST] FAIL: dispatch-mission-glm-h2 -- post-fix rc=1, expected 0
+[TEST] PASS: C8 codex structural -- injection precedes arm case, codex consumes the same ${mission}
+
+Results: 24 passed(red->green), 1 failed, 0 green-pre-fix, 0 could-not-run
+FAIL: dispatch-mission-glm-h2: post-fix did not pass (rc=1)
+[CORE-OFFLINE] FAILED: claim-evidence gate (CLAIM-EVIDENCE-GATE-01 preamble + round-1 lens)
+
+[CORE-OFFLINE] codex instant-complete dead-arm spill (V3-ENV-GUARDS-01)
+[CODEX-INSTANT-COMPLETE] case 1: dead shape (task_complete + last_agent_message=null)
+[CODEX-INSTANT-COMPLETE]   detected dead shape (rc=0) ✓
+[CODEX-INSTANT-COMPLETE] case 2: healthy terminal completion (real last_agent_message)
+[CODEX-INSTANT-COMPLETE]   correctly NOT flagged dead (rc=2) ✓
+[CODEX-INSTANT-COMPLETE] case 3: still-running job (no task_complete yet)
+[CODEX-INSTANT-COMPLETE]   correctly reported unknown/still-running (rc=1) ✓
+[CODEX-INSTANT-COMPLETE] case 4: newest-rollout-since picks the right file, ignores older-than-since
+[CODEX-INSTANT-COMPLETE]   picked c4_new, ignored c4_old (mtime < since), count=1 ✓
+[CODEX-INSTANT-COMPLETE] case 4b: cwd match preferred over a newer sibling rollout, ambiguity count=2
+[CODEX-INSTANT-COMPLETE]   picked cwd-matched rollout despite sibling being newer, count=2 ✓
+[CODEX-INSTANT-COMPLETE] case 4c: sibling is newest+dead-shaped but own cwd absent -- no candidate picked
+[CODEX-INSTANT-COMPLETE]   correctly returned no candidate (not the sibling), count=2 ✓
+[CODEX-INSTANT-COMPLETE] case 4d: end-to-end deadline-check must not terminal-decide off the sibling's dead shape
+[CODEX-INSTANT-COMPLETE]   correctly proceeded (rc=0) in 2s, sibling's dead shape ignored ✓
+[CODEX-INSTANT-COMPLETE] case 5: deadline-check returns 7 on the dead shape AND records the strike
+[CODEX-INSTANT-COMPLETE]   deadline-check returned 7 (spill) AND wrote /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.QkmXFCEhb9/quota-lockout-codex.json ✓
+[CODEX-INSTANT-COMPLETE] case 6: non-terminal activity since spawn returns 0 early, not at the 30s window
+[CODEX-INSTANT-COMPLETE]   returned 0 in 0s, well under the 30s window ✓
+[CODEX-INSTANT-COMPLETE] pass=9 fail=0
+
+[CORE-OFFLINE] core-offline shard partition (SUITE-SPEED-01)
+[SHARDS-01] total suites in SUITE_DEFS = 83
+[SHARDS-01]   shards=1: 83 lines, 83 unique indices, no out-of-range shard ✓
+[SHARDS-01]   shards=2: 83 lines, 83 unique indices, no out-of-range shard ✓
+[SHARDS-01]   shards=3: 83 lines, 83 unique indices, no out-of-range shard ✓
+[SHARDS-01]   shards=4: 83 lines, 83 unique indices, no out-of-range shard ✓
+[SHARDS-01]   shards=5: 83 lines, 83 unique indices, no out-of-range shard ✓
+[SHARDS-01]   shards=7: 83 lines, 83 unique indices, no out-of-range shard ✓
+[SHARDS-01] case: default shard count is sane (1..4)
+[SHARDS-01]   default resolves to 4 shards ✓
+[SHARDS-01] case: every sharded failure prints its FAILED marker
+[SHARDS-01]   sharded failure marker present ✓
+[SHARDS-01] case: SERIAL fixture runs after parallel phase
+[SHARDS-01]   SERIAL tail order preserved ✓
+[SHARDS-01] pass=10 fail=0
+
+[CORE-OFFLINE] plugin sync contracts write gate
+[TEST] PASS: Case 1: first logged line is Mode: DRY_RUN
+[TEST] PASS: Case 1: bare run wrote no contracts file
+[TEST] PASS: Case 2: --write output contains REFUSED (backward)
+[TEST] PASS: Case 2: refusal names the exact cp promote command into canonical
+[TEST] PASS: Case 2: vendored bytes unchanged after refused --write
+[TEST] PASS: Case 2: vendored mtime unchanged (no quarantine-in-place rewrite)
+[TEST] PASS: Case 2: refused content preserved in quarantine
+[TEST] PASS: Case 3: --allow-backward copies the contract
+[TEST] PASS: Case 3: destination now matches canonical
+[TEST] PASS: Case 4: dirty contract refused even with --allow-backward
+[TEST] PASS: Case 4: refusal reason is uncommitted destination
+[TEST] PASS: Case 4: no copy happened for the dirty contract
+[TEST] PASS: Case 4: dirty bytes unchanged
+
+[TEST] contracts-gate: 13 passed, 0 failed
+
+[CORE-OFFLINE] Claude multi-profile selector (CLAUDE-MULTIPROFILE-QUOTA-02)
+=== T1: opt-in unset -> inert ===
+[TEST] PASS: T1: no stdout, exit 0
+=== T2: registry missing -> single_profile ===
+[TEST] PASS: T2: reason=single_profile
+[TEST] PASS: T2: exit 0
+=== T3: 1 valid entry -> single_profile (fallback preserved) ===
+[TEST] PASS: T3: reason=single_profile
+[TEST] PASS: T3: exit 0
+=== T4: 20% vs 80% -> picks the 20% label ===
+[TEST] PASS: T4: picks alpha score=20 live
+[TEST] PASS: T4: exit 0
+=== T5: one unknown, one ok -> picks ok, source=live ===
+[TEST] PASS: T5: picks the ok profile
+=== T6: both unknown -> first registry entry, all_unknown ===
+[TEST] PASS: T6: first entry, all_unknown
+=== T7: malformed line + email-shaped label -> skipped, one warning each ===
+[TEST] PASS: T7: bad lines skipped, both good ones used
+[TEST] PASS: T7: exactly two skip warnings
+=== T8: probe hangs -> timeout, single_profile, exit 0 under 15s ===
+[TEST] PASS: T8: single_profile on total probe timeout
+[TEST] PASS: T8: exit 0
+[TEST] PASS: T8: completed in 2s (<15s)
+=== T9: leak scan — no token, email, or path on label-only surfaces ===
+[TEST] PASS: T9a: config_dir present on selector stdout
+[TEST] PASS: T9b: selector stderr has no token or email
+[TEST] PASS: T9c: selector stderr has no path
+=== T10: determinism — identical scores, same pick over 5 runs ===
+[TEST] PASS: T10: registry-order tie-break stable over 5 runs
+=== Integration: acceptance observable via claude-subsession.sh ===
+[TEST] PASS: I1: child sees only the selected config_dir
+[TEST] PASS: I2: exactly one [claude-profile] stderr line
+[TEST] PASS: I2b: label-only stderr line shape
+[TEST] PASS: I3: handoff claude-profile.log exists
+[TEST] PASS: I4: ISO-prefixed label-only handoff line
+[TEST] PASS: I5a: handoff log has no token
+[TEST] PASS: I5b: handoff log has no path
+[TEST] PASS: I6a: profile stderr line has no token
+[TEST] PASS: I6b: profile stderr line has no path
+=== Integration: flag unset -> no profile line, lane unchanged ===
+[TEST] PASS: I7: no CLAUDE_CONFIG_DIR forced when flag unset
+[TEST] PASS: I8: no [claude-profile] line when flag unset
+[TEST] PASS: I9: no handoff claude-profile.log when flag unset
+=== T11 (NC-a): label='personal' but credential subscriptionType=team -> identity=team/na ===
+[TEST] PASS: T11a: identity derived from credential (team), not label (personal)
+[TEST] PASS: T11b: personal/team profile scored and picked
+[TEST] PASS: T11: exit 0
+=== T11k (NC-a, keychain path): same mismatch via keychain: credential_source ===
+[TEST] PASS: T11k: identity derived via keychain: credential_source too
+[TEST] PASS: T11k-leak: selected-profile stdout carries no access/refresh token
+[TEST] PASS: T11k-leak2: selector stderr carries no access/refresh token
+=== T12 (NC-b): expired credential -> WARN token_expired + excluded from scoring ===
+[TEST] PASS: T12a: WARN token_expired names label+identity
+[TEST] PASS: T12b: expired entry excluded -- candidates=2, not 3
+[TEST] PASS: T12c: expired profile never wins
+[TEST] PASS: T12: exit 0
+=== T13 (NC-c): all candidates expired -> named refusal, not a silent pick ===
+[TEST] PASS: T13a: named refusal, not single_profile or a stale pick
+[TEST] PASS: T13b: both expired entries warned
+[TEST] PASS: T13: exit 0
+=== T14: both slots = SAME account -> WARN same_account + ONE bucket ===
+[TEST] PASS: T14a: same_account warn names both labels + the shared identity
+[TEST] PASS: T14b: usage bucketed ONCE (one cache dir for both slots)
+[TEST] PASS: T14c: fail-open -- both slots stay candidates
+[TEST] PASS: T14: exit 0
+=== T15: label/expect vs derived identity -> WARN label_mismatch, bucket by identity ===
+[TEST] PASS: T15a: label_mismatch warn carries expected + derived
+[TEST] PASS: T15b: reported/bucketed identity is the DERIVED one, not the label claim
+[TEST] PASS: T15: exit 0 (fail-open)
+=== T16: missing .claude.json -> WARN identity_email_unresolved, fail-open ===
+[TEST] PASS: T16a: identity_email_unresolved warn
+[TEST] PASS: T16b: entry still selectable (fail-open)
+[TEST] PASS: T16: exit 0
+=== T17: default token expired -> WARN default_token_expired, selection unchanged ===
+[TEST] PASS: T17a: default_token_expired warn
+[TEST] PASS: T17b: selection itself unchanged
+[TEST] PASS: T17: exit 0
+=== T18: default credential absent -> WARN default_token_absent, fail-open ===
+[TEST] PASS: T18a: default_token_absent warn
+[TEST] PASS: T18b: selection proceeds
+[TEST] PASS: T18: exit 0
+=== T19: WARN lines reach the journal (ISO-prefixed) ===
+[TEST] PASS: T19a: journal carries ISO-prefixed same_account WARN
+[TEST] PASS: T19b: journal has no token
+=== T20 (C2): two no-.claude.json slots, same sub -> distinct buckets, no same_account ===
+[TEST] PASS: T20a: distinct quota buckets for two pro/na slots (config-dir key)
+[TEST] PASS: T20b: no same_account warn when the email half is unresolved
+[TEST] PASS: T20c: both slots warned identity_email_unresolved
+[TEST] PASS: T20d: selection still works (fail-open, lowest window wins)
+[TEST] PASS: T20: exit 0
+[TEST] Results: PASS=66 FAIL=0
+
+[CORE-OFFLINE] poll-based lane watcher (LANE-OBSERVABILITY-02)
+[TEST] PASS: W2a: non-matching existing lines print nothing
+[TEST] PASS: W1a: mv-replaced journal yields the new terminal line
+[TEST] PASS: W2b: dispatch_terminal_dedup never fires the emit
+[TEST] PASS: W2c: non-matching new lines never printed
+[TEST] PASS: W2d: question lines DO reach the lead
+[TEST] PASS: W1b: emitted line carries <slug>/<task-id> prefix
+[TEST] PASS: W1c: second pass prints nothing new (exactly-once)
+[lane-watch] repo/dispatch-abcd0001 rotated (lines 2 < seen 5), re-reading
+[TEST] PASS: W3: rotation reset re-reads the truncated journal
+[TEST] PASS: W4: heartbeat fires per watched lane on the injected clock (3+3 hb lines)
+[TEST] PASS: W4b: heartbeat line carries stream_age + phase
+[TEST] PASS: W5: watcher exits 0 once every watched lane is terminal
+[TEST] PASS: W6: repo-root arg expands to all dispatch-* journals (both lanes seen)
+
+[lane-watch-poll] PASS=12 FAIL=0
+[CORE-OFFLINE] SHARD_RESULT idx=0 pass=14 fail=4 missing=0
+
+[CORE-OFFLINE] portable temp helper stress
+[TEMP-STRESS] PASS: 100 invocations, 0 collisions
+
+[CORE-OFFLINE] product-close scopes a single-repo lane worktree
+=== pass 1/2: post-fix (live tree: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts) ===
+[TEST][post-fix] PASS C1-tracked-mod
+[TEST][post-fix] PASS C2-untracked-new
+[TEST][post-fix] PASS C3-clean-anti-rescue
+[TEST][post-fix] PASS C4-handoff-only-dirt
+[TEST][post-fix] FAIL C5-registered-arm-silent
+
+=== pass 2/2: red-first pre-fix (git archive HEAD) — reds here are EVIDENCE ===
+[TEST][pre-fix] PASS C1-tracked-mod
+[TEST][pre-fix] PASS C2-untracked-new
+[TEST][pre-fix] PASS C3-clean-anti-rescue
+[TEST][pre-fix] PASS C4-handoff-only-dirt
+[TEST][pre-fix] FAIL C5-registered-arm-silent
+
+Results (post-fix, live tree): 4 passed, 1 failed
+FAIL: C5-registered-arm-silent
+red-first: 0/4 post-fix-passing cases RED against pre-fix
+GREEN-PRE-FIX (not evidence): C1-tracked-mod
+GREEN-PRE-FIX (not evidence): C2-untracked-new
+GREEN-PRE-FIX (not evidence): C3-clean-anti-rescue
+GREEN-PRE-FIX (not evidence): C4-handoff-only-dirt
+pre-fix-could-not-run: 0
+[CORE-OFFLINE] FAILED: product-close scopes a single-repo lane worktree
+
+[CORE-OFFLINE] autonomous session spawner
+[TEST] PASS: spawner syntax
+[TEST] PASS: exact task/provider delegated to common fanout; --wait trusts validated receipt
+[TEST] PASS: spawn audit receipt is stored in the shared control plane
+[TEST] PASS: daily cap is shared and fails closed before another dispatch
+[TEST] Results: PASS=4 FAIL=0
+
+[CORE-OFFLINE] main model/live quota
+[TEST] PASS: missing config defaults ordinary lead to Sonnet
+[TEST] PASS: explicit Opus lead survives guardrails with live quota headroom
+[TEST] PASS: Opus falls back to Sonnet at the live provider quota threshold
+[TEST] Results: PASS=3 FAIL=0
+
+[CORE-OFFLINE] active registry phase updates
+[TEST] === leadv2-active-registry update_phase unit tests ===
+[TEST] Script: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/../leadv2-active-registry.sh
+
+[TEST] Test 7: bash -n syntax check
+[TEST] PASS: Test 7: bash -n OK
+[TEST] Test 1: legacy 1-arg leadv2_active_update_phase (LEADV2_TASK_ID env) updates phase
+[TEST] PASS: Test 1: legacy 1-arg set phase=build
+[TEST] Test 2: V2 2-arg leadv2_active_update_phase(task_id, phase) updates phase
+[TEST] PASS: Test 2: V2 2-arg set phase=review
+[TEST] Test 3+4: phase change sets phase_started_at; heartbeat does NOT reset it
+[TEST] PASS: Test 3: phase change updated phase_started_at (2026-08-30T19:23:17Z -> 2026-08-30T19:23:18Z)
+[TEST] PASS: Test 4: heartbeat did not reset phase_started_at
+[TEST] Test 5: a custom/unknown field on a session row survives update_phase
+[TEST] PASS: Test 5: unknown field preserved across update_phase
+[TEST] Test 6: live re-register refreshes worktree and preserves one row
+[TEST] PASS: Test 6: one live row refreshed to the real task worktree
+
+[TEST] === Results: PASS=7 FAIL=0 ===
+[TEST] All tests passed.
+
+[CORE-OFFLINE] Phase-8 task schema
+[TEST] === GATE-A2-FIX-01 A2 schema-tolerance regression tests (RUN_ID=a2-15096-1788117801) ===
+[TEST] Script: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/leadv2-phase8-assert.sh
+
+[TEST] Test 7: bash -n / py_compile syntax checks
+[TEST] PASS: Test 7: leadv2-phase8-assert.sh + leadv2_tasks_yaml_common.py syntax OK
+[TEST] Test 1: A2 python block extracted from live source, imports shared helper
+[TEST] PASS: Test 1: extracted A2 block references load_tasks_items (shared helper, no inline duplication)
+[TEST] Test 2: mapping-shaped tasks.yaml + status=done -> A2 PASS
+[TEST] PASS: Test 2: mapping-shaped + terminal status -> exit 0 (PASS)
+[TEST] Test 3: list-shaped tasks.yaml + status=done -> A2 PASS
+[TEST] PASS: Test 3: list-shaped + terminal status -> exit 0 (PASS)
+[TEST] Test 4: mapping-shaped tasks.yaml + status=pending -> A2 still FAILS (not fail-open)
+[TEST] PASS: Test 4: mapping-shaped + non-terminal status -> exit 1 (FAIL, correctly not fail-open)
+[TEST] Test 5: list-shaped tasks.yaml + status=pending -> A2 still FAILS
+[TEST] PASS: Test 5: list-shaped + non-terminal status -> exit 1 (FAIL, correctly not fail-open)
+[TEST] Test 6: task_id absent from tasks.yaml -> exit 2 (not-found, distinct code)
+[TEST] PASS: Test 6: absent task_id -> exit 2
+[TEST] Test 8 (E2E): status=verified_closed -> shipped leadv2-phase8-assert.sh full PASS (exit 0)
+[TEST] PASS: Test 8: verified_closed -> shipped script exit 0 with A2 PASS logged (D-VOCAB: was missing from TERMINAL_STATUSES)
+[TEST] Test 9 (E2E): claimed_done|needs_evidence with no artifacts -> shipped script FAILs via the distinct lane-terminal path
+[TEST] PASS: Test 9: claimed_done and needs_evidence both hit the distinct lane-terminal FAIL path (no artifacts present)
+[TEST] Test 10: status=in_progress -> A2 still FAILS (exit 1) -- must never become always-pass
+[TEST] PASS: Test 10: in_progress -> exit 1 (FAIL, correctly not fail-open)
+[TEST] Test 11 (E2E): claimed_done + release receipt (outcome: completed_success) + phase-8 evidence BOTH present -> shipped script full PASS
+[TEST] PASS: Test 11: claimed_done + both artifacts (success receipt) -> shipped script exit 0
+[TEST] Test 12 (E2E): claimed_done missing receipt / sentinel / success-outcome -> shipped script FAILs in every case (not fail-open)
+[TEST] PASS: Test 12: neither / missing-sentinel-only / missing-receipt-only / poison-outcome-receipt all -> shipped script FAIL
+
+[TEST] === Results: PASS=12 FAIL=0 ===
+[TEST] All tests passed.
+
+[CORE-OFFLINE] T14 worker MCP (glm spawn role config)
+[TEST] PASS: bash -n scripts/glm-coder.sh (incl. 3.2)
+[TEST] PASS: bash -n scripts/claude-subsession.sh (incl. 3.2)
+[TEST] PASS: bash -n scripts/lib/leadv2-worker-mcp.sh (incl. 3.2)
+[TEST] T14-01: default (gate unset=1, role unset=developer) attaches --mcp-config
+[TEST] PASS: spawn line carries --strict-mcp-config --mcp-config <developer resolved file> (rc=0)
+[TEST] PASS: journal line worker_mcp_attached config=...developer... on stderr
+[TEST] PASS: resolved config is valid JSON carrying both allowlisted servers
+[TEST] T14-02: LEADV2_WORKER_ROLE=critic resolves mcp-role-critic
+[TEST] PASS: critic role picks mcp-role-critic.json + journals it
+[TEST] T14-03: LEADV2_WORKER_MCP=0 -> full pre-T14 baseline argv, rc=0, skip journaled
+[TEST] PASS: kill-switch=0 restores the pre-T14 spawn line (no MCP flags, rc=0)
+[TEST] PASS: kill-switch=0 argv matches the full pre-T14 baseline exactly
+[TEST] PASS: kill-switch=0 journals worker_mcp_skipped reason=disabled
+[TEST] T14-04: CLAUDE_PLUGIN_ROOT with no config/ -> spawn proceeds WITHOUT flag
+[TEST] PASS: missing config file => spawn proceeds WITHOUT the flag (fail-open, rc=0)
+[TEST] PASS: missing config journals worker_mcp_skipped reason=resolve_rc_11
+[TEST] T14-05: bg path attaches flags + journals into <run>/progress.log
+[TEST] PASS: bg spawn line carries --mcp-config <critic resolved file>
+[TEST] PASS: bg path journals worker_mcp_attached into progress.log
+[TEST] T14-06: leadv2-review-run.sh glm arm sets LEADV2_WORKER_ROLE=critic
+[TEST] PASS: glm review spawn is prefixed with LEADV2_WORKER_ROLE=critic (429)
+[TEST] T14-07: symlinked glm-coder.sh from a foreign dir (no local lib/) still attaches MCP
+[TEST] PASS: symlinked invocation resolves the lib via the canonical repo (flag attached)
+[TEST] PASS: no worker_mcp_skipped reason=lib_missing on the symlinked path
+[TEST] T14-08: no glm-worker-mcp.* scratch dir left in TMPDIR after a run
+[TEST] PASS: zero glm-worker-mcp.* scratch dirs after run (rc=0)
+[TEST] T14-09: dispatch-code/product-close/session-runner pin LEADV2_WORKER_ROLE
+[TEST] PASS: dispatch-code glm arm pins LEADV2_WORKER_ROLE=developer
+[TEST] PASS: dispatch-product-close glm reviewer arm pins LEADV2_WORKER_ROLE=critic
+[TEST] PASS: glm-session-runner pins LEADV2_WORKER_ROLE=architect
+[TEST] T14-NC: mutation 'return 1' inside worker_mcp_resolve body -> T14-01 must fail
+[TEST] PASS: mutant suppresses the flag -> T14-01 assertions would be RED (control kills)
+
+=== Results: 22 passed, 0 failed ===
+
+[CORE-OFFLINE] status surface single-lead + census
+== single-lead fixture titles ==
+  ok   - status-render consumes snapshot single_lead section
+  ok   - no-dispatch idle -> ⚪ idle
+  ok   - active dispatch -> 🛠 abcdef12 codex 2m
+  ok   - bogus state filtered -> 🛠 abcdef12 codex 2m
+  ok   - pending question -> ❓1
+  ok   - malformed ledger -> ⚠
+  ok   - python3 unavailable -> ⚠ (no legacy fallthrough)
+
+== process census (SWIFTBAR-ACTIVE-SOURCE-02) ==
+  ok   - (a) live claude-subsession → active with sig8
+  ok   - (a2) human task_id from reservation preferred over sig8
+  ok   - (b) worker gone + terminal → idle
+  ok   - (c) exactly 3 entries (2 live + 1 reservation-only)
+  ok   - (d) glm worker + terminal → idle (no terminal lanes in body)
+  ok   - (e) empty everything → idle
+
+== founder-named lanes (human task_id in run-id segment) ==
+  ok   - (f) founder-named glm lane → ACTIVE once with human name
+  ok   - (g) founder-named codex pid-file → ACTIVE once with human name
+
+== T-term: fresh vs stale terminal rows (Rule R retention) ==
+  ok   - (T-term-1) stale terminal (10m) drops the lane entirely
+  ok   - (T-term-2) fresh terminal (60s) drops the lane entirely
+
+== T-lead: the lead's own session is never a lane (C3) ==
+  ok   - (T-lead-1) lead's own session excluded from lanes
+  ok   - (T-lead-2) real codex session-runner still visible (exclusion is targeted)
+
+== T-multi: aggregation across repos (repo label on foreign lanes) ==
+  ok   - (T-multi) foreign-repo lane visible with its repo label
+
+== T-unverifiable: repo lacking a terminal ledger contributes zero rows ==
+  ok   - (T-unverifiable) repo with unreadable terminals contributes no rows
+
+== T-name: lane_label fallback + architect phase (C4) ==
+  ok   - (T-name-1) lane_label resolves the human name + legacy architect phase
+  ok   - (T-name-2) no name fields at all -> sig8 fallback (legacy ~ phase)
+
+test-status-surface-single-lead: 23 passed, 0 failed
+
+[CORE-OFFLINE] lane placement pin (--resume-lane/--worktree)
+[TEST] PASS: P-a: dispatch exited 0
+[TEST] PASS: P-a: worker cwd == RESUME-ME-01 worktree
+[TEST] PASS: P-h(a): prompt pin line present with --resume-lane
+[TEST] PASS: P-b: dispatch exited 0
+[TEST] PASS: P-b: worker cwd == RESUME-ME-01 worktree (via --worktree)
+[TEST] PASS: P-h(b): prompt pin line present with --worktree
+[TEST] PASS: P-c: dispatch exited 5 (placement refused)
+[TEST] PASS: P-c: stderr contains REFUSE placement line
+[TEST] PASS: P-c: no worker spawned (no cwd recorded)
+[TEST] PASS: P-c: no reservation ledger row for this dispatch
+[TEST] PASS: P-d: dispatch exited 5 (foreign repo refused)
+[TEST] PASS: P-d: stderr contains foreign_repo reason
+[TEST] PASS: P-d: no worker spawned
+[TEST] PASS: P-e: dispatch exited 5 (live lane refused)
+[TEST] PASS: P-e: stderr contains lane_is_live reason
+[TEST] PASS: P-e: no worker spawned
+[TEST] PASS: P-f: dispatch exited 1 (usage error for both flags)
+[TEST] PASS: P-f: no worker spawned
+[TEST] PASS: P-g: dispatch exited 0 (no flag, regression)
+[TEST] PASS: P-g: worker cwd is a fresh tree, != RESUME-ME-01
+[TEST] PASS: P-h(g): prompt pin line present on default ensure-created path
+[TEST] PASS: P-h(g2): pin line names the ensure-created worktree path
+[TEST] PASS: D3: ensure-created lane receives context.yaml without --worktree
+[TEST] PASS: D3: worker mission references the lane-local plan
+[TEST] PASS: P-i: dispatch exited 0 (shared-tree fallback)
+[TEST] PASS: P-i: no pin line on shared-tree dispatch
+[TEST] PASS: contract: leadv2-lane-liveness.sh --json emits a JSON object with verdict/reason/age_s
+
+[LANE-PLACEMENT-01] passed=27 failed=0
+[CORE-OFFLINE] HERMETIC-VIOLATION (WARN, follow-up): lane placement pin (--resume-lane/--worktree) dirtied docs/leadv2:
+ M docs/leadv2/.bus-offsets
+ M docs/leadv2/.bus.lock
+ M docs/leadv2/.merge.lock
+ T docs/leadv2/active.yaml
+ M docs/leadv2/active.yaml.lock
+ M docs/leadv2/bus.jsonl
+ M docs/leadv2/merge-queue.jsonl
+ M docs/leadv2/open-threads.md
+ M docs/leadv2/questions
+ M docs/leadv2/tasks/dispatch-567ba028/journal.md
+ M docs/leadv2/tasks/dispatch-59ae8b51/journal.md
+ M docs/leadv2/tasks/dispatch-tid01001/journal.md
+ M docs/leadv2/tasks/dispatch-tid02001/journal.md
+ M docs/leadv2/tasks/dispatch-tid03001/journal.md
+?? docs/leadv2/.compact-freeze.md
+
+[CORE-OFFLINE] review codex base (committed lane never diffs HEAD↔HEAD)
+[TEST] PASS: bash -n clean (leadv2-review-run.sh)
+[TEST] PASS: /bin/bash 3.2 -n clean (leadv2-review-run.sh)
+[TEST] PASS: Scenario 1: recorded --base (0ead14a5eba35f3fc6d82bed5fd999e2f4e4cee5) differs from HEAD (cf295a677c2a481d7a25cf40ad8deef2c4f995b5)
+[TEST] PASS: Scenario 1: argv contains --cwd /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.IgAf6i/suite.psNx1C/review-codex-base-test.VODkOl/s1/root
+[TEST] PASS: Scenario 2: base resolves from origin/main, still != HEAD (base=7e4e91b3c37619bee05414ae7a67e245cd9edb02)
+[TEST] PASS: Scenario 3: codex launcher never invoked (no resolvable base)
+[TEST] PASS: Scenario 3: journal shows review_arm_skipped arm=codex reason=no_base_resolved
+[TEST] PASS: Scenario 3: no review_body_lost verdict for the skipped arm
+[TEST] PASS: Scenario 4: codex launcher never invoked (empty diff)
+[TEST] PASS: Scenario 5: non-git ROOT preserves the degenerate escape (--base HEAD)
+[TEST] PASS: Scenario 6: no committed-lane scenario recorded a bare --base HEAD
+
+[TEST] 11 passed, 0 failed
+
+[CORE-OFFLINE] foreground-dispatch guard hook
+[TEST] PASS: foreground dispatch denied with correct message
+[TEST] PASS: trailing-& dispatch allowed
+[TEST] PASS: run_in_background=true allowed
+[TEST] PASS: absent run_in_background + no & denied
+[TEST] PASS: --no-spawn allowed
+[TEST] PASS: LEADV2_DISPATCH_SPAWN=0 allowed
+[TEST] PASS: --help allowed
+[TEST] PASS: status subcommand allowed
+[TEST] PASS: record-review subcommand allowed
+[TEST] PASS: # fg-dispatch: allow override works
+[TEST] PASS: LEADV2_ALLOW_FG_DISPATCH=1 env override works
+[TEST] PASS: non-matching command allowed
+[TEST] PASS: empty stdin allowed
+[TEST] PASS: malformed JSON allowed
+[TEST] PASS: leadv2-codex-session-runner.sh foreground denied
+[TEST] PASS: leadv2-fanout.sh foreground denied
+[TEST] PASS: glm-coder.sh foreground denied
+[TEST] PASS: omp-task.sh foreground denied
+[TEST] PASS: && correctly not treated as backgrounded
+[TEST] PASS: &> correctly not treated as backgrounded
+[TEST] PASS: nohup & allowed
+[TEST] PASS: setsid denied on macOS (setsid absent, R9)
+[TEST] PASS: hooks.json valid and hook field-parsed as a MANIFEST record
+[TEST] PASS: guard selected at runtime for a trigger-matching command (LEADV2_DISPATCH_TRACE=1)
+[TEST] PASS: status-surface sibling segment correctly does not exempt dispatch
+[TEST] PASS: git status sibling does not exempt dispatch (F1 &&)
+[TEST] PASS: git status after ; does not exempt dispatch (F1 ;)
+[TEST] PASS: --help sibling does not exempt dispatch (F1 --help)
+[TEST] PASS: real status subcommand still allowed
+[TEST] PASS: real --no-spawn flag still allowed
+[TEST] PASS: cat launcher allowed with no override and no stderr (F2)
+[TEST] PASS: git log launcher path allowed with no stderr (F2)
+[TEST] PASS: background dispatch survives segmentation
+[TEST] PASS: quoted launcher in echo correctly ignored; real dispatch denied
+[TEST] PASS: dispatch piped to tee correctly denied (segment is foreground)
+[TEST] PASS: grep for fanout launcher allowed with no stderr (F2 second launcher)
+
+[fg-dispatch-guard] PASS=36 FAIL=0
+
+[CORE-OFFLINE] lane phase render
+test: running + dead probe → stalled
+test: running + alive probe → plain
+test: running + unknown probe → plain (never stalled)
+test: no phases.d → ~ prefix
+test: all done → close (done)
+
+[LANE-PHASE-RENDER] pass=5 fail=0
+
+[CORE-OFFLINE] plugin reliability-02 (zombie-reaper: run_dir arg + group signaling + ordering + TASK)
+[leadv2-dispatch-product-close] product_close task=PLUGIN-RELIABILITY-02 status=waiting_worker author=glm handle=timeout-reap-proof waited=0s
+[leadv2-dispatch-product-close] review_gate task=PLUGIN-RELIABILITY-02 status=blocked reason=worker_timeout terminal=dead cause=timeout
+ok: real close-timeout reap killed setsid group child (gate rc=5)
+
+[CORE-OFFLINE] builder selfcheck gate (recursion/depth guard, baseline attribution)
+[TEST] PASS: bash -n leadv2-dispatch-product-close.sh
+[TEST] PASS: /bin/bash -n leadv2-dispatch-product-close.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n lib/leadv2-builder-selfcheck.sh
+[TEST] PASS: /bin/bash -n lib/leadv2-builder-selfcheck.sh (bash 3.2 syntax)
+[TEST] RED-then-GREEN: broken-sh-blocks-with-reason (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: broken-sh-review-arm-never-spent (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: clean-lane-selfcheck-green (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: broken-py-blocks-with-reason (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: no-arm-skips-selfcheck (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: report-lane-skips-selfcheck (pre_rc=1 -> post_rc=0)
+[TEST] PASS: kill-switch LEADV2_BUILDER_SELFCHECK=0 restores old path (no selfcheck.md, no selfcheck_failed)
+[TEST] PASS: scope-kill-switch-byte-restore-and-bypasses (SCOPE-DISCIPLINE-01)
+[TEST] RED-then-GREEN: scope-deletion-outside-write-set-blocks (SCOPE-DISCIPLINE-01) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: scope-rename-source-outside-write-set-blocks (SCOPE-DISCIPLINE-01) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: falsification-missing-blocks-when-armed (TEST-FALSIFICATION-GATE-01) (pre_rc=1 -> post_rc=0)
+[TEST] PASS: falsification default is advisory (no refusal, row still surfaced)
+[TEST] RED-then-GREEN: falsification-present-passes (TEST-FALSIFICATION-GATE-01) (pre_rc=1 -> post_rc=0)
+[TEST] PASS: kill-switch LEADV2_TEST_FALSIFICATION_GATE=off restores no-C4 behaviour byte-for-byte
+[TEST] RED-then-GREEN: falsification-forged-marker-failing-rc-blocks (codex r1 HIGH #1) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: falsification-widened-classifier-catches-new-dir (codex r1 MEDIUM #2) (pre_rc=1 -> post_rc=0)
+[TEST] PASS: stem-resolved-from-lane-tests-dir (M3)
+[TEST] PASS: stem-priority-plugins-tests-over-tests (M3)
+[TEST] PASS: suite-green-checks-verdict
+[TEST] PASS: suite-red-baseline-green-fails
+[TEST] PASS: suite-red-baseline-red-skips (H1)
+[TEST] PASS: baseline-unresolved-fails-open (H1)
+[TEST] PASS: child-suite-observes-flag-and-depth (C1)
+[TEST] PASS: depth-guard-skips-no-spawn (C1)
+[TEST] PASS: repo-level-runner-never-invoked (C1/decision-A)
+[TEST] PASS: tests-mode-never-skips
+[TEST] PASS: auto-mode-delegates-to-e2e
+[TEST] PASS: timeout-wrapper-kills-hung-command (C2)
+[TEST] PASS: timeout-wrapper-fast-command-no-hang (C2)
+[TEST] PASS: checks-zero-yields-degraded (M1)
+[TEST] PASS: bash-n-failure-ignores-baseline-arm
+[TEST] PASS: scope-off-write-set-blocks (SCOPE-DISCIPLINE-01)
+[TEST] PASS: scope-in-write-set-passes (SCOPE-DISCIPLINE-01)
+[TEST] PASS: scope-oversized-diff-blocks (SCOPE-DISCIPLINE-01)
+
+Results: 38 passed(red->green), 0 failed, 0 green-pre-fix, 0 could-not-run
+[CORE-OFFLINE] HERMETIC-VIOLATION (WARN, follow-up): builder selfcheck gate (recursion/depth guard, baseline attribution) dirtied docs/leadv2:
+ M docs/leadv2/.bus-offsets
+ M docs/leadv2/.bus.lock
+ M docs/leadv2/.merge.lock
+ M docs/leadv2/active.yaml
+ M docs/leadv2/active.yaml.lock
+ M docs/leadv2/bus.jsonl
+ M docs/leadv2/merge-queue.jsonl
+ M docs/leadv2/open-threads.md
+ M docs/leadv2/questions
+ M docs/leadv2/tasks/dispatch-567ba028/journal.md
+ M docs/leadv2/tasks/dispatch-59ae8b51/journal.md
+ M docs/leadv2/tasks/dispatch-tid01001/journal.md
+ M docs/leadv2/tasks/dispatch-tid02001/journal.md
+ M docs/leadv2/tasks/dispatch-tid03001/journal.md
+?? docs/leadv2/.compact-freeze.md
+
+[CORE-OFFLINE] broad-status relay scoping
+[TEST] PASS: T1: owner session receives the verbatim ready-line + RELAY=full
+[TEST] PASS: T2: guest session gets exactly one RELAY=none line, no ledger body
+[TEST] PASS: T3: owner still gets the full relay after a guest fired first on the same beat
+[TEST] PASS: T4: owner's second fire on an unchanged beat is silent
+[TEST] PASS: T5: unresolvable ownership fails open to full relay
+[TEST] PASS: T6: kill-switch restores full relay for every session
+[TEST] PASS: T7a: PostToolUse guest output is flat (no hookSpecificOutput wrapper)
+[TEST] PASS: T7b: PostToolUse guest context is still exactly one RELAY=none line
+[TEST] PASS: T9: owner with fresh session + live attributed lane gets the full relay
+[TEST] PASS: T10: a non-owner session with the same live owner on record gets guest
+[TEST] PASS: T11: owner naming a session with no liveness stamp fails open to full relay
+[TEST] PASS: T12: owner with a stale liveness stamp fails open to full relay
+[TEST] PASS: T13: malformed owner content '' resolves to unresolved/full relay, no crash
+[TEST] PASS: T13: malformed owner content 'onlyfield' resolves to unresolved/full relay, no crash
+[TEST] PASS: T13: malformed owner content 'sess-x epoch=abc' resolves to unresolved/full relay, no crash
+[TEST] PASS: T13: malformed owner content 'sess-x 123 extra fourth' resolves to unresolved/full relay, no crash
+[TEST] PASS: T14: alive owner with zero live lanes still fails open to full relay
+[TEST] PASS: T15: real pulse-beat --check writes the owner file for a session with a live attributed lane
+[TEST] PASS: T16: real pulse-beat --check does NOT write an owner file for a session with no live lane
+[TEST] PASS: T17: empty LEADV2_BEAT_OWNER_SESSION leaves the owner file untouched
+[TEST] PASS: T18: a live .supervise-active pid does not change the owner's role (retired path is inert)
+[TEST] PASS: T19: missing beat-owner resolver -> unresolved/full relay + exactly one stderr line
+[TEST] PASS: T20: extraction guard — both functions present in the driver
+[TEST] PASS: T20: CLAUDE_CODE_SESSION_ID alone produces a non-empty LEAD_SESSION field
+[TEST] PASS: T21: legacy CLAUDE_SESSION_ID still populates LEAD_SESSION (fallback preserved)
+
+25 passed, 0 failed
+
+[CORE-OFFLINE] worker env asserts (V3-ENV-GUARDS-01)
+[test-worker-env-asserts] worker_env_assert arm=codex task=sig8test var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=unset was=1
+[test-worker-env-asserts] worker_env_assert arm=codex task=sig8test var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[WORKER-ENV-ASSERTS] case 1: CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 leaked in -> must be unset for the worker
+[WORKER-ENV-ASSERTS]   var absent from the post-assert env ✓
+[WORKER-ENV-ASSERTS] case 1b: journal shows action=unset was=1
+[WORKER-ENV-ASSERTS]   journal line present ✓
+[WORKER-ENV-ASSERTS] case 1c: CLAUDE_CODE_ENABLE_TODO_TOOLS set to 1 for the worker
+[WORKER-ENV-ASSERTS]   var set to 1 ✓
+[WORKER-ENV-ASSERTS] case 1d: exactly two journal lines per call
+[WORKER-ENV-ASSERTS]   exactly 2 lines ✓
+[test-worker-env-asserts] worker_env_assert arm=glm task=sig8test var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[test-worker-env-asserts] worker_env_assert arm=glm task=sig8test var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[WORKER-ENV-ASSERTS] case 2: AGENT_TEAMS already unset -> action=ok
+[WORKER-ENV-ASSERTS]   ok-line present ✓
+[test-worker-env-asserts] worker_env_assert arm=sonnet task=sig8test var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[test-worker-env-asserts] worker_env_assert arm=sonnet task=sig8test var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=skip reason=opt_out
+[WORKER-ENV-ASSERTS] case 3: LEADV2_WORKER_TODO_TOOLS=0 -> skip, opt_out
+[WORKER-ENV-ASSERTS]   skip-line present ✓
+[WORKER-ENV-ASSERTS] pass=6 fail=0
+
+[CORE-OFFLINE] core-offline per-suite TMPDIR isolation (SUITE-SPEED-01)
+[TMPDIR-01] case: two suites each see a distinct, private TMPDIR
+[TMPDIR-01]   distinct private TMPDIRs: seen1=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.IgAf6i/suite.iy5cGA/lv2-caller-tmp.N7Mgj4/core-offline-run.xZq0t2/suite.ogDFYF seen2=/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.IgAf6i/suite.iy5cGA/lv2-caller-tmp.N7Mgj4/core-offline-run.xZq0t2/suite.QIqFFt ✓
+[TMPDIR-01] pass=1 fail=0
+[TMPDIR-01] case: sharded suites each see a distinct private HOME skeleton
+[TMPDIR-01]   distinct private HOME skeletons ✓
+[TMPDIR-01] pass=2 fail=0
+
+[CORE-OFFLINE] lane trace instrument (Mission B: writer/concurrency/off-path/reader)
+[TEST] PASS: 1.1 exactly one record written
+[TEST] PASS: 1.1 all required keys present
+[TEST] PASS: 1.1 child_exec_count present and null (honest not-measured)
+[TEST] PASS: 1.2 exit_code round-trips non-zero
+[TEST] PASS: 1.3 nesting: inner has parent_span, outer does not
+[TEST] PASS: 1.4 monotonic timing survives a backwards wall clock; wall_iso is cosmetic only
+[TEST] PASS: 1.5 64-char id accepted
+[TEST] PASS: 1.5 65-char id disables trace with a diagnostic
+[TEST] PASS: 1.5 path-traversal id writes nothing named after it (charset whitelist holds)
+[TEST] PASS: 2 line count == 600
+[TEST] PASS: 2 every line parses standalone as JSON
+[TEST] PASS: 2 no interleaving signature (}{  or duplicate trace_id in one line)
+[TEST] PASS: 2 multiset of (pid,span_index) pairs is exactly the expected 600 — none lost, none duplicated
+[TEST] 3.1 find(*.ndjson)='' find(traces dir)='' — ndjson=0 traces_dir=0
+[TEST] PASS: 3.1 OFF path creates zero ndjson files and never creates the traces dir
+[TEST] PASS: 3.2 all nine load stanzas' OFF else-arm is the ':' builtin (no subshell, no exec, no file open)
+[TEST] 3.3 OFF exec count=0 ON exec count=12
+[TEST] PASS: 3.3 OFF run makes zero exec calls through perl/python3/awk/basename/date
+[TEST] PASS: 3.3 ON run's exec count is strictly greater than OFF's (12 > 0)
+[TEST] PASS: 4 single-sample fixture: p50/p95/max equal, marked (raw)
+[TEST] PASS: 4 single-sample fixture: count=1 and p50==p95==max
+[TEST] PASS: 4 even-sample fixture: p50_ms=3, p95_ms=100 (pinned percentile arithmetic)
+[TEST] PASS: 4 lane-total fixture: lane_ms=1000 child_span_ms_sum=400 unattributed=600
+[TEST] PASS: 4 malformed fixture: malformed_lines=1 (empty line not counted)
+[TEST] PASS: 4 malformed fixture: rc=0 (not fatal)
+[TEST] PASS: 4 nonexistent path: rc=1
+[TEST] PASS: 4 nonexistent path: prints 'no trace data found'
+[TEST] PASS: 4 empty dir: rc=0
+[TEST] PASS: 4 noise-floor footer fires for a span whose p50 is below 10x instrument cost
+[TEST] PASS: 4 --json mode: output parses and carries spans/traces/malformed_lines
+[TEST] 5a run rc=0 (124 == timed out / hung; anything else == returned to the prompt)
+[TEST] PASS: 5a a script that armed the trace and then lost its clock returns to the shell prompt instead of hanging
+[TEST] PASS: 5b no host installs its own EXIT trap after lv2_trace_arm_exit (single-trap-slot hazard)
+[TEST] PASS: 5c status.collect writes a record even when invoked from a CWD that is not the scripts dir
+[TEST] ----
+[TEST] PASS=31 FAIL=0
+
+[CORE-OFFLINE] codex-dead review reroute (QUOTA-GATE-PARITY-01)
+[TEST] PASS: bash -n clean (lib/leadv2-review-reroute-note.sh)
+[TEST] PASS: py_compile clean (lib/leadv2-glm-policy-resolve.py)
+[TEST] PASS: resolver: codex limit_reached (null pct) -> codex:blocked:100 in pool
+[TEST] PASS: resolver: reviewer rerouted away from dead codex (reviewer=glm)
+[TEST] PASS: reroute-note: emits codex_dead_reroute naming dead codex + new reviewer
+[TEST] PASS: reroute-note: exactly one line
+[TEST] PASS: reroute-note: silent when codex is the (healthy) reviewer
+[TEST] PASS: leadv2-review-run.sh: sources + calls the shared reroute-note helper
+[TEST] PASS: leadv2-dispatch-product-close.sh: sources + calls the shared reroute-note helper
+[TEST] PASS: bash -n clean (leadv2-review-run.sh)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+
+=== 11 passed, 0 failed ===
+
+[CORE-OFFLINE] broad-status foreign-repo lanes (LANE-OBSERVABILITY-02)
+[TEST] PASS: S1: foreign live lane in the table with repo=foreignrepo
+[TEST] PASS: S4: own-repo mirror slug skipped by the -ef filter, foreign repo still read
+[TEST] PASS: S2: single-repo output byte-identical with --all-repos on (consumer safety)
+[TEST] PASS: S3: failed foreign repo -> one repo_read_error row, healthy repo's lane still in table
+[TEST] PASS: R1: foreign lane rendered with slug prefix, no false empty board
+[TEST] PASS: R1b: foreign row carries its stream age
+[TEST] PASS: R2: foreign read failure -> named degraded line, table not zeroed
+[TEST] PASS: R3: own-repo row unprefixed (single-repo founder-status shape unchanged)
+
+[broad-status-foreign-lanes] PASS=8 FAIL=0
+[CORE-OFFLINE] SHARD_RESULT idx=1 pass=19 fail=1 missing=0
+
+[CORE-OFFLINE] Claude plugin manifest/components
+Validating plugin manifest: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/.claude-plugin/plugin.json
+
+✔ Validation passed
+
+[CORE-OFFLINE] product-close resumes a died-with-work lane once
+[TEST] PASS: stub launcher invoked exactly once
+[TEST] PASS: stub argv contains bg and --cwd
+[TEST] PASS: .dwr-resume-attempted exists
+[TEST] PASS: journal has dwr_resume new_run=260803-180000-resume01
+[TEST] PASS: gating ran (review.diff created)
+[TEST] PASS: stub launcher NOT invoked when marker present
+[TEST] PASS: journal has new_run=skipped reason=already_attempted
+[TEST] PASS: gating still ran with marker present
+[TEST] PASS: stub NOT invoked for outcome=completed
+[TEST] PASS: outcome=completed has no dwr_resume journal line
+[TEST] PASS: stub NOT invoked for outcome=died-clean
+[TEST] PASS: outcome=died-clean has no dwr_resume journal line
+[TEST] PASS: journal has blocked_by_gate rc=2
+[TEST] PASS: gating still ran after gate refusal
+[TEST] PASS: marker written despite gate refusal
+[TEST] PASS: kimi: stub launcher invoked once
+[TEST] PASS: kimi: journal has dwr_resume new_run=260803-180000-kimires
+[TEST] PASS: kimi: gating ran
+[TEST] PASS: kill switch: stub NOT invoked
+[TEST] PASS: kill switch: no dwr_resume journal line
+
+=== 20 passed, 0 failed ===
+
+[CORE-OFFLINE] hook token + mode isolation
+[TEST] PASS: hook/cache scripts parse
+[TEST] PASS: supervisor receives mode anchor, never a child task anchor
+[TEST] PASS: supervisor compact hook does not write resume state into a child task
+[TEST] PASS: supervisor task hooks do not mutate or inject child state
+[TEST] PASS: ordinary lead ignores a foreign live session in the same checkout
+[TEST] PASS: task anchor is full once, then compact (<=4 lines)
+[TEST] PASS: parallel lead task hooks select their own PID row, not sessions[0]
+[TEST] PASS: standalone cache warm is disabled by default (zero token spend)
+[TEST] Results: PASS=8 FAIL=0
+
+[CORE-OFFLINE] active registry fail-closed
+[TEST] === leadv2-active-registry.sh fail-closed unit tests ===
+[TEST] Script: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/../leadv2-active-registry.sh
+
+[TEST] Test 3: bash -n syntax check
+[TEST] PASS: Test 3: bash -n OK
+[TEST] Test 1: no LEADV2_PROJECT_ROOT/CLAUDE_PROJECT_DIR/PROJECT_ROOT, cwd not a git repo -> fail closed
+[TEST] PASS: Test 1: fail-closed (root_error, no silent continuation)
+[TEST] Test 2: LEADV2_PROJECT_ROOT set -> sourcing succeeds, register() works
+[TEST] PASS: Test 2: root resolved via LEADV2_PROJECT_ROOT, register() succeeded
+
+[TEST] === Results: PASS=3 FAIL=0 ===
+[TEST] All tests passed.
+
+[CORE-OFFLINE] Phase-8 merge/completion proof
+warning: You appear to have cloned an empty repository.
+PASS: S1: deploy-merge.sh exits nonzero on Step-0 rebase conflict (rc=1)
+PASS: S1: merge-blocker.flag written: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.95nuWmZaAn/work/docs/handoff/TEST-MERGE-RACE-01/merge-blocker.flag
+PASS: S1: merge-blocker.flag has expected reason + task_id
+PASS: S1: phase8-assert.sh exits 1 with A1-A5 seeded (A6 blocks) (rc=1)
+PASS: S1: phase8-assert.sh cites A6 merge-blocker failure
+PASS: S1: phase8-passed.flag NOT written
+PASS: S1: leadv2-queue-release.sh (daemon path) does NOT flip status to done (status=queued)
+PASS: S1: leadv2-queue-release.sh logs the merge-blocker skip
+PASS: S1: render-close.sh exits 0 (best-effort render, blocker guard is internal)
+PASS: S1: render-close.sh logs the status=done skip
+PASS: S1: tasks.yaml status still non-terminal after render-close.sh (status=queued)
+PASS: S1: phase8-assert.sh with A1-A5 terminal still exits 1 (A6 alone blocks) (rc=1)
+PASS: S1: A6 is the SOLE cited failure once A1-A5 pass (not a tautology riding on A2)
+PASS: S1: A6 failure message includes recovery guidance
+PASS: S1: Phase 8 PASS writes local sentinel and shared completion receipt
+PASS: S1: shared completion receipt has the fail-closed schema
+PASS: S1: Phase 8 PASS publishes a shared closed event
+warning: You appear to have cloned an empty repository.
+PASS: S2: deploy-merge.sh exits nonzero on ff-only merge race (rc=1)
+PASS: S2: competing push was injected at git-pull-ff-only time
+PASS: S2: merge-blocker.flag written with the literal ff-only-merge reason
+PASS: S3: LOCKTEST-A acquires the merge-queue lock
+PASS: S3: LOCKTEST-B blocks while LOCKTEST-A still holds the lock
+PASS: S3: status shows LOCKTEST-A holding, LOCKTEST-B queued
+OK
+PASS: S3: LOCKTEST-B acquires promptly once LOCKTEST-A releases
+warning: You appear to have cloned an empty repository.
+PASS: S4: clean deploy-merge.sh run succeeds end-to-end (rc=0)
+PASS: S4: merge-queue lock is already free during the deploy step (released before, not through, deploy)
+PASS: zero [leadv2-state-path] ABORT lines across the whole run
+
+=== 27 passed, 0 failed ===
+
+[CORE-OFFLINE] plugin sync quarantine/dry-run safety
+PASS: quarantine: cache/probe.sh reconciled to canonical (guard stays satisfiable)
+PASS: quarantine: original content preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.BcWtnPIaIN/q-quarantine/20260830T192320Z-bea54f15db6ad9545719a15ce96ed7e009410e76e98ee524d58f1403a93395bd/cache/scripts/probe.sh
+PASS: quarantine: preserved content byte-identical to the un-landed fix
+PASS: quarantine: warning named the warn+quarantine mode + the quarantine root
+PASS: quarantine: --dry-run target left unchanged
+PASS: quarantine: --dry-run created zero quarantine content
+PASS: quarantine: --dry-run emitted the DRY_RUN DIRECTION-SAFETY line
+PASS: perimeter: healthy baseline (all 9 subdirs mirrored) -> exit 0
+PASS: perimeter: scripts/ divergence caught (rc!=0, entry plugin-cache:probe.sh:CONTENT_DIFFERS)
+PASS: perimeter: contracts/ divergence caught (rc!=0, entry plugin-cache:contracts/probe.json:CONTENT_DIFFERS)
+PASS: perimeter: workflows/ divergence caught (rc!=0, entry plugin-cache:workflows/probe.js:CONTENT_DIFFERS)
+PASS: perimeter: hooks/ divergence caught (rc!=0, entry plugin-cache:hooks/probe.sh:CONTENT_DIFFERS)
+PASS: perimeter: config/ divergence caught (rc!=0, entry plugin-cache:config/probe.yaml:CONTENT_DIFFERS)
+PASS: perimeter: skills/ divergence caught (rc!=0, entry plugin-cache:skills/probe.md:CONTENT_DIFFERS)
+PASS: perimeter: commands/ divergence caught (rc!=0, entry plugin-cache:commands/probe.md:CONTENT_DIFFERS)
+PASS: perimeter: agents/ divergence caught (rc!=0, entry plugin-cache:agents/probe.md:CONTENT_DIFFERS)
+PASS: perimeter: docs/ divergence caught (rc!=0, entry plugin-cache:docs/probe.md:CONTENT_DIFFERS)
+PASS: perimeter: docs/leadv2/ runtime state excluded (perturbed, no drift)
+---
+ALL TESTS PASSED
+
+[CORE-OFFLINE] reply router dual-store resolution
+[TEST] === leadv2-reply-router.sh dual-store resolution tests ===
+[TEST] router: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/../leadv2-reply-router.sh
+
+[TEST] Test 1: bash -n syntax check
+[TEST] PASS: Test 1: bash -n OK
+[TEST] Test 2: control-plane store, multi-word option accepted
+[TEST] PASS: Test 2: router resolved control-plane qid, status=answered selected=restart
+[TEST] Test 3: control-plane store, invalid option rejected with named valid list
+[TEST] PASS: Test 3: invalid option rejected exit=3, message names wait,stop
+[TEST] Test 4: legacy-handoff store, multi-word option accepted, task-id auto-discovered
+[TEST] PASS: Test 4: router auto-discovered legacy task-id and answered chosen=stop
+[TEST] Test 5: legacy-handoff store, single-letter option still works (regression check)
+[TEST] PASS: Test 5: single-letter option 'a' still accepted (no regression)
+[TEST] Test 6: qid absent from both stores -> exit 5, names both paths checked
+[TEST] PASS: Test 6: exit=5, message names both control-plane and legacy paths
+[TEST] Test 7: --task-id hint resolves legacy qid without a directory scan
+[TEST] PASS: Test 7: --task-id hint resolved and answered
+
+[TEST] === Results: PASS=7 FAIL=0 ===
+[TEST] All tests passed.
+
+[CORE-OFFLINE] Codex quota guardrails (effort/circuit/hook)
+[TEST] PASS: a1 no-tier → --effort medium
+[TEST] PASS: a2 --tier standard → --effort medium
+[TEST] PASS: a3 --tier volume → --effort low
+[provider-quota-gate] OK — codex 0% < 90%
+[TEST] PASS: a4 spawn gate passes when circuit closed
+[TEST] PASS: a4b spawn gate hermetic — passes on fixture 0% reading regardless of host quota state
+[TEST] PASS: a4c check 3 executes end-to-end (fixture 95% -> rc 2 reason=threshold)
+[TEST] PASS: a5 planner default tier → effort=medium
+[TEST] PASS: b1a codex-task --tier top without --reason → refused rc 2
+[TEST] PASS: b1b planner --tier top without --reason → refused rc 2
+[TEST] PASS: b2 --tier top --reason → xhigh/high permitted
+[TEST] PASS: b3 standard tier does not emit xhigh
+[TEST] PASS: c1 parse usage-limit date → 2026-08-08T08:49:00Z
+[TEST] PASS: c2 unparseable → parser declined + until ≈ now+24h
+[TEST] PASS: c3 gate refuses while circuit open (rc 2, marker)
+[provider-quota-gate] OK — codex 0% < 90%
+[TEST] PASS: c4 circuit expired → gate passes
+[TEST] PASS: c5 idempotent: exactly one codex_circuit_open journal line
+[TEST] PASS: d1 hook blocks bare codex exec (rc 2, deny line)
+[TEST] PASS: d2 hook blocks despite LEADV2_CODEX_SANCTIONED=1
+[TEST] PASS: d3 hook allows LEADV2_ALLOW_DIRECT_CODEX=1 + logged
+[TEST] PASS: d3a hook allows inline LEADV2_ALLOW_DIRECT_CODEX=1 prefix + logged
+[TEST] PASS: d3b hook blocks when the assignment is only an echo argument
+[TEST] PASS: d3c multi-assignment prefix allows; =0 value still blocks
+[TEST] PASS: d4 hook allows codex-task.sh invocation
+[TEST] PASS: d5 hook rc 0 on ls/git status/malformed/empty
+[TEST] PASS: e1 unparseable circuit marker → gate refuses (fail-closed)
+[TEST] PASS: e2 quota reader missing → fail-OPEN (rc=1 != 2)
+[TEST] PASS: f1 pre-opened circuit → exit 2, zero codex invocations
+[TEST] PASS: f2 codex usage-limit → circuit opened with parsed horizon, 1 spawn
+[TEST] PASS: f3 gate unavailable → exit 2, no spawn
+
+[CODEX-QUOTA-GUARDRAILS] pass=29 fail=0
+
+[CORE-OFFLINE] quota stand-down duration (record-quota-lockout --hours)
+[TEST] PASS: bash -n clean (leadv2-dispatch-code.sh)
+[TEST] PASS: /bin/bash 3.2 -n clean (leadv2-dispatch-code.sh)
+[TEST] PASS: Test 1: exit 0
+[TEST] PASS: Test 1: locked_until_epoch ~= now+10800 (delta=0s)
+[TEST] PASS: Test 1: source starts 'standdown:' (got standdown:provider_broken)
+[TEST] PASS: Test 2: exit 0
+[TEST] PASS: Test 2: expired lockout file overwritten, epoch now in the future
+[TEST] PASS: Test 3: codex refused by the quota precheck (locked_until_epoch in the future)
+[TEST] PASS: Test 4: exit 0
+[TEST] PASS: Test 4: no lockout file written (legacy quota=no path)
+[TEST] PASS: Test 4: journal shows arm_postspawn_verdict ... quota=no
+[TEST] PASS: Test 5a: --hours abc -> rc0, no file, stderr names bad value
+[TEST] PASS: Test 5b: --hours 0 -> rc0, no file
+[TEST] PASS: Test 5c: --hours 999 (out of 1..168 range) -> rc0, no file
+[TEST] PASS: Test 6: journal emits quota_standdown_recorded provider=codex hours=3
+[TEST] PASS: Test 6: journal does NOT emit quota_lockout_recorded for a stand-down
+
+[TEST] 16 passed, 0 failed
+
+[CORE-OFFLINE] idle-lead guard hook
+[TEST] PASS: case 1: queued+0live blocks with reason naming task id
+[TEST] PASS: case 2: queued+1live allows stop (empty stdout)
+[TEST] PASS: case 3: no queued work allows stop
+[TEST] PASS: case 4: pending question allows stop
+[TEST] PASS: case 5: 8 blocks then 9th allows with cap warning
+[TEST] PASS: case 6: kill switch allows stop silently
+[TEST] PASS: case 7a: malformed stdin allows stop
+[TEST] PASS: case 7b: deleted tasks.yaml allows stop
+[TEST] PASS: case 7c: absent liveness probe allows stop
+[TEST] PASS: case 7d: unavailable liveness allows stop
+[TEST] PASS: case 8: no docs/leadv2/ allows stop
+[TEST] PASS: case 9: counter resets on allow, re-blocks from 1
+[TEST] PASS: case 10: hooks.json has idle-lead-guard last after promise-guard
+[TEST] PASS: case 11: unwritable state dir allows stop on all 10 calls (call2=empty call5=empty call10=empty )
+[TEST] PASS: case 12: unresolvable questions dir allows stop, stderr names it
+[TEST] PASS: case 13: pending question allows stop, stderr names id
+[TEST] PASS: case 14: writable state dir still reaches cap at 8/8
+[TEST] PASS: case 15: unsatisfied goal does not suppress a legitimate block
+[TEST] PASS: case 16: satisfied file_exists goal allows stop
+
+[TEST] idle-lead-guard: PASS=19 FAIL=0
+[TEST] 
+[CORE-OFFLINE] HERMETIC-VIOLATION (WARN, follow-up): idle-lead guard hook dirtied docs/leadv2:
+ M docs/leadv2/.bus-offsets
+ M docs/leadv2/.bus.lock
+ M docs/leadv2/.merge.lock
+ T docs/leadv2/active.yaml
+ M docs/leadv2/active.yaml.lock
+ M docs/leadv2/bus.jsonl
+ M docs/leadv2/merge-queue.jsonl
+ M docs/leadv2/open-threads.md
+ M docs/leadv2/questions
+ M docs/leadv2/tasks/dispatch-567ba028/journal.md
+ M docs/leadv2/tasks/dispatch-59ae8b51/journal.md
+ M docs/leadv2/tasks/dispatch-tid01001/journal.md
+ M docs/leadv2/tasks/dispatch-tid02001/journal.md
+ M docs/leadv2/tasks/dispatch-tid03001/journal.md
+?? docs/leadv2/.compact-freeze.md
+
+[CORE-OFFLINE] plan-followups-01
+[TEST] Caveat 1a: classify_arm_failure returns refused_quota for LEADV2_DISPATCH_REFUSED
+[TEST] PASS: classify_arm_failure returns refused_quota
+[TEST] Caveat 1b: refused_quota arm spills to next :ok: arm → status=pass
+[TEST] PASS: refused codex spilled to next arm → status=pass (rc=0)
+[TEST] PASS: journal recorded arm_refused for codex
+[TEST] Caveat 2a: extract_plan_yaml handles marker→fence order (A)
+[TEST] PASS: Order A (marker→fence) extracts YAML content correctly
+[TEST] Caveat 2aa: Order A ignores prose fences before the marker
+[TEST] PASS: Order A extracts YAML after a preceding prose fence
+[TEST] Caveat 2b: extract_plan_yaml handles fence→marker order (B)
+[TEST] PASS: Order B (fence→marker) extracts YAML content correctly
+[TEST] Caveat 2bb: Order B ignores a preceding prose fence
+[TEST] PASS: Order B selects the marker-bearing fence after prose
+[TEST] Caveat 2c: Order B extraction ignores trailing prose
+[TEST] PASS: Order B extraction stops at the closing fence
+[TEST] Caveat 2d: marker-only extraction preserves legacy raw-YAML form
+[TEST] PASS: Marker-only form extracts everything after PLAN_YAML
+[TEST] Caveat 2e: extract_plan_yaml on real stub-architect.sh output
+[TEST] PASS: Real fixture (stub-architect) extracts correctly
+[TEST] Caveat 3a: non-dict acceptance causes nonzero exit
+[TEST] PASS: Non-dict acceptance rejected with nonzero exit (rc=1)
+[TEST] Caveat 3b: dict acceptance preserves engine-authored_at
+[TEST] PASS: authored_at preserved (arm value 2099-01-01 was discarded, got '2026-08-12 00:00:00+00:00')
+[TEST] Caveat 4a: _review_floor filters by DISPATCHABLE_PLAN_ARMS for plan
+[TEST] PASS: Plan floor does not pick haiku (got 'None')
+[TEST] PASS: Review floor CAN pick haiku (unfiltered — got 'haiku')
+[TEST] Caveat 4b: --plan-pool resolver never selects haiku
+[TEST] PASS: --plan-pool output excludes haiku from active pool
+[TEST] PASS: --plan-pool reviewer is not haiku (got 'codex')
+[TEST] Caveat 4c: _best_effort_floor_pool filters haiku under --plan-pool
+[TEST] PASS: _best_effort_floor_pool excludes haiku under --plan-pool (got 'codex')
+[TEST] Caveat 4d: empty post-filter plan pool degrades without degenerate hard error
+[TEST] PASS: Empty post-filter plan pool uses all_review_arms_unavailable fallback
+[TEST] Caveat 4e: sole dispatchable plan arm remains a valid floor
+[TEST] PASS: Sole dispatchable arm is honored as the plan floor
+[TEST] Caveat 4f: empty rank table returns all_review_arms_unavailable
+[TEST] PASS: Empty rank table uses all_review_arms_unavailable fallback
+[TEST] Caveat 4g: best-effort empty rank table returns all_review_arms_unavailable
+[TEST] PASS: Best-effort empty rank table uses all_review_arms_unavailable fallback
+
+Results: 21 pass, 0 fail
+
+[CORE-OFFLINE] review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)
+FAIL: shellcheck: leadv2-review-run.sh
+PASS: shellcheck clean: test-review-round-exhaustive.sh
+PASS: T1 round-1 content
+PASS: T2 round-2 verification-only
+PASS: T3 stale-diff guard
+PASS: T4 no-sidecar/blocked-gate guard
+PASS: T5 snapshot preservation
+PASS: T6 codex focus flattening
+PASS: T8 journal prior_findings count
+PASS: T9a forced round=1 -> exhaustive
+PASS: T9b forced round=2, empty body -> exhaustive
+PASS: T9c forced round=2, body -> verify_only
+PASS: T10 H1 repro: rounds 1,2,2,3
+PASS: T11 40-line/300-char cap + real count
+PASS: T12 missing diff file -> exhaustive, no sidecar, stderr
+PASS: T13 corrupt sidecar round -> exhaustive round 1
+PASS: T7 red-first: T1 fails against baseline 85ae886
+PASS: T7 red-first: T2 fails against baseline 85ae886
+PASS: T7 red-first: case_t8_journal_prior_findings fails against baseline 85ae886
+PASS: T7 red-first: case_t9b_forced_round2_empty fails against baseline 85ae886
+PASS: T7 red-first: case_t10_h1_repro fails against baseline 85ae886
+PASS: T7 red-first: case_t11_finding_cap fails against baseline 85ae886
+PASS: T7 red-first: case_t12_missing_diff fails against baseline 85ae886
+PASS: T7 red-first: case_t13_corrupt_round fails against baseline 85ae886
+
+================================================
+  review-round-exhaustive: PASS=23 FAIL=1
+================================================
+[CORE-OFFLINE] FAILED: review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)
+
+[CORE-OFFLINE] deferred-GLM ladder (V3-GLM-LADDER-01)
+FAIL: (a) park row missing for sig8=38131d44 -- deferred_file=<missing>
+PASS: (a) poison fence held
+FAIL: (b) glm-deferred --list missing sig8=38131d44 -- list_out=no deferred glm tasks
+PASS: (b) glm-deferred --list prints 'no deferred glm tasks' when empty
+FAIL: (c) expected exactly 1 codex_credits_empty line after 2 runs, got 0 -- journal=append dispatch-6870a0d0 decision lane_plan_skipped task=6870a0d0 reason=shared_tree
+append dispatch-6870a0d0 decision task_class=Light route=dispatch source=fallback task=6870a0d0
+append dispatch-6870a0d0 decision dispatch_classified task=6870a0d0 class=non_product reason=explicit_mission_fast_path kind=unknown
+phase_recorded phase=classify task=6870a0d0 status=done
+append dispatch-6870a0d0 decision arm_resolved job=build arm=glm reason=none
+append dispatch-6870a0d0 decision route_resolved by=arbiter role=worker arm=refuse task=6870a0d0 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+append dispatch-6870a0d0 decision model_select_telemetry task=6870a0d0 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=0 terminal=fail cause=all_arms_capped
+append dispatch-6870a0d0 decision dispatch_terminal task=6870a0d0 terminal=refused cause=all_arms_capped
+append dispatch-6870a0d0 decision active_lane_released task=6870a0d0 id=dispatch-6870a0d0 where=exit_trap
+append dispatch-e38db59d decision lane_plan_skipped task=e38db59d reason=shared_tree
+append dispatch-e38db59d decision task_class=Light route=dispatch source=fallback task=e38db59d
+append dispatch-e38db59d decision dispatch_classified task=e38db59d class=non_product reason=explicit_mission_fast_path kind=unknown
+phase_recorded phase=classify task=e38db59d status=done
+append dispatch-e38db59d decision arm_resolved job=build arm=glm reason=none
+append dispatch-e38db59d decision route_resolved by=arbiter role=worker arm=refuse task=e38db59d reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+append dispatch-e38db59d decision model_select_telemetry task=e38db59d role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=0 terminal=fail cause=all_arms_capped
+append dispatch-e38db59d decision dispatch_terminal task=e38db59d terminal=refused cause=all_arms_capped
+append dispatch-e38db59d decision active_lane_released task=e38db59d id=dispatch-e38db59d where=exit_trap
+FAIL: (c) setup -- stamp file missing at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T/tmp.6MxvK48v9T/root-c/docs/leadv2/.codex-credits-empty.stamp
+FAIL: (c) expected 2 codex_credits_empty lines after the back-dated 3rd run, got 0 -- journal=append dispatch-6870a0d0 decision lane_plan_skipped task=6870a0d0 reason=shared_tree
+append dispatch-6870a0d0 decision task_class=Light route=dispatch source=fallback task=6870a0d0
+append dispatch-6870a0d0 decision dispatch_classified task=6870a0d0 class=non_product reason=explicit_mission_fast_path kind=unknown
+phase_recorded phase=classify task=6870a0d0 status=done
+append dispatch-6870a0d0 decision arm_resolved job=build arm=glm reason=none
+append dispatch-6870a0d0 decision route_resolved by=arbiter role=worker arm=refuse task=6870a0d0 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+append dispatch-6870a0d0 decision model_select_telemetry task=6870a0d0 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=0 terminal=fail cause=all_arms_capped
+append dispatch-6870a0d0 decision dispatch_terminal task=6870a0d0 terminal=refused cause=all_arms_capped
+append dispatch-6870a0d0 decision active_lane_released task=6870a0d0 id=dispatch-6870a0d0 where=exit_trap
+append dispatch-e38db59d decision lane_plan_skipped task=e38db59d reason=shared_tree
+append dispatch-e38db59d decision task_class=Light route=dispatch source=fallback task=e38db59d
+append dispatch-e38db59d decision dispatch_classified task=e38db59d class=non_product reason=explicit_mission_fast_path kind=unknown
+phase_recorded phase=classify task=e38db59d status=done
+append dispatch-e38db59d decision arm_resolved job=build arm=glm reason=none
+append dispatch-e38db59d decision route_resolved by=arbiter role=worker arm=refuse task=e38db59d reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+append dispatch-e38db59d decision model_select_telemetry task=e38db59d role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=0 terminal=fail cause=all_arms_capped
+append dispatch-e38db59d decision dispatch_terminal task=e38db59d terminal=refused cause=all_arms_capped
+append dispatch-e38db59d decision active_lane_released task=e38db59d id=dispatch-e38db59d where=exit_trap
+append dispatch-11c4f0c2 decision lane_plan_skipped task=11c4f0c2 reason=shared_tree
+append dispatch-11c4f0c2 decision task_class=Light route=dispatch source=fallback task=11c4f0c2
+append dispatch-11c4f0c2 decision dispatch_classified task=11c4f0c2 class=non_product reason=explicit_mission_fast_path kind=unknown
+phase_recorded phase=classify task=11c4f0c2 status=done
+append dispatch-11c4f0c2 decision arm_resolved job=build arm=glm reason=none
+append dispatch-11c4f0c2 decision route_resolved by=arbiter role=worker arm=refuse task=11c4f0c2 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+append dispatch-11c4f0c2 decision model_select_telemetry task=11c4f0c2 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+append dispatch-11c4f0c2 decision dispatch_terminal task=11c4f0c2 terminal=refused cause=all_arms_capped
+append dispatch-11c4f0c2 decision active_lane_released task=11c4f0c2 id=dispatch-11c4f0c2 where=exit_trap
+FAIL: (d) expected sonnet-fallback line missing from rendered artifact -- content=| Линия | Что делает | Состояние |
+|---|---|---|
+| (живых линий нет) | — | — |
+
+Детали линий: (нет активных линий)
+
+Очередь — по влиянию:
+
+(очередь пуста)
+
+Закрыто сегодня: закрытых линий и коммитов сегодня нет
+PASS: (d) a day with no fallback renders no sonnet-fallback line
+FAIL: (e) expected count=2 after two distinct-sig8 refusals -- content=<missing>
+FAIL: (e) park queue missing a row for one of the two sig8s -- content=<missing>
+FAIL: (e) run 2's park row should carry reason=glm_refused_quota_precheck -- content=
+PASS: (e2) a repeat bump for an already-present sig8 is a no-op (count stays 1)
+PASS: (g) a parked row whose sig8 already landed is reaped, not retried
+PASS: (h) a parked row with no usable mission is skipped and stays in the queue (H3)
+PASS: (i) a failed retry dispatch leaves the row pending
+FAIL: (f) retry-all did not spawn a new dispatch for the parked mission -- out=retry_failed ffffffff rc=4 [leadv2-dispatch-code] active_lane_released task=27aa4766 id=dispatch-27aa4766 where=exit_trap
+PASS: poison fence held across the suite
+
+================================================
+  glm-deferred-ladder suite: FAIL=1
+================================================
+[CORE-OFFLINE] FAILED: deferred-GLM ladder (V3-GLM-LADDER-01)
+
+[CORE-OFFLINE] silent-arm commits-ahead + live-worker guard (GATE-FALSE-SILENT-01)
+[TEST] PASS: bash -n clean (leadv2-dispatch-product-close.sh)
+[TEST] PASS: Case A: a committed lane (clean worktree) is NOT classified arm_produced_nothing
+[TEST] PASS: Case A: no arm_advance decision for a committed lane
+[TEST] PASS: Case B: absent stream is NOT classified arm_produced_nothing
+[TEST] PASS: Case C: fresh stream is NOT classified arm_produced_nothing
+[TEST] PASS: Case D: genuinely silent arm still classified arm_produced_nothing
+[TEST] PASS: Case D: ledger row is no_work/arm_produced_nothing
+[TEST] PASS: Case D: exactly one arm_advance decision line
+[TEST] PASS: Case D: .arm-advanced-glm marker present
+[TEST] PASS: Case E: unresolvable-base lane is NOT classified arm_produced_nothing
+[TEST] PASS: Case E: degradation line emitted for unresolvable base
+[TEST] PASS: Case F: prove-zero linked worktree with unmoved HEAD IS classified arm_produced_nothing
+[TEST] PASS: Case F: no silent_probe_base_unresolved line for a provably-zero lane
+[TEST] PASS: Case G: linked worktree that committed is NOT classified arm_produced_nothing
+[TEST] PASS: Case G: degradation line emitted once prove-zero refuses (reflog shows a commit)
+
+[TEST] 15 passed, 0 failed
+[CORE-OFFLINE] HERMETIC-VIOLATION (WARN, follow-up): silent-arm commits-ahead + live-worker guard (GATE-FALSE-SILENT-01) dirtied docs/leadv2:
+ M docs/leadv2/.bus-offsets
+ M docs/leadv2/.bus.lock
+ M docs/leadv2/.merge.lock
+ M docs/leadv2/active.yaml
+ M docs/leadv2/active.yaml.lock
+ M docs/leadv2/bus.jsonl
+ M docs/leadv2/merge-queue.jsonl
+ M docs/leadv2/open-threads.md
+ M docs/leadv2/questions
+ M docs/leadv2/tasks/dispatch-567ba028/journal.md
+ M docs/leadv2/tasks/dispatch-59ae8b51/journal.md
+ M docs/leadv2/tasks/dispatch-tid01001/journal.md
+ M docs/leadv2/tasks/dispatch-tid02001/journal.md
+ M docs/leadv2/tasks/dispatch-tid03001/journal.md
+?? docs/leadv2/.compact-freeze.md
+
+[CORE-OFFLINE] worker_reason on no_work/dead terminals (LANE-OBSERVABILITY-02)
+[TEST] PASS: A1: last result line wins over older assistant text
+[TEST] PASS: A2: assistant-text fallback when no result line
+[TEST] PASS: A3: 120-char clamp
+[TEST] PASS: A4: quote/backslash/newline sanitised (got: He said no and fellnpath C:xy)
+[TEST] PASS: A5: codex rollout cwd filter — sibling rollout never wins
+[TEST] PASS: A6: glm .out last non-blank line
+[TEST] PASS: A7: empty sources -> empty string
+[TEST] PASS: A7: empty sources -> rc 0
+[TEST] PASS: A9: rollout naming a DIFFERENT dispatch sig8 never wins (no mis-attribution)
+[TEST] PASS: A8: LEADV2_WORKER_REASON=0 kill switch
+[TEST] PASS: B1a: JSON row carries worker_reason
+[TEST] PASS: B1b: journal line gains worker_reason token
+[TEST] PASS: B2a: empty worker_reason still an always-present JSON key
+[TEST] PASS: B2b: journal line has no worker_reason token when empty
+[TEST] PASS: B3: cause readback
+[TEST] PASS: C1a: no_work terminal journal line carries worker_reason
+[TEST] PASS: C1b: review-gate.md gains worker_reason line
+[TEST] PASS: C2: no stream source -> no worker_reason token
+
+[worker-reason-terminal] PASS=18 FAIL=0
+
+[CORE-OFFLINE] freepool model selector + gate stale-window TTL (FREEPOOL-MODEL-SELECTOR-01)
+[TEST] PASS: bash syntax: selector + gate
+[TEST] PASS: rank order: primary chosen when all routes live
+[TEST] PASS: rank order: config order drives the pick, not a hardcoded default (negative control)
+[TEST] PASS: probe-fail advances rank: primary dead -> secondary chosen
+[TEST] PASS: probe-fail advances rank: two dead ranks -> tertiary chosen (negative control)
+[TEST] PASS: selector rc!=0 on missing config, prints nothing to stdout
+[TEST] PASS: freepool_select_model() falls open to "sonnet" on selector failure
+[TEST] PASS: FREEPOOL_SKIP_MODEL_SELECT=1 short-circuits to "sonnet" (negative control)
+[TEST] PASS: P0: freepool_select_model() falls open to "sonnet" under set -e (selector failure does not kill the caller)
+[TEST] PASS: mutation applied: P0 if/else fallback reverted to bare `chosen=...; rc=$?` (scratch copy)
+[TEST] PASS: MUTATION KILLED: reverting the P0 fix makes set -e kill the script before the sonnet fallback
+[TEST] PASS: P1a: checked-in freepool-arm.yaml matches a real-shaped /v1/models payload (primary chosen)
+[TEST] PASS: MUTATION KILLED: bare pre-fix prefixes still match via the with/without-anthropic/ tolerant fallback (P1a fix also makes stale configs recoverable)
+[TEST] PASS: FP-01/02: role=bulk selects a different roster model than role=implement
+[TEST] PASS: FP-01: unset FREEPOOL_ROLE defaults to implement
+[TEST] PASS: FP-02 negative control: commented role_rank falls back to flat model_rank
+[TEST] PASS: gate TTL: all-stale window + healthy live probe -> gate passes
+[TEST] PASS: gate TTL negative control: all-stale window + dead live probe -> refused arm_down
+[TEST] PASS: gate TTL: genuinely empty window + healthy live probe -> gate passes
+[TEST] PASS: gate TTL: fresh breach still refuses gate_broken (fresh data not swallowed by TTL filter)
+[TEST] PASS: gate P1b: all-stale window issues exactly ONE live /health probe
+[TEST] PASS: mutation applied: second live /health probe reintroduced on the rc==4 branch
+[TEST] PASS: MUTATION KILLED: reintroducing the second probe reproduces the pre-fix double-probe (count=2)
+[TEST] PASS: mutation applied: TTL filter predicate replaced with True (always-fresh)
+[TEST] PASS: MUTATION KILLED: reverting the TTL filter reproduces the stale-window bug (gate wrongly refuses gate_broken)
+[TEST] === 25 passed, 0 failed ===
+[CORE-OFFLINE] SHARD_RESULT idx=2 pass=14 fail=2 missing=0
+
+[CORE-OFFLINE] provider/model router
+[TEST] PASS: router syntax
+[leadv2-session-route] provider=glm model=glm-5.3 effort=medium reason=routine Standard task routed to GLM (primary code writer, GLM-FIRST-01) to preserve Claude/Codex quota displaced=codex
+[TEST] PASS: routine Standard -> GLM (GLM-FIRST-01)
+[leadv2-session-route] provider=glm model=glm-5.3 effort=low reason=routine Light task routed to GLM (primary code writer, GLM-FIRST-01) to preserve Claude/Codex quota displaced=codex
+[TEST] PASS: Light -> GLM (GLM-FIRST-01)
+[leadv2-session-route] provider=claude model=opus effort=high reason=high-risk class/tags force Claude; Codex/GLM full-session routing is blocked displaced=none
+[TEST] PASS: Heavy -> Claude Opus
+[leadv2-session-route] provider=claude model=opus effort=high reason=high-risk class/tags force Claude; Codex/GLM full-session routing is blocked displaced=none
+[TEST] PASS: high-risk tag blocks explicit Codex
+[leadv2-session-route] provider=claude model=sonnet effort=medium reason=Codex quota 90% reached policy threshold 85%; Claude fallback displaced=none
+[TEST] PASS: Codex quota threshold -> Claude fallback (GLM+kimi unavailable)
+[leadv2-session-route] provider=claude model=sonnet effort=medium reason=Codex unavailable (codex binary unavailable); Claude fallback displaced=none
+[TEST] PASS: missing Codex CLI -> Claude fallback (GLM+kimi unavailable)
+[leadv2-session-route] provider=claude model=sonnet effort=medium reason=explicit provider override: claude displaced=none
+[TEST] PASS: explicit Claude override
+[TEST] Results: PASS=8 FAIL=0
+
+[CORE-OFFLINE] parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)
+[TEST] PASS: red-first foreground contract reaches glm/kimi/sonnet/codex without changing spawn identity site
+[TEST] PASS: clean waiting result with unsatisfied deliverable classifies parked
+[TEST] PASS: parked outcome carries continue next
+[TEST] PASS: clean success stream replay is parked-shaped
+[TEST] PASS: clean success with deliverable does not resume
+[TEST] PASS: parked lane launches exactly one resume
+[TEST] PASS: second parked exit does not loop
+[TEST] PASS: second parked exit journals already_attempted
+[TEST] PASS: positive control died-with-work resume remains green
+[TEST] RESULT: pass=9 fail=0 skip=0
+
+[CORE-OFFLINE] Codex terminal lead intake
+[TEST] PASS: wrapper and test runner stub syntax
+[TEST] PASS: next uses shared root envs, lane cwd, zero args, and names both sentinel paths
+[TEST] PASS: next skips reserved priority and duplicate-marker rows before claiming the next eligible task
+[TEST] PASS: an all-poisoned queue refuses clearly without claiming or creating a lane
+[TEST] PASS: explicit task id resolves independently of queue priority
+[TEST] PASS: open ledger rows, live job handles, and active claims refuse without queue claim or launch
+[TEST] PASS: terminal ledger landed and dead outcomes both refuse before claim or launch
+[TEST] PASS: parked, refused, and no_work terminals warn while allowing a retry
+[TEST] PASS: post-guard launch failure removes claim, canonical lane, branch, and handoff residue
+[TEST] PASS: the /model sonnet advisory is emitted first, including on refusal
+[TEST] Results: PASS=10 FAIL=0
+
+[CORE-OFFLINE] per-turn injection dedup (HOOK-INJECT-DEDUP-01)
+[TEST] PASS: hook scripts parse
+[TEST] PASS: G2->G3: second identical fire collapses to a one-line marker
+[TEST] PASS: G4: changed content re-injects full block
+[TEST] PASS: G5: a stored digest from a prior day forces full re-inject
+[TEST] PASS: G0: LEADV2_INJECT_DEDUP=0 disables the gate on every fire
+[TEST] PASS: G1: missing session id never collapses to the marker
+[inject-dedup] fail-open: PermissionError: [Errno 13] Permission denied: '/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.IgAf6i/suite.BikwJg/leadv2-inject-dedup.SSTJ9E/unwritable/nested'
+[inject-dedup] fail-open: PermissionError: [Errno 13] Permission denied: '/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.IgAf6i/suite.BikwJg/leadv2-inject-dedup.SSTJ9E/unwritable/nested'
+[TEST] PASS: G6: unwritable state dir fails open, hook still exits 0
+[TEST] PASS: R2 setup: marker present before compaction
+[TEST] PASS: R2: PreCompact removes the stored digest for the compacting session
+[TEST] PASS: R2: first prompt after /compact is a full re-inject, not a marker
+[TEST] PASS: G5b setup: unchanged ledger (DUE TODAY) still collapses to marker
+[TEST] PASS: G5b: DUE_TODAY -> OVERDUE classification flip forces full re-inject
+[TEST] PASS: finding-3: PreCompact clears the /tmp task-anchor-full marker glob
+[TEST] PASS: finding-5: fail-open path emits a [inject-dedup] fail-open: WARN on stderr
+[TEST] Results: PASS=14 FAIL=0
+
+[CORE-OFFLINE] lane write-set admission block (LANE-WRITESET-REGISTRY-01)
+[TEST] === lane write-set admission block (LANE-WRITESET-REGISTRY-01) ===
+[TEST] PASS: live signal: rc=5, conflict names LANE-A, LANE-B not appended
+[registry] writeset conflict: other=RACE-A paths=target/path
+[TEST] PASS: race: exactly one intersecting register wins under the registry lock
+LEADV2_WRITESET_UNKNOWN other=LEGACY
+[registry] writeset unknown: other=LEGACY
+[registry] writeset conflict: other=PEER paths=contested/b
+[TEST] PASS: legacy and drift re-check: warn admits, block=6, free=0, contested=5
+[TEST] PASS: H1: a lane mid-resolution (writes not yet persisted) refuses an intersecting concurrent register, even under warn
+[TEST] PASS: H2/H3: _pc_git_diff_names sees an untracked new file and excludes docs/leadv2/
+[TEST] PASS: H4: writeset_drift_conflict is never reclassified landed_foreign; unscopable_diff escape still fires
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.IgAf6i/suite.1LmfEF/pc-reclass-block.g0WKr0/block.sh: line 16: lv2_lane_root_is_own_worktree: command not found
+[TEST] PASS: M1: writeset_drift_conflict blocks reclassification; other non-partial_diff reasons still trigger it
+[TEST] === Results: PASS=7 FAIL=0 ===
+
+[CORE-OFFLINE] subsession model downgrade
+[TEST] Test 1: burn>=60% THIS spawn -> --model=sonnet (downgrade reaches launch)
+[TEST] PASS: fresh 60% breach -> --model=sonnet reaches launch (dead wire fixed)
+[TEST] Test 2: bash -n syntax check on claude-subsession.sh
+[TEST] PASS: bash -n syntax OK
+
+=== Results: 2 passed, 0 failed ===
+
+[CORE-OFFLINE] skill lint
+[TEST] PASS: bash -n syntax check: leadv2-skill-lint.sh
+[TEST] PASS: shellcheck: leadv2-skill-lint.sh
+[TEST] PASS: bad fixture -> exit 2 (HIGH finding present)
+[TEST] PASS: bad fixture -> duplicate frontmatter key detected
+[TEST] PASS: bad fixture -> unbounded loop+spawn detected
+[TEST] PASS: clean fixture -> exit 0
+[TEST] PASS: missing file -> exit 1 (not silently 0)
+[TEST] ----
+[TEST] PASS=7 FAIL=0
+
+[CORE-OFFLINE] question delivery ownership
+[TEST] === QUESTION-DELIVERY-OWNERSHIP-01 test suite ===
+
+[TEST] PASS: Syntax: leadv2-ask.sh OK
+[TEST] PASS: Syntax: leadv2-reply-router.sh OK
+[TEST] PASS: Syntax: leadv2-dispatch-product-close.sh OK
+[TEST] Test (a): ask stamps owner_session / owner_task / asked_repo
+[TEST] PASS: Test (a): owner_session=sess-alpha-123 owner_task=TASK-OWNER asked_repo=link
+[TEST] Test (b1): router refuses young foreign answer (exit 6)
+[TEST] PASS: Test (b1): young foreign answer refused (exit 6), owner printed
+[TEST] Test (b2): router allows old foreign answer (age >= threshold)
+[TEST] PASS: Test (b2): old foreign answer allowed and recorded
+[TEST] Test (b3): router allows own session to answer (regardless of age)
+[TEST] PASS: Test (b3): own session answered immediately (no age gate)
+[TEST] Test (b4): --force overrides young foreign refusal
+[TEST] PASS: Test (b4): --force overrode refusal and logged FORCE_FOREIGN
+[TEST] Test (c): old-row (no owner fields) tolerated by router
+[TEST] PASS: Test (c): old-row without owner fields answered (no refusal)
+[TEST] Test (d): _pc_emit_pending_questions emits for own task, not others
+<string>:3: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+[TEST] PASS: Test (d): emitted question_pending for own task qid, not other task's
+
+[TEST] === Results: PASS=10 FAIL=0 ===
+[TEST] All tests passed.
+[CORE-OFFLINE] HERMETIC-VIOLATION (WARN, follow-up): question delivery ownership dirtied docs/leadv2:
+ M docs/leadv2/.bus-offsets
+ M docs/leadv2/.bus.lock
+ M docs/leadv2/.merge.lock
+ T docs/leadv2/active.yaml
+ M docs/leadv2/active.yaml.lock
+ M docs/leadv2/bus.jsonl
+ M docs/leadv2/merge-queue.jsonl
+ M docs/leadv2/open-threads.md
+ M docs/leadv2/questions
+ M docs/leadv2/tasks/dispatch-567ba028/journal.md
+ M docs/leadv2/tasks/dispatch-59ae8b51/journal.md
+ M docs/leadv2/tasks/dispatch-tid01001/journal.md
+ M docs/leadv2/tasks/dispatch-tid02001/journal.md
+ M docs/leadv2/tasks/dispatch-tid03001/journal.md
+?? docs/leadv2/.compact-freeze.md
+
+[CORE-OFFLINE] e2e gate lane root + suite family
+[TEST] PASS: (a) green lane: e2e-root names worktree, pass with scope=lane_writes
+[TEST] PASS: (b) own regression: dead/e2e_regression (real failures still die)
+[TEST] PASS: (c) foreign failure: parked not dead, fail_foreign + foreign_failures listed
+[TEST] PASS: (d.1) non-toplevel subdir: blocked with reason=e2e_root_not_toplevel
+[TEST] PASS: (d.2) foreign repo: blocked with e2e_root_foreign_repo
+[TEST] PASS: (d.3) missing dir: blocked with e2e_root_missing
+[TEST] PASS: (d.4) valid worktree: validation passes
+[TEST] PASS: (e.1) C2 root_escape guard present in run-all.sh
+[TEST] PASS: (e.2) C2 out_of_tree containment check present
+[TEST] PASS: (e.3) C3 plugins/ preferred always-on path present in run-all.sh
+[TEST] PASS: (e.4) C4 machine-readable failure block present in run-all.sh
+[TEST] PASS: (f) ownership parse: own populated, no harness_unparsed (C4+C5 contract)
+[TEST] PASS: (g) other-repo fixture: no plugins/leadv2/ → .claude/ path is the fallback (C3 no-op guard)
+
+[TEST] 13 passed, 0 failed, 0 not run
+[CORE-OFFLINE] HERMETIC-VIOLATION (WARN, follow-up): e2e gate lane root + suite family dirtied docs/leadv2:
+ M docs/leadv2/.bus-offsets
+ M docs/leadv2/.bus.lock
+ M docs/leadv2/.merge.lock
+ M docs/leadv2/active.yaml
+ M docs/leadv2/active.yaml.lock
+ M docs/leadv2/bus.jsonl
+ M docs/leadv2/merge-queue.jsonl
+ M docs/leadv2/open-threads.md
+ M docs/leadv2/questions
+ M docs/leadv2/tasks/dispatch-567ba028/journal.md
+ M docs/leadv2/tasks/dispatch-59ae8b51/journal.md
+ M docs/leadv2/tasks/dispatch-tid01001/journal.md
+ M docs/leadv2/tasks/dispatch-tid02001/journal.md
+ M docs/leadv2/tasks/dispatch-tid03001/journal.md
+?? docs/leadv2/.compact-freeze.md
+
+[CORE-OFFLINE] core-offline root arithmetic (git-derived REPO_ROOT)
+[ROOT-ARITH] case (a): symlink entry from fixture repo
+[ROOT-ARITH]   (a) REPO_ROOT = fixture repo ✓
+[ROOT-ARITH]   (a) PLUGIN_ROOT = canonical ✓
+[ROOT-ARITH]   (a) REPO_ROOT is not the shared parent ✓
+[ROOT-ARITH] case (b): canonical invocation
+[ROOT-ARITH]   (b) REPO_ROOT = invoking checkout ✓
+[ROOT-ARITH]   (b) TEST_DIR = canonical scripts/tests ✓
+[ROOT-ARITH] case (b'): worktree entry
+[ROOT-ARITH]   (b') REPO_ROOT = worktree lane toplevel ✓
+[ROOT-ARITH] case (c): non-git location
+[ROOT-ARITH]   (c) stderr contains repo_root_unresolvable ✓
+[ROOT-ARITH]   (c) exit code = 2 ✓
+[ROOT-ARITH]   (c) zero suite lines printed ✓
+[ROOT-ARITH] cases passed=4 failed=0
+[CORE-OFFLINE] HERMETIC-VIOLATION (WARN, follow-up): core-offline root arithmetic (git-derived REPO_ROOT) dirtied docs/leadv2:
+ M docs/leadv2/.bus-offsets
+ M docs/leadv2/.bus.lock
+ M docs/leadv2/.merge.lock
+ T docs/leadv2/active.yaml
+ M docs/leadv2/active.yaml.lock
+ M docs/leadv2/bus.jsonl
+ M docs/leadv2/merge-queue.jsonl
+ M docs/leadv2/open-threads.md
+ M docs/leadv2/questions
+ M docs/leadv2/tasks/dispatch-567ba028/journal.md
+ M docs/leadv2/tasks/dispatch-59ae8b51/journal.md
+ M docs/leadv2/tasks/dispatch-tid01001/journal.md
+ M docs/leadv2/tasks/dispatch-tid02001/journal.md
+ M docs/leadv2/tasks/dispatch-tid03001/journal.md
+?? docs/leadv2/.compact-freeze.md
+
+[CORE-OFFLINE] phase record round-trip
+test: record basic round-trip
+test: mkdir -p on missing dir
+test: no tmp files left behind
+test: concurrent record of two phases
+test: n/a requires reason
+test: waived requires reason
+test: running requires handle
+test: show output
+test: plan-for Standard
+
+[PORE-RECORD] pass=12 fail=0
+
+[CORE-OFFLINE] founder lane view
+[TEST] PASS: lane with live process and zero artifacts prints
+[TEST] PASS: no dead: rows in the live view
+[TEST] PASS: 19-day-old artifact with no process does not print
+[TEST] PASS: a command that merely mentions an id creates no lane
+[TEST] PASS: child id folds into parent (one aaaaaaaa row)
+[TEST] PASS: context.yaml title renders
+[TEST] PASS: review-gate verdict renders
+[TEST] PASS: journal phase= token renders
+[TEST] PASS: rows ordered newest-artifact-first, artifactless last
+[TEST] PASS: json count_live counts folded lanes only
+[TEST] PASS: pgid closure + fold collect all three aaaaaaaa pids
+[TEST] PASS: artifactless lane reports last_artifact null
+[TEST] PASS: zero live lanes prints no live lanes, exit 0
+[TEST] PASS: --all output identical to leadv2-lane-liveness.sh --all
+[TEST] PASS: unknown arg exits 2 with usage on stderr
+[TEST] founder lane view: 15 checks passed
+
+[CORE-OFFLINE] e2e gate arch-01 (lane-tree testing)
+[TEST] PASS: (a) lane-tree testing: worktree fix passes gate (rc=0, e2e-root=worktree)
+
+[TEST] 1 passed, 0 failed
+
+[CORE-OFFLINE] review round cap (REVIEW-ROUNDCAP-01)
+FAIL: shellcheck: leadv2-review-run.sh
+PASS: shellcheck clean: test-review-roundcap.sh
+PASS: T1 round1 -> attempts=1
+PASS: T2 round2 -> attempts=2
+PASS: T3 round3 -> rc8/blocked/review_roundcap, no arm launched
+PASS: T4 dedup does not increment attempts
+PASS: T5 LEADV2_REVIEW_MAX_ROUNDS=0 disables cap
+PASS: T6 corrupt attempts fails open
+PASS: T7 legacy round=3-only state caps immediately
+PASS: T8 exit 9 leaves attempts unchanged
+PASS: T9 re-invoke after cap is idempotent
+PASS: T10 spawn backstop fires when dedup keeps attempts frozen
+PASS: T11 state lock taken during increment, fails open under contention
+PASS: T-red: baseline 85ae886 does not enforce round cap (rc=7)
+
+================================================
+  review-roundcap: PASS=13 FAIL=1
+================================================
+[CORE-OFFLINE] FAILED: review round cap (REVIEW-ROUNDCAP-01)
+
+[CORE-OFFLINE] pump junk stays out of lane worktrees (V3-ENV-GUARDS-01)
+[PUMP-JUNK-IN-LANE] case: liveness cache must not land inside the lane worktree
+[PUMP-JUNK-IN-LANE]   worktree stayed clean (0 cache files) ✓
+[PUMP-JUNK-IN-LANE] case: liveness cache lands under the main checkout
+[PUMP-JUNK-IN-LANE]   found liveness.json under the main checkout ✓
+[PUMP-JUNK-IN-LANE] pass=2 fail=0
+
+[CORE-OFFLINE] core-offline cross-run exclusive lock (SUITE-SPEED-01)
+[LOCK-01] case (a)/(b): held lock -> bounded wait times out
+[LOCK-01]   (a)/(b) bounded wait times out with journaled lines ✓
+[LOCK-01] case (c): wait long enough to outlast the holder
+[LOCK-01]   (c) waited then acquired ✓ (elapsed 2s)
+[LOCK-01] case (d): kill-switch bypasses a held lock
+[LOCK-01]   (d) kill-switch bypassed the held lock ✓
+[LOCK-01] pass=3 fail=0
+
+[CORE-OFFLINE] plugin sync .claude/scripts link classification
+[TEST] PASS: Case 1 LINK: a.sh created as symlink
+[TEST] PASS: Case 1 LINK: symlink resolves to canonical a.sh
+[TEST] PASS: Case 1 LINK: run reports LINK for a.sh
+[TEST] PASS: Case 2 CONVERT: b.sh converted to symlink
+[TEST] PASS: Case 2 CONVERT: content still resolves to canonical
+[TEST] PASS: Case 2 CONVERT: run reports CONVERT for b.sh
+[TEST] PASS: Case 3 DRIFT: c.sh is still a real file
+[TEST] PASS: Case 3 DRIFT: divergent content survives byte-for-byte
+[TEST] PASS: Case 3 DRIFT: run reports DRIFT for c.sh
+[TEST] PASS: Case 3 DRIFT: run emits ACTION REQUIRED summary line
+[TEST] PASS: Case 3 DRIFT: run exits rc=4
+[TEST] PASS: Case 5 EXCEPTION: d.sh left as a real file (not converted)
+[TEST] PASS: Case 5 EXCEPTION: run reports the declared override
+[TEST] PASS: Case 4 Idempotence: second run has no LINK/CONVERT churn for a.sh/b.sh
+[TEST] PASS: Case 4 Idempotence: a.sh symlink inode/target unchanged
+[TEST] PASS: Case 4 Idempotence: b.sh symlink inode/target unchanged
+[TEST] PASS: Case 4 Idempotence: second run still exits rc=4 (c.sh drift persists)
+
+[TEST] plugin sync .claude/scripts link classification: 17 passed, 0 failed
+
+[CORE-OFFLINE] provider quota gate (QUOTA-GATE-PARITY-01)
+[TEST] PASS: bash -n clean (leadv2-provider-quota-gate.sh)
+[TEST] PASS: bash -n clean (leadv2-glm-quota-gate.sh)
+[TEST] PASS: bash -n clean (lib/leadv2-codex-quota-gate.sh)
+[TEST] PASS: bash -n clean (config/leadv2-quota-ceilings.sh)
+[TEST] PASS: S1: bad provider -> rc 3
+[TEST] PASS: S1: bad purpose -> rc 3
+[TEST] PASS: S2: kill switch -> rc 0, WARN
+[TEST] PASS: S3: missing live helper -> fail-open
+[TEST] PASS: S4: live exits non-zero -> fail-open
+[TEST] PASS: S5: malformed JSON -> fail-open
+[TEST] PASS: S6: status!=ok -> fail-open
+[TEST] PASS: S7: stale cache -> fail-open even though live pct would refuse
+[TEST] PASS: S8: pct < ceiling -> allow
+[TEST] PASS: S9: pct >= ceiling -> refuse rc 1
+[TEST] PASS: S10: limit_reached forces pct=100 -> refuse
+[TEST] PASS: boundary: ceiling=0 refuses even a 0% read
+[TEST] PASS: boundary: ceiling>100 never trips, WARN inert
+[TEST] PASS: boundary: non-numeric ceiling -> fail-open
+[TEST] PASS: boundary: ceilings file missing names expected path -> fail-open
+[TEST] PASS: F4a: timeout=abc -> rc 0, warn names the 8s fallback
+[TEST] PASS: F4b: timeout=99999 -> clamped to 60s, completed in 1s
+[TEST] PASS: F4c: timeout=0 -> clamped to 1s, gate still evaluates
+[TEST] PASS: §4a: limit_reached refuses even with inert ceiling 150 (rc 1)
+[TEST] PASS: F3a: GLM_QUOTA_THRESHOLD=abc -> warn + fallback 80, never rc 2 (rc=0)
+[TEST] PASS: F3b: LEADV2_CEIL_GLM_WORK=abc + 85% read -> reroute by fallback 80 (rc 1)
+[TEST] PASS: F3c: five_hour.pct absent -> non-numeric fail-open, no abort
+[TEST] PASS: F1: top-level limit_reached ORs ahead of binding-window pct (100.0)
+[TEST] PASS: claude review under ceiling -> allow
+[TEST] PASS: drift: yaml/py/ceilings.sh agree on 5 of 6 values; codex-build exception (80py/90yaml) confirmed by name
+[TEST] PASS: missing provider gate refuses gate_broken with its exact path, never threshold
+
+=== 30 passed, 0 failed ===
+[CORE-OFFLINE] SHARD_RESULT idx=3 pass=17 fail=1 missing=0
+
+[CORE-OFFLINE] dispatch refusal fallback chain
+PASS: quota gate emits machine-readable reroute marker
+PASS: quota gate emits machine-readable peak marker
+FAIL: quota refusal advances chain -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=8b072639 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=8b072639
+[leadv2-dispatch-code] dispatch_classified task=8b072639 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=8b072639 reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] freepool_floor_mode mode=full source=yaml task=8b072639
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=freepool model=freepool-default tier=standard task=8b072639 reason=cheapest_capable arbiter_pick=freepool util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=0 floor_mode=full floor_mode_source=yaml
+[leadv2-dispatch-code] candidate_chain task=8b072639 arms=freepool
+[leadv2-dispatch-code] worker_env_assert arm=freepool task=8b072639 var=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS action=ok
+[leadv2-dispatch-code] worker_env_assert arm=freepool task=8b072639 var=CLAUDE_CODE_ENABLE_TODO_TOOLS action=set value=1
+[leadv2-dispatch-code] freepool_select role=implement task=8b072639 source=work_kind
+[leadv2-dispatch-code] spawn_failed by=router model=freepool task=8b072639 rc=1 reason=launcher_nonzero_exit
+[leadv2-dispatch-code] ERROR: spawn(freepool) failed rc=1:  [2026-08-30 22:27:02] ERROR: secrets file not found: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.IgAf6i/suite.aIi00Q/home/.claude/secrets/freepool.env
+[leadv2-dispatch-code] ERROR: spawn(freepool) full launcher stderr preserved at /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.IgAf6i/suite.aIi00Q/leadv2-dispatch-spawn-8b072639.stderr.log
+
+[leadv2-dispatch-code] dispatch_rolled_back reason=all_arms_unavailable task=8b072639 attempts=freepool_failed_launcher
+[leadv2-dispatch-code] model_select_telemetry task=8b072639 role=worker class=light work_kind=build arm=freepool model=freepool-default fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_unavailable
+[leadv2-dispatch-code] ERROR: all eligible dispatch arms declined or failed for task=8b072639: freepool_failed_launcher
+[leadv2-dispatch-code] active_lane_released task=8b072639 id=dispatch-8b072639 where=exit_trap
+FAIL: peak-hours refusal advances chain -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=0324041f reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=0324041f
+[leadv2-dispatch-code] dispatch_classified task=0324041f class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=0324041f reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=0324041f reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=0324041f role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=0324041f id=dispatch-0324041f where=exit_trap
+FAIL: codex dead-arm no_first_byte spill -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=0fb1d606 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=0fb1d606
+[leadv2-dispatch-code] dispatch_classified task=0fb1d606 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=0fb1d606 reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=0fb1d606 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=0fb1d606 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=0fb1d606 id=dispatch-0fb1d606 where=exit_trap
+FAIL: launcher crash remains failure -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=947b8269 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=947b8269
+[leadv2-dispatch-code] dispatch_classified task=947b8269 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=947b8269 reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=947b8269 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=947b8269 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=947b8269 id=dispatch-947b8269 where=exit_trap
+FAIL: duplicate dispatch refusal -- first_rc=4 second_rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=0aa7889a reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=0aa7889a
+[leadv2-dispatch-code] dispatch_classified task=0aa7889a class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=0aa7889a reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=0aa7889a reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=0aa7889a role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=0aa7889a id=dispatch-0aa7889a where=exit_trap [leadv2-dispatch-code] lane_plan_skipped task=0aa7889a reason=shared_tree
+[leadv2-dispatch-code] dispatch_classified task=0aa7889a class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=0aa7889a reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=0aa7889a reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=0aa7889a role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=0aa7889a id=dispatch-0aa7889a where=exit_trap
+PASS: record-review refuses duplicate diff hash
+FAIL: racing reserve exclusivity -- rcs=4,4 outputs=[leadv2-dispatch-code] lane_plan_skipped task=09a92cf2 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=09a92cf2
+[leadv2-dispatch-code] dispatch_classified task=09a92cf2 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=09a92cf2 reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=09a92cf2 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=09a92cf2 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=09a92cf2 id=dispatch-09a92cf2 where=exit_trap [leadv2-dispatch-code] lane_plan_skipped task=09a92cf2 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=09a92cf2
+[leadv2-dispatch-code] dispatch_classified task=09a92cf2 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=09a92cf2 reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=09a92cf2 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=09a92cf2 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=0 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_release_skipped task=09a92cf2 id=dispatch-09a92cf2 where=exit_trap reason=not_owner_row_intact
+FAIL: ladder order from yaml, dispatch:false entries excluded -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=fd5cf581 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=fd5cf581
+[leadv2-dispatch-code] dispatch_classified task=fd5cf581 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=fd5cf581 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=fd5cf581 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=0 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=fd5cf581 id=dispatch-fd5cf581 where=exit_trap
+FAIL: quota precheck skip -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=e94410d5 reason=shared_tree
+⚠ PRIMARY ARM BENCHED: glm for 1440m (class=unknown, until 1788204457) — cause: test_quota_lockout
+[leadv2-dispatch-code] primary_arm_benched provider=glm arm=glm class=unknown minutes=1440 until=1788204457 source=test_quota_lockout task=e94410d5
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=e94410d5
+[leadv2-dispatch-code] dispatch_classified task=e94410d5 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=e94410d5 reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=e94410d5 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=e94410d5 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=e94410d5 id=dispatch-e94410d5 where=exit_trap
+FAIL: past lockout ignored -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=4c009418 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=4c009418
+[leadv2-dispatch-code] dispatch_classified task=4c009418 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=4c009418 reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] quota_precheck_skip model=codex provider=codex task=4c009418 reason=provider_quota_locked class=provider_lockout
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=4c009418 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=4c009418 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=0 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=4c009418 id=dispatch-4c009418 where=exit_trap
+FAIL: absent lockout no-block -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=80151a75 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=80151a75
+[leadv2-dispatch-code] dispatch_classified task=80151a75 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=80151a75 reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] quota_precheck_skip model=codex provider=codex task=80151a75 reason=provider_quota_locked class=provider_lockout
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=80151a75 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=80151a75 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=80151a75 id=dispatch-80151a75 where=exit_trap
+FAIL: plugin self-host routing -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=59ae8b51 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=59ae8b51
+[leadv2-dispatch-code] dispatch_classified task=59ae8b51 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=59ae8b51 reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=59ae8b51 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=59ae8b51 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=59ae8b51 id=dispatch-59ae8b51 where=exit_trap
+FAIL: degraded mode announcement -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=567ba028 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=567ba028
+[leadv2-dispatch-code] dispatch_classified task=567ba028 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] routing_config_degraded task=567ba028 reason=no_routing_yaml_project_or_plugin ladder=legacy_hardcoded arms=glm,codex,sonnet
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=567ba028 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=567ba028 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=1 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=567ba028 id=dispatch-567ba028 where=exit_trap
+PASS: spawn fence: no POISON marker in any test output
+FAIL: production yaml dry run -- arms='' expected 'glm,codex,sonnet'
+FAIL: quota lockout write side -- rc=4 output=[leadv2-dispatch-code] lane_plan_skipped task=52a91b29 reason=shared_tree
+[leadv2-dispatch-code] task_class=Light route=dispatch source=fallback task=52a91b29
+[leadv2-dispatch-code] dispatch_classified task=52a91b29 class=non_product reason=explicit_mission_fast_path kind=unknown
+[leadv2-dispatch-code] arm_resolved job=build arm=glm reason=none
+[leadv2-dispatch-code] arm_excluded by=router arm=freepool task=52a91b29 reason=arm_not_capable_for_size task_class=light when=standard,bulk
+[leadv2-dispatch-code] route_resolved by=arbiter role=worker arm=refuse task=52a91b29 reason=all_arms_capped util_glm=unknown_capped util_codex=unknown_capped util_claude=unknown_capped util_freepool=100
+[leadv2-dispatch-code] model_select_telemetry task=52a91b29 role=worker class=light work_kind=build arm=refuse model=refuse fallback_depth=0 floor=none spawn_to_terminal_s=0 terminal=fail cause=all_arms_capped
+[leadv2-dispatch-code] active_lane_released task=52a91b29 id=dispatch-52a91b29 where=exit_trap file_exists=no
+[CORE-OFFLINE] FAILED: dispatch refusal fallback chain
+
+[CORE-OFFLINE] product-close waits for worker exit
+[TEST] PASS: empty-diff exits 5
+[TEST] PASS: review-gate.md reason=no_work
+[TEST] PASS: e2e-gate-passed.flag absent
+[TEST] PASS: ledger decision line terminal=no_work cause=empty_diff
+[TEST] PASS: foreign-landed lane exits 0
+[TEST] PASS: review-gate.md reason=landed_foreign status=passed
+[TEST] PASS: ledger decision line terminal=landed cause=landed_foreign
+[TEST] PASS: no-marker empty-diff lane still exits 5
+[TEST] PASS: review-gate.md reason=no_work (no foreign-repo marker present)
+[TEST] PASS: partial_diff stays refused (reason=partial_diff, not no_work)
+[TEST] PASS: surface renders no-work(empty-diff)
+[TEST] PASS: R1: no_work row NOT laundered into done(...)
+[TEST] PASS: alive worker has no review-gate.md
+[TEST] PASS: alive worker has no early review.diff
+[TEST] PASS: alive worker emits no terminal row
+[TEST] PASS: alive worker journals waiting_worker
+[TEST] PASS: diff-writing worker exits through non-empty path
+[TEST] PASS: exit-time review.diff is non-empty
+[TEST] PASS: diff-writing worker is not no_work
+[TEST] PASS: diff-writing worker terminal reflects non-empty path
+[TEST] PASS: finished empty worker exits 5
+[TEST] PASS: finished empty worker may emit empty_diff/no_work
+[TEST] PASS: finished empty worker journals empty_diff
+[TEST] PASS: finished empty worker writes no_work terminal row
+[TEST] PASS: live worker timeout exits 5
+[TEST] PASS: timeout gate says worker_timeout
+[TEST] PASS: timeout journals dead/timeout
+[TEST] PASS: timeout writes dead/timeout terminal row
+[TEST] PASS: timeout never emits no_work
+[TEST] PASS: codex finished-empty path remains no_work
+[TEST] PASS: codex wrapped jobs verdict is polled through done
+[TEST] PASS: codex close honors registry-root seam until handle clears
+[TEST] PASS: Sonnet natural completion reaches non-empty close path
+[TEST] PASS: Sonnet close waits for numeric PID exit
+[TEST] PASS: Sonnet exit-time diff is classified after natural completion
+[TEST] PASS: revived reaches ordinary empty-diff terminal
+[TEST] PASS: revived ignores stale original registry handle
+[TEST] PASS: revived never writes dead/timeout
+[TEST] PASS: revive_blocked_by_gate reaches ordinary empty-diff terminal
+[TEST] PASS: revive_blocked_by_gate ignores stale original registry handle
+[TEST] PASS: revive_blocked_by_gate never writes dead/timeout
+[TEST] PASS: live close watcher extends lease without changing claim ownership
+[TEST] PASS: committed worker reaches non-empty close path
+[TEST] PASS: committed-ahead diff is non-empty despite clean worker path
+[TEST] PASS: committed worker terminal reflects committed diff
+[TEST] PASS: slow Codex probe reaches bounded timeout path
+[TEST] PASS: Codex probe latency stays inside wait budget
+[TEST] PASS: Codex probe failures stay quiet
+
+=== 48 passed, 0 failed ===
+
+[CORE-OFFLINE] Codex full-cycle runner
+[TEST] PASS: runner syntax
+[TEST] PASS: fresh Codex thread resumes to the common Phase-8 sentinel with receipts
+[TEST] PASS: seeded closed circuit + empty cooldown: quota gate does not refuse
+[TEST] PASS: seeded open circuit refuses with reason=circuit
+[TEST] PASS: successful model turn without Phase-8 sentinel returns INCOMPLETE
+[TEST] PASS: missing thread receipt fails closed without a blind restart
+[TEST] PASS: validated shared receipt closes a main-checkout runner without a model call
+[TEST] PASS: stall_max turns without phase/git/handoff progress stop the runner (STALL_MAX=6)
+[TEST] PASS: launcher self-invocation fails immediately before retrying
+[TEST] PASS: recursion via exec wrapper is caught
+[TEST] PASS: recursion via env wrapper is caught
+[TEST] PASS: recursion via if wrapper is caught
+[TEST] PASS: recursion via bash wrapper is caught
+[TEST] PASS: round-2 recursion via env-split is caught
+[TEST] PASS: round-2 recursion via env-split-long is caught
+[TEST] PASS: round-2 recursion via time is caught
+[TEST] PASS: round-2 recursion via coproc is caught
+[TEST] PASS: round-2 recursion via coproc-direct is caught
+[TEST] PASS: round-2 recursion via coproc-unnamed-group is caught
+[TEST] PASS: coproc coproc-direct launcher mention does not trip falsekill
+[TEST] PASS: coproc coproc-named-group launcher mention does not trip falsekill
+[TEST] PASS: all launcher-mention, option-operand, closing-word, and sentinel shapes do not trip falsekill
+[TEST] PASS: live ~/.claude/cache/arm-cooldown unchanged by this suite
+[TEST] Results: PASS=23 FAIL=0
+
+[CORE-OFFLINE] lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)
+[TEST] PASS: bash -n sweep hook + cleanup + lib
+[TEST] GREEN-PRE-FIX: P1-registered-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P2-arm-open-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P3-arm-terminal-lane-swept(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P4-live-pid-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P5-young-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P6-orphan-swept-and-journaled(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P7-unreadable-registry-sweeps-nothing(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P8-malformed-env-degrades(hook) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: P11-age-from-gitdir-not-dirmtime(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P12-min-age-s-precedence(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P1-registered-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P2-arm-open-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P3-arm-terminal-lane-swept(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P4-live-pid-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P5-young-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P6-orphan-swept-and-journaled(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P7-unreadable-registry-sweeps-nothing(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P8-malformed-env-degrades(dead) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: P11-age-from-gitdir-not-dirmtime(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P12-min-age-s-precedence(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P9-failed-removal-never-guts(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P13-pid-reuse-is-not-live
+[TEST] RED-then-GREEN: P14-pid-birth-lib-absent-degrades
+[TEST] RED-then-GREEN: P10-twin-regex-unchanged
+
+Results: 11 passed(red->green), 0 failed, 13 green-pre-fix
+
+[CORE-OFFLINE] fanout classifier/runner guard
+[TEST] === leadv2-fanout.sh classify/runner existence-guard tests ===
+[TEST] fanout: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/leadv2-fanout.sh
+
+[TEST] Test 1: bash -n syntax check
+[TEST] PASS: Test 1: bash -n OK (fanout + classify + session-runner)
+[TEST] Test 2: classify script present -> class=Standard, no WARN
+[TEST] PASS: Test 2: class=Standard, classifier ran normally
+[TEST] Test 3: classify script hidden -> loud WARN + safe fallback (NOT Heavy)
+[TEST] PASS: Test 3: loud WARN printed, class=Standard (no silent Heavy escalation)
+[TEST] Test 4: session-runner hidden -> real headless launch fails closed
+[TEST] PASS: Test 4: missing completion runner refused the launch
+[TEST] Test 5: registry resolves via SCRIPT_DIR sibling alone -- no host $HOME, no vendored .claude/scripts; active.yaml under LEADV2_STATE_ROOT
+[TEST] PASS: Test 5: sibling-only resolution sufficient; active.yaml read from state root, no real file at docs/leadv2/
+[TEST] Test 6: stale (pre-state-path) registry copy is skipped; all-stale refuses to launch
+[TEST] PASS: Test 6a: stale sibling skipped, vendored (state-path-aware) copy used
+[TEST] PASS: Test 6b: all candidates stale -> loud refusal, no launch
+
+[TEST] === Results: PASS=7 FAIL=0 ===
+[TEST] All tests passed.
+
+[CORE-OFFLINE] lanes snapshot reconciliation
+[TEST] === leadv2-lanes-snapshot unit tests (SUPERVISOR-DELETE-01, retargeted from test-supervise-v2.sh) ===
+[TEST] Scripts: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/leadv2-lanes-snapshot.sh / /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/leadv2-lanes-resume.sh / /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/leadv2-active-registry.sh
+
+[TEST] Test 6: bash -n syntax check
+[TEST] PASS: Test 6: bash -n OK on all 3 scripts
+[TEST] Test 3: adoption triple-proof matrix (name-only -> orphan; full proof -> adopt)
+[TEST] PASS: Test 3a: unknown-name window -> orphan, never adopted
+[TEST] PASS: Test 3b: name+task-id+live-claude-PID triple proof -> adopted (or would_adopt if reconcile_cycle gated)
+[TEST] Test 4: tombstone-before-prune + would_prune visibility (observe_only gap fix)
+[TEST] PASS: Test 4a: observe_only=1 -> would_prune reports DEAD-1, row NOT removed
+[TEST] PASS: Test 4b: corroborated dead row pruned AND tombstoned
+[TEST] Test 5: truth-probe timeout -> unavailable (fail-open-to-EMPTY, never -clear)
+[TEST] PASS: Test 5: timed-out probe process group was killed; status never reported clear
+[TEST] Test 7: R2-3 death requires BOTH window-missing AND pid-issue (tmux backend) — fix the OR
+[TEST] PASS: Test 7a: window-missing ALONE (pid alive) -> NOT dead, row kept
+[TEST] PASS: Test 7b: pid-dead ALONE (window present) -> NOT dead, row kept
+[TEST] PASS: Test 7c: window-missing AND pid-dead TOGETHER -> corroborated dead, pruned (control case)
+[TEST] Test 8: R2-4 tombstone write failure -> row KEPT in active.yaml, warning emitted
+[TEST] PASS: Test 8: tombstone write failure -> row KEPT in active.yaml, warning present
+[TEST] Test 9: R2-5 DEAD urgent line reported once per liveness change, not every delta poll
+[TEST] PASS: Test 9: DEAD reported on the corroborating poll, suppressed (deduped) on the next unchanged poll
+[TEST] Test 12: pid:null funnel row (fresh log) survives prune, no PID-only death
+[TEST] PASS: Test 12a: pid:null row with fresh log survives prune (absent PID alone is not death)
+[TEST] PASS: Test 12b: LEADV2_SUPERVISE_PRUNE_V2=0 reproduces exact prior PID-only prune
+
+[TEST] === Results: PASS=13 FAIL=0 ===
+
+[CORE-OFFLINE] lane truth batch (log_path + quarantine convergence)
+s-20260830T193029Z-80579-35926
+[registry] rendered /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.IgAf6i/suite.2m1zVm/lane-truth.vw1Fc2/repo/docs/LEAD_V2_STATE.md (1 sessions, history_preserved=False)
+[TEST] PASS: register sets default log_path to pulse.md
+[TEST] PASS: set_log_path stamps the real stream path
+[TEST] PASS: log_path no longer defaults to pulse.md
+[TEST] PASS: Row 1: lane with set_log_path resolves alive via real stream
+[TEST] PASS: Row 1: liveness source is the stamped log_path
+[TEST] PASS: set_log_path on unregistered task returns non-zero
+[TEST] PASS: Row 2: unregistered dispatch lane discoverable via glob
+[TEST] PASS: Row 2: direct dispatch registers its dispatch-<sig8> lane
+[TEST] FAIL: Row 1 mutation gate HEAD must resolve stamped stream alive
+  got: {"lane":"MUT-HEAD","verdict":"dead:no_log_artifact","age_s":null,"source":"handoff","log_path":null,"raw_log_path":null,"pid":null,"pid_alive":null,"reason":"no_log_artifact","attempt":null,"child_of":null,"pid_source":null,"pid_identity":null}
+[TEST] PASS: Row 1 mutation gate mutant: registry read does not treat pulse.md as live stream
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+[TEST] PASS: Row 3: dry-run reports block without writing quarantine
+[TEST] PASS: Row 3: dry-run writes no quarantine files
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-causal-critique.js
+leadv2-ledger.js
+leadv2-learn.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[TEST] PASS: Row 3: divergent user-script quarantined in exclude mode
+[TEST] PASS: Row 3: quarantined copy preserves the un-landed fix
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-causal-critique.js
+leadv2-ledger.js
+leadv2-learn.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-causal-critique.js
+leadv2-ledger.js
+leadv2-learn.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-causal-critique.js
+leadv2-ledger.js
+leadv2-learn.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[TEST] PASS: Row 3 convergence: 3 additional syncs produced 1 quarantine files (no duplicates)
+[plugin-sync] user-scripts SKIPPED leadv2-test-target.sh reason=drift-guard-excluded
+[plugin-sync] user-scripts: delivered=0 skipped=1 (of 1 canonical entries)
+leadv2-audit.js
+leadv2-intake-enrich.js
+leadv2-diverge.js
+leadv2-causal-critique.js
+leadv2-ledger.js
+leadv2-learn.js
+leadv2-diagnose.js
+leadv2-po-feedback-loop.js
+[TEST] PASS: Row 3 convergence: changed content produces new quarantine (1 → 2)
+
+[LANE-TRUTH-BATCH-01] pass=15 fail=1
+[CORE-OFFLINE] FAILED: lane truth batch (log_path + quarantine convergence)
+
+[CORE-OFFLINE] report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)
+[TEST] PASS: bash -n clean (gate scripts + lib)
+[TEST] PASS: /bin/bash -n (bash 3.2 syntax) product-close
+=== pass 1/2: post-fix (live tree) ===
+[TEST] PASS C1-good-report
+[TEST] PASS C2-report-missing
+[TEST] PASS C3-report-too-thin
+[TEST] FAIL C4-diff-lane-golden
+[TEST] PASS C5-dead-worker-kind
+[TEST] PASS C6a-unknown-kind-gate
+[TEST] PASS C6b-unknown-kind-journal
+[TEST] PASS C6c-guard-exemption
+
+=== pass 2/2: red-first pre-fix (git archive HEAD) — reds here are EVIDENCE ===
+[TEST] PASS C1-good-report
+[TEST] PASS C2-report-missing
+[TEST] PASS C3-report-too-thin
+[TEST] PASS C5-dead-worker-kind
+[TEST] PASS C6a-unknown-kind-gate
+
+Results (post-fix, live tree): 7 passed, 1 failed
+FAIL: C4-diff-lane-golden
+red-first: 0/5 post-fix-passing cases RED against pre-fix
+
+[TEST] 2 passed, 0 failed
+[CORE-OFFLINE] FAILED: report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)
+
+[CORE-OFFLINE] stop-gate autocommit on worker exit (V3-STOP-GATE-01)
+[TEST] PASS: bash -n leadv2-dispatch-product-close.sh
+[TEST] PASS: /bin/bash -n leadv2-dispatch-product-close.sh (bash 3.2 syntax)
+[TEST] PASS: bash -n leadv2-dispatch-code.sh
+[TEST] RED-then-GREEN: tracked-writeset-gets-committed (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: out-of-scope-junk-not-committed (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: staged-out-of-scope-not-laundered (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: missing-declared-path-still-commits (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: rename-stages-new-path (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: space-in-name-gets-committed (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: timeout-checkpoints-before-exit (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: foreign-repo-journaled (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: untracked-timeout-capture-and-commit (pre_rc=1 -> post_rc=0)
+[TEST] PASS: kill-switch LEADV2_STOP_GATE=0 restores old path (file stays uncommitted)
+Results: 13 passed(red->green), 0 failed, 0 green-pre-fix, 0 could-not-run
+
+[CORE-OFFLINE] burn governor (BURN-GOVERNOR-01: 24h burn gate)
+[TEST] PASS: bash -n clean (leadv2-burn-governor.sh)
+[TEST] PASS: bash -n clean (leadv2-dispatch-code.sh)
+[TEST] PASS: 2: under-soft -> verdict=ok
+[TEST] PASS: 3: burn==soft -> verdict=soft
+[TEST] PASS: 4: burn==hard -> verdict=hard
+[TEST] PASS: 5: burn>hard -> verdict=hard
+[TEST] PASS: 6: -25h row excluded, -23h row included (D1 hour_key format)
+[TEST] PASS: 7: LEADV2_BURN_GOVERNOR=0 -> ok/disabled
+[TEST] PASS: 8: missing db -> no_telemetry
+[TEST] PASS: 9: hourly table missing -> no_telemetry
+[TEST] PASS: 10: sqlite3 absent from PATH -> no_telemetry, exit 0
+[TEST] PASS: 11: hard<=soft -> defaults + bad_config
+[TEST] PASS: 12: non-numeric threshold -> defaults + bad_config
+[TEST] PASS: 13: NULL column doesn't zero the row (D7)
+[TEST] PASS: D6: 21-digit hard threshold classifies correctly, no crash/overflow
+[TEST] PASS: D6: 21-digit misconfigured pair -> defaults + bad_config, no crash
+[TEST] PASS: 14: hard -> exit 6, BURN GATE stderr, burn-deferred row written
+[TEST] PASS: 15: --force does not bypass hard verdict
+[TEST] PASS: 16: LEADV2_BURN_OVERRIDE=1 bypasses hard verdict, no park row
+[TEST] PASS: 17: soft -> exit 0, advisory BURN GATE line, resolve proceeds
+[TEST] PASS: 18: ok verdict -> zero burn_gate journal noise
+[TEST] PASS: 19: hard refusal created no worktree
+[TEST] PASS: 19: hard refusal left no ledger row
+[TEST] PASS: 20: bash -n clean (leadv2-fanout-lane-launcher.sh)
+[TEST] PASS: 20: leadv2-fanout-lane-launcher.sh has an explicit 6) arm for burn_hard_24h
+[TEST] PASS: 21: --provider glm under soft -> ok, soft/hard from ceiling
+[TEST] PASS: 22: --provider codex over hard -> verdict=hard
+[TEST] PASS: 23: --provider claude over soft, under hard -> verdict=soft
+[TEST] PASS: 24: --provider bogus -> fail-open bad_provider
+[TEST] PASS: 25: --provider glm with no telemetry -> fail-open no_telemetry
+[TEST] PASS: 26: --provider ignores LEADV2_BURN_SOFT_24H/HARD_24H env
+[TEST] PASS: 27: codex top-level limit_reached=true -> hard, used_pct=100 (sentinel beats low used_percent)
+[TEST] PASS: 28: codex binding-window limit_reached=true -> hard (parser's or-branch)
+[TEST] PASS: 29: unknown flag -> rc 2 + stderr name, no verdict line
+[TEST] PASS: backward-compat: default (no-flag) invocation still emits a verdict line
+
+=== 35 passed, 0 failed ===
+
+[CORE-OFFLINE] prepass resume invalidation (LANE-OBSERVABILITY-02)
+[TEST] PASS: R1a: first pinned run generated the prepass (sig8=6efde33a)
+[TEST] PASS: R1b: .head sidecar stamped with the worktree HEAD
+[TEST] PASS: R1c: artifact line 1 carries the base_head header
+[TEST] PASS: R2a: same-head resume served from cache
+[TEST] PASS: R2b: same-head resume did NOT invalidate
+[TEST] PASS: R3a: head-move resume journaled invalidation old->new
+[TEST] PASS: R3b: old prepass archived as architect-prepass.1788118354.md
+[TEST] PASS: R3c: regenerated .head names the NEW head
+[TEST] PASS: R3d: regenerated artifact header names the NEW head
+[TEST] PASS: R3e: second resume at the same new head hits cache (no invalidation loop)
+[TEST] PASS: R4: census-refused terminal invalidates the cached prepass
+[TEST] PASS: R5: kill switch restores today (no invalidation, cache served)
+
+[prepass-resume-invalidate] PASS=12 FAIL=0
+[CORE-OFFLINE] SHARD_RESULT idx=serial pass=8 fail=3 missing=0
+
+[CORE-OFFLINE] suites passed=72 failed=11 missing=0 repo=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01
+[FAIL] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/run-core-offline.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/tests/test-status-surface-bash32.sh
+== T1: /bin/bash -n on the renderer ==
+  ok   - renderer parses clean under bash 3.2
+== T2: /bin/bash -n on the wrapper ==
+  ok   - wrapper parses clean under bash 3.2
+== T3: env -i minimal PATH (the actual SwiftBar launch shape) renders lanes ==
+  ok   - wrapper renders 2 lane row(s) under minimal PATH + bash 3.2
+== T4: a dead renderer produces the failure title, never a confident 0/0 ==
+  ok   - wrapper reports renderer failure, not a confident 0/0
+== T5: STATUS-SURFACE-R5-01 — name resolution, unnamed, age-out, limits ==
+  ok   - R5-C1: legacy stays unnamed; single-lead may resolve handoff title
+  ok   - R5-C2: no-name lane renders exactly 'unnamed' (no dispatch-<sig8> in NAME)
+  ok   - R5-C3: age-out boundary — live@100000 + done@899 present, done@901 absent, header counts drop
+  ok   - R5-C4: heuristic cap -> 'не измеряется', no fabricated 'claude: N%'
+
+== T6: STATUS-SURFACE-R5-01 round 2 — minimal-env parity (PyYAML-optional reader) ==
+  ok   - _t6a: minimal-env render has no broken substring
+  ok   - _t6b: lane row-count parity (min=2 full=2)
+  ok   - _t6c: urgent parity (min=44 full=44)
+
+== T7: env -i minimal PATH single-lead render (MENUBAR-SHOWS-DEAD-LANES-AND-HASH-NAMES-01) ==
+  ok   - T7: single-lead source-list loop parses/runs under stripped env (rc=0, no ⚠)
+== T8: bash 3.2 param-expansion split on the multibyte '·' delimiter ==
+  ok   - T8a: multi-field line splits into first field + untouched remainder
+  ok   - T8b: line with no ' · ' delimiter leaves remainder equal to the input (no-suffix case)
+  ok   - T8c: same split verified under /bin/bash 3.2 runtime
+
+test-status-surface-bash32: 15 passed, 0 failed, 0 skipped
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/tests/test-status-surface-bash32.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/tests/test-status-surface-single-lead.sh
+== single-lead fixture titles ==
+  ok   - status-render consumes snapshot single_lead section
+  ok   - no-dispatch idle -> ⚪ idle
+  ok   - active dispatch -> 🛠 abcdef12 codex 2m
+  ok   - bogus state filtered -> 🛠 abcdef12 codex 2m
+  ok   - pending question -> ❓1
+  ok   - malformed ledger -> ⚠
+  ok   - python3 unavailable -> ⚠ (no legacy fallthrough)
+
+== process census (SWIFTBAR-ACTIVE-SOURCE-02) ==
+  ok   - (a) live claude-subsession → active with sig8
+  ok   - (a2) human task_id from reservation preferred over sig8
+  ok   - (b) worker gone + terminal → idle
+  ok   - (c) exactly 3 entries (2 live + 1 reservation-only)
+  ok   - (d) glm worker + terminal → idle (no terminal lanes in body)
+  ok   - (e) empty everything → idle
+
+== founder-named lanes (human task_id in run-id segment) ==
+  ok   - (f) founder-named glm lane → ACTIVE once with human name
+  ok   - (g) founder-named codex pid-file → ACTIVE once with human name
+
+== T-term: fresh vs stale terminal rows (Rule R retention) ==
+  ok   - (T-term-1) stale terminal (10m) drops the lane entirely
+  ok   - (T-term-2) fresh terminal (60s) drops the lane entirely
+
+== T-lead: the lead's own session is never a lane (C3) ==
+  ok   - (T-lead-1) lead's own session excluded from lanes
+  ok   - (T-lead-2) real codex session-runner still visible (exclusion is targeted)
+
+== T-multi: aggregation across repos (repo label on foreign lanes) ==
+  ok   - (T-multi) foreign-repo lane visible with its repo label
+
+== T-unverifiable: repo lacking a terminal ledger contributes zero rows ==
+  ok   - (T-unverifiable) repo with unreadable terminals contributes no rows
+
+== T-name: lane_label fallback + architect phase (C4) ==
+  ok   - (T-name-1) lane_label resolves the human name + legacy architect phase
+  ok   - (T-name-2) no name fields at all -> sig8 fallback (legacy ~ phase)
+
+test-status-surface-single-lead: 23 passed, 0 failed
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/tests/test-status-surface-single-lead.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/tests/test-status-surface-fast-names.sh
+== T1: resolve_lane_label fallback chain ==
+  ok   - ledger lane_label hit
+  ok   - active.yaml worktree fallback
+  ok   - mission heading fallback (MISSION-HEADING-TASK — implementation de)
+  ok   - miss -> sig8 unchanged
+  ok   - lane_label pipe stripped (got 'AB')
+== T2: cold cache ==
+  ok   - cold cache shows «нет кэша», no spinner
+  ok   - cold render <1s (wall 0s)
+  ok   - cold render kicked a refresh (lock held)
+== T3: warm cache ==
+  ok   - warm cache: label in title+row, no sig8 sub-row
+  ok   - warm render <1s (wall 0s)
+== T4: stale cache ==
+  ok   - stale cache -> «⚠️ кэш устарел»
+== T5: rename hygiene (SELF_PATH) ==
+  ok   - copy-reply bash= path is the .5s.sh and exists (/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/leadv2-status-surface.5s.sh)
+
+test-status-surface-fast-names: 12 passed, 0 failed
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/tests/test-status-surface-fast-names.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+PASS: terminal funnel and CLOSE gate downgrade worker dirt, preserve the dirty-death pin, keep pass_unlanded non-transitive, honor the rollback switch, and permit bootstrap-only lanes
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-lane-containment.sh
+PASS: declared writes violate containment; concurrent/unattributed and control-plane residue do not
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-lane-containment.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
+[TEST] PASS: bash -n lib/leadv2-lane-guard.sh
+[TEST] PASS: product-close sources the lane guard with a consumer-repo-safe fallback
+[TEST] GREEN-PRE-FIX: state-file-excluded -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: pycache-dir-excluded -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: pyc-untracked-excluded -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: handoff-still-excluded -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: real-work-still-refusable -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: declared-file-survives -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: no-loose-pycache-match -- passed against the pre-fix script too (pre_rc=0)
+[TEST] RED-then-GREEN: both-sites-use-constant (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: bootstrap-symlink-only-not-dirty -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: bootstrap-symlink-plus-real-file-dirty -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: real-file-at-bootstrap-prefix-dirty -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: tracked-modified-at-bootstrap-prefix-dirty -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: bootstrap-filter-controls-runtime -- passed against the pre-fix script too (pre_rc=0)
+
+Results: 1 passed(red->green), 0 failed, 12 green-pre-fix, 0 could-not-run
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
+[TEST] PASS: bash -n leadv2-merged-worktree-sweep.sh
+[TEST] GREEN-PRE-FIX: merged-lane-with-orchestration-dirt-is-swept -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: real-uncommitted-work-is-never-swept -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: unmerged-lane-is-never-swept -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: newborn-lane-age-0-is-never-swept -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: untracked-handoff-deliverable-survives-sweep -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: staged-handoff-not-reverted-by-sweep -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: ignored-handoff-not-removed-through -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: exclusion-regex-matches-its-twin -- also passed pre-fix; a safety invariant, not evidence of this fix
+
+Results: 0 passed(red->green), 0 failed, 8 green-pre-fix
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+[TEST] PASS: bash -n sweep hook + cleanup + lib
+[TEST] GREEN-PRE-FIX: P1-registered-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P2-arm-open-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P3-arm-terminal-lane-swept(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P4-live-pid-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P5-young-lane-kept(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P6-orphan-swept-and-journaled(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P7-unreadable-registry-sweeps-nothing(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P8-malformed-env-degrades(hook) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: P11-age-from-gitdir-not-dirmtime(hook) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P12-min-age-s-precedence(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P1-registered-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P2-arm-open-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P3-arm-terminal-lane-swept(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P4-live-pid-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P5-young-lane-kept(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P6-orphan-swept-and-journaled(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P7-unreadable-registry-sweeps-nothing(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P8-malformed-env-degrades(dead) (pre_rc=1 -> post_rc=0)
+[TEST] RED-then-GREEN: P11-age-from-gitdir-not-dirmtime(dead) (pre_rc=1 -> post_rc=0)
+[TEST] GREEN-PRE-FIX: P12-min-age-s-precedence(dead) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] GREEN-PRE-FIX: P9-failed-removal-never-guts(hook) -- also passed pre-fix; a safety invariant, not evidence of this fix
+[TEST] RED-then-GREEN: P13-pid-reuse-is-not-live
+[TEST] RED-then-GREEN: P14-pid-birth-lib-absent-degrades
+[TEST] RED-then-GREEN: P10-twin-regex-unchanged
+
+Results: 11 passed(red->green), 0 failed, 13 green-pre-fix
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-t13-slice1.sh
+[TEST] PASS: syntax
+[TEST] PASS: guard-young green
+[TEST] PASS: guard-young negative-control red
+[TEST] PASS: guard-unknown-age green
+[TEST] PASS: guard-unknown-age negative-control red
+[TEST] PASS: guard-malformed-age green
+[TEST] PASS: guard-malformed-age negative-control red
+[TEST] PASS: guard-cas-id-swap green
+[TEST] PASS: guard-cas-id-swap negative-control red
+[TEST] PASS: guard-cas-gen-swap green
+[TEST] PASS: guard-cas-gen-swap negative-control red
+[TEST] PASS: tasks-only-refusable
+[TEST] PASS: tasks-noise-with-real-work
+[TEST] PASS: tasks-bak-anchored
+[TEST] PASS: tasks-bak negative-control red
+[TEST] PASS: exit76-permanent-sentinel-no-respawn-and-rc-failure green
+[TEST] PASS: exit76-permanent-sentinel-no-respawn-and-rc-failure negative-control red
+[TEST] PASS: exit76-sentinel-suffix-not-suppressed green
+[TEST] PASS: exit76-sentinel-suffix-not-suppressed negative-control red
+[TEST] RESULTS PASS=19 FAIL=0
+[PASS] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-PIN-CLUSTER-01/plugins/leadv2/scripts/tests/test-t13-slice1.sh
+  Failures (blocking):
+    - plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: 9 passed, 1 failed, scope=changed
+rc=1
