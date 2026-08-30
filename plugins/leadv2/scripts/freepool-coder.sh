@@ -1524,6 +1524,22 @@ deadhand_check() {
           delta="$(work_delta_present "${run_dir}" "${cwd_dir}" || echo skip)"
           [[ "${delta}" == "no" ]] && reason="no_work_delta"
         fi
+        # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01 G4: a changed *.sh/*.py that
+        # does not parse must never be recorded as a completed run -- the
+        # cheapest, highest-yield check available (two of three unusable
+        # 2026-08-30 free-arm results were exactly this: a syntactically
+        # broken hook line, a bash -n-failing suite committed four times).
+        if [[ -z "${reason}" ]]; then
+          local gate_lib gate_out gate_rc
+          gate_lib="${SELF%/*}/lib/leadv2-worker-output-gate.sh"
+          if [[ -x "${gate_lib}" || -f "${gate_lib}" ]] && git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            gate_out="$(bash "${gate_lib}" "${cwd_dir}" --from-git-diff HEAD 2>&1)"; gate_rc=$?
+            if [[ ${gate_rc} -ne 0 ]]; then
+              reason="parse_error"
+              printf '%s\n' "${gate_out}" >> "${run_dir}/progress.log" 2>/dev/null || true
+            fi
+          fi
+        fi
       fi
     fi
   fi

@@ -6650,7 +6650,19 @@ exit is treated as an incident."
       _arb_ui=1
     fi
     [[ "${_arb_safety}" == "1" || "${_arb_ui}" == "1" ]] && _arb_protected=1
-    _arb_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[6]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${sig8}")"
+    # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01: the router already filtered
+    # candidate_arms above (arm_not_capable_for_size, protected_path, etc.)
+    # but the arbiter runs its own independent capability matrix and never
+    # saw that exclusion -- it could and did re-admit an arm the router had
+    # just excluded in the same dispatch (arm_excluded by=router
+    # arm=freepool reason=arm_not_capable_for_size, immediately followed by
+    # route_resolved by=arbiter ... arbiter_pick=freepool). Pass the
+    # router's surviving set as allowed_arms so the arbiter's own matrix
+    # filter (leadv2-route-arbiter.sh:146, `allowed is None or c.get('arm')
+    # in allowed`) intersects against it instead of never seeing it.
+    local _arb_allowed_csv
+    _arb_allowed_csv="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
+    _arb_desc="$(python3 -c 'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a]; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}")"
     _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
     _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
