@@ -2046,7 +2046,9 @@ fi
 # one mechanism for both product-close and phase8-e2e-gate. Provides
 # _lv2_realpath and _lv2_e2e_resolve_root; _pc_realpath is a backward-compat alias.
 # shellcheck source=lib/leadv2-e2e-root.sh
-source "${SCRIPT_DIR}/lib/leadv2-e2e-root.sh"
+_E2E_ROOT_SH="${SCRIPT_DIR}/lib/leadv2-e2e-root.sh"
+[[ -f "${_E2E_ROOT_SH}" ]] || _E2E_ROOT_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-e2e-root.sh"
+[[ -f "${_E2E_ROOT_SH}" ]] && source "${_E2E_ROOT_SH}"
 _pc_realpath() { _lv2_realpath "$@"; }
 # C2 (LANDING-BLOCKER-R2): `git diff HEAD` never sees untracked paths, and a brand-new
 # file is a large share of lane deliverables -- LANE_WRITES=agent/newmod.py, created but
@@ -2877,7 +2879,9 @@ pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
 refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
 resolver_rc="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_rc=//p' | head -n1)"
 resolver_stderr="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_stderr=//p' | head -n1)"
-source "${SCRIPT_DIR}/lib/leadv2-review-reroute-note.sh"
+_REVIEW_REROUTE_NOTE_SH="${SCRIPT_DIR}/lib/leadv2-review-reroute-note.sh"
+[[ -f "${_REVIEW_REROUTE_NOTE_SH}" ]] || _REVIEW_REROUTE_NOTE_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-review-reroute-note.sh"
+[[ -f "${_REVIEW_REROUTE_NOTE_SH}" ]] && source "${_REVIEW_REROUTE_NOTE_SH}"
 _reroute_note="$(leadv2_review_reroute_note "${TASK}" "${pool}" "${reviewer}")"
 [[ -n "${_reroute_note}" ]] && emit decision "${_reroute_note}"
 # Defense-in-depth (R9): the resolver already filters the author out of its pool, but

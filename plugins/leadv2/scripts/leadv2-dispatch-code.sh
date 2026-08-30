@@ -446,13 +446,17 @@ declare -F lv2_scrub_bypass_env >/dev/null 2>&1 && lv2_scrub_bypass_env
 # into their parent using this SAME constant, so the registrar and the fold
 # rule can never drift apart. Export-only, no flock, safe to source directly.
 # shellcheck source=leadv2-lane-child-suffixes.sh
-source "${SCRIPT_DIR}/leadv2-lane-child-suffixes.sh"
+_LANE_CHILD_SUFFIXES_SH="${SCRIPT_DIR}/leadv2-lane-child-suffixes.sh"
+[[ -f "${_LANE_CHILD_SUFFIXES_SH}" ]] || _LANE_CHILD_SUFFIXES_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-lane-child-suffixes.sh"
+[[ -f "${_LANE_CHILD_SUFFIXES_SH}" ]] && source "${_LANE_CHILD_SUFFIXES_SH}"
 ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
 # SWIFTBAR-R4 RC-1: flock(1) doesn't exist on the widget's acceptance PATH (no
 # util-linux on macOS) -- lv2_lock_wait delegates to real flock when present,
 # else an mkdir-based fallback with the same rc0/rc3 contract.
 # shellcheck source=leadv2-portable-lock.sh
-source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
+_PORTABLE_LOCK_SH="${SCRIPT_DIR}/leadv2-portable-lock.sh"
+[[ -f "${_PORTABLE_LOCK_SH}" ]] || _PORTABLE_LOCK_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-portable-lock.sh"
+[[ -f "${_PORTABLE_LOCK_SH}" ]] && source "${_PORTABLE_LOCK_SH}"
 # DISPATCH-CLOSE-GATE-01: Mechanism 1 (refuse a dispatch whose mission demands a path
 # outside LANE_WRITES) and Mechanism 2 (unproven-fix reporting at close).
 # The consumer repos install this dispatcher as a per-file symlink, so its sibling
@@ -675,9 +679,11 @@ PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.s
 # PHASE-DISCIPLINE-01 D1/D2: shared admission map + receipt writer (also
 # sourced by leadv2-backlog-pump.sh — one inode of class-mapping truth).
 TASK_JUDGE_BIN="${LEADV2_TASK_JUDGE_BIN:-${SCRIPT_DIR}/leadv2-task-judge.sh}"
-if [[ -f "${SCRIPT_DIR}/lib/leadv2-admission-class.sh" ]]; then
+_ADMISSION_CLASS_SH="${SCRIPT_DIR}/lib/leadv2-admission-class.sh"
+[[ -f "${_ADMISSION_CLASS_SH}" ]] || _ADMISSION_CLASS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-admission-class.sh"
+if [[ -f "${_ADMISSION_CLASS_SH}" ]]; then
   # shellcheck disable=SC1091
-  source "${SCRIPT_DIR}/lib/leadv2-admission-class.sh" || true
+  source "${_ADMISSION_CLASS_SH}" || true
 fi
 # B1 R2: record-review refuses a build worker minting a review of ITS OWN diff from
 # inside a lane worktree (self-attestation). Set to 0 to disable the check (emergency escape).

@@ -187,13 +187,46 @@ out_l1a="$(cd "${LANE_ROOT}" && bash "${DISPATCH_SH}" close-gate "/etc/passwd" 2
 out_l1b="$(cd "${LANE_ROOT}" && bash "${DISPATCH_SH}" close-gate "../../etc/passwd" 2>&1)"; rc_l1b=$?
 [[ ${rc_l1b} -ne 0 ]] && pass "L1: .. task_id rejected" || fail "L1: .. task_id NOT rejected: rc=${rc_l1b} out=${out_l1b}"
 
-# ── C5: terminal evidence rendering is a live shared-library seam ─────────────
-# The close path calls this function for every terminal `_dl_note`; run its observable
-# output directly instead of parsing or slicing production source text.
-rendered="$(leadv2_red_proof_render_evidence "diff=abc123" " unproven=negated grep never fails")"
-[[ "${rendered}" == "diff=abc123 unproven=negated grep never fails" ]] \
-  && pass "C5: rendered terminal evidence carries the unproven suffix" \
-  || fail "C5: rendered terminal evidence lost the suffix: ${rendered}"
+# ── C3: execute every production terminal-render expression ──────────────────
+# The five `_dl_note` calls are the close notes a founder sees.  Extract their command
+# substitutions and execute them with the production renderer loaded; this is deliberately
+# behavioural (the values rendered), not a grep assertion about the source text.
+_rendered_terminal_notes() { # <product-close.sh> -> one rendered note per production call site
+  local product_close="$1" expression count=0
+  while IFS= read -r expression; do
+    [[ -n "${expression}" ]] || continue
+    count=$((count + 1))
+    (
+      diff_hash="abcdef123456"
+      _pc_report_deliverable="docs/handoff/render-proof.md"
+      _rgf_dnm=""
+      _t11_branch="render-probe"
+      _pc_unproven_suffix=" unproven=negated grep never fails"
+      # shellcheck disable=SC2086
+      eval "${expression}"
+      printf '\n'
+    )
+  done <<EOF
+$(awk '
+  /_dl_note .*leadv2_red_proof_render_evidence/ {
+    line=$0
+    sub(/^.*\$\(/, "", line)
+    sub(/\)".*$/, "", line)
+    print line
+  }
+' "${product_close}")
+EOF
+  [[ "${count}" -eq 5 ]] || return 64
+}
+
+rendered_notes="$(_rendered_terminal_notes "${PRODUCT_CLOSE_SH}")"; rendered_notes_rc=$?
+if [[ ${rendered_notes_rc} -ne 0 ]]; then
+  fail "C3: production terminal-render anchor drifted (expected 5 call sites, rc=${rendered_notes_rc})"
+elif [[ "$(printf '%s\n' "${rendered_notes}" | grep -cF 'unproven=negated grep never fails')" -eq 5 ]]; then
+  pass "C3: all five production rendered close notes carry the unproven downgrade"
+else
+  fail "C3: rendered production close note lost downgrade: ${rendered_notes}"
+fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "${PASS}" "${FAIL}"
 (( FAIL == 0 ))
