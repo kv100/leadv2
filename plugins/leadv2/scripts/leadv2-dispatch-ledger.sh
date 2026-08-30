@@ -143,7 +143,7 @@ _dispatch_terminal_last_field() {
 }
 
 # rc0: a TRUE terminal (landed|dead) row already exists for <sig8>. rc1: none found (ledger
-# missing, sig8 unseen, or its only history is a retryable refused/parked row -- wave2
+# missing, sig8 unseen, or its only history is a retryable pass_unlanded/refused/parked row -- wave2
 # round3 finding 3: refused/parked never count as "exists" here, since a later attempt at
 # the same sig8 must still be able to record its real landed/dead outcome).
 dispatch_terminal_exists() {
@@ -151,7 +151,7 @@ dispatch_terminal_exists() {
   [[ -f "${f}" ]] || return 1
   last="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
   case "${last}" in
-    landed|pass_unlanded|dead) return 0 ;;
+    landed|dead) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -317,11 +317,11 @@ dispatch_ledger_write_terminal() {
   local rc
   (
     lv2_lock_wait "${lockf}" 10 || exit 3
-    case "${terminal}" in landed|pass_unlanded|dead) _lv2_terminal_attempt_superseded "${founder}" "${attempt}" && exit 4 ;; esac
+    case "${terminal}" in landed|dead) _lv2_terminal_attempt_superseded "${founder}" "${attempt}" && exit 4 ;; esac
     local _last_terminal _same_attempt_row
     _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
     case "${_last_terminal}" in
-      landed|pass_unlanded|dead) exit 2 ;;  # a TRUE terminal already won write-once for this sig8
+      landed|dead) exit 2 ;;  # a TRUE terminal already won write-once for this sig8
     esac
     # LOW-3: aligned on the ANY-row form (matching dispatch_ledger_sweep_write_dead's own
     # _same_attempt_row check below) -- comparing only the LAST row missed an exit-trap
@@ -1083,6 +1083,10 @@ EOF
   exit 2
 }
 
+# Kept source-safe for the behavioral harnesses.  Direct CLI invocation retains the
+# historical command dispatcher below; a caller that sources this file gets only the
+# real ledger functions and can exercise them with isolated lower-level fixtures.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
   write-terminal)
     shift
@@ -1122,3 +1126,4 @@ case "${1:-}" in
     ;;
   *) usage ;;
 esac
+fi

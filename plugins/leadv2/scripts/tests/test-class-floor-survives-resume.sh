@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mutation: make the task receipt read in _admission_classify return empty.
 set -euo pipefail
-DIR="$(cd "$(dirname "$0")" && pwd)"; LIB="${DIR}/../lib/leadv2-admission-class.sh"
+ROOT="${LEADV2_TEST_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"; LIB="${ROOT}/scripts/lib/leadv2-admission-class.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 source "$LIB"
 sig=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

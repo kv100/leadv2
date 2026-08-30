@@ -2,7 +2,7 @@
 # Shared lane cleanliness and post-hoc containment checks.  Sourced by the
 # close gate and terminal ledger; keep the porcelain grammar in one place.
 
-_PC_PORCELAIN_EXCLUDE_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\\.md|^.. "?.*__pycache__/|^.. "?.*\\.pyc$'
+_PC_PORCELAIN_EXCLUDE_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\.md|^.. "?.*__pycache__/|^.. "?.*\.pyc$'
 _PC_BOOTSTRAP_PREFIX_RE='^\\.claude/(commands|scripts|agents)/'
 
 _lv2_norm_write() { printf '%s' "$1" | sed -e 's#^\\./##' -e 's#/$##'; }

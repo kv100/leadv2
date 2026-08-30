@@ -979,6 +979,7 @@ _set_worktree_pin_line() {
 }
 
 _deliver_plan_into_lane() { # <sig8> <founder-task-id>
+  # Behavioral coverage is selected by tests/run-all.sh's EXTRA_SUITE_MAP.
   local sig8="$1" task_id="$2" src dst f
   LANE_LOCAL_PLAN_LINE=""
   [[ "${WORK_ROOT}" != "${PROJECT_ROOT}" && -n "${task_id}" ]] || return 0
