@@ -42,6 +42,12 @@ FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-$PROJECT_ROOT/docs/leadv2/fou
 # still wrote into the live persona-engine repo because it was hardcoded
 # off PROJECT_ROOT).
 FOUNDER_STATUS_FULL_PATH="${LEADV2_FOUNDER_STATUS_FULL_PATH:-$PROJECT_ROOT/docs/leadv2/founder-status-full.md}"
+# PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01: the collector below is what fills
+# the "lanes" section this board renders; if it silently scoped to one repo,
+# a lane registered elsewhere would never reach a row here and the board
+# would render ДОСКА ПУСТА while that lane was writing. See
+# leadv2-status-collector.sh's LEADV2_LANES_ALL_REPOS pin and
+# test-pulse-empty-board.sh for the mutation-proven control.
 COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector.sh}"
 TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
 CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
