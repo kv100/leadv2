@@ -423,7 +423,7 @@ case "${1:-}" in
     printf '%s\n' "$handle"
     exit 0
     ;;
-  status) [[ -n "${2:-}" && -f "$RUNS/$2" ]] && exit 0; exit 1 ;;
+  status) [[ -n "${2:-}" && -f "$RUNS/$2" ]] && { printf 'status: complete\n'; exit 0; }; exit 1 ;;
   *) exit 0 ;;
 esac
 SH
