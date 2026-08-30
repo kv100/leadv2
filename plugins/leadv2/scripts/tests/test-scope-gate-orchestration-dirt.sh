@@ -21,8 +21,9 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET_REL="leadv2-dispatch-product-close.sh"
+TARGET_REL="lib/leadv2-lane-guard.sh"
 LIVE_SCRIPT="${SCRIPT_DIR}/../${TARGET_REL}"
+CLOSE_SCRIPT="${SCRIPT_DIR}/../leadv2-dispatch-product-close.sh"
 
 PASS=0; FAIL=0; GREEN_PRE_FIX=0; COULD_NOT_RUN=0
 declare -a ERRORS=()
@@ -32,6 +33,7 @@ PREFIX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/scope-dirt.XXXXXX")"
 trap 'rm -rf "${PREFIX_DIR}"' EXIT
 REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
 PRE_SCRIPT="${PREFIX_DIR}/pre-${TARGET_REL}"
+mkdir -p "$(dirname "${PRE_SCRIPT}")"
 if [[ -n "${REPO}" ]]; then
   git -C "${REPO}" show "HEAD:plugins/leadv2/scripts/${TARGET_REL}" > "${PRE_SCRIPT}" 2>/dev/null || : > "${PRE_SCRIPT}"
 fi
@@ -76,9 +78,7 @@ _extract_filter() { # <script> -> prints regex
 _both_sites_use_constant() { # <script>
   local s="$1" n_sites n_const
   [[ -f "$s" ]] || return 2
-  n_sites="$(grep -c "status --porcelain --untracked-files=all" "$s" 2>/dev/null || printf 0)"
-  n_const="$(grep -c 'grep -vE "\${_PC_PORCELAIN_EXCLUDE_RE}"' "$s" 2>/dev/null || printf 0)"
-  [[ "${n_sites}" -ge 2 && "${n_const}" -eq "${n_sites}" ]] && return 0
+  grep -Fq '_PC_PORCELAIN_EXCLUDE_RE=' "$s" && grep -Fq 'grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}"' "$s" && return 0
   return 1
 }
 
@@ -91,9 +91,7 @@ _both_sites_use_constant() { # <script>
 _both_sites_use_bootstrap_filter() { # <script>
   local s="$1" n_sites n_filter
   [[ -f "$s" ]] || return 2
-  n_sites="$(grep -c "status --porcelain --untracked-files=all" "$s" 2>/dev/null || printf 0)"
-  n_filter="$(grep -c '| _pc_drop_bootstrap_dirt "\$' "$s" 2>/dev/null || printf 0)"
-  [[ "${n_sites}" -ge 2 && "${n_filter}" -eq "${n_sites}" ]] && return 0
+  grep -Fq '_pc_drop_bootstrap_dirt' "$s" && return 0
   return 1
 }
 
@@ -103,7 +101,7 @@ _both_sites_use_bootstrap_filter() { # <script>
 # source-safe/functions-only guard. rc2 if the expected function boundaries are gone
 # (reported honestly, same convention as _extract_filter above).
 _pc_source_lane_dirty_funcs() { # <script>
-  local s="$1" snippet start end
+  local s="$1"
   # Functions/vars defined via eval below are GLOBAL and persist across calls in this
   # process -- without this unset, a pre-fix run right after a post-fix run would keep
   # seeing the post-fix _pc_drop_bootstrap_dirt (run_case always runs PRE then LIVE, so
@@ -111,16 +109,7 @@ _pc_source_lane_dirty_funcs() { # <script>
   unset -f _pc_drop_bootstrap_dirt _pc_lane_dirty 2>/dev/null
   unset _PC_BOOTSTRAP_PREFIX_RE 2>/dev/null
   [[ -f "$s" ]] || return 2
-  start="$(grep -n '^_PC_PORCELAIN_EXCLUDE_RE=' "$s" | head -1 | cut -d: -f1)"
-  end="$(grep -n '^_pc_lane_dirty() {' "$s" | head -1 | cut -d: -f1)"
-  [[ -n "${start}" && -n "${end}" ]] || return 2
-  end="$(tail -n "+${end}" "$s" | grep -n '^}' | head -1 | cut -d: -f1)"
-  [[ -n "${end}" ]] || return 2
-  local abs_end
-  abs_end=$(( $(grep -n '^_pc_lane_dirty() {' "$s" | head -1 | cut -d: -f1) + end - 1 ))
-  snippet="$(sed -n "${start},${abs_end}p" "$s")"
-  [[ -n "${snippet}" ]] || return 2
-  eval "${snippet}" 2>/dev/null || return 2
+  source "$s" 2>/dev/null || return 2
   declare -F _pc_lane_dirty >/dev/null 2>&1 || return 2
   return 0
 }
@@ -251,6 +240,11 @@ run_case() { # <name> <fn>
 
 log "PASS: bash -n ${TARGET_REL}"
 bash -n "${LIVE_SCRIPT}" || { log "FAIL: bash -n"; exit 1; }
+if grep -Fqx 'source "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"' "${CLOSE_SCRIPT}"; then
+  log "PASS: product-close sources the single lane guard"
+else
+  log "FAIL: product-close does not source the lane guard"; exit 1
+fi
 
 run_case "state-file-excluded"       case_state_file
 run_case "pycache-dir-excluded"      case_pycache_dir

@@ -319,9 +319,14 @@ dispatch_ledger_write_terminal() {
     lv2_lock_wait "${lockf}" 10 || exit 3
     case "${terminal}" in landed|dead) _lv2_terminal_attempt_superseded "${founder}" "${attempt}" && exit 4 ;; esac
     local _last_terminal _same_attempt_row
-    _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
+    _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal || true)"
     case "${_last_terminal}" in
       landed|dead) exit 2 ;;  # a TRUE terminal already won write-once for this sig8
+      pass_unlanded)
+        # The bounded dirty-lane funnel escalates repeated retryable downgrades
+        # to refused. That one stronger safety disposition is permitted; a later
+        # landed (or another pass) may never overwrite the first pass row.
+        [[ "${terminal}" == "refused" ]] || exit 2 ;;
     esac
     # LOW-3: aligned on the ANY-row form (matching dispatch_ledger_sweep_write_dead's own
     # _same_attempt_row check below) -- comparing only the LAST row missed an exit-trap
@@ -466,11 +471,24 @@ dispatch_ledger_sweep_write_dead() {
     log_err "sweep_write_dead: no attempt recorded on lane=${lane} sig=${sig8} -- refusing to sweep (attempt-less row predates hardening or was never stamped)"
     return 2
   fi
-  local founder cause_s evidence_s attempt_s
+  # A dead process may still have left worker-owned bytes in its pinned lane.
+  # Resolve the lane before choosing the terminal so the sweep cannot erase that
+  # distinction merely because its liveness probe is process-only.
+  local lane_root=""
+  if [[ -x "${SCRIPT_DIR}/leadv2-lane-worktree.sh" ]]; then
+    lane_root="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${lane}" 2>/dev/null || true)"
+  fi
+  local terminal="dead"
+  if [[ -n "${lane_root}" ]] && lv2_lane_dirty "${lane_root}"; then
+    terminal="dead_with_unlanded_work"
+    evidence="${evidence}${evidence:+ }lane_root=${lane_root}"
+  fi
+  local founder cause_s evidence_s attempt_s terminal_s
   founder="$(json_safe "${lane}")"
   cause_s="$(json_safe "${cause}")"
   evidence_s="$(json_safe "${evidence}")"
   attempt_s="$(json_safe "${attempt}")"
+  terminal_s="$(json_safe "${terminal}")"
   local f lockf; f="$(dispatch_terminal_ledger_file)"; lockf="$(dispatch_terminal_ledger_lock_file)"
   mkdir -p "$(dirname "${f}")" 2>/dev/null
   mkdir -p "$(dirname "${lockf}")" 2>/dev/null
@@ -481,23 +499,25 @@ dispatch_ledger_sweep_write_dead() {
   # terminal short-circuits before this point) carrying a real display name, prefer
   # THAT -- it is more likely the mission-H1-derived name than `lane` is. Falls back to
   # founder_task_id when no prior row (or no task_id on it) exists.
-  local _tid; _tid="$(_dispatch_terminal_last_field "${sig8}" "${f}" task_id)"
-  [[ -n "${_tid}" ]] || _tid="${founder:0:64}"
+  local _tid; _tid="$(_dispatch_terminal_last_field "${sig8}" "${f}" task_id || true)"
+  if [[ -z "${_tid}" ]]; then
+    _tid="${founder:0:64}"
+  fi
   local rc
   (
     lv2_lock_wait "${lockf}" 10 || exit 3
     local _last_terminal _same_attempt_row
-    _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
+    _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal || true)"
     case "${_last_terminal}" in
-      landed|pass_unlanded|dead) exit 2 ;;  # sig8-wide TRUE terminal already recorded -- write-once-final, attempt-agnostic by design
+      landed|pass_unlanded|dead|dead_with_unlanded_work) exit 2 ;;  # sig8-wide TRUE terminal already recorded -- write-once-final, attempt-agnostic by design
     esac
     if [[ -f "${f}" ]]; then
-      _same_attempt_row="$(grep -F "\"task_sig\":\"${sig8}\"" "${f}" 2>/dev/null | grep -F "\"attempt\":\"${attempt_s}\"" | head -n 1)"
+      _same_attempt_row="$(grep -F "\"task_sig\":\"${sig8}\"" "${f}" 2>/dev/null | grep -F "\"attempt\":\"${attempt_s}\"" | head -n 1 || true)"
       [[ -n "${_same_attempt_row}" ]] && exit 2  # a row for THIS exact attempt already exists (refused/parked/landed/dead) -- never append dead on top of it
     fi
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
-    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","task_id":"%s","terminal":"dead","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
-      "${ts}" "${sig8}" "${founder}" "${_tid}" "${cause_s}" "${evidence_s}" "${attempt_s}" >> "${f}" || exit 1
+    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","task_id":"%s","terminal":"%s","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
+      "${ts}" "${sig8}" "${founder}" "${_tid}" "${terminal_s}" "${cause_s}" "${evidence_s}" "${attempt_s}" >> "${f}" || exit 1
     exit 0
   ) 9>"${lockf}"
   rc=$?
@@ -505,7 +525,7 @@ dispatch_ledger_sweep_write_dead() {
     0)
       if [[ -f "${JOURNAL_BIN}" ]]; then
         bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision \
-          "dispatch_terminal task=${sig8} terminal=dead cause=${cause_s} attempt=${attempt_s} source=sweep" >/dev/null 2>&1 || true
+          "dispatch_terminal task=${sig8} terminal=${terminal_s} cause=${cause_s} attempt=${attempt_s} source=sweep" >/dev/null 2>&1 || true
       fi
       # T16 §10: swept dead IS a true terminal -- the lane row must leave active.yaml
       # here too, or swept lanes accumulate exactly like closed ones did. `lane` is the

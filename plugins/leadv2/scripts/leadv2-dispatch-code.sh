@@ -6047,6 +6047,10 @@ cmd_resolve() {
   # confirmed by census) -- this span is closed by the outer `lane` arm_exit
   # trap's stack-drain, never by an explicit end call in this function.
   lv2_trace_begin "lane.resolve"
+  # Sweep before this invocation can reserve a new lane.  This is deliberately
+  # best-effort observability: an unavailable liveness probe must not turn an
+  # otherwise dispatchable task into a false admission failure.
+  [[ -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep >/dev/null 2>&1 9>&- || true
   # Reconcile before admission: stale rows never consume a slot and a live
   # orphan is made visible before this dispatch can duplicate it.
   declare -F lane_reconcile >/dev/null 2>&1 && lane_reconcile >/dev/null 2>&1 || true

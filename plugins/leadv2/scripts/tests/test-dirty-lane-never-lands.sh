@@ -86,7 +86,10 @@ bash "$ROOT/scripts/leadv2-dispatch-product-close.sh" "$T/main" closeboot sonnet
 close_rc=$?
 set -e
 [[ $close_rc -eq 5 ]] # no product diff is expected; the gate still wrote its verdict
-! grep -Fq 'reason: unscoped_lane_work' "$T/main/docs/handoff/dispatch-closeboot/review-gate.md"
+if grep -Fq 'reason: unscoped_lane_work' "$T/main/docs/handoff/dispatch-closeboot/review-gate.md"; then
+  echo 'bootstrap-symlink-only lane was classified as unscoped work' >&2
+  exit 1
+fi
 if lv2_lane_dirty "$T/lane"; then
   git -C "$T/lane" status --porcelain --untracked-files=all >&2
   echo 'bootstrap-symlink-only lane was classified dirty' >&2
@@ -102,4 +105,16 @@ printf '{"task_sig":"bound000","terminal":"pass_unlanded","cause":"dirty_lane:pr
 printf 'dirty\n' >> "$T/lane/worker.txt"
 LEADV2_DIRTY_LANE_MAX_ATTEMPTS=2 write_terminal bound000 TASK landed completed
 assert_last refused dirty_lane_retry_exhausted:completed
-echo 'PASS: terminal funnel and CLOSE gate downgrade worker dirt, permit bootstrap-only lanes, and bound retries'
+
+# A killed worker is not plain `dead` when its pinned lane still carries
+# uncommitted worker-owned bytes. Exercise the sweep writer itself (not a
+# synthetic ledger append) through the same lane-worktree lookup used by cmd_sweep.
+: > "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE"
+printf 'dirty after worker death\n' >> "$T/lane/worker.txt"
+dispatch_ledger_sweep_write_dead sweep000 TASK swept 'verdict=dead:no_log_artifact' attempt-sweep-1
+assert_last dead_with_unlanded_work swept
+if grep -F '"task_sig":"sweep000"' "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE" | grep -Fq '"terminal":"dead"'; then
+  echo 'sweep recorded plain dead for dirty worker lane' >&2
+  exit 1
+fi
+echo 'PASS: terminal funnel and CLOSE gate downgrade worker dirt, permit bootstrap-only lanes, bound retries, and name a dead dirty lane'

@@ -5,6 +5,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/../.." && pwd)"
 GUARD="${ROOT}/scripts/codex-guard.sh"
+LANE_GUARD="${ROOT}/scripts/lib/leadv2-lane-guard.sh"
 CLOSE="${ROOT}/scripts/leadv2-dispatch-product-close.sh"
 DISPATCH="${ROOT}/scripts/leadv2-dispatch-code.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/t13-slice1.XXXXXX")"
@@ -89,13 +90,7 @@ guard_case_cas_gen() { # <script>
 extract_close() { # <script>
   unset -f _pc_norm_write _pc_drop_bootstrap_dirt _pc_lane_dirty 2>/dev/null || true
   unset _PC_PORCELAIN_EXCLUDE_RE _PC_BOOTSTRAP_PREFIX_RE 2>/dev/null || true
-  local a b norm
-  a="$(grep -n '^_PC_PORCELAIN_EXCLUDE_RE=' "$1" | head -1 | cut -d: -f1)"
-  b="$(grep -n '^_pc_phys()' "$1" | head -1 | cut -d: -f1)"
-  [[ -n "$a" && -n "$b" ]] || return 2
-  norm="$(sed -n '/^_pc_norm_write() {/,/^}/p' "$1")"
-  eval "$(sed -n "${a},$((b - 1))p" "$1")
-${norm}" || return 2
+  source "$1" || return 2
 }
 filter_case() { # <script> <writes> <porcelain> <required> <forbidden>
   local s="$1" writes="$2" in="$3" required="$4" forbidden="$5" out
@@ -132,13 +127,13 @@ run_pair "guard-cas-gen-swap" guard_case_cas_gen 's/\(current_stat\.st_ino, curr
 
 # Sole tasks.yaml is real work; with another edit it is injector noise. A .bak
 # path must always survive the exact path matcher.
-filter_case "$CLOSE" '' ' M docs/tasks.yaml\n' 'docs/tasks.yaml' '' && pass "tasks-only-refusable" || fail "tasks-only-refusable"
-filter_case "$CLOSE" '' ' M docs/tasks.yaml\n M src/real.sh\n' 'src/real.sh' 'docs/tasks.yaml' && pass "tasks-noise-with-real-work" || fail "tasks-noise-with-real-work"
+filter_case "$LANE_GUARD" '' ' M docs/tasks.yaml\n' 'docs/tasks.yaml' '' && pass "tasks-only-refusable" || fail "tasks-only-refusable"
+filter_case "$LANE_GUARD" '' ' M docs/tasks.yaml\n M src/real.sh\n' 'src/real.sh' 'docs/tasks.yaml' && pass "tasks-noise-with-real-work" || fail "tasks-noise-with-real-work"
 # The anchoring only becomes observable when real other work is also present:
 # a sole .bak edit passes through the has_other_work==0 fallback either way
 # (glob or exact match), so that shape can't distinguish the fix from the bug.
-filter_case "$CLOSE" '' ' M docs/tasks.yaml.bak\n M src/real.sh\n' 'docs/tasks.yaml.bak' '' && pass "tasks-bak-anchored" || fail "tasks-bak-anchored"
-mutate "$CLOSE" "${TMP}/close.mutant" 's/if \[\[ "\$\{path\}" == "docs\/tasks\.yaml" \]\]; then/if [[ "\$\{path\}" == docs\/tasks.yaml* ]]; then/'
+filter_case "$LANE_GUARD" '' ' M docs/tasks.yaml.bak\n M src/real.sh\n' 'docs/tasks.yaml.bak' '' && pass "tasks-bak-anchored" || fail "tasks-bak-anchored"
+mutate "$LANE_GUARD" "${TMP}/close.mutant" 's/if \[\[ "\$\{path\}" == "docs\/tasks\.yaml" \]\]; then/if [[ "\$\{path\}" == docs\/tasks.yaml* ]]; then/'
 filter_case "${TMP}/close.mutant" '' ' M docs/tasks.yaml.bak\n M src/real.sh\n' 'docs/tasks.yaml.bak' ''; rc=$?
 [[ $rc -ne 0 ]] && pass "tasks-bak negative-control red" || fail "tasks-bak negative control stayed green"
 

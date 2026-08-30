@@ -146,6 +146,12 @@ leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-one-copy-drift.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
 leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
 leadv2-dispatch-ledger:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-close-chain.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-containment.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-plan-in-lane.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-placement-pin.sh
