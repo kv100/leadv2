@@ -4425,6 +4425,11 @@ _arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
   LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
     nohup bash "${LANE_PULSE_WATCH_BIN}" --sig "${1}" >/dev/null 2>&1 </dev/null 9>&- &
   _LV2_LANE_PULSE_WATCH_PID=$!
+  # _spawn_worker_body is captured by command substitution.  In bash that
+  # subshell otherwise waits for its background job before returning, turning
+  # a persistent watcher into a dispatch hang.  Disown is available in the
+  # required bash 3.2 and preserves the watcher while releasing the launcher.
+  disown "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null || true
 }
 _arm_single_lead_beat() {  # fail-open, armed once (loop's own pidfile guards re-arm)
   [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0

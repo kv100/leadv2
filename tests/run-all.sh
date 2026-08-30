@@ -104,6 +104,7 @@ add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 # runs its suite instead of silently dropping it.
 EXTRA_SUITE_MAP="leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-selector.sh
 leadv2-backlog-pump:plugins/leadv2/scripts/tests/test-backlog-pump.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-phase-precondition.sh

@@ -31,6 +31,7 @@ bad() { printf '[TEST] FAIL: %s\n' "$1"; FAIL=$((FAIL+1)); }
 
 SANDBOX="$(mktemp -d /tmp/leadv2-lrod-XXXXXX)"
 WATCH_PIDFILE="${SANDBOX}/watch.pid"
+WATCH_STOPFILE="${SANDBOX}/watch.stop"
 cleanup() {
   if [[ -f "${WATCH_PIDFILE}" ]]; then
     kill "$(cat "${WATCH_PIDFILE}" 2>/dev/null)" 2>/dev/null || true
@@ -87,7 +88,10 @@ WATCH_STUB="${SANDBOX}/watch-stub.sh"
 cat > "${WATCH_STUB}" <<SH
 #!/usr/bin/env bash
 echo \$\$ > "${WATCH_PIDFILE}"
-sleep 60
+# This fixture owns the stop file.  Removing its liveness this way avoids
+# signalling the test runner's shared process group on macOS while still
+# making the registered PID exit under the fixture's exclusive control.
+while [[ ! -e "${WATCH_STOPFILE}" ]]; do sleep 0.1; done
 SH
 chmod +x "${WATCH_STUB}"
 
@@ -123,10 +127,12 @@ setup_env() {
   export LEADV2_SINGLE_LEAD_BEAT=0
   # Force arm=glm -- the T17 route_arbiter (cheapest-capable pick) would
   # otherwise reroute to freepool/codex regardless of LEADV2_ROUTER_V2; point
-  # its lib at a nonexistent file so `declare -F route_arbiter` fails closed
+  # its lib at a real inert file so the dispatcher's canonical-source fallback
+  # cannot load route_arbiter and `declare -F route_arbiter` fails closed
   # and the legacy resolver's arm=glm survives, same shape as test-landed-at-
   # spawn.sh's own working glm-arm fixture.
-  export LEADV2_ROUTE_ARBITER_LIB="${SANDBOX}/no-such-arbiter.sh"
+  : > "${SANDBOX}/inert-arbiter.sh"
+  export LEADV2_ROUTE_ARBITER_LIB="${SANDBOX}/inert-arbiter.sh"
   export LEADV2_EXCLUDED_ARMS="freepool codex sonnet kimi glm-flash"
 }
 
@@ -147,9 +153,11 @@ row_alive() {
 
 # ════════════════════════════════════════════════════════════════════════════
 # Spawn a lane via the glm arm, let the dispatcher process exit, then assert
-# the registry entry (a) is STILL registered (no dead_at) and (b) reads as
-# ALIVE by pid -- proving the row now tracks the lane-pulse watcher, not the
-# dispatcher's own now-dead pid.
+# the registry entry (a) is STILL registered (no dead_at), (b) records the
+# watcher pid, and (c) becomes dead when this test kills THAT watcher.  The
+# latter two assertions isolate this fixture from _lv2_durable_pid: an
+# inherited durable parent may be alive forever, but cannot be the watcher
+# process this fixture owns and kills.
 # ════════════════════════════════════════════════════════════════════════════
 setup_env
 dispatch_rc=0
@@ -170,8 +178,10 @@ done
 
 if [[ -s "${WATCH_PIDFILE}" ]]; then
   ok "lane-pulse watcher stub started and recorded its own pid"
+  WATCH_PID="$(cat "${WATCH_PIDFILE}" 2>/dev/null || true)"
 else
   bad "lane-pulse watcher stub never started -- cannot prove the fix (check LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN wiring)"
+  WATCH_PID=""
 fi
 
 ACTIVE="$(active_yaml_path)"
@@ -187,11 +197,38 @@ else
   bad "registry row is missing dead_at: null: $(grep -A20 "task_id: ${TID}" "${ACTIVE}" 2>/dev/null)"
 fi
 
-verdict="$(row_alive; echo "rc=$?")"
-if [[ "${verdict}" == *"rc=0"* ]]; then
-  ok "lane_alive(${TID}) == alive after dispatcher exit (registry outlives the dispatcher)"
+ROW_PID="$(python3 - "${ACTIVE}" "${TID}" <<'PY'
+import sys
+try:
+    import yaml
+    doc = yaml.safe_load(open(sys.argv[1])) or {}
+    for row in doc.get("sessions") or []:
+        if isinstance(row, dict) and row.get("task_id") == sys.argv[2]:
+            print(row.get("pid") or "")
+            break
+except Exception:
+    pass
+PY
+)"
+if [[ -n "${WATCH_PID}" && "${ROW_PID}" == "${WATCH_PID}" ]]; then
+  ok "registry pid is the watcher pid controlled by this test"
 else
-  bad "lane_alive(${TID}) reports DEAD after dispatcher exit -- registry did NOT outlive the dispatcher (${verdict})"
+  bad "registry pid is not the controlled watcher pid (row=${ROW_PID:-none} watcher=${WATCH_PID:-none})"
+fi
+
+if [[ -n "${WATCH_PID}" ]]; then
+  : > "${WATCH_STOPFILE}"
+  for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    kill -0 "${WATCH_PID}" 2>/dev/null || break
+    sleep 0.1
+  done
+fi
+
+verdict="$(row_alive; echo "rc=$?")"
+if [[ "${verdict}" != *"rc=0"* ]]; then
+  ok "lane_alive(${TID}) becomes dead after the controlled watcher exits"
+else
+  bad "lane_alive(${TID}) stayed alive after the controlled watcher exited (${verdict})"
 fi
 
 printf '\n[LANE-REGISTRY-OUTLIVES-DISPATCHER-01] passed=%d failed=%d\n' "${PASS}" "${FAIL}"
