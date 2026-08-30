@@ -1190,16 +1190,24 @@ cmd_run_child() {
   # events so every attempted spawn has exactly one role/model record.
   printf 'freepool_select role=%s model=%s\n' "${_freepool_role}" "${_model}" >> "${run_dir}/journal.jsonl"
 
-  set +e
-  ( command "${FREEPOOL_CLAUDE_BIN}" -p "${prompt}" \
+  _freepool_run_cli() {
+    command "${FREEPOOL_CLAUDE_BIN}" -p "${prompt}" \
       --model "${_model}" \
       --output-format stream-json \
       --verbose \
       --max-turns "${max_turns}" \
       --permission-mode bypassPermissions \
-      --disallowedTools "Agent" \
-      2> >(redact_stream >> "${run_dir}/stderr.log")
-  ) | tee -a "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
+      --disallowedTools "Agent"
+  }
+  set +e
+  # A hermetic foreground test may opt out of process-substitution redaction:
+  # macOS sandboxed test children cannot always reopen /dev/fd. Production
+  # retains the redacting stderr path and this seam is never set by launchers.
+  if [[ "${FREEPOOL_TEST_NO_REDACT:-0}" == "1" ]]; then
+    ( _freepool_run_cli 2>>"${run_dir}/stderr.log" ) | tee -a "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
+  else
+    ( _freepool_run_cli 2> >(redact_stream >> "${run_dir}/stderr.log") ) | tee -a "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
+  fi
   echo "${PIPESTATUS[0]}" > "${run_dir}/exit_code"
   set -e
 }
@@ -1438,15 +1446,14 @@ mission_is_code_shaped() {
   if [[ -n "${line}" ]]; then
     local paths_part p trimmed
     paths_part="${line#LANE_WRITES:}"
-    IFS=',' read -ra _lw_paths <<< "${paths_part}"
-    for p in "${_lw_paths[@]}"; do
+    while IFS= read -r p; do
       trimmed="$(printf '%s' "${p}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
       [[ -n "${trimmed}" ]] || continue
       if [[ "${trimmed}" != docs/* ]]; then
         echo 1
         return 0
       fi
-    done
+    done < <(printf '%s\n' "${paths_part}" | tr ',' '\n')
   fi
   echo 0
 }
@@ -1523,6 +1530,33 @@ deadhand_check() {
           local delta
           delta="$(work_delta_present "${run_dir}" "${cwd_dir}" || echo skip)"
           [[ "${delta}" == "no" ]] && reason="no_work_delta"
+        fi
+        # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01 G4: a changed *.sh/*.py that
+        # does not parse must never be recorded as a completed run -- the
+        # cheapest, highest-yield check available (two of three unusable
+        # 2026-08-30 free-arm results were exactly this: a syntactically
+        # broken hook line, a bash -n-failing suite committed four times).
+        if [[ -z "${reason}" ]]; then
+          local gate_lib gate_out gate_rc
+          gate_lib="${SELF%/*}/lib/leadv2-worker-output-gate.sh"
+          if [[ -x "${gate_lib}" || -f "${gate_lib}" ]] && git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            # The gate checks this run's working tree (`HEAD`) and its
+            # committed range. If that range cannot be resolved (for example,
+            # a lane without origin/main), it fails closed rather than treating
+            # missing validation evidence as a clean worker result.
+            # The rejected-gate exit is expected evidence, so capture it in a
+            # tested conditional; a bare failing assignment is fatal under the
+            # wrapper's global set -e and would skip finalization entirely.
+            if gate_out="$(bash "${gate_lib}" "${cwd_dir}" --from-git-diff HEAD 2>&1)"; then
+              gate_rc=0
+            else
+              gate_rc=$?
+            fi
+            if [[ ${gate_rc} -ne 0 ]]; then
+              reason="parse_error"
+              printf '%s\n' "${gate_out}" >> "${run_dir}/progress.log" 2>/dev/null || true
+            fi
+          fi
         fi
       fi
     fi

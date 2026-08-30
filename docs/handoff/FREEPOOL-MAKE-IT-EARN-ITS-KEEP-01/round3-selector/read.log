@@ -1,0 +1,3 @@
+role=read rc=0 elapsed_s=2
+[freepool-model-select] chosen="anthropic/groq/openai/gpt-oss-120b" alternatives=3 probe_ms=1800
+anthropic/groq/openai/gpt-oss-120b

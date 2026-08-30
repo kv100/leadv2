@@ -128,7 +128,14 @@ leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-empty-board.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-single-lead-beat.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
-leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh"
+leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
+leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
+leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
+freepool-coder:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
+leadv2-freepool-model-select:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
+freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
+freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -146,11 +153,18 @@ else
       # never matched this filter, so a hook fix ran zero suites under
       # --scope changed -- the EXTRA_SUITE_MAP below only fires once a
       # changed file reaches the stem-comparison loop.
-      case "${cf}" in
-        plugins/leadv2/scripts/*.sh|plugins/leadv2/hooks/*.sh) ;;
-        *) continue ;;
-      esac
-      stem="$(basename "${cf}" .sh)"
+      # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01: a data-only change to the arm
+      # ranking must select the suites that grade it, so freepool-arm.yaml
+      # maps to its own stem.
+      if [[ "${cf}" == "plugins/leadv2/config/freepool-arm.yaml" ]]; then
+        stem="freepool-arm.yaml"
+      else
+        case "${cf}" in
+          plugins/leadv2/scripts/*.sh|plugins/leadv2/hooks/*.sh) ;;
+          *) continue ;;
+        esac
+        stem="$(basename "${cf}" .sh)"
+      fi
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \
@@ -170,7 +184,7 @@ else
   fi
 fi
 
-for suite in "${SUITES[@]}"; do
+for suite in "${SUITES[@]:-}"; do
   printf '[RUN] %s\n' "${suite}"
   if bash "${suite}"; then
     printf '[PASS] %s\n' "${suite}"
@@ -192,7 +206,7 @@ done
 # existing [FAIL] lines and the run-all: summary are untouched.
 if [[ ${FAIL} -gt 0 ]]; then
   printf '  Failures (blocking):\n'
-  for rel in "${FAILED_REL[@]}"; do
+  for rel in "${FAILED_REL[@]:-}"; do
     printf '    - %s\n' "${rel}"
   done
 fi

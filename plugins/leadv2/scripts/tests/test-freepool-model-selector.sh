@@ -72,6 +72,22 @@ if [[ "$url" == *"/v1/messages" ]]; then
       exit 0
     fi
   done
+  # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01 round 2: the selector's probe now
+  # checks response CONTENT, not just HTTP status (a live route can answer
+  # 200 with blank/whitespace-only text -- the 2026-08-30 root cause). This
+  # fixture must therefore write a real body, and FAKE_CURL_BLANK_ROUTES
+  # lets a case simulate exactly that trap: 200 + whitespace-only text.
+  is_blank=0
+  for blank in ${FAKE_CURL_BLANK_ROUTES:-}; do
+    [[ "$route" == "$blank" ]] && is_blank=1
+  done
+  if [[ -n "$out" ]]; then
+    if [[ "$is_blank" -eq 1 ]]; then
+      printf '{"content":[{"type":"text","text":" "}]}' > "$out"
+    else
+      printf '{"content":[{"type":"text","text":"OK"}]}' > "$out"
+    fi
+  fi
   [[ -n "$write_out" ]] && printf '200'
   exit 0
 fi
@@ -395,7 +411,7 @@ with open(dst, 'w') as f:
     f.writelines('# ' + line if line.strip() else line for line in lines[start:])
 PYEOF
 flat_pick="$(select_real_role bulk "$NO_ROLE_CONFIG")"; flat_rc=$?
-if [[ "$flat_rc" -eq 0 && "$flat_pick" == "anthropic/nvidia_nim/deepseek-ai/deepseek-v4-pro-0813" ]]; then
+if [[ "$flat_rc" -eq 0 && "$flat_pick" == "anthropic/groq/openai/gpt-oss-120b" ]]; then
   pass 'FP-02 negative control: commented role_rank falls back to flat model_rank'
 else
   fail "FP-02 flat fallback (pick=$flat_pick rc=$flat_rc)"
