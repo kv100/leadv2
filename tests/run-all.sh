@@ -161,7 +161,11 @@ leadv2-lane-guard:plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dir
 leadv2-lane-guard:plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
 leadv2-lane-guard:plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
 leadv2-lane-guard:plugins/leadv2/scripts/tests/test-t13-slice1.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-class-floor-survives-resume.sh"
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-class-floor-survives-resume.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-admission-class.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(

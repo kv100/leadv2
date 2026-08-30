@@ -51,6 +51,33 @@ printf 'dirty\n' >> "$T/lane/worker.txt"
 write_terminal abc12345 TASK landed completed
 assert_last pass_unlanded dirty_lane:completed
 
+# H7-2: a consumer has the ledger link but neither local lib/ nor canonical
+# guard.  The live terminal funnel must emit its named fail-closed message and
+# downgrade a dirty lane; it must never persist landed in silence.
+mkdir -p "$T/consumer"
+ln -s "$LEDGER" "$T/consumer/leadv2-dispatch-ledger.sh"
+ln -s "$ROOT/scripts/leadv2-portable-lock.sh" "$T/consumer/leadv2-portable-lock.sh"
+ln -s "$T/bin/leadv2-lane-worktree.sh" "$T/consumer/leadv2-lane-worktree.sh"
+printf 'still dirty\n' >> "$T/lane/worker.txt"
+: > "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE"
+LEADV2_CANONICAL_ROOT="$T/no-canonical" source "$T/consumer/leadv2-dispatch-ledger.sh" 2>"$T/missing-guard.err"
+SCRIPT_DIR="$T/consumer"
+PROJECT_ROOT="$T/main"
+write_terminal missinglib TASK landed completed
+assert_last pass_unlanded dirty_lane:completed
+if ! grep -Fq 'lane guard unavailable' "$T/missing-guard.err"; then
+  echo 'missing guard did not emit its named fail-closed error' >&2
+  exit 1
+fi
+if grep -Fq '"terminal":"landed"' "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE"; then
+  echo 'missing guard let a dirty lane record landed' >&2
+  exit 1
+fi
+source "$LEDGER"
+SCRIPT_DIR="$T/bin"
+PROJECT_ROOT="$T/main"
+git -C "$T/lane" checkout -- worker.txt
+
 # Control-plane-only residue is explicitly excluded: otherwise every real lane is
 # permanently dirty and no successful lane can land.
 git -C "$T/lane" checkout -- worker.txt

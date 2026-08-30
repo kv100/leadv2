@@ -100,7 +100,17 @@ source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
 # has no lib/ copy of this new file).
 _LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
 [[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
-[[ -f "${_LANE_GUARD_SH}" ]] && source "${_LANE_GUARD_SH}"
+if [[ -f "${_LANE_GUARD_SH}" ]]; then
+  source "${_LANE_GUARD_SH}"
+else
+  # A close gate must never turn unknown lane state into a false success.  The
+  # local consumer farm and canonical checkout were both tried above; treat a
+  # missing guard as dirty and emit the paths so the refusal is diagnosable.
+  lv2_lane_dirty() { return 0; }
+  lv2_lane_containment_violation() { return 1; }
+  printf '[%s] ERROR: lane guard unavailable local=%s canonical=%s; treating lane as dirty\n' \
+    "${SCRIPT_NAME}" "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh" "${_LANE_GUARD_SH}" >&2
+fi
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
 
 log()     { printf '[%s] %s\n' "${SCRIPT_NAME}" "$*" >&2; }

@@ -83,7 +83,20 @@ LEDGER_BIN="${LEADV2_DISPATCH_LEDGER_BIN:-${SCRIPT_DIR}/leadv2-dispatch-ledger.s
 # has no lib/ copy of this new file).
 _LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
 [[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
-[[ -f "${_LANE_GUARD_SH}" ]] && source "${_LANE_GUARD_SH}"
+if [[ -f "${_LANE_GUARD_SH}" ]]; then
+  source "${_LANE_GUARD_SH}"
+else
+  # Unknown guard state is unsafe at close: it must fail closed, never allow
+  # the later terminal funnel to call a dirty lane clean.
+  lv2_lane_dirty() { return 0; }
+  printf '[leadv2-dispatch-product-close] ERROR: lane guard unavailable local=%s canonical=%s; treating lane as dirty\n' \
+    "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh" "${_LANE_GUARD_SH}" >&2
+fi
+# Test seam for the consumer-symlink farm: stop after the guard load so the
+# suite can inspect the live shell symbol without starting a close operation.
+if [[ "${LEADV2_PRODUCT_CLOSE_SOURCE_ONLY:-0}" == "1" && "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 TERMINAL_LEDGER="${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}"
 # N-5: refusal classification (classify_arm_failure) for the arm-agnostic review
 # fallback loop below. Private synced copy, not a shared source of dispatch-code.sh --

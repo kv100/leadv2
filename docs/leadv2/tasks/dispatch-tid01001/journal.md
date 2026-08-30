@@ -44,3 +44,4 @@
 - 2026-08-02T11:40:31Z [decision] dispatch_terminal task=tid01001 terminal=landed cause=close
 - 2026-08-04T16:05:33Z [decision] dispatch_terminal task=tid01001 terminal=landed cause=close
 - 2026-08-04T17:28:40Z [decision] dispatch_terminal task=tid01001 terminal=landed cause=close
+- 2026-08-30T12:28:20Z [decision] dispatch_terminal task=tid01001 terminal=landed cause=close
