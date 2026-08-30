@@ -1,1 +1,0 @@
-/Users/kostiantyn.vlasenko/.claude/plugins/local/leadv2/plugins/leadv2/commands/leadv2.md
