@@ -982,10 +982,21 @@ _deliver_plan_into_lane() { # <sig8> <founder-task-id>
   # Behavioral coverage is selected by tests/run-all.sh's EXTRA_SUITE_MAP.
   local sig8="$1" task_id="$2" src dst f
   LANE_LOCAL_PLAN_LINE=""
-  [[ "${WORK_ROOT}" != "${PROJECT_ROOT}" && -n "${task_id}" ]] || return 0
+  [[ -n "${WORK_ROOT:-}" ]] || {
+    emit decision "lane_plan_missing task=${sig8} reason=work_root_unset"
+    _dl_note "${sig8}" refused plan_work_root_unset
+    exit 5
+  }
+  if [[ "${WORK_ROOT}" == "${PROJECT_ROOT}" || -z "${task_id}" ]]; then
+    LANE_PLAN_DELIVERY_STATUS="not_required"
+    return 0
+  fi
   src="${PROJECT_ROOT}/docs/handoff/${task_id}"
   dst="${WORK_ROOT}/docs/handoff/${task_id}"
-  [[ -f "${src}/context.yaml" ]] || return 0
+  if [[ ! -f "${src}/context.yaml" ]]; then
+    LANE_PLAN_DELIVERY_STATUS="source_absent"
+    return 0
+  fi
   mkdir -p "${dst}" 2>/dev/null || true
   for f in context.yaml brief.md plan-*.md; do
     [[ -f "${src}/${f}" ]] || continue
@@ -997,6 +1008,7 @@ _deliver_plan_into_lane() { # <sig8> <founder-task-id>
     exit 5
   fi
   LANE_LOCAL_PLAN_LINE="LANE PLAN: read ${dst}/context.yaml and the sibling brief.md and plan-*.md before editing."
+  LANE_PLAN_DELIVERY_STATUS="delivered"
 }
 
 # ── V3-GLM-LADDER-01: deferred-GLM park, codex credit watchdog, loud sonnet exceptions ──
@@ -6160,7 +6172,6 @@ cmd_resolve() {
   # (exit 5) on: nonexistent path, not-a-worktree, foreign repo, live-claimed lane.  No
   # flag set → no-op (returns 0 immediately; ensure path runs byte-identical to today).
   _resolve_pinned_placement
-  _deliver_plan_into_lane "${sig8}" "${founder_task_id}"
   # LANE-WORKTREE-ISOLATION-01 lane-entry fix (W-1 architect prepass §0.1/§1.1 step 3):
   # this is the ONE call site every lane passes through regardless of who invoked it --
   # fanout's three lead-session launch paths, the detached per-lane launcher, AND a
@@ -6197,6 +6208,9 @@ cmd_resolve() {
     fi
   fi
   fi  # LANE-PLACEMENT-01: close PLACEMENT_PINNED guard
+  # D3: delivery is after ensure/pin resolution; ensure-created lanes have no
+  # usable WORK_ROOT before this point.
+  _deliver_plan_into_lane "${sig8}" "${founder_task_id}"
   # PLACEMENT-PIN-DEFAULT-01: pin the prompt on EVERY dispatch whose work root is a lane
   # worktree — the ensure-created path (2272) and the launcher-pre-exported path (267)
   # both land here, and both were unpinned.  Idempotent w.r.t. the flagged path above.

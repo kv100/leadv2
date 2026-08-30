@@ -52,6 +52,9 @@ IFS=$'\t' read -r c s <<<"$(leadv2_admission_class Heavy 1 "$(est trivial 1 none
 IFS=$'\t' read -r c s <<<"$(leadv2_admission_class Standard 1 "$(est trivial 1 none)")"
 [[ "$c" == "Standard" && "$s" == "flag" ]] \
   && pass "flag Standard never de-escalated" || fail "flag standard: got $c/$s"
+IFS=$'\t' read -r c s <<<"$(leadv2_admission_class standard 1 "$(est trivial 1 none)")"
+[[ "$c" == "Standard" && "$s" == "flag" ]] \
+  && pass "lowercase CLI --task-class standard binds Standard on first dispatch" || fail "lowercase flag: got $c/$s"
 IFS=$'\t' read -r c s <<<"$(leadv2_admission_class "" 0 "$(est standard 2 none)")"
 [[ "$c" == "Standard" && "$s" == "judge" ]] \
   && pass "no flag: estimate wins" || fail "no-flag: got $c/$s"

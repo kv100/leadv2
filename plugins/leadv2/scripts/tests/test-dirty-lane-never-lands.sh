@@ -61,6 +61,17 @@ fi
 write_terminal clean000 TASK landed completed
 assert_last landed completed
 
+# Bootstrap-only symlinks are injected lane setup residue, not worker dirt.
+mkdir -p "$T/lane/.claude"
+ln -s "$T/main/seed" "$T/lane/.claude/commands"
+if lv2_lane_dirty "$T/lane"; then
+  git -C "$T/lane" status --porcelain --untracked-files=all >&2
+  echo 'bootstrap-symlink-only lane was classified dirty' >&2
+  exit 1
+fi
+write_terminal bootstrap00 TASK landed completed
+assert_last landed completed
+
 # The function consumes actual prior downgrade rows for the same signature and
 # must turn the next dirty completion into a final refusal rather than another retry.
 printf '{"task_sig":"bound000","terminal":"pass_unlanded","cause":"dirty_lane:prior-1"}\n' > "$LEADV2_DISPATCH_TERMINAL_LEDGER_FILE"
@@ -68,4 +79,4 @@ printf '{"task_sig":"bound000","terminal":"pass_unlanded","cause":"dirty_lane:pr
 printf 'dirty\n' >> "$T/lane/worker.txt"
 LEADV2_DIRTY_LANE_MAX_ATTEMPTS=2 write_terminal bound000 TASK landed completed
 assert_last refused dirty_lane_retry_exhausted:completed
-echo 'PASS: real terminal funnel downgrades dirty lanes, permits clean control-plane residue, and bounds retries'
+echo 'PASS: terminal funnel downgrades worker dirt, permits control-plane/bootstrap-only lanes, and bounds retries'

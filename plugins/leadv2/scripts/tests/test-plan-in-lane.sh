@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mutation: replace `_deliver_plan_into_lane`'s `exit 5` with `return 0`.
+# Mutation: replace `_deliver_plan_into_lane`'s loud refusal with `return 0`.
 set -euo pipefail
 ROOT="${LEADV2_TEST_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 DISPATCH="${ROOT}/scripts/leadv2-dispatch-code.sh"
@@ -32,6 +32,7 @@ _deliver_plan_into_lane abc12345 TASK
 [[ -f "$T/lane/docs/handoff/TASK/context.yaml" ]]
 cmp -s "$T/main/docs/handoff/TASK/context.yaml" "$T/lane/docs/handoff/TASK/context.yaml"
 [[ "$LANE_LOCAL_PLAN_LINE" == *"$T/lane/docs/handoff/TASK/context.yaml"* ]]
+[[ "$LANE_PLAN_DELIVERY_STATUS" == "delivered" ]]
 
 # Make the destination structurally impossible; the real function must refuse
 # with rc=5 and journal lane_plan_missing.
@@ -45,9 +46,18 @@ set -e
 [[ $rc -eq 5 ]]
 grep -Fq 'lane_plan_missing task=abc12345' "$T/journal"
 
+# A call after placement resolution must never silently accept an unset root.
+set +e
+( PROJECT_ROOT="$T/main"; unset WORK_ROOT; _deliver_plan_into_lane abc12345 TASK )
+rc=$?
+set -e
+[[ $rc -eq 5 ]]
+grep -Fq 'reason=work_root_unset' "$T/journal"
+
 # Shared-tree dispatches are intentionally no-ops: no lane instruction is set.
 LANE_LOCAL_PLAN_LINE=""
 PROJECT_ROOT="$T/main"; WORK_ROOT="$T/main"
 _deliver_plan_into_lane abc12345 TASK
 [[ -z "$LANE_LOCAL_PLAN_LINE" ]]
-echo 'PASS: real plan delivery copies into a lane, refuses/journals an impossible copy, and no-ops in the shared tree'
+[[ "$LANE_PLAN_DELIVERY_STATUS" == "not_required" ]]
+echo 'PASS: real plan delivery copies into a lane, loudly refuses impossible/unset roots, and distinguishes shared-tree no-op'

@@ -261,7 +261,7 @@ dispatch_ledger_write_terminal() {
     if [[ -x "${SCRIPT_DIR}/leadv2-lane-worktree.sh" ]]; then
       _lane_root="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${founder:-${sig8}}" 2>/dev/null || true)"
     fi
-    if [[ -n "${_lane_root}" ]] && lv2_lane_containment_violation "${sig8}" "${_lane_root}" "${PROJECT_ROOT}"; then
+    if [[ -n "${_lane_root}" ]] && lv2_lane_containment_violation "${sig8}" "${_lane_root}" "${PROJECT_ROOT}" "${LEADV2_DISPATCH_LANE_WRITES:-}"; then
       terminal="refused"; cause="wrote_outside_lane"
     elif [[ -n "${_lane_root}" ]] && lv2_lane_dirty "${_lane_root}"; then
       _dirty_max="${LEADV2_DIRTY_LANE_MAX_ATTEMPTS:-2}"

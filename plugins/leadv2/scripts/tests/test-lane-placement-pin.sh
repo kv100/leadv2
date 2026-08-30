@@ -380,6 +380,32 @@ else
   bad "P-h(g2): pin line does NOT name the worktree (expected '${CWD_G}')"
 fi
 
+# D3 regression: no --worktree means cmd_resolve itself must ensure the lane
+# before copying the task plan. The worker-visible lane is the assertion, not
+# a unit call with WORK_ROOT pre-seeded.
+PLAN_TASK="ENSURE-PLAN-01"
+mkdir -p "${TARGET}/docs/handoff/${PLAN_TASK}"
+printf 'task_id: %s\n' "${PLAN_TASK}" > "${TARGET}/docs/handoff/${PLAN_TASK}/context.yaml"
+printf 'ensure-created plan\n' > "${TARGET}/docs/handoff/${PLAN_TASK}/brief.md"
+setup_env
+export LEADV2_STUB_CWD_OUT="${SANDBOX}/plan-cwd.txt"
+export LEADV2_STUB_MISSION_OUT="${SANDBOX}/plan-mission.txt"
+dispatch_rc=0
+( cd "${TARGET}" && bash "${DC}" --kind tooling --task-id "${PLAN_TASK}" \
+  "D3 ensure-created plan delivery test" >/dev/null 2>&1 ) || dispatch_rc=$?
+PLAN_CWD="$(cat "${SANDBOX}/plan-cwd.txt" 2>/dev/null || printf '')"
+if [[ ${dispatch_rc} -eq 0 && -f "${PLAN_CWD}/docs/handoff/${PLAN_TASK}/context.yaml" ]] \
+   && cmp -s "${TARGET}/docs/handoff/${PLAN_TASK}/context.yaml" "${PLAN_CWD}/docs/handoff/${PLAN_TASK}/context.yaml"; then
+  ok "D3: ensure-created lane receives context.yaml without --worktree"
+else
+  bad "D3: ensure-created plan missing (rc=${dispatch_rc}, cwd='${PLAN_CWD}')"
+fi
+if grep -q '^LANE PLAN: read ' "${SANDBOX}/plan-mission.txt" 2>/dev/null; then
+  ok "D3: worker mission references the lane-local plan"
+else
+  bad "D3: worker mission omitted lane-local plan instruction"
+fi
+
 # ════════════════════════════════════════════════════════════════════════════
 # P-i: shared-tree dispatch (WORK_ROOT == PROJECT_ROOT) → no pin line (regression)
 # ════════════════════════════════════════════════════════════════════════════

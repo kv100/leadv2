@@ -15,10 +15,19 @@ mkdir -p "$T/main/docs/handoff/dispatch-abc12345"
 git -C "$T/main" status --porcelain --untracked-files=all | sed -E 's/^.. //; s/^"//; s/"$//' > "$T/main/docs/handoff/dispatch-abc12345/main-dirt.base"
 source "$LIB"
 
-# A post-baseline write in the main checkout is a real containment violation.
+# A write inside this lane's declared write set is attributed to this lane.
 printf 'escape\n' > "$T/main/outside-lane.txt"
-lv2_lane_containment_violation abc12345 "$T/lane" "$T/main"
+lv2_lane_containment_violation abc12345 "$T/lane" "$T/main" outside-lane.txt
 rm "$T/main/outside-lane.txt"
+
+# A concurrent lane/control-plane writer is not this lane's violation. The
+# changed path is deliberately outside this lane's declared write set.
+printf 'other lane\n' > "$T/main/other-lane.txt"
+if lv2_lane_containment_violation abc12345 "$T/lane" "$T/main" own-lane.txt; then
+  echo 'unattributed main-checkout write was blamed on this lane' >&2
+  exit 1
+fi
+rm "$T/main/other-lane.txt"
 
 # Every observed control-plane residue is excluded.  A false positive here would
 # make every lane dirty and refuse all landings.
@@ -28,8 +37,8 @@ touch "$T/main/docs/leadv2/active.yaml" "$T/main/docs/leadv2/active.yaml.lock" "
   "$T/main/docs/leadv2/merge-queue.jsonl" "$T/main/docs/leadv2/questions" "$T/main/docs/leadv2/open-threads.md" \
   "$T/main/docs/leadv2/tasks/dispatch-abc12345/journal.md" "$T/main/docs/handoff/dispatch-abc12345/phases.d/review.yaml" \
   "$T/main/docs/LEAD_V2_STATE.md"
-if lv2_lane_containment_violation abc12345 "$T/lane" "$T/main"; then
+if lv2_lane_containment_violation abc12345 "$T/lane" "$T/main" own-lane.txt; then
   echo 'control-plane residue falsely reported as containment violation' >&2
   exit 1
 fi
-echo 'PASS: real main-checkout write violates containment; the complete observed control-plane residue set does not'
+echo 'PASS: declared writes violate containment; concurrent/unattributed and control-plane residue do not'

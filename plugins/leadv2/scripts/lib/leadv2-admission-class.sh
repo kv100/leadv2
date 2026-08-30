@@ -59,6 +59,7 @@ else:
 # or empty stdout on unparseable estimate (caller takes classifier_error).
 leadv2_admission_class() {
   local explicit="$1" flagged="$2" estimate="$3" mapped src
+  explicit="$(_lv2_class_canonical "${explicit}")"
   mapped="$(leadv2_admission_map_class "$estimate")"
   [[ -n "$mapped" ]] || { printf ''; return 0; }
   src="$(printf '%s' "$estimate" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("estimate_source",""))' 2>/dev/null)"
@@ -184,11 +185,25 @@ leadv2_admission_write_receipt() {  # <root> <sig8> <task_id> <digest> <class> <
   } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
   mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
   if [[ -n "${task_id}" ]]; then
-    local tf tdir ttmp
+    local tf tdir ttmp lockdir existing_cls tries=0
     tf="$(leadv2_admission_task_receipt_path "$root" "$task_id")"; tdir="$(dirname "$tf")"
     mkdir -p "$tdir" 2>/dev/null || return 1
+    # A task-keyed class is a floor. Serialise the read/compare/write so
+    # concurrent lower and higher intakes cannot race into a demotion.
+    lockdir="${tdir}/.task-class.lock"
+    until mkdir "${lockdir}" 2>/dev/null; do
+      tries=$((tries + 1))
+      (( tries < 100 )) || return 1
+      sleep 0.05
+    done
+    existing_cls="$(leadv2_admission_read_task_receipt "$root" "$task_id" 2>/dev/null || true)"
+    if [[ -n "${existing_cls}" ]] && (( $(_lv2_class_rank "${existing_cls}") > $(_lv2_class_rank "${cls}") )); then
+      rmdir "${lockdir}" 2>/dev/null || true
+      return 0
+    fi
     ttmp="${tdir}/.task-class.$$.tmp"
-    { printf 'task_id: %s\n' "$task_id"; printf 'task_class: %s\n' "$cls"; printf 'source: %s\n' "$src"; } > "$ttmp" && mv -f "$ttmp" "$tf" || { rm -f "$ttmp"; return 1; }
+    { printf 'task_id: %s\n' "$task_id"; printf 'task_class: %s\n' "$cls"; printf 'source: %s\n' "$src"; } > "$ttmp" && mv -f "$ttmp" "$tf" || { rm -f "$ttmp"; rmdir "${lockdir}" 2>/dev/null || true; return 1; }
+    rmdir "${lockdir}" 2>/dev/null || true
   fi
   return 0
 }
