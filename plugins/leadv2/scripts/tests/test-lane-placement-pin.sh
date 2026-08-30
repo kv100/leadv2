@@ -68,6 +68,21 @@ export LEADV2_DISPATCH_CACHE_DIR="${SANDBOX}/cache"
 GLM_STUB="${SANDBOX}/glm-stub.sh"
 JOURNAL_STUB="${SANDBOX}/journal-stub.sh"
 LIVENESS_STUB="${SANDBOX}/liveness-stub.sh"
+QUOTA_LIVE_STUB="${SANDBOX}/quota-live-stub.sh"
+
+# Pin the routing decision: route_arbiter (leadv2-dispatch-code.sh:6687) reads
+# LIVE quota via leadv2-quota-live.sh unless LEADV2_QUOTA_LIVE/
+# LEADV2_ROUTE_ARBITER_QUOTA_LIVE overrides it -- the established seam shared
+# by leadv2-burn-governor.sh / leadv2-glm-quota-gate.sh / leadv2-main-model-
+# check.sh (leadv2-route-arbiter.sh:24-28). Without this, a real over-80%-
+# quota day walks the ladder past every stub below and lands on arm=opus
+# (exit 3, no worker ever spawned) -- measured 2026-08-30 08:25Z: passed=16
+# failed=11, every failure a `worker cwd=''` collapse from that exit 3.
+cat > "${QUOTA_LIVE_STUB}" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"glm":{"status":"ok","five_hour":{"pct":10},"weekly":{"pct":10}},"codex":{"status":"ok","binding_window":"primary","windows":[{"kind":"primary","used_percent":10}]},"anthropic":{"status":"ok","accounts":[{"active":true,"five_hour_pct":10,"seven_day_pct":10}]}}'
+SH
+chmod +x "${QUOTA_LIVE_STUB}"
 
 # ── Stub GLM binary (records --cwd and mission, creates a fake run for status) ─
 cat > "${GLM_STUB}" <<'SH'
@@ -128,7 +143,19 @@ exit 0
 SH
 
 # ── Common dispatch env ──────────────────────────────────────────────────────
+# Each P-x/D3 case below is a logically independent dispatch (a different
+# hypothetical lead session invoking the CLI once), not nine concurrent
+# lanes from ONE session. lib/leadv2-lane-state.sh's lane_register enforces
+# a real cap of 2 LIVE lanes per lead_session_id (default "direct" when no
+# session env is set, leadv2-dispatch-code.sh:6236) and never releases a
+# successfully-spawned lane within this synchronous test process -- so
+# without a unique id per case, the 3rd+ successful spawn in one suite run
+# is legitimately refused (`lane cap exceeded ... cap=2`, exit 3, same code
+# as "arm=opus"), which read as a routing failure before this was traced.
+_LPP_SESSION_SEQ=0
 setup_env() {
+  _LPP_SESSION_SEQ=$((_LPP_SESSION_SEQ + 1))
+  export LEADV2_LEAD_SESSION_ID="lpp-test-session-${_LPP_SESSION_SEQ}"
   export CLAUDE_PROJECT_DIR="${TARGET}"
   export CLAUDE_PROJECT_ROOT="${TARGET}"
   unset PROJECT_ROOT 2>/dev/null || true
@@ -142,6 +169,11 @@ setup_env() {
   # Use v1 router with resolver missing → defaults to arm=glm
   export LEADV2_ROUTER_V2=0
   export GLM_POLICY_RESOLVER=""
+  # Pin the arbiter's routing decision off live quota (see QUOTA_LIVE_STUB
+  # above) -- both seam names, since route_arbiter honours
+  # LEADV2_ROUTE_ARBITER_QUOTA_LIVE first and falls to LEADV2_QUOTA_LIVE.
+  export LEADV2_QUOTA_LIVE="${QUOTA_LIVE_STUB}"
+  export LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${QUOTA_LIVE_STUB}"
   export LEADV2_LANE_SHAPE=off
   export LEADV2_DISPATCH_E2E_GATE=0
   export LEADV2_DISPATCH_REVIEW_GATE=0

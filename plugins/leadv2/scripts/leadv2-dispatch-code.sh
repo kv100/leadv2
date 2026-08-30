@@ -933,6 +933,10 @@ _resolve_pinned_placement() {
   WORK_ROOT="${candidate}"
   export LEADV2_LANE_WORK_ROOT="${WORK_ROOT}"
   PLACEMENT_PINNED=1
+  # LANE-PLACEMENT-01: propagate the resolved founder id so downstream guards
+  # (e.g. _lane_writes_guard's existing-worktree admission path) can see the
+  # lane this pin already proved exists. An explicit --task-id wins.
+  [[ -z "${founder_task_id:-}" ]] && founder_task_id="${key}"
   _set_worktree_pin_line
   local _mode="resume-lane"
   [[ -n "${placement_path}" ]] && _mode="worktree"
@@ -3506,7 +3510,9 @@ _lane_writes_guard() {
   [[ -n "${founder_task_id:-}" ]] && _wt="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${founder_task_id}" 2>/dev/null)"
   [[ -n "${_wt}" ]] && return 0
   ARCHITECT_PREPASS_REASON="no_lane_writes"
-  emit decision "architect_prepass task=${sig8} status=failed reason=no_lane_writes"
+  emit decision "architect_prepass task=${sig8} status=failed reason=no_lane_writes remedy=LANE_WRITES:a,b,c"
+  log_err "dispatch parked: no declared write set (reason=no_lane_writes)"
+  log_err "  remedy: add a 'LANE_WRITES: a,b,c' line to the mission (comma-separated paths, no bullets/prose)"
   return 1
 }
 
@@ -5811,6 +5817,10 @@ Usage:
                 [--ui-judgment] [--interactive] [--kind <k>] [--glm-failures N]
                 [--glm-lock-busy] [--force] [--no-spawn] [--task-class <class>]
                 [--resume-lane <task-sig8|founder-id>] [--worktree <abs-path>]
+                [--task-id <founder-task-id>]
+                --task-id <founder-task-id>: binds founder_task_id explicitly. --resume-lane
+                also resolves this from its own argument when --task-id is absent, so an
+                existing lane worktree can satisfy the lane-writes guard without it.
                 --task-class <trivial|light|standard|heavy|strategic|bulk>: named task-size
                 class, consulted by the dispatch ladder's \`when:\` gate (e.g. freepool's
                 \`when: [standard, bulk]\`) so an untrusted third-party arm only ever sees the
