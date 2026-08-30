@@ -453,6 +453,12 @@ ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
 # else an mkdir-based fallback with the same rc0/rc3 contract.
 # shellcheck source=leadv2-portable-lock.sh
 source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
+# DISPATCH-CLOSE-GATE-01: Mechanism 1 (refuse a dispatch whose mission demands a path
+# outside LANE_WRITES) and Mechanism 2 (unproven-fix reporting at close).
+# shellcheck source=lib/leadv2-mission-writeset.sh
+source "${SCRIPT_DIR}/lib/leadv2-mission-writeset.sh"
+# shellcheck source=lib/leadv2-red-proof.sh
+source "${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
 ROUTING_CONFIG_ABSENT=0
 # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
@@ -637,6 +643,10 @@ REVIEW_GATE="${LEADV2_DISPATCH_REVIEW_GATE:-1}"
 # time (leadv2-dispatch-product-close.sh unscopable_diff). =0 restores today byte-for-byte
 # (no writes declaration required, no park).
 REQUIRE_LANE_WRITES="${LEADV2_REQUIRE_LANE_WRITES:-1}"
+# DISPATCH-CLOSE-GATE-01 Mechanism 1: refuse (not warn) a dispatch whose mission demands
+# a path that LANE_WRITES does not cover -- BEFORE any worker spawns. =0 restores today
+# byte-for-byte (no writeset check, no park).
+REQUIRE_MISSION_WRITESET="${LEADV2_REQUIRE_MISSION_WRITESET:-1}"
 # RED-FIRST-GATE-01 R2: the prepass mission prompt now asks for a surface-observable
 # `acceptance:` block (see architect_prepass's printf text). =1 parks a design that
 # lacks it, same PARK-and-surface mechanism as REQUIRE_LANE_WRITES. Default 0 -- this
@@ -3447,6 +3457,29 @@ _lane_writes_guard() {
   return 1
 }
 
+# _mission_writeset_guard <sig8> <writes_csv> <raw_mission> -> 0 ok, 1 park
+# DISPATCH-CLOSE-GATE-01 Mechanism 1: a mission whose Done-means (or a "write ... to " /
+# "leave the logs in " instruction) names a path outside the lane's declared LANE_WRITES
+# cannot land -- the worker either writes out of scope (violation) or correctly stops and
+# the round is wasted (measured cost: two full re-dispatch rounds, 2026-08-30). Refuse
+# BEFORE spawn instead, naming the missing paths and a ready-to-paste corrected line.
+# See lib/leadv2-mission-writeset.sh for the extraction/coverage rules.
+_mission_writeset_guard() {
+  local sig8="$1" writes="$2" raw="$3"
+  [[ "${REQUIRE_MISSION_WRITESET}" == "1" ]] || return 0
+  local missing
+  missing="$(leadv2_writeset_missing "${writes}" <<< "${raw}")"
+  [[ -z "${missing}" ]] && return 0
+  local suggested
+  suggested="$(printf '%s\n' "${missing}" | leadv2_writeset_suggest_line "${writes}")"
+  ARCHITECT_PREPASS_REASON="mission_writeset_missing"
+  emit decision "mission_writeset_refused task=${sig8} missing=$(printf '%s' "${missing}" | tr '\n' ',' | sed 's/,$//')"
+  log_err "mission-writeset: mission requires path(s) outside LANE_WRITES for task=${sig8}:"
+  log_err "${missing}"
+  log_err "corrected: ${suggested}"
+  return 1
+}
+
 # _acceptance_guard <sig8> <design_file> -> 0 ok, 1 park
 # RED-FIRST-GATE-01 R2: refuses a design whose acceptance is missing, not one
 # of the five surface types, or reads as an internal contract (the exact
@@ -4069,6 +4102,7 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
     # declared writes or an existing lane worktree still satisfy the guard, so the
     # kill-switch remains usable -- it just can no longer bypass isolation.
     _lane_writes_guard "${sig8}" "${writes}" 0 || return 1
+    _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || return 1
     emit decision "architect_prepass task=${sig8} status=disabled reason=kill_switch"
     return 0
   fi
@@ -4084,6 +4118,7 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
     # H6: trivially satisfied (count==1 implies non-empty writes) -- called anyway so
     # there is exactly one guard call site per exit path.
     _lane_writes_guard "${sig8}" "${writes}" 0 || return 1
+    _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || return 1
     emit decision "architect_prepass task=${sig8} status=skipped reason=provably_one_file writes=${writes}"
     return 0
   fi
@@ -4296,7 +4331,7 @@ PY
   # (leadv2-dispatch-product-close.sh unscopable_diff). A lane worktree already isolates the
   # lane on its own branch, so it substitutes for a declaration. LEADV2_REQUIRE_LANE_WRITES=0
   # restores today (never guard).
-  if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _acceptance_guard "${sig8}" "${f}"; then
+  if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || ! _acceptance_guard "${sig8}" "${f}"; then
     # M7 (LANDING-BLOCKER-R2): stamp the .sig cache BEFORE returning so a byte-identical
     # retry of this same non-compliant mission hits the cache path (H4 re-runs once, then
     # parks) instead of paying a second full architect run before parking.
@@ -5849,6 +5884,46 @@ cmd_record_review() {
   fi
   emit decision "review_recorded verdict=${verdict} diff=${diff_hash:0:8} reviewer=${reviewer}"
   printf 'review_recorded verdict=%s diff=%s\n' "${verdict}" "${diff_hash:0:8}"
+  exit 0
+}
+
+# cmd_mission_writeset_check <mission_file> [<lane_writes_csv>]
+# DISPATCH-CLOSE-GATE-01 Mechanism 1, standalone entry point (also enforced automatically
+# inside architect_prepass via _mission_writeset_guard). Prints missing paths + a corrected
+# LANE_WRITES: line and exits 1 when the mission demands a path outside the write set;
+# exits 0 (silent) when covered.
+cmd_mission_writeset_check() {
+  local mission_file="$1" writes_csv="${2:-}"
+  [[ -n "${mission_file}" && -f "${mission_file}" ]] || { log_err "mission-writeset-check: mission file required"; exit 2; }
+  local missing
+  missing="$(leadv2_writeset_missing "${writes_csv}" < "${mission_file}")"
+  if [[ -z "${missing}" ]]; then
+    printf 'mission_writeset_ok\n'
+    exit 0
+  fi
+  printf 'mission_writeset_refused missing=%s\n' "$(printf '%s' "${missing}" | tr '\n' ',' | sed 's/,$//')"
+  printf '%s\n' "${missing}"
+  printf '%s\n' "${missing}" | leadv2_writeset_suggest_line "${writes_csv}"
+  exit 1
+}
+
+# cmd_close_gate <task_id>
+# DISPATCH-CLOSE-GATE-01 Mechanism 2, standalone entry point. Cross-checks named fixes in
+# docs/handoff/<task_id>/*.md against RED artifacts in docs/handoff/<task_id>/red/ and
+# prints one "unproven: <name>" line per unbacked claim. Never exits non-zero for an
+# unproven finding (D3: report, don't trap the lane) -- only a usage error exits non-zero.
+cmd_close_gate() {
+  local task_id="$1" dir
+  [[ -n "${task_id}" ]] || { log_err "close-gate: task_id required"; exit 2; }
+  dir="${PROJECT_ROOT}/docs/handoff/${task_id}"
+  [[ -d "${dir}" ]] || { log_err "close-gate: no handoff dir at ${dir}"; exit 2; }
+  local unproven
+  unproven="$(leadv2_red_proof_unproven "${dir}")"
+  if [[ -z "${unproven}" ]]; then
+    printf 'red_proof_ok task=%s\n' "${task_id}"
+    exit 0
+  fi
+  printf '%s\n' "${unproven}"
   exit 0
 }
 
@@ -7601,6 +7676,8 @@ cmd_retry_dead() {
 case "${1:-}" in
   record-review) shift; cmd_record_review "$@" ;;
   status)        cmd_status ;;
+  mission-writeset-check) shift; cmd_mission_writeset_check "$@" ;;
+  close-gate)    shift; cmd_close_gate "$@" ;;
   glm-deferred)  shift; cmd_glm_deferred "$@" ;;
   burn-deferred) shift; cmd_burn_deferred "$@" ;;
   advance-arm)   shift; cmd_advance_arm "$@" ;;

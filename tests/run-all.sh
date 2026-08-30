@@ -118,7 +118,11 @@ leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-model-select-telemetry.sh
 leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
-leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh"
+leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-mission-writeset.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
+leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
+leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -132,7 +136,13 @@ else
   fi
   if [[ -n "${changed}" ]]; then
     while IFS= read -r cf; do
-      [[ "${cf}" == plugins/leadv2/scripts/*.sh ]] || continue
+      # DISPATCH-CLOSE-GATE-01: widened to include lib/*.sh -- a bare `scripts/*.sh` glob
+      # never matches a subdirectory, so a lib-only change (e.g. lib/leadv2-mission-
+      # writeset.sh) previously never reached the stem/EXTRA_SUITE_MAP lookup below at all.
+      case "${cf}" in
+        plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh) ;;
+        *) continue ;;
+      esac
       stem="$(basename "${cf}" .sh)"
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
