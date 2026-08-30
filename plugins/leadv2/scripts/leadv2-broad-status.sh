@@ -598,6 +598,7 @@ for row in table_rows:
     rows_out.append((
         "| " + " | ".join(md_escape(x) for x in (linia, chto, sostoyanie)) + " |",
         bool(_repo_slug),
+        _repo_slug or "",
     ))
     detail_lines.append(f"{id_display} — {kto} — {na_diske}")
 
@@ -680,19 +681,65 @@ pulse_md = (
 # of TABLE_ROW_CAP (never the whole board), own-repo keeps the remainder as
 # a floor (never zero while own rows exist). Neither side may starve the
 # other.
+#
+# fix-round-4 (R3-2): the reserve above is a FLOOR (a guaranteed minimum
+# when both sides compete for the cap), never a CEILING. Round-3's version
+# applied FOREIGN_ROW_RESERVE unconditionally, so "10 foreign + 0 own"
+# rendered only 2 of 6 available slots and printed "8 строк не поместилось"
+# while four table slots sat empty -- the reservation was defending a bug,
+# not preventing one. The empty side must yield its unused share to the
+# other: 0 own -> foreign gets the WHOLE cap; 0 foreign -> own already got
+# the whole cap (unchanged). Only when BOTH sides have rows does the
+# reserve/floor split kick in.
 TABLE_ROW_CAP = 6
 FOREIGN_ROW_RESERVE = max(1, TABLE_ROW_CAP // 3)
 rows_out_full = rows_out
-_foreign_row_count = sum(1 for _, _f in rows_out_full if _f)
+_foreign_row_count = sum(1 for _, _f, _r in rows_out_full if _f)
 _own_row_count = len(rows_out_full) - _foreign_row_count
-_foreign_slots = min(_foreign_row_count, FOREIGN_ROW_RESERVE)
+if _own_row_count == 0:
+    _foreign_slots = min(_foreign_row_count, TABLE_ROW_CAP)
+elif _foreign_row_count == 0:
+    _foreign_slots = 0
+else:
+    _foreign_slots = min(_foreign_row_count, FOREIGN_ROW_RESERVE)
 _own_row_budget = TABLE_ROW_CAP - _foreign_slots
+
+# fix-round-4 (Medium, alphabetical starvation): leadv2-lanes-snapshot.sh
+# emits foreign rows in whatever order its own read happened to enumerate
+# repos, which is effectively alphabetical -- so when foreign supply
+# exceeds _foreign_slots, a repo late in that order was silently NEVER
+# shown, beat after beat, while an earlier repo always filled every slot.
+# Round-robin across repos BY INDEX (first-seen order per repo, which is
+# the liveness order the upstream rows already arrive in -- a dead row
+# never reaches rows_out_full, see the `continue` above) so a bounded slot
+# budget is shared, not monopolized by whichever repo sorts first.
+_repo_buckets = {}
+_repo_order = []
+for _idx, (_l, _f, _r) in enumerate(rows_out_full):
+    if not _f:
+        continue
+    if _r not in _repo_buckets:
+        _repo_buckets[_r] = []
+        _repo_order.append(_r)
+    _repo_buckets[_r].append(_idx)
+_foreign_selected_idx = set()
+while len(_foreign_selected_idx) < _foreign_slots:
+    _advanced = False
+    for _r in _repo_order:
+        if _repo_buckets[_r]:
+            _foreign_selected_idx.add(_repo_buckets[_r].pop(0))
+            _advanced = True
+            if len(_foreign_selected_idx) >= _foreign_slots:
+                break
+    if not _advanced:
+        break
+
 rows_out = []
 _own_rows_kept = 0
 _foreign_rows_kept = 0
-for _line, _is_foreign in rows_out_full:
+for _idx, (_line, _is_foreign, _repo) in enumerate(rows_out_full):
     if _is_foreign:
-        if _foreign_rows_kept < _foreign_slots:
+        if _idx in _foreign_selected_idx:
             rows_out.append((_line, _is_foreign))
             _foreign_rows_kept += 1
     elif _own_rows_kept < _own_row_budget:
@@ -762,7 +809,7 @@ except Exception:
 # break of an unrelated decision record for zero readability gain.
 _table_header = ["| Линия | Что делает | Состояние |", "|---|---|---|"]
 _rows_out_lines = [l for l, _ in rows_out]
-_rows_out_full_lines = [l for l, _ in rows_out_full]
+_rows_out_full_lines = [l for l, _f, _r in rows_out_full]
 table_md = "\n".join(table_prefix + _table_header +
                       (_rows_out_lines if _rows_out_lines else ["| (живых линий нет) | — | — |"]))
 full_table_md = "\n".join(table_prefix + _table_header +
@@ -1022,8 +1069,14 @@ except OSError:
 # the junk wording; a row that simply didn't fit under TABLE_ROW_CAP gets
 # honest "не поместилось" phrasing instead.
 hidden_bits = []
-if table_rows_hidden:
-    hidden_bits.append(f"{table_rows_hidden} строк таблицы не поместилось")
+# fix-round-4 (Medium): _own_rows_hidden/_foreign_rows_hidden were computed
+# above and then discarded into one combined number, which hides WHICH side
+# is starved (a founder reading "4 строк не поместилось" cannot tell if
+# that is his own work or a foreign lane). Report them separately.
+if _own_rows_hidden:
+    hidden_bits.append(f"{_own_rows_hidden} своих строк не поместилось")
+if _foreign_rows_hidden:
+    hidden_bits.append(f"{_foreign_rows_hidden} чужих строк не поместилось")
 if _dedup_dropped_count:
     hidden_bits.append(f"{_dedup_dropped_count} дублирующих строк")
 _queue_line_count = len(queue_md.splitlines())

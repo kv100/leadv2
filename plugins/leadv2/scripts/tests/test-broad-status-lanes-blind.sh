@@ -36,10 +36,17 @@
 # T5  CROSS-REPO CAP SURVIVAL: 7 own + 1 foreign — the foreign lane must
 #     survive TABLE_ROW_CAP, and the own budget left for own-repo rows is
 #     asserted to the exact count (fix-round-3 NEW-9).
-# T6  FOREIGN CAP IS BOUNDED (fix-round-3 NEW-2): 10 foreign + 0 own — a
-#     foreign surge must be capped by FOREIGN_ROW_RESERVE, not rendered
-#     without bound (leadv2-lanes-snapshot.sh applies no cap/status filter
-#     to foreign rows at the source).
+# T6  FOREIGN CAP IS BOUNDED, BUT THE RESERVE IS A FLOOR NOT A CEILING
+#     (fix-round-3 NEW-2, re-specified fix-round-4 R3-2): 10 foreign + 0
+#     own — a foreign surge must still be capped (never rendered without
+#     bound; leadv2-lanes-snapshot.sh applies no cap/status filter to
+#     foreign rows at the source), but with ZERO own-repo rows competing
+#     for the table there is nothing for FOREIGN_ROW_RESERVE to protect —
+#     foreign must fill the WHOLE TABLE_ROW_CAP, not just its reserved
+#     slice. Round-3's version applied the reserve unconditionally: 2 of 6
+#     slots filled, 4 sitting empty, while the beat told the founder "8
+#     строк таблицы не поместилось" — a lie, since only 4 rows actually
+#     failed to fit.
 # T7  OWN-REPO FLOOR SURVIVES A FOREIGN SURGE (fix-round-3 NEW-3): 6
 #     foreign + 7 own — own-repo rows must keep a floor of TABLE_ROW_CAP -
 #     FOREIGN_ROW_RESERVE, never be evicted to zero and folded into
@@ -296,10 +303,19 @@ chmod +x "$STUBS/collector-foreign-only.sh"
 beat_env "$STUBS/collector-foreign-only.sh" "2026-08-30T04:30:00Z"
 T6_CONTENT="$(cat "$FOUNDER_STATUS")"
 T6_FOREIGN_ROWS="$(printf '%s' "$T6_CONTENT" | grep -cE '^\| persona-engine/FOREIGN-ONLY-[0-9]+ ')"
-if [[ "$T6_FOREIGN_ROWS" -eq 2 ]]; then
-  pass "T6: 10 foreign lanes, 0 own — table shows exactly 2 (FOREIGN_ROW_RESERVE), not all 10"
+if [[ "$T6_FOREIGN_ROWS" -eq 6 ]]; then
+  pass "T6a: 10 foreign lanes, 0 own — table is FILLED (6 of TABLE_ROW_CAP), not starved to FOREIGN_ROW_RESERVE"
 else
-  fail "T6: foreign rows not bounded by the cap, got $T6_FOREIGN_ROWS rows: $T6_CONTENT"
+  fail "T6a: foreign rows not filling the cap when own=0, got $T6_FOREIGN_ROWS rows: $T6_CONTENT"
+fi
+# fix-round-4 (R3-2): the hidden-count must equal what was ACTUALLY dropped
+# (10 supplied - 6 rendered = 4), never the old inflated "8" that came from
+# applying the reserve as a ceiling even with no own rows to protect.
+if printf '%s' "$T6_CONTENT" | grep -q '4 чужих строк не поместилось' \
+   && ! printf '%s' "$T6_CONTENT" | grep -q '8 строк'; then
+  pass "T6b: hidden count matches what was actually dropped (4, not 8)"
+else
+  fail "T6b: hidden count wrong: $(printf '%s' "$T6_CONTENT" | grep 'не поместилось' || echo '<none>')"
 fi
 
 # ── T7: OWN-REPO FLOOR SURVIVES A FOREIGN SURGE — 6 foreign, 7 own ──────
