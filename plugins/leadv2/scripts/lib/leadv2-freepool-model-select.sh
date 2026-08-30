@@ -5,7 +5,7 @@
 # a single static route id. Reads plugins/leadv2/config/freepool-arm.yaml's
 # `model_rank` (ordered list of route-id PREFIXES, most-preferred first),
 # fetches the proxy's live GET /v1/models, and for the first rank whose
-# prefix has a live route, runs a cheap 1-token liveness probe. First
+# prefix has a live route, runs a content-based liveness probe (a short deterministic prompt must come back with non-whitespace text, not just HTTP 200). First
 # candidate whose probe succeeds wins; a probe failure advances to the next
 # rank.
 #
@@ -21,7 +21,7 @@
 #   FREEPOOL_MODELS_CACHE_TTL_S      cache TTL seconds (default 60)
 #   FREEPOOL_MODELS_FETCH_TIMEOUT_S  timeout for GET /v1/models (default 5; a cold proxy
 #                                    process can be slow to answer its first request)
-#   FREEPOOL_MODEL_PROBE_TIMEOUT_S   timeout for the 1-token liveness probe (default 30;
+#   FREEPOOL_MODEL_PROBE_TIMEOUT_S   timeout for the liveness probe (default 30;
 #                                    measured 2026-08-27 -- gemini routes answered in
 #                                    18-26s and some NIM/mistral routes in 50-117s, so
 #                                    the old 8s default silently excluded working models.
@@ -181,21 +181,61 @@ _json_str() {
   python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1" 2>/dev/null || printf '"%s"' "$1"
 }
 
-# _probe <route_id> -> 0 if the 1-token liveness POST succeeds, 1 otherwise.
+# _probe <route_id> -> 0 if the liveness POST succeeds AND the response body
+# carries non-whitespace text content, 1 otherwise.
+#
+# 2026-08-30 (FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01 round 2): an HTTP 200 with a
+# blank/whitespace-only content[].text is a live trap, not a live model --
+# measured against the real proxy on 2026-08-30, ranks 1-3 of the previous
+# default list (deepseek-v4-pro, kimi-k3, gemini-3.7-flash) AND groq's
+# gpt-oss-120b all returned exactly this shape at max_tokens:1. Root cause is
+# NOT dead credentials (every one of those routes answers 200, never
+# 401/403) -- it is that the proxy leaves reasoning computation to the
+# provider default (free_claude_code core/reasoning.py
+# ReasoningPolicy.provider_default()), so a reasoning-capable model spends
+# its entire tiny max_tokens budget on invisible reasoning tokens before any
+# visible text is emitted, and the response comes back well-formed but
+# empty. A status-code-only probe cannot see this. Bumping the probe budget
+# to 64 tokens (measured minimum for gpt-oss-120b to clear its reasoning
+# preamble and answer "OK" in 2.2s; 16/32 both still came back blank) fixes
+# it for fast non-blocked routes while a genuinely dead/hung route still
+# times out or returns blank at 64 either way, so it still gets rejected.
 _probe() {
   local route_id="$1"
   local auth_header=()
   if [[ -n "${FREEPOOL_AUTH_TOKEN:-}" ]]; then
     auth_header=(-H "Authorization: Bearer ${FREEPOOL_AUTH_TOKEN}")
   fi
+  local probe_max_tokens="${FREEPOOL_MODEL_PROBE_MAX_TOKENS:-64}"
+  local tmp_body
+  tmp_body="$(mktemp 2>/dev/null || echo "/tmp/freepool-probe-body.$$")"
   local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${PROBE_TIMEOUT_S}" \
+  code="$(curl -s -o "${tmp_body}" -w '%{http_code}' --max-time "${PROBE_TIMEOUT_S}" \
     -X POST "${FREEPOOL_BASE_URL}/v1/messages" \
     -H "Content-Type: application/json" \
     "${auth_header[@]}" \
-    -d "$(printf '{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' "${route_id}")" \
+    -d "$(printf '{"model":"%s","max_tokens":%s,"messages":[{"role":"user","content":"Reply with exactly the word OK and nothing else."}]}' "${route_id}" "${probe_max_tokens}")" \
     2>/dev/null || echo "000")"
-  [[ "${code}" =~ ^2[0-9][0-9]$ ]]
+
+  if [[ ! "${code}" =~ ^2[0-9][0-9]$ ]]; then
+    rm -f "${tmp_body}" 2>/dev/null || true
+    return 1
+  fi
+
+  local has_content
+  has_content="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        body = json.load(f)
+    parts = [b.get("text", "") for b in (body.get("content") or []) if isinstance(b, dict) and b.get("type") == "text"]
+    text = "".join(parts)
+    print("1" if text.strip() else "0")
+except Exception:
+    print("0")
+' "${tmp_body}" 2>/dev/null || echo "0")"
+  rm -f "${tmp_body}" 2>/dev/null || true
+  [[ "${has_content}" == "1" ]]
 }
 
 main() {
