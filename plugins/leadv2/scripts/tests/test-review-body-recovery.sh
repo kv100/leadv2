@@ -145,7 +145,7 @@ make_codex_stub() {
     printf '  exit 0\n'
     printf 'elif [[ "$sub" == "result" ]]; then\n'
     if [[ "$store_mode" == has_verdict ]]; then
-      printf '  printf "REVIEW_VERDICT: FAIL\\nREVIEW_FINDINGS: critical=0 high=4 medium=0 low=0\\nFour High findings recovered from the codex job store: gate integrity issues.\\n"\n'
+      printf '  printf "REVIEW_VERDICT: FAIL\\nREVIEW_FINDINGS: critical=0 high=4 medium=0 low=0\\nFINDING: severity=High file=file.txt line=1 dimension=correctness desc=recovered finding one\\nFINDING: severity=High file=file.txt line=2 dimension=correctness desc=recovered finding two\\nFINDING: severity=High file=file.txt line=3 dimension=correctness desc=recovered finding three\\nFINDING: severity=High file=file.txt line=4 dimension=correctness desc=recovered finding four\\nFour High findings recovered from the codex job store: gate integrity issues.\\n"\n'
       printf '  exit 0\n'
     else
       printf '  printf "[codex] Thread ready (thread-abc).\\n[codex] Turn started (turn-1).\\n"\n'
@@ -222,6 +222,64 @@ make_arch_stub() {
   printf '%s' "$stub"
 }
 
+# make_findings_arch_stub <name> <verdict> <critical> <high> <emit_findings> ->
+# prints stub path. REVIEW-VERDICT-COUNTER-03: declares REVIEW_FINDINGS:
+# critical=<n> high=<n> medium=0 low=0 and, when emit_findings=1, ALSO writes
+# that many real FINDING: lines (unique file/line per finding) so the union
+# array actually has <n> entries. emit_findings=0 declares the counts but
+# writes ZERO FINDING: lines -- the impossible-state trigger this round's
+# invariant must catch.
+make_findings_arch_stub() {
+  local name="$1" verdict="$2" crit="$3" high="$4" emit="$5"
+  local stub="${SUITE_TMP}/${name}/farch-${RANDOM}.sh"
+  mkdir -p "$(dirname "$stub")"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'role=""; task_id=""\n'
+    printf 'while [[ $# -gt 0 ]]; do case "$1" in --role) role="$2"; shift 2 ;; --task-id) task_id="$2"; shift 2 ;; *) shift ;; esac; done\n'
+    # _engine_hack_detect_job (leadv2-review-run.sh) shares --role critic with
+    # the real review call but keys its own artifact off a task-id suffixed
+    # -review-hackdetect -- that suffix is the only reliable signal this stub
+    # is being invoked as the hack-detect pass, not the reviewer arm itself.
+    printf '[[ "$task_id" == *-review-hackdetect ]] && exit 0\n'
+    printf 'printf "REVIEW_VERDICT: %s\\n"\n' "$verdict"
+    printf 'printf "REVIEW_FINDINGS: critical=%s high=%s medium=0 low=0\\n"\n' "$crit" "$high"
+    if [[ "$emit" == 1 ]]; then
+      local n=0 i
+      for ((i = 0; i < crit; i++)); do
+        n=$((n + 1))
+        printf 'printf "FINDING: severity=Critical file=file.txt line=%s dimension=correctness desc=finding %s\\n"\n' "$n" "$n"
+      done
+      for ((i = 0; i < high; i++)); do
+        n=$((n + 1))
+        printf 'printf "FINDING: severity=High file=file.txt line=%s dimension=correctness desc=finding %s\\n"\n' "$n" "$n"
+      done
+    fi
+    printf 'printf "Padding sentence so the review body clears the floor comfortably every run.\\n"\n'
+    printf 'exit 0\n'
+  } > "$stub"
+  chmod +x "$stub"
+  printf '%s' "$stub"
+}
+
+# json_severity_count <review-findings.json> <severity> -> prints the number
+# of entries in the findings array with that severity, via an independent
+# python3 JSON parse (never the production script's own grep -oE counting --
+# a shared-bug tautology would pass even if the invariant were broken).
+json_severity_count() {
+  local f="$1" sev="$2"
+  python3 - "$f" "$sev" <<'PY'
+import json, sys
+f, sev = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(f, encoding="utf-8"))
+except Exception:
+    print(0)
+    raise SystemExit
+print(sum(1 for x in d.get("findings", []) if x.get("severity") == sev))
+PY
+}
+
 # run_review <root> <task> <handoff> <diff> <resolver> <author> [extra env assignments...]
 # echoes "<engine-exit>"; stderr captured to $SUITE_TMP/<task>.err. <author>
 # must never equal a name present in the scenario's pool -- the engine's own
@@ -281,6 +339,21 @@ if grep -q 'reason=review_body_lost' "$s1_err"; then
   fail "S1: unexpected review_body_lost -- the verdict was recoverable"
 else
   pass "S1: no review_body_lost declared"
+fi
+# REVIEW-VERDICT-COUNTER-03 acceptance #3/#4: the gate's printed count must
+# come from the RECOVERED array (the codex-store body), not from the
+# housekeeping body it replaced, and must agree with review-findings.json.
+s1_json="${s1_handoff}/review-findings.json"
+s1_json_high="$(json_severity_count "$s1_json" High)"
+if [[ "$s1_json_high" == "4" ]]; then
+  pass "S1: review-findings.json holds the 4 recovered High findings (not the housekeeping body's zero)"
+else
+  fail "S1: review-findings.json High count -- expected 4, got '${s1_json_high}' -- $(cat "$s1_json" 2>/dev/null)"
+fi
+if grep -q '^high: 4$' "$s1_gate" 2>/dev/null; then
+  pass "S1: gate line's printed count (high: 4) agrees with review-findings.json's array length"
+else
+  fail "S1: gate line's printed high count does not read 'high: 4' -- $(cat "$s1_gate" 2>/dev/null)"
 fi
 
 # ===========================================================================
@@ -423,6 +496,104 @@ else
 fi
 
 # ===========================================================================
+# Scenario 6 — REVIEW-VERDICT-COUNTER-03 acceptance #1 (N=2): a single arm
+# declares AND emits exactly 2 High FINDING: lines. The gate line must print
+# exactly 2, and review-findings.json's array must independently count 2.
+# ===========================================================================
+s6_root="$(make_plain_root s6)"
+s6_handoff="${SUITE_TMP}/s6/handoff"
+s6_diff="$(make_diff_file s6)"
+s6_resolver="$(make_resolver_stub s6 sonnet "sonnet:ok:")"
+s6_arch="$(make_findings_arch_stub s6 FAIL 0 2 1)"
+s6_rc="$(run_review "$s6_root" "s6" "$s6_handoff" "$s6_diff" "$s6_resolver" kimi \
+  LEADV2_DISPATCH_ARCHITECT_BIN="$s6_arch")"
+s6_gate="${s6_handoff}/review-gate.md"
+s6_json="${s6_handoff}/review-findings.json"
+
+if [[ "$s6_rc" == "7" ]] && grep -q '^status: fail$' "$s6_gate" 2>/dev/null; then
+  pass "S6: 2-finding review fails the gate (exit 7, status: fail)"
+else
+  fail "S6: expected exit 7 / status: fail -- rc=${s6_rc} gate=$(cat "$s6_gate" 2>/dev/null || echo MISSING)"
+fi
+if grep -q '^high: 2$' "$s6_gate" 2>/dev/null; then
+  pass "S6: gate line prints exactly high: 2"
+else
+  fail "S6: gate line does not print high: 2 -- $(cat "$s6_gate" 2>/dev/null)"
+fi
+s6_json_high="$(json_severity_count "$s6_json" High)"
+if [[ "$s6_json_high" == "2" ]]; then
+  pass "S6: review-findings.json independently counts 2 High findings -- agrees with gate"
+else
+  fail "S6: review-findings.json High count -- expected 2, got '${s6_json_high}' -- $(cat "$s6_json" 2>/dev/null)"
+fi
+
+# ===========================================================================
+# Scenario 7 — REVIEW-VERDICT-COUNTER-03 acceptance #1 (N=5, a DISTINCT N
+# from S6): same shape, 5 High findings. Proves the count tracks the array
+# size rather than being some other fixed/independent number.
+# ===========================================================================
+s7_root="$(make_plain_root s7)"
+s7_handoff="${SUITE_TMP}/s7/handoff"
+s7_diff="$(make_diff_file s7)"
+s7_resolver="$(make_resolver_stub s7 sonnet "sonnet:ok:")"
+s7_arch="$(make_findings_arch_stub s7 FAIL 0 5 1)"
+s7_rc="$(run_review "$s7_root" "s7" "$s7_handoff" "$s7_diff" "$s7_resolver" kimi \
+  LEADV2_DISPATCH_ARCHITECT_BIN="$s7_arch")"
+s7_gate="${s7_handoff}/review-gate.md"
+s7_json="${s7_handoff}/review-findings.json"
+
+if [[ "$s7_rc" == "7" ]] && grep -q '^status: fail$' "$s7_gate" 2>/dev/null; then
+  pass "S7: 5-finding review fails the gate (exit 7, status: fail)"
+else
+  fail "S7: expected exit 7 / status: fail -- rc=${s7_rc} gate=$(cat "$s7_gate" 2>/dev/null || echo MISSING)"
+fi
+if grep -q '^high: 5$' "$s7_gate" 2>/dev/null; then
+  pass "S7: gate line prints exactly high: 5 (distinct from S6's 2)"
+else
+  fail "S7: gate line does not print high: 5 -- $(cat "$s7_gate" 2>/dev/null)"
+fi
+s7_json_high="$(json_severity_count "$s7_json" High)"
+if [[ "$s7_json_high" == "5" ]]; then
+  pass "S7: review-findings.json independently counts 5 High findings -- agrees with gate"
+else
+  fail "S7: review-findings.json High count -- expected 5, got '${s7_json_high}' -- $(cat "$s7_json" 2>/dev/null)"
+fi
+
+# ===========================================================================
+# Scenario 8 — REVIEW-VERDICT-COUNTER-03 acceptance #2: the reviewer DECLARES
+# REVIEW_FINDINGS: high=5 (a non-zero count) and REVIEW_VERDICT: FAIL, but
+# emits ZERO actual FINDING: lines -- exactly the live incident (gate printed
+# high=5, review-findings.json held an empty array). The gate must refuse to
+# print "fail: high=5" for an array nobody can find; it must block honestly.
+# ===========================================================================
+s8_root="$(make_plain_root s8)"
+s8_handoff="${SUITE_TMP}/s8/handoff"
+s8_diff="$(make_diff_file s8)"
+s8_resolver="$(make_resolver_stub s8 sonnet "sonnet:ok:")"
+s8_arch="$(make_findings_arch_stub s8 FAIL 0 5 0)"
+s8_rc="$(run_review "$s8_root" "s8" "$s8_handoff" "$s8_diff" "$s8_resolver" kimi \
+  LEADV2_DISPATCH_ARCHITECT_BIN="$s8_arch")"
+s8_gate="${s8_handoff}/review-gate.md"
+s8_json="${s8_handoff}/review-findings.json"
+
+if [[ "$s8_rc" == "6" ]] && grep -q '^status: blocked$' "$s8_gate" 2>/dev/null && grep -q '^reason: findings_lost$' "$s8_gate" 2>/dev/null; then
+  pass "S8: declared-but-unfindable high=5 blocks the gate (exit 6, status: blocked, reason: findings_lost)"
+else
+  fail "S8: expected exit 6 / blocked / findings_lost -- rc=${s8_rc} gate=$(cat "$s8_gate" 2>/dev/null || echo MISSING)"
+fi
+if grep -q '^status: fail$' "$s8_gate" 2>/dev/null; then
+  fail "S8: the impossible state must never print status: fail"
+else
+  pass "S8: no status: fail printed for the impossible state"
+fi
+s8_json_high="$(json_severity_count "$s8_json" High)"
+if [[ "$s8_json_high" == "0" ]]; then
+  pass "S8: review-findings.json's findings array is genuinely empty (0 High) -- confirms the impossible state is reachable"
+else
+  fail "S8: expected an empty findings array, got High=${s8_json_high} -- $(cat "$s8_json" 2>/dev/null)"
+fi
+
+# ===========================================================================
 # Mutation controls — prove S1 (recovery) and S3 (cooldown-vs-error) actually
 # assert something: mutate the REAL production function, expect RED, revert
 # byte-for-byte, expect GREEN again. Never a scratch copy of the engine.
@@ -524,6 +695,117 @@ if [[ "$s3g_rc" == "0" ]] && grep -q '^status: pass$' "$s3g_gate" 2>/dev/null; t
   pass "MUTATION-B GREEN: reverted engine spills the cooldown again, gate not blocked"
 else
   fail "MUTATION-B GREEN FAILED: revert did not restore cooldown spill -- rc=${s3g_rc} gate=$(cat "$s3g_gate" 2>/dev/null || echo MISSING)"
+fi
+
+# --- Mutation C: reintroduce an independent tally (targets S6/S7) ----------
+# FINDINGS_HIGH_TOTAL is hardcoded to a fixed wrong number instead of being
+# derived from review-findings.json's own array -- exactly the class of bug
+# this round fixes (a counter with no relationship to the findings array).
+# S6/S7's exact-count assertions must go red.
+python3 - "$ENGINE" <<'PY'
+import sys
+path = sys.argv[1]
+old = 'FINDINGS_HIGH_TOTAL="$({ grep -oE \'"severity":"High"\' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d \'[:space:]\')"; FINDINGS_HIGH_TOTAL="${FINDINGS_HIGH_TOTAL:-0}"'
+new = 'FINDINGS_HIGH_TOTAL=99  # MUTATION-C'
+text = open(path, encoding="utf-8").read()
+if old not in text:
+    sys.exit("MUTATION-C anchor not found")
+open(path, "w", encoding="utf-8").write(text.replace(old, new, 1))
+PY
+if [[ $? -eq 0 ]] && bash -n "$ENGINE"; then
+  pass "MUTATION-C: mutated engine still parses (bash -n)"
+else
+  fail "MUTATION-C: mutation apply or bash -n failed -- aborting mutation check"
+fi
+
+s6m_root="$(make_plain_root s6m)"
+s6m_handoff="${SUITE_TMP}/s6m/handoff"
+s6m_diff="$(make_diff_file s6m)"
+s6m_resolver="$(make_resolver_stub s6m sonnet "sonnet:ok:")"
+s6m_arch="$(make_findings_arch_stub s6m FAIL 0 2 1)"
+s6m_rc="$(run_review "$s6m_root" "s6m" "$s6m_handoff" "$s6m_diff" "$s6m_resolver" kimi \
+  LEADV2_DISPATCH_ARCHITECT_BIN="$s6m_arch")"
+s6m_gate="${s6m_handoff}/review-gate.md"
+if grep -q '^high: 2$' "$s6m_gate" 2>/dev/null; then
+  fail "MUTATION-C RED FAILED: mutation did not desync the gate count from the array -- gate=$(cat "$s6m_gate" 2>/dev/null || echo MISSING)"
+else
+  pass "MUTATION-C RED: with the independent tally reintroduced, a real 2-finding review no longer prints high: 2 -- rc=${s6m_rc} gate=$(cat "$s6m_gate" 2>/dev/null || echo MISSING)"
+fi
+
+cp "$ENGINE_BACKUP" "$ENGINE"
+if bash -n "$ENGINE"; then
+  pass "MUTATION-C: engine reverted, bash -n clean"
+else
+  fail "MUTATION-C: engine failed bash -n after revert"
+fi
+
+s6g_root="$(make_plain_root s6g)"
+s6g_handoff="${SUITE_TMP}/s6g/handoff"
+s6g_diff="$(make_diff_file s6g)"
+s6g_resolver="$(make_resolver_stub s6g sonnet "sonnet:ok:")"
+s6g_arch="$(make_findings_arch_stub s6g FAIL 0 2 1)"
+s6g_rc="$(run_review "$s6g_root" "s6g" "$s6g_handoff" "$s6g_diff" "$s6g_resolver" kimi \
+  LEADV2_DISPATCH_ARCHITECT_BIN="$s6g_arch")"
+s6g_gate="${s6g_handoff}/review-gate.md"
+if [[ "$s6g_rc" == "7" ]] && grep -q '^high: 2$' "$s6g_gate" 2>/dev/null; then
+  pass "MUTATION-C GREEN: reverted engine prints high: 2 again, matching the array"
+else
+  fail "MUTATION-C GREEN FAILED: revert did not restore the array-derived count -- rc=${s6g_rc} gate=$(cat "$s6g_gate" 2>/dev/null || echo MISSING)"
+fi
+
+# --- Mutation D: neuter the impossible-state check (targets S8) ------------
+# The findings_lost guard's condition is forced permanently false, so a
+# declared FAIL with zero actual findings falls through to a normal fail
+# print instead of blocking -- S8 must go red (no more status: blocked).
+python3 - "$ENGINE" <<'PY'
+import sys
+path = sys.argv[1]
+old = 'if [[ "${verdict}" == FAIL && "${FINDINGS_CRITICAL_TOTAL}" -eq 0 && "${FINDINGS_HIGH_TOTAL}" -eq 0 ]]; then'
+new = 'if [[ "${verdict}" == FAIL && 0 -eq 1 ]]; then  # MUTATION-D'
+text = open(path, encoding="utf-8").read()
+if old not in text:
+    sys.exit("MUTATION-D anchor not found")
+open(path, "w", encoding="utf-8").write(text.replace(old, new, 1))
+PY
+if [[ $? -eq 0 ]] && bash -n "$ENGINE"; then
+  pass "MUTATION-D: mutated engine still parses (bash -n)"
+else
+  fail "MUTATION-D: mutation apply or bash -n failed -- aborting mutation check"
+fi
+
+s8m_root="$(make_plain_root s8m)"
+s8m_handoff="${SUITE_TMP}/s8m/handoff"
+s8m_diff="$(make_diff_file s8m)"
+s8m_resolver="$(make_resolver_stub s8m sonnet "sonnet:ok:")"
+s8m_arch="$(make_findings_arch_stub s8m FAIL 0 5 0)"
+s8m_rc="$(run_review "$s8m_root" "s8m" "$s8m_handoff" "$s8m_diff" "$s8m_resolver" kimi \
+  LEADV2_DISPATCH_ARCHITECT_BIN="$s8m_arch")"
+s8m_gate="${s8m_handoff}/review-gate.md"
+if grep -q '^status: blocked$' "$s8m_gate" 2>/dev/null; then
+  fail "MUTATION-D RED FAILED: the impossible state is still caught with the guard disabled -- gate=$(cat "$s8m_gate" 2>/dev/null || echo MISSING)"
+else
+  pass "MUTATION-D RED: with the guard neutered, S8's impossible state now (wrongly) prints a verdict instead of blocking -- rc=${s8m_rc} gate=$(cat "$s8m_gate" 2>/dev/null || echo MISSING)"
+fi
+
+cp "$ENGINE_BACKUP" "$ENGINE"
+if bash -n "$ENGINE"; then
+  pass "MUTATION-D: engine reverted, bash -n clean"
+else
+  fail "MUTATION-D: engine failed bash -n after revert"
+fi
+
+s8g_root="$(make_plain_root s8g)"
+s8g_handoff="${SUITE_TMP}/s8g/handoff"
+s8g_diff="$(make_diff_file s8g)"
+s8g_resolver="$(make_resolver_stub s8g sonnet "sonnet:ok:")"
+s8g_arch="$(make_findings_arch_stub s8g FAIL 0 5 0)"
+s8g_rc="$(run_review "$s8g_root" "s8g" "$s8g_handoff" "$s8g_diff" "$s8g_resolver" kimi \
+  LEADV2_DISPATCH_ARCHITECT_BIN="$s8g_arch")"
+s8g_gate="${s8g_handoff}/review-gate.md"
+if [[ "$s8g_rc" == "6" ]] && grep -q '^status: blocked$' "$s8g_gate" 2>/dev/null && grep -q '^reason: findings_lost$' "$s8g_gate" 2>/dev/null; then
+  pass "MUTATION-D GREEN: reverted engine blocks the impossible state again"
+else
+  fail "MUTATION-D GREEN FAILED: revert did not restore the findings_lost guard -- rc=${s8g_rc} gate=$(cat "$s8g_gate" 2>/dev/null || echo MISSING)"
 fi
 
 # Final proof the mutation cycle left the production file byte-identical.
