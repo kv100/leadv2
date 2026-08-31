@@ -1920,6 +1920,53 @@ if [[ -z "${GLM_POLICY_RESOLVER}" ]]; then
     [[ -f "${_canonical_resolver}" ]] && GLM_POLICY_RESOLVER="${_canonical_resolver}"
   fi
 fi
+# ARMS-ADMISSION-01: the base arm the legacy resolver treats as "no policy
+# applied" comes from the SAME capability_matrix cost ranking the arbiter
+# uses (leadv2-route-arbiter.sh router_v2.capability_matrix), not a
+# hardcoded "glm" -- otherwise glm-flash (cost 0.4, built for exactly this,
+# GLM-53-FLASH-ARM-01) is never a candidate on the arbiter's fail-open
+# fallback path (T17: arbiter is the PRIMARY chain source; this function only
+# feeds the fallback resolve_arm() path and its own seed for the legacy
+# ladder). Mirrors the arbiter's require_trusted gate: an untrusted
+# (protected: false) arm is excluded from the pick only when this task
+# WRITES production code (DC_KIND not in review/audit/plan) on a
+# protected/safety lane -- same split as _build_candidate_chain. Cheapest
+# capable+eligible cell wins; glm-flash is never special-cased ahead of glm,
+# it wins only when the routing data says it is cheaper AND capable. Falls
+# back to "glm" on any resolution failure -- fail-open, unchanged behaviour
+# for a repo/config that predates this fix.
+_select_base_arm() {
+  local _kind="${DC_KIND:-code}" _size_raw="${DC_TASK_CLASS:-standard}"
+  local _writes=1
+  case "${_kind}" in review|audit|plan) _writes=0 ;; esac
+  local _require_trusted=0
+  if [[ "${DC_SAFETY:-0}" == "1" || ( "${DC_PROTECTED:-0}" == "1" && "${_writes}" == "1" ) ]]; then
+    _require_trusted=1
+  fi
+  [[ -r "${ROUTING_YAML}" ]] || { printf 'glm'; return; }
+  python3 -c '
+import sys, yaml
+try:
+    d = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    print("glm"); sys.exit(0)
+kind = sys.argv[2]
+size_raw = (sys.argv[3] or "standard").lower()
+require_trusted = sys.argv[4] == "1"
+SIZE_MAP={"standard":"standard","heavy":"heavy","bulk":"bulk","trivial":"standard","light":"standard","strategic":"heavy"}
+size = SIZE_MAP.get(size_raw, "standard")
+cells = ((d.get("router_v2") or {}).get("capability_matrix")) or []
+capable = [c for c in cells
+           if kind in (c.get("kinds") or [])
+           and size in (c.get("sizes") or [])
+           and (not require_trusted or c.get("protected", False))]
+if not capable:
+    print("glm"); sys.exit(0)
+capable.sort(key=lambda c: float(c.get("cost", 999)))
+print(capable[0].get("arm") or "glm")
+' "${ROUTING_YAML}" "${_kind}" "${_size_raw}" "${_require_trusted}" 2>/dev/null || printf 'glm'
+}
+
 resolve_arm() {
   local signals_json
   # Resolver unresolvable in ANY copy (both lookups above missed): fail CLOSED on
@@ -1956,7 +2003,8 @@ print(json.dumps({
   # local-signals_json-then-conditional-flag shape (bash 5.3, reproducible), which
   # made argparse silently reject the flag and fail the resolver on every call
   # (found by T-b's live-policy harness — the CLI mode had never been exercised).
-  local -a _resolver_args=(--routing-yaml "${ROUTING_YAML}" --job build --base-arm glm --signals "${signals_json}")
+  local _base_arm; _base_arm="$(_select_base_arm)"
+  local -a _resolver_args=(--routing-yaml "${ROUTING_YAML}" --job build --base-arm "${_base_arm}" --signals "${signals_json}")
   [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && _resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
   DC_PROTECTED="${DC_PROTECTED:-0}" \
   DC_SAFETY="${DC_SAFETY:-0}" \
@@ -2113,7 +2161,17 @@ _build_candidate_chain() {  # <arm> <sig8> ; mutates candidate_arms
     emit decision "arm_vocabulary_mismatch by=router arm=${_arm} fallback=sonnet task=${_sig8} reason=launcher_unknown_arm"
     log_err "arm_vocabulary_mismatch: unknown arm=${_arm} for task=${_sig8}, falling back to sonnet"
   fi
-  if [[ "${DC_PROTECTED:-0}" == "1" || "${DC_SAFETY:-0}" == "1" ]]; then
+  # ARMS-ADMISSION-01: DC_PROTECTED means "this LANE writes production code
+  # under a protected path" -- it must not ban an untrusted arm from work that
+  # writes nothing dangerous (review/audit/plan). DC_SAFETY stays a HARD
+  # requirement regardless of kind -- it is about the CONTENT being touched,
+  # not the lane. Mirrors leadv2-route-arbiter.sh's require_trusted split.
+  local _kind_now="${DC_KIND:-code}"
+  local _writes_prod=1
+  case "${_kind_now}" in
+    review|audit|plan) _writes_prod=0 ;;
+  esac
+  if [[ "${DC_SAFETY:-0}" == "1" || ( "${DC_PROTECTED:-0}" == "1" && "${_writes_prod}" == "1" ) ]]; then
     local -a _trusted=()
     local _cand _cand_i _cand_untrusted
     for _cand in "${candidate_arms[@]}"; do

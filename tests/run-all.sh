@@ -174,7 +174,10 @@ leadv2-lane-status-line.sh:plugins/leadv2/scripts/tests/test-statusline-readable
 leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
 leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-gate-no-origin.sh
 gitignore:plugins/leadv2/scripts/tests/test-handoff-artifacts-tracked.sh
-leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-review-body-recovery.sh"
+leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-review-body-recovery.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-arm-admission.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-admission.sh
+leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-admission.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
