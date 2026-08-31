@@ -40,6 +40,7 @@ set -u
 HERE="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 source "\${HERE}/${prod}"
 result="\$(compute_sum 2 3)"
+printf 'ran: compute_sum 2 3 -> %s\n' "\${result}"
 [[ "\${result}" == "5" ]]
 EOF
   chmod +x "${dir}/${name}"
@@ -54,7 +55,7 @@ c1|product|${d1}/prod.sh|\$1 + \$2|\$1 - \$2|${d1}/suite.sh|
 EOF
 out1="$(bash "${PROVER}" --catalog "${d1}/catalog.txt")"; rc1=$?
 if [[ ${rc1} -eq 0 ]] && grep -q '^\[KILLED\] id=c1 kind=product$' <<<"${out1}" \
-   && grep -q 'scored=1 killed=1 product_killed=1 self_test_killed=0 invariant=ok' <<<"${out1}"; then
+   && grep -q 'scored=1 killed=1 unscored=0 product_killed=1 self_test_killed=0 invariant=ok' <<<"${out1}"; then
   pass "1: diagnostic control passes"
 else
   fail "1: diagnostic control passes (rc=${rc1}) out=<<${out1}>>"
@@ -68,6 +69,7 @@ d2="${WORK}/lane2"; mkdir -p "${d2}"
 mk_prod "${d2}" "prod.sh"
 cat > "${d2}/suite.sh" <<'EOF'
 #!/usr/bin/env bash
+echo "suite ran (unconditional pass, ignores the target)"
 exit 0
 EOF
 chmod +x "${d2}/suite.sh"
@@ -148,6 +150,7 @@ cat > "${d6}/suite2.sh" <<EOF
 set -u
 source "${d6}/prod2.sh"
 result="\$(compute_diff 5 2)"
+printf 'ran: compute_diff 5 2 -> %s\n' "\${result}"
 [[ "\${result}" == "3" ]]
 EOF
 chmod +x "${d6}/suite2.sh"
@@ -156,7 +159,7 @@ c6a|product|${d6}/prod.sh|\$1 + \$2|\$1 - \$2|${d6}/suite.sh|
 c6b|self_test|${d6}/prod2.sh|\$1 - \$2|\$1 + \$2|${d6}/suite2.sh|
 EOF
 out6="$(bash "${PROVER}" --catalog "${d6}/catalog.txt")"; rc6=$?
-if [[ ${rc6} -eq 0 ]] && grep -q 'scored=2 killed=2 product_killed=1 self_test_killed=1 invariant=ok' <<<"${out6}"; then
+if [[ ${rc6} -eq 0 ]] && grep -q 'scored=2 killed=2 unscored=0 product_killed=1 self_test_killed=1 invariant=ok' <<<"${out6}"; then
   pass "6: mixed catalog reports product number separately"
 else
   fail "6: mixed catalog reports product number separately (rc=${rc6}) out=<<${out6}>>"
@@ -181,6 +184,7 @@ cat > "${d7}/suite2.sh" <<EOF
 set -u
 source "${d7}/prod2.sh"
 result="\$(compute_diff 5 2)"
+printf 'ran: compute_diff 5 2 -> %s\n' "\${result}"
 [[ "\${result}" == "3" ]]
 EOF
 chmod +x "${d7}/suite2.sh"
@@ -188,11 +192,85 @@ cat >> "${d7}/catalog.txt" <<EOF
 c7b|product|${d7}/prod2.sh|\$1 - \$2|\$1 + \$2|${d7}/suite2.sh|
 EOF
 out7b="$(bash "${PROVER}" --catalog "${d7}/catalog.txt")"; rc7b=$?
-if [[ ${rc7a} -eq 0 ]] && grep -q 'scored=1 killed=1' <<<"${out7a}" \
-   && [[ ${rc7b} -eq 0 ]] && grep -q 'scored=2 killed=2 product_killed=2' <<<"${out7b}"; then
+if [[ ${rc7a} -eq 0 ]] && grep -q 'scored=1 killed=1 unscored=0' <<<"${out7a}" \
+   && [[ ${rc7b} -eq 0 ]] && grep -q 'scored=2 killed=2 unscored=0 product_killed=2' <<<"${out7b}"; then
   pass "7: catalog growth keeps invariant without touching the prover"
 else
   fail "7: catalog growth keeps invariant without touching the prover (rc7a=${rc7a} rc7b=${rc7b}) out7a=<<${out7a}>> out7b=<<${out7b}>>"
+fi
+
+# ---- 8. suite: nonexistent path ⇒ still [BLOCKED] suite_missing (regression,
+#         GATE-PROVES-ITS-OWN-CONTROL-01 round 1) -------------------------
+d8="${WORK}/lane8"; mkdir -p "${d8}"
+mk_prod "${d8}" "prod.sh"
+cat > "${d8}/catalog.txt" <<EOF
+c8|product|${d8}/prod.sh|\$1 + \$2|\$1 - \$2|${d8}/does/not/exist.sh|
+EOF
+out8="$(bash "${PROVER}" --catalog "${d8}/catalog.txt")"; rc8=$?
+if [[ ${rc8} -ne 0 ]] && grep -q '^\[BLOCKED\] id=c8 reason=suite_missing' <<<"${out8}"; then
+  pass "8: suite: nonexistent path still BLOCKED suite_missing"
+else
+  fail "8: suite: nonexistent path still BLOCKED suite_missing (rc=${rc8}) out=<<${out8}>>"
+fi
+
+# ---- 9. suite RED before mutation ⇒ unscored, not killed ------------------
+d9="${WORK}/lane9"; mkdir -p "${d9}"
+mk_prod "${d9}" "prod.sh"
+cat > "${d9}/suite.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "baseline check"
+false
+EOF
+chmod +x "${d9}/suite.sh"
+cat > "${d9}/catalog.txt" <<EOF
+c9|product|${d9}/prod.sh|\$1 + \$2|\$1 - \$2|${d9}/suite.sh|
+EOF
+out9="$(bash "${PROVER}" --catalog "${d9}/catalog.txt")"; rc9=$?
+if [[ ${rc9} -ne 0 ]] && grep -q '^\[UNSCORED\] id=c9 reason=baseline_not_green$' <<<"${out9}" \
+   && grep -q 'scored=1 killed=0 unscored=1 product_killed=0 self_test_killed=0 invariant=violated' <<<"${out9}"; then
+  pass "9: suite red before mutation ⇒ unscored, not killed"
+else
+  fail "9: suite red before mutation ⇒ unscored, not killed (rc=${rc9}) out=<<${out9}>>"
+fi
+if ! cmp -s "${d9}/prod.sh" <(printf '#!/usr/bin/env bash\ncompute_sum() { # a b\n  echo $(( $1 + $2 ))\n}\n'); then
+  fail "9: production file mutated despite baseline-red skip"
+fi
+
+# ---- 10. suite collects zero tests (silent green) ⇒ unscored --------------
+d10="${WORK}/lane10"; mkdir -p "${d10}"
+mk_prod "${d10}" "prod.sh"
+cat > "${d10}/suite.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "${d10}/suite.sh"
+cat > "${d10}/catalog.txt" <<EOF
+c10|product|${d10}/prod.sh|\$1 + \$2|\$1 - \$2|${d10}/suite.sh|
+EOF
+out10="$(bash "${PROVER}" --catalog "${d10}/catalog.txt")"; rc10=$?
+if [[ ${rc10} -ne 0 ]] && grep -q '^\[UNSCORED\] id=c10 reason=zero_tests_collected$' <<<"${out10}" \
+   && grep -q 'scored=1 killed=0 unscored=1 product_killed=0 self_test_killed=0 invariant=violated' <<<"${out10}"; then
+  pass "10: silent (zero-output) green suite ⇒ unscored"
+else
+  fail "10: silent (zero-output) green suite ⇒ unscored (rc=${rc10}) out=<<${out10}>>"
+fi
+
+# ---- 11. mutation makes target unparseable ⇒ unscored, infra failure ------
+d11="${WORK}/lane11"; mkdir -p "${d11}"
+mk_prod "${d11}" "prod.sh"
+mk_diagnostic_suite "${d11}" "suite.sh" "prod.sh"
+cat > "${d11}/catalog.txt" <<EOF
+c11|product|${d11}/prod.sh|}||${d11}/suite.sh|
+EOF
+out11="$(bash "${PROVER}" --catalog "${d11}/catalog.txt")"; rc11=$?
+if [[ ${rc11} -ne 0 ]] && grep -q '^\[UNSCORED\] id=c11 reason=target_unparseable$' <<<"${out11}" \
+   && grep -q 'scored=1 killed=0 unscored=1 product_killed=0 self_test_killed=0 invariant=violated' <<<"${out11}"; then
+  pass "11: target made unparseable by mutation ⇒ unscored (infra failure)"
+else
+  fail "11: target made unparseable by mutation ⇒ unscored (infra failure) (rc=${rc11}) out=<<${out11}>>"
+fi
+if ! cmp -s "${d11}/prod.sh" <(printf '#!/usr/bin/env bash\ncompute_sum() { # a b\n  echo $(( $1 + $2 ))\n}\n'); then
+  fail "11: production file not byte-identical after unparseable-mutation unscored path"
 fi
 
 printf 'test-control-prover: %d failed\n' "${FAILS}"
