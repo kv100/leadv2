@@ -66,7 +66,18 @@ SIZE_MAP={'standard':'standard','heavy':'heavy','bulk':'bulk','trivial':'standar
 size_raw=str(d.get('size',d.get('task_class','standard'))).lower()
 size_unmapped = None if size_raw in SIZE_MAP else size_raw
 size=SIZE_MAP.get(size_raw,'standard')
-protected=any(bool(d.get(k)) for k in ('protected','safety','publish','ui_judgment'))
+# ARMS-ADMISSION-01: `protected` alone (the lane-protected/--protected signal)
+# means "this LANE writes production code under a protected path" -- it must
+# NOT ban an untrusted arm from work that writes nothing dangerous (review,
+# audit, plan/discovery). safety/publish/ui_judgment stay a HARD requirement
+# regardless of kind -- those are about the CONTENT being touched, not the
+# lane. `require_trusted` folds both into the cell filter below; `protected`
+# itself is kept (unchanged name/shape) for the existing output/journal callers.
+_prot_flag=bool(d.get('protected'))
+_hard_flag=any(bool(d.get(k)) for k in ('safety','publish','ui_judgment'))
+protected=_prot_flag or _hard_flag
+writes_prod = kind not in ('review','audit','plan')
+require_trusted = _hard_flag or (_prot_flag and writes_prod)
 allowed_raw=d.get('allowed_arms')
 allowed={str(a) for a in allowed_raw} if isinstance(allowed_raw, list) else None
 def num(x):
@@ -143,7 +154,7 @@ cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
 # (leadv2-dispatch-code.sh) only special-cases rc=3 all_arms_capped as a
 # hard refusal (exit 4); any other non-zero rc already falls open to the
 # ladder, so no caller-side change is needed for the split itself.
-capable=[c for c in cells if kind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not protected or c.get('protected',False)) and (allowed is None or c.get('arm') in allowed)]
+capable=[c for c in cells if kind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not require_trusted or c.get('protected',False)) and (allowed is None or c.get('arm') in allowed)]
 if not capable:
     print('arm=refuse model=none tier=none reason=no_capable_cell chain= %s' % ufmt())
     raise SystemExit(68)
