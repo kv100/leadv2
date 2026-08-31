@@ -288,6 +288,29 @@ PY
   mv "${rfile}.tmp" "${rfile}"
 }
 
+# _review_recover_from_codex_store <review_out_file>
+# REVIEW-RUN-LOSES-VERDICTS-01: a housekeeping-only codex body (the `[codex]
+# Thread ready (...)` / `[codex] Turn started (...)` progress lines that
+# codex-task.sh's own _strip_meta does NOT filter, unlike its "Running
+# command"/"Command completed" siblings) does not mean the review never
+# happened -- codex-companion's adversarial-review always creates a
+# `review-*` job record, even in synchronous --wait/foreground mode, and never
+# prints that job's id back to the caller. `codex-task.sh result` with NO id
+# argument resolves the most recently COMPLETED job for the current session in
+# this workspace (codex-companion's resolveResultJob -> filterJobsForCurrentSession),
+# so no id-parsing is required here. The store is authoritative; try it before
+# ever declaring the body lost or spilling to another arm.
+_review_recover_from_codex_store() { # <review_out_file>
+  local rfile="$1" codex_bin store_out
+  codex_bin="${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}"
+  [[ -f "${codex_bin}" ]] || return 1
+  store_out="$(bash "${codex_bin}" result --cwd "${ROOT}" 2>/dev/null)" || return 1
+  printf '%s\n' "${store_out}" | grep -q '^[[:space:]]*REVIEW_VERDICT:' || return 1
+  printf '%s\n' "${store_out}" > "${rfile}.tmp"
+  mv -f "${rfile}.tmp" "${rfile}"
+  return 0
+}
+
 parse_review_verdict() { # review-file
   local review_file="$1"
   PARSED_VERDICT=""
@@ -1427,6 +1450,14 @@ for _ran_index in "${!ran_arms[@]}"; do
       if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
         if [[ -s "${_err}" ]] || grep -q 'cost recorded:' "${_err}" 2>/dev/null; then
           _pc_body_rel="${_out#"${ROOT}"/}"
+          _pc_retrieval_attempts="body"
+          if [[ "${_arm}" == codex ]]; then
+            _pc_retrieval_attempts="${_pc_retrieval_attempts},codex_store"
+            if _review_recover_from_codex_store "${_out}"; then
+              emit decision "review_body_recovered task=${TASK} arm=${_arm} source=codex_store attempts=${_pc_retrieval_attempts}"
+              break
+            fi
+          fi
           _pc_used_csv="$(IFS=,; echo "${ran_arms[*]}")"
           _pc_retry_arm=""
           if [[ "${_review_body_retry_used}" -eq 0 ]]; then
@@ -1447,10 +1478,10 @@ for _ran_index in "${!ran_arms[@]}"; do
             printf '%s' "${_rc}" > "${HANDOFF}/review-${_arm}.rc"
             continue
           fi
-          printf 'status: blocked\nreason: review_body_lost\narm: %s\nbody: %s\nbytes: %s\n' \
-            "${_arm}" "${_pc_body_rel}" "${_pc_body_bytes}" > "${HANDOFF}/review-gate.md.tmp"
+          printf 'status: blocked\nreason: review_body_lost\narm: %s\nbody: %s\nbytes: %s\nretrieval_attempts: %s\n' \
+            "${_arm}" "${_pc_body_rel}" "${_pc_body_bytes}" "${_pc_retrieval_attempts}" > "${HANDOFF}/review-gate.md.tmp"
           mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-          emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${_arm} body=${_pc_body_rel} bytes=${_pc_body_bytes}"
+          emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${_arm} body=${_pc_body_rel} bytes=${_pc_body_bytes} retrieval_attempts=${_pc_retrieval_attempts}"
           exit 6
         fi
       fi
@@ -1723,6 +1754,23 @@ if [[ ${record_rc} -eq 2 ]]; then
 else
   REVIEW_DEDUP=0
   emit decision "review_gate task=${TASK} status=ran author=${AUTHOR} reviewer=${reviewer_primary} verdict=${verdict} diff=${diff_hash:0:8} arms=${ARMS_CSV}"
+fi
+
+# GATE-PROVES-ITS-OWN-CONTROL-01: if the round declared a mutation catalog
+# (docs/handoff/<task>/mutation-catalog.txt — one negative-control claim per
+# line, see lib/leadv2-control-prover.sh header for the format), the machine
+# applies every declared mutation itself and requires the declared suite to
+# go red alone, then revert byte-clean. A PASS verdict is never trusted on
+# the author's or reviewer's say-so for a declared control. Purely additive:
+# a round with no catalog file behaves exactly as before.
+_CONTROL_CATALOG="${HANDOFF}/mutation-catalog.txt"
+if [[ "${verdict}" != FAIL && -f "${_CONTROL_CATALOG}" ]]; then
+  _cp_out="$(bash "${SCRIPT_DIR}/lib/leadv2-control-prover.sh" --catalog "${_CONTROL_CATALOG}" --root "${ROOT}" 2>&1)"; _cp_rc=$?
+  if [[ ${_cp_rc} -ne 0 ]]; then
+    verdict="FAIL"
+    emit decision "review_gate task=${TASK} status=blocked reason=control_not_diagnostic rc=${_cp_rc}"
+    printf '%s\n' "${_cp_out}" > "${HANDOFF}/control-prover.md"
+  fi
 fi
 
 if [[ "${verdict}" == FAIL ]]; then

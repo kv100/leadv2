@@ -78,6 +78,28 @@ router_v2:
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true }
     - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true }
 
+  # EFFORT-IS-NOT-WIRED-01: the second routing knob (docs/model-effort-matrix.md
+  # -- model = hardness, effort = marginal value of extra thinking) resolved
+  # from the SAME winning capability_matrix cell the arbiter already picked,
+  # never a second decision and never an `if arm==X` branch in the script.
+  # Rows are evaluated top-to-bottom against the winning cell's `tags`/`kinds`/
+  # `protected`; first match wins. `default: true` is the mandatory catch-all
+  # last row. Doctrine mapping (model-effort-matrix.md): adversarial review /
+  # safety judgment / architecture (`plan`) / a protected final verdict ⇒
+  # high; mechanical / classify / cheap work ⇒ low; everything else
+  # (ordinary build/fix) ⇒ medium. Adding a row here changes routing outcomes
+  # with no script edit -- that is the anti-hardcoding property under test.
+  effort_matrix:
+    - { tags: [adversarial], effort: high }
+    - { tags: [safety], effort: high }
+    - { kinds: [safety], effort: high }
+    - { kinds: [plan], effort: high }
+    - { protected: true, effort: high }
+    - { tags: [mechanical], effort: low }
+    - { tags: [classify], effort: low }
+    - { tags: [cheap], effort: low }
+    - { default: true, effort: medium }
+
   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
   # Anthropic arms deliberately share the active Max x20 account bucket.
   #
@@ -244,14 +266,22 @@ router:
     # strips every untrusted arm from the chain whenever DC_PROTECTED=1 or
     # DC_SAFETY=1, at every chain position, and journals arm_excluded
     # reason=protected_path so the skip is a fact, not a comment.
-    # Heavy/integration eligibility is data-gated (T17): `when: [standard,
-    # bulk]` is enforced by _build_candidate_chain against --task-class
-    # (default "standard"; unset for a caller that never resolved a size class,
-    # which keeps today's behaviour).
+    # Heavy/integration eligibility is data-gated (T17): `when: [light,
+    # standard, bulk]` is enforced by _build_candidate_chain against
+    # --task-class (default "standard"; unset for a caller that never
+    # resolved a size class, which keeps today's behaviour).
+    # ARMS-ADMISSION-01 (ROUTER-ARBITER-DISAGREE-ON-FREEPOOL-01): `light` was
+    # missing here while leadv2-route-arbiter.sh's SIZE_MAP has always folded
+    # light into the 'standard' capability cell for freepool (see FP-08's own
+    # comment there: "trivial|light... must stay freepool-eligible"), so the
+    # ladder and the arbiter disagreed on the exact same task_class. The
+    # arbiter's behaviour is the one the founder already signed off on
+    # (FP-06/FP-08) -- this ladder now agrees with it instead of the arbiter
+    # being the sole source of truth for `light`.
     - id: freepool
       provider: freepool
       model: freepool-default
-      when: [standard, bulk]
+      when: [light, standard, bulk]
       effort: standard
       health_gated: true
       untrusted: true

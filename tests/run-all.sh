@@ -104,6 +104,8 @@ add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 # runs its suite instead of silently dropping it.
 EXTRA_SUITE_MAP="leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
+leadv2-active-registry.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-selector.sh
 leadv2-backlog-pump:plugins/leadv2/scripts/tests/test-backlog-pump.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-phase-precondition.sh
@@ -118,7 +120,72 @@ leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-model-select-telemetry.sh
 leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
-leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh"
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-row-identity.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-lanes-blind.sh
+leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-renderer-truth.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-duty.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-readable-rendering.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-empty-board.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-single-lead-beat.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lib-source-guarded.sh
+leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
+leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
+leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
+leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
+leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
+freepool-coder:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
+leadv2-freepool-model-select:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
+freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
+freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-foreign-lanes.sh
+leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-registered-lane.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-mission-writeset.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
+leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
+leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
+leadv2-one-copy-drift.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
+leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
+leadv2-dispatch-ledger:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-close-chain.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-containment.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-plan-in-lane.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-placement-pin.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-lane-containment.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-t13-slice1.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-class-floor-survives-resume.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-admission-class.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+test-consumer-symlink-farm.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-status-surface.sh:plugins/leadv2/scripts/tests/test-status-surface.sh
+leadv2-lane-status-line.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
+leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
+leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-gate-no-origin.sh
+gitignore:plugins/leadv2/scripts/tests/test-handoff-artifacts-tracked.sh
+leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-review-body-recovery.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-arm-admission.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-admission.sh
+leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-admission.sh
+leadv2-control-prover.sh:plugins/leadv2/scripts/tests/test-control-prover.sh
+leadv2-control-prover:plugins/leadv2/scripts/tests/test-control-prover.sh
+leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-control-prover.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-beat-stamp-agreement.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-effort-routing.sh
+leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-effort-routing.sh
+codex-task.sh:plugins/leadv2/scripts/tests/test-codex-broker-staleness.sh
+codex-guard.sh:plugins/leadv2/scripts/tests/test-codex-broker-staleness.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -126,13 +193,106 @@ if [[ "${SCOPE}" == "all" ]]; then
       -maxdepth 1 -type f -name 'test-*.sh' 2>/dev/null | sort
   )
 else
+  # Union uncommitted diff with the lane range NOT YET SEEN by a prior run of
+  # this script (round-4, HOOK-OUTPUT-CAP-PLUGIN-01): a plain merge-base
+  # anchor (round-3) unions in the WHOLE `<merge-base>..HEAD` range on every
+  # invocation forever — every already-committed, already-tested commit on
+  # the lane re-selects its suite on every future unrelated commit, growing
+  # monotonically with lane length. Persist the last-checked SHA per git-dir
+  # (worktree-scoped, so concurrent lanes never share the file) and diff from
+  # THAT instead of the merge-base once it exists. First run on a lane (no
+  # state file yet) still falls back to the merge-base, so a docs-only HEAD
+  # with unrelated dirt still selects the lane's own suite (round-3's win).
   changed="$(git -C "${ROOT}" diff --name-only HEAD 2>/dev/null)"
-  if [[ -z "${changed}" ]] && git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
-    changed="$(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
+  _base_ref=""
+  for _cand in main origin/main; do
+    if git -C "${ROOT}" rev-parse --verify "${_cand}" >/dev/null 2>&1; then
+      _base_ref="${_cand}"
+      break
+    fi
+  done
+  _merge_base=""
+  if [[ -n "${_base_ref}" ]]; then
+    _merge_base="$(git -C "${ROOT}" merge-base HEAD "${_base_ref}" 2>/dev/null || true)"
+  fi
+  _git_dir="$(git -C "${ROOT}" rev-parse --git-dir 2>/dev/null || true)"
+  _state_file=""
+  if [[ -n "${_git_dir}" ]]; then
+    case "${_git_dir}" in
+      /*) : ;;
+      *) _git_dir="${ROOT}/${_git_dir}" ;;
+    esac
+    _state_file="${_git_dir}/leadv2-run-all-last-checked-sha"
+  fi
+  _range_start=""
+  if [[ -n "${_state_file}" && -f "${_state_file}" ]]; then
+    _range_start="$(cat "${_state_file}" 2>/dev/null || true)"
+    if [[ -n "${_range_start}" ]] && ! git -C "${ROOT}" rev-parse --verify "${_range_start}^{commit}" >/dev/null 2>&1; then
+      _range_start=""
+    fi
+  fi
+  if [[ -z "${_range_start}" ]]; then
+    _range_start="${_merge_base}"
+  fi
+  if [[ -n "${_range_start}" ]]; then
+    changed="${changed}
+$(git -C "${ROOT}" diff --name-only "${_range_start}..HEAD" 2>/dev/null)"
+  elif git -C "${ROOT}" rev-parse HEAD~1 >/dev/null 2>&1; then
+    changed="${changed}
+$(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
+  fi
+  # Record this run's HEAD as "checked" so a future clean-HEAD run only sees
+  # what's newly dirty, not the whole lane range again. Best-effort (a
+  # write failure must never fail the test run) — tmp+mv keeps concurrent
+  # invocations in the same worktree from reading a half-written file.
+  if [[ -n "${_state_file}" ]]; then
+    _head_sha="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -n "${_head_sha}" ]]; then
+      printf '%s\n' "${_head_sha}" > "${_state_file}.tmp.$$" 2>/dev/null \
+        && mv -f "${_state_file}.tmp.$$" "${_state_file}" 2>/dev/null
+    fi
   fi
   if [[ -n "${changed}" ]]; then
     while IFS= read -r cf; do
-      [[ "${cf}" == plugins/leadv2/scripts/*.sh ]] || continue
+      # A changed test suite must select itself even when its matching
+      # production file did not change in this run.
+      case "${cf}" in
+        plugins/leadv2/scripts/tests/test-*.sh|.claude/scripts/tests/test-*.sh|plugins/leadv2/tests/test-*.sh|tests/test-*.sh)
+          add_suite "${ROOT}/${cf}"
+          ;;
+      esac
+      # PROMISE-GUARD-BIND-01: hooks/*.sh changes (e.g. leadv2-promise-guard.sh)
+      # never matched this filter, so a hook fix ran zero suites under
+      # --scope changed -- the EXTRA_SUITE_MAP below only fires once a
+      # changed file reaches the stem-comparison loop.
+      # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01: a data-only change to the arm
+      # ranking must select the suites that grade it, so freepool-arm.yaml
+      # maps to its own stem.
+      # DISPATCH-CLOSE-GATE-01: scripts/lib/*.sh added -- a bare scripts/*.sh glob
+      # never matches a subdirectory, so a lib-only change never reached this loop.
+      if [[ "${cf}" == "plugins/leadv2/config/freepool-arm.yaml" ]]; then
+        stem="freepool-arm.yaml"
+      else
+        case "${cf}" in
+          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
+          *) continue ;;
+        esac
+        stem="$(basename "${cf}" .sh)
+      if [[ "${cf}" == plugins/leadv2/scripts/*.sh ]]; then
+        stem="$(basename "${cf}" .sh)"
+      elif [[ "${cf}" == ".gitignore" ]]; then
+        # HANDOFF-ARTIFACTS-GITIGNORED-01: .gitignore isn't a plugins/leadv2
+        # script, so it needs its own synthetic stem to reach EXTRA_SUITE_MAP
+        # below — the blanket-vs-allowlist rule it carries has no test-*.sh
+        # of its own name to match by convention.
+        stem="gitignore"
+        continue"
+      fi
+      # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
+      # path (leadv2-control-prover.sh lives there) — a stem-scan that only
+      # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
+      # too, not just the top-level scripts.
+      [[ "${cf}" == plugins/leadv2/scripts/*.sh || "${cf}" == plugins/leadv2/scripts/lib/*.sh ]] || continue
       stem="$(basename "${cf}" .sh)"
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
@@ -153,7 +313,7 @@ else
   fi
 fi
 
-for suite in "${SUITES[@]}"; do
+for suite in "${SUITES[@]:-}"; do
   printf '[RUN] %s\n' "${suite}"
   if bash "${suite}"; then
     printf '[PASS] %s\n' "${suite}"
@@ -175,7 +335,7 @@ done
 # existing [FAIL] lines and the run-all: summary are untouched.
 if [[ ${FAIL} -gt 0 ]]; then
   printf '  Failures (blocking):\n'
-  for rel in "${FAILED_REL[@]}"; do
+  for rel in "${FAILED_REL[@]:-}"; do
     printf '    - %s\n' "${rel}"
   done
 fi

@@ -20,6 +20,21 @@
 # Standard/phases, source=classifier_error — this map never fails open.
 #
 # Bash 3.2 safe: no mapfile, no ${var^^}, no declare -A, no associative traps.
+_admission_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+# C-1 (DISPATCH-PIN-CLUSTER-01 round 7): guarded + canonical-fallback source --
+# see leadv2-dispatch-code.sh for the full rationale (consumer-repo symlink farm
+# has no lib/ copy of this new file).
+_LANE_GUARD_SH="${_admission_lib_dir}/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
+if [[ -f "${_LANE_GUARD_SH}" ]]; then
+  source "${_LANE_GUARD_SH}" || return 1
+else
+  # This library calls the class helpers from the lane guard below.  Continuing
+  # without them turns a consumer-farm install into an undefined-command path.
+  printf '[leadv2-admission-class] ERROR: lane guard unavailable local=%s canonical=%s\n' \
+    "${_admission_lib_dir}/leadv2-lane-guard.sh" "${_LANE_GUARD_SH}" >&2
+  return 1
+fi
 
 # Same normalization pipeline as leadv2-dispatch-code.sh's compute_sig — one
 # source of truth for the mission digest so a receipt minted by the pump is
@@ -57,6 +72,7 @@ else:
 # or empty stdout on unparseable estimate (caller takes classifier_error).
 leadv2_admission_class() {
   local explicit="$1" flagged="$2" estimate="$3" mapped src
+  explicit="$(_lv2_class_canonical "${explicit}")"
   mapped="$(leadv2_admission_map_class "$estimate")"
   [[ -n "$mapped" ]] || { printf ''; return 0; }
   src="$(printf '%s' "$estimate" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("estimate_source",""))' 2>/dev/null)"
@@ -65,20 +81,8 @@ leadv2_admission_class() {
     # Escalate-only: the flag wins unless the estimate's risk/complexity
     # signals rank ABOVE it (Light<Standard<Heavy<Strategic).
     local rank_explicit rank_mapped
-    case "$explicit" in
-      Trivial)   rank_explicit=0 ;;
-      Light)     rank_explicit=1 ;;
-      Standard)  rank_explicit=2 ;;
-      Heavy)     rank_explicit=3 ;;
-      Strategic) rank_explicit=4 ;;
-      *)         rank_explicit=2 ;;
-    esac
-    case "$mapped" in
-      Light)     rank_mapped=1 ;;
-      Standard)  rank_mapped=2 ;;
-      Heavy)     rank_mapped=3 ;;
-      *)         rank_mapped=2 ;;
-    esac
+    rank_explicit="$(_lv2_class_rank "$explicit")"
+    rank_mapped="$(_lv2_class_rank "$mapped")"
     if (( rank_mapped > rank_explicit )); then
       printf '%s\t%s\n' "$mapped" "$src"
     else
@@ -108,6 +112,13 @@ leadv2_admission_freepool_role() {  # <work_kind> -> stdout: review|implement|bu
 # records. Path: <root>/docs/handoff/dispatch-<sig8>/admission-receipt.yaml.
 leadv2_admission_receipt_path() {  # <root> <sig8>
   printf '%s/docs/handoff/dispatch-%s/admission-receipt.yaml' "$1" "$2"
+}
+
+leadv2_admission_task_receipt_path() { printf '%s/docs/handoff/%s/task-class.yaml' "$1" "$2"; }
+leadv2_admission_read_task_receipt() { # <root> <task-id> -> class
+  local f; f="$(leadv2_admission_task_receipt_path "$1" "$2")"
+  [[ -f "$f" ]] || return 1
+  sed -n 's/^task_class:[[:space:]]*//p' "$f" | head -1
 }
 
 # -> stdout: "class<TAB>route<TAB>source<TAB>work_kind<TAB>digest<TAB>task_id", empty if absent/corrupt
@@ -186,5 +197,26 @@ leadv2_admission_write_receipt() {  # <root> <sig8> <task_id> <digest> <class> <
     printf 'recorded_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
   mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  if [[ -n "${task_id}" ]]; then
+    local tf tdir ttmp lockdir existing_cls tries=0
+    tf="$(leadv2_admission_task_receipt_path "$root" "$task_id")"; tdir="$(dirname "$tf")"
+    mkdir -p "$tdir" 2>/dev/null || return 1
+    # A task-keyed class is a floor. Serialise the read/compare/write so
+    # concurrent lower and higher intakes cannot race into a demotion.
+    lockdir="${tdir}/.task-class.lock"
+    until mkdir "${lockdir}" 2>/dev/null; do
+      tries=$((tries + 1))
+      (( tries < 100 )) || return 1
+      sleep 0.05
+    done
+    existing_cls="$(leadv2_admission_read_task_receipt "$root" "$task_id" 2>/dev/null || true)"
+    if [[ -n "${existing_cls}" ]] && (( $(_lv2_class_rank "${existing_cls}") > $(_lv2_class_rank "${cls}") )); then
+      rmdir "${lockdir}" 2>/dev/null || true
+      return 0
+    fi
+    ttmp="${tdir}/.task-class.$$.tmp"
+    { printf 'task_id: %s\n' "$task_id"; printf 'task_class: %s\n' "$cls"; printf 'source: %s\n' "$src"; } > "$ttmp" && mv -f "$ttmp" "$tf" || { rm -f "$ttmp"; rmdir "${lockdir}" 2>/dev/null || true; return 1; }
+    rmdir "${lockdir}" 2>/dev/null || true
+  fi
   return 0
 }

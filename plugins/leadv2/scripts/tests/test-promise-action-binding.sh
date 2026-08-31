@@ -36,12 +36,36 @@ log() { printf '[TEST] %s\n' "$*"; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/promise-bind.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 
+# PROMISE-GUARD-BIND-01 round2: _verdict below runs the REAL hook, which appends one
+# journal row per evaluated case to $HOME/.claude/leadv2-promise-guard.jsonl -- with
+# no override, that is the real production journal, the same file the flip
+# GO-condition in docs/leadv2/scheduled-decisions.md reads. Reviewer found 84
+# synthetic "fired" rows across 84 session ids already in there purely from test
+# runs, which on its own satisfies the ">=20 fired, >=3 sessions" GO-condition on
+# fabricated evidence. Sandbox HOME for the whole suite; the control below fails the
+# suite if the real journal changes size during this run despite the sandbox.
+REAL_HOME="${HOME}"
+REAL_JOURNAL="${REAL_HOME}/.claude/leadv2-promise-guard.jsonl"
+REAL_JOURNAL_LINES_BEFORE=0
+[[ -f "${REAL_JOURNAL}" ]] && REAL_JOURNAL_LINES_BEFORE="$(wc -l < "${REAL_JOURNAL}" 2>/dev/null | tr -d ' ')"
+SANDBOX_HOME="${WORK}/home"
+mkdir -p "${SANDBOX_HOME}/.claude"
+export HOME="${SANDBOX_HOME}"
+
+# PROMISE-GUARD-BIND-01 round2: the pre-image used to be `git show HEAD:...`, which
+# self-destructs the moment this task's own fix is committed -- HEAD then IS the fix,
+# so the "pre-fix" arm diffs the fix against itself (reviewer observed
+# "0 passed(red->green), 8 green-pre-fix" post-commit). Pinned instead to a checked-in
+# fixture snapshot of the hook as it stood immediately before this task
+# (commit e994f07, parent of fc080bf) -- fixed content, never shifts, never re-derived
+# from a ref that this task itself moves. An unresolvable pre-image is a HARD FAILURE
+# (exit 1 below), never a silent fall-through that gets reported as a pass.
 REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
-PRE_HOOK="${WORK}/pre-hook.sh"
-if [[ -n "${REPO}" ]]; then
-  git -C "${REPO}" show "HEAD:plugins/leadv2/hooks/leadv2-promise-guard.sh" > "${PRE_HOOK}" 2>/dev/null || : > "${PRE_HOOK}"
+PRE_HOOK="${REPO}/docs/handoff/PROMISE-GUARD-BIND-01/fixtures/leadv2-promise-guard.pre-bind01.sh"
+if [[ -z "${REPO}" || ! -s "${PRE_HOOK}" ]]; then
+  log "FATAL: pre-fix fixture unresolvable (repo='${REPO}' fixture='${PRE_HOOK}') -- refusing to report a fake RED-then-GREEN proof"
+  exit 1
 fi
-[[ -s "${PRE_HOOK}" ]] || PRE_HOOK=""
 
 # Build a transcript: one real user turn, then an assistant turn whose blocks are
 # described by $2 — a space-separated script of:
@@ -70,6 +94,33 @@ for tok in spec:
         # this same turn, not a new commitment. "идут" (3rd-person-plural) collides
         # with the bare 1sg stem "иду" in an unanchored COMMIT_RU.
         blocks.append({"type": "text", "text": "Они идут параллельно и независимо"})
+    elif tok == "dispatch_promise":
+        # PROMISE-GUARD-BIND-01: a promise whose kind IS classifiable
+        # (dispatch) via classify_promise_kind — "диспатчу" is already a
+        # COMMIT_RU_VERBS entry, so this triggers a commitment on its own.
+        blocks.append({"type": "text", "text": "Диспатчу воркера на задачу"})
+    elif tok == "commit_promise":
+        blocks.append({"type": "text", "text": "I'll commit the fix now"})
+    elif tok == "write_act":
+        # write-kind action: unrelated to a dispatch or commit promise.
+        blocks.append({"type": "tool_use", "name": "Edit", "input": {}})
+    elif tok == "dispatch_act":
+        blocks.append({"type": "tool_use", "name": "Agent", "input": {}})
+    elif tok == "write_promise":
+        # PROMISE-GUARD-BIND-01 round2: "поправлю" only became extractable /
+        # classify_promise_kind='write' this round -- see the hook's
+        # COMMIT_RU_VERBS comment and PROMISE_KIND_PATTERNS 'write' entry.
+        blocks.append({"type": "text", "text": "Сейчас поправлю конфиг"})
+    elif tok == "devnull_act":
+        # round2: ACTION_BASH_RE's old `>>?\s*\S` alternative read a stderr-to-
+        # /dev/null redirect as "a write happened" -- this writes NOTHING a promise
+        # could point to and must NOT be classified as the 'write' kind.
+        blocks.append({"type": "tool_use", "name": "Bash",
+                       "input": {"command": "grep -n foo bar.txt 2>/dev/null"}})
+    elif tok == "realwrite_act":
+        # a genuine file write must still classify as 'write' after the tightening.
+        blocks.append({"type": "tool_use", "name": "Bash",
+                       "input": {"command": "echo done > /tmp/promise-bind-out.txt"}})
 recs.append({"type": "assistant", "message": {"role": "assistant", "content": blocks}})
 with open(out, "w") as f:
     for r in recs:
@@ -100,7 +151,8 @@ _verdict() { # <hook> <block-script>
   _transcript "${t}" "${spec}" || return 2
   local sid="test-$$-${RANDOM}-${RANDOM}"
   local out
-  out="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" | bash "${hook}" 2>/dev/null)"
+  out="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" \
+    | env LEADV2_PROMISE_GUARD_BLOCK=1 bash "${hook}" 2>/dev/null)"
   rm -f "${t}" "${HOME}/.claude/leadv2-promise-retry-${sid}.txt"
   [[ -n "${out}" ]] && printf 'FIRED' || printf 'SILENT'
 }
@@ -152,16 +204,57 @@ case_action_then_report()  { _expect "$1" "act plain" SILENT; }
 # positional revert, case_action_then_promise no longer pins that direction.)
 case_action_then_recap()   { _expect "$1" "act act recap" SILENT; }
 
+# PROMISE-GUARD-BIND-01 pair — the whole point of this task. The guard used to
+# suppress on ANY action tool call; these two cases are the direct falsifier
+# for that: a promise of a classifiable kind (dispatch) must be bound to an
+# action of the SAME kind, not just any action.
+#
+# Matching kind: promise = dispatch, action = Agent (dispatch-kind) -> kept, SILENT.
+# This is already correct pre-fix too (pre-fix suppresses on ANY action), so
+# expect GREEN-PRE-FIX here — it locks the "must still pass" half of the pair.
+case_dispatch_promise_matching_action()   { _expect "$1" "dispatch_promise dispatch_act" SILENT; }
+
+# Mismatched kind: promise = dispatch, action = Edit (write-kind, unrelated) ->
+# NOT kept, must FIRE. Pre-fix this reads SILENT (any action suppresses), so
+# this is the RED-then-GREEN control that proves the binding fix actually
+# rejects an unrelated tool call rather than accepting it.
+case_dispatch_promise_unrelated_action()  { _expect "$1" "dispatch_promise write_act" FIRED; }
+
+# Sanity companion: a classifiable commit-kind promise kept by its own kind.
+case_commit_promise_matching_action()     { _expect "$1" "commit_promise act" SILENT; }
+
+# PROMISE-GUARD-BIND-01 round2: a write-kind promise (new extractor form,
+# "поправлю") followed ONLY by a `2>/dev/null` redirect must still FIRE -- that
+# redirect writes nothing, so a write promise is not kept. This is a genuine
+# RED-then-GREEN against the round1 pre-fix fixture too, since e994f07's
+# ACTION_BASH_RE catch-all suppressed on ANY bash call regardless of kind.
+case_write_promise_devnull_unrelated()    { _expect "$1" "write_promise devnull_act" FIRED; }
+
+# Companion: a REAL write (`> /tmp/...`) after the same promise must keep it,
+# proving the tightened regex didn't also blind the write kind to genuine writes.
+case_write_promise_real_write_matches()   { _expect "$1" "write_promise realwrite_act" SILENT; }
+
 run_case() { # <name> <fn>
   local name="$1" fn="$2" pre_rc post_rc
-  if [[ -n "${PRE_HOOK}" ]]; then "${fn}" "${PRE_HOOK}" >/dev/null 2>&1; pre_rc=$?; else pre_rc=2; fi
+  "${fn}" "${PRE_HOOK}" >/dev/null 2>&1; pre_rc=$?
   "${fn}" "${HOOK}" >/dev/null 2>&1; post_rc=$?
   if [[ ${post_rc} -eq 2 ]]; then
-    COULD_NOT_RUN=$((COULD_NOT_RUN + 1)); log "COULD-NOT-RUN: ${name}"; return
+    COULD_NOT_RUN=$((COULD_NOT_RUN + 1))
+    FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix could-not-run (rc=2)")
+    log "FAIL: ${name} -- post-fix could-not-run (rc=2)"; return
   fi
   if [[ ${post_rc} -ne 0 ]]; then
     FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix rc=${post_rc}")
     log "FAIL: ${name} -- post-fix rc=${post_rc}, expected 0"; return
+  fi
+  # PROMISE-GUARD-BIND-01 round2: pre_rc=2 (pre-fix arm could not run at all) used to
+  # fall through to the PASS/RED-then-GREEN branch below -- a pre-image that never ran
+  # is not proof of anything, and reporting it as "passed(red->green)" is exactly the
+  # fabricated-evidence shape the reviewer caught (a non-git dir printed
+  # "8 passed(red->green)" with the pre-image never resolved). Now a hard failure.
+  if [[ ${pre_rc} -eq 2 ]]; then
+    FAIL=$((FAIL + 1)); ERRORS+=("${name}: pre-fix could-not-run (rc=2) -- RED-then-GREEN proof invalid")
+    log "FAIL: ${name} -- pre-fix arm could not run; proof is invalid, not a pass"; return
   fi
   if [[ ${pre_rc} -eq 0 ]]; then
     GREEN_PRE_FIX=$((GREEN_PRE_FIX + 1))
@@ -178,6 +271,22 @@ run_case "promise-then-action-silent" case_promise_then_action
 run_case "promise-only-fires"         case_promise_only
 run_case "action-then-report-silent"  case_action_then_report
 run_case "action-then-recap-silent"   case_action_then_recap
+run_case "dispatch-promise-matching-action-silent"  case_dispatch_promise_matching_action
+run_case "dispatch-promise-unrelated-action-fires"  case_dispatch_promise_unrelated_action
+run_case "commit-promise-matching-action-silent"    case_commit_promise_matching_action
+run_case "write-promise-devnull-unrelated-fires"    case_write_promise_devnull_unrelated
+run_case "write-promise-real-write-matches-silent"  case_write_promise_real_write_matches
+
+# --- sandbox control: this suite must never write the real journal ---------------
+REAL_JOURNAL_LINES_AFTER=0
+[[ -f "${REAL_JOURNAL}" ]] && REAL_JOURNAL_LINES_AFTER="$(wc -l < "${REAL_JOURNAL}" 2>/dev/null | tr -d ' ')"
+if [[ "${REAL_JOURNAL_LINES_AFTER}" != "${REAL_JOURNAL_LINES_BEFORE}" ]]; then
+  FAIL=$((FAIL + 1))
+  ERRORS+=("sandbox-escape: ${REAL_JOURNAL} grew from ${REAL_JOURNAL_LINES_BEFORE} to ${REAL_JOURNAL_LINES_AFTER} lines during this run despite HOME sandbox")
+  log "FAIL: sandbox-escape -- real journal changed during test run"
+else
+  log "PASS: sandbox-control -- real journal ${REAL_JOURNAL} unchanged (${REAL_JOURNAL_LINES_BEFORE} lines)"
+fi
 
 echo ""
 echo "Results: ${PASS} passed(red->green), ${FAIL} failed, ${GREEN_PRE_FIX} green-pre-fix, ${COULD_NOT_RUN} could-not-run"

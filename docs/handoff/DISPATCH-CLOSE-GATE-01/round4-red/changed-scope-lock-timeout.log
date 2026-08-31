@@ -1,0 +1,14 @@
+# DISPATCH-CLOSE-GATE-01 round 6: renamed from a misleading 'green'/'bounded' name.
+# This is a genuine timeout (ASSERTED_EXIT_STATUS=124), NOT a passing run. It is caused
+# by /tmp/leadv2-core-offline.lock being held by OTHER real, concurrently-running lanes
+# on this shared machine (verified live via ps: worktrees HOOK-OUTPUT-CAP-PLUGIN-01 and
+# ANTI-SILENCE-STATUSLINE-01 running run-core-offline.sh for 34-37+ minutes at capture
+# time, 2026-08-30T~22:40Z). run-core-offline.sh's flock is a deliberate machine-wide
+# singleton (see its own comment at :50-53) working as designed under real multi-lane
+# concurrency -- not a regression in this lane's diff, and not reproducible on demand
+# since it depends on what else is running at the moment of the attempt.
+#
+[RUN] /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/DISPATCH-CLOSE-GATE-01/plugins/leadv2/scripts/tests/run-core-offline.sh
+[CORE-OFFLINE] waiting for lock file=/tmp/leadv2-core-offline.lock (held by a concurrent run)
+
+ASSERTED_EXIT_STATUS=124

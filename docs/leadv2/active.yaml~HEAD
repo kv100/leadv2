@@ -1,0 +1,9 @@
+meta:
+  hard_limit: 3
+  heavy_max: 2
+  heavy_strategic_solo: false
+  light_max: 3
+  rendered_at: '2026-08-16T19:39:58Z'
+  schema_version: 2
+  standard_max: 2
+sessions: []

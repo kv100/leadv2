@@ -1,0 +1,79 @@
+M-1 (DISPATCH-PIN-CLUSTER-01 round 7): re-filed as the verbatim output of the
+PRODUCTION scope-changed selector -- `tests/run-all.sh --scope changed` (the
+actual e2e entrypoint), run against a real one-line working-tree touch to
+plugins/leadv2/scripts/lib/leadv2-lane-guard.sh, reverted after capture. The
+prior artifact only printed a hand-rolled "SELECTED <path>" line per
+candidate and never showed a single test actually running -- run-all.sh does
+not emit "SELECTED" anywhere in its own output (grep -rn SELECTED over the
+live tree confirms zero hits outside this artifact), so that line was not a
+production output at all. This is the real command's stdout.
+
+Full untrimmed capture (2403 lines, includes run-core-offline.sh's own
+internal per-assertion output): n4-scope-changed-lane-guard-raw.log in this
+same directory. Below is the load-bearing subset: the mutation proof, every
+[RUN]/[PASS]/[FAIL] line the selector produced, and the run-all summary.
+
+=== mutation proof: one-line touch to lib/leadv2-lane-guard.sh ===
+$ git diff --stat plugins/leadv2/scripts/lib/leadv2-lane-guard.sh
+ plugins/leadv2/scripts/lib/leadv2-lane-guard.sh | 1 +
+ 1 file changed, 1 insertion(+)
+
+=== command ===
+$ LEADV2_SUITE_LOCK_FILE=/tmp/leadv2-core-offline-m1-probe.lock \
+  timeout 850 bash tests/run-all.sh --scope changed
+(LEADV2_SUITE_LOCK_FILE points run-core-offline.sh's own documented
+LEADV2_SUITE_LOCK_FILE override at a private lock instead of the shared
+/tmp/leadv2-core-offline.lock -- the default lock serializes ALL concurrent
+lanes' offline-suite runs process-wide, which timed out this probe twice
+against an unrelated lane's held lock before this override; it changes no
+test logic, only which lock file this one probe process waits on.)
+
+=== [RUN]/[PASS]/[FAIL] lines, in order ===
+[RUN] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+[RUN] .../tests/test-status-surface-bash32.sh
+[PASS] .../tests/test-status-surface-bash32.sh
+[RUN] .../tests/test-status-surface-single-lead.sh
+[PASS] .../tests/test-status-surface-single-lead.sh
+[RUN] .../tests/test-status-surface-fast-names.sh
+[PASS] .../tests/test-status-surface-fast-names.sh
+[RUN] .../plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+[PASS] .../plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+[RUN] .../plugins/leadv2/scripts/tests/test-lane-containment.sh
+[PASS] .../plugins/leadv2/scripts/tests/test-lane-containment.sh
+[RUN] .../plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
+[PASS] .../plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
+[RUN] .../plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
+[PASS] .../plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
+[RUN] .../plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+[PASS] .../plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+[RUN] .../plugins/leadv2/scripts/tests/test-t13-slice1.sh
+[PASS] .../plugins/leadv2/scripts/tests/test-t13-slice1.sh
+
+The six PASS suites are exactly the six leadv2-lane-guard rows of
+EXTRA_SUITE_MAP in tests/run-all.sh:105-138 -- proof the changed-scope
+selector correctly maps a change to lib/leadv2-lane-guard.sh onto every
+suite that row-maps to that stem, and every one of them passes on this HEAD.
+
+=== run-all summary ===
+  Failures (blocking):
+    - plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: 9 passed, 1 failed, scope=changed
+rc=1
+
+=== run-core-offline.sh's own failure, not a lane-guard regression ===
+The one FAIL is the always-on curated suite itself (run-core-offline.sh),
+which fails on this HEAD independent of lib/leadv2-lane-guard.sh -- its
+sub-failures (landed-at-spawn target-repo-keying, dispatch arm vocabulary
+kimi-retirement, phase precondition guard matrix, claim-evidence gate,
+C5-registered-arm-silent) match the pre-existing baseline-red set already
+on record for this changed-scope runner (see memory
+run-all-changed-preexisting-reds.md: "Baseline reds in leadv2 changed-scope
+runner"). Not caused by this lane and not in DISPATCH-PIN-CLUSTER-01's
+LANE_WRITES; out of scope to fix here. None of these sub-failures are in the
+six lane-guard-mapped suites above, which are the ones this artifact exists
+to prove.
+
+=== post-run revert verification ===
+$ git checkout -- plugins/leadv2/scripts/lib/leadv2-lane-guard.sh
+$ git diff --stat plugins/leadv2/scripts/lib/leadv2-lane-guard.sh
+(empty = file byte-identical to the tracked version after revert)

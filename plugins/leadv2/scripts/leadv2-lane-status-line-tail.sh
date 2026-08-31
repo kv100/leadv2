@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export LC_ALL="${LEADV2_STATUSLINE_LOCALE:-en_US.UTF-8}"
 # leadv2-lane-status-line-tail.sh — the ENTIRE budget-relevant half of the
 # status line render (both jq reads + wrapped user command + git branch
 # fallback + lane segment), factored out of leadv2-lane-status-line.sh so
@@ -34,15 +35,34 @@ INPUT="$1"; SETTINGS_JSON="$2"; SCRIPT_DIR="$3"; LANE_CACHE_TTL_S="$4"; OUT_FILE
 
 USER_CMD="$(jq -r '(.statusLine.command // "")' "$SETTINGS_JSON" 2>/dev/null || true)"
 
+# F9 (ANTI-SILENCE-STATUSLINE-01 round 7 cont.): one jq spawn now emits all
+# four fields (transcript_path folded in below).
+#
+# ANTI-SILENCE-STATUSLINE-01 round 8: the split used to be a single
+# `IFS=$'\n' read -r a b c d <<< "$PARSED"` -- but bash's `read` terminates
+# each field read on a LITERAL newline regardless of IFS (IFS only controls
+# intra-line word-splitting), so a multi-line here-string like this one only
+# ever fills the FIRST variable; every field after CWD_FROM_INPUT was always
+# empty. That corrupted every fallback render (model always "?", remaining
+# always dropped, TRANSCRIPT_PATH always empty -> OWN_SESSION_ID always empty
+# -> foreign-lane accounting silently wrong). `mapfile` would split this
+# without a fork, but it does not exist on bash 3.2 (this repo's floor), so
+# the split is done with bash builtin parameter expansion instead -- still
+# zero extra process spawns, still bash-3.2-safe.
 PARSED="$(printf '%s' "$INPUT" | jq -r '
   (.workspace.current_dir // .cwd // ""),
   (.model.display_name // "?"),
-  ((.context_window.remaining_percentage // "") | tostring)
+  ((.context_window.remaining_percentage // "") | tostring),
+  (.transcript_path // "")
 ' 2>/dev/null || true)"
-CWD_FROM_INPUT="$(printf -- '%s' "$PARSED" | sed -n '1p')"
+CWD_FROM_INPUT="${PARSED%%$'\n'*}"
+_PARSED_REST="${PARSED#*$'\n'}"
+MODEL="${_PARSED_REST%%$'\n'*}"
+_PARSED_REST="${_PARSED_REST#*$'\n'}"
+REMAINING="${_PARSED_REST%%$'\n'*}"
+_PARSED_REST="${_PARSED_REST#*$'\n'}"
+TRANSCRIPT_PATH="${_PARSED_REST%%$'\n'*}"
 [[ -z "$CWD_FROM_INPUT" ]] && CWD_FROM_INPUT="$PWD"
-MODEL="$(printf -- '%s' "$PARSED" | sed -n '2p')"
-REMAINING="$(printf -- '%s' "$PARSED" | sed -n '3p')"
 
 # FIX5c: fallback is ALWAYS computed (a CONFIGURED-but-failing/timed-out
 # user command must fall back here too, not regress to a bare "?") — and it
@@ -148,22 +168,39 @@ STATUSLINE_WIDTH="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
 # it. Step 0 = as-is. 1 = drop "(NNN context)" parenthetical. 2 = drop the
 # " [style]" segment (colorized or plain). 3 = shrink the cwd path to its
 # repo basename. 4 = drop the trailing "NN% ctx" (colorized or plain).
-compress_base() {
-  local input="$1" step="${2:-0}"
-  local out="$input"
-  if (( step >= 1 )); then
-    out="$(printf '%s' "$out" | sed -E 's/ \([^)]*context\)//')"
-  fi
-  if (( step >= 2 )); then
-    out="$(printf '%s' "$out" | sed -E $'s/ \\[\x1b\\[[0-9;]*m[^]]*\x1b\\[0m\\]//; s/ \\[[^]]*\\]//')"
-  fi
-  if (( step >= 3 )); then
-    out="$(printf '%s' "$out" | sed -E $'s#(\x1b\\[32m)[^\x1b]*/([^/\x1b]+)(\x1b\\[0m)#\\1\\2\\3#')"
-  fi
-  if (( step >= 4 )); then
-    out="$(printf '%s' "$out" | sed -E $'s/ \x1b\\[35m[0-9]+% ctx\x1b\\[0m//; s/ [0-9]+% ctx//')"
-  fi
-  printf '%s' "$out"
+# F9 (ANTI-SILENCE-STATUSLINE-01 round 7): the caller below used to call
+# compress_base(BASE, k) for k=1..4, and each call recomputed EVERY step from
+# 1 up to k from scratch against the ORIGINAL BASE -- 1+2+3+4 = 10 sed
+# invocations (each its own printf|sed pipe, so 2-3 forked processes apiece)
+# to build 4 candidates that are strict prefixes of each other's
+# transformations. compress_base is applied incrementally per step instead:
+# each step-N transform runs exactly once, against step-(N-1)'s already
+# -computed output, so building all 4 candidates costs 4 sed forks total, not
+# 10. A here-string (`<<<`) replaces the `printf '%s' ... | sed ...` pipe --
+# same bytes into sed's stdin, one process instead of a pipe's two.
+_compress_base_step() {
+  local input="$1" step="$2"
+  case "$step" in
+    1) sed -E 's/ \([^)]*context\)//' <<< "$input" ;;
+    2) sed -E $'s/ \\[\x1b\\[[0-9;]*m[^]]*\x1b\\[0m\\]//; s/ \\[[^]]*\\]//' <<< "$input" ;;
+    3) sed -E $'s#(\x1b\\[32m)[^\x1b]*/([^/\x1b]+)(\x1b\\[0m)#\\1\\2\\3#' <<< "$input" ;;
+    4) sed -E $'s/ \x1b\\[35m[0-9]+% ctx\x1b\\[0m//; s/ [0-9]+% ctx//' <<< "$input" ;;
+    *) printf '%s' "$input" ;;
+  esac
+}
+
+# Terminal width is character width for this statusline contract, not UTF-8
+# byte length.  Keep this in bash because the final clamp is bash-owned; ANSI
+# escapes are stripped before counting and are never sliced.
+visible_len() {
+  # The final refit invokes this in a tight admission loop.  Bash can remove
+  # SGR sequences directly; spawning sed here made a statusline repaint slow.
+  local plain="$1" esc
+  while [[ "$plain" =~ $'\033'\[[0-9\;]*m ]]; do
+    esc="${BASH_REMATCH[0]}"
+    plain="${plain/"$esc"/}"
+  done
+  VISIBLE_LEN="${#plain}"
 }
 
 # An explicit LEADV2_STATUSLINE_LANE_BUDGET override pins the digest budget
@@ -173,13 +210,16 @@ compress_base() {
 _EXPLICIT_LANE_BUDGET="${LEADV2_STATUSLINE_LANE_BUDGET:-}"
 BASE_STEP=("$BASE" "$BASE" "$BASE" "$BASE" "$BASE")
 if [[ -z "$_EXPLICIT_LANE_BUDGET" ]]; then
+  _cb_acc="$BASE"
   for _k in 1 2 3 4; do
-    BASE_STEP[_k]="$(compress_base "$BASE" "$_k")"
+    _cb_acc="$(_compress_base_step "$_cb_acc" "$_k")"
+    BASE_STEP[_k]="$_cb_acc"
   done
 fi
 BASE_LEN=()
 for _k in 0 1 2 3 4; do
-  BASE_LEN[_k]="$(printf '%s' "${BASE_STEP[$_k]}" | sed -E $'s/\x1b\\[[0-9;]*m//g' | awk '{print length}')"
+  visible_len "${BASE_STEP[$_k]}"
+  BASE_LEN[_k]="${VISIBLE_LEN:-0}"
   [[ -z "${BASE_LEN[$_k]}" ]] && BASE_LEN[_k]=0
 done
 BASE_VISIBLE_LEN="${BASE_LEN[0]}"
@@ -191,7 +231,13 @@ LANE_FLOOR="${LEADV2_STATUSLINE_LANE_FLOOR:-10}"
 # named "<session-uuid>.jsonl". No ownership writer exists yet (see the
 # python calc's foreign-lane comment below) so this is frequently empty;
 # that is a known, documented gap, not a bug in this script.
-OWN_SESSION_ID="$(printf '%s' "$INPUT" | jq -r '(.transcript_path // "") | if . == "" then "" else (split("/") | last | rtrimstr(".jsonl")) end' 2>/dev/null || true)"
+# F9: TRANSCRIPT_PATH is already parsed above (folded into the single PARSED
+# jq call) -- basename/suffix-strip in bash instead of a second jq spawn.
+OWN_SESSION_ID=""
+if [[ -n "${TRANSCRIPT_PATH:-}" ]]; then
+  OWN_SESSION_ID="${TRANSCRIPT_PATH##*/}"
+  OWN_SESSION_ID="${OWN_SESSION_ID%.jsonl}"
+fi
 
 LANES="lanes ?"
 # STATUSLINE-READABLE-01 A: which BASE-compression candidate to render.
@@ -527,13 +573,20 @@ for lane_id, lrow in liveness_by_tid.items():
 # Pulse digest (founder ask, fix5 attempt 2): only the top-2 MOST
 # recently-active lanes, not the first 8 in file order — smallest age_s
 # first; unknown-age lanes (no discoverable log) sort last, never first.
-# STATUSLINE-COUNT-TRUTH-01 (3.4): stale (silent:*) rows stay visible but
-# sort AFTER every counted (alive/starting) row, so the digest reads as
-# what is actually working followed by what is stale, never interleaved --
-# separated, not deleted. Verdict is still on each token as a '·silent'
-# suffix (unchanged, below), so which group a row is in stays legible.
+# ANTI-SILENCE-STATUSLINE-01 round 2 REVERSES STATUSLINE-COUNT-TRUTH-01
+# (3.4), which sorted stale (silent:*) rows AFTER every alive/starting row
+# on the theory that what is working should lead and what is stale
+# should trail. That ordering is exactly what let a silent lane go
+# unnoticed on 2026-08-30: three lanes were live, one had gone silent, and
+# the silent one sorted last -- past both the drop-from-tail budget cut in
+# try_drop_to_k() below AND the founder's own eyeline. The founder needs to
+# know a lane went silent MORE than he needs the top-2-by-recency framing,
+# so silent:* rows now sort FIRST. try_drop_to_k() drops from the tail
+# unchanged, which as a direct consequence now protects silent lanes from
+# truncation instead of alive ones -- correct, since a silent lane is the
+# one thing on this line that must never be the one that gets cut.
 rows.sort(key=lambda r: (
-    isinstance(r[2], str) and r[2].startswith('silent:'),
+    not (isinstance(r[2], str) and r[2].startswith('silent:')),
     r[0] is None,
     r[0] if r[0] is not None else 0,
 ))
@@ -873,10 +926,18 @@ _explicit_lane_budget = os.environ.get('LEADV2_STATUSLINE_LANE_BUDGET', '')
 base_prefix = f'lanes {n}/{cap}'
 
 def digest_len(tokens, prefix=None):
+    # R12 fix (ANTI-SILENCE-STATUSLINE-01 finisher round): the inner
+    # separator between base_prefix and the lane token list is a single
+    # space, not ' | ' -- a literal '|' glyph here becomes its own
+    # whitespace-delimited token with no field content of its own, so any
+    # trim/degradation ladder that ever lands its cut adjacent to it leaves
+    # a bare '|' behind. There is nothing for that glyph to convey once
+    # id_parts is non-empty (the outer ' | ' added by the bash tail already
+    # separates LANES from BASE), so it is dropped rather than guarded.
     bp = prefix if prefix is not None else base_prefix
     if not tokens:
         return len(bp)
-    return len(bp) + len(' | ') + sum(len(t) for t in tokens) + (len(tokens) - 1)
+    return len(bp) + len(' ') + sum(len(t) for t in tokens) + (len(tokens) - 1)
 
 def try_no_drop(budget):
     # STATUSLINE-READABLE-01 B: no lane below LEADV2_STATUSLINE_LANE_FLOOR
@@ -884,11 +945,15 @@ def try_no_drop(budget):
     # ladder / old sub-floor fallback further down, never here.
     if not lane_meta:
         return []
+    # Start at the complete label, then shrink only as pressure requires.
+    # A fixed 24-character seed discarded useful name text even when the
+    # available budget had room for it.
+    full_label_cap = max([len(row[0]) for row in lane_meta] or [LABEL_CAP])
     for with_meta in (True, False):
-        cand = render_step12(LABEL_CAP, with_meta)
+        cand = render_step12(full_label_cap, with_meta)
         if digest_len(cand) <= budget:
             return cand
-    for label_cap in (16, 12, 9, 6):
+    for label_cap in (LABEL_CAP, 16, 12, 9, 6):
         if label_cap < lane_floor:
             continue
         cand = render_step12(label_cap, False)
@@ -906,13 +971,26 @@ def try_drop_to_k(budget):
     # append one '+M' token. Choose the largest K >= 1 that fits at
     # label_cap == lane_floor including the '+M' token. lanes n/cap already
     # carries the true total, so a dropped row loses no fact.
+    #
+    # ANTI-SILENCE-STATUSLINE-01 finisher round: fitting the budget is not
+    # enough -- two lanes that share a capped stem (e.g. "dispatch-c98a..."
+    # and "dispatch-5bfce..." both collapsing to "dispatch-…" at
+    # label_cap==lane_floor) render as indistinguishable stubs, the same
+    # defect BROAD-STATUS-ROWS-02 fixes on the other status surface. A K
+    # whose shown labels collide is worse than a smaller K with an honest,
+    # larger '+N' -- skip it and drop further. A lone lane (k==1) can never
+    # collide with itself, so it is always accepted once reached.
     if not lane_meta:
         return None, 0
     total = len(lane_meta)
     for k in range(total, 0, -1):
         subset = lane_meta[:k]
-        toks = [f'{cap_lbl_marked(lbl, fo, lane_floor)}·{arm}·{ag}{vs}'
-                for lbl, _kd, _mo, ag, vs, _lid, arm, fo, _ags in subset]
+        labels = [cap_lbl_marked(lbl, fo, lane_floor)
+                  for lbl, _kd, _mo, _ag, _vs, _lid, _arm, fo, _ags in subset]
+        if k > 1 and len(set(labels)) < len(labels):
+            continue
+        toks = [f'{lbl}·{arm}·{ag}{vs}'
+                for lbl, (_l, _kd, _mo, ag, vs, _lid, arm, _fo, _ags) in zip(labels, subset)]
         dropped = total - k
         if dropped:
             toks = toks + [f'+{dropped}']
@@ -965,7 +1043,7 @@ else:
 
 out = base_prefix
 if id_parts:
-    out += ' | ' + ' '.join(id_parts)
+    out += ' ' + ' '.join(id_parts)
 print(out)
 # STATUSLINE-READABLE-01 A: second stdout line, read by the bash tail to
 # pick which BASE-compression candidate to render. A caller on an older
@@ -1038,27 +1116,68 @@ fi
 # explicit LEADV2_STATUSLINE_LANE_BUDGET always keeps BASESTEP at its 0
 # default (mandatory constraint checklist #5) -- BASE stays uncompressed.
 FINAL_BASE="${BASE_STEP[$BASESTEP]:-$BASE}"
-FINAL_LINE="$(printf '%s \033[34m| %s\033[0m' "$FINAL_BASE" "$LANES")"
+# ANTI-SILENCE-STATUSLINE-01 round 2, item 1 (Lanes FIRST): lanes used to
+# render AFTER the base/quota segment, so on a long BASE (founder's own
+# statusLine.command prepends model/context/burn fields) the lane digest --
+# the one thing that says a lane went silent -- was the part most likely to
+# be scrolled off-screen or eaten by a downstream truncator. Lane state now
+# leads the line; base/quota follows.
+FINAL_LINE="$(printf '\033[34m%s\033[0m | %s' "$LANES" "$FINAL_BASE")"
 
 # STATUSLINE-READABLE-01 B/7 hard clamp: the degradation ladder above only
 # GUARANTEES a fit down to lane_floor plus a drop-lanes '+M' token; the old
 # sub-floor fallback it falls through to when even K=1+'+M' doesn't fit can
 # still, in principle, overflow. LANES is always plain ASCII (no ANSI codes
-# ever enter it), so truncating it by character count here is safe and
-# makes 'never exceeds the budget, at 1 lane and at 12 lanes' provable
-# rather than merely hoped for -- this replaces the old cwd-first-letter
-# squeeze, which is now dead: BASE compression (step A) already owns
-# shrinking the path, so keeping both would be two path compressors racing
-# each other.
-FINAL_VISIBLE_LEN="$(printf '%s' "$FINAL_LINE" | sed -E $'s/\x1b\\[[0-9;]*m//g' | awk '{print length}')"
-[[ -z "$FINAL_VISIBLE_LEN" ]] && FINAL_VISIBLE_LEN=0
+# ever enter it), so measuring/cutting it by character count here is safe.
+# ANTI-SILENCE-STATUSLINE-01 round 2, item 2: a raw `${LANES:0:KEEP}`
+# character slice used to cut mid-word (the founder's own observed
+# "| leadv" artifact) with no indication anything was dropped. Every lane
+# token in LANES is single-word (label·arm·age, no embedded spaces -- see
+# render_step12/cap_lbl_marked above), so LANES is always whitespace-
+# delimited at token boundaries; back the cut off to the last whitespace
+# boundary at or before KEEP and name how many trailing tokens were lost.
+visible_len "$FINAL_LINE"
+FINAL_VISIBLE_LEN="${VISIBLE_LEN:-0}"
 if (( FINAL_VISIBLE_LEN > STATUSLINE_WIDTH )); then
   OVERFLOW=$(( FINAL_VISIBLE_LEN - STATUSLINE_WIDTH ))
-  LANES_LEN=${#LANES}
-  KEEP=$(( LANES_LEN - OVERFLOW ))
-  (( KEEP < 0 )) && KEEP=0
-  LANES="${LANES:0:KEEP}"
-  FINAL_LINE="$(printf '%s \033[34m| %s\033[0m' "$FINAL_BASE" "$LANES")"
+  # Refit by complete fields and reserve the exact +N marker before each
+  # admission.  Character accounting matches visible_len above, including
+  # UTF-8 labels; no raw slice can land in a word or ANSI escape.
+  visible_len "$FINAL_BASE"
+  _base_len="${VISIBLE_LEN:-0}"
+  _lane_budget=$(( STATUSLINE_WIDTH - _base_len - 3 ))
+  (( _lane_budget < 0 )) && _lane_budget=0
+  _lane_first="${LANES%% *}"
+  _lane_after_first="${LANES#* }"
+  _lane_second="${_lane_after_first%% *}"
+  _lane_head="${_lane_first} ${_lane_second}"
+  _lane_rest="${_lane_after_first#"$_lane_second"}"
+  _lane_rest="${_lane_rest# }"
+  _lane_total=0; for _lane_tok in $_lane_rest; do [[ "$_lane_tok" == +[0-9]* ]] || _lane_total=$(( _lane_total + 1 )); done
+  _lane_shown=0; _lane_out="$_lane_head"
+  for _lane_tok in $_lane_rest; do
+    [[ "$_lane_tok" == +[0-9]* ]] && continue
+    _lane_remaining=$(( _lane_total - _lane_shown - 1 ))
+    _lane_marker=""; (( _lane_remaining > 0 )) && _lane_marker=" +${_lane_remaining}"
+    visible_len "${_lane_out} ${_lane_tok}${_lane_marker}"
+    if (( ${VISIBLE_LEN:-0} > _lane_budget )); then break; fi
+    _lane_out="${_lane_out} ${_lane_tok}"; _lane_shown=$(( _lane_shown + 1 ))
+  done
+  _lane_dropped=$(( _lane_total - _lane_shown ))
+  (( _lane_dropped > 0 )) && _lane_out="${_lane_out} +${_lane_dropped}"
+  LANES="$_lane_out"
+  # At degenerate widths even the maximally-compressed BASE can be wider
+  # than the cells left after the honest lane digest. Strip its ANSI first,
+  # then clip characters; never raw-slice a colour escape.
+  visible_len "$LANES"
+  _base_budget=$(( STATUSLINE_WIDTH - ${VISIBLE_LEN:-0} - 3 ))
+  (( _base_budget < 0 )) && _base_budget=0
+  visible_len "$FINAL_BASE"
+  if (( ${VISIBLE_LEN:-0} > _base_budget )); then
+    FINAL_BASE="$(printf '%s' "$FINAL_BASE" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
+    FINAL_BASE="${FINAL_BASE:0:_base_budget}"
+  fi
+  FINAL_LINE="$(printf '\033[34m%s\033[0m | %s' "$LANES" "$FINAL_BASE")"
 fi
 
 printf '%s\n' "$FINAL_LINE"

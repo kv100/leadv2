@@ -42,9 +42,35 @@ FOUNDER_STATUS_PATH="${LEADV2_FOUNDER_STATUS_PATH:-$PROJECT_ROOT/docs/leadv2/fou
 # still wrote into the live persona-engine repo because it was hardcoded
 # off PROJECT_ROOT).
 FOUNDER_STATUS_FULL_PATH="${LEADV2_FOUNDER_STATUS_FULL_PATH:-$PROJECT_ROOT/docs/leadv2/founder-status-full.md}"
+# The collector below supplies the "lanes" section rendered by this board.
+# It pins the all-repos policy itself (LEADV2_LANES_ALL_REPOS=1 at
+# leadv2-status-collector.sh's snapshot call). That pin is NOT defensive
+# hardening against a hypothetical -- it is a demonstrated, live root cause:
+# ~/.claude/settings.json's global `env` block ships LEADV2_LANES_ALL_REPOS=0
+# for every Claude Code session on this machine (verified 2026-08-30: `env |
+# grep LANES_ALL_REPOS` inside a fresh worktree shell -> "=0", and running
+# leadv2-lanes-snapshot.sh --json against a fixture with a live foreign-repo
+# lane and an empty own repo under that ambient env returns table=[] --
+# without the collector's inline override, a lane running in another repo
+# is invisible on the board even when the render itself succeeds).
+# A SECOND, independent incident shares this bug's title: the bash-3.2
+# heredoc parse failure fixed in 67f8b8d, which empties/aborts the render
+# outright ("render failed") rather than merely omitting foreign rows --
+# guarded by the syntax test below. Both are real; they were observed at
+# different beats of the same live incident (2026-08-30T16:53-17:00Z).
 COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector.sh}"
 TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
 CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
+# Reconcile any own-repo lane rows stranded in ephemeral launcher state
+# before the collector takes its one board snapshot.  The registry function
+# filters by git common-dir, so this cannot import another repo's scratch row.
+ACTIVE_REGISTRY_SH="${LEADV2_ACTIVE_REGISTRY_BIN:-$SCRIPT_DIR/leadv2-active-registry.sh}"
+if [[ -f "${ACTIVE_REGISTRY_SH}" ]]; then
+  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${ACTIVE_REGISTRY_SH}" 2>/dev/null || true
+  if declare -F leadv2_active_consolidate_ephemeral_roots >/dev/null 2>&1; then
+    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_consolidate_ephemeral_roots >/dev/null 2>&1 || true
+  fi
+fi
 # PULSE-EMPTY-BOARD-01: empty-since cursor (survives across beats — an
 # empty board's duration is measured from the FIRST beat that found it
 # empty, never re-derived per-render) and the render's own epoch stamp.
@@ -85,10 +111,14 @@ mkdir -p "$(dirname "$LOG_FILE")"
 # every extra line is a model wake paid on every remaining turn of the
 # attached session. Transition-deduped (key broad_status_ready, value = beat
 # identity) so a re-read or a double --ensure cannot fire the same beat
-# twice; lib absent → pass-through emit (R2) — this script runs once per
+# twice; lib absent from BOTH the local scripts/lib and the canonical root
+# (DISPATCH-CLOSE-GATE-01 round 7: a consumer symlink farm missing this lib
+# must fail over to canonical before pass-through, never pass through on a
+# bare [[ -f ]] miss) → pass-through emit (R2) — this script runs once per
 # BROAD_STATUS_S window, not per poll, so pass-through is still one line per
 # beat.
 ALARM_LIB="${LEADV2_ALARM_DEDUPE_BIN:-${SCRIPT_DIR}/lib/leadv2-alarm-dedupe.sh}"
+[[ -f "${ALARM_LIB}" ]] || ALARM_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-alarm-dedupe.sh"
 # shellcheck source=lib/leadv2-alarm-dedupe.sh
 [[ -f "$ALARM_LIB" ]] && source "$ALARM_LIB"
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -105,6 +135,54 @@ _emit_ready_line() {  # <rows|-> [degraded]
     "${degraded:+ degraded=1}" >>"$LOG_FILE"
 }
 
+# ── ANTI-SILENCE-ONE-MECHANISM-01: live lane facts, computed independently
+# of the failed collector/renderer. A degraded beat that only says "not
+# collected" still leaves the founder with zero facts — this reads
+# active.yaml directly (read-only, no dependency on the failed step) so the
+# fallback always names how many lanes are live, which, and their phase.
+# Never throws past this function: any failure just yields a one-line
+# "facts unavailable" string, which is still more than silence.
+_live_lane_facts() {
+  local yaml_file
+  yaml_file="$(PROJECT_ROOT="$PROJECT_ROOT" "$STATE_PATH_SH" --no-link active.yaml 2>/dev/null || true)"
+  [[ -z "$yaml_file" ]] && yaml_file="$PROJECT_ROOT/docs/leadv2/active.yaml"
+  python3 - "$yaml_file" <<'PY' 2>/dev/null
+import sys, os
+path = sys.argv[1]
+try:
+    import yaml
+except Exception:
+    print("живые линии: недоступно (PyYAML отсутствует)")
+    sys.exit(0)
+if not os.path.exists(path):
+    print("живые линии: 0 (active.yaml не найден)")
+    sys.exit(0)
+try:
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    sessions = data.get("sessions") or []
+except Exception:
+    print("живые линии: недоступно (active.yaml не читается)")
+    sys.exit(0)
+if not sessions:
+    print("живые линии: 0")
+    sys.exit(0)
+rows = []
+for s in sessions:
+    if not isinstance(s, dict):
+        continue
+    tid = s.get("task_id") or "?"
+    phase = s.get("phase") or "?"
+    flag = "stale" if s.get("stale") else "live"
+    rows.append(f"{tid}({phase},{flag})")
+print(f"живые линии: {len(rows)} — " + ", ".join(rows) if rows else "живые линии: 0")
+PY
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf 'живые линии: недоступно (ошибка чтения)\n'
+  fi
+}
+
 # ── failed-beat artifact policy (PULSE-IS-A-PLUGIN-DUTY-01 fix r1) ──────────
 # A failed beat must never leave the PREVIOUS beat's healthy table in place
 # while claiming freshness: the ready-line points at founder-status.md, so
@@ -114,8 +192,15 @@ _emit_ready_line() {  # <rows|-> [degraded]
 # signal READY degraded. If even that write fails, refuse READY entirely:
 # BROAD_STATUS_FAILED carries no path= token, so nothing points the founder
 # at the stale file, while the URGENT substring still wakes them (C1).
+# ANTI-SILENCE-ONE-MECHANISM-01 [Critical]: a degraded beat must still SPEAK
+# — never reduce the founder to a bare staleness notice. The lane-facts line
+# below is computed AT BEAT TIME from active.yaml directly, independent of
+# whatever the collector/renderer failed to do, so the fallback always
+# carries real, current facts.
 _write_degraded_status() {  # <reason> -> rc 0 if the artifact was replaced
-  local reason="$1" block
+  local reason="$1" block lane_facts
+  lane_facts="$(_live_lane_facts)"
+  [[ -z "$lane_facts" ]] && lane_facts="живые линии: недоступно"
   block="$(
     printf '%s [BROAD_STATUS] dispatched=%s degraded=1\n' "$BEAT_AT" "$DISPATCHED"
     printf '| Линия | Что делает | Состояние |\n'
@@ -123,6 +208,7 @@ _write_degraded_status() {  # <reason> -> rc 0 if the artifact was replaced
     printf '| (статус не собран) | — | %s |\n\n' "$reason"
     printf 'СТАТУС НЕ СОБРАН на beat %s: %s.\n' "$BEAT_AT" "$reason"
     printf 'Таблица линий за этот beat недоступна — это НЕ значит, что линий нет.\n'
+    printf '%s\n' "$lane_facts"
     printf '[BROAD_STATUS_END]\n'
   )"
   printf '%s\n' "$block" >>"$LOG_FILE"
@@ -171,7 +257,24 @@ trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 
 export _BS_QUEUED_TSV="$QUEUED_TSV"
 export _BS_LANDED_LOG="$LANDED_LOG"
-RENDER_JSON="$(python3 - "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" <<'PY'
+# BASH-3.2-HEREDOC-QUOTE-PARITY-01: this heredoc used to be written directly
+# inside the `RENDER_JSON="$( ... <<'PY' ... )"` command substitution. macOS's
+# system /bin/bash (3.2.57, the mandatory compatibility target — see
+# CLAUDE.md) has a heredoc-in-command-substitution lexer bug: even with a
+# QUOTED delimiter (<<'PY'), it still scans the heredoc body for stray
+# single/double quotes and unmatched parens to decide where the enclosing
+# $( ... ) closes. A ~750-line python heredoc full of English prose comments
+# (apostrophes: "lane_detail's", "worker's own", contractions) desyncs that
+# scan and the WHOLE SCRIPT fails to parse — `bash -n` (and real execution)
+# aborts with "unexpected EOF while looking for matching `)'" and the script
+# never runs at all, silently, under any minimal-PATH launcher that resolves
+# `env bash` to /bin/bash (SwiftBar is exactly this case per CLAUDE.md). Fix:
+# write the heredoc to a file as a TOP-LEVEL statement (not nested inside a
+# command substitution), then invoke python3 on that file inside the
+# substitution — a plain command has nothing for the buggy scanner to
+# misparse. Verified: `/bin/bash -n` on this file failed before this change
+# and passes after, both on macOS system bash 3.2.57 and homebrew bash 5.3.9.
+cat >"$RENDER_TMPDIR/render.py" <<'PY'
 import datetime, json, os, re, subprocess, sys
 
 snapshot_path, prev_path, root, tasks_lib_sh, tmpdir, script_dir, full_status_path_override, empty_since_path = sys.argv[1:9]
@@ -202,6 +305,24 @@ table_rows = lanes_data.get("table") or []
 # masquerade as a lane row.
 foreign_error_rows = [r for r in table_rows if isinstance(r, dict) and r.get("error")]
 table_rows = [r for r in table_rows if not (isinstance(r, dict) and r.get("error"))]
+# fix-round-3 (L1): a non-dict element in the collector's "table" array
+# (malformed collector output) survived the filter above -- isinstance(r,
+# dict) is False for it, so `not (False and ...)` is True -- and reached
+# `_row.get(...)` in the dedup loop below with no isinstance guard, an
+# AttributeError that killed the whole beat. Degrade it out of the table
+# instead of crashing; "not a lane" is exactly what a non-dict row is.
+#
+# fix-round-4 (R3-3): round-3's filter dropped the non-dict rows UNCOUNTED,
+# so a malformed collector table (e.g. a JSON-encoding bug that emits a
+# bare string or null in place of a row object) rendered as a plain empty
+# table -- byte-identical to a genuinely empty board, which is exactly the
+# LANE-DETAIL-BLIND-01 failure mode ("no lanes" vs "could not read the
+# lanes" collapsing into one output) this task exists to prevent, one level
+# down: a malformed ROW is unreadable, not absent. Count it and surface it
+# the same way an unreadable foreign repo already is (table_prefix line +
+# suppression of the false empty-board headline below).
+malformed_row_count = sum(1 for r in table_rows if not isinstance(r, dict))
+table_rows = [r for r in table_rows if isinstance(r, dict)]
 questions = lanes_data.get("questions") or lanes_data.get("requires_founder") or []
 degraded = lanes_data.get("degraded") or []
 # LANE-DETAIL-BLIND-01: a failed/absent `lanes` COLLECTOR SECTION (the
@@ -362,27 +483,100 @@ def md_escape(s):
     return str(s).replace("|", "\\|").replace("\n", " ").strip() if s else s
 
 
+# BROAD-STATUS-ROWS-01 fix A: a lane can occupy exactly one row. Two rows
+# with the same task_id previously happened whenever the row-identity
+# column (below) collapsed two DIFFERENT lanes to the same displayed
+# string; identity is now the task_id itself, but this dedup stays as a
+# second, independent guard against an upstream collector duplicate
+# (e.g. the same lane appearing once from an own-repo read and once from
+# a foreign-repo read) ever reaching the renderer as two rows.
+#
+# BROAD-STATUS-ROWS-02 fix-round-2 (High #1/#2): the key MUST be the
+# identity actually rendered, not a fragment of it.
+#   - (repo, task_id): a foreign lane sharing a bare task_id with an
+#     own-repo lane renders as "<repo>/<id>" vs "<id>" -- two DIFFERENT
+#     rows -- so repo must be part of the key or the foreign one is
+#     silently deleted despite never colliding on screen.
+#   - a row with no task_id at all previously fell back to the literal
+#     string "?" for every such row, so a SECOND task_id-less row from a
+#     different lane collapsed into the first with no degraded row left
+#     behind -- the exact failure `:203-213` (empty vs unreadable) exists
+#     to prevent. Each occurrence gets its own never-colliding key instead.
+_seen_keys = set()
+_deduped_table_rows = []
+_dedup_dropped_count = 0
+for _idx, _row in enumerate(table_rows):
+    _tid_raw = _row.get("task_id")
+    if _tid_raw:
+        _key = (_row.get("repo"), str(_tid_raw))
+    else:
+        _key = ("__missing_task_id__", _idx)
+    if _key in _seen_keys:
+        # fix-round-3 (L2): a dedup drop used to be invisible in the
+        # founder-facing accounting -- count it so it can be surfaced
+        # alongside table_rows_hidden instead of silently vanishing.
+        _dedup_dropped_count += 1
+        continue
+    _seen_keys.add(_key)
+    _deduped_table_rows.append(_row)
+table_rows = _deduped_table_rows
+
+# fix-round-3 (NEW-7): a single list of (line, is_foreign) pairs instead of
+# two parallel lists -- there is exactly one append site, but a future
+# second one that forgot the sibling list would truncate the table via
+# zip() with no error and no hidden-count, which is exactly the silent-loss
+# class this file exists to prevent.
 rows_out = []
 detail_lines = []
 closed_items = []
 current_lane_digest = {}
 for row in table_rows:
     tid = str(row.get("task_id") or "?")
-    d = detail_by_task.get(tid)
+    # fix-round-3 (NEW-1): detail_by_task is built from lane_detail, which is
+    # OWN-REPO-ONLY (see comment above its construction). A foreign row that
+    # happens to share a bare task_id with an own-repo lane must NOT join it
+    # -- the foreign row would otherwise render the own lane's mission
+    # title, worker and stream_bytes, i.e. report a dead foreign lane as
+    # "writing now". repo is the discriminator the dedup key already uses.
+    _repo_slug = row.get("repo")
+    d = detail_by_task.get(tid) if not _repo_slug else None
+    # fix-round-3 (NEW-5): the delta digest must be keyed the same way the
+    # row identity is rendered/deduped -- (repo, task_id) -- or (a) a
+    # foreign row never enters the digest at all (delta line contradicts
+    # the table above it) and (b) an own+foreign pair sharing a bare
+    # task_id collapse into one digest entry.
+    _digest_key = f"{_repo_slug}::{tid}" if _repo_slug else tid
 
-    # id_display: dispatch id when the dispatch binding is known, else the
-    # raw founder task_id with an explicit marker (never silently pass one
-    # off as the other). BROAD-STATUS-RENDERER-01 D1: a task id that IS
-    # "dispatch-<hex>" carries its own dispatch id — same identity rule as
-    # leadv2-lane-detail.sh, applied here too because tombstone rows (no
-    # lane_detail row at all) were still rendered "(dispatch id unknown)"
-    # while the id sat in their own name. This id is a fallback for col-1
-    # ONLY (below) and always the source of the diagnostic detail line.
+    # id_display: BROAD-STATUS-ROWS-02 task.context.yaml decision IDENTITY
+    # -- task_id first, sig8/dispatch id only as the FALLBACK when task_id
+    # is absent. fix-round-2 (High #3): the previous ordering preferred
+    # dispatch_id whenever a lane_detail join existed, so a lane dispatched
+    # as task_id=BROAD-STATUS-ROWS-02 rendered as "dispatch-9f3a1c22" and
+    # the founder's own task id appeared in no column at all -- backwards
+    # from the decision record. dispatch_id remains the fallback for a row
+    # whose task_id could not be resolved at all (tid == "?").
+    #
+    # PULSE-READABLE-01 honesty invariant (kept, not reverted by the above):
+    # a task_id whose own dispatch binding is genuinely unresolved (no
+    # lane_detail dispatch_id, and the task_id itself is not already
+    # "dispatch-<hex>") still carries the "(dispatch id unknown)" marker --
+    # it says "we don't know the binding", which is orthogonal to WHICH
+    # identity wins as primary. A row with a resolved dispatch_id, or whose
+    # task_id already IS the dispatch id shape, needs no such disclaimer.
+    #
+    # fix-round-3 (NEW-8): a foreign row NEVER joins lane_detail (own-repo
+    # only, see `d` above), so "(dispatch id unknown)" was 100% predictable
+    # on every foreign row and carried no information -- it just doubled
+    # column width. Suppressed for foreign rows only; own-repo rows keep the
+    # disclaimer exactly as before.
     dispatch_id = d.get("dispatch_id") if d else None
-    if dispatch_id:
+    if tid and tid != "?":
+        if dispatch_id or re.match(r"^dispatch-[0-9a-f]{6,40}$", tid) or _repo_slug:
+            id_display = tid
+        else:
+            id_display = f"{tid} (dispatch id unknown)"
+    elif dispatch_id:
         id_display = f"dispatch-{dispatch_id}"
-    elif re.match(r"^dispatch-[0-9a-f]{6,40}$", tid):
-        id_display = tid
     else:
         id_display = f"{tid} (dispatch id unknown)"
 
@@ -390,7 +584,7 @@ for row in table_rows:
     # mission title, never from the prepass excerpt (that stays in "owns"
     # for the detail block). Name is frozen on first resolution in
     # .broad-status-prev.json so it cannot drift between beats (R2).
-    prev_row_name = (prev_lanes.get(tid) or {}).get("name") if isinstance(prev_lanes.get(tid), dict) else None
+    prev_row_name = (prev_lanes.get(_digest_key) or {}).get("name") if isinstance(prev_lanes.get(_digest_key), dict) else None
     # PULSE-READABLE-01: leadv2-lane-detail.sh now emits a genuine
     # "mission_title" field (added alongside this fix) -- rung 2/3 of
     # read_owns() (lane-mission.md heading, then fanout mission.txt),
@@ -402,22 +596,28 @@ for row in table_rows:
     # as unresolved -- id-fallback in col-1, "\u2014" in col-2.
     mission_title = d.get("mission_title") if d else None
     linia_name = prev_row_name or human_name(mission_title)
-    # Only the NAME is frozen (§2.2) — the one-sentence description is
-    # re-derived fresh from the mission title every beat.
-    chto = product_sentence(mission_title) or "—"
-    # PULSE-READABLE-01: the founder cannot act on "(имя неизвестно)" — it
-    # names nothing. Fall back to the bare dispatch id (sig8) instead, per
-    # rule 3 of the pulse-readable spec: a real, greppable handle beats a
-    # sentence that just restates "we don't know".
-    linia = linia_name if linia_name else id_display
+    # BROAD-STATUS-ROWS-01 fix A: "Линия" carries the lane IDENTITY
+    # (id_display: dispatch id, or the raw task_id/sig8 when no dispatch
+    # binding is known) — never a human-derived name. human_name() truncates
+    # to <=5 words, so two lanes whose mission titles share a long common
+    # prefix ("BROAD-STATUS-ROWS-01 — the status pulse..." /
+    # "BROAD-STATUS-ROWS-02 — the status pulse...") previously collapsed to
+    # the identical short name and rendered as indistinguishable duplicate
+    # rows — one lane visually "ate" the other. task_id (via id_display) is
+    # unique per lane by construction, so this alone makes two lanes
+    # unable to render as one row ever again.
+    linia = id_display
     # LANE-OBSERVABILITY-02 change 3: a lane from ANOTHER repo (the lanes
     # snapshot's foreign rows carry repo=<slug>; own-repo rows never do) is
     # prefixed with its slug so the founder can tell which repo a row belongs
     # to at a glance — single-repo output carries no repo field and is
-    # byte-identical to before.
-    _repo_slug = row.get("repo")
+    # byte-identical to before. (_repo_slug computed once, above.)
     if _repo_slug:
         linia = f"{_repo_slug}/{linia}"
+    # The human-readable title (formerly rendered as "Линия") now lives
+    # ONLY in "Что делает", alongside the fuller product-sentence
+    # description — never duplicated into the identity column.
+    chto = product_sentence(mission_title) or linia_name or "—"
 
     # Кто делает
     _worker = d.get("worker") if d else None
@@ -446,11 +646,16 @@ for row in table_rows:
     # spelling flowed into the live table as "(имя неизвестно) | — | pid
     # birth mismatch (reuse)" junk (founder-rejected beat, 2026-08-21).
     is_dead = bool(verdict) and (str(verdict) == "dead" or str(verdict).startswith("dead:"))
-    prev_row = prev_lanes.get(tid)
+    prev_row = prev_lanes.get(_digest_key)
     delta_note = None
-    if d is not None:
-        current_lane_digest[tid] = {"stream_bytes": stream_bytes, "disk_key": disk_key(disk)}
-        if isinstance(prev_row, dict) and prev_row is not None and not is_dead:
+    # fix-round-3 (NEW-5): a foreign row (d is None by construction) must
+    # still enter the digest -- keyed on _digest_key -- so raised/closed
+    # accounting sees it; only the "молчит N мин (без изменений)" delta
+    # note stays own-repo-only (it needs `d` for stream_mtime_age_s, which
+    # foreign rows never carry).
+    if d is not None or _repo_slug:
+        current_lane_digest[_digest_key] = {"stream_bytes": stream_bytes, "disk_key": disk_key(disk)}
+        if d is not None and isinstance(prev_row, dict) and not is_dead:
             same_bytes = prev_row.get("stream_bytes") == stream_bytes
             same_disk = prev_row.get("disk_key") == disk_key(disk)
             if same_bytes and same_disk:
@@ -459,8 +664,8 @@ for row in table_rows:
     if linia_name:
         # freeze-on-first-resolution: only write a name once resolved; an
         # un-nameable lane keeps retrying fresh resolution every beat.
-        current_lane_digest.setdefault(tid, {"stream_bytes": stream_bytes, "disk_key": disk_key(disk)})
-        current_lane_digest[tid]["name"] = linia_name
+        current_lane_digest.setdefault(_digest_key, {"stream_bytes": stream_bytes, "disk_key": disk_key(disk)})
+        current_lane_digest[_digest_key]["name"] = linia_name
 
     if delta_note:
         sostoyanie = delta_note
@@ -491,16 +696,41 @@ for row in table_rows:
         # alone ("dead:silent") is exactly the silence this fix exists to
         # break. Empty extraction degrades to the verdict-only line.
         _wr = (d.get("worker_reason") if d else None) or read_worker_reason(tid)
+        # fix-round-2 (Medium): "name" carries the row IDENTITY (linia,
+        # unchanged) so the closed line stays keyed the same way as a live
+        # row, but the human-readable mission name -- lost when :519 was
+        # reworked to print identity-only -- goes back into the prose so
+        # the founder is not left reading a bare id.
         closed_items.append({
             "name": linia,
-            "cause": sostoyanie + (f" — worker: {_wr}" if _wr else ""),
+            "cause": (f"{linia_name} — " if linia_name else "")
+            + sostoyanie
+            + (f" — worker: {_wr}" if _wr else ""),
         })
         continue
 
-    rows_out.append(
-        "| " + " | ".join(md_escape(x) for x in (linia, chto, sostoyanie)) + " |"
-    )
+    rows_out.append((
+        "| " + " | ".join(md_escape(x) for x in (linia, chto, sostoyanie)) + " |",
+        bool(_repo_slug),
+        _repo_slug or "",
+    ))
     detail_lines.append(f"{id_display} — {kto} — {na_diske}")
+
+# fix-round-5 (R3-3, remedy half): round-4 counted a malformed (non-dict)
+# table row and named it in the table_prefix line above the table, but the
+# table BODY still printed only the positive-looking placeholder
+# "(живых линий нет)" beneath it -- a reader who counts rows in the table
+# itself, not the prose above it, still sees zero rows and nothing telling
+# them one is unreadable. Each malformed row now also gets its own NAMED
+# row inside the table (wording deliberately distinct from the table_prefix
+# line above so the two are independently verifiable), so the table's own
+# row count reflects reality: N unreadable rows are N rows, not an absence.
+for _mi in range(malformed_row_count):
+    rows_out.append((
+        f"| (строка {_mi + 1} повреждена) | формат не читается | НЕ ЧИТАЕТСЯ |",
+        False,
+        "",
+    ))
 
 # Change 2b: a failed lane_detail section must be visible ABOVE the table,
 # not inferred from every row silently reading "неизвестно".
@@ -531,6 +761,14 @@ for _fer in foreign_error_rows:
         f"({_fer.get('data') or _fer.get('error')}) — его линии неизвестны, "
         "таблица ниже не про него\n"
     )
+# fix-round-4 (R3-3): a malformed (non-dict) table row is unreadable, not
+# absent -- see the L1 comment above. Named, counted degraded line, same
+# treatment as an unreadable foreign repo.
+if malformed_row_count:
+    table_prefix.append(
+        f"НЕ ЧИТАЮТСЯ {malformed_row_count} строк(и) таблицы (повреждённый формат "
+        "от сборщика) — это НЕ означает, что этих линий нет, они unreadable\n"
+    )
 
 # MON-PULSE-01 fix-round 2 (H4): route the per-lane pulse to the founder.
 # The lane watcher (leadv2-lane-pulse-watch.sh) appends one line per journal
@@ -560,10 +798,119 @@ pulse_md = (
 # PULSE-READABLE-01 rule 2: max ~6 rows in the founder-facing table. The
 # full (uncapped) row set still goes into founder-status-full.md below —
 # capping here is a RENDER decision, never a data-loss decision.
+#
+# BROAD-STATUS-ROWS-02 fix-round-2 (Critical): a foreign-repo row must
+# survive the cap. leadv2-lanes-snapshot.sh APPENDS foreign rows onto the
+# END of an already own-repo-ranked-and-capped table, so a plain
+# `[:TABLE_ROW_CAP]` slice systematically cuts every foreign lane once
+# own-repo lanes alone fill the cap -- the cross-repo lane is then counted
+# as "мусорных/лишних строк" below, which is a lie: it was never junk.
+#
+# fix-round-3 (NEW-2/NEW-3): round-2 exempted foreign rows from the cap
+# entirely (no counter), which is not a reservation -- it is unbounded, and
+# leadv2-lanes-snapshot.sh puts NO cap and NO status filter on foreign rows
+# (active+stale both reach the table). At the other extreme, own-repo rows
+# had NO floor -- `_own_row_budget = max(0, TABLE_ROW_CAP - foreign_count)`
+# meant enough foreign lanes evicted every own-repo row and the founder was
+# told his own live lanes were "мусорных/лишних строк", the exact lie this
+# task exists to delete, now pointed at his own board.
+#
+# A reservation must be BOUNDED on both sides: foreign gets a capped slice
+# of TABLE_ROW_CAP (never the whole board), own-repo keeps the remainder as
+# a floor (never zero while own rows exist). Neither side may starve the
+# other.
+#
+# fix-round-4 (R3-2): the reserve above is a FLOOR (a guaranteed minimum
+# when both sides compete for the cap), never a CEILING. Round-3's version
+# applied FOREIGN_ROW_RESERVE unconditionally, so "10 foreign + 0 own"
+# rendered only 2 of 6 available slots and printed "8 строк не поместилось"
+# while four table slots sat empty -- the reservation was defending a bug,
+# not preventing one. The empty side must yield its unused share to the
+# other: 0 own -> foreign gets the WHOLE cap; 0 foreign -> own already got
+# the whole cap (unchanged). Only when BOTH sides have rows does the
+# reserve/floor split kick in.
 TABLE_ROW_CAP = 6
+FOREIGN_ROW_RESERVE = max(1, TABLE_ROW_CAP // 3)
 rows_out_full = rows_out
-rows_out = rows_out_full[:TABLE_ROW_CAP]
-table_rows_hidden = max(0, len(rows_out_full) - TABLE_ROW_CAP)
+_foreign_row_count = sum(1 for _, _f, _r in rows_out_full if _f)
+_own_row_count = len(rows_out_full) - _foreign_row_count
+# fix-round-5 (N4-1): the floor/reserve split above only has anything to
+# defend when the two sides are actually COMPETING for the cap. round-4's
+# version special-cased only `_own_row_count == 0`, so the ordinary board
+# (WIP is 1-3 own lanes per session -- see leadv2 task-lane cap policy) fell
+# straight into the `else` branch and got capped to FOREIGN_ROW_RESERVE
+# regardless of whether the total even exceeded TABLE_ROW_CAP: "2 own + 4
+# foreign" (6 lanes, 6 slots) rendered only 4 rows and reported "2 чужих
+# строк не поместилось" -- lanes that fit were told they didn't. Nothing
+# competes for a slot that would otherwise sit empty, so when everyone fits
+# under the cap, everyone renders; the reserve/floor split below only
+# engages once the two sides are actually fighting for a scarce slot.
+if _own_row_count + _foreign_row_count <= TABLE_ROW_CAP:
+    _foreign_slots = _foreign_row_count
+elif _own_row_count == 0:
+    _foreign_slots = min(_foreign_row_count, TABLE_ROW_CAP)
+elif _foreign_row_count == 0:
+    _foreign_slots = 0
+else:
+    _foreign_slots = min(_foreign_row_count, FOREIGN_ROW_RESERVE)
+_own_row_budget = TABLE_ROW_CAP - _foreign_slots
+
+# fix-round-4 (Medium, alphabetical starvation): leadv2-lanes-snapshot.sh
+# emits foreign rows in whatever order its own read happened to enumerate
+# repos, which is effectively alphabetical -- so when foreign supply
+# exceeds _foreign_slots, a repo late in that order was silently NEVER
+# shown, beat after beat, while an earlier repo always filled every slot.
+# Round-robin across repos BY INDEX (first-seen order per repo) so a
+# bounded slot budget is shared across repos, not monopolized by whichever
+# repo sorts first.
+#
+# fix-round-5 (R3-5, comment correction): this round-robin fixes the
+# CROSS-REPO starvation above, but WITHIN a repo it still keeps whatever
+# order rows_out_full received the rows in, and that order is NOT a
+# liveness/recency ordering -- leadv2-lanes-snapshot.sh sorts a repo's own
+# foreign rows via `sorted(session_by_task.items())` (task-id/session-key
+# order), so a lane silent for hours can sort ahead of one actively writing
+# right now within the same repo, and this block has no way to tell the
+# two apart (foreign rows carry only `age_s`, not a writing_now flag -- see
+# the `d` is None branch above `sostoyanie` is built from `age_s` alone).
+# leadv2-lanes-snapshot.sh is out of this task's LANE_WRITES scope, so this
+# comment records the limitation rather than silently claiming a liveness
+# guarantee this block does not provide.
+_repo_buckets = {}
+_repo_order = []
+for _idx, (_l, _f, _r) in enumerate(rows_out_full):
+    if not _f:
+        continue
+    if _r not in _repo_buckets:
+        _repo_buckets[_r] = []
+        _repo_order.append(_r)
+    _repo_buckets[_r].append(_idx)
+_foreign_selected_idx = set()
+while len(_foreign_selected_idx) < _foreign_slots:
+    _advanced = False
+    for _r in _repo_order:
+        if _repo_buckets[_r]:
+            _foreign_selected_idx.add(_repo_buckets[_r].pop(0))
+            _advanced = True
+            if len(_foreign_selected_idx) >= _foreign_slots:
+                break
+    if not _advanced:
+        break
+
+rows_out = []
+_own_rows_kept = 0
+_foreign_rows_kept = 0
+for _idx, (_line, _is_foreign, _repo) in enumerate(rows_out_full):
+    if _is_foreign:
+        if _idx in _foreign_selected_idx:
+            rows_out.append((_line, _is_foreign))
+            _foreign_rows_kept += 1
+    elif _own_rows_kept < _own_row_budget:
+        rows_out.append((_line, _is_foreign))
+        _own_rows_kept += 1
+_own_rows_hidden = max(0, _own_row_count - _own_rows_kept)
+_foreign_rows_hidden = max(0, _foreign_row_count - _foreign_rows_kept)
+table_rows_hidden = _own_rows_hidden + _foreign_rows_hidden
 
 # PULSE-EMPTY-BOARD-01 rule 1: zero live lanes is a LOUD event, not a table
 # with no rows. `rows_out_full` is already alive-only (a dead row hits
@@ -593,6 +940,12 @@ try:
             f"({lanes_fail_reason}); неизвестно, пуста ли доска на самом деле"
         )
     elif live_lane_count == 0:
+        # fix-round-5 (R3-3): a malformed row can no longer make
+        # live_lane_count==0 while malformed_row_count>0 -- each malformed
+        # row is now appended into rows_out_full as its own named "НЕ
+        # ЧИТАЕТСЯ" row (see the loop right after the main row-building
+        # loop above), so live_lane_count already reflects it and this
+        # branch is the genuinely-empty case only.
         now_epoch = int(__import__("time").time())
         since_epoch = None
         try:
@@ -624,10 +977,12 @@ except Exception:
 # as prose, not a spec requirement, and renaming it would be a drive-by
 # break of an unrelated decision record for zero readability gain.
 _table_header = ["| Линия | Что делает | Состояние |", "|---|---|---|"]
+_rows_out_lines = [l for l, _ in rows_out]
+_rows_out_full_lines = [l for l, _f, _r in rows_out_full]
 table_md = "\n".join(table_prefix + _table_header +
-                      (rows_out if rows_out else ["| (живых линий нет) | — | — |"]))
+                      (_rows_out_lines if _rows_out_lines else ["| (живых линий нет) | — | — |"]))
 full_table_md = "\n".join(table_prefix + _table_header +
-                           (rows_out_full if rows_out_full else ["| (живых линий нет) | — | — |"]))
+                           (_rows_out_full_lines if _rows_out_full_lines else ["| (живых линий нет) | — | — |"]))
 
 detail_md = "Детали линий: " + " · ".join(detail_lines) if detail_lines else "Детали линий: (нет активных линий)"
 
@@ -876,9 +1231,23 @@ try:
 except OSError:
     full_doc_ok = False
 
+# fix-round-3 (NEW-6): a row hidden by the cap (own or foreign) was never
+# junk -- it's a live lane that didn't fit -- but the old wording
+# ("мусорных/лишних строк") labeled it garbage regardless. Split the two:
+# an actual duplicate the dedup pass dropped (a real redundant row) keeps
+# the junk wording; a row that simply didn't fit under TABLE_ROW_CAP gets
+# honest "не поместилось" phrasing instead.
 hidden_bits = []
-if table_rows_hidden:
-    hidden_bits.append(f"{table_rows_hidden} мусорных/лишних строк таблицы")
+# fix-round-4 (Medium): _own_rows_hidden/_foreign_rows_hidden were computed
+# above and then discarded into one combined number, which hides WHICH side
+# is starved (a founder reading "4 строк не поместилось" cannot tell if
+# that is his own work or a foreign lane). Report them separately.
+if _own_rows_hidden:
+    hidden_bits.append(f"{_own_rows_hidden} своих строк не поместилось")
+if _foreign_rows_hidden:
+    hidden_bits.append(f"{_foreign_rows_hidden} чужих строк не поместилось")
+if _dedup_dropped_count:
+    hidden_bits.append(f"{_dedup_dropped_count} дублирующих строк")
 _queue_line_count = len(queue_md.splitlines())
 if _queue_line_count:
     hidden_bits.append(f"{_queue_line_count} строк очереди")
@@ -918,7 +1287,7 @@ with open(out_path, "w", encoding="utf-8") as fh:
     }, fh)
 print(out_path)
 PY
-)"
+RENDER_JSON="$(python3 "$RENDER_TMPDIR/render.py" "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" </dev/null)"
 RC=$?
 if [[ $RC -ne 0 || -z "$RENDER_JSON" || ! -f "$RENDER_JSON" ]]; then
   printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$(_now_iso)" >>"$LOG_FILE"

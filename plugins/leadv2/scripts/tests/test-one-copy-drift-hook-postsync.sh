@@ -73,7 +73,7 @@ rm -f "$PROBE" "$FAILFLAG"   # drift-guard FAILS (divergence persists)
 run_hook '{"tool_name":"Bash","tool_input":{"command":"bash ~/x/leadv2-plugin-sync.sh --apply"}}'
 if [[ "$RC" -eq 0 ]] \
    && grep -q 'one-copy drift' <<<"$STDOUT" \
-   && grep -q '\[one-copy\] REGRESSION' <<<"$STDOUT" \
+   && grep -q 'regression(s)/badlink(s)' <<<"$STDOUT" \
    && ! grep -q 'drift-guard\] WARNING' <<<"$STDOUT" \
    && grep -q '\[drift-guard\] WARNING: leadv2-plugin-sync.sh just ran' <<<"$STDERR" \
    && ! grep -q 'one-copy drift' <<<"$STDERR"; then
@@ -86,7 +86,7 @@ fi
 # Same invocation, drift now clean -> one-copy lines only, no WARNING
 rm -f "$PROBE"; : > "$FAILFLAG"
 run_hook '{"tool_name":"Bash","tool_input":{"command":"bash leadv2-plugin-sync.sh"}}'
-if [[ "$RC" -eq 0 ]] && grep -q '\[one-copy\] REGRESSION' <<<"$STDOUT" && [[ -z "$STDERR" ]]; then
+if [[ "$RC" -eq 0 ]] && grep -q 'regression(s)/badlink(s)' <<<"$STDOUT" && [[ -z "$STDERR" ]]; then
   pass "T1b post-sync, drift-guard clean: no WARNING leg"
 else
   fail "T1b post-sync, drift-guard clean: no WARNING leg (rc=$RC stdout=$STDOUT stderr=$STDERR)"
@@ -104,7 +104,7 @@ fi
 # ── T3: SessionStart payload -> one-copy only, drift-guard not run ──────
 rm -f "$PROBE"
 run_hook '{"source":"startup","cwd":"/tmp"}'
-if [[ "$RC" -eq 0 ]] && grep -q 'one-copy drift' <<<"$STDOUT" && grep -q '\[one-copy\] REGRESSION' <<<"$STDOUT" \
+if [[ "$RC" -eq 0 ]] && grep -q 'one-copy drift' <<<"$STDOUT" && grep -q 'regression(s)/badlink(s)' <<<"$STDOUT" \
    && [[ -z "$STDERR" ]] && [[ ! -f "$PROBE" ]]; then
   pass "T3 SessionStart payload: one-copy leg only"
 else
