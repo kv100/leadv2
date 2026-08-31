@@ -295,10 +295,59 @@ if recheck_max_age > 0:
         if time.time() - os.path.getmtime(log_path) <= recheck_max_age:
             sys.exit(0)  # log went fresh again -- worker is alive, abort
 
+# CODEX-DETACH-01: "worker_died_silent"/"worker_process_died" alone looked
+# like a plain timeout for two days across two sessions -- root cause was a
+# stale broker.json (dead pid, swept sessionDir) that every new worker
+# attached to and died against within 1-3 min. Name what actually died: the
+# worker log's own last line, plus the broker's age and whether its
+# sessionDir still existed at reap time. state_dir is json_path's own
+# grandparent (state_dir/jobs/<id>.json), so this needs no re-derivation of
+# the companion's resolveStateDir() hashing -- it's already implied by the
+# path we were handed.
+last_log_line = ""
+log_path = data.get("logFile")
+if log_path and os.path.exists(log_path):
+    try:
+        with open(log_path, "rb") as lf:
+            lf.seek(0, os.SEEK_END)
+            size = lf.tell()
+            if size <= 8192:
+                lf.seek(0)
+            else:
+                lf.seek(-8192, os.SEEK_END)
+            chunk = lf.read()
+        lines = [ln for ln in chunk.decode("utf-8", "replace").splitlines() if ln.strip()]
+        if lines:
+            last_log_line = lines[-1][:500]
+    except Exception:
+        last_log_line = ""
+
+state_dir = os.path.dirname(os.path.dirname(path))
+broker_path = os.path.join(state_dir, "broker.json")
+broker_age_sec = None
+broker_session_dir_present = None
+if os.path.exists(broker_path):
+    try:
+        broker_age_sec = int(time.time() - os.path.getmtime(broker_path))
+    except Exception:
+        broker_age_sec = None
+    try:
+        with open(broker_path) as bf:
+            broker_data = json.load(bf)
+        session_dir = broker_data.get("sessionDir")
+        broker_session_dir_present = bool(session_dir and os.path.isdir(session_dir))
+    except Exception:
+        broker_session_dir_present = None
+
 data["status"] = "failed"
 data["phase"] = "failed"
 data["pid"] = None
 data["errorMessage"] = reason
+data["deathDiagnostics"] = {
+    "lastLogLine": last_log_line,
+    "brokerAgeSec": broker_age_sec,
+    "brokerSessionDirPresent": broker_session_dir_present,
+}
 data["completedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 
 tmp = f"{path}.tmp.{os.getpid()}"
