@@ -177,7 +177,10 @@ gitignore:plugins/leadv2/scripts/tests/test-handoff-artifacts-tracked.sh
 leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-review-body-recovery.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-arm-admission.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-admission.sh
-leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-admission.sh"
+leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-admission.sh
+leadv2-control-prover.sh:plugins/leadv2/scripts/tests/test-control-prover.sh
+leadv2-control-prover:plugins/leadv2/scripts/tests/test-control-prover.sh
+leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-control-prover.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -280,6 +283,12 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         stem="gitignore"
         continue"
       fi
+      # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
+      # path (leadv2-control-prover.sh lives there) — a stem-scan that only
+      # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
+      # too, not just the top-level scripts.
+      [[ "${cf}" == plugins/leadv2/scripts/*.sh || "${cf}" == plugins/leadv2/scripts/lib/*.sh ]] || continue
+      stem="$(basename "${cf}" .sh)"
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \
