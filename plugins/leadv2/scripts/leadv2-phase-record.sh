@@ -96,6 +96,11 @@ PHASES_YAML="${PROJECT_ROOT}/.claude/leadv2-overrides/phases.yaml"
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
 ACTIVE_REGISTRY="${SCRIPT_DIR}/leadv2-active-registry.sh"
 
+# PHASE-BOOTSTRAP-ADMIT-02: global proof-kind side channel written by
+# _verify_artifact on every successful (0) return -- see that function.
+# Declared here so `set -u` never trips before the first call sets it.
+_VERIFY_PROOF_KIND="verified"
+
 _log() { printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2; }
 _log_err() { printf '[%s] ERROR: %s\n' "$SCRIPT_NAME" "$*" >&2; }
 
@@ -407,8 +412,14 @@ _resolve_lane_diff_base() {
 
 # ── verify artifact for a phase ──────────────────────────────────────────────
 # Returns 0 if artifact is proven, 1 otherwise.
+# PHASE-BOOTSTRAP-ADMIT-02: sets the GLOBAL _VERIFY_PROOF_KIND to "verified"
+# (default, machine-checked) or "attested" (lead-authored fallback accepted --
+# real evidence, but not something a machine independently derived) before
+# every successful return. Callers that stamp a proof level MUST read this
+# right after a 0 return; it is only meaningful immediately after such a call.
 _verify_artifact() {
-  local sig8="$1" phase="$2" artifact="${3:-}" sha="${4:-}" commit="${5:-}"
+  local sig8="$1" phase="$2" artifact="${3:-}" sha="${4:-}" commit="${5:-}" reason="${6:-}"
+  _VERIFY_PROOF_KIND="verified"
   case "$phase" in
     plan)
       # context.yaml or prepass file with non-empty design
@@ -417,11 +428,56 @@ _verify_artifact() {
       if [[ -n "$prepass_file" && -s "$prepass_file" ]]; then return 0; fi
       local ctx_file="${PHASES_DIR_BASE}/dispatch-${sig8}/context.yaml"
       if [[ -s "$ctx_file" ]] && grep -q 'decisions' "$ctx_file" 2>/dev/null; then return 0; fi
+      # PHASE-BOOTSTRAP-ADMIT-02: a lead-authored brief the dispatch was
+      # launched with is real plan evidence even though it carries no
+      # `decisions:` key -- context.yaml and architect-prepass.md are both
+      # machine-derived artifacts that cannot exist before a worker/architect
+      # has actually run, which is exactly the deadlock this fix closes
+      # (DISPATCH-PHASE-DEADLOCK-01). Accept ONLY a non-empty, integrity-
+      # checked handoff doc that (a) lives inside THIS lane's OWN dispatch
+      # dir -- never a foreign lane's brief -- and (b) is named like a brief
+      # (brief.md, brief-*.md, fix-round-N.md). A Standard/Heavy lane that
+      # genuinely skipped planning (no brief, no context.yaml decisions, no
+      # prepass) still falls through to `return 1` below -- this is a wider
+      # acceptable-evidence set, not a weaker check.
+      if [[ -n "$artifact" ]]; then
+        local _resolved=""
+        if [[ -f "${PROJECT_ROOT}/${artifact}" ]]; then _resolved="${PROJECT_ROOT}/${artifact}"
+        elif [[ -f "$artifact" ]]; then _resolved="$artifact"
+        fi
+        if [[ -n "$_resolved" ]]; then
+          local _base _lane_dir="${PHASES_DIR_BASE}/dispatch-${sig8}"
+          _base="$(basename "$_resolved")"
+          case "$_base" in
+            brief.md|brief-*.md|fix-round-*.md)
+              case "$_resolved" in
+                "${_lane_dir}"/*)
+                  if _artifact_integrity "$artifact" "$sha"; then
+                    _VERIFY_PROOF_KIND="attested"
+                    return 0
+                  fi
+                  ;;
+              esac
+              ;;
+          esac
+        fi
+      fi
       return 1
       ;;
     gate1)
       local gate_file="${PHASES_DIR_BASE}/dispatch-${sig8}/.gate1-passed"
       [[ -s "$gate_file" ]] && return 0
+      # PHASE-BOOTSTRAP-ADMIT-02: an explicit recorded gate decision (a
+      # non-empty --reason on THIS gate1 phase record) is real gate evidence
+      # even without the .gate1-passed sentinel a worker/leadv2-gate1-
+      # prompt.sh would normally create -- that sentinel cannot exist before
+      # the gate ever ran once, same deadlock class as `plan` above. A lane
+      # with neither the sentinel nor a reason still falls through and
+      # refuses, unchanged.
+      if [[ -n "$reason" ]]; then
+        _VERIFY_PROOF_KIND="attested"
+        return 0
+      fi
       return 1
       ;;
     build)
@@ -613,10 +669,13 @@ cmd_record() {
   esac
 
   # --artifact required unless status is running|n/a|waived, or the phase is a
-  # meta-phase (classify/diverge) whose proof is the dispatch dir itself.
+  # meta-phase (classify/diverge) whose proof is the dispatch dir itself, or
+  # PHASE-BOOTSTRAP-ADMIT-02: phase=gate1 with a non-empty --reason (an
+  # explicit recorded gate decision -- see _verify_artifact's gate1 case).
   if [[ "$status" == "done" && -z "$artifact" ]] \
-     && [[ "$phase" != "classify" && "$phase" != "diverge" ]]; then
-    _log_err "record: --artifact required for status=done"
+     && [[ "$phase" != "classify" && "$phase" != "diverge" ]] \
+     && ! [[ "$phase" == "gate1" && -n "$reason" ]]; then
+    _log_err "record: --artifact required for status=done (or --reason for an explicit gate1 decision)"
     exit 4
   fi
   # --handle required when status=running
@@ -667,13 +726,21 @@ cmd_record() {
     printf 'ended_at: %s\n' "$ended_at"
     printf 'reason: %s\n' "$reason"
     # §3 honesty: run the SAME _verify_artifact path that assert uses.
-    # proof=verified only when _verify_artifact accepts; otherwise unverified.
-    # test/live_verify/e2e are "attested" (sha256 match only, not semantic proof).
+    # proof=verified only when _verify_artifact accepts via its machine-checked
+    # path; otherwise unverified. test/live_verify/e2e are always "attested"
+    # (sha256 match only, not semantic proof). PHASE-BOOTSTRAP-ADMIT-02:
+    # plan/gate1 accepted via the lead-authored-brief / explicit-gate-decision
+    # fallback are ALSO "attested" (real evidence, not machine-derived) --
+    # _verify_artifact reports which kind via the _VERIFY_PROOF_KIND global.
     # Running/n/a/waived phases get an empty proof — it does not apply.
     local _proof=""
     if [[ "$status" == "done" ]]; then
-      if _verify_artifact "$sig8" "$phase" "$artifact" "$sha" "$commit" 2>/dev/null; then
-        case "$phase" in test|live_verify|e2e) _proof="attested" ;; *) _proof="verified" ;; esac
+      _VERIFY_PROOF_KIND="verified"
+      if _verify_artifact "$sig8" "$phase" "$artifact" "$sha" "$commit" "$reason" 2>/dev/null; then
+        case "$phase" in
+          test|live_verify|e2e) _proof="attested" ;;
+          *) _proof="${_VERIFY_PROOF_KIND:-verified}" ;;
+        esac
       else
         _proof="unverified"
         _log "WARN: phase '$phase' for $sig8 recorded done but proof NOT verified — assert will refuse"
@@ -809,14 +876,19 @@ for w in (d.get('waivers_allowed') or []):
       case "$p_status" in
         done|waived)
           # Verify artifact
-          local p_artifact p_sha p_commit
+          local p_artifact p_sha p_commit p_reason
           p_artifact="$(grep '^artifact:' "$pfile" 2>/dev/null | sed 's/^artifact:[[:space:]]*//' || true)"
           p_sha="$(grep '^artifact_sha256:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
           p_commit="$(grep '^commit:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
+          # PHASE-BOOTSTRAP-ADMIT-02: gate1's explicit-decision fallback reads
+          # this back on re-assert (e.g. a Phase-4 re-entry days later), same
+          # as p_artifact/p_sha/p_commit above -- sed, not awk, since a
+          # decision reason is free text and may contain spaces.
+          p_reason="$(grep '^reason:' "$pfile" 2>/dev/null | sed 's/^reason:[[:space:]]*//' || true)"
 
           # For non-conditional phases, verify artifact
           if [[ "$pname" != "classify" && "$pname" != "diverge" ]]; then
-            if _verify_artifact "$sig8" "$pname" "$p_artifact" "$p_sha" "$p_commit"; then
+            if _verify_artifact "$sig8" "$pname" "$p_artifact" "$p_sha" "$p_commit" "$p_reason"; then
               continue
             fi
           else
