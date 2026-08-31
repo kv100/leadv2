@@ -105,6 +105,54 @@ _emit_ready_line() {  # <rows|-> [degraded]
     "${degraded:+ degraded=1}" >>"$LOG_FILE"
 }
 
+# ── ANTI-SILENCE-ONE-MECHANISM-01: live lane facts, computed independently
+# of the failed collector/renderer. A degraded beat that only says "not
+# collected" still leaves the founder with zero facts — this reads
+# active.yaml directly (read-only, no dependency on the failed step) so the
+# fallback always names how many lanes are live, which, and their phase.
+# Never throws past this function: any failure just yields a one-line
+# "facts unavailable" string, which is still more than silence.
+_live_lane_facts() {
+  local yaml_file
+  yaml_file="$(PROJECT_ROOT="$PROJECT_ROOT" "$STATE_PATH_SH" --no-link active.yaml 2>/dev/null || true)"
+  [[ -z "$yaml_file" ]] && yaml_file="$PROJECT_ROOT/docs/leadv2/active.yaml"
+  python3 - "$yaml_file" <<'PY' 2>/dev/null
+import sys, os
+path = sys.argv[1]
+try:
+    import yaml
+except Exception:
+    print("живые линии: недоступно (PyYAML отсутствует)")
+    sys.exit(0)
+if not os.path.exists(path):
+    print("живые линии: 0 (active.yaml не найден)")
+    sys.exit(0)
+try:
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    sessions = data.get("sessions") or []
+except Exception:
+    print("живые линии: недоступно (active.yaml не читается)")
+    sys.exit(0)
+if not sessions:
+    print("живые линии: 0")
+    sys.exit(0)
+rows = []
+for s in sessions:
+    if not isinstance(s, dict):
+        continue
+    tid = s.get("task_id") or "?"
+    phase = s.get("phase") or "?"
+    flag = "stale" if s.get("stale") else "live"
+    rows.append(f"{tid}({phase},{flag})")
+print(f"живые линии: {len(rows)} — " + ", ".join(rows) if rows else "живые линии: 0")
+PY
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf 'живые линии: недоступно (ошибка чтения)\n'
+  fi
+}
+
 # ── failed-beat artifact policy (PULSE-IS-A-PLUGIN-DUTY-01 fix r1) ──────────
 # A failed beat must never leave the PREVIOUS beat's healthy table in place
 # while claiming freshness: the ready-line points at founder-status.md, so
@@ -114,8 +162,15 @@ _emit_ready_line() {  # <rows|-> [degraded]
 # signal READY degraded. If even that write fails, refuse READY entirely:
 # BROAD_STATUS_FAILED carries no path= token, so nothing points the founder
 # at the stale file, while the URGENT substring still wakes them (C1).
+# ANTI-SILENCE-ONE-MECHANISM-01 [Critical]: a degraded beat must still SPEAK
+# — never reduce the founder to a bare staleness notice. The lane-facts line
+# below is computed AT BEAT TIME from active.yaml directly, independent of
+# whatever the collector/renderer failed to do, so the fallback always
+# carries real, current facts.
 _write_degraded_status() {  # <reason> -> rc 0 if the artifact was replaced
-  local reason="$1" block
+  local reason="$1" block lane_facts
+  lane_facts="$(_live_lane_facts)"
+  [[ -z "$lane_facts" ]] && lane_facts="живые линии: недоступно"
   block="$(
     printf '%s [BROAD_STATUS] dispatched=%s degraded=1\n' "$BEAT_AT" "$DISPATCHED"
     printf '| Линия | Что делает | Состояние |\n'
@@ -123,6 +178,7 @@ _write_degraded_status() {  # <reason> -> rc 0 if the artifact was replaced
     printf '| (статус не собран) | — | %s |\n\n' "$reason"
     printf 'СТАТУС НЕ СОБРАН на beat %s: %s.\n' "$BEAT_AT" "$reason"
     printf 'Таблица линий за этот beat недоступна — это НЕ значит, что линий нет.\n'
+    printf '%s\n' "$lane_facts"
     printf '[BROAD_STATUS_END]\n'
   )"
   printf '%s\n' "$block" >>"$LOG_FILE"
