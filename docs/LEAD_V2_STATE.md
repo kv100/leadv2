@@ -4,18 +4,17 @@
 
 # /leadv2 Active Sessions
 
-Last updated: 2026-08-31T09:55:47Z
+Last updated: 2026-08-31T10:11:47Z
 
 | task_id | phase | class | started_at | daemon |
 |---|---|---|---|---|
 | DISPATCH-PIN-CLUSTER-01 | recovered | ? | 2026-08-31T08:44 | no |
-| HANDOFF-ARTIFACTS-GITIGNORED-01 | e2e | Light | 2026-08-31T09:24 | no |
 | 26c4cec3 | recovered | ? | 2026-08-31T09:54 | no |
 | ARMS-ADMISSION-01 | recovered | ? | 2026-08-31T09:54 | no |
-| CODEX-DETACH-01 | recovered | ? | 2026-08-31T09:54 | no |
 | GATE-ORIGIN-MAIN-01 | recovered | ? | 2026-08-31T09:54 | no |
 | REVIEW-RUN-LOSES-VERDICTS-01 | build | Light | 2026-08-31T09:55 | no |
-| LANE-FINISHED-IS-NOT-DEAD-01 | intake | Light | 2026-08-31T09:55 | no |
+| HANDOFF-ARTIFACTS-GITIGNORED-01 | recovered | ? | 2026-08-31T10:11 | no |
+| ANTI-SILENCE-ONE-MECHANISM-01 | intake | Heavy | 2026-08-31T10:11 | no |
 
-Sessions: 8 / 3 max
+Sessions: 7 / 3 max
 
