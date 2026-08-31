@@ -31,7 +31,12 @@ CODEX_TASK="$TEST_DIR/../codex-task.sh"
 pass=0
 fail=0
 cleanup_items=()
+cleanup_pids=()
 cleanup() {
+  for pid in "${cleanup_pids[@]:-}"; do
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+    [ -n "$pid" ] && wait "$pid" 2>/dev/null || true
+  done
   for item in "${cleanup_items[@]:-}"; do
     rm -rf "$item" 2>/dev/null || true
   done
@@ -140,6 +145,41 @@ else
   fail=$((fail + 1))
 fi
 
+# --- Case 1b (acceptance test, pid-reuse variant) -----------------------
+# A LIVE pid (a real short-lived process this test controls) paired with a
+# SWEPT sessionDir -- the case the brief singled out: a pid the OS reused
+# for an unrelated live process must not let a pid-only check wave the
+# worker onto the stale broker's corpse. sessionDir absence alone must move
+# the broker aside.
+repo1b="$(mktemp -d)"; cleanup_items+=("$repo1b")
+git -C "$repo1b" init -q
+state1b="$(mktemp -d)"; cleanup_items+=("$state1b")
+sess1b="$(mktemp -d)"; cleanup_items+=("$sess1b")
+
+sleep 60 &
+live_pid=$!
+cleanup_pids+=("$live_pid")
+
+write_broker "$repo1b" "$state1b" "$live_pid" "$sess1b"
+rm -rf "$sess1b"   # OS swept the sessionDir even though the pid lives on
+
+echo "[CODEX-BROKER-STALENESS] case 1b: live (reused) pid + swept sessionDir -> self-heals to completion"
+run_case case1b "$repo1b" "$state1b"
+result1b="$(stub_companion_attempt "$repo1b" "$state1b")" || true
+sd1b="$(state_dir_for "$repo1b")"
+stale_count1b=$(find "$state1b/$sd1b" -maxdepth 1 -name 'broker.json.stale-*' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$result1b" = "completed:fresh_broker_raised" ] && [ "$stale_count1b" -ge 1 ]; then
+  echo "[CODEX-BROKER-STALENESS]   live-pid+swept-sessionDir broker moved aside, task self-healed ✓"
+  pass=$((pass + 1))
+else
+  echo "[CODEX-BROKER-STALENESS]   FAIL: expected self-heal completion for reused-pid case, got result='$result1b' stale_count=$stale_count1b" >&2
+  cat "$harness/case1b.validate.out" >&2 || true
+  fail=$((fail + 1))
+fi
+
+kill "$live_pid" 2>/dev/null || true
+wait "$live_pid" 2>/dev/null || true
+
 # --- Case 2 (control) ----------------------------------------------------
 # A genuinely alive broker (real pid, real sessionDir) must be left
 # untouched -- validation must not evict a healthy broker.
@@ -178,6 +218,127 @@ if [ "$rc3" -eq 0 ] && [ ! -e "$state3/$sd3" -o -z "$(find "$state3/$sd3" -maxde
 else
   echo "[CODEX-BROKER-STALENESS]   FAIL: expected silent no-op, rc=$rc3" >&2
   cat "$harness/case3.validate.out" >&2 || true
+  fail=$((fail + 1))
+fi
+
+# --- Case 4 (acceptance test) ---------------------------------------------
+# The reaper's failure record must carry the worker log's last line and the
+# broker's age plus whether its sessionDir existed at reap time -- extracts
+# and calls codex-guard.sh's own mark_job_failed against a fixture job JSON,
+# then asserts on the PERSISTED record (never on source text).
+#
+# mark_job_failed's body contains a python heredoc with an unindented dict
+# closing brace ("}" at column 1) -- a plain `sed -n '/^fn()/,/^}$/p'` range
+# (used above for codex-task.sh's simpler helpers) stops there instead of at
+# the function's real end. extract_fn tracks brace depth line-by-line but
+# skips heredoc bodies entirely (their braces don't belong to bash).
+extract_fn() {
+  python3 - "$1" "$2" <<'PY'
+import re, sys
+path, fn = sys.argv[1], sys.argv[2]
+lines = open(path).read().splitlines()
+start = next((i for i, l in enumerate(lines) if l == f"{fn}() {{"), None)
+if start is None:
+    sys.exit(1)
+depth = 0
+in_heredoc = False
+delim = None
+out = []
+i = start
+heredoc_re = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+while i < len(lines):
+    line = lines[i]
+    out.append(line)
+    if in_heredoc:
+        if line == delim:
+            in_heredoc = False
+        i += 1
+        continue
+    m = heredoc_re.search(line) if "<<<" not in line else None
+    if m:
+        delim = m.group(2)
+        in_heredoc = True
+        i += 1
+        continue
+    depth += line.count("{") - line.count("}")
+    if depth <= 0:
+        break
+    i += 1
+print("\n".join(out))
+PY
+}
+
+CODEX_GUARD="$TEST_DIR/../codex-guard.sh"
+guard_harness="$(mktemp -d)"; cleanup_items+=("$guard_harness")
+guard_harness_script="$guard_harness/guard_harness.sh"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'set +e'
+  extract_fn "$CODEX_GUARD" "stat_mtime"
+  extract_fn "$CODEX_GUARD" "acquire_job_lock"
+  extract_fn "$CODEX_GUARD" "release_job_lock"
+  extract_fn "$CODEX_GUARD" "mark_job_failed"
+  echo '"$@"'
+} > "$guard_harness_script"
+chmod +x "$guard_harness_script"
+
+if ! grep -q '^mark_job_failed()' "$guard_harness_script"; then
+  echo "[CODEX-BROKER-STALENESS] FAIL: mark_job_failed not found in ${CODEX_GUARD} (extraction broke, or fn renamed)" >&2
+  fail=$((fail + 1))
+fi
+
+state4="$(mktemp -d)"; cleanup_items+=("$state4")
+mkdir -p "$state4/jobs"
+job4="$state4/jobs/job4.json"
+log4="$state4/worker4.log"
+marker="WORKER-LAST-LINE-MARKER-$$"
+printf 'first line\nsecond line\n%s\n' "$marker" > "$log4"
+dead_pid4=99997
+printf '{"id":"job4","status":"running","pid":%s,"logFile":"%s","startedAt":"2020-01-01T00:00:00.000Z"}\n' \
+  "$dead_pid4" "$log4" > "$job4"
+# broker.json sits beside the jobs/ dir (state_dir/broker.json), sessionDir
+# swept -- the exact incident shape this diagnostic exists to name.
+printf '{"pid":12345,"sessionDir":"/nowhere/does-not-exist-case4"}\n' > "$state4/broker.json"
+
+echo "[CODEX-BROKER-STALENESS] case 4: death report enriched with last log line + broker age + sessionDir presence"
+bash "$guard_harness_script" mark_job_failed "$job4" "test_reason" 0 0 "" >"$guard_harness/case4.out" 2>&1
+
+record4="$(cat "$job4" 2>/dev/null || echo '{}')"
+diag4="$(python3 - "$job4" "$marker" <<'PY'
+import json, sys
+path, marker = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path))
+except Exception as e:
+    print(f"FAIL:load_error:{e}")
+    sys.exit(0)
+if data.get("status") != "failed":
+    print(f"FAIL:status={data.get('status')!r}")
+    sys.exit(0)
+diag = data.get("deathDiagnostics")
+if not isinstance(diag, dict):
+    print("FAIL:no_deathDiagnostics")
+    sys.exit(0)
+if diag.get("lastLogLine") != marker:
+    print(f"FAIL:lastLogLine={diag.get('lastLogLine')!r}")
+    sys.exit(0)
+age = diag.get("brokerAgeSec")
+if not isinstance(age, int) or age < 0:
+    print(f"FAIL:brokerAgeSec={age!r}")
+    sys.exit(0)
+if diag.get("brokerSessionDirPresent") is not False:
+    print(f"FAIL:brokerSessionDirPresent={diag.get('brokerSessionDirPresent')!r}")
+    sys.exit(0)
+print("OK")
+PY
+)"
+if [ "$diag4" = "OK" ]; then
+  echo "[CODEX-BROKER-STALENESS]   death record carries lastLogLine + brokerAgeSec + brokerSessionDirPresent ✓"
+  pass=$((pass + 1))
+else
+  echo "[CODEX-BROKER-STALENESS]   FAIL: death report enrichment missing/wrong ($diag4)" >&2
+  echo "record: $record4" >&2
+  cat "$guard_harness/case4.out" >&2 || true
   fail=$((fail + 1))
 fi
 
