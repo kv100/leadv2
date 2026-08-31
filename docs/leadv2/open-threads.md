@@ -1,1 +1,1 @@
-/tmp/leadv2-pc-e2e-6o3XPa/state/leadv2/open-threads.md
+/Users/kostiantyn.vlasenko/.claude/leadv2-state/leadv2/open-threads.md
