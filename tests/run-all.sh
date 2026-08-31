@@ -140,6 +140,7 @@ leadv2-freepool-model-select:plugins/leadv2/scripts/tests/test-freepool-model-li
 freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-foreign-lanes.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-status-repo-scoped.sh
 leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-registered-lane.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh

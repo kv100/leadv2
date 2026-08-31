@@ -323,6 +323,35 @@ table_rows = [r for r in table_rows if not (isinstance(r, dict) and r.get("error
 # suppression of the false empty-board headline below).
 malformed_row_count = sum(1 for r in table_rows if not isinstance(r, dict))
 table_rows = [r for r in table_rows if isinstance(r, dict)]
+# PULSE-REPO-SCOPED-03: a foreign-repo row (the snapshot marks foreign lanes
+# with repo=<slug>; own-repo rows never carry it) belongs on THIS board only
+# when THIS repo dispatched it -- the dispatch journal directory
+# docs/leadv2/tasks/<task_id>/ is the ownership mark, and that is exactly
+# the case the collector's LEADV2_LANES_ALL_REPOS=1 pin was added to rescue
+# (a lane whose registry row lives in another repo must stay visible to the
+# repo that dispatched it; the pin stays, the renderer scopes it). Every
+# other foreign row is another repo's business: dropped HERE, before dedup,
+# digest, delta and cap accounting, so no hidden-count or closed-lane line
+# ever reports a lane this repo never owned. repo_read_error rows were
+# already pulled out above and keep their degraded-line treatment.
+foreign_rows_dropped = 0
+_scoped_rows = []
+for _fr in table_rows:
+    _fr_slug = _fr.get("repo")
+    _fr_tid = str(_fr.get("task_id") or "")
+    if (
+        not _fr_slug
+        or (_fr_tid and os.path.isdir(os.path.join(root, "docs", "leadv2", "tasks", _fr_tid)))
+    ):
+        _scoped_rows.append(_fr)
+    else:
+        foreign_rows_dropped += 1
+table_rows = _scoped_rows
+if foreign_rows_dropped:
+    print(
+        f"[broad-status] repo-scoped: {foreign_rows_dropped} foreign lane row(s) not dispatched by this repo dropped",
+        file=sys.stderr,
+    )
 questions = lanes_data.get("questions") or lanes_data.get("requires_founder") or []
 degraded = lanes_data.get("degraded") or []
 # LANE-DETAIL-BLIND-01: a failed/absent `lanes` COLLECTOR SECTION (the
@@ -1189,12 +1218,25 @@ def _metric(today_key, floor_key):
 
 _now_hhmm = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M")
 _window = repo_facts.get("working_window") or repo_facts.get("ny_window")
-_product_bits = [
-    _now_hhmm,
-    f"посты {_metric('posts_today', 'posts_floor')}",
-    f"комменты {_metric('comments_today', 'comments_floor')}",
-    f"реплаи {_metric('replies_today', 'replies_floor')}",
-]
+# PULSE-REPO-SCOPED-03: the product bits are repo-OWNED, not hardcoded. They
+# render only when this repo's own collect_repo_facts() actually published
+# at least one of the six candidate product keys -- a repo that declares
+# none (no status-collector-facts.sh, or one that publishes other facts)
+# gets NO product line at all, never three "н/д" implying a posting product
+# that repo does not have. A repo that declares some-but-not-all keeps the
+# line with "н/д" for the missing ones (rule-1 contract above, unchanged).
+_product_keys = (
+    "posts_today", "posts_floor",
+    "comments_today", "comments_floor",
+    "replies_today", "replies_floor",
+)
+_product_bits = [_now_hhmm]
+if any(k in repo_facts for k in _product_keys):
+    _product_bits.extend([
+        f"посты {_metric('posts_today', 'posts_floor')}",
+        f"комменты {_metric('comments_today', 'comments_floor')}",
+        f"реплаи {_metric('replies_today', 'replies_floor')}",
+    ])
 if _window:
     _product_bits.append(f"окно {_window}")
 product_line = " · ".join(_product_bits)
