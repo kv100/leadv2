@@ -37,7 +37,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="${SCRIPT_DIR}/../../hooks/leadv2-merged-worktree-sweep.sh"
-CLOSE_SH="${SCRIPT_DIR}/../leadv2-dispatch-product-close.sh"
+LANE_GUARD="${SCRIPT_DIR}/../lib/leadv2-lane-guard.sh"
 
 PASS=0; FAIL=0; GREEN_PRE_FIX=0
 declare -a ERRORS=()
@@ -239,7 +239,7 @@ case_handoff_nonuntracked_survives() { # <hook> <dirt-kind>
 case_no_regex_drift() { # <hook>
   local a b
   a="$(grep -oE "_MW_ORCH_RE='[^']*'" "$1" 2>/dev/null | head -1 | sed "s/^_MW_ORCH_RE=//")"
-  b="$(grep -oE "_PC_PORCELAIN_EXCLUDE_RE='[^']*'" "${CLOSE_SH}" 2>/dev/null | head -1 | sed "s/^_PC_PORCELAIN_EXCLUDE_RE=//")"
+  b="$(grep -oE "_PC_PORCELAIN_EXCLUDE_RE='[^']*'" "${LANE_GUARD}" 2>/dev/null | head -1 | sed "s/^_PC_PORCELAIN_EXCLUDE_RE=//")"
   [[ -n "$a" && -n "$b" ]] || return 1
   [[ "$a" == "$b" ]]
 }

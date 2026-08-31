@@ -52,6 +52,9 @@ IFS=$'\t' read -r c s <<<"$(leadv2_admission_class Heavy 1 "$(est trivial 1 none
 IFS=$'\t' read -r c s <<<"$(leadv2_admission_class Standard 1 "$(est trivial 1 none)")"
 [[ "$c" == "Standard" && "$s" == "flag" ]] \
   && pass "flag Standard never de-escalated" || fail "flag standard: got $c/$s"
+IFS=$'\t' read -r c s <<<"$(leadv2_admission_class standard 1 "$(est trivial 1 none)")"
+[[ "$c" == "Standard" && "$s" == "flag" ]] \
+  && pass "lowercase CLI --task-class standard binds Standard on first dispatch" || fail "lowercase flag: got $c/$s"
 IFS=$'\t' read -r c s <<<"$(leadv2_admission_class "" 0 "$(est standard 2 none)")"
 [[ "$c" == "Standard" && "$s" == "judge" ]] \
   && pass "no flag: estimate wins" || fail "no-flag: got $c/$s"
@@ -78,6 +81,8 @@ rc=$?
 row="$(leadv2_admission_read_receipt "$TMP" "${sig:0:8}")"
 [[ "$row" == "$(printf 'Standard\tphases\tjudge\treview\t%s\tT-1' "$sig")" ]] \
   && pass "receipt: read back all six fields" || fail "receipt: read got '$row'"
+[[ "$(leadv2_admission_read_task_receipt "$TMP" "T-1")" == "Standard" ]] \
+  && pass "receipt: task-keyed class record written" || fail "receipt: task record missing"
 # digest binding is what the re-entry guard keys on
 printf '%s' "$row" | grep -q "$sig" && pass "receipt: mission digest bound" || fail "receipt: digest missing"
 # write-once: a second intake for the same sig8 must NOT overwrite
@@ -90,6 +95,7 @@ printf '%s' "$row2" | grep -q "T-1" && ! printf '%s' "$row2" | grep -q "T-2" \
 
 # ── C3b negative control: apply the named mutation to a temp copy, assert red ─
 MUT_LIB="$TMP/leadv2-admission-class.mut.sh"
+cp "${SCRIPT_DIR}/../lib/leadv2-lane-guard.sh" "$TMP/leadv2-lane-guard.sh"
 python3 - "$LIB" "$MUT_LIB" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]

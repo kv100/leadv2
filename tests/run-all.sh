@@ -144,7 +144,29 @@ leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-one-copy-drift.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
-leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh"
+leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
+leadv2-dispatch-ledger:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-close-chain.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-containment.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-plan-in-lane.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lane-placement-pin.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-dirty-lane-never-lands.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-lane-containment.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-scope-gate-orchestration-dirt.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-merged-sweep-orchestration-dirt.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-worktree-lane-safety.sh
+leadv2-lane-guard:plugins/leadv2/scripts/tests/test-t13-slice1.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-class-floor-survives-resume.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-admission-class.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+test-consumer-symlink-farm.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(

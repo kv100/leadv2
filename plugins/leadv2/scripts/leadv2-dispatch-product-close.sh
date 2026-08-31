@@ -78,6 +78,20 @@ DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
 # product spawn (see that file's cmd_resolve arc==0 comment). Always a subprocess call
 # (never sourced) -- see leadv2-dispatch-ledger.sh's own doc header.
 LEDGER_BIN="${LEADV2_DISPATCH_LEDGER_BIN:-${SCRIPT_DIR}/leadv2-dispatch-ledger.sh}"
+# C-1 (DISPATCH-PIN-CLUSTER-01 round 7): guarded + canonical-fallback source --
+# see leadv2-dispatch-code.sh for the full rationale (consumer-repo symlink farm
+# has no lib/ copy of this new file).
+_LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
+if [[ -f "${_LANE_GUARD_SH}" ]]; then
+  source "${_LANE_GUARD_SH}"
+else
+  # Unknown guard state is unsafe at close: it must fail closed, never allow
+  # the later terminal funnel to call a dirty lane clean.
+  lv2_lane_dirty() { return 0; }
+  printf '[leadv2-dispatch-product-close] ERROR: lane guard unavailable local=%s canonical=%s; treating lane as dirty\n' \
+    "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh" "${_LANE_GUARD_SH}" >&2
+fi
 TERMINAL_LEDGER="${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}"
 # N-5: refusal classification (classify_arm_failure) for the arm-agnostic review
 # fallback loop below. Private synced copy, not a shared source of dispatch-code.sh --
@@ -188,6 +202,11 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
   # founder isn't either).
   bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${_PC_TERMINAL_EVIDENCE}" "${_PC_ATTEMPT}" "${LANE_NAME}" "${_PC_TERMINAL_COMMIT:-none}" "${_PC_TERMINAL_DELIVERABLE:-unknown}" "${_wr}" >/dev/null 2>&1 9>&- || true
 }
+# Test seam for the consumer-symlink farm: source through the terminal writer
+# so the suite exercises the real close funnel without starting e2e/review.
+if [[ "${LEADV2_PRODUCT_CLOSE_SOURCE_ONLY:-0}" == "1" && "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 HANDOFF="${ROOT}/docs/handoff/dispatch-${TASK}"
 mkdir -p "${HANDOFF}"
 # wave2 round2 finding 3: resolves to the SAME cross-worktree location
@@ -1323,105 +1342,6 @@ pc_await_worker_exit() {
 #
 # NOT applied to _pc_git_diff's ':(exclude)' pathspecs: that set governs what a
 # REVIEWER sees, which is a separate decision from what counts as a scope violation.
-_PC_PORCELAIN_EXCLUDE_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\.md|^.. "?.*__pycache__/|^.. "?.*\.pyc$'
-
-# CTX-COST-GUARDS-01: the plugin's own worktree bootstrap
-# (hooks/leadv2-command-bootstrap.sh, scripts/leadv2-repo-install.sh) symlinks
-# .claude/commands|scripts|agents/ into every fresh lane worktree. That dirt is not a
-# worker's doing, but a regex alone cannot say "only if it is a symlink" -- grep sees
-# porcelain TEXT, not the filesystem -- so widening _PC_PORCELAIN_EXCLUDE_RE would also
-# swallow a REAL file a worker writes under the same prefix. Two stages instead: the
-# regex above narrows to orchestration-owned literal paths; _pc_drop_bootstrap_dirt
-# below narrows further to bootstrap dirt specifically, via a filesystem predicate the
-# regex stage cannot express.
-_PC_BOOTSTRAP_PREFIX_RE='^\.claude/(commands|scripts|agents)/'
-
-# _pc_drop_bootstrap_dirt <lane-root> ; stdin=porcelain (post _PC_PORCELAIN_EXCLUDE_RE),
-# stdout=survivors. Drops a line only when ALL THREE hold -- dropping any one reintroduces
-# overreach:
-#   1. status field is exactly `??` (untracked) -- a tracked-modified line under the same
-#      prefix is a worker who edited a real plugin file, never dropped.
-#   2. path matches _PC_BOOTSTRAP_PREFIX_RE.
-#   3. the path IS a symlink on disk ([ -L ], true even for a dangling link -- a lane
-#      whose canonical checkout moved is still plugin dirt, not worker dirt). A real
-#      regular file a worker wrote under the same prefix fails this and survives.
-# Fails open: an unreadable/missing root passes every line through unfiltered, and the
-# function itself always returns 0 -- a non-zero tail in a `$( ... | _pc_drop_bootstrap_dirt )`
-# pipeline under `set -o pipefail` would otherwise blank the whole status and grade every
-# lane clean.
-_pc_drop_bootstrap_dirt() {  # <lane-root> ; filters stdin porcelain -> stdout
-  local root="$1" line field rest path task_lines=() kept_lines=() task_declared=0 has_other_work=0 w
-  if [[ -z "${root}" || ! -d "${root}" ]]; then
-    cat
-    return 0
-  fi
-  # docs/tasks.yaml is hook churn only when it is undeclared AND this lane has
-  # another surviving change. Keeping a sole (or declared) tasks.yaml edit
-  # makes a real worker change reach the scope gate. Exact path comparison is
-  # deliberate: docs/tasks.yaml.bak is worker data, never injector dirt.
-  IFS=',' read -r -a _pc_task_writes <<< "${WRITES_CSV:-}"
-  for w in "${_pc_task_writes[@]:-}"; do
-    w="$(_pc_norm_write "${w}")"
-    [[ "${w}" == "docs/tasks.yaml" ]] && task_declared=1
-  done
-  while IFS= read -r line; do
-    [[ -z "${line}" ]] && continue
-    field="${line:0:2}"
-    rest="${line:3}"
-    path="${rest##* -> }"
-    path="${path%\"}"; path="${path#\"}"
-    if [[ "${path}" == "docs/tasks.yaml" ]]; then
-      task_lines+=("${line}")
-      continue
-    fi
-    if [[ "${field}" == "??" && "${rest}" =~ ${_PC_BOOTSTRAP_PREFIX_RE} ]]; then
-      if [[ -L "${root}/${path}" ]]; then
-        continue
-      fi
-    fi
-    kept_lines+=("${line}")
-    has_other_work=1
-  done
-  if (( task_declared == 1 || has_other_work == 0 )); then
-    kept_lines+=("${task_lines[@]}")
-  fi
-  for line in "${kept_lines[@]}"; do
-    printf '%s\n' "${line}"
-  done
-  return 0
-}
-
-_pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding orchestration-owned paths), rc1 otherwise
-  local root="$1"
-  [[ -n "${root}" && -d "${root}" ]] || return 1
-  git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
-  local status
-  status="$(git -C "${root}" status --porcelain --untracked-files=all 2>/dev/null | \
-    grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}" | _pc_drop_bootstrap_dirt "${root}")"
-  [[ -n "${status}" ]]
-}
-
-# REVIEW-GATE-LANEROOT-01: `git -C <dir>` walks UP. A directory that is merely INSIDE
-# the main checkout (an unregistered .claude/worktrees/<tid> left behind by a partial
-# worktree removal) answers `rev-parse --is-inside-work-tree` with `true` and then
-# reports the MAIN repository's status. Identity, not membership, is the question:
-# the toplevel git resolves from <dir> must BE <dir>.
-# Physical-path comparison avoids /var vs /private/var disagreement on macOS.
-# Deliberately NOT folded into _pc_lane_dirty: pc_silent_arm_probe reads a failing
-# dirty check as proof of silence, so both callers check identity explicitly instead.
-_pc_phys() { ( cd -P "$1" 2>/dev/null && pwd -P ) ; }
-
-_PC_LANE_TOPLEVEL=""          # set by the probe below; read by the evidence line
-_pc_lane_root_is_own_worktree() {  # <root> -> rc0 iff <root> IS a git work tree root
-  local root="$1" top
-  _PC_LANE_TOPLEVEL=""
-  [[ -n "${root}" && -d "${root}" ]] || return 1
-  top="$(git -C "${root}" rev-parse --show-toplevel 2>/dev/null)" || return 1
-  [[ -n "${top}" ]] || return 1
-  _PC_LANE_TOPLEVEL="${top}"
-  [[ "$(_pc_phys "${top}")" == "$(_pc_phys "${root}")" ]]
-}
-
 # GATE-FALSE-SILENT-01: a worker that COMMITS its work leaves the worktree clean --
 # _pc_lane_dirty alone cannot tell "produced nothing" from "committed cleanly". Count
 # commits ahead of the base pc_scope_diff resolves.
@@ -1644,8 +1564,8 @@ pc_silent_arm_probe() {
   # REVIEW-GATE-LANEROOT-01: an unregistered lane dir makes _pc_lane_dirty grade the
   # parent repo. Unknown tree identity is never proof of silence: otherwise a clean
   # parent would advance the arm while finished work remains in the lane directory.
-  _pc_lane_root_is_own_worktree "${_lane_root}" || return 1
-  _pc_lane_dirty "${_lane_root}" && return 1
+  lv2_lane_root_is_own_worktree "${_lane_root}" || return 1
+  lv2_lane_dirty "${_lane_root}" && return 1
   # 6) GATE-FALSE-SILENT-01: commits ahead of base are production, whatever the
   # worktree's dirty state says -- a worker that commits cleanly is not silent.
   # round 2: "unknown" (base unresolvable) is NOT silent either -- a probe that cannot
@@ -2423,15 +2343,15 @@ if [[ -n "${blocked_reason}" ]]; then
     _pc_dirty_evidence=""
     _pc_offending=""
     _pc_declared_list="$(_pc_join_capped "${writes[@]:-}")"
-    if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && ! _pc_lane_root_is_own_worktree "${_lane_root}"; then
+    if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && ! lv2_lane_root_is_own_worktree "${_lane_root}"; then
       # Never let porcelain from a parent repository become lane evidence.
       _pc_terminal="refused"; _pc_cause="lane_root_not_a_worktree"; _pc_rg_reason="lane_root_not_a_worktree"
       _pc_dirty_n=0
       _pc_offending=""
-      _PC_LANE_RESOLVED_TOP="${_PC_LANE_TOPLEVEL:-<unresolved>}"
+      _PC_LANE_RESOLVED_TOP="${LV2_LANE_TOPLEVEL:-<unresolved>}"
       _PC_LANE_PRODUCED="$(_pc_lane_produced_files "${_lane_root}")"
       _pc_dirty_evidence="lane_root=$(basename "${_lane_root}") resolved_toplevel=${_PC_LANE_RESOLVED_TOP} expected=${_lane_root} produced=${_PC_LANE_PRODUCED}"
-    elif [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && _pc_lane_dirty "${_lane_root}"; then
+    elif [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && lv2_lane_dirty "${_lane_root}"; then
       # REVIEW-GATE-INFRA-01 D-A(ii): "the lane is dirty" is not itself the violation --
       # partition the dirty paths against the declared write-set. Only an UNDECLARED
       # dirty path is a genuine scope violation; unscoped_lane_work must fire ONLY then
@@ -2470,7 +2390,7 @@ if [[ -n "${blocked_reason}" ]]; then
         fi
       done <<< "${_pc_dirty_lines}"
       _pc_dirty_evidence="lane_root=$(basename "${_lane_root}") dirty=${_pc_dirty_n}"
-      [[ "$(_pc_phys "${_lane_root}")" == "$(_pc_phys "${ROOT}")" ]] && _pc_dirty_evidence="${_pc_dirty_evidence} lane_root_shared=1"
+      [[ "$(_lv2_phys "${_lane_root}")" == "$(_lv2_phys "${ROOT}")" ]] && _pc_dirty_evidence="${_pc_dirty_evidence} lane_root_shared=1"
       if [[ ${_pc_undeclared_n} -gt 0 ]]; then
         _pc_terminal="refused"; _pc_cause="unscoped_lane_work"; _pc_rg_reason="unscoped_lane_work"
         _pc_offending="$(_pc_join_capped "${_pc_undeclared[@]}")"

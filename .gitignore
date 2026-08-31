@@ -67,3 +67,5 @@ docs/leadv2/burn-deferred.d/
 # Local session config and a stray review artifact at the handoff root.
 .claude/cache/
 docs/handoff/dispatch-*-review-*.md
+plugins/leadv2/scripts/docs/
+plugins/leadv2/scripts/.claude/
