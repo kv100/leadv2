@@ -151,3 +151,42 @@ trade, and the lanes it took were reasonable. The real defect is narrower and st
 So the capability table must carry both: a seeded prior per (arm, work_kind) from published
 benchmarks, and the running posterior from our own lanes — with the source of each number visible,
 so a vendor claim is never mistaken for something we measured.
+
+### Prior for the remaining arms (gathered 2026-08-31; re-fetch, do not trust forever)
+
+**Codex — `gpt-5.6` ships as three tiers, and `spark` is not one of them.** The real tiers are
+Sol / Terra / Luna:
+
+| tier | strength | SWE-bench Pro |
+|---|---|---|
+| Sol | long-horizon work across files, tests, follow-up fixes; Coding Agent Index 80 | 64.6% |
+| Terra | scoped implementation and first-pass review, ~half Sol cost | 63.4% |
+| Luna | low-reasoning lane for high-volume work | — |
+
+So `routing.yaml:74` does not merely name a tier the launcher rejects — it names a tier that does
+not exist. Suggested mapping, to be confirmed against what `codex-task.sh` accepts: **Terra** as
+the working tier (63.4 vs 64.6 at half the cost) and **Sol** for long multi-file work and final
+review. Do not take this as settled; verify against the launcher and say what you found.
+
+**Freepool — our rank order is inverted.** `freepool-arm.yaml model_rank` probes in this order:
+
+| rank | model | SWE-bench |
+|---|---|---|
+| 1 | groq/openai/gpt-oss-120b | **41.9** Verified |
+| 2 | mistral/mistral-code-latest | — |
+| 3 | nvidia_nim/nvidia/nemotron-3-super-120b-a12b | **60.5** Verified |
+| 4 | nvidia_nim/moonshotai/kimi-k3 | — (2.8T, 1M context, long-horizon) |
+| 5 | gemini/models/gemini-3.7-flash | ~59.5 |
+
+We probe the weakest model first and the strongest third, so whenever rank 1 is live we take a
+model roughly 19 SWE-bench points worse than one we already list. Nemotron also reports ~2.2x the
+throughput of gpt-oss-120b.
+
+The file states the rank is "DATA, not code — add a rank by editing this file, no script change
+needed", so reordering costs nothing. **Do it in this lane**: it is a one-file data change with an
+immediate quality gain, and it is exactly the kind of thing the outcome ledger should later be
+able to confirm or contradict on our own work.
+
+Two constraints on that reorder: the probe order must stay a liveness ladder (a dead top rank still
+falls through), and the new order must be justified in `report.md` by these numbers, so a future
+session can see why it is what it is and re-derive it when the pool changes.
