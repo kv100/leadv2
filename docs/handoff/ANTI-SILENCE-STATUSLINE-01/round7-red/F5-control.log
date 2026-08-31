@@ -1,0 +1,100 @@
+=== F5 control: production mutated (revert _surf_clip_plain to raw byte slice) ===
+[PASS] R1 pre-fix: raw mid-word truncation reproduced ('GATE-FO')
+[PASS] R2 pre-fix: no arm token present (RED, as expected)
+--- post-fix @80  : [34mlanes 4/5 dispatch-…·?·1s +3[0m | [36mOpus 5[0m in [32mrepo[0m
+--- post-fix @112 : [34mlanes 4/5 dispatch-c9…·?·1s dispatch-5b…·?·1s GATE-FOREIG…·?·2s LANDING-PAG…·?·8s[0m | [36mOpus 5[0m in [32mrepo[0m [35m79% ctx[0m
+[PASS] R4: rendered lane token carries an arm marker
+[PASS] R9: digest at width 80 rendered a non-empty lane section: lanes 4/5 dispatch-…·?·1s +3
+[PASS] R5: rendered rows (1) + dropped (+3) exactly account for 4 lanes
+[PASS] R12: no mid-word-truncated token in lane sections at widths 80 and 112
+[PASS] R6: narrower width (80) yields a BASE no longer than the wide one (112) -- base@80=14 base@112=22
+[PASS] R8 (N=1): visible length 60 <= budget 80
+[PASS] R8 (N=12): visible length 79 <= budget 80
+[PASS] R7: foreign-session lane still counted in lanes n/cap ([34mlanes 4/5 dispatch-c9…·?·1s ~dispatch-5b…·?·1s GATE-FOREIG…·?·2s LANDING-PAG…·?·8s[0m | [36mOpus 5[0m in [32mrepo[0m)
+[PASS] R10: C7 stale-cache guard preserved a good digest through a live-calc failure
+[PASS] R11: unrecognised plain-text BASE passed through byte-identical
+[PASS] silence: dead-only lane digest still leads the composed line
+[PASS] order: lane field start index (9) < 40 (leads the base/quota text)
+[PASS] width: COLUMNS=40 vs COLUMNS=200 render differently (was previously width-invariant)
+[PASS] width: narrow-COLUMNS render did not balloon past the requested budget
+[PASS] R13: stale wide memo at width 30 keeps silent lane, exact +4, and exact budget
+[PASS] H2/H3: width 20 retains the dead class and complete 9m age (lanes 5: …·dead·9m O)
+[PASS] F5: wide fallback base preserves ANSI when it fits
+[FAIL] F5 -- production fallback clipping split a field or omitted ellipsis: lanes 5: …·dead·9m +4 Sonnet 5
+[PASS] F2: composer width 20 is exact/smaller (20)
+[PASS] F2: composer width 22 is exact/smaller (21)
+[PASS] F2: composer width 26 is exact/smaller (26)
+[PASS] F2: composer width 30 is exact/smaller (30)
+[PASS] F2: composer width 34 is exact/smaller (34)
+[PASS] F2: composer width 60 is exact/smaller (60)
+[PASS] F2: composer width 80 is exact/smaller (80)
+[PASS] F2: composer width 120 is exact/smaller (120)
+[PASS] F2: composer width 200 is exact/smaller (146)
+[PASS] MUT-C RED: zero composer marker overflows (20)
+[PASS] MUT-Z: production tail reservation admits the lane that fits (lanes 10/25 0·?·1s·full +9 | hi)
+[PASS] MUT-V: production tail drop count matches all 4 lanes (lanes 4/5 +4 | Opus 5 (1M cont)
+[PASS] MUT-U: clipped production base is ANSI-safe and width-safe
+[PASS] MUT-W: wide production render retains complete identity
+[PASS] F3: UTF-8 tail clamp fits 60 with exact +5
+[PASS] locale: LC_ALL=C preserves the first UTF-8 lane and exact +5 accounting
+[PASS] F2/F5: tail width 20 is exact/smaller
+[PASS] F2/F5: tail width 22 is exact/smaller
+[PASS] F2/F5: tail width 26 is exact/smaller
+[PASS] F2/F5: tail width 30 is exact/smaller
+[PASS] F2/F5: tail width 34 is exact/smaller
+[PASS] F2/F5: tail width 60 is exact/smaller
+[PASS] F2/F5: tail width 80 is exact/smaller
+[PASS] F2/F5: tail width 120 is exact/smaller
+[PASS] F2/F5: tail width 200 is exact/smaller
+pass=44 fail=1 skip=0
+RED-exit=1
+=== F5 control: production restored ===
+[PASS] R1 pre-fix: raw mid-word truncation reproduced ('GATE-FO')
+[PASS] R2 pre-fix: no arm token present (RED, as expected)
+--- post-fix @80  : [34mlanes 4/5 dispatch-…·?·1s +3[0m | [36mOpus 5[0m in [32mrepo[0m
+--- post-fix @112 : [34mlanes 4/5 dispatch-c9…·?·1s dispatch-5b…·?·1s GATE-FOREIG…·?·2s LANDING-PAG…·?·8s[0m | [36mOpus 5[0m in [32mrepo[0m [35m79% ctx[0m
+[PASS] R4: rendered lane token carries an arm marker
+[PASS] R9: digest at width 80 rendered a non-empty lane section: lanes 4/5 dispatch-…·?·1s +3
+[PASS] R5: rendered rows (1) + dropped (+3) exactly account for 4 lanes
+[PASS] R12: no mid-word-truncated token in lane sections at widths 80 and 112
+[PASS] R6: narrower width (80) yields a BASE no longer than the wide one (112) -- base@80=14 base@112=22
+[PASS] R8 (N=1): visible length 60 <= budget 80
+[PASS] R8 (N=12): visible length 79 <= budget 80
+[PASS] R7: foreign-session lane still counted in lanes n/cap ([34mlanes 4/5 dispatch-c9…·?·1s ~dispatch-5b…·?·1s GATE-FOREIG…·?·2s LANDING-PAG…·?·8s[0m | [36mOpus 5[0m in [32mrepo[0m)
+[PASS] R10: C7 stale-cache guard preserved a good digest through a live-calc failure
+[PASS] R11: unrecognised plain-text BASE passed through byte-identical
+[PASS] silence: dead-only lane digest still leads the composed line
+[PASS] order: lane field start index (9) < 40 (leads the base/quota text)
+[PASS] width: COLUMNS=40 vs COLUMNS=200 render differently (was previously width-invariant)
+[PASS] width: narrow-COLUMNS render did not balloon past the requested budget
+[PASS] R13: stale wide memo at width 30 keeps silent lane, exact +4, and exact budget
+[PASS] H2/H3: width 20 retains the dead class and complete 9m age (lanes 5: …·dead·9m)
+[PASS] F5: wide fallback base preserves ANSI when it fits
+[PASS] F5: production fallback clipping keeps complete fields (lanes 5: …·dead·9m +4 Sonnet…)
+[PASS] F2: composer width 20 is exact/smaller (18)
+[PASS] F2: composer width 22 is exact/smaller (21)
+[PASS] F2: composer width 26 is exact/smaller (21)
+[PASS] F2: composer width 30 is exact/smaller (29)
+[PASS] F2: composer width 34 is exact/smaller (34)
+[PASS] F2: composer width 60 is exact/smaller (58)
+[PASS] F2: composer width 80 is exact/smaller (78)
+[PASS] F2: composer width 120 is exact/smaller (116)
+[PASS] F2: composer width 200 is exact/smaller (146)
+[PASS] MUT-C RED: zero composer marker overflows (20)
+[PASS] MUT-Z: production tail reservation admits the lane that fits (lanes 10/25 0·?·1s·full +9 | hi)
+[PASS] MUT-V: production tail drop count matches all 4 lanes (lanes 4/5 +4 | Opus 5 (1M cont)
+[PASS] MUT-U: clipped production base is ANSI-safe and width-safe
+[PASS] MUT-W: wide production render retains complete identity
+[PASS] F3: UTF-8 tail clamp fits 60 with exact +5
+[PASS] locale: LC_ALL=C preserves the first UTF-8 lane and exact +5 accounting
+[PASS] F2/F5: tail width 20 is exact/smaller
+[PASS] F2/F5: tail width 22 is exact/smaller
+[PASS] F2/F5: tail width 26 is exact/smaller
+[PASS] F2/F5: tail width 30 is exact/smaller
+[PASS] F2/F5: tail width 34 is exact/smaller
+[PASS] F2/F5: tail width 60 is exact/smaller
+[PASS] F2/F5: tail width 80 is exact/smaller
+[PASS] F2/F5: tail width 120 is exact/smaller
+[PASS] F2/F5: tail width 200 is exact/smaller
+pass=45 fail=0 skip=0
+GREEN-exit=0

@@ -1,0 +1,129 @@
+[TEST] PASS: bash -n leadv2-status-surface.sh
+[TEST] PASS: bash -n leadv2-status-watch.sh
+[TEST] PASS: bash -n leadv2-status-surface.5s.sh
+[TEST] PASS: bash -n test-status-surface.sh
+[TEST] PASS: live lane renders live
+[TEST] PASS: R1: no symlink mutation
+[TEST] PASS: dead-with-exit renders dead(exit=76)
+[TEST] PASS: confirmed w/o process evidence renders stale, not a false done claim
+[TEST] PASS: T21: old(17h) confirmed-w/o-evidence row dropped (dead-TTL, not terminal age-out)
+[TEST] PASS: T22: recent(5m) confirmed w/o evidence renders stale, not falsely done
+[TEST] PASS: T22: recent(5m) confirmed never renders a fabricated done(confirmed) claim
+[TEST] PASS: T23: old(17h) pending dropped after dead-TTL (non-terminal stale still ages out)
+[TEST] PASS: no sentinel -> supervisor: OFF
+[TEST] PASS: no-sentinel OFF carries a reason
+[TEST] PASS: output has no bare '?'
+[TEST] PASS: supervisor gate is permanently OFF (retired)
+[TEST] PASS: T-F: writer and reader resolve the same sentinel path (/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//ss-surface.lQ7Ae7/state/.supervise-active)
+[TEST] PASS: terminal row aged 3h dropped
+[TEST] PASS: terminal row aged 10m present as done(exit=0)
+[TEST] PASS: non-terminal row aged 30m present as stale (within dead-TTL)
+[TEST] PASS: --oneline shape (1 line, lanes-first, no sup: head)
+[TEST] PASS: renderer < 500ms wall (200ms)
+[TEST] PASS: SwiftBar line-1 emoji summary
+[TEST] PASS: SwiftBar idle prefix
+[TEST] PASS: R1: tasks.yaml id resolves to human name
+[TEST] PASS: R1b: task_id w/o a tasks.yaml title renders the id verbatim
+[TEST] PASS: R2-final: empty task_id renders 'unnamed', never mission prose
+[TEST] PASS: R2: TYPE column lane vs worker
+[TEST] PASS: R3: 13 done rows -> 10 + '+ 3 done earlier today'
+[TEST] PASS: R3: live + non-terminal stale rows never collapsed
+[TEST] PASS: R4: oneline reports live lane
+  --dash-leading-name          lane   build·worker      glm     -     live               dashname | font=Menlo size=12
+[TEST] PASS: §6: dash-leading name renders a well-formed dropdown line
+[TEST] PASS: sandbox-leak: real leadv2-state dir not written by suite (test pid 88818 absent)
+[TEST] PASS: R4-T1: --questions counts pending only (CP status + legacy sibling)
+[TEST] PASS: R4-T1: question options rendered [restart|wait]
+[TEST] PASS: R4-T2: widget title is ❓1 with a pending question
+[TEST] PASS: R4-T3: ❓1 wins over 🔴 (question + dead lane)
+[TEST] PASS: R4-T3: sanity — dead lane renders dead(exit=76)
+[TEST] PASS: R4-T4: fresh per-provider kv -> verbatim value, no age suffix, glm labeled live
+[TEST] PASS: R4-T4: --limits has no dollar amount
+[TEST] PASS: R4-T4: unauthenticated claude kv -> actionable line, no percentage, no 'не измеряется'
+[TEST] PASS: R4-T4: expired kv shown with (обновляется…) suffix, no stub-refresh.sh invoked
+[TEST] PASS: R4-T4: no refresher script present at the stub path (render never wrote it)
+[TEST] PASS: R4-T5: all kv missing -> '(получаем…)' per provider, exit 0
+[TEST] PASS: R4-T6: --due counts 3 due / 1 overdue from hook JSON
+[TEST] PASS: R4-T6: non-executable hook -> due line omitted, exit 0
+[TEST] PASS: R4-T7: bare invocation matches R5 header contract for empty stub
+[TEST] PASS: R4-T8: unknown flag exits 2
+[TEST] PASS: R6-T1: 2 done + 1 dead -> 🔴 1 (got: ⚪ sup OFF · 🔴 1 / 🟢 0)
+[TEST] PASS: R6-T2: only done -> ✅ 2 (got: ⚪ sup OFF · ✅ 2)
+[TEST] PASS: N7B-T1: in-window dead lane -> header '1 dead' (got: 0 live, 1 dead, 0 done в последний час))
+[TEST] PASS: N7B-T2: out-of-window dead -> '0 dead' + hidden-by-age (got: 0 live, 0 dead, 0 done в последний час, 1 скрыто по возрасту))
+[TEST] PASS: N7B-T3: completed lane -> '0 dead', row done(completed) (got: 0 live, 0 dead, 1 done в последний час))
+[TEST] 
+[TEST] == R5r2: _mini_yaml reader unit cases ==
+  ok   - sessions: [] -> {sessions: []}
+  ok   - two sessions parsed
+  ok   - scalar keys present
+  ok   - int typed
+  ok   - null typed
+  ok   - bool typed
+  ok   - quotes stripped
+  ok   - nested meta mapping
+  ok   - tab indent raises
+  ok   - unclosed quote raises
+  ok   - flow seq of scalars
+  ok   - flow seq of flow mappings
+  ok   - block seq of flow mappings
+  ok   - flow map quoted keys/values
+  ok   - malformed flow still raises
+  ok   - titles map: mini == PyYAML
+  ok   - titles map non-empty
+R5r2-mini: 17 passed, 0 failed
+[TEST] PASS: R5r2: _mini_yaml reader unit cases (see output above)
+[TEST] 
+[TEST] == SWIFTBAR-LIVE-01: multi-project lane enumeration ==
+[TEST] PASS: MP-1: LEADV2_STATUS_STATE_DIR pinned stays single-project (enumeration never engaged)
+[TEST] PASS: MP-2: 2 enumerated projects -> PROJ column, counts sum (2 live)
+[TEST] PASS: MP-3: per-project WARN degrades only that project's rows, other project still renders
+[TEST] PASS: MP-4: leadv2-status-projects.sh exits 2 on unreadable base
+[TEST] PASS: MP-4: leadv2-status-projects.sh exits 0 with empty stdout for 0 qualifying projects
+[TEST] 
+[TEST] == SWIFTBAR-LIVE-01 round 2: process-truth liveness signals (§2.1) ==
+[TEST] PASS: LT-1: dead handle (no other evidence) does not render live
+[TEST] PASS: LT-2: alive handle renders live(pid N)
+[TEST] PASS: LT-3: handle-less row proven live by argv match (survives a never-recorded handle)
+[TEST] PASS: LT-4: live row survives past DONE_TTL (never hidden by the age filter)
+[TEST] 
+[TEST] == SWIFTBAR-LIVE-01 round 2: worker-row naming from the ledger task_id (§2.4) ==
+[TEST] PASS: LN-1: worker row named by its bound task_id, not the sig hash
+[TEST] 
+[TEST] == SWIFTBAR-R4 (§Fix 1): badge title counts == table header counts ==
+[TEST] PASS: BADGE-1: live-only badge/header agree (1 0)
+[TEST] PASS: BADGE-2: dead-only badge/header agree (0 1)
+[TEST] PASS: BADGE-3: mixed live+dead badge/header agree (0 1)
+[TEST] PASS: BADGE-4: multi-project header carries live+dead+projects (lanes (1 live, 0 dead, 0 done в последний час · 2 projects))
+[TEST] PASS: BADGE-5: badge source still carries the LANES_BROKEN fail-safe path
+[TEST] 
+[TEST] == SWIFTBAR-R4 (§Fix 2): .outcome consumed -- finished != failed ==
+[TEST] PASS: OUTCOME-1: .outcome=completed renders done(completed)
+[TEST] PASS: OUTCOME-2: .outcome=died-clean renders dead(died-clean)
+[TEST] PASS: MUT-R/F4: name-adversarial dead lane owns the first slot at widths 20,22,26,34,60
+[TEST] PASS: OUTCOME-3: completed vs died-clean differ + red count is 1 (causes differ, 🔴=1)
+[TEST] PASS: A1: title (🔴=1 🟢=0) equals same-render table row count (🔴=1 🟢=0)
+[TEST] PASS: OUTCOME-4: no .outcome -> unknown marker present, not died-clean (got:   oc4unknowneee                lane   build·done        glm-5.2 5m    dead(exit=1)?      oc4unkno)
+[TEST] PASS: OUTCOME-5: live row with stale .outcome=completed still renders live
+[TEST] 
+[TEST] == SWIFTBAR-R4 (§Fix 3): task_id reaches the surface on real dispatches ==
+[TEST] PASS: TID-1: task_id survives a terminal row (lane named R4-PROBE-01)
+[TEST] PASS: TID-2: terminal row carries task_id == founder_task_id (R4-PROBE-02)
+[TEST] PASS: TID-3: quote/backslash task_id -> parseable row, task_id sanitized (got 'R4PROBE03')
+[TEST] 
+[TEST] == ANTI-SILENCE-STATUSLINE-01 round 3: emit_oneline width budget ==
+[TEST] PASS: width: --oneline still starts with 'lanes ' at a narrow budget
+[TEST] PASS: width: 12-lane oneline at WIDTH=40 stayed within the exact budget (len=35)
+[TEST] PASS: silence: width-30 oneline keeps the first dead lane within budget (lanes 2: VERY-LONG-…·dead·- +1)
+[TEST] PASS: silence: width-30 stops before later healthy lane
+[TEST] PASS: width: no mid-token fragment in narrow-width oneline
+[TEST] PASS: width: dropped-lane count marker ('+N') present when lanes exceed budget
+[TEST] PASS: MUT-B: production marker reservation keeps narrow renders bounded and reconciled
+[TEST] 
+[TEST] == SWIFTBAR-R4 RC-2: every touched script parses under bash 3.2 ==
+[TEST] PASS: /bin/bash -n leadv2-dispatch-code.sh
+[TEST] PASS: /bin/bash -n leadv2-dispatch-ledger.sh
+[TEST] PASS: /bin/bash -n leadv2-status-surface.sh
+[TEST] PASS: /bin/bash -n leadv2-status-surface.5s.sh
+[TEST] 
+[TEST] === 90 passed, 0 failed ===

@@ -166,7 +166,11 @@ leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-consumer-syml
 leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
 leadv2-admission-class.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
-test-consumer-symlink-farm.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh"
+test-consumer-symlink-farm.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
+leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
+leadv2-status-surface.sh:plugins/leadv2/scripts/tests/test-status-surface.sh
+leadv2-lane-status-line.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
+leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -235,6 +239,13 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
   fi
   if [[ -n "${changed}" ]]; then
     while IFS= read -r cf; do
+      # A changed test suite must select itself even when its matching
+      # production file did not change in this run.
+      case "${cf}" in
+        plugins/leadv2/scripts/tests/test-*.sh|.claude/scripts/tests/test-*.sh|plugins/leadv2/tests/test-*.sh|tests/test-*.sh)
+          add_suite "${ROOT}/${cf}"
+          ;;
+      esac
       # PROMISE-GUARD-BIND-01: hooks/*.sh changes (e.g. leadv2-promise-guard.sh)
       # never matched this filter, so a hook fix ran zero suites under
       # --scope changed -- the EXTRA_SUITE_MAP below only fires once a
