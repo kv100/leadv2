@@ -80,8 +80,17 @@ with open(lock, 'a+') as lf:
     pid = int(pid)
     live=[r for r in rows if r.get('lead_session_id') == lead and not r.get('dead_at') and alive(r)]
     existing=next((r for r in rows if r.get('task_id') == task and not r.get('dead_at')), None)
-    if not existing and len(live) >= 2:
-      print('lane cap exceeded: lead_session_id=%s live=%d cap=2' % (lead, len(live)), file=sys.stderr); sys.exit(3)
+    # CONCURRENCY-2-LANES-01 stays the DEFAULT (founder policy, 2 lanes per
+    # lead session).  It was hardcoded, so "raise it for one session" required
+    # editing this file -- the same never-hardcode defect we fix elsewhere.
+    # LEADV2_LANE_CAP overrides it per-session; an absent/invalid value keeps 2.
+    try:
+      cap = int(os.environ.get('LEADV2_LANE_CAP', '') or 2)
+    except ValueError:
+      cap = 2
+    if cap < 1: cap = 2
+    if not existing and len(live) >= cap:
+      print('lane cap exceeded: lead_session_id=%s live=%d cap=%d' % (lead, len(live), cap), file=sys.stderr); sys.exit(3)
     if existing:
       existing.update(pid=pid, pid_start_time=birth(pid), worktree=worktree, phase=phase, lead_session_id=lead, dead_at=None, updated_at=now())
       event(existing, 'registered_refresh')
