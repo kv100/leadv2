@@ -6188,6 +6188,12 @@ cmd_resolve() {
       if [[ "${_lane_register_rc}" != "0" ]]; then
         if [[ "${_lane_register_rc}" == "3" ]]; then
           emit decision "dispatch_refused reason=lead_session_lane_cap task=${sig8} lead_session=${_lead_session_id}"
+          # LEAD-WORKER-CHANNEL-01: admission refusal is a lane-blocked
+          # event -- the lead already knows _lead_session_id right here
+          # (registration itself failed, so active.yaml has no row for
+          # ${sig8} yet to look it up from), so pass it explicitly rather
+          # than relying on the notifier's active.yaml fallback.
+          LEADV2_LEAD_SESSION_ID="${_lead_session_id}" "${SCRIPT_DIR}/leadv2-notify-lead.sh" "${sig8}" blocked "admission refused: lead_session_lane_cap (2 lanes already live for this lead)" >/dev/null 2>&1 || true
           exit 3
         fi
         emit decision "lane_state_register_failed task=${sig8} rc=${_lane_register_rc}"
