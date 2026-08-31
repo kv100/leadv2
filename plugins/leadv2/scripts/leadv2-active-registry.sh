@@ -67,7 +67,21 @@ fi
 # which uses `git rev-parse --git-common-dir` — identical from every
 # worktree of the same repo.
 _leadv2_state_path_sh() {
-  printf -- '%s/scripts/leadv2-state-path.sh' "${LEADV2_PROJECT_ROOT}"
+  local bundled
+  # The registry can be sourced while operating on a different repository
+  # (ephemeral-root consolidation is exactly that case).  Resolve the helper
+  # from this loaded plugin first; deriving it from the target project writes
+  # a private docs/leadv2/active.yaml when that project has no scripts copy.
+  if [[ -n "${LEADV2_STATE_PATH_BIN:-}" && -x "${LEADV2_STATE_PATH_BIN}" ]]; then
+    printf -- '%s' "${LEADV2_STATE_PATH_BIN}"
+    return 0
+  fi
+  bundled="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-state-path.sh"
+  if [[ -x "${bundled}" ]]; then
+    printf -- '%s' "${bundled}"
+  else
+    printf -- '%s/scripts/leadv2-state-path.sh' "${LEADV2_PROJECT_ROOT}"
+  fi
 }
 
 _leadv2_yaml_file() {
@@ -729,6 +743,13 @@ try:
         target["worker_pid"] = wpid
         target["worker_pid_birth"] = birth if birth not in ("", "null", "None") else None
         if wpid is not None and wpid > 0:
+            # The post-spawn process is now the lane's authoritative liveness
+            # owner.  Keep the legacy `pid` fields aligned with worker_pid:
+            # older readers still consult `pid`, while newer liveness code
+            # prefers worker_pid.  Leaving the initial dispatch/lead ancestor
+            # here makes either reader report the wrong lane lifetime.
+            target["pid"] = wpid
+            target["pid_birth"] = target["worker_pid_birth"]
             target["pid_role"] = "worker"
         target["updated_at"] = _now_iso()
 

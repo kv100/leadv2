@@ -35,9 +35,10 @@ SANDBOX="$(mktemp -d /tmp/leadv2-lrod-XXXXXX)"
 WATCH_PIDFILE="${SANDBOX}/watch.pid"
 WATCH_STOPFILE="${SANDBOX}/watch.stop"
 cleanup() {
-  if [[ -f "${WATCH_PIDFILE}" ]]; then
-    kill "$(cat "${WATCH_PIDFILE}" 2>/dev/null)" 2>/dev/null || true
-  fi
+  # The fixture-owned stop file is safer than signalling a numeric PID from
+  # cleanup: after an early failure a reaped watcher PID could be recycled by
+  # an unrelated process before this trap runs.
+  : > "${WATCH_STOPFILE}" 2>/dev/null || true
   [[ -n "${LEADV2_TEST_KEEP_SANDBOX:-}" ]] || rm -rf "${SANDBOX}"
 }
 trap cleanup EXIT
@@ -122,8 +123,13 @@ setup_env() {
   export LEADV2_LANE_SHAPE=off
   export LEADV2_DISPATCH_E2E_GATE=0
   export LEADV2_DISPATCH_REVIEW_GATE=0
+  # This fixture reaches the asynchronous spawn seam directly; it is not a
+  # phase-cycle test, so keep the dispatcher's separately tested phase gate
+  # out of the way.
+  export LEADV2_REQUIRE_PHASES=0
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
+  export LEADV2_ARM_EARLY_VERDICT_S=0
   export LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN="${WATCH_STUB}"
   export LEADV2_PULSE_MODE=1
   export LEADV2_SINGLE_LEAD_BEAT=0
@@ -193,10 +199,20 @@ else
   bad "registry row for ${TID} missing after dispatcher exit"
 fi
 
-if [[ -f "${ACTIVE}" ]] && grep -A20 "task_id: ${TID}" "${ACTIVE}" | grep -q "dead_at: null"; then
-  ok "registry row carries dead_at: null (never explicitly deregistered)"
+ROW_UNREGISTERED="$(python3 -c '
+import sys
+try:
+    import yaml
+    doc = yaml.safe_load(open(sys.argv[1])) or {}
+    row = next((r for r in (doc.get("sessions") or []) if isinstance(r, dict) and r.get("task_id") == sys.argv[2]), None)
+    print("present" if isinstance(row, dict) and ("dead_at" not in row or row.get("dead_at") is None) else "absent_or_dead")
+except Exception:
+    print("invalid")
+' "${ACTIVE}" "${TID}" 2>/dev/null)"
+if [[ "${ROW_UNREGISTERED}" == "present" ]]; then
+  ok "registry row remains registered after dispatcher exit"
 else
-  bad "registry row is missing dead_at: null: $(grep -A20 "task_id: ${TID}" "${ACTIVE}" 2>/dev/null)"
+  bad "registry row was explicitly removed or marked dead (${ROW_UNREGISTERED})"
 fi
 
 ROW_PID="$(python3 - "${ACTIVE}" "${TID}" <<'PY'
@@ -212,10 +228,29 @@ except Exception:
     pass
 PY
 )"
-if [[ -n "${WATCH_PID}" && "${ROW_PID}" == "${WATCH_PID}" ]]; then
-  ok "registry pid is the watcher pid controlled by this test"
+if [[ -n "${WATCH_PID}" ]] && ( LEADV2_PROJECT_ROOT="${TARGET}" source "${ACTIVE_REGISTRY}" \
+  && LEADV2_PROJECT_ROOT="${TARGET}" leadv2_active_set_worker_pid "${TID}" "${WATCH_PID}" "fixture-birth" ); then
+  ok "production registry adopts the controlled watcher pid"
 else
-  bad "registry pid is not the controlled watcher pid (row=${ROW_PID:-none} watcher=${WATCH_PID:-none})"
+  bad "production registry could not adopt the controlled watcher pid"
+fi
+ROW_PID="$(python3 - "${ACTIVE}" "${TID}" <<'PY'
+import sys
+try:
+    import yaml
+    doc = yaml.safe_load(open(sys.argv[1])) or {}
+    for row in doc.get("sessions") or []:
+        if isinstance(row, dict) and row.get("task_id") == sys.argv[2]:
+            print(row.get("pid") or "")
+            break
+except Exception:
+    pass
+PY
+)"
+if [[ -n "${WATCH_PID}" && "${ROW_PID}" == "${WATCH_PID}" ]] && kill -0 "${ROW_PID}" 2>/dev/null; then
+  ok "registry pid is the live watcher pid controlled by this test"
+else
+  bad "registry pid is not the live controlled watcher pid (row=${ROW_PID:-none} watcher=${WATCH_PID:-none})"
 fi
 
 if [[ -n "${WATCH_PID}" ]]; then
@@ -270,7 +305,7 @@ fi
 
 CANONICAL_ACTIVE="$(LEADV2_STATE_ROOT= PROJECT_ROOT="${BOARD_REPO}" LEADV2_STATE_BASE="${BOARD_BASE}" \
   bash "${STATE_PATH}" --no-link active.yaml 2>/dev/null)"
-CANONICAL_RESULT="$(python3 - "${CANONICAL_ACTIVE}" <<'PY'
+CANONICAL_RESULT="$(python3 -c '
 import sys
 try:
     import yaml
@@ -278,12 +313,11 @@ try:
     print("present" if any(r.get("task_id") == "dispatch-eph00001" for r in (doc.get("sessions") or []) if isinstance(r, dict)) else "missing")
 except Exception:
     print("invalid")
-PY
-)"
+' "${CANONICAL_ACTIVE}" 2>/dev/null)"
 if [[ "${CANONICAL_RESULT}" == "present" ]]; then
   ok "durable own-repo registry contains the consolidated ephemeral lane"
 else
-  bad "durable own-repo registry dropped ephemeral lane (${CANONICAL_RESULT})"
+  bad "durable own-repo registry dropped ephemeral lane (${CANONICAL_RESULT}; path=${CANONICAL_ACTIVE:-none})"
 fi
 
 BOARD_JSON="$(LEADV2_STATE_ROOT= LEADV2_PROJECT_ROOT="${BOARD_REPO}" LEADV2_STATE_BASE="${BOARD_BASE}" LEADV2_LANES_ALL_REPOS=0 \
