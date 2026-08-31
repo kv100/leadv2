@@ -1332,6 +1332,17 @@ fi
 # with no rows — it must be unmistakable in the first two lines. Line 1
 # stays the machine-parseable dispatched= stamp (the relay contract's
 # format), so the headline is line 2, ahead of everything else, when set.
+# LEAD-WORKER-CHANNEL-01: drain the durable lead inbox on every beat, so an
+# unread worker event reaches this status EVEN IF every SendMessage wake-up
+# was lost -- that is the property that makes the mechanism real rather
+# than another thing that only works when everything already works. Lead
+# id resolved the same way leadv2-dispatch-code.sh computes
+# _lead_session_id, since this beat runs under that same lead's session.
+# Never fatal: an inbox drain failure degrades to no inbox section, not a
+# failed beat.
+_LWC_LEAD_ID="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-${CLAUDE_SESSION_ID:-direct}}}"
+INBOX_MD="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-inbox.sh" drain --lead "${_LWC_LEAD_ID}" 2>/dev/null || true)"
+
 BLOCK="$(
   printf '%s [BROAD_STATUS] dispatched=%s\n' "$BEAT_AT" "$DISPATCHED"
   if [[ -n "$EMPTY_HEADLINE" ]]; then
@@ -1344,6 +1355,9 @@ BLOCK="$(
   # watcher events. Printed only when a board lane has a pulse.md.
   if [[ -n "$PULSE_MD" ]]; then
     printf '\n%s\n' "$PULSE_MD"
+  fi
+  if [[ -n "$INBOX_MD" ]]; then
+    printf '\n**Unread lead-worker events:**\n%s\n' "$INBOX_MD"
   fi
   printf '%s\n' "$DECISIONS_LINE"
   if [[ -n "$HIDDEN_NOTE" ]]; then
