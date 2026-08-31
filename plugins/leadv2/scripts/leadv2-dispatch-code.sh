@@ -4492,11 +4492,24 @@ PY
 # idiom used at every launcher call site.
 LANE_PULSE_WATCH_BIN="${LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN:-${SCRIPT_DIR}/leadv2-lane-pulse-watch.sh}"
 SINGLE_LEAD_BEAT_LOOP_BIN="${LEADV2_DISPATCH_BEAT_LOOP_BIN:-${SCRIPT_DIR}/leadv2-single-lead-beat-loop.sh}"
+# PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round 4: exposes the backgrounded
+# watcher's own pid to the caller (same subshell, no escape needed -- see the
+# adoption call site below) so a non-sonnet arm's active.yaml row can be
+# re-pinned to a process that outlives THIS dispatcher instead of staying
+# pinned to the dispatcher's own pid forever.
+_LV2_LANE_PULSE_WATCH_PID=""
 _arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
+  _LV2_LANE_PULSE_WATCH_PID=""
   [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
   [[ -f "${LANE_PULSE_WATCH_BIN}" ]] || return 0
   LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
     nohup bash "${LANE_PULSE_WATCH_BIN}" --sig "${1}" >/dev/null 2>&1 </dev/null 9>&- &
+  _LV2_LANE_PULSE_WATCH_PID=$!
+  # _spawn_worker_body is captured by command substitution.  In bash that
+  # subshell otherwise waits for its background job before returning, turning
+  # a persistent watcher into a dispatch hang.  Disown is available in the
+  # required bash 3.2 and preserves the watcher while releasing the launcher.
+  disown "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null || true
 }
 _arm_single_lead_beat() {  # fail-open, armed once (loop's own pidfile guards re-arm)
   [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
@@ -5076,6 +5089,39 @@ _spawn_worker_body() {
   # dispatcher-owned lane watch for THIS sig and the single-lead beat loop.
   # Fail-open; the watchers own their own pidfile/replay-safety semantics.
   _arm_lane_pulse_watch "${sig8}"
+  # PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round 4 root cause #2: the sonnet
+  # arm's block above (~:4852-4860) is the ONLY case that ever adopts a real
+  # worker pid onto this lane's active.yaml row. Every other arm (glm/glm-
+  # flash/kimi/codex/freepool) is an async job handle, not a local fork of
+  # THIS process, so its row was left carrying the pre-spawn registration pid
+  # (this dispatcher's own durable/transient pid, stamped at ~:6186/6157)
+  # forever. That pid dies the instant this dispatcher process exits -- which
+  # is normal and immediate for an async arm, since spawn confirmation just
+  # means "the launcher accepted the job", not "the dispatcher stays up". The
+  # exit-trap disarm (rc=0 branch below, DISPATCH_SLOT_REG_ID="") already
+  # keeps the row from being explicitly deregistered, but a liveness check
+  # that reads the row's own pid (lib/leadv2-lane-state.sh's alive(), which
+  # os.kill()s it) sees a dead pid within seconds of dispatch returning even
+  # though the async worker is still running for up to an hour -- the exact
+  # "board empty while lanes live" / "corroborated dead: pid dead" symptom.
+  # Fix: re-pin the row to the lane-pulse watcher's pid instead. That watcher
+  # is backgrounded independent of this process (nohup, above) and exits
+  # itself ONLY at the lane's real terminal state or its derived timeout
+  # (leadv2-lane-pulse-watch.sh), so the registry's liveness now tracks the
+  # LANE's lifetime, not this dispatcher's. The sonnet arm keeps its own,
+  # more precise worker pid -- never overwritten here.
+  if [[ "${arm}" != "sonnet" && -n "${DISPATCH_REG_ID:-}" && -n "${_LV2_LANE_PULSE_WATCH_PID:-}" ]] \
+     && kill -0 "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null; then
+    set +e
+    if declare -F leadv2_active_set_worker_pid >/dev/null 2>&1; then
+      local _wpid_birth
+      _wpid_birth="$(_lv2_pid_birth "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null || printf '')"
+      LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_set_worker_pid \
+        "${DISPATCH_REG_ID}" "${_LV2_LANE_PULSE_WATCH_PID}" "${_wpid_birth}" >/dev/null 2>&1 || true
+    fi
+    declare -F lane_adopt_pid >/dev/null 2>&1 && \
+      lane_adopt_pid "${DISPATCH_REG_ID}" "${DISPATCH_LEAD_SESSION_ID:-direct}" "${WORK_ROOT:-${PROJECT_ROOT}}" "build" "${_LV2_LANE_PULSE_WATCH_PID}" >/dev/null 2>&1 || true
+  fi
   _arm_single_lead_beat
   # S7-RETARGET-PERSIST-01: names which mission version this dispatch launched, so
   # "it relaunched the old premise" is a grep of this log, not archaeology. Fail-open
