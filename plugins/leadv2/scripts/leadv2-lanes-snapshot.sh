@@ -487,7 +487,7 @@ fi
 
 _lv2_main_snapshot() {
 python3 - "$ACTIVE_YAML" "$HANDOFF_DIR" "$SNAPSHOT" "$JSON_MODE" "$SINCE" "$CP_QUESTIONS_DIR" "${BUS_JSONL:-}" "${BUS_OFFSET_FILE:-}" "$TRUTH_BREACHES_JSON" "$TMUX_WINDOWS_TSV" "$TMUX_PANES_TSV" "$TASKS_YAML_PATH" "$ACTIVE_LOCKFILE" "$TOMBSTONES_FILE" "$OBSERVE_ONLY" "$SCRIPT_DIR" "$PROJECT_ROOT" "$LANE_LIVENESS_JSON" "$QUESTION_ESCALATE_S" "$SUPERVISE_PRUNE_V2" <<'PY'
-import sys, os, json, glob, datetime, subprocess
+import sys, os, json, glob, datetime, subprocess, time
 from collections import deque
 
 (active_yaml, handoff_dir, snapshot_path, json_mode, since, cp_questions_dir,
@@ -542,6 +542,13 @@ try:
     _LANE_ABANDON_MAX_S = int(os.environ.get("LEADV2_LANE_ABANDON_MAX_S", "3600"))
 except (TypeError, ValueError):
     _LANE_ABANDON_MAX_S = 3600
+# LANE-LIVENESS-THREE-STATES-02: same window/rationale as leadv2-lane-liveness.sh's
+# `finished_window` -- both probes must agree on the same three-state answer for the
+# same lane, so both read the SAME env var and the SAME default (1800s).
+try:
+    _LANE_FINISHED_WINDOW_S = max(0, int(os.environ.get("LEADV2_LANE_FINISHED_WINDOW_S", "1800")))
+except (TypeError, ValueError):
+    _LANE_FINISHED_WINDOW_S = 1800
 if LEADV2_SUPERVISE_REAP_S and LEADV2_SUPERVISE_REAP_S < _LANE_ABANDON_MAX_S:
     # A lane cannot legitimately be reaped before leadv2-lane-liveness.sh
     # itself has had a chance to classify it dead — clamp up rather than
@@ -574,6 +581,27 @@ def pid_alive(pid_val):
         return True
     except (TypeError, ValueError, ProcessLookupError, PermissionError):
         return False
+
+def _commit_age_s(worktree):
+    # LANE-LIVENESS-THREE-STATES-02: same externally-checkable evidence as
+    # leadv2-lane-liveness.sh's commit_age_s -- the lane's OWN worktree HEAD
+    # commit time, never a worker's self-reported success. Missing/foreign/
+    # non-git/unborn-HEAD worktree -> None (cannot establish finished),
+    # never a fabricated age.
+    if not worktree or not os.path.isdir(worktree):
+        return None
+    try:
+        r = subprocess.run(["git", "-C", worktree, "log", "-1", "--format=%ct"],
+                           capture_output=True, text=True, timeout=3)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        ctime = int(r.stdout.strip())
+    except ValueError:
+        return None
+    return max(0, int(time.time()) - ctime)
 
 def emit_fatal(kind, message):
     """B1 fail-closed: registry_error / state_write_error. Never a successful
@@ -830,6 +858,20 @@ for tid, s in list(current.items()):
         # `continue` below, same as fully-clean evidence.
     elif pid_issue:
         reasons = [pid_issue_reason]
+
+    # LANE-LIVENESS-THREE-STATES-02: a dead/absent pid with a commit in the
+    # lane's OWN worktree inside FINISHED_WINDOW_S is a completed round, not
+    # death evidence -- externally checkable, independent of stream/log
+    # freshness. Placed BEFORE the LANE-LIVENESS-LIES freshness veto below so
+    # a finished lane that has since gone silent past the shorter
+    # LANE_FRESH_S window still clears here (this is the exact three-
+    # founder-escalation defect: the worker had already committed and
+    # exited, and by the time the second poll corroborated it, the stream
+    # was no longer within LANE_FRESH_S either).
+    if reasons:
+        _commit_age = _commit_age_s(s.get("worktree"))
+        if _commit_age is not None and _commit_age <= _LANE_FINISHED_WINDOW_S:
+            reasons = []
 
     # LANE-LIVENESS-LIES-01 Change 1b: a fresh stream/log mtime outranks the
     # pid heuristic before any escalation (memory
