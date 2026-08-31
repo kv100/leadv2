@@ -46,15 +46,37 @@ if [[ -f "$SCRIPT_DIR/leadv2-state-path.sh" ]]; then
 fi
 
 CODEX_TASK="${CODEX_TASK_SH:-${SCRIPT_DIR}/codex-task.sh}"
+# LANE-LIVENESS-CODEX-TIMEOUT-01 (measured 2026-08-31): `codex-task.sh status`
+# shells out to the Codex CLI, which can block indefinitely -- observed >240s
+# with zero output. This call sits at the FRONT of every dispatch
+# (dispatch-code.sh ledger sweep -> lane-liveness --all -> here), so an
+# unbounded hang here makes dispatch unavailable in EVERY adopted repo, and it
+# presents as a dispatcher deadlock rather than as a Codex stall. The
+# pre-existing `2>/dev/null || true` fails open on a non-zero EXIT but cannot
+# fail open on a HANG. Bound the call; a timeout yields an empty payload, which
+# is exactly the already-supported "no codex data" path.
+# LEADV2_CODEX_STATUS_TIMEOUT_S tunes it; 0 restores the old unbounded
+# behaviour (one-step rollback).
+_lane_codex_status() {
+  local t="${LEADV2_CODEX_STATUS_TIMEOUT_S:-20}"
+  local runner=""
+  if [[ "$t" != "0" ]]; then
+    if command -v timeout >/dev/null 2>&1; then runner="timeout $t"
+    elif command -v gtimeout >/dev/null 2>&1; then runner="gtimeout $t"
+    fi
+  fi
+  # No timeout(1) on this PATH -> run unbounded rather than lose the data.
+  ${runner} bash "$CODEX_TASK" "$@" 2>/dev/null || true
+}
 CODEX_RAW=''
 if [[ "$NO_CODEX" -ne 1 && -f "$CODEX_TASK" ]]; then
   # --no-codex skips both `codex-task.sh status` shell-outs -- the statusline
   # hot path (leadv2-lane-status-line-tail.sh) never needs the provider
   # mapping, only log-based liveness (STATUSLINE-COUNT-TRUTH-02 R1).
   if [[ -n "$JOB_ID" ]]; then
-    CODEX_RAW="$(bash "$CODEX_TASK" status "$JOB_ID" --json --cwd "$PROJECT_ROOT" 2>/dev/null || true)"
+    CODEX_RAW="$(_lane_codex_status status "$JOB_ID" --json --cwd "$PROJECT_ROOT")"
   else
-    CODEX_RAW="$(bash "$CODEX_TASK" status --all --json --cwd "$PROJECT_ROOT" 2>/dev/null || true)"
+    CODEX_RAW="$(_lane_codex_status status --all --json --cwd "$PROJECT_ROOT")"
   fi
 fi
 
