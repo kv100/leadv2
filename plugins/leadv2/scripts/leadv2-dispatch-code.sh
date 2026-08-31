@@ -2553,7 +2553,13 @@ resolve_v2_dispatch() {
     || { _v2_fail "judge" "$errf"; rm -rf "$tmp"; return 1; }
   printf '%s' "$estimate" > "$tmp/estimate.json"
   allowed="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["eligible"]))' "$tmp/l1.json")"
-  task_class="$(python3 -c 'import json,sys; e=json.load(open(sys.argv[1])); print(e["work_kind"]+":"+("short" if e["duration_class"]=="short" and e["complexity"] in ("trivial","simple") else "long"))' "$tmp/estimate.json")"
+  # COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #2): the bandit's context-key used
+  # to collapse duration_class+complexity into one binary short/long flag, so a
+  # trivial one-liner and a multi-subsystem "long" task shared a key whenever
+  # both duration_class read "long". Carry complexity as its own key segment
+  # instead of folding it into the binary -- the bandit's per-key stats now
+  # separate a "build:long:trivial" mission from "build:long:complex".
+  task_class="$(python3 -c 'import json,sys; e=json.load(open(sys.argv[1])); print(e["work_kind"]+":"+e.get("duration_class","unknown")+":"+e.get("complexity","unknown"))' "$tmp/estimate.json")"
   out="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTER_V2=1 bash "$bandit" sample --context-key "$task_class" --allowed "$allowed" --heuristic glm 2>"$errf")" || true
   printf '%s\n' "$out" | sed -n 's/^samples=//p' | head -1 > "$tmp/samples.json"
   python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$tmp/samples.json" >/dev/null 2>&1 || python3 -c 'import json,sys; print(json.dumps({x:.75 for x in json.load(open(sys.argv[1]))["eligible"]}))' "$tmp/l1.json" > "$tmp/samples.json"
@@ -2562,6 +2568,49 @@ resolve_v2_dispatch() {
   out="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTING_YAML="$ROUTING_YAML" bash "$rv2" resolve --task-id "$sig8" --routing-yaml "$ROUTING_YAML" --l1-json "$tmp/l1.json" --estimate-json "$tmp/estimate.json" --samples-json "$tmp/samples.json" --headroom-weights-json "$tmp/weights.json" --account "${LEADV2_ROUTER_V2_ACCOUNT:-unknown}" 2>"$errf")"; rc=$?
   [[ $rc -eq 0 ]] || { _v2_fail "resolve" "$errf"; rm -rf "$tmp"; return "$rc"; }
   rm -rf "$tmp"; printf '%s\ntier=%s\n' "$out" "${LEADV2_ROUTER_V2_CODEX_TIER:-standard}"
+}
+
+# ── COMPLEXITY-ESTIMATOR-IS-OFF-01 ────────────────────────────────────────────
+# CENSUS CORRECTION (see docs/handoff/dispatch-0672c002/developer.full.md):
+# resolve_v2_dispatch() above and its LEADV2_ROUTER_V2 gate are a SHADOW path
+# -- the live arm-selection mechanism is route_arbiter() (leadv2-route-
+# arbiter.sh), unconditionally consulted as "the first candidate-chain source"
+# (T17) regardless of LEADV2_ROUTER_V2. Its capability_matrix keys only on
+# (kind, size=admission task_class, protected) and a static per-cell `cost` --
+# it never saw leadv2-task-judge.sh's complexity/duration_class estimate. This
+# function is the fix: call the judge on EVERY dispatch (not just the v2
+# branch) so the arbiter descriptor built below can carry complexity/
+# duration_class, and degrade to "unknown" (never crash a dispatch) on any
+# judge failure.
+_dispatch_complexity_estimate() {  # <mission> <sig8> <task_class> -> "work_kind<TAB>complexity<TAB>duration_class"
+  local mission="$1" sig8="$2" class="$3" judge tmp estimate fields
+  judge="${LEADV2_TASK_JUDGE_BIN:-${SCRIPT_DIR}/leadv2-task-judge.sh}"
+  if [[ ! -f "${judge}" ]]; then
+    emit decision "complexity_estimate_unavailable task=${sig8} reason=judge_binary_missing degrade=arbiter_uses_size_only"
+    printf 'unknown\tunknown\tunknown\n'
+    return 0
+  fi
+  tmp="$(mktemp "${TMPDIR:-/tmp}/leadv2-judge-live.XXXXXX")" || { printf 'unknown\tunknown\tunknown\n'; return 0; }
+  printf '%s' "${mission}" > "${tmp}"
+  estimate="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${judge}" --mission-file "${tmp}" --task-id "${sig8}" --class "${class}" 2>/dev/null)"
+  rm -f "${tmp}"
+  if [[ -z "${estimate}" ]]; then
+    emit decision "complexity_estimate_unavailable task=${sig8} reason=judge_call_failed degrade=arbiter_uses_size_only"
+    printf 'unknown\tunknown\tunknown\n'
+    return 0
+  fi
+  fields="$(python3 -c '
+import json, sys
+try:
+    e = json.loads(sys.argv[1])
+    print("%s\t%s\t%s" % (e.get("work_kind", "unknown") or "unknown",
+                           e.get("complexity", "unknown") or "unknown",
+                           e.get("duration_class", "unknown") or "unknown"))
+except Exception:
+    print("unknown\tunknown\tunknown")
+' "${estimate}" 2>/dev/null)"
+  [[ -n "${fields}" ]] || fields="unknown	unknown	unknown"
+  printf '%s\n' "${fields}"
 }
 
 # ── dispatch-ledger dedup (FIX PASS 4: pending/confirmed + TTL, see doc block above) ──
@@ -6081,6 +6130,12 @@ cmd_resolve() {
   # refuses class>=Standard without same-task pre-build phase records.
   _admission_classify "${mission}" "${sig}" "${sig8}" "${task_class}" "${task_class_flagged:-0}"
   task_class="${ADMISSION_CLASS}"
+  # COMPLEXITY-ESTIMATOR-IS-OFF-01: unconditional -- every dispatch (not only
+  # LEADV2_ROUTER_V2=1) now carries a complexity estimate into the live
+  # arbiter descriptor below and the arm_resolved decision line.
+  local DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS
+  IFS=$'\t' read -r DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS \
+    <<<"$(_dispatch_complexity_estimate "${mission}" "${sig8}" "${task_class}")"
   # Admission says this mission lives in the full phase cycle: its Phase-4
   # re-entries need only the pre-build phases satisfied (the cycle is mid-
   # flight), not the whole-cycle completion contract. Explicit
@@ -6505,7 +6560,32 @@ exit is treated as an incident."
   readings="$(printf '%s\n' "${resolved}" | sed -n 's/^readings=//p')"
   [[ "${router_label}" == "v2" ]] && rule="router_v2"
   [[ -n "${arm}" ]] || { log_err "resolver returned no arm: ${resolved}"; exit 1; }
-  emit decision "arm_resolved job=build arm=${arm} reason=${rule}${readings:+ readings=${readings}}"
+  # COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #3): the decision line now names
+  # the estimate that (should have) informed it -- complexity/duration_class
+  # alongside the resulting arm, so an unwired estimator is visible in the
+  # journal instead of silently absent.
+  emit decision "arm_resolved job=build arm=${arm} reason=${rule}${readings:+ readings=${readings}} complexity=${DC_COMPLEXITY:-unknown} duration_class=${DC_DURATION_CLASS:-unknown}"
+  # COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #3, "what it should cost"): best-
+  # effort, non-blocking -- a missing prior-art.yaml or cost-estimate script is
+  # a degrade (logged), never a dispatch failure. LEADV2_COST_ESTIMATE_BIN is
+  # the test seam; founder_task_id is the id cost-estimate.sh's own
+  # docs/handoff/<id>/ layout expects (falls back to sig8 when unbound, e.g. a
+  # caller that never passed --task-id).
+  if [[ "${LEADV2_DISPATCH_COST_ESTIMATE:-1}" != "0" ]]; then
+    local _cost_bin _cost_task_id _cost_out
+    _cost_bin="${LEADV2_COST_ESTIMATE_BIN:-${SCRIPT_DIR}/leadv2-cost-estimate.sh}"
+    _cost_task_id="${founder_task_id:-${sig8}}"
+    if [[ -f "${_cost_bin}" ]]; then
+      _cost_out="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${_cost_bin}" --task-id "${_cost_task_id}" --main-model sonnet 2>/dev/null)"
+      if [[ $? -eq 0 && -n "${_cost_out}" ]]; then
+        emit decision "cost_estimate_recorded task=${sig8} founder_task=${_cost_task_id} arm=${arm} complexity=${DC_COMPLEXITY:-unknown} path=docs/handoff/${_cost_task_id}/cost-estimate.yaml"
+      else
+        emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_failed degrade=no_estimate_recorded"
+      fi
+    else
+      emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_binary_missing degrade=no_estimate_recorded"
+    fi
+  fi
   # DISPATCH-BALANCE-BY-LIVE-QUOTA-01: the balancer's choice must be re-derivable
   # from the journal alone -- one decision line whenever the resolver balanced the
   # no-exception default between the GLM and Anthropic buckets (reason prefix
@@ -6650,7 +6730,10 @@ exit is treated as an incident."
       _arb_ui=1
     fi
     [[ "${_arb_safety}" == "1" || "${_arb_ui}" == "1" ]] && _arb_protected=1
-    _arb_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[6]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${sig8}")"
+    # COMPLEXITY-ESTIMATOR-IS-OFF-01: complexity/duration_class ride into the
+    # arbiter descriptor so its capability_matrix (and any complexity_penalty
+    # rule configured there) can see them, not just kind/size/protected.
+    _arb_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[6],"complexity":sys.argv[7],"duration_class":sys.argv[8]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}")"
     _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
     _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"

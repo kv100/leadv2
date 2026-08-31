@@ -78,6 +78,22 @@ router_v2:
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true }
     - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true }
 
+  # COMPLEXITY-ESTIMATOR-IS-OFF-01: the arbiter's `cheapest_capable` sort (the
+  # ecost() function in leadv2-route-arbiter.sh) previously had no notion of
+  # how hard a task is -- kind/size/protected pick the eligible cells, `cost`
+  # alone breaks the tie. Each rule here adds `penalty` to the effective cost
+  # of any capable cell whose `tags` intersect `penalize_tags`, but ONLY when
+  # the dispatch's judge-estimated complexity/duration_class matches. Data-
+  # driven, additive: an empty list (or a rule that never matches) reproduces
+  # today's pure-cost behavior byte-for-byte. Never names an arm directly --
+  # matches on the SAME `tags` capability_matrix cells already carry (cheap/
+  # mechanical/bulk/background), so a routing-yaml-only edit (no script
+  # change) is enough to retune which cells count as "too cheap" for hard work.
+  complexity_penalty:
+    - complexities: [complex]
+      penalize_tags: [cheap, mechanical, bulk, background]
+      penalty: 100
+
   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
   # Anthropic arms deliberately share the active Max x20 account bucket.
   #
