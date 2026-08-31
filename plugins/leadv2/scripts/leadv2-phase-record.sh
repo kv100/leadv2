@@ -107,6 +107,16 @@
 #   leadv2-phase-record.sh assert <sig8> --class <Trivial|Light|Standard|Heavy>
 #       [--waiver <phase>=<reason>]...
 #       [--writes <csv>]
+#       [--at-bootstrap]   caller (dispatch-code) attests its pre-classify probe
+#                          found ZERO records for this lane; honoured for
+#                          --pre-build scope only. Needed because dispatch-code
+#                          records classify before calling the guard — see
+#                          cmd_is_bootstrap.
+#
+#   leadv2-phase-record.sh is-bootstrap <sig8>
+#       exit 0 iff the lane has no phase record at all (phases.d absent or
+#       empty), 1 otherwise. dispatch-code calls this BEFORE recording its own
+#       classify so the bootstrap fact survives the classify write.
 #
 #   leadv2-phase-record.sh show <sig8>
 #   leadv2-phase-record.sh plan-for --class <C>
@@ -778,7 +788,7 @@ cmd_record() {
 
 # ── assert subcommand ─────────────────────────────────────────────────────────
 cmd_assert() {
-  local sig8="" cls="" writes="" scope="full"
+  local sig8="" cls="" writes="" scope="full" caller_bootstrap=0
   local -a waivers=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -790,6 +800,8 @@ cmd_assert() {
         writes="$2"; shift 2 ;;
       --pre-build)
         scope="pre-build"; shift ;;
+      --at-bootstrap)
+        caller_bootstrap=1; shift ;;
       --*)
         _log_err "assert: unknown flag: $1"; exit 4 ;;
       *)
@@ -835,6 +847,18 @@ cmd_assert() {
         _lane_bootstrap=0
         break
       done
+    fi
+    # DISPATCH-PHASE-DEADLOCK-01 round 2: on the real dispatch path the
+    # zero-record probe above can never fire — dispatch-code records classify
+    # BEFORE calling the guard, so a brand-new lane already has exactly one
+    # record at assert time and was still refused (test-effort-routing.sh's
+    # sonnet fixture, measured red on main 2026-08-31). The guard therefore
+    # runs `is-bootstrap` BEFORE that classify write and passes the answer as
+    # --at-bootstrap. Trusted-caller flag: scoped to pre-build only, and any
+    # lane with pre-existing history is probed non-bootstrap by the caller and
+    # enforced exactly as below.
+    if [[ "$caller_bootstrap" == "1" ]]; then
+      _lane_bootstrap=1
     fi
   fi
 
@@ -1008,14 +1032,40 @@ cmd_plan_for() {
   _resolve_mandatory "$cls" "$writes"
 }
 
+# ── is-bootstrap: does this lane have zero phase records? ────────────────────
+# exit 0 iff phases.d is absent or carries no record; 1 otherwise. Called by
+# dispatch-code BEFORE its own classify write (cmd_assert --at-bootstrap is the
+# consumer of the answer) — see DISPATCH-PHASE-DEADLOCK-01 round 2.
+cmd_is_bootstrap() {
+  local sig8=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --*)
+        _log_err "is-bootstrap: unknown flag: $1"; exit 4 ;;
+      *)
+        if [[ -z "$sig8" ]]; then sig8="$1"; else _log_err "is-bootstrap: unexpected positional: $1"; exit 4; fi
+        shift ;;
+    esac
+  done
+  [[ -n "$sig8" ]] || { _log_err "is-bootstrap: <sig8> required"; exit 4; }
+  local d probe_f
+  d="$(_phases_d "$sig8")"
+  [[ -d "$d" ]] || return 0
+  for probe_f in "$d"/*.yaml; do
+    [[ -f "$probe_f" ]] || return 0
+    return 1
+  done
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
-[[ $# -eq 0 ]] && { _log_err "usage: $0 <record|assert|show|plan-for> ..."; exit 4; }
+[[ $# -eq 0 ]] && { _log_err "usage: $0 <record|assert|show|plan-for|is-bootstrap> ..."; exit 4; }
 cmd="$1"; shift
 case "$cmd" in
   record)   cmd_record "$@" ;;
   assert)   cmd_assert "$@" ;;
   show)     cmd_show "$@" ;;
   plan-for) cmd_plan_for "$@" ;;
-  -h|--help) _log "usage: $0 <record|assert|show|plan-for> ..."; exit 0 ;;
+  is-bootstrap) cmd_is_bootstrap "$@" ;;
+  -h|--help) _log "usage: $0 <record|assert|show|plan-for|is-bootstrap> ..."; exit 0 ;;
   *)        _log_err "unknown command: $cmd"; exit 4 ;;
 esac

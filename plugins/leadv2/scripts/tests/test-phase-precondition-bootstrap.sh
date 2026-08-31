@@ -192,5 +192,65 @@ else
   fail "missing= should list plan and gate1 for the genuinely-skipped lane (got: $OUT5)"
 fi
 
+# ── Test 6 (round 2): is-bootstrap probe — the dispatch-code seam ────────────
+# dispatch-code must probe BEFORE its own classify write; the probe itself is
+# what the guard's --at-bootstrap is built on.
+printf 'test: 6 is-bootstrap probe flips after the first record\n'
+SIG_PROBE="probe001"
+bash "$PHASE_RECORD" is-bootstrap "$SIG_PROBE" 2>/dev/null; rc6a=$?
+if [[ $rc6a -eq 0 ]]; then
+  ok
+else
+  fail "is-bootstrap on a lane with no records should exit 0 (got $rc6a)"
+fi
+bash "$PHASE_RECORD" record "$SIG_PROBE" classify --status done --owner test >/dev/null 2>&1
+bash "$PHASE_RECORD" is-bootstrap "$SIG_PROBE" 2>/dev/null; rc6b=$?
+if [[ $rc6b -eq 1 ]]; then
+  ok
+else
+  fail "is-bootstrap after classify should exit 1 (got $rc6b)"
+fi
+
+# ── Test 7 (round 2): the REAL dispatcher path — classify exists (written by
+#    dispatch-code before the guard), caller attests the pre-classify probe
+#    said bootstrap ⇒ admitted. This is the exact shape that left
+#    test-effort-routing.sh red: a fresh lane already carries classify by
+#    guard time and was refused anyway. ─────────────────────────────────────
+printf 'test: 7 assert --at-bootstrap admits the classify-only fresh lane\n'
+SIGDisp="disp0001"
+bash "$PHASE_RECORD" record "$SIGDisp" classify --status done --owner dispatch-code:test >/dev/null 2>&1
+: > "$JOURNAL_LOG"
+OUT7="$(bash "$PHASE_RECORD" assert "$SIGDisp" --class Standard --pre-build --at-bootstrap 2>&1)"; rc7=$?
+if [[ $rc7 -eq 0 ]]; then
+  ok
+else
+  fail "at-bootstrap pre-build assert should admit a classify-only lane (rc=$rc7, out=$OUT7)"
+fi
+if grep -q 'phase_precondition_bootstrap' "$JOURNAL_LOG" 2>/dev/null; then
+  ok
+else
+  fail "at-bootstrap admission should journal phase_precondition_bootstrap"
+fi
+
+# ── Test 7b: --at-bootstrap is scoped to pre-build — a full-scope assert with
+#    the flag still refuses a classify-only lane ─────────────────────────────
+printf 'test: 7b at-bootstrap does not leak into full scope\n'
+OUT7B="$(bash "$PHASE_RECORD" assert "$SIGDisp" --class Standard --at-bootstrap 2>&1)"; rc7b=$?
+if [[ $rc7b -eq 3 ]] && printf '%s' "$OUT7B" | grep -q 'missing='; then
+  ok
+else
+  fail "full-scope assert with --at-bootstrap must still refuse (rc=$rc7b, out=$OUT7B)"
+fi
+
+# ── Test 7c: without the flag, the same classify-only lane is still refused —
+#    the attestation is per-dispatch, not a permanent property ───────────────
+printf 'test: 7c classify-only lane without the attestation is still refused\n'
+OUT7C="$(bash "$PHASE_RECORD" assert "$SIGDisp" --class Standard --pre-build 2>&1)"; rc7c=$?
+if [[ $rc7c -eq 3 ]] && printf '%s' "$OUT7C" | grep -q 'missing=.*plan'; then
+  ok
+else
+  fail "classify-only lane WITHOUT --at-bootstrap must refuse (rc=$rc7c, out=$OUT7C)"
+fi
+
 printf '\n[PHASE-PRECONDITION-BOOTSTRAP] pass=%d fail=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

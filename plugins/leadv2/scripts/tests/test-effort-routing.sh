@@ -12,7 +12,13 @@ SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ARBITER="${SCRIPTS_DIR}/lib/leadv2-route-arbiter.sh"
 ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
 DC="${SCRIPTS_DIR}/leadv2-dispatch-code.sh"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
+# `|| true`: the dispatch arms leadv2-lane-pulse-watch.sh (:5243 in
+# leadv2-dispatch-code.sh), a deliberately async terminal-state watcher that
+# can still be writing pulse/inbox artifacts under "$TMP" when this suite
+# exits. Under `set -e` a racing rm fails the EXIT trap and turns a 9/9-green
+# run into rc=1 (measured 2026-08-31). A stale TMP dir is acceptable litter;
+# a false red is not.
 PASS=0; FAIL=0
 pass(){ printf 'PASS: %s\n' "$1"; PASS=$((PASS+1)); }
 fail(){ printf 'FAIL: %s\n' "$1"; FAIL=$((FAIL+1)); }
