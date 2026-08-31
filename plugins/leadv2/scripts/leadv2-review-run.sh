@@ -1725,6 +1725,23 @@ else
   emit decision "review_gate task=${TASK} status=ran author=${AUTHOR} reviewer=${reviewer_primary} verdict=${verdict} diff=${diff_hash:0:8} arms=${ARMS_CSV}"
 fi
 
+# GATE-PROVES-ITS-OWN-CONTROL-01: if the round declared a mutation catalog
+# (docs/handoff/<task>/mutation-catalog.txt — one negative-control claim per
+# line, see lib/leadv2-control-prover.sh header for the format), the machine
+# applies every declared mutation itself and requires the declared suite to
+# go red alone, then revert byte-clean. A PASS verdict is never trusted on
+# the author's or reviewer's say-so for a declared control. Purely additive:
+# a round with no catalog file behaves exactly as before.
+_CONTROL_CATALOG="${HANDOFF}/mutation-catalog.txt"
+if [[ "${verdict}" != FAIL && -f "${_CONTROL_CATALOG}" ]]; then
+  _cp_out="$(bash "${SCRIPT_DIR}/lib/leadv2-control-prover.sh" --catalog "${_CONTROL_CATALOG}" --root "${ROOT}" 2>&1)"; _cp_rc=$?
+  if [[ ${_cp_rc} -ne 0 ]]; then
+    verdict="FAIL"
+    emit decision "review_gate task=${TASK} status=blocked reason=control_not_diagnostic rc=${_cp_rc}"
+    printf '%s\n' "${_cp_out}" > "${HANDOFF}/control-prover.md"
+  fi
+fi
+
 if [[ "${verdict}" == FAIL ]]; then
   {
     printf 'arms: %s\n%s\n%s\n' "${ARMS_CSV}" "${FANOUT_LINE}" "${VERIFIED_LINE}"
