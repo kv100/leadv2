@@ -150,6 +150,26 @@ _dead_pid() {
   printf '%s' "$p"
 }
 
+_iso_ago() { # <seconds-ago> -> ISO8601 UTC string (leadv2's "...Z" shape)
+  python3 -c "
+import datetime, sys
+dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=int(sys.argv[1]))
+print(dt.strftime('%Y-%m-%dT%H:%M:%SZ'))
+" "$1"
+}
+
+_set_mtime_ago() { # <path> <seconds-ago>
+  python3 -c "
+import os, sys, time
+os.utime(sys.argv[1], (time.time() - float(sys.argv[2]),) * 2)
+" "$1" "$2"
+}
+
+_start_sleeper_in() { # <dir> -- real live process whose cwd IS <dir>
+  ( cd "$1" && exec sleep 300 ) &
+  _SLEEPER_PID=$!
+}
+
 # The EXACT liveness call leadv2-dispatch-code.sh's placement gate (Step 5)
 # makes -- prints the raw verdict so a fixture can assert both the verdict
 # string AND (via _is_live_verdict) the same live/not-live boolean the
@@ -349,6 +369,196 @@ YAML
   fi
 }
 
+# ── Test 6: old anchor-only commit (past finished_window) + no pid -> dead, never finished ─
+# LANE-LIVENESS-PROVE-03 gap 1: Test 3's unborn-HEAD control proves the
+# no-commit case falls through to dead. It does NOT prove the more realistic
+# case -- a worktree with exactly one commit (the lane's own "lane <ID>
+# anchor" pattern, e.g. `git log --oneline` in THIS repo), made hours ago
+# (older than LEADV2_LANE_FINISHED_WINDOW_S). A buggy "HEAD exists at all ->
+# finished" variant (ignoring commit age) would still pass Test 3 (no commit
+# -> commit_age_s() returns None -> falls through) while wrongly reporting
+# finished here.
+
+test_6_old_anchor_commit_is_dead_not_finished() {
+  log "Test 6: single OLD commit (older than LEADV2_LANE_FINISHED_WINDOW_S) + no live pid -> dead:*, never finished:*"
+  local repo state active_path tid dead_pid verdict
+  read -r repo state < <(_new_fixture)
+  active_path="$(_active_yaml "$repo" "$state")"
+  dead_pid="$(_dead_pid)"
+  # 7200s (2h): well past LEADV2_LANE_FINISHED_WINDOW_S (1800s default).
+  _commit_aged "$repo" "lane anchor" 7200
+  tid="OLD-ANCHOR-COMMIT-DEAD"
+  _bypass_reconcile_grace "$repo" "$state"
+
+  cat > "$active_path" <<YAML
+sessions:
+  - task_id: ${tid}
+    session_id: s6
+    started_at: "2020-01-01T00:00:00+00:00"
+    phase: build
+    pid: ${dead_pid}
+    pid_birth: null
+    worktree: "${repo}"
+    protocol_version: 2
+    backend: terminal
+    last_pulse_at: "2020-01-01T00:00:00+00:00"
+    stale: false
+YAML
+
+  verdict="$(_placement_probe "$repo" "$tid" "$state")"
+
+  if [[ "$verdict" == dead:* ]] && ! _is_live_verdict "$verdict"; then
+    pass "Test 6: dead pid + commit older than finished_window -> verdict=$verdict (dead, never finished)"
+  else
+    fail "Test 6: verdict=$verdict (must be dead:*, never finished:* or alive/starting)"
+  fi
+}
+
+# ── Test 7: stale 'starting' registration (age > LEADV2_LANE_STARTING_MAX_S) -> dead, never stuck starting ─
+# LANE-LIVENESS-PROVE-03 gap 2: Tier A ("starting:<age>") must be a strictly
+# bounded grace window. Past LEADV2_LANE_STARTING_MAX_S (300s default) it
+# must fall through to the SAME dead determination as "no evidence at all" --
+# this is the exact incident named in the mission: a lane stuck reporting
+# `lane_is_live verdict=starting:70` forever. 400s (past the 300s default,
+# not a years-old timestamp like the other fixtures) pins the actual boundary
+# this incident lives on, rather than a value so extreme a broken age
+# computation could still accidentally pass.
+
+test_7_stale_starting_registration_ages_to_dead() {
+  log "Test 7: registration older than LEADV2_LANE_STARTING_MAX_S (300s default), no pid, no stream -> dead:*, never starting:*"
+  local repo state active_path tid dead_pid started_at verdict
+  read -r repo state < <(_new_fixture)   # unborn HEAD -- isolates the starting-window logic from the finished-check
+  active_path="$(_active_yaml "$repo" "$state")"
+  dead_pid="$(_dead_pid)"
+  started_at="$(_iso_ago 400)"
+  tid="STALE-STARTING-REG-DEAD"
+  _bypass_reconcile_grace "$repo" "$state"
+
+  cat > "$active_path" <<YAML
+sessions:
+  - task_id: ${tid}
+    session_id: s7
+    started_at: "${started_at}"
+    phase: build
+    pid: ${dead_pid}
+    pid_birth: null
+    worktree: "${repo}"
+    protocol_version: 2
+    backend: terminal
+    last_pulse_at: "${started_at}"
+    stale: false
+YAML
+
+  verdict="$(_placement_probe "$repo" "$tid" "$state")"
+
+  if [[ "$verdict" == dead:* ]] && ! _is_live_verdict "$verdict"; then
+    pass "Test 7: registration aged past STARTING_MAX with no pid/stream -> verdict=$verdict (dead, never stuck starting)"
+  else
+    fail "Test 7: verdict=$verdict (must be dead:*, never starting:* -- the stuck-starting incident)"
+  fi
+}
+
+# ── Test 8: live pid + stale (but not abandoned) stream -> never dead/finished ──
+# LANE-LIVENESS-PROVE-03 gap 3 PROBE FINDING: `grep -n "cwd" leadv2-lane-
+# liveness.sh` has ZERO matches -- no cwd-based corroboration exists in
+# production code today. What DOES exist: a live pid with a log/stream older
+# than LEADV2_LANE_SILENT_MAX_S (900s) but younger than
+# LEADV2_LANE_ABANDON_MAX_S (3600s) resolves "silent:<age>" by design (see
+# the D4/B8 comments in leadv2-lane-liveness.sh, a few lines below the
+# is_fresh ladder) -- "alive" is reserved for a FRESH log. This test proves
+# the actual, load-bearing guarantee: a genuinely live worker (real spawned
+# process, cwd == the lane worktree) whose stream merely went quiet is NEVER
+# read as dead or finished, matching leadv2-dispatch-code.sh's own placement
+# gate (Step 5: only verdict==alive or starting:* is treated as live) --
+# "silent" is deliberately excluded from both. Promoting a cwd-matched silent
+# lane to "alive" would be a real, separate feature change to that SAME
+# consumer (out of LANE_WRITES for this task) -- documented here as
+# out-of-scope, not implemented.
+
+test_8_live_pid_stale_stream_never_dead_or_finished() {
+  log "Test 8: live pid whose cwd is the lane worktree + STALE (but < ABANDON_MAX) stream mtime -> must never read dead or finished"
+  local repo state active_path log_rel log_abs tid verdict
+  read -r repo state < <(_new_fixture)
+  active_path="$(_active_yaml "$repo" "$state")"
+  tid="LIVE-PID-STALE-STREAM"
+  mkdir -p "$repo/docs/handoff/${tid}"
+  log_rel="docs/handoff/${tid}/developer.stream.jsonl"
+  log_abs="$repo/$log_rel"
+  printf '{"type":"assistant","text":"still working, quietly"}\n' > "$log_abs"
+  _set_mtime_ago "$log_abs" 1500   # between SILENT_MAX (900s) and ABANDON_MAX (3600s)
+  _start_sleeper_in "$repo"
+  _bypass_reconcile_grace "$repo" "$state"
+
+  python3 - "$active_path" "$_SLEEPER_PID" "$tid" "$log_rel" "$repo" <<'PY'
+import sys, yaml
+path, pid, tid, log_path, worktree = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+doc = {"sessions": [{
+    "task_id": tid, "session_id": "s8", "started_at": "2020-01-01T00:00:00+00:00",
+    "phase": "build", "pid": pid, "pid_birth": None, "worktree": worktree,
+    "protocol_version": 2, "backend": "terminal", "log_path": log_path,
+    "last_pulse_at": "2020-01-01T00:00:00+00:00", "stale": False,
+}]}
+with open(path, "w") as fh:
+    yaml.safe_dump(doc, fh)
+PY
+
+  verdict="$(_placement_probe "$repo" "$tid" "$state")"
+
+  if [[ "$verdict" == silent:* ]]; then
+    pass "Test 8: live pid + stale-but-not-abandoned stream -> verdict=$verdict (silent, never dead/finished)"
+  else
+    fail "Test 8: verdict=$verdict (expected silent:* -- a live worker's lane must never read dead or finished)"
+  fi
+  _stop_sleeper
+}
+
+# ── Test 9: recycled pid (well-formed birth mismatch) -> dead, never alive ──
+# LANE-LIVENESS-PROVE-03 gap 4 PROBE FINDING: this suite cannot force a real
+# ppid=1 orphan for a process it spawns (only init can be the real parent).
+# The production defense against "an unrelated process now holds the pid our
+# registry remembers" (the real risk an orphan-with-the-same-name poses) is
+# birth-time (lstart) corroboration, gated by LEADV2_LANE_PID_IDENTITY
+# (default ON) -- see pid_state() in leadv2-lane-liveness.sh. That hook is
+# already exercised directly by test-lane-registry-self-deadlock.sh
+# (case (b): worker_pid alive, birth mismatch -> dead:*, pid_identity=
+# mismatch). This test reuses the SAME existing hook/pattern ($$ -- this test
+# process, genuinely alive -- with a well-formed-but-wrong recorded birth) to
+# prove the identity defense also holds inside the finished/dead ladder this
+# suite is scoped to: a bare `kill(pid, 0)` alone is never sufficient to
+# read a lane alive.
+
+test_9_recycled_pid_never_reads_alive() {
+  log "Test 9: pid alive but recorded birth mismatches observed lstart (pid reuse / an orphan sharing the pid number) -> dead:*, never alive"
+  local repo state active_path tid verdict
+  read -r repo state < <(_new_fixture)   # unborn HEAD, no stream -- isolates the identity check
+  active_path="$(_active_yaml "$repo" "$state")"
+  tid="RECYCLED-PID-NOT-ALIVE"
+  _bypass_reconcile_grace "$repo" "$state"
+
+  cat > "$active_path" <<YAML
+sessions:
+  - task_id: ${tid}
+    session_id: s9
+    started_at: "2020-01-01T00:00:00+00:00"
+    phase: build
+    pid: $$
+    pid_birth: "Mon Jan  1 00:00:00 2000"
+    worktree: "${repo}"
+    protocol_version: 2
+    backend: terminal
+    last_pulse_at: "2020-01-01T00:00:00+00:00"
+    stale: false
+YAML
+
+  verdict="$(_placement_probe "$repo" "$tid" "$state")"
+
+  if [[ "$verdict" == dead:* ]] && ! _is_live_verdict "$verdict"; then
+    pass "Test 9: recycled/mismatched pid -> verdict=$verdict (dead; a bare kill(0) alone never proves identity)"
+  else
+    fail "Test 9: verdict=$verdict (must be dead:* -- an alive-but-mismatched pid must never read alive)"
+  fi
+}
+
 # ── Test 5a: mutation gate -- leadv2-lane-liveness.sh finished-check ────────
 
 test_5a_mutation_gate_liveness() {
@@ -486,6 +696,10 @@ test_1_live_pid_alive_not_escalated
 test_2_finished_no_escalation_redispatch_admitted
 test_3_dead_no_commit_escalates
 test_4_fresh_stream_does_not_override_finished
+test_6_old_anchor_commit_is_dead_not_finished
+test_7_stale_starting_registration_ages_to_dead
+test_8_live_pid_stale_stream_never_dead_or_finished
+test_9_recycled_pid_never_reads_alive
 test_5a_mutation_gate_liveness
 test_5b_mutation_gate_snapshot
 
