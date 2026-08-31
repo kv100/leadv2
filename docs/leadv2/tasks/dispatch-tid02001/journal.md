@@ -80,3 +80,4 @@
 - 2026-08-30T21:13:51Z [decision] dispatch_terminal task=tid02001 terminal=landed cause=close
 - 2026-08-31T00:28:23Z [decision] dispatch_terminal task=tid02001 terminal=landed cause=close
 - 2026-08-31T00:44:47Z [decision] dispatch_terminal task=tid02001 terminal=landed cause=close
+- 2026-08-31T01:36:39Z [decision] dispatch_terminal task=tid02001 terminal=landed cause=close

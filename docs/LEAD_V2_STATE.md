@@ -4,12 +4,11 @@
 
 # /leadv2 Active Sessions
 
-Last updated: 2026-08-31T01:22:32Z
+Last updated: 2026-08-31T01:29:14Z
 
 | task_id | phase | class | started_at | daemon |
 |---|---|---|---|---|
-| DISPATCH-PIN-CLUSTER-01 | build | Heavy | 2026-08-31T01:15 | no |
-| ANTI-SILENCE-STATUSLINE-01 | intake | Heavy | 2026-08-31T01:22 | no |
+| PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 | intake | Heavy | 2026-08-31T01:29 | no |
 
-Sessions: 2 / 3 max
+Sessions: 1 / 3 max
 
