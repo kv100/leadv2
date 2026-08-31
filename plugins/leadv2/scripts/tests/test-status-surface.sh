@@ -4,10 +4,9 @@
 # Harness style of test-acceptance-shape.sh: set -uo pipefail, PASS/FAIL
 # counters, lv2_mktemp_dir sandbox, exit 1 if FAIL>0.
 #
-# Every source is env-injected: all 5 LEADV2_STATUS_* vars (plus HOME) point at
-# a throwaway sandbox, so this NEVER touches the real ~/.claude. The renderer is
-# read-only, so we additionally assert no symlink appears in the sandbox after a
-# run (R1: rendering must not mutate a worktree's symlink set).
+# Every renderer source is env-injected into a throwaway sandbox. In particular,
+# questions and handoff paths are never allowed to default back to the checkout:
+# the status widget renders --all and its ❓ count must be fixture-controlled.
 #
 # Run: bash plugins/leadv2/scripts/tests/test-status-surface.sh
 
@@ -55,15 +54,30 @@ PY
 }
 
 # ── fresh sandbox builder ──────────────────────────────────────────────────
-# globals: SB (root), STATE_DIR, LEDGER_DIR, RUNS_ROOT, LEDGER
+# globals: SB (root), STATE_DIR, LEDGER_DIR, RUNS_ROOT, LEDGER, QUESTIONS_DIR,
+# HANDOFF_DIR. NEW_SB also exports every optional status source with a sandbox
+# default, so direct widget invocations cannot read a founder's live state.
 NEW_SB() {
   SB="$(lv2_mktemp_dir ss-surface)"
   STATE_DIR="${SB}/state"
   LEDGER_DIR="${SB}/dispatch-ledger"
   RUNS_ROOT="${SB}/cache"
-  mkdir -p "$STATE_DIR" "$LEDGER_DIR" "$RUNS_ROOT"
+  QUESTIONS_DIR="${SB}/questions"
+  HANDOFF_DIR="${SB}/handoff"
+  mkdir -p "$STATE_DIR" "$LEDGER_DIR" "$RUNS_ROOT" "$QUESTIONS_DIR" "$HANDOFF_DIR"
   LEDGER="${LEDGER_DIR}/testrepo.jsonl"
   : > "$LEDGER"
+  export LEADV2_STATUS_QUESTIONS_DIR="$QUESTIONS_DIR"
+  export LEADV2_STATUS_HANDOFF_DIR="$HANDOFF_DIR"
+  export LEADV2_STATUS_REPO_ROOT="$SB"
+  export LEADV2_STATUS_STATE_ROOT="${SB}/state-root"
+  export LEADV2_STATUS_CODEX_LOCKOUT="${SB}/codex-lockout.state"
+  export LEADV2_STATUS_SD_HOOK="${SB}/scheduled-decisions-hook.sh"
+  export LEADV2_STATUS_URGENT_LOG="${SB}/urgent.log"
+  export LEADV2_STATUS_SNAPSHOT="${SB}/status-snapshot.json"
+  export LEADV2_STATUS_CACHE_DIR="${SB}/status-cache"
+  export LEADV2_LIMITS_CACHE_DIR="${SB}/limits.d"
+  export LEADV2_LIMITS_REFRESH_SH="${SB}/stub-refresh.sh"
 }
 # run the renderer against the current sandbox (default mode unless $1=--oneline)
 # NOTE: we deliberately do NOT override HOME here. The 5 LEADV2_STATUS_* vars
@@ -81,6 +95,8 @@ run_render() {
   LEADV2_STATUS_REPO_ROOT="$SB" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="${TASKS_YAML:-${SB}/tasks.yaml}" \
+  LEADV2_STATUS_QUESTIONS_DIR="$QUESTIONS_DIR" \
+  LEADV2_STATUS_HANDOFF_DIR="$HANDOFF_DIR" \
   bash "$RENDER" "$@"
 }
 # append a ledger row: _ledger <sig8> <arm> <handle> <state> <created_epoch>
@@ -128,6 +144,20 @@ sig_seen() { printf '%s\n' "$2" | awk -v s="$1" '$NF==s{f=1} END{exit !f}'; }
 # leadv2-lanes-snapshot.sh:175, and the suite env-injects every path it reads.)
 REAL_STATE="${HOME}/.claude/leadv2-state"
 TEST_PID=$$
+
+# ── 2. live lane: session pid=$$ renders live ──────────────────────────────
+NEW_SB
+cat > "${QUESTIONS_DIR}/fixture-pending.yaml" <<'EOF'
+status: pending
+question: fixture-owned question
+EOF
+qout="$(run_render --questions)"
+if printf '%s\n' "$qout" | grep -q '^questions (1)$' \
+   && printf '%s\n' "$qout" | grep -q '^fixture-pending '; then
+  pass "HERM-1: default renderer question count is fixture-owned"
+else
+  fail "HERM-1: default renderer question count is fixture-owned (got: $(printf '%s' "$qout" | tr '\n' '|'))"
+fi
 
 # ── 2. live lane: session pid=$$ renders live ──────────────────────────────
 NEW_SB
@@ -685,8 +715,8 @@ run_render_r4() {
   LEADV2_STATUS_REPO_ROOT="$SB" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
-  LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-}" \
-  LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-}" \
+  LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-$QUESTIONS_DIR}" \
+  LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-$HANDOFF_DIR}" \
   LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
   LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
   LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
@@ -705,8 +735,8 @@ run_bar_r4() {
   LEADV2_STATUS_REPO_ROOT="$SB" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
-  LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-}" \
-  LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-}" \
+  LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-$QUESTIONS_DIR}" \
+  LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-$HANDOFF_DIR}" \
   LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
   LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
   LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
@@ -1602,11 +1632,20 @@ else
 fi
 
 # BADGE-5 (R4): a header the badge cannot parse must route to ⚠, never a
-# confident 0 -- LANES_BROKEN must fire, not a silent zeroed count.
-if grep -q 'LANES_BROKEN=1' "$BAR"; then
-  pass "BADGE-5: badge source still carries the LANES_BROKEN fail-safe path"
+# confident 0. This is behavioral: a fixture renderer returns a malformed
+# lanes section and the production widget must fail safe.
+NEW_SB
+BADGE_BROKEN_RENDERER="${SB}/broken-renderer.sh"
+cat > "$BADGE_BROKEN_RENDERER" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'supervisor: OFF' 'lanes malformed' '---' 'questions (0)'
+EOF
+chmod +x "$BADGE_BROKEN_RENDERER"
+barout="$(LEADV2_STATUS_SINGLE_LEAD=0 LEADV2_STATUS_RENDERER="$BADGE_BROKEN_RENDERER" bash "$BAR" 2>/dev/null)"
+if printf '%s\n' "$barout" | sed -n '1p' | grep -q '⚠️ lanes не прочитаны'; then
+  pass "BADGE-5: malformed lanes header fails safe"
 else
-  fail "BADGE-5: badge source still carries the LANES_BROKEN fail-safe path"
+  fail "BADGE-5: malformed lanes header fails safe (got: $(printf '%s' "$barout" | sed -n '1p'))"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
