@@ -126,6 +126,31 @@ has_arm() { # <space-separated-list> <arm>
   [[ "${hay}" == *"${needle}"* ]]
 }
 
+# ── harness: extract the real _select_base_arm + resolve_arm from the
+#    production script, byte for byte, and drive resolve_arm's OWN resolver
+#    invocation (the actual call site at "--base-arm ${_base_arm}") -- not
+#    _select_base_arm in isolation. GLM_POLICY_RESOLVER is pointed at a stub
+#    that records the argv it was invoked with to $RESOLVER_SEEN_FILE, so the
+#    test can assert on what resolve_arm actually handed the resolver.
+resolve_arm_harness() { # <out-file> <resolver-stub-py>
+  local out="$1" stub="$2"
+  {
+    printf '#!/usr/bin/env bash\nset -uo pipefail\n'
+    sed -n '/^_select_base_arm()/,/^}$/p' "${DISPATCH}"
+    sed -n '/^resolve_arm()/,/^}$/p' "${DISPATCH}"
+    printf 'ROUTING_YAML="%s"\nGLM_POLICY_RESOLVER="%s"\nDC_PROTECTED="${DC_PROTECTED:-0}"\nDC_SAFETY="${DC_SAFETY:-0}"\nDC_KIND="${DC_KIND:-}"\nDC_TASK_CLASS="${DC_TASK_CLASS:-standard}"\nDC_SUBSYSTEM_COUNT="${DC_SUBSYSTEM_COUNT:-0}"\nDC_INTERACTIVE="${DC_INTERACTIVE:-0}"\nDC_UI_JUDGMENT="${DC_UI_JUDGMENT:-0}"\nDC_GLM_FAILURES="${DC_GLM_FAILURES:-0}"\nDC_GLM_LOCK_BUSY="${DC_GLM_LOCK_BUSY:-0}"\nresolve_arm\n' "${ROUTING}" "${stub}"
+  } > "${out}"
+}
+cat > "${FIXTURE}/resolver-stub.py" <<'PY'
+import os, sys
+with open(os.environ["RESOLVER_SEEN_FILE"], "w") as f:
+    f.write(" ".join(sys.argv[1:]))
+print("arm=stub")
+print("rule=none")
+print("reason=stub")
+print("tier=")
+PY
+
 run_arbiter() { # <routing-yaml> <descriptor-json>
   LEADV2_ROUTE_ARBITER_ROUTING_YAML="$1" \
   LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${FIXTURE}/quota-live.sh" \
@@ -222,6 +247,25 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
+# Case 5: resolve_arm's OWN resolver call (the real call site: the
+#         "--base-arm ${_base_arm}" argv element it builds and hands to
+#         GLM_POLICY_RESOLVER) must carry cheap-arm, not a hardcoded
+#         constant. Case 4 alone cannot catch a regression where resolve_arm
+#         stops using _select_base_arm's output -- this drives resolve_arm()
+#         itself and inspects the argv a stub resolver actually received.
+# ══════════════════════════════════════════════════════════════════════════
+h5="${FIXTURE}/h5.sh"; resolve_arm_harness "${h5}" "${FIXTURE}/resolver-stub.py"
+seen5="${FIXTURE}/resolver-seen.txt"
+rm -f "${seen5}"
+RESOLVER_SEEN_FILE="${seen5}" DC_PROTECTED=0 DC_KIND=code DC_TASK_CLASS=standard bash "${h5}" >/dev/null
+seen5_val="$(cat "${seen5}" 2>/dev/null || printf '')"
+if [[ "${seen5_val}" == *"--base-arm cheap-arm"* ]]; then
+  pass "case5: resolve_arm's own resolver invocation carries base-arm=cheap-arm — argv='${seen5_val}'"
+else
+  fail "case5: expected '--base-arm cheap-arm' in resolve_arm's resolver argv, got '${seen5_val}'"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
 # Mutation proofs (E2E-KILLRATE-01 discipline): mutate the PRODUCTION
 # function body in a scratch copy, prove the correct-code case goes RED under
 # the mutation, then re-prove GREEN against the unmutated tree. Never against
@@ -298,6 +342,10 @@ out3b="$(DC_PROTECTED=0 DC_KIND=code DC_TASK_CLASS=light bash "${h3}")"
 has_arm "${out3b}" "free-arm" && pass "post-mutation GREEN: case3 (ladder) still passes" || fail "post-mutation GREEN: case3 (ladder) regressed"
 out4b="$(DC_PROTECTED=0 DC_KIND=code DC_TASK_CLASS=standard bash "${h4}")"
 [[ "${out4b}" == "cheap-arm" ]] && pass "post-mutation GREEN: case4 still passes" || fail "post-mutation GREEN: case4 regressed"
+rm -f "${seen5}"
+RESOLVER_SEEN_FILE="${seen5}" DC_PROTECTED=0 DC_KIND=code DC_TASK_CLASS=standard bash "${h5}" >/dev/null
+seen5b_val="$(cat "${seen5}" 2>/dev/null || printf '')"
+[[ "${seen5b_val}" == *"--base-arm cheap-arm"* ]] && pass "post-mutation GREEN: case5 still passes" || fail "post-mutation GREEN: case5 regressed"
 
 # ── repo hygiene: no repo path or real state root touched by this suite ────
 _hygiene_after="$(git -C "${PLUGIN_ROOT}" diff -- . 2>/dev/null)"
