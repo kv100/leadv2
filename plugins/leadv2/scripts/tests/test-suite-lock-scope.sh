@@ -285,7 +285,25 @@ path_a_mut="$(discover_default_path "$RUNNER_A")"
 path_b_mut="$(discover_default_path "$RUNNER_B")"
 ok=1
 [[ "$path_a_mut" == "$path_b_mut" ]] || ok=0
-check "case7 RED: under the mutation, two different roots collide on one file" "$ok"
+check "case7 RED-pre: under the mutation, two different roots collide on one file" "$ok"
+
+# The required negative control is behavioral, not just a path equality: run
+# the exact case-1 scenario under the mutation and prove it FAILS there.
+ok=1
+( exec 9>"$path_a_mut"; flock -x 9; sleep 3 ) &
+holder_pid=$!
+sleep 0.3
+if out_mut="$(env -u LEADV2_SUITE_LOCK_FILE LEADV2_SUITE_LOCK_WAIT_S=1 LEADV2_SUITE_LOCK_PROBE=1 \
+  bash "$RUNNER_B" 2>&1)"; then
+  rc_mut=0
+else
+  rc_mut=$?
+fi
+kill "$holder_pid" 2>/dev/null || true
+wait "$holder_pid" 2>/dev/null || true
+[[ "$rc_mut" -ne 0 ]] || ok=0
+echo "$out_mut" | grep -q "FATAL lock_timeout file=$path_a_mut" || ok=0
+check "case7 RED: with the machine-wide literal restored, the case-1 scenario FAILS (rc=$rc_mut)" "$ok"
 
 cp -p "$RUNNER_REAL.lockscope-backup" "$RUNNER_REAL"
 mutated=0
@@ -295,6 +313,18 @@ path_b_fixed="$(discover_default_path "$RUNNER_B")"
 ok=1
 [[ -n "$path_a_fixed" && -n "$path_b_fixed" && "$path_a_fixed" != "$path_b_fixed" ]] || ok=0
 check "case7 GREEN: reverted -- two different roots resolve to two different files again" "$ok"
+
+# Same scenario after revert must succeed again, or the RED meant nothing.
+if out_fixed="$(env -u LEADV2_SUITE_LOCK_FILE LEADV2_SUITE_LOCK_WAIT_S=5 LEADV2_SUITE_LOCK_PROBE=1 \
+  bash "$RUNNER_B" 2>&1)"; then
+  rc_fixed=0
+else
+  rc_fixed=$?
+fi
+ok=1
+[[ "$rc_fixed" -eq 0 ]] || ok=0
+echo "$out_fixed" | grep -q 'lock-probe acquired' || ok=0
+check "case7 GREEN: reverted -- the case-1 scenario passes again (rc=$rc_fixed)" "$ok"
 rm -f "$path_a_mut" "$path_b_mut" "$path_a_fixed" "$path_b_fixed" 2>/dev/null || true
 
 echo "[LOCK-SCOPE] pass=$pass fail=$fail"
