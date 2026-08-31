@@ -26,7 +26,15 @@ _admission_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 # has no lib/ copy of this new file).
 _LANE_GUARD_SH="${_admission_lib_dir}/leadv2-lane-guard.sh"
 [[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
-[[ -f "${_LANE_GUARD_SH}" ]] && source "${_LANE_GUARD_SH}"
+if [[ -f "${_LANE_GUARD_SH}" ]]; then
+  source "${_LANE_GUARD_SH}" || return 1
+else
+  # This library calls the class helpers from the lane guard below.  Continuing
+  # without them turns a consumer-farm install into an undefined-command path.
+  printf '[leadv2-admission-class] ERROR: lane guard unavailable local=%s canonical=%s\n' \
+    "${_admission_lib_dir}/leadv2-lane-guard.sh" "${_LANE_GUARD_SH}" >&2
+  return 1
+fi
 
 # Same normalization pipeline as leadv2-dispatch-code.sh's compute_sig — one
 # source of truth for the mission digest so a receipt minted by the pump is

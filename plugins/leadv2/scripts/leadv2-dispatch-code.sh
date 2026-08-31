@@ -480,6 +480,11 @@ _RED_PROOF_SH="${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
 _LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
 [[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
 [[ -f "${_LANE_GUARD_SH}" ]] && source "${_LANE_GUARD_SH}"
+# Keep the consumer-farm proof at the loader boundary.  The broader existing
+# source-only seam runs after admission-class can independently load the guard.
+if [[ "${LEADV2_DISPATCH_GUARD_SOURCE_ONLY:-0}" == "1" && "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
 ROUTING_CONFIG_ABSENT=0
 # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
