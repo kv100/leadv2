@@ -173,8 +173,14 @@ def select_arms(arms, l1_result, quota, estimate, samples, headroom_weights):
         "samples": {row["arm"]: row["sample"] for row in vector},
         "winner": ordered_rows[0]["arm"] if ordered_rows else None,
         "winner_reason": "max_sample_x_headroom" if winner_row else "all_arms_filtered",
-        "task_class": "%s:%s" % (estimate.get("work_kind", "unknown"),
-                                     "short" if estimate.get("duration_class") == "short" and estimate.get("complexity") in ("trivial", "simple") else "long"),
+        # COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #2): carry complexity as its
+        # own segment instead of collapsing duration_class+complexity into one
+        # short/long binary -- a trivial one-liner and a multi-subsystem
+        # refactor must not share the same task_class whenever both happen to
+        # read duration_class=="long".
+        "task_class": "%s:%s:%s" % (estimate.get("work_kind", "unknown"),
+                                     estimate.get("duration_class", "unknown"),
+                                     estimate.get("complexity", "unknown")),
         "estimate_id": estimate.get("estimate_id", "unknown"),
     }
 

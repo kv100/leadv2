@@ -154,6 +154,8 @@ cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
 # (leadv2-dispatch-code.sh) only special-cases rc=3 all_arms_capped as a
 # hard refusal (exit 4); any other non-zero rc already falls open to the
 # ladder, so no caller-side change is needed for the split itself.
+complexity=str(d.get('complexity','unknown')).lower()
+duration_class=str(d.get('duration_class','unknown')).lower()
 capable=[c for c in cells if kind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not require_trusted or c.get('protected',False)) and (allowed is None or c.get('arm') in allowed)]
 if not capable:
     print('arm=refuse model=none tier=none reason=no_capable_cell chain= %s' % ufmt())
@@ -170,8 +172,37 @@ if not ok:
 # when freepool is actually in the candidate set; otherwise the task never
 # contended for it and no floor token is emitted.
 floor_reason = '%s/%s' % (size_raw, kind) if (floor_applies and any(c.get('arm')=='freepool' for c in ok)) else ''
+# COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #3, "who does it"): data-driven
+# cost penalty, same mechanism the freepool floor above already uses (a cost
+# bump on the sort's dominant key), so a complex/long task naturally sorts
+# past a cell whose config marks it too cheap for that shape of work. Config-
+# only -- router_v2.complexity_penalty absent or empty is a no-op (today's
+# behavior, byte-identical). Never a hardcoded arm name: rules match cell
+# `tags` (e.g. cheap/mechanical/bulk/background), which config already uses
+# to describe glm-flash/freepool/glm above.
+complexity_penalty_rules=((data.get('router_v2') or {}).get('complexity_penalty') or [])
+def complexity_penalty(c):
+    total=0.0
+    tags=set(c.get('tags') or [])
+    for rule in complexity_penalty_rules:
+        if not isinstance(rule, dict):
+            continue
+        want_complexity=set(rule.get('complexities') or [])
+        want_duration=set(rule.get('duration_classes') or [])
+        penalize_tags=set(rule.get('penalize_tags') or [])
+        if want_complexity and complexity not in want_complexity:
+            continue
+        if want_duration and duration_class not in want_duration:
+            continue
+        if penalize_tags and not (tags & penalize_tags):
+            continue
+        try:
+            total += float(rule.get('penalty', 0))
+        except (TypeError, ValueError):
+            continue
+    return total
 def ecost(c):
-    return float(c.get('cost',999)) + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0)
+    return float(c.get('cost',999)) + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + complexity_penalty(c)
 ok.sort(key=lambda c:(ecost(c),u[c['provider']],c['arm'],c.get('tier','')))
 seen=set(); chain=[]
 for c in ok:
@@ -242,6 +273,10 @@ _extra = (' size_unmapped=%s' % size_unmapped) if size_unmapped else ''
 # (round-1 H3, the journal line was unreachable dead code).
 _floor = (' floor_applied=1 floor_reason=%s' % floor_reason) if floor_reason else ''
 _fmode = ' floor_mode=%s floor_mode_source=%s' % (floor_mode, floor_mode_src)
-print('arm=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode))
+# COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #3): name the estimate that fed
+# this decision -- absent from the descriptor (an older/unpatched caller)
+# renders as "unknown", never a blank/missing token.
+_complexity = ' complexity=%s duration_class=%s' % (complexity, duration_class)
+print('arm=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity))
 PY
 }

@@ -191,7 +191,10 @@ leadv2-inbox:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
 leadv2-ask:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
 ask-lead:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
 leadv2-broad-status:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
-leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh"
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-complexity-routing.sh
+leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-complexity-routing.sh
+leadv2-router-v2:plugins/leadv2/scripts/tests/test-complexity-routing.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
