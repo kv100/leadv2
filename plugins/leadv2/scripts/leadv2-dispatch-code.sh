@@ -4834,6 +4834,11 @@ _spawn_worker_body() {
       if [[ "${arm}" == "glm-flash" ]]; then
         _glm_model="glm-5.3-flash"
       fi
+      # EFFORT-IS-NOT-WIRED-01: glm-coder.sh has no effort knob (prompt-level
+      # only, per docs/model-effort-matrix.md's lane table) -- a silently
+      # ignored resolved effort is indistinguishable from no effort at all, so
+      # journal the drop as a fact instead of pretending the value took effect.
+      emit decision "effort_dropped by=router arm=${arm} task=${sig8} effort=${RESOLVED_EFFORT:-medium} reason=no_effort_control"
       # FIX PASS 4: `9>&-` closes the lock fd for this call as defense-in-depth -- the
       # redesign already never holds the dispatch lock across spawn (spawn_worker runs
       # outside any lock this script itself opens), but a launcher spawns a DETACHED
@@ -4884,6 +4889,12 @@ _spawn_worker_body() {
       # (kimi-coder.sh is a clone of glm-coder.sh). The only launcher-specific
       # difference is its launch-probe refusal rc (77, vs. glm's 1/2) --
       # refusal_reason() already knows about that distinction.
+      # EFFORT-IS-NOT-WIRED-01: kimi (Moonshot) has no effort knob to wire --
+      # config/model-capability.yaml:193 records reasoning_effort as CURRENTLY
+      # LOCKED TO MAX on Moonshot's side (their own docs), so passing a lower
+      # resolved effort here would silently contradict that operational fact
+      # rather than change anything; journal the drop instead of pretending.
+      emit decision "effort_dropped by=router arm=${arm} task=${sig8} effort=${RESOLVED_EFFORT:-medium} reason=no_effort_control"
       out="$(bash "${KIMI_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
@@ -4923,6 +4934,9 @@ _spawn_worker_body() {
       # about both.
       local _fp_spawn_start _fp_spawn_ok=0
       _fp_spawn_start="$(date +%s)"
+      # EFFORT-IS-NOT-WIRED-01: freepool-coder.sh has no effort knob (same
+      # glm-coder.sh clone shape, prompt-level only) -- journal the drop.
+      emit decision "effort_dropped by=router arm=${arm} task=${sig8} effort=${RESOLVED_EFFORT:-medium} reason=no_effort_control"
       # PHASE-DISCIPLINE-01 D6 (a38a5bd fix): export FREEPOOL_ROLE HERE, at
       # the real dispatch call site, from the admission TaskEstimate's
       # work_kind (review->review, build/diagnose->implement, docs->bulk).
@@ -4984,9 +4998,14 @@ _spawn_worker_body() {
       # process having already been `cd`'d there by its caller -- same value glm/codex now
       # get via --cwd, so all three arms are cwd-independent of how dispatch-code.sh itself
       # was invoked.
+      # EFFORT-IS-NOT-WIRED-01: claude-subsession.sh's --effort flag is passed
+      # straight through to the `claude` CLI's own --effort arg untouched; an
+      # empty RESOLVED_EFFORT (arbiter never ran) omits the flag, same as before.
+      local -a _sonnet_effort_args=()
+      [[ -n "${RESOLVED_EFFORT:-}" ]] && _sonnet_effort_args=(--effort "${RESOLVED_EFFORT}")
       out="$(cd "${WORK_ROOT}" && PROJECT_ROOT="${PROJECT_ROOT}" bash "${SUBSESSION_BIN}" \
              --role developer --model sonnet \
-             --task-id "dispatch-${sig8}" --mission-file "${mfile}" 2>"${errf}" 9>&-)"; rc=$?
+             --task-id "dispatch-${sig8}" --mission-file "${mfile}" "${_sonnet_effort_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
       rm -f "${mfile}"
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
@@ -5081,6 +5100,12 @@ _spawn_worker_body() {
       # resolves "standard" from the yaml today, but honor a manually-forced top without
       # hard-failing the spawn.
       [[ "${tier}" == "top" ]] && tier_args+=(--reason "leadv2-dispatch-code: codex-fitting mission")
+      # EFFORT-IS-NOT-WIRED-01: codex-task.sh's `task` subcommand takes an
+      # explicit --effort on the wire ({none,minimal,low,medium,high,xhigh});
+      # an explicit value here overrides the --tier default it would otherwise
+      # derive (_tier_model_effort). Absent RESOLVED_EFFORT (arbiter never ran)
+      # falls back to the tier's own default, same as before this change.
+      [[ -n "${RESOLVED_EFFORT:-}" ]] && tier_args+=(--effort "${RESOLVED_EFFORT}")
       # `9>&-` closes the lock fd for this call as defense-in-depth -- same rationale as
       # the glm/sonnet arms above: codex-task.sh's --background path detaches a job worker
       # that must never inherit an open fd 9.
@@ -6826,6 +6851,11 @@ exit is treated as an incident."
   # RESOLVED_CODEX_TIER is read by _spawn_worker_body's codex case (global, not passed as
   # a positional -- spawn_worker's signature is shared across all three spawning arms).
   [[ "${arm}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
+  # EFFORT-IS-NOT-WIRED-01: legacy resolver has no effort dimension (it never
+  # reads config/leadv2-routing.yaml's effort_matrix); default to medium
+  # (docs/model-effort-matrix.md's "DEFAULT for every spawn") until the T17
+  # arbiter below resolves a data-driven value from the SAME cell as arm/tier.
+  export RESOLVED_EFFORT="${RESOLVED_EFFORT:-medium}"
 
   # ANTI-DOUBLE-SPEND: one task = one model.
   # R1 FIX (Finding 3): --force NEVER bypasses the duplicate-task_sig refusal in the
@@ -6978,6 +7008,10 @@ exit is treated as an incident."
     _arb_util="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
     _arb_tier="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*tier=\([^ ]*\).*/\1/p')"
     _arb_model="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
+    # EFFORT-IS-NOT-WIRED-01: effort comes out of this SAME arbiter call, same
+    # cell as arm/model/tier -- see leadv2-route-arbiter.sh's effort_matrix lookup.
+    local _arb_effort
+    _arb_effort="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*[[:space:]]effort=\([^ ]*\).*/\1/p')"
     # FP-08 fix-round (H1/H3): the capability-floor journal comes from the
     # arbiter's OWN output line for THIS invocation (`floor_applied=1
     # floor_reason=<raw-class>/<kind>`), emitted when the demotion is APPLIED
@@ -7016,7 +7050,8 @@ exit is treated as an incident."
         # worker_spawned model could legitimately differ.
         arm="${candidate_arms[0]}"; reason="${_arb_reason:-cheapest_capable}"; router_label="arbiter"
         [[ "${arm}" == codex ]] && export RESOLVED_CODEX_TIER="${_arb_tier:-standard}"
-        emit decision "route_resolved by=arbiter role=worker arm=${arm} model=${_arb_model:-${arm}} tier=${RESOLVED_CODEX_TIER:-${_arb_tier:-standard}} task=${sig8} reason=${reason} arbiter_pick=${_arb_arm} ${_arb_util}"
+        export RESOLVED_EFFORT="${_arb_effort:-medium}"
+        emit decision "route_resolved by=arbiter role=worker arm=${arm} model=${_arb_model:-${arm}} tier=${RESOLVED_CODEX_TIER:-${_arb_tier:-standard}} effort=${RESOLVED_EFFORT} task=${sig8} reason=${reason} arbiter_pick=${_arb_arm} ${_arb_util}"
       else
         candidate_arms=("${_pre_arb_candidate_arms[@]}")
         emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder note=chain_not_dispatchable arbiter_pick=${_arb_arm}"

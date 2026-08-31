@@ -192,6 +192,22 @@ except Exception: last=''
 # the same price tier as an unfloored cost-1 arm.
 price=ecost(ok[0]); alternatives=[c for c in ok if ecost(c)==price and c['arm']!=last]
 w=alternatives[0] if alternatives else ok[0]
+# EFFORT-IS-NOT-WIRED-01: resolve effort from the SAME winning cell `w`, in
+# the SAME call that picked the arm -- never a second decision. Data-driven
+# (config/leadv2-routing.yaml router_v2.effort_matrix), never a name literal:
+# rows match on the winning cell's tags/kind/protected, first match wins, a
+# missing/empty matrix (or no match) falls open to 'medium' (never crashes).
+def _effort_row_matches(row):
+    if row.get('default'): return True
+    if 'tags' in row:
+        if not (set(row.get('tags') or []) & set(w.get('tags') or [])): return False
+    if 'kinds' in row and kind not in (row.get('kinds') or []): return False
+    if 'protected' in row and bool(row['protected']) != protected: return False
+    return True
+effort='medium'
+for _row in ((data.get('router_v2') or {}).get('effort_matrix') or []):
+    if _effort_row_matches(_row):
+        effort = _row.get('effort', 'medium'); break
 # FP-08 fix-round (M3/L1/L2): atomic write (same-dir tempfile + os.replace),
 # task-stamped, fd closed -- the old `json.dump(..., open(state,'w'))` inside
 # `try/except: pass` leaked the fd and, on a failed write, silently left the
@@ -226,6 +242,6 @@ _extra = (' size_unmapped=%s' % size_unmapped) if size_unmapped else ''
 # (round-1 H3, the journal line was unreachable dead code).
 _floor = (' floor_applied=1 floor_reason=%s' % floor_reason) if floor_reason else ''
 _fmode = ' floor_mode=%s floor_mode_source=%s' % (floor_mode, floor_mode_src)
-print('arm=%s model=%s tier=%s reason=cheapest_capable chain=%s %s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),','.join(rotated),ufmt(),_extra,_floor,_fmode))
+print('arm=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode))
 PY
 }
