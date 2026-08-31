@@ -71,6 +71,17 @@ if [[ -f "${ACTIVE_REGISTRY_SH}" ]]; then
     LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_consolidate_ephemeral_roots >/dev/null 2>&1 || true
   fi
 fi
+# ANTI-SILENCE-BEAT-ABORT-04: leadv2-active-registry.sh:45 declares its own
+# standalone policy `set -euo pipefail`, and `source` executes that in THIS
+# shell — `|| true` above only guards the source command's exit status, not
+# the shell option it leaves behind. With errexit on, the first failed
+# command substitution on the main path (the render below, fed a garbage
+# snapshot) kills the script BEFORE its `RC=$?` / degraded-beat abort paths:
+# a beat that fires and says nothing — no log line, no artifact, no ready
+# line (proven 2026-08-31: collector-garbage repro exits 1 with zero writes;
+# LEADV2_ACTIVE_REGISTRY_BIN=/nonexistent on the same repro exits 0 with the
+# full degraded artifact). Re-assert THIS script's own policy from line 22.
+set +e
 # PULSE-EMPTY-BOARD-01: empty-since cursor (survives across beats — an
 # empty board's duration is measured from the FIRST beat that found it
 # empty, never re-derived per-render) and the render's own epoch stamp.
@@ -1290,7 +1301,7 @@ PY
 RENDER_JSON="$(python3 "$RENDER_TMPDIR/render.py" "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" </dev/null)"
 RC=$?
 if [[ $RC -ne 0 || -z "$RENDER_JSON" || ! -f "$RENDER_JSON" ]]; then
-  printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
+  printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$BEAT_AT" >>"$LOG_FILE"
   # Same policy as the collector path: replace the artifact, then (and only
   # then) wake; refuse READY entirely if the replacement itself failed.
   if _write_degraded_status "рендер таблицы не выполнен (render failed)"; then
