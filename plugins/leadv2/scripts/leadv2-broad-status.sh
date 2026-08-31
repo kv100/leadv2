@@ -61,6 +61,16 @@ FOUNDER_STATUS_FULL_PATH="${LEADV2_FOUNDER_STATUS_FULL_PATH:-$PROJECT_ROOT/docs/
 COLLECTOR_SH="${LEADV2_STATUS_COLLECTOR_BIN:-$SCRIPT_DIR/leadv2-status-collector.sh}"
 TASKS_LIB_SH="${LEADV2_TASKS_LIB_BIN:-$SCRIPT_DIR/leadv2-tasks-lib.sh}"
 CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
+# Reconcile any own-repo lane rows stranded in ephemeral launcher state
+# before the collector takes its one board snapshot.  The registry function
+# filters by git common-dir, so this cannot import another repo's scratch row.
+ACTIVE_REGISTRY_SH="${LEADV2_ACTIVE_REGISTRY_BIN:-$SCRIPT_DIR/leadv2-active-registry.sh}"
+if [[ -f "${ACTIVE_REGISTRY_SH}" ]]; then
+  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${ACTIVE_REGISTRY_SH}" 2>/dev/null || true
+  if declare -F leadv2_active_consolidate_ephemeral_roots >/dev/null 2>&1; then
+    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_consolidate_ephemeral_roots >/dev/null 2>&1 || true
+  fi
+fi
 # PULSE-EMPTY-BOARD-01: empty-since cursor (survives across beats — an
 # empty board's duration is measured from the FIRST beat that found it
 # empty, never re-derived per-render) and the render's own epoch stamp.

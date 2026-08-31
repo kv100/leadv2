@@ -94,6 +94,111 @@ _leadv2_state_md() {
   printf -- '%s/docs/LEAD_V2_STATE.md' "${LEADV2_PROJECT_ROOT}"
 }
 
+# PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round 6: an interrupted/sandboxed
+# launcher can leave an otherwise real leadv2 lane in
+# <state-base>/.ephemeral/leadv2-lwt.*/active.yaml.  Those roots are useful
+# for scratch repos, but they are not a second production control plane: the
+# founder board reads the durable <state-base>/leadv2 registry.  Consolidate
+# only rows whose declared worktree belongs to THIS repository's git common
+# dir; a foreign scratch repository is never imported merely because it uses
+# the same state base.
+_leadv2_canonical_yaml_file() {
+  local resolver
+  resolver="$(_leadv2_state_path_sh)"
+  if [[ -x "$resolver" ]]; then
+    LEADV2_STATE_ROOT= PROJECT_ROOT="${LEADV2_PROJECT_ROOT}" "$resolver" --no-link active.yaml
+  else
+    printf -- '%s/docs/leadv2/active.yaml' "${LEADV2_PROJECT_ROOT}"
+  fi
+}
+
+leadv2_active_consolidate_ephemeral_roots() {
+  local common_dir state_base canonical lockfile source_root source_yaml source_common
+  common_dir="$(git -C "${LEADV2_PROJECT_ROOT}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  [[ -n "$common_dir" ]] || return 0
+  # Scratch fixtures intentionally use ephemeral state.  A remote or the
+  # project marker is the same real-repository predicate as state-path.sh.
+  if ! { git -C "${LEADV2_PROJECT_ROOT}" remote 2>/dev/null | grep -q . \
+      || [[ -f "${LEADV2_PROJECT_ROOT}/REAL-REPO" || -f "${LEADV2_PROJECT_ROOT}/.git/leadv2-real-repo-marker" ]]; }; then
+    return 0
+  fi
+  state_base="${LEADV2_STATE_BASE:-${HOME}/.claude/leadv2-state}"
+  [[ -d "${state_base}/.ephemeral" ]] || return 0
+  canonical="$(_leadv2_canonical_yaml_file)"
+  lockfile="${canonical}.lock"
+  mkdir -p "$(dirname "${canonical}")" 2>/dev/null || return 0
+  [[ -f "${canonical}" ]] || printf 'sessions: []\n' > "${canonical}" 2>/dev/null || return 0
+
+  for source_root in "${state_base}/.ephemeral"/*; do
+    [[ -d "${source_root}" ]] || continue
+    source_yaml="${source_root}/active.yaml"
+    [[ -f "${source_yaml}" ]] || continue
+    python3 - "${source_yaml}" "${canonical}" "${lockfile}" "${common_dir}" <<'PYEOF'
+import fcntl, os, sys, tempfile
+try:
+    import yaml
+except Exception:
+    sys.exit(0)
+
+source, target, lock_path, expected_common = sys.argv[1:]
+try:
+    with open(source, encoding="utf-8") as fh:
+        incoming = yaml.safe_load(fh) or {}
+except Exception:
+    sys.exit(0)
+
+def belongs_here(row):
+    worktree = row.get("worktree") if isinstance(row, dict) else None
+    if not isinstance(worktree, str) or not worktree:
+        return False
+    import subprocess
+    try:
+        got = subprocess.check_output(
+            ["git", "-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            stderr=subprocess.DEVNULL, text=True).strip()
+        return got == expected_common
+    except Exception:
+        return False
+
+rows = [r for r in (incoming.get("sessions") or []) if belongs_here(r)]
+if not rows:
+    sys.exit(0)
+os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+with open(lock_path, "a+") as lock:
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    try:
+        with open(target, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except Exception:
+        doc = {}
+    existing = [r for r in (doc.get("sessions") or []) if isinstance(r, dict)]
+    by_task = {str(r.get("task_id")): i for i, r in enumerate(existing) if r.get("task_id")}
+    changed = False
+    for row in rows:
+        tid = str(row.get("task_id"))
+        pos = by_task.get(tid)
+        if pos is None:
+            existing.append(row)
+            by_task[tid] = len(existing) - 1
+            changed = True
+        elif str(row.get("last_pulse_at") or "") > str(existing[pos].get("last_pulse_at") or ""):
+            existing[pos] = row
+            changed = True
+    if changed:
+        doc["sessions"] = existing
+        fd, tmp = tempfile.mkstemp(prefix=".active.yaml.consolidate.", dir=os.path.dirname(target))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(doc, fh, default_flow_style=False, sort_keys=False)
+            os.replace(tmp, target)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+PYEOF
+  done
+}
+
 # ── Core Python flock + atomic-write helper ───────────────────────────────
 # _leadv2_yaml_py_lock <lockfile> <yaml_file> <op> [args...]
 #

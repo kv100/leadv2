@@ -24,6 +24,8 @@ PLUGIN_SCRIPTS="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DC="${PLUGIN_SCRIPTS}/leadv2-dispatch-code.sh"
 STATE_PATH="${PLUGIN_SCRIPTS}/leadv2-state-path.sh"
 LANE_STATE_LIB="${PLUGIN_SCRIPTS}/lib/leadv2-lane-state.sh"
+ACTIVE_REGISTRY="${PLUGIN_SCRIPTS}/leadv2-active-registry.sh"
+LANES_SNAPSHOT="${PLUGIN_SCRIPTS}/leadv2-lanes-snapshot.sh"
 
 PASS=0; FAIL=0
 ok()  { printf '[TEST] PASS: %s\n' "$1"; PASS=$((PASS+1)); }
@@ -229,6 +231,75 @@ if [[ "${verdict}" != *"rc=0"* ]]; then
   ok "lane_alive(${TID}) becomes dead after the controlled watcher exits"
 else
   bad "lane_alive(${TID}) stayed alive after the controlled watcher exited (${verdict})"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+# An own-repo lane must not remain invisible merely because its launcher put
+# the row under .ephemeral/leadv2-lwt.*.  This simulates that exact root,
+# consolidates through the production registry function, then asks the real
+# snapshot (the board's lanes input) to render the row from the durable root.
+# REAL-REPO deliberately makes this fixture a production-shaped repository;
+# ordinary scratch fixtures keep their ephemeral roots isolated by design.
+# ════════════════════════════════════════════════════════════════════════════
+BOARD_REPO="${SANDBOX}/board-repo"
+BOARD_BASE="${SANDBOX}/board-state"
+EPHEMERAL_ROOT="${BOARD_BASE}/.ephemeral/leadv2-lwt.fixture"
+mkdir -p "${BOARD_REPO}" "${EPHEMERAL_ROOT}"
+( cd "${BOARD_REPO}" && git init -q -b main \
+  && git config user.email t@e.com && git config user.name t \
+  && : > REAL-REPO && git add REAL-REPO && git commit -qm seed )
+mkdir -p "${BOARD_REPO}/docs/handoff/dispatch-eph00001"
+printf '{"type":"assistant","text":"writing"}\n' > "${BOARD_REPO}/docs/handoff/dispatch-eph00001/developer.stream.jsonl"
+cat > "${EPHEMERAL_ROOT}/active.yaml" <<EOF
+sessions:
+  - task_id: dispatch-eph00001
+    worktree: ${BOARD_REPO}
+    pid: $$
+    phase: build
+    started_at: "2026-08-31T12:00:00Z"
+    last_pulse_at: "2099-01-01T00:00:00Z"
+    log_path: docs/handoff/dispatch-eph00001/developer.stream.jsonl
+EOF
+
+if ( LEADV2_PROJECT_ROOT="${BOARD_REPO}" LEADV2_STATE_BASE="${BOARD_BASE}" source "${ACTIVE_REGISTRY}" \
+     && LEADV2_PROJECT_ROOT="${BOARD_REPO}" LEADV2_STATE_BASE="${BOARD_BASE}" leadv2_active_consolidate_ephemeral_roots ); then
+  ok "ephemeral own-repo registry roots consolidate without error"
+else
+  bad "ephemeral own-repo registry consolidation failed"
+fi
+
+CANONICAL_ACTIVE="$(LEADV2_STATE_ROOT= PROJECT_ROOT="${BOARD_REPO}" LEADV2_STATE_BASE="${BOARD_BASE}" \
+  bash "${STATE_PATH}" --no-link active.yaml 2>/dev/null)"
+CANONICAL_RESULT="$(python3 - "${CANONICAL_ACTIVE}" <<'PY'
+import sys
+try:
+    import yaml
+    doc = yaml.safe_load(open(sys.argv[1])) or {}
+    print("present" if any(r.get("task_id") == "dispatch-eph00001" for r in (doc.get("sessions") or []) if isinstance(r, dict)) else "missing")
+except Exception:
+    print("invalid")
+PY
+)"
+if [[ "${CANONICAL_RESULT}" == "present" ]]; then
+  ok "durable own-repo registry contains the consolidated ephemeral lane"
+else
+  bad "durable own-repo registry dropped ephemeral lane (${CANONICAL_RESULT})"
+fi
+
+BOARD_JSON="$(LEADV2_STATE_ROOT= LEADV2_PROJECT_ROOT="${BOARD_REPO}" LEADV2_STATE_BASE="${BOARD_BASE}" LEADV2_LANES_ALL_REPOS=0 \
+  bash "${LANES_SNAPSHOT}" --json 2>&1 || true)"
+BOARD_RESULT="$(printf '%s' "${BOARD_JSON}" | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin).get("table") or []
+    print("present" if any(r.get("task_id") == "dispatch-eph00001" for r in rows if isinstance(r, dict)) else "missing")
+except Exception:
+    print("invalid")
+' 2>/dev/null)"
+if [[ "${BOARD_RESULT}" == "present" ]]; then
+  ok "board snapshot renders the consolidated ephemeral own-repo lane"
+else
+  bad "board snapshot dropped ephemeral own-repo lane (${BOARD_RESULT}): ${BOARD_JSON}"
 fi
 
 printf '\n[LANE-REGISTRY-OUTLIVES-DISPATCHER-01] passed=%d failed=%d\n' "${PASS}" "${FAIL}"
