@@ -1518,6 +1518,109 @@ if [[ "$SUB" == "adversarial-review" ]]; then
 
 fi
 
+# CODEX-DETACH-01 -- validate broker.json liveness before handing a job to the
+# companion. Root cause (established live, 2026-08-31, three sol workers
+# mtgk8ef8/mtgl2ea9/mtgl96u7 all worker_process_died within 1-3 min): the
+# companion's broker.json named a process that no longer existed, whose
+# sessionDir under /var/folders/.../T had been swept by the OS. Every new
+# worker attached to that corpse and died -- this was never a timeout (G1
+# below already caps at 1800s; the "5m00s" in the failure record is
+# codex-guard.sh reap_stale_workers stamping worker_died_silent after 300s of
+# log silence -- raising a timeout fixes nothing).
+#
+# We do not own the broker (that's ~/.claude/plugins/cache/openai-codex/) --
+# we only read scripts/lib/state.mjs:resolveStateDir()'s formula (git
+# toplevel of cwd, realpath'd, sha256[:16] + sanitized basename slug) to find
+# ITS broker.json, and move a stale one aside (never delete) so the companion
+# raises a fresh broker on its own next attach. A swept sessionDir with a pid
+# some unrelated process now holds is exactly why BOTH checks are required --
+# a pid-only check would wave that case through.
+_codex_broker_state_dir() {
+  local _cwd="$1"
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 - "$_cwd" "$CODEX_REAP_STATE_ROOT" <<'PY'
+import hashlib, os, re, subprocess, sys
+cwd, state_root = sys.argv[1], sys.argv[2]
+try:
+    root = subprocess.run(
+        ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, check=True, timeout=5,
+    ).stdout.strip()
+    if not root:
+        root = cwd
+except Exception:
+    root = cwd
+try:
+    canonical = os.path.realpath(root)
+except Exception:
+    canonical = root
+slug_source = os.path.basename(root.rstrip("/")) or "workspace"
+slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", slug_source).strip("-") or "workspace"
+digest = hashlib.sha256(canonical.encode()).hexdigest()[:16]
+print(os.path.join(state_root, "%s-%s" % (slug, digest)))
+PY
+}
+
+# $1=cwd. Renames a stale broker.json aside (timestamped, never deleted) when
+# its pid is dead OR its sessionDir no longer exists. Silent no-op if no
+# broker.json exists yet, or it is fully alive (pid live AND sessionDir
+# present -- both checks must pass).
+_codex_validate_broker() {
+  local _cwd="$1" _state_dir _broker
+  _state_dir="$(_codex_broker_state_dir "$_cwd" 2>/dev/null)" || return 0
+  [[ -n "$_state_dir" && -f "$_state_dir/broker.json" ]] || return 0
+  _broker="$_state_dir/broker.json"
+  command -v python3 >/dev/null 2>&1 || return 0
+
+  local _fields _pid _session_dir
+  _fields="$(python3 - "$_broker" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+pid = data.get("pid")
+session_dir = data.get("sessionDir") or ""
+print(pid if isinstance(pid, int) else "")
+print(session_dir)
+PY
+)" || return 0
+  _pid="$(printf '%s\n' "$_fields" | sed -n '1p')"
+  _session_dir="$(printf '%s\n' "$_fields" | sed -n '2p')"
+
+  local _dead=0 _swept=0
+  if [[ -n "$_pid" ]] && kill -0 "$_pid" 2>/dev/null; then
+    :
+  else
+    _dead=1
+  fi
+  if [[ -n "$_session_dir" && -d "$_session_dir" ]]; then
+    :
+  else
+    _swept=1
+  fi
+  if [[ "$_dead" -eq 1 || "$_swept" -eq 1 ]]; then
+    local _reason _ts
+    if [[ "$_dead" -eq 1 && "$_swept" -eq 1 ]]; then _reason="pid_dead+sessionDir_gone"
+    elif [[ "$_dead" -eq 1 ]]; then _reason="pid_dead"
+    else _reason="sessionDir_gone"; fi
+    _ts="$(date '+%Y%m%dT%H%M%S')"
+    if mv "$_broker" "${_broker}.stale-${_ts}" 2>/dev/null; then
+      echo "[codex-task] STALE_BROKER_DETECTED reason=${_reason} state_dir=${_state_dir} pid=${_pid:-?} session_dir=${_session_dir:-?}" >&2
+    fi
+  fi
+  return 0
+}
+
+if [[ "$SUB" == "task" || "$SUB" == "review" || "$SUB" == "adversarial-review" ]]; then
+  _BROKER_CHECK_CWD="$PWD"
+  _prev=""
+  for _a in "$@"; do
+    if [[ "$_prev" == "--cwd" || "$_prev" == "-C" ]]; then _BROKER_CHECK_CWD="$_a"; fi
+    _prev="$_a"
+  done
+  _codex_validate_broker "$_BROKER_CHECK_CWD"
+fi
 
 # G1 -- hard timeout + auto-kill
 # Controlled by CODEX_TIMEOUT env (default 600). Override per-repo via
