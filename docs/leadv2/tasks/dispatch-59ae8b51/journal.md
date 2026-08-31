@@ -646,3 +646,8 @@
 - 2026-08-16T04:41:43Z [decision] worker_spawned by=router model=glm task=59ae8b51 attempt=59ae8b51-1786855300-63355 handle=glm-test-run
 - 2026-08-16T04:41:44Z [decision] mission-version task=- sig=59ae8b51 rev=? head="plugin-only selfhost routing  --- If you hit a decision you cannot safely make yourself (i"
 - 2026-08-16T04:41:44Z [decision] route_resolved by=router router=v1 model=glm task=59ae8b51 rule=none reason=glm_default
+- 2026-08-28T13:20:55Z [decision] route_v2_estimate estimate_id=3fc5a696 estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none subsystems_touched=1 needs_live_verification=False cache_hit=false
+- 2026-08-28T19:11:51Z [decision] route_v2_estimate estimate_id=3fc5a696 estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none subsystems_touched=1 needs_live_verification=False cache_hit=false
+- 2026-08-28T22:42:25Z [decision] route_v2_estimate estimate_id=3fc5a696 estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none subsystems_touched=1 needs_live_verification=False cache_hit=false
+- 2026-08-28T22:58:57Z [decision] route_v2_estimate estimate_id=3fc5a696 estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none subsystems_touched=1 needs_live_verification=False cache_hit=false
+- 2026-08-29T02:48:20Z [decision] route_v2_estimate estimate_id=3fc5a696 estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none subsystems_touched=1 needs_live_verification=False cache_hit=false

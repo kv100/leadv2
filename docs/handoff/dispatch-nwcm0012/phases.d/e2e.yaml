@@ -4,7 +4,7 @@ owner: leadv2-dispatch-product-close.sh:e2e_gate
 handle: dispatch-nwcm0012-e2e
 artifact: 
 artifact_sha256: 
-started_at: 2026-08-26T16:53:47Z
+started_at: 2026-08-29T02:48:58Z
 ended_at: 
 reason: 
 proof: 
