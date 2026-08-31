@@ -59,13 +59,14 @@ if [[ "$NO_CODEX" -ne 1 && -f "$CODEX_TASK" ]]; then
 fi
 
 # --all resolves every lane in one Python pass.
-python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" "${LEADV2_LANE_SENTINEL_DEAD:-1}" "${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" "${LEADV2_LANE_RUNS_ROOT:-}" "${LEADV2_LANE_SENTINEL_CLAUDE:-1}" "${LEADV2_LANE_PID_IDENTITY:-1}" "${LEADV2_LANE_PREPASS_LIVE:-0}" <<'PY'
+python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" "${LEADV2_LANE_SENTINEL_DEAD:-1}" "${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" "${LEADV2_LANE_RUNS_ROOT:-}" "${LEADV2_LANE_SENTINEL_CLAUDE:-1}" "${LEADV2_LANE_PID_IDENTITY:-1}" "${LEADV2_LANE_PREPASS_LIVE:-0}" "${LEADV2_LANE_FINISHED_DEAD:-1}" "${LEADV2_LANE_FINISHED_WINDOW_S:-900}" <<'PY'
 import glob, json, os, re, subprocess, sys, time
 
 (root, active_path, tombstones_path, wanted_lane, wanted_job, all_mode, json_mode,
  codex_raw, silent_max_raw, v2_raw, starting_max_raw, abandon_max_raw,
  child_suffixes_raw, sentinel_dead_raw, sentinel_settle_raw, runs_root_raw,
- sentinel_claude_raw, pid_identity_raw, prepass_live_raw) = sys.argv[1:]
+ sentinel_claude_raw, pid_identity_raw, prepass_live_raw,
+ finished_dead_raw, finished_window_raw) = sys.argv[1:]
 all_mode = all_mode == "1"
 json_mode = json_mode == "1"
 # LEADV2_LANE_LIVENESS_V2=0 is the one-flag rollback to the exact prior
@@ -108,6 +109,19 @@ sentinel_claude = sentinel_claude_raw != "0"
 #     COLLECTOR-01 (task e5be9e72).
 pid_identity_on = pid_identity_raw != "0"
 prepass_live = prepass_live_raw == "1"
+
+# LANE-FINISHED-IS-NOT-DEAD-01: a lane with no live pid AND a commit on its
+# own worktree branch within LEADV2_LANE_FINISHED_WINDOW_S is FINISHED — a
+# third state the rest of the system used to collapse into "dead" (the
+# escalation path in leadv2-lanes-snapshot.sh asked the founder about a
+# normal exit) or "alive" (the log_fresh branch below read the worker's own
+# exit-time stream flush as still-running and refused re-dispatch). git log
+# is externally checkable, never the worker's self-report. Window defaults
+# to the same 900s used for silent_max: past that, a silent/committed lane
+# is unambiguously over, not merely between beats. Same argv-threaded shape
+# as every other tunable here (see the SENTINEL-COMPLETION-01 note above).
+finished_dead = finished_dead_raw != "0"
+finished_window_s = _int_env(finished_window_raw, 900)
 
 CHILD_SUFFIXES = [s.strip() for s in child_suffixes_raw.split(",") if s.strip()]
 _FOLD_RE = re.compile(r'^(dispatch-[0-9a-f]{8})-(.+)$')
@@ -479,6 +493,47 @@ def sentinel_check(tid, row):
     return True
 # --- end SENTINEL-COMPLETION-01 helpers ---------------------------------------
 
+# --- LANE-FINISHED-IS-NOT-DEAD-01 helpers ---------------------------------------
+def commit_finished_check(tid, row):
+    """Return True if the finished verdict was set on row.
+
+    finished = no live pid (identical gate to sentinel_check's pid guard,
+    including the lead_durable exception) AND the lane's own worktree
+    branch has a commit within finished_window_s. Runs after sentinel_check
+    and before the is_fresh/log_fresh ladder so it outranks a stream mtime
+    the worker's own exit-time flush left fresh -- a pid that is gone plus a
+    commit that landed are both externally checkable, never the worker's
+    own claim of success.
+    """
+    if not finished_dead:
+        return False
+    if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") != "lead_durable":
+        return False  # pid still evidence of life
+    session = sessions.get(tid)
+    worktree = session.get("worktree") if isinstance(session, dict) else None
+    if not worktree or not os.path.isdir(worktree):
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "-C", worktree, "log", "-1", "--format=%ct"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return False
+    if proc.returncode != 0:
+        return False
+    raw = proc.stdout.strip()
+    if not raw.isdigit():
+        return False
+    commit_age = max(0, int(time.time()) - int(raw))
+    if commit_age > finished_window_s:
+        return False
+    row["age_s"] = commit_age
+    row["commit_age_s"] = commit_age
+    row.update(verdict=f"finished:{commit_age}", reason="commit_within_window")
+    return True
+# --- end LANE-FINISHED-IS-NOT-DEAD-01 helpers -----------------------------------
+
 def resolve(tid):
     lane_dir = os.path.join(root, "docs", "handoff", tid)
     row = {"lane": tid, "verdict": None, "age_s": None, "source": None,
@@ -739,6 +794,8 @@ def resolve(tid):
     # wedged-process / fresh / stale ladder below (which is untouched).
     # Fires regardless of is_fresh — that is the whole point.
     if sentinel_check(tid, row):
+        return row
+    if commit_finished_check(tid, row):
         return row
     # Provider queued/running (v2_mode) is now ANNOTATION ONLY — it never
     # short-circuits the verdict; log mtime + process evidence below decide.

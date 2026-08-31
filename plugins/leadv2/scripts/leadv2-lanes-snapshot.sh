@@ -855,6 +855,20 @@ for tid, s in list(current.items()):
         if isinstance(_age_s, (int, float)) and _age_s <= _lane_fresh_s:
             reasons = []
 
+    # LANE-FINISHED-IS-NOT-DEAD-01: a "finished:*" liveness verdict (no live
+    # pid + a commit on the lane's own branch within the window, computed by
+    # leadv2-lane-liveness.sh's commit_finished_check) is a normal exit, not
+    # death evidence -- clear reasons the same way the freshness veto above
+    # does, so a finished lane never reaches the corroborated-dead escalation
+    # below. This is independent of the pid_issue_reason text ("pid dead" is
+    # set unconditionally by the elif not pid_alive(pid) branch above with no
+    # liveness consultation), so the veto must run here regardless of which
+    # branch set `reasons`.
+    if prune_v2_mode and reasons:
+        _lv_verdict = str((lane_liveness_by_id.get(tid) or {}).get("verdict") or "")
+        if _lv_verdict.startswith("finished:"):
+            reasons = []
+
     if not reasons:
         continue  # evidence clears any prior candidate marker — not carried forward
 
