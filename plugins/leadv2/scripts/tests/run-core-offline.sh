@@ -41,37 +41,76 @@ if [ -n "${LEADV2_CORE_OFFLINE_PROBE:-}" ]; then
   exit 0
 fi
 
-# --- SUITE-SPEED-01 item 1: cross-run exclusive lock ------------------------
-# Two concurrent run-core-offline.sh invocations (e.g. two lanes racing on the
-# same machine) share /tmp fixtures and, more importantly, the same real repo
-# working tree — the hermeticity post-condition below diffs `git status --
-# docs/leadv2` around every suite, and a second run mutating that tree mid-diff
-# manufactures a false HERMETIC-VIOLATION/FAIL that has nothing to do with the
-# suite under test. An exclusive flock on a well-known file serializes runs
-# instead. LEADV2_SUITE_LOCK_DISABLE=1 is the kill-switch (debugging, or a
-# caller that has already serialized externally). Default wait is unbounded
-# (matches "the lane should finish, not race") — set LEADV2_SUITE_LOCK_WAIT_S
-# for a bounded wait (used by tests, and by any caller that prefers a fast
-# failure to a long block).
+# --- SUITE-SPEED-01 item 1 / SUITE-LOCK-IS-MACHINE-WIDE-01: cross-run lock --
+# Two concurrent run-core-offline.sh invocations inside the SAME working tree
+# share /tmp fixtures and, more importantly, that one repo working tree — the
+# hermeticity post-condition below diffs `git status -- docs/leadv2` around
+# every suite, and a second run mutating that SAME tree mid-diff manufactures
+# a false HERMETIC-VIOLATION/FAIL that has nothing to do with the suite under
+# test. An exclusive flock serializes runs instead.
+#
+# The lock protects exactly one thing: REPO_ROOT's own docs/leadv2 working
+# tree. It does NOT protect any resource shared across worktrees, so it must
+# be scoped to REPO_ROOT, never to a single machine-wide path. A hardcoded
+# /tmp/leadv2-core-offline.lock (pre-SUITE-LOCK-IS-MACHINE-WIDE-01) made every
+# concurrent lane on the box -- each in its OWN worktree, each diffing its OWN
+# docs/leadv2 -- queue behind one runner regardless of worktree: N lanes did
+# not run concurrently, one ran and N-1 blocked until their own dispatch
+# timeout killed them with no diagnosis. Measured 2026-08-31: 45 lanes hit
+# this "waiting for lock" line before this fix; do not restore the shared
+# literal path (that is the regression this comment exists to prevent).
+#
+# LEADV2_SUITE_LOCK_DISABLE=1 is the kill-switch (debugging, or a caller that
+# has already serialized externally). Default wait is unbounded (matches "the
+# lane should finish, not race") — set LEADV2_SUITE_LOCK_WAIT_S for a bounded
+# wait (used by tests, and by any caller that prefers a fast, loud failure to
+# a long silent block).
 LEADV2_SUITE_LOCK_DISABLE="${LEADV2_SUITE_LOCK_DISABLE:-0}"
-LEADV2_SUITE_LOCK_FILE="${LEADV2_SUITE_LOCK_FILE:-/tmp/leadv2-core-offline.lock}"
+# bash-3.2-safe slug: no external hashing tool needed for the default case,
+# and no `${var//pat/rep}` surprises across worktree paths that only differ
+# by non-alnum characters (still enough entropy to keep worktrees distinct —
+# collisions would require two DIFFERENT worktree paths reducing to the same
+# alnum skeleton, which none of this plugin's lane paths do:
+# .claude/worktrees/<LANE-NAME>).
+_core_offline_lock_slug() {
+  local s="$1"
+  s="${s//[^A-Za-z0-9]/-}"
+  printf '%s' "$s"
+}
+LEADV2_SUITE_LOCK_FILE="${LEADV2_SUITE_LOCK_FILE:-/tmp/leadv2-core-offline-$(_core_offline_lock_slug "$REPO_ROOT").lock}"
 # Pure introspection (lists the shard partition, runs nothing) never needs to
 # serialize against a concurrent real run — skip the lock entirely for it.
 if [[ "$LEADV2_SUITE_LOCK_DISABLE" != "1" && -z "${LEADV2_SUITE_SHARDS_DUMP:-}" ]]; then
-  exec 9>"$LEADV2_SUITE_LOCK_FILE"
+  # Read-write, NO truncate (`9<>`, not `9>`): `9>` would O_TRUNC the file on
+  # every waiter's open, erasing the holder's diagnostic line (pid/host/time,
+  # written below) before any waiter could ever read it. flock is tied to the
+  # open file description on fd 9, not to the file's content or inode, so a
+  # non-truncating open here does not weaken the lock itself.
+  exec 9<>"$LEADV2_SUITE_LOCK_FILE"
   if ! flock -n 9; then
-    printf -- '[CORE-OFFLINE] waiting for lock file=%s (held by a concurrent run)\n' \
-      "$LEADV2_SUITE_LOCK_FILE" >&2
+    _lock_holder="$(cat "$LEADV2_SUITE_LOCK_FILE" 2>/dev/null || true)"
+    printf -- '[CORE-OFFLINE] waiting for lock file=%s holder=%s (held by a concurrent run)\n' \
+      "$LEADV2_SUITE_LOCK_FILE" "${_lock_holder:-<unknown>}" >&2
     if [[ -n "${LEADV2_SUITE_LOCK_WAIT_S:-}" ]]; then
       if ! flock -w "$LEADV2_SUITE_LOCK_WAIT_S" 9; then
-        printf -- '[CORE-OFFLINE] FATAL lock_timeout file=%s wait_s=%s\n' \
-          "$LEADV2_SUITE_LOCK_FILE" "$LEADV2_SUITE_LOCK_WAIT_S" >&2
+        _lock_holder="$(cat "$LEADV2_SUITE_LOCK_FILE" 2>/dev/null || true)"
+        printf -- '[CORE-OFFLINE] FATAL lock_timeout file=%s wait_s=%s holder=%s\n' \
+          "$LEADV2_SUITE_LOCK_FILE" "$LEADV2_SUITE_LOCK_WAIT_S" "${_lock_holder:-<unknown>}" >&2
         exit 2
       fi
     else
       flock 9
     fi
   fi
+  # We now hold the lock (immediately or after waiting) -- stamp holder info
+  # for the NEXT contender to read and report. Deliberately `>` on the PATH
+  # (a brand-new open file description), not `>&9`: it truncates+rewrites the
+  # file's CONTENT without touching fd 9's already-acquired flock, since
+  # POSIX flock locks live on the open file description that acquired them,
+  # not on the inode -- an unrelated open/close on the same path never
+  # releases a lock held by a different, still-open file description.
+  printf 'pid=%s host=%s since=%s\n' "$$" "$(hostname 2>/dev/null || printf unknown)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$LEADV2_SUITE_LOCK_FILE" 2>/dev/null || true
 fi
 
 if [ -n "${LEADV2_SUITE_LOCK_PROBE:-}" ]; then
