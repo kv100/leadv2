@@ -7,6 +7,7 @@ ROOT="${LEADV2_TEST_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 REPO="$(cd "${ROOT}/../.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-consumer-farm.XXXXXX")"
 MUTATE_LOADER="${LEADV2_CONSUMER_FARM_MUTATE_LOADER:-}"
+MUTATE_CLOSE_GATE="${LEADV2_CONSUMER_FARM_MUTATE_CLOSE_GATE:-0}"
 declare -a RESTORE_PATHS=()
 declare -a RESTORE_COPIES=()
 cleanup() {
@@ -27,6 +28,25 @@ ln -s "${ROOT}/scripts/leadv2-dispatch-ledger.sh" "${FARM}/leadv2-dispatch-ledge
 ln -s "${ROOT}/scripts/leadv2-dispatch-product-close.sh" "${FARM}/leadv2-dispatch-product-close.sh"
 ln -s "${ROOT}/scripts/lib/leadv2-admission-class.sh" "${FARM}/leadv2-admission-class.sh"
 [[ ! -e "${FARM}/lib" ]] || { echo 'FAIL: consumer fixture unexpectedly has lib/' >&2; exit 1; }
+
+# This sibling is part of the linked-script installation, not scripts/lib.  It
+# gives the real terminal ledger a deterministic pinned lane for the close
+# probe below.
+TERMINAL_MAIN="${T}/terminal-main"
+TERMINAL_LANE="${T}/terminal-lane"
+TERMINAL_LEDGER="${T}/terminal-ledger.jsonl"
+git init -q "${TERMINAL_MAIN}"
+git -C "${TERMINAL_MAIN}" config user.email test@example.invalid
+git -C "${TERMINAL_MAIN}" config user.name consumer-farm-test
+printf 'seed\n' > "${TERMINAL_MAIN}/worker.txt"
+git -C "${TERMINAL_MAIN}" add worker.txt
+git -C "${TERMINAL_MAIN}" commit -qm seed
+git -C "${TERMINAL_MAIN}" worktree add -q -b terminal-lane "${TERMINAL_LANE}" HEAD
+cat > "${FARM}/leadv2-lane-worktree.sh" <<EOF
+#!/usr/bin/env bash
+[[ "\${1:-}" == path-of ]] && printf '%s\\n' "${TERMINAL_LANE}"
+EOF
+chmod +x "${FARM}/leadv2-lane-worktree.sh"
 
 run_loader() { # <shell source expression> <farm link> <stdout/stderr file>
   local expr="$1" path="$2" out="$3"
@@ -88,6 +108,45 @@ run_red_control() { # <named loader> <source expression> <farm link> <production
   exit 1
 }
 
+last_terminal() { tail -n 1 "${TERMINAL_LEDGER}"; }
+assert_terminal() { # <terminal> <cause prefix>
+  local terminal="$1" cause="$2" row
+  row="$(last_terminal)"
+  if [[ "${row}" != *"\"terminal\":\"${terminal}\""* || "${row}" != *"\"cause\":\"${cause}"* ]]; then
+    echo "FAIL: expected terminal=${terminal} cause=${cause}, got: ${row}" >&2
+    exit 1
+  fi
+}
+
+run_product_close_terminal() { # <canonical root> <output file>
+  local canonical="$1" out="$2" rc
+  set +e
+  PROJECT_ROOT="${TERMINAL_MAIN}" LEADV2_PROJECT_ROOT="${TERMINAL_MAIN}" \
+    LEADV2_CANONICAL_ROOT="${canonical}" \
+    LEADV2_DISPATCH_TERMINAL_LEDGER_FILE="${TERMINAL_LEDGER}" \
+    LEADV2_PRODUCT_CLOSE_SOURCE_ONLY=1 \
+    LEADV2_DISPATCH_LANE_WRITES=worker.txt \
+    bash -c 'set -uo pipefail; source "$1" "$2" terminal01 arm handle 0 0 founder; _dl_note landed completed' \
+      _ "${FARM}/leadv2-dispatch-product-close.sh" "${TERMINAL_MAIN}" >"${out}" 2>&1
+  rc=$?
+  set -e
+  if [[ ${rc} -ne 0 ]]; then
+    echo "FAIL: product close terminal probe failed rc=${rc}" >&2
+    sed -n '1,80p' "${out}" >&2
+    exit 1
+  fi
+}
+
+exercise_close_gate() { # <canonical root> <dirty|clean> <output>
+  local canonical="$1" state="$2" out="$3"
+  : > "${TERMINAL_LEDGER}"
+  git -C "${TERMINAL_LANE}" checkout -- worker.txt
+  if [[ "${state}" == dirty ]]; then
+    printf 'dirty\n' >> "${TERMINAL_LANE}/worker.txt"
+  fi
+  run_product_close_terminal "${canonical}" "${out}"
+}
+
 case "${MUTATE_LOADER}" in
   '')
     check_loader leadv2-dispatch-code.sh 'LEADV2_DISPATCH_GUARD_SOURCE_ONLY=1 source "$1"' "${FARM}/leadv2-dispatch-code.sh"
@@ -112,5 +171,57 @@ case "${MUTATE_LOADER}" in
     exit 2
     ;;
 esac
+
+# The direct close-gate proof is intentionally data-driven: it asserts the
+# persisted terminal record, never the production script's source text.
+exercise_close_gate "${T}/no-canonical-root" dirty "${T}/missing-guard.out"
+assert_terminal pass_unlanded dirty_lane:completed
+if grep -Fq '"terminal":"landed"' "${TERMINAL_LEDGER}"; then
+  echo 'FAIL: missing guard let a dirty lane record landed' >&2
+  exit 1
+fi
+if ! grep -Fq '[leadv2-dispatch-product-close] ERROR: lane guard unavailable' "${T}/missing-guard.out"; then
+  echo 'FAIL: product close did not emit the named missing-guard error' >&2
+  sed -n '1,80p' "${T}/missing-guard.out" >&2
+  exit 1
+fi
+echo 'PASS: missing local and canonical guards fail CLOSED (terminal=pass_unlanded)'
+
+exercise_close_gate "${REPO}" clean "${T}/canonical-guard.out"
+assert_terminal landed completed
+if grep -Fq 'lane guard unavailable' "${T}/canonical-guard.out"; then
+  echo 'FAIL: canonical guard path emitted a missing-guard error' >&2
+  exit 1
+fi
+echo 'PASS: canonical guard with a clean lane records terminal=landed'
+
+if [[ "${MUTATE_CLOSE_GATE}" == 1 ]]; then
+  # Mutation is in the live production fallback body, never a scratch copy.
+  # Returning clean here restores the original fail-open behavior; the dirty
+  # lane then persists landed and this assertion must make the suite RED.
+  production="${ROOT}/scripts/leadv2-dispatch-ledger.sh"
+  backup="${T}/leadv2-dispatch-ledger.before-close-gate-mutation"
+  cp "${production}" "${backup}"
+  RESTORE_PATHS+=("${production}")
+  RESTORE_COPIES+=("${backup}")
+  python3 - "${production}" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as source:
+    text = source.read()
+needle = 'lv2_lane_dirty() { return 0; }'
+if text.count(needle) != 1:
+    raise SystemExit('expected exactly one fail-closed ledger fallback body')
+with open(path, 'w') as destination:
+    destination.write(text.replace(needle, 'lv2_lane_dirty() { return 1; }'))
+PY
+  exercise_close_gate "${T}/no-canonical-root" dirty "${T}/mutated-close-gate.out"
+  if grep -Fq '"terminal":"landed"' "${TERMINAL_LEDGER}"; then
+    echo 'RED control: mutated ledger fail-closed fallback let dirty close record landed' >&2
+    exit 1
+  fi
+  echo 'FAIL: close-gate mutation unexpectedly remained fail-closed' >&2
+  exit 1
+fi
 
 echo 'PASS: all four consumer-farm loaders resolve via canonical fallback'
