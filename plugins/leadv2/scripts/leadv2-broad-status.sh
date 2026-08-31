@@ -67,6 +67,17 @@ CLAUDE_BIN="${LEADV2_BROAD_STATUS_CLAUDE_BIN:-claude}"
 ACTIVE_REGISTRY_SH="${LEADV2_ACTIVE_REGISTRY_BIN:-$SCRIPT_DIR/leadv2-active-registry.sh}"
 if [[ -f "${ACTIVE_REGISTRY_SH}" ]]; then
   LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" source "${ACTIVE_REGISTRY_SH}" 2>/dev/null || true
+  # ANTI-SILENCE-BEAT-ABORT-03: leadv2-active-registry.sh sets `set -euo
+  # pipefail` (its own callers run under errexit), and `source` runs it in
+  # THIS shell, not a subshell — the `|| true` above only guards the source
+  # statement itself, it does not undo the `-e` it just turned on. Every
+  # abort-path check below (`RC=$?`, `[[ $RC -ne 0 ]]`) is written assuming
+  # errexit is OFF, exactly as line 22 left it; without this reset, the
+  # first failing command substitution after this point (e.g. the render
+  # step's python3 crash) kills the whole beat via the EXIT trap before any
+  # of that handling runs — a beat that fires and writes nothing at all,
+  # not even a degraded artifact or a failure line.
+  set +e
   if declare -F leadv2_active_consolidate_ephemeral_roots >/dev/null 2>&1; then
     LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_consolidate_ephemeral_roots >/dev/null 2>&1 || true
   fi
@@ -1290,7 +1301,7 @@ PY
 RENDER_JSON="$(python3 "$RENDER_TMPDIR/render.py" "$SNAPSHOT_PATH" "$PREV_PATH" "$PROJECT_ROOT" "$TASKS_LIB_SH" "$RENDER_TMPDIR" "$SCRIPT_DIR" "$FOUNDER_STATUS_FULL_PATH" "$EMPTY_SINCE_PATH" </dev/null)"
 RC=$?
 if [[ $RC -ne 0 || -z "$RENDER_JSON" || ! -f "$RENDER_JSON" ]]; then
-  printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$(_now_iso)" >>"$LOG_FILE"
+  printf '%s [BROAD_STATUS] render failure: table unavailable\n' "$BEAT_AT" >>"$LOG_FILE"
   # Same policy as the collector path: replace the artifact, then (and only
   # then) wake; refuse READY entirely if the replacement itself failed.
   if _write_degraded_status "рендер таблицы не выполнен (render failed)"; then
