@@ -118,7 +118,8 @@ leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-model-select-telemetry.sh
 leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
-leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh"
+leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
+gitignore:plugins/leadv2/scripts/tests/test-handoff-artifacts-tracked.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -132,8 +133,17 @@ else
   fi
   if [[ -n "${changed}" ]]; then
     while IFS= read -r cf; do
-      [[ "${cf}" == plugins/leadv2/scripts/*.sh ]] || continue
-      stem="$(basename "${cf}" .sh)"
+      if [[ "${cf}" == plugins/leadv2/scripts/*.sh ]]; then
+        stem="$(basename "${cf}" .sh)"
+      elif [[ "${cf}" == ".gitignore" ]]; then
+        # HANDOFF-ARTIFACTS-GITIGNORED-01: .gitignore isn't a plugins/leadv2
+        # script, so it needs its own synthetic stem to reach EXTRA_SUITE_MAP
+        # below — the blanket-vs-allowlist rule it carries has no test-*.sh
+        # of its own name to match by convention.
+        stem="gitignore"
+      else
+        continue
+      fi
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \
