@@ -7,7 +7,6 @@ ROOT="${LEADV2_TEST_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 REPO="$(cd "${ROOT}/../.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-consumer-farm.XXXXXX")"
 MUTATE_LOADER="${LEADV2_CONSUMER_FARM_MUTATE_LOADER:-}"
-MUTATE_CLOSE_GATE="${LEADV2_CONSUMER_FARM_MUTATE_CLOSE_GATE:-0}"
 declare -a RESTORE_PATHS=()
 declare -a RESTORE_COPIES=()
 cleanup() {
@@ -195,16 +194,26 @@ if grep -Fq 'lane guard unavailable' "${T}/canonical-guard.out"; then
 fi
 echo 'PASS: canonical guard with a clean lane records terminal=landed'
 
-if [[ "${MUTATE_CLOSE_GATE}" == 1 ]]; then
-  # Mutation is in the live production fallback body, never a scratch copy.
-  # Returning clean here restores the original fail-open behavior; the dirty
-  # lane then persists landed and this assertion must make the suite RED.
-  production="${ROOT}/scripts/leadv2-dispatch-ledger.sh"
-  backup="${T}/leadv2-dispatch-ledger.before-close-gate-mutation"
-  cp "${production}" "${backup}"
-  RESTORE_PATHS+=("${production}")
-  RESTORE_COPIES+=("${backup}")
-  python3 - "${production}" <<'PY'
+# Mutation proof, unconditional -- every default invocation re-derives this,
+# not an opt-in flag CI never sets. The two assertions above (:177-196)
+# depend on leadv2-dispatch-ledger.sh's OWN canonical-fallback stub, never on
+# leadv2-dispatch-product-close.sh's: _dl_note always shells out to
+# leadv2-dispatch-ledger.sh write-terminal as a SEPARATE process (see
+# leadv2-dispatch-product-close.sh:79 "Always a subprocess call (never
+# sourced)"), so it is that process's own lv2_lane_dirty definition that
+# decides the persisted terminal row -- product-close.sh's copy of the same
+# fallback pattern (used only by its in-process silence/review-gate checks,
+# never by the terminal write) is not on this path. Verified live with
+# bash -x: even with product-close.sh's own guard missing, its else-branch
+# runs and prints the missing-guard error asserted at :183-187, but the
+# ledger subprocess resolves (or fails to resolve) the guard independently.
+# Mutation is in the live production fallback body, never a scratch copy.
+production="${ROOT}/scripts/leadv2-dispatch-ledger.sh"
+backup="${T}/leadv2-dispatch-ledger.before-close-gate-mutation"
+cp "${production}" "${backup}"
+RESTORE_PATHS+=("${production}")
+RESTORE_COPIES+=("${backup}")
+python3 - "${production}" <<'PY'
 import sys
 path = sys.argv[1]
 with open(path) as source:
@@ -215,13 +224,17 @@ if text.count(needle) != 1:
 with open(path, 'w') as destination:
     destination.write(text.replace(needle, 'lv2_lane_dirty() { return 1; }'))
 PY
-  exercise_close_gate "${T}/no-canonical-root" dirty "${T}/mutated-close-gate.out"
-  if grep -Fq '"terminal":"landed"' "${TERMINAL_LEDGER}"; then
-    echo 'RED control: mutated ledger fail-closed fallback let dirty close record landed' >&2
-    exit 1
-  fi
-  echo 'FAIL: close-gate mutation unexpectedly remained fail-closed' >&2
+exercise_close_gate "${T}/no-canonical-root" dirty "${T}/mutated-close-gate.out"
+mutated_row="$(last_terminal)"
+cp "${backup}" "${production}"
+if [[ "${mutated_row}" != *'"terminal":"landed"'* ]]; then
+  echo "FAIL: close-gate mutation unexpectedly stayed fail-closed: ${mutated_row}" >&2
   exit 1
 fi
+echo 'PASS: mutation control -- flipping the ledger fail-closed stub to fail-open lets a dirty lane record landed (RED without the guarantee)'
+
+exercise_close_gate "${T}/no-canonical-root" dirty "${T}/restored-close-gate.out"
+assert_terminal pass_unlanded dirty_lane:completed
+echo 'PASS: restored ledger fail-closed stub returns the dirty lane to pass_unlanded (GREEN with the guarantee back)'
 
 echo 'PASS: all four consumer-farm loaders resolve via canonical fallback'
