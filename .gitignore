@@ -73,3 +73,7 @@ docs/leadv2/burn-deferred.d/
 # Local session config and a stray review artifact at the handoff root.
 .claude/cache/
 docs/handoff/dispatch-*-review-*.md
+!docs/handoff/*/fix-round*.md
+!docs/handoff/*/context.yaml
+!docs/handoff/*/architect-prepass.md
+!docs/handoff/*/.gate1-passed
