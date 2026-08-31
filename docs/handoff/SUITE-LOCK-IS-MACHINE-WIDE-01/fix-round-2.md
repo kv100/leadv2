@@ -93,3 +93,28 @@ Add the `EXTRA_SUITE_MAP` row and prove selection with `--scope changed`.
 An orphaned child can no longer hold the lock, a run that cannot acquire it fails loudly within a
 bounded wait, and restoring the machine-wide path turns the new suite red with the exit code
 following.
+
+## Round 3 — four named failures, measured by the lead on your own suite
+
+Your suite currently reports `pass=8 fail=4` in the lane. I ran it; these four fail:
+
+```
+case2: same root -- second run waits for the holder, then proceeds        FAILED
+case4: budget exhausted -> non-zero exit naming file, holder and age      FAILED
+case6: LEADV2_SUITE_LOCK_FILE override still wins over the default        FAILED
+case7 RED: with the machine-wide literal restored, case-1 FAILS (rc=0)    FAILED
+```
+
+**Start with case7.** It is your own negative control, and while it fails the suite proves nothing
+about the part that already works: restoring the machine-wide literal path leaves the scenario
+green, so the control does not detect the bug it exists to detect. A suite whose control is broken
+cannot be merged no matter how many other cases pass. This is the one that blocks everything.
+
+Then case6 — the documented escape hatch `LEADV2_SUITE_LOCK_FILE` must still override the derived
+path. That is a regression guard for behaviour that already shipped; if it now fails, the
+per-root derivation overrode the explicit override, which is a real defect in the round-1 code,
+not just a missing test.
+
+Then case2 and case4, which are the orphan/bounded-wait work this round was opened for.
+
+Nothing merges until case7 goes RED-on-mutation and the whole suite is green. Report the run.
