@@ -190,3 +190,31 @@ able to confirm or contradict on our own work.
 Two constraints on that reorder: the probe order must stay a liveness ladder (a dead top rank still
 falls through), and the new order must be justified in `report.md` by these numbers, so a future
 session can see why it is what it is and re-derive it when the pool changes.
+
+### Provider quota rules change under us — the gate must not hardcode them
+
+Checked 2026-08-31 (sources in report.md). The founder recalled that Codex raised usage limits
+across subscriptions at no extra cost; what actually happened is different and worth recording
+precisely:
+
+- On **2026-08-25 OpenAI restored the 5-hour cap on Codex/ChatGPT Work for Plus**, which had been
+  absent since mid-July. Plus now faces TWO ceilings at once: a rolling 5-hour window AND the
+  weekly quota.
+- **Pro $100 and Pro $200 keep the 5-hour gate OFF** for the coming months. So the effect the
+  founder remembers is real for Pro — more usable capacity at the same price — but it comes from
+  an exemption, not from a raised limit.
+- No price change.
+
+The lesson is not the news, it is the shape: **provider quota rules change without notice, and our
+thresholds are hardcoded.** Today the arbiter printed `util_codex=6` while `codex-task.sh` already
+carries a live quota reader (CODEX-GATE-01) it does not consult, so we would not have noticed
+either the restored Plus cap or the Pro exemption.
+
+Two requirements follow, both inside this lane`s scope:
+
+1. **the window shape must come from the reader, not from a constant.** A 5-hour rolling window
+   and a weekly window are different objects; a gate that knows only one silently mis-reports the
+   other. Record which windows the reader actually exposes and use them.
+2. **an unknown or changed window is surfaced, never silently assumed.** If the reader reports a
+   shape the gate does not recognise, say so loudly — the same rule as an unmeasured arm not being
+   treated as exhausted. A stale threshold that still looks confident is the failure mode here.
