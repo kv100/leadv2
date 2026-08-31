@@ -27,6 +27,44 @@ _wog_usage() {
   echo "       leadv2-worker-output-gate.sh <repo-root> --from-git-diff [<git-diff-args...>]" >&2
 }
 
+# worker_output_gate_resolve_base <repo-root> -> stdout "<ref> <sha>", rc 0
+# `origin/main` is one way to name the lane's base, not the only one -- a
+# checkout with no remote, a differently-named default branch, or a fresh
+# clone that hasn't fetched yet all have a usable base under a different
+# name (GATE-ORIGIN-MAIN-01). Tries, in order: the remote's advertised
+# default branch (git remote set-head), origin/main, origin/master, a local
+# main/master branch, and the current branch's configured upstream. Each
+# failed attempt is logged to stderr so a total failure is diagnosable, not
+# just a bare "no". On total failure, prints the aggregate reason to stderr
+# and returns 1 -- callers must treat that as a refusal, not a pass.
+worker_output_gate_resolve_base() {
+  local repo_root="$1"
+  local origin_default
+  origin_default="$(git -C "$repo_root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)"
+  local -a candidates=()
+  [[ -n "$origin_default" ]] && candidates+=("origin/${origin_default}")
+  candidates+=("origin/main" "origin/master" "main" "master" "@{upstream}")
+
+  local -a tried=()
+  local ref base already t
+  for ref in "${candidates[@]}"; do
+    already=0
+    for t in "${tried[@]:-}"; do
+      [[ -n "$t" && "$t" == "$ref" ]] && { already=1; break; }
+    done
+    [[ "$already" -eq 1 ]] && continue
+    tried+=("$ref")
+    if base="$(git -C "$repo_root" merge-base "$ref" HEAD 2>/dev/null)"; then
+      printf '%s %s\n' "$ref" "$base"
+      return 0
+    fi
+    printf 'worker_output_gate_base_attempt ref=%s result=unresolved\n' "$ref" >&2
+  done
+  printf 'worker_output_gate_error reason=committed_range_unresolved attempts=%s\n' \
+    "$(IFS=,; printf '%s' "${tried[*]:-}")" >&2
+  return 1
+}
+
 # worker_output_gate_check <repo-root> <file> [<file> ...] -> 0 pass, 1 reject
 # Prints one worker_output_gate_reject line + the tool's parse error per
 # failing file; prints nothing on full pass.
@@ -78,13 +116,16 @@ main() {
     git -C "$repo_root" diff --name-only --diff-filter=ACMR "$@" 2>/dev/null >> "$files_file" || true
     # A clean worker tree is only safe to pass when we can also resolve the
     # committed range.  Lane repositories commonly have no origin/main; do
-    # not turn that missing evidence into a silent success.
-    local committed_base
-    if ! committed_base="$(git -C "$repo_root" merge-base origin/main HEAD 2>/dev/null)"; then
-      printf 'worker_output_gate_error reason=committed_range_unresolved base=origin/main head=HEAD\n' >&2
+    # not turn that missing evidence into a silent success -- but origin/main
+    # is not the only valid name for the lane's base (GATE-ORIGIN-MAIN-01).
+    local resolved committed_base
+    if ! resolved="$(worker_output_gate_resolve_base "$repo_root")"; then
+      # worker_output_gate_resolve_base already printed the per-attempt
+      # trail and the aggregate reason to stderr.
       rm -f "$files_file"
       return 2
     fi
+    committed_base="${resolved#* }"
     if ! git -C "$repo_root" diff --name-only --diff-filter=ACMR "${committed_base}...HEAD" 2>/dev/null >> "$files_file"; then
       printf 'worker_output_gate_error reason=committed_range_diff_failed base=%s head=HEAD\n' "$committed_base" >&2
       rm -f "$files_file"

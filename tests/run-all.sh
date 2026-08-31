@@ -169,10 +169,10 @@ leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-far
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
 leadv2-admission-class.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
 test-consumer-symlink-farm.sh:plugins/leadv2/scripts/tests/test-consumer-symlink-farm.sh
-leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
 leadv2-status-surface.sh:plugins/leadv2/scripts/tests/test-status-surface.sh
 leadv2-lane-status-line.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
-leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh"
+leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
+leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-gate-no-origin.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
