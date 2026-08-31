@@ -1582,10 +1582,13 @@ if [[ -z "${verdict}" ]]; then
   exit 6
 fi
 
-FINDINGS_CRITICAL_TOTAL="${FINDINGS_CRITICAL}"
-FINDINGS_HIGH_TOTAL="${FINDINGS_HIGH}"
-FINDINGS_MEDIUM_TOTAL="${FINDINGS_MEDIUM}"
-FINDINGS_LOW_TOTAL="${FINDINGS_LOW}"
+# REVIEW-VERDICT-COUNTER-03: FINDINGS_*_TOTAL used to seed here from the
+# reviewer's self-declared REVIEW_FINDINGS: line (parse_review_verdict's
+# FINDINGS_CRITICAL/HIGH/MEDIUM/LOW globals). That is a DECLARED number with
+# no guaranteed relationship to the FINDING: lines actually unioned below --
+# they are derived from the union+dedup array (FINDINGS_JSON) once it exists,
+# a few dozen lines down, so the printed gate count and review-findings.json
+# can never disagree.
 
 # --- Step 6/7: synthesis — union FINDING: lines across ran_arms + hack-detect,
 # dedup by (file,line,severity,dimension), then verify each Critical/High on an
@@ -1625,8 +1628,9 @@ done
 SECURITY_CRITICAL="$(awk -F'\t' '$1 == "hackdetect" && $2 == "Critical" { n++ } END { print n + 0 }' "${FINDINGS_RAW}" 2>/dev/null)"
 SECURITY_HIGH="$(awk -F'\t' '$1 == "hackdetect" && $2 == "High" { n++ } END { print n + 0 }' "${FINDINGS_RAW}" 2>/dev/null)"
 if [[ "${SECURITY_CRITICAL}" -gt 0 || "${SECURITY_HIGH}" -gt 0 ]]; then
-  FINDINGS_CRITICAL_TOTAL=$(( FINDINGS_CRITICAL_TOTAL + SECURITY_CRITICAL ))
-  FINDINGS_HIGH_TOTAL=$(( FINDINGS_HIGH_TOTAL + SECURITY_HIGH ))
+  # No manual total bump here: hackdetect's own FINDING: lines are already
+  # unioned into FINDINGS_RAW/FINDINGS_DEDUP above and will be counted from
+  # FINDINGS_JSON below like every other arm's findings -- one array, one count.
   verdict="FAIL"
   emit decision "review_security_block task=${TASK} critical=${SECURITY_CRITICAL} high=${SECURITY_HIGH}"
 fi
@@ -1683,6 +1687,29 @@ FINDINGS_JSON="${HANDOFF}/review-findings.json"
   printf ']}'
 } > "${FINDINGS_JSON}.tmp"
 mv -f "${FINDINGS_JSON}.tmp" "${FINDINGS_JSON}"
+
+# REVIEW-VERDICT-COUNTER-03: the gate's printed severity counts must come from
+# the SAME findings array just written to review-findings.json, not from the
+# reviewer's self-declared REVIEW_FINDINGS: line and not from a second
+# hackdetect-only tally added on top of it. One array, one count, everywhere.
+FINDINGS_CRITICAL_TOTAL="$({ grep -oE '"severity":"Critical"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_CRITICAL_TOTAL="${FINDINGS_CRITICAL_TOTAL:-0}"
+FINDINGS_HIGH_TOTAL="$({ grep -oE '"severity":"High"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_HIGH_TOTAL="${FINDINGS_HIGH_TOTAL:-0}"
+FINDINGS_MEDIUM_TOTAL="$({ grep -oE '"severity":"Medium"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_MEDIUM_TOTAL="${FINDINGS_MEDIUM_TOTAL:-0}"
+FINDINGS_LOW_TOTAL="$({ grep -oE '"severity":"Low"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_LOW_TOTAL="${FINDINGS_LOW_TOTAL:-0}"
+
+# A FAIL verdict asserts Critical/High findings exist. If the union+dedup
+# array that just fed review-findings.json has none, the verdict and the
+# array disagree -- an impossible state, not a real fail. Print it honestly
+# as a blocked gate rather than a "fail: high=N" nobody can match against the
+# findings array (round-2 live incident: gate printed high=5 while
+# review-findings.json held an empty findings array).
+if [[ "${verdict}" == FAIL && "${FINDINGS_CRITICAL_TOTAL}" -eq 0 && "${FINDINGS_HIGH_TOTAL}" -eq 0 ]]; then
+  printf 'status: blocked\nreason: findings_lost\narms: %s\ndeclared_verdict: FAIL\nfindings_total: 0\n' \
+    "$(IFS=,; echo "${ran_arms[*]}")" > "${HANDOFF}/review-gate.md.tmp"
+  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=findings_lost declared_verdict=FAIL findings_total=0"
+  exit 6
+fi
 
 # Recompute _needs_verify/_verified_count outside the subshell the while-loop
 # ran in (pipes/process substitution create subshells; re-derive from the JSON
