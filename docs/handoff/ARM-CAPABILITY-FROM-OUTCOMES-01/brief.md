@@ -116,3 +116,38 @@ Routing consults what each arm has actually delivered on our own work, an unprov
 punished nor blindly trusted, freepool models are tracked individually so a new good one can earn
 its place, one command shows the table, and removing the feedback turns the suite red with the exit
 code following.
+
+## Addendum — published benchmarks are the PRIOR, our outcomes are the update
+
+The founder asked for published benchmarks as a starting point, and he is right that we need one:
+our own outcome ledger starts near-empty today, so with no prior the router has nothing to reason
+from. Use them as a seed, never as the answer.
+
+Numbers gathered 2026-08-31 (sources in report.md; re-fetch rather than trusting these forever):
+
+- **GLM-5.3-Flash vs GLM-5.3** — DeepSWE v1.1 is the only benchmark both publish directly:
+  Flash **63.4**, about **3.5 points** behind the flagship, at roughly **1/9 the price**
+  ($0.15 vs $1.40 per 1M input). Flagship wins 5 benchmarks (Agents Last Exam, DeepSWE 1.1, HLE,
+  NL2Repo, Terminal-Bench 2.1); Flash wins 3 (AutomationBench, GDPval-AA, Toolathlon).
+- **GLM-5.3 overall** — Terminal-Bench 3.0 28.3 (from 4.6), CyberGym 84.5%.
+
+**Every GLM figure above is vendor-reported by Z.ai and has not been independently re-run.** Weight
+it accordingly: a vendor number is a weak prior, one of our own mutation-verified outcomes is
+strong evidence. Say in `report.md` what weighting you chose.
+
+### This corrects a claim in the body above
+
+The body treats `glm-flash` taking five of eight lanes as evidence of mis-routing. On these
+numbers that framing is wrong: 3.5 points behind the flagship for a ninefold saving is a good
+trade, and the lanes it took were reasonable. The real defect is narrower and stays:
+
+1. **the config mislabels it.** `tags: [cheap, mechanical]` describes a model that nearly matches
+   the flagship on SWE-shaped work. The label understates it AND does not stop it taking hard
+   work — the worst of both, because it makes the tag decorative;
+2. **it is excluded from review by family** (`DEFAULT_REVIEW_EXCLUSIONS`, routing.yaml:135).
+   Whether that exclusion is still justified is a question these numbers reopen — do not change it
+   in this lane, but record the question in `report.md`.
+
+So the capability table must carry both: a seeded prior per (arm, work_kind) from published
+benchmarks, and the running posterior from our own lanes — with the source of each number visible,
+so a vendor claim is never mistaken for something we measured.
