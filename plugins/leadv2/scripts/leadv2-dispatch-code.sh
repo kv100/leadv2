@@ -3835,6 +3835,11 @@ _phase_precondition_guard() {
   local -a assert_args
   assert_args=(assert "${sig8}" --class "${cls}")
   [[ "${scope}" == "pre-build" ]] && assert_args+=(--pre-build)
+  # DISPATCH-PHASE-DEADLOCK-01 round 2: the caller probed is-bootstrap before
+  # recording this dispatch's own classify (cmd_resolve / cmd_advance_arm);
+  # forward that answer so a genuinely new lane is admitted here and not
+  # deadlocked by the classify write it could not avoid.
+  [[ "${_lane_at_bootstrap:-0}" == "1" ]] && assert_args+=(--at-bootstrap)
   [[ -n "${writes}" ]] && assert_args+=(--writes "${writes}")
   assert_args+=("${waiver_args[@]}")
   assert_out="$(bash "${PHASE_RECORD_BIN}" "${assert_args[@]}" 2>&1)" || assert_rc=$?
@@ -3857,8 +3862,23 @@ _phase_precondition_guard() {
         emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} mode=1"
         log_err "dispatch refused: missing mandatory phases: ${missing_csv}"
         local mp
+        # DISPATCH-PHASE-DEADLOCK-01: a printed remedy that cannot itself
+        # satisfy the gate it is offered for is not a remedy (measured cost:
+        # 8 hand-written-file workarounds on 2026-08-31). plan/gate1 now
+        # accept lead-authored evidence (see leadv2-phase-record.sh
+        # _verify_artifact) — print the command that actually clears each.
         for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
-          log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
+          case "$mp" in
+            plan)
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} plan --artifact docs/handoff/<task-id>/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)"
+              ;;
+            gate1)
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} gate1 --reason \"<founder gate-1 decision>\"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)"
+              ;;
+            *)
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
+              ;;
+          esac
         done
         return 1
       else
@@ -6604,6 +6624,15 @@ cmd_resolve() {
   # next arm.  (E2E-GATE-RESIDUE-01 round 4 root cause.)
   set +e
 
+  # DISPATCH-PHASE-DEADLOCK-01 round 2: probe bootstrap BEFORE the classify
+  # write below. classify is recorded unconditionally on every dispatch, so a
+  # probe taken after it always sees one record and the guard's bootstrap
+  # admission is unreachable on the real dispatch path (measured: the
+  # test-effort-routing.sh sonnet fixture refused with missing=diverge,plan,
+  # gate1 even with the round-1 assert-side fix in place).
+  _lane_at_bootstrap=0
+  bash "${PHASE_RECORD_BIN}" is-bootstrap "${sig8}" 2>/dev/null && _lane_at_bootstrap=1
+
   # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
   bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
     --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
@@ -7797,6 +7826,11 @@ cmd_advance_arm() {
   for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
     _phase_waiver_args+=(--waiver "$_pw")
   done
+  # Same bootstrap probe contract as cmd_resolve: the guard consumes
+  # _lane_at_bootstrap taken BEFORE any classify write (advance-arm records
+  # none, so the probe here sees the lane as its history actually is).
+  _lane_at_bootstrap=0
+  bash "${PHASE_RECORD_BIN}" is-bootstrap "${sig8}" 2>/dev/null && _lane_at_bootstrap=1
   _phase_precondition_guard "${sig8}" "${_adv_class}" "${writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
 
   local mission
