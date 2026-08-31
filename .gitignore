@@ -37,13 +37,19 @@ plugins/leadv2/scripts/tests/.claude/
 # stamps. 268 of them were showing as uncommitted changes here while the identical
 # files are ignored in persona-engine, which is why this repo looked permanently
 # dirty. Authored docs at the top of docs/handoff/ and docs/leadv2/ stay tracked.
+#
+# HANDOFF-ARTIFACTS-GITIGNORED-01 (2026-08-31): the blanket rule above ignored
+# proof, not just churn — a lane's roundN-red/ output (the only durable
+# evidence a negative control ever went red) and its report.md/brief.md never
+# reached git, and because the path was ignored, DELETING one was invisible
+# in `git status` too (a lane could destroy another lane's evidence silently).
+# Allowlist the artifacts that are actual evidence; everything else under
+# docs/handoff/<id>/ (stream jsonl, session maps, locks, regenerated diffs,
+# stamps — per-run scratch) stays default-ignored.
 docs/handoff/*/*
-# DISPATCH-CLOSE-GATE-01 round-3: these are load-bearing test fixtures (real, corrected
-# vs. pre-correction dispatch missions), not run output -- test-mission-writeset.sh's
-# specimen assertions hard-`fail` without them, and a fixture that only exists on the
-# machine that generated it is not a control at all. Un-ignore the whole subtree.
-!docs/handoff/DISPATCH-CLOSE-GATE-01/specimens/
-!docs/handoff/DISPATCH-CLOSE-GATE-01/specimens/**
+!docs/handoff/*/report.md
+!docs/handoff/*/brief*.md
+!docs/handoff/*/round*-red
 docs/leadv2/review-*
 docs/leadv2/status-snapshot.json
 docs/leadv2/founder-status*.md
@@ -67,5 +73,3 @@ docs/leadv2/burn-deferred.d/
 # Local session config and a stray review artifact at the handoff root.
 .claude/cache/
 docs/handoff/dispatch-*-review-*.md
-plugins/leadv2/scripts/docs/
-plugins/leadv2/scripts/.claude/

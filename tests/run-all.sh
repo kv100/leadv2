@@ -172,7 +172,8 @@ test-consumer-symlink-farm.sh:plugins/leadv2/scripts/tests/test-consumer-symlink
 leadv2-status-surface.sh:plugins/leadv2/scripts/tests/test-status-surface.sh
 leadv2-lane-status-line.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
 leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
-leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-gate-no-origin.sh"
+leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-gate-no-origin.sh
+gitignore:plugins/leadv2/scripts/tests/test-handoff-artifacts-tracked.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -264,7 +265,16 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
           plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
           *) continue ;;
         esac
+        stem="$(basename "${cf}" .sh)
+      if [[ "${cf}" == plugins/leadv2/scripts/*.sh ]]; then
         stem="$(basename "${cf}" .sh)"
+      elif [[ "${cf}" == ".gitignore" ]]; then
+        # HANDOFF-ARTIFACTS-GITIGNORED-01: .gitignore isn't a plugins/leadv2
+        # script, so it needs its own synthetic stem to reach EXTRA_SUITE_MAP
+        # below — the blanket-vs-allowlist rule it carries has no test-*.sh
+        # of its own name to match by convention.
+        stem="gitignore"
+        continue"
       fi
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
