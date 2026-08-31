@@ -33,6 +33,42 @@ log()  { printf -- '[TEST] %s\n' "$*"; }
 pass() { PASS=$(( PASS + 1 )); log "PASS: $1"; }
 fail() { FAIL=$(( FAIL + 1 )); log "FAIL: $1"; }
 
+# ── ROUND 11 (ANTI-SILENCE-STATUSLINE-01): hermeticity guard on the ONE real
+# repo path every fixture in this file is supposed to never touch. Every
+# renderer call below is sandboxed via LEADV2_STATUS_QUESTIONS_DIR/etc (the
+# NEW_SB() wall), so this file should never need to swap the real
+# docs/leadv2/questions inode -- but the round-10 report showed it dangling
+# right after a run, so this suite proves (not assumes) it left the real path
+# alone, and repairs it on every exit path if something did touch it.
+# REPO_ROOT is resolved via git, NEVER `../..` hops (GATE-WRONG-ROOT-FALSE-DEAD-01):
+# this file is reached through symlinked paths of different depth per worktree.
+_HERM_REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+_HERM_QDIR="${_HERM_REPO_ROOT}/docs/leadv2/questions"
+_herm_snapshot() {
+  if [ -L "$1" ]; then printf 'L:%s' "$(readlink "$1")"
+  elif [ -d "$1" ]; then printf 'D'
+  elif [ -f "$1" ]; then printf 'F'
+  else printf 'X'
+  fi
+}
+_HERM_QDIR_BEFORE=""
+[ -n "$_HERM_REPO_ROOT" ] && _HERM_QDIR_BEFORE="$(_herm_snapshot "$_HERM_QDIR")"
+_herm_restore() {
+  [ -n "$_HERM_REPO_ROOT" ] || return 0
+  local now
+  now="$(_herm_snapshot "$_HERM_QDIR")"
+  if [ "$now" != "$_HERM_QDIR_BEFORE" ]; then
+    case "$_HERM_QDIR_BEFORE" in
+      L:*)
+        rm -rf "$_HERM_QDIR" 2>/dev/null
+        ln -sfn "${_HERM_QDIR_BEFORE#L:}" "$_HERM_QDIR" 2>/dev/null
+        ;;
+    esac
+    printf -- '[TEST] HERMETIC-RESTORE docs/leadv2/questions %s -> %s\n' "$now" "$_HERM_QDIR_BEFORE" >&2
+  fi
+}
+trap _herm_restore EXIT INT TERM
+
 # ── 1. bash -n on all 3 new scripts + the test itself ───────────────────────
 for f in "$RENDER" "$WATCH" "$BAR" "$SELF"; do
   if bash -n "$f" 2>/dev/null; then pass "bash -n $(basename "$f")"; else fail "bash -n $(basename "$f")"; fi
@@ -1168,8 +1204,8 @@ fi
 log ""
 log "== R5r2: _mini_yaml reader unit cases =="
 MiniFix="$(mktemp -d -t leadv2-ss-mini)"
-cleanup_mini() { rm -rf "$MiniFix"; }
-trap cleanup_mini EXIT 2>/dev/null || true
+cleanup_mini() { rm -rf "$MiniFix"; _herm_restore; }
+trap cleanup_mini EXIT INT TERM 2>/dev/null || true
 _minirc=0
 LEADV2_R5_REN="$RENDER" LEADV2_R5_FIX="$MiniFix" python3 - <<'PY' || _minirc=$?
 import os, re, pathlib, sys
@@ -2101,6 +2137,19 @@ for _rc2_f in leadv2-dispatch-code.sh leadv2-dispatch-ledger.sh \
     fail "/bin/bash -n ${_rc2_f}"
   fi
 done
+
+log ""
+log "== ROUND 11: hermeticity — real docs/leadv2/questions untouched by this run =="
+if [ -n "$_HERM_REPO_ROOT" ]; then
+  _herm_now="$(_herm_snapshot "$_HERM_QDIR")"
+  if [ "$_herm_now" = "$_HERM_QDIR_BEFORE" ]; then
+    pass "hermetic: docs/leadv2/questions unchanged (${_HERM_QDIR_BEFORE})"
+  else
+    fail "hermetic: docs/leadv2/questions changed ${_HERM_QDIR_BEFORE} -> ${_herm_now}"
+  fi
+else
+  fail "hermetic: could not resolve repo root via git -- cannot prove docs/leadv2/questions was untouched"
+fi
 
 log ""
 log "=== ${PASS} passed, ${FAIL} failed ==="
