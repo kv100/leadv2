@@ -236,17 +236,21 @@ task_id, path, terminals_raw, lane_terminal_raw, scripts_dir = sys.argv[1:6]
 terminals = set(terminals_raw.split("|"))
 lane_terminal = set(lane_terminal_raw.split("|")) if lane_terminal_raw else set()
 sys.path.insert(0, scripts_dir)
-from leadv2_tasks_yaml_common import load_tasks_items
+from leadv2_tasks_yaml_common import load_tasks_items, resolve_task
 items = load_tasks_items(path)
-for it in items:
-    if isinstance(it, dict) and str(it.get("id","")) == task_id:
-        st = it.get("status","")
-        if st in terminals:
-            sys.exit(0)
-        if st in lane_terminal:
-            sys.exit(3)
-        sys.exit(1)
-# Not found in tasks.yaml — check lane yamls as fallback
+it = resolve_task(items, task_id)
+if it is not None:
+    st = it.get("status","")
+    if st in terminals:
+        sys.exit(0)
+    if st in lane_terminal:
+        sys.exit(3)
+    sys.exit(1)
+# Not found by id or intent-prefix in tasks.yaml -- there is no lane-yaml
+# fallback here: bridge mode already treats tasks.yaml as authoritative
+# once it exists (see the `if [[ -f "$TASKS_YAML" ]]` branch below), so the
+# rc==2 message names exactly what was searched instead of promising a
+# fallback this branch never runs.
 sys.exit(2)
 PYEOF
   then
@@ -281,8 +285,8 @@ print(str(d.get("outcome") or ""))
         failures+=("A2: ${TASK_ID} status is claimed_done/needs_evidence -- lane-terminal requires BOTH ${RELEASE_RECEIPT} with outcome: completed_success AND ${SENTINEL} to exist (got outcome='${receipt_outcome:-<missing>}'); run leadv2_tasks_release then leadv2-phase8-e2e-gate.sh")
       fi
     elif [[ $rc -eq 2 ]]; then
-      log_fail "A2 tasks.yaml: ${TASK_ID} not found — task not in tasks.yaml"
-      failures+=("A2: ${TASK_ID} not found in ${TASKS_YAML} — run leadv2_tasks_release or ensure tasks.yaml is populated")
+      log_fail "A2 tasks.yaml: ${TASK_ID} not found by id or by intent-prefix in ${TASKS_YAML} (only tasks.yaml was consulted; no lane-yaml fallback once it exists)"
+      failures+=("A2: ${TASK_ID} not found by id or intent-prefix in ${TASKS_YAML} — run leadv2_tasks_release or ensure tasks.yaml is populated")
     else
       log_fail "A2 tasks.yaml: ${TASK_ID} status is not terminal"
       failures+=("A2: ${TASK_ID} in ${TASKS_YAML} does not have terminal status (${TERMINAL_STATUSES}) — run queue-release")

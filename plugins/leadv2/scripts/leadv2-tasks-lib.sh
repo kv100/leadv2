@@ -190,6 +190,26 @@ def deps_done(item, by_id):
             return False
     return True
 
+def resolve_iid(items, iid):
+    """Find the row addressed by *iid*, tolerant of the fingerprint-id /
+    human-milestone-name split (GATE-A2-ID-SCHEME-MISMATCH-01). A
+    fingerprint-keyed backlog's row `id` is an opaque hash; the human
+    milestone name a caller passes (e.g. leadv2_tasks_release
+    "V5-M0-SKELETON-01") lives inside `intent`, as the segment before the
+    first ':'. Match by id first, else by intent's colon-anchored prefix
+    (never a substring/startswith -- "V5-M1" must not match "V5-M10:...").
+    Returns the matching dict, or None.
+    """
+    for it in items:
+        if isinstance(it, dict) and str(it.get("id", "")) == iid:
+            return it
+    for it in items:
+        if isinstance(it, dict):
+            intent = str(it.get("intent", ""))
+            if intent.split(":", 1)[0].strip() == iid:
+                return it
+    return None
+
 def set_nested(obj, path, val):
     parts = path.split(".")
     for part in parts[:-1]: obj = obj.setdefault(part, {})
@@ -327,8 +347,13 @@ elif op == "release":
                 merge_blocked = os.path.isfile(os.path.join(handoff_dir, iid, "merge-blocker.flag"))
             except Exception:
                 merge_blocked = False
-        for it in items:
-            if str(it.get("id","")) != iid: continue
+        # GATE-A2-ID-SCHEME-MISMATCH-01: a fingerprint-keyed row's `id` is
+        # never the human milestone name callers pass here -- resolve by id
+        # OR by intent's colon-anchored prefix so this is the executable
+        # remedy A2's own failure message points callers at, not a second
+        # dead end with the same id-scheme mismatch one layer down.
+        it = resolve_iid(items, iid)
+        if it is not None:
             lane    = str(it.get("lane","action"))
             max_att = int(it.get("max_attempts", LANE_MAX.get(lane,3)))
             if outcome == "success" and merge_blocked:
