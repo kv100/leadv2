@@ -3857,8 +3857,23 @@ _phase_precondition_guard() {
         emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} mode=1"
         log_err "dispatch refused: missing mandatory phases: ${missing_csv}"
         local mp
+        # DISPATCH-PHASE-DEADLOCK-01: a printed remedy that cannot itself
+        # satisfy the gate it is offered for is not a remedy (measured cost:
+        # 8 hand-written-file workarounds on 2026-08-31). plan/gate1 now
+        # accept lead-authored evidence (see leadv2-phase-record.sh
+        # _verify_artifact) — print the command that actually clears each.
         for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
-          log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
+          case "$mp" in
+            plan)
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} plan --artifact docs/handoff/<task-id>/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)"
+              ;;
+            gate1)
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} gate1 --reason \"<founder gate-1 decision>\"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)"
+              ;;
+            *)
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
+              ;;
+          esac
         done
         return 1
       else
