@@ -180,7 +180,8 @@ leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-admission.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-admission.sh
 leadv2-control-prover.sh:plugins/leadv2/scripts/tests/test-control-prover.sh
 leadv2-control-prover:plugins/leadv2/scripts/tests/test-control-prover.sh
-leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-control-prover.sh"
+leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-control-prover.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-beat-stamp-agreement.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
