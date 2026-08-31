@@ -185,7 +185,7 @@ leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-beat-stamp-agreement.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-effort-routing.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-effort-routing.sh
 codex-task.sh:plugins/leadv2/scripts/tests/test-codex-broker-staleness.sh
-codex-guard.sh:plugins/leadv2/scripts/tests/test-codex-broker-staleness.sh"
+codex-guard.sh:plugins/leadv2/scripts/tests/test-codex-broker-staleness.sh
 leadv2-notify-lead:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
 leadv2-inbox:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
 leadv2-ask:plugins/leadv2/scripts/tests/test-lead-worker-channel.sh
