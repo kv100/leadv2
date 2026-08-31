@@ -138,6 +138,7 @@ leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-capability-honoured.s
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
 leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
+leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-adoption-gate-passable.sh
 leadv2-freepool-model-select:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
