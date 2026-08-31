@@ -118,7 +118,9 @@ leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-model-select-telemetry.sh
 leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
-leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh"
+leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
+leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-lane-finished-state.sh
+leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-lane-finished-state.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
