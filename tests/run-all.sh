@@ -102,7 +102,15 @@ add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 # suite (the dispatch-code arming seam is proven by the pulse-watch suites,
 # not by any test-dispatch-code.sh) is mapped here so --scope changed still
 # runs its suite instead of silently dropping it.
-EXTRA_SUITE_MAP="leadv2-phase8-assert.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
+EXTRA_SUITE_MAP="glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-lock-per-lane.sh
+glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
+leadv2-phase8-assert.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
+leadv2-hook-session-kind.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
+leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
+leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-resume-lane-arg-shapes.sh
 leadv2-tasks-lib.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
@@ -148,6 +156,7 @@ leadv2-hook-fork-budget.sh:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
 hooks.json:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
+leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-classified-block.sh
 leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
 leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
 leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
@@ -231,7 +240,11 @@ leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
 leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
 leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
 leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
-leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-status-churn.sh"
+leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
+leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
+glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
+glm-coder.sh:plugins/leadv2/scripts/tests/test-lane-outcome.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(

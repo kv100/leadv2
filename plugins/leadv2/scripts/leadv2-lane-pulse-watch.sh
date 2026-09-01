@@ -56,6 +56,32 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# BEAT-LOOP-ORPHANS-01: a headless worker session (glm-coder/freepool-coder/
+# kimi-coder/claude-subsession) inherits this process's env exactly like a
+# lead does when it dispatches its own nested worker, and its plugin hooks
+# fire the same arming path -- but a worker session outlives nothing; when it
+# exits this watch has no owner left to disarm it. Fix-round 2: `worker`
+# refuses to arm and `unknown` FAILS CLOSED too (no env pin + no worker signal
+# in the transcript = no arm; journal one session_kind=unknown line). Only
+# `lead` arms.
+_lv2_lpw_journal="${LEADV2_PROJECT_ROOT:-$PWD}/docs/leadv2/loop-arm-journal.log"
+mkdir -p "$(dirname "$_lv2_lpw_journal")" 2>/dev/null || true
+_LV2_HOOK_KIND_LIB="${LEADV2_SESSION_KIND_LIB:-${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh}"
+if [[ -f "$_LV2_HOOK_KIND_LIB" ]]; then
+  # shellcheck source=/dev/null
+  source "$_LV2_HOOK_KIND_LIB"
+  # Direct call (no $()): keeps LEADV2_SESSION_KIND_OUT/_REASON in THIS shell
+  leadv2_hook_session_kind "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}" >/dev/null 2>&1 || true
+  _lv2_loop_kind="${LEADV2_SESSION_KIND_OUT:-unknown}"
+  if [[ "$_lv2_loop_kind" != "lead" ]]; then
+    leadv2_loop_arm_journal "$_lv2_lpw_journal" "lane-pulse-watch" "$_lv2_loop_kind" 2>/dev/null || true
+    exit 0
+  fi
+else
+  printf '%s event=owner_check_unavailable loop=lane-pulse-watch reason=classifier_lib_missing\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '?')" >> "$_lv2_lpw_journal" 2>/dev/null || true
+fi
+
 # WATCHER-LIFECYCLE-LEAK-01: shared watcher lifecycle (race-safe singleton
 # claim, self-reap, event log). Guarded + canonical-fallback source, same
 # shape dispatch-ledger uses for its libs; the stubs reproduce the PRE-fix
@@ -221,7 +247,7 @@ _cleanup_pid() {
   local _p
   _p="$(cat "$PID_FILE" 2>/dev/null | tr -d '[:space:]')"
   if [[ "$_p" == "$$" ]]; then
-    rm -f "$PID_FILE" 2>/dev/null || true
+    rm -f "$PID_FILE" "${PID_FILE}.owner" 2>/dev/null || true
     wl_event "lane-pulse-watch" "$TASK_ID" "$$" "self_reap"
   fi
   return 0
@@ -252,6 +278,16 @@ case $? in
     ;;
 esac
 wl_event "lane-pulse-watch" "$TASK_ID" "$$" "spawn"
+
+# BEAT-LOOP-ORPHANS-01 mechanism 2: record the arming session's liveness
+# tokens once (owner pid + transcript), then exit when the owner is gone —
+# a watcher whose lane outlives its dispatcher must not outlive its OWNER.
+# Env inputs from the armer (LEADV2_LOOP_OWNER_PID/_SID/_TRANSCRIPT) win;
+# fallback is the nearest claude-harness ancestor of this process.
+OWNER_FILE="${PID_FILE}.owner"
+if command -v leadv2_loop_owner_record >/dev/null 2>&1; then
+  leadv2_loop_owner_record "$OWNER_FILE" "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}"
+fi
 
 PULSE_BIN="${LEADV2_LANE_PULSE_BIN:-${SCRIPT_DIR}/leadv2-pulse.sh}"
 export LEADV2_PROJECT_ROOT="$ROOT"
@@ -318,6 +354,11 @@ while :; do
   if [[ ! -d "$ROOT" ]]; then
     printf '[lane-pulse-watch] %s root gone (%s), exiting\n' "$SIG" "$ROOT" >&2
     exit 0
+  fi
+  # BEAT-LOOP-ORPHANS-01: checked before the journal read so a watcher whose
+  # lane journal is (or looks) busy can never mask an owner that is gone.
+  if command -v leadv2_loop_owner_check >/dev/null 2>&1; then
+    leadv2_loop_owner_check "$OWNER_FILE" "lane-pulse-watch" || exit 0
   fi
   # WATCHER-LIFECYCLE-LEAK-01 #2: owner-bound self-reap, checked every
   # iteration so the exit lands within one interval. The DURABLE owner of

@@ -331,6 +331,39 @@ _lv2_path_contains() {
   local parent="$1" child="$2"
   [[ "${child}" == "${parent}" || "${child}" == "${parent}/"* ]]
 }
+# RESUME-LANE-ACCEPTS-PATH-01 round 3 (review-glm High-2): an absolute
+# --resume-lane pin is honored ONLY for a real LINKED worktree of PROJECT_ROOT
+# -- exactly a path `git worktree list --porcelain` names, never the main
+# checkout -- whose branch is `worktree-<id>`.  The earlier check
+# ("git-common-dir parent == project root") also accepted the repo root itself
+# and ANY in-repo subdirectory, letting an arbitrary directory be pinned as
+# the lane worktree.  Bash 3.2 safe.
+_lv2_is_lane_worktree_path() {
+  local cand="$1" root="$2" main_wt wt="" branch="" line cand_phys wt_phys
+  main_wt="$(git -C "${root}" rev-parse --git-common-dir 2>/dev/null || true)"
+  main_wt="$(cd "${root}" 2>/dev/null && cd "$(dirname "${main_wt}")" 2>/dev/null && pwd -P || true)"
+  [[ -n "${main_wt}" ]] || return 1
+  # RESUME-LANE-ACCEPTS-PATH-01 round-4 (review H1): identity is the canonicalised
+  # PATH equality with the porcelain `worktree <path>` line.  The round-3 check
+  # compared only basename(cand) against the branch's lane id, so any in-repo
+  # subdir sharing the lane's id (e.g. docs/handoff/<id>) matched too.
+  cand_phys="$(cd "${cand}" 2>/dev/null && pwd -P || true)"
+  [[ -n "${cand_phys}" ]] || return 1
+  while IFS= read -r line; do
+    case "${line}" in
+      "worktree "*) wt="${line#worktree }"; branch="" ;;
+      "branch refs/heads/"*) branch="${line#branch refs/heads/}" ;;
+      "")
+        if [[ -n "${wt}" && "${wt}" != "${main_wt}" ]]; then
+          wt_phys="$(cd "${wt}" 2>/dev/null && pwd -P || true)"
+          [[ -n "${wt_phys}" && "${cand_phys}" == "${wt_phys}" ]] && return 0
+        fi
+        wt=""
+        ;;
+    esac
+  done < <(git -C "${root}" worktree list --porcelain 2>/dev/null; printf '\n')
+  return 1
+}
 # GATE-WRONG-ROOT-FALSE-DEAD-01 (repo-CLAUDE.md): resolve the cwd git root ONCE,
 # unconditionally, so it is defined identically on every branch below -- the
 # prior guard-off else-branch left this unset and silently fell back to
@@ -381,8 +414,12 @@ if [[ -n "${_LV2_ENV_ROOT}" ]]; then
           # produced .../worktrees//Users/... — the preflight cd failed, the
           # pin looked unprovable, and the foreign-root guard fell back to the
           # cwd-derived root (the mangled "looked_for=" refusal).
-          if [[ "${_LV2_PIN_FLAG}" == "--resume-lane" && "${_LV2_PIN_VALUE}" != /* ]]; then
-            _LV2_PIN_CANDIDATE="${LEADV2_WORKTREE_DIR:-${_LV2_ENV_GIT_ROOT}/.claude/worktrees}/${_LV2_PIN_VALUE}"
+          if [[ "${_LV2_PIN_FLAG}" == "--resume-lane" ]]; then
+            if [[ "${_LV2_PIN_VALUE}" == /* ]]; then
+              _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
+            else
+              _LV2_PIN_CANDIDATE="${LEADV2_WORKTREE_DIR:-${_LV2_ENV_GIT_ROOT}/.claude/worktrees}/${_LV2_PIN_VALUE}"
+            fi
           else
             _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
           fi
@@ -397,10 +434,19 @@ if [[ -n "${_LV2_ENV_ROOT}" ]]; then
           # safe control-plane root for journals and ledgers.
           PROJECT_ROOT="${_LV2_PINNED_ROOT}"
         else
-          echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
-          PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
           _LV2_FOREIGN_ROOT_ENV="${_LV2_ENV_GIT_ROOT}"
           _LV2_FOREIGN_ROOT_CWD="${_LV2_CWD_GIT_ROOT}"
+          # No pin proved the env root authoritative, so the env root is the
+          # leak shape the incident describes: discard it and root the control
+          # plane at cwd.  Keeping the env root here would also strand a later
+          # --resume-lane pin: the resolver's Step 4 compares the candidate's
+          # owning repo against PROJECT_ROOT, so an env-rooted PROJECT_ROOT
+          # refuses the very pin the preflight above exists to enable
+          # (review-glm round 2, High-1: no half-deleted mechanism -- the
+          # fallback and the WARN text below agree, and the telemetry
+          # assignments stay live for the project_root_guard reader).
+          PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
+          echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
         fi
       fi
     fi
@@ -848,29 +894,61 @@ _resolve_pinned_placement() {
   project_root_phys="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)"
 
   # Step 1: Candidate.
-  # PLUGIN-PAPERCUTS-01 (defect 3): --resume-lane accepts BOTH a bare lane ref
-  # (task-sig8/founder-id, resolved via lane-worktree path-of) AND an absolute
-  # path to that lane's worktree. Pre-fix an absolute path went through path-of,
-  # which concatenated it onto the worktree dir and refused with a mangled
-  # "looked_for=<wt>/<abs-path>" and no guidance. A path-shaped --resume-lane
-  # now takes the same validation contract as --worktree.
-  if [[ -n "${placement_lane_ref}" && "${placement_lane_ref}" == /* ]]; then
+  # Round-5 merge of PLUGIN-PAPERCUTS-01 (defect 3) + RESUME-LANE-ACCEPTS-PATH-01:
+  # --resume-lane accepts BOTH shapes — a bare lane name (resolved via
+  # path-of, unchanged) and an absolute path to the lane's own worktree.
+  # PLUGIN-PAPERCUTS-01 fixed the mangled "worktrees/" + "/Users/..."
+  # concatenation refusal and added the path-form emit; this lane's
+  # review-glm High-2 check adds the validation PLUGIN-PAPERCUTS-01 lacked:
+  # the path is accepted only when `git worktree list --porcelain` names it
+  # as a LINKED worktree of PROJECT_ROOT. A bad path refuses with the
+  # accepted shapes (both the machine-readable accepted_shapes= tag and
+  # P6b's human-readable guidance) and echoes what was given.
+  if [[ -n "${placement_lane_ref}" ]]; then
     ref="${placement_lane_ref}"
-    key="$(basename "${placement_lane_ref}")"
-    candidate="${placement_lane_ref}"
-    emit decision "lane_placement_path_form task=${sig8:-?} ref=${ref} note=resume-lane accepted an absolute worktree path"
-  elif [[ -n "${placement_lane_ref}" ]]; then
-    ref="${placement_lane_ref}"
-    key="${placement_lane_ref}"
-    candidate="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${placement_lane_ref}" 2>/dev/null)"
-    if [[ -z "${candidate}" ]]; then
-      reason="no_lane_worktree_for_ref"
-      local _wt_dir="${LEADV2_WORKTREE_DIR:-${PROJECT_ROOT}/.claude/worktrees}"
-      emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} looked_for=${_wt_dir}/${ref}"
-      printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s\n' "${reason}" "${ref}" >&2
-      printf '[leadv2-dispatch-code]   accepted shapes: --resume-lane <bare-lane-ref> (task-sig8 or founder-id, looked up in %s)\n' "${_wt_dir}" >&2
-      printf '[leadv2-dispatch-code]                    --resume-lane </absolute/path/to/worktree>  (or --worktree <abs-path>)\n' >&2
-      exit 5
+    if [[ "${ref}" == /* ]]; then
+      candidate=""
+      if [[ -d "${ref}" ]]; then
+        local _abs_cand=""
+        _abs_cand="$(cd "${ref}" 2>/dev/null && pwd -P || true)"
+        # RESUME-LANE-ACCEPTS-PATH-01 round 3 (review-glm High-2): same-repo
+        # containment alone accepted PROJECT_ROOT itself and any in-repo
+        # subdirectory as a "lane worktree". An absolute --resume-lane path is
+        # accepted only when `git worktree list --porcelain` names it as a
+        # LINKED worktree of PROJECT_ROOT (never the main checkout) -- canonical
+        # PATH equality, so a basename collision (review H1) does not match.
+        if [[ -n "${_abs_cand}" ]] && _lv2_is_lane_worktree_path "${_abs_cand}" "${project_root_phys}"; then
+          candidate="${_abs_cand}"
+        fi
+      fi
+      if [[ -z "${candidate}" ]]; then
+        reason="no_lane_worktree_for_ref"
+        local _wt_dir="${LEADV2_WORKTREE_DIR:-${PROJECT_ROOT}/.claude/worktrees}"
+        emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} given=${ref} accepted_shapes=bare_lane_name|absolute_worktree_path"
+        printf '[leadv2-dispatch-code] REFUSE placement: %s given=%s accepted_shapes=bare_lane_name|absolute_worktree_path\n' \
+          "${reason}" "${ref}" >&2
+        # PLUGIN-PAPERCUTS-01 P6b: human-readable accepted-shapes guidance.
+        printf '[leadv2-dispatch-code]   accepted shapes: --resume-lane <bare-lane-ref> (task-sig8 or founder-id, looked up in %s)\n' "${_wt_dir}" >&2
+        printf '[leadv2-dispatch-code]                    --resume-lane </absolute/path/to/worktree>  (or --worktree <abs-path>)\n' >&2
+        exit 5
+      fi
+      key="$(basename "${ref}")"
+      # PLUGIN-PAPERCUTS-01: journal that the path form of --resume-lane was used.
+      emit decision "lane_placement_path_form task=${sig8:-?} ref=${ref} note=resume-lane accepted an absolute worktree path"
+    else
+      key="${ref}"
+      candidate="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${placement_lane_ref}" 2>/dev/null)"
+      if [[ -z "${candidate}" ]]; then
+        reason="no_lane_worktree_for_ref"
+        local _wt_dir="${LEADV2_WORKTREE_DIR:-${PROJECT_ROOT}/.claude/worktrees}"
+        emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} given=${ref} looked_for=${_wt_dir}/${ref} accepted_shapes=bare_lane_name|absolute_worktree_path"
+        printf '[leadv2-dispatch-code] REFUSE placement: %s given=%s looked_for=%s accepted_shapes=bare_lane_name|absolute_worktree_path\n' \
+          "${reason}" "${ref}" "${_wt_dir}/${ref}" >&2
+        # PLUGIN-PAPERCUTS-01 P6b: human-readable accepted-shapes guidance.
+        printf '[leadv2-dispatch-code]   accepted shapes: --resume-lane <bare-lane-ref> (task-sig8 or founder-id, looked up in %s)\n' "${_wt_dir}" >&2
+        printf '[leadv2-dispatch-code]                    --resume-lane </absolute/path/to/worktree>  (or --worktree <abs-path>)\n' >&2
+        exit 5
+      fi
     fi
   else
     # --worktree: explicit absolute path
@@ -4670,11 +4748,55 @@ SINGLE_LEAD_BEAT_LOOP_BIN="${LEADV2_DISPATCH_BEAT_LOOP_BIN:-${SCRIPT_DIR}/leadv2
 # re-pinned to a process that outlives THIS dispatcher instead of staying
 # pinned to the dispatcher's own pid forever.
 _LV2_LANE_PULSE_WATCH_PID=""
+# BEAT-LOOP-ORPHANS-01: session-kind gate + owner-liveness tokens for the
+# detached loops this dispatcher arms. A headless worker session (glm-coder/
+# freepool-coder/kimi-coder/claude-subsession) that runs its own nested
+# dispatch must never arm a loop — when the worker exits, the loop has no
+# owner left to disarm it (measured 2026-09-01: 53 orphaned loops, load 244).
+# Fix-round 2: `unknown` FAILS CLOSED — no arm; one loop_armed_by_unknown_
+# session journal line (with reason=<why>) so a misjudged lead's starvation
+# is visible the minute it happens. A dispatcher that knows it IS the lead
+# arms explicitly via LEADV2_SESSION_KIND=lead.
+LV2_SESSION_KIND_LIB="${LV2_SESSION_KIND_LIB:-${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh}"
+_lv2_session_kind() {  # -> sets _LV2_KIND, _LV2_OWNER_PID/_SID/_TRANSCRIPT
+  _LV2_KIND="unknown"; _LV2_OWNER_PID=""; _LV2_OWNER_SID=""; _LV2_OWNER_TRANSCRIPT=""
+  [[ -f "$LV2_SESSION_KIND_LIB" ]] || return 0
+  # shellcheck source=/dev/null
+  source "$LV2_SESSION_KIND_LIB"
+  _LV2_OWNER_SID="$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64)"
+  # The dispatcher runs under the Bash-tool shell chain, so it has no
+  # transcript_path of its own — resolve the session's transcript from the
+  # platform layout (~/.claude/projects/<munged-cwd>/<sid>.jsonl) so the
+  # predicate gets its third evidence source.
+  if [[ -n "${_LV2_OWNER_SID}" ]]; then
+    _LV2_OWNER_TRANSCRIPT="$(ls -t "${HOME}/.claude/projects/"*"/${_LV2_OWNER_SID}.jsonl" 2>/dev/null | head -1 || true)"
+  fi
+  # Direct call (no $() subshell): keeps LEADV2_SESSION_KIND_OUT/_REASON in
+  # THIS shell so the fail-closed journal carries reason=<why>.
+  leadv2_hook_session_kind "${_LV2_OWNER_TRANSCRIPT}" >/dev/null 2>&1 || true
+  _LV2_KIND="${LEADV2_SESSION_KIND_OUT:-unknown}"
+  if command -v leadv2_loop_owner_pid >/dev/null 2>&1; then
+    _LV2_OWNER_PID="$(leadv2_loop_owner_pid)"
+  fi
+  return 0
+}
 _arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
   _LV2_LANE_PULSE_WATCH_PID=""
   [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
   [[ -f "${LANE_PULSE_WATCH_BIN}" ]] || return 0
-  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
+  _lv2_session_kind
+  # Fix-round 2: worker refuses; unknown FAILS CLOSED too — journal and do
+  # not arm. Only a `lead` classification (or the LEADV2_SESSION_KIND=lead
+  # pin) arms a persistent loop.
+  if [[ "${_LV2_KIND}" != "lead" ]]; then
+    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
+      lane-pulse-watch "${_LV2_KIND}" 2>/dev/null || true
+    return 0
+  fi
+  LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
+    LEADV2_LOOP_OWNER_SID="${_LV2_OWNER_SID}" \
+    LEADV2_LOOP_OWNER_TRANSCRIPT="${_LV2_OWNER_TRANSCRIPT}" \
+    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
     nohup bash "${LANE_PULSE_WATCH_BIN}" --sig "${1}" >/dev/null 2>&1 </dev/null 9>&- &
   _LV2_LANE_PULSE_WATCH_PID=$!
   # _spawn_worker_body is captured by command substitution.  In bash that
@@ -4687,7 +4809,18 @@ _arm_single_lead_beat() {  # fail-open, armed once (loop's own pidfile guards re
   [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
   [[ "${LEADV2_SINGLE_LEAD_BEAT:-1}" == "0" ]] && return 0
   [[ -f "${SINGLE_LEAD_BEAT_LOOP_BIN}" ]] || return 0
-  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
+  _lv2_session_kind
+  # Fix-round 2: same fail-closed rule as _arm_lane_pulse_watch — worker and
+  # unknown never arm; only `lead` (incl. the LEADV2_SESSION_KIND=lead pin).
+  if [[ "${_LV2_KIND}" != "lead" ]]; then
+    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
+      single-lead-beat-loop "${_LV2_KIND}" 2>/dev/null || true
+    return 0
+  fi
+  LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
+    LEADV2_LOOP_OWNER_SID="${_LV2_OWNER_SID}" \
+    LEADV2_LOOP_OWNER_TRANSCRIPT="${_LV2_OWNER_TRANSCRIPT}" \
+    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
     nohup bash "${SINGLE_LEAD_BEAT_LOOP_BIN}" >/dev/null 2>&1 </dev/null 9>&- &
 }
 
@@ -4999,15 +5132,15 @@ _spawn_worker_body() {
         log_err "spawn(${arm}) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
-      # Extract handle from glm-coder.sh output: format is "$RUNS/$handle$handle"
-      # Remove trailing newline
-      local _glm_out="${out%$'\n'}"
-      # Get everything after the last slash
-      local _glm_temp="${_glm_out##*/}"
-      # Extract first half (since it's handle+handle)
-      local _glm_len=${#_glm_temp}
-      local _glm_half=$((_glm_len / 2))
-      handle="${_glm_temp:0:_glm_half}"
+      # GLM-ARM-THROUGHPUT-01: glm-coder.sh's `bg` echoes the bare run_id ONCE
+      # (e.g. "260902-000858-repo-60fa"), never a doubled "$handle$handle" and
+      # never with a leading "$RUNS/" path. The prior halving logic here
+      # truncated every handle to a garbage half-string that never matched a
+      # real run dir, so `status <handle>` below always reported not_live --
+      # glm-flash (and plain glm, whenever it reached this far) never
+      # actually launched. Just trim the trailing newline; the run_id IS the
+      # handle.
+      handle="${out%$'\n'}"
       # FIX PASS 2 (Finding 2, fake-launcher/empty-handle no-op): a launcher that exits
       # 0 without spawning anything (e.g. LEADV2_DISPATCH_GLM_BIN=/bin/true) must not be
       # treated as a live worker.

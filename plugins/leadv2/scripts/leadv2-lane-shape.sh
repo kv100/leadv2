@@ -321,7 +321,9 @@ cmd_frame_check() {
   prompt="$(printf 'Does the OBSERVED output actually show the named defect, and would the proposed fix plausibly turn OBSERVED into PREDICTED_DELTA?\nOBSERVED:\n%s\nPREDICTED_DELTA:\n%s\nRespond with strict JSON: {"verdict":"MATCH"|"MISMATCH","quoted_line":"<one line copied verbatim from OBSERVED>","reason":"<one sentence>"}' "$observed" "$predicted_delta")"
 
   local raw
-  raw="$("$claude_bin" -p "$prompt" --max-turns 1 --permission-mode bypassPermissions --output-format json 2>/dev/null)" || {
+  # BEAT-LOOP-ORPHANS-01 fix-round 2: env-pinned headless spawn (grep-gated by
+  # tests/test-beat-loop-orphans.sh — zero unpinned `claude -p` sites allowed).
+  raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-frame-check}" "$claude_bin" -p "$prompt" --max-turns 1 --permission-mode bypassPermissions --output-format json 2>/dev/null)" || {
     log "frame-check: ${claude_bin} invocation failed"; exit 1;
   }
 
