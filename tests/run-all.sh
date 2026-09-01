@@ -133,6 +133,9 @@ leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-readable-renderin
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-empty-board.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-single-lead-beat.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lib-source-guarded.sh
+leadv2-sleep.sh:plugins/leadv2/scripts/tests/test-no-orphan-sleep.sh
+leadv2-hook-fork-budget.sh:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
+hooks.json:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
 leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
@@ -276,6 +279,30 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
           add_suite "${ROOT}/${cf}"
           ;;
       esac
+      # FORK-STORM-KILLS-HOOKS-01: the hook table (hooks.json) and hook
+      # scripts (plugins/leadv2/hooks/*.sh) are continued by the
+      # [[ scripts || lib ]] guard below, so they never reached the
+      # stem-comparison loop and a hooks.json-only change ran zero suites.
+      # Synthetic stem, freepool-arm.yaml precedent: map row + convention
+      # candidate here, then continue.
+      case "${cf}" in
+        plugins/leadv2/hooks/hooks.json) stem="hooks.json" ;;
+        plugins/leadv2/hooks/*.sh) stem="$(basename "${cf}" .sh)" ;;
+        *) stem="" ;;
+      esac
+      if [[ -n "${stem}" ]]; then
+        for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
+                    "${ROOT}/tests/test-${stem}.sh"; do
+          add_suite "${cand}"
+        done
+        while IFS= read -r row; do
+          [[ -n "$row" ]] || continue
+          key="${row%%:*}"
+          [[ "$key" == "${stem}" || "$key" == "${stem}.sh" ]] || continue
+          add_suite "${ROOT}/${row#*:}"
+        done <<< "${EXTRA_SUITE_MAP}"
+        continue
+      fi
       # PROMISE-GUARD-BIND-01: hooks/*.sh changes (e.g. leadv2-promise-guard.sh)
       # never matched this filter, so a hook fix ran zero suites under
       # --scope changed -- the EXTRA_SUITE_MAP below only fires once a
