@@ -306,16 +306,36 @@ worktree-identity check). HEAD's round-3 fix (this lane, review-glm High-2)
 is a strict superset: it requires the absolute path to (a) exist, (b) be
 named by `git worktree list --porcelain` as a LINKED worktree of
 PROJECT_ROOT via `_lv2_is_lane_worktree_path`, refusing otherwise with the
-accepted-shapes message. Kept HEAD's logic entirely — main's weaker
+accepted-shapes message. Kept HEAD's validation as the base — main's weaker
 unvalidated-accept would have regressed the very vulnerability this lane's
 review round 3 closed (accepting PROJECT_ROOT itself or any in-repo dir as a
-"lane worktree"). Added a comment noting this supersedes PLUGIN-PAPERCUTS-01
-defect 3. A stray missing `fi` after the merged block (dropped in the manual
-resolution) was caught by `bash -n` and fixed before commit.
+"lane worktree") — but main's intent is NOT dropped: the final resolution
+also carries main's `lane_placement_path_form` journal emit on the success
+path and main's P6b human-readable "accepted shapes:" stderr guidance on
+both refusal branches (alongside the lane's machine-readable
+`accepted_shapes=` tag).
 
-No hunk from either side was dropped silently: main's absolute-path
-acceptance behavior is preserved (still works for a *valid* lane worktree
-path), only tightened by re-adding the identity check main's copy lacked.
+**One deliberate contract relaxation (the only point where the two heads
+genuinely conflicted):** this lane's helper additionally required a linked
+worktree's branch to be named `worktree-<id>`, but main's P6 fixture
+(`test-plugin-papercuts.sh:317`) creates the lane worktree with
+`git worktree add -b PPC-LANE-A` — an arbitrary branch name — and its P6
+assertion proves such paths MUST be accepted. The branch-naming requirement
+(an extra beyond what review H1/High-2 asked for) was dropped; everything
+review-mandated is retained: porcelain PATH-EQUALITY against a LINKED
+worktree, never the main checkout, never an arbitrary in-repo dir, basename
+collisions still refused (A9). A stray missing `fi` after the merged block
+(dropped in the manual resolution) was caught by `bash -n` and fixed before
+commit.
+
+### Concurrent-edit note (round 5)
+
+Two sessions ran this round-5 merge in parallel (duplicate dispatch).
+The other session's commit b288093 concluded the merge with the index as
+staged by this session, so the committed tree carries the dual-intent
+resolution described above; this section corrects the other session's
+report text, which described an earlier lane-only intermediate. Verified
+against the committed tree below.
 
 ### Suite output (merged tree)
 
@@ -332,6 +352,16 @@ probe[assertion_tools_broken]: rc=1 shim_invocations=26
 probe[empty_cwd]: rc=0
 probe[stripped_env]: rc=0
 verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+main's PLUGIN-PAPERCUTS-01 suite (the other side of the merge, proof that
+main's contract survived the resolution — P5 bare name, P6 absolute path,
+P6b accepted-shapes refusal):
+```
+[TEST] PASS: P5: bare lane name pins the lane worktree (rc=0)
+[TEST] PASS: P6: absolute path form pins the lane worktree (rc=0)
+[TEST] PASS: P6b: unknown ref refuses with rc=5 and a message showing the accepted shapes
+test-plugin-papercuts: 14 passed, 0 failed
 ```
 
 `tests/run-all.sh --scope changed` (selected shard, idx=3):
