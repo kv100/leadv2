@@ -3823,6 +3823,26 @@ _admission_classify() {
   return 0
 }
 
+# _resolve_class_with_brain_floor <sig8> <task_id> <base_class> -> stdout: final class
+# BRAIN-CLASS-LIVE-01 D3: a task's own brain.yaml (written at intake by
+# leadv2_brain_record) is a floor on any later re-entry that re-derives its
+# class independently (cmd_advance_arm's ledger/task-receipt lookup) --
+# never lowers base_class, only raises it, and journals which record source
+# won. Best-effort: brain.yaml being absent or unreadable falls back to
+# base_class unchanged (leadv2_brain_read_class already returns "" for that).
+_resolve_class_with_brain_floor() {
+  local sig8="$1" task_id="$2" cls="${3:-}"
+  if [[ -n "${task_id}" ]] && declare -F leadv2_brain_read_class >/dev/null 2>&1; then
+    local brain_cls
+    brain_cls="$(leadv2_brain_read_class "${PROJECT_ROOT}" "${task_id}" 2>/dev/null || true)"
+    if [[ -n "${brain_cls}" ]] && { [[ -z "${cls}" ]] || (( $(_lv2_class_rank "${brain_cls}") > $(_lv2_class_rank "${cls}") )); }; then
+      emit decision "phase_class_floor task=${sig8} source=brain_record class=${brain_cls}"
+      cls="${brain_cls}"
+    fi
+  fi
+  printf '%s' "${cls}"
+}
+
 # _phase_precondition_guard <sig8> <class> <writes> [waiver-args...] -> 0 proceed, 1 refuse
 # PHASES-ARE-THE-ONLY-PATH-01: sits at the same structural slot as _lane_writes_guard/
 # _acceptance_guard, after arg validation, before any spawn side effect and before
@@ -7863,6 +7883,11 @@ cmd_advance_arm() {
       _adv_class="${_adv_task_floor}"
       emit decision "phase_class_floor task=${sig8} source=task_record class=${_adv_class}"
     fi
+    # BRAIN-CLASS-LIVE-01 D3: brain.yaml is the same-task re-entry's own prior
+    # brain_decision -- read it as a floor too, so a Phase-4 re-entry never
+    # enforces a lower class than the intake's own computed decision already
+    # recorded (mirrors _admission_classify's brain-floor read above).
+    _adv_class="$(_resolve_class_with_brain_floor "${sig8}" "${task_id}" "${_adv_class}")"
   fi
   if [[ -z "${_adv_class}" ]]; then
     _adv_class="Standard"
