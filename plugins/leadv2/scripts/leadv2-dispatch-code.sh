@@ -3835,11 +3835,14 @@ _phase_precondition_guard() {
   local -a assert_args
   assert_args=(assert "${sig8}" --class "${cls}")
   [[ "${scope}" == "pre-build" ]] && assert_args+=(--pre-build)
-  # DISPATCH-PHASE-DEADLOCK-01 round 2: the caller probed is-bootstrap before
-  # recording this dispatch's own classify (cmd_resolve / cmd_advance_arm);
-  # forward that answer so a genuinely new lane is admitted here and not
-  # deadlocked by the classify write it could not avoid.
-  [[ "${_lane_at_bootstrap:-0}" == "1" ]] && assert_args+=(--at-bootstrap)
+  # PHASE-GATE-IS-INVERTED-01: no --at-bootstrap is forwarded any more. The
+  # guard derives bootstrap state itself, from the store, at assert time.
+  # Forwarding this caller's own pre-classify probe admitted EVERY brand-new
+  # lane unconditionally (the one nobody planned) while a resumed lane with
+  # records was the only kind ever enforced — exactly inverted
+  # (faee3fc5, measured 2026-09-01). A fresh Standard/Heavy lane must now
+  # carry plan+gate1 records BEFORE dispatch; lead-authored evidence
+  # (brief.md + recorded Gate-1 reason) satisfies both pre-spawn.
   [[ -n "${writes}" ]] && assert_args+=(--writes "${writes}")
   assert_args+=("${waiver_args[@]}")
   assert_out="$(bash "${PHASE_RECORD_BIN}" "${assert_args[@]}" 2>&1)" || assert_rc=$?
@@ -6624,14 +6627,11 @@ cmd_resolve() {
   # next arm.  (E2E-GATE-RESIDUE-01 round 4 root cause.)
   set +e
 
-  # DISPATCH-PHASE-DEADLOCK-01 round 2: probe bootstrap BEFORE the classify
-  # write below. classify is recorded unconditionally on every dispatch, so a
-  # probe taken after it always sees one record and the guard's bootstrap
-  # admission is unreachable on the real dispatch path (measured: the
-  # test-effort-routing.sh sonnet fixture refused with missing=diverge,plan,
-  # gate1 even with the round-1 assert-side fix in place).
-  _lane_at_bootstrap=0
-  bash "${PHASE_RECORD_BIN}" is-bootstrap "${sig8}" 2>/dev/null && _lane_at_bootstrap=1
+  # PHASE-GATE-IS-INVERTED-01: the pre-classify is-bootstrap probe is gone.
+  # It existed only to feed the caller-attested --at-bootstrap that the guard
+  # no longer honours; keeping it would resurrect the inversion (every fresh
+  # lane probed "zero records" before its own classify write and was waved
+  # through). The guard reads the store itself after classify is recorded.
 
   # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
   bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
@@ -7826,11 +7826,8 @@ cmd_advance_arm() {
   for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
     _phase_waiver_args+=(--waiver "$_pw")
   done
-  # Same bootstrap probe contract as cmd_resolve: the guard consumes
-  # _lane_at_bootstrap taken BEFORE any classify write (advance-arm records
-  # none, so the probe here sees the lane as its history actually is).
-  _lane_at_bootstrap=0
-  bash "${PHASE_RECORD_BIN}" is-bootstrap "${sig8}" 2>/dev/null && _lane_at_bootstrap=1
+  # PHASE-GATE-IS-INVERTED-01: no is-bootstrap probe and no --at-bootstrap —
+  # the guard reads the lane's store itself (see cmd_resolve).
   _phase_precondition_guard "${sig8}" "${_adv_class}" "${writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
 
   local mission
