@@ -240,6 +240,9 @@ codex-task.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 leadv2-codex-planner.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 leadv2-worker-mcp.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
+# LEADV2-HOOK-CACHE-DEPLOY-01: the cache-sync script's behavioural lock is a
+# differently-named suite (no test-leadv2-plugin-cache-sync stem match).
+leadv2-plugin-cache-sync.sh:plugins/leadv2/scripts/tests/test-plugin-cache-sync.sh
 leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
 leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
