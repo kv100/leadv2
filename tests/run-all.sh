@@ -119,6 +119,7 @@ leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-precondition-bootstr
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-phase-precondition-bootstrap.sh
 leadv2-admission-class:plugins/leadv2/scripts/tests/test-admission-class.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-route-arbiter-symlink-install.sh
+codex-task.sh:plugins/leadv2/scripts/tests/test-codex-longrun.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-model-select-telemetry.sh
