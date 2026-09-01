@@ -35,6 +35,7 @@ git -C "$REPO" init -q
 git -C "$REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 printf '#!/usr/bin/env bash\n# repo v2 content\necho a\n' > "$REPO/plugins/leadv2/hooks/leadv2-a.sh"
 printf '#!/usr/bin/env bash\necho kind\n' > "$REPO/plugins/leadv2/hooks/lib/leadv2-kind.sh"
+printf '{"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo new-hook"}]}]}}\n' > "$REPO/plugins/leadv2/hooks/hooks.json"
 git -C "$REPO" add -A
 git -C "$REPO" -c user.email=t@t -c user.name=t commit -q -m "plugin tree"
 SHA="$(git -C "$REPO" rev-parse HEAD)"
@@ -58,6 +59,12 @@ run_sync() { # run_sync <cache-root> <meta>
     LEADV2_PLUGIN_META="$2" bash "$SYNC" 2>&1
 }
 
+# (d0) precondition for the hooks.json cases: the cache starts WITHOUT the
+# repo's hooks.json — the exact round-1 defect state (an added hook is
+# invisible to Claude Code until something copies the LIST into the cache).
+check "$([[ -e "$ACTIVE/hooks/hooks.json" ]] && echo present || echo MISSING)" "MISSING" \
+  "d0: fixture cache lacks hooks.json before sync (defect state)"
+
 # ── (a) sync: diff -rq empties, marker holds the sha, output line ───────────
 out="$(run_sync "$CACHE_ROOT" "$META")" && rc=0 || rc=$?
 check "$out" "synced=" "a1: exit 0 and prints synced= line (rc=$rc)"
@@ -66,6 +73,14 @@ check "$out" "cache=$ACTIVE" "a3: output names the installed_plugins.json dir (a
 d="$(diff -rq "$REPO/plugins/leadv2" "$ACTIVE" 2>&1 | grep -v hooks.bak- | grep -v .synced-from || true)"
 check "diff-empty:${d:-OK}" "diff-empty:OK" "a4: diff -rq repo vs cache is empty after sync"
 check "$(cat "$ACTIVE/.synced-from" 2>/dev/null || echo MISSING)" "$SHA" "a5: .synced-from holds the sha"
+
+# ── (d) hooks.json: cache lacked it before sync (the real-world defect —
+#     an added hook / changed matcher is invisible to Claude Code until the
+#     cache copy exists), sync must materialize it verbatim ─────────────────
+check "$([[ -f "$ACTIVE/hooks/hooks.json" ]] && echo present || echo MISSING)" "present" \
+  "d1: hooks.json present in cache after sync"
+check "$(cat "$ACTIVE/hooks/hooks.json" 2>/dev/null)" "echo new-hook" \
+  "d2: hooks.json content matches repo (new hook entry synced)"
 
 # ── (b) stale cache-only file removed; backup preserved ─────────────────────
 if [[ ! -e "$ACTIVE/hooks/leadv2-dead.sh" ]]; then

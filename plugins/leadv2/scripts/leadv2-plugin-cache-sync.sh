@@ -1,15 +1,54 @@
 #!/usr/bin/env bash
-# leadv2-plugin-cache-sync.sh — LEADV2-HOOK-CACHE-DEPLOY-01.
+# leadv2-plugin-cache-sync.sh — LEADV2-HOOK-CACHE-DEPLOY-01, round 2.
 #
-# Claude Code does NOT load hooks/commands/agents from this repo: it loads
-# them from the versioned plugin cache (~/.claude/plugins/cache/leadv2-local/
-# leadv2/<ver>/ — a real COPY), and `claude plugin update` no-ops for a
-# directory-source marketplace when the version string did not change. A fix
-# that lands on main therefore stays un-live until the cache copy is
-# refreshed by hand. This script makes that refresh mechanical: it finds the
-# ACTIVE cache dir, rsyncs the repo's plugins/leadv2 tree into it with
-# --delete, records the repo HEAD in <cache>/.synced-from, and prints one
-# grep-able line: `synced=<n> cache=<path> repo_head=<sha>`.
+# WHY THIS EXISTS (all probes measured 2026-09-02 against the live install):
+#
+# The plugin's deploy surface is a COPY, not this repo: Claude Code resolves
+# leadv2 through installed_plugins.json → installPath
+# ~/.claude/plugins/cache/leadv2-local/leadv2/<ver>/ (evidence:
+# installed_plugins.json entry "installPath": ".../0.5.7", "lastUpdated":
+# "2026-09-01T23:00:10.973Z"; the cache root holds 0.1.0, 0.3.0 AND 0.5.7 —
+# only installPath is authoritative).
+#
+# LIVE-FROM-REPO, needs no sync: hook/command/agent script BODIES — settings
+# pins CLAUDE_PLUGIN_ROOT to the plugins/local symlink, so command strings
+# execute the repo files (evidence: settings.json line 12
+# "CLAUDE_PLUGIN_ROOT": ".../plugins/local/leadv2/plugins/leadv2";
+# `readlink` → /Users/kostiantyn.vlasenko/Projects/leadv2/plugins/leadv2; a
+# probe `echo "PROBE origin=$0"` added to the repo's
+# hooks/leadv2-user-prompt-context.sh fired during `claude -p 'ok'` with
+# origin= the plugins/local/… path, i.e. the repo file via the dir symlink).
+#
+# NEEDS SYNC: what Claude Code reads OUT of the cache copy — at minimum
+# hooks/hooks.json (the hook LIST: events, matchers, command strings) and
+# .claude-plugin/plugin.json (identity). An edit to hooks.json / an ADDED
+# hook reaches the runtime only when this copy is refreshed (or the version
+# is bumped — see next paragraph). UNVERIFIED by direct probe (proving it
+# would mean mutating the live cache's hooks.json), but it is the only
+# reading consistent with the artifacts here and with the round-1 defect
+# this lane was opened for.
+#
+# `claude plugin update leadv2@leadv2-local` refreshes the cache ONLY on a
+# version bump; otherwise it no-ops and stale cache content survives:
+#   evidence: with the version string unchanged (0.5.7), a "PROBE-UPDATE"
+#     marker written into the repo's hooks/hooks.json and `claude plugin
+#     update leadv2@leadv2-local` run → output "✔ leadv2 is already at the
+#     latest version (0.5.7)"; cache hooks/hooks.json sha256
+#     9b9abf5c27c7…923 and mtime 1788303608 byte/mtime-identical
+#     before vs after; `grep -c PROBE-UPDATE` in the cache → 0.
+#   evidence: the bump path re-copies wholesale — the cache holds a full
+#     version dir per bump (0.1.0, 0.3.0, 0.5.7), and the current 0.5.7 dir
+#     (installedAt the 2026-09-01T23:00 bump) matches the repo tree except
+#     pyc/__pycache__, .mypy_cache and runtime state files
+#     (`diff -rq plugins/leadv2 <cache 0.5.7>` → 39 lines, all of those
+#     classes). A stale dead dir also accumulates ZOMBIE hook files:
+#     0.3.0/hooks still contains leadv2-supervise-*/leadv2-supervisor-*/­
+#     leadv2-plugin-sync-drift-warn.sh — deleted in the repo at 2d6c9b4 —
+#     which is why --delete (not copy-over) is used here.
+# This script makes the no-bump refresh mechanical: find the ACTIVE cache
+# dir, rsync the repo's plugins/leadv2 tree into it with --delete, record
+# the repo HEAD in <cache>/.synced-from, print one grep-able line:
+# `synced=<n> cache=<path> repo_head=<sha>`.
 #
 # Active cache-dir resolution, in order:
 #   1. <plugins-meta>/installed_plugins.json — the leadv2@* entry's
