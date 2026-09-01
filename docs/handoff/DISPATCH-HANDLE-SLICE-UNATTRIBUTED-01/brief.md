@@ -54,3 +54,17 @@ Add the `EXTRA_SUITE_MAP` row and prove selection with `--scope changed`.
   `git diff --stat`.
 - Measure a suite's exit code WITHOUT a pipeline: `cmd > log 2>&1; echo $?`.
 - Bash 3.2.57 only. `git add <file> <file>`, never `git add <dir>`.
+
+## Live evidence, same day
+
+The empty-handle guard fired on a real dispatch minutes after this brief was written:
+
+```
+ERROR: spawn(glm-flash) handle= weekly=53% (resets 2026-09-07T02:00:41Z). Threshold=80% has no live run record -- treating as launch failure
+worker_spawned by=router model=freepool task=168e6ff1
+```
+
+The handle came back EMPTY and the arm fell through to freepool. Empty is the one truncation the
+guard below already catches; a half-length handle is the one it does not. Whatever the launcher
+printed there, the parser produced nothing from it — so the output contract is not what the parser
+assumes at least some of the time, and that is the case [Critical] 1 must pin.
