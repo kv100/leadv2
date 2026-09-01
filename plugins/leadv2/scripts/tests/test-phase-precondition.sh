@@ -13,11 +13,61 @@ PHASE_RECORD="${SCRIPT_DIR}/../leadv2-phase-record.sh"
 DISPATCH_BIN="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
 
 TMP_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TMP_ROOT"' EXIT
 
 export LEADV2_PROJECT_ROOT="$TMP_ROOT"
 export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/.cache"
 export LEADV2_JOURNAL_BIN="${TMP_ROOT}/journal.sh"
+
+# --- PPC-G3: leak-proof sandbox/env teardown ---------------------------------
+# Every G5/G6*/G7*/G9/G10/E2E/F1 block below creates its own `mktemp -d`
+# sandbox, and the E2E block additionally exports a batch of LEADV2_*/
+# CLAUDE_PROJECT_DIR vars via e2e_setup() scoped to that sandbox. Previously
+# both were cleaned only by a plain `rm -rf`/`unset` line at the BOTTOM of
+# each block — reached only on the happy path. Any early return (this
+# script uses `set -uo pipefail`; an unbound-variable reference is fatal
+# under `-u` regardless of `-e`) skipped that line and left the sandbox on
+# disk and, worse, left e2e_setup's exports live for whatever ran next IN
+# THIS SAME SHELL — which is exactly the F1/F2/F3 section that follows the
+# e2e block: F2's `plan-for` calls take no per-call LEADV2_PROJECT_ROOT
+# override, so they would silently inherit LEADV2_PROJECT_ROOT/
+# LEADV2_DISPATCH_CACHE_DIR/etc pointed at an already-rm-rf'd E2E_SANDBOX.
+# Fix: register every sandbox in an array cleaned by ONE trap-installed
+# EXIT handler (fires on early exit too, not just fall-through), and give
+# e2e_setup's exports a single teardown function called both from that trap
+# and explicitly right after the e2e section ends (fast path — F1/F2/F3
+# never observe stale e2e env even on a normal run). Bash 3.2: plain
+# indexed array, no associative arrays, `${#arr[@]}` guard before the loop
+# (an empty-array `"${arr[@]}"` expansion is fatal under `set -u` in 3.2).
+_LV2_PC_TEMP_DIRS=()
+_lv2_pc_register_sandbox() { _LV2_PC_TEMP_DIRS+=("$1"); }
+
+_e2e_teardown() {
+  unset CLAUDE_PROJECT_DIR LEADV2_STATE_BASE LEADV2_DISPATCH_GLM_BIN \
+        LEADV2_STUB_GLM_RUNS LEADV2_ROUTER_V2 GLM_POLICY_RESOLVER \
+        LEADV2_LANE_SHAPE LEADV2_DISPATCH_E2E_GATE LEADV2_DISPATCH_REVIEW_GATE \
+        LEADV2_DISPATCH_PENDING_TTL_S LEADV2_DISPATCH_CONFIRMED_TTL_S \
+        LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA LEADV2_PHASE_RECORD_BIN \
+        E2E_JOURNAL_LOG 2>/dev/null
+  # Restore the top-of-file values e2e_setup overwrote, so anything running
+  # after the e2e block sees the same env tests 1-9 saw, not the e2e fixture's.
+  export LEADV2_PROJECT_ROOT="$TMP_ROOT"
+  export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/.cache"
+  export LEADV2_JOURNAL_BIN="${TMP_ROOT}/journal.sh"
+  [ -n "${E2E_SANDBOX:-}" ] && rm -rf "${E2E_SANDBOX}" 2>/dev/null
+  return 0
+}
+
+_lv2_pc_final_cleanup() {
+  _e2e_teardown
+  if [ "${#_LV2_PC_TEMP_DIRS[@]}" -gt 0 ]; then
+    local d
+    for d in "${_LV2_PC_TEMP_DIRS[@]}"; do
+      [ -n "$d" ] && rm -rf "$d" 2>/dev/null
+    done
+  fi
+  rm -rf "$TMP_ROOT" 2>/dev/null
+}
+trap _lv2_pc_final_cleanup EXIT
 
 # Stub journal that records lines to a file
 JOURNAL_LOG="${TMP_ROOT}/journal.log"
@@ -200,6 +250,7 @@ fi
 # Fresh sandbox for dispatch-level tests (the sandbox above uses a non-git
 # TMP_ROOT which cannot support the git operations _verify_artifact now does).
 E2E_SANDBOX="$(mktemp -d /tmp/leadv2-pc-e2e-XXXXXX)"
+_lv2_pc_register_sandbox "$E2E_SANDBOX"
 
 # Fixture git repo as LEADV2_PROJECT_ROOT
 E2E_REPO="${E2E_SANDBOX}/repo"
@@ -372,6 +423,7 @@ done
 printf 'test: G5 forged review diff_hash rejected\n'
 # G5 tests phase-record.sh assert directly (about the proof, not the guard)
 G5_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g5-XXXXXX)"
+_lv2_pc_register_sandbox "$G5_SANDBOX"
 G5_REPO="${G5_SANDBOX}/repo"
 mkdir -p "${G5_REPO}"
 ( cd "${G5_REPO}" && git init -q -b main \
@@ -429,6 +481,7 @@ printf 'test: G6 artifact integrity rejected\n'
 
 # G6a: overwritten test artifact → test in missing
 G6A_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g6a-XXXXXX)"
+_lv2_pc_register_sandbox "$G6A_SANDBOX"
 G6A_REPO="${G6A_SANDBOX}/repo"
 mkdir -p "${G6A_REPO}"
 ( cd "${G6A_REPO}" && git init -q -b main \
@@ -450,6 +503,7 @@ rm -rf "$G6A_SANDBOX"
 
 # G6b: overwritten build artifact → build in missing
 G6B_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g6b-XXXXXX)"
+_lv2_pc_register_sandbox "$G6B_SANDBOX"
 G6B_REPO="${G6B_SANDBOX}/repo"
 mkdir -p "${G6B_REPO}"
 ( cd "${G6B_REPO}" && git init -q -b main \
@@ -471,6 +525,7 @@ rm -rf "$G6B_SANDBOX"
 
 # G6c: deploy with a commit that is NOT a descendant of the lane base → deploy in missing
 G6C_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g6c-XXXXXX)"
+_lv2_pc_register_sandbox "$G6C_SANDBOX"
 G6C_REPO="${G6C_SANDBOX}/repo"
 mkdir -p "${G6C_REPO}"
 ( cd "${G6C_REPO}" && git init -q -b main \
@@ -501,6 +556,7 @@ rm -rf "$G6C_SANDBOX"
 # ── G7: B1 review provenance (de-self-attestation) ─────────────────────────
 printf 'test: G7 review provenance — de-self-attestation\n'
 G7_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g7-XXXXXX)"
+_lv2_pc_register_sandbox "$G7_SANDBOX"
 G7_REPO="${G7_SANDBOX}/repo"
 mkdir -p "${G7_REPO}"
 ( cd "${G7_REPO}" && git init -q -b main \
@@ -648,6 +704,7 @@ if [[ $rc_g7d2 -eq 0 ]]; then ok; else fail "G7d-2: review of different diff fro
 # G7e: sidecar absent (true legacy — never adopted), correctly-hashed PASS row → review satisfied.
 # Uses a SEPARATE repo so the adopted marker from G7c's guarded write doesn't apply.
 G7E_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g7e-XXXXXX)"
+_lv2_pc_register_sandbox "$G7E_SANDBOX"
 G7E_REPO="${G7E_SANDBOX}/repo"
 mkdir -p "${G7E_REPO}"
 ( cd "${G7E_REPO}" && git init -q -b main \
@@ -680,6 +737,7 @@ fi
 # Uses a SEPARATE repo+cache so no guard tokens file exists (B1 R5 would
 # otherwise reject the hand-written row).
 G7F_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g7f-XXXXXX)"
+_lv2_pc_register_sandbox "$G7F_SANDBOX"
 G7F_REPO="${G7F_SANDBOX}/repo"
 mkdir -p "${G7F_REPO}"
 ( cd "${G7F_REPO}" && git init -q -b main \
@@ -813,6 +871,7 @@ rm -f "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
 # ── G9: deploy requires a descendant of the lane's own start-sha (B2) ──────────
 printf 'test: G9 deploy descendant-of-lane-base\n'
 G9_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g9-XXXXXX)"
+_lv2_pc_register_sandbox "$G9_SANDBOX"
 G9_REPO="${G9_SANDBOX}/repo"
 mkdir -p "${G9_REPO}"
 ( cd "${G9_REPO}" && git init -q -b main \
@@ -865,6 +924,7 @@ rm -rf "$G9_SANDBOX"
 # ── G10: §3 honesty — PROOF column in show output ───────────────────────────
 printf 'test: G10 PROOF column — self-attested vs verified vs unverified\n'
 G10_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g10-XXXXXX)"
+_lv2_pc_register_sandbox "$G10_SANDBOX"
 G10_REPO="${G10_SANDBOX}/repo"
 mkdir -p "${G10_REPO}"
 ( cd "${G10_REPO}" && git init -q -b main \
@@ -983,10 +1043,17 @@ fi
 
 # Cleanup
 rm -f "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
-unset LEADV2_PHASE_RECORD_BIN
 
-# Cleanup e2e sandbox
-rm -rf "${E2E_SANDBOX}"
+# Cleanup e2e sandbox + every var e2e_setup exported (PPC-G3: this used to be
+# `rm -rf "${E2E_SANDBOX}"` + a single `unset LEADV2_PHASE_RECORD_BIN` — the
+# other dozen e2e_setup exports (LEADV2_STATE_BASE, GLM_POLICY_RESOLVER,
+# LEADV2_ROUTER_V2, LEADV2_LANE_SHAPE, the *_TTL_S pair, LEADV2_REQUIRE_PHASES,
+# CLAUDE_PROJECT_DIR, ...) stayed live and leaked into the F1/F2/F3 section
+# below, which runs in this same shell). _e2e_teardown() also restores
+# LEADV2_PROJECT_ROOT/LEADV2_DISPATCH_CACHE_DIR/LEADV2_JOURNAL_BIN to the
+# top-of-file TMP_ROOT values, and is registered on the EXIT trap so it still
+# fires if this section exits early instead of falling through to here.
+_e2e_teardown
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHASE-GATE-RECORD-VS-ASSERT-01: F1, F2, F3 regression tests
@@ -995,6 +1062,7 @@ rm -rf "${E2E_SANDBOX}"
 # ── F1: record stamps proof=unverified when _verify_artifact would refuse ─────
 printf 'test: F1 record stamps unverified when proof fails\n'
 F1_SANDBOX="$(mktemp -d /tmp/leadv2-pc-f1-XXXXXX)"
+_lv2_pc_register_sandbox "$F1_SANDBOX"
 F1_REPO="${F1_SANDBOX}/repo"
 mkdir -p "${F1_REPO}"
 ( cd "${F1_REPO}" && git init -q -b main \
