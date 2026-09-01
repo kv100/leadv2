@@ -87,6 +87,32 @@ incumbent — must be fed from THIS tool's signal rather than its own, so the st
 alarm the lead gets can never disagree. Today they did: broad-status said `dispatched=unavailable`
 while four lanes were running.
 
+
+### A fifth bug, found after this brief was written — inherit the fix, not the bug
+
+The grace period first used the run directory's **mtime**. A live worker refreshes that directory
+continuously, so the grace window never expired and **the stall alarm could not fire for any live
+lane** — `GUARDS-MUST-PROVE-THEY-FIRE-01` sat 23 minutes past the threshold in complete silence and
+was noticed only because a human was reading the heartbeat. Grace must use **birth time**
+(`stat -f %B` on macOS), never mtime.
+
+The same measurement produced an improvement. A worker can be writing its provider run directory
+while touching no file in the worktree — it is reading and planning, which is not a stall. So the
+tool needs TWO signals and reports only when both are quiet, with a hang backstop so an
+eternally-"thinking" worker is still caught:
+
+| signal | meaning |
+|---|---|
+| worktree untouched | producing no files |
+| provider run dir untouched | producing nothing at all |
+| alarm | both quiet, OR worktree dead past `HANG_MIN` |
+
+Verified both ways on real lanes: four live lanes ⇒ silent; two parked dead lanes ⇒ reported, with
+both numbers in the text (`worktree untouched 47m, provider output 999999m`).
+
+Acceptance case 9: a lane writing its provider run dir but not its worktree ⇒ NOT reported before
+`HANG_MIN`, reported after.
+
 ## Acceptance
 
 Fixture-based, never a real session, never a real worktree:
@@ -154,6 +180,7 @@ STALE_MIN="${LANE_STALL_MIN:-20}"
 BEAT_MIN="${LANE_BEAT_MIN:-12}"
 ACTIVE_LANES="${ACTIVE_LANES:-}"
 GRACE_MIN="${LANE_GRACE_MIN:-15}"
+HANG_MIN="${LANE_HANG_MIN:-45}"
 reported=""
 last_beat=0
 
@@ -165,9 +192,22 @@ dispatch_age_min() {
   local lane="$1" newest m best=999999
   for d in "${HOME}"/.claude/cache/glm-runs/*"${lane}"* "${HOME}"/.claude/cache/freepool-runs/*"${lane}"*; do
     [ -e "$d" ] || continue
-    m=$(stat -f %m "$d" 2>/dev/null) || continue
+    m=$(stat -f %B "$d" 2>/dev/null) || continue   # %B = birth; %m is refreshed by the live worker
     newest=$(( ( $(date +%s) - m ) / 60 ))
     [ "$newest" -lt "$best" ] && best=$newest
+  done
+  printf '%s' "$best"
+}
+
+# Minutes since the lane's provider run directory was last WRITTEN. A worker that is
+# reading and planning produces output here while touching no worktree file.
+output_age_min() {
+  local lane="$1" m best=999999 age
+  for d in "${HOME}"/.claude/cache/glm-runs/*"${lane}"* "${HOME}"/.claude/cache/freepool-runs/*"${lane}"*; do
+    [ -e "$d" ] || continue
+    m=$(stat -f %m "$d" 2>/dev/null) || continue
+    age=$(( ( $(date +%s) - m ) / 60 ))
+    [ "$age" -lt "$best" ] && best=$age
   done
   printf '%s' "$best"
 }
@@ -197,8 +237,9 @@ while true; do
     d_age=$(dispatch_age_min "$lane")
     if [ "$d_age" -lt "${GRACE_MIN}" ]; then continue; fi
     case " $reported " in *" $lane "*) continue;; esac
-    if [ "$age" -ge "$STALE_MIN" ]; then
-      echo "LANE-STALL: ${lane} — worktree untouched for ${age}m; worker is not producing, check and re-dispatch"
+    o_age=$(output_age_min "$lane")
+    if [ "$age" -ge "$STALE_MIN" ] && { [ "$o_age" -ge "$STALE_MIN" ] || [ "$age" -ge "$HANG_MIN" ]; }; then
+      echo "LANE-STALL: ${lane} — worktree untouched ${age}m, provider output ${o_age}m; check and re-dispatch"
       reported="${reported} ${lane}"
     fi
   done
