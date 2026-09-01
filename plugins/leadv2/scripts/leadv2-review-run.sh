@@ -1261,6 +1261,61 @@ if [[ "${LEADV2_REVIEW_MACHINE_ROUND0:-1}" != 0 ]]; then
   fi
 fi
 
+# SUITE-THAT-CANNOT-FAIL-01: falsifiability gate on the round's own suites.
+# commit 0d61b3c shipped a "test suite" with zero assertions and zero failure
+# paths (exit 0 for any input) that looked like delivered, tested work. A lane
+# whose own diff carries such a suite must not reach `status: pass` on the
+# strength of that "evidence". Keyed on THIS round's diff (DIFF_FILE): only
+# suites the lane itself added or modified are evaluated — never a repo-wide
+# audit that would fail every lane on pre-existing debt. Runs before pool
+# resolve so a refusal never spends a reviewer arm. "Could not determine" is
+# a visible blocked state, never an implicit pass.
+_FALSIFY_BIN="${SCRIPT_DIR}/leadv2-suite-falsifiable.sh"
+if [[ -f "${_FALSIFY_BIN}" ]]; then
+  while IFS= read -r _fs_path; do
+    [[ -n "${_fs_path}" ]] || continue
+    # deleted/renamed-away suites are not new evidence
+    [[ -f "${ROOT}/${_fs_path}" ]] || continue
+    _fs_out="$(bash "${_FALSIFY_BIN}" "${ROOT}/${_fs_path}" 2>&1)"; _fs_rc=$?
+    if [[ ${_fs_rc} -eq 0 ]]; then
+      emit decision "review_suite_falsifiability task=${TASK} suite=${_fs_path} verdict=falsifiable"
+      continue
+    fi
+    if [[ ${_fs_rc} -eq 1 ]]; then
+      {
+        printf 'status: fail\nreason: suite_not_falsifiable\nsuite: %s\n\n' "${_fs_path}"
+        printf 'The review gate refuses this round: the suite above cannot go red.\n'
+        printf 'Its exit code did not change under failure injection (assertion tools\n'
+        printf 'broken, empty working directory, stripped environment), so it cannot\n'
+        printf 'distinguish correct from incorrect behaviour and carries no evidence.\n'
+        printf 'A printed `FAIL:` line that leaves `$?` at 0 is NOT an assertion: make\n'
+        printf 'the suite exit non-zero on failure (exit 1, or let the failing command\n'
+        printf 'propagate — no `|| true` around the checked command), then re-run review.\n\n'
+        printf '%s\n' "${_fs_out}"
+      } > "${HANDOFF}/review-gate.md.tmp"
+      mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+      _review_state_write
+      emit decision "review_gate task=${TASK} status=fail reason=suite_not_falsifiable suite=${_fs_path}"
+      exit 7
+    fi
+    # rc>=2: the checker could not determine (suite red at baseline, timed
+    # out, unrunnable). Visible blocked state — never an implicit pass.
+    {
+      printf 'status: blocked\nreason: suite_falsifiability_undetermined\nsuite: %s\n\n' "${_fs_path}"
+      printf 'The falsifiability check could not determine whether this suite can go\n'
+      printf 'red — it may already be failing at baseline (run it yourself:\n'
+      printf 'bash %s). Make the suite green, and make its failures change its exit\n'
+      printf 'code, then re-run review.\n\n' "${_fs_path}"
+      printf '%s\n' "${_fs_out}"
+    } > "${HANDOFF}/review-gate.md.tmp"
+    mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=suite_falsifiability_undetermined suite=${_fs_path}"
+    exit 8
+  done < <(sed -n 's|^+++ b/||p' "${DIFF_FILE}" 2>/dev/null \
+    | grep -E '(^|/)(tests/|plugins/leadv2/scripts/tests/|\.claude/scripts/tests/|plugins/leadv2/tests/)test-[^/]+\.sh$' \
+    | sort -u || true)
+fi
+
 # Step 2: pool resolve.
 resolver_out="$(resolve_review_pool_call)"
 reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"

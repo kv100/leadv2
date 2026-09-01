@@ -200,7 +200,9 @@ leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-complexity-routing.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-complexity-routing.sh
 leadv2-router-v2:plugins/leadv2/scripts/tests/test-complexity-routing.sh
 leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-lane-finished-state.sh
-leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-lane-finished-state.sh"
+leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-lane-finished-state.sh
+leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
+leadv2-suite-falsifiable:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
