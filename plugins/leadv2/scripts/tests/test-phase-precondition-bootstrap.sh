@@ -15,9 +15,15 @@
 #      evidence, and an explicit --reason is admissible gate1 evidence — both
 #      stamped `attested`, never `verified` (acceptance criteria 3, 4).
 #
-# Every case drives leadv2-phase-record.sh directly against a fixture
-# handoff tree under a throwaway TMP_ROOT — never a real lane, never the real
-# dispatch ledger or state root.
+# PHASE-GATE-IS-INVERTED-01 (2026-09-01): the caller-attested --at-bootstrap is
+# gone — the guard derives bootstrap state itself, from the store. Guard-level
+# cases below drive leadv2-phase-record.sh directly against a fixture handoff
+# tree under a throwaway TMP_ROOT; criterion 5's contract is additionally
+# exercised THROUGH leadv2-dispatch-code.sh (tests 7/7b), because testing the
+# guard in isolation with a correctly-computed bootstrap answer is exactly how
+# faee3fc5 shipped past a green suite.
+#
+# Never a real lane, never the real dispatch ledger or state root.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +32,9 @@ PHASE_RECORD="${SCRIPT_DIR}/../leadv2-phase-record.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+# PHASE-GATE-IS-INVERTED-01: export BOTH root names, equal — a divergent
+# pair now refuses on the write path by design.
+export PROJECT_ROOT="$TMP_ROOT"
 export LEADV2_PROJECT_ROOT="$TMP_ROOT"
 export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/.cache"
 export LEADV2_JOURNAL_BIN="${TMP_ROOT}/journal.sh"
@@ -192,9 +201,9 @@ else
   fail "missing= should list plan and gate1 for the genuinely-skipped lane (got: $OUT5)"
 fi
 
-# ── Test 6 (round 2): is-bootstrap probe — the dispatch-code seam ────────────
-# dispatch-code must probe BEFORE its own classify write; the probe itself is
-# what the guard's --at-bootstrap is built on.
+# ── Test 6: is-bootstrap read-only probe still flips after the first record ──
+# (The probe no longer feeds any caller-attested flag — PHASE-GATE-IS-INVERTED-01
+# removed that seam — but it remains a read-only helper.)
 printf 'test: 6 is-bootstrap probe flips after the first record\n'
 SIG_PROBE="probe001"
 bash "$PHASE_RECORD" is-bootstrap "$SIG_PROBE" 2>/dev/null; rc6a=$?
@@ -211,45 +220,134 @@ else
   fail "is-bootstrap after classify should exit 1 (got $rc6b)"
 fi
 
-# ── Test 7 (round 2): the REAL dispatcher path — classify exists (written by
-#    dispatch-code before the guard), caller attests the pre-classify probe
-#    said bootstrap ⇒ admitted. This is the exact shape that left
-#    test-effort-routing.sh red: a fresh lane already carries classify by
-#    guard time and was refused anyway. ─────────────────────────────────────
-printf 'test: 7 assert --at-bootstrap admits the classify-only fresh lane\n'
-SIGDisp="disp0001"
-bash "$PHASE_RECORD" record "$SIGDisp" classify --status done --owner dispatch-code:test >/dev/null 2>&1
-: > "$JOURNAL_LOG"
-OUT7="$(bash "$PHASE_RECORD" assert "$SIGDisp" --class Standard --pre-build --at-bootstrap 2>&1)"; rc7=$?
-if [[ $rc7 -eq 0 ]]; then
+# ── Tests 7/7b/7c (PHASE-GATE-IS-INVERTED-01): criterion 5 THROUGH the real
+#    dispatch entry. A classify-only fresh lane is what dispatch-code hands the
+#    guard on every brand-new Standard dispatch (it records classify first), and
+#    it is exactly the shape faee3fc5 shipped in. Driving only cmd_assert with a
+#    hand-computed bootstrap answer cannot see the forwarding bug; this can.
+#    Fixture repo + stub launchers for all four arms + fixture quota reader —
+#    never a live provider (harness shape: test-effort-routing.sh). ──────────
+DC="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
+ROUTING="${SCRIPT_DIR}/../config/leadv2-routing.yaml"
+REPO7="${TMP_ROOT}/repo7"
+mkdir -p "$REPO7"
+(
+  cd "$REPO7" || exit 1
+  git init -q -b main
+  git config user.email test@example.invalid
+  git config user.name test
+  printf 'seed\n' > .gitignore
+  git add .gitignore
+  git commit -qm seed
+) >/dev/null 2>&1
+
+mk_stub() { # <name>
+  local n="$1"
+  local stub="${TMP_ROOT}/stub-$n.sh"
+  cat > "$stub" <<EOF
+#!/usr/bin/env bash
+case "\${1:-}" in
+  task|bg) printf '%s\n' "$n" >> "${TMP_ROOT}/spawned.txt"; printf 'task-fixture-0001\n'; exit 0 ;;
+  status) exit 0 ;;
+  *) exit 0 ;;
+esac
+EOF
+  chmod +x "$stub"
+  printf '%s' "$stub"
+}
+CODEX_STUB="$(mk_stub codex)"
+GLM_STUB="$(mk_stub glm)"
+SONNET_STUB="$(mk_stub sonnet)"
+FREEPOOL_STUB="$(mk_stub freepool)"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "\$ROUTE_TEST_QUOTA"\n' > "${TMP_ROOT}/live.sh"
+chmod +x "${TMP_ROOT}/live.sh"
+printf '#!/usr/bin/env bash\nexit 1\n' > "${TMP_ROOT}/free.sh"
+chmod +x "${TMP_ROOT}/free.sh"
+QUOTA_JSON="$(python3 -c "import json;print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':1},'weekly':{'pct':1}},'codex':{'status':'ok','binding_window':'primary','windows':[{'kind':'primary','used_percent':1}]},'anthropic':{'status':'ok','accounts':[{'active':True,'five_hour_pct':1,'seven_day_pct':1}]}}))")"
+
+run_dispatch() { # <mission> <out-file>
+  local mission="$1" outf="$2"
+  (
+    cd "$REPO7" || exit 111
+    CLAUDE_PROJECT_ROOT="$REPO7" PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" \
+    LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/cache7" LEADV2_STATE_BASE="${TMP_ROOT}/state7" \
+    LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+    LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
+    LEADV2_DISPATCH_CODEX_BIN="$CODEX_STUB" LEADV2_DISPATCH_GLM_BIN="$GLM_STUB" \
+    LEADV2_DISPATCH_SUBSESSION_BIN="$SONNET_STUB" LEADV2_DISPATCH_FREEPOOL_BIN="$FREEPOOL_STUB" \
+    LEADV2_ROUTE_ARBITER_ROUTING_YAML="$ROUTING" \
+    LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${TMP_ROOT}/live.sh" \
+    LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${TMP_ROOT}/free.sh" \
+    LEADV2_ROUTE_ARBITER_STATE_FILE="${TMP_ROOT}/arb7" \
+    ROUTE_TEST_QUOTA="$QUOTA_JSON" ROUTE_TEST_FREE_RC=1 \
+    timeout 120 bash "$DC" "$mission" --kind code --task-class standard \
+      --writes src/x.py
+  ) >"$outf" 2>&1
+  return $?
+}
+
+mission_sig8() {
+  printf '%s' "$1" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' \
+    | shasum -a 256 | awk '{print substr($1, 1, 8)}'
+}
+
+# Test 7: brand-new Standard lane, no plan/gate1 anywhere ⇒ the REAL dispatcher
+# refuses before any spawn, and names plan AND gate1 (this is faee3fc5, red).
+printf 'test: 7 fresh Standard dispatch through dispatch-code.sh is refused\n'
+M7='PPB fixture Standard lane writes production code'
+S7="$(mission_sig8 "$M7")"
+run_dispatch "$M7" "${TMP_ROOT}/d7.out"; rc7=$?
+if [[ $rc7 -eq 3 ]]; then
   ok
 else
-  fail "at-bootstrap pre-build assert should admit a classify-only lane (rc=$rc7, out=$OUT7)"
+  fail "fresh Standard dispatch should exit 3 (rc=$rc7, out=$(tail -3 "${TMP_ROOT}/d7.out" 2>/dev/null | tr '\n' ' '))"
 fi
-if grep -q 'phase_precondition_bootstrap' "$JOURNAL_LOG" 2>/dev/null; then
+if [[ ! -f "${TMP_ROOT}/spawned.txt" ]]; then
   ok
 else
-  fail "at-bootstrap admission should journal phase_precondition_bootstrap"
+  fail "refused dispatch spawned a worker ($(cat "${TMP_ROOT}/spawned.txt"))"
+fi
+if grep -q 'missing=.*plan' "${TMP_ROOT}/d7.out" 2>/dev/null && grep -q 'missing=.*gate1' "${TMP_ROOT}/d7.out" 2>/dev/null; then
+  ok
+else
+  fail "refusal should name plan and gate1 ($(grep 'missing=' "${TMP_ROOT}/d7.out" 2>/dev/null | tail -1))"
 fi
 
-# ── Test 7b: --at-bootstrap is scoped to pre-build — a full-scope assert with
-#    the flag still refuses a classify-only lane ─────────────────────────────
-printf 'test: 7b at-bootstrap does not leak into full scope\n'
-OUT7B="$(bash "$PHASE_RECORD" assert "$SIGDisp" --class Standard --at-bootstrap 2>&1)"; rc7b=$?
-if [[ $rc7b -eq 3 ]] && printf '%s' "$OUT7B" | grep -q 'missing='; then
+# Test 7b: the SAME lane after the printed remedies are recorded (brief = plan,
+# explicit gate-1 reason = gate1) ⇒ the REAL dispatcher admits and spawns.
+printf 'test: 7b same lane after plan+gate1 remedies is admitted and spawns\n'
+mkdir -p "${REPO7}/docs/handoff/PPB-${S7}"
+printf '# PPB-%s\n\nfixture lead-authored plan\n' "$S7" > "${REPO7}/docs/handoff/PPB-${S7}/brief.md"
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7" plan \
+    --status done --artifact "docs/handoff/PPB-${S7}/brief.md" --owner lead:test ) >/dev/null 2>&1
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7" gate1 \
+    --status done --reason 'fixture Gate 1 decision' --owner lead:test ) >/dev/null 2>&1
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7" diverge \
+    --status n/a --reason 'fixture: no diverge round' --owner lead:test ) >/dev/null 2>&1
+run_dispatch "$M7" "${TMP_ROOT}/d7b.out"; rc7b=$?
+if [[ $rc7b -eq 0 ]]; then
   ok
 else
-  fail "full-scope assert with --at-bootstrap must still refuse (rc=$rc7b, out=$OUT7B)"
+  fail "dispatch after remedies should exit 0 (rc=$rc7b, out=$(tail -3 "${TMP_ROOT}/d7b.out" 2>/dev/null | tr '\n' ' '))"
+fi
+if [[ -f "${TMP_ROOT}/spawned.txt" ]]; then
+  ok
+else
+  fail "admitted dispatch spawned no worker"
 fi
 
-# ── Test 7c: without the flag, the same classify-only lane is still refused —
-#    the attestation is per-dispatch, not a permanent property ───────────────
-printf 'test: 7c classify-only lane without the attestation is still refused\n'
-OUT7C="$(bash "$PHASE_RECORD" assert "$SIGDisp" --class Standard --pre-build 2>&1)"; rc7c=$?
+# Test 7c: a caller STILL passing --at-bootstrap for a lane that has records is
+# ignored — the store wins (the flag is parsed for compatibility, decides nothing).
+printf 'test: 7c --at-bootstrap claim is ignored, the store wins\n'
+SIG_CLAIM="$(mission_sig8 'PPB classify-only claim lane')"
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$SIG_CLAIM" classify \
+    --status done --owner test ) >/dev/null 2>&1
+OUT7C="$( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" assert "$SIG_CLAIM" \
+    --class Standard --pre-build --at-bootstrap 2>&1 )"; rc7c=$?
 if [[ $rc7c -eq 3 ]] && printf '%s' "$OUT7C" | grep -q 'missing=.*plan'; then
   ok
 else
-  fail "classify-only lane WITHOUT --at-bootstrap must refuse (rc=$rc7c, out=$OUT7C)"
+  fail "classify-only lane with --at-bootstrap must refuse (rc=$rc7c, out=$OUT7C)"
 fi
 
 printf '\n[PHASE-PRECONDITION-BOOTSTRAP] pass=%d fail=%d\n' "$PASS" "$FAIL"
