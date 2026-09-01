@@ -26,6 +26,9 @@
 #       (persona-engine checkout — repo-local defect, copied into the fixture;
 #       pre-fix, a dead Supabase printed "task already exists" over [] and
 #       exited 0).
+#   P8  the detached --now watcher's argv carries --owner=<repo>:<lane>
+#       (PLUGIN-PAPERCUTS-01 follow-on: bare argv made safe orphan sweeps
+#       impossible; the stamp is derived from PROJECT_ROOT + git branch).
 #
 # Declared negative control (RUN RED in the lane report): P6 — reverting the
 # path-form --resume-lane acceptance makes this suite fail.
@@ -507,6 +510,54 @@ SH
   else
     bad "P7b: healthy write should exit 0 with the row; rc=$P7B_RC out=$(tail -1 "$TMP/p7b.out" 2>/dev/null)"
   fi
+fi
+
+# ═══ P8: the spawned --now watcher carries --owner=<repo>:<lane> in argv ══════
+# PLUGIN-PAPERCUTS-01 defect 1, follow-on constraint: a reparented watcher's
+# argv is the only thing identifying its owner — a bare
+# "pulse-beat.sh --now" made a safe orphan sweep impossible (2026-08-31
+# census). PATH-shimmed nohup/setsid capture the spawn argv WITHOUT running
+# the real watcher, so nothing leaks out of the fixture.
+printf '\ntest: P8 watcher argv carries --owner=<repo>:<lane>\n'
+P8_DIR="$TMP/p8-repo"
+mkdir -p "$P8_DIR"
+git -C "$P8_DIR" init -q -b worktree-P8-LANE 2>/dev/null \
+  || { git -C "$P8_DIR" init -q && git -C "$P8_DIR" checkout -q -b worktree-P8-LANE; }
+P8_SHIMS="$TMP/p8-shims"; mkdir -p "$P8_SHIMS"
+for _s in nohup setsid; do
+  printf '#!/bin/sh\nprintf ":%%s " "$0" >> "%s/spawn.log"\nfor _a in "$@"; do printf "[%%s]" "$_a" >> "%s/spawn.log"; done\nprintf "\n" >> "%s/spawn.log"\nexit 0\n' \
+    "$P8_SHIMS" "$P8_SHIMS" "$P8_SHIMS" > "$P8_SHIMS/$_s"
+  chmod +x "$P8_SHIMS/$_s"
+done
+rm -f "$P8_SHIMS/spawn.log"
+# LEADV2_STATE_ROOT pins the control-plane state under the fixture: fresh
+# throttle clock (due) and no live loop sentinel — otherwise the gates would
+# consult the REAL shared state and rightly refuse to spawn.
+PATH="$P8_SHIMS:$PATH" LEADV2_PROJECT_ROOT="$P8_DIR" LEADV2_STATE_ROOT="$TMP/p8-state" \
+  LEADV2_SINGLE_LEAD_BEAT=1 \
+  bash "$SCRIPT_DIR/leadv2-pulse-beat.sh" --check >"$TMP/p8.out" 2>"$TMP/p8.err"
+# the spawn is backgrounded and the parent exits at once — wait (bounded) for
+# the shim to be scheduled before asserting
+_p8_w=0
+while (( _p8_w < 10 )) && [[ ! -s "$P8_SHIMS/spawn.log" ]]; do sleep 0.3; _p8_w=$((_p8_w+1)); done
+if grep -q -- "--owner=p8-repo:worktree-P8-LANE" "$P8_SHIMS/spawn.log" 2>/dev/null; then
+  ok "P8: spawned watcher argv carries the owner stamp ($(grep -o -- '--owner=[^ >]*' "$P8_SHIMS/spawn.log" | head -1))"
+else
+  bad "P8: watcher spawn must carry --owner=<repo>:<lane>; spawn.log=$(cat "$P8_SHIMS/spawn.log" 2>/dev/null | head -1)"
+fi
+# explicit caller pin wins over derivation (P8 stamped the throttle clock —
+# reset it so P8b is due again)
+find "$TMP/p8-state" -name .pulse-beat-last -delete 2>/dev/null
+rm -f "$P8_SHIMS/spawn.log"
+PATH="$P8_SHIMS:$PATH" LEADV2_PROJECT_ROOT="$P8_DIR" LEADV2_STATE_ROOT="$TMP/p8-state" \
+  LEADV2_SINGLE_LEAD_BEAT=1 LEADV2_BEAT_OWNER_TAG="other-repo:worktree-OTHER" \
+  bash "$SCRIPT_DIR/leadv2-pulse-beat.sh" --check >/dev/null 2>&1
+_p8_w=0
+while (( _p8_w < 10 )) && [[ ! -s "$P8_SHIMS/spawn.log" ]]; do sleep 0.3; _p8_w=$((_p8_w+1)); done
+if grep -q -- "--owner=other-repo:worktree-OTHER" "$P8_SHIMS/spawn.log" 2>/dev/null; then
+  ok "P8b: explicit LEADV2_BEAT_OWNER_TAG overrides derivation"
+else
+  bad "P8b: caller-pinned owner tag must win; spawn.log=$(cat "$P8_SHIMS/spawn.log" 2>/dev/null | head -1)"
 fi
 
 printf '\ntest-plugin-papercuts: %d passed, %d failed\n' "$PASS" "$FAIL"
