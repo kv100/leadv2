@@ -36,6 +36,48 @@ Two guards were caught inert THIS session, both by hand:
 Existing audits check that a guard is *installed*. Both of these were installed. Installation is not
 the property that matters; **the ability to fire is**.
 
+## [Critical] 0 — the anti-silence guard stands on a liveness source that answers "nothing is alive", always
+
+Measured 2026-09-01, while one lane was demonstrably writing files seven minutes earlier:
+
+```
+leadv2-lane-liveness.sh --all
+  total rows   231
+  alive rows     0
+```
+
+Every row is `dead:*`. And the three lanes dispatched to the **codex** arm that afternoon
+(`faee3fc5`, `a605eb2a`, `cf05539d`) do not appear in the output **at all** — not alive, not dead,
+absent. Only the GLM lane had a row, and that row said `dead:sentinel_finalized` while its worker
+was running.
+
+`leadv2-idle-lead-guard.sh` — the guard whose entire job is to refuse a turn end when work is queued
+and no lane is live — consults exactly this. So its input is a constant: "no lane is live". A guard
+whose predicate never varies is not a guard, and this is why it never fired once through a night in
+which the founder repeatedly caught silence by hand.
+
+This is the same blindness class the lead just fixed in his own session watchdog: it watched
+`~/.claude/cache/glm-runs` only, so three codex lanes sat idle for 49-153 minutes while it reported
+nothing. The founder's question — "do our anti-silence guards repeat the same mistake, do they see
+ALL the work?" — is answered by the numbers above: no, they do not.
+
+What this lane must establish:
+
+1. **Why every row is dead.** Determine it from the runtime — a stale sentinel, a log-artifact path
+   that no longer matches, a registry that is written but never updated. Name the cause in
+   `report.md` before changing anything.
+2. **Provider coverage is part of correctness.** A liveness answer that structurally cannot include
+   codex lanes is wrong even when its GLM rows are right. Whatever signal replaces it must be one
+   that every arm necessarily produces — the lead's own fix used mtimes inside the lane worktree,
+   which no provider can avoid touching while working. Evaluate that or something better, and say
+   why.
+3. **A guard that depends on liveness must fail LOUD, not open.** `idle-lead-guard` times out and
+   silently permits the turn. Any guard that cannot obtain its input must say so where it can be
+   seen, per §3 below.
+
+Acceptance case: a lane that is provably working (its worktree changed within the last minute) ⇒
+liveness reports it alive, whichever arm it runs on. That single case would have caught this.
+
 ## [Critical] 1 — one honest state per guard
 
 Every guard must land in exactly one of these, and the state must be derived, never declared:
