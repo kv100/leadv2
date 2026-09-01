@@ -191,7 +191,12 @@ glm_launch_gate() {
   fi
   # NOTE: do NOT use `if ! "$gate"` — `!` resets $? to 0 and the real gate code
   # (1=reroute, 2=peak) is lost, making a refused gate non-blocking (QUOTA-GATE-01).
-  "$gate"; local rc=$?
+  # HANDLE-POLLUTION-01 (2026-09-02): the gate's "[glm-quota-gate] OK — …" line
+  # went to STDOUT, i.e. into the handle `bg` returns to the dispatcher, which
+  # then read a live spawn as not_live and re-spawned into its own lock
+  # (lock_busy → glm-flash → spawn_failed). Gate chatter belongs on stderr;
+  # the dispatcher scans stdout+stderr combined for REROUTE, so nothing is lost.
+  "$gate" >&2; local rc=$?
   if (( rc != 0 )); then
     log_error "GLM quota gate refused this launch (code $rc) - reroute per the message above (leadv2-quota-live.sh for live numbers)."
     return "$rc"
