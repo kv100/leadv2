@@ -23,9 +23,11 @@
 # machinery). Only ZERO_MAX (default 3) CONSECUTIVE real zeros stop the loop —
 # a single transient zero (heartbeat blip, briefly unparsable started_at) must
 # not silence the pulse; then it removes its pidfile and exits — the beat stops
-# with the board. Reader errors NEVER stop the loop (fix-round 3 H-2): a
-# heartbeat that fails or emits an error object means the monitor is blind,
-# precisely when the founder still needs the beat.
+# with the board. Reader errors do not stop the loop LIGHTLY (fix-round 3
+# H-2): a heartbeat that fails or emits an error object means the monitor is
+# blind, precisely when the founder still needs the beat — but that blindness
+# is bounded at UNKNOWN_MAX consecutive passes (PLUGIN-PAPERCUTS-01, defect 1:
+# an unbounded fail-open let suite-fixture loops beat blind for up to 24h).
 #
 # Kill-switches: LEADV2_PULSE_MODE=0 or LEADV2_SINGLE_LEAD_BEAT=0 make every
 # invocation a no-op (rc=0, nothing armed). Hard lifetime cap
@@ -78,8 +80,24 @@ fi
 mkdir -p "$(dirname "$PID_FILE")" 2>/dev/null || true
 printf '%s\n' "$$" > "${PID_FILE}.tmp.$$" 2>/dev/null \
   && mv -f "${PID_FILE}.tmp.$$" "$PID_FILE" 2>/dev/null || true
-_cleanup_pid() { rm -f "$PID_FILE" 2>/dev/null || true; }
-trap _cleanup_pid EXIT INT TERM
+# PLUGIN-PAPERCUTS-01 (defect 1): only remove the pidfile if it still names
+# US. A loop armed BEFORE us that exits late used to `rm -f $PID_FILE`
+# unconditionally — deleting the NEWER loop's live claim and blinding the
+# guard, so the next dispatch armed a second concurrent loop for the same
+# root ("killed one, count did not drop — they respawn").
+_cleanup_pid() {
+  if [[ -f "$PID_FILE" ]] \
+     && [[ "$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')" == "$$" ]]; then
+    rm -f "$PID_FILE" 2>/dev/null || true
+  fi
+}
+# PLUGIN-PAPERCUTS-01 (defect 1): a trapped INT/TERM whose handler only cleans
+# up RESUMES the loop afterwards (bash continues after the handler) — so
+# `kill <loop>` left the loop beating forever, another face of "killing them
+# did not reduce the count". The signal handlers must actually EXIT.
+_stop_and_clean() { _cleanup_pid; trap - EXIT; exit 0; }
+trap _cleanup_pid EXIT
+trap _stop_and_clean INT TERM
 
 HB_BIN="${LEADV2_LANE_HEARTBEAT_BIN:-${SCRIPT_DIR}/leadv2-lane-heartbeat.sh}"
 BEAT_BIN="${LEADV2_PULSE_BEAT_BIN:-${SCRIPT_DIR}/leadv2-pulse-beat.sh}"
@@ -122,6 +140,18 @@ _started="$(date +%s)"
 ZERO_MAX="${LEADV2_SINGLE_LEAD_BEAT_LOOP_ZERO_MAX:-3}"
 [[ "$ZERO_MAX" =~ ^[0-9]+$ ]] || ZERO_MAX=3
 _unknown_streak=0
+# PLUGIN-PAPERCUTS-01 (defect 1): the reader-error fail-open above is bounded.
+# A beat loop armed by a TEST suite (or by a lane whose tree was torn down)
+# finds a heartbeat that errors EVERY pass — and the H-2 "unknown keeps the
+# beat" rule made that loop beat blind for the full 24h lifetime cap, emitting
+# an unrelated repo's pulse the whole time (measured 2026-08-31: loops 6h44m
+# old inside /var/folders fixture trees). UNKNOWN_MAX consecutive UNKNOWN
+# passes now stop the loop: 12 x 300s = one hour of blindness, generous
+# against a transient monitor outage but finite against a dead environment.
+# 0 restores the unbounded pre-fix behaviour; the old suite's B8 (5+ unknown
+# passes stay alive) stays green under the default.
+UNKNOWN_MAX="${LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX:-12}"
+[[ "$UNKNOWN_MAX" =~ ^[0-9]+$ ]] || UNKNOWN_MAX=12
 _zero_streak=0
 while :; do
   if [[ ! -d "$PROJECT_ROOT" ]]; then
@@ -153,6 +183,14 @@ while :; do
     _unknown_streak=$(( _unknown_streak + 1 ))
     if (( _unknown_streak == 1 || _unknown_streak % 10 == 0 )); then
       printf '[beat-loop] lane count unknown (reader error, pass %d): keeping the beat\n' "$_unknown_streak" >&2
+    fi
+    # PLUGIN-PAPERCUTS-01 (defect 1): bounded blindness. After UNKNOWN_MAX
+    # consecutive reader-error passes the environment this loop was armed for
+    # is gone (torn-down fixture, removed tree) — stop instead of beating
+    # blind until the 24h lifetime cap.
+    if (( UNKNOWN_MAX > 0 && _unknown_streak >= UNKNOWN_MAX )); then
+      printf '[beat-loop] lane count unknown for %d passes in a row (reader error), stopping\n' "$_unknown_streak" >&2
+      exit 0
     fi
   fi
   # >=1 live lane (or unknown — fail-open): drive the beat. --check keeps the

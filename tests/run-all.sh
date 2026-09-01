@@ -103,6 +103,7 @@ add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 # not by any test-dispatch-code.sh) is mapped here so --scope changed still
 # runs its suite instead of silently dropping it.
 EXTRA_SUITE_MAP="leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
 leadv2-active-registry.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
@@ -121,6 +122,9 @@ leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-freepool-capability-floor
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-model-select-telemetry.sh
 leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
+leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
+leadv2-routing.yaml:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
+codex-task.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-row-identity.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-lanes-blind.sh
@@ -283,30 +287,37 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
       # maps to its own stem.
       # DISPATCH-CLOSE-GATE-01: scripts/lib/*.sh added -- a bare scripts/*.sh glob
       # never matches a subdirectory, so a lib-only change never reached this loop.
+      # PLUGIN-PAPERCUTS-01 repair: this block was a bad merge — an unterminated
+      # `$(basename "${cf}" .sh)` and a stray `continue"` left the two stem
+      # halves interleaved inside unbalanced quotes. Rewritten as ONE if/elif
+      # chain with the same documented behaviours: config yaml special stems,
+      # the scripts/lib/hooks allowlist, and the synthetic .gitignore stem.
       if [[ "${cf}" == "plugins/leadv2/config/freepool-arm.yaml" ]]; then
+        # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01: data-only arm-ranking change must
+        # select the suites that grade it.
         stem="freepool-arm.yaml"
-      else
-        case "${cf}" in
-          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
-          *) continue ;;
-        esac
-        stem="$(basename "${cf}" .sh)
-      if [[ "${cf}" == plugins/leadv2/scripts/*.sh ]]; then
-        stem="$(basename "${cf}" .sh)"
+      elif [[ "${cf}" == "plugins/leadv2/config/leadv2-routing.yaml" ]]; then
+        # PLUGIN-PAPERCUTS-01: a data-only routing change (arm cells, tiers)
+        # must select the suites that grade routing, same shape as
+        # freepool-arm.yaml above.
+        stem="leadv2-routing.yaml"
       elif [[ "${cf}" == ".gitignore" ]]; then
         # HANDOFF-ARTIFACTS-GITIGNORED-01: .gitignore isn't a plugins/leadv2
         # script, so it needs its own synthetic stem to reach EXTRA_SUITE_MAP
         # below — the blanket-vs-allowlist rule it carries has no test-*.sh
         # of its own name to match by convention.
         stem="gitignore"
-        continue"
+      else
+        case "${cf}" in
+          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
+          *) continue ;;
+        esac
+        # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
+        # path (leadv2-control-prover.sh lives there) — a stem-scan that only
+        # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
+        # too, not just the top-level scripts.
+        stem="$(basename "${cf}" .sh)"
       fi
-      # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
-      # path (leadv2-control-prover.sh lives there) — a stem-scan that only
-      # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
-      # too, not just the top-level scripts.
-      [[ "${cf}" == plugins/leadv2/scripts/*.sh || "${cf}" == plugins/leadv2/scripts/lib/*.sh ]] || continue
-      stem="$(basename "${cf}" .sh)"
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \
