@@ -85,9 +85,55 @@ trap cleanup EXIT
 #    wiring claim lives in hooks.json and is checked, not believed).
 # ---------------------------------------------------------------------------
 WIRED="$TMP/wired.tsv"
+# jq's ltrimstr/split(" ")[0]/rtrimstr("\"") pipeline used to assume the
+# first shell word IS the guard filename with a clean trailing quote. Many
+# hooks.json entries are `"…/leadv2-x.sh"; r=$?; if …` (degrade-log wrapper) —
+# no space before the `";`, so rtrimstr("\"") never matches and the guard
+# name comes out with a literal trailing `";`, sending it to "missing".
+# capture() on the first .sh token is layout-independent: it finds the name
+# wherever it sits in the command string.
 jq -r '.hooks | to_entries[] | .key as $e | .value[] | .hooks[]? |
-       [(.command | ltrimstr("\"") | split(" ")[0] | split("/")[-1] | rtrimstr("\"")), $e]
-       | @tsv' "$HOOKS_JSON" 2>/dev/null | sort -u > "$WIRED"
+       [(.command // "" | capture("(?<n>[A-Za-z0-9_.-]+\\.sh)"; "").n // ""), $e]
+       | @tsv' "$HOOKS_JSON" 2>/dev/null | awk -F'\t' '$1 != ""' | sort -u > "$WIRED"
+
+# ---------------------------------------------------------------------------
+# 1b. Dispatcher follow-through. A guard invoked only from inside another
+#     guard's MANIFEST (e.g. leadv2-bash-pre-dispatch.sh routing Bash-command
+#     guards by regex) is invisible to hooks.json — it never appears as a
+#     top-level entry. Any hook script that defines a `MANIFEST='script|trigger
+#     ...'` variable (the leadv2-bash-pre-dispatch.sh convention) is followed:
+#     every script named on the left of a `|` in that block is wired to the
+#     SAME event(s) the dispatcher itself is wired to.
+# ---------------------------------------------------------------------------
+DISPATCHED="$TMP/dispatched.tsv"
+: > "$DISPATCHED"
+for dsp in "$HOOK_DIR"/*.sh; do
+  [ -e "$dsp" ] || continue
+  grep -q '^MANIFEST=' "$dsp" 2>/dev/null || continue
+  dname="$(basename "$dsp")"
+  devents="$(awk -F'\t' -v g="$dname" '$1==g { print $2 }' "$WIRED")"
+  [ -n "$devents" ] || continue
+  # Extract the MANIFEST='...' single-quoted block (may span multiple lines)
+  # and pull the script name preceding each `|`.
+  awk '/^MANIFEST=/{p=1; sub(/^MANIFEST='"'"'/,""); print; next}
+       p{print; if ($0 ~ /'"'"'$/){p=0}}' "$dsp" \
+    | sed "s/'$//" \
+    | while IFS='|' read -r sub _rest; do
+        sub="$(printf '%s' "$sub" | tr -d '\n')"
+        case "$sub" in *.sh)
+          while IFS= read -r ev; do
+            [ -n "$ev" ] || continue
+            printf '%s\t%s\n' "$sub" "$ev" >> "$DISPATCHED"
+          done <<EOF
+$devents
+EOF
+        ;; esac
+      done
+done
+if [ -s "$DISPATCHED" ]; then
+  cat "$DISPATCHED" >> "$WIRED"
+  sort -u -o "$WIRED" "$WIRED"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Live journal evidence (read-only). `ran` rows and fire rows.

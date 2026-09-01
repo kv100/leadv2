@@ -80,6 +80,28 @@ while IFS='|' read -r SCRIPT TRIGGER; do
   printf '%s' "$INPUT" | "$SCRIPT_DIR/$SCRIPT" >"$STDOUT_FILE" 2>"$STDERR_FILE"
   RC=$?
 
+  # Runner-side verdict record (GUARD-CENSUS-IS-WRONG-01): most guards routed
+  # through this dispatcher never call hooks/lib/leadv2-guard-verdict.sh
+  # themselves, so the census sees zero "ran" evidence and calls a guard that
+  # fires every day "never-ran". Recording once, HERE, at the one place every
+  # dispatched guard's exit is already observed, gets ran/fired evidence for
+  # all of them without editing each guard file. Best-effort, never fatal.
+  {
+    _lv2_gv_dir="${LEADV2_GUARD_VERDICT_DIR:-${CLAUDE_PROJECT_DIR:-$HOME}/.claude/cache/guard-verdicts}"
+    mkdir -p "$_lv2_gv_dir" 2>/dev/null
+    _lv2_gv_ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown-ts)"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$_lv2_gv_ts" "$SCRIPT" "PreToolUse" "ran" "-" \
+      >> "$_lv2_gv_dir/journal.tsv"
+    _lv2_gv_kind="log"
+    if [[ "$RC" -eq 2 ]] || grep -q '"decision"[[:space:]]*:[[:space:]]*"block"' "$STDOUT_FILE" 2>/dev/null; then
+      _lv2_gv_kind="block"
+    elif [[ ! -s "$STDOUT_FILE" && ! -s "$STDERR_FILE" ]]; then
+      _lv2_gv_kind="allow"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$_lv2_gv_ts" "$SCRIPT" "PreToolUse" "verdict" "$_lv2_gv_kind" \
+      >> "$_lv2_gv_dir/journal.tsv"
+  } 2>/dev/null || true
+
   if [[ "$RC" -eq 2 ]]; then
     cat "$STDERR_FILE" >&2
     exit 2

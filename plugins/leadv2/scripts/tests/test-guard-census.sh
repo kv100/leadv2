@@ -173,6 +173,67 @@ case "$TABLE" in
   *) fail "table missing state column content" ;;
 esac
 
+# ── case 9: degrade-wrapped entry ("cmd"; r=$?; if …; printf …) parses ──────
+# fx-degrade-wrapped.sh is wired via the same "; r=$?; …" shape used by ~34
+# real hooks.json entries. Locks GUARD-CENSUS-IS-WRONG-01's root cause: the
+# old ltrimstr/split(" ")[0]/rtrimstr("\"") pipeline left a trailing `";` on
+# the guard name, so an existing file was reported "missing".
+assert_eq "case9 fx-degrade-wrapped state" "$(state_of fx-degrade-wrapped.sh)" "never-ran"
+case "$(state_of fx-degrade-wrapped.sh)" in
+  missing) fail "case9 degrade-wrapped guard falsely reported missing" ;;
+  *) pass "case9 degrade-wrapped guard not falsely reported missing" ;;
+esac
+
+# ── case 9 mutation: reintroduce the old parser ⇒ case9 must go red ────────
+OLDPARSE_CENSUS="$TMP/census-oldparse.sh"
+python3 - "$CENSUS" "$OLDPARSE_CENSUS" <<'PY'
+import sys
+new_line = '       [(.command // "" | capture("(?<n>[A-Za-z0-9_.-]+\\\\.sh)"; "").n // ""), $e]\n'
+old_line = '       [(.command | ltrimstr("\\"") | split(" ")[0] | split("/")[-1] | rtrimstr("\\"")), $e]\n'
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as fh:
+    text = fh.read()
+assert new_line in text, "fixture assumption stale: new jq line not found verbatim"
+text = text.replace(new_line, old_line, 1)
+with open(dst, "w") as fh:
+    fh.write(text)
+PY
+OLDPARSE_OUT="$(bash "$OLDPARSE_CENSUS" --hooks-json "$FIXROOT/hooks.json" --hook-dir "$FIXROOT/hook-dir" \
+  --journal-dir "$JDIR" --fixtures-dir "$FIXROOT/fixtures" --gv-lib "$GV_LIB" \
+  --sandbox-dir "$TMP/sbx-oldparse" --timeout 3 --format tsv 2>/dev/null)"
+# The old parser mangles the guard name itself (trailing `";`), so it no
+# longer matches "fx-degrade-wrapped.sh" at all — it shows up as a
+# differently-named "missing" row instead of correctly-named.
+case "$(printf '%s\n' "$OLDPARSE_OUT" | awk -F'\t' '$2 ~ /^fx-degrade-wrapped\.sh/')" in
+  *'missing'*) pass "case9-mutation: reverting the parser fix turns fx-degrade-wrapped missing (kills the fix)" ;;
+  *) fail "case9-mutation: old-parser census did not reproduce the missing bug — mutation not caught" ;;
+esac
+
+# ── case 10: dispatcher-followed guard is wired, not not-wired ─────────────
+# fx-dispatched.sh appears ONLY inside fx-dispatcher.sh's MANIFEST, never as
+# a top-level hooks.json entry — exactly the leadv2-block-bash-heredoc.sh /
+# leadv2-bash-pre-dispatch.sh shape from the brief.
+assert_eq "case10 fx-dispatched state (wired via dispatcher)" "$(state_of fx-dispatched.sh)" "never-ran"
+case "$(state_of fx-dispatched.sh)" in
+  not-wired) fail "case10 dispatcher-routed guard falsely reported not-wired" ;;
+  *) pass "case10 dispatcher-routed guard correctly seen as wired" ;;
+esac
+
+# ── case 10 mutation: drop dispatcher-follow ⇒ fx-dispatched goes not-wired ─
+NODISPATCH_CENSUS="$TMP/census-nodispatch.sh"
+awk '
+  /^DISPATCHED="\$TMP\/dispatched.tsv"$/ { skip=1 }
+  skip && /^fi$/ { skip=0; next }
+  !skip { print }
+' "$CENSUS" > "$NODISPATCH_CENSUS"
+NODISPATCH_OUT="$(bash "$NODISPATCH_CENSUS" --hooks-json "$FIXROOT/hooks.json" --hook-dir "$FIXROOT/hook-dir" \
+  --journal-dir "$JDIR" --fixtures-dir "$FIXROOT/fixtures" --gv-lib "$GV_LIB" \
+  --sandbox-dir "$TMP/sbx-nodispatch" --timeout 3 --format tsv 2>/dev/null)"
+case "$(printf '%s\n' "$NODISPATCH_OUT" | awk -F'\t' '$2=="fx-dispatched.sh"' | cut -f4)" in
+  not-wired) pass "case10-mutation: removing dispatcher-follow turns fx-dispatched not-wired (kills the fix)" ;;
+  *) fail "case10-mutation: no-dispatch-follow census did not reproduce not-wired — mutation not caught" ;;
+esac
+
 printf '\n%s\n' "----------------------------------------"
 if [ "$FAIL" -eq 0 ]; then
   printf 'ALL PASS: %s checks passed\n' "$PASS"
