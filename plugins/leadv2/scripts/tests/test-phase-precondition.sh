@@ -236,6 +236,31 @@ esac
 SH
 chmod +x "${GLM_STUB}"
 
+# PPC-G11: fix the integration test harness timeout — GLM_POLICY_RESOLVER="" does
+# NOT disable dispatch-code.sh's real resolver: resolve_arm() does
+# GLM_POLICY_RESOLVER="${GLM_POLICY_RESOLVER:-}" then, on empty, falls back to the
+# real co-located leadv2-glm-policy-resolve.py (bash `:-` treats "unset" and "set
+# to empty" identically — see leadv2-dispatch-code.sh:1698-1706). That resolver
+# shells out to quota-probe subprocesses with up to a 15s timeout EACH
+# (leadv2-glm-policy-resolve.py:340,371,393,436, up to 4 probes per call), so
+# every one of this suite's real DISPATCH_BIN invocations could pay up to 60s
+# for real — worst case ~11 calls x 60s, far past any 120s-class CI/tool
+# foreground timeout — even though the suite's own assertions never depend on
+# which arm was chosen. Point GLM_POLICY_RESOLVER at a fast, deterministic stub
+# instead of an empty string so resolve_arm() never reaches the real resolver
+# in this suite. Measured after this fix (2026-09-02, this host): full suite
+# ~177s wall / pass=78 fail=1 (the fail is the pre-existing G4/unset red, see
+# memory phase-precondition-suite-landscape — unrelated to the resolver hang).
+# 177s is still an integration-style suite, not a unit test: callers (Bash
+# tool, CI) must pass an explicit timeout >=200s rather than rely on a 120s
+# default — this fix removes the *unbounded* hang, not the suite's real I/O.
+GLM_POLICY_RESOLVER_STUB="${E2E_SANDBOX}/glm-policy-resolve-stub.py"
+cat > "${GLM_POLICY_RESOLVER_STUB}" <<'PY'
+#!/usr/bin/env python3
+print("arm=glm\nrule=none\nreason=e2e_stub\ntier=")
+PY
+chmod +x "${GLM_POLICY_RESOLVER_STUB}"
+
 # Journal stub: append all args to a log file
 E2E_JOURNAL="${E2E_SANDBOX}/journal-stub.sh"
 E2E_JOURNAL_LOG="${E2E_SANDBOX}/journal.log"
@@ -257,7 +282,7 @@ e2e_setup() {
   export LEADV2_STUB_GLM_RUNS="${E2E_STUB_RUNS}"
   export LEADV2_JOURNAL_BIN="${E2E_JOURNAL}"
   export LEADV2_ROUTER_V2=0
-  export GLM_POLICY_RESOLVER=""
+  export GLM_POLICY_RESOLVER="${GLM_POLICY_RESOLVER_STUB}"
   export LEADV2_LANE_SHAPE=off
   export LEADV2_DISPATCH_E2E_GATE=0
   export LEADV2_DISPATCH_REVIEW_GATE=0
