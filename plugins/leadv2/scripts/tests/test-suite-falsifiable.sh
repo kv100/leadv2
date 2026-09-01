@@ -14,6 +14,15 @@
 #   6. review-run, changed suite falsifiable        ⇒ verdict path unchanged
 #   7. review-run, no suite in the diff             ⇒ gate does not fire
 #   8. self-application: this suite must itself be reported falsifiable
+#   9. PPC-G1: default watchdog timeout (no env override) must be >=120s —
+#      the 60s default produced a false "timed out" verdict on a suite that
+#      took 71s under concurrent-lane load (BEAT-LOOP-ORPHANS-01 incident)
+#  10. PPC-G1: a suite that genuinely hangs past the (overridden, small)
+#      timeout is still killed and reported "timed out" — the watchdog must
+#      not become toothless just because the default grew
+#  11. PPC-G1: a suite that finishes with margin under the timeout still gets
+#      a real (non-timeout) verdict — the raised default must not itself
+#      break the case it exists to protect
 #
 # Every case asserts on exit codes / artifact contents; a failed case makes
 # the whole suite exit non-zero. A printed FAIL: line that leaves $? at 0 is
@@ -346,6 +355,59 @@ rm -f "${GUARD_FILE}"
 check "case8 this suite is itself reported falsifiable" 0 "${rc}"
 
 fi
+
+# ── Case 9: default timeout (no env override) must be >=120s ───────────────
+# PPC-G1: a fixed 60s default died to a real 71s suite under contention.
+# Extract the literal default from the source (never invoke it live for 3+
+# minutes in a test suite) and assert it carries real margin over the
+# measured incident value.
+_default_timeout="$(sed -n 's/.*LEADV2_SUITE_FALSIFIABLE_TIMEOUT:-\([0-9][0-9]*\)}.*/\1/p' "${CHECKER}" | head -n1)"
+if [[ -n "${_default_timeout}" ]] && [[ "${_default_timeout}" -ge 120 ]]; then
+  ok "case9 default timeout is ${_default_timeout}s (>=120s, survives the 71s incident with margin)"
+else
+  no "case9 default timeout '${_default_timeout:-<none found>}' is not >=120s"
+fi
+
+# ── Case 10: a genuinely-hanging suite is still killed under a small
+# override timeout — proves the watchdog is not toothless just because the
+# default grew. Must NOT use the real (now 180s) default: this asserts the
+# mechanism, not the constant.
+cat > "${FIX}/hangs.sh" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+exit 0
+EOF
+chmod +x "${FIX}/hangs.sh"
+out="$(LEADV2_SUITE_FALSIFIABLE_TIMEOUT=2 bash "${CHECKER}" "${FIX}/hangs.sh" 2>&1)"; rc=$?
+check "case10 genuinely-hanging suite is killed by the watchdog" 2 "${rc}"
+printf '%s\n' "${out}" | grep -q 'timed out' \
+  && ok "case10 verdict line says timed out" \
+  || no "case10 verdict line missing 'timed out' (watchdog may be toothless)"
+
+# ── Case 11: a suite that finishes with margin under the timeout still gets
+# a real (non-timeout) verdict — proves the fix does not mask the "genuinely
+# unrunnable" case by simply widening the window over everything.
+cat > "${FIX}/finishes-with-margin.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+sleep 2
+TMP="$(mktemp)"
+echo "content" > "${TMP}"
+if ! grep -q "content" "${TMP}"; then
+  echo "FAIL: content mismatch"
+  rm -f "${TMP}"
+  exit 1
+fi
+rm -f "${TMP}"
+echo "PASS"
+exit 0
+EOF
+chmod +x "${FIX}/finishes-with-margin.sh"
+out="$(LEADV2_SUITE_FALSIFIABLE_TIMEOUT=10 bash "${CHECKER}" "${FIX}/finishes-with-margin.sh" 2>&1)"; rc=$?
+check "case11 suite finishing under timeout gets a real verdict (falsifiable)" 0 "${rc}"
+printf '%s\n' "${out}" | grep -q 'timed out' \
+  && no "case11 verdict wrongly reports timed out for a suite that finished" \
+  || ok "case11 verdict line does not mention timed out"
 
 # ── Summary ─────────────────────────────────────────────────────────────────
 printf 'test-suite-falsifiable: %d passed, %d failed\n' "${PASS}" "${FAIL}"
