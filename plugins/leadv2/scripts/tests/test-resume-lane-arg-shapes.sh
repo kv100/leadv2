@@ -326,17 +326,12 @@ refuse_ok "A6" "${rc_a6}" "${SANDBOX}/a6-stderr.txt" "${TARGET}"
 refuse_ok "A7" "${rc_a7}" "${SANDBOX}/a7-stderr.txt" "${TARGET}/plugins"
 
 # ==============================================================================
-# A8 (round 3, review-glm H1): foreign env root, cwd in another repo, NO pin
-# -> the guard warns AND falls back to the cwd-derived root, and the
-# project_root_guard telemetry fires with both roots (proves the
-# _LV2_FOREIGN_ROOT_* assignments are live, not half-deleted).
+# A8 assertions (round 3, review-glm H1): the a8 case launched above runs with
+# a foreign ENV root and cwd inside TARGET, NO pin -> the guard warns AND
+# falls back to the cwd-derived root, and the project_root_guard telemetry
+# fires with both roots (proves the _LV2_FOREIGN_ROOT_* assignments are live,
+# not half-deleted).
 # ==============================================================================
-setup_env
-export CLAUDE_PROJECT_DIR="${FOREIGN}"
-export CLAUDE_PROJECT_ROOT="${FOREIGN}"
-rc_a8=0
-( cd "${TARGET}" && timeout -k 5 60 bash "${DC}" --kind tooling \
-  "A8 foreign env root falls back to cwd root test verify the gate" >/dev/null 2>"${SANDBOX}/a8-stderr.txt" ) || rc_a8=$?
 [[ ${rc_a8} -eq 0 ]] && ok "A8: dispatch exited 0" || bad "A8: dispatch exited ${rc_a8} (expected 0)"
 if grep -qF -- '-- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)' "${SANDBOX}/a8-stderr.txt" \
    && grep -qF "cwd=${TARGET_PHYS}" "${SANDBOX}/a8-stderr.txt"; then
