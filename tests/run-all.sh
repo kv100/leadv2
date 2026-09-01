@@ -224,7 +224,12 @@ leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
 leadv2-suite-falsifiable:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
 run-core-offline.sh:plugins/leadv2/scripts/tests/test-suite-lock-scope.sh
 leadv2-lane-watch-v2.sh:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
-leadv2-lane-watch-v2:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh"
+leadv2-lane-watch-v2:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
+leadv2-cache-truth.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+glm-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+freepool-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+kimi-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+claude-subsession.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
