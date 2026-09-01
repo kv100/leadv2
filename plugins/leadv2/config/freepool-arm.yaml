@@ -163,16 +163,28 @@ role_rank:
       why: "2.3s in the recorded selector timing via NIM; no round-3 correctness claim."
 
   # Adversarial review and bug hunting. Reasoning depth matters, latency does not.
+  # REORDERED 2026-09-01 (founder decision, same reasoning as `implement`).
+  # Review is judgment work, not throughput: a fast shallow model rubber-stamps
+  # a diff, and a rubber-stamped review is exactly the lying-green failure the
+  # review regime exists to prevent. The previous order was latency-only and
+  # said so ("ordered by recorded latency rather than a round-3 correctness
+  # oracle"). Depth first here, latency last.
   review:
-    - prefix: "groq/openai/gpt-oss-120b"
+    - prefix: "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
       tier: primary
-      why: "First review fallback chosen for a route the role selector can resolve promptly; review quality still requires the normal adversarial gate."
-    - prefix: "mistral/mistral-code-latest"
+      why: "Strongest measured coding score in reach (SWE-bench 60.5) -- a reviewer must out-reason the author, not answer faster."
+    - prefix: "nvidia_nim/moonshotai/kimi-k3"
       tier: secondary
-      why: "Second-provider fallback, ordered by recorded latency rather than a round-3 correctness oracle."
+      why: "Best independently-benchmarked agentic coder available; distinct lineage from rank 1, so a shared blind spot is less likely."
     - prefix: "gemini/models/gemini-3.7-flash"
       tier: tertiary
-      why: "Third provider fallback for an independent review path."
+      why: "Third provider, keeps an independent review path when both NIM routes are unavailable."
+    - prefix: "groq/openai/gpt-oss-120b"
+      tier: quaternary
+      why: "Fast route, last-resort reviewer: measured strong on SHORT tasks, unproven on judgment across a whole diff."
+    - prefix: "mistral/mistral-code-latest"
+      tier: quinary
+      why: "Last resort. Measured 2026-09-01 producing a suite with zero assertions that always exits 0 -- the exact failure a reviewer must catch."
 
   # Reads, summarisation, classification. Speed and frugality only.
   read:
