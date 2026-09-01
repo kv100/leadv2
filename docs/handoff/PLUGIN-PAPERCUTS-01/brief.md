@@ -32,6 +32,29 @@ Two things: a beat loop must not survive the run that started it (find out why t
 from the runtime, not by reading), and a suite must never leave one behind. Say in `report.md`
 which of the two was the actual cause.
 
+### Live evidence, 2026-09-01 11:50 — this is no longer a hypothesis
+
+A process census taken while no worker of this lane was running:
+
+```
+35584  02:11  /var/folders/.../T/fp06-telem.z1NofD/negctrl.3ZDa1r/leadv2-single-lead-beat-loop.sh
+52889  01:41  /var/folders/.../T/fp06-telem.z1NofD/negctrl.08QsfZ/leadv2-single-lead-beat-loop.sh
+```
+
+Two beat loops pulsing from a **deleted temp fixture tree**, with `negctrl.<rand>` in the path — so
+they were spawned by a freepool-telemetry negative control and outlived it.
+
+The same census showed `PLUGIN-PAPERCUTS-01` itself owning five orphaned beat loops (51m, 3m, 2.5m,
+2m, 1s) with **no worker process at all**. They are self-replacing: the lead killed ten orphans and
+the total was back to 47 within a second. Sweeping is not a workaround — the spawner must stop.
+
+One more constraint this census exposed. A watcher's path is the only thing identifying who owns it,
+and `~/.claude/plugins/local/leadv2/.../leadv2-pulse-beat.sh --now` carries **no repo and no lane in
+its argv at all**. With three repos live at once, that makes a safe sweep impossible to write: there
+is no way to tell whose watcher it is before killing it. Whatever spawns a watcher must stamp its
+owner (repo + lane) into the process, or the orphan problem cannot be cleaned up safely even after
+the leak is fixed.
+
 ## [Critical] 2 — the codex arm names a tier its launcher rejects
 
 `leadv2-routing.yaml:74` pins `tier: spark`; `codex-task.sh` accepts only `top|standard|volume`:
@@ -62,16 +85,19 @@ Accept both a bare lane name and an absolute path to that lane's worktree, or re
 with a message that shows the accepted shape. The current message shows a mangled path and no
 guidance.
 
-## [Medium] 4 — `task-add.sh` reports success and writes nothing
+## RETRACTED — 4 — `task-add.sh` reports success and writes nothing
 
-`scripts/task-add.sh "<intent>" --group X --acceptance-cmd '...' --expect '...'` printed JSON and
-exited 0, and `grep` of `docs/tasks.yaml` afterwards found **zero** matching rows. A backlog writer
-that silently drops rows is worse than one that errors: work was recorded nowhere and only survived
-because it was also written to open-threads by hand.
+**This defect does not exist. Do not work on it.** The lead filed it after a
+`scripts/task-add.sh` run printed JSON, exited 0, and a following `grep docs/tasks.yaml` found
+nothing. The write was fine: `docs/tasks.yaml` is a *generated mirror* of Supabase `work_items`,
+and it had not been regenerated since the write. `task-sync-yaml.sh` then showed the row present
+all along. A false zero, read as a lost row, and written into this brief as a defect.
 
-Note this script lives in the **consuming repo**, not the plugin. Determine whether the defect is
-in the script or in the plugin-side library it calls, fix it where it actually is, and say which in
-`report.md`. If it is repo-local, still report it — do not silently skip it.
+The real gap — that a successful write leaves the mirror stale — was fixed in the consuming repo
+on 2026-09-01 (`db590799e`): `task-add.sh` now regenerates its own mirror and shouts if that
+regeneration fails. Nothing is left here for this lane.
+
+Acceptance case 7 below is struck with it.
 
 ## Acceptance
 
@@ -83,7 +109,6 @@ Build `test-plugin-papercuts.sh` against fixtures — never real lanes, never th
 4. a spawn failure that falls through to a costlier arm ⇒ logged as a failure naming arm + reason;
 5. `--resume-lane <bare-name>` ⇒ works (regression guard);
 6. `--resume-lane <absolute path>` ⇒ works, or refuses with a message showing the accepted shape;
-7. a backlog add that cannot persist ⇒ non-zero exit, never a success line.
 
 Add the `EXTRA_SUITE_MAP` rows and prove selection with `--scope changed`.
 

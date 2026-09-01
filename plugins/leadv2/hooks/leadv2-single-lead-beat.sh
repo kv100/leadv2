@@ -48,6 +48,33 @@ except Exception:
     print('')
 " 2>/dev/null || true)"
 [[ -z "$HOOK_EVENT" ]] && HOOK_EVENT="UserPromptSubmit"
+# BEAT-LOOP-ORPHANS-01: worker evidence — the transcript path is the third
+# signal (after LEADV2_WORKER_ARM / LEADV2_SUBSESSION_ROLE) the session-kind
+# predicate consumes.
+TRANSCRIPT_PATH="$(printf -- '%s' "$INPUT" | python3 -c "
+import sys, json
+try:
+    print(json.loads(sys.stdin.read()).get('transcript_path', '') or '')
+except Exception:
+    print('')
+" 2>/dev/null || true)"
+# A headless worker session never drives the founder beat: exit 0 silently
+# before any state is touched (no alive-stamp, no GC, no deliver, no trigger).
+# `unknown` arms fail-open but is journaled next to the trigger below.
+_LEAD_GUARD_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/leadv2-hook-session-kind.sh"
+LEAD_KIND="unknown"
+if [[ -f "$_LEAD_GUARD_LIB" ]]; then
+  # shellcheck source=/dev/null
+  source "$_LEAD_GUARD_LIB"
+  # Direct call (no $() subshell): keeps LEADV2_SESSION_KIND_OUT/_REASON in
+  # THIS shell so the fail-open journal below carries reason=<why>.
+  leadv2_hook_session_kind "$TRANSCRIPT_PATH" >/dev/null 2>&1 || true
+  LEAD_KIND="${LEADV2_SESSION_KIND_OUT:-unknown}"
+  [[ "$LEAD_KIND" == "lead" || "$LEAD_KIND" == "worker" || "$LEAD_KIND" == "unknown" ]] || LEAD_KIND="unknown"
+  if [[ "$LEAD_KIND" == "worker" ]]; then
+    exit 0
+  fi
+fi
 SESSION_ID="$(printf -- '%s' "$INPUT" | python3 -c "
 import sys, json
 try:
@@ -169,6 +196,20 @@ The relay is an aside, not the turn's work: if the founder's message contains a 
 fi
 
 # ── 2. TRIGGER ───────────────────────────────────────────────────────────
+# BEAT-LOOP-ORPHANS-01: stamp the live lead's transcript path so the loop's
+# owner-transcript staleness check (mechanism 2) has a liveness signal that
+# does not depend on any pid arithmetic. Only for a resolved `lead` session —
+# a worker's own transcript is not what keeps the LEAD's beat loop alive.
+if [[ "$LEAD_KIND" == "lead" && -n "$TRANSCRIPT_PATH" ]]; then
+  OWNER_TRANSCRIPT_FILE="${STATE_DIR}/.beat-owner-transcript"
+  printf -- '%s' "$TRANSCRIPT_PATH" > "${OWNER_TRANSCRIPT_FILE}.tmp.$$" 2>/dev/null \
+    && mv -f "${OWNER_TRANSCRIPT_FILE}.tmp.$$" "$OWNER_TRANSCRIPT_FILE" 2>/dev/null || true
+fi
+if [[ "$LEAD_KIND" == "unknown" ]]; then
+  # Fail-open arming by a session the predicate could not classify — one
+  # journal line so the heuristic gap is visible (BEAT-LOOP-ORPHANS-01).
+  leadv2_loop_arm_journal "${STATE_DIR}/loop-arm-journal.log" single-lead-beat-hook unknown
+fi
 if [[ -x "$PULSE_BEAT_SH" ]]; then
   LEADV2_PROJECT_ROOT="$PROJECT_ROOT" LEADV2_BEAT_OWNER_SESSION="$SAFE_SID" \
     bash "$PULSE_BEAT_SH" --check >/dev/null 2>&1 &

@@ -1,0 +1,11 @@
+# leadv2-overrides/stack.yaml — leadv2 plugin repo itself (LEADV2-HOOK-CACHE-DEPLOY-01)
+# Consumed by leadv2-deploy / leadv2-verify / leadv2-outcome-watch as project identity.
+# This repo is the plugin source; its runtime is the plugin cache copy, so
+# deploy = refresh the cache (see leadv2-plugin-cache-sync.sh).
+
+lang: bash
+db: none
+hosting: local
+ci: none
+deploy_method: local
+deploy_detail: "leadv2-plugin-cache-sync.sh rsyncs plugins/leadv2/ into the active ~/.claude/plugins/cache/leadv2-local/leadv2/<ver>/ copy; hooks go live next session"
