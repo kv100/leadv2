@@ -224,7 +224,14 @@ leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
 leadv2-suite-falsifiable:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
 run-core-offline.sh:plugins/leadv2/scripts/tests/test-suite-lock-scope.sh
 leadv2-lane-watch-v2.sh:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
-leadv2-lane-watch-v2:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh"
+leadv2-lane-watch-v2:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
+leadv2-status-cache.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-spawn-rate.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-status-churn.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
