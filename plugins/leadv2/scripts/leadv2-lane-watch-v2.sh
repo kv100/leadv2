@@ -213,19 +213,37 @@ _lw_dispatch_age_min() {
 }
 
 # _lw_provider_output_age_min LANE -> minutes since LANE's provider state
-# last produced OUTPUT. Deliberately NOT the run dir's own mtime — ordinary
-# runner bookkeeping pings it while the worker hangs, and a dir "touched one
-# second ago" must not read as output (that is the round-2 [Critical] 1
-# measurement). Output = the newest WORKER-written file: for glm/freepool
-# that is any plain file directly inside the run dir excluding dotfiles
-# (the runner's own bookkeeping: .stream_state, .lockref); for codex the
-# real worker output lives one level down, in the dir's `jobs/` subdirectory
-# (probe 2026-09-01: `~/.claude/plugins/data/codex-openai-codex/state/<id>/
-# jobs/task-*.json` and `.log`, mtimes minutes old, vs the top-level
-# `broker.json`/`state.json` runner bookkeeping sitting weeks-stale in the
-# same dir) — those two top-level files are explicitly excluded by name so
-# a runner rewrite of them can never be mistaken for worker output. A run
-# dir with no worker-output files has produced nothing since it was
+# last produced MODEL output. Deliberately NOT the run dir's own mtime —
+# ordinary runner bookkeeping pings it while the worker hangs (round-2
+# [Critical] 1 measurement). Round 4 (reviewer glm [High]): round 3 counted
+# "every top-level file except broker.json/state.json" as worker output, but
+# progress.log, meta.yaml, supervisor.log, exit_code, stderr/child.log are
+# written by the RUNNER (glm-coder/freepool-coder heartbeat, status flips,
+# supervisor polls) — a hung or killed worker kept reading "provider-fresh"
+# and LANE-STALL was suppressed. Measured: 53 min of silence on
+# 260901-184335-PHASE-GATE-IS-INVERTED-01-7ddb never reported. Inverted to an
+# ALLOW-list — only files the MODEL's own session writes, per arm:
+#   glm/kimi/freepool run dirs -> journal.jsonl ONLY. That is the stream-json
+#     transcript (assistant/tool_use/tool_result events, written by the
+#     session as the model acts; probe 2026-09-01: the live run dir
+#     glm-runs/260901-233754-ONE-LANE-WATCH-01-R2-2fcc holds 17 assistant /
+#     10 tool_use / 9 tool_result events in journal.jsonl, while progress.log,
+#     meta.yaml, supervisor.log, stderr.log, pgid, git-pre*, prompt.txt,
+#     child.log and the .stream_state/.lockref/.workbase dotfiles are all
+#     runner-written). There is no `*.stream.jsonl` / `developer.stream.jsonl`
+#     in these run dirs — searched the live cache tree, zero hits — the
+#     journal IS the stream artifact.
+#   codex state dirs -> jobs/* ONLY (task-*.json/.log written by the codex
+#     worker; probe 2026-09-01: state/05d28614-d519cdfbfdea302f/jobs/
+#     task-mtj1kt02-6z5iy9.{json,log}, vs top-level state.json runner
+#     bookkeeping — matched by ${CODEX_STATE_ROOT}/*, not a hardcoded name).
+#   claude run dirs -> NOTHING model-written exists there (probe 2026-09-01:
+#     claude-runs/developer-dispatch-34f12615-*/ holds only .finalized,
+#     .outcome, meta.yaml, pid — all runner bookkeeping). For this arm the
+#     lane worktree mtime — the `age` half of the both-signal stall rule in
+#     _lw_run_once — is the only liveness signal; the dir birth-time fallback
+#     below makes prov_age track time-since-dispatch and get out of the way.
+# A run dir with no allow-listed model file has produced nothing since it was
 # CREATED, so its birth time is the honest fallback. Nothing found anywhere
 # -> 999999 (quiet).
 _lw_provider_output_age_min() {
@@ -234,14 +252,29 @@ _lw_provider_output_age_min() {
   while IFS= read -r d; do
     [ -d "$d" ] || continue
     cand="$(_lw_birth_epoch "$d")" || continue
-    for f in "$d"/* "$d"/jobs/*; do
-      [ -f "$f" ] || continue
-      case "$(basename "$f")" in
-        broker.json|state.json) continue ;;
-      esac
-      m="$(stat -f %m "$f" 2>/dev/null)" || continue
-      [ "$m" -gt "$cand" ] && cand="$m"
-    done
+    case "$d" in
+      "${CODEX_STATE_ROOT}"/*)
+        for f in "$d"/jobs/*; do
+          [ -f "$f" ] || continue
+          m="$(stat -f %m "$f" 2>/dev/null)" || continue
+          [ "$m" -gt "$cand" ] && cand="$m"
+        done
+        ;;
+      */glm-runs/*|*/kimi-runs/*|*/freepool-runs/*)
+        f="$d/journal.jsonl"
+        if [ -f "$f" ]; then
+          m="$(stat -f %m "$f" 2>/dev/null)" || m=""
+          if [ -n "$m" ] && [ "$m" -gt "$cand" ]; then cand="$m"; fi
+        fi
+        # no journal.jsonl yet -> cand stays at dir birth: honest
+        # "nothing produced since creation" fallback
+        ;;
+      *)
+        # claude-runs and any future family with no model-written file in
+        # the run dir: count nothing here (see probe above) — the lane
+        # worktree mtime is this arm's only liveness signal.
+        ;;
+    esac
     newest=$(( ( now - cand ) / 60 ))
     [ "$newest" -lt 0 ] && newest=0
     [ "$newest" -lt "$best" ] && best=$newest
