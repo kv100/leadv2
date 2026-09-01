@@ -210,10 +210,14 @@ print(tmpl.replace('<<<MISSION_TEXT>>>', sys.argv[2]), end='')
   fi
 
   local raw="" rc=0
+  # BEAT-LOOP-ORPHANS-01 fix-round 2: every headless `claude -p` spawn site
+  # pins LEADV2_SUBSESSION_ROLE so hooks/lib/leadv2-hook-session-kind.sh can
+  # classify the child as a worker without reading its transcript (grep-gated
+  # by tests/test-beat-loop-orphans.sh). Env prefix survives the timeout exec.
   if [[ -n "${timeout_cmd}" ]]; then
-    raw="$("${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json 2>/dev/null)" || rc=$?
+    raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${timeout_cmd}" "${TIMEOUT_SEC}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json 2>/dev/null)" || rc=$?
   else
-    raw="$("${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json 2>/dev/null)" || rc=$?
+    raw="$(LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-judge}" "${CLAUDE_BIN}" -p "${prompt}" --model "${JUDGE_MODEL}" --max-turns 3 --permission-mode bypassPermissions --output-format json 2>/dev/null)" || rc=$?
   fi
   [[ ${rc} -eq 0 ]] || return 1
   [[ -n "${raw}" ]] || return 1
