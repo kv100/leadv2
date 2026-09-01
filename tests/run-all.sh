@@ -102,11 +102,14 @@ add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 # suite (the dispatch-code arming seam is proven by the pulse-watch suites,
 # not by any test-dispatch-code.sh) is mapped here so --scope changed still
 # runs its suite instead of silently dropping it.
-EXTRA_SUITE_MAP="leadv2-hook-session-kind.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
+EXTRA_SUITE_MAP="glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-lock-per-lane.sh
+glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
+leadv2-phase8-assert.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
+leadv2-hook-session-kind.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
 leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
 leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
-leadv2-phase8-assert.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-resume-lane-arg-shapes.sh
 leadv2-tasks-lib.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
@@ -231,7 +234,10 @@ leadv2-suite-falsifiable:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
 run-core-offline.sh:plugins/leadv2/scripts/tests/test-suite-lock-scope.sh
 leadv2-lane-watch-v2.sh:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
 leadv2-lane-watch-v2:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
-leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh"
+leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
+leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
+glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
+glm-coder.sh:plugins/leadv2/scripts/tests/test-lane-outcome.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(

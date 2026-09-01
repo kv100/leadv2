@@ -390,6 +390,12 @@ ${skill_body}"
 # site below (behaviour identical: kill-switch off => no call, no WARN).
 # shellcheck disable=SC1090
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/leadv2-worker-mcp.sh"
+# WORKERS-MUST-COMMIT-01: same auto-commit-on-dirty-exit epilogue as
+# glm/kimi/freepool-coder.sh, wired below at this arm's own finalize points
+# (sync WAIT=1 path and the detached background inline waiter).
+_LV2_SUBSESSION_EPILOGUE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/leadv2-worker-epilogue.sh"
+# shellcheck disable=SC1090
+[[ -f "${_LV2_SUBSESSION_EPILOGUE_LIB}" ]] && source "${_LV2_SUBSESSION_EPILOGUE_LIB}"
 
 # ---------------------------------------------------------------------------
 # Assemble FINAL_PROMPT:
@@ -1115,6 +1121,12 @@ if [[ "$WAIT" == "1" ]]; then
   run_subsession
   parse_and_record_cost "$STREAM_OUT" "$ROLE" "$MODEL" "$SESSION_ID" "$HANDOFF_DIR" "$_start_epoch" "$PREFIX_CHECKSUM"
   _detect_empty_session
+  # WORKERS-MUST-COMMIT-01: MUST run before the DELIVERABLE_COMPLETE /
+  # outcome checks below -- an in-scope auto-commit here must land before
+  # anything downstream re-derives work-delta from the tree.
+  if declare -f leadv2_worker_commit_epilogue >/dev/null 2>&1; then
+    leadv2_worker_commit_epilogue "$HANDOFF_DIR" "$PROJECT_ROOT" "${ROLE}-${TASK_ID}" "$MISSION_FILE" || true
+  fi
   # Two-file protocol: DELIVERABLE_COMPLETE lives in .full.md; .summary.md must also exist.
   FULL_FILE="$HANDOFF_DIR/${ROLE}.full.md"
   SUMMARY_FILE="$HANDOFF_DIR/${ROLE}.summary.md"
@@ -1269,6 +1281,11 @@ else
     wait "$PID" 2>/dev/null || _exit_code=$?
     parse_and_record_cost "$STREAM_OUT" "$ROLE" "$MODEL" "$SESSION_ID" "$HANDOFF_DIR" "$_start_epoch" "$PREFIX_CHECKSUM"
     _detect_empty_session
+    # WORKERS-MUST-COMMIT-01: MUST run before the .outcome/.finalized write
+    # below -- same rationale as the sync (WAIT=1) call site above.
+    if declare -f leadv2_worker_commit_epilogue >/dev/null 2>&1; then
+      leadv2_worker_commit_epilogue "$RUN_DIR" "$PROJECT_ROOT" "${ROLE}-${TASK_ID}" "$MISSION_FILE" || true
+    fi
     # SUBSESSION-MAXTURNS-TRUNCATION-01: bg path can't change the wrapper exit
     # (caller already holds the PID), but surface the same signal so cost-flush /
     # pulse logs explain a half-written build. Only when deliverable is missing.
