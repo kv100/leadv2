@@ -234,7 +234,10 @@ case "${1:-}" in
     exit 0
     ;;
   status)
-    [[ -n "${2:-}" && -f "$RUNS/$2" ]] && exit 0
+    if [[ -n "${2:-}" && -f "$RUNS/$2" ]]; then
+      printf 'status: running\n'
+      exit 0
+    fi
     exit 1
     ;;
   *)
@@ -299,11 +302,12 @@ e2e_setup() {
   export LEADV2_JOURNAL_BIN="${E2E_JOURNAL}"
   export LEADV2_TASK_JUDGE_BIN="${E2E_JUDGE_STUB}"
   export LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_WT_STUB}"
-  # Keep this legacy guard matrix on its deterministic GLM-stub route; the
-  # production arbiter consults host routing and provider-state helpers.
-  export LEADV2_ROUTE_ARBITER_LIB="${E2E_SANDBOX}/no-route-arbiter.lib"
   export LEADV2_ROUTE_ARBITER_LIB="${E2E_NO_ARBITER_LIB}"
   export LEADV2_DISPATCH_COST_ESTIMATE=0
+  # The launch assertion is this suite's subject; it must not spend the
+  # production early-verdict window polling a deliberately non-completing
+  # fixture worker.
+  export LEADV2_ARM_EARLY_VERDICT_S=0
   export LEADV2_ROUTER_V2=0
   export GLM_POLICY_RESOLVER=""
   export LEADV2_LANE_SHAPE=off
