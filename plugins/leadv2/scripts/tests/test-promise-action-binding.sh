@@ -128,7 +128,9 @@ with open(out, "w") as f:
 PY
 }
 
-# Returns FIRED if the hook produced any output (it reports/blocks), SILENT otherwise.
+# Sets GOT_OUT/GOT_RC from the hook's real run; returns 2 if the case cannot
+# run at all (hook missing, transcript unbuildable) -- which run_case turns
+# into a FAIL, never a skip.
 #
 # SENTINEL-ISOLATION-01: the hook's once-per-turn sentinel lives at a path keyed
 # ONLY by session_id ($HOME/.claude/leadv2-promise-retry-<SESSION_ID>.txt). Every
@@ -144,24 +146,36 @@ PY
 # sentinel written by the immediately-preceding PRE_HOOK call). A unique session_id
 # per call gives every call its own sentinel path, so each verdict reflects only
 # that call's own transcript.
+GOT_OUT=""; GOT_RC=""
 _verdict() { # <hook> <block-script>
   local hook="$1" spec="$2"
   [[ -f "$hook" ]] || return 2
   local t="${WORK}/t.$$.jsonl"
   _transcript "${t}" "${spec}" || return 2
   local sid="test-$$-${RANDOM}-${RANDOM}"
-  local out
-  out="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" \
+  GOT_OUT="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" \
     | env LEADV2_PROMISE_GUARD_BLOCK=1 bash "${hook}" 2>/dev/null)"
+  GOT_RC=$?
   rm -f "${t}" "${HOME}/.claude/leadv2-promise-retry-${sid}.txt"
-  [[ -n "${out}" ]] && printf 'FIRED' || printf 'SILENT'
 }
 
 _expect() { # <hook> <spec> <FIRED|SILENT>
-  local got; got="$(_verdict "$1" "$2")" || return 2
-  [[ -z "${got}" ]] && return 2
-  [[ "${got}" == "$3" ]] && return 0
-  return 1
+  GOT_OUT=""; GOT_RC=""
+  _verdict "$1" "$2" || return 2
+  if [[ "$3" == "FIRED" ]]; then
+    # PROMISE-GUARD-TURN-IT-ON-01 r3: FIRED is the hook's REAL block shape --
+    # {"decision": "block", ...} on stdout with exit 0 under
+    # LEADV2_PROMISE_GUARD_BLOCK=1 -- not "printed anything". Judging any
+    # non-empty output as FIRED let a hook that fails open with a stray
+    # warning (or dies loudly onto stdout) count as fired. An assertion tool
+    # that cannot run (grep failing) must turn the case RED, never skip it.
+    [[ "${GOT_RC}" -eq 0 ]] || return 1
+    printf '%s' "${GOT_OUT}" | grep -q '"decision": "block"'
+  else
+    # SILENT is likewise exact: the hook passed through with no output and
+    # a clean exit. A crashing hook that happens to print nothing is not SILENT.
+    [[ -z "${GOT_OUT}" && "${GOT_RC}" -eq 0 ]]
+  fi
 }
 
 # DELIBERATELY GIVEN UP 2026-08-22 (PROMISE-GUARD-POSITIONAL-REVERT-01).
@@ -183,12 +197,17 @@ _expect() { # <hook> <spec> <FIRED|SILENT>
 #
 # TO REVERT THE TRADE: restore the positional binding in the hook and flip this back to
 # FIRED. Both must move together.
-case_action_then_promise() { _expect "$1" "act text" SILENT; }
+# TURN-IT-ON-01: the promise side is now a CLASSIFIED write promise ("Берусь за..."),
+# so the action that keeps it must be write-kind — the old bare `act` (git commit,
+# commit-kind) no longer keeps it, and the kind-scoped binding firing there is the
+# 2026-08-21 escape being caught, not a regression. write_act (Edit) keeps it.
+case_action_then_promise() { _expect "$1" "write_act text" SILENT; }
 
-# A promise made and then actually acted on. Must stay silent.
-case_promise_then_action() { _expect "$1" "text act" SILENT; }
+# A promise made and then actually acted on (same kind — write). Must stay silent.
+case_promise_then_action() { _expect "$1" "text write_act" SILENT; }
 
-# A bare promise with no work at all. Must fire (already worked pre-fix).
+# A bare promise with no work at all. Must fire: "Берусь за..." classifies as a
+# write-kind promise (TURN-IT-ON-01 taxonomy) and no write action exists.
 case_promise_only()        { _expect "$1" "text" FIRED; }
 
 # Work with no promise at all. Must stay silent — the guard must not punish a turn
@@ -278,14 +297,26 @@ run_case "write-promise-devnull-unrelated-fires"    case_write_promise_devnull_u
 run_case "write-promise-real-write-matches-silent"  case_write_promise_real_write_matches
 
 # --- sandbox control: this suite must never write the real journal ---------------
+# PROMISE-JOURNAL-CONCURRENT-WRITES-01: the real journal is shared production state --
+# every live Claude session's own Stop hook appends to it, so a raw before/after LINE
+# COUNT is a concurrency false-positive that flakes red on any busy day (measured
+# 2026-09-01: a foreign real-UUID session_id appended mid-run, no leak occurred). The
+# only thing this suite can actually prove is that ITS OWN calls (sid prefix
+# "test-${$}-...", unique per PID) never landed in the real file -- so filter the
+# appended rows to that prefix instead of trusting total count.
 REAL_JOURNAL_LINES_AFTER=0
 [[ -f "${REAL_JOURNAL}" ]] && REAL_JOURNAL_LINES_AFTER="$(wc -l < "${REAL_JOURNAL}" 2>/dev/null | tr -d ' ')"
-if [[ "${REAL_JOURNAL_LINES_AFTER}" != "${REAL_JOURNAL_LINES_BEFORE}" ]]; then
+LEAKED_ROWS=""
+if [[ "${REAL_JOURNAL_LINES_AFTER}" -gt "${REAL_JOURNAL_LINES_BEFORE}" ]]; then
+  LEAKED_ROWS="$(tail -n "+$((REAL_JOURNAL_LINES_BEFORE + 1))" "${REAL_JOURNAL}" 2>/dev/null \
+    | grep -F "\"session_id\": \"test-$$-" -- || true)"
+fi
+if [[ -n "${LEAKED_ROWS}" ]]; then
   FAIL=$((FAIL + 1))
-  ERRORS+=("sandbox-escape: ${REAL_JOURNAL} grew from ${REAL_JOURNAL_LINES_BEFORE} to ${REAL_JOURNAL_LINES_AFTER} lines during this run despite HOME sandbox")
-  log "FAIL: sandbox-escape -- real journal changed during test run"
+  ERRORS+=("sandbox-escape: ${REAL_JOURNAL} received this run's own rows despite HOME sandbox")
+  log "FAIL: sandbox-escape -- real journal contains this run's own sid prefix (test-$$-)"
 else
-  log "PASS: sandbox-control -- real journal ${REAL_JOURNAL} unchanged (${REAL_JOURNAL_LINES_BEFORE} lines)"
+  log "PASS: sandbox-control -- real journal ${REAL_JOURNAL} has no rows from this run (before=${REAL_JOURNAL_LINES_BEFORE} after=${REAL_JOURNAL_LINES_AFTER})"
 fi
 
 echo ""

@@ -90,6 +90,18 @@
 set -uo pipefail   # no -e: refusals must journal and continue, never abort
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# BEAT-LOOP-ORPHANS-01: refuse to run at all for a headless worker session
+# (glm-coder/freepool-coder/kimi-coder/claude-subsession) -- see identical
+# gate + rationale in leadv2-lane-pulse-watch.sh. Fail-open to running for
+# `lead`/`unknown`.
+_LV2_HOOK_KIND_LIB="${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh"
+if [[ -f "$_LV2_HOOK_KIND_LIB" ]]; then
+  # shellcheck source=/dev/null
+  source "$_LV2_HOOK_KIND_LIB"
+  if [[ "$(leadv2_hook_session_kind "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}")" == "worker" ]]; then
+    exit 0
+  fi
+fi
 if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${SCRIPT_DIR}/lib/leadv2-trace.sh"
 else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 SCRIPT_NAME="leadv2-backlog-pump"

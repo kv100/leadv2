@@ -142,6 +142,12 @@ RETRY_SLEEP_S="${LEADV2_RUNNER_RETRY_SLEEP_S:-5}"
 NOOP_MAX="${LEADV2_RUNNER_NOOP_MAX:-3}"
 STALL_MAX="${LEADV2_RUNNER_STALL_MAX:-6}"
 CLAUDE_BIN="${LEADV2_FANOUT_CLAUDE_BIN:-claude}"
+# BEAT-LOOP-ORPHANS-01 fix-round 2: this runner is the actual `claude -p`
+# spawn site for headless lane sessions (claude_args=(-p ...)), so the child
+# MUST be env-pinned as a worker — hooks/lib/leadv2-hook-session-kind.sh
+# classifies from this pin before ever reading a transcript (grep-gated by
+# tests/test-beat-loop-orphans.sh).
+export LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-runner}"
 CLAUDE_MAX_TURNS="${LEADV2_CLAUDE_MAX_TURNS:-150}"
 CLAUDE_MAX_BUDGET_USD="${LEADV2_CLAUDE_MAX_BUDGET_USD:-}"
 CLAUDE_PERMISSION_MODE="${LEADV2_CLAUDE_PERMISSION_MODE:-acceptEdits}"

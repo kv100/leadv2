@@ -8,16 +8,29 @@ same turn it is promised (task-anchor DIRECTIVE #4).
 
 ## PROMISE-GUARD-BLOCK-FLIP-01 — flip promise-guard from log-only to blocking
 
-- **status:** CONDITION_BOUND
-- **due:** condition-bound — no fixed date, gated on journal evidence (see GO-CONDITION below)
+- **status:** FLIPPED
+- **due:** 2026-09-01 — flipped per task PROMISE-GUARD-TURN-IT-ON-01
 
 CONTEXT: PROMISE-GUARD-BIND-01 (2026-08-30) fixed the promise extractor and
 `ACTION_BASH_RE`/action-kind binding in `plugins/leadv2/hooks/leadv2-promise-guard.sh` so
 a promise of a classifiable kind (dispatch / commit / write / test-run) is only "kept" by
-an action of that same kind, not by any tool call. It ships log-only:
-`LEADV2_PROMISE_GUARD_BLOCK` defaults to `"0"` — the hook journals every verdict
-(`~/.claude/leadv2-promise-guard.jsonl`, one row per turn with a commitment shape,
-`verdict: "fired"` meaning "would have blocked") but never emits `decision:block`.
+an action of that same kind, not by any tool call. As of 2026-09-01, the guard is flipped
+to blocking for classified promises (unless `LEADV2_PROMISE_GUARD_BLOCK=0` is set) and
+remains log-only for unclassified promises unless `LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED=1`
+is set. Evidence: the hook now defaults to `LEADV2_PROMISE_GUARD_BLOCK=1` and
+implements classified/kind-based blocking.
+
+- **status:** FLIPPED
+- **due:** 2026-09-01 — flipped per task PROMISE-GUARD-TURN-IT-ON-01
+
+CONTEXT: PROMISE-GUARD-BIND-01 (2026-08-30) fixed the promise extractor and
+`ACTION_BASH_RE`/action-kind binding in `plugins/leadv2/hooks/leadv2-promise-guard.sh` so
+a promise of a classifiable kind (dispatch / commit / write / test-run) is only "kept" by
+an action of that same kind, not by any tool call. As of 2026-09-01, the guard is flipped
+to blocking for classified promises (unless `LEADV2_PROMISE_GUARD_BLOCK=0` is set) and
+remains log-only for unclassified promises unless `LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED=1`
+is set. Evidence: the hook now defaults to `LEADV2_PROMISE_GUARD_BLOCK=1` and
+implements classified/kind-based blocking.
 
 GO-CONDITION (query over the journal, evaluate before flipping):
 ```
@@ -40,7 +53,9 @@ resets the evidence window for the newly-covered kind.
 
 FLIP (exact): set `LEADV2_PROMISE_GUARD_BLOCK=1` in the environment that runs the Stop
 hook (repo-level `.claude/settings.json` `env` block, or the shell profile that starts
-`claude`). No code change — the hook already reads this var.
+`claude`). **As of 2026-09-01, the hook defaults to `LEADV2_PROMISE_GUARD_BLOCK=1`**
+(see `plugins/leadv2/hooks/leadv2-promise-guard.sh`). No code change — the hook already
+reads this var.
 
 ROLLBACK (one step): unset `LEADV2_PROMISE_GUARD_BLOCK` (or set it back to `"0"`). The
 hook falls back to log-only immediately on the next Stop event; no state to clean up,
