@@ -16,16 +16,24 @@ are different facts (see freepool below, which does both, on different
 runs). `first_break` is the first turn (turn>1) whose per-turn ratio drops
 below 0.5.
 
-## Table -- 2026-09-01 runs
+## Table -- 2026-09-01 runs (ROUND 2, corrected: de-duplicated by message.id, reported per-request)
 
-| arm | run | turns | input | cache_read | cache_creation | hit_ratio | first_break |
-|---|---|---|---|---|---|---|---|
-| claude-native | dispatch-c293c1d5 | 176 | 352 | 27,236,567 | 549,303 | 0.9802 | 2 |
-| glm | 260901-041431-WATCHER-LIFECYCLE-LEAK-01-2ea1 | 215 | 0 | 0 | 0 | unreported | unreported |
-| glm | 260901-165920-PLUGIN-PAPERCUTS-01-53f1 | 85 | 0 | 0 | 0 | unreported | unreported |
-| freepool | 260901-175619-repo-53e9 | 137 | 13,602,259 | 0 | 0 | 0.0000 | 2 |
-| freepool | 260901-120552-SUITE-THAT-CANNOT-FAIL-01-23b9 | 169 | 16,062,933 | 0 | 0 | unreported | unreported |
-| kimi | 260901-123312-getmany-crm-reports-6939 | 0 | 0 | 0 | 0 | unreported | none (0 assistant turns -- run aborted before producing usage) |
+**Round-1 numbers below were wrong and are superseded.** Round-1 counted every
+streamed wire event (deltas + final) as a separate turn, inflating every
+total ~1.8x, and used a single per-RUN `saw_cache_key` flag that turned a
+mixed reported/unreported run into a false "real 0.0000" (freepool
+`...-repo-53e9`: only 1 of 67 unique requests actually carries cache keys,
+not all of them). See "## Round 2 evidence" below for the mutation controls
+that prove both bugs were real and are now fixed.
+
+| arm | run | turns (unique msg ids) | input | cache_read | cache_creation | hit_ratio | first_break | reported |
+|---|---|---|---|---|---|---|---|---|
+| claude-native | dispatch-c293c1d5 | 95 | 190 | 15,070,604 | 238,676 | 0.9844 | 94 | 95/95 |
+| glm | 260901-041431-WATCHER-LIFECYCLE-LEAK-01-2ea1 | 102 | 0 | 0 | 0 | unreported | unreported | 0/102 |
+| glm | 260901-165920-PLUGIN-PAPERCUTS-01-53f1 | 38 | 0 | 0 | 0 | unreported | unreported | 0/38 |
+| freepool | 260901-175619-repo-53e9 | 67 | 0 | 0 | 0 | 0.0000 | none | 1/67 |
+| freepool | 260901-120552-SUITE-THAT-CANNOT-FAIL-01-23b9 | 84 | 7,975,626 | 0 | 0 | unreported | unreported | 0/84 |
+| kimi | 260901-123312-getmany-crm-reports-6939 | 0 | 0 | 0 | 0 | unreported | none | 0/0 (0 assistant turns -- run aborted before producing usage) |
 
 Reproduce with:
 ```
@@ -41,35 +49,59 @@ plugins/leadv2/scripts/leadv2-cache-truth.sh \
 ## Findings, per arm
 
 ### claude-native (`claude -p` direct spawn writing `developer.stream.jsonl`, `leadv2-dispatch-code.sh` line ~2997)
-98% hit ratio across a 176-turn run: 27.2M cache_read tokens vs 352 fresh
-input tokens. `first_break=2` is only turn 2 itself (the first turn a cache
-read is even possible) dipping under 0.5 before recovering -- not a
-sustained break. Already cache-friendly; no fix needed.
+98.4% hit ratio across 95 unique assistant messages (176 raw stream events
+before de-dup, confirming the round-1 review's 1.81x inflation claim):
+15.07M cache_read tokens vs 190 fresh input tokens. `first_break=94` (not
+`2` as round 1 reported -- that "2" was itself an artifact of counting
+duplicate wire events as separate turns and hitting the per-turn <0.5 check
+on a partial-delta message). Already cache-friendly; no fix needed.
 
 ### glm (glm-coder.sh, model `glm-5.3`, Z.AI)
-`unreported` on every sampled run. `journal.jsonl`'s assistant `usage`
-block never carries `cache_read_input_tokens` / `cache_creation_input_tokens`
--- and separately `input_tokens`/`output_tokens` are both always `0`
-(`{"input_tokens": 0, "output_tokens": 0}` on every one of 215 assistant
-messages in one run, verified directly). Z.AI's relayed usage block simply
-doesn't populate token counts. Provider-reporting gap, not a runner-prompt
-problem -- no cache signal exists to optimize toward.
+`unreported` on every sampled run, unchanged after de-dup (102 and 38 unique
+messages respectively, 0/102 and 0/38 reported). Raw usage object from run
+`260901-041431-WATCHER-LIFECYCLE-LEAK-01-2ea1`, first assistant message,
+pulled directly from `journal.jsonl`:
+```
+{"input_tokens": 0, "output_tokens": 0}
+```
+No `cache_read_input_tokens` / `cache_creation_input_tokens` key, and
+`input_tokens`/`output_tokens` are both hardcoded/relayed as `0`. This
+matches Z.AI's documented Anthropic-compatible endpoint shape only
+partially -- UNVERIFIED: whether Z.AI's own API (bypassing whatever proxy
+glm-coder.sh talks to) ever includes prompt-cache fields; no doc URL was
+checked this round, only the raw local artifact above. Conclusion stands:
+provider-reporting gap, not a runner-prompt problem, based on the evidence
+available (zero usage fields recorded, in every sampled run).
 
 ### freepool (freepool-coder.sh, TokenRouter proxy)
-Inconsistent reporting between runs of the SAME arm -- exactly what this
-measurement exists to catch. Run `...-repo-53e9`: cache_read/cache_creation
-keys ARE present but always `0` across 137 turns (real 0.0000 ratio,
-verified by direct JSON inspection, not a parsing gap). Run
-`...-SUITE-THAT-CANNOT-FAIL-01-23b9`: keys absent entirely (`unreported`),
-same day, same arm. Whichever backend TokenRouter routes to determines
-whether cache fields appear -- provider/routing-side, not something
-`freepool-coder.sh`'s prompt assembly controls.
+Round-1 said "cache keys PRESENT but always 0 across 137 requests, verified
+by direct JSON inspection" -- this was FALSE per round-2 review: only 1 of
+67 unique requests (137 raw events before de-dup) actually carries the
+keys; the other 66 report nothing. Raw usage object for the one reported
+request, pulled directly from `journal.jsonl` in run `...-repo-53e9`:
+```
+{"output_tokens_details": null, "input_tokens": 0, "output_tokens": 0,
+ "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+ "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+ "service_tier": null,
+ "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 0},
+ "inference_geo": null, "iterations": null, "speed": null}
+```
+This IS a genuine Anthropic-shaped cache usage block (both flat and nested
+`cache_creation` fields), all zero -- a real 0.0000 for that one request,
+correctly distinct from the 66 unreported ones (reported=1/67). Run
+`...-SUITE-THAT-CANNOT-FAIL-01-23b9`: 0/84 reported (`unreported`), same
+day, same arm. Whichever backend TokenRouter routes a given request to
+determines whether cache fields appear at all -- provider/routing-side,
+inconsistent even WITHIN a single run, not something `freepool-coder.sh`'s
+prompt assembly controls.
 
 ### kimi (kimi-coder.sh, TokenRouter)
 The one 2026-09-01 run found (`260901-123312-getmany-crm-reports-6939`) has
 zero assistant messages (73 `"type":"system"` lines only) -- consistent with
 the probe-fail reroute path at kimi-coder.sh:178. No usable sample; reported
-`unreported`/`none` rather than invented.
+`unreported`/`none` rather than invented. Unchanged by de-dup (0 turns
+either way).
 
 ## Runner-side cache-break candidates checked (mission step 2) -- none evidenced
 
@@ -144,6 +176,74 @@ RC=1
 ```
 Reverted immediately after (`git diff` on the tool showed no diff
 afterward -- the mutation never touched the committed content).
+
+## Round 2 evidence
+
+Reviewer glm found two real bugs in round 1 (see brief above / fix-round-2.md):
+1. no de-dup by `message.id` -> totals inflated ~1.81x (176 raw events vs 95
+   unique ids on `dispatch-c293c1d5`; 27.24M cache_read vs 15.07M).
+2. `saw_cache_key` was a per-RUN global, so a mixed reported/unreported
+   stream (freepool `...-repo-53e9`, 1 of 137 raw requests carrying the
+   keys) was misclassified as a real `0.0000` for the whole run instead of
+   `1/67` reported (unique) requests, 66 unreported.
+
+Both are fixed in `leadv2-cache-truth.sh`:
+- Events are grouped by `message.id`, last event per id wins; unkeyed
+  events (no id) are each kept as their own turn.
+- Classification into reported/unreported is now PER TURN (checks
+  `cache_read_input_tokens`/`cache_creation_input_tokens` presence on that
+  turn's usage dict, not a single global flag); the output row's `hit_ratio`
+  is computed over the reported subset only, and a new `reported` column
+  (`N/M`) makes a mixed run visible instead of silently rounding to all-or-
+  nothing.
+
+Two new fixtures added to `test-cache-truth.sh`: fixture 4b (mixed
+reported/unreported, expects `reported=1/3`) and the dup-id fixture (5 raw
+events / 2 unique ids, expects `turns=2` and ratio computed on the
+de-duplicated totals ~0.4569).
+
+Mutation negative controls, RUN standalone against throwaway copies (not
+the committed tool -- `git diff` on `leadv2-cache-truth.sh` after these runs
+showed no incidental changes):
+
+```
+$ mutant (a): strip id de-dup, route every event through the unkeyed path
+[TEST] FAIL: dup-id fixture: expected turns=2 got '5'
+[TEST] FAIL: dup-id fixture: expected ratio ~0.4569 got '0.3636'
+PASS=14 FAIL=2
+
+$ mutant (b): make reported_turns global again (any() instead of per-item filter)
+[TEST] FAIL: mixed fixture: expected reported=1/3 got '3/3'
+PASS=15 FAIL=1
+```
+
+Both mutations reverted (they only ever existed as throwaway copies under
+`mktemp -d`, never applied to the tracked file). Full suite against the
+real (fixed) tool, all green:
+
+```
+PASS=16 FAIL=0
+```
+
+Falsifiability check:
+```
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-cache-truth.sh
+leadv2-suite-falsifiable: suite=.../plugins/leadv2/scripts/tests/test-cache-truth.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=4
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+The table and per-arm findings above have been replaced with the corrected,
+de-duplicated, per-request-classified numbers re-run against the same six
+2026-09-01 inputs used in round 1. The freepool "cache keys PRESENT but
+always 0" claim from round 1 is corrected to "1 of 67 unique requests
+reports the keys (genuinely 0), the other 66 report nothing" -- reported=1/67,
+matching the reviewer's math on the raw event count (1/137 raw events, same
+1 unique request, the other 136 raw events being duplicates or unreported
+turns).
 
 ## What was NOT done
 
