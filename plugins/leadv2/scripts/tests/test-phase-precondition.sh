@@ -299,6 +299,9 @@ e2e_setup() {
   export LEADV2_JOURNAL_BIN="${E2E_JOURNAL}"
   export LEADV2_TASK_JUDGE_BIN="${E2E_JUDGE_STUB}"
   export LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_WT_STUB}"
+  # Keep this legacy guard matrix on its deterministic GLM-stub route; the
+  # production arbiter consults host routing and provider-state helpers.
+  export LEADV2_ROUTE_ARBITER_LIB="${E2E_SANDBOX}/no-route-arbiter.lib"
   export LEADV2_ROUTE_ARBITER_LIB="${E2E_NO_ARBITER_LIB}"
   export LEADV2_DISPATCH_COST_ESTIMATE=0
   export LEADV2_ROUTER_V2=0
@@ -311,7 +314,10 @@ e2e_setup() {
   # A fixture launch must not arm real asynchronous monitor processes.
   export LEADV2_PULSE_MODE=0
   export LEADV2_SINGLE_LEAD_BEAT=0
-  unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA 2>/dev/null || true
+  # This Codex lane exports its own work root.  Leaving it inherited makes
+  # dispatch skip the fixture's lane-worktree stub and reattach the test to
+  # the real checkout after project-root resolution.
+  unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA LEADV2_LANE_WORK_ROOT 2>/dev/null || true
   mkdir -p "${E2E_STUB_RUNS}"
 }
 
@@ -319,7 +325,7 @@ e2e_setup() {
 # guard derives a git root from cwd, so invoking it from this lane worktree would
 # discard the fixture root and exercise live lane state instead.
 e2e_dispatch() {
-  ( cd "${E2E_REPO}" && bash "${DISPATCH_BIN}" "$@" )
+  ( cd "${E2E_REPO}" && bash -x "${DISPATCH_BIN}" "$@" )
 }
 
 # Sentinel: at least one spawn file exists for this case
