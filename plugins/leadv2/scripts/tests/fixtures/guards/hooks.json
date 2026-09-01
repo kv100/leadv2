@@ -1,0 +1,25 @@
+{
+  "description": "FIXTURE hooks.json for test-guard-census.sh — never the real wiring",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-always-block.sh\"", "timeout": 6 },
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-disabled.sh\"", "timeout": 6 },
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-hang.sh\"", "timeout": 6 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-logonly.sh\"", "timeout": 6 },
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-silent.sh\"", "timeout": 6 },
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-nofix.sh\"", "timeout": 6 },
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-quiet.sh\"", "timeout": 6 }
+        ]
+      }
+    ]
+  }
+}

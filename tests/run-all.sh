@@ -117,6 +117,8 @@ leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-precondition.sh
 leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-precondition-bootstrap.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-phase-precondition-bootstrap.sh
 leadv2-admission-class:plugins/leadv2/scripts/tests/test-admission-class.sh
+leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
+leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-route-arbiter-symlink-install.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
@@ -289,10 +291,13 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         stem="freepool-arm.yaml"
       else
         case "${cf}" in
-          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
+          # GUARDS-MUST-PROVE-THEY-FIRE-01: hooks/lib/*.sh added — same shape
+          # as DISPATCH-CLOSE-GATE-01, a bare hooks/*.sh glob never matches
+          # the hooks/lib/ subdirectory (leadv2-guard-verdict.sh lives there).
+          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh|plugins/leadv2/hooks/lib/*.sh) ;;
           *) continue ;;
         esac
-        stem="$(basename "${cf}" .sh)
+        stem="$(basename "${cf}" .sh)"
       if [[ "${cf}" == plugins/leadv2/scripts/*.sh ]]; then
         stem="$(basename "${cf}" .sh)"
       elif [[ "${cf}" == ".gitignore" ]]; then
@@ -301,13 +306,16 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         # below — the blanket-vs-allowlist rule it carries has no test-*.sh
         # of its own name to match by convention.
         stem="gitignore"
-        continue"
+        continue
       fi
       # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
       # path (leadv2-control-prover.sh lives there) — a stem-scan that only
       # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
       # too, not just the top-level scripts.
-      [[ "${cf}" == plugins/leadv2/scripts/*.sh || "${cf}" == plugins/leadv2/scripts/lib/*.sh ]] || continue
+      # GUARDS-MUST-PROVE-THEY-FIRE-01: hooks/*.sh and hooks/lib/*.sh added —
+      # PROMISE-GUARD-BIND-01 says hook changes must reach EXTRA_SUITE_MAP,
+      # but this gate skipped every hooks path before the map loop ran.
+      [[ "${cf}" == plugins/leadv2/scripts/*.sh || "${cf}" == plugins/leadv2/scripts/lib/*.sh || "${cf}" == plugins/leadv2/hooks/*.sh || "${cf}" == plugins/leadv2/hooks/lib/*.sh ]] || continue
       stem="$(basename "${cf}" .sh)"
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
@@ -324,6 +332,10 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         [[ "$key" == "${stem}" || "$key" == "${stem}.sh" ]] || continue
         add_suite "${ROOT}/${row#*:}"
       done <<< "${EXTRA_SUITE_MAP}"
+      fi  # GUARDS-MUST-PROVE-THEY-FIRE-01: closes the freepool-arm if/else —
+          # in HEAD this fi was swallowed by the broken stem= string above and
+          # the if/else only parsed because the stray quote on `continue"`
+          # acted as its compensating closer.
     done <<< "${changed}"
   fi
 fi
