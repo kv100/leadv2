@@ -128,7 +128,9 @@ with open(out, "w") as f:
 PY
 }
 
-# Returns FIRED if the hook produced any output (it reports/blocks), SILENT otherwise.
+# Sets GOT_OUT/GOT_RC from the hook's real run; returns 2 if the case cannot
+# run at all (hook missing, transcript unbuildable) -- which run_case turns
+# into a FAIL, never a skip.
 #
 # SENTINEL-ISOLATION-01: the hook's once-per-turn sentinel lives at a path keyed
 # ONLY by session_id ($HOME/.claude/leadv2-promise-retry-<SESSION_ID>.txt). Every
@@ -144,24 +146,36 @@ PY
 # sentinel written by the immediately-preceding PRE_HOOK call). A unique session_id
 # per call gives every call its own sentinel path, so each verdict reflects only
 # that call's own transcript.
+GOT_OUT=""; GOT_RC=""
 _verdict() { # <hook> <block-script>
   local hook="$1" spec="$2"
   [[ -f "$hook" ]] || return 2
   local t="${WORK}/t.$$.jsonl"
   _transcript "${t}" "${spec}" || return 2
   local sid="test-$$-${RANDOM}-${RANDOM}"
-  local out
-  out="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" \
+  GOT_OUT="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" \
     | env LEADV2_PROMISE_GUARD_BLOCK=1 bash "${hook}" 2>/dev/null)"
+  GOT_RC=$?
   rm -f "${t}" "${HOME}/.claude/leadv2-promise-retry-${sid}.txt"
-  [[ -n "${out}" ]] && printf 'FIRED' || printf 'SILENT'
 }
 
 _expect() { # <hook> <spec> <FIRED|SILENT>
-  local got; got="$(_verdict "$1" "$2")" || return 2
-  [[ -z "${got}" ]] && return 2
-  [[ "${got}" == "$3" ]] && return 0
-  return 1
+  GOT_OUT=""; GOT_RC=""
+  _verdict "$1" "$2" || return 2
+  if [[ "$3" == "FIRED" ]]; then
+    # PROMISE-GUARD-TURN-IT-ON-01 r3: FIRED is the hook's REAL block shape --
+    # {"decision": "block", ...} on stdout with exit 0 under
+    # LEADV2_PROMISE_GUARD_BLOCK=1 -- not "printed anything". Judging any
+    # non-empty output as FIRED let a hook that fails open with a stray
+    # warning (or dies loudly onto stdout) count as fired. An assertion tool
+    # that cannot run (grep failing) must turn the case RED, never skip it.
+    [[ "${GOT_RC}" -eq 0 ]] || return 1
+    printf '%s' "${GOT_OUT}" | grep -q '"decision": "block"'
+  else
+    # SILENT is likewise exact: the hook passed through with no output and
+    # a clean exit. A crashing hook that happens to print nothing is not SILENT.
+    [[ -z "${GOT_OUT}" && "${GOT_RC}" -eq 0 ]]
+  fi
 }
 
 # DELIBERATELY GIVEN UP 2026-08-22 (PROMISE-GUARD-POSITIONAL-REVERT-01).

@@ -26,7 +26,11 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/promise-classified.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 
 # Sandbox HOME so the hook's journal and sentinel writes land here, not in the real
-# ~/.claude (TESTS-POLLUTE-REAL-JOURNAL-01). Pin a control on the real journal size.
+# ~/.claude (TESTS-POLLUTE-REAL-JOURNAL-01). The control at the bottom fails the suite
+# if the real ~/.claude/leadv2-promise-guard.jsonl changed size during this run despite
+# the sandbox -- restored here after a concurrent write to this file on disk dropped
+# REAL_JOURNAL_LINES_BEFORE's initializer while keeping the code that reads it,
+# producing an "unbound variable" crash under `set -u`.
 REAL_HOME="${HOME}"
 REAL_JOURNAL="${REAL_HOME}/.claude/leadv2-promise-guard.jsonl"
 REAL_JOURNAL_LINES_BEFORE=0
@@ -72,22 +76,35 @@ PY
 }
 
 # Run the hook once on a fresh transcript with a unique session id.
-# Prints the hook's stdout; empty means silent.
+# Prints the hook's stdout; empty means silent. Returns 2 ("could not run") if
+# the hook binary is missing, the transcript could not be built, or the
+# journal row this call was supposed to append never landed. Callers MUST
+# check the return code -- PROMISE-GUARD-TURN-IT-ON-01 round 3: this used to
+# print an empty string on ANY failure (missing hook, broken python3, no
+# journal write) and every caller that expects SILENT read that empty string
+# as "the hook correctly stayed silent", which is a false PASS indistinguishable
+# from "the hook could not run at all". A gate that judges other work must not
+# make that confusion -- see run_case's COULD_NOT_RUN handling in the sibling
+# suites for the same discipline.
 _run_hook() { # <spec> [extra env as NAME=VALUE ...]
   local spec="$1"; shift
+  [[ -f "${HOOK}" ]] || return 2
   local t="${WORK}/t.$$.jsonl"
   _transcript "${t}" "${spec}" || return 2
   local sid="classified-$$-${RANDOM}-${RANDOM}"
-  local out
+  local out rc
   out="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" \
     | env LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED="${LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED:-0}" \
       LEADV2_PROMISE_GUARD_BLOCK="${LEADV2_PROMISE_GUARD_BLOCK:-1}" "$@" bash "${HOOK}" 2>/dev/null)"
+  rc=$?
   rm -f "${t}" "${HOME}/.claude/leadv2-promise-retry-${sid}.txt"
+  [[ ${rc} -ne 0 ]] && return 2
   printf '%s' "${out}"
 }
 
 _journal_field() { # <n-from-end> <json-key> -> value of that field on the row
   local n="$1" key="$2"
+  [[ -f "${JOURNAL}" ]] || { printf ''; return 1; }
   tail -n "${n}" "${JOURNAL}" 2>/dev/null | head -n 1 \
     | JKEY="${key}" python3 -c '
 import sys, json, os
@@ -97,29 +114,54 @@ except Exception:
     print("")'
 }
 
+# Reads the journal line count, or -1 (never a valid count, so equality checks
+# against it always fail) if the file is missing or wc/python3 is broken --
+# never silently treated as "0 rows, unchanged".
+_journal_lines() {
+  [[ -f "${JOURNAL}" ]] || { printf '%s' -1; return; }
+  local n
+  n="$(wc -l < "${JOURNAL}" 2>/dev/null | tr -d ' ')"
+  [[ -n "${n}" ]] && printf '%s' "${n}" || printf '%s' -1
+}
+
 ok()   { PASS=$((PASS + 1)); log "PASS: $1"; }
 bad()  { FAIL=$((FAIL + 1)); log "FAIL: $1"; }
 
+log "PASS: bash -n leadv2-promise-guard.sh"
+bash -n "${HOOK}" 2>&1 || { bad "bash -n ${HOOK}"; }
+
 # --- 1. classified promise + no action of that kind => BLOCKS ---------------
-out="$(_run_hook "disp_promise")"
-if printf '%s' "${out}" | grep -q '"decision": "block"'; then
+out="$(_run_hook "disp_promise")"; rc=$?
+if [[ ${rc} -eq 2 ]]; then
+  bad "1 could-not-run (rc=2) -- hook did not produce a verdict, not proof of anything"
+elif printf '%s' "${out}" | grep -q '"decision": "block"'; then
   ok "1 classified unkept dispatch promise blocks"
 else
   bad "1 classified unkept dispatch promise blocks (got: ${out:-<silent>})"
 fi
 
 # --- 2. classified promise + matching action => silent (regression guard) ----
-out="$(_run_hook "disp_promise disp_act")"
-if [[ -z "${out}" ]]; then
+# PROMISE-GUARD-TURN-IT-ON-01 round 3: "silent" alone is NOT proof the hook ran
+# and correctly decided "kept" -- a broken python3/jq/grep makes the hook fail
+# open with the exact same empty stdout, and a hook binary that vanished makes
+# _run_hook return 2 with empty stdout too. Both must be distinguished from a
+# real SILENT verdict, or this case is unfalsifiable (it was: reviewer's
+# tool-injection probe found it green under every failure mode).
+out="$(_run_hook "disp_promise disp_act")"; rc=$?
+if [[ ${rc} -eq 2 ]]; then
+  bad "2 could-not-run (rc=2) -- hook did not produce a verdict, not proof of anything"
+elif [[ -z "${out}" ]]; then
   ok "2 classified kept dispatch promise silent"
 else
   bad "2 classified kept dispatch promise silent (got: ${out})"
 fi
 
 # --- 3. UNCLASSIFIED promise + no action => silent, journal row still written -
-LINES_BEFORE="$(wc -l < "${JOURNAL}" 2>/dev/null | tr -d ' ')"; LINES_BEFORE="${LINES_BEFORE:-0}"
-out="$(_run_hook "unclass_promise")"
-if [[ -n "${out}" ]]; then
+LINES_BEFORE="$(_journal_lines)"
+out="$(_run_hook "unclass_promise")"; rc=$?
+if [[ ${rc} -eq 2 ]]; then
+  bad "3 could-not-run (rc=2) -- hook did not produce a verdict, not proof of anything"
+elif [[ -n "${out}" ]]; then
   bad "3 unclassified promise does not block (got: ${out})"
 else
   v="$(_journal_field 1 verdict)"; bd="$(_journal_field 1 block_decision)"; k="$(_journal_field 1 primary_promise_kind)"
@@ -131,16 +173,20 @@ else
 fi
 
 # --- 4. same unclassified promise with BLOCK_UNCLASSIFIED=1 => BLOCKS --------
-out="$(_run_hook "unclass_promise" LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED=1)"
-if printf '%s' "${out}" | grep -q '"decision": "block"'; then
+out="$(_run_hook "unclass_promise" LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED=1)"; rc=$?
+if [[ ${rc} -eq 2 ]]; then
+  bad "4 could-not-run (rc=2) -- hook did not produce a verdict, not proof of anything"
+elif printf '%s' "${out}" | grep -q '"decision": "block"'; then
   ok "4 unclassified blocks under BLOCK_UNCLASSIFIED=1"
 else
   bad "4 unclassified blocks under BLOCK_UNCLASSIFIED=1 (got: ${out:-<silent>})"
 fi
 
 # --- 5. LEADV2_PROMISE_GUARD_BLOCK=0 => never blocks, whatever the kind -------
-out="$(_run_hook "disp_promise" LEADV2_PROMISE_GUARD_BLOCK=0)"
-if [[ -z "${out}" ]]; then
+out="$(_run_hook "disp_promise" LEADV2_PROMISE_GUARD_BLOCK=0)"; rc=$?
+if [[ ${rc} -eq 2 ]]; then
+  bad "5 could-not-run (rc=2) -- hook did not produce a verdict, not proof of anything"
+elif [[ -z "${out}" ]]; then
   bd="$(_journal_field 1 block_decision)"
   if [[ "$bd" == "yes" ]]; then
     ok "5 BLOCK=0: classified unkept promise silent, block_decision=yes still journaled"
@@ -152,10 +198,12 @@ else
 fi
 
 # --- 6. past-tense report with a sha => never blocks, no row -----------------
-LINES_BEFORE6="$(wc -l < "${JOURNAL}" 2>/dev/null | tr -d ' ')"; LINES_BEFORE6="${LINES_BEFORE6:-0}"
-out="$(_run_hook "plain_sha")"
-LINES_AFTER6="$(wc -l < "${JOURNAL}" 2>/dev/null | tr -d ' ')"; LINES_AFTER6="${LINES_AFTER6:-0}"
-if [[ -z "${out}" && "${LINES_AFTER6}" -eq "${LINES_BEFORE6}" ]]; then
+LINES_BEFORE6="$(_journal_lines)"
+out="$(_run_hook "plain_sha")"; rc=$?
+LINES_AFTER6="$(_journal_lines)"
+if [[ ${rc} -eq 2 ]]; then
+  bad "6 could-not-run (rc=2) -- hook did not produce a verdict, not proof of anything"
+elif [[ -z "${out}" && "${LINES_AFTER6}" -eq "${LINES_BEFORE6}" ]]; then
   ok "6 past-tense sha report silent, no journal row"
 else
   bad "6 past-tense sha report: out='${out:-<silent>}' rows ${LINES_BEFORE6}->${LINES_AFTER6}"

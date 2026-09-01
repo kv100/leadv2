@@ -89,24 +89,35 @@ PY
 # PROMISE-GUARD-BIND-01 round2 (SENTINEL-ISOLATION-01): a unique session_id per call
 # gives every call its own once-per-turn sentinel path, so no call's verdict is
 # contaminated by a sentinel a PRIOR call in this same run left behind.
+#
+# PROMISE-GUARD-TURN-IT-ON-01 r3: _verdict no longer returns a verdict word. It
+# records the hook's real stdout (GOT_OUT) and exit code (GOT_RC); _expect asserts
+# the honest shape below -- FIRED means the hook's actual {"decision": "block"}
+# emission with exit 0, SILENT means no output with exit 0. The old "any output =
+# FIRED" let a hook failing open with a stray warning count as fired, and the
+# suite used no assertion tool whose breakage could turn it red.
+GOT_OUT=""; GOT_RC=""
 _verdict() { # <hook> <clause>
   local hook="$1" clause="$2"
   [[ -f "$hook" ]] || return 2
   local t="${WORK}/t.$$.jsonl"
   _transcript "${t}" "${clause}" || return 2
   local sid="test-$$-${RANDOM}-${RANDOM}"
-  local out
-  out="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" \
+  GOT_OUT="$(printf '{"transcript_path":"%s","session_id":"%s"}' "${t}" "${sid}" \
     | env LEADV2_PROMISE_GUARD_BLOCK=1 bash "${hook}" 2>/dev/null)"
+  GOT_RC=$?
   rm -f "${t}" "${HOME}/.claude/leadv2-promise-retry-${sid}.txt"
-  [[ -n "${out}" ]] && printf 'FIRED' || printf 'SILENT'
 }
 
 _expect() { # <hook> <clause> <FIRED|SILENT>
-  local out; out="$(_verdict "$1" "$2")" || return 2
-  [[ -z "$out" ]] && return 2
-  [[ "$out" == "$3" ]] && return 0
-  return 1
+  GOT_OUT=""; GOT_RC=""
+  _verdict "$1" "$2" || return 2
+  if [[ "$3" == "FIRED" ]]; then
+    [[ "${GOT_RC}" -eq 0 ]] || return 1
+    printf '%s' "${GOT_OUT}" | grep -q '"decision": "block"'
+  else
+    [[ -z "${GOT_OUT}" && "${GOT_RC}" -eq 0 ]]
+  fi
 }
 
 # --- the verbatim escape from 2026-08-21 (pinned) --------------------------------
