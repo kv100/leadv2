@@ -4999,15 +4999,15 @@ _spawn_worker_body() {
         log_err "spawn(${arm}) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
-      # Extract handle from glm-coder.sh output: format is "$RUNS/$handle$handle"
-      # Remove trailing newline
-      local _glm_out="${out%$'\n'}"
-      # Get everything after the last slash
-      local _glm_temp="${_glm_out##*/}"
-      # Extract first half (since it's handle+handle)
-      local _glm_len=${#_glm_temp}
-      local _glm_half=$((_glm_len / 2))
-      handle="${_glm_temp:0:_glm_half}"
+      # GLM-ARM-THROUGHPUT-01: glm-coder.sh's `bg` echoes the bare run_id ONCE
+      # (e.g. "260902-000858-repo-60fa"), never a doubled "$handle$handle" and
+      # never with a leading "$RUNS/" path. The prior halving logic here
+      # truncated every handle to a garbage half-string that never matched a
+      # real run dir, so `status <handle>` below always reported not_live --
+      # glm-flash (and plain glm, whenever it reached this far) never
+      # actually launched. Just trim the trailing newline; the run_id IS the
+      # handle.
+      handle="${out%$'\n'}"
       # FIX PASS 2 (Finding 2, fake-launcher/empty-handle no-op): a launcher that exits
       # 0 without spawning anything (e.g. LEADV2_DISPATCH_GLM_BIN=/bin/true) must not be
       # treated as a live worker.

@@ -64,6 +64,9 @@ else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :;
 readonly SECRETS_FILE="${GLM_SECRETS_FILE:-${HOME}/.claude/secrets/zai.env}"
 readonly ZAI_BASE_URL="https://api.z.ai/api/anthropic"
 readonly RUNS_DIR="${GLM_RUNS_DIR:-${HOME}/.claude/cache/glm-runs}"
+# GLM-ARM-THROUGHPUT-01: locks may live under their own root (hermetic suites
+# point LEADV2_GLM_LOCK_ROOT at a temp dir; default stays the runs dir).
+readonly LOCK_ROOT="${LEADV2_GLM_LOCK_ROOT:-${RUNS_DIR}}"
 # GLM_TIMEOUT: wall-clock backstop. Turn and no-progress guards below stop
 # superlinear conversation replay before a run reaches this outer bound.
 # WORKER-RESILIENCE-01 (founder order 2026-07-31): defaults raised
@@ -442,13 +445,52 @@ cmd_test() {
 # v2 workbench (`bg`, `status`, `tail`, `watch`, `list`) + internal helpers.
 # ---------------------------------------------------------------------------
 
-lock_dir_for() { echo "${RUNS_DIR}/.lock-$1"; }
+lock_dir_for() { echo "${LOCK_ROOT}/.lock-$1"; }
+
+# GLM-ARM-THROUGHPUT-01: the lock must be per LANE WORKTREE, not per repo --
+# four lanes dispatching GLM concurrently in the same repo (four `.claude/
+# worktrees/<lane>` checkouts) hit `lock_busy` on 3 of 4 dispatches because a
+# single-repo lock serialised every worktree onto one GLM run. A repo-wide
+# lock is still correct for the MAIN checkout (two writers there really would
+# collide on the same tree), so the key must distinguish "this cwd IS the
+# main checkout" from "this cwd is a linked worktree of it" -- not just hash
+# the cwd string, which is also unsafe if the same physical repo is reached
+# through two different symlink spellings (GATE-WRONG-ROOT-FALSE-DEAD-01).
+#
+# git-common-dir is the same physical path for the main checkout and every
+# worktree linked to it; show-toplevel is the main checkout's own root for
+# the main checkout, but each linked worktree's own root otherwise. So:
+#   main checkout:    dirname(common-dir) == toplevel  -> key = common-dir
+#   linked worktree:   dirname(common-dir) != toplevel  -> key = common-dir|toplevel
+# Non-git cwd (test fixtures without a repo) falls back to hashing the raw
+# cwd path, matching the prior behavior exactly.
+glm_lock_key_for() {
+  local dir="$1"
+  local common common_abs toplevel key
+  common="$(cd "${dir}" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null || true)"
+  if [[ -z "${common}" ]]; then
+    printf '%s' "${dir}" | shasum -a 256 | cut -c1-12
+    return
+  fi
+  common_abs="$(cd "${dir}" && cd "$(dirname "${common}")" 2>/dev/null && pwd -P)/$(basename "${common}")"
+  toplevel="$(cd "${dir}" && git rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "${toplevel}" ]] && toplevel="$(cd "${toplevel}" 2>/dev/null && pwd -P || printf '%s' "${toplevel}")"
+  if [[ "$(dirname "${common_abs}")" == "${toplevel}" ]]; then
+    key="${common_abs}"
+  else
+    key="${common_abs}|${toplevel}"
+  fi
+  printf '%s' "${key}" | shasum -a 256 | cut -c1-12
+}
 
 acquire_lock() {
   local repo_hash="$1" timeout_s="$2"
   local lock_dir
   lock_dir="$(lock_dir_for "${repo_hash}")"
-  mkdir -p "${RUNS_DIR}"
+  # LOCK_ROOT too: when LEADV2_GLM_LOCK_ROOT points somewhere fresh, a bare
+  # `mkdir "${lock_dir}"` would fail on the missing parent and read as a
+  # spurious "no started marker" refusal.
+  mkdir -p "${RUNS_DIR}" "${LOCK_ROOT}"
   if mkdir "${lock_dir}" 2>/dev/null; then
     _write_lock_markers "${lock_dir}"
     return 0
@@ -1794,7 +1836,7 @@ cmd_bg() {
 
   local repo repo_hash
   repo="$(basename "${cwd_dir}")"
-  repo_hash="$(printf '%s' "${cwd_dir}" | shasum -a 256 | cut -c1-12)"
+  repo_hash="$(glm_lock_key_for "${cwd_dir}")"
 
   acquire_lock "${repo_hash}" "${timeout_s}"
 
