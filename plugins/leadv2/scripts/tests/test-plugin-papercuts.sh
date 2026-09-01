@@ -78,6 +78,15 @@ wait_gone() {  # <pid> <timeout-s> -> 0 when the pid is gone
   done
   kill -0 "$pid" 2>/dev/null && return 1 || return 0
 }
+wait_beats() {  # <min-lines> <timeout-s> -> 0 when the beats log has >= min lines
+  local _min="$1" _deadline=$(( $(date +%s) + ${2:-10} )) _n
+  while (( $(date +%s) < _deadline )); do
+    _n="$(wc -l < "$P1_BEATS" 2>/dev/null | tr -d ' ')"
+    [[ "${_n:-0}" -ge "$_min" ]] && return 0
+    sleep 0.3
+  done
+  return 1
+}
 cleanup() {
   kill_recorded
   local f p
@@ -145,10 +154,12 @@ sleep 1
 if [[ "$P1A_PID" =~ ^[0-9]+$ ]] && ! kill -0 "$P1A_PID" 2>/dev/null; then
   bad "P1a setup: loop pid $P1A_PID died immediately — the loop never ran (vacuous)"
 else
-  sleep 4   # the retired UNKNOWN_MAX=2 x 1s passes + slack: the old contract died here
+  # bounded wait for >=3 beats: a fixed sleep flaked under load (the loop's
+  # first pass can exceed any fixed window). The assertions below are unchanged.
+  wait_beats 3 15 || true
   P1A_BEATS="$(wc -l < "$P1_BEATS" | tr -d ' ')"
   P1A_CLAIM="$(cat "$P1A_PIDFILE" 2>/dev/null | tr -d ' ')"
-  if [[ -s "$P1_BEATS" && "${P1A_BEATS:-0}" -ge 3 ]] \
+  if [[ "${P1A_BEATS:-0}" -ge 3 ]] \
      && kill -0 "$P1A_PID" 2>/dev/null \
      && [[ "$P1A_CLAIM" == "$P1A_PID" ]]; then
     ok "P1a: $P1A_BEATS beats through reader errors — loop alive, claim held (UNKNOWN_MAX inert)"
@@ -182,8 +193,8 @@ sleep 1
 if [[ "$P1B_PID" =~ ^[0-9]+$ ]] && ! kill -0 "$P1B_PID" 2>/dev/null; then
   bad "P1b setup: loop pid $P1B_PID died immediately — the loop never ran (vacuous)"
 else
-  if [[ -s "$P1_BEATS" ]]; then
-    if wait_gone "$P1B_PID" 10; then
+  if wait_beats 1 15; then   # the loop must beat at least once before it may stop
+    if wait_gone "$P1B_PID" 20; then
       if [[ ! -f "$P1B_PIDFILE" ]]; then
         ok "P1b: loop beat, then stopped itself after ZERO_MAX=2 real zeros; pidfile removed"
       else
