@@ -7,7 +7,9 @@
         "hooks": [
           { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-always-block.sh\"", "timeout": 6 },
           { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-disabled.sh\"", "timeout": 6 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-hang.sh\"", "timeout": 6 }
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-hang.sh\"", "timeout": 6 },
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-degrade-wrapped.sh\"; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'fx-degrade-wrapped.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0", "timeout": 6 },
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-dispatcher.sh\"", "timeout": 6 }
         ]
       }
     ],
