@@ -99,3 +99,25 @@ reporting exactly what is left:
 
 Main's core run is green, or every remaining red is a named deliberate skip — and no suite was made
 green by removing the thing that made it useful.
+
+## Named failures, measured on main 2026-09-01 (not from any lane)
+
+`plugins/leadv2/scripts/tests/test-phase-precondition.sh` on a clean main: **pass=75 fail=4**,
+exit 1. The identical four failures appear when the suite is run from the
+PHASE-GATE-IS-INVERTED-01 worktree, which is how the lane was cleared of causing them:
+
+```
+FAIL: G8:   spawn sentinel should exist (worker was spawned despite broken config)
+FAIL: G11a: warn mode should spawn despite unexpected assert rc
+FAIL: G11a: warn mode should journal unexpected_rc=127
+FAIL: G11b: enforce mode should journal refused unexpected_rc=127
+```
+
+All four are the `unexpected_rc=127` family: the fixture assert exits 127 (command not found) and
+the guard is expected to degrade — warn mode spawns anyway, enforce mode journals a refusal. The
+observed journal line instead reads `project_root_guard status=foreign_env_overridden`, so the
+fixture never reaches the rc-127 path at all: it is being stopped one step earlier by the project
+root guard, because the suite runs the dispatcher against a temp repo while the ambient root is the
+real checkout. Decide deliberately which is wrong — the fixture (it should pin both root vars) or
+the guard (a temp-repo fixture is a legitimate foreign root) — and say which in report.md. Do NOT
+edit the assertions to match current behaviour.
