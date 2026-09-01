@@ -4630,7 +4630,10 @@ _LV2_LANE_PULSE_WATCH_PID=""
 # freepool-coder/kimi-coder/claude-subsession) that runs its own nested
 # dispatch must never arm a loop — when the worker exits, the loop has no
 # owner left to disarm it (measured 2026-09-01: 53 orphaned loops, load 244).
-# `unknown` arms fail-open but journals loop_armed_by_unknown_session.
+# Fix-round 2: `unknown` FAILS CLOSED — no arm; one loop_armed_by_unknown_
+# session journal line (with reason=<why>) so a misjudged lead's starvation
+# is visible the minute it happens. A dispatcher that knows it IS the lead
+# arms explicitly via LEADV2_SESSION_KIND=lead.
 LV2_SESSION_KIND_LIB="${LV2_SESSION_KIND_LIB:-${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh}"
 _lv2_session_kind() {  # -> sets _LV2_KIND, _LV2_OWNER_PID/_SID/_TRANSCRIPT
   _LV2_KIND="unknown"; _LV2_OWNER_PID=""; _LV2_OWNER_SID=""; _LV2_OWNER_TRANSCRIPT=""
@@ -4645,7 +4648,10 @@ _lv2_session_kind() {  # -> sets _LV2_KIND, _LV2_OWNER_PID/_SID/_TRANSCRIPT
   if [[ -n "${_LV2_OWNER_SID}" ]]; then
     _LV2_OWNER_TRANSCRIPT="$(ls -t "${HOME}/.claude/projects/"*"/${_LV2_OWNER_SID}.jsonl" 2>/dev/null | head -1 || true)"
   fi
-  _LV2_KIND="$(leadv2_hook_session_kind "${_LV2_OWNER_TRANSCRIPT}" 2>/dev/null || printf 'unknown')"
+  # Direct call (no $() subshell): keeps LEADV2_SESSION_KIND_OUT/_REASON in
+  # THIS shell so the fail-closed journal carries reason=<why>.
+  leadv2_hook_session_kind "${_LV2_OWNER_TRANSCRIPT}" >/dev/null 2>&1 || true
+  _LV2_KIND="${LEADV2_SESSION_KIND_OUT:-unknown}"
   if command -v leadv2_loop_owner_pid >/dev/null 2>&1; then
     _LV2_OWNER_PID="$(leadv2_loop_owner_pid)"
   fi
@@ -4656,9 +4662,13 @@ _arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
   [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
   [[ -f "${LANE_PULSE_WATCH_BIN}" ]] || return 0
   _lv2_session_kind
-  if [[ "${_LV2_KIND}" == "worker" ]]; then return 0; fi
-  if [[ "${_LV2_KIND}" == "unknown" ]]; then
-    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" lane-pulse-watch unknown
+  # Fix-round 2: worker refuses; unknown FAILS CLOSED too — journal and do
+  # not arm. Only a `lead` classification (or the LEADV2_SESSION_KIND=lead
+  # pin) arms a persistent loop.
+  if [[ "${_LV2_KIND}" != "lead" ]]; then
+    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
+      lane-pulse-watch "${_LV2_KIND}" 2>/dev/null || true
+    return 0
   fi
   LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
     LEADV2_LOOP_OWNER_SID="${_LV2_OWNER_SID}" \
@@ -4677,9 +4687,12 @@ _arm_single_lead_beat() {  # fail-open, armed once (loop's own pidfile guards re
   [[ "${LEADV2_SINGLE_LEAD_BEAT:-1}" == "0" ]] && return 0
   [[ -f "${SINGLE_LEAD_BEAT_LOOP_BIN}" ]] || return 0
   _lv2_session_kind
-  if [[ "${_LV2_KIND}" == "worker" ]] ; then return 0; fi
-  if [[ "${_LV2_KIND}" == "unknown" ]]; then
-    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" single-lead-beat-loop unknown
+  # Fix-round 2: same fail-closed rule as _arm_lane_pulse_watch — worker and
+  # unknown never arm; only `lead` (incl. the LEADV2_SESSION_KIND=lead pin).
+  if [[ "${_LV2_KIND}" != "lead" ]]; then
+    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
+      single-lead-beat-loop "${_LV2_KIND}" 2>/dev/null || true
+    return 0
   fi
   LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
     LEADV2_LOOP_OWNER_SID="${_LV2_OWNER_SID}" \

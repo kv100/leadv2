@@ -66,7 +66,10 @@ LEAD_KIND="unknown"
 if [[ -f "$_LEAD_GUARD_LIB" ]]; then
   # shellcheck source=/dev/null
   source "$_LEAD_GUARD_LIB"
-  LEAD_KIND="$(leadv2_hook_session_kind "$TRANSCRIPT_PATH" 2>/dev/null || printf 'unknown')"
+  # Direct call (no $() subshell): keeps LEADV2_SESSION_KIND_OUT/_REASON in
+  # THIS shell so the fail-open journal below carries reason=<why>.
+  leadv2_hook_session_kind "$TRANSCRIPT_PATH" >/dev/null 2>&1 || true
+  LEAD_KIND="${LEADV2_SESSION_KIND_OUT:-unknown}"
   [[ "$LEAD_KIND" == "lead" || "$LEAD_KIND" == "worker" || "$LEAD_KIND" == "unknown" ]] || LEAD_KIND="unknown"
   if [[ "$LEAD_KIND" == "worker" ]]; then
     exit 0

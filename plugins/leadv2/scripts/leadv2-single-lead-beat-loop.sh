@@ -48,15 +48,32 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # freepool-coder/kimi-coder/claude-subsession) that dispatches its own nested
 # worker inherits this process tree and its plugin hooks fire an arming path
 # exactly like a lead's -- but a worker outlives nothing, so a loop it arms
-# has no owner left to disarm it once the worker exits. Refuse to arm at all
-# for a worker session (fail-open to armed for `lead`/`unknown`).
-_LV2_HOOK_KIND_LIB="${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh"
+# has no owner left to disarm it once the worker exits. Fix-round 2: `worker`
+# refuses to arm, and `unknown` FAILS CLOSED too (no env pin + no worker
+# signal in the transcript = no arm; journal one session_kind=unknown line so
+# a misjudged lead's starvation is visible the same minute). Only `lead` arms.
+_lv2_beat_journal="${LEADV2_PROJECT_ROOT:-$PWD}/docs/leadv2/loop-arm-journal.log"
+mkdir -p "$(dirname "$_lv2_beat_journal")" 2>/dev/null || true
+_LV2_HOOK_KIND_LIB="${LEADV2_SESSION_KIND_LIB:-${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh}"
 if [[ -f "$_LV2_HOOK_KIND_LIB" ]]; then
   # shellcheck source=/dev/null
   source "$_LV2_HOOK_KIND_LIB"
-  if [[ "$(leadv2_hook_session_kind "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}")" == "worker" ]]; then
+  # Direct call (no $()): the function sets LEADV2_SESSION_KIND_OUT/_REASON
+  # in THIS shell so the journal below can carry reason=<why>.
+  leadv2_hook_session_kind "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}" >/dev/null 2>&1 || true
+  _lv2_loop_kind="${LEADV2_SESSION_KIND_OUT:-unknown}"
+  if [[ "$_lv2_loop_kind" != "lead" ]]; then
+    leadv2_loop_arm_journal "$_lv2_beat_journal" "single-lead-beat-loop" "$_lv2_loop_kind" 2>/dev/null || true
     exit 0
   fi
+else
+  # Lib absent: this loop cannot classify its session at all — per the same
+  # fail-closed rule it must not arm silently... EXCEPT the owner-liveness
+  # belts (owner pid + transcript mtime, mechanism 2) are independent of the
+  # lib's classifier: when the lib is missing we keep the founder beat alive
+  # but journal owner_check=unavailable so the gap is on the record.
+  printf '%s event=owner_check_unavailable loop=single-lead-beat-loop reason=classifier_lib_missing\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '?')" >> "$_lv2_beat_journal" 2>/dev/null || true
 fi
 
 INTERVAL="${LEADV2_SINGLE_LEAD_BEAT_LOOP_S:-300}"
@@ -166,9 +183,12 @@ while :; do
   fi
   # BEAT-LOOP-ORPHANS-01 mechanism 2: checked BEFORE the lane-count reader so
   # a heartbeat registry stuck permanently "unknown" (the observed orphan
-  # cause) can never mask an owner that is actually gone.
-  if ! leadv2_loop_owner_check "$OWNER_FILE" "beat-loop"; then
-    exit 0
+  # cause) can never mask an owner that is actually gone. Fix-round 2: guarded
+  # like its pulse-watch sibling — a missing classifier lib must turn the
+  # owner belt OFF (owner_check=unavailable already journaled above), never
+  # kill the founder beat with rc 127.
+  if command -v leadv2_loop_owner_check >/dev/null 2>&1; then
+    leadv2_loop_owner_check "$OWNER_FILE" "beat-loop" || exit 0
   fi
   n="$(_live_lane_count)"
   if [[ "$n" =~ ^[0-9]+$ ]]; then

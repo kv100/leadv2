@@ -19,15 +19,32 @@
 #      escape hatch for a caller that knows better than the heuristic.
 #   1. LEADV2_WORKER_ARM=1 — exported by glm-coder.sh / freepool-coder.sh /
 #      kimi-coder.sh around every claude spawn.
-#   2. LEADV2_SUBSESSION_ROLE non-empty and != "lead" — exported by
-#      claude-subsession.sh.
-#   3. transcript path under docs/handoff/ or a *-runs/ directory — the shape
-#      every worker session's transcript is written under.
-#   4. non-empty transcript path with no worker evidence -> lead.
-# Anything matching none of the above (no transcript, no env markers) is
-# `unknown` — callers FAIL OPEN (arm, but journal loop_armed_by_unknown_session)
-# rather than silently starving a lead session whose evidence the predicate
-# does not yet cover.
+#   2. LEADV2_SUBSESSION_ROLE non-empty and != "lead" — exported at EVERY
+#      headless `claude -p` spawn site (grep-gated by the orphan suite).
+#   3. the TRANSCRIPT'S OWN CONTENT (fix-round 2: the round-1 path patterns
+#      docs/handoff|*-runs never match a real transcript — worker transcripts
+#      live at ~/.claude/projects/<munged-cwd>/<sid>.jsonl exactly like a
+#      lead's):
+#      a. the munged-cwd directory name contains `-claude-worktrees-` (true
+#         for every lane worker's worktree cwd, never for a repo-root lead);
+#      b. the first ~20 lines carry a lane-mission marker (LANE ROOT: /
+#         WORKTREE PIN: / LANE_WRITES: / LEADV2_LANE_OUTCOME) — a headless
+#         `claude -p` session's first user message IS the mission text.
+#      Either signal -> `worker`.
+#   4. neither signal AND no env pin -> `unknown`, and `unknown` FAILS CLOSED
+#      for loops: no loop-arming caller may arm on `unknown`; it journals
+#      session_kind=unknown reason=<why> instead. (The single-shot beat HOOK
+#      keeps its documented fail-open: it spawns no loop.)
+# Why fail closed: a worker that slips through arms an orphan loop nobody
+# disarms (measured 2026-09-01: 53 orphans, load 244); a lead that is
+# misjudged `unknown` loses only the autonomous beat loop and the journal
+# line makes the starvation visible the same minute it happens.
+# leadv2_hook_session_kind also sets — in the CALLER'S shell, so call it
+# directly (never inside a $(...) subshell, which would drop both globals):
+#   LEADV2_SESSION_KIND_OUT    lead|worker|unknown (mirror of stdout)
+#   LEADV2_SESSION_KIND_REASON env_pin|env_worker_arm|env_subsession_role|
+#       worktree_path|mission_transcript|no_transcript|no_worker_evidence
+# for the journal.
 #
 # CLAUDE_CODE_ENTRYPOINT is deliberately NOT a classifier here: the live probe
 # on 2026-09-01 showed the interactive lead session running with
@@ -42,38 +59,77 @@
 #
 # Bash 3.2 compatible (no assoc arrays, no ${var,,}).
 
+# leadv2_transcript_worker_signal <transcript_path> -> rc 0 when the
+# transcript itself carries worker evidence (sets LEADV2_SESSION_KIND_REASON).
+# Signal (a): worktree munged-cwd in the path. Signal (b): a lane-mission
+# marker within the first 20 lines (bounded read — jsonl lines can be huge).
+leadv2_transcript_worker_signal() {  # <transcript_path>
+  local tp="${1:-}"
+  [[ -n "$tp" ]] || return 1
+  case "$tp" in
+    *-claude-worktrees-*)
+      LEADV2_SESSION_KIND_REASON="worktree_path"
+      return 0
+      ;;
+  esac
+  [[ -r "$tp" ]] || return 1
+  if head -n 20 "$tp" 2>/dev/null | grep -aqm1 \
+       -e 'LANE ROOT:' -e 'WORKTREE PIN:' -e 'LANE_WRITES:' -e 'LEADV2_LANE_OUTCOME'; then
+    LEADV2_SESSION_KIND_REASON="mission_transcript"
+    return 0
+  fi
+  return 1
+}
+
 leadv2_hook_session_kind() {  # <transcript_path> -> prints lead|worker|unknown
   local transcript="${1:-}"
+  local _kind
+  LEADV2_SESSION_KIND_REASON=""
 
   case "${LEADV2_SESSION_KIND:-}" in
-    lead|worker|unknown) printf '%s\n' "$LEADV2_SESSION_KIND"; return 0 ;;
+    lead|worker|unknown)
+      LEADV2_SESSION_KIND_REASON="env_pin"
+      _kind="$LEADV2_SESSION_KIND"
+      LEADV2_SESSION_KIND_OUT="$_kind"
+      printf '%s\n' "$_kind"
+      return 0
+      ;;
   esac
 
   if [[ "${LEADV2_WORKER_ARM:-0}" == "1" ]]; then
-    printf 'worker\n'
+    LEADV2_SESSION_KIND_REASON="env_worker_arm"
+    _kind="worker"
+    LEADV2_SESSION_KIND_OUT="$_kind"
+    printf '%s\n' "$_kind"
     return 0
   fi
 
   local sub_role="${LEADV2_SUBSESSION_ROLE:-}"
   if [[ -n "$sub_role" && "$sub_role" != "lead" ]]; then
-    printf 'worker\n'
+    LEADV2_SESSION_KIND_REASON="env_subsession_role"
+    _kind="worker"
+    LEADV2_SESSION_KIND_OUT="$_kind"
+    printf '%s\n' "$_kind"
     return 0
   fi
 
-  if [[ -n "$transcript" ]]; then
-    case "$transcript" in
-      */docs/handoff/*|*-runs/*)
-        printf 'worker\n'
-        return 0
-        ;;
-      *)
-        printf 'lead\n'
-        return 0
-        ;;
-    esac
+  if leadv2_transcript_worker_signal "$transcript"; then
+    _kind="worker"
+    LEADV2_SESSION_KIND_OUT="$_kind"
+    printf '%s\n' "$_kind"
+    return 0
   fi
 
-  printf 'unknown\n'
+  # Fix-round 2: no env pin, no worker signal in the transcript itself.
+  # FAIL CLOSED for loops — this is `unknown`, never `lead`.
+  if [[ -n "$transcript" && -r "$transcript" ]]; then
+    LEADV2_SESSION_KIND_REASON="no_worker_evidence"
+  else
+    LEADV2_SESSION_KIND_REASON="no_transcript"
+  fi
+  _kind="unknown"
+  LEADV2_SESSION_KIND_OUT="$_kind"
+  printf '%s\n' "$_kind"
   return 0
 }
 
@@ -170,8 +226,9 @@ leadv2_loop_owner_check() {  # <owner_file> <loop_name>
 leadv2_loop_arm_journal() {  # <journal_file> <loop_name> <kind>
   local f="$1" name="$2" kind="$3"
   local sid="${LEADV2_LOOP_OWNER_SID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-none}}}"
-  printf '%s event=loop_armed_by_%s_session loop=%s kind=%s sid=%s pid=%s entrypoint=%s\n' \
+  printf '%s event=loop_armed_by_%s_session loop=%s kind=%s reason=%s sid=%s pid=%s entrypoint=%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '?')" "$kind" "$name" "$kind" \
+    "${LEADV2_SESSION_KIND_REASON:-none}" \
     "$sid" "$$" "${CLAUDE_CODE_ENTRYPOINT:-none}" >> "$f" 2>/dev/null || true
   return 0
 }

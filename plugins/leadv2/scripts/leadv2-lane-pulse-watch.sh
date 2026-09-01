@@ -57,15 +57,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # kimi-coder/claude-subsession) inherits this process's env exactly like a
 # lead does when it dispatches its own nested worker, and its plugin hooks
 # fire the same arming path -- but a worker session outlives nothing; when it
-# exits this watch has no owner left to disarm it. Refuse to arm at all for a
-# worker session (fail-open to armed for `lead`/`unknown`).
-_LV2_HOOK_KIND_LIB="${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh"
+# exits this watch has no owner left to disarm it. Fix-round 2: `worker`
+# refuses to arm and `unknown` FAILS CLOSED too (no env pin + no worker signal
+# in the transcript = no arm; journal one session_kind=unknown line). Only
+# `lead` arms.
+_lv2_lpw_journal="${LEADV2_PROJECT_ROOT:-$PWD}/docs/leadv2/loop-arm-journal.log"
+mkdir -p "$(dirname "$_lv2_lpw_journal")" 2>/dev/null || true
+_LV2_HOOK_KIND_LIB="${LEADV2_SESSION_KIND_LIB:-${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh}"
 if [[ -f "$_LV2_HOOK_KIND_LIB" ]]; then
   # shellcheck source=/dev/null
   source "$_LV2_HOOK_KIND_LIB"
-  if [[ "$(leadv2_hook_session_kind "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}")" == "worker" ]]; then
+  # Direct call (no $()): keeps LEADV2_SESSION_KIND_OUT/_REASON in THIS shell
+  leadv2_hook_session_kind "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}" >/dev/null 2>&1 || true
+  _lv2_loop_kind="${LEADV2_SESSION_KIND_OUT:-unknown}"
+  if [[ "$_lv2_loop_kind" != "lead" ]]; then
+    leadv2_loop_arm_journal "$_lv2_lpw_journal" "lane-pulse-watch" "$_lv2_loop_kind" 2>/dev/null || true
     exit 0
   fi
+else
+  printf '%s event=owner_check_unavailable loop=lane-pulse-watch reason=classifier_lib_missing\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '?')" >> "$_lv2_lpw_journal" 2>/dev/null || true
 fi
 
 SIG=""
