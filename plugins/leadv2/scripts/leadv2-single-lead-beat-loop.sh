@@ -129,8 +129,16 @@ _cleanup_pid() {
 # kill, pidfile already removed, so every later arm spawned a fresh
 # duplicate (the 17-copies leak). The signal handler must EXIT; the EXIT
 # trap is disarmed first so self_reap logs exactly once.
+# Fix-r1: on macOS bash 3.2 a trapped TERM also DEFERS behind a foreground
+# child for that child's full runtime (measured: handler ran 29.5s into a
+# 30s sleep) — a killed loop then "survived" its kill for a whole 300s
+# production interval and took SIGKILL (the 2026-09-01 strays). Every long
+# wait below is therefore a background child under the wait builtin, which
+# IS interruptible (0.015s measured), and the handler kills that child.
+WL_CHILD=""
 _on_term() {
   trap - EXIT
+  [[ -n "$WL_CHILD" ]] && kill "$WL_CHILD" 2>/dev/null || true
   _cleanup_pid
   exit 0
 }
@@ -237,9 +245,17 @@ while :; do
   if [[ -f "$BEAT_BIN" ]]; then
     LEADV2_SINGLE_LEAD_BEAT_S="${LEADV2_SINGLE_LEAD_BEAT_S:-$INTERVAL}" \
       LEADV2_PROJECT_ROOT="$PROJECT_ROOT" \
-      bash "$BEAT_BIN" --check >/dev/null 2>&1 || true
+      bash "$BEAT_BIN" --check >/dev/null 2>&1 &
+    WL_CHILD=$!
+    wait "$WL_CHILD" 2>/dev/null || true
+    WL_CHILD=""
   fi
-  sleep "$INTERVAL"
+  # background sleep + wait: TERM must fire the handler NOW, not when the
+  # sleep ends (see _on_term above for the measured 29.5s-of-30s deferral)
+  sleep "$INTERVAL" &
+  WL_CHILD=$!
+  wait "$WL_CHILD" 2>/dev/null || true
+  WL_CHILD=""
   _now="$(date +%s)"
   if (( _now - _started >= MAX_S )); then
     printf '[beat-loop] lifetime cap %ss reached, exiting\n' "$MAX_S" >&2

@@ -27,8 +27,12 @@
 #       loops under the L1 scenario — proving L1/L2 lock the dedup mechanism,
 #       not an incidental pass.
 #
-# Serial-suite assumption: live-copy counts grep the script PATH, so this
-# test must not run concurrently with test-single-lead-beat-loop.sh /
+# Fix-r2 scoping: live-copy counts are SCENARIO-scoped — this harness only
+# counts PIDs it started (and verifies its pidfile holder), so machine-global
+# residue from another worktree or an earlier run cannot poison L1/L2.
+# Teardown additionally asserts ZERO tracked-scenario residue at suite end
+# and FAILs the suite otherwise (fix-r2 #3).
+# Still serial-conservative with test-single-lead-beat-loop.sh /
 # test-lane-pulse-watch.sh (the repo's changed-scope runner is serial).
 # Hermetic: scratch roots, fake heartbeat/beat/pulse bins, scratch pid dir +
 # lifecycle log, interval 1s. Run: bash scripts/tests/test-watch-lifecycle.sh
@@ -46,19 +50,47 @@ bad() { printf '[TEST] FAIL: %s\n' "$1" >&2; FAIL=$((FAIL+1)); }
 
 TMP="$(mktemp -d /tmp/leadv2-watch-lifecycle-XXXXXX)"
 WL_LOG="$TMP/watch-lifecycle.log"
-cleanup() {
-  local p
-  for p in "${PIDS[@]:-}"; do
-    [[ -n "$p" ]] && kill "$p" 2>/dev/null || true
+# reap <pid>... — TERM, wait, KILL. A scenario teardown must never leak a
+# spawn into later scenarios or a later run of this suite: the 02:45Z
+# `live=4` L1 failure was exactly such residue (3 strays from the previous
+# run + the current loop). kill-without-wait also raced the loop's (previously
+# deferred, now prompt) TERM handling.
+reap() {
+  local p i
+  for p in "$@"; do
+    [[ -n "$p" ]] || continue
+    kill "$p" 2>/dev/null || true
   done
-  # kill pidfile owners too — $! can be a dead wrapper while the real loop
+  for p in "$@"; do
+    [[ -n "$p" ]] || continue
+    for ((i = 0; i < 30; i++)); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+    kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null || true
+  done
+  return 0
+}
+cleanup() {
+  local p q residue
+  reap "${PIDS[@]:-}"
+  # reap pidfile owners too — $! can be a dead wrapper while the real loop
   # (owner of the pid) runs on as an orphan (fix-round 3 H-1 idiom)
-  for p in "$TMP"/piddir-loop/*.pid "$STATE"/lane-pulse-watch/*.pid; do
+  for p in "$PID_DIR"/*.pid "$STATE"/lane-pulse-watch/*.pid; do
     [[ -f "$p" ]] || continue
     q="$(cat "$p" 2>/dev/null | tr -d ' ')"
-    [[ "$q" =~ ^[0-9]+$ ]] && kill "$q" 2>/dev/null || true
+    [[ "$q" =~ ^[0-9]+$ ]] && reap "$q"
   done
+  # fix-r2 #3: final sweep of every scenario process this suite spawned
+  # (pidfile-less orphans included), then a ZERO-residue assertion — a
+  # watcher that survives its own teardown (TERM then KILL) is a suite
+  # FAILURE even if every scenario assertion above passed.
+  for p in $(tracked_live_pids); do
+    reap "$p"
+  done
+  residue="$(tracked_live_pids | wc -l | tr -d ' ')"
   rm -rf "$TMP"
+  if [[ "$residue" -ne 0 ]]; then
+    printf '[TEST] FAIL: suite teardown residue: %d scenario process(es) still live after TERM+KILL\n' "$residue" >&2
+    exit 1
+  fi
 }
 trap cleanup EXIT
 
@@ -71,6 +103,27 @@ BEATS="$TMP/beats.log"
 HB_STATE="$TMP/hb-state.json"
 STATE="$TMP/state"   # lane-pulse-watch --state-dir
 export FAKE_BEATS_LOG="$BEATS"
+
+# The restricted test sandbox does not permit process-table reads. The
+# lifecycle library uses `ps -p <pid> -o command=` only to reject recycled
+# pidfiles; this shim exposes the command form for PIDs this test owns while
+# keeping the production implementation unchanged. Its command contains both
+# watcher basenames, so each real singleton claim still validates its holder.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/ps" <<'EOF'
+#!/usr/bin/env bash
+pid=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p) pid="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null || exit 1
+printf 'bash leadv2-single-lead-beat-loop.sh leadv2-lane-pulse-watch.sh bad-loop.sh\n'
+EOF
+chmod +x "$TMP/bin/ps"
+export PATH="$TMP/bin:$PATH"
 
 PIDS=()
 printf '[{"task":"dispatch-lc1","status":"running"}]' > "$HB_STATE"
@@ -126,8 +179,17 @@ beats_n() {
   if [[ -f "$BEATS" ]]; then wc -l < "$BEATS" | tr -d ' '; else printf '0'; fi
 }
 
-count_live() {  # <needle-string> — live processes whose cmdline contains it
-  ps -axo command= | grep -F -- "$1" | grep -v grep | wc -l | tr -d ' '
+# PIDs started by THIS harness are the scope. This avoids machine-global
+# process enumeration and remains exact for the scenario: every arm goes
+# through run_loop/run_watch and enters PIDS before an assertion is made.
+tracked_live_pids() {
+  local p
+  for p in "${PIDS[@]:-}"; do
+    [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null && printf '%s\n' "$p"
+  done
+}
+count_scenario() {
+  tracked_live_pids | wc -l | tr -d ' '
 }
 
 pidfile_alive() {
@@ -164,12 +226,12 @@ b_before="$(beats_n)"
 run_loop "$LOOP" ""
 SECOND=$!
 if wait_exit "$SECOND" 3 \
-   && [[ "$(count_live "$LOOP")" -eq 1 ]] \
+   && [[ "$(count_scenario "$LOOP")" -eq 1 ]] \
    && [[ "$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')" == "$first_pid" ]] \
    && grep -q "dedup_refused" "$WL_LOG" 2>/dev/null; then
   ok "L1 singleton: second arm refused, exactly 1 live loop, dedup_refused logged"
 else
-  bad "L1 singleton: live=$(count_live "$LOOP") second_exited=$(wait_exit "$SECOND" 0 && echo yes || echo no) log=$(cat "$WL_LOG" 2>/dev/null | tr '\n' ';')"
+  bad "L1 singleton: live=$(count_scenario "$LOOP") second_exited=$(wait_exit "$SECOND" 0 && echo yes || echo no) log=$(cat "$WL_LOG" 2>/dev/null | tr '\n' ';')"
 fi
 sleep 2
 if pidfile_alive && [[ "$(beats_n)" -gt "$b_before" ]]; then
@@ -178,20 +240,24 @@ else
   bad "L1 beat intact: beats=$(beats_n) before=$b_before (dedup changed cadence)"
 fi
 kill "$FIRST" 2>/dev/null || true
+reap "${PIDS[@]}"
 wait_pidfile_gone 5 || bad "L1 teardown: pidfile not cleaned"
+[[ "$(count_scenario "$LOOP")" -eq 0 ]] || bad "L1 teardown: $(count_scenario "$LOOP") scenario loop(s) leaked toward later scenarios"
 PIDS=()
 
 # ── L2: concurrent arm storm -> exactly one survivor ────────────────────────
 for i in 1 2 3 4 5; do run_loop "$LOOP" ""; done
 sleep 3
-if [[ "$(count_live "$LOOP")" -eq 1 ]] && pidfile_alive; then
+if [[ "$(count_scenario "$LOOP")" -eq 1 ]] && pidfile_alive; then
   ok "L2 arm storm: 5 concurrent spawns -> exactly 1 survivor holding the pidfile"
 else
-  bad "L2 arm storm: live=$(count_live "$LOOP") pidfile_alive=$(pidfile_alive && echo yes || echo no)"
+  bad "L2 arm storm: live=$(count_scenario "$LOOP") pidfile_alive=$(pidfile_alive && echo yes || echo no)"
 fi
 STORM_PID="$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')"
 kill "$STORM_PID" 2>/dev/null || true
+reap "${PIDS[@]}"
 wait_pidfile_gone 5 || bad "L2 teardown: pidfile not cleaned"
+[[ "$(count_scenario "$LOOP")" -eq 0 ]] || bad "L2 teardown: $(count_scenario "$LOOP") scenario loop(s) leaked toward later scenarios"
 PIDS=()
 
 # ── L3: owner kill -> self-reap within one interval ─────────────────────────
@@ -208,6 +274,7 @@ if wait_exit "$LOOP_PID" 4 && wait_pidfile_gone 2 \
 else
   bad "L3 owner self-reap: loop survived owner death (alive=$(kill -0 "$LOOP_PID" 2>/dev/null && echo yes || echo no))"
 fi
+reap "${PIDS[@]}"
 PIDS=()
 
 # ── L4/L5: lane-pulse-watch singleton + owner self-reap ─────────────────────
@@ -245,12 +312,12 @@ w_first="$(cat "$WPID_FILE" 2>/dev/null | tr -d ' ')"
 run_watch ""
 W2=$!
 if wait_exit "$W2" 3 \
-   && [[ "$(ps -axo command= | grep -F "$WATCH" | grep -F -- "--sig ${SIG}" | grep -v grep | wc -l | tr -d ' ')" -eq 1 ]] \
+   && [[ "$(count_scenario "$WATCH")" -eq 1 ]] \
    && [[ "$(cat "$WPID_FILE" 2>/dev/null | tr -d ' ')" == "$w_first" ]] \
    && grep -q "lane-pulse-watch.*dedup_refused" "$WL_LOG" 2>/dev/null; then
   ok "L4 lane-pulse singleton: second arm refused, 1 live watcher, dedup_refused logged"
 else
-  bad "L4 lane-pulse singleton: second_exited=$(wait_exit "$W2" 0 && echo yes || echo no) count=$(ps -axo command= | grep -F "$WATCH" | grep -F -- "--sig ${SIG}" | grep -v grep | wc -l | tr -d ' ') pf=$(cat "$WPID_FILE" 2>/dev/null) w_first=$w_first log=$(grep lane-pulse-watch "$WL_LOG" 2>/dev/null | tr '\n' ';')"
+  bad "L4 lane-pulse singleton: second_exited=$(wait_exit "$W2" 0 && echo yes || echo no) count=$(count_scenario "$WATCH") pf=$(cat "$WPID_FILE" 2>/dev/null) w_first=$w_first log=$(grep lane-pulse-watch "$WL_LOG" 2>/dev/null | tr '\n' ';')"
 fi
 
 # L5: owner kill — the LIVE watcher (pidfile owner) must self-reap in <=1 interval
@@ -270,10 +337,11 @@ if wait_exit "$w_pid" 4 && [[ ! -f "$WPID_FILE" ]] \
 else
   bad "L5 lane-pulse owner self-reap: watcher survived owner death (alive=$(kill -0 "$w_pid" 2>/dev/null && echo yes || echo no))"
 fi
+reap "${PIDS[@]}"
 PIDS=()
 
 # ── L6: 3 spawn/kill cycles -> no residual growth ───────────────────────────
-baseline="$(count_live "$LOOP")"
+baseline="$(count_scenario "$LOOP")"
 for cycle in 1 2 3; do
   run_loop "$LOOP" ""
   CPID=$!
@@ -282,16 +350,17 @@ for cycle in 1 2 3; do
   kill "$c_owner" 2>/dev/null || true
   wait_exit "$c_owner" 5 || bad "L6 cycle ${cycle}: loop did not exit after TERM"
   wait_pidfile_gone 5 || bad "L6 cycle ${cycle}: pidfile leaked"
-  now="$(count_live "$LOOP")"
+  now="$(count_scenario "$LOOP")"
   if [[ "$now" -gt "$baseline" ]]; then
     bad "L6 no-growth: live copies grew after cycle ${cycle} (baseline=${baseline} now=${now})"
   fi
 done
-if [[ "$(count_live "$LOOP")" -eq "$baseline" ]]; then
+if [[ "$(count_scenario "$LOOP")" -eq "$baseline" ]]; then
   ok "L6 no-growth: 3 spawn/kill cycles, live count back at baseline (${baseline})"
 else
-  bad "L6 no-growth: final count $(count_live "$LOOP") != baseline ${baseline}"
+  bad "L6 no-growth: final count $(count_scenario "$LOOP") != baseline ${baseline}"
 fi
+reap "${PIDS[@]}"
 PIDS=()
 
 # ── L7: NEGATIVE CONTROL (RUN RED) — claim reverted to blind write ──────────
@@ -320,9 +389,10 @@ B1=$!
 run_loop "$BAD_LOOP" ""
 B2=$!
 sleep 2
-neg_live="$(count_live "$BAD_LOOP")"
+neg_live="$(count_scenario "$BAD_LOOP")"
 kill "$B1" 2>/dev/null || true; kill "$B2" 2>/dev/null || true
-for ((i = 0; i < 30; i++)); do [[ "$(count_live "$BAD_LOOP")" -eq 0 ]] && break; sleep 0.1; done
+reap "${PIDS[@]}"
+for ((i = 0; i < 30; i++)); do [[ "$(count_scenario "$BAD_LOOP")" -eq 0 ]] && break; sleep 0.1; done
 if [[ $patch_rc -eq 0 && "$neg_live" -eq 2 ]]; then
   ok "L7 negative control RED: blind-write revert arms TWO loops under the L1 scenario (as it must)"
 else

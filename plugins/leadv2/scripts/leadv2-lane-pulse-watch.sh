@@ -180,8 +180,14 @@ _cleanup_pid() {
 # watcher survived its own kill with the pidfile already removed, so every
 # later arm spawned a fresh duplicate. The signal handler must EXIT; the
 # EXIT trap is disarmed first so self_reap logs exactly once.
+# Fix-r1: on macOS bash 3.2 a trapped TERM also DEFERS behind a foreground
+# child for that child's full runtime (measured on a 30s sleep: handler at
+# 29.5s; the wait-builtin form fires in 0.015s) — the interval sleep below
+# is therefore a background child under wait, and the handler kills it.
+WL_CHILD=""
 _on_term() {
   trap - EXIT
+  [[ -n "$WL_CHILD" ]] && kill "$WL_CHILD" 2>/dev/null || true
   _cleanup_pid
   exit 0
 }
@@ -333,5 +339,8 @@ while :; do
     _pulse "watch_timeout" "no_terminal in ${TIMEOUT}s journal_lines=${SEEN}"
     exit 0
   fi
-  sleep "$INTERVAL"
+  sleep "$INTERVAL" &
+  WL_CHILD=$!
+  wait "$WL_CHILD" 2>/dev/null || true
+  WL_CHILD=""
 done
