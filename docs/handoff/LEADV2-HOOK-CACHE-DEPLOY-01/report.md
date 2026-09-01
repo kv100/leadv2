@@ -27,7 +27,7 @@ leadv2@leadv2-local [{ "installPath": ".../plugins/cache/leadv2-local/leadv2/0.3
 
 The cache also holds a stale `0.1.0` dir; when the meta json is absent the
 script falls back to the highest **numeric** version dir (0.10.0 > 0.9.0 —
-macOS `sort` has no `-V`, so it sorts `-t. -k1,1n -k2,2n -k3,3n`; suite d1
+the fallback sorts version dirs numerically with `-t. -k1,1n -k2,2n -k3,3n`; suite d1
 regresses exactly this).
 
 ## What the cache actually holds (enumerated, not assumed)
