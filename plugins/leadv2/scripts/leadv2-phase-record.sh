@@ -151,7 +151,7 @@ _now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 # B1 R1: the review-arm vocabulary. Source of truth:
 # scripts/lib/leadv2-glm-policy-resolve.py:66 (DEFAULT_REVIEW_ARM_ORDER).
 # A repo with a novel arm overrides via LEADV2_REVIEW_ARMS.
-REVIEW_ARMS="${LEADV2_REVIEW_ARMS:-codex,glm,kimi,opus,sonnet}"
+REVIEW_ARMS="${LEADV2_REVIEW_ARMS:-codex,glm,kimi,fable,opus,sonnet}"
 
 _sha256() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
 
@@ -569,7 +569,7 @@ _verify_artifact() {
       LEADV2_HAS_TOKENS="${_has_tokens}" python3 - "$ledger_file" "$h" <<'PYEOF' || return 1
 import json, os, sys
 ledger_file, target_hash = sys.argv[1], sys.argv[2]
-arms = set(os.environ.get("LEADV2_REVIEW_ARMS", "codex,glm,kimi,opus,sonnet").split(","))
+arms = set(os.environ.get("LEADV2_REVIEW_ARMS", "codex,glm,kimi,fable,opus,sonnet").split(","))
 has_tokens = os.environ.get("LEADV2_HAS_TOKENS", "0") == "1"
 tokens_file = os.environ.get("LEADV2_TOKENS_FILE", "")
 valid_pairs = set()  # (diff_hash, token) pairs

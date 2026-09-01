@@ -16,6 +16,10 @@ else { a = args }
 a = a || {}
 if (a.probe) return { probe_ok: true, parsed_args: a }
 
+// FABLE-THINK-TIER-01: audit is a THINKING role — default arm is fable, opus
+// is the fallback, never a hardcoded 'opus' literal.
+const THINK_MODEL = a.model || (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
+
 const GLM_OK = (a && a.glmInWorkflows) !== false
 async function glmBuild(missionText, label, phase) {
   const r = await agent(
@@ -144,7 +148,25 @@ If any of these 3 are missing for a delta/ratio column, classify that finding as
 
 Output schema must include: working[] (what to preserve), findings[] (P0 max 5, P1 max 6, P2 max 4; each with id, severity, title, specific element, concrete fix, effort S/M/L, file if known), screenshots[].
 Also write a markdown report to ${TASK_DIR}/po-audit.md summarizing the same findings.`,
-    { label: 'audit', phase: 'Audit', agentType: 'architect', model: 'opus', schema: AUDIT_SCHEMA }),
+    { label: 'audit', phase: 'Audit', agentType: 'architect', model: THINK_MODEL, schema: AUDIT_SCHEMA })
+    .then(r => (r !== null || THINK_MODEL === 'opus') ? r : agent(
+      `You are a senior product-owner architect. Visit the deployed preprod URL: ${PREPROD_URL}
+Use Playwright to walk ALL states of the feature: loaded, empty, error, loading, and mobile (viewport 375x812).
+Walk the key user flows: entry → primary CTA → outcome.
+Compare what you see against:
+  - Industry benchmarks: ${BENCHMARKS}
+  - Local design baseline: ${DESIGN_BASELINE}
+  - Modern-web guidance: contrast ratios, touch targets >=44px, dvh viewport, loading states, ARIA labels, responsive layout.
+
+MANDATORY baseline-for-comparisons check (LOCAL-9 lesson): any delta, percentage, ratio, or comparison column (Floor Δ, % change, vs market, since last…) MUST specify:
+  1. Baseline — what value is compared against? (e.g. current_floor vs floor_at_event_time)
+  2. Time semantics — is the baseline live or snapshotted at event-time?
+  3. API contract — does the API expose a per-row snapshot field, or only the live aggregate?
+If any of these 3 are missing for a delta/ratio column, classify that finding as P0, NOT P2.
+
+Output schema must include: working[] (what to preserve), findings[] (P0 max 5, P1 max 6, P2 max 4; each with id, severity, title, specific element, concrete fix, effort S/M/L, file if known), screenshots[].
+Also write a markdown report to ${TASK_DIR}/po-audit.md summarizing the same findings.`,
+      { label: 'audit-opus-fallback', phase: 'Audit', agentType: 'architect', model: 'opus', schema: AUDIT_SCHEMA }))),
   () => agent(
     `You are an adversarial critic. You will receive the findings list from a UI audit of ${FEATURE} (${PREPROD_URL}).
 Wait for the audit agent to complete, then review the findings for semantic traps (LOCAL-9 FloorDelta class).

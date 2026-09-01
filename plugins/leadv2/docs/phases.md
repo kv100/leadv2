@@ -127,7 +127,7 @@ generators BEFORE the convergent Plan triad commits. Ported from ADHD
 **Execution (mechanical generator/critic split — isolation is load-bearing):**
 1. Load frames: `${CLAUDE_PLUGIN_ROOT}/data/leadv2-frames.yaml` (+ optional repo `docs/leadv2-frames.yaml`, merged by id). Lead picks `frames_per_run` (default 5): 4 code/design + ≥1 wild for code-shaped problems; vary vs recent runs.
 2. **Diverge** — ONE message, N parallel `Agent(subagent_type=general-purpose, model=sonnet, run_in_background=true)`, one per frame. Each gets ONLY: a ≤200-word problem statement + that one frame's vantage + the DIVERGENT-mode instruction (forbid evaluation, JSON array of `ideas_per_frame` ideas, first-3-obvious banned). **FORBIDDEN in a branch:** other branches' output, full/partial `context.yaml`, `prior_art`/immune/negative-memory, architect `decisions[]`, the graph-context block, BOARD/RECOVERY. Isolation is the mechanism, not a slogan. Deliverable: `docs/handoff/<id>/diverge-<frame.id>.json`.
-3. **Focus** — one `Agent(subagent_type=critic, model=<opus if Heavy/Strategic else sonnet>)`: score novelty/viability/fit (weights from frames.yaml `scoring:` — 0.35/0.40/0.25), flag traps with mechanistic reasons, cluster by underlying angle. Deliverable: `diverge-focus.json`.
+3. **Focus** — one `Agent(subagent_type=critic, model=<fable if Heavy/Strategic else sonnet>; opus is fable's fallback — FABLE-THINK-TIER-01)`: score novelty/viability/fit (weights from frames.yaml `scoring:` — 0.35/0.40/0.25), flag traps with mechanistic reasons, cluster by underlying angle. Deliverable: `diverge-focus.json`.
 4. **Deepen** — top_k (default 3) parallel `Agent(general-purpose, sonnet)` on ranked non-trap leaders: sketch + load-bearing risk + first step + 3–5 child ideas. Provocation = highest-novelty leaf (no spawn).
 5. **Cost banner + hard ceiling** to STATE.md before spawning: `diverge: running — ~<N+1+K> Agent spawns`. Clamp AFTER any repo override: `frames_per_run ≤ 8`, `ideas_per_frame ≤ 12`, `top_k ≤ 5`, total `frames+1+top_k ≤ 14`. If near budget, drop to 3×4 (~7 spawns) and note reduced breadth.
 
@@ -141,6 +141,8 @@ generators BEFORE the convergent Plan triad commits. Ported from ADHD
 **Route first:** `eval "$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-router.sh" --phase plan --step <step> --task-id <id> --class <class> --signals '{...}' 2>/dev/null)" || true` (exit 2 = fall through to class-based default). When `USE_WORKFLOW=1` is emitted, use the Workflow path below.
 
 **Dispatch — ONE PATH (ONE-PATH-EVERYWHERE-01, canonical since 0.3.0):**
+
+**Think roles (plan synthesis, architect, judge) resolve through `leadv2-router.sh think-model`: `LEADV2_THINK_MODEL` env wins, else `fable` (Fable 5.1, FABLE-THINK-TIER-01) unless `config/model-capability.yaml` marks it `unavailable: true`, else `opus`. Never set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (CC 2.1.257+) — it overrides every explicit `model=` pin, and routing IS the pins. GLM/Kimi never take think roles.**
 
 Phase 2 Plan runs through the sole-owner bash engine — native GLM/Codex/Kimi/Sonnet/Opus
 arms, quota-filtered, refusal-spill, dual-order `PLAN_YAML` extraction, journaled:
@@ -161,8 +163,8 @@ if a session still calls it, its plugin cache is stale (<0.3.0): restart the ses
 
 Single message, parallel spawns:
 1. `${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-codex-planner.sh --task-id <id> --mission-file /tmp/mission-<id>.md --effort <high|xhigh>` — background, **only if** `command -v codex-task.sh >/dev/null 2>&1 && codex-task.sh status >/dev/null 2>&1` exits 0 (requires Codex CLI installed; see docs/INSTALLATION.md). If unavailable → skip, Agent(critic) covers Stage 1.
-2. `Agent(subagent_type=architect, model=opus, run_in_background=true)` — if Heavy or arch keyword (NOT claude-subsession)
-3. `Agent(subagent_type=critic, model=opus, run_in_background=true)` — if class ≥ Standard; use `model=sonnet` when Codex already fired and task is Standard (not Heavy)
+2. `Agent(subagent_type=architect, model=<think-model: fable default, opus fallback — leadv2-router.sh think-model>, run_in_background=true)` — if Heavy or arch keyword (NOT claude-subsession)
+3. `Agent(subagent_type=critic, model=<think-model: fable default, opus fallback>, run_in_background=true)` — if class ≥ Standard; use `model=sonnet` when Codex already fired and task is Standard (not Heavy)
 
 **MANDATORY after Codex launch (inline path only):** Codex does NOT send task-notifications. Capture the task ID printed by `leadv2-codex-planner.sh` (first token on stdout, e.g. `task-abc123`), then immediately spawn a Monitor using the real ID:
 ```bash
@@ -249,7 +251,7 @@ Rationale:
 1. Lead writes `docs/handoff/<id>/groups-contract.md` per `.claude/templates/groups-contract.md`. Include producer/consumer signatures, output formats, and `external_callers_to_update` enumerated via ONE global grep before spawn. Catches the "Group A flags work for Group B" drift class.
 2. Each group's mission must reference its slice of the contract. Lead lints with `leadv2-mission-lint.sh` + `leadv2-prompt-lint.sh` before each spawn.
 
-Parallel Agent spawns per `context.yaml plan.parallel_groups:` — developer / postgres-pro / frontend-developer. **All spawns `run_in_background=true`.** Monitor via task-notification. **Verify diffs with `git diff` — don't trust DONE self-report.** Stuck Sonnet → escalate to claude-subsession or opus architect.
+Parallel Agent spawns per `context.yaml plan.parallel_groups:` — developer / postgres-pro / frontend-developer. **All spawns `run_in_background=true`.** Monitor via task-notification. **Verify diffs with `git diff` — don't trust DONE self-report.** Stuck Sonnet → escalate to claude-subsession or a think-model (fable, opus fallback) architect.
 
 **Post-build (BEFORE Phase 5):**
 - (v0.2: deliverable-routing-check script — currently manual. Read `docs/handoff/<id>/build-*-output.md` files and check `external_callers_to_update` from groups-contract for any "punted to Group B" items. Resolve before opening review.)
@@ -312,7 +314,7 @@ mechanism.
 The lead/interactive path above is unconditional — it never falls back to
 `workflows/leadv2-review.js`. Codex/critic/security-auditor selection logic that used to
 live in the Workflow's `reviewers[]` array now lives in the engine's `run_reviewer_arm()`
-(codex/glm/kimi/sonnet/opus branches) and `resolve_review_pool_call()`.
+(codex/glm/kimi/fable/sonnet/opus branches — fable enters the pool ahead of opus, same anthropic 95 ceiling, FABLE-THINK-TIER-01) and `resolve_review_pool_call()`.
 
 **`workflows/leadv2-review.js` is deleted** (ONE-PATH-EVERYWHERE-01) — canonical, the
 `~/.claude/workflows/` shared copy, and the plugin cache copy are all gone. The three test
@@ -394,7 +396,7 @@ Any precondition or merge fail → circuit break. Worktree stays on disk for ins
 
 `leadv2-verify` skill — invoke `verify-probe.sh` per `context.yaml verification.live_signal`. Heavy tasks → corroborate config (positive + ≥1 no-regression). Default timeout 30min.
 - Exit 0 → Phase 8 Close
-- Exit 1 (timeout) → `Skill(skill="leadv2-iterative-recovery")` (layer-peeling fix+verify loop, hard cap 5). On exhaustion → architect opus alt approach → execute → re-verify. Max 2 alt attempts → circuit break
+- Exit 1 (timeout) → `Skill(skill="leadv2-iterative-recovery")` (layer-peeling fix+verify loop, hard cap 5). On exhaustion → architect think-model (fable, opus fallback) alt approach → execute → re-verify. Max 2 alt attempts → circuit break
 - Exit 2 (negative signal) → immediate `leadv2-rollback.sh` → architect recovery loop
 
 

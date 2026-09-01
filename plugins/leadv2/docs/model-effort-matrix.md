@@ -20,8 +20,8 @@ thinking tokens AND fails the task.
 | Reads, classify, greps, commits, aggregation | haiku | `low` | Explore, capability-classifier, quality-scorer, archive-write |
 | Standard build / synthesis | sonnet | `medium` | developer, plan-synthesize, context.yaml writes |
 | Adversarial gate / verdict | sonnet | `high` | critic, security-auditor, verify-blocking (Codex is primary; this is the 2nd voice) |
-| Heavy design synthesis / judge | **opus → sonnet** | `xhigh` | Heavy/Strategic architect, diverge judge, safety-touched review verdict |
-| One-shot irreversible / Strategic gate | **opus → sonnet** | `max` | Strategic plan synthesis, final deploy verdict on Heavy+safety |
+| Heavy design synthesis / judge | **fable (opus fallback) → sonnet** | `xhigh` | Heavy/Strategic architect, diverge judge, safety-touched review verdict |
+| One-shot irreversible / Strategic gate | **fable (opus fallback) → sonnet** | `max` | Strategic plan synthesis, final deploy verdict on Heavy+safety |
 
 ## Effort ladder semantics
 
@@ -36,25 +36,38 @@ thinking tokens AND fails the task.
 
 **Escalation direction rule:** when a task outgrows its tier, escalate the MODEL, not
 the effort. Sonnet's effort cap is `high` — if a sonnet spawn seems to need `xhigh`,
-it needs opus (or Codex), not a longer sonnet run. Thinking tokens are output
+it needs a think model (fable, opus as fallback — or Codex), not a longer sonnet run. Thinking tokens are output
 tokens — the most quota-expensive thing a spawn emits.
 
-## Opus — only the hardest thinking (founder directive 2026-07-03; FABLE-RETIRE-01 2026-07-06 covered Fable 4.x — Claude Fable 5 is live again since 2026-08; the lead model is decided per-repo by `ref/leadv2-main-model.yaml`, and "Fable" rows below apply only where that file selects it)
+## Fable (Opus fallback) — only the hardest thinking (FABLE-THINK-TIER-01, founder order 2026-09-01, supersedes the 2026-07-03 opus-first directive; FABLE-RETIRE-01 2026-07-06 covered Fable 4.x — Claude Fable 5.1 is GA since 2026-08, 1M context, same Claude Max bucket as Opus, no new quota arm)
 
-Opus (the repo's top-tier lead/heavy model) is allowed ONLY where genuinely novel reasoning or
-judgment happens:
+Every role whose value is THINKING (not typing) runs on **Fable first; Opus is the fallback**
+when Fable is refused/unavailable — never the default. This resolves through
+`leadv2-router.sh think_model()` (env `LEADV2_THINK_MODEL` overrides; else fable unless
+`config/model-capability.yaml`'s fable row is `unavailable: true`, else opus). No think-role
+spawn site may hardcode an `'opus'` literal — call the resolver.
+
+Fable (opus fallback) is allowed ONLY where genuinely novel reasoning or judgment happens:
 
 - Heavy/Strategic plan **synthesis** (not discovery — discovery is haiku/Explore)
 - Diverge judge (scoring/clustering candidate frames)
 - Safety-touched review **verdict** (not the scan — scans are Codex/sonnet/haiku)
 - Root-cause **synthesis** after cheap models gathered the evidence
+- Lead main model (`ref/leadv2-main-model.yaml: main_model: fable`)
 
-Opus is BANNED for: evidence gathering, file reads, bulk transforms, classification,
+Fable/Opus is BANNED for: evidence gathering, file reads, bulk transforms, classification,
 mechanical edits, commit messages, status aggregation, anything a checklist could do.
+**GLM/Kimi never take think roles** — the fable-first change does not touch that boundary.
 
-**Chain on refusal/absence, never hard-pin.** Always `opus → sonnet` (opus is
-first-class for design/synthesis/verdicts). In workflows:
-`model: MODELS.think || 'opus'` with sonnet fallback on refusal/absence.
+**Chain on refusal/absence, never hard-pin.** Always `fable → opus → sonnet` (fable is
+first-class for design/synthesis/verdicts, opus is its fallback). In workflows:
+`model: opts.model || THINK_MODEL` (THINK_MODEL defaults to `fable`, env
+`LEADV2_THINK_MODEL` overrides) with an explicit opus retry, then sonnet fallback on
+refusal/absence.
+
+**Never set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`** (Claude Code 2.1.257+). It overrides
+every explicit `model=` pin, including the fable/opus think-role routing above — our
+routing IS the pins.
 
 ## Zero-Claude-quota lanes come FIRST (founder: "GLM и Codex по максимуму")
 
@@ -92,8 +105,8 @@ Surface every fallback to the founder — never degrade silently.
 | Trivial | skip | haiku `low` inline | skip |
 | Light | sonnet `medium` single-pass | sonnet `medium` (GLM if background) | skip (low-risk) or Codex `medium` |
 | Standard | architect sonnet `medium` + Codex `high` + critic sonnet `high` | sonnet `medium` / GLM bulk | Codex `high` + critic sonnet `high` |
-| Heavy | architect opus `xhigh` + Codex `xhigh` + critic sonnet `high` | sonnet `medium` parallel fan-out / GLM bulk | Codex `xhigh` + verdict opus `xhigh` (safety) |
-| Strategic | opus `max` + Codex `xhigh` | as Heavy | as Heavy, verdict `max` |
+| Heavy | architect fable(opus fallback) `xhigh` + Codex `xhigh` + critic sonnet `high` | sonnet `medium` parallel fan-out / GLM bulk | Codex `xhigh` + verdict fable(opus fallback) `xhigh` (safety) |
+| Strategic | fable(opus fallback) `max` + Codex `xhigh` | as Heavy | as Heavy, verdict `max` |
 
 ## Anti-patterns (each one observed in production before this doc)
 
@@ -101,8 +114,8 @@ Surface every fallback to the founder — never degrade silently.
    thinking regardless of class. Frontmatter default is `high` for adversarial roles,
    `medium` otherwise; workflows override per-class via `opts.effort`.
 2. **Cranking effort instead of escalating model** — sonnet `xhigh` on a Heavy design
-   task. Wrong axis: use opus `xhigh`.
-3. **Opus for discovery** — evidence gathering is haiku; synthesis is opus.
+   task. Wrong axis: use a think model — fable `xhigh` (opus fallback).
+3. **Fable/Opus for discovery** — evidence gathering is haiku; synthesis is fable (opus fallback).
 4. **Haiku for verdicts** — a `low`-effort judge on a gate decision (acceptable only as
    an explicit degraded-mode fallback, logged as such).
 5. **Ignoring the external lanes** — running sonnet review when Codex is available, or

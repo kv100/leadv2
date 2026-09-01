@@ -148,6 +148,19 @@ leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-regi
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
+# FABLE-THINK-TIER-01: the think-tier contract (resolver default fable / opus
+# fallback, no hardcoded opus spawn pins, fable-ahead-of-opus review pool,
+# zero opus-4 literals) must re-run whenever any of its carriers changes.
+leadv2-router.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-glm-policy-resolve.py:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-cache-warm.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+model-capability.yaml:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-diverge.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-learn.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-diagnose.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-po-feedback-loop.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-one-copy-drift.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
 leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh

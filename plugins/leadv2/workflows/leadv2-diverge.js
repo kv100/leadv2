@@ -28,6 +28,10 @@ const FRAMES = [
   'automate-it-away: can the problem be deleted instead of solved',
 ]
 const N = Math.min(Math.max(a.n || 6, 2), FRAMES.length)
+// FABLE-THINK-TIER-01: judge is a THINKING role (design/scoring, not typing) —
+// default arm is fable, opus is the fallback, never a hardcoded 'opus'
+// literal. a.model / opts.model still wins outright when the caller pins one.
+const THINK_MODEL = a.model || (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
 const IDEA_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { idea: { type: 'string' }, approach: { type: 'string' }, key_risk: { type: 'string' } },
@@ -78,7 +82,7 @@ async function flushLedger(phaseLabel) {
 
 // synth stages: try top model, fall back on null/error
 async function synthAgent(prompt, opts = {}) {
-  const chain = [...new Set([opts.model || 'opus', 'sonnet'])]
+  const chain = [...new Set([opts.model || THINK_MODEL, 'opus', 'sonnet'])]
   for (const m of chain) {
     try {
       const r = await agent(prompt, { ...opts, model: m })
@@ -111,7 +115,17 @@ let judged = await synthAgent(
   `Flag traps (plausible-but-doomed, trap=true). Recommend ONE (or a synthesis) and say why. ` +
   `Also write a short divergence.md to ${OUT} with the ranked set.\n` +
   `Candidates: ${JSON.stringify(ideas)}`,
-  { label: 'judge', phase: 'Judge', agentType: 'critic', model: 'opus', effort: 'xhigh', schema: JUDGE_SCHEMA })
+  { label: 'judge', phase: 'Judge', agentType: 'critic', model: THINK_MODEL, effort: 'xhigh', schema: JUDGE_SCHEMA })
+if (judged === null && THINK_MODEL !== 'opus') {
+  log(`Judge returned null on ${THINK_MODEL} — retrying on opus fallback`)
+  judged = await agent(
+    `Score and cluster these ${ideas.length} candidate solutions for task ${TASK_ID}. ` +
+    `Score each 0-10 (10=best): feasibility(0-4) + novelty(0-3) + blast-radius(0-3, higher=safer). ` +
+    `Flag traps (plausible-but-doomed, trap=true). Recommend ONE (or a synthesis) and say why. ` +
+    `Also write a short divergence.md to ${OUT} with the ranked set.\n` +
+    `Candidates: ${JSON.stringify(ideas)}`,
+    { label: 'judge-opus-fallback', phase: 'Judge', agentType: 'critic', model: 'opus', effort: 'xhigh', schema: JUDGE_SCHEMA })
+}
 if (judged === null) {
   log('Judge returned null — generating fallback summary via haiku')
   judged = await agent(

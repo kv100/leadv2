@@ -18,6 +18,9 @@ const TASK_ID = a.task_id || ''
 const OUT = `docs/leadv2/learning-proposals/${LABEL}.md`
 // C-1: task_class from args; avoids undefined cap-result reference
 const TASK_CLASS = a.task_class || 'general'
+// FABLE-THINK-TIER-01: propose is a THINKING role — default arm is fable,
+// opus is the fallback, never a hardcoded 'opus' literal.
+const THINK_MODEL = a.model || (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
 // WORKFLOW-BASH-FIX-01: runtime provides no bash() global — only agent()/parallel()/
 // pipeline()/log()/phase()/args/budget. TS + DURABLE_ROOT used to be 2 bare `await bash(...)`
 // calls; collapsed into ONE upfront `gather-init` agent() call (Move 1). NOTE: this call is
@@ -275,7 +278,7 @@ if (aboveThreshold.length === 0) {
 
 // synth stages: try top model, fall back on null/error
 async function synthAgent(prompt, opts = {}) {
-  const chain = [...new Set([opts.model || 'opus', 'sonnet'])]
+  const chain = [...new Set([opts.model || THINK_MODEL, 'opus', 'sonnet'])]
   for (const m of chain) {
     try {
       const r = await agent(prompt, { ...opts, model: m })
@@ -298,7 +301,7 @@ const proposal = await synthAgent(
   `Include class_key in each proposal (same as the signal's class_key) for threshold-tracking. ` +
   `Then WRITE the proposal to ${OUT} as a governance markdown ` +
   `(status: pending — NOT auto-applied; founder or auto-approve decides). Return the proposals[].`,
-  { label: 'propose', phase: 'Propose', model: 'opus', effort: 'medium', schema: PROPOSAL_SCHEMA })
+  { label: 'propose', phase: 'Propose', effort: 'medium', schema: PROPOSAL_SCHEMA })
 pushLedger('phase_exit', { phase: 'Propose', proposals_count: (proposal && proposal.proposals) ? proposal.proposals.length : 0 })
 
 // ── Shadow-Emit phase (D3 / G3c + C1/C2 dual-memory) ────────────────────────

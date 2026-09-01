@@ -50,9 +50,49 @@ Usage: leadv2-router.sh --phase <phase> --step <step>
                         [--signals '{"risk":"high","total_lines":600}']
                         [--task-id <id>]
                         [--class <Light|Standard|Heavy|Strategic>]
+       leadv2-router.sh think-model
 EOF
   exit 1
 }
+
+readonly MODEL_CAPABILITY_YAML="${LEADV2_MODEL_CAPABILITY_YAML:-${SCRIPT_DIR}/../config/model-capability.yaml}"
+
+# FABLE-THINK-TIER-01: every "value is thinking" role (plan synthesis, judge,
+# diagnose root-cause, learn proposal, PO audit, dispatch architect prepass,
+# lead main model) resolves through this ONE function. LEADV2_THINK_MODEL env
+# wins outright (explicit operator override); otherwise fable unless
+# model-capability.yaml marks the fable row `unavailable: true`, in which case
+# opus (the documented fallback) is used. No caller may hardcode `opus` at a
+# think-role spawn site — call this instead.
+think_model() {
+  if [[ -n "${LEADV2_THINK_MODEL:-}" ]]; then
+    printf '%s\n' "${LEADV2_THINK_MODEL}"
+    return 0
+  fi
+  local unavailable="false"
+  if [[ -f "${MODEL_CAPABILITY_YAML}" ]]; then
+    unavailable="$(python3 - "${MODEL_CAPABILITY_YAML}" <<'PY' 2>/dev/null || echo false
+import sys, yaml
+try:
+    cfg = yaml.safe_load(open(sys.argv[1])) or {}
+    row = cfg.get("fable") or {}
+    print("true" if row.get("unavailable") else "false")
+except Exception:
+    print("false")
+PY
+    )"
+  fi
+  if [[ "${unavailable}" == "true" ]]; then
+    printf 'opus\n'
+  else
+    printf 'fable\n'
+  fi
+}
+
+if [[ "${1:-}" == "think-model" ]]; then
+  think_model
+  exit 0
+fi
 
 PHASE=""
 STEP=""

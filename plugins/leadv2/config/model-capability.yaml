@@ -18,29 +18,47 @@
 #
 # cost_class here is COST-TO-US under existing subscription/quota arrangements, not public
 # list price (list price is included in notes where found, for context).
+#
+# FABLE-THINK-TIER-01: model-capability.yaml is now READ by one consumer —
+# leadv2-router.sh think_model(), which routes every THINKING role to fable
+# with opus as the fallback. The contract: the fable row may carry
+# `unavailable: true` (e.g. sunset like FABLE-RETIRE-01) — think_model() then
+# returns opus. Absent/unavailable=false means fable serves think roles.
+# `role:`/`fallback:`/`model_id:` fields are data for that contract; `role`
+# NEVER overrides routing policy (cost-first glm/kimi arms unchanged).
 
 fable:
-  underlying_model: claude-fable-5
+  model_id: claude-fable-5-1
+  underlying_model: claude-fable-5-1
+  role: think            # FABLE-THINK-TIER-01: default arm for every thinking role
+  fallback: opus
   coding_score: 95.0
   score_basis: swebench-verified
   agentic_score: 80.52
   agentic_basis: terminal-bench-2.1
   speed_class: slow
-  context_k: 200
+  context_k: 1000
   cost_class: quota-scarce
   confidence: high
   notes: >
-    SWE-V and TB2.1 both vals.ai-direct (high confidence). Context_k=200 is the Anthropic-
-    standard assumption; no Fable-specific 1M citation found (medium confidence on context
-    specifically). Speed_class=slow is an inference from reasoning-tier positioning, not a
-    measured tok/s (low confidence on speed specifically).
+    SWE-V and TB2.1 both vals.ai-direct (high confidence). FABLE-THINK-TIER-01
+    (2026-09-01, founder order): Fable 5.1 is GA with 1M context (context_k
+    200 -> 1000, model_id claude-fable-5-1) in the SAME Claude Max bucket as
+    Opus — think roles (plan synthesis, judge, diagnose synth, learn proposal,
+    PO audit, review Heavy critic, architect prepass, lead main model) resolve
+    to fable first; opus is the fallback when fable is refused/unavailable
+    (`unavailable: true` here) — not the default. Speed_class=slow is an
+    inference from reasoning-tier positioning, not a measured tok/s (low
+    confidence on speed specifically).
   sources:
     - https://www.vals.ai/benchmarks/swebench
     - https://www.vals.ai/benchmarks/terminal-bench-2-1
   asof: "2026-07-31"
 
 opus:
+  model_id: claude-opus-5
   underlying_model: claude-opus-5
+  role: think_fallback   # FABLE-THINK-TIER-01: serves think roles only when fable is unavailable/refused
   coding_score: 97.0
   score_basis: swebench-verified
   agentic_score: 84.64
@@ -62,6 +80,7 @@ opus:
   asof: "2026-07-31"
 
 sonnet:
+  model_id: claude-sonnet-5
   underlying_model: claude-sonnet-5
   coding_score: 72.7
   score_basis: swebench-verified
@@ -86,6 +105,7 @@ sonnet:
   asof: "2026-07-31"
 
 haiku:
+  model_id: claude-haiku-4-5-20251001
   underlying_model: claude-haiku-4-5-20251001
   coding_score: 73.3
   score_basis: swebench-verified

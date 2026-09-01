@@ -84,7 +84,13 @@ DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
 # B1 R1: this list is the source of truth for the review-arm allowlist enforced by
 # leadv2-phase-record.sh's _verify_artifact review check (LEADV2_REVIEW_ARMS env var).
 # If you add/remove an arm here, update the default there too.
-DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "kimi", "opus", "sonnet"]
+# FABLE-THINK-TIER-01: fable enters the review pool as a THINK-role arm, ahead
+# of opus (opus is fable's fallback, not the default) but after the two proven
+# free/cheap arms glm and kimi -- same "unproven quality, never the only
+# reviewer if a proven arm has headroom" reasoning KIMI-CHANNEL-01b applied to
+# kimi. fable shares the single "anthropic" account reading with opus/sonnet
+# (see _pct_for below) -- same bucket, no new quota arm.
+DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "kimi", "fable", "opus", "sonnet"]
 DEFAULT_GLM_REVIEW_THRESHOLD_PCT = 90.0
 DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT = 95.0
 
@@ -498,7 +504,7 @@ def _live_pct_for_arm(arm: str, quota_live_bin):
         return _live_pct_memo("codex", quota_live_bin)
     if arm in ("glm", "glm-flash"):  # GLM-53-FLASH-ARM-01: one glm bucket
         return _live_pct_memo("glm", quota_live_bin)
-    if arm in ("opus", "sonnet"):
+    if arm in ("opus", "sonnet", "fable"):
         return _live_pct_memo("anthropic", quota_live_bin)
     return None
 
@@ -566,7 +572,7 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
             return live_codex_weekly_pct(quota_live_bin)
         if arm in ("glm", "glm-flash"):  # GLM-53-FLASH-ARM-01: one glm bucket
             return live_glm_pct(quota_live_bin)
-        if arm in ("opus", "sonnet"):
+        if arm in ("opus", "sonnet", "fable"):
             if "anthropic" in pcts:
                 return pcts["anthropic"]
             return live_anthropic_pct(quota_live_bin)

@@ -430,6 +430,13 @@ LEDGER_REPO_ROOT="$(cd "${WORK_ROOT}" 2>/dev/null && cd "$(dirname "$(git rev-pa
 # leaves the worktree on disk for the async worker + close gate (§3.3 emits the loud line).
 _DISPATCH_WORKER_LIVE=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-"$0"}")" 2>/dev/null && pwd)"
+# FABLE-THINK-TIER-01: the architect prepass is a THINKING role (design, not
+# typing) — its default arm resolves through leadv2-router.sh's think_model()
+# (fable, opus fallback) rather than a hardcoded opus literal. A caller that
+# sets LEADV2_DISPATCH_ARCHITECT_MODEL explicitly still wins outright.
+_LEADV2_ARCHITECT_THINK_DEFAULT="$(bash "${SCRIPT_DIR}/leadv2-router.sh" think-model 2>/dev/null || true)"
+[[ -n "${_LEADV2_ARCHITECT_THINK_DEFAULT}" ]] || _LEADV2_ARCHITECT_THINK_DEFAULT="opus"
+readonly _LEADV2_ARCHITECT_THINK_DEFAULT
 if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${SCRIPT_DIR}/lib/leadv2-trace.sh"
 else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :; }; fi
 # CLOSE-GATE-BYPASSABLE-BY-ENV-01 L3 (defence in depth): the real scrub point
@@ -4435,7 +4442,7 @@ If code discovery contradicts the mission's framing, say so plainly and design a
   # macOS has no portable `timeout`. Python waits for the launcher only; a
   # timed-out advisory prepass is deliberately allowed to finish or be reaped
   # independently while this dispatch immediately continues with the raw task.
-  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" "dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}" "${mfile}" <<'PY' 2>&1
+  out="$(PROJECT_ROOT="${PROJECT_ROOT}" python3 - "${ARCHITECT_PREPASS_TIMEOUT_SEC}" "${ARCHITECT_BIN}" "${LEADV2_DISPATCH_ARCHITECT_MODEL:-${_LEADV2_ARCHITECT_THINK_DEFAULT}}" "dispatch-${sig8}-${ARCHITECT_LANE_SUFFIX}" "${mfile}" <<'PY' 2>&1
 import os, signal, subprocess, sys
 timeout, binary, model, task_id, mission_file = sys.argv[1:]
 proc = None
@@ -4527,9 +4534,9 @@ PY
     # timeout) retries the same prompt through another configured arm's own
     # launcher before this attempt is declared failed. The fallback design is
     # validated exactly like a Claude design by the shared guards below (§3).
-    case "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}" in
-      opus|sonnet|haiku|claude*) _pp_failed_prov="anthropic" ;;
-      *) _pp_failed_prov="$(_arm_provider "${LEADV2_DISPATCH_ARCHITECT_MODEL:-opus}")" ;;
+    case "${LEADV2_DISPATCH_ARCHITECT_MODEL:-${_LEADV2_ARCHITECT_THINK_DEFAULT}}" in
+      opus|sonnet|haiku|fable|claude*) _pp_failed_prov="anthropic" ;;
+      *) _pp_failed_prov="$(_arm_provider "${LEADV2_DISPATCH_ARCHITECT_MODEL:-${_LEADV2_ARCHITECT_THINK_DEFAULT}}")" ;;
     esac
     if [[ "${ARCHITECT_FALLBACK}" == "1" ]] \
        && [[ "${_pp_cls}" == "authentication_failed" || "${_pp_cls}" == "rate_limited" || "${_pp_cls}" == "quota_exceeded" ]] \

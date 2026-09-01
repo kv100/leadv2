@@ -47,7 +47,7 @@ CREATE TABLE kv(key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX turn_events_ts ON turn_events(ts);
 INSERT INTO turn_events(session_id,ts,input,cr,output,model) VALUES
   ('glm1',    datetime('now','-30 minutes'), 7000000, 2000000000, 100000, 'glm-5.2'),
-  ('claude1', datetime('now','-1 hour'),     1000,    1000000000, 500,    'claude-opus-4-8');
+  ('claude1', datetime('now','-1 hour'),     1000,    1000000000, 500,    'claude-opus-5');
 "
 export LEADV2_BURN_DB="$DB" LEADV2_MAIN_MODEL_CFG="$CFG"
 

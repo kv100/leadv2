@@ -33,7 +33,7 @@ deny() {
 
 # Explicit model on the call — check if it is opus.
 if [ -n "$MODEL" ]; then
-  # Case-insensitive substring match for "opus" covers: opus, claude-opus-4, claude-opus-4*, opus[1m], etc.
+  # Case-insensitive substring match for "opus" covers: opus, claude-opus-5, opus[1m], etc.
   MODEL_LOWER=$(echo "$MODEL" | tr '[:upper:]' '[:lower:]')
   if echo "$MODEL_LOWER" | grep -q "opus"; then
     # Opus requested — enforce allowlist.

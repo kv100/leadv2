@@ -16,6 +16,9 @@ const TASK_ID = a.taskId || 'adhoc'
 const BUG_BRIEF = a.bugBrief || ''
 const LOGS_HINT = a.logsHint || 'journalctl -u persona-engine --since "1 hour ago" | tail -200'
 const DB_HINT = a.dbHint || 'check recent rows in actions, health_metrics, strategy_proposals'
+// FABLE-THINK-TIER-01: reduce (root-cause synthesis) is a THINKING role —
+// default arm is fable, opus is the fallback, never a hardcoded 'opus' literal.
+const THINK_MODEL = a.model || (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
 
 const SYMPTOM_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -128,7 +131,7 @@ log(`Trace: ${traceResults.length}/${clusters.length} clusters returned, ${allHy
 
 // synth stages: try top model, fall back on null/error
 async function synthAgent(prompt, opts = {}) {
-  const chain = [...new Set([opts.model || 'opus', 'sonnet'])]
+  const chain = [...new Set([opts.model || THINK_MODEL, 'opus', 'sonnet'])]
   for (const m of chain) {
     try {
       const r = await agent(prompt, { ...opts, model: m })
@@ -147,7 +150,7 @@ const result = await synthAgent(
   `Hypotheses: ${JSON.stringify(allHypotheses)}\n` +
   `Pick the most likely root_cause (high-confidence wins; corroboration across clusters upgrades confidence). ` +
   `Set evidence_files to specific files/tables implicated. Provide a concrete fix_hint. List alternates for any competing hypotheses.`,
-  { label: 'reduce', phase: 'Reduce', model: 'opus', effort: 'medium', schema: ROOT_CAUSE_SCHEMA })
+  { label: 'reduce', phase: 'Reduce', effort: 'medium', schema: ROOT_CAUSE_SCHEMA })
 
 pushLedger('task_close', { phase: 'Reduce', confidence: result ? result.confidence : 'low' })
 await flushLedger('Reduce')
