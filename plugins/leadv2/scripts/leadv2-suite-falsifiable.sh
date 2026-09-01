@@ -48,7 +48,18 @@ fi
 SUITE_ABS="$(cd "$(dirname "${SUITE}")" && pwd)/$(basename "${SUITE}")"
 SUITE_DIR="$(dirname "${SUITE_ABS}")"
 
-TIMEOUT_S="${LEADV2_SUITE_FALSIFIABLE_TIMEOUT:-60}"
+# PPC-G1: default was 60s. BEAT-LOOP-ORPHANS-01 measured a 22-case suite
+# taking 71s wall-clock under concurrent-lane load (53 orphaned beat/pulse
+# loops driving load average to 244), which killed this watchdog mid-baseline
+# and produced a false "could_not_determine — suite timed out" verdict for a
+# suite that was never given a real chance to run (RESUME-LANE-ACCEPTS-PATH-01
+# blocked on it). This checker runs the wrapped suite up to 4 times
+# sequentially (baseline + 3 injection probes), so a single generous constant
+# — not a per-run scaling factor — is the right lever: 180s gives >2x margin
+# over the observed 71s without weakening the actual falsifiability logic
+# below (the mutation/injection checks are untouched). Callers who need a
+# different budget still override via LEADV2_SUITE_FALSIFIABLE_TIMEOUT.
+TIMEOUT_S="${LEADV2_SUITE_FALSIFIABLE_TIMEOUT:-180}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-falsify.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 SHIM_DIR="${WORK}/shims"
