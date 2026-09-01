@@ -250,6 +250,7 @@ export E2E_JOURNAL_LOG
 e2e_setup() {
   : > "${E2E_JOURNAL_LOG}"
   export LEADV2_PROJECT_ROOT="${E2E_REPO}"
+  export CLAUDE_PROJECT_ROOT="${E2E_REPO}"
   export CLAUDE_PROJECT_DIR="${E2E_REPO}"
   export LEADV2_DISPATCH_CACHE_DIR="${E2E_CACHE}"
   export LEADV2_STATE_BASE="${E2E_STATE}"
@@ -270,8 +271,19 @@ e2e_setup() {
   # switch documented at leadv2-dispatch-code.sh's _wait_arm_early_verdict already
   # exists for exactly this: skip the poll entirely.
   export LEADV2_ARM_EARLY_VERDICT_S=0
-  unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA 2>/dev/null || true
+  # Parent lead sessions export these control-plane identities.  They must not
+  # redirect this fixture into a real lane or register it under the live task.
+  unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA LEADV2_LANE_WORK_ROOT \
+        LEADV2_WORKTREE_DIR LEADV2_TASK_ID LEADV2_PARENT_SESSION_ID \
+        LEADV2_DISPATCH_LANE_NAME 2>/dev/null || true
   mkdir -p "${E2E_STUB_RUNS}"
+}
+
+# The dispatcher rejects an intentionally foreign project root by default.  Run
+# every E2E dispatch from the fixture repository so its control-plane writes
+# stay inside the fixture and the normal production guard remains enabled.
+e2e_dispatch() {
+  ( cd "${E2E_REPO}" && bash "${DISPATCH_BIN}" --worktree "${E2E_REPO}" "$@" )
 }
 
 # Sentinel: at least one spawn file exists for this case
@@ -289,7 +301,7 @@ MISSION_G1="PPC-G1: fix the integration test harness timeout"
 SIG_G1="$(printf '%s' "${MISSION_G1}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print $1}')"
 SIG8_G1="${SIG_G1:0:8}"
 rc_g1=0
-bash "$DISPATCH_BIN" --kind tooling "$MISSION_G1" >/dev/null 2>&1 || rc_g1=$?
+e2e_dispatch --kind tooling "$MISSION_G1" >/dev/null 2>&1 || rc_g1=$?
 if grep -q 'phase_precondition_warn' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
   ok
 else
@@ -310,7 +322,7 @@ mkdir -p "${E2E_STUB_RUNS}"
 export LEADV2_REQUIRE_PHASES=1
 MISSION_G2="PPC-G2: fix the integration test harness failure"
 rc_g2=0
-bash "$DISPATCH_BIN" --kind tooling "$MISSION_G2" >/dev/null 2>&1 || rc_g2=$?
+e2e_dispatch --kind tooling "$MISSION_G2" >/dev/null 2>&1 || rc_g2=$?
 if [[ $rc_g2 -eq 3 ]]; then
   ok
 else
@@ -336,7 +348,7 @@ mkdir -p "${E2E_STUB_RUNS}"
 export LEADV2_REQUIRE_PHASES=0
 MISSION_G3="PPC-G3: fix the integration test harness signal"
 rc_g3=0
-bash "$DISPATCH_BIN" --kind tooling "$MISSION_G3" >/dev/null 2>&1 || rc_g3=$?
+e2e_dispatch --kind tooling "$MISSION_G3" >/dev/null 2>&1 || rc_g3=$?
 if ! grep -q 'phase_precondition_warn' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
   ok
 else
@@ -362,7 +374,7 @@ for mode in unset 1; do
   else unset LEADV2_REQUIRE_PHASES; fi
   MISSION_G4="PPC-G4-${mode}: fix the integration test harness registry"
   rc_g4=0
-  bash "$DISPATCH_BIN" --kind tooling --phase-waiver "review=x" "$MISSION_G4" >/dev/null 2>&1 || rc_g4=$?
+  e2e_dispatch --kind tooling --phase-waiver "review=x" "$MISSION_G4" >/dev/null 2>&1 || rc_g4=$?
   if [[ $rc_g4 -ne 0 ]]; then
     ok
   else
@@ -797,7 +809,7 @@ class_overrides:
 YEOF
 MISSION_G8="PPC-G8: fix the integration test harness timeout"
 rc_g8=0
-bash "$DISPATCH_BIN" --kind tooling --phase-waiver "review=whatever" "$MISSION_G8" >/dev/null 2>&1 || rc_g8=$?
+e2e_dispatch --kind tooling --phase-waiver "review=whatever" "$MISSION_G8" >/dev/null 2>&1 || rc_g8=$?
 # With B2: mode 0 returns immediately, never processes the config error or waiver
 if ! grep -q 'phase_precondition_' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
   ok
@@ -950,7 +962,7 @@ MISSION_G11="PPC-G11: fix the integration test harness timeout"
 # G11a: warn mode → journals unexpected_rc + PROCEEDS
 export LEADV2_REQUIRE_PHASES=warn
 rc_g11a=0
-bash "$DISPATCH_BIN" --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11a=$?
+e2e_dispatch --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11a=$?
 if [[ -n "$(ls -A "${E2E_STUB_RUNS_G11}" 2>/dev/null)" ]]; then
   ok
 else
@@ -971,7 +983,7 @@ printf 'version: 1\n' > "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
 export LEADV2_PHASE_RECORD_BIN="$G11_PR"
 export LEADV2_REQUIRE_PHASES=1
 rc_g11b=0
-bash "$DISPATCH_BIN" --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11b=$?
+e2e_dispatch --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11b=$?
 if [[ $rc_g11b -ne 0 ]]; then
   ok
 else
