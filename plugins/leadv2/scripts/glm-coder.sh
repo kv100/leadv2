@@ -359,7 +359,7 @@ run_claude() {
     export ANTHROPIC_AUTH_TOKEN="${ZAI_AUTH_TOKEN}"
     export ANTHROPIC_DEFAULT_OPUS_MODEL="${GLM_MODEL}"
     export ANTHROPIC_DEFAULT_SONNET_MODEL="${GLM_MODEL}"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5.3-flash"   # GLM-47-BAN-01: 4.5-air was silently routed to GLM-4.7 by Z.AI; only 5.3 / 5.3-flash allowed
     export DISABLE_MODEL_AVAILABILITY_CHECK=1
     export API_TIMEOUT_MS=3000000
     local -a spawn_args=(-p "${resolved_prompt}" \
@@ -1165,7 +1165,7 @@ cmd_run_child() {
   export ZAI_AUTH_TOKEN
   export ANTHROPIC_DEFAULT_OPUS_MODEL="${GLM_MODEL}"
   export ANTHROPIC_DEFAULT_SONNET_MODEL="${GLM_MODEL}"
-  export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5.3-flash"   # GLM-47-BAN-01: 4.5-air was silently routed to GLM-4.7 by Z.AI; only 5.3 / 5.3-flash allowed
   export DISABLE_MODEL_AVAILABILITY_CHECK=1
   export API_TIMEOUT_MS=3000000
 
