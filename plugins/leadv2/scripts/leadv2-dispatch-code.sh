@@ -4996,7 +4996,15 @@ _spawn_worker_body() {
         log_err "spawn(${arm}) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
-      handle="$(printf '%s\n' "${out}" | tail -1)"
+      # Extract handle from glm-coder.sh output: format is "$RUNS/$handle$handle"
+      # Remove trailing newline
+      local _glm_out="${out%$'\n'}"
+      # Get everything after the last slash
+      local _glm_temp="${_glm_out##*/}"
+      # Extract first half (since it's handle+handle)
+      local _glm_len=${#_glm_temp}
+      local _glm_half=$((_glm_len / 2))
+      handle="${_glm_temp:0:_glm_half}"
       # FIX PASS 2 (Finding 2, fake-launcher/empty-handle no-op): a launcher that exits
       # 0 without spawning anything (e.g. LEADV2_DISPATCH_GLM_BIN=/bin/true) must not be
       # treated as a live worker.
@@ -5042,7 +5050,15 @@ _spawn_worker_body() {
         log_err "spawn(kimi) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
-      handle="$(printf '%s\n' "${out}" | tail -1)"
+      # Extract handle from kimi-coder.sh output: format is "$RUNS/$handle$handle"
+      # Remove trailing newline
+      local _kimi_out="${out%$'\n'}"
+      # Get everything after the last slash
+      local _kimi_temp="${_kimi_out##*/}"
+      # Extract first half (since it's handle+handle)
+      local _kimi_len=${#_kimi_temp}
+      local _kimi_half=$((_kimi_len / 2))
+      handle="${_kimi_temp:0:_kimi_half}"
       if [[ -z "${handle}" ]]; then
         emit decision "spawn_failed by=router model=kimi task=${sig8} reason=empty_handle"
         log_err "spawn(kimi) returned an empty handle -- treating as launch failure (no-op launcher?)"
@@ -5259,7 +5275,7 @@ _spawn_worker_body() {
         # stderr line (codex-task.sh's own error, e.g. "unknown --tier: spark")
         # rides along as detail=.
         local _codex_err_detail
-        _codex_err_detail="$(printf '%s\n' "${err}" "${out}" | grep -m1 -E 'ERROR|unknown|REFUSED|failed' | tr -d '\n' | cut -c1-160)"
+        _codex_err_detail="$(printf '%s\n' "${err}" "${out}" | grep -m1 -E -i 'error|unknown|refused|failed' | tr -d '\n' | cut -c1-160)"
         emit decision "spawn_failed by=router model=codex task=${sig8} rc=${rc} reason=launcher_nonzero_exit detail=${_codex_err_detail:-<launcher-stderr-empty>}"
         log_err "spawn(codex) failed rc=${rc}: ${out} ${err}"
         return 1
