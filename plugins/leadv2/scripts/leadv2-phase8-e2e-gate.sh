@@ -37,6 +37,13 @@ _lv2_load_paths
 # resolution, not two.
 # shellcheck source=lib/leadv2-e2e-root.sh
 source "${SCRIPT_DIR}/lib/leadv2-e2e-root.sh"
+# PPC-G8: the e2e suite run below (line ~173) previously had no deadline --
+# a hung suite blocked this gate (and the flock held above) forever. Reuse
+# the same portable timeout wrapper leadv2-builder-selfcheck.sh already uses
+# (macOS ships neither gtimeout nor timeout(1); the fallback is a
+# process-group sleep+kill watcher reporting 124 like timeout(1) would).
+# shellcheck source=lib/leadv2-builder-selfcheck.sh
+source "${SCRIPT_DIR}/lib/leadv2-builder-selfcheck.sh"
 cd "$PROJECT_ROOT"
 
 TASK_ID="${1:-${LEADV2_TASK_ID:-}}"
@@ -170,7 +177,11 @@ if ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_p8_e2e_root}")
   rm -f "$SENTINEL"
   exit 1
 fi
-{ printf 'e2e-root: %s\n' "${_p8_e2e_root}"; ( cd "${_p8_e2e_root}" && bash -c "${e2e_cmd} --scope changed" ); } > "$LOG" 2>&1 || rc=$?
+E2E_TIMEOUT_S="${LEADV2_PHASE8_E2E_TIMEOUT_S:-900}"
+{ printf 'e2e-root: %s\n' "${_p8_e2e_root}"; ( cd "${_p8_e2e_root}" && _lv2_selfcheck_timeout_run "${E2E_TIMEOUT_S}" /dev/stdout -- bash -c "${e2e_cmd} --scope changed" ); } > "$LOG" 2>&1 || rc=$?
+if [[ $rc -eq 124 ]]; then
+  echo "leadv2-phase8-e2e-gate: e2e suite TIMED OUT after ${E2E_TIMEOUT_S}s" >> "$LOG"
+fi
 
 # GATE-FOREIGN-FAILURE-01: resolves the lane's own write set itself (this
 # path has no LEADV2_DISPATCH_LANE_WRITES export -- it is standalone-
