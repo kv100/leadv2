@@ -377,7 +377,11 @@ if [[ -n "${_LV2_ENV_ROOT}" ]]; then
         done
         if [[ -n "${_LV2_PIN_VALUE}" ]]; then
           if [[ "${_LV2_PIN_FLAG}" == "--resume-lane" ]]; then
-            _LV2_PIN_CANDIDATE="${LEADV2_WORKTREE_DIR:-${_LV2_ENV_GIT_ROOT}/.claude/worktrees}/${_LV2_PIN_VALUE}"
+            if [[ "${_LV2_PIN_VALUE}" == /* ]]; then
+              _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
+            else
+              _LV2_PIN_CANDIDATE="${LEADV2_WORKTREE_DIR:-${_LV2_ENV_GIT_ROOT}/.claude/worktrees}/${_LV2_PIN_VALUE}"
+            fi
           else
             _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
           fi
@@ -392,7 +396,33 @@ if [[ -n "${_LV2_ENV_ROOT}" ]]; then
           # safe control-plane root for journals and ledgers.
           PROJECT_ROOT="${_LV2_PINNED_ROOT}"
         else
-          echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
+          if [[ -n "${_LV2_PIN_VALUE}" ]]; then
+          if [[ "${_LV2_PIN_FLAG}" == "--resume-lane" ]]; then
+            if [[ "${_LV2_PIN_VALUE}" == /* ]]; then
+              _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
+            else
+              _LV2_PIN_CANDIDATE="${LEADV2_WORKTREE_DIR:-${_LV2_ENV_GIT_ROOT}/.claude/worktrees}/${_LV2_PIN_VALUE}"
+            fi
+          else
+            _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
+          fi
+
+          if [[ -n "${_LV2_PINNED_ROOT}" && -n "${_LV2_ENV_PHYSICAL_ROOT}" ]] && \
+                { _lv2_path_contains "${_LV2_ENV_PHYSICAL_ROOT}" "${_LV2_PINNED_ROOT}" || \
+                  _lv2_path_contains "${_LV2_PINNED_ROOT}" "${_LV2_ENV_PHYSICAL_ROOT}"; }; then
+            # An explicit pin proven to be in/around the physical env root wins
+            # over the unrelated cwd.  Canonicalise PROJECT_ROOT to the pin's
+            # owning repository: a parent/child env spelling is not itself a
+            # safe control-plane root for journals and ledgers.
+            PROJECT_ROOT="${_LV2_PINNED_ROOT}"
+          else
+            echo "[leadv2-dispatch-code] ERROR: lane_placement_refused reason=no_lane_worktree_for_ref" >&2
+            echo "  looked_for=${_LV2_PIN_CANDIDATE}" >&2
+            echo "  accepted_shapes: bare_lane_name | absolute_worktree_path" >&2
+            echo "  given: ${_LV2_PIN_VALUE}" >&2
+            exit 1
+          fi
+        fi
           PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
           _LV2_FOREIGN_ROOT_ENV="${_LV2_ENV_GIT_ROOT}"
           _LV2_FOREIGN_ROOT_CWD="${_LV2_CWD_GIT_ROOT}"
