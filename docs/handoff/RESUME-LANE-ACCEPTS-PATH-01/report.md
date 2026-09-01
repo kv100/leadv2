@@ -228,3 +228,13 @@ suite back to 40/0 green.
 
 Self-check: `bash -n leadv2-dispatch-code.sh` and `bash -n
 test-resume-lane-arg-shapes.sh` both clean.
+
+## Round 4 concurrent-edit note
+Another live process edited `_lv2_is_lane_worktree_path` and the test file mid-session
+(the same pattern seen in round 3): it landed a simplified version of the same fix —
+pure `cand_phys == wt_phys` path equality, dropping the `basename == id` check as
+redundant once identity is proven by path — and independently added the A9 test with a
+comment, duplicating the assertion line. Verified the simplification is still correct
+(path equality alone uniquely identifies the linked worktree; basename added nothing),
+deduped the doubled `refuse_ok "A9"` line, re-ran the full suite and mutation control
+against the merged state: 40/0 green, commit `66b2dbe`.
