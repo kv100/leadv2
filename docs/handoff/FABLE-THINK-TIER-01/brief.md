@@ -47,6 +47,11 @@ build arms, haiku reads) do not change. Sonnet stays the Standard critic.
    Mutation negative control (RUN it, paste the red): hardwire `echo opus` in `think_model()` → (a) red.
    Register the suite in `tests/run-all.sh`.
 
+8. **Opus means Opus 5, never 4.8** (founder 2026-09-01). `scripts/leadv2-cache-warm.sh:104` pins
+   `claude-opus-4-8` → `claude-opus-5`. Grep-gate in the suite: zero `opus-4` literals anywhere under
+   `plugins/leadv2/{scripts,config,ref,workflows,hooks}`. Wherever a bare `opus` alias is passed to
+   `claude --model`, leave the alias (it resolves to the newest Opus); only explicit IDs change.
+
 ## Do NOT
 - Change developer/sonnet lanes, GLM/Codex/Kimi arms, or haiku read roles.
 - Add a quota bucket for fable.
