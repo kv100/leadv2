@@ -704,6 +704,16 @@ if [[ -f "${_ADMISSION_CLASS_SH}" ]]; then
   # shellcheck disable=SC1091
   source "${_ADMISSION_CLASS_SH}" || true
 fi
+# BRAIN-CLASS-LIVE-01: class_escalated/class_floor_held journal vocabulary +
+# docs/handoff/<task>/brain.yaml, layered on top of the admission class map
+# above (does not change what class is computed, only makes the decision
+# loud and durable across re-entries).
+_BRAIN_RECORD_SH="${SCRIPT_DIR}/lib/leadv2-brain-record.sh"
+[[ -f "${_BRAIN_RECORD_SH}" ]] || _BRAIN_RECORD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-brain-record.sh"
+if [[ -f "${_BRAIN_RECORD_SH}" ]]; then
+  # shellcheck disable=SC1091
+  source "${_BRAIN_RECORD_SH}" || true
+fi
 # B1 R2: record-review refuses a build worker minting a review of ITS OWN diff from
 # inside a lane worktree (self-attestation). Set to 0 to disable the check (emergency escape).
 REVIEW_RECORDER_GUARD="${LEADV2_REVIEW_RECORDER_GUARD:-1}"
@@ -3715,6 +3725,16 @@ _admission_classify() {
   local task_floor=""
   if [[ -n "${founder_task_id:-}" ]]; then
     task_floor="$(leadv2_admission_read_task_receipt "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
+    # BRAIN-CLASS-LIVE-01 D3: brain.yaml (when a prior intake already wrote
+    # one for this task) is read here too, and only ever RAISES the floor --
+    # never overrides a higher task-class.yaml floor set by something else.
+    local _brain_floor
+    _brain_floor="$(leadv2_brain_read_class "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
+    if [[ -n "${_brain_floor}" ]]; then
+      if [[ -z "${task_floor}" ]] || (( $(_lv2_class_rank "${_brain_floor}") > $(_lv2_class_rank "${task_floor}") )); then
+        task_floor="${_brain_floor}"
+      fi
+    fi
   fi
   local existing
   existing="$(leadv2_admission_read_receipt "${PROJECT_ROOT}" "${sig8}" 2>/dev/null || true)"
@@ -3759,7 +3779,23 @@ _admission_classify() {
   else
     # task-judge failed outright (missing binary, rc!=0, unparseable): the
     # conservative class is Standard -> phases, never bare dispatch.
-    ADMISSION_CLASS="Standard"; ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
+    # BRAIN-CLASS-LIVE-01: Standard is a MINIMUM here, not a hardcoded
+    # answer -- a lead that already typed --task-class Heavy/Strategic must
+    # never be silently downgraded to Standard just because the judge died.
+    # (Round-1 defect: before this fix, judge failure discarded `explicit`
+    # entirely and this branch ALWAYS won, de-escalating any declared class
+    # above Standard -- exactly the "declared class is a floor" invariant
+    # this lane exists to hold, and exactly why leadv2-brain-record.sh labels
+    # this class_source=declared_fallback rather than classifier_error's
+    # historical "Standard, no exceptions" meaning.)
+    local _judge_fail_floor
+    _judge_fail_floor="$(_lv2_class_canonical "${explicit}")"
+    if (( $(_lv2_class_rank "${_judge_fail_floor}") > $(_lv2_class_rank "Standard") )); then
+      ADMISSION_CLASS="${_judge_fail_floor}"
+    else
+      ADMISSION_CLASS="Standard"
+    fi
+    ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
   fi
   if [[ -n "${task_floor}" ]] && (( $(_lv2_class_rank "${task_floor}") > $(_lv2_class_rank "${ADMISSION_CLASS}") )); then
     ADMISSION_CLASS="${task_floor}"; ADMISSION_SOURCE="task_record"
@@ -3774,6 +3810,16 @@ _admission_classify() {
     "${ADMISSION_WORK_KIND:-unknown}" 2>/dev/null \
     || emit decision "admission_receipt_write_failed task=${sig8}"
   emit decision "task_class=${ADMISSION_CLASS} route=${ADMISSION_ROUTE} source=${ADMISSION_SOURCE} task=${sig8}"
+  # BRAIN-CLASS-LIVE-01: class_escalated/class_floor_held + the single
+  # brain_decision line + brain.yaml, ONLY on a fresh intake (the same-digest
+  # re-entry branch above already returned -- one decision record per task,
+  # not one per re-entry). Best-effort: a brain-record failure never refuses
+  # a dispatch that the admission map above already approved.
+  if declare -F leadv2_brain_record >/dev/null 2>&1; then
+    leadv2_brain_record "${PROJECT_ROOT}" "${sig8}" "${receipt_task_id}" \
+      "${explicit}" "${flagged}" "${ADMISSION_CLASS}" "${ADMISSION_SOURCE}" \
+      "${estimate:-}" "${PHASE_RECORD_BIN}" "${lane_writes:-}" 2>/dev/null || true
+  fi
   return 0
 }
 
