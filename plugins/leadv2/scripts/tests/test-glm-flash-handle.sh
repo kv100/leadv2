@@ -123,12 +123,21 @@ if [[ -n "${handle}" ]]; then
 else
   fail "launcher: glm-5.3-flash bg printed an empty handle"
 fi
-if bash "${GLM_SCRIPT}" status "${handle}" >/dev/null 2>&1; then
+# Round-3 (critic Finding 2): status "" falls back to latest_run_id() inside
+# cmd_status (glm-coder.sh:1900-1909), silently resolving an unrelated real
+# run. An empty handle must FAIL here, never fall through to `status`, or
+# these two checks stay vacuously green on the exact defect class this suite
+# exists to catch (glm-coder.sh's bg echoing nothing).
+if [[ -z "${handle}" ]]; then
+  fail "launcher: status <handle> not run — handle empty, status \"\" would resolve latest_run_id() instead"
+elif bash "${GLM_SCRIPT}" status "${handle}" >/dev/null 2>&1; then
   pass "launcher: status <handle> true right after bg"
 else
   fail "launcher: status [${handle}] not live right after bg"
 fi
-if bash "${GLM_SCRIPT}" status "${handle}" 2>/dev/null | grep -q '^model: glm-5.3-flash$'; then
+if [[ -z "${handle}" ]]; then
+  fail "launcher: run record model check not run — handle empty, status \"\" would resolve latest_run_id() instead"
+elif bash "${GLM_SCRIPT}" status "${handle}" 2>/dev/null | grep -q '^model: glm-5.3-flash$'; then
   pass "launcher: run record names model glm-5.3-flash"
 else
   fail "launcher: meta model line wrong: $(bash "${GLM_SCRIPT}" status "${handle}" 2>/dev/null | grep '^model:' || echo '<none>')"
@@ -217,6 +226,45 @@ elif bash "${GLM_SCRIPT}" status "${spawn_handle}" >/dev/null 2>&1; then
   pass "dispatcher: status true on the journaled handle"
 else
   fail "dispatcher: status [${spawn_handle}] not live — handle did not survive the spawn path"
+fi
+
+# ── Mutation negative control (round 3, critic Finding 1): prove the
+# "empty bg echo" bug this suite is named for actually turns the suite RED,
+# from a COMMITTED, self-verifying, re-runnable block — never from an ad hoc
+# session. Mirrors test-glm-lock-per-lane.sh:216-250: copy GLM_SCRIPT to a
+# scratch file, mutate cmd_bg's final `echo "${run_id}"` (glm-coder.sh:1892)
+# to `echo ""`, VERIFY the mutation landed before trusting anything, then run
+# the suite's own launcher case against the scratch copy and assert RED.
+MUT_SCRIPT="${FIXTURE}/glm-coder.mutated.sh"
+cp "${GLM_SCRIPT}" "${MUT_SCRIPT}"
+python3 - "${MUT_SCRIPT}" <<'PYEOF'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+needle = '  echo "${run_id}"\n}\n\nlatest_run_id() {'
+replacement = '  echo ""\n}\n\nlatest_run_id() {'
+assert needle in src, "cmd_bg final echo not found -- fixture drifted from source"
+src = src.replace(needle, replacement, 1)
+open(path, 'w').write(src)
+PYEOF
+chmod +x "${MUT_SCRIPT}"
+# The mutation MUST be verified applied before the control asserts anything:
+# if python3 was missing/broken the heredoc above silently no-ops and the
+# "control" would judge an UNMUTATED copy — fail that loudly instead.
+if grep -Fq 'echo "${run_id}"' "${MUT_SCRIPT}" 2>/dev/null; then
+  fail "mutation_control: mutation NOT applied (python3 broken or needle drifted from source) — control invalid"
+elif ! grep -Fq '  echo ""' "${MUT_SCRIPT}" 2>/dev/null; then
+  fail "mutation_control: mutated echo line not found in scratch copy — control invalid"
+else
+  MUT_HANDLE="$(
+    GLM_MODEL=glm-5.3-flash GLM_TIMEOUT=5 \
+    bash "${MUT_SCRIPT}" bg "flash handle mutation probe" --cwd "${REPO}" 2>/dev/null | tail -1
+  )" || MUT_HANDLE=""
+  if [[ -z "${MUT_HANDLE}" ]]; then
+    pass "mutation_control_empty_bg_echo_yields_empty_handle (RED reproduced — confirms the suite's launcher case actually exercises the fix)"
+  else
+    fail "mutation_control_empty_bg_echo_yields_empty_handle: expected an empty handle from the mutated bg, got [${MUT_HANDLE}]"
+  fi
 fi
 
 printf -- '[TEST] %s: %d passed, %d failed\n' "test-glm-flash-handle" "${PASS}" "${FAIL}"
