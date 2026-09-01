@@ -145,6 +145,8 @@ hooks.json:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
 leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
+leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
+leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
 leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
