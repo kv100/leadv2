@@ -96,3 +96,15 @@ assertion weakened; the vacuous guard got STRICTER (a loop that never beats
 still fails, but a healthy slow loop no longer does). Two consecutive green
 runs after the fix: `14 passed, 0 failed`, `GREEN3_RC=0`, `GREEN4_RC=0`,
 zero `/tmp/leadv2-plugin-papercuts-*` leftovers from these runs.
+
+## Anomaly surfaced: foreign commits on this lane branch
+
+Between this session's merge (`00bfc2a`) and its commit (`39d66b3`), two
+commits NOT made by this lane appeared on `worktree-PLUGIN-PAPERCUTS-01`:
+`e4439eb` + `ded118c` (test isolation for the phase-precondition harness,
+plus still-dirty edits to `test-phase-precondition.sh` in this worktree's
+tree). Another live session is committing into this worktree's checked-out
+branch. This lane did not touch those files, did not revert or rewrite them,
+and left the dirty runtime files (`docs/leadv2/*`, active.yaml, bus.jsonl)
+alone — the owning session must reconcile them; merging this branch to main
+will carry the two commits.
