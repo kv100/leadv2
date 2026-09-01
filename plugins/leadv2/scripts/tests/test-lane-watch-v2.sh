@@ -38,15 +38,32 @@ age_touch() {
   touch -t "$(date -v-"${2}"M +%Y%m%d%H%M.%S)" "$1"
 }
 
-# new_fixture — fresh project + worktrees root + state dir + run-cache root.
-# Sets globals: FIXTURE_ROOT, FIXTURE_WT, FIXTURE_STATE, FIXTURE_CACHE.
+# set_birth PATH MINUTES_AGO — set PATH's st_birthtime MINUTES_AGO in the
+# past. `touch` cannot do this on macOS (it only sets mtime); SetFile -d can
+# — probed 2026-09-01: after `SetFile -d $(date -v-40M ...)` on a fresh dir,
+# `stat -f "birth=%B mtime=%m"` reported birth=now-2400 mtime=now. This is
+# the whole point of the round-2 acceptance-1 fixture (run dir born 40 minutes
+# ago, touched one second ago): a hung worker's run dir gets mtime-pinged by
+# its runner for hours after the worker died.
+set_birth() {
+  if [ ! -x /usr/bin/SetFile ]; then
+    fail "set_birth: /usr/bin/SetFile not available (macOS CLT required for birth-time fixtures)"
+    return 1
+  fi
+  /usr/bin/SetFile -d "$(date -v-"${2}"M '+%m/%d/%Y %H:%M:%S')" "$1"
+}
+
+# new_fixture — fresh project + worktrees root + state dir + run-cache root
+# + codex state root. Sets globals: FIXTURE_ROOT, FIXTURE_WT, FIXTURE_STATE,
+# FIXTURE_CACHE, FIXTURE_CODEX.
 new_fixture() {
   TMPROOT="$(mktemp -d)"
   FIXTURE_ROOT="$TMPROOT/project"
   FIXTURE_WT="$FIXTURE_ROOT/.claude/worktrees"
   FIXTURE_STATE="$TMPROOT/state"
   FIXTURE_CACHE="$TMPROOT/cache"
-  mkdir -p "$FIXTURE_ROOT/docs/leadv2" "$FIXTURE_WT" "$FIXTURE_STATE" "$FIXTURE_CACHE"
+  FIXTURE_CODEX="$TMPROOT/codex-state"
+  mkdir -p "$FIXTURE_ROOT/docs/leadv2" "$FIXTURE_WT" "$FIXTURE_STATE" "$FIXTURE_CACHE" "$FIXTURE_CODEX"
 }
 
 # make_lane LANE [AGE_MIN] — a worktree dir with a `.git` FILE (not dir, the
@@ -60,15 +77,45 @@ make_lane() {
   [ "$age" -gt 0 ] && age_touch "$FIXTURE_WT/$lane/file.txt" "$age"
 }
 
+# make_rundir ARM LANE BIRTH_MIN [NAME] — provider run directory born
+# BIRTH_MIN minutes ago, in the ARM's state root (glm|freepool under the
+# fixture cache, codex under the fixture codex-state root). Prints its path.
+make_rundir() {
+  local arm="$1" lane="$2" birth="$3" d
+  case "$arm" in
+    codex) d="$FIXTURE_CODEX/${lane}-14806a70f0cacf75" ;;
+    *)     d="$FIXTURE_CACHE/$arm-runs/dispatch-$lane-abc" ;;
+  esac
+  mkdir -p "$d" || return 1
+  set_birth "$d" "$birth" || return 1
+  printf '%s' "$d"
+}
+
 # once SESSION [ROOT] — run one check cycle with the fixture env wired in.
 once() {
   local session="$1" root="${2:-$FIXTURE_ROOT}"
   LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" \
   LEADV2_LANE_WATCH_RUN_ROOTS="$FIXTURE_CACHE" \
+  LEADV2_LANE_WATCH_CODEX_STATE="$FIXTURE_CODEX" \
   LANE_STALL_MIN="${T_STALL:-20}" \
   LANE_GRACE_MIN="${T_GRACE:-15}" \
   LANE_BEAT_MIN="${T_BEAT:-12}" \
     bash "$WATCH_SH" --once "$session" "$root"
+}
+
+# write_tasks STATUS_COUNT_PAIRS... — docs/tasks.yaml with rows
+# write_tasks queued:1 done:1 -> 1 queued row, 1 done row.
+write_tasks() {
+  {
+    printf 'tasks:\n'
+    local pair name n i
+    for pair in "$@"; do
+      name="${pair%%:*}"; n="${pair##*:}"
+      for (( i=0; i<n; i++ )); do
+        printf -- '- id: %s-%s\n  status: %s\n  title: row\n' "$name" "$i" "$name"
+      done
+    done
+  } > "$FIXTURE_ROOT/docs/tasks.yaml"
 }
 
 # ── case 1: stalled worktree reported once, not repeatedly ──────────────────
@@ -114,29 +161,33 @@ once() {
   fi
 }
 
-# ── case 4: non-GLM (codex) arm watched identically — no provider special-case ──
+# ── case 4: codex arm watched identically — its state lives in a DIFFERENT
+#    root than the *-runs cache, and the round-1 "*-runs" glob matched
+#    nothing there: probed 2026-09-01, a codex lane's state dir is
+#    ~/.claude/plugins/data/codex-openai-codex/state/<LANE>-<hash> (e.g.
+#    TESTS-POLLUTE-REAL-JOURNAL-01-14806a70f0cacf75), so a codex lane had no
+#    dispatch age and was "stalled" seconds after a healthy dispatch
+#    (measured on TESTS-POLLUTE-REAL-JOURNAL-01: alarm 2 min after dispatch).
 {
   new_fixture
   make_lane "LANE-D" 25
-  mkdir -p "$FIXTURE_CACHE/codex-runs/dispatch-LANE-D-abc"
-  age_touch "$FIXTURE_CACHE/codex-runs/dispatch-LANE-D-abc" 25   # stale dispatch too -> past grace
+  make_rundir codex LANE-D 40 >/dev/null          # dispatched 40m ago -> past grace
   out="$(once sessD)"
   if [[ "$out" == *"LANE-STALL: LANE-D"* ]]; then
-    pass "case 4a: codex-arm lane (codex-runs, not glm-runs) reported when stale"
+    pass "case 4a: codex-arm lane (codex state root, not *-runs) reported when stale"
   else
     fail "case 4a: codex lane not reported, got out=[$out]"
   fi
 }
 {
   new_fixture
-  make_lane "LANE-E" 25
-  mkdir -p "$FIXTURE_CACHE/codex-runs/dispatch-LANE-E-abc"
-  age_touch "$FIXTURE_CACHE/codex-runs/dispatch-LANE-E-abc" 5    # fresh dispatch -> inside grace
+  make_lane "LANE-E" 999                          # ancient worktree
+  make_rundir codex LANE-E 1 >/dev/null           # dispatched 1m ago -> inside grace
   out="$(once sessE)"
   if [[ "$out" != *"LANE-STALL"* ]]; then
-    pass "case 4b: codex-arm lane honours the grace period identically to a glm-arm lane"
+    pass "case 4b: codex lane dispatched 1m ago is NOT reported (round-2 acceptance 2)"
   else
-    fail "case 4b: expected grace to suppress, got out=[$out]"
+    fail "case 4b: codex grace did not suppress, got out=[$out]"
   fi
 }
 
@@ -264,6 +315,94 @@ once() {
     pass "run-all.sh: EXTRA_SUITE_MAP carries a row for leadv2-lane-watch-v2"
   else
     fail "run-all.sh: no EXTRA_SUITE_MAP row found for leadv2-lane-watch-v2"
+  fi
+}
+
+# ── round-2 acceptance 1: run dir BORN 40m ago, TOUCHED 1s ago, worktree
+#    quiet 30m ⇒ REPORTED. Round 1 read the grace window from mtime, and a
+#    runner mtime-pings its run dir for hours after the worker died, so the
+#    grace never expired and this exact case was silent (lead measured a lane
+#    23 min past STALE_MIN before a human noticed via the heartbeat).
+#    touch sets only mtime — birth stays at mkdir — so the fixture needs
+#    SetFile -d to backdate the birth (see set_birth).
+{
+  new_fixture
+  make_lane "LANE-R1" 30
+  d="$(make_rundir glm LANE-R1 40)"
+  touch "$d"                                      # mtime NOW, birth still 40m ago
+  out="$(once sessR1)"
+  if [[ "$out" == *"LANE-STALL: LANE-R1"* ]]; then
+    pass "case r2-1: mtime-pinged run dir does not keep grace alive (birth-based dispatch age)"
+  else
+    fail "case r2-1: expected REPORT (born 40m, touched 1s, worktree 30m), got out=[$out]"
+  fi
+}
+
+# ── round-2 acceptance 3: worktree quiet 30m, provider dir producing 1m ago
+#    ⇒ NOT reported. A worker reading and planning writes its provider run
+#    dir while touching no worktree file — reporting that is the false alarm
+#    that makes a watcher get ignored.
+{
+  new_fixture
+  make_lane "LANE-R3" 30
+  d="$(make_rundir glm LANE-R3 30)"
+  printf 'worker output\n' > "$d/journal.jsonl"
+  age_touch "$d/journal.jsonl" 1                  # produced 1m ago
+  out="$(once sessR3)"
+  if [[ "$out" != *"LANE-STALL"* ]]; then
+    pass "case r2-3: fresh provider output suppresses the stall (both-signal rule)"
+  else
+    fail "case r2-3: expected silence (provider produced 1m ago), got out=[$out]"
+  fi
+}
+
+# ── round-2 acceptance 4: both signals quiet 30m ⇒ reported, with BOTH
+#    numbers in the text — that is what makes it actionable.
+{
+  new_fixture
+  make_lane "LANE-R4" 30
+  make_rundir glm LANE-R4 30 >/dev/null           # born 30m, empty -> output = birth
+  out="$(once sessR4)"
+  if [[ "$out" == *"LANE-STALL: LANE-R4 — worktree untouched 30m, provider output 30m"* ]]; then
+    pass "case r2-4: both-quiet stall reported with both numbers"
+  else
+    fail "case r2-4: expected both-numbers stall text, got out=[$out]"
+  fi
+}
+
+# ── round-2 acceptance 5/6 + dedup: zero live lanes + open tasks ⇒ LANE-IDLE;
+#    no open tasks ⇒ silent; count change ⇒ re-report; live lane ⇒ clear.
+{
+  new_fixture
+  write_tasks queued:1
+  out1="$(once sessR5)"
+  out2="$(once sessR5)"
+  write_tasks queued:2
+  out3="$(once sessR5)"
+  if [[ "$out1" == *"LANE-IDLE: no live lane, 1 task(s) queued"* \
+        && "$out2" != *"LANE-IDLE"* \
+        && "$out3" == *"LANE-IDLE: no live lane, 2 task(s) queued"* ]]; then
+    pass "case r2-5: LANE-IDLE emitted once per queued-count, re-emitted when it changes"
+  else
+    fail "case r2-5: out1=[$out1] out2=[$out2] out3=[$out3]"
+  fi
+
+  write_tasks done:2
+  out4="$(once sessR5)"
+  if [[ "$out4" != *"LANE-IDLE"* ]]; then
+    pass "case r2-6: zero live lanes but zero open tasks stays silent"
+  else
+    fail "case r2-6: LANE-IDLE fired with no open rows, got out4=[$out4]"
+  fi
+
+  new_fixture
+  write_tasks queued:1
+  make_lane "LANE-R7" 3                           # a live lane is working
+  out="$(once sessR7)"
+  if [[ "$out" != *"LANE-IDLE"* ]]; then
+    pass "case r2-7: queued work plus a live lane stays silent"
+  else
+    fail "case r2-7: LANE-IDLE fired despite a live lane, got out=[$out]"
   fi
 }
 
