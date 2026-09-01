@@ -218,3 +218,45 @@ committed. Prior sessions' raw outputs were not on disk; the outputs below are t
     LANE-PLACEMENT-01).
   `run-core-offline` (repo-wide, >10 min with its own documented baseline reds) was not re-run;
   every suite it would run that touches our seams is covered above.
+
+## Addendum (2026-09-01, post-salvage session — covers commit 85a5951, correctness previously unasserted)
+
+The 95-line salvage commit (worker hung mid-write) added the **watcher owner
+stamp** — defect 1's census constraint: a watcher's argv is the only thing
+identifying who owns it, so `leadv2-pulse-beat.sh --check` now stamps
+`--owner=<repo>:<lane>` into the spawned detached watcher's argv
+(`_beat_owner_tag()` derives repo from PROJECT_ROOT + lane from the checked-out
+branch; an explicit `--owner=` arg or `LEADV2_BEAT_OWNER_TAG` wins and is
+charset-guarded). This session verified it from scratch:
+
+- `bash -n` leadv2-pulse-beat.sh + test-plugin-papercuts.sh: OK. No Python
+  changed.
+- Suite GREEN on the salvaged tree: `test-plugin-papercuts: 13 passed,
+  0 failed` (P8 + P8b new), zero `/tmp/leadv2-plugin-papercuts-*` leftovers
+  after the run.
+- **Second negative control (this session): P8 owner-stamp derivation.**
+  Production mutation on the real spawn path — `_beat_owner_tag()`'s derived
+  `printf '%s:%s' "$_repo" "$_lane"` → `printf '%s' "$_repo"` in
+  leadv2-pulse-beat.sh (lane dropped from the stamp):
+  ```
+  RED:   [TEST] FAIL: P8: watcher spawn must carry --owner=<repo>:<lane>;
+         spawn.log=…setsid [nohup][bash][…leadv2-pulse-beat.sh][--now][--owner=p8-repo]
+         test-plugin-papercuts: 12 passed, 1 failed
+         RED_SUITE_RC=1
+  ```
+  Reverted via `git checkout --`; md5 `b86cb74e20774d216df003648305dbad`
+  identical before mutation and after revert. (P8b still passes under this
+  mutation — the explicit caller pin path is separate code, as intended.)
+- **EXTRA_SUITE_MAP row added**: the salvage changed production
+  `leadv2-pulse-beat.sh`, but run-all.sh had no row mapping it to any suite, so
+  `--scope changed` would have silently dropped it. Added
+  `leadv2-pulse-beat.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh`.
+  Selection proven with the real selection code, executor stubbed
+  (`bash "${suite}"` → `true`), pulse-beat dirty with a one-line marker:
+  - with the row: `run-all: 5 passed, 0 failed, scope=changed` —
+    `[RUN] …test-plugin-papercuts.sh` among them;
+  - with the pre-row HEAD version of run-all.sh: `4 passed` and **zero**
+    `[RUN] …test-plugin-papercuts` lines ⇒ the new row is the load-bearing
+    edge.
+  Probe copy removed afterwards; `leadv2-pulse-beat.sh` reverted byte-exact
+  (md5 `b86cb74e…`), `git status` on it clean.
