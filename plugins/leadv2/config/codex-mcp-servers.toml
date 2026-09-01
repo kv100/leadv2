@@ -1,0 +1,24 @@
+# WORKER-MCP-ALL-ARMS-01: plugin-owned allowlist of code-intel MCP server
+# NAMES for Codex arms — mirrors config/mcp-role-default.json (Claude-CLI
+# arms), never a baked definition. Definitions (command/args) are per-repo
+# (repowise is registered with a repo-specific path; codebase-memory-mcp is
+# hard-pinned per machine in ~/.claude/settings.json) and must be resolved
+# live from .mcp.json / .claude/settings.json at spawn time, the same
+# resolve_role_mcp_config() every other arm uses — never edit
+# ~/.codex/config.toml.
+#
+# STATUS (2026-09-02): Codex's actual worker spawn is codex-task.sh ->
+# `node "$COMPANION"` where $COMPANION resolves to
+# ~/.claude/plugins/cache/openai-codex/**/scripts/codex-companion.mjs — a
+# third-party plugin runtime OUTSIDE this repo and outside this lane's
+# LANE_WRITES. It owns the app-server session/config construction; there is
+# no --mcp-config-equivalent flag or env passthrough for MCP servers on that
+# path today (verified: `codex exec --help` on this machine offers only
+# `-c key=value` overrides and `-p/--profile`, neither of which the
+# companion forwards). Wiring live MCP injection into Codex arms therefore
+# requires a companion-side (or app-server session param) change that is out
+# of scope for this task — filed as a follow-up rather than attempted here.
+# This file stands as the documented target allowlist for that follow-up.
+
+[servers]
+names = ["codebase-memory-mcp", "repowise"]

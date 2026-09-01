@@ -123,6 +123,63 @@ readonly KIMI_PROBE_FAIL_EXIT_CODE="${KIMI_PROBE_FAIL_EXIT_CODE:-77}"
 readonly KIMI_CLAUDE_BIN="${KIMI_CLAUDE_BIN:-claude}"
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
+# WORKER-MCP-ALL-ARMS-01: role-scoped MCP for dispatched kimi workers, same
+# resolver glm-coder.sh/claude-subsession.sh use (lib/leadv2-worker-mcp.sh)
+# — never a second implementation. Gate: LEADV2_WORKER_MCP (default 1; =0
+# restores the pre-existing spawn line with no --mcp-config). Role:
+# LEADV2_WORKER_ROLE (default developer). Fail-open on every failure — see
+# worker_mcp_resolve() below. Symlink-chain fallback mirrors glm-coder.sh F1.
+_WORKER_MCP_LIB="${SELF%/*}/lib/leadv2-worker-mcp.sh"
+if [[ ! -f "${_WORKER_MCP_LIB}" ]]; then
+  _kimi_canonical_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+  if [[ -f "${_kimi_canonical_self%/*}/lib/leadv2-worker-mcp.sh" ]]; then
+    _WORKER_MCP_LIB="${_kimi_canonical_self%/*}/lib/leadv2-worker-mcp.sh"
+  fi
+fi
+readonly WORKER_MCP_LIB="${_WORKER_MCP_LIB}"
+if [[ -f "${WORKER_MCP_LIB}" ]]; then
+  # shellcheck disable=SC1090
+  source "${WORKER_MCP_LIB}"
+  readonly _WORKER_MCP_LIB_PRESENT=1
+else
+  readonly _WORKER_MCP_LIB_PRESENT=0
+fi
+
+worker_mcp_journal() { # $1=journal-file-or-empty $2=message
+  local line
+  line="[$(date '+%Y-%m-%d %H:%M:%S')] $2"
+  if [[ -n "$1" ]]; then
+    printf '%s\n' "$line" >> "$1" 2>/dev/null || echo "$line" >&2
+  else
+    echo "$line" >&2
+  fi
+}
+
+worker_mcp_resolve() { # $1=project root (worker cwd) $2=journal file $3=out dir for resolved json
+  local project_root="$1" journal_file="$2" out_dir="$3"
+  local role="${LEADV2_WORKER_ROLE:-developer}"
+  [[ "${role}" =~ ^[a-z0-9-]+$ ]] || role="developer"
+
+  if [[ "${LEADV2_WORKER_MCP:-1}" != "1" ]]; then
+    worker_mcp_journal "${journal_file}" "worker_mcp_skipped reason=disabled"
+    return 1
+  fi
+  if [[ "${_WORKER_MCP_LIB_PRESENT}" != "1" ]]; then
+    worker_mcp_journal "${journal_file}" "worker_mcp_skipped reason=lib_missing"
+    return 1
+  fi
+
+  local mcp_cfg="" rc=0
+  mcp_cfg="$(resolve_role_mcp_config "${role}" "${out_dir}" "${project_root}")" || rc=$?
+  if [[ $rc -ne 0 || -z "${mcp_cfg}" ]]; then
+    worker_mcp_journal "${journal_file}" "worker_mcp_skipped reason=resolve_rc_${rc}"
+    return 1
+  fi
+  worker_mcp_journal "${journal_file}" "worker_mcp_attached config=$(basename "${mcp_cfg}") role=${role}"
+  printf '%s' "${mcp_cfg}"
+  return 0
+}
+
 # FINISH GUARD (2026-07-03): appended to every real mission prompt (cmd_bg and
 # cmd_run — never cmd_test) so the model is told, at the prompt level, not to
 # end a run with work parked only in a stash or with no final report. The
@@ -297,6 +354,10 @@ run_claude() {
     resolved_prompt="${AGENT_BAN_PREAMBLE}${resolved_prompt}${FINISH_CONTRACT_TRAILER}"
   fi
 
+  local mcp_cfg="" mcp_out_dir
+  mcp_out_dir="$(mktemp -d "${TMPDIR:-/tmp}/kimi-worker-mcp.XXXXXX")"
+  mcp_cfg="$(worker_mcp_resolve "${cwd_dir}" "" "${mcp_out_dir}")" || true
+
   local exit_code=0
   (
     cd "${cwd_dir}"
@@ -307,11 +368,16 @@ run_claude() {
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="${TOKENROUTER_MODEL}"
     export DISABLE_MODEL_AVAILABILITY_CHECK=1
     export API_TIMEOUT_MS=3000000
-    command "${KIMI_CLAUDE_BIN}" -p "${resolved_prompt}" \
+    local -a spawn_args=(-p "${resolved_prompt}" \
       --dangerously-skip-permissions \
       --disallowedTools "Agent" \
-      --model sonnet
+      --model sonnet)
+    if [[ -n "${mcp_cfg}" ]]; then
+      spawn_args+=(--strict-mcp-config --mcp-config "${mcp_cfg}")
+    fi
+    command "${KIMI_CLAUDE_BIN}" "${spawn_args[@]}"
   ) >"${out_file}" 2>&1 || exit_code=$?
+  rm -rf "${mcp_out_dir}" 2>/dev/null || true
 
   echo "${out_file}"
   return "${exit_code}"
@@ -1047,14 +1113,21 @@ cmd_run_child() {
   # lean: prompt passed via argv, matching design/v1 — upgrade to stdin/tempfile
   # passing if a prompt near bash ARG_MAX is observed in practice.
 
+  local mcp_cfg=""
+  mcp_cfg="$(worker_mcp_resolve "${cwd_dir}" "${run_dir}/journal.jsonl" "${run_dir}")" || true
+
   set +e
-  ( command "${KIMI_CLAUDE_BIN}" -p "${prompt}" \
+  local -a spawn_args=(-p "${prompt}" \
       --model sonnet \
       --output-format stream-json \
       --verbose \
       --max-turns "${max_turns}" \
       --permission-mode bypassPermissions \
-      --disallowedTools "Agent" \
+      --disallowedTools "Agent")
+  if [[ -n "${mcp_cfg}" ]]; then
+    spawn_args+=(--strict-mcp-config --mcp-config "${mcp_cfg}")
+  fi
+  ( command "${KIMI_CLAUDE_BIN}" "${spawn_args[@]}" \
       2> >(redact_stream >> "${run_dir}/stderr.log")
   ) | tee "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
   echo "${PIPESTATUS[0]}" > "${run_dir}/exit_code"
