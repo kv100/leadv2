@@ -53,6 +53,21 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# BEAT-LOOP-ORPHANS-01: a headless worker session (glm-coder/freepool-coder/
+# kimi-coder/claude-subsession) inherits this process's env exactly like a
+# lead does when it dispatches its own nested worker, and its plugin hooks
+# fire the same arming path -- but a worker session outlives nothing; when it
+# exits this watch has no owner left to disarm it. Refuse to arm at all for a
+# worker session (fail-open to armed for `lead`/`unknown`).
+_LV2_HOOK_KIND_LIB="${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh"
+if [[ -f "$_LV2_HOOK_KIND_LIB" ]]; then
+  # shellcheck source=/dev/null
+  source "$_LV2_HOOK_KIND_LIB"
+  if [[ "$(leadv2_hook_session_kind "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}")" == "worker" ]]; then
+    exit 0
+  fi
+fi
+
 SIG=""
 ROOT=""
 JOURNAL=""
@@ -132,8 +147,18 @@ if [[ -f "$PID_FILE" ]]; then
 fi
 printf '%s\n' "$$" > "${PID_FILE}.tmp.$$" 2>/dev/null \
   && mv -f "${PID_FILE}.tmp.$$" "$PID_FILE" 2>/dev/null || true
-_cleanup_pid() { rm -f "$PID_FILE" 2>/dev/null || true; }
+_cleanup_pid() { rm -f "$PID_FILE" "${PID_FILE}.owner" 2>/dev/null || true; }
 trap _cleanup_pid EXIT INT TERM
+
+# BEAT-LOOP-ORPHANS-01 mechanism 2: record the arming session's liveness
+# tokens once (owner pid + transcript), then exit when the owner is gone —
+# a watcher whose lane outlives its dispatcher must not outlive its OWNER.
+# Env inputs from the armer (LEADV2_LOOP_OWNER_PID/_SID/_TRANSCRIPT) win;
+# fallback is the nearest claude-harness ancestor of this process.
+OWNER_FILE="${PID_FILE}.owner"
+if command -v leadv2_loop_owner_record >/dev/null 2>&1; then
+  leadv2_loop_owner_record "$OWNER_FILE" "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}"
+fi
 
 PULSE_BIN="${LEADV2_LANE_PULSE_BIN:-${SCRIPT_DIR}/leadv2-pulse.sh}"
 export LEADV2_PROJECT_ROOT="$ROOT"
@@ -200,6 +225,11 @@ while :; do
   if [[ ! -d "$ROOT" ]]; then
     printf '[lane-pulse-watch] %s root gone (%s), exiting\n' "$SIG" "$ROOT" >&2
     exit 0
+  fi
+  # BEAT-LOOP-ORPHANS-01: checked before the journal read so a watcher whose
+  # lane journal is (or looks) busy can never mask an owner that is gone.
+  if command -v leadv2_loop_owner_check >/dev/null 2>&1; then
+    leadv2_loop_owner_check "$OWNER_FILE" "lane-pulse-watch" || exit 0
   fi
   if [[ -f "$JOURNAL" ]]; then
     _missing_since=0

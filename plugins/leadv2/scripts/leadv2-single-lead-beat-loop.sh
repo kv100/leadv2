@@ -44,6 +44,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || exit 0
 [[ "${LEADV2_SINGLE_LEAD_BEAT:-1}" == "0" ]] && exit 0
 
+# BEAT-LOOP-ORPHANS-01 mechanism 1: a headless worker session (glm-coder/
+# freepool-coder/kimi-coder/claude-subsession) that dispatches its own nested
+# worker inherits this process tree and its plugin hooks fire an arming path
+# exactly like a lead's -- but a worker outlives nothing, so a loop it arms
+# has no owner left to disarm it once the worker exits. Refuse to arm at all
+# for a worker session (fail-open to armed for `lead`/`unknown`).
+_LV2_HOOK_KIND_LIB="${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh"
+if [[ -f "$_LV2_HOOK_KIND_LIB" ]]; then
+  # shellcheck source=/dev/null
+  source "$_LV2_HOOK_KIND_LIB"
+  if [[ "$(leadv2_hook_session_kind "${LEADV2_LOOP_OWNER_TRANSCRIPT:-}")" == "worker" ]]; then
+    exit 0
+  fi
+fi
+
 INTERVAL="${LEADV2_SINGLE_LEAD_BEAT_LOOP_S:-300}"
 MAX_S="${LEADV2_SINGLE_LEAD_BEAT_LOOP_MAX_S:-86400}"
 [[ "$INTERVAL" =~ ^[0-9]+$ ]] || INTERVAL=300
@@ -83,6 +98,27 @@ trap _cleanup_pid EXIT INT TERM
 
 HB_BIN="${LEADV2_LANE_HEARTBEAT_BIN:-${SCRIPT_DIR}/leadv2-lane-heartbeat.sh}"
 BEAT_BIN="${LEADV2_PULSE_BEAT_BIN:-${SCRIPT_DIR}/leadv2-pulse-beat.sh}"
+
+# BEAT-LOOP-ORPHANS-01 mechanism 2: a loop that armed cleanly must still exit
+# when the session that armed it is gone, even if _live_lane_count keeps
+# reading a nonzero/unknown lane count forever (the observed failure: a
+# closed lane's worktree left the heartbeat registry unreadable, so the
+# fail-open "keep beating on reader error" rule above kept 53 loops alive for
+# up to 8h50m). Owner pid + owner transcript are recorded ONCE at arm time via
+# the shared helpers in leadv2-hook-session-kind.sh (also sourced above for
+# the session-kind gate) and re-checked every iteration below.
+OWNER_FILE="${LEADV2_SINGLE_LEAD_BEAT_LOOP_OWNER_FILE:-${PID_DIR}/.single-lead-beat-loop-owner-${_root_key}}"
+# Owner transcript resolution order: the armer's env, else the live lead's
+# stamped transcript from the beat hook (.beat-owner-transcript), else none —
+# a loop armed before this lane (no owner file) fails open.
+_OWNER_TRANSCRIPT="${LEADV2_LOOP_OWNER_TRANSCRIPT:-}"
+if [[ -z "$_OWNER_TRANSCRIPT" && -f "${STATE_DIR}/.beat-owner-transcript" ]]; then
+  _OWNER_TRANSCRIPT="$(cat "${STATE_DIR}/.beat-owner-transcript" 2>/dev/null || true)"
+fi
+if command -v leadv2_loop_owner_record >/dev/null 2>&1; then
+  leadv2_loop_owner_record "$OWNER_FILE" "$_OWNER_TRANSCRIPT"
+  unset _OWNER_TRANSCRIPT
+fi
 
 # _live_lane_count -> integer count of live verdicts (`running` plus
 # `running_stale` — fix-round H3: a lane whose heartbeat aged past the stale
@@ -126,6 +162,12 @@ _zero_streak=0
 while :; do
   if [[ ! -d "$PROJECT_ROOT" ]]; then
     printf '[beat-loop] project root gone (%s), stopping\n' "$PROJECT_ROOT" >&2
+    exit 0
+  fi
+  # BEAT-LOOP-ORPHANS-01 mechanism 2: checked BEFORE the lane-count reader so
+  # a heartbeat registry stuck permanently "unknown" (the observed orphan
+  # cause) can never mask an owner that is actually gone.
+  if ! leadv2_loop_owner_check "$OWNER_FILE" "beat-loop"; then
     exit 0
   fi
   n="$(_live_lane_count)"
