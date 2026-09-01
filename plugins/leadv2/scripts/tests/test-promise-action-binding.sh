@@ -183,10 +183,14 @@ _expect() { # <hook> <spec> <FIRED|SILENT>
 #
 # TO REVERT THE TRADE: restore the positional binding in the hook and flip this back to
 # FIRED. Both must move together.
-case_action_then_promise() { _expect "$1" "act text" SILENT; }
+# TURN-IT-ON-01: the promise side is now a CLASSIFIED write promise ("Берусь за..."),
+# so the action that keeps it must be write-kind — the old bare `act` (git commit,
+# commit-kind) no longer keeps it, and the kind-scoped binding firing there is the
+# 2026-08-21 escape being caught, not a regression. write_act (Edit) keeps it.
+case_action_then_promise() { _expect "$1" "write_act text" SILENT; }
 
-# A promise made and then actually acted on. Must stay silent.
-case_promise_then_action() { _expect "$1" "text act" SILENT; }
+# A promise made and then actually acted on (same kind — write). Must stay silent.
+case_promise_then_action() { _expect "$1" "text write_act" SILENT; }
 
 # A bare promise with no work at all. Must fire: "Берусь за..." classifies as a
 # write-kind promise (TURN-IT-ON-01 taxonomy) and no write action exists.

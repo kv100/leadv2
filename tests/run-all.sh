@@ -135,6 +135,7 @@ leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-single-lead-beat.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lib-source-guarded.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
+leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-classified-block.sh
 leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
@@ -276,39 +277,38 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
           add_suite "${ROOT}/${cf}"
           ;;
       esac
-      # PROMISE-GUARD-BIND-01: hooks/*.sh changes (e.g. leadv2-promise-guard.sh)
-      # never matched this filter, so a hook fix ran zero suites under
-      # --scope changed -- the EXTRA_SUITE_MAP below only fires once a
-      # changed file reaches the stem-comparison loop.
       # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01: a data-only change to the arm
       # ranking must select the suites that grade it, so freepool-arm.yaml
       # maps to its own stem.
-      # DISPATCH-CLOSE-GATE-01: scripts/lib/*.sh added -- a bare scripts/*.sh glob
-      # never matches a subdirectory, so a lib-only change never reached this loop.
       if [[ "${cf}" == "plugins/leadv2/config/freepool-arm.yaml" ]]; then
         stem="freepool-arm.yaml"
-      else
-        case "${cf}" in
-          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
-          *) continue ;;
-        esac
-        stem="$(basename "${cf}" .sh)
-      if [[ "${cf}" == plugins/leadv2/scripts/*.sh ]]; then
-        stem="$(basename "${cf}" .sh)"
       elif [[ "${cf}" == ".gitignore" ]]; then
         # HANDOFF-ARTIFACTS-GITIGNORED-01: .gitignore isn't a plugins/leadv2
         # script, so it needs its own synthetic stem to reach EXTRA_SUITE_MAP
         # below — the blanket-vs-allowlist rule it carries has no test-*.sh
         # of its own name to match by convention.
         stem="gitignore"
-        continue"
+      else
+        # PROMISE-GUARD-BIND-01: hooks/*.sh changes (e.g. leadv2-promise-guard.sh)
+        # never matched this filter, so a hook fix ran zero suites under
+        # --scope changed -- the EXTRA_SUITE_MAP below only fires once a
+        # changed file reaches the stem-comparison loop.
+        # DISPATCH-CLOSE-GATE-01: scripts/lib/*.sh added -- a bare scripts/*.sh glob
+        # never matches a subdirectory, so a lib-only change never reached this loop.
+        # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
+        # path (leadv2-control-prover.sh lives there) — a stem-scan that only
+        # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
+        # too, not just the top-level scripts.
+        # PROMISE-GUARD-TURN-IT-ON-01: hooks/*.sh must reach the EXTRA_SUITE_MAP
+        # loop as well — a hook change has no name-matching test-*.sh (its
+        # suites are wired only through the map), and the block this repair
+        # replaced had drifted into dropping hooks after the allowlist.
+        case "${cf}" in
+          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
+          *) continue ;;
+        esac
+        stem="$(basename "${cf}" .sh)"
       fi
-      # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
-      # path (leadv2-control-prover.sh lives there) — a stem-scan that only
-      # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
-      # too, not just the top-level scripts.
-      [[ "${cf}" == plugins/leadv2/scripts/*.sh || "${cf}" == plugins/leadv2/scripts/lib/*.sh ]] || continue
-      stem="$(basename "${cf}" .sh)"
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \
