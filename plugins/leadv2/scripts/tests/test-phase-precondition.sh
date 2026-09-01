@@ -226,7 +226,17 @@ case "${1:-}" in
     mkdir -p "$RUNS" 2>/dev/null
     handle="stub-run-$(date +%s)-$$"
     printf '%s' "$handle" > "$RUNS/$handle" 2>/dev/null
-    printf '%s\n' "$handle"
+    # leadv2-dispatch-code.sh's glm-arm handle extraction expects
+    # glm-coder.sh's real "bg" output shape: a path whose basename is the
+    # run id DOUBLED ("$RUNS/$handle$handle") -- it strips the dir prefix
+    # then takes the first half of what remains as the handle. A stub that
+    # echoes a single un-doubled handle gets mangled into a truncated,
+    # nonexistent id, so `status` always reports not-live and every G-test
+    # dispatch burns a full glm-flash->glm->sonnet fallback chain (each hop
+    # re-paying the full per-call subprocess overhead) instead of resolving
+    # on the first arm -- this is what blew the suite past any reasonable
+    # harness timeout (measured: ~38s/call x3 hops instead of x1).
+    printf '%s\n' "${RUNS}/${handle}${handle}"
     exit 0
     ;;
   status)
@@ -255,6 +265,15 @@ e2e_setup() {
   : > "${E2E_JOURNAL_LOG}"
   export LEADV2_PROJECT_ROOT="${E2E_REPO}"
   export CLAUDE_PROJECT_DIR="${E2E_REPO}"
+  # FOREIGN-PROJECT-ROOT-GUARD-01: E2E_REPO is its own git repo, unrelated to
+  # the leadv2 checkout this suite runs from, so dispatch-code.sh's foreign-root
+  # guard (default ON) sees env-root != cwd-root and overrides PROJECT_ROOT
+  # back to cwd -- the REAL leadv2 tree -- discarding the sandbox and leaking
+  # admission/journal/phase-record writes into docs/handoff/ on this checkout
+  # (observed: dispatch-7c9da953, the mission-G2 sig8, materialized here for
+  # real). The escape hatch is the same one test-foreign-project-root-guard.sh
+  # and test-report-only-gate.sh already use for exactly this pattern.
+  export LEADV2_FOREIGN_ROOT_GUARD=0
   export LEADV2_DISPATCH_CACHE_DIR="${E2E_CACHE}"
   export LEADV2_STATE_BASE="${E2E_STATE}"
   export LEADV2_DISPATCH_GLM_BIN="${GLM_STUB}"
@@ -268,6 +287,18 @@ e2e_setup() {
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
   unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA 2>/dev/null || true
+  # PHASE-DISCIPLINE-01: cmd_resolve exports PHASE_GUARD_SCOPE=pre-build (dispatch-
+  # code.sh:6588) whenever it resolves a Phase-4 re-entry (ADMISSION_ROUTE=phases),
+  # and that export is process-environment-scoped, not call-scoped -- so a shell
+  # that already ran (or is itself) such a re-entry (e.g. this very suite invoked
+  # from inside a leadv2-dispatched Phase-4 developer session) carries
+  # PHASE_GUARD_SCOPE=pre-build ambiently. _phase_precondition_guard reads it
+  # unconditionally (dispatch-code.sh:3871) and narrows scope from "full" to
+  # "pre-build" regardless of REQUIRE_PHASES_ENV_SET, which silently satisfies
+  # G1/G2's assert on classify alone and defeats both the warn-journal and the
+  # exit-3 refusal they check for. Unset it every case, like the other leaks
+  # above -- the E2E dispatch here is never itself a Phase-4 re-entry.
+  unset PHASE_GUARD_SCOPE ADMISSION_ROUTE 2>/dev/null || true
   mkdir -p "${E2E_STUB_RUNS}"
 }
 
