@@ -34,6 +34,40 @@ journal, from a real production lane dying with every arm unavailable.
 3. **It is cross-repo.** The journal lives under `~/.claude/cache`, not in a worktree, so running the
    suite in one repo poisons the signal in all of them.
 
+## [Critical] 0 — the same leak has switched freepool OFF for real work
+
+This is the highest-value consequence and it was found by asking why every dispatch today picked
+GLM. The arbiter was excluding freepool with `util_freepool=100`. Asked directly, its gate said:
+
+```
+[freepool-gate] rolling window breach: error_rate=0.53 > max=0.3
+[freepool-gate] refused: gate_broken
+```
+
+So freepool has been circuit-broken out of routing. The evidence says the breaker was tripped by our
+own test suite, not by freepool:
+
+```
+~/.claude/leadv2-state/freepool-arm-state.json     200 records
+failures with latency_s == 0.0                     55 of 61
+failure spike                                      2026-09-01 11:00 (14 fails / 15 ok in one hour)
+```
+
+- A failure at **latency 0.0** never reached the network. Real provider failures cost time; these
+  cost none, which is the signature of a synthetic record.
+- The 11:00 spike is exactly when the lead ran `run-core-offline.sh`.
+- **23 test files exercise freepool; exactly 1 redirects `LEADV2_FREEPOOL_STATE_DIR`.** The other 22
+  write their synthetic outcomes into the real state file.
+
+So every full test run degrades the live routing decision, and a long enough CI day disables a whole
+provider arm for production work. Fixing this is what puts freepool back in the ladder — never a
+hand-edit of the threshold, and never an exclusion of the arm.
+
+Treat the state file exactly like the journal in §1: the writer refuses a test-context write to the
+real path. Then report the honest error rate once fixture records stop landing in it, and say in
+`report.md` whether freepool's real rate is above or below the 0.3 threshold. If it is genuinely
+above, that is a separate finding — report it, do not silently raise the threshold.
+
 ## [Critical] 1 — a test must never write to the real journal
 
 Find every path by which a test reaches the real journal and close it at the writer, not at each
@@ -51,7 +85,7 @@ Provide a way to identify fixture-origin rows and remove them, and report how ma
 they cannot be distinguished from real rows after the fact, say that plainly in `report.md` — that
 is itself the argument for §1.
 
-## [Medium] 3 — the same question for every other shared sink
+## [Critical] 3 — the same question for every other shared sink
 
 The journal is one shared, out-of-tree file the suite writes to. Census the others (caches, ledgers,
 lock files, telemetry CSVs under `~/.claude`) and report which of them a test run can currently
@@ -63,7 +97,11 @@ mutate. Fix the ones in this lane's write set; list the rest.
 2. the same test ⇒ its row IS written to the redirected fixture journal (it must still be testable);
 3. the writer invoked from a test context without a redirect ⇒ refuses non-zero, does not append;
 4. a production call path ⇒ still writes to the real journal (regression guard);
-5. the cleanup identifies the fixture rows described above and leaves real rows untouched.
+5. the cleanup identifies the fixture rows described above and leaves real rows untouched;
+6. a freepool test writing an outcome ⇒ `~/.claude/leadv2-state/freepool-arm-state.json` is
+   byte-identical before and after, and the gate's verdict is unchanged by the test run;
+7. after the cleanup, `leadv2-freepool-gate.sh check` reports the rate computed from real
+   traffic only — whatever that rate turns out to be.
 
 Add the `EXTRA_SUITE_MAP` row and prove selection with `--scope changed`.
 
