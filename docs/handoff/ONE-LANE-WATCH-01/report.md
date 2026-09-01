@@ -187,3 +187,55 @@ Full raw transcripts of both RED runs and both GREEN re-runs are in `full.md`.
 - All 53 non-retired census files — see the LANE_WRITES explanation above.
 - `leadv2-broad-status.sh` wiring (item 4) — patch described, not applied (out of scope).
 - Any enforcement guard — explicitly out of scope per the mission.
+
+## Round 4 evidence (2026-09-01)
+
+**Change.** `_lw_provider_output_age_min` inverted from an exclude-list
+("everything except broker.json/state.json") to an ALLOW-list of model-written
+files, per arm:
+
+- glm/kimi/freepool run dirs: `journal.jsonl` only (the stream-json transcript;
+  probe: live dir `glm-runs/260901-233754-ONE-LANE-WATCH-01-R2-2fcc` holds 17
+  assistant / 10 tool_use / 9 tool_result events there, while progress.log,
+  meta.yaml, supervisor.log, stderr.log, pgid, git-pre*, prompt.txt, child.log
+  and the .stream_state/.lockref/.workbase dotfiles are all runner-written).
+  No `*.stream.jsonl`/`developer.stream.jsonl` exists in any run dir (find
+  over the live cache tree: zero hits) — the journal IS the stream artifact.
+- codex state dirs: `jobs/*` only (matched via `${CODEX_STATE_ROOT}/*`).
+- claude run dirs: NOTHING model-written exists there (probe:
+  `claude-runs/developer-dispatch-34f12615-*/` holds only .finalized/.outcome/
+  meta.yaml/pid) — the lane worktree mtime (the `age` half of the both-signal
+  stall rule) is that arm's only liveness signal; dir birth-time fallback
+  keeps prov_age honest.
+
+**New tests** (test-lane-watch-v2.sh): r4-1 (the reviewer's measured case —
+progress.log + meta.yaml touched NOW, journal.jsonl 60m old, worktree 30m →
+LANE-STALL fires), r4-2 (fresh journal → silence), r4-3 (codex: fresh
+top-level state.json, jobs/ 60m quiet → stall), r4-4 (claude arm: fresh runner
+bookkeeping, stale worktree → stall).
+
+**Green run.** `bash plugins/leadv2/scripts/tests/test-lane-watch-v2.sh` →
+`PASS=26 FAIL=0` (rc=0).
+
+**Mutation negative control.** Put the glm/freepool arm back on the round-3
+exclude-list (top-level glob minus broker.json/state.json, so progress.log
+counts again), bash -n clean, re-ran the suite:
+
+```
+[TEST] FAIL: case r4-1: expected REPORT (stream 60m quiet, bookkeeping now), got out=[LANE-BEAT: LANE-R8:30m ]
+[TEST] lane-watch-v2: PASS=25 FAIL=1
+```
+
+Exactly the new stall case red (the reviewer's false-fresh scenario
+reproduced). Reverted from the byte-identical backup → `bash -n` clean,
+suite back to `PASS=26 FAIL=0`.
+
+**Changed-scope runner.** `LEADV2_SUITE_LOCK_DISABLE=1 bash tests/run-all.sh
+--scope changed` → exit 0. Shard results from the embedded core-offline run:
+`idx=3 pass=17 fail=1`. The one failure is `FAIL: shellcheck:
+leadv2-review-run.sh` (suite review-roundcap, REVIEW-ROUNDCAP-01) —
+`git diff main --stat -- plugins/leadv2/scripts/leadv2-review-run.sh` is
+empty: this lane never touched that file, so the red is pre-existing, not a
+round-4 regression. The lane-watch suite inside the run: PASS. The quota-gate
+suite closed `=== 30 passed, 0 failed ===`; hermetic-violation WARN listed
+pre-existing dirty journal rows from other live lanes, not this lane's files.

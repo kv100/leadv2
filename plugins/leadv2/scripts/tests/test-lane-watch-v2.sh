@@ -463,6 +463,90 @@ write_tasks() {
   fi
 }
 
+# ── round-4 regression (reviewer glm [High]): runner bookkeeping is NOT
+#    worker output. The measured case: 53 min of silence on
+#    260901-184335-PHASE-GATE-IS-INVERTED-01-7ddb never reported because
+#    round 3 counted every top-level file except broker.json/state.json, and
+#    progress.log/meta.yaml are written by the RUNNER (heartbeat, status
+#    flips) even while the model is hung. Fixture: progress.log + meta.yaml
+#    touched NOW, journal.jsonl (the model's stream-json transcript) 60m old,
+#    worktree 30m → prov_age ≥ 30 → LANE-STALL fires.
+{
+  new_fixture
+  make_lane "LANE-R8" 30
+  d="$(make_rundir glm LANE-R8 61)"
+  printf 'worker output\n' > "$d/journal.jsonl"
+  age_touch "$d/journal.jsonl" 60                 # model went quiet 60m ago
+  printf 'heartbeat\n' > "$d/progress.log"        # runner heartbeat NOW
+  age_touch "$d/progress.log" 0
+  printf 'status: running\n' > "$d/meta.yaml"     # runner status flip NOW
+  age_touch "$d/meta.yaml" 0
+  out="$(once sessR8)"
+  if [[ "$out" == *"LANE-STALL: LANE-R8"* ]]; then
+    pass "case r4-1: fresh runner bookkeeping (progress.log/meta.yaml) does not mask a 60m-quiet model stream"
+  else
+    fail "case r4-1: expected REPORT (stream 60m quiet, bookkeeping now), got out=[$out]"
+  fi
+}
+
+# ── round-4 positive: the same dir with a FRESH journal.jsonl ⇒ silence.
+#    The model is the thing that must be fresh; when it is, the runner's
+#    timers are irrelevant and the both-signal rule suppresses the stall.
+{
+  new_fixture
+  make_lane "LANE-R9" 30
+  d="$(make_rundir glm LANE-R9 30)"
+  printf 'worker output\n' > "$d/journal.jsonl"
+  age_touch "$d/journal.jsonl" 1                  # model produced 1m ago
+  printf 'heartbeat\n' > "$d/progress.log"        # runner bookkeeping NOW
+  age_touch "$d/progress.log" 0
+  out="$(once sessR9)"
+  if [[ "$out" != *"LANE-STALL"* ]]; then
+    pass "case r4-2: fresh model stream suppresses the stall regardless of runner bookkeeping"
+  else
+    fail "case r4-2: expected silence (journal 1m old), got out=[$out]"
+  fi
+}
+
+# ── round-4 codex arm: top-level runner bookkeeping fresh, jobs/* quiet
+#    ⇒ stall fires; worker job output is the only counted thing.
+{
+  new_fixture
+  make_lane "LANE-R10" 30
+  d="$(make_rundir codex LANE-R10 61)"
+  mkdir -p "$d/jobs"
+  printf '{}\n' > "$d/jobs/task-x.json"
+  age_touch "$d/jobs/task-x.json" 60              # worker quiet 60m
+  printf 'bookkeeping\n' > "$d/state.json"        # runner rewrite NOW
+  age_touch "$d/state.json" 0
+  out="$(once sessR10)"
+  if [[ "$out" == *"LANE-STALL: LANE-R10"* ]]; then
+    pass "case r4-3: codex stall fires on quiet jobs/ despite fresh top-level state.json"
+  else
+    fail "case r4-3: expected REPORT (jobs/ 60m quiet, state.json now), got out=[$out]"
+  fi
+}
+
+# ── round-4 claude arm: claude-runs dirs hold ONLY runner bookkeeping
+#    (.finalized/.outcome/meta.yaml/pid — probed 2026-09-01), so nothing in
+#    the dir may ever read as model output; a >20m-old claude dir with a
+#    stale worktree must stall (worktree mtime is that arm's only signal).
+{
+  new_fixture
+  make_lane "LANE-R11" 30
+  d="$(make_rundir claude LANE-R11 30)"
+  printf 'bookkeeping\n' > "$d/meta.yaml"         # runner status flip NOW
+  age_touch "$d/meta.yaml" 0
+  printf 'done\n' > "$d/.outcome"
+  age_touch "$d/.outcome" 0
+  out="$(once sessR11)"
+  if [[ "$out" == *"LANE-STALL: LANE-R11"* ]]; then
+    pass "case r4-4: claude-arm runner bookkeeping never counts as output; worktree-only stall fires"
+  else
+    fail "case r4-4: expected REPORT (claude dir bookkeeping now, worktree 30m), got out=[$out]"
+  fi
+}
+
 # ── summary ──────────────────────────────────────────────────────────────────
 printf -- '\n[TEST] lane-watch-v2: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 for e in "${ERRORS[@]:-}"; do printf -- '[TEST] %s\n' "$e"; done
