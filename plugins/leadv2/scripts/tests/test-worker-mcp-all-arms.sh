@@ -141,7 +141,7 @@ chmod 600 "${KIMI_SECRETS}"
 
 KIMI_OUT="${FIXTURE}/kimi-out.txt"
 KIMI_CLAUDE_BIN="${STUB_BIN}/kimi-claude" KIMI_SECRETS_FILE="${KIMI_SECRETS}" \
-  LEADV2_PROJECT_ROOT="${REPO}" \
+  LEADV2_PROJECT_ROOT="${REPO}" KIMI_SKIP_LAUNCH_PROBE=1 \
   bash "${KIMI_SCRIPT}" run "test prompt" --out "${KIMI_OUT}" --cwd "${REPO}" >/dev/null 2>&1
 
 if grep -qx -- "--mcp-config" "${KIMI_ARGV}" 2>/dev/null; then
