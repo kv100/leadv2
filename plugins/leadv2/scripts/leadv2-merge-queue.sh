@@ -124,6 +124,13 @@ def replay(events):
             if tid in queue:
                 queue.remove(tid)
             enq_ev.pop(tid, None)
+        elif t == "re-enqueued":
+            # Refreshes the pid/ts of an existing queue row in place (the
+            # caller re-ran acquire after its earlier process died) without
+            # changing FIFO position and without going through "enqueued"
+            # (which is a no-op once tid is already in queue).
+            if tid in queue:
+                enq_ev[tid] = ev
         elif t in ("released", "reclaimed", "timeout"):
             if holder == tid:
                 holder = None
@@ -161,10 +168,25 @@ try:
                 "ts": now_iso(), "type": "enqueued",
                 "task_id": task_id, "branch": branch, "pid": int(caller_pid),
             })
+        elif task_id != holder and task_id in queue:
+            # Idempotent re-run of `acquire` (e.g. after a crash/re-dispatch):
+            # the task is already in the queue under a stale pid. Refresh
+            # pid/ts in place, keeping FIFO position, so the dead-enqueued
+            # reclaim below (which only ever looks at OTHER tasks' rows) does
+            # not see a dead pid for this task on the very next try_acquire
+            # (MERGE-QUEUE-DEAD-HEAD-01 round 2: reclaim was evicting the
+            # caller's own row).
+            prev = enq_ev.get(task_id)
+            if prev is None or int(prev.get("pid", -1)) != int(caller_pid):
+                append_event({
+                    "ts": now_iso(), "type": "re-enqueued",
+                    "task_id": task_id, "branch": branch, "pid": int(caller_pid),
+                })
         print("OK")
 
     elif op == "try_acquire":
         reclaimed = False
+        caller_task_id = args[0]
 
         # Reclaim dead+stale ENQUEUED entries first, before computing the
         # head (MERGE-QUEUE-DEAD-HEAD-01: an entry that never got past
@@ -174,7 +196,17 @@ try:
         # forever). Same threshold (STALE_SEC) and same ledger event shape
         # (`reclaimed`) as the dead-holder-stale reclaim, distinguished by
         # reason.
+        #
+        # The caller's OWN row is never reclaimed here (round 2 fix): a
+        # re-dispatched task re-running `acquire` after a crash re-enqueues
+        # under a new pid via the `enqueue` op above (see "re-enqueued"),
+        # so by the time we get here its row already carries the live pid.
+        # Excluding it defensively means a stale snapshot can never evict
+        # the caller mid-poll and force it to restart at the back of the
+        # queue / TIMEOUT.
         for tid in list(queue):
+            if tid == caller_task_id:
+                continue
             ev = enq_ev.get(tid)
             if ev is None:
                 continue

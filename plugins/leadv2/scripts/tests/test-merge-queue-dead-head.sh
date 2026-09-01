@@ -165,9 +165,67 @@ test_fresh_dead_head_no_reclaim_yet() {
   unset LEADV2_DIR LEADV2_MERGE_STALE_SEC
 }
 
+# ---------------------------------------------------------------------------
+# Case (d) — round 2 (reviewer reproduction): task A enqueues, its owning
+#           process dies before it ever acquires, and A itself (re-dispatch,
+#           new pid) calls `acquire` again. Round 1 evicted A's OWN row as a
+#           "dead-enqueued" reclaim, so A never re-entered the queue and hung
+#           until TIMEOUT. A must instead get ACQUIRED (or its own turn)
+#           quickly, the ledger must show `re-enqueued` for A, and it must
+#           NEVER show a `dead-enqueued` reclaim for A's own task_id.
+# ---------------------------------------------------------------------------
+test_self_reacquire_not_evicted() {
+  local tmp
+  tmp="$(mktemp -d)"
+  export LEADV2_DIR="$tmp"
+  export LEADV2_MERGE_STALE_SEC=1
+  export LEADV2_MERGE_TIMEOUT_SEC=5
+  export LEADV2_MERGE_POLL_SEC=0.2
+
+  local dead_pid
+  dead_pid="$(_make_dead_pid)"
+
+  local qfile="${tmp}/merge-queue.jsonl"
+  local old_ts
+  old_ts="$(python3 -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time()-30)))')"
+  printf '{"ts":"%s","type":"enqueued","task_id":"task-a","branch":"x","pid":%s}\n' \
+    "$old_ts" "$dead_pid" >> "$qfile"
+
+  # task-a re-runs acquire under a NEW (live) pid, e.g. after a crash/re-dispatch.
+  local result
+  result="$(LEADV2_MERGE_OWNER_PID=$$ "$MQ" acquire task-a &
+    local ap=$!
+    wait "$ap"
+    echo "rc=$?")"
+
+  if echo "$result" | grep -q 'rc=0'; then
+    _ok "case (d): task-a re-acquired promptly, no TIMEOUT"
+  else
+    _fail "case (d): task-a did NOT re-acquire ($result)"
+  fi
+
+  if grep -q '"type": *"re-enqueued"' "$qfile" 2>/dev/null \
+    || grep -q '"type":"re-enqueued"' "$qfile" 2>/dev/null; then
+    _ok "case (d): ledger recorded re-enqueued for task-a"
+  else
+    _fail "case (d): ledger MISSING re-enqueued event ($(cat "$qfile" 2>/dev/null))"
+  fi
+
+  if grep -q 'dead-enqueued' "$qfile" 2>/dev/null; then
+    _fail "case (d): unexpected dead-enqueued reclaim present at all ($(cat "$qfile" 2>/dev/null))"
+  else
+    _ok "case (d): ledger has zero dead-enqueued reclaims"
+  fi
+
+  LEADV2_MERGE_OWNER_PID=$$ "$MQ" release task-a > /dev/null 2>&1
+  rm -rf "$tmp"
+  unset LEADV2_DIR LEADV2_MERGE_STALE_SEC LEADV2_MERGE_TIMEOUT_SEC LEADV2_MERGE_POLL_SEC
+}
+
 test_dead_stale_head_reclaimed
 test_live_head_waits
 test_fresh_dead_head_no_reclaim_yet
+test_self_reacquire_not_evicted
 
 printf -- '--- %d passed, %d failed ---\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
