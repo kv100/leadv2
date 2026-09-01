@@ -72,16 +72,16 @@
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-idle-guard-arm.sh\"; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'leadv2-idle-guard-arm.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0",
-            "timeout": 5,
-            "continueOnBlock": true,
-            "statusMessage": "Arming idle-lead guard..."
-          },
-          {
-            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-merged-worktree-sweep.sh\"; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'leadv2-merged-worktree-sweep.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0",
             "timeout": 20,
             "statusMessage": "Worktree sweep: removing landed lanes..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-lane-watch-v2.sh\" --arm-from-hook; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'leadv2-lane-watch-v2.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0",
+            "timeout": 6,
+            "continueOnBlock": true,
+            "statusMessage": "Arming lane watch..."
           }
         ]
       },
@@ -592,13 +592,6 @@
             "timeout": 5,
             "continueOnBlock": true,
             "statusMessage": "Continuation-guard: checking for silent stops..."
-          },
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-idle-lead-guard.sh\"; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'leadv2-idle-lead-guard.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0",
-            "timeout": 10,
-            "continueOnBlock": true,
-            "statusMessage": "Idle-guard: checking queued work vs live lanes..."
           }
         ]
       }
@@ -669,6 +662,18 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-task-created.sh\"; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'leadv2-task-created.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0",
             "timeout": 5,
             "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-lane-watch-v2.sh\" --disarm-from-hook; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'leadv2-lane-watch-v2.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0",
+            "timeout": 6,
+            "statusMessage": "Disarming lane watch..."
           }
         ]
       }
