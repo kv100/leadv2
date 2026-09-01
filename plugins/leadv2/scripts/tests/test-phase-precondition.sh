@@ -264,6 +264,12 @@ e2e_setup() {
   export LEADV2_LANE_SHAPE=off
   export LEADV2_DISPATCH_E2E_GATE=0
   export LEADV2_DISPATCH_REVIEW_GATE=0
+  # This suite asserts phase-precondition behavior and the fake launch sentinel,
+  # not the dispatcher's asynchronous early-verdict behavior.  Keep the fake
+  # launch path synchronous: otherwise each spawned fixture inherits the
+  # production 20-second observation window and the integration harness times
+  # out before it reaches its assertions.
+  export LEADV2_ARM_EARLY_VERDICT_S=0
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
   unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA 2>/dev/null || true
