@@ -96,6 +96,9 @@ readonly FREEPOOL_CONTINUATION_MAX_LINES="${FREEPOOL_CONTINUATION_MAX_LINES:-200
 readonly FREEPOOL_PERMANENT_FAILURE_SENTINEL="FREEPOOL_PERMANENT_FAILURE"
 # Seam for tests to stub the `claude` binary entirely (no real network call).
 readonly FREEPOOL_CLAUDE_BIN="${FREEPOOL_CLAUDE_BIN:-claude}"
+# BEAT-LOOP-ORPHANS-01: every claude process this launcher spawns is a headless
+# worker, never a lead — see glm-coder.sh's identical marker.
+export LEADV2_WORKER_ARM=1
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"
 
@@ -1811,6 +1814,17 @@ cmd_supervise() {
   # DISPATCH-DEADHAND-01: MUST run after finalize_meta (it mv-clobbers
   # meta.yaml) and before release_lock. Detect-only; never alters status.
   deadhand_check "${run_dir}" "${exit_code}"
+
+  # WORKERS-MUST-COMMIT-01: MUST run after deadhand_check (append-only from
+  # here on) and BEFORE the outcome classifier below -- same window/rationale
+  # as glm-coder.sh.
+  local _worker_epilogue_lib
+  _worker_epilogue_lib="$(dirname "${SELF}")/lib/leadv2-worker-epilogue.sh"
+  if [[ -f "${_worker_epilogue_lib}" ]]; then
+    # shellcheck disable=SC1090
+    source "${_worker_epilogue_lib}"
+    leadv2_worker_commit_epilogue "${run_dir}" "${cwd_dir}" "$(meta_get "${run_dir}" run_id)" || true
+  fi
 
   # N-3 (TURN-CAP-OUTCOME-01): same window as deadhand_check -- after
   # finalize_meta, before release_lock -- so the outcome classifier sees the
