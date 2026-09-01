@@ -142,7 +142,7 @@ generators BEFORE the convergent Plan triad commits. Ported from ADHD
 
 **Dispatch — ONE PATH (ONE-PATH-EVERYWHERE-01, canonical since 0.3.0):**
 
-**Think roles (plan synthesis, architect, judge) resolve through `leadv2-router.sh think-model`: `LEADV2_THINK_MODEL` env wins, else `fable` (Fable 5.1, FABLE-THINK-TIER-01) unless `config/model-capability.yaml` marks it `unavailable: true`, else `opus`. Never set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (CC 2.1.257+) — it overrides every explicit `model=` pin, and routing IS the pins. GLM/Kimi never take think roles.**
+**Think roles (plan synthesis, architect, judge) resolve through `leadv2-router.sh think-model`: `LEADV2_THINK_MODEL` env wins, else `fable` (Fable 5.1, FABLE-THINK-TIER-01) unless `config/model-capability.yaml` marks it `unavailable: true`, else `opus`. Never set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (CC 2.1.257+) in a Workflow-tool script's environment — confirmed by disassembly of the installed binary (`strings ~/.local/share/claude/versions/2.1.257 | grep -A2 'ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE'`; full evidence in `docs/model-effort-matrix.md`), it nulls `opts.model` before every Workflow `agent()` spawn, so it overrides the fable/opus think-role routing there — routing IS the pins. Not probed for non-Workflow spawns (`Agent` tool, `claude-subsession.sh`). GLM/Kimi never take think roles.**
 
 Phase 2 Plan runs through the sole-owner bash engine — native GLM/Codex/Kimi/Sonnet/Opus
 arms, quota-filtered, refusal-spill, dual-order `PLAN_YAML` extraction, journaled:

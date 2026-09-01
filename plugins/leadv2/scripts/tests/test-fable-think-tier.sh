@@ -79,28 +79,96 @@ fi
 #   - explicit fallback sites (the line itself names the fallback)
 #   - guard prose ("opus is reserved for ..." — the hook ENFORCES the tiering)
 #   - test fixtures under scripts/tests/ (excluded entirely)
-census_re="model[=: ]+['\"]?opus|--model[ =]['\"]?opus"
-census="$(grep -rnE "$census_re" \
+# Value-class match: bare 'opus', full model ids ('claude-opus-5', future
+# 'claude-opus-4.8'), and context-window suffixes ('opus[1m]') all classify
+# as the SAME pin — a rename or full-id spelling must not evade the census.
+census_re="model[=: ]+['\"]?(claude-)?opus(-[0-9][0-9.]*)?(\\[1m\\])?['\"]?|--model[ =]['\"]?(claude-)?opus(-[0-9][0-9.]*)?"
+
+# A survivor is exempt ONLY if it is (a) guard prose ("... reserved for ..."),
+# or (b) a fallback branch that is itself gated by a resolver check in the
+# 2 preceding lines (e.g. `if (X !== 'opus')` / `think-model` on the guard
+# line) — the bare word "fallback" on the pin line is NOT an exemption, since
+# a rename to a fallback-sounding label would otherwise defeat the gate.
+_lv2_classify_survivor() {
+  local file="$1" lineno="$2" content="$3" ctx
+  printf '%s' "$content" | grep -qiE "reserved for" && return 0
+  if printf '%s' "$content" | grep -qiE "fallback"; then
+    ctx="$(sed -n "$(( lineno > 25 ? lineno - 25 : 1 )),${lineno}p" "$file" 2>/dev/null)"
+    printf '%s' "$ctx" | grep -qE "THINK_MODEL[[:space:]]*[=!]==?[[:space:]]*['\"]opus['\"]|think-model" && return 0
+  fi
+  return 1
+}
+
+_lv2_filter_census() {
+  local raw="$1" line file rest lineno content out=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    file="${line%%:*}"
+    rest="${line#*:}"
+    lineno="${rest%%:*}"
+    content="${rest#*:}"
+    _lv2_classify_survivor "$file" "$lineno" "$content" && continue
+    out="${out}${line}"$'\n'
+  done <<< "$raw"
+  printf '%s' "$out" | sed '/^$/d'
+}
+
+census_raw="$(grep -rnE "$census_re" \
     "$PLUGIN_ROOT/scripts" "$PLUGIN_ROOT/workflows" "$PLUGIN_ROOT/skills" "$PLUGIN_ROOT/hooks" 2>/dev/null \
   | grep -v "$PLUGIN_ROOT/scripts/tests/" \
   | grep -vE ":[0-9]+: *(#|emit |log |log_warn |printf )" \
-  | grep -viE "fallback|reserved for" \
   || true)"
+census="$(_lv2_filter_census "$census_raw")"
 # Second census pass: spawn lines naming a think role that also mention opus
 # on the same line — catches pins written as `model=<opus ...>` or role-first
 # syntax the first pattern misses.
-census2="$(grep -rnE "(subagent_type|agentType)[\"'= :]+[^,)]*(architect|critic|judge)" \
+census2_raw="$(grep -rnE "(subagent_type|agentType)[\"'= :]+[^,)]*(architect|critic|judge)" \
     "$PLUGIN_ROOT/scripts" "$PLUGIN_ROOT/workflows" "$PLUGIN_ROOT/skills" "$PLUGIN_ROOT/hooks" 2>/dev/null \
   | grep -v "$PLUGIN_ROOT/scripts/tests/" \
   | grep -iE "opus" \
-  | grep -viE "fallback|reserved for" \
   || true)"
+census2="$(_lv2_filter_census "$census2_raw")"
 if [[ -z "$census" && -z "$census2" ]]; then
   pass "tree-wide census: zero live think-role 'opus' spawn pins"
 else
   [[ -n "$census"  ]] && fail "tree-wide census: unclassified 'opus' literal(s): $census"
   [[ -n "$census2" ]] && fail "tree-wide census: think-role spawn line pinning opus: $census2"
 fi
+
+# --- 2c. mutation negative controls (round-3 review bypass shapes) ---------
+# Bypass A: full model id instead of bare 'opus' — reviewer proved
+# `model: 'claude-opus-5'` at a think-role site slipped past the round-2
+# census_re, which only matched the bare word.
+mut_line="{ label: 'x', agentType: 'critic', model: 'claude-opus-5' }"
+if printf '%s' "$mut_line" | grep -qE "$census_re"; then
+  pass "mutation A (full model id pin) matches census_re"
+else
+  fail "mutation A (full model id pin) NOT matched by census_re — bypass reopened"
+fi
+# Bypass B: any pin line containing the word "fallback" — reviewer proved
+# the round-2 filter exempted by keyword alone, with no resolver guard.
+mut_file="$TMP/mut-fallback-no-guard.js"
+printf "%s\n" \
+  "// no THINK_MODEL guard anywhere near this line" \
+  "  { label: 'sneaky-fallback', agentType: 'architect', model: 'opus', schema: X })" \
+  > "$mut_file"
+if _lv2_classify_survivor "$mut_file" 2 "  { label: 'sneaky-fallback', agentType: 'architect', model: 'opus', schema: X })"; then
+  fail "mutation B (unguarded 'fallback'-labeled opus pin) wrongly exempted — bypass reopened"
+else
+  pass "mutation B (unguarded 'fallback'-labeled opus pin) correctly rejected"
+fi
+# Positive control: the same pin IS exempt when a real resolver guard precedes it.
+mut_guard_file="$TMP/mut-fallback-guard.js"
+printf "%s\n" \
+  "if (judged === null && THINK_MODEL !== 'opus') {" \
+  "  { label: 'judge-opus-fallback', agentType: 'critic', model: 'opus', schema: X }" \
+  > "$mut_guard_file"
+if _lv2_classify_survivor "$mut_guard_file" 2 "  { label: 'judge-opus-fallback', agentType: 'critic', model: 'opus', schema: X }"; then
+  pass "resolver-gated fallback (guard present) correctly exempted"
+else
+  fail "resolver-gated fallback (guard present) wrongly rejected"
+fi
+
 # The four migrated workflows keep their THINK_MODEL const (resolver wiring).
 for wf in leadv2-diverge leadv2-learn leadv2-diagnose leadv2-po-feedback-loop; do
   f="$PLUGIN_ROOT/workflows/${wf}.js"
@@ -118,6 +186,29 @@ if [[ -z "$opus4_hits" ]]; then
   pass "zero opus-4 literals under plugins/leadv2/{scripts,config,ref,workflows,hooks}"
 else
   fail "opus-4 literals found (must be claude-opus-5): $opus4_hits"
+fi
+
+# --- 2c2. architect escape-mission template: extracted command must parse --
+# The template's fenced bash block is documentation, not executed code, but a
+# broken continuation or a bare (non-PATH) script name means the escape path
+# silently fails to run when a lane copies it verbatim (round-2 review C1).
+escape_md="$PLUGIN_ROOT/skills/leadv2-review/ref/architect-escape-mission.md"
+if [[ -f "$escape_md" ]]; then
+  escape_cmd="$(awk '/^```bash$/{f=1;next} /^```$/{f=0} f' "$escape_md")"
+  echo "$escape_cmd" > "$TMP/escape-cmd.sh"
+  if bash -n "$TMP/escape-cmd.sh" 2>/dev/null; then
+    pass "architect-escape-mission.md: extracted bash block parses (bash -n)"
+  else
+    fail "architect-escape-mission.md: extracted bash block fails bash -n"
+  fi
+  router_path="$(printf '%s' "$escape_cmd" | grep -oE '\$\{CLAUDE_PLUGIN_ROOT\}/scripts/[a-zA-Z0-9_.-]+\.sh' | head -1 | sed 's#\${CLAUDE_PLUGIN_ROOT}#'"$PLUGIN_ROOT"'#')"
+  if [[ -n "$router_path" && -f "$router_path" ]]; then
+    pass "architect-escape-mission.md: referenced router script exists ($router_path)"
+  else
+    fail "architect-escape-mission.md: referenced router script missing or unresolved (got '${router_path:-<none>}')"
+  fi
+else
+  fail "architect-escape-mission.md not found at expected path"
 fi
 
 # --- 3. review pool: fable ahead of opus, author excluded -------------------

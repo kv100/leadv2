@@ -18,7 +18,8 @@ If no alt exists, explain why and recommend escalate-to-founder with what decisi
 Max 300 words.
 EOF
 
+# think-model resolver: fable; opus fallback only when fable is unavailable.
 ~/.claude/scripts/claude-subsession.sh --role architect \
-  --model "$(leadv2-router.sh think-model)" \  # fable; opus fallback
+  --model "$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-router.sh" think-model)" \
   --task-id <id> --mission-file /tmp/alt-approach-<id>.md --effort max
 ```

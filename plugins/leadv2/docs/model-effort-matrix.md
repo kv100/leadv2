@@ -82,9 +82,24 @@ first-class for design/synthesis/verdicts, opus is its fallback). In workflows:
 `LEADV2_THINK_MODEL` overrides) with an explicit opus retry, then sonnet fallback on
 refusal/absence.
 
-**Never set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`** (Claude Code 2.1.257+). It overrides
-every explicit `model=` pin, including the fable/opus think-role routing above — our
-routing IS the pins.
+**Never set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`** in a Workflow-tool script's environment.
+Scope, confirmed by disassembly of the installed CC 2.1.257 binary (`strings` on
+`~/.local/share/claude/versions/2.1.257`, evidence below): when this env var is set, the
+Workflow tool's internal `agent()` dispatcher nulls `opts.model` before spawning and logs
+`Workflow agent model "<model>" ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set` — so it
+overrides `model: opts.model || THINK_MODEL` above, i.e. our fable/opus think-role routing,
+for any `agent()` call made from inside a Workflow script. It has NOT been probed against
+non-Workflow spawns (the `Agent` tool, `claude-subsession.sh --model`) — do not extend this
+claim to those paths without a separate probe.
+
+```
+evidence: strings -a ~/.local/share/claude/versions/2.1.257 | grep -B2 -A2 \
+  'ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE'
+->  Workflow agent model "
+->  " ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set
+->  minified source: if(I?.model!==void 0 && a.CLAUDE_CODE_SUBAGENT_MODEL_FORCE)
+->    t(`Workflow agent model "${I.model}" ignored: ...`), I.model=void 0;
+```
 
 ## Zero-Claude-quota lanes come FIRST (founder: "GLM и Codex по максимуму")
 
