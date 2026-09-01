@@ -2,11 +2,15 @@
 # tests/test-plugin-papercuts.sh — PLUGIN-PAPERCUTS-01 (2026-08-31, four
 # plugin-level defects, each hitting every adopted repo).
 #
-#   P1  a run that starts a beat loop and then exits ⇒ no beat loop survives
-#       it. The pre-fix loop beat BLIND forever on a heartbeat that errors
-#       every pass (the H-2 reader-error fail-open was unbounded) — measured:
-#       fixture loops 6h44m old inside /var/folders tmp trees. The fix bounds
-#       consecutive UNKNOWN passes at LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX.
+#   P1  the loop beats THROUGH reader errors (UNKNOWN passes never stop or
+#       silence it — even with the since-retired UNKNOWN_MAX knob explicitly
+#       set) and stops only on ZERO_MAX consecutive REAL zeros, removing its
+#       pidfile. Round 2 replaced the original P1, which asserted the
+#       UNKNOWN_MAX stop that main deliberately retired (fix-round 3 H-2):
+#       the monitor going blind is exactly when the beat is still needed,
+#       and the lifetime leak is bounded by WATCHER-LIFECYCLE-LEAK-01 (TERM
+#       reaping + singleton claim + MAX_S cap), not by counting reader
+#       errors. See docs/handoff/PLUGIN-PAPERCUTS-01/report-round-2.md §1.
 #   P2  a suite run ⇒ leaves no beat loop behind, and the loop's pidfile
 #       cleanup is ownership-checked: a late-exiting OLD loop must not delete
 #       a NEWER loop's live claim (pre-fix `rm -f $PID_FILE` unconditionally —
@@ -109,50 +113,87 @@ loop_env() {  # <pidfile> [extra env assignments as args]
       "$@"
 }
 
-# ═══ P1: a run that arms a beat loop and exits ⇒ the loop does not survive it ═
-printf '\ntest: P1 beat loop stops itself when the board stays unreadable (UNKNOWN_MAX)\n'
+# ═══ P1: the loop beats through reader errors; only REAL zeros stop it ═══════
+printf '\ntest: P1 loop beats through reader errors, stops only on real zeros\n'
 mkdir -p "$TMP/fixture-root"
-P1_PIDFILE="$TMP/p1.loop.pid"; P1_BEATS="$TMP/beats.log"; : > "$P1_BEATS"
-# The production shape: the run nohups the loop detached, then exits.
-RUNNER="$TMP/p1-runner.sh"
+HB_ZERO="$TMP/hb-zero.sh"         # readable registry, zero live lanes -> REAL zero
+printf '#!/usr/bin/env bash\nprintf "[]\\n"\n' > "$HB_ZERO"; chmod +x "$HB_ZERO"
+P1_BEATS="$TMP/beats.log"
+
+# ── P1a: UNKNOWN (reader-error) passes never stop or silence the loop ────────
+P1A_PIDFILE="$TMP/p1a.loop.pid"; : > "$P1_BEATS"
+RUNNER="$TMP/p1a-runner.sh"       # the production shape: nohup detached, run exits
 cat > "$RUNNER" <<EOF
 #!/usr/bin/env bash
 env LEADV2_PROJECT_ROOT="$TMP/fixture-root" \
-    LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="$P1_PIDFILE" \
+    LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="$P1A_PIDFILE" \
     LEADV2_SINGLE_LEAD_BEAT_LOOP_S=1 \
     LEADV2_SINGLE_LEAD_BEAT_LOOP_ZERO_MAX=99 \
     LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX=2 \
     LEADV2_LANE_HEARTBEAT_BIN="$HB_UNKNOWN" \
     LEADV2_PULSE_BEAT_BIN="$BEAT_STUB" \
   nohup bash "$LOOP" >/dev/null 2>&1 </dev/null &
-echo \$! > "$TMP/p1.pid"
+echo \$! > "$TMP/p1a.pid"
 EOF
 chmod +x "$RUNNER"
 bash "$RUNNER"
-P1_PID="$(cat "$TMP/p1.pid" 2>/dev/null | tr -d ' ')"
-PIDS="$PIDS $P1_PID"
+P1A_PID="$(cat "$TMP/p1a.pid" 2>/dev/null | tr -d ' ')"
+PIDS="$PIDS $P1A_PID"
 # Vacuous-run guard: the loop must be ALIVE ~1s after launch (kill-switch or a
-# crash exits instantly). Pre-fix this used `! wait_gone 2`, which is true when
-# the loop is STILL ALIVE at the 2s mark — the expected state with
-# UNKNOWN_MAX=2 x 1s passes — so the guard fired on every healthy run.
+# crash exits instantly).
 sleep 1
-if [[ "$P1_PID" =~ ^[0-9]+$ ]] && ! kill -0 "$P1_PID" 2>/dev/null; then
-  bad "P1a setup: loop pid $P1_PID died immediately — the loop never ran (vacuous)"
+if [[ "$P1A_PID" =~ ^[0-9]+$ ]] && ! kill -0 "$P1A_PID" 2>/dev/null; then
+  bad "P1a setup: loop pid $P1A_PID died immediately — the loop never ran (vacuous)"
 else
-  # the loop must have ACTUALLY beaten (no vacuous pass), then stopped itself
-  sleep 4   # 2 unknown passes x 1s + slack
+  sleep 4   # the retired UNKNOWN_MAX=2 x 1s passes + slack: the old contract died here
+  P1A_BEATS="$(wc -l < "$P1_BEATS" | tr -d ' ')"
+  P1A_CLAIM="$(cat "$P1A_PIDFILE" 2>/dev/null | tr -d ' ')"
+  if [[ -s "$P1_BEATS" && "${P1A_BEATS:-0}" -ge 3 ]] \
+     && kill -0 "$P1A_PID" 2>/dev/null \
+     && [[ "$P1A_CLAIM" == "$P1A_PID" ]]; then
+    ok "P1a: $P1A_BEATS beats through reader errors — loop alive, claim held (UNKNOWN_MAX inert)"
+  else
+    bad "P1a: loop silenced/stopped on reader errors (beats=${P1A_BEATS:-0}, alive=$(kill -0 "$P1A_PID" 2>/dev/null && echo y || echo n), claim=$P1A_CLAIM)"
+  fi
+fi
+kill "$P1A_PID" 2>/dev/null || true
+wait_gone "$P1A_PID" 5 || true
+: > "$P1_BEATS"
+
+# ── P1b: ZERO_MAX consecutive REAL zeros stop the loop; pidfile removed ──────
+P1B_PIDFILE="$TMP/p1b.loop.pid"
+RUNNER="$TMP/p1b-runner.sh"
+cat > "$RUNNER" <<EOF
+#!/usr/bin/env bash
+env LEADV2_PROJECT_ROOT="$TMP/fixture-root" \
+    LEADV2_SINGLE_LEAD_BEAT_LOOP_PID="$P1B_PIDFILE" \
+    LEADV2_SINGLE_LEAD_BEAT_LOOP_S=1 \
+    LEADV2_SINGLE_LEAD_BEAT_LOOP_ZERO_MAX=2 \
+    LEADV2_LANE_HEARTBEAT_BIN="$HB_ZERO" \
+    LEADV2_PULSE_BEAT_BIN="$BEAT_STUB" \
+  nohup bash "$LOOP" >/dev/null 2>&1 </dev/null &
+echo \$! > "$TMP/p1b.pid"
+EOF
+chmod +x "$RUNNER"
+bash "$RUNNER"
+P1B_PID="$(cat "$TMP/p1b.pid" 2>/dev/null | tr -d ' ')"
+PIDS="$PIDS $P1B_PID"
+sleep 1
+if [[ "$P1B_PID" =~ ^[0-9]+$ ]] && ! kill -0 "$P1B_PID" 2>/dev/null; then
+  bad "P1b setup: loop pid $P1B_PID died immediately — the loop never ran (vacuous)"
+else
   if [[ -s "$P1_BEATS" ]]; then
-    if wait_gone "$P1_PID" 10; then
-      if [[ ! -f "$P1_PIDFILE" ]]; then
-        ok "P1: loop beat, then stopped itself after UNKNOWN_MAX passes; pidfile removed"
+    if wait_gone "$P1B_PID" 10; then
+      if [[ ! -f "$P1B_PIDFILE" ]]; then
+        ok "P1b: loop beat, then stopped itself after ZERO_MAX=2 real zeros; pidfile removed"
       else
-        bad "P1: loop exited but left its pidfile behind ($P1_PIDFILE)"
+        bad "P1b: loop exited but left its pidfile behind ($P1B_PIDFILE)"
       fi
     else
-      bad "P1: beat loop outlived its run — still alive after UNKNOWN_MAX passes (pid $P1_PID)"
+      bad "P1b: beat loop kept beating on a genuinely empty board (pid $P1B_PID still alive)"
     fi
   else
-    bad "P1: fixture loop never beat — assertions would be vacuous"
+    bad "P1b: fixture loop never beat — assertions would be vacuous"
   fi
 fi
 
