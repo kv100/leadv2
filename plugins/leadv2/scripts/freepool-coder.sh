@@ -96,6 +96,9 @@ readonly FREEPOOL_CONTINUATION_MAX_LINES="${FREEPOOL_CONTINUATION_MAX_LINES:-200
 readonly FREEPOOL_PERMANENT_FAILURE_SENTINEL="FREEPOOL_PERMANENT_FAILURE"
 # Seam for tests to stub the `claude` binary entirely (no real network call).
 readonly FREEPOOL_CLAUDE_BIN="${FREEPOOL_CLAUDE_BIN:-claude}"
+# BEAT-LOOP-ORPHANS-01: every claude process this launcher spawns is a headless
+# worker, never a lead — see glm-coder.sh's identical marker.
+export LEADV2_WORKER_ARM=1
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"
 

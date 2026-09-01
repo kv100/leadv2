@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-temp.sh"
+# BEAT-LOOP-ORPHANS-01: every claude process this launcher spawns is a
+# headless worker subsession, never a lead — inherited by the child claude
+# process and read by hooks/lib/leadv2-hook-session-kind.sh so its hooks
+# never arm a beat/watch loop that would outlive this subsession.
+export LEADV2_SUBSESSION_ROLE="${LEADV2_SUBSESSION_ROLE:-worker}"
 # claude-subsession.sh — spawn isolated Claude CLI headless session with a preset role.
 # Part of /leadv2 orchestrator. Zero /lead token overlap: separate conversation, own session-id.
 #
