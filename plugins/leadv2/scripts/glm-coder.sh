@@ -96,6 +96,11 @@ readonly GLM_CONTINUATION_MAX_LINES="${GLM_CONTINUATION_MAX_LINES:-200}"
 readonly GLM_PERMANENT_FAILURE_SENTINEL="GLM_PERMANENT_FAILURE"
 # Seam for tests to stub the `claude` binary entirely (no real network call).
 readonly GLM_CLAUDE_BIN="${GLM_CLAUDE_BIN:-claude}"
+# BEAT-LOOP-ORPHANS-01: every claude process this launcher spawns is a headless
+# worker, never a lead — exported so it is inherited by the child claude
+# process and read by hooks/lib/leadv2-hook-session-kind.sh to refuse arming
+# beat/watch loops that would outlive this launcher.
+export LEADV2_WORKER_ARM=1
 # GLM-53-FLASH-ARM-01 (founder order 2026-08-26): per-dispatch model override.
 # One mechanism, env-first — no second profile layer. Default stays glm-5.3;
 # the dispatcher sets GLM_MODEL=glm-5.3-flash when the route arbiter picks the

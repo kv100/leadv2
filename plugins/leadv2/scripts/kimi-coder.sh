@@ -121,6 +121,9 @@ readonly KIMI_PERMANENT_FAILURE_SENTINEL="KIMI_PERMANENT_FAILURE"
 readonly KIMI_PROBE_FAIL_EXIT_CODE="${KIMI_PROBE_FAIL_EXIT_CODE:-77}"
 # Seam for tests to stub the `claude` binary entirely (no real network call).
 readonly KIMI_CLAUDE_BIN="${KIMI_CLAUDE_BIN:-claude}"
+# BEAT-LOOP-ORPHANS-01: every claude process this launcher spawns is a headless
+# worker, never a lead — see glm-coder.sh's identical marker.
+export LEADV2_WORKER_ARM=1
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 # FINISH GUARD (2026-07-03): appended to every real mission prompt (cmd_bg and

@@ -4748,11 +4748,55 @@ SINGLE_LEAD_BEAT_LOOP_BIN="${LEADV2_DISPATCH_BEAT_LOOP_BIN:-${SCRIPT_DIR}/leadv2
 # re-pinned to a process that outlives THIS dispatcher instead of staying
 # pinned to the dispatcher's own pid forever.
 _LV2_LANE_PULSE_WATCH_PID=""
+# BEAT-LOOP-ORPHANS-01: session-kind gate + owner-liveness tokens for the
+# detached loops this dispatcher arms. A headless worker session (glm-coder/
+# freepool-coder/kimi-coder/claude-subsession) that runs its own nested
+# dispatch must never arm a loop — when the worker exits, the loop has no
+# owner left to disarm it (measured 2026-09-01: 53 orphaned loops, load 244).
+# Fix-round 2: `unknown` FAILS CLOSED — no arm; one loop_armed_by_unknown_
+# session journal line (with reason=<why>) so a misjudged lead's starvation
+# is visible the minute it happens. A dispatcher that knows it IS the lead
+# arms explicitly via LEADV2_SESSION_KIND=lead.
+LV2_SESSION_KIND_LIB="${LV2_SESSION_KIND_LIB:-${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh}"
+_lv2_session_kind() {  # -> sets _LV2_KIND, _LV2_OWNER_PID/_SID/_TRANSCRIPT
+  _LV2_KIND="unknown"; _LV2_OWNER_PID=""; _LV2_OWNER_SID=""; _LV2_OWNER_TRANSCRIPT=""
+  [[ -f "$LV2_SESSION_KIND_LIB" ]] || return 0
+  # shellcheck source=/dev/null
+  source "$LV2_SESSION_KIND_LIB"
+  _LV2_OWNER_SID="$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64)"
+  # The dispatcher runs under the Bash-tool shell chain, so it has no
+  # transcript_path of its own — resolve the session's transcript from the
+  # platform layout (~/.claude/projects/<munged-cwd>/<sid>.jsonl) so the
+  # predicate gets its third evidence source.
+  if [[ -n "${_LV2_OWNER_SID}" ]]; then
+    _LV2_OWNER_TRANSCRIPT="$(ls -t "${HOME}/.claude/projects/"*"/${_LV2_OWNER_SID}.jsonl" 2>/dev/null | head -1 || true)"
+  fi
+  # Direct call (no $() subshell): keeps LEADV2_SESSION_KIND_OUT/_REASON in
+  # THIS shell so the fail-closed journal carries reason=<why>.
+  leadv2_hook_session_kind "${_LV2_OWNER_TRANSCRIPT}" >/dev/null 2>&1 || true
+  _LV2_KIND="${LEADV2_SESSION_KIND_OUT:-unknown}"
+  if command -v leadv2_loop_owner_pid >/dev/null 2>&1; then
+    _LV2_OWNER_PID="$(leadv2_loop_owner_pid)"
+  fi
+  return 0
+}
 _arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
   _LV2_LANE_PULSE_WATCH_PID=""
   [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
   [[ -f "${LANE_PULSE_WATCH_BIN}" ]] || return 0
-  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
+  _lv2_session_kind
+  # Fix-round 2: worker refuses; unknown FAILS CLOSED too — journal and do
+  # not arm. Only a `lead` classification (or the LEADV2_SESSION_KIND=lead
+  # pin) arms a persistent loop.
+  if [[ "${_LV2_KIND}" != "lead" ]]; then
+    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
+      lane-pulse-watch "${_LV2_KIND}" 2>/dev/null || true
+    return 0
+  fi
+  LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
+    LEADV2_LOOP_OWNER_SID="${_LV2_OWNER_SID}" \
+    LEADV2_LOOP_OWNER_TRANSCRIPT="${_LV2_OWNER_TRANSCRIPT}" \
+    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
     nohup bash "${LANE_PULSE_WATCH_BIN}" --sig "${1}" >/dev/null 2>&1 </dev/null 9>&- &
   _LV2_LANE_PULSE_WATCH_PID=$!
   # _spawn_worker_body is captured by command substitution.  In bash that
@@ -4765,7 +4809,18 @@ _arm_single_lead_beat() {  # fail-open, armed once (loop's own pidfile guards re
   [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
   [[ "${LEADV2_SINGLE_LEAD_BEAT:-1}" == "0" ]] && return 0
   [[ -f "${SINGLE_LEAD_BEAT_LOOP_BIN}" ]] || return 0
-  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
+  _lv2_session_kind
+  # Fix-round 2: same fail-closed rule as _arm_lane_pulse_watch — worker and
+  # unknown never arm; only `lead` (incl. the LEADV2_SESSION_KIND=lead pin).
+  if [[ "${_LV2_KIND}" != "lead" ]]; then
+    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
+      single-lead-beat-loop "${_LV2_KIND}" 2>/dev/null || true
+    return 0
+  fi
+  LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
+    LEADV2_LOOP_OWNER_SID="${_LV2_OWNER_SID}" \
+    LEADV2_LOOP_OWNER_TRANSCRIPT="${_LV2_OWNER_TRANSCRIPT}" \
+    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
     nohup bash "${SINGLE_LEAD_BEAT_LOOP_BIN}" >/dev/null 2>&1 </dev/null 9>&- &
 }
 
