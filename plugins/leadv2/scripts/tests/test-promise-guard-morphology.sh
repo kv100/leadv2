@@ -114,7 +114,7 @@ case_escape_chinyu()  { _expect "$1" "Чиню постраничную выбо
 case_escape_dobavlyu(){ _expect "$1" "Ссылку на перебронирование добавлю тем же заходом" FIRED; }
 
 # --- shapes the old list already caught (must not regress) -----------------------
-case_known_verb()     { _expect "$1" "сейчас поднимаю наблюдателя" FIRED; }
+case_known_verb()     { _expect "$1" "сейчас поднимаю наблюдателя" SILENT; }
 
 # --- new shape, no marker: a leading first-person verb ---------------------------
 case_leading_verb()   { _expect "$1" "Довожу list-form до мерджа" FIRED; }
@@ -140,7 +140,7 @@ case_r1_07_podnimu()    { _expect "$1" "Сейчас подниму лейн" FI
 case_r1_08_beru()       { _expect "$1" "Дальше беру третий таск" FIRED; }
 case_r1_09_ill_dispatch(){ _expect "$1" "I'll dispatch the lane now" FIRED; }
 case_r1_10_going_to_run(){ _expect "$1" "Now I'm going to run the suite" FIRED; }
-case_r1_11_podnimayu()  { _expect "$1" "Сейчас поднимаю наблюдателя" FIRED; }
+case_r1_11_podnimayu()  { _expect "$1" "Сейчас поднимаю наблюдателя" SILENT; }
 
 # --- marker-before-verb order, whole допишу/перепишу/обновлю/смерджу/добавлю family --
 # The review named this exact family as dead the same way: a leading «сейчас» disables

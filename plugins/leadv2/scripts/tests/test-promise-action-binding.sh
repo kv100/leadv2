@@ -188,7 +188,8 @@ case_action_then_promise() { _expect "$1" "act text" SILENT; }
 # A promise made and then actually acted on. Must stay silent.
 case_promise_then_action() { _expect "$1" "text act" SILENT; }
 
-# A bare promise with no work at all. Must fire (already worked pre-fix).
+# A bare promise with no work at all. Must fire: "Берусь за..." classifies as a
+# write-kind promise (TURN-IT-ON-01 taxonomy) and no write action exists.
 case_promise_only()        { _expect "$1" "text" FIRED; }
 
 # Work with no promise at all. Must stay silent — the guard must not punish a turn
