@@ -106,6 +106,7 @@ EXTRA_SUITE_MAP="leadv2-phase8-assert.sh:plugins/leadv2/scripts/tests/test-phase
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-resume-lane-arg-shapes.sh
 leadv2-tasks-lib.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
 leadv2-active-registry.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
@@ -117,13 +118,22 @@ leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-record.sh
 leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-precondition.sh
 leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-precondition-bootstrap.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-phase-precondition-bootstrap.sh
+# PHASE-GATE-IS-INVERTED-01: the inversion regression lives in its own suite
+# and is exercised THROUGH the dispatcher, so both changed stems map to it.
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-phase-gate-inversion.sh
+leadv2-phase-record:plugins/leadv2/scripts/tests/test-phase-gate-inversion.sh
 leadv2-admission-class:plugins/leadv2/scripts/tests/test-admission-class.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-route-arbiter-symlink-install.sh
+codex-task.sh:plugins/leadv2/scripts/tests/test-codex-longrun.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-model-select-telemetry.sh
 leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
+leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
+leadv2-pulse-beat.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
+leadv2-routing.yaml:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
+codex-task.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lane-pulse-founder.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-row-identity.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-lanes-blind.sh
@@ -134,17 +144,24 @@ leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-readable-renderin
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-pulse-empty-board.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-single-lead-beat.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-lib-source-guarded.sh
+leadv2-sleep.sh:plugins/leadv2/scripts/tests/test-no-orphan-sleep.sh
+leadv2-hook-fork-budget.sh:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
+hooks.json:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
 leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
+leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
+leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
 leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
+leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-adoption-gate-passable.sh
 leadv2-freepool-model-select:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-foreign-lanes.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-status-repo-scoped.sh
 leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-registered-lane.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
@@ -201,7 +218,14 @@ leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-complexity-routing.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-complexity-routing.sh
 leadv2-router-v2:plugins/leadv2/scripts/tests/test-complexity-routing.sh
 leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-lane-finished-state.sh
-leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-lane-finished-state.sh"
+leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-fork-storm-watcher-liveness.sh
+leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-fork-storm-watcher-liveness.sh
+leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-lane-finished-state.sh
+leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
+leadv2-suite-falsifiable:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
+run-core-offline.sh:plugins/leadv2/scripts/tests/test-suite-lock-scope.sh
+leadv2-lane-watch-v2.sh:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
+leadv2-lane-watch-v2:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -277,6 +301,30 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
           add_suite "${ROOT}/${cf}"
           ;;
       esac
+      # FORK-STORM-KILLS-HOOKS-01: the hook table (hooks.json) and hook
+      # scripts (plugins/leadv2/hooks/*.sh) are continued by the
+      # [[ scripts || lib ]] guard below, so they never reached the
+      # stem-comparison loop and a hooks.json-only change ran zero suites.
+      # Synthetic stem, freepool-arm.yaml precedent: map row + convention
+      # candidate here, then continue.
+      case "${cf}" in
+        plugins/leadv2/hooks/hooks.json) stem="hooks.json" ;;
+        plugins/leadv2/hooks/*.sh) stem="$(basename "${cf}" .sh)" ;;
+        *) stem="" ;;
+      esac
+      if [[ -n "${stem}" ]]; then
+        for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
+                    "${ROOT}/tests/test-${stem}.sh"; do
+          add_suite "${cand}"
+        done
+        while IFS= read -r row; do
+          [[ -n "$row" ]] || continue
+          key="${row%%:*}"
+          [[ "$key" == "${stem}" || "$key" == "${stem}.sh" ]] || continue
+          add_suite "${ROOT}/${row#*:}"
+        done <<< "${EXTRA_SUITE_MAP}"
+        continue
+      fi
       # PROMISE-GUARD-BIND-01: hooks/*.sh changes (e.g. leadv2-promise-guard.sh)
       # never matched this filter, so a hook fix ran zero suites under
       # --scope changed -- the EXTRA_SUITE_MAP below only fires once a
@@ -286,30 +334,37 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
       # maps to its own stem.
       # DISPATCH-CLOSE-GATE-01: scripts/lib/*.sh added -- a bare scripts/*.sh glob
       # never matches a subdirectory, so a lib-only change never reached this loop.
+      # PLUGIN-PAPERCUTS-01 repair: this block was a bad merge — an unterminated
+      # `$(basename "${cf}" .sh)` and a stray `continue"` left the two stem
+      # halves interleaved inside unbalanced quotes. Rewritten as ONE if/elif
+      # chain with the same documented behaviours: config yaml special stems,
+      # the scripts/lib/hooks allowlist, and the synthetic .gitignore stem.
       if [[ "${cf}" == "plugins/leadv2/config/freepool-arm.yaml" ]]; then
+        # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01: data-only arm-ranking change must
+        # select the suites that grade it.
         stem="freepool-arm.yaml"
-      else
-        case "${cf}" in
-          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
-          *) continue ;;
-        esac
-        stem="$(basename "${cf}" .sh)
-      if [[ "${cf}" == plugins/leadv2/scripts/*.sh ]]; then
-        stem="$(basename "${cf}" .sh)"
+      elif [[ "${cf}" == "plugins/leadv2/config/leadv2-routing.yaml" ]]; then
+        # PLUGIN-PAPERCUTS-01: a data-only routing change (arm cells, tiers)
+        # must select the suites that grade routing, same shape as
+        # freepool-arm.yaml above.
+        stem="leadv2-routing.yaml"
       elif [[ "${cf}" == ".gitignore" ]]; then
         # HANDOFF-ARTIFACTS-GITIGNORED-01: .gitignore isn't a plugins/leadv2
         # script, so it needs its own synthetic stem to reach EXTRA_SUITE_MAP
         # below — the blanket-vs-allowlist rule it carries has no test-*.sh
         # of its own name to match by convention.
         stem="gitignore"
-        continue"
+      else
+        case "${cf}" in
+          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
+          *) continue ;;
+        esac
+        # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
+        # path (leadv2-control-prover.sh lives there) — a stem-scan that only
+        # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
+        # too, not just the top-level scripts.
+        stem="$(basename "${cf}" .sh)"
       fi
-      # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
-      # path (leadv2-control-prover.sh lives there) — a stem-scan that only
-      # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
-      # too, not just the top-level scripts.
-      [[ "${cf}" == plugins/leadv2/scripts/*.sh || "${cf}" == plugins/leadv2/scripts/lib/*.sh ]] || continue
-      stem="$(basename "${cf}" .sh)"
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/plugins/leadv2/tests/test-${stem}.sh" \

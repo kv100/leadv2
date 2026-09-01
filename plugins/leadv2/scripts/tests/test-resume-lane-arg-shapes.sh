@@ -184,6 +184,21 @@ timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${RESUME_WT}" \
   "A2 resume-lane absolute path shape test refactor the validator" >/dev/null 2>"${SANDBOX}/a2-stderr.txt" || rc=$?
 resolve_ok "A2" "${SANDBOX}/a2-stderr.txt" "${rc}"
 
+# MUTATION-ANCHOR (RESUME-LANE-ACCEPTS-PATH-01 round 2): this is the assertion
+# that dies when the absolute-path branch of the FOREIGN-PROJECT-ROOT-GUARD-01
+# pin preflight (leadv2-dispatch-code.sh, _LV2_PIN_VALUE == /*) is removed.
+# Without that branch the guard concatenates the worktrees dir onto the given
+# absolute path, cd fails, the pin is discarded, and the guard falls back to
+# the cwd-derived root with a loud WARN — control plane rooted in the wrong
+# tree (the FOREIGN-PROJECT-ROOT-GUARD-01 incident class). Assert the WARN is
+# absent: with the branch live, the pin is proven to belong to the env repo
+# and PROJECT_ROOT is pinned to the lane's owning repository.
+if grep -qF 'foreign project root detected' "${SANDBOX}/a2-stderr.txt" 2>/dev/null; then
+  bad "A2: foreign-root guard discarded the absolute-path pin (cwd-derived-root fallback WARN)"
+else
+  ok "A2: foreign-root guard accepted the absolute-path pin"
+fi
+
 # ==============================================================================
 # A3: bad absolute paths -> rc 5 + accepted shapes
 # ==============================================================================
