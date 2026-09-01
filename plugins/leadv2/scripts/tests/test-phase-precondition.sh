@@ -330,6 +330,11 @@ export LEADV2_REQUIRE_PHASES=0
 MISSION_G3="PPC-G3: fix the integration test harness signal"
 rc_g3=0
 bash "$DISPATCH_BIN" --kind tooling "$MISSION_G3" >/dev/null 2>&1 || rc_g3=$?
+if [[ $rc_g3 -eq 0 ]]; then
+  ok
+else
+  fail "G3: dispatch should exit 0 (got $rc_g3)"
+fi
 if ! grep -q 'phase_precondition_warn' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
   ok
 else
