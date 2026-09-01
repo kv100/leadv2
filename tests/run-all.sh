@@ -107,6 +107,7 @@ leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-beat-loop-orph
 leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
 leadv2-phase8-assert.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-resume-lane-arg-shapes.sh
 leadv2-tasks-lib.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
