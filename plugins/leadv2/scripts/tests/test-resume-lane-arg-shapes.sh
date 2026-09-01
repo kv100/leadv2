@@ -1,59 +1,223 @@
 #!/usr/bin/env bash
+# RESUME-LANE-ACCEPTS-PATH-01 — --resume-lane placement resolver test.
+#
+# Five cases (fixture worktrees only; stub GLM/journal/liveness/quota — never a
+# real lane, never a real dispatch). LEADV2_DISPATCH_SPAWN=0 keeps the runner
+# out of the post-spawn wait: resolution is proven by the placement decision
+# lines the dispatcher prints to stderr.
+#   A1  bare lane name of an existing lane -> rc 0, pinned to it (regression).
+#   A2  absolute path to that same lane's worktree -> rc 0, pinned to the SAME
+#       lane (key=RESUME-ME-01).
+#   A3  absolute paths that are not a lane worktree -> rc 5, refusal names the
+#       accepted shapes and echoes what was given.
+#   A4  absolute path to a FOREIGN repo's worktree (the measured defect input)
+#       -> rc 5, refusal NEVER contains a doubled `.claude/worktrees/` segment.
+#   A5  bare name matching no lane -> rc 5, refusal names the accepted shapes.
 
-# Test script for verifying --resume-lane argument shapes
+set -uo pipefail
 
-set -euo pipefail
-
+export LEADV2_BURN_GOVERNOR=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DISPATCH_SCRIPT="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
+PLUGIN_SCRIPTS="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DC="${PLUGIN_SCRIPTS}/leadv2-dispatch-code.sh"
+STATE_PATH="${PLUGIN_SCRIPTS}/leadv2-state-path.sh"
 
-# Create fixture worktrees
-FIXTURE_ROOT="$(mktemp -d)"
-FIXTURE_WORKTREE_DIR="${FIXTURE_ROOT}/.claude/worktrees"
-mkdir -p "${FIXTURE_WORKTREE_DIR}"
+PASS=0; FAIL=0
+ok()  { printf '[TEST] PASS: %s\n' "$1"; PASS=$((PASS+1)); }
+bad() { printf '[TEST] FAIL: %s\n' "$1" >&2; FAIL=$((FAIL+1)); }
 
-# Create a test lane worktree
-TEST_LANE_NAME="test-lane"
-TEST_LANE_WORKTREE="${FIXTURE_WORKTREE_DIR}/${TEST_LANE_NAME}"
-mkdir -p "${TEST_LANE_WORKTREE}"
+SANDBOX="$(mktemp -d /tmp/leadv2-rlap-XXXXXX)"
+cleanup() { rm -rf "${SANDBOX}"; }
+trap cleanup EXIT
 
-# Create a test mission file
-TEST_MISSION_FILE="${FIXTURE_ROOT}/test-mission.md"
-echo "# Test Mission" > "${TEST_MISSION_FILE}"
+# -- Fixture repos ------------------------------------------------------------
+TARGET="${SANDBOX}/target"
+FOREIGN="${SANDBOX}/foreign"
 
-# Function to run the dispatch script and check output
-run_dispatch() {
-  local args=("${DISPATCH_SCRIPT}" "--mission" "${TEST_MISSION_FILE}" "$@")
-  local output
-  local rc
-
-  output=$("${args[@]}" 2>&1 || true)
-  rc=$?
-
-  echo "Command: ${args[*]}"
-  echo "Exit code: $rc"
-  echo "Output:"
-  echo "$output"
-  echo "---"
-
-  return $rc
+new_repo() {
+  local root="$1"
+  mkdir -p "${root}"
+  ( cd "${root}" && git init -q -b main \
+    && git config user.email t@e.com && git config user.name t \
+    && printf 'seed\n' > .gitignore && git add .gitignore && git commit -qm seed )
 }
 
-# Test 1: bare name of an existing lane
-run_dispatch "--resume-lane" "${TEST_LANE_NAME}"
+new_repo "${TARGET}"
+new_repo "${FOREIGN}"
 
-# Test 2: absolute path to that same lane's worktree
-run_dispatch "--resume-lane" "${TEST_LANE_WORKTREE}"
+# The lane worktree of TARGET both shapes must resolve to.
+RESUME_WT="${TARGET}/.claude/worktrees/RESUME-ME-01"
+mkdir -p "$(dirname "${RESUME_WT}")"
+( cd "${TARGET}" && git worktree add -q "${RESUME_WT}" -b worktree-RESUME-ME-01 ) 2>/dev/null
+( cd "${RESUME_WT}" && printf 'lane work\n' > lane.txt && git add lane.txt && git commit -qm lane-seed )
+RESUME_PHYS="$(cd "${RESUME_WT}" 2>/dev/null && pwd -P)"
 
-# Test 3: absolute path that is not a lane worktree
-BAD_PATH="/tmp/nonexistent-path"
-run_dispatch "--resume-lane" "${BAD_PATH}"
+# A foreign repo's worktree — an absolute path under .claude/worktrees/ that is
+# NOT a lane of TARGET. Under the old code this input was refused with
+# looked_for=<TARGET>/.claude/worktrees/<abs-path> — the doubled segment.
+FOREIGN_WT="${FOREIGN}/.claude/worktrees/OTHER-01"
+mkdir -p "${FOREIGN}/.claude/worktrees"
+( cd "${FOREIGN}" && git worktree add -q "${FOREIGN_WT}" -b worktree-OTHER-01 ) 2>/dev/null
 
-# Test 4: the refusal message never contains a doubled .claude/worktrees/ segment
-DOUBLED_PATH="${FIXTURE_ROOT}/.claude/worktrees/.claude/worktrees/test-doubled"
-run_dispatch "--resume-lane" "${DOUBLED_PATH}"
+# A plain directory that exists but is not a git worktree.
+NOT_A_WT="${SANDBOX}/plain-dir"
+mkdir -p "${NOT_A_WT}"
 
-# Clean up
-rm -rf "${FIXTURE_ROOT}"
+# -- Sandbox state + cache dirs -----------------------------------------------
+export LEADV2_STATE_BASE="${SANDBOX}/state"
+export LEADV2_DISPATCH_CACHE_DIR="${SANDBOX}/cache"
 
-echo "All tests completed"
+QUOTA_LIVE_STUB="${SANDBOX}/quota-live-stub.sh"
+JOURNAL_STUB="${SANDBOX}/journal-stub.sh"
+LIVENESS_STUB="${SANDBOX}/liveness-stub.sh"
+GLM_STUB="${SANDBOX}/glm-stub.sh"
+
+cat > "${QUOTA_LIVE_STUB}" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"glm":{"status":"ok","five_hour":{"pct":10},"weekly":{"pct":10}},"codex":{"status":"ok","binding_window":"primary","windows":[{"kind":"primary","used_percent":10}]},"anthropic":{"status":"ok","accounts":[{"active":true,"five_hour_pct":10,"seven_day_pct":10}]}}'
+SH
+chmod +x "${QUOTA_LIVE_STUB}"
+
+printf '#!/usr/bin/env bash\nexit 0\n' > "${JOURNAL_STUB}"
+chmod +x "${JOURNAL_STUB}"
+
+cat > "${LIVENESS_STUB}" <<'SH'
+#!/usr/bin/env bash
+printf '{"lane":"%s","verdict":"dead:silent_9999s_no_process","age_s":9999,"pid_alive":false}\n' "${LEADV2_STUB_LANE:-lane}"
+exit 0
+SH
+chmod +x "${LIVENESS_STUB}"
+
+printf '#!/usr/bin/env bash\nexit 0\n' > "${GLM_STUB}"
+chmod +x "${GLM_STUB}"
+
+# Admission/cost model seams: the dispatcher shells out to a live `claude -p`
+# judge unless stubbed — on a busy machine that call queues for minutes.
+TASK_JUDGE_STUB="${SANDBOX}/task-judge-stub.sh"
+cat > "${TASK_JUDGE_STUB}" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"complexity":"simple","subsystems_touched":1,"needs_live_verification":false,"risk_class":"none","duration_class":"short","work_kind":"build"}'
+exit 0
+SH
+chmod +x "${TASK_JUDGE_STUB}"
+
+# -- Per-case dispatch env (unique session id: the 2-live-lane cap is real) ---
+_LAP_SESSION_SEQ=0
+setup_env() {
+  _LAP_SESSION_SEQ=$((_LAP_SESSION_SEQ + 1))
+  export LEADV2_LEAD_SESSION_ID="rlap-test-session-${_LAP_SESSION_SEQ}"
+  export CLAUDE_PROJECT_DIR="${TARGET}"
+  export CLAUDE_PROJECT_ROOT="${TARGET}"
+  unset PROJECT_ROOT 2>/dev/null || true
+  unset LEADV2_LANE_WORK_ROOT 2>/dev/null || true
+  export LEADV2_DISPATCH_SPAWN=0
+  export LEADV2_PULSE_MODE=0
+  export LEADV2_SINGLE_LEAD_BEAT=0
+  export LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN="${JOURNAL_STUB}"
+  export LEADV2_DISPATCH_BEAT_LOOP_BIN="${JOURNAL_STUB}"
+  export LEADV2_SUITE_LOCK_DISABLE=1
+  export LEADV2_DISPATCH_GLM_BIN="${GLM_STUB}"
+  export LEADV2_TASK_JUDGE_BIN="${TASK_JUDGE_STUB}"
+  export LEADV2_COST_ESTIMATE_BIN="${JOURNAL_STUB}"
+  export LEADV2_JOURNAL_BIN="${JOURNAL_STUB}"
+  export LEADV2_DISPATCH_LEDGER_BIN="${PLUGIN_SCRIPTS}/leadv2-dispatch-ledger.sh"
+  export LEADV2_STATE_PATH_BIN="${STATE_PATH}"
+  export LEADV2_DISPATCH_LANE_LIVENESS_BIN="${LIVENESS_STUB}"
+  export LEADV2_ROUTER_V2=0
+  export GLM_POLICY_RESOLVER=""
+  export LEADV2_QUOTA_LIVE="${QUOTA_LIVE_STUB}"
+  export LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${QUOTA_LIVE_STUB}"
+  export LEADV2_LANE_SHAPE=off
+  export LEADV2_DISPATCH_E2E_GATE=0
+  export LEADV2_DISPATCH_REVIEW_GATE=0
+  export LEADV2_DISPATCH_PENDING_TTL_S=5
+  export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
+}
+
+# resolve_ok <label> <stderr-file> <rc> — rc 0 + pinned to the fixture lane
+resolve_ok() {
+  local label="$1" errfile="$2" rc="$3"
+  [[ ${rc} -eq 0 ]] && ok "${label}: dispatch exited 0" || bad "${label}: dispatch exited ${rc} (expected 0)"
+  if grep -qF "mode=resume-lane path=${RESUME_PHYS} key=RESUME-ME-01" "${errfile}" 2>/dev/null; then
+    ok "${label}: lane_placement_pinned to RESUME-ME-01"
+  else
+    bad "${label}: expected pinned line 'path=${RESUME_PHYS} key=RESUME-ME-01'"
+  fi
+}
+
+# refuse_ok <label> <rc> <errfile> <given> — rc 5 + accepted shapes + echo
+refuse_ok() {
+  local label="$1" rc="$2" errfile="$3" given="$4"
+  [[ ${rc} -eq 5 ]] && ok "${label}: dispatch exited 5" || bad "${label}: dispatch exited ${rc} (expected 5)"
+  if ! grep -q 'lane_placement_refused' "${errfile}" 2>/dev/null; then
+    bad "${label}: no lane_placement_refused in output"
+    return 0
+  fi
+  ok "${label}: refusal emitted"
+  if grep -q 'accepted_shapes=bare_lane_name|absolute_worktree_path' "${errfile}" 2>/dev/null; then
+    ok "${label}: refusal names the accepted shapes"
+  else
+    bad "${label}: refusal missing accepted_shapes"
+  fi
+  if grep -qF "given=${given}" "${errfile}" 2>/dev/null; then
+    ok "${label}: refusal echoes what was given"
+  else
+    bad "${label}: refusal does not echo the given value"
+  fi
+}
+
+# ==============================================================================
+# A1: bare lane name -> resolves to the lane (regression guard)
+# ==============================================================================
+setup_env
+rc=0
+timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane RESUME-ME-01 \
+  "A1 resume-lane bare name shape test fix the build" >/dev/null 2>"${SANDBOX}/a1-stderr.txt" || rc=$?
+resolve_ok "A1" "${SANDBOX}/a1-stderr.txt" "${rc}"
+
+# ==============================================================================
+# A2: absolute path -> resolves to the same lane
+# ==============================================================================
+setup_env
+rc=0
+timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${RESUME_WT}" \
+  "A2 resume-lane absolute path shape test refactor the validator" >/dev/null 2>"${SANDBOX}/a2-stderr.txt" || rc=$?
+resolve_ok "A2" "${SANDBOX}/a2-stderr.txt" "${rc}"
+
+# ==============================================================================
+# A3: bad absolute paths -> rc 5 + accepted shapes
+# ==============================================================================
+for _case in "/nope/nothing-rlap" "${NOT_A_WT}"; do
+  setup_env
+  _tag="a3-$(basename "${_case}")"
+  rc=0
+  timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${_case}" \
+    "A3 resume-lane bad absolute path test ${_tag}" >/dev/null 2>"${SANDBOX}/${_tag}-stderr.txt" || rc=$?
+  refuse_ok "A3[${_case}]" "${rc}" "${SANDBOX}/${_tag}-stderr.txt" "${_case}"
+done
+
+# ==============================================================================
+# A4: foreign worktree abs path (the defect input) — no doubled segment
+# ==============================================================================
+setup_env
+rc=0
+timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${FOREIGN_WT}" \
+  "A4 resume-lane foreign worktree path test document the gate" >/dev/null 2>"${SANDBOX}/a4-stderr.txt" || rc=$?
+refuse_ok "A4" "${rc}" "${SANDBOX}/a4-stderr.txt" "${FOREIGN_WT}"
+if grep -q '\.claude/worktrees/\.claude/worktrees/' "${SANDBOX}/a4-stderr.txt" 2>/dev/null; then
+  bad "A4: refusal contains a doubled .claude/worktrees/ segment"
+else
+  ok "A4: refusal has no doubled segment"
+fi
+
+# ==============================================================================
+# A5: bare name matching no lane -> rc 5 + accepted shapes
+# ==============================================================================
+setup_env
+rc=0
+timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane NOPE-RLAP-01 \
+  "A5 resume-lane unknown bare name test tidy the docs" >/dev/null 2>"${SANDBOX}/a5-stderr.txt" || rc=$?
+refuse_ok "A5" "${rc}" "${SANDBOX}/a5-stderr.txt" "NOPE-RLAP-01"
+
+printf 'test-resume-lane-arg-shapes: %d passed, %d failed\n' "${PASS}" "${FAIL}"
+[[ ${FAIL} -eq 0 ]]

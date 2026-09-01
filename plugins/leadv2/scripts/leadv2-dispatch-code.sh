@@ -396,36 +396,7 @@ if [[ -n "${_LV2_ENV_ROOT}" ]]; then
           # safe control-plane root for journals and ledgers.
           PROJECT_ROOT="${_LV2_PINNED_ROOT}"
         else
-          if [[ -n "${_LV2_PIN_VALUE}" ]]; then
-          if [[ "${_LV2_PIN_FLAG}" == "--resume-lane" ]]; then
-            if [[ "${_LV2_PIN_VALUE}" == /* ]]; then
-              _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
-            else
-              _LV2_PIN_CANDIDATE="${LEADV2_WORKTREE_DIR:-${_LV2_ENV_GIT_ROOT}/.claude/worktrees}/${_LV2_PIN_VALUE}"
-            fi
-          else
-            _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
-          fi
-
-          if [[ -n "${_LV2_PINNED_ROOT}" && -n "${_LV2_ENV_PHYSICAL_ROOT}" ]] && \
-                { _lv2_path_contains "${_LV2_ENV_PHYSICAL_ROOT}" "${_LV2_PINNED_ROOT}" || \
-                  _lv2_path_contains "${_LV2_PINNED_ROOT}" "${_LV2_ENV_PHYSICAL_ROOT}"; }; then
-            # An explicit pin proven to be in/around the physical env root wins
-            # over the unrelated cwd.  Canonicalise PROJECT_ROOT to the pin's
-            # owning repository: a parent/child env spelling is not itself a
-            # safe control-plane root for journals and ledgers.
-            PROJECT_ROOT="${_LV2_PINNED_ROOT}"
-          else
-            echo "[leadv2-dispatch-code] ERROR: lane_placement_refused reason=no_lane_worktree_for_ref" >&2
-            echo "  looked_for=${_LV2_PIN_CANDIDATE}" >&2
-            echo "  accepted_shapes: bare_lane_name | absolute_worktree_path" >&2
-            echo "  given: ${_LV2_PIN_VALUE}" >&2
-            exit 1
-          fi
-        fi
-          PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
-          _LV2_FOREIGN_ROOT_ENV="${_LV2_ENV_GIT_ROOT}"
-          _LV2_FOREIGN_ROOT_CWD="${_LV2_CWD_GIT_ROOT}"
+          echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
         fi
       fi
     fi
@@ -873,17 +844,43 @@ _resolve_pinned_placement() {
   project_root_phys="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)"
 
   # Step 1: Candidate.
+  # RESUME-LANE-ACCEPTS-PATH-01: --resume-lane accepts BOTH shapes — a bare
+  # lane name (resolved via path-of, unchanged) and an absolute path to the
+  # lane's own worktree. The absolute branch is validated here, so a bad
+  # path refuses with the accepted shapes and echoes what was given; the
+  # refusal never shows a worktree-root/ref concatenation (the old message
+  # mangled "worktrees/" + "/Users/..." into one doubled path).
   if [[ -n "${placement_lane_ref}" ]]; then
     ref="${placement_lane_ref}"
-    key="${placement_lane_ref}"
-    candidate="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${placement_lane_ref}" 2>/dev/null)"
-    if [[ -z "${candidate}" ]]; then
-      reason="no_lane_worktree_for_ref"
-      local _wt_dir="${LEADV2_WORKTREE_DIR:-${PROJECT_ROOT}/.claude/worktrees}"
-      emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} looked_for=${_wt_dir}/${ref}"
-      printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
-        "${reason}" "${ref}" "${_wt_dir}/${ref}" >&2
-      exit 5
+    if [[ "${ref}" == /* ]]; then
+      candidate=""
+      if [[ -d "${ref}" ]]; then
+        candidate="$(cd "${ref}" 2>/dev/null && pwd -P || true)"
+        local _abs_root=""
+        _abs_root="$(cd "${candidate}" 2>/dev/null && cd "$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null)" 2>/dev/null && pwd -P || true)"
+        if [[ "${_abs_root}" != "${project_root_phys}" ]]; then
+          candidate=""
+        fi
+      fi
+      if [[ -z "${candidate}" ]]; then
+        reason="no_lane_worktree_for_ref"
+        emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} given=${ref} accepted_shapes=bare_lane_name|absolute_worktree_path"
+        printf '[leadv2-dispatch-code] REFUSE placement: %s given=%s accepted_shapes=bare_lane_name|absolute_worktree_path\n' \
+          "${reason}" "${ref}" >&2
+        exit 5
+      fi
+      key="$(basename "${ref}")"
+    else
+      key="${ref}"
+      candidate="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${placement_lane_ref}" 2>/dev/null)"
+      if [[ -z "${candidate}" ]]; then
+        reason="no_lane_worktree_for_ref"
+        local _wt_dir="${LEADV2_WORKTREE_DIR:-${PROJECT_ROOT}/.claude/worktrees}"
+        emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} given=${ref} looked_for=${_wt_dir}/${ref} accepted_shapes=bare_lane_name|absolute_worktree_path"
+        printf '[leadv2-dispatch-code] REFUSE placement: %s given=%s looked_for=%s accepted_shapes=bare_lane_name|absolute_worktree_path\n' \
+          "${reason}" "${ref}" "${_wt_dir}/${ref}" >&2
+        exit 5
+      fi
     fi
   else
     # --worktree: explicit absolute path
