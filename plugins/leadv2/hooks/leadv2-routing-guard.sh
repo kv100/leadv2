@@ -467,13 +467,13 @@ if [[ "$CODEX_ENABLED" == "true" ]]; then
   printf -- 'Preferred: route plan/review brain to Codex first (zero Claude quota):\n' >&2
   printf -- '  bash ~/.claude/scripts/codex-task.sh <prompt>              # Phase 2 plan\n' >&2
   printf -- '  bash ~/.claude/scripts/codex-task.sh adversarial-review    # Phase 5 review\n' >&2
-  printf -- 'Or use Agent(%s, model=opus) for high-stakes plan/review.\n' "$SUBAGENT_TYPE" >&2
+  printf -- 'Or spawn %s at the think tier via the resolver: model="$(leadv2-router.sh think-model)" (fable; opus fallback) for high-stakes plan/review.\n' "$SUBAGENT_TYPE" >&2
   printf -- 'Sonnet %s is valid for review R2/R3 rounds (feedback_review_routing).\n' "$SUBAGENT_TYPE" >&2
   printf -- 'See: ${CLAUDE_PLUGIN_ROOT}/docs/routing-enforcement.md\n' >&2
 else
   printf -- '[leadv2-routing-guard] ADVISORY: %s spawned on sonnet during plan/review.\n' "$SUBAGENT_TYPE" >&2
   printf -- 'Codex is DISABLED in this repo (codex_enabled: false in codex-policy.yaml).\n' >&2
-  printf -- 'Use Agent(%s, model=opus) for plan/review -- NOT sonnet.\n' "$SUBAGENT_TYPE" >&2
+  printf -- 'Use the think tier for plan/review -- NOT sonnet: model="$(leadv2-router.sh think-model)" (fable; opus fallback).\n' "$SUBAGENT_TYPE" >&2
   printf -- 'See: ${CLAUDE_PLUGIN_ROOT}/docs/routing-enforcement.md\n' >&2
 fi
 

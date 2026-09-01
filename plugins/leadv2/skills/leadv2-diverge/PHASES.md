@@ -53,7 +53,7 @@ instead — check that first).
 
 One critic spawn does score + cluster in a single call:
 ```
-Agent(subagent_type=critic, model=<opus if Heavy/Strategic else sonnet>, run_in_background=true)
+Agent(subagent_type=critic, model=<Heavy/Strategic: think-model resolver (fable; opus fallback) — else sonnet>, run_in_background=true)
 ```
 Mission (writes `docs/handoff/<id>/diverge-focus.json`):
 > You are in CONVERGENT mode — now the critic. For the idea pool below:

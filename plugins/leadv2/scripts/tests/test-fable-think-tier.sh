@@ -5,19 +5,23 @@
 # runs on Fable 5.1 (`claude-fable-5-1`) first; Opus 5 is the fallback when
 # Fable is refused/unavailable — never the default. Typing roles (developer,
 # GLM/Kimi/Codex arms, haiku reads) are untouched; Sonnet stays the Standard
-# critic. Fable shares Opus's Claude-Max bucket — the review pool quota math
-# counts fable+opus+sonnet under the SAME anthropic reading/95 ceiling, no new
-# bucket.
+# critic. R2 (2026-09-01): the round-1 "same Claude-Max bucket as Opus" claim
+# was WITHDRAWN — the quota-read probe showed five_hour unchanged across a
+# live fable probe and a separate Fable weekly_scoped window in the reader
+# (evidence: model-capability.yaml fable row). The review pool keeps fable on
+# the anthropic ACCOUNT reading as the conservative ceiling only.
 #
 # Pins:
 #   1. think_model() resolver — default fable; `unavailable: true` in
 #      model-capability.yaml -> opus; LEADV2_THINK_MODEL env wins outright
 #      (negative control).
-#   2. grep-gates — zero hardcoded 'opus' at the four workflow think-spawn
-#      sites; zero `opus-4` literals anywhere under plugins/leadv2/{scripts,
-#      config,ref,workflows,hooks} ("Opus means Opus 5, never 4.8").
-#   3. review pool — fable enters ahead of opus (same anthropic quota reading,
-#      same 95 ceiling) and the diff author's arm is never picked.
+#   2. grep-gates — TREE-WIDE census (reviewer R2 HIGH fix): the census grep
+#      itself runs over plugins/leadv2/{scripts,workflows,skills,hooks} and
+#      every 'opus' hit must classify as comment/prose, explicit-fallback, or
+#      route-telemetry; a live think-role spawn pin is red. Plus zero `opus-4`
+#      literals under the same tree ("Opus means Opus 5, never 4.8").
+#   3. review pool — fable enters ahead of opus (anthropic ACCOUNT reading as
+#      the conservative ceiling) and the diff author's arm is never picked.
 #   4. dispatch architect prepass — no `:-opus` literal default; resolves
 #      through the router's think-model query mode.
 #
@@ -67,21 +71,43 @@ else
   fail "resolver fallback expected 'opus', got '${out:-<empty>}'"
 fi
 
-# --- 2. grep-gate: no hardcoded 'opus' model pin at workflow spawn sites ----
+# --- 2. TREE-WIDE census grep-gate: zero live think-role 'opus' pins --------
+# This is the census command from the lane report, run over the whole plugin
+# tree. Survivors allowed (each classified in the dispatch round-2 report):
+#   - comment lines (`# ...`) and route telemetry (emit/log/printf lines that
+#     DESCRIBE an opus decision the router already made) — they spawn nothing
+#   - explicit fallback sites (the line itself names the fallback)
+#   - guard prose ("opus is reserved for ..." — the hook ENFORCES the tiering)
+#   - test fixtures under scripts/tests/ (excluded entirely)
+census_re="model[=: ]+['\"]?opus|--model[ =]['\"]?opus"
+census="$(grep -rnE "$census_re" \
+    "$PLUGIN_ROOT/scripts" "$PLUGIN_ROOT/workflows" "$PLUGIN_ROOT/skills" "$PLUGIN_ROOT/hooks" 2>/dev/null \
+  | grep -v "$PLUGIN_ROOT/scripts/tests/" \
+  | grep -vE ":[0-9]+: *(#|emit |log |log_warn |printf )" \
+  | grep -viE "fallback|reserved for" \
+  || true)"
+# Second census pass: spawn lines naming a think role that also mention opus
+# on the same line — catches pins written as `model=<opus ...>` or role-first
+# syntax the first pattern misses.
+census2="$(grep -rnE "(subagent_type|agentType)[\"'= :]+[^,)]*(architect|critic|judge)" \
+    "$PLUGIN_ROOT/scripts" "$PLUGIN_ROOT/workflows" "$PLUGIN_ROOT/skills" "$PLUGIN_ROOT/hooks" 2>/dev/null \
+  | grep -v "$PLUGIN_ROOT/scripts/tests/" \
+  | grep -iE "opus" \
+  | grep -viE "fallback|reserved for" \
+  || true)"
+if [[ -z "$census" && -z "$census2" ]]; then
+  pass "tree-wide census: zero live think-role 'opus' spawn pins"
+else
+  [[ -n "$census"  ]] && fail "tree-wide census: unclassified 'opus' literal(s): $census"
+  [[ -n "$census2" ]] && fail "tree-wide census: think-role spawn line pinning opus: $census2"
+fi
+# The four migrated workflows keep their THINK_MODEL const (resolver wiring).
 for wf in leadv2-diverge leadv2-learn leadv2-diagnose leadv2-po-feedback-loop; do
   f="$PLUGIN_ROOT/workflows/${wf}.js"
   if [[ ! -f "$f" ]]; then fail "workflow missing: $f"; continue; fi
   grep -n "const THINK_MODEL" "$f" >/dev/null 2>&1 \
     && pass "$wf: THINK_MODEL const present" \
     || fail "$wf: THINK_MODEL const missing"
-  # A remaining model: 'opus' literal is only allowed on an EXPLICIT fallback
-  # site (label/retry naming the fallback) — never as the primary spawn pin.
-  bad="$(grep -n "model: 'opus'" "$f" 2>/dev/null | grep -vi 'fallback' || true)"
-  if [[ -z "$bad" ]]; then
-    pass "$wf: no hardcoded primary 'opus' spawn pin"
-  else
-    fail "$wf: hardcoded 'opus' spawn pin outside a fallback site: $bad"
-  fi
 done
 
 # --- 2b. grep-gate: zero opus-4 literals (Opus means Opus 5) ----------------

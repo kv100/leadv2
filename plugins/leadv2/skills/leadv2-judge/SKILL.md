@@ -1,10 +1,12 @@
 ---
 name: leadv2-judge
-description: "[internal] Unified Opus judge for leadv2 gate decisions — adjudicates a multi-option fork in classify/plan/build/review/recovery and returns a single ruling with rationale when the specialized judges (judge-review, judge-recovery) do not apply."
+description: "[internal] Unified judge for leadv2 gate decisions (think-model resolver: fable, opus fallback) — adjudicates a multi-option fork in classify/plan/build/review/recovery and returns a single ruling with rationale when the specialized judges (judge-review, judge-recovery) do not apply."
 allowed-tools:
   - Read
   - Bash
-model: opus
+# FABLE-THINK-TIER-01 R2: judge is a THINK role — model resolves through
+# leadv2-router.sh think-model (fable; opus only when fable unavailable).
+model: fable
 ---
 
 # /leadv2 Unified Judge

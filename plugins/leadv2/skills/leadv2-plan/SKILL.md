@@ -342,7 +342,8 @@ Your job (critic):
 # If class ≥ Standard:
 Agent(
   subagent_type: critic,
-  model: opus,
+  # THINK role: model = $(leadv2-router.sh think-model) — fable, opus fallback
+  model: fable,
   prompt: "
 Mission + brief: read /tmp/critic-brief-<id>.md
 

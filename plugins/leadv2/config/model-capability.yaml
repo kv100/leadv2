@@ -37,23 +37,48 @@ fable:
   agentic_score: 80.52
   agentic_basis: terminal-bench-2.1
   speed_class: slow
-  context_k: 1000
-  cost_class: quota-scarce
+  # ROUND-2: context_k is UNVERIFIED — the 1M-context claim was never measured
+  # here; reverted to unverified until a live check proves it.
+  context_k: unverified
+  # ROUND-2: fable gets its OWN bucket entry. The round-1 claim "same Claude Max
+  # bucket as Opus" was NOT proven by probe: five_hour on the active account did
+  # not move across the probe (31% -> 31%), and the live reader exposes a
+  # model-scoped weekly window for Fable distinct from weekly_all:
+  #   evidence: quota-read delta 2026-09-01 21:02:03Z/21:03:17Z,
+  #     leadv2-quota-read.py anthropic --no-cache ->
+  #     "kind": "weekly_scoped", "scope": {"model": {"display_name": "Fable"}},
+  #     pct 7 on max_20x before AND after a tiny
+  #     `claude -p --model claude-fable-5-1 'say ok'` (rc=0, not refused);
+  #     five_hour_pct 31 -> 31 on the active max_20x account.
+  # Bucket identity with opus is therefore UNPROVEN; glm-policy-resolve.py
+  # still maps fable onto the anthropic ACCOUNT reading (conservative — it
+  # blocks with the account ceiling) but must not be described as same-bucket.
+  cost_class: fable-scoped-weekly
   confidence: high
   notes: >
     SWE-V and TB2.1 both vals.ai-direct (high confidence). FABLE-THINK-TIER-01
-    (2026-09-01, founder order): Fable 5.1 is GA with 1M context (context_k
-    200 -> 1000, model_id claude-fable-5-1) in the SAME Claude Max bucket as
-    Opus — think roles (plan synthesis, judge, diagnose synth, learn proposal,
-    PO audit, review Heavy critic, architect prepass, lead main model) resolve
-    to fable first; opus is the fallback when fable is refused/unavailable
-    (`unavailable: true` here) — not the default. Speed_class=slow is an
-    inference from reasoning-tier positioning, not a measured tok/s (low
-    confidence on speed specifically).
+    (2026-09-01, founder order): Fable 5.1 GA — think roles (plan synthesis,
+    judge, diagnose synth, learn proposal, PO audit, review Heavy critic,
+    architect prepass, lead main model) resolve to fable first; opus is the
+    fallback when fable is refused/unavailable (`unavailable: true` here) —
+    not the default. ROUND-2 evidence tags:
+    evidence: model_id claude-fable-5-1 — Claude Code environment banner,
+      verbatim: "Model IDs — Fable 5.1: 'claude-fable-5-1', Opus 5:
+      'claude-opus-5', Sonnet 5: 'claude-sonnet-5'"; confirmed live by the
+      probe `claude -p --model claude-fable-5-1 'say ok'` returning rc=0.
+    evidence: quota-read delta 2026-09-01 — five_hour_pct 31->31 and a
+      pre-existing weekly_scoped window scoped to display_name "Fable"
+      (pct 7, unchanged) across the probe; the SAME-BUCKET claim is withdrawn
+      and cost_class is fable's own scoped window.
+    context_k: UNVERIFIED (was 1000 in round 1) — no measured 1M-context check
+      exists; restore a number only after a live context probe.
+    Speed_class=slow is an inference from reasoning-tier positioning, not a
+    measured tok/s (low confidence on speed specifically).
   sources:
     - https://www.vals.ai/benchmarks/swebench
     - https://www.vals.ai/benchmarks/terminal-bench-2-1
   asof: "2026-07-31"
+  round2_probed: "2026-09-01T21:03:17Z"
 
 opus:
   model_id: claude-opus-5

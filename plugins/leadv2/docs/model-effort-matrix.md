@@ -39,13 +39,30 @@ the effort. Sonnet's effort cap is `high` — if a sonnet spawn seems to need `x
 it needs a think model (fable, opus as fallback — or Codex), not a longer sonnet run. Thinking tokens are output
 tokens — the most quota-expensive thing a spawn emits.
 
-## Fable (Opus fallback) — only the hardest thinking (FABLE-THINK-TIER-01, founder order 2026-09-01, supersedes the 2026-07-03 opus-first directive; FABLE-RETIRE-01 2026-07-06 covered Fable 4.x — Claude Fable 5.1 is GA since 2026-08, 1M context, same Claude Max bucket as Opus, no new quota arm)
+## Fable (Opus fallback) — only the hardest thinking (FABLE-THINK-TIER-01, founder order 2026-09-01, supersedes the 2026-07-03 opus-first directive; FABLE-RETIRE-01 2026-07-06 covered Fable 4.x — Claude Fable 5.1 is GA since 2026-08)
+
+> evidence: model_id — Claude Code environment banner, verbatim: "Model IDs —
+> Fable 5.1: 'claude-fable-5-1', Opus 5: 'claude-opus-5', Sonnet 5:
+> 'claude-sonnet-5', Haiku 4.5: 'claude-haiku-4-5-20251001'"; confirmed live by
+> `claude -p --model claude-fable-5-1 'say ok'` → rc=0 (2026-09-01).
+> evidence: quota-read delta 2026-09-01 (`leadv2-quota-read.py anthropic
+> --no-cache` before 21:02:03Z / after 21:03:17Z) — the round-1 claim "same
+> Claude Max bucket as Opus" is WITHDRAWN: five_hour_pct on the active max_20x
+> account did not move across the probe (31→31), and the reader exposes a
+> model-scoped window `weekly_scoped scope.model.display_name="Fable"` (pct 7,
+> unchanged) SEPARATE from `weekly_all`. Fable has its own bucket entry
+> (`cost_class: fable-scoped-weekly` in model-capability.yaml); the 1M-context
+> figure is UNVERIFIED (`context_k: unverified`). glm-policy-resolve.py keeps
+> fable on the anthropic ACCOUNT reading as the conservative ceiling.
 
 Every role whose value is THINKING (not typing) runs on **Fable first; Opus is the fallback**
 when Fable is refused/unavailable — never the default. This resolves through
 `leadv2-router.sh think_model()` (env `LEADV2_THINK_MODEL` overrides; else fable unless
 `config/model-capability.yaml`'s fable row is `unavailable: true`, else opus). No think-role
-spawn site may hardcode an `'opus'` literal — call the resolver.
+spawn site may hardcode an `'opus'` literal — call the resolver. This invariant is enforced
+tree-wide (scripts, workflows, skills, hooks — tests excluded) by the census grep-gate in
+`scripts/tests/test-fable-think-tier.sh`; literal `opus` survives only on explicit fallback
+sites, route-telemetry lines that describe an opus decision already made, and prose.
 
 Fable (opus fallback) is allowed ONLY where genuinely novel reasoning or judgment happens:
 

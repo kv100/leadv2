@@ -18,6 +18,7 @@ If no alt exists, explain why and recommend escalate-to-founder with what decisi
 Max 300 words.
 EOF
 
-~/.claude/scripts/claude-subsession.sh --role architect --model opus \
+~/.claude/scripts/claude-subsession.sh --role architect \
+  --model "$(leadv2-router.sh think-model)" \  # fable; opus fallback
   --task-id <id> --mission-file /tmp/alt-approach-<id>.md --effort max
 ```

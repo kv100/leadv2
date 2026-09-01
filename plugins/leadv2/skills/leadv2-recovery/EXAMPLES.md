@@ -21,7 +21,8 @@ Write /tmp/recovery-<task-id>-<N>.md:
 # Then spawn architect via Agent tool:
 Agent(
   subagent_type: architect,
-  model: opus,
+  # THINK role: resolve via leadv2-router.sh think-model (fable; opus fallback)
+  model: fable,
   prompt: "
 Recovery context: read /tmp/recovery-<task-id>-<N>.md in full.
 

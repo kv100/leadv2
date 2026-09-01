@@ -39,7 +39,7 @@ Closes the loop between "feature deployed" and "feature is great". Codifies the 
 
 ### Phase A — Audit (Architect-Opus + Playwright + benchmarks)
 
-Spawn `Agent(subagent_type="07-architect" OR "18-fe-architect", model="opus")` with mission `po-audit-mission.md` (see `templates/po-audit-mission.md` in this skill dir). The architect:
+Spawn `Agent(subagent_type="07-architect" OR "18-fe-architect", model=<leadv2-router.sh think-model: fable, opus fallback>)` with mission `po-audit-mission.md` (see `templates/po-audit-mission.md` in this skill dir). The architect:
 
 1. Sets cookie bypass + visits deployed preprod URL via Playwright (`@playwright/test`)
 2. Captures **all states** of the feature: loaded, empty, error, loading, mobile (375×812)

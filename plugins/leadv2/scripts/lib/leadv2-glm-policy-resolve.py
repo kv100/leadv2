@@ -88,8 +88,11 @@ DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
 # of opus (opus is fable's fallback, not the default) but after the two proven
 # free/cheap arms glm and kimi -- same "unproven quality, never the only
 # reviewer if a proven arm has headroom" reasoning KIMI-CHANNEL-01b applied to
-# kimi. fable shares the single "anthropic" account reading with opus/sonnet
-# (see _pct_for below) -- same bucket, no new quota arm.
+# kimi. fable maps onto the single "anthropic" ACCOUNT reading with opus/sonnet
+# (see _pct_for below) as the CONSERVATIVE ceiling only -- bucket identity with
+# opus is UNVERIFIED: the 2026-09-01 quota-read probe showed five_hour unchanged
+# across a live fable probe and a separate Fable weekly_scoped window in the
+# reader (evidence: model-capability.yaml fable row, round 2).
 DEFAULT_REVIEW_ARM_ORDER = ["codex", "glm", "kimi", "fable", "opus", "sonnet"]
 DEFAULT_GLM_REVIEW_THRESHOLD_PCT = 90.0
 DEFAULT_ANTHROPIC_REVIEW_THRESHOLD_PCT = 95.0
