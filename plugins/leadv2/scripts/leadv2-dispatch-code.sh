@@ -331,6 +331,33 @@ _lv2_path_contains() {
   local parent="$1" child="$2"
   [[ "${child}" == "${parent}" || "${child}" == "${parent}/"* ]]
 }
+# RESUME-LANE-ACCEPTS-PATH-01 round 3 (review-glm High-2): an absolute
+# --resume-lane pin is honored ONLY for a real LINKED worktree of PROJECT_ROOT
+# -- exactly a path `git worktree list --porcelain` names, never the main
+# checkout -- whose branch is `worktree-<id>` and whose directory basename is
+# that same <id>.  The earlier check ("git-common-dir parent == project root")
+# also accepted the repo root itself and ANY in-repo subdirectory, letting an
+# arbitrary directory be pinned as the lane worktree.  Bash 3.2 safe.
+_lv2_is_lane_worktree_path() {
+  local cand="$1" root="$2" main_wt wt="" branch="" line id
+  main_wt="$(git -C "${root}" rev-parse --git-common-dir 2>/dev/null || true)"
+  main_wt="$(cd "${root}" 2>/dev/null && cd "$(dirname "${main_wt}")" 2>/dev/null && pwd -P || true)"
+  [[ -n "${main_wt}" ]] || return 1
+  while IFS= read -r line; do
+    case "${line}" in
+      "worktree "*) wt="${line#worktree }"; branch="" ;;
+      "branch refs/heads/"*) branch="${line#branch refs/heads/}" ;;
+      "")
+        if [[ -n "${wt}" && "${wt}" != "${main_wt}" && "${branch}" == worktree-* ]]; then
+          id="${branch#worktree-}"
+          [[ "$(basename "${cand}")" == "${id}" ]] && return 0
+        fi
+        wt=""
+        ;;
+    esac
+  done < <(git -C "${root}" worktree list --porcelain 2>/dev/null; printf '\n')
+  return 1
+}
 # GATE-WRONG-ROOT-FALSE-DEAD-01 (repo-CLAUDE.md): resolve the cwd git root ONCE,
 # unconditionally, so it is defined identically on every branch below -- the
 # prior guard-off else-branch left this unset and silently fell back to
@@ -396,6 +423,18 @@ if [[ -n "${_LV2_ENV_ROOT}" ]]; then
           # safe control-plane root for journals and ledgers.
           PROJECT_ROOT="${_LV2_PINNED_ROOT}"
         else
+          _LV2_FOREIGN_ROOT_ENV="${_LV2_ENV_GIT_ROOT}"
+          _LV2_FOREIGN_ROOT_CWD="${_LV2_CWD_GIT_ROOT}"
+          # No pin proved the env root authoritative, so the env root is the
+          # leak shape the incident describes: discard it and root the control
+          # plane at cwd.  Keeping the env root here would also strand a later
+          # --resume-lane pin: the resolver's Step 4 compares the candidate's
+          # owning repo against PROJECT_ROOT, so an env-rooted PROJECT_ROOT
+          # refuses the very pin the preflight above exists to enable
+          # (review-glm round 2, High-1: no half-deleted mechanism -- the
+          # fallback and the WARN text below agree, and the telemetry
+          # assignments stay live for the project_root_guard reader).
+          PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
           echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
         fi
       fi
@@ -855,11 +894,16 @@ _resolve_pinned_placement() {
     if [[ "${ref}" == /* ]]; then
       candidate=""
       if [[ -d "${ref}" ]]; then
-        candidate="$(cd "${ref}" 2>/dev/null && pwd -P || true)"
-        local _abs_root=""
-        _abs_root="$(cd "${candidate}" 2>/dev/null && cd "$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null)" 2>/dev/null && pwd -P || true)"
-        if [[ "${_abs_root}" != "${project_root_phys}" ]]; then
-          candidate=""
+        local _abs_cand=""
+        _abs_cand="$(cd "${ref}" 2>/dev/null && pwd -P || true)"
+        # RESUME-LANE-ACCEPTS-PATH-01 round 3 (review-glm High-2): same-repo
+        # containment alone accepted PROJECT_ROOT itself and any in-repo
+        # subdirectory as a "lane worktree". An absolute --resume-lane path is
+        # accepted only when `git worktree list --porcelain` names it as a
+        # LINKED worktree of PROJECT_ROOT (never the main checkout), on branch
+        # worktree-<id>, with the path's own basename equal to that id.
+        if [[ -n "${_abs_cand}" ]] && _lv2_is_lane_worktree_path "${_abs_cand}" "${project_root_phys}"; then
+          candidate="${_abs_cand}"
         fi
       fi
       if [[ -z "${candidate}" ]]; then

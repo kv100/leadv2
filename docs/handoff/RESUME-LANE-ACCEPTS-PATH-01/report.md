@@ -146,3 +146,49 @@ bare-name path.
   stated above rather than hidden).
 - Mutations were applied INSIDE the production body on the real call path, run RED,
   reverted, run GREEN; `git diff HEAD --stat` clean afterwards.
+
+## Round 3 evidence (review-glm High-1 + High-2)
+
+NOTE: a concurrent process wrote to this lane's `leadv2-dispatch-code.sh` and its
+test file mid-session (helper function `_lv2_is_lane_worktree_path` + test cases
+A6/A7/A8 + `LEADV2_DISPATCH_TERMINAL_LEDGER=0` perf flag). Verified correct and
+adopted rather than reverted, per working-tree-collision policy.
+
+- High-1 (half-deleted mechanism): fixed by keeping the cwd-derived-root fallback
+  live, matching WARN text, and live `_LV2_FOREIGN_ROOT_ENV/CWD` telemetry
+  assignments consumed by `project_root_guard`. Grep-gated in the suite (round3
+  checks).
+- High-2 (absolute-path branch over-accepted): fixed via
+  `_lv2_is_lane_worktree_path()` — accepts only a path `git worktree list
+  --porcelain` names as a LINKED worktree of PROJECT_ROOT (never the main
+  checkout), on branch `worktree-<id>`, basename == `<id>`. New cases A6
+  (`--resume-lane <PROJECT_ROOT>` refused) and A7 (`--resume-lane
+  <PROJECT_ROOT>/plugins` refused) plus A8 (foreign-root WARN text/telemetry
+  match).
+
+Green run (36 cases, prior rounds + round 3):
+```
+test-resume-lane-arg-shapes: 36 passed, 0 failed
+```
+
+Mutation negative control — relaxed the absolute-path branch back to bare
+"common-dir parent == PROJECT_ROOT" (dropping the linked-worktree/branch/basename
+check):
+```
+[TEST] FAIL: A6: dispatch exited 0 (expected 5)
+[TEST] FAIL: A6: no lane_placement_refused in output
+[TEST] FAIL: A7: dispatch exited 0 (expected 5)
+[TEST] FAIL: A7: no lane_placement_refused in output
+test-resume-lane-arg-shapes: 28 passed, 4 failed
+```
+Reverted; suite back to 36/0 green (diffed against the pre-mutation copy to
+confirm byte-identical restore).
+
+Suite wall time (this run): 1:29.85 — still above the review's 40s target. Root
+cause investigated: a standalone single-case run floors at ~13s CPU inside the
+dispatcher itself (measured with no contention), and a real 2-live-lane
+admission cap limits usable parallelism to 2 concurrent invocations. With 8
+cases at a 2-wide cap the floor is ~4×13s = 52s before any per-call
+environment/ledger overhead. Bringing it under 40s needs dispatcher-side perf
+work (e.g. a test-only fast path skipping more subsystems) that is out of scope
+for this fix — left as a known gap rather than claimed met.

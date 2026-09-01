@@ -13,6 +13,13 @@
 #   A4  absolute path to a FOREIGN repo's worktree (the measured defect input)
 #       -> rc 5, refusal NEVER contains a doubled `.claude/worktrees/` segment.
 #   A5  bare name matching no lane -> rc 5, refusal names the accepted shapes.
+#   Round 3 (review-glm):
+#   A6  --resume-lane <PROJECT_ROOT> itself -> rc 5 (never a lane worktree).
+#   A7  --resume-lane <in-repo subdirectory> -> rc 5.
+#   A8  foreign env root + cwd in another repo, no pin -> the guard WARNs and
+#       falls back to the cwd-derived root; project_root_guard telemetry fires.
+#   + source grep-gates: WARN text, telemetry assignments, and the
+#     linked-worktree porcelain helper must all co-exist in the dispatcher.
 
 set -uo pipefail
 
@@ -44,6 +51,10 @@ new_repo() {
 
 new_repo "${TARGET}"
 new_repo "${FOREIGN}"
+# Physical spellings: the guard compares realpath forms (macOS /tmp hop), so
+# the A8 assertions must grep for the physical roots, not the /tmp strings.
+TARGET_PHYS="$(cd "${TARGET}" 2>/dev/null && pwd -P)"
+FOREIGN_PHYS="$(cd "${FOREIGN}" 2>/dev/null && pwd -P)"
 
 # The lane worktree of TARGET both shapes must resolve to.
 RESUME_WT="${TARGET}/.claude/worktrees/RESUME-ME-01"
@@ -92,7 +103,8 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "${GLM_STUB}"
 chmod +x "${GLM_STUB}"
 
 # Admission/cost model seams: the dispatcher shells out to a live `claude -p`
-# judge unless stubbed — on a busy machine that call queues for minutes.
+# judge unless stubbed — the judge is one haiku call (leadv2-task-judge.sh:6)
+# whose latency varies with machine load, so it is stubbed for determinism.
 TASK_JUDGE_STUB="${SANDBOX}/task-judge-stub.sh"
 cat > "${TASK_JUDGE_STUB}" <<'SH'
 #!/usr/bin/env bash
@@ -132,6 +144,10 @@ setup_env() {
   export LEADV2_DISPATCH_REVIEW_GATE=0
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
+  # Round 3: the dispatch-ledger sweep dominates wall time (~8.5s per
+  # invocation, measured) and the suite asserts stderr decision lines, never
+  # ledger rows -- so run the dispatcher with ledger writes off.
+  export LEADV2_DISPATCH_TERMINAL_LEDGER=0
 }
 
 # resolve_ok <label> <stderr-file> <rc> — rc 0 + pinned to the fixture lane
@@ -169,21 +185,65 @@ refuse_ok() {
 # ==============================================================================
 # A1: bare lane name -> resolves to the lane (regression guard)
 # ==============================================================================
+# Cases run in pairs (a real 2-live-lane admission cap applies system-wide;
+# more than 2 concurrent dispatch-code.sh invocations against the same state
+# base contend and time out -- proven empirically running this suite).
+mkdir -p "${TARGET}/plugins"
+
 setup_env
-rc=0
 timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane RESUME-ME-01 \
-  "A1 resume-lane bare name shape test fix the build" >/dev/null 2>"${SANDBOX}/a1-stderr.txt" || rc=$?
-resolve_ok "A1" "${SANDBOX}/a1-stderr.txt" "${rc}"
-
-# ==============================================================================
-# A2: absolute path -> resolves to the same lane
-# ==============================================================================
+  "A1 resume-lane bare name shape test fix the build" >/dev/null 2>"${SANDBOX}/a1-stderr.txt" &
+PID_A1=$!
 setup_env
-rc=0
 timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${RESUME_WT}" \
-  "A2 resume-lane absolute path shape test refactor the validator" >/dev/null 2>"${SANDBOX}/a2-stderr.txt" || rc=$?
-resolve_ok "A2" "${SANDBOX}/a2-stderr.txt" "${rc}"
+  "A2 resume-lane absolute path shape test refactor the validator" >/dev/null 2>"${SANDBOX}/a2-stderr.txt" &
+PID_A2=$!
+rc_a1=0; rc_a2=0
+wait "${PID_A1}" || rc_a1=$?
+wait "${PID_A2}" || rc_a2=$?
 
+setup_env
+timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "/nope/nothing-rlap" \
+  "A3 resume-lane bad absolute path test a3-nope" >/dev/null 2>"${SANDBOX}/a3-nope-stderr.txt" &
+PID_A3_NOPE=$!
+setup_env
+timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${NOT_A_WT}" \
+  "A3 resume-lane bad absolute path test a3-plain" >/dev/null 2>"${SANDBOX}/a3-plain-stderr.txt" &
+PID_A3_PLAIN=$!
+rc_a3_nope=0; rc_a3_plain=0
+wait "${PID_A3_NOPE}" || rc_a3_nope=$?
+wait "${PID_A3_PLAIN}" || rc_a3_plain=$?
+
+setup_env
+timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${FOREIGN_WT}" \
+  "A4 resume-lane foreign worktree path test document the gate" >/dev/null 2>"${SANDBOX}/a4-stderr.txt" &
+PID_A4=$!
+setup_env
+timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane NOPE-RLAP-01 \
+  "A5 resume-lane unknown bare name test tidy the docs" >/dev/null 2>"${SANDBOX}/a5-stderr.txt" &
+PID_A5=$!
+rc_a4=0; rc_a5=0
+wait "${PID_A4}" || rc_a4=$?
+wait "${PID_A5}" || rc_a5=$?
+
+# A6/A7 (RESUME-LANE-ACCEPTS-PATH-01 round 3): the absolute-path branch used
+# to validate only "git-common-dir parent == PROJECT_ROOT", so it accepted
+# PROJECT_ROOT itself and any in-repo subdirectory as a "lane worktree".
+setup_env
+timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${TARGET}" \
+  "A6 resume-lane project root itself must be refused" >/dev/null 2>"${SANDBOX}/a6-stderr.txt" &
+PID_A6=$!
+setup_env
+timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${TARGET}/plugins" \
+  "A7 resume-lane in-repo subdirectory must be refused" >/dev/null 2>"${SANDBOX}/a7-stderr.txt" &
+PID_A7=$!
+rc_a6=0; rc_a7=0
+wait "${PID_A6}" || rc_a6=$?
+wait "${PID_A7}" || rc_a7=$?
+
+resolve_ok "A1" "${SANDBOX}/a1-stderr.txt" "${rc_a1}"
+
+resolve_ok "A2" "${SANDBOX}/a2-stderr.txt" "${rc_a2}"
 # MUTATION-ANCHOR (RESUME-LANE-ACCEPTS-PATH-01 round 2): this is the assertion
 # that dies when the absolute-path branch of the FOREIGN-PROJECT-ROOT-GUARD-01
 # pin preflight (leadv2-dispatch-code.sh, _LV2_PIN_VALUE == /*) is removed.
@@ -198,41 +258,72 @@ if grep -qF 'foreign project root detected' "${SANDBOX}/a2-stderr.txt" 2>/dev/nu
 else
   ok "A2: foreign-root guard accepted the absolute-path pin"
 fi
+# round-3 grep-gate (review-glm H1: "no half-deleted mechanism"): the guard
+# RESTORES the cwd-derived-root fallback when no pin proves the env root, so
+# the WARN text must say exactly that, the _LV2_FOREIGN_ROOT_* telemetry
+# assignments must stay live (the project_root_guard reader consumes them),
+# and the porcelain helper behind the round-3 absolute-branch check must exist.
+RLAP_DC="${PLUGIN_SCRIPTS}/leadv2-dispatch-code.sh"
+if grep -qF -- '-- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)' "${RLAP_DC}"; then
+  ok "round3: WARN text names the cwd-derived-root fallback"
+else
+  bad "round3: WARN text does not match the restored fallback behavior"
+fi
+if grep -qF '_LV2_FOREIGN_ROOT_ENV="${_LV2_ENV_GIT_ROOT}"' "${RLAP_DC}" \
+   && grep -qF '_LV2_FOREIGN_ROOT_CWD="${_LV2_CWD_GIT_ROOT}"' "${RLAP_DC}" \
+   && grep -qF 'PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"' "${RLAP_DC}"; then
+  ok "round3: foreign-root telemetry assignments + fallback are live in source"
+else
+  bad "round3: telemetry assignments or fallback missing (half-deleted mechanism)"
+fi
+if grep -qF '_lv2_is_lane_worktree_path' "${RLAP_DC}" \
+   && grep -qF 'worktree list --porcelain' "${RLAP_DC}"; then
+  ok "round3: absolute-branch check uses the linked-worktree porcelain helper"
+else
+  bad "round3: porcelain linked-worktree check missing from source"
+fi
 
-# ==============================================================================
-# A3: bad absolute paths -> rc 5 + accepted shapes
-# ==============================================================================
-for _case in "/nope/nothing-rlap" "${NOT_A_WT}"; do
-  setup_env
-  _tag="a3-$(basename "${_case}")"
-  rc=0
-  timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${_case}" \
-    "A3 resume-lane bad absolute path test ${_tag}" >/dev/null 2>"${SANDBOX}/${_tag}-stderr.txt" || rc=$?
-  refuse_ok "A3[${_case}]" "${rc}" "${SANDBOX}/${_tag}-stderr.txt" "${_case}"
-done
+refuse_ok "A3[/nope/nothing-rlap]" "${rc_a3_nope}" "${SANDBOX}/a3-nope-stderr.txt" "/nope/nothing-rlap"
+refuse_ok "A3[${NOT_A_WT}]" "${rc_a3_plain}" "${SANDBOX}/a3-plain-stderr.txt" "${NOT_A_WT}"
 
-# ==============================================================================
-# A4: foreign worktree abs path (the defect input) — no doubled segment
-# ==============================================================================
-setup_env
-rc=0
-timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${FOREIGN_WT}" \
-  "A4 resume-lane foreign worktree path test document the gate" >/dev/null 2>"${SANDBOX}/a4-stderr.txt" || rc=$?
-refuse_ok "A4" "${rc}" "${SANDBOX}/a4-stderr.txt" "${FOREIGN_WT}"
+refuse_ok "A4" "${rc_a4}" "${SANDBOX}/a4-stderr.txt" "${FOREIGN_WT}"
 if grep -q '\.claude/worktrees/\.claude/worktrees/' "${SANDBOX}/a4-stderr.txt" 2>/dev/null; then
   bad "A4: refusal contains a doubled .claude/worktrees/ segment"
 else
   ok "A4: refusal has no doubled segment"
 fi
 
+refuse_ok "A5" "${rc_a5}" "${SANDBOX}/a5-stderr.txt" "NOPE-RLAP-01"
+
+refuse_ok "A6" "${rc_a6}" "${SANDBOX}/a6-stderr.txt" "${TARGET}"
+
+refuse_ok "A7" "${rc_a7}" "${SANDBOX}/a7-stderr.txt" "${TARGET}/plugins"
+
 # ==============================================================================
-# A5: bare name matching no lane -> rc 5 + accepted shapes
+# A8 (round 3, review-glm H1): foreign env root, cwd in another repo, NO pin
+# -> the guard warns AND falls back to the cwd-derived root, and the
+# project_root_guard telemetry fires with both roots (proves the
+# _LV2_FOREIGN_ROOT_* assignments are live, not half-deleted).
 # ==============================================================================
 setup_env
-rc=0
-timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane NOPE-RLAP-01 \
-  "A5 resume-lane unknown bare name test tidy the docs" >/dev/null 2>"${SANDBOX}/a5-stderr.txt" || rc=$?
-refuse_ok "A5" "${rc}" "${SANDBOX}/a5-stderr.txt" "NOPE-RLAP-01"
+export CLAUDE_PROJECT_DIR="${FOREIGN}"
+export CLAUDE_PROJECT_ROOT="${FOREIGN}"
+rc_a8=0
+( cd "${TARGET}" && timeout -k 5 60 bash "${DC}" --kind tooling \
+  "A8 foreign env root falls back to cwd root test verify the gate" >/dev/null 2>"${SANDBOX}/a8-stderr.txt" ) || rc_a8=$?
+[[ ${rc_a8} -eq 0 ]] && ok "A8: dispatch exited 0" || bad "A8: dispatch exited ${rc_a8} (expected 0)"
+if grep -qF -- '-- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)' "${SANDBOX}/a8-stderr.txt" \
+   && grep -qF "cwd=${TARGET_PHYS}" "${SANDBOX}/a8-stderr.txt"; then
+  ok "A8: foreign-root WARN names the cwd-derived fallback"
+else
+  bad "A8: expected cwd-derived-root WARN naming cwd=${TARGET_PHYS}"
+fi
+if grep -q "status=foreign_env_overridden env_root=${FOREIGN_PHYS}" "${SANDBOX}/a8-stderr.txt" \
+   && grep -qF "cwd_root=${TARGET_PHYS}" "${SANDBOX}/a8-stderr.txt"; then
+  ok "A8: project_root_guard telemetry fired with both roots"
+else
+  bad "A8: project_root_guard foreign_env_overridden telemetry missing or wrong roots"
+fi
 
 printf 'test-resume-lane-arg-shapes: %d passed, %d failed\n' "${PASS}" "${FAIL}"
 [[ ${FAIL} -eq 0 ]]
