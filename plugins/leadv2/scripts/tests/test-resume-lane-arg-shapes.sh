@@ -335,6 +335,10 @@ refuse_ok "A6" "${rc_a6}" "${SANDBOX}/a6-stderr.txt" "${TARGET}"
 
 refuse_ok "A7" "${rc_a7}" "${SANDBOX}/a7-stderr.txt" "${TARGET}/plugins"
 
+# A9 (round 4, review-glm H1): the collision case — an in-repo subdir whose
+# basename equals the lane id but whose PATH is not the worktree — must be
+# refused with the shape-naming message, while the worktree's own path (A2)
+# stays accepted.
 refuse_ok "A9" "${rc_a9}" "${SANDBOX}/a9-stderr.txt" "${COLLISION_DIR}"
 
 # ==============================================================================
