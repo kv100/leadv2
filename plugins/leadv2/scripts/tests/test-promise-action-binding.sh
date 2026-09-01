@@ -297,14 +297,26 @@ run_case "write-promise-devnull-unrelated-fires"    case_write_promise_devnull_u
 run_case "write-promise-real-write-matches-silent"  case_write_promise_real_write_matches
 
 # --- sandbox control: this suite must never write the real journal ---------------
+# PROMISE-JOURNAL-CONCURRENT-WRITES-01: the real journal is shared production state --
+# every live Claude session's own Stop hook appends to it, so a raw before/after LINE
+# COUNT is a concurrency false-positive that flakes red on any busy day (measured
+# 2026-09-01: a foreign real-UUID session_id appended mid-run, no leak occurred). The
+# only thing this suite can actually prove is that ITS OWN calls (sid prefix
+# "test-${$}-...", unique per PID) never landed in the real file -- so filter the
+# appended rows to that prefix instead of trusting total count.
 REAL_JOURNAL_LINES_AFTER=0
 [[ -f "${REAL_JOURNAL}" ]] && REAL_JOURNAL_LINES_AFTER="$(wc -l < "${REAL_JOURNAL}" 2>/dev/null | tr -d ' ')"
-if [[ "${REAL_JOURNAL_LINES_AFTER}" != "${REAL_JOURNAL_LINES_BEFORE}" ]]; then
+LEAKED_ROWS=""
+if [[ "${REAL_JOURNAL_LINES_AFTER}" -gt "${REAL_JOURNAL_LINES_BEFORE}" ]]; then
+  LEAKED_ROWS="$(tail -n "+$((REAL_JOURNAL_LINES_BEFORE + 1))" "${REAL_JOURNAL}" 2>/dev/null \
+    | grep -F "\"session_id\": \"test-$$-" -- || true)"
+fi
+if [[ -n "${LEAKED_ROWS}" ]]; then
   FAIL=$((FAIL + 1))
-  ERRORS+=("sandbox-escape: ${REAL_JOURNAL} grew from ${REAL_JOURNAL_LINES_BEFORE} to ${REAL_JOURNAL_LINES_AFTER} lines during this run despite HOME sandbox")
-  log "FAIL: sandbox-escape -- real journal changed during test run"
+  ERRORS+=("sandbox-escape: ${REAL_JOURNAL} received this run's own rows despite HOME sandbox")
+  log "FAIL: sandbox-escape -- real journal contains this run's own sid prefix (test-$$-)"
 else
-  log "PASS: sandbox-control -- real journal ${REAL_JOURNAL} unchanged (${REAL_JOURNAL_LINES_BEFORE} lines)"
+  log "PASS: sandbox-control -- real journal ${REAL_JOURNAL} has no rows from this run (before=${REAL_JOURNAL_LINES_BEFORE} after=${REAL_JOURNAL_LINES_AFTER})"
 fi
 
 echo ""

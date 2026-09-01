@@ -297,15 +297,69 @@ run_case "r4-neg-tablicu-past-veto"   case_r4_neg_tablicu
 run_case "r4-neg-ochered-no-candidate" case_r4_neg_ochered
 run_case "r4-neg-statistiku-excluded-ending" case_r4_neg_statistiku
 
+# --- TURN-IT-ON-01 round 4: word-start anchors on the new stems -------------------
+# Judge verdict HIGH: the r3 additions "чин\w*" and "обнов\w*" were UNANCHORED
+# substrings. Blocking only reaches a sentence that is promise-DETECTED, and the
+# judge's verbatim probe («Сейчас посмотрю, в чём причина») is not one — but the
+# mechanism is real end-to-end: a DETECTED promise whose only kind signal is the
+# substring («Сделаю разбор причины», «Запущу обновление кэша») gets classified
+# write and BLOCKED with no keeping write action. Pinned both layers:
+#   - the judge's sentence and the bare noun forms (regex layer, SILENT), and
+#   - detected promises whose only kind match was the unanchored stem (the
+#     mutation-control negatives: strip the \b anchors and these four go RED —
+#     measured, see report.md round 4).
+# Every TURN-IT-ON-01 stem now carries \b; чин- additionally requires verb endings
+# because the noun «починка» shares the word-start «почин» with the verb «починю»
+# (\b alone cannot separate them).
+case_r4b_neg_prichina()    { _expect "$1" "Сейчас посмотрю, в чём причина" SILENT; }
+case_r4b_neg_obnovlenie()  { _expect "$1" "обновление пришло" SILENT; }
+case_r4b_neg_pochinka()    { _expect "$1" "починка была вчера" SILENT; }
+case_r4b_neg_razbor()      { _expect "$1" "Сделаю разбор причины" SILENT; }
+case_r4b_neg_kesh()        { _expect "$1" "Запущу обновление кэша" SILENT; }
+case_r4b_neg_reestr()      { _expect "$1" "Сейчас сделаю обновление реестра" SILENT; }
+case_r4b_neg_nachnu()      { _expect "$1" "Начну с разбора причины" SILENT; }
+case_r4b_pos_chinyu()      { _expect "$1" "чиню конфиг" FIRED; }
+case_r4b_pos_pochinyu()    { _expect "$1" "починю конфиг" FIRED; }
+case_r4b_pos_obnovlyu()    { _expect "$1" "сейчас обновлю yaml" FIRED; }
+# Control that the flip negatives stay honest: a detected promise with a REAL kind
+# signal (прогоню тест → test kind) must still block even though "обновление" is
+# also present — proves the SILENTs above come from de-classification, not from
+# something muting the hook wholesale.
+case_r4b_pos_test_kind()   { _expect "$1" "Прогоню тест на обновление схемы" FIRED; }
+
+run_case "r4b-neg-prichina-substring"   case_r4b_neg_prichina
+run_case "r4b-neg-obnovlenie-noun"      case_r4b_neg_obnovlenie
+run_case "r4b-neg-pochinka-noun"        case_r4b_neg_pochinka
+run_case "r4b-neg-razbor-prichiny"      case_r4b_neg_razbor
+run_case "r4b-neg-obnovlenie-kesha"     case_r4b_neg_kesh
+run_case "r4b-neg-obnovlenie-reestra"   case_r4b_neg_reestr
+run_case "r4b-neg-nachnu-prichiny"      case_r4b_neg_nachnu
+run_case "r4b-pos-chinyu"               case_r4b_pos_chinyu
+run_case "r4b-pos-pochinyu"             case_r4b_pos_pochinyu
+run_case "r4b-pos-obnovlyu-yaml"        case_r4b_pos_obnovlyu
+run_case "r4b-pos-test-kind-still-blocks" case_r4b_pos_test_kind
+
 # --- sandbox control: this suite must never write the real journal ---------------
+# PROMISE-JOURNAL-CONCURRENT-WRITES-01: the real journal is shared production state --
+# every live Claude session's own Stop hook appends to it, so a raw before/after LINE
+# COUNT is a concurrency false-positive that flakes red on any busy day (measured
+# 2026-09-01: a foreign real-UUID session_id appended mid-run, no leak occurred). The
+# only thing this suite can actually prove is that ITS OWN calls (sid prefix
+# "test-${$}-...", unique per PID) never landed in the real file -- so filter the
+# appended rows to that prefix instead of trusting total count.
 REAL_JOURNAL_LINES_AFTER=0
 [[ -f "${REAL_JOURNAL}" ]] && REAL_JOURNAL_LINES_AFTER="$(wc -l < "${REAL_JOURNAL}" 2>/dev/null | tr -d ' ')"
-if [[ "${REAL_JOURNAL_LINES_AFTER}" != "${REAL_JOURNAL_LINES_BEFORE}" ]]; then
+LEAKED_ROWS=""
+if [[ "${REAL_JOURNAL_LINES_AFTER}" -gt "${REAL_JOURNAL_LINES_BEFORE}" ]]; then
+  LEAKED_ROWS="$(tail -n "+$((REAL_JOURNAL_LINES_BEFORE + 1))" "${REAL_JOURNAL}" 2>/dev/null \
+    | grep -F "\"session_id\": \"test-$$-" -- || true)"
+fi
+if [[ -n "${LEAKED_ROWS}" ]]; then
   FAIL=$((FAIL + 1))
-  ERRORS+=("sandbox-escape: ${REAL_JOURNAL} grew from ${REAL_JOURNAL_LINES_BEFORE} to ${REAL_JOURNAL_LINES_AFTER} lines during this run despite HOME sandbox")
-  log "FAIL: sandbox-escape -- real journal changed during test run"
+  ERRORS+=("sandbox-escape: ${REAL_JOURNAL} received this run's own rows despite HOME sandbox")
+  log "FAIL: sandbox-escape -- real journal contains this run's own sid prefix (test-$$-)"
 else
-  log "PASS: sandbox-control -- real journal ${REAL_JOURNAL} unchanged (${REAL_JOURNAL_LINES_BEFORE} lines)"
+  log "PASS: sandbox-control -- real journal ${REAL_JOURNAL} has no rows from this run (before=${REAL_JOURNAL_LINES_BEFORE} after=${REAL_JOURNAL_LINES_AFTER})"
 fi
 
 echo ""

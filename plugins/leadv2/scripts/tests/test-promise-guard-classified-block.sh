@@ -225,12 +225,21 @@ else
 fi
 
 # --- control: the real journal must be untouched ------------------------------
+# PROMISE-JOURNAL-CONCURRENT-WRITES-01: the real journal is shared production state --
+# any live session's own Stop hook can append to it concurrently, so a raw line-count
+# equality check flakes red on any busy day even with zero leak. Filter the appended
+# rows to this suite's own sid prefixes (classified-$$- / sentinel-$$-) instead.
 REAL_JOURNAL_LINES_AFTER="${REAL_JOURNAL_LINES_BEFORE}"
 [[ -f "${REAL_JOURNAL}" ]] && REAL_JOURNAL_LINES_AFTER="$(wc -l < "${REAL_JOURNAL}" 2>/dev/null | tr -d ' ')"
-if [[ "${REAL_JOURNAL_LINES_AFTER}" -eq "${REAL_JOURNAL_LINES_BEFORE}" ]]; then
-  ok "control: real journal untouched (${REAL_JOURNAL_LINES_BEFORE} lines)"
+LEAKED_ROWS=""
+if [[ "${REAL_JOURNAL_LINES_AFTER}" -gt "${REAL_JOURNAL_LINES_BEFORE}" ]]; then
+  LEAKED_ROWS="$(tail -n "+$((REAL_JOURNAL_LINES_BEFORE + 1))" "${REAL_JOURNAL}" 2>/dev/null \
+    | grep -E "\"session_id\": \"(classified|sentinel)-$$-" -- || true)"
+fi
+if [[ -z "${LEAKED_ROWS}" ]]; then
+  ok "control: real journal has no rows from this run (before=${REAL_JOURNAL_LINES_BEFORE} after=${REAL_JOURNAL_LINES_AFTER})"
 else
-  bad "control: REAL journal changed ${REAL_JOURNAL_LINES_BEFORE} -> ${REAL_JOURNAL_LINES_AFTER}"
+  bad "control: REAL journal received this run's own rows (sid prefix classified-$$- / sentinel-$$-) despite HOME sandbox"
 fi
 
 log "classified-block: ${PASS} passed, ${FAIL} failed"

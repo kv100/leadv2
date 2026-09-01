@@ -356,12 +356,24 @@ PROMISE_KIND_PATTERNS = [
         # bucket and each kept by an already-modelled write action (Edit/Write/
         # sed -i/> file):
         #  - "перепишу" — the писать family already here (напиш/запиш/допиш)
-        #  - "чиню/починю" — synonym of исправ, the pinned 2026-08-21 escape
-        #  - "обновлю" — "Сейчас обновлю фикстуры"
+        #  - "чиню/починю" — synonym of исправ, the pinned 2026-08-21 escape:
+        #    \b-anchored — unanchored "чин" is a substring of "причина"
+        #    ("в чём причина" classified WRITE, judge round-4 HIGH). Verb
+        #    endings are required for the почин- family too: the noun
+        #    "починка" shares the word-start "почин" with the verb "починю",
+        #    so \b alone cannot separate them ("починка была вчера" stays
+        #    SILENT, "починю конфиг" fires).
+        #  - "обновлю" — "Сейчас обновлю фикстуры". \b + verb-forms only:
+        #    the noun "обновление" ("обновление пришло") must stay SILENT.
         #  - "беру/берусь" — "Берусь за третье — контракт prepass" is the single
         #    most-fired unclassified quote (96 rows); taking on a task is kept
         #    by the state-changing work on it (a write-class action).
-        r'|перепиш\w*|чин\w*|обнов\w*|\b(?:беру|берусь)\b', re.I | re.UNICODE)),
+        #
+        # Every stem added by TURN-IT-ON-01 carries a word-start anchor (\b works
+        # here: the engine is Python re with re.UNICODE, so Cyrillic letters are
+        # word chars); unanchored stems matched mid-word nouns.
+        r'|перепиш\w*|\b(?:по)?чин(?:ю|ишь|ит|им|ите|ат|ить)\b'
+        r'|\bобнов(?:лю|им|ляю)\b|\b(?:беру|берусь)\b', re.I | re.UNICODE)),
 ]
 
 def classify_promise_kind(clause):
