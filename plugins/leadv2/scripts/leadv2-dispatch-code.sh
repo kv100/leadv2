@@ -355,8 +355,8 @@ _lv2_is_lane_worktree_path() {
       "branch refs/heads/"*) branch="${line#branch refs/heads/}" ;;
       "")
         if [[ -n "${wt}" && "${wt}" != "${main_wt}" && "${branch}" == worktree-* ]]; then
-          local id="${branch#worktree-}"
-          [[ "$(basename "${cand}")" == "${id}" ]] && return 0
+          wt_phys="$(cd "${wt}" 2>/dev/null && pwd -P || true)"
+          [[ -n "${wt_phys}" && "${cand_phys}" == "${wt_phys}" ]] && return 0
         fi
         wt=""
         ;;

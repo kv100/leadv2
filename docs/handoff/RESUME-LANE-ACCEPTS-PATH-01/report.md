@@ -238,3 +238,45 @@ comment, duplicating the assertion line. Verified the simplification is still co
 (path equality alone uniquely identifies the linked worktree; basename added nothing),
 deduped the doubled `refuse_ok "A9"` line, re-ran the full suite and mutation control
 against the merged state: 40/0 green, commit `66b2dbe`.
+
+## Round 4 evidence (reconciliation commit)
+
+**Concurrent-commit incident, resolved.** The parallel session's `66b2dbe`
+("simplified to pure path-equality, basename dropped") actually committed the
+BASENAME-ONLY compare into `_lv2_is_lane_worktree_path` — the exact mutant
+class review-glm H1 flagged — while the helper's comment above it says
+path-equality. Proof that the committed blob is defective, suite run from a
+clean `git archive HEAD` extraction (worktree untouched):
+
+```
+[TEST] FAIL: A9: dispatch exited 0 (expected 5)
+[TEST] FAIL: A9: no lane_placement_refused in output
+test-resume-lane-arg-shapes: 36 passed, 2 failed
+rc=1
+```
+
+(The mutant bytes were on disk in the window the parallel session committed —
+both sessions ran round 4 on this one lane concurrently; their report's
+"Round 4 evidence" numbers above are real but were measured on working-tree
+bytes that never landed.)
+
+**This commit restores the fix the reviewer asked for:** identity =
+canonicalised `cand_phys == wt_phys` equality with the porcelain
+`worktree <path>` line (branch check `worktree-<id>` and main-checkout refusal
+kept; basename not an identity, check dropped as dead). Re-measured on this
+session's working tree immediately before commit:
+
+- Green, suite `LEADV2_SUITE_LOCK_DISABLE=1`, 10-way parallel:
+```
+test-resume-lane-arg-shapes: 40 passed, 0 failed
+rc=0
+```
+- Mutation negative control (basename-only compare re-applied), RUN, red:
+```
+[TEST] FAIL: A9: dispatch exited 0 (expected 5)
+[TEST] FAIL: A9: no lane_placement_refused in output
+test-resume-lane-arg-shapes: 36 passed, 2 failed
+rc=1
+```
+Reverted; re-ran green (above). `bash -n` on both changed shell files: clean
+(`SYNTAX-OK` × 2). No Python files changed.
