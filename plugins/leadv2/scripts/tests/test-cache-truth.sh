@@ -128,6 +128,69 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Fixture 4b: MIXED run — 1 of 3 requests reports cache keys (value 0), the
+# other 2 report nothing at all. Round-2 review finding: a global
+# saw_cache_key flag classifies this as a real 0.0000 ratio (wrong — it hides
+# that 2/3 requests never told us anything). Correct behaviour: hit_ratio
+# computed over the 1 reported request only, and reported column = 1/3.
+# ---------------------------------------------------------------------------
+MIXED_DIR="$ROOT/freepool-runs/260901-fixture-mixed"
+mkdir -p "$MIXED_DIR"
+cat > "$MIXED_DIR/journal.jsonl" <<'JSONL'
+{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5}}}
+{"type":"assistant","message":{"id":"m2","usage":{"input_tokens":50,"output_tokens":5}}}
+{"type":"assistant","message":{"id":"m3","usage":{"input_tokens":50,"output_tokens":5}}}
+JSONL
+
+out4b="$("$TOOL" "$MIXED_DIR" 2>/dev/null)"
+row4b="$(printf '%s\n' "$out4b" | tail -1)"
+ratio4b="$(printf '%s\n' "$row4b" | awk -F'\t' '{print $7}')"
+reported4b="$(printf '%s\n' "$row4b" | awk -F'\t' '{print $9}')"
+if [[ "$ratio4b" == "0.0000" ]]; then
+  pass 'mixed fixture: hit_ratio computed over reported subset only (0.0000)'
+else
+  fail "mixed fixture: expected ratio 0.0000 got '$ratio4b'"
+fi
+if [[ "$reported4b" == "1/3" ]]; then
+  pass 'mixed fixture: reported column shows 1/3, not silently 3/3 or 0/3'
+else
+  fail "mixed fixture: expected reported=1/3 got '$reported4b'"
+fi
+
+# ---------------------------------------------------------------------------
+# Fixture 4c: DUPLICATED message.id — a stream-json file re-emits the same
+# assistant message id 3x (streaming deltas + final), as seen on real
+# dispatch-c293c1d5 (176 events / 95 unique ids). Only the LAST event per id
+# should be counted; totals must equal the de-duplicated sum, not the raw
+# event count.
+# ---------------------------------------------------------------------------
+DUP_DIR="$ROOT/docs/handoff/dispatch-fixture-dup"
+mkdir -p "$DUP_DIR"
+cat > "$DUP_DIR/developer.stream.jsonl" <<'JSONL'
+{"type":"assistant","message":{"id":"a1","usage":{"input_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":0,"output_tokens":1}}}
+{"type":"assistant","message":{"id":"a1","usage":{"input_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":0,"output_tokens":3}}}
+{"type":"assistant","message":{"id":"a1","usage":{"input_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":0,"output_tokens":5}}}
+{"type":"assistant","message":{"id":"a2","usage":{"input_tokens":10,"cache_creation_input_tokens":50,"cache_read_input_tokens":900,"output_tokens":5}}}
+{"type":"assistant","message":{"id":"a2","usage":{"input_tokens":10,"cache_creation_input_tokens":50,"cache_read_input_tokens":900,"output_tokens":5}}}
+JSONL
+# unique sum: a1(10,0,1000) + a2(10,900,50) -> turns=2 input=20 cr=900 cc=1050
+# denom=1970 ratio=900/1970=0.4569
+outdup="$("$TOOL" "$DUP_DIR" 2>/dev/null)"
+rowdup="$(printf '%s\n' "$outdup" | tail -1)"
+turnsdup="$(printf '%s\n' "$rowdup" | awk -F'\t' '{print $3}')"
+ratiodup="$(printf '%s\n' "$rowdup" | awk -F'\t' '{print $7}')"
+if [[ "$turnsdup" == "2" ]]; then
+  pass 'dup-id fixture: 5 raw events de-duplicated to 2 unique turns'
+else
+  fail "dup-id fixture: expected turns=2 got '$turnsdup'"
+fi
+if printf '%s\n' "$ratiodup" | grep -qE '^0\.4569'; then
+  pass 'dup-id fixture: ratio computed over de-duplicated totals (~0.4569)'
+else
+  fail "dup-id fixture: expected ratio ~0.4569 got '$ratiodup'"
+fi
+
+# ---------------------------------------------------------------------------
 # Fixture 5: missing input entirely (no journal.jsonl / developer.stream.jsonl
 # in the given dir) -> non-zero exit, error on stderr, no crash.
 # ---------------------------------------------------------------------------
@@ -159,6 +222,60 @@ if printf '%s\n' "$mutant_ratio" | grep -qE '^0\.62'; then
   fail 'MUTATION CONTROL: mutant (cache_creation numerator) unexpectedly matched correct ratio — control is not falsifiable'
 else
   pass "MUTATION CONTROL: mutant ratio diverged from correct 0.62 (got '$mutant_ratio') — control proven red-capable"
+fi
+
+# ---------------------------------------------------------------------------
+# MUTATION NEGATIVE CONTROL 2: remove id de-duplication (route every event
+# through the "unkeyed" path regardless of message.id) in a throwaway copy.
+# The dup-id fixture assertion (turns=2) MUST go red, since the mutant would
+# count all 5 raw events instead of 2 unique ones.
+# ---------------------------------------------------------------------------
+MUTANT_DEDUP="$ROOT/leadv2-cache-truth-mutant-dedup.sh"
+python3 - "$TOOL" "$MUTANT_DEDUP" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+needle = "        if mid:\n            if mid not in by_id:\n                order.append(mid)\n            by_id[mid] = rec  # last event for this id wins\n        else:\n            unkeyed.append(rec)\n"
+replacement = "        unkeyed.append(rec)\n"
+assert needle in text, "mutation anchor not found in tool source"
+text = text.replace(needle, replacement)
+open(dst, "w").write(text)
+PYEOF
+chmod +x "$MUTANT_DEDUP"
+
+mutant_dedup_out="$("$MUTANT_DEDUP" "$DUP_DIR" 2>/dev/null | tail -1)"
+mutant_dedup_turns="$(printf '%s\n' "$mutant_dedup_out" | awk -F'\t' '{print $3}')"
+if [[ "$mutant_dedup_turns" == "2" ]]; then
+  fail 'MUTATION CONTROL (dedup): mutant (no id dedup) unexpectedly still reported 2 turns — control is not falsifiable'
+else
+  pass "MUTATION CONTROL (dedup): mutant reported turns='$mutant_dedup_turns' (expected 5, not 2) — control proven red-capable"
+fi
+
+# ---------------------------------------------------------------------------
+# MUTATION NEGATIVE CONTROL 3: make saw_cache_key/reported classification
+# global again (reported = ALL turns if ANY turn reported keys) in a
+# throwaway copy. The mixed fixture assertion (reported=1/3) MUST go red,
+# since the mutant would report 3/3.
+# ---------------------------------------------------------------------------
+MUTANT_GLOBAL="$ROOT/leadv2-cache-truth-mutant-global.sh"
+python3 - "$TOOL" "$MUTANT_GLOBAL" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+needle = "reported_turns = [t for t in turns if t[3]]\n"
+replacement = "reported_turns = turns if any(t[3] for t in turns) else []\n"
+assert needle in text, "mutation anchor not found in tool source"
+text = text.replace(needle, replacement)
+open(dst, "w").write(text)
+PYEOF
+chmod +x "$MUTANT_GLOBAL"
+
+mutant_global_out="$("$MUTANT_GLOBAL" "$MIXED_DIR" 2>/dev/null | tail -1)"
+mutant_global_reported="$(printf '%s\n' "$mutant_global_out" | awk -F'\t' '{print $9}')"
+if [[ "$mutant_global_reported" == "1/3" ]]; then
+  fail 'MUTATION CONTROL (global-key): mutant (global saw_cache_key) unexpectedly still reported 1/3 — control is not falsifiable'
+else
+  pass "MUTATION CONTROL (global-key): mutant reported='$mutant_global_reported' (expected 3/3, not 1/3) — control proven red-capable"
 fi
 
 echo
