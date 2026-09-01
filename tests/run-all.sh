@@ -103,6 +103,7 @@ add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 # not by any test-dispatch-code.sh) is mapped here so --scope changed still
 # runs its suite instead of silently dropping it.
 EXTRA_SUITE_MAP="leadv2-phase8-assert.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-resume-lane-arg-shapes.sh
 leadv2-tasks-lib.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
@@ -148,6 +149,7 @@ leadv2-hook-fork-budget.sh:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
 hooks.json:plugins/leadv2/scripts/tests/test-hook-fork-budget.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-action-binding.sh
 leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-morphology.sh
+leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-classified-block.sh
 leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
 leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
 leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-guard-census.sh

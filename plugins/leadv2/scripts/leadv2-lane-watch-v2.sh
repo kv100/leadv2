@@ -7,13 +7,22 @@
 # status/guard/monitor scripts for this purpose (see docs/handoff/
 # ONE-LANE-WATCH-01/report.md for the census and what each is superseded by).
 #
-# Liveness signal = mtime of files INSIDE a lane's own worktree, excluding
+# Two liveness signals, and a lane is STALLED only when BOTH are quiet past
+# LANE_STALL_MIN: (a) mtime of files INSIDE the lane's own worktree, excluding
 # lead-written bookkeeping (docs/leadv2/, docs/handoff/dispatch-*,
-# LEAD_V2_STATE.md, .git/). Every provider (Claude/GLM/Codex/Kimi/freepool)
-# must touch the worktree to do work, so this is arm-agnostic by
-# construction — it does not special-case any provider, which is exactly
-# what the v1 GLM-only watcher got wrong (it watched ~/.claude/cache/
-# glm-runs only and was blind to every codex/kimi/freepool lane).
+# LEAD_V2_STATE.md, .git/), and (b) the lane's provider run state producing
+# output. One signal is not enough in either direction: a worker reading and
+# planning writes its provider run dir while touching no worktree file
+# (worktree-only -> false alarm), and a provider run dir's own DIRECTORY
+# mtime is kept fresh by ordinary runner bookkeeping (state rewrites, .stale
+# rotation) regardless of whether the WORKER produces anything, so directory
+# mtime can never be the sole stall signal either — see
+# _lw_provider_output_age_min below, which measures WORKER-output file
+# mtimes only, never the directory's own. When both
+# go quiet AND nothing is live anywhere while docs/tasks.yaml still has open
+# rows, the watcher says so (LANE-IDLE) — the one job the retired
+# leadv2-idle-lead-guard.sh did honestly (its liveness input,
+# leadv2-lane-liveness.sh --all, measured 0/231 while a lane wrote).
 #
 # Subcommands:
 #   --arm-from-hook           SessionStart hook entry. Reads {session_id,cwd}
@@ -58,6 +67,7 @@ GRACE_MIN="${LANE_GRACE_MIN:-15}"
 POLL_SEC="${LEADV2_LANE_WATCH_POLL_SEC:-60}"
 STATE_ROOT="${LEADV2_LANE_WATCH_STATE_DIR:-$HOME/.claude/leadv2-lane-watch}"
 RUN_ROOT_PARENTS="${LEADV2_LANE_WATCH_RUN_ROOTS:-$HOME/.claude/cache}"
+CODEX_STATE_ROOT="${LEADV2_LANE_WATCH_CODEX_STATE:-$HOME/.claude/plugins/data/codex-openai-codex/state}"
 
 # --- fork-free wait ----------------------------------------------------------
 # Duplicated, not sourced, from FORK-STORM-KILLS-HOOKS-01's
@@ -117,22 +127,185 @@ _lw_newest_age_min() {
   printf '%s' $(( ( $(date +%s) - newest ) / 60 ))
 }
 
-# _lw_dispatch_age_min LANE -> minutes since LANE's most recent provider run
-# directory. The provider segment is WILDCARDED ("*-runs", not an enumerated
-# "glm-runs"), which is the structural fix for the codex-blindness class of
-# bug: v1 checked ~/.claude/cache/glm-runs only, so every codex/kimi/freepool
-# lane read as "never dispatched" and its grace period never applied.
-# Verified 2026-09-01: `ls ~/.claude/cache/*-runs` -> claude-runs, freepool-
-# runs, glm-runs, kimi-runs all exist as siblings; none is special-cased here.
-_lw_dispatch_age_min() {
-  local lane="$1" d m newest best=999999
-  for d in "${RUN_ROOT_PARENTS}"/*-runs/*"${lane}"*; do
-    [ -e "$d" ] || continue
-    m="$(stat -f %m "$d" 2>/dev/null)" || continue
-    newest=$(( ( $(date +%s) - m ) / 60 ))
-    [ "$newest" -lt "$best" ] && best=$newest
+# lane_dirs LANE -> one provider state directory per line that may hold
+# LANE's run state. This is THE single place that knows which provider arms
+# exist: adding an arm later is a one-line change here, and every consumer
+# (_lw_dispatch_age_min, _lw_provider_output_age_min) picks it up. The round-1
+# glob was "*-runs" under the cache root, which matched glm-runs/freepool-runs
+# but nothing for a codex lane — measured 2026-09-01, a codex lane's state
+# lives under ~/.claude/plugins/data/codex-openai-codex/state/<LANE>-<hash>
+# (probe: TESTS-POLLUTE-REAL-JOURNAL-01-14806a70f0cacf75 exists there), so a
+# codex lane had no dispatch age at all and was "stalled" seconds after a
+# healthy dispatch. Unmatched globs print literally under bash 3.2, so every
+# consumer MUST guard with [ -e ] / [ -d ].
+# Round-2 census (2026-09-01, `ls -d ~/.claude/cache/*-runs`) found FOUR
+# `*-runs` families, not two: claude-runs and kimi-runs exist alongside
+# glm-runs/freepool-runs. Round 2's first cut enumerated only the latter two,
+# so a claude-arm lane matched nothing here and lost both dispatch grace and
+# provider-output suppression — d_age/prov_age both 999999, i.e. reported
+# stalled seconds after a healthy dispatch (the same regression class this
+# whole lane exists to kill, this time against the claude arm instead of
+# codex). Fix: enumerate every `*-runs` sibling under each root by name,
+# explicitly, so the list this function returns is the SAME list a fresh
+# `ls -d ~/.claude/cache/*-runs` would show, not a two-of-four subset.
+lane_dirs() {
+  local lane="$1" root roots
+  roots="$(printf '%s' "$RUN_ROOT_PARENTS" | tr ':' ' ')"
+  for root in $roots; do
+    printf '%s\n' \
+      "${root}"/glm-runs/*"${lane}"* \
+      "${root}"/freepool-runs/*"${lane}"* \
+      "${root}"/claude-runs/*"${lane}"* \
+      "${root}"/kimi-runs/*"${lane}"*
   done
+  printf '%s\n' "${CODEX_STATE_ROOT}"/*"${lane}"*
+}
+
+# _lw_birth_epoch PATH -> st_birthtime as epoch seconds, falling back to mtime
+# where %B is unavailable (GNU stat; macOS %B is the birth time). The
+# fallback is stated honestly: it degrades birth semantics to mtime and can
+# only make a lane look FRESHER than it is, never older.
+_lw_birth_epoch() {
+  local m
+  m="$(stat -f %B "$1" 2>/dev/null)"
+  case "$m" in
+    ''|*[!0-9]*) m="$(stat -f %m "$1" 2>/dev/null)" || return 1 ;;
+  esac
+  printf '%s' "$m"
+}
+
+# _lw_dispatch_age_min LANE -> minutes since LANE was last DISPATCHED, i.e.
+# the youngest birth time among its provider run directories. Birth, not
+# mtime: the DIRECTORY's own mtime (as opposed to the mtime of the WORKER-
+# output files inside it — see _lw_provider_output_age_min below) is pinged
+# by ordinary filesystem housekeeping unrelated to the worker producing
+# anything: a runner bookkeeping rewrite (state.json, .stream_state,
+# .lockref rotation) or a new file being created inside the dir both bump
+# the directory mtime without the worker having written a single line of
+# output. An mtime-based dispatch age therefore stays near zero indefinitely
+# and the grace window never expires for exactly the lanes worth watching —
+# a lane sat 23 minutes past LANE_STALL_MIN in silence before a human
+# reading the heartbeat noticed. Birth time is what "how long since this
+# lane was dispatched" actually means, and is immune to this pinging because
+# birth is set once, at directory creation, and cannot be bumped by later
+# writes into the directory.
+#
+# NOTE: this is a narrower claim than round 2's original draft ("broker.json
+# rotates every ~30 min") — that specific claim was UNVERIFIED and is
+# contradicted by the live tree (probe 2026-09-01, three codex state dirs
+# under codex-openai-codex/state: broker.json/state.json mtimes are Aug 9 /
+# Aug 26, weeks stale, while each dir's jobs/ subdirectory shows Sep 1
+# 22:46 activity — broker.json is NOT rotating on any ~30-min cadence in
+# this tree). The design does not depend on that claim: it depends only on
+# "directory mtime can be pinged by something other than worker output",
+# which the jobs/ vs broker.json split above demonstrates directly.
+_lw_dispatch_age_min() {
+  local lane="$1" d m newest best=999999 now
+  now="$(date +%s)"
+  while IFS= read -r d; do
+    [ -e "$d" ] || continue
+    m="$(_lw_birth_epoch "$d")" || continue
+    newest=$(( ( now - m ) / 60 ))
+    [ "$newest" -lt 0 ] && newest=0
+    [ "$newest" -lt "$best" ] && best=$newest
+  done < <(lane_dirs "$lane")
   printf '%s' "$best"
+}
+
+# _lw_provider_output_age_min LANE -> minutes since LANE's provider state
+# last produced MODEL output. Deliberately NOT the run dir's own mtime —
+# ordinary runner bookkeeping pings it while the worker hangs (round-2
+# [Critical] 1 measurement). Round 4 (reviewer glm [High]): round 3 counted
+# "every top-level file except broker.json/state.json" as worker output, but
+# progress.log, meta.yaml, supervisor.log, exit_code, stderr/child.log are
+# written by the RUNNER (glm-coder/freepool-coder heartbeat, status flips,
+# supervisor polls) — a hung or killed worker kept reading "provider-fresh"
+# and LANE-STALL was suppressed. Measured: 53 min of silence on
+# 260901-184335-PHASE-GATE-IS-INVERTED-01-7ddb never reported. Inverted to an
+# ALLOW-list — only files the MODEL's own session writes, per arm:
+#   glm/kimi/freepool run dirs -> journal.jsonl ONLY. That is the stream-json
+#     transcript (assistant/tool_use/tool_result events, written by the
+#     session as the model acts; probe 2026-09-01: the live run dir
+#     glm-runs/260901-233754-ONE-LANE-WATCH-01-R2-2fcc holds 17 assistant /
+#     10 tool_use / 9 tool_result events in journal.jsonl, while progress.log,
+#     meta.yaml, supervisor.log, stderr.log, pgid, git-pre*, prompt.txt,
+#     child.log and the .stream_state/.lockref/.workbase dotfiles are all
+#     runner-written). There is no `*.stream.jsonl` / `developer.stream.jsonl`
+#     in these run dirs — searched the live cache tree, zero hits — the
+#     journal IS the stream artifact.
+#   codex state dirs -> jobs/* ONLY (task-*.json/.log written by the codex
+#     worker; probe 2026-09-01: state/05d28614-d519cdfbfdea302f/jobs/
+#     task-mtj1kt02-6z5iy9.{json,log}, vs top-level state.json runner
+#     bookkeeping — matched by ${CODEX_STATE_ROOT}/*, not a hardcoded name).
+#   claude run dirs -> NOTHING model-written exists there (probe 2026-09-01:
+#     claude-runs/developer-dispatch-34f12615-*/ holds only .finalized,
+#     .outcome, meta.yaml, pid — all runner bookkeeping). For this arm the
+#     lane worktree mtime — the `age` half of the both-signal stall rule in
+#     _lw_run_once — is the only liveness signal; the dir birth-time fallback
+#     below makes prov_age track time-since-dispatch and get out of the way.
+# A run dir with no allow-listed model file has produced nothing since it was
+# CREATED, so its birth time is the honest fallback. Nothing found anywhere
+# -> 999999 (quiet).
+_lw_provider_output_age_min() {
+  local lane="$1" d f m cand newest best=999999 now
+  now="$(date +%s)"
+  while IFS= read -r d; do
+    [ -d "$d" ] || continue
+    cand="$(_lw_birth_epoch "$d")" || continue
+    case "$d" in
+      "${CODEX_STATE_ROOT}"/*)
+        for f in "$d"/jobs/*; do
+          [ -f "$f" ] || continue
+          m="$(stat -f %m "$f" 2>/dev/null)" || continue
+          [ "$m" -gt "$cand" ] && cand="$m"
+        done
+        ;;
+      */glm-runs/*|*/kimi-runs/*|*/freepool-runs/*)
+        f="$d/journal.jsonl"
+        if [ -f "$f" ]; then
+          m="$(stat -f %m "$f" 2>/dev/null)" || m=""
+          if [ -n "$m" ] && [ "$m" -gt "$cand" ]; then cand="$m"; fi
+        fi
+        # no journal.jsonl yet -> cand stays at dir birth: honest
+        # "nothing produced since creation" fallback
+        ;;
+      *)
+        # claude-runs and any future family with no model-written file in
+        # the run dir: count nothing here (see probe above) — the lane
+        # worktree mtime is this arm's only liveness signal.
+        ;;
+    esac
+    newest=$(( ( now - cand ) / 60 ))
+    [ "$newest" -lt 0 ] && newest=0
+    [ "$newest" -lt "$best" ] && best=$newest
+  done < <(lane_dirs "$lane")
+  printf '%s' "$best"
+}
+
+# _lw_queued_task_count PROJECT_ROOT -> number of open rows in the project's
+# docs/tasks.yaml (statuses queued/ready/pending — the same predicate the
+# retired idle-lead-guard used). No file or unparseable YAML -> 0, so a
+# project without a task store can never trigger LANE-IDLE.
+_lw_queued_task_count() {
+  local f="${LEADV2_LANE_WATCH_TASKS_FILE:-${1}/docs/tasks.yaml}"
+  [ -f "$f" ] || { printf '0'; return 0; }
+  python3 - "$f" "${LEADV2_LANE_WATCH_QUEUED_STATUSES:-queued,ready,pending}" <<'PY' 2>/dev/null || printf '0'
+import sys
+try:
+    import yaml
+    with open(sys.argv[1]) as fh:
+        items = yaml.safe_load(fh)
+except Exception:
+    items = None
+if isinstance(items, dict):
+    items = items.get("tasks")
+if not isinstance(items, list):
+    items = []
+statuses = set(s.strip() for s in sys.argv[2].split(",") if s.strip())
+print(sum(1 for it in items
+          if isinstance(it, dict)
+          and str(it.get("status", "")).strip() in statuses))
+PY
 }
 
 # _lw_discover_lanes WORKTREES_DIR -> space-separated lane names. A lane is
@@ -175,16 +348,27 @@ _lw_run_once() {
 
   local lanes; lanes="$(_lw_discover_lanes "$wt")"
   local now; now="$(date +%s)"
-  local beat_line="" lane age d_age
+  local beat_line="" lane age prov_age d_age live_lanes=0
 
   for lane in $lanes; do
     [ -n "$lane" ] || continue
     age="$(_lw_newest_age_min "${wt}/${lane}")"
+    prov_age="$(_lw_provider_output_age_min "$lane")"
     beat_line="${beat_line}${lane}:${age}m "
 
-    # Grace: a lane dispatched within GRACE_MIN has not had time to write
+    # Live = either signal fresh. A worker reading and planning writes its
+    # provider run dir while touching no worktree file, and vice versa a
+    # worker between provider calls can go quiet in the run dir while its
+    # worktree still shows writes.
+    if [ "$age" -lt "$STALE_MIN" ] || [ "$prov_age" -lt "$STALE_MIN" ]; then
+      live_lanes=$(( live_lanes + 1 ))
+    fi
+
+    # Grace: a lane DISPATCHED within GRACE_MIN has not had time to write
     # yet — reporting that is the false alarm that fired on
-    # GUARDS-MUST-PROVE-THEY-FIRE-01 sixty seconds after dispatch.
+    # GUARDS-MUST-PROVE-THEY-FIRE-01 sixty seconds after dispatch. The age
+    # is birth-based (see _lw_dispatch_age_min): an mtime-based grace never
+    # expires for exactly the lanes worth watching.
     d_age="$(_lw_dispatch_age_min "$lane")"
     if [ "$d_age" -lt "$GRACE_MIN" ]; then
       _lw_drop_reported "$lane" "$reported_file"
@@ -192,15 +376,40 @@ _lw_run_once() {
     fi
 
     if grep -qFx "$lane" "$reported_file" 2>/dev/null; then
-      [ "$age" -lt "$STALE_MIN" ] && _lw_drop_reported "$lane" "$reported_file"
+      if [ "$age" -lt "$STALE_MIN" ] || [ "$prov_age" -lt "$STALE_MIN" ]; then
+        _lw_drop_reported "$lane" "$reported_file"
+      fi
       continue
     fi
 
-    if [ "$age" -ge "$STALE_MIN" ]; then
-      printf 'LANE-STALL: %s — worktree untouched for %sm; worker is not producing, check and re-dispatch\n' "$lane" "$age"
+    # Stall = BOTH signals quiet. Never a backstop that overrides fresh
+    # provider output: a working-but-not-yet-committing lane (reading,
+    # planning) is the false alarm that makes a watcher get ignored.
+    if [ "$age" -ge "$STALE_MIN" ] && [ "$prov_age" -ge "$STALE_MIN" ]; then
+      printf 'LANE-STALL: %s — worktree untouched %sm, provider output %sm; check and re-dispatch\n' "$lane" "$age" "$prov_age"
       printf '%s\n' "$lane" >> "$reported_file"
     fi
   done
+
+  # LANE-IDLE — the one honest job inherited from the retired idle-lead-guard:
+  # there is queued work and no live lane (by the SAME two signals above,
+  # never leadv2-lane-liveness.sh --all, which measured 0/231 while a lane
+  # wrote). Reported once per queued-count so a polling loop does not spam;
+  # re-reports when the count changes, clears when a lane goes live or the
+  # queue drains.
+  local queued; queued="$(_lw_queued_task_count "$project_root")"
+  local idle_file="${state_dir}/idle_reported"
+  if [ "$queued" -gt 0 ] && [ "$live_lanes" -eq 0 ]; then
+    local last_idle
+    last_idle="$(cat "$idle_file" 2>/dev/null || true)"
+    case "$last_idle" in ''|*[!0-9]*) last_idle=0 ;; esac
+    if [ "$last_idle" != "$queued" ]; then
+      printf 'LANE-IDLE: no live lane, %s task(s) queued\n' "$queued"
+      printf '%s' "$queued" > "$idle_file" 2>/dev/null || true
+    fi
+  else
+    rm -f "$idle_file" 2>/dev/null || true
+  fi
 
   local last_beat=0
   if [ -f "$beat_file" ]; then
