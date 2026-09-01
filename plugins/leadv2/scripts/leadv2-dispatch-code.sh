@@ -339,10 +339,17 @@ _lv2_path_contains() {
 # also accepted the repo root itself and ANY in-repo subdirectory, letting an
 # arbitrary directory be pinned as the lane worktree.  Bash 3.2 safe.
 _lv2_is_lane_worktree_path() {
-  local cand="$1" root="$2" main_wt wt="" branch="" line id
+  local cand="$1" root="$2" main_wt wt="" branch="" line id cand_phys wt_phys
   main_wt="$(git -C "${root}" rev-parse --git-common-dir 2>/dev/null || true)"
   main_wt="$(cd "${root}" 2>/dev/null && cd "$(dirname "${main_wt}")" 2>/dev/null && pwd -P || true)"
   [[ -n "${main_wt}" ]] || return 1
+  # RESUME-LANE-ACCEPTS-PATH-01 round-4 (review H1): identity is the canonicalised
+  # PATH match against the porcelain `worktree <path>` line, not basename(cand)
+  # against the branch's lane id -- basename collides with any in-repo subdir
+  # sharing the lane's id (e.g. docs/handoff/<id>), letting a non-worktree path
+  # through.
+  cand_phys="$(cd "${cand}" 2>/dev/null && pwd -P || true)"
+  [[ -n "${cand_phys}" ]] || return 1
   while IFS= read -r line; do
     case "${line}" in
       "worktree "*) wt="${line#worktree }"; branch="" ;;
@@ -350,7 +357,10 @@ _lv2_is_lane_worktree_path() {
       "")
         if [[ -n "${wt}" && "${wt}" != "${main_wt}" && "${branch}" == worktree-* ]]; then
           id="${branch#worktree-}"
-          [[ "$(basename "${cand}")" == "${id}" ]] && return 0
+          wt_phys="$(cd "${wt}" 2>/dev/null && pwd -P || true)"
+          if [[ -n "${wt_phys}" && "${cand_phys}" == "${wt_phys}" && "$(basename "${cand}")" == "${id}" ]]; then
+            return 0
+          fi
         fi
         wt=""
         ;;

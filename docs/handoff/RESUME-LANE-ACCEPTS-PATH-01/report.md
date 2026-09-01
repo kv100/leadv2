@@ -192,3 +192,39 @@ cases at a 2-wide cap the floor is ~4×13s = 52s before any per-call
 environment/ledger overhead. Bringing it under 40s needs dispatcher-side perf
 work (e.g. a test-only fast path skipping more subsystems) that is out of scope
 for this fix — left as a known gap rather than claimed met.
+
+## Round 4 evidence
+
+Reviewer glm found `_lv2_is_lane_worktree_path` compared only
+`basename(cand) == id` against porcelain, never `cand == wt` (the worktree's
+own absolute path) — so an in-repo subdirectory whose basename collides with a
+lane id (e.g. `<root>/docs/handoff/RESUME-ME-01`) was accepted as the lane
+worktree.
+
+Fix: canonicalize both the candidate (`cd cand && pwd -P`) and each porcelain
+`worktree <path>` line the same way, and require path equality (`cand_phys ==
+wt_phys`) in addition to the existing branch/basename check.
+
+Added test case A9: `--resume-lane <TARGET>/docs/handoff/RESUME-ME-01` (a
+plain directory, not a worktree, sharing the lane id's basename) → refused.
+
+Green (post-fix, 40 cases incl. A9):
+```
+[TEST] PASS: A8: project_root_guard telemetry fired with both roots
+test-resume-lane-arg-shapes: 40 passed, 0 failed
+EXIT=0
+```
+
+Mutation negative control — reverted the path-equality check back to
+basename-only compare (kept branch check), ran the suite, RED:
+```
+[TEST] FAIL: A9: dispatch exited 0 (expected 5)
+[TEST] FAIL: A9: no lane_placement_refused in output
+test-resume-lane-arg-shapes: 36 passed, 2 failed
+EXIT=1
+```
+Reverted the mutation (diffed byte-identical against pre-mutation backup);
+suite back to 40/0 green.
+
+Self-check: `bash -n leadv2-dispatch-code.sh` and `bash -n
+test-resume-lane-arg-shapes.sh` both clean.

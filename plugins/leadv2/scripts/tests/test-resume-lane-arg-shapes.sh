@@ -74,6 +74,12 @@ mkdir -p "${FOREIGN}/.claude/worktrees"
 NOT_A_WT="${SANDBOX}/plain-dir"
 mkdir -p "${NOT_A_WT}"
 
+# RESUME-LANE-ACCEPTS-PATH-01 round 4 (review-glm H1): an in-repo subdirectory
+# whose BASENAME collides with the lane id ("RESUME-ME-01") but is not the
+# worktree itself. The old basename-only compare accepted this.
+COLLISION_DIR="${TARGET}/docs/handoff/RESUME-ME-01"
+mkdir -p "${COLLISION_DIR}"
+
 # -- Sandbox state + cache dirs -----------------------------------------------
 export LEADV2_STATE_BASE="${SANDBOX}/state"
 export LEADV2_DISPATCH_CACHE_DIR="${SANDBOX}/cache"
@@ -231,7 +237,7 @@ launch_case() {
 }
 _await_all() {
   local t
-  for t in a1 a2 a3nope a3plain a4 a5 a6 a7 a8; do
+  for t in a1 a2 a3nope a3plain a4 a5 a6 a7 a8 a9; do
     eval "rc_${t}=0"
     eval "wait \"\$PID_${t}\" || rc_${t}=\$?"
   done
@@ -261,6 +267,10 @@ launch_case a7 "${TARGET}" "" --kind tooling --resume-lane "${TARGET}/plugins" \
 # -> guard warns and falls back to the cwd-derived root.
 launch_case a8 "${TARGET}" "${FOREIGN}" --kind tooling \
   "A8 foreign env root falls back to cwd root test verify the gate"
+# A9 (round 4, review-glm H1): basename collision with the lane id, not the
+# worktree path itself -> must be refused.
+launch_case a9 "${TARGET}" "" --kind tooling --resume-lane "${COLLISION_DIR}" \
+  "A9 resume-lane basename collision must be refused"
 
 # _await_all blocks on each PID in turn; the nine dispatchers still run
 # concurrently. (A bare `wait` here would reap every job first, and the
@@ -324,6 +334,8 @@ refuse_ok "A5" "${rc_a5}" "${SANDBOX}/a5-stderr.txt" "NOPE-RLAP-01"
 refuse_ok "A6" "${rc_a6}" "${SANDBOX}/a6-stderr.txt" "${TARGET}"
 
 refuse_ok "A7" "${rc_a7}" "${SANDBOX}/a7-stderr.txt" "${TARGET}/plugins"
+
+refuse_ok "A9" "${rc_a9}" "${SANDBOX}/a9-stderr.txt" "${COLLISION_DIR}"
 
 # ==============================================================================
 # A8 assertions (round 3, review-glm H1): the a8 case launched above runs with
