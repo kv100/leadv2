@@ -1,186 +1,133 @@
-# FABLE-THINK-TIER-01 — round 2 report
+# FABLE-THINK-TIER-01 — round 3
 
-Fixes the two HIGH findings from round-1 review (reviewer glm):
+## Round 3 evidence
 
-1. **Invariant was false in-tree** — ≥8 think-role sites still spawned with a literal
-   `opus`, and the suite's grep-gate covered only the 4 migrated workflows.
-   → Round 2 ran its own census (below), migrated EVERY think-role site to the
-   `think-model` resolver, and made the grep-gate tree-wide (the census command itself
-   runs in `test-fable-think-tier.sh`, expecting zero unclassified `opus` literals).
-2. **External-system claims drove code with no evidence** — round-2 PROBED the claims
-   instead of asserting them. Result: the "same Claude Max bucket as Opus" claim is
-   **WITHDRAWN** (probe could not confirm it; the live reader shows a separate
-   Fable-scoped weekly window), `context_k: 1000` is **UNVERIFIED** and reverted, and
-   Fable now carries its own bucket entry (`cost_class: fable-scoped-weekly`).
+### 1. Escape-mission template fixed (`skills/leadv2-review/ref/architect-escape-mission.md:22`)
+Old (broken): `--model "$(leadv2-router.sh think-model)" \  # fable; opus fallback` — bare
+script name not on PATH, and the trailing `\  # comment` breaks the line continuation.
 
-## Round 2 evidence
+New: `--model "$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-router.sh" think-model)" \`
+with the comment moved to its own line above, matching the `${CLAUDE_PLUGIN_ROOT}/scripts/...`
+convention used by every other skill (`docs/phases.md`, `leadv2-close/SKILL.md`, etc. — grepped
+and confirmed, none use a bare `leadv2-router.sh` or the `lv2` shim for this call).
 
-### Census (2026-09-01, this worktree)
-
-Command (now also enforced tree-wide by the suite's grep-gate):
-
+Added suite case (`test-fable-think-tier.sh` §2c2): extracts the fenced bash block from the
+template with `awk`, runs `bash -n` on it, and resolves the `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh`
+path it references, asserting the file exists. Proof it catches the original defect — restored
+the pre-fix template text and re-ran:
 ```
-grep -rnE "model[=: ]+['\"]?opus|--model[ =]['\"]?opus" \
-  plugins/leadv2/{scripts,workflows,skills,hooks}
-grep -rnE "(subagent_type|agentType)[\"'= :]+[^,)]*(architect|critic|judge)" \
-  plugins/leadv2/{scripts,workflows,skills,hooks}   # + opus on same line
+PASS: architect-escape-mission.md: extracted bash block parses (bash -n)
+FAIL: architect-escape-mission.md: referenced router script missing or unresolved (got '<none>')
 ```
+(bare `leadv2-router.sh` has no `${CLAUDE_PLUGIN_ROOT}` prefix for the extractor to resolve —
+exactly the "not on PATH" defect). Restored the fix afterward; `git diff --stat` on the file
+after restore showed the round-3 fix intact.
 
-Raw hits and classification (think-role → migrated / build-role+fallback → allowed /
-telemetry / prose):
+### 2. Census gate hardened against both proven bypasses (`test-fable-think-tier.sh`)
+Reviewer proved two bypass shapes on the round-2 gate:
+- (a) `model: 'claude-opus-5'` (full model id) evaded `census_re`, which only matched the bare
+  word `opus`.
+- (b) any pin line containing the word "fallback" was exempted by `grep -viE "fallback|..."`,
+  regardless of whether a real resolver call gated it.
 
-| Hit | Class | Action |
-|---|---|---|
-| `scripts/leadv2-llm-judge.sh:391` `model="opus"` (+ `:413 \|\| echo "opus"`) | think-role (judge default) | **migrated** → `think-model` resolver, fallback literal `fable` |
-| `scripts/leadv2-fanout-classify.sh:126` `LEAD_MODEL="opus"` (Heavy/Strategic child lead) | think-role | **migrated** → resolver |
-| `scripts/leadv2-fanout.sh:473` python `fallback_model = "opus" ...` + crash path `:516 "opus"` | think-role fallback | **migrated** → `think_model` var resolved once via resolver |
-| `scripts/leadv2-fanout.sh:195` help text "opus for Heavy/Strategic" | prose (describes the pin above) | **updated** to describe resolver |
-| `hooks/leadv2-routing-guard.sh:470,476` `Agent(%s, model=opus)` advisory | think-role (drives spawn advice) | **migrated** (resolver wording; see write-set note) |
-| `skills/leadv2-judge/SKILL.md:7` frontmatter `model: opus` | think-role | **migrated** → `model: fable` + resolver note |
-| `skills/leadv2-plan/SKILL.md:345` critic `model: opus,` | think-role | **migrated** → `model: fable` + resolver note |
-| `skills/leadv2-po-feedback-loop/SKILL.md:42` architect `model="opus"` | think-role | **migrated** → resolver wording |
-| `skills/leadv2-review/SKILL.md:223` `--model opus` (architect escape) | think-role | **migrated** → `--model "$(leadv2-router.sh think-model)"` |
-| `skills/leadv2-diverge/PHASES.md:56` `model=<opus if Heavy/Strategic else sonnet>` | think-role | **migrated** (resolver wording; write-set note) |
-| `skills/leadv2-recovery/EXAMPLES.md:24` architect `model: opus,` | think-role | **migrated** (write-set note) |
-| `skills/leadv2-review/ref/manual-dispatch-cases.md:21,28` critic `model=opus` | think-role | **migrated** (write-set note) |
-| `skills/leadv2-review/ref/architect-escape-mission.md:21` `--model opus` | think-role | **migrated** (write-set note) |
-| `skills/leadv2-token-discipline/EXAMPLES.md:13` `model:'opus'` guidance | prose teaching a pin | **migrated** → resolver wording (write-set note) |
-| `skills/leadv2-llm-judge/PROMPT.md:12` `model: <from router>` | think-role, already resolver-based | no change |
-| `scripts/leadv2-dispatch-code.sh:7013-7015` `route_resolved ... model=opus` emit/log | route telemetry (describes a router decision; "requires_lead_judgment; not auto-dispatched") | allowed, kept |
-| `skills/leadv2-plan/SKILL.md:268` architect `model: sonnet` | build-role per matrix (Standard architect cross-check: "architect(sonnet, never opus)") | allowed, kept |
-| `workflows/leadv2-diverge.js:127`, `leadv2-po-feedback-loop.js:169` `model: 'opus'` on fallback-labelled retry arms | explicit fallback sites | allowed, kept |
-| `hooks/leadv2-model-inherit-guard.sh:46` "opus is reserved for high-judgment agents" | guard prose (the hook ENFORCES tiering) | allowed, kept |
-| comments: `leadv2-fanout-classify.sh:15`, `leadv2-main-model-check.sh:6`, `leadv2-router.sh:446`, `leadv2-ask.sh:505`, `claude-subsession.sh:842` | prose/comments | allowed |
-| tests (`scripts/tests/*`) `opus` fixtures | test fixtures | excluded from gate by design |
+Fix:
+- `census_re` now matches the whole **value class**: `opus`, `claude-opus-5`, future
+  `claude-opus-4.x`, and `opus[1m]` suffixes — a rename or full-id spelling can't evade it.
+- The "fallback" keyword is no longer an exemption by itself. `_lv2_classify_survivor()`
+  only exempts a "fallback"-labeled line if a real resolver guard
+  (`THINK_MODEL [=!]== 'opus'` or a `think-model` reference) appears in the preceding 25
+  lines of the same file — the two legitimate sites (`leadv2-diverge.js:127`,
+  `leadv2-po-feedback-loop.js:169`) are conditional retries gated by exactly this pattern
+  (`THINK_MODEL !== 'opus'` at diverge.js:119, `THINK_MODEL === 'opus'` at
+  po-feedback-loop.js:150 — 8 and 19 lines back respectively, hence the 25-line window).
+  "guard prose" (`reserved for`) is still exempt unconditionally, as documented.
 
-**Write-set note:** the 12 migrated sites marked "(write-set note)" sit outside
-LANE_WRITES (hooks/*.sh, skills/**/{PHASES,EXAMPLES}.md, skills/**/ref/*.md).
-Expansion was requested via the async question channel (qid q-392fa4b8, default a =
-expand, reversible via git revert of the lane commit) because the reviewer's HIGH
-finding requires migrating EVERY think-role site; the suite's tree-wide gate is RED
-on those sites until they are migrated, so "document the gap" (option b) would leave
-a red suite — the reviewer explicitly demanded a green tree-wide gate.
-
-### Quota-read probe (bucket claim) — 2026-09-01
-
-**Before** — `python3 plugins/leadv2/scripts/leadv2-quota-read.py anthropic --no-cache`
-`fetched_at: 2026-09-01T21:02:03Z` (active account `max_20x`, tier
-`default_claude_max_20x`):
-
+Mutation negative controls, run and pasted (all in `test-fable-think-tier.sh` §2c and verified
+again live against the real tree):
 ```
-max_20x: five_hour_pct=31 seven_day_pct=6
-  limits: session pct=31 active=true | weekly_all pct=6 active=false
-          weekly_scoped pct=7 active=false scope={"model":{"display_name":"Fable"}}
-max_5x:  five_hour_pct=29 seven_day_pct=2 (active=false, same Fable weekly_scoped window at 0)
+# synthetic-string checks (§2c, always run as part of the suite):
+PASS: mutation A (full model id pin) matches census_re
+PASS: mutation B (unguarded 'fallback'-labeled opus pin) correctly rejected
+PASS: resolver-gated fallback (guard present) correctly exempted
+
+# live re-insertion at a real think-role site (leadv2-diverge.js), then reverted:
+FAIL: tree-wide census: unclassified 'opus' literal(s): .../leadv2-diverge.js:128: { label: 'sneak', agentType: 'critic', model: 'claude-opus-5', ... }
+FAIL: tree-wide census: think-role spawn line pinning opus: (same line)
+PASS=17 FAIL=2   # (green PASS=20/FAIL=0 restored after revert — see full run below)
+
+# old (round-2) census_re + keyword-only filter re-applied to a scratch copy of the suite,
+# proving the two mutations WERE real bypasses under the old logic:
+FAIL: mutation A (full model id pin) NOT matched by census_re — bypass reopened
+FAIL: mutation B (unguarded 'fallback'-labeled opus pin) wrongly exempted — bypass reopened
+PASS=4 FAIL=14
 ```
 
-**Probe** — `claude -p --model claude-fable-5-1 'say ok'` → rc=0 (Fable 5.1 accepted on
-this plan; NOT refused).
-
-**After** — same reader, `fetched_at: 2026-09-01T21:03:17Z`:
-
+### 3. SUBAGENT_MODEL_FORCE claim — probed and scoped (not a blanket claim anymore)
+Ran `claude -p --model claude-opus-5` with `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=claude-sonnet-5`
+set — the top-level `--model` flag was unaffected (`"model":"claude-opus-5"` in the stream),
+confirming the var does NOT touch the main-loop model. To find what it DOES affect, disassembled
+the installed CC 2.1.257 binary directly (`strings -a ~/.local/share/claude/versions/2.1.257`,
+grep for the env var name):
 ```
-max_20x: five_hour_pct=31 seven_day_pct=6   (unchanged)
-  weekly_scoped pct=7 scope={"model":{"display_name":"Fable"}}  (unchanged)
-max_5x:  five_hour_pct=30 (inactive account)
+strings -a ~/.local/share/claude/versions/2.1.257 | grep -B2 -A2 'ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE'
+->  Workflow agent model "
+->  " ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set
+->  minified source (Workflow-tool internal agent() dispatcher):
+      if(I?.model!==void 0 && a.CLAUDE_CODE_SUBAGENT_MODEL_FORCE)
+        t(`Workflow agent model "${I.model}" ignored: ...`), I.model=void 0;
 ```
+This confirms the var nulls `opts.model` specifically inside the **Workflow tool's internal
+`agent()` dispatcher** (the same code path `docs/model-effort-matrix.md`'s
+`model: opts.model || THINK_MODEL` line refers to) — so for Workflow scripts, the original
+claim ("overrides every explicit model= pin") holds. It was NOT probed against, and the docs
+no longer claim it applies to, non-Workflow spawns (`Agent` tool, `claude-subsession.sh
+--model`) — those are separate code paths (a fresh `claude -p` process for the subsession
+script; a different internal dispatcher for the `Agent` tool) that this string evidence says
+nothing about.
 
-**Verdict:** the five-hour window did NOT move across the probe, and the reader
-exposes a model-scoped `weekly_scoped` window for Fable that is distinct from
-`weekly_all` — the "same Claude Max bucket as Opus" claim is UNPROVEN. Per the round-2
-directive: Fable gets its OWN bucket entry (`cost_class: fable-scoped-weekly` in
-`model-capability.yaml`), `context_k` reverted to `unverified`, and
-`glm-policy-resolve.py` keeps fable on the anthropic ACCOUNT reading only as the
-conservative ceiling (its comment now says so; the same-bucket claim is gone).
+Updated both `docs/model-effort-matrix.md:85` and `docs/phases.md:145` to state the scoped,
+evidenced claim with the probe command inline, and to explicitly flag the non-Workflow paths
+as unprobed rather than silently included under the old blanket wording.
 
-**evidence: model ids** — Claude Code environment banner, verbatim: "Model IDs —
-Fable 5.1: 'claude-fable-5-1', Opus 5: 'claude-opus-5', Sonnet 5:
-'claude-sonnet-5', Haiku 4.5: 'claude-haiku-4-5-20251001'", cross-confirmed by the
-probe above (`--model claude-fable-5-1` accepted).
+The round-2 "same Claude Max bucket as Opus" withdrawal (`docs/model-effort-matrix.md:50`,
+`config/model-capability.yaml:43`) was already evidence-tagged from round 2 — left unchanged,
+still correct on review.
 
-### Mutation negative control (tree-wide gate)
-
-Re-inserted a live think-role pin into `workflows/leadv2-learn.js` (a file NOT yet
-touched this round):
-
-```js
-const MUTATION_OPUS_PIN = { model: 'opus' } // NEGATIVE-CONTROL mutation, do not keep
+## Falsification (full suite run, post-fix)
 ```
-
-Gate output (red), mutation then reverted (file back to committed state, `git diff`
-clean):
-
-```
-FAIL: tree-wide census: unclassified 'opus' literal(s): .../workflows/leadv2-learn.js:24:const MUTATION_OPUS_PIN = { model: 'opus' } // NEGATIVE-CONTROL mutation, do not keep
-PASS=14 FAIL=1
-```
-
-### Suite green after all migrations
-
-`LEADV2_SUITE_LOCK_DISABLE=1 bash plugins/leadv2/scripts/tests/test-fable-think-tier.sh`:
-
-```
+$ bash -n plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+bash -n OK
+$ LEADV2_SUITE_LOCK_DISABLE=1 bash plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 PASS: resolver default = fable
 PASS: resolver LEADV2_THINK_MODEL=opus override wins (negative control)
 PASS: resolver falls back to opus when fable marked unavailable
 PASS: tree-wide census: zero live think-role 'opus' spawn pins
+PASS: mutation A (full model id pin) matches census_re
+PASS: mutation B (unguarded 'fallback'-labeled opus pin) correctly rejected
+PASS: resolver-gated fallback (guard present) correctly exempted
 PASS: leadv2-diverge: THINK_MODEL const present
 PASS: leadv2-learn: THINK_MODEL const present
 PASS: leadv2-diagnose: THINK_MODEL const present
 PASS: leadv2-po-feedback-loop: THINK_MODEL const present
 PASS: zero opus-4 literals under plugins/leadv2/{scripts,config,ref,workflows,hooks}
+PASS: architect-escape-mission.md: extracted bash block parses (bash -n)
+PASS: architect-escape-mission.md: referenced router script exists (.../leadv2-router.sh)
 PASS: pool orders fable before opus (codex:blocked:98,glm:blocked:95,kimi:author:,fable:ok:30,opus:ok:30,sonnet:ok:30)
 PASS: fable shares the anthropic reading (ok under the 95 ceiling)
 PASS: reviewer=fable (first eligible arm after the author/probe exclusions)
 PASS: author-exclusion intact: author=opus excluded, reviewer=fable
 PASS: dispatch-code.sh: no hardcoded opus prepass default
 PASS: dispatch-code.sh prepass default resolves via router think-model
-PASS=15 FAIL=0
+PASS=20 FAIL=0
 ```
+`git diff main..HEAD -- '*.sh' '*.py'` (changed-scope) — only `test-fable-think-tier.sh` has
+uncommitted-vs-main shell/python diff beyond the round-1/2 commits already on the branch;
+`bash -n` on it passes as shown above; no `.py` files touched this round.
 
-### Live resolver behaviour (fanout classifier)
+Merged `main` first (ff-able) — brought in `leadv2-guard-census.sh`, `leadv2-suite-falsifiable.sh`
+and related test fixtures/suites unrelated to this lane's scope; left untouched. Deleted the
+stray `report.md` that round 2 left at the worktree root before merging (main also carries an
+unrelated `report.md` from a different task, `PLUGIN-PAPERCUTS-01` — that one is main's file,
+not this lane's; left as merged).
 
-```
-$ leadv2-fanout-classify.sh --intent "routine bulk edit" --tags ""
-launch_class=Standard ... lead_model=sonnet            (unchanged)
-$ leadv2-fanout-classify.sh --intent "safety-gate deploy of auth flow" --tags "safety"
-launch_class=Heavy risk_tags=auth,safety lead_model=fable   (was opus — now resolves)
-```
-
-### Self-check / falsification set
-
-```
-SYNTAX-OK: plugins/leadv2/scripts/leadv2-llm-judge.sh
-SYNTAX-OK: plugins/leadv2/scripts/leadv2-fanout-classify.sh
-SYNTAX-OK: plugins/leadv2/scripts/leadv2-fanout.sh
-SYNTAX-OK: plugins/leadv2/hooks/leadv2-routing-guard.sh
-SYNTAX-OK: plugins/leadv2/scripts/tests/test-fable-think-tier.sh
-PY-OK: glm-policy-resolve.py          (python3 -m py_compile)
-YAML-OK: model-capability.yaml        (yaml.safe_load)
-```
-
-Changed-scope repo runner (`LEADV2_SUITE_LOCK_DISABLE=1 bash tests/run-all.sh --scope
-changed`):
-
-```
-[PASS] .../plugins/leadv2/scripts/tests/test-fable-think-tier.sh   (15/15, incl. tree-wide census)
-run-all: 4 passed, 1 failed, scope=changed
-  Failures (blocking):
-    - plugins/leadv2/scripts/tests/run-core-offline.sh
-```
-
-run-core-offline.sh detail (full log captured at /tmp/core-offline-r2.log): the failing
-tests inside it are `T13 slice2 (arbiter bench-fallback + abandon dedup)` — "CLI dispatch
-table exposes an undocumented subcommand" — and `landed-at-spawn T-a` (dispatch exited 4,
-reservation row unconfirmed). Both are in the PRE-EXISTING red baseline measured
-2026-09-01 (commit 2192dab, memory `run-all-changed-preexisting-reds`: "t13-slice2,
-landed-at-spawn 4/8"), BEFORE round 1 landed; none of the failing assertions touch files
-this lane changed (they exercise dispatch exit codes, terminal/reservation ledgers, and
-the arbiter CLI table). Remaining core-offline shards: 17+13+16+30 sub-checks green,
-including all bash -n / shellcheck gates over the scripts this round edited.
-
-### Async decision (write-set expansion)
-
-qid q-392fa4b8 — status=timed_out, selected=a (expand), decided_by=architect
-(timeout default; journaled, surfaces in open-threads). Reversible: revert of this
-lane's commit restores the 6 out-of-write-set files.
+DELIVERABLE_COMPLETE
