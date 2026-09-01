@@ -572,7 +572,22 @@ def resolve(tid):
             _wpid = None
         if _wpid is not None:
             row["pid"] = _wpid
-            row["pid_source"] = "worker"
+            # FORK-STORM-KILLS-HOOKS-01: a watcher-kind pid is NOT a worker.
+            # The dispatcher re-pins async-arm rows to its lane-pulse watcher
+            # (leadv2-dispatch-code.sh, PULSE-BOARD-EMPTY round 4); when that
+            # watcher outlives the dispatch it made every later dispatch for
+            # the lane read `live` off a process that only WATCHES the journal
+            # -- the closed loop behind three lane_is_live incidents
+            # (2026-09-01). A watcher pid is still reported (annotation), but
+            # it never counts as process-liveness evidence: every rung below
+            # that consults pid_source excludes "watcher" exactly like
+            # "lead_durable", and `watcher_only` marks the row so callers
+            # (placement probe) can distinguish a stale-watcher lane.
+            if session.get("worker_pid_role") == "watcher":
+                row["pid_source"] = "watcher"
+                row["watcher_only"] = 1
+            else:
+                row["pid_source"] = "worker"
             _state, _identity = pid_state(_wpid, session.get("worker_pid_birth"), pid_identity_on, session.get("dead_at"))
         else:
             row["pid"] = session.get("pid")
@@ -595,7 +610,10 @@ def resolve(tid):
     # with no runner-written sentinel at all). Excludes lead_durable rows:
     # that pid is the LEAD's own, never worker evidence, so "gone" there is
     # meaningless.
-    if session is not None and row.get("pid_source") != "lead_durable":
+    # FORK-STORM-KILLS-HOOKS-01: "watcher" joins "lead_durable" here too — a
+    # live watcher pid must not block the finished-window verdict, same
+    # reasoning as the C2 floor below.
+    if session is not None and row.get("pid_source") not in ("lead_durable", "watcher"):
         pid_gone = row["pid"] is None or row["pid_alive"] is False
         if pid_gone:
             _commit_age = commit_age_s(session.get("worktree"))
@@ -730,7 +748,14 @@ def resolve(tid):
         dispatch_json = os.path.join(lane_dir, "dispatch.json")
         registered = session is not None or os.path.isfile(dispatch_json)
         age = None
-        if registered:
+        # FORK-STORM-KILLS-HOOKS-01: the positive `starting:` rung is pid-free
+        # (age off started_at alone), so a row re-pinned to a stale watcher —
+        # whose started_at every retry's idempotent re-registration refreshes —
+        # would re-earn it forever and feed the skip/refuse loop. A
+        # watcher-only row gets NO starting grace: it falls straight through
+        # to the dead determination below (the C2 floor already excludes
+        # watcher pids).
+        if registered and not row.get("watcher_only"):
             age = age_from_started_at(session)
             if age is None and os.path.isfile(dispatch_json):
                 dj_mtime = file_mtime(dispatch_json)
@@ -751,7 +776,11 @@ def resolve(tid):
         # lead session's own pid -- ignoring it here is the deadlock-breaker
         # for a lead-registered lane whose worker died before ever writing a
         # stream (design §2.1 state 7). Legacy rows keep the exact old floor.
-        if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") != "lead_durable":
+        # FORK-STORM-KILLS-HOOKS-01: a watcher pid joins the exclusion — a
+        # stale watcher keeping the row "alive" must never hold the lane at
+        # silent:no_artifact_process_alive (acceptance 9: a lane whose only
+        # live process is a watcher is NOT live).
+        if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") not in ("lead_durable", "watcher"):
             row.update(verdict=f"silent:{row['age_s'] if row['age_s'] is not None else 'unknown'}",
                        source="handoff", reason="no_artifact_process_alive")
             return row
@@ -815,7 +844,8 @@ def resolve(tid):
     # Preserve stopped-process detection in the same verdict source.
     # LANE-REGISTRY-SELF-DEADLOCK-01: gated on a non-lead pid — a wedged LEAD
     # session must never mark a lane dead (design §2.1 state 12).
-    if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") != "lead_durable":
+    # FORK-STORM-KILLS-HOOKS-01: a watcher pid is equally non-evidence here.
+    if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") not in ("lead_durable", "watcher"):
         stat = ps_stat(row["pid"])
         if "T" in stat:
             row.update(verdict=f"dead:wedged_STAT={stat}", reason=f"wedged_STAT={stat}")
