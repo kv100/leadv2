@@ -121,3 +121,95 @@ in flight when this file was committed; result appended below if completed in ti
   LANE-PLACEMENT-01, C5-registered-arm-silent) are pre-existing per memory
   `run-all-changed-preexisting-reds`; any failures in the full run need to be
   compared against that set before blaming this lane.
+
+## Round 2 (2026-09-01): all 10 failures were ONE defect — stale working-tree bytes
+
+Runtime evidence (reproduced outside the suite, fixture repo with `docs/handoff/*/*`):
+
+```
+RC=2
+--- STDERR (628B)
+leadv2-repo-install.sh: line 231: docs/handoff/dispatch-1d76cf8a/architect-prepass.md: No such file or directory
+leadv2-repo-install.sh: line 232: docs/handoff/dispatch-1d76cf8a/.gate1-passed: No such file or directory
+leadv2-repo-install.sh: line 233: docs/handoff/some-task/brief.md: No such file or directory
+leadv2-repo-install.sh: line 235: syntax error near unexpected token `('
+leadv2-repo-install.sh: line 235: `GATE_MARKER="# leadv2: phase-gate artifacts must stay committable (leadv2-repo-install.sh)"'
+```
+
+What set 2: the worktree's ON-DISK copy of `leadv2-repo-install.sh` contained four stray
+duplicated `GATE_SAMPLES` path lines (231–234, last one with a dangling `"`), so bash
+executed the paths as commands and died with a syntax error at `GATE_MARKER` — on EVERY
+call path, before the negation block was ever appended. That single death produced all
+ten round-1 failures: rc=2 everywhere (×4), guarantee block ×0 and briefs still ignored
+(the append never ran, ×3), 1173B stderr on the already-correct repo (the same parse
+garbage, ×1), missing UNFIXABLE report (script died before reaching the report, ×1),
+plus the two dependent committable assertions.
+
+Crucially, those stray bytes are NOT in the lane commit. Proof:
+
+```
+$ git cat-file -p c10c9df:plugins/leadv2/scripts/leadv2-repo-install.sh | sed -n '230,231p'
+docs/handoff/some-task/fix-round-2.md"
+GATE_MARKER="# leadv2: phase-gate artifacts must stay committable (leadv2-repo-install.sh)"
+```
+
+The committed blob is already correct; the corruption was a stale parallel-session write
+into this worktree's working copy after `c10c9df` (the failure mode CLAUDE.md warns
+about). Round 1's "measured on the lane commit: PASS=7 FAIL=10" was in fact measured on
+those corrupted bytes. Fix = remove the stray lines, which restores the working tree to
+byte-identity with HEAD — hence `git diff HEAD` is now empty for the script.
+
+### Post-fix evidence
+
+```
+adoption-gate-passable: PASS=17 FAIL=0
+```
+
+Mutation kill re-proven on the real call path (append `printf '%s\n' "$gate_block" >>
+.gitignore` replaced by `:` in the production body):
+
+```
+mutated:   adoption-gate-passable: PASS=10 FAIL=7  (adoption rc=1, gate artifacts
+           still ignored, guarantee block x0, idempotency broken)
+reverted:  adoption-gate-passable: PASS=17 FAIL=0
+git diff HEAD --stat -- plugins/leadv2/scripts/ :  empty
+```
+
+Falsification: `bash -n` OK on both `leadv2-repo-install.sh` and
+`test-adoption-gate-passable.sh`; changed-scope runner result below.
+
+### Reviewer note
+
+A suite that goes red against a COMMITTED script should first get
+`git diff HEAD -- <script>` before any deep-dive: here it would have shown the on-disk
+bytes diverging from the blob and saved the entire round-2 dispatch.
+
+### Round 2, session 2 — independent re-verification (2026-09-01T02:00Z)
+
+Re-proved every acceptance item from scratch; working tree was already
+byte-identical to HEAD, so no code change this session — only this report.
+
+Negative control (mutation INSIDE the production body, real call path —
+`printf '%s\n' "$gate_block" >> "${REPO}/.gitignore"` at
+leadv2-repo-install.sh:257 replaced by `:`):
+
+```
+mutated:   adoption-gate-passable: PASS=10 FAIL=7   (rc=1)
+reverted:  adoption-gate-passable: PASS=17 FAIL=0
+git diff --stat -- plugins/leadv2/scripts/ : empty
+```
+
+Suite selection: `test-adoption-gate-passable.sh --scope changed` → PASS=17 FAIL=0.
+`bash -n` clean on both leadv2-repo-install.sh and the suite.
+
+Changed-scope runner (`tests/run-all.sh --scope changed`): `3 passed, 1 failed,
+scope=changed` — the failure is the run-core-offline aggregate, matching the
+pre-existing-red shape recorded 2026-08-28 in memory
+`run-all-changed-preexisting-reds`. Direct core-offline re-run:
+`suites passed=67 failed=17`, none of the 17 failed suites references
+`leadv2-repo-install` (grep over tests: only test-adoption-gate-passable.sh),
+and no production script calls it — the lane diff (2 files: repo-install §3b +
+this suite) is decoupled from every red. Growth 3→17 since 08-28 coincides with
+other lanes' merges and concurrent-session interference (core-offline itself
+reported `HERMETIC-VIOLATION: lanes snapshot reconciliation dirtied docs/leadv2`
+while 5 other sessions are live). Not this lane's reds.
