@@ -907,12 +907,14 @@ _resolve_pinned_placement() {
   # decision line is journaled on BOTH branches so the next forensic session
   # sees WHY a lane was reclaimed (deliverable #2). signal derives from the
   # row's reason: pid evidence vs stream freshness vs none.
-  local _row _v _reason _signal _age _live=0 _probe_id
+  local _row _v _reason _signal _age _live=0 _probe_id _watcher_only=0 _wpid
   for _probe_id in "dispatch-${key}" "${key}"; do
     _row="$(bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --lane "${_probe_id}" --no-codex --json 2>/dev/null || true)"
     _v="$(_placement_probe_field "${_row}" verdict)"
     _reason="$(_placement_probe_field "${_row}" reason)"
     _age="$(_placement_probe_field "${_row}" age_s)"
+    _watcher_only="$( _placement_probe_field "${_row}" watcher_only )"
+    [[ "${_watcher_only}" == "1" ]] || _watcher_only=0
     [[ -z "${_age}" ]] && _age="?"
     _signal="none"
     case "${_reason}" in
@@ -924,6 +926,23 @@ _resolve_pinned_placement() {
       break
     fi
   done
+  if (( _live == 1 )); then
+    # FORK-STORM-KILLS-HOOKS-01 (acceptance 9/10): a lane whose ONLY live
+    # process is a watcher-role pid is NOT live. This is the closed loop's
+    # load-bearing consumer fix: a stale lane-pulse watcher (reparented to
+    # launchd, alive for hours) must never make the next dispatch refuse with
+    # bare lane_is_live. Reap the watcher (TERM; its EXIT trap cleans its own
+    # pidfile), journal the DISTINCT cause, and let the pin proceed.
+    if [[ "${_watcher_only}" == "1" ]]; then
+      _wpid="$(_placement_probe_field "${_row}" pid)"
+      emit decision "stale_watcher_reaped task=${sig8:-?} probe_id=${_probe_id} watcher_pid=${_wpid:-?} verdict=${_v} age=${_age}"
+      printf '[leadv2-dispatch-code] stale watcher on lane %s (pid=%s) — reaped, pin proceeds\n' \
+        "${_probe_id}" "${_wpid:-?}" >&2
+      [[ "${_wpid:-}" =~ ^[0-9]+$ ]] && kill "${_wpid}" 2>/dev/null || true
+      STALE_WATCHER_REAPED=1
+      _live=0
+    fi
+  fi
   if (( _live == 1 )); then
     reason="lane_is_live"
     emit decision "lane_liveness verdict=live task=${sig8:-?} signal=${_signal} probe_id=${_probe_id} raw=${_v} age=${_age}"
@@ -1018,7 +1037,13 @@ _deliver_plan_into_lane() { # <sig8> <founder-task-id>
   if [[ ! -f "${src}/context.yaml" ]]; then
     LANE_PLAN_DELIVERY_STATUS="source_absent"
     emit decision "lane_plan_missing task=${sig8} reason=source_absent source=${src}/context.yaml"
-    _dl_note "${sig8}" skipped plan_source_absent
+    # FORK-STORM-KILLS-HOOKS-01 (acceptance 10): when this dispatch only got
+    # this far because a stale watcher was reaped off the lane (see the
+    # placement probe), the skip is a FAULT trace, not a deliberate skip —
+    # carry the distinct cause so the event stream can never confuse the two.
+    local _skip_cause="plan_source_absent"
+    [[ "${STALE_WATCHER_REAPED:-0}" == "1" ]] && _skip_cause="plan_source_absent_stale_watcher"
+    _dl_note "${sig8}" skipped "${_skip_cause}"
     return 0
   fi
   mkdir -p "${dst}" 2>/dev/null || true
@@ -5268,8 +5293,11 @@ _spawn_worker_body() {
     if declare -F leadv2_active_set_worker_pid >/dev/null 2>&1; then
       local _wpid_birth
       _wpid_birth="$(_lv2_pid_birth "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null || printf '')"
+      # FORK-STORM-KILLS-HOOKS-01: the pid is a WATCHER, not a worker — stamp
+      # the kind so liveness (leadv2-lane-liveness.sh) never reads it as
+      # worker-liveness evidence, however long the watcher outlives us.
       LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_set_worker_pid \
-        "${DISPATCH_REG_ID}" "${_LV2_LANE_PULSE_WATCH_PID}" "${_wpid_birth}" >/dev/null 2>&1 || true
+        "${DISPATCH_REG_ID}" "${_LV2_LANE_PULSE_WATCH_PID}" "${_wpid_birth}" "watcher" >/dev/null 2>&1 || true
     fi
     declare -F lane_adopt_pid >/dev/null 2>&1 && \
       lane_adopt_pid "${DISPATCH_REG_ID}" "${DISPATCH_LEAD_SESSION_ID:-direct}" "${WORK_ROOT:-${PROJECT_ROOT}}" "build" "${_LV2_LANE_PULSE_WATCH_PID}" >/dev/null 2>&1 || true

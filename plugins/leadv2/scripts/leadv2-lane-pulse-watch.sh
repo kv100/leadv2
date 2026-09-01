@@ -114,6 +114,56 @@ if [[ -z "$JOURNAL" ]]; then
 fi
 TASK_ID="dispatch-${SIG}"
 
+# ── FORK-STORM-KILLS-HOOKS-01: orphan self-termination ──────────────────────
+# Decision (recorded in report.md): the watcher CANNOT be owned by something
+# that dies with the dispatch — it is nohup'd+disowned from a command-
+# substitution subshell precisely so the launcher never hangs on it — so it
+# must self-terminate when its lane's worker is gone. Observable proxy: the
+# active.yaml row that pins MY pid with role=watcher stops advancing
+# updated_at (a genuinely running lane bumps its row on every phase
+# transition; a lane whose dispatch died leaves it frozen). A watcher-only
+# row frozen for ORPHAN_MAX seconds means no worker exists — exit with a
+# watcher_orphan pulse instead of lingering to the full TIMEOUT. 0 disables.
+ORPHAN_MAX="${LEADV2_LANE_PULSE_WATCH_ORPHAN_MAX_S:-1800}"
+[[ "$ORPHAN_MAX" =~ ^[0-9]+$ ]] || ORPHAN_MAX=1800
+ACTIVE_YAML="$(PROJECT_ROOT="$ROOT" bash "${SCRIPT_DIR}/leadv2-state-path.sh" active.yaml 2>/dev/null || true)"
+[[ -n "$ACTIVE_YAML" ]] || ACTIVE_YAML="${ROOT}/docs/leadv2/active.yaml"
+# <self-pid> <active.yaml> <max-age-s> -> prints "orphan" iff a row pins this
+# pid as a watcher AND its updated_at is older than max-age. Fail-open: any
+# parse error, missing PyYAML, or missing row prints nothing (keep watching).
+_orphan_check() {
+  python3 - "$1" "$2" "$3" <<'PY' 2>/dev/null || true
+import sys, time, datetime
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+self_pid, path, max_s = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+try:
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+except Exception:
+    sys.exit(0)
+for s in (data.get("sessions") or []):
+    try:
+        if int(s.get("worker_pid") or 0) != self_pid:
+            continue
+    except (TypeError, ValueError):
+        continue
+    if s.get("worker_pid_role") != "watcher" and s.get("pid_role") != "watcher":
+        continue
+    ts = str(s.get("updated_at") or "")
+    try:
+        t = datetime.datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")
+        age = time.time() - t.replace(tzinfo=datetime.timezone.utc).timestamp()
+    except ValueError:
+        sys.exit(0)
+    if age >= max_s:
+        print("orphan")
+    sys.exit(0)
+PY
+}
+
 # ── pidfile guard: never two watchers per lane (keyed by sig) ───────────────
 if [[ -z "$STATE_DIR" ]]; then
   STATE_DIR="$(PROJECT_ROOT="$ROOT" bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link lane-pulse-watch 2>/dev/null || true)"
@@ -200,6 +250,16 @@ while :; do
   if [[ ! -d "$ROOT" ]]; then
     printf '[lane-pulse-watch] %s root gone (%s), exiting\n' "$SIG" "$ROOT" >&2
     exit 0
+  fi
+  # FORK-STORM-KILLS-HOOKS-01: worker gone (registry row still pins me as a
+  # watcher and has frozen) — stop watching, the loop breaker's hygiene half.
+  if (( ORPHAN_MAX > 0 )); then
+    _orphan="$( _orphan_check "$$" "$ACTIVE_YAML" "$ORPHAN_MAX" )"
+    if [[ "$_orphan" == "orphan" ]]; then
+      printf '[lane-pulse-watch] %s orphaned: row pins my pid as watcher, frozen >%ss — exiting\n' "$SIG" "$ORPHAN_MAX" >&2
+      _pulse "watcher_orphan" "row_frozen>$ORPHAN_MAXs"
+      exit 0
+    fi
   fi
   if [[ -f "$JOURNAL" ]]; then
     _missing_since=0

@@ -218,3 +218,86 @@ selection run.
    call; loop-detect's per-event python) — needs hooks/*.sh in a write set.
 3. The degrade journal grows unbounded; fork-budget reports its line count —
    add rotation when it first matters.
+
+## 10. Fix round 3 (2026-09-01) — the addendum's watcher loop
+
+The addendum (fix-round-2.md) corrected two premises of this lane and named the
+real producer: a self-feeding loop in which a stale lane-pulse watcher keeps a
+lane's registry row reading `live`. Implemented the three acceptance additions.
+
+### Decision the addendum asked for: own vs self-terminate
+
+**Self-termination, not ownership.** The watcher cannot be owned by something
+that dies with the dispatch: it is `nohup`+`disown`ed from inside a command-
+substitution subshell precisely so a persistent watcher cannot hang the
+launcher (MON-PULSE-01, dispatch-code ~:4650). Killing it with the dispatcher
+would delete the PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round-4 feature it
+exists to provide (async arms have no local pid to pin). So the watcher keeps
+its independence but must die when its lane's worker is gone.
+
+Observable proxy for "worker is gone": the row that pins MY pid with
+`worker_pid_role: watcher` stops advancing `updated_at` — a genuinely running
+lane bumps its row on every phase transition. Frozen >ORPHAN_MAX (default
+1800s, `LEADV2_LANE_PULSE_WATCH_ORPHAN_MAX_S`, 0=off) ⇒ the watcher pulses
+`watcher_orphan` and exits, instead of lingering to the derived timeout
+(default 4×max-backend-timeout+300 ≈ 14700s — the census's 1h44m orphans).
+
+### The load-bearing fix is consumer-side: a watcher is not a worker
+
+1. `leadv2-active-registry.sh` — `leadv2_active_set_worker_pid` gains optional
+   4th arg `role` ("worker" default | "watcher"); stamped as `worker_pid_role`
+   and mirrored into `pid_role`. Unknown roles degrade to "worker" (historic
+   behaviour, never a new failure mode).
+2. `leadv2-dispatch-code.sh` re-pin site passes `"watcher"` — the registry now
+   records WHICH KIND of process the pinned pid is.
+3. `leadv2-lane-liveness.sh` — a `watcher`-role pid is excluded from every
+   process-liveness rung exactly like `lead_durable`: the finished-window
+   check, the C2 floor (`silent:no_artifact_process_alive`), the wedged-STAT
+   check, and — new rung guard — the pid-free `starting:` grace (the loop's
+   real shape: every retry's idempotent re-registration refreshes started_at,
+   so a stale watcher's row re-earned `starting:*` forever). The probe
+   contract gains `watcher_only: 1`. Acceptance 9.
+4. `leadv2-dispatch-code.sh` placement probe — verdict live/starting but
+   `watcher_only=1` ⇒ lane is NOT live: journal `stale_watcher_reaped`,
+   TERM the watcher (its EXIT trap cleans its pidfile), pin proceeds. This
+   breaks the loop at its step 4: no more `lane_is_live` refusals off a
+   watcher pid. Acceptance 8's consumer half.
+5. `_deliver_plan_into_lane` — a `source_absent` skip after a stale-watcher
+   reap carries cause `plan_source_absent_stale_watcher`, never the bare
+   token; genuine skips keep the bare cause (negative control). Acceptance 10.
+
+### Evidence (fixtures: tests/test-fork-storm-watcher-liveness.sh, 6/6 green)
+
+- A/B with rows differing ONLY in `worker_pid_role`: worker → `starting:*`
+  (prior semantics preserved); watcher → `dead:no_handoff_dir` +
+  `watcher_only=1`.
+- Real watcher, row pinning its own pid frozen 2 days: self-terminated within
+  ~2 intervals at ORPHAN_MAX=2 (fixture), pulses `watcher_orphan`.
+- Real `_deliver_plan_into_lane` (extracted from the shipped script, no copy):
+  `STALE_WATCHER_REAPED=1` ⇒ `skipped:plan_source_absent_stale_watcher`;
+  `=0` ⇒ bare `skipped:plan_source_absent`.
+
+### Mutation kills (each flips the shipped line, suite must go red, then revert)
+
+- M1: starting-rung guard `not row.get("watcher_only")` removed ⇒ acc9 FAIL
+  (`verdict=starting:1` — the loop's exact live-read). RED.
+- M2: C2-floor exclusion narrowed back to `!= "lead_durable"` ⇒ acc9 FAIL
+  (`silent:1`). RED.
+- M3: distinct `_skip_cause` suppressed ⇒ acc10 FAIL (bare cause returned).
+  RED.
+- M4: `_orphan_check` `if False` ⇒ acc8 FAIL (watcher alive 10s past freeze).
+  RED.
+
+### Honest notes
+
+- Changed-scope `tests/run-all.sh --scope changed` did NOT complete (rc=124 at
+  540s; core-offline alone is >10min — known). All failures in the partial run
+  match the pre-existing red baseline (2026-09-01 memory, 2192dab):
+  t13-slice2, landed-at-spawn 4/8, phase-precondition G1-G3, pulse-watch W8.
+- `test-lane-liveness-authoritative.sh` D6 ("degradation ladder dropped a
+  lane") FAILS — proven NOT mine: fails identically against the pristine HEAD
+  blob of leadv2-lane-liveness.sh (run before/after swap, same FAIL line).
+  Likely MAIN-CORE-SUITE-RED-01's territory.
+- `test-lane-registry-outlives-dispatcher.sh` 10/10 green (the re-pin change
+  is backwards-compatible with its fixture).
+- `bash -n` clean on all five touched files; no standalone .py changed.
