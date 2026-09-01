@@ -66,6 +66,15 @@ lv2_assert_scratch_repo "$REPO"
 
 FOUNDER_STATUS="$REPO/docs/leadv2/founder-status.md"
 
+# PULSE-REPO-SCOPED-03: the renderer now shows a foreign-repo lane only when
+# THIS repo dispatched it (dispatch record <root>/docs/leadv2/tasks/<tid>/).
+# These fixtures' foreign rows ARE the "dispatched from here" case, so seed
+# the dispatch records up front — the suite's own contracts (identity, dedup,
+# digest keys) are unchanged.
+mkdir -p "$REPO/docs/leadv2/tasks/FOREIGN-LANE-01" \
+         "$REPO/docs/leadv2/tasks/SHARED-ID-01" \
+         "$REPO/docs/leadv2/tasks/DIGEST-KEY-01"
+
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 

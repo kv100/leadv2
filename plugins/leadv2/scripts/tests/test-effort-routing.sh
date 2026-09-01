@@ -137,7 +137,7 @@ SH
 chmod +x "$CODEX_STUB"
 (
   cd "$REPO"
-  CLAUDE_PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" \
+  CLAUDE_PROJECT_ROOT="$REPO" PROJECT_ROOT="$REPO" LEADV2_PROJECT_ROOT="$REPO" \
   LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-codex" LEADV2_STATE_BASE="$TMP/state-codex" \
   LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
@@ -167,9 +167,23 @@ chmod +x "$SONNET_STUB"
 # not a CLI knob on dispatch-code.sh itself, so cap every OTHER provider's
 # quota to its ceiling and disable freepool health -- sonnet (protected:true,
 # claude bucket) is the sole survivor for a protected kind=code/heavy task.
+# PHASE-GATE-IS-INVERTED-01: a heavy code lane must carry plan+gate1 (and
+# diverge for Heavy) BEFORE dispatch — the guard no longer accepts a caller's
+# bootstrap attestation. Record the lead-authored evidence this suite's
+# mission would realistically have.
+PHASE_RECORD="${SCRIPTS_DIR}/leadv2-phase-record.sh"
+SIG_SONNET="$(printf '%s' 'sonnet effort wiring probe' | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print substr($1, 1, 8)}')"
+mkdir -p "$REPO2/docs/handoff/SONNET-$SIG_SONNET"
+printf '# sonnet effort wiring probe\n\nfixture plan\n' > "$REPO2/docs/handoff/SONNET-$SIG_SONNET/brief.md"
+( cd "$REPO2" && PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" bash "$PHASE_RECORD" record "$SIG_SONNET" plan \
+    --status done --artifact "docs/handoff/SONNET-$SIG_SONNET/brief.md" --owner lead:fixture ) >/dev/null 2>&1
+( cd "$REPO2" && PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" bash "$PHASE_RECORD" record "$SIG_SONNET" gate1 \
+    --status done --reason 'fixture Gate 1 decision' --owner lead:fixture ) >/dev/null 2>&1
+( cd "$REPO2" && PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" bash "$PHASE_RECORD" record "$SIG_SONNET" diverge \
+    --status n/a --reason 'fixture: no diverge round' --owner lead:fixture ) >/dev/null 2>&1
 (
   cd "$REPO2"
-  CLAUDE_PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" \
+  CLAUDE_PROJECT_ROOT="$REPO2" PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" \
   LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-sonnet" LEADV2_STATE_BASE="$TMP/state-sonnet" \
   LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
@@ -201,7 +215,7 @@ SH
 chmod +x "$GLM_STUB"
 (
   cd "$REPO3"
-  CLAUDE_PROJECT_ROOT="$REPO3" LEADV2_PROJECT_ROOT="$REPO3" \
+  CLAUDE_PROJECT_ROOT="$REPO3" PROJECT_ROOT="$REPO3" LEADV2_PROJECT_ROOT="$REPO3" \
   LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-glm" LEADV2_STATE_BASE="$TMP/state-glm" \
   LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \

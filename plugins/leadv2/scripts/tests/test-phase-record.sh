@@ -10,6 +10,11 @@ PHASE_RECORD="${SCRIPT_DIR}/../leadv2-phase-record.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+# PHASE-GATE-IS-INVERTED-01: a session-exported PROJECT_ROOT diverging from
+# this suite's LEADV2_PROJECT_ROOT would now refuse every record write; this
+# suite's store root comes from LEADV2_PROJECT_ROOT alone, so drop the other
+# name.
+unset PROJECT_ROOT
 export LEADV2_PROJECT_ROOT="$TMP_ROOT"
 export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/.cache"
 export LEADV2_JOURNAL_BIN=/dev/null  # silent — no real journal

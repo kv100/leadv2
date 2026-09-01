@@ -262,12 +262,25 @@ for _arm in glm kimi codex; do
   printf '#!/usr/bin/env bash\nprintf "POISON: real provider spawn attempted\\n" >&2\nexit 99\n' > "$TMP/poison-${_arm}.sh"
   chmod +x "$TMP/poison-${_arm}.sh"
 done
+# PHASE-GATE-IS-INVERTED-01: this bulk probe maps to Standard, which now
+# requires plan+gate1 records before the dispatcher will spawn; seed the
+# lead-authored evidence for this mission (both root names must agree).
+FP08_SIG="$(printf '%s' "FP-08 wait no-work probe with a real diff ${TMP}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print substr($1, 1, 8)}')"
+mkdir -p "$REPO2/docs/handoff/FP08-$FP08_SIG"
+printf '# FP-08 wait no-work probe\n\nfixture lead-authored plan\n' > "$REPO2/docs/handoff/FP08-$FP08_SIG/brief.md"
+( cd "$REPO2" && PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" bash "${SCRIPTS_ROOT}/leadv2-phase-record.sh" record "$FP08_SIG" plan \
+    --status done --artifact "docs/handoff/FP08-$FP08_SIG/brief.md" --owner lead:fixture ) >/dev/null 2>&1 || true
+( cd "$REPO2" && PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" bash "${SCRIPTS_ROOT}/leadv2-phase-record.sh" record "$FP08_SIG" gate1 \
+    --status done --reason 'fixture Gate 1 decision' --owner lead:fixture ) >/dev/null 2>&1 || true
+( cd "$REPO2" && PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" bash "${SCRIPTS_ROOT}/leadv2-phase-record.sh" record "$FP08_SIG" diverge \
+    --status n/a --reason 'fixture: no diverge round' --owner lead:fixture ) >/dev/null 2>&1 || true
 a_out="$(cd "$REPO2" && LEADV2_STATE_ROOT="$TMP/state-root2" \
+
   LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" \
   LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" \
   LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-wait" \
   ROUTE_TEST_QUOTA="$(quota_json 99 99 99)" \
-  CLAUDE_PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" \
+  CLAUDE_PROJECT_ROOT="$REPO2" PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" \
   LEADV2_DISPATCH_CACHE_DIR="$TMP/cache2" \
   LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off \

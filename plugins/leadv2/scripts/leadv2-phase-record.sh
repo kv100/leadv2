@@ -70,6 +70,15 @@
 # after classify was recorded is still refused (acceptance criterion 5 in
 # test-phase-precondition-bootstrap.sh).
 #
+# PHASE-GATE-IS-INVERTED-01 (2026-09-01): the bootstrap answer is derived by
+# the CHECKER from the store, never accepted from the caller. Because
+# dispatch-code records classify before it asserts, the zero-record exemption
+# is unreachable on the real dispatch path — a fresh Standard/Heavy dispatch
+# MUST carry plan+gate1 (lead-authored brief.md + recorded Gate-1 reason are
+# valid pre-spawn evidence, see _verify_artifact) before a worker is spawned.
+# The deadlock the exemption was added for no longer exists: the evidence
+# path above is satisfiable BEFORE dispatch, which is how it must be used.
+#
 # review — residual forgery surface (honest scope):
 #   What the review proof DOES establish: the ledger row's diff_hash matches
 #   the target diff, the verdict is PASS/PASS_WITH_NITS, the reviewer arm is
@@ -107,11 +116,12 @@
 #   leadv2-phase-record.sh assert <sig8> --class <Trivial|Light|Standard|Heavy>
 #       [--waiver <phase>=<reason>]...
 #       [--writes <csv>]
-#       [--at-bootstrap]   caller (dispatch-code) attests its pre-classify probe
-#                          found ZERO records for this lane; honoured for
-#                          --pre-build scope only. Needed because dispatch-code
-#                          records classify before calling the guard — see
-#                          cmd_is_bootstrap.
+#       [--at-bootstrap]   ACCEPTED BUT IGNORED (PHASE-GATE-IS-INVERTED-01):
+#                          a caller-attested bootstrap answer is an assertion
+#                          by the party being checked, and forwarding it let
+#                          every brand-new lane skip plan/gate1. The guard
+#                          derives bootstrap state itself, from the store, at
+#                          assert time (see PHASE-BOOTSTRAP-01 in cmd_assert).
 #
 #   leadv2-phase-record.sh is-bootstrap <sig8>
 #       exit 0 iff the lane has no phase record at all (phases.d absent or
@@ -131,7 +141,27 @@ SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── project root resolution ──────────────────────────────────────────────────
-PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+# PHASE-GATE-IS-INVERTED-01 [Medium] 4: this script read ONLY LEADV2_PROJECT_ROOT
+# while its own variable (and the dispatcher's sub-invocations) say PROJECT_ROOT
+# — an operator exporting just PROJECT_ROOT silently wrote a DIFFERENT store,
+# and `show` then reported done from a store the dispatcher never reads. Both
+# names now resolve the store (LEADV2_PROJECT_ROOT wins when both are set).
+# A divergent pair is never silent: a WRITE refuses outright (a record the
+# dispatcher cannot read is the lying-green shape this fix exists to kill); a
+# READ warns and proceeds on LEADV2_PROJECT_ROOT.
+_lv2_root_a="${LEADV2_PROJECT_ROOT:-}"
+_lv2_root_b="${PROJECT_ROOT:-}"
+_lv2_root_cmd="${1:-}"
+if [[ -n "$_lv2_root_a" && -n "$_lv2_root_b" && "$_lv2_root_a" != "$_lv2_root_b" ]]; then
+  if [[ "$_lv2_root_cmd" == "record" ]]; then
+    printf '[%s] ERROR: project root conflict: LEADV2_PROJECT_ROOT=%s vs PROJECT_ROOT=%s — refusing to guess which phase store to WRITE\n' \
+      "$SCRIPT_NAME" "$_lv2_root_a" "$_lv2_root_b" >&2
+    exit 4
+  fi
+  printf '[%s] WARN: project root conflict: LEADV2_PROJECT_ROOT=%s wins over PROJECT_ROOT=%s for this read\n' \
+    "$SCRIPT_NAME" "$_lv2_root_a" "$_lv2_root_b" >&2
+fi
+PROJECT_ROOT="${_lv2_root_a:-${_lv2_root_b:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
 PHASES_DIR_BASE="${PROJECT_ROOT}/docs/handoff"
 PHASES_YAML="${PROJECT_ROOT}/.claude/leadv2-overrides/phases.yaml"
@@ -848,17 +878,18 @@ cmd_assert() {
         break
       done
     fi
-    # DISPATCH-PHASE-DEADLOCK-01 round 2: on the real dispatch path the
-    # zero-record probe above can never fire — dispatch-code records classify
-    # BEFORE calling the guard, so a brand-new lane already has exactly one
-    # record at assert time and was still refused (test-effort-routing.sh's
-    # sonnet fixture, measured red on main 2026-08-31). The guard therefore
-    # runs `is-bootstrap` BEFORE that classify write and passes the answer as
-    # --at-bootstrap. Trusted-caller flag: scoped to pre-build only, and any
-    # lane with pre-existing history is probed non-bootstrap by the caller and
-    # enforced exactly as below.
+    # PHASE-GATE-IS-INVERTED-01: the round-2 caller-attested --at-bootstrap
+    # flag is DEAD. Forwarding the caller's own pre-classify probe inverts the
+    # gate: a brand-new lane (the one nobody has planned) was always admitted
+    # because dispatch-code probed "zero records" before writing its own
+    # classify, then handed that stale answer here — while a resumed lane,
+    # which has records, was the only kind ever enforced (measured 2026-09-01:
+    # faee3fc5 shipped to main with no plan and no gate1). The bootstrap fact
+    # is now derived ONLY from the store, by this checker, at assert time.
+    # The flag is still parsed so old callers do not die on a usage error, but
+    # it decides nothing and its presence is journalled.
     if [[ "$caller_bootstrap" == "1" ]]; then
-      _lane_bootstrap=1
+      _emit "bootstrap_claim_ignored" "task=${sig8} reason=caller_attested_bootstrap_removed"
     fi
   fi
 
@@ -1033,9 +1064,10 @@ cmd_plan_for() {
 }
 
 # ── is-bootstrap: does this lane have zero phase records? ────────────────────
-# exit 0 iff phases.d is absent or carries no record; 1 otherwise. Called by
-# dispatch-code BEFORE its own classify write (cmd_assert --at-bootstrap is the
-# consumer of the answer) — see DISPATCH-PHASE-DEADLOCK-01 round 2.
+# exit 0 iff phases.d is absent or carries no record; 1 otherwise. Read-only
+# probe; no caller's answer to it is trusted by cmd_assert any more
+# (PHASE-GATE-IS-INVERTED-01 removed the caller-attested --at-bootstrap — the
+# guard derives bootstrap state itself from the store).
 cmd_is_bootstrap() {
   local sig8=""
   while [[ $# -gt 0 ]]; do

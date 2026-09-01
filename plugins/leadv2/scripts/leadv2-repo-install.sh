@@ -34,12 +34,15 @@
 # so a fresh repo adopts itself the first time the founder types /leadv2.
 #
 # Usage:
-#   leadv2-repo-install.sh [--check] [--quiet] [repo-root]
+#   leadv2-repo-install.sh [--check|--check-all] [--quiet] [repo-root]
 #     (no flag)  install/heal, print a per-item table
 #     --check    report only, write nothing; exit 1 if anything is missing
+#     --check-all  audit EVERY adopted repo (walks ~/.claude/leadv2-state/*/
+#                  .repo-root): one command to answer "is every project fine?"
 #     --quiet    print only when something actually changed
 #
-# Exit: 0 installed/complete · 1 --check found gaps · 2 bad repo root
+# Exit: 0 installed/complete · 1 --check found gaps or a gate-unfixable repo ·
+#       2 bad repo root
 set -uo pipefail
 
 CANON="${LEADV2_CANONICAL_SCRIPTS:-$HOME/Projects/leadv2/plugins/leadv2/scripts}"
@@ -47,10 +50,11 @@ AGENTS_SRC="${LEADV2_SHARED_AGENTS:-$HOME/.claude/agents-shared}"
 STATE_BASE="${LEADV2_STATE_BASE:-$HOME/.claude/leadv2-state}"
 PLUGIN_ROOT_DEFAULT="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/local/leadv2/plugins/leadv2}"
 
-CHECK=0; QUIET=0; REPO=""
+CHECK=0; QUIET=0; CHECK_ALL=0; REPO=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK=1 ;;
+    --check-all) CHECK_ALL=1 ;;
     --quiet) QUIET=1 ;;
     -h|--help) sed -n '/^# Usage:/,/^# Exit:/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) REPO="$1" ;;
@@ -59,18 +63,44 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$REPO" ] || REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# ---- 0. fleet audit: every adopted repo at once ------------------------------
+# ADOPTION-GUARANTEES-A-PASSABLE-GATE-01: the founder answers "is every project
+# fine?" with one command, not by opening seven repos. The registry of adopted
+# repos IS the state dir (each adoption writes .repo-root).
+if [ "$CHECK_ALL" -eq 1 ]; then
+  rc=0; seen=0
+  for root_file in "$STATE_BASE"/*/.repo-root; do
+    [ -e "$root_file" ] || break
+    audit_repo="$(cat "$root_file" 2>/dev/null)"
+    [ -d "$audit_repo" ] || { printf '[ADOPTED-BROKEN] %s (missing dir)\n' "$root_file"; rc=1; continue; }
+    seen=$((seen+1))
+    if bash "${BASH_SOURCE[0]}" --check "$audit_repo"; then
+      printf '[ADOPTED-OK] %s\n' "$audit_repo"
+    else
+      printf '[ADOPTED-BROKEN] %s\n' "$audit_repo"; rc=1
+    fi
+  done
+  if [ "$seen" -eq 0 ]; then
+    echo "[repo-install] no adopted repos under ${STATE_BASE}" >&2
+    exit 1
+  fi
+  exit "$rc"
+fi
+
 [ -d "$REPO" ] || { echo "[repo-install] ERROR: not a directory: $REPO" >&2; exit 2; }
 REPO="$(cd "$REPO" && pwd)"
 SLUG="$(basename "$REPO")"
 STATE="${STATE_BASE}/${SLUG}"
 
-BUF=""; changed=0; gaps=0
+BUF=""; changed=0; gaps=0; gate_unfixable=0
 say() { BUF="${BUF}$1"$'\n'; }
 row() { say "$(printf '  %-24s %s' "$1" "$2")"; }
 flush() {
   # --quiet suppresses the table when the repo was already complete; a heal is
-  # never silent (a repo that was broken until this second is not routine).
-  if [ "$QUIET" -eq 1 ] && [ "$changed" -eq 0 ] && [ "$CHECK" -eq 0 ]; then return 0; fi
+  # never silent (a repo that was broken until this second is not routine), and
+  # an UNFIXABLE repo is never silent either — it must not look adopted.
+  if [ "$QUIET" -eq 1 ] && [ "$changed" -eq 0 ] && [ "$CHECK" -eq 0 ] && [ "$gate_unfixable" -eq 0 ]; then return 0; fi
   printf '%s' "$BUF"
 }
 
@@ -176,6 +206,68 @@ else
   row "docs/leadv2/tasks" "created"; changed=$((changed+1))
 fi
 
+# ---- 3b. phase-gate artifacts must stay committable -------------------------
+# ADOPTION-GUARANTEES-A-PASSABLE-GATE-01 (2026-08-31): the phase gate
+# (leadv2-phase-record.sh) and the dispatcher accept only COMMITTED plan and
+# gate artifacts — docs/handoff/dispatch-<sig8>/{context.yaml,
+# architect-prepass.md,.gate1-passed} plus the lead-authored plan notes
+# docs/handoff/<task>/{brief.md,fix-round-N.md}. A lane worktree contains only
+# what is committed, so a .gitignore that blankets docs/handoff makes an honest
+# gate passage physically impossible and trains the lead to bypass the gate
+# (a full day of dispatches did exactly that on 2026-08-31 in a repo with
+# `docs/handoff/*/*` ignored).
+#
+# The check is `git check-ignore` on concrete paths — never a grep of
+# .gitignore: only git knows which of layered rules wins, and a negation that
+# is present but overridden by a later rule must read as BROKEN, not fixed.
+# The fix is additive (append negations, never rewrite a repo's own lines) and
+# is re-verified against git; if the paths are STILL ignored (excluded parent
+# dir, global excludes layering), the repo must NOT look adopted — fail loudly.
+GATE_SAMPLES="docs/handoff/dispatch-1d76cf8a/context.yaml
+docs/handoff/dispatch-1d76cf8a/architect-prepass.md
+docs/handoff/dispatch-1d76cf8a/.gate1-passed
+docs/handoff/some-task/brief.md
+docs/handoff/some-task/fix-round-2.md"
+GATE_MARKER="# leadv2: phase-gate artifacts must stay committable (leadv2-repo-install.sh)"
+
+gate_ignored() { # rc 0 iff at least one guarded shape is git-ignored
+  local p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if git -C "$REPO" check-ignore -q "$p" 2>/dev/null; then return 0; fi
+  done <<EOF
+${GATE_SAMPLES}
+EOF
+  return 1
+}
+
+if ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+  row "phase-gate committable" "SKIPPED — not a git repo"
+elif ! gate_ignored; then
+  row "phase-gate committable" "ok"
+elif [ "$CHECK" -eq 1 ]; then
+  row "phase-gate committable" "IGNORED — gate artifacts git-ignored; heal required"; gaps=$((gaps+1))
+else
+  gate_block="${GATE_MARKER}
+!docs/handoff/*/context.yaml
+!docs/handoff/*/architect-prepass.md
+!docs/handoff/*/.gate1-passed
+!docs/handoff/*/brief.md
+!docs/handoff/*/fix-round-*.md"
+  printf '%s\n' "$gate_block" >> "${REPO}/.gitignore"
+  if gate_ignored; then
+    # Appended negations did not win — a parent directory is excluded or a
+    # higher-precedence ignore source still blocks. Do not leave this looking
+    # adopted: report loudly and exit nonzero.
+    gate_unfixable=1
+    row "phase-gate committable" "UNFIXABLE — still git-ignored after negations (excluded parent dir or global excludes); phase gate UNPASSABLE — resolve the ignore layering by hand"
+    gaps=$((gaps+1))
+    echo "[repo-install] ERROR: ${SLUG}: docs/handoff gate artifacts remain git-ignored after appending negations — the phase gate is UNPASSABLE in this repo. Inspect .gitignore layering, .git/info/exclude and core.excludesFile by hand." >&2
+  else
+    row "phase-gate committable" "negations appended to .gitignore"; changed=$((changed+1))
+  fi
+fi
+
 # ---- 4. control-plane state dir + registry key ------------------------------
 # active.yaml must exist as a REAL file under the state dir. A repo-side symlink
 # whose target was never created reads as "present" in the repo and still drops
@@ -267,6 +359,12 @@ if [ "$changed" -gt 0 ]; then
   say "take effect in the NEXT claude session opened from ${REPO}."
 else
   say "nothing to do — repo already adopted."
+fi
+if [ "$gate_unfixable" -eq 1 ]; then
+  say "UNFIXABLE — this repo looks adopted but CANNOT pass its phase gate honestly."
+  say "Resolve the docs/handoff ignore layering by hand, then re-run this script."
+  flush
+  exit 1
 fi
 flush
 exit 0

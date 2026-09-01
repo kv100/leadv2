@@ -158,30 +158,35 @@ else
 fi
 
 # ── W3: pidfile guard — second arm attempt for the same sig is a no-op ──────
+# WATCHER-LIFECYCLE-LEAK-01: the guard now validates the pidfile pid's
+# COMMAND LINE (a recycled pid must never block re-arm), so the old sleep-300
+# stand-in is treated as foreign and replaced — arm a REAL watcher instead,
+# which is what production always had in the pidfile.
 SIG3="beef4242"
 new_lane "$SIG3"
 append_lines "$J" \
   "- 2026-08-28T12:00:00Z [decision] worker_spawned by=router model=codex task=${SIG3} handle=h3"
-# a live stand-in process holds the pidfile, exactly like a real armed watcher
-HolderPid=""
-sleep 300 & HolderPid=$!
-printf '%s\n' "$HolderPid" > "$STATE/lane-pulse-watch/${SIG3}.pid"
+bash "$WATCH" --sig "$SIG3" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 60 >/dev/null 2>&1 &
+HolderPid=$!
+# wait until the real watcher owns the pidfile
+for ((w = 0; w < 30; w++)); do
+  [[ -f "$STATE/lane-pulse-watch/${SIG3}.pid" ]] \
+    && [[ "$(cat "$STATE/lane-pulse-watch/${SIG3}.pid" 2>/dev/null | tr -d ' ')" == "$HolderPid" ]] && break
+  sleep 0.1
+done
 before="$(cat "$PULSE" 2>/dev/null | wc -l | tr -d ' ')"
-timeout_bin="$(command -v timeout || true)"
-if [[ -n "$timeout_bin" ]]; then
-  "$timeout_bin" 5 bash "$WATCH" --sig "$SIG3" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 10 >/dev/null 2>&1
-  rc=$?
-else
-  bash "$WATCH" --sig "$SIG3" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 2 >/dev/null 2>&1
-  rc=$?
-fi
+bash "$WATCH" --sig "$SIG3" --root "$REPO" --state-dir "$STATE" --interval 1 --timeout 10 >/dev/null 2>&1
+rc=$?
 after="$(cat "$PULSE" 2>/dev/null | wc -l | tr -d ' ')"
-if [[ $rc -eq 0 && "$before" == "$after" ]]; then
-  ok "W3 pidfile: second arm attempt no-op (rc=0, no pulse written)"
+if [[ $rc -eq 0 && "$before" == "$after" ]] \
+   && [[ "$(cat "$STATE/lane-pulse-watch/${SIG3}.pid" 2>/dev/null | tr -d ' ')" == "$HolderPid" ]] \
+   && kill -0 "$HolderPid" 2>/dev/null; then
+  ok "W3 pidfile: second arm attempt no-op (rc=0, no pulse written, first watcher still owns the pid)"
 else
   bad "W3 pidfile: rc=$rc before=$before after=$after"
 fi
 kill "$HolderPid" 2>/dev/null || true
+wait_for_exit "$HolderPid" 5 || bad "W3 teardown: TERM'd watcher did not exit within 5s"
 
 # ── W4: NEGATIVE CONTROL (RUN RED) — revert replay-safety to tail -n 0 ───────
 # Patch the offset init (`printf '0'` -> pre-existing line count) in a scratch

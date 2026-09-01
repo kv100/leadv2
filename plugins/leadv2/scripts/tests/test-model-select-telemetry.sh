@@ -155,14 +155,32 @@ done
 #   FP06_ROUTER_V2 / FP06_JUDGE_BIN / FP06_EXCLUDED — census probes (g).
 # Everything else (LEADV2_ROUTER_V2_BIN, LEADV2_QUOTA_LOCKOUT_DIR, ...) rides
 # through the exported environment unchanged.
+# PHASE-GATE-IS-INVERTED-01: a bulk/Standard code lane must carry plan+gate1
+# records BEFORE dispatch (the guard no longer accepts a caller's bootstrap
+# attestation), and both root names must agree or the record write refuses.
+seed_phases() { # <repo_dir> <unique-mission-tag>
+  local _sig _brief
+  _sig="$(printf '%s' "FP-06 telemetry probe $2" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print substr($1, 1, 8)}')"
+  _brief="docs/handoff/FP06-$_sig/brief.md"
+  mkdir -p "$1/docs/handoff/FP06-$_sig"
+  printf '# FP-06 telemetry probe %s\n\nfixture lead-authored plan\n' "$2" > "$1/$_brief"
+  ( cd "$1" && PROJECT_ROOT="$1" LEADV2_PROJECT_ROOT="$1" bash "${SCRIPTS_ROOT}/leadv2-phase-record.sh" record "$_sig" plan \
+      --status done --artifact "$_brief" --owner lead:fixture ) >/dev/null 2>&1 || true
+  ( cd "$1" && PROJECT_ROOT="$1" LEADV2_PROJECT_ROOT="$1" bash "${SCRIPTS_ROOT}/leadv2-phase-record.sh" record "$_sig" gate1 \
+      --status done --reason 'fixture Gate 1 decision' --owner lead:fixture ) >/dev/null 2>&1 || true
+  ( cd "$1" && PROJECT_ROOT="$1" LEADV2_PROJECT_ROOT="$1" bash "${SCRIPTS_ROOT}/leadv2-phase-record.sh" record "$_sig" diverge \
+      --status n/a --reason 'fixture: no diverge round' --owner lead:fixture ) >/dev/null 2>&1 || true
+}
+
 run_dispatch() { # <repo_dir> <freepool_stub> <unique-mission> [dispatch_bin]
+  seed_phases "$1" "$3"
   (cd "$1" && \
    LEADV2_STATE_ROOT="$TMP/state-root-$3" \
    LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" \
    LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" \
    LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state-$3" \
    ROUTE_TEST_QUOTA="${FP06_QUOTA:-$ALL_CAPPED}" \
-   CLAUDE_PROJECT_ROOT="$1" LEADV2_PROJECT_ROOT="$1" \
+   CLAUDE_PROJECT_ROOT="$1" PROJECT_ROOT="$1" LEADV2_PROJECT_ROOT="$1" \
    LEADV2_DISPATCH_CACHE_DIR="$TMP/cache-$3" \
    LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
    LEADV2_ROUTER_V2="${FP06_ROUTER_V2:-0}" \

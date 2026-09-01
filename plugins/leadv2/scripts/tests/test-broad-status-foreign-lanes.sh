@@ -202,6 +202,12 @@ fi
 
 # ── Renderer (stubbed collector feeding the real broad-status.sh) ───────────
 FOUNDER_STATUS="$REPO/docs/leadv2/founder-status.md"
+# PULSE-REPO-SCOPED-03: the renderer shows a foreign-repo lane only when THIS
+# repo dispatched it (dispatch record <root>/docs/leadv2/tasks/<tid>/). R1's
+# foreign lane is exactly that case (it is the row that must keep rendering
+# with its slug prefix), so seed the record — the suite's snapshot-layer
+# cases (S1-S4) are untouched: leadv2-lanes-snapshot.sh has no such filter.
+mkdir -p "$REPO/docs/leadv2/tasks/dispatch-fee00001"
 
 collector_out() {  # <snapshot-json-string>
   # broad-status invokes: collector.sh --project-root <root> --out <path>

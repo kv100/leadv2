@@ -387,7 +387,8 @@ case4a_cli_surface() { # <script> -> 0 pass
   # regex-shaped about this line worth a pattern for.
   cases="$(awk 'index($0, "case \"${1:-}\" in") == 1{f=1;next} f&&/^esac$/{exit} f&&/^  [A-Za-z_-]+\)/{print}' "$s" \
     | sed -E 's/^[[:space:]]*//; s/\).*$//')"
-  local -a allowed=(record-review status glm-deferred burn-deferred advance-arm record-quota-lockout retry-dead sweep reconcile -h --help)
+  # DISPATCH-CLOSE-GATE-01 adds these standalone phased-path validation gates.
+  local -a allowed=(record-review status mission-writeset-check close-gate glm-deferred burn-deferred advance-arm record-quota-lockout retry-dead sweep reconcile -h --help)
   local c found
   while IFS= read -r c; do
     [[ -z "$c" ]] && continue

@@ -77,3 +77,4 @@ docs/handoff/dispatch-*-review-*.md
 !docs/handoff/*/context.yaml
 !docs/handoff/*/architect-prepass.md
 !docs/handoff/*/.gate1-passed
+!docs/handoff/*/divergence.md
