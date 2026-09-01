@@ -280,3 +280,69 @@ rc=1
 ```
 Reverted; re-ran green (above). `bash -n` on both changed shell files: clean
 (`SYNTAX-OK` × 2). No Python files changed.
+
+## Round 5 evidence
+
+Merged `main` (114 commits ahead) into this branch with `git merge main`
+(merge, not rebase; existing commits' hashes kept). Restored two suite-dirtied
+tracked files first (`git checkout --` on `docs/leadv2/tasks/dispatch-567ba028/journal.md`
+and `docs/leadv2/tasks/dispatch-59ae8b51/journal.md`); no `docs/handoff/dispatch-nw*`
+or `docs/LEAD_V2_STATE.md` were dirty at merge time.
+
+### Conflict: plugins/leadv2/scripts/leadv2-dispatch-code.sh (2 hunks)
+
+**Hunk 1 (~line 412, PROJECT_ROOT pin-candidate resolution):** HEAD and main
+independently fixed the same PLUGIN-PAPERCUTS-01 defect 3 (an absolute
+`--resume-lane` value was concatenated onto the worktree dir, mangling the
+path). Both resolve to the same behavior — absolute value used as-is,
+relative value gets the worktree-dir prefix — just structured differently.
+Kept HEAD's explicit if/else (clearer), folded in main's incident comment
+explaining *why* the branch exists. No behavior dropped from either side.
+
+**Hunk 2 (~line 902, `_resolve_pinned_placement` candidate resolution):**
+main's PLUGIN-PAPERCUTS-01 fix accepted ANY absolute `--resume-lane` path
+unvalidated (`candidate="${placement_lane_ref}"` with no existence or
+worktree-identity check). HEAD's round-3 fix (this lane, review-glm High-2)
+is a strict superset: it requires the absolute path to (a) exist, (b) be
+named by `git worktree list --porcelain` as a LINKED worktree of
+PROJECT_ROOT via `_lv2_is_lane_worktree_path`, refusing otherwise with the
+accepted-shapes message. Kept HEAD's logic entirely — main's weaker
+unvalidated-accept would have regressed the very vulnerability this lane's
+review round 3 closed (accepting PROJECT_ROOT itself or any in-repo dir as a
+"lane worktree"). Added a comment noting this supersedes PLUGIN-PAPERCUTS-01
+defect 3. A stray missing `fi` after the merged block (dropped in the manual
+resolution) was caught by `bash -n` and fixed before commit.
+
+No hunk from either side was dropped silently: main's absolute-path
+acceptance behavior is preserved (still works for a *valid* lane worktree
+path), only tightened by re-adding the identity check main's copy lacked.
+
+### Suite output (merged tree)
+
+`bash plugins/leadv2/scripts/tests/test-resume-lane-arg-shapes.sh`:
+```
+test-resume-lane-arg-shapes: 40 passed, 0 failed
+EXIT=0
+```
+
+`leadv2-suite-falsifiable.sh` on the same suite:
+```
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=26
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+`tests/run-all.sh --scope changed` (selected shard, idx=3):
+```
+[CORE-OFFLINE] FAILED: review round cap (REVIEW-ROUNDCAP-01)
+[CORE-OFFLINE] SHARD_RESULT idx=3 pass=17 fail=1 missing=0
+```
+The one failure (REVIEW-ROUNDCAP-01) is a pre-existing red unrelated to this
+lane's files (documented in memory as pre-existing across the 2026-09-01
+baseline re-measure); all other suites in the shard, including the two
+directly relevant to this task, passed clean. `bash -n` clean on
+`leadv2-dispatch-code.sh` after conflict resolution.
+
+DELIVERABLE_COMPLETE

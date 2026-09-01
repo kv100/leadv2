@@ -111,6 +111,18 @@ else
   printf '[%s] ERROR: lane guard unavailable local=%s canonical=%s; treating lane as dirty\n' \
     "${SCRIPT_NAME}" "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh" "${_LANE_GUARD_SH}" >&2
 fi
+# WATCHER-LIFECYCLE-LEAK-01: shared watcher-lifecycle helper (wl_reap, used
+# by _lv2_reap_lane_pulse_watchers). Same guarded + canonical-fallback shape
+# as the lane guard above; the fail-open stub keeps a missing lib from ever
+# failing a terminal write.
+_WL_LIB="${SCRIPT_DIR}/lib/leadv2-watch-lifecycle.sh"
+[[ -f "${_WL_LIB}" ]] || _WL_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-watch-lifecycle.sh"
+if [[ -f "${_WL_LIB}" ]]; then
+  # shellcheck source=lib/leadv2-watch-lifecycle.sh
+  source "${_WL_LIB}"
+else
+  wl_reap() { :; }
+fi
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
 
 log()     { printf '[%s] %s\n' "${SCRIPT_NAME}" "$*" >&2; }
@@ -401,7 +413,10 @@ dispatch_ledger_write_terminal() {
       # row now (dedup exits above keep the row: a later attempt may have re-registered).
       case "${terminal}" in
         landed|dead|dead_with_unlanded_work|pass_unlanded)
-          _lv2_terminal_unregister_lanes "${sig8}" "${founder}" "${attempt}" ;;
+          _lv2_terminal_unregister_lanes "${sig8}" "${founder}" "${attempt}"
+          # WATCHER-LIFECYCLE-LEAK-01 #3: deferred best-effort reap of this
+          # lane's pulse watcher (see _lv2_reap_lane_pulse_watchers above).
+          _lv2_reap_lane_pulse_watchers "${sig8}" ;;
       esac
       return 0 ;;
     2)
@@ -477,6 +492,40 @@ with lock:
         sys.exit(0)
 PYEOF
   done
+  return 0
+}
+
+# WATCHER-LIFECYCLE-LEAK-01 #3 — reap-on-close. A TRUE terminal ends the
+# lane, and leadv2-lane-pulse-watch.sh exits on its own within ONE interval
+# of the journal line this writer just appended — killing it inline would
+# race away its FINAL terminal pulse (the founder-visible landing notice
+# MON-PULSE-01 exists to deliver). So the reap is DEFERRED past a grace that
+# is a multiple of the watch interval: only a watcher still alive then
+# (wedged sleep, a huge --interval) is TERMed, by pidfile, best-effort and
+# idempotent — a dead or foreign pidfile is a no-op (lib wl_reap). The
+# single-lead beat loop is deliberately NOT reaped here: it is per-ROOT and
+# owned by the live-lane board (its own zero-streak stop), not by this lane.
+_lv2_reap_lane_pulse_watchers() {  # <sig8> — fail-open, never blocks the write
+  local sig8="$1" grace state_dir
+  [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
+  grace="${LEADV2_LANE_PULSE_WATCH_REAP_GRACE_S:-90}"
+  [[ "$grace" =~ ^[0-9]+$ ]] || grace=90
+  # same resolution order leadv2-lane-pulse-watch.sh uses for its pidfile
+  state_dir="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" --no-link lane-pulse-watch 2>/dev/null || true)"
+  [[ -n "$state_dir" ]] || state_dir="${TMPDIR:-/tmp}/leadv2-lane-pulse-watch"
+  # DOUBLE-FORK detach: this writer runs inside command substitutions where a
+  # directly-backgrounded child (even disowned — observed live: the parent
+  # waited the full grace on its `sleep` child) can block the caller. The
+  # outer subshell's only act is to background the reaper, so the ledger
+  # never parents the sleep; the reaper reparents to launchd.
+  (
+    (
+      sleep "$grace" 2>/dev/null
+      LEADV2_WATCH_LIFECYCLE_LOG="${state_dir}/lane-pulse-watch/watch-lifecycle.log" \
+        wl_reap "${state_dir}/lane-pulse-watch/${sig8}.pid" "leadv2-lane-pulse-watch" \
+                "lane-pulse-watch" "dispatch-${sig8}"
+    ) >/dev/null 2>&1 </dev/null &
+  ) >/dev/null 2>&1 </dev/null
   return 0
 }
 

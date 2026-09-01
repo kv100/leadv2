@@ -39,10 +39,35 @@
 #                                    back silently to `model_rank` -- never an error.
 set -euo pipefail
 
-_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# FREEPOOL-RANK-NEVER-READ-01 (measured 2026-09-01): this script is reached
+# through the consuming repo's symlink farm (.claude/scripts/lib/...), and
+# `dirname "${BASH_SOURCE[0]}"` does NOT follow the symlink -- so ARM_CONFIG
+# resolved to <repo>/.claude/config/freepool-arm.yaml, which does not exist.
+# The selector then failed with "no config" and the caller fell back, so the
+# whole model_rank / role_rank mechanism was inert on the real dispatch path
+# while looking configured. Resolve through symlinks so the default lands on
+# the plugin's own config.
+_lv2_realdir() {
+  local src="$1" dir
+  while [[ -L "${src}" ]]; do
+    dir="$(cd "$(dirname "${src}")" && pwd)"
+    src="$(readlink "${src}")"
+    [[ "${src}" == /* ]] || src="${dir}/${src}"
+  done
+  cd "$(dirname "${src}")" && pwd
+}
+_SELF_DIR="$(_lv2_realdir "${BASH_SOURCE[0]}")"
 
 readonly FREEPOOL_BASE_URL="${FREEPOOL_PROXY_URL:-http://127.0.0.1:8317}"
-readonly ARM_CONFIG="${FREEPOOL_ARM_CONFIG:-$(cd "${_SELF_DIR}/../.." && pwd)/config/freepool-arm.yaml}"
+_ARM_CONFIG_DEFAULT="$(cd "${_SELF_DIR}/../.." && pwd)/config/freepool-arm.yaml"
+# Second chance for a checkout whose scripts are real copies rather than
+# symlinks (a known drift state): fall back to the canonical plugin repo
+# before giving up, the same idiom leadv2-dispatch-code.sh uses for its libs.
+if [[ ! -f "${_ARM_CONFIG_DEFAULT}" ]]; then
+  _ARM_CONFIG_CANONICAL="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/config/freepool-arm.yaml"
+  [[ -f "${_ARM_CONFIG_CANONICAL}" ]] && _ARM_CONFIG_DEFAULT="${_ARM_CONFIG_CANONICAL}"
+fi
+readonly ARM_CONFIG="${FREEPOOL_ARM_CONFIG:-${_ARM_CONFIG_DEFAULT}}"
 readonly CACHE_DIR_DEFAULT="${HOME}/.claude/leadv2-state"
 readonly MODELS_CACHE_FILE="${FREEPOOL_MODELS_CACHE_FILE:-${CACHE_DIR_DEFAULT}/freepool-models.json}"
 readonly MODELS_CACHE_TTL_S="${FREEPOOL_MODELS_CACHE_TTL_S:-60}"
