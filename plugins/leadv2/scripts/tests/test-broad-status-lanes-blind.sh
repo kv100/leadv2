@@ -147,9 +147,14 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -z "$out" ]] && exit 1
 python3 -c '
-import json
+import json, os
 own = [{"task_id": f"OWN-CAP-{i:02d}", "status": "active"} for i in range(1, 8)]
 foreign = [{"task_id": "FOREIGN-CAP-01", "status": "active", "repo": "persona-engine", "age_s": 30}]
+# PULSE-REPO-SCOPED-03: the renderer shows a foreign lane only when THIS repo
+# dispatched it; these fixture foreign rows are the dispatched case, so the
+# stub seeds their dispatch records (<root>/docs/leadv2/tasks/<tid>/) itself.
+for _f in foreign:
+    os.makedirs(os.path.join(os.environ["LEADV2_PROJECT_ROOT"], "docs", "leadv2", "tasks", _f["task_id"]), exist_ok=True)
 own_detail = [
     {"task_id": f"OWN-CAP-{i:02d}", "dispatch_id": f"{i:08x}", "worker": "sonnet",
      "writing_now": True, "stream_bytes": i, "mission_title": f"OWN-CAP-{i:02d} -- filler lane {i}"}
@@ -290,9 +295,13 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -z "$out" ]] && exit 1
 python3 -c '
-import json
+import json, os
 foreign = [{"task_id": f"FOREIGN-ONLY-{i:02d}", "status": "active",
             "repo": "persona-engine", "age_s": 30} for i in range(1, 11)]
+# PULSE-REPO-SCOPED-03: seed dispatch records — these rows are the
+# dispatched-foreign case under test (the hidden-rows cap).
+for _f in foreign:
+    os.makedirs(os.path.join(os.environ["LEADV2_PROJECT_ROOT"], "docs", "leadv2", "tasks", _f["task_id"]), exist_ok=True)
 print(json.dumps({"sections": {
   "lanes": {"ok": True, "data": {"table": foreign, "questions": [], "degraded": []}},
   "lane_detail": {"ok": True, "data": {"lanes": []}}
@@ -334,10 +343,13 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -z "$out" ]] && exit 1
 python3 -c '
-import json
+import json, os
 own = [{"task_id": f"OWN-SURGE-{i:02d}", "status": "active"} for i in range(1, 8)]
 foreign = [{"task_id": f"FOREIGN-SURGE-{i:02d}", "status": "active",
             "repo": "persona-engine", "age_s": 30} for i in range(1, 7)]
+# PULSE-REPO-SCOPED-03: seed dispatch records — dispatched-foreign case.
+for _f in foreign:
+    os.makedirs(os.path.join(os.environ["LEADV2_PROJECT_ROOT"], "docs", "leadv2", "tasks", _f["task_id"]), exist_ok=True)
 own_detail = [
     {"task_id": f"OWN-SURGE-{i:02d}", "dispatch_id": f"{i:08x}", "worker": "sonnet",
      "writing_now": True, "stream_bytes": i, "mission_title": f"OWN-SURGE-{i:02d} -- filler lane {i}"}
@@ -481,6 +493,9 @@ tag = f"{own_n}-{foreign_n}"
 own = [{"task_id": f"OWN-MX-{tag}-{i:02d}", "status": "active"} for i in range(1, own_n + 1)]
 foreign = [{"task_id": f"FOREIGN-MX-{tag}-{i:02d}", "status": "active",
             "repo": "persona-engine", "age_s": 30} for i in range(1, foreign_n + 1)]
+# PULSE-REPO-SCOPED-03: seed dispatch records — dispatched-foreign case.
+for _f in foreign:
+    os.makedirs(os.path.join(os.environ["LEADV2_PROJECT_ROOT"], "docs", "leadv2", "tasks", _f["task_id"]), exist_ok=True)
 own_detail = [
     {"task_id": f"OWN-MX-{tag}-{i:02d}", "dispatch_id": f"{i:08x}", "worker": "sonnet",
      "writing_now": True, "stream_bytes": i, "mission_title": f"OWN-MX-{tag}-{i:02d} -- filler lane {i}"}
@@ -554,13 +569,16 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -z "$out" ]] && exit 1
 python3 -c '
-import json
+import json, os
 own = [{"task_id": f"OWN-RR-{i:02d}", "status": "active"} for i in range(1, 8)]
 foreign = []
 for repo in ("m3-market", "persona-engine", "respiro-ios"):
     for i in range(1, 5):
         foreign.append({"task_id": f"{repo}-RR-{i:02d}", "status": "active",
                          "repo": repo, "age_s": 30})
+# PULSE-REPO-SCOPED-03: seed dispatch records — dispatched-foreign case.
+for _f in foreign:
+    os.makedirs(os.path.join(os.environ["LEADV2_PROJECT_ROOT"], "docs", "leadv2", "tasks", _f["task_id"]), exist_ok=True)
 own_detail = [
     {"task_id": f"OWN-RR-{i:02d}", "dispatch_id": f"{i:08x}", "worker": "sonnet",
      "writing_now": True, "stream_bytes": i, "mission_title": f"OWN-RR-{i:02d} -- filler lane {i}"}

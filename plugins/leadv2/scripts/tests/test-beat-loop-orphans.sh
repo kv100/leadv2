@@ -44,6 +44,15 @@
 
 set -uo pipefail
 
+# Hermetic against the invoking process's own session-kind evidence: this
+# suite is routinely run BY a worker session (LEADV2_SUBSESSION_ROLE=worker
+# exported on the real dispatch env), and every `bash -c`/subshell it spawns
+# inherits the exported environment. Left alone, that ambient var leaks into
+# cases that assert "no env evidence -> unknown" and flips them to "worker"
+# (observed: E7/E8/E9/D0b/A5/A6 false-red under a live worker dispatch).
+unset LEADV2_SUBSESSION_ROLE LEADV2_WORKER_ARM LEADV2_SESSION_KIND \
+      LEADV2_SESSION_KIND_OUT LEADV2_SESSION_KIND_REASON 2>/dev/null || true
+
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$TESTS_DIR/.." && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPTS_DIR/.." && pwd)"

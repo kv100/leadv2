@@ -46,7 +46,10 @@
 #
 # Hermetic seams (tests): --root/--journal/--state-dir args,
 # LEADV2_LANE_PULSE_BIN (pulse writer), LEADV2_PROJECT_ROOT (root fallback),
-# --print-timeout (locks the derivation itself).
+# --print-timeout (locks the derivation itself). Lifecycle seams
+# (WATCHER-LIFECYCLE-LEAK-01): LEADV2_WATCH_LIFECYCLE_LOG (event log path),
+# LEADV2_WATCHER_OWNER_PID (optional explicit owner — unset in production,
+# see the loop body).
 # Read-only w.r.t. the journal; writes only its pidfile + the pulse file.
 
 set -uo pipefail
@@ -77,6 +80,31 @@ if [[ -f "$_LV2_HOOK_KIND_LIB" ]]; then
 else
   printf '%s event=owner_check_unavailable loop=lane-pulse-watch reason=classifier_lib_missing\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo '?')" >> "$_lv2_lpw_journal" 2>/dev/null || true
+fi
+
+# WATCHER-LIFECYCLE-LEAK-01: shared watcher lifecycle (race-safe singleton
+# claim, self-reap, event log). Guarded + canonical-fallback source, same
+# shape dispatch-ledger uses for its libs; the stubs reproduce the PRE-fix
+# behavior so a missing lib can never stop the watch.
+_WL_LIB="${SCRIPT_DIR}/lib/leadv2-watch-lifecycle.sh"
+[[ -f "${_WL_LIB}" ]] || _WL_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-watch-lifecycle.sh"
+if [[ -f "${_WL_LIB}" ]]; then
+  # shellcheck source=lib/leadv2-watch-lifecycle.sh
+  source "${_WL_LIB}"
+else
+  wl_event() { :; }
+  wl_owner_gone() { return 1; }
+  wl_singleton_claim() {  # pre-leak-fix fallback: kill -0 guard + blind write
+    local _p
+    if [[ -f "$1" ]]; then
+      _p="$(cat "$1" 2>/dev/null | tr -d ' ')"
+      [[ "${_p}" =~ ^[0-9]+$ ]] && kill -0 "${_p}" 2>/dev/null && return 3
+    fi
+    mkdir -p "$(dirname "$1")" 2>/dev/null || true
+    printf '%s\n' "$$" > "${1}.tmp.$$" 2>/dev/null \
+      && mv -f "${1}.tmp.$$" "$1" 2>/dev/null || true
+    return 0
+  }
 fi
 
 SIG=""
@@ -140,6 +168,56 @@ if [[ -z "$JOURNAL" ]]; then
 fi
 TASK_ID="dispatch-${SIG}"
 
+# ── FORK-STORM-KILLS-HOOKS-01: orphan self-termination ──────────────────────
+# Decision (recorded in report.md): the watcher CANNOT be owned by something
+# that dies with the dispatch — it is nohup'd+disowned from a command-
+# substitution subshell precisely so the launcher never hangs on it — so it
+# must self-terminate when its lane's worker is gone. Observable proxy: the
+# active.yaml row that pins MY pid with role=watcher stops advancing
+# updated_at (a genuinely running lane bumps its row on every phase
+# transition; a lane whose dispatch died leaves it frozen). A watcher-only
+# row frozen for ORPHAN_MAX seconds means no worker exists — exit with a
+# watcher_orphan pulse instead of lingering to the full TIMEOUT. 0 disables.
+ORPHAN_MAX="${LEADV2_LANE_PULSE_WATCH_ORPHAN_MAX_S:-1800}"
+[[ "$ORPHAN_MAX" =~ ^[0-9]+$ ]] || ORPHAN_MAX=1800
+ACTIVE_YAML="$(PROJECT_ROOT="$ROOT" bash "${SCRIPT_DIR}/leadv2-state-path.sh" active.yaml 2>/dev/null || true)"
+[[ -n "$ACTIVE_YAML" ]] || ACTIVE_YAML="${ROOT}/docs/leadv2/active.yaml"
+# <self-pid> <active.yaml> <max-age-s> -> prints "orphan" iff a row pins this
+# pid as a watcher AND its updated_at is older than max-age. Fail-open: any
+# parse error, missing PyYAML, or missing row prints nothing (keep watching).
+_orphan_check() {
+  python3 - "$1" "$2" "$3" <<'PY' 2>/dev/null || true
+import sys, time, datetime
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+self_pid, path, max_s = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+try:
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+except Exception:
+    sys.exit(0)
+for s in (data.get("sessions") or []):
+    try:
+        if int(s.get("worker_pid") or 0) != self_pid:
+            continue
+    except (TypeError, ValueError):
+        continue
+    if s.get("worker_pid_role") != "watcher" and s.get("pid_role") != "watcher":
+        continue
+    ts = str(s.get("updated_at") or "")
+    try:
+        t = datetime.datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")
+        age = time.time() - t.replace(tzinfo=datetime.timezone.utc).timestamp()
+    except ValueError:
+        sys.exit(0)
+    if age >= max_s:
+        print("orphan")
+    sys.exit(0)
+PY
+}
+
 # ── pidfile guard: never two watchers per lane (keyed by sig) ───────────────
 if [[ -z "$STATE_DIR" ]]; then
   STATE_DIR="$(PROJECT_ROOT="$ROOT" bash "${SCRIPT_DIR}/leadv2-state-path.sh" --no-link lane-pulse-watch 2>/dev/null || true)"
@@ -149,17 +227,57 @@ PID_DIR="${STATE_DIR}/lane-pulse-watch"
 mkdir -p "$PID_DIR" 2>/dev/null || true
 PID_FILE="${PID_DIR}/${SIG}.pid"
 SEEN_FILE="${PID_DIR}/${SIG}.seen"   # fix-round H2: pulsed-line ledger, survives exit
-if [[ -f "$PID_FILE" ]]; then
-  _old_pid="$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')"
-  if [[ "${_old_pid}" =~ ^[0-9]+$ ]] && kill -0 "${_old_pid}" 2>/dev/null; then
-    printf '[lane-pulse-watch] %s already watched by pid %s, no-op\n' "$SIG" "$_old_pid" >&2
-    exit 0
+# WATCHER-LIFECYCLE-LEAK-01: the old guard was check-then-write with no
+# cmdline validation — racing arms both passed it, and the pidfile loser
+# watched on invisibly to its full derived timeout. wl_singleton_claim makes
+# check+write atomic (mkdir lockdir), refuses only a LIVE process whose
+# command line still contains this script's basename, replaces a dead or
+# recycled-foreign pidfile, and fails OPEN on an unwritable dir (spawn —
+# the pre-fix behavior, mission fail-open constraint).
+WL_LOG_FILE="${LEADV2_WATCH_LIFECYCLE_LOG:-${PID_DIR}/watch-lifecycle.log}"
+LEADV2_WATCH_LIFECYCLE_LOG="$WL_LOG_FILE"
+# WATCHER-LIFECYCLE-LEAK-01: traps are armed BEFORE the claim — a TERM
+# landing inside the claim's settle window used to hit the default death
+# action and leak the pidfile. Cleanup removes the pidfile ONLY when it
+# still names THIS pid, so it is safe at any point of the claim: a
+# dedup-refused copy (pidfile names the winner) can never delete the
+# winner's claim, and a TERM between our noclobber-create and the loop
+# proper still cleans up.
+_cleanup_pid() {
+  local _p
+  _p="$(cat "$PID_FILE" 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$_p" == "$$" ]]; then
+    rm -f "$PID_FILE" "${PID_FILE}.owner" 2>/dev/null || true
+    wl_event "lane-pulse-watch" "$TASK_ID" "$$" "self_reap"
   fi
-fi
-printf '%s\n' "$$" > "${PID_FILE}.tmp.$$" 2>/dev/null \
-  && mv -f "${PID_FILE}.tmp.$$" "$PID_FILE" 2>/dev/null || true
-_cleanup_pid() { rm -f "$PID_FILE" "${PID_FILE}.owner" 2>/dev/null || true; }
-trap _cleanup_pid EXIT INT TERM
+  return 0
+}
+# A trapped TERM/INT runs the handler and then RESUMES the script — the
+# watcher survived its own kill with the pidfile already removed, so every
+# later arm spawned a fresh duplicate. The signal handler must EXIT; the
+# EXIT trap is disarmed first so self_reap logs exactly once.
+# Fix-r1: on macOS bash 3.2 a trapped TERM also DEFERS behind a foreground
+# child for that child's full runtime (measured on a 30s sleep: handler at
+# 29.5s; the wait-builtin form fires in 0.015s) — the interval sleep below
+# is therefore a background child under wait, and the handler kills it.
+WL_CHILD=""
+_on_term() {
+  trap - EXIT
+  [[ -n "$WL_CHILD" ]] && kill "$WL_CHILD" 2>/dev/null || true
+  _cleanup_pid
+  exit 0
+}
+trap _cleanup_pid EXIT
+trap _on_term INT TERM
+wl_singleton_claim "$PID_FILE"
+case $? in
+  3)
+    printf '[lane-pulse-watch] %s already watched by pid %s, no-op\n' "$SIG" "$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')" >&2
+    wl_event "lane-pulse-watch" "$TASK_ID" "$$" "dedup_refused"
+    exit 0
+    ;;
+esac
+wl_event "lane-pulse-watch" "$TASK_ID" "$$" "spawn"
 
 # BEAT-LOOP-ORPHANS-01 mechanism 2: record the arming session's liveness
 # tokens once (owner pid + transcript), then exit when the owner is gone —
@@ -242,6 +360,27 @@ while :; do
   if command -v leadv2_loop_owner_check >/dev/null 2>&1; then
     leadv2_loop_owner_check "$OWNER_FILE" "lane-pulse-watch" || exit 0
   fi
+  # WATCHER-LIFECYCLE-LEAK-01 #2: owner-bound self-reap, checked every
+  # iteration so the exit lands within one interval. The DURABLE owner of
+  # this watch is the lane's journal (terminal / derived timeout below) —
+  # neither the dispatcher pid (dead seconds after arming) nor the worker
+  # pid (H1: the lane outlives its worker through review/e2e/merge) is a
+  # safe owner. The explicit pid seam exists for ops/tests that arm with a
+  # concrete owner process; unset (production default) changes nothing.
+  if wl_owner_gone; then
+    printf '[lane-pulse-watch] %s owner pid %s gone, self-reaping\n' "$SIG" "${LEADV2_WATCHER_OWNER_PID}" >&2
+    exit 0
+  fi
+  # FORK-STORM-KILLS-HOOKS-01: worker gone (registry row still pins me as a
+  # watcher and has frozen) — stop watching, the loop breaker's hygiene half.
+  if (( ORPHAN_MAX > 0 )); then
+    _orphan="$( _orphan_check "$$" "$ACTIVE_YAML" "$ORPHAN_MAX" )"
+    if [[ "$_orphan" == "orphan" ]]; then
+      printf '[lane-pulse-watch] %s orphaned: row pins my pid as watcher, frozen >%ss — exiting\n' "$SIG" "$ORPHAN_MAX" >&2
+      _pulse "watcher_orphan" "row_frozen>$ORPHAN_MAXs"
+      exit 0
+    fi
+  fi
   if [[ -f "$JOURNAL" ]]; then
     _missing_since=0
     n="$(wc -l < "$JOURNAL" | tr -d ' ')"
@@ -301,5 +440,8 @@ while :; do
     _pulse "watch_timeout" "no_terminal in ${TIMEOUT}s journal_lines=${SEEN}"
     exit 0
   fi
-  sleep "$INTERVAL"
+  sleep "$INTERVAL" &
+  WL_CHILD=$!
+  wait "$WL_CHILD" 2>/dev/null || true
+  WL_CHILD=""
 done

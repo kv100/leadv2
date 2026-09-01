@@ -732,7 +732,15 @@ try:
     # a SILENT no-op, rc 0 -- never an error, never a created row. A malformed
     # pid string degrades to worker_pid=None without relabelling pid_role.
     elif op == "set_worker_pid":
-        task_id, pid_str, birth = args
+        task_id, pid_str, birth = args[0], args[1], args[2]
+        # FORK-STORM-KILLS-HOOKS-01: 4th arg stamps WHICH KIND of process this
+        # pid is. Only "worker" and "watcher" are in the vocabulary; anything
+        # else degrades to "worker" (the historical, unqualified behaviour).
+        # Liveness consumers (leadv2-lane-liveness.sh) ignore a "watcher" pid
+        # as liveness evidence -- a watcher is not a worker.
+        _role = args[3] if len(args) > 3 else "worker"
+        if _role not in ("worker", "watcher"):
+            _role = "worker"
         target = next((s for s in sessions if s.get("task_id") == task_id), None)
         if target is None:
             sys.exit(0)
@@ -742,6 +750,7 @@ try:
             wpid = None
         target["worker_pid"] = wpid
         target["worker_pid_birth"] = birth if birth not in ("", "null", "None") else None
+        target["worker_pid_role"] = _role
         if wpid is not None and wpid > 0:
             # The post-spawn process is now the lane's authoritative liveness
             # owner.  Keep the legacy `pid` fields aligned with worker_pid:
@@ -750,7 +759,7 @@ try:
             # here makes either reader report the wrong lane lifetime.
             target["pid"] = wpid
             target["pid_birth"] = target["worker_pid_birth"]
-            target["pid_role"] = "worker"
+            target["pid_role"] = _role
         target["updated_at"] = _now_iso()
 
     else:
@@ -1076,18 +1085,23 @@ leadv2_active_set_attempt() {
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_attempt "$task_id" "$attempt_id"
 }
 
-# leadv2_active_set_worker_pid <task_id> <pid> <pid_birth>
+# leadv2_active_set_worker_pid <task_id> <pid> <pid_birth> [role]
 # LANE-REGISTRY-SELF-DEADLOCK-01: post-spawn stamp of the WORKER process
 # identity onto the lane's active.yaml row. Unknown task_id is a silent no-op
 # in the python op (register/spawn ordering races must never kill a lane), so
 # callers run this with `|| true` -- a stamp failure must never fail a dispatch.
+# FORK-STORM-KILLS-HOOKS-01: optional 4th arg `role` -- "worker" (default) or
+# "watcher". The dispatcher-owned lane-pulse watcher is NOT a worker: a row
+# pinned to it must never read as process-liveness evidence (the closed loop
+# where a stale watcher made every later dispatch refuse with lane_is_live).
 leadv2_active_set_worker_pid() {
   local task_id="${1:?task_id required}" pid="${2:?pid required}" pid_birth="${3:-}"
+  local role="${4:-worker}"
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
   [[ -f "$yaml_file" ]] || return 0
-  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_worker_pid "$task_id" "$pid" "$pid_birth"
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_worker_pid "$task_id" "$pid" "$pid_birth" "$role"
 }
 
 # leadv2_active_render_index
