@@ -59,6 +59,39 @@ failure spike                                      2026-09-01 11:00 (14 fails / 
 - **23 test files exercise freepool; exactly 1 redirects `LEADV2_FREEPOOL_STATE_DIR`.** The other 22
   write their synthetic outcomes into the real state file.
 
+### Reproduced under control — and it corrects the paragraph above
+
+The lead then ran the experiment instead of reasoning about it. Snapshot the state file, run one
+suite, diff the contents (never the record count — the window is capped at 200, so a polluting run
+can leave the length unchanged):
+
+```
+POLLUTES  test-freepool-capability-floor.sh    2 records injected into the real state file
+clean     test-freepool-install.sh
+clean     test-freepool-model-liveness.sh
+clean     test-freepool-model-selector.sh
+clean     test-freepool-pin-drift.sh
+
+injected: {'ok': True, 'latency_s': 0.0, ts=...}   x2
+```
+
+**Pollution is proven. The causal claim about the breaker is NOT.** Both injected records are
+`ok: True` — that suite pushes successes, which cannot raise an error rate. So a test does reach the
+live state file, but the lead's hypothesis that tests tripped the 0.53 error rate is unproven, and
+the four other freepool suites are clean.
+
+Do NOT inherit that hypothesis. Two possibilities remain open and the lane must decide between them
+with evidence:
+
+1. some other suite (not necessarily named `freepool*` — the polluter above is a capability-floor
+   test) injects `ok: False` records. Find it the same way: snapshot, run, diff contents.
+2. freepool really is failing over half its real calls. Then `latency_s == 0.0` on 55 of 61 failures
+   is the lead: a real network failure costs time, so an instant failure points at spawn, config or
+   transport, and the fix is there rather than in the model.
+
+Report which one it is in `report.md`, with the reproduction. Whatever the answer, §1's rule stands
+on its own: a test must not write to the live state file.
+
 So every full test run degrades the live routing decision, and a long enough CI day disables a whole
 provider arm for production work. Fixing this is what puts freepool back in the ladder — never a
 hand-edit of the threshold, and never an exclusion of the arm.
