@@ -1727,6 +1727,20 @@ cmd_supervise() {
   # meta.yaml) and before release_lock. Detect-only; never alters status.
   deadhand_check "${run_dir}" "${exit_code}"
 
+  # WORKERS-MUST-COMMIT-01: MUST run after deadhand_check (append-only from
+  # here on, no more clobbering mv's of meta.yaml) and BEFORE the outcome
+  # classifier below -- an in-scope auto-commit here moves HEAD, and both
+  # work_delta_present() (this call site) and leadv2-lane-outcome.sh's own
+  # `_resolve_work` (when it re-derives work_delta itself) must see the
+  # POST-commit tree, not the dirty one the worker actually left behind.
+  local _worker_epilogue_lib
+  _worker_epilogue_lib="$(dirname "${SELF}")/lib/leadv2-worker-epilogue.sh"
+  if [[ -f "${_worker_epilogue_lib}" ]]; then
+    # shellcheck disable=SC1090
+    source "${_worker_epilogue_lib}"
+    leadv2_worker_commit_epilogue "${run_dir}" "${cwd_dir}" "$(meta_get "${run_dir}" run_id)" || true
+  fi
+
   # N-3 (TURN-CAP-OUTCOME-01): same window as deadhand_check -- after
   # finalize_meta, before release_lock -- so the outcome classifier sees the
   # final .no-deliverable verdict and appends to meta.yaml before it is done
