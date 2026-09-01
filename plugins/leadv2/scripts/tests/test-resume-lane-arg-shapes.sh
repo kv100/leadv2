@@ -121,7 +121,14 @@ setup_env() {
   export CLAUDE_PROJECT_DIR="${TARGET}"
   export CLAUDE_PROJECT_ROOT="${TARGET}"
   unset PROJECT_ROOT 2>/dev/null || true
+  unset LEADV2_PROJECT_ROOT 2>/dev/null || true
   unset LEADV2_LANE_WORK_ROOT 2>/dev/null || true
+  # Round 3, measured: an ambient LEADV2_PROJECT_ROOT (this session exports the
+  # real leadv2 root) outranks PROJECT_ROOT inside lane-state's
+  # _lv2_lane_state_root, so every dispatch's lane_reconcile ran
+  # `ps -axo` once per leadv2 worktree (116 worktrees on this machine ->
+  # ~10s per dispatch, ~90s of pure reconcile in this suite). Unset it so the
+  # reconcile roots at the fixture: one worktree, already known -> no ps scan.
   export LEADV2_DISPATCH_SPAWN=0
   export LEADV2_PULSE_MODE=0
   export LEADV2_SINGLE_LEAD_BEAT=0
@@ -185,61 +192,80 @@ refuse_ok() {
 # ==============================================================================
 # A1: bare lane name -> resolves to the lane (regression guard)
 # ==============================================================================
-# Cases run in pairs (a real 2-live-lane admission cap applies system-wide;
-# more than 2 concurrent dispatch-code.sh invocations against the same state
-# base contend and time out -- proven empirically running this suite).
+# All cases launch CONCURRENTLY, each against its OWN state base: the
+# dispatcher serializes on the state dir's flock and admission applies a
+# 2-live-lane cap, so concurrent cases sharing one state base contend and
+# time out (measured: pair-parallel on a shared base ran slower than
+# sequential). One fixture repo pair (TARGET/FOREIGN) is shared; only the
+# throwaway state/cache dirs are per-case.
+#
+# Per-case cwd choice (matters for the FOREIGN-PROJECT-ROOT-GUARD-01 guard;
+# a non-git cwd breaks the dispatcher itself, measured rc=127):
+#   cwd=FOREIGN  — env root (TARGET) differs from cwd's repo, so the guard is
+#                  ACTIVE: A1/A2 exercise the pin preflight (keeps the A2
+#                  MUTATION-ANCHOR below lethal), A3/A5 exercise the
+#                  cwd-derived-root fallback.
+#   cwd=TARGET   — env == cwd repo, guard inert: A4/A6/A7 assert pure
+#                  resolver refusals against env-rooted PROJECT_ROOT.
 mkdir -p "${TARGET}/plugins"
 
-setup_env
-timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane RESUME-ME-01 \
-  "A1 resume-lane bare name shape test fix the build" >/dev/null 2>"${SANDBOX}/a1-stderr.txt" &
-PID_A1=$!
-setup_env
-timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${RESUME_WT}" \
-  "A2 resume-lane absolute path shape test refactor the validator" >/dev/null 2>"${SANDBOX}/a2-stderr.txt" &
-PID_A2=$!
-rc_a1=0; rc_a2=0
-wait "${PID_A1}" || rc_a1=$?
-wait "${PID_A2}" || rc_a2=$?
+_LAP_CASE_SEQ=0
+launch_case() {
+  # launch_case <tag> <cwd> <env-root-or-''> <dc-args...> — dispatcher in a
+  # subshell with a fresh session id and private state base; rc lands in
+  # rc_<tag>.  env-root overrides CLAUDE_PROJECT_* after setup_env.
+  local tag="$1" cwd="$2" envroot="$3"; shift 3
+  _LAP_CASE_SEQ=$((_LAP_CASE_SEQ + 1))
+  (
+    setup_env
+    export LEADV2_STATE_BASE="${SANDBOX}/state-${_LAP_CASE_SEQ}"
+    export LEADV2_DISPATCH_CACHE_DIR="${SANDBOX}/cache-${_LAP_CASE_SEQ}"
+    if [[ -n "${envroot}" ]]; then
+      export CLAUDE_PROJECT_DIR="${envroot}"
+      export CLAUDE_PROJECT_ROOT="${envroot}"
+    fi
+    cd "${cwd}" || exit 99
+    timeout -k 5 60 bash "${DC}" "$@" >/dev/null 2>"${SANDBOX}/${tag}-stderr.txt"
+  ) &
+  eval "PID_${tag}=\$!"
+}
+_await_all() {
+  local t
+  for t in a1 a2 a3nope a3plain a4 a5 a6 a7 a8; do
+    eval "rc_${t}=0"
+    eval "wait \"\$PID_${t}\" || rc_${t}=\$?"
+  done
+}
 
-setup_env
-timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "/nope/nothing-rlap" \
-  "A3 resume-lane bad absolute path test a3-nope" >/dev/null 2>"${SANDBOX}/a3-nope-stderr.txt" &
-PID_A3_NOPE=$!
-setup_env
-timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${NOT_A_WT}" \
-  "A3 resume-lane bad absolute path test a3-plain" >/dev/null 2>"${SANDBOX}/a3-plain-stderr.txt" &
-PID_A3_PLAIN=$!
-rc_a3_nope=0; rc_a3_plain=0
-wait "${PID_A3_NOPE}" || rc_a3_nope=$?
-wait "${PID_A3_PLAIN}" || rc_a3_plain=$?
-
-setup_env
-timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${FOREIGN_WT}" \
-  "A4 resume-lane foreign worktree path test document the gate" >/dev/null 2>"${SANDBOX}/a4-stderr.txt" &
-PID_A4=$!
-setup_env
-timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane NOPE-RLAP-01 \
-  "A5 resume-lane unknown bare name test tidy the docs" >/dev/null 2>"${SANDBOX}/a5-stderr.txt" &
-PID_A5=$!
-rc_a4=0; rc_a5=0
-wait "${PID_A4}" || rc_a4=$?
-wait "${PID_A5}" || rc_a5=$?
-
+# --- launches ----------------------------------------------------------------
+launch_case a1 "${FOREIGN}" "" --kind tooling --resume-lane RESUME-ME-01 \
+  "A1 resume-lane bare name shape test fix the build"
+launch_case a2 "${FOREIGN}" "" --kind tooling --resume-lane "${RESUME_WT}" \
+  "A2 resume-lane absolute path shape test refactor the validator"
+launch_case a3nope "${FOREIGN}" "" --kind tooling --resume-lane "/nope/nothing-rlap" \
+  "A3 resume-lane bad absolute path test a3 nope"
+launch_case a3plain "${FOREIGN}" "" --kind tooling --resume-lane "${NOT_A_WT}" \
+  "A3 resume-lane bad absolute path test a3 plain"
+launch_case a4 "${TARGET}" "" --kind tooling --resume-lane "${FOREIGN_WT}" \
+  "A4 resume-lane foreign worktree path test document the gate"
+launch_case a5 "${FOREIGN}" "" --kind tooling --resume-lane NOPE-RLAP-01 \
+  "A5 resume-lane unknown bare name test tidy the docs"
 # A6/A7 (RESUME-LANE-ACCEPTS-PATH-01 round 3): the absolute-path branch used
 # to validate only "git-common-dir parent == PROJECT_ROOT", so it accepted
 # PROJECT_ROOT itself and any in-repo subdirectory as a "lane worktree".
-setup_env
-timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${TARGET}" \
-  "A6 resume-lane project root itself must be refused" >/dev/null 2>"${SANDBOX}/a6-stderr.txt" &
-PID_A6=$!
-setup_env
-timeout -k 5 60 bash "${DC}" --kind tooling --resume-lane "${TARGET}/plugins" \
-  "A7 resume-lane in-repo subdirectory must be refused" >/dev/null 2>"${SANDBOX}/a7-stderr.txt" &
-PID_A7=$!
-rc_a6=0; rc_a7=0
-wait "${PID_A6}" || rc_a6=$?
-wait "${PID_A7}" || rc_a7=$?
+launch_case a6 "${TARGET}" "" --kind tooling --resume-lane "${TARGET}" \
+  "A6 resume-lane project root itself must be refused"
+launch_case a7 "${TARGET}" "" --kind tooling --resume-lane "${TARGET}/plugins" \
+  "A7 resume-lane in-repo subdirectory must be refused"
+# A8 (round 3, review-glm H1): foreign ENV root, cwd inside TARGET, NO pin
+# -> guard warns and falls back to the cwd-derived root.
+launch_case a8 "${TARGET}" "${FOREIGN}" --kind tooling \
+  "A8 foreign env root falls back to cwd root test verify the gate"
+
+# _await_all blocks on each PID in turn; the nine dispatchers still run
+# concurrently. (A bare `wait` here would reap every job first, and the
+# per-PID waits would then report 127 "not a child of this shell" — measured.)
+_await_all
 
 resolve_ok "A1" "${SANDBOX}/a1-stderr.txt" "${rc_a1}"
 
@@ -283,8 +309,8 @@ else
   bad "round3: porcelain linked-worktree check missing from source"
 fi
 
-refuse_ok "A3[/nope/nothing-rlap]" "${rc_a3_nope}" "${SANDBOX}/a3-nope-stderr.txt" "/nope/nothing-rlap"
-refuse_ok "A3[${NOT_A_WT}]" "${rc_a3_plain}" "${SANDBOX}/a3-plain-stderr.txt" "${NOT_A_WT}"
+refuse_ok "A3[/nope/nothing-rlap]" "${rc_a3nope}" "${SANDBOX}/a3nope-stderr.txt" "/nope/nothing-rlap"
+refuse_ok "A3[${NOT_A_WT}]" "${rc_a3plain}" "${SANDBOX}/a3plain-stderr.txt" "${NOT_A_WT}"
 
 refuse_ok "A4" "${rc_a4}" "${SANDBOX}/a4-stderr.txt" "${FOREIGN_WT}"
 if grep -q '\.claude/worktrees/\.claude/worktrees/' "${SANDBOX}/a4-stderr.txt" 2>/dev/null; then
