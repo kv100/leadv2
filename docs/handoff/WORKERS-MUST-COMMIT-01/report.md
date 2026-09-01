@@ -116,10 +116,125 @@ failure lines. No file outside `LANE_WRITES` was edited to chase these down, per
 "never weaken a fixture to get green" rule — these are a finding for whoever owns
 `run-core-offline.sh`'s shared-tree isolation, not a defect in this change.
 
-## Left alone
-- `kimi-coder.sh` and `freepool-coder.sh` have the identical `finalize`-style tail
-  (`work_delta_present` + `leadv2-lane-outcome.sh` call) but were **not** wired to the new
-  epilogue — out of `LANE_WRITES` for this task. Same gap likely exists there; flagging as
-  a natural follow-up, not doing it here.
-- No `round` tracking added (see deviation note above) — out of scope; would require a new
-  concept invented across multiple files that this task's `LANE_WRITES` does not cover.
+## Round 2 evidence
+
+### Fixes (review verdict: status=fail high=2)
+1. **Porcelain collapse (High)** — `lib/leadv2-worker-epilogue.sh`: `git status --porcelain`
+   → `git status --porcelain --untracked-files=all` so an untracked directory is expanded to
+   one line per file before scope classification, instead of one collapsed `?? dir/` line.
+2. **Epilogue wired on every arm (High)** — added the identical `leadv2_worker_commit_epilogue`
+   call, at the same post-`deadhand_check`/pre-outcome-classifier window, to `kimi-coder.sh` and
+   `freepool-coder.sh` (byte-identical pattern to the existing `glm-coder.sh` call site).
+   `claude-subsession.sh` has a structurally different finalize shape (no `run_dir`/`prompt.txt`
+   convention — it uses `MISSION_FILE` + `HANDOFF_DIR`/`RUN_DIR`), so:
+   - `_lv2_epilogue_lane_writes()` now takes an optional `$2` mission-file override (defaults to
+     `${run_dir}/prompt.txt`, unchanged for the three coder wrappers).
+   - `leadv2_worker_commit_epilogue()` now takes an optional `$4` mission-file override, passed
+     through to `_lv2_epilogue_lane_writes`.
+   - Wired into both of `claude-subsession.sh`'s finalize points: the sync `WAIT=1` path (right
+     after `run_subsession`/`parse_and_record_cost`, before the `DELIVERABLE_COMPLETE` checks),
+     and the detached-background inline waiter (right after `wait "$PID"`, before the
+     `.outcome`/`.finalized` write) — using `HANDOFF_DIR`/`RUN_DIR` respectively as the
+     progress.log/meta.yaml sink and `PROJECT_ROOT` as `cwd_dir` (claude-subsession has no
+     separate lane-worktree var; the caller sets `PROJECT_ROOT` to the lane worktree already).
+   - `no_lane` case: `leadv2_worker_commit_epilogue()` now checks
+     `git -C "${cwd_dir}" rev-parse --is-inside-work-tree` FIRST and, on failure, writes
+     `worker_exit=no_lane auto_committed=0 foreign_dirty=0` and returns 0 instead of the prior
+     silent `return 0` — covers the `--protected` (no lane worktree) case for any arm.
+
+### New/updated test suite — `plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh`
+- `case_e_new_dir_in_scope_committed` — new untracked directory inside LANE_WRITES: every file
+  under it lands in the auto-commit.
+- `case_f_new_dir_out_of_scope_listed` — new untracked directory outside LANE_WRITES: every file
+  under it listed individually in `foreign_dirty`, nothing committed.
+- `case_g_all_arms_wire_epilogue` — grep-gate: `glm-coder.sh`, `kimi-coder.sh`,
+  `freepool-coder.sh`, `claude-subsession.sh` all reference `leadv2_worker_commit_epilogue`.
+- `case_bash_n` extended to `bash -n` all four launcher files, not just `glm-coder.sh`.
+
+Green run:
+```
+PASS: case_bash_n
+PASS: case_a_in_scope_auto_commit
+PASS: case_b_out_of_scope_no_commit
+PASS: case_c_clean_exit_untouched
+PASS: case_d_undeclared_lane_writes_no_guess
+PASS: case_e_new_dir_in_scope_committed
+PASS: case_f_new_dir_out_of_scope_listed
+PASS: case_g_all_arms_wire_epilogue
+
+test-worker-commit-epilogue: 8 passed, 0 failed
+```
+
+### Mutation negative controls (both reverted after)
+(a) revert `--untracked-files=all` to plain `--porcelain`:
+```
+FAIL: case_f_new_dir_out_of_scope_listed -- progress.log missing other/lib/a.sh
+test-worker-commit-epilogue: 7 passed, 1 failed
+```
+(b) remove the epilogue call from `kimi-coder.sh`:
+```
+FAIL: case_g_all_arms_wire_epilogue -- missing in: kimi-coder.sh
+test-worker-commit-epilogue: 7 passed, 1 failed
+```
+Both mutations reverted; suite confirmed green again (`8 passed, 0 failed`) before proceeding.
+
+### Falsifiability gate
+```
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
+leadv2-suite-falsifiable: suite=.../test-worker-commit-epilogue.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=13
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+### Self-check: `bash -n` / `py_compile`
+```
+$ for f in lib/leadv2-worker-epilogue.sh glm-coder.sh kimi-coder.sh freepool-coder.sh claude-subsession.sh; do bash -n "plugins/leadv2/scripts/$f" && echo OK $f; done
+OK plugins/leadv2/scripts/lib/leadv2-worker-epilogue.sh
+OK plugins/leadv2/scripts/glm-coder.sh
+OK plugins/leadv2/scripts/kimi-coder.sh
+OK plugins/leadv2/scripts/freepool-coder.sh
+OK plugins/leadv2/scripts/claude-subsession.sh
+```
+No `.py` files touched in this round.
+
+### Changed-scope run-all
+`tests/run-all.sh --scope changed` (`LEADV2_SUITE_LOCK_DISABLE=1`) is a known >10min run on
+this repo (memory: `run-all-changed-scope-runtime`); a full foreground run timed out at 590s
+inside `run-core-offline.sh` sharding without reaching a verdict for this task's files. Instead
+ran every existing suite that directly exercises the four touched launchers/lib in the
+foreground:
+
+```
+test-worker-commit-epilogue.sh              8 passed, 0 failed
+test-claude-subsession-sentinel.sh           PASS=11 FAIL=5   (pre-existing, see below)
+test-claude-subsession-turncap.sh            PASS=2  FAIL=0
+test-freepool-capability-floor.sh            23 passed, 8 failed (pre-existing, see below)
+test-freepool-install.sh                     PASS=8  FAIL=0
+test-freepool-model-liveness.sh              6 passed, 1 failed (pre-existing, see below)
+test-freepool-model-selector.sh              25 passed, 0 failed
+test-freepool-pin-drift.sh                   PASS=10 FAIL=1   (pre-existing, see below)
+test-glm-coder-529.sh                        8 passed, 1 failed (pre-existing, see below)
+test-kimi-session-route.sh                   PASS=14 FAIL=0
+test-subsession-absolute-handoff-path.sh     pass=3  fail=0
+test-subsession-context-diet.sh              13 passed, 0 failed
+test-subsession-soft-finish-dead-return.sh   pass=3  fail=0
+```
+
+Baseline check (never weaken a fixture to get green): temporarily restored the 5 pre-round-2
+files to their pre-this-round content (`git checkout --`, edits saved to `/tmp/wmc01-mine/`
+first) and re-ran the 5 failing suites — identical pass/fail counts and identical failing
+sub-cases on baseline (`test-claude-subsession-sentinel.sh` PASS=11/FAIL=5,
+`test-freepool-capability-floor.sh` a `rm: Directory not empty` fixture race,
+`test-freepool-model-liveness.sh` 6/1, `test-freepool-pin-drift.sh` 10/1, `test-glm-coder-529.sh`
+`case_revive_continuation` failing). Confirmed pre-existing and unrelated to this diff; edits
+restored from `/tmp/wmc01-mine/` and the epilogue suite re-verified green (`8 passed, 0 failed`)
+before committing.
+
+## Left alone (round 2)
+- The 5 pre-existing failing suites above — untouched, per "never weaken a fixture to get
+  green"; they fail identically with or without this round's diff.
+- No `round` tracking added — out of scope; would require a new concept invented across
+  multiple files that this task's `LANE_WRITES` does not cover.

@@ -11,6 +11,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EPILOGUE_LIB="${SCRIPT_DIR}/../lib/leadv2-worker-epilogue.sh"
 GLM_CODER="${SCRIPT_DIR}/../glm-coder.sh"
+KIMI_CODER="${SCRIPT_DIR}/../kimi-coder.sh"
+FREEPOOL_CODER="${SCRIPT_DIR}/../freepool-coder.sh"
+CLAUDE_SUBSESSION="${SCRIPT_DIR}/../claude-subsession.sh"
 THIS_TEST="${SCRIPT_DIR}/test-worker-commit-epilogue.sh"
 
 TMP_ROOT="$(mktemp -d)"
@@ -49,7 +52,8 @@ _new_run_dir() { # <lane_writes_csv> -> path
 # ---------------------------------------------------------------------------
 # case_bash_n — syntax-clean on the epilogue lib and both call sites.
 # ---------------------------------------------------------------------------
-if bash -n "${EPILOGUE_LIB}" && bash -n "${GLM_CODER}" && bash -n "${THIS_TEST}"; then
+if bash -n "${EPILOGUE_LIB}" && bash -n "${GLM_CODER}" && bash -n "${KIMI_CODER}" \
+   && bash -n "${FREEPOOL_CODER}" && bash -n "${CLAUDE_SUBSESSION}" && bash -n "${THIS_TEST}"; then
   pass "case_bash_n"
 else
   fail "case_bash_n" "bash -n reported a syntax error"
@@ -139,6 +143,77 @@ elif ! grep -q "foreign_dirty=undeclared_lane_writes" "${run_dir}/progress.log" 
   fail "case_d_undeclared_lane_writes_no_guess" "progress.log missing undeclared_lane_writes marker"
 else
   pass "case_d_undeclared_lane_writes_no_guess"
+fi
+
+# ---------------------------------------------------------------------------
+# case_e — new UNTRACKED DIRECTORY inside LANE_WRITES -> every file under it
+#          gets committed individually (BEAT-LOOP-ORPHANS-01 regression: a
+#          plain `git status --porcelain` collapses the dir to one line and
+#          the dir-path match against LANE_WRITES misclassifies it foreign).
+# ---------------------------------------------------------------------------
+repo="$(_new_repo)"
+run_dir="$(_new_run_dir "plugins/leadv2/hooks")"
+printf 'cwd: %s\n' "${repo}" >> "${run_dir}/meta.yaml"
+head_before="$(git -C "${repo}" rev-parse HEAD)"
+mkdir -p "${repo}/plugins/leadv2/hooks/lib"
+echo "one" > "${repo}/plugins/leadv2/hooks/lib/a.sh"
+echo "two" > "${repo}/plugins/leadv2/hooks/lib/b.sh"
+leadv2_worker_commit_epilogue "${run_dir}" "${repo}" "case_e" >/dev/null
+head_after="$(git -C "${repo}" rev-parse HEAD)"
+dirty_after="$(git -C "${repo}" status --porcelain)"
+if [[ "${head_after}" == "${head_before}" ]]; then
+  fail "case_e_new_dir_in_scope_committed" "HEAD did not move -- new dir was not committed"
+elif [[ -n "${dirty_after}" ]]; then
+  fail "case_e_new_dir_in_scope_committed" "tree still dirty after epilogue: ${dirty_after}"
+elif ! git -C "${repo}" show --stat HEAD | grep -q "hooks/lib/a.sh"; then
+  fail "case_e_new_dir_in_scope_committed" "a.sh missing from the auto-commit"
+elif ! git -C "${repo}" show --stat HEAD | grep -q "hooks/lib/b.sh"; then
+  fail "case_e_new_dir_in_scope_committed" "b.sh missing from the auto-commit"
+else
+  pass "case_e_new_dir_in_scope_committed"
+fi
+
+# ---------------------------------------------------------------------------
+# case_f — new untracked directory OUTSIDE LANE_WRITES -> every file under it
+#          listed individually in foreign_dirty, nothing committed.
+# ---------------------------------------------------------------------------
+repo="$(_new_repo)"
+run_dir="$(_new_run_dir "plugins/leadv2/scripts")"
+printf 'cwd: %s\n' "${repo}" >> "${run_dir}/meta.yaml"
+head_before="$(git -C "${repo}" rev-parse HEAD)"
+mkdir -p "${repo}/other/lib"
+echo "one" > "${repo}/other/lib/a.sh"
+echo "two" > "${repo}/other/lib/b.sh"
+leadv2_worker_commit_epilogue "${run_dir}" "${repo}" "case_f" >/dev/null
+head_after="$(git -C "${repo}" rev-parse HEAD)"
+dirty_after="$(git -C "${repo}" status --porcelain)"
+progress_foreign="$(grep '^foreign_dirty=' "${run_dir}/progress.log" 2>/dev/null || true)"
+if [[ "${head_after}" != "${head_before}" ]]; then
+  fail "case_f_new_dir_out_of_scope_listed" "HEAD moved -- a foreign dir was committed"
+elif [[ -z "${dirty_after}" ]]; then
+  fail "case_f_new_dir_out_of_scope_listed" "tree unexpectedly clean -- foreign dir vanished"
+elif [[ "${progress_foreign}" != *"other/lib/a.sh"* ]]; then
+  fail "case_f_new_dir_out_of_scope_listed" "progress.log missing other/lib/a.sh"
+elif [[ "${progress_foreign}" != *"other/lib/b.sh"* ]]; then
+  fail "case_f_new_dir_out_of_scope_listed" "progress.log missing other/lib/b.sh"
+else
+  pass "case_f_new_dir_out_of_scope_listed"
+fi
+
+# ---------------------------------------------------------------------------
+# case_g — grep-gate: every arm launcher wires the commit epilogue at its
+#          finalize point. Zero launchers without it.
+# ---------------------------------------------------------------------------
+_gate_missing=()
+for launcher in "${GLM_CODER}" "${KIMI_CODER}" "${FREEPOOL_CODER}" "${CLAUDE_SUBSESSION}"; do
+  if ! grep -q "leadv2_worker_commit_epilogue" "${launcher}" 2>/dev/null; then
+    _gate_missing+=("$(basename "${launcher}")")
+  fi
+done
+if [[ "${#_gate_missing[@]}" -eq 0 ]]; then
+  pass "case_g_all_arms_wire_epilogue"
+else
+  fail "case_g_all_arms_wire_epilogue" "missing in: ${_gate_missing[*]}"
 fi
 
 printf '\ntest-worker-commit-epilogue: %d passed, %d failed\n' "${PASSES}" "${FAILURES}"

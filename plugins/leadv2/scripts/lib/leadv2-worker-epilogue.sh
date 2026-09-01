@@ -27,9 +27,13 @@
 
 # List this run's declared LANE_WRITES paths, one per line. Empty output
 # means "no LANE_WRITES declared" — the caller must NOT guess a scope.
+# $2 (optional) overrides the mission-file path; defaults to
+# <run_dir>/prompt.txt (glm/kimi/freepool-coder.sh convention). claude-
+# subsession.sh has no run_dir/prompt.txt shape -- it passes its own
+# MISSION_FILE path here instead.
 _lv2_epilogue_lane_writes() {
-  local run_dir="$1" line paths_part p trimmed
-  line="$(grep -m1 -E '^LANE_WRITES:' "${run_dir}/prompt.txt" 2>/dev/null || true)"
+  local run_dir="$1" prompt_file="${2:-${run_dir}/prompt.txt}" line paths_part p trimmed
+  line="$(grep -m1 -E '^LANE_WRITES:' "${prompt_file}" 2>/dev/null || true)"
   [[ -n "${line}" ]] || return 0
   paths_part="${line#LANE_WRITES:}"
   IFS=',' read -ra _lv2_ep_paths <<< "${paths_part}"
@@ -60,13 +64,20 @@ _lv2_epilogue_path_in_scope() {
 # Writes worker_exit=clean|dirty, auto_committed=<n>, foreign_dirty=<n> to
 # both progress.log and meta.yaml so the outcome classifier and any human
 # reading the run dir see the same facts. Always returns 0.
+# $4 (optional): mission/prompt-file path to read LANE_WRITES from, when it
+# is not <run_dir>/prompt.txt (claude-subsession.sh passes its MISSION_FILE).
 leadv2_worker_commit_epilogue() {
-  local run_dir="$1" cwd_dir="$2" label="${3:-lane}"
+  local run_dir="$1" cwd_dir="$2" label="${3:-lane}" prompt_file="${4:-${run_dir}/prompt.txt}"
 
-  git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  if ! git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # No lane worktree at this cwd (e.g. --protected mode writes elsewhere).
+    echo "worker_exit=no_lane auto_committed=0 foreign_dirty=0" >> "${run_dir}/progress.log" 2>/dev/null || true
+    { echo "worker_exit: no_lane"; echo "auto_committed: 0"; } >> "${run_dir}/meta.yaml" 2>/dev/null || true
+    return 0
+  fi
 
   local status_out
-  status_out="$(git -C "${cwd_dir}" status --porcelain 2>/dev/null || true)"
+  status_out="$(git -C "${cwd_dir}" status --porcelain --untracked-files=all 2>/dev/null || true)"
   if [[ -z "${status_out}" ]]; then
     echo "worker_exit=clean auto_committed=0 foreign_dirty=0" >> "${run_dir}/progress.log" 2>/dev/null || true
     { echo "worker_exit: clean"; echo "auto_committed: 0"; } >> "${run_dir}/meta.yaml" 2>/dev/null || true
@@ -75,7 +86,7 @@ leadv2_worker_commit_epilogue() {
 
   local lw_file
   lw_file="$(mktemp 2>/dev/null || echo "${run_dir}/.epilogue_lw.tmp")"
-  _lv2_epilogue_lane_writes "${run_dir}" > "${lw_file}" 2>/dev/null || true
+  _lv2_epilogue_lane_writes "${run_dir}" "${prompt_file}" > "${lw_file}" 2>/dev/null || true
 
   if [[ ! -s "${lw_file}" ]]; then
     # No LANE_WRITES declared -- cannot scope a safe auto-commit. Report and
