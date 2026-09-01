@@ -13,9 +13,12 @@
 # LEAD_V2_STATE.md, .git/), and (b) the lane's provider run state producing
 # output. One signal is not enough in either direction: a worker reading and
 # planning writes its provider run dir while touching no worktree file
-# (worktree-only -> false alarm), and a provider run dir's own mtime is kept
-# fresh by its RUNNER (journal appends, .stale rotation) whether or not the
-# WORKER produces, so it can never be the sole stall signal either. When both
+# (worktree-only -> false alarm), and a provider run dir's own DIRECTORY
+# mtime is kept fresh by ordinary runner bookkeeping (state rewrites, .stale
+# rotation) regardless of whether the WORKER produces anything, so directory
+# mtime can never be the sole stall signal either — see
+# _lw_provider_output_age_min below, which measures WORKER-output file
+# mtimes only, never the directory's own. When both
 # go quiet AND nothing is live anywhere while docs/tasks.yaml still has open
 # rows, the watcher says so (LANE-IDLE) — the one job the retired
 # leadv2-idle-lead-guard.sh did honestly (its liveness input,
@@ -135,13 +138,25 @@ _lw_newest_age_min() {
 # codex lane had no dispatch age at all and was "stalled" seconds after a
 # healthy dispatch. Unmatched globs print literally under bash 3.2, so every
 # consumer MUST guard with [ -e ] / [ -d ].
+# Round-2 census (2026-09-01, `ls -d ~/.claude/cache/*-runs`) found FOUR
+# `*-runs` families, not two: claude-runs and kimi-runs exist alongside
+# glm-runs/freepool-runs. Round 2's first cut enumerated only the latter two,
+# so a claude-arm lane matched nothing here and lost both dispatch grace and
+# provider-output suppression — d_age/prov_age both 999999, i.e. reported
+# stalled seconds after a healthy dispatch (the same regression class this
+# whole lane exists to kill, this time against the claude arm instead of
+# codex). Fix: enumerate every `*-runs` sibling under each root by name,
+# explicitly, so the list this function returns is the SAME list a fresh
+# `ls -d ~/.claude/cache/*-runs` would show, not a two-of-four subset.
 lane_dirs() {
   local lane="$1" root roots
   roots="$(printf '%s' "$RUN_ROOT_PARENTS" | tr ':' ' ')"
   for root in $roots; do
     printf '%s\n' \
       "${root}"/glm-runs/*"${lane}"* \
-      "${root}"/freepool-runs/*"${lane}"*
+      "${root}"/freepool-runs/*"${lane}"* \
+      "${root}"/claude-runs/*"${lane}"* \
+      "${root}"/kimi-runs/*"${lane}"*
   done
   printf '%s\n' "${CODEX_STATE_ROOT}"/*"${lane}"*
 }
@@ -161,14 +176,29 @@ _lw_birth_epoch() {
 
 # _lw_dispatch_age_min LANE -> minutes since LANE was last DISPATCHED, i.e.
 # the youngest birth time among its provider run directories. Birth, not
-# mtime: a live RUNNER rewrites its run dir continuously (journal appends,
-# broker.json .stale rotation — measured 2026-09-01 on
-# codex-openai-codex/state, a broker rotation every ~30 min) whether or not
-# the WORKER produces, so an mtime-based age stays near zero and the grace
-# window never expires for exactly the lanes worth watching — a lane sat 23
-# minutes past LANE_STALL_MIN in silence before a human reading the heartbeat
-# noticed. Birth time is what "how long since this lane was dispatched"
-# actually means.
+# mtime: the DIRECTORY's own mtime (as opposed to the mtime of the WORKER-
+# output files inside it — see _lw_provider_output_age_min below) is pinged
+# by ordinary filesystem housekeeping unrelated to the worker producing
+# anything: a runner bookkeeping rewrite (state.json, .stream_state,
+# .lockref rotation) or a new file being created inside the dir both bump
+# the directory mtime without the worker having written a single line of
+# output. An mtime-based dispatch age therefore stays near zero indefinitely
+# and the grace window never expires for exactly the lanes worth watching —
+# a lane sat 23 minutes past LANE_STALL_MIN in silence before a human
+# reading the heartbeat noticed. Birth time is what "how long since this
+# lane was dispatched" actually means, and is immune to this pinging because
+# birth is set once, at directory creation, and cannot be bumped by later
+# writes into the directory.
+#
+# NOTE: this is a narrower claim than round 2's original draft ("broker.json
+# rotates every ~30 min") — that specific claim was UNVERIFIED and is
+# contradicted by the live tree (probe 2026-09-01, three codex state dirs
+# under codex-openai-codex/state: broker.json/state.json mtimes are Aug 9 /
+# Aug 26, weeks stale, while each dir's jobs/ subdirectory shows Sep 1
+# 22:46 activity — broker.json is NOT rotating on any ~30-min cadence in
+# this tree). The design does not depend on that claim: it depends only on
+# "directory mtime can be pinged by something other than worker output",
+# which the jobs/ vs broker.json split above demonstrates directly.
 _lw_dispatch_age_min() {
   local lane="$1" d m newest best=999999 now
   now="$(date +%s)"
@@ -183,21 +213,32 @@ _lw_dispatch_age_min() {
 }
 
 # _lw_provider_output_age_min LANE -> minutes since LANE's provider state
-# last produced OUTPUT. Deliberately NOT the run dir's own mtime — the
-# runner pings it while the worker hangs, and a dir "touched one second ago"
-# must not read as output (that is the round-2 [Critical] 1 measurement).
-# Output = the newest plain file directly inside a run dir (dotfiles — the
-# runner's own bookkeeping: .stream_state, .lockref — do not count); a run
-# dir with no files has produced nothing since it was CREATED, so its birth
-# time is the honest fallback. Nothing found anywhere -> 999999 (quiet).
+# last produced OUTPUT. Deliberately NOT the run dir's own mtime — ordinary
+# runner bookkeeping pings it while the worker hangs, and a dir "touched one
+# second ago" must not read as output (that is the round-2 [Critical] 1
+# measurement). Output = the newest WORKER-written file: for glm/freepool
+# that is any plain file directly inside the run dir excluding dotfiles
+# (the runner's own bookkeeping: .stream_state, .lockref); for codex the
+# real worker output lives one level down, in the dir's `jobs/` subdirectory
+# (probe 2026-09-01: `~/.claude/plugins/data/codex-openai-codex/state/<id>/
+# jobs/task-*.json` and `.log`, mtimes minutes old, vs the top-level
+# `broker.json`/`state.json` runner bookkeeping sitting weeks-stale in the
+# same dir) — those two top-level files are explicitly excluded by name so
+# a runner rewrite of them can never be mistaken for worker output. A run
+# dir with no worker-output files has produced nothing since it was
+# CREATED, so its birth time is the honest fallback. Nothing found anywhere
+# -> 999999 (quiet).
 _lw_provider_output_age_min() {
   local lane="$1" d f m cand newest best=999999 now
   now="$(date +%s)"
   while IFS= read -r d; do
     [ -d "$d" ] || continue
     cand="$(_lw_birth_epoch "$d")" || continue
-    for f in "$d"/*; do
+    for f in "$d"/* "$d"/jobs/*; do
       [ -f "$f" ] || continue
+      case "$(basename "$f")" in
+        broker.json|state.json) continue ;;
+      esac
       m="$(stat -f %m "$f" 2>/dev/null)" || continue
       [ "$m" -gt "$cand" ] && cand="$m"
     done

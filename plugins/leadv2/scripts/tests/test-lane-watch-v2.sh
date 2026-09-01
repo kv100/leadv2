@@ -191,6 +191,63 @@ write_tasks() {
   fi
 }
 
+# ── case r3-1: claude-arm lane inside grace must NOT be reported stalled ────
+#    Round-2 review [Critical] 1: lane_dirs enumerated only glm-runs and
+#    freepool-runs, dropping claude-runs (and kimi-runs) from the arm
+#    enumeration entirely. A claude-arm lane then matched nothing -> both
+#    d_age and prov_age returned 999999 -> no grace, no output suppression,
+#    reported stalled seconds after a healthy dispatch.
+{
+  new_fixture
+  make_lane "LANE-CLAUDE" 999                     # ancient worktree
+  make_rundir claude LANE-CLAUDE 1 >/dev/null      # dispatched 1m ago -> inside grace
+  out="$(once sessClaude)"
+  if [[ "$out" != *"LANE-STALL"* ]]; then
+    pass "case r3-1: claude-arm lane dispatched 1m ago is NOT reported (grace applies)"
+  else
+    fail "case r3-1: claude-arm grace did not suppress, got out=[$out]"
+  fi
+}
+
+# ── case r3-2: codex worker output lives in jobs/, not top-level bookkeeping.
+#    Round-2 review [High] H1: _lw_provider_output_age_min only looked at
+#    plain files directly inside the run dir, so codex's real output
+#    (jobs/task-*.json/.log) was invisible and stale top-level bookkeeping
+#    (broker.json, state.json) was miscounted as "output" if touched.
+{
+  new_fixture
+  make_lane "LANE-CX" 30
+  d="$(make_rundir codex LANE-CX 30)"              # born 30m ago
+  printf '{}' > "$d/broker.json"
+  age_touch "$d/broker.json" 30                    # runner bookkeeping, stale
+  printf '{}' > "$d/state.json"
+  age_touch "$d/state.json" 1                      # runner bookkeeping touched 1m ago
+  mkdir -p "$d/jobs"
+  printf '{}' > "$d/jobs/task-abc.json"
+  age_touch "$d/jobs/task-abc.json" 30              # worker output, still 30m old
+  out="$(once sessCX)"
+  if [[ "$out" == *"LANE-STALL: LANE-CX"* ]]; then
+    pass "case r3-2a: fresh state.json (bookkeeping) does not suppress a stall"
+  else
+    fail "case r3-2a: expected stall despite fresh bookkeeping, got out=[$out]"
+  fi
+
+  new_fixture
+  make_lane "LANE-CY" 30
+  d="$(make_rundir codex LANE-CY 30)"
+  printf '{}' > "$d/broker.json"
+  age_touch "$d/broker.json" 30
+  mkdir -p "$d/jobs"
+  printf '{}' > "$d/jobs/task-fresh.json"
+  age_touch "$d/jobs/task-fresh.json" 1             # real worker output, 1m ago
+  out="$(once sessCY)"
+  if [[ "$out" != *"LANE-STALL"* ]]; then
+    pass "case r3-2b: fresh jobs/ output suppresses the stall (codex worker output is read)"
+  else
+    fail "case r3-2b: expected silence, jobs/ output was ignored, got out=[$out]"
+  fi
+}
+
 # ── case 5: dispatched within grace, whatever the worktree age ──────────────
 {
   new_fixture
