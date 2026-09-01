@@ -15,6 +15,10 @@ DISPATCH_BIN="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+# PHASE-GATE-IS-INVERTED-01: a session-exported PROJECT_ROOT diverging from the
+# per-section LEADV2_PROJECT_ROOT would now refuse every record write; this
+# suite's roots come from LEADV2_PROJECT_ROOT alone, so drop the other name.
+unset PROJECT_ROOT
 export LEADV2_PROJECT_ROOT="$TMP_ROOT"
 export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/.cache"
 export LEADV2_JOURNAL_BIN="${TMP_ROOT}/journal.sh"

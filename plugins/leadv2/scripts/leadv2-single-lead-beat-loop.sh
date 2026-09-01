@@ -34,11 +34,39 @@
 #
 # Hermetic seams (tests): LEADV2_LANE_HEARTBEAT_BIN, LEADV2_PULSE_BEAT_BIN,
 # LEADV2_SINGLE_LEAD_BEAT_LOOP_PID, LEADV2_SINGLE_LEAD_BEAT_LOOP_PID_DIR,
-# LEADV2_SINGLE_LEAD_BEAT_LOOP_S.
+# LEADV2_SINGLE_LEAD_BEAT_LOOP_S. Lifecycle seams (WATCHER-LIFECYCLE-LEAK-01):
+# LEADV2_WATCH_LIFECYCLE_LOG (event log path), LEADV2_WATCHER_OWNER_PID
+# (optional explicit owner — unset in production, see the loop body).
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# WATCHER-LIFECYCLE-LEAK-01: shared watcher lifecycle (race-safe singleton
+# claim, self-reap, event log). Guarded + canonical-fallback source, same
+# shape dispatch-ledger uses for its libs (a consumer-repo symlink farm may
+# not carry a lib/ copy of a new file); the stubs reproduce the PRE-fix
+# behavior so a missing lib can never stop the beat.
+_WL_LIB="${SCRIPT_DIR}/lib/leadv2-watch-lifecycle.sh"
+[[ -f "${_WL_LIB}" ]] || _WL_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-watch-lifecycle.sh"
+if [[ -f "${_WL_LIB}" ]]; then
+  # shellcheck source=lib/leadv2-watch-lifecycle.sh
+  source "${_WL_LIB}"
+else
+  wl_event() { :; }
+  wl_owner_gone() { return 1; }
+  wl_singleton_claim() {  # pre-leak-fix fallback: kill -0 guard + blind write
+    local _p
+    if [[ -f "$1" ]]; then
+      _p="$(cat "$1" 2>/dev/null | tr -d ' ')"
+      [[ "${_p}" =~ ^[0-9]+$ ]] && kill -0 "${_p}" 2>/dev/null && return 3
+    fi
+    mkdir -p "$(dirname "$1")" 2>/dev/null || true
+    printf '%s\n' "$$" > "${1}.tmp.$$" 2>/dev/null \
+      && mv -f "${1}.tmp.$$" "$1" 2>/dev/null || true
+    return 0
+  }
+fi
 
 # kill-switches first — arming itself must be a no-op
 [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || exit 0
@@ -67,19 +95,64 @@ _root_key="${_root_key%% *}"
 PID_DIR="${LEADV2_SINGLE_LEAD_BEAT_LOOP_PID_DIR:-$STATE_DIR}"
 PID_FILE="${LEADV2_SINGLE_LEAD_BEAT_LOOP_PID:-${PID_DIR}/.single-lead-beat-loop-${_root_key}.pid}"
 
-# pidfile guard: a live previous arming wins, this invocation is a no-op
-if [[ -f "$PID_FILE" ]]; then
-  _old_pid="$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')"
-  if [[ "${_old_pid}" =~ ^[0-9]+$ ]] && kill -0 "${_old_pid}" 2>/dev/null; then
-    printf '[beat-loop] already armed by pid %s, no-op\n' "$_old_pid" >&2
-    exit 0
+# ── WATCHER-LIFECYCLE-LEAK-01: race-safe singleton + lifecycle events ─────────
+# The 2026-09-01 ticket measured 17 duplicate beat loops from ONE worktree:
+# this guard used to be check-then-write with no cmdline validation, so two
+# dispatches racing through the slow prelude (state-path resolution) both saw
+# no pidfile and both armed; the pidfile loser was then invisible to every
+# later arm and ran to the full 86400s cap. wl_singleton_claim (lib) makes
+# check+write ATOMIC (mkdir lockdir), refuses only a LIVE process whose
+# command line still contains this script's basename (a recycled pid never
+# blocks re-arm), replaces a dead/foreign pidfile, and fails OPEN — an
+# unwritable pidfile dir still arms, the pre-fix behavior (mission
+# fail-open constraint).
+WL_LOG_FILE="${LEADV2_WATCH_LIFECYCLE_LOG:-${PID_DIR}/watch-lifecycle.log}"
+LEADV2_WATCH_LIFECYCLE_LOG="$WL_LOG_FILE"
+# WATCHER-LIFECYCLE-LEAK-01: traps are armed BEFORE the claim — a TERM
+# landing inside the claim's settle window used to hit the default death
+# action and leak the pidfile. Cleanup removes the pidfile ONLY when it
+# still names THIS pid, so it is safe at any point of the claim: a
+# dedup-refused copy (pidfile names the winner) can never delete the
+# winner's claim, and a TERM between our noclobber-create and the loop
+# proper still cleans up.
+_cleanup_pid() {
+  local _p
+  _p="$(cat "$PID_FILE" 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$_p" == "$$" ]]; then
+    rm -f "$PID_FILE" 2>/dev/null || true
+    wl_event "beat-loop" "$PROJECT_ROOT" "$$" "self_reap"
   fi
-fi
-mkdir -p "$(dirname "$PID_FILE")" 2>/dev/null || true
-printf '%s\n' "$$" > "${PID_FILE}.tmp.$$" 2>/dev/null \
-  && mv -f "${PID_FILE}.tmp.$$" "$PID_FILE" 2>/dev/null || true
-_cleanup_pid() { rm -f "$PID_FILE" 2>/dev/null || true; }
-trap _cleanup_pid EXIT INT TERM
+  return 0
+}
+# A trapped TERM/INT runs the handler and then RESUMES the script (bash
+# replaces the default death with the trap) — the loop survived its own
+# kill, pidfile already removed, so every later arm spawned a fresh
+# duplicate (the 17-copies leak). The signal handler must EXIT; the EXIT
+# trap is disarmed first so self_reap logs exactly once.
+# Fix-r1: on macOS bash 3.2 a trapped TERM also DEFERS behind a foreground
+# child for that child's full runtime (measured: handler ran 29.5s into a
+# 30s sleep) — a killed loop then "survived" its kill for a whole 300s
+# production interval and took SIGKILL (the 2026-09-01 strays). Every long
+# wait below is therefore a background child under the wait builtin, which
+# IS interruptible (0.015s measured), and the handler kills that child.
+WL_CHILD=""
+_on_term() {
+  trap - EXIT
+  [[ -n "$WL_CHILD" ]] && kill "$WL_CHILD" 2>/dev/null || true
+  _cleanup_pid
+  exit 0
+}
+trap _cleanup_pid EXIT
+trap _on_term INT TERM
+wl_singleton_claim "$PID_FILE"
+case $? in
+  3)
+    printf '[beat-loop] already armed by pid %s, no-op\n' "$(cat "$PID_FILE" 2>/dev/null | tr -d ' ')" >&2
+    wl_event "beat-loop" "$PROJECT_ROOT" "$$" "dedup_refused"
+    exit 0
+    ;;
+esac
+wl_event "beat-loop" "$PROJECT_ROOT" "$$" "spawn"
 
 HB_BIN="${LEADV2_LANE_HEARTBEAT_BIN:-${SCRIPT_DIR}/leadv2-lane-heartbeat.sh}"
 BEAT_BIN="${LEADV2_PULSE_BEAT_BIN:-${SCRIPT_DIR}/leadv2-pulse-beat.sh}"
@@ -128,6 +201,17 @@ while :; do
     printf '[beat-loop] project root gone (%s), stopping\n' "$PROJECT_ROOT" >&2
     exit 0
   fi
+  # WATCHER-LIFECYCLE-LEAK-01 #2: owner-bound self-reap, checked every
+  # iteration so the exit lands within one interval. The DURABLE owner of
+  # this loop is the root's live-lane board — the zero-streak stop below IS
+  # the heartbeat-staleness reap — because the arming dispatcher exits
+  # seconds after worker_spawned (binding to ITS pid would kill the beat
+  # immediately). The explicit pid seam exists for ops/tests that arm with
+  # a concrete owner process; unset (production default) changes nothing.
+  if wl_owner_gone; then
+    printf '[beat-loop] owner pid %s gone, self-reaping\n' "${LEADV2_WATCHER_OWNER_PID}" >&2
+    exit 0
+  fi
   n="$(_live_lane_count)"
   if [[ "$n" =~ ^[0-9]+$ ]]; then
     _unknown_streak=0
@@ -161,9 +245,17 @@ while :; do
   if [[ -f "$BEAT_BIN" ]]; then
     LEADV2_SINGLE_LEAD_BEAT_S="${LEADV2_SINGLE_LEAD_BEAT_S:-$INTERVAL}" \
       LEADV2_PROJECT_ROOT="$PROJECT_ROOT" \
-      bash "$BEAT_BIN" --check >/dev/null 2>&1 || true
+      bash "$BEAT_BIN" --check >/dev/null 2>&1 &
+    WL_CHILD=$!
+    wait "$WL_CHILD" 2>/dev/null || true
+    WL_CHILD=""
   fi
-  sleep "$INTERVAL"
+  # background sleep + wait: TERM must fire the handler NOW, not when the
+  # sleep ends (see _on_term above for the measured 29.5s-of-30s deferral)
+  sleep "$INTERVAL" &
+  WL_CHILD=$!
+  wait "$WL_CHILD" 2>/dev/null || true
+  WL_CHILD=""
   _now="$(date +%s)"
   if (( _now - _started >= MAX_S )); then
     printf '[beat-loop] lifetime cap %ss reached, exiting\n' "$MAX_S" >&2
