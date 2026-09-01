@@ -252,6 +252,15 @@ export E2E_JOURNAL_LOG
 # Per-case setup: resets journal log, sets common env
 e2e_setup() {
   : > "${E2E_JOURNAL_LOG}"
+  # FOREIGN-PROJECT-ROOT-GUARD-01: dispatch-code.sh only trusts an env-provided
+  # LEADV2_PROJECT_ROOT when cwd's own git toplevel already matches it; otherwise
+  # it falls back to cwd-derived root. Without this cd, cwd stays this worktree's
+  # real root, so every dispatch call below silently escapes the E2E sandbox and
+  # contends on the REAL docs/leadv2/active.yaml + bus locks -- which hangs for
+  # up to the full poll window (or longer under concurrent lanes) instead of the
+  # ~1s the stub should take. Every other suite in tests/ already cd's into its
+  # throwaway repo for exactly this reason.
+  cd "${E2E_REPO}" || exit 1
   export LEADV2_PROJECT_ROOT="${E2E_REPO}"
   export CLAUDE_PROJECT_DIR="${E2E_REPO}"
   export LEADV2_DISPATCH_CACHE_DIR="${E2E_CACHE}"
