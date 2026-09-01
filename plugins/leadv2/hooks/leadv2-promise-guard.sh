@@ -19,7 +19,8 @@
 # evidence to bind kinds we haven't modeled, and a guard that fires on
 # unmodeled shapes trains itself off on day one.
 #
-# LOG-ONLY ROLLOUT: LEADV2_PROMISE_GUARD_BLOCK (default "0") gates the actual
+# BLOCKING ROLLOUT: LEADV2_PROMISE_GUARD_BLOCK (default "1" since
+# PROMISE-GUARD-TURN-IT-ON-01, 2026-09-01; was "0" log-only) gates the actual
 # `decision:block` emission. The journal row (verdict=fired/suppressed_action)
 # is written unconditionally, so "fired" in log-only mode means "would have
 # blocked" — that is the evidence the flip decision needs. See
@@ -30,6 +31,10 @@
 # chat turns too. Gating is: kill switch, stop_hook_active, once-per-turn
 # sentinel. Nothing else. A guard that crashes must never wedge a session, so
 # the ERR trap exits 0 (fail-open).
+#
+# PROMISE-GUARD-TURN-IT-ON-01: block on classified promises, keep unclassified
+# log-only. Set LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED=1 to opt-in to the
+# old behaviour (block on unclassified promises).
 
 set -euo pipefail
 trap 'echo "[$(basename "$0")] error at line $LINENO" >&2; exit 0' ERR
@@ -283,7 +288,10 @@ ACTION_KIND_BASH = [
     ('test', re.compile(
         r'run-all\.sh|test-[\w.-]*\.sh|\bpytest\b|npm\s+(?:run\s+)?test|\bctest\b',
         re.UNICODE)),
-    ('commit', re.compile(r'git\s+(?:commit|push|add|tag)', re.UNICODE)),
+    # TURN-IT-ON-01: merge joins commit — sampled from the journal's unclassified
+    # bucket ("мержу в develop", "Начинаю с мержа fix/..."); a merge promise is
+    # kept by the git merge that performs it.
+    ('commit', re.compile(r'git\s+(?:commit|push|add|tag|merge)', re.UNICODE)),
     ('dispatch', re.compile(
         r'leadv2-dispatch-code|leadv2-fanout|[A-Za-z0-9_-]*-task\.sh|glm-coder\.sh',
         re.UNICODE)),
@@ -333,13 +341,39 @@ PROMISE_KIND_PATTERNS = [
     ('test', re.compile(
         r'тест\w*|suite\b|прогон\w*|pytest|test[-_]all', re.I | re.UNICODE)),
     ('commit', re.compile(
-        r'коммич\w*|закоммич\w*|\bcommit\b', re.I | re.UNICODE)),
+        r'коммич\w*|закоммич\w*|\bcommit\b'
+        # TURN-IT-ON-01: merge shapes, sampled from the unclassified journal
+        # bucket ("смерджу ветку", "мержу в develop", "мержа fix/...").
+        r'|мерж\w*|мердж\w*|\bmerge\b', re.I | re.UNICODE)),
+    # (write keeps its original entries plus the TURN-IT-ON-01 additions below.)
     ('dispatch', re.compile(
         r'диспатч\w*|диспетч\w*|\bdispatch\b|\bлейн\w*|\bворкер\w*|\bworker\b'
         r'|\bspawn\b|субагент\w*|\bsubagent\b', re.I | re.UNICODE)),
     ('write', re.compile(
         r'напиш\w*|запиш\w*|патч\w*|\bpatch\b|исправ\w*|\bfix\b|поправ\w*'
-        r'|допиш\w*|добавлю\b', re.I | re.UNICODE)),
+        r'|допиш\w*|добавлю\b'
+        # TURN-IT-ON-01 additions, each sampled from the unclassified journal
+        # bucket and each kept by an already-modelled write action (Edit/Write/
+        # sed -i/> file):
+        #  - "перепишу" — the писать family already here (напиш/запиш/допиш)
+        #  - "чиню/починю" — synonym of исправ, the pinned 2026-08-21 escape:
+        #    \b-anchored — unanchored "чин" is a substring of "причина"
+        #    ("в чём причина" classified WRITE, judge round-4 HIGH). Verb
+        #    endings are required for the почин- family too: the noun
+        #    "починка" shares the word-start "почин" with the verb "починю",
+        #    so \b alone cannot separate them ("починка была вчера" stays
+        #    SILENT, "починю конфиг" fires).
+        #  - "обновлю" — "Сейчас обновлю фикстуры". \b + verb-forms only:
+        #    the noun "обновление" ("обновление пришло") must stay SILENT.
+        #  - "беру/берусь" — "Берусь за третье — контракт prepass" is the single
+        #    most-fired unclassified quote (96 rows); taking on a task is kept
+        #    by the state-changing work on it (a write-class action).
+        #
+        # Every stem added by TURN-IT-ON-01 carries a word-start anchor (\b works
+        # here: the engine is Python re with re.UNICODE, so Cyrillic letters are
+        # word chars); unanchored stems matched mid-word nouns.
+        r'|перепиш\w*|\b(?:по)?чин(?:ю|ишь|ит|им|ите|ат|ить)\b'
+        r'|\bобнов(?:лю|им|ляю)\b|\b(?:беру|берусь)\b', re.I | re.UNICODE)),
 ]
 
 def classify_promise_kind(clause):
@@ -586,6 +620,7 @@ import json as _j
 print(_j.dumps(d.get("commitments", []) or [], ensure_ascii=False))
 print(d.get("primary_promise_kind") or "")
 print(",".join(d.get("action_kinds_seen", []) or []))
+print("yes" if d.get("has_action_anywhere_in_turn") else "no")
 ' 2>/dev/null || true)"
 
 FINAL_FOUND="$(printf '%s' "$VF" | sed -n '1p')"
@@ -594,6 +629,7 @@ TOOLSJoined="$(printf '%s' "$VF" | sed -n '3p')"
 COMMITMENTS_JSON="$(printf '%s' "$VF" | sed -n '4p')"
 PRIMARY_KIND="$(printf '%s' "$VF" | sed -n '5p')"
 ACTION_KINDS_SEEN="$(printf '%s' "$VF" | sed -n '6p')"
+HAS_ACTION_ANYWHERE_IN_TURN="$(printf '%s' "$VF" | sed -n '7p')"
 
 [[ "$FINAL_FOUND" == "yes" ]] || exit 0
 
@@ -608,10 +644,30 @@ except Exception:
 [[ "${N_COMMIT:-0}" -gt 0 ]] || exit 0   # no commitment shape -> silent, no log row
 
 # --- determine verdict ------------------------------------------------------
-if [[ "$HAS_ACTION" == "yes" ]]; then
-  VERDICT_KIND="suppressed_action"
+# PROMISE-GUARD-TURN-IT-ON-01: `verdict` keeps the pre-flip semantics (fired =
+# promise unkept) so the journal's fired bucket stays comparable across the flip
+# and keeps collecting UNCLASSIFIED shapes as taxonomy-widening evidence — 402 of
+# 423 fired rows were unclassified at flip time. Whether a fired verdict actually
+# BLOCKS is decided separately (BLOCK_DECISION below) and recorded in its own
+# journal field, so "fired but log-only" stays visible as evidence, not lost.
+BLOCK_DECISION="no"
+if [[ -n "$PRIMARY_KIND" ]]; then
+  # classified promise: kept only by an action of the same kind
+  if [[ "$HAS_ACTION" == "yes" ]]; then
+    VERDICT_KIND="suppressed_action"
+  else
+    VERDICT_KIND="fired"
+    BLOCK_DECISION="yes"
+  fi
 else
-  VERDICT_KIND="fired"
+  # unclassified promise: verdict still follows the old rule, but blocking needs
+  # the explicit opt-in LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED=1.
+  if [[ "$HAS_ACTION_ANYWHERE_IN_TURN" == "yes" ]]; then
+    VERDICT_KIND="suppressed_action"
+  else
+    VERDICT_KIND="fired"
+    [[ "${LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED:-0}" == "1" ]] && BLOCK_DECISION="yes"
+  fi
 fi
 
 # first commitment clause = the quote
@@ -654,24 +710,26 @@ row = {
     "primary_promise_kind": (sys.argv[9] or None),
     "action_kinds_seen": (sys.argv[10].split(",") if sys.argv[10] else []),
     "block_mode": sys.argv[11],
+    "block_decision": sys.argv[12],
 }
 path = os.path.expanduser("~/.claude/leadv2-promise-guard.jsonl")
 with open(path, "a", encoding="utf-8") as f:
     f.write(json.dumps(row, ensure_ascii=False) + "\n")
 ' "$TS" "$SESSION_ID" "$CWD" "$VERDICT_KIND" "$QUOTE" "$PATTERN" "$TOOLS_LIST" "${N_COMMIT:-0}" \
-  "$PRIMARY_KIND" "$ACTION_KINDS_SEEN" "${LEADV2_PROMISE_GUARD_BLOCK:-0}" 2>/dev/null || true
+  "$PRIMARY_KIND" "$ACTION_KINDS_SEEN" "${LEADV2_PROMISE_GUARD_BLOCK:-1}" "$BLOCK_DECISION" 2>/dev/null || true
 
 # suppressed by an action tool -> silent
 [[ "$VERDICT_KIND" == "suppressed_action" ]] && exit 0
 
-# --- log-only rollout (PROMISE-GUARD-BIND-01) -------------------------------
-# LEADV2_PROMISE_GUARD_BLOCK defaults to "0": the journal row above is already
-# written with verdict=fired, which IS "would have blocked" — that's the
-# evidence trail the flip decision in scheduled-decisions.md reads. Only when
-# explicitly set to "1" does this hook actually emit decision:block.
-if [[ "${LEADV2_PROMISE_GUARD_BLOCK:-0}" != "1" ]]; then
+# --- blocking rollout (PROMISE-GUARD-TURN-IT-ON-01) -------------------------
+# FLIPPED 2026-09-01: the default is now ON. A fired verdict blocks only when
+# BLOCK_DECISION=yes (classified kind, or the BLOCK_UNCLASSIFIED opt-in); an
+# unclassified fired row above is evidence, not a block. One-step rollback:
+# LEADV2_PROMISE_GUARD_BLOCK=0 returns the hook to log-only immediately.
+if [[ "${LEADV2_PROMISE_GUARD_BLOCK:-1}" != "1" ]]; then
   exit 0
 fi
+[[ "${BLOCK_DECISION:-no}" == "yes" ]] || exit 0
 
 # --- block AT MOST ONCE per turn (sentinel, identical to prose-guard) -------
 SENTINEL="$HOME/.claude/leadv2-promise-retry-${SESSION_ID}.txt"
