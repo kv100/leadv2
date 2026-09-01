@@ -117,19 +117,35 @@ role_rank:
   # docs/handoff/FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01/round3-selector/. No
   # discriminating bash-3.2 editing bakeoff was run or recorded that round;
   # this ordering is not a correctness or model-quality claim.
+  # REORDERED 2026-09-01 (founder decision, FREEPOOL-IMPLEMENT-BY-ENDURANCE-01).
+  # The previous order was latency-only and said so in its own `why` lines
+  # ("not a correctness ranking", "no round-3 correctness bakeoff was
+  # recorded"). Latency is the wrong criterion for THIS role: `implement` is a
+  # multi-step agentic lane, not a single completion.
+  #
+  # Measured 2026-09-01 on a real lane (SUITE-LOCK-ORPHAN-FD-04, run
+  # 260901-113657): `mistral/mistral-code-latest` was selected, read one file,
+  # ran `git diff --stat`, narrated the output and ended the turn after FOUR
+  # messages -- 90k input tokens for zero work, and the run still recorded
+  # `outcome: completed`. Fast and shallow is worse than slow and complete
+  # here, because a lane that stops early reports success.
+  #
+  # So this role now leads with the two models with actual agentic evidence,
+  # and keeps the fast pair as fallbacks. bulk/read/review are NOT changed --
+  # there latency really is the right criterion.
   implement:
-    - prefix: "groq/openai/gpt-oss-120b"
-      tier: primary
-      why: "Lowest recorded round-3 selector latency for this role; latency-only ordering, not a correctness ranking."
-    - prefix: "mistral/mistral-code-latest"
-      tier: secondary
-      why: "Second recorded latency and a provider fallback; no round-3 correctness bakeoff was recorded."
     - prefix: "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
-      tier: tertiary
-      why: "Slower recorded latency; retained as a distinct-provider fallback without a round-3 correctness claim."
+      tier: primary
+      why: "Strongest independently-benchmarked coding score in reach (SWE-bench 60.5) and passed the round-2 correctness bakeoff cleanly. Slower per call; this role pays for completion, not for latency."
     - prefix: "nvidia_nim/moonshotai/kimi-k3"
+      tier: secondary
+      why: "Best independently-benchmarked AGENTIC coder available to us -- the previous ordering said exactly this and still ranked it fourth on latency alone. Distinct lineage from rank 1."
+    - prefix: "groq/openai/gpt-oss-120b"
+      tier: tertiary
+      why: "Fastest route and correct on SHORT tasks; demoted here because short-task correctness did not predict multi-step endurance. Still first for bulk/read."
+    - prefix: "mistral/mistral-code-latest"
       tier: quaternary
-      why: "Slower recorded latency; retained for a different model lineage without a round-3 correctness claim."
+      why: "Kept only as a provider-diversity fallback: measured 2026-09-01 ending a real lane after two tool calls while reporting completion."
 
   # Many near-identical edits. Throughput and consistency matter; reasoning depth does not.
   bulk:
