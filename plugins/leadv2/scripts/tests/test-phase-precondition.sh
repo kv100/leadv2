@@ -226,7 +226,11 @@ case "${1:-}" in
     mkdir -p "$RUNS" 2>/dev/null
     handle="stub-run-$(date +%s)-$$"
     printf '%s' "$handle" > "$RUNS/$handle" 2>/dev/null
-    printf '%s\n' "$handle"
+    # dispatch-code's GLM adapter extracts a handle from the legacy
+    # "<run-dir>/<handle><handle>" launch envelope.  Emit that exact envelope
+    # so the fixture exercises its liveness check instead of falling through
+    # to a real later arm after a false not_live result.
+    printf '%s/%s%s\n' "$RUNS" "$handle" "$handle"
     exit 0
     ;;
   status)
@@ -250,8 +254,41 @@ SH
 chmod +x "${E2E_JOURNAL}"
 export E2E_JOURNAL_LOG
 
+# Fast offline judge stub: no `claude -p` (which hung this suite waiting on a
+# real nested LLM call), deterministic JSON instead. Same pattern as
+# test-plugin-papercuts.sh.
+E2E_JUDGE_STUB="${E2E_SANDBOX}/judge-stub.sh"
+printf '#!/usr/bin/env bash\nprintf %s\n' "'{\"work_kind\":\"build\",\"complexity\":\"simple\",\"duration_class\":\"short\"}'" > "${E2E_JUDGE_STUB}"
+chmod +x "${E2E_JUDGE_STUB}"
+
+# Never let a dispatch test create or inspect a real lane worktree.  The
+# fixture repository is enough for this guard matrix; returning it for both
+# operations also keeps the dispatcher on the shared-tree plan-delivery path.
+LANE_WT_STUB="${E2E_SANDBOX}/lane-wt-stub.sh"
+cat > "${LANE_WT_STUB}" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  ensure|path-of) printf '%s\n' "${LEADV2_PROJECT_ROOT}" ;;
+esac
+SH
+chmod +x "${LANE_WT_STUB}"
+
+# The arbiter library runs a nested model call when it is present.  A regular
+# empty file is an intentional no-arbiter seam (unlike /dev/null, it passes
+# the dispatcher's file-exists check); cost estimation is disabled for the
+# same hermetic reason.
+E2E_NO_ARBITER_LIB="${E2E_SANDBOX}/no-arbiter.lib"
+: > "${E2E_NO_ARBITER_LIB}"
+
 # Per-case setup: resets journal log, sets common env
 e2e_setup() {
+  # FOREIGN-PROJECT-ROOT-GUARD-01: the guard treats an env-provided
+  # LEADV2_PROJECT_ROOT that disagrees with cwd's git toplevel as foreign and
+  # overrides it to the cwd-derived root -- which, unless we cd into the
+  # throwaway fixture repo first, is this actual leadv2 checkout. Every other
+  # e2e suite already cd's into its fixture repo before invoking dispatch;
+  # this suite did not, so PPC-G2 (and its siblings) silently ran dispatch
+  # against the real repo instead of the sandbox, hanging on live locks.
   : > "${E2E_JOURNAL_LOG}"
   export LEADV2_PROJECT_ROOT="${E2E_REPO}"
   export CLAUDE_PROJECT_DIR="${E2E_REPO}"
@@ -260,6 +297,10 @@ e2e_setup() {
   export LEADV2_DISPATCH_GLM_BIN="${GLM_STUB}"
   export LEADV2_STUB_GLM_RUNS="${E2E_STUB_RUNS}"
   export LEADV2_JOURNAL_BIN="${E2E_JOURNAL}"
+  export LEADV2_TASK_JUDGE_BIN="${E2E_JUDGE_STUB}"
+  export LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_WT_STUB}"
+  export LEADV2_ROUTE_ARBITER_LIB="${E2E_NO_ARBITER_LIB}"
+  export LEADV2_DISPATCH_COST_ESTIMATE=0
   export LEADV2_ROUTER_V2=0
   export GLM_POLICY_RESOLVER=""
   export LEADV2_LANE_SHAPE=off
@@ -267,8 +308,18 @@ e2e_setup() {
   export LEADV2_DISPATCH_REVIEW_GATE=0
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
+  # A fixture launch must not arm real asynchronous monitor processes.
+  export LEADV2_PULSE_MODE=0
+  export LEADV2_SINGLE_LEAD_BEAT=0
   unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA 2>/dev/null || true
   mkdir -p "${E2E_STUB_RUNS}"
+}
+
+# Keep every dispatcher process inside the fixture repository.  The foreign-root
+# guard derives a git root from cwd, so invoking it from this lane worktree would
+# discard the fixture root and exercise live lane state instead.
+e2e_dispatch() {
+  ( cd "${E2E_REPO}" && bash "${DISPATCH_BIN}" "$@" )
 }
 
 # Sentinel: at least one spawn file exists for this case
@@ -286,7 +337,7 @@ MISSION_G1="PPC-G1: fix the integration test harness timeout"
 SIG_G1="$(printf '%s' "${MISSION_G1}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print $1}')"
 SIG8_G1="${SIG_G1:0:8}"
 rc_g1=0
-bash "$DISPATCH_BIN" --kind tooling "$MISSION_G1" >/dev/null 2>&1 || rc_g1=$?
+e2e_dispatch --kind tooling "$MISSION_G1" >/dev/null 2>&1 || rc_g1=$?
 if grep -q 'phase_precondition_warn' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
   ok
 else
@@ -307,7 +358,7 @@ mkdir -p "${E2E_STUB_RUNS}"
 export LEADV2_REQUIRE_PHASES=1
 MISSION_G2="PPC-G2: fix the integration test harness failure"
 rc_g2=0
-bash "$DISPATCH_BIN" --kind tooling "$MISSION_G2" >/dev/null 2>&1 || rc_g2=$?
+e2e_dispatch --kind tooling "$MISSION_G2" >/dev/null 2>&1 || rc_g2=$?
 if [[ $rc_g2 -eq 3 ]]; then
   ok
 else
@@ -333,7 +384,7 @@ mkdir -p "${E2E_STUB_RUNS}"
 export LEADV2_REQUIRE_PHASES=0
 MISSION_G3="PPC-G3: fix the integration test harness signal"
 rc_g3=0
-bash "$DISPATCH_BIN" --kind tooling "$MISSION_G3" >/dev/null 2>&1 || rc_g3=$?
+e2e_dispatch --kind tooling "$MISSION_G3" >/dev/null 2>&1 || rc_g3=$?
 if ! grep -q 'phase_precondition_warn' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
   ok
 else
@@ -359,7 +410,7 @@ for mode in unset 1; do
   else unset LEADV2_REQUIRE_PHASES; fi
   MISSION_G4="PPC-G4-${mode}: fix the integration test harness registry"
   rc_g4=0
-  bash "$DISPATCH_BIN" --kind tooling --phase-waiver "review=x" "$MISSION_G4" >/dev/null 2>&1 || rc_g4=$?
+  e2e_dispatch --kind tooling --phase-waiver "review=x" "$MISSION_G4" >/dev/null 2>&1 || rc_g4=$?
   if [[ $rc_g4 -ne 0 ]]; then
     ok
   else
@@ -794,7 +845,7 @@ class_overrides:
 YEOF
 MISSION_G8="PPC-G8: fix the integration test harness timeout"
 rc_g8=0
-bash "$DISPATCH_BIN" --kind tooling --phase-waiver "review=whatever" "$MISSION_G8" >/dev/null 2>&1 || rc_g8=$?
+e2e_dispatch --kind tooling --phase-waiver "review=whatever" "$MISSION_G8" >/dev/null 2>&1 || rc_g8=$?
 # With B2: mode 0 returns immediately, never processes the config error or waiver
 if ! grep -q 'phase_precondition_' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
   ok
@@ -947,7 +998,7 @@ MISSION_G11="PPC-G11: fix the integration test harness timeout"
 # G11a: warn mode → journals unexpected_rc + PROCEEDS
 export LEADV2_REQUIRE_PHASES=warn
 rc_g11a=0
-bash "$DISPATCH_BIN" --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11a=$?
+e2e_dispatch --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11a=$?
 if [[ -n "$(ls -A "${E2E_STUB_RUNS_G11}" 2>/dev/null)" ]]; then
   ok
 else
@@ -968,7 +1019,7 @@ printf 'version: 1\n' > "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
 export LEADV2_PHASE_RECORD_BIN="$G11_PR"
 export LEADV2_REQUIRE_PHASES=1
 rc_g11b=0
-bash "$DISPATCH_BIN" --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11b=$?
+e2e_dispatch --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11b=$?
 if [[ $rc_g11b -ne 0 ]]; then
   ok
 else
