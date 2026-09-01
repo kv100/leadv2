@@ -62,6 +62,30 @@ for f in "scripts/glm-coder.sh" "scripts/leadv2-dispatch-code.sh"; do
   fi
 done
 
+# ── dependency floor (round 2): an assertion that cannot run is FAIL, never a
+# skip. Every tool the assertions read state through must be present AND
+# functional; a missing or sabotaged tool means the suite exits red.
+if command -v grep >/dev/null 2>&1 \
+   && printf 'leadv2-dep-floor-probe\n' | grep -q 'leadv2-dep-floor-probe' 2>/dev/null; then
+  PASS=$((PASS + 1)); log "PASS: dep floor: grep present and functional"
+else
+  FAIL=$((FAIL + 1)); log "FAIL: dep floor: grep missing or non-functional (cannot match a literal)"
+fi
+if git --version >/dev/null 2>&1; then
+  PASS=$((PASS + 1)); log "PASS: dep floor: git present and functional"
+else
+  FAIL=$((FAIL + 1)); log "FAIL: dep floor: git missing or non-functional"
+fi
+if python3 -c 'pass' >/dev/null 2>&1; then
+  PASS=$((PASS + 1)); log "PASS: dep floor: python3 present and functional"
+else
+  FAIL=$((FAIL + 1)); log "FAIL: dep floor: python3 missing or non-functional (quota stub needs it)"
+fi
+if [[ "${FAIL}" -ne 0 ]]; then
+  printf -- '[TEST] %s: %d passed, %d failed\n' "test-glm-flash-handle" "${PASS}" "${FAIL}"
+  exit 1
+fi
+
 # ── fixture: repo, stub claude (fast exit), stub secrets ────────────────────
 REPO="${FIXTURE}/repo"
 mkdir -p "${REPO}"
@@ -108,6 +132,14 @@ if bash "${GLM_SCRIPT}" status "${handle}" 2>/dev/null | grep -q '^model: glm-5.
   pass "launcher: run record names model glm-5.3-flash"
 else
   fail "launcher: meta model line wrong: $(bash "${GLM_SCRIPT}" status "${handle}" 2>/dev/null | grep '^model:' || echo '<none>')"
+fi
+
+# Fixture floor: the repo the launchers run in must exist, or every later
+# case fails for a fixture reason while looking like a product failure.
+if [[ -e "${REPO}/.git" ]]; then
+  PASS=$((PASS + 1)); log "PASS: fixture floor: fixture repo exists"
+else
+  FAIL=$((FAIL + 1)); log "FAIL: fixture floor: fixture repo missing (git setup failed)"
 fi
 
 # ── Case 2: dispatcher — real launcher, handle survives the spawn path ──────
@@ -167,12 +199,21 @@ if [[ -n "${spawned}" && -n "${spawn_handle}" ]]; then
 else
   fail "dispatcher: no worker_spawned handle — journal tail: $(tail -5 "${JOURNAL_RECORD}" 2>/dev/null | tr '\n' ' ')"
 fi
-if grep -q 'spawn_failed by=router model=glm[a-z-]* .*reason=not_live\|spawn_failed by=router model=glm[a-z-]* .*reason=empty_handle' "${JOURNAL_RECORD}" 2>/dev/null; then
+# An ABSENCE check on a journal the dispatch never wrote is vacuous: require
+# the journal to be non-empty first, else the dispatch never ran (or the
+# journal stub is broken) and that is a FAIL, never a pass.
+if [[ ! -s "${JOURNAL_RECORD}" ]]; then
+  fail "dispatcher: journal record empty — dispatch produced no journal rows"
+elif grep -q 'spawn_failed by=router model=glm[a-z-]* .*reason=not_live\|spawn_failed by=router model=glm[a-z-]* .*reason=empty_handle' "${JOURNAL_RECORD}" 2>/dev/null; then
   fail "dispatcher: spawn_failed not_live/empty_handle present (handle parser broke the run id)"
 else
   pass "dispatcher: no spawn_failed not_live/empty_handle rows"
 fi
-if bash "${GLM_SCRIPT}" status "${spawn_handle}" >/dev/null 2>&1; then
+# status on the journaled handle only counts when there IS a handle: status ""
+# exits 0 on the launcher, so an empty handle must FAIL here, not resolve.
+if [[ -z "${spawn_handle}" ]]; then
+  fail "dispatcher: no journaled handle to resolve (status check cannot run — that is a FAIL)"
+elif bash "${GLM_SCRIPT}" status "${spawn_handle}" >/dev/null 2>&1; then
   pass "dispatcher: status true on the journaled handle"
 else
   fail "dispatcher: status [${spawn_handle}] not live — handle did not survive the spawn path"
