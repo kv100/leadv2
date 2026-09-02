@@ -13,6 +13,7 @@ Hook wiring per repo, read from each repo's `.claude/settings.json`:
 | persona-engine | 1 | 7 | 8 | 1 | 4 | 3 | 24 |
 | respiro-ios | 1 | 5 | 5 | 1 | 0 | 0 | 12 |
 | getmany-followup-bot | 1 | 1 | 2 | 0 | 0 | 0 | 4 |
+| m3-market (at `~/MythicalGames/m3-market`, NOT `~/Projects`) | 1 | 7 | 4 | 1 | 2 | 4 | 19 |
 | **leadv2 (the plugin's own repo)** | 0 | 0 | 0 | 0 | 0 | 0 | **0** |
 
 So the guards exist in one repo and thin out to nothing everywhere else — including the repo where the
@@ -24,7 +25,12 @@ in all four repos (247-316 links each), so adoption LOOKS complete while enforce
 Second measured fact, same day: `leadv2-judge.sh` — the plugin's own round-cap judge — has 0 mentions
 across 400 session transcripts in 30 days, while the lead hand-wrote two judge prompts today.
 Detail + the two agent censuses that produced FALSE answers: `docs/handoff/LEAD-USES-ITS-OWN-TOOLS-01/brief.md`.
-Third: `~/Projects/m3-market` does not exist any more, though CLAUDE.md still lists it as a live repo.
+Third, and it is a lesson about this very audit: the lead first reported m3-market as "deleted" because it
+scanned only `~/Projects`. It lives at `~/MythicalGames/m3-market`, is actively worked in (session
+activity 2026-09-02 13:48), has 305 script links, 23 agents, and 19 wired hooks including events the
+other repos do not wire at all (`TaskCompleted`, `TeammateIdle`, `CwdChanged`). Any census that assumes
+a repo root LIES the same way the two agent censuses did. The repo list must come from a written source,
+not from a directory glob.
 
 ## What this task must deliver
 
@@ -39,7 +45,9 @@ Third: `~/Projects/m3-market` does not exist any more, though CLAUDE.md still li
 2. **Parity across adopted repos.** `leadv2-repo-install.sh` must install the SAME enforcement set
    everywhere (or state, per hook, why a repo is exempt). The plugin's own repo must not be the least
    protected one. Prove parity with a script that diffs the wired set per repo and exits non-zero on an
-   unexplained gap; run it for persona-engine, respiro-ios, getmany-followup-bot, leadv2.
+   unexplained gap; run it for persona-engine, respiro-ios, getmany-followup-bot, m3-market (`~/MythicalGames/m3-market`)
+   and leadv2. m3-market wires three events nobody else does — decide per event whether that is a
+   per-repo exemption or a gap in the others.
 3. **Dead-weight pass.** For every capability with no firing proof: wire it, document it, or delete it.
    Deletion is a valid and preferred outcome — 245 scripts / 43 skills / 37 hooks is more surface than
    the lead can hold, and the founder's complaint is that the lead gets heavier, not better.
