@@ -34,12 +34,17 @@ _dod_sha256() { # <file> -> stdout hash, empty on failure
   shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
 }
 
-# All b/-side paths named in a unified diff (added, modified, or the new
-# side of a rename) — mirrors leadv2-review-run.sh:592-599's diff_hash
-# sourcing and its falsifiability gate's own `sed -n 's|^+++ b/||p'` idiom.
-_dod_diff_paths() { # <diff_file> -> stdout, one path per line
+# All paths named on EITHER side of a unified diff (a/-side old paths and
+# b/-side new paths — added, modified, deleted, or renamed). A `+++ b/`-only
+# parse (the falsifiability gate's own `sed -n 's|^+++ b/||p'` idiom) misses
+# a pure deletion: a deleted file's b/-side is `+++ /dev/null`, so its real
+# path only ever appears on the `--- a/` line. Fix-round-1 finding 1: a diff
+# deleting docs/leadv2/active.yaml passed check (d) because only the +++ side
+# was scanned.
+_dod_diff_paths() { # <diff_file> -> stdout, one path per line, deduped
   [[ -f "$1" ]] || return 0
-  sed -n 's|^+++ b/||p' "$1" 2>/dev/null | grep -v '^/dev/null$'
+  { sed -n 's|^+++ b/||p' "$1" 2>/dev/null; sed -n 's|^--- a/||p' "$1" 2>/dev/null; } \
+    | grep -v '^/dev/null$' | sort -u
 }
 
 # Suite paths touched by the diff. Broader than the falsifiability gate's own
@@ -165,6 +170,37 @@ _dod_report_sections() { # <report_md> -> stdout rows, \x01-joined (heading, has
   ' "$1"
 }
 
+# Fix-round-1 finding 2: the original sub-check accepted ANY file under
+# mutation-control/*.txt containing a bare `diff_hash=<hash>` line — a
+# worker owns the diff and can compute its own sha256 and hand-write that
+# one line, so the check enforced nothing D7 actually required ("must be
+# backed by a leadv2-mutation-control.sh artifact, not asserted prose").
+# Require the artifact's full shape as leadv2-mutation-control.sh's own §7
+# writer produces it (suite=, file=, baseline_rc=0 exactly, a numeric
+# mutated_rc that is NOT 0 — the suite must have gone red — and diff_hash=
+# matching THIS round's diff). This is not unforgeable — a worker could
+# still hand-write all five lines correctly — but it is no longer a
+# one-line forgery; see report.md's "what this still does not catch"
+# section for the honest limit.
+_dod_valid_mutation_artifact() { # <artifact_file> <expected_diff_hash> -> rc 0=valid
+  local f="$1" expected="$2"
+  [[ -f "${f}" ]] || return 1
+  [[ -n "${expected}" ]] || return 1
+  local suite file baseline_rc mutated_rc artifact_hash
+  suite="$(sed -n 's/^suite=//p' "${f}" | head -1)"
+  file="$(sed -n 's/^file=//p' "${f}" | head -1)"
+  baseline_rc="$(sed -n 's/^baseline_rc=//p' "${f}" | head -1)"
+  mutated_rc="$(sed -n 's/^mutated_rc=//p' "${f}" | head -1)"
+  artifact_hash="$(sed -n 's/^diff_hash=//p' "${f}" | head -1)"
+  [[ -n "${suite}" ]] || return 1
+  [[ -n "${file}" ]] || return 1
+  [[ "${baseline_rc}" == "0" ]] || return 1
+  [[ "${mutated_rc}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${mutated_rc}" != "0" ]] || return 1
+  [[ "${artifact_hash}" == "${expected}" ]] || return 1
+  return 0
+}
+
 _dod_check_b() {
   local root="$1" task_dir="$2" diff_file="$3"
   local brief="${task_dir}/brief.md" report="${task_dir}/report.md"
@@ -238,7 +274,7 @@ _dod_check_b() {
           if [[ -d "${mc_dir}" ]]; then
             for f in "${mc_dir}"/*.txt; do
               [[ -f "${f}" ]] || continue
-              if grep -q "^diff_hash=${diff_hash}$" "${f}" 2>/dev/null; then
+              if _dod_valid_mutation_artifact "${f}" "${diff_hash}"; then
                 found=1
                 break
               fi

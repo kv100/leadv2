@@ -300,3 +300,84 @@ regression), then re-ran this self-check to get the `rc=0` pasted above.
 Both of the above are explicitly routed to GATE-PROVES-ITS-OWN-CONTROL-01
 per the brief and context.yaml's `## Checks and their negative controls`
 table row, not claimed as covered by this task.
+
+## Review round 1 findings
+
+Both glm-reviewer findings (round 1, committed diff from build-r3) were live-probed and REAL.
+
+| # | Finding | Verdict | Evidence command |
+|---|---------|---------|-------------------|
+| 1 | `lib/leadv2-dod-gate.sh:40` — check (d) extracted only `+++ b/` lines, so a pure deletion of a runtime-state file passed the gate | REAL | Negative control below: reverted `_dod_diff_paths` to the `+++`-only parse in a mktemp full copy → deletion-only diff of `docs/leadv2/active.yaml` returned `dod_pass check=runtime_state rc=0` |
+| 2 | `lib/leadv2-dod-gate.sh:241` — check (b)'s mutation sub-check accepted any `mutation-control/*.txt` containing one hand-written `diff_hash=<hash>` line, no provenance | REAL | Negative control below: reverted to the bare `grep -q "^diff_hash=..."` check in a mktemp full copy → hand-written one-line artifact returned `dod_pass check=paste_evidence rc=0` |
+
+### Fix 1 — parse both diff sides in `_dod_diff_paths`
+
+`_dod_diff_paths` now unions `--- a/` and `+++ b/` paths (deduped), so
+additions, modifications, and pure deletions of a runtime-state path are all
+caught by check (d). A deleted file's new-side line is `+++ /dev/null`, so
+its real path only ever survives on the `--- a/` line — the old parse never
+saw it.
+
+New suite case (`plugins/leadv2/scripts/tests/test-worker-dod-gate.sh`,
+"check_d: deletion-only diff of runtime-state path -> fail"):
+```
+[TEST] PASS: check_d: deletion-only diff of runtime-state path -> fail
+```
+
+Negative control (fix reverted to the old `+++`-only parse via a python
+patch, applied to a `mktemp -d` **full copy** of the worktree via
+`git ls-files -co --exclude-standard -z | tar`, never the lane itself):
+```
+$ git ls-files -co --exclude-standard -z | tar -cf - --null -T - | tar -xf - -C "$SCRATCH"
+$ # revert _dod_diff_paths to +++-only parse in $SCRATCH
+$ source plugins/leadv2/scripts/lib/leadv2-dod-gate.sh
+$ printf -- '--- a/docs/leadv2/active.yaml\n+++ /dev/null\n@@\n-x\n-y\n' > "$DIFF_FILE"
+$ _dod_check_d "$DIFF_FILE"; echo rc=$?
+dod_pass check=runtime_state
+rc=0
+```
+The pre-fix parse is falsely green on the deletion case; the fixed code goes
+red on the identical input (see suite output above,
+`rc=1 dod_fail check=runtime_state_in_diff`).
+
+### Fix 2 — require the generator's full artifact shape, re-verify `diff_hash`
+
+`_dod_valid_mutation_artifact()` (new helper, called from check (b)'s
+mutation sub-check) now requires the artifact to carry the shape only
+`leadv2-mutation-control.sh`'s own §7 writer produces: non-empty `suite=`
+and `file=` fields, `baseline_rc=0` literally, a numeric `mutated_rc` that
+is **not** 0 (the suite must have actually gone red), and `diff_hash=`
+matching the round's diff exactly. A bare one-line `diff_hash=<hash>` file
+— the round-1 forgery shape — now fails every required-field check except
+the last.
+
+New suite cases:
+```
+[TEST] PASS: check_b: hand-written one-line diff_hash artifact (no provenance) -> fail
+[TEST] PASS: check_b: real generator-shaped artifact (baseline_rc=0, mutated_rc!=0, diff_hash bound) -> pass
+```
+
+Negative control (reverted the `_dod_valid_mutation_artifact` call back to
+the bare `grep -q "^diff_hash=${diff_hash}$"` check, in a fresh
+`mktemp -d` full copy):
+```
+$ printf 'diff_hash=%s\n' "$DIFF_HASH" > "$TASK_DIR/mutation-control/run1.txt"
+$ _dod_check_b "$SCRATCH" "$TASK_DIR" "$DIFF_FILE"; echo rc=$?
+dod_pass check=paste_evidence
+rc=0
+```
+The same forged one-line file that the fixed code now rejects
+(`rc=1 dod_fail check=mutation_control_not_via_runner`) was silently
+accepted by the pre-fix code.
+
+**What a worker can still forge** (stated plainly, not overclaimed): the
+five required fields are plain text a worker can hand-write correctly if
+they know the shape — `suite=`, `file=`, `baseline_rc=0`, a nonzero
+`mutated_rc`, and a correctly-computed `diff_hash`. This fix raises the
+forgery bar from "one grep-able line" to "reproduce five specific fields
+including a real suite path and a plausible nonzero exit code," but it is
+not a cryptographic binding to an actual `leadv2-mutation-control.sh` run —
+there is no run-id/nonce the gate independently cross-checks against a log
+the worker doesn't control. Closing that residual gap (e.g. a signed or
+ledger-cross-checked run id) is out of this round's scope and not claimed
+as done here.

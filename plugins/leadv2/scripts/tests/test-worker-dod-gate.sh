@@ -155,11 +155,26 @@ fi
 
 DIFF_HASH="$(_dod_sha256 "${DIFF_FILE}")"
 mkdir -p "${TASK_DIR}/mutation-control"
+
+# fix-round-1 finding 2: a hand-written one-line file (worker owns the diff,
+# can compute its own sha256) must NOT be accepted — only the full
+# leadv2-mutation-control.sh artifact shape is.
 printf 'diff_hash=%s\n' "${DIFF_HASH}" > "${TASK_DIR}/mutation-control/run1.txt"
 commit_all
 out="$(_dod_check_b "${REPO}" "${TASK_DIR}" "${DIFF_FILE}")"; rc=$?
+if [[ ${rc} -eq 1 ]] && printf '%s' "${out}" | grep -q 'mutation_control_not_via_runner'; then
+  pass "check_b: hand-written one-line diff_hash artifact (no provenance) -> fail"
+else
+  fail "check_b: forged one-line artifact -> fail (got rc=${rc} out=${out})"
+fi
+rm -f "${TASK_DIR}/mutation-control/run1.txt"
+
+printf 'suite=plugins/leadv2/scripts/tests/test-widget.sh\nfile=plugins/leadv2/scripts/lib/leadv2-widget.sh\nanchor=s/foo/bar/\nbaseline_rc=0\nmutated_rc=1\nred_line=FAIL widget\ndiff_hash=%s\n' \
+  "${DIFF_HASH}" > "${TASK_DIR}/mutation-control/run2.txt"
+commit_all
+out="$(_dod_check_b "${REPO}" "${TASK_DIR}" "${DIFF_FILE}")"; rc=$?
 if [[ ${rc} -eq 0 ]] && printf '%s' "${out}" | grep -q 'dod_pass check=paste_evidence'; then
-  pass "check_b: bound mutation-control artifact matches diff_hash -> pass"
+  pass "check_b: real generator-shaped artifact (baseline_rc=0, mutated_rc!=0, diff_hash bound) -> pass"
 else
   fail "check_b: grounded mutation-control artifact -> pass (got rc=${rc} out=${out})"
 fi
@@ -260,6 +275,23 @@ if [[ ${rc} -eq 0 ]] && printf '%s' "${out}" | grep -q 'dod_pass check=runtime_s
   pass "check_d: clean diff -> pass"
 else
   fail "check_d: clean diff -> pass (got rc=${rc} out=${out})"
+fi
+
+# fix-round-1 finding 1: a pure DELETION of a runtime-state path (the path
+# only appears on the `--- a/` side; `+++ /dev/null` on the new side) must
+# still fail. Live-probed by the round-1 reviewer against the +++-only parse.
+cat > "${DIFF_FILE}" <<'EOF'
+--- a/docs/leadv2/active.yaml
++++ /dev/null
+@@
+-x
+-y
+EOF
+out="$(_dod_check_d "${DIFF_FILE}")"; rc=$?
+if [[ ${rc} -eq 1 ]] && printf '%s' "${out}" | grep -q 'dod_fail check=runtime_state_in_diff'; then
+  pass "check_d: deletion-only diff of runtime-state path -> fail"
+else
+  fail "check_d: deletion-only runtime-state path -> fail (got rc=${rc} out=${out})"
 fi
 
 out="$(_dod_check_d "${FIXTURE}/nope.diff")"; rc=$?
