@@ -33,3 +33,15 @@ expired.
 
 ## Do NOT
 - Do not change the stall thresholds, the pulse, or the watcher kill logic (ONE-LANE-WATCH-01 owns them).
+
+## Scope addition — 2026-09-02 09:10Z (BRAIN-CLASS-LIVE-01 refused 6 dispatches)
+A `session_id: recovered` row written by the compact/recovery hook pinned `pid: 26252`, which was
+`leadv2-lane-watch-v2.sh --loop <other-session>` running from the lane worktree. The liveness probe
+returned `starting:N reason=registered_no_stream pid_source=legacy` and the dispatcher refused
+`lane_is_live` — six times, across two lead sessions. Earlier the same lane was held "live" by an
+orphan `leadv2-single-lead-beat-loop.sh` (ppid 1). Required: (1) a recovered row must never take a
+watcher/beat-loop/lane-watch pid as worker evidence — pid must be a worker arm process or none;
+(2) `starting:` from a `recovered` row with no stream must expire (grace ≤ 5 min) instead of refusing
+forever; (3) `leadv2_active_unregister` printed rows=0 while the row survived — make unregister
+verify-and-fail-loud. Evidence: `dispatch-BRAIN-CLASS-LIVE-01-r4{a..f}.log` in the 09-02 scratchpad,
+journal lines 08:55Z/09:10Z in persona-engine `docs/leadv2/open-threads.md`.
