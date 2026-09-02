@@ -5159,6 +5159,17 @@ _spawn_worker_body() {
     log_err "_LEADV2_EVIDENCE_CONTRACT_MISSION unavailable (leadv2-helpers.sh not sourced?) — falling back to embedded literal"
     mission="EVIDENCE CONTRACT: every factual claim about an external system or API needs a probe artifact; if you have none, prefix the claim with UNVERIFIED: — an untagged evidence-free external-system claim is a protocol violation."$'\n\n'"${mission}"
   fi
+  # WORKER-DOD-GATE-01 fix-round-2 finding 4: same placement invariant as the
+  # evidence contract immediately above -- prepended here so every arm
+  # actually receives the DoD-gate contract text; previously the readonly
+  # string existed in leadv2-helpers.sh with zero consumers repo-wide, so the
+  # gate it describes was never disclosed to any worker.
+  if [[ -n "${_LEADV2_DOD_GATE_CONTRACT_MISSION:-}" ]]; then
+    mission="${_LEADV2_DOD_GATE_CONTRACT_MISSION}"$'\n\n'"${mission}"
+  else
+    log_err "_LEADV2_DOD_GATE_CONTRACT_MISSION unavailable (leadv2-helpers.sh not sourced?) — falling back to embedded literal"
+    mission="DEFINITION-OF-DONE GATE: before any model reviews your diff, a deterministic bash gate checks your committed lane for mechanical items (report.md, paste-line evidence, mutation-control provenance, test-suite registration, runtime-state paths). A failed check refuses the round at zero model spend, before any reviewer sees your diff."$'\n\n'"${mission}"
+  fi
   [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
   case "${arm}" in
     glm|glm-flash)
