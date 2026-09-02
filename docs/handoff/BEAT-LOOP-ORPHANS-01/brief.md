@@ -45,3 +45,10 @@ Suite green + both controls red + a real freepool run (short mission) after whic
 ## Do NOT
 Change what the beat/pulse loops emit or their cadence; change the lane watcher's stall rules
 (ONE-LANE-WATCH-01-R2 owns those); kill anything from a hook (SessionEnd's argv-verified kill stays).
+
+## Recurrence — 2026-09-02 08:55Z
+56 orphan `leadv2-single-lead-beat-loop.sh` processes (ppid 1) found across lane worktrees after a
+night of lands; load 22. One of them (BRAIN lane) was the "live pid" that refused dispatches. Killing
+required `kill` then `kill -9`. The loop must die with its session (argv-verified kill in SessionEnd,
+same contract as lane-watch-v2) and must never be counted as worker liveness (see
+STALE-ROW-STARTING-GRACE-01 scope addition).
