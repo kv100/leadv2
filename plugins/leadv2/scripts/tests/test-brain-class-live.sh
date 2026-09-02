@@ -71,43 +71,36 @@ journal_file() { # <root> <task_id>
   find "$1/docs/leadv2/tasks/$2" -iname '*journal*' 2>/dev/null | head -1
 }
 
-# journal_read_wait <root> <task_id> -> stdout: journal file content, polling
-# briefly if it is not there / not yet non-empty on the first look.
+# R5 fix-round (finding 3): cases (a) and (b) were reported flaky (~1 in 19
+# full-suite runs). The round-4 fix added `journal_read_wait()` -- a 5x50ms
+# poll of the on-disk journal FILE -- on the theory that `leadv2-journal.sh
+# append` propagates asynchronously. R5 review correctly rejected that
+# theory: `leadv2-journal.sh append` is a synchronous subprocess call (`$(...)`
+# does not return until it has exited), so there is no propagation delay in
+# principle, and 10 green runs cannot prove a ~1-in-19 flake is gone.
 #
-# R3 review fix (fix-round-4, item 2): cases (a) and (b) were reported flaky
-# (~1 in 3 per the round-4 brief; reproduced here at ~1 in 19 full-suite runs,
-# 0 in 80 tight isolated repro loops of (a)/(b) alone -- see report.md for the
-# repro transcript). Root-caused to: `leadv2_brain_record`'s caller in
-# leadv2-dispatch-code.sh wraps that call in `2>/dev/null` (deliberate --
-# a brain-record failure must never spam or refuse a live dispatch), which
-# means `out_a`/`out_b` NEVER carry the class_escalated/class_floor_held line
-# on this path -- the journal FILE on disk is the ONLY place that decision is
-# ever recorded. `leadv2-journal.sh append` is synchronous (the subprocess
-# has exited by the time `$(...)` returns, so there is no async propagation
-# delay in principle) but this repo is a live, heavily-concurrent shared dev
-# machine -- the same canonical scripts this suite sources are being read by
-# other leadv2 lanes' processes at the same time -- and `emit()`'s journal
-# write is best-effort (`|| true`) with `leadv2-journal.sh` itself running
-# under `trap 'exit 0' ERR`, so a rare scheduler/fork-exec hiccup around that
-# one subprocess call silently no-ops instead of surfacing. A single,
-# unretried read of that file is therefore the single point of failure this
-# helper removes: it polls briefly (5 x 50ms, 250ms bounded) for non-empty
-# content before giving up -- the exact assertion string still must appear,
-# nothing here weakens what is checked.
-journal_read_wait() {
-  local root="$1" task_id="$2" tries=5 f content=""
-  while (( tries > 0 )); do
-    f="$(journal_file "${root}" "${task_id}")"
-    if [[ -f "${f}" ]]; then
-      content="$(cat "${f}")"
-      [[ -n "${content}" ]] && { printf '%s' "${content}"; return 0; }
-    fi
-    tries=$((tries-1))
-    (( tries > 0 )) && sleep 0.05
-  done
-  printf '%s' "${content}"
-}
-
+# REAL root cause: `leadv2_brain_record`'s caller in leadv2-dispatch-code.sh
+# wrapped the call in `2>/dev/null` (see R5 finding 2, fixed at
+# leadv2-dispatch-code.sh:3939 this same round). That redirect silently
+# dropped every class_escalated/class_floor_held/brain_decision `emit()` line
+# from `out_a`/`out_b` (captured here via the `2>&1` in run_classify) --
+# regardless of JOURNAL_TASK -- so `out_a`/`out_b` ALONE could never carry the
+# assertion string; the on-disk journal file was the ONLY place left where it
+# could show up, and reading that single file, written by a separate `bash
+# leadv2-journal.sh append` child process, raced this suite's read on a
+# shared, heavily-concurrent dev machine (other lanes' processes competing
+# for the same fork/exec slots at the same moment). Polling that file longer
+# only shrank the race window; it did not close it, and it hid a real product
+# bug (finding 2) behind a test-side workaround.
+#
+# With the `2>/dev/null` removed, `class_escalated`/`class_floor_held`/
+# `brain_decision` land on stderr synchronously, in-process, as part of the
+# same `bash -c '...' 2>&1` invocation `out_a`/`out_b` already capture --
+# there is no second process and no file read left in the loop for these
+# assertions, so there is nothing left to poll. Verified: 40/40 clean on (a)
+# alone in isolation and 40/40 clean on the full suite for (a)/(b)
+# specifically after this change (report.md, R5 fix-round-3 evidence).
+#
 # blank_project_root_env <cmd...> -- run <cmd...> with CLAUDE_PROJECT_ROOT,
 # CLAUDE_PROJECT_DIR and LEADV2_PROJECT_ROOT blanked (see the comment in
 # run_classify for why this must precede every sourced dispatch-code.sh call,
@@ -121,8 +114,7 @@ TMP_A="$(mktemp -d)"
 JUDGE_A="$(mkstub_judge "${TMP_A}" complex 4 safety_publish_payments build)"
 out_a="$(run_classify "${DISPATCH_SH}" "${TMP_A}" "${JUDGE_A}" "dispatch-brainA" "brainA01" "Light" "1" \
   "touch hooks/pre-commit.sh and safety/gate.sh")"
-jf_a_content="$(journal_read_wait "${TMP_A}" "dispatch-brainA")"
-if printf '%s' "${out_a}" "${jf_a_content}" | grep -q 'class_escalated task=brainA01 from=Light to=\(Standard\|Heavy\)'; then
+if printf '%s' "${out_a}" | grep -q 'class_escalated task=brainA01 from=Light to=\(Standard\|Heavy\)'; then
   pass "(a) light+risk mission escalates to Standard|Heavy, journaled"
 else
   fail "(a) missing class_escalated line: ${out_a}"
@@ -138,8 +130,7 @@ TMP_B="$(mktemp -d)"
 JUDGE_B="$(mkstub_judge "${TMP_B}" trivial 1 none build)"
 out_b="$(run_classify "${DISPATCH_SH}" "${TMP_B}" "${JUDGE_B}" "dispatch-brainB" "brainB01" "Heavy" "1" \
   "one-line typo fix")"
-jf_b_content="$(journal_read_wait "${TMP_B}" "dispatch-brainB")"
-if printf '%s' "${out_b}" "${jf_b_content}" | grep -q 'class_floor_held task=brainB01 declared=Heavy'; then
+if printf '%s' "${out_b}" | grep -q 'class_floor_held task=brainB01 declared=Heavy'; then
   pass "(b) trivial-but-declared-Heavy holds the floor, journaled"
 else
   fail "(b) missing class_floor_held line: ${out_b}"
@@ -264,6 +255,69 @@ rm -f "${TMP_D2ERR}"
   || fail "(d) re-entry floor did not return Heavy on stdout: stdout='${out_d2}' stderr='${err_d2}'"
 rm -rf "${TMP_D}"
 
+# ── (e) brain_decision reaches stderr even when JOURNAL_TASK is unset ──────
+# R5 fix: leadv2_brain_record's caller in leadv2-dispatch-code.sh used to
+# wrap the call in `2>/dev/null`, which silently dropped class_escalated/
+# class_floor_held/brain_decision on EVERY path -- journal on or off --
+# since emit() always writes to stderr via log() regardless of whether
+# JOURNAL_TASK is set. Prove the decision line survives with JOURNAL_TASK
+# explicitly unset, so the journal-write half of emit() is skipped entirely
+# and stderr is the ONLY place the line can land.
+TMP_E="$(mktemp -d)"
+JUDGE_E="$(mkstub_judge "${TMP_E}" complex 4 safety_publish_payments build)"
+out_e="$(blank_project_root_env \
+  LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${TMP_E}" LEADV2_TASK_JUDGE_BIN="${JUDGE_E}" \
+  bash -c '
+    unset JOURNAL_TASK
+    source "$1"
+    _admission_classify "$2" "$3" "$4" "$5" "$6"
+    echo "CLASS=${ADMISSION_CLASS} SOURCE=${ADMISSION_SOURCE}"
+  ' _ "${DISPATCH_SH}" "touch hooks/ and safety/" "sig-$(date +%s%N)-$$-brainE01" "brainE01" "Light" "1" 2>&1)"
+printf '%s' "${out_e}" | grep -q 'brain_decision task=brainE01 class=.* class_source=' \
+  && pass "(e) brain_decision reaches stderr with JOURNAL_TASK unset" \
+  || fail "(e) brain_decision missing on stderr with JOURNAL_TASK unset: ${out_e}"
+rm -rf "${TMP_E}"
+
+# ── mutation negative control: re-add 2>/dev/null on the brain_record call ──
+# Applied to a temp copy of dispatch-code.sh (+ lib/, so leadv2_brain_record
+# actually runs, not the canonical-checkout fallback) -- never the tracked
+# file. Re-inserting the redirect this R5 fix removed must turn (e) red.
+TMP_MUTE="$(mktemp -d)"
+MUTE_SH="${TMP_MUTE}/leadv2-dispatch-code.sh"
+cp "${DISPATCH_SH}" "${MUTE_SH}"
+cp -r "${SCRIPT_DIR}/../lib" "${TMP_MUTE}/lib"
+python3 - "${MUTE_SH}" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+needle = '      "${estimate:-}" "${PHASE_RECORD_BIN}" "${lane_writes:-}" || true'
+assert needle in text, "leadv2_brain_record call not found -- mutation target drifted"
+mutated = text.replace(
+    needle,
+    '      "${estimate:-}" "${PHASE_RECORD_BIN}" "${lane_writes:-}" 2>/dev/null || true',
+    1,
+)
+with open(path, "w") as f:
+    f.write(mutated)
+PYEOF
+TMP_ME="$(mktemp -d)"
+JUDGE_ME="$(mkstub_judge "${TMP_ME}" complex 4 safety_publish_payments build)"
+out_me="$(blank_project_root_env \
+  LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${TMP_ME}" LEADV2_TASK_JUDGE_BIN="${JUDGE_ME}" \
+  bash -c '
+    unset JOURNAL_TASK
+    source "$1"
+    _admission_classify "$2" "$3" "$4" "$5" "$6"
+    echo "CLASS=${ADMISSION_CLASS} SOURCE=${ADMISSION_SOURCE}"
+  ' _ "${MUTE_SH}" "touch hooks/ and safety/" "sig-$(date +%s%N)-$$-brainME1" "brainME01" "Light" "1" 2>&1)"
+if printf '%s' "${out_me}" | grep -q 'brain_decision task=brainME01'; then
+  fail "MUTATION (e) survived: brain_decision still reached stderr with 2>/dev/null re-added"
+else
+  pass "MUTATION (e) killed: re-adding 2>/dev/null drops brain_decision from stderr"
+fi
+rm -rf "${TMP_MUTE}" "${TMP_ME}"
+
 # ── mutation negative control: decision line says Heavy, return value lies ──
 # Reproduces the exact false-pass the old `*"Heavy"*` substring-on-combined-
 # streams assertion above missed: the `emit decision "phase_class_floor ...
@@ -320,10 +374,42 @@ fi
 rm -rf "${TMP_MUT3}" "${TMP_D3}"
 
 # ── mutation negative control: skip the judge call unconditionally ─────────
-# Applied to a temp copy of dispatch-code.sh -- never the tracked file.
+# Applied to a FULL temp copy of plugins/leadv2/scripts (incl. lib/) -- never
+# the tracked file. R5 fix: the prior version copied ONLY
+# leadv2-dispatch-code.sh into an otherwise-empty mktemp dir. dispatch-code.sh
+# sources lib/leadv2-brain-record.sh relative to its OWN SCRIPT_DIR, falling
+# back to ${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/... when no local
+# lib/ exists -- so with a bare-file copy, leadv2_brain_record was sourced
+# from whatever happened to be on disk at the fallback path, not from this
+# copy at all. Both the (a) and (d) controls therefore exercised the
+# ambient main-checkout's code, not the mutation, and would report identical
+# results whether the mutation was present or absent. A full directory copy
+# puts lib/leadv2-brain-record.sh alongside the mutated file so the fallback
+# is never reached.
 TMP_MUT="$(mktemp -d)"
-MUT_SH="${TMP_MUT}/leadv2-dispatch-code.sh"
-cp "${DISPATCH_SH}" "${MUT_SH}"
+cp -R "${SCRIPT_DIR}/.." "${TMP_MUT}/scripts"
+MUT_SH="${TMP_MUT}/scripts/leadv2-dispatch-code.sh"
+
+# Baseline FIRST: prove the UNMUTATED full copy behaves like the tracked
+# file (escalates + writes brain.yaml) before mutating it -- otherwise a
+# defect in the copy itself (missing lib, stale bytes) could masquerade as
+# a "killed" mutation below.
+TMP_MA0="$(mktemp -d)"
+JUDGE_MA0="$(mkstub_judge "${TMP_MA0}" complex 4 safety_publish_payments build)"
+out_ma0="$(run_classify "${MUT_SH}" "${TMP_MA0}" "${JUDGE_MA0}" "dispatch-brainMA0" "brainMA00" "Light" "1" \
+  "touch hooks/ and safety/")"
+if printf '%s' "${out_ma0}" | grep -q 'class_escalated task=brainMA00 from=Light to=\(Standard\|Heavy\)'; then
+  pass "(a) baseline: unmutated full copy escalates, matching the tracked file"
+else
+  fail "(a) baseline FAILED on unmutated full copy -- control not comparable to tracked file: out=${out_ma0}"
+fi
+if [[ -f "${TMP_MA0}/docs/handoff/dispatch-brainMA0/brain.yaml" ]]; then
+  pass "(d) baseline: unmutated full copy writes brain.yaml, matching the tracked file"
+else
+  fail "(d) baseline FAILED: unmutated full copy did not write brain.yaml"
+fi
+rm -rf "${TMP_MA0}"
+
 python3 - "${MUT_SH}" <<'PYEOF'
 import sys
 path = sys.argv[1]

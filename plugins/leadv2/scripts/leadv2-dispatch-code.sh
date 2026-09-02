@@ -3934,11 +3934,16 @@ _admission_classify() {
   # brain_decision line + brain.yaml, ONLY on a fresh intake (the same-digest
   # re-entry branch above already returned -- one decision record per task,
   # not one per re-entry). Best-effort: a brain-record failure never refuses
-  # a dispatch that the admission map above already approved.
+  # a dispatch that the admission map above already approved -- `|| true`
+  # absorbs a non-zero rc, but stderr is left UNredirected (R5 fix: a prior
+  # `2>/dev/null` here silently dropped every class_escalated/
+  # class_floor_held/brain_decision emit() line, since emit() always writes
+  # to stderr via log() regardless of whether JOURNAL_TASK is set -- the
+  # lane's headline decision output must reach stderr on every path).
   if declare -F leadv2_brain_record >/dev/null 2>&1; then
     leadv2_brain_record "${PROJECT_ROOT}" "${sig8}" "${receipt_task_id}" \
       "${explicit}" "${flagged}" "${ADMISSION_CLASS}" "${ADMISSION_SOURCE}" \
-      "${estimate:-}" "${PHASE_RECORD_BIN}" "${lane_writes:-}" 2>/dev/null || true
+      "${estimate:-}" "${PHASE_RECORD_BIN}" "${lane_writes:-}" || true
   fi
   return 0
 }

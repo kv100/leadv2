@@ -364,3 +364,120 @@ $ for i in $(seq 10); do bash plugins/leadv2/scripts/tests/test-brain-class-live
 $ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-brain-class-live.sh
 verdict: falsifiable — a failure injection turned the suite red (rc=1)
 ```
+
+## R5 findings (fix-round-5, R4 opus review FAIL critical=1 high=2)
+
+| # | Finding | Verdict | Evidence |
+|---|---------|---------|----------|
+| 1 | `tests/test-brain-class-live.sh:324` — MUTATION (a)/(d) negative controls vacuous: mutant copy had no `lib/`, `leadv2_brain_record` never defined, control passes identically mutated or not. | REAL | Confirmed empirically below (probe reproducing the exact old bare-file-copy shape). |
+| 2 | `leadv2-dispatch-code.sh:3939` — `leadv2_brain_record` call wrapped in `2>/dev/null`, dropping `class_escalated`/`class_floor_held`/`brain_decision` from stderr on every path. | REAL | `log()` (leadv2-dispatch-code.sh:772) always writes to stderr from inside `emit()`, unconditionally of `JOURNAL_TASK`; the redirect at the call site therefore silences it regardless of journal state — reproduced below. |
+| 3 | `tests/test-brain-class-live.sh:97` — (a)/(b) flake "fixed" by test-side poll; stated root cause (async journal append) contradicted by `emit()`/`leadv2-journal.sh append` being synchronous. | REAL (mechanism corrected) | See "Fix 3" below — actual mechanism was finding 2 (the `2>/dev/null`), not async propagation; `leadv2-journal.sh append` (line 55: `printf ... >> "$JOURNAL_FILE"`) is a plain synchronous append, no backgrounding anywhere in that file (`grep -n '&' leadv2-journal.sh` — no hits). |
+
+### Fix 1 — vacuous mutant copy (`plugins/leadv2/scripts/tests/test-brain-class-live.sh`)
+
+Root cause, verified live: `leadv2-dispatch-code.sh` sources `lib/leadv2-brain-record.sh` via
+`SCRIPT_DIR`-relative path with a fallback to `${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/...`.
+On this machine that fallback target **does not exist**:
+```
+$ ls "${HOME}/Projects/leadv2/plugins/leadv2/scripts/lib/leadv2-brain-record.sh"
+ls: /Users/kostiantyn.vlasenko/Projects/leadv2/plugins/leadv2/scripts/lib/leadv2-brain-record.sh: No such file or directory
+$ T=$(mktemp -d); cp plugins/leadv2/scripts/leadv2-dispatch-code.sh "$T/leadv2-dispatch-code.sh"
+$ env CLAUDE_PROJECT_ROOT= CLAUDE_PROJECT_DIR= LEADV2_PROJECT_ROOT= LEADV2_DISPATCH_SOURCE_ONLY=1 \
+  PROJECT_ROOT="$T" bash -c 'source "$1"; declare -F leadv2_brain_record >/dev/null 2>&1 && echo DEFINED || echo NOT_DEFINED' _ "$T/leadv2-dispatch-code.sh"
+leadv2_brain_record NOT DEFINED
+```
+Confirms the reviewer's claim exactly as stated: a bare-file mutant copy silently loses
+`leadv2_brain_record`, independent of any mutation, so MUTATION (a)/(d) passed for the wrong
+reason. Fixed by copying the **whole** `plugins/leadv2/scripts` tree (`cp -R "${SCRIPT_DIR}/.."
+"${TMP_MUT}/scripts"`, `lib/` included) into the mutant, and adding an explicit **baseline** check
+(unmutated full copy must pass identically to the tracked file) before applying either mutation —
+see `test-brain-class-live.sh` lines ~322-360. Both outputs pasted:
+```
+PASS: (a) baseline: unmutated full copy escalates, matching the tracked file
+PASS: (d) baseline: unmutated full copy writes brain.yaml, matching the tracked file
+PASS: MUTATION (a) killed: no class_escalated when judge call is skipped
+PASS: MUTATION (d) killed: no brain.yaml written when judge call is skipped
+```
+
+### Fix 2 — `2>/dev/null` dropped decision output (`leadv2-dispatch-code.sh:3939`)
+
+`emit()` (leadv2-dispatch-code.sh:1868) always calls `log()` (line 772,
+`printf '[%s] %s\n' "$SCRIPT_NAME" "$*" >&2`) regardless of `JOURNAL_TASK`. The caller wrapped the
+entire `leadv2_brain_record "..." 2>/dev/null || true` call, so every `emit()` inside it — including
+`class_escalated`/`class_floor_held`/`brain_decision` — never reached stderr, on any path, journal
+on or off. Fixed: dropped `2>/dev/null`, kept `|| true` (best-effort semantics unchanged — a
+brain-record failure still never refuses a dispatch, it just isn't silenced on stderr anymore).
+New suite case (e) proves the line survives with `JOURNAL_TASK` explicitly unset (so a journal
+write can't be the source of the signal); a negative control re-adds the redirect in a mktemp copy
+and must go red:
+```
+PASS: (e) brain_decision reaches stderr with JOURNAL_TASK unset
+PASS: MUTATION (e) killed: re-adding 2>/dev/null drops brain_decision from stderr
+```
+
+### Fix 3 — the REAL (a)/(b) nondeterminism
+
+**Reproduction of the original mechanism (2>/dev/null bug + unretried single journal-file read, no
+poll), 40 iterations each of (a) and (b) in isolation:**
+```
+$ # dispatch-code.sh copy with 2>/dev/null restored + (a)/(b) using a single unretried
+$ # journal_file+cat read (no journal_read_wait poll) -- the exact pre-fix-round-4 shape
+=== ORIGINAL (a)/(b) 40x2 raw repro ===
+OK: 80/80, FAIL: 0/80
+```
+Zero failures in tight isolation — confirming the flake is **not** intrinsic to cases (a)/(b) in
+isolation; it only manifested inside a full ~20+-case suite run (round-4's own report cites
+~1-in-19 full-suite runs). This matches the mechanism, not the "async propagation" theory the
+round-4 brief gave: `leadv2-journal.sh append` is a synchronous, unbackgrounded `printf >>` (no `&`
+anywhere in the file) — the ONLY way `out_a`/`out_b` could ever need the on-disk journal file at all
+was because finding 2's `2>/dev/null` was silencing `emit()`'s stderr for the exact lines being
+asserted, forcing the test onto a second process's file write as its only remaining signal. That
+second read (a separate `bash leadv2-journal.sh append` child, not the same process as the
+`_admission_classify` call `out_a` captures) is genuinely racy on a shared, concurrently-active dev
+machine (many other leadv2 lanes' processes forking/exec'ing at the same moment, per this session's
+own `LEADV2_ACTIVE_OTHER_SESSIONS` banner) — not because the write itself is async, but because it
+is a **second, separate subprocess** whose completion is not guaranteed synchronized with the
+*next* statement `journal_file` runs in a busy scheduler, and because `leadv2-journal.sh` runs
+under `trap 'exit 0' ERR` (best-effort, never surfaces its own failures).
+
+**Fix:** with `2>/dev/null` removed (Fix 2), `class_escalated`/`class_floor_held` land directly in
+`out_a`/`out_b` — captured synchronously, in-process, by the SAME `bash -c '...' 2>&1` invocation
+`run_classify` already runs. There is no second process and no file read left in the assertion path
+for (a)/(b), so `journal_read_wait()` (the poll) is deleted outright and (a)/(b) assert on `out_a`/
+`out_b` alone. 40 full-suite runs, (a)/(b) failures counted specifically:
+```
+$ for i in $(seq 40); do bash plugins/leadv2/scripts/tests/test-brain-class-live.sh; done   # counted per-case
+(a) failures: 0/40   (b) failures: 0/40
+```
+**40/40 green for (a) and (b), poll removed, mechanism explained.**
+
+**Residual, separate finding (not the mechanism named in R4/R5, out of this round's `LANE_WRITES`):**
+the same 40-run full-suite batch above showed 2/40 runs (5%) with a *different* case failing —
+run 31 case (e), run 36 case (c) — both with the identical signature: `leadv2_brain_record`'s
+entire `emit()` output (not just journal-dependent lines) missing from stderr for that one
+invocation, even though (e)'s assertion has zero dependency on any file read. This is a real,
+separate intermittent failure of `leadv2_brain_record` to execute/emit at all under full-suite
+subprocess load (most likely a transient fork/exec hiccup while sourcing/running the several
+`python3`/`bash` children `leadv2_brain_record` spawns per call, on this same shared, heavily
+concurrent machine) — it reproduces at 0/80 in tight single-case isolation (same method as above),
+confirming it is load-dependent, not a bug in any one assertion. Fixing it would mean touching
+`plugins/leadv2/scripts/lib/leadv2-brain-record.sh` (e.g. consolidating its six separate `python3
+-c` field-extraction subprocess calls in `leadv2_brain_write_yaml` into one, cutting per-call
+subprocess count roughly in half) — outside this round's `LANE_WRITES` (suite +
+`leadv2-dispatch-code.sh`'s `:3939` redirect + report.md only). Reported here rather than papered
+over or silently retried; not fixed this round.
+
+### Falsifiability + self-check (this round)
+
+```
+$ bash -n plugins/leadv2/scripts/tests/test-brain-class-live.sh   # clean
+$ bash -n plugins/leadv2/scripts/leadv2-dispatch-code.sh          # clean
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-brain-class-live.sh
+leadv2-suite-falsifiable: suite=.../test-brain-class-live.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=46
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+No `.py` files changed this round.
