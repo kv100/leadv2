@@ -19,6 +19,12 @@
 #   bail:<reason>    could not complete (timeout / exited without a verdict) —
 #                    recorded with its reason, never silently absent
 #
+#   Runner-side kinds (GUARD-CENSUS-IS-WRONG-01 round 2): the dispatcher's
+#   `verdict pass` row (guard ran, emitted nothing contract-shaped) is
+#   ran-only evidence and never a fire; `verdict inject` (stdout
+#   hookSpecificOutput/additionalContext JSON) IS a fire; deny-JSON verdicts
+#   count as blocking. Kind = the guard's CONTRACT, never its chatter.
+#
 # Fixture doctrine (same as mutation-testing a suite): a guard that has never
 # been SHOWN to fire is exactly as trustworthy as a test never shown to go
 # red. Every fixture drives its guard into the fire path and declares
@@ -85,12 +91,72 @@ trap cleanup EXIT
 #    wiring claim lives in hooks.json and is checked, not believed).
 # ---------------------------------------------------------------------------
 WIRED="$TMP/wired.tsv"
+# jq's ltrimstr/split(" ")[0]/rtrimstr("\"") pipeline used to assume the
+# first shell word IS the guard filename with a clean trailing quote. Many
+# hooks.json entries are `"…/leadv2-x.sh"; r=$?; if …` (degrade-log wrapper) —
+# no space before the `";`, so rtrimstr("\"") never matches and the guard
+# name comes out with a literal trailing `";`, sending it to "missing".
+# capture() on the first .sh token is layout-independent: it finds the name
+# wherever it sits in the command string.
 jq -r '.hooks | to_entries[] | .key as $e | .value[] | .hooks[]? |
-       [(.command | ltrimstr("\"") | split(" ")[0] | split("/")[-1] | rtrimstr("\"")), $e]
-       | @tsv' "$HOOKS_JSON" 2>/dev/null | sort -u > "$WIRED"
+       [(.command // "" | capture("(?<n>[A-Za-z0-9_.-]+\\.sh)"; "").n // ""), $e]
+       | @tsv' "$HOOKS_JSON" 2>/dev/null | awk -F'\t' '$1 != ""' | sort -u > "$WIRED"
+
+# ---------------------------------------------------------------------------
+# 1b. Dispatcher follow-through. A guard invoked only from inside another
+#     guard's MANIFEST (e.g. leadv2-bash-pre-dispatch.sh routing Bash-command
+#     guards by regex) is invisible to hooks.json — it never appears as a
+#     top-level entry. Any hook script that defines a `MANIFEST='script|trigger
+#     ...'` variable (the leadv2-bash-pre-dispatch.sh convention) is followed:
+#     every script named on the left of a `|` in that block is wired to the
+#     SAME event(s) the dispatcher itself is wired to.
+# ---------------------------------------------------------------------------
+DISPATCHED="$TMP/dispatched.tsv"
+: > "$DISPATCHED"
+for dsp in "$HOOK_DIR"/*.sh; do
+  [ -e "$dsp" ] || continue
+  grep -q '^MANIFEST=' "$dsp" 2>/dev/null || continue
+  dname="$(basename "$dsp")"
+  devents="$(awk -F'\t' -v g="$dname" '$1==g { print $2 }' "$WIRED")"
+  [ -n "$devents" ] || continue
+  # Extract the MANIFEST='...' single-quoted block (may span multiple lines)
+  # and pull the script name preceding each `|`.
+  awk '/^MANIFEST=/{p=1; sub(/^MANIFEST='"'"'/,""); print; next}
+       p{print; if ($0 ~ /'"'"'$/){p=0}}' "$dsp" \
+    | sed "s/'$//" \
+    | while IFS='|' read -r sub _rest; do
+        sub="$(printf '%s' "$sub" | tr -d '\n')"
+        case "$sub" in *.sh)
+          while IFS= read -r ev; do
+            [ -n "$ev" ] || continue
+            printf '%s\t%s\n' "$sub" "$ev" >> "$DISPATCHED"
+          done <<EOF
+$devents
+EOF
+        ;; esac
+      done
+done
+if [ -s "$DISPATCHED" ]; then
+  cat "$DISPATCHED" >> "$WIRED"
+  sort -u -o "$WIRED" "$WIRED"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Live journal evidence (read-only). `ran` rows and fire rows.
+#    Round 2 (GUARD-CENSUS-IS-WRONG-01): the journal is read ONCE per run
+#    into a per-guard summary — the old code rescanned the full journal with
+#    one awk per class per guard (3 full scans × every guard). Rotated
+#    generations (.1, .2, written by the dispatcher's cap) hold older rows;
+#    ISO timestamps sort lexicographically, so a per-guard max across all
+#    three files is the true latest.
+#
+#    Kind semantics (round-2 contract, matches the dispatcher's records):
+#    `verdict pass` is ran-only evidence — a guard that exits 0 with only
+#    stderr chatter did nothing, and must never count as a fire.
+#    `verdict inject` (stdout hookSpecificOutput/additionalContext JSON) IS a
+#    fire — the guard reached its inject path. `verdict block` and deny-JSON
+#    blocks count as blocking fires.
+#
 #    Legacy journals (guards that predate the verdict lib) are mapped in so
 #    their existing runtime evidence is not thrown away: last line of the
 #    file is inspected, a fire is a line matching --legacy-fire-re, and a
@@ -98,16 +164,31 @@ jq -r '.hooks | to_entries[] | .key as $e | .value[] | .hooks[]? |
 #    journals `"verdict":"fired"` with `"block_mode":"0"`).
 # ---------------------------------------------------------------------------
 JTSV="$JOURNAL_DIR/journal.tsv"
-last_col() { # $1 guard  $2 cond-code (1=any record 4=block-fire 5=log-fire)
-  awk -F'\t' -v g="$1" -v c="$2" '
-    $2==g && ( (c==1 && ($4=="ran" || $4=="verdict" || $4=="bail")) \
-            || (c==4 && $4=="verdict" && $5 ~ /^block/) \
-            || (c==5 && $4=="verdict" && $5 ~ /^log/) ) { ts=$1 }
-    END { printf "%s", ts }' "$JTSV" 2>/dev/null
+JLAST="$TMP/jlast.tsv"
+: > "$JLAST"
+_lv2_jfiles=""
+for _lv2_jf in "$JTSV" "$JTSV.1" "$JTSV.2"; do
+  [ -f "$_lv2_jf" ] && _lv2_jfiles="$_lv2_jfiles $_lv2_jf"
+done
+if [ -n "$_lv2_jfiles" ]; then
+  # shellcheck disable=SC2086 — deliberate word split of journal paths
+  awk -F'\t' '
+    $4=="ran" || $4=="verdict" || $4=="bail" {
+      seen[$2]=1; if ($1 > ran[$2]) ran[$2] = $1 }
+    $4=="verdict" && $5 ~ /^block/ {
+      seen[$2]=1; if ($1 > blk[$2]) blk[$2] = $1 }
+    $4=="verdict" && $5 ~ /^(log|inject)/ {
+      seen[$2]=1; if ($1 > lg[$2])  lg[$2]  = $1 }
+    END { for (g in seen)
+            printf "%s\t%s\t%s\t%s\n", g, ran[g], blk[g], lg[g] }' $_lv2_jfiles \
+    > "$JLAST" 2>/dev/null
+fi
+jcol() { # $1 guard  $2 col (2=last-ran 3=last-block-fire 4=last-log/inject-fire)
+  awk -F'\t' -v g="$1" -v c="$2" '$1==g { printf "%s", $c }' "$JLAST" 2>/dev/null
 }
-live_last_ran()   { last_col "$1" 1; }
-live_last_block() { last_col "$1" 4; }
-live_last_log()   { last_col "$1" 5; }
+live_last_ran()   { jcol "$1" 2; }
+live_last_block() { jcol "$1" 3; }
+live_last_log()   { jcol "$1" 4; }
 
 LEGACY_RE="$TMP/legacy.tsv"
 : > "$LEGACY_RE"
@@ -190,7 +271,12 @@ classify_observation() { # $1 guard  -> sets CLS from $SBX/{rc,out,err}
   out="$(cat "$SBX/out" 2>/dev/null)"
   err="$(cat "$SBX/err" 2>/dev/null)"
   CLS="nap"
-  case "$out" in *'"decision"'*'"block"'*) CLS="block" ;; esac
+  # Round 2: a permissionDecision deny|block JSON (the close-ritual-guard /
+  # codex-round-cap shape: deny verdict, exit 0) IS a block — same contract
+  # class as decision:block + exit 2, never demoted to a log fire.
+  case "$out" in
+    *'"decision"'*'"block"'*|*'"permissionDecision"'*'"deny"'*|*'"permissionDecision"'*'"block"'*) CLS="block" ;;
+  esac
   [ "$rc" -eq 2 ] && CLS="block"
   if [ "$rc" -eq 137 ]; then
     CLS="bail-timeout"
@@ -308,6 +394,10 @@ while IFS= read -r g; do
   wired=0
   [ -n "$events" ] && wired=1
 
+  # reset per row (round 3, high#1): not-wired/missing rows never reach the
+  # else-branch below, so without this they printed the PREVIOUS guard's
+  # default (13 wrong rows in the round-2 census artifact).
+  dflt="-"
   if [ "$wired" -eq 0 ]; then
     state="not-wired"; rank=8
   elif [ ! -f "$HOOK_DIR/$g" ]; then
@@ -324,6 +414,29 @@ while IFS= read -r g; do
     last_ran="$(printf '%s\n%s\n%s' "$jran" "$lran" "" | sort -r | head -1)"
     last_fired="$(printf '%s\n%s\n%s\n%s\n%s' "$jblock" "$jlog" "$lblock" "$llog" "" | sort -r | head -1)"
 
+    # Founder view (round-1 brief §4): the guard's env flag and its default,
+    # read mechanically off the source (first ${LEADV2_X…} expansion) —
+    # a pointer for the founder, never a behavioural claim. Guards without a
+    # flag knob run unconditionally: `always`.
+    # Round 3, high#2: parse EVERY gate shape the tree actually uses, not
+    # just `:-0|1` — shapes enumerated live 2026-09-02 via
+    #   grep -ohE '\$\{LEADV2_[A-Za-z0-9_]+([:=?+-])[^}]*\}' hooks/*.sh | …
+    # → `:-0`(39) `:-`(37, empty) `:-1`(23) `:-advisory`(2) `:-8` `:-3`
+    #   `:-30` `:-1800` `:-path…` quoted `:-"1"` (in branches) — plus
+    #   `${X:=…}`, `${X-…}`, `${X=…}`, `${X?…}`, `${X+…}` and bare `${X}`
+    #   defensively. Any ${LEADV2_…} reference means env-gated; `always` is
+    #   reserved for guards with zero LEADV2_ references.
+    dflt="$(grep -oE '\$\{LEADV2_[A-Za-z0-9_]+[^}]*\}' "$HOOK_DIR/$g" 2>/dev/null \
+      | grep -vE 'TRACE|DEBUG' | head -1)"
+    if [ -n "$dflt" ]; then
+      # nested defaults (`${X:-${Y:-z}}`) truncate at the inner `}` —
+      # re-balance so the displayed pointer stays brace-closed.
+      open=$(( $(printf '%s' "$dflt" | tr -cd '{' | wc -c) - $(printf '%s' "$dflt" | tr -cd '}' | wc -c) ))
+      while [ "$open" -gt 0 ]; do dflt="$dflt}"; open=$((open - 1)); done
+    else
+      dflt="always"
+    fi
+
     if [ "$fxcls" = "bail-timeout" ]; then
       state="bail:timeout"; rank=1
     elif [ -n "$jblock" ] || [ -n "$lblock" ] || [ "$fxcls" = "block" ]; then
@@ -338,13 +451,15 @@ while IFS= read -r g; do
       state="never-ran"; rank=3
     fi
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$rank" "$g" "${events:--}" "$state" \
-    "${last_ran:--}" "${last_fired:--}" >> "$ROWS"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$rank" "$g" "${events:--}" "$state" \
+    "${last_ran:--}" "${last_fired:--}" "${dflt:--}" >> "$ROWS"
 done < "$UNIVERSE"
 
 OUT="$TMP/final.tsv"
-: > "$OUT"
-while IFS="$(printf '\t')" read -r rank g events state lran lfired; do
+CANDS="$TMP/candidates.tsv"
+: > "$OUT"; : > "$CANDS"
+NOW_S="$(date -u +%s)"
+while IFS="$(printf '\t')" read -r rank g events state lran lfired dflt; do
   fixcol="no"
   if [ -f "$TMP/fxcls.$g" ]; then
     v="$(cat "$TMP/fxcls.$g")"
@@ -353,7 +468,41 @@ while IFS="$(printf '\t')" read -r rank g events state lran lfired; do
       *) fixcol="yes" ;;
     esac
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$rank" "$g" "$events" "$state" "$lran" "$lfired" "$fixcol" >> "$OUT"
+  # last-fired-days (round-1 brief §4): whole days since the last fire,
+  # `-` when the guard has never fired. Parsed on BSD date (this repo's
+  # platform); an unparseable timestamp degrades to `-`, never an error.
+  fired_days="-"
+  case "$lfired" in
+    -|"") ;;
+    *)
+      ts_s="$(date -ju -f '%Y-%m-%dT%H:%M:%SZ' "$lfired" +%s 2>/dev/null || echo "")"
+      case "${ts_s:-}" in
+        ''|*[!0-9]*) ;;
+        *) fired_days=$(( (NOW_S - ts_s) / 86400 )) ;;
+      esac
+      ;;
+  esac
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$rank" "$g" "$events" "$state" \
+    "$lran" "$lfired" "$dflt" "$fired_days" "$fixcol" >> "$OUT"
+  # Candidates to delete (round-1 brief §4): wired, file present, no fixture
+  # proof, and no fire in the last 30 days (or never). Listed for the
+  # founder's decision — this census never deletes or disables anything.
+  case "$state" in
+    not-wired|missing|bail:*) ;;
+    *)
+      stale=0
+      if [ "$lfired" = "-" ]; then stale=1
+      else
+        case "$fired_days" in
+          -|"") ;;
+          *) [ "$fired_days" -gt 30 ] && stale=1 ;;
+        esac
+      fi
+      if [ "$stale" -eq 1 ] && [ "$fixcol" = "no" ]; then
+        printf '%s\t%s\t%s\t%s\n' "$g" "$state" "$lfired" "$dflt" >> "$CANDS"
+      fi
+      ;;
+  esac
 done < "$ROWS"
 
 TOTAL="$(wc -l < "$OUT" | tr -d ' ')"
@@ -363,10 +512,17 @@ else
   echo "GUARD CENSUS — GUARDS-MUST-PROVE-THEY-FIRE-01 ($(date -u '+%Y-%m-%dT%H:%M:%SZ'))"
   echo "guards: $TOTAL | fixtures run: $FIXTURED | fixture-proven: $PROVEN | regressions: $REGRESSIONS"
   echo "(dead first: regressions, bails, missing, not-wired, never-ran — the top of this table is where the failures live)"
-  printf '%-42s %-16s %-17s %-21s %-21s %s\n' GUARD EVENT STATE LAST-RAN LAST-FIRED FIXTURE
-  sort -t "$(printf '\t')" -k1,1n -k2,2 "$OUT" | while IFS="$(printf '\t')" read -r rank g events state lran lfired fixcol; do
-    printf '%-42s %-16s %-17s %-21s %-21s %s\n' "$g" "${events:--}" "$state" "$lran" "$lfired" "$fixcol"
+  printf '%-42s %-16s %-17s %-21s %-21s %-36s %-9s %s\n' GUARD EVENT STATE LAST-RAN LAST-FIRED DEFAULT FIRE-DAYS FIXTURE
+  sort -t "$(printf '\t')" -k1,1n -k2,2 "$OUT" | while IFS="$(printf '\t')" read -r rank g events state lran lfired dflt fdays fixcol; do
+    printf '%-42s %-16s %-17s %-21s %-21s %-36s %-9s %s\n' "$g" "${events:--}" "$state" "$lran" "$lfired" "$dflt" "$fdays" "$fixcol"
   done
+  if [ -s "$CANDS" ]; then
+    echo ""
+    echo "CANDIDATES TO DELETE — wired, no fixture proof, no fire in 30 days (founder decides; never auto-deleted):"
+    while IFS="$(printf '\t')" read -r cg cstate clfired cdflt; do
+      printf '  %-42s %-17s last-fired=%-21s %s\n' "$cg" "$cstate" "${clfired:--}" "$cdflt"
+    done < "$CANDS"
+  fi
 fi
 
 if [ "$REGRESSIONS" -gt 0 ]; then
