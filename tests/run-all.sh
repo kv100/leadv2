@@ -183,6 +183,16 @@ leadv2-glm-policy-resolve.py:plugins/leadv2/scripts/tests/test-fable-think-tier.
 leadv2-cache-warm.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 model-capability.yaml:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+# R5: the remaining carriers this task's diff actually touches — the round-4
+# mapping missed these eight, so the contract suite would not re-run on them.
+leadv2-session-route.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-route-bandit.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-ask.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-fanout.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-fanout-classify.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-phase-record.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-llm-judge.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-diverge.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-learn.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-diagnose.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh

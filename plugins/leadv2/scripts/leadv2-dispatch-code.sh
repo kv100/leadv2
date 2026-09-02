@@ -463,6 +463,17 @@ fi
 WORK_ROOT="${LEADV2_LANE_WORK_ROOT:-}"
 [[ -n "$WORK_ROOT" && -d "$WORK_ROOT" ]] || WORK_ROOT="$PROJECT_ROOT"
 export LEADV2_LANE_WORK_ROOT="$WORK_ROOT"
+# FABLE-THINK-TIER-01 R5: the think-model kill-switch channel for spawned
+# sessions. The four THINK workflows (diverge/learn/diagnose/po-feedback-loop)
+# read process.env.LEADV2_THINK_MODEL — the JS sandbox cannot consult
+# model-capability.yaml, so the yaml `unavailable: true` fallback only reaches
+# them if the dispatching process exports the resolver's answer. Operator
+# override (LEADV2_THINK_MODEL already set) always wins; resolver failure
+# leaves the var unset and the workflow falls back to its documented default.
+if [[ -z "${LEADV2_THINK_MODEL:-}" ]]; then
+  LEADV2_THINK_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
+  [[ -n "$LEADV2_THINK_MODEL" ]] && export LEADV2_THINK_MODEL
+fi
 # LANDED-AT-SPAWN-01: Ledger keying follows the DISPATCH TARGET (the main checkout that
 # owns the lane worktree), never the caller session's env. PROJECT_ROOT above is resolved
 # from CLAUDE_PROJECT_ROOT/CLAUDE_PROJECT_DIR -- i.e. wherever the HUMAN launched the

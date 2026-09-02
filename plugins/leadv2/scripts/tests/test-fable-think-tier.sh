@@ -129,7 +129,11 @@ ALLOWLIST=(
   'leadv2-llm-judge-parse.sh::MODEL_USED="opus"::metadata label default in a parser; actual judge arm comes from leadv2-llm-judge.sh/router'
   'leadv2-main-model-check.sh::MAIN_MODEL="opus"::opus-guardrail CHECKER (LEADV2_FORCE_OPUS_LEAD=1 path), not a spawn'
   'leadv2-main-model-check.sh::!= "opus"::comparison in the same opus-guardrail checker'
-  'leadv2-priors-compile.sh::"(new-route|cross-service|strategic)": "opus"|"critic": \{"default": "opus"\}::compiled priors prose route table; live spawns resolve via router/bandit'
+  # R5: the leadv2-priors-compile.sh entry was REMOVED — its "prose" reason was
+  # wrong. The baseline recs compile into agent_priors[].model_recommendation,
+  # which the lead consumes as live route data; the table now pins fable for
+  # the think roles (architect heavy classes, critic default) and any opus
+  # reintroduction must survive the census unallowlisted.
   'leadv2-router-v2.py::"opus": "anthropic"|"claude-opus": "anthropic"::arm-to-provider map'
   'leadv2-router-v2.py::not in \("sonnet", "opus"\)::allowed-arms membership validation'
   'leadv2-glm-policy-resolve.py::DISPATCHABLE_PLAN_ARMS|DEFAULT_REVIEW_ARM_ORDER|"opus", "opus_mission_kind"::pool-resolver arm constants; fable ordered before opus (pinned by section 3)'
@@ -168,6 +172,25 @@ _lv2_filter_census() {
   printf '%s' "$out" | sed '/^$/d'
 }
 
+# R5 honesty: the same walk, but emitting ONLY the allowlisted survivors
+# (file:lineno) so the pass line can DISCLOSE them instead of hiding a
+# self-admitted true positive behind a bare "zero live pins" claim.
+_lv2_excused_census() {
+  local raw="$1" line file rest lineno content out=""
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    file="${line%%:*}"
+    rest="${line#*:}"
+    lineno="${rest%%:*}"
+    content="${rest#*:}"
+    _lv2_classify_survivor "$file" "$lineno" "$content" && continue
+    if _lv2_allowlisted "$file" "$content"; then
+      out="${out}${file}:${lineno}"$'\n'
+    fi
+  done <<< "$raw"
+  printf '%s' "$out" | sed '/^$/d'
+}
+
 # The resolver is exempt AT FILE LEVEL: leadv2-router.sh (think_model) and
 # lib/leadv2-think-model.sh are the ONE place an opus fallback may live.
 census_raw="$(grep -rnE "$census_re" \
@@ -187,8 +210,18 @@ census2_raw="$(grep -rnE "(subagent_type|agentType)[\"'= :]+[^,)]*(architect|cri
   | grep -iE "opus" \
   || true)"
 census2="$(_lv2_filter_census "$census2_raw")"
+# R5 honesty: disclose the allowlisted survivors instead of hiding a
+# self-admitted true positive behind a bare "zero live pins" claim.
+excused="$(_lv2_excused_census "$census_raw")$(_lv2_excused_census "$census2_raw")"
+excused_files="$(printf '%s' "$excused" | sed '/^$/d' | sed 's#.*/##' | cut -d: -f1 | sort -u | tr '\n' ' ')"
 if [[ -z "$census" && -z "$census2" ]]; then
-  pass "tree-wide census: zero live think-role 'opus' spawn pins"
+  excused_n="$(printf '%s' "$excused" | grep -c . || true)"
+  pass "tree-wide census: zero UNEXCUSED live think-role 'opus' spawn pins (excused=${excused_n:-0}: ${excused_files:-none})"
+  if printf '%s' "$excused" | grep -q 'leadv2-causal-critique.js'; then
+    pass "census honesty: leadv2-causal-critique.js Heavy-pin still EXCUSED and tracked (follow-up lane; R4 review HIGH-1)"
+  else
+    fail "census honesty: leadv2-causal-critique.js no longer excused — either the follow-up lane fixed the pin (remove the stale ALLOWLIST entry) or the census regex drifted"
+  fi
 else
   [[ -n "$census"  ]] && fail "tree-wide census: unclassified 'opus' literal(s): $census"
   [[ -n "$census2" ]] && fail "tree-wide census: think-role spawn line pinning opus: $census2"
@@ -278,14 +311,112 @@ else
   fail "session-route Heavy: expected model=fable despite stub config pin, got: ${sr_model:-<none>}"
 fi
 
+# R5 CRITICAL negative control: an UNREACHABLE resolver must degrade the Heavy
+# tier to fable, never abort the whole router. The pre-R5 line was an
+# unguarded command substitution under `set -euo pipefail`: missing resolver
+# file -> rc=127, zero stdout, for EVERY task class (probe reproduced it).
+sr_rc=0
+sr_out2="$(LEADV2_TEST_ROUTER="$TMP/no-such-router.sh" LEADV2_PROJECT_ROOT="$STUB_ROOT" \
+  bash "$SCRIPTS_ROOT/leadv2-session-route.sh" --class Heavy 2>/dev/null)" || sr_rc=$?
+sr_model2="$(printf '%s\n' "$sr_out2" | grep '^model=' | head -1 | cut -d= -f2)"
+if [[ "$sr_rc" -eq 0 && "$sr_model2" == "fable" ]]; then
+  pass "session-route Heavy: unreachable resolver degrades to fable, script survives (rc=0)"
+else
+  fail "session-route Heavy: unreachable resolver -> rc=$sr_rc model=${sr_model2:-<none>} (expected rc=0/model=fable — unguarded resolver substitution?)"
+fi
+
 # The four migrated workflows keep their THINK_MODEL const (resolver wiring).
+# R5: the const must honour LEADV2_THINK_MODEL env — the ONLY kill-switch
+# channel that reaches the JS sandbox (no yaml access mid-workflow).
 for wf in leadv2-diverge leadv2-learn leadv2-diagnose leadv2-po-feedback-loop; do
   f="$PLUGIN_ROOT/workflows/${wf}.js"
   if [[ ! -f "$f" ]]; then fail "workflow missing: $f"; continue; fi
-  grep -n "const THINK_MODEL" "$f" >/dev/null 2>&1 \
-    && pass "$wf: THINK_MODEL const present" \
-    || fail "$wf: THINK_MODEL const missing"
+  if grep -n "const THINK_MODEL" "$f" >/dev/null 2>&1; then
+    if grep -q 'process.env.LEADV2_THINK_MODEL' "$f"; then
+      pass "$wf: THINK_MODEL honours LEADV2_THINK_MODEL env (kill-switch channel)"
+    else
+      fail "$wf: THINK_MODEL ignores LEADV2_THINK_MODEL env — model-capability kill-switch cannot reach it"
+    fi
+  else
+    fail "$wf: THINK_MODEL const missing"
+  fi
 done
+
+# --- 4c. ask.sh architect-decide: unreachable resolver degrades to fable ----
+# R5 HIGH negative control: `${LEADV2_ASK_ARCHITECT_MODEL:-$(resolver)}` left
+# model EMPTY on resolver failure and spawned claude-subsession with
+# `--model ""`. The stub records the --model value it actually receives.
+ask_stub="$TMP/ask-model-stub.sh"
+cat > "$ask_stub" <<'STUB'
+#!/usr/bin/env bash
+model=""; task_id=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model) model="$2"; shift 2 ;;
+    --task-id) task_id="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+adir="${PROJECT_ROOT:-$(pwd)}/docs/handoff/${task_id}"
+mkdir -p "$adir"
+printf 'DECISION_OPTION: safe\nRATIONALE: received_model=%s\nDELIVERABLE_COMPLETE\n' "${model:-<EMPTY>}" \
+  > "${adir}/architect.full.md"
+exit 0
+STUB
+chmod +x "$ask_stub"
+ask_root="$TMP/ask-repo"; ask_state="$TMP/ask-state"
+mkdir -p "$ask_root/docs/leadv2" "$ask_root/docs/handoff"
+cat > "$ask_root/docs/tasks.yaml" <<'YAML'
+tasks:
+  - id: ST-THINK-MODEL
+    title: think-model resolver degradation probe
+    lane: action
+    status: in_progress
+    claim: {by: lane-think, lease_expires: null}
+YAML
+ask_out="$(env -u LEADV2_PROJECT_ROOT LEADV2_STATE_ROOT="$ask_state" PROJECT_ROOT="$ask_root" \
+  LEADV2_ASK_POLL_INTERVAL=0.05 LEADV2_ASK_ARCHITECT_BIN="$ask_stub" \
+  LEADV2_TEST_ROUTER="$TMP/no-such-router.sh" \
+  bash "$SCRIPTS_ROOT/leadv2-ask.sh" ST-THINK-MODEL 'Use reversible route?' \
+  --option 'safe|Leave unchanged' --option 'risky|Publish now' \
+  --timeout 1 2>/dev/null || true)"
+ask_qfile="$(find "$ask_state/questions" -name 'q-*.yaml' -print -quit 2>/dev/null)"
+ask_decision="$(find "$ask_root/docs/handoff" -name 'architect.full.md' -print -quit 2>/dev/null)"
+if [[ -n "$ask_qfile" && -n "$ask_decision" ]] \
+   && grep -q '^status: timed_out$' "$ask_qfile" \
+   && grep -q 'received_model=fable' "$ask_decision"; then
+  pass "ask architect-decide: unreachable resolver -> --model fable (never empty)"
+else
+  fail "ask architect-decide: expected timeout->architect with --model fable; got qfile=${ask_qfile:-<none>} decision=$(grep -h 'received_model' "$ask_decision" 2>/dev/null || echo none)"
+fi
+
+# --- 4d. llm-judge resolver call failure-guarded (same R5 family) -----------
+if grep -F 'think-model 2>/dev/null || true' "$SCRIPTS_ROOT/leadv2-llm-judge.sh" >/dev/null; then
+  pass "llm-judge: resolver command substitution failure-guarded (set -euo pipefail safe)"
+else
+  fail "llm-judge: unguarded resolver substitution — missing router aborts the whole judge"
+fi
+
+# --- 4e. kill-switch channel: LEADV2_THINK_MODEL reaches the JS sandbox -----
+if grep -qF '"LEADV2_THINK_MODEL": os.environ.get("LV2_THINK_MODEL", "fable")' "$SCRIPTS_ROOT/leadv2-repo-install.sh"; then
+  pass "repo-install: LEADV2_THINK_MODEL written into settings.json env (kill-switch channel)"
+else
+  fail "repo-install: LEADV2_THINK_MODEL missing from settings env — yaml kill-switch cannot reach the workflows"
+fi
+if grep -qF 'LEADV2_THINK_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"' "$SCRIPTS_ROOT/leadv2-dispatch-code.sh"; then
+  pass "dispatch-code: guarded LEADV2_THINK_MODEL export to spawned sessions"
+else
+  fail "dispatch-code: LEADV2_THINK_MODEL export missing/unguarded — dispatched sessions lose the kill-switch"
+fi
+# priors baseline recs are LIVE route data (compiled into
+# agent_priors[].model_recommendation and consumed by the lead): think roles
+# must recommend fable, never opus (R5 — allowlist entry removed).
+if grep -q '"critic": {"default": "opus"}' "$SCRIPTS_ROOT/leadv2-priors-compile.sh" \
+   || grep -qE '"(new-route|cross-service|strategic)": "opus"' "$SCRIPTS_ROOT/leadv2-priors-compile.sh"; then
+  fail "priors-compile: opus baseline rec for a THINK role (architect/critic) — contradicts the tier contract"
+else
+  pass "priors-compile: no opus baseline rec for think roles (architect/critic on fable)"
+fi
 
 # --- 2b. grep-gate: zero opus-4 literals (Opus means Opus 5) ----------------
 opus4_hits="$(grep -rn --exclude="$(basename "$0")" 'opus-4' \

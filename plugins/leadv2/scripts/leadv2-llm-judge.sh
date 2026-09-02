@@ -390,7 +390,9 @@ ROUTER_SCRIPT="${SCRIPT_DIR}/leadv2-router.sh"
 ceiling_status="ok"
 # FABLE-THINK-TIER-01 R2: the judge is a THINK role — default resolves through
 # the think-model resolver (fable; opus only when fable is unavailable).
-model="$(bash "$ROUTER_SCRIPT" think-model 2>/dev/null)"
+# R5: `|| true` — same script runs `set -euo pipefail`; an unguarded resolver
+# failure aborted the whole judge before the line-3 default could apply.
+model="$(bash "$ROUTER_SCRIPT" think-model 2>/dev/null || true)"
 model="${model:-fable}"
 
 if [[ -f "$ROUTER_SCRIPT" ]]; then

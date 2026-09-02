@@ -303,6 +303,13 @@ want={
  "ENABLE_TOOL_SEARCH":"auto:50",
  "LEADV2_PULSE_MODE":"1",
  "LEADV2_MAIN_MODEL": os.environ.get("LV2_THINK_MODEL", "fable"),
+ # FABLE-THINK-TIER-01 R5: the think-model kill-switch channel. The four
+ # workflows (diverge/learn/diagnose/po-feedback-loop) resolve THINK_MODEL
+ # from process.env.LEADV2_THINK_MODEL — the JS sandbox cannot read
+ # model-capability.yaml. Writing the resolver answer here makes the
+ # unavailable-true fallback reach every session in the installed repo,
+ # at the same install-time freshness as LEADV2_MAIN_MODEL.
+ "LEADV2_THINK_MODEL": os.environ.get("LV2_THINK_MODEL", "fable"),
  "LEADV2_FORCE_OPUS_LEAD":"0",
  "LEADV2_WORKFLOW_ENABLED":"1",
  "LEADV2_WIKI_INJECT":"0",

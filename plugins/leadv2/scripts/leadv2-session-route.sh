@@ -60,7 +60,12 @@ CLAUDE_STANDARD_MODEL="sonnet"
 CLAUDE_STANDARD_EFFORT="medium"
 # FABLE-THINK-TIER-01 R4: the Heavy tier is a THINK tier — resolves through
 # the think-model resolver (fable; opus only as the resolver's own fallback).
-CLAUDE_HEAVY_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null)"
+# R5: the call is failure-guarded — under `set -euo pipefail` an unguarded
+# command substitution aborts the WHOLE script (rc=127, zero stdout) if the
+# resolver file is missing/unreachable. Documented default arm on resolver
+# failure is fable (same convention as repo-install/llm-judge).
+CLAUDE_HEAVY_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
+[[ -n "$CLAUDE_HEAVY_MODEL" ]] || CLAUDE_HEAVY_MODEL="fable"
 CLAUDE_HEAVY_EFFORT="high"
 GLM_ENABLED="true"
 # Live acceptance evidence: plugins/leadv2/docs/evidence/glm-5.3-probe.md.
@@ -189,8 +194,10 @@ HIGH_RISK_TAGS="${LEADV2_HIGH_RISK_TAGS:-$HIGH_RISK_TAGS}"
 # the think-model resolver and NEVER from defaults or session-routing.yaml
 # pins (a config 'heavy: model: opus' is dead by design; found live in
 # config/session-routing.yaml:31). The operator override path is
-# LEADV2_THINK_MODEL, honoured inside the resolver itself.
-CLAUDE_HEAVY_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null)"
+# LEADV2_THINK_MODEL, honoured inside the resolver itself. R5: failure-guarded
+# (see note at the first Heavy-tier site) — never aborts, never empty.
+CLAUDE_HEAVY_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
+[[ -n "$CLAUDE_HEAVY_MODEL" ]] || CLAUDE_HEAVY_MODEL="fable"
 
 if ! [[ "$CODEX_MAX_USED_PERCENT" =~ ^[0-9]+$ ]] || (( CODEX_MAX_USED_PERCENT < 1 || CODEX_MAX_USED_PERCENT > 100 )); then
   log_error "codex max_used_percent must be an integer in 1..100"
