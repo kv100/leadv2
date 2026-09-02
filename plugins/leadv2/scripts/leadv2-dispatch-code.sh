@@ -6920,18 +6920,12 @@ cmd_resolve() {
   # next arm.  (E2E-GATE-RESIDUE-01 round 4 root cause.)
   set +e
 
-  # PHASE-GATE-IS-INVERTED-01: the pre-classify is-bootstrap probe is gone.
-  # It existed only to feed the caller-attested --at-bootstrap that the guard
-  # no longer honours; keeping it would resurrect the inversion (every fresh
-  # lane probed "zero records" before its own classify write and was waved
-  # through). The guard reads the store itself after classify is recorded.
-
-  # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
-  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
-    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
-
   # PHASES-ARE-THE-ONLY-PATH-01 §5: precondition guard at the same structural slot
   # as _lane_writes_guard / _acceptance_guard — after arg validation, before spawn.
+  # PHASE-BOOTSTRAP-DEADLOCK-01: this must run before the dispatcher's own
+  # classify record. A zero-record lane is the one legitimate bootstrap shape;
+  # recording classify first turns that shape into a resumed lane and makes the
+  # gate refuse its own first dispatch.
   local _phase_waiver_args=()
   for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
     _phase_waiver_args+=(--waiver "$_pw")
@@ -6941,6 +6935,12 @@ cmd_resolve() {
     # trap (cleanup_pending_dispatch) releases the registered row on this exit.
     exit 3
   }
+
+  # PHASES-ARE-THE-ONLY-PATH-01: record classify only after admission. The
+  # guard above owns the bootstrap decision; subsequent dispatches see this
+  # record and remain subject to the existing phase requirements.
+  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
+    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
 
   if [[ "${product_class}" == "product" ]]; then
     # PREPASS-DEGRADES-01 (2026-07-29): a prepass failure must NEVER stop the work. On
