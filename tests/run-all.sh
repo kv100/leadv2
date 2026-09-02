@@ -245,6 +245,13 @@ codex-task.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 leadv2-codex-planner.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 leadv2-worker-mcp.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
+leadv2-status-cache.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-spawn-rate.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
 leadv2-cache-truth.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
 # CACHE-TRUTH-01 R4: the coder arms' stream files are the tool's INPUTS — a
 # change to an arm runner can change the stream shape the TSV grades, so each
