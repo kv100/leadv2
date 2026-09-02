@@ -437,3 +437,36 @@ probe[empty_cwd]: rc=0
 probe[stripped_env]: rc=0
 verdict: falsifiable — a failure injection turned the suite red (rc=1)
 ```
+
+### Closing proof — the gate against this task's own committed diff and report.md
+
+Diff scoped to this round's own commits (`dd4cd8a1..HEAD`, the parent of
+fix-round-1's first commit through the finalize commit); a fresh
+`leadv2-mutation-control.sh` artifact was generated bound to that diff's own
+hash (the previous artifacts in `mutation-control/` were bound to
+build-round-3's diff hash, which fix 2's own new provenance check correctly
+now rejects for a *different* round's diff — proof the fix is live against
+itself, not just the suite fixtures):
+
+```
+$ DIFF_HASH="$(shasum -a 256 /tmp/dod-gate-self-check.diff | awk '{print $1}')"
+$ bash plugins/leadv2/scripts/leadv2-mutation-control.sh \
+    plugins/leadv2/scripts/tests/test-worker-dod-gate.sh \
+    plugins/leadv2/scripts/lib/leadv2-dod-gate.sh \
+    's|_DOD_RUNTIME_STATE_REGEX=.*|_DOD_RUNTIME_STATE_REGEX="nevermatch_xyz_only"|' \
+    "${DIFF_HASH}" \
+    docs/handoff/WORKER-DOD-GATE-01
+MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-worker-dod-gate.sh file=plugins/leadv2/scripts/lib/leadv2-dod-gate.sh red_line=[TEST] PASS: check_a: missing report.md -> fail diff_hash=0e25cda45bafb7b779abc3fa9ed827cfbe59face37d0d69871e321932ed61737
+$ bash -c '
+    source plugins/leadv2/scripts/lib/leadv2-dod-gate.sh
+    lv2_dod_gate_run "$(pwd)" "$(pwd)/docs/handoff/WORKER-DOD-GATE-01" /tmp/dod-gate-self-check.diff /tmp/dod-gate-self-check-out3.md
+    echo "RC=$?"
+  '
+# dod-gate report — 2026-09-02T13:32:21Z
+
+dod_pass check=report
+dod_pass check=paste_evidence
+dod_pass check=suite_registration
+dod_pass check=runtime_state
+RC=0
+```
