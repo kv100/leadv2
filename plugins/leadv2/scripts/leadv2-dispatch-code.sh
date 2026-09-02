@@ -5062,12 +5062,20 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
 # reasoning_effort low|high|max, default max; CC 2.1.258 also accepts medium,
 # which Z.AI auto-converts to high). An unrecognized class falls back to the
 # arbiter's RESOLVED_EFFORT, then high — never empty.
-_glm_effort_for_class() { # <raw task class>
-  case "${1:-standard}" in
-    trivial|light|bulk) printf '%s' 'low' ;;
-    standard)           printf '%s' 'high' ;;
-    heavy|strategic)    printf '%s' 'max' ;;
-    *)                  printf '%s' "${RESOLVED_EFFORT:-high}" ;;
+# fix-round-3 (C1): DC_TASK_CLASS is always Title-case (Trivial/Light/Standard/
+# Heavy/Strategic -- see _admission_classify and lib/leadv2-lane-guard.sh's
+# _lv2_class_rank), so match on a lowercased copy, never the raw string, or
+# every arm here is dead and every dispatch silently falls through to
+# RESOLVED_EFFORT. Output is "<effort> <source>" (source: class_map|fallback)
+# so the caller journals which path actually fired instead of a fixed label.
+_glm_effort_for_class() { # <raw task class> -> stdout: "<effort> <source>"
+  local _cls
+  _cls="$(printf '%s' "${1:-standard}" | tr '[:upper:]' '[:lower:]')"
+  case "${_cls}" in
+    trivial|light|bulk) printf '%s %s' 'low' 'class_map' ;;
+    standard)           printf '%s %s' 'high' 'class_map' ;;
+    heavy|strategic)    printf '%s %s' 'max' 'class_map' ;;
+    *)                  printf '%s %s' "${RESOLVED_EFFORT:-high}" 'fallback' ;;
   esac
 }
 
@@ -5126,12 +5134,12 @@ _spawn_worker_body() {
       # max, bulk -> low (mechanical). Review/verify roles would pay `high`
       # regardless of class — glm is in DEFAULT_REVIEW_EXCLUSIONS today, so
       # this row is contract-complete but currently unreachable.
-      local _glm_effort
-      _glm_effort="$(_glm_effort_for_class "${DC_TASK_CLASS:-standard}")"
+      local _glm_effort _glm_effort_source
+      read -r _glm_effort _glm_effort_source <<<"$(_glm_effort_for_class "${DC_TASK_CLASS:-standard}")"
       case "${LEADV2_WORKER_ROLE:-developer}" in
-        review|verify|critic) _glm_effort=high ;;
+        review|verify|critic) _glm_effort=high; _glm_effort_source=role_override ;;
       esac
-      emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} mechanism=flag source=class_map resolved=${RESOLVED_EFFORT:-unset}"
+      emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} mechanism=flag source=${_glm_effort_source:-fallback} resolved=${RESOLVED_EFFORT:-unset}"
       # FIX PASS 4: `9>&-` closes the lock fd for this call as defense-in-depth -- the
       # redesign already never holds the dispatch lock across spawn (spawn_worker runs
       # outside any lock this script itself opens), but a launcher spawns a DETACHED

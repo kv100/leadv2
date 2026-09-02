@@ -79,6 +79,10 @@ printf 'ZAI_AUTH_TOKEN=stub-token-for-test\n' > "${SECRETS}"
 chmod 600 "${SECRETS}"
 
 # ── Part B1: v1 `run` path — GLM_EFFORT=low reaches the spawn argv ──────────
+# fix-round-3 (C3): an empty arg must UNSET GLM_EFFORT, not merely skip
+# exporting it -- a bare `export` skip leaves any ambient GLM_EFFORT (e.g.
+# this very suite running inside a GLM lane, which the dispatcher exports)
+# inherited by the subshell, turning the "unset -> no flag" assertion red.
 _effort_run_v1() { # $1 = GLM_EFFORT value or "" (unset)
   : > "${ARGV_CAPTURE}"
   (
@@ -90,8 +94,13 @@ _effort_run_v1() { # $1 = GLM_EFFORT value or "" (unset)
     export LEADV2_BURN_GOVERNOR=0
     export TMPDIR="${FIXTURE}"
     export CLAUDE_PLUGIN_ROOT="${PLUGIN_ROOT}"
-    [[ -n "${1:-}" ]] && export GLM_EFFORT="$1"
-    bash "${GLM_SCRIPT}" run "effort probe mission" --out "${FIXTURE}/out-v1.txt" --cwd "${REPO}"
+    if [[ -n "${1:-}" ]]; then
+      export GLM_EFFORT="$1"
+      bash "${GLM_SCRIPT}" run "effort probe mission" --out "${FIXTURE}/out-v1.txt" --cwd "${REPO}"
+    else
+      unset GLM_EFFORT
+      env -u GLM_EFFORT bash "${GLM_SCRIPT}" run "effort probe mission" --out "${FIXTURE}/out-v1.txt" --cwd "${REPO}"
+    fi
   ) >/dev/null 2>&1
   return 0
 }
@@ -175,16 +184,23 @@ chmod +x "${FIXTURE}/dispatch-live.sh"
 
 _dispatch_for_class() { # $1 = task class
   : > "${RECORD}"
+  : > "${JOURNAL_RECORD}"
   (
     # FOREIGN-PROJECT-ROOT-GUARD-01: env roots are trusted only when cwd's git
     # toplevel agrees, so cd into the throwaway repo like every other suite.
     cd "${REPO}" || exit 97
+    # fix-round-3 (C3, same hazard as _effort_run_v1): scrub any ambient
+    # GLM_EFFORT (e.g. this suite running inside a live GLM lane) so the
+    # dispatcher's own class-map computation is what reaches the recorder,
+    # never an inherited leftover.
+    unset GLM_EFFORT
     unset LEADV2_PROJECT_ROOT LEADV2_LANE_WORK_ROOT LEADV2_TASK_ID LEADV2_PARENT_SESSION_ID LEADV2_DISPATCH_LANE_NAME
     CLAUDE_PROJECT_ROOT="${REPO}" \
     LEADV2_PROJECT_ROOT="${REPO}" \
     LEADV2_DISPATCH_CACHE_DIR="${D_CACHE}" \
     LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
     LEADV2_LANE_SHAPE=off LEADV2_ARM_EARLY_VERDICT_S=0 \
+    LEADV2_REQUIRE_PHASES=0 \
     LEADV2_QUOTA_LIVE="${FIXTURE}/dispatch-live.sh" \
     LEADV2_ROUTE_ARBITER_STATE_FILE="${FIXTURE}/dispatch-arb-state" \
     LEADV2_JOURNAL_BIN="${FIXTURE}/journal.sh" JOURNAL_TASK=glm-effort-"$1" \
@@ -197,18 +213,24 @@ _dispatch_for_class() { # $1 = task class
   rm -f "${FIXTURE}/dispatch-arb-state" 2>/dev/null || true
 }
 
-# Class -> expected effort (docs/handoff/GLM-EFFICIENCY-01/report.md mapping
-# table; trivial|light share the `low` tier, heavy carries `max`).
+# Class -> expected effort. fix-round-3 (C2): DC_TASK_CLASS is ALWAYS
+# Title-case at runtime (Trivial/Light/Standard/Heavy/Strategic -- see
+# _admission_classify), never the lowercase strings the map's own case arms
+# happen to use, so the end-to-end probe must drive the dispatcher with the
+# real shape or it can pass through the `*)` fallback and never touch the
+# map at all (exactly the R2 critical finding). Three distinct effort
+# values across Light/Standard/Heavy so a coincidental fallback match can't
+# fake a pass.
 class_expect() {
   case "$1" in
-    trivial|light) printf 'low' ;;
-    standard)      printf 'high' ;;
-    heavy)         printf 'max' ;;
-    *)             printf '' ;;
+    Light)    printf 'low' ;;
+    Standard) printf 'high' ;;
+    Heavy)    printf 'max' ;;
+    *)        printf '' ;;
   esac
 }
 
-for cls in trivial light; do
+for cls in Light Standard Heavy; do
   _dispatch_for_class "${cls}"
   want="$(class_expect "${cls}")"
   if grep -q "^GLM_MODEL=[^ ]* GLM_EFFORT=${want}\$" "${RECORD}" 2>/dev/null; then
@@ -216,39 +238,65 @@ for cls in trivial light; do
   else
     fail "dispatch: task-class ${cls} expected GLM_EFFORT=${want} — got: $(cat "${RECORD}" 2>/dev/null | head -1)"
   fi
+  # Prove the MAP fired (source=class_map), not the RESOLVED_EFFORT fallback
+  # coincidentally agreeing with `want` -- this is the assertion the R2
+  # critical finding says was missing.
+  if grep -q "effort_applied by=router.*effort=${want} mechanism=flag source=class_map" "${JOURNAL_RECORD}" 2>/dev/null; then
+    pass "dispatch: task-class ${cls} journal proves class_map fired (source=class_map, effort=${want})"
+  else
+    fail "dispatch: task-class ${cls} journal did not prove class_map fired — got: $(grep -E 'effort_(applied|dropped)' "${JOURNAL_RECORD}" 2>/dev/null | head -2)"
+  fi
 done
 
 # ── Part A2: the full class map, unit-level ──────────────────────────────────
-# Standard/Heavy/Strategic intentionally never reach a DIRECT worker dispatch
-# (the admission classifier routes them phases-side), so the end-to-end probe
-# above can only carry trivial/light. The map itself is one extracted function
-# (_glm_effort_for_class, testable in isolation per the test-arm-admission.sh
-# convention); assert every class against it here.
+# The map itself is one extracted function (_glm_effort_for_class, testable
+# in isolation per the test-arm-admission.sh convention); assert every raw
+# class AND its Title-case runtime shape against it, plus an unrecognized
+# class to prove the fallback path (source=fallback) is real and distinct
+# from a map hit (source=class_map) -- fix-round-3 (C2) negative case.
 MAP_SRC="${FIXTURE}/map-extract.sh"
 {
   sed -n '/^_glm_effort_for_class()/,/^}$/p' "${DISPATCH}"
   printf 'RESOLVED_EFFORT="%s"\n' "${RESOLVED_EFFORT:-}"
-  printf 'for c in trivial light bulk standard heavy strategic bogus-cls; do printf "%%s=%%s\\n" "$c" "$(_glm_effort_for_class "$c")"; done\n'
+  printf 'for c in trivial light bulk standard heavy strategic Light Standard Heavy bogus-cls; do printf "%%s=%%s\\n" "$c" "$(_glm_effort_for_class "$c")"; done\n'
 } > "${MAP_SRC}"
 MAP_OUT="$(bash "${MAP_SRC}" 2>&1)" || MAP_OUT=""
-map_check() { # <class> <want>
-  if [[ "${MAP_OUT}" == *"$1=$2"* ]]; then
-    pass "class map: ${1} -> ${2}"
+map_check() { # <class> <want-effort> <want-source>
+  if [[ "${MAP_OUT}" == *"$1=$2 $3"* ]]; then
+    pass "class map: ${1} -> ${2} (source=${3})"
   else
-    fail "class map: ${1} expected ${2} — got: $(printf '%s\n' "${MAP_OUT}" | grep "^$1=" || echo "<missing>")"
+    fail "class map: ${1} expected ${2}/${3} — got: $(printf '%s\n' "${MAP_OUT}" | grep "^$1=" || echo "<missing>")"
   fi
 }
-map_check trivial low
-map_check light low
-map_check bulk low
-map_check standard high
-map_check heavy max
-map_check strategic max
-if grep -q 'effort_applied by=router.*mechanism=flag source=class_map' "${JOURNAL_RECORD}" 2>/dev/null \
-  && ! grep -q 'effort_dropped' "${JOURNAL_RECORD}" 2>/dev/null; then
-  pass "dispatch: journal carries effort_applied mechanism=flag (no effort_dropped remains)"
+map_check trivial low class_map
+map_check light low class_map
+map_check bulk low class_map
+map_check standard high class_map
+map_check heavy max class_map
+map_check strategic max class_map
+map_check Light low class_map
+map_check Standard high class_map
+map_check Heavy max class_map
+map_check bogus-cls high fallback
+
+# ── NEGATIVE CONTROL (fix-round-3 point 3): delete the map body ─────────────
+# The R2 critical finding: with the whole case body deleted, the old e2e
+# assertions stayed green (they checked only the effort VALUE, which the
+# fallback happened to reproduce). Prove that can't happen again: strip the
+# three map arms from the SAME extracted function and confirm every class
+# now reports source=fallback, never class_map.
+MAP_MUT_SRC="${FIXTURE}/map-extract-mutant.sh"
+{
+  sed -n '/^_glm_effort_for_class()/,/^}$/p' "${DISPATCH}" | \
+    sed -e "/'low' 'class_map'/d" -e "/'high' 'class_map'/d" -e "/'max' 'class_map'/d"
+  printf 'RESOLVED_EFFORT="%s"\n' "${RESOLVED_EFFORT:-}"
+  printf 'for c in trivial light bulk standard heavy strategic; do printf "%%s=%%s\\n" "$c" "$(_glm_effort_for_class "$c")"; done\n'
+} > "${MAP_MUT_SRC}"
+MAP_MUT_OUT="$(bash "${MAP_MUT_SRC}" 2>&1)" || MAP_MUT_OUT=""
+if [[ -n "${MAP_MUT_OUT}" ]] && ! printf '%s\n' "${MAP_MUT_OUT}" | grep -q 'class_map'; then
+  pass "NC(map-body,red): deleting the class map body drives every class to source=fallback (detectable)"
 else
-  fail "dispatch: journal missing effort_applied or still has effort_dropped — got: $(grep -E 'effort_(applied|dropped)' "${JOURNAL_RECORD}" 2>/dev/null | head -2)"
+  fail "NC(map-body): mutant with the map body deleted still reports source=class_map somewhere — got: ${MAP_MUT_OUT}"
 fi
 
 # ── NEGATIVE CONTROL (red first): drop the effort pass-through ──────────────
@@ -271,6 +319,10 @@ fi
 : > "${JOURNAL_RECORD}"
 (
   cd "${REPO}" || exit 97
+  # fix-round-3 (C3, same hazard as _effort_run_v1): scrub ambient GLM_EFFORT
+  # so the mutant's stripped pass-through is what the recorder sees, never an
+  # inherited leftover masking the mutation.
+  unset GLM_EFFORT
   unset LEADV2_PROJECT_ROOT LEADV2_LANE_WORK_ROOT LEADV2_TASK_ID LEADV2_PARENT_SESSION_ID LEADV2_DISPATCH_LANE_NAME
   CLAUDE_PROJECT_ROOT="${REPO}" \
   LEADV2_PROJECT_ROOT="${REPO}" \
