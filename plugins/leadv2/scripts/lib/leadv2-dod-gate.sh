@@ -42,11 +42,17 @@ _dod_diff_paths() { # <diff_file> -> stdout, one path per line
   sed -n 's|^+++ b/||p' "$1" 2>/dev/null | grep -v '^/dev/null$'
 }
 
-# Suite paths touched by the diff, using the EXACT regex the falsifiability
-# gate already uses at leadv2-review-run.sh:1318 (reused verbatim, not
-# reinvented, per architect-v2 §3 capability census).
+# Suite paths touched by the diff. Broader than the falsifiability gate's own
+# conventional-dir-only regex (leadv2-review-run.sh:1318) on purpose: that
+# regex pre-filters to the 4 self-selecting directories, which made check
+# (c)'s own self_select case below unreachable-false when reused verbatim —
+# every path that survived the filter was, by construction, already in one
+# of those directories, so the "needs an EXTRA_SUITE_MAP row" branch could
+# never fire. Matching any `test-*.sh` regardless of directory keeps every
+# conventional-dir suite path AND surfaces the real failure mode this check
+# exists for: a test file dropped outside a self-selecting directory.
 _dod_diff_suite_paths() { # <diff_file> -> stdout, one path per line
-  _dod_diff_paths "$1" | grep -E '(^|/)(tests/|plugins/leadv2/scripts/tests/|\.claude/scripts/tests/|plugins/leadv2/tests/)test-[^/]+\.sh$' | sort -u
+  _dod_diff_paths "$1" | grep -E '(^|/)test-[^/]+\.sh$' | sort -u
 }
 
 # Task dir relative to root, for git-committed-content checks (portable to
