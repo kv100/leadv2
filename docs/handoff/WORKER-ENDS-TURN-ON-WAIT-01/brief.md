@@ -40,3 +40,28 @@ So the worker's instinct to background it is rational — the fix must address b
 `docs/handoff/dispatch-45cb915e/developer.stream.jsonl`, `dispatch-b94c3b1c/developer.stream.jsonl`,
 `dispatch-0537dcc5/developer.stream.jsonl` (result rows, `subtype: success`); persona-engine
 `docs/leadv2/open-threads.md` entries of 2026-09-02.
+
+## Root cause found — 2026-09-02, 4th occurrence
+The R4f worker ended after 5 turns with: "Dispatched the R4 developer subagent in the background; **per
+pulse mode** I'll stay silent until its completion notification, an async question, or Gate/close."
+That is the LEAD's pulse rule (silence between milestones, speak only at Gate-1 / async question /
+Phase-8 close) being inherited by a DISPATCHED WORKER session, where it means "end the turn and wait" —
+and a dispatched worker has no next turn. So the disease is not worker laziness: the worker is obeying a
+rule written for a different role.
+
+Add to the required fixes:
+6. The pulse/silence rules must be scoped to the lead. The dispatched-worker preamble must state
+   explicitly: pulse mode does NOT apply to you; you have exactly one turn-chain and no notifications will
+   reach you; never delegate and wait, never background anything you need the result of.
+7. **Nested agents stay ALLOWED — the ban would be the wrong fix** (founder correction, 2026-09-02: the
+   whole point of giving workers subagents is that cheaper models do the bulk work). What must be forbidden
+   is the two shapes that actually lost work today:
+   - `run_in_background=true` from a dispatched worker. The worker has one turn-chain and no notifications,
+     so a background child is unreachable. Nested agents must be spawned SYNCHRONOUSLY and awaited inside
+     the same turn.
+   - `isolation:"worktree"`. BRAIN-CLASS-LIVE-01 R4g's nested developer wrote a correct 119-line diff into
+     a stray worktree the epilogue never reads; the lead had to salvage it by hand. Nested agents must work
+     in the lane worktree.
+   - The parent must commit the child's output before its own turn-chain ends.
+   The preamble should say exactly this, and the epilogue should flag a lane whose only new work sits in a
+   worktree other than the lane's.
