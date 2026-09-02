@@ -239,6 +239,9 @@ leadv2-suite-falsifiable:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
 run-core-offline.sh:plugins/leadv2/scripts/tests/test-suite-lock-scope.sh
 leadv2-lane-watch-v2.sh:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
 leadv2-lane-watch-v2:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
+# LEADV2-HOOK-CACHE-DEPLOY-01: the cache-sync script's behavioural lock is a
+# differently-named suite (no test-leadv2-plugin-cache-sync stem match).
+leadv2-plugin-cache-sync.sh:plugins/leadv2/scripts/tests/test-plugin-cache-sync.sh
 leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
 leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
