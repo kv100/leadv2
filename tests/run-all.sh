@@ -206,6 +206,11 @@ leadv2-diverge.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-learn.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-diagnose.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-po-feedback-loop.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+# FABLE-THINK-TIER-01 R9: the unguarded-fallback behavioural proof (executes the workflow .js via
+# a Node harness, not a grep) lives in its own suite — map every workflow file it actually runs.
+leadv2-diverge.js:plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
+leadv2-po-feedback-loop.js:plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
+leadv2-audit.js:plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
 leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-one-copy-drift.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
 leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
