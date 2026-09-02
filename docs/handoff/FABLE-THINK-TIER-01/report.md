@@ -148,3 +148,63 @@ $ grep -nE '(:-opus|="opus"|_MODEL:"opus"|"opus")' on the four R3 sites
 ```
 
 Mutation negative controls (brief step 4): NOT run by the worker in this round — unverified.
+
+## R6 (2026-09-02, Sonnet arm — GLM failed the same findings twice)
+
+### R6 findings table (adjudication of the four R5 review findings)
+
+| # | File:line (R5) | Verdict | Evidence command (pre-fix) |
+|---|----------------|---------|---------------------------|
+| 1 | `leadv2-dispatch-code.sh:474` — `LEADV2_THINK_MODEL` export uses `${SCRIPT_DIR}` ~20 lines before it is assigned (:494), under `set -u` → dead export channel | **REAL** | `sed -n '473,476p;494p' plugins/leadv2/scripts/leadv2-dispatch-code.sh` showed block@473 before `SCRIPT_DIR=`@494; runtime probe of the extracted block under `set -u` yielded child env `LEADV2_THINK_MODEL=UNSET` (now pinned as suite case 1e, which read `file order: block@473 < SCRIPT_DIR@483` pre-fix and went red in negative control NC1) |
+| 2 | `leadv2-repo-install.sh:312` — install-time `LEADV2_THINK_MODEL` env pin short-circuits `think_model()`, making the yaml `unavailable: true` kill switch dead for every bash call site | **REAL** | pre-fix `leadv2-router.sh` `think_model()` line 68: `if [[ -n "${LEADV2_THINK_MODEL:-}" ]]; then printf ...; return 0` — env returned BEFORE any yaml read; live probe with the pre-fix router (git HEAD copy): `LEADV2_THINK_MODEL=fable` + yaml `fable: unavailable: true` → printed `fable` (kill switch bypassed) |
+| 3 | `tests/run-all.sh:182` — 6 carrier rows (py/yaml/js) can never fire: the changed-file loop `continue`d on anything not `scripts/*.sh`, `scripts/lib/*.sh`, `hooks/*.sh` | **REAL** | pre-fix loop: `case "${cf}" in plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;; *) continue ;; esac`; negative control NC3 (pre-fix run-all via `git show HEAD:tests/run-all.sh`) → `test-run-all-carrier-map: 1 passed, 3 failed` |
+| 4 | `report.md:150` — R5 brief's required `## R5 findings` table / falsifiable verdict / run-all tail missing; report ended at Round 4 | **REAL** | `wc -l report.md` = 150 with no `## R5 findings` section (`grep -c '## R5 findings' report.md` = 0 pre-R6); this section and the R6 record below close the gap |
+
+### Fixes (design decision honoured: yaml kill switch wins; env is only a default)
+
+1. **`leadv2-dispatch-code.sh`** — the `LEADV2_THINK_MODEL` export block moved to immediately
+   AFTER the `SCRIPT_DIR=` assignment (block@495, assignment@483). Not a re-order of `SCRIPT_DIR`
+   itself. Suite case **1e** runs the REAL extracted export block plus the REAL assignment line in
+   FILE ORDER under `set -u`, then asserts a spawned child (`bash -c`) sees `LEADV2_THINK_MODEL`
+   equal to the resolver's answer — green:
+   `PASS: dispatch export path runs under set -u; spawned child sees LEADV2_THINK_MODEL=fable`
+2. **`plugins/leadv2/scripts/leadv2-router.sh`** — `think_model()` rewritten: `_think_cap_unavailable`
+   probes `model-capability.yaml` for the CANDIDATE (env pin or fable default); `unavailable: true`
+   skips it ALWAYS (env pin → falls to fable unless fable also unavailable → opus). Resolution order
+   is now yaml kill switch → env default → built-in fable → opus fallback.
+   `leadv2-repo-install.sh` is UNCHANGED (binding design: it may still write the env default — it is
+   now harmless because the yaml is consulted first). Suite case **1d** — `LEADV2_THINK_MODEL=fable`
+   + yaml `fable: unavailable: true` → must not return fable:
+   `PASS: kill switch beats env: LEADV2_THINK_MODEL=fable + fable unavailable -> 'opus' (never fable)`
+   Resolver matrix (post-fix live probes): default→`fable`; env=opus→`opus`; kill+env=fable→`opus`;
+   kill+noenv→`opus`; kill+env=sonnet→`sonnet` (unrelated pin still honoured).
+3. **`tests/run-all.sh`** — three new elif branches give synthetic stems to the non-.sh carriers
+   (`model-capability.yaml`, `lib/leadv2-glm-policy-resolve.py`, `plugins/leadv2/workflows/*.js`),
+   plus `EXTRA_SUITE_MAP` row for the resolver itself (`leadv2-think-model.sh`) and a self-map row
+   (`run-all.sh:tests/test-run-all-carrier-map.sh`). New suite **`tests/test-run-all-carrier-map.sh`**
+   builds a scratch git repo, copies the REAL run-all.sh in, dirties ONE carrier at a time, and
+   asserts the `[RUN]` line — green: yaml alone selects; py alone selects; js alone selects;
+   negative control (unmapped `scripts/*.sh` dirt) does NOT select.
+
+### Negative controls (each defect re-applied in a SCRATCH copy, canonical tree untouched)
+
+- **NC1 (finding 1)** — scratch `leadv2-dispatch-code.sh` with the block moved back before the
+  assignment, suite re-run against it:
+  `FAIL: dispatch export path DEAD: spawned child LEADV2_THINK_MODEL='UNSET' ... (file order: SCRIPT_DIR@499, block@494)` → red
+- **NC2 (finding 2)** — pre-R6 router (`git show HEAD:...` copy, live probe confirmed the defect:
+  env=fable + kill yaml → printed `fable`), suite re-run against it:
+  `FAIL: kill switch DEAD under env pin: LEADV2_THINK_MODEL=fable + fable unavailable still returned fable`; suite rc=1 → red
+- **NC3 (finding 3)** — pre-R6 `run-all.sh` (`git show HEAD:tests/run-all.sh`):
+  `FAIL: dirty model-capability.yaml alone did NOT select the suite` (+py, +js) —
+  `test-run-all-carrier-map: 1 passed, 3 failed` → red
+
+### Falsifiable gate (leadv2-suite-falsifiable.sh, cwd = lane root)
+
+```
+suite=plugins/leadv2/scripts/tests/test-fable-think-tier.sh    baseline rc=0; assertion_tools_broken rc=1 (61 shims) → verdict: falsifiable
+suite=tests/test-run-all-carrier-map.sh                        baseline rc=0; assertion_tools_broken rc=1 (4 shims)  → verdict: falsifiable
+```
+
+### run-all --scope changed tail
+
+See the lane journal / final report paste for this run (executed post-fix; result recorded below).

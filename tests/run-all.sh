@@ -182,6 +182,7 @@ leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 # FABLE-THINK-TIER-01: the think-tier contract (resolver default fable / opus
 # fallback, no hardcoded opus spawn pins, fable-ahead-of-opus review pool,
 # zero opus-4 literals) must re-run whenever any of its carriers changes.
+leadv2-think-model.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-router.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-glm-policy-resolve.py:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
@@ -278,6 +279,7 @@ leadv2-plugin-cache-sync.sh:plugins/leadv2/scripts/tests/test-plugin-cache-sync.
 leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
 leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
+run-all.sh:tests/test-run-all-carrier-map.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-lane-outcome.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
@@ -401,6 +403,19 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         # must select the suites that grade routing, same shape as
         # freepool-arm.yaml above.
         stem="leadv2-routing.yaml"
+      elif [[ "${cf}" == "plugins/leadv2/config/model-capability.yaml" ]]; then
+        # FABLE-THINK-TIER-01 R6: a data-only capability change must select
+        # the think-tier contract suite (same shape as freepool-arm.yaml).
+        stem="model-capability.yaml"
+      elif [[ "${cf}" == "plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py" ]]; then
+        # FABLE-THINK-TIER-01 R6: the policy resolver is a py carrier of the
+        # think-tier contract — the scripts/*.sh allowlist below never saw it.
+        stem="leadv2-glm-policy-resolve.py"
+      elif [[ "${cf}" == plugins/leadv2/workflows/*.js ]]; then
+        # FABLE-THINK-TIER-01 R6: the four THINK workflows (diverge/learn/
+        # diagnose/po-feedback-loop) are js carriers — the R5 map rows were
+        # dead because the loop continued before any non-.sh reached here.
+        stem="$(basename "${cf}")"
       elif [[ "${cf}" == ".gitignore" ]]; then
         # HANDOFF-ARTIFACTS-GITIGNORED-01: .gitignore isn't a plugins/leadv2
         # script, so it needs its own synthetic stem to reach EXTRA_SUITE_MAP

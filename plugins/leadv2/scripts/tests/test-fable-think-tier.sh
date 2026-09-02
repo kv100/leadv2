@@ -76,6 +76,62 @@ else
   fail "resolver fallback expected 'opus', got '${out:-<empty>}'"
 fi
 
+# --- 1d. R6 kill switch beats env: env=fable + yaml fable unavailable -------
+# The R5 defect: think_model() short-circuited on env, so the settings.json
+# install-time LEADV2_THINK_MODEL default written by leadv2-repo-install.sh
+# made the yaml `unavailable: true` kill switch dead for every bash call
+# site. Binding design (R6): the yaml kill switch wins; env is only a
+# default. Resolver must NOT return fable here.
+out="$(LEADV2_THINK_MODEL=fable LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-unavailable.yaml" bash "$ROUTER" think-model 2>/dev/null)"
+if [[ "$out" != "fable" ]]; then
+  pass "kill switch beats env: LEADV2_THINK_MODEL=fable + fable unavailable -> '${out}' (never fable)"
+else
+  fail "kill switch DEAD under env pin: LEADV2_THINK_MODEL=fable + fable unavailable still returned fable"
+fi
+
+# --- 1e. R6 dispatch export path runs: var reaches a spawned child ---------
+# R5 defect: the export block in leadv2-dispatch-code.sh used ${SCRIPT_DIR}
+# ~20 lines BEFORE SCRIPT_DIR was assigned, under set -u — the substitution
+# died and the var was never exported. This case RUNS the real export block
+# plus the real SCRIPT_DIR assignment in FILE ORDER and asserts a spawned
+# child sees LEADV2_THINK_MODEL. A grep cannot catch the old defect (text
+# was present; runtime was dead).
+DC="${LEADV2_TEST_DISPATCH_CODE:-$SCRIPTS_ROOT/leadv2-dispatch-code.sh}"
+if [[ -f "$DC" ]]; then
+  sd_line="$(grep -n '^SCRIPT_DIR=' "$DC" | head -1 | cut -d: -f1)"
+  blk_line="$(grep -n '^if \[\[ -z "${LEADV2_THINK_MODEL:-}" \]\]; then' "$DC" | head -1 | cut -d: -f1)"
+  blk_off="$(tail -n +"${blk_line:-1}" "$DC" | grep -n '^fi$' | head -1 | cut -d: -f1)"
+  if [[ -n "$sd_line" && -n "$blk_line" && -n "$blk_off" ]]; then
+    blk_end=$((blk_line + blk_off - 1))
+    export_block="$(sed -n "${blk_line},${blk_end}p" "$DC")"
+    sd_assign="$(sed -n "${sd_line}p" "$DC")"
+    # runtime = the two pieces in FILE ORDER — if the export block sits
+    # before the assignment, set -u kills it and the child sees nothing.
+    if [[ "$sd_line" -lt "$blk_line" ]]; then
+      runtime="${sd_assign}"$'\n'"${export_block}"
+    else
+      runtime="${export_block}"$'\n'"${sd_assign}"
+    fi
+    expected="$(bash "$ROUTER" think-model 2>/dev/null)"
+    child="$(bash -c 'set -u; eval "$1"; bash -c "printf %s \${LEADV2_THINK_MODEL-UNSET}"' "$DC" "$runtime" 2>/dev/null)"
+    if [[ -n "$child" && "$child" != "UNSET" && "$child" == "$expected" ]]; then
+      pass "dispatch export path runs under set -u; spawned child sees LEADV2_THINK_MODEL=${child}"
+    else
+      fail "dispatch export path DEAD: spawned child LEADV2_THINK_MODEL='${child:-<empty>}' (expected '${expected}') — block likely evaluated before SCRIPT_DIR assignment (file order: SCRIPT_DIR@${sd_line}, block@${blk_line})"
+    fi
+    # complement (ordering pin, not the proof): the block must sit after the assignment
+    if [[ "$sd_line" -lt "$blk_line" ]]; then
+      pass "file order: SCRIPT_DIR assignment (line ${sd_line}) precedes export block (line ${blk_line})"
+    else
+      fail "file order: export block (line ${blk_line}) precedes SCRIPT_DIR assignment (line ${sd_line})"
+    fi
+  else
+    fail "dispatch export case could not locate its anchors (SCRIPT_DIR@${sd_line:-?}, block@${blk_line:-?}) in $DC"
+  fi
+else
+  fail "dispatch script not found: $DC"
+fi
+
 # --- 2. TREE-WIDE census grep-gate: zero live think-role 'opus' pins --------
 # This is the census command from the lane report, run over the whole plugin
 # tree. Survivors allowed (each classified in the dispatch round-2 report):

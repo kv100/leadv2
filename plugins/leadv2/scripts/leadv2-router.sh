@@ -64,29 +64,41 @@ readonly MODEL_CAPABILITY_YAML="${LEADV2_MODEL_CAPABILITY_YAML:-${SCRIPT_DIR}/..
 # model-capability.yaml marks the fable row `unavailable: true`, in which case
 # opus (the documented fallback) is used. No caller may hardcode `opus` at a
 # think-role spawn site — call this instead.
-think_model() {
-  if [[ -n "${LEADV2_THINK_MODEL:-}" ]]; then
-    printf '%s\n' "${LEADV2_THINK_MODEL}"
-    return 0
-  fi
-  local unavailable="false"
-  if [[ -f "${MODEL_CAPABILITY_YAML}" ]]; then
-    unavailable="$(python3 - "${MODEL_CAPABILITY_YAML}" <<'PY' 2>/dev/null || echo false
+_think_cap_unavailable() { # $1=candidate model -> prints true/false
+  python3 - "${MODEL_CAPABILITY_YAML}" "$1" <<'PY' 2>/dev/null || echo false
 import sys, yaml
 try:
     cfg = yaml.safe_load(open(sys.argv[1])) or {}
-    row = cfg.get("fable") or {}
+    row = cfg.get(sys.argv[2]) or {}
     print("true" if row.get("unavailable") else "false")
 except Exception:
     print("false")
 PY
-    )"
-  fi
+}
+# R6 resolution order (lead decision, binding): (1) model-capability.yaml
+# `unavailable: true` for the candidate skips it ALWAYS — the yaml kill switch
+# beats everything, including an env pin (the settings.json install-time
+# default written by leadv2-repo-install.sh must never resurrect a dead
+# model); (2) LEADV2_THINK_MODEL env, if set and not unavailable; (3)
+# built-in default fable (repo-install feeds the per-repo default through
+# that env var); (4) opus, the documented fallback, only when the preferred
+# candidate is unavailable. LEADV2_THINK_MODEL stays a DEFAULT, never an
+# override that bypasses the capability data.
+think_model() {
+  local candidate="${LEADV2_THINK_MODEL:-fable}"
+  local unavailable
+  unavailable="$(_think_cap_unavailable "${candidate}")"
   if [[ "${unavailable}" == "true" ]]; then
-    printf 'opus\n'
-  else
-    printf 'fable\n'
+    local fable_unavailable
+    fable_unavailable="$(_think_cap_unavailable "fable")"
+    if [[ "${candidate}" != "fable" && "${fable_unavailable}" != "true" ]]; then
+      printf 'fable\n'   # an unavailable env pin falls back to the default arm
+    else
+      printf 'opus\n'
+    fi
+    return 0
   fi
+  printf '%s\n' "${candidate}"
 }
 
 if [[ "${1:-}" == "think-model" ]]; then
