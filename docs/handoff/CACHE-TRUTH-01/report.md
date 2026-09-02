@@ -376,4 +376,78 @@ verdict: falsifiable — a failure injection turned the suite red (rc=1)
 - Re-read counting (Read >200-line calls per run) not implemented; flagged
   as follow-up, out of this lane's scope.
 - `run-all.sh --scope changed` not run to full completion (>10min via
-  run-core-offline); wiring proven by direct stem-map simulation instead.
+  run-core-offline). R4 update: selection is now proven with an exact-scan
+  harness (see R4 section) — and the R3 "direct stem-map simulation" claim
+  was wrong anyway: the four arm rows it claimed did not exist (R4 finding 2,
+  REAL).
+
+## R4 findings (round-3 review, committed-tree diff a8ca06c2, verdict FAIL high=2)
+
+| # | Finding | Verdict | Evidence |
+|---|---------|---------|----------|
+| 1 | `leadv2-cache-truth.sh` — on a mixed stream `input_tokens` sums only REPORTED turns while the `n_reported==0` branch sums ALL turns (one column, two definitions) | **REAL** | Pre-fix probe on the lane tip (reported turn in=100 + unreported turn in=400): tool printed `input_tokens=100` — 400 tokens of real input silently dropped. Suite red run (old tool + new suite): `[TEST] FAIL: mixed fixture: expected input_tokens=200 got '100'` (PASS=7 FAIL=13, rc=1). |
+| 2 | `tests/run-all.sh` EXTRA_SUITE_MAP — deliverable claimed 5 cache-truth rows "verified", only `leadv2-cache-truth.sh` existed; `glm-coder.sh` / `freepool-coder.sh` / `kimi-coder.sh` / `claude-subsession.sh` did not map to `test-cache-truth.sh` | **REAL** | Pre-fix: `grep -n "test-cache-truth" tests/run-all.sh` → single hit at line 237 (`leadv2-cache-truth.sh:...`); the four arm rows were absent. |
+
+### R4 fix — finding 1 (one definition per column)
+
+Chosen: **`input_tokens` sums ALL turns in every branch; new `input_reported`
+column sums the reported subset.** `hit_ratio` denominator stays the reported
+subset (`input_reported + cache_read + cache_creation`); `cache_read` /
+`cache_creation` remain reported-subset sums. Documented in the printed header
+line (the new column name itself) and the file header comment. Post-fix probe
+(same 100+400 stream):
+
+```
+arm	run	turns	input_tokens	input_reported	cache_read	cache_creation	hit_ratio	first_break	reported
+unknown	tmp.NzsENbRR2X	2	500	100	0	0	0.0000	none	1/2
+```
+
+New suite assertions, hand-computed from the mixed fixture (m1=100 reported,
+m2/m3=50 unreported): `input_tokens = 100+50+50 = 200`, `input_reported = 100`.
+
+### R4 fix — finding 2 (4 missing map rows)
+
+Rows added at `tests/run-all.sh:243-246`: `glm-coder.sh`, `freepool-coder.sh`,
+`kimi-coder.sh`, `claude-subsession.sh` →
+`plugins/leadv2/scripts/tests/test-cache-truth.sh`.
+
+Selection proof — exact-scan harness (lines 1..411 of `tests/run-all.sh` = arg
+parsing + the whole `--scope changed` scan, plus a `SELECTED:` print instead of
+the execution loop), state file pinned to HEAD so the changed set is exactly
+one dirty file, `plugins/leadv2/scripts/glm-coder.sh` (comment marker, reverted
+after the run):
+
+```
+SELECTED: .../plugins/leadv2/scripts/tests/run-core-offline.sh
+SELECTED: .../tests/test-status-surface-bash32.sh
+SELECTED: .../tests/test-status-surface-single-lead.sh
+SELECTED: .../tests/test-status-surface-fast-names.sh
+SELECTED: .../plugins/leadv2/scripts/tests/test-glm-lock-per-lane.sh
+SELECTED: .../plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
+SELECTED: .../plugins/leadv2/scripts/tests/test-cache-truth.sh
+SELECTED: .../plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
+SELECTED: .../plugins/leadv2/scripts/tests/test-lane-outcome.sh
+harness-rc=0
+```
+
+`test-cache-truth.sh` is selected from a glm-coder.sh-only change.
+Attribution: after the R4 commit, no other dirty or in-range file maps to that
+suite, so the new row itself is what fired. (`run-all.sh --dry-run` does not
+exist — no such flag; the scan-exact harness is the equivalent listing.)
+
+### R4 suite + falsifiable (from lane root as cwd)
+
+```
+$ bash plugins/leadv2/scripts/tests/test-cache-truth.sh
+[TEST] PASS: mixed fixture: input_tokens sums ALL turns (hand-computed 100+50+50=200)
+[TEST] PASS: mixed fixture: input_reported sums reported subset only (hand-computed 100)
+...
+PASS=20 FAIL=0
+
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-cache-truth.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=6
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
