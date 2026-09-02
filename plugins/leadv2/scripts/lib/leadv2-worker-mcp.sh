@@ -184,9 +184,20 @@ PYEOF
 #           $3 = out dir for the resolved probe (optional; a private mktemp
 #                scratch is used and removed when empty)
 #   Output: rc=0  attached  → the full worker-code-intel-preamble.md on stdout
-#           rc=3  fail-open → one-line fallback note on stdout (promises
-#                             nothing; grep/Read always exist)
-#           rc=4  unwired   → nothing on stdout (arm has no MCP wiring)
+#           rc=3  fail-open → nothing on stdout (WORKER-MCP-ALL-ARMS-01 R4:
+#                             every fail-open path here skips ONLY the
+#                             role-scoped diet resolve — the launcher still
+#                             appends no --strict-mcp-config, so the child
+#                             `claude` falls back to inheriting the project's
+#                             FULL default MCP set, same as an un-dieted
+#                             session. A "code-intel MCP unavailable" note on
+#                             this branch was therefore backwards: it told the
+#                             session with the widest tool set to stop using
+#                             tools it still has. Silence is the only claim
+#                             that is never false here.)
+#           rc=4  unwired   → nothing on stdout (arm has no MCP wiring at
+#                             all — codex; this is the one branch where "no
+#                             mcp__* tools" is actually true)
 #   Every rc is a decision, never an error to propagate — the caller only
 #   picks the printed text (or its absence) and logs the mode.
 worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir (optional)
@@ -207,7 +218,9 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
       # --mcp-config and writes no worker_mcp_attached record, so the honest
       # answer is "not attached" — never promise.
       if [[ "${LEADV2_SUBSESSION_SLIM_MCP:-0}" != "1" ]]; then
-        printf '%s\n' "code-intel MCP unavailable in this session — use grep/Read instead of mcp__* tools."
+        # No --mcp-config is appended on this path (see doc block above) —
+        # the child inherits the FULL default MCP set, so printing "MCP
+        # unavailable" here would be false. Say nothing.
         return 3
       fi
       ;;
@@ -215,7 +228,9 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
       # glm/glm-flash/kimi/freepool launchers gate on LEADV2_WORKER_MCP
       # (default 1). Mirror their default exactly.
       if [[ "${LEADV2_WORKER_MCP:-1}" != "1" ]]; then
-        printf '%s\n' "code-intel MCP unavailable in this session — use grep/Read instead of mcp__* tools."
+        # Same fail-open shape: worker_mcp_resolve() short-circuits, no
+        # --strict-mcp-config is appended, the child inherits the FULL
+        # default MCP set. Say nothing rather than claim it has none.
         return 3
       fi
       ;;
@@ -225,7 +240,8 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
   if [[ -z "${out_dir}" ]]; then
     scratch="$(mktemp -d "${TMPDIR:-/tmp}/worker-mcp-preamble.XXXXXX")" || scratch=""
     if [[ -z "${scratch}" ]]; then
-      printf '%s\n' "code-intel MCP unavailable in this session — use grep/Read instead of mcp__* tools."
+      # Can't run the prediction probe at all — unknown, not "unavailable".
+      # The real launcher's own resolve call is unaffected by this failure.
       return 3
     fi
     out_dir="${scratch}"
@@ -234,7 +250,9 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
   mcp_cfg="$(resolve_role_mcp_config "${role}" "${out_dir}" "${project_root}")" || rc=$?
   [[ -z "${scratch}" ]] || rm -rf "${scratch}" 2>/dev/null || true
   if [[ ${rc} -ne 0 || -z "${mcp_cfg}" ]]; then
-    printf '%s\n' "code-intel MCP unavailable in this session — use grep/Read instead of mcp__* tools."
+    # resolve_role_mcp_config() failed/returned nothing -- its own callers
+    # (this same fail-open taxonomy) fall back to spawning with the FULL
+    # default MCP set, never zero. Say nothing rather than claim otherwise.
     return 3
   fi
 
@@ -248,10 +266,10 @@ worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir
   local preamble_file="${_script_dir}/../prompts/worker-code-intel-preamble.md"
   [[ -f "${preamble_file}" ]] || preamble_file="${CLAUDE_PLUGIN_ROOT:-${_script_dir}/..}/prompts/worker-code-intel-preamble.md"
   if [[ ! -f "${preamble_file}" ]]; then
-    # Config would attach but the preamble text is gone — fail closed to the
-    # note: an attach with no routing text must not silently inject nothing
-    # and lose the routing advice.
-    printf '%s\n' "code-intel MCP unavailable in this session — use grep/Read instead of mcp__* tools."
+    # mcp_cfg resolved fine -- this spawn WILL attach role-scoped MCP, only
+    # the routing-text file is missing. "MCP unavailable" would be false in
+    # the opposite direction from the other rc=3 branches (this one really
+    # does attach); say nothing rather than assert either way.
     return 3
   fi
   cat "${preamble_file}"

@@ -19,10 +19,15 @@
 #   - R3 preamble gate (reviewer H2): the dispatcher injects the code-intel
 #     preamble ONLY for arms whose MCP attach will succeed. lib's
 #     worker_mcp_preamble_for_arm() is exercised behaviourally: attached ->
-#     preamble text, LEADV2_WORKER_MCP=0 / fail-open -> one-line note,
-#     codex -> nothing, sonnet default -> nothing, sonnet SLIM_MCP=1 ->
-#     preamble. dispatch-code.sh is asserted to call the gate and to contain
-#     NO unconditional-injection marker.
+#     preamble text, LEADV2_WORKER_MCP=0 / fail-open / codex / sonnet default
+#     -> nothing (R4 finding 1: every fail-open branch still spawns with the
+#     FULL default MCP set, never zero, so a "code-intel MCP unavailable"
+#     note there was an inverted claim -- deleted, not just reworded), sonnet
+#     SLIM_MCP=1 -> preamble. dispatch-code.sh is asserted to call the gate,
+#     to contain NO unconditional-injection marker, AND (R4 finding 2) the
+#     dispatcher's real mission-building path is exercised end-to-end via
+#     LEADV2_DISPATCH_SOURCE_ONLY=1 so a deleted `mission="${_ci_txt}"...`
+#     line is caught, not just the presence of the gate call.
 #   - NEGATIVE CONTROLS: scratch-copy mutations (a) freepool `run` wiring,
 #     (b) freepool cmd_run_child (bg) wiring, (c) kimi cmd_run_child (bg)
 #     wiring, (d) kimi bg tee -a dropped (round-2 H1), (e) dispatch preamble
@@ -363,7 +368,7 @@ PREAMBLE_LIB="${PLUGIN_SCRIPTS}/lib/leadv2-worker-mcp.sh"
 GATE_REPO="$(make_bg_repo wmaa-gate-repo)"   # .mcp.json carries both servers
 NO_MCP_DIR="${FIXTURE}/wmaa-no-mcp-home"; mkdir -p "${NO_MCP_DIR}"
 
-# gate_case_run <label> <expected-rc> <expect-preamble|expect-note|expect-empty> <arm> <root> [env...]
+# gate_case_run <label> <expected-rc> <expect-preamble|expect-empty> <arm> <root> [env...]
 gate_case_run() {
   local label="$1" want_rc="$2" want_kind="$3" arm="$4" root="$5"
   shift 5
@@ -382,13 +387,6 @@ gate_case_run() {
       else
         fail "preamble gate: ${label} -> rc=${rc} (want ${want_rc}) + preamble text (got: $(printf '%s' "${out}" | head -1))"
       fi ;;
-    expect-note)
-      if [[ "${rc}" == "${want_rc}" ]] && printf '%s' "${out}" | grep -q "code-intel MCP unavailable" \
-         && ! printf '%s' "${out}" | grep -q "CODE-INTEL ROUTING"; then
-        pass "preamble gate: ${label} -> rc=${rc} + fallback note, no preamble"
-      else
-        fail "preamble gate: ${label} -> rc=${rc} (want ${want_rc}) + fallback note, no preamble (got: $(printf '%s' "${out}" | head -1))"
-      fi ;;
     expect-empty)
       if [[ "${rc}" == "${want_rc}" ]] && [[ -z "${out//[$'\n']/}" ]]; then
         pass "preamble gate: ${label} -> rc=${rc} + empty output"
@@ -401,22 +399,26 @@ gate_case_run() {
 gate_case_run "kimi attached (default gate)"            0 expect-preamble kimi    "${GATE_REPO}"
 gate_case_run "freepool attached (default gate)"        0 expect-preamble freepool "${GATE_REPO}"
 gate_case_run "glm attached (default gate)"             0 expect-preamble glm     "${GATE_REPO}"
-gate_case_run "kimi LEADV2_WORKER_MCP=0"                3 expect-note     kimi    "${GATE_REPO}" "LEADV2_WORKER_MCP=0"
-gate_case_run "kimi fail-open (nothing resolvable)"     3 expect-note     kimi    "${NO_MCP_DIR}" "HOME=${NO_MCP_DIR}"
+gate_case_run "kimi LEADV2_WORKER_MCP=0"                3 expect-empty    kimi    "${GATE_REPO}" "LEADV2_WORKER_MCP=0"
+gate_case_run "kimi fail-open (nothing resolvable)"     3 expect-empty    kimi    "${NO_MCP_DIR}" "HOME=${NO_MCP_DIR}"
 gate_case_run "codex unwired"                           4 expect-empty    codex   "${GATE_REPO}"
-gate_case_run "sonnet default (no SLIM_MCP)"            3 expect-note     sonnet  "${GATE_REPO}"
+gate_case_run "sonnet default (no SLIM_MCP)"            3 expect-empty    sonnet  "${GATE_REPO}"
 gate_case_run "sonnet LEADV2_SUBSESSION_SLIM_MCP=1"     0 expect-preamble sonnet  "${GATE_REPO}" "LEADV2_SUBSESSION_SLIM_MCP=1"
 
-# The note must never promise a concrete mcp__ namespace (the generic
-# "instead of mcp__* tools" mention is the instruction, not a promise).
-_note="$(env HOME="${NO_MCP_DIR}" bash -c '
+# WORKER-MCP-ALL-ARMS-01 R4 (reviewer finding 1): every rc=3 fail-open branch
+# actually describes a spawn that still gets no --strict-mcp-config, so the
+# child inherits the FULL default MCP set (never zero) -- a "code-intel MCP
+# unavailable" note there was backwards. The fix is silence (rc=3 + empty
+# stdout, asserted by the expect-empty rows above); this is the negative
+# control proving the false claim cannot silently come back.
+_regression_note="$(env HOME="${NO_MCP_DIR}" bash -c '
   source "$1"; shift
   worker_mcp_preamble_for_arm kimi "$2" ""
 ' _ "${PREAMBLE_LIB}" kimi "${NO_MCP_DIR}" 2>/dev/null)"
-if printf '%s' "${_note}" | grep -Eq "mcp__(repowise|codebase-memory)" ; then
-  fail "preamble gate: fallback note must not name concrete mcp__* tool namespaces"
+if [[ -z "${_regression_note//[$'\n']/}" ]]; then
+  pass "preamble gate: fail-open branch stays silent (no inverted 'MCP unavailable' claim)"
 else
-  pass "preamble gate: fallback note promises no concrete mcp__* tools"
+  fail "preamble gate: fail-open branch printed non-empty text (regression of R4 finding 1: ${_regression_note})"
 fi
 
 # ── dispatch-code.sh: gated injection call site, no unconditional marker ────
@@ -442,6 +444,99 @@ if grep -q 'worker_mcp_preamble_for_arm' "${DISPATCH_SCRIPT}" 2>/dev/null \
   pass "leadv2-dispatch-code.sh: sources the shared worker-MCP lib (no second resolver)"
 else
   fail "leadv2-dispatch-code.sh: sources the shared worker-MCP lib (no second resolver)"
+fi
+
+# ── dispatch-code.sh: _spawn_worker_body actually PUTS the preamble text in ──
+# the mission the child receives -- not just "calls the gate function". R4
+# finding 2: the two greps above pass even if the ONE line that folds
+# `_ci_txt` into `mission` (`[[ -z "${_ci_txt}" ]] || mission="${_ci_txt}"...`)
+# is deleted, because that line names neither `worker_mcp_preamble_for_arm`
+# nor `_LEADV2_CODE_INTEL_PREAMBLE`. This drives `_spawn_worker_body` itself
+# (LEADV2_DISPATCH_SOURCE_ONLY=1 sources the real dispatcher, same technique
+# test-mission-writeset.sh uses for architect_prepass) with a stub kimi
+# launcher that captures the exact `mission` argv `bg` receives, so the
+# assertion is on what the child would actually be handed, not on grep hits.
+WMB_STUB="${STUB_BIN}/wmb-kimi"
+cat > "${WMB_STUB}" <<'STUBEOF'
+#!/usr/bin/env bash
+case "$1" in
+  bg)
+    printf '%s' "$2" > "${WMB_MISSION_CAPTURE}"
+    printf '%s\n' "${WMB_HANDLE}${WMB_HANDLE}"
+    exit 0
+    ;;
+  status) exit 0 ;;
+  *) exit 1 ;;
+esac
+STUBEOF
+chmod +x "${WMB_STUB}"
+
+_run_spawn_worker_mission() { # <dispatch_script> <work_root> <mission_capture_file> -> stdout unused; rc=_spawn_worker_body's rc
+  local dsh="$1" root="$2" capture="$3" errf
+  errf="$(mktemp "${TMPDIR:-/tmp}/wmaa-wmb-err.XXXXXX")"
+  : > "${capture}"
+  ( cd "${root}" && \
+    LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${root}" CLAUDE_PROJECT_ROOT="${root}" \
+    LEADV2_DISPATCH_KIMI_BIN="${WMB_STUB}" WMB_MISSION_CAPTURE="${capture}" WMB_HANDLE="wmbh8" \
+    bash -c '
+      set -uo pipefail
+      source "$1"
+      _spawn_worker_body kimi "WMB-MISSION-BODY-MARKER" "wiretest8" "$2"
+    ' _ "${dsh}" "${errf}" )
+  local rc=$?
+  rm -f "${errf}" 2>/dev/null || true
+  return ${rc}
+}
+
+WMB_REPO="$(make_bg_repo wmaa-wmb-repo)"
+WMB_CAPTURE="${FIXTURE}/wmb-mission-capture.txt"
+_run_spawn_worker_mission "${DISPATCH_SCRIPT}" "${WMB_REPO}" "${WMB_CAPTURE}"
+WMB_RC=$?
+if [[ ${WMB_RC} -eq 0 ]] && grep -q "CODE-INTEL ROUTING" "${WMB_CAPTURE}" 2>/dev/null \
+   && grep -q "WMB-MISSION-BODY-MARKER" "${WMB_CAPTURE}" 2>/dev/null; then
+  pass "leadv2-dispatch-code.sh: _spawn_worker_body puts the resolved preamble text INSIDE the mission the child bg call receives"
+else
+  fail "leadv2-dispatch-code.sh: _spawn_worker_body puts the resolved preamble text INSIDE the mission the child bg call receives (rc=${WMB_RC}, captured: $(head -c 200 "${WMB_CAPTURE}" 2>/dev/null))"
+fi
+
+# ── NEGATIVE CONTROL (f): delete the `mission="${_ci_txt}"...` fold line ────
+# in a scratch dispatch-code.sh copy and prove the case above goes RED. This
+# is the exact R4 finding 2 regression: the structural dispatch_gate_check
+# above stays green on this mutant (neither grep target is touched), but the
+# real mission text now never carries the preamble.
+WMB_NC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/wmaa-wmbnc.XXXXXX")"
+CLEANUP_PATHS+=("${WMB_NC_DIR}")
+# Copy the WHOLE scripts tree (not just the one file) so the mutant still
+# finds its own lib/leadv2-worker-mcp.sh sibling -- otherwise a missing-lib
+# side effect could mask whether the deleted line is really what breaks it.
+cp -pR "${PLUGIN_SCRIPTS}" "${WMB_NC_DIR}/scripts"
+WMB_NC_SCRIPT="${WMB_NC_DIR}/scripts/leadv2-dispatch-code.sh"
+python3 - "${WMB_NC_SCRIPT}" <<'PYMUT'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+needle = '  [[ -z "${_ci_txt}" ]] || mission="${_ci_txt}"$\'\\n\\n\'"${mission}"\n'
+if needle not in text:
+    print("MUTATION_TARGET_NOT_FOUND", file=sys.stderr)
+    sys.exit(1)
+open(path, "w").write(text.replace(needle, '', 1))
+PYMUT
+if [[ $? -ne 0 ]]; then
+  fail "negative control (mission fold): mutation target found in scratch copy"
+else
+  if dispatch_gate_check "${WMB_NC_SCRIPT}"; then
+    log "negative control (mission fold): structural dispatch_gate_check still PASSES on the mutant, as predicted (R4 finding 2) -- the behavioural case below must be the one that catches it"
+  else
+    fail "negative control (mission fold): structural dispatch_gate_check unexpectedly went red on this mutant -- test setup drifted from the finding's exact shape"
+  fi
+  WMB_NC_CAPTURE="${FIXTURE}/wmb-nc-mission-capture.txt"
+  _run_spawn_worker_mission "${WMB_NC_SCRIPT}" "${WMB_REPO}" "${WMB_NC_CAPTURE}"
+  WMB_NC_RC=$?
+  if [[ ${WMB_NC_RC} -eq 0 ]] && grep -q "CODE-INTEL ROUTING" "${WMB_NC_CAPTURE}" 2>/dev/null; then
+    fail "negative control (mission fold): mutated dispatcher still put the preamble in the mission -- suite would be blind to the R4 finding 2 regression"
+  else
+    pass "negative control (mission fold): mutated dispatcher goes RED -- preamble text absent from the mission the child receives (mutation caught)"
+  fi
 fi
 
 # ── NEGATIVE CONTROL: mutate a scratch copy, prove RED ──────────────────────
