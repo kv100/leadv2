@@ -265,8 +265,8 @@ printf '#!/usr/bin/env bash\nexit 1\n' > "${TMP_ROOT}/free.sh"
 chmod +x "${TMP_ROOT}/free.sh"
 QUOTA_JSON="$(python3 -c "import json;print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':1},'weekly':{'pct':1}},'codex':{'status':'ok','binding_window':'primary','windows':[{'kind':'primary','used_percent':1}]},'anthropic':{'status':'ok','accounts':[{'active':True,'five_hour_pct':1,'seven_day_pct':1}]}}))")"
 
-run_dispatch() { # <mission> <out-file>
-  local mission="$1" outf="$2"
+run_dispatch() { # <mission> <out-file> [writes]
+  local mission="$1" outf="$2" writes="${3:-src/x.py}"
   (
     cd "$REPO7" || exit 111
     CLAUDE_PROJECT_ROOT="$REPO7" PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" \
@@ -281,7 +281,7 @@ run_dispatch() { # <mission> <out-file>
     LEADV2_ROUTE_ARBITER_STATE_FILE="${TMP_ROOT}/arb7" \
     ROUTE_TEST_QUOTA="$QUOTA_JSON" ROUTE_TEST_FREE_RC=1 \
     timeout 120 bash "$DC" "$mission" --kind code --task-class standard \
-      --writes src/x.py
+      --writes "$writes"
   ) >"$outf" 2>&1
   return $?
 }
@@ -315,7 +315,11 @@ fi
 
 # Test 7b: the SAME lane after the printed remedies are recorded (brief = plan,
 # explicit gate-1 reason = gate1) ⇒ the REAL dispatcher admits and spawns.
+# Test 7's dispatch confirmed a ledger slot for this sig; the duplicate-signature
+# guard would refuse this re-dispatch before the phase guard ever runs. Clear the
+# fixture ledger so 7b measures phase state, not dispatcher concurrency.
 printf 'test: 7b same lane after plan+gate1 remedies is admitted and spawns\n'
+rm -f "${TMP_ROOT}"/cache7/dispatch-ledger/*.jsonl 2>/dev/null
 mkdir -p "${REPO7}/docs/handoff/PPB-${S7}"
 printf '# PPB-%s\n\nfixture lead-authored plan\n' "$S7" > "${REPO7}/docs/handoff/PPB-${S7}/brief.md"
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7" plan \
@@ -348,9 +352,13 @@ printf 'not a recognized plan artifact name\n' > "${REPO7}/docs/handoff/PPB-${S7
     --status done --owner test ) >/dev/null 2>&1
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7F" plan \
     --status done --artifact "docs/handoff/PPB-${S7F}/notes.md" --owner test ) >/dev/null 2>&1
-sed -i 's/^proof: unverified$/proof: verified/' "${REPO7}/docs/handoff/dispatch-${S7F}/phases.d/plan.yaml"
+# Forge the proof field (portable: no sed -i — suite must run on BSD sed).
+_PL_YAML="${REPO7}/docs/handoff/dispatch-${S7F}/phases.d/plan.yaml"
+grep -v '^proof:' "${_PL_YAML}" > "${_PL_YAML}.forged" && printf 'proof: verified\n' >> "${_PL_YAML}.forged" && mv "${_PL_YAML}.forged" "${_PL_YAML}"
+grep -q '^proof: verified$' "${_PL_YAML}" || fail "fixture: proof forgery did not land"
 FALSE_BEFORE="$(wc -l < "${TMP_ROOT}/spawned.txt" | tr -d ' ')"
-run_dispatch "$M7F" "${TMP_ROOT}/d7f.out"; rc7f=$?
+# Distinct writeset: earlier tests' lanes hold src/x.py in the active registry.
+run_dispatch "$M7F" "${TMP_ROOT}/d7f.out" src/f7f.py; rc7f=$?
 FALSE_AFTER="$(wc -l < "${TMP_ROOT}/spawned.txt" | tr -d ' ')"
 if [[ $rc7f -eq 3 ]]; then
   ok
@@ -380,6 +388,33 @@ if [[ $rc7c -eq 3 ]] && printf '%s' "$OUT7C" | grep -q 'missing=.*plan'; then
   ok
 else
   fail "classify-only lane with --at-bootstrap must refuse (rc=$rc7c, out=$OUT7C)"
+fi
+
+# Test 8: brand-new HEAVY lane (the live 2026-09-02 shape: class_escalated to=Heavy
+# because=subsystems_touched:5) is admitted at bootstrap like Standard — the fix is
+# keyed on zero-records, not class. Heavy's pre-build mandatory set is classify,
+# diverge, plan, gate1, so the bootstrap journal must name diverge alongside
+# plan/gate1 (diverge is mandatory only for Heavy).
+printf 'test: 8 fresh Heavy dispatch through dispatch-code.sh is admitted\n'
+M8='PPB fixture Heavy lane touches five subsystems'
+S8="$(mission_sig8 "$M8")"
+HEAVY_BOOT_LINE="$(grep -c 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null || true)"
+run_dispatch "$M8" "${TMP_ROOT}/d8.out" src/h8.py; rc8=$?
+if [[ $rc8 -eq 0 ]]; then
+  ok
+else
+  fail "fresh Heavy dispatch should exit 0 (rc=$rc8, out=$(tail -5 "${TMP_ROOT}/d8.out" 2>/dev/null | tr '\n' ' '))"
+fi
+if grep 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null | tail -1 | grep -q "task=${S8}.*would_be_missing=.*diverge"; then
+  ok
+else
+  fail "Heavy bootstrap journal should name diverge as would-be-missing ($(grep "task=${S8}" "${JOURNAL_LOG}" 2>/dev/null | tail -1))"
+fi
+HEAVY_AFTER_LINE="$(grep -c 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null || true)"
+if [[ "${HEAVY_AFTER_LINE}" -gt "${HEAVY_BOOT_LINE}" ]]; then
+  ok
+else
+  fail "Heavy dispatch did not journal phase_precondition_bootstrap"
 fi
 
 printf '\n[PHASE-PRECONDITION-BOOTSTRAP] pass=%d fail=%d\n' "$PASS" "$FAIL"
