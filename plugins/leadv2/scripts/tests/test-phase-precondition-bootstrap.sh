@@ -224,7 +224,7 @@ fi
 #    dispatch entry. A classify-only fresh lane is what dispatch-code hands the
 #    guard on every brand-new Standard dispatch (it records classify first), and
 #    it is exactly the shape faee3fc5 shipped in. Driving only cmd_assert with a
-#    hand-computed bootstrap answer cannot see the forwarding bug; this can.
+#    hand-computed bootstrap answer cannot see the ordering bug; this can.
 #    Fixture repo + stub launchers for all four arms + fixture quota reader —
 #    never a live provider (harness shape: test-effort-routing.sh). ──────────
 DC="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
@@ -265,8 +265,13 @@ printf '#!/usr/bin/env bash\nexit 1\n' > "${TMP_ROOT}/free.sh"
 chmod +x "${TMP_ROOT}/free.sh"
 QUOTA_JSON="$(python3 -c "import json;print(json.dumps({'glm':{'status':'ok','five_hour':{'pct':1},'weekly':{'pct':1}},'codex':{'status':'ok','binding_window':'primary','windows':[{'kind':'primary','used_percent':1}]},'anthropic':{'status':'ok','accounts':[{'active':True,'five_hour_pct':1,'seven_day_pct':1}]}}))")"
 
-run_dispatch() { # <mission> <out-file>
-  local mission="$1" outf="$2"
+run_dispatch() { # <mission> <out-file> [writes]
+  local mission="$1" outf="$2" writes="${3:-src/x.py}"
+  # LEADV2_JUDGE_DISABLE=1 pins leadv2-task-judge.sh to its code-only fallback
+  # estimator: no live model call ever decides a class in here. Without it the
+  # suite passed or failed on whether a real `claude -p haiku` happened to be
+  # reachable and what it answered (observed: subsystems_touched=5 via a live
+  # judge one run, classifier_error the next).
   (
     cd "$REPO7" || exit 111
     CLAUDE_PROJECT_ROOT="$REPO7" PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" \
@@ -280,8 +285,9 @@ run_dispatch() { # <mission> <out-file>
     LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${TMP_ROOT}/free.sh" \
     LEADV2_ROUTE_ARBITER_STATE_FILE="${TMP_ROOT}/arb7" \
     ROUTE_TEST_QUOTA="$QUOTA_JSON" ROUTE_TEST_FREE_RC=1 \
+    LEADV2_JUDGE_DISABLE=1 \
     timeout 120 bash "$DC" "$mission" --kind code --task-class standard \
-      --writes src/x.py
+      --writes "$writes"
   ) >"$outf" 2>&1
   return $?
 }
@@ -292,30 +298,34 @@ mission_sig8() {
 }
 
 # Test 7: brand-new Standard lane, no plan/gate1 anywhere ⇒ the REAL dispatcher
-# refuses before any spawn, and names plan AND gate1 (this is faee3fc5, red).
-printf 'test: 7 fresh Standard dispatch through dispatch-code.sh is refused\n'
+# admits the bootstrap lane before recording classify and reaches the stub arm.
+printf 'test: 7 fresh Standard dispatch through dispatch-code.sh is admitted\n'
 M7='PPB fixture Standard lane writes production code'
 S7="$(mission_sig8 "$M7")"
 run_dispatch "$M7" "${TMP_ROOT}/d7.out"; rc7=$?
-if [[ $rc7 -eq 3 ]]; then
+if [[ $rc7 -eq 0 ]]; then
   ok
 else
-  fail "fresh Standard dispatch should exit 3 (rc=$rc7, out=$(tail -3 "${TMP_ROOT}/d7.out" 2>/dev/null | tr '\n' ' '))"
+  fail "fresh Standard dispatch should exit 0 (rc=$rc7, out=$(tail -5 "${TMP_ROOT}/d7.out" 2>/dev/null | tr '\n' ' '))"
 fi
-if [[ ! -f "${TMP_ROOT}/spawned.txt" ]]; then
+if [[ -f "${TMP_ROOT}/spawned.txt" ]]; then
   ok
 else
-  fail "refused dispatch spawned a worker ($(cat "${TMP_ROOT}/spawned.txt"))"
+  fail "admitted dispatch spawned no worker"
 fi
-if grep -q 'missing=.*plan' "${TMP_ROOT}/d7.out" 2>/dev/null && grep -q 'missing=.*gate1' "${TMP_ROOT}/d7.out" 2>/dev/null; then
+if grep -q 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null; then
   ok
 else
-  fail "refusal should name plan and gate1 ($(grep 'missing=' "${TMP_ROOT}/d7.out" 2>/dev/null | tail -1))"
+  fail "fresh dispatch should journal phase_precondition_bootstrap"
 fi
 
 # Test 7b: the SAME lane after the printed remedies are recorded (brief = plan,
 # explicit gate-1 reason = gate1) ⇒ the REAL dispatcher admits and spawns.
+# Test 7's dispatch confirmed a ledger slot for this sig; the duplicate-signature
+# guard would refuse this re-dispatch before the phase guard ever runs. Clear the
+# fixture ledger so 7b measures phase state, not dispatcher concurrency.
 printf 'test: 7b same lane after plan+gate1 remedies is admitted and spawns\n'
+rm -f "${TMP_ROOT}"/cache7/dispatch-ledger/*.jsonl 2>/dev/null
 mkdir -p "${REPO7}/docs/handoff/PPB-${S7}"
 printf '# PPB-%s\n\nfixture lead-authored plan\n' "$S7" > "${REPO7}/docs/handoff/PPB-${S7}/brief.md"
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7" plan \
@@ -336,9 +346,45 @@ else
   fail "admitted dispatch spawned no worker"
 fi
 
-# Test 7c: a caller STILL passing --at-bootstrap for a lane that has records is
+# Test 7c: a pre-existing phase record that falsely claims verified plan proof
+# still refuses. The real assert re-verifies the artifact instead of trusting
+# the forged proof field, so this is not a bootstrap lane anymore.
+printf 'test: 7c false verified-plan claim through dispatch-code.sh is refused\n'
+M7F='PPB fixture false verified plan claim'
+S7F="$(mission_sig8 "$M7F")"
+mkdir -p "${REPO7}/docs/handoff/PPB-${S7F}"
+printf 'not a recognized plan artifact name\n' > "${REPO7}/docs/handoff/PPB-${S7F}/notes.md"
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7F" classify \
+    --status done --owner test ) >/dev/null 2>&1
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7F" plan \
+    --status done --artifact "docs/handoff/PPB-${S7F}/notes.md" --owner test ) >/dev/null 2>&1
+# Forge the proof field (portable: no sed -i — suite must run on BSD sed).
+_PL_YAML="${REPO7}/docs/handoff/dispatch-${S7F}/phases.d/plan.yaml"
+grep -v '^proof:' "${_PL_YAML}" > "${_PL_YAML}.forged" && printf 'proof: verified\n' >> "${_PL_YAML}.forged" && mv "${_PL_YAML}.forged" "${_PL_YAML}"
+grep -q '^proof: verified$' "${_PL_YAML}" || fail "fixture: proof forgery did not land"
+FALSE_BEFORE="$(wc -l < "${TMP_ROOT}/spawned.txt" | tr -d ' ')"
+# Distinct writeset: earlier tests' lanes hold src/x.py in the active registry.
+run_dispatch "$M7F" "${TMP_ROOT}/d7f.out" src/f7f.py; rc7f=$?
+FALSE_AFTER="$(wc -l < "${TMP_ROOT}/spawned.txt" | tr -d ' ')"
+if [[ $rc7f -eq 3 ]]; then
+  ok
+else
+  fail "false verified-plan claim should exit 3 (rc=$rc7f, out=$(tail -5 "${TMP_ROOT}/d7f.out" 2>/dev/null | tr '\n' ' '))"
+fi
+if grep -q 'missing=.*plan' "${TMP_ROOT}/d7f.out" && grep -q 'missing=.*gate1' "${TMP_ROOT}/d7f.out"; then
+  ok
+else
+  fail "false claim refusal should name plan and gate1 ($(grep 'missing=' "${TMP_ROOT}/d7f.out" 2>/dev/null | tail -1))"
+fi
+if [[ "$FALSE_AFTER" == "$FALSE_BEFORE" ]]; then
+  ok
+else
+  fail "false verified-plan claim spawned a worker (before=$FALSE_BEFORE after=$FALSE_AFTER)"
+fi
+
+# Test 7d: a caller STILL passing --at-bootstrap for a lane that has records is
 # ignored — the store wins (the flag is parsed for compatibility, decides nothing).
-printf 'test: 7c --at-bootstrap claim is ignored, the store wins\n'
+printf 'test: 7d --at-bootstrap claim is ignored, the store wins\n'
 SIG_CLAIM="$(mission_sig8 'PPB classify-only claim lane')"
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$SIG_CLAIM" classify \
     --status done --owner test ) >/dev/null 2>&1
@@ -348,6 +394,89 @@ if [[ $rc7c -eq 3 ]] && printf '%s' "$OUT7C" | grep -q 'missing=.*plan'; then
   ok
 else
   fail "classify-only lane with --at-bootstrap must refuse (rc=$rc7c, out=$OUT7C)"
+fi
+
+# Test 8: brand-new HEAVY lane (the live 2026-09-02 shape: class_escalated to=Heavy
+# because=subsystems_touched:5) is admitted at bootstrap like Standard — the fix is
+# keyed on zero-records, not class. Hermetic Heavy: the mission names four
+# SUBSYSTEM_KEYWORDS (dispatch/journal/router/judge — see leadv2-task-judge.sh's
+# fallback estimator), so the pinned code-only estimate carries
+# subsystems_touched=4 and leadv2_admission_class escalates the declared
+# Standard to Heavy through the real admission map. No live judge decides this.
+# Heavy's pre-build mandatory set is classify,diverge,plan,gate1, so the
+# bootstrap journal must name diverge alongside plan/gate1 (diverge is
+# mandatory only for Heavy).
+printf 'test: 8 fresh Heavy dispatch through dispatch-code.sh is admitted\n'
+M8='PPB fixture Heavy lane spans dispatch journal router judge subsystems'
+S8="$(mission_sig8 "$M8")"
+HEAVY_BOOT_LINE="$(grep -c 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null || true)"
+run_dispatch "$M8" "${TMP_ROOT}/d8.out" src/h8.py; rc8=$?
+if [[ $rc8 -eq 0 ]]; then
+  ok
+else
+  fail "fresh Heavy dispatch should exit 0 (rc=$rc8, out=$(tail -5 "${TMP_ROOT}/d8.out" 2>/dev/null | tr '\n' ' '))"
+fi
+if grep "class_escalated" "${JOURNAL_LOG}" 2>/dev/null | grep -q "task=${S8}.*to=Heavy.*because=subsystems_touched"; then
+  ok
+else
+  fail "Heavy dispatch should journal class_escalated to=Heavy because=subsystems_touched ($(grep "task=${S8}" "${JOURNAL_LOG}" 2>/dev/null | grep class_escalated | tail -1))"
+fi
+BOOT8="$(grep 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null | grep "task=${S8}" | tail -1)"
+if [[ -n "${BOOT8}" ]] && printf '%s' "${BOOT8}" | grep -q 'class=Heavy would_be_missing=classify,diverge,plan,gate1'; then
+  ok
+else
+  fail "Heavy bootstrap journal should read class=Heavy with the full mandatory csv including diverge (got: ${BOOT8:-<none>})"
+fi
+HEAVY_AFTER_LINE="$(grep -c 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null || true)"
+if [[ "${HEAVY_AFTER_LINE}" -gt "${HEAVY_BOOT_LINE}" ]]; then
+  ok
+else
+  fail "Heavy dispatch did not journal phase_precondition_bootstrap"
+fi
+
+# Test 8b: the SAME Heavy lane after the remedies are recorded (n/a diverge,
+# brief = plan, explicit gate-1 reason) ⇒ the REAL dispatcher admits and
+# spawns. Mirrors 7b; ledger cleared for the same duplicate-signature reason.
+printf 'test: 8b Heavy lane after diverge/plan/gate1 remedies is admitted and spawns\n'
+rm -f "${TMP_ROOT}"/cache7/dispatch-ledger/*.jsonl 2>/dev/null
+mkdir -p "${REPO7}/docs/handoff/PPB-${S8}"
+printf '# PPB-%s\n\nfixture lead-authored plan\n' "$S8" > "${REPO7}/docs/handoff/PPB-${S8}/brief.md"
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S8" diverge \
+    --status n/a --reason 'fixture: no diverge round' --owner lead:test ) >/dev/null 2>&1
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S8" plan \
+    --status done --artifact "docs/handoff/PPB-${S8}/brief.md" --owner lead:test ) >/dev/null 2>&1
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S8" gate1 \
+    --status done --reason 'fixture Gate 1 decision' --owner lead:test ) >/dev/null 2>&1
+SPAWN8B_BEFORE="$(wc -l < "${TMP_ROOT}/spawned.txt" 2>/dev/null | tr -d ' ')"
+run_dispatch "$M8" "${TMP_ROOT}/d8b.out" src/h8.py; rc8b=$?
+SPAWN8B_AFTER="$(wc -l < "${TMP_ROOT}/spawned.txt" 2>/dev/null | tr -d ' ')"
+if [[ $rc8b -eq 0 ]]; then
+  ok
+else
+  fail "Heavy dispatch after remedies should exit 0 (rc=$rc8b, out=$(tail -5 "${TMP_ROOT}/d8b.out" 2>/dev/null | tr '\n' ' '))"
+fi
+if [[ "${SPAWN8B_AFTER}" -gt "${SPAWN8B_BEFORE}" ]]; then
+  ok
+else
+  fail "admitted Heavy dispatch spawned no worker (before=${SPAWN8B_BEFORE} after=${SPAWN8B_AFTER})"
+fi
+
+# Test 8c: Heavy is NOT a blanket pass — once any record exists the lane is no
+# longer bootstrap, and Heavy's mandatory set includes diverge (which Standard's
+# does not). Direct guard drive, like tests 2/5.
+printf 'test: 8c Heavy lane with classify-only records still refuses, naming diverge\n'
+SIG_H8C="heavy08c1"
+bash "$PHASE_RECORD" record "$SIG_H8C" classify --status done --owner test >/dev/null 2>&1
+OUT8C="$(bash "$PHASE_RECORD" assert "$SIG_H8C" --class Heavy --pre-build 2>&1)"; rc8c=$?
+if [[ $rc8c -eq 3 ]]; then
+  ok
+else
+  fail "classify-only Heavy lane should refuse (rc=$rc8c, out=$OUT8C)"
+fi
+if printf '%s' "$OUT8C" | grep -q 'missing=.*diverge'; then
+  ok
+else
+  fail "Heavy refusal must name diverge in missing= (got: $OUT8C)"
 fi
 
 printf '\n[PHASE-PRECONDITION-BOOTSTRAP] pass=%d fail=%d\n' "$PASS" "$FAIL"
