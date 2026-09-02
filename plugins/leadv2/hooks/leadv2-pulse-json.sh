@@ -23,11 +23,11 @@
 #   1. $LEADV2_TASK_ID         — explicit, set by the top-level lead session.
 #   2. $LEADV2_PULSE_TASK_ID   — opt-in override for hooks/subagents.
 #   3. CWD match docs/handoff/<tid>/  — a subagent cd'd into a task worktree.
-#   4. docs/leadv2/active.yaml — LAST RESORT: first session's task_id. May be
-#                                WRONG in multi-task setups (the registry is
-#                                ordered by registration, not by "this
-#                                process"). Tolerable because the supervisor
-#                                also reads pid and will flag the mismatch.
+#   4. lane control plane active.yaml (via leadv2-state-path.sh; repo-local
+#      docs/leadv2/active.yaml symlink as fallback) — LAST RESORT: first
+#      LIVE session's task_id. Rows carrying dead_at / a deregistered event
+#      are skipped; if only dead rows remain, no tid resolves (PULSE-HOOK-
+#      IS-A-FORKED-COPY-01).
 #   5. none of the above       — write docs/handoff/_unknown/pulse.json so the
 #                                artifact exists and the supervisor can SURFACE
 #                                the misconfiguration. NEVER silently no-op
@@ -100,11 +100,59 @@ if [[ -z "$tid" ]]; then
   esac
 fi
 if [[ -z "$tid" ]]; then
-  # LAST RESORT: first session's task_id from active.yaml (see header caveat).
-  _active="$PROJ_ROOT/docs/leadv2/active.yaml"
+  # LAST RESORT: first LIVE session's task_id from the lane control plane.
+  # PULSE-HOOK-IS-A-FORKED-COPY-01: the old resolver took the FIRST row and
+  # never consulted dead_at / deregistered, so one dead row (every dispatcher
+  # exit leaves one behind until reconciled) hijacked the pulse write AND the
+  # anchor injector fed a finished task_id to a live session. Now:
+  #   - the registry resolves through leadv2-state-path.sh (LEAD-CONTROL-
+  #     PLANE-01 rule: active.yaml has no hardcoded docs/leadv2 path) — this
+  #     honours the existing LEADV2_STATE_ROOT / LEADV2_STATE_BASE env knobs;
+  #     the repo-local docs/leadv2/active.yaml symlink stays as fallback only;
+  #   - rows carrying dead_at or a deregistered event are SKIPPED;
+  #   - if only dead rows remain, NO tid is picked — the _unknown fallback
+  #     below surfaces the miss instead of anchoring a dead task (an absent
+  #     anchor is strictly better than a false one).
+  _state_path_bin=""
+  if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" && -x "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-state-path.sh" ]]; then
+    _state_path_bin="${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-state-path.sh"
+  else
+    # $0 may be a per-repo symlink (persona-engine wires this hook from its
+    # own settings.json); resolve to the canonical script beside this hook.
+    _real0="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+    _cand="$(dirname "$(dirname "$_real0")")/scripts/leadv2-state-path.sh"
+    [[ -x "$_cand" ]] && _state_path_bin="$_cand"
+  fi
+  _active=""
+  if [[ -n "$_state_path_bin" ]]; then
+    _active="$(PROJECT_ROOT="$PROJ_ROOT" "$_state_path_bin" --no-link active.yaml 2>/dev/null || true)"
+  fi
+  if [[ ! -f "$_active" ]]; then
+    _active="$PROJ_ROOT/docs/leadv2/active.yaml"
+  fi
   if [[ -f "$_active" ]]; then
-    # Match `  - task_id: <hex>` (YAML list element). Print only the value.
-    tid="$(awk '/^[[:space:]]*-[[:space:]]+task_id[[:space:]]*:/{gsub(/["'"'"']/,"",$3); print $3; exit}' "$_active" 2>/dev/null || true)"
+    # First non-dead `- task_id:` row wins. A row ends at the next entry or
+    # the next column-0 key; dead = dead_at present anywhere in the row, or
+    # an event: value mentioning deregister.
+    tid="$(awk '
+      /^[[:space:]]*-[[:space:]]+task_id[[:space:]]*:/ {
+        if (pending != "" && !dead) { print pending; pending=""; exit }
+        pending = $0
+        sub(/^[[:space:]]*-[[:space:]]+task_id[[:space:]]*:[[:space:]]*/, "", pending)
+        gsub(/["'"'"']/, "", pending)
+        dead = 0
+        next
+      }
+      /^[A-Za-z_][A-Za-z0-9_]*:/ {
+        if (pending != "" && !dead) { print pending; pending=""; exit }
+        pending = ""
+        next
+      }
+      pending == "" { next }
+      /^[[:space:]]*dead_at[[:space:]]*:/ { dead = 1; next }
+      /^[[:space:]]*-[[:space:]]*event[[:space:]]*:.*deregister/ { dead = 1; next }
+      END { if (pending != "" && !dead) print pending }
+    ' "$_active" 2>/dev/null || true)"
   fi
 fi
 if [[ -z "$tid" ]]; then

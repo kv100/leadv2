@@ -48,8 +48,37 @@ esac
 
 PASS=0
 FAIL=0
+KNOWN=0
 declare -a SUITES=()
 declare -a FAILED_REL=()
+
+# CI-RUNS-THE-SUITES-01 round 3: the known-red allow-list must reach THIS
+# decision. Before this change a nested known-red failure inside
+# run-core-offline.sh surfaced only as the wrapper's repo-relative path in
+# the "Failures (blocking)" block — the block leadv2-e2e-ownership.sh parses,
+# where every entry is blocking for a lane. The wrapper was never in
+# tests/known-red-suites.txt (putting it there would allow-list all 83 of its
+# nested suites at once), so no `core:` entry could ever unblock a lane;
+# measured 2026-09-02: PULSE-HOOK-IS-A-FORKED-COPY-01 and
+# CI-RUNS-THE-SUITES-01 both died at that wall. The wrapper already emits
+# granular `[CORE-OFFLINE] FAILED: <label>` lines, so capture its transcript
+# and classify HERE (one classification point, shared by ci-gate.sh and this
+# lane-facing exit code):
+#   every failing nested suite allow-listed   -> wrapper printed [KNOWN-RED],
+#                                                NOT in Failures (blocking),
+#                                                run-all exits 0;
+#   >=1 failing nested suite NOT on the list  -> wrapper blocking as before
+#                                                (named [NOT-KNOWN-RED]);
+#   wrapper failure with ZERO parsed FAILED   -> blocking, fail-closed
+#                                                (lock timeout, harness
+#                                                crash, MISSING suites).
+ALLOWLIST="${ROOT}/tests/known-red-suites.txt"
+CORE_OFFLINE_REL="plugins/leadv2/scripts/tests/run-core-offline.sh"
+
+is_known_red() { # <id>
+  [[ -f "${ALLOWLIST}" ]] || return 1
+  grep -qxF "$1" <(grep -vE '^[[:space:]]*(#|$)' "${ALLOWLIST}" | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//')
+}
 # Non-stem suite mappings live in EXTRA_SUITE_MAP below (string rows, one per
 # line, "<stem>:<suite>"). The PHASE-DISCIPLINE-01 array form was migrated into
 # it during the MON-PULSE-01 merge (2026-08-28) — one mechanism, not two.
@@ -396,14 +425,18 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         stem="gitignore"
       else
         case "${cf}" in
-          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
+          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/scripts/*.py|plugins/leadv2/hooks/*.sh) ;;
           *) continue ;;
         esac
         # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
         # path (leadv2-control-prover.sh lives there) — a stem-scan that only
         # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
         # too, not just the top-level scripts.
-        stem="$(basename "${cf}" .sh)"
+        # NUDGE-TAX-01: scripts/*.py joins the allowlist (leadv2-loop-detect.py
+        # is the loop guard's real brain — a change there used to select ZERO
+        # suites under --scope changed). Stem strips the real extension.
+        stem="$(basename "${cf}")"
+        stem="${stem%.*}"
       fi
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
@@ -426,24 +459,69 @@ fi
 
 for suite in "${SUITES[@]:-}"; do
   printf '[RUN] %s\n' "${suite}"
-  if bash "${suite}"; then
+  suite_log=""
+  if [[ "${suite}" == "${ROOT}/${CORE_OFFLINE_REL}" || "${suite}" == "${ROOT}/.claude/scripts/tests/run-core-offline.sh" ]]; then
+    # Capture the wrapper transcript so the [CORE-OFFLINE] FAILED: labels can
+    # be classified below, then stream it verbatim — ci-gate.sh re-parses the
+    # same lines from this output, so nothing may be swallowed.
+    suite_log="$(mktemp "${TMPDIR:-/tmp}/run-all-core-offline.XXXXXX")"
+    bash "${suite}" >"${suite_log}" 2>&1
+    rc=$?
+    cat "${suite_log}"
+  else
+    bash "${suite}"
+    rc=$?
+  fi
+  if [[ ${rc} -eq 0 ]]; then
     printf '[PASS] %s\n' "${suite}"
     PASS=$((PASS + 1))
-  else
-    printf '[FAIL] %s\n' "${suite}"
-    FAIL=$((FAIL + 1))
-    # C4 (GATE-WRONG-ROOT-FALSE-DEAD-01): record repo-relative path for the
-    # machine-readable failure block (consumed by leadv2-e2e-ownership.sh).
-    rel="${suite#"${ROOT}/"}"
-    [[ "${rel}" == "${suite}" ]] && rel="${suite}"   # outside ROOT → absolute
-    FAILED_REL+=("${rel}")
+    [[ -n "${suite_log}" ]] && rm -f "${suite_log}"
+    continue
   fi
+  # C4 (GATE-WRONG-ROOT-FALSE-DEAD-01): record repo-relative path for the
+  # machine-readable failure block (consumed by leadv2-e2e-ownership.sh).
+  rel="${suite#"${ROOT}/"}"
+  [[ "${rel}" == "${suite}" ]] && rel="${suite}"   # outside ROOT → absolute
+  classified=0
+  if [[ -n "${suite_log}" ]]; then
+    declare -a KNOWN_NAMES=() UNEXPECTED_NAMES=()
+    while IFS= read -r name; do
+      [[ -n "${name}" ]] || continue
+      if is_known_red "core:${name}"; then
+        KNOWN_NAMES+=("${name}")
+      else
+        UNEXPECTED_NAMES+=("${name}")
+      fi
+    done < <(grep -E '^\[CORE-OFFLINE\] FAILED: ' "${suite_log}" | sed -E 's/^\[CORE-OFFLINE\] FAILED: //')
+    if [[ ${#KNOWN_NAMES[@]} -gt 0 && ${#UNEXPECTED_NAMES[@]} -eq 0 ]]; then
+      printf '[KNOWN-RED] %s (every failing nested suite is allow-listed)\n' "${rel}"
+      for n in "${KNOWN_NAMES[@]}"; do
+        printf '    - core:%s\n' "${n}"
+      done
+      KNOWN=$((KNOWN + 1))
+      classified=1
+    else
+      for n in "${UNEXPECTED_NAMES[@]:-}"; do
+        [[ -n "${n}" ]] || continue
+        printf '[NOT-KNOWN-RED] core:%s — failing nested suite is NOT on %s\n' "${n}" "tests/known-red-suites.txt"
+      done
+    fi
+    rm -f "${suite_log}"
+  fi
+  if [[ ${classified} -eq 1 ]]; then
+    continue
+  fi
+  printf '[FAIL] %s\n' "${suite}"
+  FAIL=$((FAIL + 1))
+  FAILED_REL+=("${rel}")
 done
 
 # C4: emit the Failures (blocking) block that leadv2-e2e-ownership.sh already
 # documents as the contract. Suite names are repo-relative to ROOT so the
-# classifier can locate them in the scratch tree by direct path. Additive —
-# existing [FAIL] lines and the run-all: summary are untouched.
+# classifier can locate them in the scratch tree by direct path. Known-red
+# (allow-listed) wrapper failures are deliberately NOT in this block — that is
+# the whole point of round 3; they are reported on their own [KNOWN-RED] lines
+# and in the summary count below, so the silence is attributable.
 if [[ ${FAIL} -gt 0 ]]; then
   printf '  Failures (blocking):\n'
   for rel in "${FAILED_REL[@]:-}"; do
@@ -451,5 +529,10 @@ if [[ ${FAIL} -gt 0 ]]; then
   done
 fi
 
-printf 'run-all: %d passed, %d failed, scope=%s\n' "${PASS}" "${FAIL}" "${SCOPE}"
+if [[ ${KNOWN} -gt 0 ]]; then
+  printf 'run-all: %d passed, %d failed, %d known-red (allow-listed, non-blocking), scope=%s\n' \
+    "${PASS}" "${FAIL}" "${KNOWN}" "${SCOPE}"
+else
+  printf 'run-all: %d passed, %d failed, scope=%s\n' "${PASS}" "${FAIL}" "${SCOPE}"
+fi
 (( FAIL == 0 ))
