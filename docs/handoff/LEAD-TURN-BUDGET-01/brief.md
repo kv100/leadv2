@@ -60,3 +60,34 @@ Class: Heavy — run the real Phase-2 plan (architect + Codex + critic) before b
 ## Do NOT
 - Do not remove the model review or weaken any gate; this changes WHO drives, not what is checked.
 - Do not add lead narration; the pulse stays plugin-owned.
+
+
+## Scope addition — founder, 2026-09-02 01:20Z ("this lead format must be plugin-level")
+
+Founder question: is the "minimum lead calls, maximum work, plugin watches the lanes" format part of
+the plugin, so it applies in every repo and for anyone who installs it? Measured answer: **no** —
+today it lives only in persona-engine's `docs/leadv2/open-threads.md` RESUME NOTE and in one
+machine-local memory file. `grep -c dispatch_terminal plugins/leadv2/commands/leadv2.md` = 0.
+A fresh lead in m3-market or respiro-ios, or any external installer, gets the OLD contract
+(deliverable-watchdog Monitors per spawn, hand-driven lanes).
+
+This task therefore owns making the protocol plugin-native, not just documented:
+
+1. **Command file (`commands/leadv2.md`) — new section "Lane event protocol"** replacing the
+   per-spawn watchdog guidance for dispatched lanes: dispatch = `leadv2-dispatch-code.sh` detached
+   (nohup, `< /dev/null`, log to file, NEVER piped — `head` kills the dispatcher; macOS has no
+   `setsid`); exactly ONE watcher per lane on the lane's terminal event, covering every terminal
+   state; on wake ≤3 tool calls: read `review-findings.json` (never the diff) → write fix-round
+   brief → re-dispatch; `pass` → land. Status every 30 min from one snapshot call, founder table.
+2. **Mechanical enforcement, not prose:** a PreToolUse hook that counts lead tool calls between
+   two lane events (journal `dispatch_terminal` lines) and WARNs at 3 / BLOCKs at 6 with the
+   lane id in the message. Env knobs `LEADV2_LANE_EVENT_CALLS_WARN/BLOCK`. Falsifiable suite with a
+   negative control that goes red when the counter is bypassed.
+3. **The watcher belongs to the plugin, not to the lead's Monitor tool:** the dispatcher already
+   writes `dispatch_terminal task=…`; the SessionStart lane-watch (ONE-LANE-WATCH-01) should surface
+   that line once per lane the way it surfaces LANE-STALL, so a lead in any repo needs zero
+   hand-armed Monitors. Keep the lead-side Monitor recipe only as the fallback for a session started
+   before the hook.
+4. **Portability check is part of Done:** run the same `grep` in a second adopted repo
+   (m3-market) after `leadv2-repo-install.sh` and show the section is present via the symlinked
+   command file; show the hook fires there.
