@@ -78,6 +78,13 @@
           },
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/plugin-scripts-drift-session-warn.sh\"; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'plugin-scripts-drift-session-warn.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0",
+            "timeout": 10,
+            "continueOnBlock": true,
+            "statusMessage": "Checking vendored plugin scripts for drift..."
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-lane-watch-v2.sh\" --arm-from-hook; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'leadv2-lane-watch-v2.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0",
             "timeout": 6,
             "continueOnBlock": true,
