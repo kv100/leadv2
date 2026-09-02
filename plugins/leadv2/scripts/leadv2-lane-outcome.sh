@@ -181,6 +181,14 @@ esac
 
 AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
+# ---- 4b. WORKER-DOD-GATE-01 soft signal ----
+# lv2_dod_retry_or_finalize() (lib/leadv2-worker-epilogue.sh) writes
+# worker_dod=pass|fail:<checks> to progress.log once its retries are
+# exhausted. Named reader only -- this is informational surfacing, never a
+# gate: the actual round refusal happens at the hard gate in
+# leadv2-dispatch-product-close.sh, independently of this script.
+DOD="$(grep -m1 -E '^worker_dod=' "${RUN_DIR}/progress.log" 2>/dev/null | cut -d= -f2- || true)"
+
 # ---- 5. artifacts, per §2.4 -- best-effort, never aborts the script ----
 {
   printf 'outcome=%s\n' "${OUTCOME}"
@@ -191,13 +199,19 @@ AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 } > "${RUN_DIR}/.outcome" 2>/dev/null \
   || echo "LEADV2_LANE_OUTCOME_WRITE_FAILED outcome_sentinel" >> "${RUN_DIR}/progress.log" 2>/dev/null || true
 
-printf 'LEADV2_LANE_OUTCOME outcome=%s bound=%s work=%s next=%s\n' \
-  "${OUTCOME}" "${BOUND}" "${WORK}" "${NEXT}" >> "${RUN_DIR}/progress.log" 2>/dev/null || true
+if [[ "${DOD}" == fail:* ]]; then
+  printf 'LEADV2_LANE_OUTCOME outcome=%s bound=%s work=%s next=%s dod=%s\n' \
+    "${OUTCOME}" "${BOUND}" "${WORK}" "${NEXT}" "${DOD}" >> "${RUN_DIR}/progress.log" 2>/dev/null || true
+else
+  printf 'LEADV2_LANE_OUTCOME outcome=%s bound=%s work=%s next=%s\n' \
+    "${OUTCOME}" "${BOUND}" "${WORK}" "${NEXT}" >> "${RUN_DIR}/progress.log" 2>/dev/null || true
+fi
 
 {
   printf 'outcome: %s\n' "${OUTCOME}"
   printf 'outcome_bound: %s\n' "${BOUND}"
   printf 'outcome_next: %s\n' "${NEXT}"
+  [[ "${DOD}" == fail:* ]] && printf 'outcome_dod: %s\n' "${DOD}"
 } >> "${RUN_DIR}/meta.yaml" 2>/dev/null || true
 
 echo "${OUTCOME}"

@@ -65,7 +65,7 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Arg parsing
 # ---------------------------------------------------------------------------
-TASK=""; ROOT=""; HANDOFF=""; DIFF_FILE=""; AUTHOR=""; FANOUT_ARG=""
+TASK=""; ROOT=""; HANDOFF=""; DIFF_FILE=""; AUTHOR=""; FANOUT_ARG=""; TASK_DIR_ARG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -75,6 +75,11 @@ while [[ $# -gt 0 ]]; do
     --diff)    DIFF_FILE="${2:-}"; shift 2 ;;
     --author)  AUTHOR="${2:-}"; shift 2 ;;
     --fanout)  FANOUT_ARG="${2:-}"; shift 2 ;;
+    # WORKER-DOD-GATE-01: the founder task dir (docs/handoff/<TASK_ID>), where
+    # brief.md/report.md live -- distinct from --handoff (docs/handoff/dispatch-<sig>).
+    # Never assumed equal to --handoff; omitted -> the defense-in-depth DoD call
+    # below falls back to ${HANDOFF}-scoped checks with an explicit dod_skip note.
+    --task-dir) TASK_DIR_ARG="${2:-}"; shift 2 ;;
     *) printf 'leadv2-review-run.sh: unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -1314,6 +1319,44 @@ if [[ -f "${_FALSIFY_BIN}" ]]; then
   done < <(sed -n 's|^+++ b/||p' "${DIFF_FILE}" 2>/dev/null \
     | grep -E '(^|/)(tests/|plugins/leadv2/scripts/tests/|\.claude/scripts/tests/|plugins/leadv2/tests/)test-[^/]+\.sh$' \
     | sort -u || true)
+fi
+
+# WORKER-DOD-GATE-01: defense-in-depth DoD gate for direct/standalone
+# review-run.sh invocations that bypass leadv2-dispatch-product-close.sh's
+# own hard gate entirely (tests, future callers). Redundant-but-safe on the
+# normal dispatched path, since that gate already passed before this script
+# was ever invoked. --task-dir names the founder task dir (brief.md/
+# report.md live there); when omitted, falls back to ${HANDOFF}-scoped
+# checks with an explicit dod_skip note -- never a silent assumption that
+# HANDOFF equals the task dir (CHALLENGE-03), never a crash.
+_DOD_GATE_SH="${SCRIPT_DIR}/lib/leadv2-dod-gate.sh"
+if [[ -f "${_DOD_GATE_SH}" ]]; then
+  _DOD_TASK_DIR="${TASK_DIR_ARG:-${HANDOFF}}"
+  _dod_fallback_note=""
+  [[ -z "${TASK_DIR_ARG}" ]] && _dod_fallback_note="dod_skip check=no_task_dir reason=task_dir_omitted_fallback_to_handoff"
+  _dod_out="$(bash "${_DOD_GATE_SH}" "${ROOT}" "${_DOD_TASK_DIR}" "${DIFF_FILE}" "${_DOD_TASK_DIR}/dod-gate.md" 2>&1)"
+  _dod_rc=$?
+  [[ -n "${_dod_fallback_note}" ]] && printf '%s\n' "${_dod_fallback_note}" >> "${_DOD_TASK_DIR}/dod-gate.md" 2>/dev/null || true
+  if [[ ${_dod_rc} -eq 1 ]]; then
+    _dod_reason="$(printf '%s\n' "${_dod_out}" | sed -n 's/^dod_fail check=\([a-z_]*\).*/\1/p' | head -1)"
+    {
+      printf 'status: fail\nreason: dod_%s\n\n' "${_dod_reason:-unknown}"
+      [[ -n "${_dod_fallback_note}" ]] && printf '%s\n' "${_dod_fallback_note}"
+      printf '%s\n' "${_dod_out}"
+    } > "${HANDOFF}/review-gate.md.tmp"
+    mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+    _review_state_write
+    emit decision "review_gate task=${TASK} status=fail round=0 reason=dod_${_dod_reason:-unknown} defense_in_depth=1"
+    exit 7
+  elif [[ ${_dod_rc} -eq 2 ]]; then
+    {
+      printf 'status: blocked\nreason: dod_undetermined\n\n'
+      printf '%s\n' "${_dod_out}"
+    } > "${HANDOFF}/review-gate.md.tmp"
+    mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked round=0 reason=dod_undetermined defense_in_depth=1"
+    exit 10
+  fi
 fi
 
 # Step 2: pool resolve.

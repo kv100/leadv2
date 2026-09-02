@@ -2746,6 +2746,53 @@ _stamp_active_phase "${FOUNDER_TASK_ID}" "review"
   bash "${SCRIPT_DIR}/leadv2-phase-record.sh" record "${TASK}" review --status running \
     --handle "dispatch-${TASK}-review" \
     --task-id "${FOUNDER_TASK_ID}" --owner "$(basename "$0"):review_gate" 2>/dev/null || true
+
+# WORKER-DOD-GATE-01: deterministic bash DoD gate, called HERE -- before the
+# LEADV2_REVIEW_ENGINE branch below splits -- so it runs unconditionally on
+# both engine=0 (production default) and engine=1 paths from one call site.
+# A v1 design reachable only behind LEADV2_REVIEW_ENGINE=1 would be inert in
+# production, whose documented default is 0 (CHALLENGE-01). Refuses a round
+# for a missing mechanical DoD item (report.md/heading, an unanswered
+# paste-line, an ungrounded mutation-control claim, an unregistered test
+# suite, a runtime-state path in the diff) at zero model spend, before the
+# reviewer pool is ever resolved -- see brief.md for the founder motivation
+# (2026-09-02 review-round audit: 15/19 review Highs one night were
+# mechanical, checkable predicates, not design disagreements).
+if [[ -n "${FOUNDER_TASK_ID}" ]]; then
+  _DOD_TASK_DIR="${ROOT}/docs/handoff/${FOUNDER_TASK_ID}"
+  _DOD_GATE_SH="${SCRIPT_DIR}/lib/leadv2-dod-gate.sh"
+  if [[ -f "${_DOD_GATE_SH}" ]]; then
+    _dod_out="$(bash "${_DOD_GATE_SH}" "${ROOT}" "${_DOD_TASK_DIR}" "${diff_file}" "${_DOD_TASK_DIR}/dod-gate.md" 2>&1)"
+    _dod_rc=$?
+    if [[ ${_dod_rc} -eq 1 ]]; then
+      _dod_reason="$(printf '%s\n' "${_dod_out}" | sed -n 's/^dod_fail check=\([a-z_]*\).*/\1/p' | head -1)"
+      {
+        printf 'status: fail\nreason: dod_%s\n\n' "${_dod_reason:-unknown}"
+        printf '%s\n' "${_dod_out}"
+      } > "${HANDOFF}/review-gate.md.tmp"
+      mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+      _dl_note dead review_dod_fail "reason=dod_${_dod_reason:-unknown}"
+      _stamp_review_terminal fail
+      emit decision "review_gate task=${TASK} status=fail round=0 reason=dod_${_dod_reason:-unknown}"
+      exit 7
+    elif [[ ${_dod_rc} -eq 2 ]]; then
+      {
+        printf 'status: blocked\nreason: dod_undetermined\n\n'
+        printf '%s\n' "${_dod_out}"
+      } > "${HANDOFF}/review-gate.md.tmp"
+      mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+      _dl_note dead review_dod_blocked "rc=2"
+      _stamp_review_terminal blocked
+      emit decision "review_gate task=${TASK} status=blocked round=0 reason=dod_undetermined"
+      exit 10
+    fi
+    # rc=0 (pass) -- falls through unchanged into whichever branch
+    # LEADV2_REVIEW_ENGINE selects below. rc=3 (usage error) never expected
+    # from this call shape; also falls through rather than blocking a round
+    # on the gate's own defect.
+  fi
+fi
+
 # ONE-PATH-EVERYWHERE-01: when LEADV2_REVIEW_ENGINE=1, this lane's whole inline review
 # body (below) is replaced by a call to the sole-owner engine, leadv2-review-run.sh.
 # Flag DEFAULTS TO 0 -- when unset (the production default, everywhere, per the rollout
@@ -2776,6 +2823,7 @@ if [[ "${LEADV2_REVIEW_ENGINE:-0}" == "1" ]]; then
     8) _dl_note dead review_roundcap "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
     6) _dl_note dead review_blocked "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
     9) _dl_note dead all_arms_unavailable "engine=1"; _stamp_review_terminal unreviewed ;;
+    10) _dl_note dead review_dod_blocked "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
     *) _dl_note dead review_engine_error "engine=1 rc=${_engine_rc}"; _stamp_review_terminal blocked ;;
   esac
   exit ${_engine_rc}

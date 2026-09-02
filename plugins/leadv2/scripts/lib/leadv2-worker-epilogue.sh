@@ -44,10 +44,21 @@ _lv2_epilogue_lane_writes() {
 }
 
 # Is <path> equal to, or nested under, one of the newline-separated prefixes
-# in <lane_writes_file>?
+# in <lane_writes_file>? A LANE_WRITES row may be authored with a trailing
+# `/`, `/**` or `/*` (glob-style scoping) — normalize those off before the
+# case match, else a row like "docs/handoff/TASK-01/" or "plugins/x/**" never
+# matches anything and reads as FOREIGN (WORKER-DOD-GATE-01 plan step 1: this
+# defect made 3 of that task's own 8 original LANE_WRITES rows read as
+# FOREIGN, including its own report.md path).
 _lv2_epilogue_path_in_scope() {
   local path="$1" lw_file="$2" lw
   while IFS= read -r lw; do
+    [[ -z "${lw}" ]] && continue
+    case "${lw}" in
+      */\*\*) lw="${lw%/\*\*}" ;;
+      */\*) lw="${lw%/\*}" ;;
+      */) lw="${lw%/}" ;;
+    esac
     [[ -z "${lw}" ]] && continue
     case "${path}" in
       "${lw}"|"${lw}"/*) return 0 ;;
@@ -134,5 +145,108 @@ leadv2_worker_commit_epilogue() {
   if [[ "${#foreign[@]}" -gt 0 ]]; then
     printf 'foreign_dirty=%s\n' "$(IFS=,; echo "${foreign[*]}")" >> "${run_dir}/progress.log" 2>/dev/null || true
   fi
+  return 0
+}
+
+# Best-effort diff of this lane's committed work, for the soft DoD probe
+# below. Not the authoritative round diff (that is computed by the lane
+# orchestrator and passed explicitly to the hard gate in
+# leadv2-dispatch-product-close.sh) -- a merge-base miss here just means
+# check (c)/(d) see less diff context, never a crash.
+_lv2_dod_round_diff() {
+  local cwd_dir="$1" out="$2" base
+  base="$(git -C "${cwd_dir}" merge-base HEAD main 2>/dev/null || true)"
+  [[ -z "${base}" ]] && base="$(git -C "${cwd_dir}" merge-base HEAD origin/main 2>/dev/null || true)"
+  [[ -z "${base}" ]] && base="$(git -C "${cwd_dir}" rev-parse HEAD~1 2>/dev/null || true)"
+  if [[ -n "${base}" ]]; then
+    git -C "${cwd_dir}" diff "${base}" HEAD -- . > "${out}" 2>/dev/null || : > "${out}"
+  else
+    : > "${out}"
+  fi
+}
+
+# Best-effort founder task dir (docs/handoff/<TASK_ID>, where brief.md/
+# report.md live) for wrappers that never receive it explicitly (glm/kimi/
+# freepool-coder.sh only know a per-arm run_dir, not the founder task dir).
+# Reuses capture_deliverable()'s existing .deliverable artifact (written
+# before child spawn from a docs/handoff/... path parsed out of prompt.txt)
+# rather than inventing a second path-extraction convention. Falls back to
+# cwd_dir when absent -- lib/leadv2-dod-gate.sh's checks already degrade to
+# not_required/skip when no brief.md is found there, never a crash.
+_lv2_dod_task_dir() {
+  local run_dir="$1" cwd_dir="$2" deliverable
+  deliverable="$(cat "${run_dir}/.deliverable" 2>/dev/null || true)"
+  if [[ -n "${deliverable}" ]]; then
+    dirname "${deliverable}"
+    return 0
+  fi
+  printf '%s\n' "${cwd_dir}"
+}
+
+# lv2_dod_retry_or_finalize <run_dir> <cwd_dir> <task_dir> [retry_hook_fn]
+#
+# WORKER-DOD-GATE-01 §7: runs lib/leadv2-dod-gate.sh against this lane's
+# just-committed HEAD. PASS -> worker_dod=pass. FAIL with attempts under
+# LEADV2_DOD_GATE_MAX_RETRIES (default 2) AND a real retry_hook_fn declared
+# -> increments the attempt counter, feeds the gate's reason lines to
+# retry_hook_fn, returns (the contract: retry_hook_fn must give the worker
+# one more turn via the wrapper's OWN loop and return before this proceeds).
+# FAIL with attempts exhausted, or no retry_hook_fn -> writes the unchanged
+# soft signal worker_dod=fail:<checks> and returns.
+#
+# RISK R9: none of the 4 current call sites (glm-coder.sh, kimi-coder.sh,
+# freepool-coder.sh, claude-subsession.sh) sit inside a re-enterable turn
+# loop -- confirmed by reading each wrapper's control flow around its
+# leadv2_worker_commit_epilogue call: the child model process has already
+# exited and finalize_meta/deadhand_check have already run by the time this
+# function is reachable, with no loop left to spawn another turn from. All 4
+# therefore call this function with retry_hook_fn omitted, which degrades
+# straight to the soft-fail signal on first hard-check failure -- never a
+# crash, never a silent skip of the hard gate in
+# leadv2-dispatch-product-close.sh (which enforces independently of this).
+# This function never invokes a model or dispatch process itself.
+lv2_dod_retry_or_finalize() {
+  local run_dir="$1" cwd_dir="$2" task_dir="$3" retry_hook_fn="${4:-}"
+  local dod_gate_sh
+  dod_gate_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-dod-gate.sh"
+  [[ -f "${dod_gate_sh}" ]] || return 0
+
+  local diff_file
+  diff_file="$(mktemp 2>/dev/null || echo "${run_dir}/.dod_diff.tmp")"
+  _lv2_dod_round_diff "${cwd_dir}" "${diff_file}"
+
+  local out_md="${task_dir}/dod-gate.md" gate_out gate_rc
+  gate_out="$(bash "${dod_gate_sh}" "${cwd_dir}" "${task_dir}" "${diff_file}" "${out_md}" 2>&1)"
+  gate_rc=$?
+  rm -f "${diff_file}" 2>/dev/null || true
+
+  if [[ "${gate_rc}" -eq 0 ]]; then
+    echo "worker_dod=pass" >> "${run_dir}/progress.log" 2>/dev/null || true
+    return 0
+  fi
+  if [[ "${gate_rc}" -eq 2 ]]; then
+    # undetermined -- never counted as a mechanical fail against retries
+    return 0
+  fi
+
+  local checks
+  checks="$(printf '%s\n' "${gate_out}" | sed -n 's/^dod_fail check=\([a-z_]*\).*/\1/p' | paste -sd, - 2>/dev/null)"
+  [[ -z "${checks}" ]] && checks="unknown"
+
+  local attempt_file="${task_dir}/.dod-attempt" attempts=0
+  [[ -f "${attempt_file}" ]] && attempts="$(cat "${attempt_file}" 2>/dev/null || echo 0)"
+  [[ "${attempts}" =~ ^[0-9]+$ ]] || attempts=0
+  local max_retries="${LEADV2_DOD_GATE_MAX_RETRIES:-2}"
+
+  if [[ "${attempts}" -lt "${max_retries}" && -n "${retry_hook_fn}" ]] \
+     && declare -F "${retry_hook_fn}" >/dev/null 2>&1; then
+    attempts=$((attempts + 1))
+    echo "${attempts}" > "${attempt_file}" 2>/dev/null || true
+    "${retry_hook_fn}" "${gate_out}"
+    return 0
+  fi
+
+  echo "worker_dod=fail:${checks}" >> "${run_dir}/progress.log" 2>/dev/null || true
+  echo "worker_dod: fail:${checks}" >> "${run_dir}/meta.yaml" 2>/dev/null || true
   return 0
 }

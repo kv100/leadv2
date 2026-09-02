@@ -64,6 +64,19 @@ if [[ -z "${_LEADV2_EVIDENCE_CONTRACT_MISSION:-}" ]]; then
 readonly _LEADV2_EVIDENCE_CONTRACT_MISSION="EVIDENCE CONTRACT: every factual claim you write about an external system or API (endpoint behaviour, rate limit, auth flow, schema, provider quirk, version) must be immediately followed by its probe artifact — a curl/CLI invocation with its output, a log excerpt, or a doc URL plus the live check that confirmed it. If you have no artifact, prefix the claim with the literal token UNVERIFIED: — an untagged evidence-free external-system claim is a protocol violation, and round-1 reviewers treat one that drives a decision as BLOCKING."
 fi
 
+# ── WORKER-DOD-GATE-01 definition-of-done mission text ────────────────────
+# A plain readonly shell string, not exported and not a config knob. Free of
+# double-quotes/backticks for the same reason as the two contracts above.
+# Consumed wherever a caller already concatenates the evidence-contract
+# string into worker mission text — this string describes the mechanical,
+# zero-model-spend gate (lib/leadv2-dod-gate.sh) that runs on the committed
+# lane BEFORE any model review, so the worker knows the checks are real and
+# checkable, not advisory.
+# shellcheck disable=SC2034  # consumed by leadv2-dispatch-code.sh / coder-wrapper callers
+if [[ -z "${_LEADV2_DOD_GATE_CONTRACT_MISSION:-}" ]]; then
+readonly _LEADV2_DOD_GATE_CONTRACT_MISSION="DEFINITION-OF-DONE GATE: before any model reviews your diff, a deterministic bash gate checks your committed lane for 5 mechanical items — (a) if the brief asks for a report.md, it must exist, be committed, and have a heading; (b) if the brief asks you to paste a named artifact's output, that artifact must appear under a matching heading in your report, and any mutation-control claim must be backed by a leadv2-mutation-control.sh artifact, not asserted prose; (c) any new test-*.sh suite you add must be registered (self-select path convention or tests/run-all.sh's EXTRA_SUITE_MAP), or it never runs; (d) your diff must not touch runtime-state paths (docs/leadv2/, docs/LEAD_V2_STATE.md, docs/handoff/dispatch-nw*). A failed check refuses the round at zero model spend, before any reviewer sees your diff — fix the gap and recommit, you do not need to wait for a review round to find out."
+fi
+
 # ── WORKER-PARKED-ON-BG-01 foreground-work mission text ───────────────────
 # A plain readonly shell string, not exported and not a config knob.  Keep the
 # value free of double-quotes and backticks: it flows into double-quoted shell
