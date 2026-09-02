@@ -36,3 +36,16 @@ R3 review (opus, committed-tree diff d815dba0): `FAIL high=4`. Full rows:
 
 ## Done when
 - 4 findings REAL→fixed with runtime evidence; no placeholder tokens anywhere in report.md; FALSIFIABLE.
+
+## Round note (lead, 2026-09-02) — THIS IS WHY THE ROUND IS REPEATING
+The R4d worker spent 83 turns and ended its turn waiting for its own background job. A dispatched worker has NO next turn. Therefore, in this round:
+- NEVER use Monitor, NEVER run_in_background, NEVER end a turn on a wait.
+- Run tests/run-all.sh --scope changed in the FOREGROUND with timeout 900. If it stalls, check /tmp/leadv2-core-offline-* for a lock whose holder pid is dead (kill -0), clear it, say so in the report, and re-run. Never paste a timeout as if it were a pass.
+- Commit after EVERY step; the previous two rounds left everything uncommitted.
+
+## Round note 2 (lead, 2026-09-02) — READ BEFORE ANYTHING ELSE
+Pulse mode does NOT apply to you: you have exactly one turn-chain and no notification will ever reach you.
+Nested agents are ALLOWED and encouraged for bulk reads (haiku), but ONLY synchronously, in this lane
+worktree, never `run_in_background`, never `isolation:"worktree"`, and you commit their output yourself.
+Run long commands in the FOREGROUND with `timeout 900`. Commit after every step.
+The partial work already on the lane is committed as "wip: R4 partial" — build on it, do not restart.
