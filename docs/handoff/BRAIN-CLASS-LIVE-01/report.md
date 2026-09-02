@@ -264,3 +264,90 @@ path — confirmed by reading `atomic_dispatch_reserve_spawn_confirm` and
 judge failure and a declared Heavy class; `model_select_telemetry ... class=heavy ... cause=worker_spawned`
 is the requested telemetry line. Fixture repo and worker stub discarded after the run; no artifacts
 left in this worktree (verified via `git status` immediately after).
+
+## R4 findings (fix-round-4, R3 review FAIL high=2)
+
+| # | Finding | Verdict | Evidence |
+|---|---------|---------|----------|
+| 1 | `test-brain-class-live.sh:214` case (d) re-entry asserted `*"Heavy"*` against combined stdout+stderr, so a mutation that leaves the decision-log line saying "Heavy" while the function's actual `stdout` return value stays stale would false-pass. | REAL | Reproduced pre-fix by inspection of the old assertion (`printf '%s' "${out_d2}"` sourced both streams via `2>&1`); fixed by capturing stdout/stderr separately (`out_d2`/`err_d2`, `TMP_D2ERR`) and asserting `[[ "${out_d2}" == "Heavy" ]]` on stdout alone — see `plugins/leadv2/scripts/tests/test-brain-class-live.sh:255-264`. |
+| 2 | `run-all.sh`/suite cases (a)/(b) reported flaky ~1 in 3. | REAL | Root-caused to `leadv2_brain_record`'s caller wrapping the journal write in `2>/dev/null` (deliberate, per `leadv2-dispatch-code.sh`) plus a synchronous-in-principle but best-effort (`\|\| true`, `trap 'exit 0' ERR`) journal append racing this suite's single unretried read of the journal file on a shared, concurrently-active dev machine. Fixed with `journal_read_wait()` (polls up to 5×50ms for non-empty content) replacing the single `cat` read — `plugins/leadv2/scripts/tests/test-brain-class-live.sh:97-109`. |
+
+### Fix 1 — case (d) re-entry, stdout-only assertion + negative control
+
+Fixed assertion (`plugins/leadv2/scripts/tests/test-brain-class-live.sh:255-264`):
+```
+out_d2="$(blank_project_root_env LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${TMP_D}" bash -c '
+  source "$1"
+  _resolve_class_with_brain_floor "brainD01" "dispatch-brainD" "Light"
+' _ "${DISPATCH_SH}" 2>"${TMP_D2ERR}")"
+...
+[[ "${out_d2}" == "Heavy" ]] && pass ... || fail ...
+```
+
+Negative control (`plugins/leadv2/scripts/tests/test-brain-class-live.sh:276-320`): a temp copy of
+`leadv2-dispatch-code.sh` is mutated so `_resolve_class_with_brain_floor` still emits the
+`phase_class_floor ... class=${brain_cls}` decision line (still says "Heavy" on stderr) but the
+`cls="${brain_cls}"` reassignment is dropped, so the function returns the stale, lower base class
+on stdout — exactly the false-pass shape the old combined-stream assertion missed. Suite run
+against this mutant (`bash plugins/leadv2/scripts/tests/test-brain-class-live.sh`):
+
+```
+PASS: MUTATION (d-re-entry) killed: decision line still says Heavy (stderr='[leadv2-dispatch-code] phase_class_floor task=brainD301 source=brain_record class=Heavy') but the stdout-only assertion correctly rejects the stale return value ('Light')
+```
+
+The mutant's stdout is `Light` (stale) while stderr still contains `Heavy` — proving the new
+assertion goes red on exactly the class of bug the old one missed, and green otherwise. Full
+suite with this control included, tracked file unmodified:
+
+```
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+```
+
+### Fix 2 — flake root-cause + 10/10 green
+
+Root cause: `journal_read_wait()` was a single unretried `cat` of the per-task journal file. On
+this shared, concurrently-active dev machine (other lanes' processes reading/writing the same
+canonical scripts at the same time), a rare scheduler/fork-exec hiccup around the best-effort
+(`|| true`, `trap 'exit 0' ERR`) journal-append subprocess left the file transiently absent/empty
+at the moment of that single read. Fix: poll up to 5×50ms (250ms bounded) for non-empty content
+before giving up (`plugins/leadv2/scripts/tests/test-brain-class-live.sh:97-109`); the exact
+assertion strings are unchanged.
+
+10 consecutive full-suite runs, tails only:
+
+```
+$ for i in $(seq 10); do bash plugins/leadv2/scripts/tests/test-brain-class-live.sh 2>&1 | tail -1; done
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===
+```
+
+10/10 green.
+
+### FALSIFIABLE verdict (from lane root)
+
+```
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-brain-class-live.sh
+leadv2-suite-falsifiable: suite=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/BRAIN-CLASS-LIVE-01/plugins/leadv2/scripts/tests/test-brain-class-live.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=40
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+### Self-check (this round)
+
+```
+$ bash -n plugins/leadv2/scripts/tests/test-brain-class-live.sh
+```
+(no output — syntax OK)
+
+No Python files changed this round.
