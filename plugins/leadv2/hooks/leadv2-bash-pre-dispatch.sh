@@ -67,6 +67,44 @@ leadv2-warn-bash-diff-read.sh|\.(diff|patch)([[:space:]]|"|'"'"'|$)|(^|[^A-Za-z0
 
 HAVE_STDOUT=0
 
+# Verdict journal (GUARD-CENSUS-IS-WRONG-01 round 2): dir computed once;
+# rotation is capped (see _lv2_gv_rotate_journal). Best-effort — recording
+# must never fail a Bash call.
+_lv2_gv_dir="${LEADV2_GUARD_VERDICT_DIR:-${CLAUDE_PROJECT_DIR:-$HOME}/.claude/cache/guard-verdicts}"
+_lv2_gv_journal=""
+if mkdir -p "$_lv2_gv_dir" 2>/dev/null; then
+  _lv2_gv_journal="$_lv2_gv_dir/journal.tsv"
+fi
+
+# Round-2 finding: every Bash call appended rows to an unrotated journal that
+# the census re-scanned in full. Cap the journal at
+# LEADV2_GUARD_VERDICT_MAX_ROWS (default 20000) rows or
+# LEADV2_GUARD_VERDICT_MAX_BYTES (default 1 MiB), whichever comes first, and
+# rotate journal.tsv -> .1 -> .2 (two generations kept; the census reads all
+# three). wc -c/-l on a ≤1 MiB file is the only extra cost per Bash call.
+_lv2_gv_rotate_journal() {
+  [ -n "$_lv2_gv_journal" ] && [ -f "$_lv2_gv_journal" ] || return 0
+  _lv2_gv_max_bytes="${LEADV2_GUARD_VERDICT_MAX_BYTES:-1048576}"
+  _lv2_gv_max_rows="${LEADV2_GUARD_VERDICT_MAX_ROWS:-20000}"
+  case "${_lv2_gv_max_bytes:-}" in ''|*[!0-9]*) _lv2_gv_max_bytes=1048576 ;; esac
+  case "${_lv2_gv_max_rows:-}"  in ''|*[!0-9]*) _lv2_gv_max_rows=20000 ;; esac
+  _lv2_gv_rotate=0
+  _lv2_gv_sz="$(wc -c < "$_lv2_gv_journal" 2>/dev/null | tr -d ' ')"
+  case "${_lv2_gv_sz:-0}" in ''|*[!0-9]*) _lv2_gv_sz=0 ;; esac
+  [ "$_lv2_gv_sz" -gt "$_lv2_gv_max_bytes" ] && _lv2_gv_rotate=1
+  if [ "$_lv2_gv_rotate" -eq 0 ]; then
+    _lv2_gv_rows="$(wc -l < "$_lv2_gv_journal" 2>/dev/null | tr -d ' ')"
+    case "${_lv2_gv_rows:-0}" in ''|*[!0-9]*) _lv2_gv_rows=0 ;; esac
+    [ "$_lv2_gv_rows" -gt "$_lv2_gv_max_rows" ] && _lv2_gv_rotate=1
+  fi
+  [ "$_lv2_gv_rotate" -eq 1 ] || return 0
+  rm -f "$_lv2_gv_journal.2"
+  [ -f "$_lv2_gv_journal.1" ] && mv "$_lv2_gv_journal.1" "$_lv2_gv_journal.2"
+  mv "$_lv2_gv_journal" "$_lv2_gv_journal.1"
+  : > "$_lv2_gv_journal"
+  return 0
+}
+
 while IFS='|' read -r SCRIPT TRIGGER; do
   [[ -n "$SCRIPT" ]] || continue
   if [[ "$TRIGGER" != "ALWAYS" && ! "$COMMAND" =~ $TRIGGER ]]; then
@@ -86,20 +124,34 @@ while IFS='|' read -r SCRIPT TRIGGER; do
   # fires every day "never-ran". Recording once, HERE, at the one place every
   # dispatched guard's exit is already observed, gets ran/fired evidence for
   # all of them without editing each guard file. Best-effort, never fatal.
+  #
+  # Round-2 fix: the KIND is the guard's CONTRACT, not its chatter. The old
+  # rule ("any stdout/stderr bytes = log fire") permanently recorded a guard
+  # that prints a pass/skip diagnostic on stderr and exits 0 as
+  # fires-log-only, poisoning the census's fired column for exactly the
+  # quiet-pass guards. Now:
+  #   exit 2 / decision:block / permissionDecision deny|block JSON -> block
+  #   exit 0 + hookSpecificOutput/additionalContext JSON on stdout -> inject
+  #   exit 0, silent or diagnostics-only (stderr chatter)          -> pass
+  # `pass` is recorded so "ran but did nothing" stays visible and distinct
+  # from fires-log-only; the census counts it as ran evidence, never a fire.
   {
-    _lv2_gv_dir="${LEADV2_GUARD_VERDICT_DIR:-${CLAUDE_PROJECT_DIR:-$HOME}/.claude/cache/guard-verdicts}"
-    mkdir -p "$_lv2_gv_dir" 2>/dev/null
-    _lv2_gv_ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown-ts)"
-    printf '%s\t%s\t%s\t%s\t%s\n' "$_lv2_gv_ts" "$SCRIPT" "PreToolUse" "ran" "-" \
-      >> "$_lv2_gv_dir/journal.tsv"
-    _lv2_gv_kind="log"
-    if [[ "$RC" -eq 2 ]] || grep -q '"decision"[[:space:]]*:[[:space:]]*"block"' "$STDOUT_FILE" 2>/dev/null; then
-      _lv2_gv_kind="block"
-    elif [[ ! -s "$STDOUT_FILE" && ! -s "$STDERR_FILE" ]]; then
-      _lv2_gv_kind="allow"
+    if [ -n "$_lv2_gv_journal" ]; then
+      _lv2_gv_ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown-ts)"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$_lv2_gv_ts" "$SCRIPT" "PreToolUse" "ran" "-" \
+        >> "$_lv2_gv_journal"
+      _lv2_gv_kind="pass"
+      if [[ "$RC" -eq 2 ]] \
+        || grep -q '"decision"[[:space:]]*:[[:space:]]*"block"' "$STDOUT_FILE" 2>/dev/null \
+        || grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"(deny|block)"' "$STDOUT_FILE" 2>/dev/null
+      then
+        _lv2_gv_kind="block"
+      elif grep -q '"hookSpecificOutput"\|"additionalContext"' "$STDOUT_FILE" 2>/dev/null; then
+        _lv2_gv_kind="inject"
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' "$_lv2_gv_ts" "$SCRIPT" "PreToolUse" "verdict" "$_lv2_gv_kind" \
+        >> "$_lv2_gv_journal"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "$_lv2_gv_ts" "$SCRIPT" "PreToolUse" "verdict" "$_lv2_gv_kind" \
-      >> "$_lv2_gv_dir/journal.tsv"
   } 2>/dev/null || true
 
   if [[ "$RC" -eq 2 ]]; then
@@ -140,6 +192,8 @@ PY
 done <<EOF
 $MANIFEST
 EOF
+
+_lv2_gv_rotate_journal 2>/dev/null || true
 
 if [[ "$HAVE_STDOUT" -eq 1 ]]; then
   cat "$FIRST_STDOUT_FILE" 2>/dev/null || true

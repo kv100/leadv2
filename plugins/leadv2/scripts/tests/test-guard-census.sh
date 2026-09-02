@@ -63,7 +63,7 @@ RC=$?
 
 row_of() { printf '%s\n' "$TSV" | awk -F'\t' -v g="$1" '$2==g'; }
 state_of() { row_of "$1" | cut -f4; }
-fixcol_of() { row_of "$1" | cut -f7; }
+fixcol_of() { row_of "$1" | cut -f9; }
 
 # ── case 0: census itself is green on a healthy fixture tree ────────────────
 assert_eq "census exit 0 on healthy fixtures" "$RC" "0"
@@ -106,7 +106,7 @@ case "$REG_LINE" in
   *REGRESSION*fx-always-block*) pass "case5 REGRESSION names the dead guard" ;;
   *) fail "case5 no REGRESSION line for fx-always-block (stderr: $REG_LINE)" ;;
 esac
-case "$(printf '%s\n' "$MUT_OUT" | awk -F'\t' '$2=="fx-always-block.sh"' | cut -f7)" in
+case "$(printf '%s\n' "$MUT_OUT" | awk -F'\t' '$2=="fx-always-block.sh"' | cut -f9)" in
   REGRESSION) pass "case5 table marks fixture REGRESSION" ;;
   *) fail "case5 fixture column not REGRESSION" ;;
 esac
