@@ -235,6 +235,15 @@ run-core-offline.sh:plugins/leadv2/scripts/tests/test-suite-lock-scope.sh
 leadv2-lane-watch-v2.sh:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
 leadv2-lane-watch-v2:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
 leadv2-cache-truth.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+# CACHE-TRUTH-01 R4: the coder arms' stream files are the tool's INPUTS — a
+# change to an arm runner can change the stream shape the TSV grades, so each
+# arm stem maps to the cache-truth suite too (R3 review finding 2: only the
+# tool stem was mapped; --scope changed silently dropped the suite for arm
+# edits).
+glm-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+freepool-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+kimi-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+claude-subsession.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
 # LEADV2-HOOK-CACHE-DEPLOY-01: the cache-sync script's behavioural lock is a
 # differently-named suite (no test-leadv2-plugin-cache-sync stem match).
 leadv2-plugin-cache-sync.sh:plugins/leadv2/scripts/tests/test-plugin-cache-sync.sh

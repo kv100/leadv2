@@ -20,7 +20,11 @@
 #   stream-file a JSONL file directly (any of the above shapes)
 #
 # Output: one TSV-ish row per input, printed to stdout:
-#   arm  run  turns  input_tokens  cache_read  cache_creation  hit_ratio  first_break  reported
+#   arm  run  turns  input_tokens  input_reported  cache_read  cache_creation  hit_ratio  first_break  reported
+# R4 (one definition per column): input_tokens sums input over ALL turns —
+# reported and unreported alike; input_reported sums input over the REPORTED
+# subset only. cache_read / cache_creation are reported-subset sums (an
+# unreported turn never carries cache fields by definition).
 # Events are DE-DUPLICATED by message.id first (streaming deltas re-emit the
 # same assistant message several times; the last event for a given id wins),
 # so `turns` counts unique messages, not wire events (CACHE-TRUTH-01 round 2:
@@ -30,8 +34,8 @@
 # hit_ratio is computed ONLY over REPORTED turns. Round-3 rule: a turn is
 # reported iff its usage dict carries a cache_read_input_tokens or
 # cache_creation_input_tokens key AND is not all zeros (see below) =
-# cache_read / (input + cache_read + cache_creation) summed across reported
-# turns. A turn whose usage block is ALL ZEROS — cache keys present or not —
+# cache_read / (input_reported + cache_read + cache_creation), all summed
+# across reported turns. A turn whose usage block is ALL ZEROS — cache keys present or not —
 # is NOT "reported": the api/anthropic GLM path returns
 # input_tokens:0/output_tokens:0 on every event (GLM-EFFICIENCY-AUDIT-01 §2),
 # so counting it as reported fabricates a 0.0000 hit_ratio out of a zero
@@ -99,7 +103,7 @@ resolve_stream() {
   return 1
 }
 
-printf 'arm\trun\tturns\tinput_tokens\tcache_read\tcache_creation\thit_ratio\tfirst_break\treported\n'
+printf 'arm\trun\tturns\tinput_tokens\tinput_reported\tcache_read\tcache_creation\thit_ratio\tfirst_break\treported\n'
 
 rc=0
 for arg in "$@"; do
@@ -160,7 +164,7 @@ with open(stream_path, "r", errors="replace") as f:
 turns = [by_id[mid] for mid in order] + unkeyed
 
 if not turns:
-    print("%s\t%s\t0\t0\t0\t0\tunreported\tnone\t0/0" % (arm, run))
+    print("%s\t%s\t0\t0\t0\t0\t0\tunreported\tnone\t0/0" % (arm, run))
     sys.exit(0)
 
 # Round-3 rule: a turn is REPORTED only if it carries a cache key AND its
@@ -175,14 +179,22 @@ n_total = len(turns)
 reported_col = "%d/%d" % (n_reported, n_total)
 
 if n_reported == 0:
+    # R4: one definition per column — input_tokens is ALL turns in every
+    # branch; input_reported is the reported subset (0 here).
     total_in = sum(t[0] for t in turns)
-    print("%s\t%s\t%d\t%d\t0\t0\tunreported\tunreported\t%s" % (arm, run, n_total, total_in, reported_col))
+    print("%s\t%s\t%d\t%d\t0\t0\t0\tunreported\tunreported\t%s" % (arm, run, n_total, total_in, reported_col))
     sys.exit(0)
 
-total_in = sum(t[0] for t in reported_turns)
+# R4 (review finding 1, round 3): the old code summed input over reported
+# turns only, so a mixed stream silently lost every unreported turn's input
+# while the all-unreported branch summed ALL turns — one column, two
+# definitions. Now input_tokens sums ALL turns unconditionally and the
+# reported subset gets its own input_reported column.
+total_in = sum(t[0] for t in turns)
+in_reported = sum(t[0] for t in reported_turns)
 total_cr = sum(t[1] for t in reported_turns)
 total_cc = sum(t[2] for t in reported_turns)
-denom = total_in + total_cr + total_cc
+denom = in_reported + total_cr + total_cc
 overall_ratio = (total_cr / denom) if denom > 0 else 0.0
 
 first_break = "none"
@@ -197,8 +209,8 @@ for idx, (inp, cr, cc, _hk) in enumerate(reported_turns, start=1):
         first_break = str(idx)
         break
 
-print("%s\t%s\t%d\t%d\t%d\t%d\t%.4f\t%s\t%s" % (
-    arm, run, n_total, total_in, total_cr, total_cc, overall_ratio, first_break, reported_col
+print("%s\t%s\t%d\t%d\t%d\t%d\t%d\t%.4f\t%s\t%s" % (
+    arm, run, n_total, total_in, in_reported, total_cr, total_cc, overall_ratio, first_break, reported_col
 ))
 PYEOF
   pyrc=$?

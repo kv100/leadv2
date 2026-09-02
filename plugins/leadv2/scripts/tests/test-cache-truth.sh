@@ -17,9 +17,9 @@ fail() { FAIL=$((FAIL + 1)); printf '[TEST] FAIL: %s\n' "$1"; }
 # fired, sed no-op) must FAIL LOUD as control_not_applied — an absent mutant
 # produces empty output which "diverges" from everything and used to print
 # "control proven red-capable" (theatre). is_row checks the mutant emitted a
-# well-formed 9-column TSV row with a numeric turns cell.
+# well-formed 10-column TSV row with a numeric turns cell.
 control_not_applied() { fail "MUTATION CONTROL NOT APPLIED: $1 (control_not_applied)"; }
-is_row() { awk -F'\t' 'NF==9 && $3 ~ /^[0-9]+$/ && $3+0>0 {ok=1} END{exit ok?0:1}' 2>/dev/null <<<"$1"; }
+is_row() { awk -F'\t' 'NF==10 && $3 ~ /^[0-9]+$/ && $3+0>0 {ok=1} END{exit ok?0:1}' 2>/dev/null <<<"$1"; }
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/cache-truth.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
@@ -43,8 +43,8 @@ JSONL
 
 out="$("$TOOL" "$ANTH_DIR" 2>/dev/null)"
 row="$(printf '%s\n' "$out" | tail -1)"
-ratio="$(printf '%s\n' "$row" | awk -F'\t' '{print $7}')"
-break_turn="$(printf '%s\n' "$row" | awk -F'\t' '{print $8}')"
+ratio="$(printf '%s\n' "$row" | awk -F'\t' '{print $8}')"
+break_turn="$(printf '%s\n' "$row" | awk -F'\t' '{print $9}')"
 
 # total: input=30 cache_read=1850 cache_creation=1100 -> denom=2980 -> ratio=0.6208
 if printf '%s\n' "$ratio" | grep -qE '^0\.62'; then
@@ -79,7 +79,7 @@ JSONL
 
 out2="$("$TOOL" "$BREAK_DIR" 2>/dev/null)"
 row2="$(printf '%s\n' "$out2" | tail -1)"
-break2="$(printf '%s\n' "$row2" | awk -F'\t' '{print $8}')"
+break2="$(printf '%s\n' "$row2" | awk -F'\t' '{print $9}')"
 if [[ "$break2" == "2" ]]; then
   pass 'break fixture: first_break correctly reports turn 2'
 else
@@ -98,7 +98,7 @@ JSONL
 
 out3="$("$TOOL" "$NOCACHE_DIR" 2>/dev/null)"
 row3="$(printf '%s\n' "$out3" | tail -1)"
-ratio3="$(printf '%s\n' "$row3" | awk -F'\t' '{print $7}')"
+ratio3="$(printf '%s\n' "$row3" | awk -F'\t' '{print $8}')"
 arm3="$(printf '%s\n' "$row3" | awk -F'\t' '{print $1}')"
 
 if [[ "$ratio3" == "unreported" ]]; then
@@ -127,7 +127,7 @@ JSONL
 
 out4="$("$TOOL" "$ZERO_DIR" 2>/dev/null)"
 row4="$(printf '%s\n' "$out4" | tail -1)"
-ratio4="$(printf '%s\n' "$row4" | awk -F'\t' '{print $7}')"
+ratio4="$(printf '%s\n' "$row4" | awk -F'\t' '{print $8}')"
 if [[ "$ratio4" == "0.0000" ]]; then
   pass 'reported-zero fixture: ratio is 0.0000, not unreported'
 else
@@ -151,8 +151,8 @@ JSONL
 
 out4b="$("$TOOL" "$MIXED_DIR" 2>/dev/null)"
 row4b="$(printf '%s\n' "$out4b" | tail -1)"
-ratio4b="$(printf '%s\n' "$row4b" | awk -F'\t' '{print $7}')"
-reported4b="$(printf '%s\n' "$row4b" | awk -F'\t' '{print $9}')"
+ratio4b="$(printf '%s\n' "$row4b" | awk -F'\t' '{print $8}')"
+reported4b="$(printf '%s\n' "$row4b" | awk -F'\t' '{print $10}')"
 if [[ "$ratio4b" == "0.0000" ]]; then
   pass 'mixed fixture: hit_ratio computed over reported subset only (0.0000)'
 else
@@ -162,6 +162,27 @@ if [[ "$reported4b" == "1/3" ]]; then
   pass 'mixed fixture: reported column shows 1/3, not silently 3/3 or 0/3'
 else
   fail "mixed fixture: expected reported=1/3 got '$reported4b'"
+fi
+
+# R4 (round-3 review finding 1): ONE definition for the input column.
+# input_tokens sums input over ALL turns — the m2/m3 input (50+50) must not
+# vanish just because those turns are unreported — while input_reported sums
+# the reported subset only. Hand-computed from the fixture above:
+#   input_tokens    = 100 (m1) + 50 (m2) + 50 (m3) = 200
+#   input_reported  = 100 (m1 only)
+# Old behaviour printed input_tokens=100 (sum over reported turns), i.e. half
+# the stream's real input silently dropped.
+in_all4b="$(printf '%s\n' "$row4b" | awk -F'\t' '{print $4}')"
+in_rep4b="$(printf '%s\n' "$row4b" | awk -F'\t' '{print $5}')"
+if [[ "$in_all4b" == "200" ]]; then
+  pass 'mixed fixture: input_tokens sums ALL turns (hand-computed 100+50+50=200)'
+else
+  fail "mixed fixture: expected input_tokens=200 got '$in_all4b'"
+fi
+if [[ "$in_rep4b" == "100" ]]; then
+  pass 'mixed fixture: input_reported sums reported subset only (hand-computed 100)'
+else
+  fail "mixed fixture: expected input_reported=100 got '$in_rep4b'"
 fi
 
 # ---------------------------------------------------------------------------
@@ -178,8 +199,8 @@ JSONL
 
 out4d="$("$TOOL" "$ALLZERO_DIR" 2>/dev/null)"
 row4d="$(printf '%s\n' "$out4d" | tail -1)"
-ratio4d="$(printf '%s\n' "$row4d" | awk -F'\t' '{print $7}')"
-reported4d="$(printf '%s\n' "$row4d" | awk -F'\t' '{print $9}')"
+ratio4d="$(printf '%s\n' "$row4d" | awk -F'\t' '{print $8}')"
+reported4d="$(printf '%s\n' "$row4d" | awk -F'\t' '{print $10}')"
 if [[ "$ratio4d" == "unreported" ]]; then
   pass 'all-zero-usage fixture: cache keys present but usage 0/0/0 -> unreported, not 0.0000'
 else
@@ -212,7 +233,7 @@ JSONL
 outdup="$("$TOOL" "$DUP_DIR" 2>/dev/null)"
 rowdup="$(printf '%s\n' "$outdup" | tail -1)"
 turnsdup="$(printf '%s\n' "$rowdup" | awk -F'\t' '{print $3}')"
-ratiodup="$(printf '%s\n' "$rowdup" | awk -F'\t' '{print $7}')"
+ratiodup="$(printf '%s\n' "$rowdup" | awk -F'\t' '{print $8}')"
 if [[ "$turnsdup" == "2" ]]; then
   pass 'dup-id fixture: 5 raw events de-duplicated to 2 unique turns'
 else
@@ -259,7 +280,7 @@ if [[ ! -s "$MUTANT" ]] \
   control_not_applied 'control 1 (numerator swap): sed anchor did not match or mutant not created'
 else
   mutant_out="$("$MUTANT" "$ANTH_DIR" 2>/dev/null | tail -1)"
-  mutant_ratio="$(printf '%s\n' "$mutant_out" | awk -F'\t' '{print $7}')"
+  mutant_ratio="$(printf '%s\n' "$mutant_out" | awk -F'\t' '{print $8}')"
   if ! is_row "$mutant_out"; then
     control_not_applied "control 1 (numerator swap): mutant emitted a malformed/empty row ('$mutant_out')"
   # expected correct ratio ~0.6208; mutant numerator is cache_creation=1100/2980=0.3691
@@ -332,7 +353,7 @@ if [[ "$CTL3_OK" != "1" ]]; then
   control_not_applied 'control 3 (global-key): python anchor did not match or mutant not created'
 else
   mutant_global_out="$("$MUTANT_GLOBAL" "$MIXED_DIR" 2>/dev/null | tail -1)"
-  mutant_global_reported="$(printf '%s\n' "$mutant_global_out" | awk -F'\t' '{print $9}')"
+  mutant_global_reported="$(printf '%s\n' "$mutant_global_out" | awk -F'\t' '{print $10}')"
   if ! is_row "$mutant_global_out"; then
     control_not_applied "control 3 (global-key): mutant emitted a malformed/empty row ('$mutant_global_out')"
   elif [[ "$mutant_global_reported" == "1/3" ]]; then
