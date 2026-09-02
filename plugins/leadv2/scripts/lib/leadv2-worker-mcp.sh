@@ -162,3 +162,98 @@ PYEOF
   printf '%s' "$resolved_path"
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# worker_mcp_preamble_for_arm() — WORKER-MCP-ALL-ARMS-01 R3 (review H2).
+#
+# The dispatcher may inject the code-intel preamble (which tells the worker to
+# call mcp__* tools) ONLY into spawns that will actually carry the role-scoped
+# MCP config. Round 2 injected it unconditionally for every arm, so codex
+# (which has no MCP wiring at all) and every fail-open path received missions
+# promising tools that provably do not exist in that session.
+#
+# This predicate is implemented ON TOP of resolve_role_mcp_config() — never a
+# second resolver — because the launchers make the attach decision through
+# THIS SAME lib at spawn time (same gate env, same role, same config chain,
+# same fail-open taxonomy). The prediction is therefore deterministic; the
+# launcher's worker_mcp_attached / worker_mcp_skipped journal line stays the
+# record of what actually happened.
+#
+#   Input : $1 = arm (glm|glm-flash|kimi|freepool|sonnet|codex)
+#           $2 = project root the worker will cwd into (config-chain source)
+#           $3 = out dir for the resolved probe (optional; a private mktemp
+#                scratch is used and removed when empty)
+#   Output: rc=0  attached  → the full worker-code-intel-preamble.md on stdout
+#           rc=3  fail-open → one-line fallback note on stdout (promises
+#                             nothing; grep/Read always exist)
+#           rc=4  unwired   → nothing on stdout (arm has no MCP wiring)
+#   Every rc is a decision, never an error to propagate — the caller only
+#   picks the printed text (or its absence) and logs the mode.
+worker_mcp_preamble_for_arm() { # $1=arm $2=project root (worker cwd) $3=out dir (optional)
+  local arm="$1" project_root="$2" out_dir="${3:-}"
+  local role="${LEADV2_WORKER_ROLE:-developer}"
+  [[ "${role}" =~ ^[a-z0-9-]+$ ]] || role="developer"
+
+  case "${arm}" in
+    codex)
+      # codex-task.sh has NO MCP wiring (the companion spawns its own task
+      # worker with fixed argv; probed 2026-09-02) — promising mcp__* tools
+      # there is a falsehood the worker cannot satisfy.
+      return 4
+      ;;
+    sonnet)
+      # claude-subsession.sh resolves role MCP only under the opt-in
+      # LEADV2_SUBSESSION_SLIM_MCP=1; the default (0) spawn appends no
+      # --mcp-config and writes no worker_mcp_attached record, so the honest
+      # answer is "not attached" — never promise.
+      if [[ "${LEADV2_SUBSESSION_SLIM_MCP:-0}" != "1" ]]; then
+        printf '%s\n' "code-intel MCP unavailable in this session — use grep/Read instead of mcp__* tools."
+        return 3
+      fi
+      ;;
+    *)
+      # glm/glm-flash/kimi/freepool launchers gate on LEADV2_WORKER_MCP
+      # (default 1). Mirror their default exactly.
+      if [[ "${LEADV2_WORKER_MCP:-1}" != "1" ]]; then
+        printf '%s\n' "code-intel MCP unavailable in this session — use grep/Read instead of mcp__* tools."
+        return 3
+      fi
+      ;;
+  esac
+
+  local scratch=""
+  if [[ -z "${out_dir}" ]]; then
+    scratch="$(mktemp -d "${TMPDIR:-/tmp}/worker-mcp-preamble.XXXXXX")" || scratch=""
+    if [[ -z "${scratch}" ]]; then
+      printf '%s\n' "code-intel MCP unavailable in this session — use grep/Read instead of mcp__* tools."
+      return 3
+    fi
+    out_dir="${scratch}"
+  fi
+  local mcp_cfg="" rc=0
+  mcp_cfg="$(resolve_role_mcp_config "${role}" "${out_dir}" "${project_root}")" || rc=$?
+  [[ -z "${scratch}" ]] || rm -rf "${scratch}" 2>/dev/null || true
+  if [[ ${rc} -ne 0 || -z "${mcp_cfg}" ]]; then
+    printf '%s\n' "code-intel MCP unavailable in this session — use grep/Read instead of mcp__* tools."
+    return 3
+  fi
+
+  local _script_dir
+  _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  # Preamble is resolved LIB-RELATIVE FIRST: the launcher runs from the tree
+  # that ships this lib, so its prompts/ sibling is the live copy.
+  # CLAUDE_PLUGIN_ROOT (an installed/cache copy) is only a fallback and can be
+  # stale — a fresh prompts file does not exist there until the plugin is
+  # redeployed (observed 2026-09-02: installed copy predates this lane).
+  local preamble_file="${_script_dir}/../prompts/worker-code-intel-preamble.md"
+  [[ -f "${preamble_file}" ]] || preamble_file="${CLAUDE_PLUGIN_ROOT:-${_script_dir}/..}/prompts/worker-code-intel-preamble.md"
+  if [[ ! -f "${preamble_file}" ]]; then
+    # Config would attach but the preamble text is gone — fail closed to the
+    # note: an attach with no routing text must not silently inject nothing
+    # and lose the routing advice.
+    printf '%s\n' "code-intel MCP unavailable in this session — use grep/Read instead of mcp__* tools."
+    return 3
+  fi
+  cat "${preamble_file}"
+  return 0
+}

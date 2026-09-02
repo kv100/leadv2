@@ -494,6 +494,14 @@ _LEADV2_HELPERS_SH="${SCRIPT_DIR}/leadv2-helpers.sh"
 # shellcheck source=leadv2-helpers.sh
 [[ -f "${_LEADV2_HELPERS_SH}" ]] && source "${_LEADV2_HELPERS_SH}" 2>/dev/null
 declare -F lv2_scrub_bypass_env >/dev/null 2>&1 && lv2_scrub_bypass_env
+# WORKER-MCP-ALL-ARMS-01 R3: the code-intel preamble gate lives in the shared
+# worker-MCP lib (same file the launchers resolve through at spawn time), so
+# the dispatcher's attach prediction and the launcher's actual attach cannot
+# drift. Same symlink-proof fallback shape as the helpers source above.
+_LEADV2_WORKER_MCP_LIB="${SCRIPT_DIR}/lib/leadv2-worker-mcp.sh"
+[[ -f "${_LEADV2_WORKER_MCP_LIB}" ]] || _LEADV2_WORKER_MCP_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-worker-mcp.sh"
+# shellcheck source=lib/leadv2-worker-mcp.sh
+[[ -f "${_LEADV2_WORKER_MCP_LIB}" ]] && source "${_LEADV2_WORKER_MCP_LIB}" 2>/dev/null
 # STATUSLINE-COUNT-TRUTH-01: single source of truth for the architect-prepass
 # dir suffix -- leadv2-lane-liveness.sh folds dispatch-<sig8>-<role> ids back
 # into their parent using this SAME constant, so the registrar and the fold
@@ -5089,18 +5097,22 @@ _spawn_worker_body() {
     mission="EVIDENCE CONTRACT: every factual claim about an external system or API needs a probe artifact; if you have none, prefix the claim with UNVERIFIED: — an untagged evidence-free external-system claim is a protocol violation."$'\n\n'"${mission}"
   fi
   [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
-  # WORKER-MCP-ALL-ARMS-01: one injection point for ALL arms (glm/kimi/
-  # freepool/sonnet/codex) — never a per-launcher copy. Cached in a global on
-  # first use so re-dispatch in the same process doesn't re-read the file.
-  if [[ -z "${_LEADV2_CODE_INTEL_PREAMBLE+x}" ]]; then
-    local _preamble_file="${SCRIPT_DIR}/../prompts/worker-code-intel-preamble.md"
-    if [[ -f "${_preamble_file}" ]]; then
-      _LEADV2_CODE_INTEL_PREAMBLE="$(cat "${_preamble_file}")"
-    else
-      _LEADV2_CODE_INTEL_PREAMBLE=""
-    fi
-  fi
-  [[ -z "${_LEADV2_CODE_INTEL_PREAMBLE}" ]] || mission="${_LEADV2_CODE_INTEL_PREAMBLE}"$'\n\n'"${mission}"
+  # WORKER-MCP-ALL-ARMS-01 R3 (review H2): the code-intel preamble promises
+  # the worker mcp__* tools — so it may be injected ONLY when this arm's MCP
+  # attach will actually succeed. worker_mcp_preamble_for_arm() (the shared
+  # lib sourced above, the SAME resolver the launchers run at spawn time)
+  # returns: rc=0 attached → preamble text; rc=3 fail-open/skip → a one-line
+  # "code-intel MCP unavailable" note that promises nothing; rc=4 unwired
+  # (codex) → nothing. The unconditional all-arms injection this replaces
+  # told codex and every fail-open path to call tools their session never had.
+  local _ci_txt="" _ci_rc=0
+  _ci_txt="$(worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" "")" || _ci_rc=$?
+  case "${_ci_rc}" in
+    0) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=attached" ;;
+    3) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=skipped reason=fail_open" ;;
+    *) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=none reason=arm_unwired" ;;
+  esac
+  [[ -z "${_ci_txt}" ]] || mission="${_ci_txt}"$'\n\n'"${mission}"
   case "${arm}" in
     glm|glm-flash)
       # GLM-53-FLASH-ARM-01: glm-flash is the same launcher (glm-coder.sh) on

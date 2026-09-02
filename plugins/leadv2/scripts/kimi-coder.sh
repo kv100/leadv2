@@ -1132,7 +1132,12 @@ cmd_run_child() {
   fi
   ( command "${KIMI_CLAUDE_BIN}" "${spawn_args[@]}" \
       2> >(redact_stream >> "${run_dir}/stderr.log")
-  ) | tee "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
+  ) | tee -a "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
+  # ^ tee -a, never bare tee: worker_mcp_resolve() above journals
+  #   worker_mcp_attached/skipped into this SAME journal.jsonl BEFORE the
+  #   stream starts — a bare tee would TRUNCATE it and destroy those records
+  #   (WORKER-MCP-ALL-ARMS-01 R3 H1; freepool-coder.sh's twin pipelines
+  #   already append).
   echo "${PIPESTATUS[0]}" > "${run_dir}/exit_code"
   set -e
 }

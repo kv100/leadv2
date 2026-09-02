@@ -11,13 +11,24 @@
 #     invoked via `freepool-coder.sh bg` exactly as the dispatcher does, with
 #     the transport faked one level lower (stub claude binary dumps argv+env;
 #     no network). Asserts --mcp-config/--strict-mcp-config on the child argv,
-#     the role-resolved server list, the transport env, and that the code-intel
-#     preamble injected at the dispatcher's ONE call site reaches the child -p.
-#   - kimi `run` and `bg` paths: same coverage as freepool.
+#     the role-resolved server list, and the transport env.
+#   - kimi `run` and `bg` paths: same coverage as freepool, PLUS the R3
+#     journal-append case: the stream tee must APPEND to journal.jsonl so the
+#     worker_mcp_attached record written before the spawn survives (round-2
+#     reviewer H1: bare tee truncated it).
+#   - R3 preamble gate (reviewer H2): the dispatcher injects the code-intel
+#     preamble ONLY for arms whose MCP attach will succeed. lib's
+#     worker_mcp_preamble_for_arm() is exercised behaviourally: attached ->
+#     preamble text, LEADV2_WORKER_MCP=0 / fail-open -> one-line note,
+#     codex -> nothing, sonnet default -> nothing, sonnet SLIM_MCP=1 ->
+#     preamble. dispatch-code.sh is asserted to call the gate and to contain
+#     NO unconditional-injection marker.
 #   - NEGATIVE CONTROLS: scratch-copy mutations (a) freepool `run` wiring,
 #     (b) freepool cmd_run_child (bg) wiring, (c) kimi cmd_run_child (bg)
-#     wiring — each proven to be caught by this suite (reviewer round-1: the
-#     bg wiring could be deleted with the suite staying green).
+#     wiring, (d) kimi bg tee -a dropped (round-2 H1), (e) dispatch preamble
+#     gate replaced by unconditional injection (round-2 H2) — each proven to
+#     be caught by this suite (reviewer round-1: the bg wiring could be
+#     deleted with the suite staying green).
 #
 # codex-task.sh: live MCP wiring is NOT asserted because it is NOT possible
 # in-repo — the real spawn goes through node codex-companion.mjs (openai-codex
@@ -303,6 +314,18 @@ else
   fail "kimi bg: code-intel preamble + mission both inside the child -p prompt"
 fi
 
+# ── R3 (reviewer H1): journal.jsonl must APPEND — two consecutive writes ────
+# Write #1: worker_mcp_resolve() journals worker_mcp_attached BEFORE the spawn
+# (kimi-coder.sh cmd_run_child). Write #2: the stream tee starts writing AFTER
+# it. A bare tee truncates the file and destroys write #1 — both records must
+# be present after the run for the append to be proven.
+if grep -q "worker_mcp_attached" "${KMBG_RUN_DIR}/journal.jsonl" 2>/dev/null \
+   && grep -q '"type":"system"' "${KMBG_RUN_DIR}/journal.jsonl" 2>/dev/null; then
+  pass "kimi bg: journal keeps BOTH the pre-spawn worker_mcp_attached record and the stream (tee -a)"
+else
+  fail "kimi bg: journal keeps BOTH the pre-spawn worker_mcp_attached record and the stream (tee -a); got: $(head -3 "${KMBG_RUN_DIR}/journal.jsonl" 2>/dev/null | tr '\n' '|')"
+fi
+
 # ── codex: no live wiring possible (companion out of scope) — doc-gap asserted ──
 if [[ -f "${CODEX_TOML}" ]] && grep -q "codebase-memory-mcp" "${CODEX_TOML}" && grep -q "repowise" "${CODEX_TOML}"; then
   pass "config/codex-mcp-servers.toml declares both server names"
@@ -333,17 +356,92 @@ else
   fail "worker-code-intel-preamble.md covers graph/repowise/distill routing"
 fi
 
-# ── dispatch-code.sh: ONE injection call site for all arms ──────────────────
-_inject_count="$(grep -c "_LEADV2_CODE_INTEL_PREAMBLE" "${DISPATCH_SCRIPT}" 2>/dev/null || echo 0)"
-if [[ "${_inject_count}" -ge 2 ]]; then
-  pass "leadv2-dispatch-code.sh: code-intel preamble injection wired (${_inject_count} refs)"
+# ── R3 (reviewer H2): the preamble gate — behavioural, lib level ────────────
+# worker_mcp_preamble_for_arm() is the dispatcher's ONLY injection decision.
+# It is exercised here from behaviour: what it prints and what rc it returns.
+PREAMBLE_LIB="${PLUGIN_SCRIPTS}/lib/leadv2-worker-mcp.sh"
+GATE_REPO="$(make_bg_repo wmaa-gate-repo)"   # .mcp.json carries both servers
+NO_MCP_DIR="${FIXTURE}/wmaa-no-mcp-home"; mkdir -p "${NO_MCP_DIR}"
+
+# gate_case_run <label> <expected-rc> <expect-preamble|expect-note|expect-empty> <arm> <root> [env...]
+gate_case_run() {
+  local label="$1" want_rc="$2" want_kind="$3" arm="$4" root="$5"
+  shift 5
+  local res rc out
+  res="$(env "$@" bash -c '
+    source "$1"; shift
+    out="$(worker_mcp_preamble_for_arm "$@")"; rc=$?
+    printf "%s" "${out}"; printf "\n--RC=%s" "${rc}"
+  ' _ "${PREAMBLE_LIB}" "${arm}" "${root}" 2>/dev/null)"
+  rc="${res##*--RC=}"
+  out="${res%"--RC=${rc}"}"
+  case "${want_kind}" in
+    expect-preamble)
+      if [[ "${rc}" == "${want_rc}" ]] && printf '%s' "${out}" | grep -q "CODE-INTEL ROUTING"; then
+        pass "preamble gate: ${label} -> rc=${rc} + preamble text"
+      else
+        fail "preamble gate: ${label} -> rc=${rc} (want ${want_rc}) + preamble text (got: $(printf '%s' "${out}" | head -1))"
+      fi ;;
+    expect-note)
+      if [[ "${rc}" == "${want_rc}" ]] && printf '%s' "${out}" | grep -q "code-intel MCP unavailable" \
+         && ! printf '%s' "${out}" | grep -q "CODE-INTEL ROUTING"; then
+        pass "preamble gate: ${label} -> rc=${rc} + fallback note, no preamble"
+      else
+        fail "preamble gate: ${label} -> rc=${rc} (want ${want_rc}) + fallback note, no preamble (got: $(printf '%s' "${out}" | head -1))"
+      fi ;;
+    expect-empty)
+      if [[ "${rc}" == "${want_rc}" ]] && [[ -z "${out//[$'\n']/}" ]]; then
+        pass "preamble gate: ${label} -> rc=${rc} + empty output"
+      else
+        fail "preamble gate: ${label} -> rc=${rc} (want ${want_rc}) + empty output (got: $(printf '%s' "${out}" | head -1))"
+      fi ;;
+  esac
+}
+
+gate_case_run "kimi attached (default gate)"            0 expect-preamble kimi    "${GATE_REPO}"
+gate_case_run "freepool attached (default gate)"        0 expect-preamble freepool "${GATE_REPO}"
+gate_case_run "glm attached (default gate)"             0 expect-preamble glm     "${GATE_REPO}"
+gate_case_run "kimi LEADV2_WORKER_MCP=0"                3 expect-note     kimi    "${GATE_REPO}" "LEADV2_WORKER_MCP=0"
+gate_case_run "kimi fail-open (nothing resolvable)"     3 expect-note     kimi    "${NO_MCP_DIR}" "HOME=${NO_MCP_DIR}"
+gate_case_run "codex unwired"                           4 expect-empty    codex   "${GATE_REPO}"
+gate_case_run "sonnet default (no SLIM_MCP)"            3 expect-note     sonnet  "${GATE_REPO}"
+gate_case_run "sonnet LEADV2_SUBSESSION_SLIM_MCP=1"     0 expect-preamble sonnet  "${GATE_REPO}" "LEADV2_SUBSESSION_SLIM_MCP=1"
+
+# The note must never promise a concrete mcp__ namespace (the generic
+# "instead of mcp__* tools" mention is the instruction, not a promise).
+_note="$(env HOME="${NO_MCP_DIR}" bash -c '
+  source "$1"; shift
+  worker_mcp_preamble_for_arm kimi "$2" ""
+' _ "${PREAMBLE_LIB}" kimi "${NO_MCP_DIR}" 2>/dev/null)"
+if printf '%s' "${_note}" | grep -Eq "mcp__(repowise|codebase-memory)" ; then
+  fail "preamble gate: fallback note must not name concrete mcp__* tool namespaces"
 else
-  fail "leadv2-dispatch-code.sh: code-intel preamble injection wired (${_inject_count} refs)"
+  pass "preamble gate: fallback note promises no concrete mcp__* tools"
 fi
-if grep -q 'worker-code-intel-preamble.md' "${DISPATCH_SCRIPT}"; then
-  pass "leadv2-dispatch-code.sh: references the canonical preamble file path"
+
+# ── dispatch-code.sh: gated injection call site, no unconditional marker ────
+# Structural by necessity (a real dispatch spawns a live worker); the gate
+# FUNCTION itself is behaviour-proven above. Regression marker: the round-2
+# unconditional global `_LEADV2_CODE_INTEL_PREAMBLE` must never reappear.
+dispatch_gate_check() { # <script-path> -> 0 when the gated call site is present
+  grep -q 'worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}"' "$1" 2>/dev/null \
+    && ! grep -q '_LEADV2_CODE_INTEL_PREAMBLE' "$1" 2>/dev/null
+}
+if dispatch_gate_check "${DISPATCH_SCRIPT}"; then
+  pass "leadv2-dispatch-code.sh: preamble injection is gated by worker_mcp_preamble_for_arm(arm)"
 else
-  fail "leadv2-dispatch-code.sh: references the canonical preamble file path"
+  fail "leadv2-dispatch-code.sh: preamble injection is gated by worker_mcp_preamble_for_arm(arm)"
+fi
+if grep -q '_LEADV2_CODE_INTEL_PREAMBLE' "${DISPATCH_SCRIPT}" 2>/dev/null; then
+  fail "leadv2-dispatch-code.sh: unconditional-injection marker _LEADV2_CODE_INTEL_PREAMBLE must stay deleted (round-2 H2 regression)"
+else
+  pass "leadv2-dispatch-code.sh: unconditional-injection marker _LEADV2_CODE_INTEL_PREAMBLE stays deleted (round-2 H2 regression)"
+fi
+if grep -q 'worker_mcp_preamble_for_arm' "${DISPATCH_SCRIPT}" 2>/dev/null \
+   && grep -q 'lib/leadv2-worker-mcp.sh' "${DISPATCH_SCRIPT}" 2>/dev/null; then
+  pass "leadv2-dispatch-code.sh: sources the shared worker-MCP lib (no second resolver)"
+else
+  fail "leadv2-dispatch-code.sh: sources the shared worker-MCP lib (no second resolver)"
 fi
 
 # ── NEGATIVE CONTROL: mutate a scratch copy, prove RED ──────────────────────
@@ -441,6 +539,65 @@ PYMUT
 FP_CHILD_NEEDLE='mcp_cfg="$(worker_mcp_resolve "${cwd_dir}" "${run_dir}/journal.jsonl" "${run_dir}")" || true'
 bg_negative_control "${FREEPOOL_SCRIPT}" "${FP_CHILD_NEEDLE}" "freepool-bg" "fp" "${FPBG_SECRETS}" "FREEPOOL_RUNS_DIR" || true
 bg_negative_control "${KIMI_SCRIPT}" "${FP_CHILD_NEEDLE}" "kimi-bg" "kimi" "${KIMI_SECRETS}" "KIMI_RUNS_DIR" || true
+
+# ── NEGATIVE CONTROL (d): drop tee -a in a scratch kimi copy (round-2 H1) ────
+# Reviewer's exact regression: bare tee truncates journal.jsonl and destroys
+# the worker_mcp_attached record written before the spawn. The mutated copy
+# must LOSE that record — i.e. the positive journal case above must go red.
+ncd_dir="$(mktemp -d "${TMPDIR:-/tmp}/wmaa-ncd.XXXXXX")"
+CLEANUP_PATHS+=("${ncd_dir}")
+cp -pR "${PLUGIN_SCRIPTS}" "${ncd_dir}/scripts"
+python3 - "${ncd_dir}/scripts/kimi-coder.sh" <<'PYMUT'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+needle = '| tee -a "${run_dir}/journal.jsonl" |'
+if needle not in text:
+    print("MUTATION_TARGET_NOT_FOUND", file=sys.stderr)
+    sys.exit(1)
+open(path, "w").write(text.replace(needle, '| tee "${run_dir}/journal.jsonl" |', 1))
+PYMUT
+if [[ $? -ne 0 ]]; then
+  fail "negative control (tee -a): mutation target found"
+else
+  NCD_ARGV="${FIXTURE}/ncd-argv.txt"; : > "${NCD_ARGV}"
+  make_bg_stub "ncd-kimi" "${NCD_ARGV}" "${FIXTURE}/ncd-env.txt" "${FIXTURE}/ncd-resolved.json"
+  NCD_REPO="$(make_bg_repo ncd-repo)"
+  NCD_RUN_ID="$(env KIMI_CLAUDE_BIN="${STUB_BIN}/ncd-kimi" KIMI_SECRETS_FILE="${KIMI_SECRETS}" \
+    KIMI_RUNS_DIR="${FIXTURE}/ncd-runs" LEADV2_PROJECT_ROOT="${NCD_REPO}" KIMI_SKIP_LAUNCH_PROBE=1 \
+    bash "${ncd_dir}/scripts/kimi-coder.sh" bg "@${KMBG_PROMPT}" --cwd "${NCD_REPO}" --timeout 60 2>/dev/null | tail -1)"
+  if [[ -n "${NCD_RUN_ID}" ]] && wait_finalized "${FIXTURE}/ncd-runs/${NCD_RUN_ID}" \
+     && ! grep -q "worker_mcp_attached" "${FIXTURE}/ncd-runs/${NCD_RUN_ID}/journal.jsonl" 2>/dev/null; then
+    pass "negative control (tee -a): mutated kimi goes RED — attached record destroyed by truncation, journal case catches it"
+  else
+    fail "negative control (tee -a): mutated kimi still keeps worker_mcp_attached — suite would be blind to the round-2 H1 regression"
+  fi
+fi
+
+# ── NEGATIVE CONTROL (e): unconditional injection in a scratch dispatch copy ─
+# Reviewer's exact regression (round-2 H2): replace the gated call with an
+# unconditional prepend. The structural dispatch check must go red on the
+# mutated copy (the gate call site is gone).
+nce_dir="$(mktemp -d "${TMPDIR:-/tmp}/wmaa-nce.XXXXXX")"
+CLEANUP_PATHS+=("${nce_dir}")
+cp "${DISPATCH_SCRIPT}" "${nce_dir}/leadv2-dispatch-code.sh"
+python3 - "${nce_dir}/leadv2-dispatch-code.sh" <<'PYMUT'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+needle = '_ci_txt="$(worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" "")" || _ci_rc=$?'
+if needle not in text:
+    print("MUTATION_TARGET_NOT_FOUND", file=sys.stderr)
+    sys.exit(1)
+open(path, "w").write(text.replace(needle, '_ci_txt="UNCONDITIONAL-PROMISE"', 1))
+PYMUT
+if [[ $? -ne 0 ]]; then
+  fail "negative control (dispatch gate): mutation target found"
+elif dispatch_gate_check "${nce_dir}/leadv2-dispatch-code.sh"; then
+  fail "negative control (dispatch gate): unconditional injection still passes — suite would be blind to the round-2 H2 regression"
+else
+  pass "negative control (dispatch gate): unconditional injection goes RED — dispatch gate check catches it"
+fi
 
 echo
 log "TOTAL: PASS=${PASS} FAIL=${FAIL}"
