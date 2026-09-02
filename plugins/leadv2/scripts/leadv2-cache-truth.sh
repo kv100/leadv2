@@ -27,11 +27,19 @@
 # without this, totals were inflated ~1.8x on real dispatch streams). Events
 # with no message.id are each treated as their own unique turn (never
 # collapsed together) since we cannot prove they are duplicates.
-# hit_ratio is computed ONLY over REPORTED turns (those whose usage dict
-# carries a cache_read_input_tokens or cache_creation_input_tokens key) =
+# hit_ratio is computed ONLY over REPORTED turns. Round-3 rule: a turn is
+# reported iff its usage dict carries a cache_read_input_tokens or
+# cache_creation_input_tokens key AND is not all zeros (see below) =
 # cache_read / (input + cache_read + cache_creation) summed across reported
-# turns. "unreported" replaces hit_ratio and first_break when ZERO turns in
-# the stream report cache fields — this is a per-run, not per-turn-1,
+# turns. A turn whose usage block is ALL ZEROS — cache keys present or not —
+# is NOT "reported": the api/anthropic GLM path returns
+# input_tokens:0/output_tokens:0 on every event (GLM-EFFICIENCY-AUDIT-01 §2),
+# so counting it as reported fabricates a 0.0000 hit_ratio out of a zero
+# denominator. hit_ratio is printed ONLY when reported>0 AND
+# input+cache_read+cache_creation>0 over the reported set; otherwise the cell
+# is "unreported". "unreported" also replaces hit_ratio and first_break when
+# ZERO turns in the stream count as reported — this is a per-run, not
+# per-turn-1,
 # decision: a stream that is a MIX of reported and unreported turns is
 # classified using only the reported subset, and `reported` (last column)
 # shows N/M so a mixed run is never silently rounded to "all reported" or
@@ -155,7 +163,13 @@ if not turns:
     print("%s\t%s\t0\t0\t0\t0\tunreported\tnone\t0/0" % (arm, run))
     sys.exit(0)
 
-reported_turns = [t for t in turns if t[3]]
+# Round-3 rule: a turn is REPORTED only if it carries a cache key AND its
+# usage is not all zeros — an all-zero usage block means the provider never
+# actually told us anything (api/anthropic GLM emits 0/0 usage on every
+# event), and counting it as reported fabricates a 0.0000 ratio out of a
+# zero denominator. Such a turn stays in the total (reported col shows the
+# honest N/M) but never feeds the ratio.
+reported_turns = [t for t in turns if t[3] and (t[0] + t[1] + t[2]) > 0]
 n_reported = len(reported_turns)
 n_total = len(turns)
 reported_col = "%d/%d" % (n_reported, n_total)

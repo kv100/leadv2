@@ -13,6 +13,13 @@ TOOL="${SCRIPT_DIR}/leadv2-cache-truth.sh"
 PASS=0 FAIL=0
 pass() { PASS=$((PASS + 1)); printf '[TEST] PASS: %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '[TEST] FAIL: %s\n' "$1"; }
+# Round-3 review: a mutant that was never created (anchor moved, python assert
+# fired, sed no-op) must FAIL LOUD as control_not_applied — an absent mutant
+# produces empty output which "diverges" from everything and used to print
+# "control proven red-capable" (theatre). is_row checks the mutant emitted a
+# well-formed 9-column TSV row with a numeric turns cell.
+control_not_applied() { fail "MUTATION CONTROL NOT APPLIED: $1 (control_not_applied)"; }
+is_row() { awk -F'\t' 'NF==9 && $3 ~ /^[0-9]+$/ && $3+0>0 {ok=1} END{exit ok?0:1}' 2>/dev/null <<<"$1"; }
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/cache-truth.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
@@ -158,6 +165,33 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Fixture 4d: round-3 review probe — a turn that CARRIES the cache keys but
+# whose usage is ALL ZEROS is NOT "reported": it must print hit_ratio
+# "unreported" (never a fabricated 0.0000 from a zero denominator) and
+# reported=0/1. (Old behaviour printed `... 0.0000 none 1/1` here.)
+# ---------------------------------------------------------------------------
+ALLZERO_DIR="$ROOT/glm-runs/260902-fixture-allzero"
+mkdir -p "$ALLZERO_DIR"
+cat > "$ALLZERO_DIR/journal.jsonl" <<'JSONL'
+{"type":"assistant","message":{"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}
+JSONL
+
+out4d="$("$TOOL" "$ALLZERO_DIR" 2>/dev/null)"
+row4d="$(printf '%s\n' "$out4d" | tail -1)"
+ratio4d="$(printf '%s\n' "$row4d" | awk -F'\t' '{print $7}')"
+reported4d="$(printf '%s\n' "$row4d" | awk -F'\t' '{print $9}')"
+if [[ "$ratio4d" == "unreported" ]]; then
+  pass 'all-zero-usage fixture: cache keys present but usage 0/0/0 -> unreported, not 0.0000'
+else
+  fail "all-zero-usage fixture: expected 'unreported' got '$ratio4d'"
+fi
+if [[ "$reported4d" == "0/1" ]]; then
+  pass 'all-zero-usage fixture: reported column shows 0/1'
+else
+  fail "all-zero-usage fixture: expected reported=0/1 got '$reported4d'"
+fi
+
+# ---------------------------------------------------------------------------
 # Fixture 4c: DUPLICATED message.id — a stream-json file re-emits the same
 # assistant message id 3x (streaming deltas + final), as seen on real
 # dispatch-c293c1d5 (176 events / 95 unique ids). Only the LAST event per id
@@ -212,16 +246,28 @@ rm -f /tmp/cache-truth-empty-err.$$
 # fixture differently (1100 vs 1850) — proving the ratio test can fail.
 # ---------------------------------------------------------------------------
 MUTANT="$ROOT/leadv2-cache-truth-mutant.sh"
-sed 's/overall_ratio = (total_cr \/ denom) if denom > 0 else 0.0/overall_ratio = (total_cc \/ denom) if denom > 0 else 0.0/' "$TOOL" > "$MUTANT"
-chmod +x "$MUTANT"
-
-mutant_out="$("$MUTANT" "$ANTH_DIR" 2>/dev/null | tail -1)"
-mutant_ratio="$(printf '%s\n' "$mutant_out" | awk -F'\t' '{print $7}')"
-# expected correct ratio ~0.6208; mutant numerator is cache_creation=1100/2980=0.3691
-if printf '%s\n' "$mutant_ratio" | grep -qE '^0\.62'; then
-  fail 'MUTATION CONTROL: mutant (cache_creation numerator) unexpectedly matched correct ratio — control is not falsifiable'
+CTL1_ANCHOR='overall_ratio = (total_cr / denom) if denom > 0 else 0.0'
+if [[ "$(grep -cF "$CTL1_ANCHOR" "$TOOL")" == "1" ]]; then
+  sed "s|$CTL1_ANCHOR|overall_ratio = (total_cc / denom) if denom > 0 else 0.0|" "$TOOL" > "$MUTANT"
+  chmod +x "$MUTANT"
+fi
+# the mutant must EXIST and actually carry the swapped numerator, and it must
+# emit a well-formed row — else this control never ran and proves nothing.
+if [[ ! -s "$MUTANT" ]] \
+   || [[ "$(grep -c 'total_cc \/ denom' "$MUTANT" 2>/dev/null)" != "1" ]] \
+   || [[ "$(grep -cF 'overall_ratio = (total_cr / denom)' "$MUTANT" 2>/dev/null)" != "0" ]]; then
+  control_not_applied 'control 1 (numerator swap): sed anchor did not match or mutant not created'
 else
-  pass "MUTATION CONTROL: mutant ratio diverged from correct 0.62 (got '$mutant_ratio') — control proven red-capable"
+  mutant_out="$("$MUTANT" "$ANTH_DIR" 2>/dev/null | tail -1)"
+  mutant_ratio="$(printf '%s\n' "$mutant_out" | awk -F'\t' '{print $7}')"
+  if ! is_row "$mutant_out"; then
+    control_not_applied "control 1 (numerator swap): mutant emitted a malformed/empty row ('$mutant_out')"
+  # expected correct ratio ~0.6208; mutant numerator is cache_creation=1100/2980=0.3691
+  elif printf '%s\n' "$mutant_ratio" | grep -qE '^0\.62'; then
+    fail 'MUTATION CONTROL: mutant (cache_creation numerator) unexpectedly matched correct ratio — control is not falsifiable'
+  else
+    pass "MUTATION CONTROL: mutant ratio diverged from correct 0.62 (got '$mutant_ratio') — control proven red-capable"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -231,7 +277,9 @@ fi
 # count all 5 raw events instead of 2 unique ones.
 # ---------------------------------------------------------------------------
 MUTANT_DEDUP="$ROOT/leadv2-cache-truth-mutant-dedup.sh"
-python3 - "$TOOL" "$MUTANT_DEDUP" <<'PYEOF'
+CTL2_OK=0
+if [[ "$(grep -c 'by_id\[mid\] = rec  # last event for this id wins' "$TOOL")" == "1" ]]; then
+  python3 - "$TOOL" "$MUTANT_DEDUP" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src).read()
@@ -241,14 +289,21 @@ assert needle in text, "mutation anchor not found in tool source"
 text = text.replace(needle, replacement)
 open(dst, "w").write(text)
 PYEOF
-chmod +x "$MUTANT_DEDUP"
-
-mutant_dedup_out="$("$MUTANT_DEDUP" "$DUP_DIR" 2>/dev/null | tail -1)"
-mutant_dedup_turns="$(printf '%s\n' "$mutant_dedup_out" | awk -F'\t' '{print $3}')"
-if [[ "$mutant_dedup_turns" == "2" ]]; then
-  fail 'MUTATION CONTROL (dedup): mutant (no id dedup) unexpectedly still reported 2 turns — control is not falsifiable'
+  [[ $? -eq 0 && -s "$MUTANT_DEDUP" ]] && CTL2_OK=1
+fi
+chmod +x "$MUTANT_DEDUP" 2>/dev/null
+if [[ "$CTL2_OK" != "1" ]]; then
+  control_not_applied 'control 2 (dedup removal): python anchor did not match or mutant not created'
 else
-  pass "MUTATION CONTROL (dedup): mutant reported turns='$mutant_dedup_turns' (expected 5, not 2) — control proven red-capable"
+  mutant_dedup_out="$("$MUTANT_DEDUP" "$DUP_DIR" 2>/dev/null | tail -1)"
+  mutant_dedup_turns="$(printf '%s\n' "$mutant_dedup_out" | awk -F'\t' '{print $3}')"
+  if ! is_row "$mutant_dedup_out"; then
+    control_not_applied "control 2 (dedup removal): mutant emitted a malformed/empty row ('$mutant_dedup_out')"
+  elif [[ "$mutant_dedup_turns" == "2" ]]; then
+    fail 'MUTATION CONTROL (dedup): mutant (no id dedup) unexpectedly still reported 2 turns — control is not falsifiable'
+  else
+    pass "MUTATION CONTROL (dedup): mutant reported turns='$mutant_dedup_turns' (expected 5, not 2) — control proven red-capable"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -258,24 +313,33 @@ fi
 # since the mutant would report 3/3.
 # ---------------------------------------------------------------------------
 MUTANT_GLOBAL="$ROOT/leadv2-cache-truth-mutant-global.sh"
-python3 - "$TOOL" "$MUTANT_GLOBAL" <<'PYEOF'
+CTL3_OK=0
+if [[ "$(grep -cF 'reported_turns = [t for t in turns if t[3] and (t[0] + t[1] + t[2]) > 0]' "$TOOL")" == "1" ]]; then
+  python3 - "$TOOL" "$MUTANT_GLOBAL" <<'PYEOF'
 import sys
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src).read()
-needle = "reported_turns = [t for t in turns if t[3]]\n"
+needle = "reported_turns = [t for t in turns if t[3] and (t[0] + t[1] + t[2]) > 0]\n"
 replacement = "reported_turns = turns if any(t[3] for t in turns) else []\n"
 assert needle in text, "mutation anchor not found in tool source"
 text = text.replace(needle, replacement)
 open(dst, "w").write(text)
 PYEOF
-chmod +x "$MUTANT_GLOBAL"
-
-mutant_global_out="$("$MUTANT_GLOBAL" "$MIXED_DIR" 2>/dev/null | tail -1)"
-mutant_global_reported="$(printf '%s\n' "$mutant_global_out" | awk -F'\t' '{print $9}')"
-if [[ "$mutant_global_reported" == "1/3" ]]; then
-  fail 'MUTATION CONTROL (global-key): mutant (global saw_cache_key) unexpectedly still reported 1/3 — control is not falsifiable'
+  [[ $? -eq 0 && -s "$MUTANT_GLOBAL" ]] && CTL3_OK=1
+fi
+chmod +x "$MUTANT_GLOBAL" 2>/dev/null
+if [[ "$CTL3_OK" != "1" ]]; then
+  control_not_applied 'control 3 (global-key): python anchor did not match or mutant not created'
 else
-  pass "MUTATION CONTROL (global-key): mutant reported='$mutant_global_reported' (expected 3/3, not 1/3) — control proven red-capable"
+  mutant_global_out="$("$MUTANT_GLOBAL" "$MIXED_DIR" 2>/dev/null | tail -1)"
+  mutant_global_reported="$(printf '%s\n' "$mutant_global_out" | awk -F'\t' '{print $9}')"
+  if ! is_row "$mutant_global_out"; then
+    control_not_applied "control 3 (global-key): mutant emitted a malformed/empty row ('$mutant_global_out')"
+  elif [[ "$mutant_global_reported" == "1/3" ]]; then
+    fail 'MUTATION CONTROL (global-key): mutant (global saw_cache_key) unexpectedly still reported 1/3 — control is not falsifiable'
+  else
+    pass "MUTATION CONTROL (global-key): mutant reported='$mutant_global_reported' (expected 3/3, not 1/3) — control proven red-capable"
+  fi
 fi
 
 echo
