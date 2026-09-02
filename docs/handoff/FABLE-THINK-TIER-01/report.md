@@ -345,3 +345,138 @@ leadv2-diagnose,leadv2-learn,leadv2-po-feedback-loop}.js`):
 Per CLAUDE.md ("never weaken a fixture to get green... an environment-sensitive failure is a finding,
 not a test bug"), these are left untouched as out-of-scope pre-existing reds, consistent with this
 repo's own memory record of pre-existing `run-all` reds re-measured across other lanes on 2026-09-01.
+
+## Review round 8 findings
+
+Round 8 FAILED with 2 HIGH findings, both repeats from prior rounds:
+
+| # | Finding | Verdict | Evidence |
+|---|---------|---------|----------|
+| 1 | `leadv2-diverge.js:146` — `judge-opus-fallback` is a bare `await agent(...)` outside any try/catch; a rejection aborts the workflow before `judged === n` reconciliation runs. | **REAL** | `git show HEAD:plugins/leadv2/workflows/leadv2-diverge.js \| sed -n '140,165p'` — no `try` wraps the fallback `await agent(...)` call. Confirmed behaviorally: `test-workflow-fallback-guard.sh` case "leadv2-diverge.js (HEAD/pre-fix mutant)" throws `stub-reject:judge-opus-fallback` when run through the real workflow logic. |
+| 2 | `leadv2-po-feedback-loop.js:194` — `audit-opus-fallback` chained via `.then()` with no `.catch` and no enclosing try/catch. | **REAL** (and worse than reported) | `git show HEAD:plugins/leadv2/workflows/leadv2-po-feedback-loop.js` — the `.then()` chain has no `.catch`. Additionally discovered while building the negative control: this exact block also has a genuine **pre-existing syntax error** — a stray extra closing paren (`}))),` where only `}))` is needed) that makes the file fail to parse at all (`node --check` on the wrapped HEAD source: `SyntaxError: Unexpected token ')'` at that line). The workflow file as committed at HEAD could not have been loaded by the real Workflow runtime, independent of the logic finding. My round-9 rewrite of this block (async IIFE with try/catch) replaces the broken expression structure from scratch, so it fixes both defects. |
+
+Both findings are one instance of the same shape: **an `agent()` call that exists only to survive a prior call's failure, itself has no guard, so its own rejection propagates past the reconciliation step it was supposed to protect.** Per the mission, every `agent(` call site across `plugins/leadv2/workflows/*.js` was enumerated and classified below; every unguarded fallback-shape site was fixed.
+
+## Census — every `agent(` call site, `plugins/leadv2/workflows/*.js`
+
+Census command: `grep -n "agent(" plugins/leadv2/workflows/*.js`
+
+Legend: **FALLBACK** = call exists specifically to retry/survive a prior call's failure (the finding shape). **PRIMARY** = a phase's first/only attempt, not a retry of anything.
+
+### `leadv2-diverge.js`
+
+| Line | Label | Shape | Verdict (pre-R9) | Action |
+|---|---|---|---|---|
+| 48 | `think-model-resolve` | PRIMARY (resolver) | guarded — wrapped in try/catch, falls back to env/default | no action |
+| 97 | `ledger-flush` | PRIMARY (fire-and-forget) | guarded — try/catch swallows | no action |
+| 113 | `synthAgent` internal | FALLBACK (per-model chain) | guarded — each attempt try/catched inside `synthAgent` | no action |
+| 126 | `gen:${i}` | PRIMARY (parallel generate) | unguarded, but not fallback shape — first substantive work in the workflow; a rejection here has nothing downstream to reconcile away | left as-is, documented |
+| 150 | `judge` | PRIMARY (first judge attempt) | unguarded, but immediately null-checked (`judged` stays whatever it resolves to) — not itself the fallback | left as-is, documented |
+| 153 (was 146) | `judge-opus-fallback` | **FALLBACK** | **unguarded — FINDING #1** | **FIXED**: wrapped in try/catch, sets `judged = null` on catch |
+| ~161 | `judge-fallback` | **FALLBACK** | **unguarded — same shape, not separately named but identical pattern** | **FIXED**: wrapped in try/catch, sets `judged = null` on catch |
+
+### `leadv2-po-feedback-loop.js`
+
+| Line | Label | Shape | Verdict (pre-R9) | Action |
+|---|---|---|---|---|
+| 35 | `think-model-resolve` | PRIMARY (resolver) | guarded | no action |
+| 54 | `glmBuild` internal | PRIMARY (GLM attempt, called from multiple fallback chains) | **unguarded** — bare `agent()`, no try/catch around the GLM dispatch call itself | **FIXED**: wrapped in try/catch, returns `null` on failure so callers' sonnet fallback still runs |
+| 152 | `ledger-flush` | PRIMARY (fire-and-forget) | guarded | no action |
+| 190 | `audit` (primary) | PRIMARY | unguarded but immediately null-checked by the surrounding logic before the fallback decision | left as-is (not the finding) |
+| 194 (orig) / ~197 (post-rewrite) | `audit-opus-fallback` | **FALLBACK** | **unguarded — FINDING #2, plus independent syntax error (see above)** | **FIXED**: rewrote the whole `.then()` chain as an async IIFE with try/catch per attempt |
+| 205 | `critic-traps` | PRIMARY (parallel with audit, independent finding) | unguarded — but independent of audit's result, not a fallback for it; a rejection here caps at `Promise.all`-style batch abort, same as any primary parallel branch | left as-is, documented |
+| 264 (`build:${label}` fallback) | Build-phase sonnet fallback | **FALLBACK** (after `glmBuild` fails) | **unguarded** — bare `return agent(...)` | **FIXED**: wrapped in try/catch, returns `null` |
+| 278 | `verifyResult` (Verify phase primary) | PRIMARY | unguarded — sequential phase step; a rejection here aborts before Iterate/re-verify, losing the just-completed Build phase's ledger events | left as-is, documented (see note below) |
+| 323 (Iterate-phase fallback) | `runIterateFix` fallback (both GLM-failed and GLM-disabled branches) | **FALLBACK** | **unguarded** — bare `await agent(...)` in both branches | **FIXED**: extracted into a guarded `runIterateFix` helper wrapping the call in try/catch |
+| 339 | `reVerify` (re-verification primary) | PRIMARY | unguarded — same shape as `verifyResult` | left as-is, documented (see note below) |
+
+Note on `verifyResult`/`reVerify` (lines 278, 339): these are **primary** phase calls, not fallbacks — they are not retrying a prior failure, they're the QA verification step itself. Leaving them unguarded means a rejection here still aborts the workflow without flushing the ledger for the Build phase's already-completed work. This is a real but **distinct** gap from the reviewed finding (loss of ledger telemetry on a primary-phase failure, not "a fallback's own rejection defeats its purpose") — fixing it would mean guarding every primary phase call workflow-wide, a much larger change than this round's mandate ("fix every unguarded FALLBACK site"). Flagged here rather than silently left; not fixed this round because it is out of scope for the "unguarded fallback" finding shape.
+
+### `leadv2-audit.js`
+
+| Line | Label | Shape | Verdict (pre-R9) | Action |
+|---|---|---|---|---|
+| 25 | `glmBuild` internal | PRIMARY (GLM attempt) | **unguarded** | **FIXED**: wrapped in try/catch, returns `null` |
+| 57 | `ledger-flush` | PRIMARY (fire-and-forget) | guarded | no action |
+| 127 | `collect` | PRIMARY (first call in workflow) | unguarded, not fallback shape — nothing computed yet to lose | left as-is, documented |
+| 143 | `judge:${persona}:${invariant}` | PRIMARY (parallel judge) | unguarded, not fallback shape | left as-is, documented |
+| 195 (Fix-phase) | sonnet fallback after `glmBuild` | **FALLBACK** | **unguarded** — bare `return agent(...)` inside the `parallel()` map; a rejection here aborted the whole Fix-phase batch, discarding every sibling candidate's already-completed fix | **FIXED**: wrapped in try/catch returning `null`; also removed the trailing `.filter(Boolean)` since `fixResults[idx]` is a positional lookup that a filter would misalign once null becomes a normal (non-throwing) outcome |
+| 205 | `reprobe` | PRIMARY | unguarded — sequential; a rejection here loses the Fix phase's completed work the same way `verifyResult` does in po-feedback-loop.js | left as-is, documented (same distinct-gap reasoning as above) |
+| 310/318/326 | `qa:${page}` / `po:${page}` / `designer:${page}` | PRIMARY (parallel per-page audit) | unguarded, not fallback shape — first substantive work per page | left as-is, documented |
+| 369 | `report` (vision-report.md writer) | PRIMARY, but write-only side effect after all real work is done | **unguarded** — `allPageResults`/`mergedFixItems`/`failCount` are already fully computed; an unguarded write failure here discards an otherwise-good return value, the same "abort after work is done, before it's preserved" shape as the two named findings | **FIXED**: wrapped in try/catch; on failure, logs and still returns the computed result (report file just doesn't get written) |
+
+### `leadv2-causal-critique.js`
+
+Already fully guarded (existing fix-round-2 pattern, self-documented in the file's own header comment): the entire Digest/Critique/Persist body is wrapped in one outer try/catch, `persistAndFlush()` try/catches its own `agent()` call, and the Critique-phase fallback chain (line 240) is guarded per-model exactly like `synthAgent`. **No action needed.**
+
+### `leadv2-diagnose.js`
+
+All `agent()` calls (lines 35, 104, 117, 138, 162) are either guarded resolvers/fire-and-forget flushers, or primaries with a JS-level null-check fallback (`classified.clusters` → static 3-domain decomposition) rather than a second `agent()` call. **No fallback-chain pattern present; no action needed.**
+
+### `leadv2-learn.js`
+
+Only fallback-style call is the per-model chain inside `synthAgent` (line 309), already guarded identically to diverge.js/causal-critique.js. **No action needed.** (Noted but out of scope: a latent null-deref at `proposal.proposals.length` around line 334 if `synthAgent`'s entire chain fails — a missing-null-guard bug, not an unguarded-fallback bug; different shape, not touched this round.)
+
+### `leadv2-intake-enrich.js`
+
+Two independent primaries via `Promise.all([agent(...), agent(...)])` (lines 52, 59) — neither is a fallback for the other; both are the very first phase of the workflow, so a rejection has no prior state to lose. **No action needed.**
+
+### `leadv2-ledger.js`
+
+`grep -c "agent(" leadv2-ledger.js` → 0. Not applicable.
+
+## Fixes applied (9 sites across 3 files)
+
+1. `leadv2-diverge.js` — `judge-opus-fallback` (try/catch, `judged = null` on failure)
+2. `leadv2-diverge.js` — `judge-fallback` (try/catch, `judged = null` on failure)
+3. `leadv2-po-feedback-loop.js` — `glmBuild` helper (try/catch, `null` on failure)
+4. `leadv2-po-feedback-loop.js` — `audit-opus-fallback` chain (rewritten as guarded async IIFE; also fixes the independent pre-existing syntax error)
+5. `leadv2-po-feedback-loop.js` — Build-phase sonnet fallback (try/catch, `null` on failure)
+6. `leadv2-po-feedback-loop.js` — Iterate-phase fallback, both branches (extracted into guarded `runIterateFix` helper)
+7. `leadv2-audit.js` — `glmBuild` helper (try/catch, `null` on failure)
+8. `leadv2-audit.js` — Fix-phase sonnet fallback (try/catch, `null` on failure; removed `.filter(Boolean)` to preserve positional alignment with `fixCandidates`)
+9. `leadv2-audit.js` — Report-phase `vision-report.md` writer (try/catch; failure logs and still returns the computed result)
+
+## Behavioral proof — `plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh`
+
+A from-scratch Node.js harness actually **executes** each workflow `.js` file (via `new AsyncFunction(...)` over the file body, stubbing `agent`/`parallel`/`phase`/`log`) — not a grep. Each case drives the fallback call to reject and checks whether the workflow still reaches its final `return` (fixed tree) vs. throws (negative control: the same scenario run against `git show HEAD:...`, the actual pre-round-9 committed source).
+
+```
+$ bash plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
+PASS: leadv2-diverge.js (fixed, R9) — workflow reached its final return (reconciliation) despite the rejected fallback
+PASS: leadv2-diverge.js (HEAD/pre-fix mutant) — negative control confirmed red: workflow aborted (stub-reject:judge-opus-fallback)
+PASS: leadv2-po-feedback-loop.js (fixed, R9) — workflow reached its final return (reconciliation) despite the rejected fallback
+PASS: leadv2-po-feedback-loop.js (HEAD/pre-fix mutant) — negative control confirmed red: workflow aborted (Unexpected token ')')
+PASS: leadv2-audit.js (fixed, R9) — workflow reached its final return (reconciliation) despite the rejected fallback
+PASS: leadv2-audit.js (HEAD/pre-fix mutant) — negative control confirmed red: workflow aborted (stub-reject:fix:p1:inv1)
+PASS=6 FAIL=0
+```
+
+Note on the po-feedback-loop.js negative control: it fails with `Unexpected token ')'` rather than `stub-reject:audit-opus-fallback` — this is expected and stronger evidence than a clean stub-rejection, since it demonstrates the committed HEAD file could not even be parsed by the real Workflow runtime (see Finding #2 above). The harness's `new AsyncFunction(...)` construction was moved inside its own try/catch specifically so this class of failure (file doesn't parse) reports as a normal `{ok: false}` result instead of crashing the Node process running the harness itself — verified this is a harness fix, not a workflow-logic change, since it only affects how the test observes failure, not what the workflow files do.
+
+### `leadv2-suite-falsifiable.sh` (cwd = lane root)
+
+```
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
+leadv2-suite-falsifiable: suite=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/FABLE-THINK-TIER-01/plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=3
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+### `bash -n` self-check
+
+```
+$ bash -n plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh tests/run-all.sh
+OK (both)
+```
+
+### `EXTRA_SUITE_MAP` addition (`tests/run-all.sh`)
+
+`leadv2-diverge.js`, `leadv2-po-feedback-loop.js`, and `leadv2-audit.js` are mapped to `plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh` so `--scope changed` picks up the new behavioral suite whenever these workflow files change (previously only `test-fable-think-tier.sh`, a static grep-census suite that never executes the files, was mapped).
+
+### `run-all --scope changed` tail (R9)
+
+R9-TAIL-PLACEHOLDER-PENDING-BACKGROUND-RUN
