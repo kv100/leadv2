@@ -59,11 +59,13 @@ readonly MODEL_CAPABILITY_YAML="${LEADV2_MODEL_CAPABILITY_YAML:-${SCRIPT_DIR}/..
 
 # FABLE-THINK-TIER-01: every "value is thinking" role (plan synthesis, judge,
 # diagnose root-cause, learn proposal, PO audit, dispatch architect prepass,
-# lead main model) resolves through this ONE function. LEADV2_THINK_MODEL env
-# wins outright (explicit operator override); otherwise fable unless
-# model-capability.yaml marks the fable row `unavailable: true`, in which case
-# opus (the documented fallback) is used. No caller may hardcode `opus` at a
-# think-role spawn site — call this instead.
+# lead main model) resolves through this ONE function. R8: LEADV2_THINK_MODEL
+# env is only the DEFAULT candidate, never an outright override — the
+# model-capability.yaml kill switch is checked FIRST and always wins, even
+# over an explicit env pin (see the binding resolution order below); fable is
+# used when the candidate is available, opus (the documented fallback)
+# otherwise. No caller may hardcode `opus` at a think-role spawn site — call
+# this instead.
 _think_cap_unavailable() { # $1=candidate model -> prints true/false
   python3 - "${MODEL_CAPABILITY_YAML}" "$1" <<'PY' 2>/dev/null || echo true
 import sys, yaml

@@ -103,10 +103,22 @@ DC="${LEADV2_TEST_DISPATCH_CODE:-$SCRIPTS_ROOT/leadv2-dispatch-code.sh}"
 if [[ -f "$DC" ]]; then
   sd_line="$(grep -n '^SCRIPT_DIR=' "$DC" | head -1 | cut -d: -f1)"
   blk_line="$(grep -nF '_lv2_think="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh"' "$DC" | head -1 | cut -d: -f1)"
-  blk_end="$(grep -nF '[[ -n "$_lv2_think" ]] && export LEADV2_THINK_MODEL=' "$DC" | head -1 | cut -d: -f1)"
-  if [[ -n "$sd_line" && -n "$blk_line" && -n "$blk_end" ]]; then
-    export_block="$(sed -n "${blk_line},${blk_end}p" "$DC")"
+  # R8 (judge round-7, item 1c): a tight anchor on JUST the resolver-call +
+  # export lines let a reintroduced skip-if-pinned guard sit OUTSIDE the
+  # extracted snippet entirely — the suite stayed green under a single-bracket
+  # `if [ -z ... ]` respelling because the extraction never saw the guard at
+  # all. blk_end now anchors on the next STABLE, unrelated block (the
+  # LEADV2_TRACE sourcing line) instead of the export line itself, so the
+  # extracted "runtime" region is wide enough to swallow ANY enclosing
+  # conditional placed around the resolver call, in any spelling.
+  blk_end="$(grep -nF 'if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${SCRIPT_DIR}/lib/leadv2-trace.sh"' "$DC" | head -1 | cut -d: -f1)"
+  if [[ -n "$sd_line" && -n "$blk_line" && -n "$blk_end" && "$blk_end" -gt "$sd_line" ]]; then
     sd_assign="$(sed -n "${sd_line}p" "$DC")"
+    # export_block spans from right after the SCRIPT_DIR assignment through
+    # (but excluding) the LEADV2_TRACE anchor — wide enough to include a
+    # guard's `if` even when placed BEFORE the resolver-call line, not just
+    # the two functional lines themselves.
+    export_block="$(sed -n "$(( sd_line + 1 )),$(( blk_end - 1 ))p" "$DC")"
     # runtime = the two pieces in FILE ORDER — if the export block sits
     # before the assignment, set -u kills it and the child sees nothing.
     if [[ "$sd_line" -lt "$blk_line" ]]; then
@@ -584,40 +596,86 @@ else
   fail "dispatch-code.sh: _LEADV2_ARCHITECT_THINK_DEFAULT not wired to router think-model"
 fi
 
-# --- 1f. R7 JS channel: the workflow's own THINK_MODEL const must honour the
-# resolved env, in a REAL node child process (not a bash simulation — a .js
-# file sourced by bash silently no-ops, which is why an earlier attempt at
-# this test always saw an empty string on both sides and never caught
-# anything). Extracts the LITERAL RHS expression from the const declaration
-# and evaluates it with node, so the assertion is against the file's real
-# source text, not a re-implementation of it.
-JS_WF="$PLUGIN_ROOT/workflows/leadv2-diverge.js"
-think_expr="$(grep -m1 '^const THINK_MODEL = ' "$JS_WF" 2>/dev/null | sed 's/^const THINK_MODEL = //')"
-if [[ -n "$think_expr" ]] && command -v node >/dev/null 2>&1; then
-  # Channel 1 (bash resolver, proved above in 1c/1d) + channel 2 (the export
-  # reaching a spawned child, proved above in 1e) compose to the value a real
-  # dispatch would export when settings.json pinned fable but yaml killed it.
-  resolved="$(LEADV2_THINK_MODEL=fable LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-unavailable.yaml" bash "$ROUTER" think-model 2>/dev/null)"
-  out="$(LEADV2_THINK_MODEL="$resolved" node -e "const a = {}; const THINK_MODEL = ${think_expr}
-console.log(THINK_MODEL)" 2>/dev/null || true)"
-  if [[ "$out" == "opus" ]]; then
-    pass "JS channel (real node child) honours yaml kill switch: resolved env '${resolved}' -> THINK_MODEL='${out}'"
+# --- 1f/1g/1h. R8 JS channel: each THINK workflow's own resolution block must
+# route through the router at RUN time (WORKFLOW-BASH-FIX-01: agent() is the
+# only execution primitive the JS runtime exposes — no bash()/require()/
+# child_process), preferring the router's answer over a stale process.env
+# pin, and must skip the resolver entirely when the caller passes an explicit
+# override. R7's case 1f was tautological: it fed the router's OWN resolved
+# answer back in as the env and merely asserted node echoed it ('opus' in,
+# 'opus' out) — it never exercised an UNRESOLVED pin, so it never ran the
+# brief's actual probe (judge round-7, item 1b/3). This extracts the REAL
+# sentinel-bracketed source block from each of the four THINK workflows and
+# evaluates it with node, injecting a mock agent() that itself shells out to
+# the REAL router — so the assertion is against the file's real source text
+# with a genuine resolver round-trip on one end, not a re-implementation of
+# either side.
+JS_WORKFLOWS=(leadv2-diverge leadv2-diagnose leadv2-learn leadv2-po-feedback-loop)
+_extract_think_block() { # $1=file -> prints sentinel-bracketed source, rc1 if absent
+  local f="$1" s e
+  s="$(grep -n 'think-model-resolve:start' "$f" 2>/dev/null | head -1 | cut -d: -f1)"
+  e="$(grep -n 'think-model-resolve:end' "$f" 2>/dev/null | head -1 | cut -d: -f1)"
+  [[ -n "$s" && -n "$e" && "$e" -gt "$s" ]] || return 1
+  sed -n "${s},${e}p" "$f"
+}
+# $1=workflow-basename $2=block-file $3=a-literal $4=LEADV2_THINK_MODEL-env
+# $5=cap-yaml-path $6=expected-think-model $7=expected-agent-calls $8=case-label
+_run_think_case() {
+  local wf="$1" block_file="$2" a_lit="$3" env_pin="$4" cap="$5" want_model="$6" want_calls="$7" label="$8" out model calls
+  out="$(LEADV2_THINK_MODEL="$env_pin" LEADV2_MODEL_CAPABILITY_YAML="$cap" TEST_ROUTER="$ROUTER" \
+    node -e "
+const a = ${a_lit}
+let __agentCalls = 0
+async function agent(prompt, opts) {
+  __agentCalls++
+  const { execSync } = require('child_process')
+  const routerOut = execSync('bash \"' + process.env.TEST_ROUTER + '\" think-model', { env: process.env }).toString().trim()
+  return { think_model: routerOut }
+}
+;(async () => {
+$(cat "$block_file")
+  console.log('THINK_MODEL=' + THINK_MODEL)
+  console.log('AGENT_CALLS=' + __agentCalls)
+})()
+" 2>/dev/null || true)"
+  model="$(printf '%s\n' "$out" | grep '^THINK_MODEL=' | head -1 | cut -d= -f2-)"
+  calls="$(printf '%s\n' "$out" | grep '^AGENT_CALLS=' | head -1 | cut -d= -f2-)"
+  if [[ "$model" == "$want_model" && "$calls" == "$want_calls" ]]; then
+    pass "${wf}.js JS channel (${label}): THINK_MODEL='${model}' agent_calls=${calls}"
   else
-    fail "JS channel (real node child) kill switch DEAD: resolved env '${resolved}' -> THINK_MODEL='${out:-<empty>}' (expected opus)"
+    fail "${wf}.js JS channel (${label}) DEAD: THINK_MODEL='${model:-<empty>}' agent_calls='${calls:-<empty>}' (expected THINK_MODEL='${want_model}' agent_calls=${want_calls})"
   fi
-else
-  fail "JS workflow THINK_MODEL expression not found or node unavailable: $JS_WF"
-fi
+}
+if command -v node >/dev/null 2>&1; then
+  for wf in "${JS_WORKFLOWS[@]}"; do
+    JS_WF="$PLUGIN_ROOT/workflows/${wf}.js"
+    block="$(_extract_think_block "$JS_WF" 2>/dev/null || true)"
+    if [[ -z "$block" ]]; then
+      fail "${wf}.js: think-model-resolve sentinel block not found"
+      continue
+    fi
+    block_file="$TMP/${wf}-think-block.js"
+    printf '%s\n' "$block" > "$block_file"
 
-# --- 1g. Negative control for JS channel: without yaml kill switch, env wins ---
-if [[ -n "$think_expr" ]] && command -v node >/dev/null 2>&1; then
-  out="$(LEADV2_THINK_MODEL=fable node -e "const a = {}; const THINK_MODEL = ${think_expr}
-console.log(THINK_MODEL)" 2>/dev/null || true)"
-  if [[ "$out" == "fable" ]]; then
-    pass "JS channel (real node child) env wins when yaml allows: LEADV2_THINK_MODEL=fable -> fable"
-  else
-    fail "JS channel (real node child) expected fable when yaml allows, got '${out:-<empty>}'"
-  fi
+    # 1f: the §1a probe as a real assertion — settings.json-style 'fable' pin
+    # UNRESOLVED on entry, yaml kills fable. Must be RED on the pre-R8
+    # one-liner (which never calls agent() at all and just echoes the stale
+    # pin) and GREEN once the block routes through the router.
+    _run_think_case "$wf" "$block_file" '{}' fable "$TMP/cap-unavailable.yaml" opus 1 \
+      "unresolved 'fable' pin + killing yaml -> opus"
+
+    # 1g: complement — yaml allows fable, router-mediated resolution still
+    # lands on fable (not a hardcoded literal; it went through agent()).
+    _run_think_case "$wf" "$block_file" '{}' fable "$CAP_YAML" fable 1 \
+      "yaml allows -> fable (router round-trip, not a hardcoded default)"
+
+    # 1h: explicit caller override wins outright and skips the resolver
+    # entirely — proves a.model still bypasses agent() (no wasted call).
+    _run_think_case "$wf" "$block_file" '{ model: "sonnet" }' fable "$TMP/cap-unavailable.yaml" sonnet 0 \
+      "explicit a.model override wins outright, agent() never called"
+  done
+else
+  fail "node unavailable — cannot run JS channel cases"
 fi
 
 # --- 2. FABLE-THINK-TIER-01 R7: resolver fails CLOSED when PyYAML unimportable ---

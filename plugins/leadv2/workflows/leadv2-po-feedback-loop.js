@@ -18,7 +18,32 @@ if (a.probe) return { probe_ok: true, parsed_args: a }
 
 // FABLE-THINK-TIER-01: audit is a THINKING role — default arm is fable, opus
 // is the fallback, never a hardcoded 'opus' literal.
-const THINK_MODEL = a.model || (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
+// FABLE-THINK-TIER-01 R8 think-model-resolve:start — the yaml kill switch must
+// reach this workflow at RUN time, not at .claude/settings.json install time.
+// R7 only fixed the leadv2-dispatch-code.sh channel (spawned child sessions);
+// a workflow launched directly from the lead's own session never passes
+// through that script, so a stale install-time LEADV2_THINK_MODEL=fable pin
+// would otherwise leak straight through even after model-capability.yaml
+// marks fable unavailable (judge round-7, item 1a). a.model (explicit caller
+// override) still wins outright and skips the resolver call entirely.
+const THINK_MODEL_SCHEMA = { type: 'object', additionalProperties: false,
+  properties: { think_model: { type: 'string' } }, required: ['think_model'] }
+let THINK_MODEL = a.model
+if (!THINK_MODEL) {
+  let _resolved = null
+  try {
+    _resolved = await agent(
+      `Run this exact shell command via your Bash tool and return its trimmed stdout ` +
+      `verbatim as think_model (do not modify, reformat, or re-derive it):\n` +
+      `_r="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null)"; [ -n "$_r" ] || _r="$PWD"; ` +
+      `_s="\${CLAUDE_PLUGIN_ROOT:-$_r/plugins/leadv2}/scripts/leadv2-router.sh"; [ -f "$_s" ] || _s="$_r/plugins/leadv2/scripts/leadv2-router.sh"; ` +
+      `bash "$_s" think-model`,
+      { label: 'think-model-resolve', phase: 'Audit', model: 'haiku', effort: 'low', schema: THINK_MODEL_SCHEMA })
+  } catch (_) { /* resolver unreachable — fail open to the env/default below, never crash the workflow */ }
+  THINK_MODEL = (_resolved && _resolved.think_model) ||
+    (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
+}
+// FABLE-THINK-TIER-01 R8 think-model-resolve:end
 
 const GLM_OK = (a && a.glmInWorkflows) !== false
 async function glmBuild(missionText, label, phase) {

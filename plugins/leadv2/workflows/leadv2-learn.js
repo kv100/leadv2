@@ -20,7 +20,32 @@ const OUT = `docs/leadv2/learning-proposals/${LABEL}.md`
 const TASK_CLASS = a.task_class || 'general'
 // FABLE-THINK-TIER-01: propose is a THINKING role — default arm is fable,
 // opus is the fallback, never a hardcoded 'opus' literal.
-const THINK_MODEL = a.model || (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
+// FABLE-THINK-TIER-01 R8 think-model-resolve:start — the yaml kill switch must
+// reach this workflow at RUN time, not at .claude/settings.json install time.
+// R7 only fixed the leadv2-dispatch-code.sh channel (spawned child sessions);
+// a workflow launched directly from the lead's own session never passes
+// through that script, so a stale install-time LEADV2_THINK_MODEL=fable pin
+// would otherwise leak straight through even after model-capability.yaml
+// marks fable unavailable (judge round-7, item 1a). a.model (explicit caller
+// override) still wins outright and skips the resolver call entirely.
+const THINK_MODEL_SCHEMA = { type: 'object', additionalProperties: false,
+  properties: { think_model: { type: 'string' } }, required: ['think_model'] }
+let THINK_MODEL = a.model
+if (!THINK_MODEL) {
+  let _resolved = null
+  try {
+    _resolved = await agent(
+      `Run this exact shell command via your Bash tool and return its trimmed stdout ` +
+      `verbatim as think_model (do not modify, reformat, or re-derive it):\n` +
+      `_r="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null)"; [ -n "$_r" ] || _r="$PWD"; ` +
+      `_s="\${CLAUDE_PLUGIN_ROOT:-$_r/plugins/leadv2}/scripts/leadv2-router.sh"; [ -f "$_s" ] || _s="$_r/plugins/leadv2/scripts/leadv2-router.sh"; ` +
+      `bash "$_s" think-model`,
+      { label: 'think-model-resolve', phase: 'Gather', model: 'haiku', effort: 'low', schema: THINK_MODEL_SCHEMA })
+  } catch (_) { /* resolver unreachable — fail open to the env/default below, never crash the workflow */ }
+  THINK_MODEL = (_resolved && _resolved.think_model) ||
+    (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
+}
+// FABLE-THINK-TIER-01 R8 think-model-resolve:end
 // WORKFLOW-BASH-FIX-01: runtime provides no bash() global — only agent()/parallel()/
 // pipeline()/log()/phase()/args/budget. TS + DURABLE_ROOT used to be 2 bare `await bash(...)`
 // calls; collapsed into ONE upfront `gather-init` agent() call (Move 1). NOTE: this call is
