@@ -52,3 +52,73 @@ The replacement test will:
 3. Demonstrate that mutating the zero-stop rule (e.g., setting ZERO_MAX=0 or removing zero-stop logic) causes the test to fail
 
 This approach maintains the backlog's purpose of preventing regressions while aligning with main's correct design decision.
+
+## R3 findings
+
+**Finding (opus R2, committed-tree diff f19d16d9):** `test-brain-class-live.sh:202` (case (d)
+re-entry call) was the one dispatch invocation in the suite that did not blank
+`CLAUDE_PROJECT_ROOT` / `CLAUDE_PROJECT_DIR` / `LEADV2_PROJECT_ROOT`, so the suite goes
+deterministically RED whenever `CLAUDE_PROJECT_DIR` is exported. Every other call site went
+through `run_classify()`, which does blank them; only the standalone
+`_resolve_class_with_brain_floor` re-entry call bypassed it.
+
+**Reproduced RED (before fix), `CLAUDE_PROJECT_DIR=/tmp/x` exported:**
+```
+PASS: (d) brain_decision line names class=Heavy
+PASS: (d) brain.yaml class: Heavy
+FAIL: (d) re-entry floor did not enforce Heavy: Light
+...
+=== test-brain-class-live.sh: 18 PASS, 1 FAIL ===
+```
+
+**Fix:** extracted a `blank_project_root_env()` helper (blanks the same three vars via `env`,
+same rationale as the existing comment in `run_classify`) and routed both `run_classify`'s
+inline blanking and the case (d) re-entry `bash -c` call through it — no per-case copy-paste,
+every dispatch invocation in the suite now blanks consistently.
+
+**Green run 1 — WITH `CLAUDE_PROJECT_DIR=/tmp/x` exported** (`env -i PATH="$PATH" HOME="$HOME"
+CLAUDE_PROJECT_DIR=/tmp/x bash plugins/leadv2/scripts/tests/test-brain-class-live.sh`):
+```
+PASS: (d) brain_decision line names class=Heavy
+PASS: (d) brain.yaml class: Heavy
+PASS: (d) re-entry guard floor reads brain.yaml class=Heavy over a lower base class
+PASS: MUTATION (a) killed: no class_escalated when judge call is skipped
+PASS: MUTATION (d) killed: no brain.yaml written when judge call is skipped
+PASS: MUTATION (c2) killed: reverting to hard-coded Standard loses the Heavy floor
+
+=== test-brain-class-live.sh: 19 PASS, 0 FAIL ===
+```
+
+**Green run 2 — WITHOUT `CLAUDE_PROJECT_DIR` exported** (`env -i PATH="$PATH" HOME="$HOME" bash
+plugins/leadv2/scripts/tests/test-brain-class-live.sh`):
+```
+PASS: (d) brain_decision line names class=Heavy
+PASS: (d) brain.yaml class: Heavy
+PASS: (d) re-entry guard floor reads brain.yaml class=Heavy over a lower base class
+PASS: MUTATION (a) killed: no class_escalated when judge call is skipped
+PASS: MUTATION (d) killed: no brain.yaml written when judge call is skipped
+PASS: MUTATION (c2) killed: reverting to hard-coded Standard loses the Heavy floor
+
+=== test-brain-class-live.sh: 19 PASS, 0 FAIL ===
+```
+
+**`leadv2-suite-falsifiable.sh` verdict** (run from lane root as cwd):
+```
+leadv2-suite-falsifiable: suite=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/BRAIN-CLASS-LIVE-01/plugins/leadv2/scripts/tests/test-brain-class-live.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=40
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+**Pre-existing flake found, left alone (out of scope for this mechanical round):** cases (a) and
+(b) intermittently FAIL (`missing class_escalated/class_floor_held line`) in ~1-in-3 to ~1-in-4
+runs, **reproduced identically on unmodified HEAD (commit 9805bdd2, before this round's edit)** —
+confirmed by running `git show HEAD:.../test-brain-class-live.sh` copied in place, in a clean
+`env -i` shell, with no `CLAUDE_PROJECT_DIR` involved at all. This is unrelated to the (d)
+env-blanking bug this round targets. Likely cause: this worktree shares `docs/leadv2/bus.jsonl` /
+active-registry state with other concurrently running lanes on this machine (see gitStatus at
+session start — those files were already modified by other sessions), and the dispatch script's
+journal/emit path may contend on shared state under concurrent load. Not touched here; flagged for
+a separate task if it needs fixing.
