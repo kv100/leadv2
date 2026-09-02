@@ -21,7 +21,7 @@ of `tests/run-all.sh`'s EXTRA_SUITE_MAP block via `ort`).
   `leadv2-dod-gate.sh` and `leadv2-mutation-control.sh` were mapped).
 - Live mutation-control run against this round's own diff (see
   `## Mutation-control` below), bound to `diff_hash` via
-  `docs/handoff/WORKER-DOD-GATE-01/mutation-control/20260902T102935Z-29873.txt`.
+  `docs/handoff/WORKER-DOD-GATE-01/mutation-control/20260902T103421Z-76397.txt`.
 - This report.
 
 ## Checks and their negative controls
@@ -66,14 +66,14 @@ Live run against this round's own diff, using
 never `git worktree add` — D5):
 
 ```
-$ DIFF_HASH=491731d9df73a5e76c6e45539e3e862a0cd0c3fc356323eb065ac7cb6870d66a
+$ DIFF_HASH=a088afdbe78bcf48af99f2767e723d72c961d23c0f762a0e791287e3a6bcfa03
 $ bash plugins/leadv2/scripts/leadv2-mutation-control.sh \
     plugins/leadv2/scripts/tests/test-worker-dod-gate.sh \
     plugins/leadv2/scripts/lib/leadv2-dod-gate.sh \
     's|_DOD_RUNTIME_STATE_REGEX=.*|_DOD_RUNTIME_STATE_REGEX="NEVERMATCH_XYZ_ONLY"|' \
     "${DIFF_HASH}" \
     docs/handoff/WORKER-DOD-GATE-01
-MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-worker-dod-gate.sh file=plugins/leadv2/scripts/lib/leadv2-dod-gate.sh red_line=[TEST] PASS: check_a: missing report.md -> fail diff_hash=491731d9df73a5e76c6e45539e3e862a0cd0c3fc356323eb065ac7cb6870d66a
+MUTATION-CONTROL ok suite=plugins/leadv2/scripts/tests/test-worker-dod-gate.sh file=plugins/leadv2/scripts/lib/leadv2-dod-gate.sh red_line=[TEST] PASS: check_a: missing report.md -> fail diff_hash=a088afdbe78bcf48af99f2767e723d72c961d23c0f762a0e791287e3a6bcfa03
 $ echo RC=$?
 RC=0
 $ git status --porcelain -- plugins/leadv2/scripts/lib/leadv2-dod-gate.sh
@@ -87,7 +87,7 @@ untracked-but-not-gitignored — never `git archive HEAD`, which is
 committed-only and would miss this round's own uncommitted-at-mutation-time
 files, D5). Baseline ran green first (`baseline_rc=0`), the mutant then
 turned the suite red (`mutated_rc=1`), and the artifact was written to
-`docs/handoff/WORKER-DOD-GATE-01/mutation-control/20260902T102935Z-29873.txt`
+`docs/handoff/WORKER-DOD-GATE-01/mutation-control/20260902T103421Z-76397.txt`
 with `diff_hash` bound to this round's own diff — the only thing check (b)'s
 mutation sub-check will accept per D7 (never a prose grep for a
 MUTATION-CONTROL sentinel string).
@@ -211,7 +211,7 @@ brief.md:41:   the gate (1b) accepts a mutation control only when the pasted blo
   -> covered by "## Mutation-control": the pasted MUTATION-CONTROL ok block above was
      produced by leadv2-mutation-control.sh, never hand-pasted prose, and check (b)'s own
      mutation sub-check accepts it because docs/handoff/WORKER-DOD-GATE-01/mutation-control/
-     20260902T102935Z-29873.txt binds diff_hash=491731d9df73a5e76c6e45539e3e862a0cd0c3fc356323eb065ac7cb6870d66a
+     20260902T103421Z-76397.txt binds diff_hash=a088afdbe78bcf48af99f2767e723d72c961d23c0f762a0e791287e3a6bcfa03
      to this round's diff.
 
 brief.md:49:   `control_not_applied`. Mutation negative controls, RUN via the new runner and paste: remove check (d)
@@ -233,7 +233,7 @@ $ bash plugins/leadv2/scripts/lib/leadv2-dod-gate.sh \
 ```
 
 ```
-# dod-gate report — 2026-09-02T10:33:39Z
+# dod-gate report — 2026-09-02T10:34:40Z (final, diff_hash=a088afdbe78bcf48af99f2767e723d72c961d23c0f762a0e791287e3a6bcfa03)
 
 dod_pass check=report
 dod_pass check=paste_evidence
