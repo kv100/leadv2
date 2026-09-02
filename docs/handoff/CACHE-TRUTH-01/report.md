@@ -16,34 +16,54 @@ are different facts (see freepool below, which does both, on different
 runs). `first_break` is the first turn (turn>1) whose per-turn ratio drops
 below 0.5.
 
-## Table -- 2026-09-01 runs (ROUND 2, corrected: de-duplicated by message.id, reported per-request)
+## Table -- 2026-09-02 runs (ROUND 3: denominator rule — all-zero usage is `unreported`, hit_ratio only over reported turns with tokens)
 
-**Round-1 numbers below were wrong and are superseded.** Round-1 counted every
-streamed wire event (deltas + final) as a separate turn, inflating every
-total ~1.8x, and used a single per-RUN `saw_cache_key` flag that turned a
-mixed reported/unreported run into a false "real 0.0000" (freepool
-`...-repo-53e9`: only 1 of 67 unique requests actually carries cache keys,
-not all of them). See "## Round 2 evidence" below for the mutation controls
-that prove both bugs were real and are now fixed.
+Round-2 numbers are superseded and live in git history (commit 17ed34a).
+Tool changes since round 2 (round-3 review fix): a turn whose usage block is
+ALL ZEROS — cache keys present or not — is no longer counted as "reported";
+`hit_ratio` is printed ONLY when reported>0 AND input+cache_read+cache_creation>0
+over the reported set, otherwise the cell is `unreported`. This changes one
+historical row: freepool `260901-175619-repo-53e9` was `0.0000 / 1/67` — its
+single cache-keyed request had all-zero usage, so it is now correctly
+`unreported / 0/67` (re-run against the patched tool, 2026-09-02).
 
 | arm | run | turns (unique msg ids) | input | cache_read | cache_creation | hit_ratio | first_break | reported |
 |---|---|---|---|---|---|---|---|---|
-| claude-native | dispatch-c293c1d5 | 95 | 190 | 15,070,604 | 238,676 | 0.9844 | 94 | 95/95 |
-| glm | 260901-041431-WATCHER-LIFECYCLE-LEAK-01-2ea1 | 102 | 0 | 0 | 0 | unreported | unreported | 0/102 |
-| glm | 260901-165920-PLUGIN-PAPERCUTS-01-53f1 | 38 | 0 | 0 | 0 | unreported | unreported | 0/38 |
-| freepool | 260901-175619-repo-53e9 | 67 | 0 | 0 | 0 | 0.0000 | none | 1/67 |
-| freepool | 260901-120552-SUITE-THAT-CANNOT-FAIL-01-23b9 | 84 | 7,975,626 | 0 | 0 | unreported | unreported | 0/84 |
-| kimi | 260901-123312-getmany-crm-reports-6939 | 0 | 0 | 0 | 0 | unreported | none | 0/0 (0 assistant turns -- run aborted before producing usage) |
+| glm | 260902-000355-GLM-ARM-THROUGHPUT-01-106c | 120 | 0 | 0 | 0 | unreported | unreported | 0/120 |
+| glm | 260902-000635-WORKERS-MUST-COMMIT-01-1c53 | 59 | 0 | 0 | 0 | unreported | unreported | 0/59 |
+| glm | 260902-000806-BLO-PROOF-FIXTURE-3d52 | 2 | 0 | 0 | 0 | unreported | unreported | 0/2 |
+| glm | 260902-002210-RESUME-LANE-ACCEPTS-PATH-01-350b | 37 | 0 | 0 | 0 | unreported | unreported | 0/37 |
+| glm | 260902-003228-BEAT-LOOP-ORPHANS-01-31c2 | 29 | 0 | 0 | 0 | unreported | unreported | 0/29 |
+| glm | 260902-003641-GLM-ARM-THROUGHPUT-01-5b8c | 45 | 0 | 0 | 0 | unreported | unreported | 0/45 |
+| glm | 260902-005811-WORKERS-MUST-COMMIT-01-24f2 | 31 | 0 | 0 | 0 | unreported | unreported | 0/31 |
+| glm | 260902-010057-FABLE-THINK-TIER-01-46d9 | 47 | 0 | 0 | 0 | unreported | unreported | 0/47 |
+| glm | 260902-010704-MERGE-QUEUE-DEAD-HEAD-01-349f | 22 | 0 | 0 | 0 | unreported | unreported | 0/22 |
+| glm | 260902-013219-LEADV2-HOOK-CACHE-DEPLOY-01-5030 | 42 | 0 | 0 | 0 | unreported | unreported | 0/42 |
+| glm | 260902-013239-CACHE-TRUTH-01-7e2a | 23 | 0 | 0 | 0 | unreported | unreported | 0/23 |
+| glm | 260902-013347-MERGE-QUEUE-DEAD-HEAD-01-3a7a | 25 | 0 | 0 | 0 | unreported | unreported | 0/25 |
+| glm | 260902-015121-WORKER-MCP-ALL-ARMS-01-55bd | 46 | 0 | 0 | 0 | unreported | unreported | 0/46 |
+| glm | 260902-015210-GUARD-CENSUS-IS-WRONG-01-71cc | 32 | 0 | 0 | 0 | unreported | unreported | 0/32 |
+| glm | 260902-015738-LEADV2-HOOK-CACHE-DEPLOY-01-1437 | 52 | 0 | 0 | 0 | unreported | unreported | 0/52 |
+| glm | 260902-021625-CACHE-TRUTH-01-54ae | 18 | 0 | 0 | 0 | unreported | unreported | 0/18 |
+| glm | 260902-021904-STATUS-CHURN-01-4957 | 32 | 0 | 0 | 0 | unreported | unreported | 0/32 |
+| glm | 260902-023609-GLM-EFFICIENCY-01-24d7 | 106 | 0 | 0 | 0 | unreported | unreported | 0/106 |
+| glm | 260902-023632-FABLE-THINK-TIER-01-21c2 | 78 | 0 | 0 | 0 | unreported | unreported | 0/78 |
+| glm | 260902-023831-GUARD-CENSUS-IS-WRONG-01-42b5 | 70 | 0 | 0 | 0 | unreported | unreported | 0/70 |
+| glm | 260902-025223-WORKER-MCP-ALL-ARMS-01-61a7 | 58 | 0 | 0 | 0 | unreported | unreported | 0/58 |
+| glm | 260902-032523-CACHE-TRUTH-01-3104 | 32 | 0 | 0 | 0 | unreported | unreported | 0/32 |
+| freepool | 260901-235840-FABLE-THINK-TIER-01-7f82 (no 260902 freepool runs exist; latest run, started 2026-09-01T23:58Z) | 43 | 1,913,304 | 0 | 0 | unreported | unreported | 0/43 |
+
+kimi / claude-runs: no runs dated 2026-09-02 exist in
+`~/.claude/cache/{kimi,claude}-runs/` (checked 2026-09-02; latest kimi run is
+`260901-123312-getmany-crm-reports-6939`, measured in round 2). The
+claude-native sample (`dispatch-c293c1d5`, 95/95 reported, hit_ratio 0.9844)
+is unchanged by the round-3 rule — all its reported turns carry real token
+counts, none is all-zero.
 
 Reproduce with:
 ```
-plugins/leadv2/scripts/leadv2-cache-truth.sh \
-  docs/handoff/dispatch-c293c1d5 \
-  ~/.claude/cache/glm-runs/260901-041431-WATCHER-LIFECYCLE-LEAK-01-2ea1 \
-  ~/.claude/cache/glm-runs/260901-165920-PLUGIN-PAPERCUTS-01-53f1 \
-  ~/.claude/cache/freepool-runs/260901-175619-repo-53e9 \
-  ~/.claude/cache/freepool-runs/260901-120552-SUITE-THAT-CANNOT-FAIL-01-23b9 \
-  ~/.claude/cache/kimi-runs/260901-123312-getmany-crm-reports-6939
+plugins/leadv2/scripts/leadv2-cache-truth.sh ~/.claude/cache/glm-runs/260902-*/ \
+  ~/.claude/cache/freepool-runs/260901-235840-FABLE-THINK-TIER-01-7f82
 ```
 
 ## Findings, per arm
@@ -65,7 +85,9 @@ pulled directly from `journal.jsonl`:
 {"input_tokens": 0, "output_tokens": 0}
 ```
 No `cache_read_input_tokens` / `cache_creation_input_tokens` key, and
-`input_tokens`/`output_tokens` are both hardcoded/relayed as `0`. This
+`input_tokens`/`output_tokens` are both hardcoded/relayed as `0`.
+**Conclusion (round 3): cache is UNMEASURABLE on api/anthropic (usage zeros)
+— dashboard only.** This
 matches Z.AI's documented Anthropic-compatible endpoint shape only
 partially -- UNVERIFIED: whether Z.AI's own API (bypassing whatever proxy
 glm-coder.sh talks to) ever includes prompt-cache fields; no doc URL was
@@ -244,6 +266,108 @@ reports the keys (genuinely 0), the other 66 report nothing" -- reported=1/67,
 matching the reviewer's math on the raw event count (1/137 raw events, same
 1 unique request, the other 136 raw events being duplicates or unreported
 turns).
+
+## Round 3 evidence
+
+Round-3 review verdict (reviewer opus, `review-opus.md`) — FAIL, high=3:
+
+1. `leadv2-cache-truth.sh:178` — zero denominator printed a fabricated
+   `hit_ratio 0.0000` instead of `unreported`, violating the tool's own
+   missing-is-not-zero rule. Reviewer's probe: one reported turn with
+   all-zero usage produced `unknown tmp 1 0 0 0 0.0000 none 1/1` rc=0.
+2. `test-cache-truth.sh:236` — mutation controls 2 and 3 printed
+   "control proven red-capable" when their python assert fired and the
+   mutant was never created (empty output "diverges" from everything).
+   Reviewer's probe: perturbed anchor -> turns='' -> suite still
+   PASS=16 FAIL=0. The controls were theatre.
+3. Round-2 diff carried lead-owned runtime files (fixed by pathspec commits).
+
+### Fix 1 — denominator rule
+
+`leadv2-cache-truth.sh` now classifies a turn as REPORTED only if it carries
+a cache key AND its usage is not all zeros; `hit_ratio` is printed only when
+reported>0 AND input+cache_read+cache_creation>0 over the reported set,
+otherwise `unreported`. The reviewer's exact probe, re-run against the
+patched tool:
+
+```
+$ printf '%s\n' '{"type":"assistant","message":{"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}' > "$T/glm-runs/260902-fixture-allzero/journal.jsonl"
+$ bash plugins/leadv2/scripts/leadv2-cache-truth.sh "$T/glm-runs/260902-fixture-allzero"
+arm	run	turns	input_tokens	cache_read	cache_creation	hit_ratio	first_break	reported
+glm	260902-fixture-allzero	1	0	0	0	unreported	unreported	0/1
+rc=0
+```
+
+This probe is now suite fixture 4d (expects `unreported` and `reported=0/1`).
+
+### Fix 2 — mutation controls fail loud
+
+Each control now (a) verifies its anchor exists in the source with
+`grep -c` == 1 BEFORE mutating, (b) verifies the mutant file exists and is
+non-empty, (c) verifies the mutant emitted a well-formed 9-column row with a
+numeric turns cell — any miss fails the suite as `control_not_applied`
+instead of printing "control proven red-capable".
+
+RED — all three anchors perturbed in a throwaway copy of suite+tool (the
+controls refuse to claim anything when the mutant cannot be created):
+
+```
+[TEST] FAIL: MUTATION CONTROL NOT APPLIED: control 1 (numerator swap): sed anchor did not match or mutant not created (control_not_applied)
+[TEST] FAIL: MUTATION CONTROL NOT APPLIED: control 2 (dedup removal): python anchor did not match or mutant not created (control_not_applied)
+[TEST] FAIL: MUTATION CONTROL NOT APPLIED: control 3 (global-key): python anchor did not match or mutant not created (control_not_applied)
+PASS=0 FAIL=18
+```
+
+(In the first committed version of fix 2 the fail-loud machinery itself
+caught two real plumbing bugs before anything was committed: sed's `s/…/…/`
+delimiter clashed with the literal `/` in the anchor — `bad flag in
+substitute command` — and the `is_row` awk probe used `END{exit 1}`, which
+clobbers a match `exit 0`. Both were red before the controls went green —
+the fail-loud path proving itself on its own author.)
+
+GREEN — anchors intact, controls 1–3 each produce a real RED-capable mutant
+against the unmutated suite:
+
+```
+[TEST] PASS: MUTATION CONTROL: mutant ratio diverged from correct 0.62 (got '0.3691') — control proven red-capable
+[TEST] PASS: MUTATION CONTROL (dedup): mutant reported turns='5' (expected 5, not 2) — control proven red-capable
+[TEST] PASS: MUTATION CONTROL (global-key): mutant reported='3/3' (expected 3/3, not 1/3) — control proven red-capable
+PASS=18 FAIL=0
+```
+
+Each mutant's actual failing assertion, isolated (mutant run standalone):
+
+- control 1 (numerator cache_read->cache_creation): fixture-1 ratio assertion
+  would read `expected ~0.62 got '0.3691'` — the suite's `fail` branch.
+- control 2 (dedup removed): mutant row `claude-native dispatch-fixture-dup 5 50 1800 3100 0.3636 2 5/5`
+  -> `dup-id fixture: expected turns=2 got '5'` and `expected ratio ~0.4569 got '0.3636'`.
+- control 3 (global-key): mutant row `freepool 260901-fixture-mixed 3 200 0 0 0.0000 2 3/3`
+  -> `mixed fixture: expected reported=1/3 got '3/3'`.
+
+Reverted = the mutants only ever existed as throwaway copies under
+`mktemp -d`; `git diff` on `leadv2-cache-truth.sh` shows only the intended
+round-3 changes.
+
+### Full suite (real tool, all fixtures)
+
+```
+$ LEADV2_SUITE_LOCK_DISABLE=1 bash plugins/leadv2/scripts/tests/test-cache-truth.sh
+PASS=18 FAIL=0
+```
+
+### Falsifiability
+
+```
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-cache-truth.sh
+leadv2-suite-falsifiable: suite=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/CACHE-TRUTH-01/plugins/leadv2/scripts/tests/test-cache-truth.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=6
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+### Changed-scope suite selection
 
 ## What was NOT done
 
