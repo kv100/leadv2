@@ -43,6 +43,28 @@
 #                             loop. Only ever invoked backgrounded by
 #                             --arm-from-hook — never call this directly in
 #                             the foreground, it does not return.
+#
+# Self-termination (WATCHER-LEAK-IS-FAKE-LIVENESS-01): a loop that depended
+# only on SessionEnd --disarm-from-hook leaked whenever its session died
+# abnormally — the dispatch supervisors SIGKILL timed-out `claude -p` workers
+# (leadv2-dispatch-code.sh:4184/4217/4669) and a SIGKILLed harness runs no
+# further hooks. The 2026-09-02 census found 17 orphan loops, oldest 15h47m,
+# four of them watching deleted /tmp suite fixtures. A loop therefore exits
+# BY ITSELF, each cycle, when (a) its watched project root is gone, (b) its
+# session transcript ($HOME/.claude/projects/*/<session>.jsonl) never
+# appeared within LW_ABSENT_GRACE_SEC of loop birth, or (c) the transcript
+# has been quiet for SESSION_IDLE_MIN — a session whose transcript stopped
+# growing is dead or idle enough that watching it is noise. Set
+# LEADV2_LANE_WATCH_SESSION_CHECK=0 to disable all three (the fixture suite
+# does, because its session ids are fake), LEADV2_LANE_WATCH_DISABLE=1 to
+# make arming/looping a no-op at all (suites that must spawn zero watchers).
+#
+# One loop per session: --arm-from-hook ADOPTS a live loop for the session
+# id wherever it runs (rewrites the pidfile to its pid) and --loop REFUSES
+# to start if another live loop for the same session exists anywhere; a
+# mkdir claim under the state root closes the simultaneous-arm race. The
+# 14-hours-apart duplicate pair on session b1efef2c in the same census was
+# exactly this hole: pidfile reaped, loop alive, arm spawned a second.
 #   --reap-stale              Sweep the state root for OTHER sessions' loop
 #                             pidfiles whose recorded pid is no longer
 #                             running, and remove the stale bookkeeping.
@@ -68,6 +90,9 @@ POLL_SEC="${LEADV2_LANE_WATCH_POLL_SEC:-60}"
 STATE_ROOT="${LEADV2_LANE_WATCH_STATE_DIR:-$HOME/.claude/leadv2-lane-watch}"
 RUN_ROOT_PARENTS="${LEADV2_LANE_WATCH_RUN_ROOTS:-$HOME/.claude/cache}"
 CODEX_STATE_ROOT="${LEADV2_LANE_WATCH_CODEX_STATE:-$HOME/.claude/plugins/data/codex-openai-codex/state}"
+PROJECTS_DIR="${LEADV2_LANE_WATCH_PROJECTS_DIR:-$HOME/.claude/projects}"
+SESSION_IDLE_MIN="${LEADV2_LANE_WATCH_SESSION_IDLE_MIN:-180}"
+LW_ABSENT_GRACE_SEC="${LEADV2_LANE_WATCH_ABSENT_GRACE_SEC:-300}"
 
 # --- fork-free wait ----------------------------------------------------------
 # Duplicated, not sourced, from FORK-STORM-KILLS-HOOKS-01's
@@ -348,21 +373,27 @@ _lw_run_once() {
 
   local lanes; lanes="$(_lw_discover_lanes "$wt")"
   local now; now="$(date +%s)"
-  local beat_line="" lane age prov_age d_age live_lanes=0
+  local beat_line="" lane age prov_age d_age live_lanes=0 worker
 
   for lane in $lanes; do
     [ -n "$lane" ] || continue
     age="$(_lw_newest_age_min "${wt}/${lane}")"
     prov_age="$(_lw_provider_output_age_min "$lane")"
-    beat_line="${beat_line}${lane}:${age}m "
 
     # Live = either signal fresh. A worker reading and planning writes its
     # provider run dir while touching no worktree file, and vice versa a
     # worker between provider calls can go quiet in the run dir while its
-    # worktree still shows writes.
+    # worktree still shows writes. worker= is the beat's explicit liveness
+    # verdict — WATCHER-LEAK-IS-FAKE-LIVENESS-01: a process census ("does
+    # anything have this path in argv?") conflated orphan WATCHERS with
+    # WORKERS and reported eight dead lanes as working. Watcher processes
+    # are this tool's own bookkeeping and are never counted as work.
+    worker=QUIET
     if [ "$age" -lt "$STALE_MIN" ] || [ "$prov_age" -lt "$STALE_MIN" ]; then
       live_lanes=$(( live_lanes + 1 ))
+      worker=LIVE
     fi
+    beat_line="${beat_line}${lane}:(age=${age}m,prov=${prov_age}m,worker=${worker}) "
 
     # Grace: a lane DISPATCHED within GRACE_MIN has not had time to write
     # yet — reporting that is the false alarm that fired on
@@ -418,7 +449,8 @@ _lw_run_once() {
   fi
 
   if [ $(( now - last_beat )) -ge $(( BEAT_MIN * 60 )) ]; then
-    printf 'LANE-BEAT: %s\n' "${beat_line:-no active lanes}"
+    printf 'LANE-BEAT: %s[watcher pid=%s is bookkeeping, not work — worker= is the liveness verdict]\n' \
+      "${beat_line:-no active lanes }" "$$"
     printf '%s' "$now" > "$beat_file" 2>/dev/null || true
   fi
 }
@@ -442,6 +474,93 @@ _lw_is_our_loop() {
   esac
 }
 
+# _lw_session_transcript_age_min SESSION -> minutes since the session's
+# transcript was last written, or the literal "absent" when no transcript
+# exists for the session id anywhere under PROJECTS_DIR. The transcript IS
+# the session-liveness probe: the harness appends to it on every turn, so a
+# fresh mtime means the session (or its writer) is alive, and hours of
+# silence means it is gone — including the SIGKILL case, where SessionEnd
+# hooks can never fire. probe 2026-09-03: the census orphans separated
+# cleanly on this signal (c3f5e055: NO transcript, d8c9c2ac/b1efef2c: 8-20h
+# quiet, all looping) while the live sessions (8b0514a2, c5502377, ...)
+# showed sub-minute mtimes.
+_lw_session_transcript_age_min() {
+  local session="$1" f m best="" now
+  case "$session" in
+    ''|*[!A-Za-z0-9_-]*) printf 'absent'; return 0 ;;
+  esac
+  for f in "$PROJECTS_DIR"/*/"$session.jsonl" "$PROJECTS_DIR"/"$session.jsonl"; do
+    [ -f "$f" ] || continue
+    m="$(stat -f %m "$f" 2>/dev/null)" || continue
+    if [ -z "$best" ] || [ "$m" -gt "$best" ]; then best="$m"; fi
+  done
+  if [ -z "$best" ]; then printf 'absent'; return 0; fi
+  now="$(date +%s)"
+  printf '%s' $(( ( now - best ) / 60 ))
+}
+
+# _lw_find_live_loop SESSION -> pid of another live --loop process for this
+# exact session id, argv-verified, or empty. Never matches our own pid.
+_lw_find_live_loop() {
+  local session="$1" p
+  for p in $(pgrep -f "$SELF_BASENAME --loop $session" 2>/dev/null || true); do
+    [ "$p" = "$$" ] && continue
+    if _lw_is_our_loop "$p" "$session"; then
+      printf '%s' "$p"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# _lw_claim_exclusive SESSION — mkdir claim closing the simultaneous-arm
+# race on top of the pgrep sweep. Refuse (return 1) when a live loop for
+# this session already exists; steal only a provably stale lock (dead or
+# non-loop owner — the mkdir owner may have been SIGKILLed, where no trap
+# runs to clean up).
+_lw_claim_exclusive() {
+  local session="$1" lock other old
+  other="$(_lw_find_live_loop "$session")"
+  [ -n "$other" ] && return 1
+  lock="${STATE_ROOT}/${session}.live"
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s' "$$" > "$lock/pid" 2>/dev/null || true
+    return 0
+  fi
+  old="$(cat "$lock/pid" 2>/dev/null || true)"
+  case "$old" in
+    ''|*[!0-9]*) rm -rf "$lock" ;;
+    *)
+      if _lw_is_our_loop "$old" "$session"; then return 1; fi
+      rm -rf "$lock"
+      ;;
+  esac
+  mkdir "$lock" 2>/dev/null || return 1
+  printf '%s' "$$" > "$lock/pid" 2>/dev/null || true
+  return 0
+}
+
+# _lw_self_terminate SESSION PROJECT_ROOT — the loop's own backstop; return
+# 1 = this loop must exit now. SessionEnd cannot be the only cleanup: it
+# never runs on an abnormal (SIGKILL/crash) death, which is exactly when the
+# leak matters. See the header block for the three exit conditions.
+_lw_self_terminate() {
+  [ "${LEADV2_LANE_WATCH_SESSION_CHECK:-1}" = "1" ] || return 0
+  local session="$1" project_root="$2" age now
+  [ -d "$project_root" ] || return 1
+  age="$(_lw_session_transcript_age_min "$session")"
+  if [ "$age" = "absent" ]; then
+    # Grace: a brand-new session may not have flushed its transcript file
+    # yet when SessionStart arms us — only conclude "never existed" (fake
+    # session id, transcript since deleted) after LW_ABSENT_GRACE_SEC.
+    now="$(date +%s)"
+    [ $(( now - ${LW_LOOP_BORN:-0} )) -ge "$LW_ABSENT_GRACE_SEC" ] && return 1
+    return 0
+  fi
+  [ "$age" -ge "$SESSION_IDLE_MIN" ] && return 1
+  return 0
+}
+
 cmd_reap_stale() {
   local d other_pid
   mkdir -p "$STATE_ROOT" 2>/dev/null || true
@@ -458,9 +577,20 @@ cmd_reap_stale() {
 
 _lw_arm() {
   local session="$1" project_root="$2"
+  [ -n "${LEADV2_LANE_WATCH_DISABLE:-}" ] && return 0
   local dir="${STATE_ROOT}/${session}"
   mkdir -p "$dir" 2>/dev/null || return 0
   local pidfile; pidfile="$(_lw_pidfile "$session")"
+  # Adopt before spawn: a live loop for this session may exist OUTSIDE the
+  # pidfile's reach (pidfile reaped by --reap-stale, or a different state
+  # root — e.g. a fixture suite's). Spawning a second was how the census
+  # got two b1efef2c loops 14 hours apart. Adopting just repoints the
+  # pidfile so a later SessionEnd can still kill the real loop.
+  local live; live="$(_lw_find_live_loop "$session")"
+  if [ -n "$live" ]; then
+    printf '%s' "$live" > "$pidfile" 2>/dev/null || true
+    return 0
+  fi
   if [ -f "$pidfile" ]; then
     local old; old="$(cat "$pidfile" 2>/dev/null || true)"
     case "$old" in
@@ -495,6 +625,9 @@ _lw_disarm() {
     waited=$(( waited + 1 ))
   done
   kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+  # The KILL path skips the loop's EXIT trap, so its claim dir would go
+  # stale — clear it here; _lw_claim_exclusive also self-heals one.
+  rm -rf "${STATE_ROOT}/${session}.live" 2>/dev/null || true
   return 0
 }
 
@@ -556,7 +689,18 @@ case "${1:-}" in
   --loop)
     SESSION="${2:?session required}"
     PROJECT_ROOT="${3:?project_root required}"
+    [ -n "${LEADV2_LANE_WATCH_DISABLE:-}" ] && exit 0
+    LW_LOOP_BORN="$(date +%s)"
+    # One loop per session, ever: refuse when another live loop for this
+    # session exists (the arm layer adopts instead of spawning; this layer
+    # is the last line against a simultaneous arm).
+    _lw_claim_exclusive "$SESSION" || exit 0
+    # Clean EXIT removes the claim; TERM/INT first convert to exit 0 so the
+    # EXIT trap runs (bash 3.2 does not run EXIT on an untrapped signal).
+    trap 'rm -rf "${STATE_ROOT}/${SESSION}.live" 2>/dev/null' EXIT
+    trap 'exit 0' TERM INT
     while :; do
+      _lw_self_terminate "$SESSION" "$PROJECT_ROOT" || exit 0
       _lw_run_once "$SESSION" "$PROJECT_ROOT"
       _lw_wait "$POLL_SEC"
     done
