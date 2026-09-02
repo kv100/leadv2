@@ -2,17 +2,30 @@
 # tests/test-worker-mcp-all-arms.sh — WORKER-MCP-ALL-ARMS-01.
 #
 # freepool-coder.sh and kimi-coder.sh must resolve+attach the SAME role-scoped
-# --mcp-config glm-coder.sh uses (lib/leadv2-worker-mcp.sh, never a copy), on
-# both their `run` (v1) and `bg`/child spawn paths, gated by LEADV2_WORKER_MCP
-# (default 1). codex-task.sh cannot wire live MCP (its real spawn is an
-# external plugin companion, out of LANE_WRITES) — this suite instead asserts
-# the documented allowlist file exists and the doc-gap NOTE is emitted.
-# leadv2-dispatch-code.sh must inject prompts/worker-code-intel-preamble.md
-# into every arm's mission at ONE call site.
+# --mcp-config glm-coder.sh uses (lib/leadv2-worker-mcp.sh, never a copy),
+# gated by LEADV2_WORKER_MCP (default 1). Exact coverage, one case per claim:
 #
-# NEGATIVE CONTROL: mutates a SCRATCH COPY of freepool-coder.sh (removes the
-# worker_mcp_resolve call from its `run` path) and proves this suite goes RED
-# against it — never against the working tree.
+#   - freepool `run` (v1) path: --mcp-config + resolved servers on the real
+#     spawn (stub claude binary), LEADV2_WORKER_MCP=0 restores no-flag spawn.
+#   - freepool `bg` path: the REAL bg -> __supervise -> __run_child chain,
+#     invoked via `freepool-coder.sh bg` exactly as the dispatcher does, with
+#     the transport faked one level lower (stub claude binary dumps argv+env;
+#     no network). Asserts --mcp-config/--strict-mcp-config on the child argv,
+#     the role-resolved server list, the transport env, and that the code-intel
+#     preamble injected at the dispatcher's ONE call site reaches the child -p.
+#   - kimi `run` and `bg` paths: same coverage as freepool.
+#   - NEGATIVE CONTROLS: scratch-copy mutations (a) freepool `run` wiring,
+#     (b) freepool cmd_run_child (bg) wiring, (c) kimi cmd_run_child (bg)
+#     wiring — each proven to be caught by this suite (reviewer round-1: the
+#     bg wiring could be deleted with the suite staying green).
+#
+# codex-task.sh: live MCP wiring is NOT asserted because it is NOT possible
+# in-repo — the real spawn goes through node codex-companion.mjs (openai-codex
+# plugin cache, outside this repo and outside LANE_WRITES), which has no
+# mcp_servers/-c passthrough (probed 2026-09-02: companion 1.0.4, 1027 lines,
+# zero "mcp" occurrences; it spawns its own task-worker with fixed argv).
+# This suite asserts only the documented allowlist toml + the doc-gap NOTE —
+# no coverage claim beyond that.
 #
 # Run: bash plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 
@@ -155,6 +168,141 @@ else
   fail "kimi-coder.sh run: resolved config carries both servers"
 fi
 
+# ── bg path helpers: REAL bg → __supervise → __run_child, transport faked ────
+# The reviewer (round 1) proved the `run`-path-only suite stays green when the
+# whole cmd_run_child MCP wiring is deleted — and bg is the ONLY path the
+# dispatcher uses. These cases invoke `bg` itself and let the detached
+# supervisor spawn the real __run_child, which execs a stub binary that dumps
+# its argv + env to files. No network: the "provider" is the stub.
+
+wait_finalized() { # <run_dir> — poll for the terminal sentinel, bounded
+  local run_dir="$1" deadline=$(( $(date +%s) + 120 ))
+  while (( $(date +%s) < deadline )); do
+    [[ -f "${run_dir}/.finalized" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+make_bg_stub() { # <bin-name> <argv-file> <env-file> <resolved-capture>
+  local bin_name="$1" argv_file="$2" env_file="$3" resolved_capture="$4"
+  cat > "${STUB_BIN}/${bin_name}" <<STUBEOF
+#!/usr/bin/env bash
+_prev=""
+for _a in "\$@"; do
+  printf 'ARGV: %s\n' "\$_a" >> "${argv_file}"
+  if [[ "\$_prev" == "--mcp-config" && -f "\$_a" ]]; then
+    cp "\$_a" "${resolved_capture}" 2>/dev/null || true
+  fi
+  _prev="\$_a"
+done
+env | sort >> "${env_file}"
+printf '%s\n' '{"type":"system","subtype":"init","model":"stub"}'
+exit 0
+STUBEOF
+  chmod +x "${STUB_BIN}/${bin_name}"
+}
+
+make_bg_repo() { # <name> — fresh git repo with both servers in .mcp.json (unique per bg case: the launcher locks per-cwd)
+  local r="${FIXTURE}/$1"
+  mkdir -p "${r}"
+  printf '%s\n' '{"mcpServers": {"repowise": {"command": "stub-repowise", "args": []}, "codebase-memory-mcp": {"command": "stub-cbm", "args": []}}}' > "${r}/.mcp.json"
+  git -C "${r}" init -q 2>/dev/null || true
+  git -C "${r}" -c user.email=wmaa@test -c user.name=wmaa commit -q --allow-empty -m init 2>/dev/null || true
+  printf '%s' "${r}"
+}
+
+bg_mission() { # <prompt-file> — dispatcher-equivalent prompt: preamble + mission
+  { cat "${PREAMBLE_FILE}"; printf '\nBG-PROBE mission: verify the bg child spawn wiring.\n'; } > "$1"
+}
+
+# ── freepool bg: bg → __supervise → cmd_run_child attaches --mcp-config ─────
+FPBG_REPO="$(make_bg_repo fp-bg-repo)"
+FPBG_RUNS="${FIXTURE}/fp-bg-runs"
+FPBG_ARGV="${FIXTURE}/fp-bg-argv.txt"; : > "${FPBG_ARGV}"
+FPBG_ENV="${FIXTURE}/fp-bg-env.txt";  : > "${FPBG_ENV}"
+FPBG_RESOLVED="${FIXTURE}/fp-bg-resolved.json"
+make_bg_stub "fp-bg-claude" "${FPBG_ARGV}" "${FPBG_ENV}" "${FPBG_RESOLVED}"
+FPBG_PROMPT="${FIXTURE}/fp-bg-prompt.txt"; bg_mission "${FPBG_PROMPT}"
+
+FPBG_SECRETS="${FIXTURE}/fp-bg-secrets"
+printf '%s\n' 'FREEPOOL_AUTH_TOKEN=stub-token' > "${FPBG_SECRETS}"
+chmod 600 "${FPBG_SECRETS}"
+
+FPBG_RUN_ID="$(env FREEPOOL_CLAUDE_BIN="${STUB_BIN}/fp-bg-claude" \
+  FREEPOOL_SECRETS_FILE="${FPBG_SECRETS}" FREEPOOL_RUNS_DIR="${FPBG_RUNS}" \
+  FREEPOOL_PROXY_URL="http://stub" \
+  LEADV2_PROJECT_ROOT="${FPBG_REPO}" FREEPOOL_SKIP_GATE=1 FREEPOOL_TEST_NO_REDACT=1 \
+  bash "${FREEPOOL_SCRIPT}" bg "@${FPBG_PROMPT}" --cwd "${FPBG_REPO}" --timeout 60 2>/dev/null | tail -1)"
+FPBG_RUN_DIR="${FPBG_RUNS}/${FPBG_RUN_ID}"
+
+if [[ -n "${FPBG_RUN_ID}" ]] && wait_finalized "${FPBG_RUN_DIR}"; then
+  pass "freepool bg: run finalized (run_id=${FPBG_RUN_ID})"
+else
+  fail "freepool bg: run finalized within 120s (run_id=${FPBG_RUN_ID:-none}; supervisor.log: $(tail -3 "${FPBG_RUN_DIR}/supervisor.log" 2>/dev/null | tr '\n' '|'))"
+fi
+if grep -qx -- "ARGV: --mcp-config" "${FPBG_ARGV}" 2>/dev/null && grep -qx -- "ARGV: --strict-mcp-config" "${FPBG_ARGV}" 2>/dev/null; then
+  pass "freepool bg: cmd_run_child puts --strict-mcp-config --mcp-config on the child argv"
+else
+  fail "freepool bg: cmd_run_child puts --strict-mcp-config --mcp-config on the child argv"
+fi
+if [[ -f "${FPBG_RESOLVED}" ]] && grep -q "repowise" "${FPBG_RESOLVED}" && grep -q "codebase-memory-mcp" "${FPBG_RESOLVED}"; then
+  pass "freepool bg: role-resolved config with both servers reaches the child (--mcp-config value)"
+else
+  fail "freepool bg: role-resolved config with both servers reaches the child (--mcp-config value)"
+fi
+if grep -q "^ANTHROPIC_BASE_URL=http://stub$" "${FPBG_ENV}" 2>/dev/null && grep -q "^ANTHROPIC_AUTH_TOKEN=stub-token$" "${FPBG_ENV}" 2>/dev/null && grep -q "^FREEPOOL_ROLE=" "${FPBG_ENV}" 2>/dev/null; then
+  pass "freepool bg: child env carries the transport (BASE_URL/AUTH_TOKEN) + FREEPOOL_ROLE"
+else
+  fail "freepool bg: child env carries the transport (BASE_URL/AUTH_TOKEN) + FREEPOOL_ROLE"
+fi
+if grep -q "CODE-INTEL ROUTING" "${FPBG_ARGV}" 2>/dev/null && grep -q "BG-PROBE mission" "${FPBG_ARGV}" 2>/dev/null; then
+  pass "freepool bg: code-intel preamble + mission both inside the child -p prompt"
+else
+  fail "freepool bg: code-intel preamble + mission both inside the child -p prompt"
+fi
+
+# ── kimi bg: bg → __supervise → cmd_run_child attaches --mcp-config ─────────
+KMBG_REPO="$(make_bg_repo kimi-bg-repo)"
+KMBG_RUNS="${FIXTURE}/kimi-bg-runs"
+KMBG_ARGV="${FIXTURE}/kimi-bg-argv.txt"; : > "${KMBG_ARGV}"
+KMBG_ENV="${FIXTURE}/kimi-bg-env.txt";  : > "${KMBG_ENV}"
+KMBG_RESOLVED="${FIXTURE}/kimi-bg-resolved.json"
+make_bg_stub "kimi-bg-claude" "${KMBG_ARGV}" "${KMBG_ENV}" "${KMBG_RESOLVED}"
+KMBG_PROMPT="${FIXTURE}/kimi-bg-prompt.txt"; bg_mission "${KMBG_PROMPT}"
+
+KMBG_RUN_ID="$(KIMI_CLAUDE_BIN="${STUB_BIN}/kimi-bg-claude" \
+  KIMI_SECRETS_FILE="${KIMI_SECRETS}" KIMI_RUNS_DIR="${KMBG_RUNS}" \
+  LEADV2_PROJECT_ROOT="${KMBG_REPO}" KIMI_SKIP_LAUNCH_PROBE=1 \
+  bash "${KIMI_SCRIPT}" bg "@${KMBG_PROMPT}" --cwd "${KMBG_REPO}" --timeout 60 2>/dev/null | tail -1)"
+KMBG_RUN_DIR="${KMBG_RUNS}/${KMBG_RUN_ID}"
+
+if [[ -n "${KMBG_RUN_ID}" ]] && wait_finalized "${KMBG_RUN_DIR}"; then
+  pass "kimi bg: run finalized (run_id=${KMBG_RUN_ID})"
+else
+  fail "kimi bg: run finalized within 120s (run_id=${KMBG_RUN_ID:-none}; supervisor.log: $(tail -3 "${KMBG_RUN_DIR}/supervisor.log" 2>/dev/null | tr '\n' '|'))"
+fi
+if grep -qx -- "ARGV: --mcp-config" "${KMBG_ARGV}" 2>/dev/null && grep -qx -- "ARGV: --strict-mcp-config" "${KMBG_ARGV}" 2>/dev/null; then
+  pass "kimi bg: cmd_run_child puts --strict-mcp-config --mcp-config on the child argv"
+else
+  fail "kimi bg: cmd_run_child puts --strict-mcp-config --mcp-config on the child argv"
+fi
+if [[ -f "${KMBG_RESOLVED}" ]] && grep -q "repowise" "${KMBG_RESOLVED}" && grep -q "codebase-memory-mcp" "${KMBG_RESOLVED}"; then
+  pass "kimi bg: role-resolved config with both servers reaches the child (--mcp-config value)"
+else
+  fail "kimi bg: role-resolved config with both servers reaches the child (--mcp-config value)"
+fi
+if grep -q "^ANTHROPIC_BASE_URL=http://stub$" "${KMBG_ENV}" 2>/dev/null && grep -q "^ANTHROPIC_AUTH_TOKEN=stub-token$" "${KMBG_ENV}" 2>/dev/null; then
+  pass "kimi bg: child env carries the transport (BASE_URL/AUTH_TOKEN)"
+else
+  fail "kimi bg: child env carries the transport (BASE_URL/AUTH_TOKEN)"
+fi
+if grep -q "CODE-INTEL ROUTING" "${KMBG_ARGV}" 2>/dev/null && grep -q "BG-PROBE mission" "${KMBG_ARGV}" 2>/dev/null; then
+  pass "kimi bg: code-intel preamble + mission both inside the child -p prompt"
+else
+  fail "kimi bg: code-intel preamble + mission both inside the child -p prompt"
+fi
+
 # ── codex: no live wiring possible (companion out of scope) — doc-gap asserted ──
 if [[ -f "${CODEX_TOML}" ]] && grep -q "codebase-memory-mcp" "${CODEX_TOML}" && grep -q "repowise" "${CODEX_TOML}"; then
   pass "config/codex-mcp-servers.toml declares both server names"
@@ -234,6 +382,65 @@ if grep -qx -- "--mcp-config" "${NC_ARGV}" 2>/dev/null; then
 else
   pass "negative control: mutated freepool-coder.sh correctly goes RED (no --mcp-config)"
 fi
+
+# ── NEGATIVE CONTROL (bg): mutate cmd_run_child in scratch copies ────────────
+# Reviewer's exact round-1 mutation, now applied to the path that actually
+# runs: empty out mcp_cfg in cmd_run_child (the resolve + argv-append wiring)
+# and prove the bg cases above would catch it — the mutated copy must spawn
+# with NO --mcp-config.
+bg_negative_control() { # <script-path> <needle> <label> <stub-bin> <secrets> <runs-var-name>
+  local script="$1" needle="$2" label="$3" stub_bin="$4" secrets="$5" runs_env="$6"
+  local nc_dir argv_f env_f resolved_f repo prompt_f run_id run_dir
+  nc_dir="$(mktemp -d "${TMPDIR:-/tmp}/wmaa-ncbg.XXXXXX")"
+  CLEANUP_PATHS+=("${nc_dir}")
+  cp -pR "${PLUGIN_SCRIPTS}" "${nc_dir}/scripts"
+  local script_copy="${nc_dir}/scripts/$(basename "${script}")"
+  python3 - "$script_copy" "$needle" <<'PYMUT'
+import sys
+path, needle = sys.argv[1], sys.argv[2]
+text = open(path).read()
+if needle not in text:
+    print("MUTATION_TARGET_NOT_FOUND", file=sys.stderr)
+    sys.exit(1)
+open(path, "w").write(text.replace(needle, 'mcp_cfg=""', 1))
+PYMUT
+  if [[ $? -ne 0 ]]; then
+    fail "negative control (${label}): mutation target found"
+    return 1
+  fi
+  argv_f="${FIXTURE}/ncbg-${label}-argv.txt"; : > "${argv_f}"
+  env_f="${FIXTURE}/ncbg-${label}-env.txt";  : > "${env_f}"
+  resolved_f="${FIXTURE}/ncbg-${label}-resolved.json"
+  make_bg_stub "ncbg-${label}" "${argv_f}" "${env_f}" "${resolved_f}"
+  repo="$(make_bg_repo "ncbg-${label}-repo")"
+  prompt_f="${FIXTURE}/ncbg-${label}-prompt.txt"; bg_mission "${prompt_f}"
+  if [[ "${runs_env}" == FREEPOOL_RUNS_DIR ]]; then
+    run_id="$(env FREEPOOL_CLAUDE_BIN="${STUB_BIN}/ncbg-${label}" FREEPOOL_SECRETS_FILE="${secrets}" \
+      "${runs_env}=${FIXTURE}/ncbg-${label}-runs" FREEPOOL_PROXY_URL="http://stub" \
+      LEADV2_PROJECT_ROOT="${repo}" FREEPOOL_SKIP_GATE=1 FREEPOOL_TEST_NO_REDACT=1 \
+      bash "${nc_dir}/scripts/$(basename "${script}")" bg "@${prompt_f}" --cwd "${repo}" --timeout 60 2>/dev/null | tail -1)"
+  else
+    run_id="$(env KIMI_CLAUDE_BIN="${STUB_BIN}/ncbg-${label}" KIMI_SECRETS_FILE="${secrets}" \
+      "${runs_env}=${FIXTURE}/ncbg-${label}-runs" LEADV2_PROJECT_ROOT="${repo}" \
+      KIMI_SKIP_LAUNCH_PROBE=1 \
+      bash "${nc_dir}/scripts/$(basename "${script}")" bg "@${prompt_f}" --cwd "${repo}" --timeout 60 2>/dev/null | tail -1)"
+  fi
+  run_dir="${FIXTURE}/ncbg-${label}-runs/${run_id}"
+  if [[ -n "${run_id}" ]] && wait_finalized "${run_dir}"; then
+    pass "negative control (${label}): mutated bg run finalized"
+  else
+    fail "negative control (${label}): mutated bg run finalized"
+  fi
+  if grep -qx -- "ARGV: --mcp-config" "${argv_f}" 2>/dev/null; then
+    fail "negative control (${label}): mutated cmd_run_child must NOT attach --mcp-config (suite would be blind to the exact round-1 regression)"
+  else
+    pass "negative control (${label}): mutated cmd_run_child goes RED (no --mcp-config reaches the child)"
+  fi
+}
+
+FP_CHILD_NEEDLE='mcp_cfg="$(worker_mcp_resolve "${cwd_dir}" "${run_dir}/journal.jsonl" "${run_dir}")" || true'
+bg_negative_control "${FREEPOOL_SCRIPT}" "${FP_CHILD_NEEDLE}" "freepool-bg" "fp" "${FPBG_SECRETS}" "FREEPOOL_RUNS_DIR" || true
+bg_negative_control "${KIMI_SCRIPT}" "${FP_CHILD_NEEDLE}" "kimi-bg" "kimi" "${KIMI_SECRETS}" "KIMI_RUNS_DIR" || true
 
 echo
 log "TOTAL: PASS=${PASS} FAIL=${FAIL}"
