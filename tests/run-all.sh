@@ -264,7 +264,12 @@ leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilog
 glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-lane-outcome.sh
 leadv2-dod-gate.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
-leadv2-mutation-control.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh"
+leadv2-mutation-control.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
+leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
+leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
+leadv2-helpers.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
+leadv2-lane-outcome.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
