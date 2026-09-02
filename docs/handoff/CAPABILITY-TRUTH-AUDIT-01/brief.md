@@ -67,3 +67,12 @@ not from a directory glob.
 - the parity script runs green (or its exceptions are written down) across the four live repos;
 - the dead-weight pass has removed or wired everything with no proof, with the diff to show it;
 - the guard-cost table for 7 days is in the report.
+
+## Additional row — 2026-09-02: the pulse reads one repo and reports the wrong truth
+The anti-silence pulse (`scripts/anti-silence-pulse.sh` + `leadv2-broad-status.sh`) composes its status from
+the CURRENT repo's registry only. The lead session ran all day from persona-engine while every lane lived in
+the leadv2 plugin repo, so the pulse printed "линий нет" twice while five lanes were building — a confident
+false zero delivered to the founder. It also listed two dead codex jobs as the only rows.
+Required: the status source must be the control-plane registry across every adopted repo (the same written
+repo list the census uses), not `$PWD`. Until then the pulse must say WHICH repo it looked at, so a reader
+can tell "nothing running" from "nothing running here".
