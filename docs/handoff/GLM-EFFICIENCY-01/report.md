@@ -144,3 +144,41 @@ harness defects, fixed; the final NC is a true red-then-green on the wiring itse
   honors the field; a live heavy lane will journal real usage deltas via the stream).
 - Routing yaml cost is a STATIC preference; the arbiter still models provider-level
   utilization only (per-cell comment retained verbatim on that point).
+
+## Falsifiability proof (fix-round 2, 2026-09-02)
+
+R1 review stopped at `review_gate status=blocked reason=suite_falsifiability_undetermined` before any
+model review ran. Fix-round 2 re-proved the gate on the lane tip (merge of `main`, 2026-09-02):
+
+Suite baseline (green, 1:49.83 wall, 20/20):
+
+```
+[TEST] PASS: NC(red): dropping the pass-through leaves the launcher env without GLM_EFFORT (part A red)
+[TEST] PASS: NC(red): mutant journal reverted to effort_dropped (journal assertion red)
+[TEST] PASS: routing yaml: parses; glm-flash cell cost corrected to 0.33
+[TEST] PASS: arbiter: light-size code work picks glm-flash / glm-5.3-flash
+[TEST] PASS: arbiter: standard-size code work picks glm-flash / glm-5.3-flash
+[TEST] passed=20 failed=0
+bash plugins/leadv2/scripts/tests/test-glm-effort-wiring.sh 2>&1  27.17s user 25.34s system 47% cpu 1:49.83 total
+RC=0
+```
+
+Falsifiable gate, full output (4 sequential suite runs, 4:47 total, every run inside the 180s watchdog):
+
+```
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-glm-effort-wiring.sh
+leadv2-suite-falsifiable: suite=/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/GLM-EFFICIENCY-01/plugins/leadv2/scripts/tests/test-glm-effort-wiring.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=84
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+GATE_RC=0
+```
+
+Verdict line reads FALSIFIABLE: the generic assertion-tool sabotage (84 shimmed `grep` calls) flipped the
+suite to rc=1, i.e. the suite's assertions are load-bearing — it cannot stay green under broken
+verification tooling. The suite's own declared negative control (the scratch-copy mutant dispatcher with
+the `GLM_EFFORT` pass-through removed and `effort_applied` demoted to `effort_dropped`,
+test-glm-effort-wiring.sh:254-300) additionally goes red inside the suite under mutation of the function
+under claim (`_glm_effort_for_class` / the `--effort` pass-through at leadv2-dispatch-code.sh ~:5100).
