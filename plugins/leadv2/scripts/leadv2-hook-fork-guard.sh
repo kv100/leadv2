@@ -8,36 +8,50 @@
 # (see leadv2-hook-materialized-core-gotcha for the separate plugin-cache case,
 # which is out of scope here).
 #
-# Scan is one level deep over $LEADV2_HOOK_FORK_SCAN_ROOT (default
-# $HOME/Projects): <root>/<repo>/.claude/hooks/<plugin-hook-name>. Repos that
+# Scan is one level deep over each root in $LEADV2_HOOK_FORK_SCAN_ROOTS
+# (colon-separated; default $HOME/Projects:$HOME/MythicalGames — repos on this
+# machine live under BOTH trees; m3-market sat invisible under MythicalGames
+# until 2026-09-03, HOOKS-PARITY-ACROSS-REPOS-01): <root>/<repo>/.claude/hooks/
+# <plugin-hook-name>. Repos that
 # carry plugins/leadv2/hooks/ themselves are canonical checkouts (leadv2 or its
 # worktrees), not consumers, and are skipped.
 #
 # Env:
-#   LEADV2_HOOK_FORK_SCAN_ROOT   scan root (default $HOME/Projects)
+#   LEADV2_HOOK_FORK_SCAN_ROOTS  scan roots, colon-separated
+#                                (default $HOME/Projects:$HOME/MythicalGames)
+#   LEADV2_HOOK_FORK_SCAN_ROOT   legacy singular form: if set, it wins and is
+#                                the only root scanned (back-compat, tests)
 #   LEADV2_HOOK_FORK_CANONICAL   canonical hooks dir (default ../hooks)
 # Run: bash plugins/leadv2/scripts/leadv2-hook-fork-guard.sh
 set -uo pipefail
 
 GUARD_DIR="$(cd "$(dirname "$0")" && pwd)"
 CANONICAL_HOOKS="${LEADV2_HOOK_FORK_CANONICAL:-${GUARD_DIR}/../hooks}"
-SCAN_ROOT="${LEADV2_HOOK_FORK_SCAN_ROOT:-${HOME}/Projects}"
+if [ -n "${LEADV2_HOOK_FORK_SCAN_ROOT:-}" ]; then
+  SCAN_ROOTS="$LEADV2_HOOK_FORK_SCAN_ROOT"
+else
+  SCAN_ROOTS="${LEADV2_HOOK_FORK_SCAN_ROOTS:-${HOME}/Projects:${HOME}/MythicalGames}"
+fi
 
 if [ ! -d "$CANONICAL_HOOKS" ]; then
   printf 'FORK-GUARD FATAL: canonical hooks dir not found: %s\n' "$CANONICAL_HOOKS" >&2
   exit 2
 fi
-if [ ! -d "$SCAN_ROOT" ]; then
-  printf 'FORK-GUARD FATAL: scan root not found: %s\n' "$SCAN_ROOT" >&2
-  exit 2
-fi
+SCAN_ROOTS="${SCAN_ROOTS//:/ }"
+for root in $SCAN_ROOTS; do
+  if [ ! -d "$root" ]; then
+    printf 'FORK-GUARD FATAL: scan root not found: %s\n' "$root" >&2
+    exit 2
+  fi
+done
 
 violations=0
 checked=0
 for hook_path in "$CANONICAL_HOOKS"/*; do
   [ -e "$hook_path" ] || continue
   hook_name="$(basename "$hook_path")"
-  for hooks_dir in "$SCAN_ROOT"/*/.claude/hooks; do
+  for root in $SCAN_ROOTS; do
+  for hooks_dir in "$root"/*/.claude/hooks; do
     [ -d "$hooks_dir" ] || continue
     repo_dir="$(dirname "$(dirname "$hooks_dir")")"
     # Canonical checkouts of the plugin itself are not consumers.
@@ -51,6 +65,7 @@ for hook_path in "$CANONICAL_HOOKS"/*; do
         "$candidate" "$hook_name" "$candidate"
       violations=$((violations + 1))
     fi
+  done
   done
 done
 
