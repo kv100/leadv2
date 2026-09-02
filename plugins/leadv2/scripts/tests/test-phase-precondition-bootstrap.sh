@@ -267,6 +267,11 @@ QUOTA_JSON="$(python3 -c "import json;print(json.dumps({'glm':{'status':'ok','fi
 
 run_dispatch() { # <mission> <out-file> [writes]
   local mission="$1" outf="$2" writes="${3:-src/x.py}"
+  # LEADV2_JUDGE_DISABLE=1 pins leadv2-task-judge.sh to its code-only fallback
+  # estimator: no live model call ever decides a class in here. Without it the
+  # suite passed or failed on whether a real `claude -p haiku` happened to be
+  # reachable and what it answered (observed: subsystems_touched=5 via a live
+  # judge one run, classifier_error the next).
   (
     cd "$REPO7" || exit 111
     CLAUDE_PROJECT_ROOT="$REPO7" PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" \
@@ -280,6 +285,7 @@ run_dispatch() { # <mission> <out-file> [writes]
     LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${TMP_ROOT}/free.sh" \
     LEADV2_ROUTE_ARBITER_STATE_FILE="${TMP_ROOT}/arb7" \
     ROUTE_TEST_QUOTA="$QUOTA_JSON" ROUTE_TEST_FREE_RC=1 \
+    LEADV2_JUDGE_DISABLE=1 \
     timeout 120 bash "$DC" "$mission" --kind code --task-class standard \
       --writes "$writes"
   ) >"$outf" 2>&1
@@ -392,11 +398,16 @@ fi
 
 # Test 8: brand-new HEAVY lane (the live 2026-09-02 shape: class_escalated to=Heavy
 # because=subsystems_touched:5) is admitted at bootstrap like Standard — the fix is
-# keyed on zero-records, not class. Heavy's pre-build mandatory set is classify,
-# diverge, plan, gate1, so the bootstrap journal must name diverge alongside
-# plan/gate1 (diverge is mandatory only for Heavy).
+# keyed on zero-records, not class. Hermetic Heavy: the mission names four
+# SUBSYSTEM_KEYWORDS (dispatch/journal/router/judge — see leadv2-task-judge.sh's
+# fallback estimator), so the pinned code-only estimate carries
+# subsystems_touched=4 and leadv2_admission_class escalates the declared
+# Standard to Heavy through the real admission map. No live judge decides this.
+# Heavy's pre-build mandatory set is classify,diverge,plan,gate1, so the
+# bootstrap journal must name diverge alongside plan/gate1 (diverge is
+# mandatory only for Heavy).
 printf 'test: 8 fresh Heavy dispatch through dispatch-code.sh is admitted\n'
-M8='PPB fixture Heavy lane touches five subsystems'
+M8='PPB fixture Heavy lane spans dispatch journal router judge subsystems'
 S8="$(mission_sig8 "$M8")"
 HEAVY_BOOT_LINE="$(grep -c 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null || true)"
 run_dispatch "$M8" "${TMP_ROOT}/d8.out" src/h8.py; rc8=$?
@@ -405,16 +416,67 @@ if [[ $rc8 -eq 0 ]]; then
 else
   fail "fresh Heavy dispatch should exit 0 (rc=$rc8, out=$(tail -5 "${TMP_ROOT}/d8.out" 2>/dev/null | tr '\n' ' '))"
 fi
-if grep 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null | tail -1 | grep -q "task=${S8}.*would_be_missing=.*diverge"; then
+if grep "class_escalated" "${JOURNAL_LOG}" 2>/dev/null | grep -q "task=${S8}.*to=Heavy.*because=subsystems_touched"; then
   ok
 else
-  fail "Heavy bootstrap journal should name diverge as would-be-missing ($(grep "task=${S8}" "${JOURNAL_LOG}" 2>/dev/null | tail -1))"
+  fail "Heavy dispatch should journal class_escalated to=Heavy because=subsystems_touched ($(grep "task=${S8}" "${JOURNAL_LOG}" 2>/dev/null | grep class_escalated | tail -1))"
+fi
+BOOT8="$(grep 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null | grep "task=${S8}" | tail -1)"
+if [[ -n "${BOOT8}" ]] && printf '%s' "${BOOT8}" | grep -q 'class=Heavy would_be_missing=classify,diverge,plan,gate1'; then
+  ok
+else
+  fail "Heavy bootstrap journal should read class=Heavy with the full mandatory csv including diverge (got: ${BOOT8:-<none>})"
 fi
 HEAVY_AFTER_LINE="$(grep -c 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null || true)"
 if [[ "${HEAVY_AFTER_LINE}" -gt "${HEAVY_BOOT_LINE}" ]]; then
   ok
 else
   fail "Heavy dispatch did not journal phase_precondition_bootstrap"
+fi
+
+# Test 8b: the SAME Heavy lane after the remedies are recorded (n/a diverge,
+# brief = plan, explicit gate-1 reason) ⇒ the REAL dispatcher admits and
+# spawns. Mirrors 7b; ledger cleared for the same duplicate-signature reason.
+printf 'test: 8b Heavy lane after diverge/plan/gate1 remedies is admitted and spawns\n'
+rm -f "${TMP_ROOT}"/cache7/dispatch-ledger/*.jsonl 2>/dev/null
+mkdir -p "${REPO7}/docs/handoff/PPB-${S8}"
+printf '# PPB-%s\n\nfixture lead-authored plan\n' "$S8" > "${REPO7}/docs/handoff/PPB-${S8}/brief.md"
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S8" diverge \
+    --status n/a --reason 'fixture: no diverge round' --owner lead:test ) >/dev/null 2>&1
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S8" plan \
+    --status done --artifact "docs/handoff/PPB-${S8}/brief.md" --owner lead:test ) >/dev/null 2>&1
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S8" gate1 \
+    --status done --reason 'fixture Gate 1 decision' --owner lead:test ) >/dev/null 2>&1
+SPAWN8B_BEFORE="$(wc -l < "${TMP_ROOT}/spawned.txt" 2>/dev/null | tr -d ' ')"
+run_dispatch "$M8" "${TMP_ROOT}/d8b.out" src/h8.py; rc8b=$?
+SPAWN8B_AFTER="$(wc -l < "${TMP_ROOT}/spawned.txt" 2>/dev/null | tr -d ' ')"
+if [[ $rc8b -eq 0 ]]; then
+  ok
+else
+  fail "Heavy dispatch after remedies should exit 0 (rc=$rc8b, out=$(tail -5 "${TMP_ROOT}/d8b.out" 2>/dev/null | tr '\n' ' '))"
+fi
+if [[ "${SPAWN8B_AFTER}" -gt "${SPAWN8B_BEFORE}" ]]; then
+  ok
+else
+  fail "admitted Heavy dispatch spawned no worker (before=${SPAWN8B_BEFORE} after=${SPAWN8B_AFTER})"
+fi
+
+# Test 8c: Heavy is NOT a blanket pass — once any record exists the lane is no
+# longer bootstrap, and Heavy's mandatory set includes diverge (which Standard's
+# does not). Direct guard drive, like tests 2/5.
+printf 'test: 8c Heavy lane with classify-only records still refuses, naming diverge\n'
+SIG_H8C="heavy08c1"
+bash "$PHASE_RECORD" record "$SIG_H8C" classify --status done --owner test >/dev/null 2>&1
+OUT8C="$(bash "$PHASE_RECORD" assert "$SIG_H8C" --class Heavy --pre-build 2>&1)"; rc8c=$?
+if [[ $rc8c -eq 3 ]]; then
+  ok
+else
+  fail "classify-only Heavy lane should refuse (rc=$rc8c, out=$OUT8C)"
+fi
+if printf '%s' "$OUT8C" | grep -q 'missing=.*diverge'; then
+  ok
+else
+  fail "Heavy refusal must name diverge in missing= (got: $OUT8C)"
 fi
 
 printf '\n[PHASE-PRECONDITION-BOOTSTRAP] pass=%d fail=%d\n' "$PASS" "$FAIL"
