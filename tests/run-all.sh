@@ -241,6 +241,9 @@ leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
 leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
 leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
 leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
+# LEADV2-HOOK-CACHE-DEPLOY-01: the cache-sync script's behavioural lock is a
+# differently-named suite (no test-leadv2-plugin-cache-sync stem match).
+leadv2-plugin-cache-sync.sh:plugins/leadv2/scripts/tests/test-plugin-cache-sync.sh
 leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
 leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
