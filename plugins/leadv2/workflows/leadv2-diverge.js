@@ -141,23 +141,36 @@ let judged = await synthAgent(
   `Also write a short divergence.md to ${OUT} with the ranked set.\n` +
   `Candidates: ${JSON.stringify(ideas)}`,
   { label: 'judge', phase: 'Judge', agentType: 'critic', model: THINK_MODEL, effort: 'xhigh', schema: JUDGE_SCHEMA })
+// FABLE-THINK-TIER-01 R9: both fallbacks below exist to survive a primary-judge failure, so each
+// must itself be guarded — an unguarded agent() rejection here would abort the whole workflow
+// BEFORE the judged===null reconciliation and Select-phase ledger flush ever run (round-8 finding 1).
 if (judged === null && THINK_MODEL !== 'opus') {
   log(`Judge returned null on ${THINK_MODEL} — retrying on opus fallback`)
-  judged = await agent(
-    `Score and cluster these ${ideas.length} candidate solutions for task ${TASK_ID}. ` +
-    `Score each 0-10 (10=best): feasibility(0-4) + novelty(0-3) + blast-radius(0-3, higher=safer). ` +
-    `Flag traps (plausible-but-doomed, trap=true). Recommend ONE (or a synthesis) and say why. ` +
-    `Also write a short divergence.md to ${OUT} with the ranked set.\n` +
-    `Candidates: ${JSON.stringify(ideas)}`,
-    { label: 'judge-opus-fallback', phase: 'Judge', agentType: 'critic', model: 'opus', effort: 'xhigh', schema: JUDGE_SCHEMA })
+  try {
+    judged = await agent(
+      `Score and cluster these ${ideas.length} candidate solutions for task ${TASK_ID}. ` +
+      `Score each 0-10 (10=best): feasibility(0-4) + novelty(0-3) + blast-radius(0-3, higher=safer). ` +
+      `Flag traps (plausible-but-doomed, trap=true). Recommend ONE (or a synthesis) and say why. ` +
+      `Also write a short divergence.md to ${OUT} with the ranked set.\n` +
+      `Candidates: ${JSON.stringify(ideas)}`,
+      { label: 'judge-opus-fallback', phase: 'Judge', agentType: 'critic', model: 'opus', effort: 'xhigh', schema: JUDGE_SCHEMA })
+  } catch (e) {
+    log(`judge-opus-fallback: agent() threw — ${e && e.message ? e.message : String(e)}`)
+    judged = null
+  }
 }
 if (judged === null) {
   log('Judge returned null — generating fallback summary via haiku')
-  judged = await agent(
-    `Judge agent failed for task ${TASK_ID}. Write a minimal fallback divergence.md to ${OUT} listing these ideas with no scores. ` +
-    `Return { ranked: [], recommended: 'judge-failed — review ideas manually', summary_for_lead: 'Judge returned null; raw ideas listed in divergence.md' }.\n` +
-    `Ideas: ${JSON.stringify(ideas.map(i => i.idea || '(unnamed)'))}`,
-    { label: 'judge-fallback', phase: 'Judge', model: 'haiku', effort: 'low', schema: JUDGE_SCHEMA })
+  try {
+    judged = await agent(
+      `Judge agent failed for task ${TASK_ID}. Write a minimal fallback divergence.md to ${OUT} listing these ideas with no scores. ` +
+      `Return { ranked: [], recommended: 'judge-failed — review ideas manually', summary_for_lead: 'Judge returned null; raw ideas listed in divergence.md' }.\n` +
+      `Ideas: ${JSON.stringify(ideas.map(i => i.idea || '(unnamed)'))}`,
+      { label: 'judge-fallback', phase: 'Judge', model: 'haiku', effort: 'low', schema: JUDGE_SCHEMA })
+  } catch (e) {
+    log(`judge-fallback: agent() threw — ${e && e.message ? e.message : String(e)}`)
+    judged = null
+  }
 }
 
 phase('Select')
