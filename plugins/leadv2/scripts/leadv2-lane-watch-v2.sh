@@ -543,7 +543,10 @@ _lw_claim_exclusive() {
   case "$old" in
     ''|*[!0-9]*) rm -rf "$lock" ;;
     *)
-      if _lw_is_our_loop "$old" "$session"; then return 1; fi
+      # If the owner PID still exists but argv inspection is unavailable or
+      # inconclusive, preserve the claim. Refusing a registration is safe;
+      # deleting it could create the duplicate watcher this lock prevents.
+      kill -0 "$old" 2>/dev/null && return 1
       rm -rf "$lock"
       ;;
   esac
@@ -674,9 +677,10 @@ _lw_arm() {
     case "$old" in
       ''|*[!0-9]*) : ;;
       *)
-        if kill -0 "$old" 2>/dev/null && _lw_is_our_loop "$old" "$session"; then
-          return 0   # already armed for this session — idempotent
-        fi
+        # A live PID is a live registration until proven otherwise. We only
+        # kill after argv verification, but must never spawn beside a PID we
+        # cannot inspect (ps denial/PID-race): refuse rather than duplicate.
+        kill -0 "$old" 2>/dev/null && return 0
         ;;
     esac
   fi
