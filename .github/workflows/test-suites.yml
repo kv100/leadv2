@@ -1,0 +1,68 @@
+name: Test Suites
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 06:00 UTC daily — full --scope all sweep. See "Timeouts and cost" in
+    # docs/handoff/dispatch-02f41cdd/developer.full.md for why this is not
+    # on every push.
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  changed-scope:
+    name: run-all --scope changed
+    if: github.event_name != 'schedule'
+    # Real macOS, not a Linux runner with a modern `bash` on PATH:
+    # tests/test-status-surface-bash32.sh invokes the actual Apple /bin/bash
+    # (frozen at 3.2) to catch bash4+-only syntax the way SwiftBar's runtime
+    # would reject it. That check is meaningless on ubuntu-latest, where
+    # /bin/bash is bash 5.x. Costs ~10x ubuntu-latest minutes; see report.
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: known-red allow-list guard (may only shrink)
+        run: bash tests/known-red-guard.sh "origin/${{ github.event.pull_request.base.ref || 'main' }}"
+
+      - name: run-all --scope changed
+        run: bash tests/ci-gate.sh changed
+
+  full-scope-nightly:
+    name: run-all --scope all (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: known-red allow-list guard (may only shrink)
+        run: bash tests/known-red-guard.sh main
+
+      - name: run-all --scope all
+        run: bash tests/ci-gate.sh all
