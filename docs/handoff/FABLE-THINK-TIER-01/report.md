@@ -131,3 +131,20 @@ unrelated `report.md` from a different task, `PLUGIN-PAPERCUTS-01` — that one 
 not this lane's; left as merged).
 
 DELIVERABLE_COMPLETE
+
+## Round 4 evidence (collected by the lead from the committed tree 587bb1f; the worker exited without writing this section)
+
+```
+$ LEADV2_SUITE_LOCK_DISABLE=1 bash plugins/leadv2/scripts/tests/test-fable-think-tier.sh | tail -3
+PASS: dispatch-code.sh: no hardcoded opus prepass default
+PASS: dispatch-code.sh prepass default resolves via router think-model
+PASS=31 FAIL=0
+
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-fable-think-tier.sh | tail -2
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+
+$ grep -nE '(:-opus|="opus"|_MODEL:"opus"|"opus")' on the four R3 sites
+```
+
+Mutation negative controls (brief step 4): NOT run by the worker in this round — unverified.
