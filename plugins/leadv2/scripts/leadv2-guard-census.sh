@@ -394,6 +394,10 @@ while IFS= read -r g; do
   wired=0
   [ -n "$events" ] && wired=1
 
+  # reset per row (round 3, high#1): not-wired/missing rows never reach the
+  # else-branch below, so without this they printed the PREVIOUS guard's
+  # default (13 wrong rows in the round-2 census artifact).
+  dflt="-"
   if [ "$wired" -eq 0 ]; then
     state="not-wired"; rank=8
   elif [ ! -f "$HOOK_DIR/$g" ]; then
@@ -411,14 +415,26 @@ while IFS= read -r g; do
     last_fired="$(printf '%s\n%s\n%s\n%s\n%s' "$jblock" "$jlog" "$lblock" "$llog" "" | sort -r | head -1)"
 
     # Founder view (round-1 brief §4): the guard's env flag and its default,
-    # read mechanically off the source (first ${LEADV2_X:-0|1} expansion) —
+    # read mechanically off the source (first ${LEADV2_X…} expansion) —
     # a pointer for the founder, never a behavioural claim. Guards without a
     # flag knob run unconditionally: `always`.
-    dflt="-"
-    if [ -f "$HOOK_DIR/$g" ]; then
-      dflt="$(grep -oE '\$\{LEADV2_[A-Za-z0-9_]+:-[01]\}' "$HOOK_DIR/$g" 2>/dev/null \
-        | grep -vE 'TRACE|DEBUG' | head -1)"
-      [ -n "$dflt" ] || dflt="always"
+    # Round 3, high#2: parse EVERY gate shape the tree actually uses, not
+    # just `:-0|1` — shapes enumerated live 2026-09-02 via
+    #   grep -ohE '\$\{LEADV2_[A-Za-z0-9_]+([:=?+-])[^}]*\}' hooks/*.sh | …
+    # → `:-0`(39) `:-`(37, empty) `:-1`(23) `:-advisory`(2) `:-8` `:-3`
+    #   `:-30` `:-1800` `:-path…` quoted `:-"1"` (in branches) — plus
+    #   `${X:=…}`, `${X-…}`, `${X=…}`, `${X?…}`, `${X+…}` and bare `${X}`
+    #   defensively. Any ${LEADV2_…} reference means env-gated; `always` is
+    #   reserved for guards with zero LEADV2_ references.
+    dflt="$(grep -oE '\$\{LEADV2_[A-Za-z0-9_]+[^}]*\}' "$HOOK_DIR/$g" 2>/dev/null \
+      | grep -vE 'TRACE|DEBUG' | head -1)"
+    if [ -n "$dflt" ]; then
+      # nested defaults (`${X:-${Y:-z}}`) truncate at the inner `}` —
+      # re-balance so the displayed pointer stays brace-closed.
+      open=$(( $(printf '%s' "$dflt" | tr -cd '{' | wc -c) - $(printf '%s' "$dflt" | tr -cd '}' | wc -c) ))
+      while [ "$open" -gt 0 ]; do dflt="$dflt}"; open=$((open - 1)); done
+    else
+      dflt="always"
     fi
 
     if [ "$fxcls" = "bail-timeout" ]; then
@@ -496,9 +512,9 @@ else
   echo "GUARD CENSUS — GUARDS-MUST-PROVE-THEY-FIRE-01 ($(date -u '+%Y-%m-%dT%H:%M:%SZ'))"
   echo "guards: $TOTAL | fixtures run: $FIXTURED | fixture-proven: $PROVEN | regressions: $REGRESSIONS"
   echo "(dead first: regressions, bails, missing, not-wired, never-ran — the top of this table is where the failures live)"
-  printf '%-42s %-16s %-17s %-21s %-21s %-32s %-9s %s\n' GUARD EVENT STATE LAST-RAN LAST-FIRED DEFAULT FIRE-DAYS FIXTURE
+  printf '%-42s %-16s %-17s %-21s %-21s %-36s %-9s %s\n' GUARD EVENT STATE LAST-RAN LAST-FIRED DEFAULT FIRE-DAYS FIXTURE
   sort -t "$(printf '\t')" -k1,1n -k2,2 "$OUT" | while IFS="$(printf '\t')" read -r rank g events state lran lfired dflt fdays fixcol; do
-    printf '%-42s %-16s %-17s %-21s %-21s %-32s %-9s %s\n' "$g" "${events:--}" "$state" "$lran" "$lfired" "$dflt" "$fdays" "$fixcol"
+    printf '%-42s %-16s %-17s %-21s %-21s %-36s %-9s %s\n' "$g" "${events:--}" "$state" "$lran" "$lfired" "$dflt" "$fdays" "$fixcol"
   done
   if [ -s "$CANDS" ]; then
     echo ""

@@ -17,7 +17,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIXROOT="$SCRIPT_DIR/fixtures/guards"
-CENSUS="$SCRIPT_DIR/../leadv2-guard-census.sh"
+# Negative controls point LEADV2_CENSUS_UNDER_TEST at a mutated scratch copy
+# of the census; the suite must go red against it (round 3 mutations).
+CENSUS="${LEADV2_CENSUS_UNDER_TEST:-$SCRIPT_DIR/../leadv2-guard-census.sh}"
 GV_LIB="$SCRIPT_DIR/../../hooks/lib/leadv2-guard-verdict.sh"
 
 PASS=0; FAIL=0
@@ -64,6 +66,7 @@ RC=$?
 row_of() { printf '%s\n' "$TSV" | awk -F'\t' -v g="$1" '$2==g'; }
 state_of() { row_of "$1" | cut -f4; }
 fixcol_of() { row_of "$1" | cut -f9; }
+dflt_of() { row_of "$1" | cut -f7; }
 
 # ── case 0: census itself is green on a healthy fixture tree ────────────────
 assert_eq "census exit 0 on healthy fixtures" "$RC" "0"
@@ -220,18 +223,102 @@ case "$(state_of fx-dispatched.sh)" in
 esac
 
 # ── case 10 mutation: drop dispatcher-follow ⇒ fx-dispatched goes not-wired ─
+# (round 3, L3): the old awk deleted to the FIRST column-0 `fi`, so a future
+# bare `fi` inside the dispatcher-follow block would silently truncate the
+# mutation into a no-op. Now the deleted region is verified to contain the
+# block's actual effect (`cat "$DISPATCHED" >> "$WIRED"`) or the case fails.
 NODISPATCH_CENSUS="$TMP/census-nodispatch.sh"
-awk '
-  /^DISPATCHED="\$TMP\/dispatched.tsv"$/ { skip=1 }
-  skip && /^fi$/ { skip=0; next }
-  !skip { print }
-' "$CENSUS" > "$NODISPATCH_CENSUS"
+python3 - "$CENSUS" "$NODISPATCH_CENSUS" <<'PY' || { fail "case10-mutation: dispatcher-follow block not found — mutation is a no-op"; }
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+lines = open(src).readlines()
+start = end = None
+for i, l in enumerate(lines):
+    if l.startswith('DISPATCHED="$TMP/dispatched.tsv"'):
+        start = i
+    elif start is not None and l.rstrip('\n') == 'fi':
+        end = i
+        break
+assert start is not None and end is not None, "dispatcher-follow block not found"
+chunk = ''.join(lines[start:end + 1])
+assert 'cat "$DISPATCHED" >> "$WIRED"' in chunk, \
+    "deleted region lacks the WIRED append — block layout changed, anchor stale"
+open(dst, 'w').writelines(lines[:start] + lines[end + 1:])
+PY
 NODISPATCH_OUT="$(bash "$NODISPATCH_CENSUS" --hooks-json "$FIXROOT/hooks.json" --hook-dir "$FIXROOT/hook-dir" \
   --journal-dir "$JDIR" --fixtures-dir "$FIXROOT/fixtures" --gv-lib "$GV_LIB" \
   --sandbox-dir "$TMP/sbx-nodispatch" --timeout 3 --format tsv 2>/dev/null)"
 case "$(printf '%s\n' "$NODISPATCH_OUT" | awk -F'\t' '$2=="fx-dispatched.sh"' | cut -f4)" in
   not-wired) pass "case10-mutation: removing dispatcher-follow turns fx-dispatched not-wired (kills the fix)" ;;
   *) fail "case10-mutation: no-dispatch-follow census did not reproduce not-wired — mutation not caught" ;;
+esac
+
+# ── case 11: DEFAULT column parses EVERY gate shape (round 3 high#2) ────────
+# The old regex `\$\{LEADV2_X:-[01]\}` printed `always` for guards gated in
+# any other shape. Each fixture guard carries one shape; the census must
+# echo that shape verbatim on the founder-facing column.
+assert_eq "case11 shape :\"\" (empty default)"      "$(dflt_of fx-gate-empty.sh)"    '${LEADV2_FX_EMPTY:-}'
+assert_eq "case11 shape :-0"                        "$(dflt_of fx-gate-dflt0.sh)"    '${LEADV2_FX_GATE0:-0}'
+assert_eq "case11 shape :-1"                        "$(dflt_of fx-gate-dflt1.sh)"    '${LEADV2_FX_GATE1:-1}'
+assert_eq "case11 shape :=0"                        "$(dflt_of fx-gate-assign.sh)"   '${LEADV2_FX_ASSIGN:=0}'
+assert_eq "case11 shape -1 (bare dash)"             "$(dflt_of fx-gate-baredash.sh)" '${LEADV2_FX_BARE-1}'
+assert_eq "case11 shape quoted :-\"1\""             "$(dflt_of fx-gate-quoted.sh)"   '${LEADV2_FX_QUOTED:-"1"}'
+assert_eq "case11 shape [[ \"\${X:-0}\" == 1 ]]"    "$(dflt_of fx-gate-bracket.sh)"  '${LEADV2_FX_BRACKET:-0}'
+assert_eq "case11 nested default is brace-balanced" "$(dflt_of fx-gate-nested.sh)"   '${LEADV2_FX_NESTED:-${TMPDIR:-/tmp}}'
+
+# ── case 12: not-wired row never inherits the previous guard's default ──────
+# fx-gate-zunwired.sh is absent from hooks.json and sorts directly after
+# fx-gate-quoted.sh, whose default is a non-empty gate string. Round 3
+# high#1 leaked exactly that into this row (13 wrong rows in the R2
+# artifact; live: leadv2-lead-read-guard.sh printed its neighbour's default).
+assert_eq "case12 not-wired dflt is '-', never stale" "$(dflt_of fx-gate-zunwired.sh)" '-'
+for g in fx-gate-assign.sh fx-gate-baredash.sh fx-gate-bracket.sh fx-gate-dflt0.sh \
+         fx-gate-dflt1.sh fx-gate-empty.sh fx-gate-nested.sh fx-gate-quoted.sh; do
+  case "$(state_of "$g")" in
+    not-wired|missing) fail "case12 precondition: $g must be wired+present" ;;
+  esac
+done
+
+# ── case 12 mutation: remove the per-row dflt reset ⇒ stale value returns ───
+STALE_CENSUS="$TMP/census-stale-dflt.sh"
+python3 - "$CENSUS" "$STALE_CENSUS" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+anchor = '  dflt="-"\n  if [ "$wired" -eq 0 ]; then'
+with open(src) as fh:
+    text = fh.read()
+assert anchor in text, "fixture assumption stale: per-row reset not found verbatim"
+text = text.replace(anchor, '  if [ "$wired" -eq 0 ]; then', 1)
+with open(dst, "w") as fh:
+    fh.write(text)
+PY
+STALE_OUT="$(bash "$STALE_CENSUS" --hooks-json "$FIXROOT/hooks.json" --hook-dir "$FIXROOT/hook-dir" \
+  --journal-dir "$JDIR" --sandbox-dir "$TMP/sbx-stale" --timeout 3 --format tsv 2>/dev/null)"
+case "$(printf '%s\n' "$STALE_OUT" | awk -F'\t' '$2=="fx-gate-zunwired.sh"' | cut -f7)" in
+  '') fail "case12-mutation: mutated census produced no row for fx-gate-zunwired.sh" ;;
+  -) fail "case12-mutation: stale-dflt mutation did NOT reproduce the leak — mutation not caught" ;;
+  *) pass "case12-mutation: dropping the reset re-leaks the previous guard's default (kills the fix)" ;;
+esac
+
+# ── case 11 mutation: narrow the parser back to :-[01] ⇒ `always` returns ──
+OLDREGEX_CENSUS="$TMP/census-old-regex.sh"
+python3 - "$CENSUS" "$OLDREGEX_CENSUS" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+wide = r'\$\{LEADV2_[A-Za-z0-9_]+[^}]*\}'
+narrow = r'\$\{LEADV2_[A-Za-z0-9_]+:-[01]\}'
+with open(src) as fh:
+    text = fh.read()
+assert wide in text, "fixture assumption stale: wide dflt regex not found verbatim"
+text = text.replace(wide, narrow, 1)
+with open(dst, "w") as fh:
+    fh.write(text)
+PY
+OLDREGEX_OUT="$(bash "$OLDREGEX_CENSUS" --hooks-json "$FIXROOT/hooks.json" --hook-dir "$FIXROOT/hook-dir" \
+  --journal-dir "$JDIR" --sandbox-dir "$TMP/sbx-oldregex" --timeout 3 --format tsv 2>/dev/null)"
+case "$(printf '%s\n' "$OLDREGEX_OUT" | awk -F'\t' '$2=="fx-gate-empty.sh"' | cut -f7)" in
+  always) pass "case11-mutation: old :-[01]-only regex prints gated guard as always (kills the fix)" ;;
+  *) fail "case11-mutation: old-regex census did not reproduce 'always' — mutation not caught" ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

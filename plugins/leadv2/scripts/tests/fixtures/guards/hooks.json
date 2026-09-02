@@ -1,25 +1,101 @@
 {
-  "description": "FIXTURE hooks.json for test-guard-census.sh — never the real wiring",
+  "description": "FIXTURE hooks.json for test-guard-census.sh \u2014 never the real wiring",
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-always-block.sh\"", "timeout": 6 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-disabled.sh\"", "timeout": 6 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-hang.sh\"", "timeout": 6 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-degrade-wrapped.sh\"; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'fx-degrade-wrapped.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0", "timeout": 6 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-dispatcher.sh\"", "timeout": 6 }
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-always-block.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-disabled.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-hang.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-degrade-wrapped.sh\"; r=$?; if [ \"$r\" -le 2 ]; then exit \"$r\"; fi; printf '%s rc=%s\\n' 'fx-degrade-wrapped.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; exit 0",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-dispatcher.sh\"",
+            "timeout": 6
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-logonly.sh\"", "timeout": 6 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-silent.sh\"", "timeout": 6 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-nofix.sh\"", "timeout": 6 },
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-quiet.sh\"", "timeout": 6 }
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-logonly.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-silent.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-nofix.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-quiet.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-gate-assign.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-gate-baredash.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-gate-bracket.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-gate-dflt0.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-gate-dflt1.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-gate-empty.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-gate-nested.sh\"",
+            "timeout": 6
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/fx-gate-quoted.sh\"",
+            "timeout": 6
+          }
         ]
       }
     ]

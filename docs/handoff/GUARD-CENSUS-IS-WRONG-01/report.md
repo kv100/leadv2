@@ -326,3 +326,139 @@ verdict: falsifiable — a failure injection turned the suite red (rc=1)
 - No Python files changed.
 - `test-guard-census.sh`: 29/29 (field-index fix: fixture column moved 7→9 with the two new
   founder columns; suite updated in the same commit).
+
+---
+
+# Round 3 (fix: R2 review high=2, DEFAULT column)
+
+## R3 findings verification (on lane tip 18012e1, live tree)
+
+### High #1 (stale `dflt` on not-wired/missing rows) — REAL
+
+`leadv2-guard-census.sh` assigned `dflt` only inside the wired+present else-branch; the
+`while read g` loop never reset it, so not-wired/missing rows printed the previous guard's value.
+
+Direct probe from the R2-era census (`--format tsv`, DEFAULT=col 7):
+
+```
+$ awk -F'\t' 'NR>1{print $2"\t"$4"\t"$7}' census-before.tsv | sort | grep -B1 'not-wired\|missing'
+...
+leadv2-lead-prose-guard.sh	never-ran	${LEADV2_LEAD_GUARD:-0}
+leadv2-lead-read-guard.sh	not-wired	${LEADV2_LEAD_GUARD:-0}     ← leaked from the row above
+```
+
+Stronger still: `leadv2-lead-read-guard.sh`'s REAL first gate is
+`${LEADV2_LEAD_GUARD:-advisory}` (`grep -oE … leadv2-lead-read-guard.sh`), so the row was wrong in
+two ways at once — stale value AND a shape the old parser could never produce.
+
+### High #2 (DEFAULT regex `:-[01]`-only) — REAL
+
+Shape enumeration over the live tree (the grep this round's parser is built from):
+
+```
+$ grep -ohE '\$\{LEADV2_[A-Za-z0-9_]+([:=?+-])[^}]*\}' hooks/*.sh hooks/lib/*.sh \
+    | grep -vE 'TRACE|DEBUG' | sed -E 's/LEADV2_[A-Za-z0-9_]+/X/; s/(:[=-])(.*)/\1«\2»/' \
+    | sort | uniq -c | sort -rn | head -12
+  39 ${X:-«0}»        ← old regex OK
+  37 ${X:-«}»         ← empty default — INVISIBLE to old regex
+  23 ${X:-«1}»        ← old regex OK
+   3 ${X:-«${CLAUDE_PROJECT_DIR:-$HOME}»   ← nested — INVISIBLE
+   2 ${X:-«advisory}»                      ← INVISIBLE
+   2 ${X:-«8}»  ${X:-«3}»  ${X:-«30}»  ${X:-«1800}» …   ← INVISIBLE
+```
+
+Live-tree result: 20 wired guards with a `${LEADV2_…}` reference printed `always`
+(`awk -F… '$7=="always"' | while read g; do grep -lE '\$\{LEADV2_' hooks/$g; done` — list in the
+diff below). The reviewer counted 19 at review commit 0c0dd161; the merged tip has 20. No
+`${X:=…}`, `${X-…}`, quoted or `[[ … ]]`-only shapes exist in `hooks/*.sh` today; the new parser
+covers them anyway (defensive, locked by suite case 11).
+
+## Fix
+
+`plugins/leadv2/scripts/leadv2-guard-census.sh`:
+
+1. **Per-row reset (high #1):** `dflt="-"` moved to the top of the per-guard loop, before the
+   `if [ "$wired" -eq 0 ]` branch. Not-wired/missing rows now print `-`, never a neighbour's gate.
+2. **Wide parser (high #2):** `\$\{LEADV2_[A-Za-z0-9_]+:-[01]\}` →
+   `\$\{LEADV2_[A-Za-z0-9_]+[^}]*\}` — any `${LEADV2_…}` reference (all `:-`/`:=`/`-`/`=`/`?`/`+`
+   forms, quoted defaults, bare `${X}`) means env-gated; nested `${X:-${Y:-z}}` is re-balanced
+   (`while open>0; do dflt+="}"`). `always` is now reserved for guards with ZERO `LEADV2_`
+   references. Removed the dead `if [ -f "$HOOK_DIR/$g" ]` (R2 Low L2 — the enclosing
+   `elif [ ! -f … ]` already proved existence).
+
+## Census DEFAULT column: before/after (live tree, `--format tsv`, same flags both runs)
+
+- 94 guard rows; **31 DEFAULT cells changed** (`awk` join on guard name, values differ).
+- `always`: 55 → 32. All 32 remaining `always` rows were probed: **zero contain a `LEADV2_`
+  reference** (`while read g; do grep -qE '\$\{LEADV2_' hooks/$g && echo STILL-WRONG; done` →
+  empty). Zero flag-gated guards still print `always`.
+- All 13 not-wired/missing rows now print `-` (was: leaked values on 6+ rows).
+
+Representative diff (old → new):
+
+```
+leadv2-bash-pre-dispatch.sh    always → ${LEADV2_GUARD_VERDICT_DIR:-${CLAUDE_PROJECT_DIR:-$HOME}}
+leadv2-bg-watchdog-enforce.sh  always → ${LEADV2_BG_ORPHAN_MAX:-3}
+leadv2-lead-edit-guard.sh      ${LEADV2_LEAD_GUARD:-0} → ${LEADV2_LEAD_GUARD_FORCE:-}
+leadv2-lead-read-guard.sh      ${LEADV2_LEAD_GUARD:-0} → -            (not-wired; stale gone)
+leadv2-lead-prose-guard.sh     ${LEADV2_LEAD_GUARD:-0} → ${LEADV2_LEAD_GUARD:-advisory}  (true shape)
+leadv2-mode-isolation.sh       ${LEADV2_MERGED_WORKTREE_SWEEP:-1} → - (not-wired; stale gone)
+leadv2-tool-blowup-gate.sh     always → ${LEADV2_TOOL_BLOWUP_HARD:-120}
+leadv2-block-codex.sh          always → -                             (not-wired; reset working)
+… (31 rows total; full before/after diff reproducible via the two tsv runs with the same flags)
+```
+
+## Suite (fixtures per shape + negative controls)
+
+New fixture guards in `scripts/tests/fixtures/guards/hook-dir/`, wired in the fixture hooks.json
+(except the unwired control), one per gate shape: `:-0`, `:-1`, `:-` (empty), `:=0`, `-1` (bare
+dash), quoted `:-"1"`, `[[ "${X:-0}" == 1 ]]`, nested `:-${TMPDIR:-/tmp}`, plus
+`fx-gate-zunwired.sh` (NOT wired, sorts directly after the quoted-shape guard — the stale-leak
+canary). `test-guard-census.sh` grew `dflt_of` (DEFAULT=col 7), case 11 (eight shape assertions
+incl. brace-balanced nested), case 12 (unwired row = `-`), and two in-suite mutations:
+
+- **case12-mutation** — scratch copy with the per-row reset deleted re-leaks
+  `${LEADV2_FX_QUOTED:-"1"}` into the unwired row (mutation caught).
+- **case11-mutation** — scratch copy with the old `:-[01]` regex prints `always` for the
+  empty/`:=`/bare-dash/quoted/nested guards (mutation caught).
+
+Whole-suite negative controls (via the new `LEADV2_CENSUS_UNDER_TEST` override; rc measured
+unpiped):
+
+```
+=== NEGATIVE CONTROL 1: stale-dflt re-introduced ===
+FAIL: case12 not-wired dflt is '-', never stale (got '${LEADV2_FX_QUOTED:-"1"}', want '-')
+FAIL: case12-mutation: mutated census produced no row for fx-gate-zunwired.sh   ← expected:
+  the in-suite mutator's anchor is already gone in this doubly-mutated copy
+SUITE RED: 38 passed, 2 FAILED            → suite rc=1
+=== NEGATIVE CONTROL 2: old :-[01] regex re-introduced ===
+FAIL: case11 shape :"" (empty default) (got 'always', …)   … 6 FAILs total
+SUITE RED: 34 passed, 6 FAILED            → suite rc=1
+Healthy tree: ALL PASS: 40 checks passed  → suite rc=0
+```
+
+## R2 Lows — fixed vs deferred
+
+- **L1** (DEFAULT column `%-32s` overflows) — FIXED: `%-36s` on header + row lines.
+- **L2** (dead `if [ -f … ]` inside else-branch) — FIXED: removed (see Fix #2).
+- **L3** (case-10 awk mutation deletes to first column-0 `fi` — future no-op risk) — FIXED:
+  mutation rewritten in python; it now locates the `DISPATCHED=`…`fi` region and FAILS the case
+  unless the deleted chunk contains the block's actual effect
+  (`cat "$DISPATCHED" >> "$WIRED"`).
+- **L4** (`leadv2-bash-pre-dispatch.sh:533` cap checked after append — ≤2-row overshoot before
+  rotation) — DEFERRED: cosmetic at a 20000-row default; the fix touches the hottest hook on the
+  live path, which costs more risk than the 2 cosmetic rows are worth.
+- **L5** (count drift "31" vs "~34" degrade-wrapped entries, unshown arithmetic) — FIXED:
+  probe run — `grep -o '"; r=\$?' hooks.json | wc -l` = **32** of 172 command entries;
+  `fx-degrade-wrapped.sh`'s comment now says 32 with the probe inline. Round-1 §1's "31" is
+  corrected by this note (the tree gained one wrapped entry between round 1 and now).
+
+## Self-check (round 3)
+
+- `bash -n` green on `leadv2-guard-census.sh` + `test-guard-census.sh`.
+- No Python files changed.
+- `test-guard-census.sh`: **ALL PASS: 40 checks** (was 29 pre-round-3) after the L1–L3 edits,
+  re-run green; census tsv output byte-identical before/after the L1/L2 edits.
+- `tests/run-all.sh --scope changed` on the merged tree: see below.
+
+## RUN-ALL-RESULTS
