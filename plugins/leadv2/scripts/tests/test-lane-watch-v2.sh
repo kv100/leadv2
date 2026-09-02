@@ -347,6 +347,143 @@ write_tasks() {
   kill -9 "$foreign_pid" 2>/dev/null || true
 }
 
+# ── WATCHER-LEAK-IS-FAKE-LIVENESS-01: a loop dies with its session ──────────
+# SessionEnd --disarm-from-hook never runs on an abnormal death (the dispatch
+# supervisors SIGKILL timed-out `claude -p` workers), so the loop must exit
+# BY ITSELF: watched root gone, transcript absent after a grace, or
+# transcript quiet past SESSION_IDLE_MIN. The transcript fixture is a plain
+# file under a fixture PROJECTS_DIR — $HOME/.claude/projects is never
+# touched. Session ids here are fake, which is exactly the shape of the
+# suite-spawned orphan watchers found in the 2026-09-02 census.
+watch_projects() { printf '%s' "$FIXTURE_STATE/projects"; }
+
+arm_loop() { # arm_loop SESSION [extra env via env]
+  printf '{"session_id":"%s","cwd":"%s"}' "$1" "$FIXTURE_ROOT" \
+    | LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" \
+      LEADV2_LANE_WATCH_PROJECTS_DIR="$(watch_projects)" \
+      LEADV2_LANE_WATCH_POLL_SEC="${LP_POLL:-1}" \
+      LEADV2_LANE_WATCH_ABSENT_GRACE_SEC="${LP_GRACE:-2}" \
+      LEADV2_LANE_WATCH_SESSION_IDLE_MIN="${LP_IDLE:-9999}" \
+      bash "$WATCH_SH" --arm-from-hook
+}
+
+# L1: transcript never appears -> loop self-exits after the absent grace.
+{
+  new_fixture
+  mkdir -p "$(watch_projects)"
+  arm_loop sessGhost
+  sleep 0.3
+  pid="$(cat "$FIXTURE_STATE/sessGhost/loop.pid" 2>/dev/null || true)"
+  LEAKED_PIDS+=("$pid")
+  armed=0; [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && armed=1
+  sleep 4
+  gone=1; kill -0 "$pid" 2>/dev/null && gone=0
+  [[ -d "$FIXTURE_STATE/sessGhost.live" ]] && gone=0
+  if [[ "$armed" == 1 && "$gone" == 1 ]]; then
+    pass "case L1: loop armed for a session with no transcript self-exits after the grace"
+  else
+    fail "case L1: armed=$armed gone=$gone pid=$pid"
+  fi
+}
+
+# L2: transcript gone quiet past SESSION_IDLE_MIN -> loop self-exits. This
+# is the SIGKILLed-session case: the transcript simply stops growing.
+{
+  new_fixture
+  mkdir -p "$(watch_projects)"
+  : > "$(watch_projects)/sessKilled.jsonl"
+  age_touch "$(watch_projects)/sessKilled.jsonl" 40
+  LP_IDLE=30 arm_loop sessKilled
+  sleep 2
+  pid="$(cat "$FIXTURE_STATE/sessKilled/loop.pid" 2>/dev/null || true)"
+  LEAKED_PIDS+=("$pid")
+  gone=1; [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && gone=0
+  if [[ "$gone" == 1 ]]; then
+    pass "case L2: loop whose session transcript went quiet past SESSION_IDLE_MIN self-exits"
+  else
+    fail "case L2: loop still alive with 40m-quiet transcript (idle min=30) pid=$pid"
+  fi
+}
+
+# L3 (control for L2): a FRESH transcript keeps the loop alive, and the
+# beat names worker liveness explicitly instead of process counts.
+{
+  new_fixture
+  mkdir -p "$(watch_projects)"
+  : > "$(watch_projects)/sessLive.jsonl"          # touched now = session alive
+  make_lane "LANE-L3" 1                           # a lane written 1m ago = worker live
+  LP_IDLE=30 arm_loop sessLive
+  sleep 2.5
+  pid="$(cat "$FIXTURE_STATE/sessLive/loop.pid" 2>/dev/null || true)"
+  LEAKED_PIDS+=("$pid")
+  alive=0; [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && alive=1
+  T_BEAT=0 once sessLive > "$TMPROOT/beat.out" 2>&1 || true
+  beat="$(cat "$TMPROOT/beat.out" 2>/dev/null || true)"
+  if [[ "$alive" == 1 && "$beat" == *"worker=LIVE"* && "$beat" == *"watcher pid="* ]]; then
+    pass "case L3: fresh transcript keeps the loop alive; beat reports worker= verdicts, not process counts"
+  else
+    fail "case L3: alive=$alive beat=[$beat]"
+  fi
+}
+
+# L4: watched project root deleted -> loop self-exits even with a fresh
+# transcript (the deleted /tmp suite-fixture census class).
+{
+  new_fixture
+  mkdir -p "$(watch_projects)"
+  : > "$(watch_projects)/sessRootGone.jsonl"
+  arm_loop sessRootGone
+  sleep 0.3
+  pid="$(cat "$FIXTURE_STATE/sessRootGone/loop.pid" 2>/dev/null || true)"
+  LEAKED_PIDS+=("$pid")
+  armed=0; [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && armed=1
+  rm -rf "$FIXTURE_ROOT"
+  sleep 2.5
+  gone=1; kill -0 "$pid" 2>/dev/null && gone=0
+  if [[ "$armed" == 1 && "$gone" == 1 ]]; then
+    pass "case L4: deleted watched project root self-terminates the loop"
+  else
+    fail "case L4: armed=$armed gone=$gone pid=$pid"
+  fi
+}
+
+# L5: never two loops for one session — the second registration adopts the
+# first (pidfile repointed at it) instead of spawning a duplicate. The
+# census found two b1efef2c loops 14 hours apart through exactly this hole.
+{
+  new_fixture
+  mkdir -p "$(watch_projects)"
+  : > "$(watch_projects)/sessDup.jsonl"
+  arm_loop sessDup
+  sleep 0.3
+  arm_loop sessDup
+  sleep 0.3
+  n="$(pgrep -f "leadv2-lane-watch-v2.sh --loop sessDup" | wc -l | tr -d ' ')"
+  pid="$(cat "$FIXTURE_STATE/sessDup/loop.pid" 2>/dev/null || true)"
+  LEAKED_PIDS+=("$pid")
+  if [[ "$n" == "1" && -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    pass "case L5: double arm -> exactly one live loop survives and the pidfile names it"
+  else
+    fail "case L5: loops=$n pid=$pid"
+  fi
+  printf '{"session_id":"sessDup"}' | LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" bash "$WATCH_SH" --disarm-from-hook
+}
+
+# L6: LEADV2_LANE_WATCH_DISABLE=1 makes arming a no-op — the suite escape
+# hatch for runs that must spawn zero real watchers.
+{
+  new_fixture
+  mkdir -p "$(watch_projects)"
+  LEADV2_LANE_WATCH_DISABLE=1 arm_loop sessDisabled
+  sleep 0.3
+  if [[ ! -f "$FIXTURE_STATE/sessDisabled/loop.pid" ]] \
+     && [[ "$(pgrep -f "leadv2-lane-watch-v2.sh --loop sessDisabled" | wc -l | tr -d ' ')" == "0" ]]; then
+    pass "case L6: LEADV2_LANE_WATCH_DISABLE=1 arms nothing"
+  else
+    fail "case L6: a loop was spawned despite LEADV2_LANE_WATCH_DISABLE=1"
+  fi
+}
+
 # ── reap-stale: dead sessions' pidfiles are cleared, live ones are untouched ──
 {
   new_fixture

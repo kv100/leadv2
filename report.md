@@ -1,54 +1,36 @@
-# PLUGIN-PAPERCUTS-01 Analysis Report
+# PHASE-BOOTSTRAP-DEADLOCK-01
 
-## Decision: Main is right
+## Reproduction
 
-After analyzing the code and the deliberate design choice documented in the commit history, I conclude that **main is correct**: an unknown-reader pass must never stop the beat loop.
+Before changing the tree, I created detached scratch worktree
+`/private/tmp/phase-bootstrap-repro.26ht1Y` from `HEAD` and ran a brand-new
+Standard task with isolated cache/state, `--no-spawn`, and one declared write:
 
-### Why Main's Decision is Correct
+```text
+$ bash plugins/leadv2/codex-lead/lv2guard.sh -c 'cd /private/tmp/phase-bootstrap-repro.26ht1Y && timeout 120 env -u CLAUDE_PROJECT_ROOT PROJECT_ROOT=/private/tmp/phase-bootstrap-repro.26ht1Y LEADV2_PROJECT_ROOT=/private/tmp/phase-bootstrap-repro.26ht1Y LEADV2_DISPATCH_CACHE_DIR=/private/tmp/phase-bootstrap-repro.26ht1Y/.cache3 LEADV2_STATE_BASE=/private/tmp/phase-bootstrap-repro.26ht1Y/.state3 LEADV2_DISPATCH_TERMINAL_LEDGER=0 LEADV2_BURN_GOVERNOR=0 LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_LANE_SHAPE=off LEADV2_DISPATCH_SPAWN=0 bash plugins/leadv2/scripts/leadv2-dispatch-code.sh "PBDEADLOCK first time shell line 20260902" --kind code --task-class standard --subsystems 1 --task-id PBDEADLOCK-REPRO-20260902-C --no-spawn --writes plugins/leadv2/scripts/leadv2-dispatch-code.sh'
+[leadv2-dispatch-code] lane_plan_missing task=502450be reason=source_absent source=/private/tmp/phase-bootstrap-repro.26ht1Y/docs/handoff/PBDEADLOCK-REPRO-20260902-C/context.yaml
+[leadv2-dispatch-code] dispatch_task_bound task=502450be founder_task=PBDEADLOCK-REPRO-20260902-C
+[leadv2-dispatch-code] task_class=Standard route=phases source=flag task=502450be
+[leadv2-dispatch-code] class_floor_held task=502450be declared=Standard computed=Light
+[leadv2-dispatch-code] brain_decision task=502450be class=Standard class_source=floor_held phases=classify,plan,gate1,build,test,review,deploy,live_verify,close reason=declared_floor
+[leadv2-dispatch-code] dispatch_classified task=502450be class=product reason=conservative_default kind=code
+[leadv2-dispatch-code] phase_precondition_refused task=502450be class=Standard missing=plan,gate1 mode=1
+[leadv2-dispatch-code] ERROR: dispatch refused: missing mandatory phases: plan,gate1
+[leadv2-dispatch-code] ERROR:   remedy: /private/tmp/phase-bootstrap-repro.26ht1Y/plugins/leadv2/scripts/leadv2-phase-record.sh record 502450be plan --artifact docs/handoff/<task-id>/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)
+[leadv2-dispatch-code] ERROR:   remedy: /private/tmp/phase-bootstrap-repro.26ht1Y/plugins/leadv2/scripts/leadv2-phase-record.sh record 502450be gate1 --reason "<founder gate-1 decision>"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)
+[leadv2-dispatch-code] active_lane_released task=502450be id=PBDEADLOCK-REPRO-20260902-C where=exit_trap
+$ echo $?
+3
+```
 
-The commit message explicitly states:
-> "That removal was deliberate: a loop that dies on reader-error passes goes quiet, and the silence this loop exists to prevent comes back. So `P1` asserts a contract that main removed on purpose."
+The refusal is caused by the dispatcher recording `classify` before the guard
+checks whether the lane has zero phase records. The exact pre-change sites were
+`leadv2-dispatch-code.sh:6931` (classify record) and `:6939` (phase guard).
 
-The fundamental purpose of the single-lead beat loop is to prevent founder-blindness - ensuring that when at least one lane is live, the founder receives regular status updates via `founder-status.md`. 
+## Fix
 
-If the loop were to stop on reader errors (when the heartbeat script fails to execute or returns unparseable output), we would create exactly the failure mode the loop is designed to prevent:
-- Monitor becomes blind (heartbeat errors)
-- Loop stops beating 
-- No updates to `founder-status.md`
-- Founder sees no new data and assumes everything is fine
-- Founder's blindness persists and worsens
+Pending.
 
-This is precisely what fix-round H4 sought to address, and why the `LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX` stop was intentionally removed.
+## Verification
 
-### Addressing Resource Concerns
-
-While the lane's concern about unbounded loops in test/dead environments is valid, main's version already includes appropriate bounds:
-1. **Hard lifetime cap** (`LEADV2_SINGLE_LEAD_BEAT_LOOP_MAX_S`, default 24 hours)
-2. **Project root monitoring** (exits if project root disappears)
-3. **Owner-based self-reap** from WATCHER-LIFECYCLE-LEAK-01 (when explicitly configured)
-
-These bounds ensure that even in permanently broken environments, the loop will not run indefinitely - it will either:
-- Exit when the project root is removed (test fixture teardown)
-- Self-reap when an owner process dies (if owner is explicitly set)
-- Hit the 24-hour lifetime cap as a final safety net
-
-The 24-hour cap is a reasonable balance: long enough to avoid prematurely stopping during transient monitor issues, but short enough to prevent permanent resource leaks in abandoned test environments.
-
-### The Flaw in P1's Assumption
-
-Test case P1 assumes that the loop should stop after `LEADV2_SINGLE_LEAD_BEAT_LOOP_UNKNOWN_MAX` consecutive reader-error passes. This assumption is incorrect because:
-- It confuses "reader error" (temporary monitor blindness) with "permanently dead environment"
-- Implementing this stop would re-introduce the founder-blindness failure
-- The existing lifetime cap and project-root monitoring already provide sufficient bounds for test scenarios
-
-## Test Replacement Strategy
-
-Since P1 tests a retired contract, it must be replaced with a test case that validates main's actual contract:
-> "The loop stops on ZERO_MAX consecutive REAL zeros (where zero means heartbeat successfully parsed and reported zero live lanes), and does NOT stop on reader errors."
-
-The replacement test will:
-1. Verify the loop stops when presented with ZERO_MAX consecutive real zero lane counts
-2. Verify the loop continues running when presented with reader errors (unknown passes)
-3. Demonstrate that mutating the zero-stop rule (e.g., setting ZERO_MAX=0 or removing zero-stop logic) causes the test to fail
-
-This approach maintains the backlog's purpose of preventing regressions while aligning with main's correct design decision.
+Pending.

@@ -374,11 +374,40 @@ PROMISE_KIND_PATTERNS = [
         # word chars); unanchored stems matched mid-word nouns.
         r'|перепиш\w*|\b(?:по)?чин(?:ю|ишь|ит|им|ите|ат|ить)\b'
         r'|\bобнов(?:лю|им|ляю)\b|\b(?:беру|берусь)\b', re.I | re.UNICODE)),
+    # PROMISE-GUARD-UNKNOWN-KIND-01 (2026-09-02 escape): the lead ended a turn
+    # with «так что сейчас разбираю все три», did nothing, and the guard stayed
+    # silent — detection worked but the clause classified None, and None bound to
+    # "any action", which a turn of pure reads satisfies in spirit. «разбираю» is
+    # the commonest promise a lead makes and it had NO kind. `diagnose` names the
+    # look-into-it family. LAST on purpose: a clause naming a concrete kind
+    # («разбираюсь с упавшими тестами») keeps its sharper classification and the
+    # keeping action that comes with it; diagnose is the residue.
+    #
+    # Anchoring discipline is the TURN-IT-ON-01 one — every stem \b-anchored and
+    # verb-formed, because only DETECTED commitments ever reach this classifier
+    # (the past-tense veto has already removed reports), but the nouns must still
+    # not steal the label from a real kind: «Сделаю разбор причины» has its own
+    # write signal («сделаю») and must classify write, not diagnose; «разбор»,
+    # «изучение», «копия», «осмотр» are nouns sharing these stems. 1sg present and
+    # 1sg future forms are listed explicitly (разбираю/разберусь, выясняю/выясню,
+    # изучаю/изучу) — no bare stem match, so 3rd-person shapes («воркер
+    # разбирается», «джоба изучает») and 1pl («посмотрим») never classify.
+    # Kept by: any state-changing action, plus a test run — running the suite IS
+    # digging in (see the binding below). Never by a read.
+    ('diagnose', re.compile(
+        r'\bразбира(?:юсь|ю)\b|\bразбер(?:усь|у)\b'
+        r'|\b(?:по|о)?смотрю\b|\b(?:вз)?гляну\b'
+        r'|\bвыясняю\b|\bвыясню\b'
+        r'|\b(?:по)?копаю(?:сь)?\b'
+        r'|\bизучаю\b|\bизучу\b'
+        r'|\bзаймусь\b|\bознакомлюсь\b', re.I | re.UNICODE)),
 ]
 
 def classify_promise_kind(clause):
     """Returns the promised action kind, or None if the clause's kind cannot
-    be classified (falls back to legacy any-action binding downstream)."""
+    be classified. PROMISE-GUARD-UNKNOWN-KIND-01: an unknown kind no longer
+    falls back to legacy any-action binding — it is kept only by a
+    state-changing action (write / commit / dispatch), never by a read."""
     for kind, pat in PROMISE_KIND_PATTERNS:
         if pat.search(clause):
             return kind
@@ -581,14 +610,29 @@ primary_kind = commitment_kinds[0] if commitment_kinds else None
 # The guard's actual purpose is unchanged and still enforced: a turn that promises
 # something and does NOTHING still fires, which is every real escape we have caught.
 #
-# PROMISE-GUARD-BIND-01: turn-wide "any action" is still the fallback for a
-# promise whose kind we cannot classify (see classify_promise_kind docstring)
-# — but when the primary promise's kind IS known, only an action of that same
-# kind keeps it. This is the fix for PROMISE-GUARD-SUPPRESSED-BY-ANY-TOOL-CALL-01:
-# a turn that promises a dispatch and then only Edits a file no longer reads as
-# "kept" just because Edit is *an* action.
+# PROMISE-GUARD-BIND-01: when the primary promise's kind IS known, only an
+# action of that same kind keeps it. This is the fix for
+# PROMISE-GUARD-SUPPRESSED-BY-ANY-TOOL-CALL-01: a turn that promises a dispatch
+# and then only Edits a file no longer reads as "kept" just because Edit is
+# *an* action.
+#
+# PROMISE-GUARD-UNKNOWN-KIND-01 (2026-09-02 escape): the old fallback for an
+# UNKNOWN kind — `action_after_promise = has_action` — is REMOVED, not kept. It
+# let the escape through («так что сейчас разбираю все три», turn = grep + head
+# only) and no case needs it: a promise kept by "any action anywhere" is a
+# promise kept by a read, and reads are how you look, not how you do. When the
+# kind is unknown the promise is kept only by a state-changing action (write /
+# commit / dispatch); a `diagnose` promise is additionally kept by a test run,
+# because running the suite IS digging in. A 'test' action does NOT keep an
+# unknown-kind promise — a vague promise bound by a test run binds to nothing
+# checkable, which is the defect being fixed here. The unclassified BLOCK gate
+# downstream (BLOCK_UNCLASSIFIED opt-in) is unchanged, so this hardening
+# widens evidence, not shouting.
+STATE_KINDS = {'write', 'commit', 'dispatch'}
 if primary_kind is None:
-    action_after_promise = has_action
+    action_after_promise = bool(action_kinds_seen & STATE_KINDS)
+elif primary_kind == 'diagnose':
+    action_after_promise = bool(action_kinds_seen & (STATE_KINDS | {'test'}))
 else:
     action_after_promise = primary_kind in action_kinds_seen
 
@@ -660,9 +704,14 @@ if [[ -n "$PRIMARY_KIND" ]]; then
     BLOCK_DECISION="yes"
   fi
 else
-  # unclassified promise: verdict still follows the old rule, but blocking needs
-  # the explicit opt-in LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED=1.
-  if [[ "$HAS_ACTION_ANYWHERE_IN_TURN" == "yes" ]]; then
+  # unclassified promise: verdict follows the SAME binding the verdict JSON
+  # already computed — PROMISE-GUARD-UNKNOWN-KIND-01: kept only by a
+  # state-changing action, never by a read (the old HAS_ACTION_ANYWHERE_IN_TURN
+  # here let a turn of pure reads suppress the verdict on the 2026-09-02
+  # escape). Blocking still needs the explicit opt-in
+  # LEADV2_PROMISE_GUARD_BLOCK_UNCLASSIFIED=1, so unclassified fired rows stay
+  # evidence, not blocks.
+  if [[ "$HAS_ACTION" == "yes" ]]; then
     VERDICT_KIND="suppressed_action"
   else
     VERDICT_KIND="fired"

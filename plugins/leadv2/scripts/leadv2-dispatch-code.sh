@@ -755,6 +755,16 @@ if [[ -f "${_ADMISSION_CLASS_SH}" ]]; then
   # shellcheck disable=SC1091
   source "${_ADMISSION_CLASS_SH}" || true
 fi
+# BRAIN-CLASS-LIVE-01: class_escalated/class_floor_held journal vocabulary +
+# docs/handoff/<task>/brain.yaml, layered on top of the admission class map
+# above (does not change what class is computed, only makes the decision
+# loud and durable across re-entries).
+_BRAIN_RECORD_SH="${SCRIPT_DIR}/lib/leadv2-brain-record.sh"
+[[ -f "${_BRAIN_RECORD_SH}" ]] || _BRAIN_RECORD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-brain-record.sh"
+if [[ -f "${_BRAIN_RECORD_SH}" ]]; then
+  # shellcheck disable=SC1091
+  source "${_BRAIN_RECORD_SH}" || true
+fi
 # B1 R2: record-review refuses a build worker minting a review of ITS OWN diff from
 # inside a lane worktree (self-attestation). Set to 0 to disable the check (emergency escape).
 REVIEW_RECORDER_GUARD="${LEADV2_REVIEW_RECORDER_GUARD:-1}"
@@ -3835,6 +3845,16 @@ _admission_classify() {
   local task_floor=""
   if [[ -n "${founder_task_id:-}" ]]; then
     task_floor="$(leadv2_admission_read_task_receipt "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
+    # BRAIN-CLASS-LIVE-01 D3: brain.yaml (when a prior intake already wrote
+    # one for this task) is read here too, and only ever RAISES the floor --
+    # never overrides a higher task-class.yaml floor set by something else.
+    local _brain_floor
+    _brain_floor="$(leadv2_brain_read_class "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
+    if [[ -n "${_brain_floor}" ]]; then
+      if [[ -z "${task_floor}" ]] || (( $(_lv2_class_rank "${_brain_floor}") > $(_lv2_class_rank "${task_floor}") )); then
+        task_floor="${_brain_floor}"
+      fi
+    fi
   fi
   local existing
   existing="$(leadv2_admission_read_receipt "${PROJECT_ROOT}" "${sig8}" 2>/dev/null || true)"
@@ -3879,7 +3899,23 @@ _admission_classify() {
   else
     # task-judge failed outright (missing binary, rc!=0, unparseable): the
     # conservative class is Standard -> phases, never bare dispatch.
-    ADMISSION_CLASS="Standard"; ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
+    # BRAIN-CLASS-LIVE-01: Standard is a MINIMUM here, not a hardcoded
+    # answer -- a lead that already typed --task-class Heavy/Strategic must
+    # never be silently downgraded to Standard just because the judge died.
+    # (Round-1 defect: before this fix, judge failure discarded `explicit`
+    # entirely and this branch ALWAYS won, de-escalating any declared class
+    # above Standard -- exactly the "declared class is a floor" invariant
+    # this lane exists to hold, and exactly why leadv2-brain-record.sh labels
+    # this class_source=declared_fallback rather than classifier_error's
+    # historical "Standard, no exceptions" meaning.)
+    local _judge_fail_floor
+    _judge_fail_floor="$(_lv2_class_canonical "${explicit}")"
+    if (( $(_lv2_class_rank "${_judge_fail_floor}") > $(_lv2_class_rank "Standard") )); then
+      ADMISSION_CLASS="${_judge_fail_floor}"
+    else
+      ADMISSION_CLASS="Standard"
+    fi
+    ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
   fi
   if [[ -n "${task_floor}" ]] && (( $(_lv2_class_rank "${task_floor}") > $(_lv2_class_rank "${ADMISSION_CLASS}") )); then
     ADMISSION_CLASS="${task_floor}"; ADMISSION_SOURCE="task_record"
@@ -3894,7 +3930,42 @@ _admission_classify() {
     "${ADMISSION_WORK_KIND:-unknown}" 2>/dev/null \
     || emit decision "admission_receipt_write_failed task=${sig8}"
   emit decision "task_class=${ADMISSION_CLASS} route=${ADMISSION_ROUTE} source=${ADMISSION_SOURCE} task=${sig8}"
+  # BRAIN-CLASS-LIVE-01: class_escalated/class_floor_held + the single
+  # brain_decision line + brain.yaml, ONLY on a fresh intake (the same-digest
+  # re-entry branch above already returned -- one decision record per task,
+  # not one per re-entry). Best-effort: a brain-record failure never refuses
+  # a dispatch that the admission map above already approved -- `|| true`
+  # absorbs a non-zero rc, but stderr is left UNredirected (R5 fix: a prior
+  # `2>/dev/null` here silently dropped every class_escalated/
+  # class_floor_held/brain_decision emit() line, since emit() always writes
+  # to stderr via log() regardless of whether JOURNAL_TASK is set -- the
+  # lane's headline decision output must reach stderr on every path).
+  if declare -F leadv2_brain_record >/dev/null 2>&1; then
+    leadv2_brain_record "${PROJECT_ROOT}" "${sig8}" "${receipt_task_id}" \
+      "${explicit}" "${flagged}" "${ADMISSION_CLASS}" "${ADMISSION_SOURCE}" \
+      "${estimate:-}" "${PHASE_RECORD_BIN}" "${lane_writes:-}" || true
+  fi
   return 0
+}
+
+# _resolve_class_with_brain_floor <sig8> <task_id> <base_class> -> stdout: final class
+# BRAIN-CLASS-LIVE-01 D3: a task's own brain.yaml (written at intake by
+# leadv2_brain_record) is a floor on any later re-entry that re-derives its
+# class independently (cmd_advance_arm's ledger/task-receipt lookup) --
+# never lowers base_class, only raises it, and journals which record source
+# won. Best-effort: brain.yaml being absent or unreadable falls back to
+# base_class unchanged (leadv2_brain_read_class already returns "" for that).
+_resolve_class_with_brain_floor() {
+  local sig8="$1" task_id="$2" cls="${3:-}"
+  if [[ -n "${task_id}" ]] && declare -F leadv2_brain_read_class >/dev/null 2>&1; then
+    local brain_cls
+    brain_cls="$(leadv2_brain_read_class "${PROJECT_ROOT}" "${task_id}" 2>/dev/null || true)"
+    if [[ -n "${brain_cls}" ]] && { [[ -z "${cls}" ]] || (( $(_lv2_class_rank "${brain_cls}") > $(_lv2_class_rank "${cls}") )); }; then
+      emit decision "phase_class_floor task=${sig8} source=brain_record class=${brain_cls}"
+      cls="${brain_cls}"
+    fi
+  fi
+  printf '%s' "${cls}"
 }
 
 # _phase_precondition_guard <sig8> <class> <writes> [waiver-args...] -> 0 proceed, 1 refuse
@@ -6883,18 +6954,12 @@ cmd_resolve() {
   # next arm.  (E2E-GATE-RESIDUE-01 round 4 root cause.)
   set +e
 
-  # PHASE-GATE-IS-INVERTED-01: the pre-classify is-bootstrap probe is gone.
-  # It existed only to feed the caller-attested --at-bootstrap that the guard
-  # no longer honours; keeping it would resurrect the inversion (every fresh
-  # lane probed "zero records" before its own classify write and was waved
-  # through). The guard reads the store itself after classify is recorded.
-
-  # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
-  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
-    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
-
   # PHASES-ARE-THE-ONLY-PATH-01 §5: precondition guard at the same structural slot
   # as _lane_writes_guard / _acceptance_guard — after arg validation, before spawn.
+  # PHASE-BOOTSTRAP-DEADLOCK-01: this must run before the dispatcher's own
+  # classify record. A zero-record lane is the one legitimate bootstrap shape;
+  # recording classify first turns that shape into a resumed lane and makes the
+  # gate refuse its own first dispatch.
   local _phase_waiver_args=()
   for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
     _phase_waiver_args+=(--waiver "$_pw")
@@ -6904,6 +6969,12 @@ cmd_resolve() {
     # trap (cleanup_pending_dispatch) releases the registered row on this exit.
     exit 3
   }
+
+  # PHASES-ARE-THE-ONLY-PATH-01: record classify only after admission. The
+  # guard above owns the bootstrap decision; subsequent dispatches see this
+  # record and remain subject to the existing phase requirements.
+  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
+    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
 
   if [[ "${product_class}" == "product" ]]; then
     # PREPASS-DEGRADES-01 (2026-07-29): a prepass failure must NEVER stop the work. On
@@ -8082,6 +8153,11 @@ cmd_advance_arm() {
       _adv_class="${_adv_task_floor}"
       emit decision "phase_class_floor task=${sig8} source=task_record class=${_adv_class}"
     fi
+    # BRAIN-CLASS-LIVE-01 D3: brain.yaml is the same-task re-entry's own prior
+    # brain_decision -- read it as a floor too, so a Phase-4 re-entry never
+    # enforces a lower class than the intake's own computed decision already
+    # recorded (mirrors _admission_classify's brain-floor read above).
+    _adv_class="$(_resolve_class_with_brain_floor "${sig8}" "${task_id}" "${_adv_class}")"
   fi
   if [[ -z "${_adv_class}" ]]; then
     _adv_class="Standard"

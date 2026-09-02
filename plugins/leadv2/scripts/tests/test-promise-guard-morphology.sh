@@ -311,7 +311,17 @@ run_case "r4-neg-statistiku-excluded-ending" case_r4_neg_statistiku
 # Every TURN-IT-ON-01 stem now carries \b; чин- additionally requires verb endings
 # because the noun «починка» shares the word-start «почин» with the verb «починю»
 # (\b alone cannot separate them).
-case_r4b_neg_prichina()    { _expect "$1" "Сейчас посмотрю, в чём причина" SILENT; }
+# PROMISE-GUARD-UNKNOWN-KIND-01 (2026-09-02 escape): this pin FLIPPED from
+# SILENT to FIRED. It was written when «посмотрю» had no kind — the sentence
+# was detected but unclassified, and the flip gate kept unclassified rows
+# log-only. UNKNOWN-KIND-01 added the `diagnose` kind for exactly this family
+# (посмотрю/разбираю/выясняю/…), so the clause now classifies diagnose, and a
+# diagnose promise is kept only by a state-changing action (or a test run) —
+# never by a read. With zero actions this is the same escape shape as the
+# 2026-09-02 «сейчас разбираю все три» and must block. The \b-anchor mutation
+# control below is unaffected: the stems it guards (разбор/обновление nouns)
+# classify write via «сделаю/запущу», not diagnose.
+case_r4b_neg_prichina()    { _expect "$1" "Сейчас посмотрю, в чём причина" FIRED; }
 case_r4b_neg_obnovlenie()  { _expect "$1" "обновление пришло" SILENT; }
 case_r4b_neg_pochinka()    { _expect "$1" "починка была вчера" SILENT; }
 case_r4b_neg_razbor()      { _expect "$1" "Сделаю разбор причины" SILENT; }
