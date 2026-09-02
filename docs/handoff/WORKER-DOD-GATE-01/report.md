@@ -381,3 +381,59 @@ there is no run-id/nonce the gate independently cross-checks against a log
 the worker doesn't control. Closing that residual gap (e.g. a signed or
 ledger-cross-checked run id) is out of this round's scope and not claimed
 as done here.
+
+### `tests/run-all.sh --scope changed` (foreground)
+
+The `--scope changed` state file (`.git/worktrees/WORKER-DOD-GATE-01/leadv2-run-all-last-checked-sha`)
+had already been advanced past this round's own commit by an earlier
+(timed-out) invocation, which would have silently made every later run see
+an empty changed-set (see `run-all-scope-changed-state-file` in memory).
+Reset it to `HEAD~1` before the run that is pasted below, so `--scope
+changed` actually diffs this round's own commit. Two earlier attempts also
+hit a **stale core-offline lock** (`/tmp/leadv2-core-offline-...WORKER-DOD-GATE-01.lock`,
+holder pid confirmed dead via `kill -0`) and a slow-but-not-hung
+`run-core-offline.sh` shard that needed an 1800s budget under concurrent
+system load from sibling lanes; both were diagnosed and cleared per this
+round's own instructions before the run below.
+
+```
+$ git rev-parse HEAD~1 > "$(git rev-parse --git-dir)/leadv2-run-all-last-checked-sha"
+$ rm -f /tmp/leadv2-core-offline-...WORKER-DOD-GATE-01.lock   # holder pid confirmed dead
+$ timeout 1800 bash tests/run-all.sh --scope changed
+...
+[TEST] PASS: check_e: external claim w/o evidence:/UNVERIFIED nearby -> dod_note emitted
+[TEST] PASS: check_e: claim immediately followed by evidence: -> no note
+[TEST] PASS: lv2_dod_gate_run: fully-compliant fixture -> rc=0, out file written
+[TEST] PASS: lv2_dod_gate_run: runtime-state violation -> rc=1, reason recorded in out file
+[TEST] PASS: mutation-control: mutation applied, suite went red -> exit 0 ok + artifact written
+[TEST] PASS: mutation-control: absent anchor -> exit 2 control_not_applied reason=anchor_count
+[TEST] PASS: mutation-control: non-green baseline -> exit 2 control_not_applied reason=baseline_not_green
+[TEST] PASS: mutation-control: suite does not cover the mutated file -> exit 1 mutant_survived
+[TEST] PASS: wiring: LEADV2_REVIEW_ENGINE unset (production default) -> exit 7 before engine split, review-gate.md written
+[TEST] PASS: wiring: LEADV2_REVIEW_ENGINE=1 -> identical refusal, exit 7 before engine split
+[TEST] test-worker-dod-gate: 29 passed, 0 failed
+[PASS] .../plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
+  Failures (blocking):
+    - plugins/leadv2/scripts/tests/run-core-offline.sh
+run-all: 4 passed, 1 failed, scope=changed
+```
+
+`test-worker-dod-gate.sh` (this task's own suite, containing both fix-round-1
+cases) was selected by `--scope changed` and passed 29/29. The only failure
+is `run-core-offline.sh` — its own internal tally was `passed=68 failed=15`,
+matching the pre-existing baseline reds already on record in memory
+(`run-all-changed-preexisting-reds`: pulse-watch W8, arm-cap anchor,
+landed-at-spawn 4/8, t13-slice2, phase-precondition, etc.) — not something
+this round's diff touches or introduced.
+
+### `leadv2-suite-falsifiable.sh` (from lane root as cwd)
+
+```
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
+leadv2-suite-falsifiable: suite=.../plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=51
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
