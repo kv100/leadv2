@@ -1,0 +1,610 @@
+task:
+  id: WORKER-DOD-GATE-01
+  class: Heavy
+  mission: >
+    Ship a deterministic bash definition-of-done gate that runs on a worker's
+    committed lane BEFORE any model review, on the PRODUCTION review path (not
+    only a flag-gated one), refuses the round on a missing mechanical DoD item
+    (missing report.md, unanswered paste-line, ungrounded mutation-control
+    claim, unregistered test suite, runtime-state path in the diff) at zero
+    model spend, and gives the worker up to 2 in-session retries before the
+    hard gate refuses the round.
+  started_at: 2026-09-02T03:18:44Z
+
+decisions:
+  - id: D1
+    topic: enforcement placement (CHALLENGE-01 CRITICAL)
+    choice: >
+      Single authoritative gate call (lv2_dod_gate_run) inserted directly into
+      leadv2-dispatch-product-close.sh BEFORE the LEADV2_REVIEW_ENGINE branch
+      splits (~line 2756), so it fires on both engine=0 (production default)
+      and engine=1 paths from one call site; a second defense-in-depth call is
+      added to leadv2-review-run.sh for direct/standalone invocations that
+      bypass dispatch-product-close.sh entirely.
+    rejected:
+      - "v1: gate only reachable behind LEADV2_REVIEW_ENGINE=1 — inert in production since the flag's documented production default is 0"
+    source: architect-v2
+  - id: D2
+    topic: LANE_WRITES scope + 3 broken rows (CHALLENGE-02 CRITICAL)
+    choice: >
+      Corrected 14-row LANE_WRITES list: lib/ path fixed (leadv2-worker-epilogue.sh
+      lives under plugins/leadv2/scripts/lib/, not plugins/leadv2/scripts/),
+      plugins/leadv2/prompts/** dropped entirely, trailing slash stripped from
+      the handoff dir row, plus leadv2-dispatch-product-close.sh,
+      leadv2-helpers.sh, leadv2-lane-outcome.sh and the 4 coder wrappers added.
+      _lv2_epilogue_path_in_scope() normalized to strip trailing /, /**, /*
+      before the case match (benefits sibling briefs too).
+    rejected:
+      - "brief's original 8-row list — 3 of 8 rows failed the live scoper, including this task's own report.md path under docs/handoff/WORKER-DOD-GATE-01/"
+    source: architect-v2
+  - id: D3
+    topic: task-dir resolution for checks (a)/(b)/(e) (CHALLENGE-03 CRITICAL)
+    choice: >
+      dispatch-product-close.sh computes TASK_DIR="${ROOT}/docs/handoff/${FOUNDER_TASK_ID}"
+      directly at the new pre-branch call site (FOUNDER_TASK_ID is already a
+      positional param at that script's line 23). leadv2-review-run.sh gets a
+      NEW --task-dir arg for its own call; when omitted it falls back to
+      ${HANDOFF}-scoped checks with an explicit dod_skip note, never a silent
+      assumption that ${HANDOFF} equals the task dir.
+    rejected:
+      - "reading ${HANDOFF} directly — resolves to docs/handoff/dispatch-<sig8>, not the task's own handoff dir; every hard check would read the wrong files"
+    source: architect-v2
+  - id: D4
+    topic: check (a) report-heading regex calibration (CHALLENGE-04 CRITICAL)
+    choice: >
+      Regex rewritten to ^#{2,3}[[:space:]].*[Ee]vidence (case-insensitive,
+      non-anchored); check is conditional on brief.md mentioning "report.md" —
+      skipped (dod_skip), not failed, when the brief never asked for one.
+      Calibrated against the 37-report corpus, target 0 false refusals.
+    rejected:
+      - "v1's original heading regex — refused 37 of 37 real reports in the corpus; uncalibrated against any real sample"
+    source: architect-v2
+  - id: D5
+    topic: mutation-control scratch-tree snapshot mechanism (CHALLENGE-05 CRITICAL)
+    choice: >
+      Baseline-green-first gate (non-green baseline -> exit 2
+      control_not_applied reason=baseline_not_green, never ok); snapshot the
+      WORKING tree via `git ls-files -co --exclude-standard` + tar, not
+      `git archive HEAD`; scratch tree gets `git init -q && git add -A &&
+      git commit -qm base` for a real git identity (never `git worktree add`).
+    rejected:
+      - "git archive HEAD | tar -x — committed-only, misses uncommitted suite/mutation-target files the worker is still iterating on; produces a lying-green result by construction"
+    source: architect-v2
+  - id: D6
+    topic: check (c) suite-registration mechanism (CHALLENGE-06 HIGH, CHALLENGE-08 HIGH)
+    choice: >
+      Resolved IN-PROCESS inside lib/leadv2-dod-gate.sh by reading
+      EXTRA_SUITE_MAP + the stem convention directly from tests/run-all.sh's
+      text — no shell-out, no state write. tests/run-all.sh absent in the
+      target repo -> dod_skip check=suite_registration reason=no_run_all.
+    rejected:
+      - "tests/run-all.sh --scope changed --dry-run (brief's literal ask) — stateful; the state write precedes the execution loop and poisons the very selection being checked"
+      - "--dry-run flag does not exist in every adopted repo (0 hits in persona-engine's tests/run-all.sh) — not portable"
+    source: architect-v2
+  - id: D7
+    topic: check (b) mutation-control evidence binding (CHALLENGE-07 HIGH)
+    choice: >
+      The mutation-lines sub-check requires an ARTIFACT file
+      ${TASK_DIR}/mutation-control/<run-id>.txt whose diff_hash field equals
+      sha256(DIFF_FILE) for the round — reusing leadv2-review-run.sh's
+      _review_diff_hash() pattern verbatim.
+    rejected:
+      - "prose grep for a MUTATION-CONTROL sentinel string in report.md — gameable by report text alone, same failure shape as checks (a) and (e)"
+    source: architect-v2
+  - id: D8
+    topic: check (e) external-claims severity (CHALLENGE-14 MEDIUM)
+    choice: >
+      Check (e) is report-only: writes dod_note lines to dod-gate.md and NEVER
+      contributes to lv2_dod_gate_run's exit code.
+    rejected:
+      - "check (e) as a blocking hard check — critic measured ~19% false-refusal rate on the 37-report corpus and it duplicates a rule the reviewer model already enforces"
+    source: architect-v2
+  - id: D9
+    topic: soft-tier reader (CHALLENGE-09 HIGH)
+    choice: >
+      leadv2-lane-outcome.sh extended to read worker_dod= from
+      progress.log/meta.yaml and append dod=fail:<checks> to its own status
+      line output, named as the soft tier's reader.
+    rejected:
+      - "writing worker_dod= with no reader anywhere in the codebase — a control nobody consumes is equivalent to not writing it"
+    source: architect-v2
+  - id: D10
+    topic: in-worker retry mechanism, brief item 3 (CHALLENGE-10 HIGH)
+    choice: >
+      Option C adopted explicitly, not deferred: shared
+      lv2_dod_retry_or_finalize() added to lib/leadv2-worker-epilogue.sh
+      (already shared by all 4 coder wrappers); each wrapper implements an
+      <=8-line retry_hook_fn feeding the gate's failure text into its OWN
+      existing inner turn-loop as the next worker turn — no recursive
+      --resume-lane dispatch.
+    rejected:
+      - "Option A (soft-signal only) — silently drops brief item 3's in-worker retry while being described as full delivery; an undisclosed descope"
+      - "Option B (recursive --resume-lane re-entry) — carries re-entrancy risk R5, rejected by the architect's own design"
+    source: architect-v2
+  - id: D11
+    topic: per-wrapper retry-hook re-enterability, new risk R9
+    choice: >
+      Wire retry_hook_fn into all 4 wrappers per D10; a wrapper whose inner
+      turn-loop is confirmed NOT re-enterable mid-flight degrades that
+      wrapper's hook to a no-op (soft signal only, same as today) — never a
+      crash, never a silent skip of the [2a] hard gate (which is independent
+      of this mechanism). Implementer MUST verify re-enterability per-wrapper
+      in plan step 6 before wiring; this was not verified during design
+      (out of architect-v2's discovery budget) and is carried forward as an
+      OPEN item, not resolved by this synthesis.
+    rejected:
+      - "assuming all 4 wrappers are re-enterable without per-wrapper verification — architect-v2 explicitly flags this as unverified (R9, HIGH)"
+    source: architect-v2
+  - id: D12
+    topic: checks (c)/(d) diff source (CHALLENGE-12 MEDIUM)
+    choice: >
+      Both checks read DIFF_FILE exclusively — the round's authoritative diff,
+      already resolved upstream by the caller as ${diff_file}. Standalone
+      invocation with no diff file -> dod_skip, never a fallback to
+      `git diff main HEAD`.
+    rejected:
+      - "git diff main HEAD (brief's literal ask) — main is not reliably the round's base ref; review-run.sh's falsifiability gate already resolves DIFF_FILE upstream and reads it exclusively"
+    source: architect-v2
+  - id: D13
+    topic: ledger cause for DoD-undetermined (CHALLENGE-13 MEDIUM)
+    choice: >
+      NEW exit code 10, reserved exclusively for DoD-undetermined
+      (rc=2/undetermined from the gate) -> _dl_note dead review_dod_blocked.
+      Exit 8 (review_roundcap) and exit 7 (review_verdict_fail, used for DoD
+      hard-fail) are both left untouched.
+    rejected:
+      - "reusing exit 8 for the DoD-undetermined case — mislabels the ledger cause as review_roundcap, a pre-existing and semantically different failure mode"
+    source: architect-v2
+  - id: D14
+    topic: sibling write-set collisions (CHALLENGE-11 HIGH)
+    choice: >
+      leadv2-review-run.sh's edit reduced to a single source-guarded
+      conditional line (mirrors the existing _REVIEW_REROUTE_NOTE_SH idiom in
+      the same file). plugins/leadv2/prompts/** dropped entirely from this
+      task's writes (removes that collision with REVIEW-SENTINELS-LANGUAGE-01
+      outright). Four files remain CONTESTED — shared with a sibling lane's
+      LANE_WRITES and named explicitly here rather than silently assumed
+      collision-free: leadv2-review-run.sh (REVIEW-SENTINELS-LANGUAGE-01),
+      tests/run-all.sh (all 3 siblings), lib/leadv2-worker-epilogue.sh
+      (LAND-PATH-IS-BROKEN-01), plugins/leadv2/scripts/tests/ directory
+      (TESTS-POLLUTE-REAL-JOURNAL-01 — this task only adds
+      test-worker-dod-gate.sh, never touches another file in that dir). The
+      dod_* reason enum (dod_report_missing_or_unheaded,
+      dod_paste_evidence_missing, dod_mutation_control_not_via_runner,
+      dod_suite_unregistered, dod_runtime_state_in_diff, dod_skip/dod_note) is
+      requested via report.md as a registration handshake with
+      REVIEW-SENTINELS-LANGUAGE-01's parser — never assumed compliant without
+      that lane's own confirmation. Brief's "Merge main FIRST" rule is the
+      serialization discipline for all 4 contested files; the lead must
+      serialize commits touching them across lanes, not assume parallel-safe.
+    rejected:
+      - "v1's unstated collision on 3+ paths across 3 sibling lanes with no named serialization discipline"
+    source: architect-v2
+  - id: D15
+    topic: worker-facing contract text wiring, prompts/** unverified (CHALLENGE-17 LOW-but-load-bearing)
+    choice: >
+      New readonly string _LEADV2_DOD_GATE_CONTRACT_MISSION added to
+      plugins/leadv2/scripts/leadv2-helpers.sh, adjacent to the proven
+      _LEADV2_EVIDENCE_CONTRACT_MISSION (lines 62-66) — same pattern, same
+      file, consumed by whichever caller already concatenates the
+      evidence-contract string into worker mission text.
+    rejected:
+      - "plugins/leadv2/prompts/** fragment with no confirmed mechanism reaching a live worker system prompt — brief item 2 (workers told to use leadv2-mutation-control.sh instead of hand-editing) depends on this reaching workers; critic's finding: 'that is not a MEDIUM implementation detail; it decides whether the cause-row-2 fix functions at all'"
+    source: critic
+  - decision: capability-search
+    considered:
+      - "leadv2-suite-falsifiable.sh exit-code convention (0/1/2/3) + mktemp -d/trap idiom + rc=2 'undetermined, never a pass' doctrine"
+      - "_review_diff_hash() sha256(DIFF_FILE) pattern in leadv2-review-run.sh:592-599"
+      - "falsifiability-gate shape: refuse-before-pool-resolve, status: fail/reason:, exit 7/8, DIFF_FILE-only sourcing (leadv2-review-run.sh:1264-1318)"
+      - "_lv2_epilogue_path_in_scope() quoted-case scoper (lib/leadv2-worker-epilogue.sh:48-57)"
+      - "leadv2_worker_commit_epilogue() shared call site across all 4 coder wrappers"
+      - "_REVIEW_REROUTE_NOTE_SH conditional-source idiom in leadv2-dispatch-product-close.sh"
+      - "_LEADV2_EVIDENCE_CONTRACT_MISSION readonly-string pattern in leadv2-helpers.sh:62-66"
+      - "EXTRA_SUITE_MAP='<stem>:<suite>' block format in tests/run-all.sh:100-105"
+      - "founder lesson (2026-08-22): never git worktree add/prune for scratch state"
+    chosen: >
+      Reuse all 9 existing primitives verbatim or adapted (architect-v2 §3
+      capability census). Only 3 new files are created:
+      plugins/leadv2/scripts/lib/leadv2-dod-gate.sh,
+      plugins/leadv2/scripts/leadv2-mutation-control.sh, and
+      plugins/leadv2/scripts/tests/test-worker-dod-gate.sh — no new custom
+      mechanism was built where an existing primitive already covered the
+      need.
+    why: >
+      architect-v2 ran an explicit capability census (§3) before designing
+      each check and the mutation-control tool, citing file:line for every
+      reused primitive. Codex was unavailable for this task's triad — this
+      handoff dir contains only architect(v1->v2 redesign) and critic
+      deliverables, no codex.md; the capability-search check therefore ran
+      against the architect's own census plus critic's cross-check, not a
+      third independent pass.
+    source: architect-v2
+
+off_limits:
+  - path: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    reason: "--resume-lane re-entry mechanism — Option C (D10) deliberately avoids it; do not call or modify it for the retry contract"
+  - path: "lib/leadv2-dod-gate.sh, leadv2-mutation-control.sh: any model/LLM call"
+    reason: "gate and mutation-runner are bash + grep + git only, under 5s each — brief's explicit 'Do NOT add a model call' rule"
+  - path: "glm-coder.sh, kimi-coder.sh, freepool-coder.sh, claude-subsession.sh: any change beyond the <=8-line retry_hook_fn"
+    reason: "no refactor of the wrappers' own turn-loop implementation — only a hook into it (architect-v2 §11)"
+  - path: plugins/leadv2/scripts/lib/leadv2-review-parse.sh
+    reason: "REVIEW-SENTINELS-LANGUAGE-01 exclusive LANE_WRITES row — consume the dod_* reason enum only via the report.md handshake request (D14), never edit or duplicate its parser"
+  - path: plugins/leadv2/skills/leadv2-review/ref/reviewer-setup-steps.md
+    reason: "REVIEW-SENTINELS-LANGUAGE-01 exclusive LANE_WRITES row"
+  - path: plugins/leadv2/scripts/tests/test-review-sentinels-language.sh
+    reason: "REVIEW-SENTINELS-LANGUAGE-01 exclusive LANE_WRITES row"
+  - path: docs/handoff/REVIEW-SENTINELS-LANGUAGE-01/
+    reason: "sibling task's own handoff dir — its LANE_WRITES, union per this task's brief"
+  - path: docs/handoff/TESTS-POLLUTE-REAL-JOURNAL-01/
+    reason: "sibling task's own handoff dir — its LANE_WRITES, union per this task's brief"
+  - path: plugins/leadv2/scripts/lib/leadv2-events.sh
+    reason: "TESTS-POLLUTE-REAL-JOURNAL-01 exclusive LANE_WRITES row"
+  - path: plugins/leadv2/scripts/leadv2-deploy-merge.sh
+    reason: "LAND-PATH-IS-BROKEN-01 exclusive LANE_WRITES row"
+  - path: plugins/leadv2/scripts/lib/leadv2-land.sh
+    reason: "LAND-PATH-IS-BROKEN-01 exclusive LANE_WRITES row; confirmed absent today — do not create it. Check (d)'s runtime-state list stays hardcoded in lib/leadv2-dod-gate.sh until that sibling task lands, per architect-v2 §11"
+  - path: plugins/leadv2/scripts/tests/test-land-path.sh
+    reason: "LAND-PATH-IS-BROKEN-01 exclusive LANE_WRITES row"
+  - path: docs/handoff/LAND-PATH-IS-BROKEN-01/
+    reason: "sibling task's own handoff dir — its LANE_WRITES, union per this task's brief"
+  - path: "docs/leadv2/**, docs/LEAD_V2_STATE.md, docs/handoff/dispatch-nw*"
+    reason: "brief.md's own runtime-state rule: never commit these; also matches check (d)'s own refusal list"
+  - path: "plugins/leadv2/scripts/leadv2-review-run.sh (CONTESTED, not fully off-limits)"
+    reason: "shared with REVIEW-SENTINELS-LANGUAGE-01's LANE_WRITES (D14) — this task IS required to add one source-guarded conditional line here; coordinate/serialize with that lane before commit, never edit beyond that one line"
+  - path: "tests/run-all.sh (CONTESTED, not fully off-limits)"
+    reason: "shared with all 3 sibling LANE_WRITES (D14) — this task IS required to append 2 EXTRA_SUITE_MAP rows; serialize (merge main first, brief's own rule) rather than assume parallel-safe"
+  - path: "plugins/leadv2/scripts/lib/leadv2-worker-epilogue.sh (CONTESTED, not fully off-limits)"
+    reason: "shared with LAND-PATH-IS-BROKEN-01's LANE_WRITES (D14) — this task IS required to normalize the scoper and add lv2_dod_retry_or_finalize() here; serialize before commit"
+  - path: "plugins/leadv2/scripts/tests/ directory (CONTESTED, not fully off-limits)"
+    reason: "shared with TESTS-POLLUTE-REAL-JOURNAL-01's LANE_WRITES (D14) — this task only adds test-worker-dod-gate.sh; never touch any other file already in that directory"
+
+research:
+  - source: architect-v2
+    summary: "Post-REDESIGN revision resolving all 17 critic CHALLENGEs (§0 table); moves the hard gate to fire unconditionally in leadv2-dispatch-product-close.sh before the LEADV2_REVIEW_ENGINE branch, fixes the 3 broken LANE_WRITES rows, rewrites check (a)'s regex and check (b)'s evidence binding, rewrites the mutation-control snapshot to avoid lying-green, and adopts Option C for the in-worker retry."
+    file: docs/handoff/WORKER-DOD-GATE-01/architect-v2.md#0-critic-resolution-table
+  - source: critic
+    summary: "Verdict REDESIGN on the v1 architect plan: 5 CRITICAL findings (gate inert in production, 3/8 LANE_WRITES rows fail the scoper, checks read the wrong ${HANDOFF}, check (a) refuses 37/37 real reports, mutation runner is lying-green by git-archive construction) plus 12 more HIGH/MEDIUM/LOW findings and a 12-item ordered fix list, all addressed in architect-v2's §0 resolution table."
+    file: docs/handoff/WORKER-DOD-GATE-01/critic.md#challenge-01
+  - source: codex
+    summary: "UNAVAILABLE — no codex.md deliverable exists in this handoff dir; this task's triad consists of architect(v1->v2 redesign) + critic only. Flagged per synthesis instructions, not silently omitted."
+    file: "N/A"
+
+plan:
+  steps:
+    - id: 1
+      agent: developer
+      mission: >
+        Normalize the epilogue path-in-scope scoper so LANE_WRITES rows with a
+        trailing slash, /** or /* compare correctly against files the worker
+        actually touched, fixing the defect that made 3 of this task's own 8
+        original LANE_WRITES rows read as FOREIGN (out of scope) including its
+        own report.md path; this is a prerequisite for every later step since
+        no committed change in this task can land through the epilogue until
+        the scoper recognizes its own write set.
+      reads:
+        - docs/handoff/WORKER-DOD-GATE-01/brief.md
+        - plugins/leadv2/scripts/lib/leadv2-worker-epilogue.sh
+      writes:
+        - plugins/leadv2/scripts/lib/leadv2-worker-epilogue.sh
+      acceptance: >
+        Re-running the critic's dodtest-style probe against all 14 corrected
+        LANE_WRITES rows (D2) returns IN_SCOPE for every one, including this
+        task's own report.md path and its own epilogue edit — zero FOREIGN
+        rows printed, pasted into report.md.
+      tests:
+        - "fixture case per trailing-slash / /** / /* variant, red before the fix, green after"
+
+    - id: 2
+      agent: developer
+      mission: >
+        Build the new lib/leadv2-dod-gate.sh library implementing checks
+        (a) through (e) exactly per architect-v2 §4: hard checks a-d each
+        return a named dod_fail reason line and can independently trigger
+        rc=1, check (e) is report-only and never affects rc, check (c)
+        resolves suite registration in-process from tests/run-all.sh's
+        EXTRA_SUITE_MAP block with no shell-out, and every hard check reads
+        an unreadable/missing input as rc=2 undetermined rather than a false
+        pass or false fail.
+      reads:
+        - docs/handoff/WORKER-DOD-GATE-01/architect-v2.md#4-check-list
+        - plugins/leadv2/scripts/leadv2-suite-falsifiable.sh
+        - tests/run-all.sh
+      writes:
+        - plugins/leadv2/scripts/lib/leadv2-dod-gate.sh
+      acceptance: >
+        Against a fixture missing report.md with a brief that demands one,
+        lv2_dod_gate_run returns rc=1 with dod_fail check=report_missing_or_unheaded;
+        against the same fixture with a brief that never mentions report.md,
+        check (a) returns dod_skip and overall rc=0 if no other check fires;
+        against a fully-compliant fixture, rc=0; every invocation completes
+        under 5 seconds, timed and printed in the suite's own output.
+      tests:
+        - "one red+green fixture pair per hard check (a)-(d)"
+        - "one report-only assertion for check (e)"
+
+    - id: 3
+      agent: developer
+      mission: >
+        Rewrite leadv2-mutation-control.sh per architect-v2 §5: a
+        baseline-green-first gate that refuses to proceed on a non-green
+        baseline, a working-tree snapshot via git ls-files -co
+        --exclude-standard plus tar (never git archive HEAD, which is
+        committed-only and produces a lying-green result), a scratch tree
+        given its own git identity via git init/add/commit so git-dependent
+        suites run for a real reason, an exact-one anchor-match guard before
+        applying the mutation, and an artifact file under
+        <task_dir>/mutation-control/ carrying a diff_hash bound to the
+        round's authoritative diff.
+      reads:
+        - docs/handoff/WORKER-DOD-GATE-01/architect-v2.md#5-leadv2-mutation-controlsh
+        - plugins/leadv2/scripts/leadv2-suite-falsifiable.sh
+      writes:
+        - plugins/leadv2/scripts/leadv2-mutation-control.sh
+      acceptance: >
+        Run against a fixture suite with a deliberately red baseline (setup
+        crashes) -> exit 2 control_not_applied reason=baseline_not_green;
+        against a green-baseline suite with the anchor absent -> exit 2
+        reason=anchor_count; against a green-baseline suite with a valid
+        anchor and a mutation the suite's own assertions do not cover ->
+        exit 1 mutant_survived; against a green-baseline suite with a valid
+        anchor and a mutation the suite DOES cover -> exit 0 with a
+        "MUTATION-CONTROL ok ... diff_hash=<hash>" line and the artifact file
+        written; all four runs executed and pasted with their exit code and
+        stdout; git -C ROOT status --porcelain is empty after every run.
+      tests:
+        - "the 4 exit-code cases above, each run and pasted, not asserted from memory"
+
+    - id: 4
+      agent: developer
+      mission: >
+        Wire the hard gate into leadv2-dispatch-product-close.sh as a new
+        block inserted before the LEADV2_REVIEW_ENGINE branch check at line
+        2756, so it runs unconditionally regardless of that flag's value —
+        this is the direct fix for the CRITICAL finding that the gate was
+        previously reachable only behind a flag whose production default is
+        0. On rc=1 it writes review-gate.md with status fail and a
+        dod_<check> reason and exits 7 before the review engine or reviewer
+        pool is ever touched; on rc=2 it writes status blocked and exits with
+        the new code 10, journaling review_dod_blocked rather than the
+        existing review_roundcap cause.
+      reads:
+        - plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+        - docs/handoff/WORKER-DOD-GATE-01/architect-v2.md#8-wiring--fileline
+      writes:
+        - plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+      acceptance: >
+        Running the lane's product-close path with LEADV2_REVIEW_ENGINE
+        UNSET (the production default) against a fixture diff that violates
+        check (d) shows review-gate.md written with status: fail and
+        reason: dod_runtime_state_in_diff, the process exits 7, and grepping
+        the run's own stderr shows zero resolve_review_pool_call or
+        REVIEW_ENGINE log lines — the gate fired before the engine was ever
+        invoked. Repeating with LEADV2_REVIEW_ENGINE=1 shows the identical
+        refusal and exit 7.
+      tests:
+        - "refusal-path case, both LEADV2_REVIEW_ENGINE unset and =1"
+
+    - id: 5
+      agent: developer
+      mission: >
+        Add the defense-in-depth gate call to leadv2-review-run.sh as a
+        single conditional-source line placed after the falsifiability
+        gate's closing loop (~line 1318) and before the pool-resolve step
+        (line 1319), mirroring the existing _REVIEW_REROUTE_NOTE_SH
+        conditional-source idiom already in the file to keep this task's
+        footprint in a file shared with REVIEW-SENTINELS-LANGUAGE-01 to the
+        smallest possible diff; also add a new --task-dir argument to the
+        script's own argument parser so the gate reads the correct handoff
+        dir rather than assuming ${HANDOFF} equals the task dir.
+      reads:
+        - plugins/leadv2/scripts/leadv2-review-run.sh
+        - docs/handoff/WORKER-DOD-GATE-01/architect-v2.md#8-wiring--fileline
+      writes:
+        - plugins/leadv2/scripts/leadv2-review-run.sh
+      acceptance: >
+        Invoking leadv2-review-run.sh directly (bypassing
+        dispatch-product-close.sh) with --task-dir omitted against a
+        DoD-violating fixture shows a dod_skip check=no_task_dir note and
+        falls back to ${HANDOFF}-scoped checks only, never a crash or a
+        silent pass; with --task-dir supplied, the full check set runs and
+        status: fail reason: dod_<check> is written before any pool-resolve
+        log line, and the process exits 7.
+      tests:
+        - "--task-dir omitted vs supplied, both against the same DoD-violating fixture"
+
+    - id: 6
+      agent: developer
+      mission: >
+        Add the shared lv2_dod_retry_or_finalize() function to
+        lib/leadv2-worker-epilogue.sh implementing Option C's retry contract
+        (D10), then wire a <=8-line retry_hook_fn into each of the 4 coder
+        wrappers (glm-coder.sh, kimi-coder.sh, freepool-coder.sh,
+        claude-subsession.sh) right after their existing
+        leadv2_worker_commit_epilogue() call sites; per D11/R9, before wiring
+        each wrapper's hook the implementer must verify that wrapper's inner
+        turn-loop is re-enterable mid-flight — if it is not, that wrapper's
+        hook must degrade to a documented no-op citing R9 rather than crash
+        or silently skip the separate hard gate at step 4.
+      reads:
+        - plugins/leadv2/scripts/lib/leadv2-worker-epilogue.sh
+        - plugins/leadv2/scripts/glm-coder.sh
+        - plugins/leadv2/scripts/kimi-coder.sh
+        - plugins/leadv2/scripts/freepool-coder.sh
+        - plugins/leadv2/scripts/claude-subsession.sh
+      writes:
+        - plugins/leadv2/scripts/lib/leadv2-worker-epilogue.sh
+        - plugins/leadv2/scripts/glm-coder.sh
+        - plugins/leadv2/scripts/kimi-coder.sh
+        - plugins/leadv2/scripts/freepool-coder.sh
+        - plugins/leadv2/scripts/claude-subsession.sh
+      acceptance: >
+        Against a fixture worker session with a DoD-failing commit, each
+        wrapper's retry_hook_fn is invoked exactly once (a log line asserts
+        this), .dod-attempt increments to 1, and the wrapper's own inner loop
+        is shown to have received the feedback text by grepping that
+        wrapper's own log/transcript for the fed-back reason line — captured
+        for at least glm-coder.sh and claude-subsession.sh; the other two are
+        either captured with the same assertion shape or explicitly marked
+        no-op with a comment citing R9 if their loop is confirmed
+        non-re-enterable.
+      tests:
+        - "retry_hook_fn invocation + .dod-attempt increment, per wrapper"
+
+    - id: 7
+      agent: developer
+      mission: >
+        Add a new readonly string _LEADV2_DOD_GATE_CONTRACT_MISSION to
+        leadv2-helpers.sh, in the same neighborhood as the proven
+        _LEADV2_EVIDENCE_CONTRACT_MISSION precedent, describing the DoD
+        checks and the mutation-control contract in worker-facing language —
+        this is the fix for the critic's finding that the original
+        prompts/** row had no confirmed mechanism reaching a live worker
+        system prompt, and it must reach every arm the same way the
+        evidence-contract string already does.
+      reads:
+        - plugins/leadv2/scripts/leadv2-helpers.sh
+      writes:
+        - plugins/leadv2/scripts/leadv2-helpers.sh
+      acceptance: >
+        A worker mission assembled through the same call site that already
+        includes the evidence-contract string now also contains the DoD-gate
+        contract text verbatim — grepping the assembled mission file shows
+        both strings present in the same output.
+
+    - id: 8
+      agent: developer
+      mission: >
+        Extend leadv2-lane-outcome.sh to read worker_dod= from progress.log
+        (or meta.yaml) and append a dod=fail:<checks> field to its own
+        status-line output when present, making it the named reader for the
+        soft-tier signal that lv2_dod_retry_or_finalize() writes — the
+        critic's finding was that this field previously had zero readers
+        anywhere in the codebase, equivalent to not writing it at all.
+      reads:
+        - plugins/leadv2/scripts/leadv2-lane-outcome.sh
+      writes:
+        - plugins/leadv2/scripts/leadv2-lane-outcome.sh
+      acceptance: >
+        Run against a fixture progress.log containing
+        worker_dod=fail:paste_evidence_missing — the status line output gains
+        dod=fail:paste_evidence_missing; against a worker_dod=pass fixture,
+        the existing output is unchanged (regression check pasted alongside).
+
+    - id: 9
+      agent: developer
+      mission: >
+        Build plugins/leadv2/scripts/tests/test-worker-dod-gate.sh covering
+        one red+green fixture pair per hard check (a)-(d), a report-only
+        assertion for check (e), the 4 mutation-control exit-code cases from
+        step 3, a refusal-path case asserting dispatch-product-close.sh exits
+        7 before any pool-resolve log line with LEADV2_REVIEW_ENGINE both
+        unset and =1, an rc=2/dod_skip case per hard check simulating an
+        unreadable or missing input, and a portability case simulating a repo
+        with no tests/run-all.sh at all; register the suite in
+        tests/run-all.sh's EXTRA_SUITE_MAP with two rows (one per new
+        script), coordinating the shared-file edit with the 3 sibling lanes
+        per D14.
+      reads:
+        - docs/handoff/WORKER-DOD-GATE-01/brief.md
+        - docs/handoff/WORKER-DOD-GATE-01/architect-v2.md#4-check-list
+        - docs/handoff/WORKER-DOD-GATE-01/architect-v2.md#6-testsrun-allsh--required-change-v2-reduced-scope
+      writes:
+        - plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
+        - tests/run-all.sh
+      acceptance: >
+        leadv2-suite-falsifiable.sh test-worker-dod-gate.sh exits 0
+        (verdict: falsifiable); every negative control listed above is
+        individually RUN and its red result pasted, not asserted from
+        memory; a diff touching only leadv2-mutation-control.sh causes
+        tests/run-all.sh --scope changed to list test-worker-dod-gate.sh,
+        run exactly once to avoid the CHALLENGE-06 state-poisoning trap.
+      tests:
+        - "the full fixture matrix named in the mission, each run once and pasted"
+
+    - id: 10
+      agent: developer
+      mission: >
+        Write report.md for this task: run the gate against this task's own
+        committed diff and report.md (it must pass its own gate), include the
+        cause-row table from the brief with the check that would have caught
+        each historical review-round row, the check (a)/(b) calibration
+        numbers measured against the 37-report corpus (target 0 false
+        refusals for (a), <=15% for (b)), the dod_* sentinel-enum handshake
+        request addressed to REVIEW-SENTINELS-LANGUAGE-01's parser, and an
+        explicit "what this gate does NOT catch" section (design
+        disagreement, reviewer hallucination — routed to
+        GATE-PROVES-ITS-OWN-CONTROL-01, not claimed as covered here).
+      reads:
+        - docs/handoff/WORKER-DOD-GATE-01/brief.md
+        - "docs/handoff/*/report.md (the 37-report calibration corpus)"
+      writes:
+        - docs/handoff/WORKER-DOD-GATE-01/report.md
+      acceptance: >
+        Running lib/leadv2-dod-gate.sh against this task's own committed
+        diff and report.md returns rc=0 — the invocation and its full stdout
+        pasted as the closing proof in report.md itself.
+
+  parallel_groups:
+    - [step_1]
+    - [step_2, step_3, step_7, step_8]
+    - [step_4, step_5, step_6]
+    - [step_9]
+    - [step_10]
+
+reviews: {}
+
+allowed_tools:
+  intake:   [Read, Glob, Grep, WebFetch, WebSearch, "codebase-memory-mcp-*"]
+  classify: [Read, Glob, Grep, WebFetch, WebSearch, "codebase-memory-mcp-*"]
+  plan:     [Read, Glob, Grep, WebFetch, WebSearch, "codebase-memory-mcp-*"]
+  build:    [Read, Edit, Write, Bash, Glob, Grep]
+  review:   [Read, Bash, Grep]
+  deploy:   [Bash, Read]
+  close:    [Read, Write]
+
+verification:
+  live_signal: "review_gate task=WORKER-DOD-GATE-01 status=fail round=0 reason=dod_<check> decision line, and zero resolve_review_pool_call/engine-invocation log lines in the same run"
+  probe:
+    type: log-grep
+    args:
+      cmd: "bash plugins/leadv2/scripts/leadv2-dispatch-product-close.sh <fixture-args-for-a-dod-violating-lane>"
+      pattern: "review_gate task=.* status=fail .*reason=dod_"
+      anti_pattern: "resolve_review_pool_call|REVIEW_ENGINE"
+  timeout: 1800
+  criteria:
+    - id: gate-fires-unconditionally
+      type: programmatic
+      expect: exit_zero
+      check: ["bash", "-c", "LEADV2_REVIEW_ENGINE= bash plugins/leadv2/scripts/leadv2-dispatch-product-close.sh <fixture-dod-violating-args>; test $? -eq 7"]
+    - id: mutation-control-baseline-gate
+      type: programmatic
+      expect: exit_zero
+      check: ["bash", "-c", "plugins/leadv2/scripts/leadv2-mutation-control.sh <red-baseline-fixture-args>; test $? -eq 2"]
+    - id: dod-gate-suite-falsifiable
+      type: programmatic
+      expect: exit_zero
+      check: ["bash", "plugins/leadv2/scripts/leadv2-suite-falsifiable.sh", "test-worker-dod-gate.sh"]
+    - id: report-passes-own-gate
+      type: judge
+      rubric: "docs/handoff/WORKER-DOD-GATE-01/report.md pastes a live run of lib/leadv2-dod-gate.sh against this task's own committed diff and report.md, showing rc=0 with full stdout, not a claimed/asserted result"
+
+acceptance:
+  authored_at: 2026-09-02T03:18:44Z
+  surface: log_line
+  observable: >
+    Running plugins/leadv2/scripts/leadv2-dispatch-product-close.sh against a
+    fixture lane built to violate exactly one of checks (a)-(d), with
+    LEADV2_REVIEW_ENGINE UNSET (production default), prints a
+    "review_gate task=<x> status=fail round=0 reason=dod_<check>" decision
+    line, review-gate.md on disk shows status: fail / reason: dod_<check>,
+    and the same run's stderr contains zero resolve_review_pool_call or
+    review-engine-invocation log lines — a human watching the run sees the
+    round refused for the price of one bash invocation before any reviewer
+    model or the review engine binary is ever touched, on the path
+    production actually takes (LEADV2_REVIEW_ENGINE unset), not only behind
+    an opt-in flag. Repeating with LEADV2_REVIEW_ENGINE=1 set shows the
+    identical refusal line and exit 7 before the engine binary is invoked.
+  probe_cmd: "LEADV2_REVIEW_ENGINE= bash plugins/leadv2/scripts/leadv2-dispatch-product-close.sh <fixture-dod-violating-lane-args> 2>&1 | grep 'review_gate task='"
+  regression_only: []
+
+# DELIVERABLE_COMPLETE
