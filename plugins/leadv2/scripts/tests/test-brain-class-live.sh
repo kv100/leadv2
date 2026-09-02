@@ -57,7 +57,7 @@ run_classify() {
   # suite's own PROJECT_ROOT, the guard sees env!=cwd, and every brain.yaml /
   # journal artifact lands in the caller's repo instead of ${root}. Blank them
   # out (empty == unset under the resolver's ${VAR:-} chain) so ${root} wins.
-  CLAUDE_PROJECT_ROOT= CLAUDE_PROJECT_DIR= LEADV2_PROJECT_ROOT= \
+  blank_project_root_env \
     LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${root}" LEADV2_TASK_JUDGE_BIN="${judge}" \
     founder_task_id="${task_id}" JOURNAL_TASK="${task_id}" \
     bash -c '
@@ -69,6 +69,14 @@ run_classify() {
 
 journal_file() { # <root> <task_id>
   find "$1/docs/leadv2/tasks/$2" -iname '*journal*' 2>/dev/null | head -1
+}
+
+# blank_project_root_env <cmd...> -- run <cmd...> with CLAUDE_PROJECT_ROOT,
+# CLAUDE_PROJECT_DIR and LEADV2_PROJECT_ROOT blanked (see the comment in
+# run_classify for why this must precede every sourced dispatch-code.sh call,
+# including the (d) re-entry path which is NOT routed through run_classify).
+blank_project_root_env() {
+  env CLAUDE_PROJECT_ROOT= CLAUDE_PROJECT_DIR= LEADV2_PROJECT_ROOT= "$@"
 }
 
 # ── (a) light mission touching hooks/+safety -> escalated to Standard|Heavy ──
@@ -199,7 +207,7 @@ printf '%s' "${d_all}" | grep -q 'brain_decision task=brainD01 class=Heavy class
 # Same-task re-entry (cmd_advance_arm's path): _resolve_class_with_brain_floor
 # must read that same brain.yaml as a floor over an independently-derived
 # (lower) base class, and journal which record source won.
-out_d2="$(LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${TMP_D}" bash -c '
+out_d2="$(blank_project_root_env LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${TMP_D}" bash -c '
   source "$1"
   _resolve_class_with_brain_floor "brainD01" "dispatch-brainD" "Light"
 ' _ "${DISPATCH_SH}" 2>&1)"
