@@ -160,6 +160,11 @@ leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-classifi
 leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
 leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
 leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
+# GUARD-CENSUS-IS-WRONG-01 round 2: the dispatcher hook had NO suite at all —
+# every verdict-kind/rotation line was untested until this mapping.
+leadv2-bash-pre-dispatch.sh:plugins/leadv2/scripts/tests/test-bash-pre-dispatch-verdict.sh
+leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-bash-pre-dispatch-verdict.sh
+leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-bash-pre-dispatch-verdict.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
 leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
