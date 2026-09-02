@@ -144,6 +144,14 @@ _dod_filename_tokens() { # <text> -> stdout, one filename-shaped token per line
 }
 
 # heading<TAB>has_fence(0|1)<TAB>body — one row per heading section in report.md
+#
+# Body lines are joined with a space, never a real newline: the caller reads
+# one \x01-joined record per line (`while IFS=$'\x01' read -r heading
+# has_fence body`), and `read` always stops at LF regardless of IFS. A body
+# that embeds literal "\n" (the pre-fix behaviour) silently splits ONE
+# section into many malformed reads — heading empty after the first physical
+# line, so every line past the first is dropped from the match, a false
+# refusal for any multi-line report section (i.e. nearly every real one).
 _dod_report_sections() { # <report_md> -> stdout rows, \x01-joined (heading, has_fence, body b64)
   [[ -f "$1" ]] || return 0
   awk '
@@ -152,7 +160,7 @@ _dod_report_sections() { # <report_md> -> stdout rows, \x01-joined (heading, has
       if (heading != "") { printf "%s\x01%s\x01%s\n", heading, fence, body }
       heading = $0; body = ""; fence = 0; next
     }
-    { body = body $0 "\n"; if ($0 ~ /^```/) fence = 1 }
+    { body = body $0 " "; if ($0 ~ /^```/) fence = 1 }
     END { if (heading != "") printf "%s\x01%s\x01%s\n", heading, fence, body }
   ' "$1"
 }

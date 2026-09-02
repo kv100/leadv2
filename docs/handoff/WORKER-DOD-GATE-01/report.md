@@ -231,7 +231,32 @@ $ bash plugins/leadv2/scripts/lib/leadv2-dod-gate.sh \
     "$(pwd)" docs/handoff/WORKER-DOD-GATE-01 /tmp/dodgate-report/round.diff \
     docs/handoff/WORKER-DOD-GATE-01/dod-gate.md
 ```
-<!-- GATE_SELF_RUN_PLACEHOLDER -->
+
+```
+# dod-gate report — 2026-09-02T10:33:39Z
+
+dod_pass check=report
+dod_pass check=paste_evidence
+dod_pass check=suite_registration
+dod_pass check=runtime_state
+RC=0
+```
+
+**Bug found and fixed while producing this proof**: the first two attempts at
+this self-check both failed `check=paste_evidence_missing` for every
+multi-line report section, including this one's own `## Mutation-control`
+section which plainly contains the words the brief lines ask for. Root
+cause: `_dod_report_sections()`'s awk joined a section's body lines with a
+literal `\n`, but its caller reads one record per line
+(`while IFS=$'\x01' read -r heading has_fence body`) — `read` stops at LF
+regardless of `IFS`, so any section with more than one body line silently
+fractured into multiple malformed reads, and only the section's FIRST body
+line ever participated in the overlap match. That is a false-refusal bug
+for nearly every real report section (multi-line is the norm), not just
+this one. Fixed by joining body lines with a space instead
+(`plugins/leadv2/scripts/lib/leadv2-dod-gate.sh`, `_dod_report_sections`) —
+re-ran `test-worker-dod-gate.sh` after the fix, still 27/27 green (no
+regression), then re-ran this self-check to get the `rc=0` pasted above.
 
 ## Not done (honest)
 
