@@ -5056,6 +5056,21 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
   return 1
 }
 
+# GLM-EFFICIENCY-01: class -> effort contract for the GLM spawn, one function
+# so suites can extract and test it in isolation (test-glm-effort-wiring.sh).
+# Raw task class in, Z.AI effort out (docs.z.ai/guides/llm/glm-5.3.md:
+# reasoning_effort low|high|max, default max; CC 2.1.258 also accepts medium,
+# which Z.AI auto-converts to high). An unrecognized class falls back to the
+# arbiter's RESOLVED_EFFORT, then high — never empty.
+_glm_effort_for_class() { # <raw task class>
+  case "${1:-standard}" in
+    trivial|light|bulk) printf '%s' 'low' ;;
+    standard)           printf '%s' 'high' ;;
+    heavy|strategic)    printf '%s' 'max' ;;
+    *)                  printf '%s' "${RESOLVED_EFFORT:-high}" ;;
+  esac
+}
+
 _spawn_worker_body() {
   local arm="$1" mission="$2" sig8="$3" errf="$4"
   local out rc handle err
@@ -5101,11 +5116,22 @@ _spawn_worker_body() {
       if [[ "${arm}" == "glm-flash" ]]; then
         _glm_model="glm-5.3-flash"
       fi
-      # EFFORT-IS-NOT-WIRED-01: glm-coder.sh has no effort knob (prompt-level
-      # only, per docs/model-effort-matrix.md's lane table) -- a silently
-      # ignored resolved effort is indistinguishable from no effort at all, so
-      # journal the drop as a fact instead of pretending the value took effect.
-      emit decision "effort_dropped by=router arm=${arm} task=${sig8} effort=${RESOLVED_EFFORT:-medium} reason=no_effort_control"
+      # GLM-EFFICIENCY-01: RESOLVED_EFFORT is now WIRED, not dropped. glm-coder.sh
+      # appends `--effort <v>` to its `claude -p` argv when GLM_EFFORT is set
+      # (CC 2.1.258 --effort; Z.AI's Anthropic-compat layer reads it as
+      # output_config.effort — probe: docs/handoff/GLM-EFFICIENCY-01/report.md).
+      # Mapping is by RAW task class (this dispatcher owns the class->effort
+      # contract; the arbiter's effort_matrix is tag-keyed and cannot see the
+      # raw class): trivial|light -> low, standard -> high, heavy|strategic ->
+      # max, bulk -> low (mechanical). Review/verify roles would pay `high`
+      # regardless of class — glm is in DEFAULT_REVIEW_EXCLUSIONS today, so
+      # this row is contract-complete but currently unreachable.
+      local _glm_effort
+      _glm_effort="$(_glm_effort_for_class "${DC_TASK_CLASS:-standard}")"
+      case "${LEADV2_WORKER_ROLE:-developer}" in
+        review|verify|critic) _glm_effort=high ;;
+      esac
+      emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} mechanism=flag source=class_map resolved=${RESOLVED_EFFORT:-unset}"
       # FIX PASS 4: `9>&-` closes the lock fd for this call as defense-in-depth -- the
       # redesign already never holds the dispatch lock across spawn (spawn_worker runs
       # outside any lock this script itself opens), but a launcher spawns a DETACHED
@@ -5116,7 +5142,7 @@ _spawn_worker_body() {
       # The GLM wrapper owns the terminal JSON envelope and invokes the shared
       # dev cost shim only after it exists.  Stamp this dispatch identity here
       # so direct and dispatcher-launched lanes use one attribution contract.
-      out="$(LEADV2_COSTLOG_ARM="glm-coder:${arm}" LEADV2_WORKER_ROLE=developer GLM_MODEL="${_glm_model}" bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      out="$(LEADV2_COSTLOG_ARM="glm-coder:${arm}" LEADV2_WORKER_ROLE=developer GLM_MODEL="${_glm_model}" GLM_EFFORT="${_glm_effort}" bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
         local refusal

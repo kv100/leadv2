@@ -104,7 +104,9 @@ add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 # runs its suite instead of silently dropping it.
 EXTRA_SUITE_MAP="glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-lock-per-lane.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
+glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-effort-wiring.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-glm-effort-wiring.sh
 leadv2-phase8-assert.sh:plugins/leadv2/scripts/tests/test-phase8-a2-id-resolution.sh
 leadv2-hook-session-kind.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
 leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-beat-loop-orphans.sh
