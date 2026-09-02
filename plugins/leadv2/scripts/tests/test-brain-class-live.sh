@@ -50,7 +50,15 @@ EOF
 # unit slice) followed by a line "CLASS=<c> SOURCE=<s>"
 run_classify() {
   local dsh="$1" root="$2" judge="$3" task_id="$4" sig8="$5" explicit="$6" flagged="$7" mission="$8"
-  LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${root}" LEADV2_TASK_JUDGE_BIN="${judge}" \
+  # Hermetic root: FOREIGN-PROJECT-ROOT-GUARD-01 resolves the env root as
+  # CLAUDE_PROJECT_ROOT > CLAUDE_PROJECT_DIR > PROJECT_ROOT > LEADV2_PROJECT_ROOT,
+  # so a caller-session leak of the three higher-precedence spellings (the
+  # live-proof harness exports all of them to its fixture repo) outranks this
+  # suite's own PROJECT_ROOT, the guard sees env!=cwd, and every brain.yaml /
+  # journal artifact lands in the caller's repo instead of ${root}. Blank them
+  # out (empty == unset under the resolver's ${VAR:-} chain) so ${root} wins.
+  CLAUDE_PROJECT_ROOT= CLAUDE_PROJECT_DIR= LEADV2_PROJECT_ROOT= \
+    LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${root}" LEADV2_TASK_JUDGE_BIN="${judge}" \
     founder_task_id="${task_id}" JOURNAL_TASK="${task_id}" \
     bash -c '
       source "$1"
@@ -110,6 +118,69 @@ printf '%s' "${out_c}" | grep -q 'CLASS=Standard ' \
   && pass "(c) dispatch proceeds with declared class, no refusal" \
   || fail "(c) did not proceed with declared class: ${out_c}"
 rm -rf "${TMP_C}"
+
+# ── (c2) judge fails AND declared=Heavy -> floor holds at Heavy, not the ──
+# old hard-coded Standard. This is the exact case round-1 review found
+# uncovered: explicit=Standard (case c) passes identically whether or not
+# _judge_fail_floor exists, since Standard==Standard either way.
+TMP_C2="$(mktemp -d)"
+JUDGE_C2="$(mkstub_judge_fail "${TMP_C2}")"
+out_c2="$(run_classify "${DISPATCH_SH}" "${TMP_C2}" "${JUDGE_C2}" "dispatch-brainC2" "brainC201" "Heavy" "1" \
+  "some heavy mission")"
+printf '%s' "${out_c2}" | grep -q 'CLASS=Heavy ' \
+  && pass "(c2) judge failure + declared=Heavy floors admission class at Heavy" \
+  || fail "(c2) judge failure did not floor at Heavy: ${out_c2}"
+[[ -f "${TMP_C2}/docs/handoff/dispatch-brainC2/brain.yaml" ]] \
+  && grep -q '^class: Heavy' "${TMP_C2}/docs/handoff/dispatch-brainC2/brain.yaml" \
+  && pass "(c2) brain.yaml records class: Heavy under judge-fail floor" \
+  || fail "(c2) brain.yaml missing or wrong class for judge-fail floor"
+rm -rf "${TMP_C2}"
+
+# ── (c3) judge fails AND declared=Strategic -> floor holds at Strategic ─────
+TMP_C3="$(mktemp -d)"
+JUDGE_C3="$(mkstub_judge_fail "${TMP_C3}")"
+out_c3="$(run_classify "${DISPATCH_SH}" "${TMP_C3}" "${JUDGE_C3}" "dispatch-brainC3" "brainC301" "Strategic" "1" \
+  "some strategic mission")"
+printf '%s' "${out_c3}" | grep -q 'CLASS=Strategic ' \
+  && pass "(c3) judge failure + declared=Strategic floors admission class at Strategic" \
+  || fail "(c3) judge failure did not floor at Strategic: ${out_c3}"
+[[ -f "${TMP_C3}/docs/handoff/dispatch-brainC3/brain.yaml" ]] \
+  && grep -q '^class: Strategic' "${TMP_C3}/docs/handoff/dispatch-brainC3/brain.yaml" \
+  && pass "(c3) brain.yaml records class: Strategic under judge-fail floor" \
+  || fail "(c3) brain.yaml missing or wrong class for judge-fail floor"
+rm -rf "${TMP_C3}"
+
+# ── (c4) judge fails AND declared=Light -> floor never LOWERS below Standard ─
+TMP_C4="$(mktemp -d)"
+JUDGE_C4="$(mkstub_judge_fail "${TMP_C4}")"
+out_c4="$(run_classify "${DISPATCH_SH}" "${TMP_C4}" "${JUDGE_C4}" "dispatch-brainC4" "brainC401" "Light" "1" \
+  "some light mission")"
+printf '%s' "${out_c4}" | grep -q 'CLASS=Standard ' \
+  && pass "(c4) judge failure + declared=Light never lowers below Standard" \
+  || fail "(c4) judge failure with declared=Light did not floor at Standard: ${out_c4}"
+rm -rf "${TMP_C4}"
+
+# ── (c5) judge SUCCEEDS -> the judge's class wins over declared, both ways ──
+# up: declared=Light, judge computes Heavy (safety-touching) -> Heavy wins.
+TMP_C5="$(mktemp -d)"
+JUDGE_C5="$(mkstub_judge "${TMP_C5}" complex 4 safety_publish_payments build)"
+out_c5="$(run_classify "${DISPATCH_SH}" "${TMP_C5}" "${JUDGE_C5}" "dispatch-brainC5" "brainC501" "Light" "1" \
+  "touch safety/gate.sh")"
+printf '%s' "${out_c5}" | grep -q 'CLASS=Heavy \|CLASS=Standard ' \
+  && pass "(c5-up) judge success escalates over a lower declared class" \
+  || fail "(c5-up) judge success did not escalate: ${out_c5}"
+rm -rf "${TMP_C5}"
+# down: declared=Heavy, judge computes trivial -> declared floor holds Heavy
+# (same invariant as (b), restated here for the judge-succeeds/declared-wins
+# down-direction pairing the round-2 brief asks for).
+TMP_C6="$(mktemp -d)"
+JUDGE_C6="$(mkstub_judge "${TMP_C6}" trivial 1 none build)"
+out_c6="$(run_classify "${DISPATCH_SH}" "${TMP_C6}" "${JUDGE_C6}" "dispatch-brainC6" "brainC601" "Heavy" "1" \
+  "one-line typo fix")"
+printf '%s' "${out_c6}" | grep -q 'CLASS=Heavy ' \
+  && pass "(c5-down) declared floor holds Heavy over a lower judge-computed class" \
+  || fail "(c5-down) declared floor did not hold: ${out_c6}"
+rm -rf "${TMP_C6}"
 
 # ── (d) brain.yaml + brain_decision line name the class the guard enforces ──
 TMP_D="$(mktemp -d)"
@@ -174,6 +245,42 @@ else
   pass "MUTATION (d) killed: no brain.yaml written when judge call is skipped"
 fi
 rm -rf "${TMP_MUT}" "${TMP_MA}"
+
+# ── mutation negative control: revert _judge_fail_floor to the old ─────────
+# hard-coded `ADMISSION_CLASS="Standard"` -- the reviewer's EXACT round-1
+# mutation (this is the one case (c) alone failed to catch, since
+# explicit=Standard passes identically whether the floor exists or not).
+# Applied to a temp copy of dispatch-code.sh -- never the tracked file.
+TMP_MUT2="$(mktemp -d)"
+MUT2_SH="${TMP_MUT2}/leadv2-dispatch-code.sh"
+cp "${DISPATCH_SH}" "${MUT2_SH}"
+python3 - "${MUT2_SH}" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+needle = '''    local _judge_fail_floor
+    _judge_fail_floor="$(_lv2_class_canonical "${explicit}")"
+    if (( $(_lv2_class_rank "${_judge_fail_floor}") > $(_lv2_class_rank "Standard") )); then
+      ADMISSION_CLASS="${_judge_fail_floor}"
+    else
+      ADMISSION_CLASS="Standard"
+    fi'''
+assert needle in text, "_judge_fail_floor block not found -- mutation target drifted"
+mutated = text.replace(needle, '    ADMISSION_CLASS="Standard"', 1)
+with open(path, "w") as f:
+    f.write(mutated)
+PYEOF
+TMP_MB="$(mktemp -d)"
+JUDGE_MB="$(mkstub_judge_fail "${TMP_MB}")"
+out_mb="$(run_classify "${MUT2_SH}" "${TMP_MB}" "${JUDGE_MB}" "dispatch-brainMB" "brainMB01" "Heavy" "1" \
+  "some heavy mission")"
+if printf '%s' "${out_mb}" | grep -q 'CLASS=Heavy '; then
+  fail "MUTATION (c2) survived: floor held at Heavy even with the hard-coded revert"
+else
+  pass "MUTATION (c2) killed: reverting to hard-coded Standard loses the Heavy floor"
+fi
+rm -rf "${TMP_MUT2}" "${TMP_MB}"
 
 printf '\n=== test-brain-class-live.sh: %d PASS, %d FAIL ===\n' "${PASS}" "${FAIL}"
 [[ ${FAIL} -eq 0 ]]

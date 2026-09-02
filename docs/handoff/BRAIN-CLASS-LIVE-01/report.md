@@ -143,3 +143,124 @@ before check).
 
 python3 -m py_compile: no `.py` files changed by this lane (brain-record.sh calls `python3 -c`
 inline; no `.py` file was added or edited).
+
+## Round 2 evidence
+
+### Review verdict addressed
+
+Round-1 reviewer (glm) proved `test-brain-class-live.sh:98`'s case (c) covers `explicit=Standard`
+only, which passes identically whether `_judge_fail_floor` exists or not (Standard==Standard either
+way) — so removing the fix left the suite green. Added five new cases (c2–c6) plus a
+mutation-negative control that targets `_judge_fail_floor` specifically (not the earlier
+judge-call-skip mutation, which never exercised this branch).
+
+### 1. Missing cases added (`plugins/leadv2/scripts/tests/test-brain-class-live.sh`)
+
+- **(c2)** judge fails, declared=Heavy → `CLASS=Heavy`, `brain.yaml` `class: Heavy` (floor applied).
+- **(c3)** judge fails, declared=Strategic → `CLASS=Strategic`, `brain.yaml` `class: Strategic`.
+- **(c4)** judge fails, declared=Light → `CLASS=Standard` (floor never lowers below Standard).
+- **(c5-up)** judge succeeds, declared=Light, judge computes Heavy (safety-touching) → escalates.
+- **(c5-down)** judge succeeds, declared=Heavy, judge computes trivial → declared floor holds Heavy.
+
+Note on the brief's literal `floor=judge_fail declared=Heavy` phrasing: `leadv2-brain-record.sh`'s
+actual vocabulary for this path is `class_source: declared_fallback` / `reason: judge_unavailable`
+(verified in `leadv2_brain_record`, judge-failure branch, lines 178–180) — there is no
+`floor=judge_fail` field anywhere in the codebase (`grep -rn "floor=judge_fail"` — zero hits). Cases
+(c2)/(c3)/(c4) assert the actual observable contract instead: final `ADMISSION_CLASS` and
+`brain.yaml`'s `class:` field, which is what the phase-precondition guard reads.
+
+### 2. Mutation negative control — RAN, pasted RED, reverted
+
+Reverted `_judge_fail_floor` (leadv2-dispatch-code.sh:3911-3918) to the round-1 hard-coded
+`ADMISSION_CLASS="Standard"` on a throwaway `/tmp` copy, ran the (c2)-shape scenario
+(declared=Heavy, judge forced to fail) directly against it:
+
+```
+--- mutated file line context ---
+3911:    ADMISSION_CLASS="Standard"
+--- running case (c2)-shape scenario against MUTATED file (expect CLASS != Heavy, i.e. RED for the fix) ---
+[leadv2-dispatch-code] task_class=Standard route=phases source=classifier_error task=demoMUT1
+CLASS=Standard SOURCE=classifier_error
+```
+
+RED confirmed: declared=Heavy collapses to Standard exactly as round-1 reported. The real
+(unmutated) file, run through the identical harness, returns `CLASS=Heavy`. This exact mutation is
+now also wired into the suite itself as an automated negative control (`MUTATION (c2)` case, see
+suite output below) so a future revert of the fix fails the suite without a human re-running this
+by hand. Temp copy discarded; tracked file untouched throughout.
+
+### 3. Suite + falsifiability
+
+```
+$ LEADV2_SUITE_LOCK_DISABLE=1 bash plugins/leadv2/scripts/tests/test-brain-class-live.sh
+PASS: (a) light+risk mission escalates to Standard|Heavy, journaled
+PASS: (a) brain.yaml class_source=escalated
+PASS: (b) trivial-but-declared-Heavy holds the floor, journaled
+PASS: (b) final class stays Heavy
+PASS: (c) judge failure -> declared_fallback
+PASS: (c) dispatch proceeds with declared class, no refusal
+PASS: (c2) judge failure + declared=Heavy floors admission class at Heavy
+PASS: (c2) brain.yaml records class: Heavy under judge-fail floor
+PASS: (c3) judge failure + declared=Strategic floors admission class at Strategic
+PASS: (c3) brain.yaml records class: Strategic under judge-fail floor
+PASS: (c4) judge failure + declared=Light never lowers below Standard
+PASS: (c5-up) judge success escalates over a lower declared class
+PASS: (c5-down) declared floor holds Heavy over a lower judge-computed class
+PASS: (d) brain_decision line names class=Heavy
+PASS: (d) brain.yaml class: Heavy
+PASS: (d) re-entry guard floor reads brain.yaml class=Heavy over a lower base class
+PASS: MUTATION (a) killed: no class_escalated when judge call is skipped
+PASS: MUTATION (d) killed: no brain.yaml written when judge call is skipped
+PASS: MUTATION (c2) killed: reverting to hard-coded Standard loses the Heavy floor
+
+=== test-brain-class-live.sh: 19 PASS, 0 FAIL ===
+```
+
+```
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-brain-class-live.sh
+leadv2-suite-falsifiable: suite=.../test-brain-class-live.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=40
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+`tests/run-all.sh --scope changed`: `EXTRA_SUITE_MAP` in `tests/run-all.sh` (unchanged by this
+round) already carries three rows mapping this lane's changed stems to this suite —
+`leadv2-dispatch-code:...test-brain-class-live.sh`, `leadv2-brain-record:...test-brain-class-live.sh`,
+`leadv2-admission-class:...test-brain-class-live.sh` — so the suite is selected under
+`--scope changed` for this diff. The full run-all invocation could not be completed as clean
+evidence this round: it stalled for 35+ minutes inside `run-core-offline.sh` (a suite bundle
+outside this lane's `LANE_WRITES`, always-on regardless of scope) — `ps` showed the running child
+process's own command line pointing at a **different** active lane's worktree
+(`GUARD-CENSUS-IS-WRONG-01`) despite `run-all.sh`'s own `[RUN]` line correctly printing this
+worktree's path, which points at contention/cross-talk with one of the ~30 other concurrently
+active lanes over `docs/leadv2/`'s shared state, not at anything in this round's diff. Killed the
+stuck process rather than let it run further; `docs/leadv2/` and `docs/LEAD_V2_STATE.md` were
+`git checkout --`'d clean before every commit per this lane's boundary rule regardless. This is
+reported as a scope reduction, not papered over: the standalone suite run above plus the
+FALSIFIABLE verdict are the evidence actually gathered for item 3; the full `run-all.sh` line is
+not.
+
+### 4. Live dispatcher proof (merged tree, real `leadv2-dispatch-code.sh`)
+
+Ran the real dispatcher (not `LEADV2_DISPATCH_SOURCE_ONLY=1`) against a throwaway git-init'd fixture
+repo, `--task-class heavy`, a judge stub that `exit 7`s unconditionally (the same fixture shape
+`mkstub_judge_fail` uses), a harmless worker stub (prints `PID=... LABEL=t SESSION_ID=t`, does no
+real work), quota/gates disabled the same way `test-arm-capability-honoured.sh` does it. `--no-spawn`
+was tried first but never reaches `_model_select_telemetry` (that only fires on the `do_spawn=1`
+path — confirmed by reading `atomic_dispatch_reserve_spawn_confirm` and
+`leadv2-dispatch-code.sh:7803`); re-ran letting the harmless stub actually get spawned:
+
+```
+[leadv2-dispatch-code] task_class=Heavy route=phases source=classifier_error task=7f830018
+[leadv2-dispatch-code] complexity_estimate_unavailable task=7f830018 reason=judge_call_failed degrade=arbiter_uses_size_only
+...
+[leadv2-dispatch-code] model_select_telemetry task=7f830018 role=worker class=heavy work_kind=code arm=glm model=glm-5.3 fallback_depth=0 floor=none spawn_to_terminal_s=5 terminal=win cause=worker_spawned
+```
+
+`task_class=Heavy` (not Standard) confirms the floor held through the real dispatcher with a forced
+judge failure and a declared Heavy class; `model_select_telemetry ... class=heavy ... cause=worker_spawned`
+is the requested telemetry line. Fixture repo and worker stub discarded after the run; no artifacts
+left in this worktree (verified via `git status` immediately after).
