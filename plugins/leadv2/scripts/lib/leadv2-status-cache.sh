@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
-# scripts/lib/leadv2-status-cache.sh — STATUS-CHURN-01 shared status-snapshot cache.
+# scripts/lib/leadv2-status-cache.sh — STATUS-CHURN-01 scoped status-snapshot cache.
 #
-# THE BUG this fixes: every status consumer (leadv2-broad-status.sh,
-# leadv2-status-collector.sh, leadv2-lanes-snapshot.sh, leadv2-lane-liveness.sh,
-# leadv2-lane-status-line-tail.sh) ran its OWN independent Python scan of
-# active.yaml + every *-runs/ dir, spawned at its own cadence by a different
-# consumer (statusline, beat loop, pulse watch, backlog pump, lead hooks).
-# Measured 2026-09-01 (load avg 244): leadv2-broad-status.sh x10,
-# leadv2-status-collector.sh x8, leadv2-lanes-snapshot.sh x4,
-# leadv2-lane-liveness.sh x6 in ONE `ps` instant -- the CPU spikes are these
-# short-lived scans (66-92% of a core each), not the sleeping loops.
+# THE COST this pays down (measured 2026-09-01, load avg 244): the status
+# surfaces each spawn their own short-lived scans at their own cadence —
+# leadv2-broad-status.sh x10, leadv2-status-collector.sh x8,
+# leadv2-lanes-snapshot.sh x4, leadv2-lane-liveness.sh x6 in ONE `ps`
+# instant -- and those scans (66-92% of a core each), not the sleeping
+# loops, are the CPU spikes.
 #
-# THE FIX: ONE snapshot file per project control-plane
-# (`<control-plane>/status-snapshot.json`), atomic tmp+mv, stamped with
-# `computed_at`. A consumer asks for a snapshot no older than
+# WHAT THIS LIBRARY IS: a TTL/flock/journal cache around a compute step a
+# consumer supplies. It has exactly ONE production consumer today —
+# leadv2-status-collector.sh's git section (scope "git-facts"), whose
+# compute_cmd re-invokes that collector with --git-facts-only so a cache
+# miss pays the 3 git subprocesses the section needs instead of the whole
+# collector. Census (grep lv2_status_snapshot_get across
+# plugins/leadv2/scripts, 2026-09-02): that is the only call site. The other
+# status consumers still do their own reads; wiring them onto this cache is
+# future work, deliberately not claimed here (R3 H3/H4: headers must
+# describe what the diff DOES).
+#
+# Mechanics: ONE snapshot file per scope under the project control-plane
+# (`<control-plane>/status-snapshot[-<scope>].json`), atomic tmp+mv, stamped
+# with `computed_at`. A consumer asks for a snapshot no older than
 # LEADV2_STATUS_SNAPSHOT_TTL_S (default 10, floor 3): if fresh, it reads the
 # file immediately (`hit`); if stale, exactly ONE producer wins a
 # non-blocking flock and recomputes (`recompute`) while the rest poll for up
@@ -25,29 +33,29 @@
 # caller recomputes rather than trusting stale content past the bound).
 #
 # Every call appends exactly one line to
-# `<control-plane>/status-snapshot-journal.jsonl`:
-#   {"ts":<epoch>,"event":"status_snapshot","kind":"hit|miss|recompute","producer":"<name>","age_s":<n>}
-# `leadv2-spawn-rate.sh` reads this journal to compute the ticket's
-# before/after acceptance numbers.
+# `<control-plane>/status-snapshot[-<scope>]-journal.jsonl`:
+#   {"ts":<epoch>,"event":"status_snapshot","kind":"hit|recompute","producer":"<name>","age_s":<n>}
+# `age_s` is always the age of the snapshot the caller was SERVED: hits
+# report the age of the file they read; recomputes report ~0 (the file they
+# just wrote), with the pre-recompute staleness kept as a separate
+# `stale_age_s` diagnostic field. `leadv2-spawn-rate.sh` counts kinds only
+# (it reads kind/producer, never age_s), so the age_s semantics above are
+# safe for it.
 #
-# WHAT THIS DOES NOT DO: it does not change what any status surface
-# DISPLAYS. It only caches the raw COMPUTE step behind a `compute_cmd` that
-# each consumer supplies; the consumer's own rendering/formatting logic is
-# untouched. A consumer that needs bespoke fields writes its own
-# `compute_cmd` that emits whatever JSON shape it wants under the shared
-# snapshot file (last writer's shape wins the file until the next recompute)
-# -- see leadv2-status-collector.sh's compute step for the reference shape
-# (active.yaml raw text + a directory listing of every `*-runs` dir with
-# mtimes), which is the superset the other four consumers were duplicating.
+# Cached-file shape: whatever compute_cmd prints (a JSON object; non-JSON
+# stdout is wrapped as {"raw": "<stdout>"}), with computed_at/producer
+# OVERWRITTEN by this library at write time. The one live compute_cmd
+# (git-facts) emits {local_head, branch, unpushed, computed_at: null,
+# producer: null} — the two nulls keep ONE shape on every path, including
+# the caller's own bypass/fallback which prints compute_cmd output as-is.
 #
 # Usage (source, then call):
 #   source ".../lib/leadv2-status-cache.sh"
 #   snap_path="$(lv2_status_snapshot_get "<producer-name>" "<compute_cmd> [args...]")"
 #   # $snap_path is the absolute path to a fresh-enough JSON file; read it.
 #
-# compute_cmd MUST print a JSON object (or object-producing text) to stdout;
-# non-JSON stdout is wrapped as {"raw": "<stdout>"}. computed_at/producer are
-# added by this library, not by compute_cmd.
+# compute_cmd MUST print a JSON object (or object-producing text) to stdout.
+# computed_at/producer are set by this library, not by compute_cmd.
 #
 # Bash 3.2 compatible: no associative arrays, no readarray, no ${x^^}.
 
@@ -153,15 +161,18 @@ def read_computed_at(path):
         return None
 
 
-def journal(kind, age_s):
+def journal(kind, age_s, stale_age_s=None):
     try:
-        line = json.dumps({
+        rec = {
             "ts": time.time(),
             "event": "status_snapshot",
             "kind": kind,
             "producer": producer,
             "age_s": age_s,
-        })
+        }
+        if stale_age_s is not None:
+            rec["stale_age_s"] = stale_age_s
+        line = json.dumps(rec)
         with open(journal_path, "a") as jf:
             jf.write(line + "\n")
     except Exception:
@@ -215,8 +226,11 @@ except (BlockingIOError, OSError):
 
 if got_lock:
     try:
-        do_compute()
-        journal("recompute", 0.0 if age is None else round(age, 3))
+        # age_s is the age of the snapshot SERVED (the one just written, ~0);
+        # the pre-recompute staleness rides along as stale_age_s (R3 H6).
+        new_ts = do_compute()
+        journal("recompute", round(time.time() - new_ts, 3),
+                None if age is None else round(age, 3))
         print(snapshot_path)
     finally:
         try:
@@ -275,8 +289,8 @@ try:
     c = read_computed_at(snapshot_path)
     if c is not None:
         stale_age = round(time.time() - c, 3)
-    do_compute()
-    journal("recompute", -1.0 if stale_age is None else stale_age)
+    new_ts = do_compute()
+    journal("recompute", round(time.time() - new_ts, 3), stale_age)
     print(snapshot_path)
 finally:
     if locked_here:
