@@ -208,3 +208,140 @@ suite=tests/test-run-all-carrier-map.sh                        baseline rc=0; as
 ### run-all --scope changed tail
 
 See the lane journal / final report paste for this run (executed post-fix; result recorded below).
+
+## R7 findings (judge verdict, full text: `docs/handoff/FABLE-THINK-TIER-01/judge-r7.md`)
+
+Lane tip judged: `8fc75fe2`. Suite on that tip: `PASS=45 FAIL=0`; falsifiable gate: `falsifiable`.
+
+| # | Item | Verdict | Evidence |
+|---|------|---------|----------|
+| 1 | Kill switch on every channel | **REAL** (not resolved) | Router says `opus`, but the real `leadv2-diverge.js` `THINK_MODEL` const evaluated `fable` under a `LEADV2_THINK_MODEL=fable` + yaml-unavailable probe (§1a of judge-r7.md). The R7 dispatch-side NC was also vacuous: a single-bracket `if [ -z ... ]` respelling of the skip-if-pinned guard left the suite `PASS=45 FAIL=0` while the child-side print still showed `CHILD=fable` (§1c). |
+| 2 | Dead carrier-map row (`tests/run-all.sh`) | REFUTED (resolved) | `bash tests/test-run-all-carrier-map.sh` → `5 passed, 0 failed`; NC (delete the R7 `elif`) → `4 passed, 1 failed` on exactly the carrier case. |
+| 3 | Kill switch fails OPEN without PyYAML | REFUTED (resolved) | Live `ImportError` shim: resolver returns `opus` (closed); working-PyYAML control on the same yaml returns `fable`. NC (revert both `true`→`false`) → `PASS=43 FAIL=2` on exactly the two new cases. |
+| 4 | `report.md` never updated in R7 | **REAL** (not resolved) | `grep -c '## R7 findings' report.md` = 0 pre-this-round; mtime (06:07) predated the R7 commit (13:12). |
+
+Items 2 and 3 were preserved verbatim this round per the judge's instruction; items 1 and 4 are addressed below.
+
+## R8 findings
+
+### Item 1 — kill switch on the JS channel — REFUTED (fixed this round)
+
+Root cause (judge-r7.md §1a): the four THINK workflows (`leadv2-diverge.js`, `leadv2-diagnose.js`,
+`leadv2-learn.js`, `leadv2-po-feedback-loop.js`) read `process.env.LEADV2_THINK_MODEL` as an outright
+override, populated at **install time** by `leadv2-repo-install.sh:299,312` into `.claude/settings.json`.
+Nothing re-resolved it when a workflow launched directly from the lead's own session (no
+`leadv2-dispatch-code.sh` in the path) — so flipping `model-capability.yaml`'s `fable.unavailable` to
+`true` changed nothing until the next install.
+
+Fix (WORKFLOW-BASH-FIX-01 constraint honoured: the Workflow-tool JS sandbox has "No filesystem or
+Node.js API access" — confirmed via the `workflow-authoring` skill this round — so `agent()` is the
+only execution primitive available; no `require('child_process')` inside a real workflow script). Each
+of the four workflows now re-resolves through `leadv2-router.sh think-model` at RUN time via a sentinel-
+bracketed block (`// FABLE-THINK-TIER-01 R8 think-model-resolve:start` ... `:end`): `a.model` (explicit
+caller override) still wins outright and skips the resolver entirely (no wasted `agent()` call); absent
+that, an `agent()` call runs `bash .../leadv2-router.sh think-model` and its trimmed stdout becomes
+`THINK_MODEL`; on a resolver-unreachable exception, falls open to the stale env/`'fable'` default rather
+than crashing the workflow.
+
+**Child-side runtime probe (brief's own acceptance test), re-run fresh this round:**
+```
+$ T=$(mktemp -d); printf 'fable:\n  unavailable: true\n' > "$T/cap.yaml"
+$ LEADV2_THINK_MODEL=fable LEADV2_MODEL_CAPABILITY_YAML="$T/cap.yaml" \
+    bash plugins/leadv2/scripts/leadv2-router.sh think-model
+opus
+$ # extract the REAL think-model-resolve sentinel block from leadv2-diverge.js and evaluate it
+$ # with node, injecting an agent() that shells to the REAL router (the harness's own agent()
+$ # cannot be invoked outside a live Workflow run; this is the same substitution the suite's
+$ # _run_think_case helper uses)
+$ LEADV2_THINK_MODEL=fable LEADV2_MODEL_CAPABILITY_YAML="$T/cap.yaml" node -e '...'
+CHILD THINK_MODEL=opus
+```
+Router `opus`, child `opus` — the defect named in judge-r7.md §1a no longer reproduces on any of the
+four workflows (all four are asserted by the suite's new cases 1f/1g/1h, see below).
+
+**Spelling-independent negative control (judge-r7.md §1c), proven in a mktemp FULL copy
+(`plugins/` incl. `scripts/lib/`, plus `tests/`), baseline shown green FIRST:**
+```
+$ M=$(mktemp -d); cp -R plugins "$M"/; cp -R tests "$M"/
+$ LEADV2_SUITE_LOCK_DISABLE=1 bash "$M/plugins/leadv2/scripts/tests/test-fable-think-tier.sh" \
+    | grep -E "^FAIL|PASS=|dispatch export path"
+PASS: dispatch export path runs under set -u even with a pre-set pin; spawned child sees resolver's answer LEADV2_THINK_MODEL=opus (kill switch overwrote the 'fable' pin)
+PASS=55 FAIL=0
+$ # mutate: wrap the resolver call in the FULL copy with the single-bracket
+$ #   if [ -z "${LEADV2_THINK_MODEL:-}" ]; then ... fi
+$ # (the exact respelling that evaded the R7 grep-only defence)
+$ LEADV2_SUITE_LOCK_DISABLE=1 bash "$M/plugins/leadv2/scripts/tests/test-fable-think-tier.sh" \
+    | grep -E "^FAIL|PASS=|dispatch export path"
+FAIL: dispatch export path DEAD/LEAKY: spawned child LEADV2_THINK_MODEL='fable' (expected 'opus' — resolver's answer) with a pre-set settings.json-style 'fable' pin on entry — a -z guard would skip the resolver here and leak the pin
+PASS=54 FAIL=1
+```
+Case 1e now goes red on ANY spelling of the guard because `test-fable-think-tier.sh`'s extraction
+window was widened: `blk_end` anchors on the next stable, unrelated block (the `LEADV2_TRACE`
+sourcing line) instead of the export line itself, so the extracted "runtime" region swallows any
+enclosing conditional placed around the resolver call, regardless of bracket style or placement
+before/after the resolver-call line.
+
+Case 1f (judge-r7.md §1b/§3 — the R7 case was tautological, feeding the router's own answer back in
+as the env) is replaced: each workflow's real sentinel block is now evaluated directly against an
+**unresolved** `fable` pin plus a killing yaml (the §1a probe as an assertion, cases 1f/1g/1h per
+workflow — see `PASS=55 FAIL=0` suite run above for all twelve).
+
+### Item 4 — `report.md` findings sections — REFUTED (fixed this round)
+
+This section and the R7 section above close the gap the judge found (`grep -c '## R7 findings'` was 0).
+
+### Falsifiable gate (`leadv2-suite-falsifiable.sh`, cwd = lane root)
+
+```
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-suite-falsifiable: suite=.../plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=69
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+### `bash -n` / suite self-check
+
+```
+$ bash -n plugins/leadv2/scripts/leadv2-router.sh plugins/leadv2/scripts/lib/leadv2-think-model.sh \
+    plugins/leadv2/scripts/tests/test-fable-think-tier.sh plugins/leadv2/scripts/leadv2-dispatch-code.sh
+OK (all four)
+$ LEADV2_SUITE_LOCK_DISABLE=1 bash plugins/leadv2/scripts/tests/test-fable-think-tier.sh | tail -1
+PASS=55 FAIL=0
+```
+
+### `run-all --scope changed` tail
+
+Stale lock cleared first: `/tmp/leadv2-core-offline--Users-kostiantyn-vlasenko-Projects-leadv2--claude-worktrees-FABLE-THINK-TIER-01.lock` held `pid=73299`, dead (`kill -0 73299` → "no such process"). Removed, re-ran with `timeout 1800` (machine load average ~27-37 across many concurrent lanes; the earlier `timeout 900` attempt hit `RC=124` mid-shard, not a hang — just genuinely slow under this load).
+
+```
+$ timeout 1800 bash tests/run-all.sh --scope changed
+...
+[RUN]  .../plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+PASS=55 FAIL=0
+[PASS] .../plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+  Failures (blocking):
+    - plugins/leadv2/scripts/tests/run-core-offline.sh
+    - tests/test-status-surface-bash32.sh
+run-all: 3 passed, 2 failed, scope=changed
+RC=1
+```
+
+This lane's own suite (`test-fable-think-tier.sh`) is green: `PASS=55 FAIL=0`, `[PASS]` in the top-level
+listing. The 2 failing top-level suites are pre-existing and **not touched by this round's diff**
+(`plugins/leadv2/scripts/leadv2-router.sh`, `plugins/leadv2/scripts/lib/leadv2-think-model.sh`,
+`plugins/leadv2/scripts/tests/test-fable-think-tier.sh`, `plugins/leadv2/workflows/{leadv2-diverge,
+leadv2-diagnose,leadv2-learn,leadv2-po-feedback-loop}.js`):
+- `run-core-offline.sh` — internal failures are dispatch-mission-chain cases (`glm chain from ladder`,
+  `codex chain includes trailing freepool`, `--task-class Heavy`), `reason=shared_tree` lane-plan-skip
+  refusals, park-queue signature cases, `shellcheck: leadv2-review-run.sh`, and golden-fixture cases
+  (`C4-diff-lane-golden`, `C5-registered-arm-silent`, `C6b/C6c`) — none reference `think`, `fable`,
+  `router`, `THINK_MODEL`, or any file this round touched.
+- `tests/test-status-surface-bash32.sh` — single sub-case `_t6c: urgent divergence (min=31 full=30)`,
+  a numeric-count mismatch in the SwiftBar status-surface renderer, unrelated to think-model routing.
+
+Per CLAUDE.md ("never weaken a fixture to get green... an environment-sensitive failure is a finding,
+not a test bug"), these are left untouched as out-of-scope pre-existing reds, consistent with this
+repo's own memory record of pre-existing `run-all` reds re-measured across other lanes on 2026-09-01.
