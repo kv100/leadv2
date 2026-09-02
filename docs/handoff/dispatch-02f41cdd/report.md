@@ -67,3 +67,51 @@ a named check from branch protection).
 `timeout-minutes` is a hang-catcher, not a budget knob. If a run starts
 approaching the cap, measure which suite grew (`bash <suite>` standalone,
 `time` it) before raising the number.
+
+---
+
+# Round 3 addendum — the allow-list now reaches the lane-facing decision
+
+## Fix (commit 199f2692)
+
+`tests/run-all.sh` captures the run-core-offline.sh transcript, classifies its
+`[CORE-OFFLINE] FAILED:` labels against `tests/known-red-suites.txt`, and only
+an all-allow-listed wrapper failure leaves the "Failures (blocking)" block
+(and the exit code) clean. Non-allow-listed nested failures and wrapper
+failures with ZERO parsed labels (lock timeout, crash, MISSING) stay blocking,
+fail-closed.
+
+## Proof log (real repo, injected fake suites via LEADV2_SUITE_DEFS_OVERRIDE)
+
+- All-allow-listed (label `review round cap (REVIEW-ROUNDCAP-01)`, real
+  allow-list, real gate path): rc=0,
+  `[KNOWN-RED] plugins/leadv2/scripts/tests/run-core-offline.sh (every failing
+  nested suite is allow-listed)` + `    - core:review round cap
+  (REVIEW-ROUNDCAP-01)`, summary `3 passed, 0 failed, 1 known-red
+  (allow-listed, non-blocking)`, no Failures (blocking) block.
+- Injected NOT-allow-listed (`CI-RUNS-INJECTED-NOT-ALLOW-LISTED`, mktemp
+  byte-identical replica): rc=1, `[NOT-KNOWN-RED]` names it, wrapper in
+  Failures (blocking).
+- Negative control: same replica, baseline green (rc=0) on the first inject;
+  then the allow-list application removed INSIDE `is_known_red`'s body
+  (`return 1  # MUTANT`) → the same inject goes red (rc=1), wrapper blocking.
+- `test-core-offline-lock-01.sh` standalone (rc measured unpiped): **rc=0,
+  pass=3 fail=0** — round 1's "passes standalone, red only under concurrent
+  load" claim holds; and in the full run below the lock suite PASSED,
+  consistent with the flake diagnosis for at least that one of the 15.
+
+## Full `tests/run-all.sh --scope changed`, lane root, foreground
+
+22:17:18→22:40:26 local = **23m08s** (the 45-min workflow cap has ~2x
+headroom). Result: rc=1 — and the red is the gate working, not failing:
+
+- 13 of the 15 allow-listed suites failed and were classified known-red;
+- 2 allow-listed suites passed this run (incl. the lock flake);
+- 1 failing suite is NOT on the list:
+  `prepass resume invalidation (LANE-OBSERVABILITY-02)`
+  (test-prepass-resume-invalidate.sh) — red standalone too (rc=1, `R1a: no
+  architect_prepass status=ran`). This lane's diff touches zero plugin
+  scripts, so it is red at main's script state: a **16th pre-existing red
+  the 15-entry list missed**, caught by exactly the property this round
+  built. The list was NOT widened (may only shrink; needs sign-off) — the
+  fix belongs to FIFTEEN-RED-SUITES-01, whose name is now off by one.
