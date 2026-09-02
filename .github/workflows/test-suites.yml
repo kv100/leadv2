@@ -5,9 +5,9 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # 06:00 UTC daily — full --scope all sweep. See "Timeouts and cost" in
-    # docs/handoff/dispatch-02f41cdd/developer.full.md for why this is not
-    # on every push.
+    # 06:00 UTC daily — full --scope all sweep. See
+    # docs/handoff/dispatch-02f41cdd/report.md for the minutes math and why
+    # the full sweep is not on every push.
     - cron: '0 6 * * *'
   workflow_dispatch: {}
 
@@ -15,13 +15,25 @@ jobs:
   changed-scope:
     name: run-all --scope changed
     if: github.event_name != 'schedule'
-    # Real macOS, not a Linux runner with a modern `bash` on PATH:
-    # tests/test-status-surface-bash32.sh invokes the actual Apple /bin/bash
-    # (frozen at 3.2) to catch bash4+-only syntax the way SwiftBar's runtime
-    # would reject it. That check is meaningless on ubuntu-latest, where
-    # /bin/bash is bash 5.x. Costs ~10x ubuntu-latest minutes; see report.
-    runs-on: macos-latest
-    timeout-minutes: 35
+    # CI-RUNS-THE-SUITES-01 round 2: ubuntu-latest — macOS minutes bill at 10x
+    # for private repos, and exactly ONE suite in the tree needs Apple's
+    # /bin/bash 3.2 (test-status-surface-bash32.sh), which now has its own
+    # darwin job below. The suite tree is written bash-3.2-safe (no Bash 4+
+    # features — standing repo decision), so bash 5 on ubuntu is a superset.
+    # The bash32 suite itself SKIPs cleanly on non-Darwin, so it does not make
+    # this job red here; its coverage is not lost, it moved to bash32-darwin.
+    runs-on: ubuntu-latest
+    # Derived from measurement, not guessed: the local (macOS, 2026-09-02)
+    # --scope changed run with the full 83-suite core-offline set is budgeted
+    # at 45 min — see docs/handoff/dispatch-02f41cdd/report.md. A first
+    # ubuntu-latest run that approaches the cap is a signal to re-measure, not
+    # to bump the number blind.
+    timeout-minutes: 45
+    # Round 2: a stale push to the same PR branch must not stack runs — the
+    # newest commit's result is the only one a reviewer acts on.
+    concurrency:
+      group: ci-changed-scope-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,10 +54,27 @@ jobs:
       - name: run-all --scope changed
         run: bash tests/ci-gate.sh changed
 
+  bash32-darwin:
+    name: status-surface bash32 (Apple /bin/bash 3.2)
+    # The only suite that genuinely needs macOS: it hardcodes /bin/bash and
+    # asserts it is 3.x (SWIFTBAR-BASH32-01 — SwiftBar launches the renderer
+    # under the frozen Apple bash, not Homebrew 5.x). ~2m10s measured locally
+    # (2026-09-02); 15 min of macOS minutes is generous headroom.
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: test-status-surface-bash32.sh
+        run: bash tests/test-status-surface-bash32.sh
+
   full-scope-nightly:
     name: run-all --scope all (nightly)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - name: Checkout
