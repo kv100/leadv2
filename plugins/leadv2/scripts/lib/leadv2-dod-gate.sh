@@ -34,17 +34,31 @@ _dod_sha256() { # <file> -> stdout hash, empty on failure
   shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
 }
 
-# All paths named on EITHER side of a unified diff (a/-side old paths and
-# b/-side new paths — added, modified, deleted, or renamed). A `+++ b/`-only
-# parse (the falsifiability gate's own `sed -n 's|^+++ b/||p'` idiom) misses
-# a pure deletion: a deleted file's b/-side is `+++ /dev/null`, so its real
-# path only ever appears on the `--- a/` line. Fix-round-1 finding 1: a diff
-# deleting docs/leadv2/active.yaml passed check (d) because only the +++ side
-# was scanned.
+# All paths named anywhere in a unified diff — `+++ b/`/`--- a/` content
+# lines, AND the `diff --git a/<old> b/<new>` header plus `rename
+# from`/`rename to` lines every git-produced diff entry carries regardless of
+# whether it has content hunks. Fix-round-1 finding 1: a `+++ b/`-only parse
+# missed a pure deletion (path only on `--- a/`, since `+++ /dev/null` names
+# nothing). Fix-round-2 finding 3: `---`/`+++` alone ALSO misses three shapes
+# that never emit either line because git generates no content hunk for them
+# — an empty-file creation (`diff --git a/x b/x` + `new file mode` +
+# `index 0000000..e69de29`, no `---`/`+++`), a 100% rename (`diff --git`,
+# `similarity index 100%`, `rename from`/`rename to`, no `---`/`+++`), and a
+# mode-only change (`diff --git`, `old mode`/`new mode`, no `---`/`+++`).
+# Live-verified against real `git diff`/`git diff --cached -M` output for all
+# three shapes before this fix (see report.md). The `diff --git` header line
+# is present for EVERY entry unconditionally, so parsing it directly covers
+# all three gaps without needing per-shape special cases.
 _dod_diff_paths() { # <diff_file> -> stdout, one path per line, deduped
   [[ -f "$1" ]] || return 0
-  { sed -n 's|^+++ b/||p' "$1" 2>/dev/null; sed -n 's|^--- a/||p' "$1" 2>/dev/null; } \
-    | grep -v '^/dev/null$' | sort -u
+  {
+    sed -n 's|^+++ b/||p' "$1" 2>/dev/null
+    sed -n 's|^--- a/||p' "$1" 2>/dev/null
+    sed -n 's|^rename from ||p' "$1" 2>/dev/null
+    sed -n 's|^rename to ||p' "$1" 2>/dev/null
+    sed -n 's|^diff --git a/\(.*\) b/.*$|\1|p' "$1" 2>/dev/null
+    sed -n 's|^diff --git a/.* b/\(.*\)$|\1|p' "$1" 2>/dev/null
+  } | grep -v '^/dev/null$' | sort -u
 }
 
 # Suite paths touched by the diff. Broader than the falsifiability gate's own
@@ -68,6 +82,63 @@ _dod_task_rel() { # <root> <task_dir> -> stdout relpath (no trailing slash)
     "${root}"/*) printf '%s' "${task_dir#${root}/}" ;;
     *) printf '%s' "${task_dir}" ;;
   esac
+}
+
+# Fix-round-2 finding 1: the merge-base resolution _review_resolve_codex_base()
+# already uses in leadv2-review-run.sh (LEADV2_LANE_START_SHA env, else
+# origin/main, else main) -- reused here so the gate and a worker running the
+# identical `git diff <base> HEAD` command land on the SAME base, hence the
+# SAME bytes, hence the SAME hash. Never a git-repo root (a bare fixture dir)
+# -> rc 1, caller must treat as undetermined, never a false pass/fail.
+_dod_resolve_base() { # <root> -> stdout base sha, rc 1 if none resolvable
+  local root="$1" base sha
+  git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  sha="${LEADV2_LANE_START_SHA:-}"
+  if [[ -n "${sha}" ]] && git -C "${root}" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+    base="$(git -C "${root}" merge-base "${sha}" HEAD 2>/dev/null || true)"
+    [[ -n "${base}" ]] && { printf '%s' "${base}"; return 0; }
+  fi
+  if git -C "${root}" cat-file -e "main^{commit}" 2>/dev/null; then
+    base="$(git -C "${root}" merge-base main HEAD 2>/dev/null || true)"
+    [[ -n "${base}" ]] && { printf '%s' "${base}"; return 0; }
+  fi
+  if git -C "${root}" cat-file -e "origin/main^{commit}" 2>/dev/null; then
+    base="$(git -C "${root}" merge-base origin/main HEAD 2>/dev/null || true)"
+    [[ -n "${base}" ]] && { printf '%s' "${base}"; return 0; }
+  fi
+  return 1
+}
+
+# Fix-round-2 finding 1 (CRITICAL): the sha256 that gates a mutation-control
+# claim must be something a WORKER can reproduce inside its own round, before
+# it exits. Hashing review.diff (the round's post-exit artifact, written by
+# leadv2-dispatch-product-close.sh only AFTER the worker's session ends, via a
+# GIT_INDEX_FILE-staged diff with docs/leadv2 and docs/handoff excluded) can
+# never match anything the worker itself could have hashed -- no brief
+# carrying a paste+mutation line could ever pass. `git diff <base> HEAD` is
+# deterministic over the lane's own committed history: a worker can run this
+# exact command right after its own commit, and the gate re-running the same
+# command against the same HEAD (nothing else commits to the lane between
+# worker-exit and gate-run) reproduces byte-identical output.
+#
+# `**/mutation-control/**` is excluded from the hashed diff on both sides
+# (here and in leadv2-mutation-control.sh's own hash computation) — the
+# artifact file leadv2-mutation-control.sh writes must itself be committed
+# for review, but the tool computes and embeds diff_hash BEFORE that
+# artifact-adding commit exists. Hashing it in would mean the gate's
+# post-commit recomputation (HEAD now includes the artifact) could never
+# equal the worker's pre-commit computation (HEAD did not yet include it) —
+# a structural mismatch, not a bug on either side. Excluding the directory
+# removes the chicken-and-egg: the hash covers only the code diff neither
+# side's timing can disagree about.
+_dod_worker_diff_hash() { # <root> -> stdout sha256; rc 1 = unresolvable, caller must skip not fail
+  local root="$1" base hash
+  base="$(_dod_resolve_base "${root}")" || return 1
+  hash="$(git -C "${root}" diff "${base}" HEAD -- . ':(exclude,glob)**/mutation-control/**' 2>/dev/null \
+    | shasum -a 256 2>/dev/null | awk '{print $1}')"
+  [[ -n "${hash}" ]] || return 1
+  printf '%s' "${hash}"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -106,11 +177,13 @@ _dod_check_a() {
 # check (b) — every brief "paste" line has a matching fenced block in
 # report.md under a heading that names it (token-overlap heuristic,
 # threshold tunable — CHALLENGE-16). Mutation-control paste-lines additionally
-# require a grounded artifact file whose diff_hash matches THIS round's diff
-# (CHALLENGE-07: never a prose-sentinel grep).
-# Returns: 0 pass, 1 fail, 2 undetermined (diff_file missing while a
-# mutation-control line is present and needs diff_hash binding), 3 skip (no
-# paste lines in brief.md at all).
+# require a grounded artifact file whose diff_hash matches `git diff <base>
+# HEAD` over the lane's own committed history (CHALLENGE-07: never a
+# prose-sentinel grep; fix-round-2 finding 1: never sha256(diff_file) either
+# — that file is a post-exit artifact no worker could ever reproduce).
+# Returns: 0 pass, 1 fail, 2 undetermined (a mutation-control line is present
+# but no merge-base was resolvable, so the required hash itself is
+# undetermined), 3 skip (no paste lines in brief.md at all).
 # ---------------------------------------------------------------------------
 _DOD_PASTE_OVERLAP_PCT="${LEADV2_DOD_PASTE_OVERLAP_PCT:-50}"
 
@@ -215,8 +288,14 @@ _dod_check_b() {
   _dod_report_sections "${report}" > "${sections_file}"
 
   local overall_rc=0 undetermined=0
-  local diff_hash=""
-  [[ -f "${diff_file}" ]] && diff_hash="$(_dod_sha256 "${diff_file}")"
+  # Fix-round-2 finding 1: bind mutation-control provenance to a hash a
+  # worker can reproduce (see _dod_worker_diff_hash above), not to
+  # sha256(diff_file) -- diff_file is review.diff, written only after the
+  # worker's round has already exited.
+  local mc_diff_hash="" mc_diff_hash_ok=0
+  if mc_diff_hash="$(_dod_worker_diff_hash "${root}")"; then
+    mc_diff_hash_ok=1
+  fi
 
   local lineno linetext tokf fnametokf
   tokf="$(mktemp 2>/dev/null || echo "${task_dir}/.dod_tok.tmp")"
@@ -266,15 +345,15 @@ _dod_check_b() {
     # Sub-check: mutation-control lines need a grounded artifact.
     case "${linetext}" in
       *[Mm]utation*)
-        if [[ -z "${diff_file}" || ! -f "${diff_file}" ]]; then
-          printf 'dod_skip check=mutation_control_undetermined brief_line=%s reason=no_diff_file\n' "${lineno}"
+        if [[ ${mc_diff_hash_ok} -ne 1 ]]; then
+          printf 'dod_skip check=mutation_control_undetermined brief_line=%s reason=no_merge_base\n' "${lineno}"
           undetermined=1
         else
           local mc_dir="${task_dir}/mutation-control" found=0 f
           if [[ -d "${mc_dir}" ]]; then
             for f in "${mc_dir}"/*.txt; do
               [[ -f "${f}" ]] || continue
-              if _dod_valid_mutation_artifact "${f}" "${diff_hash}"; then
+              if _dod_valid_mutation_artifact "${f}" "${mc_diff_hash}"; then
                 found=1
                 break
               fi
@@ -442,17 +521,38 @@ lv2_dod_gate_run() {
     [[ "${rc}" == "2" ]] && overall_undetermined=1
   done
 
-  {
+  local body
+  body="$(
     printf '# dod-gate report — %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
     printf '%s\n' "${a_out}"
     printf '%s\n' "${b_out}"
     printf '%s\n' "${c_out}"
     printf '%s\n' "${d_out}"
     [[ -n "${e_out}" ]] && printf '%s\n' "${e_out}"
-  } > "${tmp_out}"
-  mv -f "${tmp_out}" "${out_md}" 2>/dev/null || cp -f "${tmp_out}" "${out_md}" 2>/dev/null || true
+  )"
 
-  cat "${out_md}" 2>/dev/null
+  # Fix-round-2 finding 2: mkdir -p the out dir here too (defense-in-depth —
+  # both call sites now also mkdir -p before invoking this script), and never
+  # source stdout by re-reading out_md. Previously stdout WAS `cat "${out_md}"`
+  # — if the dir did not exist, both mv and cp failed silently (`|| true`),
+  # out_md was never written, and the caller's `_dod_out` came back empty,
+  # collapsing every real reason into review-gate.md's `reason=dod_unknown`
+  # (the same muteness as REVIEW-GATE-IS-MUTE-01, produced by this gate's own
+  # code). ${body} is already fully assembled in memory, so print it
+  # unconditionally regardless of whether the artifact file write succeeds.
+  mkdir -p "$(dirname "${out_md}")" 2>/dev/null || true
+  printf '%s\n' "${body}" > "${tmp_out}"
+  if mv -f "${tmp_out}" "${out_md}" 2>/dev/null || cp -f "${tmp_out}" "${out_md}" 2>/dev/null; then
+    :
+  else
+    # Out dir still unwritable after mkdir -p (read-only mount, race). stdout
+    # below already carries the real cause; also emit on stderr per
+    # fix-round-2 finding 2's explicit ask, so a caller inspecting stderr
+    # alone (not just a combined 2>&1 capture) still sees it.
+    printf '%s\n' "${body}" >&2
+  fi
+
+  printf '%s\n' "${body}"
 
   if [[ ${overall_fail} -eq 1 ]]; then
     return 1

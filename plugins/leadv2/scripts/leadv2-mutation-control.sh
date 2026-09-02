@@ -10,24 +10,28 @@
 # lib/leadv2-dod-gate.sh's check (b) mutation sub-check will accept.
 #
 # Usage:
-#   leadv2-mutation-control.sh <suite> <file> <sed-or-patch> <diff_hash> [task_dir]
+#   leadv2-mutation-control.sh <suite> <file> <sed-or-patch> [task_dir]
 #     <suite>       path (repo-relative or absolute) to the target suite script
 #     <file>        path (repo-relative or absolute) to the file to mutate
 #     <sed-or-patch> either a sed(1) expression (applied via `sed -i`) or a
 #                    path to a unified-diff patch file (detected by a leading
 #                    "--- "/"+++ " pair inside the file)
-#     <diff_hash>   sha256 of THIS round's authoritative diff (the caller
-#                   already computed this via the same shasum -a 256 pattern
-#                   _review_diff_hash() uses) — bound into the artifact so
-#                   check (b) can never accept a stale round's mutation proof
 #     [task_dir]    where to write mutation-control/<run-id>.txt; defaults to
 #                   $(pwd) if omitted (still under LANE_WRITES-owned dirs
 #                   only — the caller is responsible for passing the right one)
 #
+# diff_hash is computed HERE, never taken from the caller (fix-round-2
+# finding 1): it is sha256 of `git diff <base> HEAD` over ROOT's own
+# committed history, the same command+base lib/leadv2-dod-gate.sh's
+# _dod_worker_diff_hash() re-runs after the worker exits. A caller-supplied
+# hash could only ever be sha256 of some OTHER artifact (e.g. review.diff,
+# written after the worker's round ends) and would never match what the gate
+# recomputes independently — that was fix-round-1's shipped defect.
+#
 # Exit codes:
 #   0 = mutation applied, suite went red as required (ok, artifact written)
 #   1 = mutant_survived — suite stayed green despite the mutation
-#   2 = control_not_applied — reason= baseline_not_green | anchor_count | noop_edit
+#   2 = control_not_applied — reason= baseline_not_green | anchor_count | noop_edit | no_merge_base
 #   3 = usage error
 #
 # Never `git worktree add` (2026-08-22 founder lesson) — a plain `mktemp -d`
@@ -35,18 +39,56 @@
 # .git/worktrees/ and is prune-safe by construction.
 set -uo pipefail
 
-if [[ $# -lt 4 || $# -gt 5 ]]; then
-  printf 'Usage: %s <suite> <file> <sed-or-patch> <diff_hash> [task_dir]\n' "$0" >&2
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+  printf 'Usage: %s <suite> <file> <sed-or-patch> [task_dir]\n' "$0" >&2
   exit 3
 fi
 
 SUITE_ARG="$1"
 FILE_ARG="$2"
 MUTATION_ARG="$3"
-DIFF_HASH="$4"
-TASK_DIR="${5:-$(pwd)}"
+TASK_DIR="${4:-$(pwd)}"
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# Same base-resolution ladder as lib/leadv2-dod-gate.sh's _dod_resolve_base()
+# — LEADV2_LANE_START_SHA env, else main, else origin/main. Kept independent
+# (not sourced) so this tool has zero dependency on the gate library ever
+# being present.
+_mc_resolve_base() {
+  git -C "${ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  local base sha="${LEADV2_LANE_START_SHA:-}"
+  if [[ -n "${sha}" ]] && git -C "${ROOT}" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+    base="$(git -C "${ROOT}" merge-base "${sha}" HEAD 2>/dev/null || true)"
+    [[ -n "${base}" ]] && { printf '%s' "${base}"; return 0; }
+  fi
+  if git -C "${ROOT}" cat-file -e "main^{commit}" 2>/dev/null; then
+    base="$(git -C "${ROOT}" merge-base main HEAD 2>/dev/null || true)"
+    [[ -n "${base}" ]] && { printf '%s' "${base}"; return 0; }
+  fi
+  if git -C "${ROOT}" cat-file -e "origin/main^{commit}" 2>/dev/null; then
+    base="$(git -C "${ROOT}" merge-base origin/main HEAD 2>/dev/null || true)"
+    [[ -n "${base}" ]] && { printf '%s' "${base}"; return 0; }
+  fi
+  return 1
+}
+
+MC_BASE="$(_mc_resolve_base)"
+if [[ -z "${MC_BASE}" ]]; then
+  printf 'leadv2-mutation-control: control_not_applied reason=no_merge_base\n'
+  exit 2
+fi
+# **/mutation-control/** excluded: this tool's own artifact write happens
+# AFTER this hash is computed and gets committed in a later commit than the
+# one this hash describes — including the directory would make the gate's
+# post-commit recomputation structurally unable to ever match. See
+# lib/leadv2-dod-gate.sh's _dod_worker_diff_hash() comment for the full
+# chicken-and-egg explanation; both sides exclude identically.
+DIFF_HASH="$(git -C "${ROOT}" diff "${MC_BASE}" HEAD -- . ':(exclude,glob)**/mutation-control/**' 2>/dev/null | shasum -a 256 2>/dev/null | awk '{print $1}')"
+if [[ -z "${DIFF_HASH}" ]]; then
+  printf 'leadv2-mutation-control: control_not_applied reason=no_merge_base\n'
+  exit 2
+fi
 
 _mc_abs() { # <path relative-to-ROOT-or-absolute> -> stdout absolute path (no existence check)
   case "$1" in
