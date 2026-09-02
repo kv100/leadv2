@@ -65,14 +65,14 @@ readonly MODEL_CAPABILITY_YAML="${LEADV2_MODEL_CAPABILITY_YAML:-${SCRIPT_DIR}/..
 # opus (the documented fallback) is used. No caller may hardcode `opus` at a
 # think-role spawn site — call this instead.
 _think_cap_unavailable() { # $1=candidate model -> prints true/false
-  python3 - "${MODEL_CAPABILITY_YAML}" "$1" <<'PY' 2>/dev/null || echo false
+  python3 - "${MODEL_CAPABILITY_YAML}" "$1" <<'PY' 2>/dev/null || echo true
 import sys, yaml
 try:
     cfg = yaml.safe_load(open(sys.argv[1])) or {}
     row = cfg.get(sys.argv[2]) or {}
     print("true" if row.get("unavailable") else "false")
 except Exception:
-    print("false")
+    print("true")
 PY
 }
 # R6 resolution order (lead decision, binding): (1) model-capability.yaml

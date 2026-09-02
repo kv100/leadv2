@@ -492,10 +492,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-"$0"}")" 2>/dev/null && pwd)"
 # failure leaves the var unset and the workflow falls back to its documented
 # default. R6: this block must stay AFTER the SCRIPT_DIR assignment above —
 # it calls "${SCRIPT_DIR}/lib/leadv2-think-model.sh" and the script runs set -u.
-if [[ -z "${LEADV2_THINK_MODEL:-}" ]]; then
-  LEADV2_THINK_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
-  [[ -n "$LEADV2_THINK_MODEL" ]] && export LEADV2_THINK_MODEL
-fi
+_lv2_think="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
+[[ -n "$_lv2_think" ]] && export LEADV2_THINK_MODEL="$_lv2_think"
 # FABLE-THINK-TIER-01: the architect prepass is a THINKING role (design, not
 # typing) — its default arm resolves through leadv2-router.sh's think_model()
 # (fable, opus fallback) rather than a hardcoded opus literal. A caller that

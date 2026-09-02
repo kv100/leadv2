@@ -38,6 +38,10 @@ cp "$RUN_ALL" "$SCRATCH/tests/run-all.sh"
 # the mapped target suite: a cheap stub that passes
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SCRATCH/plugins/leadv2/scripts/tests/test-fable-think-tier.sh"
 chmod +x "$SCRATCH/plugins/leadv2/scripts/tests/test-fable-think-tier.sh"
+# R7: run-all.sh's OWN carrier-map row (tests/test-run-all-carrier-map.sh) —
+# a cheap stub that passes
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SCRATCH/tests/test-run-all-carrier-map.sh"
+chmod +x "$SCRATCH/tests/test-run-all-carrier-map.sh"
 # tracked carriers (must be committed, then dirtied, to appear in diff HEAD)
 printf 'fable:\n  model_id: claude-fable-5-1\n' > "$SCRATCH/plugins/leadv2/config/model-capability.yaml"
 printf '# resolver carrier\n' > "$SCRATCH/plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py"
@@ -85,6 +89,23 @@ else
 $out"
 fi
 git -C "$SCRATCH" checkout -q -- plugins/leadv2/workflows/leadv2-diverge.js
+
+# --- case 3b: run-all.sh itself (R7) ------------------------------------------
+# R7 defect: tests/run-all.sh carried a carrier-map row pointing back at its
+# own suite (tests/test-run-all-carrier-map.sh), but the changed-file loop's
+# else-branch case statement only allowlisted plugins/leadv2/scripts/*.sh,
+# scripts/lib/*.sh and hooks/*.sh — anything else, including tests/run-all.sh
+# itself, hit `*) continue ;;` before a stem was ever assigned. The map row
+# was permanently dead: no diff to run-all.sh could ever select it.
+printf '# dirty\n' >> "$SCRATCH/tests/run-all.sh"
+out="$(run_selection)"
+if printf '%s' "$out" | grep -q '\[RUN\].*test-run-all-carrier-map\.sh'; then
+  pass "dirty tests/run-all.sh alone selects tests/test-run-all-carrier-map.sh"
+else
+  fail "dirty tests/run-all.sh alone did NOT select its own carrier-map suite (dead map row); output:
+$out"
+fi
+git -C "$SCRATCH" checkout -q -- tests/run-all.sh
 
 # --- case 4 (negative control): an unmapped scripts/*.sh must NOT select it ---
 printf '# dirty\n' >> "$SCRATCH/plugins/leadv2/scripts/leadv2-unmapped-control.sh"

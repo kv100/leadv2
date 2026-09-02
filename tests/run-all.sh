@@ -429,6 +429,10 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         # below — the blanket-vs-allowlist rule it carries has no test-*.sh
         # of its own name to match by convention.
         stem="gitignore"
+      elif [[ "${cf}" == "tests/run-all.sh" ]]; then
+        # FABLE-THINK-TIER-01 R7: the carrier map row for run-all.sh must be
+        # reachable so the test suite for the carrier map can be selected.
+        stem="run-all.sh"
       else
         case "${cf}" in
           plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;

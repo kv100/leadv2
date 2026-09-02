@@ -89,20 +89,22 @@ else
   fail "kill switch DEAD under env pin: LEADV2_THINK_MODEL=fable + fable unavailable still returned fable"
 fi
 
-# --- 1e. R6 dispatch export path runs: var reaches a spawned child ---------
+# --- 1e. R6/R7 dispatch export path runs: var reaches a spawned child ------
 # R5 defect: the export block in leadv2-dispatch-code.sh used ${SCRIPT_DIR}
 # ~20 lines BEFORE SCRIPT_DIR was assigned, under set -u — the substitution
-# died and the var was never exported. This case RUNS the real export block
-# plus the real SCRIPT_DIR assignment in FILE ORDER and asserts a spawned
-# child sees LEADV2_THINK_MODEL. A grep cannot catch the old defect (text
-# was present; runtime was dead).
+# died and the var was never exported. R7 defect: a `-z "${LEADV2_THINK_MODEL:-}"`
+# guard let an ALREADY-SET var (settings.json pin) skip the resolver call
+# entirely, so the yaml kill switch never ran on this channel. This case RUNS
+# the real export block plus the real SCRIPT_DIR assignment in FILE ORDER,
+# WITH the var pre-set on entry (the exact R7 shape), and asserts a spawned
+# child sees the RESOLVER's answer, not the stale pin. A grep cannot catch
+# either defect (text was present; runtime was dead/wrong).
 DC="${LEADV2_TEST_DISPATCH_CODE:-$SCRIPTS_ROOT/leadv2-dispatch-code.sh}"
 if [[ -f "$DC" ]]; then
   sd_line="$(grep -n '^SCRIPT_DIR=' "$DC" | head -1 | cut -d: -f1)"
-  blk_line="$(grep -n '^if \[\[ -z "${LEADV2_THINK_MODEL:-}" \]\]; then' "$DC" | head -1 | cut -d: -f1)"
-  blk_off="$(tail -n +"${blk_line:-1}" "$DC" | grep -n '^fi$' | head -1 | cut -d: -f1)"
-  if [[ -n "$sd_line" && -n "$blk_line" && -n "$blk_off" ]]; then
-    blk_end=$((blk_line + blk_off - 1))
+  blk_line="$(grep -nF '_lv2_think="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh"' "$DC" | head -1 | cut -d: -f1)"
+  blk_end="$(grep -nF '[[ -n "$_lv2_think" ]] && export LEADV2_THINK_MODEL=' "$DC" | head -1 | cut -d: -f1)"
+  if [[ -n "$sd_line" && -n "$blk_line" && -n "$blk_end" ]]; then
     export_block="$(sed -n "${blk_line},${blk_end}p" "$DC")"
     sd_assign="$(sed -n "${sd_line}p" "$DC")"
     # runtime = the two pieces in FILE ORDER — if the export block sits
@@ -112,12 +114,18 @@ if [[ -f "$DC" ]]; then
     else
       runtime="${export_block}"$'\n'"${sd_assign}"
     fi
-    expected="$(bash "$ROUTER" think-model 2>/dev/null)"
-    child="$(bash -c 'set -u; eval "$1"; bash -c "printf %s \${LEADV2_THINK_MODEL-UNSET}"' "$DC" "$runtime" 2>/dev/null)"
-    if [[ -n "$child" && "$child" != "UNSET" && "$child" == "$expected" ]]; then
-      pass "dispatch export path runs under set -u; spawned child sees LEADV2_THINK_MODEL=${child}"
+    # R7 shape: LEADV2_THINK_MODEL is ALREADY set to a settings.json-style
+    # pin ('fable') on entry, AND the yaml kill switch marks fable
+    # unavailable — the resolver's answer ('opus') must overwrite the pin.
+    # A -z guard would see the var already set, skip the resolver entirely,
+    # and leak 'fable' straight through to the child.
+    expected="$(LEADV2_THINK_MODEL=fable LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-unavailable.yaml" bash "$ROUTER" think-model 2>/dev/null)"
+    child="$(LEADV2_THINK_MODEL=fable LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-unavailable.yaml" \
+      bash -c 'set -u; eval "$1"; bash -c "printf %s \${LEADV2_THINK_MODEL-UNSET}"' "$DC" "$runtime" 2>/dev/null)"
+    if [[ -n "$child" && "$child" != "UNSET" && "$child" == "$expected" && "$child" == "opus" ]]; then
+      pass "dispatch export path runs under set -u even with a pre-set pin; spawned child sees resolver's answer LEADV2_THINK_MODEL=${child} (kill switch overwrote the 'fable' pin)"
     else
-      fail "dispatch export path DEAD: spawned child LEADV2_THINK_MODEL='${child:-<empty>}' (expected '${expected}') — block likely evaluated before SCRIPT_DIR assignment (file order: SCRIPT_DIR@${sd_line}, block@${blk_line})"
+      fail "dispatch export path DEAD/LEAKY: spawned child LEADV2_THINK_MODEL='${child:-<empty>}' (expected 'opus' — resolver's answer) with a pre-set settings.json-style 'fable' pin on entry — a -z guard would skip the resolver here and leak the pin"
     fi
     # complement (ordering pin, not the proof): the block must sit after the assignment
     if [[ "$sd_line" -lt "$blk_line" ]]; then
@@ -126,7 +134,7 @@ if [[ -f "$DC" ]]; then
       fail "file order: export block (line ${blk_line}) precedes SCRIPT_DIR assignment (line ${sd_line})"
     fi
   else
-    fail "dispatch export case could not locate its anchors (SCRIPT_DIR@${sd_line:-?}, block@${blk_line:-?}) in $DC"
+    fail "dispatch export case could not locate its anchors (SCRIPT_DIR@${sd_line:-?}, block@${blk_line:-?}, end@${blk_end:-?}) in $DC"
   fi
 else
   fail "dispatch script not found: $DC"
@@ -459,10 +467,11 @@ if grep -qF '"LEADV2_THINK_MODEL": os.environ.get("LV2_THINK_MODEL", "fable")' "
 else
   fail "repo-install: LEADV2_THINK_MODEL missing from settings env — yaml kill-switch cannot reach the workflows"
 fi
-if grep -qF 'LEADV2_THINK_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"' "$SCRIPTS_ROOT/leadv2-dispatch-code.sh"; then
-  pass "dispatch-code: guarded LEADV2_THINK_MODEL export to spawned sessions"
+if grep -qF '_lv2_think="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"' "$SCRIPTS_ROOT/leadv2-dispatch-code.sh" \
+   && ! grep -qF 'if [[ -z "${LEADV2_THINK_MODEL:-}" ]]; then' "$SCRIPTS_ROOT/leadv2-dispatch-code.sh"; then
+  pass "dispatch-code: unconditional LEADV2_THINK_MODEL export to spawned sessions (no -z skip-if-pinned guard)"
 else
-  fail "dispatch-code: LEADV2_THINK_MODEL export missing/unguarded — dispatched sessions lose the kill-switch"
+  fail "dispatch-code: LEADV2_THINK_MODEL export missing, or still gated behind a -z guard that lets a settings.json pin skip the resolver"
 fi
 # priors baseline recs are LIVE route data (compiled into
 # agent_priors[].model_recommendation and consumed by the lead): think roles
@@ -573,6 +582,67 @@ if grep -n '_LEADV2_ARCHITECT_THINK_DEFAULT' "$SCRIPTS_ROOT/leadv2-dispatch-code
   pass "dispatch-code.sh prepass default resolves via router think-model"
 else
   fail "dispatch-code.sh: _LEADV2_ARCHITECT_THINK_DEFAULT not wired to router think-model"
+fi
+
+# --- 1f. R7 JS channel: the workflow's own THINK_MODEL const must honour the
+# resolved env, in a REAL node child process (not a bash simulation — a .js
+# file sourced by bash silently no-ops, which is why an earlier attempt at
+# this test always saw an empty string on both sides and never caught
+# anything). Extracts the LITERAL RHS expression from the const declaration
+# and evaluates it with node, so the assertion is against the file's real
+# source text, not a re-implementation of it.
+JS_WF="$PLUGIN_ROOT/workflows/leadv2-diverge.js"
+think_expr="$(grep -m1 '^const THINK_MODEL = ' "$JS_WF" 2>/dev/null | sed 's/^const THINK_MODEL = //')"
+if [[ -n "$think_expr" ]] && command -v node >/dev/null 2>&1; then
+  # Channel 1 (bash resolver, proved above in 1c/1d) + channel 2 (the export
+  # reaching a spawned child, proved above in 1e) compose to the value a real
+  # dispatch would export when settings.json pinned fable but yaml killed it.
+  resolved="$(LEADV2_THINK_MODEL=fable LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-unavailable.yaml" bash "$ROUTER" think-model 2>/dev/null)"
+  out="$(LEADV2_THINK_MODEL="$resolved" node -e "const a = {}; const THINK_MODEL = ${think_expr}
+console.log(THINK_MODEL)" 2>/dev/null || true)"
+  if [[ "$out" == "opus" ]]; then
+    pass "JS channel (real node child) honours yaml kill switch: resolved env '${resolved}' -> THINK_MODEL='${out}'"
+  else
+    fail "JS channel (real node child) kill switch DEAD: resolved env '${resolved}' -> THINK_MODEL='${out:-<empty>}' (expected opus)"
+  fi
+else
+  fail "JS workflow THINK_MODEL expression not found or node unavailable: $JS_WF"
+fi
+
+# --- 1g. Negative control for JS channel: without yaml kill switch, env wins ---
+if [[ -n "$think_expr" ]] && command -v node >/dev/null 2>&1; then
+  out="$(LEADV2_THINK_MODEL=fable node -e "const a = {}; const THINK_MODEL = ${think_expr}
+console.log(THINK_MODEL)" 2>/dev/null || true)"
+  if [[ "$out" == "fable" ]]; then
+    pass "JS channel (real node child) env wins when yaml allows: LEADV2_THINK_MODEL=fable -> fable"
+  else
+    fail "JS channel (real node child) expected fable when yaml allows, got '${out:-<empty>}'"
+  fi
+fi
+
+# --- 2. FABLE-THINK-TIER-01 R7: resolver fails CLOSED when PyYAML unimportable ---
+# D1: _think_cap_unavailable must print "true" (unavailable) when python/yaml
+# fails to import. A nonexistent PYTHONPATH dir does NOT reproduce this — the
+# real yaml module is still found via the normal site-packages search path
+# regardless (an earlier attempt at this test used that and always got
+# 'fable', never catching anything). Shadow the import for real: place a
+# yaml.py stub that raises ImportError FIRST on PYTHONPATH.
+NOYAML="$TMP/noyaml"; mkdir -p "$NOYAML"
+printf 'raise ImportError("simulated: PyYAML not installed")\n' > "$NOYAML/yaml.py"
+printf 'fable:\n  unavailable: false\n' > "$TMP/cap-available.yaml"
+out="$(PYTHONPATH="$NOYAML" LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-available.yaml" \
+  bash "$ROUTER" think-model 2>/dev/null)"
+if [[ "$out" == "opus" ]]; then
+  pass "resolver fails CLOSED when PyYAML missing: fable available -> opus (via unavailable:true degradation)"
+else
+  fail "resolver fails OPEN when PyYAML missing: expected opus, got '${out:-<empty>}'"
+fi
+out="$(PYTHONPATH="$NOYAML" LEADV2_MODEL_CAPABILITY_YAML="$TMP/cap-unavailable.yaml" \
+  bash "$ROUTER" think-model 2>/dev/null)"
+if [[ "$out" == "opus" ]]; then
+  pass "resolver stays CLOSED when PyYAML missing + fable unavailable -> opus"
+else
+  fail "resolver flipped OPEN when PyYAML missing + fable unavailable: expected opus, got '${out:-<empty>}'"
 fi
 
 log "PASS=$PASS FAIL=$FAIL"
