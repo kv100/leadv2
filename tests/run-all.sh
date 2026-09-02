@@ -425,14 +425,18 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         stem="gitignore"
       else
         case "${cf}" in
-          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/hooks/*.sh) ;;
+          plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/scripts/*.py|plugins/leadv2/hooks/*.sh) ;;
           *) continue ;;
         esac
         # GATE-PROVES-ITS-OWN-CONTROL-01: lib/*.sh is a real production call
         # path (leadv2-control-prover.sh lives there) — a stem-scan that only
         # sees plugins/leadv2/scripts/*.sh never reaches it, so lib/ is scanned
         # too, not just the top-level scripts.
-        stem="$(basename "${cf}" .sh)"
+        # NUDGE-TAX-01: scripts/*.py joins the allowlist (leadv2-loop-detect.py
+        # is the loop guard's real brain — a change there used to select ZERO
+        # suites under --scope changed). Stem strips the real extension.
+        stem="$(basename "${cf}")"
+        stem="${stem%.*}"
       fi
       for cand in "${ROOT}/plugins/leadv2/scripts/tests/test-${stem}.sh" \
                   "${ROOT}/.claude/scripts/tests/test-${stem}.sh" \
