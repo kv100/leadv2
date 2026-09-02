@@ -33,3 +33,8 @@ Still open:
 
 ## Done when
 - all 4 items REAL→fixed with runtime evidence (child-side prints, not greps); FALSIFIABLE; run-all tail pasted.
+
+## Round note (lead, 2026-09-02)
+- The first attempt at this round went to the freepool arm and produced NOTHING: no commit, no dirty
+  file, no stream. This dispatch is `--protected` so the freepool arm is excluded. Do the work in the
+  lane yourself: no nested agents, no background waits, commit after every step.
