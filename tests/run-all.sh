@@ -160,6 +160,11 @@ leadv2-promise-guard.sh:plugins/leadv2/scripts/tests/test-promise-guard-classifi
 leadv2-promise-guard.sh:plugins/leadv2/tests/test-promise-guard.sh
 leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
 leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-guard-census.sh
+# GUARD-CENSUS-IS-WRONG-01 round 2: the dispatcher hook had NO suite at all —
+# every verdict-kind/rotation line was untested until this mapping.
+leadv2-bash-pre-dispatch.sh:plugins/leadv2/scripts/tests/test-bash-pre-dispatch-verdict.sh
+leadv2-guard-census.sh:plugins/leadv2/scripts/tests/test-bash-pre-dispatch-verdict.sh
+leadv2-guard-verdict.sh:plugins/leadv2/scripts/tests/test-bash-pre-dispatch-verdict.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-arm-capability-honoured.sh
 leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
@@ -240,6 +245,16 @@ codex-task.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 leadv2-codex-planner.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 leadv2-worker-mcp.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
+leadv2-cache-truth.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+# CACHE-TRUTH-01 R4: the coder arms' stream files are the tool's INPUTS — a
+# change to an arm runner can change the stream shape the TSV grades, so each
+# arm stem maps to the cache-truth suite too (R3 review finding 2: only the
+# tool stem was mapped; --scope changed silently dropped the suite for arm
+# edits).
+glm-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+freepool-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+kimi-coder.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
+claude-subsession.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
 # LEADV2-HOOK-CACHE-DEPLOY-01: the cache-sync script's behavioural lock is a
 # differently-named suite (no test-leadv2-plugin-cache-sync stem match).
 leadv2-plugin-cache-sync.sh:plugins/leadv2/scripts/tests/test-plugin-cache-sync.sh
