@@ -224,7 +224,7 @@ fi
 #    dispatch entry. A classify-only fresh lane is what dispatch-code hands the
 #    guard on every brand-new Standard dispatch (it records classify first), and
 #    it is exactly the shape faee3fc5 shipped in. Driving only cmd_assert with a
-#    hand-computed bootstrap answer cannot see the forwarding bug; this can.
+#    hand-computed bootstrap answer cannot see the ordering bug; this can.
 #    Fixture repo + stub launchers for all four arms + fixture quota reader —
 #    never a live provider (harness shape: test-effort-routing.sh). ──────────
 DC="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
@@ -292,25 +292,25 @@ mission_sig8() {
 }
 
 # Test 7: brand-new Standard lane, no plan/gate1 anywhere ⇒ the REAL dispatcher
-# refuses before any spawn, and names plan AND gate1 (this is faee3fc5, red).
-printf 'test: 7 fresh Standard dispatch through dispatch-code.sh is refused\n'
+# admits the bootstrap lane before recording classify and reaches the stub arm.
+printf 'test: 7 fresh Standard dispatch through dispatch-code.sh is admitted\n'
 M7='PPB fixture Standard lane writes production code'
 S7="$(mission_sig8 "$M7")"
 run_dispatch "$M7" "${TMP_ROOT}/d7.out"; rc7=$?
-if [[ $rc7 -eq 3 ]]; then
+if [[ $rc7 -eq 0 ]]; then
   ok
 else
-  fail "fresh Standard dispatch should exit 3 (rc=$rc7, out=$(tail -3 "${TMP_ROOT}/d7.out" 2>/dev/null | tr '\n' ' '))"
+  fail "fresh Standard dispatch should exit 0 (rc=$rc7, out=$(tail -5 "${TMP_ROOT}/d7.out" 2>/dev/null | tr '\n' ' '))"
 fi
-if [[ ! -f "${TMP_ROOT}/spawned.txt" ]]; then
+if [[ -f "${TMP_ROOT}/spawned.txt" ]]; then
   ok
 else
-  fail "refused dispatch spawned a worker ($(cat "${TMP_ROOT}/spawned.txt"))"
+  fail "admitted dispatch spawned no worker"
 fi
-if grep -q 'missing=.*plan' "${TMP_ROOT}/d7.out" 2>/dev/null && grep -q 'missing=.*gate1' "${TMP_ROOT}/d7.out" 2>/dev/null; then
+if grep -q 'phase_precondition_bootstrap' "${JOURNAL_LOG}" 2>/dev/null; then
   ok
 else
-  fail "refusal should name plan and gate1 ($(grep 'missing=' "${TMP_ROOT}/d7.out" 2>/dev/null | tail -1))"
+  fail "fresh dispatch should journal phase_precondition_bootstrap"
 fi
 
 # Test 7b: the SAME lane after the printed remedies are recorded (brief = plan,
@@ -336,9 +336,41 @@ else
   fail "admitted dispatch spawned no worker"
 fi
 
-# Test 7c: a caller STILL passing --at-bootstrap for a lane that has records is
+# Test 7c: a pre-existing phase record that falsely claims verified plan proof
+# still refuses. The real assert re-verifies the artifact instead of trusting
+# the forged proof field, so this is not a bootstrap lane anymore.
+printf 'test: 7c false verified-plan claim through dispatch-code.sh is refused\n'
+M7F='PPB fixture false verified plan claim'
+S7F="$(mission_sig8 "$M7F")"
+mkdir -p "${REPO7}/docs/handoff/PPB-${S7F}"
+printf 'not a recognized plan artifact name\n' > "${REPO7}/docs/handoff/PPB-${S7F}/notes.md"
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7F" classify \
+    --status done --owner test ) >/dev/null 2>&1
+( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$S7F" plan \
+    --status done --artifact "docs/handoff/PPB-${S7F}/notes.md" --owner test ) >/dev/null 2>&1
+sed -i 's/^proof: unverified$/proof: verified/' "${REPO7}/docs/handoff/dispatch-${S7F}/phases.d/plan.yaml"
+FALSE_BEFORE="$(wc -l < "${TMP_ROOT}/spawned.txt" | tr -d ' ')"
+run_dispatch "$M7F" "${TMP_ROOT}/d7f.out"; rc7f=$?
+FALSE_AFTER="$(wc -l < "${TMP_ROOT}/spawned.txt" | tr -d ' ')"
+if [[ $rc7f -eq 3 ]]; then
+  ok
+else
+  fail "false verified-plan claim should exit 3 (rc=$rc7f, out=$(tail -5 "${TMP_ROOT}/d7f.out" 2>/dev/null | tr '\n' ' '))"
+fi
+if grep -q 'missing=.*plan' "${TMP_ROOT}/d7f.out" && grep -q 'missing=.*gate1' "${TMP_ROOT}/d7f.out"; then
+  ok
+else
+  fail "false claim refusal should name plan and gate1 ($(grep 'missing=' "${TMP_ROOT}/d7f.out" 2>/dev/null | tail -1))"
+fi
+if [[ "$FALSE_AFTER" == "$FALSE_BEFORE" ]]; then
+  ok
+else
+  fail "false verified-plan claim spawned a worker (before=$FALSE_BEFORE after=$FALSE_AFTER)"
+fi
+
+# Test 7d: a caller STILL passing --at-bootstrap for a lane that has records is
 # ignored — the store wins (the flag is parsed for compatibility, decides nothing).
-printf 'test: 7c --at-bootstrap claim is ignored, the store wins\n'
+printf 'test: 7d --at-bootstrap claim is ignored, the store wins\n'
 SIG_CLAIM="$(mission_sig8 'PPB classify-only claim lane')"
 ( cd "$REPO7" && PROJECT_ROOT="$REPO7" LEADV2_PROJECT_ROOT="$REPO7" bash "$PHASE_RECORD" record "$SIG_CLAIM" classify \
     --status done --owner test ) >/dev/null 2>&1
