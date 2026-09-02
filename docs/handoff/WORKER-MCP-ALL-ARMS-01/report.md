@@ -135,3 +135,120 @@ assignment (freepool-coder.sh:65) — reproduced: child exits rc=1,
 existing suite's freepool `run` fixture masked this because the `if`-context
 disables `set -e`). Flagging as a footgun for a future lane; the round-2 bg
 fixtures use a token-only secrets file + `FREEPOOL_PROXY_URL`.
+
+## Round 3 evidence
+
+Round 3 fixes review verdict H1 (journal truncation) and H2 (unconditional
+preamble injection). Round-2 review verdict: `FAIL, high=2`.
+
+### 1. H1 — `tee -a` on the kimi journal + full journal-write audit
+
+Fix: `kimi-coder.sh:1135` is now `| tee -a "${run_dir}/journal.jsonl" |`
+(was bare `tee`, which truncated the file and destroyed the
+`worker_mcp_attached`/`worker_mcp_skipped` records `worker_mcp_resolve()`
+writes at :1120 BEFORE the stream starts).
+
+Audit — every `tee`/`>` onto a `journal.jsonl` across LANE_WRITES shell files
+(`grep -nE 'journal\.jsonl' | grep -E 'tee|>>|>[^>]'` per file):
+
+| File:line | Write | Verdict |
+|---|---|---|
+| `kimi-coder.sh:1135` | `tee -a` stream | FIXED this round (was bare `tee`) |
+| `freepool-coder.sh:1283` | `tee -a` stream (direct path) | already append |
+| `freepool-coder.sh:1285` | `tee -a` stream (redact path) | already append |
+| `freepool-coder.sh:1260` | `>> journal.jsonl` (`freepool_select` record) | append |
+| `codex-task.sh`, `leadv2-codex-planner.sh`, `lib/leadv2-worker-mcp.sh`, `leadv2-dispatch-code.sh` | — | no direct journal.jsonl writes |
+| `worker_mcp_journal()` (kimi:151, freepool:127) | `printf >> "$1"` | append |
+
+Out-of-lane note: `glm-coder.sh:1203` still has a bare `tee` onto
+`journal.jsonl`, but it is NOT the H1 bug: glm passes
+`${run_dir}/progress.log` (not journal.jsonl) as `worker_mcp_resolve`'s
+journal target (`glm-coder.sh:1181`), so journal.jsonl carries no pre-spawn
+MCP records for the tee to destroy. Left untouched (outside LANE_WRITES).
+
+Suite case (two consecutive journal writes, both records present):
+
+```
+[TEST] PASS: kimi bg: journal keeps BOTH the pre-spawn worker_mcp_attached record and the stream (tee -a)
+```
+
+### 2. H2 — preamble injected only when the arm's MCP attach succeeds
+
+`leadv2-dispatch-code.sh` no longer injects the code-intel preamble
+unconditionally. The single injection site (`_spawn_worker_body`, ~:5090) now
+calls `worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" ""` — a new
+predicate in `lib/leadv2-worker-mcp.sh:192` built ON TOP of
+`resolve_role_mcp_config()` (the same resolver the launchers run at spawn
+time, so the prediction is deterministic):
+
+- rc=0 attached (glm/glm-flash/kimi/freepool with `LEADV2_WORKER_MCP=1`
+  default, sonnet with `LEADV2_SUBSESSION_SLIM_MCP=1`) → full preamble;
+- rc=3 skip/fail-open (`LEADV2_WORKER_MCP=0`, nothing resolvable, preamble
+  file missing) → one-line `code-intel MCP unavailable in this session — use
+  grep/Read instead of mcp__* tools.` note that names no concrete tool;
+- rc=4 unwired (codex) → nothing.
+
+The round-2 unconditional global `_LEADV2_CODE_INTEL_PREAMBLE` is deleted
+from `leadv2-dispatch-code.sh` (grep hits remain only inside the suite, as
+the regression guard). The dispatcher also `emit`s a
+`code_intel_preamble arm=… mode=attached|skipped|none` decision line per
+spawn. Suite (behavioural, lib level — rc + stdout asserted):
+
+```
+[TEST] PASS: preamble gate: kimi attached (default gate) -> rc=0 + preamble text
+[TEST] PASS: preamble gate: freepool attached (default gate) -> rc=0 + preamble text
+[TEST] PASS: preamble gate: glm attached (default gate) -> rc=0 + preamble text
+[TEST] PASS: preamble gate: kimi LEADV2_WORKER_MCP=0 -> rc=3 + fallback note, no preamble
+[TEST] PASS: preamble gate: kimi fail-open (nothing resolvable) -> rc=3 + fallback note, no preamble
+[TEST] PASS: preamble gate: codex unwired -> rc=4 + empty output
+[TEST] PASS: preamble gate: sonnet default (no SLIM_MCP) -> rc=3 + fallback note, no preamble
+[TEST] PASS: preamble gate: sonnet LEADV2_SUBSESSION_SLIM_MCP=1 -> rc=0 + preamble text
+[TEST] PASS: preamble gate: fallback note promises no concrete mcp__* tools
+[TEST] PASS: leadv2-dispatch-code.sh: preamble injection is gated by worker_mcp_preamble_for_arm(arm)
+[TEST] PASS: leadv2-dispatch-code.sh: unconditional-injection marker _LEADV2_CODE_INTEL_PREAMBLE stays deleted (round-2 H2 regression)
+[TEST] PASS: leadv2-dispatch-code.sh: sources the shared worker-MCP lib (no second resolver)
+```
+
+Codex stays unwired: `codex-task.sh` still emits the documented MCP-gap NOTE;
+`config/codex-mcp-servers.toml` remains a declared allowlist only.
+
+### 3. Mutation negative controls (by hand in a scratch copy —
+`leadv2-mutation-control.sh` does not exist on main)
+
+Both controls mutate a scratch copy (never the lane tree), run the mutated
+artifact, and assert the suite's case goes red; run inside the suite:
+
+```
+[TEST] PASS: negative control (tee -a): mutated kimi goes RED — attached record destroyed by truncation, journal case catches it
+[TEST] PASS: negative control (dispatch gate): unconditional injection goes RED — dispatch gate check catches it
+```
+
+That is: (d) scratch kimi-coder.sh with `tee -a` → `tee` — the bg run's
+journal.jsonl LOSES the `worker_mcp_attached` record (truncation reproduced,
+the exact round-2 H1), and the suite's journal case fails on it; (e) scratch
+leadv2-dispatch-code.sh with the gate call replaced by an unconditional
+prepend — the dispatch gate check fails on it (exact round-2 H2).
+
+### 4. Falsifiable gate + changed-scope
+
+```
+leadv2-suite-falsifiable: suite=.../test-worker-mcp-all-arms.sh
+baseline: rc=0
+probe[assertion_tools_broken]: rc=1 shim_invocations=235
+probe[empty_cwd]: rc=0
+probe[stripped_env]: rc=0
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
+
+`tests/run-all.sh --scope changed` (full run, 2026-09-02, state-file reset
+beforehand):
+
+```
+RUNALL_PLACEHOLDER
+```
+
+Suite self-check: `bash -n` green on all 8 changed shell files (kimi-coder.sh,
+leadv2-dispatch-code.sh, lib/leadv2-worker-mcp.sh, freepool-coder.sh,
+codex-task.sh, leadv2-codex-planner.sh, tests/test-worker-mcp-all-arms.sh,
+tests/run-all.sh); no Python files changed this round. Suite total:
+`PASS=47 FAIL=0`, rc=0.
