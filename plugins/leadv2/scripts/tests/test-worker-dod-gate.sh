@@ -46,9 +46,21 @@ fi
 source "${DOD_GATE_SH}"
 
 # ── fixture repo: a from-scratch git repo, its own identity ────────────────
+# `main` is pinned at the base commit and HEAD lives on a separate `lane`
+# branch throughout the rest of this fixture's life, so
+# _dod_resolve_base()/_dod_worker_diff_hash() (fix-round-2 finding 1) have a
+# real, non-trivial merge-base to diff against instead of main==HEAD (which
+# would make every hash the trivial empty-diff hash).
 REPO="${FIXTURE}/repo"
 mkdir -p "${REPO}"
-( cd "${REPO}" && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m base )
+# `git init` checks out the default branch (verified: "main" in this
+# environment) and the base commit lands there; `checkout -b lane`
+# immediately after leaves `main` parked at that commit forever while `lane`
+# (checked out from here on) receives every subsequent commit_all — never
+# `git branch -f main HEAD` while main is checked out, which git refuses
+# (the branch a repo's sole checkout has open cannot be force-moved).
+( cd "${REPO}" && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m base \
+    && git checkout -q -b lane )
 
 TASK_DIR="${REPO}/docs/handoff/T1"
 mkdir -p "${TASK_DIR}"
@@ -153,14 +165,22 @@ else
   fail "check_b: ungrounded mutation-control claim -> fail (got rc=${rc} out=${out})"
 fi
 
-DIFF_HASH="$(_dod_sha256 "${DIFF_FILE}")"
+# fix-round-2 finding 1: diff_hash is no longer sha256(diff_file) -- diff_file
+# is review.diff, a post-exit artifact no worker could ever reproduce. It is
+# now _dod_worker_diff_hash(root), the sha256 of `git diff <base> HEAD`
+# (mutation-control/ excluded) over the fixture repo's OWN committed history
+# -- exactly what leadv2-mutation-control.sh itself would compute. Recomputed
+# fresh right before each artifact write below since REPO keeps accumulating
+# commits across this whole test file.
 mkdir -p "${TASK_DIR}/mutation-control"
 
 # fix-round-1 finding 2: a hand-written one-line file (worker owns the diff,
 # can compute its own sha256) must NOT be accepted — only the full
 # leadv2-mutation-control.sh artifact shape is.
+DIFF_HASH="$(_dod_worker_diff_hash "${REPO}")"
 printf 'diff_hash=%s\n' "${DIFF_HASH}" > "${TASK_DIR}/mutation-control/run1.txt"
 commit_all
+DIFF_HASH="$(_dod_worker_diff_hash "${REPO}")"
 out="$(_dod_check_b "${REPO}" "${TASK_DIR}" "${DIFF_FILE}")"; rc=$?
 if [[ ${rc} -eq 1 ]] && printf '%s' "${out}" | grep -q 'mutation_control_not_via_runner'; then
   pass "check_b: hand-written one-line diff_hash artifact (no provenance) -> fail"
@@ -171,19 +191,25 @@ rm -f "${TASK_DIR}/mutation-control/run1.txt"
 
 printf 'suite=plugins/leadv2/scripts/tests/test-widget.sh\nfile=plugins/leadv2/scripts/lib/leadv2-widget.sh\nanchor=s/foo/bar/\nbaseline_rc=0\nmutated_rc=1\nred_line=FAIL widget\ndiff_hash=%s\n' \
   "${DIFF_HASH}" > "${TASK_DIR}/mutation-control/run2.txt"
-commit_all
 out="$(_dod_check_b "${REPO}" "${TASK_DIR}" "${DIFF_FILE}")"; rc=$?
 if [[ ${rc} -eq 0 ]] && printf '%s' "${out}" | grep -q 'dod_pass check=paste_evidence'; then
   pass "check_b: real generator-shaped artifact (baseline_rc=0, mutated_rc!=0, diff_hash bound) -> pass"
 else
   fail "check_b: grounded mutation-control artifact -> pass (got rc=${rc} out=${out})"
 fi
+commit_all
 
-out="$(_dod_check_b "${REPO}" "${TASK_DIR}" "${FIXTURE}/does-not-exist.diff")"; rc=$?
+# fix-round-2 finding 1: no merge-base resolvable (a bare non-git dir) ->
+# undetermined, never a silent pass -- the sub-check that used to be gated on
+# "no diff_file" is now gated on "no merge-base"; a bare dir with no .git at
+# all is the fixture for that.
+BARE_DIR="${FIXTURE}/not-a-repo"
+mkdir -p "${BARE_DIR}"
+out="$(_dod_check_b "${BARE_DIR}" "${TASK_DIR}" "${DIFF_FILE}")"; rc=$?
 if [[ ${rc} -eq 2 ]] && printf '%s' "${out}" | grep -q 'mutation_control_undetermined'; then
-  pass "check_b: no diff_file with a mutation-control line present -> undetermined (never a silent pass)"
+  pass "check_b: no merge-base resolvable (non-git root) -> undetermined (never a silent pass)"
 else
-  fail "check_b: missing diff_file -> undetermined (got rc=${rc} out=${out})"
+  fail "check_b: unresolvable merge-base -> undetermined (got rc=${rc} out=${out})"
 fi
 
 # ---------------------------------------------------------------------------
@@ -301,6 +327,47 @@ else
   fail "check_d: missing diff_file -> undetermined (got rc=${rc} out=${out})"
 fi
 
+# fix-round-2 finding 3: three shapes that emit neither `--- a/` nor `+++ b/`
+# because git generates no content hunk for them — live-verified against
+# real `git diff`/`git diff --cached -M` output before this fix (see
+# report.md). All three must still fail.
+cat > "${DIFF_FILE}" <<'EOF'
+diff --git a/docs/leadv2/empty.yaml b/docs/leadv2/empty.yaml
+new file mode 100644
+index 0000000..e69de29
+EOF
+out="$(_dod_check_d "${DIFF_FILE}")"; rc=$?
+if [[ ${rc} -eq 1 ]] && printf '%s' "${out}" | grep -q 'dod_fail check=runtime_state_in_diff'; then
+  pass "check_d: empty-file creation of a runtime-state path (no ---/+++ lines) -> fail"
+else
+  fail "check_d: empty-file creation -> fail (got rc=${rc} out=${out})"
+fi
+
+cat > "${DIFF_FILE}" <<'EOF'
+diff --git a/scratch/notes.yaml b/docs/leadv2/notes.yaml
+similarity index 100%
+rename from scratch/notes.yaml
+rename to docs/leadv2/notes.yaml
+EOF
+out="$(_dod_check_d "${DIFF_FILE}")"; rc=$?
+if [[ ${rc} -eq 1 ]] && printf '%s' "${out}" | grep -q 'dod_fail check=runtime_state_in_diff'; then
+  pass "check_d: 100% rename into a runtime-state path (no ---/+++ lines) -> fail"
+else
+  fail "check_d: 100% rename -> fail (got rc=${rc} out=${out})"
+fi
+
+cat > "${DIFF_FILE}" <<'EOF'
+diff --git a/docs/leadv2/active.yaml b/docs/leadv2/active.yaml
+old mode 100644
+new mode 100755
+EOF
+out="$(_dod_check_d "${DIFF_FILE}")"; rc=$?
+if [[ ${rc} -eq 1 ]] && printf '%s' "${out}" | grep -q 'dod_fail check=runtime_state_in_diff'; then
+  pass "check_d: mode-only change of a runtime-state path (no ---/+++ lines) -> fail"
+else
+  fail "check_d: mode-only change -> fail (got rc=${rc} out=${out})"
+fi
+
 # ---------------------------------------------------------------------------
 # check (e) — report-only, never affects rc
 # ---------------------------------------------------------------------------
@@ -369,6 +436,21 @@ else
   fail "lv2_dod_gate_run: violating fixture -> rc=1 (got rc=${rc})"
 fi
 
+# fix-round-2 finding 2: an out dir that CANNOT be created (mkdir -p fails —
+# a regular file occupies the parent path component) must still name its
+# cause on stdout/stderr, never collapse to an empty out_md and dod_unknown.
+BLOCKED_PARENT="${FIXTURE}/blocked-parent"
+: > "${BLOCKED_PARENT}"
+UNWRITABLE_OUT_MD="${BLOCKED_PARENT}/dod-gate.md"
+gate_out="$(lv2_dod_gate_run "${REPO}" "${TASK_DIR}" "${DIFF_FILE}" "${UNWRITABLE_OUT_MD}" 2>&1)"; rc=$?
+if [[ ${rc} -eq 1 ]] && printf '%s' "${gate_out}" | grep -q 'dod_fail check=runtime_state_in_diff' \
+   && [[ ! -e "${UNWRITABLE_OUT_MD}" ]]; then
+  pass "lv2_dod_gate_run: unwritable out dir -> cause still named on stdout/stderr, never dod_unknown"
+else
+  fail "lv2_dod_gate_run: unwritable out dir -> cause still named (got rc=${rc} out=${gate_out})"
+fi
+rm -f "${BLOCKED_PARENT}"
+
 # ---------------------------------------------------------------------------
 # leadv2-mutation-control.sh — 4 exit-code cases (own scratch fixture, no
 # shared state with the gate-lib fixture above)
@@ -397,9 +479,15 @@ EOF
 ( cd "${MC_REPO}" && git add -A && git -c user.email=t@t -c user.name=t commit -q -m base )
 MC_TASK_DIR="${FIXTURE}/mc-task"
 mkdir -p "${MC_TASK_DIR}"
+# fix-round-2 finding 1: leadv2-mutation-control.sh now computes its own
+# diff_hash internally (no more caller-supplied 4th positional) via the same
+# LEADV2_LANE_START_SHA-first base ladder lib/leadv2-dod-gate.sh's
+# _dod_resolve_base() uses. Pin it to this fixture's own base commit so every
+# call below resolves a real, stable merge-base.
+MC_BASE_SHA="$(cd "${MC_REPO}" && git rev-parse HEAD)"
 
-( cd "${MC_REPO}" && LEADV2_TARGET_ROOT_OVERRIDE=1 bash "${MUT_CTL_SH}" \
-    suite.sh lib/target.sh 's/ + / - /' deadbeef "${MC_TASK_DIR}" ) \
+( cd "${MC_REPO}" && LEADV2_LANE_START_SHA="${MC_BASE_SHA}" bash "${MUT_CTL_SH}" \
+    suite.sh lib/target.sh 's/ + / - /' "${MC_TASK_DIR}" ) \
     >"${FIXTURE}/mc-ok.out" 2>&1
 mc_rc=$?
 if [[ ${mc_rc} -eq 0 ]] && grep -q 'MUTATION-CONTROL ok' "${FIXTURE}/mc-ok.out" \
@@ -409,7 +497,7 @@ else
   fail "mutation-control: expected exit0/ok (got rc=${mc_rc}, out=$(cat "${FIXTURE}/mc-ok.out"))"
 fi
 
-( cd "${MC_REPO}" && bash "${MUT_CTL_SH}" suite.sh lib/target.sh 's/NOPE_NO_MATCH_ANCHOR/x/' deadbeef "${MC_TASK_DIR}" ) \
+( cd "${MC_REPO}" && LEADV2_LANE_START_SHA="${MC_BASE_SHA}" bash "${MUT_CTL_SH}" suite.sh lib/target.sh 's/NOPE_NO_MATCH_ANCHOR/x/' "${MC_TASK_DIR}" ) \
   >"${FIXTURE}/mc-anchor.out" 2>&1
 mc_rc=$?
 if [[ ${mc_rc} -eq 2 ]] && grep -q 'reason=anchor_count' "${FIXTURE}/mc-anchor.out"; then
@@ -424,7 +512,7 @@ echo "FAIL: baseline is already red"
 exit 1
 EOF
 ( cd "${MC_REPO}" && git add -A && git -c user.email=t@t -c user.name=t commit -q -m redbase )
-( cd "${MC_REPO}" && bash "${MUT_CTL_SH}" suite.sh lib/target.sh 's/ + / - /' deadbeef "${MC_TASK_DIR}" ) \
+( cd "${MC_REPO}" && LEADV2_LANE_START_SHA="${MC_BASE_SHA}" bash "${MUT_CTL_SH}" suite.sh lib/target.sh 's/ + / - /' "${MC_TASK_DIR}" ) \
   >"${FIXTURE}/mc-baseline.out" 2>&1
 mc_rc=$?
 if [[ ${mc_rc} -eq 2 ]] && grep -q 'reason=baseline_not_green' "${FIXTURE}/mc-baseline.out"; then
@@ -439,7 +527,7 @@ echo "PASS: suite ignores lib/target.sh entirely"
 exit 0
 EOF
 ( cd "${MC_REPO}" && git add -A && git -c user.email=t@t -c user.name=t commit -q -m greenbase-nocov )
-( cd "${MC_REPO}" && bash "${MUT_CTL_SH}" suite.sh lib/target.sh 's/ + / - /' deadbeef "${MC_TASK_DIR}" ) \
+( cd "${MC_REPO}" && LEADV2_LANE_START_SHA="${MC_BASE_SHA}" bash "${MUT_CTL_SH}" suite.sh lib/target.sh 's/ + / - /' "${MC_TASK_DIR}" ) \
   >"${FIXTURE}/mc-survived.out" 2>&1
 mc_rc=$?
 if [[ ${mc_rc} -eq 1 ]] && grep -q 'mutant_survived' "${FIXTURE}/mc-survived.out"; then
