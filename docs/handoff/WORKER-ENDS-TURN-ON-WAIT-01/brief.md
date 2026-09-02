@@ -40,3 +40,18 @@ So the worker's instinct to background it is rational — the fix must address b
 `docs/handoff/dispatch-45cb915e/developer.stream.jsonl`, `dispatch-b94c3b1c/developer.stream.jsonl`,
 `dispatch-0537dcc5/developer.stream.jsonl` (result rows, `subtype: success`); persona-engine
 `docs/leadv2/open-threads.md` entries of 2026-09-02.
+
+## Root cause found — 2026-09-02, 4th occurrence
+The R4f worker ended after 5 turns with: "Dispatched the R4 developer subagent in the background; **per
+pulse mode** I'll stay silent until its completion notification, an async question, or Gate/close."
+That is the LEAD's pulse rule (silence between milestones, speak only at Gate-1 / async question /
+Phase-8 close) being inherited by a DISPATCHED WORKER session, where it means "end the turn and wait" —
+and a dispatched worker has no next turn. So the disease is not worker laziness: the worker is obeying a
+rule written for a different role.
+
+Add to the required fixes:
+6. The pulse/silence rules must be scoped to the lead. The dispatched-worker preamble must state
+   explicitly: pulse mode does NOT apply to you; you have exactly one turn-chain and no notifications will
+   reach you; never delegate and wait, never background anything you need the result of.
+7. The same preamble must forbid nested agent spawns outright (three lanes today spawned nested developers,
+   two of them with isolation:"worktree", which puts the diff in a stray worktree the epilogue never sees).
