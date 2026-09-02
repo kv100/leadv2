@@ -351,3 +351,16 @@ $ bash -n plugins/leadv2/scripts/tests/test-brain-class-live.sh
 (no output — syntax OK)
 
 No Python files changed this round.
+
+### Post-`main`-merge re-verification
+
+`main` merged clean (no conflicts touching this suite or its targets; `ort` strategy, 16 files
+from unrelated lanes). Re-ran after merge:
+
+```
+$ bash -n plugins/leadv2/scripts/tests/test-brain-class-live.sh   # (no output — syntax OK)
+$ for i in $(seq 10); do bash plugins/leadv2/scripts/tests/test-brain-class-live.sh 2>&1 | tail -1; done
+=== test-brain-class-live.sh: 20 PASS, 0 FAIL ===   (x10)
+$ bash plugins/leadv2/scripts/leadv2-suite-falsifiable.sh plugins/leadv2/scripts/tests/test-brain-class-live.sh
+verdict: falsifiable — a failure injection turned the suite red (rc=1)
+```
