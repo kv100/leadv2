@@ -68,29 +68,54 @@ lv2_status_snapshot_ttl() {
   echo "$ttl"
 }
 
-# lv2_status_snapshot_path — absolute path to the shared snapshot file for
-# the CURRENT project's control plane (resolved via leadv2-state-path.sh, so
-# it is identical across every worktree of the same repo).
+# lv2_status_snapshot_path [scope] — absolute path to the shared snapshot
+# file for the CURRENT project's control plane (resolved via
+# leadv2-state-path.sh, so it is identical across every worktree of the same
+# repo). With no scope: the original single shared file (back-compat, still
+# what test-status-churn.sh's multi-producer scenarios exercise). With a
+# scope (e.g. "git", "registry", a sanitized foreign-repo slug): a SEPARATELY
+# named file, so two DIFFERENT raw-probe shapes (e.g. status-collector's git
+# facts vs. lanes-snapshot's foreign-registry copy) never clobber each other
+# under one filename -- see lv2_status_snapshot_get_scoped below.
 lv2_status_snapshot_path() {
-  PROJECT_ROOT="${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-}}" "${LV2_STATUS_CACHE_STATE_PATH_SH}" --no-link status-snapshot.json 2>/dev/null
+  local scope="${1:-}"
+  local name="status-snapshot.json"
+  [[ -n "$scope" ]] && name="status-snapshot-${scope}.json"
+  PROJECT_ROOT="${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-}}" "${LV2_STATUS_CACHE_STATE_PATH_SH}" --no-link "$name" 2>/dev/null
 }
 
-# lv2_status_snapshot_journal_path — journal file, same control plane.
+# lv2_status_snapshot_journal_path [scope] — journal file, same control plane.
 lv2_status_snapshot_journal_path() {
-  PROJECT_ROOT="${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-}}" "${LV2_STATUS_CACHE_STATE_PATH_SH}" --no-link status-snapshot-journal.jsonl 2>/dev/null
+  local scope="${1:-}"
+  local name="status-snapshot-journal.jsonl"
+  [[ -n "$scope" ]] && name="status-snapshot-${scope}-journal.jsonl"
+  PROJECT_ROOT="${PROJECT_ROOT:-${LEADV2_PROJECT_ROOT:-}}" "${LV2_STATUS_CACHE_STATE_PATH_SH}" --no-link "$name" 2>/dev/null
 }
 
 # lv2_status_snapshot_get <producer_name> <compute_cmd...>
 #   Prints the absolute path of a fresh-enough snapshot file to stdout.
 #   Returns 0 on success. compute_cmd is only invoked when this call is the
 #   one that wins the recompute race (or the pathological wedged-lock
-#   fallback).
+#   fallback). Unscoped — every caller shares ONE file (original behaviour).
 lv2_status_snapshot_get() {
-  local producer="$1"
-  shift
+  lv2_status_snapshot_get_scoped "" "$@"
+}
+
+# lv2_status_snapshot_get_scoped <scope> <producer_name> <compute_cmd...>
+#   Same contract as lv2_status_snapshot_get, but the snapshot/journal file
+#   is namespaced by <scope> (empty scope == the original unscoped file).
+#   STATUS-CHURN-01 round 2: separate scopes let different real consumers
+#   (status-collector's git facts, the shared active.yaml registry copy read
+#   by broad-status/lane-status-line-tail, lanes-snapshot's per-foreign-repo
+#   registry copy) each get their OWN debounced file instead of colliding on
+#   one shape, while still sharing the same TTL/lock/journal machinery.
+lv2_status_snapshot_get_scoped() {
+  local scope="$1"
+  local producer="$2"
+  shift 2
   local snapshot_path journal_path ttl
-  snapshot_path="$(lv2_status_snapshot_path)"
-  journal_path="$(lv2_status_snapshot_journal_path)"
+  snapshot_path="$(lv2_status_snapshot_path "$scope")"
+  journal_path="$(lv2_status_snapshot_journal_path "$scope")"
   ttl="$(lv2_status_snapshot_ttl)"
   if [[ -z "$snapshot_path" ]]; then
     return 1

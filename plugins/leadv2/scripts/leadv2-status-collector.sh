@@ -29,10 +29,16 @@ trap 'exit 0' ERR   # a probe script's contract: never crash the timer
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
 OUT_PATH=""
+_SC_GIT_FACTS_ONLY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-root) PROJECT_ROOT="$2"; shift 2;;
     --out) OUT_PATH="$2"; shift 2;;
+    # STATUS-CHURN-01 round 2: internal-only mode used as the git-facts
+    # cache's own compute_cmd (see _sc_git_section below) — prints ONLY the
+    # git section's JSON and exits, so a cache miss recomputes exactly the 3
+    # git subprocesses this section needs, never the whole collector.
+    --git-facts-only) _SC_GIT_FACTS_ONLY=1; shift;;
     -h|--help)
       echo "Usage: leadv2-status-collector.sh [--project-root <dir>] [--out <path>]"
       exit 0;;
@@ -41,6 +47,31 @@ while [[ $# -gt 0 ]]; do
 done
 PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 : "${OUT_PATH:=$PROJECT_ROOT/docs/leadv2/status-snapshot.json}"
+
+_sc_git_compute_raw() {
+  cd "$PROJECT_ROOT"
+  local head branch unpushed
+  head="$(git rev-parse --short HEAD)"
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+    unpushed="$(git rev-list '@{u}..HEAD' --count)"
+  else
+    unpushed="null"
+  fi
+  python3 -c "
+import json, sys
+head, branch, unpushed = sys.argv[1], sys.argv[2], sys.argv[3]
+print(json.dumps({
+    'local_head': head,
+    'branch': branch,
+    'unpushed': (None if unpushed == 'null' else int(unpushed)),
+}))
+" "$head" "$branch" "$unpushed"
+}
+if [[ "$_SC_GIT_FACTS_ONLY" == "1" ]]; then
+  _sc_git_compute_raw
+  exit 0
+fi
 
 _SC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "${LEADV2_TRACE:-0}" == "1" ]]; then . "${_SC_DIR}/lib/leadv2-trace.sh"
@@ -78,25 +109,30 @@ _sc_run_section() {
 SECTION_NAMES=(); SECTION_OK=(); SECTION_FILES=()
 
 # ── generic section: git (local HEAD, unpushed count) ───────────────────
+# STATUS-CHURN-01 round 2: this section is pure read-only display facts (no
+# gating decision, no reconciliation, no lane verdict) — 3 `git` subprocess
+# spawns repeated on every collector call. Routed through the shared
+# status-snapshot cache (scope "git-facts") so repeat collector calls within
+# LEADV2_STATUS_SNAPSHOT_TTL_S (default 10s, floor 3s) read a cached JSON
+# blob instead of re-spawning `git rev-parse`/`git rev-list` three times.
+# Compute step is this same function, invoked once with the bypass flag set
+# so a cache miss cannot recurse.
+_SC_STATUS_CACHE_LIB="${_SC_DIR}/lib/leadv2-status-cache.sh"
 _sc_git_section() {
-  cd "$PROJECT_ROOT"
-  local head branch unpushed
-  head="$(git rev-parse --short HEAD)"
-  branch="$(git rev-parse --abbrev-ref HEAD)"
-  if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-    unpushed="$(git rev-list '@{u}..HEAD' --count)"
-  else
-    unpushed="null"
+  if [[ "${LEADV2_STATUS_CACHE_BYPASS:-0}" == "1" || ! -f "${_SC_STATUS_CACHE_LIB}" ]]; then
+    _sc_git_compute_raw
+    return $?
   fi
-  python3 -c "
-import json, sys
-head, branch, unpushed = sys.argv[1], sys.argv[2], sys.argv[3]
-print(json.dumps({
-    'local_head': head,
-    'branch': branch,
-    'unpushed': (None if unpushed == 'null' else int(unpushed)),
-}))
-" "$head" "$branch" "$unpushed"
+  # shellcheck source=lib/leadv2-status-cache.sh
+  source "${_SC_STATUS_CACHE_LIB}"
+  local snap
+  snap="$(PROJECT_ROOT="$PROJECT_ROOT" lv2_status_snapshot_get_scoped "git-facts" "status-collector" \
+    env LEADV2_STATUS_CACHE_BYPASS=1 PROJECT_ROOT="$PROJECT_ROOT" bash "${_SC_DIR}/leadv2-status-collector.sh" --project-root "$PROJECT_ROOT" --out /dev/null --git-facts-only 2>/dev/null)"
+  if [[ -n "$snap" && -f "$snap" ]]; then
+    cat "$snap"
+  else
+    _sc_git_compute_raw
+  fi
 }
 _sc_run_section "git" _sc_git_section
 
