@@ -2762,6 +2762,10 @@ if [[ -n "${FOUNDER_TASK_ID}" ]]; then
   _DOD_TASK_DIR="${ROOT}/docs/handoff/${FOUNDER_TASK_ID}"
   _DOD_GATE_SH="${SCRIPT_DIR}/lib/leadv2-dod-gate.sh"
   if [[ -f "${_DOD_GATE_SH}" ]]; then
+    # Fix-round-2 finding 2: mkdir -p before the gate call, not just inside
+    # the gate itself — belt and suspenders against an out dir that does not
+    # exist yet at this call site.
+    mkdir -p "${_DOD_TASK_DIR}" 2>/dev/null || true
     _dod_out="$(bash "${_DOD_GATE_SH}" "${ROOT}" "${_DOD_TASK_DIR}" "${diff_file}" "${_DOD_TASK_DIR}/dod-gate.md" 2>&1)"
     _dod_rc=$?
     if [[ ${_dod_rc} -eq 1 ]]; then

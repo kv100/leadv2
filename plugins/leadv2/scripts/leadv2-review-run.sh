@@ -1334,6 +1334,9 @@ if [[ -f "${_DOD_GATE_SH}" ]]; then
   _DOD_TASK_DIR="${TASK_DIR_ARG:-${HANDOFF}}"
   _dod_fallback_note=""
   [[ -z "${TASK_DIR_ARG}" ]] && _dod_fallback_note="dod_skip check=no_task_dir reason=task_dir_omitted_fallback_to_handoff"
+  # Fix-round-2 finding 2: mkdir -p before the gate call — --task-dir can
+  # name a directory this script has never written to yet.
+  mkdir -p "${_DOD_TASK_DIR}" 2>/dev/null || true
   _dod_out="$(bash "${_DOD_GATE_SH}" "${ROOT}" "${_DOD_TASK_DIR}" "${DIFF_FILE}" "${_DOD_TASK_DIR}/dod-gate.md" 2>&1)"
   _dod_rc=$?
   [[ -n "${_dod_fallback_note}" ]] && printf '%s\n' "${_dod_fallback_note}" >> "${_DOD_TASK_DIR}/dod-gate.md" 2>/dev/null || true
