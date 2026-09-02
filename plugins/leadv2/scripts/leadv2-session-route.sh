@@ -58,7 +58,9 @@ CLAUDE_LIGHT_MODEL="sonnet"
 CLAUDE_LIGHT_EFFORT="medium"
 CLAUDE_STANDARD_MODEL="sonnet"
 CLAUDE_STANDARD_EFFORT="medium"
-CLAUDE_HEAVY_MODEL="opus"
+# FABLE-THINK-TIER-01 R4: the Heavy tier is a THINK tier — resolves through
+# the think-model resolver (fable; opus only as the resolver's own fallback).
+CLAUDE_HEAVY_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null)"
 CLAUDE_HEAVY_EFFORT="high"
 GLM_ENABLED="true"
 # Live acceptance evidence: plugins/leadv2/docs/evidence/glm-5.3-probe.md.
@@ -182,6 +184,13 @@ KIMI_LIGHT_EFFORT="${LEADV2_KIMI_LIGHT_EFFORT:-$KIMI_LIGHT_EFFORT}"
 KIMI_STANDARD_MODEL="${LEADV2_KIMI_STANDARD_MODEL:-$KIMI_STANDARD_MODEL}"
 KIMI_STANDARD_EFFORT="${LEADV2_KIMI_STANDARD_EFFORT:-$KIMI_STANDARD_EFFORT}"
 HIGH_RISK_TAGS="${LEADV2_HIGH_RISK_TAGS:-$HIGH_RISK_TAGS}"
+
+# FABLE-THINK-TIER-01 R4: the Heavy tier is a THINK tier — it resolves through
+# the think-model resolver and NEVER from defaults or session-routing.yaml
+# pins (a config 'heavy: model: opus' is dead by design; found live in
+# config/session-routing.yaml:31). The operator override path is
+# LEADV2_THINK_MODEL, honoured inside the resolver itself.
+CLAUDE_HEAVY_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null)"
 
 if ! [[ "$CODEX_MAX_USED_PERCENT" =~ ^[0-9]+$ ]] || (( CODEX_MAX_USED_PERCENT < 1 || CODEX_MAX_USED_PERCENT > 100 )); then
   log_error "codex max_used_percent must be an integer in 1..100"

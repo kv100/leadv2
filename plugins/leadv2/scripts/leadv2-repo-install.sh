@@ -49,6 +49,12 @@ CANON="${LEADV2_CANONICAL_SCRIPTS:-$HOME/Projects/leadv2/plugins/leadv2/scripts}
 AGENTS_SRC="${LEADV2_SHARED_AGENTS:-$HOME/.claude/agents-shared}"
 STATE_BASE="${LEADV2_STATE_BASE:-$HOME/.claude/leadv2-state}"
 PLUGIN_ROOT_DEFAULT="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/local/leadv2/plugins/leadv2}"
+# FABLE-THINK-TIER-01 R4: LEADV2_MAIN_MODEL is written from the think-model
+# resolver (fable; opus only as the resolver's documented fallback) — never a
+# hardcoded opus literal, so fresh/refreshed repos inherit lead main model =
+# fable instead of freezing opus at install time.
+THINK_MODEL_RESOLVED="$(bash "${CANON}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
+THINK_MODEL_RESOLVED="${THINK_MODEL_RESOLVED:-fable}"
 
 CHECK=0; QUIET=0; CHECK_ALL=0; REPO=""
 while [ $# -gt 0 ]; do
@@ -289,13 +295,14 @@ fi
 
 # ---- 5. settings.json env ---------------------------------------------------
 env_py() {
-  LV2_REPO="$REPO" LV2_PR="$PLUGIN_ROOT_DEFAULT" LV2_MODE="$1" python3 -c '
+  LV2_REPO="$REPO" LV2_PR="$PLUGIN_ROOT_DEFAULT" LV2_MODE="$1" \
+    LV2_THINK_MODEL="$THINK_MODEL_RESOLVED" python3 -c '
 import json,os,pathlib
 repo=os.environ["LV2_REPO"]; mode=os.environ["LV2_MODE"]
 want={
  "ENABLE_TOOL_SEARCH":"auto:50",
  "LEADV2_PULSE_MODE":"1",
- "LEADV2_MAIN_MODEL":"opus",
+ "LEADV2_MAIN_MODEL": os.environ.get("LV2_THINK_MODEL", "fable"),
  "LEADV2_FORCE_OPUS_LEAD":"0",
  "LEADV2_WORKFLOW_ENABLED":"1",
  "LEADV2_WIKI_INJECT":"0",

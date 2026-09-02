@@ -24,6 +24,11 @@
 #      the conservative ceiling) and the diff author's arm is never picked.
 #   4. dispatch architect prepass — no `:-opus` literal default; resolves
 #      through the router's think-model query mode.
+#   5. R4 (2026-09-02): value-class census — pins matched by VALUE shape
+#      regardless of variable name/case (uppercase X_MODEL="opus",
+#      ${X:-opus}, generic X="opus", "KEY":"opus", arm arrays); resolver files
+#      exempted at file level; every other surviving opus hit carries an
+#      explicit allowlist entry with a one-line reason.
 #
 # No network, no provider: the pool test uses the REAL resolver with a stubbed
 # --quota-live reader (same pattern as test-review-arm-failclosed-nonzero.sh).
@@ -82,7 +87,7 @@ fi
 # Value-class match: bare 'opus', full model ids ('claude-opus-5', future
 # 'claude-opus-4.8'), and context-window suffixes ('opus[1m]') all classify
 # as the SAME pin — a rename or full-id spelling must not evade the census.
-census_re="model[=: ]+['\"]?(claude-)?opus(-[0-9][0-9.]*)?(\\[1m\\])?['\"]?|--model[ =]['\"]?(claude-)?opus(-[0-9][0-9.]*)?"
+census_re="[Mm][Oo][Dd][Ee][Ll][A-Za-z_0-9]*[^A-Za-z0-9_$]{1,4}['\"]?(claude-)?opus(-[0-9][0-9.]*)?(\\[1m\\])?['\"]?|[A-Za-z_][A-Za-z_0-9]*:?[+-]?=['\"]?(claude-)?opus(-[0-9][0-9.]*)?(\\[1m\\])?['\"]?([[:space:]]|;|\\)|,|$)|[,:[:space:]]['\"](claude-)?opus(-[0-9][0-9.]*)?['\"]|\$\{[A-Za-z_][A-Za-z_0-9]*:[-+]?['\"]?(claude-)?opus(-[0-9][0-9.]*)?|--model[ =]['\"]?(claude-)?opus(-[0-9][0-9.]*)?"
 
 # A survivor is exempt ONLY if it is (a) guard prose ("... reserved for ..."),
 # or (b) a fallback branch that is itself gated by a resolver check in the
@@ -96,6 +101,55 @@ _lv2_classify_survivor() {
     ctx="$(sed -n "$(( lineno > 25 ? lineno - 25 : 1 )),${lineno}p" "$file" 2>/dev/null)"
     printf '%s' "$ctx" | grep -qE "THINK_MODEL[[:space:]]*[=!]==?[[:space:]]*['\"]opus['\"]|think-model" && return 0
   fi
+  # line itself is resolver-wired (chain/guard naming THINK_MODEL)
+  printf '%s' "$content" | grep -qE "THINK_MODEL|think-model" && return 0
+  # shell fallback operator immediately after a resolver call (preceding 2
+  # lines), e.g. dispatch-code.sh: _LEADV2_ARCHITECT_THINK_DEFAULT="opus"
+  if printf '%s' "$content" | grep -qE '\|\|'; then
+    ctx="$(sed -n "$(( lineno > 2 ? lineno - 2 : 1 )),${lineno}p" "$file" 2>/dev/null)"
+    printf '%s' "$ctx" | grep -qE "think-model|THINK_MODEL" && return 0
+  fi
+  return 1
+}
+
+# Explicit allowlist: opus hits that are NOT think-role spawn pins. Each entry
+# is "path-suffix::content-regex::reason". If the matched line drifts, the
+# entry stops matching and the census goes red (self-falsifying allowlist).
+ALLOWLIST=(
+  'leadv2-model-inherit-guard.sh::grep -q "opus"::hook containment check — classifies a model id, spawns nothing'
+  'claude-subsession.sh::--model <opus[|]sonnet>::usage prose'
+  'claude-subsession.sh::if "opus" in m::python containment check on an already-resolved model id'
+  'leadv2-cache-warm.sh::opus\)   MODEL_ID="claude-opus-5"::alias-to-full-id case mapping; MODEL comes from the caller'
+  'leadv2-cost-estimate.sh::Usage:.*--main-model::usage prose'
+  'leadv2-cost-estimate.sh::"opus":   \{"input"::pricing table row'
+  'leadv2-cost-flush.sh::if "opus" in m::python containment check on an already-resolved model id'
+  'leadv2-dispatch-code.sh::arm=opus \(lead::exit-code documentation prose (heredoc text)'
+  'leadv2-dispatch-code.sh::== "opus" \]\]::comparison branch on a router-resolved arm'
+  'leadv2-lane-status-line-tail.sh::if .opus. in val::python containment check (status surfacing)'
+  'leadv2-llm-judge-parse.sh::MODEL_USED="opus"::metadata label default in a parser; actual judge arm comes from leadv2-llm-judge.sh/router'
+  'leadv2-main-model-check.sh::MAIN_MODEL="opus"::opus-guardrail CHECKER (LEADV2_FORCE_OPUS_LEAD=1 path), not a spawn'
+  'leadv2-main-model-check.sh::!= "opus"::comparison in the same opus-guardrail checker'
+  'leadv2-priors-compile.sh::"(new-route|cross-service|strategic)": "opus"|"critic": \{"default": "opus"\}::compiled priors prose route table; live spawns resolve via router/bandit'
+  'leadv2-router-v2.py::"opus": "anthropic"|"claude-opus": "anthropic"::arm-to-provider map'
+  'leadv2-router-v2.py::not in \("sonnet", "opus"\)::allowed-arms membership validation'
+  'leadv2-glm-policy-resolve.py::DISPATCHABLE_PLAN_ARMS|DEFAULT_REVIEW_ARM_ORDER|"opus", "opus_mission_kind"::pool-resolver arm constants; fable ordered before opus (pinned by section 3)'
+  'leadv2-worker-reason.sh::any\(k in arm for k in \("sonnet", "claude", "opus", "haiku"\)\)::provider-class membership check on an already-resolved arm; spawns nothing'
+  'leadv2-causal-critique.js::TASK_CLASS === .Heavy. \? .opus.::PRE-EXISTING think-role pin — workflow file OUTSIDE this lane LANE_WRITES; the old lowercase-only census regex missed it (this match proves review HIGH-1). NOT fixed here — flagged for a follow-up lane in the round-4 report'
+  'leadv2-review/SKILL.md::critic=opus::skill doc table prose (auto-upgrade description); live review pool comes from glm-policy-resolve'
+  'SCHEMAS.md::model_used: opus::skill schema doc prose'
+  'WRITER.md::"model_used": judge.get::skill doc example'
+  'workflow-review-reference.md::claude-opus-5::reference doc of legacy workflow JS; live pool pins fable ahead of opus'
+  'leadv2-token-discipline/SKILL.md::LEADV2_MAIN_MODEL=opus::stale doc prose about the main-model env (doc debt, logged in round-4 report)'
+)
+
+_lv2_allowlisted() { # $1=file $2=content — rc0 if an allowlist entry matches
+  local file="$1" content="$2" entry fpat rest cpat
+  for entry in "${ALLOWLIST[@]}"; do
+    fpat="${entry%%::*}"; rest="${entry#*::}"; cpat="${rest%%::*}"
+    if [[ "$file" == *"$fpat" ]]; then
+      printf '%s' "$content" | grep -qE -e "$cpat" && return 0
+    fi
+  done
   return 1
 }
 
@@ -108,15 +162,20 @@ _lv2_filter_census() {
     lineno="${rest%%:*}"
     content="${rest#*:}"
     _lv2_classify_survivor "$file" "$lineno" "$content" && continue
+    _lv2_allowlisted "$file" "$content" && continue
     out="${out}${line}"$'\n'
   done <<< "$raw"
   printf '%s' "$out" | sed '/^$/d'
 }
 
+# The resolver is exempt AT FILE LEVEL: leadv2-router.sh (think_model) and
+# lib/leadv2-think-model.sh are the ONE place an opus fallback may live.
 census_raw="$(grep -rnE "$census_re" \
     "$PLUGIN_ROOT/scripts" "$PLUGIN_ROOT/workflows" "$PLUGIN_ROOT/skills" "$PLUGIN_ROOT/hooks" 2>/dev/null \
   | grep -v "$PLUGIN_ROOT/scripts/tests/" \
-  | grep -vE ":[0-9]+: *(#|emit |log |log_warn |printf )" \
+  | grep -v "${PLUGIN_ROOT}/scripts/leadv2-router.sh" \
+  | grep -v "${PLUGIN_ROOT}/scripts/lib/leadv2-think-model.sh" \
+  | grep -vE ":[0-9]+: *(#|//|emit |log |log_warn |printf )" \
   || true)"
 census="$(_lv2_filter_census "$census_raw")"
 # Second census pass: spawn lines naming a think role that also mention opus
@@ -167,6 +226,56 @@ if _lv2_classify_survivor "$mut_guard_file" 2 "  { label: 'judge-opus-fallback',
   pass "resolver-gated fallback (guard present) correctly exempted"
 else
   fail "resolver-gated fallback (guard present) wrongly rejected"
+fi
+
+# --- 2d. round-4 HIGH-1..5 fixtures: value-class pin shapes -----------------
+# Each shape from the round-3 verdict MUST match census_re (an uppercase shell
+# var, a ${X:-opus} default, a generic assignment, a JSON key or an arm array
+# cannot evade the census), and the resolver-routed replacement MUST NOT trip it.
+fx_pass=0; fx_fail=0
+fx_red() { # $1 label, $2 line — a pin: census_re MUST match
+  if printf '%s' "$2" | grep -qE "$census_re"; then
+    fx_pass=$((fx_pass + 1))
+  else
+    fx_fail=$((fx_fail + 1)); log "FAIL: fixture (red) '$1' NOT matched by census_re: $2"
+  fi
+}
+fx_green() { # $1 label, $2 line — resolver-routed shape: MUST NOT match
+  if printf '%s' "$2" | grep -qE "$census_re"; then
+    fx_fail=$((fx_fail + 1)); log "FAIL: fixture (green) '$1' wrongly matched: $2"
+  else
+    fx_pass=$((fx_pass + 1))
+  fi
+}
+fx_red   "HIGH-2 driver: model token + ':-' default"   '  model="${LEADV2_ASK_ARCHITECT_MODEL:-opus}"'
+fx_red   "HIGH-3 driver: uppercase shell-var pin"      'CLAUDE_HEAVY_MODEL="opus"'
+fx_red   "HIGH-4 driver: generic var assignment"       '      default_architect="opus"'
+fx_red   "HIGH-4 driver: arm array without fable"      "$(printf "  local two_arms='[\"sonnet\",\"opus\"]'")"
+fx_red   "HIGH-5 driver: JSON model-key pin"           ' "LEADV2_MAIN_MODEL":"opus",'
+fx_red   "full-id uppercase pin"                       'CLAUDE_HEAVY_MODEL="claude-opus-5"'
+fx_green "resolver-routed ask default"                 '  model="${LEADV2_ASK_ARCHITECT_MODEL:-$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh")}"'
+fx_green "resolver-routed heavy tier"                  'CLAUDE_HEAVY_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh")"'
+fx_green "arm array incl fable"                        "$(printf "  local two_arms='[\"sonnet\",\"fable\"]'")"
+fx_green "installer writes resolver answer"            ' "LEADV2_MAIN_MODEL": os.environ.get("LV2_THINK_MODEL", "fable"),'
+PASS=$((PASS + fx_pass)); FAIL=$((FAIL + fx_fail))
+log "fixtures 2d: red-shapes+controls matched=$fx_pass missed=$fx_fail"
+
+# --- 4b. session-route Heavy tier: config YAML cannot pin a think tier ------
+# R4 discovery: config/session-routing.yaml carried 'heavy: model: opus',
+# which overrode the script default and kept the Heavy tier on opus even after
+# the default was resolver-routed (the census scans scripts/, not config/).
+# The Heavy tier is now forced through the resolver AFTER config/env
+# application; this probe proves a stub config pin cannot win.
+STUB_ROOT="$TMP/stub-repo"
+mkdir -p "$STUB_ROOT/.claude/leadv2-overrides"
+printf 'claude:\n  models:\n    heavy:\n      model: opus\n      effort: high\n' \
+  > "$STUB_ROOT/.claude/leadv2-overrides/session-routing.yaml"
+sr_out="$(LEADV2_PROJECT_ROOT="$STUB_ROOT" bash "$SCRIPTS_ROOT/leadv2-session-route.sh" --class Heavy 2>/dev/null || true)"
+sr_model="$(printf '%s\n' "$sr_out" | grep '^model=' | head -1 | cut -d= -f2)"
+if [[ "$sr_model" == "fable" ]]; then
+  pass "session-route Heavy: stub config 'heavy: opus' cannot pin — resolver wins (model=fable)"
+else
+  fail "session-route Heavy: expected model=fable despite stub config pin, got: ${sr_model:-<none>}"
 fi
 
 # The four migrated workflows keep their THINK_MODEL const (resolver wiring).
