@@ -48,7 +48,12 @@ plugin_script_guard_main() {
   [[ -n "$repo_root" ]] || return 0
   canonical_scripts="${LEADV2_CANONICAL_ROOT:-$HOME/Projects/leadv2}/plugins/leadv2/scripts"
   [[ -d "$canonical_scripts" ]] || return 0
-  staged=$(git -C "$repo_root" diff --cached --name-only --diff-filter=ACMR -- '.claude/scripts/*.sh' '.claude/scripts/*.py' 2>/dev/null || true)
+  # ACMRT, not ACMR: a symlink-to-real-file conversion staged in the index is
+  # recorded by git as T (typechange), never M. ACMR alone let that exact
+  # scenario walk through the guard with rc=0 (round-1 review finding,
+  # DRIFT-GUARDS-TO-CANON-01 fix-round 1) — the guard's own reason for
+  # existing is the case ACMR silently excluded.
+  staged=$(git -C "$repo_root" diff --cached --name-only --diff-filter=ACMRT -- '.claude/scripts/*.sh' '.claude/scripts/*.py' 2>/dev/null || true)
   [[ -n "$staged" ]] || return 0
   fail=0; blocked=""
   while IFS= read -r f; do
