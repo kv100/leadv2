@@ -56,7 +56,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-_mktmp() { local d; d="$(mktemp -d 2>/dev/null || mktemp -d -t lv2bp)"; CLEANUP_DIRS+=("$d"); printf '%s' "$d"; }
+_mktmp() {
+  local d
+  d="$(mktemp -d "${TMPDIR:-/tmp}/lv2bp.XXXXXX" 2>/dev/null)" || {
+    echo "Failed to create temporary directory" >&2
+    exit 1
+  }
+  CLEANUP_DIRS+=("$d")
+  printf '%s' "$d"
+}
 
 # ── stubs ───────────────────────────────────────────────────────────────────
 # A quota-bin stub ignores its args and cats a payload file (real or derived).

@@ -42,6 +42,17 @@ export LEADV2_BURN_GOVERNOR=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# Guard against mktemp -t without XXX in template
+GUARD_SCRIPT="${SCRIPTS_DIR}/lib/mktemp-guard.sh"
+if [ -f "$GUARD_SCRIPT" ]; then
+    source "$GUARD_SCRIPT"
+else
+    echo "Error: mktemp-guard.sh not found" >&2
+    exit 1
+fi
+mktemp_guard
+
 LEDGER_SH="${SCRIPTS_DIR}/leadv2-dispatch-ledger.sh"
 LANE_SH="${SCRIPTS_DIR}/leadv2-lane-worktree.sh"
 CLEANUP_SH="${SCRIPTS_DIR}/leadv2-worktree-cleanup.sh"
@@ -135,7 +146,7 @@ S4="$(new_scratch)"
 export LEADV2_PROJECT_ROOT="$S4"
 # Kept OUTSIDE the repo -- an errf inside $S4 is untracked and would show up
 # in the `git status --porcelain` clean-merge check below.
-export LEADV2_LANE_WORKTREE_ERRF="$(mktemp -t lane-err)"
+export LEADV2_LANE_WORKTREE_ERRF="$(mktemp "${TMPDIR:-/tmp}/lane-err.XXXXXX")"
 lane_dir="$(bash "$LANE_SH" ensure taskAnchor heavy)"
 anchor_ahead="$(git -C "$S4" rev-list --count "main..worktree-taskAnchor" 2>/dev/null || echo -1)"
 anchor_subj="$(git -C "$S4" log -1 --format='%s' "main..worktree-taskAnchor" 2>/dev/null || true)"
@@ -249,7 +260,7 @@ rm -rf "$S6" "$(dirname "$_s6_active_path")"
 # ── F1: close-chain completes merge -> deregister -> remove for a landed lane ──
 S7="$(new_scratch)"
 export LEADV2_PROJECT_ROOT="$S7"
-export LEADV2_LANE_WORKTREE_ERRF="$(mktemp -t lane-err)"
+export LEADV2_LANE_WORKTREE_ERRF="$(mktemp "${TMPDIR:-/tmp}/lane-err.XXXXXX")"
 lane7_dir="$(bash "$LANE_SH" ensure taskF1 heavy)"
 echo "real work" > "$lane7_dir/work.txt"
 git -C "$lane7_dir" add work.txt && git -C "$lane7_dir" commit -q -m "taskF1 real commit"
