@@ -234,16 +234,17 @@ No Python files were changed.
 
 - `main` untouched — all work on `worktree-HANDOFF-DOCS-INVISIBLE-IN-LANES-01`.
 - `.gitignore`'s blanket rule was NOT deleted, only extended by one negation line.
-- No manual step required going forward: the census showed the *pattern* set was already
-  complete except `continue-round-*.md` (now added); the remaining gap was behavioural
-  (forgetting `git add`), which the new test suite exists to catch before it recurs.
+- No `git add -f` exception or per-lane allowlist edit is required going forward: the census
+  showed the *pattern* set was already complete except `continue-round-*.md` (now added), and
+  the live-checking suite fails if a future authored document is left untracked.
 - Diff does not touch `docs/leadv2/`, `docs/LEAD_V2_STATE.md`, or `docs/handoff/dispatch-nw*`
   — verified: none of the 275 retroactively-tracked files matched `dispatch-nw*`
   (`grep -c dispatch-nw /tmp/leak_final.txt` → 0), and `docs/LEAD_V2_STATE.md` /
   `docs/leadv2/*` show as unstaged working-tree churn from other concurrent sessions in
   `git status`, never staged or committed by this lane.
-- Committed in this lane (two commits: `1f6dc786` retroactive tracking, plus this report +
-  gitignore + both test suites + `pick_base` fix).
+- Committed in this lane across three task commits: `1f6dc786` retroactive tracking,
+  `cb34270e` for the ignore/test/base-selection fix, and `eb695289` for the end-to-end proof
+  and fresh falsification evidence.
 
 ## Fresh falsification evidence (2026-09-03)
 
@@ -272,7 +273,8 @@ PASS: 1: RED — untracked brief.md, continue-round-2.md, round1-red/ proof all 
 PASS: 2: transient dispatch.log (gitignored) is not reported as a leak
 PASS: 3: GREEN — after `git add`, the same fixture reports zero leaks
 PASS: 4: tracking one doc clears it while the still-untracked one stays flagged
-test-handoff-docs-not-leaked: 4 passed, 0 failed
+PASS: 5: live checkout has no untracked authored handoff docs
+test-handoff-docs-not-leaked: 5 passed, 0 failed
 PASS: 0: bash -n .../leadv2-lane-worktree.sh
 PASS: 1: no origin/main ref -> main
 PASS: 2: origin/main ahead (sibling landing) -> origin/main preserved

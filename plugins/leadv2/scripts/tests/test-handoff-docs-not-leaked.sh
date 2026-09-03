@@ -117,5 +117,17 @@ else
   fail "4: partial-tracking case behaved wrong (got: ${leaked_partial})"
 fi
 
+# ── 5: the real checkout is clean, too ─────────────────────────────────────
+# The fixture checks prove the detector moves red -> green. This live check is
+# the regression guard: when a future worker leaves an authored handoff doc in
+# this checkout untracked, this suite fails instead of silently passing only on
+# its private fixture.
+live_leaked="$(find_leaked_handoff_docs "${ROOT}")"
+if [[ -z "${live_leaked}" ]]; then
+  pass "5: live checkout has no untracked authored handoff docs"
+else
+  fail "5: live checkout has leaked authored handoff docs: ${live_leaked}"
+fi
+
 printf 'test-handoff-docs-not-leaked: %d passed, %d failed\n' "${PASS}" "${FAIL}"
 (( FAIL == 0 ))
