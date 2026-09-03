@@ -330,7 +330,7 @@ _lane_cache_signature() {
   local newest=0 t d
   while IFS= read -r d; do
     [[ -n "$d" ]] || continue
-    t="$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0)"
+    t="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0)"
     [[ "$t" =~ ^[0-9]+$ ]] || t=0
     (( t > newest )) && newest=$t
   done < <(find "${PROJECT_ROOT}/docs/handoff" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)

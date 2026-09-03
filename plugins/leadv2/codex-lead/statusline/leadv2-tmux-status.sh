@@ -40,7 +40,7 @@ command -v timeout >/dev/null 2>&1 && TIMEOUT_BIN="timeout 8"
 now="$(date +%s)"
 age() { # age of $CACHE in seconds; huge when missing
   local mtime
-  mtime="$(stat -f %m "$CACHE" 2>/dev/null || stat -c %Y "$CACHE" 2>/dev/null)"
+  mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$CACHE" 2>/dev/null || stat -c %Y "$CACHE" 2>/dev/null)"
   if [[ "$mtime" =~ ^[0-9]+$ ]]; then
     printf '%s\n' "$((now - mtime))"
   else

@@ -84,7 +84,7 @@ _fetch_models() {
   mkdir -p "$(dirname "${MODELS_CACHE_FILE}")"
   if [[ -f "${MODELS_CACHE_FILE}" ]]; then
     local mtime now
-    mtime="$(stat -f '%m' "${MODELS_CACHE_FILE}" 2>/dev/null || stat -c '%Y' "${MODELS_CACHE_FILE}" 2>/dev/null || echo 0)"
+    mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "${MODELS_CACHE_FILE}" 2>/dev/null || stat -c '%Y' "${MODELS_CACHE_FILE}" 2>/dev/null || echo 0)"
     now="$(date +%s)"
     if [[ "${mtime}" =~ ^[0-9]+$ ]] && (( now - mtime < MODELS_CACHE_TTL_S )); then
       return 0

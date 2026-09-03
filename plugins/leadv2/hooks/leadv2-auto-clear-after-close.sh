@@ -12,7 +12,7 @@ CWD="$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || echo "")"
 FOUND=""
 for flag in $(find "$CWD/.claude/leadv2-tasks" "$CWD/docs/handoff" "$CWD/docs/leadv2/tasks" -maxdepth 3 -name 'phase11-passed.flag' -o -name 'phase8-passed.flag' 2>/dev/null); do
   if [[ -n "$flag" ]]; then
-    AGE=$(( $(date +%s) - $(stat -f %m "$flag" 2>/dev/null || stat -c %Y "$flag" 2>/dev/null || echo 0) ))
+    AGE=$(( $(date +%s) - $( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$flag" 2>/dev/null || stat -c %Y "$flag" 2>/dev/null || echo 0) ))
     if [[ "$AGE" -lt 300 ]]; then
       FOUND="$flag"
       break

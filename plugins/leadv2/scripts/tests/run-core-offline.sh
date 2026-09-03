@@ -320,8 +320,13 @@ syntax_all() {
 
 validate_plugin() {
   if ! command -v claude >/dev/null 2>&1; then
-    printf -- '[CORE-OFFLINE] claude CLI unavailable; manifest validation cannot run\n' >&2
-    return 1
+    # TWELVE-LINUX-ONLY-SUITES-01: the only validation seam is
+    # `claude plugin validate`, which needs the claude CLI -- not installed on
+    # ubuntu-latest CI runners. SKIP cleanly with a stated reason (the
+    # test-status-surface-bash32.sh pattern), never a hollow pass: the suite
+    # still runs (and validates) anywhere the CLI exists, e.g. macOS.
+    printf -- '[CORE-OFFLINE] SKIP: claude plugin manifest/components -- claude CLI unavailable on this platform; validation cannot run\n' >&2
+    return 0
   fi
   claude plugin validate "$PLUGIN_ROOT"
 }

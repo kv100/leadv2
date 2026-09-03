@@ -356,7 +356,12 @@ test_d4_grace_guard() {
   printf 'status:\npid:\n' > "$meta"
   # Set mtime to 120s ago
   local old_ts=$(( $(date +%s) - 120 ))
-  touch -t "$(date -r "$old_ts" +%Y%m%d%H%M.%S)" "$meta" 2>/dev/null || true
+  # date -r takes an epoch on BSD, a file on GNU -- branch on the OS
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -r "$old_ts" +%Y%m%d%H%M.%S)" "$meta" 2>/dev/null || true
+  else
+    touch -t "$(date -d "@${old_ts}" +%Y%m%d%H%M.%S)" "$meta" 2>/dev/null || true
+  fi
 
   # Read status and pid like _pc_meta_value does
   local status pid
@@ -366,7 +371,7 @@ test_d4_grace_guard() {
   local _meta_age_s=0
   local _now_s _meta_mtime_s
   _now_s="$(date +%s)"
-  _meta_mtime_s="$(stat -f %m "$meta" 2>/dev/null || stat -c %Y "$meta" 2>/dev/null || echo 0)"
+  _meta_mtime_s="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$meta" 2>/dev/null || stat -c %Y "$meta" 2>/dev/null || echo 0)"
   _meta_age_s=$(( _now_s - _meta_mtime_s ))
 
   if [[ -z "$status" && -z "$pid" && $_meta_age_s -ge 30 ]]; then
@@ -378,7 +383,7 @@ test_d4_grace_guard() {
   # --- Test 3: meta.yaml just created (fresh) → NOT dead ---
   printf 'status:\npid:\n' > "$meta"  # fresh mtime = now
   _now_s="$(date +%s)"
-  _meta_mtime_s="$(stat -f %m "$meta" 2>/dev/null || stat -c %Y "$meta" 2>/dev/null || echo 0)"
+  _meta_mtime_s="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$meta" 2>/dev/null || stat -c %Y "$meta" 2>/dev/null || echo 0)"
   _meta_age_s=$(( _now_s - _meta_mtime_s ))
   if (( _meta_age_s < 30 )); then
     ok "fresh meta (<30s) → grace (not dead)"

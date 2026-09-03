@@ -84,8 +84,8 @@ with open('$d4/rotrepo.jsonl', 'wb') as f:
 "
 LEADV2_EVENT_LOG_DIR="$d4" bash "$EVENT_BIN" emit --repo rotrepo --kind worker_spawned --task t1 >/dev/null 2>&1
 if [[ -f "$d4/rotrepo.jsonl.1" && -f "$d4/rotrepo.jsonl" ]]; then
-  rotated_size="$(stat -f '%z' "$d4/rotrepo.jsonl.1" 2>/dev/null || stat -c '%s' "$d4/rotrepo.jsonl.1" 2>/dev/null)"
-  new_size="$(stat -f '%z' "$d4/rotrepo.jsonl" 2>/dev/null || stat -c '%s' "$d4/rotrepo.jsonl" 2>/dev/null)"
+  rotated_size="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%z' "$d4/rotrepo.jsonl.1" 2>/dev/null || stat -c '%s' "$d4/rotrepo.jsonl.1" 2>/dev/null)"
+  new_size="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%z' "$d4/rotrepo.jsonl" 2>/dev/null || stat -c '%s' "$d4/rotrepo.jsonl" 2>/dev/null)"
   if [[ "$rotated_size" -gt 1000000 && "$new_size" -lt 1000 ]]; then
     pass "rotation: oversized log rotated to .1, fresh log started small"
   else

@@ -104,6 +104,10 @@ git clone -q "$ORIGIN" "$WORK"
   git branch -M main
   git push -q origin main
 )
+# git >= 2.43: a bare repo's unborn HEAD (refs/heads/master) makes later
+# clones skip checkout entirely ("remote HEAD refers to nonexistent ref"),
+# leaving an empty working tree. Point the bare HEAD at the pushed branch.
+git --git-dir="$ORIGIN" symbolic-ref HEAD refs/heads/main
 BASE_SHA="$(git -C "$WORK" rev-parse HEAD)"
 
 # A named task branch (unused by the failing path below, but realistic).
@@ -426,6 +430,8 @@ git clone -q "$ORIGIN2" "$WORKFF"
   git branch -M main
   git push -q origin main
 )
+# Same unborn-HEAD guard as scenario 1 (git >= 2.43 clones skip checkout).
+git --git-dir="$ORIGIN2" symbolic-ref HEAD refs/heads/main
 BASE2_SHA="$(git -C "$WORKFF" rev-parse HEAD)"
 
 # Task branch: one clean, non-conflicting commit (does NOT touch file2.txt) —
@@ -588,6 +594,8 @@ git clone -q "$ORIGIN4" "$WORK4"
   git branch -M main
   git push -q origin main
 )
+# Same unborn-HEAD guard as scenario 1 (git >= 2.43 clones skip checkout).
+git --git-dir="$ORIGIN4" symbolic-ref HEAD refs/heads/main
 BASE4_SHA="$(git -C "$WORK4" rev-parse HEAD)"
 
 # Clean task branch: strictly ahead of main, no divergence anywhere — merge

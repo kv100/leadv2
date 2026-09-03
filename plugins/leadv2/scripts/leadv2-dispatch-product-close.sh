@@ -1089,7 +1089,7 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
         local _meta_age_s=0
         local _now_s _meta_mtime_s
         _now_s="$(date +%s)"
-        _meta_mtime_s="$(stat -f %m "${meta}" 2>/dev/null || stat -c %Y "${meta}" 2>/dev/null || echo 0)"
+        _meta_mtime_s="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "${meta}" 2>/dev/null || stat -c %Y "${meta}" 2>/dev/null || echo 0)"
         _meta_age_s=$(( _now_s - _meta_mtime_s ))
         if (( _meta_age_s < 30 )); then
           return 0
@@ -1153,7 +1153,7 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
         local _meta_age_s=0
         local _now_s _meta_mtime_s
         _now_s="$(date +%s)"
-        _meta_mtime_s="$(stat -f %m "${meta}" 2>/dev/null || stat -c %Y "${meta}" 2>/dev/null || echo 0)"
+        _meta_mtime_s="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "${meta}" 2>/dev/null || stat -c %Y "${meta}" 2>/dev/null || echo 0)"
         _meta_age_s=$(( _now_s - _meta_mtime_s ))
         if (( _meta_age_s < 30 )); then
           return 0
@@ -1434,7 +1434,7 @@ _pc_worker_process_alive() {  # -> rc0 iff a worker process for AUTHOR/HANDLE is
 # unknown stat dialect) -- callers fail OPEN (treat as "not proven stale") on rc1.
 _pc_stat_mtime() {  # <file> -> stdout epoch mtime; rc1 on failure
   local f="$1" m
-  m="$(stat -f %m "${f}" 2>/dev/null)" || m="$(stat -c %Y "${f}" 2>/dev/null)" || return 1
+  m="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "${f}" 2>/dev/null)" || m="$(stat -c %Y "${f}" 2>/dev/null)" || return 1
   [[ "${m}" =~ ^[0-9]+$ ]] || return 1
   printf '%s' "${m}"
 }
@@ -2668,8 +2668,13 @@ else
   # share one enforcement mechanism (_lv2_selfcheck_timeout_run, from
   # lib/leadv2-builder-selfcheck.sh, sourced at :89-91) or the fix is partial.
   _pc_e2e_timeout_s="${LEADV2_PHASE8_E2E_TIMEOUT_S:-900}"
+  # Do NOT log to /dev/stdout: on Linux `> /dev/stdout` re-opens (and
+  # truncates) the outer redirect target, erasing the e2e-root: line. Use a
+  # temp file and cat it back into the real log instead.
+  _pc_e2e_run_log="$(mktemp "${TMPDIR:-/tmp}/e2e-run-log.XXXXXX")"
   if command -v _lv2_selfcheck_timeout_run >/dev/null 2>&1; then
-    { printf 'e2e-root: %s\n' "${_lv2_e2e_root}"; ( cd "${_lv2_e2e_root}" && _lv2_selfcheck_timeout_run "${_pc_e2e_timeout_s}" /dev/stdout -- bash -c "${e2e_cmd} --scope changed" ); } > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+    ( printf 'e2e-root: %s\n' "${_lv2_e2e_root}"; ( cd "${_lv2_e2e_root}" && _lv2_selfcheck_timeout_run "${_pc_e2e_timeout_s}" "${_pc_e2e_run_log}" -- bash -c "${e2e_cmd} --scope changed" ); rc=$?; cat "${_pc_e2e_run_log}" 2>/dev/null; exit "${rc}" ) > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+    rm -f "${_pc_e2e_run_log}"
   else
     # Guarded-source lib absent (R1: infra fault, not lane fault) -- degrade to
     # the pre-PPC-G8 undeadlined run rather than block on a missing helper.

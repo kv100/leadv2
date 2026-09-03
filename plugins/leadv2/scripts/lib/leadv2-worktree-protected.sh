@@ -308,12 +308,12 @@ lv2_worktree_protected() { # <repo-root> <wt-path> -> rc 0-5
     age_source="${git_dir:+$git_dir/gitdir}"
     if [[ -n "$age_source" && ! -f "$age_source" ]]; then age_source=""; fi
     if [[ -n "$age_source" ]]; then
-      mtime="$(stat -f %m "$age_source" 2>/dev/null || stat -c %Y "$age_source" 2>/dev/null || printf '%s' '')"
+      mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$age_source" 2>/dev/null || stat -c %Y "$age_source" 2>/dev/null || printf '%s' '')"
     else
       mtime=""
     fi
     if [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
-      mtime="$(stat -f %m "$wt" 2>/dev/null || stat -c %Y "$wt" 2>/dev/null || printf '%s' '')"
+      mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$wt" 2>/dev/null || stat -c %Y "$wt" 2>/dev/null || printf '%s' '')"
     fi
     if [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
       LV2_WT_PROTECT_REASON="read-error:worktree-stat-failed"

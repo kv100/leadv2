@@ -86,7 +86,7 @@ printf '{"schema": "scorecard", "v": 2, "local-edit": true}\n' > "$scorecard_dst
 vendored_content="$(cat "$scorecard_dst")"
 # Far-future mtime ⇒ copy_evidence > canonical_commit_time + 2 ⇒ VENDORED_NEWER
 touch -t 209901010000 "$scorecard_dst"
-vendored_mtime_before="$(stat -f '%m' "$scorecard_dst")"
+vendored_mtime_before="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "$scorecard_dst" 2>/dev/null || stat -c '%Y' "$scorecard_dst" 2>/dev/null)"
 
 run_sync "$tmp/run2.log" --write
 run2_log="$(cat "$tmp/run2.log")"
@@ -97,7 +97,7 @@ if [[ "$(cat "$scorecard_dst")" == "$vendored_content" ]]; then
 else
   printf '[TEST] FAIL: Case 2: vendored bytes were clobbered\n' >&2; fail=$((fail+1))
 fi
-if [[ "$(stat -f '%m' "$scorecard_dst")" == "$vendored_mtime_before" ]]; then
+if [[ "$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "$scorecard_dst" 2>/dev/null || stat -c '%Y' "$scorecard_dst" 2>/dev/null)" == "$vendored_mtime_before" ]]; then
   printf '[TEST] PASS: Case 2: vendored mtime unchanged (no quarantine-in-place rewrite)\n'; pass=$((pass+1))
 else
   printf '[TEST] FAIL: Case 2: vendored mtime changed\n' >&2; fail=$((fail+1))

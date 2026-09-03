@@ -221,9 +221,9 @@ before_c="$(probe_json "${TID_C}")"
 census() {  # mtime+size of every file the probe reads for this lane
   find "${TARGET}/docs/handoff/${TID_C}" "${TARGET}/docs/handoff/${TID_C}-architect" \
     -type f 2>/dev/null | sort | while read -r f; do
-    stat -f '%m %z %N' "$f" 2>/dev/null || stat -c '%Y %s %n' "$f" 2>/dev/null
+    [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m %z %N' "$f" 2>/dev/null || stat -c '%Y %s %n' "$f" 2>/dev/null
   done
-  stat -f '%m %z %N' "$ACTIVE" 2>/dev/null || stat -c '%Y %s %n' "$ACTIVE" 2>/dev/null
+  [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m %z %N' "$ACTIVE" 2>/dev/null || stat -c '%Y %s %n' "$ACTIVE" 2>/dev/null
 }
 census_before="$(census)"
 sleep 2

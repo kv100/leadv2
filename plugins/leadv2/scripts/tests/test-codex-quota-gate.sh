@@ -62,7 +62,7 @@ chmod +x "$STUBBIN/node"
 # Real founder lockout file -- captured once, asserted unchanged at the end.
 REAL_LOCKOUT="${HOME}/.claude/cache/codex-lockout.state"
 REAL_LOCKOUT_MT=""
-[[ -f "$REAL_LOCKOUT" ]] && REAL_LOCKOUT_MT="$(stat -f '%m' "$REAL_LOCKOUT" 2>/dev/null || stat -c '%Y' "$REAL_LOCKOUT" 2>/dev/null || echo '')"
+[[ -f "$REAL_LOCKOUT" ]] && REAL_LOCKOUT_MT="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "$REAL_LOCKOUT" 2>/dev/null || stat -c '%Y' "$REAL_LOCKOUT" 2>/dev/null || echo '')"
 
 # Build an isolated HOME. Echoes nothing; sets globals HOME_DIR / STATE_ROOT / LOCKOUT.
 build_home() {
@@ -332,7 +332,7 @@ fi
 # ── isolation guard: real lockout file untouched (NOT counted toward PASS;
 #    a violation flips the run to failed, success does not increment pass) ──
 if [[ -n "$REAL_LOCKOUT_MT" && -f "$REAL_LOCKOUT" ]]; then
-  _after="$(stat -f '%m' "$REAL_LOCKOUT" 2>/dev/null || stat -c '%Y' "$REAL_LOCKOUT" 2>/dev/null || echo '')"
+  _after="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "$REAL_LOCKOUT" 2>/dev/null || stat -c '%Y' "$REAL_LOCKOUT" 2>/dev/null || echo '')"
   if [[ "$_after" != "$REAL_LOCKOUT_MT" ]]; then
     printf '[TEST] FAIL: isolation violated -- real lockout mtime %s -> %s\n' "$REAL_LOCKOUT_MT" "$_after"
     FAIL=$((FAIL + 1))
