@@ -94,6 +94,25 @@ The original task. **D0 is done** (`34b31cb6`) — measurement only, produced `c
 
 ---
 
+---
+
+## LEAD-DOES-MACHINE-WORK-01 — where it lands (added after the founder asked)
+
+It was **not** in the waves above; that was an omission. It is filed in `docs/tasks.yaml` with a
+census taken from the live 2026-09-03 session — every line happened that night, none is theory.
+It is not one task, it is a debt paid by three different rows:
+
+| what the lead does by hand | who removes it | wave |
+|---|---|---|
+| merging lanes into main by hand — 5 lanes, ~2h, judging "this is state noise, this is work" | `REVIEW-GATE-IS-MUTE-01` + `LANE-MERGE-SILENTLY-REVERTS-MAIN-01` | 0 (in flight) / 1 |
+| rescuing a dead worker's uncommitted diff — 6 times in one night | **D4** | 2 |
+| deciding a lane is dead by reading `ps` and worktree mtimes | **D2** | 2 |
+| choosing the arm and the `--protected` flag per dispatch | classifier rows 3.2–3.4 | 3 |
+| writing design briefs itself instead of the architect | already changed: briefs go to `Agent(architect)` from 2026-09-03 | done |
+
+Only the last one is fixed today. The rest is mechanism that does not exist yet — which is why it
+reads as "the lead keeps doing it".
+
 ## Honest read on the estimate
 
 The original **3–5 days** covered Wave 2 only, and it still does. Wave 1 is **3–4 days that were not
