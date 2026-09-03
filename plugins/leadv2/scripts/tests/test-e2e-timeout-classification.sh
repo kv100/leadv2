@@ -31,6 +31,7 @@ SCRIPTS_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${SCRIPTS_ROOT}/leadv2-temp.sh"
 
 PRODUCT_CLOSE_SH="${SCRIPTS_ROOT}/leadv2-dispatch-product-close.sh"
+PHASE8_GATE_SH="${SCRIPTS_ROOT}/leadv2-phase8-e2e-gate.sh"
 
 PASS=0; FAIL=0; NOTRUN=0; ERRORS=()
 log()    { printf -- '[TEST] %s\n' "$*"; }
@@ -68,22 +69,20 @@ build_fixture() { # <root> <a_working> <e2e_body_file>
 TMP="$(lv2_mktemp_dir "e2e-timeout-classification-test")"; trap 'rm -rf "$TMP"' EXIT
 
 SLEEPER="${TMP}/fake-e2e-sleep.sh"
-cat > "${SLEEPER}" <<'EOF'
-#!/usr/bin/env bash
-# Ignores --scope/etc, outlives any sane timeout budget for this test.
-sleep 30
-exit 0
-EOF
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  '# Ignores --scope/etc, outlives any sane timeout budget for this test.' \
+  'sleep 30' \
+  'exit 0' > "${SLEEPER}"
 chmod +x "${SLEEPER}"
 
 REDSUITE="${TMP}/fake-e2e-fail.sh"
-cat > "${REDSUITE}" <<'EOF'
-#!/usr/bin/env bash
-# A real, immediate failure -- no timeout involved.
-echo "  Failures (blocking):"
-echo "    - tests/unit/test-A.sh"
-exit 1
-EOF
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  '# A real, immediate failure -- no timeout involved.' \
+  'echo "  Failures (blocking):"' \
+  'echo "    - tests/unit/test-A.sh"' \
+  'exit 1' > "${REDSUITE}"
 chmod +x "${REDSUITE}"
 
 # ── gate runner ───────────────────────────────────────────────────────────────
@@ -93,10 +92,8 @@ run_gate() { # <root> <sig8> <e2e_cmd> <timeout_s> <ledger_bin> -> sets RC, MD, 
   rm -rf "${handoff}"
   JOURNAL_LOG="${TMP}/journal-${sig8}.log"; : > "${JOURNAL_LOG}"
   local stub_journal="${TMP}/stub-journal-${sig8}.sh"
-  cat > "${stub_journal}" <<STUB
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "${JOURNAL_LOG}"
-STUB
+  printf '%s\n' '#!/usr/bin/env bash' > "${stub_journal}"
+  printf 'printf '\''%%s\\n'\'' "$*" >> %q\n' "${JOURNAL_LOG}" >> "${stub_journal}"
   chmod +x "${stub_journal}"
 
   RC=0
@@ -114,13 +111,31 @@ STUB
   FLAG="$(cat "${handoff}/e2e-gate-passed.flag" 2>/dev/null || true)"
 }
 
+run_phase8_gate() { # <root> <sig8> <timeout_s> <journal_bin>
+  local root="$1" sig8="$2" timeout_s="$3" journal_bin="$4"
+  local handoff="${root}/docs/handoff/${sig8}"
+  mkdir -p "${handoff}"
+  P8_RC=0
+  P8_LOG="${TMP}/phase8-${sig8}.log"
+  CLAUDE_PROJECT_ROOT="${root}" \
+  LEADV2_PROJECT_ROOT="${root}" \
+  LEADV2_HANDOFF_DIR="${root}/docs/handoff" \
+  LEADV2_E2E_CMD="bash ${root}/fake-e2e.sh" \
+  LEADV2_PHASE8_E2E_TIMEOUT_S="${timeout_s}" \
+  LEADV2_E2E_OWNERSHIP=0 \
+  LEADV2_LANE_WORK_ROOT="${root}" \
+  LEADV2_JOURNAL_BIN="${journal_bin}" \
+    bash "${PHASE8_GATE_SH}" "${sig8}" >"${P8_LOG}" 2>&1 || P8_RC=$?
+  P8_MD="$(cat "${handoff}/e2e-gate.md" 2>/dev/null || true)"
+  P8_FLAG="$(cat "${handoff}/e2e-gate-passed.flag" 2>/dev/null || true)"
+  P8_JOURNAL="$(cat "${TMP}/journal-${sig8}.log" 2>/dev/null || true)"
+}
+
 LEDGER_LOG="${TMP}/ledger-calls.log"; : > "${LEDGER_LOG}"
 STUB_LEDGER="${TMP}/stub-ledger.sh"
-cat > "${STUB_LEDGER}" <<STUB
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "${LEDGER_LOG}"
-exit 0
-STUB
+printf '%s\n' '#!/usr/bin/env bash' > "${STUB_LEDGER}"
+printf 'printf '\''%%s\\n'\'' "$*" >> %q\n' "${LEDGER_LOG}" >> "${STUB_LEDGER}"
+printf '%s\n' 'exit 0' >> "${STUB_LEDGER}"
 chmod +x "${STUB_LEDGER}"
 
 # ── R1: sweep outlives its budget -> timeout, not regression ────────────────
@@ -175,6 +190,28 @@ if grep -qE '^write-terminal r2sig001 .*dead e2e_regression' "${LEDGER_LOG}"; th
   pass "R2: ledger terminal is still dead/e2e_regression for a genuine failure"
 else
   fail "R2: ledger call did not record dead/e2e_regression -- $(cat "${LEDGER_LOG}")"
+fi
+
+# ── R3: standalone phase-8 gate records the same timeout as unknown ─────────
+R3="${TMP}/r3"; mkdir -p "${R3}"
+build_fixture "${R3}" "A-changed" "${SLEEPER}"
+lv2_assert_scratch_repo "${R3}"
+R3_JOURNAL="${TMP}/journal-r3sig001.log"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' \"\$*\" >> \"${R3_JOURNAL}\"" > "${TMP}/stub-journal-r3.sh"
+chmod +x "${TMP}/stub-journal-r3.sh"
+run_phase8_gate "${R3}" "r3sig001" "1" "${TMP}/stub-journal-r3.sh"
+
+if [[ "${P8_RC}" -eq 1 ]] && grep -q 'status: unknown' <<<"${P8_MD}" \
+   && grep -q 'reason: e2e_timeout' <<<"${P8_MD}" && [[ -z "${P8_FLAG}" ]]; then
+  pass "R3: standalone phase-8 gate records timeout as unknown and writes no pass sentinel"
+else
+  fail "R3: expected rc 1 + unknown timeout + no sentinel, got rc=${P8_RC} md=<${P8_MD}> flag=<${P8_FLAG}> log=<$(cat "${P8_LOG}")>"
+fi
+
+if grep -qE 'e2e_gate task=r3sig001 status=ran verdict=timeout rc=124' <<<"${P8_JOURNAL}"; then
+  pass "R3: standalone phase-8 journal records verdict=timeout rc=124"
+else
+  fail "R3: standalone phase-8 journal missing timeout line -- ${P8_JOURNAL} log=<$(cat "${P8_LOG}")>"
 fi
 
 printf -- '\n[TEST] %d passed, %d failed, %d not run\n' "$PASS" "$FAIL" "$NOTRUN"
