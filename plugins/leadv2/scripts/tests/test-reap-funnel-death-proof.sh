@@ -16,6 +16,9 @@
 #   C5  `--all` reservation-ledger anti-join            -> barrier=spawned_then_died
 #   C6  no lane_writes CSV info at all                  -> still rescued (unscoped probe)
 #   C7  rescue commit is unmistakable (author/trailer/marker) — asserted against C1's commit
+#   C8  _dl_derive_lane_state called DIRECTLY (D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01):
+#       C8a dirty tree + no path-scoped commit + dead -> dead_with_unlanded_work,
+#       never landed; C8b real path-scoped commit -> landed with that exact sha
 #
 # Run: bash plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh
 # Negative control (proof pasted in the deliverable, not part of normal CI runs):
@@ -310,6 +313,56 @@ run_c7() {
     || fail "C7: RESCUE-UNREVIEWED marker not found in commit"
 }
 
+# ============================================================================ C8 (D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01)
+# Direct unit coverage for _dl_derive_lane_state. C1..C7 drive the reap funnel
+# end-to-end, but the derive function itself had ZERO assertions: the one-line
+# regression that ORs a dirty tree back into the `landed` branch (the 2026-08-04
+# incident shape -- 573 uncommitted lines stamped `landed`, worktree one sweep
+# from deletion) kept this whole suite green. The ledger script is SOURCED (its
+# main dispatch is guarded behind BASH_SOURCE==$0) so the REAL shipped function
+# runs, with liveness faked one level lower exactly like the reap runs above.
+_derive() {  # <repo> <spawn_epoch> <writes_csv> <deliverable> <lane_id> -> _dl_derive_lane_state's stdout
+  local repo="$1" epoch="$2" csv="$3" deliverable="$4" lane="$5"
+  PROJECT_ROOT="${repo}" LEADV2_PROJECT_ROOT="${repo}" \
+    LEADV2_DISPATCH_LANE_LIVENESS_BIN="${LIVENESS_BIN}" \
+    bash -c '
+      source "${1}"
+      _dl_derive_lane_state "${2}" "${3}" "${4}" "${5}" "${6}"
+    ' _derive_sub "${LEDGER_BIN}" "${repo}" "${epoch}" "${csv}" "${deliverable}" "${lane}"
+}
+
+run_c8() {
+  local root wt out lane sha f1
+  # -- C8a: THE assertion that must kill the mutant. No path-scoped commit, DIRTY
+  #    tree in the lane's write-set, liveness dead => dead_with_unlanded_work,
+  #    NEVER landed. spawn_epoch=0 = lane spawned before any of its work.
+  root="$(_new_repo)"; lane="dispatch-c8a8a8a8"
+  _make_lane_worktree "${root}" "${lane}"
+  wt="${root}/.claude/worktrees/${lane}"
+  ( cd "${wt}" && printf 'uncommitted incident work\n' > work.txt )
+  out="$(LEADV2_TEST_LIVENESS_VERDICT=dead:test _derive "${wt}" "0" "work.txt" "" "${lane}")"
+  f1="${out%%$'\x1f'*}"
+  if [[ "${f1}" == "dead_with_unlanded_work" && "${out}" != "landed"$'\x1f'* ]]; then
+    pass "C8a: derive(dirty tree, no path-scoped commit, dead) -> dead_with_unlanded_work, never landed"
+  else
+    fail "C8a: expected dead_with_unlanded_work (never landed), got: ${out}"
+  fi
+  # -- C8b: the mirror. A real path-scoped commit must still derive `landed` with
+  #    that exact sha -- without this, C8a would also pass against a function
+  #    that NEVER returns landed at all (formally green, operationally dead).
+  root="$(_new_repo)"; lane="dispatch-c8b8b8b8"
+  _make_lane_worktree "${root}" "${lane}"
+  wt="${root}/.claude/worktrees/${lane}"
+  ( cd "${wt}" && printf 'a\n' > work.txt && git add work.txt && git commit -qm "lane work" >/dev/null )
+  sha="$(git -C "${wt}" rev-parse HEAD)"
+  out="$(LEADV2_TEST_LIVENESS_VERDICT=dead:test _derive "${wt}" "0" "work.txt" "" "${lane}")"
+  if [[ "${out}" == "landed"$'\x1f'"${sha}"$'\x1f'* ]]; then
+    pass "C8b: derive(real path-scoped commit) -> landed with that exact sha"
+  else
+    fail "C8b: expected landed with sha ${sha}, got: ${out}"
+  fi
+}
+
 C1_WT=""
 run_c1
 run_c1b
@@ -319,6 +372,7 @@ run_c4
 run_c5
 run_c6
 run_c7 "${C1_WT}"
+run_c8
 
 printf '\n[TEST] %d passed, %d failed\n' "${PASS}" "${FAIL}"
 if [[ ${FAIL} -gt 0 ]]; then
