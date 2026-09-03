@@ -45,7 +45,18 @@ fi
 run_hook() {
   # subshell: source + call, mirroring leadv2-status-collector.sh's
   # _sc_repo_facts_section (cd "$PROJECT_ROOT"; source hook; collect_repo_facts).
-  ( cd "${REPO_ROOT}" && PROJECT_ROOT="${REPO_ROOT}" source "${HOOK}" && collect_repo_facts )
+  # PROJECT_ROOT is set as a plain assignment BEFORE sourcing (not a
+  # `VAR=val source file` prefix) -- whether a prefix assignment on a
+  # source/`.` command persists into later commands in the same shell is a
+  # POSIX-special-builtin nuance that measurably differs between bash builds
+  # (passed on this machine's bash, failed under `set -u` on bash 5.2 in a
+  # Linux container) -- matching production's own pattern sidesteps it.
+  (
+    cd "${REPO_ROOT}"
+    PROJECT_ROOT="${REPO_ROOT}"
+    source "${HOOK}"
+    collect_repo_facts
+  )
 }
 
 # ---------------------------------------------------------------------------
