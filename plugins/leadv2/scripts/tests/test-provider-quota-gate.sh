@@ -147,7 +147,7 @@ OUT="$(LEADV2_CEIL_GLM_WORK=abc FAKE_LIVE_FIXDIR="$FIX" LEADV2_QUOTA_LIVE="$FAKE
 # ── boundary: ceilings file missing -> fail-open ────────────────────────────
 OUT="$(LEADV2_QUOTA_CEILINGS="${tmp}/nope.sh" FAKE_LIVE_FIXDIR="$FIX" LEADV2_QUOTA_LIVE="$FAKE_LIVE" \
   LEADV2_QUOTA_CACHE_DIR="$CACHE" bash "$GATE_BIN" glm build 2>&1)"; RC=$?
-[[ "$RC" == 0 ]] && grep -q 'FAIL-OPEN: ceilings file missing' <<<"$OUT" && pass "boundary: ceilings file missing -> fail-open" || fail "boundary ceilings missing" "rc=$RC out=$OUT"
+[[ "$RC" == 0 ]] && grep -q "FAIL-OPEN: ceilings file missing (${tmp}/nope.sh)" <<<"$OUT" && pass "boundary: ceilings file missing names expected path -> fail-open" || fail "boundary ceilings missing" "rc=$RC out=$OUT"
 
 # ── QUOTA-GATE-PARITY-01 fix round 2 ─────────────────────────────────────────
 
@@ -269,6 +269,24 @@ else
   fail "drift: unexpected disagreement between quota-ceiling sources" \
     "yaml_glm=${drift_val_yaml_glm_work}/${drift_val_yaml_glm_review} yaml_codex=${drift_val_yaml_codex_work}/${drift_val_yaml_codex_review} yaml_claude=${drift_val_yaml_claude_work}/${drift_val_yaml_claude_review} py_codex_build=${drift_py_codex_build} py_codex_review=${drift_py_codex_review} py_glm_review=${drift_py_glm_review} py_claude_review=${drift_py_claude_review}"
 fi
+
+# A missing generic codex gate is control-plane breakage, not evidence that a
+# quota threshold was exceeded.  The wrapper must refuse loudly and name the
+# exact dependency path so an operator can repair it.
+BROKEN_GATE_ROOT="${tmp}/broken-codex-gate"; mkdir -p "${BROKEN_GATE_ROOT}/lib"
+cp "$CODEX_LIB" "${BROKEN_GATE_ROOT}/lib/leadv2-codex-quota-gate.sh"
+cat > "${BROKEN_GATE_ROOT}/lib/leadv2-arm-cooldown.sh" <<'EOF'
+arm_cooldown_state() { printf 'idle\n'; }
+EOF
+cat > "${BROKEN_GATE_ROOT}/lib/leadv2-codex-circuit.sh" <<'EOF'
+codex_circuit_state() { printf 'closed\n'; }
+EOF
+GATE_BROKEN_OUT="$(source "${BROKEN_GATE_ROOT}/lib/leadv2-codex-quota-gate.sh"; codex_spawn_gate exec 2>&1)"; RC=$?
+[[ "$RC" == 2 ]] && grep -q 'CODEX_REFUSED_QUOTA reason=gate_broken' <<<"$GATE_BROKEN_OUT" \
+  && grep -Fq "${BROKEN_GATE_ROOT}/leadv2-provider-quota-gate.sh" <<<"$GATE_BROKEN_OUT" \
+  && ! grep -q 'reason=threshold' <<<"$GATE_BROKEN_OUT" \
+  && pass "missing provider gate refuses gate_broken with its exact path, never threshold" \
+  || fail "missing provider gate" "rc=$RC out=$GATE_BROKEN_OUT"
 
 echo
 echo "=== ${PASS} passed, ${FAIL} failed ==="

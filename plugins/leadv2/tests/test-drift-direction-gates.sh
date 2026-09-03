@@ -106,13 +106,28 @@ run_case2() {
   git_commit_at "${canon}" "2026-01-10T00:00:00" "canonical newer version"
 
   local home="${dir}/home"; mkdir -p "${home}"
-  local out
-  out="$(LEADV2_CANONICAL_ROOT="${canon}" LEADV2_HOME_ROOT="${home}" bash "${DRIFT_GUARD}" 2>&1)" || true
+  local out out_default out_verbose
+  out_default="$(LEADV2_CANONICAL_ROOT="${canon}" LEADV2_HOME_ROOT="${home}" bash "${DRIFT_GUARD}" 2>&1)" || true
+  out_verbose="$(LEADV2_CANONICAL_ROOT="${canon}" LEADV2_HOME_ROOT="${home}" bash "${DRIFT_GUARD}" --verbose 2>&1)" || true
 
-  if echo "${out}" | grep -q "leadv2-repo-vendored.*dummy\.sh.*CANONICAL_NEWER"; then
-    pass "case2: canonical-committed-after-vendored -> CANONICAL_NEWER"
+  # Round-2 (scope b) demoted the per-entry CANONICAL_NEWER line behind
+  # --verbose, so the default-output half of this case asserts the
+  # by-copy summary count instead — that's the only non-verbose signal
+  # left that classification still works.
+  local ok_default=0 ok_verbose=0
+  if echo "${out_default}" | grep -qE "SUMMARY-BY-COPY: leadv2-repo-vendored:.*CANONICAL_NEWER=1"; then
+    ok_default=1
+  fi
+  if echo "${out_verbose}" | grep -q "leadv2-repo-vendored.*dummy\.sh.*CANONICAL_NEWER"; then
+    ok_verbose=1
+  fi
+
+  if [[ "${ok_default}" -eq 1 && "${ok_verbose}" -eq 1 ]]; then
+    pass "case2: canonical-committed-after-vendored -> CANONICAL_NEWER (default summary + verbose entry)"
+  elif [[ "${ok_default}" -eq 0 ]]; then
+    fail "case2: default-output SUMMARY-BY-COPY missing CANONICAL_NEWER=1: $(echo "${out_default}" | grep -i "summary-by-copy" || echo '<no SUMMARY-BY-COPY line>')"
   else
-    fail "case2: expected CANONICAL_NEWER, got: $(echo "${out}" | grep -i dummy || echo '<no dummy.sh line>')"
+    fail "case2: --verbose output missing per-entry CANONICAL_NEWER: $(echo "${out_verbose}" | grep -i dummy || echo '<no dummy.sh line>')"
   fi
 }
 

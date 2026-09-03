@@ -1,0 +1,2 @@
+[TEST] FATAL: pre-fix fixture unresolvable (repo='/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PROMISE-GUARD-BIND-01' fixture='/Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/PROMISE-GUARD-BIND-01/docs/handoff/PROMISE-GUARD-BIND-01/fixtures/leadv2-promise-guard.pre-bind01.sh') -- refusing to report a fake RED-then-GREEN proof
+EXIT=1

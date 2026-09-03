@@ -1,0 +1,7 @@
+task: PULSE-REPO-SCOPED-03
+decisions:
+  - "product metrics in a beat belong to the repo the beat renders for, never hardcoded"
+  - "foreign-repo lanes appear only for the session that dispatched them"
+  - "LEADV2_LANES_ALL_REPOS must not be globally pinned"
+  - "a beat in an unrelated repo still beats; it just carries that repo none of another repo data"
+off_limits: ["removing beats", "silencing the pulse"]

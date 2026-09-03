@@ -12,7 +12,8 @@
 # with ZERO warning anywhere: leadv2-lead-edit-guard.sh:68 explicitly
 # EXEMPTS `.claude/scripts/leadv2-*.sh` from its own warning (an exemption
 # written when these were per-repo copies -- now exactly backwards), and
-# leadv2-plugin-sync-drift-warn.sh only fires after a Bash command that
+# leadv2-one-copy-drift.sh (PostToolUse:Bash leg, merged from the retired
+# leadv2-plugin-sync-drift-warn.sh) only fires after a Bash command that
 # invokes leadv2-plugin-sync.sh itself, never on an ordinary Edit/Write.
 #
 # This hook closes that gap. It is UNCONDITIONAL (no LEADV2_LEAD_GUARD gate --

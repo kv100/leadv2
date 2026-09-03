@@ -335,6 +335,12 @@ else
   printf -- '[leadv2-ask] qid=%s task_id=%s file=%s\n' "$QID" "$TASK_ID" "$QFILE" >&2
 fi
 
+# LEAD-WORKER-CHANNEL-01: durable row above (V2 or legacy) is already
+# written by this point in either branch -- this is only the wake-up
+# optimisation on top, so its own failure must never block the poll below.
+# stderr only -- stdout is reserved for the QID (NO_BLOCK) or answer text.
+"${SCRIPT_DIR}/leadv2-notify-lead.sh" "$TASK_ID" question "$QUESTION" >&2 2>/dev/null || true
+
 if [[ "$NO_BLOCK" -eq 1 ]]; then
   printf -- '%s\n' "$QID"
   exit 0

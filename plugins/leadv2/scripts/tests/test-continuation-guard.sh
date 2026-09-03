@@ -330,6 +330,66 @@ ACTIVE_YAML_CLOSED='sessions:
 }
 
 # ════════════════════════════════════════════════════════════════════════════
+# Case 14 (T16 §6): tail-window fast path — a transcript padded with >256KB
+# between the user turn and its final assistant record must yield the SAME
+# verdict as the unpadded one. The tail misses the user turn, so the full-file
+# fallback is required: still BLOCK.
+# ════════════════════════════════════════════════════════════════════════════
+{
+  setup_fixture "$ACTIVE_YAML_OPEN" "open"
+  write_transcript '[]' "Тишина."
+  # Prepend ~300KB of old assistant chatter so the loader takes the
+  # tail-window path (file size > TAIL_WINDOW_BYTES=262144).
+  python3 - "$FIXTURE_TRANSCRIPT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+pad = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"old chatter %08d"}]}}\n'
+with open(path, encoding="utf-8") as f:
+    lines = f.readlines()
+with open(path, "w", encoding="utf-8") as f:
+    f.write(lines[0])
+    for i in range(3200):  # ~95 bytes/line -> ~300KB
+        f.write(pad % i)
+    f.writelines(lines[1:])
+PYEOF
+  run_hook "" "false"
+
+  if is_block "$HOOK_OUT"; then
+    pass "Case 14: tail-window fast path still blocks silent stop"
+  else
+    fail "Case 14: tail-window fast path should still block (got: $HOOK_OUT)"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# Case 15 (T16 §6): same fallback shape, but an Edit in the final turn →
+# ALLOW. The window sees the action but not the turn boundary.
+# ════════════════════════════════════════════════════════════════════════════
+{
+  setup_fixture "$ACTIVE_YAML_OPEN" "open"
+  write_transcript '[{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/x","old_string":"a","new_string":"b"}}]' "Готово."
+  python3 - "$FIXTURE_TRANSCRIPT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+pad = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"old chatter %08d"}]}}\n'
+with open(path, encoding="utf-8") as f:
+    lines = f.readlines()
+with open(path, "w", encoding="utf-8") as f:
+    f.write(lines[0])
+    for i in range(3200):
+        f.write(pad % i)
+    f.writelines(lines[1:])
+PYEOF
+  run_hook "" "false"
+
+  if is_allow "$HOOK_OUT"; then
+    pass "Case 15: tail-window fast path allows turn with in-window action"
+  else
+    fail "Case 15: tail-window fast path should allow in-window action (got: $HOOK_OUT)"
+  fi
+}
+
+# ════════════════════════════════════════════════════════════════════════════
 # Summary
 # ════════════════════════════════════════════════════════════════════════════
 log ""

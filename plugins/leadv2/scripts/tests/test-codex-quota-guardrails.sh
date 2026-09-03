@@ -358,6 +358,46 @@ else
   fail "d3 hook allows LEADV2_ALLOW_DIRECT_CODEX=1 (rc=$D3_RC, err=$(cat /tmp/d3.err))"
 fi
 
+# d3a (T16 §1): inline env-prefix form — LEADV2_ALLOW_DIRECT_CODEX=1 as a
+# prefix assignment on the denied command itself. The Bash tool runs each
+# command in a fresh shell, so this is the only shape the override can take
+# there; the hook's own environment never sees it.
+D3A_RC=0
+printf '{"tool_name":"Bash","tool_input":{"command":"LEADV2_ALLOW_DIRECT_CODEX=1 codex exec \\"x\\""}}' \
+  | bash "$HOOK_SH" 2>/tmp/d3a.err || D3A_RC=$?
+if [[ $D3A_RC -eq 0 ]] && grep -q 'ALLOWED' /tmp/d3a.err; then
+  pass "d3a hook allows inline LEADV2_ALLOW_DIRECT_CODEX=1 prefix + logged"
+else
+  fail "d3a hook allows inline LEADV2_ALLOW_DIRECT_CODEX=1 prefix (rc=$D3A_RC, err=$(cat /tmp/d3a.err))"
+fi
+
+# d3b: the prefix only unlocks the command word it precedes — an assignment
+# in an earlier segment (as an echo ARGUMENT) must NOT unlock a later
+# denied command.
+D3B_RC=0
+printf '{"tool_name":"Bash","tool_input":{"command":"echo LEADV2_ALLOW_DIRECT_CODEX=1; codex exec \\"x\\""}}' \
+  | bash "$HOOK_SH" 2>/tmp/d3b.err || D3B_RC=$?
+if [[ $D3B_RC -eq 2 ]] && grep -q 'BLOCKED' /tmp/d3b.err; then
+  pass "d3b hook blocks when the assignment is only an echo argument"
+else
+  fail "d3b hook blocks echo-argument form (rc=$D3B_RC, err=$(cat /tmp/d3b.err))"
+fi
+
+# d3c: multi-assignment prefix (VAR=val before the override) still unlocks;
+# a NON-1 value must not.
+D3C_RC=0
+printf '{"tool_name":"Bash","tool_input":{"command":"FOO=1 LEADV2_ALLOW_DIRECT_CODEX=1 codex exec \\"x\\""}}' \
+  | bash "$HOOK_SH" 2>/tmp/d3c.err || D3C_RC=$?
+D3C2_RC=0
+printf '{"tool_name":"Bash","tool_input":{"command":"LEADV2_ALLOW_DIRECT_CODEX=0 codex exec \\"x\\""}}' \
+  | bash "$HOOK_SH" 2>/tmp/d3c2.err || D3C2_RC=$?
+if [[ $D3C_RC -eq 0 ]] && grep -q 'ALLOWED' /tmp/d3c.err \
+   && [[ $D3C2_RC -eq 2 ]] && grep -q 'BLOCKED' /tmp/d3c2.err; then
+  pass "d3c multi-assignment prefix allows; =0 value still blocks"
+else
+  fail "d3c prefix assignment scoping (rc=$D3C_RC/$D3C2_RC, err=$(cat /tmp/d3c.err)/$(cat /tmp/d3c2.err))"
+fi
+
 # d4: bash .../codex-task.sh task "x" → rc 0
 D4_RC=0
 printf '{"tool_name":"Bash","tool_input":{"command":"bash ~/.claude/scripts/codex-task.sh task \\"x\\""}}' \

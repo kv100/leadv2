@@ -487,7 +487,7 @@ fi
 
 _lv2_main_snapshot() {
 python3 - "$ACTIVE_YAML" "$HANDOFF_DIR" "$SNAPSHOT" "$JSON_MODE" "$SINCE" "$CP_QUESTIONS_DIR" "${BUS_JSONL:-}" "${BUS_OFFSET_FILE:-}" "$TRUTH_BREACHES_JSON" "$TMUX_WINDOWS_TSV" "$TMUX_PANES_TSV" "$TASKS_YAML_PATH" "$ACTIVE_LOCKFILE" "$TOMBSTONES_FILE" "$OBSERVE_ONLY" "$SCRIPT_DIR" "$PROJECT_ROOT" "$LANE_LIVENESS_JSON" "$QUESTION_ESCALATE_S" "$SUPERVISE_PRUNE_V2" <<'PY'
-import sys, os, json, glob, datetime, subprocess
+import sys, os, json, glob, datetime, subprocess, time
 from collections import deque
 
 (active_yaml, handoff_dir, snapshot_path, json_mode, since, cp_questions_dir,
@@ -542,6 +542,13 @@ try:
     _LANE_ABANDON_MAX_S = int(os.environ.get("LEADV2_LANE_ABANDON_MAX_S", "3600"))
 except (TypeError, ValueError):
     _LANE_ABANDON_MAX_S = 3600
+# LANE-LIVENESS-THREE-STATES-02: same window/rationale as leadv2-lane-liveness.sh's
+# `finished_window` -- both probes must agree on the same three-state answer for the
+# same lane, so both read the SAME env var and the SAME default (1800s).
+try:
+    _LANE_FINISHED_WINDOW_S = max(0, int(os.environ.get("LEADV2_LANE_FINISHED_WINDOW_S", "1800")))
+except (TypeError, ValueError):
+    _LANE_FINISHED_WINDOW_S = 1800
 if LEADV2_SUPERVISE_REAP_S and LEADV2_SUPERVISE_REAP_S < _LANE_ABANDON_MAX_S:
     # A lane cannot legitimately be reaped before leadv2-lane-liveness.sh
     # itself has had a chance to classify it dead — clamp up rather than
@@ -574,6 +581,27 @@ def pid_alive(pid_val):
         return True
     except (TypeError, ValueError, ProcessLookupError, PermissionError):
         return False
+
+def _commit_age_s(worktree):
+    # LANE-LIVENESS-THREE-STATES-02: same externally-checkable evidence as
+    # leadv2-lane-liveness.sh's commit_age_s -- the lane's OWN worktree HEAD
+    # commit time, never a worker's self-reported success. Missing/foreign/
+    # non-git/unborn-HEAD worktree -> None (cannot establish finished),
+    # never a fabricated age.
+    if not worktree or not os.path.isdir(worktree):
+        return None
+    try:
+        r = subprocess.run(["git", "-C", worktree, "log", "-1", "--format=%ct"],
+                           capture_output=True, text=True, timeout=3)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        ctime = int(r.stdout.strip())
+    except ValueError:
+        return None
+    return max(0, int(time.time()) - ctime)
 
 def emit_fatal(kind, message):
     """B1 fail-closed: registry_error / state_write_error. Never a successful
@@ -830,6 +858,20 @@ for tid, s in list(current.items()):
         # `continue` below, same as fully-clean evidence.
     elif pid_issue:
         reasons = [pid_issue_reason]
+
+    # LANE-LIVENESS-THREE-STATES-02: a dead/absent pid with a commit in the
+    # lane's OWN worktree inside FINISHED_WINDOW_S is a completed round, not
+    # death evidence -- externally checkable, independent of stream/log
+    # freshness. Placed BEFORE the LANE-LIVENESS-LIES freshness veto below so
+    # a finished lane that has since gone silent past the shorter
+    # LANE_FRESH_S window still clears here (this is the exact three-
+    # founder-escalation defect: the worker had already committed and
+    # exited, and by the time the second poll corroborated it, the stream
+    # was no longer within LANE_FRESH_S either).
+    if reasons:
+        _commit_age = _commit_age_s(s.get("worktree"))
+        if _commit_age is not None and _commit_age <= _LANE_FINISHED_WINDOW_S:
+            reasons = []
 
     # LANE-LIVENESS-LIES-01 Change 1b: a fresh stream/log mtime outranks the
     # pid heuristic before any escalation (memory
@@ -1104,6 +1146,7 @@ for tid in bus_closed_ids:
 # asked_at, status, answer. TRUE control plane — visible from every worktree,
 # unlike the per-task questions-async dir below.
 cp_pending = []
+abandon_answers = []
 if cp_questions_dir and os.path.isdir(cp_questions_dir):
     for qf in sorted(glob.glob(os.path.join(cp_questions_dir, "*.yaml"))):
         qid = os.path.basename(qf)
@@ -1121,7 +1164,21 @@ if cp_questions_dir and os.path.isdir(cp_questions_dir):
             # snapshot warnings above): record it, never drop it quietly.
             warnings.append(f"control-plane question {qf} unreadable/malformed ({e.__class__.__name__}: {e}) — skipped")
             continue
-        if not isinstance(qd, dict) or qd.get("status") != "pending":
+        if not isinstance(qd, dict):
+            continue
+        # ABANDON-NO-OP-01: a dead-lane escalation is actionable.  The old
+        # snapshot only rendered pending questions; an answered `abandon`
+        # left the registration intact, so every later reconciliation asked
+        # the same question again.  Consume only this exact, self-authored
+        # escalation shape -- never let an unrelated question abandon a lane.
+        answer = qd.get("answer") or {}
+        selected = answer.get("selected") if isinstance(answer, dict) else answer
+        tid = str(qd.get("task_id") or "")
+        if (qd.get("status") == "answered" and selected == "abandon" and tid
+                and str(qd.get("question") or "").startswith(f"Task {tid} corroborated dead:")):
+            abandon_answers.append((tid, qf))
+            continue
+        if qd.get("status") != "pending":
             continue
         question_text = qd.get("question", "")
         raw_options = qd.get("options") or []
@@ -1141,6 +1198,86 @@ if cp_questions_dir and os.path.isdir(cp_questions_dir):
             "store": "control-plane",
             "legacy_path": None,
         })
+
+# Apply answered abandon decisions before rendering.  The question YAML is
+# retained as the durable answer receipt; only the in-flight registration is
+# removed.  The identical active-registry lock makes this race-safe with a
+# live lane refresh, and a failed write leaves both row and answer visible.
+# T13 slice2 fix-round (F2, review): this block used to delete the active.yaml
+# row DIRECTLY, bypassing the file's own R2-4 contract (tombstone FIRST, prune
+# SECOND -- see the dead-row prune above): an abandoned lane left no historical
+# record at all. The deletion now goes through the same tombstone path -- an
+# ABANDON entry is durably written to tombstones.yaml under its lock BEFORE the
+# row is pruned, and only ids whose tombstone write succeeded are removed from
+# active.yaml (a tombstone failure keeps the row live and surfaces a warning).
+abandoned_ids = []
+if abandon_answers and not observe_only:
+    try:
+        import fcntl as _ab_fcntl
+        os.makedirs(os.path.dirname(active_lockfile), exist_ok=True)
+        with open(active_lockfile, "a+") as _ab_lf:
+            _ab_fcntl.flock(_ab_lf, _ab_fcntl.LOCK_EX)
+            with open(active_yaml, encoding="utf-8") as _ab_fh:
+                _ab_data = yaml.safe_load(_ab_fh) or {}
+            _ab_sessions = _ab_data.get("sessions") or []
+            _ab_ids = {tid for tid, _qf in abandon_answers}
+            # Tombstone FIRST (R2-4 order, mirrored from the dead-row prune
+            # writer above -- same lock file, same tmp+replace durability).
+            _ab_tombstoned = []
+            try:
+                _ab_tlock = tombstones_file + ".lock"
+                os.makedirs(os.path.dirname(tombstones_file), exist_ok=True)
+                with open(_ab_tlock, "a+") as _ab_tlf:
+                    _ab_fcntl.flock(_ab_tlf, _ab_fcntl.LOCK_EX)
+                    _ab_existing = []
+                    if os.path.isfile(tombstones_file):
+                        try:
+                            with open(tombstones_file, encoding="utf-8") as _ab_tf:
+                                _ab_existing = yaml.safe_load(_ab_tf) or []
+                            if not isinstance(_ab_existing, list):
+                                _ab_existing = []
+                        except Exception:
+                            _ab_existing = []
+                    for _ab_tid in sorted(_ab_ids):
+                        _ab_last = next((s for s in _ab_sessions if s.get("task_id") == _ab_tid), {})
+                        _ab_existing.append({
+                            "task_id": _ab_tid, "tombstoned_at": now_iso(),
+                            "reasons": ["abandon: answered dead-lane escalation"],
+                            "last_state": dict(_ab_last),
+                            "log_path": _ab_last.get("log_path"),
+                            "abandon": True,
+                        })
+                    _ab_ttmp = tombstones_file + f".tmp.{os.getpid()}"
+                    with open(_ab_ttmp, "w", encoding="utf-8") as _ab_tout:
+                        yaml.dump(_ab_existing, _ab_tout, default_flow_style=False, sort_keys=False)
+                    os.replace(_ab_ttmp, tombstones_file)
+                    _ab_tombstoned = sorted(_ab_ids)
+            except OSError as e:
+                # Tombstone write failed — do NOT prune. Rows stay in
+                # active.yaml this cycle; loud warning, never a silent
+                # permanent delete with no tombstone (R2-4 contract).
+                warnings.append(
+                    f"abandon tombstone write failed for {sorted(_ab_ids)} "
+                    f"({e.__class__.__name__}: {e}) — row(s) KEPT, abandon prune skipped"
+                )
+                _ab_tombstoned = []
+            # Prune SECOND — only tombstone-confirmed ids.
+            _ab_prune = set(_ab_tombstoned)
+            _ab_data["sessions"] = [s for s in _ab_sessions if s.get("task_id") not in _ab_prune]
+            _ab_tmp = active_yaml + f".abandon.{os.getpid()}"
+            with open(_ab_tmp, "w", encoding="utf-8") as _ab_out:
+                yaml.safe_dump(_ab_data, _ab_out, default_flow_style=False, sort_keys=False)
+            os.replace(_ab_tmp, active_yaml)
+            abandoned_ids = sorted(_ab_prune)
+    except Exception as e:
+        warnings.append(f"abandon deregistration failed: {e.__class__.__name__}: {e}")
+
+for _ab_tid in abandoned_ids:
+    current.pop(_ab_tid, None)
+    new_snapshot_tasks.pop(_ab_tid, None)
+    dead_candidates_next.pop(_ab_tid, None)
+    dead_now[:] = [d for d in dead_now if d.get("task_id") != _ab_tid]
+    pending_prunes[:] = [p for p in pending_prunes if p.get("task_id") != _ab_tid]
 
 cp_by_task = {}
 for q in cp_pending:

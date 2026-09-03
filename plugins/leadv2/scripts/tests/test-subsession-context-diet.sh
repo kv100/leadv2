@@ -276,12 +276,14 @@ test_9_exclude_dynamic_default_off_optin_on() {
 # tests/test-sonnet-arm-detach-01.sh extracting setsid_wrapper()) to prove the
 # in-function regex guard directly: a role containing path-traversal chars
 # must coerce to "default", never be interpolated raw into a config path.
+# T14: the function moved from claude-subsession.sh to
+# scripts/lib/leadv2-worker-mcp.sh (shared with glm-coder.sh).
 test_10_role_sanitised() {
   log "Test 10: resolve_role_mcp_config('../../evil', ...) coerces to default, no traversal"
   local funcs_file; funcs_file="$(lv2_mktemp_file "context-diet-funcs" "sh")"
-  sed -n '/^resolve_role_mcp_config() {/,/^}$/p' "$SUBSESSION_SH" > "$funcs_file"
+  sed -n '/^resolve_role_mcp_config() {/,/^}$/p' "${SCRIPT_DIR}/../lib/leadv2-worker-mcp.sh" > "$funcs_file"
   if [[ ! -s "$funcs_file" ]]; then
-    fail "could not extract resolve_role_mcp_config() from claude-subsession.sh -- renamed/removed?"
+    fail "could not extract resolve_role_mcp_config() from lib/leadv2-worker-mcp.sh -- renamed/removed?"
     rm -f "$funcs_file"
     return
   fi

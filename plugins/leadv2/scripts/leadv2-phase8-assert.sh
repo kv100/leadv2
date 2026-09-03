@@ -75,7 +75,27 @@ if [[ -f "$E2E_SENTINEL" ]]; then
     log_fail "A7 E2E gate sentinel stale (${age}s > 1h): ${E2E_SENTINEL}"
     failures+=("A7: ${E2E_SENTINEL} is ${age}s old (>1h) -- re-run: bash ${SCRIPT_DIR}/leadv2-phase8-e2e-gate.sh ${TASK_ID}")
   else
-    log_pass "A7 E2E gate: sentinel fresh (${age}s old)"
+    # CLOSE-GATE-BYPASSABLE-BY-ENV-01 L2: existence+freshness alone can't tell
+    # a real pass from a bypassed one. A bypassed sentinel with no reason --
+    # including every sentinel written by the OLD PE_SKIP_TESTS code path,
+    # which never wrote a bypass_reason: field at all -- fails closed here.
+    # `|| true` on each: under `set -eo pipefail` a no-match grep (exit 1)
+    # would otherwise abort the whole script silently mid-statement -- a
+    # sentinel legitimately has no bypass_reason: line in the common
+    # (non-bypassed) case.
+    _a7_bypassed="$(grep -m1 -E '^bypassed:' "$E2E_SENTINEL" 2>/dev/null | sed -E 's/^bypassed:[[:space:]]*//' || true)"
+    _a7_bypass_reason="$(grep -m1 -E '^bypass_reason:' "$E2E_SENTINEL" 2>/dev/null | sed -E 's/^bypass_reason:[[:space:]]*//' || true)"
+    if [[ "${_a7_bypassed}" == "true" ]]; then
+      if [[ -n "${_a7_bypass_reason}" ]]; then
+        log_warning "A7 E2E gate: sentinel is a bypass -- ${_a7_bypass_reason}"
+        log_pass "A7 E2E gate: sentinel fresh (${age}s old, bypassed with reason)"
+      else
+        log_fail "A7 e2e sentinel is a bypass with no reason: ${E2E_SENTINEL}"
+        failures+=("A7: e2e sentinel is a bypass with no reason -- re-run: bash ${SCRIPT_DIR}/leadv2-phase8-e2e-gate.sh ${TASK_ID}")
+      fi
+    else
+      log_pass "A7 E2E gate: sentinel fresh (${age}s old)"
+    fi
   fi
 else
   log_fail "A7 E2E gate sentinel missing: ${E2E_SENTINEL}"
@@ -216,17 +236,25 @@ task_id, path, terminals_raw, lane_terminal_raw, scripts_dir = sys.argv[1:6]
 terminals = set(terminals_raw.split("|"))
 lane_terminal = set(lane_terminal_raw.split("|")) if lane_terminal_raw else set()
 sys.path.insert(0, scripts_dir)
-from leadv2_tasks_yaml_common import load_tasks_items
+from leadv2_tasks_yaml_common import load_tasks_items, row_matches
 items = load_tasks_items(path)
 for it in items:
-    if isinstance(it, dict) and str(it.get("id","")) == task_id:
+    # CLOSE-GATE-A2-ID-SCHEME-MISMATCH-01: resolve before compare. A bare
+    # `id == task_id` can NEVER match when the human passed a milestone name
+    # (backlog rows are fingerprint-keyed; the name lives in `intent`).
+    if isinstance(it, dict) and row_matches(it, task_id):
         st = it.get("status","")
         if st in terminals:
             sys.exit(0)
         if st in lane_terminal:
             sys.exit(3)
         sys.exit(1)
-# Not found in tasks.yaml — check lane yamls as fallback
+# CLOSE-GATE-A2-ID-SCHEME-MISMATCH-01: genuinely not found by id or by
+# intent's pre-colon segment. The lane-yamls branch below runs ONLY when
+# tasks.yaml itself is ABSENT -- here tasks.yaml exists, so there is NO
+# fallback on this path. (The previous comment here claimed "check lane yamls
+# as fallback" -- a behaviour no code on this path performs.)
+print("A2: task '%s' not found in %s (searched: row id == '%s', or intent's pre-colon segment == '%s')" % (task_id, path, task_id, task_id), file=sys.stderr)
 sys.exit(2)
 PYEOF
   then
@@ -261,8 +289,8 @@ print(str(d.get("outcome") or ""))
         failures+=("A2: ${TASK_ID} status is claimed_done/needs_evidence -- lane-terminal requires BOTH ${RELEASE_RECEIPT} with outcome: completed_success AND ${SENTINEL} to exist (got outcome='${receipt_outcome:-<missing>}'); run leadv2_tasks_release then leadv2-phase8-e2e-gate.sh")
       fi
     elif [[ $rc -eq 2 ]]; then
-      log_fail "A2 tasks.yaml: ${TASK_ID} not found — task not in tasks.yaml"
-      failures+=("A2: ${TASK_ID} not found in ${TASKS_YAML} — run leadv2_tasks_release or ensure tasks.yaml is populated")
+      log_fail "A2 tasks.yaml: ${TASK_ID} not found — searched ${TASKS_YAML} by row id and by intent pre-colon segment; only tasks.yaml was consulted (lane-yamls fallback applies only when tasks.yaml is absent)"
+      failures+=("A2: ${TASK_ID} not found in ${TASKS_YAML} — run leadv2_tasks_release ${TASK_ID} --outcome success, or ensure tasks.yaml is populated")
     else
       log_fail "A2 tasks.yaml: ${TASK_ID} status is not terminal"
       failures+=("A2: ${TASK_ID} in ${TASKS_YAML} does not have terminal status (${TERMINAL_STATUSES}) — run queue-release")
@@ -270,17 +298,21 @@ print(str(d.get("outcome") or ""))
   fi
 else
   # Fallback: read lane yamls directly (pre-cutover)
-  if python3 - "$TASK_ID" "$QUEUE_DIR" "$TERMINAL_STATUSES" <<'PYEOF' 2>/dev/null
+  if python3 - "$TASK_ID" "$QUEUE_DIR" "$TERMINAL_STATUSES" "$SCRIPT_DIR" <<'PYEOF' 2>/dev/null
 import sys, os, yaml
 task_id   = sys.argv[1]
 qdir      = sys.argv[2]
 terminals = set(sys.argv[3].split("|"))
+sys.path.insert(0, sys.argv[4])
+from leadv2_tasks_yaml_common import row_matches
 for lane in ("action", "recovery", "intelligence", "human-needed"):
     f = os.path.join(qdir, f"{lane}.yaml")
     if not os.path.isfile(f): continue
     items = yaml.safe_load(open(f)) or []
     for it in (items if isinstance(items, list) else []):
-        if isinstance(it, dict) and str(it.get("id","")) == task_id:
+        # CLOSE-GATE-A2-ID-SCHEME-MISMATCH-01: same resolution as the
+        # tasks.yaml path above (id, or intent's pre-colon segment).
+        if isinstance(it, dict) and row_matches(it, task_id):
             sys.exit(0 if it.get("status","") in terminals else 1)
 # Not found in any lane — treat as PASS (may be a manual-only task)
 sys.exit(0)

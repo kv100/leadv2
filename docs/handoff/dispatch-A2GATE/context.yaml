@@ -1,0 +1,7 @@
+task: CLOSE-GATE-A2-ID-SCHEME-MISMATCH-01
+decisions:
+  - "resolve the human milestone id to a backlog row before comparing, never widen to substring"
+  - "V5-M1 must not match V5-M10; anchor on the full segment before the first colon"
+  - "the promised lane-yaml fallback must exist, or the comment must go and rc=2 must say what was searched"
+  - "the printed remedy must be executable against the same id scheme"
+off_limits: ["substring matching", "forging phase8-passed.flag"]
