@@ -129,3 +129,51 @@ same unit, and the p90 tells us immediately whether a 5x seat would have walled.
 
 **Both belong in the backlog whatever the purchase decision is** — the founder should not have to ask
 three models to guess at a number his own tooling could have been recording all along.
+
+---
+
+## CORRECTION, same day, after the founder pushed back
+
+Two claims above are **wrong** and the founder was right to challenge them. Correcting rather than
+editing them out, because the reasoning that followed from them changes.
+
+**Wrong claim 1: "I do not have evidence that second-account dispatch works here."** It works, it is
+the current architecture, and it ran today. The seam is
+`plugins/leadv2/scripts/leadv2-claude-profile-select.sh`; every dispatch writes
+`docs/handoff/dispatch-<sig>/claude-profile.log`. From today's live lane:
+
+    [claude-profile] selected=work score=29 source=live candidates=2 cred_kind=keychain
+                     identity=team/kostiantyn.vlasenko@mythical.games
+
+Across the 94 profile logs on disk, 123 recorded selections:
+
+| account | selections |
+|---|---|
+| personal `max/vkk1008k@gmail.com` | 93 |
+| work `team/kostiantyn.vlasenko@mythical.games` | 29 |
+| (one hybrid row) | 1 |
+
+So per-dispatch routing across two Claude accounts is not something the $100 plan would require us
+to build. It is what we already do. **This strengthens the two-Max-5x option**, because the only
+open question left is which pair of seats to put behind an existing, working selector.
+
+**Wrong claim 2, by implication: that the 41% weekly figure measures our whole Claude load.** It does
+not. `rate_limit_anthropic` reports `account_label: max_20x` — the personal account — while 29 of
+123 dispatches (24%) ran on the work account. So Max 20x reached 41% of its weekly window **while
+roughly a quarter of lane volume was already being absorbed elsewhere.** True demand against a
+single 20x seat is higher than 41% suggests, which makes the weekly window tighter than my table
+implied, and makes buying a 20× multiplier on the 5-hour window worse value, not better.
+
+**A third thing this turned up, which is a defect rather than an analysis point:** the selector
+logged `default_token_expired identity=max/vkk1008k@gmail.com` **198 times** and failed open each
+time. Today's lane chose the work account partly because the personal account's default token was
+unusable. So the 93/29 split is not purely a scoring decision — some of it is the personal account
+being unavailable. Filed as `CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01`. Until that is fixed, any
+account-level usage number on this machine is measuring a degraded router, and the 93/29 split
+should not be read as intended routing behaviour.
+
+**What does not change:** the recommendation. If anything the case is stronger — the routing exists,
+the weekly window is tighter than the raw percentage shows, and the 20× still multiplies a window we
+are 16% into. What still gates acting on it is unchanged too: `binding_window` has one recorded
+sample, and now there is a second reason to distrust single samples — the router was degraded when
+it was taken.
