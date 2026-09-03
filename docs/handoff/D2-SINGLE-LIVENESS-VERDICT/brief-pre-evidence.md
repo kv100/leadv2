@@ -113,3 +113,27 @@ what the verdict **means**, and D3 consumes this verdict to decide whether to re
 Resuming a starved lane onto a saturated machine reproduces the starvation. Whatever D2 returns must
 carry enough for a caller to tell "died holding work" from "never got scheduled": at minimum the exit
 cause, so D3 does not treat the two identically.
+
+### Eleventh: the anti-silence pulse reads "no journal" as "not alive"
+
+Observed live, 2026-09-03T19:26Z. The pulse published:
+
+```
+[ПУЛЬС 19:26Z] live=0: … D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF=нет-журнала; …
+```
+
+At that same moment the D3 worker's dispatcher-printed PID (72076) answered `kill -0`. The lane was
+alive. The pulse's method is "does this lane have a journal file", and a worker that has spawned but
+not yet written its first journal line has none — so a healthy lane in its first minutes is published
+as `live=0`.
+
+This one matters beyond the count, because it is a **caller with its own opinion**, not a bad probe
+in isolation. D2's deliverable is not a good function; it is *one pinned implementation that every
+caller uses*. The pulse is precisely a caller that grew its own verdict, and it is the surface the
+founder reads. While it keeps its own method, D2 can ship a perfect function and the number the
+founder sees will still be wrong.
+
+**Acceptance addition:** the pulse must consume D2's pinned function. Grep for every site that
+decides liveness — journal presence, stream mtime, `ps` patterns, registry fields — and either
+convert it or list it in the closure as a known remaining caller. A census of callers is part of the
+deliverable; without it "one verdict" is an aspiration.
