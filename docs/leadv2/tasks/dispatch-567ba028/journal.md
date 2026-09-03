@@ -734,3 +734,5 @@
 - 2026-08-16T04:41:48Z [decision] worker_spawned by=router model=glm task=567ba028 attempt=567ba028-1786855304-64399 handle=glm-test-run
 - 2026-08-16T04:41:49Z [decision] mission-version task=- sig=567ba028 rev=? head="plugin-only degraded mode test  --- If you hit a decision you cannot safely make yourself "
 - 2026-08-16T04:41:49Z [decision] route_resolved by=router router=v1 model=glm task=567ba028 rule=none reason=glm_default
+- 2026-08-31T15:05:40Z [decision] route_v2_estimate estimate_id=09e510fe estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none subsystems_touched=1 needs_live_verification=False cache_hit=false
+- 2026-09-01T00:57:15Z [decision] route_v2_estimate estimate_id=09e510fe estimate_source=fallback complexity=trivial work_kind=build duration_class=short risk_class=none subsystems_touched=1 needs_live_verification=False cache_hit=false
