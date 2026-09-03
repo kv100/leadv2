@@ -61,7 +61,7 @@ ROLLBACK (one step): unset `LEADV2_PROMISE_GUARD_BLOCK` (or set it back to `"0"`
 hook falls back to log-only immediately on the next Stop event; no state to clean up,
 the journal keeps accumulating either way.
 
-## SD-WORKER-OUTLIVES-VERIFY-01 — прогнать гейты на спасённой работе линии WORKER-OUTLIVES
+## SD-WORKER-OUTLIVES-VERIFY-01 — ЗАКРЫТО 2026-09-03T12:15Z доказательством (три контроля мутаций, macOS+Linux rc=0, слито как fd6f221a)
 - **Due:** условие — освободилась одна из двух живых линий (`E2E-TIMEOUT-REPORTED-AS-REGRESSION-01`
   или `LEAD-IS-OPUS-THINK-IS-FABLE-01` дошла до слияния). WIP=2, третью не открываем.
 - **GO:** у одной из двух линий появился `dispatch_terminal task=<sig> terminal=landed`, ИЛИ её
