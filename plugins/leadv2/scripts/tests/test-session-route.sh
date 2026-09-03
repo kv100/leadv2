@@ -121,14 +121,27 @@ out="$(route --class Standard --risk-tags auth --provider codex)"
 assert_fields "high-risk tag blocks explicit Codex" "$out" \
   'provider=claude' 'model=opus' 'high_risk=true'
 
-# Split-path guard: Heavy CLASS still lands on the think tier even when safety
-# tags are also present (class check precedes the tag pin), while a Standard
-# class with a safety tag can never inherit the think tier's model.
+# HEAVY-TIER-VS-SAFETY-OPUS-01 R2 (lead adjudication, fix-round-2.md): safety
+# OUTRANKS the think tier. A Heavy class with a hard-safety tag (auth,rls,
+# safety,publish,security) pins opus — a pin that yields to the class check is
+# not a pin.
 out="$(route --class Heavy --risk-tags safety --provider auto)"
-assert_fields "Heavy + safety tags stays think-tier" "$out" \
+assert_fields "Heavy + safety tag -> opus (safety outranks think tier)" "$out" \
+  'provider=claude' 'model=opus' 'high_risk=true'
+
+# ...but 'arch' is carved out: it names difficulty, not consequence, and
+# PLANNER-MODELS-DECISION-01 deliberately pins Heavy planning/architecture to
+# the think tier. Heavy + arch (and no other high-risk tag) keeps the think arm.
+out="$(route --class Heavy --risk-tags arch --provider auto)"
+assert_fields "Heavy + arch tag stays think-tier (arch carve-out)" "$out" \
   'provider=claude' 'model=fable' 'high_risk=true'
+
+# On a non-Heavy class both tag kinds keep round-1 behaviour (safety pin).
 out="$(route --class Standard --risk-tags safety --provider codex)"
 assert_fields "Standard + safety tag pins opus" "$out" \
+  'provider=claude' 'model=opus' 'high_risk=true'
+out="$(route --class Standard --risk-tags arch --provider codex)"
+assert_fields "Standard + arch tag pins opus" "$out" \
   'provider=claude' 'model=opus' 'high_risk=true'
 
 # GLM-FIRST-01 means GLM (and, if enabled, kimi) win auto-routing whenever they are
