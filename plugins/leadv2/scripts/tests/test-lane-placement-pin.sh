@@ -66,6 +66,7 @@ export LEADV2_STATE_BASE="${SANDBOX}/state"
 export LEADV2_DISPATCH_CACHE_DIR="${SANDBOX}/cache"
 
 GLM_STUB="${SANDBOX}/glm-stub.sh"
+SONNET_STUB="${SANDBOX}/sonnet-stub.sh"
 JOURNAL_STUB="${SANDBOX}/journal-stub.sh"
 LIVENESS_STUB="${SANDBOX}/liveness-stub.sh"
 QUOTA_LIVE_STUB="${SANDBOX}/quota-live-stub.sh"
@@ -122,6 +123,47 @@ case "${1:-}" in
 esac
 SH
 
+# ── Stub sonnet launcher (records cwd + mission-file content) ──────────────
+# FREEPOOL-MUST-ACTUALLY-GET-WORK-01 changed the default: an UNKNOWN write-set
+# (every P-a/P-b/P-g/D3 case below -- none declares --writes) now fails CLOSED
+# to protected=1, and resolve_arm()/_select_base_arm() route a protected task
+# to the cheapest TRUSTED-capable arm, which is sonnet here, not glm. Before
+# that merge this suite never needed a sonnet stub because unprotected
+# dispatch always resolved to glm. claude-subsession.sh (the real sonnet
+# launcher) takes no --cwd flag -- the caller `cd`s into WORK_ROOT first
+# (leadv2-dispatch-code.sh ~5478) -- so this stub reads $PWD, not an argv
+# flag. It backgrounds a real sleep so the caller's `kill -0 $pid` liveness
+# check (leadv2-dispatch-code.sh ~5518) sees a genuinely live process, not a
+# handle for a PID that already exited and was reaped before the caller ever
+# checked it.
+cat > "${SONNET_STUB}" <<'SH'
+#!/usr/bin/env bash
+CWD_OUT="${LEADV2_STUB_CWD_OUT:-}"
+MISSION_OUT="${LEADV2_STUB_MISSION_OUT:-}"
+mission_file=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mission-file) mission_file="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -z "${CWD_OUT}" ]] || pwd > "${CWD_OUT}" 2>/dev/null
+if [[ -n "${MISSION_OUT}" && -n "${mission_file}" ]]; then
+  cat "${mission_file}" > "${MISSION_OUT}" 2>/dev/null
+fi
+# Redirect the background sleep's own stdout/stderr away from this script's
+# inherited fds -- the caller captures this script's stdout via `out="$(...)"`,
+# and a backgrounded child that still holds that pipe open (even disowned)
+# keeps the command substitution blocked until the child exits (~100s later,
+# by which point `kill -0` on its pid finds it already dead). Without this
+# redirect the dispatcher's spawn check reliably read "not_live".
+sleep 100 >/dev/null 2>&1 &
+disown
+printf 'PID=%s LABEL=stub SESSION_ID=stub\n' "$!"
+exit 0
+SH
+chmod +x "${SONNET_STUB}"
+
 # Stub journal (no-op)
 cat > "${JOURNAL_STUB}" <<'SH'
 #!/usr/bin/env bash
@@ -165,6 +207,7 @@ setup_env() {
   unset LEADV2_LANE_WORK_ROOT 2>/dev/null || true
   export LEADV2_DISPATCH_GLM_BIN="${GLM_STUB}"
   export LEADV2_STUB_GLM_RUNS="${SANDBOX}/glm-runs"
+  export LEADV2_DISPATCH_SUBSESSION_BIN="${SONNET_STUB}"
   export LEADV2_JOURNAL_BIN="${JOURNAL_STUB}"
   export LEADV2_DISPATCH_LEDGER_BIN="${PLUGIN_SCRIPTS}/leadv2-dispatch-ledger.sh"
   export LEADV2_STATE_PATH_BIN="${STATE_PATH}"
