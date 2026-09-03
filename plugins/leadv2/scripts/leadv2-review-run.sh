@@ -1293,8 +1293,12 @@ if [[ -f "${_FALSIFY_BIN}" ]]; then
         printf 'Its exit code did not change under failure injection (assertion tools\n'
         printf 'broken, empty working directory, stripped environment), so it cannot\n'
         printf 'distinguish correct from incorrect behaviour and carries no evidence.\n'
+        # Literal `$?`/backticks in a printed message, not an expansion.
+        # shellcheck disable=SC2016
         printf 'A printed `FAIL:` line that leaves `$?` at 0 is NOT an assertion: make\n'
         printf 'the suite exit non-zero on failure (exit 1, or let the failing command\n'
+        # Literal backticks in a printed message, not an expansion.
+        # shellcheck disable=SC2016
         printf 'propagate — no `|| true` around the checked command), then re-run review.\n\n'
         printf '%s\n' "${_fs_out}"
       } > "${HANDOFF}/review-gate.md.tmp"
@@ -1309,8 +1313,8 @@ if [[ -f "${_FALSIFY_BIN}" ]]; then
       printf 'status: blocked\nreason: suite_falsifiability_undetermined\nsuite: %s\n\n' "${_fs_path}"
       printf 'The falsifiability check could not determine whether this suite can go\n'
       printf 'red — it may already be failing at baseline (run it yourself:\n'
-      printf 'bash %s). Make the suite green, and make its failures change its exit\n'
-      printf 'code, then re-run review.\n\n' "${_fs_path}"
+      printf 'bash %s). Make the suite green, and make its failures change its exit\n' "${_fs_path}"
+      printf 'code, then re-run review.\n\n'
       printf '%s\n' "${_fs_out}"
     } > "${HANDOFF}/review-gate.md.tmp"
     mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
@@ -1573,7 +1577,7 @@ for _ran_index in "${!ran_arms[@]}"; do
                 "review_arm_retry from=${_arm} to=${_pc_retry_arm}" >/dev/null 2>&1 || true
             fi
             _arm="${_pc_retry_arm}"
-            ran_arms[${_ran_index}]="${_arm}"
+            ran_arms[_ran_index]="${_arm}"
             run_reviewer_arm "${_arm}" || review_rc=$?
             _rc="${review_rc:-1}"
             printf '%s' "${_rc}" > "${HANDOFF}/review-${_arm}.rc"
