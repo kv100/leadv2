@@ -363,7 +363,9 @@ leadv2-helpers.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-lane-outcome.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
 leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
-leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-repo-install-tracked-settings.sh"
+leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-repo-install-tracked-settings.sh
+scheduled-decisions.md:plugins/leadv2/scripts/tests/test-tracked-evidence-paths.sh
+brief.md:plugins/leadv2/scripts/tests/test-tracked-evidence-paths.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -517,6 +519,18 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         # FABLE-THINK-TIER-01 R7: the carrier map row for run-all.sh must be
         # reachable so the test suite for the carrier map can be selected.
         stem="run-all.sh"
+      elif [[ "${cf}" == "docs/leadv2/scheduled-decisions.md" ]]; then
+        # HANDOFF-ANALYSIS-DIES-UNTRACKED-01: a scheduled-decision row can
+        # cite a file path git never saw (the exact loss this carrier maps
+        # to test-tracked-evidence-paths.sh below) -- docs/leadv2/*.md is not
+        # a plugins/leadv2 script, so it needs its own synthetic stem, same
+        # shape as .gitignore/tests/run-all.sh above.
+        stem="scheduled-decisions.md"
+      elif [[ "${cf}" == docs/handoff/*/brief*.md ]]; then
+        # HANDOFF-ANALYSIS-DIES-UNTRACKED-01: a lane brief citing another
+        # artifact as its own evidence is the second carrier this suite
+        # covers -- wildcard elif, same shape as workflows/*.js above.
+        stem="brief.md"
       else
         case "${cf}" in
           plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/scripts/*.py|plugins/leadv2/hooks/*.sh) ;;
