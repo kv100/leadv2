@@ -83,3 +83,33 @@ suite rots silently and a green suite CI never runs is worth nothing.
 D2 is "one verdict about liveness". The deliverable is not a good function — it is **one pinned
 implementation that every caller uses**. If leads keep writing their own `ps` invocation, D2 is not
 delivered however good the function is.
+
+## Two more false answers, added 2026-09-03 after the machine-saturation measurement
+
+### Ninth: `kill -0` reports a live process dead when permission is denied
+
+From herdr, via c2. `kill(pid, 0)` fails for two different reasons and the shell collapses them into
+one non-zero exit code:
+
+- `ESRCH` — no such process. **Dead.**
+- `EPERM` — the process exists but belongs to another user. **Alive, and unreachable.**
+
+`kill -0 "$p"` in bash returns non-zero for both. So the pinned function, written the obvious way,
+answers "dead" for a live process it merely cannot signal. This is a false zero hiding inside the
+method that was chosen precisely to eliminate false zeros.
+
+**Acceptance case, mandatory:** a fixture PID whose signal is refused with `EPERM` must be reported
+**ALIVE**. Distinguish the two errnos rather than testing truthiness — a suite that only covers
+`ESRCH` passes today and ships the bug.
+
+### Tenth: starvation timeout reads as death
+
+Measured the same evening. Load 188–248 on a 10-core machine, memory 64% free — CPU contention, not
+OOM. Workers were spawned successfully (`rc=0` genuine, PID real), got no CPU, hit their own timeout,
+and exited. From outside, that is byte-identical to "the lane died".
+
+This does not change the liveness verdict itself — a timed-out worker really is dead — but it changes
+what the verdict **means**, and D3 consumes this verdict to decide whether to rescue and resume.
+Resuming a starved lane onto a saturated machine reproduces the starvation. Whatever D2 returns must
+carry enough for a caller to tell "died holding work" from "never got scheduled": at minimum the exit
+cause, so D3 does not treat the two identically.
