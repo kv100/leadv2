@@ -289,6 +289,19 @@ if [[ -n "${FOREIGN_CSV}" && -z "${OWN_CSV}" && -z "${UNDECIDABLE_CSV}" ]]; then
 fi
 
 rm -f "$SENTINEL"   # never leave a stale PASS behind on a red re-run
+# E2E-TIMEOUT-REPORTED-AS-REGRESSION-01: rc=124 is the portable timeout
+# watcher's exit code for a sweep it had to kill (line ~209 above), not a
+# test failure -- callers of this standalone gate must be able to tell
+# "the sweep never finished" from "a suite went red" the same way the
+# dispatch-close gate now does (leadv2-dispatch-product-close.sh:~2698).
+if [[ ${rc} -eq 124 ]]; then
+  printf 'status: unknown\nreason: e2e_timeout\nrc: %s\ntimeout_s: %s\n' \
+    "${rc}" "${E2E_TIMEOUT_S}" > "${OUT_DIR}/e2e-gate.md" 2>/dev/null || true
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=timeout rc=${rc} timeout_s=${E2E_TIMEOUT_S}"
+  echo "leadv2-phase8-e2e-gate: TIMEOUT (tests/run-all.sh --scope changed exceeded ${E2E_TIMEOUT_S}s) — see ${LOG}" >&2
+  tail -40 "$LOG" >&2 || true
+  exit 1
+fi
 if [[ -z "${WRITES_CSV}" ]]; then
   _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=fail rc=${rc} scope=whole_tree_fallback"
 else
