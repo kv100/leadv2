@@ -80,15 +80,20 @@ with open(lock, 'a+') as lf:
     pid = int(pid)
     live=[r for r in rows if r.get('lead_session_id') == lead and not r.get('dead_at') and alive(r)]
     existing=next((r for r in rows if r.get('task_id') == task and not r.get('dead_at')), None)
-    # CONCURRENCY-2-LANES-01 stays the DEFAULT (founder policy, 2 lanes per
-    # lead session).  It was hardcoded, so "raise it for one session" required
-    # editing this file -- the same never-hardcode defect we fix elsewhere.
-    # LEADV2_LANE_CAP overrides it per-session; an absent/invalid value keeps 2.
+    # CONCURRENCY-UNLIMITED-LANES-01 (founder order 2026-09-03, verbatim:
+    # "колчиество лейнов везде берешь любое") supersedes CONCURRENCY-2-LANES-01.
+    # The default is now high enough not to be a wall; LEADV2_LANE_CAP still
+    # overrides it per-session, and a value below 1 is treated as unset.
+    #
+    # Known defect this does NOT fix, filed separately: independent lead
+    # sessions all resolve to lead_session_id="direct", so they share one
+    # bucket and one another's cap.  Raising the ceiling is the founder's
+    # order; attributing lanes to the right session is the real repair.
     try:
-      cap = int(os.environ.get('LEADV2_LANE_CAP', '') or 2)
+      cap = int(os.environ.get('LEADV2_LANE_CAP', '') or 64)
     except ValueError:
-      cap = 2
-    if cap < 1: cap = 2
+      cap = 64
+    if cap < 1: cap = 64
     if not existing and len(live) >= cap:
       print('lane cap exceeded: lead_session_id=%s live=%d cap=%d' % (lead, len(live), cap), file=sys.stderr); sys.exit(3)
     if existing:
