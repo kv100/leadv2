@@ -117,7 +117,24 @@ router_v2:
   # change) is enough to retune which cells count as "too cheap" for hard work.
   complexity_penalty:
     - complexities: [complex]
-      penalize_tags: [cheap, mechanical, bulk, background]
+      # GLM-FIRST-IS-DEAD-BY-COMPLEXITY-PENALTY-01 (lead, 2026-09-03, founder
+      # decision the same evening: heavy+complex work is ALLOWED on glm, with
+      # exceptions). `bulk` and `background` are glm's own tags, and the penalty
+      # is +100 -- the same magnitude the freepool capability floor uses to
+      # "clear the whole real cost range". So this rule was not a nudge, it was
+      # a total ban: every task the judge called `complex` removed glm from
+      # contention entirely (measured: glm cost 1 -> 101, sonnet 5 wins and is
+      # journalled `reason=cheapest_capable` while glm sits at 13% utilization
+      # and claude at 54%).
+      # `cheap` and `mechanical` stay penalized -- those are glm-flash's tags,
+      # and a flash-tier arm on complex work is the case this rule was written
+      # for. The exceptions founder policy actually names (safety / publish /
+      # payments / ui_judgment) are enforced elsewhere and are untouched: they
+      # come through `_hard_flag` in leadv2-route-arbiter.sh:79, which forces
+      # require_trusted regardless of any cost ranking. Controls run on the live
+      # tree before/after: complex+safety -> sonnet (both), complex alone ->
+      # sonnet before / glm after, glm-flash never wins complex.
+      penalize_tags: [cheap, mechanical]
       penalty: 100
 
   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
