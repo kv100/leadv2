@@ -166,6 +166,9 @@ leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-route-arbiter-symlink-ins
 codex-task.sh:plugins/leadv2/scripts/tests/test-codex-longrun.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-freepool-gets-work.sh
+leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-freepool-gets-work.sh
+freepool-coder:plugins/leadv2/scripts/tests/test-freepool-turncap-checkpoint.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-model-select-telemetry.sh
 leadv2-lane-pulse-watch.sh:plugins/leadv2/scripts/tests/test-lane-pulse-watch.sh
 leadv2-single-lead-beat-loop.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
@@ -204,6 +207,8 @@ freepool-coder:plugins/leadv2/scripts/tests/test-worker-output-gate.sh
 leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-adoption-gate-passable.sh
 leadv2-freepool-model-select:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
+freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
+freepool-arm.yaml:plugins/leadv2/scripts/tests/test-freepool-gets-work.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-liveness.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-broad-status-foreign-lanes.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-status-repo-scoped.sh
@@ -293,6 +298,7 @@ claude-subsession.sh:plugins/leadv2/scripts/tests/test-cache-truth.sh
 leadv2-plugin-cache-sync.sh:plugins/leadv2/scripts/tests/test-plugin-cache-sync.sh
 leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
 leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
+leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-freepool-turncap-checkpoint.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-lane-outcome.sh"
 
@@ -455,6 +461,15 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
       done <<< "${EXTRA_SUITE_MAP}"
     done <<< "${changed}"
   fi
+fi
+
+# Selection proof is intentionally non-executing: it lets a lane demonstrate
+# that --scope changed will hand its suites to CI without starting the always-
+# on core runner on a shared machine. Normal CI never sets this seam.
+if [[ "${LEADV2_RUN_ALL_SELECT_ONLY:-0}" == "1" ]]; then
+  for suite in "${SUITES[@]:-}"; do printf '[SELECT] %s\n' "${suite}"; done
+  printf 'run-all: %s selected, scope=%s, select_only=1\n' "${#SUITES[@]}" "${SCOPE}"
+  exit 0
 fi
 
 for suite in "${SUITES[@]:-}"; do

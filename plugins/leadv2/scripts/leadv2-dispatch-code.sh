@@ -6546,6 +6546,40 @@ cmd_status() {
   exit 0
 }
 
+# FREEPOOL-MUST-ACTUALLY-GET-WORK-01: derive the routing protection signal
+# from the declared write-set before looking at a caller's manual --protected
+# flag. Empty/malformed/unknown sets stay protected (fail closed). Tests plus
+# handoff evidence are mechanically safe; known safety/publish/payments paths
+# stay protected; ordinary code stays eligible for the existing capability
+# floor. A caller can still add protection with --protected, but that override
+# is journaled beside the deciding write-set rather than silently looking like
+# a path-derived ban.
+_lane_writes_class() { # <csv> -> tests_docs | protected | standard | unknown
+  local writes="$1" entry trimmed count=0
+  [[ -n "${writes//[[:space:]]/}" ]] || { printf 'unknown\n'; return 0; }
+  while IFS= read -r entry; do
+    trimmed="$(printf '%s' "${entry}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [[ -n "${trimmed}" ]] || { printf 'unknown\n'; return 0; }
+    count=$((count + 1))
+    case "${trimmed}" in
+      tests/*|plugins/leadv2/scripts/tests/*|docs/handoff/*) ;;
+      *safety*|*publish*|*payment*) printf 'protected\n'; return 0 ;;
+      *) : ;;
+    esac
+  done < <(printf '%s\n' "${writes}" | tr ',;' '\n')
+  # The all-safe guarantee is strict: any ordinary code path means this is a
+  # normal lane, not a tests/docs-only exemption.
+  if [[ "${writes}" == *tests/* || "${writes}" == *plugins/leadv2/scripts/tests/* || "${writes}" == *docs/handoff/* ]]; then
+    local _non_safe=0
+    while IFS= read -r entry; do
+      trimmed="$(printf '%s' "${entry}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+      case "${trimmed}" in tests/*|plugins/leadv2/scripts/tests/*|docs/handoff/*) ;; *) _non_safe=1 ;; esac
+    done < <(printf '%s\n' "${writes}" | tr ',;' '\n')
+    [[ "${_non_safe}" == "0" && "${count}" -gt 0 ]] && { printf 'tests_docs\n'; return 0; }
+  fi
+  [[ "${count}" -gt 0 ]] && printf 'standard\n' || printf 'unknown\n'
+}
+
 # ── resolve (default) path ────────────────────────────────────────────────────────
 cmd_resolve() {
   # cmd_resolve exits the process via `exit N` on every path (never `return`,
@@ -7161,11 +7195,28 @@ exit is treated as an incident."
     glmfails=0
   fi
 
+  # FREEPOOL-MUST-ACTUALLY-GET-WORK-01: LANE_WRITES is the authoritative
+  # protection input. A manual flag remains additive (never a way to reduce
+  # protection), while an omitted/unknown set fails closed. Keep the whole
+  # decision in one journal line so a habitual --protected is visible rather
+  # than indistinguishable from an actual protected path.
+  local _writes_class _writes_protected _effective_protected _test_only
+  _writes_class="$(_lane_writes_class "${lane_writes}")"
+  _writes_protected=0; _test_only=0
+  if [[ "${_writes_class}" == "tests_docs" ]]; then
+    _test_only=1
+  elif [[ "${_writes_class}" == "protected" || "${_writes_class}" == "unknown" ]]; then
+    _writes_protected=1
+  fi
+  _effective_protected="${_writes_protected}"
+  [[ "${protected}" == "1" ]] && _effective_protected=1
+  emit decision "protection_derived by=router task=${sig8} writes=${lane_writes:-<none>} write_class=${_writes_class} writes_protected=${_writes_protected} manual_protected=${protected} effective_protected=${_effective_protected}"
+
   # ROUTER: resolve the model from routing.yaml glm_policy (NOT from a lead choice).
   # Resolution is pure (no side effects, deterministic from the SAME sig/flags every
   # call) so computing it before the atomic ledger section below is safe even for the
   # losing side of a race — only the ledger read+write needs to be atomic.
-  export DC_PROTECTED="${protected}" DC_SAFETY="${safety}" DC_SUBSYSTEM_COUNT="${subsystems}" \
+  export DC_PROTECTED="${_effective_protected}" DC_SAFETY="${safety}" DC_SUBSYSTEM_COUNT="${subsystems}" \
          DC_INTERACTIVE="${interactive}" DC_UI_JUDGMENT="${ui}" DC_KIND="${kind}" \
          DC_GLM_FAILURES="${glmfails}" DC_GLM_LOCK_BUSY="${lockbusy}" \
          DC_TASK_CLASS="${task_class}"
@@ -7180,7 +7231,7 @@ exit is treated as an incident."
     # a bare `router_v2_unavailable rc=1` and the operator had nothing to act on.
     local _v2err _v2stage="unknown" _v2detail=""
     _v2err="$(mktemp "${TMPDIR:-/tmp}/leadv2-v2err.XXXXXX")" || _v2err=""
-    resolved="$(V2_FAIL_FILE="${_v2err}" resolve_v2_dispatch "${mission}" "${sig8}" "${task_class}" "${kind}" "${protected}")" || {
+    resolved="$(V2_FAIL_FILE="${_v2err}" resolve_v2_dispatch "${mission}" "${sig8}" "${task_class}" "${kind}" "${_effective_protected}")" || {
       local v2rc=$?
       if [[ -n "${_v2err}" && -s "${_v2err}" ]]; then
         _v2stage="$(sed -n 's/^stage=//p' "${_v2err}" | head -1)"
@@ -7392,7 +7443,7 @@ exit is treated as an incident."
     # (safety_gate_publish_payments / ui_design_judgment keyword classes) and
     # OR it into the CLI-flag value rather than overriding it -- an explicit
     # --protected/--safety/--ui-judgment flag always still wins.
-    local _arb_protected="${protected}" _arb_safety="${safety}" _arb_ui="${ui}"
+    local _arb_protected="${_effective_protected}" _arb_safety="${safety}" _arb_ui="${ui}"
     if [[ "${_arb_safety}" != "1" ]] && printf '%s' "${mission}" | grep -qiE 'safety[_-]?gate|\bpublish\b|\bpayments?\b'; then
       _arb_safety=1
     fi
@@ -7408,7 +7459,7 @@ exit is treated as an incident."
     # rule) can see them, not just kind/size/protected.
     local _arb_allowed_csv
     _arb_allowed_csv="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
-    _arb_desc="$(python3 -c 'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a]; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed,"complexity":sys.argv[8],"duration_class":sys.argv[9]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}")"
+    _arb_desc="$(python3 -c 'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a]; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed,"complexity":sys.argv[8],"duration_class":sys.argv[9],"test_only":sys.argv[10]=="1"}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}" "${_test_only}")"
     _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
     _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
@@ -7442,7 +7493,7 @@ exit is treated as an incident."
     # token instead; head -1 guards against any duplicate token.
     _arb_floor_mode="$(printf '%s\n' "${_arb_out}" | grep -oE ' floor_mode=(bulk_only|full)' | head -1 | sed 's/.*=//')"
     _arb_floor_mode_src="$(printf '%s\n' "${_arb_out}" | grep -oE ' floor_mode_source=(yaml|env|default)' | head -1 | sed 's/.*=//')"
-    [[ -n "${_arb_floor_mode}" ]] && emit decision "freepool_floor_mode mode=${_arb_floor_mode} source=${_arb_floor_mode_src:-default} task=${sig8}"
+    [[ -n "${_arb_floor_mode}" ]] && emit decision "freepool_floor_mode mode=${_arb_floor_mode} source=${_arb_floor_mode_src:-default} test_only=${_test_only} task=${sig8}"
     if [[ ${_arb_rc} -eq 0 && -n "${_arb_arm}" && "${_arb_arm}" != refuse && -n "${_arb_chain}" ]]; then
       # T17 fix-round (C2): the arbiter chain must pass the SAME
       # DISPATCHABLE_BUILD_ARMS filter every other chain-adoption site uses
