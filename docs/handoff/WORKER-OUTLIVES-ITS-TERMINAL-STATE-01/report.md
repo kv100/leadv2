@@ -29,6 +29,15 @@ product-close finalization. Their regenerated artifacts, plus the finalizer arti
 are committed under `mutation-control/` below this report. Each artifact contains both
 hash fields; the helper rejects the SHA-256 empty-string value for `diff_hash`.
 
+### Green macOS and Linux container exit codes
+
+```text
+macOS: test-worker-outlives-terminal-state 11 passed, 0 failed; rc=0
+macOS: test-worker-dod-gate 35 passed, 0 failed; rc=0
+Linux container: test-worker-outlives-terminal-state 11 passed, 0 failed; rc=0
+Linux container: test-worker-dod-gate 35 passed, 0 failed; rc=0
+```
+
 ### macOS focused green
 
 ```text
