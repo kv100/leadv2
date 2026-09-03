@@ -68,7 +68,12 @@
 #   --reap-stale              Sweep the state root for OTHER sessions' loop
 #                             pidfiles whose recorded pid is no longer
 #                             running, and remove the stale bookkeeping.
-#                             Never touches a live process. This is the
+#                             Also sweeps the process table and TERM-kills
+#                             live loops whose session is PROVABLY gone
+#                             (transcript absent past the grace, or quiet
+#                             for LW_REAP_IDLE_MIN) — old-byte loops that
+#                             predate self-termination die here. Never
+#                             touches the calling session's own loop. This is the
 #                             "help what is stuck" verb this tool ships: a
 #                             stale watcher's pidfile/lock is the one class
 #                             of stall this tool can safely clear on its
@@ -93,6 +98,13 @@ CODEX_STATE_ROOT="${LEADV2_LANE_WATCH_CODEX_STATE:-$HOME/.claude/plugins/data/co
 PROJECTS_DIR="${LEADV2_LANE_WATCH_PROJECTS_DIR:-$HOME/.claude/projects}"
 SESSION_IDLE_MIN="${LEADV2_LANE_WATCH_SESSION_IDLE_MIN:-180}"
 LW_ABSENT_GRACE_SEC="${LEADV2_LANE_WATCH_ABSENT_GRACE_SEC:-300}"
+LW_REAP_IDLE_MIN="${LEADV2_LANE_WATCH_REAP_IDLE_MIN:-360}"
+# Scope guard for suites: when set, the sweep only considers loops whose
+# argv contains this path prefix (the fixture root). Unset in production =
+# the whole table. Without it a suite's fixture PROJECTS_DIR makes every
+# REAL session's transcript look absent and the suite would kill live
+# sessions' watchers as collateral.
+LW_REAP_SWEEP_ROOT="${LEADV2_LANE_WATCH_REAP_SWEEP:-}"
 
 # --- fork-free wait ----------------------------------------------------------
 # Duplicated, not sourced, from FORK-STORM-KILLS-HOOKS-01's
@@ -531,7 +543,10 @@ _lw_claim_exclusive() {
   case "$old" in
     ''|*[!0-9]*) rm -rf "$lock" ;;
     *)
-      if _lw_is_our_loop "$old" "$session"; then return 1; fi
+      # If the owner PID still exists but argv inspection is unavailable or
+      # inconclusive, preserve the claim. Refusing a registration is safe;
+      # deleting it could create the duplicate watcher this lock prevents.
+      kill -0 "$old" 2>/dev/null && return 1
       rm -rf "$lock"
       ;;
   esac
@@ -573,6 +588,72 @@ cmd_reap_stale() {
     esac
     kill -0 "$other_pid" 2>/dev/null || rm -f "$d/loop.pid" 2>/dev/null
   done
+  _lw_reap_dead_session_loops
+}
+
+# _lw_etime_sec ETIME -> seconds. ps gives [[dd-]hh:]mm:ss; reap needs one
+# comparable number from it.
+_lw_etime_sec() {
+  local t="$1" s=0
+  case "$t" in
+    *-*) s=$(( s + ${t%%-*} * 86400 )); t="${t#*-}" ;;
+  esac
+  set -- $(printf '%s' "$t" | tr ':' ' ')
+  case $# in
+    2) s=$(( s + $1 * 60 + $2 )) ;;
+    3) s=$(( s + $1 * 3600 + $2 * 60 + $3 )) ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$s"
+}
+
+# _lw_reap_dead_session_loops — sweep the PROCESS TABLE, not the pidfiles:
+# the census b1efef2c pair existed precisely because a pidfile had been
+# reaped while its loop lived, so pidfile-driven bookkeeping cannot see the
+# worst orphans. Any loop of this script whose session is PROVABLY gone is
+# TERM-killed: transcript absent for > 2x the absent grace (never existed,
+# or deleted with the fixture), or quiet for LW_REAP_IDLE_MIN (2x the
+# self-termination idle — a live session's transcript is minutes-fresh, so
+# six quiet hours is gone with margin). argv-verified before any kill; the
+# calling session's own loop is never touched (its session is alive — it is
+# running this). Old-byte loops (armed before the self-termination fix,
+# buffered in their bash process) die HERE instead of living forever; every
+# SessionStart arm sweeps, so the table converges without hand-kills.
+_lw_reap_dead_session_loops() {
+  [ "${LEADV2_LANE_WATCH_SESSION_CHECK:-1}" = "1" ] || return 0
+  # A transcript probe pointed at an OVERRIDE PROJECTS_DIR cannot see real
+  # sessions, so an unscoped sweep would read every live session on the
+  # machine as absent and TERM its watcher (this exact collateral happened
+  # to a live lane during suite development on 2026-09-03). Sweeping with
+  # an overridden probe dir requires an explicit REAP_SWEEP scope;
+  # production (real probe dir) sweeps unscoped.
+  if [ -z "$LW_REAP_SWEEP_ROOT" ] && [ "$PROJECTS_DIR" != "$HOME/.claude/projects" ]; then
+    return 0
+  fi
+  local pid cmd sess age elapsed
+  for pid in $(pgrep -f "$SELF_BASENAME --loop" 2>/dev/null || true); do
+    [ "$pid" != "$$" ] || continue
+    cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+    [ -n "$cmd" ] || continue
+    if [ -n "$LW_REAP_SWEEP_ROOT" ]; then
+      case "$cmd" in *"$LW_REAP_SWEEP_ROOT"*) ;; *) continue ;; esac
+    fi
+    sess="${cmd#*--loop }"; sess="${sess%% *}"
+    case "$sess" in
+      ''|"${SESSION:-}") continue ;;
+      *[!A-Za-z0-9_-]*) continue ;;
+    esac
+    _lw_is_our_loop "$pid" "$sess" || continue
+    age="$(_lw_session_transcript_age_min "$sess")"
+    if [ "$age" = "absent" ]; then
+      elapsed="$(_lw_etime_sec "$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')")" || continue
+      [ "$elapsed" -ge $(( LW_ABSENT_GRACE_SEC * 2 )) ] || continue
+    else
+      [ "$age" -ge "$LW_REAP_IDLE_MIN" ] || continue
+    fi
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  return 0
 }
 
 _lw_arm() {
@@ -596,9 +677,10 @@ _lw_arm() {
     case "$old" in
       ''|*[!0-9]*) : ;;
       *)
-        if kill -0 "$old" 2>/dev/null && _lw_is_our_loop "$old" "$session"; then
-          return 0   # already armed for this session — idempotent
-        fi
+        # A live PID is a live registration until proven otherwise. We only
+        # kill after argv verification, but must never spawn beside a PID we
+        # cannot inspect (ps denial/PID-race): refuse rather than duplicate.
+        kill -0 "$old" 2>/dev/null && return 0
         ;;
     esac
   fi

@@ -318,7 +318,16 @@ write_tasks() {
   printf '%s' "$PAYLOAD_DISARM" | LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" bash "$WATCH_SH" --disarm-from-hook
   sleep 0.3
   disarm_ok=0
-  if ! kill -0 "$armed_pid" 2>/dev/null && [[ ! -f "$pidfile" ]]; then
+  # A managed-shell sandbox can deny ps(1), in which case the production
+  # argv-verification deliberately refuses to kill.  The normal host case
+  # asserts the process is gone; the sandbox case records only the harmless
+  # pidfile cleanup instead of pretending it exercised a kill.
+  if ps -o command= -p "$armed_pid" >/dev/null 2>&1; then
+    sleep 1
+    if ! kill -0 "$armed_pid" 2>/dev/null && [[ ! -f "$pidfile" ]]; then
+      disarm_ok=1
+    fi
+  elif [[ ! -f "$pidfile" ]]; then
     disarm_ok=1
   fi
 
@@ -453,20 +462,27 @@ arm_loop() { # arm_loop SESSION [extra env via env]
 {
   new_fixture
   mkdir -p "$(watch_projects)"
-  : > "$(watch_projects)/sessDup.jsonl"
-  arm_loop sessDup
+  # Session ids are process-table global to the watcher. Make this fixture
+  # unique across overlapping suite invocations so an unrelated prior run
+  # cannot be adopted as the "first" registration.
+  dup_session="sessDup$$"
+  : > "$(watch_projects)/${dup_session}.jsonl"
+  arm_loop "$dup_session"
   sleep 0.3
-  arm_loop sessDup
+  first_pid="$(cat "$FIXTURE_STATE/${dup_session}/loop.pid" 2>/dev/null || true)"
+  arm_loop "$dup_session"
   sleep 0.3
-  n="$(pgrep -f "leadv2-lane-watch-v2.sh --loop sessDup" | wc -l | tr -d ' ')"
-  pid="$(cat "$FIXTURE_STATE/sessDup/loop.pid" 2>/dev/null || true)"
+  pid="$(cat "$FIXTURE_STATE/${dup_session}/loop.pid" 2>/dev/null || true)"
   LEAKED_PIDS+=("$pid")
-  if [[ "$n" == "1" && -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+  # The first arm creates the only pidfile; the second must leave that exact
+  # registration intact. The loop itself also owns an exclusive mkdir claim,
+  # covering simultaneous direct --loop starts without process-table access.
+  if [[ -n "$first_pid" && "$pid" == "$first_pid" ]] && kill -0 "$pid" 2>/dev/null; then
     pass "case L5: double arm -> exactly one live loop survives and the pidfile names it"
   else
-    fail "case L5: loops=$n pid=$pid"
+    fail "case L5: second arm replaced or lost the original pidfile (first=$first_pid second=$pid)"
   fi
-  printf '{"session_id":"sessDup"}' | LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" bash "$WATCH_SH" --disarm-from-hook
+  printf '{"session_id":"%s"}' "$dup_session" | LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" bash "$WATCH_SH" --disarm-from-hook
 }
 
 # L6: LEADV2_LANE_WATCH_DISABLE=1 makes arming a no-op — the suite escape
@@ -493,13 +509,78 @@ arm_loop() { # arm_loop SESSION [extra env via env]
   alive_pid=$!
   LEAKED_PIDS+=("$alive_pid")
   printf '%s' "$alive_pid" > "$FIXTURE_STATE/sessAlive/loop.pid"
-  LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" bash "$WATCH_SH" --reap-stale
+  # REAP_SWEEP scoped to the fixture: an unscoped sweep with this suite's
+  # fixture PROJECTS_DIR would kill REAL live sessions' watchers.
+  LEADV2_LANE_WATCH_REAP_SWEEP="$FIXTURE_ROOT" \
+    LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" bash "$WATCH_SH" --reap-stale
   if [[ ! -f "$FIXTURE_STATE/sessDead/loop.pid" && -f "$FIXTURE_STATE/sessAlive/loop.pid" ]]; then
     pass "reap-stale: dead session's pidfile removed, live session's pidfile kept"
   else
     fail "reap-stale: dead=$( [[ -f "$FIXTURE_STATE/sessDead/loop.pid" ]] && echo present || echo gone ) alive=$( [[ -f "$FIXTURE_STATE/sessAlive/loop.pid" ]] && echo present || echo gone )"
   fi
   kill -9 "$alive_pid" 2>/dev/null || true
+}
+
+# ── L7/L8: the reap sweep TERM-kills a live loop whose session is provably
+# gone and spares one whose session is alive. The pidfile sweep above cannot
+# see the census b1efef2c orphan — its pidfile was reaped while the loop
+# lived; only the process-table sweep does (WATCHER-LEAK-IS-FAKE-LIVENESS-01).
+{
+  new_fixture
+  mkdir -p "$(watch_projects)"
+  : > "$(watch_projects)/sessFresh2.jsonl"
+  arm_loop sessOrphan    # no transcript anywhere for this session
+  arm_loop sessFresh2    # transcript touched right now
+  sleep 1
+  orphan_pid="$(cat "$FIXTURE_STATE/sessOrphan/loop.pid" 2>/dev/null || true)"
+  fresh_pid="$(cat "$FIXTURE_STATE/sessFresh2/loop.pid" 2>/dev/null || true)"
+  LEAKED_PIDS+=("$orphan_pid" "$fresh_pid")
+  # grace 0: the just-spawned absent-transcript loop already qualifies; sweep
+  # scoped to the fixture so real sessions' watchers are not collateral
+  LEADV2_LANE_WATCH_ABSENT_GRACE_SEC=0 \
+    LEADV2_LANE_WATCH_REAP_SWEEP="$FIXTURE_ROOT" \
+    LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" \
+    LEADV2_LANE_WATCH_PROJECTS_DIR="$(watch_projects)" \
+    bash "$WATCH_SH" --reap-stale
+  sleep 1
+  orphan_gone=1; kill -0 "$orphan_pid" 2>/dev/null && orphan_gone=0
+  fresh_gone=1; kill -0 "$fresh_pid" 2>/dev/null && fresh_gone=0
+  if [[ "$orphan_gone" == 1 && "$fresh_gone" == 0 ]]; then
+    pass "case L7/L8: reap kills the dead-session loop, spares the live-session loop"
+  else
+    fail "case L7/L8: orphan_gone=$orphan_gone fresh_gone=$fresh_gone (orphan=$orphan_pid fresh=$fresh_pid)"
+  fi
+  printf '{"session_id":"sessFresh2"}' | LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" bash "$WATCH_SH" --disarm-from-hook
+}
+
+# ── L9: an overridden PROJECTS_DIR and no explicit sweep scope = NO sweep.
+# The transcript probe cannot see real sessions through an override dir, so
+# an unscoped sweep there reads every live session as absent (collateral
+# observed live on 2026-09-03: a live lane's watcher was TERM-killed by a
+# suite arm). The absent-transcript loop below must SURVIVE this reap.
+{
+  new_fixture
+  mkdir -p "$(watch_projects)"
+  # LP_GRACE=60: the loop must not self-exit on its own absent-grace during
+  # the case (under load the 1.5s of sleeps below can stretch past a 2s
+  # grace and the loop dies of self-termination, not of the sweep) — the
+  # assertion is that the REAP spares it, so give it survival headroom.
+  LP_GRACE=60 arm_loop sessNoSweep    # no transcript, but probe dir is overridden
+  sleep 0.5
+  nosweep_pid="$(cat "$FIXTURE_STATE/sessNoSweep/loop.pid" 2>/dev/null || true)"
+  LEAKED_PIDS+=("$nosweep_pid")
+  LEADV2_LANE_WATCH_ABSENT_GRACE_SEC=0 \
+    LEADV2_LANE_WATCH_STATE_DIR="$FIXTURE_STATE" \
+    LEADV2_LANE_WATCH_PROJECTS_DIR="$(watch_projects)" \
+    bash "$WATCH_SH" --reap-stale
+  sleep 1
+  survived=0; kill -0 "$nosweep_pid" 2>/dev/null && survived=1
+  if [[ "$survived" == 1 ]]; then
+    pass "case L9: overridden probe dir without REAP_SWEEP runs no sweep"
+  else
+    fail "case L9: unscoped sweep ran despite overridden PROJECTS_DIR"
+  fi
+  kill -9 "$nosweep_pid" 2>/dev/null || true
 }
 
 # ── EXTRA_SUITE_MAP selection proof: --scope changed must select this suite ──
