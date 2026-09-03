@@ -83,6 +83,39 @@ allowed={str(a) for a in allowed_raw} if isinstance(allowed_raw, list) else None
 def num(x):
     try:return float(x)
     except:return None
+# CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01 (founder, 2026-09-03): the arbiter
+# previously scored ONLY the raw used-pct of a provider's binding window --
+# capped()/util() below never looked at WHEN that window resets, so "85%
+# burned, resets in 20 minutes" and "85% burned, resets in 4 days" produced the
+# identical verdict (switch away). leadv2-quota-read.py already computes
+# hours_to_reset per window (normalize_window/with_window_truth, T1,
+# leadv2-quota-read.py:113-142) and ships it inside the same JSON this arbiter
+# already fetches from quota-live -- glm/codex/anthropic each publish their own
+# reset_iso already (kimi is not a live build arm -- config/leadv2-routing.yaml
+# marks it `dispatch: false` -- so it carries no reset to read). No new fetcher
+# needed; window_period_hours/window_reset below only READ that existing field.
+#
+# Wait-vs-switch threshold: 10% of the WINDOW'S OWN period. Argued from the
+# two live period shapes (5h burst window, 7d/168h weekly window), not picked
+# free-hand -- it reproduces both founder examples exactly:
+#   20 min left on a 5h window  (0.1*5h=30min)  -> 20<=30  -> WAIT
+#   4 days left on a 7d window  (0.1*168h=16.8h) -> 96>16.8 -> SWITCH
+# A window whose own reset cannot be read (absent/malformed reset_iso) degrades
+# to that window's FULL period as hours_to_reset -- a named, defensible default
+# that is always > the 10% threshold, so an unknown reset always reads as "far"
+# and can never fabricate an imminent wait. Never a silent zero.
+WAIT_FRACTION_OF_PERIOD=0.10
+WINDOW_PERIOD_HOURS={'five_hour':5.0,'weekly':168.0,'seven_day':168.0}
+DEFAULT_PERIOD_HOURS=168.0
+def window_period_hours(name, window):
+    lws=num((window or {}).get('limit_window_seconds'))
+    if lws is not None: return lws/3600.0
+    return WINDOW_PERIOD_HOURS.get(name, DEFAULT_PERIOD_HOURS)
+def window_reset(name, window):
+    period=window_period_hours(name, window)
+    h=num((window or {}).get('hours_to_reset'))
+    if h is not None: return h, period, 'live'
+    return period, period, 'default_full_period'
 def util(provider):
     # T17 fix-round (C3): a provider whose probe is broken/unknown must be
     # PESSIMISTIC (maximally capped), never the cheapest-looking arm. The old
@@ -97,20 +130,39 @@ def util(provider):
     # nothing against codex (cost 3..7) or sonnet (cost 5) -- falsified by the
     # round-1 live probe (freepool still selected with util_freepool=50).
     # The demotion now happens on the effective cost, right before the sort.
-    if provider=='freepool': return (0.0 if free_ok else 100.0, False)
+    empty={'pct':0.0,'unknown':False,'hours_to_reset':None,'period_hours':None,'reset_basis':'n/a'}
+    if provider=='freepool':
+        return dict(empty, pct=(0.0 if free_ok else 100.0))
     x=q.get('anthropic' if provider=='claude' else provider,{})
-    if x.get('status')!='ok': return (100.0, True)
-    if provider=='glm': vals=[num((x.get(k) or {}).get('pct')) for k in ('five_hour','weekly')]
+    if x.get('status')!='ok': return dict(empty, pct=100.0, unknown=True)
+    if provider=='glm':
+        windows={k:(x.get(k) or {}) for k in ('five_hour','weekly')}; pct_key='pct'
     elif provider=='codex':
-        if x.get('limit_reached'): return (100.0, False)
-        ws=x.get('windows') or []; bind=x.get('binding_window'); w=next((z for z in ws if z.get('kind')==bind),None)
-        vals=[num((w or {}).get('used_percent'))] if w else [num(z.get('used_percent')) for z in ws]
+        if x.get('limit_reached'): return dict(empty, pct=100.0)
+        ws=x.get('windows') or []
+        windows={(w.get('kind') or 'w%d'%i):w for i,w in enumerate(ws)}; pct_key='used_percent'
     else:
         a=next((z for z in x.get('accounts',[]) if z.get('active')), (x.get('accounts') or [{}])[0])
-        vals=[num(a.get(k)) for k in ('five_hour_pct','seven_day_pct')]
-    vals=[z for z in vals if z is not None]; return (max(vals) if vals else 0.0, False)
+        windows={'five_hour':(a.get('five_hour') or {'pct':a.get('five_hour_pct'),'reset_iso':a.get('five_hour_reset_iso')}),
+                 'seven_day':(a.get('seven_day') or {'pct':a.get('seven_day_pct'),'reset_iso':a.get('seven_day_reset_iso')})}
+        pct_key='pct'
+    # The BINDING (worst-case, highest-used) window decides both the pct AND
+    # -- new -- travels its own reset/period with it, so a provider with two
+    # windows never borrows one window's pct with a DIFFERENT window's clock.
+    best_name,best_pct,best_window=None,None,None
+    for name,w in windows.items():
+        p=num((w or {}).get(pct_key))
+        if p is None: continue
+        if best_pct is None or p>best_pct: best_name,best_pct,best_window=name,p,w
+    if best_pct is None: return empty
+    h,period,basis=window_reset(best_name,best_window)
+    return {'pct':best_pct,'unknown':False,'hours_to_reset':h,'period_hours':period,'reset_basis':basis}
 _uraw={p:util(p) for p in ('glm','codex','claude','freepool')}
-u={p:_uraw[p][0] for p in _uraw}; unk={p:_uraw[p][1] for p in _uraw}
+u={p:_uraw[p]['pct'] for p in _uraw}; unk={p:_uraw[p]['unknown'] for p in _uraw}
+def near_reset_wait(provider):
+    info=_uraw[provider]; h=info.get('hours_to_reset'); period=info.get('period_hours')
+    if h is None or period is None: return False
+    return h <= (period * WAIT_FRACTION_OF_PERIOD)
 # FP-08 fix-round (M1): the floor keys on the RAW --task-class, not the
 # SIZE_MAP-folded bucket. trivial|light ("simple") fold into the 'standard'
 # matrix cell for CAPABILITY lookups but must stay freepool-eligible, and
@@ -142,13 +194,27 @@ else:
 test_only=bool(d.get('test_only'))
 floor_applies = (size_raw in ('standard','heavy','strategic') and kind == 'code' and not test_only) if floor_mode=='bulk_only' else False
 def ufmt():
-    return ' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else '%d'%u[p]) for p in ('glm','codex','claude','freepool'))
+    util_part=' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else '%d'%u[p]) for p in ('glm','codex','claude','freepool'))
+    reset_part=' '.join('reset_%s=%s' % (p, ('%.2fh_%s' % (_uraw[p]['hours_to_reset'], _uraw[p]['reset_basis'])) if _uraw[p].get('hours_to_reset') is not None else 'n/a') for p in ('glm','codex','claude','freepool'))
+    return util_part + ' ' + reset_part
 ceil=((data.get('router_v2') or {}).get('quota_ceilings') or {})
-def capped(provider):
+def over_ceiling(provider):
     if provider=='freepool': return not free_ok
     key='claude' if provider=='claude' else provider
     c=(ceil.get(key) or {}).get('review_pct' if role=='reviewer' else 'work_pct',100)
     return u[provider] >= float(c)
+# CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01: an over-ceiling provider whose
+# binding window resets within the wait threshold is NOT excluded -- the task
+# waits on it (it stays in `ok` and competes on cost as before, so it is only
+# picked again if it is still cheapest) instead of being forced to switch to a
+# pricier arm minutes before its own quota would have refreshed anyway. A
+# provider that is over ceiling with a FAR reset is unaffected: still capped,
+# still switches, exactly today's behaviour.
+_waited=[p for p in ('glm','codex','claude') if over_ceiling(p) and near_reset_wait(p)]
+def capped(provider):
+    if over_ceiling(provider) and near_reset_wait(provider):
+        return False
+    return over_ceiling(provider)
 cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
 # T17 fix-round (C1): split the config-vocabulary gap ("no cell matches kind/
 # size/protected" -- a routing.yaml drift, never a real refusal) from the
@@ -283,6 +349,19 @@ _fmode = ' floor_mode=%s floor_mode_source=%s test_only=%d' % (floor_mode, floor
 # this decision -- absent from the descriptor (an older/unpatched caller)
 # renders as "unknown", never a blank/missing token.
 _complexity = ' complexity=%s duration_class=%s' % (complexity, duration_class)
-print('arm=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity))
+# CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01: name the winning arm's own
+# remaining budget and reset distance on the SAME line the arm was picked on
+# -- a decision that cannot be read back from the journal did not happen.
+_w_info=_uraw.get(w.get('provider'), {})
+if _w_info.get('unknown'):
+    _w_remaining='unknown'
+elif _w_info.get('pct') is None:
+    _w_remaining='n/a'
+else:
+    _w_remaining='%.1f' % (100.0 - _w_info['pct'])
+_w_reset=('%.2fh' % _w_info['hours_to_reset']) if _w_info.get('hours_to_reset') is not None else 'n/a'
+_quota = ' remaining=%s reset_in=%s reset_basis=%s' % (_w_remaining, _w_reset, _w_info.get('reset_basis','n/a'))
+_wait = (' wait_applied=%s' % ','.join(_waited)) if _waited else ''
+print('arm=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_quota,_wait))
 PY
 }
