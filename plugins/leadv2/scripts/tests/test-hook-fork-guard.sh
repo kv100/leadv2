@@ -59,6 +59,31 @@ cp "$CANONICAL_HOOKS/$HOOK_NAME" "$FIXTURE/canonical-repo/.claude/hooks/$HOOK_NA
 if run_guard; then pass "canonical checkout skipped even with .claude/hooks copy"
 else fail "canonical checkout was treated as a consumer"; fi
 
+# Case 5: multi-root discovery — a forked repo under a SECOND scan root is
+# found. On the live machine this is m3-market under $HOME/MythicalGames,
+# which the old singular $HOME/Projects default never scanned
+# (HOOKS-PARITY-ACROSS-REPOS-01).
+ROOT_B="$FIXTURE/roots-b"; mkdir -p "$ROOT_B"
+mk_consumer_at() { mkdir -p "$1/$2/.claude/hooks"; }
+mk_consumer_at "$ROOT_B" forked-repo-b
+cp "$CANONICAL_HOOKS/$HOOK_NAME" "$ROOT_B/forked-repo-b/.claude/hooks/$HOOK_NAME"
+if LEADV2_HOOK_FORK_SCAN_ROOTS="$FIXTURE:$ROOT_B" \
+   LEADV2_HOOK_FORK_CANONICAL="$CANONICAL_HOOKS" \
+   bash "$GUARD" >/dev/null 2>&1; then
+  fail "real copy under second scan root -> guard exited 0 (must fail)"
+else
+  pass "real copy under second scan root -> guard fails"
+fi
+
+# Case 6: legacy singular env still works (back-compat for existing callers).
+if LEADV2_HOOK_FORK_SCAN_ROOT="$ROOT_B" \
+   LEADV2_HOOK_FORK_CANONICAL="$CANONICAL_HOOKS" \
+   bash "$GUARD" >/dev/null 2>&1; then
+  fail "legacy singular scan-root env -> guard exited 0 (must fail)"
+else
+  pass "legacy singular scan-root env -> guard fails"
+fi
+
 printf -- '\nResults: %d pass, %d fail\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
 exit 0
