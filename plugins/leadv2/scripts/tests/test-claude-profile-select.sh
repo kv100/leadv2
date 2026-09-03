@@ -122,7 +122,7 @@ echo "=== T4: 20% vs 80% -> picks the 20% label ==="
 printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=alpha config_dir=.*/dir-alpha score=20 source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na$' 'T4: picks alpha score=20 live'
+check_grep "$OUT" '^profile=alpha config_dir=.*/dir-alpha score=20 source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=worst_of_both:20 windows=alpha:worst_of_both=20\|beta:worst_of_both=80$' 'T4: picks alpha score=20 live, binding/windows logged'
 [[ "$RC" -eq 0 ]] && pass "T4: exit 0" || fail "T4 exit" "rc=$RC"
 
 # ============================================================================
@@ -130,7 +130,7 @@ echo "=== T5: one unknown, one ok -> picks ok, source=live ==="
 printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=beta .*score=80 source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na$' 'T5: picks the ok profile'
+check_grep "$OUT" '^profile=beta .*score=80 source=live reason=worst_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=worst_of_both:80 windows=dead:-=-\|beta:worst_of_both=80$' 'T5: picks the ok profile, binding/windows logged'
 
 # ============================================================================
 echo "=== T6: both unknown -> first registry entry, all_unknown ==="
@@ -138,7 +138,7 @@ printf 'dead\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG
 printf 'dead2\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 cp "$FIX/dead.json" "$FIX/dead2.json"
 run_select $(base_env)
-check_grep "$OUT" '^profile=dead .*score=101 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=unknown/na$' 'T6: first entry, all_unknown'
+check_grep "$OUT" '^profile=dead .*score=101 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=unknown/na binding=-:- windows=dead:-=-\|dead2:-=-$' 'T6: first entry, all_unknown, binding/windows logged'
 
 # ============================================================================
 echo "=== T7: malformed line + email-shaped label -> skipped, one warning each ==="
@@ -149,7 +149,7 @@ echo "=== T7: malformed line + email-shaped label -> skipped, one warning each =
   printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta"
 } > "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=alpha .*candidates=2 cred=file:[^ ]+ identity=unknown/na$' 'T7: bad lines skipped, both good ones used'
+check_grep "$OUT" '^profile=alpha .*candidates=2 cred=file:[^ ]+ identity=unknown/na' 'T7: bad lines skipped, both good ones used'
 w_count="$(grep -c 'WARN: registry line .* skipped' <<<"$ERR")"
 [[ "$w_count" -eq 2 ]] && pass "T7: exactly two skip warnings" || fail "T7 warnings" "count=$w_count err=$ERR"
 
@@ -292,7 +292,7 @@ echo "=== T11 (NC-a): label='personal' but credential subscriptionType=team -> i
 printf 'personal\t%s\tfile:%s/cred.json\n' "$tmp/dir-team" "$tmp/dir-team" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=personal .*identity=team/na$' 'T11a: identity derived from credential (team), not label (personal)'
+check_grep "$OUT" '^profile=personal .*identity=team/na' 'T11a: identity derived from credential (team), not label (personal)'
 check_grep "$OUT" 'score=30 source=live' 'T11b: personal/team profile scored and picked'
 [[ "$RC" -eq 0 ]] && pass "T11: exit 0" || fail "T11 exit" "rc=$RC"
 
@@ -300,7 +300,7 @@ echo "=== T11k (NC-a, keychain path): same mismatch via keychain: credential_sou
 printf 'personal\t%s\tkeychain:svc-team\n' "$tmp/dir-team" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env) LEADV2_CLAUDE_PROFILE_SECURITY_BIN="$SECURITY_STUB"
-check_grep "$OUT" '^profile=personal .*identity=team/na$' 'T11k: identity derived via keychain: credential_source too'
+check_grep "$OUT" '^profile=personal .*identity=team/na' 'T11k: identity derived via keychain: credential_source too'
 check_nogrep "$OUT" 'sk-ant' 'T11k-leak: selected-profile stdout carries no access/refresh token'
 check_nogrep "$ERR" 'sk-ant' 'T11k-leak2: selector stderr carries no access/refresh token'
 
@@ -374,7 +374,7 @@ printf 'nojson\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-nojson" "$tmp/dir-noj
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env) "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
 check_grep "$ERR" 'WARN: registry line 1: identity_email_unresolved \(no readable \.claude\.json\) label=nojson identity=pro/na -- fail-open' 'T16a: identity_email_unresolved warn'
-check_grep "$OUT" '^profile=nojson .*identity=pro/na$' 'T16b: entry still selectable (fail-open)'
+check_grep "$OUT" '^profile=nojson .*identity=pro/na' 'T16b: entry still selectable (fail-open)'
 [[ "$RC" -eq 0 ]] && pass "T16: exit 0" || fail "T16 exit" "rc=$RC"
 
 echo "=== T17: default token expired -> WARN default_token_expired, selection unchanged ==="
@@ -428,6 +428,27 @@ w_count="$(grep -c 'identity_email_unresolved' <<<"$ERR")"
 [[ "$w_count" -eq 2 ]] && pass "T20c: both slots warned identity_email_unresolved" || fail "T20c" "count=$w_count err=$ERR"
 check_grep "$OUT" '^profile=nojson-a .*score=15 source=live.*identity=pro/na' 'T20d: selection still works (fail-open, lowest window wins)'
 [[ "$RC" -eq 0 ]] && pass "T20: exit 0" || fail "T20 exit" "rc=$RC"
+
+# ============================================================================
+# T21 (TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01 D2): binding_window scoring.
+# case1: five_hour=90% (NOT binding -- resets soon) / seven_day=20% (binding).
+# case2: five_hour=20% (NOT binding) / seven_day=90% (binding -- resets soon).
+# A blind max(five_hour_pct, seven_day_pct) would score BOTH 90 and could not
+# tell them apart. Scoring on the account's own binding_window must pick
+# case1 (score 20, healthy) over case2 (score 90, genuinely tight) even
+# though the raw five_hour numbers alone would suggest the opposite.
+echo "=== T21: binding_window (reset-aware) beats blind worst-of-both ==="
+acct_json_binding() { # <five_hour_pct> <seven_day_pct> <binding_window>
+  printf '{"provider":"anthropic","status":"ok","accounts":[{"entry_suffix":"file","service":"file:stub","status":"ok","five_hour_pct":%s,"seven_day_pct":%s,"binding_window":"%s","active":true,"account_label":"stub"}],"active_account":"stub","fetched_at":"2026-08-25T00:00:00Z"}' "$1" "$2" "$3"
+}
+acct_json_binding 90 20 seven_day > "$FIX/case1.json"
+acct_json_binding 20 90 seven_day > "$FIX/case2.json"
+printf 'case1\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
+printf 'case2\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env)
+check_grep "$OUT" '^profile=case1 config_dir=.*/dir-alpha score=20 source=live reason=binding_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=seven_day:20 windows=case1:seven_day=20\|case2:seven_day=90$' \
+  'T21: picks case1 (binding window 20%) over case2 (binding window 90%), reason=binding_window'
+[[ "$RC" -eq 0 ]] && pass "T21: exit 0" || fail "T21 exit" "rc=$RC"
 
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
