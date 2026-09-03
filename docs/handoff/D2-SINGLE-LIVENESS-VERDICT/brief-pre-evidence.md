@@ -167,3 +167,36 @@ by any acceptance case here:
 process must not report the lane alive. Pair the PID with something that dies with the worker — its
 start time, or its command-line signature — and assert a fixture where the recorded PID now belongs
 to a different process reports **not alive**.
+
+### Fourteenth: the recorded PID is alive but is not a worker
+
+Measured 2026-09-03 on CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01, which could not be re-dispatched
+at all: every attempt answered `REFUSE placement: lane_is_live`, with the age counter climbing
+(`starting:60`, then `starting:163`) rather than expiring.
+
+The registry row carried `pid: 79117`. `kill -0 79117` returned **0** — the process was genuinely
+alive. But `ps -p 79117 -o command=` showed `claude --dangerously-skip-permissions`: an **interactive
+session**, not a `claude -p` worker. No `claude -p` existed in that lane's worktree at all.
+
+This is the sharpest case in the list, because every rule agreed and the answer was still wrong. We
+spent the evening replacing field-reads and `ps` patterns with "ask the kernel about the PID". Here
+the kernel was asked, answered correctly, and the conclusion was false — because the wrong process
+had been recorded. **Liveness is not "is this PID alive"; it is "is this PID a live worker for this
+lane".**
+
+Two further corruptions in the same row, both worth asserting against: its `worktree` field pointed
+at the main repo rather than the lane worktree, and two different `session_id` rows carried the
+**same** pid 79117 — one interactive session owning several lanes at once.
+
+**Acceptance additions:**
+
+1. A recorded PID belonging to an interactive session (or any process that is not this lane's
+   worker) must report **not alive** for that lane. Pair the PID with its process kind, not only its
+   start time — start time defends against reuse, kind defends against this.
+2. A PID appearing as owner of more than one lane is a contradiction; the function must not report
+   both lanes alive on it.
+
+**Measurement trap in the same row:** `started_at` is stored in UTC while `pid_birth` is in LOCAL
+time. Comparing them directly yields a process that appears to have been born after the lane it
+owns started. Normalise before comparing, and never derive a liveness conclusion from that pair
+without doing so.
