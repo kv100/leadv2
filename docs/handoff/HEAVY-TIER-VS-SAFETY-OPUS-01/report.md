@@ -98,6 +98,41 @@ No other caller routes a model decision for safety through a class check
 (`leadv2-route-arbiter.sh` uses class only for bucket flooring;
 `leadv2-task-judge.sh` only produces `risk_class`, it does not route).
 
+## Round-3 addendum (dispatch-d552b9ab): a third instance, tag-check but wrong target
+
+Re-run of the census (same task, fresh dispatch, code already green — see below)
+found a THIRD instance, of a different shape than round 2's: not a class check
+standing in for a tag check, but a correctly-fired safety *tag* check that still
+lands on the think tier instead of Opus.
+
+`plugins/leadv2/scripts/leadv2-route-bandit.sh:561` and `:565`
+(`cmd_select_for_workflow`, subcommand `select-for-workflow` — live, called from
+`plugins/leadv2/hooks/leadv2-bandit-preflight.sh` and documented in
+`skills/leadv2-plan/SKILL.md` and `skills/leadv2-review/ref/route-bandit-step0.md`,
+so this is a real pre-spawn model pick, not dead code):
+
+```
+[[ "$safety" == "true" ]] && default_critic="${think_model:-sonnet}"
+```
+
+`think_model` here is the same resolver as `CLAUDE_HEAVY_MODEL`
+(`lib/leadv2-think-model.sh` → fable, opus only on the resolver's own failure).
+So a review/plan phase with `--safety true` picks the critic's *default* model
+from the think tier, not from a safety pin — contradicting the standing rule at
+`docs/model-routing.md:95`: "review/critic → Sonnet critic (Opus if
+safety-touched)". Two of three now-known instances (this one and round 2's
+admission-class.sh finding) both leave a safety-tagged decision on fable instead
+of opus; that is the pattern the lead should weigh a systemic fix for (e.g. a
+single shared "safety pins opus, no exceptions but arch" helper both scripts
+call, instead of each caller re-deriving the rule).
+
+Not fixed here — same reasoning as round 2's admission-class.sh finding:
+`leadv2-route-bandit.sh` is a shared plan/review pre-spawn chooser with its own
+test suite (`tests/test-leadv2-route-bandit.sh`) and live callers in two skills;
+changing its default without updating those together is cross-lane surface, and
+this task's brief scopes the *fix* to `leadv2-session-route.sh`'s two failing
+assertions, not to every caller the census turns up. Flagging for the lead.
+
 ## Self-check
 
 - `bash -n leadv2-session-route.sh` ok; `bash -n tests/test-session-route.sh` ok
