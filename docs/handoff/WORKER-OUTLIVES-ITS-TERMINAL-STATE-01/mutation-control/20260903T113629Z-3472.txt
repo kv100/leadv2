@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+anchor=/printf.*candidate/d
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: timeout close rc=2, want 5
+diff_hash=8d6696717dc64e389c55a7e123c22b9390fb6309ecfa5c5a5f6d7eb3c6fff4d0
+lane_diff_hash=505bd2dc2be0ca8d199bc6244ef8f46757372c790ef123c9fbf7ed00009442f0
