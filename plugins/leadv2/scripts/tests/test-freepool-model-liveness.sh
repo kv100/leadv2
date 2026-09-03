@@ -36,21 +36,22 @@ else
 fi
 
 # The data-only freepool roster is itself dispatch behaviour. Keep the
-# changed-scope mapping honest by proving every role exists and the round-3
-# implementation/review primaries are the route this lane is meant to run.
+# changed-scope mapping honest by proving every role exists and the endurance-
+# ranked implementation/review primaries in the current arm configuration are
+# the route this lane is meant to run.
 if python3 - "${SCRIPT_DIR}/../config/freepool-arm.yaml" <<'PYEOF'
 import sys, yaml
 cfg = yaml.safe_load(open(sys.argv[1])) or {}
 roles = cfg.get("role_rank") or {}
 want = {
-    "implement": "groq/openai/gpt-oss-120b",
-    "review": "groq/openai/gpt-oss-120b",
+    "implement": "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
+    "review": "nvidia_nim/nvidia/nemotron-3-super-120b-a12b",
 }
 assert all(isinstance(roles.get(role), list) and roles[role] for role in ("implement", "bulk", "review", "read"))
 assert all(roles[role][0].get("prefix") == prefix for role, prefix in want.items())
 PYEOF
 then
-  pass 'yaml roster: all roles exist; implement and review primary are gpt-oss-120b'
+  pass 'yaml roster: all roles exist; implement and review primary are nemotron-3-super-120b'
 else
   fail 'yaml roster: role blocks or round-3 primaries drifted'
 fi

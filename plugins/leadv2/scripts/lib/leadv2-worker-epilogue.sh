@@ -39,6 +39,11 @@ _lv2_epilogue_lane_writes() {
   IFS=',' read -ra _lv2_ep_paths <<< "${paths_part}"
   for p in "${_lv2_ep_paths[@]}"; do
     trimmed="$(printf '%s' "${p}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    # LANE_WRITES commonly declares a directory with its natural trailing
+    # slash (for example `tests/`). Normalize it before the equal-or-child
+    # match below; otherwise the constructed child glob becomes `tests//*`
+    # and a turn-cap checkpoint falsely reports its own test edit as foreign.
+    while [[ "${trimmed}" == */ && "${trimmed}" != / ]]; do trimmed="${trimmed%/}"; done
     [[ -n "${trimmed}" ]] && printf '%s\n' "${trimmed}"
   done
 }

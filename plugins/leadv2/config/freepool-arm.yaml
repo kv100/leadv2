@@ -224,4 +224,4 @@ role_rank:
 # unrecognized value at either layer falls back toward bulk_only, never
 # silently unfloors. The dispatcher journals the resolved mode once per
 # dispatch as `freepool_floor_mode mode=<m> source=<yaml|env|default>`.
-capability_floor: full   # flipped 2026-08-29 (founder: freepool → Standard); rollback = bulk_only; ledger SD-FREEPOOL-FLOOR-FULL-01
+capability_floor: bulk_only   # Standard+ production work stays floored; tests/docs-only is descriptor-exempt.

@@ -134,7 +134,13 @@ else:
             floor_mode=_yaml_mode; floor_mode_src='yaml'
     except Exception:
         pass
-floor_applies = (size_raw in ('standard','heavy','strategic') and kind == 'code') if floor_mode=='bulk_only' else False
+# FREEPOOL-MUST-ACTUALLY-GET-WORK-01: the FP-08 floor still protects
+# strategic production work, but a dispatcher-proven tests/docs-only lane is
+# mechanical verification work and must compete at its real cost. Missing the
+# descriptor flag is conservative: test_only defaults false and the floor
+# remains exactly as before.
+test_only=bool(d.get('test_only'))
+floor_applies = (size_raw in ('standard','heavy','strategic') and kind == 'code' and not test_only) if floor_mode=='bulk_only' else False
 def ufmt():
     return ' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else '%d'%u[p]) for p in ('glm','codex','claude','freepool'))
 ceil=((data.get('router_v2') or {}).get('quota_ceilings') or {})
@@ -272,7 +278,7 @@ _extra = (' size_unmapped=%s' % size_unmapped) if size_unmapped else ''
 # rendered `True` and never matched dispatch-code's `== "true"` comparison
 # (round-1 H3, the journal line was unreachable dead code).
 _floor = (' floor_applied=1 floor_reason=%s' % floor_reason) if floor_reason else ''
-_fmode = ' floor_mode=%s floor_mode_source=%s' % (floor_mode, floor_mode_src)
+_fmode = ' floor_mode=%s floor_mode_source=%s test_only=%d' % (floor_mode, floor_mode_src, 1 if test_only else 0)
 # COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #3): name the estimate that fed
 # this decision -- absent from the descriptor (an older/unpatched caller)
 # renders as "unknown", never a blank/missing token.

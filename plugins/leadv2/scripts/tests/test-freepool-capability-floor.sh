@@ -283,6 +283,7 @@ a_out="$(cd "$REPO2" && LEADV2_STATE_ROOT="$TMP/state-root2" \
   CLAUDE_PROJECT_ROOT="$REPO2" PROJECT_ROOT="$REPO2" LEADV2_PROJECT_ROOT="$REPO2" \
   LEADV2_DISPATCH_CACHE_DIR="$TMP/cache2" \
   LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
+  LEADV2_REQUIRE_PHASES=0 \
   LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ LEADV2_LANE_SHAPE=off \
   LEADV2_BURN_GOVERNOR=0 \
   LEADV2_TASK_JUDGE_BIN="$TMP/judge-light.sh" \
@@ -420,7 +421,7 @@ e4_out="$(cd "$REPO3" && LEADV2_STATE_ROOT="$TMP/state-root3" \
   bash "$DISPATCH_BIN" "FP-06 floor-mode-full dispatch probe ${TMP}" \
     --kind code --task-class standard --no-spawn --writes src/x.py 2>&1 || true)"
 printf '%s\n' "$e4_out" > "$TMP/e4-out.log"
-if printf '%s\n' "$e4_out" | grep -q 'freepool_floor_mode mode=full source=env task=[0-9a-f]\{8\}'; then
+if printf '%s\n' "$e4_out" | grep -q 'freepool_floor_mode mode=full source=env test_only=0 task=[0-9a-f]\{8\}'; then
   pass "(e4) freepool_floor_mode mode=full source=env journaled by the dispatcher"
 else
   fail "(e4) freepool_floor_mode journal line missing (log: $TMP/e4-out.log)"
@@ -447,7 +448,7 @@ e4b_out="$(cd "$REPO3" && LEADV2_STATE_ROOT="$TMP/state-root3" \
   LEADV2_DISPATCH_SUBSESSION_BIN="$WORKER" \
   bash "$DISPATCH_BIN" "FP-06 floor-mode-default dispatch probe ${TMP}" \
     --kind code --task-class standard --no-spawn --writes src/x.py 2>&1 || true)"
-if printf '%s\n' "$e4b_out" | grep -q 'freepool_floor_mode mode=bulk_only source=yaml task=[0-9a-f]\{8\}'; then
+if printf '%s\n' "$e4b_out" | grep -q 'freepool_floor_mode mode=bulk_only source=yaml test_only=0 task=[0-9a-f]\{8\}'; then
   pass "(e4b) no override: mode=bulk_only source=yaml journaled (canonical arm.yaml key)"
 else
   fail "(e4b) default-mode journal line missing ($(printf '%s\n' "$e4b_out" | grep -m1 freepool_floor_mode || echo none))"

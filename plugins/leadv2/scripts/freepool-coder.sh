@@ -1888,6 +1888,13 @@ cmd_supervise() {
   # meta.yaml) and before release_lock. Detect-only; never alters status.
   deadhand_check "${run_dir}" "${exit_code}"
 
+  # FREEPOOL-MUST-ACTUALLY-GET-WORK-01: a turn cap is a bounded checkpoint,
+  # not permission to strand the lane. The child is reaped before git is
+  # touched (so no concurrent writer races the commit), then a turn-capped
+  # run checkpoints its declared write-set before outcome classification. The
+  # default is on; the zero branch is a hermetic negative-control seam used
+  # only by test-freepool-turncap-checkpoint.sh.
+  #
   # WORKERS-MUST-COMMIT-01: MUST run after deadhand_check (append-only from
   # here on) and BEFORE the outcome classifier below -- same window/rationale
   # as glm-coder.sh.
@@ -1896,7 +1903,18 @@ cmd_supervise() {
   if [[ -f "${_worker_epilogue_lib}" ]]; then
     # shellcheck disable=SC1090
     source "${_worker_epilogue_lib}"
-    leadv2_worker_commit_epilogue "${run_dir}" "${cwd_dir}" "$(meta_get "${run_dir}" run_id)" || true
+    local _bound_reason=""
+    [[ -f "${run_dir}/.bound_reason" ]] && _bound_reason="$(tr -d '[:space:]' < "${run_dir}/.bound_reason")"
+    if [[ "${_bound_reason}" == "turn_count" ]]; then
+      if [[ "${FREEPOOL_TURNCAP_CHECKPOINT:-1}" == "1" ]]; then
+        leadv2_worker_commit_epilogue "${run_dir}" "${cwd_dir}" "wip($(meta_get "${run_dir}" run_id)): turn-cap checkpoint" || true
+        printf 'TURN_CAP_CHECKPOINT bound=turn_count enabled=1\n' >> "${run_dir}/progress.log"
+      else
+        printf 'TURN_CAP_CHECKPOINT bound=turn_count enabled=0\n' >> "${run_dir}/progress.log"
+      fi
+    else
+      leadv2_worker_commit_epilogue "${run_dir}" "${cwd_dir}" "$(meta_get "${run_dir}" run_id)" || true
+    fi
   fi
 
   # N-3 (TURN-CAP-OUTCOME-01): same window as deadhand_check -- after
