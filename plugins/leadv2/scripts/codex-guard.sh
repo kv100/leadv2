@@ -390,7 +390,7 @@ PY
 
 # BSD (macOS) and GNU `stat` disagree on flags -- try both, silently.
 stat_mtime() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+  [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
 }
 
 # True (rc 0) if $1's mtime is no older than $2 seconds. False (incl. missing

@@ -69,7 +69,7 @@ failures=()
 E2E_SENTINEL="${LEADV2_HANDOFF_DIR}/${TASK_ID}/e2e-gate-passed.flag"
 if [[ -f "$E2E_SENTINEL" ]]; then
   now=$(date +%s)
-  mtime=$(stat -f %m "$E2E_SENTINEL" 2>/dev/null || stat -c %Y "$E2E_SENTINEL" 2>/dev/null || echo 0)
+  mtime=$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$E2E_SENTINEL" 2>/dev/null || stat -c %Y "$E2E_SENTINEL" 2>/dev/null || echo 0)
   age=$(( now - mtime ))
   if (( age > 3600 )); then
     log_fail "A7 E2E gate sentinel stale (${age}s > 1h): ${E2E_SENTINEL}"

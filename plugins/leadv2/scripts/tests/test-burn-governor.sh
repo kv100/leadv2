@@ -199,11 +199,31 @@ for _arm in kimi codex glm sonnet; do
   chmod +x "${_poison}"
 done
 
+# Hermetic quota seams for the dispatch-level tests (14-18): any test whose
+# dispatch runs PAST the burn gate reaches the route arbiter, which consults
+# the live quota endpoints. On a developer mac that probe succeeds and the
+# arbiter resolves an arm; on CI (no provider tokens) every window comes back
+# unknown_capped and the arbiter refuses rc=4. Stub both seams so the verdict
+# depends on the burn gate alone, identically on every platform.
+QUOTA_OK_SH="${tmp}/quota-ok.sh"
+cat > "${QUOTA_OK_SH}" <<'QOK'
+#!/usr/bin/env bash
+# Minimal all-ok quota json in the shape leadv2-route-arbiter.sh consumes.
+printf '{"glm":{"status":"ok","five_hour":{"pct":10},"weekly":{"pct":10}},"codex":{"status":"ok","binding_window":"five_hour","windows":[{"kind":"five_hour","used_percent":10}]},"anthropic":{"status":"ok","accounts":[{"active":true,"five_hour_pct":10,"seven_day_pct":10}]}}\n'
+QOK
+chmod +x "${QUOTA_OK_SH}"
+FREE_OK_SH="${tmp}/freepool-ok.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${FREE_OK_SH}"
+chmod +x "${FREE_OK_SH}"
 dispatch_env() {  # <root> <cache> <governor-bin>
   echo CLAUDE_PROJECT_ROOT="$1" LEADV2_DISPATCH_CACHE_DIR="$2" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
     LEADV2_DISPATCH_SPAWN=0 LEADV2_BURN_GOVERNOR_BIN="$3" \
     LEADV2_DISPATCH_KIMI_BIN="${tmp}/poison-kimi.sh" LEADV2_DISPATCH_CODEX_BIN="${tmp}/poison-codex.sh" \
-    LEADV2_DISPATCH_GLM_BIN="${tmp}/poison-glm.sh" LEADV2_DISPATCH_SUBSESSION_BIN="${tmp}/poison-sonnet.sh"
+  LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${QUOTA_OK_SH}" LEADV2_QUOTA_LIVE="${QUOTA_OK_SH}" \
+  LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${FREE_OK_SH}" \
+    LEADV2_DISPATCH_GLM_BIN="${tmp}/poison-glm.sh" LEADV2_DISPATCH_SUBSESSION_BIN="${tmp}/poison-sonnet.sh" \
+    LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${QUOTA_OK_SH}" LEADV2_QUOTA_LIVE="${QUOTA_OK_SH}" \
+    LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${FREE_OK_SH}"
 }
 
 # 14: stub says hard -> exit 6, stderr BURN GATE, burn-deferred.jsonl gains one row
@@ -212,6 +232,8 @@ GOV14="${tmp}/gov14.sh"; make_stub_governor "${GOV14}" "verdict=hard burn24h=200
 out14="$(CLAUDE_PROJECT_ROOT="${ROOT14}" LEADV2_DISPATCH_CACHE_DIR="${tmp}/cache14" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SPAWN=0 LEADV2_BURN_GOVERNOR_BIN="${GOV14}" \
   LEADV2_DISPATCH_KIMI_BIN="${tmp}/poison-kimi.sh" LEADV2_DISPATCH_CODEX_BIN="${tmp}/poison-codex.sh" \
+  LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${QUOTA_OK_SH}" LEADV2_QUOTA_LIVE="${QUOTA_OK_SH}" \
+  LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${FREE_OK_SH}" \
   bash "${DISPATCH_BIN}" 'plugin-only burn governor test 14' --no-spawn 2>&1)"; rc14=$?
 DEFERRED14="${ROOT14}/docs/leadv2/burn-deferred.jsonl"
 sig14="$(printf '%s\n' "${out14}" | grep -oE 'task=[0-9a-f]{8}' | head -1 | cut -d= -f2)"
@@ -226,6 +248,8 @@ fi
 out15="$(CLAUDE_PROJECT_ROOT="${ROOT14}" LEADV2_DISPATCH_CACHE_DIR="${tmp}/cache15" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SPAWN=0 LEADV2_BURN_GOVERNOR_BIN="${GOV14}" \
   LEADV2_DISPATCH_KIMI_BIN="${tmp}/poison-kimi.sh" LEADV2_DISPATCH_CODEX_BIN="${tmp}/poison-codex.sh" \
+  LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${QUOTA_OK_SH}" LEADV2_QUOTA_LIVE="${QUOTA_OK_SH}" \
+  LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${FREE_OK_SH}" \
   bash "${DISPATCH_BIN}" 'plugin-only burn governor test 15' --no-spawn --force 2>&1)"; rc15=$?
 [[ "${rc15}" == "6" ]] && pass "15: --force does not bypass hard verdict" || fail "15: --force bypass" "rc=${rc15} out=${out15}"
 
@@ -234,6 +258,8 @@ ROOT16="${tmp}/root16"; mkdir -p "${ROOT16}"
 out16="$(CLAUDE_PROJECT_ROOT="${ROOT16}" LEADV2_DISPATCH_CACHE_DIR="${tmp}/cache16" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SPAWN=0 LEADV2_BURN_GOVERNOR_BIN="${GOV14}" LEADV2_BURN_OVERRIDE=1 \
   LEADV2_DISPATCH_KIMI_BIN="${tmp}/poison-kimi.sh" LEADV2_DISPATCH_CODEX_BIN="${tmp}/poison-codex.sh" \
+  LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${QUOTA_OK_SH}" LEADV2_QUOTA_LIVE="${QUOTA_OK_SH}" \
+  LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${FREE_OK_SH}" \
   bash "${DISPATCH_BIN}" 'plugin-only burn governor test 16' --no-spawn 2>&1)"; rc16=$?
 DEFERRED16="${ROOT16}/docs/leadv2/burn-deferred.jsonl"
 if [[ "${rc16}" == "0" ]] && grep -q 'OVERRIDDEN' <<<"${out16}" && [[ ! -f "${DEFERRED16}" ]]; then
@@ -248,6 +274,8 @@ GOV17="${tmp}/gov17.sh"; make_stub_governor "${GOV17}" "verdict=soft burn24h=900
 out17="$(CLAUDE_PROJECT_ROOT="${ROOT17}" LEADV2_DISPATCH_CACHE_DIR="${tmp}/cache17" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SPAWN=0 LEADV2_BURN_GOVERNOR_BIN="${GOV17}" \
   LEADV2_DISPATCH_KIMI_BIN="${tmp}/poison-kimi.sh" LEADV2_DISPATCH_CODEX_BIN="${tmp}/poison-codex.sh" \
+  LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${QUOTA_OK_SH}" LEADV2_QUOTA_LIVE="${QUOTA_OK_SH}" \
+  LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${FREE_OK_SH}" \
   bash "${DISPATCH_BIN}" 'plugin-only burn governor test 17' --no-spawn 2>&1)"; rc17=$?
 if [[ "${rc17}" == "0" ]] && grep -q 'BURN GATE' <<<"${out17}"; then
   pass "17: soft -> exit 0, advisory BURN GATE line, resolve proceeds"
@@ -261,6 +289,8 @@ GOV18="${tmp}/gov18.sh"; make_stub_governor "${GOV18}" "verdict=ok burn24h=100 s
 out18="$(CLAUDE_PROJECT_ROOT="${ROOT18}" LEADV2_DISPATCH_CACHE_DIR="${tmp}/cache18" LEADV2_DISPATCH_ARCHITECT_GATE=0 \
   LEADV2_DISPATCH_SPAWN=0 LEADV2_BURN_GOVERNOR_BIN="${GOV18}" \
   LEADV2_DISPATCH_KIMI_BIN="${tmp}/poison-kimi.sh" LEADV2_DISPATCH_CODEX_BIN="${tmp}/poison-codex.sh" \
+  LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${QUOTA_OK_SH}" LEADV2_QUOTA_LIVE="${QUOTA_OK_SH}" \
+  LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${FREE_OK_SH}" \
   bash "${DISPATCH_BIN}" 'plugin-only burn governor test 18' --no-spawn 2>&1)"; rc18=$?
 sig18="$(printf '%s\n' "${out18}" | grep -oE 'task=[0-9a-f]{8}' | head -1 | cut -d= -f2)"
 journal18="${ROOT18}/docs/handoff/dispatch-${sig18}"

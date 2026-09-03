@@ -156,7 +156,7 @@ while IFS= read -r wt; do
   meta_dir="$(git -C "${wt}" rev-parse --git-dir 2>/dev/null)"
   gitdir_file="${meta_dir:-}/gitdir"
   if [[ -n "${meta_dir}" && -f "${gitdir_file}" ]]; then
-    created_epoch="$(stat -f '%m' "${gitdir_file}" 2>/dev/null || stat -c '%Y' "${gitdir_file}" 2>/dev/null || echo 0)"
+    created_epoch="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "${gitdir_file}" 2>/dev/null || stat -c '%Y' "${gitdir_file}" 2>/dev/null || echo 0)"
     now_epoch="$(date +%s)"
     if [[ "${created_epoch}" =~ ^[0-9]+$ ]] && (( created_epoch > 0 )); then
       age=$(( now_epoch - created_epoch ))

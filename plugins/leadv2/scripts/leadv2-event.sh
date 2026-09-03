@@ -28,7 +28,7 @@ usage() {
 _event_rotate_if_needed() {
   local f="$1" size
   [[ -f "${f}" ]] || return 0
-  size="$(stat -f '%z' "${f}" 2>/dev/null || stat -c '%s' "${f}" 2>/dev/null || printf 0)"
+  size="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%z' "${f}" 2>/dev/null || stat -c '%s' "${f}" 2>/dev/null || printf 0)"
   [[ "${size}" =~ ^[0-9]+$ ]] || return 0
   (( size < _EVENT_ROTATE_MAX_BYTES )) && return 0
   local i

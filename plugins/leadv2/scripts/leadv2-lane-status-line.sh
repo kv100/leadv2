@@ -188,7 +188,7 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
   _now_r4="${EPOCHSECONDS:-$(date +%s)}"
   _surf_oneline=""
   if [[ -f "$MEMO" ]]; then
-    _memo_mtime="$(stat -f %m "$MEMO" 2>/dev/null || stat -c %Y "$MEMO" 2>/dev/null || echo 0)"
+    _memo_mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$MEMO" 2>/dev/null || stat -c %Y "$MEMO" 2>/dev/null || echo 0)"
     if (( _now_r4 - _memo_mtime < 5 )); then
       # read returns non-zero at EOF-without-newline (the normal case here, the
       # surface prints one line); do NOT gate on its exit status, same caveat as
@@ -433,7 +433,7 @@ fi
 _now="${EPOCHSECONDS:-$(date +%s)}"
 _should_refresh=1
 if [[ -f "$REFRESH_LOCK" ]]; then
-  _lock_mtime="$(stat -f %m "$REFRESH_LOCK" 2>/dev/null || stat -c %Y "$REFRESH_LOCK" 2>/dev/null || echo 0)"
+  _lock_mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$REFRESH_LOCK" 2>/dev/null || stat -c %Y "$REFRESH_LOCK" 2>/dev/null || echo 0)"
   _lock_age=$(( _now - _lock_mtime ))
   (( _lock_age < REFRESH_MIN_INTERVAL_S )) && _should_refresh=0
 fi

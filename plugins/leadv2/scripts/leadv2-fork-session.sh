@@ -331,7 +331,7 @@ cmd_ask() {
   # re-running ask for the same task concurrently. Stale (>120s) is broken.
   if ! mkdir "$lock_dir" 2>/dev/null; then
     local lock_mtime lock_age
-    lock_mtime="$(stat -f %m "$lock_dir" 2>/dev/null || stat -c %Y "$lock_dir" 2>/dev/null || date +%s)"
+    lock_mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$lock_dir" 2>/dev/null || stat -c %Y "$lock_dir" 2>/dev/null || date +%s)"
     lock_age=$(( $(date +%s) - lock_mtime ))
     if [[ "$lock_age" -gt 120 ]]; then
       log "ask: breaking stale fork-ask lock (${lock_age}s old): ${lock_dir}"

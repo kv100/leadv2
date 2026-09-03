@@ -128,7 +128,7 @@ is_live_repo() { # <slug>
 now_epoch() { date -u +%s; }
 
 mtime_epoch() { # <path> -> epoch seconds, or empty on failure
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || true
+  [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || true
 }
 
 age_days() { # <path> -> integer days since newer of (dir mtime, dir/active.yaml mtime)

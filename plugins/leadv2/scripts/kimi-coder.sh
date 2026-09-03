@@ -313,7 +313,7 @@ load_secret() {
     exit 1
   fi
   local perms
-  perms=$(stat -f "%Lp" "${SECRETS_FILE}" 2>/dev/null || stat -c "%a" "${SECRETS_FILE}" 2>/dev/null || echo "")
+  perms=$( [[ "$(uname -s)" == "Darwin" ]] && stat -f "%Lp" "${SECRETS_FILE}" 2>/dev/null || stat -c "%a" "${SECRETS_FILE}" 2>/dev/null || echo "")
   if [[ "${perms}" != "600" ]]; then
     log_error "refusing to use secrets file with unsafe perms (${perms:-unknown}), expected 600: ${SECRETS_FILE}"
     exit 1

@@ -210,7 +210,13 @@ legacy_scan() { # $1 guard -> sets L_RAN L_FIRED L_LOGFIRE
   [ -f "$path" ] || return 0
   last="$(tail -n 1 "$path" 2>/dev/null)"
   [ -n "$last" ] || return 0
-  L_RAN="$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$path" 2>/dev/null)"
+  # Portable human-time mtime: BSD stat -f %Sm vs GNU stat -c %y (GNU's %y is
+  # locale-dependent, so normalize through date).
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    L_RAN="$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$path" 2>/dev/null)"
+  else
+    L_RAN="$(date -u -d "@$(stat -c '%Y' "$path" 2>/dev/null || echo 0)" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)"
+  fi
   if printf '%s' "$last" | grep -qE "$fire"; then
     if printf '%s' "$last" | grep -qE "$logonly"; then
       L_LOGFIRE="$L_RAN"

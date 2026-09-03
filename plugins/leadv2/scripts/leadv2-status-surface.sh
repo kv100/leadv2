@@ -220,7 +220,7 @@ _mtime() {
   local f="$1"
   [ -z "$f" ] && { printf ''; return; }
   [ -e "$f" ] || { printf ''; return; }
-  stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || printf ''
+  [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || printf ''
 }
 
 # ── R4: kill -0 with EPERM-as-alive ─────────────────────────────────────────

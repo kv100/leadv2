@@ -111,7 +111,7 @@ _stream_age_s() {  # <journal_path>
   [[ -n "${hdir}" && -d "${hdir}" ]] || { printf '?'; return 0; }
   newest=""
   while IFS= read -r p; do
-    m="$(stat -f %m "$p" 2>/dev/null || stat -c %Y "$p" 2>/dev/null || true)"
+    m="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$p" 2>/dev/null || stat -c %Y "$p" 2>/dev/null || true)"
     [[ -n "${m}" ]] || continue
     if [[ -z "${newest}" || "${m}" -gt "${newest}" ]]; then newest="${m}"; fi
   done < <(find "${hdir}" -maxdepth 1 -type f 2>/dev/null)

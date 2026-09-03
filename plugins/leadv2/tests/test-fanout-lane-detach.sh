@@ -215,9 +215,9 @@ fi
 # Worker must still be alive and its stream still advancing AFTER the
 # launcher process itself has exited -- this is the mission's core liveness
 # assertion, one level down from fanout (launcher -> worker).
-mtime1="$(stat -f '%m' "$STREAM_FILE" 2>/dev/null || stat -c '%Y' "$STREAM_FILE" 2>/dev/null)"
+mtime1="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "$STREAM_FILE" 2>/dev/null || stat -c '%Y' "$STREAM_FILE" 2>/dev/null)"
 sleep 2
-mtime2="$(stat -f '%m' "$STREAM_FILE" 2>/dev/null || stat -c '%Y' "$STREAM_FILE" 2>/dev/null)"
+mtime2="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "$STREAM_FILE" 2>/dev/null || stat -c '%Y' "$STREAM_FILE" 2>/dev/null)"
 if [[ -n "$mtime1" && -n "$mtime2" && "$mtime2" -gt "$mtime1" ]]; then
   pass "fake worker's stream is still advancing after the launcher process exited"
 else

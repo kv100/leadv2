@@ -273,7 +273,7 @@ load_secret() {
     exit 1
   fi
   local perms
-  perms=$(stat -f "%Lp" "${SECRETS_FILE}" 2>/dev/null || stat -c "%a" "${SECRETS_FILE}" 2>/dev/null || echo "")
+  perms=$( [[ "$(uname -s)" == "Darwin" ]] && stat -f "%Lp" "${SECRETS_FILE}" 2>/dev/null || stat -c "%a" "${SECRETS_FILE}" 2>/dev/null || echo "")
   if [[ "${perms}" != "600" ]]; then
     log_error "refusing to use secrets file with unsafe perms (${perms:-unknown}), expected 600: ${SECRETS_FILE}"
     exit 1
@@ -1239,7 +1239,7 @@ run_dir_has_fresh_activity() {
   local run_dir="$1" now="$2" grace_s="$3" path mtime
   for path in "${run_dir}/journal.jsonl" "${run_dir}/progress.log" "${run_dir}/.stream_state"; do
     [[ -e "${path}" ]] || continue
-    mtime="$(stat -f '%m' "${path}" 2>/dev/null || stat -c '%Y' "${path}" 2>/dev/null || true)"
+    mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "${path}" 2>/dev/null || stat -c '%Y' "${path}" 2>/dev/null || true)"
     [[ "${mtime}" =~ ^[0-9]+$ ]] || continue
     if (( now - mtime < grace_s )); then
       return 0

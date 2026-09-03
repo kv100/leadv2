@@ -3042,7 +3042,7 @@ _dispatch_handoff_evidence_exists() {  # <sig8> <created_epoch> -> rc0 evidence/
   for artifact in "${dir}/SUMMARY.md" "${dir}/summary.md" "${dir}/CHECKPOINT.md" "${dir}/phase8-passed.flag"; do
     [[ -e "${artifact}" ]] || continue
     [[ -f "${artifact}" ]] || return 0
-    mtime="$(stat -f %m "${artifact}" 2>/dev/null || stat -c %Y "${artifact}" 2>/dev/null)" || return 0
+    mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "${artifact}" 2>/dev/null || stat -c %Y "${artifact}" 2>/dev/null)" || return 0
     [[ "${mtime}" =~ ^[0-9]+$ ]] || return 0
     (( mtime >= created )) && return 0
   done
@@ -3092,7 +3092,7 @@ _dispatch_maxturns_cutoff() {  # <sig8> <created_epoch> -> rc0 cutoff; rc1 not p
   [[ "${created}" =~ ^[0-9]+$ ]] || return 1
   stream="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/developer.stream.jsonl"
   [[ -f "${stream}" && -r "${stream}" ]] || return 1
-  mtime="$(stat -f %m "${stream}" 2>/dev/null || stat -c %Y "${stream}" 2>/dev/null)" || return 1
+  mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "${stream}" 2>/dev/null || stat -c %Y "${stream}" 2>/dev/null)" || return 1
   [[ "${mtime}" =~ ^[0-9]+$ ]] && (( mtime >= created )) || return 1
   tail -c 65536 "${stream}" 2>/dev/null | python3 -c '
 import json, sys
@@ -3171,7 +3171,7 @@ _dispatch_checkpointed_cutoff() {  # <sig8> <created_epoch> [<lane_task_id>] -> 
   [[ "${created}" =~ ^[0-9]+$ ]] || created=0
   marker="$(_dispatch_checkpoint_marker "${sig8}")"
   if [[ -f "${marker}" ]]; then
-    mtime="$(stat -f %m "${marker}" 2>/dev/null || stat -c %Y "${marker}" 2>/dev/null)"
+    mtime="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "${marker}" 2>/dev/null || stat -c %Y "${marker}" 2>/dev/null)"
     if [[ "${mtime}" =~ ^[0-9]+$ ]] && (( mtime >= created )); then
       return 0
     fi

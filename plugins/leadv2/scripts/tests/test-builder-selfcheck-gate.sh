@@ -627,15 +627,27 @@ mask_timeout_path() {
     [[ -x "${d}/timeout" || -x "${d}/gtimeout" ]] && continue
     out="${out:+${out}:}${d}"
   done
-  printf '%s' "${out}"
+  # merged-usr Linuxes symlink /bin -> /usr/bin, so dropping the dir that
+  # holds `timeout` also drops `sleep`, which the wrapper's no-timeout
+  # fallback needs. Shadow the binaries the fallback touches explicitly.
+  local shadow b bp
+  shadow="$(mktemp -d "${TMPDIR:-/tmp}/no-timeout-shadow.XXXXXX")"
+  for b in sleep; do
+    bp="$(command -v "${b}" 2>/dev/null || true)"
+    [[ -n "${bp}" ]] && ln -s "${bp}" "${shadow}/${b}"
+  done
+  printf '%s' "${shadow}:${out}"
 }
 
 case_timeout_wrapper_kills_hung_command() {
   local masked; masked="$(mask_timeout_path)"
+  # Resolve bash BEFORE masking PATH: on Linux `timeout` lives in /usr/bin,
+  # so masking removes the dir that also provides `bash` itself.
+  local bash_bin; bash_bin="$(command -v bash)"
   local log; log="$(mktemp)"
   local rc
   SECONDS=0
-  PATH="${masked}" bash -c 'source "$1"; _lv2_selfcheck_timeout_run 2 "$2" -- sleep 30' _ "${LIB_SH}" "${log}"
+  PATH="${masked}" "${bash_bin}" -c 'source "$1"; _lv2_selfcheck_timeout_run 2 "$2" -- sleep 30' _ "${LIB_SH}" "${log}"
   rc=$?
   local elapsed=${SECONDS}
   rm -f "${log}"
@@ -644,10 +656,11 @@ case_timeout_wrapper_kills_hung_command() {
 
 case_timeout_wrapper_fast_command_no_hang() {
   local masked; masked="$(mask_timeout_path)"
+  local bash_bin; bash_bin="$(command -v bash)"
   local log; log="$(mktemp)"
   local out
   SECONDS=0
-  out="$(PATH="${masked}" bash -c 'source "$1"; _lv2_selfcheck_timeout_run 5 "$2" -- /bin/echo hi; echo "RC=$?"' _ "${LIB_SH}" "${log}")"
+  out="$(PATH="${masked}" "${bash_bin}" -c 'source "$1"; _lv2_selfcheck_timeout_run 5 "$2" -- /bin/echo hi; echo "RC=$?"' _ "${LIB_SH}" "${log}")"
   local elapsed=${SECONDS}
   rm -f "${log}"
   [[ "${out}" == *"RC=0"* && "${elapsed}" -lt 3 ]]

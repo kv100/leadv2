@@ -87,7 +87,7 @@ _lock_and_run() {
   elif [ -d "$lock" ]; then
     lock_age=999999
     if command -v stat >/dev/null 2>&1; then
-      lock_age=$(( $(date +%s) - $(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || echo 0) ))
+      lock_age=$(( $(date +%s) - $( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || echo 0) ))
     fi
     if [ "$lock_age" -lt 180 ]; then
       return 0

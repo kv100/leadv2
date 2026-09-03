@@ -83,7 +83,7 @@ while IFS= read -r -d '' task_dir; do
   fi
 
   # mtime check — macOS stat uses -f %m, Linux uses -c %Y
-  mtime=$(stat -f %m "$state_file" 2>/dev/null || stat -c %Y "$state_file" 2>/dev/null || echo 0)
+  mtime=$( [[ "$(uname -s)" == "Darwin" ]] && stat -f %m "$state_file" 2>/dev/null || stat -c %Y "$state_file" 2>/dev/null || echo 0)
   now=$(date +%s)
   age_days=$(( (now - mtime) / 86400 ))
 

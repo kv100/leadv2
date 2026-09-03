@@ -56,7 +56,7 @@ _lv2_lock_stale() {  # <lockdir> -> 0 if stale (reap-eligible)
 
 _lv2_lock_mtime() {  # <path> -> epoch mtime, best-effort across BSD/GNU stat
   local path="$1"
-  stat -f '%m' "${path}" 2>/dev/null || stat -c '%Y' "${path}" 2>/dev/null || printf ''
+  [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "${path}" 2>/dev/null || stat -c '%Y' "${path}" 2>/dev/null || printf ''
 }
 
 _lv2_sleep_step() {

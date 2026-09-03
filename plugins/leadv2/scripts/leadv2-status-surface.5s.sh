@@ -328,7 +328,8 @@ if [ "$CACHED" -eq 0 ]; then
     printf 'renderer missing (looked for: %s) | font=Menlo size=12\n' "$RENDERER"
     printf 'Refresh | refresh=true\n'; exit 0
   fi
-  _ss_err="$(mktemp -t leadv2-ss-err)"
+  # XXXXXX suffix required by GNU mktemp; BSD accepts it too
+  _ss_err="$(mktemp -t leadv2-ss-err.XXXXXX)"
   OUT_ALL="$(bash "$RENDERER" --all 2>"$_ss_err")"
   _ss_rc=$?
   if [ "$_ss_rc" -ne 0 ] || [ -z "$OUT_ALL" ]; then

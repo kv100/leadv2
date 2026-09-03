@@ -547,7 +547,7 @@ except Exception:
           fi
           if [[ -z "$_age_min" ]]; then
             local _mt
-            _mt="$(stat -f '%m' "$_jf" 2>/dev/null || stat -c '%Y' "$_jf" 2>/dev/null || echo '')"
+            _mt="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "$_jf" 2>/dev/null || stat -c '%Y' "$_jf" 2>/dev/null || echo '')"
             if [[ -n "$_mt" ]]; then
               _age_min=$(( ( $(date +%s) - _mt ) / 60 ))
             else
