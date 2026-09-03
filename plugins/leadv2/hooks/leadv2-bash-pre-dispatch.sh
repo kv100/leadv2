@@ -45,6 +45,8 @@ trap 'rm -f "$STDOUT_FILE" "$STDERR_FILE" "$FIRST_STDOUT_FILE"' EXIT HUP INT TER
 # leadv2-codex-nopoll-guard.sh: codex-task status only (leadv2-codex-nopoll-guard.sh:30-31).
 # leadv2-close-ritual-guard.sh: git commit only (leadv2-close-ritual-guard.sh:29-30).
 # leadv2-context-glossary-close.sh: git commit only (leadv2-context-glossary-close.sh:45-46).
+# plugin-scripts-drift-guard.sh: git commit only (plugin-scripts-drift-guard.sh:45); blocks a
+# staged real .claude/scripts/ file where a canonical symlink belongs (DRIFT-GUARDS-TO-CANON-01).
 # leadv2-codex-direct-exec-guard.sh: standalone codex exec (leadv2-codex-direct-exec-guard.sh:45-47).
 # leadv2-bash-lint-pre-gate.sh: git commit only (leadv2-bash-lint-pre-gate.sh:58-65).
 # leadv2-env-audit-pre-gate.sh: ALWAYS — unconditional placeholder (leadv2-env-audit-pre-gate.sh:1-6).
@@ -61,6 +63,7 @@ leadv2-codex-nopoll-guard.sh|codex-task\.sh[[:space:]]+status
 leadv2-close-ritual-guard.sh|^git[[:space:]]+commit
 leadv2-context-glossary-close.sh|^git[[:space:]]+commit
 leadv2-bash-lint-pre-gate.sh|git[[:space:]]+commit
+plugin-scripts-drift-guard.sh|git[[:space:]]+commit
 leadv2-env-audit-pre-gate.sh|ALWAYS
 leadv2-schema-audit-pre-gate.sh|git[[:space:]]+commit
 leadv2-warn-bash-diff-read.sh|\.(diff|patch)([[:space:]]|"|'"'"'|$)|(^|[^A-Za-z0-9_-])git[[:space:]]+(diff|show)([[:space:]]|$)'

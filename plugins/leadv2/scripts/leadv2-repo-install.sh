@@ -143,6 +143,48 @@ else
   row ".claude/scripts" "linked ${missing_scripts}"; changed=$((changed+1))
 fi
 
+# ---- 1b. .claude/scripts drift — a real file sitting where a symlink belongs
+# DRIFT-GUARDS-TO-CANON-01: "linked N" / "ok" above only counts PRESENCE — a
+# vendored real copy that has since drifted behind canonical still counts as
+# present and reported clean. Reuse plugin_script_classify from the canonical
+# drift-guard hook (never a second implementation of the same classification)
+# to catch that case and fail --check loudly, naming each file with its line
+# delta. Never auto-heals: a drifted copy may hold unmerged work that has to
+# go UP into canonical first (one-copy rule, leadv2-repo-install.sh header).
+drifted_scripts=0
+drift_report=""
+GUARD_LIB="$(dirname "$CANON")/hooks/plugin-scripts-drift-guard.sh"
+if [ -d "$CANON" ] && [ -f "$GUARD_LIB" ]; then
+  # shellcheck source=/dev/null
+  . "$GUARD_LIB"
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    case "$rel" in *.sh|*.py) ;; *) continue ;; esac
+    t="${REPO}/.claude/scripts/${rel}"
+    [ -e "$t" ] || continue
+    classification="$(plugin_script_classify "$REPO" "$rel" filesystem)"
+    case "$classification" in
+      REGRESSION|DRIFT)
+        drifted_scripts=$((drifted_scripts+1))
+        local_lines="$(wc -l < "$t" 2>/dev/null | tr -d ' ')"
+        canon_lines="$(wc -l < "${CANON}/${rel}" 2>/dev/null | tr -d ' ')"
+        case "${local_lines:-}" in ''|*[!0-9]*) local_lines=0 ;; esac
+        case "${canon_lines:-}" in ''|*[!0-9]*) canon_lines=0 ;; esac
+        delta=$((canon_lines - local_lines))
+        drift_report="${drift_report}  - .claude/scripts/${rel} (${classification}; ${delta} line(s) behind canonical)\n"
+        ;;
+    esac
+  done < <(canon_files)
+fi
+if [ "$drifted_scripts" -gt 0 ]; then
+  if [ "$CHECK" -eq 1 ]; then
+    row ".claude/scripts drift" "DRIFTED — ${drifted_scripts} real copy(ies) where symlink(s) belong"; gaps=$((gaps+1))
+  else
+    row ".claude/scripts drift" "DRIFTED — ${drifted_scripts} real copy(ies) left untouched (one-copy rule: never auto-overwritten; land in canonical first)"
+  fi
+  say "$(printf '%b' "$drift_report")"
+fi
+
 # ---- 2. shared agents -------------------------------------------------------
 missing_agents=0
 if [ -d "$AGENTS_SRC" ]; then

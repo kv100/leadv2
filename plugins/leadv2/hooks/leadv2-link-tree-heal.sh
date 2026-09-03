@@ -26,16 +26,40 @@ TREE="${LEADV2_SHARED_SCRIPTS:-$HOME/.claude/leadv2-shared/scripts}"
 
 healed=0
 missing_list=""
+drifted=0
+drifted_list=""
 while IFS= read -r rel; do
   [ -n "$rel" ] || continue
   target="$TREE/$rel"
-  [ -e "$target" ] && continue          # -e follows links: an existing link OR a real file both count
+  if [ -e "$target" ]; then
+    # DRIFT-GUARDS-TO-CANON-01: a real file already occupying a symlink's spot
+    # is NOT the same as "present" — the missing-link case below silently
+    # treated both alike. Report it; do not touch it. Healing a drifted copy
+    # here would risk discarding unmerged work that must go UP into canonical
+    # first (out of scope for this hook, see plugin-scripts-drift-guard.sh).
+    if [ ! -L "$target" ]; then
+      drifted=$((drifted + 1))
+      drifted_list="${drifted_list}${drifted_list:+, }${rel}"
+    fi
+    continue
+  fi
   mkdir -p "$(dirname "$target")" 2>/dev/null || continue
   if ln -s "$CANON/$rel" "$target" 2>/dev/null; then
     healed=$((healed + 1))
     missing_list="${missing_list}${missing_list:+, }${rel}"
   fi
 done < <(cd "$CANON" && find . -type f -name '*.sh' 2>/dev/null | sed 's|^\./||')
+
+if [ "$drifted" -gt 0 ]; then
+  printf 'LINK-TREE-DRIFT: %d real file(s) occupy a canonical symlink'\''s place in %s (NOT healed — resolve by hand):\n' \
+    "$drifted" "$TREE"
+  if [ "$drifted" -le 12 ]; then
+    printf 'LINK-TREE-DRIFT: %s\n' "$drifted_list"
+  else
+    printf 'LINK-TREE-DRIFT: %s, ... (+%d more)\n' \
+      "$(printf '%s' "$drifted_list" | cut -d, -f1-8)" "$((drifted - 8))"
+  fi
+fi
 
 [ "$healed" -eq 0 ] && exit 0
 
