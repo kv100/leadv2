@@ -339,7 +339,28 @@ else
   row "control-plane state" "created  (${STATE})"; changed=$((changed+1))
 fi
 
-# ---- 5. settings.json env ---------------------------------------------------
+# ---- 5. settings.local.json env ---------------------------------------------
+# INSTALLER-WRITES-ENV-INTO-A-TRACKED-SETTINGS-FILE-01 (2026-09-03): write
+# destination moved from .claude/settings.json to .claude/settings.local.json.
+# Claude Code merges settings.local.json over settings.json, so runtime
+# behaviour is unchanged — only WHERE the 17 keys land changes. settings.json
+# is a tracked, shared file in some repos (measured: ~/MythicalGames/m3); the
+# installer must never write machine-specific env (absolute paths, routing
+# knobs) into a file the whole team pulls. settings.json is never opened for
+# WRITING anywhere below — read-only, to compute the missing-key union so an
+# already-damaged repo (env already in the tracked file) is not re-nagged and
+# a hand-placed settings.local.json is respected.
+#
+# Concurrency: this read-modify-write is not atomic across two sessions
+# adopting the same repo at the same instant (rare) — self-correcting via the
+# next --check; worst case is a re-add of the same 17-key union, no data loss.
+# No lock taken.
+SETTINGS_GUARD_LIB="${CANON}/lib/leadv2-settings-guard.sh"
+if [ -f "$SETTINGS_GUARD_LIB" ]; then
+  # shellcheck source=/dev/null
+  . "$SETTINGS_GUARD_LIB"
+fi
+
 env_py() {
   LV2_REPO="$REPO" LV2_PR="$PLUGIN_ROOT_DEFAULT" LV2_MODE="$1" \
     LV2_THINK_MODEL="$THINK_MODEL_RESOLVED" LV2_MAIN_MODEL="$MAIN_MODEL_DEFAULT" python3 -c '
@@ -372,31 +393,78 @@ want={
  "CLAUDE_PLUGIN_ROOT":os.environ["LV2_PR"],
  "LEADV2_PROJECT_ROOT":repo,
 }
-p=pathlib.Path(repo)/".claude/settings.json"
+tracked_p=pathlib.Path(repo)/".claude/settings.json"
+local_p=pathlib.Path(repo)/".claude/settings.local.json"
+def load(p):
+    if not p.exists():
+        return {}
+    return json.loads(p.read_text())
 try:
-    d=json.loads(p.read_text()) if p.exists() else {}
+    d_tracked=load(tracked_p)
+    d_local=load(local_p)
 except Exception:
     print("-1"); raise SystemExit(0)
-env=d.get("env",{})
-missing=[k for k in want if k not in env]
+env_union={}
+env_union.update(d_tracked.get("env",{}))
+env_union.update(d_local.get("env",{}))
+missing=[k for k in want if k not in env_union]
 if mode=="write" and missing:
-    d.setdefault("env",{}).update({k:want[k] for k in missing})
-    p.parent.mkdir(parents=True,exist_ok=True)
-    p.write_text(json.dumps(d,indent=2,ensure_ascii=False)+"\n")
+    d_local.setdefault("env",{}).update({k:want[k] for k in missing})
+    local_p.parent.mkdir(parents=True,exist_ok=True)
+    local_p.write_text(json.dumps(d_local,indent=2,ensure_ascii=False)+"\n")
 print(len(missing))
 '
 }
 missing_env="$(env_py check 2>/dev/null || echo -1)"
 if [ "${missing_env}" = "-1" ]; then
-  row ".claude/settings.json env" "UNREADABLE — settings.json is not valid JSON; fix it by hand"
+  row ".claude/settings*.json env" "UNREADABLE — settings.json or settings.local.json is not valid JSON; fix it by hand"
   gaps=$((gaps+1))
 elif [ "${missing_env:-0}" -eq 0 ]; then
-  row ".claude/settings.json env" "ok"
+  row ".claude/settings.local.json env" "ok"
 elif [ "$CHECK" -eq 1 ]; then
-  row ".claude/settings.json env" "MISSING — ${missing_env} key(s)"; gaps=$((gaps+1))
+  row ".claude/settings.local.json env" "MISSING — ${missing_env} key(s)"; gaps=$((gaps+1))
 else
+  # Defense-in-depth (step 4 of the fix): settings.local.json must never
+  # itself be a tracked file. Should never fire — every measured repo either
+  # ignores it via its own .gitignore/global excludesFile, or 5b below heals
+  # .git/info/exclude before the NEXT run reaches here — but if it somehow is
+  # tracked right now, refuse the whole install rather than leak env into a
+  # shared file silently.
+  if command -v leadv2_path_is_tracked >/dev/null 2>&1 && \
+     leadv2_path_is_tracked "$REPO" ".claude/settings.local.json"; then
+    echo "[repo-install] FATAL: ${REPO}: .claude/settings.local.json is TRACKED by git — refusing to write env keys into a shared file. Untrack it (git rm --cached .claude/settings.local.json) and re-run." >&2
+    flush
+    exit 1
+  fi
   env_py write >/dev/null 2>&1
-  row ".claude/settings.json env" "added ${missing_env} key(s)"; changed=$((changed+1))
+  row ".claude/settings.local.json env" "added ${missing_env} key(s) -> .claude/settings.local.json"; changed=$((changed+1))
+fi
+
+# ---- 5b. settings.local.json must be git-ignored -----------------------------
+# Already true today via a repo's own tracked .gitignore (m3) or a global
+# core.excludesFile (leadv2, persona-engine). If neither applies, append to
+# .git/info/exclude ONLY — never a tracked .gitignore, never a commit, in ANY
+# repo (simpler as a universal rule than branching by repo owner).
+if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+  if git -C "$REPO" check-ignore -q ".claude/settings.local.json" 2>/dev/null; then
+    :
+  elif [ "$CHECK" -eq 1 ]; then
+    row "settings.local.json ignore" "NOT IGNORED — will append to .git/info/exclude on next heal"; gaps=$((gaps+1))
+  else
+    _lv2_excl="$(git -C "$REPO" rev-parse --git-dir 2>/dev/null)"
+    case "$_lv2_excl" in
+      /*) : ;;
+      *) _lv2_excl="${REPO}/${_lv2_excl}" ;;
+    esac
+    _lv2_excl="${_lv2_excl}/info/exclude"
+    mkdir -p "$(dirname "$_lv2_excl")" 2>/dev/null || true
+    if [ -f "$_lv2_excl" ] && grep -qxF '.claude/settings.local.json' "$_lv2_excl" 2>/dev/null; then
+      :
+    else
+      printf '.claude/settings.local.json\n' >> "$_lv2_excl" 2>/dev/null || true
+      row "settings.local.json ignore" "appended to .git/info/exclude"; changed=$((changed+1))
+    fi
+  fi
 fi
 
 # ---- 6. stack overrides (reported, never guessed) ---------------------------
