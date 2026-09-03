@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-liveness-sentinel.sh
+file=plugins/leadv2/scripts/leadv2-lane-liveness.sh
+anchor=525s/.*/    if sentinel_age < 999999:/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: S1: verdict is dead:sentinel_finalized
+diff_hash=7538506f7a15a59dcb7f6f9c41311c6530fd39e036ffab5eaae576ae340a8920
+lane_diff_hash=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
