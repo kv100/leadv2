@@ -121,7 +121,11 @@ leadv2_admission_read_task_receipt() { # <root> <task-id> -> class
   sed -n 's/^task_class:[[:space:]]*//p' "$f" | head -1
 }
 
-# -> stdout: "class<TAB>route<TAB>source<TAB>work_kind<TAB>digest<TAB>task_id", empty if absent/corrupt
+# -> stdout: "class<TAB>route<TAB>source<TAB>work_kind<TAB>digest<TAB>task_id<TAB>risk_class",
+# empty if absent/corrupt. risk_class is OPTIONAL (not in the required-keys
+# check below) so a receipt written before SAFETY-PIN-SECOND-DOOR-01 still
+# reads back fine -- it just reports risk_class="" (caller re-derives no pin
+# from it, same as today, never a hard failure on an old receipt).
 leadv2_admission_read_receipt() {  # <root> <sig8>
   local f
   f="$(leadv2_admission_receipt_path "$1" "$2")"
@@ -141,7 +145,7 @@ d = flat(sys.argv[1])
 keys = ("task_class", "route", "source", "work_kind", "mission_digest", "task_id")
 if not all(d.get(k) for k in keys):
     sys.exit(1)
-print("\t".join(d[k] for k in keys))
+print("\t".join(d[k] for k in keys) + "\t" + d.get("risk_class", ""))
 ' "$f" 2>/dev/null || printf ''
 }
 
@@ -178,8 +182,12 @@ PY
 # Writes the receipt atomically (tmp+mv). Existing receipt is NEVER
 # overwritten (once per intake: a re-dispatch reads, not re-mints).
 # rc 0 written or already present; rc 1 write failed.
-leadv2_admission_write_receipt() {  # <root> <sig8> <task_id> <digest> <class> <route> <source> <work_kind>
-  local root="$1" sig8="$2" task_id="$3" digest="$4" cls="$5" route="$6" src="$7" wk="$8"
+# <risk_class> (SAFETY-PIN-SECOND-DOOR-01) is OPTIONAL -- callers that omit it
+# (leadv2-backlog-pump.sh's _pump_classify does not resolve arms itself and
+# has no need of it) get a receipt with an empty risk_class line, same as
+# before this field existed.
+leadv2_admission_write_receipt() {  # <root> <sig8> <task_id> <digest> <class> <route> <source> <work_kind> [<risk_class>]
+  local root="$1" sig8="$2" task_id="$3" digest="$4" cls="$5" route="$6" src="$7" wk="$8" risk="${9:-}"
   local f dir tmp
   f="$(leadv2_admission_receipt_path "$root" "$sig8")"
   [[ -f "$f" ]] && return 0
@@ -194,6 +202,7 @@ leadv2_admission_write_receipt() {  # <root> <sig8> <task_id> <digest> <class> <
     printf 'route: %s\n' "$route"
     printf 'source: %s\n' "$src"
     printf 'work_kind: %s\n' "$wk"
+    printf 'risk_class: %s\n' "$risk"
     printf 'recorded_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
   mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
