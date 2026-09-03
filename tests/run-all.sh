@@ -131,7 +131,9 @@ add_suite "${ROOT}/tests/test-status-surface-fast-names.sh"
 # suite (the dispatch-code arming seam is proven by the pulse-watch suites,
 # not by any test-dispatch-code.sh) is mapped here so --scope changed still
 # runs its suite instead of silently dropping it.
-EXTRA_SUITE_MAP="glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-lock-per-lane.sh
+EXTRA_SUITE_MAP="leadv2-skill-telemetry-collect.sh:plugins/leadv2/scripts/tests/test-skill-telemetry.sh
+leadv2-skill-rollup.sh:plugins/leadv2/scripts/tests/test-skill-telemetry.sh
+glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-lock-per-lane.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-glm-effort-wiring.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-glm-flash-handle.sh
