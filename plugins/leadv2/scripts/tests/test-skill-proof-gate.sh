@@ -57,13 +57,18 @@ else
   fail "bash -n: leadv2-proof-lib.sh"
 fi
 
+# --severity=error: info/style findings differ between shellcheck versions
+# (0.9/0.10 on Linux emit SC2015/SC2317 that 0.11 does not), so a bare
+# `shellcheck -x` verdict is a coin flip on the runner's version. Error-level
+# findings agree across versions — verified 0.9.0 (ubuntu 24.04), 0.10.0
+# (debian stable) and 0.11.0 (macOS) all return 0 here.
 if command -v shellcheck >/dev/null 2>&1; then
-  if shellcheck -x "$GATE" >/dev/null 2>&1; then
+  if shellcheck -x --severity=error "$GATE" >/dev/null 2>&1; then
     pass "shellcheck: leadv2-skill-proof.sh"
   else
     fail "shellcheck: leadv2-skill-proof.sh"
   fi
-  if shellcheck -x "$LIB" >/dev/null 2>&1; then
+  if shellcheck -x --severity=error "$LIB" >/dev/null 2>&1; then
     pass "shellcheck: leadv2-proof-lib.sh"
   else
     fail "shellcheck: leadv2-proof-lib.sh"
