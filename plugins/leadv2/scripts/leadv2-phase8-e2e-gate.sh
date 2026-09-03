@@ -206,7 +206,18 @@ if ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_p8_e2e_root}")
   exit 1
 fi
 E2E_TIMEOUT_S="${LEADV2_PHASE8_E2E_TIMEOUT_S:-900}"
-{ printf 'e2e-root: %s\n' "${_p8_e2e_root}"; ( cd "${_p8_e2e_root}" && _lv2_selfcheck_timeout_run "${E2E_TIMEOUT_S}" /dev/stdout -- bash -c "${e2e_cmd} --scope changed" ); } > "$LOG" 2>&1 || rc=$?
+# Keep the timeout helper's output in a temporary file and replay it into the
+# gate log. `/dev/stdout` is not portable on macOS (and can fail under a
+# sandbox), while the helper needs a real writable logfile to preserve rc=124.
+_p8_e2e_run_log="$(mktemp "${TMPDIR:-/tmp}/e2e-gate-run.XXXXXX")"
+(
+  printf 'e2e-root: %s\n' "${_p8_e2e_root}"
+  ( cd "${_p8_e2e_root}" && _lv2_selfcheck_timeout_run "${E2E_TIMEOUT_S}" "${_p8_e2e_run_log}" -- bash -c "${e2e_cmd} --scope changed" )
+  _p8_e2e_rc=$?
+  cat "${_p8_e2e_run_log}" 2>/dev/null
+  exit "${_p8_e2e_rc}"
+) > "$LOG" 2>&1 || rc=$?
+rm -f "${_p8_e2e_run_log}"
 if [[ $rc -eq 124 ]]; then
   echo "leadv2-phase8-e2e-gate: e2e suite TIMED OUT after ${E2E_TIMEOUT_S}s" >> "$LOG"
 fi
@@ -239,6 +250,20 @@ WRITES_CSV="$(_p8_prepass_writes)"
 E2E_OWNERSHIP="${LEADV2_E2E_OWNERSHIP:-1}"
 PASS_SCOPE="changed"
 [[ "${E2E_OWNERSHIP}" == "1" && -n "${WRITES_CSV}" ]] && PASS_SCOPE="lane_writes"
+
+rm -f "$SENTINEL"   # never leave a stale PASS behind on a red or timed-out re-run
+# E2E-TIMEOUT-REPORTED-AS-REGRESSION-01: timeout classification must precede
+# ownership classification. A sweep that never finished cannot be classified as
+# a foreign pass or a regression from its partial output; it is unknown and
+# requires a human decision, with the timeout evidence recorded.
+if [[ ${rc} -eq 124 ]]; then
+  printf 'status: unknown\nreason: e2e_timeout\nrc: %s\ntimeout_s: %s\n' \
+    "${rc}" "${E2E_TIMEOUT_S}" > "${OUT_DIR}/e2e-gate.md" 2>/dev/null || true
+  _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=timeout rc=${rc} timeout_s=${E2E_TIMEOUT_S}"
+  echo "leadv2-phase8-e2e-gate: TIMEOUT (tests/run-all.sh --scope changed exceeded ${E2E_TIMEOUT_S}s) — see ${LOG}" >&2
+  tail -40 "$LOG" >&2 || true
+  exit 1
+fi
 
 if [[ $rc -eq 0 ]]; then
   printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: %s\nbypassed: false\nbypass_reason: \ndeploy_verified: %s\ndeploy_verify_bypassed: %s\ndeploy_verify_bypass_reason: %s\n' \
@@ -288,7 +313,6 @@ if [[ -n "${FOREIGN_CSV}" && -z "${OWN_CSV}" && -z "${UNDECIDABLE_CSV}" ]]; then
   exit 0
 fi
 
-rm -f "$SENTINEL"   # never leave a stale PASS behind on a red re-run
 if [[ -z "${WRITES_CSV}" ]]; then
   _p8_emit decision "e2e_gate task=${TASK_ID} status=ran verdict=fail rc=${rc} scope=whole_tree_fallback"
 else
