@@ -363,7 +363,28 @@ leadv2-helpers.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-lane-outcome.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
 leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
-leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-repo-install-tracked-settings.sh"
+leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-repo-install-tracked-settings.sh
+# DARK-SUITES-UNREACHABLE-BY-RUNNER-01: 13 of the 14 suites the D0 census
+# (docs/handoff/CONTROL-PLANE-HAS-NO-OWNER-01/census.md) found dark — existing,
+# some red, never selected by --scope changed or the always-on set (the 14th,
+# test-worker-outlives-terminal-state.sh, was already registered above).
+leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-lane-liveness-authoritative.sh
+leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-lane-liveness-lies.sh
+leadv2-active-registry.sh:plugins/leadv2/scripts/tests/test-lane-liveness-lies.sh
+leadv2-lane-liveness.sh:plugins/leadv2/scripts/tests/test-lane-liveness-sentinel.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-registry-self-deadlock.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-dispatch-terminal-deregisters-lane.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-dispatch-ledger-partial-close.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-dispatch-ledger-task-id.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-dispatch-ledger-task-id.sh
+leadv2-dispatch-ledger.sh:plugins/leadv2/scripts/tests/test-t-core-dispatch-ledger.sh
+leadv2-status-surface.sh:plugins/leadv2/scripts/tests/test-status-surface-close-phase.sh
+leadv2-status-surface.sh:plugins/leadv2/scripts/tests/test-status-surface-cwd.sh
+leadv2-state-path.sh:plugins/leadv2/scripts/tests/test-status-surface-cwd.sh
+leadv2-status-surface.sh:plugins/leadv2/scripts/tests/test-status-surface-handle-identity.sh
+leadv2-single-lead-beat.sh:plugins/leadv2/scripts/tests/test-broad-status-relay-scope.sh
+leadv2-beat-owner.sh:plugins/leadv2/scripts/tests/test-broad-status-relay-scope.sh
+leadv2-lanes-snapshot.sh:plugins/leadv2/scripts/tests/test-lanes-snapshot.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
