@@ -385,3 +385,183 @@ from `main`, unrelated to this task's own change:
   investigation.
 - **`sonnet` arm's fail-open cause** (the `LEADV2_SUBSESSION_SLIM_MCP`
   default) is named but not changed — out of the brief's stated scope.
+
+## Round 3 — item 5 actually wired to a surface, item 10's block reconfirmed
+
+Round 2 shipped `leadv2-code-intel-rate.sh` (a CLI) but nothing called it —
+`grep -rl leadv2-code-intel-rate plugins/leadv2/scripts` found only the
+script itself. A tool nobody runs is exactly the "cannot silently regress to
+0/5 again" failure item 5 was written to prevent, so this round closes that
+gap.
+
+### Item 5, closed: wired into founder-status via the repo_facts hook
+
+`leadv2-status-collector.sh` already has a per-repo extension point for
+exactly this shape (`_sc_repo_facts_section`, sourcing
+`.claude/leadv2-overrides/status-collector-facts.sh` if present, folding its
+one JSON object into `docs/leadv2/status-snapshot.json`'s `repo_facts`
+section) — this repo (leadv2 itself) had never populated that hook. Added
+`.claude/leadv2-overrides/status-collector-facts.sh` defining
+`collect_repo_facts()`, which shells out to `leadv2-code-intel-rate.sh` and
+folds its summary line + per-arm breakdown into two flat keys
+(`code_intel_attach_rate`, `code_intel_by_arm`). `render_repo_facts()`
+(`leadv2-status-surface.sh:3275-3307`) already prints every `repo_facts` key
+on `--mode all`/`--mode repo-facts`, which is the path `founder-status.md`
+reads — so the rate is now on the surface the founder actually sees, with
+zero new rendering code.
+
+Verified the hook directly (isolated call, not the full collector, which
+timed out in this sandbox for unrelated reasons — some other section hangs
+here; not investigated, out of scope):
+
+```
+$ PROJECT_ROOT="$(pwd)" bash -c 'source .claude/leadv2-overrides/status-collector-facts.sh; collect_repo_facts'
+{"code_intel_attach_rate": "code-intel attach rate: 0 decisions recorded", "code_intel_by_arm": "no data"}
+
+$ # scratch tree with 1 attached, 1 fail_open, 1 arm_unwired:
+{"code_intel_attach_rate": "attach rate among MCP-capable arms (excludes codex arm_unwired): 1/2 = 50%", "code_intel_by_arm": "codex:arm_unwired=1 glm-flash:attached=1 sonnet:fail_open=1"}
+```
+
+New suite `test-status-collector-facts.sh` (10 cases: valid-JSON contract,
+honest zero on an empty tree, real percentage + per-arm breakdown on a
+populated scratch tree, graceful `"unavailable"` when the rate script is
+missing — never a crash, matching the collector's own per-section isolation
+contract). Registered by self-select convention
+(`plugins/leadv2/scripts/tests/test-status-collector-facts.sh`).
+
+`tests/run-all.sh`'s `--scope changed` carrier map needed a new stem row: the
+hook lives under `.claude/leadv2-overrides/`, not `plugins/leadv2/scripts/`,
+so the generic scripts allowlist in the else-branch would `continue` past it
+and select zero suites for a hook-only change (same shape as the existing
+`.gitignore`/`freepool-arm.yaml` special cases). Added the `elif` mapping
+`stem="status-collector-facts"`.
+
+**Negative control, isolated to only the hook file being "changed"** (the
+brief's item 7/9 shape — force it to fail, show red/dropped; revert, show
+selected again):
+
+```
+$ # only .claude/leadv2-overrides/status-collector-facts.sh dirty, elif mapping PRESENT:
+$ LEADV2_RUN_ALL_SELECT_ONLY=1 bash tests/run-all.sh --scope changed
+[SELECT] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+[SELECT] .../tests/test-status-surface-bash32.sh
+[SELECT] .../tests/test-status-surface-single-lead.sh
+[SELECT] .../tests/test-status-surface-fast-names.sh
+[SELECT] .../plugins/leadv2/scripts/tests/test-status-collector-facts.sh   <-- present
+[SELECT] .../tests/test-run-all-carrier-map.sh
+run-all: 6 selected, scope=changed, select_only=1
+
+$ # same dirty file, elif mapping REMOVED (mutant tests/run-all.sh):
+$ LEADV2_RUN_ALL_SELECT_ONLY=1 bash tests/run-all.sh --scope changed
+[SELECT] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+[SELECT] .../tests/test-status-surface-bash32.sh
+[SELECT] .../tests/test-status-surface-single-lead.sh
+[SELECT] .../tests/test-status-surface-fast-names.sh
+[SELECT] .../tests/test-run-all-carrier-map.sh
+run-all: 5 selected, scope=changed, select_only=1   <-- test-status-collector-facts.sh dropped
+```
+tests/run-all.sh restored to the mapped version afterward (`diff` against
+the pre-mutation backup showed zero difference); the mutant was never
+committed.
+
+A real cross-platform bug surfaced building this: the test's `run_hook()`
+originally set `PROJECT_ROOT` via `PROJECT_ROOT="$X" source "$HOOK"` (prefix
+assignment on a `source` command). Whether that assignment persists into
+later commands in the *same* shell is a POSIX special-builtin nuance that
+measurably differs between bash builds — green on this machine's bash, but
+`PROJECT_ROOT: unbound variable` under `set -u` on bash 5.2 in the Linux
+container (caught by item 8's own macOS+Linux gate, not by inspection).
+Fixed to a plain assignment before `source`, matching how
+`leadv2-status-collector.sh`'s own `_sc_repo_facts_section` actually does it
+in production (which was never at risk — it never used the prefix-assignment
+idiom). 10/10 green on both platforms after the fix; see the exit codes
+below.
+
+### macOS
+
+```
+$ bash plugins/leadv2/scripts/tests/test-status-collector-facts.sh
+[TEST] PASS: bash -n .../status-collector-facts.sh
+[TEST] PASS: case1: collect_repo_facts exits 0
+[TEST] PASS: case1: output is exactly one valid JSON object
+[TEST] PASS: case1: both expected keys present
+[TEST] PASS: case2: empty tree reports 0 decisions honestly
+[TEST] PASS: case2: by_arm reports 'no data' when nothing recorded
+[TEST] PASS: case3: populated tree surfaces the real attach-rate percentage
+[TEST] PASS: case3: per-arm breakdown present in by_arm
+[TEST] PASS: case4: missing rate script does not crash the hook
+[TEST] PASS: case4: missing rate script reports 'unavailable', not a fabricated rate
+=== SUMMARY: 10 passed, 0 failed ===
+EXIT_CODE_MACOS=0
+```
+Pre-existing suites re-run clean, no regression:
+`test-leadv2-code-intel-rate.sh` → 10 passed, 0 failed.
+`test-worker-mcp-all-arms.sh` → TOTAL: PASS=49 FAIL=0.
+
+### Linux container (`python:3.12-slim`, bash 5.2.37, aarch64; same
+main-checkout `.git` mount as round 2)
+
+```
+$ docker run --rm -v .../leadv2:/.../leadv2 -w .../CODE-INTEL-IS-INSTALLED-AND-UNUSED-01 \
+    python:3.12-slim bash -c '
+  apt-get update -qq && apt-get install -y -qq git
+  bash -n .claude/leadv2-overrides/status-collector-facts.sh; echo rc_hook=$?
+  bash -n plugins/leadv2/scripts/tests/test-status-collector-facts.sh; echo rc_test=$?
+  bash -n tests/run-all.sh; echo rc_runall=$?
+  bash plugins/leadv2/scripts/tests/test-status-collector-facts.sh; echo EXIT_CODE_LINUX=$?
+'
+rc_hook=0
+rc_test=0
+rc_runall=0
+=== SUMMARY: 10 passed, 0 failed ===
+EXIT_CODE_LINUX=0
+```
+
+### Falsification set (round 3's own changed files)
+
+```
+$ bash -n .claude/leadv2-overrides/status-collector-facts.sh; echo $?
+0
+$ bash -n plugins/leadv2/scripts/tests/test-status-collector-facts.sh; echo $?
+0
+$ bash -n tests/run-all.sh; echo $?
+0
+```
+No Python files changed. The red-then-green pair for this round is the
+`PROJECT_ROOT: unbound variable` failure documented above (red on Linux
+bash 5.2, green after the plain-assignment fix, on both platforms) plus the
+selection negative-control (red/dropped with the `elif` mapping removed,
+green/selected restored).
+
+### Item 10, reconfirmed blocked (not re-attempted-and-hidden)
+
+Re-tried the live paired-A/B call from this session
+(`mcp__repowise__get_answer`, same question shape as round 2: who calls
+`worker_mcp_preamble_for_arm()` and what breaks if its rc=3 branch silently
+succeeded) via a fresh subagent call, in case this round's session had
+different MCP grants:
+
+```
+Permission to use mcp__repowise__get_answer has been denied.
+```
+
+Same result as round 2 — this is not a one-off fluke, it reproduces on a
+second, independent attempt. The paired single-task A/B claim remains
+withdrawn; the aggregate 2026-08-25 number is the only real evidence, and it
+was already flagged in round 2 as measuring calls that (per item 4) are not
+demonstrably coming from dispatched workers acting on an attached preamble.
+
+### Item 11, unchanged
+
+Still blocked by the worktree/write-root boundary — `m3`'s `.mcp.json` is
+outside this lane's writable scope by the mission's own explicit rule
+("Writable scope — $WRITE_ROOT... Main-repo paths are off-limits during
+worktree tasks", doubly true for a repo entirely outside `leadv2`). Not
+reattempted this round because attempting it would itself be a protocol
+violation, not a permission accident to route around. The exact JSON to
+apply and the `LEAD_ACTION` are unchanged from round 2, above.
+
+### What changed vs round 2's "still missing" list
+
+- Item 5 is now genuinely closed (was: script exists, unused).
+- Items 4, 10, 11 are unchanged and reconfirmed, not re-guessed.
