@@ -1,0 +1,7 @@
+suite=plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+anchor=2697s/124/125/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: R1: expected exit 5 + status:unknown + reason:e2e_timeout, got rc=8 md=<status: fail
+diff_hash=bd9568a88e3d77b5abea57c4795712eda090ec2535cb35da41dce37f9fb525a6

@@ -2788,6 +2788,32 @@ else
     printf 'e2e-gate-passed: %s\nasserted_at: %s\nscope: %s\nbypassed: false\n' \
       "${TASK}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${_e2e_pass_scope}" > "${HANDOFF}/e2e-gate-passed.flag"
     emit decision "e2e_gate task=${TASK} status=ran verdict=pass"
+  elif [[ ${e2e_rc} -eq 124 ]]; then
+    # E2E-TIMEOUT-REPORTED-AS-REGRESSION-01: rc=124 is timeout(1)'s (or the
+    # portable fallback watcher's, lib/leadv2-builder-selfcheck.sh) exit code
+    # for a command it had to kill -- it means the sweep did not finish inside
+    # ${_pc_e2e_timeout_s}s, not that a test failed. Falling through to the
+    # generic `else` below used to write reason=e2e_regression and
+    # `_dl_note dead` for this rc too, discarding a round whose selfcheck had
+    # already passed green. Route it to its own cause instead, BEFORE the
+    # ownership/foreign-failure classification (which re-runs suites to see
+    # whether a failure reproduces against the lane's own writes -- meaningless
+    # for a sweep that never finished, and itself liable to time out again).
+    rm -f "${HANDOFF}/e2e-gate-passed.flag"
+    printf 'status: unknown\nreason: e2e_timeout\nrc: %s\ntimeout_s: %s\n' \
+      "${e2e_rc}" "${_pc_e2e_timeout_s}" > "${HANDOFF}/e2e-gate.md"
+    emit decision "e2e_gate task=${TASK} status=ran verdict=timeout rc=${e2e_rc} timeout_s=${_pc_e2e_timeout_s}"
+    # parked, not dead: a timeout is not evidence the lane's code regressed
+    # (brief item 2) -- it says the budget or the sweep's scope was wrong.
+    # parked is the ledger's existing "a human must decide" terminal (see
+    # asked_into_void a few lines above) and, like refused, is retryable --
+    # it never permanently blocks a later, real verdict for the same sig8
+    # (leadv2-dispatch-ledger.sh:266-268). The worker's diff was already
+    # checkpointed by pc_stop_gate_autocommit above (:2571), so the round's
+    # work survives this terminal regardless of what a human decides next.
+    _dl_note parked e2e_timeout "rc=${e2e_rc} timeout_s=${_pc_e2e_timeout_s}"
+    _stamp_review_terminal blocked
+    exit 5
   else
     rm -f "${HANDOFF}/e2e-gate-passed.flag"
     emit decision "e2e_gate task=${TASK} status=ran verdict=fail rc=${e2e_rc}"

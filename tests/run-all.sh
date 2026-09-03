@@ -242,6 +242,9 @@ leadv2-ask.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-fanout.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-fanout-classify.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+# LEAD-IS-OPUS-THINK-IS-FABLE-01: the plugin-canonical main-model default now
+# carries its own axis (opus) — a change to it must re-run the split contract.
+leadv2-main-model.yaml:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-phase-record.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-llm-judge.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
 leadv2-diverge.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
@@ -357,7 +360,9 @@ leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-worker-dod-ga
 leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-helpers.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
-leadv2-lane-outcome.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh"
+leadv2-lane-outcome.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
+leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
@@ -484,6 +489,14 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         # FABLE-THINK-TIER-01 R6: a data-only capability change must select
         # the think-tier contract suite (same shape as freepool-arm.yaml).
         stem="model-capability.yaml"
+      elif [[ "${cf}" == "plugins/leadv2/ref/leadv2-main-model.yaml" ]]; then
+        # LEAD-IS-OPUS-THINK-IS-FABLE-01: a data-only main-model default
+        # change must select the think-tier split contract suite (same shape
+        # as model-capability.yaml above) — ref/*.yaml is not under
+        # plugins/leadv2/scripts/, so the generic scripts/*.sh|*.py allowlist
+        # below never reaches it and the file would otherwise select zero
+        # suites under --scope changed.
+        stem="leadv2-main-model.yaml"
       elif [[ "${cf}" == "plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py" ]]; then
         # FABLE-THINK-TIER-01 R6: the policy resolver is a py carrier of the
         # think-tier contract — the scripts/*.sh allowlist below never saw it.
