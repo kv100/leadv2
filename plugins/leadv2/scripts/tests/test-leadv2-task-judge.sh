@@ -16,7 +16,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JUDGE_SH="${SCRIPT_DIR}/../leadv2-task-judge.sh"
+# LEADV2_TEST_JUDGE_BIN lets a negative-control script (nc-*.sh) point this
+# suite at a mutated scratch copy of the judge instead of the real shipped
+# script, so the suite can prove its own assertions bite.
+JUDGE_SH="${LEADV2_TEST_JUDGE_BIN:-${SCRIPT_DIR}/../leadv2-task-judge.sh}"
 PROMPT_TMPL="${SCRIPT_DIR}/../leadv2-task-judge-prompt.tmpl"
 
 PASS=0
@@ -132,9 +135,11 @@ ALLOWED = {
     'duration_class': {'short','medium','long'},
     'work_kind': {'build','review','diagnose','docs'},
     'estimate_source': {'judge','fallback'},
+    'flag_source': {'path','title','judge'},
 }
 REQUIRED = ('estimate_v','complexity','subsystems_touched','needs_live_verification',
-            'risk_class','duration_class','work_kind','estimate_id','estimate_source')
+            'risk_class','duration_class','work_kind','estimate_id','estimate_source',
+            'flag_source')
 ok = all(k in est for k in REQUIRED)
 ok = ok and all(est[f] in allowed for f, allowed in ALLOWED.items())
 ok = ok and isinstance(est['subsystems_touched'], int) and not isinstance(est['subsystems_touched'], bool)
@@ -374,7 +379,7 @@ test_t11_cache_hit_self_heals() {
   local sig8; sig8="$(_sig8_for "${m}")"
   mkdir -p "${root}/cache"
   cat > "${root}/cache/${sig8}.json" <<JSON
-{"estimate_v":1,"complexity":"trivial","subsystems_touched":1,"needs_live_verification":false,"risk_class":"safety_publish_payments","duration_class":"short","work_kind":"build","estimate_id":"${sig8}","estimate_source":"judge"}
+{"estimate_v":1,"complexity":"trivial","subsystems_touched":1,"needs_live_verification":false,"risk_class":"safety_publish_payments","duration_class":"short","work_kind":"build","estimate_id":"${sig8}","estimate_source":"judge","flag_source":"judge"}
 JSON
   local counter="${root}/calls.txt"; : > "${counter}"
   local claude_bin; claude_bin="$(_stub_claude_fail "${root}" "${counter}")"

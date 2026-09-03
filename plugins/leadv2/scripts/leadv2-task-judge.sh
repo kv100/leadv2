@@ -156,6 +156,24 @@ else:
 # deliberately left scanning the body as-is (out of scope for this fix).
 SAFETY_TOKENS = ('safety', 'publish', 'payment', 'payments')
 
+# flag_source priority (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 round 1) --
+# the ONE place this order is declared; reorder here, nowhere else, when a
+# source is added or promoted. Founder decision (docs/handoff/SMART-ARBITER-01/
+# brief.md §10, D4): what makes a task "protected" is write paths, not prose --
+# prose is demoted to advisory once the path arm ships, target field name
+# 'flag_source=path' per that same decision row. 'path' is listed first (it is
+# the target state) but is NOT YET AVAILABLE: LANE_WRITES is empty in 237/241
+# dispatches (98.3%), filed as LANE-WRITES-IS-EMPTY-98-PERCENT-01 -- until that
+# closes there is no reachable write-path signal for this resolver to key on
+# (see the caller's comment above for why no decorative arm was built for it).
+# So this resolver falls through to 'title' today. When LANE-WRITES-IS-EMPTY-
+# 98-PERCENT-01 closes: add 'path' to FLAG_SOURCE_AVAILABLE (and implement the
+# path arm) -- do not reorder FLAG_SOURCE_PRIORITY itself, its order already
+# reflects the target state.
+FLAG_SOURCE_PRIORITY = ('path', 'title')
+FLAG_SOURCE_AVAILABLE = {'title'}  # add 'path' when LANE-WRITES-IS-EMPTY-98-PERCENT-01 closes
+flag_source = next(s for s in FLAG_SOURCE_PRIORITY if s in FLAG_SOURCE_AVAILABLE)
+
 title = ''
 for ln in mission_text.splitlines():
     s = ln.strip()
@@ -202,6 +220,7 @@ estimate = {
     'work_kind': work_kind,
     'estimate_id': sig8,
     'estimate_source': 'fallback',
+    'flag_source': flag_source,
 }
 print(json.dumps(estimate, sort_keys=True))
 " "${MISSION_TEXT}" "${SIG8}" "${CLASS_HINT}"
@@ -220,9 +239,11 @@ ALLOWED = {
     'duration_class': {'short', 'medium', 'long'},
     'work_kind': {'build', 'review', 'diagnose', 'docs'},
     'estimate_source': {'judge', 'fallback'},
+    'flag_source': {'path', 'title', 'judge'},
 }
 REQUIRED = ('estimate_v', 'complexity', 'subsystems_touched', 'needs_live_verification',
-            'risk_class', 'duration_class', 'work_kind', 'estimate_id', 'estimate_source')
+            'risk_class', 'duration_class', 'work_kind', 'estimate_id', 'estimate_source',
+            'flag_source')
 
 try:
     est = json.load(sys.stdin)
@@ -305,6 +326,10 @@ except Exception:
 est['estimate_v'] = 1
 est['estimate_id'] = sys.argv[1]
 est['estimate_source'] = 'judge'
+# The judge path's risk_class comes from the LLM call itself, not the id/
+# title resolver in _fallback_estimate -- flag_source='judge' says so
+# honestly rather than borrowing a value from a resolver that never ran.
+est['flag_source'] = 'judge'
 print(json.dumps(est))
 " "${SIG8}"
 }
@@ -320,13 +345,20 @@ _journal() {
   risk_class="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('risk_class',''))" <<<"${estimate_json}" 2>/dev/null)"
   subsystems="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('subsystems_touched',''))" <<<"${estimate_json}" 2>/dev/null)"
   live="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('needs_live_verification',''))" <<<"${estimate_json}" 2>/dev/null)"
+  # flag_source (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 round 1): what the
+  # risk_class verdict was based on -- 'title' (interim) / 'path' (target
+  # state, not yet reachable -- LANE-WRITES-IS-EMPTY-98-PERCENT-01) / 'judge'
+  # (LLM decided directly). Priority order lives in one place: the
+  # FLAG_SOURCE_PRIORITY list in _fallback_estimate above.
+  local flag_source
+  flag_source="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('flag_source',''))" <<<"${estimate_json}" 2>/dev/null)"
   if [[ -n "${TASK_ID}" && -f "${JOURNAL_BIN}" ]]; then
     # safety_floor (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01, blueprint §4):
     # "a rule with no reader is not a rule" -- SAFETY_FLOOR_STATUS is set by
     # _emit's call to _apply_safety_floor just before this call runs; the
     # default here only guards an unexpected empty value.
     bash "${JOURNAL_BIN}" append "${TASK_ID}" decision \
-      "route_v2_estimate estimate_id=${SIG8} estimate_source=${src} complexity=${complexity} work_kind=${work_kind} duration_class=${duration_class} risk_class=${risk_class} subsystems_touched=${subsystems} needs_live_verification=${live} cache_hit=${cache_hit} safety_floor=${SAFETY_FLOOR_STATUS:-none}" \
+      "route_v2_estimate estimate_id=${SIG8} estimate_source=${src} complexity=${complexity} work_kind=${work_kind} duration_class=${duration_class} risk_class=${risk_class} flag_source=${flag_source:-none} subsystems_touched=${subsystems} needs_live_verification=${live} cache_hit=${cache_hit} safety_floor=${SAFETY_FLOOR_STATUS:-none}" \
       >/dev/null 2>&1 || true
   fi
   # T13's audit joins durable estimate records against close outcomes.  The
