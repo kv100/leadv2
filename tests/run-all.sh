@@ -148,6 +148,9 @@ leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-plugin-papercuts.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-single-lead-beat-loop.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
 leadv2-active-registry.sh:plugins/leadv2/scripts/tests/test-lane-registry-outlives-dispatcher.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh
+claude-subsession.sh:plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh
 freepool-coder:plugins/leadv2/scripts/tests/test-freepool-model-selector.sh
 leadv2-backlog-pump:plugins/leadv2/scripts/tests/test-backlog-pump.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-phase-precondition.sh
