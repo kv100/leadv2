@@ -15,6 +15,11 @@ trap 'for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; for p in 
 
 PASS=0
 FAIL=0
+# The production close gate is configured with a 2s poll ceiling in this
+# fixture. Its model and finalizer TERM grace loops are each bounded at 5s;
+# 3s covers process scheduling and filesystem visibility. Therefore a
+# terminal decision must leave every recorded producer gone within 15s.
+TERMINAL_GONE_BOUND_S=15
 ok() { printf 'PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf 'FAIL: %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
@@ -187,10 +192,10 @@ case_timeout_reaps_both() {
   else
     bad "timeout terminal evidence missing"
   fi
-  if [[ ${elapsed} -le 15 ]]; then
-    ok "recorded terminal reaps worker and finalizer within bound (${elapsed}s)"
+  if [[ ${elapsed} -le ${TERMINAL_GONE_BOUND_S} ]]; then
+    ok "recorded terminal leaves worker and finalizer gone within ${TERMINAL_GONE_BOUND_S}s (${elapsed}s)"
   else
-    bad "recorded terminal exceeded bounded reap time (${elapsed}s)"
+    bad "recorded terminal exceeded ${TERMINAL_GONE_BOUND_S}s bound (${elapsed}s)"
   fi
 }
 

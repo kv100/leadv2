@@ -165,22 +165,20 @@ else
   fail "check_b: ungrounded mutation-control claim -> fail (got rc=${rc} out=${out})"
 fi
 
-# fix-round-2 finding 1: diff_hash is no longer sha256(diff_file) -- diff_file
-# is review.diff, a post-exit artifact no worker could ever reproduce. It is
-# now _dod_worker_diff_hash(root), the sha256 of `git diff <base> HEAD`
-# (mutation-control/ excluded) over the fixture repo's OWN committed history
-# -- exactly what leadv2-mutation-control.sh itself would compute. Recomputed
-# fresh right before each artifact write below since REPO keeps accumulating
-# commits across this whole test file.
+# fix-round-2 finding 1: lane_diff_hash is the sha256 of `git diff <base> HEAD`
+# (mutation-control/ excluded) over the fixture repo's OWN committed history --
+# exactly what leadv2-mutation-control.sh and this gate compute. The artifact's
+# diff_hash is separately the actual applied mutation diff hash; both are
+# required so a mutant cannot be confused with the lane that proved it.
 mkdir -p "${TASK_DIR}/mutation-control"
 
 # fix-round-1 finding 2: a hand-written one-line file (worker owns the diff,
 # can compute its own sha256) must NOT be accepted — only the full
 # leadv2-mutation-control.sh artifact shape is.
-DIFF_HASH="$(_dod_worker_diff_hash "${REPO}")"
-printf 'diff_hash=%s\n' "${DIFF_HASH}" > "${TASK_DIR}/mutation-control/run1.txt"
+LANE_DIFF_HASH="$(_dod_worker_diff_hash "${REPO}")"
+printf 'diff_hash=%s\n' "${LANE_DIFF_HASH}" > "${TASK_DIR}/mutation-control/run1.txt"
 commit_all
-DIFF_HASH="$(_dod_worker_diff_hash "${REPO}")"
+LANE_DIFF_HASH="$(_dod_worker_diff_hash "${REPO}")"
 out="$(_dod_check_b "${REPO}" "${TASK_DIR}" "${DIFF_FILE}")"; rc=$?
 if [[ ${rc} -eq 1 ]] && printf '%s' "${out}" | grep -q 'mutation_control_not_via_runner'; then
   pass "check_b: hand-written one-line diff_hash artifact (no provenance) -> fail"
@@ -189,11 +187,12 @@ else
 fi
 rm -f "${TASK_DIR}/mutation-control/run1.txt"
 
-printf 'suite=plugins/leadv2/scripts/tests/test-widget.sh\nfile=plugins/leadv2/scripts/lib/leadv2-widget.sh\nanchor=s/foo/bar/\nbaseline_rc=0\nmutated_rc=1\nred_line=FAIL widget\ndiff_hash=%s\n' \
-  "${DIFF_HASH}" > "${TASK_DIR}/mutation-control/run2.txt"
+MUTATION_HASH="$(printf '%s' 'fixture mutation diff' | shasum -a 256 | awk '{print $1}')"
+printf 'suite=plugins/leadv2/scripts/tests/test-widget.sh\nfile=plugins/leadv2/scripts/lib/leadv2-widget.sh\nanchor=s/foo/bar/\nbaseline_rc=0\nmutated_rc=1\nred_line=FAIL widget\ndiff_hash=%s\nlane_diff_hash=%s\n' \
+  "${MUTATION_HASH}" "${LANE_DIFF_HASH}" > "${TASK_DIR}/mutation-control/run2.txt"
 out="$(_dod_check_b "${REPO}" "${TASK_DIR}" "${DIFF_FILE}")"; rc=$?
 if [[ ${rc} -eq 0 ]] && printf '%s' "${out}" | grep -q 'dod_pass check=paste_evidence'; then
-  pass "check_b: real generator-shaped artifact (baseline_rc=0, mutated_rc!=0, diff_hash bound) -> pass"
+  pass "check_b: real generator-shaped artifact (mutation diff_hash + bound lane_diff_hash) -> pass"
 else
   fail "check_b: grounded mutation-control artifact -> pass (got rc=${rc} out=${out})"
 fi
@@ -495,6 +494,29 @@ if [[ ${mc_rc} -eq 0 ]] && grep -q 'MUTATION-CONTROL ok' "${FIXTURE}/mc-ok.out" 
   pass "mutation-control: mutation applied, suite went red -> exit 0 ok + artifact written"
 else
   fail "mutation-control: expected exit0/ok (got rc=${mc_rc}, out=$(cat "${FIXTURE}/mc-ok.out"))"
+fi
+
+MC_FIRST_ARTIFACT="$(find "${MC_TASK_DIR}/mutation-control" -type f -name '*.txt' -print | sort | tail -1)"
+MC_FIRST_HASH="$(sed -n 's/^diff_hash=//p' "${MC_FIRST_ARTIFACT}" | head -1)"
+if [[ "${MC_FIRST_HASH}" =~ ^[0-9a-f]{64}$ ]] \
+   && [[ "${MC_FIRST_HASH}" != e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]] \
+   && grep -q '^lane_diff_hash=[0-9a-f]\{64\}$' "${MC_FIRST_ARTIFACT}"; then
+  pass "mutation-control: diff_hash is a non-empty applied-mutant hash and lane binding is separate"
+else
+  fail "mutation-control: generated artifact hash fields are not distinct, non-empty proofs"
+fi
+
+( cd "${MC_REPO}" && LEADV2_LANE_START_SHA="${MC_BASE_SHA}" bash "${MUT_CTL_SH}" \
+    suite.sh lib/target.sh 's/ + / % /' "${MC_TASK_DIR}" ) \
+    >"${FIXTURE}/mc-second.out" 2>&1
+mc_rc=$?
+MC_SECOND_ARTIFACT="$(find "${MC_TASK_DIR}/mutation-control" -type f -name '*.txt' -print | sort | tail -1)"
+MC_SECOND_HASH="$(sed -n 's/^diff_hash=//p' "${MC_SECOND_ARTIFACT}" | head -1)"
+if [[ ${mc_rc} -eq 0 ]] && [[ -n "${MC_FIRST_ARTIFACT}" && "${MC_SECOND_ARTIFACT}" != "${MC_FIRST_ARTIFACT}" ]] \
+   && [[ "${MC_FIRST_HASH}" != "${MC_SECOND_HASH}" ]]; then
+  pass "mutation-control: two different applied mutations produce different diff_hash values"
+else
+  fail "mutation-control: distinct mutations collided (rc=${mc_rc}, first=${MC_FIRST_HASH}, second=${MC_SECOND_HASH})"
 fi
 
 ( cd "${MC_REPO}" && LEADV2_LANE_START_SHA="${MC_BASE_SHA}" bash "${MUT_CTL_SH}" suite.sh lib/target.sh 's/NOPE_NO_MATCH_ANCHOR/x/' "${MC_TASK_DIR}" ) \

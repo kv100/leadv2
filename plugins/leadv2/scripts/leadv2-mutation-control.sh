@@ -20,13 +20,13 @@
 #                   $(pwd) if omitted (still under LANE_WRITES-owned dirs
 #                   only — the caller is responsible for passing the right one)
 #
-# diff_hash is computed HERE, never taken from the caller (fix-round-2
-# finding 1): it is sha256 of `git diff <base> HEAD` over ROOT's own
-# committed history, the same command+base lib/leadv2-dod-gate.sh's
-# _dod_worker_diff_hash() re-runs after the worker exits. A caller-supplied
-# hash could only ever be sha256 of some OTHER artifact (e.g. review.diff,
-# written after the worker's round ends) and would never match what the gate
-# recomputes independently — that was fix-round-1's shipped defect.
+# lane_diff_hash is computed HERE, never taken from the caller (fix-round-2
+# finding 1): it is sha256 of `git diff <base> HEAD` over ROOT's own committed
+# history, the same command+base lib/leadv2-dod-gate.sh's
+# _dod_worker_diff_hash() re-runs after the worker exits. The artifact's
+# diff_hash is different: it is the sha256 of the actual applied mutant diff
+# in the scratch repository. Keeping both fields prevents the mutation proof
+# from confusing the identity of the mutant with the identity of the lane.
 #
 # Exit codes:
 #   0 = mutation applied, suite went red as required (ok, artifact written)
@@ -84,8 +84,8 @@ fi
 # post-commit recomputation structurally unable to ever match. See
 # lib/leadv2-dod-gate.sh's _dod_worker_diff_hash() comment for the full
 # chicken-and-egg explanation; both sides exclude identically.
-DIFF_HASH="$(git -C "${ROOT}" diff "${MC_BASE}" HEAD -- . ':(exclude,glob)**/mutation-control/**' 2>/dev/null | shasum -a 256 2>/dev/null | awk '{print $1}')"
-if [[ -z "${DIFF_HASH}" ]]; then
+LANE_DIFF_HASH="$(git -C "${ROOT}" diff "${MC_BASE}" HEAD -- . ':(exclude,glob)**/mutation-control/**' 2>/dev/null | shasum -a 256 2>/dev/null | awk '{print $1}')"
+if [[ -z "${LANE_DIFF_HASH}" ]]; then
   printf 'leadv2-mutation-control: control_not_applied reason=no_merge_base\n'
   exit 2
 fi
@@ -203,6 +203,18 @@ if cmp -s "${SCRATCH_FILE}.orig" "${SCRATCH_FILE}" 2>/dev/null; then
   exit 2
 fi
 
+# Hash the bytes of the applied mutation as Git renders them, including mode
+# and binary changes when applicable. This is deliberately computed after the
+# mutation is applied and before the suite runs; hashing the lane diff here
+# would make different mutants indistinguishable (and hashing an empty stream
+# would yield the false-assurance SHA-256 empty-string value).
+MUTATION_DIFF_HASH="$(git -C "${SCRATCH}" diff --no-ext-diff --binary --no-color -- "${FILE_REL}" 2>/dev/null \
+  | shasum -a 256 2>/dev/null | awk '{print $1}')"
+if [[ -z "${MUTATION_DIFF_HASH}" || "${MUTATION_DIFF_HASH}" == e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]]; then
+  printf 'leadv2-mutation-control: control_not_applied reason=empty_mutation_diff\n'
+  exit 2
+fi
+
 # ── 6. Run the suite again (mutated) ────────────────────────────────────────
 MUTATED_OUT="$(_mc_run_suite)"; MUTATED_RC=$?
 
@@ -215,7 +227,7 @@ fi
 RED_LINE="$(printf '%s\n' "${MUTATED_OUT}" | grep -iE 'fail|assert|error' | head -1)"
 [[ -z "${RED_LINE}" ]] && RED_LINE="$(printf '%s\n' "${MUTATED_OUT}" | tail -1)"
 
-# ── 7. Write the artifact, bound to this round's diff_hash ─────────────────
+# ── 7. Write the artifact, bound to this round's lane and mutation hashes ───
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo "run")-$$"
 MC_DIR="${TASK_DIR}/mutation-control"
 mkdir -p "${MC_DIR}" 2>/dev/null || true
@@ -227,9 +239,10 @@ ARTIFACT="${MC_DIR}/${RUN_ID}.txt"
   printf 'baseline_rc=0\n'
   printf 'mutated_rc=%s\n' "${MUTATED_RC}"
   printf 'red_line=%s\n' "${RED_LINE}"
-  printf 'diff_hash=%s\n' "${DIFF_HASH}"
+  printf 'diff_hash=%s\n' "${MUTATION_DIFF_HASH}"
+  printf 'lane_diff_hash=%s\n' "${LANE_DIFF_HASH}"
 } > "${ARTIFACT}" 2>/dev/null
 
-printf 'MUTATION-CONTROL ok suite=%s file=%s red_line=%s diff_hash=%s\n' \
-  "${SUITE_REL}" "${FILE_REL}" "${RED_LINE}" "${DIFF_HASH}"
+printf 'MUTATION-CONTROL ok suite=%s file=%s red_line=%s diff_hash=%s lane_diff_hash=%s\n' \
+  "${SUITE_REL}" "${FILE_REL}" "${RED_LINE}" "${MUTATION_DIFF_HASH}" "${LANE_DIFF_HASH}"
 exit 0
