@@ -8397,6 +8397,13 @@ cmd_advance_arm() {
     spawn_out="$(spawn_worker "${candidate}" "${mission}" "${sig8}")"; src=$?
     if [[ ${src} -eq 0 ]]; then
       candidate_handle="$(printf '%s\n' "${spawn_out}" | sed -n 's/.*handle=\(.*\)$/\1/p' | tail -1)"
+      # DISPATCH-OUTCOME-LEDGER-01: spawn_worker returns the launcher's raw
+      # handle. Sonnet's handle is a complete `PID=... LABEL=...` line, while
+      # the close gate's liveness contract requires the bare PID. The normal
+      # dispatch path already applies this normalization; continuation arms
+      # must use the same contract or the close gate can write a terminal row
+      # while the Sonnet worker is still producing.
+      candidate_handle="$(_dispatch_normalize_handle "${candidate}" "${candidate_handle}")"
       if [[ -n "${candidate_handle}" ]]; then
         arm="${candidate}"
         handle="${candidate_handle}"

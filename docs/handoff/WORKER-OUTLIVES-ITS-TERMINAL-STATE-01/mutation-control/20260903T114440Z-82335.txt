@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh
+file=plugins/leadv2/scripts/claude-subsession.sh
+anchor=/^[[:space:]]*printf.*finalizer_pid/ d
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: Sonnet launcher does not record the finalizer PID
+diff_hash=a120699df8c334d8f356cbdfa62103c4a00a09382a667380011b0d5b14b340e7
+lane_diff_hash=25248b72d3bcdf801c8baf3dc6cc010ac95d2a0665bb8c822da48a11a2967500
