@@ -954,10 +954,18 @@ _dl_derive_lane_state() {
     fi
   fi
 
-  # 3. VERDICT. Positive commit/dirty evidence is safe to stamp -- landed is what the lane
-  # would have earned, so write-once cannot discard a better verdict here. Only the NO-work
-  # case needs liveness to avoid poisoning a live lane (R1).
-  if [[ "${commit_sha}" != "none" || ${dirty} -eq 1 ]]; then
+  # 3. VERDICT. Positive COMMIT evidence is safe to stamp immediately -- landed is what the
+  # lane would have earned, so write-once cannot discard a better verdict here.
+  #
+  # D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF (GATE-WRONG-ROOT-FALSE-DEAD-01 family / the 2026-08-04
+  # false-verdict incidents): a DIRTY-ONLY tree (no commit) used to be OR'd into this same
+  # `landed` branch, which reads a SIGKILLed worker's uncommitted bytes as a clean success --
+  # exactly "confidently wrong about work it never looked at" (573 uncommitted lines stamped
+  # `landed`). `dirty` alone proves only that bytes exist, not that anything finished; it must
+  # be routed through liveness like every other no-commit case, so it can come back as
+  # `dead_with_unlanded_work` (worker died, dirt real -- for the reap funnel to rescue) instead
+  # of a false `landed`. Only a real, path-scoped COMMIT stamps `landed` here.
+  if [[ "${commit_sha}" != "none" ]]; then
     printf 'landed\x1f%s\x1f%s' "${commit_sha}" "${deliverable_state}"
     return 0
   fi
@@ -972,19 +980,38 @@ _dl_derive_lane_state() {
   case "${verdict}" in
     alive|starting:*|silent:*)
       # process is alive (or freshly starting, or alive-but-silent) -- NOT terminal. Stamping
-      # here would discard the real outcome the live worker is about to record (R1).
+      # here would discard the real outcome the live worker is about to record (R1). A dirty
+      # tree here is the NORMAL mid-work state (the worker is still writing), not evidence of
+      # anything -- still `running`.
       printf 'running\x1fnone\x1f%s' "${deliverable_state}" ;;
     dead:no_handoff_dir|dead:no_log_artifact)
-      # the lane has no work artifacts at all -- it wrote nothing. no_work (retryable), not
-      # dead (dead is write-once and would block a retry).
-      printf 'no_work\x1fnone\x1f%s' "${deliverable_state}" ;;
+      # the lane has no work artifacts at all AND (per the dirty check above) no uncommitted
+      # bytes in its own write-set either -- it wrote nothing. no_work (retryable), not dead
+      # (dead is write-once and would block a retry). A DIRTY tree changes this verdict: the
+      # worker is confirmed dead from outside AND left real bytes behind -- that is exactly
+      # the shape the reap funnel exists for (dead_with_unlanded_work), never a silent landed
+      # and never a lying no_work that would throw the bytes away.
+      if [[ ${dirty} -eq 1 ]]; then
+        printf 'dead_with_unlanded_work\x1fnone\x1f%s' "${deliverable_state}"
+      else
+        printf 'no_work\x1fnone\x1f%s' "${deliverable_state}"
+      fi ;;
     dead:*)
       # a verdict that consulted the process and concluded dead (provider_failed/cancelled,
-      # wedged, silent_no_process, log_stat_failed) -- the worker ran and died. dead.
-      printf 'dead\x1fnone\x1f%s' "${deliverable_state}" ;;
+      # wedged, silent_no_process, log_stat_failed) -- the worker ran and died. dead, unless a
+      # dirty tree in the lane's write-set proves it died holding real, unlanded bytes --
+      # dead_with_unlanded_work routes that lane into the reap funnel instead of discarding
+      # the work under a plain `dead`.
+      if [[ ${dirty} -eq 1 ]]; then
+        printf 'dead_with_unlanded_work\x1fnone\x1f%s' "${deliverable_state}"
+      else
+        printf 'dead\x1fnone\x1f%s' "${deliverable_state}"
+      fi ;;
     *)
       # liveness unavailable / indeterminate -- do NOT stamp (R1: a live lane this repo
-      # cannot see would be poisoned). Surface as unknown; counts toward exit-1.
+      # cannot see would be poisoned). Surface as unknown; counts toward exit-1. This holds
+      # even when dirty=1: an indeterminate verdict is not proof of death, so a dirty tree
+      # here is still not safe to auto-stamp as dead_with_unlanded_work.
       printf 'unknown\x1fnone\x1f%s' "${deliverable_state}" ;;
   esac
 }
@@ -1153,6 +1180,19 @@ for r in (d.get("lanes") or []):
         stalled=$((stalled + 1))
         _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "no_work:empty_diff" "none" "${deliverable_state}" "${json_mode}"
         ;;
+      dead_with_unlanded_work)
+        # D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF: NOT stamped here. Writing this TRUE
+        # terminal without first running the reap funnel's rescue commit would free the
+        # cap slot / leave a worktree GC free to prune the only copy of the worker's
+        # uncommitted bytes before a human (or the funnel) ever recovers them --
+        # dispatch_ledger_write_terminal is write-once, so a bare stamp here would also
+        # permanently block the real rescue from ever landing its commit sha. Reconcile
+        # only surfaces the finding and names the exact follow-up command; `reap` is the
+        # one path that commits, THEN writes.
+        stalled=$((stalled + 1))
+        log "reconcile: lane ${lane_label:-${sig8}} (${sig8}) is dead with unlanded work -- run: ${SCRIPT_NAME}.sh reap --lane dispatch-${sig8}" >&2
+        _dl_emit_row "${sig8}" "${lane_label}" "${spawn_epoch}" "dead_with_unlanded_work:needs_reap" "none" "${deliverable_state}" "${json_mode}"
+        ;;
       running)
         running=$((running + 1))
         # NOT stamped -- a terminal for a live lane is the write-once poisoning bug.
@@ -1180,6 +1220,330 @@ for r in (d.get("lanes") or []):
   return 0
 }
 
+# ── D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF: `reap` -- the terminal funnel with a death check ──
+#
+# PROBLEM THIS SOLVES: a lane can be SIGKILLed (OOM, `/clear`, a wedged tmux session torn
+# down by hand) while it still carries real, uncommitted work in its pinned worktree.
+# leadv2-worker-epilogue.sh has no `trap` (grep-verified: 0 hits), so nothing runs when the
+# process dies -- the lane never gets a terminal row, its active.yaml slot never frees, and
+# (before this fix) _dl_derive_lane_state's own dirty-tree check silently mis-stamped it
+# `landed` (see the comment on that function above; three false verdicts landed on
+# 2026-08-04 from exactly this class of bug). `reap` is the one place that (a) proves the
+# lane is dead FROM OUTSIDE (leadv2-lane-liveness.sh, never a second liveness opinion here),
+# (b) commits the worker's uncommitted bytes into an unmistakable, unreviewed rescue commit
+# so a `git worktree remove`/GC pass can never destroy the only copy, and ONLY THEN (c)
+# writes the TRUE terminal (dead_with_unlanded_work or no_work) that frees the cap slot.
+# Ordering is load-bearing: a terminal written before the worktree is inspected is the
+# regression this suite's negative control exists to catch (test-reap-funnel-death-proof.sh).
+#
+# CLI:
+#   leadv2-dispatch-ledger.sh reap --lane <id> [--task-id <founder>] [--sig8 <sig8>]
+#                                   [--handle <handle>] [--barrier <label>] [--dry-run]
+#   leadv2-dispatch-ledger.sh reap --all [--dry-run]
+#
+# `--all` anti-joins the reservation ledger (every confirmed spawn) against the terminal
+# ledger, exactly like cmd_reconcile's existing enumeration, and additionally sweeps
+# active.yaml rows that have NO reservation-ledger row at all (the stale-registry case --
+# a row that outlived the process that wrote it). `--lane` runs the funnel for exactly one
+# lane and is what the suite drives directly; `--barrier`/`--handle` let a caller (or a
+# test) supply the classification this lane would otherwise need `--all`'s enumeration
+# context to derive (see the barrier table below).
+#
+# BARRIERS (§4 of the brief) -- what kept the lane from ever reaching a terminal:
+#   cap_slot_held_by_dead_lane  active.yaml row live, liveness dead:*            (default)
+#   duplicate_task_signature    a later attempt at the SAME sig8 is refused post-reap (R1;
+#                                asserted by the suite, not detected by this function)
+#   stale_registry_row          active.yaml row, no reservation row, liveness dead:*
+#   spawned_then_died           reservation row with a PID handle, no terminal, PID dead
+#
+# Every write lands in the SAME locked, write-once terminal ledger every other caller uses
+# (dispatch_ledger_write_terminal) -- reap introduces no new store (see D3 brief §5).
+
+# _dl_reap_rescue_commit <lane_root> <lane_id> <status_out> [<handle>]
+# Commits the worktree's current dirty state under an unmistakable, unreviewed identity.
+# stdout: the new commit sha on success; nothing (rc1) if there was nothing committable
+# (e.g. every dirty path was a credential path and got excluded) or the commit itself failed.
+# Never touches PROJECT_ROOT/main -- <lane_root> is the ONLY tree this ever writes to.
+_dl_reap_rescue_commit() {
+  local root="$1" lane_id="$2" status_out="$3" handle="${4:-}"
+  [[ -n "${root}" && -d "${root}" ]] || return 1
+  local ts marker_dir
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
+  marker_dir="${root}/docs/handoff/${lane_id}"
+  mkdir -p "${marker_dir}" 2>/dev/null || return 1
+  # Marker file (§3): survives `git log` reformatting, visible in a plain `ls`. Independent
+  # of the two other detectors (author identity, trailer grep) by design -- three ways to
+  # notice, none of which a careless reviewer can miss all at once.
+  printf 'RESCUE-UNREVIEWED\nlane=%s\nts=%s\nDO NOT MERGE -- unreviewed rescue commit. See git log trailers\n(Leadv2-Rescue / Leadv2-Reviewed) or `git log --grep=%s`.\n' \
+    "${lane_id}" "${ts}" "'^Leadv2-Rescue: true'" > "${marker_dir}/RESCUE-UNREVIEWED" 2>/dev/null || return 1
+
+  git -C "${root}" add -A -- . >/dev/null 2>&1
+  # Credential rule (§3): exclude credential-shaped paths from the rescue outright -- never
+  # staged, never committed, never printed. `git add -A` above may have staged them; unstage
+  # by exact path (no pathspec-glob magic, which is git-version-sensitive) so a rename/quote
+  # in the porcelain line can't defeat the exclusion silently.
+  local cred_paths path_field
+  cred_paths="$(printf '%s\n' "${status_out}" | cut -c4- | grep -Ei '(^|/)\.env($|[./])|\.enc$|secret|credential' || true)"
+  local _foreign_dirty=0 _deletions=0
+  if [[ -n "${cred_paths}" ]]; then
+    while IFS= read -r path_field; do
+      [[ -n "${path_field}" ]] || continue
+      git -C "${root}" reset -q -- "${path_field}" >/dev/null 2>&1 || true
+      _foreign_dirty=$((_foreign_dirty + 1))
+    done <<< "${cred_paths}"
+  fi
+  # R7: a worker killed mid-`rm` can leave deletions in its own dirty tree -- still rescued
+  # (dead_with_unlanded_work), but the count is flagged in a trailer for human review; never
+  # silently dropped and never blocks the commit.
+  _deletions="$(printf '%s\n' "${status_out}" | awk '{if (substr($0,1,1)=="D" || substr($0,2,1)=="D") c++} END{print c+0}')"
+
+  git -C "${root}" diff --cached --quiet 2>/dev/null && return 1
+
+  local dead_pids subject body msg
+  dead_pids="$(printf '%s' "${handle}" | sed -n 's/^PID=//p' | tr -cd '0-9,')"
+  subject="RESCUE(unreviewed): ${lane_id} killed ${ts} -- DO NOT MERGE"
+  body="$(printf '%s\n' "${status_out}" | head -n 200)"
+  msg="$(printf '%s\n\n%s\n\nLeadv2-Rescue: true\nLeadv2-Lane: %s\nLeadv2-Terminal: dead_with_unlanded_work\nLeadv2-Reviewed: no\nLeadv2-Dead-Pids: %s\nLeadv2-Foreign-Dirty: %s\nLeadv2-Deletions: %s\n' \
+    "${subject}" "${body}" "${lane_id}" "${dead_pids}" "${_foreign_dirty}" "${_deletions}")"
+
+  # Credential rule + §3: `-c user.name=/-c user.email=` scoped to THIS commit only -- never
+  # mutates the lane's git config, never the founder's identity.
+  if ! git -C "${root}" -c user.name="leadv2-rescue" -c user.email="rescue@leadv2.invalid" \
+        commit -q -m "${msg}" >/dev/null 2>&1; then
+    return 1
+  fi
+  git -C "${root}" rev-parse HEAD 2>/dev/null
+}
+
+# _dl_reap_one_lane <sig8> <lane_id> <founder> <handle> <barrier> <dry_run>
+# The ordered funnel (§2 of the brief), one lane, one locked transaction for steps 2-5.
+# Prints the operator line on stdout (§4) on every real outcome; prints nothing on a
+# no-op (alive / indeterminate -- writes nothing, ever).
+_dl_reap_one_lane() {
+  local sig8="$1" lane_id="$2" founder="$3" handle="${4:-}" barrier="${5:-cap_slot_held_by_dead_lane}" dry_run="${6:-0}"
+  [[ -n "${sig8}" ]] || { log_err "reap: empty sig8 for lane=${lane_id}"; return 2; }
+
+  # Idempotence (R3): a TRUE terminal already recorded means an earlier reap (or the
+  # ordinary close gate) already resolved this lane. Never a second rescue commit.
+  if dispatch_terminal_exists "${sig8}"; then
+    local prior; prior="$(dispatch_terminal_last_state "${sig8}")"
+    printf 'lane_reaped task=%s lane=%s barrier=%s terminal=%s rescued=0 commit=none resumable=no\n' \
+      "${sig8}" "${lane_id}" "${barrier}" "${prior:-unknown}"
+    return 0
+  fi
+
+  local liveness_bin="${LEADV2_REAP_LIVENESS_BIN:-${LANE_LIVENESS_BIN}}"
+  [[ -f "${liveness_bin}" ]] || { log_err "reap: liveness binary not found: ${liveness_bin}"; return 1; }
+
+  # Step 2 (cheap, outside the lock): "alive|starting:*|silent:* => STOP, write nothing."
+  # D3 computes no liveness of its own -- this call and the re-check inside the lock below
+  # are the ONLY two liveness opinions this function ever consults.
+  local verdict
+  verdict="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${liveness_bin}" --project-root "${PROJECT_ROOT}" --lane "${lane_id}" 2>/dev/null || true)"
+  case "${verdict}" in
+    alive|starting:*|silent:*)
+      log "reap: lane=${lane_id} sig=${sig8} verdict=${verdict} -- alive, writing nothing"
+      return 0 ;;
+    dead:*) : ;;
+    *)
+      log "reap: lane=${lane_id} sig=${sig8} verdict=${verdict:-<empty>} -- indeterminate, writing nothing"
+      return 0 ;;
+  esac
+
+  if [[ "${dry_run}" == "1" ]]; then
+    log "reap: DRY-RUN lane=${lane_id} sig=${sig8} verdict=${verdict} -- would inspect worktree and, if dirty, rescue+write"
+    return 0
+  fi
+
+  local lockf; lockf="$(dispatch_terminal_ledger_lock_file)"
+  mkdir -p "$(dirname "${lockf}")" 2>/dev/null
+
+  local out rc
+  out="$(
+    (
+      lv2_lock_wait "${lockf}" 10 || exit 3
+      # R3: re-check under the lock -- a concurrent reap (dispatch sweep + beat loop, R3)
+      # may have already written the terminal between our pre-lock check and lock acquire.
+      dispatch_terminal_exists "${sig8}" && exit 5
+      # R2: re-check liveness AFTER the lock, BEFORE touching the worktree -- a worker that
+      # resurrected (or was never really gone) between the pre-lock probe and now must not
+      # have its in-progress work rescued/committed out from under it.
+      local verdict2
+      verdict2="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${liveness_bin}" --project-root "${PROJECT_ROOT}" --lane "${lane_id}" 2>/dev/null || true)"
+      case "${verdict2}" in dead:*) : ;; *) exit 6 ;; esac
+
+      # Step 3: resolve the worktree via the real resolver (never a hop-counted guess --
+      # GATE-WRONG-ROOT-FALSE-DEAD-01).
+      local lane_root=""
+      if [[ -x "${SCRIPT_DIR}/leadv2-lane-worktree.sh" ]]; then
+        lane_root="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${founder}" 2>/dev/null || true)"
+        [[ -z "${lane_root}" ]] && lane_root="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${lane_id}" 2>/dev/null || true)"
+      fi
+      [[ -n "${lane_root}" && -d "${lane_root}" ]] || exit 10
+
+      # Step 3 (cont.): UNSCOPED `git status --porcelain -uall`. Deliberately NOT scoped to
+      # lane_writes -- an empty lane_writes CSV (LANE-WRITES-IS-EMPTY-98-PERCENT-01: measured
+      # empty on ~98% of real lanes) must never silence this probe the way it silences
+      # `pc_stop_gate_autocommit` (leadv2-dispatch-product-close.sh:1910's
+      # `[[ -n "${_PC_SCOPE_WRITES_CSV:-}" ]] || return 0`). lane_writes is used ONLY to
+      # classify dirt as owned-vs-foreign in the rescue commit trailer, never to decide
+      # whether to look.
+      local status_out
+      status_out="$(git -C "${lane_root}" status --porcelain -uall 2>/dev/null || true)"
+
+      # `no_work` is reachable ONLY under this literal empty-status guard (§2 step 5,
+      # enforced as code, not a comment): a non-empty status_out can NEVER reach the no_work
+      # branch below.
+      if [[ -z "${status_out}" ]]; then
+        exit 11
+      fi
+
+      # Step 4: rescue commit. A commit failure must NOT fall through to a `no_work`/silent
+      # write on a KNOWN-dirty tree -- that would be the exact false-empty-diff incident
+      # class this funnel exists to prevent. Surface as a hard error instead (rc 13).
+      local commit_sha
+      commit_sha="$(_dl_reap_rescue_commit "${lane_root}" "${lane_id}" "${status_out}" "${handle}")"
+      [[ -n "${commit_sha}" ]] || exit 13
+      printf '%s' "${commit_sha}"
+      exit 12
+    ) 9>"${lockf}"
+  )"
+  rc=$?
+
+  case "${rc}" in
+    3) log_err "reap: lock-wait timeout for sig=${sig8}"; return 1 ;;
+    5)
+      local prior; prior="$(dispatch_terminal_last_state "${sig8}")"
+      printf 'lane_reaped task=%s lane=%s barrier=%s terminal=%s rescued=0 commit=none resumable=no\n' \
+        "${sig8}" "${lane_id}" "${barrier}" "${prior:-unknown}"
+      return 0 ;;
+    6)
+      log "reap: lane=${lane_id} sig=${sig8} -- liveness flipped to non-dead after lock acquisition, writing nothing"
+      return 0 ;;
+    10)
+      dispatch_ledger_write_terminal "${sig8}" "${founder}" no_work no_worktree \
+        "reap: dead lane, no worktree found" "reap-$$" "${lane_id}"
+      printf 'lane_reaped task=%s lane=%s barrier=%s terminal=no_work rescued=0 commit=none resumable=yes\n' \
+        "${sig8}" "${lane_id}" "${barrier}"
+      return 0 ;;
+    11)
+      dispatch_ledger_write_terminal "${sig8}" "${founder}" no_work empty_diff \
+        "reap: dead lane, clean worktree" "reap-$$" "${lane_id}"
+      printf 'lane_reaped task=%s lane=%s barrier=%s terminal=no_work rescued=0 commit=none resumable=yes\n' \
+        "${sig8}" "${lane_id}" "${barrier}"
+      return 0 ;;
+    12)
+      dispatch_ledger_write_terminal "${sig8}" "${founder}" dead_with_unlanded_work rescued \
+        "reap: rescued uncommitted work commit=${out}" "reap-$$" "${lane_id}" "${out}"
+      printf 'lane_reaped task=%s lane=%s barrier=%s terminal=dead_with_unlanded_work rescued=1 commit=%s resumable=yes\n' \
+        "${sig8}" "${lane_id}" "${barrier}" "${out}"
+      return 0 ;;
+    13)
+      log_err "reap: rescue commit FAILED for lane=${lane_id} sig=${sig8} -- worktree left dirty, terminal NOT written (a known-dirty tree must never fall through to no_work)"
+      return 1 ;;
+    *) log_err "reap: unexpected internal rc=${rc} for lane=${lane_id} sig=${sig8}"; return 1 ;;
+  esac
+}
+
+cmd_reap() {
+  local lane_arg="" all_mode=0 dry_run=0 task_id_arg="" sig8_arg="" handle_arg="" barrier_arg=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --lane)     lane_arg="${2:-}";     shift 2 ;;
+      --all)      all_mode=1;            shift ;;
+      --dry-run)  dry_run=1;             shift ;;
+      --task-id)  task_id_arg="${2:-}";  shift 2 ;;
+      --sig8)     sig8_arg="${2:-}";     shift 2 ;;
+      --handle)   handle_arg="${2:-}";   shift 2 ;;
+      --barrier)  barrier_arg="${2:-}";  shift 2 ;;
+      *) log_err "reap: unknown arg: $1"; return 2 ;;
+    esac
+  done
+  [[ -n "${lane_arg}" || "${all_mode}" == "1" ]] || { log_err "reap: --lane <id> or --all is required"; return 2; }
+
+  if [[ -n "${lane_arg}" ]]; then
+    local sig8="${sig8_arg}"
+    if [[ -z "${sig8}" ]]; then
+      if [[ "${lane_arg}" == dispatch-* && "${lane_arg#dispatch-}" =~ ^[0-9a-f]{8}$ ]]; then
+        sig8="${lane_arg#dispatch-}"
+      else
+        sig8="${lane_arg:0:8}"
+      fi
+    fi
+    local founder="${task_id_arg:-${lane_arg}}"
+    _dl_reap_one_lane "${sig8}" "${lane_arg}" "${founder}" "${handle_arg}" "${barrier_arg:-cap_slot_held_by_dead_lane}" "${dry_run}"
+    return $?
+  fi
+
+  # --all: same reservation-ledger resolution cmd_reconcile uses (worktree-aware, resolves
+  # to the MAIN checkout even from a linked worktree).
+  local disp_root
+  disp_root="$(cd "${PROJECT_ROOT}" 2>/dev/null && cd "$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)")" 2>/dev/null && pwd)"
+  [[ -n "${disp_root}" && -d "${disp_root}" ]] || disp_root="${PROJECT_ROOT}"
+  local res_file
+  if [[ -n "${LEADV2_DISPATCH_RESERVATION_LEDGER_FILE:-}" ]]; then
+    res_file="${LEADV2_DISPATCH_RESERVATION_LEDGER_FILE}"
+  else
+    local slug; slug="$(printf '%s' "$(basename "${disp_root}")" | tr -cd 'A-Za-z0-9._-')"
+    res_file="${CACHE_BASE}/dispatch-ledger/${slug}.jsonl"
+  fi
+
+  local -a seen_founders=()
+  if [[ -f "${res_file}" ]]; then
+    local ln sig sig8 lane_label handle
+    while IFS= read -r ln || [[ -n "${ln}" ]]; do
+      [[ "${ln}" == *'"state":"confirmed"'* ]] || continue
+      sig="$(printf '%s' "${ln}" | sed -n 's/.*"task_sig":"\([^"]*\)".*/\1/p')"
+      [[ -n "${sig}" ]] || continue
+      sig8="${sig:0:8}"
+      # Step 1 (§2): only reservation rows with NO TRUE terminal yet -- exactly
+      # cmd_reconcile's own anti-join.
+      dispatch_terminal_exists "${sig8}" && continue
+      lane_label="$(printf '%s' "${ln}" | sed -n 's/.*"lane_label":"\([^"]*\)".*/\1/p')"
+      handle="$(printf '%s' "${ln}" | sed -n 's/.*"handle":"\([^"]*\)".*/\1/p')"
+      seen_founders+=("${lane_label:-dispatch-${sig8}}")
+      _dl_reap_one_lane "${sig8}" "dispatch-${sig8}" "${lane_label:-dispatch-${sig8}}" "${handle}" spawned_then_died "${dry_run}"
+    done < "${res_file}"
+  fi
+
+  # Stale-registry case (§2 step 1, second half): active.yaml rows with NO reservation row
+  # at all. Uses the founder task_id itself as the ledger key -- there is no dispatch-<sig8>
+  # signature for a row the reservation ledger never saw.
+  local yaml_file
+  yaml_file="$(PROJECT_ROOT="${disp_root}" "${STATE_PATH_BIN}" active.yaml 2>/dev/null)"
+  if [[ -n "${yaml_file}" && -f "${yaml_file}" ]]; then
+    local seen_csv; seen_csv="$(printf '%s\n' "${seen_founders[@]:-}" | tr '\n' ',')"
+    python3 - "${yaml_file}" "${seen_csv}" <<'PYEOF' 2>/dev/null
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+path, seen_csv = sys.argv[1], sys.argv[2]
+seen = set(x for x in seen_csv.split(",") if x)
+try:
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+except Exception:
+    sys.exit(0)
+for s in (data.get("sessions") or []):
+    if not isinstance(s, dict):
+        continue
+    tid = s.get("task_id") or ""
+    if tid and tid not in seen:
+        print(tid)
+PYEOF
+  fi | while IFS= read -r tid; do
+    [[ -n "${tid}" ]] || continue
+    local sig8="${tid}"
+    if [[ "${tid}" == dispatch-* && "${tid#dispatch-}" =~ ^[0-9a-f]{8}$ ]]; then
+      sig8="${tid#dispatch-}"
+    fi
+    _dl_reap_one_lane "${sig8}" "${tid}" "${tid}" "" stale_registry_row "${dry_run}"
+  done
+  return 0
+}
+
 usage() {
   cat >&2 <<EOF
 Usage:
@@ -1188,6 +1552,8 @@ Usage:
   ${SCRIPT_NAME}.sh state <sig8>
   ${SCRIPT_NAME}.sh sweep
   ${SCRIPT_NAME}.sh reconcile [--repo <abs>] [--since <epoch|ISO>] [--lane <sig8>]... [--json]
+  ${SCRIPT_NAME}.sh reap --lane <id> [--task-id <founder>] [--sig8 <sig8>] [--handle <h>] [--barrier <b>] [--dry-run]
+  ${SCRIPT_NAME}.sh reap --all [--dry-run]
 EOF
   exit 2
 }
@@ -1231,6 +1597,11 @@ case "${1:-}" in
   reconcile)
     shift
     cmd_reconcile "$@"
+    exit $?
+    ;;
+  reap)
+    shift
+    cmd_reap "$@"
     exit $?
     ;;
   *) usage ;;
