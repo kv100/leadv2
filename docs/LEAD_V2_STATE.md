@@ -4,7 +4,7 @@
 
 # /leadv2 Active Sessions
 
-Last updated: 2026-09-03T21:08:05Z
+Last updated: 2026-09-03T21:48:02Z
 
 | task_id | phase | class | started_at | daemon |
 |---|---|---|---|---|
@@ -117,7 +117,8 @@ Last updated: 2026-09-03T21:08:05Z
 | QUOTA-BINDING-WINDOW-IS-NEVER-RECORDED-01 | intake | Standard | 2026-09-03T20:19 | no |
 | CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 | review:fail | Heavy | 2026-09-03T20:29 | no |
 | CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 | recovered | ? | 2026-09-03T20:51 | no |
-| HARNESS-EMPTY-TASK-PROBE-01 | intake | Light | 2026-09-03T21:08 | no |
+| HARNESS-EMPTY-TASK-PROBE-01 | build | Light | 2026-09-03T21:08 | no |
+| INVISIBLE-DELIVERABLES-CENSUS-01 | prepass | Light | 2026-09-03T21:47 | no |
 
-Sessions: 110 / 3 max
+Sessions: 111 / 3 max
 

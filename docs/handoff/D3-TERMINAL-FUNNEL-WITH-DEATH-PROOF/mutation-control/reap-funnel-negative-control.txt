@@ -1,0 +1,9 @@
+suite=plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-ledger.sh
+anchor=/# Step 3: resolve the worktree via the real resolver/i\
+      exit 11
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: C1: expected dead_with_unlanded_work/rescued=1, got: lane_reaped task=c1c1c1c1 lane=dispatch-c1c1c1c1 barrier=cap_slot_held_by_dead_lane terminal=no_work rescued=0 commit=none resumable=yes
+diff_hash=db807742b92d70804df1509dd733b77e3b004f36ab0d81b8c7a79dd3388844f9
+lane_diff_hash=b6c33162b05a7c01cbf3e771db5237a1ed8147b1f4a18398ffb5fc769bd0ef46
