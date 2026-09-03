@@ -1,0 +1,8 @@
+task: MUTATION-RUNNER-STAGES-EVERYTHING-01
+decisions:
+  - "stage only the paths the mutation actually wrote, never git add -A"
+  - "a changed-path set different from the intended set is unscored, with a reason"
+  - "drop --no-verify, or name the single hook that cannot run and why"
+  - "the scratch worktree must live outside TMPDIR and be cleaned up on failure too"
+  - "the in-worktree commit itself stays: run-all.sh selects from committed history only"
+off_limits: ["removing the commit step", "widening the staged set"]

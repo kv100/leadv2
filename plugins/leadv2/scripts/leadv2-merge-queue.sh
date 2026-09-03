@@ -110,24 +110,35 @@ def replay(events):
     queue = []          # waiting task_ids, FIFO order
     holder = None        # task_id currently holding, or None
     holder_ev = None
+    enq_ev = {}           # task_id -> last "enqueued" event, for tasks still in queue
     for ev in events:
         t = ev.get("type")
         tid = ev.get("task_id")
         if t == "enqueued":
             if tid != holder and tid not in queue:
                 queue.append(tid)
+            enq_ev[tid] = ev
         elif t == "acquired":
             holder = tid
             holder_ev = ev
             if tid in queue:
                 queue.remove(tid)
+            enq_ev.pop(tid, None)
+        elif t == "re-enqueued":
+            # Refreshes the pid/ts of an existing queue row in place (the
+            # caller re-ran acquire after its earlier process died) without
+            # changing FIFO position and without going through "enqueued"
+            # (which is a no-op once tid is already in queue).
+            if tid in queue:
+                enq_ev[tid] = ev
         elif t in ("released", "reclaimed", "timeout"):
             if holder == tid:
                 holder = None
                 holder_ev = None
             if tid in queue:
                 queue.remove(tid)
-    return queue, holder, holder_ev
+            enq_ev.pop(tid, None)
+    return queue, holder, holder_ev, enq_ev
 
 def pid_alive(pid):
     try:
@@ -136,11 +147,19 @@ def pid_alive(pid):
     except (OSError, ValueError):
         return False
 
+def event_age_sec(ev):
+    ts = ev.get("ts", "")
+    try:
+        since = calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+        return time.time() - since
+    except Exception:
+        return 0
+
 lockf = open(queue_lock, "a+")
 fcntl.flock(lockf, fcntl.LOCK_EX)
 try:
     events = read_events()
-    queue, holder, holder_ev = replay(events)
+    queue, holder, holder_ev, enq_ev = replay(events)
 
     if op == "enqueue":
         task_id, branch, caller_pid = args[0], args[1], args[2]
@@ -149,11 +168,59 @@ try:
                 "ts": now_iso(), "type": "enqueued",
                 "task_id": task_id, "branch": branch, "pid": int(caller_pid),
             })
+        elif task_id != holder and task_id in queue:
+            # Idempotent re-run of `acquire` (e.g. after a crash/re-dispatch):
+            # the task is already in the queue under a stale pid. Refresh
+            # pid/ts in place, keeping FIFO position, so the dead-enqueued
+            # reclaim below (which only ever looks at OTHER tasks' rows) does
+            # not see a dead pid for this task on the very next try_acquire
+            # (MERGE-QUEUE-DEAD-HEAD-01 round 2: reclaim was evicting the
+            # caller's own row).
+            prev = enq_ev.get(task_id)
+            if prev is None or int(prev.get("pid", -1)) != int(caller_pid):
+                append_event({
+                    "ts": now_iso(), "type": "re-enqueued",
+                    "task_id": task_id, "branch": branch, "pid": int(caller_pid),
+                })
         print("OK")
 
     elif op == "try_acquire":
-        # Reclaim a dead+stale holder first, if any.
         reclaimed = False
+        caller_task_id = args[0]
+
+        # Reclaim dead+stale ENQUEUED entries first, before computing the
+        # head (MERGE-QUEUE-DEAD-HEAD-01: an entry that never got past
+        # `enqueued` because its owning process died was never examined by
+        # the dead-holder-only reclaim below, so a dead task's enqueue sat
+        # as a permanent head and every later acquire() printed WAIT
+        # forever). Same threshold (STALE_SEC) and same ledger event shape
+        # (`reclaimed`) as the dead-holder-stale reclaim, distinguished by
+        # reason.
+        #
+        # The caller's OWN row is never reclaimed here (round 2 fix): a
+        # re-dispatched task re-running `acquire` after a crash re-enqueues
+        # under a new pid via the `enqueue` op above (see "re-enqueued"),
+        # so by the time we get here its row already carries the live pid.
+        # Excluding it defensively means a stale snapshot can never evict
+        # the caller mid-poll and force it to restart at the back of the
+        # queue / TIMEOUT.
+        for tid in list(queue):
+            if tid == caller_task_id:
+                continue
+            ev = enq_ev.get(tid)
+            if ev is None:
+                continue
+            if not pid_alive(ev.get("pid")) and event_age_sec(ev) > stale_sec:
+                append_event({
+                    "ts": now_iso(), "type": "reclaimed",
+                    "task_id": tid, "reason": "dead-enqueued",
+                })
+                reclaimed = True
+        if reclaimed:
+            events = read_events()
+            queue, holder, holder_ev, enq_ev = replay(events)
+
+        # Reclaim a dead+stale holder, if any.
         if holder is not None and holder_ev is not None:
             holder_pid = holder_ev.get("pid")
             holder_ts = holder_ev.get("ts", "")
@@ -169,7 +236,7 @@ try:
                 })
                 reclaimed = True
                 events = read_events()
-                queue, holder, holder_ev = replay(events)
+                queue, holder, holder_ev, enq_ev = replay(events)
 
         task_id, caller_pid = args[0], args[1]
         if holder is None and queue and queue[0] == task_id:
@@ -195,7 +262,14 @@ try:
         print("OK")
 
     elif op == "status":
-        print(json.dumps({"holder": holder, "queue": queue}, sort_keys=True))
+        queue_view = []
+        for tid in queue:
+            ev = enq_ev.get(tid)
+            state = "queued"
+            if ev is not None and not pid_alive(ev.get("pid")) and event_age_sec(ev) > stale_sec:
+                state = "DEAD-ENQUEUED"
+            queue_view.append({"task_id": tid, "state": state})
+        print(json.dumps({"holder": holder, "queue": queue_view}, sort_keys=True))
 
 finally:
     fcntl.flock(lockf, fcntl.LOCK_UN)

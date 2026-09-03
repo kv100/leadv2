@@ -64,6 +64,9 @@ else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :;
 readonly SECRETS_FILE="${GLM_SECRETS_FILE:-${HOME}/.claude/secrets/zai.env}"
 readonly ZAI_BASE_URL="https://api.z.ai/api/anthropic"
 readonly RUNS_DIR="${GLM_RUNS_DIR:-${HOME}/.claude/cache/glm-runs}"
+# GLM-ARM-THROUGHPUT-01: locks may live under their own root (hermetic suites
+# point LEADV2_GLM_LOCK_ROOT at a temp dir; default stays the runs dir).
+readonly LOCK_ROOT="${LEADV2_GLM_LOCK_ROOT:-${RUNS_DIR}}"
 # GLM_TIMEOUT: wall-clock backstop. Turn and no-progress guards below stop
 # superlinear conversation replay before a run reaches this outer bound.
 # WORKER-RESILIENCE-01 (founder order 2026-07-31): defaults raised
@@ -96,12 +99,28 @@ readonly GLM_CONTINUATION_MAX_LINES="${GLM_CONTINUATION_MAX_LINES:-200}"
 readonly GLM_PERMANENT_FAILURE_SENTINEL="GLM_PERMANENT_FAILURE"
 # Seam for tests to stub the `claude` binary entirely (no real network call).
 readonly GLM_CLAUDE_BIN="${GLM_CLAUDE_BIN:-claude}"
+# BEAT-LOOP-ORPHANS-01: every claude process this launcher spawns is a headless
+# worker, never a lead — exported so it is inherited by the child claude
+# process and read by hooks/lib/leadv2-hook-session-kind.sh to refuse arming
+# beat/watch loops that would outlive this launcher.
+export LEADV2_WORKER_ARM=1
 # GLM-53-FLASH-ARM-01 (founder order 2026-08-26): per-dispatch model override.
 # One mechanism, env-first — no second profile layer. Default stays glm-5.3;
 # the dispatcher sets GLM_MODEL=glm-5.3-flash when the route arbiter picks the
 # glm-flash arm (cheap/mechanical tier). Every spawn site and meta.yaml read
 # this single value, so a run record always names the model that actually ran.
 readonly GLM_MODEL="${GLM_MODEL:-glm-5.3}"
+# GLM-EFFICIENCY-01: per-dispatch reasoning-effort override, same env-first
+# pattern as GLM_MODEL. The dispatcher maps DC_TASK_CLASS -> effort and exports
+# GLM_EFFORT; every spawn site appends `--effort <v>` to the `claude -p` argv
+# when set (CC 2.1.258 `--effort <level>`, verified live). Z.AI's Anthropic-compat
+# layer reads `output_config.effort` from Claude Code (docs.z.ai/devpack/
+# latest-model.md: low|medium|high|max, medium auto-converts to high, default
+# max) and the field measurably changes the response — same prompt, glm-5.3,
+# output_tokens 130 at low vs 369 at max (probe 2026-09-02,
+# docs/handoff/GLM-EFFICIENCY-01/report.md). Empty = flag omitted = provider
+# default `max` (pre-lane behaviour, byte-identical spawn).
+readonly GLM_EFFORT="${GLM_EFFORT:-}"
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"
 
@@ -183,7 +202,12 @@ glm_launch_gate() {
   fi
   # NOTE: do NOT use `if ! "$gate"` — `!` resets $? to 0 and the real gate code
   # (1=reroute, 2=peak) is lost, making a refused gate non-blocking (QUOTA-GATE-01).
-  "$gate"; local rc=$?
+  # HANDLE-POLLUTION-01 (2026-09-02): the gate's "[glm-quota-gate] OK — …" line
+  # went to STDOUT, i.e. into the handle `bg` returns to the dispatcher, which
+  # then read a live spawn as not_live and re-spawned into its own lock
+  # (lock_busy → glm-flash → spawn_failed). Gate chatter belongs on stderr;
+  # the dispatcher scans stdout+stderr combined for REROUTE, so nothing is lost.
+  "$gate" >&2; local rc=$?
   if (( rc != 0 )); then
     log_error "GLM quota gate refused this launch (code $rc) - reroute per the message above (leadv2-quota-live.sh for live numbers)."
     return "$rc"
@@ -351,7 +375,7 @@ run_claude() {
     export ANTHROPIC_AUTH_TOKEN="${ZAI_AUTH_TOKEN}"
     export ANTHROPIC_DEFAULT_OPUS_MODEL="${GLM_MODEL}"
     export ANTHROPIC_DEFAULT_SONNET_MODEL="${GLM_MODEL}"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5.3-flash"   # GLM-47-BAN-01: 4.5-air was silently routed to GLM-4.7 by Z.AI; only 5.3 / 5.3-flash allowed
     export DISABLE_MODEL_AVAILABILITY_CHECK=1
     export API_TIMEOUT_MS=3000000
     local -a spawn_args=(-p "${resolved_prompt}" \
@@ -359,6 +383,12 @@ run_claude() {
       --disallowedTools "Agent" \
       --model sonnet \
       --output-format json)
+    # GLM-EFFICIENCY-01: apply the dispatcher-resolved effort (whitelist =
+    # Z.AI's accepted vocabulary; anything else omits the flag — fail-open
+    # to the provider default `max`, never a malformed argv).
+    case "${GLM_EFFORT:-}" in
+      low|medium|high|max) spawn_args+=(--effort "${GLM_EFFORT}") ;;
+    esac
     if [[ -n "${mcp_cfg}" ]]; then
       spawn_args+=(--strict-mcp-config --mcp-config "${mcp_cfg}")
     fi
@@ -442,13 +472,52 @@ cmd_test() {
 # v2 workbench (`bg`, `status`, `tail`, `watch`, `list`) + internal helpers.
 # ---------------------------------------------------------------------------
 
-lock_dir_for() { echo "${RUNS_DIR}/.lock-$1"; }
+lock_dir_for() { echo "${LOCK_ROOT}/.lock-$1"; }
+
+# GLM-ARM-THROUGHPUT-01: the lock must be per LANE WORKTREE, not per repo --
+# four lanes dispatching GLM concurrently in the same repo (four `.claude/
+# worktrees/<lane>` checkouts) hit `lock_busy` on 3 of 4 dispatches because a
+# single-repo lock serialised every worktree onto one GLM run. A repo-wide
+# lock is still correct for the MAIN checkout (two writers there really would
+# collide on the same tree), so the key must distinguish "this cwd IS the
+# main checkout" from "this cwd is a linked worktree of it" -- not just hash
+# the cwd string, which is also unsafe if the same physical repo is reached
+# through two different symlink spellings (GATE-WRONG-ROOT-FALSE-DEAD-01).
+#
+# git-common-dir is the same physical path for the main checkout and every
+# worktree linked to it; show-toplevel is the main checkout's own root for
+# the main checkout, but each linked worktree's own root otherwise. So:
+#   main checkout:    dirname(common-dir) == toplevel  -> key = common-dir
+#   linked worktree:   dirname(common-dir) != toplevel  -> key = common-dir|toplevel
+# Non-git cwd (test fixtures without a repo) falls back to hashing the raw
+# cwd path, matching the prior behavior exactly.
+glm_lock_key_for() {
+  local dir="$1"
+  local common common_abs toplevel key
+  common="$(cd "${dir}" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null || true)"
+  if [[ -z "${common}" ]]; then
+    printf '%s' "${dir}" | shasum -a 256 | cut -c1-12
+    return
+  fi
+  common_abs="$(cd "${dir}" && cd "$(dirname "${common}")" 2>/dev/null && pwd -P)/$(basename "${common}")"
+  toplevel="$(cd "${dir}" && git rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "${toplevel}" ]] && toplevel="$(cd "${toplevel}" 2>/dev/null && pwd -P || printf '%s' "${toplevel}")"
+  if [[ "$(dirname "${common_abs}")" == "${toplevel}" ]]; then
+    key="${common_abs}"
+  else
+    key="${common_abs}|${toplevel}"
+  fi
+  printf '%s' "${key}" | shasum -a 256 | cut -c1-12
+}
 
 acquire_lock() {
   local repo_hash="$1" timeout_s="$2"
   local lock_dir
   lock_dir="$(lock_dir_for "${repo_hash}")"
-  mkdir -p "${RUNS_DIR}"
+  # LOCK_ROOT too: when LEADV2_GLM_LOCK_ROOT points somewhere fresh, a bare
+  # `mkdir "${lock_dir}"` would fail on the missing parent and read as a
+  # spurious "no started marker" refusal.
+  mkdir -p "${RUNS_DIR}" "${LOCK_ROOT}"
   if mkdir "${lock_dir}" 2>/dev/null; then
     _write_lock_markers "${lock_dir}"
     return 0
@@ -1118,7 +1187,7 @@ cmd_run_child() {
   export ZAI_AUTH_TOKEN
   export ANTHROPIC_DEFAULT_OPUS_MODEL="${GLM_MODEL}"
   export ANTHROPIC_DEFAULT_SONNET_MODEL="${GLM_MODEL}"
-  export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5.3-flash"   # GLM-47-BAN-01: 4.5-air was silently routed to GLM-4.7 by Z.AI; only 5.3 / 5.3-flash allowed
   export DISABLE_MODEL_AVAILABILITY_CHECK=1
   export API_TIMEOUT_MS=3000000
 
@@ -1141,6 +1210,11 @@ cmd_run_child() {
       --max-turns "${max_turns}" \
       --permission-mode bypassPermissions \
       --disallowedTools "Agent")
+  # GLM-EFFICIENCY-01: same effort seam as the v1 path (see GLM_EFFORT note
+  # near GLM_MODEL) — whitelist else omit, fail-open to provider default max.
+  case "${GLM_EFFORT:-}" in
+    low|medium|high|max) spawn_args+=(--effort "${GLM_EFFORT}") ;;
+  esac
   if [[ -n "${mcp_cfg}" ]]; then
     spawn_args+=(--strict-mcp-config --mcp-config "${mcp_cfg}")
   fi
@@ -1727,6 +1801,20 @@ cmd_supervise() {
   # meta.yaml) and before release_lock. Detect-only; never alters status.
   deadhand_check "${run_dir}" "${exit_code}"
 
+  # WORKERS-MUST-COMMIT-01: MUST run after deadhand_check (append-only from
+  # here on, no more clobbering mv's of meta.yaml) and BEFORE the outcome
+  # classifier below -- an in-scope auto-commit here moves HEAD, and both
+  # work_delta_present() (this call site) and leadv2-lane-outcome.sh's own
+  # `_resolve_work` (when it re-derives work_delta itself) must see the
+  # POST-commit tree, not the dirty one the worker actually left behind.
+  local _worker_epilogue_lib
+  _worker_epilogue_lib="$(dirname "${SELF}")/lib/leadv2-worker-epilogue.sh"
+  if [[ -f "${_worker_epilogue_lib}" ]]; then
+    # shellcheck disable=SC1090
+    source "${_worker_epilogue_lib}"
+    leadv2_worker_commit_epilogue "${run_dir}" "${cwd_dir}" "$(meta_get "${run_dir}" run_id)" || true
+  fi
+
   # N-3 (TURN-CAP-OUTCOME-01): same window as deadhand_check -- after
   # finalize_meta, before release_lock -- so the outcome classifier sees the
   # final .no-deliverable verdict and appends to meta.yaml before it is done
@@ -1794,7 +1882,7 @@ cmd_bg() {
 
   local repo repo_hash
   repo="$(basename "${cwd_dir}")"
-  repo_hash="$(printf '%s' "${cwd_dir}" | shasum -a 256 | cut -c1-12)"
+  repo_hash="$(glm_lock_key_for "${cwd_dir}")"
 
   acquire_lock "${repo_hash}" "${timeout_s}"
 

@@ -331,6 +331,39 @@ _lv2_path_contains() {
   local parent="$1" child="$2"
   [[ "${child}" == "${parent}" || "${child}" == "${parent}/"* ]]
 }
+# RESUME-LANE-ACCEPTS-PATH-01 round 3 (review-glm High-2): an absolute
+# --resume-lane pin is honored ONLY for a real LINKED worktree of PROJECT_ROOT
+# -- exactly a path `git worktree list --porcelain` names, never the main
+# checkout -- whose branch is `worktree-<id>`.  The earlier check
+# ("git-common-dir parent == project root") also accepted the repo root itself
+# and ANY in-repo subdirectory, letting an arbitrary directory be pinned as
+# the lane worktree.  Bash 3.2 safe.
+_lv2_is_lane_worktree_path() {
+  local cand="$1" root="$2" main_wt wt="" branch="" line cand_phys wt_phys
+  main_wt="$(git -C "${root}" rev-parse --git-common-dir 2>/dev/null || true)"
+  main_wt="$(cd "${root}" 2>/dev/null && cd "$(dirname "${main_wt}")" 2>/dev/null && pwd -P || true)"
+  [[ -n "${main_wt}" ]] || return 1
+  # RESUME-LANE-ACCEPTS-PATH-01 round-4 (review H1): identity is the canonicalised
+  # PATH equality with the porcelain `worktree <path>` line.  The round-3 check
+  # compared only basename(cand) against the branch's lane id, so any in-repo
+  # subdir sharing the lane's id (e.g. docs/handoff/<id>) matched too.
+  cand_phys="$(cd "${cand}" 2>/dev/null && pwd -P || true)"
+  [[ -n "${cand_phys}" ]] || return 1
+  while IFS= read -r line; do
+    case "${line}" in
+      "worktree "*) wt="${line#worktree }"; branch="" ;;
+      "branch refs/heads/"*) branch="${line#branch refs/heads/}" ;;
+      "")
+        if [[ -n "${wt}" && "${wt}" != "${main_wt}" ]]; then
+          wt_phys="$(cd "${wt}" 2>/dev/null && pwd -P || true)"
+          [[ -n "${wt_phys}" && "${cand_phys}" == "${wt_phys}" ]] && return 0
+        fi
+        wt=""
+        ;;
+    esac
+  done < <(git -C "${root}" worktree list --porcelain 2>/dev/null; printf '\n')
+  return 1
+}
 # GATE-WRONG-ROOT-FALSE-DEAD-01 (repo-CLAUDE.md): resolve the cwd git root ONCE,
 # unconditionally, so it is defined identically on every branch below -- the
 # prior guard-off else-branch left this unset and silently fell back to
@@ -376,8 +409,17 @@ if [[ -n "${_LV2_ENV_ROOT}" ]]; then
           esac
         done
         if [[ -n "${_LV2_PIN_VALUE}" ]]; then
+          # PLUGIN-PAPERCUTS-01 (defect 3): an ABSOLUTE --resume-lane value is
+          # the worktree path itself. Concatenating the worktrees dir onto it
+          # produced .../worktrees//Users/... — the preflight cd failed, the
+          # pin looked unprovable, and the foreign-root guard fell back to the
+          # cwd-derived root (the mangled "looked_for=" refusal).
           if [[ "${_LV2_PIN_FLAG}" == "--resume-lane" ]]; then
-            _LV2_PIN_CANDIDATE="${LEADV2_WORKTREE_DIR:-${_LV2_ENV_GIT_ROOT}/.claude/worktrees}/${_LV2_PIN_VALUE}"
+            if [[ "${_LV2_PIN_VALUE}" == /* ]]; then
+              _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
+            else
+              _LV2_PIN_CANDIDATE="${LEADV2_WORKTREE_DIR:-${_LV2_ENV_GIT_ROOT}/.claude/worktrees}/${_LV2_PIN_VALUE}"
+            fi
           else
             _LV2_PIN_CANDIDATE="${_LV2_PIN_VALUE}"
           fi
@@ -392,10 +434,19 @@ if [[ -n "${_LV2_ENV_ROOT}" ]]; then
           # safe control-plane root for journals and ledgers.
           PROJECT_ROOT="${_LV2_PINNED_ROOT}"
         else
-          echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
-          PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
           _LV2_FOREIGN_ROOT_ENV="${_LV2_ENV_GIT_ROOT}"
           _LV2_FOREIGN_ROOT_CWD="${_LV2_CWD_GIT_ROOT}"
+          # No pin proved the env root authoritative, so the env root is the
+          # leak shape the incident describes: discard it and root the control
+          # plane at cwd.  Keeping the env root here would also strand a later
+          # --resume-lane pin: the resolver's Step 4 compares the candidate's
+          # owning repo against PROJECT_ROOT, so an env-rooted PROJECT_ROOT
+          # refuses the very pin the preflight above exists to enable
+          # (review-glm round 2, High-1: no half-deleted mechanism -- the
+          # fallback and the WARN text below agree, and the telemetry
+          # assignments stay live for the project_root_guard reader).
+          PROJECT_ROOT="${_LV2_CWD_GIT_ROOT}"
+          echo "[leadv2-dispatch-code] WARN: foreign project root detected (env=${_LV2_ENV_GIT_ROOT} cwd=${_LV2_CWD_GIT_ROOT}) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)" >&2
         fi
       fi
     fi
@@ -438,21 +489,53 @@ else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :;
 # environment before it launches any provider channel, so a bypass var set on
 # the supervising session cannot ride along even through a channel that does
 # not go through the session runner.
+_LEADV2_HELPERS_SH="${SCRIPT_DIR}/leadv2-helpers.sh"
+[[ -f "${_LEADV2_HELPERS_SH}" ]] || _LEADV2_HELPERS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-helpers.sh"
 # shellcheck source=leadv2-helpers.sh
-source "${SCRIPT_DIR}/leadv2-helpers.sh" 2>/dev/null || true
+[[ -f "${_LEADV2_HELPERS_SH}" ]] && source "${_LEADV2_HELPERS_SH}" 2>/dev/null
 declare -F lv2_scrub_bypass_env >/dev/null 2>&1 && lv2_scrub_bypass_env
 # STATUSLINE-COUNT-TRUTH-01: single source of truth for the architect-prepass
 # dir suffix -- leadv2-lane-liveness.sh folds dispatch-<sig8>-<role> ids back
 # into their parent using this SAME constant, so the registrar and the fold
 # rule can never drift apart. Export-only, no flock, safe to source directly.
 # shellcheck source=leadv2-lane-child-suffixes.sh
-source "${SCRIPT_DIR}/leadv2-lane-child-suffixes.sh"
+_LANE_CHILD_SUFFIXES_SH="${SCRIPT_DIR}/leadv2-lane-child-suffixes.sh"
+[[ -f "${_LANE_CHILD_SUFFIXES_SH}" ]] || _LANE_CHILD_SUFFIXES_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-lane-child-suffixes.sh"
+[[ -f "${_LANE_CHILD_SUFFIXES_SH}" ]] && source "${_LANE_CHILD_SUFFIXES_SH}"
 ARCHITECT_LANE_SUFFIX="${LEADV2_LANE_CHILD_SUFFIXES%%,*}"
 # SWIFTBAR-R4 RC-1: flock(1) doesn't exist on the widget's acceptance PATH (no
 # util-linux on macOS) -- lv2_lock_wait delegates to real flock when present,
 # else an mkdir-based fallback with the same rc0/rc3 contract.
 # shellcheck source=leadv2-portable-lock.sh
-source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
+_PORTABLE_LOCK_SH="${SCRIPT_DIR}/leadv2-portable-lock.sh"
+[[ -f "${_PORTABLE_LOCK_SH}" ]] || _PORTABLE_LOCK_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-portable-lock.sh"
+[[ -f "${_PORTABLE_LOCK_SH}" ]] && source "${_PORTABLE_LOCK_SH}"
+# DISPATCH-CLOSE-GATE-01: Mechanism 1 (refuse a dispatch whose mission demands a path
+# outside LANE_WRITES) and Mechanism 2 (unproven-fix reporting at close).
+# The consumer repos install this dispatcher as a per-file symlink, so its sibling
+# lib/ directory is absent there.  Prefer a local lib for a full plugin install, then
+# fall back to the canonical plugin tree.  A missing optional close-proof feature must
+# never prevent dispatch from starting.
+_MISSION_WRITESET_SH="${SCRIPT_DIR}/lib/leadv2-mission-writeset.sh"
+[[ -f "${_MISSION_WRITESET_SH}" ]] || _MISSION_WRITESET_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-mission-writeset.sh"
+[[ -f "${_MISSION_WRITESET_SH}" ]] && source "${_MISSION_WRITESET_SH}"
+_RED_PROOF_SH="${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
+[[ -f "${_RED_PROOF_SH}" ]] || _RED_PROOF_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-red-proof.sh"
+[[ -f "${_RED_PROOF_SH}" ]] && source "${_RED_PROOF_SH}"
+# C-1 (DISPATCH-PIN-CLUSTER-01 round 7): SCRIPT_DIR resolves through the
+# per-file symlink in consumer repos (persona-engine, m3-market, respiro-ios),
+# so it points at the CONSUMER's .claude/scripts, which has no lib/ copy of a
+# file this new to the symlink farm. Same degrade-to-canonical idiom as
+# _REPORT_DELIVERABLE_SH below -- fall back to the canonical checkout so the
+# dirty-lane pin and containment check stay live everywhere, not just here.
+_LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] && source "${_LANE_GUARD_SH}"
+# Keep the consumer-farm proof at the loader boundary.  The broader existing
+# source-only seam runs after admission-class can independently load the guard.
+if [[ "${LEADV2_DISPATCH_GUARD_SOURCE_ONLY:-0}" == "1" && "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 ROUTING_YAML="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
 ROUTING_CONFIG_ABSENT=0
 # ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3: when the project root has no routing
@@ -472,6 +555,7 @@ fi
 # copy falls through to the established ladder and is made observable at the
 # call site, rather than making dispatch unavailable.
 ROUTE_ARBITER_LIB="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
+[[ -f "${ROUTE_ARBITER_LIB}" ]] || ROUTE_ARBITER_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh"
 [[ -f "${ROUTE_ARBITER_LIB}" ]] && source "${ROUTE_ARBITER_LIB}" || true
 # Overridable so tests can point at /bin/true and avoid writing to the real per-task journal.
 JOURNAL_BIN="${LEADV2_JOURNAL_BIN:-${SCRIPT_DIR}/leadv2-journal.sh}"
@@ -523,8 +607,10 @@ _dl_attempt_token() { printf '%s-%s-%s' "${1:-nosig}" "${ATTEMPT_EPOCH}" "$$"; }
 # task_id (no --task-id caller) is guarded explicitly: leadv2_active_update_phase's own
 # "${1:?...}" would otherwise abort this whole script under `set -u` on an empty arg.
 _ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+[[ -f "${_ACTIVE_REGISTRY_SH}" ]] || _ACTIVE_REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
 [[ -f "${_ACTIVE_REGISTRY_SH}" ]] && source "${_ACTIVE_REGISTRY_SH}"
 _LANE_STATE_SH="${SCRIPT_DIR}/lib/leadv2-lane-state.sh"
+[[ -f "${_LANE_STATE_SH}" ]] || _LANE_STATE_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-state.sh"
 [[ -f "${_LANE_STATE_SH}" ]] && source "${_LANE_STATE_SH}"
 # SILENT-DEATH-01 (SUPERVISOR-AUDIT-01, 2026-07-30): leadv2-active-registry.sh sets its own
 # `set -euo pipefail` (line 26) for standalone use; `source` runs it in THIS shell, so its -e
@@ -637,6 +723,10 @@ REVIEW_GATE="${LEADV2_DISPATCH_REVIEW_GATE:-1}"
 # time (leadv2-dispatch-product-close.sh unscopable_diff). =0 restores today byte-for-byte
 # (no writes declaration required, no park).
 REQUIRE_LANE_WRITES="${LEADV2_REQUIRE_LANE_WRITES:-1}"
+# DISPATCH-CLOSE-GATE-01 Mechanism 1: refuse (not warn) a dispatch whose mission demands
+# a path that LANE_WRITES does not cover -- BEFORE any worker spawns. =0 restores today
+# byte-for-byte (no writeset check, no park).
+REQUIRE_MISSION_WRITESET="${LEADV2_REQUIRE_MISSION_WRITESET:-0}"
 # RED-FIRST-GATE-01 R2: the prepass mission prompt now asks for a surface-observable
 # `acceptance:` block (see architect_prepass's printf text). =1 parks a design that
 # lacks it, same PARK-and-surface mechanism as REQUIRE_LANE_WRITES. Default 0 -- this
@@ -659,9 +749,21 @@ PHASE_RECORD_BIN="${LEADV2_PHASE_RECORD_BIN:-${SCRIPT_DIR}/leadv2-phase-record.s
 # PHASE-DISCIPLINE-01 D1/D2: shared admission map + receipt writer (also
 # sourced by leadv2-backlog-pump.sh — one inode of class-mapping truth).
 TASK_JUDGE_BIN="${LEADV2_TASK_JUDGE_BIN:-${SCRIPT_DIR}/leadv2-task-judge.sh}"
-if [[ -f "${SCRIPT_DIR}/lib/leadv2-admission-class.sh" ]]; then
+_ADMISSION_CLASS_SH="${SCRIPT_DIR}/lib/leadv2-admission-class.sh"
+[[ -f "${_ADMISSION_CLASS_SH}" ]] || _ADMISSION_CLASS_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-admission-class.sh"
+if [[ -f "${_ADMISSION_CLASS_SH}" ]]; then
   # shellcheck disable=SC1091
-  source "${SCRIPT_DIR}/lib/leadv2-admission-class.sh" || true
+  source "${_ADMISSION_CLASS_SH}" || true
+fi
+# BRAIN-CLASS-LIVE-01: class_escalated/class_floor_held journal vocabulary +
+# docs/handoff/<task>/brain.yaml, layered on top of the admission class map
+# above (does not change what class is computed, only makes the decision
+# loud and durable across re-entries).
+_BRAIN_RECORD_SH="${SCRIPT_DIR}/lib/leadv2-brain-record.sh"
+[[ -f "${_BRAIN_RECORD_SH}" ]] || _BRAIN_RECORD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-brain-record.sh"
+if [[ -f "${_BRAIN_RECORD_SH}" ]]; then
+  # shellcheck disable=SC1091
+  source "${_BRAIN_RECORD_SH}" || true
 fi
 # B1 R2: record-review refuses a build worker minting a review of ITS OWN diff from
 # inside a lane worktree (self-attestation). Set to 0 to disable the check (emergency escape).
@@ -802,17 +904,61 @@ _resolve_pinned_placement() {
   project_root_phys="$(cd "${PROJECT_ROOT}" 2>/dev/null && pwd -P)"
 
   # Step 1: Candidate.
+  # Round-5 merge of PLUGIN-PAPERCUTS-01 (defect 3) + RESUME-LANE-ACCEPTS-PATH-01:
+  # --resume-lane accepts BOTH shapes — a bare lane name (resolved via
+  # path-of, unchanged) and an absolute path to the lane's own worktree.
+  # PLUGIN-PAPERCUTS-01 fixed the mangled "worktrees/" + "/Users/..."
+  # concatenation refusal and added the path-form emit; this lane's
+  # review-glm High-2 check adds the validation PLUGIN-PAPERCUTS-01 lacked:
+  # the path is accepted only when `git worktree list --porcelain` names it
+  # as a LINKED worktree of PROJECT_ROOT. A bad path refuses with the
+  # accepted shapes (both the machine-readable accepted_shapes= tag and
+  # P6b's human-readable guidance) and echoes what was given.
   if [[ -n "${placement_lane_ref}" ]]; then
     ref="${placement_lane_ref}"
-    key="${placement_lane_ref}"
-    candidate="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${placement_lane_ref}" 2>/dev/null)"
-    if [[ -z "${candidate}" ]]; then
-      reason="no_lane_worktree_for_ref"
-      local _wt_dir="${LEADV2_WORKTREE_DIR:-${PROJECT_ROOT}/.claude/worktrees}"
-      emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} looked_for=${_wt_dir}/${ref}"
-      printf '[leadv2-dispatch-code] REFUSE placement: %s ref=%s path=%s\n' \
-        "${reason}" "${ref}" "${_wt_dir}/${ref}" >&2
-      exit 5
+    if [[ "${ref}" == /* ]]; then
+      candidate=""
+      if [[ -d "${ref}" ]]; then
+        local _abs_cand=""
+        _abs_cand="$(cd "${ref}" 2>/dev/null && pwd -P || true)"
+        # RESUME-LANE-ACCEPTS-PATH-01 round 3 (review-glm High-2): same-repo
+        # containment alone accepted PROJECT_ROOT itself and any in-repo
+        # subdirectory as a "lane worktree". An absolute --resume-lane path is
+        # accepted only when `git worktree list --porcelain` names it as a
+        # LINKED worktree of PROJECT_ROOT (never the main checkout) -- canonical
+        # PATH equality, so a basename collision (review H1) does not match.
+        if [[ -n "${_abs_cand}" ]] && _lv2_is_lane_worktree_path "${_abs_cand}" "${project_root_phys}"; then
+          candidate="${_abs_cand}"
+        fi
+      fi
+      if [[ -z "${candidate}" ]]; then
+        reason="no_lane_worktree_for_ref"
+        local _wt_dir="${LEADV2_WORKTREE_DIR:-${PROJECT_ROOT}/.claude/worktrees}"
+        emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} given=${ref} accepted_shapes=bare_lane_name|absolute_worktree_path"
+        printf '[leadv2-dispatch-code] REFUSE placement: %s given=%s accepted_shapes=bare_lane_name|absolute_worktree_path\n' \
+          "${reason}" "${ref}" >&2
+        # PLUGIN-PAPERCUTS-01 P6b: human-readable accepted-shapes guidance.
+        printf '[leadv2-dispatch-code]   accepted shapes: --resume-lane <bare-lane-ref> (task-sig8 or founder-id, looked up in %s)\n' "${_wt_dir}" >&2
+        printf '[leadv2-dispatch-code]                    --resume-lane </absolute/path/to/worktree>  (or --worktree <abs-path>)\n' >&2
+        exit 5
+      fi
+      key="$(basename "${ref}")"
+      # PLUGIN-PAPERCUTS-01: journal that the path form of --resume-lane was used.
+      emit decision "lane_placement_path_form task=${sig8:-?} ref=${ref} note=resume-lane accepted an absolute worktree path"
+    else
+      key="${ref}"
+      candidate="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${placement_lane_ref}" 2>/dev/null)"
+      if [[ -z "${candidate}" ]]; then
+        reason="no_lane_worktree_for_ref"
+        local _wt_dir="${LEADV2_WORKTREE_DIR:-${PROJECT_ROOT}/.claude/worktrees}"
+        emit decision "lane_placement_refused task=${sig8:-?} reason=${reason} ref=${ref} given=${ref} looked_for=${_wt_dir}/${ref} accepted_shapes=bare_lane_name|absolute_worktree_path"
+        printf '[leadv2-dispatch-code] REFUSE placement: %s given=%s looked_for=%s accepted_shapes=bare_lane_name|absolute_worktree_path\n' \
+          "${reason}" "${ref}" "${_wt_dir}/${ref}" >&2
+        # PLUGIN-PAPERCUTS-01 P6b: human-readable accepted-shapes guidance.
+        printf '[leadv2-dispatch-code]   accepted shapes: --resume-lane <bare-lane-ref> (task-sig8 or founder-id, looked up in %s)\n' "${_wt_dir}" >&2
+        printf '[leadv2-dispatch-code]                    --resume-lane </absolute/path/to/worktree>  (or --worktree <abs-path>)\n' >&2
+        exit 5
+      fi
     fi
   else
     # --worktree: explicit absolute path
@@ -866,12 +1012,14 @@ _resolve_pinned_placement() {
   # decision line is journaled on BOTH branches so the next forensic session
   # sees WHY a lane was reclaimed (deliverable #2). signal derives from the
   # row's reason: pid evidence vs stream freshness vs none.
-  local _row _v _reason _signal _age _live=0 _probe_id
+  local _row _v _reason _signal _age _live=0 _probe_id _watcher_only=0 _wpid
   for _probe_id in "dispatch-${key}" "${key}"; do
     _row="$(bash "${LANE_LIVENESS_BIN}" --project-root "${PROJECT_ROOT}" --lane "${_probe_id}" --no-codex --json 2>/dev/null || true)"
     _v="$(_placement_probe_field "${_row}" verdict)"
     _reason="$(_placement_probe_field "${_row}" reason)"
     _age="$(_placement_probe_field "${_row}" age_s)"
+    _watcher_only="$( _placement_probe_field "${_row}" watcher_only )"
+    [[ "${_watcher_only}" == "1" ]] || _watcher_only=0
     [[ -z "${_age}" ]] && _age="?"
     _signal="none"
     case "${_reason}" in
@@ -883,6 +1031,23 @@ _resolve_pinned_placement() {
       break
     fi
   done
+  if (( _live == 1 )); then
+    # FORK-STORM-KILLS-HOOKS-01 (acceptance 9/10): a lane whose ONLY live
+    # process is a watcher-role pid is NOT live. This is the closed loop's
+    # load-bearing consumer fix: a stale lane-pulse watcher (reparented to
+    # launchd, alive for hours) must never make the next dispatch refuse with
+    # bare lane_is_live. Reap the watcher (TERM; its EXIT trap cleans its own
+    # pidfile), journal the DISTINCT cause, and let the pin proceed.
+    if [[ "${_watcher_only}" == "1" ]]; then
+      _wpid="$(_placement_probe_field "${_row}" pid)"
+      emit decision "stale_watcher_reaped task=${sig8:-?} probe_id=${_probe_id} watcher_pid=${_wpid:-?} verdict=${_v} age=${_age}"
+      printf '[leadv2-dispatch-code] stale watcher on lane %s (pid=%s) — reaped, pin proceeds\n' \
+        "${_probe_id}" "${_wpid:-?}" >&2
+      [[ "${_wpid:-}" =~ ^[0-9]+$ ]] && kill "${_wpid}" 2>/dev/null || true
+      STALE_WATCHER_REAPED=1
+      _live=0
+    fi
+  fi
   if (( _live == 1 )); then
     reason="lane_is_live"
     emit decision "lane_liveness verdict=live task=${sig8:-?} signal=${_signal} probe_id=${_probe_id} raw=${_v} age=${_age}"
@@ -903,6 +1068,10 @@ _resolve_pinned_placement() {
   WORK_ROOT="${candidate}"
   export LEADV2_LANE_WORK_ROOT="${WORK_ROOT}"
   PLACEMENT_PINNED=1
+  # LANE-PLACEMENT-01: propagate the resolved founder id so downstream guards
+  # (e.g. _lane_writes_guard's existing-worktree admission path) can see the
+  # lane this pin already proved exists. An explicit --task-id wins.
+  [[ -z "${founder_task_id:-}" ]] && founder_task_id="${key}"
   _set_worktree_pin_line
   local _mode="resume-lane"
   [[ -n "${placement_path}" ]] && _mode="worktree"
@@ -946,6 +1115,54 @@ _resolve_pinned_placement() {
 _set_worktree_pin_line() {
   [[ -n "${WORK_ROOT:-}" && "${WORK_ROOT}" != "${PROJECT_ROOT}" ]] || return 0
   WORKTREE_PIN_LINE="WORKTREE PIN: all edits go in ${WORK_ROOT}; do NOT cd to the main checkout even if the mission text names it."
+}
+
+_deliver_plan_into_lane() { # <sig8> <founder-task-id>
+  # Behavioral coverage is selected by tests/run-all.sh's EXTRA_SUITE_MAP.
+  local sig8="$1" task_id="$2" src dst f
+  LANE_LOCAL_PLAN_LINE=""
+  [[ -n "${WORK_ROOT:-}" ]] || {
+    emit decision "lane_plan_missing task=${sig8} reason=work_root_unset"
+    _dl_note "${sig8}" refused plan_work_root_unset
+    exit 5
+  }
+  if [[ "${WORK_ROOT}" == "${PROJECT_ROOT}" ]]; then
+    LANE_PLAN_DELIVERY_STATUS="not_required"
+    emit decision "lane_plan_skipped task=${sig8} reason=shared_tree"
+    return 0
+  fi
+  if [[ -z "${task_id}" ]]; then
+    LANE_PLAN_DELIVERY_STATUS="refused"
+    emit decision "lane_plan_missing task=${sig8} reason=task_id_unset"
+    _dl_note "${sig8}" refused plan_task_id_unset
+    exit 5
+  fi
+  src="${PROJECT_ROOT}/docs/handoff/${task_id}"
+  dst="${WORK_ROOT}/docs/handoff/${task_id}"
+  if [[ ! -f "${src}/context.yaml" ]]; then
+    LANE_PLAN_DELIVERY_STATUS="source_absent"
+    emit decision "lane_plan_missing task=${sig8} reason=source_absent source=${src}/context.yaml"
+    # FORK-STORM-KILLS-HOOKS-01 (acceptance 10): when this dispatch only got
+    # this far because a stale watcher was reaped off the lane (see the
+    # placement probe), the skip is a FAULT trace, not a deliberate skip —
+    # carry the distinct cause so the event stream can never confuse the two.
+    local _skip_cause="plan_source_absent"
+    [[ "${STALE_WATCHER_REAPED:-0}" == "1" ]] && _skip_cause="plan_source_absent_stale_watcher"
+    _dl_note "${sig8}" skipped "${_skip_cause}"
+    return 0
+  fi
+  mkdir -p "${dst}" 2>/dev/null || true
+  for f in "${src}"/context.yaml "${src}"/brief.md "${src}"/plan-*.md; do
+    [[ -f "${f}" ]] || continue
+    cp -f "${f}" "${dst}/$(basename "${f}")" 2>/dev/null || true
+  done
+  if [[ ! -f "${dst}/context.yaml" ]]; then
+    emit decision "lane_plan_missing task=${sig8} source=${src}/context.yaml lane=${dst}/context.yaml"
+    _dl_note "${sig8}" refused plan_not_in_lane
+    exit 5
+  fi
+  LANE_LOCAL_PLAN_LINE="LANE PLAN: read ${dst}/context.yaml and the sibling brief.md and plan-*.md before editing."
+  LANE_PLAN_DELIVERY_STATUS="delivered"
 }
 
 # ── V3-GLM-LADDER-01: deferred-GLM park, codex credit watchdog, loud sonnet exceptions ──
@@ -1833,6 +2050,53 @@ if [[ -z "${GLM_POLICY_RESOLVER}" ]]; then
     [[ -f "${_canonical_resolver}" ]] && GLM_POLICY_RESOLVER="${_canonical_resolver}"
   fi
 fi
+# ARMS-ADMISSION-01: the base arm the legacy resolver treats as "no policy
+# applied" comes from the SAME capability_matrix cost ranking the arbiter
+# uses (leadv2-route-arbiter.sh router_v2.capability_matrix), not a
+# hardcoded "glm" -- otherwise glm-flash (cost 0.4, built for exactly this,
+# GLM-53-FLASH-ARM-01) is never a candidate on the arbiter's fail-open
+# fallback path (T17: arbiter is the PRIMARY chain source; this function only
+# feeds the fallback resolve_arm() path and its own seed for the legacy
+# ladder). Mirrors the arbiter's require_trusted gate: an untrusted
+# (protected: false) arm is excluded from the pick only when this task
+# WRITES production code (DC_KIND not in review/audit/plan) on a
+# protected/safety lane -- same split as _build_candidate_chain. Cheapest
+# capable+eligible cell wins; glm-flash is never special-cased ahead of glm,
+# it wins only when the routing data says it is cheaper AND capable. Falls
+# back to "glm" on any resolution failure -- fail-open, unchanged behaviour
+# for a repo/config that predates this fix.
+_select_base_arm() {
+  local _kind="${DC_KIND:-code}" _size_raw="${DC_TASK_CLASS:-standard}"
+  local _writes=1
+  case "${_kind}" in review|audit|plan) _writes=0 ;; esac
+  local _require_trusted=0
+  if [[ "${DC_SAFETY:-0}" == "1" || ( "${DC_PROTECTED:-0}" == "1" && "${_writes}" == "1" ) ]]; then
+    _require_trusted=1
+  fi
+  [[ -r "${ROUTING_YAML}" ]] || { printf 'glm'; return; }
+  python3 -c '
+import sys, yaml
+try:
+    d = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    print("glm"); sys.exit(0)
+kind = sys.argv[2]
+size_raw = (sys.argv[3] or "standard").lower()
+require_trusted = sys.argv[4] == "1"
+SIZE_MAP={"standard":"standard","heavy":"heavy","bulk":"bulk","trivial":"standard","light":"standard","strategic":"heavy"}
+size = SIZE_MAP.get(size_raw, "standard")
+cells = ((d.get("router_v2") or {}).get("capability_matrix")) or []
+capable = [c for c in cells
+           if kind in (c.get("kinds") or [])
+           and size in (c.get("sizes") or [])
+           and (not require_trusted or c.get("protected", False))]
+if not capable:
+    print("glm"); sys.exit(0)
+capable.sort(key=lambda c: float(c.get("cost", 999)))
+print(capable[0].get("arm") or "glm")
+' "${ROUTING_YAML}" "${_kind}" "${_size_raw}" "${_require_trusted}" 2>/dev/null || printf 'glm'
+}
+
 resolve_arm() {
   local signals_json
   # Resolver unresolvable in ANY copy (both lookups above missed): fail CLOSED on
@@ -1869,7 +2133,8 @@ print(json.dumps({
   # local-signals_json-then-conditional-flag shape (bash 5.3, reproducible), which
   # made argparse silently reject the flag and fail the resolver on every call
   # (found by T-b's live-policy harness — the CLI mode had never been exercised).
-  local -a _resolver_args=(--routing-yaml "${ROUTING_YAML}" --job build --base-arm glm --signals "${signals_json}")
+  local _base_arm; _base_arm="$(_select_base_arm)"
+  local -a _resolver_args=(--routing-yaml "${ROUTING_YAML}" --job build --base-arm "${_base_arm}" --signals "${signals_json}")
   [[ -n "${GLM_POLICY_QUOTA_LIVE:-}" ]] && _resolver_args+=(--quota-live "${GLM_POLICY_QUOTA_LIVE}")
   DC_PROTECTED="${DC_PROTECTED:-0}" \
   DC_SAFETY="${DC_SAFETY:-0}" \
@@ -2026,7 +2291,17 @@ _build_candidate_chain() {  # <arm> <sig8> ; mutates candidate_arms
     emit decision "arm_vocabulary_mismatch by=router arm=${_arm} fallback=sonnet task=${_sig8} reason=launcher_unknown_arm"
     log_err "arm_vocabulary_mismatch: unknown arm=${_arm} for task=${_sig8}, falling back to sonnet"
   fi
-  if [[ "${DC_PROTECTED:-0}" == "1" || "${DC_SAFETY:-0}" == "1" ]]; then
+  # ARMS-ADMISSION-01: DC_PROTECTED means "this LANE writes production code
+  # under a protected path" -- it must not ban an untrusted arm from work that
+  # writes nothing dangerous (review/audit/plan). DC_SAFETY stays a HARD
+  # requirement regardless of kind -- it is about the CONTENT being touched,
+  # not the lane. Mirrors leadv2-route-arbiter.sh's require_trusted split.
+  local _kind_now="${DC_KIND:-code}"
+  local _writes_prod=1
+  case "${_kind_now}" in
+    review|audit|plan) _writes_prod=0 ;;
+  esac
+  if [[ "${DC_SAFETY:-0}" == "1" || ( "${DC_PROTECTED:-0}" == "1" && "${_writes_prod}" == "1" ) ]]; then
     local -a _trusted=()
     local _cand _cand_i _cand_untrusted
     for _cand in "${candidate_arms[@]}"; do
@@ -2553,7 +2828,13 @@ resolve_v2_dispatch() {
     || { _v2_fail "judge" "$errf"; rm -rf "$tmp"; return 1; }
   printf '%s' "$estimate" > "$tmp/estimate.json"
   allowed="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["eligible"]))' "$tmp/l1.json")"
-  task_class="$(python3 -c 'import json,sys; e=json.load(open(sys.argv[1])); print(e["work_kind"]+":"+("short" if e["duration_class"]=="short" and e["complexity"] in ("trivial","simple") else "long"))' "$tmp/estimate.json")"
+  # COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #2): the bandit's context-key used
+  # to collapse duration_class+complexity into one binary short/long flag, so a
+  # trivial one-liner and a multi-subsystem "long" task shared a key whenever
+  # both duration_class read "long". Carry complexity as its own key segment
+  # instead of folding it into the binary -- the bandit's per-key stats now
+  # separate a "build:long:trivial" mission from "build:long:complex".
+  task_class="$(python3 -c 'import json,sys; e=json.load(open(sys.argv[1])); print(e["work_kind"]+":"+e.get("duration_class","unknown")+":"+e.get("complexity","unknown"))' "$tmp/estimate.json")"
   out="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTER_V2=1 bash "$bandit" sample --context-key "$task_class" --allowed "$allowed" --heuristic glm 2>"$errf")" || true
   printf '%s\n' "$out" | sed -n 's/^samples=//p' | head -1 > "$tmp/samples.json"
   python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$tmp/samples.json" >/dev/null 2>&1 || python3 -c 'import json,sys; print(json.dumps({x:.75 for x in json.load(open(sys.argv[1]))["eligible"]}))' "$tmp/l1.json" > "$tmp/samples.json"
@@ -2562,6 +2843,49 @@ resolve_v2_dispatch() {
   out="$(PROJECT_ROOT="$PROJECT_ROOT" LEADV2_ROUTING_YAML="$ROUTING_YAML" bash "$rv2" resolve --task-id "$sig8" --routing-yaml "$ROUTING_YAML" --l1-json "$tmp/l1.json" --estimate-json "$tmp/estimate.json" --samples-json "$tmp/samples.json" --headroom-weights-json "$tmp/weights.json" --account "${LEADV2_ROUTER_V2_ACCOUNT:-unknown}" 2>"$errf")"; rc=$?
   [[ $rc -eq 0 ]] || { _v2_fail "resolve" "$errf"; rm -rf "$tmp"; return "$rc"; }
   rm -rf "$tmp"; printf '%s\ntier=%s\n' "$out" "${LEADV2_ROUTER_V2_CODEX_TIER:-standard}"
+}
+
+# ── COMPLEXITY-ESTIMATOR-IS-OFF-01 ────────────────────────────────────────────
+# CENSUS CORRECTION (see docs/handoff/dispatch-0672c002/developer.full.md):
+# resolve_v2_dispatch() above and its LEADV2_ROUTER_V2 gate are a SHADOW path
+# -- the live arm-selection mechanism is route_arbiter() (leadv2-route-
+# arbiter.sh), unconditionally consulted as "the first candidate-chain source"
+# (T17) regardless of LEADV2_ROUTER_V2. Its capability_matrix keys only on
+# (kind, size=admission task_class, protected) and a static per-cell `cost` --
+# it never saw leadv2-task-judge.sh's complexity/duration_class estimate. This
+# function is the fix: call the judge on EVERY dispatch (not just the v2
+# branch) so the arbiter descriptor built below can carry complexity/
+# duration_class, and degrade to "unknown" (never crash a dispatch) on any
+# judge failure.
+_dispatch_complexity_estimate() {  # <mission> <sig8> <task_class> -> "work_kind<TAB>complexity<TAB>duration_class"
+  local mission="$1" sig8="$2" class="$3" judge tmp estimate fields
+  judge="${LEADV2_TASK_JUDGE_BIN:-${SCRIPT_DIR}/leadv2-task-judge.sh}"
+  if [[ ! -f "${judge}" ]]; then
+    emit decision "complexity_estimate_unavailable task=${sig8} reason=judge_binary_missing degrade=arbiter_uses_size_only"
+    printf 'unknown\tunknown\tunknown\n'
+    return 0
+  fi
+  tmp="$(mktemp "${TMPDIR:-/tmp}/leadv2-judge-live.XXXXXX")" || { printf 'unknown\tunknown\tunknown\n'; return 0; }
+  printf '%s' "${mission}" > "${tmp}"
+  estimate="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${judge}" --mission-file "${tmp}" --task-id "${sig8}" --class "${class}" 2>/dev/null)"
+  rm -f "${tmp}"
+  if [[ -z "${estimate}" ]]; then
+    emit decision "complexity_estimate_unavailable task=${sig8} reason=judge_call_failed degrade=arbiter_uses_size_only"
+    printf 'unknown\tunknown\tunknown\n'
+    return 0
+  fi
+  fields="$(python3 -c '
+import json, sys
+try:
+    e = json.loads(sys.argv[1])
+    print("%s\t%s\t%s" % (e.get("work_kind", "unknown") or "unknown",
+                           e.get("complexity", "unknown") or "unknown",
+                           e.get("duration_class", "unknown") or "unknown"))
+except Exception:
+    print("unknown\tunknown\tunknown")
+' "${estimate}" 2>/dev/null)"
+  [[ -n "${fields}" ]] || fields="unknown	unknown	unknown"
+  printf '%s\n' "${fields}"
 }
 
 # ── dispatch-ledger dedup (FIX PASS 4: pending/confirmed + TTL, see doc block above) ──
@@ -3443,7 +3767,32 @@ _lane_writes_guard() {
   [[ -n "${founder_task_id:-}" ]] && _wt="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${LANE_WORKTREE_BIN}" path-of "${founder_task_id}" 2>/dev/null)"
   [[ -n "${_wt}" ]] && return 0
   ARCHITECT_PREPASS_REASON="no_lane_writes"
-  emit decision "architect_prepass task=${sig8} status=failed reason=no_lane_writes"
+  emit decision "architect_prepass task=${sig8} status=failed reason=no_lane_writes remedy=LANE_WRITES:a,b,c"
+  log_err "dispatch parked: no declared write set (reason=no_lane_writes)"
+  log_err "  remedy: add a 'LANE_WRITES: a,b,c' line to the mission (comma-separated paths, no bullets/prose)"
+  return 1
+}
+
+# _mission_writeset_guard <sig8> <writes_csv> <raw_mission> -> 0 ok, 1 park
+# DISPATCH-CLOSE-GATE-01 Mechanism 1: a mission whose Done-means (or a "write ... to " /
+# "leave the logs in " instruction) names a path outside the lane's declared LANE_WRITES
+# cannot land -- the worker either writes out of scope (violation) or correctly stops and
+# the round is wasted (measured cost: two full re-dispatch rounds, 2026-08-30). Refuse
+# BEFORE spawn instead, naming the missing paths and a ready-to-paste corrected line.
+# See lib/leadv2-mission-writeset.sh for the extraction/coverage rules.
+_mission_writeset_guard() {
+  local sig8="$1" writes="$2" raw="$3"
+  [[ "${REQUIRE_MISSION_WRITESET}" == "1" ]] || return 0
+  local missing
+  missing="$(leadv2_writeset_missing "${writes}" <<< "${raw}")"
+  [[ -z "${missing}" ]] && return 0
+  local suggested
+  suggested="$(printf '%s\n' "${missing}" | leadv2_writeset_suggest_line "${writes}")"
+  ARCHITECT_PREPASS_REASON="mission_writeset_missing"
+  emit decision "mission_writeset_refused task=${sig8} missing=$(printf '%s' "${missing}" | tr '\n' ',' | sed 's/,$//')"
+  log_err "mission-writeset: mission requires path(s) outside LANE_WRITES for task=${sig8}:"
+  log_err "${missing}"
+  log_err "corrected: ${suggested}"
   return 1
 }
 
@@ -3491,6 +3840,22 @@ _admission_classify() {
   ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
   DISPATCH_FREEPOOL_ROLE=""
   local receipt_task_id="${founder_task_id:-dispatch-${sig8}}"
+  # The task record is a floor on every entry path, including a same-digest
+  # resume that reuses its per-signature receipt below.
+  local task_floor=""
+  if [[ -n "${founder_task_id:-}" ]]; then
+    task_floor="$(leadv2_admission_read_task_receipt "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
+    # BRAIN-CLASS-LIVE-01 D3: brain.yaml (when a prior intake already wrote
+    # one for this task) is read here too, and only ever RAISES the floor --
+    # never overrides a higher task-class.yaml floor set by something else.
+    local _brain_floor
+    _brain_floor="$(leadv2_brain_read_class "${PROJECT_ROOT}" "${founder_task_id}" 2>/dev/null || true)"
+    if [[ -n "${_brain_floor}" ]]; then
+      if [[ -z "${task_floor}" ]] || (( $(_lv2_class_rank "${_brain_floor}") > $(_lv2_class_rank "${task_floor}") )); then
+        task_floor="${_brain_floor}"
+      fi
+    fi
+  fi
   local existing
   existing="$(leadv2_admission_read_receipt "${PROJECT_ROOT}" "${sig8}" 2>/dev/null || true)"
   if [[ -n "${existing}" ]]; then
@@ -3502,12 +3867,21 @@ _admission_classify() {
       # line, and the guard below decides admission from the phase records.
       ADMISSION_CLASS="${r_cls}"; ADMISSION_ROUTE="${r_route}"
       ADMISSION_SOURCE="${r_src}"; ADMISSION_WORK_KIND="${r_wk}"
+      if [[ -n "${task_floor}" ]] && (( $(_lv2_class_rank "${task_floor}") > $(_lv2_class_rank "${ADMISSION_CLASS}") )); then
+        ADMISSION_CLASS="${task_floor}"; ADMISSION_SOURCE="task_record"
+        case "${ADMISSION_CLASS}" in
+          Standard|Heavy|Strategic) ADMISSION_ROUTE="phases" ;;
+          *)                        ADMISSION_CLASS="Light"; ADMISSION_ROUTE="dispatch" ;;
+        esac
+      fi
       DISPATCH_FREEPOOL_ROLE="$(leadv2_admission_freepool_role "${r_wk}")"
       return 0
     fi
     # sig8 collision with a different digest: refuse to trust it, journal loud.
     emit decision "admission_receipt_mismatch task=${sig8} receipt_digest=${r_digest}"
   fi
+  # A resume has a new mission signature.  Its task record is therefore a
+  # floor, not an optional cache: the fresh estimate may escalate it only.
   local mfile estimate pair
   mfile="$(mktemp "${TMPDIR:-/tmp}/leadv2-admission.XXXXXX")" || return 0
   printf '%s' "${mission}" > "${mfile}"
@@ -3525,7 +3899,26 @@ _admission_classify() {
   else
     # task-judge failed outright (missing binary, rc!=0, unparseable): the
     # conservative class is Standard -> phases, never bare dispatch.
-    ADMISSION_CLASS="Standard"; ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
+    # BRAIN-CLASS-LIVE-01: Standard is a MINIMUM here, not a hardcoded
+    # answer -- a lead that already typed --task-class Heavy/Strategic must
+    # never be silently downgraded to Standard just because the judge died.
+    # (Round-1 defect: before this fix, judge failure discarded `explicit`
+    # entirely and this branch ALWAYS won, de-escalating any declared class
+    # above Standard -- exactly the "declared class is a floor" invariant
+    # this lane exists to hold, and exactly why leadv2-brain-record.sh labels
+    # this class_source=declared_fallback rather than classifier_error's
+    # historical "Standard, no exceptions" meaning.)
+    local _judge_fail_floor
+    _judge_fail_floor="$(_lv2_class_canonical "${explicit}")"
+    if (( $(_lv2_class_rank "${_judge_fail_floor}") > $(_lv2_class_rank "Standard") )); then
+      ADMISSION_CLASS="${_judge_fail_floor}"
+    else
+      ADMISSION_CLASS="Standard"
+    fi
+    ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
+  fi
+  if [[ -n "${task_floor}" ]] && (( $(_lv2_class_rank "${task_floor}") > $(_lv2_class_rank "${ADMISSION_CLASS}") )); then
+    ADMISSION_CLASS="${task_floor}"; ADMISSION_SOURCE="task_record"
   fi
   case "${ADMISSION_CLASS}" in
     Standard|Heavy|Strategic) ADMISSION_ROUTE="phases" ;;
@@ -3537,7 +3930,42 @@ _admission_classify() {
     "${ADMISSION_WORK_KIND:-unknown}" 2>/dev/null \
     || emit decision "admission_receipt_write_failed task=${sig8}"
   emit decision "task_class=${ADMISSION_CLASS} route=${ADMISSION_ROUTE} source=${ADMISSION_SOURCE} task=${sig8}"
+  # BRAIN-CLASS-LIVE-01: class_escalated/class_floor_held + the single
+  # brain_decision line + brain.yaml, ONLY on a fresh intake (the same-digest
+  # re-entry branch above already returned -- one decision record per task,
+  # not one per re-entry). Best-effort: a brain-record failure never refuses
+  # a dispatch that the admission map above already approved -- `|| true`
+  # absorbs a non-zero rc, but stderr is left UNredirected (R5 fix: a prior
+  # `2>/dev/null` here silently dropped every class_escalated/
+  # class_floor_held/brain_decision emit() line, since emit() always writes
+  # to stderr via log() regardless of whether JOURNAL_TASK is set -- the
+  # lane's headline decision output must reach stderr on every path).
+  if declare -F leadv2_brain_record >/dev/null 2>&1; then
+    leadv2_brain_record "${PROJECT_ROOT}" "${sig8}" "${receipt_task_id}" \
+      "${explicit}" "${flagged}" "${ADMISSION_CLASS}" "${ADMISSION_SOURCE}" \
+      "${estimate:-}" "${PHASE_RECORD_BIN}" "${lane_writes:-}" || true
+  fi
   return 0
+}
+
+# _resolve_class_with_brain_floor <sig8> <task_id> <base_class> -> stdout: final class
+# BRAIN-CLASS-LIVE-01 D3: a task's own brain.yaml (written at intake by
+# leadv2_brain_record) is a floor on any later re-entry that re-derives its
+# class independently (cmd_advance_arm's ledger/task-receipt lookup) --
+# never lowers base_class, only raises it, and journals which record source
+# won. Best-effort: brain.yaml being absent or unreadable falls back to
+# base_class unchanged (leadv2_brain_read_class already returns "" for that).
+_resolve_class_with_brain_floor() {
+  local sig8="$1" task_id="$2" cls="${3:-}"
+  if [[ -n "${task_id}" ]] && declare -F leadv2_brain_read_class >/dev/null 2>&1; then
+    local brain_cls
+    brain_cls="$(leadv2_brain_read_class "${PROJECT_ROOT}" "${task_id}" 2>/dev/null || true)"
+    if [[ -n "${brain_cls}" ]] && { [[ -z "${cls}" ]] || (( $(_lv2_class_rank "${brain_cls}") > $(_lv2_class_rank "${cls}") )); }; then
+      emit decision "phase_class_floor task=${sig8} source=brain_record class=${brain_cls}"
+      cls="${brain_cls}"
+    fi
+  fi
+  printf '%s' "${cls}"
 }
 
 # _phase_precondition_guard <sig8> <class> <writes> [waiver-args...] -> 0 proceed, 1 refuse
@@ -3598,6 +4026,14 @@ _phase_precondition_guard() {
   local -a assert_args
   assert_args=(assert "${sig8}" --class "${cls}")
   [[ "${scope}" == "pre-build" ]] && assert_args+=(--pre-build)
+  # PHASE-GATE-IS-INVERTED-01: no --at-bootstrap is forwarded any more. The
+  # guard derives bootstrap state itself, from the store, at assert time.
+  # Forwarding this caller's own pre-classify probe admitted EVERY brand-new
+  # lane unconditionally (the one nobody planned) while a resumed lane with
+  # records was the only kind ever enforced — exactly inverted
+  # (faee3fc5, measured 2026-09-01). A fresh Standard/Heavy lane must now
+  # carry plan+gate1 records BEFORE dispatch; lead-authored evidence
+  # (brief.md + recorded Gate-1 reason) satisfies both pre-spawn.
   [[ -n "${writes}" ]] && assert_args+=(--writes "${writes}")
   assert_args+=("${waiver_args[@]}")
   assert_out="$(bash "${PHASE_RECORD_BIN}" "${assert_args[@]}" 2>&1)" || assert_rc=$?
@@ -3620,8 +4056,23 @@ _phase_precondition_guard() {
         emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} mode=1"
         log_err "dispatch refused: missing mandatory phases: ${missing_csv}"
         local mp
+        # DISPATCH-PHASE-DEADLOCK-01: a printed remedy that cannot itself
+        # satisfy the gate it is offered for is not a remedy (measured cost:
+        # 8 hand-written-file workarounds on 2026-08-31). plan/gate1 now
+        # accept lead-authored evidence (see leadv2-phase-record.sh
+        # _verify_artifact) — print the command that actually clears each.
         for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
-          log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
+          case "$mp" in
+            plan)
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} plan --artifact docs/handoff/<task-id>/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)"
+              ;;
+            gate1)
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} gate1 --reason \"<founder gate-1 decision>\"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)"
+              ;;
+            *)
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
+              ;;
+          esac
         done
         return 1
       else
@@ -4069,6 +4520,7 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
     # declared writes or an existing lane worktree still satisfy the guard, so the
     # kill-switch remains usable -- it just can no longer bypass isolation.
     _lane_writes_guard "${sig8}" "${writes}" 0 || return 1
+    _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || return 1
     emit decision "architect_prepass task=${sig8} status=disabled reason=kill_switch"
     return 0
   fi
@@ -4084,6 +4536,7 @@ architect_prepass() { # <raw mission> <sig8> <writes> -> 0 ran/skipped/disabled,
     # H6: trivially satisfied (count==1 implies non-empty writes) -- called anyway so
     # there is exactly one guard call site per exit path.
     _lane_writes_guard "${sig8}" "${writes}" 0 || return 1
+    _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || return 1
     emit decision "architect_prepass task=${sig8} status=skipped reason=provably_one_file writes=${writes}"
     return 0
   fi
@@ -4296,7 +4749,7 @@ PY
   # (leadv2-dispatch-product-close.sh unscopable_diff). A lane worktree already isolates the
   # lane on its own branch, so it substitutes for a declaration. LEADV2_REQUIRE_LANE_WRITES=0
   # restores today (never guard).
-  if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _acceptance_guard "${sig8}" "${f}"; then
+  if ! _lane_writes_guard "${sig8}" "${writes}" 1 || ! _mission_writeset_guard "${sig8}" "${writes}" "${raw}" || ! _acceptance_guard "${sig8}" "${f}"; then
     # M7 (LANDING-BLOCKER-R2): stamp the .sig cache BEFORE returning so a byte-identical
     # retry of this same non-compliant mission hits the cache path (H4 re-runs once, then
     # parks) instead of paying a second full architect run before parking.
@@ -4360,18 +4813,106 @@ PY
 # idiom used at every launcher call site.
 LANE_PULSE_WATCH_BIN="${LEADV2_DISPATCH_LANE_PULSE_WATCH_BIN:-${SCRIPT_DIR}/leadv2-lane-pulse-watch.sh}"
 SINGLE_LEAD_BEAT_LOOP_BIN="${LEADV2_DISPATCH_BEAT_LOOP_BIN:-${SCRIPT_DIR}/leadv2-single-lead-beat-loop.sh}"
+# PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round 4: exposes the backgrounded
+# watcher's own pid to the caller (same subshell, no escape needed -- see the
+# adoption call site below) so a non-sonnet arm's active.yaml row can be
+# re-pinned to a process that outlives THIS dispatcher instead of staying
+# pinned to the dispatcher's own pid forever.
+_LV2_LANE_PULSE_WATCH_PID=""
+# BEAT-LOOP-ORPHANS-01: session-kind gate + owner-liveness tokens for the
+# detached loops this dispatcher arms. A headless worker session (glm-coder/
+# freepool-coder/kimi-coder/claude-subsession) that runs its own nested
+# dispatch must never arm a loop — when the worker exits, the loop has no
+# owner left to disarm it (measured 2026-09-01: 53 orphaned loops, load 244).
+# Fix-round 2: `unknown` FAILS CLOSED — no arm; one loop_armed_by_unknown_
+# session journal line (with reason=<why>) so a misjudged lead's starvation
+# is visible the minute it happens. A dispatcher that knows it IS the lead
+# arms explicitly via LEADV2_SESSION_KIND=lead.
+LV2_SESSION_KIND_LIB="${LV2_SESSION_KIND_LIB:-${SCRIPT_DIR}/../hooks/lib/leadv2-hook-session-kind.sh}"
+_lv2_session_kind() {  # -> sets _LV2_KIND, _LV2_OWNER_PID/_SID/_TRANSCRIPT
+  _LV2_KIND="unknown"; _LV2_OWNER_PID=""; _LV2_OWNER_SID=""; _LV2_OWNER_TRANSCRIPT=""
+  [[ -f "$LV2_SESSION_KIND_LIB" ]] || return 0
+  # shellcheck source=/dev/null
+  source "$LV2_SESSION_KIND_LIB"
+  _LV2_OWNER_SID="$(printf '%s' "${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64)"
+  # The dispatcher runs under the Bash-tool shell chain, so it has no
+  # transcript_path of its own — resolve the session's transcript from the
+  # platform layout (~/.claude/projects/<munged-cwd>/<sid>.jsonl) so the
+  # predicate gets its third evidence source.
+  if [[ -n "${_LV2_OWNER_SID}" ]]; then
+    _LV2_OWNER_TRANSCRIPT="$(ls -t "${HOME}/.claude/projects/"*"/${_LV2_OWNER_SID}.jsonl" 2>/dev/null | head -1 || true)"
+  fi
+  # Direct call (no $() subshell): keeps LEADV2_SESSION_KIND_OUT/_REASON in
+  # THIS shell so the fail-closed journal carries reason=<why>.
+  leadv2_hook_session_kind "${_LV2_OWNER_TRANSCRIPT}" >/dev/null 2>&1 || true
+  _LV2_KIND="${LEADV2_SESSION_KIND_OUT:-unknown}"
+  if command -v leadv2_loop_owner_pid >/dev/null 2>&1; then
+    _LV2_OWNER_PID="$(leadv2_loop_owner_pid)"
+  fi
+  return 0
+}
 _arm_lane_pulse_watch() {  # <sig8> — fail-open, never blocks dispatch
+  _LV2_LANE_PULSE_WATCH_PID=""
   [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
   [[ -f "${LANE_PULSE_WATCH_BIN}" ]] || return 0
-  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
+  _lv2_session_kind
+  # Fix-round 2: worker refuses; unknown FAILS CLOSED too — journal and do
+  # not arm. Only a `lead` classification (or the LEADV2_SESSION_KIND=lead
+  # pin) arms a persistent loop.
+  if [[ "${_LV2_KIND}" != "lead" ]]; then
+    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
+      lane-pulse-watch "${_LV2_KIND}" 2>/dev/null || true
+    return 0
+  fi
+  LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
+    LEADV2_LOOP_OWNER_SID="${_LV2_OWNER_SID}" \
+    LEADV2_LOOP_OWNER_TRANSCRIPT="${_LV2_OWNER_TRANSCRIPT}" \
+    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
     nohup bash "${LANE_PULSE_WATCH_BIN}" --sig "${1}" >/dev/null 2>&1 </dev/null 9>&- &
+  _LV2_LANE_PULSE_WATCH_PID=$!
+  # _spawn_worker_body is captured by command substitution.  In bash that
+  # subshell otherwise waits for its background job before returning, turning
+  # a persistent watcher into a dispatch hang.  Disown is available in the
+  # required bash 3.2 and preserves the watcher while releasing the launcher.
+  disown "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null || true
 }
 _arm_single_lead_beat() {  # fail-open, armed once (loop's own pidfile guards re-arm)
   [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
   [[ "${LEADV2_SINGLE_LEAD_BEAT:-1}" == "0" ]] && return 0
   [[ -f "${SINGLE_LEAD_BEAT_LOOP_BIN}" ]] || return 0
-  LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
+  _lv2_session_kind
+  # Fix-round 2: same fail-closed rule as _arm_lane_pulse_watch — worker and
+  # unknown never arm; only `lead` (incl. the LEADV2_SESSION_KIND=lead pin).
+  if [[ "${_LV2_KIND}" != "lead" ]]; then
+    leadv2_loop_arm_journal "${PROJECT_ROOT}/docs/leadv2/loop-arm-journal.log" \
+      single-lead-beat-loop "${_LV2_KIND}" 2>/dev/null || true
+    return 0
+  fi
+  LEADV2_LOOP_OWNER_PID="${_LV2_OWNER_PID}" \
+    LEADV2_LOOP_OWNER_SID="${_LV2_OWNER_SID}" \
+    LEADV2_LOOP_OWNER_TRANSCRIPT="${_LV2_OWNER_TRANSCRIPT}" \
+    LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" \
     nohup bash "${SINGLE_LEAD_BEAT_LOOP_BIN}" >/dev/null 2>&1 </dev/null 9>&- &
+}
+
+# ── PLUGIN-PAPERCUTS-01 (defect 2): codex tier validation ─────────────────────
+# codex-task.sh accepts ONLY --tier top|standard|volume (probed live 2026-08-31:
+# `--tier spark` -> "[codex-task] unknown --tier: spark (expected
+# top|standard|volume)"; spark is hard-banned there, founder directive
+# 2026-04-28). A routing cell pinning any other tier used to win the auction and
+# then die INSIDE the launcher at spawn time, silently falling through to a
+# costlier arm. Validate at RESOLUTION time instead and fail loudly: a config
+# error must surface as a config error, never as a routing fallthrough.
+# Called at every site that exports RESOLVED_CODEX_TIER.
+_codex_tier_validate() {  # <tier> <sig8> — returns 0 valid; exits 1 loudly on a launcher-rejected tier
+  local _tier="${1:-}" _sig="${2:-?}"
+  case "${_tier}" in
+    top|standard|volume) return 0 ;;
+  esac
+  emit decision "route_tier_invalid task=${_sig} arm=codex tier=${_tier} accepted=top|standard|volume reason=launcher_rejects_tier"
+  log_err "[leadv2-dispatch-code] REFUSE: routing pins codex tier '${_tier}' but codex-task.sh accepts only top|standard|volume (spark is banned in this project). Fix leadv2-routing.yaml -- refusing loudly instead of falling through to a costlier arm."
+  printf '[leadv2-dispatch-code] REFUSE: codex tier %s is not launchable (codex-task.sh accepts: top|standard|volume)\n' "${_tier}" >&2
+  exit 1
 }
 
 # ── spawn: actually launch the resolved worker (Finding 2) ────────────────────────
@@ -4513,7 +5054,7 @@ spawn_product_close() { # <sig8> <author arm> <normalized handle> <quota-eligibl
     LEADV2_DISPATCH_LANE_MISSION="${lane_mission_path}" \
     LEADV2_DISPATCH_LANE_WRITES="${lane_writes_csv}" \
     LEADV2_DISPATCH_LANE_DELIVERABLE="${lane_deliverable_decl}" \
-    LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" \
+    LEADV2_LANE_WORK_ROOT="${WORK_ROOT}" LEADV2_WRITE_ROOT="${WORK_ROOT}" \
     LEADV2_LANE_START_SHA="${LANE_START_SHA:-}" \
     "${BASH:-bash}" "${close_bin}" "${PROJECT_ROOT}" "${sig8}" "${author}" "${handle}" "${E2E_GATE}" "${REVIEW_GATE}" "${founder_task_id}" "${DISPATCH_LANE_NAME:-}" \
       >/dev/null 2>&1 &
@@ -4586,9 +5127,37 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
   return 1
 }
 
+# GLM-EFFICIENCY-01: class -> effort contract for the GLM spawn, one function
+# so suites can extract and test it in isolation (test-glm-effort-wiring.sh).
+# Raw task class in, Z.AI effort out (docs.z.ai/guides/llm/glm-5.3.md:
+# reasoning_effort low|high|max, default max; CC 2.1.258 also accepts medium,
+# which Z.AI auto-converts to high). An unrecognized class falls back to the
+# arbiter's RESOLVED_EFFORT, then high — never empty.
+# fix-round-3 (C1): DC_TASK_CLASS is always Title-case (Trivial/Light/Standard/
+# Heavy/Strategic -- see _admission_classify and lib/leadv2-lane-guard.sh's
+# _lv2_class_rank), so match on a lowercased copy, never the raw string, or
+# every arm here is dead and every dispatch silently falls through to
+# RESOLVED_EFFORT. Output is "<effort> <source>" (source: class_map|fallback)
+# so the caller journals which path actually fired instead of a fixed label.
+_glm_effort_for_class() { # <raw task class> -> stdout: "<effort> <source>"
+  local _cls
+  _cls="$(printf '%s' "${1:-standard}" | tr '[:upper:]' '[:lower:]')"
+  case "${_cls}" in
+    trivial|light|bulk) printf '%s %s' 'low' 'class_map' ;;
+    standard)           printf '%s %s' 'high' 'class_map' ;;
+    heavy|strategic)    printf '%s %s' 'max' 'class_map' ;;
+    *)                  printf '%s %s' "${RESOLVED_EFFORT:-high}" 'fallback' ;;
+  esac
+}
+
 _spawn_worker_body() {
   local arm="$1" mission="$2" sig8="$3" errf="$4"
   local out rc handle err
+  if [[ "${WORK_ROOT}" != "${PROJECT_ROOT}" ]]; then
+    mkdir -p "${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}" 2>/dev/null || true
+    git -C "${PROJECT_ROOT}" status --porcelain --untracked-files=all 2>/dev/null | \
+      sed -E 's/^.. //; s/^"//; s/"$//' > "${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/main-dirt.base" || true
+  fi
   # LANE-PLACEMENT-01: prepend the worktree pin line ONCE here — covers all four arms
   # (glm/kimi/sonnet/codex) with a single insertion, no per-arm drift.  Prepended AFTER
   # compute_sig/classify/router so sig8, dedup ledger, and routing are byte-identical with
@@ -4626,6 +5195,22 @@ _spawn_worker_body() {
       if [[ "${arm}" == "glm-flash" ]]; then
         _glm_model="glm-5.3-flash"
       fi
+      # GLM-EFFICIENCY-01: RESOLVED_EFFORT is now WIRED, not dropped. glm-coder.sh
+      # appends `--effort <v>` to its `claude -p` argv when GLM_EFFORT is set
+      # (CC 2.1.258 --effort; Z.AI's Anthropic-compat layer reads it as
+      # output_config.effort — probe: docs/handoff/GLM-EFFICIENCY-01/report.md).
+      # Mapping is by RAW task class (this dispatcher owns the class->effort
+      # contract; the arbiter's effort_matrix is tag-keyed and cannot see the
+      # raw class): trivial|light -> low, standard -> high, heavy|strategic ->
+      # max, bulk -> low (mechanical). Review/verify roles would pay `high`
+      # regardless of class — glm is in DEFAULT_REVIEW_EXCLUSIONS today, so
+      # this row is contract-complete but currently unreachable.
+      local _glm_effort _glm_effort_source
+      read -r _glm_effort _glm_effort_source <<<"$(_glm_effort_for_class "${DC_TASK_CLASS:-standard}")"
+      case "${LEADV2_WORKER_ROLE:-developer}" in
+        review|verify|critic) _glm_effort=high; _glm_effort_source=role_override ;;
+      esac
+      emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} mechanism=flag source=${_glm_effort_source:-fallback} resolved=${RESOLVED_EFFORT:-unset}"
       # FIX PASS 4: `9>&-` closes the lock fd for this call as defense-in-depth -- the
       # redesign already never holds the dispatch lock across spawn (spawn_worker runs
       # outside any lock this script itself opens), but a launcher spawns a DETACHED
@@ -4636,7 +5221,7 @@ _spawn_worker_body() {
       # The GLM wrapper owns the terminal JSON envelope and invokes the shared
       # dev cost shim only after it exists.  Stamp this dispatch identity here
       # so direct and dispatcher-launched lanes use one attribution contract.
-      out="$(LEADV2_COSTLOG_ARM="glm-coder:${arm}" LEADV2_WORKER_ROLE=developer GLM_MODEL="${_glm_model}" bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      out="$(LEADV2_COSTLOG_ARM="glm-coder:${arm}" LEADV2_WORKER_ROLE=developer GLM_MODEL="${_glm_model}" GLM_EFFORT="${_glm_effort}" bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
         local refusal
@@ -4652,7 +5237,15 @@ _spawn_worker_body() {
         log_err "spawn(${arm}) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
-      handle="$(printf '%s\n' "${out}" | tail -1)"
+      # GLM-ARM-THROUGHPUT-01: glm-coder.sh's `bg` echoes the bare run_id ONCE
+      # (e.g. "260902-000858-repo-60fa"), never a doubled "$handle$handle" and
+      # never with a leading "$RUNS/" path. The prior halving logic here
+      # truncated every handle to a garbage half-string that never matched a
+      # real run dir, so `status <handle>` below always reported not_live --
+      # glm-flash (and plain glm, whenever it reached this far) never
+      # actually launched. Just trim the trailing newline; the run_id IS the
+      # handle.
+      handle="${out%$'\n'}"
       # FIX PASS 2 (Finding 2, fake-launcher/empty-handle no-op): a launcher that exits
       # 0 without spawning anything (e.g. LEADV2_DISPATCH_GLM_BIN=/bin/true) must not be
       # treated as a live worker.
@@ -4676,6 +5269,12 @@ _spawn_worker_body() {
       # (kimi-coder.sh is a clone of glm-coder.sh). The only launcher-specific
       # difference is its launch-probe refusal rc (77, vs. glm's 1/2) --
       # refusal_reason() already knows about that distinction.
+      # EFFORT-IS-NOT-WIRED-01: kimi (Moonshot) has no effort knob to wire --
+      # config/model-capability.yaml:193 records reasoning_effort as CURRENTLY
+      # LOCKED TO MAX on Moonshot's side (their own docs), so passing a lower
+      # resolved effort here would silently contradict that operational fact
+      # rather than change anything; journal the drop instead of pretending.
+      emit decision "effort_dropped by=router arm=${arm} task=${sig8} effort=${RESOLVED_EFFORT:-medium} reason=no_effort_control"
       out="$(bash "${KIMI_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
@@ -4692,7 +5291,15 @@ _spawn_worker_body() {
         log_err "spawn(kimi) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
-      handle="$(printf '%s\n' "${out}" | tail -1)"
+      # Extract handle from kimi-coder.sh output: format is "$RUNS/$handle$handle"
+      # Remove trailing newline
+      local _kimi_out="${out%$'\n'}"
+      # Get everything after the last slash
+      local _kimi_temp="${_kimi_out##*/}"
+      # Extract first half (since it's handle+handle)
+      local _kimi_len=${#_kimi_temp}
+      local _kimi_half=$((_kimi_len / 2))
+      handle="${_kimi_temp:0:_kimi_half}"
       if [[ -z "${handle}" ]]; then
         emit decision "spawn_failed by=router model=kimi task=${sig8} reason=empty_handle"
         log_err "spawn(kimi) returned an empty handle -- treating as launch failure (no-op launcher?)"
@@ -4715,6 +5322,9 @@ _spawn_worker_body() {
       # about both.
       local _fp_spawn_start _fp_spawn_ok=0
       _fp_spawn_start="$(date +%s)"
+      # EFFORT-IS-NOT-WIRED-01: freepool-coder.sh has no effort knob (same
+      # glm-coder.sh clone shape, prompt-level only) -- journal the drop.
+      emit decision "effort_dropped by=router arm=${arm} task=${sig8} effort=${RESOLVED_EFFORT:-medium} reason=no_effort_control"
       # PHASE-DISCIPLINE-01 D6 (a38a5bd fix): export FREEPOOL_ROLE HERE, at
       # the real dispatch call site, from the admission TaskEstimate's
       # work_kind (review->review, build/diagnose->implement, docs->bulk).
@@ -4776,9 +5386,14 @@ _spawn_worker_body() {
       # process having already been `cd`'d there by its caller -- same value glm/codex now
       # get via --cwd, so all three arms are cwd-independent of how dispatch-code.sh itself
       # was invoked.
+      # EFFORT-IS-NOT-WIRED-01: claude-subsession.sh's --effort flag is passed
+      # straight through to the `claude` CLI's own --effort arg untouched; an
+      # empty RESOLVED_EFFORT (arbiter never ran) omits the flag, same as before.
+      local -a _sonnet_effort_args=()
+      [[ -n "${RESOLVED_EFFORT:-}" ]] && _sonnet_effort_args=(--effort "${RESOLVED_EFFORT}")
       out="$(cd "${WORK_ROOT}" && PROJECT_ROOT="${PROJECT_ROOT}" bash "${SUBSESSION_BIN}" \
              --role developer --model sonnet \
-             --task-id "dispatch-${sig8}" --mission-file "${mfile}" 2>"${errf}" 9>&-)"; rc=$?
+             --task-id "dispatch-${sig8}" --mission-file "${mfile}" "${_sonnet_effort_args[@]}" 2>"${errf}" 9>&-)"; rc=$?
       rm -f "${mfile}"
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
@@ -4873,6 +5488,12 @@ _spawn_worker_body() {
       # resolves "standard" from the yaml today, but honor a manually-forced top without
       # hard-failing the spawn.
       [[ "${tier}" == "top" ]] && tier_args+=(--reason "leadv2-dispatch-code: codex-fitting mission")
+      # EFFORT-IS-NOT-WIRED-01: codex-task.sh's `task` subcommand takes an
+      # explicit --effort on the wire ({none,minimal,low,medium,high,xhigh});
+      # an explicit value here overrides the --tier default it would otherwise
+      # derive (_tier_model_effort). Absent RESOLVED_EFFORT (arbiter never ran)
+      # falls back to the tier's own default, same as before this change.
+      [[ -n "${RESOLVED_EFFORT:-}" ]] && tier_args+=(--effort "${RESOLVED_EFFORT}")
       # `9>&-` closes the lock fd for this call as defense-in-depth -- same rationale as
       # the glm/sonnet arms above: codex-task.sh's --background path detaches a job worker
       # that must never inherit an open fd 9.
@@ -4888,7 +5509,15 @@ _spawn_worker_body() {
           log "spawn(codex) refused: ${refusal}"
           return 2
         fi
-        emit decision "spawn_failed by=router model=codex task=${sig8} rc=${rc} reason=launcher_nonzero_exit"
+        # PLUGIN-PAPERCUTS-01 (defect 2, acceptance 4): a spawn-time failure that
+        # falls through to a costlier arm must be logged AS A FAILURE naming the
+        # arm and the launcher's own reason — the bare "launcher_nonzero_exit"
+        # used to be indistinguishable from a deliberate arm choice. The first
+        # stderr line (codex-task.sh's own error, e.g. "unknown --tier: spark")
+        # rides along as detail=.
+        local _codex_err_detail
+        _codex_err_detail="$(printf '%s\n' "${err}" "${out}" | grep -m1 -E -i 'error|unknown|refused|failed' | tr -d '\n' | cut -c1-160)"
+        emit decision "spawn_failed by=router model=codex task=${sig8} rc=${rc} reason=launcher_nonzero_exit detail=${_codex_err_detail:-<launcher-stderr-empty>}"
         log_err "spawn(codex) failed rc=${rc}: ${out} ${err}"
         return 1
       fi
@@ -4939,6 +5568,42 @@ _spawn_worker_body() {
   # dispatcher-owned lane watch for THIS sig and the single-lead beat loop.
   # Fail-open; the watchers own their own pidfile/replay-safety semantics.
   _arm_lane_pulse_watch "${sig8}"
+  # PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round 4 root cause #2: the sonnet
+  # arm's block above (~:4852-4860) is the ONLY case that ever adopts a real
+  # worker pid onto this lane's active.yaml row. Every other arm (glm/glm-
+  # flash/kimi/codex/freepool) is an async job handle, not a local fork of
+  # THIS process, so its row was left carrying the pre-spawn registration pid
+  # (this dispatcher's own durable/transient pid, stamped at ~:6186/6157)
+  # forever. That pid dies the instant this dispatcher process exits -- which
+  # is normal and immediate for an async arm, since spawn confirmation just
+  # means "the launcher accepted the job", not "the dispatcher stays up". The
+  # exit-trap disarm (rc=0 branch below, DISPATCH_SLOT_REG_ID="") already
+  # keeps the row from being explicitly deregistered, but a liveness check
+  # that reads the row's own pid (lib/leadv2-lane-state.sh's alive(), which
+  # os.kill()s it) sees a dead pid within seconds of dispatch returning even
+  # though the async worker is still running for up to an hour -- the exact
+  # "board empty while lanes live" / "corroborated dead: pid dead" symptom.
+  # Fix: re-pin the row to the lane-pulse watcher's pid instead. That watcher
+  # is backgrounded independent of this process (nohup, above) and exits
+  # itself ONLY at the lane's real terminal state or its derived timeout
+  # (leadv2-lane-pulse-watch.sh), so the registry's liveness now tracks the
+  # LANE's lifetime, not this dispatcher's. The sonnet arm keeps its own,
+  # more precise worker pid -- never overwritten here.
+  if [[ "${arm}" != "sonnet" && -n "${DISPATCH_REG_ID:-}" && -n "${_LV2_LANE_PULSE_WATCH_PID:-}" ]] \
+     && kill -0 "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null; then
+    set +e
+    if declare -F leadv2_active_set_worker_pid >/dev/null 2>&1; then
+      local _wpid_birth
+      _wpid_birth="$(_lv2_pid_birth "${_LV2_LANE_PULSE_WATCH_PID}" 2>/dev/null || printf '')"
+      # FORK-STORM-KILLS-HOOKS-01: the pid is a WATCHER, not a worker — stamp
+      # the kind so liveness (leadv2-lane-liveness.sh) never reads it as
+      # worker-liveness evidence, however long the watcher outlives us.
+      LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" leadv2_active_set_worker_pid \
+        "${DISPATCH_REG_ID}" "${_LV2_LANE_PULSE_WATCH_PID}" "${_wpid_birth}" "watcher" >/dev/null 2>&1 || true
+    fi
+    declare -F lane_adopt_pid >/dev/null 2>&1 && \
+      lane_adopt_pid "${DISPATCH_REG_ID}" "${DISPATCH_LEAD_SESSION_ID:-direct}" "${WORK_ROOT:-${PROJECT_ROOT}}" "build" "${_LV2_LANE_PULSE_WATCH_PID}" >/dev/null 2>&1 || true
+  fi
   _arm_single_lead_beat
   # S7-RETARGET-PERSIST-01: names which mission version this dispatch launched, so
   # "it relaunched the old premise" is a grep of this log, not archaeology. Fail-open
@@ -5709,9 +6374,13 @@ Usage:
                 [--ui-judgment] [--interactive] [--kind <k>] [--glm-failures N]
                 [--glm-lock-busy] [--force] [--no-spawn] [--task-class <class>]
                 [--resume-lane <task-sig8|founder-id>] [--worktree <abs-path>]
+                [--task-id <founder-task-id>]
+                --task-id <founder-task-id>: binds founder_task_id explicitly. --resume-lane
+                also resolves this from its own argument when --task-id is absent, so an
+                existing lane worktree can satisfy the lane-writes guard without it.
                 --task-class <trivial|light|standard|heavy|strategic|bulk>: named task-size
-                class, consulted by the dispatch ladder's `when:` gate (e.g. freepool's
-                `when: [standard, bulk]`) so an untrusted third-party arm only ever sees the
+                class, consulted by the dispatch ladder's \`when:\` gate (e.g. freepool's
+                \`when: [standard, bulk]\`) so an untrusted third-party arm only ever sees the
                 task sizes it was actually approved for. Defaults to "Standard" for a caller
                 that never resolved a size class (today's behaviour, unchanged).
                 Resolve the code-writing model (glm|sonnet|codex) via routing.yaml glm_policy,
@@ -5852,6 +6521,55 @@ cmd_record_review() {
   exit 0
 }
 
+# cmd_mission_writeset_check <mission_file> [<lane_writes_csv>]
+# DISPATCH-CLOSE-GATE-01 Mechanism 1, standalone entry point (also enforced automatically
+# inside architect_prepass via _mission_writeset_guard). Prints missing paths + a corrected
+# LANE_WRITES: line and exits 1 when the mission demands a path outside the write set;
+# exits 0 (silent) when covered.
+cmd_mission_writeset_check() {
+  local mission_file="$1" writes_csv="${2:-}"
+  [[ -n "${mission_file}" && -f "${mission_file}" ]] || { log_err "mission-writeset-check: mission file required"; exit 2; }
+  local missing
+  missing="$(leadv2_writeset_missing "${writes_csv}" < "${mission_file}")"
+  if [[ -z "${missing}" ]]; then
+    printf 'mission_writeset_ok\n'
+    exit 0
+  fi
+  printf 'mission_writeset_refused missing=%s\n' "$(printf '%s' "${missing}" | tr '\n' ',' | sed 's/,$//')"
+  printf '%s\n' "${missing}"
+  printf '%s\n' "${missing}" | leadv2_writeset_suggest_line "${writes_csv}"
+  exit 1
+}
+
+# cmd_close_gate <task_id>
+# DISPATCH-CLOSE-GATE-01 Mechanism 2, standalone entry point. Cross-checks named fixes in
+# docs/handoff/<task_id>/*.md against RED artifacts in docs/handoff/<task_id>/red/ and
+# prints one "unproven: <name>" line per unbacked claim. Never exits non-zero for an
+# unproven finding (D3: report, don't trap the lane) -- only a usage error exits non-zero.
+cmd_close_gate() {
+  local task_id="$1" dir
+  [[ -n "${task_id}" ]] || { log_err "close-gate: task_id required"; exit 2; }
+  # L1 (DISPATCH-CLOSE-GATE-01 round 2): task_id is concatenated onto PROJECT_ROOT/docs/
+  # handoff/ unvalidated -- reject a leading `/` (would replace the prefix under some
+  # concatenation forms) and any `..` segment (path traversal) at minimum.
+  case "${task_id}" in
+    /*|*..*) log_err "close-gate: invalid task_id '${task_id}'"; exit 2 ;;
+  esac
+  # M2: a hermetic test needs a scratch fixture dir outside the real repo tree --
+  # LEADV2_CLOSE_GATE_DIR_OVERRIDE substitutes for the PROJECT_ROOT-relative path
+  # entirely rather than letting task_id reach the filesystem unvalidated (L1 above).
+  dir="${LEADV2_CLOSE_GATE_DIR_OVERRIDE:-${PROJECT_ROOT}/docs/handoff/${task_id}}"
+  [[ -d "${dir}" ]] || { log_err "close-gate: no handoff dir at ${dir}"; exit 2; }
+  local unproven
+  unproven="$(leadv2_red_proof_unproven "${dir}")"
+  if [[ -z "${unproven}" ]]; then
+    printf 'red_proof_ok task=%s\n' "${task_id}"
+    exit 0
+  fi
+  printf '%s\n' "${unproven}"
+  exit 0
+}
+
 cmd_status() {
   local df rf
   df="$(dispatch_ledger_file)"; rf="$(review_ledger_file)"
@@ -5868,6 +6586,16 @@ cmd_resolve() {
   # confirmed by census) -- this span is closed by the outer `lane` arm_exit
   # trap's stack-drain, never by an explicit end call in this function.
   lv2_trace_begin "lane.resolve"
+  # Sweep before this invocation can reserve a new lane.  This is deliberately
+  # best-effort observability: an unavailable liveness probe must not turn an
+  # otherwise dispatchable task into a false admission failure.
+  # N5 fix (review-r5.md): match the other three LEDGER_BIN call sites (:1802,
+  # :2908, :2920) -- LEADV2_DISPATCH_TERMINAL_LEDGER=0 is documented at :499 as
+  # disabling ALL ledger writes, but this sweep invoker skipped the gate and ran
+  # regardless. A sweep that deregisters active.yaml rows and writes TRUE terminals
+  # under the kill switch defeats the switch's whole purpose (a wrongly-swept live
+  # lane leaves no trace, per HIGH-1's live repro).
+  [[ "${TERMINAL_LEDGER}" == "1" && -f "${LEDGER_BIN}" ]] && bash "${LEDGER_BIN}" sweep >/dev/null 2>&1 9>&- || true
   # Reconcile before admission: stale rows never consume a slot and a live
   # orphan is made visible before this dispatch can duplicate it.
   declare -F lane_reconcile >/dev/null 2>&1 && lane_reconcile >/dev/null 2>&1 || true
@@ -6057,10 +6785,14 @@ cmd_resolve() {
     fi
   fi
   fi  # LANE-PLACEMENT-01: close PLACEMENT_PINNED guard
+  # D3: delivery is after ensure/pin resolution; ensure-created lanes have no
+  # usable WORK_ROOT before this point.
+  _deliver_plan_into_lane "${sig8}" "${founder_task_id:-${sig8}}"
   # PLACEMENT-PIN-DEFAULT-01: pin the prompt on EVERY dispatch whose work root is a lane
   # worktree — the ensure-created path (2272) and the launcher-pre-exported path (267)
   # both land here, and both were unpinned.  Idempotent w.r.t. the flagged path above.
   _set_worktree_pin_line
+  [[ -z "${LANE_LOCAL_PLAN_LINE:-}" ]] || mission="${LANE_LOCAL_PLAN_LINE}"$'\n\n'"${mission}"
   # LANE-START-SHA-01: unconditional, before any arm spawn -- overwrites any stale value
   # from a prior dispatch that reused this cache dir (mitigates R2: a nested/child dispatch
   # never inherits a parent's start sha because it always re-records its own here first).
@@ -6081,6 +6813,12 @@ cmd_resolve() {
   # refuses class>=Standard without same-task pre-build phase records.
   _admission_classify "${mission}" "${sig}" "${sig8}" "${task_class}" "${task_class_flagged:-0}"
   task_class="${ADMISSION_CLASS}"
+  # COMPLEXITY-ESTIMATOR-IS-OFF-01: unconditional -- every dispatch (not only
+  # LEADV2_ROUTER_V2=1) now carries a complexity estimate into the live
+  # arbiter descriptor below and the arm_resolved decision line.
+  local DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS
+  IFS=$'\t' read -r DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS \
+    <<<"$(_dispatch_complexity_estimate "${mission}" "${sig8}" "${task_class}")"
   # Admission says this mission lives in the full phase cycle: its Phase-4
   # re-entries need only the pre-build phases satisfied (the cycle is mid-
   # flight), not the whole-cycle completion contract. Explicit
@@ -6188,6 +6926,12 @@ cmd_resolve() {
       if [[ "${_lane_register_rc}" != "0" ]]; then
         if [[ "${_lane_register_rc}" == "3" ]]; then
           emit decision "dispatch_refused reason=lead_session_lane_cap task=${sig8} lead_session=${_lead_session_id}"
+          # LEAD-WORKER-CHANNEL-01: admission refusal is a lane-blocked
+          # event -- the lead already knows _lead_session_id right here
+          # (registration itself failed, so active.yaml has no row for
+          # ${sig8} yet to look it up from), so pass it explicitly rather
+          # than relying on the notifier's active.yaml fallback.
+          LEADV2_LEAD_SESSION_ID="${_lead_session_id}" "${SCRIPT_DIR}/leadv2-notify-lead.sh" "${sig8}" blocked "admission refused: lead_session_lane_cap (2 lanes already live for this lead)" >/dev/null 2>&1 || true
           exit 3
         fi
         emit decision "lane_state_register_failed task=${sig8} rc=${_lane_register_rc}"
@@ -6210,12 +6954,12 @@ cmd_resolve() {
   # next arm.  (E2E-GATE-RESIDUE-01 round 4 root cause.)
   set +e
 
-  # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
-  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
-    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
-
   # PHASES-ARE-THE-ONLY-PATH-01 §5: precondition guard at the same structural slot
   # as _lane_writes_guard / _acceptance_guard — after arg validation, before spawn.
+  # PHASE-BOOTSTRAP-DEADLOCK-01: this must run before the dispatcher's own
+  # classify record. A zero-record lane is the one legitimate bootstrap shape;
+  # recording classify first turns that shape into a resumed lane and makes the
+  # gate refuse its own first dispatch.
   local _phase_waiver_args=()
   for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
     _phase_waiver_args+=(--waiver "$_pw")
@@ -6225,6 +6969,12 @@ cmd_resolve() {
     # trap (cleanup_pending_dispatch) releases the registered row on this exit.
     exit 3
   }
+
+  # PHASES-ARE-THE-ONLY-PATH-01: record classify only after admission. The
+  # guard above owns the bootstrap decision; subsequent dispatches see this
+  # record and remain subject to the existing phase requirements.
+  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
+    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
 
   if [[ "${product_class}" == "product" ]]; then
     # PREPASS-DEGRADES-01 (2026-07-29): a prepass failure must NEVER stop the work. On
@@ -6505,7 +7255,32 @@ exit is treated as an incident."
   readings="$(printf '%s\n' "${resolved}" | sed -n 's/^readings=//p')"
   [[ "${router_label}" == "v2" ]] && rule="router_v2"
   [[ -n "${arm}" ]] || { log_err "resolver returned no arm: ${resolved}"; exit 1; }
-  emit decision "arm_resolved job=build arm=${arm} reason=${rule}${readings:+ readings=${readings}}"
+  # COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #3): the decision line now names
+  # the estimate that (should have) informed it -- complexity/duration_class
+  # alongside the resulting arm, so an unwired estimator is visible in the
+  # journal instead of silently absent.
+  emit decision "arm_resolved job=build arm=${arm} reason=${rule}${readings:+ readings=${readings}} complexity=${DC_COMPLEXITY:-unknown} duration_class=${DC_DURATION_CLASS:-unknown}"
+  # COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #3, "what it should cost"): best-
+  # effort, non-blocking -- a missing prior-art.yaml or cost-estimate script is
+  # a degrade (logged), never a dispatch failure. LEADV2_COST_ESTIMATE_BIN is
+  # the test seam; founder_task_id is the id cost-estimate.sh's own
+  # docs/handoff/<id>/ layout expects (falls back to sig8 when unbound, e.g. a
+  # caller that never passed --task-id).
+  if [[ "${LEADV2_DISPATCH_COST_ESTIMATE:-1}" != "0" ]]; then
+    local _cost_bin _cost_task_id _cost_out
+    _cost_bin="${LEADV2_COST_ESTIMATE_BIN:-${SCRIPT_DIR}/leadv2-cost-estimate.sh}"
+    _cost_task_id="${founder_task_id:-${sig8}}"
+    if [[ -f "${_cost_bin}" ]]; then
+      _cost_out="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${_cost_bin}" --task-id "${_cost_task_id}" --main-model sonnet 2>/dev/null)"
+      if [[ $? -eq 0 && -n "${_cost_out}" ]]; then
+        emit decision "cost_estimate_recorded task=${sig8} founder_task=${_cost_task_id} arm=${arm} complexity=${DC_COMPLEXITY:-unknown} path=docs/handoff/${_cost_task_id}/cost-estimate.yaml"
+      else
+        emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_failed degrade=no_estimate_recorded"
+      fi
+    else
+      emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_binary_missing degrade=no_estimate_recorded"
+    fi
+  fi
   # DISPATCH-BALANCE-BY-LIVE-QUOTA-01: the balancer's choice must be re-derivable
   # from the journal alone -- one decision line whenever the resolver balanced the
   # no-exception default between the GLM and Anthropic buckets (reason prefix
@@ -6517,7 +7292,16 @@ exit is treated as an incident."
     && emit decision "dispatch_balance task=${sig8} arm=${arm} reason=${reason}${readings:+ readings=${readings}}"
   # RESOLVED_CODEX_TIER is read by _spawn_worker_body's codex case (global, not passed as
   # a positional -- spawn_worker's signature is shared across all three spawning arms).
-  [[ "${arm}" == "codex" ]] && export RESOLVED_CODEX_TIER="${tier:-standard}"
+  # PLUGIN-PAPERCUTS-01 (defect 2): validate against the launcher BEFORE exporting.
+  if [[ "${arm}" == "codex" ]]; then
+    _codex_tier_validate "${tier:-standard}" "${sig8}"
+    export RESOLVED_CODEX_TIER="${tier:-standard}"
+  fi
+  # EFFORT-IS-NOT-WIRED-01: legacy resolver has no effort dimension (it never
+  # reads config/leadv2-routing.yaml's effort_matrix); default to medium
+  # (docs/model-effort-matrix.md's "DEFAULT for every spawn") until the T17
+  # arbiter below resolves a data-driven value from the SAME cell as arm/tier.
+  export RESOLVED_EFFORT="${RESOLVED_EFFORT:-medium}"
 
   # ANTI-DOUBLE-SPEND: one task = one model.
   # R1 FIX (Finding 3): --force NEVER bypasses the duplicate-task_sig refusal in the
@@ -6650,7 +7434,15 @@ exit is treated as an incident."
       _arb_ui=1
     fi
     [[ "${_arb_safety}" == "1" || "${_arb_ui}" == "1" ]] && _arb_protected=1
-    _arb_desc="$(python3 -c 'import json,sys; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[6]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${sig8}")"
+    # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01: pass the router's surviving set as
+    # allowed_arms so the arbiter's own matrix filter intersects against it
+    # instead of re-admitting an arm the router just excluded.
+    # COMPLEXITY-ESTIMATOR-IS-OFF-01: complexity/duration_class ride into the
+    # same descriptor so the capability_matrix (and any complexity_penalty
+    # rule) can see them, not just kind/size/protected.
+    local _arb_allowed_csv
+    _arb_allowed_csv="$(IFS=,; printf '%s' "${candidate_arms[*]}")"
+    _arb_desc="$(python3 -c 'import json,sys; allowed=[a for a in sys.argv[6].split(",") if a]; print(json.dumps({"kind":sys.argv[1],"size":sys.argv[2],"protected":sys.argv[3]=="1","safety":sys.argv[4]=="1","ui_judgment":sys.argv[5]=="1","task":sys.argv[7],"allowed_arms":allowed,"complexity":sys.argv[8],"duration_class":sys.argv[9]}))' "${kind:-code}" "${task_class:-standard}" "${_arb_protected}" "${_arb_safety}" "${_arb_ui}" "${_arb_allowed_csv}" "${sig8}" "${DC_COMPLEXITY:-unknown}" "${DC_DURATION_CLASS:-unknown}")"
     _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
     _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
@@ -6658,6 +7450,10 @@ exit is treated as an incident."
     _arb_util="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
     _arb_tier="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*tier=\([^ ]*\).*/\1/p')"
     _arb_model="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
+    # EFFORT-IS-NOT-WIRED-01: effort comes out of this SAME arbiter call, same
+    # cell as arm/model/tier -- see leadv2-route-arbiter.sh's effort_matrix lookup.
+    local _arb_effort
+    _arb_effort="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*[[:space:]]effort=\([^ ]*\).*/\1/p')"
     # FP-08 fix-round (H1/H3): the capability-floor journal comes from the
     # arbiter's OWN output line for THIS invocation (`floor_applied=1
     # floor_reason=<raw-class>/<kind>`), emitted when the demotion is APPLIED
@@ -6695,8 +7491,12 @@ exit is treated as an incident."
         # index 0, so pre-fix the journal's arm= value and the first
         # worker_spawned model could legitimately differ.
         arm="${candidate_arms[0]}"; reason="${_arb_reason:-cheapest_capable}"; router_label="arbiter"
-        [[ "${arm}" == codex ]] && export RESOLVED_CODEX_TIER="${_arb_tier:-standard}"
-        emit decision "route_resolved by=arbiter role=worker arm=${arm} model=${_arb_model:-${arm}} tier=${RESOLVED_CODEX_TIER:-${_arb_tier:-standard}} task=${sig8} reason=${reason} arbiter_pick=${_arb_arm} ${_arb_util}"
+        if [[ "${arm}" == codex ]]; then
+          _codex_tier_validate "${_arb_tier:-standard}" "${sig8}"   # PLUGIN-PAPERCUTS-01 defect 2
+          export RESOLVED_CODEX_TIER="${_arb_tier:-standard}"
+        fi
+        export RESOLVED_EFFORT="${_arb_effort:-medium}"
+        emit decision "route_resolved by=arbiter role=worker arm=${arm} model=${_arb_model:-${arm}} tier=${RESOLVED_CODEX_TIER:-${_arb_tier:-standard}} effort=${RESOLVED_EFFORT} task=${sig8} reason=${reason} arbiter_pick=${_arb_arm} ${_arb_util}"
       else
         candidate_arms=("${_pre_arb_candidate_arms[@]}")
         emit decision "arbiter_broken task=${sig8} rc=${_arb_rc} reason=fail_open_to_ladder note=chain_not_dispatchable arbiter_pick=${_arb_arm}"
@@ -6930,8 +7730,10 @@ exit is treated as an incident."
     # this only substitutes on the exact first-iteration match.
     if [[ "${candidate}" == "codex" ]]; then
       if [[ "${router_label:-}" == "arbiter" && "${candidate}" == "${candidate_arms[0]:-}" && -n "${_arb_tier:-}" ]]; then
+        _codex_tier_validate "${_arb_tier}" "${sig8}"   # PLUGIN-PAPERCUTS-01 defect 2
         export RESOLVED_CODEX_TIER="${_arb_tier}"
       else
+        _codex_tier_validate "${tier:-standard}" "${sig8}"   # PLUGIN-PAPERCUTS-01 defect 2
         export RESOLVED_CODEX_TIER="${tier:-standard}"
       fi
     fi
@@ -7343,6 +8145,20 @@ cmd_advance_arm() {
   # from the confirmed dispatch-ledger row, default to Standard if absent.
   local _adv_class
   _adv_class="$(printf '%s' "${confirmed}" | sed -n 's/.*"task_class":"\([^"]*\)".*/\1/p')"
+  local _adv_task_floor=""
+  [[ -n "${task_id}" ]] || task_id="$(printf '%s' "${confirmed}" | sed -n 's/.*"founder_task_id":"\([^"]*\)".*/\1/p')"
+  if [[ -n "${task_id}" ]]; then
+    _adv_task_floor="$(leadv2_admission_read_task_receipt "${PROJECT_ROOT}" "${task_id}" 2>/dev/null || true)"
+    if [[ -n "${_adv_task_floor}" ]] && { [[ -z "${_adv_class}" ]] || (( $(_lv2_class_rank "${_adv_task_floor}") > $(_lv2_class_rank "${_adv_class}") )); }; then
+      _adv_class="${_adv_task_floor}"
+      emit decision "phase_class_floor task=${sig8} source=task_record class=${_adv_class}"
+    fi
+    # BRAIN-CLASS-LIVE-01 D3: brain.yaml is the same-task re-entry's own prior
+    # brain_decision -- read it as a floor too, so a Phase-4 re-entry never
+    # enforces a lower class than the intake's own computed decision already
+    # recorded (mirrors _admission_classify's brain-floor read above).
+    _adv_class="$(_resolve_class_with_brain_floor "${sig8}" "${task_id}" "${_adv_class}")"
+  fi
   if [[ -z "${_adv_class}" ]]; then
     _adv_class="Standard"
     emit decision "phase_class_defaulted task=${sig8}"
@@ -7351,6 +8167,8 @@ cmd_advance_arm() {
   for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
     _phase_waiver_args+=(--waiver "$_pw")
   done
+  # PHASE-GATE-IS-INVERTED-01: no is-bootstrap probe and no --at-bootstrap —
+  # the guard reads the lane's store itself (see cmd_resolve).
   _phase_precondition_guard "${sig8}" "${_adv_class}" "${writes}" "${_phase_waiver_args[@]+"${_phase_waiver_args[@]}"}" || exit 3
 
   local mission
@@ -7597,10 +8415,17 @@ cmd_retry_dead() {
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────────
+# DISPATCH-CLOSE-GATE-01 round 2 (C1): LEADV2_DISPATCH_SOURCE_ONLY=1 lets a test `source`
+# this file to call architect_prepass / _mission_writeset_guard directly, without the CLI
+# case block consuming "$@" or exiting -- the wiring itself becomes testable, not just the
+# libs it calls.
+if [[ "${LEADV2_DISPATCH_SOURCE_ONLY:-0}" != "1" ]]; then
 [[ $# -eq 0 ]] && usage
 case "${1:-}" in
   record-review) shift; cmd_record_review "$@" ;;
   status)        cmd_status ;;
+  mission-writeset-check) shift; cmd_mission_writeset_check "$@" ;;
+  close-gate)    shift; cmd_close_gate "$@" ;;
   glm-deferred)  shift; cmd_glm_deferred "$@" ;;
   burn-deferred) shift; cmd_burn_deferred "$@" ;;
   advance-arm)   shift; cmd_advance_arm "$@" ;;
@@ -7611,3 +8436,4 @@ case "${1:-}" in
   -h|--help)     usage ;;
   *)             cmd_resolve "$@" ;;
 esac
+fi

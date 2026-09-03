@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-suite-lock-scope.sh — SUITE-LOCK-IS-MACHINE-WIDE-01 (round 3)
+# test-suite-lock-scope.sh — SUITE-LOCK-ORPHAN-FD-04
 #
 # Exercises the ACTUAL production lock section of run-core-offline.sh (never
 # a reimplementation) against fixture repo roots and a fixture lock dir --
@@ -12,13 +12,26 @@
 # in-place (LEADV2_SUITE_LOCK_FILE default), re-proves case 1 goes red, then
 # restores the file byte-for-byte from a pre-mutation backup before this
 # script exits (trap-guarded, so a crash mid-mutation never leaves the
-# production file altered). The control is BEHAVIORAL: under the mutation it
-# runs the exact case-1 scenario (holder in root A, contender in root B) and
-# requires it to FAIL -- a path-equality-only control would stay green under
-# any scenario that never reaches the locking path, which is exactly the
-# lying-green shape round 2 shipped.
+# production file altered).
 
 set -euo pipefail
+
+# --- SUITE-LOCK-ORPHAN-FD-04 round 4: hermetic against inherited lock knobs
+# This suite's subject IS the lock; an inherited LEADV2_SUITE_LOCK_DISABLE=1
+# makes the runner skip its lock section entirely, so every lock-holding
+# assertion (cases 2/4/6/7-RED) fails for a reason that has nothing to do
+# with the code under test (measured 2026-09-01: pass=8 fail=4 under an
+# inherited kill-switch, pass=12 fail=0 without it). Scrub the knobs here;
+# case 5 re-applies the kill-switch per-run via `env`, so the kill-switch
+# itself stays covered. run-core-offline.sh already scrubs LEADV2_* for its
+# inner suites; this guard covers direct invocation, where the lead's
+# round-4 measurement was burned.
+if [[ -n "${LEADV2_SUITE_LOCK_DISABLE:-}" || -n "${LEADV2_SUITE_LOCK_WAIT_S:-}" \
+      || -n "${LEADV2_SUITE_LOCK_FILE:-}" ]]; then
+  printf -- '[LOCK-SCOPE] NOTE: scrubbing inherited lock knobs (DISABLE=%s WAIT_S=%s FILE=%s) -- cases set their own per-run\n' \
+    "${LEADV2_SUITE_LOCK_DISABLE:-}" "${LEADV2_SUITE_LOCK_WAIT_S:-}" "${LEADV2_SUITE_LOCK_FILE:-}" >&2
+fi
+unset LEADV2_SUITE_LOCK_DISABLE LEADV2_SUITE_LOCK_WAIT_S LEADV2_SUITE_LOCK_FILE
 
 _src="${BASH_SOURCE[0]}"
 while [ -L "$_src" ]; do
@@ -332,4 +345,7 @@ check "case7 GREEN: reverted -- the case-1 scenario passes again (rc=$rc_fixed)"
 rm -f "$path_a_mut" "$path_b_mut" "$path_a_fixed" "$path_b_fixed" 2>/dev/null || true
 
 echo "[LOCK-SCOPE] pass=$pass fail=$fail"
-(( fail == 0 ))
+# Exit contract (round-4 Critical 1): CI keys off THIS status, never off the
+# printed lines. fail>0 => exit 1, regardless of what was echoed.
+(( fail == 0 )) || exit 1
+exit 0

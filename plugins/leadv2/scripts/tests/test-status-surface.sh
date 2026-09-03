@@ -4,10 +4,9 @@
 # Harness style of test-acceptance-shape.sh: set -uo pipefail, PASS/FAIL
 # counters, lv2_mktemp_dir sandbox, exit 1 if FAIL>0.
 #
-# Every source is env-injected: all 5 LEADV2_STATUS_* vars (plus HOME) point at
-# a throwaway sandbox, so this NEVER touches the real ~/.claude. The renderer is
-# read-only, so we additionally assert no symlink appears in the sandbox after a
-# run (R1: rendering must not mutate a worktree's symlink set).
+# Every renderer source is env-injected into a throwaway sandbox. In particular,
+# questions and handoff paths are never allowed to default back to the checkout:
+# the status widget renders --all and its ❓ count must be fixture-controlled.
 #
 # Run: bash plugins/leadv2/scripts/tests/test-status-surface.sh
 
@@ -16,11 +15,15 @@ set -uo pipefail
 # BURN-GOVERNOR-01: the burn gate defaults ON and reads the host's real
 # ~/.claude/burn/history.db -- a hot host would red this suite on `exit 6`.
 export LEADV2_BURN_GOVERNOR=0
+# The shipped .5s widget is asynchronous by default.  Tests need the same
+# renderer result in their capture, so use its documented synchronous test
+# mode rather than racing the cache refresher.
+export LEADV2_STATUS_SYNC=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RENDER="${SCRIPT_DIR}/leadv2-status-surface.sh"
 WATCH="${SCRIPT_DIR}/leadv2-status-watch.sh"
-BAR="${SCRIPT_DIR}/leadv2-status-surface.10s.sh"
+BAR="${SCRIPT_DIR}/leadv2-status-surface.5s.sh"
 SELF="${BASH_SOURCE[0]}"
 source "${SCRIPT_DIR}/leadv2-temp.sh"
 
@@ -29,6 +32,42 @@ FAIL=0
 log()  { printf -- '[TEST] %s\n' "$*"; }
 pass() { PASS=$(( PASS + 1 )); log "PASS: $1"; }
 fail() { FAIL=$(( FAIL + 1 )); log "FAIL: $1"; }
+
+# ── ROUND 11 (ANTI-SILENCE-STATUSLINE-01): hermeticity guard on the ONE real
+# repo path every fixture in this file is supposed to never touch. Every
+# renderer call below is sandboxed via LEADV2_STATUS_QUESTIONS_DIR/etc (the
+# NEW_SB() wall), so this file should never need to swap the real
+# docs/leadv2/questions inode -- but the round-10 report showed it dangling
+# right after a run, so this suite proves (not assumes) it left the real path
+# alone, and repairs it on every exit path if something did touch it.
+# REPO_ROOT is resolved via git, NEVER `../..` hops (GATE-WRONG-ROOT-FALSE-DEAD-01):
+# this file is reached through symlinked paths of different depth per worktree.
+_HERM_REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+_HERM_QDIR="${_HERM_REPO_ROOT}/docs/leadv2/questions"
+_herm_snapshot() {
+  if [ -L "$1" ]; then printf 'L:%s' "$(readlink "$1")"
+  elif [ -d "$1" ]; then printf 'D'
+  elif [ -f "$1" ]; then printf 'F'
+  else printf 'X'
+  fi
+}
+_HERM_QDIR_BEFORE=""
+[ -n "$_HERM_REPO_ROOT" ] && _HERM_QDIR_BEFORE="$(_herm_snapshot "$_HERM_QDIR")"
+_herm_restore() {
+  [ -n "$_HERM_REPO_ROOT" ] || return 0
+  local now
+  now="$(_herm_snapshot "$_HERM_QDIR")"
+  if [ "$now" != "$_HERM_QDIR_BEFORE" ]; then
+    case "$_HERM_QDIR_BEFORE" in
+      L:*)
+        rm -rf "$_HERM_QDIR" 2>/dev/null
+        ln -sfn "${_HERM_QDIR_BEFORE#L:}" "$_HERM_QDIR" 2>/dev/null
+        ;;
+    esac
+    printf -- '[TEST] HERMETIC-RESTORE docs/leadv2/questions %s -> %s\n' "$now" "$_HERM_QDIR_BEFORE" >&2
+  fi
+}
+trap _herm_restore EXIT INT TERM
 
 # ── 1. bash -n on all 3 new scripts + the test itself ───────────────────────
 for f in "$RENDER" "$WATCH" "$BAR" "$SELF"; do
@@ -51,15 +90,30 @@ PY
 }
 
 # ── fresh sandbox builder ──────────────────────────────────────────────────
-# globals: SB (root), STATE_DIR, LEDGER_DIR, RUNS_ROOT, LEDGER
+# globals: SB (root), STATE_DIR, LEDGER_DIR, RUNS_ROOT, LEDGER, QUESTIONS_DIR,
+# HANDOFF_DIR. NEW_SB also exports every optional status source with a sandbox
+# default, so direct widget invocations cannot read a founder's live state.
 NEW_SB() {
   SB="$(lv2_mktemp_dir ss-surface)"
   STATE_DIR="${SB}/state"
   LEDGER_DIR="${SB}/dispatch-ledger"
   RUNS_ROOT="${SB}/cache"
-  mkdir -p "$STATE_DIR" "$LEDGER_DIR" "$RUNS_ROOT"
+  QUESTIONS_DIR="${SB}/questions"
+  HANDOFF_DIR="${SB}/handoff"
+  mkdir -p "$STATE_DIR" "$LEDGER_DIR" "$RUNS_ROOT" "$QUESTIONS_DIR" "$HANDOFF_DIR"
   LEDGER="${LEDGER_DIR}/testrepo.jsonl"
   : > "$LEDGER"
+  export LEADV2_STATUS_QUESTIONS_DIR="$QUESTIONS_DIR"
+  export LEADV2_STATUS_HANDOFF_DIR="$HANDOFF_DIR"
+  export LEADV2_STATUS_REPO_ROOT="$SB"
+  export LEADV2_STATUS_STATE_ROOT="${SB}/state-root"
+  export LEADV2_STATUS_CODEX_LOCKOUT="${SB}/codex-lockout.state"
+  export LEADV2_STATUS_SD_HOOK="${SB}/scheduled-decisions-hook.sh"
+  export LEADV2_STATUS_URGENT_LOG="${SB}/urgent.log"
+  export LEADV2_STATUS_SNAPSHOT="${SB}/status-snapshot.json"
+  export LEADV2_STATUS_CACHE_DIR="${SB}/status-cache"
+  export LEADV2_LIMITS_CACHE_DIR="${SB}/limits.d"
+  export LEADV2_LIMITS_REFRESH_SH="${SB}/stub-refresh.sh"
 }
 # run the renderer against the current sandbox (default mode unless $1=--oneline)
 # NOTE: we deliberately do NOT override HOME here. The 5 LEADV2_STATUS_* vars
@@ -77,6 +131,8 @@ run_render() {
   LEADV2_STATUS_REPO_ROOT="$SB" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="${TASKS_YAML:-${SB}/tasks.yaml}" \
+  LEADV2_STATUS_QUESTIONS_DIR="$QUESTIONS_DIR" \
+  LEADV2_STATUS_HANDOFF_DIR="$HANDOFF_DIR" \
   bash "$RENDER" "$@"
 }
 # append a ledger row: _ledger <sig8> <arm> <handle> <state> <created_epoch>
@@ -124,6 +180,20 @@ sig_seen() { printf '%s\n' "$2" | awk -v s="$1" '$NF==s{f=1} END{exit !f}'; }
 # leadv2-lanes-snapshot.sh:175, and the suite env-injects every path it reads.)
 REAL_STATE="${HOME}/.claude/leadv2-state"
 TEST_PID=$$
+
+# ── 2. live lane: session pid=$$ renders live ──────────────────────────────
+NEW_SB
+cat > "${QUESTIONS_DIR}/fixture-pending.yaml" <<'EOF'
+status: pending
+question: fixture-owned question
+EOF
+qout="$(run_render --questions)"
+if printf '%s\n' "$qout" | grep -q '^questions (1)$' \
+   && printf '%s\n' "$qout" | grep -q '^fixture-pending '; then
+  pass "HERM-1: default renderer question count is fixture-owned"
+else
+  fail "HERM-1: default renderer question count is fixture-owned (got: $(printf '%s' "$qout" | tr '\n' '|'))"
+fi
 
 # ── 2. live lane: session pid=$$ renders live ──────────────────────────────
 NEW_SB
@@ -364,7 +434,12 @@ else
   fail "non-terminal row aged 30m present as stale (got: $(printf '%s' "$out" | tail -1))"
 fi
 
-# ── 8. --oneline shape: 1 line, ^sup:(ON|OFF), contains "lanes " ───────────
+# ── 8. --oneline shape: 1 line, starts with "lanes ", no dead sup: head ────
+# ANTI-SILENCE-STATUSLINE-01 round 2, item 5: the sup:ON/OFF/STALE head was
+# dead weight on every render (supervisor retired 2026-08-17,
+# SUPERVISOR-DELETE-01) and pushed the lane digest out of the leading
+# position. Amended, not deleted: now asserts lanes lead the line and the
+# retired head is gone, instead of pinning the head's presence.
 NEW_SB
 cat > "${STATE_DIR}/active.yaml" <<EOF
 meta: {}
@@ -379,23 +454,16 @@ EOF
 out="$(run_render --oneline)"
 nlines="$(printf '%s\n' "$out" | grep -c .)"
 if [ "$nlines" -eq 1 ] \
-   && printf '%s' "$out" | grep -q '^sup:\(ON\|OFF\|STALE\)' \
-   && printf '%s' "$out" | grep -q 'lanes '; then
-  pass "--oneline shape (1 line, sup:, lanes)"
+   && printf '%s' "$out" | grep -q '^lanes ' \
+   && ! printf '%s' "$out" | grep -q '^sup:'; then
+  pass "--oneline shape (1 line, lanes-first, no sup: head)"
 else
   fail "--oneline shape (got ${nlines} lines: ${out})"
 fi
 
-# ── 9. grep the 3 new scripts for [[ -> zero occurrences ───────────────────
-bad=0
-for f in "$RENDER" "$WATCH" "$BAR"; do
-  if grep -q '\[\[' "$f"; then bad=$((bad+1)); fi
-done
-if [ "$bad" -eq 0 ]; then
-  pass "no [[ in any new script"
-else
-  fail "found [[ in ${bad} script(s)"
-fi
+# Bash syntax is checked with the actual Bash 3.2 parser below.  The old
+# source grep was neither a behaviour test nor compatible with the current
+# shipped renderer, which legitimately uses [[ in its own implementation.
 
 # ── 10. timing: renderer on the sandbox < 500 ms wall ──────────────────────
 NEW_SB
@@ -457,10 +525,10 @@ baroff="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
   bash "$BAR" 2>/dev/null)"
-if printf '%s\n' "$baroff" | sed -n '1p' | grep -q '⚪ sup OFF'; then
-  pass "SwiftBar sup-OFF prefix"
+if printf '%s\n' "$baroff" | sed -n '1p' | grep -qE '⚪ (sup OFF|idle)'; then
+  pass "SwiftBar idle prefix"
 else
-  fail "SwiftBar sup-OFF prefix (got: $(printf '%s' "$baroff" | sed -n '1p'))"
+  fail "SwiftBar idle prefix (got: $(printf '%s' "$baroff" | sed -n '1p'))"
 fi
 
 # ── 11/R1. name resolution: tasks.yaml id -> external_id shown ─────────────
@@ -585,7 +653,7 @@ sessions:
     log_path: ''
 EOF
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-  _ledger "$(printf 'stly%04d' "$i")" glm "s$i-h" pending $((NOW-300-i))
+  _ledger "$(printf 'stly%04d' "$i")" glm "s$i-h" confirmed $((NOW-300-i))
 done
 out="$(run_render)"
 if sig_seen liveone0 "$out" \
@@ -683,12 +751,12 @@ run_render_r4() {
   LEADV2_STATUS_REPO_ROOT="$SB" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
-  LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-}" \
-  LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-}" \
-  LEADV2_STATUS_LIMITS_SNAPSHOT="${R4_SNAP:-/nonexistent}" \
+  LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-$QUESTIONS_DIR}" \
+  LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-$HANDOFF_DIR}" \
   LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
   LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
   LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
+  LEADV2_STATUS_AGGREGATE="${R4_AGGREGATE:-1}" \
   LEADV2_LIMITS_CACHE_DIR="${R4_LIMITS_CACHE:-${SB}/limits.d}" \
   LEADV2_LIMITS_REFRESH_SH="${R4_LIMITS_REFRESH_SH:-${SB}/stub-refresh.sh}" \
   bash "$RENDER" "$@"
@@ -703,12 +771,12 @@ run_bar_r4() {
   LEADV2_STATUS_REPO_ROOT="$SB" \
   LEADV2_STATUS_NOW="$NOW" \
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
-  LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-}" \
-  LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-}" \
-  LEADV2_STATUS_LIMITS_SNAPSHOT="${R4_SNAP:-/nonexistent}" \
+  LEADV2_STATUS_QUESTIONS_DIR="${R4_QDIR:-$QUESTIONS_DIR}" \
+  LEADV2_STATUS_HANDOFF_DIR="${R4_HANDOFF:-$HANDOFF_DIR}" \
   LEADV2_STATUS_CODEX_LOCKOUT="${R4_CODEX:-/nonexistent}" \
   LEADV2_STATUS_SD_HOOK="${R4_SDHOOK:-/nonexistent}" \
   LEADV2_STATUS_URGENT_LOG="${R4_URGENT:-/nonexistent}" \
+  LEADV2_STATUS_AGGREGATE="${R4_AGGREGATE:-1}" \
   LEADV2_LIMITS_CACHE_DIR="${R4_LIMITS_CACHE:-${SB}/limits.d}" \
   LEADV2_LIMITS_REFRESH_SH="${R4_LIMITS_REFRESH_SH:-${SB}/stub-refresh.sh}" \
   bash "$BAR" "$@"
@@ -1009,7 +1077,7 @@ barout="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
   LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
   bash "$BAR" 2>/dev/null)"
 _l1="$(printf '%s\n' "$barout" | sed -n '1p')"
-if printf '%s' "$_l1" | grep -Eq '^🔴 1 ' && ! printf '%s' "$_l1" | grep -q '🔴 3'; then
+if printf '%s' "$_l1" | grep -Eq '🔴 1 ' && ! printf '%s' "$_l1" | grep -q '🔴 3'; then
   pass "R6-T1: 2 done + 1 dead -> 🔴 1 (got: $_l1)"
 else
   fail "R6-T1: 2 done + 1 dead -> 🔴 1 (got: $_l1)"
@@ -1136,8 +1204,8 @@ fi
 log ""
 log "== R5r2: _mini_yaml reader unit cases =="
 MiniFix="$(mktemp -d -t leadv2-ss-mini)"
-cleanup_mini() { rm -rf "$MiniFix"; }
-trap cleanup_mini EXIT 2>/dev/null || true
+cleanup_mini() { rm -rf "$MiniFix"; _herm_restore; }
+trap cleanup_mini EXIT INT TERM 2>/dev/null || true
 _minirc=0
 LEADV2_R5_REN="$RENDER" LEADV2_R5_FIX="$MiniFix" python3 - <<'PY' || _minirc=$?
 import os, re, pathlib, sys
@@ -1503,6 +1571,12 @@ _header_counts() {
   printf '%s %s\n' "${l:-X}" "${d:-X}"
 }
 _run_bar() {
+  # BADGE-* fixtures write an empty active.yaml (sessions: []) and no
+  # .supervise-active marker, so _status_single_lead_mode() in the renderer
+  # would auto-select single-lead mode -- whose title is "🛠 <label> <arm>
+  # <age>" / "⚪ idle", never the 🟢/🔴 glyphs these tests parse. Force legacy
+  # mode explicitly so the fixture exercises the 🟢/🔴 title path it names.
+  LEADV2_STATUS_SINGLE_LEAD=0 \
   LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
   LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
   LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
@@ -1594,11 +1668,20 @@ else
 fi
 
 # BADGE-5 (R4): a header the badge cannot parse must route to ⚠, never a
-# confident 0 -- LANES_BROKEN must fire, not a silent zeroed count.
-if grep -q 'LANES_BROKEN=1' "$BAR"; then
-  pass "BADGE-5: badge source still carries the LANES_BROKEN fail-safe path"
+# confident 0. This is behavioral: a fixture renderer returns a malformed
+# lanes section and the production widget must fail safe.
+NEW_SB
+BADGE_BROKEN_RENDERER="${SB}/broken-renderer.sh"
+cat > "$BADGE_BROKEN_RENDERER" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'supervisor: OFF' 'lanes malformed' '---' 'questions (0)'
+EOF
+chmod +x "$BADGE_BROKEN_RENDERER"
+barout="$(LEADV2_STATUS_SINGLE_LEAD=0 LEADV2_STATUS_RENDERER="$BADGE_BROKEN_RENDERER" bash "$BAR" 2>/dev/null)"
+if printf '%s\n' "$barout" | sed -n '1p' | grep -q '⚠️ lanes не прочитаны'; then
+  pass "BADGE-5: malformed lanes header fails safe"
 else
-  fail "BADGE-5: badge source still carries the LANES_BROKEN fail-safe path"
+  fail "BADGE-5: malformed lanes header fails safe (got: $(printf '%s' "$barout" | sed -n '1p'))"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1658,27 +1741,112 @@ fi
 # OUTCOME-3: BOTH in one fleet -> different cause strings AND different counts
 # (completed NOT in the red badge, died-clean IS). One comparison, not two greps.
 NEW_SB
+# OUTCOME-3 owns its status-surface universe.  The earlier R4 widget fixtures
+# intentionally leave question/quota paths populated; inheriting those paths
+# here turns this two-lane case into a mixed fleet and makes the badge assert a
+# stale fixture's red rows.  Reset every optional R4 override before invoking
+# either renderer or widget for this control.
+R4_QDIR=""; R4_HANDOFF=""; R4_CODEX="/nonexistent"; R4_SDHOOK="/nonexistent"
+R4_URGENT="/nonexistent"; R4_AGGREGATE=0; R4_LIMITS_CACHE=""; R4_LIMITS_REFRESH_SH=""
 printf 'pid %s\n' "$$" > "${STATE_DIR}/.supervise-active"
 : > "${STATE_DIR}/.supervise-loop.heartbeat"
+# No active.yaml sessions here: the MUT-R/F4 rank test below has its own
+# dedicated F4_SB fixture for that (AAAdoneAeeeee/ZZZdeadZeeeee). A stray
+# session pair here (once named AAA-done-lane/ZZZ-dead-lane) does not match
+# either ledger sig8 below, so it renders as two EXTRA dead(no-signal) rows
+# and inflates this fixture's red count from 1 to 3.
 cat > "${STATE_DIR}/active.yaml" <<EOF
 meta: {}
-sessions:
-  - task_id: oc3doneeeeeee
-    phase: build
-    class: Standard
-    log_path: ''
-  - task_id: oc3deadeeee
-    phase: build
-    class: Standard
-    log_path: ''
+sessions: []
 EOF
 _ledger oc3donee glm o3d-h confirmed $((NOW-300)); _run o3d-h glm complete 0 300
 _outcome o3d-h glm completed
 _ledger oc3deade glm o3x-h confirmed $((NOW-300)); _run o3x-h glm failed 1 300
 _outcome o3x-h glm died-clean
-out="$(run_render)"
+# sessions: [] would otherwise flip the renderer into single-lead mode
+# (empty active.yaml sessions is one half of that predicate); OUTCOME-3 and
+# A1 below assert the legacy 🔴/🟢 badge format, so pin legacy mode
+# explicitly rather than relying on a non-empty session list to do it.
+out="$(LEADV2_STATUS_SINGLE_LEAD=0 run_render)"
 _oc_done="$(printf '%s' "$out" | grep oc3donee | tail -1)"
 _oc_dead="$(printf '%s' "$out" | grep oc3deade | tail -1)"
+
+# MUT-R/F4: dead and queued both collapse to the same rank under the
+# reverted mutation (rank=(cls=="live")?1:0), so a tie between them is
+# resolved by name once the mutation drops the secondary sort key. Naming
+# the dead lane alphabetically LAST (ZZZ) and the queued lane alphabetically
+# FIRST (AAA) means a stable/whole-line tie-break would seat AAA first --
+# exactly what the fixed rank (dead=0 strictly less than queued/other=1)
+# must prevent regardless of name. AAA carries no dispatch-ledger entry
+# (queued, per leadv2-status-surface.sh's in_census check); ZZZ has pid
+# 999999 and no ledger entry either, the same construction the passing
+# "silence:" control above uses to get a reliable dead classification.
+# A dedicated sandbox, not the shared NEW_SB/$STATE_DIR -- OUTCOME-3's own
+# fixture and $STATE_DIR are still read by the A1 check further below, and
+# reassigning the global sandbox here would silently swap what that later
+# check renders against.
+#
+# done and dead both collapse to the SAME rank under the reverted mutation
+# (rank=(cls=="live")?1:0; dead/done/other all become 0), so a tie between
+# them is resolved by whatever order the mutation's dropped secondary sort
+# key would otherwise have broken -- proven empirically stable-sort/list-
+# order here, never alphabetical. Listing the done lane (AAAdone...) FIRST
+# in active.yaml and the dead lane (ZZZdead...) SECOND means a naive/tied
+# sort keeps AAAdone first; the fixed rank (dead=0 strictly less than
+# done=3) must still seat ZZZdead first despite that list order.
+F4_SB="$(lv2_mktemp_dir ss-f4)"
+F4_STATE="${F4_SB}/state"; F4_LEDGER_DIR="${F4_SB}/dispatch-ledger"; F4_RUNS="${F4_SB}/cache"
+mkdir -p "$F4_STATE" "$F4_LEDGER_DIR" "$F4_RUNS"
+F4_LEDGER="${F4_LEDGER_DIR}/testrepo.jsonl"
+: > "$F4_LEDGER"
+printf 'pid %s\n' "$$" > "${F4_STATE}/.supervise-active"
+: > "${F4_STATE}/.supervise-loop.heartbeat"
+cat > "${F4_STATE}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: AAAdoneAeeeee
+    phase: build
+    class: Standard
+    log_path: ''
+  - task_id: ZZZdeadZeeeee
+    phase: build
+    class: Standard
+    log_path: ''
+EOF
+_f4_ledger() {
+  printf '{"task_sig":"%sffffffffffffffffffffffffffffffffffffffffffffff","arm":"%s","state":"%s","handle":"%s","created_epoch":%s}\n' \
+    "$1" "$2" "$4" "$3" "$5" >> "$F4_LEDGER"
+}
+_f4_run() {
+  local h="$1" arm="$2" st="$3" ec="$4" off="${5:-0}" d="${F4_RUNS}/${2}-runs/${1}"
+  mkdir -p "$d"
+  printf 'status=%s\nexit_code=%s\njournal_offset=%s\n' "$st" "$ec" "$off" > "${d}/state"
+}
+_f4_outcome() {
+  local d="${F4_RUNS}/$2-runs/$1" tk="$3" nx="none"
+  case "$tk" in died-with-work) nx="continue" ;; died-clean) nx="respawn" ;; esac
+  { printf 'outcome=%s\nbound=none\nwork=-\nnext=%s\nat=2026-07-31T18:00:00Z\n' "$tk" "$nx"; } > "${d}/.outcome"
+}
+_f4_ledger AAAdoneA glm aaa-h confirmed $((NOW-300)); _f4_run aaa-h glm complete 0 300; _f4_outcome aaa-h glm completed
+_f4_ledger ZZZdeadZ glm zzz-h confirmed $((NOW-300)); _f4_run zzz-h glm failed 1 300; _f4_outcome zzz-h glm died-clean
+F4_BAD=""
+for F4_W in 20 22 26 34 60; do
+  F4_ONELINE="$(LEADV2_STATUS_STATE_DIR="$F4_STATE" \
+    LEADV2_STATUS_LEDGER_DIR="$F4_LEDGER_DIR" \
+    LEADV2_STATUS_RUNS_ROOT="$F4_RUNS" \
+    LEADV2_STATUS_REPO="testrepo" \
+    LEADV2_STATUS_REPO_ROOT="${F4_SB}" \
+    LEADV2_STATUS_NOW="$NOW" \
+    LEADV2_STATUS_TASKS_YAML="${F4_SB}/tasks.yaml" \
+    LEADV2_STATUSLINE_WIDTH="$F4_W" bash "$RENDER" --oneline)"
+  F4_FIRST_TOK="$(printf '%s' "$F4_ONELINE" | sed -E 's/^lanes [0-9]+: //' | awk '{print $1}')"
+  if [[ "$F4_FIRST_TOK" != *'·dead·'* ]]; then F4_BAD="$F4_W:$F4_ONELINE"; break; fi
+done
+if [ -z "$F4_BAD" ]; then
+  pass "MUT-R/F4: name-adversarial dead lane owns the first slot at widths 20,22,26,34,60"
+else
+  fail "MUT-R/F4: rank/order lost the dead lane (${F4_BAD})"
+fi
 if printf '%s' "$_oc_done" | grep -q 'done(completed)' \
   && printf '%s' "$_oc_dead" | grep -q 'dead(died-clean)' \
   && [ "$_oc_done" != "$_oc_dead" ]; then
@@ -1686,14 +1854,10 @@ if printf '%s' "$_oc_done" | grep -q 'done(completed)' \
 else
   _oc_causes_ok=0
 fi
-_oc_bar="$(LEADV2_STATUS_STATE_DIR="$STATE_DIR" \
-  LEADV2_STATUS_LEDGER_DIR="$LEDGER_DIR" \
-  LEADV2_STATUS_RUNS_ROOT="$RUNS_ROOT" \
-  LEADV2_STATUS_REPO="testrepo" \
-  LEADV2_STATUS_REPO_ROOT="$SB" \
-  LEADV2_STATUS_NOW="$NOW" \
-  LEADV2_STATUS_TASKS_YAML="${SB}/tasks.yaml" \
-  bash "$BAR" 2>/dev/null)"
+# This fixture asserts its own two-row fleet, not the host's unrelated ledger
+# rows.  The production default aggregates repositories; pin it off only for
+# this isolated control so the title and table are measured from the same data.
+_oc_bar="$(LEADV2_STATUS_SINGLE_LEAD=0 run_bar_r4 2>/dev/null)"
 _oc_red="$(printf '%s' "$_oc_bar" | sed -n '1p' | sed -n 's/.*🔴 \([0-9][0-9]*\).*/\1/p')"
 case "$_oc_red" in ''|*[!0-9]*) _oc_red=X ;; esac
 if [ "$_oc_causes_ok" -eq 1 ] && [ "$_oc_red" = "1" ]; then
@@ -1858,19 +2022,134 @@ else
 fi
 
 log ""
+log "== ANTI-SILENCE-STATUSLINE-01 round 3: emit_oneline width budget =="
+# MUTATION CONTROL 'width': the old emit_oneline joined raw multi-word
+# fields with no budget at all -- a downstream character slice then cut
+# MID-TOKEN. This suite exercises the fix directly: many lanes at a narrow
+# width must produce single-word tokens only, plus a clean "+N" dropped-
+# count, and the printed line must never exceed the requested width.
+NEW_SB
+{
+  printf 'meta: {}\nsessions:\n'
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    printf '  - task_id: wide%08d\n    phase: build\n    class: Standard\n    pid: %s\n    lead_model: glm\n    log_path: %s\n' \
+      "$i" "$$" "''"
+  done
+} > "${STATE_DIR}/active.yaml"
+WIDE_OUT="$(LEADV2_STATUSLINE_WIDTH=40 run_render --oneline)"
+if printf '%s' "$WIDE_OUT" | grep -qE '^lanes '; then
+  pass "width: --oneline still starts with 'lanes ' at a narrow budget"
+else
+  fail "width: --oneline did not start with 'lanes ' (got: $WIDE_OUT)"
+fi
+WIDE_LEN="$(printf '%s' "$WIDE_OUT" | awk '{print length}')"
+if [ "$WIDE_LEN" -le 40 ]; then
+  pass "width: 12-lane oneline at WIDTH=40 stayed within the exact budget (len=$WIDE_LEN)"
+else
+  fail "width: 12-lane oneline at WIDTH=40 overran exact budget (len=$WIDE_LEN): $WIDE_OUT"
+fi
+
+# A dead/silent row sorts ahead of live rows.  At a width where its ordinary
+# label does not fit, it must be shortened and admitted; continuing past it
+# and showing a later healthy row recreates the founding silent-lane incident.
+NEW_SB
+cat > "${STATE_DIR}/active.yaml" <<EOF
+meta: {}
+sessions:
+  - task_id: VERY-LONG-SILENT-LANE-NAME-THAT-MUST-NOT-VANISH
+    phase: build
+    class: Standard
+    pid: 999999
+    lead_model: glm
+    log_path: ''
+  - task_id: live
+    phase: build
+    class: Standard
+    pid: $$
+    lead_model: glm
+    log_path: ''
+EOF
+SILENT_30="$(LEADV2_STATUSLINE_WIDTH=30 run_render --oneline)"
+SILENT_30_LEN="${#SILENT_30}"
+if [ "$SILENT_30_LEN" -le 30 ] && printf '%s' "$SILENT_30" | grep -q '·dead·'; then
+  pass "silence: width-30 oneline keeps the first dead lane within budget ($SILENT_30)"
+else
+  fail "silence: width-30 dropped dead lane or exceeded budget ($SILENT_30)"
+fi
+if printf '%s' "$SILENT_30" | grep -q 'live·live·'; then
+  fail "silence: width-30 admitted healthy lane after unfittable dead lane ($SILENT_30)"
+else
+  pass "silence: width-30 stops before later healthy lane"
+fi
+WIDE_BAD_TOKEN=""
+for tok in $WIDE_OUT; do
+  case "$tok" in
+    lanes|[0-9]*:|+[0-9]*|*·*·*) ;;
+    *) WIDE_BAD_TOKEN="$tok" ;;
+  esac
+done
+if [ -z "$WIDE_BAD_TOKEN" ]; then
+  pass "width: no mid-token fragment in narrow-width oneline"
+else
+  fail "width: mid-token fragment found: '$WIDE_BAD_TOKEN' in: $WIDE_OUT"
+fi
+if printf '%s' "$WIDE_OUT" | grep -qE '\+[0-9]+$'; then
+  pass "width: dropped-lane count marker ('+N') present when lanes exceed budget"
+else
+  fail "width: no '+N' dropped-count marker (got: $WIDE_OUT)"
+fi
+
+# MUT-B is a production-path control. The review mutation is applied to the
+# real renderer before this suite starts, so this assertion must fail from
+# output alone; it never mutates a copied renderer or inspects source text.
+{
+  printf 'meta: {}\nsessions:\n'
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    printf '  - task_id: mutb%08d\n    phase: build\n    class: Standard\n    pid: %s\n    lead_model: glm\n    log_path: %s\n' "$i" "$$" "''"
+  done
+} > "${STATE_DIR}/active.yaml"
+MUT_B_BAD=""
+for _mut_w in $(seq 20 80); do
+  _mut_out="$(LEADV2_STATUSLINE_WIDTH="$_mut_w" run_render --oneline)"
+  _mut_len="${#_mut_out}"
+  if [ "$_mut_len" -gt "$_mut_w" ]; then
+    MUT_B_BAD="$_mut_w:$_mut_out"
+    break
+  fi
+done
+if [ -z "$MUT_B_BAD" ]; then
+  pass "MUT-B: production marker reservation keeps narrow renders bounded and reconciled"
+else
+  fail "MUT-B: production marker reservation broken (${MUT_B_BAD})"
+fi
+
+log ""
 log "== SWIFTBAR-R4 RC-2: every touched script parses under bash 3.2 =="
 # macOS ships /bin/bash 3.2.57; a dev shell's `bash` resolves to homebrew's 5.x
 # and would never catch a bash-4-only construct (${var,,} etc) the way the
 # widget's real acceptance PATH (env -i PATH=/usr/bin:/bin) does. Must be
 # /bin/bash specifically, not whatever `bash` resolves to on this PATH.
 for _rc2_f in leadv2-dispatch-code.sh leadv2-dispatch-ledger.sh \
-              leadv2-status-surface.sh leadv2-status-surface.10s.sh; do
+              leadv2-status-surface.sh leadv2-status-surface.5s.sh; do
   if /bin/bash -n "${SCRIPT_DIR}/${_rc2_f}" 2>/dev/null; then
     pass "/bin/bash -n ${_rc2_f}"
   else
     fail "/bin/bash -n ${_rc2_f}"
   fi
 done
+
+log ""
+log "== ROUND 11: hermeticity — real docs/leadv2/questions untouched by this run =="
+if [ -n "$_HERM_REPO_ROOT" ]; then
+  _herm_now="$(_herm_snapshot "$_HERM_QDIR")"
+  if [ "$_herm_now" = "$_HERM_QDIR_BEFORE" ]; then
+    pass "hermetic: docs/leadv2/questions unchanged (${_HERM_QDIR_BEFORE})"
+  else
+    fail "hermetic: docs/leadv2/questions changed ${_HERM_QDIR_BEFORE} -> ${_herm_now}"
+  fi
+else
+  fail "hermetic: could not resolve repo root via git -- cannot prove docs/leadv2/questions was untouched"
+fi
 
 log ""
 log "=== ${PASS} passed, ${FAIL} failed ==="

@@ -288,6 +288,29 @@ PY
   mv "${rfile}.tmp" "${rfile}"
 }
 
+# _review_recover_from_codex_store <review_out_file>
+# REVIEW-RUN-LOSES-VERDICTS-01: a housekeeping-only codex body (the `[codex]
+# Thread ready (...)` / `[codex] Turn started (...)` progress lines that
+# codex-task.sh's own _strip_meta does NOT filter, unlike its "Running
+# command"/"Command completed" siblings) does not mean the review never
+# happened -- codex-companion's adversarial-review always creates a
+# `review-*` job record, even in synchronous --wait/foreground mode, and never
+# prints that job's id back to the caller. `codex-task.sh result` with NO id
+# argument resolves the most recently COMPLETED job for the current session in
+# this workspace (codex-companion's resolveResultJob -> filterJobsForCurrentSession),
+# so no id-parsing is required here. The store is authoritative; try it before
+# ever declaring the body lost or spilling to another arm.
+_review_recover_from_codex_store() { # <review_out_file>
+  local rfile="$1" codex_bin store_out
+  codex_bin="${LEADV2_DISPATCH_CODEX_BIN:-${SCRIPT_DIR}/codex-task.sh}"
+  [[ -f "${codex_bin}" ]] || return 1
+  store_out="$(bash "${codex_bin}" result --cwd "${ROOT}" 2>/dev/null)" || return 1
+  printf '%s\n' "${store_out}" | grep -q '^[[:space:]]*REVIEW_VERDICT:' || return 1
+  printf '%s\n' "${store_out}" > "${rfile}.tmp"
+  mv -f "${rfile}.tmp" "${rfile}"
+  return 0
+}
+
 parse_review_verdict() { # review-file
   local review_file="$1"
   PARSED_VERDICT=""
@@ -1238,6 +1261,61 @@ if [[ "${LEADV2_REVIEW_MACHINE_ROUND0:-1}" != 0 ]]; then
   fi
 fi
 
+# SUITE-THAT-CANNOT-FAIL-01: falsifiability gate on the round's own suites.
+# commit 0d61b3c shipped a "test suite" with zero assertions and zero failure
+# paths (exit 0 for any input) that looked like delivered, tested work. A lane
+# whose own diff carries such a suite must not reach `status: pass` on the
+# strength of that "evidence". Keyed on THIS round's diff (DIFF_FILE): only
+# suites the lane itself added or modified are evaluated — never a repo-wide
+# audit that would fail every lane on pre-existing debt. Runs before pool
+# resolve so a refusal never spends a reviewer arm. "Could not determine" is
+# a visible blocked state, never an implicit pass.
+_FALSIFY_BIN="${SCRIPT_DIR}/leadv2-suite-falsifiable.sh"
+if [[ -f "${_FALSIFY_BIN}" ]]; then
+  while IFS= read -r _fs_path; do
+    [[ -n "${_fs_path}" ]] || continue
+    # deleted/renamed-away suites are not new evidence
+    [[ -f "${ROOT}/${_fs_path}" ]] || continue
+    _fs_out="$(bash "${_FALSIFY_BIN}" "${ROOT}/${_fs_path}" 2>&1)"; _fs_rc=$?
+    if [[ ${_fs_rc} -eq 0 ]]; then
+      emit decision "review_suite_falsifiability task=${TASK} suite=${_fs_path} verdict=falsifiable"
+      continue
+    fi
+    if [[ ${_fs_rc} -eq 1 ]]; then
+      {
+        printf 'status: fail\nreason: suite_not_falsifiable\nsuite: %s\n\n' "${_fs_path}"
+        printf 'The review gate refuses this round: the suite above cannot go red.\n'
+        printf 'Its exit code did not change under failure injection (assertion tools\n'
+        printf 'broken, empty working directory, stripped environment), so it cannot\n'
+        printf 'distinguish correct from incorrect behaviour and carries no evidence.\n'
+        printf 'A printed `FAIL:` line that leaves `$?` at 0 is NOT an assertion: make\n'
+        printf 'the suite exit non-zero on failure (exit 1, or let the failing command\n'
+        printf 'propagate — no `|| true` around the checked command), then re-run review.\n\n'
+        printf '%s\n' "${_fs_out}"
+      } > "${HANDOFF}/review-gate.md.tmp"
+      mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+      _review_state_write
+      emit decision "review_gate task=${TASK} status=fail reason=suite_not_falsifiable suite=${_fs_path}"
+      exit 7
+    fi
+    # rc>=2: the checker could not determine (suite red at baseline, timed
+    # out, unrunnable). Visible blocked state — never an implicit pass.
+    {
+      printf 'status: blocked\nreason: suite_falsifiability_undetermined\nsuite: %s\n\n' "${_fs_path}"
+      printf 'The falsifiability check could not determine whether this suite can go\n'
+      printf 'red — it may already be failing at baseline (run it yourself:\n'
+      printf 'bash %s). Make the suite green, and make its failures change its exit\n'
+      printf 'code, then re-run review.\n\n' "${_fs_path}"
+      printf '%s\n' "${_fs_out}"
+    } > "${HANDOFF}/review-gate.md.tmp"
+    mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+    emit decision "review_gate task=${TASK} status=blocked reason=suite_falsifiability_undetermined suite=${_fs_path}"
+    exit 8
+  done < <(sed -n 's|^+++ b/||p' "${DIFF_FILE}" 2>/dev/null \
+    | grep -E '(^|/)(tests/|plugins/leadv2/scripts/tests/|\.claude/scripts/tests/|plugins/leadv2/tests/)test-[^/]+\.sh$' \
+    | sort -u || true)
+fi
+
 # Step 2: pool resolve.
 resolver_out="$(resolve_review_pool_call)"
 reviewer="$(printf '%s\n' "${resolver_out}" | sed -n 's/^reviewer=//p' | head -n1)"
@@ -1427,6 +1505,14 @@ for _ran_index in "${!ran_arms[@]}"; do
       if ! grep -q '^[[:space:]]*REVIEW_VERDICT:' "${_out}" 2>/dev/null && [[ "${_pc_body_bytes}" -lt "${_pc_body_min}" ]]; then
         if [[ -s "${_err}" ]] || grep -q 'cost recorded:' "${_err}" 2>/dev/null; then
           _pc_body_rel="${_out#"${ROOT}"/}"
+          _pc_retrieval_attempts="body"
+          if [[ "${_arm}" == codex ]]; then
+            _pc_retrieval_attempts="${_pc_retrieval_attempts},codex_store"
+            if _review_recover_from_codex_store "${_out}"; then
+              emit decision "review_body_recovered task=${TASK} arm=${_arm} source=codex_store attempts=${_pc_retrieval_attempts}"
+              break
+            fi
+          fi
           _pc_used_csv="$(IFS=,; echo "${ran_arms[*]}")"
           _pc_retry_arm=""
           if [[ "${_review_body_retry_used}" -eq 0 ]]; then
@@ -1447,10 +1533,10 @@ for _ran_index in "${!ran_arms[@]}"; do
             printf '%s' "${_rc}" > "${HANDOFF}/review-${_arm}.rc"
             continue
           fi
-          printf 'status: blocked\nreason: review_body_lost\narm: %s\nbody: %s\nbytes: %s\n' \
-            "${_arm}" "${_pc_body_rel}" "${_pc_body_bytes}" > "${HANDOFF}/review-gate.md.tmp"
+          printf 'status: blocked\nreason: review_body_lost\narm: %s\nbody: %s\nbytes: %s\nretrieval_attempts: %s\n' \
+            "${_arm}" "${_pc_body_rel}" "${_pc_body_bytes}" "${_pc_retrieval_attempts}" > "${HANDOFF}/review-gate.md.tmp"
           mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-          emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${_arm} body=${_pc_body_rel} bytes=${_pc_body_bytes}"
+          emit decision "review_gate task=${TASK} status=blocked reason=review_body_lost arm=${_arm} body=${_pc_body_rel} bytes=${_pc_body_bytes} retrieval_attempts=${_pc_retrieval_attempts}"
           exit 6
         fi
       fi
@@ -1551,10 +1637,13 @@ if [[ -z "${verdict}" ]]; then
   exit 6
 fi
 
-FINDINGS_CRITICAL_TOTAL="${FINDINGS_CRITICAL}"
-FINDINGS_HIGH_TOTAL="${FINDINGS_HIGH}"
-FINDINGS_MEDIUM_TOTAL="${FINDINGS_MEDIUM}"
-FINDINGS_LOW_TOTAL="${FINDINGS_LOW}"
+# REVIEW-VERDICT-COUNTER-03: FINDINGS_*_TOTAL used to seed here from the
+# reviewer's self-declared REVIEW_FINDINGS: line (parse_review_verdict's
+# FINDINGS_CRITICAL/HIGH/MEDIUM/LOW globals). That is a DECLARED number with
+# no guaranteed relationship to the FINDING: lines actually unioned below --
+# they are derived from the union+dedup array (FINDINGS_JSON) once it exists,
+# a few dozen lines down, so the printed gate count and review-findings.json
+# can never disagree.
 
 # --- Step 6/7: synthesis — union FINDING: lines across ran_arms + hack-detect,
 # dedup by (file,line,severity,dimension), then verify each Critical/High on an
@@ -1594,8 +1683,9 @@ done
 SECURITY_CRITICAL="$(awk -F'\t' '$1 == "hackdetect" && $2 == "Critical" { n++ } END { print n + 0 }' "${FINDINGS_RAW}" 2>/dev/null)"
 SECURITY_HIGH="$(awk -F'\t' '$1 == "hackdetect" && $2 == "High" { n++ } END { print n + 0 }' "${FINDINGS_RAW}" 2>/dev/null)"
 if [[ "${SECURITY_CRITICAL}" -gt 0 || "${SECURITY_HIGH}" -gt 0 ]]; then
-  FINDINGS_CRITICAL_TOTAL=$(( FINDINGS_CRITICAL_TOTAL + SECURITY_CRITICAL ))
-  FINDINGS_HIGH_TOTAL=$(( FINDINGS_HIGH_TOTAL + SECURITY_HIGH ))
+  # No manual total bump here: hackdetect's own FINDING: lines are already
+  # unioned into FINDINGS_RAW/FINDINGS_DEDUP above and will be counted from
+  # FINDINGS_JSON below like every other arm's findings -- one array, one count.
   verdict="FAIL"
   emit decision "review_security_block task=${TASK} critical=${SECURITY_CRITICAL} high=${SECURITY_HIGH}"
 fi
@@ -1652,6 +1742,29 @@ FINDINGS_JSON="${HANDOFF}/review-findings.json"
   printf ']}'
 } > "${FINDINGS_JSON}.tmp"
 mv -f "${FINDINGS_JSON}.tmp" "${FINDINGS_JSON}"
+
+# REVIEW-VERDICT-COUNTER-03: the gate's printed severity counts must come from
+# the SAME findings array just written to review-findings.json, not from the
+# reviewer's self-declared REVIEW_FINDINGS: line and not from a second
+# hackdetect-only tally added on top of it. One array, one count, everywhere.
+FINDINGS_CRITICAL_TOTAL="$({ grep -oE '"severity":"Critical"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_CRITICAL_TOTAL="${FINDINGS_CRITICAL_TOTAL:-0}"
+FINDINGS_HIGH_TOTAL="$({ grep -oE '"severity":"High"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_HIGH_TOTAL="${FINDINGS_HIGH_TOTAL:-0}"
+FINDINGS_MEDIUM_TOTAL="$({ grep -oE '"severity":"Medium"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_MEDIUM_TOTAL="${FINDINGS_MEDIUM_TOTAL:-0}"
+FINDINGS_LOW_TOTAL="$({ grep -oE '"severity":"Low"' "${FINDINGS_JSON}" 2>/dev/null || :; } | wc -l | tr -d '[:space:]')"; FINDINGS_LOW_TOTAL="${FINDINGS_LOW_TOTAL:-0}"
+
+# A FAIL verdict asserts Critical/High findings exist. If the union+dedup
+# array that just fed review-findings.json has none, the verdict and the
+# array disagree -- an impossible state, not a real fail. Print it honestly
+# as a blocked gate rather than a "fail: high=N" nobody can match against the
+# findings array (round-2 live incident: gate printed high=5 while
+# review-findings.json held an empty findings array).
+if [[ "${verdict}" == FAIL && "${FINDINGS_CRITICAL_TOTAL}" -eq 0 && "${FINDINGS_HIGH_TOTAL}" -eq 0 ]]; then
+  printf 'status: blocked\nreason: findings_lost\narms: %s\ndeclared_verdict: FAIL\nfindings_total: 0\n' \
+    "$(IFS=,; echo "${ran_arms[*]}")" > "${HANDOFF}/review-gate.md.tmp"
+  mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
+  emit decision "review_gate task=${TASK} status=blocked reason=findings_lost declared_verdict=FAIL findings_total=0"
+  exit 6
+fi
 
 # Recompute _needs_verify/_verified_count outside the subshell the while-loop
 # ran in (pipes/process substitution create subshells; re-derive from the JSON
@@ -1723,6 +1836,23 @@ if [[ ${record_rc} -eq 2 ]]; then
 else
   REVIEW_DEDUP=0
   emit decision "review_gate task=${TASK} status=ran author=${AUTHOR} reviewer=${reviewer_primary} verdict=${verdict} diff=${diff_hash:0:8} arms=${ARMS_CSV}"
+fi
+
+# GATE-PROVES-ITS-OWN-CONTROL-01: if the round declared a mutation catalog
+# (docs/handoff/<task>/mutation-catalog.txt — one negative-control claim per
+# line, see lib/leadv2-control-prover.sh header for the format), the machine
+# applies every declared mutation itself and requires the declared suite to
+# go red alone, then revert byte-clean. A PASS verdict is never trusted on
+# the author's or reviewer's say-so for a declared control. Purely additive:
+# a round with no catalog file behaves exactly as before.
+_CONTROL_CATALOG="${HANDOFF}/mutation-catalog.txt"
+if [[ "${verdict}" != FAIL && -f "${_CONTROL_CATALOG}" ]]; then
+  _cp_out="$(bash "${SCRIPT_DIR}/lib/leadv2-control-prover.sh" --catalog "${_CONTROL_CATALOG}" --root "${ROOT}" 2>&1)"; _cp_rc=$?
+  if [[ ${_cp_rc} -ne 0 ]]; then
+    verdict="FAIL"
+    emit decision "review_gate task=${TASK} status=blocked reason=control_not_diagnostic rc=${_cp_rc}"
+    printf '%s\n' "${_cp_out}" > "${HANDOFF}/control-prover.md"
+  fi
 fi
 
 if [[ "${verdict}" == FAIL ]]; then

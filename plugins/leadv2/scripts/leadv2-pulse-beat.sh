@@ -18,13 +18,28 @@
 # Invocations:
 #   --check   background-safe: honours the throttle + loop-liveness gate,
 #             never fails a caller (always rc=0)
-#   --now     bypasses the throttle, runs synchronously, exit = composer rc
+#   --now     bypasses the throttle, runs synchronously, exit = composer rc;
+#             PLUGIN-PAPERCUTS-01: --check accepts --owner=<repo>:<lane> (or
+#             LEADV2_BEAT_OWNER_TAG) to stamp the spawned watcher's argv so a
+#             reparented orphan is attributable; default derives it from the
+#             project root + checked-out branch
 #   --due     predicate only: prints due|not-due|loop-owns, exits 0/1
 set -uo pipefail
 trap 'exit 0' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODE="${1:---check}"
+
+# PLUGIN-PAPERCUTS-01 (defect 1): the detached --now watcher is reparented to
+# launchd and its argv is the ONLY thing identifying who owns it (repo + lane)
+# — a bare "pulse-beat.sh --now" made a safe orphan sweep impossible (measured
+# 2026-08-31: fixture-root loops no repo, no lane, unkillable-by-attribution).
+# The owner tag is pinned by the caller (--owner=<repo>:<lane> as $2, or
+# LEADV2_BEAT_OWNER_TAG) or derived from PROJECT_ROOT + git branch below.
+OWNER_TAG_IN="${LEADV2_BEAT_OWNER_TAG:-}"
+if [[ -z "$OWNER_TAG_IN" && "${2:-}" == --owner=* ]]; then
+  OWNER_TAG_IN="${2#--owner=}"
+fi
 
 [[ "${LEADV2_SINGLE_LEAD_BEAT:-1}" == "0" ]] && { [[ "$MODE" == "--due" ]] && { printf -- 'disabled\n'; exit 1; }; exit 0; }
 
@@ -34,6 +49,27 @@ if [[ -z "$PROJECT_ROOT" ]]; then
   exit 0
 fi
 export LEADV2_PROJECT_ROOT="$PROJECT_ROOT"
+
+# PLUGIN-PAPERCUTS-01 (defect 1): owner-stamp derivation, evaluated lazily at
+# spawn (one basename + one `git branch` per actual watcher, not per hook
+# fire). Explicit input wins and is charset-guarded (it goes into a
+# ps-visible argv); a detached HEAD degrades to repo-only, which still
+# narrows a sweep.
+_beat_owner_tag() {
+  local _tag="${OWNER_TAG_IN:-}" _repo _lane
+  if [[ -n "$_tag" ]]; then
+    [[ "$_tag" =~ ^[A-Za-z0-9._/-]+(:[A-Za-z0-9._/-]+)?$ ]] || _tag=""
+    printf '%s' "$_tag"
+    return 0
+  fi
+  _repo="$(basename "$PROJECT_ROOT" 2>/dev/null)" || return 0
+  _lane="$(git -C "$PROJECT_ROOT" branch --show-current 2>/dev/null || true)"
+  if [[ -n "$_lane" ]]; then
+    printf '%s:%s' "$_repo" "$_lane"
+  else
+    printf '%s' "$_repo"
+  fi
+}
 
 STATE_PATH_SH="$SCRIPT_DIR/leadv2-state-path.sh"
 PUMP_SH="${LEADV2_BACKLOG_PUMP_BIN:-${SCRIPT_DIR}/leadv2-backlog-pump.sh}"
@@ -360,10 +396,15 @@ fi
 _prepare_transition_env
 
 SELF="${BASH_SOURCE[0]}"
+# PLUGIN-PAPERCUTS-01 (defect 1): stamp repo+lane into the watcher argv so a
+# reparented orphan is attributable (and sweepable) safely. ${OWNER_TAG:+…}
+# keeps an unresolvable tag byte-identical to the pre-fix bare spawn; the tag
+# charset excludes spaces, so it cannot word-split.
+OWNER_TAG="$(_beat_owner_tag)"
 if command -v setsid >/dev/null 2>&1; then
-  setsid nohup bash "$SELF" --now >/dev/null 2>&1 &
+  setsid nohup bash "$SELF" --now ${OWNER_TAG:+"--owner=$OWNER_TAG"} >/dev/null 2>&1 &
 else
-  nohup bash "$SELF" --now >/dev/null 2>&1 &
+  nohup bash "$SELF" --now ${OWNER_TAG:+"--owner=$OWNER_TAG"} >/dev/null 2>&1 &
 fi
 disown 2>/dev/null || true
 exit 0

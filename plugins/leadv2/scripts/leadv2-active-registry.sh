@@ -67,7 +67,21 @@ fi
 # which uses `git rev-parse --git-common-dir` — identical from every
 # worktree of the same repo.
 _leadv2_state_path_sh() {
-  printf -- '%s/scripts/leadv2-state-path.sh' "${LEADV2_PROJECT_ROOT}"
+  local bundled
+  # The registry can be sourced while operating on a different repository
+  # (ephemeral-root consolidation is exactly that case).  Resolve the helper
+  # from this loaded plugin first; deriving it from the target project writes
+  # a private docs/leadv2/active.yaml when that project has no scripts copy.
+  if [[ -n "${LEADV2_STATE_PATH_BIN:-}" && -x "${LEADV2_STATE_PATH_BIN}" ]]; then
+    printf -- '%s' "${LEADV2_STATE_PATH_BIN}"
+    return 0
+  fi
+  bundled="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/leadv2-state-path.sh"
+  if [[ -x "${bundled}" ]]; then
+    printf -- '%s' "${bundled}"
+  else
+    printf -- '%s/scripts/leadv2-state-path.sh' "${LEADV2_PROJECT_ROOT}"
+  fi
 }
 
 _leadv2_yaml_file() {
@@ -92,6 +106,111 @@ _leadv2_yaml_lockfile() {
 
 _leadv2_state_md() {
   printf -- '%s/docs/LEAD_V2_STATE.md' "${LEADV2_PROJECT_ROOT}"
+}
+
+# PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01 round 6: an interrupted/sandboxed
+# launcher can leave an otherwise real leadv2 lane in
+# <state-base>/.ephemeral/leadv2-lwt.*/active.yaml.  Those roots are useful
+# for scratch repos, but they are not a second production control plane: the
+# founder board reads the durable <state-base>/leadv2 registry.  Consolidate
+# only rows whose declared worktree belongs to THIS repository's git common
+# dir; a foreign scratch repository is never imported merely because it uses
+# the same state base.
+_leadv2_canonical_yaml_file() {
+  local resolver
+  resolver="$(_leadv2_state_path_sh)"
+  if [[ -x "$resolver" ]]; then
+    LEADV2_STATE_ROOT= PROJECT_ROOT="${LEADV2_PROJECT_ROOT}" "$resolver" --no-link active.yaml
+  else
+    printf -- '%s/docs/leadv2/active.yaml' "${LEADV2_PROJECT_ROOT}"
+  fi
+}
+
+leadv2_active_consolidate_ephemeral_roots() {
+  local common_dir state_base canonical lockfile source_root source_yaml source_common
+  common_dir="$(git -C "${LEADV2_PROJECT_ROOT}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  [[ -n "$common_dir" ]] || return 0
+  # Scratch fixtures intentionally use ephemeral state.  A remote or the
+  # project marker is the same real-repository predicate as state-path.sh.
+  if ! { git -C "${LEADV2_PROJECT_ROOT}" remote 2>/dev/null | grep -q . \
+      || [[ -f "${LEADV2_PROJECT_ROOT}/REAL-REPO" || -f "${LEADV2_PROJECT_ROOT}/.git/leadv2-real-repo-marker" ]]; }; then
+    return 0
+  fi
+  state_base="${LEADV2_STATE_BASE:-${HOME}/.claude/leadv2-state}"
+  [[ -d "${state_base}/.ephemeral" ]] || return 0
+  canonical="$(_leadv2_canonical_yaml_file)"
+  lockfile="${canonical}.lock"
+  mkdir -p "$(dirname "${canonical}")" 2>/dev/null || return 0
+  [[ -f "${canonical}" ]] || printf 'sessions: []\n' > "${canonical}" 2>/dev/null || return 0
+
+  for source_root in "${state_base}/.ephemeral"/*; do
+    [[ -d "${source_root}" ]] || continue
+    source_yaml="${source_root}/active.yaml"
+    [[ -f "${source_yaml}" ]] || continue
+    python3 - "${source_yaml}" "${canonical}" "${lockfile}" "${common_dir}" <<'PYEOF'
+import fcntl, os, sys, tempfile
+try:
+    import yaml
+except Exception:
+    sys.exit(0)
+
+source, target, lock_path, expected_common = sys.argv[1:]
+try:
+    with open(source, encoding="utf-8") as fh:
+        incoming = yaml.safe_load(fh) or {}
+except Exception:
+    sys.exit(0)
+
+def belongs_here(row):
+    worktree = row.get("worktree") if isinstance(row, dict) else None
+    if not isinstance(worktree, str) or not worktree:
+        return False
+    import subprocess
+    try:
+        got = subprocess.check_output(
+            ["git", "-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            stderr=subprocess.DEVNULL, text=True).strip()
+        return got == expected_common
+    except Exception:
+        return False
+
+rows = [r for r in (incoming.get("sessions") or []) if belongs_here(r)]
+if not rows:
+    sys.exit(0)
+os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+with open(lock_path, "a+") as lock:
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    try:
+        with open(target, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except Exception:
+        doc = {}
+    existing = [r for r in (doc.get("sessions") or []) if isinstance(r, dict)]
+    by_task = {str(r.get("task_id")): i for i, r in enumerate(existing) if r.get("task_id")}
+    changed = False
+    for row in rows:
+        tid = str(row.get("task_id"))
+        pos = by_task.get(tid)
+        if pos is None:
+            existing.append(row)
+            by_task[tid] = len(existing) - 1
+            changed = True
+        elif str(row.get("last_pulse_at") or "") > str(existing[pos].get("last_pulse_at") or ""):
+            existing[pos] = row
+            changed = True
+    if changed:
+        doc["sessions"] = existing
+        fd, tmp = tempfile.mkstemp(prefix=".active.yaml.consolidate.", dir=os.path.dirname(target))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(doc, fh, default_flow_style=False, sort_keys=False)
+            os.replace(tmp, target)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+PYEOF
+  done
 }
 
 # ── Core Python flock + atomic-write helper ───────────────────────────────
@@ -613,7 +732,15 @@ try:
     # a SILENT no-op, rc 0 -- never an error, never a created row. A malformed
     # pid string degrades to worker_pid=None without relabelling pid_role.
     elif op == "set_worker_pid":
-        task_id, pid_str, birth = args
+        task_id, pid_str, birth = args[0], args[1], args[2]
+        # FORK-STORM-KILLS-HOOKS-01: 4th arg stamps WHICH KIND of process this
+        # pid is. Only "worker" and "watcher" are in the vocabulary; anything
+        # else degrades to "worker" (the historical, unqualified behaviour).
+        # Liveness consumers (leadv2-lane-liveness.sh) ignore a "watcher" pid
+        # as liveness evidence -- a watcher is not a worker.
+        _role = args[3] if len(args) > 3 else "worker"
+        if _role not in ("worker", "watcher"):
+            _role = "worker"
         target = next((s for s in sessions if s.get("task_id") == task_id), None)
         if target is None:
             sys.exit(0)
@@ -623,8 +750,16 @@ try:
             wpid = None
         target["worker_pid"] = wpid
         target["worker_pid_birth"] = birth if birth not in ("", "null", "None") else None
+        target["worker_pid_role"] = _role
         if wpid is not None and wpid > 0:
-            target["pid_role"] = "worker"
+            # The post-spawn process is now the lane's authoritative liveness
+            # owner.  Keep the legacy `pid` fields aligned with worker_pid:
+            # older readers still consult `pid`, while newer liveness code
+            # prefers worker_pid.  Leaving the initial dispatch/lead ancestor
+            # here makes either reader report the wrong lane lifetime.
+            target["pid"] = wpid
+            target["pid_birth"] = target["worker_pid_birth"]
+            target["pid_role"] = _role
         target["updated_at"] = _now_iso()
 
     else:
@@ -950,18 +1085,23 @@ leadv2_active_set_attempt() {
   _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_attempt "$task_id" "$attempt_id"
 }
 
-# leadv2_active_set_worker_pid <task_id> <pid> <pid_birth>
+# leadv2_active_set_worker_pid <task_id> <pid> <pid_birth> [role]
 # LANE-REGISTRY-SELF-DEADLOCK-01: post-spawn stamp of the WORKER process
 # identity onto the lane's active.yaml row. Unknown task_id is a silent no-op
 # in the python op (register/spawn ordering races must never kill a lane), so
 # callers run this with `|| true` -- a stamp failure must never fail a dispatch.
+# FORK-STORM-KILLS-HOOKS-01: optional 4th arg `role` -- "worker" (default) or
+# "watcher". The dispatcher-owned lane-pulse watcher is NOT a worker: a row
+# pinned to it must never read as process-liveness evidence (the closed loop
+# where a stale watcher made every later dispatch refuse with lane_is_live).
 leadv2_active_set_worker_pid() {
   local task_id="${1:?task_id required}" pid="${2:?pid required}" pid_birth="${3:-}"
+  local role="${4:-worker}"
   local yaml_file lockfile
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
   [[ -f "$yaml_file" ]] || return 0
-  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_worker_pid "$task_id" "$pid" "$pid_birth"
+  _leadv2_yaml_py_lock "$lockfile" "$yaml_file" set_worker_pid "$task_id" "$pid" "$pid_birth" "$role"
 }
 
 # leadv2_active_render_index

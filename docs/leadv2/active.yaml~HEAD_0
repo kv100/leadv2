@@ -1,0 +1,36 @@
+meta:
+  hard_limit: 3
+  heavy_max: 2
+  heavy_strategic_solo: false
+  light_max: 3
+  rendered_at: '2026-09-01T01:15:22Z'
+  schema_version: 2
+  standard_max: 2
+sessions:
+- session_id: s-20260901T004021Z-59781-85704
+  task_id: dispatch-0e7cd03d
+  worktree: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/SUITE-LOCK-IS-MACHINE-WIDE-01
+  branch: worktree-SUITE-LOCK-IS-MACHINE-WIDE-01
+  started_at: '2026-09-01T00:40:21Z'
+  phase: intake
+  class: Light
+  pulse_log: docs/leadv2/tasks/dispatch-0e7cd03d/pulse.md
+  pid: 59781
+  pid_birth: Tue Sep 1 03:16:44 2026
+  pid_role: lead_durable
+  parent_session_id: null
+  daemon_mode: false
+  last_pulse_at: '2026-09-01T00:40:21Z'
+  stale: false
+  note: ''
+  group_key: null
+  risk_tags: null
+  writes: null
+  protocol_version: 2
+  backend: terminal
+  phase_started_at: '2026-09-01T00:40:21Z'
+  updated_at: '2026-09-01T00:40:25Z'
+  tmux_window: null
+  tmux_pane: null
+  log_path: docs/leadv2/tasks/dispatch-0e7cd03d/pulse.md
+  provider_receipts: []

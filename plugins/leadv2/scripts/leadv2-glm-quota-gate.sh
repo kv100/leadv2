@@ -156,7 +156,7 @@ if (( five_pct >= THRESHOLD || wk_pct >= THRESHOLD )); then
   The dispatcher computes the fallback from its live quota-headroom decision;
   this message deliberately does not prescribe a hand-kept provider order.
   A Sonnet arm selected after this quota-gate reroute carries the live approved
-  exception id `glm_quota_gate_80`, which the GLM-FIRST hook allowlist admits.
+  exception id \`glm_quota_gate_80\`, which the GLM-FIRST hook allowlist admits.
 EOF
   exit 1
 fi

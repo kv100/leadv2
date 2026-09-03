@@ -46,26 +46,48 @@ if [[ -f "$SCRIPT_DIR/leadv2-state-path.sh" ]]; then
 fi
 
 CODEX_TASK="${CODEX_TASK_SH:-${SCRIPT_DIR}/codex-task.sh}"
+# LANE-LIVENESS-CODEX-TIMEOUT-01 (measured 2026-08-31): `codex-task.sh status`
+# shells out to the Codex CLI, which can block indefinitely -- observed >240s
+# with zero output. This call sits at the FRONT of every dispatch
+# (dispatch-code.sh ledger sweep -> lane-liveness --all -> here), so an
+# unbounded hang here makes dispatch unavailable in EVERY adopted repo, and it
+# presents as a dispatcher deadlock rather than as a Codex stall. The
+# pre-existing `2>/dev/null || true` fails open on a non-zero EXIT but cannot
+# fail open on a HANG. Bound the call; a timeout yields an empty payload, which
+# is exactly the already-supported "no codex data" path.
+# LEADV2_CODEX_STATUS_TIMEOUT_S tunes it; 0 restores the old unbounded
+# behaviour (one-step rollback).
+_lane_codex_status() {
+  local t="${LEADV2_CODEX_STATUS_TIMEOUT_S:-20}"
+  local runner=""
+  if [[ "$t" != "0" ]]; then
+    if command -v timeout >/dev/null 2>&1; then runner="timeout $t"
+    elif command -v gtimeout >/dev/null 2>&1; then runner="gtimeout $t"
+    fi
+  fi
+  # No timeout(1) on this PATH -> run unbounded rather than lose the data.
+  ${runner} bash "$CODEX_TASK" "$@" 2>/dev/null || true
+}
 CODEX_RAW=''
 if [[ "$NO_CODEX" -ne 1 && -f "$CODEX_TASK" ]]; then
   # --no-codex skips both `codex-task.sh status` shell-outs -- the statusline
   # hot path (leadv2-lane-status-line-tail.sh) never needs the provider
   # mapping, only log-based liveness (STATUSLINE-COUNT-TRUTH-02 R1).
   if [[ -n "$JOB_ID" ]]; then
-    CODEX_RAW="$(bash "$CODEX_TASK" status "$JOB_ID" --json --cwd "$PROJECT_ROOT" 2>/dev/null || true)"
+    CODEX_RAW="$(_lane_codex_status status "$JOB_ID" --json --cwd "$PROJECT_ROOT")"
   else
-    CODEX_RAW="$(bash "$CODEX_TASK" status --all --json --cwd "$PROJECT_ROOT" 2>/dev/null || true)"
+    CODEX_RAW="$(_lane_codex_status status --all --json --cwd "$PROJECT_ROOT")"
   fi
 fi
 
 # --all resolves every lane in one Python pass.
-python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" "${LEADV2_LANE_SENTINEL_DEAD:-1}" "${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" "${LEADV2_LANE_RUNS_ROOT:-}" "${LEADV2_LANE_SENTINEL_CLAUDE:-1}" "${LEADV2_LANE_PID_IDENTITY:-1}" "${LEADV2_LANE_PREPASS_LIVE:-0}" <<'PY'
+python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" "${LEADV2_LANE_SENTINEL_DEAD:-1}" "${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" "${LEADV2_LANE_RUNS_ROOT:-}" "${LEADV2_LANE_SENTINEL_CLAUDE:-1}" "${LEADV2_LANE_PID_IDENTITY:-1}" "${LEADV2_LANE_PREPASS_LIVE:-0}" "${LEADV2_LANE_FINISHED_WINDOW_S:-1800}" <<'PY'
 import glob, json, os, re, subprocess, sys, time
 
 (root, active_path, tombstones_path, wanted_lane, wanted_job, all_mode, json_mode,
  codex_raw, silent_max_raw, v2_raw, starting_max_raw, abandon_max_raw,
  child_suffixes_raw, sentinel_dead_raw, sentinel_settle_raw, runs_root_raw,
- sentinel_claude_raw, pid_identity_raw, prepass_live_raw) = sys.argv[1:]
+ sentinel_claude_raw, pid_identity_raw, prepass_live_raw, finished_window_raw) = sys.argv[1:]
 all_mode = all_mode == "1"
 json_mode = json_mode == "1"
 # LEADV2_LANE_LIVENESS_V2=0 is the one-flag rollback to the exact prior
@@ -82,6 +104,17 @@ def _int_env(raw, default):
 silent_max = _int_env(silent_max_raw, 900)
 starting_max = _int_env(starting_max_raw, 300)
 abandon_max = _int_env(abandon_max_raw, 3600)
+
+# LANE-LIVENESS-THREE-STATES-02: no live pid + a commit in the lane's OWN
+# worktree within this window is a completed round, not a death -- both
+# facts are externally checkable, independent of the worker's own claims.
+# 1800s (30min) sits between SILENT_MAX (900s) and ABANDON_MAX (3600s): long
+# enough to absorb the gap between a worker's last commit and the next probe
+# (live incident V5-M0-SKELETON-01: three founder escalations spanned
+# ~40min after the worker had already committed and exited), short enough
+# that a lane whose only commit is from a much earlier, unrelated round is
+# not misread as freshly finished.
+finished_window = _int_env(finished_window_raw, 1800)
 
 # SENTINEL-COMPLETION-01 (LANE-LIVENESS-IGNORES-ITS-OWN-COMPLETION-SENTINEL-01):
 # a runner-written .finalized sentinel + dead process group is proof, not a
@@ -479,6 +512,26 @@ def sentinel_check(tid, row):
     return True
 # --- end SENTINEL-COMPLETION-01 helpers ---------------------------------------
 
+def commit_age_s(worktree):
+    # LANE-LIVENESS-THREE-STATES-02: externally checkable fact #2 -- the
+    # lane's OWN worktree HEAD commit time, never the worker's self-reported
+    # success. Missing/foreign/non-git/unborn-HEAD worktree -> None (cannot
+    # establish finished), never a fabricated age.
+    if not worktree or not os.path.isdir(worktree):
+        return None
+    try:
+        r = subprocess.run(["git", "-C", worktree, "log", "-1", "--format=%ct"],
+                           capture_output=True, text=True, timeout=3)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        ctime = int(r.stdout.strip())
+    except ValueError:
+        return None
+    return max(0, int(time.time()) - ctime)
+
 def resolve(tid):
     lane_dir = os.path.join(root, "docs", "handoff", tid)
     row = {"lane": tid, "verdict": None, "age_s": None, "source": None,
@@ -519,7 +572,22 @@ def resolve(tid):
             _wpid = None
         if _wpid is not None:
             row["pid"] = _wpid
-            row["pid_source"] = "worker"
+            # FORK-STORM-KILLS-HOOKS-01: a watcher-kind pid is NOT a worker.
+            # The dispatcher re-pins async-arm rows to its lane-pulse watcher
+            # (leadv2-dispatch-code.sh, PULSE-BOARD-EMPTY round 4); when that
+            # watcher outlives the dispatch it made every later dispatch for
+            # the lane read `live` off a process that only WATCHES the journal
+            # -- the closed loop behind three lane_is_live incidents
+            # (2026-09-01). A watcher pid is still reported (annotation), but
+            # it never counts as process-liveness evidence: every rung below
+            # that consults pid_source excludes "watcher" exactly like
+            # "lead_durable", and `watcher_only` marks the row so callers
+            # (placement probe) can distinguish a stale-watcher lane.
+            if session.get("worker_pid_role") == "watcher":
+                row["pid_source"] = "watcher"
+                row["watcher_only"] = 1
+            else:
+                row["pid_source"] = "worker"
             _state, _identity = pid_state(_wpid, session.get("worker_pid_birth"), pid_identity_on, session.get("dead_at"))
         else:
             row["pid"] = session.get("pid")
@@ -534,6 +602,26 @@ def resolve(tid):
         # through that path; the dispatch-ledger sweep treats an absent attempt as
         # "cannot safely attribute a dead terminal" and skips rather than sweeps.
         row["attempt"] = session.get("attempt")
+
+    # LANE-LIVENESS-THREE-STATES-02: finished is a third state, decided BEFORE
+    # any log/stream freshness check below -- a fresh stream mtime after the
+    # worker exited is the completion flush, not proof of continued work
+    # (same precedence rule as SENTINEL-COMPLETION-01 further down, for lanes
+    # with no runner-written sentinel at all). Excludes lead_durable rows:
+    # that pid is the LEAD's own, never worker evidence, so "gone" there is
+    # meaningless.
+    # FORK-STORM-KILLS-HOOKS-01: "watcher" joins "lead_durable" here too — a
+    # live watcher pid must not block the finished-window verdict, same
+    # reasoning as the C2 floor below.
+    if session is not None and row.get("pid_source") not in ("lead_durable", "watcher"):
+        pid_gone = row["pid"] is None or row["pid_alive"] is False
+        if pid_gone:
+            _commit_age = commit_age_s(session.get("worktree"))
+            if _commit_age is not None and _commit_age <= finished_window:
+                row["age_s"] = _commit_age
+                row.update(verdict=f"finished:{_commit_age}s", source="git_commit",
+                           reason="no_pid_recent_commit")
+                return row
 
     # B9/B14 fix (SUPERVISOR-AUDIT-01 fix-round-2): consult the active row's
     # OWN recorded log_path first. leadv2-fanout.sh's single-worker funnel
@@ -660,7 +748,14 @@ def resolve(tid):
         dispatch_json = os.path.join(lane_dir, "dispatch.json")
         registered = session is not None or os.path.isfile(dispatch_json)
         age = None
-        if registered:
+        # FORK-STORM-KILLS-HOOKS-01: the positive `starting:` rung is pid-free
+        # (age off started_at alone), so a row re-pinned to a stale watcher —
+        # whose started_at every retry's idempotent re-registration refreshes —
+        # would re-earn it forever and feed the skip/refuse loop. A
+        # watcher-only row gets NO starting grace: it falls straight through
+        # to the dead determination below (the C2 floor already excludes
+        # watcher pids).
+        if registered and not row.get("watcher_only"):
             age = age_from_started_at(session)
             if age is None and os.path.isfile(dispatch_json):
                 dj_mtime = file_mtime(dispatch_json)
@@ -681,7 +776,11 @@ def resolve(tid):
         # lead session's own pid -- ignoring it here is the deadlock-breaker
         # for a lead-registered lane whose worker died before ever writing a
         # stream (design §2.1 state 7). Legacy rows keep the exact old floor.
-        if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") != "lead_durable":
+        # FORK-STORM-KILLS-HOOKS-01: a watcher pid joins the exclusion — a
+        # stale watcher keeping the row "alive" must never hold the lane at
+        # silent:no_artifact_process_alive (acceptance 9: a lane whose only
+        # live process is a watcher is NOT live).
+        if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") not in ("lead_durable", "watcher"):
             row.update(verdict=f"silent:{row['age_s'] if row['age_s'] is not None else 'unknown'}",
                        source="handoff", reason="no_artifact_process_alive")
             return row
@@ -745,7 +844,8 @@ def resolve(tid):
     # Preserve stopped-process detection in the same verdict source.
     # LANE-REGISTRY-SELF-DEADLOCK-01: gated on a non-lead pid — a wedged LEAD
     # session must never mark a lane dead (design §2.1 state 12).
-    if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") != "lead_durable":
+    # FORK-STORM-KILLS-HOOKS-01: a watcher pid is equally non-evidence here.
+    if row["pid"] is not None and row["pid_alive"] and row.get("pid_source") not in ("lead_durable", "watcher"):
         stat = ps_stat(row["pid"])
         if "T" in stat:
             row.update(verdict=f"dead:wedged_STAT={stat}", reason=f"wedged_STAT={stat}")

@@ -80,33 +80,28 @@ _core_offline_lock_slug() {
   printf '%s' "$s"
 }
 LEADV2_SUITE_LOCK_FILE="${LEADV2_SUITE_LOCK_FILE:-/tmp/leadv2-core-offline-$(_core_offline_lock_slug "$REPO_ROOT").lock}"
-# --- SUITE-LOCK round 3: a bounded wait, and an fd no child can inherit -----
-# The old approach (`exec 9<>"$LOCK"` then `flock` on fd 9) has two defects,
-# both measured live on 2026-08-31:
-#   (1) the default wait was a bare `flock 9` -- unbounded -- so a run that
-#       could not acquire hung silently until an external watchdog killed it
-#       with no reason recorded anywhere (up to 47 orphaned `sleep 900`
-#       processes reparented to launchd looked like dead workers);
-#   (2) fd 9 stayed open across every fork/exec this process performs, so any
-#       child that outlives the run -- a background worker reparented to
-#       launchd after the run is killed -- keeps the flock held forever
-#       through the inherited open file description.
-# Bash has no builtin to mark a manually-opened fd close-on-exec, so instead
-# of holding fd 9 in THIS process we hand the whole rest of this script to
-# `flock ... -o <lockfile> <command>`: flock's `-o/--close` closes ITS
-# internal lock fd before exec'ing <command>, so <command> (the re-exec'd
-# copy of this very script, marked via _LV2_CORE_OFFLINE_LOCK_HELD=1) and
-# everything IT ever forks never has the fd at all -- there is nothing left
-# for an orphan to inherit. The lock is then held solely by the `flock`
-# process; killing that process (however it dies) releases the lock
-# immediately and unconditionally, which is exactly the "process whose exit
-# is guaranteed to release it" property fd-inheritance cannot give us.
+# --- SUITE-LOCK-ORPHAN-FD-04: the lock fd must NOT survive into a child -----
+# `exec 9<>"$LOCK"` (the old approach) leaves fd 9 open across every `fork`
+# AND every `exec` this process performs, so any child that outlives this run
+# -- a background worker reparented to launchd after the run is killed --
+# keeps the flock held forever (measured 2026-08-31: 47 such orphans, some
+# holding the lock for 15+ minutes with ppid=1). Bash has no builtin to mark
+# a manually-opened fd close-on-exec, so instead of holding fd 9 in THIS
+# process we hand the whole rest of this script to `flock ... -o <lockfile>
+# <command>`: flock's own `-o/--close` closes ITS internal lock fd before
+# exec'ing <command>, so <command> (the re-exec'd copy of this very script,
+# marked via _LV2_CORE_OFFLINE_LOCK_HELD=1) and everything IT ever forks
+# never has the fd at all -- there is nothing left for an orphan to inherit.
+# The lock is then held solely by the `flock` process; killing that process
+# (however it dies) releases the lock immediately and unconditionally, which
+# is exactly the "process whose exit is guaranteed to release it" property
+# fd-inheritance cannot give us. Verified live on this machine: a run whose
+# child was left running as an orphan (ppid=1) held no fd on the lock file
+# (`lsof <lockfile>` empty) and a fresh run acquired immediately.
 #
 # `-E 99` picks an exit code no suite-body outcome can ever produce (bodies
 # exit 0/1/2 -- see EOF) so "flock could not acquire" is unambiguous against
-# "the wrapped run legitimately exited with that code". An exhausted
-# LEADV2_SUITE_LOCK_WAIT_S budget exits 2 with a FATAL line naming the lock
-# file and the holder stamped in it -- never a silent fall-through.
+# "the wrapped run legitimately exited with that code".
 #
 # Pure introspection (lists the shard partition, runs nothing) never needs to
 # serialize against a concurrent real run — skip the lock entirely for it.
@@ -148,7 +143,12 @@ if [[ "${_LV2_CORE_OFFLINE_LOCK_HELD:-0}" == "1" ]]; then
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$LEADV2_SUITE_LOCK_FILE" 2>/dev/null || true
 fi
 
-# Test-only hook (SUITE-LOCK round 3, case 8): simulate the incident shape --
+if [ -n "${LEADV2_SUITE_LOCK_PROBE:-}" ]; then
+  printf -- '[CORE-OFFLINE] lock-probe acquired file=%s\n' "$LEADV2_SUITE_LOCK_FILE"
+  exit 0
+fi
+
+# Test-only hook (SUITE-LOCK-ORPHAN-FD-04): simulate the incident shape --
 # this run forks a long-lived child, then dies before ever reaching real
 # suite execution (mirrors a lane killed right after a worker spawn). Never
 # set by a real caller; test-suite-lock-scope.sh uses it to prove the
@@ -156,11 +156,6 @@ fi
 if [ -n "${LEADV2_SUITE_LOCK_ORPHAN_TEST_SLEEP_S:-}" ]; then
   sleep "$LEADV2_SUITE_LOCK_ORPHAN_TEST_SLEEP_S" &
   printf -- '[CORE-OFFLINE] orphan-test child spawned pid=%s\n' "$!"
-  exit 0
-fi
-
-if [ -n "${LEADV2_SUITE_LOCK_PROBE:-}" ]; then
-  printf -- '[CORE-OFFLINE] lock-probe acquired file=%s\n' "$LEADV2_SUITE_LOCK_FILE"
   exit 0
 fi
 

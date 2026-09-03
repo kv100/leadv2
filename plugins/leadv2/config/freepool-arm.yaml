@@ -36,29 +36,45 @@ install_dir: /Users/kostiantyn.vlasenko/tools/free-claude-code
 # open_router, groq, gemini, deepseek, mistral) — each prefix below matched
 # at least one live route id at verification time.
 model_rank:
-  # Rewritten 2026-08-27. The previous list is preserved in git history; every one of
-  # its five entries was unusable: `open_router/deepseek/deepseek-chat-v3.1` and
-  # `nvidia_nim/...nemotron-3-super...` were fine on paper but the OpenRouter primary
-  # BILLS US (key reports is_free_tier:false, no spend cap), `gemini-3.1-pro-preview`
-  # returns HTTP 429, and `mistral/mistral-code-latest` sat behind two dead ranks.
-  # This flat list is the no-role default — a general-purpose blend, ordered by
-  # measured correctness first and latency second. Rationale and exclusions: see the
-  # role_rank commentary below.
-  - prefix: "nvidia_nim/deepseek-ai/deepseek-v4-pro-0813"
-    tier: primary
-    why: "Frontier-class and free via NIM; answered correctly in 7.5s. Best general default."
-  - prefix: "nvidia_nim/moonshotai/kimi-k3"
-    tier: secondary
-    why: "Best independently-benchmarked agentic coder in reach; 12.3s."
-  - prefix: "gemini/models/gemini-3.7-flash"
-    tier: tertiary
-    why: "Second provider, 7.0s — survives a NIM outage."
+  # Rewritten 2026-08-30 round 2 (FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01). The
+  # 2026-08-27 list above scored a 1-token status-code-only probe, which
+  # cannot see a live trap: measured 2026-08-30 against the real proxy, the
+  # top three of that list (deepseek-v4-pro, kimi-k3, gemini-3.7-flash) all
+  # answer HTTP 200 with content[].text == " " (whitespace only) at a small
+  # max_tokens budget -- not a dead route, an INVISIBLE one. Root cause
+  # (docs/handoff/FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01/report.md §2): the proxy
+  # leaves reasoning to the provider default (free_claude_code core/
+  # reasoning.py ReasoningPolicy.provider_default()), so a reasoning-capable
+  # model spends its whole tiny token budget on invisible reasoning before
+  # any visible text -- fixed at the probe layer (64-token content-checked
+  # probe, see leadv2-freepool-model-select.sh's _probe), not by removing
+  # these models, since a bigger budget resolves it for most of them.
+  #
+  # This list is now ordered from a real bakeoff (a small bash-editing task,
+  # `bash -n`-clean + correct output decides), not the 1-token probe:
+  # docs/handoff/FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01/bakeoff/round2/*.verdict.txt.
+  # `nvidia_nim/deepseek-ai/deepseek-v4-pro-0813` is EXCLUDED here (not just
+  # demoted): it failed the bakeoff outright twice at a real-work token
+  # budget (500 tokens -> no response after 90s; retried at 500 tokens -> no
+  # response after 125s) even though the same route answers fast (200,
+  # blank) at max_tokens=10. A route that reliably hangs the full probe
+  # timeout on real work costs more dispatch latency than it is worth;
+  # re-admit it once a fresh probe shows it completing real-work requests.
   - prefix: "groq/openai/gpt-oss-120b"
-    tier: quaternary
-    why: "Third provider and the fastest correct route measured (0.5s)."
+    tier: primary
+    why: "Fastest correct route in the round-2 bakeoff (1s, real bash generated and ran correctly). Best general default for throughput."
   - prefix: "mistral/mistral-code-latest"
+    tier: secondary
+    why: "Second provider, 1s, correct in the round-2 bakeoff -- survives a Groq quota wall."
+  - prefix: "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
+    tier: tertiary
+    why: "Not in the previous list at all -- round-2 bakeoff added it and it passed cleanly (35s, correct). Third provider."
+  - prefix: "nvidia_nim/moonshotai/kimi-k3"
+    tier: quaternary
+    why: "Best independently-benchmarked agentic coder in reach and passed the round-2 bakeoff (67s, correct) -- slow but real, kept below the fast/reliable tier."
+  - prefix: "gemini/models/gemini-3.7-flash"
     tier: quinary
-    why: "Fourth provider, 2.0s; broadest fallback before the caller drops to paid Claude."
+    why: "Passed the round-2 bakeoff (33s, correct) but was flaky under repeated probing in the same session (a separate short-prompt probe timed out at 40s) -- broadest fallback before the caller drops to paid Claude."
 
 # role_rank — per-role ranking, populated 2026-08-27 from a live measured probe of
 # every candidate route plus independent-benchmark research. Callers set FREEPOOL_ROLE
@@ -97,19 +113,39 @@ model_rank:
 role_rank:
   # Multi-file code writing. Instruction adherence and correctness dominate; a minute
   # of latency is cheaper than a wrong diff.
+  # Re-ranked 2026-08-30 round 3 by the latency-only selector timings in
+  # docs/handoff/FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01/round3-selector/. No
+  # discriminating bash-3.2 editing bakeoff was run or recorded that round;
+  # this ordering is not a correctness or model-quality claim.
+  # REORDERED 2026-09-01 (founder decision, FREEPOOL-IMPLEMENT-BY-ENDURANCE-01).
+  # The previous order was latency-only and said so in its own `why` lines
+  # ("not a correctness ranking", "no round-3 correctness bakeoff was
+  # recorded"). Latency is the wrong criterion for THIS role: `implement` is a
+  # multi-step agentic lane, not a single completion.
+  #
+  # Measured 2026-09-01 on a real lane (SUITE-LOCK-ORPHAN-FD-04, run
+  # 260901-113657): `mistral/mistral-code-latest` was selected, read one file,
+  # ran `git diff --stat`, narrated the output and ended the turn after FOUR
+  # messages -- 90k input tokens for zero work, and the run still recorded
+  # `outcome: completed`. Fast and shallow is worse than slow and complete
+  # here, because a lane that stops early reports success.
+  #
+  # So this role now leads with the two models with actual agentic evidence,
+  # and keeps the fast pair as fallbacks. bulk/read/review are NOT changed --
+  # there latency really is the right criterion.
   implement:
-    - prefix: "nvidia_nim/moonshotai/kimi-k3"
+    - prefix: "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
       tier: primary
-      why: "Leads Terminal-Bench 2.1 and Frontend Code Arena in independent testing (see docs/handoff/AUDIT-THIRDPARTY/free-model-research.md); free via NIM, answered correctly in 12.3s."
-    - prefix: "nvidia_nim/deepseek-ai/deepseek-v4-pro-0813"
+      why: "Strongest independently-benchmarked coding score in reach (SWE-bench 60.5) and passed the round-2 correctness bakeoff cleanly. Slower per call; this role pays for completion, not for latency."
+    - prefix: "nvidia_nim/moonshotai/kimi-k3"
       tier: secondary
-      why: "Same generation as the v4-pro OpenRouter bills for, free here; correct in 7.5s."
-    - prefix: "gemini/models/gemini-3.7-flash"
+      why: "Best independently-benchmarked AGENTIC coder available to us -- the previous ordering said exactly this and still ranked it fourth on latency alone. Distinct lineage from rank 1."
+    - prefix: "groq/openai/gpt-oss-120b"
       tier: tertiary
-      why: "Third distinct provider, so a NIM-wide outage does not take implementation down; correct in 7.0s."
+      why: "Fastest route and correct on SHORT tasks; demoted here because short-task correctness did not predict multi-step endurance. Still first for bulk/read."
     - prefix: "mistral/mistral-code-latest"
       tier: quaternary
-      why: "Code-tuned and fast (2.0s), fourth provider. Note its devstral siblings failed the correctness check — this specific route did not."
+      why: "Kept only as a provider-diversity fallback: measured 2026-09-01 ending a real lane after two tool calls while reporting completion."
 
   # Many near-identical edits. Throughput and consistency matter; reasoning depth does not.
   bulk:
@@ -118,25 +154,37 @@ role_rank:
       why: "Fastest correct route measured (0.5s); Groq's inference speed is the whole point for high-volume mechanical work."
     - prefix: "groq/qwen/qwen3.8-27b"
       tier: secondary
-      why: "Same provider's smaller model, 1.6s, correct and token-frugal (2 output tokens)."
+      why: "Same provider's smaller model, 1.6s in the recorded selector timing; latency-only ordering."
     - prefix: "mistral/mistral-code-latest"
       tier: tertiary
-      why: "2.0s from a second provider, so a Groq quota wall does not stall the batch."
+      why: "2.0s in the recorded selector timing from a second provider; a latency fallback."
     - prefix: "nvidia_nim/minimaxai/minimax-m3"
       tier: quaternary
-      why: "2.3s and correct via NIM — unlike minimax-m2.1, which never reached an answer."
+      why: "2.3s in the recorded selector timing via NIM; no round-3 correctness claim."
 
   # Adversarial review and bug hunting. Reasoning depth matters, latency does not.
+  # REORDERED 2026-09-01 (founder decision, same reasoning as `implement`).
+  # Review is judgment work, not throughput: a fast shallow model rubber-stamps
+  # a diff, and a rubber-stamped review is exactly the lying-green failure the
+  # review regime exists to prevent. The previous order was latency-only and
+  # said so ("ordered by recorded latency rather than a round-3 correctness
+  # oracle"). Depth first here, latency last.
   review:
-    - prefix: "nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b"
+    - prefix: "nvidia_nim/nvidia/nemotron-3-super-120b-a12b"
       tier: primary
-      why: "Largest model reachable free and the one with a genuine third-party coding-index result rather than only vendor claims; 60.9s is acceptable for review."
+      why: "Strongest measured coding score in reach (SWE-bench 60.5) -- a reviewer must out-reason the author, not answer faster."
     - prefix: "nvidia_nim/moonshotai/kimi-k3"
       tier: secondary
-      why: "Strongest measured agentic-coding model; a second opinion from a different lineage than nemotron."
+      why: "Best independently-benchmarked agentic coder available; distinct lineage from rank 1, so a shared blind spot is less likely."
     - prefix: "gemini/models/gemini-3.7-flash"
       tier: tertiary
-      why: "Different provider and different training lineage — the point of a review arm is disagreement, not agreement."
+      why: "Third provider, keeps an independent review path when both NIM routes are unavailable."
+    - prefix: "groq/openai/gpt-oss-120b"
+      tier: quaternary
+      why: "Fast route, last-resort reviewer: measured strong on SHORT tasks, unproven on judgment across a whole diff."
+    - prefix: "mistral/mistral-code-latest"
+      tier: quinary
+      why: "Last resort. Measured 2026-09-01 producing a suite with zero assertions that always exits 0 -- the exact failure a reviewer must catch."
 
   # Reads, summarisation, classification. Speed and frugality only.
   read:

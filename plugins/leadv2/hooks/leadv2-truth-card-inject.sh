@@ -101,7 +101,7 @@ printf -- '%s' "$RAW_RESPONSE" > "$DATA_FILE"
 
 printf '%s|card-emit|slug=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PERSONA_SLUG" >> /tmp/leadv2-truth-card-inject.log 2>/dev/null || true
 python3 - "$PERSONA_SLUG" "$DATA_FILE" << 'RUN_FMT'
-import sys, json, datetime, os
+import sys, json, datetime, os, tempfile
 
 slug     = sys.argv[1]
 data_fp  = sys.argv[2]
@@ -195,7 +195,29 @@ lines = [
     "  Comments: action_log WHERE action_type='comment' AND metadata->>'graph_id' IS NOT NULL",
     '=== END TRUTH CARD ===',
 ]
-print(json.dumps({'additionalContext': '\n'.join(lines)}))
+full_text = '\n'.join(lines)
+
+# Output cap (HOOK-OUTPUT-CAP-PLUGIN-01): a session needs the freshness
+# verdict and engine-state headline, not every pipeline/activity field. Full
+# card always written to disk; only over-cap responses get truncated in the
+# injected context.
+CAP = 2048
+if len(full_text) > CAP:
+    full_path = os.path.join(tempfile.gettempdir(), 'leadv2-truth-card-full-' + slug + '.txt')
+    try:
+        with open(full_path, 'w') as fh:
+            fh.write(full_text)
+    except Exception:
+        full_path = '(write failed)'
+    summary = [
+        '=== PERSONA TRUTH CARD: ' + slug + ' (capped, ' + str(len(full_text)) + ' bytes full) ===',
+        hdr,
+        '  RUN_MODE: ' + f(r.get('run_mode')) + '  CONTROL_MODE: ' + f(r.get('control_mode')),
+        'Full card: ' + full_path,
+    ]
+    print(json.dumps({'additionalContext': '\n'.join(summary)}))
+else:
+    print(json.dumps({'additionalContext': full_text}))
 RUN_FMT
 
 exit 0

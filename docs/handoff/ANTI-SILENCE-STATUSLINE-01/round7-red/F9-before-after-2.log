@@ -1,0 +1,46 @@
+F9 round-7-continuation: further fork reduction on the warm-cache tail render.
+Method: children CPU via bash's `times`/`time` builtin (real production scripts
+copied to scratch, liveness/state-path stubbed, warm cache, 10 renders/row) --
+same method review-r5/r6 and the prior round-7 F9 fix used.
+
+Baseline for this pass is committed HEAD (370d47c), which already halved the
+compress_base sed forks (10->4). This pass removes the 3 `printf | sed -n Np`
+forks used to split PARSED (CWD/MODEL/REMAINING) -- replaced with one `read`
+against PARSED's own newlines -- and folds the separate OWN_SESSION_ID jq call
+into the single PARSED jq call, deriving the session id from the already-
+parsed transcript_path in bash (`${x##*/}` / `${x%.jsonl}`) instead of a
+second jq spawn. Net: 4 forks removed (3 sed + 1 jq) from every render.
+
+run 1
+== floor: 10 x bash -c 'exit 0' ==             0m0.039s 0m0.025s ->  6.4 ms
+== BEFORE (committed HEAD, 370d47c) ==         0m0.270s 0m0.427s -> 69.7 ms
+== AFTER (this pass) ==                        0m0.224s 0m0.318s -> 54.2 ms
+
+run 2
+== floor ==                                    0m0.037s 0m0.024s ->  6.1 ms
+== BEFORE ==                                    0m0.271s 0m0.441s -> 71.2 ms
+== AFTER ==                                     0m0.223s 0m0.320s -> 54.3 ms
+
+Warm-cache subprocess-fork tally (bash -x trace, external commands only):
+  BEFORE this pass: jq=3 sed=7 timeout=2(+2 wrapped: bash,stat) cat=1  (13 matched, ~15 total incl wrapped)
+  AFTER  this pass: jq=2 sed=4 timeout=2(+2 wrapped)            cat=1  (9 matched, ~11 total incl wrapped)
+
+Tail render is now ~54 ms/render against a ~6 ms floor (down from ~70 ms
+before this pass, ~120 ms two rounds ago). This is a real, measured
+improvement, but it is NOT "near the floor": the remaining ~48 ms is the
+irreducible cost of process-per-fork overhead on this host (~5-6 ms/fork,
+observed via the floor row) times the ~9-11 forks structurally required by
+this script -- 2 jq spawns (settings.json command lookup + the combined
+PARSED extraction), 4 sed spawns (compress_base's BASE-shrink ladder, one per
+step, already halved from 10 in the prior round-7 fix), and 2 timeout-wrapped
+spawns (the founder's own arbitrary statusLine command, and the cache-file
+mtime stat) plus their wrapped child processes and a `cat` of the lane cache.
+
+Closing the remaining gap to ~5-6 ms would require eliminating jq (replacing
+JSON field extraction with a forkless parser, e.g. embedding the four fields
+this script needs in a single already-running process) and/or dropping the
+`timeout` wrapper around the founder's own statusLine command -- the latter
+is a deliberate safety net (B13 fix-round-3/4, see the file header) against a
+hanging user command and removing it would reintroduce exactly the failure
+mode those rounds fixed. That tradeoff was not made here; flagging it instead
+of claiming a floor that was not reached.

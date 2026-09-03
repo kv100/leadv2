@@ -75,7 +75,7 @@ if [[ -f "$LOG_FILE" ]]; then
 fi
 
 if [[ "$ALREADY_NUDGED" == "1" ]]; then
-  REMINDER="[leadv2-codex-first-nudge] already nudged subtype=$SUBTYPE this session — route to Codex/GLM before Claude quota (see full reminder earlier this session)."
+  REMINDER="[leadv2-codex-first-nudge] subtype=$SUBTYPE: route plan/review/fitting-dev to Codex and background/bulk work to GLM before Claude quota; use Claude only for integration-critical or safety-gate work."
 else
   if [[ "$MAXIMIZE" == "1" ]]; then
     REMINDER="[leadv2-codex-first-nudge] MAXIMIZE_CHEAP_MODELS=1: subagent_type=$SUBTYPE SHOULD route to Codex (codex-task.sh --tier standard, or --tier top for Heavy/adversarial per codex-policy.yaml) for plan/review/fitting-dev, or to GLM for background/bulk work -- not Claude quota, unless this spawn is integration-critical or a safety-gate task. See docs/model-routing.md and .claude/leadv2-overrides/codex-policy.yaml (dev_on_codex_fitting/phase5_review_standard)."

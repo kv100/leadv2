@@ -1,0 +1,8 @@
+task: PHASE-BOOTSTRAP-PROVE-05
+decisions:
+  - "a lane with no phase record at all is at bootstrap, not in violation; first dispatch admitted"
+  - "a lane WITH phase history missing a mandatory phase is still refused, exactly as today"
+  - "a lead-authored brief is admissible plan evidence, recorded as attested, never verified"
+  - "the printed remedy must clear the refusal when actually run"
+  - "acceptance is external: test-effort-routing.sh must go green on main"
+off_limits: ["dropping the phase requirement", "task-class light as a bypass"]

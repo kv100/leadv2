@@ -24,8 +24,14 @@
 #
 #   Phase        Proof                                        Level
 #   -----        -----                                        -----
-#   plan         context.yaml or prepass exists + has body    full
-#   gate1        .gate1-passed sentinel non-empty             full
+#   plan         context.yaml or prepass exists + has body    full (verified)
+#                OR a brief/fix-round file the dispatch was    attested
+#                launched with (docs/handoff/<task>/brief.md
+#                or fix-round-N.md), non-empty
+#   gate1        .gate1-passed sentinel non-empty             full (verified)
+#                OR the phase record itself carries a          attested
+#                non-empty --reason (an explicit recorded
+#                gate decision, not a machine-checked sentinel)
 #   build        artifact integrity + lane diff non-empty     full
 #   review       diff_hash match + verdict PASS/PASS_NITS     full
 #   deploy       artifact integrity + commit descendant of lane base full
@@ -40,6 +46,38 @@
 # bare existence, but is NOT semantic proof that a test ran or a deploy is live.
 # These three phases are declared UNPROVABLE beyond integrity — there is no
 # writer that records them `done` today, and no semantic assertion is available.
+#
+# DISPATCH-PHASE-DEADLOCK-01: plan/gate1's "attested" paths above exist because
+# _verify_artifact's ONLY prior acceptance for those two phases was a
+# machine-produced artifact (context.yaml.decisions / architect-prepass.md /
+# .gate1-passed) — none of which exist before a worker has ever run. A
+# brand-new Standard/Heavy lane whose plan and gate 1 were genuinely done by
+# the LEAD (a brief was written, a gate decision was taken) had no admissible
+# proof at all: the printed remedy pointed at a command that could never
+# satisfy the gate it was offered for (measured cost: 8 hand-written-file
+# workarounds on 2026-08-31, plus a red main-branch test tripping the same
+# refusal). "attested" is deliberately a WEAKER proof tier than "verified" —
+# see cmd_record's proof field — so this does not silently upgrade lead
+# say-so to the same strength as a machine-checked artifact.
+#
+# DISPATCH-PHASE-DEADLOCK-01: a lane with ZERO phase records at all (phases.d
+# absent or empty) is at BOOTSTRAP, not in violation — cmd_assert admits it
+# unconditionally (see PHASE-BOOTSTRAP-01 below). The instant any phase
+# record exists for the lane (typically `classify`, written by dispatch-code
+# immediately before it calls the guard), bootstrap is over and every
+# mandatory phase is enforced exactly as before. Do not read this as "phases
+# are now optional" — a Standard/Heavy lane that genuinely skipped planning
+# after classify was recorded is still refused (acceptance criterion 5 in
+# test-phase-precondition-bootstrap.sh).
+#
+# PHASE-GATE-IS-INVERTED-01 (2026-09-01): the bootstrap answer is derived by
+# the CHECKER from the store, never accepted from the caller. Because
+# dispatch-code records classify before it asserts, the zero-record exemption
+# is unreachable on the real dispatch path — a fresh Standard/Heavy dispatch
+# MUST carry plan+gate1 (lead-authored brief.md + recorded Gate-1 reason are
+# valid pre-spawn evidence, see _verify_artifact) before a worker is spawned.
+# The deadlock the exemption was added for no longer exists: the evidence
+# path above is satisfiable BEFORE dispatch, which is how it must be used.
 #
 # review — residual forgery surface (honest scope):
 #   What the review proof DOES establish: the ledger row's diff_hash matches
@@ -68,13 +106,27 @@
 #       --artifact <path>           required unless --status running|n/a|waived
 #       --status running|done|n/a|waived   default: done
 #       --handle <worker handle>    required when --status running
-#       --reason <text>             required when --status n/a|waived
+#       --reason <text>             required when --status n/a|waived;
+#                                    for phase=gate1 status=done, a non-empty
+#                                    --reason is ALSO accepted as an explicit
+#                                    recorded gate decision (proof: attested)
 #       --task-id <founder task id> for the active.yaml mirror
 #       --owner <script:function>   default: $(basename "$0")
 #
 #   leadv2-phase-record.sh assert <sig8> --class <Trivial|Light|Standard|Heavy>
 #       [--waiver <phase>=<reason>]...
 #       [--writes <csv>]
+#       [--at-bootstrap]   ACCEPTED BUT IGNORED (PHASE-GATE-IS-INVERTED-01):
+#                          a caller-attested bootstrap answer is an assertion
+#                          by the party being checked, and forwarding it let
+#                          every brand-new lane skip plan/gate1. The guard
+#                          derives bootstrap state itself, from the store, at
+#                          assert time (see PHASE-BOOTSTRAP-01 in cmd_assert).
+#
+#   leadv2-phase-record.sh is-bootstrap <sig8>
+#       exit 0 iff the lane has no phase record at all (phases.d absent or
+#       empty), 1 otherwise. dispatch-code calls this BEFORE recording its own
+#       classify so the bootstrap fact survives the classify write.
 #
 #   leadv2-phase-record.sh show <sig8>
 #   leadv2-phase-record.sh plan-for --class <C>
@@ -89,7 +141,27 @@ SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── project root resolution ──────────────────────────────────────────────────
-PROJECT_ROOT="${LEADV2_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+# PHASE-GATE-IS-INVERTED-01 [Medium] 4: this script read ONLY LEADV2_PROJECT_ROOT
+# while its own variable (and the dispatcher's sub-invocations) say PROJECT_ROOT
+# — an operator exporting just PROJECT_ROOT silently wrote a DIFFERENT store,
+# and `show` then reported done from a store the dispatcher never reads. Both
+# names now resolve the store (LEADV2_PROJECT_ROOT wins when both are set).
+# A divergent pair is never silent: a WRITE refuses outright (a record the
+# dispatcher cannot read is the lying-green shape this fix exists to kill); a
+# READ warns and proceeds on LEADV2_PROJECT_ROOT.
+_lv2_root_a="${LEADV2_PROJECT_ROOT:-}"
+_lv2_root_b="${PROJECT_ROOT:-}"
+_lv2_root_cmd="${1:-}"
+if [[ -n "$_lv2_root_a" && -n "$_lv2_root_b" && "$_lv2_root_a" != "$_lv2_root_b" ]]; then
+  if [[ "$_lv2_root_cmd" == "record" ]]; then
+    printf '[%s] ERROR: project root conflict: LEADV2_PROJECT_ROOT=%s vs PROJECT_ROOT=%s — refusing to guess which phase store to WRITE\n' \
+      "$SCRIPT_NAME" "$_lv2_root_a" "$_lv2_root_b" >&2
+    exit 4
+  fi
+  printf '[%s] WARN: project root conflict: LEADV2_PROJECT_ROOT=%s wins over PROJECT_ROOT=%s for this read\n' \
+    "$SCRIPT_NAME" "$_lv2_root_a" "$_lv2_root_b" >&2
+fi
+PROJECT_ROOT="${_lv2_root_a:-${_lv2_root_b:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
 PHASES_DIR_BASE="${PROJECT_ROOT}/docs/handoff"
 PHASES_YAML="${PROJECT_ROOT}/.claude/leadv2-overrides/phases.yaml"
@@ -406,22 +478,53 @@ _resolve_lane_diff_base() {
 }
 
 # ── verify artifact for a phase ──────────────────────────────────────────────
-# Returns 0 if artifact is proven, 1 otherwise.
+# Returns 0 if artifact is proven, 1 otherwise. On a 0 return for plan/gate1,
+# also sets _VA_STRENGTH to "verified" (machine-checked artifact) or
+# "attested" (lead-authored brief / explicit recorded decision) — cmd_record
+# reads this to stamp the proof field honestly (§ DISPATCH-PHASE-DEADLOCK-01).
+_VA_STRENGTH=""
 _verify_artifact() {
-  local sig8="$1" phase="$2" artifact="${3:-}" sha="${4:-}" commit="${5:-}"
+  local sig8="$1" phase="$2" artifact="${3:-}" sha="${4:-}" commit="${5:-}" reason="${6:-}"
+  _VA_STRENGTH=""
   case "$phase" in
     plan)
-      # context.yaml or prepass file with non-empty design
+      # context.yaml or prepass file with non-empty design — machine-checked,
+      # full proof.
       local prepass_file
       prepass_file="$(_prepass_file "$sig8" 2>/dev/null)"
-      if [[ -n "$prepass_file" && -s "$prepass_file" ]]; then return 0; fi
+      if [[ -n "$prepass_file" && -s "$prepass_file" ]]; then _VA_STRENGTH="verified"; return 0; fi
       local ctx_file="${PHASES_DIR_BASE}/dispatch-${sig8}/context.yaml"
-      if [[ -s "$ctx_file" ]] && grep -q 'decisions' "$ctx_file" 2>/dev/null; then return 0; fi
+      if [[ -s "$ctx_file" ]] && grep -q 'decisions' "$ctx_file" 2>/dev/null; then _VA_STRENGTH="verified"; return 0; fi
+      # DISPATCH-PHASE-DEADLOCK-01: a lead-authored brief or fix-round note is
+      # a real plan — it just does not live in context.yaml. Accept it, but
+      # only ever as "attested": this is a human artifact, not a
+      # machine-checked one, and the distinction must not be lost. Restricted
+      # to the docs/handoff/<task>/{brief.md,fix-round-N.md} naming so an
+      # arbitrary --artifact string cannot forge plan proof.
+      if [[ -n "$artifact" ]]; then
+        local _resolved=""
+        if [[ -f "${PROJECT_ROOT}/${artifact}" ]]; then _resolved="${PROJECT_ROOT}/${artifact}"
+        elif [[ -f "$artifact" ]]; then _resolved="$artifact"
+        fi
+        if [[ -n "$_resolved" && -s "$_resolved" ]] \
+           && printf '%s' "$artifact" | grep -qE '^(.*/)?docs/handoff/[^/]+/(brief\.md|fix-round-[0-9]+\.md)$'; then
+          _VA_STRENGTH="attested"
+          return 0
+        fi
+      fi
       return 1
       ;;
     gate1)
       local gate_file="${PHASES_DIR_BASE}/dispatch-${sig8}/.gate1-passed"
-      [[ -s "$gate_file" ]] && return 0
+      if [[ -s "$gate_file" ]]; then _VA_STRENGTH="verified"; return 0; fi
+      # DISPATCH-PHASE-DEADLOCK-01: when the lead has taken gate 1 without
+      # going through leadv2-gate1-prompt.sh (which writes the sentinel
+      # above), the phase record itself — carrying a non-empty --reason that
+      # explains the decision — IS the record of that decision. Weaker than
+      # the sentinel (no filesystem proof beyond the phases.d record a lead
+      # or worker could equally have written), so "attested", never
+      # "verified".
+      if [[ -n "$reason" ]]; then _VA_STRENGTH="attested"; return 0; fi
       return 1
       ;;
     build)
@@ -613,9 +716,13 @@ cmd_record() {
   esac
 
   # --artifact required unless status is running|n/a|waived, or the phase is a
-  # meta-phase (classify/diverge) whose proof is the dispatch dir itself.
+  # meta-phase (classify/diverge) whose proof is the dispatch dir itself, or
+  # the phase is gate1 with a non-empty --reason (DISPATCH-PHASE-DEADLOCK-01:
+  # an explicit recorded gate decision is admissible gate1 evidence in its
+  # own right — see _verify_artifact).
   if [[ "$status" == "done" && -z "$artifact" ]] \
-     && [[ "$phase" != "classify" && "$phase" != "diverge" ]]; then
+     && [[ "$phase" != "classify" && "$phase" != "diverge" ]] \
+     && ! [[ "$phase" == "gate1" && -n "$reason" ]]; then
     _log_err "record: --artifact required for status=done"
     exit 4
   fi
@@ -672,8 +779,12 @@ cmd_record() {
     # Running/n/a/waived phases get an empty proof — it does not apply.
     local _proof=""
     if [[ "$status" == "done" ]]; then
-      if _verify_artifact "$sig8" "$phase" "$artifact" "$sha" "$commit" 2>/dev/null; then
-        case "$phase" in test|live_verify|e2e) _proof="attested" ;; *) _proof="verified" ;; esac
+      if _verify_artifact "$sig8" "$phase" "$artifact" "$sha" "$commit" "$reason" 2>/dev/null; then
+        case "$phase" in
+          test|live_verify|e2e) _proof="attested" ;;
+          plan|gate1) _proof="${_VA_STRENGTH:-verified}" ;;
+          *) _proof="verified" ;;
+        esac
       else
         _proof="unverified"
         _log "WARN: phase '$phase' for $sig8 recorded done but proof NOT verified — assert will refuse"
@@ -707,7 +818,7 @@ cmd_record() {
 
 # ── assert subcommand ─────────────────────────────────────────────────────────
 cmd_assert() {
-  local sig8="" cls="" writes="" scope="full"
+  local sig8="" cls="" writes="" scope="full" caller_bootstrap=0
   local -a waivers=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -719,6 +830,8 @@ cmd_assert() {
         writes="$2"; shift 2 ;;
       --pre-build)
         scope="pre-build"; shift ;;
+      --at-bootstrap)
+        caller_bootstrap=1; shift ;;
       --*)
         _log_err "assert: unknown flag: $1"; exit 4 ;;
       *)
@@ -734,6 +847,51 @@ cmd_assert() {
     Trivial|Light|Standard|Heavy) ;;
     *) _log_err "assert: invalid class '$cls'"; exit 4 ;;
   esac
+
+  # PHASE-BOOTSTRAP-01 (DISPATCH-PHASE-DEADLOCK-01): capture whether this lane
+  # has ANY phase record at all, BEFORE the waiver loop below can create one.
+  # A lane with zero records has never started — that is not the same fact as
+  # "phases were skipped after starting", and conflating the two is exactly
+  # what produced the deadlock this const exists to prevent (a new lane
+  # refused for missing phases it had no way to satisfy). The instant one
+  # phase record exists (classify, written by dispatch-code right before it
+  # calls the guard, is the common case), bootstrap is over for every later
+  # assert on this sig8 — full enforcement resumes.
+  #
+  # Deliberately scoped to scope=="pre-build" ONLY: the reported deadlock is
+  # the dispatch-code admission guard's pre-build re-entry check (_phase_
+  # precondition_guard's D3 default for Standard/Heavy). A full-scope assert
+  # (build/test/review/deploy/close mandatory too) fires later in a lane's
+  # life, when zero phase records is a much stronger signal that nothing ran
+  # at all — test-phase-precondition.sh's own Test 1 locks that full-scope
+  # refusal in and must keep failing a bootstrap-state full assert.
+  local _lane_bootstrap=0
+  if [[ "$scope" == "pre-build" ]]; then
+    _lane_bootstrap=1
+    local _phases_d_probe
+    _phases_d_probe="$(_phases_d "$sig8")"
+    if [[ -d "$_phases_d_probe" ]]; then
+      local _probe_f
+      for _probe_f in "$_phases_d_probe"/*.yaml; do
+        [[ -f "$_probe_f" ]] || continue
+        _lane_bootstrap=0
+        break
+      done
+    fi
+    # PHASE-GATE-IS-INVERTED-01: the round-2 caller-attested --at-bootstrap
+    # flag is DEAD. Forwarding the caller's own pre-classify probe inverts the
+    # gate: a brand-new lane (the one nobody has planned) was always admitted
+    # because dispatch-code probed "zero records" before writing its own
+    # classify, then handed that stale answer here — while a resumed lane,
+    # which has records, was the only kind ever enforced (measured 2026-09-01:
+    # faee3fc5 shipped to main with no plan and no gate1). The bootstrap fact
+    # is now derived ONLY from the store, by this checker, at assert time.
+    # The flag is still parsed so old callers do not die on a usage error, but
+    # it decides nothing and its presence is journalled.
+    if [[ "$caller_bootstrap" == "1" ]]; then
+      _emit "bootstrap_claim_ignored" "task=${sig8} reason=caller_attested_bootstrap_removed"
+    fi
+  fi
 
   # Read phases.yaml
   local overrides_json
@@ -809,14 +967,15 @@ for w in (d.get('waivers_allowed') or []):
       case "$p_status" in
         done|waived)
           # Verify artifact
-          local p_artifact p_sha p_commit
+          local p_artifact p_sha p_commit p_reason
           p_artifact="$(grep '^artifact:' "$pfile" 2>/dev/null | sed 's/^artifact:[[:space:]]*//' || true)"
           p_sha="$(grep '^artifact_sha256:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
           p_commit="$(grep '^commit:' "$pfile" 2>/dev/null | awk '{print $2}' || true)"
+          p_reason="$(grep '^reason:' "$pfile" 2>/dev/null | sed 's/^reason:[[:space:]]*//' || true)"
 
           # For non-conditional phases, verify artifact
           if [[ "$pname" != "classify" && "$pname" != "diverge" ]]; then
-            if _verify_artifact "$sig8" "$pname" "$p_artifact" "$p_sha" "$p_commit"; then
+            if _verify_artifact "$sig8" "$pname" "$p_artifact" "$p_sha" "$p_commit" "$p_reason"; then
               continue
             fi
           else
@@ -837,6 +996,15 @@ for w in (d.get('waivers_allowed') or []):
   if [[ ${#missing[@]} -gt 0 ]]; then
     local csv
     csv="$(IFS=,; printf '%s' "${missing[*]}")"
+    if [[ "$_lane_bootstrap" == "1" ]]; then
+      # PHASE-BOOTSTRAP-01: this lane has never recorded a single phase — admit
+      # unconditionally. Do NOT read this as "always true for this sig8": the
+      # very next assert call, once the caller has recorded even one phase
+      # (classify at minimum), re-derives _lane_bootstrap=0 and enforces the
+      # missing set above exactly as before.
+      _emit "phase_precondition_bootstrap" "task=${sig8} class=${cls} would_be_missing=${csv}"
+      exit 0
+    fi
     printf 'missing=%s\n' "$csv"
     exit 3
   fi
@@ -895,14 +1063,41 @@ cmd_plan_for() {
   _resolve_mandatory "$cls" "$writes"
 }
 
+# ── is-bootstrap: does this lane have zero phase records? ────────────────────
+# exit 0 iff phases.d is absent or carries no record; 1 otherwise. Read-only
+# probe; no caller's answer to it is trusted by cmd_assert any more
+# (PHASE-GATE-IS-INVERTED-01 removed the caller-attested --at-bootstrap — the
+# guard derives bootstrap state itself from the store).
+cmd_is_bootstrap() {
+  local sig8=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --*)
+        _log_err "is-bootstrap: unknown flag: $1"; exit 4 ;;
+      *)
+        if [[ -z "$sig8" ]]; then sig8="$1"; else _log_err "is-bootstrap: unexpected positional: $1"; exit 4; fi
+        shift ;;
+    esac
+  done
+  [[ -n "$sig8" ]] || { _log_err "is-bootstrap: <sig8> required"; exit 4; }
+  local d probe_f
+  d="$(_phases_d "$sig8")"
+  [[ -d "$d" ]] || return 0
+  for probe_f in "$d"/*.yaml; do
+    [[ -f "$probe_f" ]] || return 0
+    return 1
+  done
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
-[[ $# -eq 0 ]] && { _log_err "usage: $0 <record|assert|show|plan-for> ..."; exit 4; }
+[[ $# -eq 0 ]] && { _log_err "usage: $0 <record|assert|show|plan-for|is-bootstrap> ..."; exit 4; }
 cmd="$1"; shift
 case "$cmd" in
   record)   cmd_record "$@" ;;
   assert)   cmd_assert "$@" ;;
   show)     cmd_show "$@" ;;
   plan-for) cmd_plan_for "$@" ;;
-  -h|--help) _log "usage: $0 <record|assert|show|plan-for> ..."; exit 0 ;;
+  is-bootstrap) cmd_is_bootstrap "$@" ;;
+  -h|--help) _log "usage: $0 <record|assert|show|plan-for|is-bootstrap> ..."; exit 0 ;;
   *)        _log_err "unknown command: $cmd"; exit 4 ;;
 esac

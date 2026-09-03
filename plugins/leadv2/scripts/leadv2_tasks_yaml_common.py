@@ -54,6 +54,28 @@ TERMINAL_STATUSES = "done|poisoned|rejected|failed|archived|closed|completed|adm
 LANE_TERMINAL_STATUSES = "claimed_done|needs_evidence"
 
 
+def row_matches(it: dict, task_id: str) -> bool:
+    """True when row *it* is the task the human named as *task_id*.
+
+    CLOSE-GATE-A2-ID-SCHEME-MISMATCH-01: a backlog row is keyed by a
+    fingerprint id (e.g. ca2177b9451b) while humans name tasks by milestone
+    names (e.g. V5-M0-SKELETON-01) that live only inside the row's `intent`
+    as the text before its first colon. A bare `id == task_id` comparison
+    therefore NEVER matches, and every consumer using it fails "not found"
+    forever. This resolves before comparing, anchored on the FULL segment
+    before the first colon -- never a substring: "V5-M1" must not match an
+    intent beginning "V5-M10:". Every id-scheme lookup against tasks.yaml /
+    lane yamls must route through this helper instead of comparing
+    `it.get("id")` directly.
+    """
+    if not task_id:
+        return False
+    if str(it.get("id", "")) == task_id:
+        return True
+    intent_head = str(it.get("intent", "") or "").split(":", 1)[0].strip()
+    return intent_head == task_id
+
+
 def load_tasks_items(path: str) -> list:
     """Return the list of task dicts found in *path*, tolerant of shape.
 
