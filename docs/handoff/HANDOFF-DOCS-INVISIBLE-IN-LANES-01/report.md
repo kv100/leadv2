@@ -3,7 +3,7 @@
 Two distinct causes made a lead's handoff doc invisible to the worker it was written for.
 Both are fixed in this lane.
 
-## Cause 1 — authored docs sit untracked, `.gitignore`'s negations are correct but nobody `git add`s them
+## Cause 1 — durable handoff docs sit untracked, `.gitignore`'s negations are correct but nobody `git add`s them
 
 ### Census (measured against the main checkout, not this worktree — a worktree only ever
 contains tracked content, so the leak itself is invisible from inside a worktree)
@@ -22,8 +22,8 @@ $ git ls-files --others --exclude-standard -- docs/handoff | wc -l
 - 5265 correctly gitignored generated scratch (dispatch.log, developer.stream.jsonl,
   costs.yaml, session maps, locks, regenerated diffs — verified with `git check-ignore -v`
   against samples of each).
-- **275 files are the actual leak**: untracked, but NOT excluded by `.gitignore` (a plain
-  `git add` would stage every one of them right now — verified with `git check-ignore -v`,
+- **275 files are the durable handoff leak**: untracked, but NOT excluded by `.gitignore` (a
+  plain `git add` would stage every one of them right now — verified with `git check-ignore -v`,
   exit 1/no match, on every category below). They are simply never `git add`ed.
 
 Breakdown of the 275 leaked files by basename (`sed -E 's#.*/##; s/[0-9]+/N/g' | sort | uniq -c`):
@@ -38,6 +38,19 @@ Breakdown of the 275 leaked files by basename (`sed -E 's#.*/##; s/[0-9]+/N/g' |
    2 report.md
    2 round3-red/before*-renders.md   (BROAD-STATUS-ROWS-02, depth-5 negative-control evidence)
 ```
+
+The census separates the 275 durable candidates from the generated bulk rather than treating
+every file as authored:
+
+| Census bucket | Name patterns | Files | Treatment |
+| --- | --- | ---: | --- |
+| Human/worker-authored docs and curated negative-control evidence | `brief*.md`, `fix-round*.md`, `divergence.md`, `report.md`, `round*-red/*` | 111 | Track retroactively |
+| Durable gate evidence already explicitly allowlisted by the phase-gate contract | `architect-prepass.md`, `context.yaml`, `.gate1-passed` | 164 | Track; these are not scratch |
+| Generated scratch | `*.log`, `*.jsonl`, `costs.yaml`, locks, session maps, regenerated diffs and phase-state subtrees | 5265 | Keep ignored |
+
+The 164-file middle bucket is deliberately called out: it is machine-produced or machine-marked
+evidence, but the existing phase-gate contract requires these exact top-level artifacts to remain
+committable. It is not the generated bulk swept into the retroactive commit.
 
 Every one of these already matches an existing `.gitignore` negation
 (`!docs/handoff/*/architect-prepass.md`, `!docs/handoff/*/fix-round*.md`,
@@ -98,8 +111,8 @@ run-all: 8 selected, scope=changed, select_only=1
 
 ## Cause 1, item 4 — retroactive tracking
 
-Committed separately (`1f6dc786`, on this lane branch, before the fix commit): all 275 leaked
-files, copied byte-for-byte from the main checkout into this worktree at identical paths, then
+Committed separately (`1f6dc786`, on this lane branch, before the fix commit): all 275 durable
+handoff candidates, copied byte-for-byte from the main checkout into this worktree at identical paths, then
 `git add`ed with no `-f` (proving the existing `.gitignore` allowlist already accepts them) and
 committed as one commit.
 
@@ -231,3 +244,74 @@ No Python files were changed.
   `git status`, never staged or committed by this lane.
 - Committed in this lane (two commits: `1f6dc786` retroactive tracking, plus this report +
   gitignore + both test suites + `pick_base` fix).
+
+## Fresh falsification evidence (2026-09-03)
+
+### Red control before the `pick_base()` fix
+
+The old implementation from `origin/main` was run against a fixture where local `main` had
+one unpushed commit and `origin/main` pointed at its parent:
+
+```text
+pre-fix pick_base choice=origin/main (expected main)
+```
+
+### Green after the fix
+
+The focused suites and the strengthened end-to-end base test passed:
+
+```text
+PASS: 1: roundN-red/ artifact staged by plain git add (no -f)
+PASS: 2: report.md + brief.md staged by plain git add (no -f)
+PASS: 3a: transient dispatch.log still matched by check-ignore
+PASS: 3b: plain git add is a no-op on ignored dispatch.log
+PASS: 4: deleting a tracked proof artifact shows in git status
+PASS: RED control: pre-fix blanket-ignore mutation blocks roundN-red git add (control fires, exit code moves)
+test-handoff-artifacts-tracked: 6 passed, 0 failed
+PASS: 1: RED — untracked brief.md, continue-round-2.md, round1-red/ proof all flagged as leaked
+PASS: 2: transient dispatch.log (gitignored) is not reported as a leak
+PASS: 3: GREEN — after `git add`, the same fixture reports zero leaks
+PASS: 4: tracking one doc clears it while the still-untracked one stays flagged
+test-handoff-docs-not-leaked: 4 passed, 0 failed
+PASS: 0: bash -n .../leadv2-lane-worktree.sh
+PASS: 1: no origin/main ref -> main
+PASS: 2: origin/main ahead (sibling landing) -> origin/main preserved
+PASS: 3: main ahead of origin/main (unpushed brief) -> main (regression fixed)
+PASS: 4: diverged refs -> main, with a loud diverged warning (never silent)
+PASS: 5: ensure forks from local main and the committed brief reaches the lane
+test-lane-worktree-base-pick: 6 passed, 0 failed
+test-run-all-carrier-map: 5 passed, 0 failed
+```
+
+Changed-scope selection also proves the new suite is selected:
+
+```text
+[SELECT] .../plugins/leadv2/scripts/tests/run-core-offline.sh
+[SELECT] .../tests/test-status-surface-bash32.sh
+[SELECT] .../tests/test-status-surface-single-lead.sh
+[SELECT] .../tests/test-status-surface-fast-names.sh
+[SELECT] .../plugins/leadv2/scripts/tests/test-lane-worktree-base-pick.sh
+run-all: 5 selected, scope=changed, select_only=1
+```
+
+The real changed-scope runner was run in the foreground with `gtimeout --foreground 20` and a
+one-suite core override to keep this lane within the explicit bound. Its raw terminal result was:
+
+```text
+[CORE-OFFLINE] suites passed=1 failed=0 missing=0 repo=.../HANDOFF-DOCS-INVISIBLE-IN-LANES-01
+== T3: env -i minimal PATH (the actual SwiftBar launch shape) renders lanes ==
+changed_scope_rc=124
+```
+
+That timeout is from the unrelated always-on status-surface T3 live-state probe; the changed
+lane suite itself completed green immediately before it. No process was left running.
+
+Shell falsification over every changed shell file:
+
+```text
+OK: bash -n plugins/leadv2/scripts/leadv2-lane-worktree.sh
+OK: bash -n plugins/leadv2/scripts/tests/test-handoff-docs-not-leaked.sh
+OK: bash -n plugins/leadv2/scripts/tests/test-lane-worktree-base-pick.sh
+OK: bash -n tests/run-all.sh
+No changed Python files; `python3 -m py_compile` set is empty.
+```

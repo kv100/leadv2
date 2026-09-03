@@ -54,6 +54,13 @@ run_pick_base() {
   ( cd "${d}" && LEADV2_PROJECT_ROOT="${d}" bash -c "source '${LANE_SH}'; resolve_root; pick_base" ) >"${outf}" 2>"${errf}"
 }
 
+run_ensure() {
+  local d="$1" outf="$2" errf="$3"
+  ( cd "${d}" && LEADV2_PROJECT_ROOT="${d}" LEADV2_WORKTREE_DIR="${d}/lane-worktrees" \
+      LEADV2_CODEX_WORKTREE_TRUST=off LEADV2_LANE_WORKTREE_ERRF="${errf}" \
+      bash -c "source '${LANE_SH}'; cmd_ensure FIXTURE-ID" ) >"${outf}" 2>"${errf}"
+}
+
 outf="$(mktemp)"; errf="$(mktemp)"
 
 # ── 1: no origin/main -> main ───────────────────────────────────────────────
@@ -96,6 +103,21 @@ if [[ "${choice}" == "main" && "${stderr_out}" == *diverged* ]]; then
   pass "4: diverged refs -> main, with a loud diverged warning (never silent)"
 else
   fail "4: got choice='${choice}' stderr='${stderr_out}'"
+fi
+
+# ── 5: end-to-end visibility — ensure must fork from local main ────────────
+d="$(new_repo)"
+base_sha="$(cd "${d}" && git rev-parse HEAD)"
+mkdir -p "${d}/docs/handoff/FIXTURE-ID"
+printf '# fixture brief\n' > "${d}/docs/handoff/FIXTURE-ID/brief.md"
+( cd "${d}" && git add docs/handoff/FIXTURE-ID/brief.md && git commit -q -m "brief committed locally" \
+    && git update-ref refs/remotes/origin/main "${base_sha}" )
+run_ensure "${d}" "${outf}" "${errf}"
+lane_path="$(cat "${outf}")"
+if [[ -f "${lane_path}/docs/handoff/FIXTURE-ID/brief.md" ]]; then
+  pass "5: ensure forks from local main and the committed brief reaches the lane"
+else
+  fail "5: ensure output='${lane_path}' did not contain the local brief (stderr: $(cat "${errf}"))"
 fi
 rm -f "${outf}" "${errf}"
 
