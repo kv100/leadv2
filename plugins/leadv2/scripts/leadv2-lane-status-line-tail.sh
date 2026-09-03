@@ -117,9 +117,8 @@ elif [[ -n "$PREV_CACHED" ]]; then
   # refreshes: no segment may appear or disappear while the underlying data
   # is unchanged. Skip the git-branch fallback — the preserved BASE already
   # carries its own formatting from a prior successful render.
-  _flicker_sep=$' \x1b[34m| '
-  BASE="${PREV_CACHED%"$_flicker_sep"*}"
-  if [[ -z "$BASE" || "$BASE" == "$PREV_CACHED" ]]; then
+  BASE="${PREV_CACHED#* | }"
+  if [[ -z "$BASE" || -z "$PREV_CACHED" || "$BASE" == "$PREV_CACHED" ]]; then
     # Separator not found (malformed cache) — degrade to fallback.
     BASE="$FALLBACK_BASE"
     BRANCH="$(timeout 1 git -C "$CWD_FROM_INPUT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"

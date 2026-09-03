@@ -58,7 +58,10 @@ assert_file_contains() {
 # The directory is also exported as LEADV2_PROOF_TMP for child processes.
 proof_tmpdir() {
   local d
-  d=$(mktemp -d 2>/dev/null || mktemp -d -t leadv2-proof)
+  d=$(mktemp -d 2>/dev/null || mktemp -d "${TMPDIR:-/tmp}/leadv2-proof.XXXXXX" 2>/dev/null) || {
+    echo "proof_tmpdir: mktemp -d failed, cannot create proof tmp dir" >&2
+    return 1
+  }
   export LEADV2_PROOF_TMP="$d"
   # Register cleanup only once
   if [[ -z "${_PROOF_TMP_CLEANUP_REGISTERED:-}" ]]; then

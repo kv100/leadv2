@@ -418,7 +418,13 @@ print(json.dumps(d))
       fi
     else
       # Execute
-      export LEADV2_PROOF_BASE_TMP="${LEADV2_PROOF_BASE_TMP:-$(mktemp -d -t leadv2-skill-proof)}"
+      if [[ -z "${LEADV2_PROOF_BASE_TMP:-}" ]]; then
+        LEADV2_PROOF_BASE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-skill-proof.XXXXXX")" || {
+          echo "leadv2-skill-proof: mktemp -d failed, cannot create proof base tmp dir" >&2
+          exit 1
+        }
+      fi
+      export LEADV2_PROOF_BASE_TMP
       local rc=0
       execute_proof "$proof_file" "$skill" || rc=$?
       duration_ms=$PROOF_DURATION_MS

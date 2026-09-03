@@ -294,7 +294,8 @@ leadv2-plugin-cache-sync.sh:plugins/leadv2/scripts/tests/test-plugin-cache-sync.
 leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
 leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
-glm-coder.sh:plugins/leadv2/scripts/tests/test-lane-outcome.sh"
+glm-coder.sh:plugins/leadv2/scripts/tests/test-lane-outcome.sh
+mktemp-guard.sh:plugins/leadv2/scripts/tests/test-mktemp-guard.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
