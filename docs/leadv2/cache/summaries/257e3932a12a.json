@@ -1,0 +1,10 @@
+{
+  "task_id": "BEAT-LOOP-ORPHANS-01",
+  "phase": "recovered",
+  "latest_handoff": "checkpoint.md",
+  "written": "2026-09-01T23:26:04Z",
+  "session_summary": "- 2026-09-01T22:26:55Z [note] review_roundcap task=BEAT-LOOP-ORPHANS-01 rounds=2 max=2",
+  "key_decisions": [],
+  "blockers": [],
+  "next_actions": []
+}

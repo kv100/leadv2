@@ -1,0 +1,10 @@
+{
+  "task_id": "dispatch-40f1bbd6",
+  "phase": "spawning",
+  "latest_handoff": "checkpoint.md",
+  "written": "2026-09-01T20:11:15Z",
+  "session_summary": "- 2026-08-23T20:50:10Z [decision] prepass_parked task=40f1bbd6 founder_task_id= reason=no_design_after_2_attempts last_reason=failed_rc_9",
+  "key_decisions": [],
+  "blockers": [],
+  "next_actions": []
+}

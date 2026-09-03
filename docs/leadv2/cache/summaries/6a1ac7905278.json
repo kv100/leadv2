@@ -1,0 +1,10 @@
+{
+  "task_id": "WORKER-MCP-ALL-ARMS-01",
+  "phase": "e2e",
+  "latest_handoff": "checkpoint.md",
+  "written": "2026-09-02T00:36:10Z",
+  "session_summary": "- 2026-09-02T00:25:58Z [note] review_arm_retry from=codex to=opus",
+  "key_decisions": [],
+  "blockers": [],
+  "next_actions": []
+}

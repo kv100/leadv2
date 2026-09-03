@@ -1,0 +1,10 @@
+{
+  "task_id": "05d28614",
+  "phase": "recovered",
+  "latest_handoff": "checkpoint.md",
+  "written": "2026-09-03T17:07:28Z",
+  "session_summary": "- 2026-08-25T08:58:09Z [note] worktree_swept id=05d28614 reason=merged-clean",
+  "key_decisions": [],
+  "blockers": [],
+  "next_actions": []
+}

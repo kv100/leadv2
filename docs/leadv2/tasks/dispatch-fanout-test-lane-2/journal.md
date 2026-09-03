@@ -1,3 +1,4 @@
 - 2026-07-30T14:42:59Z [decision] dispatch_terminal task=fanout-test-lane-2 terminal=dead cause=launcher_died_before_spawn
 - 2026-08-04T16:08:45Z [decision] dispatch_terminal task=fanout-test-lane-2 terminal=dead cause=launcher_died_before_spawn
 - 2026-08-04T17:31:55Z [decision] dispatch_terminal task=fanout-test-lane-2 terminal=dead cause=launcher_died_before_spawn
+- 2026-09-03T03:28:20Z [decision] dispatch_terminal task=fanout-test-lane-2 terminal=dead cause=launcher_died_before_spawn
