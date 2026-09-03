@@ -100,6 +100,40 @@ Not a unit test: **two real dispatches**, one landing on each account, each with
 whose chosen account never actually runs the work proves nothing — that is the same lying-green as a
 code-intel preamble that attaches and is never called.
 
+### D5 — teach every repo, and verify each one can actually do it
+
+**Founder addition, 2026-09-03:** «как только научишься использовать оба аккаунта клод то научи все
+мои репо и убедись что все они могут, приоритет на гет мени фоллоу бот и м3».
+
+Order matters and is his, not yours: **`getmany-followup-bot` first, `m3` second**, then the rest.
+
+D1 produced the reachability table. D5 turns every row that is not already true into one that is,
+and then **proves each repo individually** — the founder's word is «убедись что все они могут», and
+a table saying "should work" is not that.
+
+Per repo, in the founder's priority order:
+
+1. `getmany-followup-bot` — note it ran a **forked** `/leadv2` command until today (de-forked
+   2026-09-03; the fork is archived at `.claude/leadv2-overrides/archive/leadv2.md.fork-2026-08-12`).
+   Its `.claude/scripts/` farm had only 6 links when re-installed, against ~291 in a fully adopted
+   repo — so check what else is missing there before assuming the selector is reachable.
+2. `m3` — its env block lives in `.claude/settings.local.json`, **not** `settings.json`, because the
+   latter is git-tracked and belongs to the founder's employer. Never write to the tracked file and
+   never commit inside any MythicalGames repo.
+3. Then: `persona-engine`, `leadv2`, `respiro-ios`, `getmany-crm-reports`, `m3-market`,
+   `pf3-backend`, `pf3-local-dev`, `pf3-smart-contracts`, `mp-frontend`, `mondia-portal`,
+   `mythical-aii`, `environment-platform`.
+
+**Acceptance, and nothing less:** for each of `getmany-followup-bot` and `m3`, a **real dispatch
+launched from inside that repo** whose `claude-profile.log` shows `candidates=2` and a selected
+identity — pasted in the report. For the remaining repos a scripted check is acceptable, provided
+the check actually invokes the selector from that repo's own path rather than inspecting files.
+
+If a repo genuinely cannot reach the selector and the fix is not local to that repo, say which repo
+and why, rather than reporting it green. `MYTHICALGAMES-REPOS-HAVE-NO-OVERRIDES-01` is a separate
+open task — do not absorb it here; if a missing override blocks D5 for some repo, name it and move
+on to the next repo.
+
 ## Standing requirements
 
 Negative control per claimed fix: name the mutation, insert it **inside** the function body (not at
