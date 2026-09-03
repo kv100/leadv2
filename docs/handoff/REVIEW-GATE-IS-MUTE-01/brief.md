@@ -1,47 +1,75 @@
-# REVIEW-GATE-IS-MUTE-01 — a failed review arm says `rc=1` and nothing else, and `blocked` reads like a pass
+# REVIEW-GATE-IS-MUTE-01 — the gate says "no work" about finished, committed work
 
-**Class:** Standard. **Repo:** leadv2 plugin. **Filed:** 2026-09-02 by the persona-engine lead, from a
-cross-repo report by the getmany-followup-bot lead (their items И-2 and И-3, handed over).
+## READ THIS FIRST
+- **Pulse mode does NOT apply to you.** One turn-chain, no notification will reach you. Never end a
+  turn waiting for anything.
+- **Never background a command whose result you need.** Foreground, `timeout 1800`.
+- **Commit after every step.**
+- Suite path is `tests/run-all.sh` at the repo **ROOT**. Do NOT open with a full suite run.
 
-## Two defects, one file
+**Class:** Standard. **Repo:** leadv2 plugin. Owner file: `plugins/leadv2/scripts/leadv2-review-run.sh`.
 
-### 1. A provider failure produces no diagnosis
-`leadv2-review-run.sh:1630-1631` writes:
+## Why this is now the highest-leverage task in the repo
+
+On 2026-09-02 five lanes were merged. **Every single one was merged because the lead ran its suites
+by hand and merged personally.** In each case the gate had already reported:
+
 ```
-review_gate status=blocked reason=provider_error rc=1 arm_rc=opus=1
+status: blocked
+reason: no_work
+worker_reason: {type:system,subtype:hook_response,hook_id:...,hook_name:SessionStart:startup,...}
 ```
-and that is the entire record. The arm's stderr file is empty, so the round silently did not happen and
-nobody can say why. Reported twice in getmany-followup-bot; the pool resolved correctly both times
-(`pool=codex:blocked:100,glm:ok:5,opus:ok:21,sonnet:author:`), so the failure is inside the arm launch.
 
-Not reproducible in persona-engine / the plugin repo: the opus arm ran three times today through the same
-engine — STATUS-CHURN-01 `arms: opus status: pass`, GLM-EFFICIENCY-01 `arms: opus status: fail`
-(1 critical + 2 high), WORKER-MCP-ALL-ARMS-01 `arms: opus status: fail` (4 high). No `provider_error` in
-any gate here. So the environment differs — but **the muteness is the plugin's defect regardless**: the
-engine must never report a failed arm without a cause, because the reader cannot tell "provider down"
-from "quota exhausted" from "launcher missing".
+— about lanes carrying real commits, a written report, and `DELIVERABLE_COMPLETE`. Three separate
+witnesses on `CI-RUNS-THE-SUITES-01` alone, hours apart.
 
-Required:
-- capture the arm's stdout+stderr head and tail (say 20 lines each) into
-  `docs/handoff/<task>/review-arm-<arm>.err` and quote the first non-empty line in the gate;
-- print a `remedy:` line the way the phase-precondition refusal already does (which command to run to
-  diagnose: quota probe, launcher symlink check, profile check);
-- classify at least: `quota_exhausted`, `launcher_missing`, `profile_no_subscription`, `unknown`.
-  The three suspects, in likelihood order, from the cross-repo triage: (a) the Claude subscription window
-  is exhausted for child sessions while in-session agents still work; (b) `claude-subsession.sh` in that
-  repo's `.claude/scripts/` is a REAL COPY instead of a symlink and has drifted (a known killer, see
-  `reference_claude_scripts_stale_copies_break_dispatch`); (c) the repo runs child sessions under a Claude
-  profile with no active subscription.
+So the throughput gain of that evening was **not** a system improvement: the lead was personally
+doing the gate's job. That does not scale, and it is dangerous — had the lead believed `no_work`,
+five finished pieces of work would have been thrown away and redone.
 
-### 2. `status: blocked` reads like a pass
-`blocked` sits in the same field as `pass` and `fail`, in the same shape, and a hurried reader takes it as
-"gate cleared". Two lanes here hit `blocked` today (`reason=review_roundcap`) and both needed a human to
-notice. The gate must make a non-verdict unmistakable: a leading marker line (e.g. `NO VERDICT — <reason>`)
-before the `status:` line, and the same word in the journal decision.
+Two visible symptoms, and you must decide whether they are one bug or two:
+1. `reason: no_work` while the lane's diff is non-empty.
+2. `worker_reason` carries a **SessionStart hook response** — a hook's JSON, captured where the
+   worker's own terminal reason belongs. That strongly suggests the gate is reading the first
+   thing on a stream rather than the worker's result, and a hook firing at session start wins the
+   race.
+
+## Deliver
+
+1. **Reproduce it first, and paste the reproduction, before changing anything.** Point the gate at
+   a lane worktree with committed work — the merged lanes are on `main` now, so construct the case
+   in a scratch worktree. If you cannot reproduce it, stop and say so; do not fix a bug you have
+   not seen.
+2. **`no_work` must mean no work.** Whatever the gate uses to decide "is there a diff", make it
+   answer from the lane's committed range, not from a stream that a hook can poison. Name the
+   decision site and what it reads now versus after.
+3. **A hook response is never a worker verdict.** If the stream can carry hook JSON where a result
+   belongs, the reader must reject it by shape, not by hoping it does not appear. Say how you
+   distinguish them.
+4. **A blocked verdict must name evidence.** When the gate refuses, its `reason` should be
+   falsifiable by a command the reader can run — "0 files changed in `<base>..<head>`" beats
+   `no_work`. A verdict nobody can check is how five finished lanes nearly got redone.
+
+## Prove it
+- The reproduction, pasted, before the fix.
+- A lane with committed work → the gate reviews it instead of returning `no_work`. Paste it.
+- A lane with genuinely no diff → still `no_work`, and the reason names the empty range. Paste it.
+- A hook response injected into the stream → the gate ignores it and still reads the worker's real
+  terminal state. Paste it.
+- **Negative control:** restore the old read in a mktemp FULL copy whose baseline is proven green →
+  the committed-work case returns `no_work` again. Paste baseline and mutant runs. Insert the
+  mutation INSIDE the function body.
+- `tests/run-all.sh --scope changed` from the LANE ROOT at the END, FOREGROUND, `timeout 1800`.
+
+## Out of scope
+The review round cap, reviewer arm selection, the e2e gate. This round is about the gate reporting
+`no_work` for work that exists.
+
+## Constraints
+LANE_WRITES only. Never commit `docs/leadv2/`, `LEAD_V2_STATE.md`, `phases.d/`,
+`plugins/leadv2/scripts/docs/`, `critic.*`. Mutants and fixtures in mktemp only.
 
 ## Done when
-- a forced arm failure (stub the launcher to `exit 1`) produces a gate carrying the arm's first error line,
-  a classification and a `remedy:`; negative control: remove the capture → the gate goes back to mute and
-  the suite goes red;
-- a `blocked` gate is visually unmistakable from `pass` in both the file and the journal line;
-- both cases have EXTRA_SUITE_MAP rows proven with `--scope changed`.
+The `no_work`-on-real-work case is reproduced and then fixed with both runs pasted; an empty lane
+still refuses and names the empty range; an injected hook response cannot become a verdict; the
+negative control reproduces the old behaviour against a green baseline.

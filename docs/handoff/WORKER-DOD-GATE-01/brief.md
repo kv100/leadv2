@@ -56,3 +56,18 @@ spends a round on it.
 ## Do NOT
 - Do not weaken the review: the gate is in ADDITION to the model review, never a replacement.
 - Do not add a model call to the gate — it is bash + grep + git only, under 5 s.
+
+## Follow-up requirement (filed 2026-09-02, after the pattern appeared in a SECOND lane)
+
+A literal unfilled placeholder token standing where run output belongs has now been found in two
+independent lanes on the same day: `WORKER-MCP-ALL-ARMS-01` (report line 247, caught by the glm
+reviewer) and `FABLE-THINK-TIER-01` (report line 482, caught by the opus judge). Two different workers,
+same shape — a habit, not a slip. Both reports ASSERTED a full `run-all.sh --scope changed` run in
+prose while the evidence block held a token.
+
+Once the current round lands, the DoD gate must add exactly one check: a report whose evidence block
+matches `[A-Z_]{6,}_PLACEHOLDER`, `<[A-Z_]+>`, `TODO` or `TBD` fails the gate, naming the line. This is
+mechanical, needs no judgement, and would have caught both instances at zero reviewer cost.
+Negative control: remove the check in a mktemp FULL copy whose baseline is green -> the case goes red.
+
+NOT this round — round 2 adds no new checks by design.
