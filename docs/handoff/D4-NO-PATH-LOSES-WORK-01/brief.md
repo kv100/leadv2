@@ -1,3 +1,34 @@
+# D4 — NO PATH LOSES WORK
+
+## THE DEFINITION — read this first; everything below is its appendix
+
+**The defect is that "I cannot ask" is rendered as "it is not there."**
+
+Every liveness bug found on 2026-09-03 — ten of them, enumerated in the addenda at the end of this
+file — is one instance of that single sentence. A missing handle, a probe timeout, a permission
+error, a starved worker: each is the ABSENCE of an answer, and each was displayed, logged, or
+acted upon as a NEGATIVE answer. The consequence is always the same and always in the same
+direction: a live lane is called dead, gets resumed, and a second worker lands in a tree that
+already holds uncommitted work.
+
+So the acceptance for this row is not "the ten fixtures pass". A lane can pass ten fixtures and
+still carry the disease, because an eleventh unanswerable situation exists that nobody has met
+yet. **The requirement is structural: the liveness result is a THREE-valued type — `alive`,
+`dead`, `unknown` — and `unknown` is unrepresentable as either of the others anywhere in the
+system.** Not a convention, not a comment: no code path may collapse it, no surface may render
+it as a state, and the resume path may act only on a positive `dead`.
+
+Concretely, that means every one of these is `unknown`, not `dead`:
+- no handle recorded for the lane
+- the liveness call timed out (measured: 20s+ under lock contention)
+- `kill -0` failed for any reason other than *no such process* — notably *operation not permitted*
+- the process list could not be read, or the probe matched nothing it could interpret
+- the worker is alive but starved of CPU and answering nothing
+
+If a reviewer can point at one line where an unanswerable case becomes `dead`, the row is not
+done, however many fixtures are green.
+
+---
 # D4 — NO PATH LOSES WORK — BUILD MISSION BRIEF
 
 Repo: `~/Projects/leadv2`. Binding: `docs/handoff/WAVE4/shared-constraints.md` (read it first —
@@ -459,3 +490,29 @@ persists; it is three lines of bash and it is the cheapest item in this brief.
 
 Source of these four points: `docs/handoff/RESEARCH-HERDR-DAEMON-01/brief.md` (commit `e861cb0e`),
 a read of the implementation rather than its documentation.
+
+---
+
+## LEAD ADDENDUM 7 — case 10: starvation reads as death, and it is measured
+
+On this machine, verified independently just now: **10 cores, load average 209**, 299 leadv2
+processes, and only **11 real `claude -p` workers**. Memory is not the constraint and nothing was
+OOM-killed; this is pure CPU contention, roughly 20x oversubscribed.
+
+A worker that gets no CPU answers nothing, and from outside is indistinguishable from a dead one.
+So part of what looked all evening like "the lane died minutes after a successful dispatch" was
+not death at all — it was a starved process missing its probe window. It fits the definition at
+the top of this file exactly: **a timeout is the absence of an answer, not a negative answer.**
+
+Two consequences for this row:
+
+1. The starvation case joins the fixtures: a worker alive but unable to answer within the probe
+   window must yield `unknown`, and the resume path must refuse to act on it. Without this, the
+   sweeper itself becomes a load amplifier — it resumes lanes that were only slow, adding workers,
+   raising load, and starving more lanes.
+2. Report load alongside any liveness verdict the sweeper logs. A verdict recorded at load 209 is
+   worth less than the same verdict at load 3, and a future reader needs to see that.
+
+Note the second-order risk plainly: **the count of live lanes is not the load driver.** 57-75
+concurrent suite runs against 7-13 workers means the suites have no queue. Capping lanes treats a
+symptom; the missing queue is the cause, and it is being filed separately.
