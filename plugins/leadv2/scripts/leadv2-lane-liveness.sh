@@ -82,7 +82,7 @@ fi
 
 # --all resolves every lane in one Python pass.
 python3 - "$PROJECT_ROOT" "$ACTIVE_YAML" "$TOMBSTONES" "$LANE_ID" "$JOB_ID" "$ALL" "$JSON" "$CODEX_RAW" "${LEADV2_LANE_SILENT_MAX_S:-900}" "${LEADV2_LANE_LIVENESS_V2:-1}" "${LEADV2_LANE_STARTING_MAX_S:-300}" "${LEADV2_LANE_ABANDON_MAX_S:-3600}" "$LEADV2_LANE_CHILD_SUFFIXES" "${LEADV2_LANE_SENTINEL_DEAD:-1}" "${LEADV2_LANE_SENTINEL_SETTLE_S:-60}" "${LEADV2_LANE_RUNS_ROOT:-}" "${LEADV2_LANE_SENTINEL_CLAUDE:-1}" "${LEADV2_LANE_PID_IDENTITY:-1}" "${LEADV2_LANE_PREPASS_LIVE:-0}" "${LEADV2_LANE_FINISHED_WINDOW_S:-1800}" <<'PY'
-import glob, json, os, re, subprocess, sys, time
+import errno, glob, json, os, re, subprocess, sys, time
 
 (root, active_path, tombstones_path, wanted_lane, wanted_job, all_mode, json_mode,
  codex_raw, silent_max_raw, v2_raw, starting_max_raw, abandon_max_raw,
@@ -634,29 +634,76 @@ def commit_age_s(worktree):
         return None
     return max(0, int(time.time()) - ctime)
 
-def deliverable_age_s(lane_dir):
+def deliverable_dirs(tid, session):
+    # D2-E4-RESOLVES-THE-WRONG-DIR-01: E4 used to search only
+    # docs/handoff/<tid>/, but a lane addressed by its FOUNDER task id never
+    # keeps its deliverable there -- the single-worker funnel writes
+    # docs/handoff/dispatch-<sig8>/developer.full.md and records that
+    # directory's stream path in the lane's OWN registry row
+    # (leadv2_active_set_log_path, leadv2-dispatch-code.sh). Resolve the
+    # row's pointer into the candidate set so a founder id reaches the same
+    # deliverable as its dispatch-<sig8> id. Never glob docs/handoff/: the
+    # pointer comes from THIS lane's row (keyed by this task_id, written by
+    # the dispatcher at spawn), which is exact attribution; a glob would
+    # credit another lane's report to this one -- a false finished_unlanded,
+    # the mirror mistake. The parent must be a DIRECT child of the handoff
+    # root: the pulse.md default (docs/leadv2/tasks/...) and a degenerate
+    # pointer name no lane handoff dir and add no candidate.
+    # Returns (dirs, unreadable). `unreadable` is set when a candidate dir
+    # EXISTS but cannot be READ (EACCES etc.) -- a check that could not
+    # look, which resolve() must surface as unknown:, never let fall to a
+    # dead verdict about a directory it was unable to inspect.
+    dirs = [os.path.join(root, "docs", "handoff", tid)]
+    lp = (session or {}).get("log_path")
+    if lp:
+        cand = os.path.normpath(lp if os.path.isabs(lp) else os.path.join(root, lp))
+        handoff_root = os.path.normpath(os.path.join(root, "docs", "handoff"))
+        parent = os.path.dirname(cand)
+        if parent != handoff_root and os.path.dirname(parent) == handoff_root \
+                and parent not in dirs:
+            dirs.append(parent)
+    unreadable = None
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        try:
+            os.listdir(d)
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                continue  # raced away between isdir and listdir: just absent
+            unreadable = os.path.basename(d)
+            break
+    return dirs, unreadable
+
+def deliverable_age_s(lane_dirs):
     # D2-UNBLIND-AND-THIRD-STATE-M0M1-01 (M1, rung E4): externally checkable
     # fact -- the lane's OWN deliverable report, the artifact a finished
     # worker writes when its work never lands as a commit. Guards mirror
     # commit_age_s's refusal to fabricate: no dir / no report / empty
-    # (placeholder) report -> None, never a fabricated age. The newest
-    # NON-EMPTY *.full.md or *.summary.md wins, so a stale prior-round
-    # report sitting next to a fresh one cannot mask the fresh evidence.
+    # (placeholder) report -> None, never a fabricated age. lane_dirs is the
+    # lane's OWN closed candidate set from deliverable_dirs() (D2-E4-...-01:
+    # tid-named dir + registry-resolved dispatch dir); the newest NON-EMPTY
+    # *.full.md or *.summary.md across ALL of them wins, so a stale
+    # prior-round report sitting next to a fresh one cannot mask the fresh
+    # evidence, and a report in the dispatch dir is found from a founder id.
     # Content is never inspected -- a DELIVERABLE_BLOCKED report is still a
     # finished round that did work and said why it stopped.
-    if not lane_dir or not os.path.isdir(lane_dir):
+    if not lane_dirs:
         return None
     newest = None
-    for pattern in ("*.full.md", "*.summary.md"):
-        for path in glob.glob(os.path.join(lane_dir, pattern)):
-            try:
-                st = os.stat(path)
-            except OSError:
-                continue
-            if st.st_size <= 0:
-                continue
-            if newest is None or st.st_mtime > newest:
-                newest = st.st_mtime
+    for lane_dir in lane_dirs:
+        if not lane_dir or not os.path.isdir(lane_dir):
+            continue
+        for pattern in ("*.full.md", "*.summary.md"):
+            for path in glob.glob(os.path.join(lane_dir, pattern)):
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                if st.st_size <= 0:
+                    continue
+                if newest is None or st.st_mtime > newest:
+                    newest = st.st_mtime
     if newest is None:
         return None
     return max(0, int(time.time()) - int(newest))
@@ -943,7 +990,22 @@ def resolve(tid):
         # dead:no_handoff_dir / dead:no_log_artifact become unreachable while
         # the deliverable exists -- the incident fix, with zero consumer
         # edits: unknown to every existing arm means "write nothing".
-        _deliverable_age = deliverable_age_s(lane_dir)
+        # D2-E4-RESOLVES-THE-WRONG-DIR-01: the report lives under the lane's
+        # REAL handoff dir, resolved by deliverable_dirs() -- the tid-named
+        # dir (all a dispatch-<sig8>-shaped id ever had) plus the dispatch
+        # dir the registry row points at (what a founder-shaped id actually
+        # needs: the lead names lanes by founder id, and the deliverable is
+        # never written to docs/handoff/<founder-id>/). If even that closed
+        # candidate set cannot be LOOKED at -- a candidate dir that exists
+        # but cannot be read -- that is unknown:, never dead: an
+        # unresolvable location is a check that could not look, and dead
+        # here would be manufactured exactly where the evidence is invisible.
+        _deliverable_dirs, _dir_unreadable = deliverable_dirs(tid, session)
+        if _dir_unreadable is not None:
+            row.update(verdict="unknown:deliverable_dir_unreadable",
+                       source="deliverable", reason="deliverable_dir_unreadable")
+            return row
+        _deliverable_age = deliverable_age_s(_deliverable_dirs)
         if _deliverable_age is not None and _deliverable_age <= finished_window:
             row["age_s"] = _deliverable_age
             row.update(verdict=f"finished_unlanded:{_deliverable_age}s",
