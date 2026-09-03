@@ -385,7 +385,8 @@ over-counts; form plus lane content is the rule.
 ### The `(ORPHAN)`-is-not-deliverable risk is not hypothetical — it is shipped
 
 Addendum 4 warned that nothing downstream may treat a rescue checkpoint as finished work. That
-defect already exists in production, with an address: **`_dl_derive_lane_state` folds a dirty
+defect already exists in production, with an address (found by the session working Wave 3):
+**`_dl_derive_lane_state` folds a dirty
 working tree into the state `landed`** — not into "died with work". A lane killed by `SIGKILL`
 holding 573 unsaved lines is stamped complete. Cite this in the report; the row is fixing a live
 bug, not guarding against a future one.
