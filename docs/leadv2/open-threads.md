@@ -1,1 +1,1 @@
-/Users/kostiantyn.vlasenko/.claude/leadv2-state/leadv2/open-threads.md
+/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.HYAjCy/suite.0yI2Yb/home/.claude/leadv2-state/leadv2/open-threads.md
