@@ -205,3 +205,50 @@ Finally: the brief's own finding — that all three existing checkpoint mechanis
 dying process tree — is the whole reason this row exists. Keep it at the top of the report. It
 explains, precisely, why six hand-rescues and seven dead lanes happened despite the machinery
 that was already there.
+
+---
+
+## LEAD ADDENDUM 2 — liveness has FOUR false answers, not two. Plus a shell trap that fakes them all.
+
+Supersedes the "two cases" list in Addendum 1: that list was incomplete. The rule must get all
+four right, and the suite asserts each by name.
+
+1. **False zero (narrow pattern).** `ps`/`pgrep` on `worktrees/<lane>` reports 0 while a worker is
+   alive — the lane name does not sit next to `worktrees/` in every process's argv.
+2. **False life (wide pattern).** The same probe widened to the bare lane name matches the
+   dispatcher and its helpers, which carry the lane name in argv because it was passed as
+   `--task-id`. A dead lane looks busy, so nobody resumes it. More dangerous than (1): a false
+   zero at least sends someone to look.
+3. **Mirror-dead.** The lane is genuinely dead and the wide pattern still matches its dispatcher.
+   Assert the rule says dead.
+4. **Several handles, one alive.** After resumes a lane accumulates more than one recorded
+   `handle=PID=`. **A lane is ALIVE if ANY recorded PID is alive; DEAD only if ALL are dead.**
+   Checking only the newest handle returns a stale answer — the newest attempt may have failed
+   while an earlier worker is still running.
+
+### The shell trap that manufactures a false "everything is dead"
+
+In **zsh**, an unquoted `$pids` does NOT word-split. This loop runs ONCE over a single glued
+blob, every `kill -0` fails, and the function reports every lane dead — including live ones:
+
+```
+for p in $pids; do kill -0 "$p"; done      # zsh: 1 iteration. bash: N iterations.
+```
+
+Measured here, same script under both shells:
+
+```
+zsh_unquoted_iterations=1
+bash_unquoted_iterations=3
+```
+
+This already produced a real wrong verdict: a first run of the PID method reported `alive=none`
+across five lanes, two of which were alive.
+
+Consequences the lane must honour:
+- Iterate with `while read -r pid; do …; done <<< "$pids"` or an explicit array — never a bare
+  unquoted `$pids`.
+- The liveness suite must run under **both** `bash` and `zsh`, and fail if the two disagree. A
+  suite that only runs under bash cannot see this class of bug at all.
+- Any probe helper written for this row carries a shebang and is executed, not sourced into
+  whatever shell happens to be current.
