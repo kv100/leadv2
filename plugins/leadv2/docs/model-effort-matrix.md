@@ -110,15 +110,50 @@ cap for the few spawns that truly need it.
 | Lane | Carries | Effort control | Gate |
 |---|---|---|---|
 | Codex (gpt-5.5) | plan review, adversarial review, bug-hunt/root-cause, fitting dev tasks | `--effort medium\|high\|xhigh` on codex-task.sh | `codex-policy.yaml codex_enabled: true` |
-| GLM-5.2 | background latency-class, bulk/mechanical transforms, standard code nobody waits on | prompt-level (no knob) | repo override (e.g. PE `extensions.md §Model routing v2`) |
-| GLM-5.3-flash (`glm-flash` arm) | mechanical edits, small fixes, doc rounds, test authoring — trivial/light/standard only | prompt-level (no knob); model via `GLM_MODEL` env on glm-coder.sh | route arbiter capability matrix (cost 0.4) |
+| GLM-5.3 | background latency-class, bulk/mechanical transforms, standard code nobody waits on | `GLM_EFFORT` env on glm-coder.sh → `claude -p --effort` (GLM-EFFICIENCY-01, 2026-09-02; was prompt-level only) | route arbiter capability matrix |
+| GLM-5.3-flash (`glm-flash` arm) | mechanical edits, small fixes, doc rounds, test authoring — trivial/light/standard only | same `GLM_EFFORT` seam; model via `GLM_MODEL` env on glm-coder.sh | route arbiter capability matrix (cost 0.33 = measured credit-weight ratio) |
+
+## GLM effort wiring (GLM-EFFICIENCY-01, 2026-09-02)
+
+Z.AI evidence (all fetched live 2026-09-02):
+- GLM-5.3 / 5.3-flash force thinking ON — no disable. `reasoning_effort`: `low` |
+  `high` | `max`, **default `max`** — [glm-5.3](https://docs.z.ai/guides/llm/glm-5.3.md),
+  [glm-5.3-flash](https://docs.z.ai/guides/vlm/glm-5.3-flash.md).
+- Claude Code reaches Z.AI's Anthropic-compat endpoint (`https://api.z.ai/api/anthropic`)
+  with `output_config.effort`; CC's `--effort <level>` (2.1.258) maps onto the same
+  low/high/max ladder — [latest-model](https://docs.z.ai/devpack/latest-model.md).
+- The field measurably changes the response. Raw endpoint probe, same prompt, glm-5.3:
+  `output_tokens` **130 at `low` vs 369 at `max`** (input_tokens 40 both). CC-level A/B:
+  output 3 vs 29, wall 34s vs 41s on a 1-line prompt. Artifacts:
+  `docs/handoff/GLM-EFFICIENCY-01/report.md`.
+- Credit weights (coding plan, per 10k credits) — [teamplan](https://docs.z.ai/devpack/teamplan.md):
+  glm-5.3 in 6.9 / cached 1.7 / out 24; glm-5.3-flash in 2.3 / cached 0.56 / out 8.
+  **Flash weighs ⅓ of glm-5.3** — its "3× the quota" means 3× the allowance, not 3× the
+  cost (GLM-EFFICIENCY-AUDIT-01 read the direction backwards; the matrix's `cost: 0.4`
+  is directionally right, mildly conservative vs the true 0.33).
+
+Dispatcher contract (`_glm_effort_for_class` in leadv2-dispatch-code.sh; journaled as
+`effort_applied … mechanism=flag source=class_map`):
+
+| Raw task class | GLM effort |
+|---|---|
+| trivial, light, bulk | `low` |
+| standard | `high` |
+| heavy, strategic | `max` |
+| review / verify roles | `high` (contract-complete; glm is review-excluded today) |
+
+glm-coder.sh appends `--effort <v>` to both `claude -p` spawn sites when `GLM_EFFORT`
+is set and in the accepted vocabulary; unset or out-of-vocabulary ⇒ flag omitted
+(fail-open to the provider default `max`, byte-identical pre-lane spawn).
+Suite: `scripts/tests/test-glm-effort-wiring.sh`.
 
 **GLM-53-FLASH-ARM-01 (2026-08-27): when flash is chosen.** The dispatch route
 arbiter picks `glm-flash` whenever the task cell is code/docs (incl.
 fanout-class-funnel / backlog-pump), size ≤ standard, unprotected, and the glm
-bucket is under its ceiling — flash's `cost: 0.4` encodes its 0.4x prompt
-weight on the legacy Z.AI coding plan (~2.5x quota efficiency vs glm-5.3
-prompts at 1x / max-context at 1.2x vs 3x), so among capable uncapped arms it
+bucket is under its ceiling — flash's `cost: 0.33` (corrected 2026-09-02,
+GLM-EFFICIENCY-01 ask q-bba84179) encodes its measured credit-weight ratio —
+⅓ of glm-5.3's (2.3/0.56/8 vs 6.9/1.7/24, [teamplan](https://docs.z.ai/devpack/teamplan.md);
+the pre-lane 0.4 was a legacy-plan figure), so among capable uncapped arms it
 sorts first. It shares the one glm quota bucket and lockout record with
 glm-5.3. Flash is NEVER chosen for: protected/safety/publish/payments paths
 (matrix `protected: false` + ladder `untrusted: true` strip it from those
