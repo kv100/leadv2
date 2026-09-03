@@ -112,15 +112,20 @@ read_cred_json() {
 }
 
 # derive_identity <config_dir> <credential_source>
-#   -> "<sub>\t<email>\t<expiresAt_ms|->\t<cj_ok>\t<cred_ok>"
+#   -> "<sub>\t<email>\t<expiresAt_ms|->\t<cj_ok>\t<cred_ok>\t<account_uuid|->\t<org_uuid|->\t<cred_digest12|->"
 # Email from <config_dir>/.claude.json oauthAccount.emailAddress, sub/expiry
 # from the credential's claudeAiOauth (see header: the sources are
 # complementary live shapes). Tab is IFS-whitespace, so the empty expiry
 # field uses the '-' sentinel to survive `IFS=$'\t' read` collapsing.
+# account_uuid/org_uuid (TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01): also from
+# oauthAccount -- accountUuid is the real-account discriminator (email is
+# display and can drift; the account cannot). cred_digest12 is sha256 of the
+# RAW credential blob (never the blob itself) -- proves two slots hold
+# physically different credentials even when other fields fail to resolve.
 # Never emits accessToken/refreshToken.
 derive_identity() {
   read_cred_json "$2" | CJ_PATH="${1}/.claude.json" python3 -c '
-import json, os, sys
+import hashlib, json, os, sys
 def _load(path):
     try:
         with open(path) as f:
@@ -128,8 +133,9 @@ def _load(path):
     except Exception:
         return None
 cj = _load(os.environ.get("CJ_PATH", ""))
+raw = sys.stdin.buffer.read()
 try:
-    cred = json.load(sys.stdin)
+    cred = json.loads(raw) if raw else None
 except Exception:
     cred = None
 oa = (cj or {}).get("oauthAccount") or {}
@@ -138,7 +144,10 @@ sub = co.get("subscriptionType") or "unknown"
 email = oa.get("emailAddress") or co.get("email") or co.get("emailAddress") or "na"
 ea = co.get("expiresAt")
 ea = ea if isinstance(ea, (int, float)) else "-"
-print("%s\t%s\t%s\t%d\t%d" % (sub, email, ea, 1 if cj else 0, 1 if cred else 0))
+account_uuid = oa.get("accountUuid") or "-"
+org_uuid = oa.get("organizationUuid") or "-"
+digest = hashlib.sha256(raw).hexdigest()[:12] if raw else "-"
+print("%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s" % (sub, email, ea, 1 if cj else 0, 1 if cred else 0, account_uuid, org_uuid, digest))
 ' 2>/dev/null
 }
 
@@ -164,10 +173,10 @@ if (( timeout_s > 60 )); then warn "WARN: LEADV2_CLAUDE_PROFILE_TIMEOUT clamped 
 # credential there -- verified live 2026-08-27).
 default_dir="${LEADV2_CLAUDE_PROFILE_DEFAULT_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
 def_line="$(derive_identity "$default_dir" "file:${default_dir}/.credentials.json")"
-IFS=$'\t' read -r d_sub d_email d_exp d_cj d_cred <<<"$def_line"
+IFS=$'\t' read -r d_sub d_email d_exp d_cj d_cred d_uuid d_org d_digest <<<"$def_line"
 if [[ "$d_cred" != "1" ]]; then
   def_line="$(derive_identity "$default_dir" "keychain:Claude Code-credentials")"
-  IFS=$'\t' read -r d_sub d_email d_exp d_cj d_cred <<<"$def_line"
+  IFS=$'\t' read -r d_sub d_email d_exp d_cj d_cred d_uuid d_org d_digest <<<"$def_line"
 fi
 if [[ "$d_cred" != "1" ]]; then
   warn "WARN: default_token_absent (inherited slot has no readable credential) -- fail-open"
@@ -184,6 +193,7 @@ LABELS=()
 DIRS=()
 SOURCES=()
 IDENTITIES=()
+ACCOUNT_UUIDS=()
 expired_count=0
 re_label='^[a-z0-9][a-z0-9_-]{0,31}$'
 [[ -r "$REGISTRY" ]] || single_profile
@@ -231,8 +241,8 @@ while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; d
   # the credential for sub/expiry), never from the label -- a re-logged-in
   # slot can silently start serving a different account.
   id_line="$(derive_identity "$config_dir" "$cred")"
-  IFS=$'\t' read -r id_sub id_email id_exp id_cj id_cred <<<"$id_line"
-  id_sub="${id_sub:-unknown}"; id_email="${id_email:-na}"
+  IFS=$'\t' read -r id_sub id_email id_exp id_cj id_cred id_uuid id_org id_digest <<<"$id_line"
+  id_sub="${id_sub:-unknown}"; id_email="${id_email:-na}"; id_uuid="${id_uuid:--}"
   identity="${id_sub}/${id_email}"
   if [[ "$id_cj" != "1" ]]; then
     # Missing/unreadable .claude.json: the email half of the identity cannot
@@ -252,26 +262,73 @@ while IFS=$'\t' read -r label config_dir cred expect || [[ -n "${label:-}" ]]; d
     fi
   fi
   LABELS+=("$label"); DIRS+=("$config_dir"); SOURCES+=("$cred"); IDENTITIES+=("$identity")
+  ACCOUNT_UUIDS+=("$id_uuid")
 done < "$REGISTRY"
+
+# --- alarm file (2b: TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01) -----------------
+# Persistent, single well-known path -- NOT a handoff log. Written atomically
+# (mktemp + mv) on detect, rm -f on a clean run. No email, no token, no digest
+# of a token: labels, sub, uuid tail, dir only. Written by every lane spawn
+# that reaches this point (opt-in gate passed, registry readable); the
+# SessionStart banner (2c) does its own independent check and does not read
+# this file, so a lost concurrent write never loses the signal (worst case:
+# a false-positive stale alarm for one run, the safe direction).
+ALARM_FILE="${LEADV2_CLAUDE_ACCOUNT_ALARM_FILE:-$HOME/.claude/state/leadv2/claude-profile-alarm.json}"
+write_alarm() { # <label_a> <label_b> <sub> <uuid_tail|unresolved> <remedy_dir>
+  local dir tmpf
+  dir="$(dirname "$ALARM_FILE")"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  tmpf="$(mktemp "${dir}/.claude-profile-alarm.XXXXXX" 2>/dev/null)" || return 0
+  printf '{"kind":"same_account","labels":["%s","%s"],"account_uuid_tail":"%s","sub":"%s","detected_at":"%s","remedy_dir":"%s"}\n' \
+    "$1" "$2" "$4" "$3" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$5" > "$tmpf" 2>/dev/null \
+    && mv -f "$tmpf" "$ALARM_FILE" 2>/dev/null || rm -f "$tmpf"
+}
+clear_alarm() { rm -f "$ALARM_FILE" 2>/dev/null || true; }
 
 # --- same-account detection (the 2026-08-26 incident shape) ------------------
 # Two labels resolving to ONE real account means the registry lies about
-# having two slots.  Warn loudly; both stay candidates and already share one
-# identity-keyed quota bucket, so usage is counted once either way.
-n=${#LABELS[@]}
-_sa_i=0
-while (( _sa_i < n )); do
-  _sa_j=$(( _sa_i + 1 ))
-  while (( _sa_j < n )); do
-    if [[ "${IDENTITIES[$_sa_i]}" == "${IDENTITIES[$_sa_j]}" \
-          && "${IDENTITIES[$_sa_i]}" != "unknown/na" \
-          && "${IDENTITIES[$_sa_i]#*/}" != "na" ]]; then
-      warn "WARN: same_account label=${LABELS[$_sa_i]} label=${LABELS[$_sa_j]} identity=${IDENTITIES[$_sa_i]} -- one real account behind two slots"
-    fi
-    _sa_j=$(( _sa_j + 1 ))
+# having two slots. Keys on accountUuid (the real-account discriminator --
+# email is display and can drift); falls back to the <sub>/<email> identity
+# comparison only when a uuid is unresolved on either side (2d). On a hit,
+# the caller refuses the round outright (2a) instead of quietly continuing --
+# `selected=... candidates=2` used to read as healthy two-bucket operation
+# while it was actually one account behind two slots.
+SAME_ACCOUNT_HIT=0
+detect_same_account() {
+  local n=${#LABELS[@]}
+  local _sa_i=0 _sa_j sub_i uuid_i uuid_j tail same
+  while (( _sa_i < n )); do
+    _sa_j=$(( _sa_i + 1 ))
+    while (( _sa_j < n )); do
+      uuid_i="${ACCOUNT_UUIDS[$_sa_i]}"; uuid_j="${ACCOUNT_UUIDS[$_sa_j]}"
+      same=0
+      if [[ "$uuid_i" != "-" && "X${uuid_i}" == "X${uuid_j}" ]]; then
+        same=1
+      elif [[ "$uuid_i" == "-" || "$uuid_j" == "-" ]] \
+        && [[ "${IDENTITIES[$_sa_i]}" == "${IDENTITIES[$_sa_j]}" \
+              && "${IDENTITIES[$_sa_i]}" != "unknown/na" \
+              && "${IDENTITIES[$_sa_i]#*/}" != "na" ]]; then
+        same=1
+      fi
+      if (( same )); then
+        sub_i="${IDENTITIES[$_sa_i]%%/*}"
+        tail="unresolved"
+        [[ "$uuid_i" != "-" ]] && tail="..${uuid_i: -6}"
+        warn "WARN: same_account label=${LABELS[$_sa_i]} label=${LABELS[$_sa_j]} sub=${sub_i} account=${tail} -- one real account behind two slots"
+        write_alarm "${LABELS[$_sa_i]}" "${LABELS[$_sa_j]}" "$sub_i" "$tail" "${DIRS[$_sa_i]}"
+        SAME_ACCOUNT_HIT=1
+      fi
+      _sa_j=$(( _sa_j + 1 ))
+    done
+    _sa_i=$(( _sa_i + 1 ))
   done
-  _sa_i=$(( _sa_i + 1 ))
-done
+}
+detect_same_account
+(( SAME_ACCOUNT_HIT )) || clear_alarm
+if (( SAME_ACCOUNT_HIT )); then
+  printf 'profile=- reason=same_account\n'
+  exit 0
+fi
 
 # <2 valid entries => multi-profile is inert; caller keeps its inherited
 # CLAUDE_CONFIG_DIR (single-profile fallback preserved). But if every entry

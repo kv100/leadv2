@@ -421,6 +421,7 @@ SUITE_DEFS=(
   "burn governor (BURN-GOVERNOR-01: 24h burn gate)|||bash $TEST_DIR/test-burn-governor.sh|||SERIAL"
   "provider quota gate (QUOTA-GATE-PARITY-01)|||bash $TEST_DIR/test-provider-quota-gate.sh"
   "Claude multi-profile selector (CLAUDE-MULTIPROFILE-QUOTA-02)|||bash $TEST_DIR/test-claude-profile-select.sh"
+  "Claude account collapse check (TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01)|||bash $TEST_DIR/test-claude-account-check.sh"
   "codex-dead review reroute (QUOTA-GATE-PARITY-01)|||bash $TEST_DIR/test-codex-dead-reroute.sh"
   "worker_reason on no_work/dead terminals (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-worker-reason-terminal.sh"
   "prepass resume invalidation (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-prepass-resume-invalidate.sh|||SERIAL"
