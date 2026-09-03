@@ -646,6 +646,24 @@ else
   log_info "[memory-gc] archiver not found at ${_ARCHIVER} — skipped"
 fi
 # ── end memory-archive ────────────────────────────────────────────────────────
+# ── [D4-NO-PATH-LOSES-WORK-01] External orphan checkpoint before any sweep ───
+# D9: checkpoint-then-sweep ordering is load-bearing. This MUST run before
+# the --sweep-merged / --sweep-dead calls below — same discard-then-remove
+# hazard (b413968c) the merged-worktree-sweep hook's own wiring comment
+# documents. A lane whose worker already died mid-edit gets its dirty tree
+# committed (or quarantined) here first, so neither sweep call below can
+# ever discard uncommitted work as a side effect of deciding a worktree is
+# "dead+empty" or "merged and clean". Non-blocking: never gates close.
+ORPHAN_CHECKPOINT_SCRIPT="${SCRIPTS_DIR}/leadv2-orphan-checkpoint.sh"
+if [[ -f "$ORPHAN_CHECKPOINT_SCRIPT" ]]; then
+  log_info "Running external orphan-checkpoint sweep before worktree cleanup..."
+  bash "$ORPHAN_CHECKPOINT_SCRIPT" --project-root "${PROJECT_ROOT}" \
+    || log_info "[orphan-checkpoint] sweep returned non-zero — continuing (non-blocking)"
+else
+  log_info "[orphan-checkpoint] leadv2-orphan-checkpoint.sh not found — skipping"
+fi
+# ── end orphan checkpoint ──────────────────────────────────────────────────────
+
 # ── [WT-SWEEP-01] Sweep merged subagent worktrees on close ───────────────────
 # Removes .claude/worktrees/agent-<hex> worktrees whose branches are fully
 # merged into the default branch. Non-blocking: never gates close.
