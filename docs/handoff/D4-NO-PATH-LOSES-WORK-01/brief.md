@@ -342,3 +342,55 @@ resume does not happen; report it and stop.
 Acceptance: attempt a resume on a lane with a dirty tree and a dead worker, and assert the
 rescue commit exists BEFORE the new worker's first write. Then attempt a resume where the rescue
 is forced to fail, and assert no new worker is spawned at all.
+
+---
+
+## LEAD ADDENDUM 5 — cases 6-8, and the one live defect this row must cite
+
+Three more false answers, all caught on live processes on 2026-09-03. With cases 1-5 above that
+makes eight. The point is no longer the list: **every probe written so far has been wrong in some
+direction**, so the acceptance for this row is a fixture suite of all eight, not a demonstration
+that some probe returns something.
+
+**Case 6 — `claude` as a substring is always false life.** On this machine the tool directory is
+`.claude`, so that string appears in the path of nearly every script. A sibling session's probe
+matched `run-core-offline.sh`, `test-lane-placement-pin.sh` and the dispatcher itself; the number
+of real `claude -p` workers among them was zero. A resume-keeper built on this probe would never
+raise a dead lane again, and would never complain — false life is silent.
+
+**Case 7 — a probe can match ITSELF.** Counting keepers with `ps | grep keeper.sh` finds the
+grep's own command line, which contains that pattern. Five reported where two existed. (That one
+also uncovered a real fault: there really were two keepers, so every cycle dispatched twice. A
+lock file holding a live PID is the honest single-instance check; counting with `ps` is not.)
+
+**Case 8 — the zsh word-split trap fires even when you know about it.** Writing this very
+addendum, the lead's own mapping loop used `set -- $pair` in zsh, did not split, and produced a
+uniform bogus column for all ten lanes. Addendum 2 documents this trap; it was hit anyway, one
+screen below its own description. Treat it as a property of the shell, not a mistake to be
+avoided by care: the suite must run under bash AND zsh and fail on disagreement.
+
+### The rule, stated so it covers 6, 7 and 8 at once
+
+**A liveness probe may not match a string that can occur in tool paths or in the probe itself.
+Match the FORM of the worker command (`claude` with `-p`/`--print`), then narrow WITHIN that set
+by lane content. Never a bare substring over the whole process list.**
+
+Acceptance fixture: a process that mentions the lane name and the word `claude` in its arguments
+but is not a worker must come back NOT alive. And the probe must not count itself.
+
+Even the form check needs the second step: on this machine `claude -p` also matches the cost
+estimator (`gtimeout 45 claude -p You are estimating…`), which is not a lane worker. Form alone
+over-counts; form plus lane content is the rule.
+
+### The `(ORPHAN)`-is-not-deliverable risk is not hypothetical — it is shipped
+
+Addendum 4 warned that nothing downstream may treat a rescue checkpoint as finished work. That
+defect already exists in production, with an address: **`_dl_derive_lane_state` folds a dirty
+working tree into the state `landed`** — not into "died with work". A lane killed by `SIGKILL`
+holding 573 unsaved lines is stamped complete. Cite this in the report; the row is fixing a live
+bug, not guarding against a future one.
+
+Sibling finding of the same shape, worth naming as a class rather than two incidents: the
+dirty-tree probe is scoped by a pathspec taken from `lane_writes`, which is empty in ~98% of
+cases — so `dirty` is never set. **Two independent places disable themselves on empty input.**
+Any check this lane adds must fail loudly on empty input, never quietly pass.
