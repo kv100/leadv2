@@ -42,8 +42,13 @@ mkdir -p "$FIX" "$CACHE" "$tmp/dir-alpha" "$tmp/dir-beta"
 # T12/LEAD-FINAL-FIXES-01: the selector health-checks the inherited default
 # slot too; pin it to a healthy fixture so the suite never touches the real
 # ~/.claude or Keychain (T9b caught exactly that leak before this pin).
+# CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01: "healthy" under the corrected
+# refresh-based contract requires a live refreshToken, not just a future
+# expiresAt -- without it credential_health() correctly calls this
+# unrefreshable and the default_token_unrefreshable warn (with its identity/
+# dir detail) would pollute every leak-scan assertion in this suite.
 mkdir -p "$tmp/dir-default"
-printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture","subscriptionType":"max","expiresAt":%s}}' \
+printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture","refreshToken":"sk-ant-r","subscriptionType":"max","expiresAt":%s}}' \
   "$(( $(date +%s) * 1000 + 3600000 ))" > "$tmp/dir-default/.credentials.json"
 printf '{"oauthAccount":{"emailAddress":"default@fixture.test"}}' > "$tmp/dir-default/.claude.json"
 export LEADV2_CLAUDE_PROFILE_DEFAULT_DIR="$tmp/dir-default"
@@ -257,14 +262,22 @@ fi
 now_ms=$(( $(date +%s) * 1000 ))
 future_ms=$(( now_ms + 3600000 ))
 past_ms=$(( now_ms - 3600000 ))
-cred_json() { # <subscription_type> <expires_at_ms>
-  printf '{"claudeAiOauth":{"accessToken":"sk-ant-should-never-be-read","refreshToken":"sk-ant-r","subscriptionType":"%s","expiresAt":%s}}' "$1" "$2"
+cred_json() { # <subscription_type> <expires_at_ms> [refresh_state: live|none|dead]
+  local sub="$1" exp="$2" refresh_state="${3:-live}"
+  local frag=""
+  case "$refresh_state" in
+    live) frag='"refreshToken":"sk-ant-r",' ;;
+    none) frag="" ;;
+    dead) frag="\"refreshToken\":\"sk-ant-r\",\"refreshTokenExpiresAt\":${past_ms}," ;;
+  esac
+  printf '{"claudeAiOauth":{"accessToken":"sk-ant-should-never-be-read",%s"subscriptionType":"%s","expiresAt":%s}}' \
+    "$frag" "$sub" "$exp"
 }
 mkdir -p "$tmp/dir-team" "$tmp/dir-stale" "$tmp/dir-allexp-a" "$tmp/dir-allexp-b"
 cred_json team "$future_ms" > "$tmp/dir-team/cred.json"
-cred_json max  "$past_ms"   > "$tmp/dir-stale/cred.json"
-cred_json max  "$past_ms"   > "$tmp/dir-allexp-a/cred.json"
-cred_json pro  "$past_ms"   > "$tmp/dir-allexp-b/cred.json"
+cred_json max  "$past_ms"   dead > "$tmp/dir-stale/cred.json"
+cred_json max  "$past_ms"   dead > "$tmp/dir-allexp-a/cred.json"
+cred_json pro  "$past_ms"   dead > "$tmp/dir-allexp-b/cred.json"
 acct_json 30 25 > "$FIX/personal.json"
 
 # --- keychain-path fixture: a "security" stub that maps -s <service> to a
@@ -283,6 +296,9 @@ for a in "\$@"; do
   if [[ "\$prev" == "-s" ]]; then svc="\$a"; fi
   prev="\$a"
 done
+if [[ -n "\${STUB_SEEN:-}" ]]; then
+  printf '%s\n' "\$svc" >> "\$STUB_SEEN"
+fi
 f="$KEYFIX/\${svc}.json"
 [[ -f "\$f" ]] && cat "\$f" || exit 44
 SH
@@ -304,23 +320,23 @@ check_grep "$OUT" '^profile=personal .*identity=team/na$' 'T11k: identity derive
 check_nogrep "$OUT" 'sk-ant' 'T11k-leak: selected-profile stdout carries no access/refresh token'
 check_nogrep "$ERR" 'sk-ant' 'T11k-leak2: selector stderr carries no access/refresh token'
 
-echo "=== T12 (NC-b): expired credential -> WARN token_expired + excluded from scoring ==="
+echo "=== T12 (NC-b): dead refresh window -> WARN token_unrefreshable + excluded from scoring ==="
 printf 'stale\t%s\tfile:%s/cred.json\n' "$tmp/dir-stale" "$tmp/dir-stale" > "$REG"
 printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" >> "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$ERR" 'WARN: registry line 1 skipped: token_expired label=stale identity=max/na' 'T12a: WARN token_expired names label+identity'
-check_grep "$OUT" '^profile=alpha .*candidates=2 ' 'T12b: expired entry excluded -- candidates=2, not 3'
-check_nogrep "$OUT" '^profile=stale ' 'T12c: expired profile never wins'
+check_grep "$ERR" 'WARN: registry line 1 skipped: token_unrefreshable label=stale identity=max/na' 'T12a: WARN token_unrefreshable names label+identity'
+check_grep "$OUT" '^profile=alpha .*candidates=2 ' 'T12b: unrefreshable entry excluded -- candidates=2, not 3'
+check_nogrep "$OUT" '^profile=stale ' 'T12c: unrefreshable profile never wins'
 [[ "$RC" -eq 0 ]] && pass "T12: exit 0" || fail "T12 exit" "rc=$RC"
 
-echo "=== T13 (NC-c): all candidates expired -> named refusal, not a silent pick ==="
+echo "=== T13 (NC-c): all candidates unrefreshable -> named refusal, not a silent pick ==="
 printf 'exp-a\t%s\tfile:%s/cred.json\n' "$tmp/dir-allexp-a" "$tmp/dir-allexp-a" > "$REG"
 printf 'exp-b\t%s\tfile:%s/cred.json\n' "$tmp/dir-allexp-b" "$tmp/dir-allexp-b" >> "$REG"
 run_select $(base_env)
 check_grep "$OUT" '^profile=- reason=all_expired$' 'T13a: named refusal, not single_profile or a stale pick'
-w_count="$(grep -c 'WARN: registry line .* skipped: token_expired' <<<"$ERR")"
-[[ "$w_count" -eq 2 ]] && pass "T13b: both expired entries warned" || fail "T13b" "count=$w_count err=$ERR"
+w_count="$(grep -c 'WARN: registry line .* skipped: token_unrefreshable' <<<"$ERR")"
+[[ "$w_count" -eq 2 ]] && pass "T13b: both unrefreshable entries warned" || fail "T13b" "count=$w_count err=$ERR"
 [[ "$RC" -eq 0 ]] && pass "T13: exit 0" || fail "T13 exit" "rc=$RC"
 
 # ============================================================================
@@ -328,10 +344,17 @@ w_count="$(grep -c 'WARN: registry line .* skipped: token_expired' <<<"$ERR")"
 # is display-only; identity comes from the slot's own JSON (.claude.json for
 # the email, credential for sub/expiry), bucketing keys on that identity, and
 # every lie the registry can tell is warned loudly, fail-open.
-mk_slot() { # <dir> <sub> <email|-> <expiry_ms>
+mk_slot() { # <dir> <sub> <email|-> <expiry_ms> [refresh_state: live|none|dead]
   mkdir -p "$1"
-  printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture","refreshToken":"sk-ant-r","subscriptionType":"%s","expiresAt":%s}}' \
-    "$2" "$4" > "$1/.credentials.json"
+  local refresh_state="${5:-live}"
+  local frag=""
+  case "$refresh_state" in
+    live) frag='"refreshToken":"sk-ant-r",' ;;
+    none) frag="" ;;
+    dead) frag="\"refreshToken\":\"sk-ant-r\",\"refreshTokenExpiresAt\":${past_ms}," ;;
+  esac
+  printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture",%s"subscriptionType":"%s","expiresAt":%s}}' \
+    "$frag" "$2" "$4" > "$1/.credentials.json"
   if [[ "$3" == "-" ]]; then
     rm -f "$1/.claude.json"
   else
@@ -377,16 +400,56 @@ check_grep "$ERR" 'WARN: registry line 1: identity_email_unresolved \(no readabl
 check_grep "$OUT" '^profile=nojson .*identity=pro/na$' 'T16b: entry still selectable (fail-open)'
 [[ "$RC" -eq 0 ]] && pass "T16: exit 0" || fail "T16 exit" "rc=$RC"
 
-echo "=== T17: default token expired -> WARN default_token_expired, selection unchanged ==="
+echo "=== T17: default access token expired but refresh live -> silent, no warn ==="
 mkdir -p "$tmp/dir-def-exp"
 mk_slot "$tmp/dir-def-exp" max "defexp@fixture.test" "$past_ms"
 printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env) "LEADV2_CLAUDE_PROFILE_DEFAULT_DIR=$tmp/dir-def-exp" \
   "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
-check_grep "$ERR" 'WARN: default_token_expired identity=max/defexp@fixture\.test -- fail-open' 'T17a: default_token_expired warn'
+check_nogrep "$ERR" 'default_token_unrefreshable|default_token_expired' 'T17a: no warn -- expired access token with live refresh is normal steady state'
 check_grep "$OUT" '^profile=alpha .*score=20 source=live' 'T17b: selection itself unchanged'
 [[ "$RC" -eq 0 ]] && pass "T17: exit 0" || fail "T17 exit" "rc=$RC"
+
+echo "=== T17c: default slot has no refreshToken at all -> WARN default_token_unrefreshable ==="
+mkdir -p "$tmp/dir-def-norefresh"
+mk_slot "$tmp/dir-def-norefresh" max "noref@fixture.test" "$future_ms" none
+run_select $(base_env) "LEADV2_CLAUDE_PROFILE_DEFAULT_DIR=$tmp/dir-def-norefresh" \
+  "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+check_grep "$ERR" 'WARN: default_token_unrefreshable identity=max/noref@fixture\.test dir=.*dir-def-norefresh -- fail-open' 'T17c: no refreshToken at all -> unrefreshable warn'
+check_grep "$ERR" "CLAUDE_CONFIG_DIR=$tmp/dir-def-norefresh claude /login" 'T17c-remedy: remedy string binds the exact dead dir, never a bare claude /login'
+check_nogrep "$OUT" 'sk-ant' 'T17c-leak1: stdout carries no token'
+check_nogrep "$ERR" 'sk-ant' 'T17c-leak2: stderr carries no token'
+[[ "$RC" -eq 0 ]] && pass "T17c: exit 0" || fail "T17c exit" "rc=$RC"
+
+echo "=== T17d: default slot refreshTokenExpiresAt in the past -> WARN default_token_unrefreshable ==="
+mkdir -p "$tmp/dir-def-deadrefresh"
+mk_slot "$tmp/dir-def-deadrefresh" max "deadref@fixture.test" "$future_ms" dead
+run_select $(base_env) "LEADV2_CLAUDE_PROFILE_DEFAULT_DIR=$tmp/dir-def-deadrefresh" \
+  "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+check_grep "$ERR" 'WARN: default_token_unrefreshable identity=max/deadref@fixture\.test dir=.*dir-def-deadrefresh -- fail-open' 'T17d: dead refresh window -> unrefreshable warn'
+check_grep "$ERR" "CLAUDE_CONFIG_DIR=$tmp/dir-def-deadrefresh claude /login" 'T17d-remedy: remedy string binds the exact dead dir, never a bare claude /login'
+check_nogrep "$OUT" 'sk-ant' 'T17d-leak1: stdout carries no token'
+check_nogrep "$ERR" 'sk-ant' 'T17d-leak2: stderr carries no token'
+[[ "$RC" -eq 0 ]] && pass "T17d: exit 0" || fail "T17d exit" "rc=$RC"
+
+echo "=== T17e: default dir has no .credentials.json -> suffixed keychain service queried BEFORE legacy ==="
+mkdir -p "$tmp/dir-def-nocreds"
+: > "$tmp/seen"
+printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" > "$REG"
+printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env) "LEADV2_CLAUDE_PROFILE_DEFAULT_DIR=$tmp/dir-def-nocreds" \
+  "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB" "STUB_SEEN=$tmp/seen"
+suffixed_line="$(grep -n '^Claude Code-credentials-[0-9a-f]\{8\}$' "$tmp/seen" | head -1 | cut -d: -f1)"
+legacy_line="$(grep -n '^Claude Code-credentials$' "$tmp/seen" | head -1 | cut -d: -f1)"
+if [[ -n "$suffixed_line" && -n "$legacy_line" && "$suffixed_line" -lt "$legacy_line" ]]; then
+  pass "T17e: suffixed keychain service queried before legacy fallback"
+else
+  fail "T17e" "seen=$(cat "$tmp/seen")"
+fi
+check_nogrep "$OUT" 'sk-ant' 'T17e-leak1: stdout carries no token'
+check_nogrep "$ERR" 'sk-ant' 'T17e-leak2: stderr carries no token'
+[[ "$RC" -eq 0 ]] && pass "T17e: exit 0" || fail "T17e exit" "rc=$RC"
 
 echo "=== T18: default credential absent -> WARN default_token_absent, fail-open ==="
 mkdir -p "$tmp/dir-def-empty"
