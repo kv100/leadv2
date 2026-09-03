@@ -1,0 +1,13 @@
+task: MERGE-UP-PHASE8-GATES-01
+sig: 1c68b2ea
+class: Standard
+decisions:
+  - D1: two-way merge UP — port only the 08-17 CLOSE-GATE hunks into canonical, keep canonical newer logic
+  - D2: farm copies replaced by symlinks ONLY after suites green (never blind-symlink)
+  - D3: negative control RUN red — revert one ported hunk, covering suite must fail
+off_limits:
+  - never take the copy wholesale over canonical
+plan:
+  steps: [diff both files, port hardening hunks, suites+bash -n, negative control, symlink farm copies, commit]
+verification:
+  live_signal: farm copies are symlinks AND canonical contains CLOSE-GATE hunks AND suites green

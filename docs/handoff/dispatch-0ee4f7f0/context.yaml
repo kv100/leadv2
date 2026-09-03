@@ -1,0 +1,29 @@
+task_id: ANTI-SILENCE-ONE-MECHANISM-01
+sig8: 0ee4f7f0
+brief: docs/handoff/ANTI-SILENCE-ONE-MECHANISM-01/brief.md
+
+decisions:
+  - id: D1
+    text: >-
+      The plan for this lane is its brief, authored by the lead from live evidence
+      cited inside it (file:line or a pasted command output for every claim).
+      Scope, acceptance and the mutation-control rules are stated there and are
+      binding.
+  - id: D2
+    text: >-
+      Gate 1 was decided by the lead. The founder ordered the whole plugin backlog
+      taken to production in this session, which is the authority for accepting it.
+
+plan:
+  steps:
+    - Follow the brief section by section; each [Critical] heading is one step.
+    - Prove every claim with a mutation inside the production body on the real
+      call path; a fixture-only mutation is not a control.
+    - Commit before stopping, even if partial.
+
+verification:
+  acceptance: see the Acceptance section of docs/handoff/ANTI-SILENCE-ONE-MECHANISM-01/brief.md
+
+gate1:
+  decided_by: lead
+  outcome: accepted

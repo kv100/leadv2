@@ -1,0 +1,16 @@
+task_id: PULSE-BOARD-EMPTY-WHILE-LANES-LIVE-01
+sig: 42bad5a1
+class: standard
+decisions:
+  - scope is the collector/renderer only; the dispatch-code TypeError belongs to DISPATCH-LANE-INFRA-3PACK-01
+off_limits:
+  - plugins/leadv2/scripts/leadv2-dispatch-code.sh
+  - plugins/leadv2/scripts/leadv2-status-surface.sh
+plan:
+  steps:
+    - establish what the collector reads and why a registered row is lost
+    - check whether the live renderer is the one merged in 53247bc
+    - fixture with one registered live lane must render a row, never DOSKA PUSTA
+    - mutation-proof the fix RED, then live-verify on a real lane
+verification:
+  live_signal: board renders a row for a registered live lane

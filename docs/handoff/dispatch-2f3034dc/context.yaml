@@ -1,0 +1,15 @@
+task: MON-PULSE-01
+sig: 2f3034dc
+class: Heavy
+decisions:
+  - D1: watcher is dispatcher-owned detached bash (nohup), NOT a lead Monitor — survives any session
+  - D2: replay-safe tail -n +1 + all-terminal-state match (todays evidence: tail -n 0 missed a 25s terminal)
+  - D3: beat arming lives in dispatch (first worker_spawned), pidfile-guarded, kill-switch LEADV2_PULSE_MODE=0
+  - D4: reuse leadv2-pulse.sh / pulse-beat / broad-status — no parallel mechanism
+off_limits:
+  - no Claude-session Monitors as the mechanism
+  - no revival of the retired supervise loop
+plan:
+  steps: [lane watch in dispatch-code, beat default-on wiring, hermetic tests a-d incl RUN negative control, EXTRA_SUITE_MAP]
+verification:
+  live_signal: next dispatched lane shows pulse lines written by the dispatcher-owned watcher with zero lead Monitors armed

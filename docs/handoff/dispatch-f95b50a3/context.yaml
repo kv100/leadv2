@@ -1,0 +1,46 @@
+task: PHASE-INTEGRITY-01
+
+decisions:
+  - id: D1
+    decision: A phase counts only when evidence shows it ran as a distinct process. A document the
+      lead authored seconds earlier stops being proof.
+    evidence: 2026-08-29 - the lead hand-wrote context.yaml and .gate1-passed and recorded
+      diverge/plan/gate1 against its own files on six dispatches; the admission guard passed
+      every time and no planner ever ran.
+  - id: D2
+    decision: An unclassified task is refused, never defaulted. The silent
+      task_class=Heavy source=fallback is what made skipping Phase 1 free.
+    evidence: every dispatch this session journalled source=fallback; no class= was ever written
+      to any STATE.md across the whole session.
+  - id: D3
+    decision: skipped is a first-class recorded state with a reason, distinct from done. A Light
+      task legitimately skipping diverge must not have to lie about it.
+  - id: D4
+    decision: Staleness is fatal. A plan artifact older than the lane base or predating the current
+      mission revision does not satisfy the phase.
+    evidence: a 26KB prepass from 6 days earlier was copied into three fresh handoff dirs to
+      satisfy the plan proof; it contradicted the mission and three codex workers stopped without
+      implementing.
+  - id: D5
+    decision: The legitimate flow must stay green. A gate that blocks honest work gets switched
+      off within a week - which is exactly what happened to architect_prepass on 2026-08-25.
+
+off_limits:
+  - plugins/leadv2/scripts/leadv2-status-render.sh
+  - plugins/leadv2/scripts/leadv2-lanes-snapshot.sh
+
+open_question_not_decided_here:
+  - which planning mechanism Standard+ should use (Phase-2 triad vs in-dispatch architect_prepass),
+    its trigger predicate, model and cost. Founder objected that reviving the prepass reintroduces
+    a fast-single-architect shape and the quota burn behind b9c235ee4. A Codex design pass is
+    running separately.
+
+plan:
+  steps:
+    - refuse an unclassified dispatch instead of defaulting the class
+    - plan proof must be machine-attributable to a planner run in the journal
+    - gate1 proof must trace to an answered question or a journalled auto-accept
+    - skipped as a recorded state with a reason
+    - staleness check against lane base and mission revision
+    - three tests - the bypass refused, the unclassified path refused, the legitimate flow green
+    - core-offline suite reported as a DELTA against the 11 pre-existing LANE-PLACEMENT-01 failures

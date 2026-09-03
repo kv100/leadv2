@@ -1,0 +1,205 @@
+task_id: ANTI-SILENCE-DELIVERY-01
+class: Heavy
+repo: /Users/kostiantyn.vlasenko/Projects/persona-engine
+supersedes_backlog_rows:
+  - ANTI-SILENCE-NAG-NEVER-ARRIVES-01
+  - ANTI-SILENCE-SESSION-KEY-FALLS-BACK-TO-PPID-01   # re-scoped, see D-B-RESCOPE
+
+inputs:
+  brief: docs/handoff/ANTI-SILENCE-DELIVERY-01/brief.md
+  architect: docs/handoff/ANTI-SILENCE-DELIVERY-01/plan-architect.md
+  critic: docs/handoff/ANTI-SILENCE-DELIVERY-01/concerns-critic.md
+
+decisions:
+  - id: ROOT-CAUSE
+    text: >
+      PROVEN, and it is not what the brief guessed. The harness DROPS a top-level
+      {"additionalContext": ...} on SessionStart and UserPromptSubmit. Only plain stdout,
+      or {"hookSpecificOutput":{"hookEventName":"<ev>","additionalContext":"..."}}, is
+      delivered. Evidence: in the live transcript every SessionStart attachment with
+      non-empty content is a plain-text emitter, and all nine top-level-JSON emitters have
+      content length 0. Decisive control: scheduled-decisions-inject.sh prints a non-empty
+      top-level additionalContext by hand and its live attachment is len=0 — it produced
+      content and the harness discarded it, independent of anti-silence. Positive control:
+      the only two hook_additional_context attachments at UserPromptSubmit come from the
+      two hooks that use hookSpecificOutput. Format is the only variable that separates
+      arrival from silence.
+  - id: HYPOTHESIS-KILLED
+    text: >
+      The 45.2KB-cap theory the lead told the founder is WRONG. The cap is per hook, not
+      per array: the persisted 46,255-byte file is 100% leadv2-one-copy-drift.sh output and
+      contains zero additionalContext; each hook gets its own attachment, and even the
+      capped hook still delivered a 2KB preview. Array position is also not the
+      discriminator — one-copy-drift is #10 of 13 and surfaced, engine-flag-row-inject is
+      #2 of 4 and did not. Also: the arrays are bigger than the brief said. settings.json
+      and the plugin hooks.json are MERGED, both run, no first-wins, no dedupe —
+      SessionStart 13+9=22, UserPromptSubmit 7+4=11.
+  - id: NO-REORDER
+    text: >
+      Do NOT reorder the hook arrays. It was never the fix, and it would do harm: the two
+      fat hooks (leadv2-queue-archiver, feature-liveness-session-inject) account for ~38KB
+      of the 45KB SessionStart total, so moving anti-silence to slot 1 evicts the tail —
+      which includes scheduled-decisions-inject, the DUE/OVERDUE ledger surface CLAUDE.md
+      calls the layer that guarantees a row is surfaced without anyone opening a chat.
+      Trading the deferred-actions ledger for a nag is a net loss. Filed separately as
+      HOOK-OUTPUT-BUDGET-UNMANAGED-01.
+  - id: TEST-PINNED-THE-BUG
+    text: >
+      tests/unit/test-anti-silence-pulse-hooks.sh:46,51 asserts .additionalContext exists —
+      it pins the BROKEN shape, and its header reasons from an explicitly stated false
+      premise ("scheduled-decisions-inject demonstrably reaches the session, so no shape
+      change was needed"). That is why this shipped green. AMEND the assertion to the
+      wrapped shape; do not delete it.
+  - id: D-B-RESCOPE
+    text: >
+      The filed PPID defect was OVERSTATED and its mechanism was wrong. The real cause is
+      bash 3.2: `read -r -N 8192 -t 2` uses -N, which did not exist before bash 4.1, and
+      macOS /bin/bash is 3.2.57. `env -i PATH=/usr/bin:/bin` did not "degrade the env" — it
+      dropped /opt/homebrew/bin, so `#!/usr/bin/env bash` resolved to 3.2, read -N died,
+      `|| true` swallowed it, and the key fell back. A NORMAL env with stdin closed falls
+      back too, and three variants produced the SAME key inside one call — so "PPID differs
+      on every invocation" was never demonstrated. Real remaining bug, narrower: if the
+      harness ever hands the hook a PATH without /opt/homebrew/bin, or a closed stdin, the
+      key silently rotates. Fix read -N (use `_stdin="$(cat)"`) and make an empty session
+      key a LOUD failure. Build nothing on the $PPID framing.
+  - id: BAR-NOT-MET-TODAY
+    text: >
+      The stated bar is "the founder gets a beat without the lead choosing to cooperate".
+      The current design scores ZERO against it: anti-silence-pulse.sh has no send path
+      (zero hits for tg.py / telegram / osascript); it prints to stdout, a Monitor reads
+      stdout, and a Monitor event lands in the LEAD's conversation. Every *-inject.sh hook
+      is likewise lead-facing, not founder-facing. Counting them toward the bar is the
+      category error at the heart of this task.
+  - id: NO-TELEGRAM
+    text: >
+      FOUNDER ORDER 2026-08-30, overrides the architect's step 3 and the critic's PRECEDENT:
+      NOTHING is sent to Telegram. The founder will not read or clean a Telegram channel, so
+      a Telegram door is not a delivery mechanism, it is a landfill. Delete that branch of
+      the design entirely — do not keep it as a fallback or behind a flag.
+  - id: BEAT-IS-A-HOOK-NOT-A-LOOP
+    text: >
+      Consequence of NO-TELEGRAM. The founder is AT THE TERMINAL — that is the channel. The
+      only thing that puts text in front of him without the lead choosing to cooperate is a
+      HOOK, because hooks run whether the lead wants them to or not. So the beat is emitted
+      BY A HOOK, and there is no background loop at all. This deletes steps 2 (self-arm),
+      3 (send door) and 6 (orphan reaping) as previously written, and with them the entire
+      orphan/reaper problem, the arm-lock, and the Monitor.
+      A Stop hook alone is NOT sufficient: Stop fires when the lead ends its turn, but the
+      silence being fixed is a lead grinding for 40 minutes INSIDE one turn, where Stop never
+      fires. The beat must therefore ride an event that fires DURING a long turn — PostToolUse
+      is the candidate — rate-limited to once per interval off the same freshness stamp.
+      Keep the Stop-hook backstop as a second layer for the turn-boundary case.
+  - id: PROVE-THE-CHANNEL-FIRST
+    text: >
+      REQUIRED, and it is step 0 of the build. It is NOT yet established which hook event's
+      output reaches the FOUNDER'S TERMINAL without also being injected into the LEAD'S
+      context. That distinction is the whole task: an emission that lands in the lead's
+      context is both lead-dependent and per-turn-expensive (it is re-sent on every later
+      turn), which is exactly the defect BAR-NOT-MET-TODAY and BEAT-MUST-STAY-ONE-LINE
+      describe. Build nothing until the transcript-attachment record proves which
+      event+stream (stdout vs stderr, PostToolUse vs Stop vs Notification) is
+      terminal-visible and context-free. Same method that proved ROOT-CAUSE: read the live
+      .jsonl attachments, do not reason from the docs.
+  - id: PRECEDENT-SUPERSEDED
+    text: >
+      The shape that meets the bar already exists and runs: scripts/persona-watch-tg-pulse.sh,
+      VPS cron */30, posts straight to Telegram, lead-independent. Also real:
+      platform/lib/notify.sh / pe_notify driven by scripts/scheduled-decisions-run.sh. NOT
+      real, do not count: leadv2-telegram-{start.sh,bot.py} and telegram-supervisor.ts exist
+      on disk but no process is running; leadv2-status-collector.sh has no Telegram sink.
+
+  - id: BEAT-MUST-STAY-ONE-LINE
+    text: >
+      REQUIRED cost bound. A Monitor event is appended to the conversation and re-sent on
+      every later turn, so the beat's cost is per-turn, not per-event. At a 30-minute
+      interval a ONE-LINE beat costs ~96K token-turns over a long session; a 400-token beat
+      costs ~640K. The beat stays one line, hard. Any richer payload goes to the Telegram
+      door (step 3), never through the lead's context.
+  - id: NO-PYTHON-ON-HOT-PATH
+    text: >
+      _emit() shells out to python3 on the hook's hot path — the same class of PATH
+      dependency that produced D-B-RESCOPE (a hook must never depend on PATH; these files
+      already replaced tr/head for exactly this reason and left python3 behind). Emit the
+      wrapped JSON with bash builtins, escaping the payload without an external process.
+  - id: NO-REAPER-EXISTS
+    text: >
+      Confirmed: nothing reaps these loops. scripts/anti-silence-pulse.sh is a bare
+      `while true; do sleep` with no parent-death check, and its ":445 identity unverified"
+      branch deliberately does NOT kill. Zero strays today only because the session key
+      happened to hold — that is luck, not a mechanism. Step 6 is therefore mandatory, not
+      hygiene.
+
+off_limits:
+  - No hook-array reordering (NO-REORDER).
+  - No multi-line beat through the lead's context (BEAT-MUST-STAY-ONE-LINE).
+  - No external process (python3, tr, head) on a hook's hot path (NO-PYTHON-ON-HOT-PATH).
+  - No design whose terminus is the lead's context (BAR-NOT-MET-TODAY).
+  - No $PPID-based reasoning or fix (D-B-RESCOPE).
+  - Do not delete the test that pinned the bug — amend it (TEST-PINNED-THE-BUG).
+  - No claim that the pulse "was never armed": the lead armed one by hand at 02:49 after
+    the founder complained. That hand-arming is the proof of lead-dependence, not a fix.
+
+  - id: BUDGET-IN-SCOPE
+    text: >
+      Founder folded HOOK-OUTPUT-BUDGET-UNMANAGED-01 into this lane 2026-08-30. Same
+      subsystem (the SessionStart hook surface) and it directly protects this task's own
+      delivery, so it is one lane, not two. Measured: the SessionStart total was 45.2KB;
+      five measured non-git hooks emit 6,514 B combined; ~38KB (85%) comes from
+      leadv2-queue-archiver.sh and feature-liveness-session-inject.sh (the latter shells
+      out to a pull script and a ~20s ship-truth dump). docs-truth-inject.sh already emits
+      0 bytes mid-array. docs/leadv2/scheduled-decisions.md is 371,694 bytes and unbounded;
+      its hook filters to 4.5KB today with nothing guaranteeing that. All three hooks are
+      repo-native real files, NOT plugin symlinks — verified; no shared-tree edit is involved.
+      Bound the two fat producers AT SOURCE (a byte cap each, with the overflow written to a
+      file and referenced by path, the pattern the harness already uses). Do not reorder,
+      and do not "fix" it by trimming scheduled-decisions-inject — that is the surface
+      CLAUDE.md names as the deferred-actions guarantee.
+
+plan:
+  steps:
+    - 1. Schema fix. Emit {"hookSpecificOutput":{"hookEventName":<ev>,"additionalContext":<str>}}
+         from both hooks; drop the top-level key. Amend the unit suite to the wrapped shape.
+    - 0. PROVE THE CHANNEL (see PROVE-THE-CHANNEL-FIRST). Determine from the live transcript
+         attachments which hook event + stream is terminal-visible to the founder AND does
+         not land in the lead's context. Write the finding, with evidence, before step 2.
+         If no such channel exists, STOP and say so — that is a finding, not a failure.
+    - 2. Beat hook. Emit the beat from a hook on the proven channel, rate-limited to once per
+         interval off the freshness stamp, composed from disk (active.yaml + journal tails).
+         PostToolUse is the candidate because it fires DURING a long turn. No loop, no
+         Monitor, no arm-lock, no reaper.
+    - 3. DELETED (was: Telegram send door). See NO-TELEGRAM.
+    - 4. Stop backstop, second layer only: at a turn boundary, if the last beat is older than
+         interval+slack, emit the beat and block once per interval. Never blocks on a turn
+         that already beat.
+    - 5. Session key. session_id -> basename(transcript_path) -> HARD FAIL with a KEYFAIL
+         marker and no keyed artifact. Replace read -N with `$(cat)`.
+    - 6. DELETED (was: orphan reaping). No loop exists to orphan.
+    - 7. Budget. Measure every SessionStart hook individually and record the numbers, then
+         cap leadv2-queue-archiver.sh and feature-liveness-session-inject.sh at source
+         (overflow to a file, reference it by path). Re-measure and show the new total.
+
+verification:
+  mutation_controls:
+    - schema  -> tests/contract/anti-silence-hook-schema.sh (top-level key must be absent)
+    - selfarm -> same suite: pid file exists and kill -0 succeeds after one arm-inject run
+    - beat    -> tests/unit/test-anti-silence-beat-hook.sh (new): with a stale freshness
+                 stamp the hook emits exactly one beat; with a fresh stamp, none
+    - stopgd  -> same suite: stale-beat fixture yields exactly one block and one emitted beat
+    - key     -> tests/unit/test-anti-silence-pulse-hooks.sh amended: no session_id and no
+                 transcript_path must yield KEYFAIL and NO anti-silence-pulse.<digits>.* file
+    - budget  -> tests/contract/sessionstart-output-budget.sh (new): remove the byte cap
+                 from either fat hook and the suite must go red on the measured total
+  ci: >
+    Add the suites to EXTRA_SUITE_MAP for .claude/hooks/anti-silence-* and
+    scripts/anti-silence-*, prove selection with --scope changed, and add a catalog row per
+    mutation to tests/mutations/catalog.yaml. Kill rate may not go down.
+  live_signal: >
+    A beat appears in the founder's TERMINAL during a long lead turn, in a session where the
+    lead ran no arming command, attached no Monitor, and relayed nothing. That is the only
+    signal that proves the bar. Nothing is sent to Telegram.
+
+residual_unproven: >
+  ROOT-CAUSE is proven for SessionStart and UserPromptSubmit in THIS harness build; it was
+  not proven that the harness never honours the top-level key for some other event. Settling
+  experiment: land the schema fix on the detector only, start one session, diff the two
+  attachment types across the flip. Nothing in this plan depends on that residual.

@@ -1,0 +1,31 @@
+task: BOARD-BLIND-TO-DETACHED-WORKERS-01
+
+decisions:
+  - id: D1
+    decision: The board is not lying about its source; active.yaml is genuinely missing the row.
+      Fix the registry lifecycle, never the renderer.
+    evidence: three live workers (codex ef95d34a waited=612s, glm ab0ec014 waited=302s) while
+      founder-status.md printed "живых линий нет" at 00:19Z, 00:33Z, 00:49Z on 2026-08-29.
+  - id: D2
+    decision: This affects BOTH codex and glm arms - any fix scoped to codex alone is wrong.
+  - id: D3
+    decision: The exit-trap compare-and-delete already refuses to remove a pid_role=worker row
+      (leadv2-dispatch-code.sh:4012). The defect is that a detached worker never gets the row
+      promoted to worker, because set_worker_pid needs a positive local pid it does not have.
+      Prefer promoting by handle over widening the delete's ownership checks.
+  - id: D4
+    decision: The fix must not leak dead rows onto the board forever - a genuinely finished lane
+      stays releasable. Both directions asserted in one test file.
+
+off_limits:
+  - plugins/leadv2/scripts/leadv2-status-render.sh
+  - plugins/leadv2/scripts/leadv2-lanes-snapshot.sh
+
+plan:
+  steps:
+    - confirm or refute the pid-promotion hypothesis with a file:line, in the codex arm branch
+      and the glm arm branch separately
+    - narrowest change that keeps a detached worker's row alive while the work runs
+    - test - detached spawn, run the exit-trap release, assert row survives and renders live
+    - same file - finished lane still releasable
+    - repo suite green, name the command

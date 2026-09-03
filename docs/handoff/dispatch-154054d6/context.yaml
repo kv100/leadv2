@@ -1,0 +1,16 @@
+task: FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01 round 3
+source: docs/handoff/FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01/fix-round-3.md
+decisions:
+  - Keep round-2 wins: content-based liveness probe and arbiter honouring router exclusions.
+  - C-1 first: fix the unbound-array crash at lib/leadv2-worker-output-gate.sh:75 (bash 3.2, set -u);
+    add a control running the gate on an EMPTY diff and asserting it passes.
+  - C-2: inspect the committed range (origin/main...HEAD) as well as the working tree.
+  - C-3: drive the production call shape from freepool-coder.sh; mutate the call site out, show RED.
+  - Make role_rank.implement contain the models the bakeoff favours; make role=review resolve at all;
+    paste per-role selector output and timings.
+  - Bakeoff must discriminate on correctness, or state explicitly that the ranking is by latency.
+  - Remove both single-source violations (no real copy into the production scripts dir; restoring trap).
+  - --scope changed must select suites on a freepool-arm.yaml-only change.
+off_limits:
+  - Do not disable or hardcode freepool out of the routing ladder.
+  - Bash 3.2.57 only; every ${arr[@]} guarded under set -u.

@@ -1,0 +1,8 @@
+gate: 1
+status: accepted
+by: founder
+via: chat ("да, бери работу", 2026-08-29)
+task: LANE-WRITESET-REGISTRY-01
+class: Heavy
+plan: docs/handoff/LANE-WRITESET-REGISTRY-01/context.yaml
+at: 2026-08-29T11:46:06Z

@@ -1,0 +1,112 @@
+task_id: DISPATCH-PIN-CLUSTER-01
+class: Heavy
+repo: /Users/kostiantyn.vlasenko/Projects/leadv2
+supersedes_backlog_rows:
+  - DISPATCH-WORKER-WRITES-OUTSIDE-LANE-01   # f6d345ccc66e
+  - DISPATCH-COMMIT-NOT-AN-OBLIGATION-01     # 460537822b09
+  - DISPATCH-PLAN-NOT-IN-LANE-01             # 606257de1360
+  - DISPATCH-CLASS-FROM-MISSION-LENGTH-01    # e9e45058b9ff
+
+inputs:
+  brief: docs/handoff/DISPATCH-PIN-CLUSTER-01/brief.md
+  architect: docs/handoff/DISPATCH-PIN-CLUSTER-01/plan-architect.md
+  critic: docs/handoff/DISPATCH-PIN-CLUSTER-01/concerns-critic.md
+
+decisions:
+  - id: SHAPE-01
+    text: One lane, not four. All four defects land in the same write set
+      (leadv2-dispatch-code.sh + dispatch-product-close.sh + dispatch-ledger.sh).
+  - id: D1-SHAPE
+    text: >
+      D1 is NOT a write fence. The critic proved a prefix fence is unimplementable —
+      a lane worktree's .git is a file pointing at the main checkout's object store,
+      so every legitimate lane commit writes into PROJECT_ROOT, and the control plane
+      (journals, registry, event ledger, question store, docs/handoff) is deliberately
+      rooted at PROJECT_ROOT (dispatch-code.sh:406-414). Adopt the architect's
+      post-hoc CONTAINMENT VERDICT instead: baseline the main checkout's porcelain at
+      spawn, set-diff it at the close gate, and refuse `landed` when a non-excluded
+      path appeared in main.
+  - id: D1-EXCLUDES
+    text: >
+      The containment exclude-set is load-bearing and must be explicit, not implied:
+      docs/handoff/**, the control-plane state dir, journals, active registry, event
+      ledger, question store, .git internals. A missing entry turns the guard into a
+      100% false-violation gate — and specifically starves _dispatch_evidence_exists
+      (:2720), which reads ${PROJECT_ROOT}/docs/handoff/dispatch-<sig8>/.
+  - id: D2-SHAPE
+    text: >
+      D2 is NOT an auto-commit. Both existing autocommitters are already broken by
+      construction — leadv2-turncap-checkpoint-commit.sh:54 no-ops in every lane
+      (guards on $PROJECT_ROOT/.git being a dir), and pc_stop_gate_autocommit stages
+      only _PC_SCOPE_WRITES_CSV, which IS the 3-of-5 incident. Enforcement is one
+      rule at one choke point: a dirty lane can never produce `landed`. Implement in
+      dispatch_ledger_write_terminal (leadv2-dispatch-ledger.sh:250) — the single
+      funnel every terminal writer passes through — downgrading landed to the
+      existing `pass_unlanded` terminal.
+  - id: D2-LOOP-BOUND
+    text: >
+      REQUIRED, from the critic: pass_unlanded is retryable and routes into advance-arm
+      (dispatch-product-close.sh:1695), which re-runs the same mission on the next arm
+      while the reservation stays confirmed for CONFIRMED_TTL=7200. The downgrade must
+      carry a bounded attempt counter — after N dirty-lane downgrades on one sig8 the
+      terminal is final (refused), not retryable. Without this the fix converts one
+      silent failure into an arm-burning loop.
+  - id: D3-SHAPE
+    text: >
+      COPY the plan into the lane, never commit it. The critic showed force-committing
+      lands the plan outside LANE_WRITES and PARKs the round as unscopable_diff
+      (:596-601) — converting BLOCKED into PARKED. docs/handoff is already excluded
+      from the writes grammar (:3425), so a copy pollutes no branch and cannot
+      conflict. Fail loudly (exit 5 + lane_plan_missing) when the plan does not
+      resolve under WORK_ROOT.
+  - id: D4-SHAPE
+    text: >
+      Class comes from a task-keyed record and acts as a FLOOR, never a demotion.
+      Root cause is that sig8 = sha256(normalised mission text), so a short resume
+      mission is a different key and misses the admission receipt entirely.
+  - id: D4-ADVANCE-ARM
+    text: >
+      REQUIRED, from the critic, and NOT covered by the architect's plan: the receipt
+      carrier already exists and is discarded — dispatch-code.sh:5977-5983 reads
+      intake_cls from the receipt and assigns only sig/sig8. The second demotion site
+      is advance-arm (:7345-7351), which sed-scrapes class from the ledger row and
+      DEFAULTS TO Standard. Fixing only _admission_classify leaves the chain-advance
+      path still demoting. Both sites must read the task record.
+
+off_limits:
+  - No write fence / path-prefix denial on the worker process (D1-SHAPE).
+  - No auto-commit of a dirty lane as the enforcement mechanism (D2-SHAPE).
+  - No force-commit of docs/handoff into the lane branch (D3-SHAPE).
+  - No second class-ordering ladder — extract and reuse _lv2_class_rank.
+  - No real copies of plugin files into a consuming repo; fix once here.
+
+plan:
+  steps:
+    - 1. Extract lib/leadv2-lane-guard.sh — lv2_lane_dirty, _PC_PORCELAIN_EXCLUDE_RE,
+         _pc_drop_bootstrap_dirt, lv2_lane_root_is_own_worktree, _lv2_class_rank.
+         Pure move + source from dispatch-product-close.sh. Zero behaviour change.
+         (These already diverged once; see the comment at product-close:1290-1296.)
+    - 2. D2 — dirty lane can never land. Downgrade in dispatch_ledger_write_terminal
+         plus the D2-LOOP-BOUND attempt cap.
+    - 3. D1 — spawn-time main-checkout baseline + containment verdict called once
+         from the D2 choke point, with the D1-EXCLUDES set explicit.
+    - 4. D3 — _deliver_plan_into_lane, copy-only, loud refusal.
+    - 5. D4 — task-keyed class floor in _admission_classify AND in advance-arm.
+
+verification:
+  mutation_controls:
+    - D2 -> tests/test-dirty-lane-never-lands.sh
+    - D1 -> tests/test-lane-containment.sh
+    - D3 -> tests/test-plan-in-lane.sh
+    - D4 -> tests/test-class-floor-survives-resume.sh (short resume mission on a Heavy
+      task record must NOT route to freepool; must also hold on the advance-arm path)
+  live_signal: >
+    A real dispatch on this repo where the lane is left deliberately dirty produces
+    terminal pass_unlanded (not landed) in the dispatch ledger, and a resume mission
+    on a Heavy task record resolves Heavy, not Light.
+
+risk: >
+  This dispatcher launches every lane in every repo. A regression is total: the
+  containment guard false-positiving refuses every round; the dirty-lane downgrade
+  without the loop bound burns every arm in the chain. Both mitigations are named
+  above as REQUIRED, not optional.

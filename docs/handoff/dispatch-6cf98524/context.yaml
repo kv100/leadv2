@@ -1,0 +1,467 @@
+# LANE-WRITESET-REGISTRY-01 — architect design (PLANNING ONLY, no code edits)
+# Canonical repo: /Users/kostiantyn.vlasenko/Projects/leadv2
+# All paths below are relative to that root unless absolute.
+
+task_id: LANE-WRITESET-REGISTRY-01
+class: Heavy
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HEADLINE FINDING (changes the shape of the task)
+# ─────────────────────────────────────────────────────────────────────────────
+# This is NOT a build task. The write-set registry already exists end-to-end and
+# is DEAD ON THE LIVE PATH — a textbook PULSE-IN-SINGLE-LEAD-01 recurrence:
+#
+#   * plugins/leadv2/scripts/leadv2-active-registry.sh:410-419  — `set_writes` op
+#     persists a lane's declared writes CSV onto its active.yaml row, under the
+#     existing python flock. Shell wrapper `leadv2_active_set_writes` at :742-749.
+#   * plugins/leadv2/scripts/leadv2-writes-overlap.sh — a complete detector that
+#     compares a NEW lane's writes against every ALIVE lane's `writes` in
+#     active.yaml (prefix-overlap semantics, :86-89 `overlaps()`), emits
+#     `task=<tid> other=<tid> paths=<csv>`.
+#   * plugins/leadv2/scripts/tests/test-writes-overlap.sh — a passing 5-case suite.
+#
+# Its ONLY callers are leadv2-fanout.sh:1535 and :1845 — the RETIRED supervisor
+# arm (leadv2.md:124, SUPERVISOR-DELETE-01). `grep -rn set_writes` finds ZERO
+# calls from leadv2-dispatch-code.sh. So on the single-lead live path every lane
+# row is written with NO `writes` key and the detector is never invoked.
+#
+# Meanwhile leadv2-dispatch-code.sh ALREADY HAS the declared write set in hand:
+# `--writes` is an accepted flag, `REQUIRE_LANE_WRITES=1` (:639) makes it
+# fail-closed via `_lane_writes_guard` (:3414-3446), the architect prepass
+# harvests a `LANE_WRITES:` line (:3318-3333), and the review gate already scopes
+# `git diff <start-sha> -- <lane_writes>` with it (:704). The value exists, is
+# mandatory, and is already load-bearing — it simply never reaches active.yaml.
+#
+# Therefore: this task is THREE WIRES plus one atomicity fix, not a new subsystem.
+
+decisions:
+
+  - id: D1
+    decision: >-
+      Reuse the EXISTING `writes` key on the active.yaml lane record. Do NOT add a
+      new `write_set:` key. The reader accepts `write_set` as an alias (union) for
+      forward tolerance, but the writer only ever writes `writes`.
+    overturns: "the mission's literal `write_set:` field name"
+    rationale: >-
+      leadv2-writes-overlap.sh:124 already keys on `other.get("writes")` and
+      leadv2-active-registry.sh:416 already writes `target["writes"]`, both shipped
+      and both under flock. Adding `write_set` forks the schema into two sources of
+      truth for one fact. The concrete failure that buys us: a lane registered by
+      an older writer (or by fanout, still on disk in all three repos) populates
+      `writes`, while a new reader looks at `write_set`, finds nothing, and reports
+      NO CONFLICT. That is a silent false-negative in exactly the gate we are
+      building — the lying-green disease, shipped on day one. Renaming is pure cost
+      with a negative safety delta.
+
+  - id: D2
+    decision: >-
+      SOURCE = declared at dispatch. Confirmed, with no new input channel: the value
+      is the `writes` CSV that leadv2-dispatch-code.sh already resolves (explicit
+      `--writes`, else the architect prepass `LANE_WRITES:` line), at the point
+      where `_lane_writes_guard` has just proven it non-empty.
+    rejected_alternatives:
+      - option: derive from the plan (docs/tasks.yaml files_hint)
+        why_rejected: >-
+          leadv2-collision-check.sh --compare-tasks already does exactly this and
+          demonstrates the flaw — it WARNs and exits 0 whenever files_hint is absent
+          ("WARN: files_hint absent"), and files_hint is a planning hint that is
+          NOT the review-scoping source. Deriving here creates a second write set
+          that can legally disagree with the one the review gate diffs against, so a
+          lane could be admitted on set A and reviewed on set B.
+      - option: observe from the lane's first git diff
+        why_rejected: >-
+          Structurally too late. Admission must decide BEFORE the worker is spawned;
+          by the time a first diff exists both lanes have already written the same
+          file and the corruption we exist to prevent has happened. Observation is
+          still valuable — it is exactly what D5 uses at commit — but as a drift
+          detector, never as the admission input.
+
+  - id: D3
+    decision: >-
+      ENFORCEMENT POINT (a) — admission — is CONFIRMED, but it must live INSIDE the
+      registry's `register` op, in the same locked python block, NOT as a shell-level
+      check-then-register in leadv2-dispatch-code.sh. Extend `register` to take a
+      `writes` argument; it intersects against alive rows and refuses with a distinct
+      exit code, atomically with the append.
+    overturns: "the implicit 'check, then dispatch' reading of the working assumption"
+    rationale: >-
+      A shell-level `writes-overlap.sh && register` is a TOCTOU race, and
+      CONCURRENCY-2-LANES-01 (2 lanes/session, unlimited sessions) makes it reachable
+      rather than theoretical: two leads in different sessions both read active.yaml,
+      both see no conflict, both register, both spawn on the same file. The flock only
+      protects each individual write, not the check-then-act pair. Folding
+      intersect+append into one op reuses the flock that leadv2-active-registry.sh
+      already holds and closes the window by construction. It also eliminates the
+      second window in today's fanout pattern, where `register` and `set_writes` are
+      two separate locked calls and the row is alive-with-no-writes in between —
+      during which a peer's check legitimately sees an empty set and admits.
+
+  - id: D4
+    decision: >-
+      The BLOCK decision does not go inside leadv2-writes-overlap.sh. That script
+      stays fail-open, notify-only, and byte-compatible for its fanout callers; it
+      is retained for the close-time notify (D8) and for the human-readable conflict
+      line. Policy lives in the registry op (D3) and in dispatch-code's rc mapping.
+    rationale: >-
+      Two reasons, one of them CRITICAL. (1) Contract: that script's header states
+      it "must never be why a dispatch fails or hangs" and all three consuming repos
+      may still reach it through fanout; changing its return semantics is a breaking
+      change to a shared plugin. (2) CRITICAL config contradiction —
+      LEADV2_WRITES_CONFLICT_NOTIFY=0 makes that script a total no-op at :41
+      (exit 0, no stdout, no side effects). If the new BLOCK read that script's
+      stdout, then a legacy notify-suppression flag would silently disable a safety
+      gate, and the gate would report clean. A safety gate may never be switchable
+      by a flag whose documented meaning is "quieter notifications". The registry
+      op has no such flag and is the correct home.
+    self_check_source: architect(self-check item 5)
+
+  - id: D5
+    decision: >-
+      ENFORCEMENT POINT (b) — commit-time drift — is CONFIRMED. `git diff --name-only`
+      is compared against the declared set at the existing review-scoping point.
+      On drift the action is WARN + WIDEN + JOURNAL, never a commit block — with ONE
+      escalation to BLOCK, defined in D6.
+    rationale: >-
+      Blocking at commit is the wrong lever three ways. (i) The work is already
+      written; refusing the commit strands a finished diff in a worktree with no
+      landing path and no rollback, which our own history ranks as the worse failure
+      (worktree loss). (ii) The real harm of drift is not the extra file, it is that
+      the file is INVISIBLE TO REVIEW — leadv2-dispatch-code.sh:704 scopes the review
+      diff by the declared set, so an undeclared file lands unreviewed. The correct
+      remedy is therefore to widen the review scope to the union of declared+actual,
+      which converts a silent hole into a reviewed change. (iii) A declaration that
+      was merely too narrow is a planning miss, not a correctness violation, and
+      punishing it with lost work trains lanes to over-declare — which would make the
+      admission intersection in D3 fire constantly and force us to turn it off.
+      Net: drift is non-fatal to the LANE, fatal to a SILENT file.
+
+  - id: D6
+    decision: >-
+      Drift escalates from WARN to BLOCK in exactly one case: a drifted path
+      intersects ANOTHER currently-alive lane's declared set. That commit is refused
+      and the lane is PARKed for lead adjudication.
+    rationale: >-
+      That case is not a planning miss — it is the precise corruption the feature
+      exists to prevent, observed after the fact: two live lanes have now written the
+      same file. Landing it would merge one lane's edit over another's in-flight work.
+      This keeps the blocking surface as small as it can be while still being real.
+
+  - id: D7
+    decision: >-
+      BACKWARD COMPATIBILITY — an incumbent alive row with NO `writes` key is a THIRD
+      state, `unknown`. It is neither "conflicts with everything" nor "conflicts with
+      nothing". Under LEADV2_WRITESET_ENFORCE=block an unknown incumbent REFUSES the
+      dispatch with its own distinct exit code (rc=6, writeset_unknown), separate
+      from a real intersection (rc=5, writeset_conflict); under the default
+      `warn` it admits but emits `LEADV2_WRITESET_UNKNOWN other=<tid>` to stdout and a
+      journal finding. It is never silent in either mode, and the count of unknown
+      rows is a measurable number.
+    rationale: >-
+      "Conflicts with everything" is unshippable: on rollout day EVERY alive row is
+      legacy, so the first dispatch after the upgrade blocks on all of them — a
+      guaranteed false-block storm across three repos. "Conflicts with nothing" is the
+      lying-green disease: the gate reports clean precisely when it has no data, which
+      is the one situation where it should be loudest. The third state satisfies the
+      non-negotiable literally — absent never silently means either — and it drains on
+      its own, because D3 makes every NEW row carry `writes` at register time. The two
+      distinct exit codes matter for telemetry: they let us watch `unknown` go to zero
+      before flipping the default to `block`, instead of guessing.
+    rollout: >-
+      LEADV2_WRITESET_ENFORCE defaults to `warn` for one soak window, then `block`.
+      The flip is a one-line default change and is the single-flip rollback. Log a
+      row in the consuming repo's scheduled-decisions ledger with the GO-condition
+      "zero rows emit LEADV2_WRITESET_UNKNOWN across a full working day".
+
+  - id: D8
+    decision: >-
+      PARTS 2 AND 3 CANNOT BE DONE IN SHELL. ListAgents and SendMessage are HARNESS
+      tools available to a Claude session, not commands available to a bash script —
+      `grep -rn ListAgents plugins/leadv2/scripts/` returns ZERO hits; the only
+      references in the repo are prose in plugins/leadv2/commands/leadv2.md:100.
+      Design accordingly: the shell renders and persists, the LEAD relays.
+      `/leadv2 sessions` = registry table (shell) merged with an optional
+      `--peers-json <file>` that the lead writes from its own ListAgents call.
+      Close-time notify = the close script writes durable notify intents to disk and
+      to each peer's journal; the lead relays them via SendMessage best-effort.
+    rationale: >-
+      A plan that told a bash script to "call ListAgents" would be unimplementable and
+      would be discovered only by the implementing agent. Splitting at the real
+      process boundary also gives the better failure mode for free: the on-disk half
+      always succeeds, so the feature degrades to "correct but unannounced" rather
+      than "lost", which is what makes the non-fatal-notify non-negotiable satisfiable.
+
+  - id: D9
+    decision: >-
+      Env var naming: LEADV2_WRITESET_ENFORCE (values warn|block). Confirmed against
+      the repo's LEADV2_* convention — siblings LEADV2_REQUIRE_LANE_WRITES:639,
+      LEADV2_WRITES_CONFLICT_NOTIFY (writes-overlap.sh:41), LEADV2_DISPATCH_SPAWN.
+      No LEAD_V2_* drift. No `claude -p` invocation is introduced by this plan, so
+      the --max-turns / --permission-mode / --output-format check is N/A.
+    self_check_source: architect(self-check items 1 and 3)
+
+off_limits:
+  - plugins/leadv2/scripts/leadv2-fanout.sh          # retired supervisor arm; do not revive, do not "fix"
+  - plugins/leadv2/scripts/leadv2-supervise-loop.sh  # retired
+  - plugins/leadv2/scripts/leadv2-writes-overlap.sh  # detector semantics FROZEN (D4); read-only in this task
+  - "any path under a CONSUMING repo (persona-engine/, m3-market/, respiro-ios/)"  # symlinks to canonical; editing through them is the 2026-07-29 defect
+  - plugins/leadv2/scripts/tests/test-writes-overlap.sh  # existing 5 cases are the fanout regression baseline; APPEND only, never rewrite
+  - docs/leadv2/active.yaml                          # live registry state; never hand-edit, only through the flocked ops
+
+plan:
+  steps:
+
+    - n: 1
+      file: plugins/leadv2/scripts/leadv2-active-registry.sh
+      what: >-
+        Extend the `register` op (:163-244) to accept a 16th positional arg `writes`
+        and persist it as `"writes": writes or None` on the appended row, alongside
+        group_key/risk_tags. The refresh_existing branch (:180-192) updates it too.
+        Update the arg tuple unpack at :164-166 and the wrapper
+        `leadv2_active_register` (:~580-609) with a trailing optional param
+        defaulting to "-" so every existing call site is untouched.
+      minimal_diff: one tuple element, one dict key, one wrapper param, two doc lines (:12, :91).
+
+    - n: 2
+      file: plugins/leadv2/scripts/leadv2-active-registry.sh
+      what: >-
+        Inside the SAME locked `register` block, BEFORE the append: intersect the
+        candidate `writes` against every non-stale row's `writes` (union with the
+        `write_set` alias per D1) using the prefix-overlap rule copied from
+        leadv2-writes-overlap.sh:86-89. Real intersection -> print
+        "[registry] writeset conflict: other=<tid> paths=<csv>" to stderr and
+        sys.exit(5). Incumbent row missing both keys -> per D7: sys.exit(6) when
+        LEADV2_WRITESET_ENFORCE=block, else print "LEADV2_WRITESET_UNKNOWN other=<tid>"
+        and continue. Empty candidate writes -> no judgement (dispatch's
+        REQUIRE_LANE_WRITES already fail-closes that case upstream).
+      minimal_diff: one helper fn + one loop, ~25 lines, entirely inside the existing lock.
+
+    - n: 3
+      file: plugins/leadv2/scripts/leadv2-active-registry.sh
+      what: >-
+        Document rc 5/6 in the exit-code header block (:24 area, which already lists
+        "1 — hard_limit_reached"), and make `leadv2_active_register` propagate the
+        python exit code instead of swallowing it.
+      minimal_diff: two header lines + one `return $?`.
+
+    - n: 4
+      file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+      what: >-
+        At the self-register call in cmd_resolve, pass the already-resolved
+        ${writes} CSV as the new register arg — placed AFTER `_lane_writes_guard`
+        (:4071/:4086) has proven it non-empty. Map rc 5 -> emit
+        "LEADV2_DISPATCH_REFUSED: writeset_conflict", rc 6 ->
+        "LEADV2_DISPATCH_REFUSED: writeset_unknown", reusing the existing marker
+        convention parsed at :4550. Journal a `decision` line for each. No new gate
+        function, no new flag read.
+      minimal_diff: one extra argument + one case statement on rc.
+
+    - n: 5
+      file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+      what: >-
+        At the existing review-scoping point (:704, `git diff <start-sha> -- <lane_writes>`)
+        compute `git diff --name-only <start-sha>` and diff it against the declared
+        set. Drift -> journal "writeset_drift task=<sig8> undeclared=<csv>", and WIDEN
+        the review scope to declared UNION actual (D5). Then re-run the registry
+        intersect against the drifted paths only; if it returns rc 5, refuse the
+        commit and PARK (D6). Never block on rc 6 here.
+      minimal_diff: one name-only diff, one set subtraction, one scope union, one rc branch.
+
+    - n: 6
+      file: plugins/leadv2/scripts/leadv2-active-registry.sh
+      what: >-
+        `leadv2_active_list` (:869-903): add a `writes` column (truncated, "-" when
+        the lane declared none, "?" rendered distinctly so unknown is visible) and an
+        optional `--peers-json <file>` that merges peer session names onto rows by
+        session_id/task_id, adding a `peer` column. When the file is absent or
+        unparseable, render peer="?" for every row and print the footer
+        "peers: unavailable — registry-only view". Never omit the column silently.
+      minimal_diff: two columns + one optional arg + one footer line.
+
+    - n: 7
+      file: plugins/leadv2/commands/leadv2.md
+      what: >-
+        Rewrite the `/leadv2 sessions` row (:122) into the two-step procedure of D8:
+        lead calls ListAgents, writes the peer list to a temp json, then runs
+        `leadv2_active_list --peers-json <file>`. State explicitly that if ListAgents
+        errors or is unavailable the lead runs the bare list and reports the
+        "peers: unavailable" footer verbatim — an empty peer column is never to be
+        read as "no peers".
+      minimal_diff: one table row -> one short procedure block.
+
+    - n: 8
+      file: plugins/leadv2/scripts/leadv2-phase8-close.sh
+      what: >-
+        Immediately BEFORE `leadv2_active_unregister "${TASK_ID}"` (:559) — order is
+        load-bearing, the closing lane's own `writes` dies with its row — read the
+        closing row's writes and compute intersecting alive peers via
+        leadv2-writes-overlap.sh (notify mode, unchanged). AFTER the unregister,
+        for each peer write (a) a journal finding on the PEER's task id and (b) a
+        line to docs/leadv2/writeset-notify.log. Wrap the whole block in
+        `|| true` and mirror the existing non-blocking log style at :560-566.
+      minimal_diff: ~15 lines, no new dependency, no daemon, no polling.
+
+    - n: 9
+      file: plugins/leadv2/scripts/tests/test-writeset-admission-block.sh (to-create) + plugins/leadv2/scripts/tests/run-core-offline.sh
+      what: >-
+        New suite per test_plan below, PLUS its selection row in the
+        "<label>|||bash $TEST_DIR/test-<name>.sh" array (:263-287) and, if the suite
+        is to be owned by the offline runner, an entry in _CORE_OFFLINE_OWNED_SUITES
+        (:134). A suite CI never selects is worth nothing.
+      minimal_diff: one new file + one array row (+ optionally one owned-suite row).
+
+risk: >-
+  The dominant risk is FALSE BLOCKS, and it has three distinct sources that must not be
+  conflated. First, over-declaration: `writes` is already the review-scoping input, and
+  lanes have every incentive to declare a wide directory prefix to keep review honest;
+  because the overlap rule is prefix-based (leadv2-writes-overlap.sh:86-89), two lanes
+  that both declare plugins/leadv2/scripts/ intersect even when they touch disjoint
+  files — under CONCURRENCY-2-LANES-01 with two lanes per session across unlimited
+  sessions in a repo whose real work concentrates in one directory, this could refuse
+  most second dispatches. That is precisely why D7 defaults LEADV2_WRITESET_ENFORCE to
+  warn: the soak measures the real false-block rate before anything is refused, and
+  the flip to block is one line with a one-line rollback. Second, the legacy-row
+  storm: every row alive at upgrade time lacks `writes`, so a naive "absent conflicts
+  with everything" would refuse everything on day one across three repos — D7's third
+  `unknown` state exists solely to make that impossible while still refusing to lie
+  clean. Third, and most dangerous because it fails in the safe-looking direction: if
+  enforcement had been built on leadv2-writes-overlap.sh's stdout, then the pre-existing
+  LEADV2_WRITES_CONFLICT_NOTIFY=0 kill-switch would silently disable the safety gate and
+  the gate would report no conflicts — D4 moves the decision into the registry op
+  specifically so no notify-suppression flag can turn a gate green. Beyond false blocks,
+  the schema risk is a lane registered by an OLDER writer in another repo: the register
+  op gains a positional arg, so the wrapper must default it and every existing caller
+  (fanout included, which we do not touch) must keep working unchanged — a wrapper arity
+  mismatch would break dispatch in all three repos at once, which is why step 1 is
+  deliberately additive-with-default rather than a signature change. Finally, the
+  concurrency surface itself: active.yaml is read+written by two parallel lanes, and the
+  ONLY reason this design is safe is that the intersect and the append happen inside one
+  flock acquisition (D3); any implementation that reverts to check-in-shell-then-register
+  silently reintroduces the TOCTOU race and the gate becomes decorative under exactly the
+  concurrency it was built for.
+
+verification:
+  live_signal: |
+    # Proves a REAL intersecting dispatch is REFUSED (not merely warned), end to end,
+    # in a sandbox that never touches the repo's own docs/leadv2/active.yaml.
+    # UNVERIFIED (design-time; not executed — this task is planning only). The
+    # implementer must run this and paste the output as the close evidence.
+    set -e
+    T="$(mktemp -d)"; mkdir -p "$T/docs/leadv2"
+    cd /Users/kostiantyn.vlasenko/Projects/leadv2/plugins/leadv2/scripts
+    export LEADV2_PROJECT_ROOT="$T" LEADV2_STATE_ROOT="$T" CLAUDE_PROJECT_DIR="$T"
+    export LEADV2_WRITESET_ENFORCE=block LEADV2_DISPATCH_SPAWN=0
+    source ./leadv2-active-registry.sh
+    # incumbent lane, alive (own PID), declares the contested path
+    leadv2_active_register "sess-A" "LANE-A" "$T" "wt-A" "$(date -u +%FT%TZ)" \
+      exec Standard "$$" "-" "" 0 "$(date -u +%FT%TZ)" "$T/a.log" "-" "-" \
+      "plugins/leadv2/scripts/leadv2-dispatch-code.sh"
+    # candidate lane declares an intersecting path -> MUST refuse with rc=5
+    set +e
+    out="$(leadv2_active_register "sess-B" "LANE-B" "$T" "wt-B" "$(date -u +%FT%TZ)" \
+      exec Standard "$$" "-" "" 0 "$(date -u +%FT%TZ)" "$T/b.log" "-" "-" \
+      "plugins/leadv2/scripts/leadv2-dispatch-code.sh" 2>&1)"; rc=$?
+    set -e
+    printf 'rc=%s\n%s\n' "$rc" "$out"
+    # PASS iff ALL THREE hold:
+    test "$rc" = "5"
+    printf '%s' "$out" | grep -q 'writeset conflict: other=LANE-A'
+    # and LANE-B must NOT have been appended (atomicity of intersect+append):
+    ! grep -q 'task_id: LANE-B' "$T/docs/leadv2/active.yaml"
+    echo "LIVE_SIGNAL_PASS"
+  secondary_signal: |
+    # Proves the DISPATCH layer surfaces the refusal with the existing marker
+    # convention (parsed at leadv2-dispatch-code.sh:4550), not a bare non-zero exit.
+    # Expect on stdout: "LEADV2_DISPATCH_REFUSED: writeset_conflict"
+    LEADV2_DISPATCH_SPAWN=0 LEADV2_WRITESET_ENFORCE=block \
+      bash ./leadv2-dispatch-code.sh resolve --mission "edit dispatch-code" \
+      --writes "plugins/leadv2/scripts/leadv2-dispatch-code.sh" 2>&1 \
+      | grep -c 'LEADV2_DISPATCH_REFUSED: writeset_conflict'
+
+test_plan:
+  extend_existing:
+    - file: plugins/leadv2/scripts/tests/test-writes-overlap.sh
+      add: >-
+        APPEND-ONLY (the 5 existing cases are the fanout regression baseline).
+        Case 6: `register` with a writes arg stamps `writes` on a NEW row without a
+        separate set_writes call — closes the alive-with-no-writes window.
+        Case 7: reader unions `writes` and the `write_set` alias (D1 back-compat).
+    - file: plugins/leadv2/scripts/tests/test-active-registry-failclosed.sh
+      add: >-
+        Case: rc=5 on real intersection and rc=6 on an unknown incumbent are DISTINCT,
+        and rc=6 does NOT fire when LEADV2_WRITESET_ENFORCE=warn (D7 rollout ladder).
+    - file: plugins/leadv2/scripts/tests/test-close-chain.sh
+      add: >-
+        Case: on close, the intersecting-peer set is computed BEFORE unregister (assert
+        a peer line exists in writeset-notify.log even though the closing row is gone),
+        and a peer whose journal path is unwritable does NOT fail the close (non-fatal).
+  new_suite:
+    file: plugins/leadv2/scripts/tests/test-writeset-admission-block.sh (to-create)
+    covers: >-
+      The live_signal above as an automated case; the concurrency case (two register
+      calls racing the same lock both attempting the same path — exactly one wins);
+      the legacy-row case (incumbent with no writes key -> warn admits, block refuses
+      with rc=6); and the drift case (declared A, actual A+B, B free -> WARN and the
+      review scope widens to A+B; B contested by an alive lane -> BLOCK per D6).
+    ci_selection: >-
+      MANDATORY — add the row
+      "lane write-set admission block (LANE-WRITESET-REGISTRY-01)|||bash $TEST_DIR/test-writeset-admission-block.sh"
+      to the suite array in plugins/leadv2/scripts/tests/run-core-offline.sh (:263-287),
+      and prove selection by running the runner and showing the label in its output.
+      An unselected suite is not coverage.
+  negative_control:
+    statement: >-
+      Declared mutation, applied INSIDE the function body (never at top level — a
+      top-level insert reddens every suite for the wrong reason and reads as a pass).
+    mutation: >-
+      In leadv2-active-registry.sh, inside the `register` op's intersect loop added by
+      step 2, change the overlap predicate to `if False:` (i.e. never detect an
+      intersection) while leaving the arg, the persisted `writes` key, and the exit
+      codes intact. This reproduces the exact pre-fix world: the field is stored, the
+      table renders it, everything looks wired — and nothing is ever refused.
+    must_go_red: >-
+      test-writeset-admission-block.sh MUST fail (live_signal case: rc becomes 0 and
+      LANE-B is appended to active.yaml). test-writes-overlap.sh cases 1-5 MUST stay
+      GREEN under the mutation — that is the proof the new coverage is real and not
+      inherited from the pre-existing suite. If both suites redden, the mutation was
+      inserted at the wrong scope and the measurement is invalid; re-do it.
+    second_mutation: >-
+      Revert step 4's rc mapping in leadv2-dispatch-code.sh (drop the rc 5/6 case) —
+      the secondary_signal must lose the "LEADV2_DISPATCH_REFUSED: writeset_conflict"
+      line while the registry-level suite stays green. This separates "the registry
+      refuses" from "the dispatcher tells anyone", which are two different lies.
+
+self_check:
+  - item: "1 env var naming"
+    result: PASS
+    note: LEADV2_WRITESET_ENFORCE matches the LEADV2_* convention; no LEAD_V2_* drift (D9).
+  - item: "2 file paths exist"
+    result: PASS
+    note: >-
+      All eight touched files verified present on disk. Only
+      plugins/leadv2/scripts/tests/test-writeset-admission-block.sh is marked (to-create).
+  - item: "3 claude -p flags"
+    result: N/A
+    note: This plan introduces no `claude -p` invocation.
+  - item: "4 concurrent access"
+    result: FLAGGED -> mitigated by D3
+    note: >-
+      active.yaml is read+written by parallel lanes; the check-then-register race is
+      real under CONCURRENCY-2-LANES-01 and is closed by folding intersect+append into
+      the one existing flock. Ordering constraint recorded in step 8 (compute peers
+      BEFORE unregister).
+  - item: "5 config contradiction"
+    result: CRITICAL -> resolved by D4
+    note: >-
+      LEADV2_WRITES_CONFLICT_NOTIFY=0 makes leadv2-writes-overlap.sh a total no-op.
+      Building the block on that script would let a notify-suppression flag silently
+      turn a safety gate green. Enforcement therefore lives in the registry op, which
+      that flag cannot reach.
+
+out_of_scope:
+  - "Reviving or repairing leadv2-fanout.sh / the supervisor. It stays retired."
+  - "Changing leadv2-writes-overlap.sh semantics, return codes, or its notify sinks."
+  - "Replacing the prefix-overlap rule with glob/fnmatch matching. Same rule as today, in one more place. Revisit only if the soak shows prefix matching is the false-block driver."
+  - "leadv2-collision-check.sh Phase-0 behaviour and its --compare-tasks files_hint mode. Untouched; it answers a different question (task-pair planning) at a different time."
+  - "Any new daemon, timer, watcher, or polling loop. Every hook in this design rides an existing call site."
+  - "Editing anything through persona-engine / m3-market / respiro-ios. Canonical only."
+  - "Auto-resolving a conflict (rebase, queue, serialize). This design DETECTS and REFUSES; adjudication stays with the lead."

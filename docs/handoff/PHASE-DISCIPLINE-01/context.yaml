@@ -1,0 +1,77 @@
+task: PHASE-DISCIPLINE-01
+class: Heavy
+goal: >
+  Every task is classified at admission; Trivial/Light -> dispatch door (its
+  build->review->land pipeline = Phase-4-equivalent); Standard/Heavy -> full
+  9-phase cycle with real Gate-1. Nothing reaches a bare single worker
+  unclassified. Founder order 2026-08-28.
+ground_truth:
+  - dispatch-code.sh:651 REQUIRE_PHASES default 'warn' — guard exists (line 3378,
+    PHASES-ARE-THE-ONLY-PATH-01) but proceeds on warn; never flipped to enforce.
+  - task-judge.sh TaskEstimate (haiku+fallback+sig8 cache) already called by
+    dispatch-code (~2434) but used only for arm choice, never class routing.
+  - backlog-pump has zero classification; its rc=3 path already surfaces
+    "needs judgment" without auto-dispatching.
+decisions:
+  - D1 (synthesis of codex-D1 vs architect-D2): class comes from the ALREADY-CALLED
+    TaskEstimate via a deterministic map (trivial|simple->Light; standard->Standard;
+    complex OR risk_class=safety_publish_payments OR subsystems>=4 -> Heavy);
+    explicit --task-class wins but may only be ESCALATED by risk signals (codex
+    policy). Classifier failure -> Standard/phases, journaled source=classifier_error;
+    NEVER falls open to bare dispatch. No new classifier subsystem (rejected codex-D1's
+    new admission script as scope; adopted all its policies).
+  - D2: admission receipt persisted, bound to task id + mission digest; journal line
+    `task_class=<c> route=<dispatch|phases> source=<judge|fallback|flag|classifier_error>`
+    exactly once per intake; Phase-4 re-entry reads the receipt (recursion guard).
+  - D3: enforcement point = dispatch-code guard, default flipped to enforce for
+    class>=Standard; Light unaffected; LEADV2_REQUIRE_PHASES=0 stays the kill switch,
+    byte-identical semantics.
+  - D4: Gate-1 real — Heavy/high-risk: blocking async question (leadv2-ask, founder
+    answers /leadv2 reply), NO timeout acceptance; Standard non-high-risk: timeout
+    auto-accept allowed, journaled gate1_auto_accepted vs answered. Fix docs/phases.md
+    vs gate1-prompt.sh contradiction.
+  - D5 (UPDATED by Gate-1 answer 2026-08-28, founder chose "Slice A+B сразу"):
+    both slices ship in this task. Pump adopt path (session-spawner adopt mode,
+    codex-D4) is default-ON: pumped Standard/Heavy launches ONE full-cycle child;
+    phases_required refusal + escalation question is the FALLBACK when adopt is
+    unavailable. Negative control accordingly: a pumped Standard-shaped task must
+    NEVER reach a bare worker — it must show either session_spawned (adopt) or
+    phases_required refusal in the journal.
+  - D6: fix-round a38a5bd — FREEPOOL_ROLE exported at the real dispatch call site from
+    TaskEstimate.work_kind (review->review, build->implement, docs/bulk->bulk);
+    mission-text regex demoted to narrow direct-invocation fallback; e2e test captures
+    the env freepool-coder.sh actually receives.
+  - D7: fix-round 341b80a — regression fixture installing route-arbiter/quota-live/
+    freepool-gate through relative+chained per-file symlinks, asserting canonical
+    config discovery; mutation restoring logical-path lookup must reproduce rc=65.
+off_limits:
+  - REQUIRE_PHASES=0 kill-switch semantics; arbiter rc 64-67 numbering; task-judge
+    prompt lexicon; provider ladders/quota thresholds/roster ordering; WIP stays 1;
+    no new daemon; supervisor stays retired; 62ccd9f untouched.
+plan_steps:
+  - 1 dispatch-code TaskEstimate->class map + receipt + journal line (D1,D2)
+  - 2 flip enforce for >=Standard, Phase-4 re-entry via receipt+records (D3)
+  - 3 pump classify-after-claim; Standard/Heavy -> phases_required refusal ->
+      escalation question via rc=3 surfacing (D5 slice A)
+  - 4 Gate-1 semantics per D4 + doc alignment
+  - 5 FREEPOOL_ROLE from work_kind at caller + tests (D6)
+  - 6 arbiter symlink regression fixture + mutation (D7)
+  - 7 verify: suites + negative control (Standard-shaped mission pumped ->
+      refusal, zero worker spawn) + catalog mutation entry
+risks:
+  - judge fallback misclassifies -> escalate-only overrides cap damage
+  - enforce flip stalls autonomous throughput until slice B -> Light unaffected,
+    kill switch documented, slice B follows immediately if founder approves
+  - pump claim/slot leak on refusal path -> release/unclaim tests on every
+    pre-spawn failure (codex risk 3)
+verification:
+  live_signal: >
+    First pumped dispatch after deploy journals task_class_* AND either (Light)
+    normal pipeline or (Standard+) phases_required refusal + escalation question;
+    zero arbiter_broken rc=65; freepool-routed build logs freepool_select role=
+    sourced from work_kind.
+plan_sources:
+  codex: scratchpad/phase-discipline-codex-plan.md (tier=top, task-mtc8e1po)
+  architect: scratchpad/phase-discipline-architect-plan.md (fork, fable)
+  cross_check: independent co-authors converged on enforcement point + Gate-1
+    semantics; divergence (new classifier vs TaskEstimate reuse) resolved in D1.

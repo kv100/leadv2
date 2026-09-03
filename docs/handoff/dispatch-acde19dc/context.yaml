@@ -1,0 +1,31 @@
+task: FP-08
+sig: 5fa969ac
+class: Standard
+decisions:
+  - D1: unify freepool worker wait with the glm arm's waiting_worker loop; a known handle
+        means WAIT, only provably-dead or timeout ends it (kills the 21-23s false no_work).
+  - D2: capability floor is config-driven (freepool-arm.yaml capability_floor key), applied
+        in the layer that already owns arm eligibility (arbiter scoring / candidate chain),
+        never a hand-kept exclusion list (feedback_never_hardcode_arm_exclusion).
+  - D3: floor policy: freepool eligible for worker role only when role=bulk (work_kind) or
+        class in {Trivial,Light}; Standard+ build ranks freepool below codex/sonnet until
+        FP-04 quality gate flips capability_floor=full.
+  - D4: every demotion journals arm_floor_applied arm=freepool reason=<r> (FP-06 telemetry
+        will consume this line).
+off_limits:
+  - no parallel eligibility mechanism beside the existing arbiter/candidate-chain layer
+  - no change to glm/codex/sonnet arm semantics
+plan:
+  steps:
+    - locate product_close worker-wait path + why freepool handle resolves worker_liveness=unknown
+    - implement handle-aware wait for freepool (same beats/timeout contract as glm arm)
+    - add capability_floor config + arbiter/chain enforcement + arm_floor_applied journal
+    - hermetic tests a-d incl. RUN negative control; EXTRA_SUITE_MAP rows
+verification:
+  live_signal: journal shows waiting_worker beats for a freepool lane and arm_floor_applied
+               on a Standard build; no dispatch_terminal no_work within 60s of worker_spawned
+negative_control: mutation removing the floor must make suite (b)/(d) red — RUN, not declared
+
+fix_round: 1
+sig: acde19dc
+findings: review-glm.md H1(blocking floor-in-wrong-dimension) M3 L1 L2 + tests a-d missing
