@@ -1,58 +1,85 @@
-# D2 — pre-brief evidence: the liveness verdict needs a pinned pattern, not a habit
+# D2 — pre-brief evidence: liveness needs a PID, and the suite must catch BOTH false answers
 
-Measured twice, independently, by two lead sessions on 2026-09-03. Carry this into the D2 brief as
-a **named acceptance criterion**, not as background.
+Measured on 2026-09-03 by three lead sessions independently. Carry all of this into the D2 brief as
+**named acceptance criteria**, not as background. Every claim below was produced by running the
+thing, not by reading code.
 
-## The finding
+## Three methods were tried. Two of them lie, in opposite directions.
 
-"Liveness is decided by `ps`, not by mtime" is not yet a rule — it is half a rule. `ps` with the
-wrong pattern returns a confident zero for a lane that is writing at that same second.
+### 1. Narrow `ps` — false ZERO
 
-Session `fb`, six wave-3 lanes:
+`ps aux | grep -F "worktrees/<lane-name>"`
 
-| pattern | result |
-|---|---|
-| `ps aux \| grep -F "worktrees/<name>"` | **0 for all six** — including a lane whose stream mtime was 1 second old |
-| `ps aux \| grep -F "<name>"` | 4 and 2 processes on two of them |
-
-Session `c2`, three of its own lanes, run back to back:
-
-| lane | narrow `worktrees/<name>` | free `<name>` |
+| lane | narrow | free |
 |---|---|---|
-| LANE-MERGE-SILENTLY-REVERTS-MAIN-01 | 0 | **4** |
-| TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01 | 0 | 1 |
-| CODE-INTEL-IS-INSTALLED-AND-UNUSED-01 | 2 | 3 |
+| six wave-3 lanes (session fb) | **0 for all six** — one of them was writing its stream that same second | 4 and 2 on two |
+| LANE-MERGE-SILENTLY-REVERTS-MAIN-01 (c2) | 0 | **4** |
+| TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01 (c2) | 0 | 1 |
+| CODE-INTEL-IS-INSTALLED-AND-UNUSED-01 (c2) | 2 | 3 |
 
-Cause: a lane's processes do not all carry the lane name adjacent to `worktrees/` on their command
-line. The narrow pattern matches only some of them, and matches none for some lanes.
+A lane's processes do not all carry the lane name next to `worktrees/`. Seven lanes were declared
+dead by this pattern. The verdict happened to be right that time; the method was not.
 
-Consequence, already paid: `c2` declared seven lanes dead using the narrow pattern. The verdict
-happened to be right — no commits were moving and the deaths coincided with an editor process
-exiting — but the method was unsound. **A right answer from an unsound method is not evidence**, and
-next time it will be a wrong answer.
+### 2. Free `ps` — false LIFE, and this one is worse
 
-## What this makes D2 responsible for
+`ps aux | grep -F "<lane-name>"` also matches the dispatcher itself and helper processes that carry
+the lane name in their arguments. Session 36 showed `ps` on the `developer-dispatch-*` label
+returning zero against the same free=4.
 
-Not "a function that returns liveness". Specifically: **one pinned pattern, chosen once, in one
-function**, so no lead reinvents it and gets its own zero. If every lead writes their own `ps`
-invocation, D2 has not been delivered no matter how good the function is.
+Measured cost, same session, minutes later: the free pattern reported QUOTA-BINDING-WINDOW as having
+1 process and CLASSIFIER-CALLS-SAFETY as having 5. By PID (method 3) QUOTA-BINDING was **dead**. A
+dead lane that looks alive is never resumed — nobody goes looking for it. **False life is more
+dangerous than false zero**, and a fix that only removes the false zero replaces one error with the
+other.
 
-## Acceptance criterion for D2's suite — write it exactly this way
+### 3. PID from the dispatcher + `kill -0` — the one that holds
 
-The suite must **catch the false zero of the narrow pattern**, not merely check that the function
-returns something.
+The dispatcher already prints its own answer:
 
-Concretely: stand up a fixture lane whose worker process carries the lane name WITHOUT an adjacent
-`worktrees/` on its command line — that is the real shape that produced every zero above — then
-assert that the liveness function reports it ALIVE. A suite that only asserts "alive lane reports
-alive" using a conveniently-named fixture passes today and would have passed all through the
-incident; it proves nothing.
+```
+worker_spawned by=router model=sonnet task=<sig> handle=PID=<pid> LABEL=developer-dispatch-<sig>-<ts> ...
+```
 
-Add the mirror case: a genuinely dead lane must report dead, so the fix cannot be "always return
-alive".
+Take the PID from there and ask the kernel. This does not depend on the shape of any command line.
+Session 36 ran it against four workers with four distinct signatures, no collisions. Live result at
+18:35Z: `54e6f32d` alive (82405), `ca26c56e` alive (44702), `ac7b08fc` alive (25767), `79a9c5b7`
+dead, `97669e50` dead — where the free pattern had claimed the last one alive.
 
-Negative control: the mutation goes INSIDE the liveness function's body — revert it to the narrow
-pattern — and the suite must go red. Proof is the `baseline_rc` / `mutated_rc` pair plus the literal
-red suite line. Register the suite in `EXTRA_SUITE_MAP` in `tests/run-all.sh` and prove
-`--scope changed` selects it; of the 23 suites the plan assumed, the runner can currently reach 9,
-and an unregistered suite rots silently.
+Note when reading old handle lines: a lane may have several recorded PIDs across resumes. **Any one
+of them alive means the lane is alive**; only "every recorded PID is dead" means dead. Testing just
+the newest line you happen to find gives a stale answer.
+
+## A shell trap the implementation will hit
+
+In zsh, an unquoted `$pids` does **not** word-split. `for p in $pids; do kill -0 "$p"; done` iterates
+one blob containing every PID and newline, every `kill -0` fails, and the function reports **every
+lane dead** — a fourth false zero, produced in this very investigation. Pipe through
+`while read -r p` (or `${=pids}`), and make the suite cover it.
+
+## Acceptance criteria for D2's suite — both halves are mandatory
+
+The suite must catch **both** lies. Checking only one converts the bug into its mirror image.
+
+1. **False zero.** Fixture: a live worker whose command line carries the lane name WITHOUT an
+   adjacent `worktrees/`. The function must report ALIVE.
+2. **False life.** Fixture: a process that mentions the lane name in its arguments but is not the
+   worker — a dispatcher or a helper. The function must report NOT alive.
+3. **Mirror case.** A genuinely dead lane reports dead, so the fix cannot degrade to "always alive".
+4. **Multi-PID case.** A lane with several recorded handles, only one of them alive, reports ALIVE.
+
+A suite that asserts "an alive lane on a conveniently-named fixture reports alive" would have passed
+through this entire incident unchanged. It proves nothing.
+
+**Negative control:** the mutation goes INSIDE the liveness function's body — revert it to the narrow
+`ps` pattern — and the suite must go red. Proof is the `baseline_rc` / `mutated_rc` pair plus the
+literal red suite line. Then revert and show green again, pasting both exit codes.
+
+**Registration:** add the suite to `EXTRA_SUITE_MAP` in `tests/run-all.sh` and prove `--scope changed`
+selects it. Of the 23 suites the plan assumed, the runner can currently reach 9; an unregistered
+suite rots silently and a green suite CI never runs is worth nothing.
+
+## Scope note
+
+D2 is "one verdict about liveness". The deliverable is not a good function — it is **one pinned
+implementation that every caller uses**. If leads keep writing their own `ps` invocation, D2 is not
+delivered however good the function is.
