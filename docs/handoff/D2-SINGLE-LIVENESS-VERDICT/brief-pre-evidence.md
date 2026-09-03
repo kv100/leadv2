@@ -200,3 +200,39 @@ at the main repo rather than the lane worktree, and two different `session_id` r
 time. Comparing them directly yields a process that appears to have been born after the lane it
 owns started. Normalise before comparing, and never derive a liveness conclusion from that pair
 without doing so.
+
+### Fifteenth: a duplicate row makes release structurally impossible, and the counter hides it
+
+Root cause of the fourteenth case, found by c2 at `leadv2-dispatch-code.sh:4555`. The ownership check
+on the release path begins:
+
+```python
+rows = [rows with this task_id]
+if len(rows) != 1:
+    sys.exit(2)
+```
+
+The lane had **two** rows. That single condition is enough: the session/pid comparison below it is
+never reached. So with duplicate rows, release is impossible **for anyone**, regardless of who owns
+them. The climbing `starting:60` → `starting:163` counter was not a grace period slowly expiring — it
+was a lane that never even attempted release, displaying elapsed time as if it were progress.
+
+**Acceptance addition:** duplicate rows for one lane must be an **error in themselves**. Today they
+silently convert a lane into a permanent one. A liveness function must not report a lane live on the
+strength of rows it cannot even parse into a single owner; and a PID owning more than one lane is a
+contradiction, not two live lanes.
+
+**A counter that only counts up is not evidence of a process.** `starting:N` reads as "still coming
+up", which is why three dispatch attempts were spent waiting for it. Any age display on a stuck path
+should say what it is waiting for, not merely how long it has waited.
+
+### Sixteenth: the unregister API silently targets the wrong repo
+
+Also from c2, hit while fixing the above. `leadv2_active_unregister` without `LEADV2_PROJECT_ROOT`
+resolves to persona-engine rather than the plugin repo. The first call **returned success**, rendered
+an unrelated `LEAD_V2_STATE.md`, and removed nothing — the two rows were still there.
+
+It was caught only because the result was checked rather than the exit code. This is the same shape
+as the census probe that returned `0/821` from the wrong directory, and as reading a stale copy of a
+status file: **a tool that misses its target reports success**. Any registry helper used in a fixture
+must assert the post-state, never the return code.
