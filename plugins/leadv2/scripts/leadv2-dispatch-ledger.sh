@@ -903,6 +903,23 @@ _dl_harvest_deliverable() {  # <mission_path>
 # onto the existing ledger taxonomy (landed|dead|no_work) so reconcile stamps no new enum;
 # running/unknown mean "do not stamp" (a live or indeterminate lane -- stamping it would
 # poison the sig8 under write-once, the exact HIGH-1 bug cmd_sweep already documents).
+#
+# DERIVE-COERCES-GIT-FAILURE-TO-NO-COMMIT-01: a FAILED git is not "no commit" and not a
+# "clean tree". Both probes in _dl_derive_lane_state used to end in `2>/dev/null || true`,
+# which coerced any git failure (fork failure under load, a held index.lock, a transient
+# ENOENT) into an empty result -- and emptiness was the ONLY thing the verdict logic tested,
+# so a measurement that never happened was stamped as terminal evidence (live: a
+# fixture-proven path-scoped commit derived dead:none:unknown twice in 13 suite runs).
+# This helper names WHICH probe failed, carries git's own stderr (bounded), and degrades
+# the lane to the unknown shape so reconcile refuses to stamp anything from it.
+_dl_derive_git_fail() {  # <what> <rc> <lane_id> <stderr_file>
+  local what="$1" rc="$2" lane="$3" errf="$4" err=""
+  if [[ -s "${errf}" ]]; then err="$(tr '\n' ' ' < "${errf}" | cut -c1-200)"; fi
+  printf 'leadv2-dispatch-ledger: derive %s: %s exited %d -- measurement failed, verdict downgraded to unknown: %s\n' \
+    "${lane:-<no-lane-id>}" "${what}" "${rc}" "${err:-<git produced no stderr>}" >&2
+  [[ "${errf}" != /dev/null ]] && rm -f "${errf}"
+  printf 'unknown\x1fnone\x1funknown'
+}
 _dl_derive_lane_state() {
   local repo="$1" spawn_epoch="$2" writes_csv="$3" deliverable="$4" lane_id="${5:-}" arm="${6:-}"
   local commit_sha="none" deliverable_state="unknown" dirty=0
@@ -925,9 +942,19 @@ _dl_derive_lane_state() {
         pathspec+=("${e}")
       done
     fi
-    local found=""
+    local found="" grc=0 _dl_ge=""
+    _dl_ge="$(mktemp 2>/dev/null || mktemp -t dlge)"
+    [[ -n "${_dl_ge}" ]] || _dl_ge=/dev/null
     if [[ ${#pathspec[@]} -gt 0 && -n "${since_arg}" ]]; then
-      found="$(git -C "${repo}" log ${since_arg} --pretty=%H -n 1 -- "${pathspec[@]}" 2>/dev/null || true)"
+      # DERIVE-COERCES-GIT-FAILURE-TO-NO-COMMIT-01: rc and stderr are captured SEPARATELY
+      # from the output. The old `2>/dev/null || true` coerced a FAILED git into "no
+      # commit", and the verdict below stamped a terminal state from a measurement that
+      # never happened. Failure here yields unknown, never a terminal verdict.
+      found="$(git -C "${repo}" log ${since_arg} --pretty=%H -n 1 -- "${pathspec[@]}" 2>"${_dl_ge}")" || grc=$?
+      if [[ ${grc} -ne 0 ]]; then
+        _dl_derive_git_fail "git log (commit lookup)" "${grc}" "${lane_id}" "${_dl_ge}"
+        return 0
+      fi
     fi
     # NOTE: there is deliberately NO unscoped `git log --since` fallback. An unscoped window
     # attributes the repo's LATEST commit to every lane with no declared lane_writes -- found
@@ -938,10 +965,18 @@ _dl_derive_lane_state() {
     [[ -n "${found}" ]] && commit_sha="${found}"
     # OR a dirty working tree in the lane's write-set (uncommitted-but-real work).
     if [[ ${#pathspec[@]} -gt 0 ]]; then
-      local st
-      st="$(git -C "${repo}" status --porcelain -uall -- "${pathspec[@]}" 2>/dev/null || true)"
+      local st grc2=0
+      # Same discipline as the commit lookup: a FAILED status probe is not a clean tree.
+      # This is the probe that decides whether real uncommitted work gets rescued --
+      # swallowing its failure here silently discards the worker's bytes as no_work.
+      st="$(git -C "${repo}" status --porcelain -uall -- "${pathspec[@]}" 2>"${_dl_ge}")" || grc2=$?
+      if [[ ${grc2} -ne 0 ]]; then
+        _dl_derive_git_fail "git status (dirty probe)" "${grc2}" "${lane_id}" "${_dl_ge}"
+        return 0
+      fi
       [[ -n "${st}" ]] && dirty=1
     fi
+    [[ "${_dl_ge}" != /dev/null ]] && rm -f "${_dl_ge}"
   fi
 
   # 2. DELIVERABLE EVIDENCE -- present iff a non-empty file exists at the declared path,
