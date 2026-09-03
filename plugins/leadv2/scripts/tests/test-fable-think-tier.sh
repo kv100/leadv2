@@ -205,6 +205,7 @@ ALLOWLIST=(
   'leadv2-llm-judge-parse.sh::MODEL_USED="opus"::metadata label default in a parser; actual judge arm comes from leadv2-llm-judge.sh/router'
   'leadv2-main-model-check.sh::MAIN_MODEL="opus"::opus-guardrail CHECKER (LEADV2_FORCE_OPUS_LEAD=1 path), not a spawn'
   'leadv2-main-model-check.sh::!= "opus"::comparison in the same opus-guardrail checker'
+  'leadv2-session-route.sh::CLAUDE_SAFETY_MODEL="opus"::hard-safety model pin, not a think-role spawn'
   # R5: the leadv2-priors-compile.sh entry was REMOVED — its "prose" reason was
   # wrong. The baseline recs compile into agent_priors[].model_recommendation,
   # which the lead consumes as live route data; the table now pins fable for
