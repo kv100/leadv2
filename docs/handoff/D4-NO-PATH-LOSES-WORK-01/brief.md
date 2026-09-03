@@ -252,3 +252,52 @@ Consequences the lane must honour:
   suite that only runs under bash cannot see this class of bug at all.
 - Any probe helper written for this row carries a shebang and is executed, not sourced into
   whatever shell happens to be current.
+
+---
+
+## LEAD ADDENDUM 3 — a FIFTH false answer, caught in the act 2026-09-03
+
+Addendum 2 said the handle rule (`kill -0` on the PID the dispatcher recorded) is authoritative
+when a handle exists. That qualifier turned out to be load-bearing, and the failure it hides is
+the dangerous kind.
+
+**Case 5 — a live worker with NO recorded handle.**
+
+Lane `MYTHICALGAMES-REPOS-HAVE-NO-OVERRIDES-01` (sig `8f93e5a5`) had:
+- no `handle=PID=` line anywhere in its dispatch dir or in any resume log — the grep returned
+  an empty handle list;
+- therefore `alive=no` under the handle rule;
+- and a genuinely ALIVE worker: a `claude -p` process whose prompt text carries the mission and
+  the sig, found only by a plain content grep of the process list.
+
+Under the handle rule alone this lane would have been declared dead and RESUMED — putting a
+second worker into a worktree that already had one. That is worse than any wrong verdict about
+liveness: two workers in one tree corrupt each other's work, and the dispatcher does not prevent
+it. The resume was withheld only because a wider probe was run before acting.
+
+### What the rule must therefore be
+
+An ABSENT handle is not evidence of death. It is a third state:
+
+- handle exists and PID alive → **alive**
+- handle exists and every recorded PID dead → **dead**
+- **no handle recorded → `unknown`, never `dead`.** Fall through to a content probe of the process
+  list (the worker's argv carries the mission text, hence the sig) before any resume.
+
+And the hard rule that follows: **never resume on `unknown`.** Resume only on a positive `dead`.
+A lane wrongly left alone costs delay; a lane wrongly resumed costs the work in it.
+
+### Two acceptance cases to add
+
+1. A worker alive with no handle recorded → the rule returns `unknown`, and the resume path
+   REFUSES to act on it.
+2. A worker alive whose handle exists → `alive`. Then delete the handle record and assert the
+   verdict degrades to `unknown`, not to `dead`.
+
+### Why the handle can be missing at all
+
+Worth a line in the report: the dispatcher prints `handle=PID=` on the spawn path, but a lane
+that was resumed, or whose dispatcher output was not captured, has no such line on disk. If the
+handle is meant to be authoritative, the dispatcher must PERSIST it into the lane's own directory
+rather than only printing it to a log that may or may not be kept. Prescribe that; it is the
+difference between a rule that works and a rule that works when someone remembered to save stdout.
