@@ -516,3 +516,32 @@ Two consequences for this row:
 Note the second-order risk plainly: **the count of live lanes is not the load driver.** 57-75
 concurrent suite runs against 7-13 workers means the suites have no queue. Capping lanes treats a
 symptom; the missing queue is the cause, and it is being filed separately.
+
+---
+
+## LEAD ADDENDUM 8 — the amplifier is not hypothetical; and log the MECHANISM, not just the symptom
+
+Addendum 7 argued that a sweeper which cannot tell starvation from death becomes a load amplifier.
+There is now a worked example of exactly that, reported by the session that owned it:
+
+A resume-keeper ran on the rule "no live PID, therefore dead". It did not distinguish starvation.
+It re-dispatched five times, and for part of that window **two copies of the keeper were running**,
+so each cycle dispatched twice. It was adding workers to a machine whose workers already were not
+getting CPU — starving the next lane in order to resume a lane that was never dead. It was stopped
+because the liveness rule was not trusted; the amplification turned out to be the stronger reason.
+
+Treat this as a REQUIREMENT, not a caution: the sweeper must be single-instance (a lock file
+holding a live PID — never a count from `ps`, which matches its own command line), and it must
+refuse to resume on `unknown`. Either omission reproduces the amplifier.
+
+### What to log next to a liveness verdict
+
+Load average alone is the symptom and will send a future reader off to cap the number of lanes,
+which is the wrong lever. Log BOTH:
+
+- **load average and core count** — measured here: load 209 on 10 cores;
+- **the number of concurrent suite runs against the number of real workers** — measured here:
+  57-75 suite runs against 7-13 workers.
+
+The second pair is the mechanism. The suites have no queue, so they, not the lanes, are what
+saturates the machine. A verdict recorded without it invites the same wrong fix again.
