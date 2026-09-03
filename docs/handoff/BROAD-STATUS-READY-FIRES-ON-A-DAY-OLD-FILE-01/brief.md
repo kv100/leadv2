@@ -108,3 +108,31 @@ already retries each beat; no new trigger needed. (a) is never the sole behavior
 - Resurrecting `leadv2-supervise-loop.sh` — confirmed deleted, do not recreate.
 - PID-suffixing L1423/L226's tmp files (`_stamp_epoch` already PID-suffixes its own, L102) —
   optional hardening for a secondary race, not required for acceptance.
+
+---
+
+## LEAD ADDENDUM — the stamp-agreement check passes on stale data. Observed 2026-09-03.
+
+The relay protocol says: compare the ready-line's `at=` with the timestamp on line 1 of
+`founder-status.md`; if they differ, the file is from an earlier beat. Measured this beat:
+
+```
+beat fired at : 2026-09-03T19:03:23Z
+ready-line at=: 2026-09-03T18:52:11Z
+file line 1   : 2026-09-03T18:52:11Z   <- agrees, so the check PASSES
+file mtime    : 2026-09-03T19:03:20Z   <- written seconds ago
+file line 2   : "19:03 · посты 0/6 …"  <- and line 2 disagrees with line 1
+```
+
+So the file was regenerated NOW and stamped with an 11-minute-old time, and the two numbers the
+protocol compares agree because they come from the SAME stale source. The check cannot detect
+this: it compares a value against a copy of itself.
+
+Two things follow for this row:
+
+1. The fix is not only "carry the file's mtime instead of the beat's". The stamp must be the time
+   the CONTENT was gathered, and the file must not contain two different times for one snapshot —
+   line 1 saying 18:52 while line 2 says 19:03 is the defect visible inside a single file.
+2. Add to acceptance: regenerate the file and assert every timestamp it carries refers to the same
+   gathering, and that a consumer comparing them cannot get a false PASS from two copies of one
+   stale value.
