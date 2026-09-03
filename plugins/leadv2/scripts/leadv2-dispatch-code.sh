@@ -5258,7 +5258,6 @@ _spawn_worker_body() {
     log_err "_LEADV2_DOD_GATE_CONTRACT_MISSION unavailable (leadv2-helpers.sh not sourced?) — falling back to embedded literal"
     mission="DEFINITION-OF-DONE GATE: before any model reviews your diff, a deterministic bash gate checks your committed lane for mechanical items (report.md, paste-line evidence, mutation-control provenance, test-suite registration, runtime-state paths). A failed check refuses the round at zero model spend, before any reviewer sees your diff."$'\n\n'"${mission}"
   fi
-  [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
   # WORKER-MCP-ALL-ARMS-01 R3 (review H2): the code-intel preamble promises
   # the worker mcp__* tools — so it may be injected ONLY when this arm's MCP
   # attach will actually succeed. worker_mcp_preamble_for_arm() (the shared
@@ -5267,6 +5266,14 @@ _spawn_worker_body() {
   # "code-intel MCP unavailable" note that promises nothing; rc=4 unwired
   # (codex) → nothing. The unconditional all-arms injection this replaces
   # told codex and every fail-open path to call tools their session never had.
+  # LANE-PLACEMENT-PIN-RED-01: this block must run and prepend its own text
+  # BEFORE the WORKTREE_PIN_LINE prepend just below -- prepending is LIFO
+  # (whatever prepends LAST ends up first in the string), and the pin line's
+  # own comment requires it be the literal first line of the mission
+  # (test-lane-placement-pin.sh's P-h cases assert `head -1`). Landing this
+  # block after the pin prepend (as WORKER-MCP-ALL-ARMS-01 originally did)
+  # silently demoted the pin line to wherever the code-intel text ends,
+  # breaking that invariant on every dispatch whose MCP attach succeeded.
   local _ci_txt="" _ci_rc=0
   _ci_txt="$(worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" "")" || _ci_rc=$?
   case "${_ci_rc}" in
@@ -5275,6 +5282,7 @@ _spawn_worker_body() {
     *) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=none reason=arm_unwired" ;;
   esac
   [[ -z "${_ci_txt}" ]] || mission="${_ci_txt}"$'\n\n'"${mission}"
+  [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
   case "${arm}" in
     glm|glm-flash)
       # GLM-53-FLASH-ARM-01: glm-flash is the same launcher (glm-coder.sh) on
