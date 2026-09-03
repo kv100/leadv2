@@ -3437,15 +3437,27 @@ else
     _dl_note pass_unlanded root_dirty "$(leadv2_red_proof_render_evidence "branch=${_t11_branch} diff=${diff_hash:0:8}" "${_pc_unproven_suffix}")"
   else
     _t11_landed=0
+    _t11_merge_refused=0
     [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" acquire "${TASK}" >/dev/null 2>&1
-    if git -C "${ROOT}" merge --no-edit --no-ff "${_t11_branch}" >/tmp/t11-merge-"${TASK}".log 2>&1 \
+    # LANE-MERGE-SILENTLY-REVERTS-MAIN-01: a lane branched before another
+    # lane landed a file on the default branch produces a CLEAN, no-conflict
+    # `git merge --no-ff` that silently drops that file -- five measured
+    # occurrences in one day, caught only by a human running `git diff
+    # --stat main..HEAD` by hand. Refuse before the merge, not after.
+    _T11_MERGE_GATE="${SCRIPT_DIR}/leadv2-merge-safety-gate.sh"
+    if [[ -x "${_T11_MERGE_GATE}" ]] && ! _t11_gate_out="$("${_T11_MERGE_GATE}" "${ROOT}" "${_t11_branch}" "${_t11_default}" 2>&1)"; then
+      _t11_merge_refused=1
+      printf '%s\n' "${_t11_gate_out}" >&2
+    elif git -C "${ROOT}" merge --no-edit --no-ff "${_t11_branch}" >/tmp/t11-merge-"${TASK}".log 2>&1 \
         && lv2_branch_merged "${ROOT}" "${_t11_branch}" "${_t11_default}"; then
       _t11_landed=1
     else
       git -C "${ROOT}" merge --abort >/dev/null 2>&1 || true
     fi
     [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" release "${TASK}" >/dev/null 2>&1
-    if [[ "${_t11_landed}" == 1 ]]; then
+    if [[ "${_t11_merge_refused}" == 1 ]]; then
+      _dl_note pass_unlanded merge_would_revert_main "$(leadv2_red_proof_render_evidence "branch=${_t11_branch} diff=${diff_hash:0:8} fix=merge_${_t11_default}_into_lane_then_retry" "${_pc_unproven_suffix}")"
+    elif [[ "${_t11_landed}" == 1 ]]; then
       _dl_note landed review_verdict_pass "$(leadv2_red_proof_render_evidence "diff=${diff_hash:0:8}${_rgf_dnm} branch=${_t11_branch}" "${_pc_unproven_suffix}")"
       # T11-F1: merge + is-ancestor verified above -- complete the close chain
       # instead of stopping at the terminal stamp. Deregister the lane from
