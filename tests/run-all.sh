@@ -223,6 +223,14 @@ leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-status-repo-scoped.sh
 leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-registered-lane.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
+# SUITES-MUTATE-LIVE-CONTROL-PLANE-01: a fixture suite that git-inits a temp
+# repo and calls dispatch-code.sh with an env-only PROJECT_ROOT override but
+# never cd's into it gets silently rerouted onto the real, shared control
+# plane by FOREIGN-PROJECT-ROOT-GUARD-01 + leadv2-state-path.sh's git-slug
+# resolution — re-run the static leak-shape scan whenever either carrier
+# changes, not only when the guard suite's own file changes.
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-fixture-state-leak-guard.sh
+leadv2-state-path.sh:plugins/leadv2/scripts/tests/test-fixture-state-leak-guard.sh
 leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 # FABLE-THINK-TIER-01: the think-tier contract (resolver default fable / opus
 # fallback, no hardcoded opus spawn pins, fable-ahead-of-opus review pool,
