@@ -33,6 +33,14 @@
 #   1  ONE_BUCKET      -- two slots resolve to the SAME accountUuid
 #   2  INDETERMINATE   -- a slot's .claude.json is unreadable (identity
 #                         cannot be established at all for that slot)
+#   3  ORG_COLLAPSE    -- two slots hold DISTINCT accountUuids but the SAME
+#                         organizationUuid (fix-round-1 finding: rate limiting
+#                         applies at the org level -- see organizationRateLimitTier
+#                         fallback below -- so two seats in one org is the same
+#                         failure class one level up from ONE_BUCKET). Never
+#                         fires when organizationUuid is unresolved ("-") for
+#                         either slot -- unresolved is unknown, never collapse,
+#                         same fail-open discipline as the email half (T20d).
 #
 # Linux container, no keychain: guarded by `command -v "$SECURITY_BIN"`.
 # With no keychain the credential source falls back to
@@ -148,6 +156,32 @@ verdict() {
         acct_tail="..${ACCOUNTS[$_v_i]: -6}"
         printf 'VERDICT: ONE_BUCKET collapsed=[%s,%s] account=%s\n' "${LABELS[$_v_i]}" "${LABELS[$_v_j]}" "$acct_tail"
         return 1
+      fi
+      _v_j=$(( _v_j + 1 ))
+    done
+    _v_i=$(( _v_i + 1 ))
+  done
+  # Org-level collapse (fix-round-1, NC3 target): reached only once every
+  # pairwise accountUuid comparison above came back distinct or unresolved --
+  # so this loop asks a DIFFERENT question: do two distinct accounts sit
+  # inside the SAME organizationUuid? Rate limiting for an org applies at the
+  # org level (organizationRateLimitTier fallback above), so that is one
+  # shared quota bucket wearing two account labels -- the failure class this
+  # lane exists to catch, one level up from ONE_BUCKET. Skips the "-"
+  # placeholder exactly like the account loop above: an unresolved org is
+  # unknown, never a collapse (fail-open, mirrors T20d's discipline for the
+  # email half) -- this is the sole reason ORG_COLLAPSE gets its own verdict
+  # word instead of overloading ONE_BUCKET: the remedy for "same account" and
+  # "different accounts, same org" differs, and the operator must be able to
+  # tell them apart without reading code.
+  _v_i=0
+  while (( _v_i < n )); do
+    _v_j=$(( _v_i + 1 ))
+    while (( _v_j < n )); do
+      if [[ "${ORGS[$_v_i]}" != "-" && "${ORGS[$_v_i]}" == "${ORGS[$_v_j]}" ]]; then
+        org_tail="..${ORGS[$_v_i]: -6}"
+        printf 'VERDICT: ORG_COLLAPSE collapsed=[%s,%s] org=%s\n' "${LABELS[$_v_i]}" "${LABELS[$_v_j]}" "$org_tail"
+        return 3
       fi
       _v_j=$(( _v_j + 1 ))
     done

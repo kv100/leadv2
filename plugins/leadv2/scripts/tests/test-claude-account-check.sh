@@ -113,5 +113,38 @@ check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2$' 'T5a: two distinct
 check_nogrep "$OUT$ERR" 'sk-ant' 'T5b: no token value printed even with a live keychain stub'
 [[ "$RC" -eq 0 ]] && pass "T5: exit 0" || fail "T5 exit" "rc=$RC"
 
+echo "=== T6: distinct accountUuids, SAME organizationUuid -> ORG_COLLAPSE, exit 3 ==="
+mkdir -p "$tmp/dir-k" "$tmp/dir-l"
+ORG_SHARED="org-shared777"
+mk_slot "$tmp/dir-k" max "acct-kkk111" "$ORG_SHARED" "default_claude_max_20x"
+mk_slot "$tmp/dir-l" team "acct-lll222" "$ORG_SHARED" "default_claude_max_5x"
+printf 'personal\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-k" "$tmp/dir-k" > "$REG"
+printf 'work\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-l" "$tmp/dir-l" >> "$REG"
+run_check
+org_tail="..${ORG_SHARED: -6}"
+check_grep "$OUT" "^VERDICT: ORG_COLLAPSE collapsed=\[personal,work\] org=${org_tail}\$" 'T6a: org-collapse verdict names both labels + org tail'
+[[ "$RC" -eq 3 ]] && pass "T6: exit 3" || fail "T6 exit" "rc=$RC"
+check_nogrep "$OUT$ERR" 'sk-ant' 'T6b: no token value printed on the org-collapse path'
+
+echo "=== T7: different accountUuids AND different organizationUuids -> still TWO_BUCKETS (org branch must not over-fire) ==="
+mkdir -p "$tmp/dir-m" "$tmp/dir-n"
+mk_slot "$tmp/dir-m" max "acct-mmm111" "org-one111" "default_claude_max_20x"
+mk_slot "$tmp/dir-n" team "acct-nnn222" "org-two222" "default_claude_max_5x"
+printf 'personal\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-m" "$tmp/dir-m" > "$REG"
+printf 'work\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-n" "$tmp/dir-n" >> "$REG"
+run_check
+check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2$' 'T7a: distinct accounts + distinct orgs stays TWO_BUCKETS'
+[[ "$RC" -eq 0 ]] && pass "T7: exit 0" || fail "T7 exit" "rc=$RC"
+
+echo "=== T8: one slot's organizationUuid unresolved (-) -> TWO_BUCKETS, no spurious ORG_COLLAPSE ==="
+mkdir -p "$tmp/dir-o" "$tmp/dir-p"
+mk_slot "$tmp/dir-o" max "acct-ooo111" "-" "default_claude_max_20x"
+mk_slot "$tmp/dir-p" team "acct-ppp222" "org-ppp999" "default_claude_max_5x"
+printf 'personal\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-o" "$tmp/dir-o" > "$REG"
+printf 'work\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-p" "$tmp/dir-p" >> "$REG"
+run_check
+check_grep "$OUT" '^VERDICT: TWO_BUCKETS accounts=2 creds=2$' 'T8a: unresolved org on one slot never triggers ORG_COLLAPSE'
+[[ "$RC" -eq 0 ]] && pass "T8: exit 0" || fail "T8 exit" "rc=$RC"
+
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
