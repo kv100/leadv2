@@ -13,6 +13,19 @@
 # (LEADV2_DISPATCH_LANE_LIVENESS_BIN) returns deterministic verdicts so the test never
 # touches a real ~/.claude or a real active.yaml. Asserts ~/.claude/leadv2-state mtime is
 # unchanged. Exits 0 and prints a passing summary; run it twice.
+# Guard against mktemp -t without XXX in template
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD_SCRIPT="$SCRIPT_DIR/../lib/mktemp-guard.sh"
+if [ ! -f "$GUARD_SCRIPT" ]; then
+    GUARD_SCRIPT="$SCRIPT_DIR/../../../plugins/leadv2/scripts/lib/mktemp-guard.sh"
+fi
+if [ -f "$GUARD_SCRIPT" ]; then
+    source "$GUARD_SCRIPT"
+else
+    echo "Error: mktemp-guard.sh not found" >&2
+    exit 1
+fi
+mktemp_guard
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,7 +42,10 @@ if [[ ! -f "${LEDGER_BIN}" ]]; then
 fi
 
 # ── sandbox ───────────────────────────────────────────────────────────────────────
-BOX="$(mktemp -d 2>/dev/null || mktemp -d -t lcl)"
+BOX="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX" 2>/dev/null || mktemp -d "${TMPDIR:-/tmp}/lcl.XXXXXX" 2>/dev/null)" || {
+    echo "Failed to create temporary directory" >&2
+    exit 1
+}
 trap 'rm -rf "${BOX}" 2>/dev/null' EXIT
 
 EVIDENCE_REPO="${BOX}/repo"

@@ -1203,7 +1203,10 @@ fi
 # readers honest; it SKIPS if PyYAML is not importable on the test host.
 log ""
 log "== R5r2: _mini_yaml reader unit cases =="
-MiniFix="$(mktemp -d -t leadv2-ss-mini)"
+MiniFix="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-ss-mini.XXXXXX")" || {
+    echo "Failed to create temporary directory" >&2
+    exit 1
+}
 cleanup_mini() { rm -rf "$MiniFix"; _herm_restore; }
 trap cleanup_mini EXIT INT TERM 2>/dev/null || true
 _minirc=0

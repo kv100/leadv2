@@ -22,6 +22,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPTS_DIR}/.." && pwd)"
+
+# Guard against mktemp -t without XXX in template
+GUARD_SCRIPT="${SCRIPTS_DIR}/lib/mktemp-guard.sh"
+if [ -f "$GUARD_SCRIPT" ]; then
+    source "$GUARD_SCRIPT"
+else
+    echo "Error: mktemp-guard.sh not found" >&2
+    exit 1
+fi
+mktemp_guard
+
 GATE="${SCRIPTS_DIR}/leadv2-skill-proof.sh"
 LIB="${SCRIPTS_DIR}/leadv2-proof-lib.sh"
 FIXTURES="${SCRIPT_DIR}/fixtures/skill-proof"

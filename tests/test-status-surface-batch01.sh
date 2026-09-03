@@ -9,6 +9,19 @@
 #
 # The tail script is driven directly in a hermetic sandbox (mktemp).  No real
 # lane state, no real user settings.json, no real active.yaml.
+# Guard against mktemp -t without XXX in template
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD_SCRIPT="$SCRIPT_DIR/../plugins/leadv2/scripts/lib/mktemp-guard.sh"
+if [ ! -f "$GUARD_SCRIPT" ]; then
+    GUARD_SCRIPT="$SCRIPT_DIR/../../lib/mktemp-guard.sh"
+fi
+if [ -f "$GUARD_SCRIPT" ]; then
+    source "$GUARD_SCRIPT"
+else
+    echo "Error: mktemp-guard.sh not found" >&2
+    exit 1
+fi
+mktemp_guard
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,7 +34,10 @@ FAIL=0
 ok()  { printf '  ok   - %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  FAIL - %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
-FIX="$(mktemp -d -t leadv2-batch01)"
+FIX="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-batch01.XXXXXX")" || {
+    echo "Failed to create temporary directory" >&2
+    exit 1
+}
 trap 'rm -rf "$FIX"' EXIT
 
 # ── shared fixtures ──────────────────────────────────────────────────────────

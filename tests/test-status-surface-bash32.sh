@@ -13,6 +13,19 @@
 # This test hardcodes /bin/bash (not `bash` resolved via PATH) for exactly
 # that reason: under CI or any Homebrew-shell dev machine, `bash` on PATH is
 # 5.x, and the bug would be invisible to a test that used it.
+# Guard against mktemp -t without XXX in template
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD_SCRIPT="$SCRIPT_DIR/../plugins/leadv2/scripts/lib/mktemp-guard.sh"
+if [ ! -f "$GUARD_SCRIPT" ]; then
+    GUARD_SCRIPT="$SCRIPT_DIR/../../lib/mktemp-guard.sh"
+fi
+if [ -f "$GUARD_SCRIPT" ]; then
+    source "$GUARD_SCRIPT"
+else
+    echo "Error: mktemp-guard.sh not found" >&2
+    exit 1
+fi
+mktemp_guard
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -100,7 +113,10 @@ else
 fi
 
 echo "== T4: a dead renderer produces the failure title, never a confident 0/0 =="
-STUB="$(mktemp -t leadv2-ss-stub)"
+STUB="$(mktemp "${TMPDIR:-/tmp}/leadv2-ss-stub.XXXXXX")" || {
+    echo "Failed to create temporary file" >&2
+    exit 1
+}
 cat > "$STUB" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "simulated renderer crash for test-status-surface-bash32" >&2
@@ -123,7 +139,10 @@ echo "== T5: STATUS-SURFACE-R5-01 — name resolution, unnamed, age-out, limits 
 # Fixture-driven cases against the RENDERER (not the wrapper) under /bin/bash 3.2.
 # Every path the renderer reads is env-injected into a sandbox; nothing touches
 # live state.
-FIX="$(mktemp -d -t leadv2-ss-r5)"
+FIX="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-ss-r5.XXXXXX")" || {
+    echo "Failed to create temporary directory" >&2
+    exit 1
+}
 cleanup_fix() { rm -rf "$FIX"; }
 trap cleanup_fix EXIT
 F_STATE="$FIX/state"; F_LED="$FIX/ledger"; F_RUNS="$FIX/cache"; F_HAND="$FIX/handoff"
