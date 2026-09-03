@@ -121,9 +121,16 @@ refuse_all_expired() { printf 'profile=- reason=all_expired\n'; exit 0; }
 # read_cred_json <credential_source> -> raw credential JSON on stdout, empty
 # on any failure. keychain: goes through $SECURITY_BIN (overridable for
 # hermetic tests); file: is a plain read. Never logs, never echoes on error.
+# Single choke point for the "guard every keychain invocation" rule (item 7):
+# a keychain-less host (Linux container) never reaches the `security` exec at
+# all -- this covers BOTH the default-slot probe (which also gates its own
+# call sites for clarity/fallback-ordering) and the registry loop below, which
+# has no other guard of its own.
 read_cred_json() {
   case "$1" in
-    keychain:*) "$SECURITY_BIN" find-generic-password -s "${1#keychain:}" -w 2>/dev/null ;;
+    keychain:*)
+      command -v "$SECURITY_BIN" >/dev/null 2>&1 || return 1
+      "$SECURITY_BIN" find-generic-password -s "${1#keychain:}" -w 2>/dev/null ;;
     file:*)     cat "${1#file:}" 2>/dev/null ;;
     *)          return 1 ;;
   esac
