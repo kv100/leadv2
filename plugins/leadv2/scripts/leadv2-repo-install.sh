@@ -340,8 +340,25 @@ else
 fi
 
 # ---- 5. settings.json env ---------------------------------------------------
+# INSTALLER-REFUSAL-URGENT-01: a tracked .claude/settings.json must never receive
+# the env block (it would ship the installing machine's absolute paths into the
+# repo's git history). Route to settings.local.json instead when tracked.
+_lv2_settings_is_tracked() {
+  git -C "$1" ls-files --error-unmatch .claude/settings.json >/dev/null 2>&1
+}
+
+_lv2_settings_target() {
+  if _lv2_settings_is_tracked "$1"; then
+    printf '%s/.claude/settings.local.json' "$1"
+  else
+    printf '%s/.claude/settings.json' "$1"
+  fi
+}
+
 env_py() {
+  settings_target="$(_lv2_settings_target "$REPO")"
   LV2_REPO="$REPO" LV2_PR="$PLUGIN_ROOT_DEFAULT" LV2_MODE="$1" \
+    LV2_SETTINGS_PATH="$settings_target" \
     LV2_THINK_MODEL="$THINK_MODEL_RESOLVED" LV2_MAIN_MODEL="$MAIN_MODEL_DEFAULT" python3 -c '
 import json,os,pathlib
 repo=os.environ["LV2_REPO"]; mode=os.environ["LV2_MODE"]
@@ -372,7 +389,7 @@ want={
  "CLAUDE_PLUGIN_ROOT":os.environ["LV2_PR"],
  "LEADV2_PROJECT_ROOT":repo,
 }
-p=pathlib.Path(repo)/".claude/settings.json"
+p=pathlib.Path(os.environ["LV2_SETTINGS_PATH"])
 try:
     d=json.loads(p.read_text()) if p.exists() else {}
 except Exception:
@@ -396,7 +413,12 @@ elif [ "$CHECK" -eq 1 ]; then
   row ".claude/settings.json env" "MISSING — ${missing_env} key(s)"; gaps=$((gaps+1))
 else
   env_py write >/dev/null 2>&1
-  row ".claude/settings.json env" "added ${missing_env} key(s)"; changed=$((changed+1))
+  if _lv2_settings_is_tracked "$REPO"; then
+    row ".claude/settings.json env" "tracked — left untouched; added ${missing_env} key(s) to .claude/settings.local.json instead"
+  else
+    row ".claude/settings.json env" "added ${missing_env} key(s)"
+  fi
+  changed=$((changed+1))
 fi
 
 # ---- 6. stack overrides (reported, never guessed) ---------------------------

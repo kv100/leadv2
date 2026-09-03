@@ -362,7 +362,8 @@ leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-helpers.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-lane-outcome.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
-leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh"
+leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
+leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-repo-install-tracked-settings.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
