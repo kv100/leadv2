@@ -1,0 +1,532 @@
+{
+  "measured_at": "2026-09-03",
+  "source_file": "/Users/kostiantyn.vlasenko/Projects/persona-engine/docs/tasks.yaml",
+  "selection_predicate": "group_key in {leadv2,leadv2-plugin,plugin,plugin-bug} or node_id.startswith('leadv2:')",
+  "count": 74,
+  "rows": [
+    {
+      "source_id": "24cc139cc4fb",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "E2E-GATE-CANNOT-SEE-THE-ALLOWLIST-01",
+      "note": "E2E-GATE-CANNOT-SEE-THE-ALLOWLIST-01: список известных красных сюит не может разблокировать НИ ОДНУ линию, потому что e2e-гейт видит только имя обёртки run-core-offline.sh, а все 15 записей списка называют вложенные сюиты. Проверка: grep -v '^#' known-red-suites.txt | grep -c run-core-offline → 0. Обёртки в списке нет и быть не должно — она разрешила бы все 83 вложенные разом. Следствие: обе линии 2026-09-02 умерли у этой стены с правильной закоммиченной работой, а раунд 2 по CI отработал три часа на sonnet и не закоммитил ничего. Починка легла в tests/run-all.sh (коммит 199f2692 на линии CI-RUNS-THE-SUITES-01): гранулярные имена провалившихся вложенных сюит прокидываются наверх, список применяется к ним, не-разрешённый провал по-прежнему красит обёртку"
+    },
+    {
+      "source_id": "3f5f87d37524",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "CI-SUITES-ARE-MACOS-ONLY-01",
+      "note": "CI-SUITES-ARE-MACOS-ONLY-01: первый прогон CI (33694115147) красный не из-за регрессии — 9 сюит используют BSD-форму 'mktemp -d -t <имя>', которая на GNU coreutils падает, FIX становится пустым и тесты пишут в /cache и /ledgers от корня. Починить на переносимую форму и проверить прогоном на ubuntu."
+    },
+    {
+      "source_id": "c05847ab1815",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "LAST-LINUX-RED-FAST-NAMES-01",
+      "note": "LAST-LINUX-RED-FAST-NAMES-01: последний красный на Linux, блокирующий гейт CI — tests/test-status-surface-fast-names.sh зелёная на macOS (12/0) и красная на Linux (9/3); ci-gate на ca99326b даёт known_red=14 unexpected=1, и это единственный unexpected; бриф docs/handoff/LAST-LINUX-RED-FAST-NAMES-01/brief.md в репо плагина"
+    },
+    {
+      "source_id": "96c2b64a2df4",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "LANE-PLACEMENT-PIN-RED-01",
+      "note": "LANE-PLACEMENT-PIN-RED-01: test-lane-placement-pin.sh красная на main и теперь единственный блокер гейта CI; честное сравнение лидом — до слияния фрипула 23/4, после 14/13; четыре падения ДОпредшествуют ночи и не замечались, потому что --scope changed выбирает сюиту только при изменении leadv2-dispatch-code.sh; девять новых; проба доказала резолвинг, но НЕ размещение с --resume-lane; бриф docs/handoff/LANE-PLACEMENT-PIN-RED-01/brief.md"
+    },
+    {
+      "source_id": "fa515ffe5e3a",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "HEAVY-TIER-VS-SAFETY-OPUS-01",
+      "note": "HEAVY-TIER-VS-SAFETY-OPUS-01: слияние FABLE увело high-risk маршрут с opus на fable; test-session-route.sh красная на ОБЕИХ платформах (PASS=6 FAIL=2); бриф docs/handoff/HEAVY-TIER-VS-SAFETY-OPUS-01/brief.md в репо плагина"
+    },
+    {
+      "source_id": "e368bedfc1af",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "WORKER-OUTLIVES-ITS-TERMINAL-STATE-01",
+      "note": "WORKER-OUTLIVES-ITS-TERMINAL-STATE-01: воркер записывает терминальное состояние, ПОТОМ делает работу, и остаётся жить бесконечно, держа линию. Доказательство: линия LANE-PLACEMENT-PIN-RED-01 (dispatch-8b995f4a) закрыта как no_work cause=empty_diff, а PID 65371 был жив ещё 83 минуты с последней записью потока 'Waiting for the Monitor notification' и держал 52 строки НЕЗАКОММИЧЕННОЙ работы в leadv2-dispatch-code.sh и test-lane-placement-pin.sh (спасено лидом как b794a736). Два следствия: работа после терминала теряется, и линия навсегда блокирована от перезапуска через lane_is_live, потому что живой процесс держит поток открытым"
+    },
+    {
+      "source_id": "73e5d6ba3c97",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "CI-SKILL-PROOF-GATE-IS-MACOS-ONLY-01",
+      "note": "CI-SKILL-PROOF-GATE-IS-MACOS-ONLY-01: test-skill-proof-gate.sh зелёная на macOS и красная на Linux CI — последнее, что держит зелёный main и, через него, включение обязательных проверок (SD-CI-REQUIRE-STATUS-CHECKS-01). Прогон 33703800486 на ubuntu-latest, коммит 692fd94f: PASS=10 FAIL=6 — 'shellcheck: leadv2-skill-proof.sh', 'shellcheck: leadv2-proof-lib.sh', '(a) valid+passing expected GREEN exit 0, got rc=1', и два '(e) mixed tree' по счётчикам. Та же сюита на этом маке, тот же коммит: rc=0, PASS=16 FAIL=0, обе shellcheck-проверки зелёные (замерено лидом 2026-09-03T01:40Z). bash -n проходит на ОБЕИХ платформах, то есть это не синтаксис. Две независимые причины: (1) test-skill-proof-gate.sh:60-64 запускает 'shellcheck -x' и валит тест по любому ненулевому коду — локально shellcheck 0.11.0, на ubuntu-latest старее, findings отличаются, то есть вердикт сюиты зависит от того, какой shellcheck оказался на машине; (2) падения (a) и (e) — это поведение самого гейта в рантайме, а не линт, и диагностировать их надо отдельно. Запрет: НЕ вносить сюиту в known-red-suites.txt ради зелёного CI — аллоу-лист для унаследованных красных, прятать в нём свежий платформенный баг это ровно та лгущая зелень, против которой в репо есть правило."
+    },
+    {
+      "source_id": "a54dcb736315",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "TWELVE-LINUX-ONLY-SUITES-01",
+      "note": "TWELVE-LINUX-ONLY-SUITES-01: двенадцать сюит зелёные на macOS и красные на Linux — последнее, что держит зелёный main и, через него, обязательные проверки (SD-CI-REQUIRE-STATUS-CHECKS-01). Замерено прогоном 33706523661, ubuntu-latest, коммит 815627a7: 'suites passed=57 failed=27', и 12 из 27 печатают [NOT-KNOWN-RED], то есть их нет в tests/known-red-suites.txt. То же дерево на macOS: 69/15 и НОЛЬ вне списка, значит дельта целиком платформенная, а не регрессия; сам механизм аллоу-листа при этом работает корректно. Двенадцать: Claude plugin manifest/components; Phase-8 merge/completion proof; Phase-8 task schema; T14 worker MCP (glm spawn role config); builder selfcheck gate; burn governor; e2e gate arch-01; e2e gate lane root + suite family; lane worktrees survive the sweepers; plugin reliability; plugin sync contracts write gate; status surface single-lead + census. Это семья, а не двенадцать багов: две уже починены этой ночью (BSD-форма mktemp и зависимость вердикта от версии shellcheck), обе оказались 'BSD-вызов иначе ведёт себя под GNU'. Работать по корневым причинам, а не по симптомам. ЗАПРЕТ: ничего не добавлять в known-red-suites.txt — список для унаследованных красных, которые мы сознательно несём, а прятать в нём свежий платформенный баг ради зелёного CI это лгущая зелень; если сюита действительно не может идти на Linux, она должна честно SKIP-ать на не-Darwin с указанной причиной, как уже делает test-status-surface-bash32.sh. И не ослаблять проверки ради прохождения: переносимость это одинаковый вердикт на обеих платформах, а не более низкая планка на одной."
+    },
+    {
+      "source_id": "e061e20c4cde",
+      "source_node_id": "leadv2:GATE-PROVES-ITS-OWN-CONTROL-01",
+      "source_group_key": "adhoc",
+      "title": "GATE-PROVES-ITS-OWN-CONTROL-01",
+      "note": "GATE-PROVES-ITS-OWN-CONTROL-01: the review gate must apply the declared mutation itself and require red, instead of trusting the author's prose. Four requirements: suite exits non-zero (a FAIL: line with $?=0 is not red); THAT suite alone goes red (a mutation also killed by mypy/a linter/another suite proves nothing); revert restores green with the production file byte-identical; the cycle leaves the repo byte-identical. Otherwise blocked: control_not_diagnostic, never pass. Plus: product mutations counted separately from detector self-tests, headline carries only the product number; and acceptance asserts killed == scored == len(catalog) rather than a pinned literal. Evidence: three fake shapes landed today alone — test-arm-admission 16/0 stayed 16/0 with the hardcoded --base-arm restored at dispatch-code.sh:1920; test-codex-broker-staleness 3/0 stayed 3/0 with the -d sessionDir test dropped; and the V5 track's l4 law is killed by mypy before pytest so its suite can be deleted whole without moving the number."
+    },
+    {
+      "source_id": "17d5f8d6fa08",
+      "source_node_id": "leadv2:TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01",
+      "source_group_key": "adhoc",
+      "title": "TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01",
+      "note": "TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01: оба Claude-аккаунта рабочие во всех локальных репо, диспатчер работает с обоими, арбитр учитывает квоты обоих и распределяет нагрузку (приказ фаундера)"
+    },
+    {
+      "source_id": "f470ed0a43f1",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "STATE-OWNER-WRITE-GATE-01",
+      "note": "STATE-OWNER-WRITE-GATE-01: запретить запись в active.yaml мимо объявленного владельца. Рычаг из независимого мнения Codex Sol в PLUGIN-VERDICT-01, выбран как максимальный выхлоп на единицу работы всеми четырьмя мнениями вместе: он не требует, чтобы владелец состояния уже существовал, но немедленно останавливает рост самой частой формы дефекта, пока транзакционный модуль строится. Измерено: active.yaml упоминают 126 скриптов, пишут 73; журнал диспатчей 55/13; локи 72/21; phases.d 11/3. Формулировка Codex дословно: «запасной писатель — это не отказоустойчивость, это невереионированная вторая реализация базы данных». Требования: (1) манифест владельцев — по одному владеющему модулю на каждый долгоживущий артефакт; (2) статическая проверка на коммите отвергает любую запись в артефакт из скрипта, не объявленного владельцем (os.replace, перенаправление в путь, вызов встроенного сериализатора); (3) существующие 73 писателя вносятся в список исключений с датой, и список может только сокращаться — проверка падает, если он вырос; (4) негативный контроль: добавить новый прямой писатель -> проверка краснеет; убрать её -> случай зеленеет. Восемь открытых задач (DISPATCH-PHASE-DEADLOCK-01, DISPATCH-LEDGER-DEDUP-BLOCKS-REDISPATCHE-01, DEAD-TASK-CANNOT-BE-REDISPATCHED-01, DISPATCH-REFUSAL-SELF-PERPETUATES-01, REVIEW-ROUND-LOST-ON-LANE-HANDOFF-01, LANES-SNAPSHOT-HANGS-01, PULSE-READS-THE-WRONG-REGISTRY-01, STALE-ROW-STARTING-GRACE-01) — симптомы этого же корня; они не удаляются, а привязываются сюда и должны умереть сами, когда владелец появится."
+    },
+    {
+      "source_id": "5eccb36b8133",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "SALVAGE-UNMERGED-LANES-01",
+      "note": "SALVAGE-UNMERGED-LANES-01: ревизия worktree нашла 90 настоящих коммитов в 30 линиях, не дошедших до main. Слить или явно отклонить, по одной линии за раз, каждая с прогоном её сюит: FABLE-THINK-TIER-01(15), WORKER-DOD-GATE-01(13), WORKER-MCP-ALL-ARMS-01(8), GLM-EFFICIENCY-01(4), 0ac989a9(3), 0e7cd03d(3), DRIFT-GUARDS-TO-CANON-01(2), 05d28614(2), WATCHER-LEAK-01 шаг3(1), SUITE-LOCK-IS-MACHINE-WIDE-01 раунд3(1), ca7c1056(1); отдельно решить по 6409fada, OPS-42, PHASE-BOOTSTRAP-ADMIT-02, ANTI-SILENCE-BEAT-ABORT-03. Доказательство: docs/handoff/FIVE-DAY-AUDIT-BEFORE-STATE-OWNER-01/audit2-worktrees.md"
+    },
+    {
+      "source_id": "ac13c2d58a60",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "FIVE-DAY-AUDIT-BEFORE-STATE-OWNER-01",
+      "note": "FIVE-DAY-AUDIT-BEFORE-STATE-OWNER-01: сплошная ревизия пяти дней работы над плагином ДО начала задачи о владельце состояния линий. Объём: 498 коммитов, 84 слияния, 297 каталогов handoff, 31 отчёт, ~130 worktree за 2026-08-29..09-03. Три параллельные ревизии запущены 2026-09-03: (1) живо ли то, что обещало каждое слияние — LIVE/DEAD/UNPROVEN с командой-доказательством, хук считается подключённым только если он есть в hooks.json ИЛИ в MANIFEST внутри leadv2-bash-pre-dispatch.sh; (2) какая настоящая работа осталась в worktree и не дошла до main, за вычетом якорных коммитов и слияний main внутрь линии; (3) держится ли сегодня центральное утверждение каждого отчёта — HOLDS/BROKEN/UNTESTABLE, с отдельной ловлей подставного вывода прогона, негативного контроля на верхнем уровне вместо тела функции и 'verified' на пустом артефакте. Закрывается только когда каждая строка со статусом DEAD/BROKEN/UNTESTABLE имеет задачу в бэклоге либо явную запись об отказе чинить с причиной. Основание: на прошлой сплошной проверке 47 закрытых задач из 105 умерли, как только агент открыл файл"
+    },
+    {
+      "source_id": "7547e876567c",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "SAFETY-PIN-SECOND-DOOR-01",
+      "note": "SAFETY-PIN-SECOND-DOOR-01: пин безопасности обходится вторым путём — leadv2-admission-class.sh сворачивает risk_class=safety_publish_payments в класс Heavy, а пин в leadv2-session-route.sh читает RISK_TAGS, поэтому safety-задача, помеченная судьёй БЕЗ явных risk_tags, уходит на think-арм (fable). Найдено переписью в HEAVY-TIER-VS-SAFETY-OPUS-01 R2, отчёт docs/handoff/HEAVY-TIER-VS-SAFETY-OPUS-01/report.md; линия намеренно не чинила — это контракт admission→route между линиями"
+    },
+    {
+      "source_id": "88396fe3f032",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "GETMANY-FOLLOWUP-BOT-FORKED-LEADV2-01",
+      "note": "GETMANY-FOLLOWUP-BOT-FORKED-LEADV2-01: в getmany-followup-bot файл .claude/commands/leadv2.md — РЕАЛЬНЫЙ ФАЙЛ, а не симлинк на канонический plugins/leadv2/commands/leadv2.md; значит репо гоняет замороженную старую версию лида и ничего из ночных правок туда не приходит. Это ровно та болезнь, о которой предупреждает CLAUDE.md (persona-engine месяцами жил на таком форке). Нужно смерджить расхождения ВВЕРХ в канонический файл, потом заменить симлинком"
+    },
+    {
+      "source_id": "a89d4444bb75",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "E2E-TIMEOUT-REPORTED-AS-REGRESSION-01",
+      "note": "E2E-TIMEOUT-REPORTED-AS-REGRESSION-01: гейт e2e записывает таймаут как регрессию — линия SAFETY-PIN-SECOND-DOOR-01 (dispatch-49c6e0c8) прошла selfcheck зелёным (checks=7), затем e2e_gate status=ran verdict=fail rc=124 (rc=124 = таймаут команды, не падение теста), и линия закрыта как terminal=dead cause=e2e_regression с потерей всей работы (в worktree остался только anchor). Таймаут и регрессия — разные причины, и лечатся они по-разному: одна бюджетом, другая откатом"
+    },
+    {
+      "source_id": "424a964eaf4d",
+      "source_node_id": "leadv2:SUBSCRIPTION-MIX-DECISION-01",
+      "source_group_key": "adhoc",
+      "title": "SUBSCRIPTION-MIX-DECISION-01",
+      "note": "SUBSCRIPTION-MIX-DECISION-01: 2x Max 5x + Codex $100 + GLM Max против текущего Max 20x — три независимые оценки (Claude/Codex/GLM), выводы делает GLM; ключевой вопрос: 20x множит 5-часовое окно или недельное"
+    },
+    {
+      "source_id": "e589ee519dc8",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "FORK-BUDGET-IS-DEAD-01",
+      "note": "FORK-BUDGET-IS-DEAD-01: leadv2-hook-fork-budget.sh (FORK-STORM-KILLS-HOOKS-01, слит 1d179855) не вызывается ниоткуда — только собственный тест. Либо подключить к живому пути, либо удалить вместе с тестом. Мёртвый скрипт с зелёной сюитой — это ложная защита."
+    },
+    {
+      "source_id": "bc6b23753a7c",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "SELECTOR-TURN-IT-ON-01",
+      "note": "SELECTOR-TURN-IT-ON-01: включить и доделать умный селектор — LEADV2_ROUTER_V2 по умолчанию 0 (dispatch-code.sh:6708), поэтому task-judge/router-v2/route-bandit/cost-estimate/brain-record построены и не работают ни разу. Бандит читает route-outcomes.jsonl, писателя нет нигде, файла нет. Шаг 2 плана PLUGIN-VERDICT-01. Проект: docs/handoff/SELECTOR-DESIGN-01/design.md"
+    },
+    {
+      "source_id": "21a71eb35dac",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "LANE-REGISTRY-STAMPS-THE-LEAD-PID-01",
+      "note": "LANE-REGISTRY-STAMPS-THE-LEAD-PID-01: строки active.yaml для линий держат pid ЛИДА, а не воркера — обе ночные линии (LANE-PLACEMENT-PIN-RED-01, HANDOFF-DOCS-INVISIBLE-IN-LANES-01) имели pid: 85740 = процесс claude самого лида. Следствие: линия числится живой, пока жива сессия лида, диспатч отказывает с lane_placement_refused reason=lane_is_live, и перезапуск невозможен без ручного leadv2_active_unregister. Это и есть причина, по которой в памяти записано «перезапуск требует очистки четырёх хранилищ»"
+    },
+    {
+      "source_id": "e27781d427ee",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01",
+      "note": "CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01: диспатч HEAVY-TIER-VS-SAFETY-OPUS-01 (вопрос «должен ли high-risk маршрут оставаться на opus») классифицирован как class=light complexity=simple duration_class=short и уехал на glm-flash effort=low; правило репо говорит «арх/дизайн/безопасность → всегда opus, GLM запрещён». Доказательство: journal task=d552b9ab, model_select_telemetry class=light arm=glm-flash. Классификатор смотрит на размер диффа, а не на предмет решения"
+    },
+    {
+      "source_id": "065897da9680",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "M3-NOT-ADOPTED-BY-LEADV2-01",
+      "note": "M3-NOT-ADOPTED-BY-LEADV2-01: репо ~/MythicalGames/m3 не подключено к плагину вообще — ноль симлинков в .claude/scripts, команды /leadv2 нет. Основатель считает его живым. Лечится одним запуском leadv2-repo-install.sh, но нужно решить, что делать с существующим .claude/leadv2-tasks и rules, которые там уже свои"
+    },
+    {
+      "source_id": "63a6810ddd8e",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "HANDOFF-DOCS-INVISIBLE-IN-LANES-01",
+      "note": "HANDOFF-DOCS-INVISIBLE-IN-LANES-01: .gitignore:49 = docs/handoff/*/* — каждый артефакт handoff игнорируется гитом, поэтому НИ ОДНА линия-worktree не видит дизайн-доки и брифы, на которые её же миссия ссылается по пути. Доказано 2026-09-03: ARBITER-ESTIMATES-BLIND-01 встал в 22:59 с вопросом q-b84d6bf5 'docs/handoff/SELECTOR-DESIGN-01/design.md отсутствует в этом checkout', файл есть в main (792 строки), git check-ignore -v показывает .gitignore:49. Линия простояла 4 часа. Решение: трекать design.md/brief.md явным '!'-правилом, либо диспетчер копирует named-artifacts в линию при ensure."
+    },
+    {
+      "source_id": "ec177217ed36",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "CODEX-COOLDOWN-DOES-NOT-ESCALATE-01",
+      "note": "CODEX-COOLDOWN-DOES-NOT-ESCALATE-01: the deathwatch correctly names the codex broker teardown (arm=codex reason=transport_gone_app_server_absent, recorded 2026-09-01T16:13Z and 17:32Z against real job handles) but always records cooldown_s=900, so the arm is re-elected 15 minutes later and dies again — six deaths in one day on the same lane, each costing a full dispatch. The cooldown must escalate on repeated deaths of the same reason within a window (and decay when a codex job completes), so the router degrades on evidence WITHOUT any hardcoded arm exclusion"
+    },
+    {
+      "source_id": "160da73eb826",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01",
+      "note": "PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01: leadv2-phase-record.sh молча пишет фазы в ЧУЖОЙ репозиторий. Причина найдена 2026-09-03 через bash -x: скрипт берёт PROJECT_ROOT из унаследованного LEADV2_PROJECT_ROOT, а .claude/settings.json репо persona-engine экспортирует его глобально — поэтому 'record 7a8f236f gate1', запущенный из ~/Projects/leadv2, создал /Users/kostiantyn.vlasenko/Projects/persona-engine/docs/handoff/dispatch-7a8f236f/phases.d/gate1.yaml и вернул RC=0. Лид три раза 'разблокировал' фазовый гейт и три раза попадал в чужой репо; ремедия, которую печатает сам диспетчер, не действует и молчит. Нужен guard: record обязан ОТКАЗАТЬ, если docs/handoff/dispatch-<sig8>/ не существует под разрешённым корнем — плюс негативный контроль на это. Заменяет ранее заведённую PHASE-RECORD-WRITES-NOTHING-01 (диагноз там был неверен)."
+    },
+    {
+      "source_id": "7b4d1970f723",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "PHASE-RECORD-WRITES-NOTHING-01",
+      "note": "PHASE-RECORD-WRITES-NOTHING-01: leadv2-phase-record.sh record <sig8> <phase> возвращает RC=0 и НЕ создаёт phases.d/<phase>.yaml. Доказано 2026-09-03: три вызова record 7a8f236f diverge|plan|gate1 --artifact <существующий файл> вернули 0, ls docs/handoff/dispatch-7a8f236f/phases.d/ по-прежнему показывает только build.yaml+classify.yaml. Это единственный штатный способ разблокировать phase_precondition_refused, и он молча не работает — ремедия, которую печатает сам диспетчер, не действует. Нужен негативный контроль: сюита, ловящая запись, не появившуюся на диске."
+    },
+    {
+      "source_id": "2b95c99e292d",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "LEAD-DOES-MACHINE-WORK-01",
+      "note": "LEAD-DOES-MACHINE-WORK-01: перепись того, что лид делает руками вместо машины, снятая с живой сессии 2026-09-03 (не теория — каждая строка случилась этой ночью). ДЕЛАЕТ, НО НЕ ДОЛЖЕН: (a) слияние линий в main вручную — git merge, разбор конфликтов, решение 'это шум состояния, а это работа' — 5 линий за ночь, ~2 часа лида, это долг REVIEW-GATE-IS-MUTE-01; (b) выбор руки: --protected ставился лидом на каждом диспатче и этим выключал бесплатную руку — должен выводиться из write-set (FREEPOOL-MUST-ACTUALLY-GET-WORK-01); (c) суждение 'регрессия или флейк' по красной сюите — 7 ручных перезамеров на main и в линиях, чтобы доказать что все 7 падений были флейком под нагрузкой; должен решать сюитный гейт, сравнивая с known-red-suites.txt и с базой на main; (d) классификация файлов конфликта как шума контроль-плейна — делалась на глаз 5 раз подряд, должна быть объявленным списком путей; (e) ручная запись фаз diverge/plan/gate1 для обхода phase_precondition_refused — обход гейта руками это дыра, а не решение; (f) уборка worktree: отодвигание untracked, бэкапы state; (g) определение живости линии через ps/grep — и лид всё равно ошибся, убив живого codex-воркера своими же параллельными прогонами сюит через машинный лок. НЕ ДЕЛАЕТ, НО ДОЛЖЕН: (h) первым делом смотреть почтовый ящик линии — ARBITER-ESTIMATES-BLIND-01 простоял 4 часа на неотвеченном вопросе q-b84d6bf5, найдено случайно; (i) держать очередь полной — узким местом был сам лид, пока он мержил, а не линии; (j) закрывать строки бэклога по мере приземления — бэклог врал на 6 строк, пока основатель не спросил; (k) объяснять смысл, а не отчитываться механикой — основатель трижды просил другую форму. ФОРМУЛА: лид работает руками там, где должен работать языком; его миссия — разговор с основателем, объяснение работы и решение вопросов, а не механика. Приёмка: по каждой строке (a)-(g) либо механизм, который её забирает, либо явное решение оставить её лиду с причиной."
+    },
+    {
+      "source_id": "3df240bba3cb",
+      "source_node_id": "leadv2:CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01",
+      "source_group_key": "adhoc",
+      "title": "CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01",
+      "note": "CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01: селектор аккаунтов 198 раз получил default_token_expired по личному max-аккаунту и каждый раз ушёл в fail-open — маршрутизация тихо смещена на рабочий аккаунт"
+    },
+    {
+      "source_id": "b35ad780ea1d",
+      "source_node_id": "leadv2:LANE-MERGE-SILENTLY-REVERTS-MAIN-01",
+      "source_group_key": "adhoc",
+      "title": "LANE-MERGE-SILENTLY-REVERTS-MAIN-01",
+      "note": "LANE-MERGE-SILENTLY-REVERTS-MAIN-01: линия, ответвившаяся раньше чужого слияния, при слиянии молча удаляет то, что легло в main после её ответвления — 5 случаев за сутки, ловил только вручную"
+    },
+    {
+      "source_id": "228239bcc795",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "REVIEW-ARM-OUTAGE-CHARGED-TO-LANE-01",
+      "note": "REVIEW-ARM-OUTAGE-CHARGED-TO-LANE-01: сбой самого ревью-механизма отдаёт линии вердикт, неотличимый от содержательного отказа. Измерено 2026-09-02 переписью за 30 дней: 8 линий из 49 (16%) стоят не на вердикте о работе, а на сбое гейта — empty_response, review_body_lost, provider_error, suite_falsifiability_undetermined, review_roundcap; среди них двое из пяти худших по числу раундов (BRAIN-CLASS-LIVE-01 empty_response, BROAD-STATUS-ROWS-02 provider_error). Ещё 3 линии умирают, не дожив до fix-round-1, и потому невидимы любой метрике раундов. За этим кладбище из 467 каталогов dispatch-<hex>, ни один из которых не дошёл до раунда: selfcheck_failed 32, no_work 30, worker_timeout 24, arm_produced_nothing 19, all_arms_unavailable 16. Ключевое: сбои гейта НЕ попадают в review-findings.json вообще (0% находок), поэтому по находкам они невидимы — их видно только по blocked без причины. Нужно: (1) повтор захвата вывода ревьюера вместо перевода линии в blocked; (2) blocked по вине механизма обязан называться иначе, чем blocked по вине работы, и в журнале, и в файле; (3) empty_response запрещён при непустом файле вывода арма — сегодня выброшено настоящее ревью на 13 КБ с живой High-находкой; (4) негативный контроль на каждый случай. Оценка возврата: минимум 8 раундов линий. Смежные: REVIEW-GATE-IS-MUTE-01, REVIEW-SENTINELS-LANGUAGE-01."
+    },
+    {
+      "source_id": "c8f7bdba64b6",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "ARBITER-ESTIMATES-BLIND-AND-NEVER-LEARNS-01",
+      "note": "ARBITER-ESTIMATES-BLIND-AND-NEVER-LEARNS-01: арбитр решает правильно по замыслу, но решает из бедного входа и никогда не узнаёт результат. Замер 2026-09-02: раунд, требующий аудита пятинедельной копии хука и решения об экономике GitHub-раннеров с множителем 10, оценён как complexity=simple duration_class=short и отдан самой дешёвой руке с reason=cheapest_capable — трижды подряд, причём --task-class standard и --interactive на это не повлияли. Две настоящие дыры: (1) оценка сложности берётся только из текста миссии, без размера набора файлов, истории раундов задачи и того, требует ли раунд суждения или механической правки; (2) 'capable' в cheapest_capable — это утверждение, а не измерение: route-outcomes.jsonl не пишет НИКТО, файла нет, бандит ни разу не получал данных, поэтому арбитр не может узнать, доводит ли glm-flash раунды такой формы до конца. Требование: писатель исходов (какая рука, какая форма задачи, сколько раундов до закрытия, чем кончилось) и оценщик, читающий больше текста миссии. Ручной --arm НЕ добавлять: у нас уже есть доказательство, что аварийные люки становятся основным путём — 29% диспатчей аттестовали обход фазового гейта через --reason"
+    },
+    {
+      "source_id": "7ba2bd711056",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "REPORT-PASS-COUNTS-ARE-ASSERTED-01",
+      "note": "REPORT-PASS-COUNTS-ARE-ASSERTED-01: ревизия 30 отчётов не нашла ни одного BROKEN, но три отчёта (DISPATCH-PIN-CLUSTER-01, RESUME-LANE-ACCEPTS-PATH-01, FP-06) выдают вставленные числа прогона за доказательство без живого перезапуска. Перепрогнать эти три сюиты и записать реальный вывод; закрепить правило: вставленное в отчёт число — не доказательство."
+    },
+    {
+      "source_id": "ad7bd2898d74",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "DEAD-ATTEMPT-POISONS-THE-PHASE-STORE-01",
+      "note": "DEAD-ATTEMPT-POISONS-THE-PHASE-STORE-01: запись фазы, оставленная умершей попыткой, навсегда блокирует повторную отправку задачи. Прослежено вживую 2026-09-03 на ARBITER-ESTIMATES-BLIND-01, три круга подряд. Круг 1: cmd_resolve пишет classify.yaml (started_at==ended_at, artifact пустой) и тут же отказывает — следующая попытка видит запись, считает задачу не первой, бутстрап-допуск не применяется, гейт требует diverge+plan+gate1. Лид снял запись руками, круг 2 стартовал на codex. Круг 2: codex умер на исчерпанной квоте, оставив build.yaml со status: running, ended_at пустой, artifact пустой. Круг 3: гейт увидел build без plan/gate1 и снова отказал. То есть КАЖДАЯ смерть воркера превращает линию в неперезапускаемую, а воркеры умирают часто — сегодня трижды за день. Требование: запись фазы со status: running, чей владелец мёртв (pid не жив / handle без процесса), не является доказательством; сборщик должен снимать такие записи, а не хранить их как истину. Пустой artifact при нулевой длительности — тот же класс"
+    },
+    {
+      "source_id": "87360d74442d",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "LEAD-SESSION-CANNOT-SWITCH-ACCOUNTS-MIDFLIGHT-01",
+      "note": "LEAD-SESSION-CANNOT-SWITCH-ACCOUNTS-MIDFLIGHT-01: пер-диспатчевая балансировка по двум аккаунтам существует и работает (leadv2-claude-profile-select.sh, 136 записанных выборов), но САМА сессия лида привязана к одному креденшелу в момент запуска и не может переключиться на лету. Именно это болит основателю как оркестратору: воркеры разложатся по двум вёдрам, а его собственная сессия упрётся в 5-часовое окно одного аккаунта. С 15.09 личный аккаунт падает с Max 20x на Max 5x, потолок падает вчетверо. Community-решения (claude-code-profiles, claude-switch, CLAUDE_CONFIG_DIR-алиасы) решают только запуск НОВОЙ сессии под другим аккаунтом; переключение на лету не решает никто. Нужно: либо передача текущей сессии на второй аккаунт, либо явный сигнал лиду 'ты в 15 минутах от стены, перезапустись под work' с готовой командой и сохранением состояния. Зависит от TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01."
+    },
+    {
+      "source_id": "a09f77f8a1ac",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "PHASE-PLAN-PROOF-IS-FILENAME-BASED-01",
+      "note": "PHASE-PLAN-PROOF-IS-FILENAME-BASED-01: проверка артефакта фазы plan в leadv2-phase-record.sh:504-511 смотрит на ИМЯ файла (brief.md|fix-round-N.md), а не на содержание; легитимный continue-round-2.md отвергается и диспатч встаёт — за ночь стоило двух кругов"
+    },
+    {
+      "source_id": "ea94a77af50a",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "DISPATCH-HANDLE-SLICE-UNATTRIBUTED-01",
+      "note": "DISPATCH-HANDLE-SLICE-UNATTRIBUTED-01: the GLM/Kimi spawn handle is recovered by halving a string, unreviewed and uncommitted on main until 2026-09-01; it returned an EMPTY handle on a live glm-flash spawn the same day. Brief + acceptance in leadv2 docs/handoff/DISPATCH-HANDLE-SLICE-UNATTRIBUTED-01/brief.md"
+    },
+    {
+      "source_id": "9745dc9b9783",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "FREEPOOL-MUST-ACTUALLY-GET-WORK-01",
+      "note": "FREEPOOL-MUST-ACTUALLY-GET-WORK-01: бесплатная рука почти никогда не получает работу, и ни одна из трёх причин не является поломкой — все три измерены 2026-09-03. (1) --protected это РУЧНОЙ флаг лида (leadv2-dispatch-code.sh:6646 '--protected) protected=1'), он ниоткуда не выводится из write-set линии; лид ставит его по привычке и этим сам вырубает фрипул — в ночь 03-09 я ставил его на каждом диспатче и получал 'arm_excluded by=router arm=freepool reason=protected_path'. Надо выводить protected из фактического LANE_WRITES: линия, пишущая только в tests/ и docs/handoff/, protected НЕ является никогда, флаг остаётся ручным только для расширения, не для сужения. (2) Лимит ходов убивает его с несохранённой работой: FREEPOOL_MAX_TURNS=120 и FREEPOOL_TURN_LIMIT=120 (freepool-coder.sh:80,84); прогон 260903-030233-CI-SUITES-ARE-MACOS-ONLY-01-49db сделал 121 ход, дал дифф на 10 файлов и умер с exit 80 outcome=died-with-work bound=turn_count, НЕ закоммитив ничего — целый раунд в мусор. Нужен принудительный чекпойнт-коммит до упора в лимит, а не просто больший лимит. (3) Даже допущенный, он проигрывает платной руке: capability_floor даёт +100 к эффективной цене (leadv2-route-arbiter.sh:167-174), а это доминирующий ключ сортировки, так что codex (3..7) и sonnet (5) всегда впереди; замер 2026-08-30 — флаг снят, работу взял codex, util_freepool=0. Требуется НЕ снести пол (он защищает от посадки стратегических задач на дешёвую руку), а проверить и зафиксировать, что для линий с write-set только tests/+docs/handoff/ пол не применяется, с живым доказательством в логе. Приёмка: диспатч линии с тестовым write-set даёт в логе route_resolved arm=freepool БЕЗ ручного флага, и раунд завершается коммитом, а не died-with-work."
+    },
+    {
+      "source_id": "84cd8dceb0f6",
+      "source_node_id": "leadv2:CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01",
+      "source_group_key": "adhoc",
+      "title": "CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01",
+      "note": "CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01: арбитр обязан учитывать остаток квоты и дату сброса недельного окна, а не только процент потолка"
+    },
+    {
+      "source_id": "d3a5ecc88068",
+      "source_node_id": "leadv2:QUOTA-BINDING-WINDOW-IS-NEVER-RECORDED-01",
+      "source_group_key": "adhoc",
+      "title": "QUOTA-BINDING-WINDOW-IS-NEVER-RECORDED-01",
+      "note": "QUOTA-BINDING-WINDOW-IS-NEVER-RECORDED-01: binding_window/five_hour_pct/seven_day_pct пишутся в history.db kv одной строкой и перезаписываются — истории нет, поэтому решение на $1200/год приходится принимать по одному сэмплу"
+    },
+    {
+      "source_id": "42f5dcc2fb19",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "UNFALSIFIABLE-TEST-LINT-01",
+      "note": "UNFALSIFIABLE-TEST-LINT-01: воркеры сдают несфальсифицируемые тесты и линия крутится по одному и тому же кругу. Измерено 2026-09-02: две линии по 11 раундов (DISPATCH-PIN-CLUSTER-01, ANTI-SILENCE-STATUSLINE-01) — это не одиннадцать разных багов, а один и тот же дефект доказательства, поданный заново. Раунд 1 DISPATCH-PIN-CLUSTER-01: «три из четырёх негативных контролей — это grep по строке, они не исполняют производственный путь»; раунд 11 там же, Critical: «доказательство fail-closed проходит по неверной причине». Ревьюер каждый раз отвергал правильно. Вывод переписи: длина линии измеряет не сложность задачи, а непонимание воркером того, что такое доказательство. Нужно: (1) проверка до диспатча/до ревью, отвергающая негативный контроль, который не исполняет производственный код — минимум: мутант обязан быть ПОЛНОЙ копией дерева (включая lib/), базовая линия обязана быть показана зелёной до мутации, мутация обязана быть внутри тела функции, а не на верхнем уровне; grep по строке утверждением не считается; (2) проверка встроена туда же, где живёт leadv2-suite-falsifiable.sh, а не вторым механизмом; (3) негативный контроль на саму проверку. Оценка возврата: 4-6 раундов только на двух названных линиях. Связано с E2E-KILLRATE-01 доктриной."
+    },
+    {
+      "source_id": "c40fcedf6268",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "STATUS-SURFACE-SHOWS-CORPSES-AND-BACKLOG-01",
+      "note": "STATUS-SURFACE-SHOWS-CORPSES-AND-BACKLOG-01: отчёт основателю показывает мёртвые хендлы как живые линии и вклеивает в себя бэклог. Замерено 2026-09-03T00:34Z: founder-status.md перечислил ровно две строки, обе codex-хендлы со status=failed и reaped=worker_died_stale/transport_gone, при этом реально живых линий было две (CI-SUITES-ARE-MACOS-ONLY-01 на freepool, ARBITER-ESTIMATES-BLIND-01 на codex) плюс три идущих прогона сюит — ни одна не показана; ps по обоим показанным хендлам пуст. Отдельно founder-status-full.md вклеивает 13 строк бэклога ('Очередь — по влиянию') и строку 'codex: кредиты на нуле с 2026-08-25', которая опровергается успешным диспатчем на codex в 00:19 того же дня. Пульс обязан показывать только живое и следующее; бэклог и кредиты в нём не место. Смежная строка: PULSE-READS-THE-WRONG-REGISTRY-01."
+    },
+    {
+      "source_id": "a10a747c0ac8",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "SKILL-USAGE-IS-UNMEASURED-01",
+      "note": "SKILL-USAGE-IS-UNMEASURED-01: мы не знаем, пользуется ли плагин своими скилами — это не измеряется. Замерено 2026-09-03: на диске 89 скилов (41 в plugins/leadv2/skills/, 48 в .claude/skills/). Единственный учёт, leadv2-skill-usage-tally.sh, видит 40 и даёт 'total=40 dispatch=5 wired=27 dormant=6 deferred=2' — но его собственная шапка (строки 6-16) говорит, что WIRED значит 'имя встречается в commands/*.md, docs/*.md или hooks/hooks.json', а DORMANT — 'нигде не упоминается вне своей папки'. Это учёт УПОМИНАНИЙ В ТЕКСТАХ, а не вызовов: leadv2-review показывает refs=52 dispatch=0, то есть 52 раза упомянут и ни разу не посчитан вызванным. Ни одна колонка не отвечает на вопрос 'сколько раз этот скил сработал за неделю и помог ли'. Работа в двух шагах, порядок обязателен. ШАГ 1 — измерить: телеметрия фактического вызова скила (кто, когда, в какой фазе, чем кончилось), сводка за период, и на её основе честная таблица 'вызывался / не вызывался ни разу / вызывался и не помог'. Без этого шага любая чистка — резня вслепую. ШАГ 2 — действовать по измерению, а не по догадке: скил, ни разу не вызванный за месяц при живых поводах, либо встраивается в путь, где повод возникает, либо удаляется; скил, который вызывается и не меняет исход, переписывается или удаляется. Запрет: не удалять и не 'инлайнить' ни одного скила до того, как появится измерение вызовов — сейчас DORMANT означает лишь 'о нём не пишут в доках', и по этому признаку удалять нельзя. Смежная строка про обучение роутинга: ARBITER-ESTIMATES-BLIND-AND-NEVER-LEARNS-01."
+    },
+    {
+      "source_id": "e65408e54ff0",
+      "source_node_id": "leadv2:BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01",
+      "source_group_key": "adhoc",
+      "title": "BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01",
+      "note": "BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01: хук объявляет BROAD_STATUS_READY со свежей меткой at=, тогда как docs/leadv2/founder-status.md не менялся сутки — реле велит пересказать основателю вчерашнее как текущее"
+    },
+    {
+      "source_id": "b131028bcf26",
+      "source_node_id": "leadv2:INSTALLER-WRITES-ENV-INTO-A-TRACKED-SETTINGS-FILE-01",
+      "source_group_key": "adhoc",
+      "title": "INSTALLER-WRITES-ENV-INTO-A-TRACKED-SETTINGS-FILE-01",
+      "note": "INSTALLER-WRITES-ENV-INTO-A-TRACKED-SETTINGS-FILE-01: установщик дописывает leadv2-env в .claude/settings.json, не проверяя, отслеживается ли файл гитом — в рабочем репо это уходит команде вместе с абсолютным домашним путём"
+    },
+    {
+      "source_id": "d3cd9bd49dfe",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "QUOTA-PROBE-FAILS-CLOSED-01",
+      "note": "QUOTA-PROBE-FAILS-CLOSED-01: непрочитанная квота трактуется как исчерпанная, и это отказывает диспатчам при свободных армах. Проверено на живом коде 2026-09-02: plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh:102 — 'if x.get(status)!=ok: return (100.0, True)', то есть неудачная ПРОБА квоты возвращает утилизацию 100% с пометкой unknown, а не «неизвестно». Отсюда живая строка журнала 'route_resolved arm=refuse reason=all_arms_capped util_glm=6 util_codex=100 util_claude=unknown_capped util_freepool=0' — линия DRIFT-GUARDS-TO-CANON-01 встала «за неимением армов» при GLM, свободном на 94%. Счётчик: all_arms_capped встречается 28 раз в журналах задач. В том же репо для тех же данных задокументирована ПРОТИВОПОЛОЖНАЯ политика — leadv2-router-v2.py работает fail-open; две несовместимые политики на одну величину. Нужно: (1) непрочитанная проба даёт «неизвестно», а не «исчерпано» — арм с неизвестной квотой ранжируется ниже известно-свободного, но остаётся допустимым; (2) инвариант last_resort: отказ по причине квоты структурно невозможен, пока хоть один арм ниже своего порога — если все неизвестны, берётся самый дешёвый и решение журналируется как last_resort; (3) две политики сводятся к одной, в одном месте; (4) негативный контроль: подсунуть состояние codex=100, claude=проба-упала, glm=6 -> маршрут обязан выбрать glm; вернуть fail-closed -> проба краснеет. Смежное: GLM-FAILED-TWICE-UNREACHABLE-01 (там же измерена цена: 17 диспатчей на sonnet против 9 на GLM при GLM на 1-6%). Проектная часть: docs/handoff/SELECTOR-DESIGN-01/design.md."
+    },
+    {
+      "source_id": "d75b1723e4f9",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "PHASE-FIX-HAS-NO-MIGRATION-01",
+      "note": "PHASE-FIX-HAS-NO-MIGRATION-01: починка фазового деадлока не лечит задачи, уже отравленные старым багом. Замер 2026-09-03: ARBITER-ESTIMATES-BLIND-01 после слияния починки всё равно отказывался — в docs/handoff/dispatch-7a8f236f/phases.d/ лежала одна запись classify.yaml, написанная cmd_resolve во время НЕУДАЧНОЙ первой попытки (started_at == ended_at == 17:44:17Z, artifact пустой, proof: verified). Эта запись делает задачу «не первой», бутстрап-допуск не применяется, и гейт требует diverge+plan+gate1, которых взять неоткуда. Лид снял запись вручную. Каждая задача, налетевшая на старый баг, застряла так же навсегда. Нужна миграция: запись фазы с пустым artifact и нулевой длительностью, чей диспатч отказал, не является доказательством прохождения фазы"
+    },
+    {
+      "source_id": "c4700349dfd6",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "WATCHER-LEAK-IS-FAKE-LIVENESS-01",
+      "note": "WATCHER-LEAK-IS-FAKE-LIVENESS-01: leadv2-lane-watch-v2.sh --loop утекает и выдаётся за живую работу. Замер 2026-09-02T15:0xZ: 17 живых наблюдателей возрастом до 15ч47м, ДВА на одну линию (FABLE-THINK-TIER-01 и WORKER-MCP-ALL-ARMS-01 по паре, разные session_id), четыре указывали на удалённые тестовые фикстуры (/private/tmp/leadv2-phase-gate-*/repo2, glm-effort-fixture.*, leadv2-lpp-*/target), два делили один session_id b1efef2c. При этом воркеров не было НИ ОДНОГО: лид прочитал procs>0 как 'линия работает' и доложил founder восемь живых линий, тогда как все восемь были закончены или мертвы. SessionEnd не разоружает наблюдателей давно закрытых сессий; сюиты плодят их в реальную таблицу процессов"
+    },
+    {
+      "source_id": "8721988ec0a1",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "CODE-INTEL-IS-INSTALLED-AND-UNUSED-01",
+      "note": "CODE-INTEL-IS-INSTALLED-AND-UNUSED-01: два code-intel MCP настроены, маршрутная таблица написана в CLAUDE.md, и почти никто ими не пользуется — платим grep-ом. Перемерено 2026-09-03 через scripts/measure-tool-cost.py по всей истории транскриптов: Bash 13195 вызовов / 4 023 463 токена, Read 573 / 1 342 396, а ВСЕ code-intel вызовы вместе (repowise get_answer/get_risk/get_dead_code/get_symbol/search_codebase/get_change_risk/get_context/get_health + graph query_graph/search_graph/trace_path/index_status/list_projects) — 58 вызовов и 62 687 токенов. Это 0,4% вызовов и 1,2% стоимости от Bash+Read. Прямая улика того же дня: сама сессия лида, разбиравшая роутинг арбитра, capability_floor и жизненный цикл вотчеров, не сделала НИ ОДНОГО вызова графа или repowise — всё через grep и cat. Правило в CLAUDE.md ('кто вызывает X / что читает это / trace A→B → ГРАФ; как это работает / почему так → REPOWISE') существует и не исполняется, то есть это правило без читателя. Работа: (1) измерить, в каких местах пути лид и воркеры реально задают вопросы формы 'кто вызывает' и 'как это работает', и почему там выбирается grep — привычка, незнание, недоверие к ответу или реальная негодность инструмента; каждую причину подтвердить примером из транскрипта; (2) сделать выбор инструмента механическим там, где он механизируем, а не вопросом дисциплины — правило, которое исполняется только силой воли, мы уже имеем и оно не работает; (3) мерить долю code-intel к Bash+Read как показатель и следить за ней, а не разово. Запрет: не вводить хук, который блокирует grep — измерено в CLAUDE.md, что гейт, заставляющий делать вызов инструмента вместо дешёвого Grep на 42 токена, стоит дороже, чем экономит; оптимизировать хвост (тяжёлые чтения диффов и многофайловые обходы), а не медиану."
+    },
+    {
+      "source_id": "f38161387a22",
+      "source_node_id": "leadv2:DISPATCH-LEDGER-DEDUP-BLOCKS-REDISPATCH-01",
+      "source_group_key": "adhoc",
+      "title": "DISPATCH-LEDGER-DEDUP-BLOCKS-REDISPATCH-01",
+      "note": "DISPATCH-LEDGER-DEDUP-BLOCKS-REDISPATCH-01: the dispatch ledger keeps a stale row that refuses the next round of the same lane. Observed 2026-08-31: CODEX-DETACH-01 round 2 was refused with 'dispatch_refused reason=duplicate_task_signature task=72d8800d ledger=~/.claude/cache/dispatch-ledger/leadv2.jsonl' against a row written at 09:00:43Z whose dispatch had long since ended. The signature is derived from the task id, not the mission file, so pointing the dispatch at a different brief (fix-round-2.md instead of brief.md) does not clear it; the only unblock was deleting the row by hand. This is a SECOND layer of DISPATCH-REFUSAL-SELF-PERPETUATES-01: the arm rows are now rolled back on refusal (dispatch-code.sh:5779-5806) but the ledger is a separate store and is never reconciled. Fix: a ledger row must expire when its dispatch reaches a terminal, or the dedup must key on (task id, mission content, round) rather than the task id alone."
+    },
+    {
+      "source_id": "a814efbe1840",
+      "source_node_id": "leadv2:MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01",
+      "source_group_key": "adhoc",
+      "title": "MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01",
+      "note": "MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01: поле diff_hash в уликах негативного контроля — это SHA-256 пустой строки, одинаковое при любой мутации; выглядит как доказательство, не доказывает ничего"
+    },
+    {
+      "source_id": "d4a16a423c72",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "FIFTEEN-RED-SUITES-01",
+      "note": "FIFTEEN-RED-SUITES-01: 15 из 83 сюит в run-core-offline.sh красные, и никто об этом не знает. Измерено 2026-09-02 лидом вручную в линии WORKER-MCP-ALL-ARMS-01: 'run-all --scope changed' = 3 passed 1 failed; упавшее — plugins/leadv2/scripts/tests/run-core-offline.sh; внутри '[CORE-OFFLINE] suites passed=68 failed=15 missing=0'. Причина, почему это не заметили: в .github/workflows/ ровно один файл, validate-skills.yml, проверяющий front-matter у SKILL.md; ни один workflow не упоминает tests/ (проверено grep -rl). В репо 315 сюит и ноль автоматических прогонов. Нужно: (1) определить по каждой из 15, красная ли она на main или сломана линией — это разные задачи, и смешивать их нельзя; (2) починить или удалить с указанием причины, никогда не ослабляя утверждение ради зелёного; (3) один CI-джоб, прогоняющий run-all, иначе число вернётся. Задача связана с PLUGIN-VERDICT-01 §5 шаг 1 — это его первое измерение."
+    },
+    {
+      "source_id": "eb2d6dd52a2d",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "CI-COST-CEILING-IS-A-TEMPLATE-RISK-01",
+      "note": "CI-COST-CEILING-IS-A-TEMPLATE-RISK-01: воркфлоу теста в репо плагина копируется усыновителями, поэтому его стоимость — это их стоимость, а не наша. kv100/leadv2 PUBLIC, минуты бесплатны, но macos-latest на приватном репо идёт с множителем 10: timeout-minutes 120 у ночного прогона = 1200 списываемых минут за ОДИН запуск при бесплатной норме 2000/месяц, то есть два прогона съедают месяц усыновителя. Плюс публичные репо ограничены 5 одновременными macOS-джобами, а блока concurrency нет — вытесненные прогоны не отменяются и копятся в очереди. macOS нужен ровно ради bash 3.2 в test-status-surface-bash32.sh. Требование: macOS только для того, что без него бессмысленно; concurrency с cancel-in-progress; таймауты из замера; абзац стоимости в минутах для публичного и приватного репо"
+    },
+    {
+      "source_id": "b9384f0806a2",
+      "source_node_id": "leadv2:EFFORT-IS-NOT-WIRED-01",
+      "source_group_key": "adhoc",
+      "title": "EFFORT-IS-NOT-WIRED-01",
+      "note": "EFFORT-IS-NOT-WIRED-01: the arbiter and dispatcher never read or pass reasoning effort. 'effort' appears 0 times in leadv2-dispatch-code.sh and leadv2-route-arbiter.sh (all 8 hits are the phrase 'best-effort'), while config/session-routing.yaml carries per-role effort values and docs/model-effort-matrix.md is 97 lines of doctrine. Every spawn goes out at the provider default, so a mechanical edit and an adversarial safety review get the same thinking budget. Fix: the arbiter resolves (arm, effort) in one call from routing data, the dispatcher maps it onto each arm's own parameter, and the decision line names both."
+    },
+    {
+      "source_id": "95df4bfb52e4",
+      "source_node_id": "leadv2:MYTHICALGAMES-REPOS-HAVE-NO-OVERRIDES-01",
+      "source_group_key": "adhoc",
+      "title": "MYTHICALGAMES-REPOS-HAVE-NO-OVERRIDES-01",
+      "note": "MYTHICALGAMES-REPOS-HAVE-NO-OVERRIDES-01: 8 репозиториев MythicalGames приняты, но у каждого leadv2-overrides ABSENT — стек не описан, verify/deploy не заданы"
+    },
+    {
+      "source_id": "e7e35567e722",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "REGROUND-IS-SINGLE-REPO-01",
+      "note": "REGROUND-IS-SINGLE-REPO-01: post-compact-reground.sh:62 возвращает относительный docs/leadv2 и читает его от каталога сессии — 2026-09-02 это дало 0 журналов в persona-engine при 63 изменённых в ~/Projects/leadv2, где шли все восемь линий. Тот же однорепозиторный дефект, что у leadv2-pulse-json.sh:103-107, который брал первую мёртвую строку реестра как активную задачу лида"
+    },
+    {
+      "source_id": "ca0b9d47c40b",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "PULSE-READS-THE-WRONG-REGISTRY-01",
+      "note": "PULSE-READS-THE-WRONG-REGISTRY-01: анти-молчальный пульс весь день сообщает «линий нет» при четырёх живых линиях. Измерено 2026-09-02: пульс печатал «[ПУЛЬС] линий нет» в 12:24Z, 12:54Z, 13:24Z, 13:54Z, а также BROAD_STATUS с «+0 линии подняты, 0 закрыто» в 12:31Z, 13:08Z, 13:39Z — в то же время в ~/Projects/leadv2/.claude/worktrees/ работали WORKER-DOD-GATE-01, DRIFT-GUARDS-TO-CANON-01, FABLE-THINK-TIER-01 и WORKER-MCP-ALL-ARMS-01, у каждой живые процессы (3-17) и коммиты сверх main (2-25). Причина: пульс и broad-status читают реестр линий того репо, из которого запущена сессия (persona-engine), а линии живут в репо плагина. Это тот же корень, что в PLUGIN-VERDICT-01: одно состояние, шесть хранилищ, ни одного владельца. Последствие не косметическое — основатель спросил «почему час тишины в терминале», а механизм, существующий ровно против тишины, всё это время докладывал, что работы нет. Нужно: (1) реестр линий должен быть общим для всех репо ИЛИ пульс обязан перечислять линии по всем известным чекаутам, а не по одному; (2) «линий нет» и «0 поднято» обязаны отличаться от «реестр пуст, но воркеры найдены» — второе это расхождение, о котором надо кричать, а не молчать; (3) негативный контроль: запустить линию в чужом репо и убедиться, что пульс её видит; снять фикс — проба краснеет."
+    },
+    {
+      "source_id": "f630e21420b7",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "DRIFT-GUARDS-TO-CANON-01",
+      "note": "DRIFT-GUARDS-TO-CANON-01: перенести plugin-scripts-drift-guard.sh и plugin-scripts-drift-session-warn.sh из persona-engine/.claude/hooks/ в plugins/leadv2/hooks/ канона, чтобы соседние репо подключали их симлинком, а не копией. Запрос от лида getmany-followup-bot 2026-09-02: из четырёх его сегодняшних провалов хуки ловят ровно один — дрейф копий — и ловит его именно этот сторож, которого в плагине нет; копировать к себе он отказался, потому что это воспроизводит ровно ту болезнь, которую мы диагностировали (202 реальные копии в самом репо плагина, 5 протухших у него). Критерий сторожа репо-агностичен: реальный файл там, где в каноне есть файл с тем же именем. Заодно закрывает требование к leadv2-repo-install.sh --check тем же кодом: он обязан падать на дрейфе, а не рапортовать ok. Отдельно: leadv2-link-tree-heal.sh эту ситуацию не видит — он только добавляет недостающие симлинки и не распознаёт реальный файл на месте ссылки. guard-shared-git-destructive.py и leadv2-close-diff-guard.sh в канон НЕ берём — польза не подтверждена."
+    },
+    {
+      "source_id": "d23a14bce0b7",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "OPEN-THREADS-GUARD-PRECONDITION-DEAD-01",
+      "note": "OPEN-THREADS-GUARD-PRECONDITION-DEAD-01: scripts/open-threads-guard.sh refuses every commit in this repo when open-threads.md shrinks and demands docs/leadv2/open-threads-archive.md vouch for it — but that file was deleted by the v4-era purge (15ed23caf), so the precondition is unsatisfiable on main and the ONLY way past is PE_ALLOW_OPEN_THREADS_SHRINK=1. Measured 2026-09-01: refusal persisted even after the three named lines were restored to the file, so the comparison is not against file content as the message claims. A guard whose only exit is its own override is a guard everyone learns to override"
+    },
+    {
+      "source_id": "9370a6405e27",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "DIAGNOSTIC-WORKTREE-BECOMES-A-LANE-01",
+      "note": "DIAGNOSTIC-WORKTREE-BECOMES-A-LANE-01: черновой worktree, созданный диагностическим агентом, статусная поверхность считает живой линией и назначает активной задачей лида. Наблюдено 2026-09-02: агент, воспроизводивший фазовый дедлок вживую, создал worktree PHASE-PATH-REPRO-01 и оставил его; в реестре ~/.claude/leadv2-state/leadv2/active.yaml его 0 упоминаний, в журнале диспатчей 0, коммитов сверх main ровно один и тот якорный, дерево чистое, процессов ноль. Тем не менее анти-молчальный пульс напечатал «live=0: PHASE-PATH-REPRO-01=нет-журнала; PHASE-PATH-REPRO-01=нет-журнала» (дважды одну строку), status-snapshot.json подхватил его, а UserPromptSubmit-хук выдал лиду «ACTIVE TASK: PHASE-PATH-REPRO-01 | phase: spawning» вместе с полным ORCHESTRATOR_ROLE-блоком. То есть личность активной задачи лида была переписана черновиком чужого агента. Причина та же, что в PLUGIN-VERDICT-01: у состояния линий нет владельца, поэтому каталог worktrees сам по себе служит источником правды наравне с реестром, и они расходятся. Нужно: (1) линией считается только то, что есть в реестре — каталог worktrees не источник правды; (2) worktree без строки в реестре обязан называться осиротевшим и предлагаться к уборке, а не выдаваться за активную задачу; (3) диагностические прогоны создают worktree в mktemp, а не в .claude/worktrees; (4) негативный контроль: создать worktree без записи в реестре -> пульс обязан назвать его осиротевшим, а не живым."
+    },
+    {
+      "source_id": "ad64ded731f7",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "LEADV2-RESIDUE-HAS-NO-GC-01",
+      "note": "LEADV2-RESIDUE-HAS-NO-GC-01: у плагина нет сборщика мусора для собственных рабочих файлов. Измерено 2026-09-02 в persona-engine: docs/leadv2 = 348 файлов / 22 каталога / 4.6M, 62 файла старше 30 дней; glm-deferred.d = 3.2M / 155 файлов, 101 старше 7 дней; questions/ = 1.2M / 287 файлов, ни один не помечен отвеченным; плюс cache/, watches/, tasks/, missions/ без срока жизни. docs/LEAD_V2_STATE.md при этом 400 байт и рендерит пустую таблицу (Sessions: 0/5), последнее изменение 2026-08-31 — он зеркалит реестр, который очищается, тогда как линии живут в другом репо, так что файл структурно не может быть непустым здесь. Основатель ожидал, что временные файлы удаляются после отработки. Нужно: срок жизни на каждый каталог с рабочими файлами (кто пишет — тот и убирает), уборка на закрытии линии, и либо LEAD_V2_STATE.md показывает реестр того репо, где реально идут линии, либо он удаляется. Каждая проверка с негативным контролем."
+    },
+    {
+      "source_id": "fb3369300dce",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "DEAD-HOOKS-DELETE-01",
+      "note": "DEAD-HOOKS-DELETE-01: удалить 9 подтверждённо мёртвых точек входа среди хуков — не подключены НИ в hooks.json, НИ в MANIFEST внутри leadv2-bash-pre-dispatch.sh (проверены обе поверхности; чтение только одной уже дало ложную перепись 24 сирот вместо 12). block-codex (перенесён в codex-first-nudge), compact-trigger, force-read-limit + read-dedup-hard + lead-read-guard (все три вшиты как SECTION 1/2/3 в leadv2-read-gate.sh:38,80,140), hardbans-reinject, idle-guard-arm + idle-lead-guard (явно сняты lane-watch-v2.sh:24,287,394), hook-fork-budget (единственный вызыватель — его собственный тест). Отдельно: mode-isolation.sh НЕ сирота, это библиотека, которую сорсят пять живых хуков — перенести в hooks/lib/, её плоское расположение дважды породило ложную перепись. И pre-compact-task-freeze.sh не подключён, но его шапка до сих пор объявляет себя живым исправлением инцидента с потерей 136/139 и 191/191 id задач на 27 компактах — либо подключить к PreCompact, либо удалить и починить два файла, ссылающихся на него как на живой"
+    },
+    {
+      "source_id": "05a309fd5d75",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "DEAD-TASK-CANNOT-BE-REDISPATCHED-01",
+      "note": "DEAD-TASK-CANNOT-BE-REDISPATCHED-01: dispatch dedup refuses on row EXISTENCE, not state — a task the ledger itself reports as state=dead is refused as duplicate_task_signature forever, and no CLI releases a reservation (write-terminal/reconcile do not clear it). Measured 2026-09-01 on ARM-CAPABILITY-FROM-OUTCOMES-01: only hand-editing the dispatch ledger unblocked it. Needs a release/abort subcommand plus dedup keyed on live state."
+    },
+    {
+      "source_id": "490ed6999bb4",
+      "source_node_id": "human:plugin",
+      "source_group_key": "plugin",
+      "title": "DEAD-TASK-CANNOT-BE-REDISPATCHED-01",
+      "note": "DEAD-TASK-CANNOT-BE-REDISPATCHED-01: dispatch dedup refuses on row existence not state; a sig the ledger reports as state=dead is refused forever and no CLI releases a reservation. Measured 2026-09-01 on ARM-CAPABILITY."
+    },
+    {
+      "source_id": "4421c56e04ea",
+      "source_node_id": "leadv2:CODEX-DETACH-01",
+      "source_group_key": "adhoc",
+      "title": "CODEX-DETACH-01",
+      "note": "CODEX-DETACH-01: codex sol-workers die because state/broker.json points at a dead broker whose session dir the OS swept; companion must validate pid-alive AND session-dir-present before attaching, else raise a fresh broker. Supersedes the timeout theory in SD-CODEX-5MIN-CAP-ON-HEAVY-01 (wrapper ceiling is already 1800s, codex-task.sh:1534); the guard reaper stamps it as a 5m00s timeout and hides it. Root-caused by peer session persona-engine-a5 on 3 deaths: mtgk8ef8, mtgl2ea9, mtgl96u7."
+    },
+    {
+      "source_id": "b5e27169435a",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "ARBITER-CODEX-UTIL-UNKNOWN-CAPPED-01",
+      "note": "ARBITER-CODEX-UTIL-UNKNOWN-CAPPED-01: arbiter substitutes a ceiling for unknown Codex utilisation (util_codex=unknown_capped) so Codex systematically loses arm selection to any provider that publishes a number, regardless of real load. Evidence: route_resolved line, task-sig d552b9ab, 2026-09-03T~17:00Z, /tmp/lv2m/dispatch.log. Overlaps CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01 from the other side: the arbiter lacks quota visibility not only on reset dates but on one whole arm. Decide whether it folds into that task or stands alone."
+    },
+    {
+      "source_id": "d22d85cee19b",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "ARBITER-FLOOR-MODE-SILENTLY-OVERRIDES-GLM-FIRST-01",
+      "note": "ARBITER-FLOOR-MODE-SILENTLY-OVERRIDES-GLM-FIRST-01: arbiter routed 4 lanes to sonnet with reason=cheapest_capable while util_glm=13 vs util_claude=43 - GLM 3x freer yet not chosen. Suspected floor_mode=bulk_only admits GLM to bulk only so it is never considered at standard tier; if so a yaml line silently overrides GLM-FIRST-01 and the arbiter never gets to decide. Evidence: route_resolved line, task-sig d552b9ab, 2026-09-03T~17:00Z, /tmp/lv2m/dispatch.log. NOTE: measured before quota ceilings were restored at 20:04, so re-measure first. Verify the floor_mode hypothesis before fixing; never hardcode an arm into or out of routing."
+    },
+    {
+      "source_id": "77de6264b787",
+      "source_node_id": "human:leadv2",
+      "source_group_key": "leadv2",
+      "title": "TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01",
+      "note": "TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01: the profile selector logged 'same_account label=personal label=work -- one real account behind two slots' 9 times, in BOTH directions - 2026-08-28 both slots resolved to team/mythical.games, then 2026-08-31 (6x) and 2026-09-01 (2x) both resolved to max/gmail.com. In those runs there was ONE quota bucket, not two. That is the single defect that can void the founder's already-made and irreversible-until-2026-09-15 subscription decision: after the personal account drops from Max 20x to Max 5x, the whole throughput bet rests on two INDEPENDENT 5x buckets, and a collapse would surface not as a warning but as a wall mid-workday. Mechanism hypothesis, to be proven not guessed: the registry (~/.claude/state/leadv2/claude-profiles.tsv, unchanged since 2026-08-25) maps personal->keychain 'Claude Code-credentials-eb6c5b97' and work->'Claude Code-credentials-5a3c2328'; identity is derived per slot from <config_dir>/.claude.json oauthAccount.emailAddress merged with the credential's subscriptionType. A 'claude /login' run under the wrong CLAUDE_CONFIG_DIR rewrites one dir's oauthAccount, silently repointing that slot at the other account. Measured 2026-09-03T20:2xZ: currently HEALTHY - two distinct credentials (sha differ), personal=max/gmail uuid ...6ab506, work=team/mythical uuid ...502204. Deliver: (1) the proven cause of the 9 events, (2) collapse made impossible or loud - two slots on one account is a config failure, not a fail-open, (3) a one-command 'are we really two buckets' check the founder can run daily and on 2026-09-15. Never print credential values; labels, subscriptionType, uuid tails and hashes only. Separate from CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01: that one is a stale-field read, this one is a config-dir overwrite - different causes, so two lanes."
+    },
+    {
+      "source_id": "ceaa0a06e3d0",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "DISPATCH-RESUME-LANE-ARG-SHAPE-01",
+      "note": "DISPATCH-RESUME-LANE-ARG-SHAPE-01: --resume-lane принимает только голое имя линии; с абсолютным путём диспетчер склеивает worktrees//Users/... и отказывает no_lane_worktree_for_ref. Принимать обе формы или печатать точную в usage."
+    },
+    {
+      "source_id": "550665609c2d",
+      "source_node_id": "human:leadv2-plugin",
+      "source_group_key": "leadv2-plugin",
+      "title": "CODEX-ARM-UNKNOWN-TIER-SPARK-01",
+      "note": "CODEX-ARM-UNKNOWN-TIER-SPARK-01: плечо codex падает spawn(codex) failed rc=1, [codex-task] unknown --tier: spark (expected top|standard|volume). Починить источник неверного тира, а не расширять список."
+    },
+    {
+      "source_id": "183f76542b3f",
+      "source_node_id": "human:plugin-bug",
+      "source_group_key": "plugin-bug",
+      "title": "REVIEW-ROUND-LOST-ON-LANE-HANDOFF-01",
+      "note": "REVIEW-ROUND-LOST-ON-LANE-HANDOFF-01: leadv2-review-run.sh started FABLE R4 and GUARD-CENSUS R2 as round=1 prior_findings=0 when --handoff pointed at the lane worktree docs/handoff (prior review-findings.roundN.json live only in the main checkout) — round cap and prior-findings dedup silently reset; resolve the handoff dir from the task id, not from --root"
+    },
+    {
+      "source_id": "899a2e661c5a",
+      "source_node_id": "human:plugin-bug",
+      "source_group_key": "plugin-bug",
+      "title": "LANES-SNAPSHOT-HANGS-01",
+      "note": "LANES-SNAPSHOT-HANGS-01: leadv2-lanes-snapshot.sh hung >2 min with 7 live lanes (2026-09-02 00:50Z, killed by tool timeout) — the 30-min status source is unusable; find the blocking call and bound every probe with a timeout"
+    },
+    {
+      "source_id": "2dcca7ef7e0f",
+      "source_node_id": "human:plugin-bug",
+      "source_group_key": "plugin-bug",
+      "title": "REVIEW-GATE-SWALLOWS-FALSIFIABILITY-VERDICT-01",
+      "note": "REVIEW-GATE-SWALLOWS-FALSIFIABILITY-VERDICT-01: leadv2-review-run.sh reports reason=suite_falsifiability_undetermined but drops the gate's own verdict line (baseline rc / timed out / already red), so the review log is 2 lines and the lead must re-run the gate by hand to learn why (hit twice tonight: GLM-EFFICIENCY-01 R1, FABLE-THINK-TIER-01 R5) — carry the verdict line and baseline rc into the review_gate reason and into review-gate.md"
+    },
+    {
+      "source_id": "1656486bd9f8",
+      "source_node_id": "human:plugin-bug",
+      "source_group_key": "plugin-bug",
+      "title": "GLM-LOCK-STALE-DIRS-01",
+      "note": "GLM-LOCK-STALE-DIRS-01: GLM-EFFICIENCY-01 R2 dispatch got glm_refused_lock_busy on BOTH glm and glm-flash with no live GLM worker for that lane (fell to codex, fallback_depth=3); ~/.claude/cache/glm-runs/ holds 22 .lock-* dirs dating back to Aug 2 with dead pids — the per-lane lock (GLM-ARM-THROUGHPUT-01) must reclaim a lock whose pid/pgid is dead and sweep stale dirs"
+    },
+    {
+      "source_id": "0000b5bc9aa0",
+      "source_node_id": "human:plugin-bug",
+      "source_group_key": "plugin-bug",
+      "title": "CODEX-TRANSPORT-GONE-01",
+      "note": "CODEX-TRANSPORT-GONE-01: codex arm keeps dying at transport — GLM-EFFICIENCY-01 R2 job task-mtjeekuw-a3e0w0 TERMINAL cause=transport_gone_app_server_absent 5 min after its first turn (01:14Z), same as BRAIN R2 and two founder-status rows earlier; codex-task.sh must probe app-server liveness BEFORE spawn and the router must skip the arm for the window instead of burning a spawn + 5 min per dispatch"
+    }
+  ],
+  "meta_row_excluded": {
+    "note": "This is task PLUGIN-REPO-HAS-NO-BACKLOG-01 itself, sitting in persona-engine backlog. Do NOT migrate it as an open row. Close it in persona-engine once this mission ships.",
+    "id": "540504d70585",
+    "node_id": "human:adhoc",
+    "intent": "PLUGIN-REPO-HAS-NO-BACKLOG-01: в репо плагина ~/Projects/leadv2 нет docs/tasks.yaml, хотя его собственный тулинг ждёт файл ровно там (plugins/leadv2/scripts/leadv2-tasks-lib.sh:21 задаёт _TASKS_FILE=P"
+  }
+}
