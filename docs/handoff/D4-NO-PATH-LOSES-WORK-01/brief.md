@@ -395,3 +395,67 @@ Sibling finding of the same shape, worth naming as a class rather than two incid
 dirty-tree probe is scoped by a pathspec taken from `lane_writes`, which is empty in ~98% of
 cases — so `dirty` is never set. **Two independent places disable themselves on empty input.**
 Any check this lane adds must fail loudly on empty input, never quietly pass.
+
+---
+
+## LEAD ADDENDUM 6 — case 9 is inside our own rule, and it is confirmed on this machine
+
+Every addendum so far has said "alive if `kill -0 <pid>` succeeds". That is wrong, and the failure
+is silent in the dangerous direction: it reports a LIVE process as dead.
+
+`kill -0` fails for two different reasons and **bash gives them the same exit code.** Measured
+here, just now:
+
+```
+$ kill -0 1        ; echo $?     # pid 1: alive, owned by root
+kill 1 failed: operation not permitted
+1
+$ kill -0 999999   ; echo $?     # pid 999999: does not exist
+kill 999999 failed: no such process
+1
+```
+
+Identical `rc=1`. The only thing that separates a living process from a missing one is the text on
+stderr. A rule that reads the exit code alone declares any process it may not signal to be dead —
+and then, under the resume policy, a live lane gets a second worker.
+
+The C-level distinction is `EPERM` (alive, not permitted to signal) versus `ESRCH` (no such
+process). Only `ESRCH` is death. This is the same shape as case 5 one storey down: **"I cannot ask"
+is not "it is not there."**
+
+### Rule correction — replaces the `kill -0` line in addenda 2, 3 and 5
+
+- `kill -0` succeeds → **alive**
+- fails with *no such process* → **dead**
+- fails for any other reason (*operation not permitted*, or anything else) → **unknown**, never dead
+
+And, per addendum 3, the resume path never acts on `unknown`. Capture stderr and classify it; do
+not branch on `$?` alone.
+
+Acceptance fixture: assert `kill -0` against a live process the caller may not signal (pid 1 is
+adequate on this machine) yields **unknown**, and against a pid that does not exist yields
+**dead**. A suite that only tests "own live pid" and "obviously bogus pid" passes today and hides
+this entirely.
+
+## Atomic checkpoint — take the cheap known-good shape, do not invent one
+
+A checkpoint that must survive a `SIGKILL` mid-write is a solved problem and needs no daemon and
+no protocol: **write to a temporary file, then `rename()`** — rename is atomic, so a reader sees
+either the old file or the new one, never a half-written one — **plus a short debounce (~5s)** so
+a busy lane does not rewrite continuously. This is the shape a mature daemon in the same problem
+space uses (`persist/io.rs:44`, `app/session.rs:13`). Use it for whatever state the sweeper
+persists; it is three lines of bash and it is the cheapest item in this brief.
+
+## Two corroborations, and one honest limit
+
+- **Liveness must ASK, not LOOK.** That daemon checks a server by connecting to its socket
+  (`server/autodetect.rs:44`), not by testing that the socket file exists: a stale socket file is
+  not life. Same class as our "a handle file exists ≠ the lane is alive". Whatever probe this lane
+  writes must interrogate something, not observe an artifact.
+- **Nobody has solved the hard half.** After that daemon restarts, each pane gets a NEW shell in
+  the saved directory (`persist/restore.rs:66`) — the layout is restored, the process is not. They
+  persist context, not work. D4 is aiming higher than the reference implementation, so do not
+  expect to find the answer by reading it: the part we care about is the part they skipped.
+
+Source of these four points: `docs/handoff/RESEARCH-HERDR-DAEMON-01/brief.md` (commit `e861cb0e`),
+a read of the implementation rather than its documentation.
