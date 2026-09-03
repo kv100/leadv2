@@ -118,6 +118,26 @@ git pull --ff-only origin main || {
   write_blocker "main moved during task — manual rebase needed"
   exit 1
 }
+
+# LANE-MERGE-SILENTLY-REVERTS-MAIN-01: last check before the irreversible
+# merge. A rebase above (if BEHIND>0) normally already carries main's
+# post-fork content forward, but this is the final backstop regardless of
+# how TASK_BRANCH got here -- refuse rather than silently drop a file the
+# task branch never touched.
+MERGE_SAFETY_GATE="${SCRIPT_DIR}/leadv2-merge-safety-gate.sh"
+if [[ -x "$MERGE_SAFETY_GATE" ]]; then
+  GATE_OUT="$("$MERGE_SAFETY_GATE" "$(pwd)" "$TASK_BRANCH" main 2>&1)" && GATE_RC=0 || GATE_RC=$?
+  if [[ "$GATE_RC" -eq 1 ]]; then
+    printf '%s\n' "$GATE_OUT" >&2
+    write_blocker "merge-safety-gate refused: lane deletes file(s) it never touched -- merge main into the lane, then retry"
+    exit 1
+  elif [[ "$GATE_RC" -ge 2 ]]; then
+    printf '%s\n' "$GATE_OUT" >&2
+    write_blocker "merge-safety-gate errored (rc=${GATE_RC}) -- see log"
+    exit 1
+  fi
+fi
+
 git merge --ff-only "$TASK_BRANCH" || {
   echo "ff-only merge failed — rebase task branch first"
   write_blocker "ff-only merge failed — rebase task branch first"
