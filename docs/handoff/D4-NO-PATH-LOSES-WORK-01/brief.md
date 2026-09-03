@@ -301,3 +301,44 @@ that was resumed, or whose dispatcher output was not captured, has no such line 
 handle is meant to be authoritative, the dispatcher must PERSIST it into the lane's own directory
 rather than only printing it to a log that may or may not be kept. Prescribe that; it is the
 difference between a rule that works and a rule that works when someone remembered to save stdout.
+
+---
+
+## LEAD ADDENDUM 4 — a lane dies TWICE, and rescue must beat the resume to it
+
+Second independent confirmation, 2026-09-03, from a sibling session: a lane does not die once at
+session restart. It dies again, minutes after a SUCCESSFUL resume. Lane `CLASSIFIER-CALLS-SAFETY`
+died on its second run carrying 11 files and +264/−115 with no commit at all; it was saved only
+by a second hand-written `wip` commit.
+
+Two requirements follow, and neither is implied by the sweeper as designed above.
+
+### 1. Rescue must be REPEATABLE
+
+A lane can accumulate several rescue commits. The design must therefore hold two things at once:
+
+- a second (third, fourth) orphan checkpoint on the same lane is normal, not an error, and must
+  not be suppressed by "this lane already has a checkpoint";
+- **a previous rescue commit is NOT finished work.** Nothing downstream — the merge funnel, the
+  close gate, the "lane has commits, therefore it produced something" heuristic — may treat an
+  `(ORPHAN)` checkpoint as a deliverable. That is how a rescue turns into a false close: the lane
+  looks productive, gets merged or closed, and the work it was actually doing is thrown away.
+
+Assert both: rescue a lane twice and confirm two distinct checkpoints exist; then confirm the
+close/merge path does not count either of them as the lane's deliverable.
+
+### 2. Rescue must PRECEDE the resume, and the order is fixed
+
+The sequence is not "resume and hope the sweeper catches up". It is:
+
+**prove death → rescue the dirty tree → release the slot → only then resume.**
+
+A resume issued before the rescue races the new worker against the old tree, and the new worker
+will happily write over uncommitted work it never saw. Note this interacts directly with
+Addendum 3: "prove death" means a positive `dead`, never `unknown` — so the full gate before any
+resume is *positive death, then successful rescue, then slot release*. If the rescue fails, the
+resume does not happen; report it and stop.
+
+Acceptance: attempt a resume on a lane with a dirty tree and a dead worker, and assert the
+rescue commit exists BEFORE the new worker's first write. Then attempt a resume where the rescue
+is forced to fail, and assert no new worker is spawned at all.

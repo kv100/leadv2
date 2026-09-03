@@ -189,3 +189,42 @@ before implementing the liveness call here; D4 owns the rule, this lane consumes
 
 Assert that a timeout produces `unknown` on every surface simultaneously — not alive on one and
 dead on another. Surfaces disagreeing under failure is the exact symptom this row exists to kill.
+
+---
+
+## LEAD ADDENDUM 2 — the policy question is answered: foreign repos ON by default
+
+Addendum 1 told this lane to build the aggregation but leave the display switch in its current
+position pending a decision. **The decision has arrived: turn it ON.** The `PULSE-REPO-SCOPED-03`
+reversal is sanctioned.
+
+The basis, recorded so a later session does not relitigate it: a surface that prints
+"+0 линии подняты" while seven lanes are running in the plugin repo is not "correctly scoped" —
+it is wrong, and wrong in the exact direction where work gets lost. The policy was written against
+noise; what it produced was not quiet, it was a false zero. Same class as the narrow `ps` pattern,
+same remedy.
+
+Two conditions attached to the flip:
+
+1. **The switch stays.** Rollback must remain a single flip if the founder finds the wider view
+   noisy. Do not hard-code the new behaviour.
+2. **Make the inclusion visible.** The status line states how many repos it aggregated. Being ON
+   must be legible on the surface itself, not implied by its contents — otherwise nobody can tell
+   an aggregated view from a lucky one.
+
+## Additional acceptance case — `unknown` may not decay into a stale fact
+
+Addendum 1 required a timeout to render as `unknown` on every surface at once. One more case, and
+it is the one this whole evening has been about:
+
+**A surface showing `unknown` may NOT substitute the last known value.** "Alive a minute ago"
+displayed on a timeout becomes "alive", and a reader takes it as current. Every wrong verdict we
+have chased today — the day-old status file with a fresh stamp, the lane called silent that was
+dead, the mtime that meant nothing — is the same shape: a stale answer presented as a present
+one.
+
+So the suite asserts: force the liveness call to time out for a lane that was alive on the
+previous pass, and assert every surface renders `unknown` — not the previous `alive`, not a
+cached row, not a greyed-out "last seen" that reads as a state. If a surface wants to show when
+it last had a real answer, it must be labelled as a timestamp of the last successful probe and
+must not occupy the state column.
