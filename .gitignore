@@ -49,6 +49,7 @@ plugins/leadv2/scripts/tests/.claude/
 docs/handoff/*/*
 !docs/handoff/*/report.md
 !docs/handoff/*/brief*.md
+!docs/handoff/*/persona-engine-close-commands.txt
 !docs/handoff/*/round*-red
 docs/leadv2/review-*
 docs/leadv2/status-snapshot.json
