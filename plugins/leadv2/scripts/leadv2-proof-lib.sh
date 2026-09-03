@@ -58,7 +58,12 @@ assert_file_contains() {
 # The directory is also exported as LEADV2_PROOF_TMP for child processes.
 proof_tmpdir() {
   local d
-  d=$(mktemp -d 2>/dev/null || mktemp -d -t leadv2-proof)
+  # Portable template (GNU mktemp rejects `-t name` without X's); fall back
+  # to the explicit -t form for BSD variants where plain `mktemp -d` needs it.
+  d=$(mktemp -d 2>/dev/null || mktemp -d -t leadv2-proof.XXXXXX 2>/dev/null) || true
+  if [[ -z "${d:-}" || ! -d "${d:-}" ]]; then
+    proof_fail "could not create a temp directory for the proof"
+  fi
   export LEADV2_PROOF_TMP="$d"
   # Register cleanup only once
   if [[ -z "${_PROOF_TMP_CLEANUP_REGISTERED:-}" ]]; then

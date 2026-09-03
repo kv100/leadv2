@@ -418,7 +418,12 @@ print(json.dumps(d))
       fi
     else
       # Execute
-      export LEADV2_PROOF_BASE_TMP="${LEADV2_PROOF_BASE_TMP:-$(mktemp -d -t leadv2-skill-proof)}"
+      # Portable mktemp: GNU coreutils reads `-t leadv2-skill-proof` as a
+      # template with no X's and fails ("too few X's"), leaving this var empty;
+      # execute_proof would then mkdir at the filesystem root, which fails for
+      # a non-root runner and every proof goes RED. BSD mktemp (macOS) accepts
+      # the -t form. Explicit template with XXXXXX works on both.
+      export LEADV2_PROOF_BASE_TMP="${LEADV2_PROOF_BASE_TMP:-$(mktemp -d "${TMPDIR:-/tmp}/leadv2-skill-proof.XXXXXX")}"
       local rc=0
       execute_proof "$proof_file" "$skill" || rc=$?
       duration_ms=$PROOF_DURATION_MS
