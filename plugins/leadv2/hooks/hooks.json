@@ -89,6 +89,13 @@
             "timeout": 6,
             "continueOnBlock": true,
             "statusMessage": "Arming lane watch..."
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-hook-fork-guard.sh\" 2>&1; r=$?; if [ \"$r\" -eq 1 ]; then printf 'HOOK-FORK-GUARD: real copies of plugin hooks detected in consumer repos (see FAIL lines above); fix: replace each with a symlink into plugins/leadv2/hooks/\\n'; exit 0; fi; if [ \"$r\" -ne 0 ]; then printf '%s rc=%s\\n' 'leadv2-hook-fork-guard.sh' \"$r\" >> \"${LEADV2_DEGRADE_LOG:-/tmp/leadv2-hook-degrade.log}\" 2>/dev/null; fi; exit 0",
+            "timeout": 10,
+            "continueOnBlock": true,
+            "statusMessage": "Checking plugin-hook parity across repos..."
           }
         ]
       },

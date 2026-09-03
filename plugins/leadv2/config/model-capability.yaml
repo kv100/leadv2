@@ -160,15 +160,54 @@ glm:
   agentic_score: null
   agentic_basis: null
   speed_class: medium
-  context_k: null
+  context_k: 1000
   cost_class: cheap
-  confidence: low
+  confidence: medium
   notes: >
-    UNVERIFIED: benchmark, context, and price figures were collected for glm-5.2
-    and must not be reused for glm-5.3. The only current capability evidence is
-    the live endpoint acceptance probe in docs/evidence/glm-5.3-probe.md.
-  sources: []
-  asof: "2026-08-25"
+    Refreshed 2026-09-02 (GLM-EFFICIENCY-01) from Z.AI's live 5.3 pages — the
+    GLM-5.2-era stale flag is gone. Text-only; 1M context / 128K max output.
+    Thinking is FORCED ON (thinking.type only supports enabled; reasoning_effort
+    low|high|max, default max, no disable). Independent swebench/terminal-bench
+    numbers for 5.3 do not exist yet — Z.AI's own Code Bench is private and
+    vendor-run (34.5% e2e at max effort), so score fields stay null and coding
+    claims remain UNVERIFIED-by-third-party. Credit weight on the coding plan
+    (docs.z.ai/devpack/teamplan.md, fetched 2026-09-02): input 6.9 / cached 1.7 /
+    output 24 per 10k credits — the 1x baseline glm-5.3-flash is measured against.
+    Off-peak (outside Mon-Fri 14:00-18:00 SGT) bills at 0.5x.
+  sources:
+    - https://docs.z.ai/guides/llm/glm-5.3.md
+    - https://docs.z.ai/devpack/teamplan.md
+    - https://docs.z.ai/devpack/latest-model.md
+  asof: "2026-09-02"
+
+glm-flash:
+  underlying_model: glm-5.3-flash
+  coding_score: null
+  score_basis: null
+  agentic_score: null
+  agentic_basis: null
+  speed_class: fast
+  context_k: 1000
+  cost_class: cheap
+  confidence: medium
+  notes: >
+    Added 2026-09-02 (GLM-EFFICIENCY-01). First native-multimodal GLM-5 model
+    (320B total / 18B activated, sparse+linear attention); 1M context / 128K
+    max output — same parameter settings as glm-5.3. Thinking forced on, same
+    reasoning_effort ladder (low|high|max, default max; Z.AI recommends max
+    generally — low is our cost policy for trivial/mechanical dispatch, not a
+    provider restriction). CREDIT WEIGHT IS 1/3 OF GLM-5.3, NOT 3x: input 2.3 /
+    cached 0.56 / output 8 vs glm-5.3's 6.9 / 1.7 / 24 (docs.z.ai/devpack/
+    teamplan.md). The flash page's "3x the quota" means 3x MORE allowance
+    (Team Standard ~965-1,930 M tokens/week at 95% cache hit vs glm-5.3's
+    319-638), not 3x cost — GLM-EFFICIENCY-AUDIT-01 read the direction
+    backwards; the routing matrix's cost 0.4 (legacy-plan figure) is
+    directionally right and mildly conservative vs the true 0.33 ratio.
+  sources:
+    - https://docs.z.ai/guides/vlm/glm-5.3-flash.md
+    - https://docs.z.ai/devpack/teamplan.md
+    - https://docs.z.ai/devpack/latest-model.md
+  asof: "2026-09-02"
 
 kimi:
   underlying_model: kimi-k3
