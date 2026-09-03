@@ -2660,7 +2660,24 @@ elif ! e2e_cmd="$(bash "${SCRIPT_DIR}/leadv2-e2e-entrypoint.sh" "${_lv2_e2e_root
   _dl_note refused no_e2e_entrypoint "repo=${repo}"
   exit 4
 else
-  { printf 'e2e-root: %s\n' "${_lv2_e2e_root}"; ( cd "${_lv2_e2e_root}" && bash -c "${e2e_cmd} --scope changed" ); } > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+  # PPC-G8: mirror leadv2-phase8-e2e-gate.sh's deadline enforcement here too --
+  # this is the SAME "e2e_cmd --scope changed" invocation, just reached via the
+  # dispatch-close path instead of the standalone gate. Without a deadline on
+  # THIS call site a hung suite still blocks dispatch-close forever even though
+  # the standalone gate now times out; both writers of e2e-gate-passed.flag must
+  # share one enforcement mechanism (_lv2_selfcheck_timeout_run, from
+  # lib/leadv2-builder-selfcheck.sh, sourced at :89-91) or the fix is partial.
+  _pc_e2e_timeout_s="${LEADV2_PHASE8_E2E_TIMEOUT_S:-900}"
+  if command -v _lv2_selfcheck_timeout_run >/dev/null 2>&1; then
+    { printf 'e2e-root: %s\n' "${_lv2_e2e_root}"; ( cd "${_lv2_e2e_root}" && _lv2_selfcheck_timeout_run "${_pc_e2e_timeout_s}" /dev/stdout -- bash -c "${e2e_cmd} --scope changed" ); } > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+  else
+    # Guarded-source lib absent (R1: infra fault, not lane fault) -- degrade to
+    # the pre-PPC-G8 undeadlined run rather than block on a missing helper.
+    { printf 'e2e-root: %s\n' "${_lv2_e2e_root}"; ( cd "${_lv2_e2e_root}" && bash -c "${e2e_cmd} --scope changed" ); } > "${HANDOFF}/e2e-gate.log" 2>&1; e2e_rc=$?
+  fi
+  if [[ ${e2e_rc} -eq 124 ]]; then
+    echo "leadv2-dispatch-product-close: e2e suite TIMED OUT after ${_pc_e2e_timeout_s}s" >> "${HANDOFF}/e2e-gate.log"
+  fi
   # GATE-FOREIGN-FAILURE-01: WRITES_CSV present + ownership enabled means the
   # passed sentinel is stamped as scoped to the lane's own write set (the
   # apparatus that can tell "my regression" from "someone else's unfinished
