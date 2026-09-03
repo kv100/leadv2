@@ -328,18 +328,20 @@ w_count="$(grep -c 'WARN: registry line .* skipped: token_expired' <<<"$ERR")"
 # is display-only; identity comes from the slot's own JSON (.claude.json for
 # the email, credential for sub/expiry), bucketing keys on that identity, and
 # every lie the registry can tell is warned loudly, fail-open.
-mk_slot() { # <dir> <sub> <email|-> <expiry_ms>
+mk_slot() { # <dir> <sub> <email|-> <expiry_ms> [account_uuid]
   mkdir -p "$1"
   printf '{"claudeAiOauth":{"accessToken":"sk-ant-fixture","refreshToken":"sk-ant-r","subscriptionType":"%s","expiresAt":%s}}' \
     "$2" "$4" > "$1/.credentials.json"
   if [[ "$3" == "-" ]]; then
     rm -f "$1/.claude.json"
+  elif [[ -n "${5:-}" ]]; then
+    printf '{"oauthAccount":{"emailAddress":"%s","accountUuid":"%s"}}' "$3" "$5" > "$1/.claude.json"
   else
     printf '{"oauthAccount":{"emailAddress":"%s"}}' "$3" > "$1/.claude.json"
   fi
 }
 
-echo "=== T14: both slots = SAME account -> WARN same_account + ONE bucket ==="
+echo "=== T14: both slots = SAME account -> refuse the round (reason=same_account), email-free WARN ==="
 mkdir -p "$tmp/dir-same1" "$tmp/dir-same2"
 mk_slot "$tmp/dir-same1" team  "shared@fixture.test" "$future_ms"
 mk_slot "$tmp/dir-same2" team  "shared@fixture.test" "$future_ms"
@@ -347,13 +349,30 @@ acct_json 40 30 > "$FIX/same1.json"; acct_json 40 30 > "$FIX/same2.json"
 printf 'same1\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-same1" "$tmp/dir-same1" > "$REG"
 printf 'same2\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-same2" "$tmp/dir-same2" >> "$REG"
 : > "$tmp/seen"
+alarm="$tmp/alarm.json"; rm -f "$alarm"
+run_select $(base_env) "STUB_SEEN=$tmp/seen" "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB" \
+  "LEADV2_CLAUDE_ACCOUNT_ALARM_FILE=$alarm"
+check_grep "$ERR" 'WARN: same_account label=same1 label=same2 sub=team account=unresolved' 'T14a: same_account warn is email-free (no accountUuid in fixture -> unresolved)'
+check_nogrep "$ERR" 'shared@fixture\.test' 'T14a2: same_account warn never carries the email half'
+check_grep "$OUT" '^profile=- reason=same_account$' 'T14b: selector refuses the round instead of pinning a dir'
+[[ ! -s "$tmp/seen" ]] && pass "T14c: no probe ran (refused before probing)" || fail "T14c" "seen=$(cat "$tmp/seen")"
+[[ -f "$alarm" ]] && grep -q '"kind":"same_account"' "$alarm" \
+  && pass "T14d: alarm file written on detect" || fail "T14d" "alarm=$([[ -f "$alarm" ]] && cat "$alarm" || echo MISSING)"
+check_nogrep "$(cat "$alarm" 2>/dev/null)" '@' 'T14e: alarm file carries no email'
+[[ "$RC" -eq 0 ]] && pass "T14: exit 0 (fail-open availability -- caller falls back to single-profile)" || fail "T14 exit" "rc=$RC"
+
+echo "=== T21: same accountUuid, DIFFERING email case -> still caught (uuid beats string identity) ==="
+mkdir -p "$tmp/dir-uuid1" "$tmp/dir-uuid2"
+mk_slot "$tmp/dir-uuid1" team "Shared@Fixture.test" "$future_ms" "acct-fixture-000111222333"
+mk_slot "$tmp/dir-uuid2" team "shared@fixture.test" "$future_ms" "acct-fixture-000111222333"
+printf 'uuid1\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-uuid1" "$tmp/dir-uuid1" > "$REG"
+printf 'uuid2\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-uuid2" "$tmp/dir-uuid2" >> "$REG"
+: > "$tmp/seen"
 run_select $(base_env) "STUB_SEEN=$tmp/seen" "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
-check_grep "$ERR" 'WARN: same_account label=same1 label=same2 identity=team/shared@fixture\.test' 'T14a: same_account warn names both labels + the shared identity'
-buckets="$(sort -u "$tmp/seen" | wc -l | tr -d ' ')"
-[[ "$buckets" -eq 1 ]] && pass "T14b: usage bucketed ONCE (one cache dir for both slots)" \
-                      || fail "T14b" "buckets=$buckets seen=$(cat "$tmp/seen")"
-check_grep "$OUT" '^profile=same1 .*candidates=2 ' 'T14c: fail-open -- both slots stay candidates'
-[[ "$RC" -eq 0 ]] && pass "T14: exit 0" || fail "T14 exit" "rc=$RC"
+check_grep "$ERR" 'WARN: same_account label=uuid1 label=uuid2 sub=team account=\.\.222333' 'T21a: uuid-keyed match reports the account-uuid tail'
+check_grep "$OUT" '^profile=- reason=same_account$' 'T21b: refused even though the two derived identities differ as strings'
+[[ ! -s "$tmp/seen" ]] && pass "T21c: no probe ran" || fail "T21c" "seen=$(cat "$tmp/seen")"
+[[ "$RC" -eq 0 ]] && pass "T21: exit 0" || fail "T21 exit" "rc=$RC"
 
 echo "=== T15: label/expect vs derived identity -> WARN label_mismatch, bucket by identity ==="
 mkdir -p "$tmp/dir-mism"
