@@ -15,6 +15,8 @@ ARBITER="${SCRIPTS_DIR}/lib/leadv2-route-arbiter.sh"
 ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/freepool-gets-work.XXXXXX")"
 MUTATED_DISPATCH="${SCRIPTS_DIR}/.test-freepool-gets-work-mutated.$$.sh"
+MUTATED_ARBITER="${TMP}/leadv2-route-arbiter-floor-mutated.sh"
+MUTATED_OVERRIDE_DISPATCH="${TMP}/leadv2-dispatch-class-override-mutated.sh"
 cleanup() { rm -rf "${TMP}"; rm -f "${MUTATED_DISPATCH}"; }
 trap cleanup EXIT
 
@@ -63,21 +65,23 @@ WORKER="${TMP}/worker.sh"
 printf '#!/usr/bin/env bash\nprintf "PID=%%s LABEL=test SESSION_ID=test\\n" "$$"\n' > "${WORKER}"
 chmod +x "${WORKER}"
 
-dispatch_probe() { # <dispatcher> <label>
-  local bin="$1" label="$2"
+dispatch_probe() { # <dispatcher> <label> [arbiter] [judge]
+  local bin="$1" label="$2" arbiter="${3:-${ARBITER}}" judge="${4:-/bin/false}"
   (
     cd "${REPO}" || exit 9
     LEADV2_STATE_ROOT="${TMP}/state-${label}" \
     LEADV2_ROUTE_ARBITER_QUOTA_LIVE="${TMP}/live.sh" \
     LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="${TMP}/free.sh" \
     LEADV2_ROUTE_ARBITER_STATE_FILE="${TMP}/arbiter-${label}.json" \
+    LEADV2_ROUTE_ARBITER_LIB="${arbiter}" \
+    LEADV2_ROUTE_ARBITER_ROUTING_YAML="${ROUTING}" \
     ROUTE_TEST_QUOTA="${ROUTE_TEST_QUOTA}" \
     CLAUDE_PROJECT_ROOT="${REPO}" LEADV2_PROJECT_ROOT="${REPO}" \
     LEADV2_DISPATCH_CACHE_DIR="${TMP}/cache-${label}" \
     LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 \
     LEADV2_REQUIRE_PHASES=0 LEADV2_ROUTER_V2=0 LEADV2_EXCLUDED_ARMS=__none__ \
     LEADV2_LANE_SHAPE=off LEADV2_BURN_GOVERNOR=0 LEADV2_ARM_EARLY_VERDICT_S=0 \
-    LEADV2_TASK_JUDGE_BIN=/bin/false LEADV2_DISPATCH_SUBSESSION_BIN="${WORKER}" \
+    LEADV2_TASK_JUDGE_BIN="${judge}" LEADV2_DISPATCH_SUBSESSION_BIN="${WORKER}" \
     bash "${bin}" "freepool tests-only admission ${label}" \
       --kind code --task-class standard --no-spawn \
       --writes 'tests/freepool-probe.sh,docs/handoff/FREEPOOL/report.md' 2>&1
@@ -129,14 +133,84 @@ else
   fi
 fi
 
-# The production dispatcher remains untouched and the first green run above is
-# the restoration proof; re-run after the mutation to prove no sibling-copy
-# path leaked into the canonical dispatcher.
+# Negative control C: retain the tests/docs descriptor but force the arbiter's
+# floor branch to apply. The exact lane must lose freepool selection and emit
+# its usual floor decision; otherwise the test-only exemption is unproven.
+cp "${ARBITER}" "${MUTATED_ARBITER}"
+python3 - "${MUTATED_ARBITER}" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+needle = 'and not test_only) if floor_mode'
+if needle not in s:
+    raise SystemExit('floor mutation anchor missing')
+open(p, 'w').write(s.replace(needle, 'and True) if floor_mode', 1))
+PY
+floor_mutate_rc=$?
+if [[ ${floor_mutate_rc} -ne 0 ]]; then
+  fail 'negative control C: floor mutation anchor found'
+else
+  floor_mutated_out="$(dispatch_probe "${DISPATCH}" floor-mutated "${MUTATED_ARBITER}")"; floor_mutated_rc=$?
+  printf '%s\n' "${floor_mutated_out}" > "${TMP}/floor-mutated.log"
+  if [[ ${floor_mutated_rc} -eq 0 ]] \
+     && ! printf '%s\n' "${floor_mutated_out}" | grep -q 'route_resolved by=arbiter role=worker arm=freepool' \
+     && printf '%s\n' "${floor_mutated_out}" | grep -q 'arm_floor_applied arm=freepool .*reason=standard/code'; then
+    pass 'RED: negative control C forced-floor mutation demotes freepool for the tests/docs lane'
+  else
+    fail 'negative control C: forced-floor mutation did not make floor exemption assertion red' "rc=${floor_mutated_rc} $(tail -n 8 "${TMP}/floor-mutated.log")"
+  fi
+fi
+
+# The classifier, rather than the caller's hint, remains authoritative. Its
+# override needs a journal line with both classes and a concrete reason.
+HEAVY_JUDGE="${TMP}/heavy-judge.sh"
+cat > "${HEAVY_JUDGE}" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '{"complexity":"complex","risk_class":"none","subsystems_touched":1,"work_kind":"build","estimate_source":"judge"}'
+EOF
+chmod +x "${HEAVY_JUDGE}"
+override_out="$(dispatch_probe "${DISPATCH}" override "${ARBITER}" "${HEAVY_JUDGE}")"; override_rc=$?
+printf '%s\n' "${override_out}" > "${TMP}/override.log"
+if [[ ${override_rc} -eq 0 ]] && printf '%s\n' "${override_out}" | grep -q 'task_class_override by=admission task=[0-9a-f]\{8\} requested=standard resolved=Heavy reason=complexity_complex source=judge'; then
+  pass 'green: classifier escalation journals requested class, resolved class, and reason'
+else
+  fail 'green: classifier escalation journals requested class, resolved class, and reason' "rc=${override_rc} $(grep -m1 task_class "${TMP}/override.log" || true)"
+fi
+
+# Negative control D: remove only the emitted override record from a sibling
+# dispatcher. Routing still succeeds, but the observability assertion goes RED.
+cp "${DISPATCH}" "${MUTATED_OVERRIDE_DISPATCH}"
+python3 - "${MUTATED_OVERRIDE_DISPATCH}" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+needle = 'emit decision "task_class_override by=admission task=${sig8} requested=${requested_class} resolved=${ADMISSION_CLASS} reason=${class_override_reason} source=${ADMISSION_SOURCE}"'
+if needle not in s:
+    raise SystemExit('override mutation anchor missing')
+open(p, 'w').write(s.replace(needle, ': # MUTATION: suppress class override journal', 1))
+PY
+override_mutate_rc=$?
+if [[ ${override_mutate_rc} -ne 0 ]]; then
+  fail 'negative control D: class-override mutation anchor found'
+else
+  override_mutated_out="$(dispatch_probe "${MUTATED_OVERRIDE_DISPATCH}" override-mutated "${ARBITER}" "${HEAVY_JUDGE}")"; override_mutated_rc=$?
+  printf '%s\n' "${override_mutated_out}" > "${TMP}/override-mutated.log"
+  if [[ ${override_mutated_rc} -eq 0 ]] \
+     && printf '%s\n' "${override_mutated_out}" | grep -q 'task_class=Heavy' \
+     && ! printf '%s\n' "${override_mutated_out}" | grep -q 'task_class_override by=admission'; then
+    pass 'RED: negative control D suppressing override journal removes the required trace'
+  else
+    fail 'negative control D: suppression mutation did not make override assertion red' "rc=${override_mutated_rc} $(tail -n 8 "${TMP}/override-mutated.log")"
+  fi
+fi
+
+# The production dispatcher and arbiter remain untouched; re-run their path to
+# prove neither sibling-copy mutation leaked into the canonical route.
 restored_out="$(dispatch_probe "${DISPATCH}" restored)"; restored_rc=$?
 if [[ ${restored_rc} -eq 0 ]] && printf '%s\n' "${restored_out}" | grep -q 'route_resolved by=arbiter role=worker arm=freepool'; then
-  pass 'green: production dispatcher remains freepool-admitting after mutation control'
+  pass 'green: production dispatcher remains freepool-admitting after mutation controls'
 else
-  fail 'green: production dispatcher remains freepool-admitting after mutation control' "rc=${restored_rc}"
+  fail 'green: production dispatcher remains freepool-admitting after mutation controls' "rc=${restored_rc}"
 fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "${PASS}" "${FAIL}"

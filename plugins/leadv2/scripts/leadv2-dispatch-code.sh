@@ -3839,6 +3839,12 @@ _admission_classify() {
   ADMISSION_CLASS="Standard"; ADMISSION_ROUTE="phases"
   ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
   DISPATCH_FREEPOOL_ROLE=""
+  # Keep the caller's requested class separate from the final admission class.
+  # The classifier is authoritative, but an escalation must not look as though
+  # a caller's flag was silently ignored.
+  local requested_class=""
+  [[ "${flagged}" == "1" ]] && requested_class="$(_lv2_class_canonical "${explicit}" | tr '[:upper:]' '[:lower:]')"
+  local class_override_reason="classifier_error_fallback"
   local receipt_task_id="${founder_task_id:-dispatch-${sig8}}"
   # The task record is a floor on every entry path, including a same-digest
   # resume that reuses its per-signature receipt below.
@@ -3896,6 +3902,25 @@ _admission_classify() {
   if [[ -n "${pair}" ]]; then
     IFS=$'\t' read -r ADMISSION_CLASS ADMISSION_SOURCE <<<"${pair}"
     ADMISSION_WORK_KIND="$(printf '%s' "${estimate}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("work_kind",""))' 2>/dev/null || true)"
+    class_override_reason="$(printf '%s' "${estimate}" | python3 -c '
+import json, sys
+try:
+    e = json.load(sys.stdin)
+    complexity = e.get("complexity", "")
+    risk = e.get("risk_class", "")
+    subsystems = int(e.get("subsystems_touched", 0))
+except Exception:
+    print("classifier_estimate")
+    raise SystemExit
+if complexity == "complex":
+    print("complexity_complex")
+elif risk == "safety_publish_payments":
+    print("risk_safety_publish_payments")
+elif subsystems >= 4:
+    print("subsystems_ge_4")
+else:
+    print("classifier_estimate")
+' 2>/dev/null || printf 'classifier_estimate')"
   else
     # task-judge failed outright (missing binary, rc!=0, unparseable): the
     # conservative class is Standard -> phases, never bare dispatch.
@@ -3919,6 +3944,7 @@ _admission_classify() {
   fi
   if [[ -n "${task_floor}" ]] && (( $(_lv2_class_rank "${task_floor}") > $(_lv2_class_rank "${ADMISSION_CLASS}") )); then
     ADMISSION_CLASS="${task_floor}"; ADMISSION_SOURCE="task_record"
+    class_override_reason="task_record_floor"
   fi
   case "${ADMISSION_CLASS}" in
     Standard|Heavy|Strategic) ADMISSION_ROUTE="phases" ;;
@@ -3930,6 +3956,9 @@ _admission_classify() {
     "${ADMISSION_WORK_KIND:-unknown}" 2>/dev/null \
     || emit decision "admission_receipt_write_failed task=${sig8}"
   emit decision "task_class=${ADMISSION_CLASS} route=${ADMISSION_ROUTE} source=${ADMISSION_SOURCE} task=${sig8}"
+  if [[ -n "${requested_class}" && "${requested_class}" != "${ADMISSION_CLASS}" ]]; then
+    emit decision "task_class_override by=admission task=${sig8} requested=${requested_class} resolved=${ADMISSION_CLASS} reason=${class_override_reason} source=${ADMISSION_SOURCE}"
+  fi
   # BRAIN-CLASS-LIVE-01: class_escalated/class_floor_held + the single
   # brain_decision line + brain.yaml, ONLY on a fresh intake (the same-digest
   # re-entry branch above already returned -- one decision record per task,
@@ -6344,11 +6373,13 @@ Usage:
                 --task-id <founder-task-id>: binds founder_task_id explicitly. --resume-lane
                 also resolves this from its own argument when --task-id is absent, so an
                 existing lane worktree can satisfy the lane-writes guard without it.
-                --task-class <trivial|light|standard|heavy|strategic|bulk>: named task-size
-                class, consulted by the dispatch ladder's \`when:\` gate (e.g. freepool's
-                \`when: [standard, bulk]\`) so an untrusted third-party arm only ever sees the
-                task sizes it was actually approved for. Defaults to "Standard" for a caller
-                that never resolved a size class (today's behaviour, unchanged).
+                --task-class <trivial|light|standard|heavy|strategic|bulk>: caller size hint.
+                The admission classifier remains authoritative and may escalate this hint for
+                complexity, risk, or subsystem evidence; every override is journaled with the
+                requested class, resolved class, and deciding reason. The resolved class feeds
+                the dispatch ladder's \`when:\` gate (e.g. freepool's \`when: [standard, bulk]\`)
+                so an untrusted third-party arm only ever sees approved work sizes. Defaults to
+                "Standard" for a caller that never supplies a hint (today's behaviour, unchanged).
                 Resolve the code-writing model (glm|sonnet|codex) via routing.yaml glm_policy,
                 journal route_resolved, refuse a duplicate task-signature (ATOMIC; --force
                 never bypasses it), then LAUNCH the resolved worker and print its handle
