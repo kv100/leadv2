@@ -4,7 +4,7 @@
 
 # /leadv2 Active Sessions
 
-Last updated: 2026-09-03T21:48:02Z
+Last updated: 2026-09-03T23:10:52Z
 
 | task_id | phase | class | started_at | daemon |
 |---|---|---|---|---|
@@ -90,35 +90,32 @@ Last updated: 2026-09-03T21:48:02Z
 | D5-STATUS-SURFACES-ONE-SOURCE-01 | build | ? | 2026-09-03T18:59 | no |
 | DARK-SUITES-UNREACHABLE-BY-RUNNER-01 | recovered | ? | 2026-09-03T18:59 | no |
 | MUTATION-CONTROL-DIFF-HASH-IS-THE-EMPTY-HASH-01 | recovered | ? | 2026-09-03T19:00 | no |
-| QUOTA-BINDING-WINDOW-IS-NEVER-RECORDED-01 | e2e | ? | 2026-09-03T19:03 | no |
 | 8d59413b | recovered | ? | 2026-09-03T19:08 | no |
 | LANE-WRITES-IS-EMPTY-98-PERCENT-01 | review:blocked | Standard | 2026-09-03T19:08 | no |
 | CI-SUITES-ARE-MACOS-ONLY-01 | e2e | Light | 2026-09-03T19:10 | no |
 | SD-MAIN-CORE-SUITE-RED-01 | review:blocked | Standard | 2026-09-03T19:10 | no |
 | CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01 | spawning | Heavy | 2026-09-03T19:12 | no |
 | BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01 | review:blocked | Standard | 2026-09-03T19:13 | no |
-| D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF | review:blocked | Standard | 2026-09-03T19:18 | no |
 | LAST-LINUX-RED-FAST-NAMES-01 | build | ? | 2026-09-03T19:19 | no |
-| QUOTA-BINDING-WINDOW-IS-NEVER-RECORDED-01 | build | Standard | 2026-09-03T19:21 | no |
 | PLUGIN-REPO-HAS-NO-BACKLOG-01 | build | Standard | 2026-09-03T19:22 | no |
 | TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01 | review:blocked | Standard | 2026-09-03T19:23 | no |
 | TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01 | recovered | ? | 2026-09-03T19:25 | no |
 | HEAVY-TIER-VS-SAFETY-OPUS-01 | review:blocked | Light | 2026-09-03T19:27 | no |
 | CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01 | spawning | ? | 2026-09-03T19:32 | no |
 | D4-NO-PATH-LOSES-WORK-01 | review:blocked | Standard | 2026-09-03T19:38 | no |
-| D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF | intake | Standard | 2026-09-03T19:41 | no |
-| D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF | recovered | ? | 2026-09-03T19:43 | no |
 | D4-NO-PATH-LOSES-WORK-01 | build | Standard | 2026-09-03T19:47 | no |
 | 9289462d | recovered | ? | 2026-09-03T19:51 | no |
-| HANDOFF-ANALYSIS-DIES-UNTRACKED-01 | build | Standard | 2026-09-03T19:55 | no |
 | TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01 | review:blocked | Light | 2026-09-03T19:57 | no |
-| D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF | intake | Standard | 2026-09-03T20:00 | no |
-| LIVENESS-HAS-NO-SUITE-01 | review:blocked | Heavy | 2026-09-03T20:19 | no |
-| QUOTA-BINDING-WINDOW-IS-NEVER-RECORDED-01 | intake | Standard | 2026-09-03T20:19 | no |
-| CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 | review:fail | Heavy | 2026-09-03T20:29 | no |
-| CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 | recovered | ? | 2026-09-03T20:51 | no |
 | HARNESS-EMPTY-TASK-PROBE-01 | build | Light | 2026-09-03T21:08 | no |
-| INVISIBLE-DELIVERABLES-CENSUS-01 | prepass | Light | 2026-09-03T21:47 | no |
+| INVISIBLE-DELIVERABLES-CENSUS-01 | review:blocked | Light | 2026-09-03T21:47 | no |
+| PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01 | review:blocked | Light | 2026-09-03T22:20 | no |
+| PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01 | recovered | ? | 2026-09-03T22:23 | no |
+| CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 | recovered | ? | 2026-09-03T22:35 | no |
+| D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01 | build | Standard | 2026-09-03T22:41 | no |
+| D2-UNBLIND-AND-THIRD-STATE-M0M1-01 | build | Standard | 2026-09-03T22:45 | no |
+| D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01 | spawning | Standard | 2026-09-03T22:50 | no |
+| SCANNER-MISSES-PS-SUBSTRING-01 | build | Light | 2026-09-03T23:07 | no |
+| HANDOFF-ANALYSIS-DIES-UNTRACKED-01 | intake | Standard | 2026-09-03T23:10 | no |
 
-Sessions: 111 / 3 max
+Sessions: 108 / 3 max
 
