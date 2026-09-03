@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-ledger.sh
+anchor=s/"\${commit_sha}" != "none" \]\]; then/"${commit_sha}" != "none" || ${dirty} -eq 1 ]]; then/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: C8a: expected dead_with_unlanded_work (never landed), got: landednoneunknown
+diff_hash=a481a28718596346fea5d1cafe951465d67f22ecb605fba2a7b0ca29e5d6aae6
+lane_diff_hash=a3efb2634d6ba67f2304b2ed91792fa1f1b4466fa19675adf75e8010b204936d

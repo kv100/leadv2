@@ -16,6 +16,14 @@
 #   C5  `--all` reservation-ledger anti-join            -> barrier=spawned_then_died
 #   C6  no lane_writes CSV info at all                  -> still rescued (unscoped probe)
 #   C7  rescue commit is unmistakable (author/trailer/marker) — asserted against C1's commit
+#   C8  _dl_derive_lane_state called DIRECTLY (D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01):
+#       C8a dirty tree + no path-scoped commit + dead -> dead_with_unlanded_work,
+#       never landed; C8b real path-scoped commit -> landed with that exact sha
+#
+# Fixture discipline (fix round 2): every fixture construction step verifies its own
+# result and aborts the run via setup_error (exit 2, wording distinct from an assertion
+# FAIL). A fixture that silently missed its target must never surface as an assertion
+# red (looks like a product bug) or, worse, hand an unwarranted green.
 #
 # Run: bash plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh
 # Negative control (proof pasted in the deliverable, not part of normal CI runs):
@@ -32,6 +40,13 @@ source "${SCRIPTS_DIR}/leadv2-temp.sh"
 PASS=0; FAIL=0; ERRORS=()
 pass() { PASS=$((PASS + 1)); printf '[TEST] PASS: %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); ERRORS+=("$1"); printf '[TEST] FAIL: %s\n' "$1"; }
+setup_error() {  # <case> <reason>: the FIXTURE missed its target -- not an assertion
+  # verdict about the product. Loud abort, distinct wording, exit 2 (never 1), so a
+  # broken fixture can neither masquerade as a product red nor enable a fake green.
+  printf '[TEST] SETUP-ERROR: %s: %s\n' "$1" "$2"
+  printf '\n[TEST] aborted: %d passed, %d failed, setup error\n' "${PASS}" "${FAIL}"
+  exit 2
+}
 
 RUN_ID="reap-funnel-$$-$(date +%s 2>/dev/null || echo 0)"
 TMPDIR_ROOT="$(lv2_mktemp_dir "${RUN_ID}")"
@@ -46,22 +61,32 @@ cat > "${LIVENESS_BIN}" <<'EOF'
 printf '%s\n' "${LEADV2_TEST_LIVENESS_VERDICT:-dead:test}"
 EOF
 chmod +x "${LIVENESS_BIN}"
+[[ -x "${LIVENESS_BIN}" ]] || setup_error "harness" "fake liveness bin not executable"
 
 # ── fixture helpers ──────────────────────────────────────────────────────────────────
-_seq=0
-_new_repo() {  # -> prints repo root (a fresh, isolated main checkout)
-  _seq=$((_seq + 1))
-  local root="${TMPDIR_ROOT}/repo-${_seq}"
-  mkdir -p "${root}"
-  ( cd "${root}" && git init -q -b main >/dev/null 2>&1 \
-    && git config user.email t@example.com && git config user.name t \
-    && printf 'seed\n' > seed.txt && git add seed.txt && git commit -qm seed >/dev/null )
+_new_repo() {  # -> prints repo root (a fresh, isolated main checkout); rc!=0 on any
+  # construction miss (whole seed chain guarded -- a discarded-status subshell here
+  # once let 8 of 9 cases silently re-use one shared repo, every seed commit after
+  # the first failing unreported). Index comes from the DIRECTORY, never a counter:
+  # callers run this inside $( ), where an incremented counter dies in the subshell
+  # and hands every case the same path.
+  local root="" n=0
+  while [[ -d "${TMPDIR_ROOT}/repo-$((n + 1))" ]]; do n=$((n + 1)); done
+  root="${TMPDIR_ROOT}/repo-$((n + 1))"
   # active.yaml resolves through leadv2-state-path.sh to a control-plane root OUTSIDE
   # the repo (LEAD-CONTROL-PLANE-01) -- LEADV2_STATE_ROOT overrides that resolution to a
   # tmpdir-scoped path so the fixture never touches the real ~/.claude/leadv2-state.
-  mkdir -p "${root}/.state-root"
-  printf 'sessions: []\n' > "${root}/.state-root/active.yaml"
-  : > "${root}/.state-root/active.yaml.lock"
+  if ! ( mkdir -p "${root}" && cd "${root}" \
+    && git init -q -b main >/dev/null 2>&1 \
+    && git config user.email t@example.com && git config user.name t \
+    && printf 'seed\n' > seed.txt && git add seed.txt && git commit -qm seed >/dev/null \
+    && mkdir -p "${root}/.state-root" \
+    && printf 'sessions: []\n' > "${root}/.state-root/active.yaml" \
+    && : > "${root}/.state-root/active.yaml.lock" ); then
+    # stderr, not stdout: callers run this in $( ) and stdout is the root-path channel.
+    printf '[TEST] SETUP-ERROR: repo-%s: seed repo/state-root construction failed\n' "${_seq}" >&2
+    return 1
+  fi
   printf '%s' "${root}"
 }
 
@@ -115,12 +140,17 @@ _term_exists() {  # <root> <term_ledger_file> <sig8> -> rc0 if a TRUE terminal i
 # ============================================================================ C1
 run_c1() {
   local root term out lane sig8 wt
-  root="$(_new_repo)"; lane="dispatch-c1c1c1c1"; sig8="c1c1c1c1"
+  root="$(_new_repo)" || setup_error "C1" "repo fixture construction failed"
+  lane="dispatch-c1c1c1c1"; sig8="c1c1c1c1"
   term="${root}/term-ledger.jsonl"
-  _make_lane_worktree "${root}" "${lane}"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C1" "worktree add failed for ${lane}"
   wt="${root}/.claude/worktrees/${lane}"
   ( cd "${wt}" && printf 'a\n' > work.txt && git add work.txt && git commit -qm "lane work" >/dev/null \
-    && printf 'b\n' >> work.txt )   # real prior commit + a real uncommitted diff on top
+    && printf 'b\n' >> work.txt ) || setup_error "C1" "prior-commit fixture construction failed"
+  # real prior commit + a real uncommitted diff on top -- verify BOTH halves exist:
+  [[ -n "$(git -C "${wt}" log -n1 --pretty=%H -- work.txt 2>/dev/null)" \
+    && -n "$(git -C "${wt}" status --porcelain 2>/dev/null)" ]] \
+    || setup_error "C1" "work.txt commit and/or uncommitted diff missing after construction"
 
   out="$(LEADV2_TEST_LIVENESS_VERDICT=dead:test _reap "${root}" "${term}" --lane "${lane}")"
   if [[ "${out}" == *"terminal=dead_with_unlanded_work"* && "${out}" == *"rescued=1"* ]]; then
@@ -145,12 +175,16 @@ run_c1() {
 # ============================================================================ C1b (addendum)
 run_c1b() {
   local root term out lane sig8 wt
-  root="$(_new_repo)"; lane="dispatch-c1b1c1b1"; sig8="c1b1c1b1"
+  root="$(_new_repo)" || setup_error "C1b" "repo fixture construction failed"
+  lane="dispatch-c1b1c1b1"; sig8="c1b1c1b1"
   term="${root}/term-ledger.jsonl"
-  _make_lane_worktree "${root}" "${lane}"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C1b" "worktree add failed for ${lane}"
   wt="${root}/.claude/worktrees/${lane}"
   # The real 2026-09-03 incident shape: ZERO non-anchor commits, only a dirty tree.
-  ( cd "${wt}" && printf 'only uncommitted work\n' > work.txt )
+  ( cd "${wt}" && printf 'only uncommitted work\n' > work.txt ) \
+    || setup_error "C1b" "dirty-tree write failed"
+  [[ -f "${wt}/work.txt" && -n "$(git -C "${wt}" status --porcelain 2>/dev/null)" ]] \
+    || setup_error "C1b" "work.txt not present as an uncommitted change"
 
   out="$(LEADV2_TEST_LIVENESS_VERDICT=dead:test _reap "${root}" "${term}" --lane "${lane}")"
   if [[ "${out}" == *"terminal=dead_with_unlanded_work"* && "${out}" == *"rescued=1"* ]]; then
@@ -171,9 +205,10 @@ run_c1b() {
 # ============================================================================ C2
 run_c2() {
   local root term out lane sig8
-  root="$(_new_repo)"; lane="dispatch-c2c2c2c2"; sig8="c2c2c2c2"
+  root="$(_new_repo)" || setup_error "C2" "repo fixture construction failed"
+  lane="dispatch-c2c2c2c2"; sig8="c2c2c2c2"
   term="${root}/term-ledger.jsonl"
-  _make_lane_worktree "${root}" "${lane}"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C2" "worktree add failed for ${lane}"
 
   out="$(LEADV2_TEST_LIVENESS_VERDICT=dead:test _reap "${root}" "${term}" --lane "${lane}")"
   if [[ "${out}" == *"terminal=no_work"* && "${out}" == *"rescued=0"* ]]; then
@@ -191,12 +226,16 @@ run_c2() {
 # ============================================================================ C3
 run_c3() {
   local root term out lane sig8 other_lane
-  root="$(_new_repo)"; lane="dispatch-c3c3c3c3"; sig8="c3c3c3c3"; other_lane="dispatch-99999999"
+  root="$(_new_repo)" || setup_error "C3" "repo fixture construction failed"
+  lane="dispatch-c3c3c3c3"; sig8="c3c3c3c3"; other_lane="dispatch-99999999"
   term="${root}/term-ledger.jsonl"
-  _make_lane_worktree "${root}" "${lane}"
-  ( cd "${root}/.claude/worktrees/${lane}" && printf 'dirty\n' > work.txt )
-  _register_session "${root}" "${lane}"
-  _register_session "${root}" "${other_lane}"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C3" "worktree add failed for ${lane}"
+  ( cd "${root}/.claude/worktrees/${lane}" && printf 'dirty\n' > work.txt ) \
+    || setup_error "C3" "dirty-tree write failed"
+  [[ -n "$(git -C "${root}/.claude/worktrees/${lane}" status --porcelain 2>/dev/null)" ]] \
+    || setup_error "C3" "lane worktree not dirty after construction"
+  _register_session "${root}" "${lane}" || setup_error "C3" "active.yaml register failed for ${lane}"
+  _register_session "${root}" "${other_lane}" || setup_error "C3" "active.yaml register failed for ${other_lane}"
 
   out="$(LEADV2_TEST_LIVENESS_VERDICT=dead:test _reap "${root}" "${term}" --lane "${lane}")"
   [[ "${out}" == *"terminal=dead_with_unlanded_work"* ]] || fail "C3: setup reap failed: ${out}"
@@ -235,10 +274,14 @@ run_c3() {
 # ============================================================================ C4
 run_c4() {
   local root term out lane sig8
-  root="$(_new_repo)"; lane="dispatch-c4c4c4c4"; sig8="c4c4c4c4"
+  root="$(_new_repo)" || setup_error "C4" "repo fixture construction failed"
+  lane="dispatch-c4c4c4c4"; sig8="c4c4c4c4"
   term="${root}/term-ledger.jsonl"
-  _make_lane_worktree "${root}" "${lane}"
-  ( cd "${root}/.claude/worktrees/${lane}" && printf 'still working\n' > work.txt )
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C4" "worktree add failed for ${lane}"
+  ( cd "${root}/.claude/worktrees/${lane}" && printf 'still working\n' > work.txt ) \
+    || setup_error "C4" "dirty-tree write failed"
+  [[ -n "$(git -C "${root}/.claude/worktrees/${lane}" status --porcelain 2>/dev/null)" ]] \
+    || setup_error "C4" "lane worktree not dirty after construction"
 
   out="$(LEADV2_TEST_LIVENESS_VERDICT=alive _reap "${root}" "${term}" --lane "${lane}")"
   [[ -z "${out}" ]] \
@@ -254,13 +297,18 @@ run_c4() {
 # ============================================================================ C5
 run_c5() {
   local root term out lane sig8 res_file
-  root="$(_new_repo)"; lane="dispatch-c5c5c5c5"; sig8="c5c5c5c5"
+  root="$(_new_repo)" || setup_error "C5" "repo fixture construction failed"
+  lane="dispatch-c5c5c5c5"; sig8="c5c5c5c5"
   term="${root}/term-ledger.jsonl"
   res_file="${root}/reservation-ledger.jsonl"
-  _make_lane_worktree "${root}" "${lane}"
-  ( cd "${root}/.claude/worktrees/${lane}" && printf 'died after spawn\n' > work.txt )
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C5" "worktree add failed for ${lane}"
+  ( cd "${root}/.claude/worktrees/${lane}" && printf 'died after spawn\n' > work.txt ) \
+    || setup_error "C5" "dirty-tree write failed"
+  [[ -n "$(git -C "${root}/.claude/worktrees/${lane}" status --porcelain 2>/dev/null)" ]] \
+    || setup_error "C5" "lane worktree not dirty after construction"
   printf '{"task_sig":"%s","state":"confirmed","lane_label":"%s","handle":"PID=999999"}\n' \
     "${sig8}" "${lane}" > "${res_file}"
+  [[ -s "${res_file}" ]] || setup_error "C5" "reservation-ledger row not written"
 
   out="$(
     LEADV2_TEST_LIVENESS_VERDICT=dead:test \
@@ -277,11 +325,15 @@ run_c5() {
 # ============================================================================ C6
 run_c6() {
   local root term out lane sig8 wt
-  root="$(_new_repo)"; lane="dispatch-c6c6c6c6"; sig8="c6c6c6c6"
+  root="$(_new_repo)" || setup_error "C6" "repo fixture construction failed"
+  lane="dispatch-c6c6c6c6"; sig8="c6c6c6c6"
   term="${root}/term-ledger.jsonl"
-  _make_lane_worktree "${root}" "${lane}"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C6" "worktree add failed for ${lane}"
   wt="${root}/.claude/worktrees/${lane}"
-  ( cd "${wt}" && mkdir -p src/nested && printf 'x\n' > src/nested/untracked_by_any_write_set.txt )
+  ( cd "${wt}" && mkdir -p src/nested && printf 'x\n' > src/nested/untracked_by_any_write_set.txt ) \
+    || setup_error "C6" "untracked-file construction failed"
+  [[ -f "${wt}/src/nested/untracked_by_any_write_set.txt" ]] \
+    || setup_error "C6" "untracked fixture file missing after construction"
 
   # Deliberately NO lane_writes / LEADV2_DISPATCH_LANE_WRITES of any kind -- the funnel's
   # own dirty probe (git status --porcelain -uall, unscoped) must not depend on it.
@@ -310,6 +362,68 @@ run_c7() {
     || fail "C7: RESCUE-UNREVIEWED marker not found in commit"
 }
 
+# ============================================================================ C8 (D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01)
+# Direct unit coverage for _dl_derive_lane_state. C1..C7 drive the reap funnel
+# end-to-end, but the derive function itself had ZERO assertions: the one-line
+# regression that ORs a dirty tree back into the `landed` branch (the 2026-08-04
+# incident shape -- 573 uncommitted lines stamped `landed`, worktree one sweep
+# from deletion) kept this whole suite green. The ledger script is SOURCED (its
+# main dispatch is guarded behind BASH_SOURCE==$0) so the REAL shipped function
+# runs, with liveness faked one level lower exactly like the reap runs above.
+_derive() {  # <repo> <spawn_epoch> <writes_csv> <deliverable> <lane_id> -> _dl_derive_lane_state's stdout
+  local repo="$1" epoch="$2" csv="$3" deliverable="$4" lane="$5"
+  PROJECT_ROOT="${repo}" LEADV2_PROJECT_ROOT="${repo}" \
+    LEADV2_DISPATCH_LANE_LIVENESS_BIN="${LIVENESS_BIN}" \
+    bash -c '
+      source "${1}"
+      _dl_derive_lane_state "${2}" "${3}" "${4}" "${5}" "${6}"
+    ' _derive_sub "${LEDGER_BIN}" "${repo}" "${epoch}" "${csv}" "${deliverable}" "${lane}"
+}
+
+run_c8() {
+  local root wt out lane sha f1
+  # -- C8a: THE assertion that must kill the mutant. No path-scoped commit, DIRTY
+  #    tree in the lane's write-set, liveness dead => dead_with_unlanded_work,
+  #    NEVER landed. spawn_epoch=0 = lane spawned before any of its work.
+  root="$(_new_repo)" || setup_error "C8a" "repo fixture construction failed"
+  lane="dispatch-c8a8a8a8"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C8a" "worktree add failed for ${lane}"
+  wt="${root}/.claude/worktrees/${lane}"
+  ( cd "${wt}" && printf 'uncommitted incident work\n' > work.txt ) \
+    || setup_error "C8a" "dirty-tree write failed"
+  # A silently-failed printf would make C8a pass for the wrong reason -- prove the
+  # dirty tree actually exists before deriving.
+  [[ -f "${wt}/work.txt" && -n "$(git -C "${wt}" status --porcelain 2>/dev/null)" ]] \
+    || setup_error "C8a" "dirty-tree fixture not constructed (work.txt uncommitted)"
+  out="$(LEADV2_TEST_LIVENESS_VERDICT=dead:test _derive "${wt}" "0" "work.txt" "" "${lane}")"
+  f1="${out%%$'\x1f'*}"
+  if [[ "${f1}" == "dead_with_unlanded_work" && "${out}" != "landed"$'\x1f'* ]]; then
+    pass "C8a: derive(dirty tree, no path-scoped commit, dead) -> dead_with_unlanded_work, never landed"
+  else
+    fail "C8a: expected dead_with_unlanded_work (never landed), got: ${out}"
+  fi
+  # -- C8b: the mirror. A real path-scoped commit must still derive `landed` with
+  #    that exact sha -- without this, C8a would also pass against a function
+  #    that NEVER returns landed at all (formally green, operationally dead).
+  root="$(_new_repo)" || setup_error "C8b" "repo fixture construction failed"
+  lane="dispatch-c8b8b8b8"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C8b" "worktree add failed for ${lane}"
+  wt="${root}/.claude/worktrees/${lane}"
+  ( cd "${wt}" && printf 'a\n' > work.txt && git add work.txt && git commit -qm "lane work" >/dev/null ) \
+    || setup_error "C8b" "path-scoped commit construction failed"
+  # Expected sha from the SAME path-scoped lookup the function under test performs --
+  # never bare `rev-parse HEAD`, which silently hands back the SEED commit when the
+  # construction above failed (the 1-in-4 false red this guard exists for).
+  sha="$(git -C "${wt}" log -n1 --pretty=%H -- work.txt 2>/dev/null)"
+  [[ -n "${sha}" ]] || setup_error "C8b" "no path-scoped commit for work.txt after construction"
+  out="$(LEADV2_TEST_LIVENESS_VERDICT=dead:test _derive "${wt}" "0" "work.txt" "" "${lane}")"
+  if [[ "${out}" == "landed"$'\x1f'"${sha}"$'\x1f'* ]]; then
+    pass "C8b: derive(real path-scoped commit) -> landed with that exact sha"
+  else
+    fail "C8b: expected landed with sha ${sha}, got: ${out}"
+  fi
+}
+
 C1_WT=""
 run_c1
 run_c1b
@@ -319,6 +433,7 @@ run_c4
 run_c5
 run_c6
 run_c7 "${C1_WT}"
+run_c8
 
 printf '\n[TEST] %d passed, %d failed\n' "${PASS}" "${FAIL}"
 if [[ ${FAIL} -gt 0 ]]; then
