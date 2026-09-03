@@ -74,6 +74,7 @@ docs/leadv2/burn-deferred.d/
 .claude/cache/
 docs/handoff/dispatch-*-review-*.md
 !docs/handoff/*/fix-round*.md
+!docs/handoff/*/continue-round*.md
 !docs/handoff/*/context.yaml
 !docs/handoff/*/architect-prepass.md
 !docs/handoff/*/.gate1-passed
