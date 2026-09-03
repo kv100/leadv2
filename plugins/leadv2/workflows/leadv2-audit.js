@@ -17,13 +17,20 @@ a = a || {}
 if (a.probe) return { probe_ok: true, parsed_args: a }
 
 const GLM_OK = (a && a.glmInWorkflows) !== false
+// FABLE-THINK-TIER-01 R9: glmBuild is the PRIMARY attempt in a GLM-then-agent() fallback chain
+// (Fix phase below) — an unguarded agent() rejection here must not take down the sonnet fallback
+// that exists specifically to survive it, so this returns null (never throws) on failure.
 async function glmBuild(missionText, label, phase) {
-  const r = await agent(
-    `You are a GLM dispatch driver. Steps: (1) write the mission below to a temp file; (2) run: ~/.claude/scripts/glm-coder.sh run <tempfile> (blocking; read the script's usage first with head -40 if unsure of arg order); (3) report. Return JSON {glm_ok: boolean, summary: string (<=80 words), out_file: string}. glm_ok=false if the script is missing, exits non-zero, or produced no edits.\n---MISSION---\n${missionText}`,
-    { model: 'haiku', effort: 'low', label, phase,
-      schema: { type: 'object', properties: { glm_ok: {type:'boolean'}, summary: {type:'string'}, out_file: {type:'string'} }, required: ['glm_ok','summary'] } }
-  )
-  return r
+  try {
+    return await agent(
+      `You are a GLM dispatch driver. Steps: (1) write the mission below to a temp file; (2) run: ~/.claude/scripts/glm-coder.sh run <tempfile> (blocking; read the script's usage first with head -40 if unsure of arg order); (3) report. Return JSON {glm_ok: boolean, summary: string (<=80 words), out_file: string}. glm_ok=false if the script is missing, exits non-zero, or produced no edits.\n---MISSION---\n${missionText}`,
+      { model: 'haiku', effort: 'low', label, phase,
+        schema: { type: 'object', properties: { glm_ok: {type:'boolean'}, summary: {type:'string'}, out_file: {type:'string'} }, required: ['glm_ok','summary'] } }
+    )
+  } catch (e) {
+    log(`glmBuild: agent() threw for ${label} — ${e && e.message ? e.message : String(e)}`)
+    return null
+  }
 }
 
 const MODE = a.mode || 'personas'
@@ -181,8 +188,19 @@ Return a one-sentence summary of what you changed.`
         if (g && g.glm_ok) return g.summary
         log(`glmBuild fallback: GLM unavailable for ${label}`)
       }
-      return agent(missionText, { label, phase: 'Fix', model: 'sonnet', effort: 'medium' })
-    }))).filter(Boolean)
+      // FABLE-THINK-TIER-01 R9: sonnet fallback must survive its own rejection too — otherwise
+      // one failing fix candidate aborts the whole parallel batch, discarding every sibling
+      // candidate's already-completed fix.
+      try {
+        return await agent(missionText, { label, phase: 'Fix', model: 'sonnet', effort: 'medium' })
+      } catch (e) {
+        log(`${label}: agent() threw — ${e && e.message ? e.message : String(e)}`)
+        return null
+      }
+    })))
+    // FABLE-THINK-TIER-01 R9: no .filter(Boolean) here — fixResults[idx] below is a positional
+    // lookup against fixCandidates, and a graceful-null entry (now reachable since the fallback
+    // no longer throws) must keep its slot, not shift every later index out of alignment.
 
     const reprobeResult = await agent(
       `Re-run the persona audit for the specific invariants that were just fixed.
@@ -343,8 +361,13 @@ Return verdicts[] (role="Designer", criterion, result, note) and fix_items[] (pr
   phase('Report')
 
   pushLedger('phase_enter', { phase: 'Report' })
-  await agent(
-    `Write a vision-report.md to ${REPORT_DIR}/vision-report.md.
+  // FABLE-THINK-TIER-01 R9: allPageResults/mergedFixItems/failCount are already fully computed by
+  // this point — an unguarded rejection of this write-only report step would discard that
+  // already-good return value along with it, the same "abort before reconciliation" shape as the
+  // two round-8 findings, just with a doc write standing in for a judge/audit fallback.
+  try {
+    await agent(
+      `Write a vision-report.md to ${REPORT_DIR}/vision-report.md.
 
 Structure:
 ${allPageResults.map(({ page, verdicts, fixItems }) => `
@@ -362,7 +385,10 @@ ${fixItems.map(f => `- [ ] [${f.prio}] ${f.item}`).join('\n')}
 ${mergedFixItems.map(f => `- [ ] [${f.prio}] ${f.item}`).join('\n')}
 
 Create parent directories if needed. Return "ok".`,
-    { label: 'report', phase: 'Report', model: 'haiku', effort: 'low' })
+      { label: 'report', phase: 'Report', model: 'haiku', effort: 'low' })
+  } catch (e) {
+    log(`report: agent() threw — ${e && e.message ? e.message : String(e)}; vision-report.md not written`)
+  }
 
   pushLedger('task_close', { phase: 'Report', pages: PAGES.length, fail_count: failCount })
   await flushLedger('Report')

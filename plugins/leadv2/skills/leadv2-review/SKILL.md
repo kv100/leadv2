@@ -220,7 +220,7 @@ When max 2 rounds exhausted and Critical still present: compose a full-history m
 (template + exact invocation: **`ref/architect-escape-mission.md`** — task/mission/Round 1+2
 findings/fixes/remaining Critical, max 300 words, propose an alt approach that bypasses this
 class of issue, or explain why and recommend escalate-to-founder) and run it via
-`claude-subsession.sh --role architect --model opus --effort max`.
+`claude-subsession.sh --role architect --model "$(leadv2-router.sh think-model)" --effort max` (fable; opus fallback).
 
 - Architect proposes alt → re-run Plan phase (context.yaml revised) → re-Build → re-Review Round 3 (final).
 - Architect says "no alt" → circuit break.

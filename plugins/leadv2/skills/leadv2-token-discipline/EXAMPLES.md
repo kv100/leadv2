@@ -10,7 +10,7 @@ When the lead authors a `Workflow` tool script (fan-out orchestration), the mode
 ### Routing mirrors the task-class table
 - `model:'haiku'` for trace/read/discovery (pair with `agentType:'Explore'`)
 - `model:'sonnet'` for write/verify/refute/synthesize
-- `model:'opus'` only for a single deep-reasoning step — never the whole fleet
+- think steps resolve via the think-model resolver (`leadv2-router.sh think-model`: fable; opus fallback) — one deep-reasoning step, never the whole fleet
 
 ### Implementation
 - Hoist the model into a `const` and pass it on every call; forgetting on one call silently routes that agent to Opus

@@ -18,14 +18,14 @@ fi
 if $CODEX_OK && safety_touched; then
   # ONE message, four calls:
   Bash(codex-task.sh adversarial-review --wait --base main, run_in_background=true)
-  Agent(subagent_type=critic, model=opus, prompt="review diff /tmp/leadv2-review-<id>.diff per critic role frontmatter; brief /tmp/review-mission-<id>.md; write to docs/handoff/<id>/critic.summary.md + critic.full.md with DELIVERABLE_COMPLETE")
+  Agent(subagent_type=critic, model=<think-model: fable, opus fallback>, prompt="review diff /tmp/leadv2-review-<id>.diff per critic role frontmatter; brief /tmp/review-mission-<id>.md; write to docs/handoff/<id>/critic.summary.md + critic.full.md with DELIVERABLE_COMPLETE")
   Agent(subagent_type=security-auditor, model=sonnet, prompt="security review diff /tmp/leadv2-review-<id>.diff per role frontmatter; always-read-full for security-sensitive paths; write to docs/handoff/<id>/security-auditor.summary.md + security-auditor.full.md with DELIVERABLE_COMPLETE")
   Agent(subagent_type=developer, model=sonnet, prompt="run hack-detection per .claude/skills/leadv2-hack-detection/SKILL.md on diff /tmp/leadv2-review-<id>.diff; write findings YAML to docs/handoff/<id>/hack-findings.yaml and summary to docs/handoff/<id>/hack-detection.summary.md")
 fi
 
 # Case C: Codex down → critic(opus) via Agent promoted to primary + hack-detection
 if ! $CODEX_OK; then
-  Agent(subagent_type=critic, model=opus, prompt="primary adversarial review — full-coverage (Codex unavailable); diff /tmp/leadv2-review-<id>.diff; brief /tmp/review-mission-<id>.md; write to docs/handoff/<id>/critic.full.md + critic.summary.md")
+  Agent(subagent_type=critic, model=<think-model: fable, opus fallback>, prompt="primary adversarial review — full-coverage (Codex unavailable); diff /tmp/leadv2-review-<id>.diff; brief /tmp/review-mission-<id>.md; write to docs/handoff/<id>/critic.full.md + critic.summary.md")
   Agent(subagent_type=developer, model=sonnet, prompt="run hack-detection per .claude/skills/leadv2-hack-detection/SKILL.md on diff /tmp/leadv2-review-<id>.diff; write findings to docs/handoff/<id>/hack-findings.yaml")
   # If safety-touched, also Agent(security-auditor, sonnet) parallel
 fi

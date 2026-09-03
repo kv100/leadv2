@@ -548,15 +548,21 @@ cmd_select_for_workflow() {
   local default_critic="sonnet"
   local default_verify="sonnet"
 
+  # FABLE-THINK-TIER-01 R4: heavy plan/review think tiers resolve through the
+  # think-model resolver (fable; opus only as the resolver's own fallback),
+  # never a hardcoded opus literal. If the resolver is unreachable the tier
+  # degrades to sonnet — it never silently pins opus here.
+  local think_model
+  think_model="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
   if [[ "$phase" == "plan" ]]; then
     if [[ "$task_class" == "Heavy" || "$task_class" == "Strategic" ]]; then
-      default_architect="opus"
+      default_architect="${think_model:-sonnet}"
     fi
-    [[ "$safety" == "true" ]] && default_critic="opus"
+    [[ "$safety" == "true" ]] && default_critic="${think_model:-sonnet}"
   fi
 
   if [[ "$phase" == "review" ]]; then
-    [[ "$safety" == "true" ]] && default_critic="opus"
+    [[ "$safety" == "true" ]] && default_critic="${think_model:-sonnet}"
   fi
 
   # Flag-off guard — emit defaults without touching bandit state
@@ -575,8 +581,10 @@ cmd_select_for_workflow() {
 
   local ctx_key="${phase}:${task_class}:${safety}"
 
-  # Allowed arms per role (sonnet vs opus)
-  local two_arms='["sonnet","opus"]'
+  # Allowed arms per role. R4: fable joins (and replaces opus in) the
+  # exploration set — opus stays reachable via the resolver fallback or an
+  # explicit LEADV2_THINK_MODEL, never via bandit exploration.
+  local two_arms='["sonnet","fable"]'
 
   # Helper: run a single bandit sample for one role
   _wf_sample_role() {
@@ -622,7 +630,7 @@ cmd_select_for_workflow() {
         printf -- '  task_class: %s\n'       "${task_class}"  >> "$rd_file"
         printf -- '  safety_touched: %s\n'   "${safety}"      >> "$rd_file"
         printf -- '  heuristic_arm: %s\n'    "${heuristic}"   >> "$rd_file"
-        printf -- '  allowed_arms: %s\n'     '["sonnet","opus"]' >> "$rd_file"
+        printf -- '  allowed_arms: %s\n'     "${two_arms}" >> "$rd_file"
         printf -- '  chosen_arm: %s\n'       "${chosen}"      >> "$rd_file"
         printf -- '  bandit_active: true\n'                   >> "$rd_file"
         printf -- '  bandit_deviation: %s\n' "${deviation}"   >> "$rd_file"

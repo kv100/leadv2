@@ -50,9 +50,63 @@ Usage: leadv2-router.sh --phase <phase> --step <step>
                         [--signals '{"risk":"high","total_lines":600}']
                         [--task-id <id>]
                         [--class <Light|Standard|Heavy|Strategic>]
+       leadv2-router.sh think-model
 EOF
   exit 1
 }
+
+readonly MODEL_CAPABILITY_YAML="${LEADV2_MODEL_CAPABILITY_YAML:-${SCRIPT_DIR}/../config/model-capability.yaml}"
+
+# FABLE-THINK-TIER-01: every "value is thinking" role (plan synthesis, judge,
+# diagnose root-cause, learn proposal, PO audit, dispatch architect prepass,
+# lead main model) resolves through this ONE function. R8: LEADV2_THINK_MODEL
+# env is only the DEFAULT candidate, never an outright override — the
+# model-capability.yaml kill switch is checked FIRST and always wins, even
+# over an explicit env pin (see the binding resolution order below); fable is
+# used when the candidate is available, opus (the documented fallback)
+# otherwise. No caller may hardcode `opus` at a think-role spawn site — call
+# this instead.
+_think_cap_unavailable() { # $1=candidate model -> prints true/false
+  python3 - "${MODEL_CAPABILITY_YAML}" "$1" <<'PY' 2>/dev/null || echo true
+import sys, yaml
+try:
+    cfg = yaml.safe_load(open(sys.argv[1])) or {}
+    row = cfg.get(sys.argv[2]) or {}
+    print("true" if row.get("unavailable") else "false")
+except Exception:
+    print("true")
+PY
+}
+# R6 resolution order (lead decision, binding): (1) model-capability.yaml
+# `unavailable: true` for the candidate skips it ALWAYS — the yaml kill switch
+# beats everything, including an env pin (the settings.json install-time
+# default written by leadv2-repo-install.sh must never resurrect a dead
+# model); (2) LEADV2_THINK_MODEL env, if set and not unavailable; (3)
+# built-in default fable (repo-install feeds the per-repo default through
+# that env var); (4) opus, the documented fallback, only when the preferred
+# candidate is unavailable. LEADV2_THINK_MODEL stays a DEFAULT, never an
+# override that bypasses the capability data.
+think_model() {
+  local candidate="${LEADV2_THINK_MODEL:-fable}"
+  local unavailable
+  unavailable="$(_think_cap_unavailable "${candidate}")"
+  if [[ "${unavailable}" == "true" ]]; then
+    local fable_unavailable
+    fable_unavailable="$(_think_cap_unavailable "fable")"
+    if [[ "${candidate}" != "fable" && "${fable_unavailable}" != "true" ]]; then
+      printf 'fable\n'   # an unavailable env pin falls back to the default arm
+    else
+      printf 'opus\n'
+    fi
+    return 0
+  fi
+  printf '%s\n' "${candidate}"
+}
+
+if [[ "${1:-}" == "think-model" ]]; then
+  think_model
+  exit 0
+fi
 
 PHASE=""
 STEP=""

@@ -16,6 +16,34 @@ const TASK_ID = a.taskId || 'adhoc'
 const BUG_BRIEF = a.bugBrief || ''
 const LOGS_HINT = a.logsHint || 'journalctl -u persona-engine --since "1 hour ago" | tail -200'
 const DB_HINT = a.dbHint || 'check recent rows in actions, health_metrics, strategy_proposals'
+// FABLE-THINK-TIER-01: reduce (root-cause synthesis) is a THINKING role —
+// default arm is fable, opus is the fallback, never a hardcoded 'opus' literal.
+// FABLE-THINK-TIER-01 R8 think-model-resolve:start — the yaml kill switch must
+// reach this workflow at RUN time, not at .claude/settings.json install time.
+// R7 only fixed the leadv2-dispatch-code.sh channel (spawned child sessions);
+// a workflow launched directly from the lead's own session never passes
+// through that script, so a stale install-time LEADV2_THINK_MODEL=fable pin
+// would otherwise leak straight through even after model-capability.yaml
+// marks fable unavailable (judge round-7, item 1a). a.model (explicit caller
+// override) still wins outright and skips the resolver call entirely.
+const THINK_MODEL_SCHEMA = { type: 'object', additionalProperties: false,
+  properties: { think_model: { type: 'string' } }, required: ['think_model'] }
+let THINK_MODEL = a.model
+if (!THINK_MODEL) {
+  let _resolved = null
+  try {
+    _resolved = await agent(
+      `Run this exact shell command via your Bash tool and return its trimmed stdout ` +
+      `verbatim as think_model (do not modify, reformat, or re-derive it):\n` +
+      `_r="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null)"; [ -n "$_r" ] || _r="$PWD"; ` +
+      `_s="\${CLAUDE_PLUGIN_ROOT:-$_r/plugins/leadv2}/scripts/leadv2-router.sh"; [ -f "$_s" ] || _s="$_r/plugins/leadv2/scripts/leadv2-router.sh"; ` +
+      `bash "$_s" think-model`,
+      { label: 'think-model-resolve', phase: 'Classify', model: 'haiku', effort: 'low', schema: THINK_MODEL_SCHEMA })
+  } catch (_) { /* resolver unreachable — fail open to the env/default below, never crash the workflow */ }
+  THINK_MODEL = (_resolved && _resolved.think_model) ||
+    (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
+}
+// FABLE-THINK-TIER-01 R8 think-model-resolve:end
 
 const SYMPTOM_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -128,7 +156,7 @@ log(`Trace: ${traceResults.length}/${clusters.length} clusters returned, ${allHy
 
 // synth stages: try top model, fall back on null/error
 async function synthAgent(prompt, opts = {}) {
-  const chain = [...new Set([opts.model || 'opus', 'sonnet'])]
+  const chain = [...new Set([opts.model || THINK_MODEL, 'opus', 'sonnet'])]
   for (const m of chain) {
     try {
       const r = await agent(prompt, { ...opts, model: m })
@@ -147,7 +175,7 @@ const result = await synthAgent(
   `Hypotheses: ${JSON.stringify(allHypotheses)}\n` +
   `Pick the most likely root_cause (high-confidence wins; corroboration across clusters upgrades confidence). ` +
   `Set evidence_files to specific files/tables implicated. Provide a concrete fix_hint. List alternates for any competing hypotheses.`,
-  { label: 'reduce', phase: 'Reduce', model: 'opus', effort: 'medium', schema: ROOT_CAUSE_SCHEMA })
+  { label: 'reduce', phase: 'Reduce', effort: 'medium', schema: ROOT_CAUSE_SCHEMA })
 
 pushLedger('task_close', { phase: 'Reduce', confidence: result ? result.confidence : 'low' })
 await flushLedger('Reduce')

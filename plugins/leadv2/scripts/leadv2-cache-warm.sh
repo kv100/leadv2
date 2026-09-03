@@ -11,7 +11,7 @@ set -euo pipefail
 # only for controlled measurements; never enable it as a production saving.
 #
 # Usage:
-#   leadv2-cache-warm.sh --role <critic|developer|architect|...> --model <sonnet|opus|haiku>
+#   leadv2-cache-warm.sh --role <critic|developer|architect|...> --model <sonnet|opus|haiku|fable>
 #
 # Reads:  /tmp/leadv2-cache/<role>-<model>.prefix.md
 # Writes: /tmp/leadv2-cache/.warm-log.json (tracks last-warm-ts per role-model)
@@ -28,7 +28,7 @@ log()      { printf '[leadv2-cache-warm] %s\n' "$*" >&2; }
 log_warn() { printf '[leadv2-cache-warm] WARN: %s\n' "$*" >&2; }
 
 usage() {
-  printf 'Usage: leadv2-cache-warm.sh --role <role> --model <sonnet|opus|haiku>\n' >&2
+  printf 'Usage: leadv2-cache-warm.sh --role <role> --model <sonnet|opus|haiku|fable>\n' >&2
   exit 1
 }
 
@@ -101,7 +101,8 @@ fi
 
 # Map model alias to full model ID
 case "$MODEL" in
-  opus)   MODEL_ID="claude-opus-4-8" ;;
+  opus)   MODEL_ID="claude-opus-5" ;;
+  fable)  MODEL_ID="claude-fable-5-1" ;;
   sonnet) MODEL_ID="claude-sonnet-5" ;;
   haiku)  MODEL_ID="claude-haiku-4-5" ;;
   *)      MODEL_ID="$MODEL" ;;

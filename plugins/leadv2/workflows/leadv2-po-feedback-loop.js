@@ -16,14 +16,50 @@ else { a = args }
 a = a || {}
 if (a.probe) return { probe_ok: true, parsed_args: a }
 
+// FABLE-THINK-TIER-01: audit is a THINKING role — default arm is fable, opus
+// is the fallback, never a hardcoded 'opus' literal.
+// FABLE-THINK-TIER-01 R8 think-model-resolve:start — the yaml kill switch must
+// reach this workflow at RUN time, not at .claude/settings.json install time.
+// R7 only fixed the leadv2-dispatch-code.sh channel (spawned child sessions);
+// a workflow launched directly from the lead's own session never passes
+// through that script, so a stale install-time LEADV2_THINK_MODEL=fable pin
+// would otherwise leak straight through even after model-capability.yaml
+// marks fable unavailable (judge round-7, item 1a). a.model (explicit caller
+// override) still wins outright and skips the resolver call entirely.
+const THINK_MODEL_SCHEMA = { type: 'object', additionalProperties: false,
+  properties: { think_model: { type: 'string' } }, required: ['think_model'] }
+let THINK_MODEL = a.model
+if (!THINK_MODEL) {
+  let _resolved = null
+  try {
+    _resolved = await agent(
+      `Run this exact shell command via your Bash tool and return its trimmed stdout ` +
+      `verbatim as think_model (do not modify, reformat, or re-derive it):\n` +
+      `_r="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null)"; [ -n "$_r" ] || _r="$PWD"; ` +
+      `_s="\${CLAUDE_PLUGIN_ROOT:-$_r/plugins/leadv2}/scripts/leadv2-router.sh"; [ -f "$_s" ] || _s="$_r/plugins/leadv2/scripts/leadv2-router.sh"; ` +
+      `bash "$_s" think-model`,
+      { label: 'think-model-resolve', phase: 'Audit', model: 'haiku', effort: 'low', schema: THINK_MODEL_SCHEMA })
+  } catch (_) { /* resolver unreachable — fail open to the env/default below, never crash the workflow */ }
+  THINK_MODEL = (_resolved && _resolved.think_model) ||
+    (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
+}
+// FABLE-THINK-TIER-01 R8 think-model-resolve:end
+
 const GLM_OK = (a && a.glmInWorkflows) !== false
+// FABLE-THINK-TIER-01 R9: glmBuild is the PRIMARY attempt in a GLM-then-agent() fallback chain at
+// every call site below — an unguarded agent() rejection here must not take down the sonnet
+// fallback that exists specifically to survive it, so this returns null (never throws) on failure.
 async function glmBuild(missionText, label, phase) {
-  const r = await agent(
-    `You are a GLM dispatch driver. Steps: (1) write the mission below to a temp file; (2) run: ~/.claude/scripts/glm-coder.sh run <tempfile> (blocking; read the script's usage first with head -40 if unsure of arg order); (3) report. Return JSON {glm_ok: boolean, summary: string (<=80 words), out_file: string}. glm_ok=false if the script is missing, exits non-zero, or produced no edits.\n---MISSION---\n${missionText}`,
-    { model: 'haiku', effort: 'low', label, phase,
-      schema: { type: 'object', properties: { glm_ok: {type:'boolean'}, summary: {type:'string'}, out_file: {type:'string'} }, required: ['glm_ok','summary'] } }
-  )
-  return r
+  try {
+    return await agent(
+      `You are a GLM dispatch driver. Steps: (1) write the mission below to a temp file; (2) run: ~/.claude/scripts/glm-coder.sh run <tempfile> (blocking; read the script's usage first with head -40 if unsure of arg order); (3) report. Return JSON {glm_ok: boolean, summary: string (<=80 words), out_file: string}. glm_ok=false if the script is missing, exits non-zero, or produced no edits.\n---MISSION---\n${missionText}`,
+      { model: 'haiku', effort: 'low', label, phase,
+        schema: { type: 'object', properties: { glm_ok: {type:'boolean'}, summary: {type:'string'}, out_file: {type:'string'} }, required: ['glm_ok','summary'] } }
+    )
+  } catch (e) {
+    log(`glmBuild: agent() threw for ${label} — ${e && e.message ? e.message : String(e)}`)
+    return null
+  }
 }
 
 const TASK_ID = a.taskId || 'adhoc'
@@ -126,9 +162,12 @@ async function flushLedger(phaseLabel) {
 
 phase('Audit')
 pushLedger('phase_enter', { phase: 'Audit' })
-const auditResults = (await parallel([
-  () => agent(
-    `You are a senior product-owner architect. Visit the deployed preprod URL: ${PREPROD_URL}
+// FABLE-THINK-TIER-01 R9: audit-opus-fallback exists to survive a primary-audit failure, so it
+// must itself be guarded (round-8 finding 2) — the prior `.then(r => ... : agent(...))` chain had
+// no `.catch`, so a rejection of EITHER the primary or the fallback call aborted the whole
+// workflow before Build/Verify/Iterate ever ran. Rewritten as an async IIFE with try/catch around
+// each attempt, mirroring the synthAgent guard shape used elsewhere in this file.
+const AUDIT_PROMPT = `You are a senior product-owner architect. Visit the deployed preprod URL: ${PREPROD_URL}
 Use Playwright to walk ALL states of the feature: loaded, empty, error, loading, and mobile (viewport 375x812).
 Walk the key user flows: entry → primary CTA → outcome.
 Compare what you see against:
@@ -143,8 +182,26 @@ MANDATORY baseline-for-comparisons check (LOCAL-9 lesson): any delta, percentage
 If any of these 3 are missing for a delta/ratio column, classify that finding as P0, NOT P2.
 
 Output schema must include: working[] (what to preserve), findings[] (P0 max 5, P1 max 6, P2 max 4; each with id, severity, title, specific element, concrete fix, effort S/M/L, file if known), screenshots[].
-Also write a markdown report to ${TASK_DIR}/po-audit.md summarizing the same findings.`,
-    { label: 'audit', phase: 'Audit', agentType: 'architect', model: 'opus', schema: AUDIT_SCHEMA }),
+Also write a markdown report to ${TASK_DIR}/po-audit.md summarizing the same findings.`
+const auditResults = (await parallel([
+  () => (async () => {
+    let r = null
+    try {
+      r = await agent(AUDIT_PROMPT,
+        { label: 'audit', phase: 'Audit', agentType: 'architect', model: THINK_MODEL, schema: AUDIT_SCHEMA })
+    } catch (e) {
+      log(`audit: agent() threw on ${THINK_MODEL} — ${e && e.message ? e.message : String(e)}`)
+    }
+    if (r === null && THINK_MODEL !== 'opus') {
+      try {
+        r = await agent(AUDIT_PROMPT,
+          { label: 'audit-opus-fallback', phase: 'Audit', agentType: 'architect', model: 'opus', schema: AUDIT_SCHEMA })
+      } catch (e) {
+        log(`audit-opus-fallback: agent() threw — ${e && e.message ? e.message : String(e)}`)
+      }
+    }
+    return r
+  })(),
   () => agent(
     `You are an adversarial critic. You will receive the findings list from a UI audit of ${FEATURE} (${PREPROD_URL}).
 Wait for the audit agent to complete, then review the findings for semantic traps (LOCAL-9 FloorDelta class).
@@ -200,7 +257,15 @@ Instructions:
           if (g && g.glm_ok) return g.summary
           log(`glmBuild fallback: GLM unavailable for ${label}`)
         }
-        return agent(missionText, { label, phase: 'Build', model: 'sonnet' })
+        // FABLE-THINK-TIER-01 R9: sonnet fallback must survive its own rejection too — otherwise
+        // one failing build group aborts the whole parallel batch, discarding every sibling
+        // group's already-completed fix.
+        try {
+          return await agent(missionText, { label, phase: 'Build', model: 'sonnet' })
+        } catch (e) {
+          log(`build:${label}: agent() threw — ${e && e.message ? e.message : String(e)}`)
+          return null
+        }
       }
     }
   ))).filter(Boolean)
@@ -248,14 +313,26 @@ ${failedFindings.map(f => `  [${f.severity}] ${f.id}: ${f.title} — element: ${
 
 Apply targeted minimal-diff fixes. Do NOT commit. Return summary per finding_id.`
     const label = `iterate-fix:round-${round}`
+    // FABLE-THINK-TIER-01 R9: this sonnet call is the last resort for the round (GLM-failed
+    // fallback, or the only path when GLM is disabled) — an unguarded rejection here would abort
+    // the whole Iterate loop before reVerify/checks-merge below ever runs, discarding every prior
+    // round's progress. A failed fix attempt should just leave the item FAIL for reVerify to
+    // re-report, not take the workflow down.
+    const runIterateFix = async () => {
+      try {
+        await agent(missionText, { label, phase: 'Iterate', model: 'sonnet' })
+      } catch (e) {
+        log(`${label}: agent() threw — ${e && e.message ? e.message : String(e)}`)
+      }
+    }
     if (GLM_OK) {
       const g = await glmBuild(missionText, label, 'Iterate')
       if (!g || !g.glm_ok) {
         log(`glmBuild fallback: GLM unavailable for ${label}`)
-        await agent(missionText, { label, phase: 'Iterate', model: 'sonnet' })
+        await runIterateFix()
       }
     } else {
-      await agent(missionText, { label, phase: 'Iterate', model: 'sonnet' })
+      await runIterateFix()
     }
   }
 

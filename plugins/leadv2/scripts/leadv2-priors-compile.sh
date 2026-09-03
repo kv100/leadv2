@@ -311,14 +311,19 @@ base_model_recs: dict[str, dict] = {
         "cross-service": "sonnet",
         "new-route": "sonnet",
     },
+    # FABLE-THINK-TIER-01 R5: architect/critic are THINK roles — their
+    # baseline recommendations follow the think-tier contract (fable; opus
+    # only via the resolver's own fallback). These rows are LIVE route data:
+    # the compiled yaml's agent_priors[].model_recommendation is consumed by
+    # the lead, so an opus default here contradicted the tier contract.
     "architect": {
-        "new-route": "opus",
-        "cross-service": "opus",
-        "strategic": "opus",
+        "new-route": "fable",
+        "cross-service": "fable",
+        "strategic": "fable",
         "refactor-internal": "sonnet",
         "ui-only": "sonnet",
     },
-    "critic": {"default": "opus"},
+    "critic": {"default": "fable"},
     "security-auditor": {"default": "sonnet"},
     "postgres-pro": {"default": "sonnet"},
     "frontend-developer": {"default": "sonnet"},

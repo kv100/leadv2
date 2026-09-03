@@ -388,7 +388,12 @@ fi
 # ---------------------------------------------------------------------------
 ROUTER_SCRIPT="${SCRIPT_DIR}/leadv2-router.sh"
 ceiling_status="ok"
-model="opus"
+# FABLE-THINK-TIER-01 R2: the judge is a THINK role — default resolves through
+# the think-model resolver (fable; opus only when fable is unavailable).
+# R5: `|| true` — same script runs `set -euo pipefail`; an unguarded resolver
+# failure aborted the whole judge before the line-3 default could apply.
+model="$(bash "$ROUTER_SCRIPT" think-model 2>/dev/null || true)"
+model="${model:-fable}"
 
 if [[ -f "$ROUTER_SCRIPT" ]]; then
   router_signals=$(python3 -c "
@@ -407,7 +412,7 @@ print(json.dumps({'premortem_success': prob}))
     --signals "$router_signals" 2>/dev/null) || true
 
   if [[ -n "$router_out" ]]; then
-    model=$(printf '%s\n' "$router_out" | grep '^model=' | cut -d= -f2 || echo "opus")
+    model=$(printf '%s\n' "$router_out" | grep '^model=' | cut -d= -f2 || echo "fable")
     ceiling_status=$(printf '%s\n' "$router_out" | grep '^ceiling_status=' | cut -d= -f2 || echo "ok")
   fi
 fi

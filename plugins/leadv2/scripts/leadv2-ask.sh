@@ -511,7 +511,13 @@ _architect_decide() { # sets ARCHITECT_CHOSEN + ARCHITECT_RATIONALE on success; 
 
   local bin model timeout_sec atask adir mfile out rc design lbl raw found
   bin="${LEADV2_ASK_ARCHITECT_BIN:-${SCRIPT_DIR}/claude-subsession.sh}"
-  model="${LEADV2_ASK_ARCHITECT_MODEL:-opus}"
+  # FABLE-THINK-TIER-01 R4: architect-decide is a THINK role — default arm
+  # resolves through the think-model resolver (fable; opus only as the
+  # resolver's own fallback). Explicit LEADV2_ASK_ARCHITECT_MODEL still wins.
+  # R5: resolver failure must yield fable, never an empty model (a bare
+  # substitution failure here spawned claude-subsession with `--model ""`).
+  model="${LEADV2_ASK_ARCHITECT_MODEL:-$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)}"
+  [[ -n "$model" ]] || model="fable"
   timeout_sec="${LEADV2_ASK_ARCHITECT_TIMEOUT_SEC:-300}"
   [[ "$timeout_sec" -gt 300 ]] && timeout_sec=300   # hard cap, never override past 300s
   atask="${TASK_ID}-ask-${QID}-architect"

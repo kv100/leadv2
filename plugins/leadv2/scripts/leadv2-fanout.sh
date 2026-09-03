@@ -192,7 +192,8 @@ while [[ $# -gt 0 ]]; do
       printf -- '           check — that is the worktree-collision safety net, not a policy cap.\n'
       printf -- '  --lead-model MODEL: override the per-task classifier model for EVERY child\n'
       printf -- '           launched by this invocation (default: classifier picks sonnet for\n'
-      printf -- '           Light/Standard, opus for Heavy/Strategic). Use `--lead-model opus`\n'
+      printf -- '           Light/Standard, the think-model resolver (fable; opus when fable is\n'
+      printf -- '           unavailable) for Heavy/Strategic). Use `--lead-model opus`\n'
       printf -- '           when the founder explicitly wants an Opus child; never on by default.\n'
       printf -- '  --provider auto|claude|codex|glm|kimi: provider for COMPLETE Phase 0..8 child\n'
       printf -- '           sessions. auto routes routine work by live policy/quota; high-risk\n'
@@ -439,6 +440,15 @@ tasks = tasks or []
 
 CLASSIFY_SCRIPT = os.path.join(script_dir, "leadv2-fanout-classify.sh")
 
+# FABLE-THINK-TIER-01 R2: think-role model resolves once through the resolver
+# (leadv2-router.sh think-model: fable; opus only when fable unavailable).
+try:
+    think_model = subprocess.run(
+        ["bash", os.path.join(script_dir, "leadv2-router.sh"), "think-model"],
+        capture_output=True, text=True, timeout=30).stdout.strip() or "fable"
+except Exception:
+    think_model = "fable"
+
 # SUPERVISOR-RETRO-01 item 1: replace the old missing-class -> "Standard"
 # silent fallback with the pre-launch classifier. An explicit class already
 # present on the task row is passed through as --existing-class and still
@@ -470,7 +480,9 @@ def classify_task(t):
               f"task={tid} falls back to existing class ({existing or 'Standard'}), NOT auto-escalated to Heavy. "
               "Run leadv2-plugin-sync.sh to fix.", file=sys.stderr)
         fallback_class = existing if existing else "Standard"
-        fallback_model = "opus" if fallback_class.lower() in ("heavy", "strategic") else "sonnet"
+        # FABLE-THINK-TIER-01 R2: think-role fallback resolves through the
+        # think-model resolver (fable; opus only when fable is unavailable).
+        fallback_model = think_model if fallback_class.lower() in ("heavy", "strategic") else "sonnet"
         fallback_effort = "high" if fallback_class.lower() in ("heavy", "strategic") else "medium"
         result = (fallback_class, "", "classify script unavailable -- safe fallback, no risk escalation", fallback_model, fallback_effort)
         _classify_cache[tid] = result
@@ -495,13 +507,13 @@ def classify_task(t):
         )
     except Exception as e:
         # Classifier crash (script exists but errored at runtime) is NOT a
-        # "no signal" case -- escalate to Heavy/opus rather than silently
+        # "no signal" case -- escalate to Heavy/think-model rather than silently
         # falling back to Standard (the exact bug this task fixes), but LOUD
         # this time: print the WARN so it isn't buried in an unread report
         # line. A human reviews the fanout report before anything runs.
         print(f"[fanout] WARN: leadv2-fanout-classify.sh crashed for task={tid} ({e}) -- "
-              "escalating to Heavy/opus (conservative default on classifier crash).", file=sys.stderr)
-        result = ("Heavy", "classifier_error", f"classifier failed: {e}", "opus", "high")
+              f"escalating to Heavy/{think_model} (conservative default on classifier crash).", file=sys.stderr)
+        result = ("Heavy", "classifier_error", f"classifier failed: {e}", think_model, "high")
     _classify_cache[tid] = result
     return result
 

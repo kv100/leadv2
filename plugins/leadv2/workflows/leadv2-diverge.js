@@ -28,6 +28,35 @@ const FRAMES = [
   'automate-it-away: can the problem be deleted instead of solved',
 ]
 const N = Math.min(Math.max(a.n || 6, 2), FRAMES.length)
+// FABLE-THINK-TIER-01: judge is a THINKING role (design/scoring, not typing) —
+// default arm is fable, opus is the fallback, never a hardcoded 'opus'
+// literal. a.model / opts.model still wins outright when the caller pins one.
+// FABLE-THINK-TIER-01 R8 think-model-resolve:start — the yaml kill switch must
+// reach this workflow at RUN time, not at .claude/settings.json install time.
+// R7 only fixed the leadv2-dispatch-code.sh channel (spawned child sessions);
+// a workflow launched directly from the lead's own session never passes
+// through that script, so a stale install-time LEADV2_THINK_MODEL=fable pin
+// would otherwise leak straight through even after model-capability.yaml
+// marks fable unavailable (judge round-7, item 1a). a.model (explicit caller
+// override) still wins outright and skips the resolver call entirely.
+const THINK_MODEL_SCHEMA = { type: 'object', additionalProperties: false,
+  properties: { think_model: { type: 'string' } }, required: ['think_model'] }
+let THINK_MODEL = a.model
+if (!THINK_MODEL) {
+  let _resolved = null
+  try {
+    _resolved = await agent(
+      `Run this exact shell command via your Bash tool and return its trimmed stdout ` +
+      `verbatim as think_model (do not modify, reformat, or re-derive it):\n` +
+      `_r="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | xargs dirname 2>/dev/null)"; [ -n "$_r" ] || _r="$PWD"; ` +
+      `_s="\${CLAUDE_PLUGIN_ROOT:-$_r/plugins/leadv2}/scripts/leadv2-router.sh"; [ -f "$_s" ] || _s="$_r/plugins/leadv2/scripts/leadv2-router.sh"; ` +
+      `bash "$_s" think-model`,
+      { label: 'think-model-resolve', phase: 'Generate', model: 'haiku', effort: 'low', schema: THINK_MODEL_SCHEMA })
+  } catch (_) { /* resolver unreachable — fail open to the env/default below, never crash the workflow */ }
+  THINK_MODEL = (_resolved && _resolved.think_model) ||
+    (typeof process !== 'undefined' && process.env && process.env.LEADV2_THINK_MODEL) || 'fable'
+}
+// FABLE-THINK-TIER-01 R8 think-model-resolve:end
 const IDEA_SCHEMA = {
   type: 'object', additionalProperties: false,
   properties: { idea: { type: 'string' }, approach: { type: 'string' }, key_risk: { type: 'string' } },
@@ -78,7 +107,7 @@ async function flushLedger(phaseLabel) {
 
 // synth stages: try top model, fall back on null/error
 async function synthAgent(prompt, opts = {}) {
-  const chain = [...new Set([opts.model || 'opus', 'sonnet'])]
+  const chain = [...new Set([opts.model || THINK_MODEL, 'opus', 'sonnet'])]
   for (const m of chain) {
     try {
       const r = await agent(prompt, { ...opts, model: m })
@@ -111,14 +140,37 @@ let judged = await synthAgent(
   `Flag traps (plausible-but-doomed, trap=true). Recommend ONE (or a synthesis) and say why. ` +
   `Also write a short divergence.md to ${OUT} with the ranked set.\n` +
   `Candidates: ${JSON.stringify(ideas)}`,
-  { label: 'judge', phase: 'Judge', agentType: 'critic', model: 'opus', effort: 'xhigh', schema: JUDGE_SCHEMA })
+  { label: 'judge', phase: 'Judge', agentType: 'critic', model: THINK_MODEL, effort: 'xhigh', schema: JUDGE_SCHEMA })
+// FABLE-THINK-TIER-01 R9: both fallbacks below exist to survive a primary-judge failure, so each
+// must itself be guarded — an unguarded agent() rejection here would abort the whole workflow
+// BEFORE the judged===null reconciliation and Select-phase ledger flush ever run (round-8 finding 1).
+if (judged === null && THINK_MODEL !== 'opus') {
+  log(`Judge returned null on ${THINK_MODEL} — retrying on opus fallback`)
+  try {
+    judged = await agent(
+      `Score and cluster these ${ideas.length} candidate solutions for task ${TASK_ID}. ` +
+      `Score each 0-10 (10=best): feasibility(0-4) + novelty(0-3) + blast-radius(0-3, higher=safer). ` +
+      `Flag traps (plausible-but-doomed, trap=true). Recommend ONE (or a synthesis) and say why. ` +
+      `Also write a short divergence.md to ${OUT} with the ranked set.\n` +
+      `Candidates: ${JSON.stringify(ideas)}`,
+      { label: 'judge-opus-fallback', phase: 'Judge', agentType: 'critic', model: 'opus', effort: 'xhigh', schema: JUDGE_SCHEMA })
+  } catch (e) {
+    log(`judge-opus-fallback: agent() threw — ${e && e.message ? e.message : String(e)}`)
+    judged = null
+  }
+}
 if (judged === null) {
   log('Judge returned null — generating fallback summary via haiku')
-  judged = await agent(
-    `Judge agent failed for task ${TASK_ID}. Write a minimal fallback divergence.md to ${OUT} listing these ideas with no scores. ` +
-    `Return { ranked: [], recommended: 'judge-failed — review ideas manually', summary_for_lead: 'Judge returned null; raw ideas listed in divergence.md' }.\n` +
-    `Ideas: ${JSON.stringify(ideas.map(i => i.idea || '(unnamed)'))}`,
-    { label: 'judge-fallback', phase: 'Judge', model: 'haiku', effort: 'low', schema: JUDGE_SCHEMA })
+  try {
+    judged = await agent(
+      `Judge agent failed for task ${TASK_ID}. Write a minimal fallback divergence.md to ${OUT} listing these ideas with no scores. ` +
+      `Return { ranked: [], recommended: 'judge-failed — review ideas manually', summary_for_lead: 'Judge returned null; raw ideas listed in divergence.md' }.\n` +
+      `Ideas: ${JSON.stringify(ideas.map(i => i.idea || '(unnamed)'))}`,
+      { label: 'judge-fallback', phase: 'Judge', model: 'haiku', effort: 'low', schema: JUDGE_SCHEMA })
+  } catch (e) {
+    log(`judge-fallback: agent() threw — ${e && e.message ? e.message : String(e)}`)
+    judged = null
+  }
 }
 
 phase('Select')

@@ -20,8 +20,8 @@ thinking tokens AND fails the task.
 | Reads, classify, greps, commits, aggregation | haiku | `low` | Explore, capability-classifier, quality-scorer, archive-write |
 | Standard build / synthesis | sonnet | `medium` | developer, plan-synthesize, context.yaml writes |
 | Adversarial gate / verdict | sonnet | `high` | critic, security-auditor, verify-blocking (Codex is primary; this is the 2nd voice) |
-| Heavy design synthesis / judge | **opus → sonnet** | `xhigh` | Heavy/Strategic architect, diverge judge, safety-touched review verdict |
-| One-shot irreversible / Strategic gate | **opus → sonnet** | `max` | Strategic plan synthesis, final deploy verdict on Heavy+safety |
+| Heavy design synthesis / judge | **fable (opus fallback) → sonnet** | `xhigh` | Heavy/Strategic architect, diverge judge, safety-touched review verdict |
+| One-shot irreversible / Strategic gate | **fable (opus fallback) → sonnet** | `max` | Strategic plan synthesis, final deploy verdict on Heavy+safety |
 
 ## Effort ladder semantics
 
@@ -36,25 +36,70 @@ thinking tokens AND fails the task.
 
 **Escalation direction rule:** when a task outgrows its tier, escalate the MODEL, not
 the effort. Sonnet's effort cap is `high` — if a sonnet spawn seems to need `xhigh`,
-it needs opus (or Codex), not a longer sonnet run. Thinking tokens are output
+it needs a think model (fable, opus as fallback — or Codex), not a longer sonnet run. Thinking tokens are output
 tokens — the most quota-expensive thing a spawn emits.
 
-## Opus — only the hardest thinking (founder directive 2026-07-03; FABLE-RETIRE-01 2026-07-06 covered Fable 4.x — Claude Fable 5 is live again since 2026-08; the lead model is decided per-repo by `ref/leadv2-main-model.yaml`, and "Fable" rows below apply only where that file selects it)
+## Fable (Opus fallback) — only the hardest thinking (FABLE-THINK-TIER-01, founder order 2026-09-01, supersedes the 2026-07-03 opus-first directive; FABLE-RETIRE-01 2026-07-06 covered Fable 4.x — Claude Fable 5.1 is GA since 2026-08)
 
-Opus (the repo's top-tier lead/heavy model) is allowed ONLY where genuinely novel reasoning or
-judgment happens:
+> evidence: model_id — Claude Code environment banner, verbatim: "Model IDs —
+> Fable 5.1: 'claude-fable-5-1', Opus 5: 'claude-opus-5', Sonnet 5:
+> 'claude-sonnet-5', Haiku 4.5: 'claude-haiku-4-5-20251001'"; confirmed live by
+> `claude -p --model claude-fable-5-1 'say ok'` → rc=0 (2026-09-01).
+> evidence: quota-read delta 2026-09-01 (`leadv2-quota-read.py anthropic
+> --no-cache` before 21:02:03Z / after 21:03:17Z) — the round-1 claim "same
+> Claude Max bucket as Opus" is WITHDRAWN: five_hour_pct on the active max_20x
+> account did not move across the probe (31→31), and the reader exposes a
+> model-scoped window `weekly_scoped scope.model.display_name="Fable"` (pct 7,
+> unchanged) SEPARATE from `weekly_all`. Fable has its own bucket entry
+> (`cost_class: fable-scoped-weekly` in model-capability.yaml); the 1M-context
+> figure is UNVERIFIED (`context_k: unverified`). glm-policy-resolve.py keeps
+> fable on the anthropic ACCOUNT reading as the conservative ceiling.
+
+Every role whose value is THINKING (not typing) runs on **Fable first; Opus is the fallback**
+when Fable is refused/unavailable — never the default. This resolves through
+`leadv2-router.sh think_model()` (env `LEADV2_THINK_MODEL` overrides; else fable unless
+`config/model-capability.yaml`'s fable row is `unavailable: true`, else opus). No think-role
+spawn site may hardcode an `'opus'` literal — call the resolver. This invariant is enforced
+tree-wide (scripts, workflows, skills, hooks — tests excluded) by the census grep-gate in
+`scripts/tests/test-fable-think-tier.sh`; literal `opus` survives only on explicit fallback
+sites, route-telemetry lines that describe an opus decision already made, and prose.
+
+Fable (opus fallback) is allowed ONLY where genuinely novel reasoning or judgment happens:
 
 - Heavy/Strategic plan **synthesis** (not discovery — discovery is haiku/Explore)
 - Diverge judge (scoring/clustering candidate frames)
 - Safety-touched review **verdict** (not the scan — scans are Codex/sonnet/haiku)
 - Root-cause **synthesis** after cheap models gathered the evidence
+- Lead main model (`ref/leadv2-main-model.yaml: main_model: fable`)
 
-Opus is BANNED for: evidence gathering, file reads, bulk transforms, classification,
+Fable/Opus is BANNED for: evidence gathering, file reads, bulk transforms, classification,
 mechanical edits, commit messages, status aggregation, anything a checklist could do.
+**GLM/Kimi never take think roles** — the fable-first change does not touch that boundary.
 
-**Chain on refusal/absence, never hard-pin.** Always `opus → sonnet` (opus is
-first-class for design/synthesis/verdicts). In workflows:
-`model: MODELS.think || 'opus'` with sonnet fallback on refusal/absence.
+**Chain on refusal/absence, never hard-pin.** Always `fable → opus → sonnet` (fable is
+first-class for design/synthesis/verdicts, opus is its fallback). In workflows:
+`model: opts.model || THINK_MODEL` (THINK_MODEL defaults to `fable`, env
+`LEADV2_THINK_MODEL` overrides) with an explicit opus retry, then sonnet fallback on
+refusal/absence.
+
+**Never set `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`** in a Workflow-tool script's environment.
+Scope, confirmed by disassembly of the installed CC 2.1.257 binary (`strings` on
+`~/.local/share/claude/versions/2.1.257`, evidence below): when this env var is set, the
+Workflow tool's internal `agent()` dispatcher nulls `opts.model` before spawning and logs
+`Workflow agent model "<model>" ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set` — so it
+overrides `model: opts.model || THINK_MODEL` above, i.e. our fable/opus think-role routing,
+for any `agent()` call made from inside a Workflow script. It has NOT been probed against
+non-Workflow spawns (the `Agent` tool, `claude-subsession.sh --model`) — do not extend this
+claim to those paths without a separate probe.
+
+```
+evidence: strings -a ~/.local/share/claude/versions/2.1.257 | grep -B2 -A2 \
+  'ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE'
+->  Workflow agent model "
+->  " ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set
+->  minified source: if(I?.model!==void 0 && a.CLAUDE_CODE_SUBAGENT_MODEL_FORCE)
+->    t(`Workflow agent model "${I.model}" ignored: ...`), I.model=void 0;
+```
 
 ## Zero-Claude-quota lanes come FIRST (founder: "GLM и Codex по максимуму")
 
@@ -127,8 +172,8 @@ Surface every fallback to the founder — never degrade silently.
 | Trivial | skip | haiku `low` inline | skip |
 | Light | sonnet `medium` single-pass | sonnet `medium` (GLM if background) | skip (low-risk) or Codex `medium` |
 | Standard | architect sonnet `medium` + Codex `high` + critic sonnet `high` | sonnet `medium` / GLM bulk | Codex `high` + critic sonnet `high` |
-| Heavy | architect opus `xhigh` + Codex `xhigh` + critic sonnet `high` | sonnet `medium` parallel fan-out / GLM bulk | Codex `xhigh` + verdict opus `xhigh` (safety) |
-| Strategic | opus `max` + Codex `xhigh` | as Heavy | as Heavy, verdict `max` |
+| Heavy | architect fable(opus fallback) `xhigh` + Codex `xhigh` + critic sonnet `high` | sonnet `medium` parallel fan-out / GLM bulk | Codex `xhigh` + verdict fable(opus fallback) `xhigh` (safety) |
+| Strategic | fable(opus fallback) `max` + Codex `xhigh` | as Heavy | as Heavy, verdict `max` |
 
 ## Anti-patterns (each one observed in production before this doc)
 
@@ -136,8 +181,8 @@ Surface every fallback to the founder — never degrade silently.
    thinking regardless of class. Frontmatter default is `high` for adversarial roles,
    `medium` otherwise; workflows override per-class via `opts.effort`.
 2. **Cranking effort instead of escalating model** — sonnet `xhigh` on a Heavy design
-   task. Wrong axis: use opus `xhigh`.
-3. **Opus for discovery** — evidence gathering is haiku; synthesis is opus.
+   task. Wrong axis: use a think model — fable `xhigh` (opus fallback).
+3. **Fable/Opus for discovery** — evidence gathering is haiku; synthesis is fable (opus fallback).
 4. **Haiku for verdicts** — a `low`-effort judge on a gate decision (acceptable only as
    an explicit degraded-mode fallback, logged as such).
 5. **Ignoring the external lanes** — running sonnet review when Codex is available, or

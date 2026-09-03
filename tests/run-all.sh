@@ -214,6 +214,35 @@ leadv2-status-collector.sh:plugins/leadv2/scripts/tests/test-collector-sees-regi
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-mission-writeset.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-mission-writeset:plugins/leadv2/scripts/tests/test-mission-writeset.sh
+# FABLE-THINK-TIER-01: the think-tier contract (resolver default fable / opus
+# fallback, no hardcoded opus spawn pins, fable-ahead-of-opus review pool,
+# zero opus-4 literals) must re-run whenever any of its carriers changes.
+leadv2-think-model.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-router.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-glm-policy-resolve.py:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-cache-warm.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+model-capability.yaml:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+# R5: the remaining carriers this task's diff actually touches — the round-4
+# mapping missed these eight, so the contract suite would not re-run on them.
+leadv2-session-route.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-route-bandit.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-ask.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-fanout.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-fanout-classify.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-phase-record.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-llm-judge.sh:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-diverge.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-learn.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-diagnose.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+leadv2-po-feedback-loop.js:plugins/leadv2/scripts/tests/test-fable-think-tier.sh
+# FABLE-THINK-TIER-01 R9: the unguarded-fallback behavioural proof (executes the workflow .js via
+# a Node harness, not a grep) lives in its own suite — map every workflow file it actually runs.
+leadv2-diverge.js:plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
+leadv2-po-feedback-loop.js:plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
+leadv2-audit.js:plugins/leadv2/scripts/tests/test-workflow-fallback-guard.sh
 leadv2-red-proof:plugins/leadv2/scripts/tests/test-red-proof-gate.sh
 leadv2-one-copy-drift.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
 leadv2-truth-card-inject.sh:plugins/leadv2/scripts/tests/test-hook-output-cap.sh
@@ -303,6 +332,7 @@ leadv2-plugin-cache-sync.sh:plugins/leadv2/scripts/tests/test-plugin-cache-sync.
 leadv2-merge-queue.sh:plugins/leadv2/scripts/tests/test-merge-queue-dead-head.sh
 leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-worker-commit-epilogue.sh
+run-all.sh:tests/test-run-all-carrier-map.sh
 glm-coder.sh:plugins/leadv2/scripts/tests/test-lane-outcome.sh
 leadv2-dod-gate.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-mutation-control.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
@@ -433,12 +463,29 @@ $(git -C "${ROOT}" diff --name-only HEAD~1..HEAD 2>/dev/null)"
         # must select the suites that grade routing, same shape as
         # freepool-arm.yaml above.
         stem="leadv2-routing.yaml"
+      elif [[ "${cf}" == "plugins/leadv2/config/model-capability.yaml" ]]; then
+        # FABLE-THINK-TIER-01 R6: a data-only capability change must select
+        # the think-tier contract suite (same shape as freepool-arm.yaml).
+        stem="model-capability.yaml"
+      elif [[ "${cf}" == "plugins/leadv2/scripts/lib/leadv2-glm-policy-resolve.py" ]]; then
+        # FABLE-THINK-TIER-01 R6: the policy resolver is a py carrier of the
+        # think-tier contract — the scripts/*.sh allowlist below never saw it.
+        stem="leadv2-glm-policy-resolve.py"
+      elif [[ "${cf}" == plugins/leadv2/workflows/*.js ]]; then
+        # FABLE-THINK-TIER-01 R6: the four THINK workflows (diverge/learn/
+        # diagnose/po-feedback-loop) are js carriers — the R5 map rows were
+        # dead because the loop continued before any non-.sh reached here.
+        stem="$(basename "${cf}")"
       elif [[ "${cf}" == ".gitignore" ]]; then
         # HANDOFF-ARTIFACTS-GITIGNORED-01: .gitignore isn't a plugins/leadv2
         # script, so it needs its own synthetic stem to reach EXTRA_SUITE_MAP
         # below — the blanket-vs-allowlist rule it carries has no test-*.sh
         # of its own name to match by convention.
         stem="gitignore"
+      elif [[ "${cf}" == "tests/run-all.sh" ]]; then
+        # FABLE-THINK-TIER-01 R7: the carrier map row for run-all.sh must be
+        # reachable so the test suite for the carrier map can be selected.
+        stem="run-all.sh"
       else
         case "${cf}" in
           plugins/leadv2/scripts/*.sh|plugins/leadv2/scripts/lib/*.sh|plugins/leadv2/scripts/*.py|plugins/leadv2/hooks/*.sh) ;;

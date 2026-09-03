@@ -1,0 +1,12 @@
+# leadv2-main-model.yaml — plugin default for the lead's own main model.
+# FABLE-THINK-TIER-01 (founder order 2026-09-01): the lead is a THINKING role
+# (design/orchestration, not typing) — Fable 5.1 is the default, Opus 5 is the
+# documented fallback (leadv2-main-model-check.sh only runs Opus guardrails
+# when main_model=opus; a non-opus value, including fable, is returned as-is
+# with no guardrail check needed).
+#
+# This is the plugin's OWN copy (plugins/leadv2/ref/). A project's per-repo
+# override lives at that project's .claude/ref/leadv2-main-model.yaml and
+# takes precedence there — do NOT edit persona-engine's (or any other repo's)
+# copy from here.
+main_model: fable
