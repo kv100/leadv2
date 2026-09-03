@@ -1,0 +1,18 @@
+task: ANTI-SILENCE-STATUSLINE-01
+class: Heavy
+decisions:
+  - id: D1
+    text: "Lanes render FIRST on the statusline; quotas follow and shrink."
+  - id: D2
+    text: "Width budget from COLUMNS -> tput cols -> 80; never truncate mid-word."
+  - id: D3
+    text: "A silent/dead lane outranks every quota field."
+  - id: D4
+    text: "No new hook, loop, notifier or send door — channel-verdict.md is binding."
+  - id: D5
+    text: "persona-engine hook schema + session key stay in the persona-engine lane."
+off_limits:
+  - "Telegram or any outbound notifier"
+  - "editing the main checkout instead of the lane"
+verification:
+  live_signal: "statusline renders lanes at 80/120/200 cols"

@@ -1,0 +1,8 @@
+task: FP-07
+class: Standard
+decisions:
+  - fix codex review arm rg-exit-1 choke (no-match is not fatal)
+  - review_body_lost -> one retry on a DIFFERENT pool arm, journal review_arm_retry
+off_limits:
+  - author-exclusion stays binding; never retry same arm
+plan_steps: see docs/handoff/FP-07/mission.md

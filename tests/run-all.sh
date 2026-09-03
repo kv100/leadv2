@@ -280,6 +280,12 @@ leadv2-lane-status-line.sh:plugins/leadv2/scripts/tests/test-statusline-readable
 leadv2-lane-status-line-tail.sh:plugins/leadv2/scripts/tests/test-statusline-readable.sh
 leadv2-worker-output-gate:plugins/leadv2/scripts/tests/test-worker-gate-no-origin.sh
 gitignore:plugins/leadv2/scripts/tests/test-handoff-artifacts-tracked.sh
+gitignore:plugins/leadv2/scripts/tests/test-handoff-docs-not-leaked.sh
+# HANDOFF-DOCS-INVISIBLE-IN-LANES-01 (second cause): pick_base() base-ref
+# selection lives in leadv2-lane-worktree.sh but the suite proving it is
+# named for the behaviour (base-pick), not the carrier — self-select by
+# convention (test-leadv2-lane-worktree.sh) would never match it.
+leadv2-lane-worktree:plugins/leadv2/scripts/tests/test-lane-worktree-base-pick.sh
 leadv2-review-run.sh:plugins/leadv2/scripts/tests/test-review-body-recovery.sh
 leadv2-dispatch-code.sh:plugins/leadv2/scripts/tests/test-arm-admission.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-arm-admission.sh

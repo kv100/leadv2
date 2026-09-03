@@ -1,0 +1,109 @@
+task_id: PROMISE-GUARD-BIND-01
+class: Standard
+repo: /Users/kostiantyn.vlasenko/Projects/leadv2
+supersedes_backlog_rows:
+  - PROMISE-GUARD-SUPPRESSED-BY-ANY-TOOL-CALL-01   # re-scoped, see PREMISE-CORRECTED
+
+inputs:
+  brief: docs/handoff/PROMISE-GUARD-BIND-01/brief.md          # PARTLY WRONG, see below
+  architect: docs/handoff/PROMISE-GUARD-BIND-01/plan-architect.md
+  critic: docs/handoff/PROMISE-GUARD-BIND-01/concerns-critic.md
+
+decisions:
+  - id: PREMISE-CORRECTED
+    text: >
+      The filed defect and brief.md are WRONG on two counts, both corrected from the corpus.
+      (1) Not "one fired row in 1579": the census over all 1581 rows / 239 sessions / 6 repos is
+      1236 suppressed_action (78.2%) and 344 fired (21.8%) across 115 sessions, 151 of those
+      with non-empty tools. (2) The mechanism blamed in the brief — the positional rule — is NOT
+      LIVE. leadv2-promise-guard.sh:359-401 documents PROMISE-GUARD-POSITIONAL-REVERT-01
+      (2026-08-22): it was reverted after five false positives and zero true catches on its
+      first full day, and :400 now collapses to turn-wide `action_after_promise = has_action`.
+      Read brief.md only for the incident narrative; take mechanism from the critic.
+  - id: REAL-SUPPRESSOR
+    text: >
+      The actual 78% suppressor is ACTION_BASH_RE (:210), whose pattern ends in `>>?\s*\S` —
+      so ANY command containing a redirect, including a harmless `2>/dev/null`, is classified
+      as state-changing and excuses the turn. That is the one-line cause of "any tool call
+      grants immunity", not the positional rule.
+  - id: BINDING-IS-BLOCKED
+    text: >
+      Artifact-binding as originally proposed is NOT BUILDABLE and must not be attempted.
+      Bindable-token census over all 1581 quotes: file path 0 (0.0%), any slash-path 2,
+      TASK-ID 11 (0.7%), lane word 28 (1.8%). Median quote is 35 chars and 1504/1580 (95%) end
+      mid-sentence. There is nothing in the stored quote to bind against, because the extractor
+      throws the artifact away first: :355-372 splits final_text on [.!?\n;] AND on comma and
+      keeps ONE comma-clause; :452-459 truncates to arr[0][:280].
+  - id: FIX-THE-EXTRACTOR-FIRST
+    text: >
+      Therefore the task is re-scoped: fix EXTRACTION and PRECISION first; binding is a later
+      task that only becomes possible once quotes contain targets. Three live extractor bugs
+      to fix, all reproduced by the critic: COMMIT_RU_LEADING (:189) fires on bare pronouns
+      «которую» / «какую» / «Ревью»; COMMIT_RU (:111) is unanchored and matched the verb «дам»
+      INSIDE the word «раундами»; and the `pattern` telemetry field emits COMMIT_EN as an
+      else-branch, so all 422 COMMIT_EN rows are unclassified noise.
+  - id: PRECISION-BEFORE-POWER
+    text: >
+      The guard is already expensive AND useless: 344 blocks, 193 of them with zero tools, and
+      the recent zero-tool blocks are dominated by non-promises — the critic quotes
+      «Государству нужен не ты в Киеве» and "and I'll do my best to assist you". A block costs
+      the lead a whole extra turn in every repo. So the success metric for this task is
+      PRECISION, not catch-rate: fewer, correct blocks. A change that raises catch-rate while
+      keeping today's false-positive rate is a regression.
+  - id: ROLLOUT-LOG-ONLY
+    text: >
+      First rollout is log-only: LEADV2_PROMISE_GUARD_BLOCK=0 emits the verdict and the ledger
+      row but never blocks. Turn blocking on only after the log shows the new verdicts are
+      right on real sessions. Keep a 1-block-per-session cap when blocking is enabled.
+  - id: CI-BLIND
+    text: >
+      Neither suite is selected by CI: `grep -c promise plugins/leadv2/scripts/tests/run-core-offline.sh`
+      is 0, and tests/run-all.sh (:8, :137) maps changed-file stems only under
+      plugins/leadv2/scripts/, so all three suites are invisible to --scope changed. Worse,
+      test-promise-action-binding.sh:134-153 ASSERTS `action_then_promise -> SILENT` — it
+      encodes the defect. Amend that assertion, wire the suites explicitly, and prove selection.
+  - id: FORBIDDEN-COPY
+    text: >
+      VERIFIED by the lead 2026-08-30: ~/.claude/scripts/tests/test-promise-action-binding.sh
+      is a REAL FILE, not a symlink, duplicating the canonical
+      plugins/leadv2/scripts/tests/test-promise-action-binding.sh (identical bytes, mtime Aug 26
+      vs Aug 22). That is exactly the copy shape CLAUDE.md forbids and it will drift silently.
+      Replace the copy with a symlink to canonical as part of this task.
+
+off_limits:
+  - No artifact-binding implementation this round (BINDING-IS-BLOCKED).
+  - No re-introduction of the positional rule — it was already reverted once for cause.
+  - No change that increases block volume before the log-only rollout proves precision.
+  - No second real copy of any plugin file in a consuming repo.
+
+plan:
+  steps:
+    - 1. Fix ACTION_BASH_RE (:210) so a redirect alone is not "state-changing". A read-only
+         command with 2>/dev/null must NOT excuse a turn.
+    - 2. Fix the three extractor bugs: anchor COMMIT_RU so it cannot match inside a word;
+         stop COMMIT_RU_LEADING firing on bare pronouns; make `pattern` a real classification
+         instead of an else-branch.
+    - 3. Keep the whole sentence. Stop splitting on comma and stop the 280-char truncation from
+         discarding the head of the promise. This is what makes a later binding task possible.
+    - 4. Log-only rollout behind LEADV2_PROMISE_GUARD_BLOCK=0, plus the ledger row.
+    - 5. Amend test-promise-action-binding.sh:134-153, wire all promise suites into
+         run-core-offline.sh and the run-all.sh stem map, prove with --scope changed.
+    - 6. Replace ~/.claude/scripts/tests/test-promise-action-binding.sh with a symlink.
+
+verification:
+  mutation_controls:
+    - redirect  -> a read-only `grep foo bar 2>/dev/null` turn must NOT be classified
+                   state-changing; restore the old regex and the suite goes red
+    - anchor    -> «раундами» must not match the verb «дам»; unanchor it and the suite goes red
+    - pronoun   -> a turn whose final text is «которую» must not register a commitment
+    - sentence  -> a promise naming a path must retain that path in the stored quote
+    - ci        -> --scope changed on leadv2-promise-guard.sh must select the promise suites
+  live_signal: >
+    With LEADV2_PROMISE_GUARD_BLOCK=0, a day of real sessions shows the new verdicts on the
+    ledger: the zero-tool non-promise blocks are gone, and a turn that genuinely promised and
+    did nothing is marked. Precision judged on the log before blocking is enabled.
+
+risk: >
+  A Stop hook in every repo and session. Today it blocks 344 times, mostly wrongly. The
+  log-only rollout is the containment: nothing this task ships can block until the log proves
+  it should.

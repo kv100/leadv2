@@ -1,0 +1,14 @@
+task: DISPATCH-CLOSE-GATE-01
+class: Standard
+decisions:
+  - id: D1
+    text: "Refuse a dispatch before spawn when the mission requires a path outside LANE_WRITES."
+  - id: D2
+    text: "A named fix owes a RED artifact; an unbacked claim closes as unproven, by name."
+  - id: D3
+    text: "The red-proof gate reports, it does not trap the lane."
+off_limits:
+  - "the seven-worker-death commit problem (in flight in another lane)"
+  - "lane liveness and registration defects (filed separately)"
+verification:
+  live_signal: "a bad write set refuses before spawn; an unbacked claim prints unproven"

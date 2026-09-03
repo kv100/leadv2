@@ -1,0 +1,7 @@
+task: LEAD-WORKER-CHANNEL-01
+decisions:
+  - "message is the fast path, the durable file row is the guaranteed path; bash cannot SendMessage"
+  - "inbox keyed by lead session id, not by repo, so a worker in any repo reaches the same lead"
+  - "lead drains the inbox on every beat, so an event surfaces even if no message was delivered"
+  - "lead->worker messaging is approval-gated (measured); answered-yaml poll stays the only real path"
+off_limits: ["telegram", "any channel that can fail a lane"]

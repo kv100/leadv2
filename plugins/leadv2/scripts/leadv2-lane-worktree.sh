@@ -123,12 +123,47 @@ resolve_root() {
   fi
 }
 
-# Latest main-ish ref to fork from: origin/main (saw sibling landings) > main
-# > HEAD. Echoes the choice.
+# Latest main-ish ref to fork from. HANDOFF-DOCS-INVISIBLE-IN-LANES-01 second
+# cause (2026-09-03): the old rule ("origin/main if it exists, else main")
+# unconditionally preferred origin/main even when it was BEHIND local main —
+# the lead commits a brief and deliberately withholds the push (a push
+# cancels an in-flight CI run through the workflow's concurrency group), and
+# the freshly-forked lane worktree then has no docs/handoff/<id>/ at all. The
+# worker finds nothing to read, produces an empty diff, and the arm ladder
+# burns a retry on what looks like "the model produced nothing" but is really
+# "the brief was one push away". Measured: two lanes, two arms, zero output,
+# see docs/handoff/HANDOFF-DOCS-INVISIBLE-IN-LANES-01/brief-addendum-second-cause.md.
+#
+# origin/main was preferred in the first place to pick up sibling landings —
+# another push having merged in ahead of a stale local main. Both scenarios
+# are real, so pick whichever ref is NOT behind the other (the descendant),
+# instead of a fixed preference:
+#   - origin/main is an ancestor of main  -> main is at least as fresh, fork main
+#   - main is an ancestor of origin/main  -> origin/main has sibling landings, fork it
+#   - diverged (neither is an ancestor)   -> ambiguous; fork main (what the
+#     lead just committed and is dispatching against) and log loudly rather
+#     than silently guessing wrong in the direction that reproduces this bug.
+# Echoes the choice.
 pick_base() {
-  if git -C "$ROOT" rev-parse --verify -q origin/main >/dev/null 2>&1; then printf 'origin/main'
-  elif git -C "$ROOT" rev-parse --verify -q main >/dev/null 2>&1; then printf 'main'
-  else printf 'HEAD'; fi
+  local have_origin=0 have_main=0
+  git -C "$ROOT" rev-parse --verify -q origin/main >/dev/null 2>&1 && have_origin=1
+  git -C "$ROOT" rev-parse --verify -q main >/dev/null 2>&1 && have_main=1
+  if [[ "$have_origin" == 1 && "$have_main" == 1 ]]; then
+    if git -C "$ROOT" merge-base --is-ancestor origin/main main 2>/dev/null; then
+      printf 'main'
+    elif git -C "$ROOT" merge-base --is-ancestor main origin/main 2>/dev/null; then
+      printf 'origin/main'
+    else
+      log_error "pick_base: origin/main and main have diverged — forking from main"
+      printf 'main'
+    fi
+  elif [[ "$have_main" == 1 ]]; then
+    printf 'main'
+  elif [[ "$have_origin" == 1 ]]; then
+    printf 'origin/main'
+  else
+    printf 'HEAD'
+  fi
 }
 
 # Print the shared tree (legacy cwd) — the safe fallback when isolation cannot
@@ -328,9 +363,14 @@ reaps it.
 EOF
 }
 
+# Sourcing this file (e.g. a test that wants to unit-test pick_base() in
+# isolation) must get only the function definitions, not the CLI dispatch —
+# same guard as leadv2-dispatch-ledger.sh / leadv2-review-findings.sh.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
   ensure)   shift; cmd_ensure "$@" ;;
   path-of)  shift; cmd_path_of "$@" ;;
   -h|--help) usage; exit 0 ;;
   *)        usage; exit 2 ;;
 esac
+fi

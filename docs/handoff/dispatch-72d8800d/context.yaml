@@ -1,0 +1,60 @@
+task_id: CODEX-DETACH-01
+sig8: 72d8800d
+class: Standard
+brief: docs/handoff/CODEX-DETACH-01/brief.md
+
+decisions:
+  - id: D1
+    text: >-
+      The 5m00s deaths are not a timeout. codex-task.sh:1534 already sets an 1800s
+      ceiling; codex-guard.sh:387-393 stamps worker_died_silent after 300s of log
+      silence. Raising any timeout is out of scope and would fix nothing.
+    evidence: >-
+      Parallel session root-caused three sol-worker deaths (mtgk8ef8, mtgl2ea9,
+      mtgl96u7) on the live machine; ledger row SD-CODEX-5MIN-CAP-ON-HEAVY-01 marked
+      superseded in commit 95ed6f310.
+  - id: D2
+    text: >-
+      The real cause is a stale broker: state/broker.json names a pid that is gone and
+      a sessionDir the OS has swept, and every new worker attaches to that corpse.
+      The fix is validation before attaching — pid alive AND sessionDir present — with
+      the stale file renamed aside so the companion raises a fresh broker.
+    evidence: >-
+      Moving broker.json aside made the companion raise broker pid 18070 and the next
+      sol task ran to completion.
+  - id: D3
+    text: >-
+      The broker belongs to the Codex plugin, which is not ours. Our layer is
+      codex-task.sh and codex-guard.sh only.
+  - id: D4
+    text: >-
+      The death report must carry the worker log's last line and the broker's age plus
+      whether its sessionDir existed at reap time. The absence of that detail is why
+      this read as a timeout across two sessions for two days.
+
+off_limits:
+  - ~/.claude/plugins/cache/openai-codex/**
+  - any real state root under ~/.claude/plugins/data/
+  - hook arrays in any settings.json
+
+plan:
+  steps:
+    - Validate broker.json in codex-task.sh before handing a job to the companion.
+    - Rename a stale broker.json aside (never delete) and log which check failed.
+    - Enrich the codex-guard reaper's failure record with last log line and broker age.
+    - Build test-codex-broker-staleness.sh against a fixture state root.
+    - Add EXTRA_SUITE_MAP rows for codex-task.sh and codex-guard.sh; prove --scope changed.
+
+verification:
+  acceptance: >-
+    Kill a live broker and delete its sessionDir, then start a task: it must raise a
+    fresh broker and run to completion. Proven by a mutation that removes the
+    validation and turns the suite red, with the exit code following.
+
+risk: >-
+  Medium. Touches the dispatch path every codex job uses. The suite must never run
+  against the real ~/.claude/plugins/data/ state root.
+
+gate1:
+  decided_by: lead
+  outcome: accepted

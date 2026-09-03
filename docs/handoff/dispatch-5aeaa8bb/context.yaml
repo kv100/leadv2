@@ -1,0 +1,13 @@
+task: FP-06
+sig: 5aeaa8bb
+class: Heavy(guard)
+decisions:
+  - D1: telemetry emitted at the SINGLE terminal-journal point (no daemon, no second path)
+  - D2: CSV dataset docs/leadv2/model-select-telemetry.csv for FP-04 quality gate
+  - D3: capability_floor becomes config (yaml key + env override), default bulk_only preserves FP-08 behavior
+  - D4: base on worktree-60ec85a4 to avoid dispatch-code conflicts with MON-PULSE-01
+off_limits: [no new daemons, no behavior change under default config]
+plan:
+  steps: [merge base branch, telemetry line+CSV, floor knob, tests a-d incl RUN negative control, EXTRA_SUITE_MAP]
+verification:
+  live_signal: model_select_telemetry line in the next real dispatch journal + CSV row

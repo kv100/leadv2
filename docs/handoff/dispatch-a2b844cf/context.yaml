@@ -1,0 +1,8 @@
+task: CHEAP-ARMS-ARE-SWITCHED-OFF-01
+decisions:
+  - "absence of telemetry must not render as exhaustion; introduce an explicit unmeasured state"
+  - "an unknown launcher tier is a loud config error, never a silent fallthrough to a costlier arm"
+  - "untrusted-arm exclusion must key on production/safety write sets, not on a hand-kept list"
+  - "the arbiter must read the codex quota reader that already exists in codex-task.sh"
+  - "both anthropic accounts must be routable so one near its cap does not stall work"
+off_limits: ["hardcoding any arm in or out of the ladder"]

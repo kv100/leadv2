@@ -1,0 +1,2 @@
+gate1 passed 2026-08-30 — founder: "тоже бери в работу". Defect localised to leadv2-broad-status.sh:404 (row identity from mission title) plus a cross-repo lane missing from the snapshot.
+task=BROAD-STATUS-ROWS-01 sig8=e9d256b4 class=Standard

@@ -1,0 +1,11 @@
+task_id: BROAD-STATUS-ROWS-01
+class: Standard
+decisions:
+  - id: IDENTITY
+    text: row identity must be task_id (sig8 fallback), never a mission-title fragment (leadv2-broad-status.sh:404)
+  - id: CROSSREPO
+    text: establish whether the missing lane was absent from the snapshot or dropped at render; do not guess
+  - id: NO-FREEPOOL
+    text: the first round went to freepool as Light and produced only an anchor commit; this is Standard
+off_limits:
+  - do not regress the empty-vs-unreadable distinction at :203-213

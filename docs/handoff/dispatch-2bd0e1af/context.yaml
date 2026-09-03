@@ -1,0 +1,17 @@
+task_id: FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01
+sig: 2bd0e1af
+class: standard
+decisions:
+  - model choice by evidence-backed preference list, not list order
+  - parse gate applies to every arm, not just freepool
+  - arbiter must honour the router exclusion set
+off_limits:
+  - disabling or hardcoding freepool out of the routing ladder
+plan:
+  steps:
+    - bakeoff top-3 free models on a real shell-editing task
+    - build lib/leadv2-freepool-model.sh with logged selection
+    - build lib/leadv2-worker-output-gate.sh (bash -n / py_compile)
+    - make arbiter honour router exclusions, mutation-proven
+verification:
+  live_signal: a light task dispatched to freepool lands with parsing output
