@@ -362,7 +362,15 @@ leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-helpers.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-lane-outcome.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
-leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh"
+leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
+# CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01: the selector's suite is named
+# test-claude-profile-select.sh (no leadv2- prefix), so the generic
+# test-STEM.sh convention below -- which would look for
+# test-leadv2-claude-profile-select.sh -- never matches a changed
+# leadv2-claude-profile-select.sh without this explicit row. (Note: this
+# string is double-quoted, so a literal dollar-brace here would be expanded
+# at assignment time and abort under set -u -- spell it out instead.)
+leadv2-claude-profile-select.sh:plugins/leadv2/scripts/tests/test-claude-profile-select.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
