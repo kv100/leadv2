@@ -49,6 +49,14 @@ plugins/leadv2/scripts/tests/.claude/
 docs/handoff/*/*
 !docs/handoff/*/report.md
 !docs/handoff/*/brief*.md
+# D2-UNBLIND-AND-THIRD-STATE-M0M1-01 (M0): the worker's own deliverable report
+# (*.full.md / *.summary.md) is evidence a round finished, not per-run scratch.
+# 184 of 281 on-disk reports were invisible to git (ignored at random — the 97
+# tracked ones merely predate the blanket rule), so a worker that finished
+# without committing read as "produced nothing" and was re-dispatched, each
+# dispatch erasing the previous round's report.
+!docs/handoff/*/*.full.md
+!docs/handoff/*/*.summary.md
 !docs/handoff/*/round*-red
 docs/leadv2/review-*
 docs/leadv2/status-snapshot.json

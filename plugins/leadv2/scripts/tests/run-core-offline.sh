@@ -428,6 +428,7 @@ SUITE_DEFS=(
   "poll-based lane watcher (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-lane-watch-poll.sh"
   "broad-status foreign-repo lanes (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-broad-status-foreign-lanes.sh"
   "freepool model selector + gate stale-window TTL (FREEPOOL-MODEL-SELECTOR-01)|||bash $TEST_DIR/test-freepool-model-selector.sh"
+  "lane verdict three states (D2-UNBLIND-AND-THIRD-STATE-M0M1-01: deliverable=finished_unlanded, registry unreadable=unknown)|||bash $TEST_DIR/test-lane-verdict-three-states.sh"
 )
 
 # Runner-mechanics test hook (SUITE-SPEED-01): a caller may substitute the
