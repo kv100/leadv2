@@ -3,5 +3,5 @@ file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
 anchor=s/ADMISSION_RISK_CLASS:-}" == "safety_publish_payments"/ADMISSION_RISK_CLASS:-}" == "never_matches_anything"/
 baseline_rc=0
 mutated_rc=1
-red_line=FAIL: (green) safety_pin_applied line missing (log: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//admission-safety-pin.OYnqf4/a.log) -- 
-diff_hash=c3b5ea769607c26e1b95920bd302d6e31a3aed64680eeec81f0cb81d5318a174
+red_line=FAIL: (green) safety_pin_applied line missing (log: /var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//admission-safety-pin.eYjBd0/a.log) -- 
+diff_hash=f75504396690500751e9be9e4f01a1969a5cab4462bf5adf76d6be5b67e24a77
