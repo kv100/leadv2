@@ -5135,6 +5135,29 @@ refusal_reason() { # <arm> <exit-code> <stdout> <stderr> -> reason, or rc 1
   return 1
 }
 
+# GLM-EFFICIENCY-01: class -> effort contract for the GLM spawn, one function
+# so suites can extract and test it in isolation (test-glm-effort-wiring.sh).
+# Raw task class in, Z.AI effort out (docs.z.ai/guides/llm/glm-5.3.md:
+# reasoning_effort low|high|max, default max; CC 2.1.258 also accepts medium,
+# which Z.AI auto-converts to high). An unrecognized class falls back to the
+# arbiter's RESOLVED_EFFORT, then high — never empty.
+# fix-round-3 (C1): DC_TASK_CLASS is always Title-case (Trivial/Light/Standard/
+# Heavy/Strategic -- see _admission_classify and lib/leadv2-lane-guard.sh's
+# _lv2_class_rank), so match on a lowercased copy, never the raw string, or
+# every arm here is dead and every dispatch silently falls through to
+# RESOLVED_EFFORT. Output is "<effort> <source>" (source: class_map|fallback)
+# so the caller journals which path actually fired instead of a fixed label.
+_glm_effort_for_class() { # <raw task class> -> stdout: "<effort> <source>"
+  local _cls
+  _cls="$(printf '%s' "${1:-standard}" | tr '[:upper:]' '[:lower:]')"
+  case "${_cls}" in
+    trivial|light|bulk) printf '%s %s' 'low' 'class_map' ;;
+    standard)           printf '%s %s' 'high' 'class_map' ;;
+    heavy|strategic)    printf '%s %s' 'max' 'class_map' ;;
+    *)                  printf '%s %s' "${RESOLVED_EFFORT:-high}" 'fallback' ;;
+  esac
+}
+
 _spawn_worker_body() {
   local arm="$1" mission="$2" sig8="$3" errf="$4"
   local out rc handle err
@@ -5196,11 +5219,22 @@ _spawn_worker_body() {
       if [[ "${arm}" == "glm-flash" ]]; then
         _glm_model="glm-5.3-flash"
       fi
-      # EFFORT-IS-NOT-WIRED-01: glm-coder.sh has no effort knob (prompt-level
-      # only, per docs/model-effort-matrix.md's lane table) -- a silently
-      # ignored resolved effort is indistinguishable from no effort at all, so
-      # journal the drop as a fact instead of pretending the value took effect.
-      emit decision "effort_dropped by=router arm=${arm} task=${sig8} effort=${RESOLVED_EFFORT:-medium} reason=no_effort_control"
+      # GLM-EFFICIENCY-01: RESOLVED_EFFORT is now WIRED, not dropped. glm-coder.sh
+      # appends `--effort <v>` to its `claude -p` argv when GLM_EFFORT is set
+      # (CC 2.1.258 --effort; Z.AI's Anthropic-compat layer reads it as
+      # output_config.effort — probe: docs/handoff/GLM-EFFICIENCY-01/report.md).
+      # Mapping is by RAW task class (this dispatcher owns the class->effort
+      # contract; the arbiter's effort_matrix is tag-keyed and cannot see the
+      # raw class): trivial|light -> low, standard -> high, heavy|strategic ->
+      # max, bulk -> low (mechanical). Review/verify roles would pay `high`
+      # regardless of class — glm is in DEFAULT_REVIEW_EXCLUSIONS today, so
+      # this row is contract-complete but currently unreachable.
+      local _glm_effort _glm_effort_source
+      read -r _glm_effort _glm_effort_source <<<"$(_glm_effort_for_class "${DC_TASK_CLASS:-standard}")"
+      case "${LEADV2_WORKER_ROLE:-developer}" in
+        review|verify|critic) _glm_effort=high; _glm_effort_source=role_override ;;
+      esac
+      emit decision "effort_applied by=router arm=${arm} task=${sig8} effort=${_glm_effort} mechanism=flag source=${_glm_effort_source:-fallback} resolved=${RESOLVED_EFFORT:-unset}"
       # FIX PASS 4: `9>&-` closes the lock fd for this call as defense-in-depth -- the
       # redesign already never holds the dispatch lock across spawn (spawn_worker runs
       # outside any lock this script itself opens), but a launcher spawns a DETACHED
@@ -5211,7 +5245,7 @@ _spawn_worker_body() {
       # The GLM wrapper owns the terminal JSON envelope and invokes the shared
       # dev cost shim only after it exists.  Stamp this dispatch identity here
       # so direct and dispatcher-launched lanes use one attribution contract.
-      out="$(LEADV2_COSTLOG_ARM="glm-coder:${arm}" LEADV2_WORKER_ROLE=developer GLM_MODEL="${_glm_model}" bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
+      out="$(LEADV2_COSTLOG_ARM="glm-coder:${arm}" LEADV2_WORKER_ROLE=developer GLM_MODEL="${_glm_model}" GLM_EFFORT="${_glm_effort}" bash "${GLM_BIN}" bg "${mission}" --cwd "${WORK_ROOT}" 2>"${errf}" 9>&-)"; rc=$?
       err="$(tail -20 "${errf}" 2>/dev/null)"
       if [[ ${rc} -ne 0 ]]; then
         local refusal
@@ -6944,18 +6978,12 @@ cmd_resolve() {
   # next arm.  (E2E-GATE-RESIDUE-01 round 4 root cause.)
   set +e
 
-  # PHASE-GATE-IS-INVERTED-01: the pre-classify is-bootstrap probe is gone.
-  # It existed only to feed the caller-attested --at-bootstrap that the guard
-  # no longer honours; keeping it would resurrect the inversion (every fresh
-  # lane probed "zero records" before its own classify write and was waved
-  # through). The guard reads the store itself after classify is recorded.
-
-  # PHASES-ARE-THE-ONLY-PATH-01: record classify as done (it just happened).
-  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
-    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
-
   # PHASES-ARE-THE-ONLY-PATH-01 §5: precondition guard at the same structural slot
   # as _lane_writes_guard / _acceptance_guard — after arg validation, before spawn.
+  # PHASE-BOOTSTRAP-DEADLOCK-01: this must run before the dispatcher's own
+  # classify record. A zero-record lane is the one legitimate bootstrap shape;
+  # recording classify first turns that shape into a resumed lane and makes the
+  # gate refuse its own first dispatch.
   local _phase_waiver_args=()
   for _pw in "${phase_waivers[@]+"${phase_waivers[@]}"}"; do
     _phase_waiver_args+=(--waiver "$_pw")
@@ -6965,6 +6993,12 @@ cmd_resolve() {
     # trap (cleanup_pending_dispatch) releases the registered row on this exit.
     exit 3
   }
+
+  # PHASES-ARE-THE-ONLY-PATH-01: record classify only after admission. The
+  # guard above owns the bootstrap decision; subsequent dispatches see this
+  # record and remain subject to the existing phase requirements.
+  bash "${PHASE_RECORD_BIN}" record "${sig8}" classify --status done \
+    --task-id "${founder_task_id}" --owner "$(basename "$0"):cmd_resolve" 2>/dev/null || true
 
   if [[ "${product_class}" == "product" ]]; then
     # PREPASS-DEGRADES-01 (2026-07-29): a prepass failure must NEVER stop the work. On
