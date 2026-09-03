@@ -36,10 +36,18 @@ if [[ "$out" == *'arm=glm '* || "$out" == *'arm=glm-flash '* || "$out" == *'arm=
 out="$(run "$(quota 99 99 99)" 1 '{"kind":"code","size":"standard"}' || true)"
 if [[ "$out" == *'arm=refuse '* && "$out" == *'reason=all_arms_capped'* ]]; then pass 'all capped refuses all_arms_capped'; else fail "all capped output=$out"; fi
 
-# (c) protected tasks cannot enter either untrusted arm.
+# (c) protected tasks cannot enter an UNTRUSTED arm. Which arms are untrusted is
+#     policy, and the policy changed: GLM-DOES-ANY-WORK-01 (founder, 2026-09-04)
+#     grants glm every kind of work in every repo, review included, so glm is a
+#     trusted arm now and MUST appear on a protected path. freepool is untouched
+#     and must still be excluded -- that is what keeps this case an assertion
+#     rather than a formality. Asserting glm's presence (not merely freepool's
+#     absence) is deliberate: a bug that dropped glm from the chain again would
+#     otherwise pass this test silently, which is exactly how the old wiring hid
+#     for months while sonnet was journalled `reason=cheapest_capable` at cost 5.
 out="$(run "$(quota 1 1 1)" 0 '{"kind":"code","size":"standard","protected":true}')"
 chain="$(printf '%s\n' "$out" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
-if [[ "$out" != *'arm=glm '* && "$out" != *'arm=freepool '* && ",${chain}," != *',glm,'* && ",${chain}," != *',freepool,'* ]]; then pass 'protected chain excludes glm and freepool'; else fail "protected output=$out"; fi
+if [[ "$out" != *'arm=freepool '* && ",${chain}," != *',freepool,'* && ",${chain}," == *',glm,'* ]]; then pass 'protected chain excludes freepool and admits glm'; else fail "protected output=$out"; fi
 
 # (d) Anti-stickiness: fixed live readings still rotate equal-cost arms.
 # GLM-53-FLASH-ARM-01: size=standard now has a uniquely-cheapest arm

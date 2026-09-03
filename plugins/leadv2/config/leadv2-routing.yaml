@@ -57,7 +57,31 @@ router_v2:
   # second, defensive layer -- this matrix entry is the first-class one so the
   # journal shows the real kind, not a silent rewrite.
   capability_matrix:
-    - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [bulk, background], review: false, protected: false }
+    # GLM-DOES-ANY-WORK-01 — прямое решение основателя 2026-09-04, дословно:
+    # «дай глм право делать любую работу, вообще любую, во всех репо. глм отлично
+    # все делает, и ревью тоже пусть делает». Это ШИРЕ его же решения от 2026-09-03
+    # («разрешить с исключениями») и заменяет его.
+    #
+    # Что именно изменено в этой ячейке и что каждое поле значит:
+    #   protected: false -> true   — glm допущен на защищённые пути. Тот же флаг
+    #     через require_trusted (lib/leadv2-route-arbiter.sh:80) закрывает safety,
+    #     publish и ui_judgment, поэтому glm теперь выигрывает и их: при цене 1
+    #     против 5 у sonnet он дешевле на любом сравнении. Это НЕ побочный эффект,
+    #     а буквально то, о чём попросили; названо здесь, чтобы никто не счёл это
+    #     недосмотром и не «починил» обратно молча.
+    #   review: false -> true      — glm допущен как рецензент, не только как автор.
+    #   kinds += review, plan, safety — раньше ячейка не бралась за эти виды работ
+    #     вовсе, независимо от цены.
+    #
+    # Не изменено намеренно: glm-flash и freepool остаются protected: false. Оба
+    # помечены `untrusted: true` в лестнице диспатчера, и лестница снимает их на
+    # защищённом пути раньше арбитра — так что правка одной ячейки их всё равно не
+    # пустила бы, а править лестницу основатель не просил. Речь шла о GLM, а
+    # glm-flash это его дешёвый тариф для механической работы, не он сам.
+    #
+    # Откат — один шаг: вернуть в этой строке protected: false, review: false и
+    # исходный список kinds. Ледгер: SD-GLM-DOES-ANY-WORK-ROLLBACK-01.
+    - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, review, plan, audit, safety, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [bulk, background], review: true, protected: true }
     # GLM-53-FLASH-ARM-01 (founder order 2026-08-26): glm-5.3-flash, the CHEAP
     # glm-family arm. GLM-EFFICIENCY-01 (founder ruling on ask q-bba84179,
     # 2026-09-02, option b): cost corrected 0.4 -> 0.33 against Z.AI's measured
