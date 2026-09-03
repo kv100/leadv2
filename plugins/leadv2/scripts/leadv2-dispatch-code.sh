@@ -3866,6 +3866,12 @@ _admission_classify() {
   local mission="$1" sig="$2" sig8="$3" explicit="$4" flagged="$5"
   ADMISSION_CLASS="Standard"; ADMISSION_ROUTE="phases"
   ADMISSION_SOURCE="classifier_error"; ADMISSION_WORK_KIND=""
+  # SAFETY-PIN-SECOND-DOOR-01: the judge's risk_class, exposed for the caller
+  # to pin the safety arm on -- separate from ADMISSION_CLASS (Heavy), which a
+  # non-risk signal (complexity=complex, subsystems>=4) can equally produce.
+  # "" on every path that does not KNOW the risk class (cache hit against an
+  # old receipt written before this field existed, or classifier_error).
+  ADMISSION_RISK_CLASS=""
   DISPATCH_FREEPOOL_ROLE=""
   # Keep the caller's requested class separate from the final admission class.
   # The classifier is authoritative, but an escalation must not look as though
@@ -3893,14 +3899,15 @@ _admission_classify() {
   local existing
   existing="$(leadv2_admission_read_receipt "${PROJECT_ROOT}" "${sig8}" 2>/dev/null || true)"
   if [[ -n "${existing}" ]]; then
-    local r_cls r_route r_src r_wk r_digest
-    IFS=$'\t' read -r r_cls r_route r_src r_wk r_digest _ <<<"${existing}"
+    local r_cls r_route r_src r_wk r_digest r_risk
+    IFS=$'\t' read -r r_cls r_route r_src r_wk r_digest _ r_risk <<<"${existing}"
     if [[ "${r_digest}" == "${sig}" ]]; then
       # Same mission digest: this is a re-entry (e.g. Phase-4 spawn from the
       # full cycle), not a new intake — reuse the receipt, no second journal
       # line, and the guard below decides admission from the phase records.
       ADMISSION_CLASS="${r_cls}"; ADMISSION_ROUTE="${r_route}"
       ADMISSION_SOURCE="${r_src}"; ADMISSION_WORK_KIND="${r_wk}"
+      ADMISSION_RISK_CLASS="${r_risk:-}"
       if [[ -n "${task_floor}" ]] && (( $(_lv2_class_rank "${task_floor}") > $(_lv2_class_rank "${ADMISSION_CLASS}") )); then
         ADMISSION_CLASS="${task_floor}"; ADMISSION_SOURCE="task_record"
         case "${ADMISSION_CLASS}" in
@@ -3930,6 +3937,7 @@ _admission_classify() {
   if [[ -n "${pair}" ]]; then
     IFS=$'\t' read -r ADMISSION_CLASS ADMISSION_SOURCE <<<"${pair}"
     ADMISSION_WORK_KIND="$(printf '%s' "${estimate}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("work_kind",""))' 2>/dev/null || true)"
+    ADMISSION_RISK_CLASS="$(printf '%s' "${estimate}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("risk_class",""))' 2>/dev/null || true)"
     class_override_reason="$(printf '%s' "${estimate}" | python3 -c '
 import json, sys
 try:
@@ -3981,7 +3989,7 @@ else:
   DISPATCH_FREEPOOL_ROLE="$(leadv2_admission_freepool_role "${ADMISSION_WORK_KIND}")"
   leadv2_admission_write_receipt "${PROJECT_ROOT}" "${sig8}" "${receipt_task_id}" \
     "${sig}" "${ADMISSION_CLASS}" "${ADMISSION_ROUTE}" "${ADMISSION_SOURCE}" \
-    "${ADMISSION_WORK_KIND:-unknown}" 2>/dev/null \
+    "${ADMISSION_WORK_KIND:-unknown}" "${ADMISSION_RISK_CLASS:-}" 2>/dev/null \
     || emit decision "admission_receipt_write_failed task=${sig8}"
   emit decision "task_class=${ADMISSION_CLASS} route=${ADMISSION_ROUTE} source=${ADMISSION_SOURCE} task=${sig8}"
   if [[ -n "${requested_class}" && "${requested_class}" != "${ADMISSION_CLASS}" ]]; then
@@ -5250,7 +5258,6 @@ _spawn_worker_body() {
     log_err "_LEADV2_DOD_GATE_CONTRACT_MISSION unavailable (leadv2-helpers.sh not sourced?) — falling back to embedded literal"
     mission="DEFINITION-OF-DONE GATE: before any model reviews your diff, a deterministic bash gate checks your committed lane for mechanical items (report.md, paste-line evidence, mutation-control provenance, test-suite registration, runtime-state paths). A failed check refuses the round at zero model spend, before any reviewer sees your diff."$'\n\n'"${mission}"
   fi
-  [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
   # WORKER-MCP-ALL-ARMS-01 R3 (review H2): the code-intel preamble promises
   # the worker mcp__* tools — so it may be injected ONLY when this arm's MCP
   # attach will actually succeed. worker_mcp_preamble_for_arm() (the shared
@@ -5259,6 +5266,14 @@ _spawn_worker_body() {
   # "code-intel MCP unavailable" note that promises nothing; rc=4 unwired
   # (codex) → nothing. The unconditional all-arms injection this replaces
   # told codex and every fail-open path to call tools their session never had.
+  # LANE-PLACEMENT-PIN-RED-01: this block must run and prepend its own text
+  # BEFORE the WORKTREE_PIN_LINE prepend just below -- prepending is LIFO
+  # (whatever prepends LAST ends up first in the string), and the pin line's
+  # own comment requires it be the literal first line of the mission
+  # (test-lane-placement-pin.sh's P-h cases assert `head -1`). Landing this
+  # block after the pin prepend (as WORKER-MCP-ALL-ARMS-01 originally did)
+  # silently demoted the pin line to wherever the code-intel text ends,
+  # breaking that invariant on every dispatch whose MCP attach succeeded.
   local _ci_txt="" _ci_rc=0
   _ci_txt="$(worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" "")" || _ci_rc=$?
   case "${_ci_rc}" in
@@ -5267,6 +5282,7 @@ _spawn_worker_body() {
     *) emit decision "code_intel_preamble arm=${arm} task=${sig8} mode=none reason=arm_unwired" ;;
   esac
   [[ -z "${_ci_txt}" ]] || mission="${_ci_txt}"$'\n\n'"${mission}"
+  [[ -z "${WORKTREE_PIN_LINE:-}" ]] || mission="${WORKTREE_PIN_LINE}"$'\n\n'"${mission}"
   case "${arm}" in
     glm|glm-flash)
       # GLM-53-FLASH-ARM-01: glm-flash is the same launcher (glm-coder.sh) on
@@ -6933,6 +6949,19 @@ cmd_resolve() {
   # refuses class>=Standard without same-task pre-build phase records.
   _admission_classify "${mission}" "${sig}" "${sig8}" "${task_class}" "${task_class_flagged:-0}"
   task_class="${ADMISSION_CLASS}"
+  # SAFETY-PIN-SECOND-DOOR-01: the judge's risk_class=safety_publish_payments
+  # previously only escalated ADMISSION_CLASS to Heavy (leadv2-admission-class.sh)
+  # -- it never reached the `safety` signal below, so a task the judge flagged
+  # hard-safety but whose caller never also passed --safety took the ordinary
+  # Heavy-class route with no safety pin at all. Fold it in here, unconditionally
+  # and before any config/env read in this function -- same "outside the
+  # override surface" placement HEAVY-TIER-VS-SAFETY-OPUS-01 round 2 used for
+  # CLAUDE_SAFETY_MODEL. An explicit --safety flag already sets safety=1; this
+  # only ADDS the judge's own signal, never clears a caller's flag.
+  if [[ "${ADMISSION_RISK_CLASS:-}" == "safety_publish_payments" && "${safety}" != "1" ]]; then
+    safety=1
+    emit decision "safety_pin_applied by=admission task=${sig8} reason=risk_safety_publish_payments"
+  fi
   # COMPLEXITY-ESTIMATOR-IS-OFF-01: unconditional -- every dispatch (not only
   # LEADV2_ROUTER_V2=1) now carries a complexity estimate into the live
   # arbiter descriptor below and the arm_resolved decision line.
