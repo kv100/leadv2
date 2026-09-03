@@ -220,6 +220,14 @@ ALLOWLIST=(
   'WRITER.md::"model_used": judge.get::skill doc example'
   'workflow-review-reference.md::claude-opus-5::reference doc of legacy workflow JS; live pool pins fable ahead of opus'
   'leadv2-token-discipline/SKILL.md::LEADV2_MAIN_MODEL=opus::stale doc prose about the main-model env (doc debt, logged in round-4 report)'
+  # LEAD-IS-OPUS-THINK-IS-FABLE-01 (2026-09-03): LEADV2_MAIN_MODEL is the
+  # LEAD's own axis, split from the think resolver — its own default is opus,
+  # not a think-role spawn pin. Both sites below are the two halves of that
+  # one default (the shell-level MAIN_MODEL_DEFAULT var and the JSON write
+  # into a repo's settings.json env block); section 5 below pins that neither
+  # this nor the think axis silently re-collapses onto the other.
+  'leadv2-repo-install.sh::MAIN_MODEL_DEFAULT:-opus::LEADV2_MAIN_MODEL own-axis shell default (LEAD-IS-OPUS-THINK-IS-FABLE-01) — the lead itself, not a think-role spawn'
+  'leadv2-repo-install.sh::os\.environ\.get\("LV2_MAIN_MODEL", "opus"\)::LEADV2_MAIN_MODEL own-axis settings.json write (LEAD-IS-OPUS-THINK-IS-FABLE-01) — independent of the think resolver, not a think-role spawn'
 )
 
 _lv2_allowlisted() { # $1=file $2=content — rc0 if an allowlist entry matches
@@ -279,11 +287,15 @@ census_raw="$(grep -rnE "$census_re" \
 census="$(_lv2_filter_census "$census_raw")"
 # Second census pass: spawn lines naming a think role that also mention opus
 # on the same line — catches pins written as `model=<opus ...>` or role-first
-# syntax the first pattern misses.
+# syntax the first pattern misses. The "opus" filter must match the matched
+# CONTENT only, not the whole "path:line:content" grep record — a worktree
+# checked out under a path containing "opus" (e.g. a lane literally named
+# ...OPUS...) previously false-positived every think-role line in the tree,
+# because plain `grep -iE "opus"` matched the path prefix, not the code.
 census2_raw="$(grep -rnE "(subagent_type|agentType)[\"'= :]+[^,)]*(architect|critic|judge)" \
     "$PLUGIN_ROOT/scripts" "$PLUGIN_ROOT/workflows" "$PLUGIN_ROOT/skills" "$PLUGIN_ROOT/hooks" 2>/dev/null \
   | grep -v "$PLUGIN_ROOT/scripts/tests/" \
-  | grep -iE "opus" \
+  | awk -F: '{c=$0; sub(/^[^:]*:[^:]*:/, "", c); if (tolower(c) ~ /opus/) print}' \
   || true)"
 census2="$(_lv2_filter_census "$census2_raw")"
 # R5 honesty: disclose the allowlisted survivors instead of hiding a
@@ -301,6 +313,53 @@ if [[ -z "$census" && -z "$census2" ]]; then
 else
   [[ -n "$census"  ]] && fail "tree-wide census: unclassified 'opus' literal(s): $census"
   [[ -n "$census2" ]] && fail "tree-wide census: think-role spawn line pinning opus: $census2"
+fi
+
+# --- 2d1. main-model axis: own default, independent of the think axis ------
+# LEAD-IS-OPUS-THINK-IS-FABLE-01 (2026-09-03, founder order): LEADV2_MAIN_MODEL
+# is the LEAD's own axis (default opus) and must no longer be derived from
+# LV2_THINK_MODEL/fable. LEADV2_THINK_MODEL keeps resolving through the think
+# resolver (fable). This section pins BOTH directions so a future edit cannot
+# silently re-collapse either axis onto the other.
+_axis_main_ok() { # $1=content -> rc0 if it is the split-shape main default
+  printf '%s' "$1" | grep -qE '"LEADV2_MAIN_MODEL": os\.environ\.get\("LV2_MAIN_MODEL", "opus"\)'
+}
+_axis_think_ok() { # $1=content -> rc0 if it is the split-shape think default
+  printf '%s' "$1" | grep -qE '"LEADV2_THINK_MODEL": os\.environ\.get\("LV2_THINK_MODEL", "fable"\)'
+}
+
+main_model_line="$(grep -F '"LEADV2_MAIN_MODEL":' "$SCRIPTS_ROOT/leadv2-repo-install.sh" | head -1)"
+think_model_line="$(grep -F '"LEADV2_THINK_MODEL":' "$SCRIPTS_ROOT/leadv2-repo-install.sh" | head -1)"
+
+if _axis_main_ok "$main_model_line"; then
+  pass "repo-install.sh: LEADV2_MAIN_MODEL has its own default (opus), independent of LV2_THINK_MODEL — ${main_model_line}"
+else
+  fail "repo-install.sh: LEADV2_MAIN_MODEL default missing/collapsed onto the think axis — ${main_model_line:-<not found>}"
+fi
+if _axis_think_ok "$think_model_line"; then
+  pass "repo-install.sh: LEADV2_THINK_MODEL still resolves via the think resolver (fable), independent of the main axis — ${think_model_line}"
+else
+  fail "repo-install.sh: LEADV2_THINK_MODEL default missing/collapsed onto the main axis — ${think_model_line:-<not found>}"
+fi
+
+# Negative control A (FABLE-THINK-TIER-01 R4 shape): main axis re-collapsed
+# onto the think value must be REJECTED by the split check — this is the
+# EXACT pre-fix line this task replaced.
+old_collapsed_main=' "LEADV2_MAIN_MODEL": os.environ.get("LV2_THINK_MODEL", "fable"),'
+if _axis_main_ok "$old_collapsed_main"; then
+  fail "negative control A: pre-fix collapsed main-axis line wrongly PASSES the split check (red expected)"
+else
+  pass "negative control A: pre-fix collapsed main-axis line correctly RED under the split check; the real file's line above is GREEN (revert proven)"
+fi
+
+# Negative control B (reverse direction): think axis re-derived from the main
+# value must be REJECTED by the split check too — proves neither axis can
+# collapse onto the other, not just the one direction R4 actually did.
+reverse_collapsed_think=' "LEADV2_THINK_MODEL": os.environ.get("LV2_MAIN_MODEL", "opus"),'
+if _axis_think_ok "$reverse_collapsed_think"; then
+  fail "negative control B: a main-derived think-axis line wrongly PASSES the split check (red expected)"
+else
+  pass "negative control B: a main-derived think-axis line correctly RED under the split check; the real file's line above is GREEN (revert proven)"
 fi
 
 # --- 2c. mutation negative controls (round-3 review bypass shapes) ---------

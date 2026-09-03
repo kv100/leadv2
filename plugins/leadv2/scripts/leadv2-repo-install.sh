@@ -49,12 +49,16 @@ CANON="${LEADV2_CANONICAL_SCRIPTS:-$HOME/Projects/leadv2/plugins/leadv2/scripts}
 AGENTS_SRC="${LEADV2_SHARED_AGENTS:-$HOME/.claude/agents-shared}"
 STATE_BASE="${LEADV2_STATE_BASE:-$HOME/.claude/leadv2-state}"
 PLUGIN_ROOT_DEFAULT="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/local/leadv2/plugins/leadv2}"
-# FABLE-THINK-TIER-01 R4: LEADV2_MAIN_MODEL is written from the think-model
-# resolver (fable; opus only as the resolver's documented fallback) — never a
-# hardcoded opus literal, so fresh/refreshed repos inherit lead main model =
-# fable instead of freezing opus at install time.
+# LEAD-IS-OPUS-THINK-IS-FABLE-01 (2026-09-03, founder order): the lead's own
+# main model and the think-role model are two SEPARATE axes. FABLE-THINK-TIER-01
+# R4 had collapsed them — LEADV2_MAIN_MODEL was written FROM the think resolver,
+# so every freshly-adopted repo got a lead running on Fable instead of Opus.
+# THINK_MODEL_RESOLVED below still feeds ONLY LEADV2_THINK_MODEL (architect,
+# plan synthesis, judge — fable by default). LEADV2_MAIN_MODEL gets its own
+# independent default (opus) via MAIN_MODEL_DEFAULT, never derived from this.
 THINK_MODEL_RESOLVED="$(bash "${CANON}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
 THINK_MODEL_RESOLVED="${THINK_MODEL_RESOLVED:-fable}"
+MAIN_MODEL_DEFAULT="${LEADV2_MAIN_MODEL_DEFAULT:-opus}"
 
 CHECK=0; QUIET=0; CHECK_ALL=0; REPO=""
 while [ $# -gt 0 ]; do
@@ -338,19 +342,21 @@ fi
 # ---- 5. settings.json env ---------------------------------------------------
 env_py() {
   LV2_REPO="$REPO" LV2_PR="$PLUGIN_ROOT_DEFAULT" LV2_MODE="$1" \
-    LV2_THINK_MODEL="$THINK_MODEL_RESOLVED" python3 -c '
+    LV2_THINK_MODEL="$THINK_MODEL_RESOLVED" LV2_MAIN_MODEL="$MAIN_MODEL_DEFAULT" python3 -c '
 import json,os,pathlib
 repo=os.environ["LV2_REPO"]; mode=os.environ["LV2_MODE"]
 want={
  "ENABLE_TOOL_SEARCH":"auto:50",
  "LEADV2_PULSE_MODE":"1",
- "LEADV2_MAIN_MODEL": os.environ.get("LV2_THINK_MODEL", "fable"),
+ # LEAD-IS-OPUS-THINK-IS-FABLE-01 (2026-09-03): own axis, own default — opus,
+ # independent of LV2_THINK_MODEL. Never re-derive this from the think resolver.
+ "LEADV2_MAIN_MODEL": os.environ.get("LV2_MAIN_MODEL", "opus"),
  # FABLE-THINK-TIER-01 R5: the think-model kill-switch channel. The four
  # workflows (diverge/learn/diagnose/po-feedback-loop) resolve THINK_MODEL
  # from process.env.LEADV2_THINK_MODEL — the JS sandbox cannot read
  # model-capability.yaml. Writing the resolver answer here makes the
  # unavailable-true fallback reach every session in the installed repo,
- # at the same install-time freshness as LEADV2_MAIN_MODEL.
+ # at the same install-time freshness as the LEADV2_THINK_MODEL axis.
  "LEADV2_THINK_MODEL": os.environ.get("LV2_THINK_MODEL", "fable"),
  "LEADV2_FORCE_OPUS_LEAD":"0",
  "LEADV2_WORKFLOW_ENABLED":"1",
