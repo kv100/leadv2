@@ -153,3 +153,49 @@ One observation only, offered as an observation: this lane's mission is the long
 
 Do not treat repeated re-dispatch as the remedy. If a lane dies with the same shape a fourth time,
 that is a property to be diagnosed, not a run of bad luck to be restarted through.
+
+## Reframed: this is not a D3 fixture, it is a window every lane passes through
+
+Corrected 2026-09-03 after a second lead reproduced it the same minute. The framing above — "the
+incident happened to D3" — is too narrow and would produce a fixture that tests one lane's bad luck.
+
+The real statement: **between a lane's start and its first commit, it is indistinguishable from a
+lane that did nothing.** Every lane passes through that window. Anything that dies inside it looks
+empty, however much work sits in its tree.
+
+Measured across two sessions the same evening:
+
+| lane | non-anchor commits | dirty files | outcome |
+|---|---|---|---|
+| `D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF` | 0 | 1 (382 insertions) | died; rescued by hand |
+| `LAST-LINUX-RED-FAST-NAMES-01` | 0 | 18 | died; 7 files rescued |
+| `CI-SUITES-ARE-MACOS-ONLY-01` | 0 | 26 | **alive right now** — will become this case if it dies |
+
+The third row is the one to design against: a live lane, holding 26 dirty files, that the sweeper
+would classify as empty the moment its worker stops.
+
+**Therefore:** the funnel and the sweeper must not ask "does this lane have unmerged commits". That
+predicate is itself a false zero — it answers "no work here" about a lane holding four hundred lines,
+and it lives in the code that **deletes**. The sweeper must consult the same funnel that decides
+death, never its own commit count.
+
+## Mission size against survival — the cheap check, and it has a signal
+
+Suggested by the second lead, run before the fourth dispatch. Missions dispatched this evening,
+against how long their workers lived:
+
+| lane | mission | worker |
+|---|---|---|
+| D3 | **17,849 bytes / 229 lines** | died 3× within ~10-14 min, **0 commits** each time |
+| TWO-SLOTS fix round | 4,592 bytes / 70 lines | alive at 11:16 |
+| CLASSIFIER-QUOTA fix round | 5,022 bytes / 80 lines | alive at 4:50 |
+
+D3's mission is roughly **3.7× larger** than either survivor. Three deaths is not a sample, and this
+is a correlation on n=3 — it is not proof and must not be quoted as one. But it points somewhere
+different from CPU starvation: if size is the variable, the remedy is a limit at the input, not a
+queue on the machine, and the two are treated completely differently.
+
+The actionable reading, if it holds: the danger is not the mission's length as such but the **time
+before the first commit**, which a long mission stretches. That is the same window as the section
+above. A lane that commits in its first minutes leaves the window immediately, whatever else happens
+to it.

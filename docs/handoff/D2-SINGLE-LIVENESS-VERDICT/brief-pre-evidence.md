@@ -137,3 +137,33 @@ founder sees will still be wrong.
 decides liveness — journal presence, stream mtime, `ps` patterns, registry fields — and either
 convert it or list it in the closure as a known remaining caller. A census of callers is part of the
 deliverable; without it "one verdict" is an aspiration.
+
+### Twelfth: `set -o pipefail` turns a correct check into a wrong answer
+
+From c2, found in its own status generator and fixed at `c482bde99`. Three bugs sat in one function
+at once; this is the one that matters for D2's implementation.
+
+Under `set -o pipefail`, a pipeline like
+
+```sh
+kill -0 "$pid" 2>/dev/null | grep -q something
+```
+
+inherits the failure of **any** stage, so the pipeline's exit status carries `kill`'s result even
+when the intended answer comes from the last stage. A successful match therefore reads as a failure,
+and in c2's generator the effect was that **every genuine death was reported as "unknown"**.
+
+The lesson for D2 is not "avoid pipefail" — it is that the pinned function must **not decide liveness
+inside a pipeline at all**. Call `kill -0` on its own, capture `$?` into a variable immediately, and
+branch on that variable. Any shell construct that lets another command's status reach the same exit
+code is a fourth way to get a false answer out of a correct check.
+
+The other two bugs in that same function are worth naming because they are D2's own subject matter:
+it defaulted to **"dead" when no record existed** (absence read as death — the fifth false answer,
+already recorded above), and it reported a **reused PID as alive**. The second one is not yet covered
+by any acceptance case here:
+
+**Acceptance addition — PID reuse.** A recorded PID that has been recycled by the OS to an unrelated
+process must not report the lane alive. Pair the PID with something that dies with the worker — its
+start time, or its command-line signature — and assert a fixture where the recorded PID now belongs
+to a different process reports **not alive**.
