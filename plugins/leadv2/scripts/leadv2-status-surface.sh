@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+export LC_ALL="${LEADV2_STATUSLINE_LOCALE:-en_US.UTF-8}"
 # leadv2-status-surface.sh — SUPERVISOR-STATUS-SURFACE-02
 #
 # A cheap, always-fresh, terminal-INDEPENDENT status surface for the leadv2
@@ -1014,7 +1015,8 @@ def is_terminal(status, ledger_state):
     # dispatching for this attempt -- it is terminal for display/TTL purposes.
     return status in ("complete", "failed", "cancelled") or \
            ledger_state in ("closed", "failed", "cancelled",
-                            "landed", "parked", "refused", "dead", "no_work")
+                            "landed", "parked", "refused", "dead",
+                            "dead_with_unlanded_work", "no_work")
 
 # ---- R1 (fix round 3): tasks.yaml title map -- ONE parse ----------------
 # Source for rule 1 of name resolution. tasks.yaml is mapping-shaped
@@ -1646,29 +1648,121 @@ fi
 # emit_oneline / emit_lanes_table are factored out so --all can compose the
 # lanes table with the round-4 sections. Their output is byte-identical to the
 # pre-round-4 renderer (the regression contract: bare invocation must not drift).
+# ANTI-SILENCE-STATUSLINE-01 round 2, item 5: the supervisor-state head
+# (sup:ON/STALE/OFF) used to render on every single line even though the
+# supervisor loop was retired 2026-08-17 (SUPERVISOR-DELETE-01) -- SUP_STATE
+# is permanently OFF/retired now, so the head was dead weight on every
+# render, spending width the lane digest needed instead. Dropped; lanes
+# lead the line unconditionally (see leadv2-lane-status-line.sh item 1).
+# ANTI-SILENCE-STATUSLINE-01 round 3: the old version joined raw multi-word
+# fields ("<name> <kind> <display> <age> <cause>") with " | " and never
+# budgeted for width -- a downstream character-slice truncation (see
+# leadv2-lane-status-line.sh) then cut MID-FIELD, producing garbage like
+# "live(pid +1" instead of dropping a whole lane cleanly. Every token here
+# is now a single space-free word ("<name>·<cls>·<age>"), so a boundary cut
+# anywhere is safe, and the budget is enforced HERE (not left to the caller)
+# so a stale/no-op caller-side clamp is a backstop, never the only guard.
+# A dead/silent/done/queued lane sorts BEFORE a live one -- the founder's
+# complaint (three lanes running, saw none) was specifically that a gone-
+# silent lane had no way to outrank a healthy one; prominence is now sort
+# order, not luck.
 emit_oneline() {
-  local head lane_str
-  case "$SUP_STATE" in
-    on)     head="sup:ON(${SUP_SHORT})" ;;
-    stale)  head="sup:STALE(${SUP_SHORT})" ;;
-    *)      head="sup:OFF(${SUP_SHORT})" ;;
-  esac
-  lane_str=""
-  if [ "$LANE_COUNT" -gt 0 ] && [ "$MULTI_PROJECT" -eq 1 ]; then
-    lane_str="$(printf '%s\n' "$LANE_ROWS" | awk -F '\t' '
-      { printf "%s%s/%s %s %s %s %s", (NR>1?" | ":""), $1, $2, $3, $4, $6, $7 }
-      END { printf "\n" }')"
-    lane_str="$(printf '%s' "$lane_str" | tr -d '\n')"
-  elif [ "$LANE_COUNT" -gt 0 ]; then
-    lane_str="$(printf '%s\n' "$LANE_ROWS" | awk -F '\t' '
-      { printf "%s%s %s %s %s %s", (NR>1?" | ":""), $1, $2, $3, $5, $6 }
-      END { printf "\n" }')"
-    lane_str="$(printf '%s' "$lane_str" | tr -d '\n')"
+  local width prefix budget sorted_rows _rank name cls age name_cap tok tlen \
+        toks n_shown n_dropped cur_len total remaining marker marker_len suffix_len marker_fits
+  width="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
+  case "$width" in ''|*[!0-9]*) width=80 ;; esac
+  prefix="lanes ${LANE_COUNT}"
+  if [ "$LANE_COUNT" -le 0 ]; then
+    # Zero lanes is not silence -- say so in one short token, never emit a
+    # blank leading field.
+    printf '%s\n' "$prefix"
+    return
   fi
-  if [ -n "$lane_str" ]; then
-    printf '%s | lanes %d: %s\n' "$head" "$LANE_COUNT" "$lane_str"
+  if [ "$MULTI_PROJECT" -eq 1 ]; then
+    sorted_rows="$(printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{
+      cls=$8; rank=(cls=="dead")?0:(cls=="live")?2:(cls=="done")?3:1
+      printf "%s\t%s/%s\t%s\t%s\n", rank, $1, $2, cls, $6
+    }' | sort -t "$(printf '\t')" -k1,1n -k2,2)"
   else
-    printf '%s | lanes %d\n' "$head" "$LANE_COUNT"
+    sorted_rows="$(printf '%s\n' "$LANE_ROWS" | awk -F '\t' '{
+      cls=$7; rank=(cls=="dead")?0:(cls=="live")?2:(cls=="done")?3:1
+      printf "%s\t%s\t%s\t%s\n", rank, $1, cls, $5
+    }' | sort -t "$(printf '\t')" -k1,1n -k2,2)"
+  fi
+  # The marker is part of the budget, not an afterthought.  Reserving it
+  # before admitting a row keeps the final line within COLUMNS and makes its
+  # number equal the rows we really did not render.
+  budget=$(( width - ${#prefix} - 2 ))
+  [ "$budget" -lt 0 ] && budget=0
+  toks=""
+  n_shown=0
+  n_dropped=0
+  cur_len=0
+  total="$(printf '%s\n' "$sorted_rows" | grep -c . || true)"
+  while IFS="$(printf '\t')" read -r _rank name cls age; do
+    [ -z "$name" ] && continue
+    remaining=$(( total - n_shown - 1 ))
+    name_cap="$name"
+    if [ "${#name_cap}" -gt 16 ]; then
+      name_cap="${name_cap:0:15}…"
+    fi
+    tok="${name_cap}·${cls}·${age}"
+    tlen=${#tok}; [ "$n_shown" -gt 0 ] && tlen=$(( tlen + 1 ))
+    marker=""; marker_len=0
+    if [ "$remaining" -gt 0 ]; then
+      marker=" +${remaining}"; marker_len=${#marker}
+    fi
+    if [ $(( cur_len + tlen + marker_len )) -gt "$budget" ]; then
+      # The first row is the highest-priority non-live row.  It may not be
+      # skipped in favour of a later healthy lane: cap its label until its
+      # existence plus the honest dropped marker fits, then stop greedily.
+      if [ "$n_shown" -eq 0 ]; then
+        suffix_len=$(( ${#cls} + ${#age} + 2 ))
+        # Start complete and spend every usable cell on identity.  The former
+        # ellipsis seed left a third of a 34-column line blank.
+        name_cap="$name"
+        while [ $(( ${#name_cap} + suffix_len + marker_len )) -gt "$budget" ] && [ ${#name_cap} -gt 0 ]; do
+          name_cap="${name_cap:0:${#name_cap}-1}"
+        done
+        if [ "${#name_cap}" -lt "${#name}" ] && [ "${#name_cap}" -gt 1 ]; then
+          name_cap="${name_cap:0:${#name_cap}-1}…"
+        fi
+        # At the minimum width the dropped marker is less valuable than the
+        # urgency class.  Retry without it rather than emitting only '+N'.
+        marker_fits=1
+        if [ -z "$name_cap" ]; then
+          marker_fits=0
+          marker=""; marker_len=0; name_cap="$name"
+          while [ $(( ${#name_cap} + suffix_len )) -gt "$budget" ] && [ ${#name_cap} -gt 0 ]; do
+            name_cap="${name_cap:0:${#name_cap}-1}"
+          done
+          if [ "${#name_cap}" -lt "${#name}" ] && [ "${#name_cap}" -gt 1 ]; then
+            name_cap="${name_cap:0:${#name_cap}-1}…"
+          fi
+        fi
+        if [ -n "$name_cap" ]; then
+          toks="${name_cap}·${cls}·${age}"
+          n_shown=1
+        fi
+      fi
+      n_dropped=$(( total - n_shown ))
+      [ "${marker_fits:-1}" -eq 0 ] && n_dropped=0
+      break
+    fi
+    [ "$n_shown" -gt 0 ] && toks="${toks} "
+    toks="${toks}${tok}"
+    cur_len=$(( cur_len + tlen ))
+    n_shown=$(( n_shown + 1 ))
+  done <<EOF_ROWS
+$sorted_rows
+EOF_ROWS
+  if [ "$n_dropped" -gt 0 ]; then
+    [ -n "$toks" ] && toks="${toks} +${n_dropped}" || toks="+${n_dropped}"
+  fi
+  if [ -n "$toks" ]; then
+    printf '%s: %s\n' "$prefix" "$toks"
+  else
+    printf '%s\n' "$prefix"
   fi
 }
 

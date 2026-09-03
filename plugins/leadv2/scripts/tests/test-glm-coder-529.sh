@@ -126,6 +126,21 @@ EOF
 
 chmod +x "${STUBS_DIR}"/*.sh
 
+# First invocation emits progress then idles until the no-progress watchdog
+# kills it.  The revived prompt must carry that progress plus the worktree
+# state; only then does the second invocation succeed.
+cat > "${STUBS_DIR}/stall-then-revive.sh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"===== CONTINUATION FROM DEAD GLM RUN ====="* ]] && [[ "$*" == *"partial-progress"* ]]; then
+  printf '{"type":"system","subtype":"init","model":"glm-5.2"}\n'
+  printf '{"type":"result","result":"continued","is_error":false}\n'
+  exit 0
+fi
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"partial-progress"}]}}\n'
+sleep 30
+EOF
+chmod +x "${STUBS_DIR}/stall-then-revive.sh"
+
 # Runs one `bg` scenario end-to-end and polls meta.yaml until it leaves
 # "running". Prints space-separated fields: wall status exit_code
 # fallback_sentinel_present permanent_sentinel_present timedout_marker
@@ -143,6 +158,8 @@ run_scenario() {
     GLM_SECRETS_FILE="${FAKE_SECRETS}" \
     GLM_RUNS_DIR="${RUNS_DIR}" \
     GLM_CLAUDE_BIN="${STUBS_DIR}/${stub}" \
+    ZAI_BASE_URL=https://example.invalid \
+    GLM_SKIP_QUOTA_GATE=1 \
     GLM_TIMEOUT="${timeout_s}" \
     bash "${GLM_CODER}" bg "test prompt for ${name}"
   )"
@@ -257,6 +274,31 @@ if [[ "${STATUS7}" == "complete" && "${EXIT7}" == "0" && "${FB7}" == "0" && "${T
   pass "case_provider_retry_then_success (${PR7} PROVIDER_RETRY lines + RUN_COMPLETE, no fallback)"
 else
   fail "case_provider_retry_then_success" "status=${STATUS7} exit=${EXIT7} fb=${FB7} to_marker=${TO7} provider_retry_lines=${PR7} run_complete=${RC7} (want complete/0/fb=0/to=0/pr>=2/rc=1)"
+fi
+
+# ---------------------------------------------------------------------------
+# negative control: without the continuation block the stub's second turn
+# would sleep/fail; the revived run must receive its dead predecessor's tail.
+# ---------------------------------------------------------------------------
+REVIVE_CWD="${TMP_ROOT}/repo-revive-continuation"
+mkdir -p "${REVIVE_CWD}"
+git -C "${REVIVE_CWD}" init -q
+git -C "${REVIVE_CWD}" config user.email test@example.invalid
+git -C "${REVIVE_CWD}" config user.name test
+printf 'seed\n' > "${REVIVE_CWD}/seed.txt"
+git -C "${REVIVE_CWD}" add seed.txt && git -C "${REVIVE_CWD}" commit -qm seed
+printf 'dirty\n' > "${REVIVE_CWD}/changed.txt"
+REVIVE_ID="$(cd "${REVIVE_CWD}" && GLM_SECRETS_FILE="${FAKE_SECRETS}" GLM_RUNS_DIR="${RUNS_DIR}" GLM_CLAUDE_BIN="${STUBS_DIR}/stall-then-revive.sh" ZAI_BASE_URL=https://example.invalid GLM_SKIP_QUOTA_GATE=1 GLM_TIMEOUT=20 GLM_STALL_S=1 GLM_NO_PROGRESS_S=2 bash "${GLM_CODER}" bg 'revive continuation test')"
+REVIVE_META="${RUNS_DIR}/${REVIVE_ID}/meta.yaml"
+for _i in $(seq 1 20); do
+  [[ -f "${REVIVE_META}" ]] && ! grep -q '^status: running' "${REVIVE_META}" && break
+  sleep 1
+done
+REVIVED_DIR="$(find "${RUNS_DIR}" -mindepth 2 -maxdepth 2 -name meta.yaml -print 2>/dev/null | xargs -r grep -l "revived_from: ${REVIVE_ID}" | head -1 | xargs -r dirname)"
+if [[ -n "${REVIVED_DIR}" ]] && grep -q 'CONTINUATION FROM DEAD GLM RUN' "${REVIVED_DIR}/prompt.txt" && grep -q 'partial-progress' "${REVIVED_DIR}/prompt.txt" && grep -q '?? changed.txt' "${REVIVED_DIR}/prompt.txt"; then
+  pass "case_revive_continuation (dead progress and worktree diff reached revived prompt)"
+else
+  fail "case_revive_continuation" "continuation block missing from revived prompt"
 fi
 
 # ---------------------------------------------------------------------------

@@ -60,6 +60,25 @@ If a subagent hits an unrecognized entity needing one probe: search_graph/trace_
 - Never `Read` a 1000-line file without offset+limit.
 - Never `cat | head/tail` via Bash — use `Read offset=X limit=Y`.
 
+### 5b. Never read a whole diff — the tail IS the bill
+
+Measured across a full transcript history (persona-engine, 2026-08-25; the shape generalizes):
+Bash **8.19M** tokens + Read **2.89M** against **200K** for every code-intelligence MCP call ever
+made. Half the Bash cost sits in the 10.6% of calls over 1,000 tokens, and the heaviest entries in
+BOTH tools are review diffs — `sed -n '1,340p' …/review.diff` 7,393 tok, `Read /tmp/r4-code.diff`
+14,319 tok, one diff read **twice** at 7,383 each.
+
+- `git diff --stat` first → then the review engine's own `review-findings.json` → then only the
+  hunks of the files under review. The lead reading a full diff is the single largest controllable
+  cost in a leadv2 session, larger than any routing decision.
+- **Never read the same artifact twice.** In context = already paid for, on every later turn.
+- `repowise distill <cmd>` for noisy commands (tests, builds, `git log`, diffs) where repowise is
+  installed; `repowise expand <ref> [-q <regex>]` recovers what it elided — never re-run the
+  command to see it.
+- **Optimize the tail, never the median.** The same measurement found `Grep` used once, at 42
+  tokens: a gate that forces a 300–3,155-token tool call to suppress it is net-negative. Any new
+  guard must first show that what it suppresses costs more than what it mandates.
+
 ### 6. Pulse-mode silence
 - Between phases: zero free-form chat text. Pulse log only (≤80 chars).
 

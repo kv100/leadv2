@@ -71,18 +71,47 @@ if [[ "$TOOL_NAME" == "Agent" ]]; then
 fi
 
 # Bash or Read — increment streak
-CURRENT=0
-if [[ -f "$STREAK_FILE" ]]; then
-    CURRENT="$(cat "$STREAK_FILE" 2>/dev/null || printf '0')"
-    CURRENT="${CURRENT//[^0-9]/}"
-    [[ -z "$CURRENT" ]] && CURRENT=0
+# NUDGE-TAX-01 (2026-09-02): the nudge used to fire on EVERY call past 6 —
+# measured 39,230 fires / 10d, one session reaching streak ~900 and ~895
+# identical messages. Same situation re-fired, not new information. Now the
+# file also carries <last_fired> <next_gap>: first fire at 6, then the gap to
+# the next fire doubles (10, 20, 40, ...) so a non-delegating run costs
+# O(log n) messages and the case the hook exists for (crossing 6) still fires.
+# Legacy files hold a bare "<current>" — parsed as last_fired=0, gap=10, which
+# fires once immediately on a mid-run legacy file, then resumes doubling.
+STATE_LINE="$(cat "$STREAK_FILE" 2>/dev/null || printf '0')"
+CURRENT="${STATE_LINE%%[!0-9]*}"
+[[ -z "$CURRENT" ]] && CURRENT=0
+REST="${STATE_LINE#* }"
+if [[ "$REST" == "$STATE_LINE" ]]; then
+    # legacy or absent state
+    LAST_FIRED=0
+    NEXT_GAP=10
+else
+    LAST_FIRED="${REST%% *}"
+    NEXT_GAP="${REST#* }"
+    NEXT_GAP="${NEXT_GAP%%[!0-9]*}"
+    LAST_FIRED="${LAST_FIRED//[^0-9]/}"
+    [[ -z "$LAST_FIRED" ]] && LAST_FIRED=0
+    [[ -z "$NEXT_GAP" ]] && NEXT_GAP=10
 fi
 
 CURRENT=$(( CURRENT + 1 ))
-printf '%d\n' "$CURRENT" > "$STREAK_FILE"
 
+FIRE=0
 if [[ "$CURRENT" -ge 6 ]]; then
+    if [[ "$LAST_FIRED" -eq 0 ]] || [[ $(( CURRENT - LAST_FIRED )) -ge "$NEXT_GAP" ]]; then
+        FIRE=1
+    fi
+fi
+
+if [[ "$FIRE" -eq 1 ]]; then
+    # first fire keeps the 10-call gap; later fires double it (10, 20, 40, ...)
+    if [[ "$LAST_FIRED" -eq 0 ]]; then NEXT_GAP=10; else NEXT_GAP=$(( NEXT_GAP * 2 )); fi
+    printf '%d %d %d\n' "$CURRENT" "$CURRENT" "$NEXT_GAP" > "$STREAK_FILE"
     printf '[leadv2-lead-delegation-nudge] lead has done %d direct tool calls without delegation — Opus pre-delegation budget = 3-4. Spawn Agent(developer/Explore) now.\n' "$CURRENT" >&2
+else
+    printf '%d %d %d\n' "$CURRENT" "$LAST_FIRED" "$NEXT_GAP" > "$STREAK_FILE"
 fi
 
 exit 0

@@ -56,11 +56,15 @@ for _good in codex sonnet; do
 done
 [[ "${_ok}" == "1" ]] && pass "DISPATCHABLE_PLAN_ARMS includes codex and sonnet"
 
-# Case 3: DISPATCHABLE_BUILD_ARMS unchanged (must be {codex, glm, sonnet})
-if [[ "${BUILD_ARMS}" == "codex glm sonnet" ]]; then
-  pass "DISPATCHABLE_BUILD_ARMS unchanged (${BUILD_ARMS})"
+# Case 3: DISPATCHABLE_BUILD_ARMS baseline. NOTE: this expectation was stale
+# the moment T19 added freepool (2026-08-26) and was only caught when
+# GLM-53-FLASH-ARM-01 (2026-08-27) added glm-flash — the case now asserts the
+# full current set {codex, freepool, glm, glm-flash, sonnet} so a future arm
+# addition re-reds it here instead of silently passing one behind.
+if [[ "${BUILD_ARMS}" == "codex freepool glm glm-flash sonnet" ]]; then
+  pass "DISPATCHABLE_BUILD_ARMS baseline held (${BUILD_ARMS})"
 else
-  fail "DISPATCHABLE_BUILD_ARMS changed! Expected 'codex glm sonnet', got '${BUILD_ARMS}'"
+  fail "DISPATCHABLE_BUILD_ARMS changed! Expected 'codex freepool glm glm-flash sonnet', got '${BUILD_ARMS}'"
 fi
 
 # Case 4: plan job pool filtering — resolve_review_pool with job=plan filters

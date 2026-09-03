@@ -85,6 +85,7 @@ if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
 fi
 
 set -uo pipefail
+export LC_ALL="${LEADV2_STATUSLINE_LOCALE:-en_US.UTF-8}"
 
 INPUT="$(cat 2>/dev/null || true)"
 
@@ -195,33 +196,174 @@ if [[ "${LEADV2_STATUSLINE_SUPERVISOR_ONLY:-1}" == "1" && "$IS_SUPERVISOR" == "0
       IFS= read -r _surf_oneline < "$MEMO" 2>/dev/null || true
     fi
   fi
+  # ANTI-SILENCE-STATUSLINE-01 round 3: this segment used to only fire when
+  # the surface oneline literally CONTAINED the substring "live" -- but that
+  # substring match hit the human-readable cause text ("0s live(pid 6136)"),
+  # never the lane's actual class, so a repaint whose lanes were ALL
+  # dead/silent/done (the exact scenario the founder hit: three lanes ran,
+  # he saw none) produced a _surf_oneline with no "live" anywhere and the
+  # whole segment was silently dropped -- the opposite of "silent lane is
+  # the most prominent field". emit_oneline() (leadv2-status-surface.sh) now
+  # always returns a non-empty line ("lanes 0" when there truly are none),
+  # is already width-budgeted and sorts non-live lanes first, so this side
+  # only needs a defensive re-clamp for a memo cached at a wider width than
+  # THIS repaint's COLUMNS. Every emitted token is single-word (no embedded
+  # spaces), so a boundary cut is always safe.
+  _surf_budget="${LEADV2_STATUSLINE_WIDTH:-${COLUMNS:-80}}"
+  # This is on the paint path.  Do not use sed here: the refit loop can call
+  # it repeatedly, turning one repaint into a process-per-character storm.
+  _surf_visible_len() {
+    local _sv="$1" _esc
+    while [[ "$_sv" =~ $'\033'\[[0-9\;]*m ]]; do
+      _esc="${BASH_REMATCH[0]}"
+      _sv="${_sv/"$_esc"/}"
+    done
+    _SURF_VISIBLE_LEN="${#_sv}"
+  }
+  # Clip plain BASE text only at field boundaries.  A raw character slice
+  # turns "Opus" into "O" under pressure, which reads as corruption rather
+  # than intentional omission.  The ellipsis consumes one reserved cell and
+  # is emitted only when a complete field has been retained.
+  _surf_clip_plain() {
+    local _scp_text="$1" _scp_budget="$2" _scp_word _scp_next _scp_out=""
+    _SURF_CLIPPED=""
+    (( _scp_budget > 0 )) || return 0
+    if (( ${#_scp_text} <= _scp_budget )); then
+      _SURF_CLIPPED="$_scp_text"
+      return 0
+    fi
+    for _scp_word in $_scp_text; do
+      _scp_next="$_scp_word"
+      [[ -n "$_scp_out" ]] && _scp_next="${_scp_out} ${_scp_word}"
+      if (( ${#_scp_next} + 1 <= _scp_budget )); then
+        _scp_out="$_scp_next"
+      else
+        break
+      fi
+    done
+    [[ -n "$_scp_out" ]] && _SURF_CLIPPED="${_scp_out}…"
+  }
   _surf_tail=""
   if [[ -n "$_surf_oneline" ]]; then
-    # Append only when a LIVE lane is reported; a quiet/errored surface adds
-    # nothing so the base line is byte-identical to before.
-    case "$_surf_oneline" in
-      *live*) _surf_tail=" ${_surf_oneline:0:120}" ;;
-    esac
+    # A memo may have been written at a wider terminal width.  Refit its
+    # field tokens here, reserving space for +N before each admission.  This
+    # is deliberately not a character slice: it keeps a complete lane token
+    # (or the surface's already-capped first token) and never lets +N itself
+    # push the composed line over this paint's budget.
+    if [[ "$_surf_oneline" =~ ^lanes[[:space:]]+([0-9]+):?[[:space:]]*(.*)$ ]]; then
+      _surf_total="${BASH_REMATCH[1]}"; _surf_rest="${BASH_REMATCH[2]}"
+      _surf_head="lanes ${_surf_total}:"
+      _surf_trimmed="$_surf_head"; _surf_shown=0; _surf_hide_marker=0
+      for _surf_tok in $_surf_rest; do
+        [[ "$_surf_tok" == +[0-9]* ]] && continue
+        _surf_remaining=$(( _surf_total - _surf_shown - 1 ))
+        _surf_marker=""; (( _surf_remaining > 0 )) && _surf_marker=" +${_surf_remaining}"
+        _surf_sep=" "; [[ "$_surf_trimmed" == *: ]] && _surf_sep=" "
+        _surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}"
+        if (( ${_SURF_VISIBLE_LEN:-0} > _surf_budget )); then
+          # Keep the first (surface-sorted) lane visible even if this memo
+          # was produced for a much wider terminal.  The token grammar is
+          # label·class·age, so only its label may be shortened.
+          if (( _surf_shown == 0 )) && [[ "$_surf_tok" == *·*·* ]]; then
+            _surf_suffix="·${_surf_tok#*·}"
+            _surf_tok="…${_surf_suffix}"
+            # Never shave the class/age suffix: a clipped age unit corrupts
+            # the incident value (9m used to render as bare 9).
+            _surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}"
+            if (( ${_SURF_VISIBLE_LEN:-0} > _surf_budget )); then
+              # The row is the incident payload; at degenerate widths drop
+              # the annotation (+N) before dropping its class and age.
+              _surf_marker=""; _surf_hide_marker=1
+              _surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}"
+              if (( ${_SURF_VISIBLE_LEN:-0} > _surf_budget )); then
+                _surf_tok=""
+              fi
+            fi
+            _surf_visible_len "${_surf_trimmed}${_surf_sep}${_surf_tok}${_surf_marker}"
+            if (( ${_SURF_VISIBLE_LEN:-0} <= _surf_budget )); then
+              _surf_trimmed="${_surf_trimmed}${_surf_sep}${_surf_tok}"
+              _surf_shown=1
+            fi
+          fi
+          break
+        fi
+        _surf_trimmed="${_surf_trimmed}${_surf_sep}${_surf_tok}"
+        _surf_shown=$(( _surf_shown + 1 ))
+      done
+      _surf_dropped_n=$(( _surf_total - _surf_shown ))
+      (( _surf_dropped_n > 0 && _surf_hide_marker == 0 )) && _surf_trimmed="${_surf_trimmed} +${_surf_dropped_n}"
+    else
+      _surf_trimmed="${_surf_oneline:0:$_surf_budget}"
+      [[ "$_surf_trimmed" == *" "* ]] && _surf_trimmed="${_surf_trimmed% *}"
+    fi
+    _surf_tail="$_surf_trimmed"
   fi
   USER_CMD="$(jq -r '(.statusLine.command // "")' "$SETTINGS_JSON" 2>/dev/null || true)"
   if [[ -n "$USER_CMD" ]]; then
     _base_out="$(printf '%s' "$INPUT" | timeout 2 bash -c "$USER_CMD" 2>/dev/null || true)"
-    printf '%s%s\n' "$_base_out" "$_surf_tail"
+    # Item 4: lanes own the budget first; the founder's own command (quotas,
+    # model, ctx%) is composed-in, not authored here, so the only lever this
+    # script has is to shrink what's KEPT of its output once lanes are live
+    # -- cut on the visible-character budget remaining after the lane
+    # segment, never before it.
+    if [[ -n "$_surf_tail" ]]; then
+      _surf_visible_len "$_surf_tail"
+      _base_visible_budget=$(( _surf_budget - ${_SURF_VISIBLE_LEN:-0} - 1 ))
+      (( _base_visible_budget < 0 )) && _base_visible_budget=0
+      # Strip ANSI FIRST, then slice by visible chars -- slicing the raw
+      # (color-coded) string at a visible-length offset can land mid escape
+      # sequence and leave a dangling color code bleeding into the rest of
+      # the terminal line.
+      _base_out_plain="$(printf '%s' "$_base_out" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
+      if (( ${#_base_out_plain} > _base_visible_budget )); then
+        _surf_clip_plain "$_base_out_plain" "$_base_visible_budget"
+        _base_out="$_SURF_CLIPPED"
+      fi
+    fi
+    # The separator belongs to the BASE, not the lane payload.  Appending it
+    # unconditionally consumed the final cell at W=20 and let one base byte
+    # leak after an otherwise complete incident token.
+    _surf_visible_len "$_surf_tail"
+    if [[ -n "$_base_out" && ${_SURF_VISIBLE_LEN:-0} -lt _surf_budget ]]; then
+      printf '%s %s\n' "$_surf_tail" "$_base_out"
+    else
+      printf '%s\n' "$_surf_tail"
+    fi
   else
     # No user command configured: emit a minimal base line (no lanes segment)
     # so the status line is never blank for a non-supervisor session.
     _BM="?" _BC="$PAINT_CWD"
     [[ "$INPUT" =~ \"display_name\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]] && _BM="${BASH_REMATCH[1]}"
-    _leadv2_render_colored_base "$_BM" "$_BC" "" ""
-    printf '%s\n' "$_surf_tail"
+    _fallback_base="$(_leadv2_render_colored_base "$_BM" "$_BC" "" "")"
+    if [[ -n "$_surf_tail" ]]; then
+      _surf_visible_len "$_surf_tail"
+      _fallback_budget=$(( _surf_budget - ${_SURF_VISIBLE_LEN:-0} - 1 ))
+      (( _fallback_budget < 0 )) && _fallback_budget=0
+      _fallback_plain="$(printf '%s' "$_fallback_base" | sed -E $'s/\x1b\\[[0-9;]*m//g')"
+      if (( ${#_fallback_plain} > _fallback_budget )); then
+        _surf_clip_plain "$_fallback_plain" "$_fallback_budget"
+        _fallback_base="$_SURF_CLIPPED"
+      fi
+    fi
+    _surf_visible_len "$_surf_tail"
+    if [[ -n "$_fallback_base" && ${_SURF_VISIBLE_LEN:-0} -lt _surf_budget ]]; then
+      printf '%s %s' "$_surf_tail" "$_fallback_base"
+    else
+      printf '%s' "$_surf_tail"
+    fi
+    printf '\n'
   fi
   # Detached refresh of the memo (fire-and-forget). A missing renderer is a
-  # silent no-op -- never a broken statusline.
+  # silent no-op -- never a broken statusline. LEADV2_STATUSLINE_WIDTH is
+  # exported explicitly because the refresher is detached from any tty --
+  # $COLUMNS does not survive into a backgrounded, disowned child, so
+  # without this the refresher would always budget against emit_oneline's
+  # own 80-col default regardless of the terminal that triggered it.
   if [[ -x "$SURFACE" || -f "$SURFACE" ]]; then
     if command -v setsid >/dev/null 2>&1; then
-      ( setsid bash "$SURFACE" --oneline >"$MEMO".tmp 2>/dev/null && mv -f "$MEMO".tmp "$MEMO"; ) </dev/null >/dev/null 2>&1 &
+      ( LEADV2_STATUSLINE_WIDTH="$_surf_budget" setsid bash "$SURFACE" --oneline >"$MEMO".tmp 2>/dev/null && mv -f "$MEMO".tmp "$MEMO"; ) </dev/null >/dev/null 2>&1 &
     else
-      ( nohup bash "$SURFACE" --oneline >"$MEMO".tmp 2>/dev/null && mv -f "$MEMO".tmp "$MEMO"; ) </dev/null >/dev/null 2>&1 &
+      ( LEADV2_STATUSLINE_WIDTH="$_surf_budget" nohup bash "$SURFACE" --oneline >"$MEMO".tmp 2>/dev/null && mv -f "$MEMO".tmp "$MEMO"; ) </dev/null >/dev/null 2>&1 &
     fi
     disown -a 2>/dev/null || true
   fi

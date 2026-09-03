@@ -1,0 +1,2 @@
+Plan authored by the lead 2026-08-31 after the founder asked what stops a lead from downgrading its own class for speed. Verified: leadv2-admission-class.sh:18 already states the escalate-only doctrine, and grep for class_downgrade/declared_class/class_mismatch returns zero — the rule has no reader. Gate 1 taken by the lead; scope is admission only.
+Full plan: docs/handoff/CLASS-IS-COMPUTED-NOT-DECLARED-01/brief.md

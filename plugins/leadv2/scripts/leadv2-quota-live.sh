@@ -22,7 +22,19 @@
 #   LEADV2_QUOTA_TTL_GLM/CODEX/ANTHROPIC  cache TTLs (default 60/120/300 s)
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+leadv2_quota_live_script_dir() {
+  # This script is also installed as a per-file symlink by consuming repos.
+  local source="${BASH_SOURCE[0]}" link dir
+  while [[ -h "$source" ]]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    link="$(readlink "$source")"
+    [[ "$link" == /* ]] || link="$dir/$link"
+    source="$link"
+  done
+  cd -P "$(dirname "$source")" && pwd
+}
+
+SCRIPT_DIR="$(leadv2_quota_live_script_dir)"
 READER="${LEADV2_QUOTA_READ:-"${SCRIPT_DIR}/leadv2-quota-read.py"}"
 
 die() { printf -- '[leadv2-quota-live] %s\n' "$*" >&2; exit 2; }

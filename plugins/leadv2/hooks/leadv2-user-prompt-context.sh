@@ -84,13 +84,28 @@ print(json.dumps(d, indent=2))
 fi
 
 # === 2. Active leadv2 task summary ===
+# T15 R2: LEADV2_ANCHOR_OWNS_CONTEXT=1 (default) hands the [LEADV2_ACTIVE]
+# task_id/phase header to task-anchor.sh — that block IS a true duplicate
+# (task-anchor's own header already carries task_id/phase/class) and stays
+# suppressed. Everything below that is NOT covered by task-anchor.sh's
+# fixed DIRECTIVE (phase-hint severity/round-cap gate, post-compact-resume
+# snippet, knowledge-archive hint, the no-direct-code delegate rule) keeps
+# firing regardless of the flag — dedup only the genuine duplicate, never
+# drop unique information.
+ANCHOR_OWNS_CONTEXT="${LEADV2_ANCHOR_OWNS_CONTEXT:-1}"
 TID_ACTIVE=""
-if [[ "${LEADV2_ANCHOR_OWNS_CONTEXT:-1}" != "1" ]]; then
 ACTIVE=""
 for f in "$CWD/.claude/leadv2-tasks/active.yaml" "$CWD/${_lv2_leadv2_dir}/active.yaml"; do
   [[ -f "$f" ]] && ACTIVE="$f" && break
 done
 if [[ -n "$ACTIVE" ]]; then
+  # Resolve the task-anchor's own selected task_id FIRST (moved up from 2.b)
+  # so the ANCHOR_OWNS_CONTEXT branch below can exclude it — task-anchor.sh
+  # already renders this one task's header/goal/plan; we must never drop the
+  # *other* sessions' notes/blocked_by just because that one overlaps.
+  TID_ACTIVE="$(leadv2_hook_resolve_task_id "$INPUT" "$ACTIVE" 2>/dev/null || true)"
+
+  if [[ "$ANCHOR_OWNS_CONTEXT" != "1" ]]; then
   ACTIVE_SUM="$(python3 -c "
 import yaml
 try:
@@ -113,9 +128,45 @@ except Exception: print('')
 $ACTIVE_SUM
 (Lead: read STATE.md only when needed for phase action. active.yaml summary above is current.)")
   fi
+  else
+  # ANCHOR_OWNS_CONTEXT=1: task-anchor.sh already renders TID_ACTIVE's own
+  # header/goal/plan (and, from bus.jsonl, other live sessions' phase/files).
+  # It does NOT carry active.yaml's per-session note/blocked_by field, so
+  # still emit those here for every OTHER session — never the one task-anchor
+  # already covers (that part IS the genuine duplicate) — so no session's
+  # summary/note is lost.
+  OTHER_SUM="$(python3 -c "
+import yaml
+try:
+    d = yaml.safe_load(open('$ACTIVE')) or {}
+    s = d.get('sessions') or []
+    mine = '$TID_ACTIVE'
+    # No cap: a dropped session's note/blocked_by is information loss (T15 V1).
+    others = [sess for sess in s if sess.get('task_id') != mine]
+    if not others: print('')
+    else:
+        lines = []
+        for sess in others:
+            tid = sess.get('task_id','?')
+            phase = sess.get('phase','?')
+            note = sess.get('note','') or sess.get('blocked_by','')
+            extra = f' ({note})' if note else ''
+            lines.append(f'  {tid}: phase={phase}{extra}')
+        print('\n'.join(lines))
+except Exception: print('')
+" 2>/dev/null || echo "")"
+  if [[ -n "$OTHER_SUM" ]]; then
+    CTX_PARTS+=("[LEADV2_ACTIVE_OTHER_SESSIONS]
+$OTHER_SUM
+(Your own active task's header/goal/plan is rendered by task-anchor above; these are OTHER live sessions.)")
+  fi
+  fi # ANCHOR_OWNS_CONTEXT: task-anchor's own header dupes only the TID_ACTIVE row of [LEADV2_ACTIVE]
 
   # === 2.b. Auto-detect real phase from handoff/ artifacts (active.yaml often stale) ===
-  TID_ACTIVE="$(leadv2_hook_resolve_task_id "$INPUT" "$ACTIVE" 2>/dev/null || true)"
+  # T15 R2: unconditional — task-anchor.sh's DIRECTIVE has no equivalent of
+  # the severity-gate / round-cap phase hint, so this is unique information
+  # regardless of ANCHOR_OWNS_CONTEXT.
+  # TID_ACTIVE already resolved above (moved up for the OTHER_SUM exclusion).
   if [[ -n "$TID_ACTIVE" ]]; then
     HANDOFF_DIR="$CWD/${_lv2_handoff_dir}/$TID_ACTIVE"
     if [[ -d "$HANDOFF_DIR" ]]; then
@@ -181,19 +232,31 @@ $RESUME_SNIPPET"
       CTX_PARTS+=("[KNOWLEDGE_ARCHIVE] ${KNOWLEDGE_COUNT} entries in docs/leadv2/knowledge/. Before re-deciding anything (architecture choice, schema approach, error strategy), run: grep -r '<keyword>' docs/leadv2/knowledge/ to surface prior decisions and gotchas.")
     fi
 
-    CTX_PARTS+=("[ORCHESTRATOR_ROLE] You are the LEADV2 ORCHESTRATOR for task $TID_ACTIVE.
+    if [[ "$ANCHOR_OWNS_CONTEXT" == "1" ]]; then
+      # T15 R2: task-anchor.sh's DIRECTIVE already carries the silence-
+      # protocol / no-narration rule verbatim — only the two things it does
+      # NOT cover (the no-direct-code delegate rule and the post-compact
+      # resume-read instruction) are unique here.
+      CTX_PARTS+=("[ORCHESTRATOR_ROLE] You are the LEADV2 ORCHESTRATOR for task $TID_ACTIVE.
+Rules that persist across /compact (silence protocol is covered by the active <task-anchor> DIRECTIVE above; not repeated here):
+- NEVER write .py/.sh/.ts/.tsx/.sql directly — delegate ALL code to developer/devops subagents.
+- If you just resumed from /compact: read ${_lv2_leadv2_dir}/tasks/$TID_ACTIVE/STATE.md limit=20 and ${_lv2_handoff_dir}/$TID_ACTIVE/context.yaml limit=30 to restore plan context.")
+    else
+      CTX_PARTS+=("[ORCHESTRATOR_ROLE] You are the LEADV2 ORCHESTRATOR for task $TID_ACTIVE.
 Rules that persist across /compact:
 - NEVER write .py/.sh/.ts/.tsx/.sql directly — delegate ALL code to developer/devops subagents.
 - SILENCE PROTOCOL: No preamble. No 'Let me…'. No reasoning narration. Output ONLY: pulse line | gate prompt | async question | ≤3-line close. All detail → deliverable files.
 - Every text-only turn costs 150K+ tokens. No 'I am now doing X'. No multi-paragraph reasoning.
 - If you just resumed from /compact: read ${_lv2_leadv2_dir}/tasks/$TID_ACTIVE/STATE.md limit=20 and ${_lv2_handoff_dir}/$TID_ACTIVE/context.yaml limit=30 to restore plan context.")
+    fi
     touch "$ORCH_SENTINEL" 2>/dev/null || true
   else
     CTX_PARTS+=("[ORCHESTRATOR_ROLE] full rules already injected this session — see above.")
   fi
 fi
-
-fi # LEADV2_ANCHOR_OWNS_CONTEXT: task-anchor owns active/phase/role context by default
+# (T15 R2: the -n "$ACTIVE" wrapper closed above at the matching fi on the
+# "=== 2. Active leadv2 task summary ===" block; only [LEADV2_ACTIVE] and the
+# ORCHESTRATOR_ROLE silence-protocol text are conditioned on the flag now.)
 
 # === 2.5. Pending Stop-hook warnings (lead-prose-guard, etc.) ===
 if [[ -n "$SESSION_ID" ]]; then

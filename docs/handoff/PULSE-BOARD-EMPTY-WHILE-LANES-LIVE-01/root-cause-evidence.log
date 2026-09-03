@@ -1,0 +1,18 @@
+# Root-cause evidence — LEADV2_LANES_ALL_REPOS=0 ambient default (2026-08-30)
+
+$ grep -n LEADV2_LANES_ALL_REPOS ~/.claude/settings.json
+17-    "CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION": "200",
+18-    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "2",
+19:    "LEADV2_LANES_ALL_REPOS": "0"
+20-  },
+21-  "permissions": {
+
+$ env | grep LANES_ALL_REPOS   (inside this worktree's live shell, no override)
+LEADV2_LANES_ALL_REPOS=0
+
+$ (fixture: own repo has sessions:[] ; foreign repo has one live lane; ambient env, no LEADV2_LANES_ALL_REPOS override)
+leadv2-lanes-snapshot.sh --json -> "table": []   (foreign lane invisible)
+
+Same fixture WITH LEADV2_LANES_ALL_REPOS=1 forced (what leadv2-status-collector.sh:125 does today) -> foreign row appears with repo=foreignrepo.
+
+Conclusion: leadv2-status-collector.sh:125 pinning LEADV2_LANES_ALL_REPOS=1 is not defensive hardening against a condition nothing creates -- ~/.claude/settings.json ships LEADV2_LANES_ALL_REPOS=0 globally, and without the inline override every real session on this machine would silently drop foreign-repo lanes from the board.

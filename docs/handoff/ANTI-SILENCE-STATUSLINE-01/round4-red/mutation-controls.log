@@ -1,0 +1,11 @@
+MUT-C RED: zero composer marker overflows (20)
+MUT-Z RED: zero tail reservation changes rendered fields (20)
+MUT-V RED: tail dropped count no longer reconciles
+MUT-U RED: raw ANSI survives a clipped base
+MUT-W RED: fixed label cap truncates wide rendered identity
+MUT-R RED: independently reproduced in the status-surface scratch renderer:
+  green: lanes 2: oc3de…·dead·5m +1
+  red:   lanes 2: oc3do…·done·5m +1
+
+GREEN:
+pass=43 fail=0 skip=0

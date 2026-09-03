@@ -1,0 +1,19 @@
+PASS: 1: forward-tense + no tool_use -> FIRES
+PASS: 2: forward-tense + Edit -> silent
+PASS: 3: forward-tense + only Bash grep -> FIRES (reading is not doing)
+PASS: 4: past-tense + sha -> silent
+PASS: 5: «сделал» alone -> silent (commitment-triggered, not artifact-required)
+PASS: 6: tool-only turn, no final text -> silent
+PASS: 7: Edit (write) + 'I'll dispatch' promise -> FIRES (kind mismatch)
+PASS: 8: «сейчас проверил логи» -> silent (past-tense)
+PASS: 9: I'll dispatch + Agent spawn -> silent
+PASS: 10: past-report + fresh unkept promise -> FIRES
+PASS: 10b: quote = only the promise clause
+PASS: 11: stop_hook_active=true -> silent (anti-loop)
+PASS: 12: LEADV2_PROMISE_GUARD=0 kill switch -> silent
+PASS: 13: dispatch promise + Agent (matching kind) -> silent
+PASS: 14: dispatch promise + git commit (mismatched kind) -> FIRES
+PASS: 15a: log-only default -> stdout silent (no block)
+PASS: 15b: log-only default -> journal row verdict=fired
+
+17/17 pass

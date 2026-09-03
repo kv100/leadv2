@@ -62,14 +62,25 @@ LV2_WT_PROTECT_MIN_AGE_S=$((48 * 3600))
 # A missing ledger is not an error (no terminal row => an arm-registered lane
 # counts as open — the correct direction); an unopenable active.yaml, a
 # malformed YAML, or a missing yaml module exits 3 => caller fails closed.
+# The pid-birth lib is the exception (R4 import contract): a drifted copy of
+# THIS file may sit in a dir without lib/leadv2_pid_birth.py, and that must
+# degrade to the inline rule, never exit 3 — an exit here turns EVERY probe
+# into control-plane-unreadable.
 _LV2_WT_PROTECT_PY='
-import json, os, sys
+import json, os, subprocess, sys
 
-active_path, ledger_path = sys.argv[1], sys.argv[2]
+active_path, ledger_path, lib_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, lib_dir)
 try:
     import yaml
 except ImportError:
     sys.exit(3)
+
+try:
+    from leadv2_pid_birth import birth_matches, pid_birth_of
+    _BIRTH_LIB = True
+except Exception:
+    _BIRTH_LIB = False
 
 try:
     with open(active_path, encoding="utf-8") as fh:
@@ -83,6 +94,7 @@ for s in data.get("sessions") or []:
     if not isinstance(s, dict) or not s.get("task_id"):
         continue
     pid = s.get("pid")
+    birth = s.get("pid_birth") or s.get("worker_pid_birth") or ""
     alive = 0
     if pid not in (None, "", "null", "None"):
         try:
@@ -90,7 +102,21 @@ for s in data.get("sessions") or []:
             alive = 1
         except (TypeError, ValueError, OSError):
             alive = 0
-    print("S\t%s\t%s\t%s\t%d" % (s.get("task_id"), s.get("worktree") or "", pid or "", alive))
+    if alive and birth:
+        try:
+            if _BIRTH_LIB:
+                alive = int(birth_matches(birth, pid_birth_of(pid)))
+            else:
+                # Inline fallback, byte-equivalent to birth_matches: collapse
+                # all whitespace runs, unknown on either side => match (R3).
+                live = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                                      capture_output=True, text=True, timeout=5)
+                live = " ".join(live.stdout.split())
+                stored = " ".join(str(birth).split())
+                alive = int(not (stored and live) or stored == live)
+        except Exception:
+            alive = 0
+    print("S\t%s\t%s\t%s\t%s\t%d" % (s.get("task_id"), s.get("worktree") or "", pid or "", birth, alive))
 
 if ledger_path and os.path.isfile(ledger_path):
     try:
@@ -116,7 +142,7 @@ if ledger_path and os.path.isfile(ledger_path):
 '
 
 lv2_wt_protect_prime() {
-  local repo_root="$1" state_bin active_path ledger_path out v
+  local repo_root="$1" state_bin lib_dir active_path ledger_path out v
   LV2_WT_PROTECT_ERR=""
   LV2_WT_PROTECT_SESSIONS=""
   LV2_WT_PROTECT_TERMINALS=""
@@ -153,6 +179,7 @@ lv2_wt_protect_prime() {
   fi
 
   state_bin="${BASH_SOURCE[0]:-$0}"; state_bin="${state_bin%/*}/../leadv2-state-path.sh"
+  lib_dir="${BASH_SOURCE[0]:-$0}"; lib_dir="${lib_dir%/*}"
   if [[ ! -f "$state_bin" ]]; then
     LV2_WT_PROTECT_ERR="state-path-resolver-absent"
     return 0
@@ -167,7 +194,7 @@ lv2_wt_protect_prime() {
   ledger_path="$(PROJECT_ROOT="$repo_root" bash "$state_bin" --no-link dispatch-ledger.jsonl 2>/dev/null)" \
     || ledger_path=""
 
-  out="$(python3 -c "$_LV2_WT_PROTECT_PY" "$active_path" "$ledger_path" 2>/dev/null)" \
+  out="$(python3 -c "$_LV2_WT_PROTECT_PY" "$active_path" "$ledger_path" "$lib_dir" 2>/dev/null)" \
     || { LV2_WT_PROTECT_ERR="control-plane-unreadable"; return 0; }
 
   local line
@@ -183,8 +210,8 @@ lv2_wt_protect_prime() {
 
 # 0 iff a session row is registered for this lane id / path. Probe A's key set.
 _lv2_wt_session_row() { # <id> <wt-path>
-  local id="$1" wt="$2" tid wpath pid alive wreal treal
-  while IFS=$'\t' read -r tid wpath pid alive; do
+  local id="$1" wt="$2" tid wpath pid birth alive wreal treal
+  while IFS=$'\t' read -r tid wpath pid birth alive; do
     [[ -n "$tid" ]] || continue
     if [[ "$tid" == "$id" || "$tid" == "dispatch-$id" ]]; then
       return 0
@@ -204,8 +231,8 @@ _lv2_wt_session_row() { # <id> <wt-path>
 # A's — a pid row implies a session row, so in practice rc 3 only refines rc 1;
 # both are kept because the rc contract is the sweeper-facing interface).
 _lv2_wt_pid_alive() { # <id>
-  local id="$1" tid wpath pid alive
-  while IFS=$'\t' read -r tid wpath pid alive; do
+  local id="$1" tid wpath pid birth alive
+  while IFS=$'\t' read -r tid wpath pid birth alive; do
     [[ -n "$tid" ]] || continue
     if [[ "$tid" == "$id" || "$tid" == "dispatch-$id" ]] && [[ "$alive" == "1" ]]; then
       return 0

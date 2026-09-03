@@ -585,7 +585,8 @@ except Exception:
 _codex_reap() {
   local target="${1:-}" _lib_dir
   _lib_dir="$(dirname "$COMPANION")/lib"
-  python3 - "$CODEX_REAP_STATE_ROOT" "$CODEX_QUEUED_KILL_MIN" "$CODEX_RUNNING_DEAD_KILL_MIN" "$target" "$_lib_dir" "$CODEX_REPAIR_DIR" <<'PY'
+  local _reap_out="" _reap_rc=0 _line _jid="" _cause="" _ws="" _logf=""
+  _reap_out="$(python3 - "$CODEX_REAP_STATE_ROOT" "$CODEX_QUEUED_KILL_MIN" "$CODEX_RUNNING_DEAD_KILL_MIN" "$target" "$_lib_dir" "$CODEX_REPAIR_DIR" <<'PY'
 import json, os, shutil, subprocess, sys, time
 from datetime import datetime, timezone
 
@@ -969,6 +970,7 @@ def reap_one(job_path, force=False):
             return None
 
         job_id = os.path.basename(job_path)[:-5]
+        orig_pid = data.get("pid")
         completed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         data["status"] = "failed"
         data["phase"] = "failed"
@@ -980,6 +982,29 @@ def reap_one(job_path, force=False):
         with open(tmp, "w") as f:
             json.dump(data, f, indent=2)
         os.replace(tmp, job_path)
+
+        # CODEX-DIES-MID-TEST-01 crit 2 — a killed job must SAY so. Until now the
+        # job log simply STOPPED at its last "Running command" line (measured on
+        # four lanes 2026-09-01), which reads as a lane still working. Whatever
+        # killed the worker acted outside this job's control (SessionEnd broker
+        # shutdown / V8 OOM abort — see docs/handoff/CODEX-DIES-MID-TEST-01/
+        # report.md), so this reaper — the first component that can PROVE the
+        # death — writes the terminal line naming cause and time directly into
+        # the log everyone already tails. Best-effort: a missing/unwritable log
+        # never fails the reap (the job file above is the authoritative record).
+        log_file = data.get("logFile")
+        if log_file:
+            try:
+                with open(log_file, "a") as _lf:
+                    _lf.write(
+                        "[codex-task] TERMINAL: job=%s cause=%s worker_pid=%s "
+                        "reaped_at=%s note=worker process died without recording a "
+                        "terminal state; named by the leadv2 reaper "
+                        "(CODEX-DIES-MID-TEST-01)\n" % (job_id, cause, orig_pid, completed_at)
+                    )
+            except OSError:
+                pass
+
         patch = {
             "id": job_id,
             "status": "failed",
@@ -988,7 +1013,7 @@ def reap_one(job_path, force=False):
             "errorMessage": f"reaped: {cause}",
             "completedAt": completed_at,
         }
-        return (job_id, cause, data.get("workspaceRoot"), patch)
+        return (job_id, cause, data.get("workspaceRoot"), log_file, patch)
     finally:
         release_lock(lock_dir)
 
@@ -1011,17 +1036,20 @@ for root, _dirs, files in os.walk(state_root):
         job_path = os.path.join(root, name)
         result = reap_one(job_path, force=bool(target))
         if result:
-            reaped_job_id, cause, workspace_root, patch = result
+            reaped_job_id, cause, workspace_root, log_file, patch = result
             # Runs AFTER reap_one's own `finally: release_lock(...)` above -- upsertJob
             # never touches the per-job-file lock (only writeJobFile does), so there is
             # no lock-reentry/deadlock risk calling it here.
             if not _sync_state_index(reaped_job_id, workspace_root, patch, lib_dir):
                 if not _write_repair_marker(job_path, reaped_job_id, workspace_root, patch, repair_dir):
                     _marker_persist_failed = True
-            reaped.append((reaped_job_id, cause))
+            reaped.append((reaped_job_id, cause, workspace_root, log_file))
 
-for job_id, cause in reaped:
-    print(f"{job_id} {cause}")
+# CODEX-DIES-MID-TEST-01 crit 2/3 — reap output grows two trailing fields
+# (workspaceRoot, logFile; "-" when absent). Field order for the first two
+# (<jobId> <cause>) is unchanged so existing line-shape readers keep working.
+for job_id, cause, workspace_root, log_file in reaped:
+    print(f"{job_id} {cause} {workspace_root or '-'} {log_file or '-'}")
 
 # wave2 round3 finding 4: the job itself WAS reaped (status=failed already landed in
 # job_path above) -- what is at risk is only the state.json index + this last-resort
@@ -1036,6 +1064,20 @@ if _marker_persist_failed:
     )
     sys.exit(1)
 PY
+)" || _reap_rc=$?
+  # CODEX-DIES-MID-TEST-01 — deliberately ONLY prints. The journal row and the
+  # arm-cooldown record live in the __deathwatch path below, NOT here: _codex_reap
+  # runs from every `status`/autoreap/`reap` call AND from hermetic suites
+  # exercising the reaper (measured 2026-09-01: recording here made
+  # test-codex-task-reap runs append REAL cooldown rows to the live arm ladder,
+  # which then refused the next real dispatch). The reaper's own critical outputs
+  # stay exactly as before: status=failed, errorMessage, TERMINAL line in the
+  # job log. Output contract: "<jobId> <cause> <workspaceRoot|-> <logFile|->"
+  # (first two fields unchanged; the trailing two are consumed by __deathwatch).
+  if [[ -n "$_reap_out" ]]; then
+    printf '%s\n' "$_reap_out"
+  fi
+  return "$_reap_rc"
 }
 
 # _record_spawn_failure <cwd> <error-text> -- CODEX-REAP-01 item 3 (spawn
@@ -1518,6 +1560,213 @@ if [[ "$SUB" == "adversarial-review" ]]; then
 
 fi
 
+# CODEX-DETACH-01 -- validate broker.json liveness before handing a job to the
+# companion. Root cause (established live, 2026-08-31, three sol workers
+# mtgk8ef8/mtgl2ea9/mtgl96u7 all worker_process_died within 1-3 min): the
+# companion's broker.json named a process that no longer existed, whose
+# sessionDir under /var/folders/.../T had been swept by the OS. Every new
+# worker attached to that corpse and died -- this was never a timeout (G1
+# below already caps at 1800s; the "5m00s" in the failure record is
+# codex-guard.sh reap_stale_workers stamping worker_died_silent after 300s of
+# log silence -- raising a timeout fixes nothing).
+#
+# We do not own the broker (that's ~/.claude/plugins/cache/openai-codex/) --
+# we only read scripts/lib/state.mjs:resolveStateDir()'s formula (git
+# toplevel of cwd, realpath'd, sha256[:16] + sanitized basename slug) to find
+# ITS broker.json, and move a stale one aside (never delete) so the companion
+# raises a fresh broker on its own next attach. A swept sessionDir with a pid
+# some unrelated process now holds is exactly why BOTH checks are required --
+# a pid-only check would wave that case through.
+_codex_broker_state_dir() {
+  local _cwd="$1"
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 - "$_cwd" "$CODEX_REAP_STATE_ROOT" <<'PY'
+import hashlib, os, re, subprocess, sys
+cwd, state_root = sys.argv[1], sys.argv[2]
+try:
+    root = subprocess.run(
+        ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, check=True, timeout=5,
+    ).stdout.strip()
+    if not root:
+        root = cwd
+except Exception:
+    root = cwd
+try:
+    canonical = os.path.realpath(root)
+except Exception:
+    canonical = root
+slug_source = os.path.basename(root.rstrip("/")) or "workspace"
+slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", slug_source).strip("-") or "workspace"
+digest = hashlib.sha256(canonical.encode()).hexdigest()[:16]
+print(os.path.join(state_root, "%s-%s" % (slug, digest)))
+PY
+}
+
+# $1=cwd. Renames a stale broker.json aside (timestamped, never deleted) when
+# its pid is dead OR its sessionDir no longer exists. Silent no-op if no
+# broker.json exists yet, or it is fully alive (pid live AND sessionDir
+# present -- both checks must pass).
+_codex_validate_broker() {
+  local _cwd="$1" _state_dir _broker
+  _state_dir="$(_codex_broker_state_dir "$_cwd" 2>/dev/null)" || return 0
+  [[ -n "$_state_dir" && -f "$_state_dir/broker.json" ]] || return 0
+  _broker="$_state_dir/broker.json"
+  command -v python3 >/dev/null 2>&1 || return 0
+
+  local _fields _pid _session_dir
+  _fields="$(python3 - "$_broker" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+pid = data.get("pid")
+session_dir = data.get("sessionDir") or ""
+print(pid if isinstance(pid, int) else "")
+print(session_dir)
+PY
+)" || return 0
+  _pid="$(printf '%s\n' "$_fields" | sed -n '1p')"
+  _session_dir="$(printf '%s\n' "$_fields" | sed -n '2p')"
+
+  local _dead=0 _swept=0
+  if [[ -n "$_pid" ]] && kill -0 "$_pid" 2>/dev/null; then
+    :
+  else
+    _dead=1
+  fi
+  if [[ -n "$_session_dir" && -d "$_session_dir" ]]; then
+    :
+  else
+    _swept=1
+  fi
+  if [[ "$_dead" -eq 1 || "$_swept" -eq 1 ]]; then
+    local _reason _ts
+    if [[ "$_dead" -eq 1 && "$_swept" -eq 1 ]]; then _reason="pid_dead+sessionDir_gone"
+    elif [[ "$_dead" -eq 1 ]]; then _reason="pid_dead"
+    else _reason="sessionDir_gone"; fi
+    _ts="$(date '+%Y%m%dT%H%M%S')"
+    if mv "$_broker" "${_broker}.stale-${_ts}" 2>/dev/null; then
+      echo "[codex-task] STALE_BROKER_DETECTED reason=${_reason} state_dir=${_state_dir} pid=${_pid:-?} session_dir=${_session_dir:-?}" >&2
+    fi
+  fi
+  return 0
+}
+
+if [[ "$SUB" == "task" || "$SUB" == "review" || "$SUB" == "adversarial-review" ]]; then
+  _BROKER_CHECK_CWD="$PWD"
+  _prev=""
+  for _a in "$@"; do
+    if [[ "$_prev" == "--cwd" || "$_prev" == "-C" ]]; then _BROKER_CHECK_CWD="$_a"; fi
+    _prev="$_a"
+  done
+  _codex_validate_broker "$_BROKER_CHECK_CWD"
+fi
+
+# CODEX-DIES-MID-TEST-01 — per-job deathwatch (internal subcommand, armed by the
+# --background dispatch path right after codex-guard.sh). codex-guard.sh watches
+# JOB STATUS; this watches the WORKER PROCESS, because the incident class this
+# lane fixed is a worker killed out-of-band (SessionEnd broker shutdown / V8 OOM
+# abort) whose job record stays "running" for hours while its log just stops —
+# four lanes, zero commits, no terminal line anywhere (2026-09-01). The moment
+# the recorded pid is provably dead this triggers the SAME targeted reap the
+# `reap` subcommand uses (shared mkdir-lock protocol, status/index/log TERMINAL
+# line, journal row, arm-cooldown record) — within seconds of the death instead
+# of the next unrelated codex-task.sh invocation hours later. Same liveness
+# discipline as the reaper: kill -0 failing is necessary but not sufficient —
+# a reap that cannot PROVE the whole group dead reaps nothing and the watcher
+# keeps polling. Quiet by design on live workers (a long silent test run is
+# NOT a death) and on terminal-status jobs.
+if [[ "$SUB" == "__deathwatch" ]]; then
+  shift
+  _DW_JID="${1:-}"
+  shift || true
+  _DW_STATE_DIR=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cwd)        _DW_CWD="${2:-}"; shift 2 ;;
+      --state-dir)  _DW_STATE_DIR="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  _DW_CWD="${_DW_CWD:-$PWD}"
+  if [[ -z "$_DW_STATE_DIR" ]]; then
+    _DW_STATE_DIR="$(_codex_broker_state_dir "$_DW_CWD" 2>/dev/null || printf '')"
+  fi
+  # _dw_announce <job> <cause> <workspaceRoot> <logFile> -- crit 2+3 announcer.
+  # (a) a durable dispatch-journal row (kind=codex_worker_died, arm=codex) so lane
+  # liveness/the pulse see the death instead of a lane that "was still working",
+  # and (b) an arm-cooldown failure record (reason=<cause>) so the router's NEXT
+  # resolve cools the codex arm via the standard bounded ladder — quota, task
+  # shape and outcomes decide the arm, never a hardcoded exclusion. Both
+  # fail-open: an observability write never flips the watcher's rc.
+  _dw_announce() {
+    bash "${LEADV2_EVENT_BIN:-${_CODEX_SCRIPT_DIR}/leadv2-event.sh}" emit \
+      --repo "$(printf '%s' "${3##*/}" | tr -cd 'A-Za-z0-9._-')" \
+      --kind codex_worker_died --arm codex --handle "$1" \
+      --detail "cause=${2:-unknown} log=${4:--}" >/dev/null 2>&1 || true
+    LEADV2_ARM_COOLDOWN_JOB="$1" arm_cooldown_record codex "${2:-worker_died}" >/dev/null 2>&1 || true
+  }
+  _DW_POLL="${CODEX_DEATHWATCH_POLL_S:-5}"
+  _DW_MAX="${CODEX_DEATHWATCH_MAX_S:-14400}"
+  _DW_DEADLINE=$(( $(date +%s) + _DW_MAX ))
+  while (( $(date +%s) < _DW_DEADLINE )); do
+    _DW_JF="$_DW_STATE_DIR/jobs/$_DW_JID.json"
+    if [[ -f "$_DW_JF" ]]; then
+      _DW_STATUS="$(python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get("status") or "")
+except Exception:
+    print("")' "$_DW_JF" 2>/dev/null || true)"
+      case "$_DW_STATUS" in
+        completed|cancelled) exit 0 ;;
+        failed)
+          # The autoreap sweep (quota gate at this script's own startup, or a
+          # later dispatch's status call) can beat this watcher to the corpse:
+          # the sweep is a pure state mutation BY DESIGN -- recording inside
+          # _codex_reap made hermetic reap suites append real cooldown rows to
+          # the LIVE arm ladder (measured 2026-09-01). The deathwatch only
+          # exists on real dispatches, so IT owns the announcement even for a
+          # sweep-reaped job: a worker death is a router-visible failure no
+          # matter which leadv2 component buried the body.
+          _DW_PRE="$(python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print((d.get("errorMessage") or "") + "\t" + (d.get("workspaceRoot") or "") + "\t" + (d.get("logFile") or ""))
+except Exception:
+    print("")' "$_DW_JF" 2>/dev/null || true)"
+          _DW_ERR="${_DW_PRE%%$'\t'*}"
+          if [[ "$_DW_ERR" == reaped:* ]]; then
+            _DW_CAUSE="${_DW_ERR#reaped: }"
+            _DW_REST="${_DW_PRE#*$'\t'}"
+            _dw_announce "$_DW_JID" "$_DW_CAUSE" "${_DW_REST%%$'\t'*}" "${_DW_REST#*$'\t'}"
+          fi
+          exit 0 ;;
+      esac
+      _DW_PID="$(python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get("pid") or "")
+except Exception:
+    print("")' "$_DW_JF" 2>/dev/null || true)"
+      if [[ -n "$_DW_PID" ]] && ! kill -0 "$_DW_PID" 2>/dev/null; then
+        _DW_OUT="$(_codex_reap "$_DW_JID" 2>/dev/null || true)"
+        if [[ -n "$_DW_OUT" ]]; then
+          while IFS=' ' read -r _DW_J _DW_CAUSE _DW_WS _DW_LOGF; do
+            [[ -n "${_DW_J:-}" ]] || continue
+            _dw_announce "$_DW_J" "$_DW_CAUSE" "$_DW_WS" "$_DW_LOGF"
+          done <<EOF_DW_LINES
+$_DW_OUT
+EOF_DW_LINES
+          exit 0   # reaped: TERMINAL line + journal row + arm record have landed
+        fi
+        # group not provably dead — fall through and keep polling
+      fi
+    fi
+    sleep "$_DW_POLL"
+  done
+  exit 0
+fi
 
 # G1 -- hard timeout + auto-kill
 # Controlled by CODEX_TIMEOUT env (default 600). Override per-repo via
@@ -1828,6 +2077,15 @@ if [[ ( "$SUB" == "task" || "$SUB" == "review" ) && "$_has_background" -eq 1 ]];
       nohup "$_GUARD_SCRIPT" "$_JOB_ID" "$_GUARD_CWD" >/dev/null 2>&1 < /dev/null &
       disown 2>/dev/null || true
       echo "[codex-task] armed codex-guard.sh for $_JOB_ID (cwd=$_GUARD_CWD, guard=$_GUARD_SCRIPT)" >&2
+      # CODEX-DIES-MID-TEST-01 — codex-guard watches job STATUS; the deathwatch
+      # watches the WORKER PID so an out-of-band kill (SessionEnd broker
+      # shutdown, V8 OOM abort) is named in the job log, the dispatch journal
+      # and the arm ladder within seconds instead of hours. Same self-invoked,
+      # detached, disowned pattern as the guard line above.
+      nohup bash "$_CODEX_SCRIPT_DIR/codex-task.sh" __deathwatch "$_JOB_ID" \
+        --cwd "$_GUARD_CWD" >/dev/null 2>&1 < /dev/null &
+      disown 2>/dev/null || true
+      echo "[codex-task] armed deathwatch for $_JOB_ID (cwd=$_GUARD_CWD)" >&2
     else
       echo "[codex-task] WARN: codex-guard.sh not found -- tried: ${_GUARD_TRIED:-<none>} -- background job $_JOB_ID is unguarded" >&2
     fi

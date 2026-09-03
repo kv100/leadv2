@@ -1,0 +1,13 @@
+-- BEFORE (10 sed forks in compress_base, pre round-7 F9 fix) (warm cache, 5 runs) --
+run 1: 130.1 ms
+run 2: 121.8 ms
+run 3: 119.0 ms
+run 4: 117.0 ms
+run 5: 123.6 ms
+
+-- AFTER (4 chained sed forks, round-7 F9 fix) (warm cache, 5 runs) --
+run 1: 93.7 ms
+run 2: 98.6 ms
+run 3: 94.3 ms
+run 4: 94.4 ms
+run 5: 91.3 ms

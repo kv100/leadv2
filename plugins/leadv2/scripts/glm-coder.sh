@@ -64,6 +64,9 @@ else lv2_trace_begin() { :; }; lv2_trace_end() { :; }; lv2_trace_arm_exit() { :;
 readonly SECRETS_FILE="${GLM_SECRETS_FILE:-${HOME}/.claude/secrets/zai.env}"
 readonly ZAI_BASE_URL="https://api.z.ai/api/anthropic"
 readonly RUNS_DIR="${GLM_RUNS_DIR:-${HOME}/.claude/cache/glm-runs}"
+# GLM-ARM-THROUGHPUT-01: locks may live under their own root (hermetic suites
+# point LEADV2_GLM_LOCK_ROOT at a temp dir; default stays the runs dir).
+readonly LOCK_ROOT="${LEADV2_GLM_LOCK_ROOT:-${RUNS_DIR}}"
 # GLM_TIMEOUT: wall-clock backstop. Turn and no-progress guards below stop
 # superlinear conversation replay before a run reaches this outer bound.
 # WORKER-RESILIENCE-01 (founder order 2026-07-31): defaults raised
@@ -74,28 +77,80 @@ readonly RUNS_DIR="${GLM_RUNS_DIR:-${HOME}/.claude/cache/glm-runs}"
 # was structurally unreachable (900s wall-clock killed first). F2: both
 # turn knobs had to rise, else the watchdog still killed at turn 40.
 readonly GLM_TIMEOUT="${GLM_TIMEOUT:-3600}"
-# GLM-REVIVE-01 legacy compatibility: when configured lower than the explicit
-# no-progress guard below, GLM_STALL_S still kills and revives once. At the
-# defaults, GLM_NO_PROGRESS_S reaches the timeout/fallback path first.
+# GLM_STALL_S is retained as the stdout-idle observation threshold.  It is NOT
+# a kill switch: a long tool call can legitimately leave stdout quiet.
 readonly GLM_STALL_S="${GLM_STALL_S:-1200}"
 readonly GLM_MAX_TURNS="${GLM_MAX_TURNS:-120}"
 # Hard watchdog limits. GLM_MAX_TURNS remains the Claude CLI request limit and
 # --max-turns remains backward compatible; GLM_TURN_LIMIT is independently
 # enforced from observed stream turns through the timeout/fallback path.
 readonly GLM_TURN_LIMIT="${GLM_TURN_LIMIT:-120}"
-readonly GLM_NO_PROGRESS_S="${GLM_NO_PROGRESS_S:-${GLM_STALL_S}}"
+# A kill needs this independent, stricter proof: no semantic progress, no open
+# tool invocation, and no fresh stream/progress file activity.
+readonly GLM_NO_PROGRESS_S="${GLM_NO_PROGRESS_S:-1800}"
 # Dedicated non-zero exit code for "GLM gave up, fall back to sonnet" —
 # distinct from 75 (lock busy, pre-existing) and from ordinary shell exit 1.
 readonly GLM_FALLBACK_EXIT_CODE="${GLM_FALLBACK_EXIT_CODE:-76}"
 readonly GLM_FALLBACK_SENTINEL="GLM_FALLBACK_TO_SONNET"
+readonly GLM_CONTINUATION_MAX_LINES="${GLM_CONTINUATION_MAX_LINES:-200}"
 # Emitted (real child exit code PRESERVED in meta.yaml) when the run produced
 # a coherent, non-error result but genuinely failed with no timeout marker —
 # sonnet would hit the same task-level failure.
 readonly GLM_PERMANENT_FAILURE_SENTINEL="GLM_PERMANENT_FAILURE"
 # Seam for tests to stub the `claude` binary entirely (no real network call).
 readonly GLM_CLAUDE_BIN="${GLM_CLAUDE_BIN:-claude}"
+# BEAT-LOOP-ORPHANS-01: every claude process this launcher spawns is a headless
+# worker, never a lead — exported so it is inherited by the child claude
+# process and read by hooks/lib/leadv2-hook-session-kind.sh to refuse arming
+# beat/watch loops that would outlive this launcher.
+export LEADV2_WORKER_ARM=1
+# GLM-53-FLASH-ARM-01 (founder order 2026-08-26): per-dispatch model override.
+# One mechanism, env-first — no second profile layer. Default stays glm-5.3;
+# the dispatcher sets GLM_MODEL=glm-5.3-flash when the route arbiter picks the
+# glm-flash arm (cheap/mechanical tier). Every spawn site and meta.yaml read
+# this single value, so a run record always names the model that actually ran.
+readonly GLM_MODEL="${GLM_MODEL:-glm-5.3}"
+# GLM-EFFICIENCY-01: per-dispatch reasoning-effort override, same env-first
+# pattern as GLM_MODEL. The dispatcher maps DC_TASK_CLASS -> effort and exports
+# GLM_EFFORT; every spawn site appends `--effort <v>` to the `claude -p` argv
+# when set (CC 2.1.258 `--effort <level>`, verified live). Z.AI's Anthropic-compat
+# layer reads `output_config.effort` from Claude Code (docs.z.ai/devpack/
+# latest-model.md: low|medium|high|max, medium auto-converts to high, default
+# max) and the field measurably changes the response — same prompt, glm-5.3,
+# output_tokens 130 at low vs 369 at max (probe 2026-09-02,
+# docs/handoff/GLM-EFFICIENCY-01/report.md). Empty = flag omitted = provider
+# default `max` (pre-lane behaviour, byte-identical spawn).
+readonly GLM_EFFORT="${GLM_EFFORT:-}"
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"
+
+# T14 (2026-08-26): role-scoped MCP for dispatched workers. The resolver is
+# the SAME one the claude-subsession escalation path uses (extracted to
+# lib/leadv2-worker-mcp.sh) — never a second implementation. Gate:
+# LEADV2_WORKER_MCP (default 1; =0 restores the pre-T14 spawn line with no
+# --mcp-config). Role: LEADV2_WORKER_ROLE (default developer; set critic for
+# review missions). Fail-open on every failure — see worker_mcp_resolve().
+# F1 (T14 fix-round): $SELF is derived from the INVOKING path, so when this
+# script is a per-file symlink into a foreign tree (persona-engine layout:
+# real .claude/scripts/ dir, lib/ only partially symlinked), the lib looks
+# missing and every worker silently degrades to worker_mcp_skipped
+# reason=lib_missing. Fall back to the canonical repo by resolving the
+# symlink chain of BASH_SOURCE itself.
+_WORKER_MCP_LIB="${SELF%/*}/lib/leadv2-worker-mcp.sh"
+if [[ ! -f "${_WORKER_MCP_LIB}" ]]; then
+  _glm_canonical_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+  if [[ -f "${_glm_canonical_self%/*}/lib/leadv2-worker-mcp.sh" ]]; then
+    _WORKER_MCP_LIB="${_glm_canonical_self%/*}/lib/leadv2-worker-mcp.sh"
+  fi
+fi
+readonly WORKER_MCP_LIB="${_WORKER_MCP_LIB}"
+if [[ -f "${WORKER_MCP_LIB}" ]]; then
+  # shellcheck disable=SC1090
+  source "${WORKER_MCP_LIB}"
+  readonly _WORKER_MCP_LIB_PRESENT=1
+else
+  readonly _WORKER_MCP_LIB_PRESENT=0
+fi
 
 # FINISH GUARD (2026-07-03): appended to every real mission prompt (cmd_bg and
 # cmd_run — never cmd_test) so the model is told, at the prompt level, not to
@@ -147,7 +202,12 @@ glm_launch_gate() {
   fi
   # NOTE: do NOT use `if ! "$gate"` — `!` resets $? to 0 and the real gate code
   # (1=reroute, 2=peak) is lost, making a refused gate non-blocking (QUOTA-GATE-01).
-  "$gate"; local rc=$?
+  # HANDLE-POLLUTION-01 (2026-09-02): the gate's "[glm-quota-gate] OK — …" line
+  # went to STDOUT, i.e. into the handle `bg` returns to the dispatcher, which
+  # then read a live spawn as not_live and re-spawned into its own lock
+  # (lock_busy → glm-flash → spawn_failed). Gate chatter belongs on stderr;
+  # the dispatcher scans stdout+stderr combined for REROUTE, so nothing is lost.
+  "$gate" >&2; local rc=$?
   if (( rc != 0 )); then
     log_error "GLM quota gate refused this launch (code $rc) - reroute per the message above (leadv2-quota-live.sh for live numbers)."
     return "$rc"
@@ -179,7 +239,11 @@ Usage:
   test    Self-test: sends a short prompt and prints the tail of the response.
 
 Env knobs: GLM_TIMEOUT (default 3600s), GLM_MAX_TURNS (default 120),
-  GLM_TURN_LIMIT (default 120), GLM_NO_PROGRESS_S (default 1200s),
+  GLM_TURN_LIMIT (default 120), GLM_STALL_S (default 1200s, diagnostic only),
+  GLM_NO_PROGRESS_S (default 1800s),
+  LEADV2_WORKER_MCP (default 1; =0 spawns without --mcp-config, pre-T14),
+  LEADV2_WORKER_ROLE (default developer; critic for review missions — selects
+  plugins/leadv2/config/mcp-role-<role>.json, resolved at spawn time),
   GLM_FALLBACK_EXIT_CODE (default 76).
 
 Terminal sentinels (GLM-RELIABILITY-529-01) — mutually exclusive, appended to
@@ -226,6 +290,51 @@ load_secret() {
 # v1 blocking path (`run`, `test`) — unchanged behavior, kept intact (R2).
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# T14: role-scoped MCP attach for every worker spawn (run + bg paths).
+# ---------------------------------------------------------------------------
+
+# One journal line per spawn decision. $1 = journal file (bg path: the run's
+# progress.log) or empty (v1 run path: stderr via log, same [ts] shape).
+worker_mcp_journal() { # $1=journal-file-or-empty $2=message
+  local line
+  line="[$(date '+%Y-%m-%d %H:%M:%S')] $2"
+  if [[ -n "$1" ]]; then
+    printf '%s\n' "$line" >> "$1" 2>/dev/null || echo "$line" >&2
+  else
+    echo "$line" >&2
+  fi
+}
+
+# Resolve the role-scoped --mcp-config for THIS spawn. Echoes the resolved
+# config path (rc 0) or nothing (rc 1, fail-open — spawn proceeds WITHOUT the
+# flag, exactly as pre-T14). The resolver's own WARN lines go to stderr; the
+# worker_mcp_skipped/attached journal line is the machine-greppable record.
+worker_mcp_resolve() { # $1=project root (worker cwd) $2=journal file $3=out dir for resolved json
+  local project_root="$1" journal_file="$2" out_dir="$3"
+  local role="${LEADV2_WORKER_ROLE:-developer}"
+  [[ "${role}" =~ ^[a-z0-9-]+$ ]] || role="developer"
+
+  if [[ "${LEADV2_WORKER_MCP:-1}" != "1" ]]; then
+    worker_mcp_journal "${journal_file}" "worker_mcp_skipped reason=disabled"
+    return 1
+  fi
+  if [[ "${_WORKER_MCP_LIB_PRESENT}" != "1" ]]; then
+    worker_mcp_journal "${journal_file}" "worker_mcp_skipped reason=lib_missing"
+    return 1
+  fi
+
+  local mcp_cfg="" rc=0
+  mcp_cfg="$(resolve_role_mcp_config "${role}" "${out_dir}" "${project_root}")" || rc=$?
+  if [[ $rc -ne 0 || -z "${mcp_cfg}" ]]; then
+    worker_mcp_journal "${journal_file}" "worker_mcp_skipped reason=resolve_rc_${rc}"
+    return 1
+  fi
+  worker_mcp_journal "${journal_file}" "worker_mcp_attached config=$(basename "${mcp_cfg}") role=${role}"
+  printf '%s' "${mcp_cfg}"
+  return 0
+}
+
 run_claude() {
   local prompt="$1"
   local out_file="$2"
@@ -253,22 +362,43 @@ run_claude() {
     resolved_prompt="${AGENT_BAN_PREAMBLE}${resolved_prompt}${FINISH_CONTRACT_TRAILER}"
   fi
 
+  # T14: resolve BEFORE the subshell cd — the journal line goes to stderr
+  # (v1 path has no run dir). Empty mcp_cfg = fail-open, no flag appended.
+  local mcp_cfg="" mcp_out_dir
+  mcp_out_dir="$(mktemp -d "${TMPDIR:-/tmp}/glm-worker-mcp.XXXXXX")"
+  mcp_cfg="$(worker_mcp_resolve "${cwd_dir}" "" "${mcp_out_dir}")" || true
+
   local exit_code=0
   (
     cd "${cwd_dir}"
     export ANTHROPIC_BASE_URL="${ZAI_BASE_URL}"
     export ANTHROPIC_AUTH_TOKEN="${ZAI_AUTH_TOKEN}"
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.3"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.3"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="${GLM_MODEL}"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="${GLM_MODEL}"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5.3-flash"   # GLM-47-BAN-01: 4.5-air was silently routed to GLM-4.7 by Z.AI; only 5.3 / 5.3-flash allowed
     export DISABLE_MODEL_AVAILABILITY_CHECK=1
     export API_TIMEOUT_MS=3000000
-    command "${GLM_CLAUDE_BIN}" -p "${resolved_prompt}" \
+    local -a spawn_args=(-p "${resolved_prompt}" \
       --dangerously-skip-permissions \
       --disallowedTools "Agent" \
       --model sonnet \
-      --output-format json
+      --output-format json)
+    # GLM-EFFICIENCY-01: apply the dispatcher-resolved effort (whitelist =
+    # Z.AI's accepted vocabulary; anything else omits the flag — fail-open
+    # to the provider default `max`, never a malformed argv).
+    case "${GLM_EFFORT:-}" in
+      low|medium|high|max) spawn_args+=(--effort "${GLM_EFFORT}") ;;
+    esac
+    if [[ -n "${mcp_cfg}" ]]; then
+      spawn_args+=(--strict-mcp-config --mcp-config "${mcp_cfg}")
+    fi
+    command "${GLM_CLAUDE_BIN}" "${spawn_args[@]}"
   ) >"${out_file}" 2>&1 || exit_code=$?
+
+  # F2 (T14 fix-round): the resolve scratch dir holds only the resolved
+  # --mcp-config copy (already consumed by the spawn above) — remove it so
+  # each synchronous `run` does not leak one /tmp/glm-worker-mcp.XXXXXX dir.
+  rm -rf "${mcp_out_dir}" 2>/dev/null || true
 
   # Telemetry is deliberately best-effort and runs after the complete provider
   # JSON envelope is durable.  Its failure can never alter the lane outcome.
@@ -342,13 +472,52 @@ cmd_test() {
 # v2 workbench (`bg`, `status`, `tail`, `watch`, `list`) + internal helpers.
 # ---------------------------------------------------------------------------
 
-lock_dir_for() { echo "${RUNS_DIR}/.lock-$1"; }
+lock_dir_for() { echo "${LOCK_ROOT}/.lock-$1"; }
+
+# GLM-ARM-THROUGHPUT-01: the lock must be per LANE WORKTREE, not per repo --
+# four lanes dispatching GLM concurrently in the same repo (four `.claude/
+# worktrees/<lane>` checkouts) hit `lock_busy` on 3 of 4 dispatches because a
+# single-repo lock serialised every worktree onto one GLM run. A repo-wide
+# lock is still correct for the MAIN checkout (two writers there really would
+# collide on the same tree), so the key must distinguish "this cwd IS the
+# main checkout" from "this cwd is a linked worktree of it" -- not just hash
+# the cwd string, which is also unsafe if the same physical repo is reached
+# through two different symlink spellings (GATE-WRONG-ROOT-FALSE-DEAD-01).
+#
+# git-common-dir is the same physical path for the main checkout and every
+# worktree linked to it; show-toplevel is the main checkout's own root for
+# the main checkout, but each linked worktree's own root otherwise. So:
+#   main checkout:    dirname(common-dir) == toplevel  -> key = common-dir
+#   linked worktree:   dirname(common-dir) != toplevel  -> key = common-dir|toplevel
+# Non-git cwd (test fixtures without a repo) falls back to hashing the raw
+# cwd path, matching the prior behavior exactly.
+glm_lock_key_for() {
+  local dir="$1"
+  local common common_abs toplevel key
+  common="$(cd "${dir}" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null || true)"
+  if [[ -z "${common}" ]]; then
+    printf '%s' "${dir}" | shasum -a 256 | cut -c1-12
+    return
+  fi
+  common_abs="$(cd "${dir}" && cd "$(dirname "${common}")" 2>/dev/null && pwd -P)/$(basename "${common}")"
+  toplevel="$(cd "${dir}" && git rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "${toplevel}" ]] && toplevel="$(cd "${toplevel}" 2>/dev/null && pwd -P || printf '%s' "${toplevel}")"
+  if [[ "$(dirname "${common_abs}")" == "${toplevel}" ]]; then
+    key="${common_abs}"
+  else
+    key="${common_abs}|${toplevel}"
+  fi
+  printf '%s' "${key}" | shasum -a 256 | cut -c1-12
+}
 
 acquire_lock() {
   local repo_hash="$1" timeout_s="$2"
   local lock_dir
   lock_dir="$(lock_dir_for "${repo_hash}")"
-  mkdir -p "${RUNS_DIR}"
+  # LOCK_ROOT too: when LEADV2_GLM_LOCK_ROOT points somewhere fresh, a bare
+  # `mkdir "${lock_dir}"` would fail on the missing parent and read as a
+  # spurious "no started marker" refusal.
+  mkdir -p "${RUNS_DIR}" "${LOCK_ROOT}"
   if mkdir "${lock_dir}" 2>/dev/null; then
     _write_lock_markers "${lock_dir}"
     return 0
@@ -433,7 +602,7 @@ repo: ${repo}
 cwd: ${cwd_dir}
 prompt_file: ${run_dir}/prompt.txt
 endpoint: ${ZAI_BASE_URL}
-model: glm-5.3
+model: ${GLM_MODEL}
 max_turns: ${max_turns}
 timeout: ${timeout_s}
 turn_limit: ${GLM_TURN_LIMIT}
@@ -584,6 +753,7 @@ last_progress_ts = int(started_ts)
 stream_bytes = 0
 estimated_output_tokens = 0
 observed_turns = 0
+open_tool_calls = 0
 reported_turns = 0
 seen_message_ids = set()
 message_usage = {}
@@ -677,6 +847,7 @@ def _persist(force=False):
     state = (
         "turns=" + str(observed_turns) + "\n"
         + "last_progress_ts=" + str(last_progress_ts) + "\n"
+        + "open_tool_calls=" + str(open_tool_calls) + "\n"
         + "bytes_streamed=" + str(stream_bytes) + "\n"
     )
     _atomic_write(state_path, state)
@@ -764,6 +935,7 @@ for raw in sys.stdin:
                 made_progress = True
             for block in blocks:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
+                    open_tool_calls += 1
                     name = block.get("name", "?")
                     inp = block.get("input") or {}
                     detail = inp.get("file_path") or inp.get("command") or inp.get("path") or ""
@@ -785,6 +957,7 @@ for raw in sys.stdin:
             msg = ev.get("message") or {}
             for block in (msg.get("content") or []):
                 if isinstance(block, dict) and block.get("type") == "tool_result":
+                    open_tool_calls = max(0, open_tool_calls - 1)
                     made_progress = True
                     break
     except Exception:
@@ -1012,11 +1185,17 @@ cmd_run_child() {
   # so redact_stream()'s os.environ.get("ZAI_AUTH_TOKEN") below actually sees it —
   # otherwise stderr redaction is dead code (R5 finding, GLM-ROUTING-V2-01 review).
   export ZAI_AUTH_TOKEN
-  export ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5.3"
-  export ANTHROPIC_DEFAULT_SONNET_MODEL="glm-5.3"
-  export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-4.5-air"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="${GLM_MODEL}"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="${GLM_MODEL}"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="glm-5.3-flash"   # GLM-47-BAN-01: 4.5-air was silently routed to GLM-4.7 by Z.AI; only 5.3 / 5.3-flash allowed
   export DISABLE_MODEL_AVAILABILITY_CHECK=1
   export API_TIMEOUT_MS=3000000
+
+  # T14: resolve the role-scoped MCP config before cd — the journal line
+  # (worker_mcp_attached / worker_mcp_skipped) lands in this run's
+  # progress.log. Empty mcp_cfg = fail-open, no flag on the spawn line.
+  local mcp_cfg=""
+  mcp_cfg="$(worker_mcp_resolve "${cwd_dir}" "${run_dir}/progress.log" "${run_dir}")" || true
 
   cd "${cwd_dir}"
   local prompt
@@ -1024,14 +1203,24 @@ cmd_run_child() {
   # lean: prompt passed via argv, matching design/v1 — upgrade to stdin/tempfile
   # passing if a prompt near bash ARG_MAX is observed in practice.
 
-  set +e
-  ( command "${GLM_CLAUDE_BIN}" -p "${prompt}" \
+  local -a spawn_args=(-p "${prompt}" \
       --model sonnet \
       --output-format stream-json \
       --verbose \
       --max-turns "${max_turns}" \
       --permission-mode bypassPermissions \
-      --disallowedTools "Agent" \
+      --disallowedTools "Agent")
+  # GLM-EFFICIENCY-01: same effort seam as the v1 path (see GLM_EFFORT note
+  # near GLM_MODEL) — whitelist else omit, fail-open to provider default max.
+  case "${GLM_EFFORT:-}" in
+    low|medium|high|max) spawn_args+=(--effort "${GLM_EFFORT}") ;;
+  esac
+  if [[ -n "${mcp_cfg}" ]]; then
+    spawn_args+=(--strict-mcp-config --mcp-config "${mcp_cfg}")
+  fi
+
+  set +e
+  ( command "${GLM_CLAUDE_BIN}" "${spawn_args[@]}" \
       2> >(redact_stream >> "${run_dir}/stderr.log")
   ) | tee "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
   echo "${PIPESTATUS[0]}" > "${run_dir}/exit_code"
@@ -1041,6 +1230,60 @@ cmd_run_child() {
 stream_state_get() {
   local run_dir="$1" key="$2"
   { grep "^${key}=" "${run_dir}/.stream_state" 2>/dev/null | head -1 | cut -d= -f2-; } || true
+}
+
+# True when one of the files written by the stream pipeline changed recently.
+# This is deliberately a widening liveness signal: stat failures mean "unknown"
+# and must not become a reason to kill a worker.
+run_dir_has_fresh_activity() {
+  local run_dir="$1" now="$2" grace_s="$3" path mtime
+  for path in "${run_dir}/journal.jsonl" "${run_dir}/progress.log" "${run_dir}/.stream_state"; do
+    [[ -e "${path}" ]] || continue
+    mtime="$(stat -f '%m' "${path}" 2>/dev/null || stat -c '%Y' "${path}" 2>/dev/null || true)"
+    [[ "${mtime}" =~ ^[0-9]+$ ]] || continue
+    if (( now - mtime < grace_s )); then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Build a bounded, provider-neutral handoff from a dead attempt.  A revive is
+# a new API conversation, not a literal resume, so the prompt must carry the
+# useful local state explicitly.  Keep this deliberately diagnostic: it never
+# claims that a file is safe or complete, it only tells the next worker what
+# was observed before the previous process died.
+append_continuation_block() { # <dead-run-dir> <next-prompt-file>
+  local dead_dir="$1" prompt_file="$2" cwd_dir max_lines remaining stream f capture used
+  cwd_dir="$(meta_get "${dead_dir}" cwd || true)"
+  max_lines="${GLM_CONTINUATION_MAX_LINES}"
+  [[ "${max_lines}" =~ ^[1-9][0-9]*$ ]] || max_lines=200
+  remaining="${max_lines}"
+  {
+    printf '\n\n===== CONTINUATION FROM DEAD GLM RUN =====\n'
+    printf 'Continue the existing work. Do not re-derive completed investigation; verify the artifacts below and proceed from them.\n'
+    printf 'source_run_id=%s\n' "$(meta_get "${dead_dir}" run_id || true)"
+    for stream in progress.log result.md; do
+      f="${dead_dir}/${stream}"
+      [[ -s "${f}" && ${remaining} -gt 0 ]] || continue
+      printf '\n--- last lines: %s ---\n' "${stream}"
+      capture="$(mktemp "${TMPDIR:-/tmp}/glm-continuation.XXXXXX")" || continue
+      tail -n "${remaining}" "${f}" 2>/dev/null > "${capture}"
+      cat "${capture}" 2>/dev/null
+      used="$(wc -l < "${capture}" 2>/dev/null | tr -d ' ')"
+      rm -f "${capture}" 2>/dev/null || true
+      [[ "${used}" =~ ^[0-9]+$ ]] && remaining=$(( remaining - used ))
+    done
+    if [[ -n "${cwd_dir}" ]] && git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      printf '\n--- files modified in worktree ---\n'
+      git -C "${cwd_dir}" status --short 2>/dev/null || true
+      printf '\n--- last committed checkpoint ---\n'
+      git -C "${cwd_dir}" log -1 --format='%h %s' 2>/dev/null || true
+    else
+      printf '\n--- worktree state ---\nunavailable\n'
+    fi
+    printf '===== END CONTINUATION =====\n'
+  } >> "${prompt_file}"
 }
 
 terminate_through_timeout_path() {
@@ -1072,10 +1315,9 @@ watchdog_loop() {
   local child_pid="$1" timeout_s="$2" run_dir="$3" stall_s="${4:-${GLM_STALL_S}}"
   local turn_limit="${5:-${GLM_TURN_LIMIT}}" no_progress_s="${6:-${GLM_NO_PROGRESS_S}}"
   local waited=0 interval=2
-  # GLM-REVIVE-01 legacy stall bound shares parse_stream activity state with
-  # the stricter no-progress guard. The explicit guard is checked first and
-  # routes through .timed_out; a lower legacy GLM_STALL_S may still revive.
-  local started_ts last_progress_ts
+  # GLM_STALL_S only reports stdout-idle.  GLM_NO_PROGRESS_S is the independent
+  # kill threshold and requires the corroborating checks below.
+  local started_ts last_progress_ts stdout_idle_logged=0
   started_ts="$(date +%s)"
   last_progress_ts="${started_ts}"
   while [[ ! -f "${run_dir}/.done" ]]; do
@@ -1093,7 +1335,7 @@ watchdog_loop() {
       return 0
     fi
 
-    local observed now state_progress idle_s
+    local observed now state_progress idle_s open_tool_calls=0
     now="$(date +%s)"
     observed="$(stream_state_get "${run_dir}" turns)"
     [[ "${observed}" =~ ^[0-9]+$ ]] || observed=0
@@ -1107,14 +1349,23 @@ watchdog_loop() {
       last_progress_ts="${state_progress}"
     fi
     idle_s=$(( now - last_progress_ts ))
-    if [[ "${idle_s}" -ge "${no_progress_s}" ]]; then
-      terminate_through_timeout_path "${child_pid}" "${run_dir}" "no_progress" "${idle_s}" "${no_progress_s}"
-      return 0
-    elif [[ "${idle_s}" -ge "${stall_s}" ]]; then
+    open_tool_calls="$(stream_state_get "${run_dir}" open_tool_calls)"
+    [[ "${open_tool_calls}" =~ ^[0-9]+$ ]] || open_tool_calls=0
+    if [[ "${idle_s}" -ge "${stall_s}" ]] && [[ "${stdout_idle_logged}" -eq 0 ]]; then
+      # Do not write this observation into progress.log: that file's mtime is
+      # itself a liveness signal, so doing so would manufacture activity.
+      printf '[%s] STDOUT_IDLE idle_s=%s threshold_s=%s open_tool_calls=%s -- observation only\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${idle_s}" "${stall_s}" "${open_tool_calls}" >> "${run_dir}/stderr.log"
+      stdout_idle_logged=1
+    fi
+    if [[ "${idle_s}" -ge "${no_progress_s}" ]] \
+       && [[ "${open_tool_calls}" -eq 0 ]] \
+       && ! run_dir_has_fresh_activity "${run_dir}" "${now}" "${no_progress_s}"; then
       # Same touch-before-kill ordering rationale as the timeout branch above.
+      printf '%s\n' "idle_no_activity" > "${run_dir}/.bound_reason"
       touch "${run_dir}/.stalled"
-      printf '[%s] STALL_KILL after=%ss -- no progress; killing process group %s\n' \
-        "$(date '+%Y-%m-%d %H:%M:%S')" "${stall_s}" "${child_pid}" >> "${run_dir}/progress.log"
+      printf '[%s] STALL_KILL stall_kill=idle_no_activity idle_s=%s limit_s=%s -- killing process group %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "${idle_s}" "${no_progress_s}" "${child_pid}" >> "${run_dir}/progress.log"
       kill -TERM "-${child_pid}" 2>/dev/null || true
       sleep 5
       kill -KILL "-${child_pid}" 2>/dev/null || true
@@ -1369,6 +1620,7 @@ cmd_supervise() {
       mkdir -p "${new_run_dir}"
       chmod 700 "${new_run_dir}"
       cp "${run_dir}/prompt.txt" "${new_run_dir}/prompt.txt"
+      append_continuation_block "${run_dir}" "${new_run_dir}/prompt.txt"
       # DISPATCH-DEADHAND-01 (R2): carry the deliverable contract into the
       # revived run_dir, else a revived run silently loses it and can never flag.
       [[ -f "${run_dir}/.deliverable" ]] && cp "${run_dir}/.deliverable" "${new_run_dir}/.deliverable" 2>/dev/null || true
@@ -1549,6 +1801,20 @@ cmd_supervise() {
   # meta.yaml) and before release_lock. Detect-only; never alters status.
   deadhand_check "${run_dir}" "${exit_code}"
 
+  # WORKERS-MUST-COMMIT-01: MUST run after deadhand_check (append-only from
+  # here on, no more clobbering mv's of meta.yaml) and BEFORE the outcome
+  # classifier below -- an in-scope auto-commit here moves HEAD, and both
+  # work_delta_present() (this call site) and leadv2-lane-outcome.sh's own
+  # `_resolve_work` (when it re-derives work_delta itself) must see the
+  # POST-commit tree, not the dirty one the worker actually left behind.
+  local _worker_epilogue_lib
+  _worker_epilogue_lib="$(dirname "${SELF}")/lib/leadv2-worker-epilogue.sh"
+  if [[ -f "${_worker_epilogue_lib}" ]]; then
+    # shellcheck disable=SC1090
+    source "${_worker_epilogue_lib}"
+    leadv2_worker_commit_epilogue "${run_dir}" "${cwd_dir}" "$(meta_get "${run_dir}" run_id)" || true
+  fi
+
   # N-3 (TURN-CAP-OUTCOME-01): same window as deadhand_check -- after
   # finalize_meta, before release_lock -- so the outcome classifier sees the
   # final .no-deliverable verdict and appends to meta.yaml before it is done
@@ -1616,7 +1882,7 @@ cmd_bg() {
 
   local repo repo_hash
   repo="$(basename "${cwd_dir}")"
-  repo_hash="$(printf '%s' "${cwd_dir}" | shasum -a 256 | cut -c1-12)"
+  repo_hash="$(glm_lock_key_for "${cwd_dir}")"
 
   acquire_lock "${repo_hash}" "${timeout_s}"
 

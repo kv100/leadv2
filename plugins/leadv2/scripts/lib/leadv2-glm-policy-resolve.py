@@ -38,18 +38,31 @@ from pathlib import Path
 # review arm (see kimi_review_available below) — only build dispatch retired.
 # The launcher-side vocabulary mirror is _candidate_chain_for_arm in
 # leadv2-dispatch-code.sh; both lists must agree.
-DEFAULT_BUILD_SPILL = ["glm", "codex", "sonnet"]
+# T19 (founder decision 2026-08-26): freepool joins the tail of the bulk spill
+# chain, replacing kimi's old bulk position (glm -> codex -> sonnet -> freepool).
+# Its own admission gate (leadv2-freepool-gate.sh) refuses independently of
+# quota, so the spill walk below never needs a freepool-specific quota read --
+# an arm_down/gate_broken freepool is simply skipped like a filtered-out arm.
+# GLM-53-FLASH-ARM-01: glm-flash (glm-5.3-flash, the cheap mechanical tier)
+# sits directly after glm in the spill walk -- same glm quota bucket, so the
+# spill walk's glm live-reading gates it identically.
+DEFAULT_BUILD_SPILL = ["glm", "glm-flash", "codex", "sonnet", "freepool"]
 
 # Launcher vocabulary: the set of arms the dispatcher can actually run as
 # primary build arms. Applied to the spill walk so a stale tenant yaml that
 # still lists a retired arm (e.g. kimi) cannot resurrect it. Must match the
 # case-rows in _candidate_chain_for_arm (leadv2-dispatch-code.sh).
-DISPATCHABLE_BUILD_ARMS = {"glm", "codex", "sonnet"}
+DISPATCHABLE_BUILD_ARMS = {"glm", "glm-flash", "codex", "sonnet", "freepool"}
 
 # PLANNER-MODELS-DECISION-01: glm and kimi are build-only and are never admitted
 # to a planning role. Role decides the SET; the ladder still decides the ORDER.
+# T19: freepool is build-only too -- never a planning arm, same reasoning as glm.
 DISPATCHABLE_PLAN_ARMS = {"codex", "sonnet", "opus", "fable"}
-DEFAULT_REVIEW_EXCLUSIONS = ["glm"]
+# T19: freepool is excluded from ever being the review arm, same as glm --
+# a review gate is mandatory on every diff (Codex/Opus), never the arm
+# reviewing its own diff. GLM-53-FLASH-ARM-01: glm-flash is glm-family and
+# inherits the same exclusion -- a flash model never reviews any diff.
+DEFAULT_REVIEW_EXCLUSIONS = ["glm", "glm-flash", "freepool"]
 DEFAULT_BUILD_THRESHOLD_PCT = 80.0
 DEFAULT_REVIEW_THRESHOLD_PCT = 95.0
 
@@ -130,6 +143,7 @@ def extract_glm_policy_block(routing_yaml_text: str) -> dict:
                 "build_threshold_pct": DEFAULT_BUILD_THRESHOLD_PCT,
                 "review_threshold_pct": DEFAULT_REVIEW_THRESHOLD_PCT,
                 "build_spill_order": list(DEFAULT_BUILD_SPILL),
+                "build_arm_exclusions": [],
                 "review_arm_exclusions": list(DEFAULT_REVIEW_EXCLUSIONS),
             }
             btm = re.search(r'(?m)^[ \t]*build_threshold_pct:[ \t]*([0-9.]+)', block)
@@ -141,6 +155,9 @@ def extract_glm_policy_block(routing_yaml_text: str) -> dict:
             bso = re.search(r'(?m)^[ \t]*build_spill_order:[ \t]*\[([^\]]*)\]', block)
             if bso:
                 gate["build_spill_order"] = [s.strip() for s in bso.group(1).split(',') if s.strip()]
+            bex = re.search(r'(?m)^[ \t]*build_arm_exclusions:[ \t]*\[([^\]]*)\]', block)
+            if bex:
+                gate["build_arm_exclusions"] = [s.strip() for s in bex.group(1).split(',') if s.strip()]
             rex = re.search(r'(?m)^[ \t]*review_arm_exclusions:[ \t]*\[([^\]]*)\]', block)
             if rex:
                 gate["review_arm_exclusions"] = [s.strip() for s in rex.group(1).split(',') if s.strip()]
@@ -479,7 +496,7 @@ def _live_pct_for_arm(arm: str, quota_live_bin):
     when no bin was supplied) read None = unknown."""
     if arm == "codex":
         return _live_pct_memo("codex", quota_live_bin)
-    if arm == "glm":
+    if arm in ("glm", "glm-flash"):  # GLM-53-FLASH-ARM-01: one glm bucket
         return _live_pct_memo("glm", quota_live_bin)
     if arm in ("opus", "sonnet"):
         return _live_pct_memo("anthropic", quota_live_bin)
@@ -547,7 +564,7 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
             return pcts[arm]
         if arm == "codex":
             return live_codex_weekly_pct(quota_live_bin)
-        if arm == "glm":
+        if arm in ("glm", "glm-flash"):  # GLM-53-FLASH-ARM-01: one glm bucket
             return live_glm_pct(quota_live_bin)
         if arm in ("opus", "sonnet"):
             if "anthropic" in pcts:
@@ -558,7 +575,7 @@ def resolve_review_pool(glm_policy: dict, author: str, quota_live_bin: str = Non
     def _threshold_for(arm):
         if arm == "codex":
             return codex_threshold
-        if arm == "glm":
+        if arm in ("glm", "glm-flash"):  # GLM-53-FLASH-ARM-01: one glm bucket
             return glm_threshold
         return anthropic_threshold
 
@@ -656,8 +673,8 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
       parameter, not hardcoded, so a future non-glm-default step can still
       get quota-gate-only enforcement without touching this function.
     job: "build" | "review" (anything else falls back to "build" semantics —
-      review_arm_exclusions and the review threshold only ever apply when the
-      caller explicitly asks for job="review").
+      build_arm_exclusions apply only to build; review_arm_exclusions and the
+      review threshold apply only when the caller explicitly asks for job="review").
     enable_codex_fitting_rule: the two pre-T-b duplicates had ALREADY drifted —
       dispatch-code.sh:resolve_arm() carried the ROUTING-ENFORCEMENT-01
       codex_fitting_mission_kind rule, leadv2-router.sh's copy never got it
@@ -694,7 +711,7 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
     # list beside it; carried in glm_excluded so the spill walk can resurrect
     # base_arm ONLY for the preference row.
     glm_excluded = False
-    if base_arm == "glm":
+    if base_arm in ("glm", "glm-flash"):
         # STRICT precedence, first match wins — identical order/semantics to
         # the two deleted duplicates (dispatch-code.sh:337-418,
         # router.sh:190-259 pre-T-b).
@@ -823,15 +840,32 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
     codex_block_cause = ""
     readings = ""
 
-    # --- T-q enforcement (SUPERVISOR-AUDIT-01 T-b): codex_quota_gate + review_arm_exclusions ---
+    # --- T-q enforcement (SUPERVISOR-AUDIT-01 T-b): codex_quota_gate + arm exclusions ---
     # MAJOR fix (resolver:55-60): only enforce when the yaml explicitly
     # declares codex_quota_gate -- absent block => exact old v1 output
     # (arm/rule/reason/tier from the precedence rules above, untouched).
     if isinstance(gate, dict):
-        exclusions = gate.get("review_arm_exclusions", DEFAULT_REVIEW_EXCLUSIONS) if job == "review" else []
+        exclusions = (gate.get("review_arm_exclusions", DEFAULT_REVIEW_EXCLUSIONS) if job == "review"
+                      else gate.get("build_arm_exclusions", []))
         spill = gate.get("build_spill_order", DEFAULT_BUILD_SPILL)
         threshold = (gate.get("review_threshold_pct", DEFAULT_REVIEW_THRESHOLD_PCT) if job == "review"
                      else gate.get("build_threshold_pct", DEFAULT_BUILD_THRESHOLD_PCT))
+
+        # Repo opt-in: a build base arm that is explicitly banned must not
+        # escape merely because no quota spill was needed. Preserve the file's
+        # fail-open dispatch contract for a malformed policy that excludes its
+        # entire dispatchable spill order: retain the existing arm and expose
+        # the refusal instead of returning no arm or raising.
+        if job == "build" and arm in exclusions:
+            allowed = [a for a in spill
+                       if a not in exclusions and a in DISPATCHABLE_BUILD_ARMS]
+            if allowed:
+                arm = allowed[0]
+                rule, reason = "build_arm_exclusions", "build_arm_exclusion"
+                tier = codex_default_tier if arm == "codex" else ""
+            else:
+                rule, reason = "build_arm_exclusions", "build_arm_exclusions_all_excluded_fail_open"
+                tier = codex_default_tier if arm == "codex" else ""
 
         if quota_codex_pct is None and quota_live_bin:
             quota_codex_pct = _live_pct_memo("codex", quota_live_bin)
@@ -899,7 +933,20 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
             for a in spill:
                 if a in skip or a not in _dispatchable:
                     continue
-                if job == "review" and a in exclusions:
+                if a in exclusions:
+                    continue
+                # T19 fix-round (review FAIL on 009d0b6, C1 required-fix #2):
+                # freepool is a third-party arm -- exclude it from this spill
+                # walk on a protected/safety task, mirroring the
+                # kimi:excluded:safety precedent above. The bash-side
+                # _build_candidate_chain filter (leadv2-dispatch-code.sh) is
+                # the authoritative guard for the full candidate chain; this
+                # is a second, independent guard in the resolver's own spill
+                # so a caller that only reads resolve_glm_policy()'s single
+                # `arm` (e.g. router.sh import mode, which does not go through
+                # the bash chain builder at all) cannot hand back freepool
+                # either.
+                if a == "freepool" and (signals.get("safety_touched") or signals.get("protected_path")):
                     continue
                 if a != "sonnet" and quota_live_bin:
                     a_pct = _live_pct_for_arm(a, quota_live_bin)
@@ -919,6 +966,27 @@ def resolve_glm_policy(glm_policy: dict, signals: dict, job: str,
     # win -- they carry the same memoized glm/anthropic values.
     if balance_readings is not None and not readings:
         readings = _fmt_readings(balance_readings[0], quota_codex_pct, balance_readings[1])
+
+    # T19 fix-round-2 (B-M3): the codex-quota-gate spill walk above already skips
+    # freepool on a protected/safety task, but that is reachable only through the
+    # gate's own blocked-arm branch -- a caller that hands `arm` back to us already
+    # equal to "freepool" (e.g. --base-arm freepool from router.sh's import mode,
+    # which never goes through the bash chain builder's own untrusted-arm filter)
+    # skipped every branch above (sonnet_exceptions is gated on base_arm=="glm")
+    # and would return freepool unfiltered. Make the refusal unconditional instead
+    # of only living inside the spill walk.
+    if arm == "freepool" and (signals.get("safety_touched") or signals.get("protected_path")):
+        arm = "sonnet"
+        rule, reason = "freepool_untrusted", "freepool_protected_refusal"
+        tier = ""
+
+    # glm-flash shares GLM's cheap build channel, but must never be returned for
+    # protected/safety work.  This is deliberately unconditional: callers can
+    # pass glm-flash directly and a tenant may omit the named safety exception.
+    if arm == "glm-flash" and (signals.get("safety_touched") or signals.get("protected_path")):
+        arm = "sonnet"
+        rule, reason = "glm_flash_untrusted", "glm_flash_protected_refusal"
+        tier = ""
 
     result = {"arm": arm, "rule": rule, "reason": reason, "tier": tier,
               "codex_quota_blocked": codex_blocked, "job": job}

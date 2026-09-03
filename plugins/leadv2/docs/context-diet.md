@@ -9,6 +9,13 @@ compaction change — plus what is deliberately **not** touched.
 
 ## 1. Per-role MCP allowlist (`LEADV2_SUBSESSION_SLIM_MCP`, default `0` (opt-in))
 
+> **T14 (2026-08-26):** `resolve_role_mcp_config()` moved from `claude-subsession.sh` to
+> `scripts/lib/leadv2-worker-mcp.sh` and is now shared with the **glm-coder.sh** worker spawn
+> path (both `run` and `bg`), gated there by `LEADV2_WORKER_MCP` (default `1`, =0 restores the
+> pre-T14 spawn line; role via `LEADV2_WORKER_ROLE`, default `developer`, `critic` for review
+> missions). One resolver, two path-scoped gates — not a second implementation. Suite:
+> `tests/test-t14-worker-mcp.sh`.
+
 When enabled, `claude-subsession.sh` appends `--strict-mcp-config --mcp-config <resolved.json>`
 to the spawned worker's CLI args, restricting it to the MCP servers its role actually uses —
 in practice `repowise` only (`plugins/leadv2/config/mcp-role-<role>.json`).
@@ -18,7 +25,8 @@ registered per-repo with a *different* command in each project's `.mcp.json`, an
 user-level `~/.claude/settings.json` definition is hard-pinned to a single repo path. A baked
 definition would silently point a worker at the wrong repo's index — confidently wrong, not
 merely fat. So `plugins/leadv2/config/mcp-role-<role>.json` holds only
-`{"servers": ["repowise"]}`; `resolve_role_mcp_config()` in `claude-subsession.sh` resolves each
+`{"servers": ["repowise"]}`; `resolve_role_mcp_config()` in `scripts/lib/leadv2-worker-mcp.sh`
+(sourced by both `claude-subsession.sh` and `glm-coder.sh`) resolves each
 name against the live chain at spawn time, in order:
 
 1. `$PROJECT_ROOT/.mcp.json` → `.mcpServers.<name>`
@@ -30,10 +38,12 @@ The merged, resolved definition is written to
 disposed of with the task) and validated by a JSON round-trip before it is ever passed to
 `claude`.
 
-`mcp__codebase-memory-mcp__*` (the graph MCP) is deliberately **omitted** from every role
-config: it is disabled in persona-engine, and a headless `claude -p` subsession has no MCP-graph
-access regardless (`leadv2-subagent-protocol.md` §1b) — the omission is a decision, not an
-oversight, and is noted in each config file's `_comment`.
+`mcp__codebase-memory-mcp__*` (the graph MCP) is **listed in every role config** since
+CODE-INTEL-BOTH-01 (founder, 2026-08-25). It was previously omitted on the premise that the graph
+was "disabled in persona-engine" — that premise is retired: both MCPs run there side by side, and
+the graph is the only one that answers who-calls / trace / impact deterministically. Because a role
+config carries server NAMES only, a repo that registers no such server simply does not resolve it,
+so listing it costs nothing in repos that lack it.
 
 **Roles covered:** `developer`, `critic`, `architect` each get a dedicated file; every other
 role (`hack-detect`, templated `--role "${role...}"` call sites) falls back to
