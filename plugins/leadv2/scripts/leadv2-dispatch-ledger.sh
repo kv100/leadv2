@@ -1315,6 +1315,42 @@ _dl_reap_rescue_commit() {
   git -C "${root}" rev-parse HEAD 2>/dev/null
 }
 
+# _dl_reap_active_attempt <task_id> -- prints the CURRENT active.yaml attempt token for
+# <task_id>, or "" if there is no row / no field / the registry is unreadable.
+#
+# WHY: _lv2_terminal_unregister_lanes (the cap-release path a TRUE terminal already
+# triggers, §0) requires an EXACT (task_id, attempt) match before it removes a row --
+# an attempt-less write must not deregister a lane that has since started a real
+# attempt, and vice versa (its own comment: "do not let it deregister a retry that
+# subsequently registered an attempt"). reap runs OUTSIDE the lane's own dispatch
+# process, so it has no attempt token of its own to offer -- inventing one (e.g. a
+# fresh "reap-$$") can never match whatever token (if any) the row was registered
+# under, so the cap slot silently fails to free even though the terminal write itself
+# succeeds. Reading back the row's own current attempt and handing it straight back is
+# the only value guaranteed to match.
+_dl_reap_active_attempt() {
+  local tid="$1" yaml_file
+  yaml_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml 2>/dev/null)" || return 0
+  [[ -n "${yaml_file}" && -f "${yaml_file}" ]] || return 0
+  python3 - "${yaml_file}" "${tid}" <<'PYEOF' 2>/dev/null
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+path, tid = sys.argv[1], sys.argv[2]
+try:
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+except Exception:
+    sys.exit(0)
+for s in (data.get("sessions") or []):
+    if isinstance(s, dict) and s.get("task_id") == tid:
+        print(s.get("attempt") or "")
+        break
+PYEOF
+}
+
 # _dl_reap_one_lane <sig8> <lane_id> <founder> <handle> <barrier> <dry_run>
 # The ordered funnel (§2 of the brief), one lane, one locked transaction for steps 2-5.
 # Prints the operator line on stdout (§4) on every real outcome; prints nothing on a
@@ -1421,20 +1457,23 @@ _dl_reap_one_lane() {
       log "reap: lane=${lane_id} sig=${sig8} -- liveness flipped to non-dead after lock acquisition, writing nothing"
       return 0 ;;
     10)
+      local _atmpt10; _atmpt10="$(_dl_reap_active_attempt "${founder}")"
       dispatch_ledger_write_terminal "${sig8}" "${founder}" no_work no_worktree \
-        "reap: dead lane, no worktree found" "reap-$$" "${lane_id}"
+        "reap: dead lane, no worktree found" "${_atmpt10}" "${lane_id}"
       printf 'lane_reaped task=%s lane=%s barrier=%s terminal=no_work rescued=0 commit=none resumable=yes\n' \
         "${sig8}" "${lane_id}" "${barrier}"
       return 0 ;;
     11)
+      local _atmpt11; _atmpt11="$(_dl_reap_active_attempt "${founder}")"
       dispatch_ledger_write_terminal "${sig8}" "${founder}" no_work empty_diff \
-        "reap: dead lane, clean worktree" "reap-$$" "${lane_id}"
+        "reap: dead lane, clean worktree" "${_atmpt11}" "${lane_id}"
       printf 'lane_reaped task=%s lane=%s barrier=%s terminal=no_work rescued=0 commit=none resumable=yes\n' \
         "${sig8}" "${lane_id}" "${barrier}"
       return 0 ;;
     12)
+      local _atmpt12; _atmpt12="$(_dl_reap_active_attempt "${founder}")"
       dispatch_ledger_write_terminal "${sig8}" "${founder}" dead_with_unlanded_work rescued \
-        "reap: rescued uncommitted work commit=${out}" "reap-$$" "${lane_id}" "${out}"
+        "reap: rescued uncommitted work commit=${out}" "${_atmpt12}" "${lane_id}" "${out}"
       printf 'lane_reaped task=%s lane=%s barrier=%s terminal=dead_with_unlanded_work rescued=1 commit=%s resumable=yes\n' \
         "${sig8}" "${lane_id}" "${barrier}" "${out}"
       return 0 ;;
