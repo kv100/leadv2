@@ -7,6 +7,16 @@
 # retrospective comparison — e.g. did the 2026-09-15 Max 20x -> Max 5x
 # downgrade actually move which window binds for the SAME account_key.
 #
+# Second consumer: TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01's independent-
+# quota assumption. TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01 answers "are these
+# two Claude accounts independent" at the level of IDENTITY (distinct
+# accountUuid) — an inference. This table answers it at the level of
+# CONSUMPTION: with rate_limit_history partitioned by account_key, a spend on
+# one account that leaves the other account's five_hour_pct/seven_day_pct
+# unmoved is readable directly from recorded probes via `--account KEY`
+# (already implemented below — ACCOUNT_FILTER on account_key, applied to
+# every query in the pipeline), with no experiment staged.
+#
 # Usage: leadv2-quota-window-history.sh [--days N] [--account KEY] [--json]
 # Env:   LEADV2_BURN_DB  default: ~/.claude/burn/history.db
 #
@@ -100,21 +110,44 @@ echo "coverage: ${SAMPLES} samples, ${SPAN_D}d span (min_epoch=${MIN_EP} max_epo
 QUERY="
 WITH s AS (
   SELECT captured_epoch, state, account_key, binding_window, five_hour_pct, seven_day_pct,
+         CASE binding_window
+           WHEN 'five_hour' THEN five_hour_pct
+           WHEN 'seven_day' THEN seven_day_pct
+           ELSE NULL
+         END AS window_pct,
          LEAD(captured_epoch) OVER (PARTITION BY account_key ORDER BY captured_epoch) AS next_epoch
     FROM rate_limit_history
    WHERE captured_epoch >= strftime('%s','now') - (${DAYS} * 86400) ${ACCOUNT_FILTER}
 ), w AS (
   SELECT *, MIN(COALESCE(next_epoch - captured_epoch, 0), 1800) AS dwell
     FROM s WHERE state = 'ok'
+), agg AS (
+  SELECT account_key,
+         COALESCE(binding_window,'(none)')                             AS window,
+         COUNT(*)                                                      AS samples,
+         SUM(dwell)                                                    AS dwell_s,
+         ROUND(100.0*SUM(dwell)/NULLIF(SUM(SUM(dwell)) OVER (PARTITION BY account_key),0),1) AS dwell_pct
+    FROM w GROUP BY account_key, window
 )
-SELECT account_key,
-       COALESCE(binding_window,'(none)')                             AS window,
-       COUNT(*)                                                      AS samples,
-       SUM(dwell)                                                    AS dwell_s,
-       ROUND(100.0*SUM(dwell)/NULLIF(SUM(SUM(dwell)) OVER (PARTITION BY account_key),0),1) AS dwell_pct,
-       ROUND(MAX(five_hour_pct),1)                                   AS max_5h_pct,
-       ROUND(MAX(seven_day_pct),1)                                   AS max_7d_pct
-  FROM w GROUP BY account_key, 2 ORDER BY account_key, dwell_s DESC;
+-- Peak-with-timestamp per (account_key, window): a correlated nested
+-- SELECT * FROM (SELECT ... ORDER BY <pct> DESC, captured_epoch DESC LIMIT 1)
+-- per output row -- NEVER an un-nested ORDER BY/LIMIT on a compound SELECT,
+-- which binds to the whole compound instead of one branch (bug trap this
+-- comment exists to name).
+SELECT agg.account_key, agg.window, agg.samples, agg.dwell_s, agg.dwell_pct,
+       (SELECT peak_pct FROM (
+          SELECT window_pct AS peak_pct FROM w
+           WHERE w.account_key = agg.account_key
+             AND COALESCE(w.binding_window,'(none)') = agg.window
+           ORDER BY w.window_pct DESC, w.captured_epoch DESC LIMIT 1
+       ))                                                               AS peak_pct,
+       (SELECT peak_epoch FROM (
+          SELECT captured_epoch AS peak_epoch FROM w
+           WHERE w.account_key = agg.account_key
+             AND COALESCE(w.binding_window,'(none)') = agg.window
+           ORDER BY w.window_pct DESC, w.captured_epoch DESC LIMIT 1
+       ))                                                               AS peak_epoch
+  FROM agg ORDER BY agg.account_key, agg.dwell_s DESC;
 "
 
 if [ "$JSON_MODE" -eq 1 ]; then
