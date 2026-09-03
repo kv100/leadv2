@@ -145,3 +145,46 @@ exit codes verbatim, macOS and Linux container per shared-constraints.md.
 - Nested-spawn propagation policy (when a child should inherit
   `LEADV2_PARENT_SESSION_ID` vs mint its own) — governed by `NESTED-SPAWNS.md`, unchanged
   here; this lane only fixes what happens when neither override is set.
+
+---
+
+## LEAD ADDENDUM — the binding acceptance, and two things already right
+
+### Only ONE acceptance closes this row
+
+The suite keeps both checks, but they are not equal and must not be reported as if they were:
+
+- "the registry shows two distinct owners" — **not sufficient, never quote it as the proof.** It
+  shows the strings differ. It does not show anything COUNTS them per session.
+- **Binding acceptance:** with the cap set to **1**, the second lane of the SAME session is
+  REFUSED and a lane from a DIFFERENT session is PERMITTED. Both halves in one run. This is the
+  only assertion that proves the defect dead, because it exercises the accounting, not the label.
+
+Report the cap test with its output. A close that presents the distinct-owners check as the
+result will be sent back.
+
+Why this is not pedantry: the cap is 64 today, and at 64 the difference between "ids differ" and
+"accounting works" is invisible. There is already a ledger row (`SD-LANE-CAP-BACK-TO-4-01`) to
+lower it once the waves close. A weak acceptance here means the original bug returns at exactly
+the moment someone lowers the cap, and it will look like a new defect.
+
+### Two questions raised by the dispatcher's owner — both already answered above, do not change them
+
+1. **Where the identity functions live.** `_lv2_durable_pid()` / `_lv2_pid_birth()` are in
+   `plugins/leadv2/scripts/leadv2-active-registry.sh` at :809 and :860 — NOT under `lib/`.
+   Verified on disk. The brief cites this correctly; keep it. A worker that goes looking under
+   `lib/` will come back with "the function does not exist", which is a false negative of the
+   same family we have already been burned by today.
+2. **How the dispatcher reaches the function.** Not by sourcing the whole registry. The brief
+   already prescribes a small dedicated resolver, `lib/leadv2-lead-identity.sh`, exposing
+   `leadv2_lead_session_id()`, which both sides pull. Keep that shape: pulling the entire registry
+   into the dispatcher for one identifier would add a dependency exactly where old ones are being
+   untangled. (Note the registry is in any case already sourced at that call site, ~20 lines above
+   :7071 — so this costs nothing and is purely about not widening the coupling.)
+
+### Handover of the one off-limits line
+
+`leadv2-dispatch-code.sh:7071` is owned by another session and this lane does NOT edit it. When
+`lib/leadv2-lead-identity.sh` is landed AND visible in `git ls-files`, hand that session the exact
+replacement text for the third fallback link — not before. They have said they will apply it from
+the finished artifact, never blind.
