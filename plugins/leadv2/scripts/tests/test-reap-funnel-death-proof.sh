@@ -19,6 +19,9 @@
 #   C8  _dl_derive_lane_state called DIRECTLY (D3-DERIVE-DIRTY-HAS-NO-COVERAGE-01):
 #       C8a dirty tree + no path-scoped commit + dead -> dead_with_unlanded_work,
 #       never landed; C8b real path-scoped commit -> landed with that exact sha
+#   C9  git itself FAILS during derive (PATH shim, DERIVE-COERCES-GIT-FAILURE-TO-NO-
+#       COMMIT-01): C9a commit-lookup failure, C9b dirty-probe failure -> unknown,
+#       never dead/no_work/landed (a failed measurement is not "no commit"/"clean tree")
 #
 # Fixture discipline (fix round 2): every fixture construction step verifies its own
 # result and aborts the run via setup_error (exit 2, wording distinct from an assertion
@@ -424,6 +427,74 @@ run_c8() {
   fi
 }
 
+# ============================================================================ C9 (DERIVE-COERCES-GIT-FAILURE-TO-NO-COMMIT-01)
+# A git that FAILS during derivation is not evidence of anything. Before the fix,
+# both probes in _dl_derive_lane_state ended in `2>/dev/null || true`, so a transient
+# git failure (fork failure under load, a held index.lock) read as "no commit" AND
+# "clean tree" -- liveness then supplied a TERMINAL verdict (dead/no_work) derived
+# from a measurement that never happened (live: C8b red 2/13 runs with a
+# fixture-proven path-scoped commit derived as dead:none:unknown). git is made to
+# fail via a PATH shim (no privileges, no timing); the verdict must come back the
+# unknown shape -- never dead, dead_with_unlanded_work, no_work, or landed.
+GIT_SHIM_DIR="${TMPDIR_ROOT}/git-shim"
+mkdir -p "${GIT_SHIM_DIR}"
+cat > "${GIT_SHIM_DIR}/git" <<'SHIMEOF'
+#!/usr/bin/env bash
+# Fails ONLY the subcommand named by SHIM_FAIL_ON (exit 128 + stderr, like a real
+# transient git failure); delegates every other invocation to the real git.
+for a in "$@"; do
+  [[ "${a}" == "${SHIM_FAIL_ON:-}" ]] || continue
+  printf 'shim: simulated git %s failure: fatal: unable to fork (Resource temporarily unavailable)\n' "${SHIM_FAIL_ON}" >&2
+  exit 128
+done
+exec "${SHIM_REAL_GIT:?SHIM_REAL_GIT not supplied}" "$@"
+SHIMEOF
+chmod +x "${GIT_SHIM_DIR}/git"
+REAL_GIT_BIN="$(command -v git)"
+[[ -n "${REAL_GIT_BIN}" && "${REAL_GIT_BIN}" != "${GIT_SHIM_DIR}/git" ]] \
+  || setup_error "C9" "could not resolve a real git binary to delegate to"
+
+run_c9() {
+  local root wt out lane f1
+  # -- C9a: the COMMIT LOOKUP fails. Fixture has a real path-scoped commit (so a
+  #    mutant that swallows the failure has everything it needs to say dead:none).
+  root="$(_new_repo)" || setup_error "C9a" "repo fixture construction failed"
+  lane="dispatch-c9a9a9a9"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C9a" "worktree add failed for ${lane}"
+  wt="${root}/.claude/worktrees/${lane}"
+  ( cd "${wt}" && printf 'a\n' > work.txt && git add work.txt && git commit -qm "lane work" >/dev/null ) \
+    || setup_error "C9a" "path-scoped commit construction failed"
+  [[ -n "$(git -C "${wt}" log -n1 --pretty=%H -- work.txt 2>/dev/null)" ]] \
+    || setup_error "C9a" "no path-scoped commit for work.txt after construction"
+  out="$(LEADV2_TEST_LIVENESS_VERDICT=dead:test SHIM_FAIL_ON=log SHIM_REAL_GIT="${REAL_GIT_BIN}" \
+    PATH="${GIT_SHIM_DIR}:${PATH}" _derive "${wt}" "0" "work.txt" "" "${lane}")"
+  f1="${out%%$'\x1f'*}"
+  if [[ "${f1}" == "unknown" ]]; then
+    pass "C9a: derive(git log fails) -> unknown, never a terminal verdict from a failed measurement"
+  else
+    fail "C9a: expected unknown when the commit lookup fails, got: ${out}"
+  fi
+  # -- C9b: the DIRTY PROBE fails. Fixture is the C1b incident shape (dirty tree,
+  #    no commit) -- exactly what a swallowed status failure would mis-read as a
+  #    clean tree and stamp no_work, discarding the worker's bytes.
+  root="$(_new_repo)" || setup_error "C9b" "repo fixture construction failed"
+  lane="dispatch-c9b9b9b9"
+  _make_lane_worktree "${root}" "${lane}" || setup_error "C9b" "worktree add failed for ${lane}"
+  wt="${root}/.claude/worktrees/${lane}"
+  ( cd "${wt}" && printf 'uncommitted rescue-worthy work\n' > work.txt ) \
+    || setup_error "C9b" "dirty-tree write failed"
+  [[ -n "$(git -C "${wt}" status --porcelain 2>/dev/null)" ]] \
+    || setup_error "C9b" "dirty-tree fixture not constructed (work.txt uncommitted)"
+  out="$(LEADV2_TEST_LIVENESS_VERDICT=dead:test SHIM_FAIL_ON=status SHIM_REAL_GIT="${REAL_GIT_BIN}" \
+    PATH="${GIT_SHIM_DIR}:${PATH}" _derive "${wt}" "0" "work.txt" "" "${lane}")"
+  f1="${out%%$'\x1f'*}"
+  if [[ "${f1}" == "unknown" ]]; then
+    pass "C9b: derive(git status fails) -> unknown, a failed dirty probe must not read as a clean tree"
+  else
+    fail "C9b: expected unknown when the dirty probe fails, got: ${out}"
+  fi
+}
+
 C1_WT=""
 run_c1
 run_c1b
@@ -434,6 +505,7 @@ run_c5
 run_c6
 run_c7 "${C1_WT}"
 run_c8
+run_c9
 
 printf '\n[TEST] %d passed, %d failed\n' "${PASS}" "${FAIL}"
 if [[ ${FAIL} -gt 0 ]]; then
