@@ -71,3 +71,22 @@ Related: `SKILL-USAGE-IS-UNMEASURED-01` (same shape — a capability nobody can 
 
 Off limits: `main`, `tests/known-red-suites.txt`, weakening assertions, removing the fail-open guard,
 and injecting the preamble for an arm that has no MCP wiring.
+
+## Added 2026-09-03 after the founder asked whether the savings are proven
+
+They are not, and the brief above did not say so plainly enough. Two more deliverables:
+
+10. **An A/B on one real task, or the savings claim is withdrawn.** Nobody has ever run the same
+    task with and without code-intel and compared token cost. Until that exists, "these tools save
+    tokens" is the tools' *purpose*, not a measured fact, and must not be stated as one. Pick a task
+    of the shape they should help most — "who calls X", "where does this mechanism live", "what
+    breaks if I change this" — run it both ways, and report both numbers even if the answer is that
+    they cost more. A negative result here is a real finding and must not be buried.
+11. **Reachability, per repo, made true.** The graph server holds 19 indexed projects, including
+    `m3`, `m3-trait`, `pf3-backend`, `environment-platform`, `mondia-portal`, `respiro-ios`,
+    `getmany-followup-bot` and `leadv2` — but a repo whose `.mcp.json` does not wire the server
+    cannot reach its own index. Wire every repo that has an index. Separately, repowise in this
+    workspace resolves only `persona-engine`, and that index is from **2026-08-31, commit
+    `b9f5d20a`** — days behind. Say what keeps an index fresh and whether anything does it
+    automatically today; a stale index that answers confidently is worse than no index.
+    Local-only config in the MythicalGames repos — never commit inside them.
