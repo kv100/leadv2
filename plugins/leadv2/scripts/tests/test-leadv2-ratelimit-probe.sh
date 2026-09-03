@@ -15,8 +15,11 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROBE_SH="${SCRIPT_DIR}/../leadv2-ratelimit-probe.sh"
-HIST_SH="${SCRIPT_DIR}/../leadv2-quota-window-history.sh"
+# LEADV2_RATELIMIT_PROBE_SH / LEADV2_QUOTA_WINDOW_HISTORY_SH: mutation-control
+# injection points (nc-*.sh in this dir) -- run the whole suite against a
+# scratch mutated copy without ever editing the real script in place.
+PROBE_SH="${LEADV2_RATELIMIT_PROBE_SH:-${SCRIPT_DIR}/../leadv2-ratelimit-probe.sh}"
+HIST_SH="${LEADV2_QUOTA_WINDOW_HISTORY_SH:-${SCRIPT_DIR}/../leadv2-quota-window-history.sh}"
 
 PASS=0; FAIL=0; ERRORS=()
 log()  { printf -- '[TEST] %s\n' "$*"; }
@@ -277,9 +280,11 @@ db, base = sys.argv[1], int(sys.argv[2])
 conn = sqlite3.connect(db)
 step = int(10*86400/60)
 rows = []
+PEAK_I = 30  # single distinguished sample -> proves peak-with-timestamp, not just MAX()
 for i in range(60):
     ep = base + i*step
-    rows.append((ep, 'default', 'max_5x', 0, 'ok', 'ok', 'normal', 10.0, None, None, 40.0, None, None, 'seven_day', 'ratelimit-probe'))
+    seven_pct = 77.0 if i == PEAK_I else 40.0
+    rows.append((ep, 'default', 'max_5x', 0, 'ok', 'ok', 'normal', 10.0, None, None, seven_pct, None, None, 'seven_day', 'ratelimit-probe'))
 # asleep-laptop gap: last 'default' sample followed by a 12h-later one
 rows.append((base + 60*step + 12*3600, 'default', 'max_5x', 0, 'ok', 'ok', 'normal', 10.0, None, None, 40.0, None, None, 'seven_day', 'ratelimit-probe'))
 step_b = int(10*86400/55)
@@ -318,6 +323,31 @@ if [[ "$dwell_default" == "108000" ]]; then
   pass "9b asleep-laptop gap dwell-capped via script output: dwell_s=$dwell_default (60 gaps x 1800s cap)"
 else
   fail "9b dwell_s='${dwell_default:-<empty>}' expected 108000 (cap not applied by the script?)"
+fi
+
+# --- assertion 9c: peak-with-timestamp (D6) -- one distinguished sample
+# (i=30, seven_day_pct=77.0) among 60 flat 40.0 samples must be reported as
+# THE peak, at ITS OWN captured_epoch -- not MAX() alone (which would give
+# the right value but no way to say when it happened).
+PEAK_EPOCH_EXPECTED=$(( BASE + 30 * (10*86400/60) ))
+peak_pct_default="$(python3 -c "
+import json,sys
+rows=json.loads(sys.stdin.read())
+for r in rows:
+    if r.get('window')=='seven_day':
+        print(r.get('peak_pct'))
+" <<<"$out9_json")"
+peak_epoch_default="$(python3 -c "
+import json,sys
+rows=json.loads(sys.stdin.read())
+for r in rows:
+    if r.get('window')=='seven_day':
+        print(r.get('peak_epoch'))
+" <<<"$out9_json")"
+if [[ "$peak_pct_default" == "77.0" && "$peak_epoch_default" == "$PEAK_EPOCH_EXPECTED" ]]; then
+  pass "9c peak-with-timestamp: peak_pct=77.0 at peak_epoch=$peak_epoch_default (matches distinguished sample)"
+else
+  fail "9c peak_pct='$peak_pct_default' expected 77.0; peak_epoch='$peak_epoch_default' expected '$PEAK_EPOCH_EXPECTED'"
 fi
 
 # ---------------------------------------------------------------------------
