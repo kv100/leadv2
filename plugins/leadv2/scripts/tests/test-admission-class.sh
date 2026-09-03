@@ -78,9 +78,13 @@ sig="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 leadv2_admission_write_receipt "$TMP" "${sig:0:8}" "T-1" "$sig" Standard phases judge review
 rc=$?
 [[ $rc -eq 0 ]] && pass "receipt: written rc=0" || fail "receipt: write rc=$rc"
+# SAFETY-PIN-SECOND-DOOR-01: read_receipt now always appends a 7th
+# tab-delimited risk_class field (empty when the writer didn't pass one, as
+# here) so the dispatch-code.sh call site can positionally parse both old and
+# new receipts the same way.
 row="$(leadv2_admission_read_receipt "$TMP" "${sig:0:8}")"
-[[ "$row" == "$(printf 'Standard\tphases\tjudge\treview\t%s\tT-1' "$sig")" ]] \
-  && pass "receipt: read back all six fields" || fail "receipt: read got '$row'"
+[[ "$row" == "$(printf 'Standard\tphases\tjudge\treview\t%s\tT-1\t' "$sig")" ]] \
+  && pass "receipt: read back all seven fields (risk_class empty)" || fail "receipt: read got '$row'"
 [[ "$(leadv2_admission_read_task_receipt "$TMP" "T-1")" == "Standard" ]] \
   && pass "receipt: task-keyed class record written" || fail "receipt: task record missing"
 # digest binding is what the re-entry guard keys on
@@ -92,6 +96,16 @@ printf '%s' "$row2" | grep -q "T-1" && ! printf '%s' "$row2" | grep -q "T-2" \
   && pass "receipt: never overwritten on second write" || fail "receipt: overwrite happened ($row2)"
 [[ -z "$(leadv2_admission_read_receipt "$TMP" "deadbeef")" ]] \
   && pass "receipt: absent sig8 reads empty" || fail "receipt: phantom read"
+
+# SAFETY-PIN-SECOND-DOOR-01: risk_class round-trips through the receipt so a
+# cache-hit resume can still recover the judge's safety signal without
+# re-judging (leadv2-dispatch-code.sh's cmd_resolve reads this field to
+# decide whether to fold the safety pin in on a same-digest re-entry).
+sig2="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+leadv2_admission_write_receipt "$TMP" "${sig2:0:8}" "T-3" "$sig2" Heavy phases judge build safety_publish_payments
+row3="$(leadv2_admission_read_receipt "$TMP" "${sig2:0:8}")"
+[[ "$row3" == "$(printf 'Heavy\tphases\tjudge\tbuild\t%s\tT-3\tsafety_publish_payments' "$sig2")" ]] \
+  && pass "receipt: risk_class round-trips through write/read" || fail "receipt: risk_class got '$row3'"
 
 # ── C3b negative control: apply the named mutation to a temp copy, assert red ─
 MUT_LIB="$TMP/leadv2-admission-class.mut.sh"
