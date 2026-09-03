@@ -375,7 +375,13 @@ leadv2-repo-install.sh:plugins/leadv2/scripts/tests/test-repo-install-tracked-se
 leadv2-quota-window-history.sh:plugins/leadv2/scripts/tests/test-leadv2-ratelimit-probe.sh
 leadv2-lane-state.sh:plugins/leadv2/scripts/tests/test-liveness-tristate-01.sh
 leadv2-lane-heartbeat.sh:plugins/leadv2/scripts/tests/test-liveness-tristate-01.sh
-leadv2-watch-lifecycle.sh:plugins/leadv2/scripts/tests/test-liveness-tristate-01.sh"
+leadv2-watch-lifecycle.sh:plugins/leadv2/scripts/tests/test-liveness-tristate-01.sh
+# LANE-MERGE-SILENTLY-REVERTS-MAIN-01: the merge-safety-gate carrier stem
+# self-selects its own suite by convention; these two rows cover the wiring
+# points (T11 merge in dispatch-product-close.sh, the ff-only merge in
+# deploy-merge.sh) so a change to either caller re-runs the gate's suite too.
+leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh
+leadv2-deploy-merge.sh:plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
