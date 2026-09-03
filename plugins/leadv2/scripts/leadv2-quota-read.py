@@ -19,12 +19,14 @@ Buckets:
   codex      ChatGPT/Codex usage. Refreshes the OAuth token first (rotation
              rotates the refresh_token -> written back to auth.json), then reads
              chatgpt.com/backend-api/wham/usage. used_percent verbatim.
-  anthropic  Anthropic Max/Team usage via /api/oauth/usage with a FRESH
-             in-process access token (NO DPoP needed for the resource server).
-             Scans every Claude Code-credentials* keychain entry; reports each
-             fresh account. 429 -> unknown. No fresh token -> unknown (DPoP
-             refresh is the unwired fallback; in leadv2 a live session keeps a
-             fresh token present).
+  anthropic  Anthropic Max/Team usage via /api/oauth/usage using whatever
+             in-process access token each keychain entry holds. Scans every
+             Claude Code-credentials* keychain entry; reports each account
+             that has a token to try. 429 -> unknown. No token bytes at all ->
+             unknown (nothing to try). A stale claudeAiOauth.expiresAt is NOT
+             treated as death -- the live call itself is the liveness test
+             (D3, TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01); a genuinely
+             dead token still comes back 401/403 -> unknown.
 
 Env overrides:
   LEADV2_QUOTA_TTL_GLM (60)  LEADV2_QUOTA_TTL_CODEX (120)  LEADV2_QUOTA_TTL_ANTHROPIC (300)
@@ -435,7 +437,6 @@ def resolve_active_account(accounts, active_pin):
 
 
 def read_anthropic(credential_file=None):
-    now_ms = int(time.time() * 1000)
     accounts = []
     active_pin = configured_active_account()
     # CLAUDE-MULTIPROFILE-QUOTA-02: --credential-file swaps the keychain
@@ -455,9 +456,20 @@ def read_anthropic(credential_file=None):
         if not isinstance(blob, dict):
             continue
         o = blob.get("claudeAiOauth") or {}
-        at, ea = o.get("accessToken"), o.get("expiresAt")
-        if not (at and ea and ea > now_ms):
-            continue  # stale — DPoP refresh not wired here
+        at = o.get("accessToken")
+        if not at:
+            continue  # no token bytes at all -- nothing to try
+        # TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01 D3: claudeAiOauth.expiresAt
+        # used to gate this loop (`ea and ea > now_ms`) before ever attempting
+        # the call below.  Measured live 2026-09-03: expiresAt was in the past
+        # on every one of six registered keychain entries, including the one
+        # actively serving a running session -- the CLI refreshes the access
+        # token in-process without ever rewriting expiresAt back to Keychain,
+        # so the field is not a liveness signal here.  The usage call below IS
+        # the liveness test; a token that is truly dead comes back 401/403 and
+        # lands in the existing status=unknown branch, same as any other probe
+        # failure (429, parse error, ...) -- one bad field never excludes an
+        # account that could still return a working read.
         code, body, err = None, "", None
         try:
             code, body = http_json("https://api.anthropic.com/api/oauth/usage",

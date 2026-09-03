@@ -304,23 +304,23 @@ check_grep "$OUT" '^profile=personal .*identity=team/na' 'T11k: identity derived
 check_nogrep "$OUT" 'sk-ant' 'T11k-leak: selected-profile stdout carries no access/refresh token'
 check_nogrep "$ERR" 'sk-ant' 'T11k-leak2: selector stderr carries no access/refresh token'
 
-echo "=== T12 (NC-b): expired credential -> WARN token_expired + excluded from scoring ==="
+echo "=== T12 (NC-b, D3): stale expiresAt -> WARN expiresAt_stale, probed live anyway ==="
 printf 'stale\t%s\tfile:%s/cred.json\n' "$tmp/dir-stale" "$tmp/dir-stale" > "$REG"
 printf 'alpha\t%s\tfile:%s/cred.json\n' "$tmp/dir-alpha" "$tmp/dir-alpha" >> "$REG"
 printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
 run_select $(base_env)
-check_grep "$ERR" 'WARN: registry line 1 skipped: token_expired label=stale identity=max/na' 'T12a: WARN token_expired names label+identity'
-check_grep "$OUT" '^profile=alpha .*candidates=2 ' 'T12b: expired entry excluded -- candidates=2, not 3'
-check_nogrep "$OUT" '^profile=stale ' 'T12c: expired profile never wins'
+check_grep "$ERR" 'WARN: registry line 1: expiresAt_stale label=stale identity=max/na -- probing live anyway' 'T12a: WARN expiresAt_stale names label+identity, does not exclude'
+check_grep "$OUT" '^profile=alpha .*candidates=3 ' 'T12b: stale entry still reaches the probe -- candidates=3, not 2'
+check_nogrep "$OUT" '^profile=stale ' 'T12c: stale-and-actually-dead-per-probe profile still never wins'
 [[ "$RC" -eq 0 ]] && pass "T12: exit 0" || fail "T12 exit" "rc=$RC"
 
-echo "=== T13 (NC-c): all candidates expired -> named refusal, not a silent pick ==="
+echo "=== T13 (NC-c, D3): all candidates stale + probe can't resolve them -> all_unknown, not a silent pick ==="
 printf 'exp-a\t%s\tfile:%s/cred.json\n' "$tmp/dir-allexp-a" "$tmp/dir-allexp-a" > "$REG"
 printf 'exp-b\t%s\tfile:%s/cred.json\n' "$tmp/dir-allexp-b" "$tmp/dir-allexp-b" >> "$REG"
 run_select $(base_env)
-check_grep "$OUT" '^profile=- reason=all_expired$' 'T13a: named refusal, not single_profile or a stale pick'
-w_count="$(grep -c 'WARN: registry line .* skipped: token_expired' <<<"$ERR")"
-[[ "$w_count" -eq 2 ]] && pass "T13b: both expired entries warned" || fail "T13b" "count=$w_count err=$ERR"
+check_grep "$OUT" '^profile=exp-a .*score=101 source=unknown reason=all_unknown candidates=2 cred=file:[^ ]+ identity=max/na binding=-:- windows=exp-a:-=-\|exp-b:-=-$' 'T13a: named all_unknown outcome (probed, not statically refused), not a silent pick'
+w_count="$(grep -c 'WARN: registry line .* expiresAt_stale' <<<"$ERR")"
+[[ "$w_count" -eq 2 ]] && pass "T13b: both stale entries warned but still probed" || fail "T13b" "count=$w_count err=$ERR"
 [[ "$RC" -eq 0 ]] && pass "T13: exit 0" || fail "T13 exit" "rc=$RC"
 
 # ============================================================================
@@ -449,6 +449,38 @@ run_select $(base_env)
 check_grep "$OUT" '^profile=case1 config_dir=.*/dir-alpha score=20 source=live reason=binding_window candidates=2 cred=file:[^ ]+ identity=unknown/na binding=seven_day:20 windows=case1:seven_day=20\|case2:seven_day=90$' \
   'T21: picks case1 (binding window 20%) over case2 (binding window 90%), reason=binding_window'
 [[ "$RC" -eq 0 ]] && pass "T21: exit 0" || fail "T21 exit" "rc=$RC"
+
+# ============================================================================
+echo "=== T22 (D3, TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01): stale expiresAt does not stop a genuinely live account from winning ==="
+mkdir -p "$tmp/dir-stale-live"
+cred_json max "$past_ms" > "$tmp/dir-stale-live/cred.json"
+acct_json 15 10 > "$FIX/stale-live.json"
+printf 'stale-live\t%s\tfile:%s/cred.json\n' "$tmp/dir-stale-live" "$tmp/dir-stale-live" > "$REG"
+printf 'beta\t%s\tfile:%s/cred.json\n' "$tmp/dir-beta" "$tmp/dir-beta" >> "$REG"
+run_select $(base_env)
+check_grep "$ERR" 'WARN: registry line 1: expiresAt_stale label=stale-live identity=max/na -- probing live anyway' 'T22a: WARN fires but does not exclude'
+check_grep "$OUT" '^profile=stale-live .*score=15 source=live' 'T22b: the stale-per-field, live-per-probe account still wins -- the field is not the liveness test'
+[[ "$RC" -eq 0 ]] && pass "T22: exit 0" || fail "T22 exit" "rc=$RC"
+
+# ============================================================================
+echo "=== T23 (D3): same_account still fires when one sibling's expiresAt looks stale ==="
+# Before D3, a stale-looking sibling was dropped in the registry loop BEFORE
+# ever reaching the same-account comparison below -- a real same-account pair
+# could silently present as a single, unwarned candidate whenever one slot's
+# expiresAt looked expired (measured: true of every registered slot in this
+# environment). This is the exact incident risk the founder flagged for the
+# Sept 15 plan: two registry rows that resolve to ONE live account must never
+# go undetected just because a stale field happened to hide one of them.
+mkdir -p "$tmp/dir-same-fresh" "$tmp/dir-same-stale"
+mk_slot "$tmp/dir-same-fresh" team "shared2@fixture.test" "$future_ms"
+mk_slot "$tmp/dir-same-stale" team "shared2@fixture.test" "$past_ms"
+acct_json 40 30 > "$FIX/same-fresh.json"; acct_json 40 30 > "$FIX/same-stale.json"
+printf 'same-fresh\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-same-fresh" "$tmp/dir-same-fresh" > "$REG"
+printf 'same-stale\t%s\tfile:%s/.credentials.json\n' "$tmp/dir-same-stale" "$tmp/dir-same-stale" >> "$REG"
+run_select $(base_env) "LEADV2_CLAUDE_PROFILE_SECURITY_BIN=$SECURITY_STUB"
+check_grep "$ERR" 'WARN: same_account label=same-fresh label=same-stale identity=team/shared2@fixture\.test' 'T23a: same_account fires even though one sibling looked expired -- closes the coverage hole'
+check_grep "$OUT" '^profile=same-fresh .*candidates=2 ' 'T23b: both slots stay candidates (fail-open, as with T14)'
+[[ "$RC" -eq 0 ]] && pass "T23: exit 0" || fail "T23 exit" "rc=$RC"
 
 printf '[TEST] Results: PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
