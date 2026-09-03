@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-lane-verdict-three-states.sh
+file=plugins/leadv2/scripts/leadv2-lane-liveness.sh
+anchor=s/if active_unreadable:/if False:  # D2 unknown mutation gate/
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: Test 3a: verdict=dead:no_handoff_dir (must be unknown:*, never dead)
+diff_hash=679a6381437bc22400cb1d183d576dd0f8e4d7f7375fe1d6a2c3fa7c5fd21a25
+lane_diff_hash=f39bc734a241cd40628e7d5eaf6a3a52a68acb2622d08c39b7cfba059fa701b5
