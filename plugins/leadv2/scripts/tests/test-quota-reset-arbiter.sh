@@ -17,7 +17,12 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ARBITER="${SCRIPTS_DIR}/lib/leadv2-route-arbiter.sh"
+# LEADV2_TEST_ARBITER_BIN: injection seam for negative controls (nc-*.sh) --
+# lets a control run this whole suite against a mutated PRIVATE COPY of the
+# arbiter without ever touching the tracked file. Mirrors the
+# LEADV2_TEST_SELECT_BIN convention used by test-claude-profile-select.sh /
+# nc-claude-account-collapse.sh.
+ARBITER="${LEADV2_TEST_ARBITER_BIN:-${SCRIPTS_DIR}/lib/leadv2-route-arbiter.sh}"
 ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0
@@ -158,6 +163,78 @@ if [[ "$reader_out" == *"'remaining_pct': None, 'hours_to_reset': None, 'usable_
   pass '(f) reader-level normalize_window degrades a missing/malformed reset to unknown, never zero'
 else
   fail "(f) reader default changed: $reader_out"
+fi
+
+# (g) UNKNOWN WINDOW NAME (fix-round item 1): codex's binding window is named
+# 'primary' -- not one of the known names in WINDOW_PERIOD_HOURS
+# (five_hour/weekly/seven_day) -- and carries no limit_window_seconds, so its
+# period cannot be derived at all. codex is over its 90% work ceiling
+# (config/leadv2-routing.yaml quota_ceilings.codex.work_pct) with a real,
+# very short hours_to_reset=0.1. The pre-fix bug guessed
+# DEFAULT_PERIOD_HOURS=168h for any unknown name, so 0.1<=16.8h WAITED on a
+# burnt codex; an unknown window NAME must degrade the same direction as an
+# unknown RESET -- away, never toward staying on a possibly-burnt provider --
+# so this must SWITCH (no wait_applied=codex) and the journal must name the
+# basis reset_basis=unknown_window for codex specifically (never
+# default_full_period, which means a different case: a KNOWN period with an
+# unreadable reset).
+quota_reset_unknown_window() { # <codex_pct> <codex_hours_to_reset>
+  python3 - "$1" "$2" <<'PY'
+import json,sys
+c,h=sys.argv[1:]
+print(json.dumps({
+  'glm': {'status':'ok',
+          'five_hour':{'pct':5.0,'hours_to_reset':1000.0,'reset_iso':'forged-fixture'},
+          'weekly':{'pct':5.0,'hours_to_reset':1000.0,'reset_iso':'forged-fixture'}},
+  'codex': {'status':'ok','binding_window':'primary',
+            'windows':[{'kind':'primary','used_percent':float(c),'hours_to_reset':float(h),'reset_iso':'forged-fixture'}]},
+  'anthropic': {'status':'ok','accounts':[{'active':True,
+            'five_hour_pct':5.0,'seven_day_pct':5.0,
+            'five_hour':{'pct':5.0,'hours_to_reset':1000.0,'reset_iso':'forged-fixture'},
+            'seven_day':{'pct':5.0,'hours_to_reset':1000.0,'reset_iso':'forged-fixture'}}]}
+}))
+PY
+}
+rm -f "$TMP/state"
+out_unknown_window="$(run_with "$ARBITER" "$(quota_reset_unknown_window 96 0.1)" '{"kind":"code","size":"standard"}')"
+if [[ "$out_unknown_window" != *'wait_applied=codex'* && "$out_unknown_window" == *'reset_codex=0.10h_unknown_window'* ]]; then
+  pass '(g) unknown window NAME switches away, never waits, and reports reset_basis=unknown_window'
+else
+  fail "(g) unexpected unknown-window handling: $out_unknown_window"
+fi
+
+# (h) UNREADABLE RESET AT THE ARBITER LEVEL: glm's five_hour window carries
+# NO hours_to_reset field at all (the live payload genuinely could not
+# compute one) while its window NAME stays known ('five_hour') -- this is the
+# case window_reset()'s default_full_period branch exists for, and it is
+# distinct from (f), which only proves the READER's normalize_window default
+# — this proves the ARBITER's own consumer-side default. glm is 85% (over
+# its 80% work ceiling); the arbiter must degrade the unreadable reset to the
+# window's FULL period (5h), never a silent zero, so glm still SWITCHES
+# (never wait_applied=glm) and the journal names reset_basis=default_full_period.
+quota_reset_unreadable_glm_reset() { # <glm_pct>
+  python3 - "$1" <<'PY'
+import json,sys
+g=sys.argv[1]
+print(json.dumps({
+  'glm': {'status':'ok',
+          'five_hour':{'pct':float(g)},
+          'weekly':{'pct':5.0,'hours_to_reset':1000.0,'reset_iso':'forged-fixture'}},
+  'codex': {'status':'ok','binding_window':'primary',
+            'windows':[{'kind':'primary','used_percent':5.0,'hours_to_reset':1000.0,'reset_iso':'forged-fixture'}]},
+  'anthropic': {'status':'ok','accounts':[{'active':True,
+            'five_hour_pct':5.0,'seven_day_pct':5.0,
+            'five_hour':{'pct':5.0,'hours_to_reset':1000.0,'reset_iso':'forged-fixture'},
+            'seven_day':{'pct':5.0,'hours_to_reset':1000.0,'reset_iso':'forged-fixture'}}]}
+}))
+PY
+}
+rm -f "$TMP/state"
+out_unreadable="$(run_with "$ARBITER" "$(quota_reset_unreadable_glm_reset 85)" '{"kind":"code","size":"standard"}')"
+if [[ "$out_unreadable" != *'wait_applied=glm'* && "$out_unreadable" == *'reset_glm=5.00h_default_full_period'* ]]; then
+  pass '(h) unreadable reset at the arbiter level degrades to the full period, never a silent zero'
+else
+  fail "(h) unexpected unreadable-reset handling: $out_unreadable"
 fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"

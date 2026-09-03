@@ -104,16 +104,34 @@ def num(x):
 # to that window's FULL period as hours_to_reset -- a named, defensible default
 # that is always > the 10% threshold, so an unknown reset always reads as "far"
 # and can never fabricate an imminent wait. Never a silent zero.
+#
+# CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01 fix-round item 1: an unknown
+# window NAME must NOT degrade the same way as an unknown RESET. The two are
+# opposite-direction failures. An unreadable reset defaults to the window's
+# own (known) full period -- always "far", so it can only ever push us to
+# switch, never fabricate a wait. But an unknown NAME has no known period at
+# all: silently assuming DEFAULT_PERIOD_HOURS=168h (the old behaviour, now
+# removed) made every genuinely SHORT unknown window look like a 168h window,
+# so its threshold became 16.8h and a real 20-minute-to-reset window read as
+# "near" and WAITED on an over-ceiling provider instead of switching away --
+# the harmful direction, because it holds a burnt provider in the chain.
+# Fix: window_period_hours() returns None for an unknown name (no
+# limit_window_seconds either), and window_reset() reports period_hours=None
+# with reset_basis='unknown_window' (never 'default_full_period', which means
+# a DIFFERENT case: a known period, unreadable reset). near_reset_wait()
+# already treats period_hours is None as False, so an unknown window name
+# switches away -- exactly the pre-change behaviour -- and reset_basis
+# surfaces which of the two unknowns produced the verdict.
 WAIT_FRACTION_OF_PERIOD=0.10
 WINDOW_PERIOD_HOURS={'five_hour':5.0,'weekly':168.0,'seven_day':168.0}
-DEFAULT_PERIOD_HOURS=168.0
 def window_period_hours(name, window):
     lws=num((window or {}).get('limit_window_seconds'))
     if lws is not None: return lws/3600.0
-    return WINDOW_PERIOD_HOURS.get(name, DEFAULT_PERIOD_HOURS)
+    return WINDOW_PERIOD_HOURS.get(name)
 def window_reset(name, window):
     period=window_period_hours(name, window)
     h=num((window or {}).get('hours_to_reset'))
+    if period is None: return h, None, 'unknown_window'
     if h is not None: return h, period, 'live'
     return period, period, 'default_full_period'
 def util(provider):
