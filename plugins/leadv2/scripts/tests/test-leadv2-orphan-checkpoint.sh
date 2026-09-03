@@ -46,6 +46,15 @@ EOF
 WT_A="${TMP}/wt/abc"
 WT_B="${TMP}/wt/abc-def"
 mkdir -p "${WT_A}" "${WT_B}"
+# Canonicalize once, up front: lv2_lane_worker_alive now realpath-normalizes
+# its wt_path argument to match what a real lsof always reports (resolved,
+# symlink-free -- macOS /tmp is /private/tmp, $TMPDIR is under
+# /private/var/...). If WT_A/WT_B stayed non-canonical here, every stub
+# below that embeds them verbatim as the fake cwd would be comparing a
+# canonical wt_path against a non-canonical cwd and never match, testing a
+# shape real lsof never produces.
+WT_A="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${WT_A}")"
+WT_B="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${WT_B}")"
 
 run_lib_case() {  # <PATH override> <shell> <expr> -> stdout: expr's stdout, rc preserved
   local path_override="$1" shell="$2" expr="$3"
@@ -192,7 +201,11 @@ mk_lane() {  # <repo> <lane> -> stdout: worktree path
 }
 
 dead_lsof() { set_fake_lsof "printf 'p1\nn/nowhere/at/all\n'"; }
-alive_lsof() { local wt="$1"; set_fake_lsof "printf 'p1\nn${wt}\n'"; }
+# Real lsof always reports a resolved (symlink-free) cwd -- macOS /tmp is
+# /private/tmp, $TMPDIR is under /private/var/... -- so the stub must
+# canonicalize too, or it is testing a cwd shape lsof never actually
+# produces. Matches the same realpath fix in lv2_lane_worker_alive.
+alive_lsof() { local wt; wt="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1")"; set_fake_lsof "printf 'p1\nn${wt}\n'"; }
 
 run_ckpt() {  # <repo> [--dry-run]
   PATH="${BIN_DIR}:${PATH}" bash "${CKPT}" --project-root "$1" "${2:-}" 2>"${TMP}/last-stderr.log"
@@ -282,6 +295,11 @@ fi
 REPO_A6="$(mk_repo)"
 LANE_A6="lane-a6"
 WT_A6="$(mk_lane "${REPO_A6}" "${LANE_A6}")"
+# Canonicalize: the checkpointer enumerates worktrees via `git worktree list
+# --porcelain`, which always returns a resolved path, so meta.yaml's `cwd:`
+# line must match that resolved form or _lv2_orphan_find_run_meta's exact
+# grep never matches (same class as the A5 lsof-cwd fix above).
+WT_A6="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${WT_A6}")"
 mkdir -p "${WT_A6}/src" "${WT_A6}/scratch"
 printf 'in-scope\n' > "${WT_A6}/src/feature.txt"
 printf 'out-of-scope\n' > "${WT_A6}/scratch/notes.txt"

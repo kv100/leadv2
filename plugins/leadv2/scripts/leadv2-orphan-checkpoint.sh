@@ -113,9 +113,19 @@ _lv2_orphan_lane_id() { basename "$1"; }
 _lv2_orphan_find_run_meta() {
   local wt_path="$1" cache_root="${LEADV2_ORPHAN_RUN_CACHE_ROOT:-${HOME}/.claude/cache}" f best="" best_m=-1 m
   local -a globs=("${cache_root}"/glm-runs/*/meta.yaml "${cache_root}"/kimi-runs/*/meta.yaml "${cache_root}"/freepool-runs/*/meta.yaml)
+  local recorded_cwd
   for f in "${globs[@]}"; do
     [[ -f "${f}" ]] || continue
-    grep -q -F -x "cwd: ${wt_path}" "${f}" 2>/dev/null || continue
+    # Compare canonically, not by exact string: the wrapper records $PWD
+    # (bash's LOGICAL cwd, symlink-preserving) at meta_dir/cwd-write time,
+    # which can differ from wt_path's resolved form on any host where the
+    # worktree root was reached through a symlink (macOS /tmp, $TMPDIR).
+    # An exact-string grep silently drops a real run-meta match in exactly
+    # the case this script exists to handle: the worker already died, so
+    # nobody is left to have written a canonical cwd for it.
+    recorded_cwd="$(grep -m1 '^cwd:' "${f}" 2>/dev/null | cut -d: -f2- | sed 's/^ //')"
+    [[ -n "${recorded_cwd}" ]] || continue
+    [[ "$(_lv2_lane_realpath "${recorded_cwd}")" == "${wt_path}" ]] || continue
     m="$( [[ "$(uname -s)" == "Darwin" ]] && stat -f '%m' "${f}" 2>/dev/null || stat -c '%Y' "${f}" 2>/dev/null || echo 0)"
     [[ "${m}" =~ ^[0-9]+$ ]] || m=0
     if (( m > best_m )); then best_m="${m}"; best="${f}"; fi
@@ -252,6 +262,16 @@ _lv2_orphan_quarantine_commit() {
 # never aborts the caller's sweep of other worktrees.
 lv2_orphan_checkpoint_lane() {
   local wt_path="$1" lane_id
+  # Canonicalize once, up front: a coder wrapper's `cd` into the worktree can
+  # leave a non-canonical (symlinked) cwd recorded in its run-cache
+  # meta.yaml (macOS /tmp -> /private/tmp, $TMPDIR -> /private/var/...),
+  # while `git worktree list --porcelain` (this script's own enumeration)
+  # always returns the resolved form. Normalizing here propagates the SAME
+  # canonical path into every downstream comparison -- the lsof cwd-liveness
+  # check (already normalized in lv2_lane_worker_alive) and the run-meta
+  # `cwd:` match (_lv2_orphan_find_run_meta) below -- so neither false-alives
+  # a dead lane's checkpoint nor false-loses its LANE_WRITES scope.
+  wt_path="$(_lv2_lane_realpath "${wt_path}")"
   lane_id="$(_lv2_orphan_lane_id "${wt_path}")"
 
   [[ -d "${wt_path}/.git" || -f "${wt_path}/.git" ]] 2>/dev/null || { _oc_log "skip ${lane_id}: not-a-worktree"; return 0; }

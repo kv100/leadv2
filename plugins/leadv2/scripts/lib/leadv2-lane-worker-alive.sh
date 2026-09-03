@@ -53,6 +53,24 @@ LV2_LANE_ALIVE_PRIMED=0
 LV2_LANE_ALIVE_FAILCLOSED=0
 LV2_LANE_ALIVE_CWD_FILE=""
 
+# _lv2_lane_realpath <path> -> stdout: canonical (symlink-resolved) path, or
+# the input unchanged if python3 is unavailable. GATE-WRONG-ROOT-FALSE-DEAD-01
+# class bug: the real OS `lsof` always reports a process's cwd fully resolved
+# (macOS /tmp -> /private/tmp, $TMPDIR -> /private/var/...), so comparing a
+# caller-supplied wt_path against that output without the SAME normalization
+# false-negatives on every host where the worktree root was reached through a
+# symlink -- exactly the "path through symlink is not the path git knows"
+# trap this repo has hit twice before. No portable `readlink -f` on macOS;
+# python3's os.path.realpath is this repo's existing convention for this
+# exact problem (lib/leadv2-e2e-root.sh's _lv2_realpath).
+_lv2_lane_realpath() {
+  local p="$1"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${p}" 2>/dev/null && return 0
+  fi
+  printf '%s\n' "${p}"
+}
+
 # lv2_lane_cwd_prime — one global `lsof -a -d cwd -Fpn` pass, cached for the
 # rest of the process (a sweep run touches many worktrees; re-running lsof
 # per-worktree would be both slow and racier). D2: fail-closed to ALIVE
@@ -136,6 +154,7 @@ lv2_lane_worker_alive() {
   fi
   [[ -s "${LV2_LANE_ALIVE_CWD_FILE}" ]] || return 1
 
+  wt_path="$(_lv2_lane_realpath "${wt_path}")"
   while [[ "${wt_path}" == */ && "${wt_path}" != / ]]; do wt_path="${wt_path%/}"; done
 
   local _pid cwd
@@ -199,6 +218,7 @@ lv2_lane_pid_alive_for() {
   fi
   [[ "${LV2_LANE_ALIVE_FAILCLOSED}" == "1" ]] && return 0   # cannot verify -- trust the pid
   cwd="$(lv2_lane_pid_cwd "${pid}")" || return 0             # no cwd recorded for this pid -- trust the pid
+  wt_path="$(_lv2_lane_realpath "${wt_path}")"
   while [[ "${wt_path}" == */ && "${wt_path}" != / ]]; do wt_path="${wt_path%/}"; done
   case "${cwd}" in
     "${wt_path}"|"${wt_path}"/*) return 0 ;;
