@@ -81,10 +81,45 @@ MISSION_TEXT="$(cat "${MISSION_FILE}")"
 SIG8="$(python3 -c "import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:8])" <<<"${MISSION_TEXT}")"
 [[ -n "${SIG8}" ]] || die "failed to compute mission signature"
 
+# ── safety risk-class matcher surface (CLASSIFIER-CALLS-SAFETY-DOCTRINE-
+# SIMPLE-01, blueprint §3/§8) ────────────────────────────────────────────────
+# protected_path_patterns (glm_policy.protected_path_patterns) are PATH GLOBS.
+# Matching them -- or any safety keyword -- against the whole free-text
+# mission body is the category error both directions of the bug trace to:
+#   - HEAVY-TIER-VS-SAFETY-OPUS-01 (false negative): the task id carries the
+#     bare token SAFETY, but no existing pattern ('safety gate'/'safety-gate')
+#     requires it adjacent to 'gate', so the id never fires.
+#   - CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01 (false positive): the body
+#     contains "...does not publish a reset..." -- 'publish' the English verb,
+#     not the product-action path glob -- and the old whole-body scan fired.
+# Fix (§3): restrict the scan to the mission's own id/title (its first '#'
+# heading line -- in every real mission on disk the task id IS the title, see
+# census 2b) with a token match, never the free-text body.
+#
+# Blueprint §3 also specs a third arm: match the dispatcher's *already-
+# resolved* protected_path_patterns against actual paths. That arm is
+# deliberately NOT implemented here. Verified before writing this: (a) the
+# census (2b-a) found 0 of 324 real lane-mission.md files carry a Reads:/
+# Writes:/Touches: line, so sourcing paths from the mission body would be
+# decorative; (b) this script's only inputs are --mission-file/--task-id/
+# --class (see arg parsing above) and the caller
+# (leadv2-dispatch-code.sh:_dispatch_complexity_estimate) passes sig8 as
+# --task-id, never a resolved path list -- so there is no channel through
+# which _effective_protected's paths could reach this process today. Per
+# §3's own instruction ("if no such list is reachable from the judge, ship
+# the id+title arm alone and say so -- never ship an arm that cannot fire"),
+# this ships id+title only. A prior uncommitted draft of this fix (rescued
+# 2026-09-03 after a worker death, see `git log` on this branch) built the
+# path-glob arm against Reads:/Writes:/Touches: anyway -- that was the exact
+# decorative arm §3 forbids, and is removed here, not carried forward.
+#
+# No LEADV2_* bypass flag -- a kill-switch on a safety rule is the anti-
+# pattern this fix deletes. Token set: see _fallback_estimate, SAFETY_TOKENS.
+
 # ── code-only fallback estimator (R2 mitigation #1) ─────────────────────────
 _fallback_estimate() {
   python3 -c "
-import json, sys
+import json, re, sys
 
 mission_text = sys.argv[1]
 sig8 = sys.argv[2]
@@ -107,9 +142,49 @@ elif lines <= 300:
 else:
     complexity, duration_class = 'complex', 'long'
 
-SAFETY_KEYWORDS = ('payment', 'publish', 'safety gate', 'safety-gate')
+# ── structured-surface safety matcher (CLASSIFIER-CALLS-SAFETY-DOCTRINE-
+# SIMPLE-01) -- protected_path_patterns are path globs; scanning them (or any
+# safety keyword) against the free-text mission body is the category error
+# HEAVY-TIER-VS-SAFETY-OPUS-01 (false negative, id-only) and CLASSIFIER-MUST-
+# SEE-QUOTA-AND-RESET-DATE-01 (false positive, homograph 'publish') both trace
+# to. Restricted to the mission's own id/title -- its first '#' heading line,
+# token-matched (whole hyphen/underscore-delimited token, case insensitive)
+# against safety/publish/payment/payments. The free-text body is never
+# scanned for this risk class again (a path-glob arm against declared paths
+# was considered and deliberately dropped -- see the comment above this
+# function's caller for why). DATA_KEYWORDS below is unrelated prior art,
+# deliberately left scanning the body as-is (out of scope for this fix).
+SAFETY_TOKENS = ('safety', 'publish', 'payment', 'payments')
+
+# flag_source priority (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 round 1) --
+# the ONE place this order is declared; reorder here, nowhere else, when a
+# source is added or promoted. Founder decision (docs/handoff/SMART-ARBITER-01/
+# brief.md §10, D4): what makes a task "protected" is write paths, not prose --
+# prose is demoted to advisory once the path arm ships, target field name
+# 'flag_source=path' per that same decision row. 'path' is listed first (it is
+# the target state) but is NOT YET AVAILABLE: LANE_WRITES is empty in 237/241
+# dispatches (98.3%), filed as LANE-WRITES-IS-EMPTY-98-PERCENT-01 -- until that
+# closes there is no reachable write-path signal for this resolver to key on
+# (see the caller's comment above for why no decorative arm was built for it).
+# So this resolver falls through to 'title' today. When LANE-WRITES-IS-EMPTY-
+# 98-PERCENT-01 closes: add 'path' to FLAG_SOURCE_AVAILABLE (and implement the
+# path arm) -- do not reorder FLAG_SOURCE_PRIORITY itself, its order already
+# reflects the target state.
+FLAG_SOURCE_PRIORITY = ('path', 'title')
+FLAG_SOURCE_AVAILABLE = {'title'}  # add 'path' when LANE-WRITES-IS-EMPTY-98-PERCENT-01 closes
+flag_source = next(s for s in FLAG_SOURCE_PRIORITY if s in FLAG_SOURCE_AVAILABLE)
+
+title = ''
+for ln in mission_text.splitlines():
+    s = ln.strip()
+    if s.startswith('#'):
+        title = s.lstrip('#').strip()
+        break
+title_tokens = set(t for t in re.split(r'[^a-z0-9]+', title.lower()) if t)
+title_hit = bool(title_tokens & set(SAFETY_TOKENS))
+
 DATA_KEYWORDS = ('migration', 'schema', 'supabase', 'database', 'drop table', 'postgres')
-if any(k in text_lower for k in SAFETY_KEYWORDS):
+if title_hit:
     risk_class = 'safety_publish_payments'
 elif any(k in text_lower for k in DATA_KEYWORDS):
     risk_class = 'data'
@@ -145,6 +220,7 @@ estimate = {
     'work_kind': work_kind,
     'estimate_id': sig8,
     'estimate_source': 'fallback',
+    'flag_source': flag_source,
 }
 print(json.dumps(estimate, sort_keys=True))
 " "${MISSION_TEXT}" "${SIG8}" "${CLASS_HINT}"
@@ -163,9 +239,11 @@ ALLOWED = {
     'duration_class': {'short', 'medium', 'long'},
     'work_kind': {'build', 'review', 'diagnose', 'docs'},
     'estimate_source': {'judge', 'fallback'},
+    'flag_source': {'path', 'title', 'judge'},
 }
 REQUIRED = ('estimate_v', 'complexity', 'subsystems_touched', 'needs_live_verification',
-            'risk_class', 'duration_class', 'work_kind', 'estimate_id', 'estimate_source')
+            'risk_class', 'duration_class', 'work_kind', 'estimate_id', 'estimate_source',
+            'flag_source')
 
 try:
     est = json.load(sys.stdin)
@@ -248,6 +326,10 @@ except Exception:
 est['estimate_v'] = 1
 est['estimate_id'] = sys.argv[1]
 est['estimate_source'] = 'judge'
+# The judge path's risk_class comes from the LLM call itself, not the id/
+# title resolver in _fallback_estimate -- flag_source='judge' says so
+# honestly rather than borrowing a value from a resolver that never ran.
+est['flag_source'] = 'judge'
 print(json.dumps(est))
 " "${SIG8}"
 }
@@ -263,9 +345,20 @@ _journal() {
   risk_class="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('risk_class',''))" <<<"${estimate_json}" 2>/dev/null)"
   subsystems="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('subsystems_touched',''))" <<<"${estimate_json}" 2>/dev/null)"
   live="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('needs_live_verification',''))" <<<"${estimate_json}" 2>/dev/null)"
+  # flag_source (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 round 1): what the
+  # risk_class verdict was based on -- 'title' (interim) / 'path' (target
+  # state, not yet reachable -- LANE-WRITES-IS-EMPTY-98-PERCENT-01) / 'judge'
+  # (LLM decided directly). Priority order lives in one place: the
+  # FLAG_SOURCE_PRIORITY list in _fallback_estimate above.
+  local flag_source
+  flag_source="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('flag_source',''))" <<<"${estimate_json}" 2>/dev/null)"
   if [[ -n "${TASK_ID}" && -f "${JOURNAL_BIN}" ]]; then
+    # safety_floor (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01, blueprint §4):
+    # "a rule with no reader is not a rule" -- SAFETY_FLOOR_STATUS is set by
+    # _emit's call to _apply_safety_floor just before this call runs; the
+    # default here only guards an unexpected empty value.
     bash "${JOURNAL_BIN}" append "${TASK_ID}" decision \
-      "route_v2_estimate estimate_id=${SIG8} estimate_source=${src} complexity=${complexity} work_kind=${work_kind} duration_class=${duration_class} risk_class=${risk_class} subsystems_touched=${subsystems} needs_live_verification=${live} cache_hit=${cache_hit}" \
+      "route_v2_estimate estimate_id=${SIG8} estimate_source=${src} complexity=${complexity} work_kind=${work_kind} duration_class=${duration_class} risk_class=${risk_class} flag_source=${flag_source:-none} subsystems_touched=${subsystems} needs_live_verification=${live} cache_hit=${cache_hit} safety_floor=${SAFETY_FLOOR_STATUS:-none}" \
       >/dev/null 2>&1 || true
   fi
   # T13's audit joins durable estimate records against close outcomes.  The
@@ -281,8 +374,62 @@ _journal() {
   fi
 }
 
+# ── safety floor (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01, blueprint §4) ──
+# Monotonic floor: an estimate whose risk_class is safety_publish_payments
+# must never resolve to trivial/simple complexity. Applied inside _emit(),
+# as its first statement -- before printf, before _journal -- because _emit
+# is the single choke point all 5 exit paths (disable / --class Light /
+# cache-hit / judge-validated / fallback) pass through. That includes the
+# cache-hit path (§4): a stored pre-fix estimate self-heals on the next read
+# with no migration, because the floor runs on the way OUT of the cache, not
+# on the way in (the raw cache write at the judge-call site is untouched).
+#
+# Floors to 'standard', never 'complex' -- 'complex' would over-escalate
+# duration/heavy-tier routing, which this fix is not chartered to touch.
+# Touches ONLY complexity -- duration_class/work_kind/subsystems_touched
+# pass through unchanged; a safety fix can honestly be short.
+#
+# This decides task SHAPE only. It never names, prefers, or excludes an arm
+# -- the arbiter still chooses (leadv2-route-arbiter.sh, off-limits, read-
+# only in this task); enforcement itself stays glm_policy.sonnet_exceptions
+# [safety_gate_publish_payments], untouched by this fix.
+#
+# On any internal error the estimate passes through completely unchanged
+# and SAFETY_FLOOR_STATUS is set to 'error' -- R2 (the judge must never
+# block a dispatch) binds here exactly as it binds on judge-call failure.
+_apply_safety_floor() {
+  local estimate_json="$1"
+  local out
+  out="$(python3 -c "
+import json, sys
+
+raw = sys.argv[1]
+try:
+    est = json.loads(raw)
+    if est.get('risk_class') == 'safety_publish_payments' and est.get('complexity') in ('trivial', 'simple'):
+        est['complexity'] = 'standard'
+        status = 'applied'
+    else:
+        status = 'none'
+    out = json.dumps(est, sort_keys=True)
+except Exception:
+    out = raw
+    status = 'error'
+print(out)
+print(status)
+" "${estimate_json}" 2>/dev/null)"
+  if [[ -z "${out}" ]]; then
+    SAFETY_FLOOR_STATUS="error"
+    printf '%s' "${estimate_json}"
+    return 0
+  fi
+  SAFETY_FLOOR_STATUS="${out##*$'\n'}"
+  printf '%s' "${out%$'\n'*}"
+}
+
 _emit() {
   local estimate_json="$1" cache_hit="${2:-false}"
+  estimate_json="$(_apply_safety_floor "${estimate_json}")"
   printf '%s\n' "${estimate_json}"
   _journal "${estimate_json}" "${cache_hit}"
   exit 0

@@ -16,7 +16,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JUDGE_SH="${SCRIPT_DIR}/../leadv2-task-judge.sh"
+# LEADV2_TEST_JUDGE_BIN lets a negative-control script (nc-*.sh) point this
+# suite at a mutated scratch copy of the judge instead of the real shipped
+# script, so the suite can prove its own assertions bite.
+JUDGE_SH="${LEADV2_TEST_JUDGE_BIN:-${SCRIPT_DIR}/../leadv2-task-judge.sh}"
 PROMPT_TMPL="${SCRIPT_DIR}/../leadv2-task-judge-prompt.tmpl"
 
 PASS=0
@@ -94,6 +97,31 @@ STUB
   printf '%s' "${bin}"
 }
 
+# Stub whose LLM-path verdict is itself a pre-floor safety estimate
+# (risk_class=safety_publish_payments, complexity=trivial) — used by T10 to
+# prove the floor applies on the judge-validated path (_emit path 4), not
+# just the fallback path.
+_stub_claude_safety_trivial() {
+  local dir="$1" counter_file="$2"
+  local bin="${dir}/claude"
+  cat > "${bin}" <<STUB
+#!/usr/bin/env bash
+echo x >> "${counter_file}"
+printf '%s\n' '{"is_error":false,"result":"\`\`\`json\n{\"complexity\":\"trivial\",\"subsystems_touched\":1,\"needs_live_verification\":false,\"risk_class\":\"safety_publish_payments\",\"duration_class\":\"short\",\"work_kind\":\"build\"}\n\`\`\`","type":"result"}'
+STUB
+  chmod +x "${bin}"
+  printf '%s' "${bin}"
+}
+
+# sig8 exactly as leadv2-task-judge.sh computes it: MISSION_TEXT="$(cat file)"
+# (strips trailing newlines) piped into python3 via a `<<<` heredoc (which
+# re-appends exactly one newline). Replicated here bit-for-bit so T11's
+# pre-seeded cache file lands under the same key the judge will look up.
+_sig8_for() {
+  local mission_file="$1"
+  python3 -c "import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:8])" <<<"$(cat "${mission_file}")"
+}
+
 _kv() { python3 -c "import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2],''))" "$1" "$2" 2>/dev/null; }
 
 _validate_schema_or_fail() {
@@ -107,9 +135,11 @@ ALLOWED = {
     'duration_class': {'short','medium','long'},
     'work_kind': {'build','review','diagnose','docs'},
     'estimate_source': {'judge','fallback'},
+    'flag_source': {'path','title','judge'},
 }
 REQUIRED = ('estimate_v','complexity','subsystems_touched','needs_live_verification',
-            'risk_class','duration_class','work_kind','estimate_id','estimate_source')
+            'risk_class','duration_class','work_kind','estimate_id','estimate_source',
+            'flag_source')
 ok = all(k in est for k in REQUIRED)
 ok = ok and all(est[f] in allowed for f, allowed in ALLOWED.items())
 ok = ok and isinstance(est['subsystems_touched'], int) and not isinstance(est['subsystems_touched'], bool)
@@ -304,6 +334,136 @@ test_t9_missing_mission_file_errors() {
   rm -rf "${root}"
 }
 
+# ── T10: safety floor holds across both the judge-verified path AND the
+# --class Light (fallback) path — CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 §4/§9.1 ─
+test_t10_safety_floor_both_paths() {
+  local root; root="$(_fixture_root)"
+  local counter="${root}/calls.txt"; : > "${counter}"
+  # id/title carries the bare 'safety' token, nothing else safety-shaped.
+  local m; m="$(_write_mission "${root}" "m" "# SAFETY-GATE-ROUTING-01
+
+Ordinary short task, nothing else risky in the body.")"
+
+  # Run 1: no --class -> real judge call. Stub returns a pre-floor verdict
+  # (complexity=trivial, risk_class=safety_publish_payments) so this proves
+  # the floor applies on _emit path 4 (judge-validated), not just fallback.
+  local claude_bin; claude_bin="$(_stub_claude_safety_trivial "${root}" "${counter}")"
+  local out1; out1="$(LEADV2_JUDGE_CLAUDE_BIN="${claude_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache" \
+    bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  local risk1 cx1; risk1="$(_kv "${out1}" risk_class)"; cx1="$(_kv "${out1}" complexity)"
+  if [[ "${risk1}" == "safety_publish_payments" && ( "${cx1}" == "standard" || "${cx1}" == "complex" ) ]]; then
+    pass "T10 (no --class, judge path): risk_class=safety_publish_payments, complexity=${cx1} (floored, not trivial)"
+  else
+    fail "T10 (no --class, judge path): got risk_class=${risk1} complexity=${cx1}"
+  fi
+
+  # Run 2: --class Light -> skips the judge entirely, forces the fallback
+  # estimator (id/title token match), which would otherwise emit
+  # complexity=simple for a Light-hinted task.
+  local out2; out2="$(LEADV2_JUDGE_CLAUDE_BIN="${claude_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache2" \
+    bash "${JUDGE_SH}" --mission-file "${m}" --class Light 2>/dev/null)"
+  local risk2 cx2; risk2="$(_kv "${out2}" risk_class)"; cx2="$(_kv "${out2}" complexity)"
+  if [[ "${risk2}" == "safety_publish_payments" && ( "${cx2}" == "standard" || "${cx2}" == "complex" ) ]]; then
+    pass "T10 (--class Light, fallback path): risk_class=safety_publish_payments, complexity=${cx2} (floored, not simple)"
+  else
+    fail "T10 (--class Light, fallback path): got risk_class=${risk2} complexity=${cx2}"
+  fi
+  rm -rf "${root}"
+}
+
+# ── T11: cache-hit path (_emit path 3) floors a STORED pre-fix estimate —
+# proves the floor self-heals judge-cache/ with no migration (blueprint §4) ─
+test_t11_cache_hit_self_heals() {
+  local root; root="$(_fixture_root)"
+  local m; m="$(_write_mission "${root}" "m" "# Any mission text — the cached record below is what decides the verdict.")"
+  local sig8; sig8="$(_sig8_for "${m}")"
+  mkdir -p "${root}/cache"
+  cat > "${root}/cache/${sig8}.json" <<JSON
+{"estimate_v":1,"complexity":"trivial","subsystems_touched":1,"needs_live_verification":false,"risk_class":"safety_publish_payments","duration_class":"short","work_kind":"build","estimate_id":"${sig8}","estimate_source":"judge","flag_source":"judge"}
+JSON
+  local counter="${root}/calls.txt"; : > "${counter}"
+  local claude_bin; claude_bin="$(_stub_claude_fail "${root}" "${counter}")"
+  local out; out="$(LEADV2_JUDGE_CLAUDE_BIN="${claude_bin}" LEADV2_JUDGE_CACHE_DIR="${root}/cache" \
+    bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  local cx; cx="$(_kv "${out}" complexity)"
+  [[ "${cx}" == "standard" ]] && pass "T11: cache pre-seeded complexity=trivial emits complexity=standard (floor at the choke point)" \
+    || fail "T11: expected complexity=standard from floored cache-hit, got ${cx}"
+  local calls; calls="$(wc -l < "${counter}" | tr -d ' ')"
+  [[ "${calls}" == "0" ]] && pass "T11: cache hit — judge never invoked (0 calls)" \
+    || fail "T11: expected 0 model calls on cache hit, got ${calls}"
+  rm -rf "${root}"
+}
+
+# ── T12: no-over-trigger control — README typo, zero safety tokens ────────
+test_t12_no_over_trigger() {
+  local root; root="$(_fixture_root)"
+  local m; m="$(_write_mission "${root}" "m" "# Fix a typo in the README
+
+Just a one-line comment change, nothing risky.")"
+  local out; out="$(LEADV2_JUDGE_DISABLE=1 LEADV2_JUDGE_CACHE_DIR="${root}/cache" \
+    bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  local risk cx; risk="$(_kv "${out}" risk_class)"; cx="$(_kv "${out}" complexity)"
+  [[ "${risk}" == "none" ]] && pass "T12: README-typo mission -> risk_class=none" \
+    || fail "T12: expected risk_class=none, got ${risk}"
+  [[ "${cx}" == "trivial" ]] && pass "T12: README-typo mission -> complexity=trivial (exact, never over-floored)" \
+    || fail "T12: expected complexity=trivial exactly, got ${cx}"
+  rm -rf "${root}"
+}
+
+# ── T13: floor never downgrades — safety mission with --class Heavy stays complex ─
+test_t13_floor_never_downgrades() {
+  local root; root="$(_fixture_root)"
+  local m; m="$(_write_mission "${root}" "m" "# SAFETY-PUBLISH-ROUTING-01
+
+Short body, --class Heavy hint forces complex regardless of line count.")"
+  local out; out="$(LEADV2_JUDGE_DISABLE=1 LEADV2_JUDGE_CACHE_DIR="${root}/cache" \
+    bash "${JUDGE_SH}" --mission-file "${m}" --class Heavy 2>/dev/null)"
+  local risk cx; risk="$(_kv "${out}" risk_class)"; cx="$(_kv "${out}" complexity)"
+  [[ "${risk}" == "safety_publish_payments" ]] && pass "T13: safety mission -> risk_class=safety_publish_payments" \
+    || fail "T13: expected risk_class=safety_publish_payments, got ${risk}"
+  [[ "${cx}" == "complex" ]] && pass "T13: --class Heavy -> complexity=complex (floor never downgrades)" \
+    || fail "T13: expected complexity=complex, got ${cx}"
+  rm -rf "${root}"
+}
+
+# ── T14: d552b9ab regression — HEAVY-TIER-VS-SAFETY-OPUS-01-shaped id, no
+# other safety-shaped content -> must now score safety_publish_payments ────
+test_t14_id_only_safety_regression() {
+  local root; root="$(_fixture_root)"
+  local m; m="$(_write_mission "${root}" "m" "# HEAVY-TIER-VS-SAFETY-OPUS-01
+
+An ordinary short mission body with no other safety-shaped vocabulary.")"
+  local out; out="$(LEADV2_JUDGE_DISABLE=1 LEADV2_JUDGE_CACHE_DIR="${root}/cache" \
+    bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  local risk cx; risk="$(_kv "${out}" risk_class)"; cx="$(_kv "${out}" complexity)"
+  [[ "${risk}" == "safety_publish_payments" ]] && pass "T14: id-only 'SAFETY' token -> risk_class=safety_publish_payments (d552b9ab regression fixed)" \
+    || fail "T14: expected risk_class=safety_publish_payments, got ${risk}"
+  # Brief requires complexity != simple; asserted as the stronger (not
+  # weaker) "not in {trivial,simple}" so a floor bypass at either rung fails.
+  if [[ "${cx}" != "trivial" && "${cx}" != "simple" ]]; then
+    pass "T14: complexity=${cx} (not trivial/simple — floor applied)"
+  else
+    fail "T14: expected complexity outside {trivial,simple}, got ${cx}"
+  fi
+  rm -rf "${root}"
+}
+
+# ── T15: 79a9c5b7 regression — 'publish' as an English verb in the body,
+# safety-free id/title -> must stay risk_class=none (no homograph re-trigger) ─
+test_t15_homograph_regression() {
+  local root; root="$(_fixture_root)"
+  local m; m="$(_write_mission "${root}" "m" "# CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01
+
+This is unresolved when a provider does not publish a reset date, and also
+when a provider that already publishes a reset date changes format.")"
+  local out; out="$(LEADV2_JUDGE_DISABLE=1 LEADV2_JUDGE_CACHE_DIR="${root}/cache" \
+    bash "${JUDGE_SH}" --mission-file "${m}" 2>/dev/null)"
+  local risk; risk="$(_kv "${out}" risk_class)"
+  [[ "${risk}" == "none" ]] && pass "T15: body-only 'publish' homograph -> risk_class=none (79a9c5b7 regression fixed)" \
+    || fail "T15: expected risk_class=none, got ${risk}"
+  rm -rf "${root}"
+}
+
 # ── syntax guard ─────────────────────────────────────────────────────────────
 test_syntax_check() {
   if bash -n "${JUDGE_SH}" 2>/dev/null; then
@@ -322,6 +482,12 @@ test_t6_timeout_fallback
 test_t7_cache_hit
 test_t8_light_skips_judge
 test_t9_missing_mission_file_errors
+test_t10_safety_floor_both_paths
+test_t11_cache_hit_self_heals
+test_t12_no_over_trigger
+test_t13_floor_never_downgrades
+test_t14_id_only_safety_regression
+test_t15_homograph_regression
 test_syntax_check
 
 echo ""
