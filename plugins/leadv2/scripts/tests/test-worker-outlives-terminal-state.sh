@@ -8,6 +8,7 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISPATCH="${TEST_DIR}/../leadv2-dispatch-code.sh"
 CLOSE="${TEST_DIR}/../leadv2-dispatch-product-close.sh"
+SUBSESSION="${TEST_DIR}/../claude-subsession.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/worker-terminal-state.XXXXXX")"
 PIDS=()
 trap 'for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; for p in "${PIDS[@]:-}"; do wait "$p" 2>/dev/null || true; done; rm -rf "${TMP_ROOT}"' EXIT INT TERM
@@ -16,6 +17,12 @@ PASS=0
 FAIL=0
 ok() { printf 'PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf 'FAIL: %s\n' "$1"; FAIL=$((FAIL + 1)); }
+
+if grep -Fq '> "$RUN_DIR/finalizer_pid"' "${SUBSESSION}"; then
+  ok "Sonnet launcher records the finalizer PID"
+else
+  bad "Sonnet launcher does not record the finalizer PID"
+fi
 
 # The continuation path must apply the same normalization already used by the
 # ordinary dispatch path. This is both a source-level registration guard and a
@@ -113,10 +120,49 @@ case_finalizer_wait() {
   fi
 }
 
+# Case 1b: a shared handoff pointer may have moved to a newer role. The close
+# gate must resolve the Sonnet run by the exact worker PID recorded in the run
+# directory, or it can declare a terminal state while the old finalizer still
+# owns the worktree.
+case_pointer_moved_exact_pid() {
+  local d="${TMP_ROOT}/pointer-moved" root cache journal target_run distractor_run
+  local target_dir distractor_dir worker finalizer close_pid i
+  root="${d}/repo"; cache="${d}/cache"; journal="${d}/journal.sh"
+  target_run="sonnet-pointer-target"; distractor_run="sonnet-pointer-newer"
+  target_dir="${cache}/claude-runs/${target_run}"
+  distractor_dir="${cache}/claude-runs/${distractor_run}"
+  mkdir -p "${cache}/claude-runs"; make_repo "${root}"; make_journal "${journal}"; : > "${journal}.log"
+  sleep 30 & worker=$!; PIDS+=("${worker}")
+  sleep 30 & finalizer=$!; PIDS+=("${finalizer}")
+  mkdir -p "${target_dir}" "${distractor_dir}" "${root}/docs/handoff/dispatch-pointerstate"
+  printf '%s\n' "${distractor_run}" > "${root}/docs/handoff/dispatch-pointerstate/.claude-session-runner.run-id"
+  printf '%s\n' "${worker}" > "${target_dir}/pid"
+  printf '%s\n' "${finalizer}" > "${target_dir}/finalizer_pid"
+  printf '%s\n' "999999" > "${distractor_dir}/pid"
+  WTS_JOURNAL="${journal}.log" run_close "${root}" "${cache}" "${journal}" pointerstate 8 "${worker}" >"${journal}.close.log" 2>&1 &
+  close_pid=$!; PIDS+=("${close_pid}")
+  kill -TERM "${worker}" 2>/dev/null || true
+  sleep 2
+  if grep -q 'review_gate' "${journal}.log" 2>/dev/null; then
+    bad "pointer-moved close gate ignored exact PID run directory"
+  else
+    ok "pointer-moved close gate waits on exact PID run directory"
+  fi
+  touch "${target_dir}/.finalized"
+  kill -TERM "${finalizer}" 2>/dev/null || true; wait "${finalizer}" 2>/dev/null || true
+  i=0
+  while kill -0 "${close_pid}" 2>/dev/null && [[ ${i} -lt 50 ]]; do sleep 0.1; i=$((i + 1)); done
+  if kill -0 "${close_pid}" 2>/dev/null; then
+    bad "pointer-moved close gate did not finish after finalizer completion"
+  else
+    ok "pointer-moved close gate finishes after exact run finalization"
+  fi
+}
+
 # Case 2: the hard ceiling must reap both the model and finalizer before the
 # timeout terminal decision is emitted.
 case_timeout_reaps_both() {
-  local d="${TMP_ROOT}/timeout" root cache journal run_id run_dir worker finalizer close_pid rc
+  local d="${TMP_ROOT}/timeout" root cache journal run_id run_dir worker finalizer close_pid rc started elapsed
   root="${d}/repo"; cache="${d}/cache"; journal="${d}/journal.sh"
   run_id="sonnet-timeout-run"; run_dir="${cache}/claude-runs/${run_id}"
   mkdir -p "${cache}/claude-runs"; make_repo "${root}"; make_journal "${journal}"; : > "${journal}.log"
@@ -126,8 +172,10 @@ case_timeout_reaps_both() {
   printf '%s\n' "${run_id}" > "${root}/docs/handoff/dispatch-timeoutstate/.claude-session-runner.run-id"
   printf '%s\n' "${worker}" > "${run_dir}/pid"
   printf '%s\n' "${finalizer}" > "${run_dir}/finalizer_pid"
+  started="$(date +%s)"
   WTS_JOURNAL="${journal}.log" run_close "${root}" "${cache}" "${journal}" timeoutstate 2 "${worker}" >/dev/null 2>&1
   rc=$?
+  elapsed=$(( $(date +%s) - started ))
   if [[ ${rc} -eq 5 ]]; then ok "timeout close exits blocked"; else bad "timeout close rc=${rc}, want 5"; fi
   if ! kill -0 "${worker}" 2>/dev/null && ! kill -0 "${finalizer}" 2>/dev/null; then
     ok "timeout terminal has no live model or finalizer"
@@ -139,9 +187,15 @@ case_timeout_reaps_both() {
   else
     bad "timeout terminal evidence missing"
   fi
+  if [[ ${elapsed} -le 15 ]]; then
+    ok "recorded terminal reaps worker and finalizer within bound (${elapsed}s)"
+  else
+    bad "recorded terminal exceeded bounded reap time (${elapsed}s)"
+  fi
 }
 
 case_finalizer_wait
+case_pointer_moved_exact_pid
 case_timeout_reaps_both
 printf 'test-worker-outlives-terminal-state: %d passed, %d failed\n' "${PASS}" "${FAIL}"
 [[ ${FAIL} -eq 0 ]]
