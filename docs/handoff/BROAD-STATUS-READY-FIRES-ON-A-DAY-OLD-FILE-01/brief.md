@@ -136,3 +136,47 @@ Two things follow for this row:
 2. Add to acceptance: regenerate the file and assert every timestamp it carries refers to the same
    gathering, and that a consumer comparing them cannot get a false PASS from two copies of one
    stale value.
+
+---
+
+## LEAD ADDENDUM 2 — the ready-line names a RELATIVE path, so two readers publish different files
+
+One beat, `BROAD_STATUS_READY at=2026-09-03T19:31:14Z path=docs/leadv2/founder-status.md`, reached
+two lead sessions. They checked line 1 of "the file" and saw different things:
+
+```
+~/Projects/persona-engine/docs/leadv2/founder-status.md : 2026-09-03T19:31:14Z  (mtime 09-03 22:39)
+~/Projects/leadv2/docs/leadv2/founder-status.md         : 2026-09-02T11:20:00Z  (mtime 09-02 14:22)
+```
+
+Same beat. Same relative path. **Two different files, a day apart.** The session reading from the
+plugin repo was about to publish yesterday's state under today's stamp; the session reading from
+persona-engine saw a current file. Neither reader did anything wrong.
+
+So the row has two causes, and fixing only the first leaves the bug:
+
+1. **The stamp.** The ready-line carries the BEAT's clock, not the FILE's. It asserts freshness it
+   never checked. (Already covered in addendum 1: the two numbers the relay protocol compares can
+   also be two copies of one stale value, so the comparison can pass on stale data.)
+2. **The path.** `path=docs/leadv2/founder-status.md` is relative, and which file it denotes
+   depends on the reader's project root. This is the same root ambiguity as
+   `PHASE-RECORD-WRITES-TO-THE-WRONG-REPO-01`: a path resolved against an inherited
+   `LEADV2_PROJECT_ROOT` rather than against the writer's own.
+
+### Required, both halves
+
+- The ready-line carries the **absolute path** of the file the writer actually wrote, and the
+  **file's own modification time** — never the beat's clock, never a relative path.
+- A mismatch between the announced stamp and the file's stamp **refuses publication**. Not a
+  warning: the reader is a model that has already been told to relay verbatim, and a warning is
+  exactly what gets skipped on the third occurrence.
+- The writer must fail loudly if it cannot write; today the write chain has no failure check and
+  the next line emits a fresh READY regardless (`leadv2-broad-status.sh:1423-1426`).
+
+### Acceptance
+
+- Put a day-old file in place and fire the beat: publication must be REFUSED, not warned about.
+- Fire the beat from a session whose project root differs from the writer's: both must resolve to
+  the same file, or the beat must refuse rather than name an ambiguous path.
+- A suite that only asserts "a ready-line is emitted" passes today and hides all of this. Assert
+  the refusals, not the emission.
