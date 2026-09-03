@@ -41,3 +41,18 @@ Still open:
 ## Done when
 - the child prints `opus` under a settings pin + yaml `unavailable: true`; the NC is spelling-independent
   and red; report carries both sections and a real run-all tail; FALSIFIABLE.
+
+## READ THIS FIRST — round note 2 (lead, 2026-09-02)
+The R8 worker spent 92 turns and then ended its turn waiting for a background `run-all.sh`. A dispatched
+worker has NO next turn, so that round produced no report. Its code work IS committed on the lane as
+"wip: R8 partial" — build on it, do not restart.
+- Pulse mode does NOT apply to you. One turn-chain, no notifications will ever reach you.
+- Never `run_in_background`, never Monitor. Long commands in the FOREGROUND with `timeout 900`. If
+  run-all stalls, check `/tmp/leadv2-core-offline-*` for a lock whose holder pid is dead (`kill -0`),
+  clear it, say so in the report, re-run.
+- Nested agents are allowed and encouraged for bulk reads (haiku), but ONLY synchronously, in THIS lane
+  worktree, never with `isolation:"worktree"`, and you commit their output yourself.
+- Commit after every step.
+What is still missing from the lane: the `## R7 findings` and `## R8 findings` sections in report.md, the
+child-side runtime probe for the kill switch (router verdict + `CHILD THINK_MODEL=`), the
+spelling-independent negative control, and the run-all tail.

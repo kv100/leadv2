@@ -76,3 +76,32 @@ false zero delivered to the founder. It also listed two dead codex jobs as the o
 Required: the status source must be the control-plane registry across every adopted repo (the same written
 repo list the census uses), not `$PWD`. Until then the pulse must say WHICH repo it looked at, so a reader
 can tell "nothing running" from "nothing running here".
+
+## Symlink-farm drift — measured across four repos, 2026-09-02 (cross-repo find)
+
+The getmany-followup-bot lead traced a two-day `provider_error rc=1` on the opus review arm to a REAL COPY
+of `claude-subsession.sh` in `.claude/scripts/` (32105 bytes, 4 May) instead of a symlink to canonical
+(69004 bytes, current) — 990 lines of drift. Four more drifted copies sat beside it, `leadv2-helpers.sh`
+worst at 1142 lines. Replacing all five with symlinks fixed the arm on the next probe.
+
+The same check here (a `.claude/scripts/*.sh` that is a regular file AND has a same-named file in
+`plugins/leadv2/scripts` is drift; no canonical twin means a legitimate repo-native script):
+
+| repo | real files | drifted copies |
+|---|---|---|
+| persona-engine | 40 | 1 — `leadv2-lane-detail.sh` (169 lines) |
+| respiro-ios | 18 | 1 — `codex-guard.sh` (392) |
+| m3-market | 31 | 1 — `codex-guard.sh` (392) |
+| **leadv2 (the plugin's own repo)** | **202** | **~25**, worst: `leadv2-broad-status.sh` 568, `leadv2-dispatch-product-close.sh` 416, `leadv2-active-registry.sh` 414, `leadv2-status-collector.sh` 221, `leadv2-lane-status-line-tail.sh` 217, `leadv2-repo-install.sh` 110 |
+
+The plugin's own `.claude/scripts` is 202 real copies of its own `plugins/leadv2/scripts`, and every lane of
+2026-09-02 ran there. `leadv2-repo-install.sh` itself is one of the drifted copies (110 lines behind), which
+explains why it reported `.claude/scripts linked 20` and `ok` while five stale copies sat next to it.
+
+Additional requirements for this task:
+- `leadv2-repo-install.sh --check` must FAIL (non-zero) on a drifted copy and name each file plus its line
+  delta. Detection rule as above; it is mechanical and needs no judgement.
+- The install must never report `ok` for a farm that contains a same-named real copy.
+- Converting the plugin repo's own 202 copies to symlinks is its own step (`leadv2-scripts-symlink-plan.sh`),
+  to be done with no lanes in flight, file by file — a drifted copy may contain unmerged work that has to go
+  UP into canonical first, never be discarded.

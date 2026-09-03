@@ -53,5 +53,15 @@ Add to the required fixes:
 6. The pulse/silence rules must be scoped to the lead. The dispatched-worker preamble must state
    explicitly: pulse mode does NOT apply to you; you have exactly one turn-chain and no notifications will
    reach you; never delegate and wait, never background anything you need the result of.
-7. The same preamble must forbid nested agent spawns outright (three lanes today spawned nested developers,
-   two of them with isolation:"worktree", which puts the diff in a stray worktree the epilogue never sees).
+7. **Nested agents stay ALLOWED — the ban would be the wrong fix** (founder correction, 2026-09-02: the
+   whole point of giving workers subagents is that cheaper models do the bulk work). What must be forbidden
+   is the two shapes that actually lost work today:
+   - `run_in_background=true` from a dispatched worker. The worker has one turn-chain and no notifications,
+     so a background child is unreachable. Nested agents must be spawned SYNCHRONOUSLY and awaited inside
+     the same turn.
+   - `isolation:"worktree"`. BRAIN-CLASS-LIVE-01 R4g's nested developer wrote a correct 119-line diff into
+     a stray worktree the epilogue never reads; the lead had to salvage it by hand. Nested agents must work
+     in the lane worktree.
+   - The parent must commit the child's output before its own turn-chain ends.
+   The preamble should say exactly this, and the epilogue should flag a lane whose only new work sits in a
+   worktree other than the lane's.

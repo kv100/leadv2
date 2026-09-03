@@ -277,6 +277,28 @@ def _locked_update(state_key: str, tool_name: str, h: str, file_path: str = "") 
 # ---------------------------------------------------------------------------
 
 
+def _warn_anchors(freq_warn: int, hard_limit: int) -> frozenset:
+    """NUDGE-TAX-01 (2026-09-02): freq-WARN used to fire on EVERY call from
+    freq_warn to hard_limit — measured 19,776 repeated warns / 10d, 12,589 of
+    them past count 50 (live env sets LEADV2_TOOL_HARD_LIMIT=1400, so the
+    repeat never stopped). A message that fires ~2k times a day is a tax, not
+    a signal. Now the warn fires only on threshold CROSSINGS: freq_warn, then
+    each doubling while < hard_limit, plus hard_limit-10 (the approach-the-
+    block warning) when it is a distinct value >= freq_warn."""
+    anchors = set()
+    a = freq_warn
+    while a < hard_limit:
+        anchors.add(a)
+        a *= 2
+    approach = hard_limit - 10
+    if approach >= freq_warn:
+        anchors.add(approach)
+    return frozenset(anchors)
+
+
+_TOOL_WARN_ANCHORS = _warn_anchors(TOOL_FREQ_WARN, TOOL_HARD_LIMIT)
+
+
 def decide_from_counts(
     tool_name: str,
     hash_count_after: int,
@@ -287,10 +309,12 @@ def decide_from_counts(
     """Return (verdict, reason) given the counts THIS call would produce if it
     executes (fix-round-2, task 6d0c93f4a7b2, item 6: caller computes these
     read-only via _peek_counts for PreToolUse -- nothing is persisted here)."""
-    # Per-call-signature checks (highest priority)
+    # Per-call-signature checks (highest priority). NUDGE-TAX-01: the sig-warn
+    # fires on the WARN_AT crossing only — repeating at WARN_AT+1 carried no
+    # new information (measured 228 fires/10d for one looping condition).
     if hash_count_after >= HARD_AT:
         return "BLOCK", f"{tool_name} identical call repeated {hash_count_after}x (limit {HARD_AT})"
-    if hash_count_after >= WARN_AT:
+    if hash_count_after == WARN_AT:
         return "WARN", f"{tool_name} identical call repeated {hash_count_after}x (warn threshold {WARN_AT})"
 
     # Per-tool-type frequency checks. Tools in UNCAPPED_TOOLS (default: Agent) are
@@ -312,7 +336,7 @@ def decide_from_counts(
     if not is_paging_read:
         if tool_count_after >= TOOL_HARD_LIMIT:
             return "BLOCK", f"{tool_name} called {tool_count_after}x total (limit {TOOL_HARD_LIMIT})"
-        if tool_count_after >= TOOL_FREQ_WARN:
+        if tool_count_after in _TOOL_WARN_ANCHORS:
             return "WARN", f"{tool_name} called {tool_count_after}x total (warn at {TOOL_FREQ_WARN})"
 
     return "CLEAR", ""

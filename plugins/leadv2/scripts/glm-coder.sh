@@ -110,6 +110,17 @@ export LEADV2_WORKER_ARM=1
 # glm-flash arm (cheap/mechanical tier). Every spawn site and meta.yaml read
 # this single value, so a run record always names the model that actually ran.
 readonly GLM_MODEL="${GLM_MODEL:-glm-5.3}"
+# GLM-EFFICIENCY-01: per-dispatch reasoning-effort override, same env-first
+# pattern as GLM_MODEL. The dispatcher maps DC_TASK_CLASS -> effort and exports
+# GLM_EFFORT; every spawn site appends `--effort <v>` to the `claude -p` argv
+# when set (CC 2.1.258 `--effort <level>`, verified live). Z.AI's Anthropic-compat
+# layer reads `output_config.effort` from Claude Code (docs.z.ai/devpack/
+# latest-model.md: low|medium|high|max, medium auto-converts to high, default
+# max) and the field measurably changes the response — same prompt, glm-5.3,
+# output_tokens 130 at low vs 369 at max (probe 2026-09-02,
+# docs/handoff/GLM-EFFICIENCY-01/report.md). Empty = flag omitted = provider
+# default `max` (pre-lane behaviour, byte-identical spawn).
+readonly GLM_EFFORT="${GLM_EFFORT:-}"
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"
 
@@ -372,6 +383,12 @@ run_claude() {
       --disallowedTools "Agent" \
       --model sonnet \
       --output-format json)
+    # GLM-EFFICIENCY-01: apply the dispatcher-resolved effort (whitelist =
+    # Z.AI's accepted vocabulary; anything else omits the flag — fail-open
+    # to the provider default `max`, never a malformed argv).
+    case "${GLM_EFFORT:-}" in
+      low|medium|high|max) spawn_args+=(--effort "${GLM_EFFORT}") ;;
+    esac
     if [[ -n "${mcp_cfg}" ]]; then
       spawn_args+=(--strict-mcp-config --mcp-config "${mcp_cfg}")
     fi
@@ -1193,6 +1210,11 @@ cmd_run_child() {
       --max-turns "${max_turns}" \
       --permission-mode bypassPermissions \
       --disallowedTools "Agent")
+  # GLM-EFFICIENCY-01: same effort seam as the v1 path (see GLM_EFFORT note
+  # near GLM_MODEL) — whitelist else omit, fail-open to provider default max.
+  case "${GLM_EFFORT:-}" in
+    low|medium|high|max) spawn_args+=(--effort "${GLM_EFFORT}") ;;
+  esac
   if [[ -n "${mcp_cfg}" ]]; then
     spawn_args+=(--strict-mcp-config --mcp-config "${mcp_cfg}")
   fi
