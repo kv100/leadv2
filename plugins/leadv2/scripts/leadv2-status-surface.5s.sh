@@ -211,6 +211,16 @@ _resolve() {
   done
   cd "$(dirname "$p")" 2>/dev/null && pwd -P
 }
+# Portable mtime: BSD `stat -f %m` must never fall through to `|| stat -c %Y` —
+# on GNU, `stat -f` means "filesystem" and "succeeds" with a dump (same
+# root cause as TWELVE-LINUX-ONLY-SUITES-01 group A). Missing file -> 0.
+_stat_mtime() {  # <path> -> epoch seconds or 0
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    stat -f %m "$1" 2>/dev/null || printf '0'
+  else
+    stat -c %Y "$1" 2>/dev/null || printf '0'
+  fi
+}
 SCRIPT_DIR="$(_resolve "$_self")"
 RENDERER="${LEADV2_STATUS_RENDERER:-${SCRIPT_DIR}/leadv2-status-surface.sh}"
 # SELF_PATH derived from $_self, NOT hardcoded — the rename (.10s→.5s) and any
@@ -277,7 +287,7 @@ _lookup_label() {  # <token> -> label (sig8 resolved, else verbatim)
 # ── refresher: detached, mkdir-guarded, promotes only rc=0 + non-empty ──────
 _kick_refresh() {
   if ! mkdir "$LOCKDIR" 2>/dev/null; then
-    _lk_age=$(( $(date +%s) - $(stat -f %m "$LOCKDIR" 2>/dev/null || echo 0) ))
+    _lk_age=$(( $(date +%s) - $(_stat_mtime "$LOCKDIR") ))
     if [ "${_lk_age:-0}" -gt 90 ] 2>/dev/null; then
       rmdir "$LOCKDIR" 2>/dev/null && mkdir "$LOCKDIR" 2>/dev/null || return
     else
@@ -359,7 +369,7 @@ else
     exit 0
   fi
   OUT_ALL="$(cat "$PAYLOAD" 2>/dev/null)"
-  PAYLOAD_AGE=$(( $(date +%s) - $(stat -f %m "$PAYLOAD" 2>/dev/null || echo 0) ))
+  PAYLOAD_AGE=$(( $(date +%s) - $(_stat_mtime "$PAYLOAD") ))
   if [ "$PAYLOAD_AGE" -gt "$TTL" ] && [ ! -d "$LOCKDIR" ]; then
     _kick_refresh
   fi
