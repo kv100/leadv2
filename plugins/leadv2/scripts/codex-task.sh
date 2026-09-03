@@ -1400,6 +1400,16 @@ if [[ -n "$_TIER" ]]; then
         set -- "$@" --effort "$WIRE_EFFORT"
       fi
       echo "[codex-task] tier=$_TIER -> model=$TIER_MODEL effort=$WIRE_EFFORT (sub=$SUB)" >&2
+      # WORKER-MCP-ALL-ARMS-01: this arm's worker MCP allowlist is documented
+      # at config/codex-mcp-servers.toml, but live injection is NOT wired --
+      # the actual spawn goes through node "$COMPANION" (openai-codex plugin
+      # cache, outside this repo), which has no --mcp-config-equivalent
+      # passthrough today. Fail-open: log once so the gap is visible, never
+      # block the dispatch on it.
+      if [[ "${LEADV2_CODEX_MCP_WARNED:-0}" != "1" ]]; then
+        echo "[codex-task] NOTE: code-intel MCP (codebase-memory-mcp/repowise) is not yet wired for Codex arms -- see config/codex-mcp-servers.toml comment (WORKER-MCP-ALL-ARMS-01 follow-up)." >&2
+        export LEADV2_CODEX_MCP_WARNED=1
+      fi
       ;;
     *)
       echo "[codex-task] WARN: --tier has no effect on subcommand '$SUB' -- ignoring" >&2

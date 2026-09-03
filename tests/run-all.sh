@@ -274,6 +274,12 @@ leadv2-suite-falsifiable:plugins/leadv2/scripts/tests/test-suite-falsifiable.sh
 run-core-offline.sh:plugins/leadv2/scripts/tests/test-suite-lock-scope.sh
 leadv2-lane-watch-v2.sh:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
 leadv2-lane-watch-v2:plugins/leadv2/scripts/tests/test-lane-watch-v2.sh
+freepool-coder:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
+kimi-coder:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
+codex-task.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
+leadv2-codex-planner.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
+leadv2-worker-mcp.sh:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
+leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
 leadv2-status-cache.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
 leadv2-spawn-rate.sh:plugins/leadv2/scripts/tests/test-status-churn.sh
 leadv2-broad-status.sh:plugins/leadv2/scripts/tests/test-status-churn.sh

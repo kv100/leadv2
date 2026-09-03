@@ -1,0 +1,46 @@
+# WORKER-MCP-ALL-ARMS-01: plugin-owned allowlist of code-intel MCP server
+# NAMES for Codex arms — mirrors config/mcp-role-default.json (Claude-CLI
+# arms), never a baked definition. Definitions (command/args) are per-repo
+# (repowise is registered with a repo-specific path; codebase-memory-mcp is
+# hard-pinned per machine in ~/.claude/settings.json) and must be resolved
+# live from .mcp.json / .claude/settings.json at spawn time, the same
+# resolve_role_mcp_config() every other arm uses — never edit
+# ~/.codex/config.toml.
+#
+# STATUS (2026-09-02, WORKER-MCP-ALL-ARMS-01 R4): Codex's actual worker
+# spawn is codex-task.sh -> `node "$COMPANION"` where $COMPANION resolves to
+# ~/.claude/plugins/cache/openai-codex/**/scripts/codex-companion.mjs — a
+# third-party plugin runtime OUTSIDE this repo and outside this lane's
+# LANE_WRITES. It owns the app-server session/config construction; there is
+# no --mcp-config-equivalent flag or env passthrough for MCP servers on that
+# path today. Two independent probes, both re-run for this round:
+#
+#   1. `LEADV2_ALLOW_DIRECT_CODEX=1 codex exec --help` (this machine,
+#      2026-09-02) lists every flag the CLI accepts: `-c/--config
+#      key=value` (generic TOML overrides -- COULD in principle set
+#      `mcp_servers.*` keys), `-p/--profile`, `-m/--model`, `-C/--cd`,
+#      `--add-dir`, `-s/--sandbox`, etc. No dedicated MCP-server flag exists,
+#      and evidence: (2) shows this is moot anyway.
+#   2. codex-task.sh:50 resolves $COMPANION via
+#      `find ~/.claude/plugins/cache/openai-codex -name codex-companion.mjs
+#      -path "*/scripts/*" | sort -V | tail -1` -- on this machine that picks
+#      the 1.0.4 cache dir over 1.0.3 (both installed). evidence: `grep -c mcp
+#      ~/.claude/plugins/cache/openai-codex/codex/1.0.4/scripts/codex-companion.mjs`
+#      -> 0 (of 1027 lines) AND `grep -n 'spawn(' <same file>` -> line 643:
+#      `spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd,
+#      "--job-id", jobId], ...)`. (1.0.3's copy is byte-identical on both
+#      checks, re-confirmed this round, but 1.0.4 is the one codex-task.sh
+#      actually resolves.) The companion does not shell out to `codex exec`
+#      at all for this path -- it spawns ITS OWN script in "task-worker" mode
+#      with a fixed, non-configurable argv, so none of the flags probe (1)
+#      enumerated (including `-c`) ever reaches a codex process from here.
+#      The decision (no MCP wiring for the codex arm this round) holds on
+#      this evidence.
+#
+# Wiring live MCP injection into Codex arms therefore requires a
+# companion-side (or app-server session param) change that is out of scope
+# for this task — filed as a follow-up rather than attempted here. This file
+# stands as the documented target allowlist for that follow-up.
+
+[servers]
+names = ["codebase-memory-mcp", "repowise"]
