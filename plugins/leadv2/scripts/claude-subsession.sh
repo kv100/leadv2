@@ -1305,6 +1305,12 @@ else
       touch "$RUN_DIR/.finalized" 2>/dev/null || true
     fi
   ) &
+  # WORKER-OUTLIVES-ITS-TERMINAL-STATE-01: the close gate must not classify a
+  # dead Claude PID before this post-exit epilogue has reaped, auto-committed,
+  # and written .finalized. Keep the finalizer PID beside the existing run
+  # metadata so the close gate can wait for the actual producer lifecycle.
+  FINALIZER_PID=$!
+  printf '%s\n' "$FINALIZER_PID" > "$RUN_DIR/finalizer_pid" 2>/dev/null || true
   echo "PID=$PID LABEL=$SESSION_LABEL SESSION_ID=$SESSION_ID STREAM=$STREAM_OUT"
   exit 0
 fi

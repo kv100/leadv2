@@ -680,9 +680,55 @@ _pc_run_dir_for() { # <author> <handle> -> path on stdout
   case "${author}" in
     glm|glm-flash) run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${handle}" ;;
     kimi) run_dir="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${handle}" ;;
+    sonnet) run_dir="$(_pc_sonnet_run_dir_for_handle "${handle}")" ;;
     *)    run_dir="${_PC_RUNS_ROOT}/${author}-runs/${handle}" ;;
   esac
   printf '%s' "${run_dir}"
+}
+
+# WORKER-OUTLIVES-ITS-TERMINAL-STATE-01: claude-subsession's Sonnet handle is
+# the model PID, but its post-exit commit epilogue is a second process. Resolve
+# the run directory by the exact PID recorded by the launcher rather than by
+# the shared handoff pointer alone; the pointer can move when roles share a
+# task directory.
+_pc_claude_runs_root() {
+  if [[ -n "${LEADV2_CLAUDE_RUNS_DIR:-}" ]]; then
+    printf '%s' "${LEADV2_CLAUDE_RUNS_DIR}"
+  elif [[ -n "${LEADV2_LANE_RUNS_ROOT:-}" ]]; then
+    printf '%s/claude-runs' "${LEADV2_LANE_RUNS_ROOT}"
+  else
+    printf '%s/claude-runs' "${_PC_RUNS_ROOT}"
+  fi
+}
+
+_pc_sonnet_run_dir_for_handle() { # <pid> -> run directory, or empty
+  local handle="$1" root candidate run_id
+  [[ "${handle}" =~ ^[0-9]+$ ]] || { printf ''; return 0; }
+  root="$(_pc_claude_runs_root)"
+  [[ -d "${root}" ]] || { printf ''; return 0; }
+
+  # Fast path: the current pointer is normally this launch. Verify its pid
+  # file before trusting it, so a newer role's pointer cannot be mistaken for
+  # the worker this close gate owns.
+  run_id="$(cat "${HANDOFF}/.claude-session-runner.run-id" 2>/dev/null || true)"
+  if [[ -n "${run_id}" && "${run_id}" != */* && "${run_id}" != *..* ]]; then
+    candidate="${root}/${run_id}"
+    if [[ "$(cat "${candidate}/pid" 2>/dev/null || true)" == "${handle}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  fi
+
+  # Fallback handles shared-task pointer movement and remains bounded by the
+  # finite run-directory scan; only exact pid-file matches are accepted.
+  while IFS= read -r candidate; do
+    [[ -n "${candidate}" ]] || continue
+    if [[ "$(cat "${candidate}/pid" 2>/dev/null || true)" == "${handle}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done < <(find "${root}" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null)
+  printf ''
 }
 
 # Set global _PC_ASKED_INTO_VOID from current AUTHOR/HANDLE.  Called before the
@@ -953,6 +999,37 @@ _pc_process_alive() { # <run_dir> [meta_pid] -> 0 if any live process found
 # processes like a tail -f on the handle's log). Self/parent always excluded.
 _pc_reap_worker() { # <run_dir> [meta_pid]
   local run_dir="$1" meta_pid="${2:-}" _pid _killed=""
+
+  # WORKER-OUTLIVES-ITS-TERMINAL-STATE-01: Sonnet's model process and its
+  # commit/finalize waiter are separate processes. On the hard ceiling, stop
+  # both in a bounded order before the terminal funnel records dead/timeout;
+  # otherwise the close gate can declare the lane terminal while the finalizer
+  # is still able to write the worktree.
+  if [[ "${AUTHOR:-}" == "sonnet" && "${HANDLE:-}" =~ ^[0-9]+$ ]]; then
+    local _sonnet_run _sonnet_finalizer _waited
+    _sonnet_run="$(_pc_sonnet_run_dir_for_handle "${HANDLE}")"
+    if kill -0 "${HANDLE}" 2>/dev/null; then
+      kill -TERM "${HANDLE}" 2>/dev/null || true
+      _waited=0
+      while kill -0 "${HANDLE}" 2>/dev/null && (( _waited < 10 )); do
+        sleep 0.5
+        _waited=$((_waited + 1))
+      done
+      kill -KILL "${HANDLE}" 2>/dev/null || true
+    fi
+    _sonnet_finalizer="$(cat "${_sonnet_run}/finalizer_pid" 2>/dev/null || true)"
+    if [[ "${_sonnet_finalizer}" =~ ^[0-9]+$ ]]; then
+      _waited=0
+      while kill -0 "${_sonnet_finalizer}" 2>/dev/null && (( _waited < 10 )); do
+        sleep 0.5
+        _waited=$((_waited + 1))
+      done
+      kill -KILL "${_sonnet_finalizer}" 2>/dev/null || true
+    fi
+    emit decision "product_close task=${TASK:-} worker_reaped sonnet_pid=${HANDLE} finalizer_pid=${_sonnet_finalizer:-unknown}"
+    return 0
+  fi
+
   local -A _skip=( ["$$"]=1 ["$PPID"]=1 )
   local -a _bare_pids=()   # pids signalled as bare pids (meta_pid, lock_dir/pid)
   local -a _grp_pids=()    # process-group ids signalled with negative sign (pgid files)
@@ -1020,6 +1097,17 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
     sonnet)
       if [[ "${HANDLE}" =~ ^[0-9]+$ ]]; then
         kill -0 "${HANDLE}" 2>/dev/null && return 0
+        # Claude's model PID can exit before the detached inline finalizer
+        # finishes the scoped auto-commit. A run with no .finalized marker is
+        # still owned by the worker lifecycle, so keep the terminal funnel
+        # closed until the finalizer has finished or the hard ceiling reaps it.
+        run_dir="$(_pc_sonnet_run_dir_for_handle "${HANDLE}")"
+        if [[ -n "${run_dir}" ]]; then
+          [[ -f "${run_dir}/.finalized" ]] && return 1
+          pid="$(cat "${run_dir}/finalizer_pid" 2>/dev/null || true)"
+          [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null && return 0
+          return 0
+        fi
         return 1
       fi
       ;;
@@ -1419,6 +1507,12 @@ _pc_worker_process_alive() {  # -> rc0 iff a worker process for AUTHOR/HANDLE is
   [[ -n "${HANDLE:-}" ]] || return 1
   if [[ "${AUTHOR}" == "sonnet" && "${HANDLE}" =~ ^[0-9]+$ ]]; then
     kill -0 "${HANDLE}" 2>/dev/null && return 0
+    local sonnet_run_dir sonnet_finalizer_pid
+    sonnet_run_dir="$(_pc_sonnet_run_dir_for_handle "${HANDLE}")"
+    if [[ -n "${sonnet_run_dir}" && ! -f "${sonnet_run_dir}/.finalized" ]]; then
+      sonnet_finalizer_pid="$(cat "${sonnet_run_dir}/finalizer_pid" 2>/dev/null || true)"
+      [[ "${sonnet_finalizer_pid}" =~ ^[0-9]+$ ]] && kill -0 "${sonnet_finalizer_pid}" 2>/dev/null && return 0
+    fi
     return 1
   fi
   local run_dir meta_pid

@@ -177,10 +177,11 @@ _dod_check_a() {
 # check (b) — every brief "paste" line has a matching fenced block in
 # report.md under a heading that names it (token-overlap heuristic,
 # threshold tunable — CHALLENGE-16). Mutation-control paste-lines additionally
-# require a grounded artifact file whose diff_hash matches `git diff <base>
-# HEAD` over the lane's own committed history (CHALLENGE-07: never a
-# prose-sentinel grep; fix-round-2 finding 1: never sha256(diff_file) either
-# — that file is a post-exit artifact no worker could ever reproduce).
+# require a grounded artifact file with a non-empty diff_hash for the actual
+# applied mutation and a lane_diff_hash matching `git diff <base> HEAD` over
+# the lane's own committed history (CHALLENGE-07: never a prose-sentinel grep;
+# fix-round-2 finding 1: never sha256(diff_file) either — that file is a
+# post-exit artifact no worker could ever reproduce).
 # Returns: 0 pass, 1 fail, 2 undetermined (a mutation-control line is present
 # but no merge-base was resolvable, so the required hash itself is
 # undetermined), 3 skip (no paste lines in brief.md at all).
@@ -250,27 +251,30 @@ _dod_report_sections() { # <report_md> -> stdout rows, \x01-joined (heading, has
 # backed by a leadv2-mutation-control.sh artifact, not asserted prose").
 # Require the artifact's full shape as leadv2-mutation-control.sh's own §7
 # writer produces it (suite=, file=, baseline_rc=0 exactly, a numeric
-# mutated_rc that is NOT 0 — the suite must have gone red — and diff_hash=
-# matching THIS round's diff). This is not unforgeable — a worker could
-# still hand-write all five lines correctly — but it is no longer a
-# one-line forgery; see report.md's "what this still does not catch"
-# section for the honest limit.
+# mutated_rc that is NOT 0 — the suite must have gone red — diff_hash= for the
+# actual mutation, and lane_diff_hash= matching THIS round's diff). This is not
+# unforgeable — a worker could still hand-write all fields correctly — but it
+# is no longer a one-line forgery; see report.md's "what this still does not
+# catch" section for the honest limit.
 _dod_valid_mutation_artifact() { # <artifact_file> <expected_diff_hash> -> rc 0=valid
   local f="$1" expected="$2"
   [[ -f "${f}" ]] || return 1
   [[ -n "${expected}" ]] || return 1
-  local suite file baseline_rc mutated_rc artifact_hash
+  local suite file baseline_rc mutated_rc artifact_hash lane_hash
   suite="$(sed -n 's/^suite=//p' "${f}" | head -1)"
   file="$(sed -n 's/^file=//p' "${f}" | head -1)"
   baseline_rc="$(sed -n 's/^baseline_rc=//p' "${f}" | head -1)"
   mutated_rc="$(sed -n 's/^mutated_rc=//p' "${f}" | head -1)"
   artifact_hash="$(sed -n 's/^diff_hash=//p' "${f}" | head -1)"
+  lane_hash="$(sed -n 's/^lane_diff_hash=//p' "${f}" | head -1)"
   [[ -n "${suite}" ]] || return 1
   [[ -n "${file}" ]] || return 1
   [[ "${baseline_rc}" == "0" ]] || return 1
   [[ "${mutated_rc}" =~ ^[0-9]+$ ]] || return 1
   [[ "${mutated_rc}" != "0" ]] || return 1
-  [[ "${artifact_hash}" == "${expected}" ]] || return 1
+  [[ "${artifact_hash}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "${artifact_hash}" != e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]] || return 1
+  [[ "${lane_hash}" == "${expected}" ]] || return 1
   return 0
 }
 

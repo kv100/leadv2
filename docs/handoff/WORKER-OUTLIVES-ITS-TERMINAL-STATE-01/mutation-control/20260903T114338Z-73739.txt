@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-worker-outlives-terminal-state.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-code.sh
+anchor=/^[[:space:]]*candidate_handle=.*_dispatch_normalize_handle/ d
+baseline_rc=0
+mutated_rc=1
+red_line=FAIL: continuation path omits raw-handle normalization
+diff_hash=3627183f5e7817e56c8ae67d4eca776e7bcf9c28d148e3da64b4f90483c28ec6
+lane_diff_hash=25248b72d3bcdf801c8baf3dc6cc010ac95d2a0665bb8c822da48a11a2967500
