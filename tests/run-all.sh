@@ -362,7 +362,11 @@ leadv2-worker-epilogue.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-helpers.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-lane-outcome.sh:plugins/leadv2/scripts/tests/test-worker-dod-gate.sh
 leadv2-dispatch-product-close.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
-leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh"
+leadv2-phase8-e2e-gate.sh:plugins/leadv2/scripts/tests/test-e2e-timeout-classification.sh
+# MYTHICALGAMES-REPOS-HAVE-NO-OVERRIDES-01: suite name drops the leadv2-
+# prefix the stem convention expects (test-leadv2-mythicalgames-overrides-gen.sh),
+# so --scope changed needs an explicit row to still select it.
+leadv2-mythicalgames-overrides-gen.sh:plugins/leadv2/scripts/tests/test-mythicalgames-overrides-gen.sh"
 
 if [[ "${SCOPE}" == "all" ]]; then
   while IFS= read -r f; do add_suite "$f"; done < <(
