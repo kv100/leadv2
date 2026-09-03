@@ -83,3 +83,35 @@ silently.
 A file placed under `docs/handoff/<id>/` looks saved and is not: four wave-3 briefs lived on local
 disk only until a lead noticed. Name artifacts `brief*.md`, use `git add -f`, and confirm with
 `git ls-files` by eye.
+
+## Fourth barrier, and it masks itself: `rc=0` from dispatch does not mean a live worker
+
+Measured 2026-09-03 by two sessions independently.
+
+Session c2's resume script returned `rc=0` for CODE-INTEL and LANE-MERGE — workers were genuinely
+spawned. Minutes later a status generator counting liveness by PID reported **both dead**. Of seven
+wave-0 lanes, one survived. Session fb: of five wave-3 lanes, two alive — and both figures were
+taken *after* a successful dispatch.
+
+So lanes do not merely "fail to start". They start, report success, and die inside a window of
+minutes. Any check that trusts the dispatcher's exit code will cheerfully report "raised" about a
+graveyard — c2's own resume script did exactly that until it recounted by PID.
+
+**Constraint for D3:** a lane is never marked live because a dispatch returned 0. Liveness is only
+ever the PID answer from D2's pinned function. Add this to the suite: a fixture where dispatch
+returns 0 and the worker is then `SIGKILL`ed must be reported **dead**, not live.
+
+The three previously-named barriers to a resume — the lead-session lane cap, the dedup ledger's
+`duplicate_task_signature` on re-submitting the same mission, and the stale registry row — plus this
+fourth one all present identically to an operator: "the lane just didn't come up." D3 must make them
+distinguishable in whatever it writes, or every future lead re-derives them one at a time as this
+session did.
+
+## Blocking acceptance item, not a preference
+
+**D3 must consume D2's pinned liveness function. A second opinion about liveness fails acceptance.**
+
+This is a gate, not a wish. If D3 ships its own `ps`, its own PID walk, or its own mtime check, the
+system has two verdicts about whether a lane is alive, and we land back exactly here — with the two
+disagreeing and no way to tell which lied. Reviewer: reject the diff if it computes liveness itself
+anywhere, however small the helper looks.
