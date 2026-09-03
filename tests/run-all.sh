@@ -170,6 +170,12 @@ leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-brain-class-live.sh
 leadv2-brain-record:plugins/leadv2/scripts/tests/test-brain-class-live.sh
 leadv2-admission-class:plugins/leadv2/scripts/tests/test-brain-class-live.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-route-arbiter-symlink-install.sh
+# CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01: the arbiter's wait-vs-switch
+# rule (near-reset over-ceiling providers stay in the chain instead of being
+# forced to switch) lives entirely inside leadv2-route-arbiter.sh -- map it
+# here since the stem-convention candidate would be test-leadv2-route-
+# arbiter.sh, not this suite's actual name.
+leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-quota-reset-arbiter.sh
 codex-task.sh:plugins/leadv2/scripts/tests/test-codex-longrun.sh
 leadv2-dispatch-code:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
 leadv2-route-arbiter:plugins/leadv2/scripts/tests/test-freepool-capability-floor.sh
