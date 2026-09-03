@@ -128,6 +128,32 @@ else
   fail "case3: expected exactly 1 glm-flash attached row after --since filter, got: ${OUT3}"
 fi
 
+
+# ---------------------------------------------------------------------------
+# Case 4: a decision line with a mode/reason this script doesn't recognize
+# yet (future arm state) is bucketed as "other", not silently dropped, and
+# does not corrupt the MCP-capable attach-rate denominator (which only
+# counts attached + fail_open).
+# ---------------------------------------------------------------------------
+OTHER_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ci-rate-other.XXXXXX")"
+CLEANUP_PATHS+=("${OTHER_ROOT}")
+mkdir -p "${OTHER_ROOT}/docs/leadv2/tasks/dispatch-ddd44444"
+cat > "${OTHER_ROOT}/docs/leadv2/tasks/dispatch-ddd44444/journal.md" <<'EOF'
+- 2026-09-03T05:00:00Z [decision] code_intel_preamble arm=kimi task=ddd44444 mode=deferred reason=quota_hold
+- 2026-09-03T05:00:01Z [decision] code_intel_preamble arm=glm task=ddd44444 mode=attached
+EOF
+OUT4="$(LEADV2_CODE_INTEL_RATE_ROOT="${OTHER_ROOT}" bash "${TARGET}")"
+if echo "${OUT4}" | grep -qE "^kimi +other +1$"; then
+  pass "case4: unrecognized mode bucketed as 'other', not dropped"
+else
+  fail "case4: expected 'kimi other 1' row, got: ${OUT4}"
+fi
+if echo "${OUT4}" | grep -qE "attach rate among MCP-capable arms.*1/1 = 100%"; then
+  pass "case4: 'other' row excluded from MCP-capable attach-rate denominator"
+else
+  fail "case4: expected '1/1 = 100%' attach-rate line (other-mode row must not inflate denominator), got: ${OUT4}"
+fi
+
 echo
 echo "=== SUMMARY: ${PASS} passed, ${FAIL} failed ==="
 if [[ ${FAIL} -gt 0 ]]; then
