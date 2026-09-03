@@ -60,3 +60,20 @@ reads this var.
 ROLLBACK (one step): unset `LEADV2_PROMISE_GUARD_BLOCK` (or set it back to `"0"`). The
 hook falls back to log-only immediately on the next Stop event; no state to clean up,
 the journal keeps accumulating either way.
+
+## SD-WORKER-OUTLIVES-VERIFY-01 — прогнать гейты на спасённой работе линии WORKER-OUTLIVES
+- **Due:** условие — освободилась одна из двух живых линий (`E2E-TIMEOUT-REPORTED-AS-REGRESSION-01`
+  или `LEAD-IS-OPUS-THINK-IS-FABLE-01` дошла до слияния). WIP=2, третью не открываем.
+- **GO:** у одной из двух линий появился `dispatch_terminal task=<sig> terminal=landed`, ИЛИ её
+  ветка слита в `main` (`git -C ~/Projects/leadv2 log --oneline main | grep <task-id>`).
+- **Action:** `LEADV2_PROJECT_ROOT=~/Projects/leadv2 bash plugins/leadv2/scripts/leadv2-dispatch-code.sh
+  --task-id WORKER-OUTLIVES-ITS-TERMINAL-STATE-01 --resume-lane --kind codex_fitting_dev` с миссией:
+  «работа уже закоммичена как `adf89c9b`, гейты по ней НЕ прогонялись; выполнить пункты 4–6 брифа —
+  негативный контроль на каждое из трёх исправлений, зелёное на macOS и в Linux-контейнере,
+  доказать что `--scope changed` выбирает сюиту». Перед этим очистить четыре хранилища
+  (session-id, receipt, active.yaml, lock) — память `reference_redispatch_needs_four_stores_cleared`.
+- **Rollback:** один шаг — `git revert adf89c9b` внутри линии, если негативный контроль покажет,
+  что спасённая работа неверна.
+- **Why:** воркер умер, держа 23 файла несохранённой работы; лид спас их дословно коммитом
+  `adf89c9b`, но собственные гейты линии по этой работе не проходили ни разу. «Закоммичено» без
+  гейта — это лгущая зелёнка. Третий за ночь случай ровно той болезни, которую сама линия и чинит.
