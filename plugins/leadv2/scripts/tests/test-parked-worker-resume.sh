@@ -32,7 +32,7 @@ contract_case() { # <scripts>
   body="$(awk '/^_spawn_worker_body\(\) \{/{p=1} p{print} p && /^}/{exit}' "${s}/leadv2-dispatch-code.sh")"
   grep -q '_LEADV2_FOREGROUND_CONTRACT_MISSION' "${s}/leadv2-helpers.sh" \
     && grep -q '_LEADV2_FOREGROUND_CONTRACT_MISSION' <<<"${body}" \
-    && grep -q 'glm)' <<<"${body}" && grep -q 'kimi)' <<<"${body}" \
+    && grep -q 'glm|glm-flash)' <<<"${body}" && grep -q 'kimi)' <<<"${body}" \
     && grep -q 'sonnet)' <<<"${body}" && grep -q 'codex)' <<<"${body}" \
     && [[ "$(grep -n '_LEADV2_FOREGROUND_CONTRACT_MISSION' <<<"${body}" | head -1 | cut -d: -f1)" -lt "$(grep -n '_LEADV2_EVIDENCE_CONTRACT_MISSION' <<<"${body}" | head -1 | cut -d: -f1)" ]]
 }

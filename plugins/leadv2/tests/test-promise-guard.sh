@@ -71,11 +71,17 @@ print(json.dumps({"type":"user","message":{"role":"user","content":[{"type":"too
 }
 
 # run_case <fixture_lines...> -> stdout = hook stdout
+#
+# PROMISE-GUARD-BIND-01: the hook now ships log-only by default
+# (LEADV2_PROMISE_GUARD_BLOCK=0) — it journals a "fired" verdict but never
+# emits decision:block. This file tests the DETECTION/BINDING decision
+# itself, so it opts into block-mode explicitly; the log-only default is
+# covered separately (case 13 below).
 run_case() {
   local fixture="$TMP/f.jsonl"
   write_fixture "$fixture" "$@"
   printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s"}' "$SID" "$fixture" "$TMP" \
-    | env LEADV2_PROMISE_GUARD_TRANSCRIPT="$fixture" bash "$SCRIPT" 2>/dev/null || true
+    | env LEADV2_PROMISE_GUARD_BLOCK=1 LEADV2_PROMISE_GUARD_TRANSCRIPT="$fixture" bash "$SCRIPT" 2>/dev/null || true
 }
 
 # run_case_env <env_assign> <fixture_lines...>
@@ -84,7 +90,7 @@ run_case_env() {
   local fixture="$TMP/f.jsonl"
   write_fixture "$fixture" "$@"
   printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","stop_hook_active":false}' "$SID" "$fixture" "$TMP" \
-    | env $env_assign LEADV2_PROMISE_GUARD_TRANSCRIPT="$fixture" bash "$SCRIPT" 2>/dev/null || true
+    | env LEADV2_PROMISE_GUARD_BLOCK=1 $env_assign LEADV2_PROMISE_GUARD_TRANSCRIPT="$fixture" bash "$SCRIPT" 2>/dev/null || true
 }
 
 expect_fires() {  # $1 = label, $2 = actual stdout
@@ -129,9 +135,13 @@ expect_silent "5: «сделал» alone -> silent (commitment-triggered, not ar
 OUT="$(run_case "$(mk_user_real "go")" "$(mk_assistant_tool Bash "ls -la")")"
 expect_silent "6: tool-only turn, no final text -> silent" "$OUT"
 
-# --- Case 7: Edit in earlier assistant record, final text-only + I'll dispatch -> silent (turn-boundary regression)
+# --- Case 7: Edit (write-kind) earlier + final text promise "I'll dispatch" -> FIRES
+# PROMISE-GUARD-BIND-01: this used to assert silent — turn-wide "any action
+# suppresses" is exactly the defect PROMISE-GUARD-SUPPRESSED-BY-ANY-TOOL-CALL-01
+# named. The promise's kind (dispatch) is classifiable and no dispatch-kind
+# action occurred in the turn (only a write), so binding must now fire.
 OUT="$(run_case "$(mk_user_real "go")" "$(mk_assistant_tool Edit "")" "$(mk_assistant_text "$PROMISE_EN")")"
-expect_silent "7: Edit in earlier record + final text promise -> silent (turn-boundary)" "$OUT"
+expect_fires "7: Edit (write) + 'I'll dispatch' promise -> FIRES (kind mismatch)" "$OUT"
 
 # --- Case 8: «сейчас проверил логи», no tools -> silent (past-tense) -------
 OUT="$(run_case "$(mk_user_real "go")" "$(mk_assistant_text "сейчас проверил логи")")"
@@ -155,12 +165,45 @@ fi
 FIXTURE="$TMP/f11.jsonl"
 write_fixture "$FIXTURE" "$(mk_user_real "go")" "$(mk_assistant_text "$PROMISE_RU")"
 OUT="$(printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","stop_hook_active":true}' "$SID" "$FIXTURE" "$TMP" \
-     | env LEADV2_PROMISE_GUARD_TRANSCRIPT="$FIXTURE" bash "$SCRIPT" 2>/dev/null || true)"
+     | env LEADV2_PROMISE_GUARD_BLOCK=1 LEADV2_PROMISE_GUARD_TRANSCRIPT="$FIXTURE" bash "$SCRIPT" 2>/dev/null || true)"
 expect_silent "11: stop_hook_active=true -> silent (anti-loop)" "$OUT"
 
 # --- Case 12: LEADV2_PROMISE_GUARD=0 + case-1 text -> silent (kill switch) -
 OUT="$(run_case_env "LEADV2_PROMISE_GUARD=0" "$(mk_user_real "go")" "$(mk_assistant_text "$PROMISE_RU")")"
 expect_silent "12: LEADV2_PROMISE_GUARD=0 kill switch -> silent" "$OUT"
+
+# --- Case 13: dispatch-kind promise + matching Agent action -> silent ------
+# PROMISE-GUARD-BIND-01: the "matching kind" half of the binding fixture pair
+# (mission requires both matching-kind-passes and mismatched-kind-fires).
+PROMISE_DISPATCH="I'll dispatch the worker now"
+OUT="$(run_case "$(mk_user_real "go")" "$(mk_assistant_tool Agent "")" "$(mk_assistant_text "$PROMISE_DISPATCH")")"
+expect_silent "13: dispatch promise + Agent (matching kind) -> silent" "$OUT"
+
+# --- Case 14: dispatch-kind promise + ONLY a commit action -> FIRES --------
+# The mismatched-kind half: git commit is *an* action, but not the promised
+# kind, so it must not suppress. This is the direct manifestation of
+# PROMISE-GUARD-SUPPRESSED-BY-ANY-TOOL-CALL-01.
+OUT="$(run_case "$(mk_user_real "go")" "$(mk_assistant_tool Bash "git commit -m x")" "$(mk_assistant_text "$PROMISE_DISPATCH")")"
+expect_fires "14: dispatch promise + git commit (mismatched kind) -> FIRES" "$OUT"
+
+# --- Case 15: log-only default (LEADV2_PROMISE_GUARD_BLOCK unset) ----------
+# Same shape as case 1 (bare promise, zero tools -> would fire), but run
+# WITHOUT the BLOCK=1 override this file otherwise applies via run_case. Must
+# stay silent on stdout (no decision:block) while still journaling
+# verdict=fired -- that journal row is the evidence the flip decision reads.
+JOURNAL="$TMP/journal-home/.claude/leadv2-promise-guard.jsonl"
+LOGONLY_HOME="$TMP/journal-home"
+mkdir -p "$LOGONLY_HOME/.claude"
+FIXTURE15="$TMP/f15.jsonl"
+write_fixture "$FIXTURE15" "$(mk_user_real "go")" "$(mk_assistant_text "$PROMISE_RU")"
+OUT="$(printf '{"session_id":"logonly-1","transcript_path":"%s","cwd":"%s"}' "$FIXTURE15" "$TMP" \
+     | env HOME="$LOGONLY_HOME" LEADV2_PROMISE_GUARD_TRANSCRIPT="$FIXTURE15" bash "$SCRIPT" 2>/dev/null || true)"
+expect_silent "15a: log-only default -> stdout silent (no block)" "$OUT"
+if [[ -f "$JOURNAL" ]] && grep -q '"verdict": *"fired"' "$JOURNAL"; then
+  pass "15b: log-only default -> journal row verdict=fired"
+else
+  fail "15b: expected a verdict=fired journal row at $JOURNAL"
+fi
 
 printf -- '\n%d/%d pass\n' "$PASS" "$(( PASS + FAIL ))"
 [[ "$FAIL" -eq 0 ]]

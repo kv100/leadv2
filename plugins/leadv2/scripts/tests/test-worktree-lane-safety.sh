@@ -28,7 +28,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="${SCRIPT_DIR}/../../hooks/leadv2-merged-worktree-sweep.sh"
 CLEANUP="${SCRIPT_DIR}/../leadv2-worktree-cleanup.sh"
-CLOSE_SH="${SCRIPT_DIR}/../leadv2-dispatch-product-close.sh"
+LANE_GUARD="${SCRIPT_DIR}/../lib/leadv2-lane-guard.sh"
 
 PASS=0; FAIL=0; GREEN_PRE_FIX=0
 declare -a ERRORS=()
@@ -97,6 +97,71 @@ _active_with_session() { # <repo> [pid]
     printf "  branch: worktree-lane\n  started_at: '2020-01-01T00:00:00Z'\n"
     [[ -n "$pid" ]] && printf '  pid: %s\n' "$pid"
   } > "$d/state/active.yaml"
+}
+
+# P13 uses the helper directly: the active-row probe deliberately protects any
+# registration, so only the pid-specific helper can prove PID reuse handling.
+case_p13_pid_reuse_not_live() {
+  local repo="${WORK}/p13-$RANDOM$RANDOM" live_birth
+  _mk "$repo" || return 2
+  live_birth="$(ps -o lstart= -p $$ | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//')"
+  cat > "$repo/state/active.yaml" <<YAML
+sessions:
+  - task_id: lane
+    worktree: $repo/.claude/worktrees/lane
+    pid: $$
+    pid_birth: "$live_birth"
+YAML
+  export LEADV2_STATE_ROOT="$repo/state"
+  source "${SCRIPT_DIR}/../lib/leadv2-worktree-protected.sh"
+  lv2_wt_protect_prime "$repo"
+  _lv2_wt_pid_alive lane || return 1
+  cat > "$repo/state/active.yaml" <<YAML
+sessions:
+  - task_id: lane
+    worktree: $repo/.claude/worktrees/lane
+    pid: $$
+    pid_birth: "Wed Jan  1 00:00:00 2020"
+YAML
+  lv2_wt_protect_prime "$repo"
+  ! _lv2_wt_pid_alive lane
+}
+
+# P14: a drifted copy of the gate without lib/leadv2_pid_birth.py must
+# DEGRADE to the inline rule, not exit 3 (R4 import contract). Pre-fix, the
+# pid-birth import shared the yaml try/except, so a drifted lib turned EVERY
+# probe into control-plane-unreadable. Simulate drift with a temp-dir copy
+# whose lib/ lacks the module — never rename the canonical file.
+case_p14_pid_birth_lib_absent_degrades() {
+  local repo="${WORK}/p14-$RANDOM$RANDOM" drift="${WORK}/p14-drift-$RANDOM$RANDOM" live_birth
+  _mk "$repo" || return 2
+  live_birth="$(ps -o lstart= -p $$ | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//')"
+  cat > "$repo/state/active.yaml" <<YAML
+sessions:
+  - task_id: lane
+    worktree: $repo/.claude/worktrees/lane
+    pid: $$
+    pid_birth: "$live_birth"
+YAML
+  mkdir -p "$drift/lib"
+  cp "${SCRIPT_DIR}/../lib/leadv2-worktree-protected.sh" "$drift/lib/"
+  # The gate resolves its state-path sibling relative to its own location.
+  cp "${SCRIPT_DIR}/../leadv2-state-path.sh" "$drift/"
+  export LEADV2_STATE_ROOT="$repo/state"
+  source "$drift/lib/leadv2-worktree-protected.sh"
+  lv2_wt_protect_prime "$repo"
+  [[ -z "$LV2_WT_PROTECT_ERR" ]] || return 1
+  _lv2_wt_pid_alive lane || return 1
+  cat > "$repo/state/active.yaml" <<YAML
+sessions:
+  - task_id: lane
+    worktree: $repo/.claude/worktrees/lane
+    pid: $$
+    pid_birth: "Wed Jan  1 00:00:00 2020"
+YAML
+  lv2_wt_protect_prime "$repo"
+  [[ -z "$LV2_WT_PROTECT_ERR" ]] || return 1
+  ! _lv2_wt_pid_alive lane
 }
 
 _run() { # <kind:hook|dead> <bin> <repo>  (env: caller-exported)
@@ -224,7 +289,7 @@ case_p9_no_gutting() { # <kind> <bin>
 case_p10_twin() {
   local a b
   a="$(grep -oE "_MW_ORCH_RE='[^']*'" "${HOOK}" 2>/dev/null | head -1 | sed "s/^_MW_ORCH_RE=//")"
-  b="$(grep -oE "_PC_PORCELAIN_EXCLUDE_RE='[^']*'" "${CLOSE_SH}" 2>/dev/null | head -1 | sed "s/^_PC_PORCELAIN_EXCLUDE_RE=//")"
+  b="$(grep -oE "_PC_PORCELAIN_EXCLUDE_RE='[^']*'" "${LANE_GUARD}" 2>/dev/null | head -1 | sed "s/^_PC_PORCELAIN_EXCLUDE_RE=//")"
   [[ -n "$a" && -n "$b" && "$a" == "$b" ]]
 }
 
@@ -302,6 +367,20 @@ for kind in hook dead; do
   run_case "P12-min-age-s-precedence(${kind})"      case_p12_min_age_s_precedence "$kind"
 done
 run_case "P9-failed-removal-never-guts(hook)"        case_p9_no_gutting hook
+
+if case_p13_pid_reuse_not_live; then
+  PASS=$((PASS + 1)); log "RED-then-GREEN: P13-pid-reuse-is-not-live"
+else
+  FAIL=$((FAIL + 1)); ERRORS+=("P13-pid-reuse-is-not-live")
+  log "FAIL: P13-pid-reuse-is-not-live"
+fi
+
+if case_p14_pid_birth_lib_absent_degrades; then
+  PASS=$((PASS + 1)); log "RED-then-GREEN: P14-pid-birth-lib-absent-degrades"
+else
+  FAIL=$((FAIL + 1)); ERRORS+=("P14-pid-birth-lib-absent-degrades")
+  log "FAIL: P14-pid-birth-lib-absent-degrades"
+fi
 
 if case_p10_twin; then
   PASS=$((PASS + 1)); log "RED-then-GREEN: P10-twin-regex-unchanged"

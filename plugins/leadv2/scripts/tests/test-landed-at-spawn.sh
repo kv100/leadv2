@@ -193,7 +193,9 @@ fi
 # ════════════════════════════════════════════════════════════════════════════
 setup_env
 # Exclude ALL arms → pre-spawn refusal (all_arms_excluded)
-export LEADV2_EXCLUDED_ARMS="glm kimi codex sonnet"
+# GLM-53-FLASH-ARM-01: glm-flash joined the dispatchable set — excluding the
+# old four leaves it as the last arm standing and the refusal never happens.
+export LEADV2_EXCLUDED_ARMS="glm glm-flash kimi codex sonnet"
 
 MISSION_B="LAS01-T-b: refactor the plugin cache validator scripts/sync.sh"
 SIG_B="$(printf '%s' "${MISSION_B}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print $1}')"

@@ -148,6 +148,29 @@ lane_dir()    { printf '%s/.claude/worktrees' "$ROOT"; }
 phys() { ( cd "$1" 2>/dev/null && pwd -P ) 2>/dev/null || printf '%s' "$1"; }
 
 # --- ops ---------------------------------------------------------------------
+# WORKTREE-RESURRECTOR-02 (T16 §11): 0 = allow creation, 1 = refuse. The lane's
+# worktree was removed but its branch survived (the dead-lane sweeps keep
+# unmerged branches for merge triage); any later `ensure` for the same id used
+# to silently re-attach a fresh worktree to that branch, resurrecting dead
+# lanes (20 dirs / 132 branches accumulated by 2026-08-27). Re-creation is now
+# allowed ONLY for a lane that is BOTH registered in active.yaml AND has a
+# live pid — a lane a dispatcher/runner is actively (re)driving, which
+# registers itself before spawning. Reuses the sweeper-protection lib's ONE
+# primed view of the control plane (no second reader). Fail-open on any
+# infrastructure absence: kill switch, missing lib, unreadable active.yaml.
+resurrection_allowed() { # <task_id>
+  local tid="$1" lib
+  [[ "${LEADV2_LANE_RESURRECT_GUARD:-1}" == "0" ]] && return 0
+  lib="$(dirname "${BASH_SOURCE[0]}")/lib/leadv2-worktree-protected.sh"
+  [[ -f "$lib" ]] || return 0
+  # shellcheck source=lib/leadv2-worktree-protected.sh
+  source "$lib" || return 0
+  lv2_wt_protect_prime "$ROOT" >/dev/null 2>&1
+  [[ -z "$LV2_WT_PROTECT_ERR" ]] || return 0
+  _lv2_wt_pid_alive "$tid" && return 0
+  return 1
+}
+
 # ensure <task_id> [class]
 cmd_ensure() {
   local task_id="${1:-}"
@@ -170,6 +193,15 @@ cmd_ensure() {
   local lane_path="$wt_dir/$task_id"
   local branch; branch="$(lane_branch "$task_id")"
 
+  # T11-D2: prune BEFORE the idempotent reuse check below -- a stale git admin entry
+  # (.git/worktrees/<id>) whose directory was deleted by a crashed prior attempt would
+  # otherwise still satisfy the reuse check's `worktree list --porcelain` grep, handing
+  # back a lane_path with no real worktree at all (live-verified 2026-08-26 on lane
+  # 92484d63: active.yaml recorded branch=main, no .claude/worktrees/92484d63/.git
+  # existed). A live worktree's admin entry always has an intact directory, so prune
+  # never touches it.
+  git -C "$ROOT" worktree prune 2>/dev/null || true
+
   # Idempotent: an existing linked worktree is reused as-is. Compare on the
   # PHYSICAL path — git reports /private/var on macOS, not the /var we passed.
   if [[ -d "$lane_path" ]] && git -C "$ROOT" worktree list --porcelain 2>/dev/null | grep -q "^worktree $(phys "$lane_path")\$"; then
@@ -180,11 +212,44 @@ cmd_ensure() {
     return 0
   fi
 
+  # WORKTREE-RESURRECTOR-02 (T16 §11): no worktree here, but the lane's branch
+  # survived a sweep — this `ensure` is a RE-create of a known lane, not a
+  # fresh dispatch. Refuse unless the lane is live (registered + live pid).
+  # On refusal ensure falls back to the shared root per its never-block
+  # contract; fanout/fork-session assert isolated lanes and refuse to spawn,
+  # so a dead lane is never silently re-run. Fresh ids (no surviving branch)
+  # never reach this gate.
+  if [[ ! -d "$lane_path" ]] \
+     && git -C "$ROOT" rev-parse --verify -q "refs/heads/${branch}" >/dev/null 2>&1 \
+     && ! resurrection_allowed "$task_id"; then
+    log_error "ensure: resurrection refused for task=$task_id (branch ${branch} exists but lane not live in active.yaml — WORKTREE-RESURRECTOR-02) — FALLING BACK to shared tree"
+    fallback
+    return 0
+  fi
+
   local base; base="${LEADV2_LANE_BASE:-$(pick_base)}"
   mkdir -p "$wt_dir"
 
+  # T11-D2 cont'd: the prune above cleared any stale git admin entry; what's left here
+  # is a non-git leftover directory (state dirs, no .git) that isn't registered with git
+  # at all. `worktree add` refuses a non-empty target, so clear it -- prune already ruled
+  # out that git still considers this path a live worktree.
+  if [[ -e "$lane_path" ]] && ! git -C "$ROOT" worktree list --porcelain 2>/dev/null | grep -q "^worktree $(phys "$lane_path")\$"; then
+    rm -rf -- "$lane_path"
+  fi
+
+  # T11-F2: the branch is born with one empty anchor commit ("lane <id> anchor"),
+  # so the lane is provably 1 commit ahead of default from birth (it merges
+  # cleanly later -- an empty commit never conflicts). The "dead + truly-empty
+  # lane -> swept" fast path this was previously dropped for
+  # (test-lane-worktree-isolation.sh, leadv2-worktree-cleanup.sh --sweep-dead /
+  # --name) is NOT regressed: both now recognize a sole ahead=1 commit whose
+  # subject matches the anchor pattern as still-empty for GC purposes, so a
+  # genuinely dead/untouched lane stays sweepable without --force.
+  #
   # Fresh branch from base + linked worktree.
   if git -C "$ROOT" worktree add -b "$branch" "$lane_path" "$base" >>"$ERRF" 2>&1; then
+    git -C "$lane_path" commit --allow-empty -m "lane ${task_id} anchor" >>"$ERRF" 2>&1 || true
     codex_trust_worktree "$lane_path"
     printf '%s\n' "$lane_path"
     return 0

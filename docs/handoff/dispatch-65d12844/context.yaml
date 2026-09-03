@@ -1,0 +1,8 @@
+task: CLASS-IS-COMPUTED-NOT-DECLARED-01
+decisions:
+  - "class is computed from LANE_WRITES, subsystem count and prod/safety touch, not declared"
+  - "--task-class may raise, never lower; a lower flag is refused naming both classes"
+  - "any surviving downgrade path is recorded with a reason and surfaced in the beat"
+  - "close-time recompute records declared/computed/actual so systematic downgrades become visible"
+  - "every class must keep a passable honest route; an unpassable gate manufactures cheating"
+off_limits: ["making any class unreachable", "a warning instead of a refusal"]

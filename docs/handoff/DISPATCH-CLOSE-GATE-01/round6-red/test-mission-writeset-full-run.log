@@ -1,0 +1,23 @@
+PASS: extract: Done-means backtick path captured
+PASS: extract: second Done-means backtick path captured
+PASS: extract: citation-only path excluded (see/described in)
+PASS: extract: 'write ... to' instruction captured
+PASS: extract: 'leave the logs in' instruction captured
+PASS: missing: uncovered path named
+PASS: missing: citation-only mission has nothing missing
+PASS: missing: directory-prefix LANE_WRITES covers nested Done-means paths
+PASS: missing: glob LANE_WRITES covers Done-means paths
+PASS: suggest_line: appends missing paths to existing LANE_WRITES
+PASS: CLI: refuses with exit non-zero and names the missing path
+PASS: CLI: a citation-only mission dispatches normally (exit 0)
+PASS: control CITE: mutated lib leaks citation path into required -> caught (would be red)
+PASS: control COVERAGE: mutated lib always reports covered -> caught (would be red)
+PASS: C1: per-file consumer symlink starts with canonical mission/red-proof libraries
+PASS: C4: mission writeset enforcement defaults to opt-in (0)
+PASS: wiring: architect_prepass itself refuses a non-covering mission
+PASS: control WIRING: removing all 3 call sites -> architect_prepass no longer refuses (caught, would be red)
+PASS: specimen: fix-round-4.md (real corrected mission) dispatches normally
+PASS: specimen: pre-correction fix-round-5.md refused, names lib/leadv2-lane-guard.sh
+PASS: usage: --help stderr has no unescaped-backtick command-not-found artifact
+PASS: control USAGE: reverting the backtick escaping reproduces the error -> caught (would be red)
+SUMMARY: pass=22 fail=0

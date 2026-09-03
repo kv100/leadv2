@@ -45,6 +45,13 @@ ASKED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 touch "$SIGNAL"
 
+# LEAD-WORKER-CHANNEL-01: the durable row is written above (PENDING); this
+# is only the wake-up optimisation on top, so its own failure must never
+# block the blocking poll below. stderr only -- stdout is reserved for the
+# eventual answer text.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-notify-lead.sh" "$TASK_ID" question "$QUESTION" >&2 2>/dev/null || true
+
 LOCK="$Q_DIR/${QID}-answer.lock"
 DEADLINE=$(($(date +%s) + TIMEOUT))
 # If lead writes the .lock file it signals "answer in progress — keep waiting even past soft deadline".

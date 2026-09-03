@@ -49,6 +49,9 @@ trap 'rm -f "$STDOUT_FILE" "$STDERR_FILE" "$FIRST_STDOUT_FILE"' EXIT HUP INT TER
 # leadv2-bash-lint-pre-gate.sh: git commit only (leadv2-bash-lint-pre-gate.sh:58-65).
 # leadv2-env-audit-pre-gate.sh: ALWAYS — unconditional placeholder (leadv2-env-audit-pre-gate.sh:1-6).
 # leadv2-schema-audit-pre-gate.sh: git commit only (leadv2-schema-audit-pre-gate.sh:80-86).
+# leadv2-warn-bash-diff-read.sh: diff/patch path or unsummarized git diff/show (advisory
+# stdout JSON by default; LEADV2_DIFF_READ_DENY=1 upgrades to exit-2 block). Last in the
+# manifest so it can never pre-empt another guard's stdout JSON (only the first is kept).
 MANIFEST='leadv2-deny-floor.sh|ALWAYS
 leadv2-block-bash-heredoc.sh|<<-?[[:space:]]*
 leadv2-block-fg-dispatch.sh|leadv2-dispatch-code\.sh|leadv2-codex-session-runner\.sh|leadv2-fanout\.sh|glm-coder\.sh|omp-task\.sh
@@ -59,9 +62,48 @@ leadv2-close-ritual-guard.sh|^git[[:space:]]+commit
 leadv2-context-glossary-close.sh|^git[[:space:]]+commit
 leadv2-bash-lint-pre-gate.sh|git[[:space:]]+commit
 leadv2-env-audit-pre-gate.sh|ALWAYS
-leadv2-schema-audit-pre-gate.sh|git[[:space:]]+commit'
+leadv2-schema-audit-pre-gate.sh|git[[:space:]]+commit
+leadv2-warn-bash-diff-read.sh|\.(diff|patch)([[:space:]]|"|'"'"'|$)|(^|[^A-Za-z0-9_-])git[[:space:]]+(diff|show)([[:space:]]|$)'
 
 HAVE_STDOUT=0
+
+# Verdict journal (GUARD-CENSUS-IS-WRONG-01 round 2): dir computed once;
+# rotation is capped (see _lv2_gv_rotate_journal). Best-effort — recording
+# must never fail a Bash call.
+_lv2_gv_dir="${LEADV2_GUARD_VERDICT_DIR:-${CLAUDE_PROJECT_DIR:-$HOME}/.claude/cache/guard-verdicts}"
+_lv2_gv_journal=""
+if mkdir -p "$_lv2_gv_dir" 2>/dev/null; then
+  _lv2_gv_journal="$_lv2_gv_dir/journal.tsv"
+fi
+
+# Round-2 finding: every Bash call appended rows to an unrotated journal that
+# the census re-scanned in full. Cap the journal at
+# LEADV2_GUARD_VERDICT_MAX_ROWS (default 20000) rows or
+# LEADV2_GUARD_VERDICT_MAX_BYTES (default 1 MiB), whichever comes first, and
+# rotate journal.tsv -> .1 -> .2 (two generations kept; the census reads all
+# three). wc -c/-l on a ≤1 MiB file is the only extra cost per Bash call.
+_lv2_gv_rotate_journal() {
+  [ -n "$_lv2_gv_journal" ] && [ -f "$_lv2_gv_journal" ] || return 0
+  _lv2_gv_max_bytes="${LEADV2_GUARD_VERDICT_MAX_BYTES:-1048576}"
+  _lv2_gv_max_rows="${LEADV2_GUARD_VERDICT_MAX_ROWS:-20000}"
+  case "${_lv2_gv_max_bytes:-}" in ''|*[!0-9]*) _lv2_gv_max_bytes=1048576 ;; esac
+  case "${_lv2_gv_max_rows:-}"  in ''|*[!0-9]*) _lv2_gv_max_rows=20000 ;; esac
+  _lv2_gv_rotate=0
+  _lv2_gv_sz="$(wc -c < "$_lv2_gv_journal" 2>/dev/null | tr -d ' ')"
+  case "${_lv2_gv_sz:-0}" in ''|*[!0-9]*) _lv2_gv_sz=0 ;; esac
+  [ "$_lv2_gv_sz" -gt "$_lv2_gv_max_bytes" ] && _lv2_gv_rotate=1
+  if [ "$_lv2_gv_rotate" -eq 0 ]; then
+    _lv2_gv_rows="$(wc -l < "$_lv2_gv_journal" 2>/dev/null | tr -d ' ')"
+    case "${_lv2_gv_rows:-0}" in ''|*[!0-9]*) _lv2_gv_rows=0 ;; esac
+    [ "$_lv2_gv_rows" -gt "$_lv2_gv_max_rows" ] && _lv2_gv_rotate=1
+  fi
+  [ "$_lv2_gv_rotate" -eq 1 ] || return 0
+  rm -f "$_lv2_gv_journal.2"
+  [ -f "$_lv2_gv_journal.1" ] && mv "$_lv2_gv_journal.1" "$_lv2_gv_journal.2"
+  mv "$_lv2_gv_journal" "$_lv2_gv_journal.1"
+  : > "$_lv2_gv_journal"
+  return 0
+}
 
 while IFS='|' read -r SCRIPT TRIGGER; do
   [[ -n "$SCRIPT" ]] || continue
@@ -75,6 +117,42 @@ while IFS='|' read -r SCRIPT TRIGGER; do
   : > "$STDERR_FILE"
   printf '%s' "$INPUT" | "$SCRIPT_DIR/$SCRIPT" >"$STDOUT_FILE" 2>"$STDERR_FILE"
   RC=$?
+
+  # Runner-side verdict record (GUARD-CENSUS-IS-WRONG-01): most guards routed
+  # through this dispatcher never call hooks/lib/leadv2-guard-verdict.sh
+  # themselves, so the census sees zero "ran" evidence and calls a guard that
+  # fires every day "never-ran". Recording once, HERE, at the one place every
+  # dispatched guard's exit is already observed, gets ran/fired evidence for
+  # all of them without editing each guard file. Best-effort, never fatal.
+  #
+  # Round-2 fix: the KIND is the guard's CONTRACT, not its chatter. The old
+  # rule ("any stdout/stderr bytes = log fire") permanently recorded a guard
+  # that prints a pass/skip diagnostic on stderr and exits 0 as
+  # fires-log-only, poisoning the census's fired column for exactly the
+  # quiet-pass guards. Now:
+  #   exit 2 / decision:block / permissionDecision deny|block JSON -> block
+  #   exit 0 + hookSpecificOutput/additionalContext JSON on stdout -> inject
+  #   exit 0, silent or diagnostics-only (stderr chatter)          -> pass
+  # `pass` is recorded so "ran but did nothing" stays visible and distinct
+  # from fires-log-only; the census counts it as ran evidence, never a fire.
+  {
+    if [ -n "$_lv2_gv_journal" ]; then
+      _lv2_gv_ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown-ts)"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$_lv2_gv_ts" "$SCRIPT" "PreToolUse" "ran" "-" \
+        >> "$_lv2_gv_journal"
+      _lv2_gv_kind="pass"
+      if [[ "$RC" -eq 2 ]] \
+        || grep -q '"decision"[[:space:]]*:[[:space:]]*"block"' "$STDOUT_FILE" 2>/dev/null \
+        || grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"(deny|block)"' "$STDOUT_FILE" 2>/dev/null
+      then
+        _lv2_gv_kind="block"
+      elif grep -q '"hookSpecificOutput"\|"additionalContext"' "$STDOUT_FILE" 2>/dev/null; then
+        _lv2_gv_kind="inject"
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' "$_lv2_gv_ts" "$SCRIPT" "PreToolUse" "verdict" "$_lv2_gv_kind" \
+        >> "$_lv2_gv_journal"
+    fi
+  } 2>/dev/null || true
 
   if [[ "$RC" -eq 2 ]]; then
     cat "$STDERR_FILE" >&2
@@ -114,6 +192,8 @@ PY
 done <<EOF
 $MANIFEST
 EOF
+
+_lv2_gv_rotate_journal 2>/dev/null || true
 
 if [[ "$HAVE_STDOUT" -eq 1 ]]; then
   cat "$FIRST_STDOUT_FILE" 2>/dev/null || true

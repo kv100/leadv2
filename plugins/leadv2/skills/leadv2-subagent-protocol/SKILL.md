@@ -62,7 +62,7 @@ Mission file contains a `## Graph context` block pre-populated by lead from code
 
 Graph queries are cheap when fresh — but DON'T re-issue queries already populated in mission's `## Graph context` block. That's your cache.
 
-- Inside a `claude -p` headless subsession: **you do NOT have MCP access.** Do not attempt `search_graph` / `trace_path` / etc directly.
+- Inside a `claude -p` headless subsession: what you have is whatever the spawn's `--mcp-config` allowlist resolved (`config/mcp-role-<role>.json`; since CODE-INTEL-BOTH-01 that list includes the graph as well as repowise, when the repo registers them). **Do not assume either way** — if the tool is absent the call fails harmlessly and the mission's `## Graph context` block plus `ask-lead.sh` remain the path.
 - Inside an Agent-tool subagent (shared parent session): MCP may be available if your agent frontmatter allows it (`tools: ... mcp__codebase-memory-mcp__*`). Use it normally.
 - Either way: start from mission's Graph context. Only Grep config/JSON/migrations (where graph has no coverage).
 

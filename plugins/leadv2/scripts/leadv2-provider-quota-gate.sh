@@ -14,7 +14,7 @@ usage() { warn "usage: $0 <glm|codex|claude> <build|review>"; }
 case "$provider" in glm|codex|claude) ;; *) usage; exit 3;; esac
 case "$purpose" in build|review) ;; *) usage; exit 3;; esac
 if [[ "${LEADV2_PROVIDER_QUOTA_GATE:-1}" == 0 ]]; then warn 'WARN: gate disabled'; exit 0; fi
-if [[ ! -r "$CEILINGS" ]]; then warn 'FAIL-OPEN: ceilings file missing'; exit 0; fi
+if [[ ! -r "$CEILINGS" ]]; then warn "FAIL-OPEN: ceilings file missing (${CEILINGS})"; exit 0; fi
 # Do not use -e: a malformed sourced file must not brick dispatch.
 source "$CEILINGS" 2>/dev/null || { warn 'FAIL-OPEN: ceilings file malformed'; exit 0; }
 if ! declare -F leadv2_quota_ceiling >/dev/null 2>&1; then warn 'FAIL-OPEN: ceilings lookup unavailable'; exit 0; fi

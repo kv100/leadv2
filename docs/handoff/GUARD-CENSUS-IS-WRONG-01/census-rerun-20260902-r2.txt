@@ -1,0 +1,169 @@
+GUARD CENSUS — GUARDS-MUST-PROVE-THEY-FIRE-01 (2026-09-01T23:58:57Z)
+guards: 94 | fixtures run: 13 | fixture-proven: 13 | regressions: 0
+(dead first: regressions, bails, missing, not-wired, never-ran — the top of this table is where the failures live)
+GUARD                                      EVENT            STATE             LAST-RAN              LAST-FIRED            DEFAULT                          FIRE-DAYS FIXTURE
+leadv2-lane-watch-v2.sh                    SessionEnd,SessionStart missing           -                     -                     always                           -         no
+leadv2-active-cache.sh                     PostToolUse      never-ran         -                     -                     always                           -         no
+leadv2-async-question-guard.sh             PreToolUse       never-ran         -                     -                     ${LEADV2_ASYNC_QUESTIONS:-0}     -         no
+leadv2-auto-clear-after-close.sh           Stop             never-ran         -                     -                     always                           -         no
+leadv2-auto-status.sh                      PostToolUse      never-ran         -                     -                     always                           -         no
+leadv2-bandit-preflight.sh                 PreToolUse       never-ran         -                     -                     ${LEADV2_ROUTE_BANDIT:-0}        -         no
+leadv2-bash-output-cap.sh                  PostToolUse      never-ran         -                     -                     always                           -         no
+leadv2-bash-pre-dispatch.sh                PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-bg-ledger.sh                        PostToolUse      never-ran         -                     -                     always                           -         no
+leadv2-bg-stop-warn.sh                     Stop             never-ran         -                     -                     ${LEADV2_BG_WARN_EVERY:-1}       -         no
+leadv2-bg-watchdog-enforce.sh              PostToolUse      never-ran         -                     -                     always                           -         no
+leadv2-bg-watchdog-gate.sh                 PostToolUse      never-ran         -                     -                     always                           -         no
+leadv2-block-fg-agent.sh                   PreToolUse       never-ran         -                     -                     ${LEADV2_ALLOW_FG:-0}            -         no
+leadv2-blocker-drift-guard.sh              PreToolUse       never-ran         -                     -                     ${LEADV2_BLOCKER_DRIFT_ENFORCE:-1} -         no
+leadv2-broken-signal-gate.sh               UserPromptSubmit never-ran         -                     -                     ${LEADV2_BROKEN_GATE:-1}         -         no
+leadv2-codex-first-nudge.sh                PreToolUse       never-ran         -                     -                     ${LEADV2_MAXIMIZE_CHEAP_MODELS:-1} -         no
+leadv2-command-bootstrap.sh                SessionStart     never-ran         -                     -                     always                           -         no
+leadv2-compact-warn.sh                     UserPromptSubmit never-ran         -                     -                     ${LEADV2_COMPACT_WARN:-1}        -         no
+leadv2-continuation-guard.sh               Stop             never-ran         -                     -                     ${LEADV2_CONTINUATION_GUARD:-1}  -         no
+leadv2-cwd-changed.sh                      CwdChanged       never-ran         -                     -                     always                           -         no
+leadv2-env-audit-pre-gate.sh               PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-force-reflect.sh                    Stop             never-ran         -                     -                     always                           -         no
+leadv2-gate-artifact-guard.sh              PreToolUse       never-ran         -                     -                     ${LEADV2_GATE_ENFORCE:-1}        -         no
+leadv2-graph-cache-bust.sh                 PostToolUse      never-ran         -                     -                     always                           -         no
+leadv2-idle-notification-filter.sh         UserPromptSubmit never-ran         -                     -                     ${LEADV2_IDLE_FILTER:-1}         -         no
+leadv2-immune-intake-inject.sh             PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-install-dispatcher.sh               SessionStart     never-ran         -                     -                     always                           -         no
+leadv2-lead-delegation-nudge.sh            PostToolUse      never-ran         -                     -                     always                           -         no
+leadv2-lead-prose-guard.sh                 Stop             never-ran         -                     -                     ${LEADV2_LEAD_GUARD:-0}          -         no
+leadv2-learn-consume.sh                    SessionStart     never-ran         -                     -                     always                           -         no
+leadv2-link-tree-heal.sh                   SessionStart     never-ran         -                     -                     always                           -         no
+leadv2-loop-detect-hook.sh                 PostToolUse,PreToolUse never-ran         -                     -                     ${LEADV2_LOOP_DETECT:-1}         -         no
+leadv2-memory-guard.sh                     PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-merged-worktree-sweep.sh            SessionStart     never-ran         -                     -                     ${LEADV2_MERGED_WORKTREE_SWEEP:-1} -         no
+leadv2-model-inherit-guard.sh              PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-monitor-cap-gate.sh                 PreToolUse       never-ran         -                     -                     ${LEADV2_MONITORCAP_OFF:-0}      -         no
+leadv2-no-opus-code-edit.sh                PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-one-copy-drift.sh                   PostToolUse,SessionStart never-ran         -                     -                     ${LEADV2_ONE_COPY_DRIFT:-1}      -         no
+leadv2-opus-read-budget.sh                 PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-orphan-monitor-sweep.sh             SessionStart     never-ran         -                     -                     always                           -         no
+leadv2-pending-close-inject.sh             SessionStart     never-ran         -                     -                     always                           -         no
+leadv2-pending-questions-inject.sh         SessionStart     never-ran         -                     -                     always                           -         no
+leadv2-postcompact-goal-reinject.sh        PostCompact      never-ran         -                     -                     always                           -         no
+leadv2-pre-compact-checkpoint.sh           PreCompact       never-ran         -                     -                     always                           -         no
+leadv2-precompact-log.sh                   PostCompact,PreCompact never-ran         -                     -                     always                           -         no
+leadv2-pulse-enforcer.sh                   UserPromptSubmit never-ran         -                     -                     ${LEADV2_HOOK_PROFILE:-0}        -         no
+leadv2-read-gate.sh                        PreToolUse       never-ran         -                     -                     ${LEADV2_HOOK_PROFILE:-0}        -         no
+leadv2-routing-guard.sh                    PreToolUse       never-ran         -                     -                     ${LEADV2_NESTED_DEPTH_GATE:-1}   -         no
+leadv2-schema-audit-pre-gate.sh            PreToolUse       never-ran         -                     -                     ${LEADV2_HOOK_PROFILE:-0}        -         no
+leadv2-shared-script-warn.sh               PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-single-lead-beat.sh                 PostToolUse,UserPromptSubmit never-ran         -                     -                     ${LEADV2_SINGLE_LEAD_BEAT:-1}    -         no
+leadv2-skill-authoring-reminder.sh         PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-stale-pid-sweep.sh                  SessionStart     never-ran         -                     -                     always                           -         no
+leadv2-subagent-stop-verify.sh             SubagentStop     never-ran         -                     -                     ${LEADV2_SUBAGENT_VERIFY_STRICT:-0} -         no
+leadv2-task-anchor.sh                      UserPromptSubmit never-ran         -                     -                     always                           -         no
+leadv2-task-budget-tracker.sh              PostToolUse      never-ran         -                     -                     always                           -         no
+leadv2-task-created.sh                     TaskCreated      never-ran         -                     -                     always                           -         no
+leadv2-taskoutput-ban.sh                   PreToolUse       never-ran         -                     -                     ${LEADV2_TASKOUTPUT_STRICT:-0}   -         no
+leadv2-thinking-audit-gate.sh              PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-tool-blowup-gate.sh                 PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-tool-counter.sh                     PostToolUse      never-ran         -                     -                     always                           -         no
+leadv2-truth-card-inject.sh                SessionStart     never-ran         -                     -                     always                           -         no
+leadv2-turncap-checkpoint-hook.sh          PostToolUse      never-ran         -                     -                     ${LEADV2_TURNCAP_CHECKPOINT:-1}  -         no
+leadv2-user-prompt-context.sh              UserPromptSubmit never-ran         -                     -                     ${LEADV2_ANCHOR_OWNS_CONTEXT:-1} -         no
+leadv2-verdict-format-guard.sh             PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-workflow-bypass-guard.sh            PreToolUse       never-ran         -                     -                     ${LEADV2_WORKFLOW_GUARD:-1}      -         no
+leadv2-workflow-model-guard.sh             PreToolUse       never-ran         -                     -                     always                           -         no
+leadv2-workflow-sentinel-touch.sh          PostToolUse      never-ran         -                     -                     ${LEADV2_WORKFLOW_ENABLED:-0}    -         no
+leadv2-worktree-enforce.sh                 PreToolUse       never-ran         -                     -                     ${LEADV2_ALLOW_MAIN_REPO:-0}     -         no
+post-compact-reground.sh                   SessionStart     never-ran         -                     -                     always                           -         no
+leadv2-lead-edit-guard.sh                  PreToolUse       disabled          -                     -                     ${LEADV2_LEAD_GUARD:-0}          -         yes
+leadv2-context-glossary-close.sh           PreToolUse       fires-log-only    -                     -                     always                           -         yes
+leadv2-promise-guard.sh                    Stop             fires-log-only    2026-09-02T02:56:57Z  -                     ${LEADV2_PROMISE_GUARD:-1}       -         yes
+leadv2-bash-lint-pre-gate.sh               PreToolUse       blocking          -                     -                     always                           -         yes
+leadv2-block-bash-heredoc.sh               PreToolUse       blocking          -                     -                     always                           -         yes
+leadv2-block-fg-dispatch.sh                PreToolUse       blocking          -                     -                     ${LEADV2_ALLOW_FG_DISPATCH:-0}   -         yes
+leadv2-close-ritual-guard.sh               PreToolUse       blocking          -                     -                     ${LEADV2_SKIP_CLOSE_GUARD:-0}    -         yes
+leadv2-codex-direct-exec-guard.sh          PreToolUse       blocking          -                     -                     always                           -         yes
+leadv2-codex-nopoll-guard.sh               PreToolUse       blocking          -                     -                     ${LEADV2_CODEX_NOPOLL:-1}        -         yes
+leadv2-codex-round-cap.sh                  PreToolUse       blocking          -                     -                     always                           -         yes
+leadv2-deny-floor.sh                       PreToolUse       blocking          -                     -                     ${LEADV2_DENY_FLOOR:-1}          -         yes
+leadv2-warn-bash-diff-read.sh              PreToolUse       blocking          -                     -                     always                           -         yes
+leadv2-block-codex.sh                      -                not-wired         -                     -                     always                           -         no
+leadv2-compact-trigger.sh                  -                not-wired         -                     -                     always                           -         no
+leadv2-force-read-limit.sh                 -                not-wired         -                     -                     always                           -         no
+leadv2-hardbans-reinject.sh                -                not-wired         -                     -                     always                           -         no
+leadv2-hook-fork-budget.sh                 -                not-wired         -                     -                     always                           -         no
+leadv2-idle-guard-arm.sh                   -                not-wired         -                     -                     always                           -         no
+leadv2-idle-lead-guard.sh                  -                not-wired         -                     -                     always                           -         yes
+leadv2-lead-read-guard.sh                  -                not-wired         -                     -                     ${LEADV2_LEAD_GUARD:-0}          -         no
+leadv2-mode-isolation.sh                   -                not-wired         -                     -                     ${LEADV2_MERGED_WORKTREE_SWEEP:-1} -         no
+leadv2-pulse-json.sh                       -                not-wired         -                     -                     ${LEADV2_HOOK_PROFILE:-0}        -         no
+leadv2-read-dedup-hard.sh                  -                not-wired         -                     -                     ${LEADV2_HOOK_PROFILE:-0}        -         no
+pre-compact-task-freeze.sh                 -                not-wired         -                     -                     always                           -         no
+
+CANDIDATES TO DELETE — wired, no fixture proof, no fire in 30 days (founder decides; never auto-deleted):
+  leadv2-active-cache.sh                     never-ran         last-fired=-                     always
+  leadv2-async-question-guard.sh             never-ran         last-fired=-                     ${LEADV2_ASYNC_QUESTIONS:-0}
+  leadv2-auto-clear-after-close.sh           never-ran         last-fired=-                     always
+  leadv2-auto-status.sh                      never-ran         last-fired=-                     always
+  leadv2-bandit-preflight.sh                 never-ran         last-fired=-                     ${LEADV2_ROUTE_BANDIT:-0}
+  leadv2-bash-output-cap.sh                  never-ran         last-fired=-                     always
+  leadv2-bash-pre-dispatch.sh                never-ran         last-fired=-                     always
+  leadv2-bg-ledger.sh                        never-ran         last-fired=-                     always
+  leadv2-bg-stop-warn.sh                     never-ran         last-fired=-                     ${LEADV2_BG_WARN_EVERY:-1}
+  leadv2-bg-watchdog-enforce.sh              never-ran         last-fired=-                     always
+  leadv2-bg-watchdog-gate.sh                 never-ran         last-fired=-                     always
+  leadv2-block-fg-agent.sh                   never-ran         last-fired=-                     ${LEADV2_ALLOW_FG:-0}
+  leadv2-blocker-drift-guard.sh              never-ran         last-fired=-                     ${LEADV2_BLOCKER_DRIFT_ENFORCE:-1}
+  leadv2-broken-signal-gate.sh               never-ran         last-fired=-                     ${LEADV2_BROKEN_GATE:-1}
+  leadv2-codex-first-nudge.sh                never-ran         last-fired=-                     ${LEADV2_MAXIMIZE_CHEAP_MODELS:-1}
+  leadv2-command-bootstrap.sh                never-ran         last-fired=-                     always
+  leadv2-compact-warn.sh                     never-ran         last-fired=-                     ${LEADV2_COMPACT_WARN:-1}
+  leadv2-continuation-guard.sh               never-ran         last-fired=-                     ${LEADV2_CONTINUATION_GUARD:-1}
+  leadv2-cwd-changed.sh                      never-ran         last-fired=-                     always
+  leadv2-env-audit-pre-gate.sh               never-ran         last-fired=-                     always
+  leadv2-force-reflect.sh                    never-ran         last-fired=-                     always
+  leadv2-gate-artifact-guard.sh              never-ran         last-fired=-                     ${LEADV2_GATE_ENFORCE:-1}
+  leadv2-graph-cache-bust.sh                 never-ran         last-fired=-                     always
+  leadv2-idle-notification-filter.sh         never-ran         last-fired=-                     ${LEADV2_IDLE_FILTER:-1}
+  leadv2-immune-intake-inject.sh             never-ran         last-fired=-                     always
+  leadv2-install-dispatcher.sh               never-ran         last-fired=-                     always
+  leadv2-lead-delegation-nudge.sh            never-ran         last-fired=-                     always
+  leadv2-lead-prose-guard.sh                 never-ran         last-fired=-                     ${LEADV2_LEAD_GUARD:-0}
+  leadv2-learn-consume.sh                    never-ran         last-fired=-                     always
+  leadv2-link-tree-heal.sh                   never-ran         last-fired=-                     always
+  leadv2-loop-detect-hook.sh                 never-ran         last-fired=-                     ${LEADV2_LOOP_DETECT:-1}
+  leadv2-memory-guard.sh                     never-ran         last-fired=-                     always
+  leadv2-merged-worktree-sweep.sh            never-ran         last-fired=-                     ${LEADV2_MERGED_WORKTREE_SWEEP:-1}
+  leadv2-model-inherit-guard.sh              never-ran         last-fired=-                     always
+  leadv2-monitor-cap-gate.sh                 never-ran         last-fired=-                     ${LEADV2_MONITORCAP_OFF:-0}
+  leadv2-no-opus-code-edit.sh                never-ran         last-fired=-                     always
+  leadv2-one-copy-drift.sh                   never-ran         last-fired=-                     ${LEADV2_ONE_COPY_DRIFT:-1}
+  leadv2-opus-read-budget.sh                 never-ran         last-fired=-                     always
+  leadv2-orphan-monitor-sweep.sh             never-ran         last-fired=-                     always
+  leadv2-pending-close-inject.sh             never-ran         last-fired=-                     always
+  leadv2-pending-questions-inject.sh         never-ran         last-fired=-                     always
+  leadv2-postcompact-goal-reinject.sh        never-ran         last-fired=-                     always
+  leadv2-pre-compact-checkpoint.sh           never-ran         last-fired=-                     always
+  leadv2-precompact-log.sh                   never-ran         last-fired=-                     always
+  leadv2-pulse-enforcer.sh                   never-ran         last-fired=-                     ${LEADV2_HOOK_PROFILE:-0}
+  leadv2-read-gate.sh                        never-ran         last-fired=-                     ${LEADV2_HOOK_PROFILE:-0}
+  leadv2-routing-guard.sh                    never-ran         last-fired=-                     ${LEADV2_NESTED_DEPTH_GATE:-1}
+  leadv2-schema-audit-pre-gate.sh            never-ran         last-fired=-                     ${LEADV2_HOOK_PROFILE:-0}
+  leadv2-shared-script-warn.sh               never-ran         last-fired=-                     always
+  leadv2-single-lead-beat.sh                 never-ran         last-fired=-                     ${LEADV2_SINGLE_LEAD_BEAT:-1}
+  leadv2-skill-authoring-reminder.sh         never-ran         last-fired=-                     always
+  leadv2-stale-pid-sweep.sh                  never-ran         last-fired=-                     always
+  leadv2-subagent-stop-verify.sh             never-ran         last-fired=-                     ${LEADV2_SUBAGENT_VERIFY_STRICT:-0}
+  leadv2-task-anchor.sh                      never-ran         last-fired=-                     always
+  leadv2-task-budget-tracker.sh              never-ran         last-fired=-                     always
+  leadv2-task-created.sh                     never-ran         last-fired=-                     always
+  leadv2-taskoutput-ban.sh                   never-ran         last-fired=-                     ${LEADV2_TASKOUTPUT_STRICT:-0}
+  leadv2-thinking-audit-gate.sh              never-ran         last-fired=-                     always
+  leadv2-tool-blowup-gate.sh                 never-ran         last-fired=-                     always
+  leadv2-tool-counter.sh                     never-ran         last-fired=-                     always
+  leadv2-truth-card-inject.sh                never-ran         last-fired=-                     always
+  leadv2-turncap-checkpoint-hook.sh          never-ran         last-fired=-                     ${LEADV2_TURNCAP_CHECKPOINT:-1}
+  leadv2-user-prompt-context.sh              never-ran         last-fired=-                     ${LEADV2_ANCHOR_OWNS_CONTEXT:-1}
+  leadv2-verdict-format-guard.sh             never-ran         last-fired=-                     always
+  leadv2-workflow-bypass-guard.sh            never-ran         last-fired=-                     ${LEADV2_WORKFLOW_GUARD:-1}
+  leadv2-workflow-model-guard.sh             never-ran         last-fired=-                     always
+  leadv2-workflow-sentinel-touch.sh          never-ran         last-fired=-                     ${LEADV2_WORKFLOW_ENABLED:-0}
+  leadv2-worktree-enforce.sh                 never-ran         last-fired=-                     ${LEADV2_ALLOW_MAIN_REPO:-0}
+  post-compact-reground.sh                   never-ran         last-fired=-                     always

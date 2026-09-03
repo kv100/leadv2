@@ -218,6 +218,52 @@ case_cross_repo_elsewhere_terminal() { # <scripts_dir> -> 0 pass, 1 fail, 2 coul
   return "${ok}"
 }
 
+# ── Case 5 (T8C-FOREIGN-REPO-LANDING-01): a lane whose declared write-set is
+# untouched (empty local diff -> blocked_reason would be unscopable_diff / no_work)
+# but that legitimately landed a commit in a SEPARATE repo it declared via a
+# ${HANDOFF}/lane-target-repo marker must terminate landed (cause=landed_foreign),
+# never no_work. A lane with the SAME empty local diff but NO marker (or a marker
+# whose foreign repo has no matching commit) must still fall through to the
+# pre-existing no_work/empty_diff path unchanged. ───────────────────────────────────
+case_foreign_repo_landing() { # <scripts_dir> -> 0 pass, 1 fail, 2 could-not-run
+  local scripts_dir="$1"
+  local pc="${scripts_dir}/leadv2-dispatch-product-close.sh"
+  [[ -f "${pc}" ]] || return 2
+  local root tid wt d foreign
+  root="$(new_repo)"
+  tid="frl-$$"
+  wt="$(ensure_worktree "${root}" "${tid}")"
+  [[ -d "${wt}" ]] || return 2
+  # the foreign repo: a lane commit tagged with the task sig, landed BEFORE the gate runs.
+  foreign="$(new_repo)"
+  ( cd "${foreign}" && printf 'fix\n' >> agent/seed.py \
+    && git commit -qam "fix(leadv2): frlsig001 -- landed in canonical" ) >/dev/null 2>&1
+  d="$(mktemp -d)"
+  mkdir -p "${root}/docs/handoff/dispatch-frlsig001"
+  printf '%s\n' "${foreign}" > "${root}/docs/handoff/dispatch-frlsig001/lane-target-repo"
+  make_resolver_stub "${d}/resolver.py" codex
+  make_review_pass_stub "${d}/codex.sh"
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_CACHE_DIR="${d}/cache" \
+  LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" LEADV2_LANE_WORK_ROOT="${wt}" \
+  LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
+  bash "${pc}" "${root}" frlsig001 sonnet "" 0 1 "${tid}" >/dev/null 2>&1
+  local gate="${root}/docs/handoff/dispatch-frlsig001/review-gate.md"
+  local ok=1
+  if [[ -f "${gate}" ]] && grep -q '^status: passed$' "${gate}" \
+     && grep -q '^reason: landed_foreign$' "${gate}" \
+     && ! grep -qE '^reason: (no_work|unscopable_diff)$' "${gate}"; then
+    ok=0
+  fi
+  rm -rf "${root}" "${d}" "${foreign}"
+  return "${ok}"
+}
+
+# NOTE: the matching negative control -- same empty-diff lane, no lane-target-repo
+# marker at all, MUST still terminate no_work -- is NOT a red-first case (it passes
+# identically pre- and post-fix by construction, since the new code path is a no-op
+# without a marker) and so cannot live under this file's F6 green-pre-fix gate; see
+# test-no-work-terminal.sh's foreign-repo-absent case instead.
+
 # ── harness runner (falsifiable red-first baseline, F6) ─────────────────────────────
 # `git archive HEAD` stopped being a valid pre-fix baseline the moment this suite's own
 # fix landed on HEAD (the lane commit) -- every case would then run identically pre-
@@ -272,6 +318,7 @@ run_case "undiffable-write-set-bounces-early"     case_undiffable_write_set
 run_case "mixed-write-set-not-bounced"             case_mixed_write_set_not_bounced
 run_case "unscoped-lane-work-names-offending"      case_unscoped_names_offending
 run_case "cross-repo-elsewhere-terminal"           case_cross_repo_elsewhere_terminal
+run_case "foreign-repo-landing"                    case_foreign_repo_landing
 
 rm -rf "${PREFIX_DIR}"
 

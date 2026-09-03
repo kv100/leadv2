@@ -16,7 +16,7 @@
 #   LATER, separate attempt at the same sig8 will end, so recording one never blocks a
 #   later write from the SAME sig8 -- landed/dead still wins write-once against it. Row
 #   shape:
-#     {"ts","task_sig","founder_task_id","terminal":"landed|parked|refused|dead|no_work","cause","evidence"}
+#     {"ts","task_sig","founder_task_id","terminal":"landed|pass_unlanded|parked|refused|dead|dead_with_unlanded_work|no_work","cause","evidence"}
 #   task_sig is the dispatch-<sig8> identifier BOTH writer scripts already share (dispatch-
 #   code.sh computes the full mission-text sig but only ever hands sig8 to dispatch-product-
 #   close.sh -- keying on the 8-char form here is what lets a single ledger row be extended
@@ -30,6 +30,11 @@
 #   dead    — started and ended badly: crash, ledger write failure, lock timeout, e2e
 #             regression, or a review verdict of FAIL. TRUE terminal -- write-once, no
 #             later attempt can override it.
+#   dead_with_unlanded_work — same as dead, but the pinned lane worktree still carries
+#             worker-owned uncommitted bytes (lv2_lane_dirty) at the moment of death.
+#             TRUE terminal -- write-once, no later attempt can override it, and it may
+#             not be silently downgraded back to plain `dead` (N2): the pin exists so a
+#             human recovers the unlanded work before the lane is pruned.
 #   parked  — explicitly deferred for a human/architect decision (no design after retries).
 #             RETRYABLE -- does not block a later attempt at the same sig8 from later
 #             recording landed/dead.
@@ -90,6 +95,34 @@ LANE_LIVENESS_BIN="${LEADV2_DISPATCH_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lan
 # util-linux on macOS). Same rc0/rc3 acquire contract as flock -w -x.
 # shellcheck source=leadv2-portable-lock.sh
 source "${SCRIPT_DIR}/leadv2-portable-lock.sh"
+# C-1 (DISPATCH-PIN-CLUSTER-01 round 7): guarded + canonical-fallback source --
+# see leadv2-dispatch-code.sh for the full rationale (consumer-repo symlink farm
+# has no lib/ copy of this new file).
+_LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
+if [[ -f "${_LANE_GUARD_SH}" ]]; then
+  source "${_LANE_GUARD_SH}"
+else
+  # A close gate must never turn unknown lane state into a false success.  The
+  # local consumer farm and canonical checkout were both tried above; treat a
+  # missing guard as dirty and emit the paths so the refusal is diagnosable.
+  lv2_lane_dirty() { return 0; }
+  lv2_lane_containment_violation() { return 1; }
+  printf '[%s] ERROR: lane guard unavailable local=%s canonical=%s; treating lane as dirty\n' \
+    "${SCRIPT_NAME}" "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh" "${_LANE_GUARD_SH}" >&2
+fi
+# WATCHER-LIFECYCLE-LEAK-01: shared watcher-lifecycle helper (wl_reap, used
+# by _lv2_reap_lane_pulse_watchers). Same guarded + canonical-fallback shape
+# as the lane guard above; the fail-open stub keeps a missing lib from ever
+# failing a terminal write.
+_WL_LIB="${SCRIPT_DIR}/lib/leadv2-watch-lifecycle.sh"
+[[ -f "${_WL_LIB}" ]] || _WL_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-watch-lifecycle.sh"
+if [[ -f "${_WL_LIB}" ]]; then
+  # shellcheck source=lib/leadv2-watch-lifecycle.sh
+  source "${_WL_LIB}"
+else
+  wl_reap() { :; }
+fi
 CACHE_BASE="${LEADV2_DISPATCH_CACHE_DIR:-${HOME}/.claude/cache}"
 
 log()     { printf '[%s] %s\n' "${SCRIPT_NAME}" "$*" >&2; }
@@ -141,16 +174,24 @@ _dispatch_terminal_last_field() {
     sed -n "s/.*\"${field}\":\"\([^\"]*\)\".*/\\1/p"
 }
 
-# rc0: a TRUE terminal (landed|dead) row already exists for <sig8>. rc1: none found (ledger
-# missing, sig8 unseen, or its only history is a retryable refused/parked row -- wave2
-# round3 finding 3: refused/parked never count as "exists" here, since a later attempt at
-# the same sig8 must still be able to record its real landed/dead outcome).
+# rc0: a TRUE terminal (landed|dead|dead_with_unlanded_work|pass_unlanded) row already
+# exists for <sig8>. rc1: none found (ledger missing, sig8 unseen, or its only history is
+# a retryable refused/parked row -- wave2 round3 finding 3: refused/parked never count as
+# "exists" here, since a later attempt at the same sig8 must still be able to record its
+# real landed/dead outcome).
+# H-1 (DISPATCH-PIN-CLUSTER-01 round 7): pass_unlanded moved from "retryable" to a TRUE,
+# write-once-final terminal in dispatch_ledger_write_terminal's blocklist (:334, "a
+# pass_unlanded row is a durable human-action state ... a new attempt needs a new sig8").
+# This function's answer to "has this sig8 finished?" must agree, or a pass_unlanded sig8
+# is never reaped by the deferred-retry readers (leadv2-dispatch-code.sh's two callers),
+# falls through to retry, and every terminal that retry could produce is exit-2'd by the
+# write gate -- the sig8 can be re-dispatched and can never terminate in the ledger.
 dispatch_terminal_exists() {
   local sig8="$1" f last; f="$(dispatch_terminal_ledger_file)"
   [[ -f "${f}" ]] || return 1
   last="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
   case "${last}" in
-    landed|dead) return 0 ;;
+    landed|dead|dead_with_unlanded_work|pass_unlanded) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -175,7 +216,7 @@ dispatch_any_terminal_exists() {
 }
 
 # DEDUP-REFUSED-RETRY-01: stdout = the LAST recorded terminal-ledger word for <sig8>
-# (landed|parked|refused|dead|no_work), or empty if no row exists. rc always 0 (this is a
+# (landed|parked|refused|dead|dead_with_unlanded_work|no_work), or empty if no row exists. rc always 0 (this is a
 # read, not a gate). Unlike dispatch_terminal_exists()/dispatch_any_terminal_exists() above
 # (which collapse the ledger to a yes/no boolean -- and, per that fn's own doc comment,
 # deliberately treat refused/parked as "not present" for THEIR gate), the dispatch-code.sh
@@ -195,6 +236,29 @@ dispatch_terminal_last_state() {
 dispatch_terminal_last_cause() {
   local sig8="$1" f; f="$(dispatch_terminal_ledger_file)"
   _dispatch_terminal_last_field "${sig8}" "${f}" cause
+}
+
+# A late terminal from an earlier attempt must not poison a retry that has
+# already registered a different attempt token in active.yaml.
+_lv2_terminal_attempt_superseded() { # <founder_task_id> <attempt>
+  local founder="$1" attempt="$2" yaml_file lock_file
+  [[ -n "$founder" && -n "$attempt" ]] || return 1
+  yaml_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml 2>/dev/null)" || return 1
+  lock_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml.lock 2>/dev/null)" || return 1
+  [[ -f "$yaml_file" && -n "$lock_file" ]] || return 1
+  python3 - "$lock_file" "$yaml_file" "$founder" "$attempt" <<'PYEOF' 2>/dev/null
+import fcntl, sys
+try: import yaml
+except ImportError: sys.exit(1)
+lock_path, path, founder, attempt = sys.argv[1:5]
+try:
+    with open(lock_path, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with open(path, encoding="utf-8") as fh:
+            sessions = (yaml.safe_load(fh) or {}).get("sessions") or []
+except Exception: sys.exit(1)
+sys.exit(0 if any(isinstance(s, dict) and s.get("task_id") == founder and str(s.get("attempt") or "") not in ("", attempt) for s in sessions) else 1)
+PYEOF
 }
 
 # Writes EXACTLY ONE row per <sig8> per real ATTEMPT (write-once-per-attempt), and refuses
@@ -228,8 +292,30 @@ dispatch_ledger_write_terminal() {
   local sig8="$1" founder="${2:-}" terminal="$3" cause="${4:-}" evidence="${5:-}" attempt="${6:-}" display_name="${7:-}"
   local commit="${8:-none}" deliverable="${9:-unknown}" worker_reason="${10:-}"
   [[ -n "${sig8}" ]] || { log_err "write_terminal: empty task_sig, refusing to write"; return 1; }
+  # One terminal funnel: a linked lane may not claim landed while it retains
+  # worker-owned dirt, and a new non-control-plane main path is containment failure.
+  # Count prior downgrades by signature; the next one becomes final refused so
+  # pass_unlanded cannot burn every arm during the confirmed TTL.
+  if [[ "${terminal}" == "landed" ]]; then
+    local _lane_root="" _dirty_count _dirty_max
+    if [[ -x "${SCRIPT_DIR}/leadv2-lane-worktree.sh" ]]; then
+      _lane_root="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${founder:-${sig8}}" 2>/dev/null || true)"
+    fi
+    if [[ -n "${_lane_root}" ]] && lv2_lane_containment_violation "${sig8}" "${_lane_root}" "${PROJECT_ROOT}" "${LEADV2_DISPATCH_LANE_WRITES:-}"; then
+      terminal="refused"; cause="wrote_outside_lane"
+    elif [[ -n "${_lane_root}" ]] && lv2_lane_dirty "${_lane_root}"; then
+      _dirty_max="${LEADV2_DIRTY_LANE_MAX_ATTEMPTS:-2}"
+      [[ "${_dirty_max}" =~ ^[1-9][0-9]*$ ]] || _dirty_max=2
+      _dirty_count="$(grep -F "\"task_sig\":\"${sig8}\"" "$(dispatch_terminal_ledger_file)" 2>/dev/null | grep -F '"cause":"dirty_lane:' | wc -l | tr -d ' ')"
+      if (( ${_dirty_count:-0} >= _dirty_max )); then
+        terminal="refused"; cause="dirty_lane_retry_exhausted:${cause}"
+      else
+        terminal="pass_unlanded"; cause="dirty_lane:${cause}"
+      fi
+    fi
+  fi
   case "${terminal}" in
-    landed|parked|refused|dead|no_work) : ;;
+    landed|pass_unlanded|parked|refused|dead|dead_with_unlanded_work|no_work) : ;;
     *) log_err "write_terminal: invalid terminal='${terminal}' for sig=${sig8}"; return 1 ;;
   esac
   founder="$(json_safe "${founder}")"
@@ -271,11 +357,28 @@ dispatch_ledger_write_terminal() {
   local rc
   (
     lv2_lock_wait "${lockf}" 10 || exit 3
+    case "${terminal}" in landed|dead|dead_with_unlanded_work) _lv2_terminal_attempt_superseded "${founder}" "${attempt}" && exit 4 ;; esac
     local _last_terminal _same_attempt_row
-    _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
+    _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal || true)"
     case "${_last_terminal}" in
-      landed|dead) exit 2 ;;  # a TRUE terminal already won write-once for this sig8
+      landed|dead|dead_with_unlanded_work|pass_unlanded) exit 2 ;;
+        # A pass_unlanded row is a durable human-action state.  It may not be
+        # transited through refused into landed; a new attempt needs a new sig8.
     esac
+    # N3 (review-r5.md): the reviewer's probe on an earlier commit in this lane
+    # showed pass_unlanded -> refused -> landed slipping through, because the
+    # case above only inspects the LAST row and (at that commit) `pass_unlanded`
+    # was transiently absent from its blocklist. On THIS HEAD the case above
+    # already includes `pass_unlanded` unconditionally -- once it is the last
+    # row, ANY subsequent write (refused, parked, or landed) hits that same
+    # `exit 2` and is dedup'd away, so the last row can never advance past
+    # pass_unlanded and the two/three-hop chain cannot form. Verified by direct
+    # probe (round6-red/n3-chain-probe-pre-existing-head.log): pass_unlanded ->
+    # refused -> landed AND pass_unlanded -> parked -> landed both stay pinned
+    # at state=pass_unlanded on this HEAD. No code change needed here; the
+    # regression is locked in by the two-hop-chain case added to
+    # test-dirty-lane-never-lands.sh below so a future edit to this blocklist
+    # (e.g. narrowing it back to `landed|dead`) fails loudly.
     # LOW-3: aligned on the ANY-row form (matching dispatch_ledger_sweep_write_dead's own
     # _same_attempt_row check below) -- comparing only the LAST row missed an exit-trap
     # retry whose attempt is no longer the last row (e.g. a refused/parked row from a
@@ -306,6 +409,15 @@ dispatch_ledger_write_terminal() {
             "dispatch_terminal task=${sig8} terminal=${terminal} cause=${cause}" >/dev/null 2>&1 || true
         fi
       fi
+      # T16 §10: a freshly-written TRUE terminal ends the lane -- drop its active.yaml
+      # row now (dedup exits above keep the row: a later attempt may have re-registered).
+      case "${terminal}" in
+        landed|dead|dead_with_unlanded_work|pass_unlanded)
+          _lv2_terminal_unregister_lanes "${sig8}" "${founder}" "${attempt}"
+          # WATCHER-LIFECYCLE-LEAK-01 #3: deferred best-effort reap of this
+          # lane's pulse watcher (see _lv2_reap_lane_pulse_watchers above).
+          _lv2_reap_lane_pulse_watchers "${sig8}" ;;
+      esac
       return 0 ;;
     2)
       if [[ -f "${JOURNAL_BIN}" ]]; then
@@ -314,8 +426,107 @@ dispatch_ledger_write_terminal() {
       fi
       return 0 ;;  # dedup is a SUCCESSFUL no-op, not a caller error
     3) log_err "write_terminal: lock-wait timeout for sig=${sig8}"; return 1 ;;
+    4)
+      [[ -f "${JOURNAL_BIN}" ]] && bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision "dispatch_terminal_stale_attempt task=${sig8} terminal=${terminal} attempt=${attempt}" >/dev/null 2>&1 || true
+      return 0 ;;
     *) log_err "write_terminal: ledger write failed (rc=${rc}) for sig=${sig8}"; return 1 ;;
   esac
+}
+
+# T16 §10 (LANE-DEREGISTRATION): a TRUE terminal (landed|dead|dead_with_unlanded_work|pass_unlanded) ends the
+# lane for good, but its active.yaml registration row used to survive forever -- closed
+# lanes accumulated until lead_session_lane_cap refused every new dispatch and a human
+# had to prune by hand (3x on 2026-08-26/27). Removal is tombstone-consistent with the
+# T18 abandon path (leadv2_active_unregister semantics: row removed, the terminal row in
+# THIS ledger is the durable record). Self-contained python instead of sourcing
+# leadv2-active-registry.sh -- see "WHY A CLI, NOT A LIBRARY" above; a subshell source
+# under this script's own set -u is the same trap with a different hat. Fail-open by
+# contract: a missing resolver/yaml/pyyaml or a failed removal NEVER fails the terminal
+# write itself -- the row then simply ages out via the sweep's next pass.
+_lv2_terminal_unregister_lanes() {  # <sig8> <founder_task_id> <attempt> -- remove only matching-attempt lane rows
+  local sig8="$1" founder="$2" attempt="${3:-}" yaml_file lock_file tid
+  # An attempt-less terminal can own only an attempt-less row.  In particular,
+  # do not let it deregister a retry that subsequently registered an attempt.
+  yaml_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml 2>/dev/null)" || return 0
+  [[ -n "${yaml_file}" && -f "${yaml_file}" ]] || return 0
+  lock_file="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" active.yaml.lock 2>/dev/null)" || return 0
+  [[ -n "${lock_file}" ]] || return 0
+  for tid in "${founder}" "dispatch-${sig8}"; do
+    [[ -n "${tid}" ]] || continue
+    python3 - "${lock_file}" "${yaml_file}" "${tid}" "${attempt}" <<'PYEOF' 2>/dev/null || true
+import fcntl, os, sys, tempfile
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+lock_path, path, task_id, attempt = sys.argv[1:5]
+try:
+    lock = open(lock_path, "a+")
+except OSError:
+    sys.exit(0)
+with lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except Exception:
+        sys.exit(0)
+    if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
+        sys.exit(0)
+    before = len(data["sessions"])
+    data["sessions"] = [s for s in data["sessions"]
+                        if not (isinstance(s, dict) and s.get("task_id") == task_id
+                                and str(s.get("attempt") or "") == attempt)]
+    if len(data["sessions"]) == before:
+        sys.exit(0)
+    fd, tmp = tempfile.mkstemp(prefix=".active-unreg-", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            yaml.safe_dump(data, out, default_flow_style=False, sort_keys=False)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try: os.unlink(tmp)
+        except OSError: pass
+        sys.exit(0)
+PYEOF
+  done
+  return 0
+}
+
+# WATCHER-LIFECYCLE-LEAK-01 #3 — reap-on-close. A TRUE terminal ends the
+# lane, and leadv2-lane-pulse-watch.sh exits on its own within ONE interval
+# of the journal line this writer just appended — killing it inline would
+# race away its FINAL terminal pulse (the founder-visible landing notice
+# MON-PULSE-01 exists to deliver). So the reap is DEFERRED past a grace that
+# is a multiple of the watch interval: only a watcher still alive then
+# (wedged sleep, a huge --interval) is TERMed, by pidfile, best-effort and
+# idempotent — a dead or foreign pidfile is a no-op (lib wl_reap). The
+# single-lead beat loop is deliberately NOT reaped here: it is per-ROOT and
+# owned by the live-lane board (its own zero-streak stop), not by this lane.
+_lv2_reap_lane_pulse_watchers() {  # <sig8> — fail-open, never blocks the write
+  local sig8="$1" grace state_dir
+  [[ "${LEADV2_PULSE_MODE:-1}" == "1" ]] || return 0
+  grace="${LEADV2_LANE_PULSE_WATCH_REAP_GRACE_S:-90}"
+  [[ "$grace" =~ ^[0-9]+$ ]] || grace=90
+  # same resolution order leadv2-lane-pulse-watch.sh uses for its pidfile
+  state_dir="$(PROJECT_ROOT="${PROJECT_ROOT}" "${STATE_PATH_BIN}" --no-link lane-pulse-watch 2>/dev/null || true)"
+  [[ -n "$state_dir" ]] || state_dir="${TMPDIR:-/tmp}/leadv2-lane-pulse-watch"
+  # DOUBLE-FORK detach: this writer runs inside command substitutions where a
+  # directly-backgrounded child (even disowned — observed live: the parent
+  # waited the full grace on its `sleep` child) can block the caller. The
+  # outer subshell's only act is to background the reaper, so the ledger
+  # never parents the sleep; the reaper reparents to launchd.
+  (
+    (
+      sleep "$grace" 2>/dev/null
+      LEADV2_WATCH_LIFECYCLE_LOG="${state_dir}/lane-pulse-watch/watch-lifecycle.log" \
+        wl_reap "${state_dir}/lane-pulse-watch/${sig8}.pid" "leadv2-lane-pulse-watch" \
+                "lane-pulse-watch" "dispatch-${sig8}"
+    ) >/dev/null 2>&1 </dev/null &
+  ) >/dev/null 2>&1 </dev/null
+  return 0
 }
 
 # SD-LEDGER-SWEEP-HARDEN-01: the sweep's OWN write path -- deliberately NOT
@@ -343,16 +554,30 @@ dispatch_ledger_write_terminal() {
 # <sig8> <lane_id> <cause> <evidence> <attempt>
 dispatch_ledger_sweep_write_dead() {
   local sig8="$1" lane="${2:-}" cause="${3:-}" evidence="${4:-}" attempt="${5:-}"
+  [[ "${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}" == "0" ]] && return 0
   [[ -n "${sig8}" ]] || { log_err "sweep_write_dead: empty task_sig, refusing to write"; return 1; }
   if [[ -z "${attempt}" ]]; then
     log_err "sweep_write_dead: no attempt recorded on lane=${lane} sig=${sig8} -- refusing to sweep (attempt-less row predates hardening or was never stamped)"
     return 2
   fi
-  local founder cause_s evidence_s attempt_s
+  # A dead process may still have left worker-owned bytes in its pinned lane.
+  # Resolve the lane before choosing the terminal so the sweep cannot erase that
+  # distinction merely because its liveness probe is process-only.
+  local lane_root=""
+  if [[ -x "${SCRIPT_DIR}/leadv2-lane-worktree.sh" ]]; then
+    lane_root="$(LEADV2_PROJECT_ROOT="${PROJECT_ROOT}" bash "${SCRIPT_DIR}/leadv2-lane-worktree.sh" path-of "${lane}" 2>/dev/null || true)"
+  fi
+  local terminal="dead"
+  if [[ -n "${lane_root}" ]] && lv2_lane_dirty "${lane_root}"; then
+    terminal="dead_with_unlanded_work"
+    evidence="${evidence}${evidence:+ }lane_root=${lane_root}"
+  fi
+  local founder cause_s evidence_s attempt_s terminal_s
   founder="$(json_safe "${lane}")"
   cause_s="$(json_safe "${cause}")"
   evidence_s="$(json_safe "${evidence}")"
   attempt_s="$(json_safe "${attempt}")"
+  terminal_s="$(json_safe "${terminal}")"
   local f lockf; f="$(dispatch_terminal_ledger_file)"; lockf="$(dispatch_terminal_ledger_lock_file)"
   mkdir -p "$(dirname "${f}")" 2>/dev/null
   mkdir -p "$(dirname "${lockf}")" 2>/dev/null
@@ -363,23 +588,25 @@ dispatch_ledger_sweep_write_dead() {
   # terminal short-circuits before this point) carrying a real display name, prefer
   # THAT -- it is more likely the mission-H1-derived name than `lane` is. Falls back to
   # founder_task_id when no prior row (or no task_id on it) exists.
-  local _tid; _tid="$(_dispatch_terminal_last_field "${sig8}" "${f}" task_id)"
-  [[ -n "${_tid}" ]] || _tid="${founder:0:64}"
+  local _tid; _tid="$(_dispatch_terminal_last_field "${sig8}" "${f}" task_id || true)"
+  if [[ -z "${_tid}" ]]; then
+    _tid="${founder:0:64}"
+  fi
   local rc
   (
     lv2_lock_wait "${lockf}" 10 || exit 3
     local _last_terminal _same_attempt_row
-    _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal)"
+    _last_terminal="$(_dispatch_terminal_last_field "${sig8}" "${f}" terminal || true)"
     case "${_last_terminal}" in
-      landed|dead) exit 2 ;;  # sig8-wide TRUE terminal already recorded -- write-once-final, attempt-agnostic by design
+      landed|pass_unlanded|dead|dead_with_unlanded_work) exit 2 ;;  # sig8-wide TRUE terminal already recorded -- write-once-final, attempt-agnostic by design
     esac
     if [[ -f "${f}" ]]; then
-      _same_attempt_row="$(grep -F "\"task_sig\":\"${sig8}\"" "${f}" 2>/dev/null | grep -F "\"attempt\":\"${attempt_s}\"" | head -n 1)"
+      _same_attempt_row="$(grep -F "\"task_sig\":\"${sig8}\"" "${f}" 2>/dev/null | grep -F "\"attempt\":\"${attempt_s}\"" | head -n 1 || true)"
       [[ -n "${_same_attempt_row}" ]] && exit 2  # a row for THIS exact attempt already exists (refused/parked/landed/dead) -- never append dead on top of it
     fi
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
-    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","task_id":"%s","terminal":"dead","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
-      "${ts}" "${sig8}" "${founder}" "${_tid}" "${cause_s}" "${evidence_s}" "${attempt_s}" >> "${f}" || exit 1
+    printf '{"ts":"%s","task_sig":"%s","founder_task_id":"%s","task_id":"%s","terminal":"%s","cause":"%s","evidence":"%s","attempt":"%s"}\n' \
+      "${ts}" "${sig8}" "${founder}" "${_tid}" "${terminal_s}" "${cause_s}" "${evidence_s}" "${attempt_s}" >> "${f}" || exit 1
     exit 0
   ) 9>"${lockf}"
   rc=$?
@@ -387,8 +614,12 @@ dispatch_ledger_sweep_write_dead() {
     0)
       if [[ -f "${JOURNAL_BIN}" ]]; then
         bash "${JOURNAL_BIN}" append "dispatch-${sig8}" decision \
-          "dispatch_terminal task=${sig8} terminal=dead cause=${cause_s} attempt=${attempt_s} source=sweep" >/dev/null 2>&1 || true
+          "dispatch_terminal task=${sig8} terminal=${terminal_s} cause=${cause_s} attempt=${attempt_s} source=sweep" >/dev/null 2>&1 || true
       fi
+      # T16 §10: swept dead IS a true terminal -- the lane row must leave active.yaml
+      # here too, or swept lanes accumulate exactly like closed ones did. `lane` is the
+      # active.yaml task_id this sweep iteration is acting on (founder_task_id form).
+      _lv2_terminal_unregister_lanes "${sig8}" "${lane}" "${attempt_s}"
       return 0 ;;
     2)
       if [[ -f "${JOURNAL_BIN}" ]]; then
@@ -961,6 +1192,10 @@ EOF
   exit 2
 }
 
+# Kept source-safe for the behavioral harnesses.  Direct CLI invocation retains the
+# historical command dispatcher below; a caller that sources this file gets only the
+# real ledger functions and can exercise them with isolated lower-level fixtures.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
   write-terminal)
     shift
@@ -1000,3 +1235,4 @@ case "${1:-}" in
     ;;
   *) usage ;;
 esac
+fi

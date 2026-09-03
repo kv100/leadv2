@@ -1,0 +1,20 @@
+[TEST] PASS: bash -n lib/leadv2-lane-guard.sh
+[TEST] PASS: product-close sources the single lane guard
+[TEST] GREEN-PRE-FIX: state-file-excluded -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: pycache-dir-excluded -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: pyc-untracked-excluded -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: handoff-still-excluded -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: real-work-still-refusable -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: declared-file-survives -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: no-loose-pycache-match -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: both-sites-use-constant -- passed against the pre-fix script too (pre_rc=0)
+[TEST] FAIL: bootstrap-symlink-only-not-dirty -- post-fix rc=1, expected 0
+[TEST] GREEN-PRE-FIX: bootstrap-symlink-plus-real-file-dirty -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: real-file-at-bootstrap-prefix-dirty -- passed against the pre-fix script too (pre_rc=0)
+[TEST] GREEN-PRE-FIX: tracked-modified-at-bootstrap-prefix-dirty -- passed against the pre-fix script too (pre_rc=0)
+[TEST] FAIL: bootstrap-filter-controls-runtime -- post-fix rc=1, expected 0
+
+Results: 0 passed(red->green), 2 failed, 11 green-pre-fix, 0 could-not-run
+FAIL: bootstrap-symlink-only-not-dirty: post-fix rc=1
+FAIL: bootstrap-filter-controls-runtime: post-fix rc=1
+rc=1

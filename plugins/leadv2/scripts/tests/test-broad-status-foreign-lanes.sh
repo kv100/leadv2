@@ -91,8 +91,16 @@ EOF
 chmod +x "$STUBS/liveness.sh"
 
 snap() {  # [extra args...]
+  # LEADV2_LANES_ALL_REPOS=1 pins the script's documented default explicitly:
+  # ~/.claude/settings.json ships LEADV2_LANES_ALL_REPOS=0 globally on this
+  # machine (verified 2026-08-30, see root-cause-evidence.log), so relying on
+  # the script's own "${LEADV2_LANES_ALL_REPOS:-1}" default here would let
+  # this suite silently test the ambient override instead of the documented
+  # behaviour. An explicit "$@" flag (e.g. --no-all-repos in S2) still wins,
+  # since CLI parsing runs after this env default inside the script.
   env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_BASE="$STATE" \
     LEADV2_LANE_LIVENESS_BIN="$STUBS/liveness.sh" \
+    LEADV2_LANES_ALL_REPOS=1 \
     bash "$LANES_SNAPSHOT_SH" --json "$@" 2>/dev/null
 }
 
@@ -194,6 +202,12 @@ fi
 
 # ── Renderer (stubbed collector feeding the real broad-status.sh) ───────────
 FOUNDER_STATUS="$REPO/docs/leadv2/founder-status.md"
+# PULSE-REPO-SCOPED-03: the renderer shows a foreign-repo lane only when THIS
+# repo dispatched it (dispatch record <root>/docs/leadv2/tasks/<tid>/). R1's
+# foreign lane is exactly that case (it is the row that must keep rendering
+# with its slug prefix), so seed the record — the suite's snapshot-layer
+# cases (S1-S4) are untouched: leadv2-lanes-snapshot.sh has no such filter.
+mkdir -p "$REPO/docs/leadv2/tasks/dispatch-fee00001"
 
 collector_out() {  # <snapshot-json-string>
   # broad-status invokes: collector.sh --project-root <root> --out <path>

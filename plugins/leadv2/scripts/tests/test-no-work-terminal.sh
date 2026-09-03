@@ -114,6 +114,65 @@ case_empty_no_work() {
   rm -rf "${d}"
 }
 
+# ---- Case 1b (T8C-FOREIGN-REPO-LANDING-01): empty local diff + a declared
+# lane-target-repo marker whose foreign repo carries a commit tagged with the task
+# sig -> terminal=landed cause=landed_foreign, exit 0, never no_work. -----------
+case_foreign_repo_landing() {
+  local d root foreign
+  d="$(mktemp -d)"; root="${d}/repo"; mkdir -p "${root}"
+  new_repo "${root}"; make_stubs "${d}"
+  foreign="${d}/foreign-repo"
+  mkdir -p "${foreign}"
+  ( cd "${foreign}" && git init -q -b main && git config user.email t@e.com && git config user.name t \
+    && printf 'seed\n' > seed.py && git add seed.py && git commit -qm seed \
+    && printf 'fix\n' >> seed.py && git commit -qam "fix(leadv2): frl2sig001 -- landed in canonical" \
+  ) >/dev/null 2>&1
+  mkdir -p "${root}/docs/handoff/dispatch-frl2sig001"
+  printf '%s\n' "${foreign}" > "${root}/docs/handoff/dispatch-frl2sig001/lane-target-repo"
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_CACHE_DIR="${d}/cache" \
+    LEADV2_LANE_WORK_ROOT="${root}" \
+    LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" \
+    LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
+    LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
+    bash "${PC}" "${root}" frl2sig001 sonnet "" 1 1 "founder-frl2" >/dev/null 2>&1
+  local rc=$?
+  local handoff="${root}/docs/handoff/dispatch-frl2sig001"
+  assert_eq "${rc}" "0" "foreign-landed lane exits 0"
+  if [[ -f "${handoff}/review-gate.md" ]] && grep -q '^reason: landed_foreign$' "${handoff}/review-gate.md" \
+     && grep -q '^status: passed$' "${handoff}/review-gate.md"; then
+    ok "review-gate.md reason=landed_foreign status=passed"
+  else bad "review-gate.md reason=landed_foreign (got: $(cat "${handoff}/review-gate.md" 2>/dev/null))"
+  fi
+  if grep -q 'terminal=landed cause=landed_foreign' "${d}/journal.log" 2>/dev/null; then
+    ok "ledger decision line terminal=landed cause=landed_foreign"
+  else bad "ledger decision line missing (got: $(grep review_gate "${d}/journal.log" 2>/dev/null | tail -1))"
+  fi
+  rm -rf "${d}"
+}
+
+# ---- Case 1c (T8C negative control): same empty local diff, NO lane-target-repo
+# marker at all -> must stay on the pre-existing no_work/empty_diff path unchanged. --
+case_foreign_repo_absent_stays_no_work() {
+  local d root
+  d="$(mktemp -d)"; root="${d}/repo"; mkdir -p "${root}"
+  new_repo "${root}"; make_stubs "${d}"
+  CLAUDE_PROJECT_ROOT="${root}" LEADV2_DISPATCH_CACHE_DIR="${d}/cache" \
+    LEADV2_LANE_WORK_ROOT="${root}" \
+    LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" \
+    LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
+    LEADV2_GLM_POLICY_RESOLVER="${d}/resolver.py" LEADV2_DISPATCH_CODEX_BIN="${d}/codex.sh" \
+    bash "${PC}" "${root}" fra2sig001 sonnet "" 1 1 "founder-fra2" >/dev/null 2>&1
+  local rc=$?
+  local handoff="${root}/docs/handoff/dispatch-fra2sig001"
+  assert_eq "${rc}" "5" "no-marker empty-diff lane still exits 5"
+  if [[ -f "${handoff}/review-gate.md" ]] && grep -q '^reason: no_work$' "${handoff}/review-gate.md" \
+     && ! grep -q 'landed_foreign' "${handoff}/review-gate.md"; then
+    ok "review-gate.md reason=no_work (no foreign-repo marker present)"
+  else bad "review-gate.md unexpectedly mentions landed_foreign (got: $(cat "${handoff}/review-gate.md" 2>/dev/null))"
+  fi
+  rm -rf "${d}"
+}
+
 # ---- Case 2: partial_diff (mixed group) stays refused -----------------------
 case_partial_stays_refused() {
   local d plugin target
@@ -465,6 +524,8 @@ SH
 }
 
 case_empty_no_work
+case_foreign_repo_landing
+case_foreign_repo_absent_stays_no_work
 case_partial_stays_refused
 case_surface_no_work_not_done
 case_alive_worker_has_no_terminal

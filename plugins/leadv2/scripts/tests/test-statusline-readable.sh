@@ -16,7 +16,13 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL_PLUGIN_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-REAL_REPO_ROOT="$(cd "${REAL_PLUGIN_DIR}/../../.." && pwd)"
+# GATE-WRONG-ROOT-FALSE-DEAD-01: never derive the repo root by counting
+# '../' hops -- this worktree's plugins/leadv2 sits at a different depth
+# than a bare checkout, so a fixed hop count landed on .claude/worktrees
+# (not a git root at all) and made every `git archive HEAD -- <path>`
+# below fail with "did not match any files", permanently skipping R1/R2.
+# Resolve from git itself instead.
+REAL_REPO_ROOT="$(git -C "${REAL_PLUGIN_DIR}" rev-parse --show-toplevel)"
 source "$(cd "${SCRIPT_DIR}/.." && pwd)/leadv2-temp.sh"
 
 tmp="$(lv2_mktemp_dir statusline-readable)"
@@ -95,12 +101,30 @@ run_tail() {
     bash "$scripts_dir/leadv2-lane-status-line-tail.sh" "$INPUT_JSON" "$SETTINGS_JSON" "$scripts_dir" 5 </dev/null
 }
 strip_ansi() { sed -E $'s/\x1b\\[[0-9;]*m//g'; }
-visible_len() { printf '%s' "$1" | strip_ansi | awk '{print length}'; }
+# Bash's character length follows the terminal locale; awk's length can count
+# UTF-8 bytes, turning each visible `·` into two columns on this host.
+visible_len() { local plain; plain="$(printf '%s' "$1" | strip_ansi)"; printf '%s' "${#plain}"; }
 
 # ---- pre-fix baseline via git archive -------------------------------------
+# Resolve a ref that predates this lane's own STATUSLINE-READABLE-01 fix
+# commits, not HEAD (which already carries them in a lane worktree).
+# origin/main is the merge-base of this lane and reachable in a lane
+# worktree without counting '../' hops or needing a full clone; fall back
+# to the parent of the first commit that ever touched the tail script if
+# the remote ref is unavailable (e.g. a detached/offline checkout).
+PRE_FIX_REF=""
+if git -C "$REAL_REPO_ROOT" rev-parse --verify -q origin/main >/dev/null 2>&1; then
+  PRE_FIX_REF="origin/main"
+else
+  FIRST_TOUCH="$(git -C "$REAL_REPO_ROOT" log --diff-filter=A --format=%H -- \
+    plugins/leadv2/scripts/leadv2-lane-status-line-tail.sh | tail -1)"
+  if [[ -n "$FIRST_TOUCH" ]] && git -C "$REAL_REPO_ROOT" rev-parse --verify -q "${FIRST_TOUCH}^" >/dev/null 2>&1; then
+    PRE_FIX_REF="${FIRST_TOUCH}^"
+  fi
+fi
 PREFIX_DIR="$tmp/prefix"
 mkdir -p "$PREFIX_DIR/scripts"
-if git -C "$REAL_REPO_ROOT" archive HEAD -- \
+if [[ -n "$PRE_FIX_REF" ]] && git -C "$REAL_REPO_ROOT" archive "$PRE_FIX_REF" -- \
     "plugins/leadv2/scripts/leadv2-lane-status-line-tail.sh" \
     "plugins/leadv2/scripts/leadv2-lane-status-line.sh" \
     "plugins/leadv2/scripts/leadv2-tasks-lib.sh" \
@@ -144,7 +168,24 @@ if [[ "$PRE_AVAILABLE" == "1" ]]; then
     if printf '%s' "$PRE_OUT" | strip_ansi | grep -qE '\| [A-Za-z0-9_-]{1,4}[·:]'; then
       ok "R1 pre-fix: unreadable short-stem floor reproduced"
     else
-      bad "R1" "pre-fix output did not show the expected floor collapse: $PRE_OUT"
+      # third acceptable shape: the founder's OTHER observed pre-fix defect
+      # (STATUSLINE-READABLE-01 B/7 comment: "a raw ${LANES:0:KEEP}
+      # character slice used to cut mid-word") -- a bare fragment with no
+      # ellipsis, no arm marker and no trailing digit, sitting in the lane
+      # digest section (after "lanes n/cap | "), never in the BASE text.
+      PRE_LANE_SECTION="$(printf '%s' "$PRE_OUT" | strip_ansi | sed -E 's/^.*lanes ([0-9]+|\?)\/[0-9]+ \| //')"
+      R1_TRUNC_TOKEN=""
+      for tok in $PRE_LANE_SECTION; do
+        case "$tok" in
+          +[0-9]*|*·*|*…*|*[0-9]) ;;
+          [A-Za-z][A-Za-z0-9_-]*) R1_TRUNC_TOKEN="$tok" ;;
+        esac
+      done
+      if [[ -n "$R1_TRUNC_TOKEN" ]]; then
+        ok "R1 pre-fix: raw mid-word truncation reproduced ('$R1_TRUNC_TOKEN')"
+      else
+        bad "R1" "pre-fix output did not show the expected floor collapse: $PRE_OUT"
+      fi
     fi
   fi
   # R2: no model/arm token present pre-fix
@@ -177,28 +218,74 @@ fi
 # renders a label -- checked by scanning the widest realistic width (112);
 # at 80 with 4 lanes we expect the drop-to-K ladder, not sub-floor labels,
 # UNLESS K collapses to the old sub-floor fallback (still width-safe).
-LABELS_80="$(printf '%s' "$POST_80" | strip_ansi | sed -n 's/.*| //p')"
+# ANTI-SILENCE-STATUSLINE-01 round 2 reordered the line to LANES | BASE
+# (lanes first, per mission item 1) -- the lane section is now everything
+# before the LAST " | " (the lane digest itself can contain its own "|",
+# e.g. "lanes 4/5 | dispatch-... +2", so BASE -- which never contains "|" --
+# is what anchors the split).
+LABELS_80="$(printf '%s' "$POST_80" | strip_ansi | sed -E 's/ \| [^|]*$//')"
 if [[ -n "$LABELS_80" ]]; then
   ok "R9: digest at width 80 rendered a non-empty lane section: $LABELS_80"
 else
   bad "R9" "digest at width 80 rendered NO lane section at all"
 fi
 
-# R5: rendered rows + '+M' == true lane count (4), OR all 4 rendered without a '+M'
+# R5: rendered rows + '+M' == true lane count (4).  This is exact: a marker
+# that undercounts hidden lanes is worse than no marker because it lies about
+# the incident surface.
 ROW_COUNT="$(printf '%s' "$LABELS_80" | grep -oE '·[a-z?]{1,2}·[0-9]' | wc -l | tr -d ' ')"
 PLUS_M="$(printf '%s' "$LABELS_80" | grep -oE '\+[0-9]+' | grep -oE '[0-9]+' || true)"
 [[ -z "$PLUS_M" ]] && PLUS_M=0
 TOTAL_ACCOUNTED=$(( ROW_COUNT + PLUS_M ))
-if [[ "$TOTAL_ACCOUNTED" -ge 1 ]]; then
-  ok "R5: rendered rows ($ROW_COUNT) + dropped (+$PLUS_M) accounted for at least 1 lane"
+if [[ "$TOTAL_ACCOUNTED" -eq 4 ]]; then
+  ok "R5: rendered rows ($ROW_COUNT) + dropped (+$PLUS_M) exactly account for 4 lanes"
 else
-  bad "R5" "no rows and no +M token -- lanes vanished entirely: $LABELS_80"
+  bad "R5" "rendered rows ($ROW_COUNT) + dropped (+$PLUS_M) != 4: $LABELS_80"
+fi
+
+# R12: the trailing word-boundary cut never leaves a truncated mid-word
+# fragment -- every whitespace-delimited token in the lane section must be
+# either the "+N" dropped-count marker, a complete "lanes n/m" head token,
+# or a complete arm-marked lane token (label·arm·age). A raw mid-word slice
+# (e.g. "GATE-FO") matches none of these.
+R12_BAD_TOKEN() {
+  local section="$1" tok R12_LABEL R12_REST R12_SOURCE R12_CANDIDATE
+  for tok in $section; do
+  case "$tok" in
+    lanes|+[0-9]*|[0-9]*/[0-9]*) continue ;;
+    *·*)
+      R12_LABEL="${tok%%·*}"
+      R12_REST="${tok#*·}"
+      if [[ ! "$R12_REST" =~ ^(alive|dead|done|queued|\?)·[0-9]+[smh]?$ ]]; then
+        printf '%s' "$tok"; return
+      fi
+      R12_SOURCE=""
+      for R12_CANDIDATE in dispatch-c98a1414-architect dispatch-5bfce73e GATE-FOREIGN-FAILURE-01 LANDING-PAGE-REDESIGN-01; do
+        if [[ "$R12_LABEL" == "$R12_CANDIDATE" || "$R12_LABEL" == *… && "$R12_CANDIDATE" == "${R12_LABEL%…}"* ]]; then
+          R12_SOURCE="$R12_CANDIDATE"
+          break
+        fi
+      done
+      [[ -n "$R12_SOURCE" ]] || { printf '%s' "$tok"; return; }
+      ;;
+    *) printf '%s' "$tok"; return ;;
+  esac
+  done
+}
+R12_BAD_80="$(R12_BAD_TOKEN "$LABELS_80")"
+LABELS_112="$(printf '%s' "$POST_112" | strip_ansi | sed -E 's/ \| [^|]*$//')"
+R12_BAD_112="$(R12_BAD_TOKEN "$LABELS_112")"
+if [[ -z "$R12_BAD_80" && -z "$R12_BAD_112" ]]; then
+  ok "R12: no mid-word-truncated token in lane sections at widths 80 and 112"
+else
+  bad "R12" "mid-word-truncated token found (80='$R12_BAD_80', 112='$R12_BAD_112')"
 fi
 
 # R6: BASE compression happens BEFORE label capping -- a narrow width (80)
 # must produce a SHORTER base than a wide one (112), proving the ordering.
-BASE_80_VIS="$(visible_len "$(printf '%s' "$POST_80" | sed 's/ \x1b\[34m|.*//')" )"
-BASE_112_VIS="$(visible_len "$(printf '%s' "$POST_112" | sed 's/ \x1b\[34m|.*//')" )"
+# Lanes-first format: LANES | BASE -- BASE is now everything after " | ".
+BASE_80_VIS="$(visible_len "$(printf '%s' "$POST_80" | strip_ansi | sed -n 's/.*| //p')" )"
+BASE_112_VIS="$(visible_len "$(printf '%s' "$POST_112" | strip_ansi | sed -n 's/.*| //p')" )"
 if [[ "$BASE_80_VIS" -le "$BASE_112_VIS" ]]; then
   ok "R6: narrower width (80) yields a BASE no longer than the wide one (112) -- base@80=$BASE_80_VIS base@112=$BASE_112_VIS"
 else
@@ -317,6 +404,390 @@ if printf '%s' "$GARBAGE_OUT" | grep -qF "$GARBAGE_BASE"; then
 else
   bad "R11" "unrecognised BASE was mutated: $GARBAGE_OUT"
 fi
+
+# ---- ANTI-SILENCE-STATUSLINE-01 round 8: fallback-path field integrity ---
+# Every fixture above wraps a `printf '<literal>'` statusLine.command that
+# always succeeds, so FALLBACK_BASE / MODEL / REMAINING / TRANSCRIPT_PATH are
+# NEVER exercised by any of R1-R11 -- the exact hole that let round 7's
+# `IFS=$'\n' read -r a b c d <<< "$PARSED"` regression (read's line
+# terminator is a literal newline, not IFS -- only the FIRST var ever filled)
+# stay invisible through 45/0. FIX5c requires a configured-but-failing or
+# timed-out user command to land on this path too, not just an absent one --
+# all three are exercised here, reusing FOREIGN_DIR/REPO from the R7 fixture
+# above (pulse.json with a differing owner_session_id already seeded) so the
+# own-session-id-from-transcript_path accounting is covered in the same pass.
+FB_SETTINGS_NONE="$tmp/settings-fb-none.json"
+printf '{}' > "$FB_SETTINGS_NONE"
+FB_SETTINGS_FAIL="$tmp/settings-fb-fail.json"
+printf '{"statusLine":{"command":"exit 1"}}' > "$FB_SETTINGS_FAIL"
+FB_SETTINGS_TIMEOUT="$tmp/settings-fb-timeout.json"
+printf '{"statusLine":{"command":"sleep 5"}}' > "$FB_SETTINGS_TIMEOUT"
+# Own JSON (not INPUT_JSON_WITH_SESSION, which carries no context_window) --
+# needs model + remaining_percentage + transcript_path all populated so all
+# three fields the broken split zeroed out are actually exercisable here.
+FB_INPUT_JSON=$(jq -n --arg dir "$REPO" '{workspace:{current_dir:$dir},model:{display_name:"Opus 5"},context_window:{remaining_percentage:79},transcript_path:"/tmp/22222222-2222-2222-2222-222222222222.jsonl"}')
+
+run_fallback() {
+  local settings="$1"
+  rm -f "$tmp"/cache/leadv2-statusline-lane-*
+  TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH=112 \
+    bash "$FOREIGN_DIR/leadv2-lane-status-line-tail.sh" "$FB_INPUT_JSON" "$settings" "$FOREIGN_DIR" 5 </dev/null
+}
+
+for _fb_case in "no-command $FB_SETTINGS_NONE" "failing-command $FB_SETTINGS_FAIL" "timed-out-command $FB_SETTINGS_TIMEOUT"; do
+  _fb_label="${_fb_case%% *}"
+  _fb_settings="${_fb_case#* }"
+  _fb_out="$(run_fallback "$_fb_settings")"
+  _fb_plain="$(printf '%s' "$_fb_out" | strip_ansi)"
+  if [[ "$_fb_plain" == *'Opus 5'* ]]; then
+    ok "FB-model ($_fb_label): fallback render carries the real model, not '?'"
+  else
+    bad "FB-model ($_fb_label)" "fallback render lost the model name (MODEL var empty): $_fb_plain"
+  fi
+  if [[ "$_fb_plain" == *'ctx'* ]]; then
+    ok "FB-remaining ($_fb_label): fallback render carries the remaining-pct segment"
+  else
+    bad "FB-remaining ($_fb_label)" "fallback render lost the remaining-pct (REMAINING var empty): $_fb_plain"
+  fi
+  if [[ "$_fb_plain" == *'~dispatch-5b'* ]]; then
+    ok "FB-foreign ($_fb_label): own-session-id parsed from TRANSCRIPT_PATH marks the foreign lane"
+  else
+    bad "FB-foreign ($_fb_label)" "foreign-lane marker missing (TRANSCRIPT_PATH var empty -> OWN_SESSION_ID empty): $_fb_plain"
+  fi
+done
+
+# Mutation control: restore round 7's broken multi-line `read` split and
+# confirm the three FB-* assertions above go RED by name -- proves the
+# fixture actually exercises the regressed code path, not a no-op.
+FBMUT_DIR="$tmp/scripts-fbmut"
+mkdir -p "$FBMUT_DIR"; cp -a "$SCRATCH_SCRIPTS/." "$FBMUT_DIR/"
+cat > "$FBMUT_DIR/leadv2-state-path.sh" <<EOF
+#!/usr/bin/env bash
+echo "$REPO/.leadv2-state/active.yaml"
+EOF
+chmod +x "$FBMUT_DIR/leadv2-state-path.sh"
+python3 - "$FBMUT_DIR/leadv2-lane-status-line-tail.sh" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+text = open(path, encoding='utf-8').read()
+broken = (
+    "CWD_FROM_INPUT=\"${PARSED%%$'\\n'*}\"\n"
+    "_PARSED_REST=\"${PARSED#*$'\\n'}\"\n"
+    "MODEL=\"${_PARSED_REST%%$'\\n'*}\"\n"
+    "_PARSED_REST=\"${_PARSED_REST#*$'\\n'}\"\n"
+    "REMAINING=\"${_PARSED_REST%%$'\\n'*}\"\n"
+    "_PARSED_REST=\"${_PARSED_REST#*$'\\n'}\"\n"
+    "TRANSCRIPT_PATH=\"${_PARSED_REST%%$'\\n'*}\"\n"
+)
+replacement = "IFS=$'\\n' read -r CWD_FROM_INPUT MODEL REMAINING TRANSCRIPT_PATH <<< \"$PARSED\"\n"
+assert broken in text, "round-8 split not found verbatim -- mutation target text drifted"
+open(path, 'w', encoding='utf-8').write(text.replace(broken, replacement, 1))
+PYEOF
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+FBMUT_OUT="$(TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH=112 \
+  bash "$FBMUT_DIR/leadv2-lane-status-line-tail.sh" "$FB_INPUT_JSON" "$FB_SETTINGS_NONE" "$FBMUT_DIR" 5 </dev/null)"
+FBMUT_PLAIN="$(printf '%s' "$FBMUT_OUT" | strip_ansi)"
+if [[ "$FBMUT_PLAIN" != *'Opus 5'* && "$FBMUT_PLAIN" == *'?'* ]]; then
+  ok "FB-mutation: reverting to the broken multi-line read reproduces the MODEL='?' regression (RED)"
+else
+  bad "FB-mutation" "reverting to the broken read did NOT reproduce the regression -- fixture is not load-bearing: $FBMUT_PLAIN"
+fi
+
+# ---- ANTI-SILENCE-STATUSLINE-01 round 3: the ACTUAL live path -------------
+# Everything above exercises leadv2-lane-status-line-tail.sh's rich digest,
+# which is only reachable when a supervising session is detected. A normal
+# /leadv2 session (LEADV2_STATUSLINE_SUPERVISOR_ONLY=1, the default, no
+# .supervise-active sentinel) takes a DIFFERENT path entirely: the
+# non-supervisor branch of leadv2-lane-status-line.sh itself, which reads a
+# memoised `leadv2-status-surface.sh --oneline` line. That branch used to
+# gate the whole lane segment on the literal substring "live" appearing
+# anywhere in the oneline text (including inside human-readable cause text
+# like "0s live(pid 123)") -- so a repaint where every lane had gone
+# dead/silent rendered NO lane segment at all: the founder's exact repro
+# ("three lanes running, saw none"). These tests drive that real path
+# directly, with a hand-seeded memo file (bypassing the background
+# refresher/status-surface.sh entirely) so the composer's own logic is what
+# is under test.
+COMPOSER="${SCRATCH_SCRIPTS}/leadv2-lane-status-line.sh"
+COMPOSER_TMPDIR="$tmp/composer-tmp"
+mkdir -p "$COMPOSER_TMPDIR"
+COMPOSER_INPUT='{"model":{"display_name":"Sonnet 5"},"workspace":{"current_dir":"/tmp/composer-cwd"}}'
+_composer_cache_key() {
+  # mirrors leadv2-lane-status-line.sh's BASE_KEY/_sup0 derivation
+  printf '%s' "/tmp/composer-cwd" | tr '/' '_'
+}
+run_composer() {
+  local width="$1" memo_line="$2"
+  local key memo
+  key="$(_composer_cache_key)_sup0"
+  rm -rf "$COMPOSER_TMPDIR"; mkdir -p "$COMPOSER_TMPDIR"
+  memo="${COMPOSER_TMPDIR}/leadv2-status-oneline-${key}"
+  printf '%s' "$memo_line" > "$memo"
+  printf '%s' "$COMPOSER_INPUT" | \
+    TMPDIR="$COMPOSER_TMPDIR" HOME="${HOME}" COLUMNS="$width" \
+    LEADV2_STATUSLINE_SUPERVISOR_ONLY=1 bash "$COMPOSER"
+}
+# a settings.json with no statusLine.command -> exercises the pure-builtin
+# fallback base render, isolating the composer's own lane-prefix logic from
+# any external command.
+mkdir -p "$tmp/composer-home/.claude"
+printf '{}' > "$tmp/composer-home/.claude/settings.json"
+
+# MUTATION CONTROL 'silence': a lane digest with ZERO "live" lanes (all
+# dead/silent) must still lead the line, ahead of the base render.
+DEAD_ONLY_LINE='lanes 1: mylane·dead·9m'
+SILENCE_OUT="$(HOME="$tmp/composer-home" run_composer 120 "$DEAD_ONLY_LINE")"
+if [[ "$SILENCE_OUT" == "$DEAD_ONLY_LINE "* ]]; then
+  ok "silence: dead-only lane digest still leads the composed line"
+else
+  bad "silence" "dead-only lane digest missing/not leading: $SILENCE_OUT"
+fi
+
+# MUTATION CONTROL 'order': lane field start index is < 40 even with a
+# realistic base line present.
+printf '{"statusLine":{"command":"printf %s"}}' "'Opus 5 in ~/proj [style] 50%% ctx'" > "$tmp/composer-home/.claude/settings.json"
+ORDER_OUT="$(HOME="$tmp/composer-home" run_composer 120 "$DEAD_ONLY_LINE")"
+ORDER_IDX="$(printf '%s' "$ORDER_OUT" | grep -bo 'mylane' | head -1 | cut -d: -f1)"
+if [[ -n "$ORDER_IDX" && "$ORDER_IDX" -lt 40 ]]; then
+  ok "order: lane field start index ($ORDER_IDX) < 40 (leads the base/quota text)"
+else
+  bad "order" "lane field not found before index 40 (idx='$ORDER_IDX'): $ORDER_OUT"
+fi
+
+# MUTATION CONTROL 'width': COLUMNS actually changes the rendered line, and
+# a narrow width still yields the full lane digest (short enough to fit)
+# with the base line visibly shorter than at a wide COLUMNS.
+WIDE_LINE="$(HOME="$tmp/composer-home" run_composer 200 "$DEAD_ONLY_LINE")"
+NARROW_LINE="$(HOME="$tmp/composer-home" run_composer 40 "$DEAD_ONLY_LINE")"
+if [[ "$WIDE_LINE" != "$NARROW_LINE" ]]; then
+  ok "width: COLUMNS=40 vs COLUMNS=200 render differently (was previously width-invariant)"
+else
+  bad "width" "output identical across COLUMNS=40 and COLUMNS=200: $NARROW_LINE"
+fi
+if (( $(visible_len "$NARROW_LINE") <= 40 )); then
+  ok "width: narrow-COLUMNS render did not balloon past the requested budget"
+else
+  bad "width" "narrow-COLUMNS render ($( printf '%s' "$NARROW_LINE" | wc -c )) far exceeds budget: $NARROW_LINE"
+fi
+
+# A stale wider-width memo is the caller-side clamp's real negative case.
+# It contains five lane tokens but is painted at 30 columns: the composer
+# must retain the first (silent) token, budget the marker itself, and report
+# all four hidden rows.  Removing the composer refit/backoff makes this RED.
+WIDE_MEMO='lanes 5: SILENT-LANE-THAT-MUST-REMAIN·dead·9m live-one·live·1s live-two·live·2s live-three·live·3s live-four·live·4s'
+MEMO_30="$(HOME="$tmp/composer-home" run_composer 30 "$WIDE_MEMO")"
+MEMO_30_PLAIN="$(printf '%s' "$MEMO_30" | strip_ansi)"
+MEMO_30_LEN="$(visible_len "$MEMO_30")"
+if (( MEMO_30_LEN <= 30 )) && [[ "$MEMO_30_PLAIN" == *'·dead·9m'* ]] && [[ "$MEMO_30_PLAIN" == *'+4'* ]]; then
+  ok "R13: stale wide memo at width 30 keeps silent lane, exact +4, and exact budget"
+else
+  bad "R13" "memo clamp lost silent lane, lied about +N, or exceeded 30 (len=$MEMO_30_LEN): $MEMO_30_PLAIN"
+fi
+
+# H2/H3: at the minimum width the incident remains visible and its age unit
+# remains intact.  A counter-only line or dead·9 is an information loss.
+MEMO_20="$(HOME="$tmp/composer-home" run_composer 20 "$WIDE_MEMO")"
+MEMO_20_PLAIN="$(printf '%s' "$MEMO_20" | strip_ansi)"
+if (( $(visible_len "$MEMO_20") <= 20 )) && [[ "$MEMO_20_PLAIN" == *'·dead·9m'* ]]; then
+  ok "H2/H3: width 20 retains the dead class and complete 9m age ($MEMO_20_PLAIN)"
+else
+  bad "H2/H3" "width 20 lost the incident or corrupted its age: $MEMO_20_PLAIN"
+fi
+
+# F5: a fitting fallback base keeps its SGR signal.  ANSI is stripped only
+# when clipping is actually necessary.
+printf '{}' > "$tmp/composer-home/.claude/settings.json"
+WIDE_COLORED="$(HOME="$tmp/composer-home" run_composer 200 "$DEAD_ONLY_LINE")"
+if [[ "$WIDE_COLORED" == *$'\033['* ]]; then
+  ok "F5: wide fallback base preserves ANSI when it fits"
+else
+  bad "F5" "wide fallback base lost ANSI despite headroom: $WIDE_COLORED"
+fi
+
+# F5: when the composer must shorten its fallback base, it may only retain
+# whole fields.  This is deliberately exercised through the copied production
+# renderer: reverting _surf_clip_plain in production before this suite starts
+# changes this render to a raw partial-field slice and makes this assertion RED.
+F5_CLIP_OUT="$(HOME="$tmp/composer-home" run_composer 30 "$WIDE_MEMO")"
+F5_CLIP_PLAIN="$(printf '%s' "$F5_CLIP_OUT" | strip_ansi)"
+if [[ "$F5_CLIP_PLAIN" == *'Sonnet…'* ]] && [[ "$F5_CLIP_PLAIN" != *'Sonnet 5 in /tmp/composer-'* ]]; then
+  ok "F5: production fallback clipping keeps complete fields ($F5_CLIP_PLAIN)"
+else
+  bad "F5" "production fallback clipping split a field or omitted ellipsis: $F5_CLIP_PLAIN"
+fi
+
+# F2: the composer must fit exact narrow terminal budgets, including the
+# former negative-slack/trailing-space case at 22 columns.
+for _narrow_w in 20 22 26 30 34 60 80 120 200; do
+  _narrow_out="$(HOME="$tmp/composer-home" run_composer "$_narrow_w" "$WIDE_MEMO")"
+  _narrow_len="$(visible_len "$_narrow_out")"
+  if (( _narrow_len <= _narrow_w )); then
+    ok "F2: composer width $_narrow_w is exact/smaller ($_narrow_len)"
+  else
+    bad "F2" "composer width $_narrow_w overflowed ($_narrow_len): $_narrow_out"
+  fi
+done
+
+# MUT-C: deleting the composer's reserved +N marker must make the same
+# narrow fixture overflow. This is a red control, not a textual source check.
+MUT_C_DIR="$tmp/composer-mut-c"
+cp -a "$SCRATCH_SCRIPTS" "$MUT_C_DIR"
+sed -i.bak 's/_surf_marker=""; (( _surf_remaining > 0 )) && _surf_marker=" +${_surf_remaining}"/_surf_marker=""/' "$MUT_C_DIR/leadv2-lane-status-line.sh"
+rm -f "$MUT_C_DIR/leadv2-lane-status-line.sh.bak"
+COMPOSER_SAVED="$COMPOSER"; COMPOSER="$MUT_C_DIR/leadv2-lane-status-line.sh"
+MUT_C_RED=""
+for _mut_w in 20 22 26 30 34 60; do
+  MUT_C_OUT="$(HOME="$tmp/composer-home" run_composer "$_mut_w" "$WIDE_MEMO")"
+  if (( $(visible_len "$MUT_C_OUT") > _mut_w )); then MUT_C_RED="$_mut_w:$MUT_C_OUT"; break; fi
+done
+COMPOSER="$COMPOSER_SAVED"
+if [ -n "$MUT_C_RED" ]; then
+  ok "MUT-C RED: zero composer marker overflows (${MUT_C_RED%%:*})"
+else
+  bad "MUT-C" "zero composer marker unexpectedly stayed within every narrow budget"
+fi
+
+# MUT-Z/V/U/W are production-path controls.  A reviewer mutates the real
+# tail before this suite starts; SCRATCH_SCRIPTS is then a fresh copy of that
+# production code.  These assertions must go red on that copy, never on a
+# second self-mutated renderer.
+#
+# The lane cache key is CWD-only (no width component -- see
+# leadv2-lane-status-line-tail.sh CACHE_KEY), so back-to-back run_tail calls
+# against the same $REPO at different widths within the 5s TTL used above
+# would replay a narrower call's stale digest into a wider one instead of
+# recomputing.  Each of these four calls asserts on a specific width, so the
+# cache is cleared immediately before each one to force a live recompute.
+# MUT-Z targets the bash hard-clamp loop's reservation math
+# (leadv2-lane-status-line-tail.sh:1127, `_lane_remaining=$(( _lane_total -
+# _lane_shown - 1 ))`, the per-candidate marker-width preview used ONLY to
+# decide whether the token being considered still fits). Empirically this
+# term only changes the admission decision at the exact point where the
+# marker's own digit count would cross a boundary (e.g. "+9" vs "+10") --
+# everywhere else the wrong marker is the same length as the right one and
+# the mutation is invisible. 10 real lanes plus an explicit
+# LEADV2_STATUSLINE_LANE_BUDGET (forces the Python ladder to hand back the
+# full candidate so this bash clamp is the only thing trimming it) at width
+# 31 sits exactly on that boundary: with the reservation term, the first
+# lane fits (label + " +9"); without it, the marker is computed one digit
+# too wide ("+10"), the fit check now fails, and the lane that should have
+# rendered is silently swallowed into the drop count instead -- the
+# founding incident in miniature.
+MUTZ_DIR="$tmp/scripts-mutz"
+mkdir -p "$MUTZ_DIR"; cp -a "$SCRATCH_SCRIPTS/." "$MUTZ_DIR/"
+cat > "$MUTZ_DIR/leadv2-lane-liveness.sh" <<'EOF'
+#!/usr/bin/env bash
+python3 -c '
+import json
+rows = [{"lane": "n%d" % i, "verdict": "alive", "age_s": i + 1} for i in range(10)]
+print(json.dumps({"count_live": len(rows), "lanes": rows}))
+'
+EOF
+chmod +x "$MUTZ_DIR/leadv2-lane-liveness.sh"
+MUTZ_REPO="$tmp/repo-mutz"
+mkdir -p "$MUTZ_REPO/.claude/leadv2-overrides" "$MUTZ_REPO/.leadv2-state" "$MUTZ_REPO/docs/handoff"
+printf 'hard_limit: 25\n' > "$MUTZ_REPO/.claude/leadv2-overrides/active-limits.yaml"
+printf 'meta:\n  hard_limit: 25\nsessions: []\n' > "$MUTZ_REPO/.leadv2-state/active.yaml"
+cat > "$MUTZ_DIR/leadv2-state-path.sh" <<EOF
+#!/usr/bin/env bash
+echo "$MUTZ_REPO/.leadv2-state/active.yaml"
+EOF
+chmod +x "$MUTZ_DIR/leadv2-state-path.sh"
+MUTZ_INPUT_JSON=$(jq -n --arg dir "$MUTZ_REPO" '{workspace:{current_dir:$dir},model:{display_name:"Opus 5"},output_style:{name:"default"},context_window:{remaining_percentage:79},transcript_path:""}')
+MUTZ_SETTINGS_JSON="$tmp/settings-mutz.json"
+printf '{"statusLine":{"command":"printf hi"}}' > "$MUTZ_SETTINGS_JSON"
+rm -rf "$tmp/cache"
+MUT_Z_OUT="$(TMPDIR="$tmp/cache" CLAUDE_PLUGIN_ROOT="" LEADV2_STATUSLINE_WIDTH=31 LEADV2_STATUSLINE_LANE_BUDGET=200 \
+  bash "$MUTZ_DIR/leadv2-lane-status-line-tail.sh" "$MUTZ_INPUT_JSON" "$MUTZ_SETTINGS_JSON" "$MUTZ_DIR" 5 </dev/null)"
+MUT_Z_PLAIN="$(printf '%s' "$MUT_Z_OUT" | strip_ansi)"
+if [[ "$MUT_Z_PLAIN" == 'lanes 10/25 0'*'+9'* ]]; then
+  ok "MUT-Z: production tail reservation admits the lane that fits ($MUT_Z_PLAIN)"
+else
+  bad "MUT-Z" "production tail reservation swallowed a lane that should have fit: $MUT_Z_PLAIN"
+fi
+
+# MUT-V targets the final drop-count assignment two lines later
+# (leadv2-lane-status-line-tail.sh:1132, `_lane_dropped=$(( _lane_total -
+# _lane_shown ))`) -- a distinct line from MUT-Z's reservation term, and
+# exercised via a distinct fixture: the founder's 4-lane repro with
+# LEADV2_STATUSLINE_LANE_BUDGET forcing the Python ladder to hand back the
+# full uncompressed candidate, so the bash clamp is the only thing standing
+# between that candidate and the 30-column terminal -- an off-by-one here
+# silently under-reports how many lanes disappeared.
+rm -rf "$tmp/cache"
+MUT_V_OUT="$(LEADV2_STATUSLINE_LANE_BUDGET=200 run_tail 30 "$SCRATCH_SCRIPTS")"
+MUT_V_PLAIN="$(printf '%s' "$MUT_V_OUT" | strip_ansi)"
+if [[ "$MUT_V_PLAIN" == 'lanes 4/5 +4'* ]]; then
+  ok "MUT-V: production tail drop count matches all 4 lanes ($MUT_V_PLAIN)"
+else
+  bad "MUT-V" "production tail drop count is off by one: $MUT_V_PLAIN"
+fi
+
+rm -rf "$tmp/cache"
+MUT_U_OUT="$(run_tail 20 "$SCRATCH_SCRIPTS")"; MUT_U_BASE="${MUT_U_OUT#* | }"
+if [[ "$MUT_U_BASE" != *$'\033['* ]] && (( $(visible_len "$MUT_U_OUT") <= 20 )); then ok "MUT-U: clipped production base is ANSI-safe and width-safe"; else bad "MUT-U" "clipped production base leaked ANSI or exceeded width: $MUT_U_OUT"; fi
+
+MUTW_DIR="$tmp/scripts-mutw"
+mkdir -p "$MUTW_DIR"; cp -a "$SCRATCH_SCRIPTS/." "$MUTW_DIR/"
+cat > "$MUTW_DIR/leadv2-lane-liveness.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<JSON
+{"count_live": 1, "lanes": [
+ {"lane":"LANDING-PAGE-REDESIGN-EXTENDED-01","verdict":"alive","age_s":8}
+]}
+JSON
+EOF
+chmod +x "$MUTW_DIR/leadv2-lane-liveness.sh"
+rm -rf "$tmp/cache"
+MUT_W_OUT="$(run_tail 1000 "$MUTW_DIR")"
+if [[ "$MUT_W_OUT" == *'LANDING-PAGE-REDESIGN-EXTENDED-01'* ]]; then ok "MUT-W: wide production render retains complete identity"; else bad "MUT-W" "wide production render truncated identity: $MUT_W_OUT"; fi
+
+# F3: UTF-8 labels must use character, not byte, width accounting in the tail
+# clamp; the visible row count and +N must exactly reconcile.
+UTF8_DIR="$tmp/scripts-utf8"
+mkdir -p "$UTF8_DIR"; cp -a "$SCRATCH_SCRIPTS/." "$UTF8_DIR/"
+cat > "$UTF8_DIR/leadv2-lane-liveness.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<JSON
+{"count_live": 8, "lanes": [
+ {"lane":"кириллица-один","verdict":"alive","age_s":1},
+ {"lane":"кириллица-два","verdict":"alive","age_s":2},
+ {"lane":"кириллица-три","verdict":"alive","age_s":3},
+ {"lane":"кириллица-четыре","verdict":"alive","age_s":4},
+ {"lane":"кириллица-пять","verdict":"alive","age_s":5},
+ {"lane":"кириллица-шесть","verdict":"alive","age_s":6},
+ {"lane":"кириллица-семь","verdict":"alive","age_s":7},
+ {"lane":"кириллица-восемь","verdict":"alive","age_s":8}
+]}
+JSON
+EOF
+chmod +x "$UTF8_DIR/leadv2-lane-liveness.sh"
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+UTF8_OUT="$(run_tail 60 "$UTF8_DIR")"; UTF8_PLAIN="$(printf '%s' "$UTF8_OUT" | strip_ansi)"
+if (( $(visible_len "$UTF8_OUT") <= 60 )) && [[ "$UTF8_PLAIN" == *'+5'* ]]; then
+  ok "F3: UTF-8 tail clamp fits 60 with exact +5"
+else
+  bad "F3" "UTF-8 tail clamp width/count mismatch: $UTF8_PLAIN"
+fi
+rm -f "$tmp"/cache/leadv2-statusline-lane-*
+UTF8_C_OUT="$(LC_ALL=C run_tail 60 "$UTF8_DIR")"; UTF8_C_PLAIN="$(printf '%s' "$UTF8_C_OUT" | strip_ansi)"
+if [[ "$UTF8_C_PLAIN" == *'один·?·1s'* ]] && [[ "$UTF8_C_PLAIN" == *'+5'* ]] && (( $(visible_len "$UTF8_C_OUT") <= 60 )); then
+  ok "locale: LC_ALL=C preserves the first UTF-8 lane and exact +5 accounting"
+else
+  bad "locale" "LC_ALL=C lost first UTF-8 lane, +5 accounting, or width: $UTF8_C_PLAIN"
+fi
+
+# F2/F5: the production tail has the same exact-width contract, and its BASE
+# fallback must become plain text before a degenerate-width clip.
+for _tail_w in 20 22 26 30 34 60 80 120 200; do
+  rm -f "$tmp"/cache/leadv2-statusline-lane-*
+  _tail_out="$(run_tail "$_tail_w" "$SCRATCH_SCRIPTS")"
+  if (( $(visible_len "$_tail_out") <= _tail_w )); then
+    ok "F2/F5: tail width $_tail_w is exact/smaller"
+  else
+    bad "F2/F5" "tail width $_tail_w overflowed: $_tail_out"
+  fi
+done
 
 printf 'pass=%d fail=%d skip=%d\n' "$PASS" "$FAIL" "$SKIP"
 [[ "$FAIL" -eq 0 ]]

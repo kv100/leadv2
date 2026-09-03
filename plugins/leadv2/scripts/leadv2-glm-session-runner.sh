@@ -348,7 +348,11 @@ while (( attempt < MAX_ATTEMPTS )); do
   progress_before="$("$PROGRESS_TOOL" "$TASK_ID" 2>/dev/null || printf -- 'unknown-before')"
 
   set +e
-  run_id="$("$GLM_CODER_BIN" bg "$prompt" --cwd "$PROJECT_ROOT" --max-turns "$GLM_MAX_TURNS" --timeout "$GLM_TIMEOUT" 2>>"$LOGF")"
+  # T14 fix-round F3: explicit role for the role-scoped MCP attach — the
+  # session runner drives the whole Phase 0..8 lifecycle (planning-heavy),
+  # so it takes the architect allowlist rather than the implicit developer
+  # default. Unknown roles fail open to developer inside the resolver.
+  run_id="$(LEADV2_WORKER_ROLE=architect "$GLM_CODER_BIN" bg "$prompt" --cwd "$PROJECT_ROOT" --max-turns "$GLM_MAX_TURNS" --timeout "$GLM_TIMEOUT" 2>>"$LOGF")"
   launch_rc=$?
   set -e
   if [[ "$launch_rc" -ne 0 || -z "$run_id" ]]; then

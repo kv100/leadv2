@@ -59,6 +59,8 @@ cat > "$tmp/bin/codex-task.sh" <<'SH'
 #!/usr/bin/env bash
 if [[ "$*" == *"cancelled-job"* ]]; then
   printf '%s\n' '{"workspaceRoot":"x","job":{"id":"cancelled-job","status":"cancelled","phase":"cancelled","createdAt":"2026-07-28T00:00:00Z"}}'
+elif [[ "$*" == *"failed-job"* ]]; then
+  printf '%s\n' '{"workspaceRoot":"x","job":{"id":"failed-job","status":"failed","phase":"failed","createdAt":"2026-07-28T00:00:00Z","errorMessage":"spawn refused by provider"}}'
 else
   printf '%s\n' '{"workspaceRoot":"x","running":[{"id":"running-job","status":"running","phase":"verifying","createdAt":"2026-07-28T00:00:00Z"}],"recent":[]}'
 fi
@@ -72,6 +74,8 @@ running="$(CODEX_TASK_SH="$tmp/bin/codex-task.sh" bash "$HELPER" --project-root 
 check "$running" '"verdict": "running"' 'running job is not classified dead without codex-guard'
 cancelled="$(CODEX_TASK_SH="$tmp/bin/codex-task.sh" bash "$HELPER" --project-root "$repo" --job cancelled-job --json)"
 check "$cancelled" '"verdict": "cancelled"' 'cancelled job is reported as cancelled, not dead'
+failed="$(CODEX_TASK_SH="$tmp/bin/codex-task.sh" bash "$HELPER" --project-root "$repo" --job failed-job --json)"
+check "$failed" '"reason": "spawn refused by provider"' 'failed job surfaces errorMessage when no older reason field exists'
 supervised="$(LEADV2_PROJECT_ROOT="$repo" LEADV2_STATE_ROOT="$state" CODEX_TASK_SH="$tmp/bin/codex-task.sh" bash "$SUPERVISE" --json)"
 check "$supervised" 'codex:running-job' 'supervise enumerates Codex app-server job'
 check "$supervised" '"phase": "verifying"' 'supervise preserves authoritative Phase'

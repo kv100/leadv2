@@ -1865,6 +1865,7 @@ launch_via_dispatch_code() {
   fi
 
   local -a dc_args=("$mission" --kind "fanout-class-funnel" --task-id "$tid")
+  dc_args+=(--task-class "$cls")
   [[ -n "$_lane_writes" ]] && dc_args+=(--writes "$_lane_writes")
   [[ -n "$_lane_acceptance" ]] && dc_args+=(--acceptance-cmd "$_lane_acceptance")
   [[ "$_lane_rollback" == "1" ]] && dc_args+=(--rollback-onestep)

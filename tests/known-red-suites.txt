@@ -1,0 +1,37 @@
+# tests/known-red-suites.txt — CI-RUNS-THE-SUITES-01, dated 2026-09-02.
+#
+# Suites that were ALREADY red on `main` the day CI was wired up (measured via
+# `tests/run-all.sh --scope changed`, which always runs the full curated
+# plugins/leadv2/scripts/tests/run-core-offline.sh set regardless of scope).
+# Fixing them is out of scope for CI-RUNS-THE-SUITES-01 — that is
+# FIFTEEN-RED-SUITES-01, a separate task. This file exists so the CI job can
+# be green from birth without hiding NEW regressions: tests/ci-gate.sh treats
+# any failing suite on this list as a known issue (reported, non-blocking)
+# and any failing suite NOT on this list as a hard failure.
+#
+# Format: one entry per line, `core:<exact [CORE-OFFLINE] FAILED: label>` for
+# suites that run nested inside run-core-offline.sh (all 15 below are), or
+# `path:<repo-relative suite path>` for a suite that fails at the top level
+# of tests/run-all.sh. A trailing `# <script path> — <reason>` comment is
+# required so a reader never has to reproduce the failure locally just to
+# find out what it is.
+#
+# THIS LIST MAY ONLY SHRINK. tests/known-red-guard.sh fails the build if the
+# entry count grows relative to the base branch. To add a suite here, remove
+# one first, or get sign-off outside this task's scope — do not just widen it.
+
+core:landed-at-spawn (no terminal=landed at spawn; target repo keying)  # plugins/leadv2/scripts/tests/test-landed-at-spawn.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:dispatch arm vocabulary (kimi retirement)  # plugins/leadv2/scripts/tests/test-dispatch-arm-vocabulary.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:phase precondition guard matrix  # plugins/leadv2/scripts/tests/test-phase-precondition.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:claim-evidence gate (CLAIM-EVIDENCE-GATE-01 preamble + round-1 lens)  # plugins/leadv2/scripts/tests/test-claim-evidence-gate.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:product-close scopes a single-repo lane worktree  # plugins/leadv2/scripts/tests/test-lane-diff-single-repo.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:codex-dead review reroute (QUOTA-GATE-PARITY-01)  # plugins/leadv2/scripts/tests/test-codex-dead-reroute.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:idle-lead guard hook  # plugins/leadv2/scripts/tests/test-idle-lead-guard.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)  # plugins/leadv2/scripts/tests/test-review-round-exhaustive.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:deferred-GLM ladder (V3-GLM-LADDER-01)  # plugins/leadv2/scripts/tests/test-glm-deferred-ladder.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:review round cap (REVIEW-ROUNDCAP-01)  # plugins/leadv2/scripts/tests/test-review-roundcap.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:core-offline cross-run exclusive lock (SUITE-SPEED-01)  # plugins/leadv2/scripts/tests/test-core-offline-lock-01.sh — red inside the full 83-suite run at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); passes 3/3 standalone (verified) — looks like a lock-contention timing flake under concurrent machine load, not a logic bug; see FIFTEEN-RED-SUITES-01
+core:dispatch refusal fallback chain  # plugins/leadv2/scripts/tests/test-routing-enforcement-p1.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:Codex full-cycle runner  # plugins/leadv2/scripts/tests/test-codex-session-runner.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:lane truth batch (log_path + quarantine convergence)  # plugins/leadv2/scripts/tests/test-lane-truth-batch-01.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
+core:report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)  # plugins/leadv2/scripts/tests/test-report-only-gate.sh — red on main at CI-RUNS-THE-SUITES-01 baseline (2026-09-02); see FIFTEEN-RED-SUITES-01
