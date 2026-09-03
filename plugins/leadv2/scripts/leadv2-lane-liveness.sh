@@ -290,7 +290,26 @@ def load_yaml(path, default):
     except Exception:
         return default
 
-active = load_yaml(active_path, {})
+# D2-UNBLIND-AND-THIRD-STATE-M0M1-01 (M1): the registry's READABILITY is
+# itself evidence. load_yaml folds "active.yaml absent" and "active.yaml
+# unparseable" into the same {} as "present and empty", so a corrupt or
+# missing registry was indistinguishable from "no row for this lane" -- and
+# an artifactless lane then took a terminal dead:no_* verdict manufactured
+# by an unreadable source. Parse active.yaml here (once, exact load_yaml
+# semantics) and record the failure; resolve() demotes the no-evidence dead
+# labels to unknown:yaml_unreadable, which every consumer's existing `*)`
+# arm already treats as "indeterminate, write nothing" -- never a death.
+active = {}
+active_unreadable = not os.path.isfile(active_path)
+if not active_unreadable:
+    try:
+        import yaml
+        with open(active_path, encoding="utf-8") as fh:
+            _active_value = yaml.safe_load(fh)
+        if _active_value is not None:
+            active = _active_value
+    except Exception:
+        active_unreadable = True
 sessions = {str(s.get("task_id")): s for s in (active.get("sessions") or [])
             if isinstance(s, dict) and s.get("task_id")}
 tombstones = load_yaml(tombstones_path, [])
@@ -615,6 +634,33 @@ def commit_age_s(worktree):
         return None
     return max(0, int(time.time()) - ctime)
 
+def deliverable_age_s(lane_dir):
+    # D2-UNBLIND-AND-THIRD-STATE-M0M1-01 (M1, rung E4): externally checkable
+    # fact -- the lane's OWN deliverable report, the artifact a finished
+    # worker writes when its work never lands as a commit. Guards mirror
+    # commit_age_s's refusal to fabricate: no dir / no report / empty
+    # (placeholder) report -> None, never a fabricated age. The newest
+    # NON-EMPTY *.full.md or *.summary.md wins, so a stale prior-round
+    # report sitting next to a fresh one cannot mask the fresh evidence.
+    # Content is never inspected -- a DELIVERABLE_BLOCKED report is still a
+    # finished round that did work and said why it stopped.
+    if not lane_dir or not os.path.isdir(lane_dir):
+        return None
+    newest = None
+    for pattern in ("*.full.md", "*.summary.md"):
+        for path in glob.glob(os.path.join(lane_dir, pattern)):
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if st.st_size <= 0:
+                continue
+            if newest is None or st.st_mtime > newest:
+                newest = st.st_mtime
+    if newest is None:
+        return None
+    return max(0, int(time.time()) - int(newest))
+
 def resolve(tid):
     lane_dir = os.path.join(root, "docs", "handoff", tid)
     row = {"lane": tid, "verdict": None, "age_s": None, "source": None,
@@ -877,6 +923,41 @@ def resolve(tid):
         if det is not None:
             row["age_s"] = row.get("detached_age_s", row["age_s"])
             row.update(verdict="alive", reason=det, source="arm-registered")
+            return row
+        # D2-UNBLIND-AND-THIRD-STATE-M0M1-01 (M1, rung E4): a finished worker
+        # whose work never landed as a commit still leaves a deliverable
+        # report under its own handoff dir. 2026-09-03 incident: five workers
+        # wrote docs/handoff/dispatch-<sig>/developer.full.md, no commit
+        # landed, git log showed nothing, and this ladder read "no stream, no
+        # pid" as dead:no_log_artifact -- four re-dispatches each destroyed
+        # the previous round's only evidence. A non-empty *.full.md /
+        # *.summary.md within LEADV2_LANE_FINISHED_WINDOW_S -- deliberately
+        # the SAME window as the finished: rung near the top of resolve()
+        # (no second tunable: two windows would let finished: and
+        # finished_unlanded: disagree about one lane at one instant) -- is
+        # finished work that has not landed, not death. Sits AFTER the C2
+        # floor and the detached-worker probe above, so it only fires once
+        # process evidence says not-alive; a worker still writing its report
+        # (live pid) never reaches it. Verdict is a sibling of finished:
+        # (consumers match finished*), nothing is renamed, and
+        # dead:no_handoff_dir / dead:no_log_artifact become unreachable while
+        # the deliverable exists -- the incident fix, with zero consumer
+        # edits: unknown to every existing arm means "write nothing".
+        _deliverable_age = deliverable_age_s(lane_dir)
+        if _deliverable_age is not None and _deliverable_age <= finished_window:
+            row["age_s"] = _deliverable_age
+            row.update(verdict=f"finished_unlanded:{_deliverable_age}s",
+                       source="deliverable", reason="no_pid_recent_deliverable")
+            return row
+        # D2-UNBLIND-AND-THIRD-STATE-M0M1-01 (M1): an unreadable registry
+        # must never manufacture the terminal dead labels below.
+        # unknown:yaml_unreadable lands in every consumer's existing `*)`
+        # arm ("indeterminate, write nothing"), same as bare `unknown`
+        # today -- strictly safer than a death verdict sourced from a file
+        # this run could not read.
+        if active_unreadable:
+            row.update(verdict="unknown:yaml_unreadable", source="handoff",
+                       reason="registry_unreadable")
             return row
         if not os.path.isdir(lane_dir):
             row.update(verdict="dead:no_handoff_dir", source="handoff", reason="no_handoff_dir")
