@@ -203,6 +203,7 @@ def complexity_penalty(c):
     return total
 def ecost(c):
     return float(c.get('cost',999)) + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + complexity_penalty(c)
+complexity_penalty_active = any(complexity_penalty(c) > 0 for c in ok)
 ok.sort(key=lambda c:(ecost(c),u[c['provider']],c['arm'],c.get('tier','')))
 seen=set(); chain=[]
 for c in ok:
@@ -277,6 +278,11 @@ _fmode = ' floor_mode=%s floor_mode_source=%s' % (floor_mode, floor_mode_src)
 # this decision -- absent from the descriptor (an older/unpatched caller)
 # renders as "unknown", never a blank/missing token.
 _complexity = ' complexity=%s duration_class=%s' % (complexity, duration_class)
-print('arm=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity))
+# A complexity rule only changes the selector through effective cost.  Say so
+# when it is active: `cheapest_capable` alone would hide that cheaper tagged
+# cells were deliberately demoted for this estimate.
+reason = 'complexity_penalty' if complexity_penalty_active else 'cheapest_capable'
+_complexity_policy = (' complexity_policy=penalty' if complexity_penalty_active else ' complexity_policy=none')
+print('arm=%s model=%s tier=%s effort=%s reason=%s chain=%s %s%s%s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),effort,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy))
 PY
 }
