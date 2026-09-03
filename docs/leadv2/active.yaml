@@ -1,1 +1,65 @@
-/Users/kostiantyn.vlasenko/.claude/leadv2-state/leadv2/active.yaml
+meta:
+  schema_version: 2
+  rendered_at: '2026-09-01T22:02:50Z'
+  hard_limit: 3
+  heavy_max: 3
+  heavy_strategic_solo: false
+  light_max: 3
+  standard_max: 2
+sessions:
+- session_id: s-20260901T215922Z-82715-17199
+  task_id: dispatch-0e7cd03d
+  worktree: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/RESUME-LANE-ACCEPTS-PATH-01
+  branch: worktree-RESUME-LANE-ACCEPTS-PATH-01
+  started_at: '2026-09-01T21:59:22Z'
+  phase: intake
+  class: Light
+  pulse_log: docs/leadv2/tasks/dispatch-0e7cd03d/pulse.md
+  pid: 41265
+  pid_birth: Wed Sep 2 00:59:38 2026
+  pid_role: worker
+  parent_session_id: null
+  daemon_mode: false
+  last_pulse_at: '2026-09-01T21:59:22Z'
+  stale: false
+  note: ''
+  group_key: null
+  risk_tags: null
+  writes: null
+  protocol_version: 2
+  backend: terminal
+  phase_started_at: '2026-09-01T21:59:22Z'
+  updated_at: '2026-09-01T21:59:40Z'
+  tmux_window: null
+  tmux_pane: null
+  log_path: docs/leadv2/tasks/dispatch-0e7cd03d/pulse.md
+  provider_receipts: []
+  worker_pid: 41265
+  worker_pid_birth: Wed Sep 2 00:59:38 2026
+  worker_pid_role: worker
+- session_id: s-20260901T220244Z-41265-31059
+  task_id: dispatch-ff7cfeec
+  worktree: /Users/kostiantyn.vlasenko/Projects/leadv2/.claude/worktrees/0e7cd03d
+  branch: worktree-0e7cd03d
+  started_at: '2026-09-01T22:02:44Z'
+  phase: intake
+  class: Standard
+  pulse_log: docs/leadv2/tasks/dispatch-ff7cfeec/pulse.md
+  pid: 41265
+  pid_birth: Wed Sep 2 00:59:38 2026
+  pid_role: lead_durable
+  parent_session_id: null
+  daemon_mode: false
+  last_pulse_at: '2026-09-01T22:02:44Z'
+  stale: false
+  note: ''
+  group_key: null
+  risk_tags: null
+  protocol_version: 2
+  backend: terminal
+  phase_started_at: '2026-09-01T22:02:44Z'
+  updated_at: '2026-09-01T22:02:44Z'
+  tmux_window: null
+  tmux_pane: null
+  log_path: docs/leadv2/tasks/dispatch-ff7cfeec/pulse.md
+  provider_receipts: []
