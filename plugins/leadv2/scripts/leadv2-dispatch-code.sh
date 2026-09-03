@@ -3810,7 +3810,19 @@ _lane_writes_guard() {
 # See lib/leadv2-mission-writeset.sh for the extraction/coverage rules.
 _mission_writeset_guard() {
   local sig8="$1" writes="$2" raw="$3"
-  [[ "${REQUIRE_MISSION_WRITESET}" == "1" ]] || return 0
+  # MISSION-WRITESET-GATE-IS-DEAD-ON-THE-LIVE-PATH-01 (census pass 2, session fb,
+  # 2026-09-03): REQUIRE_MISSION_WRITESET defaults to 0 and is set to 1 in exactly
+  # one place in the whole tree -- a test file. So this gate has never run on the
+  # live path, while reading like a protection that does. It cannot simply be
+  # turned on: LANE_WRITES is empty in 237 of 241 dispatch lines, so with an empty
+  # declared set EVERY path is out of scope and every dispatch would refuse.
+  # Order: (1) say so out loud, here and now; (2) enable by default only after
+  # LANE-WRITES-IS-EMPTY-98-PERCENT-01 fills the set. A guard that is off must
+  # announce that it is off -- silence is what made it look like cover.
+  if [[ "${REQUIRE_MISSION_WRITESET}" != "1" ]]; then
+    emit decision "mission_writeset_gate_disabled task=${sig8} reason=REQUIRE_MISSION_WRITESET=${REQUIRE_MISSION_WRITESET:-unset} note=no_write_scope_check_ran"
+    return 0
+  fi
   local missing
   missing="$(leadv2_writeset_missing "${writes}" <<< "${raw}")"
   [[ -z "${missing}" ]] && return 0
