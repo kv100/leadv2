@@ -160,4 +160,45 @@ rows, not part of this diff) were spot-checked so this change doesn't regress th
   (times out past 2 min due to `run-core-offline.sh` and other unrelated long suites in the
   selected set — a known, pre-existing runtime characteristic, not something introduced here).
 
+## Resume re-verification (2026-09-03, post-crash-recovery)
+
+This lane's editor crashed after commit `ff509d45` landed the fix (see git log). Resumed session
+found the fix already committed, `git status` clean on all 5 task files, and no uncommitted work
+lost. Re-ran the falsification set from scratch against the on-disk state, unchanged from the
+above:
+
+```
+== bash -n ==
+OK plugins/leadv2/scripts/leadv2-merge-safety-gate.sh
+OK plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh
+OK plugins/leadv2/scripts/leadv2-deploy-merge.sh
+OK plugins/leadv2/scripts/leadv2-dispatch-product-close.sh
+OK tests/run-all.sh
+```
+
+macOS native re-run:
+```
+--- 10 passed, 0 failed ---
+EXIT=0
+```
+
+Fresh Debian 12 container re-run (`docker run --rm debian:12-slim`, apt-installed git+bash, not
+the prior cached container):
+```
+--- 10 passed, 0 failed ---
+RC=0
+```
+
+`--scope changed` re-selection proof:
+```
+[SELECT] .../plugins/leadv2/scripts/tests/test-leadv2-merge-safety-gate.sh
+run-all: 14 selected, scope=changed, select_only=1
+```
+
+`git diff --diff-filter=D --name-only main...HEAD` (three-dot, per shared resume rules) — empty:
+no file this lane's diff...main relationship shows as deleted, so nothing to restore.
+
+No code changes were needed on resume; this section is the evidence that the lane's committed
+state still satisfies the acceptance criteria after the crash.
+
 DELIVERABLE_COMPLETE
