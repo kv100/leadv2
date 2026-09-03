@@ -121,7 +121,7 @@ trap 'rm -rf "${SCRATCH}"' EXIT
 # result by construction (CHALLENGE-05). Snapshot tracked+untracked-but-not-
 # ignored files from the actual working tree instead.
 if ! git -C "${ROOT}" ls-files -co --exclude-standard -z 2>/dev/null \
-     | tar -cf - --null -T - -C "${ROOT}" 2>/dev/null \
+     | tar -C "${ROOT}" --null -cf - -T - 2>/dev/null \
      | tar -xf - -C "${SCRATCH}" 2>/dev/null; then
   printf 'leadv2-mutation-control: control_not_applied reason=snapshot_failed\n'
   exit 2

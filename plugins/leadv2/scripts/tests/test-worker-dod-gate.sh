@@ -59,7 +59,7 @@ mkdir -p "${REPO}"
 # (checked out from here on) receives every subsequent commit_all — never
 # `git branch -f main HEAD` while main is checked out, which git refuses
 # (the branch a repo's sole checkout has open cannot be force-moved).
-( cd "${REPO}" && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m base \
+( cd "${REPO}" && git init -q -b main && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m base \
     && git checkout -q -b lane )
 
 TASK_DIR="${REPO}/docs/handoff/T1"
