@@ -51,7 +51,20 @@ cat > "$GLM_GATE_REFUSE_STUB" <<'STUB'
 echo '[glm-quota-gate] LEADV2_DISPATCH_REFUSED: quota_gate' >&2
 exit 1
 STUB
-chmod +x "$CODEX_STUB" "$QUOTA_STUB" "$GLM_GATE_OK_STUB" "$GLM_GATE_REFUSE_STUB"
+
+# HEAVY-TIER-VS-SAFETY-OPUS-01: the Heavy (think-tier) cases must be deterministic.
+# The live resolver (leadv2-router.sh think-model) needs python3+PyYAML to read
+# model-capability.yaml; without PyYAML (e.g. a bare Linux container) it degrades
+# to the documented opus fallback, which made 'model=fable' platform-dependent.
+# Stub the resolver via its own documented test hook (leadv2-think-model.sh
+# honours LEADV2_TEST_ROUTER) — same stubbing discipline as the GLM gate above.
+THINK_MODEL_STUB="$SANDBOX/think-router"
+cat > "$THINK_MODEL_STUB" <<'STUB'
+#!/usr/bin/env bash
+# test stub: stand in for `leadv2-router.sh think-model`
+printf 'fable\n'
+STUB
+chmod +x "$CODEX_STUB" "$QUOTA_STUB" "$GLM_GATE_OK_STUB" "$GLM_GATE_REFUSE_STUB" "$THINK_MODEL_STUB"
 
 route() {
   TEST_QUOTA_JSON="${TEST_QUOTA_JSON:-}" \
@@ -60,6 +73,7 @@ route() {
   LEADV2_QUOTA_LIVE="$QUOTA_STUB" \
   LEADV2_GLM_QUOTA_GATE="${LEADV2_GLM_QUOTA_GATE:-$GLM_GATE_OK_STUB}" \
   LEADV2_KIMI_ENABLED="${LEADV2_KIMI_ENABLED:-0}" \
+  LEADV2_TEST_ROUTER="${LEADV2_TEST_ROUTER:-$THINK_MODEL_STUB}" \
     "$ROUTER" "$@"
 }
 
@@ -91,12 +105,30 @@ out="$(route --class Light --provider auto)"
 assert_fields "Light -> GLM (GLM-FIRST-01)" "$out" \
   'provider=glm' 'model=glm-5.3' 'effort=low'
 
+# HEAVY-TIER-VS-SAFETY-OPUS-01: Heavy-as-a-class is the THINK tier since
+# FABLE-THINK-TIER-01 R4 (see PLANNER-MODELS-DECISION-01, leadv2.md:74-75) —
+# the Claude arm resolves through the think-model resolver (fable; opus only
+# as the resolver's own fallback). The old 'model=opus' assertion was stale
+# doctrine from when CLAUDE_HEAVY_MODEL was hard-pinned to opus.
 out="$(route --class Heavy --provider auto)"
-assert_fields "Heavy -> Claude Opus" "$out" \
-  'provider=claude' 'model=opus' 'effort=high' 'high_risk=true'
+assert_fields "Heavy (think tier) -> Claude fable" "$out" \
+  'provider=claude' 'model=fable' 'effort=high' 'high_risk=true'
 
+# HEAVY-TIER-VS-SAFETY-OPUS-01: a TAG-forced high-risk route is a SAFETY route,
+# pinned to opus regardless of the think tier (leadv2.md:82 "Opus (Heavy or
+# safety verdict)", leadv2.md:142, model-routing.md:30).
 out="$(route --class Standard --risk-tags auth --provider codex)"
 assert_fields "high-risk tag blocks explicit Codex" "$out" \
+  'provider=claude' 'model=opus' 'high_risk=true'
+
+# Split-path guard: Heavy CLASS still lands on the think tier even when safety
+# tags are also present (class check precedes the tag pin), while a Standard
+# class with a safety tag can never inherit the think tier's model.
+out="$(route --class Heavy --risk-tags safety --provider auto)"
+assert_fields "Heavy + safety tags stays think-tier" "$out" \
+  'provider=claude' 'model=fable' 'high_risk=true'
+out="$(route --class Standard --risk-tags safety --provider codex)"
+assert_fields "Standard + safety tag pins opus" "$out" \
   'provider=claude' 'model=opus' 'high_risk=true'
 
 # GLM-FIRST-01 means GLM (and, if enabled, kimi) win auto-routing whenever they are

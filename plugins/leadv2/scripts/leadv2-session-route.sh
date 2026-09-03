@@ -67,6 +67,11 @@ CLAUDE_STANDARD_EFFORT="medium"
 CLAUDE_HEAVY_MODEL="$(bash "${SCRIPT_DIR}/lib/leadv2-think-model.sh" 2>/dev/null || true)"
 [[ -n "$CLAUDE_HEAVY_MODEL" ]] || CLAUDE_HEAVY_MODEL="fable"
 CLAUDE_HEAVY_EFFORT="high"
+# HEAVY-TIER-VS-SAFETY-OPUS-01: tag-forced high-risk (safety) routes pin Opus.
+# Deliberately absent from the config/env override surface — the safety pin is
+# doctrine (leadv2.md:82, leadv2.md:142, model-routing.md:30), not a tunable.
+CLAUDE_SAFETY_MODEL="opus"
+CLAUDE_SAFETY_EFFORT="high"
 GLM_ENABLED="true"
 # Live acceptance evidence: plugins/leadv2/docs/evidence/glm-5.3-probe.md.
 GLM_LIGHT_MODEL="glm-5.3"
@@ -225,9 +230,21 @@ _claude_effort="$CLAUDE_STANDARD_EFFORT"
 if [[ "$_class_l" == "light" ]]; then
   _claude_model="$CLAUDE_LIGHT_MODEL"
   _claude_effort="$CLAUDE_LIGHT_EFFORT"
-elif [[ "$_high_risk" == "true" ]]; then
+elif [[ "$_class_l" == "heavy" || "$_class_l" == "strategic" ]]; then
+  # HEAVY-TIER-VS-SAFETY-OPUS-01: class-based Heavy is the THINK tier —
+  # keep the think-model arm (FABLE-THINK-TIER-01 R4 / PLANNER-MODELS-DECISION-01).
   _claude_model="$CLAUDE_HEAVY_MODEL"
   _claude_effort="$CLAUDE_HEAVY_EFFORT"
+elif [[ "$_high_risk" == "true" ]]; then
+  # HEAVY-TIER-VS-SAFETY-OPUS-01: a TAG-forced high-risk route (risk_tags
+  # intersecting HIGH_RISK_TAGS, on a non-Heavy class) is a SAFETY route, not a
+  # think route — standing rule pins it to Opus (plugins/leadv2/commands/leadv2.md:82
+  # "critic | ... Opus (Heavy or safety verdict)"; leadv2.md:142 "opus only for
+  # judge/safety verdicts"; docs/model-routing.md:30 safety -> Opus). It is NOT
+  # resolver-resolved and NOT config-overridable — same "dead pin" treatment
+  # FABLE-THINK-TIER-01 R4 gave heavy:model, but in the opposite direction.
+  _claude_model="$CLAUDE_SAFETY_MODEL"
+  _claude_effort="$CLAUDE_SAFETY_EFFORT"
 elif [[ -n "$SUGGESTED_MODEL" ]]; then
   _claude_model="$SUGGESTED_MODEL"
   _claude_effort="${SUGGESTED_EFFORT:-$CLAUDE_STANDARD_EFFORT}"
