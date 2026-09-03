@@ -1,0 +1,5 @@
+PASS: census: no new unguarded lib source outside the recorded out-of-lane baseline
+PASS: control: removed canonical fallback is detected (would be red)
+PASS: control LANE_CHILD_SUFFIXES: stripped canonical fallback is detected, naming plugins/leadv2/scripts/leadv2-dispatch-code.sh:452 (would be red)
+PASS: control PORTABLE_LOCK: stripped canonical fallback is detected, naming plugins/leadv2/scripts/leadv2-dispatch-code.sh:460 (would be red)
+SUMMARY: pass=4 fail=0

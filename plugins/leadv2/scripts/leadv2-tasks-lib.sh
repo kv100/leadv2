@@ -36,13 +36,20 @@ _TASKS_MAX_human_needed=1
 
 # ── Single Python dispatcher — all operations via one heredoc ─────────────
 _tasks_dispatch() {
-  python3 - "$_TASKS_FILE" "$_TASKS_LOCK" "$@" <<'DISPATCHER'
+  # CLOSE-GATE-A2-ID-SCHEME-MISMATCH-01: scripts dir passed as argv[3] so the
+  # dispatcher can import row_matches() from leadv2_tasks_yaml_common --
+  # lookups must resolve a human milestone name via a row's `intent`
+  # pre-colon segment, not only the fingerprint id.
+  python3 - "$_TASKS_FILE" "$_TASKS_LOCK" "$_TASKS_LIB_DIR" "$@" <<'DISPATCHER'
 import sys, os, yaml, fcntl, time, datetime, hashlib
 
 tasks_file = sys.argv[1]
 lock_path  = sys.argv[2]
-op         = sys.argv[3]
-args       = sys.argv[4:]
+scripts_dir = sys.argv[3]
+op         = sys.argv[4]
+args       = sys.argv[5:]
+sys.path.insert(0, scripts_dir)
+from leadv2_tasks_yaml_common import row_matches
 
 LANE_RANK     = {"recovery": 0, "action": 1, "intelligence": 2, "human-needed": 3}
 PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -253,7 +260,7 @@ elif op == "by_id":
     iid = args[0]; fd = acquire_lock(shared=True)
     try:
         for it in load_tasks():
-            if str(it.get("id","")) == iid:
+            if row_matches(it, iid):
                 print(yaml.dump([it], default_flow_style=False, allow_unicode=True, sort_keys=False), end="")
                 sys.exit(0)
         sys.exit(1)
@@ -274,7 +281,7 @@ elif op == "claim":
     try:
         items = load_tasks()
         for it in items:
-            if str(it.get("id","")) != iid: continue
+            if not row_matches(it, iid): continue
             claim = it.get("claim") or {}
             if claim.get("by") is not None:
                 print(f"[tasks-lib] already claimed by {claim['by']}", file=sys.stderr); sys.exit(9)
@@ -297,7 +304,7 @@ elif op == "unclaim":
     try:
         items = load_tasks()
         for it in items:
-            if str(it.get("id","")) != iid: continue
+            if not row_matches(it, iid): continue
             it["status"] = "pending"
             it["claim"]  = {"by": None, "lease_expires": None}
             it["last_error"] = None
@@ -328,7 +335,7 @@ elif op == "release":
             except Exception:
                 merge_blocked = False
         for it in items:
-            if str(it.get("id","")) != iid: continue
+            if not row_matches(it, iid): continue
             lane    = str(it.get("lane","action"))
             max_att = int(it.get("max_attempts", LANE_MAX.get(lane,3)))
             if outcome == "success" and merge_blocked:
@@ -394,7 +401,7 @@ elif op == "update":
     try:
         items = load_tasks()
         for it in items:
-            if str(it.get("id","")) == iid:
+            if row_matches(it, iid):
                 set_nested(it, key_path, value); save_tasks(items); sys.exit(0)
         print(f"[tasks-lib] {iid} not found", file=sys.stderr); sys.exit(1)
     finally:

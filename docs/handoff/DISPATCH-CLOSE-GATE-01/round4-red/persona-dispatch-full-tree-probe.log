@@ -1,0 +1,19 @@
+[leadv2-dispatch-code] WARN: foreign project root detected (env=/Users/kostiantyn.vlasenko/Projects/leadv2 cwd=/Users/kostiantyn.vlasenko/Projects/persona-engine) -- using cwd-derived root (FOREIGN-PROJECT-ROOT-GUARD-01)
+[leadv2-dispatch-code] project_root_guard task=b323550c status=foreign_env_overridden env_root=/Users/kostiantyn.vlasenko/Projects/leadv2 cwd_root=/Users/kostiantyn.vlasenko/Projects/persona-engine
+[leadv2-dispatch-code] admission_receipt_write_failed task=b323550c
+[leadv2-dispatch-code] task_class=Light route=dispatch source=flag task=b323550c
+[leadv2-dispatch-code] dispatch_classified task=b323550c class=product reason=conservative_default kind=unknown
+[leadv2-dispatch-code] active_register_miss task=b323550c rc=1
+Traceback (most recent call last):
+  File "<stdin>", line 32, in <module>
+PermissionError: [Errno 1] Operation not permitted: '/Users/kostiantyn.vlasenko/.claude/leadv2-state/leadv2/active.yaml.lock'
+[leadv2-dispatch-code] lane_state_register_failed task=b323550c rc=1
+[leadv2-dispatch-code] architect_prepass task=b323550c status=failed reason=no_lane_writes
+[leadv2-dispatch-code] architect_prepass task=b323550c status=retrying attempt=1/2 reason=no_lane_writes
+[leadv2-dispatch-code] architect_prepass task=b323550c status=failed reason=no_lane_writes
+[leadv2-dispatch-code] architect_prepass task=b323550c status=retrying attempt=2/2 reason=no_lane_writes
+[leadv2-dispatch-code] architect_prepass task=b323550c status=parked reason=no_design_after_2_attempts action=not_dispatched
+[leadv2-dispatch-code] prepass_parked task=b323550c founder_task_id= reason=no_design_after_2_attempts last_reason=no_lane_writes worker_launched=0
+[leadv2-dispatch-code] ERROR: architect prepass produced no design for product task=b323550c after 2 attempts -- task PARKED, not dispatched.
+
+ASSERTED_EXIT_STATUS=3

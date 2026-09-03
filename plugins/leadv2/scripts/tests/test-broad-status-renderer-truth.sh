@@ -196,7 +196,10 @@ if [[ ! -f "$FOUNDER_STATUS" ]]; then
   printf -- '%s\n' "${ERRORS[@]:-}" >&2; exit 1
 fi
 CONTENT="$(cat "$FOUNDER_STATUS")"
-ROW="$(printf '%s' "$CONTENT" | grep -m1 '^| Browser door retry queue fix |')"
+# fix-round-4 (R3-1): col-1 is now the lane IDENTITY (task_id/sig8, never a
+# mission-title fragment -- BROAD-STATUS-ROWS-02's IDENTITY decision), so the
+# fixture's live row is found by its identity, not by the old human-name text.
+ROW="$(printf '%s' "$CONTENT" | grep -m1 '^| dispatch-aabbccdd ')"
 # PULSE-READABLE-01 rule 6: the per-lane detail block, the full queue and
 # the full «Закрыто сегодня» paragraph are no longer in the compact beat
 # (founder-status.md) — they are written, in full, to
@@ -278,10 +281,17 @@ else
   fail "T8: live row cell count wrong: ${ROW:-<no row>}"
 fi
 
-# ── T9 — col-1 is a human name, never a hex id ──────────────────────────────
-if printf '%s' "$ROW" | grep -q '^| Browser door retry queue fix |' \
-   && ! printf '%s' "$ROW" | grep -Eq '[0-9a-f]{6,40}'; then
-  pass "T9: col-1 is a human name, no hex id"
+# ── T9 — col-1 is the lane IDENTITY, never a human name (fix-round-4,
+#    R3-1: this assertion predates BROAD-STATUS-ROWS-02's IDENTITY decision.
+#    It used to require the OPPOSITE -- a human name, no hex id -- which is
+#    exactly the bug that decision fixed: two lanes sharing a long common
+#    mission-title prefix collapsed to the same truncated name and rendered
+#    as one indistinguishable row. task_id is unique per lane by
+#    construction, so col-1 must be the id, deliberately re-specified here
+#    rather than weakened). ──────────────────────────────────────────────────
+COL1="$(printf '%s' "$ROW" | awk -F'|' '{print $2}' | sed 's/^ *//; s/ *$//')"
+if [[ "$COL1" == "dispatch-aabbccdd" ]]; then
+  pass "T9: col-1 is the lane identity (task_id), never a human name"
 else
   fail "T9: col-1 wrong: ${ROW:-<no row>}"
 fi
@@ -322,30 +332,37 @@ else
   fail "T14: detail block missing worker/disk facts"
 fi
 
-# ── T13 — name stability: mission heading rewritten mid-lane, col-1
-#    (the NAME, §2.2) stays frozen on first resolution (beat 1, above) even
-#    though col-2 (the description, deliberately NOT frozen) re-derives. ──
+# ── T13 — identity stability (fix-round-4, R3-1 restatement): col-1 is
+#    derived from task_id, never the mission title, so a mid-lane mission
+#    rewrite CANNOT destabilize it -- this is the whole point of the
+#    IDENTITY decision (two lanes sharing a mission-title prefix used to
+#    collapse into one row; task_id never collides). Col-2 (Что делает) is
+#    NOT frozen -- it tracks current work -- so it legitimately updates to
+#    the new heading. ────────────────────────────────────────────────────
 cat >"$REPO/docs/handoff/dispatch-aabbccdd/lane-mission.md" <<'EOF'
 # Completely different rewritten heading
 This body must never appear either.
 EOF
 run_beat "2026-08-17T15:15:00Z"
 CONTENT2="$(cat "$FOUNDER_STATUS")"
-if printf '%s' "$CONTENT2" | grep -q '^| Browser door retry queue fix |'; then
-  pass "T13: name stays frozen across a mid-lane mission rewrite"
+ROW2="$(printf '%s' "$CONTENT2" | grep -m1 '^| dispatch-aabbccdd ')"
+if [[ -n "$ROW2" ]] && printf '%s' "$ROW2" | grep -q 'Completely different rewritten heading'; then
+  pass "T13: identity stays stable across a mid-lane mission rewrite, description updates"
 else
-  fail "T13: name churned after mission rewrite"
+  fail "T13: identity or description wrong after rewrite: ${ROW2:-<no row>}"
 fi
 
-# ── beat 3: prepass removed -> mission title unaffected (rung 1 is always
-#    lane-mission.md; the prepass was never the source, T2c). ──────────────
+# ── beat 3: prepass removed -> mission title (already rewritten by T13
+#    above) unaffected (rung 1 is always lane-mission.md; the prepass was
+#    never the source, T2c). ────────────────────────────────────────────
 rm "$REPO/docs/handoff/dispatch-aabbccdd/architect-prepass.md"
 run_beat "2026-08-17T15:30:00Z"
 CONTENT3="$(cat "$FOUNDER_STATUS")"
-if printf '%s' "$CONTENT3" | grep -q '^| Browser door retry queue fix |'; then
-  pass "T2c: prepass removed -> name unaffected (mission was always the source)"
+ROW3="$(printf '%s' "$CONTENT3" | grep -m1 '^| dispatch-aabbccdd ')"
+if printf '%s' "$ROW3" | grep -q 'Completely different rewritten heading'; then
+  pass "T2c: prepass removed -> description unaffected (mission was always the source)"
 else
-  fail "T2c: prepass removal broke the frozen name"
+  fail "T2c: prepass removal broke the description: ${ROW3:-<no row>}"
 fi
 
 # ── T5 — one pid-birth rule, one inode ─────────────────────────────────────

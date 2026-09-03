@@ -4,16 +4,18 @@
 
 # /leadv2 Active Sessions
 
-Last updated: 2026-08-29T02:12:05Z
+Last updated: 2026-08-31T11:46:57Z
 
 | task_id | phase | class | started_at | daemon |
 |---|---|---|---|---|
-| dispatch-26c4cec3 | intake | Standard | 2026-08-29T02:10 | no |
-| dispatch-0e7cd03d | intake | Standard | 2026-08-29T02:10 | no |
-| dispatch-ff7cfeec | intake | Standard | 2026-08-29T02:10 | no |
-| dispatch-6409fada | intake | Standard | 2026-08-29T02:11 | no |
-| dispatch-b195e743 | intake | Standard | 2026-08-29T02:11 | no |
-| dispatch-ca7c1056 | intake | Standard | 2026-08-29T02:12 | no |
+| DISPATCH-PIN-CLUSTER-01 | recovered | ? | 2026-08-31T08:44 | no |
+| CODEX-DETACH-01 | e2e | Standard | 2026-08-31T11:04 | no |
+| PULSE-BEATS-IN-IDLE-REPOS-01 | recovered | ? | 2026-08-31T11:08 | no |
+| GATE-PROVES-ITS-OWN-CONTROL-01 | recovered | Light | 2026-08-31T11:28 | no |
+| ANTI-SILENCE-ONE-MECHANISM-01 | review:blocked | Heavy | 2026-08-31T11:28 | no |
+| LANE-FINISHED-IS-NOT-DEAD-01 | recovered | ? | 2026-08-31T11:38 | no |
+| DISPATCH-PHASE-DEADLOCK-01 | build | Light | 2026-08-31T11:39 | no |
+| EFFORT-IS-NOT-WIRED-01 | recovered | ? | 2026-08-31T11:46 | no |
 
-Sessions: 6 / 3 max
+Sessions: 8 / 3 max
 

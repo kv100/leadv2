@@ -31,7 +31,22 @@ LANE_NAME="${8:-}"
 WRITES_CSV="${LEADV2_DISPATCH_LANE_WRITES:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ROUTE_ARBITER_SH="${LEADV2_ROUTE_ARBITER_LIB:-${SCRIPT_DIR}/lib/leadv2-route-arbiter.sh}"
+[[ -f "${_ROUTE_ARBITER_SH}" ]] || _ROUTE_ARBITER_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh"
 [[ -f "${_ROUTE_ARBITER_SH}" ]] && source "${_ROUTE_ARBITER_SH}" || true
+# DISPATCH-CLOSE-GATE-01 Mechanism 2 (C5): the only live close gate, wired here so a real
+# close cross-checks claimed fixes against RED artifacts instead of a standalone CLI verb
+# nothing calls.
+# round-3: guarded like _PARKED_DETECT_SH below -- persona-engine, m3-market and
+# respiro-ios symlink this script PER FILE (not the whole scripts/ dir), so
+# lib/leadv2-red-proof.sh does not exist next to the symlinked copy in any of the three
+# consumer repos. An unguarded `source` there was a hard failure (`set -uo pipefail`) on
+# every close in every non-leadv2 repo. Falls back to the canonical plugin root.
+_RED_PROOF_SH="${SCRIPT_DIR}/lib/leadv2-red-proof.sh"
+[[ -f "${_RED_PROOF_SH}" ]] || _RED_PROOF_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-red-proof.sh"
+if [[ -f "${_RED_PROOF_SH}" ]]; then
+  # shellcheck source=lib/leadv2-red-proof.sh
+  source "${_RED_PROOF_SH}" || true
+fi
 _PARKED_DETECT_SH="${SCRIPT_DIR}/lib/leadv2-parked-detect.sh"
 [[ -f "${_PARKED_DETECT_SH}" ]] || _PARKED_DETECT_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-parked-detect.sh"
 if [[ -f "${_PARKED_DETECT_SH}" ]]; then
@@ -63,6 +78,20 @@ DISPATCH_BIN="${LEADV2_DISPATCH_BIN:-${SCRIPT_DIR}/leadv2-dispatch-code.sh}"
 # product spawn (see that file's cmd_resolve arc==0 comment). Always a subprocess call
 # (never sourced) -- see leadv2-dispatch-ledger.sh's own doc header.
 LEDGER_BIN="${LEADV2_DISPATCH_LEDGER_BIN:-${SCRIPT_DIR}/leadv2-dispatch-ledger.sh}"
+# C-1 (DISPATCH-PIN-CLUSTER-01 round 7): guarded + canonical-fallback source --
+# see leadv2-dispatch-code.sh for the full rationale (consumer-repo symlink farm
+# has no lib/ copy of this new file).
+_LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"
+[[ -f "${_LANE_GUARD_SH}" ]] || _LANE_GUARD_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh"
+if [[ -f "${_LANE_GUARD_SH}" ]]; then
+  source "${_LANE_GUARD_SH}"
+else
+  # Unknown guard state is unsafe at close: it must fail closed, never allow
+  # the later terminal funnel to call a dirty lane clean.
+  lv2_lane_dirty() { return 0; }
+  printf '[leadv2-dispatch-product-close] ERROR: lane guard unavailable local=%s canonical=%s; treating lane as dirty\n' \
+    "${SCRIPT_DIR}/lib/leadv2-lane-guard.sh" "${_LANE_GUARD_SH}" >&2
+fi
 TERMINAL_LEDGER="${LEADV2_DISPATCH_TERMINAL_LEDGER:-1}"
 # N-5: refusal classification (classify_arm_failure) for the arm-agnostic review
 # fallback loop below. Private synced copy, not a shared source of dispatch-code.sh --
@@ -116,6 +145,10 @@ _PC_ATTEMPT="${TASK}-${_PC_ATTEMPT_EPOCH}-$$"
 _PC_TERMINAL_STATE=""
 _PC_TERMINAL_CAUSE=""
 _PC_TERMINAL_EVIDENCE=""
+# Set only after advance-arm has confirmed a new live worker and launched its
+# successor close owner. The old close process must then exit without writing a
+# terminal or unclaiming the lane the successor now owns.
+_PC_CONTINUATION_HANDED_OFF=0
 # LANE-OBSERVABILITY-02 change 1: the worker's own last words for a no_work/dead
 # stop, computed ONCE per run (memoised — the review-gate writers below and the
 # EXIT trap's idempotent _dl_note retry all reuse the identical value; the
@@ -169,6 +202,11 @@ _dl_note() {  # <terminal> <cause> [<evidence>] [<commit>] [<deliverable>]
   # founder isn't either).
   bash "${LEDGER_BIN}" write-terminal "${TASK}" "${FOUNDER_TASK_ID}" "$1" "$2" "${_PC_TERMINAL_EVIDENCE}" "${_PC_ATTEMPT}" "${LANE_NAME}" "${_PC_TERMINAL_COMMIT:-none}" "${_PC_TERMINAL_DELIVERABLE:-unknown}" "${_wr}" >/dev/null 2>&1 9>&- || true
 }
+# Test seam for the consumer-symlink farm: source through the terminal writer
+# so the suite exercises the real close funnel without starting e2e/review.
+if [[ "${LEADV2_PRODUCT_CLOSE_SOURCE_ONLY:-0}" == "1" && "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 HANDOFF="${ROOT}/docs/handoff/dispatch-${TASK}"
 mkdir -p "${HANDOFF}"
 # wave2 round2 finding 3: resolves to the SAME cross-worktree location
@@ -222,6 +260,9 @@ _pc_exit_handler() {
   # Capture the triggering exit code FIRST -- every statement below (including the
   # `[[` tests) would otherwise overwrite $? before the review_crashed row could log it.
   local _pc_exit_rc=$?
+  if [[ "${_PC_CONTINUATION_HANDED_OFF:-0}" == "1" ]]; then
+    return 0
+  fi
   # wave2 round2 finding 4: retry the explicitly-recorded terminal state (if any
   # branch below ever reached one) instead of unconditionally writing crashed_
   # unfinished. write-once dedup (leadv2-dispatch-ledger.sh) makes this call a no-op
@@ -258,6 +299,7 @@ trap 'exit 129' HUP
 
 if [[ -n "${FOUNDER_TASK_ID}" ]]; then
   _TASKS_LIB="${SCRIPT_DIR}/leadv2-tasks-lib.sh"
+  [[ -f "${_TASKS_LIB}" ]] || _TASKS_LIB="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-tasks-lib.sh"
   if [[ -f "${_TASKS_LIB}" ]]; then
     PROJECT_ROOT="${ROOT}"
     # shellcheck source=leadv2-tasks-lib.sh
@@ -279,6 +321,7 @@ emit() { # type text
 # guarded against empty/unset so leadv2_active_update_phase's "${1:?...}" can never abort
 # this script under `set -u` when no founder id was threaded through (e.g. a bare re-run).
 _ACTIVE_REGISTRY_SH="${SCRIPT_DIR}/leadv2-active-registry.sh"
+[[ -f "${_ACTIVE_REGISTRY_SH}" ]] || _ACTIVE_REGISTRY_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-active-registry.sh"
 [[ -f "${_ACTIVE_REGISTRY_SH}" ]] && source "${_ACTIVE_REGISTRY_SH}"
 # SILENT-DEATH-01 (SUPERVISOR-AUDIT-01, 2026-07-30): leadv2-active-registry.sh's own
 # `set -euo pipefail` (line 26) leaks into this shell via `source` and silently overrides
@@ -635,7 +678,7 @@ _pc_run_dir_for() { # <author> <handle> -> path on stdout
   local author="$1" handle="$2" run_dir=""
   [[ -n "${author}" && -n "${handle}" ]] || { printf ''; return 0; }
   case "${author}" in
-    glm)  run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${handle}" ;;
+    glm|glm-flash) run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${handle}" ;;
     kimi) run_dir="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${handle}" ;;
     *)    run_dir="${_PC_RUNS_ROOT}/${author}-runs/${handle}" ;;
   esac
@@ -672,7 +715,10 @@ _pc_resume_launcher_for() { # <author> -> absolute path or empty
   local author="$1" launcher
   [[ -n "${LEADV2_PC_RESUME_LAUNCHER_BIN:-}" ]] && { printf '%s' "${LEADV2_PC_RESUME_LAUNCHER_BIN}"; return 0; }
   [[ -n "${author}" ]] || { printf ''; return 0; }
-  launcher="${SCRIPT_DIR}/${author}-coder.sh"
+  case "${author}" in
+    glm-flash) launcher="${SCRIPT_DIR}/glm-coder.sh" ;;
+    *)         launcher="${SCRIPT_DIR}/${author}-coder.sh" ;;
+  esac
   [[ -f "${launcher}" ]] && { printf '%s' "${launcher}"; return 0; }
   printf ''
 }
@@ -848,7 +894,11 @@ _pc_maybe_quota_advance() {  # <arm> <handle>
   after="$(ls -1 "${lockout_dir}"/quota-lockout-*.json 2>/dev/null | while IFS= read -r _f; do _pc_stat_mtime "${_f}" 2>/dev/null; printf ' %s\n' "${_f}"; done)"
   [[ "${before}" != "${after}" ]] || return 0
   emit decision "arm_quota_failed task=${TASK} arm=${arm} handle=${handle}"
-  _pc_arm_advance
+  if _pc_arm_advance; then
+    _PC_CONTINUATION_HANDED_OFF=1
+    emit decision "review_gate task=${TASK} status=blocked reason=arm_quota_failed action=arm_advanced arm=${arm}"
+    exit 5
+  fi
 }
 
 # PLUGIN-RELIABILITY-01 D1 (round 2): pid-file-only process liveness.
@@ -982,12 +1032,76 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
       # Unknown provider state is conservative: the hard ceiling owns recovery.
       return 0
       ;;
-    glm|kimi)
-      if [[ "${AUTHOR}" == glm ]]; then
+    glm|glm-flash|kimi)
+      if [[ "${AUTHOR}" == glm || "${AUTHOR}" == glm-flash ]]; then
         run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${HANDLE}"
       else
         run_dir="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${HANDLE}"
       fi
+      meta="${run_dir}/meta.yaml"
+      status="$(_pc_meta_value "${meta}" status)"
+      # PLUGIN-RELIABILITY-01 D4: malformed/truncated meta.yaml — empty status
+      # with a gone pid means the run is dead, not keep-waiting for 4200s.
+      # One grace re-read already happened via the poll loop; treat it as dead.
+      pid="$(_pc_meta_value "${meta}" pid)"
+      # GLM/Kimi stall revival finalizes the ORIGINAL run with one of these
+      # statuses, then returns before clearing its original registry entry. They
+      # are therefore terminal evidence for this handle even while that stale
+      # registry file remains; treating the registry as live here would run the
+      # full ceiling and write a permanent dead/timeout row for completed work.
+      [[ "${status}" == revived || "${status}" == revive_blocked_by_gate ]] && return 1
+      registry_alive=0
+      _pc_job_registry_has_handle "${HANDLE}" && registry_alive=1
+      [[ "${status}" == running || "${registry_alive}" == 1 ]] && return 0
+      # PLUGIN-RELIABILITY-01 D1 (round 2): pid-file-based liveness check.
+      # The pid in meta.yaml may be the coder child (already exited) while the
+      # parent __supervise process still holds the GLM lock. _pc_process_alive
+      # checks exact pids from the spawn record (meta, pgid, lock_dir).
+      _pc_process_alive "${run_dir}" "${pid}" && return 0
+      # CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01 (close-gate out-of-window path):
+      # this close gate is discovering status==failed possibly long after
+      # leadv2-dispatch-code.sh's own in-process post-spawn verdict window
+      # (_wait_arm_early_verdict) already expired -- classify it here too, so a late
+      # quota death still gets a lockout AND advances the chain instead of sitting dead.
+      [[ "${status}" == failed && "${registry_alive}" == 0 ]] && _pc_maybe_quota_advance "${AUTHOR}" "${HANDLE}"
+      # PLUGIN-RELIABILITY-01 D1 (round 2): before declaring terminal=dead,
+      # reap any straggler processes so the GLM lock is released for the next lane.
+      if [[ ( "${status}" == complete || "${status}" == failed ) && "${registry_alive}" == 0 ]]; then
+        _pc_reap_worker "${run_dir}" "${pid}"
+        return 1
+      fi
+      # The coder writes this only from its finish guard. It is terminal provider
+      # evidence for legacy runs that predate meta.yaml, once no exact registry or
+      # process evidence remains. PLUGIN-RELIABILITY-02: this must run BEFORE the
+      # empty-status grace guard so legacy terminal evidence still wins.
+      [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" && "${registry_alive}" == 0 ]] && return 1
+      # PLUGIN-RELIABILITY-01 D4 (round 2): pid gone + empty/unparseable status
+      # = dead, not keep-waiting (which caused 4200s false waits). Grace guard:
+      # meta.yaml must exist and be older than 30s — a just-spawned worker that
+      # hasn't written meta yet (or wrote a truncated initial copy) must not be
+      # declared dead on the first poll.
+      if [[ -z "${status}" && "${registry_alive}" == 0 ]]; then
+        if [[ ! -f "${meta}" ]]; then
+          # meta.yaml doesn't exist yet — the worker may have just spawned.
+          # Give it time to write meta before declaring dead.
+          return 0
+        fi
+        local _meta_age_s=0
+        local _now_s _meta_mtime_s
+        _now_s="$(date +%s)"
+        _meta_mtime_s="$(stat -f %m "${meta}" 2>/dev/null || stat -c %Y "${meta}" 2>/dev/null || echo 0)"
+        _meta_age_s=$(( _now_s - _meta_mtime_s ))
+        if (( _meta_age_s < 30 )); then
+          return 0
+        fi
+        emit decision "product_close task=${TASK} worker_liveness=dead author=${AUTHOR} handle=${HANDLE} reason=empty_status_pid_gone meta_age_s=${_meta_age_s}"
+        return 1
+      fi
+      # Missing/malformed provider evidence is never treated as completion.
+      return 0
+      ;;
+    freepool)
+      run_dir="${FREEPOOL_RUNS_DIR:-${_PC_RUNS_ROOT}/freepool-runs}/${HANDLE}"
       meta="${run_dir}/meta.yaml"
       status="$(_pc_meta_value "${meta}" status)"
       # PLUGIN-RELIABILITY-01 D4: malformed/truncated meta.yaml — empty status
@@ -1228,105 +1342,6 @@ pc_await_worker_exit() {
 #
 # NOT applied to _pc_git_diff's ':(exclude)' pathspecs: that set governs what a
 # REVIEWER sees, which is a separate decision from what counts as a scope violation.
-_PC_PORCELAIN_EXCLUDE_RE='^.. "?docs/leadv2/|^.. "?docs/handoff/|^.. "?docs/LEAD_V2_STATE\.md|^.. "?.*__pycache__/|^.. "?.*\.pyc$'
-
-# CTX-COST-GUARDS-01: the plugin's own worktree bootstrap
-# (hooks/leadv2-command-bootstrap.sh, scripts/leadv2-repo-install.sh) symlinks
-# .claude/commands|scripts|agents/ into every fresh lane worktree. That dirt is not a
-# worker's doing, but a regex alone cannot say "only if it is a symlink" -- grep sees
-# porcelain TEXT, not the filesystem -- so widening _PC_PORCELAIN_EXCLUDE_RE would also
-# swallow a REAL file a worker writes under the same prefix. Two stages instead: the
-# regex above narrows to orchestration-owned literal paths; _pc_drop_bootstrap_dirt
-# below narrows further to bootstrap dirt specifically, via a filesystem predicate the
-# regex stage cannot express.
-_PC_BOOTSTRAP_PREFIX_RE='^\.claude/(commands|scripts|agents)/'
-
-# _pc_drop_bootstrap_dirt <lane-root> ; stdin=porcelain (post _PC_PORCELAIN_EXCLUDE_RE),
-# stdout=survivors. Drops a line only when ALL THREE hold -- dropping any one reintroduces
-# overreach:
-#   1. status field is exactly `??` (untracked) -- a tracked-modified line under the same
-#      prefix is a worker who edited a real plugin file, never dropped.
-#   2. path matches _PC_BOOTSTRAP_PREFIX_RE.
-#   3. the path IS a symlink on disk ([ -L ], true even for a dangling link -- a lane
-#      whose canonical checkout moved is still plugin dirt, not worker dirt). A real
-#      regular file a worker wrote under the same prefix fails this and survives.
-# Fails open: an unreadable/missing root passes every line through unfiltered, and the
-# function itself always returns 0 -- a non-zero tail in a `$( ... | _pc_drop_bootstrap_dirt )`
-# pipeline under `set -o pipefail` would otherwise blank the whole status and grade every
-# lane clean.
-_pc_drop_bootstrap_dirt() {  # <lane-root> ; filters stdin porcelain -> stdout
-  local root="$1" line field rest path task_lines=() kept_lines=() task_declared=0 has_other_work=0 w
-  if [[ -z "${root}" || ! -d "${root}" ]]; then
-    cat
-    return 0
-  fi
-  # docs/tasks.yaml is hook churn only when it is undeclared AND this lane has
-  # another surviving change. Keeping a sole (or declared) tasks.yaml edit
-  # makes a real worker change reach the scope gate. Exact path comparison is
-  # deliberate: docs/tasks.yaml.bak is worker data, never injector dirt.
-  IFS=',' read -r -a _pc_task_writes <<< "${WRITES_CSV:-}"
-  for w in "${_pc_task_writes[@]:-}"; do
-    w="$(_pc_norm_write "${w}")"
-    [[ "${w}" == "docs/tasks.yaml" ]] && task_declared=1
-  done
-  while IFS= read -r line; do
-    [[ -z "${line}" ]] && continue
-    field="${line:0:2}"
-    rest="${line:3}"
-    path="${rest##* -> }"
-    path="${path%\"}"; path="${path#\"}"
-    if [[ "${path}" == "docs/tasks.yaml" ]]; then
-      task_lines+=("${line}")
-      continue
-    fi
-    if [[ "${field}" == "??" && "${rest}" =~ ${_PC_BOOTSTRAP_PREFIX_RE} ]]; then
-      if [[ -L "${root}/${path}" ]]; then
-        continue
-      fi
-    fi
-    kept_lines+=("${line}")
-    has_other_work=1
-  done
-  if (( task_declared == 1 || has_other_work == 0 )); then
-    kept_lines+=("${task_lines[@]}")
-  fi
-  for line in "${kept_lines[@]}"; do
-    printf '%s\n' "${line}"
-  done
-  return 0
-}
-
-_pc_lane_dirty() {  # <root> -> rc0 if dirty (excluding orchestration-owned paths), rc1 otherwise
-  local root="$1"
-  [[ -n "${root}" && -d "${root}" ]] || return 1
-  git -C "${root}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
-  local status
-  status="$(git -C "${root}" status --porcelain --untracked-files=all 2>/dev/null | \
-    grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}" | _pc_drop_bootstrap_dirt "${root}")"
-  [[ -n "${status}" ]]
-}
-
-# REVIEW-GATE-LANEROOT-01: `git -C <dir>` walks UP. A directory that is merely INSIDE
-# the main checkout (an unregistered .claude/worktrees/<tid> left behind by a partial
-# worktree removal) answers `rev-parse --is-inside-work-tree` with `true` and then
-# reports the MAIN repository's status. Identity, not membership, is the question:
-# the toplevel git resolves from <dir> must BE <dir>.
-# Physical-path comparison avoids /var vs /private/var disagreement on macOS.
-# Deliberately NOT folded into _pc_lane_dirty: pc_silent_arm_probe reads a failing
-# dirty check as proof of silence, so both callers check identity explicitly instead.
-_pc_phys() { ( cd -P "$1" 2>/dev/null && pwd -P ) ; }
-
-_PC_LANE_TOPLEVEL=""          # set by the probe below; read by the evidence line
-_pc_lane_root_is_own_worktree() {  # <root> -> rc0 iff <root> IS a git work tree root
-  local root="$1" top
-  _PC_LANE_TOPLEVEL=""
-  [[ -n "${root}" && -d "${root}" ]] || return 1
-  top="$(git -C "${root}" rev-parse --show-toplevel 2>/dev/null)" || return 1
-  [[ -n "${top}" ]] || return 1
-  _PC_LANE_TOPLEVEL="${top}"
-  [[ "$(_pc_phys "${top}")" == "$(_pc_phys "${root}")" ]]
-}
-
 # GATE-FALSE-SILENT-01: a worker that COMMITS its work leaves the worktree clean --
 # _pc_lane_dirty alone cannot tell "produced nothing" from "committed cleanly". Count
 # commits ahead of the base pc_scope_diff resolves.
@@ -1549,8 +1564,8 @@ pc_silent_arm_probe() {
   # REVIEW-GATE-LANEROOT-01: an unregistered lane dir makes _pc_lane_dirty grade the
   # parent repo. Unknown tree identity is never proof of silence: otherwise a clean
   # parent would advance the arm while finished work remains in the lane directory.
-  _pc_lane_root_is_own_worktree "${_lane_root}" || return 1
-  _pc_lane_dirty "${_lane_root}" && return 1
+  lv2_lane_root_is_own_worktree "${_lane_root}" || return 1
+  lv2_lane_dirty "${_lane_root}" && return 1
   # 6) GATE-FALSE-SILENT-01: commits ahead of base are production, whatever the
   # worktree's dirty state says -- a worker that commits cleanly is not silent.
   # round 2: "unknown" (base unresolvable) is NOT silent either -- a probe that cannot
@@ -1577,13 +1592,17 @@ pc_silent_arm_probe() {
 _pc_arm_advance() {
   local marker="${HANDOFF}/.arm-advanced-${AUTHOR}"
   if [[ -f "${marker}" ]]; then
-    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=already_advanced"
-    return 0
+    if grep -q '^status=advanced$' "${marker}" 2>/dev/null; then
+      emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=already_advanced_success"
+      return 0
+    fi
+    emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=already_attempted"
+    return 1
   fi
-  : > "${marker}" 2>/dev/null || true
+  printf 'status=attempting\n' > "${marker}" 2>/dev/null || true
   if [[ "${LEADV2_ARM_ADVANCE:-1}" == "0" ]]; then
     emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=kill_switch"
-    return 0
+    return 1
   fi
   local chain_csv="${LEADV2_DISPATCH_CANDIDATE_ARMS:-}"
   if [[ -z "${chain_csv}" ]]; then
@@ -1596,7 +1615,7 @@ _pc_arm_advance() {
   local next_arm
   if ! next_arm="$(_pc_next_arm_in_chain "${chain_csv}" "${AUTHOR}")" || [[ -z "${next_arm}" ]]; then
     emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=chain_exhausted"
-    return 0
+    return 1
   fi
   local mission_file="${LEADV2_DISPATCH_LANE_MISSION:-}"
   if [[ -z "${mission_file}" || ! -f "${mission_file}" ]]; then
@@ -1604,13 +1623,18 @@ _pc_arm_advance() {
   fi
   if [[ ! -f "${mission_file}" ]]; then
     emit decision "arm_advance_skipped task=${TASK} arm=${AUTHOR} reason=no_mission_file"
-    return 0
+    return 1
   fi
   emit decision "arm_advance task=${TASK} from=${AUTHOR} to=${next_arm} reason=arm_produced_nothing"
   local adv_args=(--sig8 "${TASK}" --arm "${next_arm}" --mission-file "${mission_file}" --task-id "${FOUNDER_TASK_ID}")
   [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && adv_args+=(--worktree "${_lane_root}")
   [[ -n "${WRITES_CSV:-}" ]] && adv_args+=(--writes "${WRITES_CSV}")
-  bash "${DISPATCH_BIN}" advance-arm "${adv_args[@]}" >/dev/null 2>&1 || true
+  if bash "${DISPATCH_BIN}" advance-arm "${adv_args[@]}" >/dev/null 2>&1; then
+    printf 'status=advanced\n' > "${marker}" 2>/dev/null || true
+    return 0
+  fi
+  emit decision "arm_advance_failed task=${TASK} from=${AUTHOR} reason=remaining_chain_exhausted"
+  return 1
 }
 
 # REVIEW-GATE-INFRA-01 D-A(i): a declared write under docs/leadv2/ or docs/handoff/
@@ -1945,7 +1969,9 @@ fi
 # one mechanism for both product-close and phase8-e2e-gate. Provides
 # _lv2_realpath and _lv2_e2e_resolve_root; _pc_realpath is a backward-compat alias.
 # shellcheck source=lib/leadv2-e2e-root.sh
-source "${SCRIPT_DIR}/lib/leadv2-e2e-root.sh"
+_E2E_ROOT_SH="${SCRIPT_DIR}/lib/leadv2-e2e-root.sh"
+[[ -f "${_E2E_ROOT_SH}" ]] || _E2E_ROOT_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-e2e-root.sh"
+[[ -f "${_E2E_ROOT_SH}" ]] && source "${_E2E_ROOT_SH}"
 _pc_realpath() { _lv2_realpath "$@"; }
 # C2 (LANDING-BLOCKER-R2): `git diff HEAD` never sees untracked paths, and a brand-new
 # file is a large share of lane deliverables -- LANE_WRITES=agent/newmod.py, created but
@@ -1965,6 +1991,30 @@ _pc_git_diff() {  # <repo_abs> <base_rev> <path...> -> diff on stdout (tracked +
     GIT_INDEX_FILE="${tmpidx}" git -C "${repo}" diff "${base}" -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
   else
     git -C "${repo}" diff "${base}" -- "$@" ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+  fi
+  rm -f "${tmpidx}"
+}
+
+# LANE-WRITESET-REGISTRY-01 fix-round-1 H2/H3: whole-repo name-only sibling
+# of _pc_git_diff for the commit-time drift detector (D5/D6), which needs
+# the FULL set of changed paths (not scoped to the declared writes -- that
+# is the whole point of drift detection) to diff against the declared set.
+# Reuses the same `add -N` temp-index trick, widened to `-A` so EVERY
+# untracked file in the repo is intent-added, not just declared paths (a
+# brand-new file outside the write set is invisible otherwise -- H2), and
+# the same `:(exclude)docs/leadv2` / `:(exclude)docs/handoff` pathspecs
+# every other diff call in this file carries (so routine lane-state writes
+# never register as drift -- H3).
+_pc_git_diff_names() {  # <repo_abs> <base_rev> -> name-only list on stdout, whole repo
+  local repo="$1" base="$2"
+  local gitdir tmpidx
+  gitdir="$(git -C "${repo}" rev-parse --absolute-git-dir 2>/dev/null)" || { git -C "${repo}" diff --name-only "${base}" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; return 0; }
+  tmpidx="$(mktemp "${TMPDIR:-/tmp}/leadv2-pc-idx.XXXXXX")" || { git -C "${repo}" diff --name-only "${base}" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null; return 0; }
+  if cp "${gitdir}/index" "${tmpidx}" 2>/dev/null; then
+    GIT_INDEX_FILE="${tmpidx}" git -C "${repo}" add -N -A -- . >/dev/null 2>&1 || true
+    GIT_INDEX_FILE="${tmpidx}" git -C "${repo}" diff --name-only "${base}" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
+  else
+    git -C "${repo}" diff --name-only "${base}" -- ':(exclude)docs/leadv2' ':(exclude)docs/handoff' 2>/dev/null
   fi
   rm -f "${tmpidx}"
 }
@@ -2101,8 +2151,65 @@ if [[ -n "${WRITES_CSV}" ]]; then
       fi
     else
       repo_diff="$(_pc_repo_diff "${diff_root}" "${writes[@]}")"
-      printf '%s' "${repo_diff}" > "${diff_file}"
+      # M7: trailing newline when non-empty, like the multi-repo branch above
+      # -- the widened drift diff below is APPENDED to this file, and without
+      # a separator its "diff --git a/... b/..." header fuses onto this
+      # diff's last line into one malformed hunk. An empty repo_diff must
+      # still leave the file genuinely empty (not a bare newline), or the
+      # `[[ -s "${diff_file}" ]]` unscopable_diff check a few lines below
+      # would read "no work" as "some work".
+      if [[ -n "${repo_diff}" ]]; then
+        printf '%s\n' "${repo_diff}" > "${diff_file}"
+      else
+        : > "${diff_file}"
+      fi
       _pc_base_used="$(_pc_last_diff_base)"
+      # LANE-WRITESET-REGISTRY-01 D5/D6: commit-time drift check, single-repo
+      # path only (CROSS_REPO_DIFF is a known gap, see developer.full.md).
+      # Undeclared writes are non-fatal by default (WARN+WIDEN, D5) -- the
+      # widened diff makes an undeclared file VISIBLE to review instead of
+      # silently unreviewed. The one escalation to BLOCK+PARK (D6) is a
+      # drifted path that intersects an ALIVE PEER lane's own declared
+      # writes -- checked read-only, never persisted.
+      # fix-round-1 H2/H3: _pc_git_diff_names (not bare `git diff --name-only`)
+      # so an untracked NEW file is visible (H2) and tracked docs/leadv2 or
+      # docs/handoff writes never register as drift (H3).
+      _ws_actual_files="$(_pc_git_diff_names "${diff_root}" "${_pc_base_used}" || true)"
+      _ws_drift_paths=()
+      if [[ -n "${_ws_actual_files}" ]]; then
+        while IFS= read -r _ws_f; do
+          [[ -n "${_ws_f}" ]] || continue
+          _ws_declared=0
+          # M3: normalize both sides (strip a leading "./" and trailing "/")
+          # before comparing -- the registry side (leadv2-active-registry.sh
+          # _lv2_ws_norm) runs os.path.normpath on every path, so a declared
+          # "./plugins/leadv2/scripts" or "plugins/leadv2/scripts/" must match
+          # an actual "plugins/leadv2/scripts/foo.sh" here exactly as it would
+          # there, or the same CSV answers differently on the two sides.
+          _ws_fn="${_ws_f#./}"; _ws_fn="${_ws_fn%/}"
+          for _ws_w in "${writes[@]}"; do
+            _ws_wn="${_ws_w#./}"; _ws_wn="${_ws_wn%/}"
+            case "${_ws_fn}" in
+              "${_ws_wn}"|"${_ws_wn}"/*) _ws_declared=1; break ;;
+            esac
+          done
+          [[ "${_ws_declared}" == "0" ]] && _ws_drift_paths+=("${_ws_f}")
+        done <<< "${_ws_actual_files}"
+      fi
+      if [[ ${#_ws_drift_paths[@]} -gt 0 ]]; then
+        _ws_drift_csv="$(IFS=,; printf '%s' "${_ws_drift_paths[*]}")"
+        emit decision "writeset_drift task=${TASK} undeclared=${_ws_drift_csv}"
+        _ws_widen_diff="$(_pc_git_diff "${diff_root}" "${_pc_base_used}" "${_ws_drift_paths[@]}")"
+        [[ -n "${_ws_widen_diff}" ]] && printf '%s\n' "${_ws_widen_diff}" >> "${diff_file}"
+        if declare -F leadv2_active_check_writes_conflict >/dev/null 2>&1; then
+          _ws_drift_rc=0
+          LEADV2_PROJECT_ROOT="${ROOT}" leadv2_active_check_writes_conflict "${TASK}" "${_ws_drift_csv}" >/dev/null 2>&1 || _ws_drift_rc=$?
+          if [[ "${_ws_drift_rc}" == "5" ]]; then
+            emit decision "writeset_drift_blocked task=${TASK} undeclared=${_ws_drift_csv}"
+            blocked_reason="writeset_drift_conflict"
+          fi
+        fi
+      fi
     fi
   fi
   [[ -s "${diff_file}" ]] || blocked_reason="${blocked_reason:-unscopable_diff}"
@@ -2182,7 +2289,13 @@ fi
 # 2026-08-04 incident where an unscoped window attributed the target repo's newest
 # unrelated commit to 137 lanes at once -- the same trap applies here, so a match
 # requires the grep token to actually appear in the commit message.
-if [[ -n "${blocked_reason}" && "${blocked_reason}" != "partial_diff" ]]; then
+# fix-round-1 H4: the precondition this escape documents above ("runs only when a
+# verdict is ALREADY headed there -- an empty or undeclared-dirty diff") is
+# `unscopable_diff` specifically, not "anything but partial_diff". D6's
+# writeset_drift_conflict is a lane with a FULL diff and a real cross-lane write
+# collision -- the opposite of "no local bytes" -- and must never be reclassified
+# landed_foreign. Narrowed to the one reason the escape was written for.
+if [[ "${blocked_reason}" == "unscopable_diff" ]]; then
   _pc_foreign_repo="${LANE_TARGET_REPO:-${LEADV2_LANE_TARGET_REPO:-}}"
   _pc_foreign_grep="${LEADV2_LANE_TARGET_REPO_GREP:-}"
   if [[ -z "${_pc_foreign_repo}" && -f "${HANDOFF}/lane-target-repo" ]]; then
@@ -2216,7 +2329,7 @@ if [[ -n "${blocked_reason}" ]]; then
   # (_PC_ASKED_INTO_VOID, set by the asked-into-void probe below the e2e block).
   # Exit code stays 5 -- no caller-contract change.
   _pc_terminal="refused"; _pc_cause="${blocked_reason}"; _pc_rg_reason="${blocked_reason}"
-  if [[ "${blocked_reason}" != "partial_diff" ]]; then
+  if [[ "${blocked_reason}" != "partial_diff" && "${blocked_reason}" != "writeset_drift_conflict" ]]; then
     # GATE-LANE-DIFF-ONLY-WHEN-CROSS-REPO-01: an empty diff whose resolved lane worktree is
     # DIRTY is a diff-scoping failure, not an absent-work outcome -- the worker demonstrably
     # produced something the gate could not scope. Gate on _lane_root (whether a lane
@@ -2230,15 +2343,15 @@ if [[ -n "${blocked_reason}" ]]; then
     _pc_dirty_evidence=""
     _pc_offending=""
     _pc_declared_list="$(_pc_join_capped "${writes[@]:-}")"
-    if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && ! _pc_lane_root_is_own_worktree "${_lane_root}"; then
+    if [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && ! lv2_lane_root_is_own_worktree "${_lane_root}"; then
       # Never let porcelain from a parent repository become lane evidence.
       _pc_terminal="refused"; _pc_cause="lane_root_not_a_worktree"; _pc_rg_reason="lane_root_not_a_worktree"
       _pc_dirty_n=0
       _pc_offending=""
-      _PC_LANE_RESOLVED_TOP="${_PC_LANE_TOPLEVEL:-<unresolved>}"
+      _PC_LANE_RESOLVED_TOP="${LV2_LANE_TOPLEVEL:-<unresolved>}"
       _PC_LANE_PRODUCED="$(_pc_lane_produced_files "${_lane_root}")"
       _pc_dirty_evidence="lane_root=$(basename "${_lane_root}") resolved_toplevel=${_PC_LANE_RESOLVED_TOP} expected=${_lane_root} produced=${_PC_LANE_PRODUCED}"
-    elif [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && _pc_lane_dirty "${_lane_root}"; then
+    elif [[ -n "${_lane_root:-}" && -d "${_lane_root}" ]] && lv2_lane_dirty "${_lane_root}"; then
       # REVIEW-GATE-INFRA-01 D-A(ii): "the lane is dirty" is not itself the violation --
       # partition the dirty paths against the declared write-set. Only an UNDECLARED
       # dirty path is a genuine scope violation; unscoped_lane_work must fire ONLY then
@@ -2277,7 +2390,7 @@ if [[ -n "${blocked_reason}" ]]; then
         fi
       done <<< "${_pc_dirty_lines}"
       _pc_dirty_evidence="lane_root=$(basename "${_lane_root}") dirty=${_pc_dirty_n}"
-      [[ "$(_pc_phys "${_lane_root}")" == "$(_pc_phys "${ROOT}")" ]] && _pc_dirty_evidence="${_pc_dirty_evidence} lane_root_shared=1"
+      [[ "$(_lv2_phys "${_lane_root}")" == "$(_lv2_phys "${ROOT}")" ]] && _pc_dirty_evidence="${_pc_dirty_evidence} lane_root_shared=1"
       if [[ ${_pc_undeclared_n} -gt 0 ]]; then
         _pc_terminal="refused"; _pc_cause="unscoped_lane_work"; _pc_rg_reason="unscoped_lane_work"
         _pc_offending="$(_pc_join_capped "${_pc_undeclared[@]}")"
@@ -2434,9 +2547,16 @@ if pc_silent_arm_probe; then
     [[ -n "${_pc_wr}" ]] && printf 'worker_reason: %s\n' "${_pc_wr}"
     printf 'arm: %s\n' "${AUTHOR}"
   } > "${HANDOFF}/review-gate.md"
-  emit decision "review_gate task=${TASK} status=blocked reason=arm_produced_nothing terminal=no_work cause=arm_produced_nothing arm=${AUTHOR}"
+  # A successful continuation is non-terminal. The terminal ledger is
+  # write-once, so writing no_work before this call makes the second spawn
+  # decorative even when it succeeds.
+  if _pc_arm_advance; then
+    _PC_CONTINUATION_HANDED_OFF=1
+    emit decision "review_gate task=${TASK} status=blocked reason=arm_produced_nothing action=arm_advanced arm=${AUTHOR}"
+    exit 5
+  fi
+  emit decision "review_gate task=${TASK} status=blocked reason=arm_produced_nothing terminal=no_work cause=arm_produced_nothing arm=${AUTHOR} chain=exhausted"
   _dl_note no_work arm_produced_nothing "${_pc_silent_evidence}"
-  _pc_arm_advance
   _stamp_review_terminal blocked
   exit 5
 fi
@@ -2682,7 +2802,9 @@ pool="$(printf '%s\n' "${resolver_out}" | sed -n 's/^pool=//p' | head -n1)"
 refusal="$(printf '%s\n' "${resolver_out}" | sed -n 's/^refusal=//p' | head -n1)"
 resolver_rc="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_rc=//p' | head -n1)"
 resolver_stderr="$(printf '%s\n' "${resolver_out}" | sed -n 's/^resolver_stderr=//p' | head -n1)"
-source "${SCRIPT_DIR}/lib/leadv2-review-reroute-note.sh"
+_REVIEW_REROUTE_NOTE_SH="${SCRIPT_DIR}/lib/leadv2-review-reroute-note.sh"
+[[ -f "${_REVIEW_REROUTE_NOTE_SH}" ]] || _REVIEW_REROUTE_NOTE_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-review-reroute-note.sh"
+[[ -f "${_REVIEW_REROUTE_NOTE_SH}" ]] && source "${_REVIEW_REROUTE_NOTE_SH}"
 _reroute_note="$(leadv2_review_reroute_note "${TASK}" "${pool}" "${reviewer}")"
 [[ -n "${_reroute_note}" ]] && emit decision "${_reroute_note}"
 # Defense-in-depth (R9): the resolver already filters the author out of its pool, but
@@ -3043,6 +3165,37 @@ if [[ "${verdict}" == FAIL ]]; then
   _stamp_review_terminal fail
   exit 7
 fi
+# C5-BLOCK-BEGIN -- explicit sentinel, not a "slice to the first `fi`" heuristic: round-3
+# review finding, the old heuristic silently truncated at whatever `fi` came first and so
+# never covered the five `_dl_note` call sites below that actually render the suffix.
+# test-red-proof-gate.sh's _extract_c5_block anchors on this literal comment pair.
+# DISPATCH-CLOSE-GATE-01 Mechanism 2 (C5): cross-check fixes the worker claimed (any
+# `## [Critical]`/`## [High]` heading in a handoff *.md) against RED artifacts on disk
+# BEFORE the close verdict below is written. D3: report, never trap the lane -- an
+# unproven claim is printed and named in the decision line, and folded into the
+# terminal's evidence string so `landed` here is visibly distinguishable from a fully
+# proven landed close, but no exit code or terminal value changes because of it.
+# round-3 (review finding): RED artifacts (`red/`, `round*-red/`) live under the FOUNDER
+# task-id directory (docs/handoff/<TASK-ID>/), never under this dispatch-<sig8> HANDOFF
+# dir -- confirmed on-disk: 0 of 652 dispatch-<sig8> dirs have a `red/` child, while every
+# founder-named task dir that has one is keyed by its own uppercase/slug id (e.g.
+# docs/handoff/DISPATCH-CLOSE-GATE-01/red/). FOUNDER_TASK_ID (falling back to LANE_NAME,
+# then to HANDOFF itself when neither is known) is the correct key.
+_pc_redproof_dir="${HANDOFF}"
+if [[ -n "${FOUNDER_TASK_ID}" ]]; then
+  _pc_redproof_dir="${ROOT}/docs/handoff/${FOUNDER_TASK_ID}"
+elif [[ -n "${LANE_NAME}" ]]; then
+  _pc_redproof_dir="${ROOT}/docs/handoff/${LANE_NAME}"
+fi
+_pc_unproven="$(leadv2_red_proof_unproven "${_pc_redproof_dir}" "${HANDOFF}")"
+_pc_unproven_suffix=""
+if [[ -n "${_pc_unproven}" ]]; then
+  printf '%s\n' "${_pc_unproven}"
+  _pc_unproven_csv="$(printf '%s\n' "${_pc_unproven}" | sed -E 's/^unproven: //' | tr '\n' '|' | sed 's/|$//')"
+  _pc_unproven_suffix=" unproven=${_pc_unproven_csv}"
+  emit decision "red_proof_unproven task=${TASK} names=${_pc_unproven_csv}"
+fi
+# C5-BLOCK-END
 # PASS must overwrite review-gate.md too, or a stale fail/blocked artifact from an earlier
 # attempt keeps lying after the gate has actually cleared (hit live on fe5307b3, 2026-07-30).
 # REVIEW-GATE-SHOWS-FINDINGS-01: same append + tmp/mv discipline on the pass exit —
@@ -3063,7 +3216,7 @@ if [[ "${_pc_kind}" == "report" ]]; then
     render_gate_findings "${review_file}" "" "${reviewer}" "${_rgf_rel}" || true
   } > "${HANDOFF}/review-gate.md.tmp"
   mv -f "${HANDOFF}/review-gate.md.tmp" "${HANDOFF}/review-gate.md"
-  _dl_note landed review_verdict_pass "diff=${diff_hash:0:8} deliverable=${_pc_report_deliverable}${_rgf_dnm}" "" "${_pc_report_deliverable}"
+  _dl_note landed review_verdict_pass "$(leadv2_red_proof_render_evidence "diff=${diff_hash:0:8} deliverable=${_pc_report_deliverable}${_rgf_dnm}" "${_pc_unproven_suffix}")" "" "${_pc_report_deliverable}"
 else
   {
     printf 'status: pass\nreviewer: %s\ndiff: %s\n' "${reviewer}" "${diff_hash:0:8}"
@@ -3075,17 +3228,19 @@ else
   # lane 299f2bae got terminal=landed cause=review_verdict_pass with NO merge in main
   # (live incident, 2026-08-26). Anything short of a verified merge is `pass_unlanded`:
   # review passed, code did not land, lead must merge by hand.
-  source "${SCRIPT_DIR}/leadv2-branch-merged.sh"
+  _BRANCH_MERGED_SH="${SCRIPT_DIR}/leadv2-branch-merged.sh"
+  [[ -f "${_BRANCH_MERGED_SH}" ]] || _BRANCH_MERGED_SH="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/leadv2-branch-merged.sh"
+  source "${_BRANCH_MERGED_SH}"
   _t11_branch="$(git -C "${diff_root}" symbolic-ref --short HEAD 2>/dev/null || true)"
   _t11_default="$(lv2_default_branch "${ROOT}")"
   if [[ -z "${_t11_branch}" || "${_t11_branch}" == "${_t11_default}" || "${diff_root}" == "${ROOT}" ]]; then
     # No isolated lane branch to merge (shared-tree fallback lane, or work already landed on
     # the default branch directly) -- nothing to merge, so `landed` is accurate as-is.
-    _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm}"
+    _dl_note landed review_verdict_pass "$(leadv2_red_proof_render_evidence "diff=${diff_hash:0:8}${_rgf_dnm}" "${_pc_unproven_suffix}")"
   elif [[ -n "$(git -C "${ROOT}" status --porcelain 2>/dev/null)" ]]; then
     # Shared tree has foreign uncommitted work right now -- merging here risks another
     # session's in-flight edits. Never force past this: fail toward pass_unlanded.
-    _dl_note pass_unlanded root_dirty "branch=${_t11_branch} diff=${diff_hash:0:8}"
+    _dl_note pass_unlanded root_dirty "$(leadv2_red_proof_render_evidence "branch=${_t11_branch} diff=${diff_hash:0:8}" "${_pc_unproven_suffix}")"
   else
     _t11_landed=0
     [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" acquire "${TASK}" >/dev/null 2>&1
@@ -3097,7 +3252,7 @@ else
     fi
     [[ -x "${SCRIPT_DIR}/leadv2-merge-queue.sh" ]] && bash "${SCRIPT_DIR}/leadv2-merge-queue.sh" release "${TASK}" >/dev/null 2>&1
     if [[ "${_t11_landed}" == 1 ]]; then
-      _dl_note landed review_verdict_pass "diff=${diff_hash:0:8}${_rgf_dnm} branch=${_t11_branch}"
+      _dl_note landed review_verdict_pass "$(leadv2_red_proof_render_evidence "diff=${diff_hash:0:8}${_rgf_dnm} branch=${_t11_branch}" "${_pc_unproven_suffix}")"
       # T11-F1: merge + is-ancestor verified above -- complete the close chain
       # instead of stopping at the terminal stamp. Deregister the lane from
       # the live registry so a subsequent sweep no longer sees it as running,
@@ -3106,6 +3261,7 @@ else
       # Both steps are best-effort and journaled either way: a landed task
       # must never be blocked on cleanup succeeding.
       _t11_lane_state_sh="${SCRIPT_DIR}/lib/leadv2-lane-state.sh"
+      [[ -f "${_t11_lane_state_sh}" ]] || _t11_lane_state_sh="${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-state.sh"
       if [[ -f "${_t11_lane_state_sh}" ]]; then
         # shellcheck source=lib/leadv2-lane-state.sh
         source "${_t11_lane_state_sh}"
@@ -3123,7 +3279,7 @@ else
         fi
       fi
     else
-      _dl_note pass_unlanded merge_conflict "branch=${_t11_branch} diff=${diff_hash:0:8}"
+      _dl_note pass_unlanded merge_conflict "$(leadv2_red_proof_render_evidence "branch=${_t11_branch} diff=${diff_hash:0:8}" "${_pc_unproven_suffix}")"
     fi
   fi
 fi

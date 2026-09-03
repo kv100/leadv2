@@ -96,6 +96,9 @@ readonly FREEPOOL_CONTINUATION_MAX_LINES="${FREEPOOL_CONTINUATION_MAX_LINES:-200
 readonly FREEPOOL_PERMANENT_FAILURE_SENTINEL="FREEPOOL_PERMANENT_FAILURE"
 # Seam for tests to stub the `claude` binary entirely (no real network call).
 readonly FREEPOOL_CLAUDE_BIN="${FREEPOOL_CLAUDE_BIN:-claude}"
+# BEAT-LOOP-ORPHANS-01: every claude process this launcher spawns is a headless
+# worker, never a lead — see glm-coder.sh's identical marker.
+export LEADV2_WORKER_ARM=1
 readonly SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 readonly COSTLOG_DEV_LIB="${SELF%/*}/lib/leadv2-costlog-dev.sh"
 
@@ -133,27 +136,108 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2; }
 log_error() { log "ERROR: $*"; }
 log_info() { log "INFO: $*"; }
 
+# FP-01: Selection is role-aware only when the launcher exports a role before
+# invoking the selector.  An explicit valid FREEPOOL_ROLE is invocation
+# context and wins; otherwise derive conservatively from the mission text.
+# Unknown/ambiguous missions default to implement so they retain the existing
+# code-worker behaviour instead of accidentally receiving a review/bulk model.
+# PHASE-DISCIPLINE-01 D6 (a38a5bd fix): on the DISPATCHED path the role is
+# exported by leadv2-dispatch-code.sh from TaskEstimate.work_kind -- this
+# regex is the NARROW direct-invocation fallback only. It matches a role
+# VERB opening the mission's first non-empty line (an imperative directive),
+# never a noun phrase buried in an implementation mission ("implement the
+# code-review dashboard" -> implement, not review).
+freepool_role_for_mission() {
+  local mission="${1:-}" explicit="${FREEPOOL_ROLE:-}" first normalized
+  case "${explicit}" in
+    implement|review|bulk)
+      printf '%s\n' "${explicit}"
+      return 0
+      ;;
+  esac
+  first="$(printf '%s' "${mission}" | sed '/^[[:space:]]*$/d' | head -n 1)"
+  normalized="$(printf '%s' "${first}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${normalized}" =~ ^(please[[:space:]]+)?(review|audit|critique|critic[[:space:]]+pass)([[:space:][:punct:]]|$) ]] \
+     || [[ "${normalized}" =~ ^(adversarial|cross-provider)[[:space:]]+(review|critique) ]] \
+     || [[ "${normalized}" =~ ^(you[[:space:]]+are[[:space:]]+the[[:space:]]+critic) ]]; then
+    printf '%s\n' review
+  elif [[ "${normalized}" =~ ^(please[[:space:]]+)?(bulk|batch|sweep)([[:space:][:punct:]]|$) ]]; then
+    printf '%s\n' bulk
+  else
+    printf '%s\n' implement
+  fi
+}
+
 # QUOTA-GATE-01 (2026-07-17): gate a GLM lane launch on live z.ai quota.
-# Calls leadv2-freepool-gate.sh (sibling). On non-zero, that gate has already
+# Calls leadv2-freepool-gate.sh (sibling lib). On non-zero, that gate has already
 # printed a REROUTE (>=80% on 5h or weekly) or PEAK-override message to stderr;
 # we propagate the code so the caller (router/supervise) can reroute the work to
 # another bucket instead of stopping it. Fail-open: a missing gate or
 # FREEPOOL_SKIP_GATE=1 lets the launch proceed (the gate itself fail-opens on
 # network/parse errors). cmd_test is NOT gated (health check, not real work).
+#
+# AUTOSTART-01 (2026-08-27): the gate refuses with "arm_down" specifically when
+# the proxy's own /health endpoint is unreachable -- the one refusal reason a
+# `freepool-proxy.sh start` can actually fix (gate_broken/pin_drift can't).
+# On that refusal, attempt exactly ONE start + a bounded (~40s) wait, then
+# re-run the gate once. FREEPOOL_AUTOSTART=0 disables this and restores the
+# prior straight-refuse behavior. A failed/timed-out autostart falls through
+# to the SAME refusal path as before -- never a hang, never a second attempt.
 freepool_launch_gate() {
   [[ "${FREEPOOL_SKIP_GATE:-0}" == "1" ]] && return 0
-  local gate="${SELF%/*}/leadv2-freepool-gate.sh"
+  local gate="${SELF%/*}/lib/leadv2-freepool-gate.sh"
   if [[ ! -f "$gate" ]]; then
     log_info "quota gate absent ($gate) - proceeding (fail-open)."
     return 0
   fi
+  local gate_stderr rc
+  gate_stderr="$(mktemp 2>/dev/null || echo "/tmp/freepool-gate.$$.stderr")"
   # NOTE: do NOT use `if ! "$gate"` — `!` resets $? to 0 and the real gate code
   # (1=reroute, 2=peak) is lost, making a refused gate non-blocking (QUOTA-GATE-01).
-  "$gate"; local rc=$?
+  # Also do NOT run "$gate" as a bare statement under `set -e` — a non-zero exit
+  # from a bare command (not inside if/&&/||) kills the whole script before
+  # `rc=$?` ever runs (same class of bug as freepool_select_model's P0 note).
+  if "$gate" 2>"${gate_stderr}"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  cat "${gate_stderr}" >&2 2>/dev/null || true
   if (( rc != 0 )); then
+    if [[ "${FREEPOOL_AUTOSTART:-1}" != "0" ]] && grep -q 'LEADV2_DISPATCH_REFUSED: arm_down' "${gate_stderr}" 2>/dev/null; then
+      rm -f "${gate_stderr}"
+      log_info "freepool_autostart_attempted reason=arm_down"
+      local proxy_script="${SELF%/*}/freepool-proxy.sh"
+      local autostart_ok=1
+      if [[ -f "${proxy_script}" ]]; then
+        local deadline
+        deadline=$(( $(date +%s) + 40 ))
+        if "${proxy_script}" start >&2; then
+          while (( $(date +%s) < deadline )); do
+            if "${gate}" >/dev/null 2>&1; then
+              autostart_ok=0
+              break
+            fi
+            sleep 2
+          done
+        else
+          log_error "freepool_autostart_failed reason=start_command_failed"
+        fi
+      else
+        log_error "freepool_autostart_failed reason=proxy_script_absent ($proxy_script)"
+      fi
+      if (( autostart_ok == 0 )); then
+        log_info "freepool_autostart_ok"
+        return 0
+      fi
+      [[ -f "${proxy_script}" ]] && log_error "freepool_autostart_failed reason=still_unhealthy_after_wait"
+    else
+      rm -f "${gate_stderr}"
+    fi
     log_error "freepool health gate refused this launch (code $rc) - reroute per the message above (leadv2-quota-live.sh for live numbers)."
     return "$rc"
   fi
+  rm -f "${gate_stderr}"
   return 0
 }
 
@@ -319,7 +403,9 @@ run_claude() {
     resolved_prompt="${AGENT_BAN_PREAMBLE}${resolved_prompt}${FINISH_CONTRACT_TRAILER}"
   fi
 
-  local _model
+  local _model _freepool_role
+  _freepool_role="$(freepool_role_for_mission "${resolved_prompt}")"
+  export FREEPOOL_ROLE="${_freepool_role}"
   _model="$(freepool_select_model)"
 
   local exit_code=0
@@ -1097,19 +1183,34 @@ cmd_run_child() {
   # lean: prompt passed via argv, matching design/v1 — upgrade to stdin/tempfile
   # passing if a prompt near bash ARG_MAX is observed in practice.
 
-  local _model
+  local _model _freepool_role
+  _freepool_role="$(freepool_role_for_mission "${prompt}")"
+  export FREEPOOL_ROLE="${_freepool_role}"
   _model="$(freepool_select_model)"
 
-  set +e
-  ( command "${FREEPOOL_CLAUDE_BIN}" -p "${prompt}" \
+  # The stream is JSONL, but this intentional launcher record is a compact
+  # grep-friendly selection journal line. Write it before appending provider
+  # events so every attempted spawn has exactly one role/model record.
+  printf 'freepool_select role=%s model=%s\n' "${_freepool_role}" "${_model}" >> "${run_dir}/journal.jsonl"
+
+  _freepool_run_cli() {
+    command "${FREEPOOL_CLAUDE_BIN}" -p "${prompt}" \
       --model "${_model}" \
       --output-format stream-json \
       --verbose \
       --max-turns "${max_turns}" \
       --permission-mode bypassPermissions \
-      --disallowedTools "Agent" \
-      2> >(redact_stream >> "${run_dir}/stderr.log")
-  ) | tee "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
+      --disallowedTools "Agent"
+  }
+  set +e
+  # A hermetic foreground test may opt out of process-substitution redaction:
+  # macOS sandboxed test children cannot always reopen /dev/fd. Production
+  # retains the redacting stderr path and this seam is never set by launchers.
+  if [[ "${FREEPOOL_TEST_NO_REDACT:-0}" == "1" ]]; then
+    ( _freepool_run_cli 2>>"${run_dir}/stderr.log" ) | tee -a "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
+  else
+    ( _freepool_run_cli 2> >(redact_stream >> "${run_dir}/stderr.log") ) | tee -a "${run_dir}/journal.jsonl" | ( parse_stream "${run_dir}" >> "${run_dir}/progress.log" 2>>"${run_dir}/parser-error.log" || true )
+  fi
   echo "${PIPESTATUS[0]}" > "${run_dir}/exit_code"
   set -e
 }
@@ -1348,15 +1449,14 @@ mission_is_code_shaped() {
   if [[ -n "${line}" ]]; then
     local paths_part p trimmed
     paths_part="${line#LANE_WRITES:}"
-    IFS=',' read -ra _lw_paths <<< "${paths_part}"
-    for p in "${_lw_paths[@]}"; do
+    while IFS= read -r p; do
       trimmed="$(printf '%s' "${p}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
       [[ -n "${trimmed}" ]] || continue
       if [[ "${trimmed}" != docs/* ]]; then
         echo 1
         return 0
       fi
-    done
+    done < <(printf '%s\n' "${paths_part}" | tr ',' '\n')
   fi
   echo 0
 }
@@ -1433,6 +1533,33 @@ deadhand_check() {
           local delta
           delta="$(work_delta_present "${run_dir}" "${cwd_dir}" || echo skip)"
           [[ "${delta}" == "no" ]] && reason="no_work_delta"
+        fi
+        # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01 G4: a changed *.sh/*.py that
+        # does not parse must never be recorded as a completed run -- the
+        # cheapest, highest-yield check available (two of three unusable
+        # 2026-08-30 free-arm results were exactly this: a syntactically
+        # broken hook line, a bash -n-failing suite committed four times).
+        if [[ -z "${reason}" ]]; then
+          local gate_lib gate_out gate_rc
+          gate_lib="${SELF%/*}/lib/leadv2-worker-output-gate.sh"
+          if [[ -x "${gate_lib}" || -f "${gate_lib}" ]] && git -C "${cwd_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            # The gate checks this run's working tree (`HEAD`) and its
+            # committed range. If that range cannot be resolved (for example,
+            # a lane without origin/main), it fails closed rather than treating
+            # missing validation evidence as a clean worker result.
+            # The rejected-gate exit is expected evidence, so capture it in a
+            # tested conditional; a bare failing assignment is fatal under the
+            # wrapper's global set -e and would skip finalization entirely.
+            if gate_out="$(bash "${gate_lib}" "${cwd_dir}" --from-git-diff HEAD 2>&1)"; then
+              gate_rc=0
+            else
+              gate_rc=$?
+            fi
+            if [[ ${gate_rc} -ne 0 ]]; then
+              reason="parse_error"
+              printf '%s\n' "${gate_out}" >> "${run_dir}/progress.log" 2>/dev/null || true
+            fi
+          fi
         fi
       fi
     fi
@@ -1687,6 +1814,17 @@ cmd_supervise() {
   # DISPATCH-DEADHAND-01: MUST run after finalize_meta (it mv-clobbers
   # meta.yaml) and before release_lock. Detect-only; never alters status.
   deadhand_check "${run_dir}" "${exit_code}"
+
+  # WORKERS-MUST-COMMIT-01: MUST run after deadhand_check (append-only from
+  # here on) and BEFORE the outcome classifier below -- same window/rationale
+  # as glm-coder.sh.
+  local _worker_epilogue_lib
+  _worker_epilogue_lib="$(dirname "${SELF}")/lib/leadv2-worker-epilogue.sh"
+  if [[ -f "${_worker_epilogue_lib}" ]]; then
+    # shellcheck disable=SC1090
+    source "${_worker_epilogue_lib}"
+    leadv2_worker_commit_epilogue "${run_dir}" "${cwd_dir}" "$(meta_get "${run_dir}" run_id)" || true
+  fi
 
   # N-3 (TURN-CAP-OUTCOME-01): same window as deadhand_check -- after
   # finalize_meta, before release_lock -- so the outcome classifier sees the

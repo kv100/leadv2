@@ -21,8 +21,9 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET_REL="leadv2-dispatch-product-close.sh"
-LIVE_SCRIPT="${SCRIPT_DIR}/../${TARGET_REL}"
+TARGET_REL="lib/leadv2-lane-guard.sh"
+LIVE_SCRIPT="${LEADV2_SCOPE_GATE_LIVE_SCRIPT:-${SCRIPT_DIR}/../${TARGET_REL}}"
+CLOSE_SCRIPT="${SCRIPT_DIR}/../leadv2-dispatch-product-close.sh"
 
 PASS=0; FAIL=0; GREEN_PRE_FIX=0; COULD_NOT_RUN=0
 declare -a ERRORS=()
@@ -32,10 +33,38 @@ PREFIX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/scope-dirt.XXXXXX")"
 trap 'rm -rf "${PREFIX_DIR}"' EXIT
 REPO="$(cd "${SCRIPT_DIR}" && git rev-parse --show-toplevel 2>/dev/null)"
 PRE_SCRIPT="${PREFIX_DIR}/pre-${TARGET_REL}"
+mkdir -p "$(dirname "${PRE_SCRIPT}")"
 if [[ -n "${REPO}" ]]; then
-  git -C "${REPO}" show "HEAD:plugins/leadv2/scripts/${TARGET_REL}" > "${PRE_SCRIPT}" 2>/dev/null || : > "${PRE_SCRIPT}"
+  # N7 fix (review-r5.md): a bare "HEAD^" pre-image is only correct on the exact
+  # commit that landed the guard fix -- the very next unrelated commit on this
+  # lane makes HEAD^ == HEAD:TARGET_REL again (both post-fix), and the whole
+  # GREEN-PRE-FIX/RED-PRE-FIX labelling below silently goes vacuous with no
+  # signal that it did. Anchor instead to the parent of the LAST commit that
+  # actually touched TARGET_REL, which stays correct no matter how many
+  # unrelated commits land on top. An explicit override still wins, for
+  # bisecting a one-commit repo or reproducing a specific historical pairing.
+  #
+  # H-4 (DISPATCH-PIN-CLUSTER-01 round 7): the "differs from live by definition"
+  # claim this comment used to make was false -- round 6's LAST touching commit
+  # (d45d792) turned out to be a comment-only edit, so its parent's content was
+  # byte-identical to live, and every case (including both-sites-use-constant,
+  # the one this file exists to catch) silently reported GREEN-PRE-FIX against a
+  # pre-image that was actually the post-image. "Re-anchor to the merge base" is
+  # not viable here -- TARGET_REL did not exist yet at this branch's merge base
+  # (5d1a5d7), so `git show` for it fails there and PRE_SCRIPT falls back to
+  # empty (every case then honestly reports could-not-run instead of a fabricated
+  # verdict). The general fix, robust to WHICHEVER commit ends up as the anchor:
+  # refuse to run at all when the resolved pre-image is byte-identical to live.
+  _last_touch="$(git -C "${REPO}" log -1 --format=%H -- "plugins/leadv2/scripts/${TARGET_REL}" 2>/dev/null)"
+  PRE_REF="${LEADV2_SCOPE_GATE_PRE_REF:-${_last_touch:+${_last_touch}^}}"
+  PRE_REF="${PRE_REF:-HEAD^}"
+  git -C "${REPO}" show "${PRE_REF}:plugins/leadv2/scripts/${TARGET_REL}" > "${PRE_SCRIPT}" 2>/dev/null || : > "${PRE_SCRIPT}"
 fi
 [[ -s "${PRE_SCRIPT}" ]] || PRE_SCRIPT=""
+if [[ -n "${PRE_SCRIPT}" ]] && cmp -s "${PRE_SCRIPT}" "${LIVE_SCRIPT}"; then
+  echo "[TEST] FAIL: resolved pre-image (${PRE_REF}) is byte-identical to ${LIVE_SCRIPT} -- the gate would compare the fix to itself; set LEADV2_SCOPE_GATE_PRE_REF to a real pre-fix commit" >&2
+  exit 1
+fi
 
 # Extract the exclusion regex from the script's own single definition. Returns rc 2
 # (cannot run) if the constant is absent or its shape changed, so a refactor is
@@ -73,6 +102,12 @@ _extract_filter() { # <script> -> prints regex
 
 # Both porcelain call sites must reference the constant — never an inline regex. This
 # is the guard that keeps a future edit from reintroducing a second copy.
+# H-3 (DISPATCH-PIN-CLUSTER-01 round 7): restored the COUNTING form. A bare -Fq
+# presence check (dropped at some earlier round) passes as soon as ONE site uses the
+# constant, so a second site that still carries its own inline regex -- the exact
+# 2026-08-21 divergence this test exists to catch -- goes undetected. Counting sites
+# vs. constant-uses and requiring them equal (and >=2, so a single-site script still
+# fails honestly rather than vacuously passing) is what makes the check load-bearing.
 _both_sites_use_constant() { # <script>
   local s="$1" n_sites n_const
   [[ -f "$s" ]] || return 2
@@ -88,40 +123,34 @@ _both_sites_use_constant() { # <script>
 # `| _pc_drop_bootstrap_dirt ` pipeline appends must equal the count of porcelain sites,
 # same shape as _both_sites_use_constant above -- so the two-stage filter cannot drift
 # the way the single-stage one did on 2026-08-21.
-_both_sites_use_bootstrap_filter() { # <script>
-  local s="$1" n_sites n_filter
-  [[ -f "$s" ]] || return 2
-  n_sites="$(grep -c "status --porcelain --untracked-files=all" "$s" 2>/dev/null || printf 0)"
-  n_filter="$(grep -c '| _pc_drop_bootstrap_dirt "\$' "$s" 2>/dev/null || printf 0)"
-  [[ "${n_sites}" -ge 2 && "${n_filter}" -eq "${n_sites}" ]] && return 0
-  return 1
+_bootstrap_filter_controls_runtime() { # <script>
+  # Behavioural control: a symlink-only bootstrap lane must be clean.  This
+  # fails when lv2_lane_dirty stops invoking _pc_drop_bootstrap_dirt, while a
+  # match on the helper's own definition would keep passing.
+  local s="$1" lane rc
+  lane="$(_scratch_lane_setup)" || return 2
+  _pc_source_lane_dirty_funcs "$s" || { rm -rf "${lane}"; return 2; }
+  lv2_lane_dirty "${lane}" >/dev/null 2>&1; rc=$?
+  rm -rf "${lane}"
+  [[ ${rc} -eq 1 ]]
 }
 
 # Extracts _PC_PORCELAIN_EXCLUDE_RE, _PC_BOOTSTRAP_PREFIX_RE, _pc_drop_bootstrap_dirt
-# and _pc_lane_dirty verbatim out of the live script and sources them into the caller's
+# and lv2_lane_dirty verbatim out of the live script and sources them into the caller's
 # shell -- NOT the whole script, which is a top-level executor with no
 # source-safe/functions-only guard. rc2 if the expected function boundaries are gone
 # (reported honestly, same convention as _extract_filter above).
 _pc_source_lane_dirty_funcs() { # <script>
-  local s="$1" snippet start end
+  local s="$1"
   # Functions/vars defined via eval below are GLOBAL and persist across calls in this
   # process -- without this unset, a pre-fix run right after a post-fix run would keep
   # seeing the post-fix _pc_drop_bootstrap_dirt (run_case always runs PRE then LIVE, so
   # case N+1's PRE_SCRIPT pass silently inherits case N's LIVE_SCRIPT functions).
-  unset -f _pc_drop_bootstrap_dirt _pc_lane_dirty 2>/dev/null
+  unset -f _pc_drop_bootstrap_dirt lv2_lane_dirty 2>/dev/null
   unset _PC_BOOTSTRAP_PREFIX_RE 2>/dev/null
   [[ -f "$s" ]] || return 2
-  start="$(grep -n '^_PC_PORCELAIN_EXCLUDE_RE=' "$s" | head -1 | cut -d: -f1)"
-  end="$(grep -n '^_pc_lane_dirty() {' "$s" | head -1 | cut -d: -f1)"
-  [[ -n "${start}" && -n "${end}" ]] || return 2
-  end="$(tail -n "+${end}" "$s" | grep -n '^}' | head -1 | cut -d: -f1)"
-  [[ -n "${end}" ]] || return 2
-  local abs_end
-  abs_end=$(( $(grep -n '^_pc_lane_dirty() {' "$s" | head -1 | cut -d: -f1) + end - 1 ))
-  snippet="$(sed -n "${start},${abs_end}p" "$s")"
-  [[ -n "${snippet}" ]] || return 2
-  eval "${snippet}" 2>/dev/null || return 2
-  declare -F _pc_lane_dirty >/dev/null 2>&1 || return 2
+  source "$s" 2>/dev/null || return 2
+  declare -F lv2_lane_dirty >/dev/null 2>&1 || return 2
   return 0
 }
 
@@ -144,7 +173,7 @@ case_bootstrap_symlink_only() { # <script>
   local s="$1" lane
   lane="$(_scratch_lane_setup)" || return 2
   _pc_source_lane_dirty_funcs "$s" || { rm -rf "${lane}"; return 2; }
-  if _pc_lane_dirty "${lane}"; then rm -rf "${lane}"; return 1; fi
+  if lv2_lane_dirty "${lane}"; then rm -rf "${lane}"; return 1; fi
   rm -rf "${lane}"
   return 0
 }
@@ -156,7 +185,7 @@ case_bootstrap_symlink_plus_real_file() { # <script>
   lane="$(_scratch_lane_setup)" || return 2
   _pc_source_lane_dirty_funcs "$s" || { rm -rf "${lane}"; return 2; }
   printf 'x' > "${lane}/undeclared.txt"
-  if ! _pc_lane_dirty "${lane}"; then rm -rf "${lane}"; return 1; fi
+  if ! lv2_lane_dirty "${lane}"; then rm -rf "${lane}"; return 1; fi
   local survivors
   survivors="$(git -C "${lane}" status --porcelain --untracked-files=all 2>/dev/null | \
     grep -vE "${_PC_PORCELAIN_EXCLUDE_RE}" | _pc_drop_bootstrap_dirt "${lane}")"
@@ -177,7 +206,7 @@ case_real_file_at_bootstrap_prefix() { # <script>
   printf 'real file, not a symlink' > "${lane}/.claude/commands/leadv2.md"
   _pc_source_lane_dirty_funcs "$s" || { rm -rf "${lane}"; return 2; }
   local rc=1
-  _pc_lane_dirty "${lane}" && rc=0
+  lv2_lane_dirty "${lane}" && rc=0
   rm -rf "${lane}"
   [[ ${rc} -eq 0 ]] && return 0
   return 1
@@ -194,7 +223,7 @@ case_tracked_modified_at_bootstrap_prefix() { # <script>
     printf 'edited' > .claude/agents/critic.md ) >/dev/null 2>&1 || { rm -rf "${lane}"; return 2; }
   _pc_source_lane_dirty_funcs "$s" || { rm -rf "${lane}"; return 2; }
   local rc=1
-  _pc_lane_dirty "${lane}" && rc=0
+  lv2_lane_dirty "${lane}" && rc=0
   rm -rf "${lane}"
   [[ ${rc} -eq 0 ]] && return 0
   return 1
@@ -236,7 +265,8 @@ run_case() { # <name> <fn>
   if [[ -n "${PRE_SCRIPT}" ]]; then "${fn}" "${PRE_SCRIPT}" >/dev/null 2>&1; pre_rc=$?; else pre_rc=2; fi
   "${fn}" "${LIVE_SCRIPT}" >/dev/null 2>&1; post_rc=$?
   if [[ ${post_rc} -eq 2 ]]; then
-    COULD_NOT_RUN=$((COULD_NOT_RUN + 1)); log "COULD-NOT-RUN: ${name} (post_rc=2)"; return
+    COULD_NOT_RUN=$((COULD_NOT_RUN + 1)); FAIL=$((FAIL + 1)); ERRORS+=("${name}: could-not-run")
+    log "FAIL: COULD-NOT-RUN: ${name} (post_rc=2)"; return
   fi
   if [[ ${post_rc} -ne 0 ]]; then
     FAIL=$((FAIL + 1)); ERRORS+=("${name}: post-fix rc=${post_rc}")
@@ -251,6 +281,20 @@ run_case() { # <name> <fn>
 
 log "PASS: bash -n ${TARGET_REL}"
 bash -n "${LIVE_SCRIPT}" || { log "FAIL: bash -n"; exit 1; }
+# C-1 (DISPATCH-PIN-CLUSTER-01 round 7): the source line is no longer a bare
+# one-liner -- it is guarded + canonical-fallback (SCRIPT_DIR copy first, else
+# LEADV2_CANONICAL_ROOT) so a consumer-repo symlink farm with no lib/ copy of this
+# new file does not error every dispatch entry point. An exact-line match on the old
+# unguarded form would fail forever against the fix; assert the three load-bearing
+# facts instead: it resolves the SCRIPT_DIR-local path, falls back to canonical root
+# when that path is absent, and actually sources whichever one exists.
+if grep -Fq '_LANE_GUARD_SH="${SCRIPT_DIR}/lib/leadv2-lane-guard.sh"' "${CLOSE_SCRIPT}" && \
+   grep -Fq '${LEADV2_CANONICAL_ROOT:-${HOME}/Projects/leadv2}/plugins/leadv2/scripts/lib/leadv2-lane-guard.sh' "${CLOSE_SCRIPT}" && \
+   grep -Fq 'source "${_LANE_GUARD_SH}"' "${CLOSE_SCRIPT}"; then
+  log "PASS: product-close sources the lane guard with a consumer-repo-safe fallback"
+else
+  log "FAIL: product-close does not source the lane guard (or lost its fallback)"; exit 1
+fi
 
 run_case "state-file-excluded"       case_state_file
 run_case "pycache-dir-excluded"      case_pycache_dir
@@ -264,7 +308,7 @@ run_case "bootstrap-symlink-only-not-dirty"        case_bootstrap_symlink_only
 run_case "bootstrap-symlink-plus-real-file-dirty"  case_bootstrap_symlink_plus_real_file
 run_case "real-file-at-bootstrap-prefix-dirty"     case_real_file_at_bootstrap_prefix
 run_case "tracked-modified-at-bootstrap-prefix-dirty" case_tracked_modified_at_bootstrap_prefix
-run_case "both-sites-use-bootstrap-filter"         _both_sites_use_bootstrap_filter
+run_case "bootstrap-filter-controls-runtime"        _bootstrap_filter_controls_runtime
 
 echo ""
 echo "Results: ${PASS} passed(red->green), ${FAIL} failed, ${GREEN_PRE_FIX} green-pre-fix, ${COULD_NOT_RUN} could-not-run"

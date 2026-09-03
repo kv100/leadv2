@@ -72,6 +72,22 @@ if [[ "$url" == *"/v1/messages" ]]; then
       exit 0
     fi
   done
+  # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01 round 2: the selector's probe now
+  # checks response CONTENT, not just HTTP status (a live route can answer
+  # 200 with blank/whitespace-only text -- the 2026-08-30 root cause). This
+  # fixture must therefore write a real body, and FAKE_CURL_BLANK_ROUTES
+  # lets a case simulate exactly that trap: 200 + whitespace-only text.
+  is_blank=0
+  for blank in ${FAKE_CURL_BLANK_ROUTES:-}; do
+    [[ "$route" == "$blank" ]] && is_blank=1
+  done
+  if [[ -n "$out" ]]; then
+    if [[ "$is_blank" -eq 1 ]]; then
+      printf '{"content":[{"type":"text","text":" "}]}' > "$out"
+    else
+      printf '{"content":[{"type":"text","text":"OK"}]}' > "$out"
+    fi
+  fi
   [[ -n "$write_out" ]] && printf '200'
   exit 0
 fi
@@ -306,12 +322,12 @@ REAL_ARM_CONFIG="$(cd "$SCRIPT_DIR/.." && pwd)/config/freepool-arm.yaml"
 REAL_MODELS_FILE="$ROOT/real-models.json"
 cat > "$REAL_MODELS_FILE" <<'JSON'
 {"object": "list", "data": [
-  {"id": "anthropic/open_router/deepseek/deepseek-chat-v3.1", "object": "model"},
-  {"id": "claude-3-freecc-no-thinking/open_router/deepseek/deepseek-chat-v3.1", "object": "model"},
-  {"id": "anthropic/nvidia_nim/nvidia/nemotron-3-super-120b-a12b", "object": "model"},
+  {"id": "anthropic/nvidia_nim/deepseek-ai/deepseek-v4-pro-0813", "object": "model"},
+  {"id": "anthropic/nvidia_nim/moonshotai/kimi-k3", "object": "model"},
+  {"id": "anthropic/nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b", "object": "model"},
   {"id": "anthropic/groq/openai/gpt-oss-120b", "object": "model"},
-  {"id": "anthropic/mistral/mistral-large-2512", "object": "model"},
-  {"id": "anthropic/mistral/mistral-large-latest", "object": "model"}
+  {"id": "anthropic/groq/qwen/qwen3.8-27b", "object": "model"},
+  {"id": "anthropic/mistral/mistral-code-latest", "object": "model"}
 ]}
 JSON
 chosen_real="$(PATH="$FAKE_BIN_DIR:$PATH" FAKE_CURL_MODELS_FILE="$REAL_MODELS_FILE" \
@@ -319,7 +335,7 @@ chosen_real="$(PATH="$FAKE_BIN_DIR:$PATH" FAKE_CURL_MODELS_FILE="$REAL_MODELS_FI
   FREEPOOL_MODELS_CACHE_FILE="$ROOT/cache-real-$$.json" FREEPOOL_MODELS_CACHE_TTL_S=0 \
   FREEPOOL_MODELS_FETCH_TIMEOUT_S=2 FREEPOOL_MODEL_PROBE_TIMEOUT_S=2 \
   "$SELECTOR" 2>/dev/null)"; chosen_real_rc=$?
-if [[ "$chosen_real_rc" -eq 0 && "$chosen_real" == "anthropic/open_router/deepseek/deepseek-chat-v3.1" ]]; then
+if [[ "$chosen_real_rc" -eq 0 && "$chosen_real" == "anthropic/nvidia_nim/moonshotai/kimi-k3" ]]; then
   pass 'P1a: checked-in freepool-arm.yaml matches a real-shaped /v1/models payload (primary chosen)'
 else
   fail "P1a: checked-in config against real-shaped fixture (rc=$chosen_real_rc chosen=$chosen_real)"
@@ -332,10 +348,10 @@ fi
 STALE_ARM_CONFIG="$ROOT/freepool-arm-stale-prefixes.yaml"
 cat > "$STALE_ARM_CONFIG" <<'YAML'
 model_rank:
-  - prefix: "deepseek/deepseek-chat"
+  - prefix: "nvidia_nim/moonshotai/kimi-k3"
     tier: primary
     why: pre-fix shape, no anthropic/ alias segment
-  - prefix: "nvidia_nim/nvidia/nemotron-3-super"
+  - prefix: "groq/openai/gpt-oss-120b"
     tier: secondary
     why: pre-fix shape
 YAML
@@ -348,6 +364,57 @@ if [[ "$chosen_stale_rc" -eq 0 && -n "$chosen_stale" ]]; then
   pass 'MUTATION KILLED: bare pre-fix prefixes still match via the with/without-anthropic/ tolerant fallback (P1a fix also makes stale configs recoverable)'
 else
   fail "P1a negative control: bare prefixes matched nothing even with the tolerant fallback (rc=$chosen_stale_rc chosen=$chosen_stale) — tolerant matching regressed"
+fi
+
+# --- FP-01/FP-02: role selection is real, defaulted, and fail-open ---------
+# This uses the checked-in roster and an offline live-shaped model list. The
+# choices are intentionally distinct: implement is quality-first Kimi K3;
+# bulk is throughput-first GPT-OSS on Groq.
+select_real_role() {
+  local role="$1" config="$2"
+  PATH="$FAKE_BIN_DIR:$PATH" FAKE_CURL_MODELS_FILE="$REAL_MODELS_FILE" \
+    FREEPOOL_ARM_CONFIG="$config" \
+    FREEPOOL_MODELS_CACHE_FILE="$ROOT/cache-role-${role:-unset}-$$-$RANDOM.json" \
+    FREEPOOL_MODELS_CACHE_TTL_S=0 FREEPOOL_MODELS_FETCH_TIMEOUT_S=2 \
+    FREEPOOL_MODEL_PROBE_TIMEOUT_S=2 FREEPOOL_ROLE="$role" \
+    "$SELECTOR" 2>/dev/null
+}
+
+implement_pick="$(select_real_role implement "$REAL_ARM_CONFIG")"; implement_rc=$?
+bulk_pick="$(select_real_role bulk "$REAL_ARM_CONFIG")"; bulk_rc=$?
+if [[ "$implement_rc" -eq 0 && "$bulk_rc" -eq 0 && \
+      "$implement_pick" == "anthropic/nvidia_nim/moonshotai/kimi-k3" && \
+      "$bulk_pick" == "anthropic/groq/openai/gpt-oss-120b" && \
+      "$implement_pick" != "$bulk_pick" ]]; then
+  pass 'FP-01/02: role=bulk selects a different roster model than role=implement'
+else
+  fail "FP-01/02 role separation (implement=$implement_pick/$implement_rc bulk=$bulk_pick/$bulk_rc)"
+fi
+
+unset_pick="$(select_real_role '' "$REAL_ARM_CONFIG")"; unset_rc=$?
+if [[ "$unset_rc" -eq 0 && "$unset_pick" == "$implement_pick" ]]; then
+  pass 'FP-01: unset FREEPOOL_ROLE defaults to implement'
+else
+  fail "FP-01 unset role default (unset=$unset_pick/$unset_rc implement=$implement_pick)"
+fi
+
+# Negative control: comment role_rank out in a temp copy. The selector must
+# still choose flat model_rank (deepseek-v4-pro) rather than failing closed.
+NO_ROLE_CONFIG="$ROOT/freepool-arm-no-role-rank.yaml"
+python3 - "$REAL_ARM_CONFIG" "$NO_ROLE_CONFIG" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+lines = open(src).read().splitlines(True)
+start = next(i for i, line in enumerate(lines) if line == 'role_rank:\n')
+with open(dst, 'w') as f:
+    f.writelines(lines[:start])
+    f.writelines('# ' + line if line.strip() else line for line in lines[start:])
+PYEOF
+flat_pick="$(select_real_role bulk "$NO_ROLE_CONFIG")"; flat_rc=$?
+if [[ "$flat_rc" -eq 0 && "$flat_pick" == "anthropic/groq/openai/gpt-oss-120b" ]]; then
+  pass 'FP-02 negative control: commented role_rank falls back to flat model_rank'
+else
+  fail "FP-02 flat fallback (pick=$flat_pick rc=$flat_rc)"
 fi
 
 # ---------------------------------------------------------------------------

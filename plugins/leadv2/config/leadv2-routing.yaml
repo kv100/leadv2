@@ -59,9 +59,14 @@ router_v2:
   capability_matrix:
     - { arm: glm, provider: glm, model: glm-5.3, tier: standard, cost: 1, kinds: [code, docs, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy, bulk], tags: [bulk, background], review: false, protected: false }
     # GLM-53-FLASH-ARM-01 (founder order 2026-08-26): glm-5.3-flash, the CHEAP
-    # glm-family arm. On the legacy coding plan its prompts weigh 0.4x (vs 1x
-    # for glm-5.3) and max-context calls 1.2x (vs 3x) => ~2.5x quota efficiency.
-    # `cost: 0.4` is that prompt-weight ratio expressed in the arbiter's only
+    # glm-family arm. GLM-EFFICIENCY-01 (founder ruling on ask q-bba84179,
+    # 2026-09-02, option b): cost corrected 0.4 -> 0.33 against Z.AI's measured
+    # credit multipliers (docs.z.ai/devpack/teamplan.md, fetched 2026-09-02):
+    # flash 2.3 in / 0.56 cached / 8 out vs glm-5.3 6.9 / 1.7 / 24 — exactly ⅓,
+    # i.e. flash's advertised "3x the quota" means 3x the ALLOWANCE, not 3x the
+    # cost. The old 0.4 was a legacy-plan figure; the direction (flash cheapest)
+    # was always right. Flash stays preferred on trivial/light/standard.
+    # `cost: 0.33` is that credit-weight ratio expressed in the arbiter's only
     # economic unit (relative cost among capable, uncapped arms) — a STATIC
     # preference note, not a quota model: the arbiter scores provider-level
     # utilization, not per-model consumption, so no per-arm quota math was
@@ -69,14 +74,51 @@ router_v2:
     # test authoring. NOT for protected/safety/publish (protected: false here
     # plus `untrusted: true` on the ladder entry below), NOT review/audit/plan,
     # and sizes stop at standard — heavy/bulk stay on glm-5.3/codex/sonnet.
-    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.4, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [cheap, mechanical], review: false, protected: false }
+    - { arm: glm-flash, provider: glm, model: glm-5.3-flash, tier: standard, cost: 0.33, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [cheap, mechanical], review: false, protected: false }
     - { arm: freepool, provider: freepool, model: freepool-default, tier: standard, cost: 1, kinds: [code, docs, fanout-class-funnel, backlog-pump], sizes: [standard, bulk], tags: [bulk, background], review: false, protected: false }
-    - { arm: codex, provider: codex, model: gpt-5.6, tier: spark, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true }
+    - { arm: codex, provider: codex, model: gpt-5.6, tier: volume, cost: 3, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard], tags: [review, adversarial], review: true, protected: true } # PLUGIN-PAPERCUTS-01 defect 2: was tier: spark — codex-task.sh rejects spark (banned, founder directive 2026-04-28; accepts top|standard|volume only), so this cell won the auction and died at spawn. volume (gpt-5.6-luna/low) is the launcher's cheapest valid tier for this cheap leg.
     - { arm: codex, provider: codex, model: gpt-5.6, tier: standard, cost: 4, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [review, adversarial], review: true, protected: true }
     - { arm: codex, provider: codex, model: gpt-5.6, tier: top, cost: 7, kinds: [code, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [heavy], tags: [adversarial, exhaustive], review: true, protected: true }
     - { arm: haiku, provider: claude, model: haiku, tier: standard, cost: 2, kinds: [docs, audit, plan], sizes: [standard], tags: [classify, audit], review: true, protected: true }
     - { arm: sonnet, provider: claude, model: sonnet, tier: standard, cost: 5, kinds: [code, docs, review, plan, audit, fanout-class-funnel, backlog-pump], sizes: [standard, heavy], tags: [integration, ui_judgment], review: true, protected: true }
     - { arm: opus, provider: claude, model: opus, tier: high, cost: 9, kinds: [review, plan, audit, safety], sizes: [standard, heavy], tags: [architecture, safety, adversarial], review: true, protected: true }
+
+  # EFFORT-IS-NOT-WIRED-01: the second routing knob (docs/model-effort-matrix.md
+  # -- model = hardness, effort = marginal value of extra thinking) resolved
+  # from the SAME winning capability_matrix cell the arbiter already picked,
+  # never a second decision and never an `if arm==X` branch in the script.
+  # Rows are evaluated top-to-bottom against the winning cell's `tags`/`kinds`/
+  # `protected`; first match wins. `default: true` is the mandatory catch-all
+  # last row. Doctrine mapping (model-effort-matrix.md): adversarial review /
+  # safety judgment / architecture (`plan`) / a protected final verdict ⇒
+  # high; mechanical / classify / cheap work ⇒ low; everything else
+  # (ordinary build/fix) ⇒ medium. Adding a row here changes routing outcomes
+  # with no script edit -- that is the anti-hardcoding property under test.
+  effort_matrix:
+    - { tags: [adversarial], effort: high }
+    - { tags: [safety], effort: high }
+    - { kinds: [safety], effort: high }
+    - { kinds: [plan], effort: high }
+    - { protected: true, effort: high }
+    - { tags: [mechanical], effort: low }
+    - { tags: [classify], effort: low }
+    - { tags: [cheap], effort: low }
+    - { default: true, effort: medium }
+  # COMPLEXITY-ESTIMATOR-IS-OFF-01: the arbiter's `cheapest_capable` sort (the
+  # ecost() function in leadv2-route-arbiter.sh) previously had no notion of
+  # how hard a task is -- kind/size/protected pick the eligible cells, `cost`
+  # alone breaks the tie. Each rule here adds `penalty` to the effective cost
+  # of any capable cell whose `tags` intersect `penalize_tags`, but ONLY when
+  # the dispatch's judge-estimated complexity/duration_class matches. Data-
+  # driven, additive: an empty list (or a rule that never matches) reproduces
+  # today's pure-cost behavior byte-for-byte. Never names an arm directly --
+  # matches on the SAME `tags` capability_matrix cells already carry (cheap/
+  # mechanical/bulk/background), so a routing-yaml-only edit (no script
+  # change) is enough to retune which cells count as "too cheap" for hard work.
+  complexity_penalty:
+    - complexities: [complex]
+      penalize_tags: [cheap, mechanical, bulk, background]
+      penalty: 100
 
   # Arms are (channel, model) pairs.  Quota buckets are scopes, so the three
   # Anthropic arms deliberately share the active Max x20 account bucket.
@@ -194,7 +236,7 @@ router:
       when: [all]
       effort: standard
     # GLM-53-FLASH-ARM-01: the CHEAP glm-family arm, first fallback after
-    # glm-5.3 (the route arbiter ranks it ahead on cost 0.4 whenever a
+    # glm-5.3 (the route arbiter ranks it ahead on cost 0.33 whenever a
     # standard-size mechanical cell matches). `untrusted: true` reuses the
     # T19 protected/safety chain-strip mechanism — for freepool it encodes
     # third-party trust, for glm-flash it encodes the model-class rule that a
@@ -244,14 +286,22 @@ router:
     # strips every untrusted arm from the chain whenever DC_PROTECTED=1 or
     # DC_SAFETY=1, at every chain position, and journals arm_excluded
     # reason=protected_path so the skip is a fact, not a comment.
-    # Heavy/integration eligibility is data-gated (T17): `when: [standard,
-    # bulk]` is enforced by _build_candidate_chain against --task-class
-    # (default "standard"; unset for a caller that never resolved a size class,
-    # which keeps today's behaviour).
+    # Heavy/integration eligibility is data-gated (T17): `when: [light,
+    # standard, bulk]` is enforced by _build_candidate_chain against
+    # --task-class (default "standard"; unset for a caller that never
+    # resolved a size class, which keeps today's behaviour).
+    # ARMS-ADMISSION-01 (ROUTER-ARBITER-DISAGREE-ON-FREEPOOL-01): `light` was
+    # missing here while leadv2-route-arbiter.sh's SIZE_MAP has always folded
+    # light into the 'standard' capability cell for freepool (see FP-08's own
+    # comment there: "trivial|light... must stay freepool-eligible"), so the
+    # ladder and the arbiter disagreed on the exact same task_class. The
+    # arbiter's behaviour is the one the founder already signed off on
+    # (FP-06/FP-08) -- this ladder now agrees with it instead of the arbiter
+    # being the sole source of truth for `light`.
     - id: freepool
       provider: freepool
       model: freepool-default
-      when: [standard, bulk]
+      when: [light, standard, bulk]
       effort: standard
       health_gated: true
       untrusted: true

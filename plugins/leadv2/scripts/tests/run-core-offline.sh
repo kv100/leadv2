@@ -41,41 +41,121 @@ if [ -n "${LEADV2_CORE_OFFLINE_PROBE:-}" ]; then
   exit 0
 fi
 
-# --- SUITE-SPEED-01 item 1: cross-run exclusive lock ------------------------
-# Two concurrent run-core-offline.sh invocations (e.g. two lanes racing on the
-# same machine) share /tmp fixtures and, more importantly, the same real repo
-# working tree — the hermeticity post-condition below diffs `git status --
-# docs/leadv2` around every suite, and a second run mutating that tree mid-diff
-# manufactures a false HERMETIC-VIOLATION/FAIL that has nothing to do with the
-# suite under test. An exclusive flock on a well-known file serializes runs
-# instead. LEADV2_SUITE_LOCK_DISABLE=1 is the kill-switch (debugging, or a
-# caller that has already serialized externally). Default wait is unbounded
-# (matches "the lane should finish, not race") — set LEADV2_SUITE_LOCK_WAIT_S
-# for a bounded wait (used by tests, and by any caller that prefers a fast
-# failure to a long block).
+# --- SUITE-SPEED-01 item 1 / SUITE-LOCK-IS-MACHINE-WIDE-01: cross-run lock --
+# Two concurrent run-core-offline.sh invocations inside the SAME working tree
+# share /tmp fixtures and, more importantly, that one repo working tree — the
+# hermeticity post-condition below diffs `git status -- docs/leadv2` around
+# every suite, and a second run mutating that SAME tree mid-diff manufactures
+# a false HERMETIC-VIOLATION/FAIL that has nothing to do with the suite under
+# test. An exclusive flock serializes runs instead.
+#
+# The lock protects exactly one thing: REPO_ROOT's own docs/leadv2 working
+# tree. It does NOT protect any resource shared across worktrees, so it must
+# be scoped to REPO_ROOT, never to a single machine-wide path. A hardcoded
+# /tmp/leadv2-core-offline.lock (pre-SUITE-LOCK-IS-MACHINE-WIDE-01) made every
+# concurrent lane on the box -- each in its OWN worktree, each diffing its OWN
+# docs/leadv2 -- queue behind one runner regardless of worktree: N lanes did
+# not run concurrently, one ran and N-1 blocked until their own dispatch
+# timeout killed them with no diagnosis. Measured 2026-08-31: 45 lanes hit
+# this "waiting for lock" line before this fix; do not restore the shared
+# literal path (that is the regression this comment exists to prevent).
+#
+# LEADV2_SUITE_LOCK_DISABLE=1 is the kill-switch (debugging, or a caller that
+# has already serialized externally). LEADV2_SUITE_LOCK_WAIT_S bounds the
+# wait (default below) -- a run that cannot acquire within budget fails
+# loudly instead of hanging until an external watchdog kills it with no
+# reason recorded anywhere (that silent-kill is what six lanes looked like
+# on 2026-08-31 before this default existed).
 LEADV2_SUITE_LOCK_DISABLE="${LEADV2_SUITE_LOCK_DISABLE:-0}"
-LEADV2_SUITE_LOCK_FILE="${LEADV2_SUITE_LOCK_FILE:-/tmp/leadv2-core-offline.lock}"
+LEADV2_SUITE_LOCK_WAIT_S="${LEADV2_SUITE_LOCK_WAIT_S:-600}"
+# bash-3.2-safe slug: no external hashing tool needed for the default case,
+# and no `${var//pat/rep}` surprises across worktree paths that only differ
+# by non-alnum characters (still enough entropy to keep worktrees distinct —
+# collisions would require two DIFFERENT worktree paths reducing to the same
+# alnum skeleton, which none of this plugin's lane paths do:
+# .claude/worktrees/<LANE-NAME>).
+_core_offline_lock_slug() {
+  local s="$1"
+  s="${s//[^A-Za-z0-9]/-}"
+  printf '%s' "$s"
+}
+LEADV2_SUITE_LOCK_FILE="${LEADV2_SUITE_LOCK_FILE:-/tmp/leadv2-core-offline-$(_core_offline_lock_slug "$REPO_ROOT").lock}"
+# --- SUITE-LOCK-ORPHAN-FD-04: the lock fd must NOT survive into a child -----
+# `exec 9<>"$LOCK"` (the old approach) leaves fd 9 open across every `fork`
+# AND every `exec` this process performs, so any child that outlives this run
+# -- a background worker reparented to launchd after the run is killed --
+# keeps the flock held forever (measured 2026-08-31: 47 such orphans, some
+# holding the lock for 15+ minutes with ppid=1). Bash has no builtin to mark
+# a manually-opened fd close-on-exec, so instead of holding fd 9 in THIS
+# process we hand the whole rest of this script to `flock ... -o <lockfile>
+# <command>`: flock's own `-o/--close` closes ITS internal lock fd before
+# exec'ing <command>, so <command> (the re-exec'd copy of this very script,
+# marked via _LV2_CORE_OFFLINE_LOCK_HELD=1) and everything IT ever forks
+# never has the fd at all -- there is nothing left for an orphan to inherit.
+# The lock is then held solely by the `flock` process; killing that process
+# (however it dies) releases the lock immediately and unconditionally, which
+# is exactly the "process whose exit is guaranteed to release it" property
+# fd-inheritance cannot give us. Verified live on this machine: a run whose
+# child was left running as an orphan (ppid=1) held no fd on the lock file
+# (`lsof <lockfile>` empty) and a fresh run acquired immediately.
+#
+# `-E 99` picks an exit code no suite-body outcome can ever produce (bodies
+# exit 0/1/2 -- see EOF) so "flock could not acquire" is unambiguous against
+# "the wrapped run legitimately exited with that code".
+#
 # Pure introspection (lists the shard partition, runs nothing) never needs to
 # serialize against a concurrent real run — skip the lock entirely for it.
-if [[ "$LEADV2_SUITE_LOCK_DISABLE" != "1" && -z "${LEADV2_SUITE_SHARDS_DUMP:-}" ]]; then
-  exec 9>"$LEADV2_SUITE_LOCK_FILE"
-  if ! flock -n 9; then
-    printf -- '[CORE-OFFLINE] waiting for lock file=%s (held by a concurrent run)\n' \
-      "$LEADV2_SUITE_LOCK_FILE" >&2
-    if [[ -n "${LEADV2_SUITE_LOCK_WAIT_S:-}" ]]; then
-      if ! flock -w "$LEADV2_SUITE_LOCK_WAIT_S" 9; then
-        printf -- '[CORE-OFFLINE] FATAL lock_timeout file=%s wait_s=%s\n' \
-          "$LEADV2_SUITE_LOCK_FILE" "$LEADV2_SUITE_LOCK_WAIT_S" >&2
-        exit 2
-      fi
-    else
-      flock 9
-    fi
+if [[ "$LEADV2_SUITE_LOCK_DISABLE" != "1" && -z "${LEADV2_SUITE_SHARDS_DUMP:-}" \
+  && "${_LV2_CORE_OFFLINE_LOCK_HELD:-0}" != "1" ]]; then
+  if flock -x -n -E 99 -o "$LEADV2_SUITE_LOCK_FILE" \
+    env _LV2_CORE_OFFLINE_LOCK_HELD=1 bash "${BASH_SOURCE[0]}"; then
+    exit 0
+  else
+    _lock_rc=$?
   fi
+  if [[ "$_lock_rc" != 99 ]]; then
+    exit "$_lock_rc"
+  fi
+  _lock_holder="$(cat "$LEADV2_SUITE_LOCK_FILE" 2>/dev/null || true)"
+  printf -- '[CORE-OFFLINE] waiting for lock file=%s holder=%s (held by a concurrent run)\n' \
+    "$LEADV2_SUITE_LOCK_FILE" "${_lock_holder:-<unknown>}" >&2
+  if flock -x -w "$LEADV2_SUITE_LOCK_WAIT_S" -E 99 -o "$LEADV2_SUITE_LOCK_FILE" \
+    env _LV2_CORE_OFFLINE_LOCK_HELD=1 bash "${BASH_SOURCE[0]}"; then
+    exit 0
+  else
+    _lock_rc2=$?
+  fi
+  if [[ "$_lock_rc2" == 99 ]]; then
+    _lock_holder="$(cat "$LEADV2_SUITE_LOCK_FILE" 2>/dev/null || true)"
+    printf -- '[CORE-OFFLINE] FATAL lock_timeout file=%s wait_s=%s holder=%s\n' \
+      "$LEADV2_SUITE_LOCK_FILE" "$LEADV2_SUITE_LOCK_WAIT_S" "${_lock_holder:-<unknown>}" >&2
+    exit 2
+  fi
+  exit "$_lock_rc2"
+fi
+
+if [[ "${_LV2_CORE_OFFLINE_LOCK_HELD:-0}" == "1" ]]; then
+  # We now hold the lock (immediately or after waiting) -- stamp holder info
+  # for the NEXT contender to read and report. This is a plain overwrite of
+  # the file's CONTENT on a fresh fd, unrelated to the fd `flock` itself
+  # holds the lock on -- it does not touch that lock.
+  printf 'pid=%s host=%s since=%s\n' "$$" "$(hostname 2>/dev/null || printf unknown)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$LEADV2_SUITE_LOCK_FILE" 2>/dev/null || true
 fi
 
 if [ -n "${LEADV2_SUITE_LOCK_PROBE:-}" ]; then
   printf -- '[CORE-OFFLINE] lock-probe acquired file=%s\n' "$LEADV2_SUITE_LOCK_FILE"
+  exit 0
+fi
+
+# Test-only hook (SUITE-LOCK-ORPHAN-FD-04): simulate the incident shape --
+# this run forks a long-lived child, then dies before ever reaching real
+# suite execution (mirrors a lane killed right after a worker spawn). Never
+# set by a real caller; test-suite-lock-scope.sh uses it to prove the
+# orphaned child does not keep holding the lock.
+if [ -n "${LEADV2_SUITE_LOCK_ORPHAN_TEST_SLEEP_S:-}" ]; then
+  sleep "$LEADV2_SUITE_LOCK_ORPHAN_TEST_SLEEP_S" &
+  printf -- '[CORE-OFFLINE] orphan-test child spawned pid=%s\n' "$!"
   exit 0
 fi
 
@@ -278,6 +358,7 @@ SUITE_DEFS=(
   "cross-injector dedup, active-task path (T15)|||bash $TEST_DIR/test-injector-dedup.sh"
   "main model/live quota|||bash $TEST_DIR/test-main-model-check.sh"
   "active registry fail-closed|||bash $TEST_DIR/test-active-registry-failclosed.sh"
+  "lane write-set admission block (LANE-WRITESET-REGISTRY-01)|||bash $TEST_DIR/test-writeset-admission-block.sh"
   "lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)|||bash $TEST_DIR/test-worktree-lane-safety.sh|||SERIAL"
   "active registry phase updates|||bash $TEST_DIR/test-active-registry-update-phase.sh"
   "fanout classifier/runner guard|||bash $TEST_DIR/test-fanout-classify-guard.sh|||SERIAL"

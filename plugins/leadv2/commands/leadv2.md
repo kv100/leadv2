@@ -95,6 +95,8 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 
 1. `bash ${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-state-compact.sh` -- emits HEAD, active sessions, recent history (last 10), queue freshness, top-5 unclaimed tasks. ~30 lines total. Active session detected -> read `STATE.md limit=30` to resume.
 
+**Lane watch (ONE-LANE-WATCH-01, self-arming):** the SessionStart hook backgrounds `scripts/leadv2-lane-watch-v2.sh --arm-from-hook` for this session id — one poll loop, keyed by session id, watching every lane's own worktree mtime (provider-agnostic: GLM/Codex/Kimi/freepool all watched identically, unlike the old GLM-only pulse watcher). It prints `LANE-STALL: <lane> — worktree untouched for Nm` the first time a lane crosses `LANE_STALL_MIN` (default 20m, one report per stall — never a repeat flood) and a `LANE-BEAT: <lane>:Nm ...` line naming every active lane every `LANE_BEAT_MIN` (default 12m), so a quiet session is provably a working one. A lane dispatched within `LANE_GRACE_MIN` (default 15m) is never falsely reported. SessionEnd disarms it (argv-verified kill, never a bare pattern match — never touches a process it did not itself start). This is the one instrument this repo now trusts for "what's in work and is anything stuck" — see `docs/handoff/ONE-LANE-WATCH-01/report.md` for the census of scripts it supersedes and why `leadv2-idle-lead-guard.sh` was retired rather than kept alongside it.
+
 **Explicit task id -> claim, never greet.** If invoked as `/leadv2 <task-id>` (bare token matching an existing `docs/leadv2/tasks.yaml` id or an existing `docs/handoff/<id>/`), OR with `LEADV2_ASYNC_QUESTIONS=1` set, this is a **fanned-out child session** (spawned by `leadv2-fanout.sh`/`leadv2-supervise.sh`) -- claim that task_id immediately via Phase 0 and proceed straight to CLASSIFY. **Do NOT render the greeting AskUserQuestion picker** in this path -- a picker left waiting on a headless child is a silent multi-hour stall (bug: `f83037a57907` sat 2.5h on it). The picker below is ONLY for a bare `/leadv2` / `/leadv2 next` with no task id.
 
 **Question wake-up (CC 2.1.224+, additive):** in ANY child worker session — a fanned-out supervise child OR a single-lead-mode dispatched Claude arm (`leadv2-dispatch-code.sh`) — immediately after launching `scripts/leadv2-ask.sh`, attempt `ListAgents` and, if the dispatching lead/supervisor session is discoverable, `SendMessage` it one line: `[leadv2-q] <task-id> <q-id>: <question, <=15 words> — answer via /leadv2 reply <q-id> <option>`. This is a wake-up only — the control-plane question store stays the source of truth, and failure of this step is non-fatal (fall back to the blocking poll silently). An interactive lead with the founder in the same window keeps using `AskUserQuestion` directly — no message needed there. Since CC 2.1.224 `SendMessage` silent write failures are fixed and 2.1.232 gives sessions stable unique names (`@`-addressable) — so treat a *returned error* as the only failure signal (retry once with the ` [ref]` from `ListAgents`), and do NOT add extra compensating re-sends: one wake-up per question, the poll remains the safety net.
@@ -119,7 +121,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 | `/leadv2 help` | Russian summary + link to `${CLAUDE_PLUGIN_ROOT}/docs/phases.md` |
 | `/leadv2 reply <q-id> <option>` | Answer an async question; writes answered YAML, wakes waiting session |
 | `/leadv2 questions` | List all pending async questions across all active tasks |
-| `/leadv2 sessions` | Show docs/leadv2/active.yaml sessions table |
+| `/leadv2 sessions` | Lead calls ListAgents, writes peer list to temp json, then runs `leadv2_active_list --peers-json <file>`. If ListAgents errors/unavailable, lead runs bare list and reports "peers: unavailable — registry-only view" footer. Empty peer column never read as "no peers". |
 | `/leadv2 supervise` | **Retired 2026-08-17 (founder order, SUPERVISOR-DELETE-01)** — the standalone supervisor session mode (loop/pick/watchdog daemon) is gone. Reconciliation lives in `scripts/leadv2-lanes-snapshot.sh`; see `.claude/skills/leadv2-supervise/SKILL.md`. |
 | `/leadv2 fanout` | **Retired 2026-08-17 (founder order, SUPERVISOR-DELETE-01)** — fanout was the supervisor's multi-child dispatch arm; it is retired with the supervisor it served. Dispatch child /leadv2 sessions directly instead (`scripts/leadv2-fanout.sh` remains on disk but is founder-order-only per this repo's CLAUDE.md, never self-invoked). |
 | `/leadv2 health` | Run leadv2-briefing-freshness-monitor. Exit immediately (not 9-phase). |
@@ -149,7 +151,7 @@ GLM and Kimi are build-only and never take plan, architect, or synthesis roles.
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 2` BEFORE executing.
 
 ## Phase 3: GATE 1 - the only gate
-- Trigger: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-gate1-prompt.sh" "$LEADV2_TASK_ID" "$CLASS" "$PLAN_SUMMARY"` -- auto-accepts after timeout (except Heavy + DAEMON=0) | Exit: Exit 0 = accepted -> Phase 4; Exit 1 = declined -> iterate once; Exit 2 = auto-accepted
+- Trigger: `bash "${CLAUDE_PLUGIN_ROOT}/scripts/leadv2-gate1-prompt.sh" "$LEADV2_TASK_ID" "$CLASS" "$PLAN_SUMMARY" "$RISK"` — Heavy/Strategic/high-risk NEVER auto-accept in any mode (async blocking question under LEADV2_ASYNC_QUESTIONS=1, blocking read otherwise); Standard non-high-risk auto-accepts after timeout (journaled gate1_auto_accepted vs answered) | Exit: Exit 0 = accepted -> Phase 4; Exit 1 = declined -> iterate once; Exit 2 = auto-accepted
 - Detail: read `${CLAUDE_PLUGIN_ROOT}/docs/phases.md §Phase 3` BEFORE executing.
 
 ## Phase 4: BUILD
@@ -293,7 +295,14 @@ Principle: **context is cache, disk is truth.** Sessions run for days with many 
 - **No code** on `.py`/`.sh`/`.ts`/`.tsx`/`.sql`/migrations. Ever.
 - **No ending turn after `leadv2-codex-planner.sh` launch without a Monitor.** Always pair with Monitor(codex-task.sh status polling). Read cx-tail and proceed in SAME turn.
 - **No skipping Phase 2 Plan triad** for Standard+ tasks.
-- **No concurrent /leadv2.** Lockfile check in Phase 0.
+- **Concurrency: 2 execution lanes per lead session, unlimited sessions** (founder order
+  2026-08-29, CONCURRENCY-2-LANES-01 — supersedes the old "No concurrent /leadv2" ban and the
+  single-lead `WIP=1` rule). A second `/leadv2` session in the same repo is NORMAL and needs no
+  founder approval; so is a second lane inside one session. Phase 0 still takes the lockfile —
+  it serialises the *registry write*, never the session. Constraints that remain real: each lane
+  gets its OWN worktree (never two lanes in one tree), and two lanes may not share a write set.
+  **Never ask the founder "can I start a second lane / another session?" — the answer is yes.**
+  Ask only when two lanes would write the same files.
 - **No skipping yaml validation** on subagent deliverables.
 - **No chat narration.** Pulse mode (default): absolute silence except pulse lines + gate + close.
 - **No foreground Agent spawns.** Always `run_in_background=true`.
