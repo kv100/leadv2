@@ -271,6 +271,26 @@ def _pid_alive(pid_val) -> bool:
     except (TypeError, ValueError, ProcessLookupError, PermissionError):
         return False
 
+# PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01: liveness must not rest on "PID
+# alive" alone -- a recorded PID can belong to the interactive lead session
+# (`claude --dangerously-skip-permissions`) rather than a worker
+# (`claude -p`). The kind is read from the LIVE process argv, so it reflects
+# what the PID is NOW, not what the registerer hoped it was.
+def _proc_kind(pid_val):
+    try:
+        import subprocess as _sp
+        out = _sp.run(["ps", "-p", str(int(pid_val)), "-o", "args="],
+                      capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return "unknown"
+    if not out:
+        return "dead"
+    if ("claude" in out or "codex" in out) and (" -p" in out or "--print" in out):
+        return "worker"
+    if "claude" in out or "--dangerously-skip-permissions" in out:
+        return "interactive"
+    return "other"
+
 # LANE-WRITESET-REGISTRY-01: shared prefix-overlap predicate, copied from
 # leadv2-writes-overlap.sh:86-89 (that script is frozen/off-limits, D4) --
 # used by both the `register` op's admission intersect and the read-only
@@ -430,6 +450,7 @@ try:
                 existing["last_pulse_at"] = last_pulse_at
                 existing["updated_at"] = _now_iso()
                 existing["stale"] = False
+                existing["proc_kind"] = _proc_kind(existing.get("pid"))
                 if writes is not None:
                     existing["writes"] = writes
                 print(existing.get("session_id") or session_id)
@@ -449,6 +470,9 @@ try:
                 "pulse_log": pulse_log,
                 "pid": pid_int,
                 "pid_birth": pid_birth,
+                # PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01: process-kind
+                # attribute paired with (pid, pid_birth).
+                "proc_kind": _proc_kind(pid_int),
                 # LANE-REGISTRY-SELF-DEADLOCK-01: label WHO the row's `pid`
                 # belongs to at register time (always the durable lead session
                 # here). The post-spawn set_worker_pid op later flips this to
