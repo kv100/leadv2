@@ -81,14 +81,91 @@ MISSION_TEXT="$(cat "${MISSION_FILE}")"
 SIG8="$(python3 -c "import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:8])" <<<"${MISSION_TEXT}")"
 [[ -n "${SIG8}" ]] || die "failed to compute mission signature"
 
+# ── safety-floor structured-surface pattern source (CLASSIFIER-CALLS-SAFETY-
+# DOCTRINE-SIMPLE-01, blueprint §3/§8) ──────────────────────────────────────
+# protected_path_patterns (glm_policy.protected_path_patterns) are PATH GLOBS.
+# Matching them -- or any safety keyword -- against the whole free-text
+# mission body is the category error both directions of the bug trace to:
+#   - HEAVY-TIER-VS-SAFETY-OPUS-01 (false negative): the task id carries the
+#     bare token SAFETY, but no existing pattern ('safety gate'/'safety-gate')
+#     requires it adjacent to 'gate', so the id never fires.
+#   - CLASSIFIER-MUST-SEE-QUOTA-AND-RESET-DATE-01 (false positive): the body
+#     contains "...does not publish a reset..." -- 'publish' the English verb,
+#     not the product-action path glob -- and the old whole-body scan fired.
+# Fix (§3): restrict the scan to a structured surface -- the mission's own
+# id/title line (token match, unconditional, see _fallback_estimate) and its
+# declared Reads:/Writes:/Touches: paths (glob match, this resolver) -- never
+# the free-text body. Resolution mirrors the tenant-first / plugin-fallback
+# convention leadv2-dispatch-code.sh's ROUTING_YAML already uses (see its
+# comment at ARM-LADDER-HAS-NO-QUOTA-PRECHECK-01 P3): a whole-FILE fallback,
+# never a per-key one. No LEADV2_* bypass flag -- a kill-switch on a safety
+# rule is the anti-pattern this fix deletes. On unreadable/absent yaml (both
+# tenant and plugin paths), fall back to the built-in tuple plus the bare
+# 'safety' glob; the caller journals safety_patterns=default in that case.
+_resolve_safety_patterns() {
+  local tenant_yaml="${PROJECT_ROOT}/.claude/ref/leadv2-routing.yaml"
+  local plugin_yaml="${SCRIPT_DIR}/../config/leadv2-routing.yaml"
+  local yp found
+  for yp in "${tenant_yaml}" "${plugin_yaml}"; do
+    [[ -r "${yp}" ]] || continue
+    found="$(python3 -c "
+import sys
+
+try:
+    text = open(sys.argv[1], encoding='utf-8').read()
+except Exception:
+    sys.exit(0)
+
+in_block = False
+base_indent = None
+items = []
+for ln in text.splitlines():
+    if not in_block:
+        s = ln.strip()
+        if s.startswith('protected_path_patterns') and s.rstrip().endswith(':'):
+            in_block = True
+            base_indent = len(ln) - len(ln.lstrip())
+        continue
+    s = ln.strip()
+    if not s:
+        continue
+    indent = len(ln) - len(ln.lstrip())
+    if indent <= base_indent or not s.startswith('-'):
+        break
+    item = s[1:].strip()
+    if len(item) >= 2 and item[0] == item[-1] and item[0] in (chr(34), chr(39)):
+        item = item[1:-1]
+    if item:
+        items.append(item)
+
+for it in items:
+    print(it)
+" "${yp}" 2>/dev/null)"
+    if [[ -n "${found}" ]]; then
+      printf 'yaml\n%s' "${found}"
+      return 0
+    fi
+  done
+  printf 'default\n*safety-gate*\n*safety_gate*\n*safety*gate*\n*publish*\n*payments*\n*payment*\n*safety*'
+}
+# _resolve_safety_patterns runs in a subshell via $(...); it communicates
+# ONLY through stdout (status line, then one pattern per line) so the split
+# below -- done in THIS shell, not inside the function -- is what actually
+# makes SAFETY_PATTERNS_SOURCE visible to _journal() later.
+_SAFETY_PATTERNS_RAW="$(_resolve_safety_patterns)"
+SAFETY_PATTERNS_SOURCE="${_SAFETY_PATTERNS_RAW%%$'\n'*}"
+SAFETY_PATTERNS="${_SAFETY_PATTERNS_RAW#*$'\n'}"
+[[ -n "${SAFETY_PATTERNS_SOURCE}" ]] || SAFETY_PATTERNS_SOURCE="default"
+
 # ── code-only fallback estimator (R2 mitigation #1) ─────────────────────────
 _fallback_estimate() {
   python3 -c "
-import json, sys
+import json, re, fnmatch, sys
 
 mission_text = sys.argv[1]
 sig8 = sys.argv[2]
 class_hint = sys.argv[3] if len(sys.argv) > 3 else ''
+patterns_raw = sys.argv[4] if len(sys.argv) > 4 else ''
 text_lower = mission_text.lower()
 lines = mission_text.count(chr(10)) + 1
 
@@ -107,9 +184,54 @@ elif lines <= 300:
 else:
     complexity, duration_class = 'complex', 'long'
 
-SAFETY_KEYWORDS = ('payment', 'publish', 'safety gate', 'safety-gate')
+# ── structured-surface safety matcher (CLASSIFIER-CALLS-SAFETY-DOCTRINE-
+# SIMPLE-01) -- protected_path_patterns are path globs; scanning them (or any
+# safety keyword) against the free-text mission body is the category error
+# HEAVY-TIER-VS-SAFETY-OPUS-01 (false negative, id-only) and CLASSIFIER-MUST-
+# SEE-QUOTA-AND-RESET-DATE-01 (false positive, homograph 'publish') both trace
+# to. Restricted to: (1) the mission's own id/title -- its first '#' heading
+# line, token-matched (whole hyphen/underscore-delimited token, case
+# insensitive, unconditional -- does not depend on yaml availability) against
+# safety/publish/payment/payments; (2) declared Reads:/Writes:/Touches: paths,
+# matched against protected_path_patterns (resolved by _resolve_safety_
+# patterns above) as the path globs they are. The free-text body is never
+# scanned for this risk class again. DATA_KEYWORDS below is unrelated prior
+# art, deliberately left scanning the body as-is (out of scope for this fix).
+SAFETY_TOKENS = ('safety', 'publish', 'payment', 'payments')
+
+title = ''
+for ln in mission_text.splitlines():
+    s = ln.strip()
+    if s.startswith('#'):
+        title = s.lstrip('#').strip()
+        break
+title_tokens = set(t for t in re.split(r'[^a-z0-9]+', title.lower()) if t)
+title_hit = bool(title_tokens & set(SAFETY_TOKENS))
+
+declared_paths = []
+for ln in mission_text.splitlines():
+    s = ln.strip()
+    for prefix in ('Reads:', 'Writes:', 'Touches:'):
+        if s.startswith(prefix):
+            for tok in s[len(prefix):].replace(',', ' ').split():
+                tok = tok.strip()
+                if tok:
+                    declared_paths.append(tok)
+            break
+
+patterns = [p for p in patterns_raw.split(chr(10)) if p]
+path_hit = False
+for p in declared_paths:
+    p_l = p.lower()
+    for pat in patterns:
+        if fnmatch.fnmatch(p_l, pat.lower()):
+            path_hit = True
+            break
+    if path_hit:
+        break
+
 DATA_KEYWORDS = ('migration', 'schema', 'supabase', 'database', 'drop table', 'postgres')
-if any(k in text_lower for k in SAFETY_KEYWORDS):
+if title_hit or path_hit:
     risk_class = 'safety_publish_payments'
 elif any(k in text_lower for k in DATA_KEYWORDS):
     risk_class = 'data'
@@ -147,7 +269,7 @@ estimate = {
     'estimate_source': 'fallback',
 }
 print(json.dumps(estimate, sort_keys=True))
-" "${MISSION_TEXT}" "${SIG8}" "${CLASS_HINT}"
+" "${MISSION_TEXT}" "${SIG8}" "${CLASS_HINT}" "${SAFETY_PATTERNS}"
 }
 
 # ── schema validation (shared: judge output, cache reads) ───────────────────
@@ -264,8 +386,13 @@ _journal() {
   subsystems="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('subsystems_touched',''))" <<<"${estimate_json}" 2>/dev/null)"
   live="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('needs_live_verification',''))" <<<"${estimate_json}" 2>/dev/null)"
   if [[ -n "${TASK_ID}" && -f "${JOURNAL_BIN}" ]]; then
+    # safety_floor / safety_patterns (CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01,
+    # blueprint §4/§8): "a rule with no reader is not a rule" -- both are set
+    # by the time _journal runs (SAFETY_PATTERNS_SOURCE at script startup,
+    # SAFETY_FLOOR_STATUS by _emit's call to _apply_safety_floor just before
+    # this call), so default here only guards an unexpected empty value.
     bash "${JOURNAL_BIN}" append "${TASK_ID}" decision \
-      "route_v2_estimate estimate_id=${SIG8} estimate_source=${src} complexity=${complexity} work_kind=${work_kind} duration_class=${duration_class} risk_class=${risk_class} subsystems_touched=${subsystems} needs_live_verification=${live} cache_hit=${cache_hit}" \
+      "route_v2_estimate estimate_id=${SIG8} estimate_source=${src} complexity=${complexity} work_kind=${work_kind} duration_class=${duration_class} risk_class=${risk_class} subsystems_touched=${subsystems} needs_live_verification=${live} cache_hit=${cache_hit} safety_floor=${SAFETY_FLOOR_STATUS:-none} safety_patterns=${SAFETY_PATTERNS_SOURCE:-default}" \
       >/dev/null 2>&1 || true
   fi
   # T13's audit joins durable estimate records against close outcomes.  The
