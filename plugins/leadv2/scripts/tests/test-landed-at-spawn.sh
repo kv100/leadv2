@@ -73,7 +73,10 @@ case "${1:-}" in
     exit 0
     ;;
   status)
-    [[ -n "${2:-}" && -f "$RUNS/$2" ]] && exit 0
+    if [[ -n "${2:-}" && -f "$RUNS/$2" ]]; then
+      printf 'status: complete\n'
+      exit 0
+    fi
     exit 1
     ;;
   *)

@@ -230,7 +230,10 @@ case "${1:-}" in
     exit 0
     ;;
   status)
-    [[ -n "${2:-}" && -f "$RUNS/$2" ]] && exit 0
+    if [[ -n "${2:-}" && -f "$RUNS/$2" ]]; then
+      printf 'status: complete\n'
+      exit 0
+    fi
     exit 1
     ;;
   *)
@@ -278,6 +281,15 @@ export E2E_JOURNAL_LOG
 # Per-case setup: resets journal log, sets common env
 e2e_setup() {
   : > "${E2E_JOURNAL_LOG}"
+  # FOREIGN-PROJECT-ROOT-GUARD-01: dispatch-code.sh only trusts an env-provided
+  # LEADV2_PROJECT_ROOT when cwd's own git toplevel already matches it; otherwise
+  # it falls back to cwd-derived root. Without this cd, cwd stays this worktree's
+  # real root, so every dispatch call below silently escapes the E2E sandbox and
+  # contends on the REAL docs/leadv2/active.yaml + bus locks -- which hangs for
+  # up to the full poll window (or longer under concurrent lanes) instead of the
+  # ~1s the stub should take. Every other suite in tests/ already cd's into its
+  # throwaway repo for exactly this reason.
+  cd "${E2E_REPO}" || exit 1
   export LEADV2_PROJECT_ROOT="${E2E_REPO}"
   export CLAUDE_PROJECT_DIR="${E2E_REPO}"
   export LEADV2_DISPATCH_CACHE_DIR="${E2E_CACHE}"
@@ -290,6 +302,12 @@ e2e_setup() {
   export LEADV2_LANE_SHAPE=off
   export LEADV2_DISPATCH_E2E_GATE=0
   export LEADV2_DISPATCH_REVIEW_GATE=0
+  # This suite asserts phase-precondition behavior and the fake launch sentinel,
+  # not the dispatcher's asynchronous early-verdict behavior.  Keep the fake
+  # launch path synchronous: otherwise each spawned fixture inherits the
+  # production 20-second observation window and the integration harness times
+  # out before it reaches its assertions.
+  export LEADV2_ARM_EARLY_VERDICT_S=0
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
   # An ambient PHASE_GUARD_SCOPE=pre-build (e.g. this suite itself running
