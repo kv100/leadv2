@@ -545,3 +545,34 @@ which is the wrong lever. Log BOTH:
 
 The second pair is the mechanism. The suites have no queue, so they, not the lanes, are what
 saturates the machine. A verdict recorded without it invites the same wrong fix again.
+
+---
+
+## LEAD ADDENDUM 9 — cases 11 and 12: a PID is not an identity, and an `unknown` may be your own search
+
+**Case 12 — PID reuse gives FALSE LIFE.** `kill -0 <pid>` alone answers "some process with this
+number exists", not "the worker is alive". PIDs are recycled; a recorded handle can be answered by
+an unrelated process that started later. A sibling session's status generator did exactly this all
+evening and showed two dead lanes as alive. Note `leadv2-lane-state.sh` already compares
+`pid_start_time` — the discipline exists in the codebase and the newer probe simply did not use it.
+
+**Liveness is the pair (PID, process start time), never the PID.** A recorded handle must persist
+both; a probe must compare both; a match on the number alone is not a match. This replaces the
+plain `kill -0` in every addendum above, and combines with case 9: classify by stderr AND verify
+the start time.
+
+**Case 11 — an `unknown` can come from an incomplete SEARCH, and is indistinguishable from an
+`unknown` caused by a missing record.** The lead's own probe reported D4, D5 and D6 as
+`unknown/nohandle` and nearly produced the finding "handles are not persisted". They are: they sit
+in the dispatch directories and in the dispatcher's stdout. The probe was looking in the wrong
+place.
+
+The lesson is about the TYPE, not the probe. Under a two-valued rule that `unknown` would have been
+rendered `dead`, three lanes holding uncommitted work would have been resumed, and a task row would
+have been filed against a defect that does not exist. Under three values it produced the correct
+behaviour: resume nothing, keep searching, find the real answer. **This is the argument for the
+three-valued type — keep it in the report.**
+
+Requirement that follows: the handle record is part of the contract, not a log artifact. It must be
+written to a known path inside the lane's own directory — PID *and* start time — so a probe never
+has to guess where it lives. "It was printed to stdout somewhere" is not persistence.
