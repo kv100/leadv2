@@ -4,7 +4,7 @@
 
 # /leadv2 Active Sessions
 
-Last updated: 2026-09-03T20:52:41Z
+Last updated: 2026-09-03T21:08:05Z
 
 | task_id | phase | class | started_at | daemon |
 |---|---|---|---|---|
@@ -113,11 +113,11 @@ Last updated: 2026-09-03T20:52:41Z
 | HANDOFF-ANALYSIS-DIES-UNTRACKED-01 | build | Standard | 2026-09-03T19:55 | no |
 | TWO-ACCOUNTS-EVERYWHERE-AND-QUOTA-AWARE-01 | review:blocked | Light | 2026-09-03T19:57 | no |
 | D3-TERMINAL-FUNNEL-WITH-DEATH-PROOF | intake | Standard | 2026-09-03T20:00 | no |
-| LIVENESS-HAS-NO-SUITE-01 | e2e | Heavy | 2026-09-03T20:19 | no |
+| LIVENESS-HAS-NO-SUITE-01 | review:blocked | Heavy | 2026-09-03T20:19 | no |
 | QUOTA-BINDING-WINDOW-IS-NEVER-RECORDED-01 | intake | Standard | 2026-09-03T20:19 | no |
 | CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 | review:fail | Heavy | 2026-09-03T20:29 | no |
 | CLASSIFIER-CALLS-SAFETY-DOCTRINE-SIMPLE-01 | recovered | ? | 2026-09-03T20:51 | no |
-| HARNESS-EMPTY-TASK-PROBE-01 | intake | Light | 2026-09-03T20:52 | no |
+| HARNESS-EMPTY-TASK-PROBE-01 | intake | Light | 2026-09-03T21:08 | no |
 
 Sessions: 110 / 3 max
 
