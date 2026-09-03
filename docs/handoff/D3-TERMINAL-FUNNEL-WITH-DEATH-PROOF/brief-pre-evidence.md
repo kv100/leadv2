@@ -115,3 +115,41 @@ This is a gate, not a wish. If D3 ships its own `ps`, its own PID walk, or its o
 system has two verdicts about whether a lane is alive, and we land back exactly here — with the two
 disagreeing and no way to tell which lied. Reviewer: reject the diff if it computes liveness itself
 anywhere, however small the helper looks.
+
+## The incident reproduced itself on D3, and it is poorer than the fixture assumed
+
+2026-09-03, third dispatch of this very lane. Worker PID 72076 lived about ten minutes and vanished.
+**Zero commits** — only the lane anchor. In the worktree: **382 uncommitted insertions** in
+`plugins/leadv2/scripts/leadv2-dispatch-ledger.sh`, i.e. this task's own real work. Rescued by hand
+as `577283e8`.
+
+The fixture in the section above says "kill a worker with `SIGKILL` while its worktree holds
+uncommitted changes". That is the richer case. The case that actually happened is **poorer and more
+dangerous**:
+
+> **zero unmerged commits AND a non-empty working tree.**
+
+Why the difference matters: the SessionStart sweeper deletes a lane worktree that has no unmerged
+commits. With only an anchor commit, D3 qualified for deletion while holding 382 lines. One more
+session start and the work would have been gone, and from outside it would have read as "the lane
+produced nothing" — because the only actor that could have seen the diff was the process that died.
+
+**Acceptance, added and mandatory:**
+
+1. The funnel must report **`died-with-work`** for a lane with **zero non-anchor commits** and a
+   dirty tree. The existing fixture, which has commits *and* a dirty tree, does not exercise this
+   path and would pass while this one fails.
+2. **The sweeper must treat such a lane as undeletable.** "Has unmerged commits" is itself a false
+   zero: it answers "no work here" about a lane holding four hundred lines. Whatever predicate the
+   sweeper uses must consult the same funnel, not its own commit count.
+3. Assert the rescue commit contains those specific lines — not merely that some commit exists.
+
+## A note on why this lane keeps dying, kept honest
+
+Three dispatches, three deaths, zero worker commits. Meanwhile three sibling lanes were alive at the
+same moment with live PIDs and were producing. So "the machine will not let work run" is too broad an
+explanation — some workers do survive. The difference is not yet known and should not be guessed at.
+One observation only, offered as an observation: this lane's mission is the longest of the four.
+
+Do not treat repeated re-dispatch as the remedy. If a lane dies with the same shape a fourth time,
+that is a property to be diagnosed, not a run of bad luck to be restarted through.
