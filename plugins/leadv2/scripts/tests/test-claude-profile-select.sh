@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-claude-profile-select.sh
 # tests/test-claude-profile-select.sh — CLAUDE-MULTIPROFILE-QUOTA-02
 #
 # Hermetic unit + integration coverage for leadv2-claude-profile-select.sh,

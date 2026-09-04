@@ -15,7 +15,6 @@ PHASE_RECORD="${SCRIPT_DIR}/../leadv2-phase-record.sh"
 DISPATCH_BIN="${SCRIPT_DIR}/../leadv2-dispatch-code.sh"
 
 TMP_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TMP_ROOT"' EXIT
 
 # PHASE-GATE-IS-INVERTED-01: a session-exported PROJECT_ROOT diverging from the
 # per-section LEADV2_PROJECT_ROOT would now refuse every record write; this
@@ -24,6 +23,57 @@ unset PROJECT_ROOT
 export LEADV2_PROJECT_ROOT="$TMP_ROOT"
 export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/.cache"
 export LEADV2_JOURNAL_BIN="${TMP_ROOT}/journal.sh"
+
+# --- PPC-G3: leak-proof sandbox/env teardown ---------------------------------
+# Every G5/G6*/G7*/G9/G10/E2E/F1 block below creates its own `mktemp -d`
+# sandbox, and the E2E block additionally exports a batch of LEADV2_*/
+# CLAUDE_PROJECT_DIR vars via e2e_setup() scoped to that sandbox. Previously
+# both were cleaned only by a plain `rm -rf`/`unset` line at the BOTTOM of
+# each block — reached only on the happy path. Any early return (this
+# script uses `set -uo pipefail`; an unbound-variable reference is fatal
+# under `-u` regardless of `-e`) skipped that line and left the sandbox on
+# disk and, worse, left e2e_setup's exports live for whatever ran next IN
+# THIS SAME SHELL — which is exactly the F1/F2/F3 section that follows the
+# e2e block: F2's `plan-for` calls take no per-call LEADV2_PROJECT_ROOT
+# override, so they would silently inherit LEADV2_PROJECT_ROOT/
+# LEADV2_DISPATCH_CACHE_DIR/etc pointed at an already-rm-rf'd E2E_SANDBOX.
+# Fix: register every sandbox in an array cleaned by ONE trap-installed
+# EXIT handler (fires on early exit too, not just fall-through), and give
+# e2e_setup's exports a single teardown function called both from that trap
+# and explicitly right after the e2e section ends (fast path — F1/F2/F3
+# never observe stale e2e env even on a normal run). Bash 3.2: plain
+# indexed array, no associative arrays, `${#arr[@]}` guard before the loop
+# (an empty-array `"${arr[@]}"` expansion is fatal under `set -u` in 3.2).
+_LV2_PC_TEMP_DIRS=()
+_lv2_pc_register_sandbox() { _LV2_PC_TEMP_DIRS+=("$1"); }
+
+_e2e_teardown() {
+  unset CLAUDE_PROJECT_DIR LEADV2_STATE_BASE LEADV2_DISPATCH_GLM_BIN \
+        LEADV2_STUB_GLM_RUNS LEADV2_ROUTER_V2 GLM_POLICY_RESOLVER \
+        LEADV2_LANE_SHAPE LEADV2_DISPATCH_E2E_GATE LEADV2_DISPATCH_REVIEW_GATE \
+        LEADV2_DISPATCH_PENDING_TTL_S LEADV2_DISPATCH_CONFIRMED_TTL_S \
+        LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA LEADV2_PHASE_RECORD_BIN \
+        E2E_JOURNAL_LOG 2>/dev/null
+  # Restore the top-of-file values e2e_setup overwrote, so anything running
+  # after the e2e block sees the same env tests 1-9 saw, not the e2e fixture's.
+  export LEADV2_PROJECT_ROOT="$TMP_ROOT"
+  export LEADV2_DISPATCH_CACHE_DIR="${TMP_ROOT}/.cache"
+  export LEADV2_JOURNAL_BIN="${TMP_ROOT}/journal.sh"
+  [ -n "${E2E_SANDBOX:-}" ] && rm -rf "${E2E_SANDBOX}" 2>/dev/null
+  return 0
+}
+
+_lv2_pc_final_cleanup() {
+  _e2e_teardown
+  if [ "${#_LV2_PC_TEMP_DIRS[@]}" -gt 0 ]; then
+    local d
+    for d in "${_LV2_PC_TEMP_DIRS[@]}"; do
+      [ -n "$d" ] && rm -rf "$d" 2>/dev/null
+    done
+  fi
+  rm -rf "$TMP_ROOT" 2>/dev/null
+}
+trap _lv2_pc_final_cleanup EXIT
 
 # Stub journal that records lines to a file
 JOURNAL_LOG="${TMP_ROOT}/journal.log"
@@ -206,6 +256,7 @@ fi
 # Fresh sandbox for dispatch-level tests (the sandbox above uses a non-git
 # TMP_ROOT which cannot support the git operations _verify_artifact now does).
 E2E_SANDBOX="$(mktemp -d /tmp/leadv2-pc-e2e-XXXXXX)"
+_lv2_pc_register_sandbox "$E2E_SANDBOX"
 
 # Fixture git repo as LEADV2_PROJECT_ROOT
 E2E_REPO="${E2E_SANDBOX}/repo"
@@ -228,7 +279,11 @@ case "${1:-}" in
     mkdir -p "$RUNS" 2>/dev/null
     handle="stub-run-$(date +%s)-$$"
     printf '%s' "$handle" > "$RUNS/$handle" 2>/dev/null
-    printf '%s\n' "$handle"
+    # dispatch-code's GLM adapter extracts a handle from the legacy
+    # "<run-dir>/<handle><handle>" launch envelope.  Emit that exact envelope
+    # so the fixture exercises its liveness check instead of falling through
+    # to a real later arm after a false not_live result.
+    printf '%s/%s%s\n' "$RUNS" "$handle" "$handle"
     exit 0
     ;;
   status)
@@ -280,8 +335,41 @@ SH
 chmod +x "${E2E_JOURNAL}"
 export E2E_JOURNAL_LOG
 
+# Fast offline judge stub: no `claude -p` (which hung this suite waiting on a
+# real nested LLM call), deterministic JSON instead. Same pattern as
+# test-plugin-papercuts.sh.
+E2E_JUDGE_STUB="${E2E_SANDBOX}/judge-stub.sh"
+printf '#!/usr/bin/env bash\nprintf %s\n' "'{\"work_kind\":\"build\",\"complexity\":\"simple\",\"duration_class\":\"short\"}'" > "${E2E_JUDGE_STUB}"
+chmod +x "${E2E_JUDGE_STUB}"
+
+# Never let a dispatch test create or inspect a real lane worktree.  The
+# fixture repository is enough for this guard matrix; returning it for both
+# operations also keeps the dispatcher on the shared-tree plan-delivery path.
+LANE_WT_STUB="${E2E_SANDBOX}/lane-wt-stub.sh"
+cat > "${LANE_WT_STUB}" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  ensure|path-of) printf '%s\n' "${LEADV2_PROJECT_ROOT}" ;;
+esac
+SH
+chmod +x "${LANE_WT_STUB}"
+
+# The arbiter library runs a nested model call when it is present.  A regular
+# empty file is an intentional no-arbiter seam (unlike /dev/null, it passes
+# the dispatcher's file-exists check); cost estimation is disabled for the
+# same hermetic reason.
+E2E_NO_ARBITER_LIB="${E2E_SANDBOX}/no-arbiter.lib"
+: > "${E2E_NO_ARBITER_LIB}"
+
 # Per-case setup: resets journal log, sets common env
 e2e_setup() {
+  # FOREIGN-PROJECT-ROOT-GUARD-01: the guard treats an env-provided
+  # LEADV2_PROJECT_ROOT that disagrees with cwd's git toplevel as foreign and
+  # overrides it to the cwd-derived root -- which, unless we cd into the
+  # throwaway fixture repo first, is this actual leadv2 checkout. Every other
+  # e2e suite already cd's into its fixture repo before invoking dispatch;
+  # this suite did not, so PPC-G2 (and its siblings) silently ran dispatch
+  # against the real repo instead of the sandbox, hanging on live locks.
   : > "${E2E_JOURNAL_LOG}"
   # FOREIGN-PROJECT-ROOT-GUARD-01: dispatch-code.sh only trusts an env-provided
   # LEADV2_PROJECT_ROOT when cwd's own git toplevel already matches it; otherwise
@@ -293,12 +381,21 @@ e2e_setup() {
   # throwaway repo for exactly this reason.
   cd "${E2E_REPO}" || exit 1
   export LEADV2_PROJECT_ROOT="${E2E_REPO}"
+  export CLAUDE_PROJECT_ROOT="${E2E_REPO}"
   export CLAUDE_PROJECT_DIR="${E2E_REPO}"
   export LEADV2_DISPATCH_CACHE_DIR="${E2E_CACHE}"
   export LEADV2_STATE_BASE="${E2E_STATE}"
   export LEADV2_DISPATCH_GLM_BIN="${GLM_STUB}"
   export LEADV2_STUB_GLM_RUNS="${E2E_STUB_RUNS}"
   export LEADV2_JOURNAL_BIN="${E2E_JOURNAL}"
+  export LEADV2_TASK_JUDGE_BIN="${E2E_JUDGE_STUB}"
+  export LEADV2_DISPATCH_LANE_WORKTREE_BIN="${LANE_WT_STUB}"
+  export LEADV2_ROUTE_ARBITER_LIB="${E2E_NO_ARBITER_LIB}"
+  export LEADV2_DISPATCH_COST_ESTIMATE=0
+  # The launch assertion is this suite's subject; it must not spend the
+  # production early-verdict window polling a deliberately non-completing
+  # fixture worker.
+  export LEADV2_ARM_EARLY_VERDICT_S=0
   export LEADV2_ROUTER_V2=0
   export GLM_POLICY_RESOLVER="${GLM_POLICY_RESOLVER_STUB}"
   export LEADV2_LANE_SHAPE=off
@@ -312,12 +409,35 @@ e2e_setup() {
   export LEADV2_ARM_EARLY_VERDICT_S=0
   export LEADV2_DISPATCH_PENDING_TTL_S=5
   export LEADV2_DISPATCH_CONFIRMED_TTL_S=10
+  # GLM_STUB's `status` never reports complete (F3 harness template only fakes
+  # `bg`), so _wait_arm_early_verdict polled the full LEADV2_ARM_EARLY_VERDICT_S
+  # window (default 20s) on every dispatch call that actually spawns -- 11 calls
+  # in this suite, up to ~220s, presenting as a hung/timed-out test run. The kill
+  # switch documented at leadv2-dispatch-code.sh's _wait_arm_early_verdict already
+  # exists for exactly this: skip the poll entirely (exported above).
   # An ambient PHASE_GUARD_SCOPE=pre-build (e.g. this suite itself running
   # inside a leadv2-dispatched subagent, which exports it for its own task)
   # leaks into the dispatch subprocess below and silently forces --pre-build
   # scope on every guard call, masking G1-G4/G8/G11's full-scope assertions.
-  unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA PHASE_GUARD_SCOPE 2>/dev/null || true
+  # Parent lead sessions export these control-plane identities.  They must not
+  # redirect this fixture into a real lane or register it under the live task.
+  unset LEADV2_REQUIRE_PHASES LEADV2_LANE_START_SHA PHASE_GUARD_SCOPE \
+        LEADV2_LANE_WORK_ROOT LEADV2_WORKTREE_DIR LEADV2_TASK_ID \
+        LEADV2_PARENT_SESSION_ID LEADV2_DISPATCH_LANE_NAME 2>/dev/null || true
   mkdir -p "${E2E_STUB_RUNS}"
+}
+
+# The dispatcher rejects an intentionally foreign project root by default.  Run
+# every E2E dispatch from the fixture repository so its control-plane writes
+# stay inside the fixture and the normal production guard remains enabled.
+# UNION 2026-09-04 (RECOVER-TWELVE-CONFLICTED-BRANCHES-01): 7c9da953 passed
+# --worktree "${E2E_REPO}" here, but on the merged dispatcher that flag is
+# PINNED PLACEMENT and a /tmp fixture is never a linked worktree of
+# PROJECT_ROOT, so every call refused exit 5 (foreign_repo). The isolation the
+# flag was aiming at is already delivered by the cd + LEADV2_PROJECT_ROOT the
+# harness exports; the flag itself is dropped.
+e2e_dispatch() {
+  ( cd "${E2E_REPO}" && bash "${DISPATCH_BIN}" "$@" )
 }
 
 # Sentinel: at least one spawn file exists for this case
@@ -335,7 +455,7 @@ MISSION_G1="PPC-G1: fix the integration test harness timeout"
 SIG_G1="$(printf '%s' "${MISSION_G1}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//' | shasum -a 256 | awk '{print $1}')"
 SIG8_G1="${SIG_G1:0:8}"
 rc_g1=0
-( cd "${E2E_REPO}" && bash "$DISPATCH_BIN" --kind tooling "$MISSION_G1" ) >/dev/null 2>&1 || rc_g1=$?
+e2e_dispatch --kind tooling "$MISSION_G1" >/dev/null 2>&1 || rc_g1=$?
 if grep -q 'phase_precondition_warn' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
   ok
 else
@@ -366,7 +486,7 @@ SIG_G2="$(printf '%s' "${MISSION_G2}" | tr -d '\r' | tr -s '[:space:]' ' ' | sed
 SIG8_G2="${SIG_G2:0:8}"
 bash "$PHASE_RECORD" record "${SIG8_G2}" classify --status done --owner test:test >/dev/null 2>&1
 rc_g2=0
-( cd "${E2E_REPO}" && bash "$DISPATCH_BIN" --kind tooling "$MISSION_G2" ) >/dev/null 2>&1 || rc_g2=$?
+e2e_dispatch --kind tooling "$MISSION_G2" >/dev/null 2>&1 || rc_g2=$?
 if [[ $rc_g2 -eq 3 ]]; then
   ok
 else
@@ -392,7 +512,12 @@ mkdir -p "${E2E_STUB_RUNS}"
 export LEADV2_REQUIRE_PHASES=0
 MISSION_G3="PPC-G3: fix the integration test harness signal"
 rc_g3=0
-( cd "${E2E_REPO}" && bash "$DISPATCH_BIN" --kind tooling "$MISSION_G3" ) >/dev/null 2>&1 || rc_g3=$?
+e2e_dispatch --kind tooling "$MISSION_G3" >/dev/null 2>&1 || rc_g3=$?
+if [[ $rc_g3 -eq 0 ]]; then
+  ok
+else
+  fail "G3: dispatch should exit 0 (got $rc_g3)"
+fi
 if ! grep -q 'phase_precondition_warn' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
   ok
 else
@@ -418,7 +543,7 @@ for mode in unset 1; do
   else unset LEADV2_REQUIRE_PHASES; fi
   MISSION_G4="PPC-G4-${mode}: fix the integration test harness registry"
   rc_g4=0
-  ( cd "${E2E_REPO}" && bash "$DISPATCH_BIN" --kind tooling --phase-waiver "review=x" "$MISSION_G4" ) >/dev/null 2>&1 || rc_g4=$?
+  e2e_dispatch --kind tooling --phase-waiver "review=x" "$MISSION_G4" >/dev/null 2>&1 || rc_g4=$?
   if [[ $rc_g4 -ne 0 ]]; then
     ok
   else
@@ -430,6 +555,7 @@ done
 printf 'test: G5 forged review diff_hash rejected\n'
 # G5 tests phase-record.sh assert directly (about the proof, not the guard)
 G5_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g5-XXXXXX)"
+_lv2_pc_register_sandbox "$G5_SANDBOX"
 G5_REPO="${G5_SANDBOX}/repo"
 mkdir -p "${G5_REPO}"
 ( cd "${G5_REPO}" && git init -q -b main \
@@ -487,6 +613,7 @@ printf 'test: G6 artifact integrity rejected\n'
 
 # G6a: overwritten test artifact → test in missing
 G6A_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g6a-XXXXXX)"
+_lv2_pc_register_sandbox "$G6A_SANDBOX"
 G6A_REPO="${G6A_SANDBOX}/repo"
 mkdir -p "${G6A_REPO}"
 ( cd "${G6A_REPO}" && git init -q -b main \
@@ -508,6 +635,7 @@ rm -rf "$G6A_SANDBOX"
 
 # G6b: overwritten build artifact → build in missing
 G6B_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g6b-XXXXXX)"
+_lv2_pc_register_sandbox "$G6B_SANDBOX"
 G6B_REPO="${G6B_SANDBOX}/repo"
 mkdir -p "${G6B_REPO}"
 ( cd "${G6B_REPO}" && git init -q -b main \
@@ -529,6 +657,7 @@ rm -rf "$G6B_SANDBOX"
 
 # G6c: deploy with a commit that is NOT a descendant of the lane base → deploy in missing
 G6C_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g6c-XXXXXX)"
+_lv2_pc_register_sandbox "$G6C_SANDBOX"
 G6C_REPO="${G6C_SANDBOX}/repo"
 mkdir -p "${G6C_REPO}"
 ( cd "${G6C_REPO}" && git init -q -b main \
@@ -559,6 +688,7 @@ rm -rf "$G6C_SANDBOX"
 # ── G7: B1 review provenance (de-self-attestation) ─────────────────────────
 printf 'test: G7 review provenance — de-self-attestation\n'
 G7_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g7-XXXXXX)"
+_lv2_pc_register_sandbox "$G7_SANDBOX"
 G7_REPO="${G7_SANDBOX}/repo"
 mkdir -p "${G7_REPO}"
 ( cd "${G7_REPO}" && git init -q -b main \
@@ -706,6 +836,7 @@ if [[ $rc_g7d2 -eq 0 ]]; then ok; else fail "G7d-2: review of different diff fro
 # G7e: sidecar absent (true legacy — never adopted), correctly-hashed PASS row → review satisfied.
 # Uses a SEPARATE repo so the adopted marker from G7c's guarded write doesn't apply.
 G7E_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g7e-XXXXXX)"
+_lv2_pc_register_sandbox "$G7E_SANDBOX"
 G7E_REPO="${G7E_SANDBOX}/repo"
 mkdir -p "${G7E_REPO}"
 ( cd "${G7E_REPO}" && git init -q -b main \
@@ -738,6 +869,7 @@ fi
 # Uses a SEPARATE repo+cache so no guard tokens file exists (B1 R5 would
 # otherwise reject the hand-written row).
 G7F_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g7f-XXXXXX)"
+_lv2_pc_register_sandbox "$G7F_SANDBOX"
 G7F_REPO="${G7F_SANDBOX}/repo"
 mkdir -p "${G7F_REPO}"
 ( cd "${G7F_REPO}" && git init -q -b main \
@@ -853,7 +985,7 @@ class_overrides:
 YEOF
 MISSION_G8="PPC-G8: fix the integration test harness timeout"
 rc_g8=0
-( cd "${E2E_REPO}" && bash "$DISPATCH_BIN" --kind tooling --phase-waiver "review=whatever" "$MISSION_G8" ) >/dev/null 2>&1 || rc_g8=$?
+e2e_dispatch --kind tooling --phase-waiver "review=whatever" "$MISSION_G8" >/dev/null 2>&1 || rc_g8=$?
 # With B2: mode 0 returns immediately, never processes the config error or waiver
 if ! grep -q 'phase_precondition_' "${E2E_JOURNAL_LOG}" 2>/dev/null; then
   ok
@@ -871,6 +1003,7 @@ rm -f "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
 # ── G9: deploy requires a descendant of the lane's own start-sha (B2) ──────────
 printf 'test: G9 deploy descendant-of-lane-base\n'
 G9_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g9-XXXXXX)"
+_lv2_pc_register_sandbox "$G9_SANDBOX"
 G9_REPO="${G9_SANDBOX}/repo"
 mkdir -p "${G9_REPO}"
 ( cd "${G9_REPO}" && git init -q -b main \
@@ -923,6 +1056,7 @@ rm -rf "$G9_SANDBOX"
 # ── G10: §3 honesty — PROOF column in show output ───────────────────────────
 printf 'test: G10 PROOF column — self-attested vs verified vs unverified\n'
 G10_SANDBOX="$(mktemp -d /tmp/leadv2-pc-g10-XXXXXX)"
+_lv2_pc_register_sandbox "$G10_SANDBOX"
 G10_REPO="${G10_SANDBOX}/repo"
 mkdir -p "${G10_REPO}"
 ( cd "${G10_REPO}" && git init -q -b main \
@@ -1006,7 +1140,7 @@ MISSION_G11="PPC-G11: fix the integration test harness timeout"
 # G11a: warn mode → journals unexpected_rc + PROCEEDS
 export LEADV2_REQUIRE_PHASES=warn
 rc_g11a=0
-( cd "${E2E_REPO}" && bash "$DISPATCH_BIN" --kind tooling "$MISSION_G11" ) >/dev/null 2>&1 || rc_g11a=$?
+e2e_dispatch --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11a=$?
 if [[ -n "$(ls -A "${E2E_STUB_RUNS_G11}" 2>/dev/null)" ]]; then
   ok
 else
@@ -1027,7 +1161,7 @@ printf 'version: 1\n' > "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
 export LEADV2_PHASE_RECORD_BIN="$G11_PR"
 export LEADV2_REQUIRE_PHASES=1
 rc_g11b=0
-( cd "${E2E_REPO}" && bash "$DISPATCH_BIN" --kind tooling "$MISSION_G11" ) >/dev/null 2>&1 || rc_g11b=$?
+e2e_dispatch --kind tooling "$MISSION_G11" >/dev/null 2>&1 || rc_g11b=$?
 if [[ $rc_g11b -ne 0 ]]; then
   ok
 else
@@ -1041,10 +1175,17 @@ fi
 
 # Cleanup
 rm -f "${E2E_REPO}/.claude/leadv2-overrides/phases.yaml"
-unset LEADV2_PHASE_RECORD_BIN
 
-# Cleanup e2e sandbox
-rm -rf "${E2E_SANDBOX}"
+# Cleanup e2e sandbox + every var e2e_setup exported (PPC-G3: this used to be
+# `rm -rf "${E2E_SANDBOX}"` + a single `unset LEADV2_PHASE_RECORD_BIN` — the
+# other dozen e2e_setup exports (LEADV2_STATE_BASE, GLM_POLICY_RESOLVER,
+# LEADV2_ROUTER_V2, LEADV2_LANE_SHAPE, the *_TTL_S pair, LEADV2_REQUIRE_PHASES,
+# CLAUDE_PROJECT_DIR, ...) stayed live and leaked into the F1/F2/F3 section
+# below, which runs in this same shell). _e2e_teardown() also restores
+# LEADV2_PROJECT_ROOT/LEADV2_DISPATCH_CACHE_DIR/LEADV2_JOURNAL_BIN to the
+# top-of-file TMP_ROOT values, and is registered on the EXIT trap so it still
+# fires if this section exits early instead of falling through to here.
+_e2e_teardown
 
 # ════════════════════════════════════════════════════════════════════════════
 # PHASE-GATE-RECORD-VS-ASSERT-01: F1, F2, F3 regression tests
@@ -1053,6 +1194,7 @@ rm -rf "${E2E_SANDBOX}"
 # ── F1: record stamps proof=unverified when _verify_artifact would refuse ─────
 printf 'test: F1 record stamps unverified when proof fails\n'
 F1_SANDBOX="$(mktemp -d /tmp/leadv2-pc-f1-XXXXXX)"
+_lv2_pc_register_sandbox "$F1_SANDBOX"
 F1_REPO="${F1_SANDBOX}/repo"
 mkdir -p "${F1_REPO}"
 ( cd "${F1_REPO}" && git init -q -b main \

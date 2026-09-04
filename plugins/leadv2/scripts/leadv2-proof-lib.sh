@@ -58,9 +58,11 @@ assert_file_contains() {
 # The directory is also exported as LEADV2_PROOF_TMP for child processes.
 proof_tmpdir() {
   local d
-  # Portable template (GNU mktemp rejects `-t name` without X's); fall back
-  # to the explicit -t form for BSD variants where plain `mktemp -d` needs it.
-  d=$(mktemp -d 2>/dev/null || mktemp -d -t leadv2-proof.XXXXXX 2>/dev/null) || true
+  # Portable template (CI-SUITES-ARE-MACOS-ONLY-01): GNU coreutils rejects
+  # the BSD `-t` form on CI/Linux hosts, so use an explicit template path with
+  # X's, which works on both GNU and BSD. Failure stays structured via
+  # proof_fail (HEAD) instead of a bare echo.
+  d=$(mktemp -d 2>/dev/null || mktemp -d "${TMPDIR:-/tmp}/leadv2-proof.XXXXXX" 2>/dev/null) || true
   if [[ -z "${d:-}" || ! -d "${d:-}" ]]; then
     proof_fail "could not create a temp directory for the proof"
   fi

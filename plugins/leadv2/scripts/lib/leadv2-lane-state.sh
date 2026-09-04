@@ -67,7 +67,7 @@ _lv2_lane_state_mutate() { # <op> [args...] -- fcntl.flock + atomic rename
   _lv2_mutate_path="$(_lv2_lane_state_path)" || return 1
   _lv2_mutate_lock="$(_lv2_lane_state_lock)" || return 1
   python3 - "$_lv2_mutate_lock" "$_lv2_mutate_path" "$@" <<'PY'
-import datetime, fcntl, os, subprocess, sys, tempfile
+import datetime, fcntl, os, shlex, subprocess, sys, tempfile
 try:
     import yaml
 except ImportError:
@@ -86,6 +86,23 @@ def birth(pid):
         except OSError: pass
     try: return ' '.join(subprocess.run(['ps','-o','lstart=','-p',str(pid)], text=True, capture_output=True, timeout=2).stdout.split())
     except Exception: return ''
+def ppid(pid):
+    # Like the birth fixture, this seam supplies process observation only;
+    # candidate liveness remains governed by birth(pid) == recorded start.
+    fixture=os.environ.get('LEADV2_LANE_STATE_TEST_PPID_FILE','')
+    if fixture:
+        try:
+            for line in open(fixture, encoding='utf-8'):
+                key, value=line.rstrip('\n').split('\t', 1)
+                if key == str(pid): return int(value)
+        except (OSError, ValueError): pass
+    try: return int(subprocess.run(['ps','-o','ppid=','-p',str(pid)], text=True, capture_output=True, timeout=2).stdout.strip())
+    except Exception: return 1
+def ancestry():
+    result=set(); pid=os.getpid()
+    while pid > 1 and pid not in result:
+        result.add(pid); pid=ppid(pid)
+    return result
 def alive(row):
     try: pid=int(row.get('pid'))
     except (TypeError, ValueError): return False
@@ -212,6 +229,15 @@ with open(lock, 'a+') as lf:
                 if l.startswith('n'): return l[1:]
         except Exception: pass
         return ''
+    # ORPHAN (66d6209a) union 2026-09-04: argv classification alongside the
+    # cwd probe. worker_markers = the programs a lane worker actually runs
+    # under; non_workers = observation/tooling whose argv may mention a lane
+    # path without owning the lane. Used below: any non_workers member in a
+    # command blocks ADOPTION, a command made ONLY of non_workers does not
+    # even count as a mention (no unowned visibility row for grep/tail/ps).
+    ancestors=ancestry()
+    worker_markers={'claude','leadv2-session-runner.sh','leadv2-codex-session-runner.sh','codex','glm-coder.sh','kimi-coder.sh'}
+    non_workers={'leadv2-dispatch-code.sh','leadv2-lane-liveness.sh','grep','ps','tail','Monitor'}
     for worktree in worktrees:
       real=os.path.realpath(worktree)
       if '/.claude/worktrees/' not in real: continue
@@ -221,22 +247,39 @@ with open(lock, 'a+') as lf:
       try:
         ps=open(fixture, encoding='utf-8').read().splitlines() if fixture else subprocess.run(['ps','-axo','pid=,lstart=,command='], text=True, capture_output=True, timeout=3).stdout.splitlines()
       except Exception: ps=[]
-      # RECOVERY-ATTACHES-A-BYSTANDER-PID-TO-A-LANE-01 fix 2: substring over
-      # `ps` is not ownership. A pid is adopted only when the process is
-      # actually RUNNING in the lane (its cwd is the worktree) -- a lane
-      # worker is spawned with cwd inside its worktree, while a bystander
-      # whose argv merely MENTIONS the path (a tool shell, a grep, this
-      # reconcile itself) fails the cwd check. Unknowable cwd -> no adoption
-      # (fail to pid-less, never to a wrong pid). start == birth(pid) is kept
-      # only as the pid-recycling guard.
+      # RECOVERY-ATTACHES-A-BYSTANDER-PID-TO-A-LANE-01 fix 2 + ORPHAN (66d6209a)
+      # union 2026-09-04: substring over `ps` is not ownership. A pid is
+      # adopted only when it is a worker-marker program (never observation
+      # tooling, never this reconcile's own ancestry) that either RUNS IN the
+      # lane (cwd is the worktree) or was INVOKED WITH the lane (the worktree
+      # is a whole argv token). A bystander whose argv merely MENTIONS the
+      # path (a tool shell, a grep, this reconcile itself) is neither.
+      # Neither proof available -> no adoption (fail to pid-less, never to a
+      # wrong pid). start == birth(pid) stays the pid-recycling guard.
       adopted=None; mentioned=False
       for line in ps:
         if worktree not in line: continue
-        mentioned=True
         parts=line.strip().split(None, 6)
         if len(parts) < 7: continue
-        pid=int(parts[0]); start=' '.join(parts[1:6])
-        if pid > 1 and start == birth(pid) and os.path.realpath(proc_cwd(pid) or '') == real:
+        pid=int(parts[0]); start=' '.join(parts[1:6]); command=parts[6]
+        try: argv=shlex.split(command)
+        except ValueError: continue
+        # ORPHAN (66d6209a) union: a whole argv token (or parent dir), never
+        # a substring -- X-old is not X.
+        token=any(arg == worktree or arg.startswith(worktree + '/') for arg in argv)
+        programs={os.path.basename(arg) for arg in argv}
+        # Mention (-> unowned visibility row) needs a token hit from a command
+        # whose LEAD program (argv[0]) is not observation tooling: grep/tail/
+        # ps/dispatch never make a lane (branch a/b/c); a tool shell that
+        # names the lane does (HEAD case 2). argv[0] decides, not any token:
+        # flags and the lane path itself would otherwise pollute the class.
+        argv0=os.path.basename(argv[0]) if argv else ''
+        if token and argv0 not in non_workers: mentioned=True
+        if pid in ancestors: continue
+        if programs & non_workers: continue
+        if not programs & worker_markers: continue
+        cwd_owner = os.path.realpath(proc_cwd(pid) or '') == real
+        if pid > 1 and start == birth(pid) and (token or cwd_owner):
           adopted=(pid,start); break
       if not mentioned: continue
       if adopted:

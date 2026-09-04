@@ -423,7 +423,15 @@ print(json.dumps(d))
       # execute_proof would then mkdir at the filesystem root, which fails for
       # a non-root runner and every proof goes RED. BSD mktemp (macOS) accepts
       # the -t form. Explicit template with XXXXXX works on both.
-      export LEADV2_PROOF_BASE_TMP="${LEADV2_PROOF_BASE_TMP:-$(mktemp -d "${TMPDIR:-/tmp}/leadv2-skill-proof.XXXXXX")}"
+      # (CI-SUITES-ARE-MACOS-ONLY-01: mktemp failure is a loud exit, not a
+      # silent empty var that would mkdir at the filesystem root.)
+      if [[ -z "${LEADV2_PROOF_BASE_TMP:-}" ]]; then
+        LEADV2_PROOF_BASE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/leadv2-skill-proof.XXXXXX")" || {
+          echo "leadv2-skill-proof: mktemp -d failed, cannot create proof base tmp dir" >&2
+          exit 1
+        }
+      fi
+      export LEADV2_PROOF_BASE_TMP
       local rc=0
       execute_proof "$proof_file" "$skill" || rc=$?
       duration_ms=$PROOF_DURATION_MS

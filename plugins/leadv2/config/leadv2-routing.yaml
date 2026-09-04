@@ -117,23 +117,37 @@ router_v2:
   # -- model = hardness, effort = marginal value of extra thinking) resolved
   # from the SAME winning capability_matrix cell the arbiter already picked,
   # never a second decision and never an `if arm==X` branch in the script.
-  # Rows are evaluated top-to-bottom against the winning cell's `tags`/`kinds`/
-  # `protected`; first match wins. `default: true` is the mandatory catch-all
-  # last row. Doctrine mapping (model-effort-matrix.md): adversarial review /
+  # Doctrine mapping (model-effort-matrix.md): adversarial review /
   # safety judgment / architecture (`plan`) / a protected final verdict ⇒
   # high; mechanical / classify / cheap work ⇒ low; everything else
   # (ordinary build/fix) ⇒ medium. Adding a row here changes routing outcomes
   # with no script edit -- that is the anti-hardcoding property under test.
+  #
+  # SMART-ARBITER-01 / EFFORT-FOLLOWS-THE-ARM-NOT-THE-TASK-01 (founder
+  # 2026-09-04): rows split into TWO phases. Phase 1 rows are keyed ONLY on
+  # the TASK descriptor (kinds/sizes/complexity/duration_class/protected/
+  # default) and are evaluated FIRST; phase 2 rows (arm `tags`) are a
+  # fallback for when no task row matched. Before this split the winning
+  # ARM's tags decided effort: glm-flash won a standard build on cost and its
+  # cheap/mechanical tags forced effort=low for writing code (43 live
+  # decisions at effort=low, 2026-09-03/04) -- the exact circularity the
+  # founder rejected. The pre-split tag rows are preserved below as phase 2
+  # so a config that ships only arm rows still resolves.
   effort_matrix:
+    # Phase 1 -- task-keyed, evaluated first (effort follows the TASK).
+    - { kinds: [safety], effort: high }
+    - { protected: true, effort: high }
+    - { kinds: [plan, audit, review], effort: high }
+    - { kinds: [code], complexity: [complex], effort: high }
+    - { kinds: [code], effort: medium }  # a build is NEVER low: founder 2026-09-04
+    - { kinds: [docs, recon, fanout-class-funnel, backlog-pump], effort: low }
+    - { default: true, effort: medium }
+    # Phase 2 -- arm-keyed FALLBACK, never overrides a task-keyed row above.
     - { tags: [adversarial], effort: high }
     - { tags: [safety], effort: high }
-    - { kinds: [safety], effort: high }
-    - { kinds: [plan], effort: high }
-    - { protected: true, effort: high }
     - { tags: [mechanical], effort: low }
     - { tags: [classify], effort: low }
     - { tags: [cheap], effort: low }
-    - { default: true, effort: medium }
   # COMPLEXITY-ESTIMATOR-IS-OFF-01: the arbiter's `cheapest_capable` sort (the
   # ecost() function in leadv2-route-arbiter.sh) previously had no notion of
   # how hard a task is -- kind/size/protected pick the eligible cells, `cost`
@@ -401,8 +415,18 @@ router:
     # .claude/ref/leadv2-routing.yaml:77-87) so the plugin config is no longer
     # a silent exception to its own safety rule.
     sonnet_exceptions:
-      - id: safety_gate_publish_payments
-        when: protected_path
+      # SMART-ARBITER-01: `safety_gate_publish_payments when: protected_path`
+      # is REMOVED. It predates GLM-DOES-ANY-WORK-01 (founder 2026-09-04 «дай
+      # глм право делать любую работу, вообще любую») and still forced
+      # sonnet-primary + glm-excluded on every protected task -- the matrix
+      # cell's protected:true could never win this path (84 live
+      # sonnet-at-cost-5 decisions 2026-09-03/04 while glm idled at 13-31%;
+      # direct arm_excluded lines in dispatch-07401216's journal). The
+      # resolver's exc-id gate (leadv2-glm-policy-resolve.py: rid not in
+      # exc_ids -> cannot fire) makes this row's absence the enforcement.
+      # Rollback: re-add the two lines below. The resolver's unconditional
+      # freepool/glm-flash protected guards still hold -- those arms remain
+      # excluded from protected work; glm itself is allowed.
       - id: integration_critical_4subsystems
         when: subsystem_count>=4 or needs_midflight_interaction
       - id: ui_design_judgment

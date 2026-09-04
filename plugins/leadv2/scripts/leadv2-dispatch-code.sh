@@ -2993,6 +2993,28 @@ except Exception:
   printf '%s\n' "${fields}"
 }
 
+# The monetary/cap estimate is not a routing input: it has no per-arm price
+# for the live arbiter's provider set. It is nevertheless a pre-run estimate
+# and therefore belongs beside the judge, before either resolver can select an
+# arm. Best effort is intentional: an unavailable helper preserves the chain.
+_dispatch_record_cost_estimate() {  # <sig8> <founder-task-id> <complexity> <duration-class>
+  local sig8="$1" founder_id="$2" complexity="$3" duration_class="$4"
+  local cost_bin cost_task_id cost_out
+  [[ "${LEADV2_DISPATCH_COST_ESTIMATE:-1}" != "0" ]] || return 0
+  cost_bin="${LEADV2_COST_ESTIMATE_BIN:-${SCRIPT_DIR}/leadv2-cost-estimate.sh}"
+  cost_task_id="${founder_id:-${sig8}}"
+  if [[ -f "${cost_bin}" ]]; then
+    cost_out="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${cost_bin}" --task-id "${cost_task_id}" --main-model sonnet 2>/dev/null)"
+    if [[ $? -eq 0 && -n "${cost_out}" ]]; then
+      emit decision "cost_estimate_recorded task=${sig8} founder_task=${cost_task_id} complexity=${complexity:-unknown} duration_class=${duration_class:-unknown} phase=pre_arm_selection path=docs/handoff/${cost_task_id}/cost-estimate.yaml"
+    else
+      emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_failed degrade=no_estimate_recorded phase=pre_arm_selection"
+    fi
+  else
+    emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_binary_missing degrade=no_estimate_recorded phase=pre_arm_selection"
+  fi
+}
+
 # ── dispatch-ledger dedup (FIX PASS 4: pending/confirmed + TTL, see doc block above) ──
 dispatch_lock_file() { printf '%s/.%s.dispatch.lock' "${DISPATCH_LEDGER_DIR}" "$(repo_slug)"; }
 _now_epoch() { date +%s 2>/dev/null || printf '0'; }
@@ -4312,6 +4334,51 @@ _phase_precondition_guard() {
     3)
       local missing_csv="${assert_out#missing=}"
       if [[ "$mode" == "1" ]]; then
+        # PHASE-BOOTSTRAP-ADMIT-02: distinguish "this lane has never started"
+        # from "phases were skipped". cmd_resolve records `classify` as done
+        # UNCONDITIONALLY, on every single call, immediately before this guard
+        # runs (see "record classify as done (it just happened)" a few lines
+        # above every call site) -- so by the time we get here, phases.d is
+        # NEVER truly empty even on a brand-new lane's very first dispatch.
+        # Refusing here because plan/gate1 are missing means EVERY brand-new
+        # lane is refused on admission, because no worker has ever run yet to
+        # leave behind the plan/gate1 artifact the refusal's own remedy points
+        # at -- that is DISPATCH-PHASE-DEADLOCK-01, not a real violation.
+        #
+        # Scope: pre-build ONLY. scope=full is the deliberately-strict manual
+        # override path (LEADV2_REQUIRE_PHASES=1 with no PHASE_GUARD_SCOPE) --
+        # under scope=full, build/test/review/close are ALSO mandatory and
+        # none of those can exist on a first dispatch either, so bootstrap-
+        # admitting there would defeat the explicit full-completion check that
+        # path exists for (PHASES-ARE-THE-ONLY-PATH-01 regression guard G2 in
+        # test-phase-precondition.sh pins exactly this: a fresh lane under
+        # scope=full must still refuse).
+        #
+        # Definition: bootstrap iff phases.d contains NO phase record for any
+        # phase OTHER than the auto-stamped `classify`. The instant this lane
+        # records ANYTHING else -- even a mere `diverge` n/a -- it has real
+        # phase history and this guard falls straight through to the refusal
+        # below, unchanged. This is a one-shot grace on the very first
+        # dispatch attempt, never a standing bypass.
+        if [[ "${scope}" == "pre-build" ]]; then
+          local _pp_phases_d="${PROJECT_ROOT}/docs/handoff/dispatch-${sig8}/phases.d"
+          local _pp_bootstrap="1" _pp_f
+          if [[ -d "${_pp_phases_d}" ]]; then
+            for _pp_f in "${_pp_phases_d}"/*.yaml; do
+              [[ -f "${_pp_f}" ]] || continue
+              local _pp_phase_name
+              _pp_phase_name="$(grep '^phase:' "${_pp_f}" 2>/dev/null | awk '{print $2}')"
+              if [[ "${_pp_phase_name}" != "classify" ]]; then
+                _pp_bootstrap=""
+                break
+              fi
+            done
+          fi
+          if [[ -n "${_pp_bootstrap}" ]]; then
+            emit decision "phase_precondition_bootstrap_admit task=${sig8} class=${cls} missing=${missing_csv} mode=1"
+            return 0
+          fi
+        fi
         emit decision "phase_precondition_refused task=${sig8} class=${cls} missing=${missing_csv} mode=1"
         log_err "dispatch refused: missing mandatory phases: ${missing_csv}"
         local mp
@@ -4323,10 +4390,21 @@ _phase_precondition_guard() {
         for mp in $(printf '%s' "${missing_csv}" | tr ',' ' '); do
           case "$mp" in
             plan)
-              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} plan --artifact docs/handoff/<task-id>/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)"
+              # PHASE-BOOTSTRAP-ADMIT-02: point the remedy at evidence that
+              # can actually exist before any worker has run. A lead-authored
+              # brief is real plan evidence (_verify_artifact accepts it,
+              # proof=attested) -- same for fix-round-N.md, a context.yaml
+              # with decisions:, or a non-empty architect-prepass.md.
+              log_err "  remedy: write docs/handoff/dispatch-${sig8}/brief.md with the plan (a lead-authored brief is valid plan evidence)"
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} plan --artifact docs/handoff/dispatch-${sig8}/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)"
               ;;
             gate1)
-              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} gate1 --reason \"<founder gate-1 decision>\"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)"
+              # PHASE-BOOTSTRAP-ADMIT-02: an explicit recorded gate decision
+              # (--reason, no --artifact) is real gate1 evidence -- the
+              # .gate1-passed sentinel a worker/gate1-prompt would normally
+              # create cannot exist yet either.
+              log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} gate1 --status done --reason \"<explicit gate1 decision>\"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)"
+
               ;;
             *)
               log_err "  remedy: ${PHASE_RECORD_BIN} record ${sig8} ${mp} --artifact <path>"
@@ -7310,6 +7388,7 @@ cmd_resolve() {
   local DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS
   IFS=$'\t' read -r DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS \
     <<<"$(_dispatch_complexity_estimate "${mission}" "${sig8}" "${task_class}")"
+  _dispatch_record_cost_estimate "${sig8}" "${founder_task_id}" "${DC_COMPLEXITY}" "${DC_DURATION_CLASS}"
   # Admission says this mission lives in the full phase cycle: its Phase-4
   # re-entries need only the pre-build phases satisfied (the cycle is mid-
   # flight), not the whole-cycle completion contract. Explicit
@@ -7796,27 +7875,6 @@ exit is treated as an incident."
   # alongside the resulting arm, so an unwired estimator is visible in the
   # journal instead of silently absent.
   emit decision "arm_resolved job=build arm=${arm} reason=${rule}${readings:+ readings=${readings}} complexity=${DC_COMPLEXITY:-unknown} duration_class=${DC_DURATION_CLASS:-unknown}"
-  # COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #3, "what it should cost"): best-
-  # effort, non-blocking -- a missing prior-art.yaml or cost-estimate script is
-  # a degrade (logged), never a dispatch failure. LEADV2_COST_ESTIMATE_BIN is
-  # the test seam; founder_task_id is the id cost-estimate.sh's own
-  # docs/handoff/<id>/ layout expects (falls back to sig8 when unbound, e.g. a
-  # caller that never passed --task-id).
-  if [[ "${LEADV2_DISPATCH_COST_ESTIMATE:-1}" != "0" ]]; then
-    local _cost_bin _cost_task_id _cost_out
-    _cost_bin="${LEADV2_COST_ESTIMATE_BIN:-${SCRIPT_DIR}/leadv2-cost-estimate.sh}"
-    _cost_task_id="${founder_task_id:-${sig8}}"
-    if [[ -f "${_cost_bin}" ]]; then
-      _cost_out="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${_cost_bin}" --task-id "${_cost_task_id}" --main-model sonnet 2>/dev/null)"
-      if [[ $? -eq 0 && -n "${_cost_out}" ]]; then
-        emit decision "cost_estimate_recorded task=${sig8} founder_task=${_cost_task_id} arm=${arm} complexity=${DC_COMPLEXITY:-unknown} path=docs/handoff/${_cost_task_id}/cost-estimate.yaml"
-      else
-        emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_failed degrade=no_estimate_recorded"
-      fi
-    else
-      emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_binary_missing degrade=no_estimate_recorded"
-    fi
-  fi
   # DISPATCH-BALANCE-BY-LIVE-QUOTA-01: the balancer's choice must be re-derivable
   # from the journal alone -- one decision line whenever the resolver balanced the
   # no-exception default between the GLM and Anthropic buckets (reason prefix
@@ -7982,7 +8040,13 @@ exit is treated as an incident."
     _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
     _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
-    _arb_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*reason=\([^ ]*\).*/\1/p')"
+    # SMART-ARBITER-01: anchor the reason capture on a leading space boundary
+  # -- the bare `.*reason=` matched the LAST reason= token on the line, so
+  # whenever the arbiter emitted floor tokens the journal printed
+  # `reason=standard/code` (floor_reason's value) instead of
+  # reason=cheapest_capable -- 23 corrupted decision lines on 2026-09-04
+  # alone, the record a lead audits.
+  _arb_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*[[:space:]]reason=\([^ ]*\).*/\1/p')"
     _arb_util="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
     _arb_tier="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*tier=\([^ ]*\).*/\1/p')"
     _arb_model="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"

@@ -1,0 +1,76 @@
+task_id: dispatch-ca26c56e
+title: CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01 — fix default_token_expired false alarm
+decisions:
+  - D1: Verdict is FALSE ALARM for the warn as currently worded — two independent, confirmed-live
+      defects cause it: (A) selector falls back to a stale legacy keychain service
+      "Claude Code-credentials" instead of the live per-config-dir suffixed service
+      "Claude Code-credentials-<sha256(config_dir)[:8]>"; (B) selector judges liveness off
+      claudeAiOauth.expiresAt (access-token expiry, ~8h rolling, legitimately often in the past)
+      instead of refreshToken/refreshTokenExpiresAt (~3wk horizon, the real liveness signal).
+  - D2: Fix direction is (a) check refreshability + correct service resolution. Do NOT silence or
+      demote the warn (option b) — that hides Defect A and leaves the registry-loop availability bug
+      at credential_health() call site (currently inline :245-253) refusing all selection nightly.
+  - D3: Rename the warn string default_token_expired -> default_token_unrefreshable (and
+      token_expired -> token_unrefreshable in the registry loop). Old strings must not still match,
+      by design — 207 historical lines trained everyone to ignore them.
+  - D4: No new env vars introduced by this task.
+  - D5: The stdout contract token `reason=all_expired` (consumed by claude-subsession.sh:480's
+      regex) stays byte-identical. Do not rename it; that is a caller-side change and out of scope.
+  - D6: Negative control mutation MUST be inserted inside credential_health()'s function body
+      (between its opening and closing brace), never at file top level. A top-level insert makes
+      every suite fail for the wrong reason and would read as a false pass.
+  - D7: Never print or log a credential value, access token, or refresh token, anywhere (stdout,
+      stderr, journal, test fixtures beyond the fixed `sk-ant-r` test doubles already in use).
+  - D8: Hash the config-dir -> suffixed-service-name derivation via python3 (already a hard
+      dependency of derive_identity) — no shasum/sha256sum, no new dependency, bash-3.2 safe.
+off_limits:
+  - plugins/leadv2/scripts/leadv2-dispatch-code.sh   # owned by Wave-2 lane
+  - plugins/leadv2/scripts/leadv2-ratelimit-probe.sh  # owned by QUOTA-BINDING-WINDOW-IS-NEVER-RECORDED-01
+  - rate_limit_anthropic write path into ~/.claude/burn/history.db  # same lane as above
+  - plugins/leadv2/scripts/claude-subsession.sh  # read-only reference; caller contract must not change shape
+  - tests/known-red-suites.txt  # may only shrink; do not add to it
+  - docs/leadv2/**            # runtime-state path, DoD gate item (d)
+  - docs/LEAD_V2_STATE.md     # runtime-state path, DoD gate item (d)
+  - docs/handoff/dispatch-nw* # runtime-state path, DoD gate item (d)
+  - main branch               # never commit to main; work stays on the worktree lane branch
+research:
+  - Full investigation, keychain measurements, blast-radius grep results, and the exact diff spec
+    are already in the mission text this task was dispatched with (see developer.full.md for the
+    restated brief); do not re-derive them.
+plan:
+  steps:
+    - id: implement
+      role: developer
+      reads:
+        - plugins/leadv2/scripts/leadv2-claude-profile-select.sh
+        - plugins/leadv2/scripts/tests/test-claude-profile-select.sh
+        - plugins/leadv2/scripts/tests/nc-claude-profile-select.sh
+        - plugins/leadv2/scripts/leadv2-quota-read.py
+        - plugins/leadv2/scripts/leadv2-quota-status.sh
+        - plugins/leadv2/scripts/leadv2-quota-live.sh
+        - plugins/leadv2/scripts/claude-subsession.sh
+        - plugins/leadv2/scripts/tests/run-core-offline.sh
+        - plugins/leadv2/scripts/tests/run-all.sh
+        - plugins/leadv2/scripts/tests/known-red-suites.txt
+      writes:
+        - plugins/leadv2/scripts/leadv2-claude-profile-select.sh
+        - plugins/leadv2/scripts/tests/test-claude-profile-select.sh
+        - plugins/leadv2/scripts/tests/nc-claude-profile-select.sh
+      acceptance:
+        - keychain_service_for_dir() helper added, python3-hash based, bash-3.2 safe
+        - derive_identity() emits extended tuple incl. refreshTokenExpiresAt + has_refresh boolean,
+          never the raw token
+        - credential_health() extracted as its own function (0=refreshable/1=unrefreshable/2=unreadable)
+        - default-slot resolution order: file:$default_dir/.credentials.json ->
+          keychain:<suffixed-service> -> keychain:"Claude Code-credentials" (legacy last resort)
+        - warns renamed default_token_expired->default_token_unrefreshable,
+          token_expired->token_unrefreshable; default_token_absent unchanged
+        - registry loop (~:245-253) uses credential_health() instead of raw expiresAt compare
+        - reason=all_expired stdout token unchanged
+        - T12/T13/T17 re-pointed per brief table; T17c/T17d/T17e added; T18 unchanged
+        - nc-claude-profile-select.sh gets second NC2 arm (mutation inside credential_health body)
+          without touching existing NC arm; both arms proven red-then-green
+        - bash -n clean on all changed .sh; python3 -m py_compile clean on any changed .py
+        - test-claude-profile-select.sh green; nc-claude-profile-select.sh both arms print NC-PASS
+        - git diff --stat main..HEAD shows no unexpected deletions
+        - work committed on the lane branch (not main)

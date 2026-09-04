@@ -66,6 +66,18 @@ else
   fail "unnamed decision: $out_trivial"
 fi
 
+# Absent estimates must preserve pure-cost behavior: an older descriptor with
+# no keys and an explicit fail-open unknown descriptor choose the same arm.
+rm -f "$TMP/state"
+out_absent="$(run_arb "$Q_HEALTHY" 0 '{"kind":"code","size":"standard"}')"
+rm -f "$TMP/state"
+out_unknown="$(run_arb "$Q_HEALTHY" 0 '{"kind":"code","size":"standard","complexity":"unknown","duration_class":"unknown"}')"
+if [[ "$(arm_of "$out_absent")" == "$(arm_of "$out_unknown")" && "$out_absent" == *'reason=cheapest_capable'* && "$out_unknown" == *'reason=cheapest_capable'* ]]; then
+  pass "estimate unavailable: omitted and unknown inputs retain the pure-cost arm ($(arm_of "$out_absent"))"
+else
+  fail "estimate-unavailable changed selection: absent=$out_absent unknown=$out_unknown"
+fi
+
 # ── (2) same work_kind, differing complexity -> decisions differ (collapse bug) ──
 rm -f "$TMP/state"
 a1="$(run_arb "$Q_HEALTHY" 0 '{"kind":"code","size":"standard","complexity":"simple","duration_class":"long"}')"
@@ -99,18 +111,8 @@ else
   fail "duration_class not distinguished"
 fi
 
-# ── (4)/(5b)/(6)/(6b) -- exercise the REAL production code on the real call
-# path, not a scratch copy: awk-extract the exact function/block from the
-# live dispatch-code.sh (re-extracted every run, so a source edit is a moving
-# target the extraction always tracks) and run it in a harness that stubs
-# only `emit`/`log_err` (I/O sinks) -- everything else is the shipped code.
-# A full `bash leadv2-dispatch-code.sh ...` CLI invocation was tried first and
-# hits a PRE-EXISTING, unrelated defect in this session: leadv2-active-
-# registry.sh's writeset admission refuses even a fresh, fully isolated repo
-# on its FIRST dispatch (reproduced on the unmodified test-route-arbiter.sh
-# case (e) too, before this lane touched anything) -- out of scope here, see
-# developer.full.md.
-extract(){ awk "/$1/,/^  fi\$/" "${DISPATCH}"; }  # <start-anchor-regex> -> matching block
+# ── (4)/(5b)/(6)/(6b) -- exercise real production helpers, extracted from
+# the live dispatch script so fixture code cannot drift from the implementation.
 
 # (4) judge unavailable -> degrades (logged), never crashes.
 cat >"$TMP/judge_fn.sh" <<H
@@ -130,9 +132,6 @@ else
   fail "judge-unavailable output=$out4"
 fi
 
-# (5b)/(6)/(6b): the arm_resolved + cost-estimate block, extracted verbatim
-# from its two COMPLEXITY-ESTIMATOR-IS-OFF-01 comment anchors through to the
-# closing `fi` of the cost-estimate `if`.
 cat >"$TMP/judge-stub.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '{"estimate_v":1,"complexity":"complex","subsystems_touched":4,"needs_live_verification":false,"risk_class":"none","duration_class":"long","work_kind":"build","estimate_id":"stub","estimate_source":"stub"}\n'
@@ -145,35 +144,25 @@ printf 'cost estimate for %s: 1000 tokens\n' "$id"
 exit 0
 EOF
 chmod +x "$TMP/cost-estimate-stub.sh"
-extract 'the decision line now names' > "$TMP/decision_block.sh"
-[[ -s "$TMP/decision_block.sh" ]] || { fail "extraction of the arm_resolved/cost-estimate block found nothing (anchor drifted?)"; }
-run_block(){  # <cost-bin>
-  SCRIPT_DIR="${SCRIPTS_DIR}" PROJECT_ROOT="${SCRIPTS_DIR}/.." \
-  LEADV2_COST_ESTIMATE_BIN="$1" \
-  arm=codex rule=cheapest_capable readings='' DC_COMPLEXITY=complex DC_DURATION_CLASS=long \
-  sig8=sig8 founder_task_id=founder1 \
+awk '/^_dispatch_record_cost_estimate\(\)/,/^}/' "${DISPATCH}" > "$TMP/cost_fn.sh"
+[[ -s "$TMP/cost_fn.sh" ]] || { fail "cost-estimate helper extraction found nothing"; }
+run_cost(){  # <cost-bin>
+  SCRIPT_DIR="${SCRIPTS_DIR}" PROJECT_ROOT="${SCRIPTS_DIR}/.." LEADV2_COST_ESTIMATE_BIN="$1" \
   bash -c '
-    SCRIPT_DIR="$1"; PROJECT_ROOT="$2"; LEADV2_COST_ESTIMATE_BIN="$3"
-    arm="$4"; rule="$5"; readings="$6"; DC_COMPLEXITY="$7"; DC_DURATION_CLASS="$8"; sig8="$9"; founder_task_id="${10}"
     emit(){ shift; printf "%s\n" "$*"; }
-    log_err(){ printf "log_err: %s\n" "$*" >&2; }
-    source "${11}"
-  ' _ "${SCRIPT_DIR}" "${PROJECT_ROOT}" "$1" codex cheapest_capable '' complex long sig8 founder1 "$TMP/decision_block.sh"
+    source "$1"
+    _dispatch_record_cost_estimate sig8 founder1 complex long
+  ' _ "$TMP/cost_fn.sh"
 }
-out5b="$(run_block "$TMP/cost-estimate-stub.sh" 2>&1)"
-if [[ "$out5b" == *'arm_resolved'*'arm=codex'*'complexity=complex'*'duration_class=long'* ]]; then
-  pass "arm_resolved decision line names arm, complexity and duration_class together"
+out5b="$(run_cost "$TMP/cost-estimate-stub.sh" 2>&1)"
+if [[ "$out5b" == *'cost_estimate_recorded'*'complexity=complex'*'duration_class=long'*'phase=pre_arm_selection'*'path=docs/handoff/founder1/cost-estimate.yaml'* ]]; then
+  pass "cost estimate runs before arm selection and records the same judge estimate"
 else
-  fail "arm_resolved missing estimate: $out5b"
+  fail "cost-estimate pre-selection output=$out5b"
 fi
-if [[ "$out5b" == *'cost_estimate_recorded'*'path=docs/handoff/founder1/cost-estimate.yaml'* ]]; then
-  pass "cost estimate invoked and recorded beside the decision"
-else
-  fail "cost estimate not recorded: $out5b"
-fi
-out6b="$(run_block "$TMP/no-such-cost-estimate.sh" 2>&1)"
-if [[ "$out6b" == *'cost_estimate_unavailable'*'reason=estimator_binary_missing'* && "$out6b" != *'cost_estimate_recorded'* ]]; then
-  pass "missing cost-estimate binary degrades (logged), never fabricates a recorded estimate"
+out6b="$(run_cost "$TMP/no-such-cost-estimate.sh" 2>&1)"
+if [[ "$out6b" == *'cost_estimate_unavailable'*'reason=estimator_binary_missing'*'phase=pre_arm_selection'* && "$out6b" != *'cost_estimate_recorded'* ]]; then
+  pass "missing cost-estimate binary degrades before selection, never fabricates a record"
 else
   fail "cost-estimate-missing output=$out6b"
 fi
@@ -193,6 +182,44 @@ if [[ "$(arm_of "$before")" != "$(arm_of "$after")" ]]; then
   pass "adding the routing.yaml complexity_penalty rule changes the outcome, no script edit ($(arm_of "$before") -> $(arm_of "$after"))"
 else
   fail "no-penalty=$before with-penalty=$after"
+fi
+
+# Negative control: copy the COMPLETE arbiter library, prove the copy's
+# baseline distinguishes the two Standard tasks, then discard complexity and
+# duration inside route_arbiter itself. The mutant must collapse to one arm.
+FULL_COPY="$TMP/full-route-arbiter.sh"
+cp "$ARBITER" "$FULL_COPY"
+run_full(){
+  LEADV2_ROUTE_ARBITER_ROUTING_YAML="$4" LEADV2_ROUTE_ARBITER_QUOTA_LIVE="$TMP/live.sh" LEADV2_ROUTE_ARBITER_FREEPOOL_GATE="$TMP/free.sh" LEADV2_ROUTE_ARBITER_STATE_FILE="$TMP/state" ROUTE_TEST_QUOTA="$1" ROUTE_TEST_FREE_RC="${2:-0}" bash -c 'source "$0"; route_arbiter worker "$1"' "$FULL_COPY" "$3"
+}
+rm -f "$TMP/state"
+full_trivial="$(run_full "$Q_HEALTHY" 0 '{"kind":"code","size":"standard","complexity":"trivial","duration_class":"short"}' "$ROUTING")"
+rm -f "$TMP/state"
+full_complex="$(run_full "$Q_HEALTHY" 0 '{"kind":"code","size":"standard","complexity":"complex","duration_class":"long"}' "$ROUTING")"
+if [[ "$(arm_of "$full_trivial")" != "$(arm_of "$full_complex")" ]]; then
+  pass "negative-control baseline: full copy differs ($(arm_of "$full_trivial") vs $(arm_of "$full_complex"))"
+else
+  fail "negative-control baseline collapsed: trivial=$full_trivial complex=$full_complex"
+fi
+python3 - "$FULL_COPY" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text()
+old = "complexity=str(d.get('complexity','unknown')).lower()\nduration_class=str(d.get('duration_class','unknown')).lower()"
+new = "complexity='unknown'  # MUTANT: discard descriptor input inside route_arbiter\nduration_class='unknown'  # MUTANT: discard descriptor input inside route_arbiter"
+if old not in s:
+    raise SystemExit('mutation anchor missing')
+p.write_text(s.replace(old, new, 1))
+PY
+rm -f "$TMP/state"
+mut_trivial="$(run_full "$Q_HEALTHY" 0 '{"kind":"code","size":"standard","complexity":"trivial","duration_class":"short"}' "$ROUTING")"
+rm -f "$TMP/state"
+mut_complex="$(run_full "$Q_HEALTHY" 0 '{"kind":"code","size":"standard","complexity":"complex","duration_class":"long"}' "$ROUTING")"
+if [[ "$(arm_of "$mut_trivial")" == "$(arm_of "$mut_complex")" ]]; then
+  pass "negative-control mutant: in-function input removal collapses Standard tasks ($(arm_of "$mut_trivial"))"
+else
+  fail "negative-control mutant still distinguishes tasks: trivial=$mut_trivial complex=$mut_complex"
 fi
 
 printf 'SUMMARY: pass=%s fail=%s\n' "$PASS" "$FAIL"

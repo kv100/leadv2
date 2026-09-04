@@ -243,7 +243,10 @@ for cls in Light Standard Heavy; do
   # Prove the MAP fired (source=class_map), not the RESOLVED_EFFORT fallback
   # coincidentally agreeing with `want` -- this is the assertion the R2
   # critical finding says was missing.
-  if grep -q "effort_applied by=router.*effort=${want} mechanism=flag source=class_map" "${JOURNAL_RECORD}" 2>/dev/null; then
+  # DEEPTHINK-MODE-IS-NOT-WIRED-01 added think=/think_source= columns between
+  # effort= and mechanism= in the effort_applied journal row -- keep the
+  # assertion tail-anchored, not contiguous, or every map hit looks red.
+  if grep -q "effort_applied by=router.*effort=${want} .*mechanism=flag source=class_map" "${JOURNAL_RECORD}" 2>/dev/null; then
     pass "dispatch: task-class ${cls} journal proves class_map fired (source=class_map, effort=${want})"
   else
     fail "dispatch: task-class ${cls} journal did not prove class_map fired — got: $(grep -E 'effort_(applied|dropped)' "${JOURNAL_RECORD}" 2>/dev/null | head -2)"

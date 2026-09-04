@@ -29,6 +29,26 @@ _real_arm_cooldown_snapshot() {
 }
 _ARM_COOLDOWN_BEFORE="$(_real_arm_cooldown_snapshot)"
 
+# QUOTA-GATE-PARITY-01 F2: codex_spawn_gate check 3 execs
+# leadv2-provider-quota-gate.sh as a CHILD that inherits this env. Without the
+# hermetic trio it reads the host's real ~/.claude/state/leadv2/quota-cache/
+# and the whole suite flakes on host codex usage (observed 2026-09-05: every
+# runner case red with reason=threshold used=live at 92%). Same fixture
+# pattern as test-codex-quota-guardrails.sh.
+_QG_FIX="$ROOT/qg-fixtures"; mkdir -p "$_QG_FIX" "$_QG_FIX/cache"
+printf '%s\n' '{"status":"ok","binding_window":"primary","windows":[{"kind":"primary","used_percent":0,"limit_reached":false}]}' > "$_QG_FIX/codex.json"
+_QG_LIVE="$_QG_FIX/qg-live.sh"
+cat > "$_QG_LIVE" <<'QGLIVE'
+#!/usr/bin/env bash
+f="${_QG_FIXDIR}/${1:-}.json"
+if [[ -f "$f" ]]; then cat "$f"; else printf '{"status":"unknown"}'; fi
+exit 0
+QGLIVE
+chmod +x "$_QG_LIVE"
+export _QG_FIXDIR="$_QG_FIX" LEADV2_QUOTA_LIVE="$_QG_LIVE"
+export LEADV2_QUOTA_CACHE_DIR="$_QG_FIX/cache"
+export LEADV2_QUOTA_CEILINGS="${SCRIPTS_ROOT}/../config/leadv2-quota-ceilings.sh"
+
 CODEX_STUB="$ROOT/codex"
 cat > "$CODEX_STUB" <<'STUB'
 #!/usr/bin/env bash
