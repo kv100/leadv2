@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-phase8-closes-the-backlog-row.sh
+file=plugins/leadv2/scripts/leadv2-phase8-close.sh
+anchor=s#if \[\[ "${OUTCOME}" == "completed_success" || "${OUTCOME}" == "completed_with_warnings" \]\]; then#if true; then#
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: T4: rc=0 calls=1 logtail=<sweep-merged: 0 removed / 0 kept
+diff_hash=bc5807928e6c64b687d55ca720b360a4e28cf2f2d5037fdc576812170182d7ec
+lane_diff_hash=91a86319a978db5878fe0f33a5625034f91eb50080398d61545b6d8974ad19b1

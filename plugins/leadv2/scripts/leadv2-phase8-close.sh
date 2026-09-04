@@ -475,6 +475,145 @@ if [[ -f "$LEDGER_EMIT" ]]; then
 fi
 # ── end ledger emit ───────────────────────────────────────────────────────────
 
+# ── [BACKLOG-ONLY-GROWS-CLOSING-IS-MANUAL-01] Close the founder backlog row ───
+# Founder order 2026-09-04: a lane closing on a success outcome removes its own
+# backlog row ("надо чтобы задачи при закрытии удаляли тогда оттуда"). Contract
+# (census: docs/handoff/BACKLOG-ONLY-GROWS-CLOSING-IS-MANUAL-01/census.md):
+#   * success-only: completed_success|completed_with_warnings — the same
+#     SUCCESS_OUTCOMES set leadv2-daemon.sh:480 classifies by. refused, no_work
+#     and every other outcome leave the row open: a backlog that lies in the
+#     "done" direction is worse than one that grows.
+#   * founder task: a TASK_ID without the dispatch- prefix IS the founder task
+#     (interactive lead path). A dispatch-* TASK_ID resolves through the journal
+#     binding dispatch-code.sh:7186 writes at dispatch time
+#     (dispatch_task_bound task=<sig8> founder_task=<id>). The journal lives in
+#     the DISPATCHER's PROJECT_ROOT (main checkout), not the lane worktree close
+#     runs in — so it is read from PROJECT_ROOT first, then from the
+#     git-common-dir root, the same durable-root rule as the learn counter above
+#     (MEM-WRITE-PATH-FIX-01).
+#   * row fingerprint: docs/tasks.yaml keys rows on `intent`, whose segment
+#     before the first colon is the founder task id; row `id` is
+#     work_items.fingerprint[:12]. Resolution goes through the shared
+#     colon-anchored matcher (leadv2_tasks_yaml_common.row_matches — never a
+#     substring): exactly one match closes the row; zero or >=2 matches log and
+#     close NOTHING.
+#   * the seam is repo-native: ${PROJECT_ROOT}/scripts/task-close.sh (the
+#     Supabase human_close_work_items RPC wrapper) exists only in repos that own
+#     a work_items table (persona-engine). Absent -> log_info skip; the plugin
+#     never requires a repo-native script.
+#   * non-blocking, same contract as the ledger emit above: a failed row close
+#     never fails the lane close. docs/tasks.yaml itself is never written — the
+#     status transition belongs to the RPC, the mirror regenerates on next sync.
+if [[ "${OUTCOME}" == "completed_success" || "${OUTCOME}" == "completed_with_warnings" ]]; then
+  _p8c_row_bin="${PROJECT_ROOT}/scripts/task-close.sh"
+  if [[ -x "${_p8c_row_bin}" ]]; then
+    _p8c_row_plan="$(
+      TASK_ID="${TASK_ID}" OUTCOME="${OUTCOME}" PROJECT_ROOT="${PROJECT_ROOT}" \
+        python3 - "${SCRIPTS_DIR}" <<'PYEOF'
+import os, re, subprocess, sys
+
+scripts_dir = sys.argv[1]
+task_id = os.environ["TASK_ID"]
+project_root = os.environ["PROJECT_ROOT"]
+sys.path.insert(0, scripts_dir)
+from leadv2_tasks_yaml_common import load_tasks_items, row_matches
+
+def _durable_root():
+    # Same rule as the learn-counter block above: git-common-dir's parent is
+    # the main checkout every worktree shares; dispatch journals live there.
+    try:
+        out = subprocess.run(
+            ["git", "-C", project_root, "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except Exception:
+        return ""
+    root = os.path.dirname(out) if out else ""
+    return root if root and os.path.isdir(root) else ""
+
+def _leadv2_dir(root):
+    # Mirrors leadv2-journal.sh:21-23: state-paths.yaml override, docs/leadv2
+    # default.
+    try:
+        with open(os.path.join(root, ".claude", "leadv2-overrides", "state-paths.yaml"),
+                  encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = re.match(r"^\s*leadv2_dir\s*:\s*(.+?)\s*$", line)
+                if m:
+                    v = m.group(1).strip().strip("'\"")
+                    if v and v not in ("null", "~"):
+                        return v
+                    break
+    except OSError:
+        pass
+    return "docs/leadv2"
+
+roots = [project_root]
+_durable = _durable_root()
+if _durable and _durable != project_root:
+    roots.append(_durable)
+
+founder = task_id
+if task_id.startswith("dispatch-"):
+    founder = ""
+    bind = re.compile(r"dispatch_task_bound\s+task=\S+\s+founder_task=([^\s]+)")
+    for root in roots:
+        jpath = os.path.join(root, _leadv2_dir(root), "tasks", task_id, "journal.md")
+        try:
+            with open(jpath, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    m = bind.search(line)
+                    if m:
+                        founder = m.group(1)  # last binding wins: retries rebind
+        except OSError:
+            continue
+        if founder:
+            break
+    if not founder:
+        print("SKIP no_journal_binding dispatch_task_bound absent for %s (roots: %s)"
+              % (task_id, ",".join(roots)))
+        sys.exit(0)
+
+shortid = ""
+matches = 0
+for root in roots:
+    items = load_tasks_items(os.path.join(root, "docs", "tasks.yaml"))
+    hits = [it for it in items if isinstance(it, dict) and row_matches(it, founder)]
+    if hits:
+        matches = len(hits)
+        if matches == 1:
+            shortid = str(hits[0].get("id") or "")
+        break  # first root with any hits decides; later roots never override
+if matches == 0:
+    print("SKIP no_backlog_row no docs/tasks.yaml row resolves founder '%s'" % founder)
+elif matches > 1:
+    print("SKIP ambiguous_backlog_row %d rows resolve founder '%s' — closing nothing"
+          % (matches, founder))
+elif not shortid:
+    print("SKIP no_shortid row for '%s' carries no id" % founder)
+else:
+    print("CALL %s %s" % (founder, shortid))
+PYEOF
+    )" || { log_error "[backlog-row] founder-row resolver failed — continuing (non-blocking)"; _p8c_row_plan="SKIP resolver_error"; }
+    read -r _p8c_row_verb _p8c_row_founder _p8c_row_sid _p8c_row_rest <<<"${_p8c_row_plan}"
+    if [[ "${_p8c_row_verb}" == "CALL" && -n "${_p8c_row_founder}" && -n "${_p8c_row_sid}" ]]; then
+      log_info "[backlog-row] closing founder row ${_p8c_row_founder} (shortid ${_p8c_row_sid}) for lane ${TASK_ID}"
+      if ! bash "${_p8c_row_bin}" "${_p8c_row_sid}" \
+          --reason "leadv2 phase8 close: lane ${TASK_ID} (outcome=${OUTCOME}) closed founder task ${_p8c_row_founder}"; then
+        log_error "[backlog-row] task-close.sh exited non-zero for ${_p8c_row_founder} — continuing (non-blocking)"
+      fi
+    else
+      log_info "[backlog-row] ${_p8c_row_plan}"
+    fi
+  else
+    log_info "[backlog-row] ${PROJECT_ROOT}/scripts/task-close.sh not present/not executable — backlog row left to its owning repo"
+  fi
+else
+  log_info "[backlog-row] outcome=${OUTCOME} is not a success outcome — backlog row left open"
+fi
+# ── end backlog-row close ──────────────────────────────────────────────────────
+
 # ── [R4] Learn trigger: every N closes drop a signal for leadv2-learn ────────
 # Gated by LEADV2_LEARN_ON_CLOSE=1 (DEFAULT ON — founder 2026-06-17 flywheel fix).
 # Counts lines in scorecard.jsonl when available; falls back to a persistent

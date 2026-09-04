@@ -1,0 +1,42 @@
+# Production-mutation catalog for leadv2 (BACKLOG-ONLY-GROWS-CLOSING-IS-MANUAL-01).
+#
+# Schema mirrors persona-engine's tests/mutations/catalog.yaml (the only prior
+# catalog in the fleet): one entry per known production-behaviour mutation.
+# This repo's canonical mutation runner is plugins/leadv2/scripts/
+# leadv2-mutation-control.sh — it applies the mutation in a scratch copy of
+# the lane, runs the named suite against it, and requires the suite to go RED
+# (killed). An entry is NEVER deleted to make the kill rate look better; if an
+# anchor rots, fix the anchor.
+#
+# Baseline: 3/3 killed on 2026-09-04 (artifacts under
+# docs/handoff/BACKLOG-ONLY-GROWS-CLOSING-IS-MANUAL-01/mutation-control/).
+# The kill rate has no earlier value in this repo — this catalog is the first
+# — so "kill rate must not drop" starts at 3/3.
+
+mutations:
+  - id: phase8-backlog-row-call-removed
+    product_flow: "lane close on a success outcome removes its founder backlog row (the seam call itself)"
+    file: plugins/leadv2/scripts/leadv2-phase8-close.sh
+    anchor: |
+      if ! bash "${_p8c_row_bin}" "${_p8c_row_sid}" \
+    patch: |
+      if ! true \
+    expected: killed
+
+  - id: phase8-backlog-row-closes-on-refused
+    product_flow: "non-success outcomes (refused, no_work) must leave the backlog row open"
+    file: plugins/leadv2/scripts/leadv2-phase8-close.sh
+    anchor: |
+      if [[ "${OUTCOME}" == "completed_success" || "${OUTCOME}" == "completed_with_warnings" ]]; then
+    patch: |
+      if true; then
+    expected: killed
+
+  - id: phase8-backlog-row-ambiguous-resolves-first
+    product_flow: "a founder task resolving to >=2 backlog rows closes NOTHING (never a partial/first match)"
+    file: plugins/leadv2/scripts/leadv2-phase8-close.sh
+    anchor: |
+      hits = [it for it in items if isinstance(it, dict) and row_matches(it, founder)]
+    patch: |
+      hits = [it for it in items if isinstance(it, dict) and row_matches(it, founder)][:1]
+    expected: killed
