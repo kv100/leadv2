@@ -294,3 +294,35 @@ the code it covers changes — which is the claim being made.
 
 Both failures share a shape with `borrowed justification`: something true was demonstrated, and it
 was not the thing that needed demonstrating.
+
+## An empty field is honest ignorance; a stale field is false knowledge
+
+A merge queue named the head of every branch. One of them went stale within the hour, and merging by
+it would have silently dropped five commits — discovered not at merge time but later, by someone
+following a reference to a record that was not there. The fix was not to refresh the field but to
+decide which fields may exist at all:
+
+> For anything still changing, record no value. A missing field makes you look; a wrong field does
+> not.
+
+Two branches in that queue therefore carry no head on purpose, with the omission itself written down
+so a later reader does not helpfully fill it in from a listing. The value is read at the moment it is
+used, from the thing itself.
+
+This is the third shape of one idea in a single shift, and the three are worth seeing together:
+
+| surface | the state | what we turned it into |
+|---|---|---|
+| a probe | `unknown` | "no" |
+| the e2e gate | "I could not tell" | "it failed" |
+| a written record | "this is still moving" | a specific stale value |
+
+We convert ignorance into an assertion because an assertion is easier to carry forward. Each time,
+the conversion is invisible at the point of use: nothing about a stale head, a zero, or a `fail`
+looks different from the real thing.
+
+**And the matching rule about scale.** When the merge queue's one stale head was found, the response
+was not to fix that line: it was to re-verify all eight heads the document named (all eight held).
+A defect found in a record is evidence about the record's *class*, not about the line — the same way
+a mutation that reddens three cases through one branch is one witness, not three. Fixing the
+instance and leaving the class is how the same defect returns wearing a different name.
