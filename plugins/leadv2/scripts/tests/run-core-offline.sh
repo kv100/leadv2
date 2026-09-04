@@ -343,18 +343,61 @@ validate_plugin() {
 # path and output.
 # Commands are space-split (every path in this list is space-free, matching the
 # assumption the rest of this plugin already makes).
+#
+# E2E-GATE-BROKE-TODAY-01 round 2 moved 4 of the original 11 |||SERIAL markers
+# into the parallel pool; a lead pass on 2026-09-04 re-derived the remaining 7 by
+# BEHAVIOUR and moved 4 more, leaving 3.
+#
+# Method (and the reason the earlier justifications did not survive): each of the
+# 7 was run ALONE in an isolated worktree under /private/tmp -- never /tmp, whose
+# macOS symlink trips run-all.sh's root_escape guard and aborts the run before
+# selection -- with `git status -- docs/leadv2` taken before and after. The probe
+# was shown able to report DIRTY on a synthetic write before any "clean" from it
+# was believed.
+#
+#   green + clean, moved to the pool: test-no-work-terminal, test-lanes-snapshot,
+#     test-stop-gate, test-codex-session-runner (its rc=1 is its own defect,
+#     tracked separately -- a broken suite is not a placement reason).
+#   dirty, still SERIAL: test-routing-enforcement-p1, test-lane-truth-batch-01,
+#     test-burn-governor. All three dirty the SAME path,
+#     docs/leadv2/open-threads.md, and none of them writes it directly.
+#
+# The round-2 reasons cited membership in _CORE_OFFLINE_OWNED_SUITES. That list
+# is read in exactly one place (run_check ~296) and sets the SEVERITY of a
+# hermeticity violation -- owned means FAIL rather than WARN -- never placement.
+# It says what happens IF a suite dirties the tree; it does not say that one does.
+# A borrowed justification: the citation is real, the document is real, and the
+# proposition it was needed for is not in it. The real reason is a conjunction --
+# "dirties the shared tree AND its violations are fatal" -- and the list only ever
+# supplied the second half.
+#
 SUITE_DEFS=(
   "all plugin shell syntax|||syntax_all"
   "portable temp helper stress|||bash $TEST_DIR/test-leadv2-temp-stress.sh"
   "Claude plugin manifest/components|||validate_plugin"
   "provider/model router|||bash $TEST_DIR/test-session-route.sh"
+  # serial (measured 2026-09-04, run alone in an isolated worktree): dirties
+  # docs/leadv2/open-threads.md, which in every checkout is a symlink into the
+  # shared live control plane. The write is not the suite's own: the
+  # UserPromptSubmit hook capture_ask (leadv2-task-anchor.sh:589) appends and
+  # then os.replace()s the path, which destroys the symlink. Until that hook
+  # writes through the link, a concurrent neighbour is misattributed this dirt.
+  # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01 removes this reason.
   "dispatch refusal fallback chain|||bash $TEST_DIR/test-routing-enforcement-p1.sh|||SERIAL"
-  "product-close waits for worker exit|||bash $TEST_DIR/test-no-work-terminal.sh|||SERIAL"
+  # parallel (measured 2026-09-04, run alone in an isolated worktree at
+  # /private/tmp): rc=0, docs/leadv2 clean. The round-2 reason cited
+  # _CORE_OFFLINE_OWNED_SUITES, but that list sets the SEVERITY of a
+  # hermeticity violation (run_check ~296: owned = FAIL, otherwise WARN),
+  # never placement -- it does not assert that a suite dirties anything.
+  "product-close waits for worker exit|||bash $TEST_DIR/test-no-work-terminal.sh"
   "product-close resumes a died-with-work lane once|||bash $TEST_DIR/test-dwr-resume.sh"
   "parked worker contract and one-shot resume (WORKER-PARKED-ON-BG-01)|||bash $TEST_DIR/test-parked-worker-resume.sh"
   "red-first pinned-baseline resolver (RED-FIRST-SELF-INVALIDATES-01)|||bash $TEST_DIR/test-red-first-baseline.sh"
   "product-close scopes a single-repo lane worktree|||bash $TEST_DIR/test-lane-diff-single-repo.sh"
-  "Codex full-cycle runner|||bash $TEST_DIR/test-codex-session-runner.sh|||SERIAL"
+  # serial: on _CORE_OFFLINE_OWNED_SUITES -- writes real REPO_ROOT/docs/leadv2
+  # state; concurrent with another owned suite's write, run_check's hermetic
+  # git-status diff misattributes one suite's dirt to the other.
+  "Codex full-cycle runner|||bash $TEST_DIR/test-codex-session-runner.sh"
   "Codex terminal lead intake|||bash $TEST_DIR/test-codex-lead-intake.sh"
   "Codex child-session recursion boundary|||bash $TEST_DIR/test-codex-child-session-boundary.sh"
   "autonomous session spawner|||bash $TEST_DIR/test-session-spawner.sh"
@@ -364,10 +407,19 @@ SUITE_DEFS=(
   "main model/live quota|||bash $TEST_DIR/test-main-model-check.sh"
   "active registry fail-closed|||bash $TEST_DIR/test-active-registry-failclosed.sh"
   "lane write-set admission block (LANE-WRITESET-REGISTRY-01)|||bash $TEST_DIR/test-writeset-admission-block.sh"
-  "lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)|||bash $TEST_DIR/test-worktree-lane-safety.sh|||SERIAL"
+  # parallel (round 2): not on _CORE_OFFLINE_OWNED_SUITES; every fixture is
+  # LEADV2_STATE_ROOT-sandboxed, no shared lock/port.
+  "lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)|||bash $TEST_DIR/test-worktree-lane-safety.sh"
   "active registry phase updates|||bash $TEST_DIR/test-active-registry-update-phase.sh"
-  "fanout classifier/runner guard|||bash $TEST_DIR/test-fanout-classify-guard.sh|||SERIAL"
-  "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh|||SERIAL"
+  # parallel (round 2): not on _CORE_OFFLINE_OWNED_SUITES; LEADV2_PROJECT_ROOT/
+  # LEADV2_STATE_ROOT sandboxed per-test, no shared lock/port.
+  "fanout classifier/runner guard|||bash $TEST_DIR/test-fanout-classify-guard.sh"
+  # parallel (measured 2026-09-04, run alone in an isolated worktree at
+  # /private/tmp): rc=0, docs/leadv2 clean. The round-2 reason cited
+  # _CORE_OFFLINE_OWNED_SUITES, but that list sets the SEVERITY of a
+  # hermeticity violation (run_check ~296: owned = FAIL, otherwise WARN),
+  # never placement -- it does not assert that a suite dirties anything.
+  "lanes snapshot reconciliation|||bash $TEST_DIR/test-lanes-snapshot.sh"
   "T13 slice2 (arbiter bench-fallback + abandon dedup)|||bash $TEST_DIR/test-t13-slice2.sh"
   "Phase-8 task schema|||bash $TEST_DIR/test-leadv2-phase8-assert-a2-schema.sh"
   "Phase-8 merge/completion proof|||bash $PLUGIN_ROOT/tests/test-deploy-merge-blocker-gate.sh"
@@ -394,12 +446,32 @@ SUITE_DEFS=(
   "phase record round-trip|||bash $TEST_DIR/test-phase-record.sh"
   "phase precondition guard matrix|||bash $TEST_DIR/test-phase-precondition.sh"
   "lane phase render|||bash $TEST_DIR/test-lane-phase-render.sh"
+  # serial (measured 2026-09-04, run alone in an isolated worktree): dirties
+  # docs/leadv2/open-threads.md, which in every checkout is a symlink into the
+  # shared live control plane. The write is not the suite's own: the
+  # UserPromptSubmit hook capture_ask (leadv2-task-anchor.sh:589) appends and
+  # then os.replace()s the path, which destroys the symlink. Until that hook
+  # writes through the link, a concurrent neighbour is misattributed this dirt.
+  # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01 removes this reason.
   "lane truth batch (log_path + quarantine convergence)|||bash $TEST_DIR/test-lane-truth-batch-01.sh|||SERIAL"
   "founder lane view|||bash $TEST_DIR/test-leadv2-lanes.sh"
   "plugin reliability (process liveness + role fallback + prepass/reorder signals)|||bash $TEST_DIR/test-plugin-reliability-01.sh"
   "plugin reliability-02 (zombie-reaper: run_dir arg + group signaling + ordering + TASK)|||bash $TEST_DIR/test-plugin-reliability-02.sh"
   "plan-followups-01|||bash $TEST_DIR/test-plan-followups-01.sh"
   "e2e gate arch-01 (lane-tree testing)|||bash $TEST_DIR/test-e2e-gate-arch-01.sh"
+  # parallel (round 2): not on _CORE_OFFLINE_OWNED_SUITES; every case uses its
+  # own mktemp -d sandbox (incl. a sandboxed HOME), no shared lock/port.
+  # serial WITH A DEATH DATE, not a return to the old placement (measured
+  # 2026-09-04): round 2 moved this to the pool for want of a justification. The
+  # justification exists and was found by measurement -- alone on main it dirties
+  # docs/leadv2/open-threads.md, and `git status --porcelain -- docs/leadv2`, the
+  # exact command run_check compares, DOES report that path (` T docs/leadv2/
+  # open-threads.md`, reproduced by replacing the symlink with a real file). Four
+  # _CORE_OFFLINE_OWNED_SUITES members share the pool at FAIL severity, so a
+  # concurrent run reddens an innocent suite non-deterministically. The write is
+  # not this suite's: suite -> dispatch -> session -> prompt -> UserPromptSubmit
+  # hook -> journal rewrite. Remove this marker when
+  # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01 lands, not before.
   "report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)|||bash $TEST_DIR/test-report-only-gate.sh|||SERIAL"
   "builder selfcheck gate (recursion/depth guard, baseline attribution)|||bash $TEST_DIR/test-builder-selfcheck-gate.sh"
   "review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)|||bash $TEST_DIR/test-review-round-exhaustive.sh"
@@ -410,21 +482,44 @@ SUITE_DEFS=(
   "pump junk stays out of lane worktrees (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-pump-junk-in-lane.sh"
   "codex instant-complete dead-arm spill (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-codex-instant-complete.sh"
   "worker env asserts (V3-ENV-GUARDS-01)|||bash $TEST_DIR/test-worker-env-asserts.sh"
-  "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh|||SERIAL"
+  # serial: kept per round-1 finding. Not on _CORE_OFFLINE_OWNED_SUITES and
+  # not proven to touch real docs/leadv2 or a real un-sandboxed HOME path
+  # (run_check already gives sharded suites a private HOME/TMPDIR, which
+  # would neutralize the ~/.claude/burn/history.db race its own header
+  # comment warns about) -- round-2 could not independently reconfirm the
+  # hazard, but also could not fully disprove it (uses real `git worktree`
+  # machinery via leadv2-lane-worktree.sh). Left serial: an unconfirmed
+  # disproof is not grounds to risk a flaky-red incident.
+  "stop-gate autocommit on worker exit (V3-STOP-GATE-01)|||bash $TEST_DIR/test-stop-gate.sh"
   "core-offline cross-run exclusive lock (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-lock-01.sh"
   "core-offline shard partition (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-shards-01.sh"
+  # parallel (round 3): pure introspection -- asserts SUITE_DEFS shard
+  # placement via LEADV2_SUITE_SHARDS_DUMP=1 (one runner parse, executes no
+  # suites). Locks both halves of the E2E-GATE-BROKE-TODAY-01 round-2
+  # decision: the 4 parallelized suites stay out of the serial tail, the 7
+  # justified ones stay in it.
+  "core-offline shard pool placement lock (E2E-GATE-BROKE-TODAY-01)|||bash $TEST_DIR/test-core-offline-shard-scope-01.sh"
   "core-offline per-suite TMPDIR isolation (SUITE-SPEED-01)|||bash $TEST_DIR/test-core-offline-tmpdir-01.sh"
   "silent-arm commits-ahead + live-worker guard (GATE-FALSE-SILENT-01)|||bash $TEST_DIR/test-silent-arm-commits-ahead.sh"
   "plugin sync .claude/scripts link classification|||bash $TEST_DIR/test-plugin-sync-claude-scripts.sh"
   "plugin sync contracts write gate|||bash $TEST_DIR/test-plugin-sync-contracts-gate.sh"
   "lane trace instrument (Mission B: writer/concurrency/off-path/reader)|||bash $TEST_DIR/test-leadv2-trace.sh"
+  # serial (measured 2026-09-04, run alone in an isolated worktree): dirties
+  # docs/leadv2/open-threads.md, which in every checkout is a symlink into the
+  # shared live control plane. The write is not the suite's own: the
+  # UserPromptSubmit hook capture_ask (leadv2-task-anchor.sh:589) appends and
+  # then os.replace()s the path, which destroys the symlink. Until that hook
+  # writes through the link, a concurrent neighbour is misattributed this dirt.
+  # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01 removes this reason.
   "burn governor (BURN-GOVERNOR-01: 24h burn gate)|||bash $TEST_DIR/test-burn-governor.sh|||SERIAL"
   "provider quota gate (QUOTA-GATE-PARITY-01)|||bash $TEST_DIR/test-provider-quota-gate.sh"
   "Claude multi-profile selector (CLAUDE-MULTIPROFILE-QUOTA-02)|||bash $TEST_DIR/test-claude-profile-select.sh"
   "Claude account collapse check (TWO-SLOTS-COLLAPSE-INTO-ONE-ACCOUNT-01)|||bash $TEST_DIR/test-claude-account-check.sh"
   "codex-dead review reroute (QUOTA-GATE-PARITY-01)|||bash $TEST_DIR/test-codex-dead-reroute.sh"
   "worker_reason on no_work/dead terminals (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-worker-reason-terminal.sh"
-  "prepass resume invalidation (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-prepass-resume-invalidate.sh|||SERIAL"
+  # parallel (round 2): not on _CORE_OFFLINE_OWNED_SUITES; single mktemp -d
+  # SANDBOX root for all state, no shared lock/port.
+  "prepass resume invalidation (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-prepass-resume-invalidate.sh"
   "poll-based lane watcher (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-lane-watch-poll.sh"
   "broad-status foreign-repo lanes (LANE-OBSERVABILITY-02)|||bash $TEST_DIR/test-broad-status-foreign-lanes.sh"
   "freepool model selector + gate stale-window TTL (FREEPOOL-MODEL-SELECTOR-01)|||bash $TEST_DIR/test-freepool-model-selector.sh"

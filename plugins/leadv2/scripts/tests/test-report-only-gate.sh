@@ -48,6 +48,20 @@ if [[ -z "${ROG1_SANDBOXED:-}" ]]; then
   export HOME="${SANDBOX_HOME}" TMPDIR="${SANDBOX_HOME}/tmp" ROG1_SANDBOXED=1
 fi
 
+# SUITES-WRITE-THE-LIVE-CONTROL-PLANE-01: a sandboxed HOME is not enough. Every
+# docs/leadv2 entry in any checkout is a SYMLINK into the shared live control
+# plane (~/.claude/leadv2-state/leadv2/), so a product invocation that resolves
+# its control-plane root through leadv2-state-path.sh writes the FLEET's bus,
+# merge queue, questions and locks -- measured 2026-09-04: this suite alone, from
+# a clean tree, left eight entries dirty including a type-change that replaced
+# the shared open-threads.md symlink with a real file (the active.yaml disease).
+# This suite already pins LEADV2_PROJECT_ROOT per invocation; state-path.sh keys
+# on LEADV2_STATE_ROOT (see its line ~78), which nothing here was setting.
+if [[ -z "${LEADV2_STATE_ROOT:-}" ]]; then
+  export LEADV2_STATE_ROOT="${TMPDIR:-/tmp}/rog1-state"
+  mkdir -p "${LEADV2_STATE_ROOT}"
+fi
+
 PASS=0; FAIL=0; ERRORS=()
 log()  { printf -- '[TEST] %s\n' "$*"; }
 pass() { PASS=$((PASS + 1)); log "PASS: $1"; }
