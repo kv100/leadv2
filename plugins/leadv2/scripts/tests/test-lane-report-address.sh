@@ -118,17 +118,6 @@ c4=0
 [[ "$OUT" == *"0 unattributable dirs remain"* ]] && ok "states 0 unattributable" || { bad "C4 no unattributable line"; c4=1; }
 rm -rf "$ROOT"
 
-section "C5 no pointer matched but unattributable dirs exist -> unknown"
-ROOT=$(mktemp -d "${TMPDIR:-/tmp}/lraddr.XXXXXX")
-mk_base_fixture "$ROOT"
-run_report "$ROOT" "MISSING-LANE-02"
-c5=0
-[[ $RC -eq 2 ]] && ok "exit 2" || { bad "C5 rc=$RC"; c5=1; }
-[[ "$OUT" == *"result: unknown"* ]] && ok "says unknown" || { bad "C5 not unknown: $OUT"; c5=1; }
-[[ "$OUT" != *"result: none"* ]] && ok "NOT none" || { bad "C5 collapsed to none: $OUT"; c5=1; }
-[[ "$OUT" =~ unattributable ]] && ok "names unattributable" || { bad "C5 no unattributable count"; c5=1; }
-rm -rf "$ROOT"
-
 section "C6 report dir unreadable (chmod 000) -> unknown, not none"
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/lraddr.XXXXXX")
 mk_base_fixture "$ROOT"
@@ -139,10 +128,47 @@ else
   mk_receipt "$ROOT/docs/handoff/dispatch-eeee5555" "$TID"
   mk_deliv x "$ROOT/docs/handoff/dispatch-eeee5555/developer.full.md"
   chmod 000 "$ROOT/docs/handoff/dispatch-eeee5555"
+  # chmod 000 does deny the owner (the kernel checks owner rwx bits), but for
+  # a founder-id query the denial is caught early: the scan inside
+  # lane_address_scan_handoff_root drops the dir into LA_UNREADABLE_DIRS
+  # before any receipt can be read, so the dir never enters LA_MATCH_DIRS and
+  # the gather loop's LA_UNREADABLE arm in lane_address_resolve never fires
+  # on this query. That arm is reached when a MATCHED dir is unreadable —
+  # the sig8 path (and a registry-derived sig8) appends dispatch-<sig8> to
+  # LA_MATCH_DIRS with no readability check. Both arms must say unknown; the
+  # reason text tells them apart: the LA_UNREADABLE_DIRS arm prints the glob
+  # form "dispatch-<sig8>/exists..." (trailing slash), the gather arm prints
+  # the sd form "dispatch-<sig8> exists..." (no slash).
+  # C6 runs before C5 so the global LA_RESULT-mutation control reports a C6
+  # red line rather than C5's alone.
   run_report "$ROOT" "$TID"
-  if [[ $RC -eq 2 && "$OUT" == *"unknown"* && "$OUT" != *"result: none"* ]]; then ok "unknown under unreadable dir"; else bad "C6 rc=$RC out=$OUT"; fi
+  c6=0
+  [[ $RC -eq 2 ]] && ok "tid query: exit 2" || { bad "C6a rc=$RC out=$OUT"; c6=1; }
+  [[ "$OUT" == *"result: unknown"* && "$OUT" != *"result: none"* ]] \
+    && ok "tid query: unknown, not none" || { bad "C6a collapsed: $OUT"; c6=1; }
+  [[ "$OUT" == *"dispatch-eeee5555/exists but listdir failed"* ]] \
+    && ok "tid query: reason names the dir (scan-level LA_UNREADABLE_DIRS arm)" \
+    || { bad "C6a reason: $OUT"; c6=1; }
+  run_report "$ROOT" "dispatch-eeee5555"
+  [[ $RC -eq 2 ]] && ok "sig8 query: exit 2" || { bad "C6b rc=$RC out=$OUT"; c6=1; }
+  [[ "$OUT" == *"result: unknown"* && "$OUT" != *"result: none"* ]] \
+    && ok "sig8 query: unknown, not none" || { bad "C6b collapsed: $OUT"; c6=1; }
+  [[ "$OUT" == *"dispatch-eeee5555 exists but listdir failed"* ]] \
+    && ok "sig8 query: reason names the dir (gather-loop LA_UNREADABLE arm)" \
+    || { bad "C6b reason: $OUT"; c6=1; }
   chmod 755 "$ROOT/docs/handoff/dispatch-eeee5555"
 fi
+rm -rf "$ROOT"
+
+section "C5 no pointer matched but unattributable dirs exist -> unknown"
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/lraddr.XXXXXX")
+mk_base_fixture "$ROOT"
+run_report "$ROOT" "MISSING-LANE-02"
+c5=0
+[[ $RC -eq 2 ]] && ok "exit 2" || { bad "C5 rc=$RC"; c5=1; }
+[[ "$OUT" == *"result: unknown"* ]] && ok "says unknown" || { bad "C5 not unknown: $OUT"; c5=1; }
+[[ "$OUT" != *"result: none"* ]] && ok "NOT none" || { bad "C5 collapsed to none: $OUT"; c5=1; }
+[[ "$OUT" =~ unattributable ]] && ok "names unattributable" || { bad "C5 no unattributable count"; c5=1; }
 rm -rf "$ROOT"
 
 section "C7 mirror: banned sources never credit the neighbouring dir"
