@@ -570,6 +570,15 @@ def looks_like_new_ask(prompt):
     # tag/bracket character is a harness/system event, not typed by a human.
     if p[:1] in ("<", "["):
         return False
+    # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01: a role preamble is a
+    # prompt the harness sent to a model, not a line a person typed. Two of these
+    # were caught in the founder-ask journal on 2026-09-04 ("You are estimating
+    # the shape of a single engineering task...", sessions 1b761565 / 8e9778c0).
+    # The journal has capture without closing, so anything admitted stays for
+    # good; a founder opening a message with "you are ..." is rarer than that
+    # cost. Matched at the START only, so "…and you are right" still captures.
+    if re.match(r"(?i)^(you are\b|ты\s+—|вы\s+—)", p):
+        return False
     lower_full = p.lower()
     if lower_full.startswith(_COMPACT_PREAMBLE):
         return False
@@ -655,10 +664,22 @@ def capture_ask(root, leadv2_dir, prompt, session_id=""):
             sep = "\n" if existing and not existing.endswith("\n") else ""
             new_content = existing + sep + ("\n" if existing else "") + heading + "\n" + new_entry + "\n"
 
-        tmp_path = f"{ot_path}.tmp.{os.getpid()}"
+        # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01: in every checkout
+        # docs/leadv2/open-threads.md is a SYMLINK into the shared live control
+        # plane (~/.claude/leadv2-state/<repo>/). os.replace() does not follow a
+        # symlink -- it replaces the LINK with the temp file, so this checkout
+        # silently forks: other sessions keep writing the shared file, this one
+        # writes a private copy, and both see a self-consistent picture. Writing
+        # in place would fix the fork and lose the partial-write protection the
+        # temp+rename exists for, so resolve the link first and rename onto the
+        # TARGET. The temp must sit beside the target, not beside the link: a
+        # rename across a filesystem boundary raises OSError, and the two are not
+        # on the same device here.
+        target = os.path.realpath(ot_path)
+        tmp_path = f"{target}.tmp.{os.getpid()}"
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(new_content)
-        os.replace(tmp_path, ot_path)  # atomic-ish rename, never a partial write
+        os.replace(tmp_path, target)  # atomic-ish rename, never a partial write
     finally:
         if lockf is not None:
             try:
