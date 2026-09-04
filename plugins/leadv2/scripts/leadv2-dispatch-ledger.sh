@@ -1113,7 +1113,7 @@ cmd_reconcile() {
   # handoff dirs and would verdict dead:no_handoff_dir for every lane.
   local liv_map=""
   if [[ -f "${LANE_LIVENESS_BIN}" ]]; then
-    liv_map="$(mktemp 2>/dev/null || mktemp -t liv)"
+    liv_map="$(mktemp 2>/dev/null || mktemp "${TMPDIR:-/tmp}/liv.XXXXXX" 2>/dev/null || true)"
     LEADV2_PROJECT_ROOT="${disp_root}" bash "${LANE_LIVENESS_BIN}" --project-root "${disp_root}" --all --json 2>/dev/null \
       | python3 -c '
 import json, sys, re

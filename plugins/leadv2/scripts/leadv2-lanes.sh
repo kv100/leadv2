@@ -78,7 +78,10 @@ if [[ "$NO_COLOR" -ne 1 && ! -t 1 ]]; then NO_COLOR=1; fi
 PS_FILE="${LEADV2_LANE_VIEW_PS_FILE:-}"
 TMP_PS=""
 if [[ -z "$PS_FILE" || ! -f "$PS_FILE" ]]; then
-  TMP_PS="$(mktemp -t leadv2-lanes)"
+  TMP_PS="$(mktemp "${TMPDIR:-/tmp}/leadv2-lanes.XXXXXX")" || {
+    echo "leadv2-lanes: mktemp failed, cannot create ps snapshot tmpfile" >&2
+    exit 1
+  }
   trap 'rm -f "$TMP_PS"' EXIT
   ps -Ao pid=,pgid=,etime=,command= > "$TMP_PS" 2>/dev/null || true
   PS_FILE="$TMP_PS"

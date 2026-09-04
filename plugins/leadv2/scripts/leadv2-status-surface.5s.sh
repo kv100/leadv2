@@ -346,8 +346,15 @@ if [ "$CACHED" -eq 0 ]; then
     printf 'renderer missing (looked for: %s) | font=Menlo size=12\n' "$RENDERER"
     printf 'Refresh | refresh=true\n'; exit 0
   fi
-  # XXXXXX suffix required by GNU mktemp; BSD accepts it too
-  _ss_err="$(mktemp -t leadv2-ss-err.XXXXXX)"
+  # XXXXXX suffix required by GNU mktemp; BSD accepts it too.
+  # (CI-SUITES-ARE-MACOS-ONLY-01: explicit template, no BSD-only -t; on
+  # failure degrade to a visible menu line instead of an empty-var path.)
+  _ss_err="$(mktemp "${TMPDIR:-/tmp}/leadv2-ss-err.XXXXXX" 2>/dev/null)"
+  if [ -z "$_ss_err" ]; then
+    printf '⚠️ leadv2 status\n'; printf -- '---\n'
+    printf 'mktemp failed (no writable tmp dir) | font=Menlo size=12\n'
+    printf 'Refresh | refresh=true\n'; exit 0
+  fi
   OUT_ALL="$(bash "$RENDERER" --all 2>"$_ss_err")"
   _ss_rc=$?
   if [ "$_ss_rc" -ne 0 ] || [ -z "$OUT_ALL" ]; then
