@@ -3,12 +3,18 @@
 # active.yaml directly from a lane lifecycle caller.
 #
 # API:
-#   lane_register <task-id> <lead-session-id> <worktree> <phase> [pid]
+#   lane_register <task-id> <lead-session-id> <worktree> <phase> [pid] [lead_pid] [lead_pid_birth]
 #   lane_transition <task-id> <phase> [detail]
 #   lane_deregister <task-id> [reason]
 #   lane_alive <task-id>                 # 0 live, 1 dead/not-found
 #   lane_reconcile                       # marks dead, recovers live orphans
 #   lane_count_live <lead-session-id>    # stdout count
+#   lane_lead_alive <lead-session-id>    # 0 live, 1 dead/orphaned/no-data
+#                                         # (D6-REGISTRY-LANE-OWNERSHIP-01: raw
+#                                         # lead_pid/lead_pid_birth, additive
+#                                         # to pid/pid_start_time, so a lane's
+#                                         # owning lead process can be checked
+#                                         # without re-parsing lead_session_id)
 
 _lv2_lane_state_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 _lv2_lane_state_root() {
@@ -76,7 +82,9 @@ with open(lock, 'a+') as lf:
   data.setdefault('meta', {}); data.setdefault('sessions', [])
   rows=data['sessions']
   if op == 'register':
-    task, lead, worktree, phase, pid = args
+    task, lead, worktree, phase, pid = args[:5]
+    lead_pid = args[5] if len(args) > 5 else ''
+    lead_pid_birth = args[6] if len(args) > 6 else ''
     pid = int(pid)
     live=[r for r in rows if r.get('lead_session_id') == lead and not r.get('dead_at') and alive(r)]
     existing=next((r for r in rows if r.get('task_id') == task and not r.get('dead_at')), None)
@@ -98,11 +106,15 @@ with open(lock, 'a+') as lf:
       print('lane cap exceeded: lead_session_id=%s live=%d cap=%d' % (lead, len(live), cap), file=sys.stderr); sys.exit(3)
     if existing:
       existing.update(pid=pid, pid_start_time=birth(pid), worktree=worktree, phase=phase, lead_session_id=lead, dead_at=None, updated_at=now())
+      if lead_pid: existing['lead_pid'] = int(lead_pid)
+      if lead_pid_birth: existing['lead_pid_birth'] = lead_pid_birth
       event(existing, 'registered_refresh')
     else:
       row={'task_id':task, 'session_id':lead, 'lead_session_id':lead, 'worktree':worktree, 'phase':phase,
            'pid':pid, 'pid_start_time':birth(pid), 'started_at':now(), 'updated_at':now(), 'dead_at':None,
            'recovered':False, 'lane_events':[]}
+      if lead_pid: row['lead_pid'] = int(lead_pid)
+      if lead_pid_birth: row['lead_pid_birth'] = lead_pid_birth
       event(row, 'registered'); rows.append(row)
   elif op == 'transition':
     task, phase, detail = args
@@ -149,15 +161,32 @@ with open(lock, 'a+') as lf:
   elif op == 'alive':
     task=args[0]; row=next((r for r in rows if r.get('task_id') == task and not r.get('dead_at')), None)
     sys.exit(0 if row and alive(row) else 1)
+  elif op == 'lead_alive':
+    # D6-REGISTRY-LANE-OWNERSHIP-01: same liveness pattern as alive(), but
+    # keyed on the lead process (lead_pid/lead_pid_birth) rather than the
+    # lane's own worker pid -- "is the session that owns these lanes still
+    # running", not "is this particular lane's worker still running".
+    lead=args[0]
+    row=next((r for r in rows if r.get('lead_session_id') == lead and r.get('lead_pid')), None)
+    if row is None: sys.exit(1)
+    try: lp=int(row.get('lead_pid'))
+    except (TypeError, ValueError): sys.exit(1)
+    if lp <= 1: sys.exit(1)
+    try: os.kill(lp, 0)
+    except OSError: sys.exit(1)
+    recorded=' '.join(str(row.get('lead_pid_birth') or '').split())
+    observed=birth(lp)
+    sys.exit(0 if (recorded and observed and recorded == observed) else 1)
   fd,tmp=tempfile.mkstemp(prefix='.active.yaml.', dir=os.path.dirname(path))
   with os.fdopen(fd,'w',encoding='utf-8') as f: yaml.safe_dump(data,f,default_flow_style=False,sort_keys=False)
   os.replace(tmp,path)
 PY
 }
-lane_register() { _lv2_lane_state_mutate register "$1" "$2" "$3" "$4" "${5:-$$}"; }
+lane_register() { _lv2_lane_state_mutate register "$1" "$2" "$3" "$4" "${5:-$$}" "${6:-}" "${7:-}"; }
 lane_transition() { _lv2_lane_state_mutate transition "$1" "$2" "${3:-}"; }
 lane_deregister() { _lv2_lane_state_mutate deregister "$1" "${2:-closed}"; }
 lane_alive() { _lv2_lane_state_mutate alive "$1"; }
+lane_lead_alive() { _lv2_lane_state_mutate lead_alive "$1"; }
 lane_reconcile() { _lv2_lane_state_mutate reconcile "$(_lv2_lane_state_root)"; }
 lane_count_live() { _lv2_lane_state_mutate count "$1"; }
 lane_adopt_pid() { # <task-id> <lead-session-id> <worktree> <phase> <worker-pid>
