@@ -680,7 +680,7 @@ python3 - "${nce_dir}/leadv2-dispatch-code.sh" <<'PYMUT'
 import sys
 path = sys.argv[1]
 text = open(path).read()
-needle = '_ci_txt="$(worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" "")" || _ci_rc=$?'
+needle = '_ci_txt="$(LEADV2_SUBSESSION_SLIM_MCP="${_ci_slim}" worker_mcp_preamble_for_arm "${arm}" "${WORK_ROOT}" "" 2>"${_ci_errf:-/dev/null}")" || _ci_rc=$?'
 if needle not in text:
     print("MUTATION_TARGET_NOT_FOUND", file=sys.stderr)
     sys.exit(1)

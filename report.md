@@ -1,36 +1,169 @@
-# PHASE-BOOTSTRAP-DEADLOCK-01
+# CODE-INTEL-SKIPPED-FIFTEEN-TIMES-01 — sonnet-линии работали вслепую: причина найдена, fail_open стал громким
 
-## Reproduction
+## 1. Замер и его происхождение
 
-Before changing the tree, I created detached scratch worktree
-`/private/tmp/phase-bootstrap-repro.26ht1Y` from `HEAD` and ran a brand-new
-Standard task with isolated cache/state, `--no-spawn`, and one declared write:
+Замер из брифа (ведущая, 2026-09-04): за день в журнале —
+`code_intel_preamble arm=glm mode=attached` ×1, `arm=glm-flash mode=attached` ×2,
+`arm=sonnet mode=skipped reason=fail_open` ×15. Я не смог пере-посчитать эти строки
+в своём worktree: исторические строки лежат в журнале основного чекаута
+(`docs/leadv2/tasks/*/journal.md`), в изолированном lane-worktree их нет — grep по
+`docs/leadv2/` этого worktree даёт только `arm=glm mode=attached` ×1. Цифры в этом
+отчёте — цитата брифа, не мой повторный замер.
 
-```text
-$ bash plugins/leadv2/codex-lead/lv2guard.sh -c 'cd /private/tmp/phase-bootstrap-repro.26ht1Y && timeout 120 env -u CLAUDE_PROJECT_ROOT PROJECT_ROOT=/private/tmp/phase-bootstrap-repro.26ht1Y LEADV2_PROJECT_ROOT=/private/tmp/phase-bootstrap-repro.26ht1Y LEADV2_DISPATCH_CACHE_DIR=/private/tmp/phase-bootstrap-repro.26ht1Y/.cache3 LEADV2_STATE_BASE=/private/tmp/phase-bootstrap-repro.26ht1Y/.state3 LEADV2_DISPATCH_TERMINAL_LEDGER=0 LEADV2_BURN_GOVERNOR=0 LEADV2_DISPATCH_E2E_GATE=0 LEADV2_DISPATCH_REVIEW_GATE=0 LEADV2_DISPATCH_ARCHITECT_GATE=0 LEADV2_LANE_SHAPE=off LEADV2_DISPATCH_SPAWN=0 bash plugins/leadv2/scripts/leadv2-dispatch-code.sh "PBDEADLOCK first time shell line 20260902" --kind code --task-class standard --subsystems 1 --task-id PBDEADLOCK-REPRO-20260902-C --no-spawn --writes plugins/leadv2/scripts/leadv2-dispatch-code.sh'
-[leadv2-dispatch-code] lane_plan_missing task=502450be reason=source_absent source=/private/tmp/phase-bootstrap-repro.26ht1Y/docs/handoff/PBDEADLOCK-REPRO-20260902-C/context.yaml
-[leadv2-dispatch-code] dispatch_task_bound task=502450be founder_task=PBDEADLOCK-REPRO-20260902-C
-[leadv2-dispatch-code] task_class=Standard route=phases source=flag task=502450be
-[leadv2-dispatch-code] class_floor_held task=502450be declared=Standard computed=Light
-[leadv2-dispatch-code] brain_decision task=502450be class=Standard class_source=floor_held phases=classify,plan,gate1,build,test,review,deploy,live_verify,close reason=declared_floor
-[leadv2-dispatch-code] dispatch_classified task=502450be class=product reason=conservative_default kind=code
-[leadv2-dispatch-code] phase_precondition_refused task=502450be class=Standard missing=plan,gate1 mode=1
-[leadv2-dispatch-code] ERROR: dispatch refused: missing mandatory phases: plan,gate1
-[leadv2-dispatch-code] ERROR:   remedy: /private/tmp/phase-bootstrap-repro.26ht1Y/plugins/leadv2/scripts/leadv2-phase-record.sh record 502450be plan --artifact docs/handoff/<task-id>/brief.md   (or docs/handoff/<task-id>/fix-round-N.md, or a context.yaml with decisions:, or a non-empty architect-prepass.md)
-[leadv2-dispatch-code] ERROR:   remedy: /private/tmp/phase-bootstrap-repro.26ht1Y/plugins/leadv2/scripts/leadv2-phase-record.sh record 502450be gate1 --reason "<founder gate-1 decision>"   (or --artifact <path-to-.gate1-passed> if run through leadv2-gate1-prompt.sh)
-[leadv2-dispatch-code] active_lane_released task=502450be id=PBDEADLOCK-REPRO-20260902-C where=exit_trap
-$ echo $?
-3
+## 2. Причина: структурная асимметрия гейтов, а не флак
+
+Путь сборки преамбулы: `leadv2-dispatch-code.sh:_spawn_worker_body` вызывает
+`worker_mcp_preamble_for_arm()` (`plugins/leadv2/scripts/lib/leadv2-worker-mcp.sh:221`),
+которая для каждой arm решает, собирать ли преамбулу, по СВОЕМУ гейту:
+
+| arm | гейт | default | результат 2026-09-04 |
+|---|---|---|---|
+| glm / glm-flash / kimi / freepool | `LEADV2_WORKER_MCP` | **1** (`:-1` в lib) | attached 3/3 |
+| sonnet | `LEADV2_SUBSESSION_SLIM_MCP` | **0** (`claude-subsession.sh:543` — `if [[ "${LEADV2_SUBSESSION_SLIM_MCP:-0}" == "1" ]]`) | skipped 15/15 |
+
+`LEADV2_SUBSESSION_SLIM_MCP` — opt-in флаг лаунчера `claude-subsession.sh` (default 0
+нужен LEAD-пути эскалации, где дочерняя сессия наследует полный дефолтный MCP-набор и
+role-scoped конфиг не собирается). Но этот же флаг lib использует как гейт для arm=sonnet,
+и **никто никогда не выставлял его для диспатч-воркеров** — диспетчер sonnet-линию
+запускал без преамбулы всегда, не иногда. Отсюда 15 против 3: у glm гейт default-1
+закрывает всю популяцию, у sonnet гейт default-0 не был выставлен ни для кого.
+
+Молчание усугубляло: каждый rc!=0 в lib возвращал голый код, диспетчер писал
+`mode=skipped reason=fail_open` без единого байта о том, ЧТО именно не собралось —
+гейт выключен, resolve упал или файл преамбулы отсутствует, было неотличимо.
+
+## 3. Фикс
+
+### 3a. Sonnet-гейт для диспатч-воркеров = default 1
+
+`plugins/leadv2/scripts/leadv2-dispatch-code.sh:5303-5305` — один локальный `_ci_slim`,
+посчитанный ДО вызова, гоняет ОБЕ точки (prediction-вызов lib и строку spawn
+`:5535`, её prefix-присваивание `LEADV2_SUBSESSION_SLIM_MCP=...:-1`), так что
+предсказание и реальный spawn не могут разойтись:
+
+```bash
+local _ci_slim="${LEADV2_SUBSESSION_SLIM_MCP:-}"
+if [[ "${arm}" == "sonnet" && -z "${_ci_slim}" ]]; then
+  _ci_slim=1
+fi
 ```
 
-The refusal is caused by the dispatcher recording `classify` before the guard
-checks whether the lane has zero phase records. The exact pre-change sites were
-`leadv2-dispatch-code.sh:6931` (classify record) and `:6939` (phase guard).
+Фикс в диспетчере, НЕ в `claude-subsession.sh`: default-0 лаунчера остаётся для
+LEAD-пути, диспатчнутый sonnet-воркер получает гейт 1. Явный env по-прежнему
+побеждает: `LEADV2_SUBSESSION_SLIM_MCP=0` возвращает старый spawn — громко (см. 3b).
 
-## Fix
+### 3b. Громкий fail_open
 
-Pending.
+Каждый rc!=0-бранч lib печатает ровно одну машиночитаемую строку в stderr
+(`plugins/leadv2/scripts/lib/leadv2-worker-mcp.sh:224,236,248,261,276,295`):
 
-## Verification
+```
+[worker-mcp] preamble_skip_cause=<token>
+```
 
-Pending.
+таксономия: `codex_no_mcp_wiring` (rc=4) · `gate:LEADV2_SUBSESSION_SLIM_MCP=<v>` ·
+`gate:LEADV2_WORKER_MCP=<v>` · `mktemp_scratch_failed` · `resolve_role_mcp_config_rc=<N>`
+(11 no-allowlist / 12 ничего не зарезолвилось / 13 malformed / 14 нет python3 / 15 write
+failure) · `preamble_file_missing:<path>`. stdout на скипе пуст, как и раньше — cause
+это метаданные, не текст, который видит воркер.
+
+Диспетчер (`:5311-5319`) капчурит stderr вызова в temp-файл, извлекает токен и пишет
+его в журнал: `... mode=skipped reason=fail_open cause=<token>`. Пустая причина сама
+себя выдаёт: `cause=no_cause_reported` — тишина больше не является приемлемым
+объяснением скипа.
+
+### 3c. Политика НЕ перевёрнута
+
+`fail_open` остался fail_open: ни один скип не блокирует линию. Отдельное предложение
+в отчёте (не реализовано, требует решения ведущей): сделать `cause=` метрикой —
+если за день копится N≥10 строк `cause=resolve_role_mcp_config_rc=*` по одному репо,
+поднимать вопрос, а не глотать; блокировку линий я не вводил сознательно.
+
+## 4. Приёмка
+
+### 4.1 Негативные контроли (мутации ВНУТРИ тел функций, пары rc, НЕ diff_hash)
+
+Сюита `plugins/leadv2/scripts/tests/test-leadv2-worker-mcp.sh`, вывод прогона:
+
+```text
+[TEST] PASS: NC1 lib body: baseline_rc=0 mutated_rc=1 — RED, cause-less skip cannot return silently
+[TEST] PASS: NC2 dispatcher body: baseline_rc=0 mutated_rc=1 — RED, default-attach cannot silently vanish
+[TEST] PASS: NC3 dispatcher body: baseline_rc=0 mutated_rc=1 — RED, bare fail_open cannot return
+```
+
+- **NC1** (обязательный контроль «сборка преамбулы падает → в журнале видна причина,
+  не голое fail_open»): из тела sonnet-бранча lib удалён `printf ... preamble_skip_cause=gate:...`
+  → проверка «stderr несёт cause-токен» красная (baseline_rc=0 / mutated_rc=1).
+- **NC2**: из тела `_spawn_worker_body` удалён sonnet-default `_ci_slim=1` →
+  D1 (default-attach: journal `mode=attached`, spawn-env `SLIM_MCP=1`, mission несёт
+  преамбулу) красная.
+- **NC3**: из emit-строки вырезан `cause=${_ci_cause}` → D2 (громкий скип с
+  `cause=gate:LEADV2_SUBSESSION_SLIM_MCP=0`) красная — ровно то молчание
+  2026-09-04, возвращённое на место.
+
+### 4.2 Десять прогонов подряд
+
+```text
+run 1: rc=0 (TOTAL: PASS=17 FAIL=0) 16s
+run 2: rc=0 (TOTAL: PASS=17 FAIL=0) 18s
+run 3: rc=0 (TOTAL: PASS=17 FAIL=0) 20s
+run 4: rc=0 (TOTAL: PASS=17 FAIL=0) 16s
+run 5: rc=0 (TOTAL: PASS=17 FAIL=0) 18s
+run 6: rc=0 (TOTAL: PASS=17 FAIL=0) 22s
+run 7: rc=0 (TOTAL: PASS=17 FAIL=0) 23s
+run 8: rc=0 (TOTAL: PASS=17 FAIL=0) 20s
+run 9: rc=0 (TOTAL: PASS=17 FAIL=0) 16s
+run 10: rc=0 (TOTAL: PASS=17 FAIL=0) 15s
+```
+
+10/10 rc=0, PASS=17 FAIL=0 в каждом.
+
+### 4.3 Затронутая существующая сюита
+
+`test-worker-mcp-all-arms.sh` (обновлён только needle её мутационного контроля под
+новую строку вызова): `rc=0`, `TOTAL: PASS=49 FAIL=0`.
+
+### 4.4 Регистрация сюиты
+
+`tests/run-all.sh` не трогал (граница миссии). Сюита выбирается self-select конвенцией
+стемов: изменённый `scripts/lib/leadv2-worker-mcp.sh` даёт кандидата
+`test-leadv2-worker-mcp.sh` (совпадение по стему), плюс любой изменённый
+`plugins/leadv2/scripts/tests/test-*.sh` выбирает себя сам. Живая проверка:
+
+```text
+$ LEADV2_RUN_ALL_SELECT_ONLY=1 bash tests/run-all.sh --scope changed | grep -E 'SELECT.*worker-mcp|selected'
+[SELECT] .../plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh
+[SELECT] .../plugins/leadv2/scripts/tests/test-leadv2-worker-mcp.sh
+run-all: 36 selected, scope=changed, select_only=1
+```
+
+### 4.5 Falsification-сет
+
+```text
+$ bash -n plugins/leadv2/scripts/leadv2-dispatch-code.sh; echo $?
+0
+$ /bin/bash -n plugins/leadv2/scripts/leadv2-dispatch-code.sh; echo $?   # macOS 3.2 floor
+0
+$ bash -n plugins/leadv2/scripts/lib/leadv2-worker-mcp.sh; echo $?
+0
+$ /bin/bash -n plugins/leadv2/scripts/lib/leadv2-worker-mcp.sh; echo $?
+0
+$ bash -n plugins/leadv2/scripts/tests/test-leadv2-worker-mcp.sh; echo $?
+0
+```
+
+Python-файлы этой ланией не менялись — `py_compile` не применим (в сюите bash 3.2-floor
+на все три файла включён как постоянные проверки).
+
+## 5. Changed-scope раннер
+
+<!-- RUNNER-OUTPUT: вставляется после завершения прогона, до коммита -->
+
+## 6. Изменённые файлы
+
+- `plugins/leadv2/scripts/leadv2-dispatch-code.sh` — sonnet-default гейт + громкий cause= в emit
+- `plugins/leadv2/scripts/lib/leadv2-worker-mcp.sh` — `preamble_skip_cause` на каждом rc!=0
+- `plugins/leadv2/scripts/tests/test-leadv2-worker-mcp.sh` — новая сюита (17 проверок, 3 NC)
+- `plugins/leadv2/scripts/tests/test-worker-mcp-all-arms.sh` — needle мутационного контроля
+- `report.md` — этот отчёт (перезаписал чужой артефакт PHASE-BOOTSTRAP-DEADLOCK-01,
+  унаследованный от main в lane-анкере; миссия требует report.md в корне)
