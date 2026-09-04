@@ -1,0 +1,82 @@
+task_id: dispatch-eb7431bc
+lane: D4-NO-PATH-LOSES-WORK-01
+title: "No path loses work — external orphan-checkpoint sweeper"
+
+decisions:
+  - D1: "Mechanism = external periodic sweeper (leadv2-orphan-checkpoint.sh), not an in-process trap. Trap is optional 2nd-commit backstop only, never the guarantee."
+  - D2: "Liveness authority = process cwd inside worktree path (lsof -a -d cwd -Fpn global pass, prefix-match), NOT mtime, NOT bare pgrep on lane name. Fail-closed to ALIVE if lsof missing/errors."
+  - D3: "When a PID handle is already recorded (dispatcher's handle=PID=...), use kill -0 on it directly — do not re-derive liveness from argv patterns for that case."
+  - D4: "A lane with multiple recorded handles is ALIVE if ANY pid is alive; DEAD only if ALL are dead."
+  - D5: "Never a bare unquoted \$pids loop (zsh word-split trap) — iterate via array or while-read <<<. Suite must run under both bash and zsh and fail if they disagree."
+  - D6: "Commit message token for the new sweeper is '(ORPHAN)', distinct from pc_stop_gate_autocommit's '(STOP-GATE)', so leadv2-dispatch-code.sh:3175's exact-string grep and lane-liveness L11 'landed' heuristic stay unaffected."
+  - D7: "Reuse lib/leadv2-mission-writeset.sh for scope resolution and copy pc_stop_gate_autocommit's temp-index (GIT_INDEX_FILE / read-tree HEAD / add / diff --cached --quiet) discipline verbatim from leadv2-dispatch-product-close.sh:1990-2020. Do not reinvent or rewrite that logic's semantics."
+  - D8: "Out-of-scope dirty paths (not in LANE_WRITES) go to a distinct 'orphan-quarantine/<lane>' branch, journaled, never merged into the lane's own branch history."
+  - D9: "Checkpoint-then-sweep ordering is load-bearing: the checkpointer must run BEFORE leadv2-merged-worktree-sweep.sh's sweep logic and before leadv2-phase8-close.sh:654's sweep block (b413968c discard-then-remove incident)."
+  - D10: "Negative control mutation must be INSIDE the body of lv2_orphan_checkpoint_lane(), never at file top level: (1) --untracked-files=all -> --untracked-files=no must turn A1/A2 RED; (2) optional: deleting the diff --cached --quiet guard must turn A4 RED."
+  - D11: "EXTRA_SUITE_MAP rows are APPEND-ONLY at the end of the existing block in tests/run-all.sh (~line 134+). Never reorder existing rows."
+  - D12: "--dry-run and LEADV2_ORPHAN_CHECKPOINT=0 must both produce a one-flag rollback (no commits made)."
+
+off_limits:
+  - plugins/leadv2/scripts/leadv2-dispatch-code.sh
+  - plugins/leadv2/scripts/lib/leadv2-route-arbiter.sh
+  - plugins/leadv2/scripts/leadv2-claude-profile-select.sh
+  - tests/known-red-suites.txt
+  - plugins/leadv2/scripts/leadv2-dispatch-product-close.sh   # read-only reference for verbatim pattern only, do not edit
+  - plugins/leadv2/scripts/leadv2-lane-liveness.sh             # read-only; add a new signal file instead, do not retune existing thresholds/verdict strings
+  - plugins/leadv2/scripts/leadv2-worktree-cleanup.sh          # read-only; do not loosen any protection gate
+  - plugins/leadv2/scripts/lib/leadv2-worktree-protected.sh
+  - docs/leadv2/**
+  - docs/LEAD_V2_STATE.md
+  - docs/handoff/dispatch-nw*
+  - crontab/launchd installation (file a scheduled-decisions row instead, do not install)
+  - merging any lane branch to main
+
+research:
+  - docs/handoff/WAVE4/shared-constraints.md   # READ FIRST: three-dot deletion check, negative control inside function body, EXTRA_SUITE_MAP append-only
+  - lib/leadv2-worker-epilogue.sh:85-114
+  - leadv2-dispatch-product-close.sh:1909-2020 (pc_stop_gate_autocommit + temp-index pattern), :2583,2612,2665
+  - leadv2-turncap-checkpoint-commit.sh
+  - leadv2-lane-liveness.sh (read-only reference: :84, :890-895, :997, :108-110)
+  - leadv2-worktree-cleanup.sh (read-only reference: :170, :196, :216-221, :239-241, :471)
+  - leadv2-dispatch-code.sh (read-only reference only: :3158-3185, :3175, :3498-3503)
+  - lib/leadv2-mission-writeset.sh
+  - plugins/leadv2/hooks/leadv2-merged-worktree-sweep.sh
+  - leadv2-phase8-close.sh:654
+
+plan:
+  steps:
+    - step: 1
+      description: "Build lib/leadv2-lane-worker-alive.sh: lv2_lane_cwd_prime (one global lsof -a -d cwd -Fpn pass, timeout-bounded) + lv2_lane_worker_alive <wt_path> (prefix-match cwd). Also expose a PID-handle check (kill -0) for when a handle is already recorded, and a multi-handle ANY-alive rule. Fail-closed to ALIVE on lsof error/missing/timeout. No bare unquoted \$var loops — bash 3.2 compatible."
+      reads: [lib/leadv2-worker-epilogue.sh, leadv2-lane-liveness.sh, leadv2-dispatch-product-close.sh]
+      writes: [plugins/leadv2/scripts/lib/leadv2-lane-worker-alive.sh]
+    - step: 2
+      description: "Build leadv2-orphan-checkpoint.sh per-worktree loop (a-g) as specified in the mission brief: skip alive, skip clean, resolve scope via leadv2-mission-writeset.sh, in-scope commit / out-of-scope quarantine via temp-index copied from pc_stop_gate_autocommit, distinct (ORPHAN) message, journal + summary, --dry-run / LEADV2_ORPHAN_CHECKPOINT=0 rollback, print the exact resume command per checkpointed lane."
+      reads: [lib/leadv2-mission-writeset.sh, leadv2-dispatch-product-close.sh, lib/leadv2-lane-worker-alive.sh]
+      writes: [plugins/leadv2/scripts/leadv2-orphan-checkpoint.sh]
+    - step: 3
+      description: "Wire the checkpointer BEFORE sweep logic in both leadv2-merged-worktree-sweep.sh (hook) and leadv2-phase8-close.sh:654 block. Ordering must be checkpoint-then-sweep."
+      reads: [plugins/leadv2/hooks/leadv2-merged-worktree-sweep.sh, leadv2-phase8-close.sh]
+      writes: [plugins/leadv2/hooks/leadv2-merged-worktree-sweep.sh, leadv2-phase8-close.sh]
+    - step: 4
+      description: "Write test-leadv2-orphan-checkpoint.sh covering A1-A6 acceptance cases plus the two false-answer/liveness cases from the lead addenda (false zero, false life, mirror-dead, several-handles-one-alive) and the zsh-vs-bash disagreement check. Stub only lsof (one level lower), never the checkpoint function itself. Run under both bash and zsh. Include the negative-control mutation/revert cycle with pasted exit codes."
+      reads: [plugins/leadv2/scripts/tests/test-leadv2-orphan-checkpoint.sh]
+      writes: [plugins/leadv2/scripts/tests/test-leadv2-orphan-checkpoint.sh]
+    - step: 5
+      description: "Append the 5 EXTRA_SUITE_MAP rows at end of block in tests/run-all.sh (never reorder). Prove selection via tests/run-all.sh --scope changed output."
+      reads: [tests/run-all.sh]
+      writes: [tests/run-all.sh]
+    - step: 6
+      description: "OPTIONAL 2nd commit: arm EXIT trap in lib/leadv2-worker-epilogue.sh + one line each in glm-coder.sh, kimi-coder.sh, freepool-coder.sh, claude-subsession.sh, as a cheap backstop only (never the guarantee)."
+      reads: [lib/leadv2-worker-epilogue.sh]
+      writes: [lib/leadv2-worker-epilogue.sh, glm-coder.sh, kimi-coder.sh, freepool-coder.sh, claude-subsession.sh]
+
+acceptance: |
+  A1 SIGKILL worker -> checkpoint commits dirty tracked+untracked files, no manual git command.
+  A2 whole process-group killed -> same assertion (the 7-lane case).
+  A3 idempotent -> exactly ONE (ORPHAN) commit across 2 runs, 2nd run exits 0 skipped_clean.
+  A4 clean lane -> rev-parse HEAD unchanged, no empty commit.
+  A5 live worker (cwd inside worktree) -> skipped_alive, nothing committed.
+  A6 out-of-scope dirty file -> lands on orphan-quarantine/<lane>, NOT lane branch.
+  Plus: false-zero, false-life, mirror-dead, several-handles-one-alive liveness cases named individually.
+  Plus: negative control RED (mutation) then GREEN (revert) with pasted exit codes, bash AND zsh.
+  Plus: tests/run-all.sh --scope changed output showing the new suite selected via all 5 EXTRA_SUITE_MAP rows.
