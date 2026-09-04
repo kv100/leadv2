@@ -53,9 +53,17 @@ role=os.environ['ROUTE_ARBITER_ROLE']; free_ok=os.environ.get('ROUTE_ARBITER_FRE
 # audit|safety set. Any OTHER value (a future caller, a typo) falls open to
 # `code` rather than refusing -- this is a second, defensive layer under the
 # matrix rows, never the caller's only path to a capable cell.
-KNOWN_KINDS={'code','docs','review','plan','audit','safety','fanout-class-funnel','backlog-pump'}
-kind=str(d.get('kind','code')).lower()
+KNOWN_KINDS={'code','docs','review','plan','audit','safety','fanout-class-funnel','backlog-pump','build','recon'}
+# ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01 (founder 2026-09-04): the lead-facing
+# spelling is `work_kind` -- task-judge.sh already emits build|review|diagnose|docs
+# under that key. `kind` stays accepted for the existing dispatch-code callers.
+# `build` folds onto the existing `code` cells, so build routing is unchanged by
+# construction. `recon` (read-only exploration) is a first-class kind with its own
+# cheap matrix rows (config/leadv2-routing.yaml), not a code branch.
+kind=str(d.get('work_kind') or d.get('kind') or 'code').lower()
 if kind not in KNOWN_KINDS: kind='code'
+MATRIX_KIND={'build':'code'}  # recon keeps its own name -- it has its own rows
+mkind=MATRIX_KIND.get(kind,kind)
 # T17 fix-round (M1): the full --task-class vocabulary is six values
 # (trivial|light|standard|heavy|strategic|bulk, dispatch-code.sh usage line
 # 5350); the matrix only expresses three buckets. Map every real value
@@ -76,7 +84,9 @@ size=SIZE_MAP.get(size_raw,'standard')
 _prot_flag=bool(d.get('protected'))
 _hard_flag=any(bool(d.get(k)) for k in ('safety','publish','ui_judgment'))
 protected=_prot_flag or _hard_flag
-writes_prod = kind not in ('review','audit','plan')
+# recon is read-only exploration: it never writes production code, so the
+# protected-lane rule must not ban a cheap untrusted arm from it.
+writes_prod = kind not in ('review','audit','plan','recon')
 require_trusted = _hard_flag or (_prot_flag and writes_prod)
 allowed_raw=d.get('allowed_arms')
 allowed={str(a) for a in allowed_raw} if isinstance(allowed_raw, list) else None
@@ -210,7 +220,7 @@ else:
 # descriptor flag is conservative: test_only defaults false and the floor
 # remains exactly as before.
 test_only=bool(d.get('test_only'))
-floor_applies = (size_raw in ('standard','heavy','strategic') and kind == 'code' and not test_only) if floor_mode=='bulk_only' else False
+floor_applies = (size_raw in ('standard','heavy','strategic') and mkind == 'code' and not test_only) if floor_mode=='bulk_only' else False
 def ufmt():
     util_part=' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else '%d'%u[p]) for p in ('glm','codex','claude','freepool'))
     reset_part=' '.join('reset_%s=%s' % (p, ('%.2fh_%s' % (_uraw[p]['hours_to_reset'], _uraw[p]['reset_basis'])) if _uraw[p].get('hours_to_reset') is not None else 'n/a') for p in ('glm','codex','claude','freepool'))
@@ -246,13 +256,38 @@ cells=((data.get('router_v2') or {}).get('capability_matrix') or [])
 # ladder, so no caller-side change is needed for the split itself.
 complexity=str(d.get('complexity','unknown')).lower()
 duration_class=str(d.get('duration_class','unknown')).lower()
-capable=[c for c in cells if kind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not require_trusted or c.get('protected',False)) and (allowed is None or c.get('arm') in allowed)]
+capable=[c for c in cells if mkind in c.get('kinds',[]) and size in c.get('sizes',[]) and (not require_trusted or c.get('protected',False)) and (allowed is None or c.get('arm') in allowed)]
+# ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01: the decision journal is the
+# enforcement-side record. The spawn gate (PreToolUse Agent) distinguishes
+# "consulted, decision=X" from "no decision" by the PRESENCE of a fresh,
+# arm!=refuse record for the spawn's subtype -- the predicate is the absence
+# of a record, never a name list of subtypes/models/providers.
+import time
+def _record(arm, model, tier, reason):
+    try:
+        _jf_path=os.environ.get('LEADV2_ROUTE_ARBITER_DECISIONS_FILE') or os.path.join(os.environ.get('TMPDIR','/tmp'),'leadv2-route-arbiter-decisions.jsonl')
+        os.makedirs(os.path.dirname(_jf_path) or '.',exist_ok=True)
+        if os.path.exists(_jf_path) and os.path.getsize(_jf_path)>262144:
+            try:
+                with open(_jf_path) as _old: _lines=_old.readlines()
+                with open(_jf_path,'w') as _new: _new.writelines(_lines[len(_lines)//2:])
+            except Exception:
+                pass
+        _rec={'ts':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'ts_epoch':int(time.time()),
+              'role':role,'work_kind':kind,'subtype':str(d.get('subtype','')),
+              'model_requested':str(d.get('model_requested','')),'arm':arm,'model':model,
+              'tier':tier,'reason':reason,'task':str(d.get('task',''))[:200]}
+        with open(_jf_path,'a') as _jf: _jf.write(json.dumps(_rec)+'\n')
+    except Exception:
+        pass
 if not capable:
-    print('arm=refuse model=none tier=none reason=no_capable_cell chain= %s' % ufmt())
+    _record('refuse','none','none','no_capable_cell')
+    print('arm=refuse model=none tier=none reason=no_capable_cell kind=%s chain= %s' % (kind,ufmt()))
     raise SystemExit(68)
 ok=[c for c in capable if not capped(c.get('provider'))]
 if not ok:
-    print('arm=refuse model=none tier=none reason=all_arms_capped chain= %s' % ufmt())
+    _record('refuse','none','none','all_arms_capped')
+    print('arm=refuse model=none tier=none reason=all_arms_capped kind=%s chain= %s' % (kind,ufmt()))
     raise SystemExit(3)
 # FP-08 fix-round (H1): demote freepool in the dimension the selector ACTUALLY
 # ranks by -- effective cost, the sort's dominant key. +100 clears the whole
@@ -322,7 +357,7 @@ def _effort_row_matches(row):
     if row.get('default'): return True
     if 'tags' in row:
         if not (set(row.get('tags') or []) & set(w.get('tags') or [])): return False
-    if 'kinds' in row and kind not in (row.get('kinds') or []): return False
+    if 'kinds' in row and mkind not in (row.get('kinds') or []): return False
     if 'protected' in row and bool(row['protected']) != protected: return False
     return True
 effort='medium'
@@ -380,6 +415,18 @@ else:
 _w_reset=('%.2fh' % _w_info['hours_to_reset']) if _w_info.get('hours_to_reset') is not None else 'n/a'
 _quota = ' remaining=%s reset_in=%s reset_basis=%s' % (_w_remaining, _w_reset, _w_info.get('reset_basis','n/a'))
 _wait = (' wait_applied=%s' % ','.join(_waited)) if _waited else ''
-print('arm=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s%s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_quota,_wait))
+_record(w['arm'],w['model'],w.get('tier','standard'),'cheapest_capable')
+# ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01: the decision line names the kind
+# it routed for -- a decision that cannot be read back is not a decision.
+print('arm=%s kind=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_quota,_wait))
 PY
 }
+
+# ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01: CLI consult entry. The lib stays
+# source-only for its existing callers (dispatch-code, product-close); invoked
+# directly it consults the arbiter and prints the decision line, which the
+# spawn gate's way-forward text hands to the lead:
+#   bash .../lib/leadv2-route-arbiter.sh worker '{"work_kind":"recon","size":"standard","subtype":"Explore","task":"map auth flow"}'
+if [[ "${BASH_SOURCE[0]}" == "${0}" && ( "${1:-}" == worker || "${1:-}" == reviewer ) ]]; then
+  route_arbiter "$1" "${2:-{\}}"; exit $?
+fi
