@@ -130,3 +130,33 @@ A sixth, adjacent form is worth keeping beside these because it inverts the dire
 be right. `REFUSE placement: lane_is_live verdict=starting:221` was the single refusal in a day of
 false ones that meant exactly what it said. So a refusal gets verified the same way a death does —
 by processes and files — and never dismissed by habit.
+
+## Built, correct, and addressed by a form that barely exists
+
+Three mechanisms were measured in one shift. None is broken. Each is nearly unreachable.
+
+| mechanism | state | reach |
+|---|---|---|
+| falsifiability gate (`leadv2-review-run.sh:1269`) | unconditional, checker present | **2.6%** of dispatches carry its decision line |
+| lead→worker channel (`leadv2-tell.sh` + PostToolUse hook) | built, atomic, acked once | **1.2%** of handoff directories are addressable |
+| editing a brief after dispatch | writes fine, rc=0 | **0%** of workers — the mission is snapshotted at spawn |
+
+We spent a night believing we lacked instruments. We had them; the addresses did not fit. The
+product writes by founder-id, observers address by dispatch-sig, and a third format — bare hex —
+appears almost nowhere. Adding one more accepted form to each caller produces a fourth
+representation and repeats the cause: **there must be one address resolver, and every caller must
+use it.**
+
+Two corollaries, both about output that is not bound to behaviour:
+
+- **A tool that prints its diagnosis where nobody reads it.** `leadv2-broad-status.sh` announces
+  `26 foreign lane row(s) not dispatched by this repo dropped` on stderr while the rendered board
+  says nothing — so the board reports "no lanes" when it means "no lanes of mine".
+- **A tool that prints a hint it will not accept.** `leadv2-tell.sh` refuses an id, then offers a
+  "Known tasks:" list built from the same directory, every entry of which its own validator
+  rejects. A hint that leads away is worse than no hint.
+
+And the reader-side rule that governs all of it: **a new state exists only as far as the last
+reader in the chain distinguishes it.** Teaching a writer to emit `unknown` changes nothing while a
+consumer still treats "not pass" as "fail". Enumerate the readers before changing the writer, and
+prove the distinction by mutating at the reader — not by reading the list.
