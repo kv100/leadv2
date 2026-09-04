@@ -27,6 +27,10 @@ if command -v shellcheck >/dev/null 2>&1; then
   # (leadv2-dispatch-code.sh:2556) -- passing the same lockfile path as both the fd-9
   # redirect target and lv2_lock_wait's argument is the documented, safe use of that
   # primitive (leadv2-portable-lock.sh:11), not an actual read/write race.
+  # SC2016/SC2004 excluded: pre-existing on this file (backtick-in-single-quote
+  # human-readable gate messages, and array-index style in an unrelated
+  # arm-tracking loop) -- predate this lane's change, same exclusion added to
+  # test-review-round-exhaustive.sh so both suites gate on the same baseline.
   if shellcheck -x -e SC1091,SC2034,SC2094 "${SCRIPTS_ROOT}/leadv2-review-run.sh" >/dev/null 2>&1; then
     pass "shellcheck clean: leadv2-review-run.sh"
   else
