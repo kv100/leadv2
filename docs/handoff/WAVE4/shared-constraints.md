@@ -202,3 +202,33 @@ This is why the precheck belongs before the result and not beside it. An accepta
 red is indistinguishable, at every surface we read, from an acceptance that went green honestly.
 The only thing that separates them is having watched the probe answer non-zero on a case known to
 be alive.
+
+# A convention that was found, not invented
+
+Our recurring family defect is a mechanism that is built, correct, and addressed by a form that
+barely exists — the falsifiability gate reaching 2.6% of rounds, the tell channel 1.2% of
+directories, a brief edited after dispatch reaching 0% of workers. Every instance had the same
+shape: a caller needed to name something, did not use the existing name, and minted a fourth
+representation of it.
+
+`GATE-UNKNOWN-MUST-NOT-KILL-A-ROUND-01` is the counter-example, and it is worth keeping precisely
+because it is rare. The lane had to give "the gate reached no verdict" a distinct exit code in
+`leadv2-phase8-close.sh`. The sibling path `leadv2-dispatch-product-close.sh` had already solved the
+same problem for its own timeout branch — `rc=124` → `status: unknown`, `_dl_note parked
+e2e_timeout`, **`exit 5`**. The lane adopted **that same 5** rather than picking a free number.
+
+The rule this instance supports:
+
+> Before you mint a representation, look for the one a sibling path already uses. Conventions in
+> this codebase are almost always found, not invented — and the cost of inventing is not paid by
+> you, it is paid by the next reader who has to learn that two paths say the same thing two ways.
+
+Two corollaries the same round produced, both about the limit of a fix at the writer:
+
+- **A new state exists only as far as the last reader distinguishes it.** `close-state.md`, the
+  marker this lane added, has zero readers anywhere in the plugin. It is a note for a human or the
+  next round — legitimate, but never acceptance evidence.
+- **Prove the consequence as state, not as wording.** The suite proved a log line and a marker file.
+  What actually makes the round resumable is ordering: `exit 5` fires before
+  `leadv2-phase8-assert.sh`, the writer of `phase8-passed.flag`, so no "finished" sentinel exists.
+  Assert the ordering; drop the message assertion and the claim must still stand.
