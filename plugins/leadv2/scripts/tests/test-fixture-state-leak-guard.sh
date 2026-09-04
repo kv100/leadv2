@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-dispatch-code leadv2-state-path
 # tests/test-fixture-state-leak-guard.sh -- SUITES-MUTATE-LIVE-CONTROL-PLANE-01.
 #
 # THE INCIDENT this guards: a fixture suite that `git init`s (or `git -C
