@@ -56,18 +56,25 @@ FAKEBIN="${SANDBOX}/fakebin"
 mkdir -p "${FAKEBIN}"
 cat > "${FAKEBIN}/ps" <<'PSSTUB'
 #!/usr/bin/env bash
-# Minimal stub: -o comm= -> never "claude"; -o ppid= -> 1 (terminates the
-# _lv2_durable_pid walk immediately); -o lstart= -> delegate to real ps so
-# birth-hash still varies per real pid (needed for cap/orphan sections).
-for a in "$@"; do
-  case "$a" in
-    comm=) echo "bash"; exit 0 ;;
-    ppid=) echo "1"; exit 0 ;;
+# Fully hermetic: host ps is unavailable inside this test sandbox.  The
+# synthetic lstart includes pid, so separate simulated leads have distinct
+# birth hashes while repeat observations of one pid remain stable.
+field=""; pid=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    comm=|ppid=|lstart=) field="$1" ;;
+    -p) shift; pid="${1:-}" ;;
   esac
+  shift
 done
-exec /bin/ps "$@"
+case "${field}" in
+  comm=) echo "bash" ;;
+  ppid=) echo "1" ;;
+  lstart=) printf 'Tue Jan 02 03:04:05 2024 %s\n' "${pid}" ;;
+esac
 PSSTUB
 chmod +x "${FAKEBIN}/ps"
+export PATH="${FAKEBIN}:${PATH}"
 
 # ── 1. Distinct owners: two real processes resolve to different ids ────────
 # Each resolver runs inside its own background job shell. The two job shells
@@ -82,7 +89,7 @@ chmod +x "${FAKEBIN}/ps"
 # construction was replaced rather than the zsh result tolerated.
 run_id_job() { # $1 = output file
   (
-    OUT="$(PATH="${FAKEBIN}:${PATH}" bash -c "source '${IDENTITY_SH}'; leadv2_lead_session_id" 2>/dev/null)" \
+    OUT="$(bash -c "source '${IDENTITY_SH}'; leadv2_lead_session_id" 2>/dev/null)" \
       && printf '%s' "${OUT}" > "$1"
   ) &
 }
