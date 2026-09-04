@@ -7868,7 +7868,13 @@ exit is treated as an incident."
     _arb_out="$(route_arbiter worker "${_arb_desc}")"; _arb_rc=$?
     _arb_arm="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*arm=\([^ ]*\).*/\1/p')"
     _arb_chain="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*chain=\([^ ]*\).*/\1/p')"
-    _arb_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*reason=\([^ ]*\).*/\1/p')"
+    # SMART-ARBITER-01: anchor the reason capture on a leading space boundary
+  # -- the bare `.*reason=` matched the LAST reason= token on the line, so
+  # whenever the arbiter emitted floor tokens the journal printed
+  # `reason=standard/code` (floor_reason's value) instead of
+  # reason=cheapest_capable -- 23 corrupted decision lines on 2026-09-04
+  # alone, the record a lead audits.
+  _arb_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*[[:space:]]reason=\([^ ]*\).*/\1/p')"
     _arb_util="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
     _arb_tier="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*tier=\([^ ]*\).*/\1/p')"
     _arb_model="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
