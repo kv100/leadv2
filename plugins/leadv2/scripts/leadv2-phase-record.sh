@@ -1003,6 +1003,13 @@ for w in (d.get('waivers_allowed') or []):
       # (classify at minimum), re-derives _lane_bootstrap=0 and enforces the
       # missing set above exactly as before.
       _emit "phase_precondition_bootstrap" "task=${sig8} class=${cls} would_be_missing=${csv}"
+      # PHASE-GATE-DEFAULT-CLASS-ESCAPES-IT-01 (B): the caller-side trace. _emit
+      # above reaches only an argv-agnostic stub under the tests; the real
+      # leadv2-journal.sh CLI is `append <task-id> <type> <text>`, so the event
+      # was dropped live (dispatch-96d97702, 2026-09-04: zero phase_precondition
+      # lines). Print the admission on stdout so _phase_precondition_guard can
+      # journal it through its own working emit.
+      printf 'admitted=bootstrap would_be_missing=%s\n' "$csv"
       exit 0
     fi
     printf 'missing=%s\n' "$csv"

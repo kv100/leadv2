@@ -40,3 +40,41 @@ mutations:
     patch: |
       hits = [it for it in items if isinstance(it, dict) and row_matches(it, founder)][:1]
     expected: killed
+
+  # PHASE-GATE-DEFAULT-CLASS-ESCAPES-IT-01 (2026-09-04) — the phase gate's
+  # permissive default and its silent passages.
+  - id: phase-gate-canonicalizes-class-before-mode
+    product_flow: "an unrecognized class spelling reaching the phase gate (ledger-borne lowercase heavy, garbage) is canonicalized and ENFORCED, never silently warned"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    anchor: |
+      cls="$(_lv2_class_canonical "${cls}")"
+    patch: |
+      cls="${cls}"
+    expected: killed
+
+  - id: phase-gate-warn-leaves-a-trace
+    product_flow: "warn mode journals phase_precondition_warn with class and missing phases on every rc=3 passage"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    anchor: |
+      && emit decision "phase_precondition_warn task=${sig8} class=${cls} missing=${missing_csv} mode=warn"
+    patch: |
+      && emit decision "phase_precondition_nowarn task=${sig8} class=${cls} missing=${missing_csv} mode=warn"
+    expected: killed
+
+  - id: phase-gate-light-trivial-keep-warn
+    product_flow: "Light/Trivial keep the historical warn default — the gate is correct, not merely strict"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    anchor: |
+      Light|Trivial)
+    patch: |
+      LightTrivialDisabled)
+    expected: killed
+
+  - id: phase-gate-pass-leaves-a-trace
+    product_flow: "a satisfied pass journals phase_precondition_pass; a bootstrap admission journals phase_precondition_bootstrap with would_be_missing"
+    file: plugins/leadv2/scripts/leadv2-dispatch-code.sh
+    anchor: |
+      emit decision "phase_precondition_pass task=${sig8} class=${cls} mode=${mode} scope=${scope}"
+    patch: |
+      : # pass trace removed
+    expected: killed
