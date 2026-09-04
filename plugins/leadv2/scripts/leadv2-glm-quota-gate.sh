@@ -28,6 +28,8 @@
 #   GLM_SKIP_QUOTA_GATE=1 bypass entirely (emergencies) — logs to stderr
 #   GLM_ALLOW_PEAK=1      allow launching during peak hours (P0 override)
 #   GLM_SIMULATE_UTC_HOUR 0-23  force the clock for testing peak behavior
+#   LEADV2_GLM_GATE_ARM <name>  the arm being launched (or $1); a flash arm is
+#                               allowed through peak, the regular GLM is not
 #   LEADV2_QUOTA_LIVE     override path to leadv2-quota-live.sh (tests)
 set -uo pipefail
 
@@ -82,6 +84,26 @@ peak_ends_at="10:00 UTC"
 cur_min="$(date -u +%M)"; cur_min=$((10#${cur_min}))
 mins_until_peak_ends=$(( (10 - cur_hour) * 60 - cur_min ))
 (( mins_until_peak_ends < 0 )) && mins_until_peak_ends=0
+
+# ── which arm is being launched (GLM-PEAK-RULE-IS-MODEL-BLIND-01) ────────────
+# Founder ruling 2026-09-04: in peak hours flash is allowed; the regular GLM is
+# peak-refused unless every other bucket can be proven unavailable. The
+# discriminator is the ARM NAME, never a model version literal — GLM versions
+# rotate ~monthly, so a "glm-5.3" needle would rot. The dispatcher already
+# distinguishes arm == glm from arm == glm-flash (leadv2-dispatch-code.sh);
+# the caller passes that name explicitly ($1 wins, then LEADV2_GLM_GATE_ARM).
+# A bare *flash* substring also admits the dispatcher's "glm-coder:glm-flash"
+# costlog form. No arm passed ⇒ treated as non-flash ⇒ pre-seam behaviour
+# byte-for-byte. "Every other bucket unavailable" is deliberately NOT guessed
+# here: this gate measures the GLM account, not the other providers'
+# capability, and treating a fail-open "unknown" Codex/Anthropic read as
+# "exhausted" would fire spuriously in exactly the network-blip case §3
+# protects. The documented last-resort path stays GLM_ALLOW_PEAK=1.
+GLM_GATE_ARM="${1:-${LEADV2_GLM_GATE_ARM:-}}"
+glm_gate_is_flash=0
+case "${GLM_GATE_ARM}" in
+  *flash*) glm_gate_is_flash=1 ;;
+esac
 
 # ── live GLM read (fails open on any error) ──────────────────────────────────
 glm_json="$("$LIVE" glm 2>/tmp/glm-gate-stderr.$$)"
@@ -163,20 +185,23 @@ fi
 
 # ── §2 peak awareness ────────────────────────────────────────────────────────
 if (( in_peak )); then
-  if [[ "${GLM_ALLOW_PEAK:-0}" != "1" ]]; then
+  if (( glm_gate_is_flash )); then
+    warn "PEAK (06:00–10:00 UTC, 3× token cost): arm '${GLM_GATE_ARM}' is a flash arm — allowed per founder ruling 2026-09-04. Quota OK (5h=${five_pct}% / weekly=${wk_pct}%)."
+  elif [[ "${GLM_ALLOW_PEAK:-0}" != "1" ]]; then
     peak_end_iso="$(_arm_cooldown_epoch_iso $(( $(_arm_cooldown_now_epoch) + mins_until_peak_ends * 60 )))"
     arm_cooldown_record glm peak_hours "$peak_end_iso"
     arm_cooldown_ladder_note glm peak_hours "$(arm_cooldown_state glm | awk '/^cooling / {print $2}')"
     cat >&2 <<EOF
 [glm-quota-gate] LEADV2_DISPATCH_REFUSED: peak_hours
-[glm-quota-gate] PEAK HOURS — GLM-5.2 costs 3× during 06:00–10:00 UTC (14:00–18:00 UTC+8).
+[glm-quota-gate] PEAK HOURS — regular GLM costs 3× during 06:00–10:00 UTC (14:00–18:00 UTC+8); flash arms are allowed.
   Peak ends in ~${mins_until_peak_ends} min (at ${peak_ends_at}). Quota is fine
   (5h=${five_pct}% / weekly=${wk_pct}%) but the 3× cost multiplier is in effect.
   For a genuine P0: re-run with GLM_ALLOW_PEAK=1. Otherwise wait until ${peak_ends_at}.
 EOF
     exit 2
+  else
+    warn "PEAK OVERRIDE active (GLM_ALLOW_PEAK=1): running at 3× cost. Peak ends in ~${mins_until_peak_ends} min. Quota OK (5h=${five_pct}% / weekly=${wk_pct}%)."
   fi
-  warn "PEAK OVERRIDE active (GLM_ALLOW_PEAK=1): running at 3× cost. Peak ends in ~${mins_until_peak_ends} min. Quota OK (5h=${five_pct}% / weekly=${wk_pct}%)."
 fi
 
 # ── allow ────────────────────────────────────────────────────────────────────

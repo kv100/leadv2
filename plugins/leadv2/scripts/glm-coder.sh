@@ -207,7 +207,11 @@ glm_launch_gate() {
   # then read a live spawn as not_live and re-spawned into its own lock
   # (lock_busy → glm-flash → spawn_failed). Gate chatter belongs on stderr;
   # the dispatcher scans stdout+stderr combined for REROUTE, so nothing is lost.
-  "$gate" >&2; local rc=$?
+  # GLM-PEAK-RULE-IS-MODEL-BLIND-01: tell the gate which arm this launch is.
+  # LEADV2_COSTLOG_ARM is "glm-coder:<arm>" from the dispatcher ("glm-flash"
+  # substring is what the gate matches on); GLM_MODEL covers direct invocations
+  # (GLM-53-FLASH-ARM-01: GLM_MODEL=…flash is the flash signal there).
+  LEADV2_GLM_GATE_ARM="${LEADV2_COSTLOG_ARM:-} ${GLM_MODEL:-}" "$gate" >&2; local rc=$?
   if (( rc != 0 )); then
     log_error "GLM quota gate refused this launch (code $rc) - reroute per the message above (leadv2-quota-live.sh for live numbers)."
     return "$rc"
