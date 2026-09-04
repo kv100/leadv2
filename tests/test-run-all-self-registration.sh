@@ -481,5 +481,38 @@ else
 $out"
 fi
 
+# ── every scan root that holds a declared suite must appear in the map ───────
+# SCAN-ROOT-CAN-BE-DROPPED-SILENTLY-01 (lead negative control, 2026-09-04).
+# scan_suite_triggers() walks four roots. Removing one of them from that list
+# is a parse-clean, behaviour-changing edit that this suite did not notice:
+# dropping "${ROOT}/tests" took the discovered map from 2 rows pointing into
+# tests/ to 0 — and the suite stayed 11/0. The suites that prove this whole
+# feature (test-run-all-self-registration.sh, test-run-all-carrier-map.sh)
+# live in exactly that root, so the silent failure mode is "CI stops selecting
+# the tests that guard self-registration" with nothing red to say so.
+#
+# The assertion is deliberately derived, not hardcoded: for each root that
+# exists AND contains at least one suite carrying a declaration, the map must
+# carry at least one row pointing into that root. A new root needs no edit
+# here; a dropped root reddens immediately.
+MAP_OUT="$( env LEADV2_RUN_ALL_LIST_TRIGGERS=1 bash "$RUN_ALL" 2>/dev/null )"
+root_miss=""
+root_checked=0
+for _r in "plugins/leadv2/scripts/tests" ".claude/scripts/tests" "plugins/leadv2/tests" "tests"; do
+  [[ -d "$ROOT/$_r" ]] || continue
+  grep -lE '^# run-all-triggers:' "$ROOT/$_r"/test-*.sh >/dev/null 2>&1 || continue
+  root_checked=$((root_checked + 1))
+  if ! printf '%s\n' "$MAP_OUT" | grep -qE "^[^:]+:${_r}/"; then
+    root_miss="${root_miss} ${_r}"
+  fi
+done
+if [[ $root_checked -eq 0 ]]; then
+  fail "scan roots: no root carries a declaration — discovery cannot be exercised at all"
+elif [[ -z "$root_miss" ]]; then
+  pass "scan roots: all $root_checked declaring root(s) contribute rows to the discovered map"
+else
+  fail "scan roots: declaring root(s) missing from the map:${root_miss} — scan_suite_triggers stopped walking a directory that holds declared suites"
+fi
+
 printf 'test-run-all-self-registration: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]
