@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh
+file=plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh
+anchor=s/git commit -qm "lane work" >\/dev\/null )/git commit -qm "lane work" --dry-run >\/dev\/null )/
+baseline_rc=0
+mutated_rc=2
+red_line=[TEST] SETUP-ERROR: C8b: no path-scoped commit for work.txt after construction
+diff_hash=f3a7f3661f31e59fa741c06048f61ab45e2ec1d03ebe95e30e208dd65562c989
+lane_diff_hash=a3efb2634d6ba67f2304b2ed91792fa1f1b4466fa19675adf75e8010b204936d

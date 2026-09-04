@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-reap-funnel-death-proof.sh
+file=plugins/leadv2/scripts/leadv2-dispatch-ledger.sh
+anchor=s#2>"${_dl_ge}")" || grc=$?#2>/dev/null || true)"#
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: C9a: expected unknown when the commit lookup fails, got: deadnoneunknown
+diff_hash=f6ed764d6eda5285941a2a4fbbf1436af6e61e5ba3123a5e4d86d981b93c0507
+lane_diff_hash=c8d6a3d8a521a4263fa3e97cd8efb08fa5e1b2633fcc695baa7bd9679f73690e
