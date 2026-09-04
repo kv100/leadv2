@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01).
+# SMART-ARBITER-01: this suite had NO trigger line, so a leadv2-route-arbiter.sh
+# change selected every OTHER arbiter suite (effort-routing, quota-reset,
+# symlink-install all declare the trigger) except its own primary suite.
+# run-all-triggers: leadv2-route-arbiter leadv2-routing.yaml leadv2-dispatch-code.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"

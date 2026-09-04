@@ -403,18 +403,40 @@ price=ecost(ok[0]); alternatives=[c for c in ok if ecost(c)==price and c['arm']!
 w=alternatives[0] if alternatives else ok[0]
 # EFFORT-IS-NOT-WIRED-01: resolve effort from the SAME winning cell `w`, in
 # the SAME call that picked the arm -- never a second decision. Data-driven
-# (config/leadv2-routing.yaml router_v2.effort_matrix), never a name literal:
-# rows match on the winning cell's tags/kind/protected, first match wins, a
-# missing/empty matrix (or no match) falls open to 'medium' (never crashes).
+# (config/leadv2-routing.yaml router_v2.effort_matrix), never a name literal.
+#
+# SMART-ARBITER-01 / EFFORT-FOLLOWS-THE-ARM-NOT-THE-TASK-01 (founder
+# 2026-09-04): the old lookup let the WINNING ARM's tags decide effort --
+# glm-flash won a standard build on cost and its `cheap`/`mechanical` tags
+# then forced effort=low (43 live build decisions at effort=low,
+# 2026-09-03/04; the founder named exactly this outcome). Circular: B was
+# derived from A's outcome instead of the task's own properties. Rows are
+# now TWO PHASES: a row keyed ONLY on task-descriptor properties
+# (kinds/sizes/complexity/duration_class/protected/default -- `protected`
+# stays the TASK flag, exactly as before) is evaluated FIRST; rows that key
+# on the arm too (`tags`) are a FALLBACK consulted only when no task row
+# matched. Config order is preserved within each phase, and a task-keyed row
+# ANYWHERE in the matrix outranks any arm-keyed row -- so a yaml edit alone
+# (no script change) still retunes every outcome, the anti-hardcoding
+# property test-effort-routing.sh case (6) grades.
+TASK_EFFORT_KEYS={'kinds','sizes','complexity','duration_class','protected','default'}
+def _effort_row_is_task_keyed(row):
+    return set(row.keys()) <= (TASK_EFFORT_KEYS | {'effort'})
 def _effort_row_matches(row):
     if row.get('default'): return True
     if 'tags' in row:
         if not (set(row.get('tags') or []) & set(w.get('tags') or [])): return False
     if 'kinds' in row and mkind not in (row.get('kinds') or []): return False
+    if 'sizes' in row and size not in (row.get('sizes') or []): return False
+    if 'complexity' in row and complexity not in (row.get('complexity') or []): return False
+    if 'duration_class' in row and duration_class not in (row.get('duration_class') or []): return False
     if 'protected' in row and bool(row['protected']) != protected: return False
     return True
+_effort_rows=((data.get('router_v2') or {}).get('effort_matrix') or [])
+_task_rows=[r for r in _effort_rows if _effort_row_is_task_keyed(r)]
+_arm_rows=[r for r in _effort_rows if not _effort_row_is_task_keyed(r)]
 effort='medium'
-for _row in ((data.get('router_v2') or {}).get('effort_matrix') or []):
+for _row in (_task_rows+_arm_rows):
     if _effort_row_matches(_row):
         effort = _row.get('effort', 'medium'); break
 # FP-08 fix-round (M3/L1/L2): atomic write (same-dir tempfile + os.replace),

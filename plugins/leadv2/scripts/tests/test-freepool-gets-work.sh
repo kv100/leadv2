@@ -18,8 +18,13 @@ ROUTING="${SCRIPTS_DIR}/../config/leadv2-routing.yaml"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/freepool-gets-work.XXXXXX")"
 MUTATED_DISPATCH="${SCRIPTS_DIR}/.test-freepool-gets-work-mutated.$$.sh"
 MUTATED_ARBITER="${TMP}/leadv2-route-arbiter-floor-mutated.sh"
-MUTATED_OVERRIDE_DISPATCH="${TMP}/leadv2-dispatch-class-override-mutated.sh"
-cleanup() { rm -rf "${TMP}"; rm -f "${MUTATED_DISPATCH}"; }
+# Lives in SCRIPTS_DIR like MUTATED_DISPATCH above, NOT in TMP: dispatch reads
+# its dispatchable-arm metadata relative to its own location (importlib), and a
+# TMP copy degrades to the fallback arm list and refuses all_arms_capped —
+# rc=4 with routing evidence intact, which is a fixture artifact, not the
+# suppression this control exists to prove (SMART-ARBITER-01, HEAD-bytes probe).
+MUTATED_OVERRIDE_DISPATCH="${SCRIPTS_DIR}/.test-freepool-gets-work-override-mutated.$$.sh"
+cleanup() { rm -rf "${TMP}"; rm -f "${MUTATED_DISPATCH}" "${MUTATED_OVERRIDE_DISPATCH}"; }
 trap cleanup EXIT
 
 PASS=0; FAIL=0
@@ -161,6 +166,20 @@ else
   else
     fail 'negative control C: forced-floor mutation did not make floor exemption assertion red' "rc=${floor_mutated_rc} $(tail -n 8 "${TMP}/floor-mutated.log")"
   fi
+fi
+
+# SMART-ARBITER-01 (journal reason token): the floor-applied run above is
+# exactly the case where the arbiter's decision line carries BOTH `reason=`
+# and `floor_reason=` tokens. The route_resolved journal line must keep
+# reason=cheapest_capable -- dispatch-code's reason capture used a greedy
+# `.*reason=` that matched floor_reason's value LAST on the line, printing
+# `reason=standard/code` instead (23 corrupted live decision lines on
+# 2026-09-04 alone -- the record a lead audits).
+if printf '%s\n' "${floor_mutated_out}" | grep -q 'route_resolved by=arbiter .*[[:space:]]reason=cheapest_capable' \
+   && ! printf '%s\n' "${floor_mutated_out}" | grep -q 'route_resolved by=arbiter .*[[:space:]]reason=standard/'; then
+  pass 'floor-applied route_resolved keeps reason=cheapest_capable (floor_reason no longer overwrites it)'
+else
+  fail 'floor-applied route_resolved reason token corrupted' "$(grep -m1 'route_resolved by=arbiter' "${TMP}/floor-mutated.log" || true)"
 fi
 
 # The classifier, rather than the caller's hint, remains authoritative. Its
