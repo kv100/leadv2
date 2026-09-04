@@ -332,21 +332,28 @@ fi
 # subprocess.  Codex provider jobs remain included for backward compatibility.
 LANE_LIVENESS_JSON="$(LEADV2_PROJECT_ROOT="$PROJECT_ROOT" bash "${SCRIPT_DIR}/leadv2-lane-liveness.sh" --project-root "$PROJECT_ROOT" --all --json 2>/dev/null || printf '%s' '{"lanes":[],"jobs":[],"availability":"unavailable"}')"
 
-# ── LANE-OBSERVABILITY-02 change 3: foreign-repo lane gather ────────────────
-# Runs only on a FULL --json call with the flag on. Foreign repos come from
-# leadv2-status-projects.sh's TSV (slug \t state_dir \t repo_root); own repo is
-# whatever root -ef PROJECT_ROOT. Each foreign repo is read PURE-READ: its
-# active.yaml straight from the TSV state_dir (NO leadv2-state-path.sh call —
-# the resolver mkdirs/symlinks into the foreign repo's control plane by
-# design, which a status probe must never trigger) plus pid/log-mtime liveness
-# computed in-process. A failed/timeout read appends one repo_read_error row;
-# the loop below ALWAYS continues to the next repo. When no foreign repo
-# yields a row, both temp files are dropped and the main snapshot runs
-# UNMODIFIED (byte-identical single-repo output).
+# ── LANE-OBSERVABILITY-02 change 3 / D5-STATUS-SURFACES-ONE-SOURCE-01: ─────
+# foreign-repo lane gather. Runs only on a FULL --json call with the flag on.
+# Foreign repos come from leadv2-status-projects.sh's TSV (slug \t state_dir
+# \t repo_root); own repo is whatever root -ef PROJECT_ROOT. Each foreign
+# repo's active.yaml is read straight from the TSV state_dir (pure read, no
+# leadv2-state-path.sh call for THAT read), but its VERDICT now comes from
+# the same engine an own-repo lane uses — leadv2-lane-liveness.sh --all
+# --json — never a cheaper inline pid/log-mtime guess. That asymmetry (an
+# own-repo lane judged by the authoritative engine, a foreign one judged by a
+# guess) was the one real gap D5's brief identified: a foreign lane idle
+# 13-26min could read "active" off a fresh stream mtime while an own-repo
+# lane at the same age already read "stale"/"dead". A failed/timed-out read
+# now degrades every task_id in that repo to status "unknown" (never a
+# silent guess, never zeroed) instead of one bare repo_read_error row masking
+# every lane in that repo. The loop below ALWAYS continues to the next repo.
+# When no foreign repo yields a row, both temp files are dropped and the main
+# snapshot runs UNMODIFIED (byte-identical single-repo output).
 _LV2_FOREIGN_ROWS_FILE=""
 _LV2_MAIN_JSON_TMP=""
 if [[ "$ALL_REPOS" == "1" && "$JSON_MODE" == "1" && -z "$SINCE" ]]; then
   _LV2_PROJECTS_SH="${SCRIPT_DIR}/leadv2-status-projects.sh"
+  _LV2_LIVENESS_BIN="${LEADV2_LANE_LIVENESS_BIN:-${SCRIPT_DIR}/leadv2-lane-liveness.sh}"
   if [[ -f "${_LV2_PROJECTS_SH}" ]]; then
     _LV2_OWN_PHYS="$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P || true)"
     _LV2_FOREIGN_ROWS_FILE="$(mktemp "${TMPDIR:-/tmp}/lv2-foreign-rows.XXXXXX")"
@@ -356,10 +363,10 @@ if [[ "$ALL_REPOS" == "1" && "$JSON_MODE" == "1" && -z "$SINCE" ]]; then
       _lv2_rroot_phys="$(cd "${_lv2_repo_root}" 2>/dev/null && pwd -P || true)"
       [[ -n "${_lv2_rroot_phys}" && "${_lv2_rroot_phys}" == "${_LV2_OWN_PHYS}" ]] && continue
       LEADV2_FOREIGN_STATE_DIR="${_lv2_state_dir}" \
-      python3 - "${_lv2_slug}" "${_lv2_repo_root}" "${_lv2_state_dir}" "${_LV2_FOREIGN_ROWS_FILE}" <<'PYF' 2>/dev/null || true
-import datetime, glob, json, os, sys, time
+      python3 - "${_lv2_slug}" "${_lv2_repo_root}" "${_lv2_state_dir}" "${_LV2_FOREIGN_ROWS_FILE}" "${_LV2_LIVENESS_BIN}" <<'PYF' 2>/dev/null || true
+import datetime, json, os, subprocess, sys
 
-slug, repo_root, state_dir, out_path = sys.argv[1:5]
+slug, repo_root, state_dir, out_path, liveness_bin = sys.argv[1:6]
 
 def now_utc():
     return datetime.datetime.now(datetime.timezone.utc)
@@ -379,15 +386,19 @@ def emit(row):
     with open(out_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(row) + "\n")
 
-# hard per-repo timeout: a foreign repo read that wedges (NFS hang, huge
-# registry) yields ONE error row after 15s, never a wedged beat.
-# LEADV2_FOREIGN_SCAN_DEADLINE_S is a test knob for that error path (0 with
-# at least one session row -> immediate deadline exceeded).
+# Hard per-repo timeout: a foreign lane-liveness.sh call that wedges (lock
+# contention, NFS hang) is killed and every lane in that repo degrades to
+# "unknown" after this many seconds — never a wedged beat. Live verification
+# on this machine (2026-09-03, D5 brief): a standalone lane-liveness.sh --all
+# --json call hung the FULL 20s at ~0% CPU (blocked, not computing) under
+# real lock contention — a monotonic in-process deadline cannot interrupt a
+# blocked subprocess, only subprocess.run's own timeout= (which kills the
+# child) can. LEADV2_FOREIGN_SCAN_DEADLINE_S is the existing test knob for
+# this path (0 -> immediate timeout, exercised by test-status-single-source.sh).
 try:
     _deadline_s = max(0, int(os.environ.get("LEADV2_FOREIGN_SCAN_DEADLINE_S", "15")))
 except ValueError:
     _deadline_s = 15
-_DEADLINE = time.monotonic() + _deadline_s
 
 try:
     active_yaml = os.path.join(state_dir, "active.yaml")
@@ -402,65 +413,82 @@ try:
     except Exception:
         pass  # no registry is an empty lane set, not a repo_read_error
 
-    lane_fresh_s = 120
-    try:
-        lane_fresh_s = max(0, int(os.environ.get("LEADV2_LANE_FRESH_S", "120")))
-    except ValueError:
-        pass
+    if not session_by_task:
+        sys.exit(0)  # nothing to verdict — no rows, no liveness call spent
 
     now = now_utc()
-    for tid, s in sorted(session_by_task.items()):
-        if time.monotonic() > _DEADLINE:
-            emit({"repo": slug, "error": "repo_read_error", "data": "foreign scan deadline exceeded"})
-            break
-        pid = s.get("pid")
-        pid_alive = False
-        if isinstance(pid, int):
-            try:
-                os.kill(pid, 0)
-                pid_alive = True
-            except (ProcessLookupError, PermissionError):
-                pid_alive = False
-        # stream freshness: newest mtime under the lane's log_path / worktree
-        # docs/leadv2 stream surfaces — pure stat, pure read.
-        age_s = None
-        stream_bytes = None
-        log_path = s.get("log_path")
-        cands = []
-        if log_path:
-            p = log_path if os.path.isabs(log_path) else os.path.join(repo_root, log_path)
-            cands.append(p)
-        hdir = os.path.join(repo_root, "docs", "handoff", str(tid))
-        if os.path.isdir(hdir):
-            cands.extend(glob.glob(os.path.join(hdir, "*.stream.jsonl")))
-            cands.extend(glob.glob(os.path.join(hdir, "*.out")))
-        newest = None
-        for p in cands:
-            try:
-                st = os.stat(p)
-            except OSError:
-                continue
-            if newest is None or st.st_mtime > newest:
-                newest = st.st_mtime
-                stream_bytes = st.st_size
-        if newest is not None:
-            age_s = max(0, int(time.time() - newest))
-        if pid_alive or (isinstance(age_s, (int, float)) and age_s <= lane_fresh_s):
-            status = "active"
-        elif isinstance(age_s, (int, float)) and age_s <= 86400:
-            status = "stale"
+
+    # ONE lane-liveness.sh --all call resolves every task_id in this foreign
+    # repo, matching the own-repo call above (line ~333) — never one call per
+    # lane. --no-codex: codex-job liveness is a separate process model, out
+    # of scope for this aggregator (D5 brief, "Out of scope"), and skipping
+    # it removes the one internal subprocess (`codex-task.sh status`) most
+    # likely to itself hang.
+    liveness_by_id = {}
+    timeout_hit = False
+    error_reason = None
+    try:
+        proc = subprocess.run(
+            ["bash", liveness_bin, "--project-root", repo_root, "--all", "--json", "--no-codex"],
+            capture_output=True, text=True, timeout=max(1, _deadline_s),
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            payload = json.loads(proc.stdout)
+            for row in (payload.get("lanes") or []):
+                if isinstance(row, dict) and row.get("lane"):
+                    liveness_by_id[str(row["lane"])] = row
         else:
-            status = "dead"
+            error_reason = f"exit {proc.returncode}"
+    except subprocess.TimeoutExpired:
+        timeout_hit = True
+    except Exception as e:
+        error_reason = f"{e.__class__.__name__}: {str(e)[:180]}"
+
+    for tid, s in sorted(session_by_task.items()):
+        where = s.get("where") or ("headless" if s.get("daemon_mode") else "terminal")
         started = parse_iso(s.get("last_pulse_at")) or parse_iso(s.get("started_at"))
         minutes = max(0, int((now - started).total_seconds() // 60)) if started else "?"
-        where = s.get("where") or ("headless" if s.get("daemon_mode") else "terminal")
-        status_reason = (
-            f"foreign repo {slug}; pid={'alive' if pid_alive else 'dead'}"
-            + (f"; stream_age={age_s}s" if age_s is not None else "; no stream")
-        )
+        phase = s.get("phase") or "?"
+
+        if timeout_hit:
+            # D5 lead addendum: unknown must render as unknown everywhere —
+            # never alive, never dead, never a stale cached guess.
+            status = "unknown"
+            status_reason = f"unknown:timeout; foreign repo {slug} lane-liveness.sh exceeded {_deadline_s}s"
+            age_s = None
+        elif error_reason is not None:
+            status = "unknown"
+            status_reason = f"unknown:error; foreign repo {slug} lane-liveness.sh {error_reason}"
+            age_s = None
+        else:
+            lane = liveness_by_id.get(tid)
+            if lane is None:
+                # --all reads this SAME active.yaml, so a task_id present
+                # here but absent from its output is a genuine gap — never
+                # silently guessed at.
+                status = "unknown"
+                status_reason = f"unknown:not_in_liveness_output; foreign repo {slug}"
+                age_s = None
+            elif str(lane.get("verdict") or "") == "child":
+                continue  # sub-agent prepass, not its own lane — never counted
+            else:
+                verdict = str(lane.get("verdict") or "dead:unresolved")
+                if verdict == "alive":
+                    status = "active"
+                elif verdict.startswith("silent:"):
+                    status = "stale"
+                elif verdict == "dead" or verdict.startswith("dead:"):
+                    status = "dead"
+                else:
+                    status = "unknown"
+                status_reason = f"{verdict}; source={lane.get('source') or '?'}"
+                if lane.get("log_path"):
+                    status_reason += f"; log={lane['log_path']}"
+                age_s = lane.get("age_s")
+
         emit({
             "task_id": tid,
-            "phase": s.get("phase") or "?",
+            "phase": phase,
             "minutes_in_phase": minutes,
             "status": status,
             "status_reason": status_reason,
@@ -469,7 +497,7 @@ try:
             "protocol_version": s.get("protocol_version", 1),
             "repo": slug,
             "age_s": age_s,
-            "stream_bytes": stream_bytes,
+            "stream_bytes": None,
         })
 except Exception as e:  # never zero the table on one bad repo
     emit({"repo": slug, "error": "repo_read_error",

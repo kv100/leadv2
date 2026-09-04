@@ -80,16 +80,13 @@ sessions:
     last_pulse_at: 2026-08-25T10:01:00Z
 EOF
 
-# Liveness stub: valid JSON, verdict dead (liveness is another script's
-# contract — an EMPTY stdout (e.g. /bin/true) makes the main snapshot's
-# json.loads raise and exit 1 silently, which is not the shape under test).
-cat > "$STUBS/liveness.sh" <<'EOF'
-#!/usr/bin/env bash
-printf '{"lanes":[],"jobs":[],"availability":"unavailable"}\n'
-exit 0
-EOF
-chmod +x "$STUBS/liveness.sh"
-
+# D5-STATUS-SURFACES-ONE-SOURCE-01: the foreign-repo gather now calls the
+# REAL leadv2-lane-liveness.sh (--project-root <foreign root> --all --json
+# --no-codex) instead of an inline pid/log-mtime guess — LEADV2_STATE_BASE is
+# already pinned to this sandbox above, so the real engine resolves each
+# foreign repo's active.yaml correctly. No blanket stub here; S3 below
+# overrides LEADV2_LANE_LIVENESS_BIN with a narrower stub for its one
+# broken-repo scenario only.
 snap() {  # [extra args...]
   # LEADV2_LANES_ALL_REPOS=1 pins the script's documented default explicitly:
   # ~/.claude/settings.json ships LEADV2_LANES_ALL_REPOS=0 globally on this
@@ -99,7 +96,6 @@ snap() {  # [extra args...]
   # behaviour. An explicit "$@" flag (e.g. --no-all-repos in S2) still wins,
   # since CLI parsing runs after this env default inside the script.
   env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_BASE="$STATE" \
-    LEADV2_LANE_LIVENESS_BIN="$STUBS/liveness.sh" \
     LEADV2_LANES_ALL_REPOS=1 \
     bash "$LANES_SNAPSHOT_SH" --json "$@" 2>/dev/null
 }
@@ -167,11 +163,16 @@ else
   bad "S2: single-repo output diverged: $(diff <(printf '%s' "$A") <(printf '%s' "$B") | head -5)"
 fi
 
-# ── S3: one foreign repo fails -> one error row, the OTHER repo's lanes stay ─
-# repoB's registry carries a pid too large for pid_t: the per-session read
-# raises inside the foreign scan and the WHOLE repoB read degrades to one
-# repo_read_error row — while healthy repoA keeps its lane row (a sub-read
-# failure is loud, never a zeroed table).
+# ── S3: one foreign repo's liveness call fails -> its lane(s) degrade to
+# "unknown" (never a silent guess, never zeroed) while the OTHER repo's
+# lanes still resolve via the real engine. D5-STATUS-SURFACES-ONE-SOURCE-01:
+# the foreign gather's own inline os.kill (which used to raise on the old
+# fixture's oversized pid, producing one blanket repo_read_error row that hid
+# the WHOLE repo) is gone — pid handling now lives inside
+# leadv2-lane-liveness.sh, called once per foreign repo. A stub
+# (LEADV2_LANE_LIVENESS_BIN) fails ONLY for foreignrepo-b's project-root and
+# delegates to the real binary otherwise, so this asserts the new contract:
+# a broken repo's lane is still named and visible ("unknown"), not hidden.
 FOREIGN_B="$TMP/foreignrepo-b"
 mkdir -p "$FOREIGN_B"; git -C "$FOREIGN_B" init -q
 # recreate the healthy foreign repo (S2 removed it for its single-repo diff)
@@ -181,21 +182,36 @@ mk_slug foreignrepo-b "$FOREIGN_B"
 cat > "$STATE/foreignrepo-b/active.yaml" <<EOF
 sessions:
   - task_id: dispatch-bad00002
-    pid: 99999999999999999999999
+    pid: null
     phase: build
     started_at: 2026-08-25T10:00:00Z
 EOF
-S3_JSON="$(snap)"
+cat > "$STUBS/liveness-partial-fail.sh" <<EOF
+#!/usr/bin/env bash
+root=""
+prev=""
+for a in "\$@"; do
+  [[ "\$prev" == "--project-root" ]] && root="\$a"
+  prev="\$a"
+done
+if [[ "\$root" == "$FOREIGN_B" ]]; then
+  exit 1
+fi
+exec bash "${SCRIPT_DIR}/leadv2-lane-liveness.sh" "\$@"
+EOF
+chmod +x "$STUBS/liveness-partial-fail.sh"
+S3_JSON="$(env LEADV2_LANE_LIVENESS_BIN="$STUBS/liveness-partial-fail.sh" snap)"
 S3_VERDICT="$(printf '%s' "$S3_JSON" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 t = d.get("table") or []
-err = [r for r in t if r.get("error") == "repo_read_error" and r.get("repo") == "foreignrepo-b"]
+bad = [r for r in t if r.get("task_id") == "dispatch-bad00002" and r.get("repo") == "foreignrepo-b"]
 ok_lanes = [r for r in t if r.get("task_id") == "dispatch-fee00001" and r.get("repo") == "foreignrepo"]
-print("ok" if err and ok_lanes else "bad err=%d healthy=%d" % (len(err), len(ok_lanes)))
+bad_unknown = bad and bad[0].get("status") == "unknown" and "unknown:error" in (bad[0].get("status_reason") or "")
+print("ok" if bad_unknown and ok_lanes else "bad bad=%r healthy=%d" % (bad, len(ok_lanes)))
 ' 2>/dev/null || true)"
 if [[ "$S3_VERDICT" == "ok" ]]; then
-  ok "S3: failed foreign repo -> one repo_read_error row, healthy repo's lane still in table"
+  ok "S3: broken foreign repo's lane degrades to status=unknown (named, not hidden); healthy repo's lane still in table"
 else
   bad "S3: $S3_VERDICT"
 fi
