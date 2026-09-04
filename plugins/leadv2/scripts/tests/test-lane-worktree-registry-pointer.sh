@@ -83,6 +83,68 @@ live_active_yaml_path() { # <lane_path> <state-base> -> prints resolved live pat
   PROJECT_ROOT="${lp}" LEADV2_STATE_BASE="${sbase}" "${STATE_PATH_SH}" --no-link active.yaml 2>/dev/null
 }
 
+# ── resolver-failure fixture (proves the NEUTRALIZATION write, not just the
+#    symlink happy path) ─────────────────────────────────────────────────────
+#
+# degrade_frozen_registry_copy() computes `script_dir` from its OWN
+# BASH_SOURCE[0] and calls "$script_dir/leadv2-state-path.sh". To force that
+# resolution to fail for exactly ONE cmd_ensure invocation -- without touching
+# the product script itself -- we source a MIRROR of the scripts directory
+# (every sibling file/dir symlinked through, so all other relative lookups
+# still work) in which leadv2-state-path.sh alone is replaced by a stub that
+# is present and executable but exits non-zero with empty stdout. That is a
+# real production failure mode of the resolver: e.g. a corrupt
+# state-paths.yaml override or an unreadable ~/.claude/leadv2-state directory
+# makes leadv2-state-path.sh exit non-zero without printing a path, which is
+# exactly the "$(...)" capture degrade_frozen_registry_copy tests with
+# `[[ -z "${live:-}" ]]`. This only affects the ONE cmd_ensure call sourced
+# from the mirror; every other case in this suite still sources the real,
+# unmodified leadv2-lane-worktree.sh / leadv2-state-path.sh pair.
+REAL_SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+make_broken_resolver_mirror() { # -> prints mirror dir
+  local m f base
+  m="$(mktemp -d)"
+  FIXTURES+=("${m}")
+  for f in "${REAL_SCRIPTS_DIR}"/*; do
+    base="$(basename "${f}")"
+    [[ "${base}" == "tests" ]] && continue
+    if [[ "${base}" == "leadv2-state-path.sh" ]]; then
+      {
+        printf '#!/usr/bin/env bash\n'
+        printf '# test stub for WORKTREE-CREATION-RESURRECTS-THE-FROZEN-REGISTRY-01:\n'
+        printf '# present + executable, but always fails to resolve (empty stdout,\n'
+        printf '# non-zero exit) -- simulates a corrupt state-paths.yaml override or\n'
+        printf '# an unreadable ~/.claude/leadv2-state dir in production.\n'
+        printf 'exit 1\n'
+      } > "${m}/${base}"
+      chmod +x "${m}/${base}"
+    else
+      ln -s "${f}" "${m}/${base}"
+    fi
+  done
+  printf '%s\n' "${m}"
+}
+
+run_ensure_mirror() { # <repo-dir> <task-id> <state-base> <outf> <errf> <mirror-dir>
+  local d="$1" tid="$2" sbase="$3" outf="$4" errf="$5" mirror="$6"
+  ( cd "${d}" && LEADV2_PROJECT_ROOT="${d}" LEADV2_WORKTREE_DIR="${d}/lane-worktrees" \
+      LEADV2_CODEX_WORKTREE_TRUST=off LEADV2_LANE_WORKTREE_ERRF="${errf}" \
+      LEADV2_LANE_RESURRECT_GUARD=0 LEADV2_STATE_BASE="${sbase}" \
+      bash -c "source '${mirror}/leadv2-lane-worktree.sh'; cmd_ensure '${tid}'" ) >"${outf}" 2>"${errf}"
+}
+
+assert_neutralized() { # <label> <frozen-file-path>
+  local label="$1" frozen="$2"
+  if [[ ! -e "${frozen}" ]]; then
+    pass "${label} -- frozen copy removed entirely (no phantom file left)"
+  elif [[ -f "${frozen}" ]] && grep -q "NOT-A-REGISTRY" "${frozen}" 2>/dev/null; then
+    pass "${label} -- frozen copy overwritten with NOT-A-REGISTRY sentinel"
+  else
+    fail "${label} -- frozen copy survived unneutralized: $(cat "${frozen}" 2>/dev/null | head -1)"
+  fi
+}
+
 outf="$(mktemp)"; errf="$(mktemp)"
 
 # ── 1: fresh-branch site (worktree add -b) -- BEFORE shape is a frozen plain
@@ -123,6 +185,17 @@ else
   fail "2b: expected skip-worktree flag 'S', got '${skip_flag}' (git ls-files -v)"
 fi
 
+# ── 2d: fresh-branch site, resolver-failure -- degrade_frozen_registry_copy
+#      must neutralize (sentinel or delete) the frozen copy, never leave the
+#      stale YAML looking authoritative ───────────────────────────────────────
+d="$(new_repo_with_frozen_registry)"
+mirror="$(make_broken_resolver_mirror)"
+sbase="${d}/state-base"
+run_ensure_mirror "${d}" "TASK-FRESH-BROKEN" "${sbase}" "${outf}" "${errf}" "${mirror}"
+lane_path="$(cat "${outf}")"
+WT_CLEANUP+=("${d}:${lane_path}")
+assert_neutralized "2d: AFTER (fresh-branch site, resolver failure)" "${lane_path}/docs/leadv2/active.yaml"
+
 # ── 3: attach-to-existing-branch site -- BEFORE shape ───────────────────────
 d="$(new_repo_with_frozen_registry)"
 ( cd "${d}" && git branch before-attach-branch main )
@@ -157,6 +230,18 @@ if [[ -n "${expect_target2}" ]] && [[ "${actual_target2}" == "${expect_target2}"
 else
   fail "4: got symlink target='${actual_target2}' want='${expect_target2}' (stderr: $(cat "${errf}"))"
 fi
+
+# ── 4b: attach-to-existing-branch site, resolver-failure -- same neutralization
+#      assertion, forced via the same broken-resolver mirror, on the
+#      "branch survived a prior aborted run" path ──────────────────────────
+d="$(new_repo_with_frozen_registry)"
+( cd "${d}" && git branch worktree-TASK-ATTACH-BROKEN main )
+mirror2="$(make_broken_resolver_mirror)"
+sbase2b="${d}/state-base"
+run_ensure_mirror "${d}" "TASK-ATTACH-BROKEN" "${sbase2b}" "${outf}" "${errf}" "${mirror2}"
+lane_path2b="$(cat "${outf}")"
+WT_CLEANUP+=("${d}:${lane_path2b}")
+assert_neutralized "4b: AFTER (attach-to-existing-branch site, resolver failure)" "${lane_path2b}/docs/leadv2/active.yaml"
 
 # ── 5: a branch that never tracked active.yaml is left alone (no-op path) ──
 d="$(mktemp -d)"; FIXTURES+=("${d}")
