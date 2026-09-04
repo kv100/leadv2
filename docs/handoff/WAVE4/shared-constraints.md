@@ -160,3 +160,31 @@ And the reader-side rule that governs all of it: **a new state exists only as fa
 reader in the chain distinguishes it.** Teaching a writer to emit `unknown` changes nothing while a
 consumer still treats "not pass" as "fail". Enumerate the readers before changing the writer, and
 prove the distinction by mutating at the reader — not by reading the list.
+
+## Derive the probe's ability to answer, not the answer
+
+"Derive a zero a second way" is not enough, and half a night was spent proving it: **a zero derived
+twice by the same blind probe is false twice.** The rule that survives is one step earlier —
+
+> Before believing a zero, show the probe can return non-zero at all, on a case known to be alive.
+
+The case that forced the correction had four layers of blindness stacked in one check, over a branch
+with no defects in it: a mutation applied by `perl` that turned out inert; a condition established
+with `touch`, which git does not see while `--scope changed` asks git precisely that; `run-all.sh`'s
+`root_escape` guard aborting the run before selection because on macOS `/tmp` is a symlink to
+`/private/tmp`
+
+```text
+rc=2  run-all: FATAL root_escape expected=/tmp/… resolved=/private/tmp/…
+```
+
+and, on top, the whole thing reading as an honest negative result about the code under test. Moving
+the same tree to `/private/tmp` gave `rc=0` and 109 suites selected. Nothing in the output said
+"path defect"; it said "not selected", which is a sentence about the code.
+
+Two operational consequences:
+
+- **Temporary trees for acceptance go in `/private/tmp`, never `/tmp`.** Any check that creates a
+  worktree, a fixture repo, or an `mktemp` sandbox and then runs `run-all.sh` inherits this.
+- **When an acceptance says "not selected", check the path before the code.** The abort and the
+  substantive answer are indistinguishable at the call site, and only one of them is about your work.
