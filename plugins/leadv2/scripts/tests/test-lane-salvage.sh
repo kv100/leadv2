@@ -88,6 +88,32 @@ _run_salvage() { # <repo> <lane> <outfile>
   printf '%s' "$rc"
 }
 
+# Installs a post-checkout hook in fixture repo $1 that fires EXACTLY ONCE
+# (guarded by a flag file under the shared .git dir, so a later checkout
+# inside the same run is a no-op) and, on that one firing, commits directly
+# onto main from main's OWN worktree. `git worktree add` runs a checkout
+# internally, so the hook fires the instant the salvage tool creates its
+# throwaway worktree — strictly after MAIN_BEFORE is captured (main() reads
+# it before resolving the lane), strictly before guard_main_untouched's
+# first post-loop re-read. No sleep, no second process: the tool's own git
+# call is what advances main.
+_install_main_move_hook() { # <repo>
+  local repo="$1"
+  mkdir -p "$repo/.git/hooks"
+  cat > "$repo/.git/hooks/post-checkout" <<'HOOK'
+#!/usr/bin/env bash
+FLAG="$(git rev-parse --git-common-dir)/lane-salvage-test-hook-fired"
+[[ -f "$FLAG" ]] && exit 0
+touch "$FLAG"
+MAIN_WT="$(git worktree list --porcelain | awk '/^worktree /{d=$2} /^branch refs\/heads\/main$/{print d}')"
+if [[ -n "$MAIN_WT" ]]; then
+  printf 'main moved mid-salvage\n' >> "$MAIN_WT/shared.txt"
+  git -C "$MAIN_WT" commit -qam "main moved mid-salvage (test hook)"
+fi
+HOOK
+  chmod +x "$repo/.git/hooks/post-checkout"
+}
+
 # ---------------------------------------------------------------------------
 # Case 1: carry. Anchor + two work commits + a side branch merged in. Main
 # advances after the fork. Expect green, cut from CURRENT main, anchor and
@@ -546,6 +572,105 @@ test_already_on_main_drops_empty() {
 }
 
 # ---------------------------------------------------------------------------
+# Case 9: main advances mid-carry (the promise guard_main_untouched exists to
+# catch — a concurrent lead committing to main while a salvage runs). Expect
+# refusal: non-zero exit, main_moved message, and the tool's own reported
+# `now=` reading matches the sha the hook actually produced (i.e. the tool
+# is reporting reality, not fabricating a mismatch). The salvage worktree it
+# had created is torn down on the way out; the salvage BRANCH ref is not —
+# measured below and reported as a follow-up, not asserted away.
+# ---------------------------------------------------------------------------
+test_main_moved_aborts() {
+  local repo out rc main_before main_after
+
+  repo="$(_mk_repo)"
+  out="$(mktemp)"
+
+  git -C "$repo" checkout -qb worktree-LANE9
+  printf 'anchor\n' > "$repo/docs/anchor.txt"
+  git -C "$repo" add -A && git -C "$repo" commit -qm "lane LANE9 anchor"
+  printf 'delta v1\n' > "$repo/plugins/delta.txt"
+  git -C "$repo" add -A && git -C "$repo" commit -qm "feat: delta module"
+  git -C "$repo" checkout -q main
+
+  _install_main_move_hook "$repo"
+
+  main_before="$(_main_sha "$repo")"
+  rc="$(_run_salvage "$repo" LANE9 "$out")"
+  main_after="$(_main_sha "$repo")"
+
+  if [[ "$rc" -ne 0 ]] && grep -q 'main_moved' "$out"; then
+    _ok "case 9: main-moved mid-carry refuses with non-zero exit + main_moved message"
+  else
+    _fail "case 9: expected non-zero exit + main_moved message, got rc=$rc: $(tail -5 "$out")"
+  fi
+
+  if [[ "$main_after" != "$main_before" ]]; then
+    _ok "case 9: fixture actually advanced main (case is not vacuous)"
+  else
+    _fail "case 9: main never moved — hook did not fire, this case proves nothing"
+  fi
+
+  if grep -q "now=${main_after}" "$out"; then
+    _ok "case 9: tool's guard reads main truthfully (before=<old> now=<the hook's sha>)"
+  else
+    _fail "case 9: tool's reported now= does not match actual post-hook main sha: $(grep -o 'now=[a-f0-9]*' "$out")"
+  fi
+
+  if ! git -C "$repo" worktree list --porcelain 2>/dev/null | grep -q 'lane-salvage\.LANE9'; then
+    _ok "case 9: throwaway salvage worktree was torn down on abort"
+  else
+    _fail "case 9: salvage worktree still registered after abort"
+  fi
+
+  if git -C "$repo" show-ref --verify -q refs/heads/salvage/LANE9; then
+    _ok "case 9 (measured, not asserted-good): salvage/LANE9 branch ref survives the abort — leftover-branch cleanup is a follow-up, out of this round's scope"
+  else
+    _fail "case 9: salvage/LANE9 unexpectedly absent — re-verify against a fresh probe before trusting this line"
+  fi
+
+  rm -rf "$repo" "$out"
+}
+
+# ---------------------------------------------------------------------------
+# Case 10 (mirror of case 9): same lane shape, hook NOT installed — main
+# never moves. The path must still complete and carry the work. Without
+# this mirror, case 9 could pass on a tool that always refuses.
+# ---------------------------------------------------------------------------
+test_main_not_moved_still_carries() {
+  local repo out rc main_before main_after
+
+  repo="$(_mk_repo)"
+  out="$(mktemp)"
+
+  git -C "$repo" checkout -qb worktree-LANE10
+  printf 'anchor\n' > "$repo/docs/anchor.txt"
+  git -C "$repo" add -A && git -C "$repo" commit -qm "lane LANE10 anchor"
+  printf 'delta v1\n' > "$repo/plugins/delta.txt"
+  git -C "$repo" add -A && git -C "$repo" commit -qm "feat: delta module"
+  git -C "$repo" checkout -q main
+
+  main_before="$(_main_sha "$repo")"
+  rc="$(_run_salvage "$repo" LANE10 "$out")"
+  main_after="$(_main_sha "$repo")"
+
+  if [[ "$rc" -eq 0 ]] && grep -q 'verdict=salvaged_green ' "$out" \
+     && grep -q 'carried=1/1 ' "$out"; then
+    _ok "case 10: mirror — no main move, salvaged_green carried=1/1"
+  else
+    _fail "case 10: expected salvaged_green carried=1/1 rc=0, got rc=$rc: $(tail -5 "$out")"
+  fi
+
+  if [[ "$main_after" == "$main_before" ]]; then
+    _ok "case 10: main untouched when it never moves"
+  else
+    _fail "case 10: main moved unexpectedly with no hook installed"
+  fi
+
+  rm -rf "$repo" "$out"
+}
+
+# ---------------------------------------------------------------------------
 
 if ! bash -n "$SALVAGE"; then
   _fail "bash -n leadv2-lane-salvage.sh"
@@ -562,6 +687,8 @@ test_red_until_suites_prove_green
 test_code_conflict_in_run_all_refused
 test_worktree_head_preferred
 test_already_on_main_drops_empty
+test_main_moved_aborts
+test_main_not_moved_still_carries
 
 printf 'lane-salvage: pass=%d fail=%d\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
