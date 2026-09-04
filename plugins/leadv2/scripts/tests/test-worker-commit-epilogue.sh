@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: glm-coder.sh leadv2-worker-epilogue.sh
 # test-worker-commit-epilogue.sh — offline tests for WORKERS-MUST-COMMIT-01:
 # leadv2_worker_commit_epilogue() in lib/leadv2-worker-epilogue.sh, sourced
 # by glm-coder.sh's finalize path right before the outcome classifier.

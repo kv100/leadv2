@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-dispatch-code leadv2-route-arbiter
 # FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01 -- the arbiter must never pick an arm the
 # router already excluded in the SAME dispatch.
 #

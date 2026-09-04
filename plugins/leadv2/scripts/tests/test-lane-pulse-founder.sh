@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-broad-status.sh leadv2-lane-pulse-watch.sh
 # tests/test-lane-pulse-founder.sh — MON-PULSE-01 fix-round 2 (H4): the lane
 # pulse has a DEMONSTRATED route to the founder.
 #

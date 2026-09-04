@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-broad-status.sh
 # tests/test-status-repo-scoped.sh — PULSE-REPO-SCOPED-03 (dispatch-82bb6960).
 #
 # Founder report (2026-08-31): opening a session in ~/Projects/platform, the

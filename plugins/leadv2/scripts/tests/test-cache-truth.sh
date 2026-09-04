@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# CACHE-TRUTH-01 R4: the coder arms' stream files are the tool's INPUTS — a
+# change to an arm runner can change the stream shape the TSV grades, so each
+# arm stem maps to the cache-truth suite too (R3 review finding 2: only the
+# tool stem was mapped; --scope changed silently dropped the suite for arm
+# edits).
+# run-all-triggers: claude-subsession.sh freepool-coder.sh glm-coder.sh kimi-coder.sh leadv2-cache-truth.sh
 # Offline contract tests for CACHE-TRUTH-01's leadv2-cache-truth.sh.
 #
 # Every assertion below has a NEGATIVE CONTROL: the tool's ratio numerator is

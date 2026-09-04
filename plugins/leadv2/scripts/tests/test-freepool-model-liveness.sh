@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: freepool-arm.yaml freepool-coder leadv2-freepool-model-select
 # test-freepool-model-liveness.sh — FREEPOOL-MAKE-IT-EARN-ITS-KEEP-01 round 2.
 #
 # Measured 2026-08-30 against the real proxy: an HTTP 200 with

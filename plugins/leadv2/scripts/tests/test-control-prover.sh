@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-control-prover leadv2-control-prover.sh leadv2-review-run.sh
 # tests/test-control-prover.sh — GATE-PROVES-ITS-OWN-CONTROL-01
 #
 # Proves lib/leadv2-control-prover.sh against fixture lanes ONLY — never a

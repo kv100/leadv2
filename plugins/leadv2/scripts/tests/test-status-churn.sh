@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-broad-status.sh leadv2-lane-liveness.sh leadv2-lane-status-line-tail.sh leadv2-lanes-snapshot.sh leadv2-spawn-rate.sh leadv2-status-cache.sh leadv2-status-collector.sh
 # test-status-churn.sh — STATUS-CHURN-01 acceptance for the shared
 # status-snapshot cache (scripts/lib/leadv2-status-cache.sh).
 #

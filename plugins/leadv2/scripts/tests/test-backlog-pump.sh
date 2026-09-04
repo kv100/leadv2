@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-backlog-pump
 # tests/test-backlog-pump.sh — BACKLOG-PUMP-01 + C-1 (LANE-CONCURRENCY-IN-PLUGIN)
 # coverage.
 #

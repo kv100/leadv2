@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: freepool-arm.yaml leadv2-dispatch-code leadv2-route-arbiter
 # FREEPOOL-MUST-ACTUALLY-GET-WORK-01: a Standard lane whose declared writes
 # are only tests plus docs/handoff must be admitted to freepool. The +100
 # capability floor remains for production Standard work; the arbiter receives

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-dispatch-code.sh leadv2-red-proof
 # test-red-proof-gate.sh — DISPATCH-CLOSE-GATE-01 Mechanism 2 unit coverage for
 # lib/leadv2-red-proof.sh (named-fix extraction, RED-artifact backing) and the
 # leadv2-dispatch-code.sh `close-gate` CLI entry point.

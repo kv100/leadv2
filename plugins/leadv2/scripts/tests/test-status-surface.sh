@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-status-surface.sh
 # tests/test-status-surface.sh — SUPERVISOR-STATUS-SURFACE-02 DoD test.
 #
 # Harness style of test-acceptance-shape.sh: set -uo pipefail, PASS/FAIL

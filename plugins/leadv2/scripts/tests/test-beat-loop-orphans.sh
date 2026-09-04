@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-dispatch-code.sh leadv2-hook-session-kind.sh leadv2-lane-pulse-watch.sh leadv2-single-lead-beat-loop.sh
 # tests/test-beat-loop-orphans.sh — BEAT-LOOP-ORPHANS-01 (fix-round 2)
 #
 # Locks both orphan mechanisms:

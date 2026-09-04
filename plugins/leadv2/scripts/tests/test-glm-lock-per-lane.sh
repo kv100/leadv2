@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: glm-coder.sh
 # tests/test-glm-lock-per-lane.sh — GLM-ARM-THROUGHPUT-01.
 #
 # glm-coder.sh's GLM arm lock guards a WORKING TREE, not a repository:

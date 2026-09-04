@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-admission-class leadv2-dispatch-code
 # SAFETY-PIN-SECOND-DOOR-01 -- the L2 task judge can flag risk_class=
 # safety_publish_payments (its own deterministic keyword estimator, or a live
 # haiku call) without the caller ever passing --safety/--risk-tags. Before

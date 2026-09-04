@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: glm-coder.sh
 # test-lane-outcome.sh — offline tests for N-3 (TURN-CAP-OUTCOME-01):
 # leadv2-lane-outcome.sh, the join of bound-detection + N-2 work-delta into
 # one of the three outcome tokens (completed | died-with-work | died-clean).

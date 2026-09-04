@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: glm-coder.sh leadv2-dispatch-code.sh
 # tests/test-glm-effort-wiring.sh — GLM-EFFICIENCY-01 (founder order 2026-09-02).
 #
 # RESOLVED_EFFORT is WIRED into the GLM spawn (was EFFORT-IS-NOT-WIRED-01:

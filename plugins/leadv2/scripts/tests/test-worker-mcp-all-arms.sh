@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: codex-task.sh freepool-coder kimi-coder leadv2-codex-planner.sh leadv2-dispatch-code leadv2-worker-mcp.sh
 # tests/test-worker-mcp-all-arms.sh — WORKER-MCP-ALL-ARMS-01.
 #
 # freepool-coder.sh and kimi-coder.sh must resolve+attach the SAME role-scoped

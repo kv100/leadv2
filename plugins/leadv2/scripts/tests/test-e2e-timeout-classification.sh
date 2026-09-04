@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-dispatch-product-close.sh leadv2-phase8-e2e-gate.sh
 # tests/test-e2e-timeout-classification.sh — E2E-TIMEOUT-REPORTED-AS-REGRESSION-01
 #
 # rc=124 is timeout(1)'s (or the portable fallback watcher's) exit code for a

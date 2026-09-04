@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-repo-install.sh
 # test-repo-install-tracked-settings.sh — INSTALLER-REFUSAL-URGENT-01
 #
 # leadv2-repo-install.sh must never write its env block into a git-TRACKED

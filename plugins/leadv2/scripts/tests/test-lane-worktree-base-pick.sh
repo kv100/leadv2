@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# HANDOFF-DOCS-INVISIBLE-IN-LANES-01 (second cause): pick_base() base-ref
+# selection lives in leadv2-lane-worktree.sh but the suite proving it is
+# named for the behaviour (base-pick), not the carrier — self-select by
+# convention (test-leadv2-lane-worktree.sh) would never match it.
+# run-all-triggers: leadv2-lane-worktree
 # test-lane-worktree-base-pick.sh — HANDOFF-DOCS-INVISIBLE-IN-LANES-01 (second cause)
 #
 # pick_base() in leadv2-lane-worktree.sh used to unconditionally prefer

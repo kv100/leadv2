@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-admission-class leadv2-brain-record leadv2-dispatch-code
 # test-brain-class-live.sh — BRAIN-CLASS-LIVE-01 coverage: the judge-derived
 # class is a FLOOR over a declared --task-class, every decision is journaled
 # in the class_escalated/class_floor_held/declared_fallback vocabulary, and

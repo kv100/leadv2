@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-phase8-assert.sh leadv2-tasks-lib.sh
 # tests/test-phase8-a2-id-resolution.sh — CLOSE-GATE-A2-ID-SCHEME-MISMATCH-01.
 #
 # Defect: A2 in leadv2-phase8-assert.sh compared `row.id == task_id` where

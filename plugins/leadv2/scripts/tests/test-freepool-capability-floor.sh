@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: freepool-arm.yaml leadv2-dispatch-code leadv2-route-arbiter
 # FP-08 fix-round 1 (2026-08-28) — capability-floor suite for the freepool arm.
 #
 # Contract: for raw --task-class standard|heavy|strategic (`code` kind) the

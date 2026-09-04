@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-admission-class
 # test-admission-class.sh — PHASE-DISCIPLINE-01 D1/D2 unit coverage for
 # lib/leadv2-admission-class.sh (the shared TaskEstimate->class map,
 # escalate-only explicit flag, and the admission receipt).

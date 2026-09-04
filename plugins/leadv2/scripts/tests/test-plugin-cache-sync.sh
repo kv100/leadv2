@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# LEADV2-HOOK-CACHE-DEPLOY-01: the cache-sync script's behavioural lock is a
+# differently-named suite (no test-leadv2-plugin-cache-sync stem match).
+# run-all-triggers: leadv2-plugin-cache-sync.sh
 # test-plugin-cache-sync.sh — LEADV2-HOOK-CACHE-DEPLOY-01.
 #
 # Hermetic suite for leadv2-plugin-cache-sync.sh: the script must push the

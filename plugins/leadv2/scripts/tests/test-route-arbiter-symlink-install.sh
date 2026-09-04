@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-route-arbiter
 # test-route-arbiter-symlink-install.sh — PHASE-DISCIPLINE-01 D7 regression
 # fixture for 341b80a (route-arbiter resolves the PHYSICAL path under
 # per-file symlink installs; rc=65 fail-open everywhere).

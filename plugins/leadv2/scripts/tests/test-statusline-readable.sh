@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-lane-status-line-tail.sh leadv2-lane-status-line.sh
 # STATUSLINE-READABLE-01: red-first test for the founder's exact repro --
 # BASE claims width first, the ladder cannot drop a lane, the arm/model
 # vanishes at the first sign of pressure, labels are dispatch-id stems not

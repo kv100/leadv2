@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-lane-liveness.sh leadv2-lane-pulse-watch.sh
 # FORK-STORM-KILLS-HOOKS-01 — the watcher loop, consumer side + hygiene side.
 #
 # The closed loop (measured live 2026-09-01, docs/handoff/FORK-STORM-KILLS-HOOKS-01/

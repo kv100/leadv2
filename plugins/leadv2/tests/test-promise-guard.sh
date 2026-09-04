@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-promise-guard.sh
 # tests/test-promise-guard.sh — offline tests for hooks/leadv2-promise-guard.sh
 # Usage: bash tests/test-promise-guard.sh
 # Exit 0 = all pass; non-zero = failure count.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-gate1-prompt
 # test-gate1-discipline.sh — PHASE-DISCIPLINE-01 D4 coverage for
 # leadv2-gate1-prompt.sh: Heavy/high-risk NEVER auto-accepts in any mode
 # (DRY_RUN/BOT_MODE included), the async path is a BLOCKING leadv2-ask

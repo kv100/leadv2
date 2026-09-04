@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-lane-heartbeat.sh leadv2-lane-state.sh leadv2-watch-lifecycle.sh
 # tests/test-liveness-tristate-01.sh — LIVENESS-HAS-NO-SUITE-01.
 #
 # 2026-09-03: three sessions got the answer to "is this lane alive" wrong

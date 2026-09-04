@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# changed-scope triggers, self-registered (SD-SUITE-MAP-SERIALIZES-EVERY-WAVE-01, migrated from tests/run-all.sh EXTRA_SUITE_MAP; discovered by scan_suite_triggers):
+# run-all-triggers: leadv2-repo-install.sh
 # test-adoption-gate-passable.sh — ADOPTION-GUARANTEES-A-PASSABLE-GATE-01.
 #
 # Guarantees that leadv2-repo-install.sh leaves EVERY adopted repo's phase gate
