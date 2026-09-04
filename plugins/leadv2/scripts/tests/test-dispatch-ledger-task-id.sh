@@ -60,11 +60,29 @@ TMPDIR_ROOT="$(lv2_mktemp_dir "${RUN_ID}")"
 ROOT="${TMPDIR_ROOT}/repo"
 CACHE_DIR="${TMPDIR_ROOT}/cache"
 FAKE_SUBSESSION="${TMPDIR_ROOT}/fake-claude-subsession.sh"
+FAKE_GLM="${TMPDIR_ROOT}/fake-glm.sh"
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
 mkdir -p "${ROOT}/.claude/ref" "${ROOT}/docs/leadv2/.bus-offsets" "${ROOT}/platform"
 ( cd "${ROOT}" && git init -q && git config user.email test@example.com && git config user.name test \
   && printf 'seed\n' > seed.txt && git add seed.txt && git commit -qm seed )
+
+# This suite dispatches against its isolated repository.  A parent lead session can
+# export LEADV2_LANE_WORK_ROOT for its own linked worktree; without overriding it,
+# the dispatcher keys the reservation ledger to that inherited checkout instead of
+# this fixture's repo, making the assertions below read a different ledger.
+export LEADV2_LANE_WORK_ROOT="${ROOT}"
+# The fake launcher only proves its PID is alive; there is no provider adapter
+# for it to report an early verdict.  Skip the production-only 20s probe so
+# every fixture exercises its assertions within the test runner's timeout.
+export LEADV2_ARM_EARLY_VERDICT_S=0
+
+# The dispatcher derives its authoritative project root from its working directory
+# (and deliberately rejects a foreign environment root).  Run the remaining
+# fixture dispatches from the fixture repository so that guard and the explicit
+# lane-work-root override agree; otherwise a parent session's worktree becomes
+# the reservation target and a later fixture dispatch can wait on its lock.
+cd "${ROOT}"
 
 cat > "${ROOT}/.claude/ref/leadv2-routing.yaml" <<'YAML'
 router:
@@ -88,6 +106,21 @@ printf 'PID=%s LABEL=fake-lane SESSION_ID=fake-session\n' "${pid}"
 exit 0
 EOF
 chmod +x "${FAKE_SUBSESSION}"
+
+# The current routing fixture selects GLM.  It must satisfy the launcher's
+# bg/status protocol locally; stubbing only the Sonnet subsession launcher
+# allows the dispatcher to fall back to the real GLM provider launcher.
+cat > "${FAKE_GLM}" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  bg)     printf 'fake-glm-handle\n' ;;
+  status) exit 0 ;;
+  log|tail) : ;;
+  *)      exit 2 ;;
+esac
+EOF
+chmod +x "${FAKE_GLM}"
+export LEADV2_DISPATCH_GLM_BIN="${FAKE_GLM}"
 
 TASK_ID="N4-TESTRUNNER-FALSE-RED"
 mission="docs-only: dispatch-ledger-task-id $$ $(date +%s)"
