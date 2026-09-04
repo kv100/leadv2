@@ -104,6 +104,24 @@ _stamp_epoch() {
     && mv -f "${FOUNDER_STATUS_EPOCH_PATH}.tmp.$$" "$FOUNDER_STATUS_EPOCH_PATH" 2>/dev/null || true
 }
 
+# BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01: age of the confirmed write,
+# in seconds, sourced ONLY from FOUNDER_STATUS_EPOCH_PATH (the stamp written
+# by _stamp_epoch right after a successful mv of founder-status.md — see the
+# FRESH-VS-STALE RULE comment above). A missing or non-numeric epoch file is
+# treated as epoch 0 (1970), which makes the age enormous: fail SAFE toward
+# "maximally stale" rather than toward "fresh," because the caller of this
+# function is exactly the mechanism that used to relay a day-old file as
+# current (the defect this fixes). Never reads founder-status.md's line-1
+# stamp or the beat's own $BEAT_AT — those are wall-clock text, not proof the
+# file was actually (re)written.
+_file_age_s() {
+  local now epoch
+  now="$(date +%s 2>/dev/null || echo 0)"
+  epoch="$(cat "$FOUNDER_STATUS_EPOCH_PATH" 2>/dev/null || true)"
+  [[ "$epoch" =~ ^[0-9]+$ ]] || epoch=0
+  printf '%s' "$(( now - epoch ))"
+}
+
 # Beat identity (also the alarm-dedupe VALUE — semantic, never the rendered
 # line). LEADV2_BROAD_STATUS_BEAT_AT pins it for tests so a re-run of the
 # same beat is a true no-op, not a second wake.
@@ -135,15 +153,44 @@ ALARM_LIB="${LEADV2_ALARM_DEDUPE_BIN:-${SCRIPT_DIR}/lib/leadv2-alarm-dedupe.sh}"
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 _emit_ready_line() {  # <rows|-> [degraded]
   local rows="${1:--}" degraded="${2:-}"
+  # dedupe_value stays on $BEAT_AT deliberately: it is the beat's identity
+  # (so a re-run of the same beat is a true no-op), never the display truth
+  # — that is the epoch-sourced `at=` below.
   local dedupe_value="$BEAT_AT${degraded:+ degraded}"
   if command -v leadv2_alarm_transition >/dev/null 2>&1 \
       && ! leadv2_alarm_transition broad_status_ready "$dedupe_value" 2>/dev/null; then
     return 0  # same beat already delivered — suppressed
   fi
-  local rel_path="${FOUNDER_STATUS_PATH#"$PROJECT_ROOT"/}"
-  printf '%s [SUPERVISE-URGENT] BROAD_STATUS_READY at=%s path=%s rows=%s dispatched=%s%s\n' \
-    "$(_now_iso)" "$BEAT_AT" "$rel_path" "$rows" "$DISPATCHED" \
-    "${degraded:+ degraded=1}" >>"$LOG_FILE"
+  # BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01 (addendum 2): path= must
+  # carry the ABSOLUTE path of the file THIS writer actually wrote. A relative
+  # path resolves against whichever project root the READER sits in --
+  # measured 2026-09-03, one ready-line reached two lead sessions and each
+  # opened a different founder-status.md under its own repo, one a day old.
+  # Anchor a relative override to this writer's own PROJECT_ROOT.
+  local abs_path="$FOUNDER_STATUS_PATH"
+  case "$abs_path" in /*) ;; *) abs_path="$PROJECT_ROOT/$abs_path" ;; esac
+  # BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01: at= must be the FILE's own
+  # confirmed-write stamp, never the beat's wall clock ($BEAT_AT). Source it
+  # from FOUNDER_STATUS_EPOCH_PATH; if that is missing/non-numeric, fall back
+  # to the artifact's own mtime (still the FILE's stamp); only if neither is
+  # available (e.g. first-ever run before any write) fall back to $BEAT_AT.
+  local age at_epoch at_iso stale_suffix=""
+  age="$(_file_age_s)"
+  at_epoch="$(cat "$FOUNDER_STATUS_EPOCH_PATH" 2>/dev/null || true)"
+  if ! [[ "$at_epoch" =~ ^[0-9]+$ ]]; then
+    at_epoch="$(stat -f %m "$FOUNDER_STATUS_PATH" 2>/dev/null || stat -c %Y "$FOUNDER_STATUS_PATH" 2>/dev/null || true)"
+  fi
+  if [[ "$at_epoch" =~ ^[0-9]+$ ]]; then
+    at_iso="$(date -u -r "$at_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || date -u -d "@$at_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  fi
+  [[ -z "${at_iso:-}" ]] && at_iso="$BEAT_AT"
+  if [[ "$age" =~ ^[0-9]+$ ]] && [[ "$age" -ge "${LEADV2_SINGLE_LEAD_BEAT_S:-1800}" ]]; then
+    stale_suffix=" stale=1"
+  fi
+  printf '%s [SUPERVISE-URGENT] BROAD_STATUS_READY at=%s path=%s rows=%s dispatched=%s%s%s\n' \
+    "$(_now_iso)" "$at_iso" "$abs_path" "$rows" "$DISPATCHED" \
+    "${degraded:+ degraded=1}" "$stale_suffix" >>"$LOG_FILE"
 }
 
 # ── ANTI-SILENCE-ONE-MECHANISM-01: live lane facts, computed independently
@@ -268,6 +315,19 @@ trap 'rm -rf "$RENDER_TMPDIR"' EXIT
 
 export _BS_QUEUED_TSV="$QUEUED_TSV"
 export _BS_LANDED_LOG="$LANDED_LOG"
+# BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01 (lead addendum): the product
+# line used to stamp itself with its OWN datetime.now() call, taken inside
+# this python subprocess -- seconds to minutes after $BEAT_AT was captured
+# at script start (L128) and after the collector/render work in between.
+# That produced two different times inside the SAME founder-status.md
+# snapshot (BLOCK line 1 = $BEAT_AT, product line = a later independent
+# clock read) which agree with EACH OTHER by construction whenever the file
+# is regenerated promptly, giving a false sense that "line 1 matches line 2
+# so the content is fresh" when both are really just close copies of two
+# separate clock reads, not proof of one single gathering. Pin the product
+# line to the same $BEAT_AT used for line 1 so one snapshot carries exactly
+# one timestamp, sourced once.
+export _BS_BEAT_AT="$BEAT_AT"
 # BASH-3.2-HEREDOC-QUOTE-PARITY-01: this heredoc used to be written directly
 # inside the `RENDER_JSON="$( ... <<'PY' ... )"` command substitution. macOS's
 # system /bin/bash (3.2.57, the mandatory compatibility target — see
@@ -1227,7 +1287,19 @@ def _metric(today_key, floor_key):
         return f"{int(today)}/{int(floor)}"
     return str(int(today))
 
-_now_hhmm = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M")
+# BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01 (lead addendum): source the
+# product line's clock from the SAME $BEAT_AT stamped on BLOCK line 1
+# (passed in via _BS_BEAT_AT), never an independent datetime.now() call --
+# two clock reads for what is presented as one snapshot is the exact defect
+# the addendum names ("line 1 says 18:52, line 2 says 19:03"). Fall back to
+# a fresh read only if the env var is absent/unparseable (should not happen
+# in normal operation; BEAT_AT is always set by the caller).
+try:
+    _now_hhmm = datetime.datetime.strptime(
+        os.environ.get("_BS_BEAT_AT", ""), "%Y-%m-%dT%H:%M:%SZ"
+    ).strftime("%H:%M")
+except ValueError:
+    _now_hhmm = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M")
 _window = repo_facts.get("working_window") or repo_facts.get("ny_window")
 # PULSE-REPO-SCOPED-03: the product bits are repo-OWNED, not hardcoded. They
 # render only when this repo's own collect_repo_facts() actually published
@@ -1420,7 +1492,16 @@ BLOCK="$(
 )"
 
 printf '%s\n' "$BLOCK" >>"$LOG_FILE"
-printf '%s\n' "$BLOCK" >"$FOUNDER_STATUS_PATH.tmp" && mv "$FOUNDER_STATUS_PATH.tmp" "$FOUNDER_STATUS_PATH" && _stamp_epoch
-
-# C1 delivery: the ONE wake per beat, after both durable writes succeeded.
-_emit_ready_line "$ROWS_N"
+# BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01: this write must be guarded
+# like the collector-failure (L241-250) and render-failure (L1345-1354)
+# paths above it. Before this fix it was not: a failed mv (perm/race/
+# ENOSPC) left founder-status.md untouched while _emit_ready_line still
+# fired a fresh, non-stale READY over it — a day-old file relayed to the
+# founder as current. Same policy as those two paths: replace-then-wake, or
+# refuse READY and say so.
+if printf '%s\n' "$BLOCK" >"$FOUNDER_STATUS_PATH.tmp" && mv "$FOUNDER_STATUS_PATH.tmp" "$FOUNDER_STATUS_PATH" && _stamp_epoch; then
+  # C1 delivery: the ONE wake per beat, after both durable writes succeeded.
+  _emit_ready_line "$ROWS_N"
+else
+  _emit_fail_line "founder-status.md write failed"
+fi

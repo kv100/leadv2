@@ -73,6 +73,7 @@ export LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE"
 
 LOG_FILE="$(PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" bash "$STATE_PATH_SH" supervise-loop.log)"
 FOUNDER_STATUS="$REPO/docs/leadv2/founder-status.md"
+EPOCH="$REPO/docs/leadv2/.founder-status-epoch"
 ready_count()   { grep -c 'BROAD_STATUS_READY' "$LOG_FILE" 2>/dev/null || true; }
 urgent_count()  { grep 'URGENT' "$LOG_FILE" 2>/dev/null | grep -c 'BROAD_STATUS_READY' || true; }
 started_pids()  { sed -n 's/.*\[supervise-loop\] started pid=\([0-9]*\) .*/\1/p' "$LOG_FILE" 2>/dev/null; }
@@ -125,6 +126,8 @@ beat_env() {  # <beat-at> [extra env assignments via caller]
   env LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" \
     LEADV2_STATUS_COLLECTOR_BIN="$STUBS/collector.sh" \
     LEADV2_BROAD_STATUS_CLAUDE_BIN="$STUBS/claude.sh" \
+    LEADV2_FOUNDER_STATUS_PATH="$FOUNDER_STATUS" \
+    LEADV2_FOUNDER_STATUS_EPOCH_PATH="$EPOCH" \
     LEADV2_BROAD_STATUS_BEAT_AT="$1" \
     LEADV2_BROAD_STATUS_DISPATCHED="2" \
     "${@:2}"
@@ -164,7 +167,12 @@ trap cleanup EXIT
 beat_env "2026-08-16T10:00:00Z" bash "$BROAD_STATUS_SH" >/dev/null 2>&1 || true
 if [[ -f "$FOUNDER_STATUS" ]]; then pass "T1a: founder-status.md written"; else fail "T1a: founder-status.md missing"; fi
 if [[ "$(urgent_count)" == "1" ]]; then pass "T1b: exactly one URGENT-filtered BROAD_STATUS_READY line"; else fail "T1b: expected 1 URGENT BROAD_STATUS_READY line, got $(urgent_count)"; fi
-if grep -q 'BROAD_STATUS_READY at=2026-08-16T10:00:00Z path=docs/leadv2/founder-status.md rows=0 dispatched=2$' "$LOG_FILE"; then
+# BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01: at= is now the artifact's
+# confirmed-write epoch (the real write time, NOT the pinned BEAT_AT) and
+# path= is the ABSOLUTE path of the file this run wrote (addendum 2: a
+# relative path let two readers publish two different files).
+if grep -E 'BROAD_STATUS_READY at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ' "$LOG_FILE" \
+    | grep "path=$REPO/docs/leadv2/founder-status.md rows=0 dispatched=2\$" >/dev/null; then
   pass "T1c: ready-line carries at/path/rows/dispatched"
 else
   fail "T1c: ready-line shape wrong: $(grep BROAD_STATUS_READY "$LOG_FILE" | tail -1)"
@@ -201,7 +209,8 @@ else
   fail "T3a: pump counter or founder-status.md missing after one loop cycle"
   echo "=== T3a DEBUG: LOG_FILE=[$LOG_FILE] exists=$(test -f "$LOG_FILE" && echo yes || echo no)"; echo "=== T3a DEBUG loop-log tail:"; tail -25 "$LOG_FILE" 2>&1; echo "=== T3a DEBUG STATE=[$STATE]:"; ls "$STATE" 2>&1 | head; echo "=== T3a DEBUG REPO docs:"; ls "$REPO/docs/leadv2" 2>&1 | head
 fi
-if grep -q 'BROAD_STATUS_READY at=.* path=docs/leadv2/founder-status.md rows=0 dispatched=2' "$LOG_FILE"; then
+if grep -E 'BROAD_STATUS_READY at=[0-9]{4}-' "$LOG_FILE" \
+    | grep "path=$REPO/docs/leadv2/founder-status.md rows=0 dispatched=2" >/dev/null; then
   pass "T3b: loop-run beat stamps the pump's dispatched count"
 else
   fail "T3b: no ready-line with dispatched=2 after loop cycle: $(grep BROAD_STATUS_READY "$LOG_FILE" || echo none)"
@@ -305,17 +314,26 @@ beat_env "2026-08-16T13:00:00Z" LEADV2_STATUS_COLLECTOR_BIN="$STUBS/bad-collecto
   bash "$BROAD_STATUS_SH" >/dev/null 2>&1 || true
 degraded_assertions "T9b" "2026-08-16T13:00:00Z" 'render failed'
 
-# T9c: stamp coherence (P2) — the ready-line's at= always equals the leading
-# timestamp of founder-status.md line 1, healthy beat AND degraded beat, so a
-# reader can detect staleness without trusting the writer.
+# T9c: stamp truth (P2, BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01) — the
+# ready-line's at= is the artifact's CONFIRMED-WRITE stamp (the epoch integer
+# _stamp_epoch writes right after every successful mv), healthy beat AND
+# degraded beat. It must NOT equal line-1's $BEAT_AT on principle: those two
+# share one source, so comparing them passes on stale data (lead addendum 1 —
+# "it compares a value against a copy of itself"). Line-1 and the product
+# HH:MM line still both carry the beat's single gathering clock.
 stamp_coherence_check() {  # <label>
-  local label="$1" at_val line1_ts
+  local label="$1" at_val epoch_val epoch_iso_val
   at_val="$(sed -n 's/.*BROAD_STATUS_READY at=\([^ ]*\).*/\1/p' "$LOG_FILE" | tail -n1)"
-  line1_ts="$(head -n1 "$FOUNDER_STATUS" | awk '{print $1}')"
-  if [[ -n "$at_val" && "$at_val" == "$line1_ts" ]]; then
-    pass "$label: ready-line at= == founder-status.md line-1 timestamp"
+  epoch_val="$(cat "$EPOCH" 2>/dev/null || true)"
+  epoch_iso_val=""
+  if [[ "$epoch_val" =~ ^[0-9]+$ ]]; then
+    epoch_iso_val="$(date -u -r "$epoch_val" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+      || date -u -d "@$epoch_val" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  fi
+  if [[ -n "$at_val" && "$at_val" == "$epoch_iso_val" ]]; then
+    pass "$label: ready-line at= == the artifact's confirmed-write epoch stamp"
   else
-    fail "$label: stamp mismatch: ready at=$at_val file line1=$line1_ts"
+    fail "$label: stamp mismatch: ready at=$at_val epoch_iso=$epoch_iso_val"
   fi
 }
 seed_stale_status; : >"$LOG_FILE"

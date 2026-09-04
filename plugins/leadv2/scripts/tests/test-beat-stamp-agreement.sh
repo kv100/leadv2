@@ -8,9 +8,12 @@
 # two and, on mismatch, publish that fact instead of the file — so a
 # disagreement does not lie, it goes SILENT. This suite locks:
 #
-#   1. happy path -> ready-line at= and founder-status.md line-1 stamp are
-#      byte-identical.
-#   2. degraded path (collector failure) -> same.
+#   1. happy path -> ready-line at= equals the FILE's own confirmed-write
+#      epoch stamp (FOUNDER_STATUS_EPOCH_PATH), converted to ISO-8601 — and
+#      deliberately does NOT equal founder-status.md's line-1 stamp
+#      ($BEAT_AT) when the two are forced apart by the test's fixed
+#      LEADV2_BROAD_STATUS_BEAT_AT.
+#   2. degraded path (collector failure) -> same epoch-sourced at=.
 #   3. render failure (bad collector JSON) -> same; and a FAILED write (no
 #      artifact write permission at all) carries no path= token.
 #   4. a degraded beat still emits live lane facts computed independently
@@ -18,6 +21,20 @@
 #      [Critical] fallback-must-speak fix in _write_degraded_status).
 #   5. zero live lanes -> the beat still emits a truthful "живые линии: 0"
 #      fact, never nothing (no idleness guard).
+#
+# BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01 (2026-09-03): cases 1-3 used
+# to assert at= WAS byte-identical to $BEAT_AT (line-1's stamp) — but that
+# was comparing a value against a copy of itself: pre-fix, both the
+# ready-line's at= and the artifact's line 1 were rendered from the SAME
+# $BEAT_AT shell variable, so they could never disagree even when the write
+# silently failed and a day-old file was relayed as current. The fix sources
+# at= from the file's own confirmed-write epoch (FOUNDER_STATUS_EPOCH_PATH,
+# stamped by _stamp_epoch right after a successful mv) instead — an
+# independent witness. These three cases now assert THAT independence
+# (at= == epoch-derived ISO, and at= != the artificially-old forced
+# $BEAT_AT) rather than the old, vacuous self-agreement. Staleness itself
+# (stale=1 suffix + the write-guard that refuses READY on a failed write)
+# is covered by tests/test-broad-status-stale-file.sh.
 #
 # Hermetic: LEADV2_PROJECT_ROOT/LEADV2_STATE_ROOT point at a throwaway
 # fixture tree, never a real repo or real state root. The collector and
@@ -48,7 +65,14 @@ lv2_assert_scratch_repo "$REPO"
 export LEADV2_PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE"
 
 LOG_FILE="$(PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" bash "$STATE_PATH_SH" supervise-loop.log)"
-FOUNDER_STATUS="$REPO/docs/leadv2/founder-status.md"
+# BROAD-STATUS-READY-FIRES-ON-A-DAY-OLD-FILE-01: resolve the artifact through
+# the state resolver (--no-link = the REAL file under $STATE). The plain
+# $REPO/docs/leadv2/... path is a symlink the resolver maintains; `rm -f` on
+# the link leaves the state-side bytes alive, and the next section's
+# assertions read a resurrected earlier beat (measured: T4/T5 compared
+# against a 3-beats-old render). Removing the real target keeps every
+# section prelude honest.
+FOUNDER_STATUS="$(PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" bash "$STATE_PATH_SH" --no-link founder-status.md)"
 ACTIVE_YAML="$(PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" bash "$STATE_PATH_SH" --no-link active.yaml)"
 
 cleanup() { rm -rf "$TMP"; }
@@ -96,6 +120,15 @@ ready_at() {  # last ready/failed line's at=
 }
 line1_stamp() { head -n1 "$FOUNDER_STATUS" 2>/dev/null | awk '{print $1}'; }
 has_path_token() { grep -q 'BROAD_STATUS_READY .*path=' "$LOG_FILE" 2>/dev/null; }
+EPOCH_FILE="$(PROJECT_ROOT="$REPO" LEADV2_STATE_ROOT="$STATE" bash "$STATE_PATH_SH" --no-link .founder-status-epoch)"  # the real target of the
+                                                       # script-default $PROJECT_ROOT/docs/leadv2/.founder-status-epoch link
+epoch_iso() {  # ISO-8601 UTC for whatever epoch integer FOUNDER_STATUS_EPOCH_PATH holds
+  local epoch
+  epoch="$(cat "$EPOCH_FILE" 2>/dev/null || true)"
+  [[ "$epoch" =~ ^[0-9]+$ ]] || { printf ''; return; }
+  date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
+}
 
 write_active_yaml() {  # writes docs test fixture sessions
   mkdir -p "$(dirname "$ACTIVE_YAML")"
@@ -106,34 +139,34 @@ write_active_yaml() {  # writes docs test fixture sessions
 write_active_yaml <<'EOF'
 sessions: []
 EOF
-: >"$LOG_FILE"; rm -f "$FOUNDER_STATUS"
+: >"$LOG_FILE"; rm -f "$FOUNDER_STATUS" "$EPOCH_FILE"
 beat_env "2026-08-31T09:00:00Z" "$STUBS/collector.sh" || true
 if [[ -f "$FOUNDER_STATUS" ]]; then
-  if [[ -n "$(ready_at)" && "$(ready_at)" == "$(line1_stamp)" ]]; then
-    pass "T1: happy path — ready-line at= == artifact line-1 stamp"
+  if [[ -n "$(ready_at)" && "$(ready_at)" == "$(epoch_iso)" && "$(ready_at)" != "$(line1_stamp)" ]]; then
+    pass "T1: happy path — ready-line at= == epoch stamp, independent of line-1's \$BEAT_AT"
   else
-    fail "T1: stamp mismatch: at=$(ready_at) line1=$(line1_stamp)"
+    fail "T1: at=$(ready_at) epoch_iso=$(epoch_iso) line1=$(line1_stamp)"
   fi
 else
   fail "T1: founder-status.md not written"
 fi
 
 # ── 2. degraded path (collector failure) ────────────────────────────────
-: >"$LOG_FILE"; rm -f "$FOUNDER_STATUS"
+: >"$LOG_FILE"; rm -f "$FOUNDER_STATUS" "$EPOCH_FILE"
 beat_env "2026-08-31T09:30:00Z" /nonexistent-collector || true
-if [[ -n "$(ready_at)" && "$(ready_at)" == "$(line1_stamp)" ]]; then
-  pass "T2: degraded path — ready-line at= == artifact line-1 stamp"
+if [[ -n "$(ready_at)" && "$(ready_at)" == "$(epoch_iso)" && "$(ready_at)" != "$(line1_stamp)" ]]; then
+  pass "T2: degraded path — ready-line at= == epoch stamp, independent of line-1's \$BEAT_AT"
 else
-  fail "T2: stamp mismatch: at=$(ready_at) line1=$(line1_stamp)"
+  fail "T2: at=$(ready_at) epoch_iso=$(epoch_iso) line1=$(line1_stamp)"
 fi
 
 # ── 3a. render failure ──────────────────────────────────────────────────
-: >"$LOG_FILE"; rm -f "$FOUNDER_STATUS"
+: >"$LOG_FILE"; rm -f "$FOUNDER_STATUS" "$EPOCH_FILE"
 beat_env "2026-08-31T10:00:00Z" "$STUBS/bad-collector.sh" || true
-if [[ -n "$(ready_at)" && "$(ready_at)" == "$(line1_stamp)" ]]; then
-  pass "T3a: render failure — ready-line at= == artifact line-1 stamp"
+if [[ -n "$(ready_at)" && "$(ready_at)" == "$(epoch_iso)" && "$(ready_at)" != "$(line1_stamp)" ]]; then
+  pass "T3a: render failure — ready-line at= == epoch stamp, independent of line-1's \$BEAT_AT"
 else
-  fail "T3a: stamp mismatch: at=$(ready_at) line1=$(line1_stamp)"
+  fail "T3a: at=$(ready_at) epoch_iso=$(epoch_iso) line1=$(line1_stamp)"
 fi
 
 # ── 3b. artifact unwritable -> FAILED line carries no path= token ───────
