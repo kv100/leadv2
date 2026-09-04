@@ -38,9 +38,15 @@
 # Run: bash scripts/tests/test-active-register-miss.sh
 
 set -euo pipefail
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/leadv2-temp.sh"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# LIVE-LANE-IS-ABSENT-FROM-THE-REGISTRY-01 / lead fix: under zsh BASH_SOURCE does
+# not exist at all, so `${BASH_SOURCE[0]}` under `set -u` aborted this suite with
+# rc=127 before the first assertion -- the same resolution order the merged
+# lib/leadv2-lane-state.sh already uses: this file's path when bash names it, then
+# $0 when it names a real file.
+_ssrc="${BASH_SOURCE[0]:-}"
+if [[ -z "$_ssrc" && -f "${0:-}" ]]; then _ssrc="$0"; fi
+SCRIPT_DIR="$(cd "$(dirname "$_ssrc")" && pwd)"
+source "${SCRIPT_DIR}/../leadv2-temp.sh"
 REGISTRY_SH="${SCRIPT_DIR}/../leadv2-active-registry.sh"
 # Pinned explicitly (LEADV2_STATE_PATH_BIN is _leadv2_state_path_sh's own
 # documented override) so a MUTANT copy sourced from a scratch tmp dir still
@@ -291,7 +297,7 @@ PYEOF
 test_3_syntax() {
   log "Test 3: bash -n syntax check"
   bash -n "$REGISTRY_SH" 2>/dev/null && pass "Test 3a: leadv2-active-registry.sh bash -n OK" || fail "Test 3a: leadv2-active-registry.sh bash -n FAILED"
-  bash -n "${BASH_SOURCE[0]}" 2>/dev/null && pass "Test 3b: this test file bash -n OK" || fail "Test 3b: this test file bash -n FAILED"
+  bash -n "${_ssrc}" 2>/dev/null && pass "Test 3b: this test file bash -n OK" || fail "Test 3b: this test file bash -n FAILED"
 }
 
 main() {
