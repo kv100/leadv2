@@ -47,8 +47,12 @@
 #   conflict           a pick conflicted outside the auto-resolvable shape
 #   nothing_to_salvage no non-anchor, non-merge commits ahead of merge-base
 #
-# Exit codes:
-#   0 = a verdict was produced (all four verdicts; the verdict is data)
+# Exit codes (CONTROL-PLANE-FILES-CONFLICT-ON-EVERY-OLD-BRANCH-01): the exit
+# code now CARRIES the verdict — a record that says "conflict" must never be
+# read as success by a caller that only checks $?
+#   0 = salvaged_green | nothing_to_salvage
+#   1 = salvaged_red (carried, but run-all exited non-zero or timed out)
+#   3 = conflict (a pick conflicted outside the auto-resolvable shape)
 #   2 = usage / environment error (no verdict), incl. main-moved invariant
 set -uo pipefail
 
@@ -437,7 +441,14 @@ main() {
     printf ' conflict_commit=%s conflict_files=%s' "${conflict_commit:0:12}" "${conflict_files}"
   fi
   printf '\n'
-  return 0
+  # Exit code carries the verdict (see header): a caller that only reads $?
+  # must never read a conflict or a red suite as success.
+  case "${verdict}" in
+    salvaged_green|nothing_to_salvage) return 0 ;;
+    salvaged_red)                      return 1 ;;
+    conflict)                          return 3 ;;
+    *) _slv_fatal "unhandled verdict: ${verdict}" ;;
+  esac
 }
 
 main "$@"

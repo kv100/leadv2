@@ -353,7 +353,8 @@ test_foreign_conflict_stops() {
   main_before="$(_main_sha "$repo")"
   rc="$(_run_salvage "$repo" LANE3 "$out")"
 
-  if [[ "$rc" -eq 0 ]] && grep -q 'verdict=conflict ' "$out" \
+  # CONTROL-PLANE-...-01: the exit code carries the verdict — conflict exits 3
+  if [[ "$rc" -eq 3 ]] && grep -q 'verdict=conflict ' "$out" \
      && grep -q 'conflict_files=shared.txt' "$out"; then
     _ok "case 3: foreign conflict -> verdict=conflict naming the file"
   else
@@ -441,7 +442,7 @@ test_red_until_suites_prove_green() {
   rc="$(_run_salvage "$repo" LANE5 "$out")"
   unset STUB_RC
 
-  if [[ "$rc" -eq 0 ]] && grep -q 'verdict=salvaged_red ' "$out" \
+  if [[ "$rc" -eq 1 ]] && grep -q 'verdict=salvaged_red ' "$out" \
      && grep -q 'suite_rc=1' "$out" && grep -q 'carried=1/1 ' "$out"; then
     _ok "case 5: carry ok + red suite -> salvaged_red (green is never 'it merged')"
   else
@@ -483,7 +484,7 @@ lane6.sh:plugins/leadv2/scripts/tests/test-lane6.sh"' > "$repo/tests/run-all.sh"
   main_before="$(_main_sha "$repo")"
   rc="$(_run_salvage "$repo" LANE6 "$out")"
 
-  if [[ "$rc" -eq 0 ]] && grep -q 'verdict=conflict ' "$out" \
+  if [[ "$rc" -eq 3 ]] && grep -q 'verdict=conflict ' "$out" \
      && grep -q 'non-registration lines' "$out"; then
     _ok "case 6: code-line conflict inside run-all.sh refused (no guessing)"
   else

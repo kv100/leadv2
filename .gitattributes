@@ -1,1 +1,17 @@
 docs/leadv2/skill-invocations.jsonl merge=union
+# CONTROL-PLANE-FILES-CONFLICT-ON-EVERY-OLD-BRANCH-01: these are symlinks into
+# ~/.claude/leadv2-state/leadv2/ (live state of running sessions). The tree's
+# symlink must win every merge; old branches carry them as regular files.
+# NOTE: symlink-vs-file is a git "distinct types" conflict where NO merge
+# driver runs — finish those mechanically with
+# plugins/leadv2/scripts/leadv2-merge-old-branch.sh (guard included).
+docs/leadv2/active.yaml merge=leadv2-control-plane
+docs/leadv2/bus.jsonl merge=leadv2-control-plane
+docs/leadv2/merge-queue.jsonl merge=leadv2-control-plane
+docs/leadv2/open-threads.md merge=leadv2-control-plane
+docs/leadv2/questions merge=leadv2-control-plane
+docs/leadv2/.bus-offsets merge=leadv2-control-plane
+docs/leadv2/.bus.lock merge=leadv2-control-plane
+docs/leadv2/.merge.lock merge=leadv2-control-plane
+docs/leadv2/active.yaml.lock merge=leadv2-control-plane
+docs/leadv2/glm-deferred.jsonl merge=leadv2-control-plane
