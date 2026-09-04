@@ -154,8 +154,33 @@ with open(lock, 'a+') as lf:
       row['dead_at']=now(); row['updated_at']=now(); event(row, 'deregistered', reason)
   elif op == 'reconcile':
     root=args[0]
+    # RECOVERY-ATTACHES-A-BYSTANDER-PID-TO-A-LANE-01 fix 3: an unowned
+    # recovered row (registered WITHOUT a pid because ownership could not be
+    # established) must neither be killed merely for being pidless (that
+    # would let the next pass re-adopt a fresh bystander forever) nor block
+    # the registry indefinitely (a writes-less row inside
+    # _lv2_ws_pending refuses ANY concurrent dispatch). It ages out on a TTL.
+    # The number mirrors LEADV2_WRITESET_PENDING_WINDOW_SEC (default 900s):
+    # the registry can only refuse a dispatch on this row inside that window
+    # anyway, so expiring here means the row can never block longer than it
+    # could block, and observers keep 15 minutes of visibility.
+    def unowned_expired(row):
+        started=row.get('started_at')
+        if not started: return True
+        try:
+            ts=datetime.datetime.strptime(started,'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)
+        except ValueError: return True
+        try: ttl=int(os.environ.get('LEADV2_RECOVERED_UNOWNED_TTL_SEC','900') or 900)
+        except ValueError: ttl=900
+        if ttl < 0: ttl=900
+        return (datetime.datetime.now(datetime.timezone.utc)-ts).total_seconds() > ttl
     for row in rows:
-      if not row.get('dead_at') and not alive(row):
+      if row.get('dead_at'): continue
+      if row.get('recovered') and not row.get('pid'):
+        if unowned_expired(row):
+          row['dead_at']=now(); row['updated_at']=now(); event(row, 'recovered_unowned_expired')
+        continue
+      if not alive(row):
         row['dead_at']=now(); row['updated_at']=now(); event(row, 'reconciled_dead')
     fixture_wt=os.environ.get('LEADV2_LANE_STATE_TEST_WORKTREES_FILE','')
     try:
@@ -163,24 +188,72 @@ with open(lock, 'a+') as lf:
       worktrees=[x[9:] for x in wt.splitlines() if x.startswith('worktree ')]
     except Exception: worktrees=[]
     known={os.path.realpath(str(r.get('worktree') or '')) for r in rows}
+    # RECOVERY-ATTACHES-A-BYSTANDER-PID-TO-A-LANE-01 fix 1: a live row already
+    # owns this lane when its task_id equals the lane worktree's basename
+    # (the same identity recovery itself assigns). A LEAD-owner row carries
+    # the REPO ROOT in worktree:, so a realpath-of-worktree set alone never
+    # contains the lane and the lane was re-registered every pass. The
+    # task_id match cannot be spoofed by a lead row pointing at the repo
+    # root for an UNRELATED task (different task_id), and it must be ALIVE
+    # (os.kill + birth match), so a dead lead row cannot suppress recovery.
+    live_tasks={str(r.get('task_id')) for r in rows if not r.get('dead_at') and alive(r)}
+    def proc_cwd(pid):
+        # Test seam pairs with LEADV2_LANE_STATE_TEST_PS_FILE/BIRTH_FILE.
+        fixture=os.environ.get('LEADV2_LANE_STATE_TEST_CWD_FILE','')
+        if fixture:
+            try:
+                for line in open(fixture, encoding='utf-8'):
+                    key, value=line.rstrip('\n').split('\t', 1)
+                    if key == str(pid): return ' '.join(value.split())
+            except OSError: pass
+        try:
+            out=subprocess.run(['lsof','-a','-p',str(pid),'-d','cwd','-Fn'], text=True, capture_output=True, timeout=3).stdout
+            for l in out.splitlines():
+                if l.startswith('n'): return l[1:]
+        except Exception: pass
+        return ''
     for worktree in worktrees:
       real=os.path.realpath(worktree)
-      if '/.claude/worktrees/' not in real or real in known: continue
+      if '/.claude/worktrees/' not in real: continue
+      task=os.path.basename(real)
+      if real in known or task in live_tasks: continue
       fixture=os.environ.get('LEADV2_LANE_STATE_TEST_PS_FILE','')
       try:
         ps=open(fixture, encoding='utf-8').read().splitlines() if fixture else subprocess.run(['ps','-axo','pid=,lstart=,command='], text=True, capture_output=True, timeout=3).stdout.splitlines()
       except Exception: ps=[]
+      # RECOVERY-ATTACHES-A-BYSTANDER-PID-TO-A-LANE-01 fix 2: substring over
+      # `ps` is not ownership. A pid is adopted only when the process is
+      # actually RUNNING in the lane (its cwd is the worktree) -- a lane
+      # worker is spawned with cwd inside its worktree, while a bystander
+      # whose argv merely MENTIONS the path (a tool shell, a grep, this
+      # reconcile itself) fails the cwd check. Unknowable cwd -> no adoption
+      # (fail to pid-less, never to a wrong pid). start == birth(pid) is kept
+      # only as the pid-recycling guard.
+      adopted=None; mentioned=False
       for line in ps:
         if worktree not in line: continue
+        mentioned=True
         parts=line.strip().split(None, 6)
         if len(parts) < 7: continue
         pid=int(parts[0]); start=' '.join(parts[1:6])
-        if pid > 1 and start == birth(pid):
-          task=os.path.basename(worktree)
-          row={'task_id':task, 'session_id':'recovered', 'lead_session_id':'recovered', 'worktree':worktree,
-               'phase':'recovered', 'pid':pid, 'pid_start_time':start, 'started_at':now(), 'updated_at':now(),
-               'dead_at':None, 'recovered':True, 'lane_events':[]}
-          event(row, 'recovered_orphan'); rows.append(row); known.add(real); break
+        if pid > 1 and start == birth(pid) and os.path.realpath(proc_cwd(pid) or '') == real:
+          adopted=(pid,start); break
+      if not mentioned: continue
+      if adopted:
+        row={'task_id':task, 'session_id':'recovered', 'lead_session_id':'recovered', 'worktree':worktree,
+             'phase':'recovered', 'pid':adopted[0], 'pid_start_time':adopted[1], 'started_at':now(), 'updated_at':now(),
+             'dead_at':None, 'recovered':True, 'lane_events':[]}
+        event(row, 'recovered_orphan')
+      else:
+        # Registered WITHOUT a pid: visibility row for the status surface /
+        # humans; it does not claim an owner, and it ages out on
+        # LEADV2_RECOVERED_UNOWNED_TTL_SEC (see fix 3 above) so it cannot
+        # block dispatch beyond the registry's own pending window.
+        row={'task_id':task, 'session_id':'recovered', 'lead_session_id':'recovered', 'worktree':worktree,
+             'phase':'recovered_unowned', 'started_at':now(), 'updated_at':now(),
+             'dead_at':None, 'recovered':True, 'lane_events':[]}
+        event(row, 'recovered_unowned_no_pid')
+      rows.append(row); known.add(real)
   elif op == 'count':
     lead=args[0]; print(sum(1 for r in rows if r.get('lead_session_id') == lead and not r.get('dead_at') and alive(r)))
     sys.exit(0)
