@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-all-triggers: leadv2-dispatch-code.sh
 # LANE-REGISTRY-SELF-DEADLOCK-01 — a lane whose worker died could never be
 # re-dispatched: active.yaml recorded the LEAD's pid (alive by definition)
 # and a fresh architect-prepass stream (written synchronously by the dispatch
