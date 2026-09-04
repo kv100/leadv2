@@ -79,3 +79,24 @@ owe this sentence.
 - **Ten consecutive runs, not one.** A suite that passes once is not green; flakiness is exactly
   how a red main hides. Report the suite's exit codes for ten consecutive runs, and if any run
   differs from the others, that disagreement IS the finding.
+
+### A negative control must break the CONSEQUENCE, not print the message
+
+Two lanes produced controls that looked valid and proved nothing, by two different routes:
+
+- `mutated_rc=1` **implied by** the mutation tool printing `ok` — the code was restated from a
+  tool's verdict, never observed. That tool has an open row against it for writing the empty hash
+  as evidence, so the inference inherits the lie whole.
+- `mutated_rc=0` while the mutant printed the expected error text — the suite reddened on a STRING
+  in the output, not on anything being broken.
+
+Same root: **the observable symptom was proved instead of the event.** Both reports were honest in
+every sentence and neither guaranteed anything.
+
+**The rule:** a negative control must show the CONSEQUENCE broke. Report `baseline_rc`,
+`mutated_rc`, `restored_rc` as OBSERVED numbers — never inferred from a tool's verdict, never a
+`diff_hash`.
+
+**The falsification, one edit:** remove the assertion on the message text and keep the assertion on
+state. The control must stay RED. If it goes green, it was testing output, not behaviour — that is
+a coverage hole and it is a finding, not something to omit.
