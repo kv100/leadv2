@@ -71,6 +71,43 @@ journal_file() { # <root> <task_id>
   find "$1/docs/leadv2/tasks/$2" -iname '*journal*' 2>/dev/null | head -1
 }
 
+# journal_read_wait <root> <task_id> -> stdout: journal file content, polling
+# briefly if it is not there / not yet non-empty on the first look.
+#
+# R3 review fix (fix-round-4, item 2): cases (a) and (b) were reported flaky
+# (~1 in 3 per the round-4 brief; reproduced here at ~1 in 19 full-suite runs,
+# 0 in 80 tight isolated repro loops of (a)/(b) alone -- see report.md for the
+# repro transcript). Root-caused to: `leadv2_brain_record`'s caller in
+# leadv2-dispatch-code.sh wraps that call in `2>/dev/null` (deliberate --
+# a brain-record failure must never spam or refuse a live dispatch), which
+# means `out_a`/`out_b` NEVER carry the class_escalated/class_floor_held line
+# on this path -- the journal FILE on disk is the ONLY place that decision is
+# ever recorded. `leadv2-journal.sh append` is synchronous (the subprocess
+# has exited by the time `$(...)` returns, so there is no async propagation
+# delay in principle) but this repo is a live, heavily-concurrent shared dev
+# machine -- the same canonical scripts this suite sources are being read by
+# other leadv2 lanes' processes at the same time -- and `emit()`'s journal
+# write is best-effort (`|| true`) with `leadv2-journal.sh` itself running
+# under `trap 'exit 0' ERR`, so a rare scheduler/fork-exec hiccup around that
+# one subprocess call silently no-ops instead of surfacing. A single,
+# unretried read of that file is therefore the single point of failure this
+# helper removes: it polls briefly (5 x 50ms, 250ms bounded) for non-empty
+# content before giving up -- the exact assertion string still must appear,
+# nothing here weakens what is checked.
+journal_read_wait() {
+  local root="$1" task_id="$2" tries=5 f content=""
+  while (( tries > 0 )); do
+    f="$(journal_file "${root}" "${task_id}")"
+    if [[ -f "${f}" ]]; then
+      content="$(cat "${f}")"
+      [[ -n "${content}" ]] && { printf '%s' "${content}"; return 0; }
+    fi
+    tries=$((tries-1))
+    (( tries > 0 )) && sleep 0.05
+  done
+  printf '%s' "${content}"
+}
+
 # blank_project_root_env <cmd...> -- run <cmd...> with CLAUDE_PROJECT_ROOT,
 # CLAUDE_PROJECT_DIR and LEADV2_PROJECT_ROOT blanked (see the comment in
 # run_classify for why this must precede every sourced dispatch-code.sh call,
@@ -84,8 +121,8 @@ TMP_A="$(mktemp -d)"
 JUDGE_A="$(mkstub_judge "${TMP_A}" complex 4 safety_publish_payments build)"
 out_a="$(run_classify "${DISPATCH_SH}" "${TMP_A}" "${JUDGE_A}" "dispatch-brainA" "brainA01" "Light" "1" \
   "touch hooks/pre-commit.sh and safety/gate.sh")"
-jf_a="$(journal_file "${TMP_A}" "dispatch-brainA")"
-if printf '%s' "${out_a}" "$( [[ -f "${jf_a}" ]] && cat "${jf_a}" )" | grep -q 'class_escalated task=brainA01 from=Light to=\(Standard\|Heavy\)'; then
+jf_a_content="$(journal_read_wait "${TMP_A}" "dispatch-brainA")"
+if printf '%s' "${out_a}" "${jf_a_content}" | grep -q 'class_escalated task=brainA01 from=Light to=\(Standard\|Heavy\)'; then
   pass "(a) light+risk mission escalates to Standard|Heavy, journaled"
 else
   fail "(a) missing class_escalated line: ${out_a}"
@@ -101,8 +138,8 @@ TMP_B="$(mktemp -d)"
 JUDGE_B="$(mkstub_judge "${TMP_B}" trivial 1 none build)"
 out_b="$(run_classify "${DISPATCH_SH}" "${TMP_B}" "${JUDGE_B}" "dispatch-brainB" "brainB01" "Heavy" "1" \
   "one-line typo fix")"
-jf_b="$(journal_file "${TMP_B}" "dispatch-brainB")"
-if printf '%s' "${out_b}" "$( [[ -f "${jf_b}" ]] && cat "${jf_b}" )" | grep -q 'class_floor_held task=brainB01 declared=Heavy'; then
+jf_b_content="$(journal_read_wait "${TMP_B}" "dispatch-brainB")"
+if printf '%s' "${out_b}" "${jf_b_content}" | grep -q 'class_floor_held task=brainB01 declared=Heavy'; then
   pass "(b) trivial-but-declared-Heavy holds the floor, journaled"
 else
   fail "(b) missing class_floor_held line: ${out_b}"
@@ -207,14 +244,80 @@ printf '%s' "${d_all}" | grep -q 'brain_decision task=brainD01 class=Heavy class
 # Same-task re-entry (cmd_advance_arm's path): _resolve_class_with_brain_floor
 # must read that same brain.yaml as a floor over an independently-derived
 # (lower) base class, and journal which record source won.
+#
+# R3 review fix (fix-round-4, item 1): this MUST assert against the function's
+# actual return value (its stdout printf, the one string cmd_advance_arm
+# captures as `_adv_class="$(...)"`), not against combined stdout+stderr. The
+# decision/log line (`emit decision "phase_class_floor ... class=${brain_cls}"`,
+# which lands on stderr via `log`) can say "Heavy" while the function still
+# returns the wrong class on stdout -- that split is exactly what R3 found
+# uncaught. Capture the two streams separately and assert stdout by itself.
+TMP_D2ERR="$(mktemp)"
 out_d2="$(blank_project_root_env LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${TMP_D}" bash -c '
   source "$1"
   _resolve_class_with_brain_floor "brainD01" "dispatch-brainD" "Light"
-' _ "${DISPATCH_SH}" 2>&1)"
-[[ "${out_d2}" == *"Heavy"* ]] \
-  && pass "(d) re-entry guard floor reads brain.yaml class=Heavy over a lower base class" \
-  || fail "(d) re-entry floor did not enforce Heavy: ${out_d2}"
+' _ "${DISPATCH_SH}" 2>"${TMP_D2ERR}")"
+err_d2="$(cat "${TMP_D2ERR}")"
+rm -f "${TMP_D2ERR}"
+[[ "${out_d2}" == "Heavy" ]] \
+  && pass "(d) re-entry guard floor RETURNS class=Heavy (the routed value, on stdout alone) over a lower base class" \
+  || fail "(d) re-entry floor did not return Heavy on stdout: stdout='${out_d2}' stderr='${err_d2}'"
 rm -rf "${TMP_D}"
+
+# ── mutation negative control: decision line says Heavy, return value lies ──
+# Reproduces the exact false-pass the old `*"Heavy"*` substring-on-combined-
+# streams assertion above missed: the `emit decision "phase_class_floor ...
+# class=${brain_cls}"` line still fires (and still says Heavy on stderr), but
+# the function is mutated to forget to reassign `cls` from `brain_cls`, so it
+# returns the stale, lower base class on stdout. The stdout-only assertion
+# above must go red on this mutant; the old combined-stream assertion would
+# have stayed green. Applied to a temp copy of dispatch-code.sh -- never the
+# tracked file.
+TMP_MUT3="$(mktemp -d)"
+MUT3_SH="${TMP_MUT3}/leadv2-dispatch-code.sh"
+cp "${DISPATCH_SH}" "${MUT3_SH}"
+# leadv2_brain_record/leadv2_brain_read_class live in lib/leadv2-brain-record.sh,
+# sourced by SCRIPT_DIR-relative path with a canonical-checkout fallback that is
+# NOT guaranteed present on this machine -- copy lib/ alongside the mutant so the
+# brain write/read path this control depends on actually runs, same as it does
+# for the tracked DISPATCH_SH.
+cp -r "${SCRIPT_DIR}/../lib" "${TMP_MUT3}/lib"
+python3 - "${MUT3_SH}" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+needle = '''      emit decision "phase_class_floor task=${sig8} source=brain_record class=${brain_cls}"
+      cls="${brain_cls}"'''
+assert needle in text, "_resolve_class_with_brain_floor reassignment not found -- mutation target drifted"
+mutated = text.replace(
+    needle,
+    '      emit decision "phase_class_floor task=${sig8} source=brain_record class=${brain_cls}"\n'
+    '      : # BRAIN-CLASS-LIVE-01 mutation: decision line still says Heavy, return value stays stale',
+    1,
+)
+with open(path, "w") as f:
+    f.write(mutated)
+PYEOF
+TMP_D3="$(mktemp -d)"
+JUDGE_D3="$(mkstub_judge "${TMP_D3}" complex 5 safety_publish_payments build)"
+run_classify "${MUT3_SH}" "${TMP_D3}" "${JUDGE_D3}" "dispatch-brainD3" "brainD301" "Light" "1" \
+  "touches five subsystems" >/dev/null
+TMP_D3ERR="$(mktemp)"
+mut_out_d3="$(blank_project_root_env LEADV2_DISPATCH_SOURCE_ONLY=1 PROJECT_ROOT="${TMP_D3}" bash -c '
+  source "$1"
+  _resolve_class_with_brain_floor "brainD301" "dispatch-brainD3" "Light"
+' _ "${MUT3_SH}" 2>"${TMP_D3ERR}")"
+mut_err_d3="$(cat "${TMP_D3ERR}")"
+rm -f "${TMP_D3ERR}"
+if [[ "${mut_out_d3}" == "Heavy" ]]; then
+  fail "MUTATION (d-re-entry) survived: stdout still returned Heavy despite the stale-cls mutation"
+elif [[ "${mut_out_d3}" != "Heavy" && "${mut_err_d3}" == *"Heavy"* ]]; then
+  pass "MUTATION (d-re-entry) killed: decision line still says Heavy (stderr='${mut_err_d3}') but the stdout-only assertion correctly rejects the stale return value ('${mut_out_d3}')"
+else
+  fail "MUTATION (d-re-entry) inconclusive: expected the decision line to still mention Heavy on stderr even though stdout is stale, got stdout='${mut_out_d3}' stderr='${mut_err_d3}'"
+fi
+rm -rf "${TMP_MUT3}" "${TMP_D3}"
 
 # ── mutation negative control: skip the judge call unconditionally ─────────
 # Applied to a temp copy of dispatch-code.sh -- never the tracked file.
