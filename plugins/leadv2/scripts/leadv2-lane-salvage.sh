@@ -222,15 +222,19 @@ union_resolve_run_all() { # <wt> <relpath> -> 0 resolved (staged), 1 refused
   git -C "${wt}" show ":2:${rel}" > "${t}/ours" 2>/dev/null || { rm -rf "${t}"; return 1; }
   git -C "${wt}" show ":3:${rel}" > "${t}/theirs" 2>/dev/null || { rm -rf "${t}"; return 1; }
 
-  # 1) Every non-marker line inside every conflict hunk of the working file
-  #    must be a registration row, blank, or a line verbatim in base. One
-  #    code line means this is NOT a registration conflict — refuse.
+  # 1) On THEIRS side of every conflict hunk, every non-marker line must be
+  #    a registration row, blank, or a line verbatim in base. Ours-side lines
+  #    are always acceptable: the result keeps them verbatim, so nothing is
+  #    lost however far ours drifted from base (measured live 2026-09-04:
+  #    main's map region carries a comment stem the stale lane never saw).
+  #    One theirs-side code line means the lane edited real code here —
+  #    refuse rather than drop it.
   local bad
   bad="$(awk '
-    /^<{7} / { inhunk = 1; next }
-    /^={7}$/  { next }
+    /^<{7} / { inhunk = 1; ours = 1; next }
+    /^={7}$/  { ours = 0; next }
     /^>{7} /  { inhunk = 0; next }
-    inhunk && NF > 0 { print }
+    inhunk && !ours && NF > 0 { print }
   ' "${wt}/${rel}" \
     | grep -Ev "${REGROW_RE}" \
     | grep -vFx -f "${t}/base" \

@@ -231,6 +231,76 @@ main-tool.sh:plugins/leadv2/scripts/tests/test-main-tool.sh"' > "$repo/tests/run
 }
 
 # ---------------------------------------------------------------------------
+# Case 2b: registration union when OURS side of the hunk carries lines base
+# never saw — a comment stem main added inside the map region after the lane
+# forked (measured live: the merge-safety-gate carrier stem, 2026-09-04).
+# Ours is kept verbatim so this is not a loss risk; the union must proceed.
+# THEIRS side still carries only registration rows.
+# ---------------------------------------------------------------------------
+test_registration_union_ours_comment() {
+  local repo out rc main_before ours_n theirs_n base_n after_n expect
+  repo="$(_mk_repo)"
+  out="$(mktemp)"
+
+  git -C "$repo" checkout -qb worktree-LANE2B
+  # lane appends its registration row (last row carries the closing quote)
+  git -C "$repo" show main:tests/run-all.sh \
+    | sed -e 's|gamma.sh:plugins/leadv2/scripts/tests/test-gamma.sh"|gamma.sh:plugins/leadv2/scripts/tests/test-gamma.sh|' \
+      -e '$a\
+lane2b.sh:plugins/leadv2/scripts/tests/test-lane2b.sh"' > "$repo/tests/run-all.sh"
+  git -C "$repo" add -A && git -C "$repo" commit -qm "feat: register lane2b suite"
+
+  git -C "$repo" checkout -q main
+  # main adds a comment INSIDE the map region (base never saw it) + its own row
+  git -C "$repo" show main:tests/run-all.sh \
+    | sed -e 's|^EXTRA_SUITE_MAP="|# LANE-MERGE-SILENTLY-REVERTS-MAIN-01: carrier stem\
+EXTRA_SUITE_MAP="|' \
+      -e 's|gamma.sh:plugins/leadv2/scripts/tests/test-gamma.sh"|gamma.sh:plugins/leadv2/scripts/tests/test-gamma.sh|' \
+      -e '$a\
+main2b.sh:plugins/leadv2/scripts/tests/test-main2b.sh"' > "$repo/tests/run-all.sh"
+  git -C "$repo" add -A && git -C "$repo" commit -qm "feat: comment stem + register main2b suite"
+
+  base_n="$(_regrow_count "$repo" 'main~1')"
+  ours_n="$(_regrow_count "$repo" 'main')"
+  theirs_n="$(_regrow_count "$repo" 'worktree-LANE2B')"
+
+  main_before="$(_main_sha "$repo")"
+  rc="$(_run_salvage "$repo" LANE2B "$out")"
+
+  if [[ "$rc" -eq 0 ]] && grep -q 'verdict=salvaged_green ' "$out"; then
+    _ok "case 2b: ours-side comment in hunk does not block union"
+  else
+    _fail "case 2b: expected salvaged_green, got rc=$rc: $(tail -5 "$out")"
+  fi
+
+  after_n="$(_regrow_count "$repo" 'salvage/LANE2B')"
+  expect=$((ours_n + theirs_n - base_n))
+  if [[ "$after_n" -eq "$expect" ]]; then
+    _ok "case 2b: no row lost — after=${after_n} == ours=${ours_n} + theirs=${theirs_n} - common=${base_n}"
+  else
+    _fail "case 2b: row count off — after=${after_n} expected=${expect}"
+  fi
+
+  local resolved
+  resolved="$(git -C "$repo" show salvage/LANE2B:tests/run-all.sh)"
+  if grep -q 'carrier stem' <<< "$resolved" \
+     && [[ "$(grep -c 'lane2b.sh:plugins' <<< "$resolved")" -eq 1 ]] \
+     && bash -n <<< "$resolved"; then
+    _ok "case 2b: ours comment kept verbatim, lane row inserted, result parses"
+  else
+    _fail "case 2b: resolved run-all.sh lost the comment stem or malformed"
+  fi
+
+  if [[ "$(_main_sha "$repo")" == "$main_before" ]]; then
+    _ok "case 2b: main untouched"
+  else
+    _fail "case 2b: main MOVED during salvage"
+  fi
+
+  rm -rf "$repo" "$out"
+}
+
+# ---------------------------------------------------------------------------
 # Case 3: foreign conflict. The lane and main both edit the same line of a
 # production file. The pick must stop with verdict=conflict, name the file,
 # report conflicting lines, and never touch main.
@@ -485,6 +555,7 @@ fi
 
 test_carry_happy_path
 test_registration_union
+test_registration_union_ours_comment
 test_foreign_conflict_stops
 test_nothing_to_salvage
 test_red_until_suites_prove_green
