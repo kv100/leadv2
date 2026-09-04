@@ -237,6 +237,12 @@
           },
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-spawn-arbiter-gate.sh\"",
+            "timeout": 5,
+            "statusMessage": "Spawn arbiter gate (ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01)"
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/leadv2-codex-first-nudge.sh\"",
             "timeout": 5,
             "continueOnBlock": true,
