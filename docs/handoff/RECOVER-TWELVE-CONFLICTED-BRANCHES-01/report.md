@@ -18,8 +18,8 @@ Worktree: `.claude/worktrees/RECOVER-TWELVE-CONFLICTED-BRANCHES-01` (ветка
 | agent-a4be34650195f2188 | слита (дифф пуст — см. ниже) | d131633a |
 | CI-SUITES-ARE-MACOS-ONLY-01 | слита | 5187b58e |
 | CLAUDE-PROFILE-DEFAULT-TOKEN-EXPIRED-01 | слита | 5f2b02b0 |
-| PHASE-BOOTSTRAP-ADMIT-02 | слита | (см. ниже) |
-| PLUGIN-PAPERCUTS-01 | см. ниже | — |
+| PHASE-BOOTSTRAP-ADMIT-02 | слита | 6abbc44f |
+| PLUGIN-PAPERCUTS-01 | слита | bcdf59b0 |
 | 5fa969ac | см. ниже | — |
 
 (строки заполняются по мере завершения прогонов)
@@ -124,3 +124,23 @@ The replacement test will:
 3. Demonstrate that mutating the zero-stop rule (e.g., setting ZERO_MAX=0 or removing zero-stop logic) causes the test to fail
 
 This approach maintains the backlog's purpose of preventing regressions while aligning with main's correct design decision.
+
+
+### PHASE-BOOTSTRAP-ADMIT-02 Resolution
+
+Recovered after session failure; parallel evolution of the same fix as DISPATCH-PHASE-DEADLOCK-01:
+- Union: _VA_STRENGTH from HEAD + doc-intent from branch
+- Allow lead-brief as plan-evidence enhanced: naming brief-*.md/fix-round-N.md + sha256-integrity from branch
+- But location rule from HEAD (any docs/handoff/<task-id>/, not dispatch-<sig>) — pinning to dispatch-category branch conflicted with own red-green fixture TASK-BRIEF-01/brief.md)
+- Remedy texts: branch's two-step recipe + enumeration of HEAD forms
+- Suites: bootstrap 34/0, phase-record 12/0, phase-precondition exit 0
+
+Key changes:
+1. **leadv2-dispatch-code.sh**: Updated remedy messaging to point to evidence that can exist before any worker runs (lead-authored brief is valid plan evidence)
+2. **leadv2-phase-record.sh**: 
+   - Sets global _VA_STRENGTH to "verified" (machine-checked) or "attested" (lead-authored brief/explicit recorded decision)
+   - For plan phase: accepts lead-authored brief/fix-round-N.md as "attested" evidence (human artifact, not machine-checked)
+   - For gate1 phase: accepts explicit recorded decision (--reason) as "attested" evidence even without .gate1-passed sentinel
+   - Maintains distinction between "verified" (machine-checked) and "attested" (human-provided) proof levels
+
+This resolves the bootstrap deadlock by allowing lead-authored briefs to serve as valid plan evidence before workers run, while preserving the machine-checked verification pathway for post-worker artifacts.
