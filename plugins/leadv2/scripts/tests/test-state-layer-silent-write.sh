@@ -19,7 +19,30 @@
 # no `${x^^}`. Portable `sed -i.bak` (works under both GNU and BSD sed).
 set -uo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# STATE-LAYER-CANNOT-SAY-IT-FAILED-01 / lead fix: under zsh BASH_SOURCE does not
+# exist, so HERE resolved to the caller's cwd and every known-instance lookup came
+# back MISSING -- the detector reported "no such functions exist" because it was
+# looking in the wrong directory. That is the exact false zero this lane counts,
+# occurring inside the lane's own instrument. Resolution order as in the merged
+# lib/leadv2-lane-state.sh: this file's path when bash names it, then $0.
+# The classifier reads function bodies from `declare -f`, whose output shape is
+# bash-specific: under zsh every lookup came back CLEAN — a detector for silent
+# failures failing silently. A skip would be no better (a suite that does not run
+# must not look like one that found nothing), so re-exec under bash instead, and
+# refuse loudly if bash is absent.
+if [ -z "${BASH_VERSION:-}" ]; then
+  if command -v bash >/dev/null 2>&1; then
+    exec bash "$0" "$@"
+  fi
+  printf 'FAIL: this suite classifies `declare -f` output and needs bash; no bash found.\n' >&2
+  printf '      Refusing to run under another shell: every lookup would report CLEAN,\n' >&2
+  printf '      which is the false zero this suite exists to detect.\n' >&2
+  exit 2
+fi
+
+_ssw_src="${BASH_SOURCE[0]:-}"
+if [[ -z "$_ssw_src" && -f "${0:-}" ]]; then _ssw_src="$0"; fi
+HERE="$(cd "$(dirname "$_ssw_src")" && pwd)"
 SCRIPTS_DIR="$(cd "${HERE}/.." && pwd)"
 LIB_DIR="${SCRIPTS_DIR}/lib"
 
