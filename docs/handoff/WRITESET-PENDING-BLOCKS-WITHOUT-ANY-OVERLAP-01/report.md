@@ -36,19 +36,32 @@ non-artifact HEAD (artifacts are excluded from the lane diff hash):
 
 1. Window clock — `leadv2-active-registry.sh`
    `started = other.get("first_seen_at") or other.get("started_at")` →
-   `started = other.get("started_at")` (pre-fix clock). Cases 3/3b must go red.
+   `started = other.get("started_at")` (pre-fix clock). Case 3b must go red.
+   First attempt at a 1s window: **mutant survived** — one slow python spawn
+   between recreation and candidate expired the window even pre-fix. Margin
+   widened to 5s window / 6s sleep (commit b956f718); control then killed.
 2. Fanout declaration — `leadv2-fanout.sh`
    `writes = None if writes_str in ("", "null", "None", "-") else writes_str` →
    `writes = None` (strip the declaration). Case 1 must go red.
 
 ## Acceptance 4 — selection proof (production file, never the suite)
 
+Suite committed and clean; only `plugins/leadv2/scripts/leadv2-active-registry.sh`
+made dirty (transient trailing comment, reverted immediately):
+
+    $ LEADV2_RUN_ALL_SELECT_ONLY=1 bash tests/run-all.sh --scope changed | grep writeset-pending
+    [SELECT] .../plugins/leadv2/scripts/tests/test-writeset-pending-overlap.sh
+    run-all: 8 selected, scope=changed, select_only=1
+
+Selected by the `# run-all-triggers:` header naming the production file —
+never by the suite's own dirty filename. Full run-all was NEVER executed in
+this live checkout (five control-plane symlinks get redirected into a temp
+dir and their targets deleted).
+
 ## Falsification set (raw)
 
-bash -n: all 7 changed shell files OK; all 5 embedded PYEOF blocks in
-leadv2-active-registry.sh compile (py_compile-equivalent via compile()).
-Suite: pass=7 fail=0. SELECT_ONLY isolation: with only
-`leadv2-active-registry.sh` dirty (suite committed and clean),
-`LEADV2_RUN_ALL_SELECT_ONLY=1 bash tests/run-all.sh --scope changed` selects
-`test-writeset-pending-overlap.sh` (8 selected total incl. control-plane dirt).
-Full run-all NEVER executed in this live checkout (symlink-redirect hazard).
+- `bash -n`: all 7 changed shell files OK.
+- Embedded python: all 5 PYEOF blocks in leadv2-active-registry.sh compile.
+- Suite at final HEAD: `[TEST] SUMMARY: pass=7 fail=0` (local mutant probes:
+  clock revert → fail=1 at case 3b; declaration strip → fail=2 at cases 1/3).
+- Changed-scope runner: SELECT_ONLY only (see Acceptance 4).
