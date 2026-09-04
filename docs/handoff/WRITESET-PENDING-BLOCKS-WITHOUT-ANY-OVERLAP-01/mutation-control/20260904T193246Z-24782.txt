@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-writeset-pending-overlap.sh
+file=plugins/leadv2/scripts/leadv2-active-registry.sh
+anchor=s|started = other.get("first_seen_at") or other.get("started_at")|started = other.get("started_at")|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 3b: out=[cand_rc=5
+diff_hash=191a191be4b6cb29fad7db55a92d4c2d1787e55c8a530848ed03529a088e09e0
+lane_diff_hash=df4ffca3940d3ebb73fb43296b2137809fb80fbea037b9e69a4bfa7b109b9593

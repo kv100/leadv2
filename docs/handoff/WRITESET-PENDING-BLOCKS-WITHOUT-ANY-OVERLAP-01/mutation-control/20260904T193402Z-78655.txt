@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-writeset-pending-overlap.sh
+file=plugins/leadv2/scripts/leadv2-fanout.sh
+anchor=s|writes = None if writes_str in ("", "null", "None", "-") else writes_str|writes = None|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: 1: out=[reserve_rc=0
+diff_hash=9c1cfac464636cecbde03a632833cb7c60b5ae9269a6b44592dc9a846f1ca643
+lane_diff_hash=df4ffca3940d3ebb73fb43296b2137809fb80fbea037b9e69a4bfa7b109b9593
