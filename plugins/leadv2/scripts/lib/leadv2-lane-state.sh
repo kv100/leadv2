@@ -3,25 +3,39 @@
 # active.yaml directly from a lane lifecycle caller.
 #
 # API:
-#   lane_register <task-id> <lead-session-id> <worktree> <phase> [pid]
+#   lane_register <task-id> <lead-session-id> <worktree> <phase> [pid] [lead_pid] [lead_pid_birth]
 #   lane_transition <task-id> <phase> [detail]
 #   lane_deregister <task-id> [reason]
 #   lane_alive <task-id>                 # 0 live, 1 dead/not-found
 #   lane_reconcile                       # marks dead, recovers live orphans
 #   lane_count_live <lead-session-id>    # stdout count
+#   lane_lead_alive <lead-session-id>    # 0 live, 1 dead/orphaned/no-data
+#                                         # (D6-REGISTRY-LANE-OWNERSHIP-01: raw
+#                                         # lead_pid/lead_pid_birth, additive
+#                                         # to pid/pid_start_time, so a lane's
+#                                         # owning lead process can be checked
+#                                         # without re-parsing lead_session_id)
 
-# REGISTRY-MUST-LEAVE-GIT-01: BASH_SOURCE[0] is unset (not merely empty) when
-# this file is sourced via `eval "$(cat ...)"` or a similar no-file-backing
-# path -- under a caller's `set -u` that is a hard "unbound variable" crash,
-# not a silently-wrong path. `${BASH_SOURCE[0]:-}` never crashes; when it IS
-# empty, fall back to LEADV2_PROJECT_ROOT/CLAUDE_PROJECT_DIR (the same
-# resolution order leadv2-active-registry.sh's own root fallback uses) so the
-# resolved dir still points at this checkout's scripts/, not some ambient cwd.
-if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
-  _lv2_lane_state_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# REGISTRY-MUST-LEAVE-GIT-01 + D6-REGISTRY-LANE-OWNERSHIP-01 (union of two real
+# failures, neither of which the other covers):
+#  - under `eval "$(cat ...)"` bash leaves BASH_SOURCE[0] UNSET, and a caller's
+#    `set -u` then crashes hard ("unbound variable"), not merely resolves wrong;
+#  - under zsh BASH_SOURCE does not exist at all, and the sourcing script's $0
+#    is the correct stand-in (every current caller, plus the suites, sits one
+#    directory below this lib's parent).
+# Order: this lib's own path when bash names it; $0 when it names a real file;
+# otherwise the project root -- so the resolved dir points at THIS checkout's
+# scripts/, never at an ambient cwd. Production writers are bash-shebang.
+_lv2_lane_state_src="${BASH_SOURCE[0]:-}"
+if [[ -z "$_lv2_lane_state_src" && -f "${0:-}" ]]; then
+  _lv2_lane_state_src="$0"
+fi
+if [[ -n "$_lv2_lane_state_src" ]]; then
+  _lv2_lane_state_dir="$(cd "$(dirname "$_lv2_lane_state_src")/.." && pwd)"
 else
   _lv2_lane_state_dir="${LEADV2_PROJECT_ROOT:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}/plugins/leadv2/scripts"
 fi
+unset _lv2_lane_state_src
 _lv2_lane_state_root() {
   local root="${LEADV2_PROJECT_ROOT:-${PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
   printf '%s' "$root"
@@ -44,8 +58,15 @@ _lv2_lane_state_lock() {
 }
 _lv2_lane_start_time() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//'; }
 _lv2_lane_state_mutate() { # <op> [args...] -- fcntl.flock + atomic rename
-  local path lock; path="$(_lv2_lane_state_path)" || return 1; lock="$(_lv2_lane_state_lock)" || return 1
-  python3 - "$lock" "$path" "$@" <<'PY'
+  # _lv2_mutate_path/_lv2_mutate_lock, NOT plain path/lock: in zsh `path` is
+  # the tied array of $PATH, so the old names clobbered PATH inside this
+  # function and every child lookup (env bash / python3) died with
+  # "No such file or directory". Same behavior under bash, zsh-safe by
+  # construction.
+  local _lv2_mutate_path _lv2_mutate_lock
+  _lv2_mutate_path="$(_lv2_lane_state_path)" || return 1
+  _lv2_mutate_lock="$(_lv2_lane_state_lock)" || return 1
+  python3 - "$_lv2_mutate_lock" "$_lv2_mutate_path" "$@" <<'PY'
 import datetime, fcntl, os, subprocess, sys, tempfile
 try:
     import yaml
@@ -87,7 +108,9 @@ with open(lock, 'a+') as lf:
   data.setdefault('meta', {}); data.setdefault('sessions', [])
   rows=data['sessions']
   if op == 'register':
-    task, lead, worktree, phase, pid = args
+    task, lead, worktree, phase, pid = args[:5]
+    lead_pid = args[5] if len(args) > 5 else ''
+    lead_pid_birth = args[6] if len(args) > 6 else ''
     pid = int(pid)
     live=[r for r in rows if r.get('lead_session_id') == lead and not r.get('dead_at') and alive(r)]
     existing=next((r for r in rows if r.get('task_id') == task and not r.get('dead_at')), None)
@@ -109,11 +132,15 @@ with open(lock, 'a+') as lf:
       print('lane cap exceeded: lead_session_id=%s live=%d cap=%d' % (lead, len(live), cap), file=sys.stderr); sys.exit(3)
     if existing:
       existing.update(pid=pid, pid_start_time=birth(pid), worktree=worktree, phase=phase, lead_session_id=lead, dead_at=None, updated_at=now())
+      if lead_pid: existing['lead_pid'] = int(lead_pid)
+      if lead_pid_birth: existing['lead_pid_birth'] = lead_pid_birth
       event(existing, 'registered_refresh')
     else:
       row={'task_id':task, 'session_id':lead, 'lead_session_id':lead, 'worktree':worktree, 'phase':phase,
            'pid':pid, 'pid_start_time':birth(pid), 'started_at':now(), 'updated_at':now(), 'dead_at':None,
            'recovered':False, 'lane_events':[]}
+      if lead_pid: row['lead_pid'] = int(lead_pid)
+      if lead_pid_birth: row['lead_pid_birth'] = lead_pid_birth
       event(row, 'registered'); rows.append(row)
   elif op == 'transition':
     task, phase, detail = args
@@ -160,15 +187,32 @@ with open(lock, 'a+') as lf:
   elif op == 'alive':
     task=args[0]; row=next((r for r in rows if r.get('task_id') == task and not r.get('dead_at')), None)
     sys.exit(0 if row and alive(row) else 1)
+  elif op == 'lead_alive':
+    # D6-REGISTRY-LANE-OWNERSHIP-01: same liveness pattern as alive(), but
+    # keyed on the lead process (lead_pid/lead_pid_birth) rather than the
+    # lane's own worker pid -- "is the session that owns these lanes still
+    # running", not "is this particular lane's worker still running".
+    lead=args[0]
+    row=next((r for r in rows if r.get('lead_session_id') == lead and r.get('lead_pid')), None)
+    if row is None: sys.exit(1)
+    try: lp=int(row.get('lead_pid'))
+    except (TypeError, ValueError): sys.exit(1)
+    if lp <= 1: sys.exit(1)
+    try: os.kill(lp, 0)
+    except OSError: sys.exit(1)
+    recorded=' '.join(str(row.get('lead_pid_birth') or '').split())
+    observed=birth(lp)
+    sys.exit(0 if (recorded and observed and recorded == observed) else 1)
   fd,tmp=tempfile.mkstemp(prefix='.active.yaml.', dir=os.path.dirname(path))
   with os.fdopen(fd,'w',encoding='utf-8') as f: yaml.safe_dump(data,f,default_flow_style=False,sort_keys=False)
   os.replace(tmp,path)
 PY
 }
-lane_register() { _lv2_lane_state_mutate register "$1" "$2" "$3" "$4" "${5:-$$}"; }
+lane_register() { _lv2_lane_state_mutate register "$1" "$2" "$3" "$4" "${5:-$$}" "${6:-}" "${7:-}"; }
 lane_transition() { _lv2_lane_state_mutate transition "$1" "$2" "${3:-}"; }
 lane_deregister() { _lv2_lane_state_mutate deregister "$1" "${2:-closed}"; }
 lane_alive() { _lv2_lane_state_mutate alive "$1"; }
+lane_lead_alive() { _lv2_lane_state_mutate lead_alive "$1"; }
 lane_reconcile() { _lv2_lane_state_mutate reconcile "$(_lv2_lane_state_root)"; }
 lane_count_live() { _lv2_lane_state_mutate count "$1"; }
 lane_adopt_pid() { # <task-id> <lead-session-id> <worktree> <phase> <worker-pid>

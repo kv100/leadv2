@@ -1393,7 +1393,12 @@ fi
 # _lead_session_id, since this beat runs under that same lead's session.
 # Never fatal: an inbox drain failure degrades to no inbox section, not a
 # failed beat.
-_LWC_LEAD_ID="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-${CLAUDE_SESSION_ID:-direct}}}"
+# D6-REGISTRY-LANE-OWNERSHIP-01: CLAUDE_SESSION_ID is never set in prod
+# (test-only); the durable-pid resolver replaces it as the third fallback
+# link so two "direct" sessions stop sharing one inbox-drain bucket.
+_LV2_LEAD_IDENTITY_SH="${SCRIPT_DIR}/lib/leadv2-lead-identity.sh"
+[[ -f "${_LV2_LEAD_IDENTITY_SH}" ]] && source "${_LV2_LEAD_IDENTITY_SH}"
+_LWC_LEAD_ID="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-$(declare -F leadv2_lead_session_id >/dev/null 2>&1 && leadv2_lead_session_id || printf -- 'direct')}}"
 INBOX_MD="$(PROJECT_ROOT="$PROJECT_ROOT" "${SCRIPT_DIR}/leadv2-inbox.sh" drain --lead "${_LWC_LEAD_ID}" 2>/dev/null || true)"
 
 BLOCK="$(

@@ -229,11 +229,22 @@ test_4_lane_state_survives_eval_sourcing() {
   log "Test 4 negative control: reintroduce bare BASH_SOURCE[0] -> resolution check must fail with NONZERO rc"
   local tmp_lane mutated_out mutated_rc=0
   tmp_lane="$(lv2_mktemp_file "lane-state-mutated" "sh")"
+  # The mutation must reintroduce the BARE BASH_SOURCE[0] and strip every
+  # fallback, i.e. replace the whole guarded block. The block's shape changed
+  # when D6's zsh $0 fallback was merged into REGISTRY-MUST-LEAVE-GIT-01's
+  # unset-guard, and an awk pattern that no longer matches applies NO mutation
+  # at all -- which reads exactly like a passing control. So: assert the file
+  # actually changed before believing anything the mutant does.
   awk -v repl='_lv2_lane_state_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' '
-    /^if \[\[ -n "\$\{BASH_SOURCE\[0\]:-\}" \]\]; then$/ { print repl; skip=1; next }
-    skip==1 { if (/^fi$/) { skip=0 }; next }
+    /^_lv2_lane_state_src="\$\{BASH_SOURCE\[0\]:-\}"$/ { print repl; skip=1; next }
+    skip==1 { if (/^unset _lv2_lane_state_src$/) { skip=0 }; next }
     { print }
   ' "$LANE_STATE_SH" > "$tmp_lane"
+  if cmp -s "$LANE_STATE_SH" "$tmp_lane"; then
+    fail "negative control could not APPLY its mutation: $tmp_lane is byte-identical to $LANE_STATE_SH (the awk pattern no longer matches the resolver's shape)"
+    lv2_rmtemp_file "$tmp_lane"
+    return
+  fi
   scratch="$(_mk_scratch_repo)"
   _mk_sentinel_state_path "$scratch"
   mutated_out="$(

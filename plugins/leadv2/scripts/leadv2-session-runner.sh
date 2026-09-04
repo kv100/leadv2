@@ -194,7 +194,12 @@ printf -- '%s\n' "$$" > "$PID_FILE"
 # deregister on any exit path so a dead runner never leaves a live-looking row.
 _LANE_STATE_SH="${SCRIPT_DIR}/lib/leadv2-lane-state.sh"
 [[ -f "${_LANE_STATE_SH}" ]] && source "${_LANE_STATE_SH}"
-_LANE_LEAD_SESSION_ID="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-${CLAUDE_SESSION_ID:-direct}}}"
+_LANE_LEAD_IDENTITY_SH="${SCRIPT_DIR}/lib/leadv2-lead-identity.sh"
+[[ -f "${_LANE_LEAD_IDENTITY_SH}" ]] && source "${_LANE_LEAD_IDENTITY_SH}"
+# D6-REGISTRY-LANE-OWNERSHIP-01: CLAUDE_SESSION_ID is never set in prod (test-only);
+# the durable-pid resolver replaces it as the third fallback link so concurrent
+# lead processes stop sharing one "direct" accounting bucket.
+_LANE_LEAD_SESSION_ID="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-$(declare -F leadv2_lead_session_id >/dev/null 2>&1 && leadv2_lead_session_id || printf -- 'direct')}}"
 if declare -F lane_adopt_pid >/dev/null 2>&1; then
   lane_adopt_pid "${TASK_ID}" "${_LANE_LEAD_SESSION_ID}" "${PROJECT_ROOT}" "spawning" "$$" >/dev/null 2>&1 || true
   trap 'declare -F lane_deregister >/dev/null 2>&1 && lane_deregister "${TASK_ID}" "session_runner_exit" >/dev/null 2>&1 || true' EXIT
