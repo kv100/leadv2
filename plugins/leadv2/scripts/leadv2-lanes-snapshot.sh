@@ -917,6 +917,12 @@ for tid, s in list(current.items()):
     # (v2) path, same precedent as the "absent PID alone" gate above.
     if prune_v2_mode and reasons:
         _lv_row = lane_liveness_by_id.get(tid) or {}
+        # BOARD-BLIND-TO-DETACHED-WORKERS-01: a detached arm's own current
+        # process-group / Codex-job proof is authoritative. The registry pid
+        # may deliberately remain the now-exited lead_durable dispatcher, so
+        # do not carry its bare PID death into the two-poll prune candidate.
+        if _lv_row.get("verdict") == "alive":
+            reasons = []
         _age_s = _lv_row.get("age_s")
         try:
             _lane_fresh_s = max(0, int(os.environ.get("LEADV2_LANE_FRESH_S", "120")))
