@@ -982,76 +982,23 @@ pc_worker_alive() { # 0 = keep watching; 1 = worker is provably finished
       # Unknown provider state is conservative: the hard ceiling owns recovery.
       return 0
       ;;
-    glm|kimi)
+    glm|kimi|freepool)
+      # FP-08 (2026-08-28): freepool joins the shared coder-script liveness
+      # branch. freepool-coder.sh is a clone of glm-coder.sh -- same bg/status
+      # contract, same meta.yaml shape, same pgid/.lockref spawn records -- so
+      # its handle resolves through the SAME waiter the glm arm uses. This is
+      # the fix for the live 2026-08-28 defect (lanes 27434c7a/e9e1ad51):
+      # without an author case here, freepool fell through to
+      # `proceed_legacy` -> "provably finished" -> no_work/empty_diff while the
+      # worker was still running. All three arms share the meta.yaml contract;
+      # only the runs-dir resolution differs.
       if [[ "${AUTHOR}" == glm ]]; then
         run_dir="${GLM_RUNS_DIR:-${_PC_RUNS_ROOT}/glm-runs}/${HANDLE}"
-      else
+      elif [[ "${AUTHOR}" == kimi ]]; then
         run_dir="${KIMI_RUNS_DIR:-${_PC_RUNS_ROOT}/kimi-runs}/${HANDLE}"
+      else
+        run_dir="${FREEPOOL_RUNS_DIR:-${_PC_RUNS_ROOT}/freepool-runs}/${HANDLE}"
       fi
-      meta="${run_dir}/meta.yaml"
-      status="$(_pc_meta_value "${meta}" status)"
-      # PLUGIN-RELIABILITY-01 D4: malformed/truncated meta.yaml — empty status
-      # with a gone pid means the run is dead, not keep-waiting for 4200s.
-      # One grace re-read already happened via the poll loop; treat it as dead.
-      pid="$(_pc_meta_value "${meta}" pid)"
-      # GLM/Kimi stall revival finalizes the ORIGINAL run with one of these
-      # statuses, then returns before clearing its original registry entry. They
-      # are therefore terminal evidence for this handle even while that stale
-      # registry file remains; treating the registry as live here would run the
-      # full ceiling and write a permanent dead/timeout row for completed work.
-      [[ "${status}" == revived || "${status}" == revive_blocked_by_gate ]] && return 1
-      registry_alive=0
-      _pc_job_registry_has_handle "${HANDLE}" && registry_alive=1
-      [[ "${status}" == running || "${registry_alive}" == 1 ]] && return 0
-      # PLUGIN-RELIABILITY-01 D1 (round 2): pid-file-based liveness check.
-      # The pid in meta.yaml may be the coder child (already exited) while the
-      # parent __supervise process still holds the GLM lock. _pc_process_alive
-      # checks exact pids from the spawn record (meta, pgid, lock_dir).
-      _pc_process_alive "${run_dir}" "${pid}" && return 0
-      # CODEX-QUOTA-LOCKOUT-NEVER-FIRES-FOR-CODEX-01 (close-gate out-of-window path):
-      # this close gate is discovering status==failed possibly long after
-      # leadv2-dispatch-code.sh's own in-process post-spawn verdict window
-      # (_wait_arm_early_verdict) already expired -- classify it here too, so a late
-      # quota death still gets a lockout AND advances the chain instead of sitting dead.
-      [[ "${status}" == failed && "${registry_alive}" == 0 ]] && _pc_maybe_quota_advance "${AUTHOR}" "${HANDLE}"
-      # PLUGIN-RELIABILITY-01 D1 (round 2): before declaring terminal=dead,
-      # reap any straggler processes so the GLM lock is released for the next lane.
-      if [[ ( "${status}" == complete || "${status}" == failed ) && "${registry_alive}" == 0 ]]; then
-        _pc_reap_worker "${run_dir}" "${pid}"
-        return 1
-      fi
-      # The coder writes this only from its finish guard. It is terminal provider
-      # evidence for legacy runs that predate meta.yaml, once no exact registry or
-      # process evidence remains. PLUGIN-RELIABILITY-02: this must run BEFORE the
-      # empty-status grace guard so legacy terminal evidence still wins.
-      [[ -n "${_PC_ASKED_INTO_VOID:-}" && -f "${_PC_ASKED_INTO_VOID}" && "${registry_alive}" == 0 ]] && return 1
-      # PLUGIN-RELIABILITY-01 D4 (round 2): pid gone + empty/unparseable status
-      # = dead, not keep-waiting (which caused 4200s false waits). Grace guard:
-      # meta.yaml must exist and be older than 30s — a just-spawned worker that
-      # hasn't written meta yet (or wrote a truncated initial copy) must not be
-      # declared dead on the first poll.
-      if [[ -z "${status}" && "${registry_alive}" == 0 ]]; then
-        if [[ ! -f "${meta}" ]]; then
-          # meta.yaml doesn't exist yet — the worker may have just spawned.
-          # Give it time to write meta before declaring dead.
-          return 0
-        fi
-        local _meta_age_s=0
-        local _now_s _meta_mtime_s
-        _now_s="$(date +%s)"
-        _meta_mtime_s="$(stat -f %m "${meta}" 2>/dev/null || stat -c %Y "${meta}" 2>/dev/null || echo 0)"
-        _meta_age_s=$(( _now_s - _meta_mtime_s ))
-        if (( _meta_age_s < 30 )); then
-          return 0
-        fi
-        emit decision "product_close task=${TASK} worker_liveness=dead author=${AUTHOR} handle=${HANDLE} reason=empty_status_pid_gone meta_age_s=${_meta_age_s}"
-        return 1
-      fi
-      # Missing/malformed provider evidence is never treated as completion.
-      return 0
-      ;;
-    freepool)
-      run_dir="${FREEPOOL_RUNS_DIR:-${_PC_RUNS_ROOT}/freepool-runs}/${HANDLE}"
       meta="${run_dir}/meta.yaml"
       status="$(_pc_meta_value "${meta}" status)"
       # PLUGIN-RELIABILITY-01 D4: malformed/truncated meta.yaml — empty status
@@ -1209,6 +1156,13 @@ pc_await_worker_exit() {
   local max_wait_s="${LEADV2_PC_WORKER_MAX_WAIT_S:-4200}"
   local log_every_s="${LEADV2_PC_WORKER_LOG_EVERY_S:-300}"
   local lease_refresh_s="${LEADV2_PC_LEASE_REFRESH_EVERY_S:-300}"
+  # FP-08 (2026-08-28): the freepool arm waits on the SAME loop as glm/kimi,
+  # with its own optional ceiling. Default is the glm arm's timeout (the shared
+  # LEADV2_PC_WORKER_MAX_WAIT_S above, 4200s) -- an invalid/nonsense override
+  # falls back to that default rather than shrinking or disabling the wait.
+  if [[ "${AUTHOR}" == freepool && -n "${LEADV2_PC_FREEPOOL_MAX_WAIT_S:-}" ]]; then
+    [[ "${LEADV2_PC_FREEPOOL_MAX_WAIT_S}" =~ ^[1-9][0-9]*$ ]] && max_wait_s="${LEADV2_PC_FREEPOOL_MAX_WAIT_S}"
+  fi
   [[ "${poll_s}" =~ ^[1-9][0-9]*$ ]] || poll_s=10
   [[ "${max_wait_s}" =~ ^[1-9][0-9]*$ ]] || max_wait_s=4200
   [[ "${log_every_s}" =~ ^[0-9]+$ ]] || log_every_s=300

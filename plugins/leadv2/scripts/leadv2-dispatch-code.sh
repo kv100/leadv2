@@ -6465,17 +6465,18 @@ exit is treated as an incident."
     _arb_util="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*\(util_glm=.*\)$/\1/p')"
     _arb_tier="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*tier=\([^ ]*\).*/\1/p')"
     _arb_model="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*model=\([^ ]*\).*/\1/p')"
-    # Read the arbiter state file to get applier information for freepool
-    _arb_state_file="${LEADV2_ROUTE_ARBITER_STATE_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-last-arm}"
-    if [[ -f "${_arb_state_file}" ]]; then
-        _arb_state_json="$(cat "${_arb_state_file}" 2>/dev/null)" || _arb_state_json=""
-        if [[ -n "${_arb_state_json}" ]]; then
-            _arb_applier_applied="$(printf '%s\n' "${_arb_state_json}" | python3 -c 'import json,sys; obj=json.load(sys.stdin); print(obj.get("applier",{}).get("applied",False))' 2>/dev/null)" || _arb_applier_applied="false"
-            _arb_applier_reason="$(printf '%s\n' "${_arb_state_json}" | python3 -c 'import json,sys; obj=json.load(sys.stdin); print(obj.get("applier",{}).get("reason",""))' 2>/dev/null)" || _arb_applier_reason=""
-            if [[ "${_arb_applier_applied}" == "true" && "${_arb_arm}" == "freepool" ]]; then
-                emit decision "arm_floor_applied arm=freepool task=${sig8} reason=${_arb_applier_reason}"
-            fi
-        fi
+    # FP-08 CAPABILITY-FLOOR: the arbiter journals its own floor demotion on its
+    # output line (floor_applied=1 floor_reason=<class>/<kind>). Parse it HERE,
+    # from THIS dispatch's own invocation -- never from the shared ROUTE_ARBITER
+    # _STATE_FILE, which every concurrent lane overwrites (a cross-lane
+    # attribution race: lane A's floor reason could be journaled by lane B), and
+    # which is written by the anti-stickiness layer as a bare arm name anyway.
+    # The line fires whenever freepool was actually demoted for this dispatch,
+    # regardless of which arm won.
+    _arb_floor_applied="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*floor_applied=\([^ ]*\).*/\1/p')"
+    _arb_floor_reason="$(printf '%s\n' "${_arb_out}" | sed -n 's/.*floor_reason=\([^ ]*\).*/\1/p')"
+    if [[ "${_arb_floor_applied}" == "1" ]]; then
+        emit decision "arm_floor_applied arm=freepool task=${sig8} reason=${_arb_floor_reason:-standard/code}"
     fi
     if [[ ${_arb_rc} -eq 0 && -n "${_arb_arm}" && "${_arb_arm}" != refuse && -n "${_arb_chain}" ]]; then
       # T17 fix-round (C2): the arbiter chain must pass the SAME

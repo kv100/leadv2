@@ -34,10 +34,16 @@ route_arbiter() { # <worker|reviewer> <task-descriptor-json>
   if [[ -x "$free_gate" || -f "$free_gate" ]]; then
     bash "$free_gate" check >/dev/null 2>&1; free_rc=$?
   fi
+  # FP-08 CAPABILITY-FLOOR: freepool's operator surface (config/freepool-arm.yaml)
+  # carries `capability_floor: bulk_only|full`. bulk_only (the default, also when
+  # the file/key is unreadable) holds freepool below codex/sonnet for Standard+
+  # build work; `full` is the flip FP-04's quality gate will make. Env seam for
+  # tests/hermeticity: LEADV2_ROUTE_ARBITER_FREEPOOL_CONFIG.
+  freepool_config="${LEADV2_ROUTE_ARBITER_FREEPOOL_CONFIG:-${here}/../config/freepool-arm.yaml}"
   ROUTE_ARBITER_ROLE="$role" ROUTE_ARBITER_DESCRIPTOR="$descriptor" \
   ROUTE_ARBITER_QUOTA="$quota_json" ROUTE_ARBITER_FREEPOOL_RC="$free_rc" \
   ROUTE_ARBITER_STATE_FILE="${LEADV2_ROUTE_ARBITER_STATE_FILE:-${TMPDIR:-/tmp}/leadv2-route-arbiter-last-arm}" \
-  python3 - "$routing" <<'PY'
+  python3 - "$routing" "$freepool_config" <<'PY'
 import json, os, sys
 try:
     import yaml
@@ -79,33 +85,20 @@ def util(provider):
     # every cost/util comparison and win selection forever -- reproduced 3/3
     # in the round-1 review with every real arm healthy. freepool is
     # unaffected: its own gate (free_ok) already encodes this correctly.
-    if provider=='freepool':
-        base_cost = 0.0 if free_ok else 100.0
-        # Apply capability floor: if the task is Standard or Heavy and the kind is code or docs, then increase cost
-        if size in ['standard', 'heavy'] and kind in ['code', 'docs']:
-            base_cost += 50.0  # we choose 50 so that it is higher than codex and sonnet (which are 3,4,5,7,9)
-            applier_applied = True
-            applier_reason = f"{size}/{kind}"
-        else:
-            applier_applied = False
-            applier_reason = ""
-        return (base_cost, False, applier_applied, applier_reason)
+    if provider=='freepool': return (0.0 if free_ok else 100.0, False)
     x=q.get('anthropic' if provider=='claude' else provider,{})
-    if x.get('status')!='ok': return (100.0, True, False, "")
+    if x.get('status')!='ok': return (100.0, True)
     if provider=='glm': vals=[num((x.get(k) or {}).get('pct')) for k in ('five_hour','weekly')]
     elif provider=='codex':
-        if x.get('limit_reached'): return (100.0, False, False, "")
+        if x.get('limit_reached'): return (100.0, False)
         ws=x.get('windows') or []; bind=x.get('binding_window'); w=next((z for z in ws if z.get('kind')==bind),None)
         vals=[num((w or {}).get('used_percent'))] if w else [num(z.get('used_percent')) for z in ws]
     else:
         a=next((z for z in x.get('accounts',[]) if z.get('active')), (x.get('accounts') or [{}])[0])
         vals=[num(a.get(k)) for k in ('five_hour_pct','seven_day_pct')]
-    vals=[z for z in vals if z is not None]; return (max(vals) if vals else 0.0, False, False, "")
+    vals=[z for z in vals if z is not None]; return (max(vals) if vals else 0.0, False)
 _uraw={p:util(p) for p in ('glm','codex','claude','freepool')}
-u={p:_uraw[p][0] for p in _uraw}
-unk={p:_uraw[p][1] for p in _uraw}
-freepool_applier_applied = _uraw['freepool'][2]
-freepool_applier_reason = _uraw['freepool'][3]
+u={p:_uraw[p][0] for p in _uraw}; unk={p:_uraw[p][1] for p in _uraw}
 def ufmt():
     return ' '.join('util_%s=%s' % (p, 'unknown_capped' if unk[p] else '%d'%u[p]) for p in ('glm','codex','claude','freepool'))
 ceil=((data.get('router_v2') or {}).get('quota_ceilings') or {})
@@ -133,7 +126,31 @@ ok=[c for c in capable if not capped(c.get('provider'))]
 if not ok:
     print('arm=refuse model=none tier=none reason=all_arms_capped chain= %s' % ufmt())
     raise SystemExit(3)
-ok.sort(key=lambda c:(float(c.get('cost',999)),u[c['provider']],c['arm'],c.get('tier','')))
+# FP-08 CAPABILITY-FLOOR (2026-08-28): until FP-04's quality gate flips
+# freepool-arm.yaml's `capability_floor` to `full`, freepool ranks BELOW
+# codex/sonnet for Standard+ build work. Demotion is applied to the EFFECTIVE
+# cost -- the sort's dominant key. A utilization penalty cannot demote a
+# cost-1 arm below cost-3 codex, which is the exact defect of the previous
+# in-util() attempt. Classes are the RAW --task-class vocabulary BEFORE
+# SIZE_MAP (trivial/light must NOT fold into standard: the 'simple' tier stays
+# freepool-eligible, as does bulk). kind='code' is the arbiter's name for
+# build work. Only demotes when freepool actually survived into `ok` (capable
+# and uncapped); the arm is never excluded, so a freepool-only window still
+# dispatches there.
+floor_mode='bulk_only'
+try:
+    _fdata=yaml.safe_load(open(sys.argv[2])) or {}
+    _fm=_fdata.get('capability_floor')
+    if _fm in ('bulk_only','full'): floor_mode=_fm
+except Exception: pass
+FLOOR_CLASSES=('standard','heavy','strategic')
+floor_applies = (floor_mode!='full' and kind=='code' and size_raw in FLOOR_CLASSES and any(c.get('arm')=='freepool' for c in ok))
+def eff_cost(c):
+    base=float(c.get('cost',999))
+    return base+50.0 if (floor_applies and c.get('arm')=='freepool') else base
+floor_applied = floor_applies
+floor_reason = '%s/%s' % (size_raw,kind) if floor_applies else ''
+ok.sort(key=lambda c:(eff_cost(c),u[c['provider']],c['arm'],c.get('tier','')))
 seen=set(); chain=[]
 for c in ok:
     if c['arm'] not in seen: chain.append(c['arm']); seen.add(c['arm'])
@@ -142,23 +159,11 @@ try: last=open(state).read().strip()
 except Exception: last=''
 # Anti-stickiness is stronger than a static lowest-utilization preference:
 # when an equally-priced alternative exists, do not spend the same arm twice.
-price=float(ok[0].get('cost',999)); alternatives=[c for c in ok if float(c.get('cost',999))==price and c['arm']!=last]
+price=eff_cost(ok[0]); alternatives=[c for c in ok if eff_cost(c)==price and c['arm']!=last]
 w=alternatives[0] if alternatives else ok[0]
 try:
     os.makedirs(os.path.dirname(state) or '.',exist_ok=True)
-    import json
-    applier_applied = False
-    applier_reason = ""
-    if w['arm'] == 'freepool':
-        applier_applied = freepool_applier_applied
-        applier_reason = freepool_applier_reason
-    json.dump({
-        'arm': w['arm'],
-        'applier': {
-            'applied': applier_applied,
-            'reason': applier_reason
-        }
-    }, open(state, 'w'))
+    open(state,'w').write(w['arm']+'\n')
 except Exception: pass
 # T17 fix-round (H1): emit the chain with the anti-sticky PICK first, then
 # the remaining cost-ordered arms. The spawn loop (leadv2-dispatch-code.sh)
@@ -168,6 +173,7 @@ except Exception: pass
 # affected which arm actually ran.
 rotated=[w['arm']]+[a for a in chain if a != w['arm']]
 _extra = (' size_unmapped=%s' % size_unmapped) if size_unmapped else ''
-print('arm=%s model=%s tier=%s reason=cheapest_capable chain=%s %s%s' % (w['arm'],w['model'],w.get('tier','standard'),','.join(rotated),ufmt(),_extra))
+_floor = ('floor_applied=1 floor_reason=%s ' % floor_reason) if floor_applied else ''
+print('arm=%s model=%s tier=%s reason=cheapest_capable chain=%s %s%s%s' % (w['arm'],w['model'],w.get('tier','standard'),','.join(rotated),_floor,ufmt(),_extra))
 PY
 }

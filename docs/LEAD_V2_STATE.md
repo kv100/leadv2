@@ -4,11 +4,11 @@
 
 # /leadv2 Active Sessions
 
-Last updated: 2026-08-27T04:27:06Z
+Last updated: 2026-08-28T11:07:53Z
 
 | task_id | phase | class | started_at | daemon |
 |---|---|---|---|---|
-| dispatch-118be2d0 | intake | Standard | 2026-08-27T04:27 | no |
+| dispatch-92f7e69f | intake | standard | 2026-08-28T11:07 | no |
 
 Sessions: 1 / 3 max
 

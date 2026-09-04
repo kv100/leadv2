@@ -1,1 +1,9 @@
-/var/folders/gr/5bbqwwcs6x75mxtky4yqnx400000gq/T//core-offline-run.SCfsXo/suite.uL1Q83/leadv2-ceg-c8-de104I/state/leadv2/active.yaml
+meta:
+  hard_limit: 3
+  heavy_max: 2
+  heavy_strategic_solo: false
+  light_max: 3
+  rendered_at: '2026-08-28T11:07:53Z'
+  schema_version: 2
+  standard_max: 2
+sessions: []

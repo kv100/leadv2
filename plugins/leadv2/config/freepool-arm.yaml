@@ -162,3 +162,14 @@ role_rank:
 #                                    2026-08-27 because cold free-tier models (NIM) need warmup
 #   FREEPOOL_ROLE                    implement|review|bulk — set by the dispatcher from TaskEstimate
 #                                    work_kind (FP-01); unset falls back to implement
+
+# --- FP-08: capability floor (read by lib/leadv2-route-arbiter.sh) ---
+# bulk_only (default): freepool ranks BELOW codex/sonnet for Standard+ build
+#   work (raw --task-class standard|heavy|strategic, mission kind code). It
+#   stays eligible for trivial/light ("simple") and bulk classes and for every
+#   non-build kind, and is never excluded outright -- a freepool-only window
+#   still dispatches there.
+# full: lifts the floor. This is the flip FP-04's quality gate will make when
+#   freepool output proves Standard-build quality.
+# Unreadable/missing file or key degrades to bulk_only (floor ON = fail-safe).
+capability_floor: bulk_only

@@ -523,6 +523,87 @@ SH
   cleanup_case "${d}"
 }
 
+# ---- FP-08 (2026-08-28): the freepool arm must ride the SAME waiter as glm.
+# Live defect (lanes 27434c7a/e9e1ad51): pc_worker_alive had no freepool case,
+# so product_close fell through to proceed_legacy and declared
+# no_work cause=empty_diff ~21-23s after worker_spawned while the freepool
+# worker was still running. These cases mirror fake_glm_run with a
+# freepool-runs dir + FREEPOOL_RUNS_DIR seam.
+fake_freepool_run() { # <sandbox> <repo> <handle> <delay_s> <work_mode:0=empty,1=dirty,2=committed>
+  local d="$1" root="$2" handle="$3" delay_s="$4" work_mode="$5"
+  FAKE_RUNS="${d}/freepool-runs"
+  FAKE_JOB_REGISTRY_ROOT="${d}/job-registry"
+  local run_dir="${FAKE_RUNS}/${handle}"
+  CASE_REG_DIR="${FAKE_JOB_REGISTRY_ROOT}/pc-freepool-$$-${RANDOM}"
+  mkdir -p "${run_dir}" "${CASE_REG_DIR}"
+  : > "${CASE_REG_DIR}/${handle}"
+  (
+    trap 'exit 0' TERM INT
+    worker_deadline=$(( SECONDS + delay_s ))
+    while [[ "${SECONDS}" -lt "${worker_deadline}" ]]; do sleep 0.1; done
+    if [[ "${work_mode}" != 0 ]]; then
+      printf 'worker diff\n' >> "${root}/agent/seed.py"
+    fi
+    if [[ "${work_mode}" == 2 ]]; then
+      git -C "${root}" add agent/seed.py
+      git -C "${root}" commit -qm 'stub worker commit'
+    fi
+    sed 's/^status: running$/status: complete/' "${run_dir}/meta.yaml" > "${run_dir}/meta.yaml.tmp"
+    mv "${run_dir}/meta.yaml.tmp" "${run_dir}/meta.yaml"
+    rm -f "${CASE_REG_DIR}/${handle}"
+  ) &
+  FAKE_PID=$!
+  track_pid "${FAKE_PID}"
+  printf 'run_id: %s\npid: %s\nstatus: running\n' "${handle}" "${FAKE_PID}" > "${run_dir}/meta.yaml"
+}
+
+# ---- Case FP-08a: a freepool worker that finishes late with a real diff must
+# be WAITED on, never declared no_work early. -------------------------------
+case_freepool_worker_waits() {
+  local d root handle close_pid rc handoff
+  d="$(mktemp -d)"; root="${d}/repo"; handle="fp-diff-$$"
+  mkdir -p "${root}"; new_repo "${root}"; make_stubs "${d}"
+  fake_freepool_run "${d}" "${root}" "${handle}" 2 2
+  FREEPOOL_RUNS_DIR="${FAKE_RUNS}" LEADV2_PC_RUNS_ROOT="${d}" \
+    LEADV2_JOB_REGISTRY_ROOT="${FAKE_JOB_REGISTRY_ROOT}" \
+    LEADV2_PC_WORKER_POLL_S=1 LEADV2_PC_WORKER_MAX_WAIT_S=15 \
+    LEADV2_DISPATCH_CACHE_DIR="${d}/cache" LEADV2_LANE_WORK_ROOT="${root}" \
+    LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
+    bash "${PC}" "${root}" fp8sig001 freepool "${handle}" 0 0 "founder-fp8a" >"${d}/close.log" 2>&1 &
+  close_pid=$!; track_pid "${close_pid}"
+  wait "${close_pid}"; rc=$?
+  handoff="${root}/docs/handoff/dispatch-fp8sig001"
+  assert_eq "${rc}" "0" "freepool diff-writing worker exits through non-empty path"
+  if [[ -s "${handoff}/review.diff" ]]; then ok "freepool exit-time review.diff is non-empty"; else bad "freepool review.diff is empty"; fi
+  if grep -q 'terminal=no_work' "${d}/journal.log" 2>/dev/null; then bad "freepool worker misclassified no_work (the live FP-08 defect)"; else ok "freepool worker is never no_work"; fi
+  if grep -q 'write-terminal fp8sig001 .* landed' "${d}/ledger.log" 2>/dev/null; then ok "freepool terminal reflects the real diff"; else bad "freepool terminal row is not landed"; fi
+  if grep -q 'action=proceed_legacy' "${d}/journal.log" 2>/dev/null; then bad "freepool author fell through to proceed_legacy"; else ok "freepool liveness resolves through its own author case"; fi
+  if grep -q 'status=waiting_worker author=freepool' "${d}/journal.log" 2>/dev/null; then ok "freepool rides the shared waiting_worker beat"; else bad "no waiting_worker beat for freepool"; fi
+  cleanup_case "${d}"
+}
+
+# ---- Case FP-08b: only a timeout ends the wait, on the freepool-specific
+# ceiling (LEADV2_PC_FREEPOOL_MAX_WAIT_S) -> dead/timeout, never no_work. ---
+case_freepool_timeout_seam() {
+  local d root handle rc started elapsed
+  d="$(mktemp -d)"; root="${d}/repo"; handle="fp-slow-$$"
+  mkdir -p "${root}"; new_repo "${root}"; make_stubs "${d}"
+  fake_freepool_run "${d}" "${root}" "${handle}" 30 0
+  started="$(date +%s)"
+  FREEPOOL_RUNS_DIR="${FAKE_RUNS}" LEADV2_PC_RUNS_ROOT="${d}" \
+    LEADV2_JOB_REGISTRY_ROOT="${FAKE_JOB_REGISTRY_ROOT}" \
+    LEADV2_PC_WORKER_POLL_S=1 LEADV2_PC_WORKER_MAX_WAIT_S=60 LEADV2_PC_FREEPOOL_MAX_WAIT_S=2 \
+    LEADV2_DISPATCH_CACHE_DIR="${d}/cache" LEADV2_LANE_WORK_ROOT="${root}" \
+    LEADV2_DISPATCH_LANE_WRITES="agent/seed.py" LEADV2_JOURNAL_BIN="${d}/journal.sh" LEADV2_DISPATCH_LEDGER_BIN="${d}/ledger.sh" \
+    bash "${PC}" "${root}" fp8sig002 freepool "${handle}" 0 0 "founder-fp8b" >"${d}/close.log" 2>&1
+  rc=$?; elapsed=$(( $(date +%s) - started ))
+  assert_eq "${rc}" "5" "freepool timeout reaches the bounded worker_timeout path"
+  if [[ "${elapsed}" -ge 2 && "${elapsed}" -lt 10 ]]; then ok "freepool honors LEADV2_PC_FREEPOOL_MAX_WAIT_S (2s), not 60s (${elapsed}s)"; else bad "freepool wait did not honor its ceiling (${elapsed}s)"; fi
+  if grep -q 'reason: worker_timeout' "${root}/docs/handoff/dispatch-fp8sig002/review-gate.md" 2>/dev/null; then ok "freepool timeout gate says worker_timeout"; else bad "freepool timeout gate reason missing"; fi
+  if grep -q 'terminal=no_work' "${d}/journal.log" 2>/dev/null; then bad "freepool timeout misclassified as no_work"; else ok "freepool timeout never emits no_work"; fi
+  cleanup_case "${d}"
+}
+
 case_empty_no_work
 case_foreign_repo_landing
 case_foreign_repo_absent_stays_no_work
@@ -538,6 +619,8 @@ case_revived_status_is_terminal_for_handle
 case_live_watcher_refreshes_lease
 case_committed_worker_diff
 case_codex_probe_respects_budget
+case_freepool_worker_waits
+case_freepool_timeout_seam
 
 printf '\n=== %d passed, %d failed ===\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" == 0 ]]
