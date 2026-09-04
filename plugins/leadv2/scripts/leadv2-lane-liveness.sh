@@ -312,6 +312,18 @@ if not active_unreadable:
         active_unreadable = True
 sessions = {str(s.get("task_id")): s for s in (active.get("sessions") or [])
             if isinstance(s, dict) and s.get("task_id")}
+# D2-E4-RESOLVES-THE-WRONG-DIR-01 (round 2): a lane can carry SEVERAL registry
+# rows (one per dispatch attempt / re-arm). `sessions` keeps only the LAST,
+# whose log_path is often the pulse.md default -- the live D3 lane measured
+# 2026-09-04 had its dispatch-<sig8> pointer on row 1 of 3 and a pulse.md
+# pointer on the last, so E4 resolved nothing and said dead:no_log_artifact
+# about a lane whose deliverable existed. Keep every row of the lane for
+# deliverable_dirs(): each pointer is still from THIS lane's own row, exact
+# attribution, never a glob across docs/handoff/.
+sessions_all = {}
+for _s in (active.get("sessions") or []):
+    if isinstance(_s, dict) and _s.get("task_id"):
+        sessions_all.setdefault(str(_s.get("task_id")), []).append(_s)
 tombstones = load_yaml(tombstones_path, [])
 tombstoned = {str(item.get("task_id")) for item in tombstones if isinstance(item, dict) and item.get("task_id")}
 
@@ -634,7 +646,7 @@ def commit_age_s(worktree):
         return None
     return max(0, int(time.time()) - ctime)
 
-def deliverable_dirs(tid, session):
+def deliverable_dirs(tid, lane_sessions):
     # D2-E4-RESOLVES-THE-WRONG-DIR-01: E4 used to search only
     # docs/handoff/<tid>/, but a lane addressed by its FOUNDER task id never
     # keeps its deliverable there -- the single-worker funnel writes
@@ -643,21 +655,30 @@ def deliverable_dirs(tid, session):
     # (leadv2_active_set_log_path, leadv2-dispatch-code.sh). Resolve the
     # row's pointer into the candidate set so a founder id reaches the same
     # deliverable as its dispatch-<sig8> id. Never glob docs/handoff/: the
-    # pointer comes from THIS lane's row (keyed by this task_id, written by
-    # the dispatcher at spawn), which is exact attribution; a glob would
-    # credit another lane's report to this one -- a false finished_unlanded,
-    # the mirror mistake. The parent must be a DIRECT child of the handoff
-    # root: the pulse.md default (docs/leadv2/tasks/...) and a degenerate
-    # pointer name no lane handoff dir and add no candidate.
+    # pointers come from THIS lane's own rows (keyed by this task_id,
+    # written by the dispatcher at spawn), which is exact attribution; a
+    # glob would credit another lane's report to this one -- a false
+    # finished_unlanded, the mirror mistake. lane_sessions is EVERY row the
+    # registry holds for this task_id (round 2): `sessions` keeps only the
+    # LAST row per lane, and a re-armed lane's last row often carries the
+    # pulse.md default -- measured live on 2026-09-04: the pointer lived on
+    # row 1 of 3, E4 saw only the pulse.md row, resolved nothing, and said
+    # dead:no_log_artifact about a lane whose deliverable existed. Every
+    # row's pointer is still this lane's own. The parent must be a DIRECT
+    # child of the handoff root: the pulse.md default (docs/leadv2/tasks/...)
+    # and a degenerate pointer name no lane handoff dir and add no
+    # candidate.
     # Returns (dirs, unreadable). `unreadable` is set when a candidate dir
     # EXISTS but cannot be READ (EACCES etc.) -- a check that could not
     # look, which resolve() must surface as unknown:, never let fall to a
     # dead verdict about a directory it was unable to inspect.
     dirs = [os.path.join(root, "docs", "handoff", tid)]
-    lp = (session or {}).get("log_path")
-    if lp:
+    handoff_root = os.path.normpath(os.path.join(root, "docs", "handoff"))
+    for sess in (lane_sessions or []):
+        lp = (sess or {}).get("log_path")
+        if not lp:
+            continue
         cand = os.path.normpath(lp if os.path.isabs(lp) else os.path.join(root, lp))
-        handoff_root = os.path.normpath(os.path.join(root, "docs", "handoff"))
         parent = os.path.dirname(cand)
         if parent != handoff_root and os.path.dirname(parent) == handoff_root \
                 and parent not in dirs:
@@ -1000,7 +1021,8 @@ def resolve(tid):
         # but cannot be read -- that is unknown:, never dead: an
         # unresolvable location is a check that could not look, and dead
         # here would be manufactured exactly where the evidence is invisible.
-        _deliverable_dirs, _dir_unreadable = deliverable_dirs(tid, session)
+        _deliverable_dirs, _dir_unreadable = deliverable_dirs(
+            tid, sessions_all.get(tid) or ([session] if session else []))
         if _dir_unreadable is not None:
             row.update(verdict="unknown:deliverable_dir_unreadable",
                        source="deliverable", reason="deliverable_dir_unreadable")
