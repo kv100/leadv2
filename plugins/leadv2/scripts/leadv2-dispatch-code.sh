@@ -7080,7 +7080,17 @@ cmd_resolve() {
       fi
       # The lane-state module is the cap authority.  Existing registry rows
       # remain readable for legacy consumers; this adds identity/history.
-      local _lead_session_id="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-${CLAUDE_SESSION_ID:-direct}}}"
+      # D6-REGISTRY-LANE-OWNERSHIP-01: CLAUDE_SESSION_ID collapses distinct leads
+      # onto one value, so every session wrote its lanes under the same owner and
+      # the per-lead cap counted the machine, not the lane's owner. The resolver
+      # derives a durable per-lead id (pid + process birth) and fails OPEN to
+      # "direct" on its own, with a stderr warning -- so an empty result here can
+      # only mean the lib is missing, and that must not become an empty owner.
+      local _lead_session_id="${LEADV2_LEAD_SESSION_ID:-${LEADV2_PARENT_SESSION_ID:-}}"
+      if [[ -z "${_lead_session_id}" ]]; then
+        _lead_session_id="$(source "${SCRIPT_DIR}/lib/leadv2-lead-identity.sh" 2>/dev/null; leadv2_lead_session_id 2>/dev/null)"
+        [[ -n "${_lead_session_id}" ]] || _lead_session_id="direct"
+      fi
       DISPATCH_LEAD_SESSION_ID="${_lead_session_id}"
       lane_register "${reg_id}" "${_lead_session_id}" "${WORK_ROOT:-${PROJECT_ROOT}}" "spawning" "${DISPATCH_SLOT_PID:-$$}"
       local _lane_register_rc=$?
