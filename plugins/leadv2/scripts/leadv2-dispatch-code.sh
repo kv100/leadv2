@@ -4543,8 +4543,10 @@ _release_registered_lane() {  # <reg_id> <sig8> <where> -- owner-verified, idemp
     emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=registry_unreadable"
     return 0
   fi
-  python3 - "${lf}" "${yf}" "${rid}" "${DISPATCH_SLOT_SESSION}" "${DISPATCH_SLOT_PID}" <<'PY' 2>/dev/null
-import fcntl, os, sys, tempfile
+  local rel_out _prlr_tmp
+  _prlr_tmp="$(mktemp "${TMPDIR:-/tmp}/leadv2-prlr-out.XXXXXX")"
+  python3 - "${lf}" "${yf}" "${rid}" "${DISPATCH_SLOT_SESSION}" "${DISPATCH_SLOT_PID}" <<'PY' 2>/dev/null > "${_prlr_tmp}"
+import fcntl, os, subprocess, sys, tempfile
 try:
     import yaml
 except Exception:
@@ -4561,13 +4563,57 @@ try:
     if not isinstance(data, dict) or not isinstance(data.get("sessions"), list):
         sys.exit(3)
     rows = [row for row in data["sessions"] if isinstance(row, dict) and row.get("task_id") == task_id]
-    if len(rows) != 1:
-        sys.exit(2)
-    row = rows[0]
-    if (row.get("pid_role") == "worker" or not session or row.get("session_id") != session
-            or not pid or str(row.get("pid")) != pid):
-        sys.exit(2)
-    data["sessions"].remove(row)
+    # PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01: duplicate rows for one task_id
+    # used to make release permanently impossible (silent exit 2 indistinguishable
+    # from "foreign row"), so a phase-refused lane stayed registered forever.
+    # Now: the duplicate count is journaled (shell emits active_lane_duplicate_rows
+    # from our stdout summary) and release proceeds per-row instead of failing whole.
+    # Liveness is not just "PID alive": the recorded PID may belong to an
+    # interactive claude session, not a worker (`claude -p`). Kind is read from
+    # the LIVE process argv, so a mislabelled row is still protected.
+    def _prlr_alive(p):
+        try:
+            os.kill(int(p), 0)
+            return True
+        except (TypeError, ValueError, ProcessLookupError, PermissionError, OSError):
+            return False
+    def _prlr_kind(p):
+        try:
+            out = subprocess.run(["ps", "-p", str(int(p)), "-o", "args="],
+                                 capture_output=True, text=True, timeout=5).stdout.strip()
+        except Exception:
+            return "unknown"
+        if not out:
+            return "dead"
+        if ("claude" in out or "codex" in out) and (" -p" in out or "--print" in out):
+            return "worker"
+        if "claude" in out or "--dangerously-skip-permissions" in out:
+            return "interactive"
+        return "other"
+    removed = 0
+    kept_worker = 0
+    removed_ids = set()
+    for row in list(rows):
+        rpid = row.get("pid")
+        if row.get("pid_role") == "worker":
+            kept_worker += 1
+            continue
+        # defence in depth: even a MISLABELLED row whose PID is actually a live
+        # worker process is never released by this dispatcher.
+        if _prlr_alive(rpid) and _prlr_kind(rpid) == "worker":
+            kept_worker += 1
+            continue
+        ours = bool(session) and row.get("session_id") == session \
+            and rpid and str(rpid) == str(pid)
+        stale = not _prlr_alive(rpid)
+        if ours or stale:
+            rows.remove(row)
+            removed_ids.add(id(row))
+            removed += 1
+    print(f"rows={len(rows) + removed} removed={removed} live_worker_kept={kept_worker}", flush=True)
+    if removed == 0:
+        sys.exit(2 if len(rows) <= 1 else 4)
+    data["sessions"] = [s for s in data["sessions"] if id(s) not in removed_ids]
     fd, tmp = tempfile.mkstemp(prefix=".active-release-", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as out:
@@ -4588,9 +4634,23 @@ finally:
 sys.exit(0)
 PY
   release_rc=$?
+  rel_out="$(tr -d '\n' < "${_prlr_tmp}")"
+  rm -f "${_prlr_tmp}"
+  # PHASE-REFUSAL-LEAVES-A-LANE-REGISTERED-01: duplicate rows for one task_id
+  # must be VISIBLE -- a silent exit 2 is indistinguishable from "foreign row"
+  # and made the release path permanently unreachable for that lane.
+  case "${rel_out}" in
+    rows=*)
+      _prlr_rows="${rel_out#rows=}"; _prlr_rows="${_prlr_rows%% *}"
+      if [[ "${_prlr_rows}" -gt 1 ]]; then
+        emit decision "active_lane_duplicate_rows task=${s8:-} id=${rid} where=${where} found=${_prlr_rows} ${rel_out}"
+      fi
+      ;;
+  esac
   case "${release_rc}" in
-    0) emit decision "active_lane_released task=${s8:-} id=${rid} where=${where}" ;;
-    2) emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=not_owner_row_intact" ;;
+    0) emit decision "active_lane_released task=${s8:-} id=${rid} where=${where} ${rel_out}" ;;
+    2) emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=not_owner_row_intact ${rel_out}" ;;
+    4) emit decision "active_lane_release_skipped task=${s8:-} id=${rid} where=${where} reason=duplicate_rows_unresolvable ${rel_out}" ;;
     *) emit decision "active_lane_release_failed task=${s8:-} id=${rid} where=${where} reason=registry_compare_delete_error" ;;
   esac
   return 0
