@@ -381,6 +381,7 @@ def complexity_penalty(c):
     return total
 def ecost(c):
     return float(c.get('cost',999)) + (100.0 if (floor_applies and c.get('arm')=='freepool') else 0.0) + complexity_penalty(c)
+complexity_penalty_active = any(complexity_penalty(c) > 0 for c in ok)
 ok.sort(key=lambda c:(ecost(c),u[c['provider']],c['arm'],c.get('tier','')))
 seen=set(); chain=[]
 for c in ok:
@@ -495,13 +496,18 @@ _wait = (' wait_applied=%s' % ','.join(_waited)) if _waited else ''
 # (route_resolved ... util_glm=... tail), so the freepool verdict travels
 # with every decision, not only the ones a human re-derives by hand.
 _gate = (' freepool_gate=%s' % free_reason) if (free_reason and not free_ok) else ''
-_record(w['arm'],w['model'],w.get('tier','standard'),'cheapest_capable')
+# A complexity rule only changes the selector through effective cost.  Say so
+# when it is active: `cheapest_capable` alone would hide that cheaper tagged
+# cells were deliberately demoted for this estimate.
+reason = 'complexity_penalty' if complexity_penalty_active else 'cheapest_capable'
+_complexity_policy = (' complexity_policy=penalty' if complexity_penalty_active else ' complexity_policy=none')
+_record(w['arm'],w['model'],w.get('tier','standard'),reason)
 # ROUTING-EVERY-SPAWN-THROUGH-THE-ARBITER-01: the decision line names the kind
 # it routed for -- a decision that cannot be read back is not a decision.
-# UNION 2026-09-04: both sides of this hunk were kept. main contributed the
-# freepool gate reason, the branch contributed _record() and kind=. Taking
-# either side alone silently drops half the observability both were written for.
-print('arm=%s kind=%s model=%s tier=%s effort=%s reason=cheapest_capable chain=%s %s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_quota,_wait,_gate))
+# UNION 2026-09-04 (RECOVER-TWELVE-CONFLICTED-BRANCHES-01), third union of this
+# print line: HEAD contributed kind=/_quota/_wait/_gate/_record, the branch
+# contributed the variable reason (complexity_penalty) and complexity_policy=.
+print('arm=%s kind=%s model=%s tier=%s effort=%s reason=%s chain=%s %s%s%s%s%s%s%s%s%s' % (w['arm'],kind,w['model'],w.get('tier','standard'),effort,reason,','.join(rotated),ufmt(),_extra,_floor,_fmode,_complexity,_complexity_policy,_quota,_wait,_gate))
 PY
 }
 

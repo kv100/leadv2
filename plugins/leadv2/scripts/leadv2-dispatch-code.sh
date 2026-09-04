@@ -2993,6 +2993,28 @@ except Exception:
   printf '%s\n' "${fields}"
 }
 
+# The monetary/cap estimate is not a routing input: it has no per-arm price
+# for the live arbiter's provider set. It is nevertheless a pre-run estimate
+# and therefore belongs beside the judge, before either resolver can select an
+# arm. Best effort is intentional: an unavailable helper preserves the chain.
+_dispatch_record_cost_estimate() {  # <sig8> <founder-task-id> <complexity> <duration-class>
+  local sig8="$1" founder_id="$2" complexity="$3" duration_class="$4"
+  local cost_bin cost_task_id cost_out
+  [[ "${LEADV2_DISPATCH_COST_ESTIMATE:-1}" != "0" ]] || return 0
+  cost_bin="${LEADV2_COST_ESTIMATE_BIN:-${SCRIPT_DIR}/leadv2-cost-estimate.sh}"
+  cost_task_id="${founder_id:-${sig8}}"
+  if [[ -f "${cost_bin}" ]]; then
+    cost_out="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${cost_bin}" --task-id "${cost_task_id}" --main-model sonnet 2>/dev/null)"
+    if [[ $? -eq 0 && -n "${cost_out}" ]]; then
+      emit decision "cost_estimate_recorded task=${sig8} founder_task=${cost_task_id} complexity=${complexity:-unknown} duration_class=${duration_class:-unknown} phase=pre_arm_selection path=docs/handoff/${cost_task_id}/cost-estimate.yaml"
+    else
+      emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_failed degrade=no_estimate_recorded phase=pre_arm_selection"
+    fi
+  else
+    emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_binary_missing degrade=no_estimate_recorded phase=pre_arm_selection"
+  fi
+}
+
 # ── dispatch-ledger dedup (FIX PASS 4: pending/confirmed + TTL, see doc block above) ──
 dispatch_lock_file() { printf '%s/.%s.dispatch.lock' "${DISPATCH_LEDGER_DIR}" "$(repo_slug)"; }
 _now_epoch() { date +%s 2>/dev/null || printf '0'; }
@@ -7305,6 +7327,7 @@ cmd_resolve() {
   local DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS
   IFS=$'\t' read -r DC_WORK_KIND DC_COMPLEXITY DC_DURATION_CLASS \
     <<<"$(_dispatch_complexity_estimate "${mission}" "${sig8}" "${task_class}")"
+  _dispatch_record_cost_estimate "${sig8}" "${founder_task_id}" "${DC_COMPLEXITY}" "${DC_DURATION_CLASS}"
   # Admission says this mission lives in the full phase cycle: its Phase-4
   # re-entries need only the pre-build phases satisfied (the cycle is mid-
   # flight), not the whole-cycle completion contract. Explicit
@@ -7784,27 +7807,6 @@ exit is treated as an incident."
   # alongside the resulting arm, so an unwired estimator is visible in the
   # journal instead of silently absent.
   emit decision "arm_resolved job=build arm=${arm} reason=${rule}${readings:+ readings=${readings}} complexity=${DC_COMPLEXITY:-unknown} duration_class=${DC_DURATION_CLASS:-unknown}"
-  # COMPLEXITY-ESTIMATOR-IS-OFF-01 (Critical #3, "what it should cost"): best-
-  # effort, non-blocking -- a missing prior-art.yaml or cost-estimate script is
-  # a degrade (logged), never a dispatch failure. LEADV2_COST_ESTIMATE_BIN is
-  # the test seam; founder_task_id is the id cost-estimate.sh's own
-  # docs/handoff/<id>/ layout expects (falls back to sig8 when unbound, e.g. a
-  # caller that never passed --task-id).
-  if [[ "${LEADV2_DISPATCH_COST_ESTIMATE:-1}" != "0" ]]; then
-    local _cost_bin _cost_task_id _cost_out
-    _cost_bin="${LEADV2_COST_ESTIMATE_BIN:-${SCRIPT_DIR}/leadv2-cost-estimate.sh}"
-    _cost_task_id="${founder_task_id:-${sig8}}"
-    if [[ -f "${_cost_bin}" ]]; then
-      _cost_out="$(PROJECT_ROOT="${PROJECT_ROOT}" bash "${_cost_bin}" --task-id "${_cost_task_id}" --main-model sonnet 2>/dev/null)"
-      if [[ $? -eq 0 && -n "${_cost_out}" ]]; then
-        emit decision "cost_estimate_recorded task=${sig8} founder_task=${_cost_task_id} arm=${arm} complexity=${DC_COMPLEXITY:-unknown} path=docs/handoff/${_cost_task_id}/cost-estimate.yaml"
-      else
-        emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_failed degrade=no_estimate_recorded"
-      fi
-    else
-      emit decision "cost_estimate_unavailable task=${sig8} reason=estimator_binary_missing degrade=no_estimate_recorded"
-    fi
-  fi
   # DISPATCH-BALANCE-BY-LIVE-QUOTA-01: the balancer's choice must be re-derivable
   # from the journal alone -- one decision line whenever the resolver balanced the
   # no-exception default between the GLM and Anthropic buckets (reason prefix
