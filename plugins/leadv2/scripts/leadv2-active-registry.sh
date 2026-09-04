@@ -441,7 +441,25 @@ try:
                 existing["stale"] = False
                 if writes is not None:
                     existing["writes"] = writes
-                print(existing.get("session_id") or session_id)
+                # LIVE-LANE-IS-ABSENT-FROM-THE-REGISTRY-01: a row created by a
+                # DIFFERENT registrar (leadv2-fanout.sh's own
+                # _fanout_register_session stamps "f-<ts>-<pid>-<pid>", not
+                # this file's "s-<ts>-<pid>-<pid>") kept its ORIGINAL
+                # session_id across a refresh. dispatch-code.sh's own caller
+                # (leadv2-dispatch-code.sh:~7058) filters this call's stdout
+                # through a strict `^s-...$` pattern to capture the id it now
+                # owns -- a foreign prefix never matches, so a refresh that
+                # genuinely wrote the row (rc=0, row present, metadata
+                # current) was reported upstream as "active_register_miss
+                # ... rc=0": a write that succeeded, read back as a miss.
+                # Restamping session_id on every refresh, not just append,
+                # means the id printed here always matches the current
+                # schema's own pattern -- the caller that just refreshed the
+                # row is also the id's rightful owner from this point on,
+                # consistent with the "refresh ownership metadata" comment
+                # above.
+                existing["session_id"] = session_id
+                print(session_id)
             else:
                 sessions.remove(existing)
 
@@ -910,12 +928,12 @@ leadv2_active_register() {
   yaml_file="$(_leadv2_yaml_file)"
   lockfile="$(_leadv2_yaml_lockfile)"
 
-  local _register_rc=0
-  _leadv2_yaml_py_lock \
+  local _register_rc=0 _register_out
+  _register_out="$(_leadv2_yaml_py_lock \
     "$lockfile" "$yaml_file" register \
     "$session_id" "$task_id" "$worktree" "$branch" "$ts" \
     "intake" "$cls" "${durable_pid}" "$pid_birth" "$parent_sid" \
-    "$daemon_mode" "$ts" "$pulse_log" "$group_key" "$risk_tags" "$writes" || _register_rc=$?
+    "$daemon_mode" "$ts" "$pulse_log" "$group_key" "$risk_tags" "$writes")" || _register_rc=$?
 
   # LANE-WRITESET-REGISTRY-01 step 3: propagate the python op's exit code
   # instead of swallowing it -- a writeset admission refusal (rc 5/6) must
@@ -923,6 +941,23 @@ leadv2_active_register() {
   if [[ "${_register_rc}" -ne 0 ]]; then
     return "${_register_rc}"
   fi
+
+  # LIVE-LANE-IS-ABSENT-FROM-THE-REGISTRY-01: a python `register` op that
+  # returns 0 without printing a session_id matching THIS caller's own
+  # current-schema pattern is exactly the shape a caller's fragile
+  # stdout-pattern extraction (leadv2-dispatch-code.sh:~7058) reported as
+  # "active_register_miss ... rc=0" -- a write the registry believes
+  # succeeded, read back by its own caller as a failure. Rather than trust
+  # that every future caller re-derives and matches this pattern correctly,
+  # verify it HERE, at the single place that owns the contract, and fail
+  # LOUD (distinct nonzero rc, stderr diagnostic) instead of returning 0 on
+  # an output shape nothing downstream can actually use.
+  if [[ ! "${_register_out}" =~ ^s-[0-9]{8}T[0-9]{6}Z-[0-9]+-[0-9]+$ ]]; then
+    printf -- '[leadv2-active-registry] register_output_malformed: task=%s op returned rc=0 but printed %s (expected s-<ts>-<pid>-<pid>) -- registry write is unverifiable, treating as failure\n' \
+      "${task_id}" "${_register_out:-<empty>}" >&2
+    return 7
+  fi
+  printf -- '%s\n' "${_register_out}"
 
   # Auto-refresh LEAD_V2_STATE.md on every register — non-fatal to register itself
   _render_log="/tmp/lv2-render-$(date +%s).log"
