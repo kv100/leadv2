@@ -461,7 +461,18 @@ SUITE_DEFS=(
   "e2e gate arch-01 (lane-tree testing)|||bash $TEST_DIR/test-e2e-gate-arch-01.sh"
   # parallel (round 2): not on _CORE_OFFLINE_OWNED_SUITES; every case uses its
   # own mktemp -d sandbox (incl. a sandboxed HOME), no shared lock/port.
-  "report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)|||bash $TEST_DIR/test-report-only-gate.sh"
+  # serial WITH A DEATH DATE, not a return to the old placement (measured
+  # 2026-09-04): round 2 moved this to the pool for want of a justification. The
+  # justification exists and was found by measurement -- alone on main it dirties
+  # docs/leadv2/open-threads.md, and `git status --porcelain -- docs/leadv2`, the
+  # exact command run_check compares, DOES report that path (` T docs/leadv2/
+  # open-threads.md`, reproduced by replacing the symlink with a real file). Four
+  # _CORE_OFFLINE_OWNED_SUITES members share the pool at FAIL severity, so a
+  # concurrent run reddens an innocent suite non-deterministically. The write is
+  # not this suite's: suite -> dispatch -> session -> prompt -> UserPromptSubmit
+  # hook -> journal rewrite. Remove this marker when
+  # PROMPT-CAPTURE-HOOK-DESTROYS-THE-SHARED-JOURNAL-01 lands, not before.
+  "report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)|||bash $TEST_DIR/test-report-only-gate.sh|||SERIAL"
   "builder selfcheck gate (recursion/depth guard, baseline attribution)|||bash $TEST_DIR/test-builder-selfcheck-gate.sh"
   "review round exhaustive/verify-only (REVIEW-ROUND1-EXHAUSTIVE-01)|||bash $TEST_DIR/test-review-round-exhaustive.sh"
   "review round cap (REVIEW-ROUNDCAP-01)|||bash $TEST_DIR/test-review-roundcap.sh"

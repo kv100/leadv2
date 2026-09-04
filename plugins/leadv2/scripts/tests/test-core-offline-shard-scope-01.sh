@@ -82,7 +82,7 @@ expect_pool() { # <suite name> <expected pool> <label>
 # separates them — no serial placement needed) ---
 expect_pool "lane worktrees survive the sweepers (SWEEPER-LANE-SAFETY-01)" parallel "test-worktree-lane-safety"
 expect_pool "fanout classifier/runner guard" parallel "test-fanout-classify-guard"
-expect_pool "report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)" parallel "test-report-only-gate"
+expect_pool "report-only gate (REPORT-ONLY-GATE-01: report lane deliverable)" serial "test-report-only-gate"
 expect_pool "prepass resume invalidation (LANE-OBSERVABILITY-02)" parallel "test-prepass-resume-invalidate"
 
 # --- the 7 justified SERIAL suites (first 5 are on _CORE_OFFLINE_OWNED_SUITES:
