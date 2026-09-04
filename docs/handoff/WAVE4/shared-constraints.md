@@ -100,3 +100,33 @@ the fallback and the two shells stop disagreeing, which the case shows).
 The general rule both twins share: **green means "the check passed" only after you have proven the
 check ran.** Before trusting a control, make the mutant differ; before trusting a column, make the
 interpreter speak.
+
+## The instrument was fine — that is why its silence was believed
+
+Five forms of the same failure were measured in a single night. In none of them was the tool broken;
+in every one, a working tool was pointed at something that could not contain the answer, and its
+empty output was read as a fact about the world.
+
+1. **Not that tree.** A deliverable was declared missing by a `find` run inside the lane worktree,
+   while dispatch directories live in the MAIN repo. Check both, with the address named.
+2. **Not that directory.** `git status | grep -vE 'docs/handoff/dispatch-'` filtered away exactly
+   the directory the worker writes into; nine "produced nothing" reports were blind. And
+   `git status -uall` never shows gitignored files at all, so a deliverable can be invisible to git
+   entirely — use `find`.
+3. **Not that arm.** Liveness belongs to the arm, not the lane: a codex arm writes no
+   `handle=PID=`, so a PID probe reports death for a healthy worker. `codex-task.sh status` is
+   workspace-scoped and answers "no jobs" from the wrong directory.
+4. **Not that syntax.** `trace_path` with a bare function name returns `[]` when several nodes share
+   the name — ten real callers, an empty answer, no error.
+5. **Not that artifact.** A watcher waited for `^status:` in `e2e-gate.log`; the gate writes its
+   verdict to `e2e-gate.md`. The filter could not have seen the outcome it was watching for under
+   any sequence of events — not "missed it", *could not*.
+
+The shared remedy is one question, asked before the answer is believed: **if the thing I am looking
+for existed right now, would this command show it to me?** An empty result answers that question
+only if the answer is yes. Otherwise the result is `unknown`, and `unknown` is not `no`.
+
+A sixth, adjacent form is worth keeping beside these because it inverts the direction: a refusal can
+be right. `REFUSE placement: lane_is_live verdict=starting:221` was the single refusal in a day of
+false ones that meant exactly what it said. So a refusal gets verified the same way a death does —
+by processes and files — and never dismissed by habit.
