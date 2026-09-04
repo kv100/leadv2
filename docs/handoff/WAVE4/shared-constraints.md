@@ -232,3 +232,37 @@ Two corollaries the same round produced, both about the limit of a fix at the wr
   What actually makes the round resumable is ordering: `exit 5` fires before
   `leadv2-phase8-assert.sh`, the writer of `phase8-passed.flag`, so no "finished" sentinel exists.
   Assert the ordering; drop the message assertion and the claim must still stand.
+
+## Borrowed justification
+
+A round needed a reason and cited a real document. `run-core-offline.sh` justified seven
+`|||SERIAL` markers by membership in `_CORE_OFFLINE_OWNED_SUITES`. The list exists, the membership
+is accurate, the citation is honest — and the list does not say what the reason needed it to say.
+It is read in exactly one place and sets the **severity** of a hermeticity violation (owned = FAIL,
+otherwise WARN). It says what happens *if* a suite dirties the tree; it never says one does.
+
+> Before citing a declaration as a reason, ask whether it asserts the proposition you need — not
+> whether it is about the same subject.
+
+The real reason was a conjunction: *dirties the shared tree* **and** *its violations are fatal*.
+The list supplied only the second half, and nobody noticed the first half had never been
+established. Measuring it moved four of the seven suites into the parallel pool.
+
+This figure is unlike the rest of our catalogue: it has nothing to do with zeros, silence, or
+missing output. Everything speaks, everything is true, and the conclusion is still wrong.
+
+## Described is a hypothesis; measured is evidence
+
+Two root causes died in one hour, both mine, both stated confidently to a peer before being
+checked: "the digest generator reads one file and writes another" (it reads and writes the same
+file; its zero was a correct count under its own grammar) and "`leadv2-lanes-resume.sh` writes the
+journal" (it only reads it; the writer was a `UserPromptSubmit` hook doing `os.replace` over a
+symlink). Each survived being repeated twice and died on the first read of the code.
+
+In the same hour, a behavioural result held without correction: seven suites run alone in an
+isolated tree, `git status` before and after, a probe first shown able to answer DIRTY.
+
+> A description of a cause is a hypothesis until it has been read back against the code — including
+> when you wrote the description yourself. A measurement of behaviour is evidence immediately.
+
+We spent the night applying this to other agents' reports and never once to our own.
