@@ -102,6 +102,31 @@ def load_tasks_items(path: str) -> list:
     return []
 
 
+def resolve_task(items: list, task_id: str) -> dict | None:
+    """Find the row addressed by *task_id*, tolerant of the fingerprint-id /
+    human-milestone-name split (GATE-A2-ID-SCHEME-MISMATCH-01).
+
+    A fingerprint-keyed backlog (e.g. persona-engine's docs/tasks.yaml) gives
+    each row an opaque id (e.g. "ca2177b9451b"); the human milestone name a
+    caller actually has (e.g. "V5-M0-SKELETON-01") lives inside `intent`, as
+    the segment before the first ':' (e.g. "V5-M0-SKELETON-01: veha M0 ...").
+    Match a row when EITHER its id equals task_id, OR its intent's
+    colon-anchored prefix equals task_id exactly -- a substring/startswith
+    check would let "V5-M1" false-match a row whose intent begins "V5-M10:".
+
+    Returns the matching dict, or None if no row matches either way.
+    """
+    for it in items:
+        if isinstance(it, dict) and str(it.get("id", "")) == task_id:
+            return it
+    for it in items:
+        if isinstance(it, dict):
+            intent = str(it.get("intent", ""))
+            if intent.split(":", 1)[0].strip() == task_id:
+                return it
+    return None
+
+
 def detect_wrapper(doc) -> tuple[str | None, dict]:
     """Given an already-loaded top-level doc, return (list_key, extra_keys).
 
