@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-stream-attempt-isolation.sh
+file=plugins/leadv2/scripts/claude-subsession.sh
+anchor=s|MARKER_FILE="\$HANDOFF_DIR/\${ROLE}\.\${ATTEMPT_ID}\.cost-pending\.yaml"|MARKER_FILE="$HANDOFF_DIR/${ROLE}.cost-pending.yaml"|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: A3: TWO pending-cost markers coexist (attempt#1 not overwritten)
+diff_hash=04a30d35df7ae50d6986bcd620127b1871f1273f63de222d71d46f6c25209d89
+lane_diff_hash=5544238ce2f3cf84c54509fde16b66311dd68be94e11e9f67937184ebbc9e01e

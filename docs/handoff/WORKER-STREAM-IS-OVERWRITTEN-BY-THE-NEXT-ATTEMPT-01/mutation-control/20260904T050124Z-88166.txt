@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-stream-attempt-isolation.sh
+file=plugins/leadv2/scripts/leadv2-budget-check.sh
+anchor=s|if os\.path\.isdir(att):|if False and os.path.isdir(att):|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: B1: fallback sums ALL attempts exactly (spent: 160)
+diff_hash=f2dee0babb5c1df603cd19535d1b063cdacbc1d4e61f8d83c4f72a1c33567c09
+lane_diff_hash=5544238ce2f3cf84c54509fde16b66311dd68be94e11e9f67937184ebbc9e01e

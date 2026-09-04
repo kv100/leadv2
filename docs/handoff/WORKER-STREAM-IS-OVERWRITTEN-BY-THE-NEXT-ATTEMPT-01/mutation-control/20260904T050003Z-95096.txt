@@ -1,0 +1,8 @@
+suite=plugins/leadv2/scripts/tests/test-stream-attempt-isolation.sh
+file=plugins/leadv2/scripts/claude-subsession.sh
+anchor=s|printf '%s-%s' "\$(date +%s)" "\$\$"|printf '0-0'|
+baseline_rc=0
+mutated_rc=1
+red_line=[TEST] FAIL: A1: setup self-check — fake claude ran twice (2 attempt dirs, got 1)
+diff_hash=b2bf91aff729ff428622a23199ef55390941c98d16f633d0eb02da3e1a6d0d64
+lane_diff_hash=5544238ce2f3cf84c54509fde16b66311dd68be94e11e9f67937184ebbc9e01e
