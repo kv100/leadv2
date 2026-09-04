@@ -193,6 +193,6 @@ was left untouched per the no-destructive-ops rule.
 
 Committed on the current branch
 `worktree-WORKTREE-CREATION-RESURRECTS-THE-FROZEN-REGISTRY-01` (no push, no
-merge, no main). Commit SHA recorded after `git commit` below.
+merge, no main). Commit SHA: `a19eca15`.
 
 DELIVERABLE_COMPLETE
